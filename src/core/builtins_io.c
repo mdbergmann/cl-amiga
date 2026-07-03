@@ -2855,6 +2855,16 @@ static CL_Obj bi_ext_gc_compact(CL_Obj *args, int n)
     return CL_NIL;
 }
 
+/* (ext:%gc-audit-roots) — count double-registered GC roots (global vs.
+ * global, global vs. any thread root stack).  gc_forward is not
+ * idempotent, so any double-registered root silently corrupts on
+ * compaction; tests assert this returns 0. */
+static CL_Obj bi_ext_gc_audit_roots(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    return CL_MAKE_FIXNUM(cl_gc_audit_roots());
+}
+
 static CL_Obj bi_time_report(CL_Obj *args, int n)
 {
     uint32_t start_time, end_time, elapsed;
@@ -3843,6 +3853,7 @@ void cl_builtins_io_init(void)
     /* Extension functions (EXT package) */
     extfun("GC", bi_ext_gc, 0, 0);
     extfun("GC-COMPACT", bi_ext_gc_compact, 0, 0);
+    extfun("%GC-AUDIT-ROOTS", bi_ext_gc_audit_roots, 0, 0);
     extfun("GETENV", bi_getenv, 1, 1);
     extfun("GETCWD", bi_getcwd, 0, 0);
     extfun("SYSTEM-COMMAND", bi_system_command, 1, 1);

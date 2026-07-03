@@ -2300,6 +2300,144 @@ check_contains "make-array+upgraded-array-elt-type with deftype alias under GC s
 check_absent   "no stale element_type/typespec from deftype alias classify compaction" \
   "ELTTYPE-DEF:NIL\|not of type\|corrupted\|type 0\|Unbound" "$out"
 
+# --- Case: condition report with :format-arguments under GC stress --------
+# Bug: format_condition_report read the format-control string and every
+# format argument out of c->slots into un-rooted C locals BEFORE
+# cl_make_string_output_stream / cl_format_to_stream allocated (and
+# compacted) — the report then formatted relocated garbage ("CAR:
+# corrupted pointer") on every (error "..." args) whose report is printed.
+cat > "$WORK/condreport.lisp" <<'EOF'
+(let ((ok t))
+  (dotimes (i 30)
+    (let ((rpt (handler-case
+                   (error "gcstress ~a ~s ~d end" (list i (+ i 1)) "str" i)
+                 (error (c) (format nil "~a" c)))))
+      (unless (string= rpt (format nil "gcstress (~d ~d) \"str\" ~d end"
+                                   i (+ i 1) i))
+        (format t "BAD-REPORT:~s~%" rpt)
+        (setf ok nil))))
+  (format t "CONDREPORT:~a~%" ok))
+EOF
+out=$(run_stress "$WORK/condreport.lisp")
+check_contains "condition report formats :format-arguments under GC stress" "CONDREPORT:T" "$out"
+check_absent   "no corrupted pointer in condition report under GC stress" \
+  "corrupted\|not of type\|BAD-REPORT" "$out"
+
+# --- Case: SORT of a general vector with an allocating predicate/:key -----
+# Bug: vector_insertion_sort captured cl_vector_data(v) ONCE and kept
+# reading/writing through it across every user predicate/:key call; a
+# compaction inside the predicate relocated the vector and the sort
+# read/wrote the vector's OLD arena location.  The discriminator below
+# makes the predicate drop a large live reference on its first call, so
+# the next stress-compaction inside the sort slides the vector down over
+# the freed space: the old code then "sorts" the stale copy and returns
+# the vector UNSORTED (silent corruption); the fix re-derives the data
+# pointer from the rooted vector after every user call.
+# (Kept as flat top-level forms: a (let (...) (dotimes ...)) wrapper
+# trips an unrelated, pre-existing compile-time GC-stress crash in
+# compile_dotimes/compile_tagbody — see the tier-2 compiler findings.)
+cat > "$WORK/sortvec.lisp" <<'EOF'
+(defvar *junk* (make-list 2000))
+(defvar *v* (coerce (loop for i from 30 downto 1 collect (list i)) 'vector))
+(defvar *pred*
+  (lambda (a b)
+    (setq *junk* nil)  ; dies mid-sort -> next compaction slides *v*
+    (< (first (list (car a))) (car b))))
+(sort *v* *pred*)
+(defvar *keys* (map 'list #'car *v*))
+(format t "SORTVEC:~a~%"
+        (if (equal *keys* (loop for i from 1 to 30 collect i)) t *keys*))
+;; :key variant — allocating :key on a general vector of heap objects
+(defvar *kv* (vector "dd" "b" "ccc" "a"))
+(sort *kv* #'< :key (lambda (s) (first (list (length s)))))
+;; stable sort by length: "b" and "a" (both length 1) keep order
+(format t "SORTKEY:~a~%"
+        (if (equal (coerce *kv* 'list) '("b" "a" "dd" "ccc"))
+            t (coerce *kv* 'list)))
+EOF
+out=$(run_stress "$WORK/sortvec.lisp")
+check_contains "sort vector with allocating predicate under GC stress" "SORTVEC:T" "$out"
+check_contains "sort vector with allocating :key under GC stress"      "SORTKEY:T" "$out"
+check_absent   "no corruption sorting vector under GC stress" \
+  "corrupted\|not of type\|type 0\|FATAL" "$out"
+
+# --- Case: THROW multiple values through an allocating unwind-protect ------
+# Bug: t->pending_mv_values[], the saved_pending_stack[] snapshots, and
+# nlx_stack[i].mv_values were neither marked nor forwarded by the GC.  A
+# throw carrying (values ...) with heap objects runs the unwind-protect
+# cleanup (arbitrary allocating Lisp) between the throw and the catch
+# landing; a sweep during the cleanup collected the secondary values and
+# a compaction left them (and the saved pending_tag) as stale offsets —
+# garbage values or "No catch for tag".
+cat > "$WORK/throwmv.lisp" <<'EOF'
+(let ((ok t))
+  (dotimes (i 40)
+    (multiple-value-bind (a b c)
+        (catch 'tag
+          (unwind-protect
+              (throw 'tag (values i (list i (+ i 1)) (format nil "s~d" i)))
+            ;; allocating cleanup -> compaction while values are parked
+            (make-list 20)))
+      (unless (and (eql a i)
+                   (equal b (list i (+ i 1)))
+                   (string= c (format nil "s~d" i)))
+        (format t "BAD-THROW-MV:~s ~s ~s~%" a b c)
+        (setf ok nil))))
+  ;; nested unwind-protects: outer throw's snapshot lives on
+  ;; saved_pending_stack while the inner cleanup allocates
+  (dotimes (i 40)
+    (multiple-value-bind (x y)
+        (catch 'outer
+          (unwind-protect
+              (unwind-protect
+                  (throw 'outer (values (list i) (list (* i 2))))
+                (make-list 15))
+            (make-list 15)))
+      (unless (and (equal x (list i)) (equal y (list (* i 2))))
+        (format t "BAD-NESTED-MV:~s ~s~%" x y)
+        (setf ok nil))))
+  (format t "THROWMV:~a~%" ok))
+EOF
+out=$(run_stress "$WORK/throwmv.lisp")
+check_contains "throw values survive allocating unwind-protect cleanup" "THROWMV:T" "$out"
+check_absent   "no stale throw values / lost catch tags under GC stress" \
+  "BAD-THROW-MV\|BAD-NESTED-MV\|No catch for tag\|corrupted" "$out"
+
+# --- Case: oversized allocation must not corrupt the arena -----------------
+# Bug: cl_alloc's >8MB header-size guard ran AFTER alloc_from_bump had
+# already advanced the bump pointer; the guard's longjmp left a
+# headerless region inside the walked bump front, and every later arena
+# walk (sweep/forwarding/slide) desynced there — live objects above the
+# hole were overwritten.  (make-array 3000000) passes the element-count
+# check but requests ~12MB of bytes, hitting the guard whenever the heap
+# is big enough for the request to fit in bump space.
+# Note: the oversized-allocation guard signals via cl_storage_error (a
+# C-level error frame, deliberately allocation-free), which aborts the
+# offending top-level form rather than unwinding into handler-case; the
+# loader reports it and continues.  What matters here is (a) the clean
+# error message and (b) a fully intact heap afterwards — the C-level
+# regression (bump must not advance) is asserted by tests/test_alloc_guard.c.
+cat > "$WORK/bigalloc.lisp" <<'EOF'
+(make-array 3000000)
+;; The heap must be fully intact afterwards: allocate, force compaction,
+;; and verify data survives.
+(let ((keep '()))
+  (dotimes (i 50) (push (list i (format nil "x~d" i)) keep))
+  (ext:gc-compact)
+  (let ((ok t))
+    (dotimes (i 50)
+      (let ((e (nth (- 49 i) keep)))
+        (unless (and (eql (first e) i)
+                     (string= (second e) (format nil "x~d" i)))
+          (setf ok nil))))
+    (format t "BIGALLOC-2:~a~%" ok)))
+EOF
+out=$(run_stress "$WORK/bigalloc.lisp")
+check_contains "oversized make-array signals a clean storage error" "Allocation too large for header" "$out"
+check_contains "heap fully intact after oversized-allocation error"   "BIGALLOC-2:T" "$out"
+check_absent   "no arena-walk corruption after oversized allocation" \
+  "corrupted\|not of type\|type 0\|Guru" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

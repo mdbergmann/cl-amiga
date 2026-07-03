@@ -125,6 +125,12 @@ void cl_gc_reset_roots(void);
 #define CL_MAX_GLOBAL_ROOTS 512
 void cl_gc_register_root(CL_Obj *root_ptr);
 
+/* Audit for double-registered roots (global vs. global, global vs. any
+ * thread root stack).  gc_forward is not idempotent, so a slot reachable
+ * from two root entries is silently corrupted on compaction.  Returns
+ * the number of violations (0 = clean). */
+int cl_gc_audit_roots(void);
+
 
 /* Manually trigger GC */
 void cl_gc(void);

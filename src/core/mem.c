@@ -366,6 +366,18 @@ void *cl_alloc(uint8_t type, uint32_t size)
     if (size < CL_MIN_ALLOC_SIZE)
         size = CL_MIN_ALLOC_SIZE;
 
+    /* Guard: size must fit the 23-bit header size field.  This MUST run
+     * before alloc_from_bump: the old post-allocation guard fired after
+     * the bump pointer had already advanced, longjmp'ing out via
+     * cl_storage_error and leaving a headerless region inside the walked
+     * bump front — every later arena walk (sweep, mark-overflow rescan,
+     * forwarding, slide) desynced there, silently corrupting the heap.
+     * Reachable from pure Lisp: (make-array 3000000) passes the element-
+     * count check but requests ~12MB of bytes. */
+    if (size > CL_HDR_SIZE_MASK)
+        cl_storage_error("Allocation too large for header: %u bytes (max %u)",
+                         (unsigned)size, (unsigned)CL_HDR_SIZE_MASK);
+
     if (multi) platform_mutex_lock(alloc_mutex);
 
     /* Fast path: bump allocator, then a *bounded* first-fit free-list probe.
@@ -462,13 +474,9 @@ void *cl_alloc(uint8_t type, uint32_t size)
         cl_storage_error("Heap exhausted (requested %u bytes)", (unsigned)size);
     }
 
-    /* Guard: size must fit in the 23-bit header size field.
-     * If this fires, an object exceeds ~8MB — architecturally unsupported. */
-    if (size > CL_HDR_SIZE_MASK) {
-        if (multi) platform_mutex_unlock(alloc_mutex);
-        cl_storage_error("Allocation too large for header: %u bytes (max %u)",
-                         (unsigned)size, (unsigned)CL_HDR_SIZE_MASK);
-    }
+    /* (The header-size guard runs at function entry, BEFORE any bump
+     * advance — see above.  alloc_from_free_list can only ever shrink-fit
+     * or return the exact block, never grow size past the mask.) */
 
     /* Initialize: zero entire block, then set header.
      * Zeroing prevents stale data in padding/trailing bytes from being
@@ -1379,6 +1387,90 @@ static void gc_scan_jit_native_stack(CL_Thread *t)
  * We must #undef gc_root_count here because thread.h defines it as
  * (CT->gc_root_count), which collides with t->gc_root_count member access. */
 #undef gc_root_count
+
+/* Audit the GC root registries for double registration.
+ *
+ * gc_forward is NOT idempotent (the forwarding table is keyed by
+ * pre-compaction offsets), so a CL_Obj slot reachable from two root
+ * entries is forwarded twice on compaction: the second lookup maps the
+ * already-forwarded offset through whatever object's OLD offset it now
+ * coincides with, silently rewriting the root to an unrelated object.
+ * Every slot must therefore appear at most once across global_roots and
+ * all thread root stacks combined.  Returns the number of violations
+ * and prints one line per offender so the source can be found.
+ *
+ * Walks cl_thread_list and every thread's gc_roots[]/gc_root_count, which
+ * are otherwise only safe to read under a stop-the-world pause (peer
+ * threads mutate their own root stack via CL_GC_PROTECT/UNPROTECT, and
+ * thread create/exit mutates the list's `next` links).  Since this is a
+ * diagnostic entry point reachable from Lisp at any time (ext:%gc-audit-roots),
+ * bracket the walk with cl_gc_stop_the_world()/cl_gc_resume_the_world()
+ * ourselves, matching the pattern in cl_gc_compact(). */
+int cl_gc_audit_roots(void)
+{
+    int violations = 0;
+    int i, j;
+    CL_Thread *t, *t2;
+    int multithread = (cl_thread_count > 1);
+
+    if (multithread)
+        cl_gc_stop_the_world();
+
+    for (i = 0; i < n_global_roots; i++) {
+        for (j = i + 1; j < n_global_roots; j++) {
+            if (global_roots[i] == global_roots[j]) {
+                fprintf(stderr, "GC root audit: address registered twice "
+                        "in global roots\n");
+                violations++;
+            }
+        }
+        for (t = cl_thread_list; t; t = t->next) {
+            for (j = 0; j < t->gc_root_count; j++) {
+                if (t->gc_roots[j] == global_roots[i]) {
+                    fprintf(stderr, "GC root audit: global root also on a "
+                            "thread root stack (double-forward hazard)\n");
+                    violations++;
+                }
+            }
+        }
+    }
+
+    /* Duplicate address registered twice within the same thread's own
+     * gc_roots[] stack (e.g. an accidental double CL_GC_PROTECT). */
+    for (t = cl_thread_list; t; t = t->next) {
+        for (i = 0; i < t->gc_root_count; i++) {
+            for (j = i + 1; j < t->gc_root_count; j++) {
+                if (t->gc_roots[i] == t->gc_roots[j]) {
+                    fprintf(stderr, "GC root audit: address registered "
+                            "twice on the same thread's root stack\n");
+                    violations++;
+                }
+            }
+        }
+    }
+
+    /* Same address registered on two different threads' root stacks. */
+    for (t = cl_thread_list; t; t = t->next) {
+        for (t2 = t->next; t2; t2 = t2->next) {
+            for (i = 0; i < t->gc_root_count; i++) {
+                for (j = 0; j < t2->gc_root_count; j++) {
+                    if (t->gc_roots[i] == t2->gc_roots[j]) {
+                        fprintf(stderr, "GC root audit: address registered "
+                                "on two different thread root stacks "
+                                "(double-forward hazard)\n");
+                        violations++;
+                    }
+                }
+            }
+        }
+    }
+
+    if (multithread)
+        cl_gc_resume_the_world();
+
+    return violations;
+}
+
 static void gc_mark_thread_roots(CL_Thread *t)
 {
     int i;
@@ -1394,7 +1486,15 @@ static void gc_mark_thread_roots(CL_Thread *t)
         gc_mark_obj(t->dyn_stack[i].old_value);
     }
 
-    /* NLX stack (catch tags, results, and saved bytecodes) */
+    /* NLX stack (catch tags, results, and saved bytecodes).
+     * NOTE: nlx_stack[i].mv_values are deliberately NOT marked: they are
+     * written together with mv_count only in the zero-allocation window
+     * between a throw's stash and its longjmp landing (immediately
+     * consumed into cl_mv_values); outside that window mv_count is 1
+     * from the frame push while mv_values[0] holds a stale/garbage word
+     * — marking it would set mark bits at non-object-start offsets.
+     * Values that live across an ALLOCATING unwind-protect cleanup are
+     * parked in pending_mv_values / saved_pending_stack, marked below. */
     for (i = 0; i < t->nlx_top; i++) {
         gc_mark_obj(t->nlx_stack[i].tag);
         gc_mark_obj(t->nlx_stack[i].result);
@@ -1437,6 +1537,35 @@ static void gc_mark_thread_roots(CL_Thread *t)
     }
     gc_mark_obj(t->pending_tag);
     gc_mark_obj(t->pending_value);
+    /* Secondary values of an in-flight THROW.  These are live while an
+     * unwind-protect cleanup runs (arbitrary allocating Lisp) between
+     * the throw and the catch landing; without marking, a sweep during
+     * the cleanup collects them and a compaction leaves stale offsets.
+     * Bound STRICTLY by pending_mv_count while a throw is in flight:
+     * unlike mv_values (continuously maintained), slots beyond the
+     * count — or the whole array when no throw is pending — hold stale
+     * offsets from completed throws; marking those would set mark bits
+     * at non-object-start offsets and corrupt the arena walk. */
+    if (t->pending_throw) {
+        for (i = 0; i < t->pending_mv_count && i < CL_MAX_MV; i++)
+            gc_mark_obj(t->pending_mv_values[i]);
+    }
+    /* Saved pending-throw snapshots: one per armed unwind-protect whose
+     * cleanup is running (nested UWPs park the OUTER throw's tag/values
+     * here — see saved_pending_stack in thread.h). */
+    for (i = 0; i < t->saved_pending_top; i++) {
+        int m;
+        /* A snapshot taken while no throw was in flight copies whatever
+         * stale tag/value a COMPLETED throw left behind — only entries
+         * with an armed pending_throw hold live references. */
+        if (!t->saved_pending_stack[i].pending_throw)
+            continue;
+        gc_mark_obj(t->saved_pending_stack[i].pending_tag);
+        gc_mark_obj(t->saved_pending_stack[i].pending_value);
+        for (m = 0; m < t->saved_pending_stack[i].pending_mv_count &&
+                    m < CL_MAX_MV; m++)
+            gc_mark_obj(t->saved_pending_stack[i].pending_mv_values[m]);
+    }
     /* Compiler hand-off: holds a CL_Obj symbol across compile_expr's allocations
      * (set in compile_named_lambda/compile_defun, consumed in compile_lambda).
      * Must be marked AND updated or a compaction mid-lambda-compile leaves
@@ -2121,7 +2250,7 @@ static void gc_update_thread_roots(CL_Thread *t)
         gc_update_slot(&t->dyn_stack[i].old_value);
     }
 
-    /* NLX stack */
+    /* NLX stack (mv_values deliberately excluded — see the mark phase) */
     for (i = 0; i < t->nlx_top; i++) {
         gc_update_slot(&t->nlx_stack[i].tag);
         gc_update_slot(&t->nlx_stack[i].result);
@@ -2157,6 +2286,25 @@ static void gc_update_thread_roots(CL_Thread *t)
         gc_update_slot(&t->mv_values[i]);
     gc_update_slot(&t->pending_tag);
     gc_update_slot(&t->pending_value);
+    /* In-flight THROW secondary values + saved pending-throw snapshots —
+     * mirror of gc_mark_thread_roots (a snapshot restored after an
+     * allocating unwind-protect cleanup must hold FORWARDED offsets, or
+     * the restored pending_tag no longer EQ-matches its catch tag:
+     * "No catch for tag" / garbage multiple values). */
+    if (t->pending_throw) {
+        for (i = 0; i < t->pending_mv_count && i < CL_MAX_MV; i++)
+            gc_update_slot(&t->pending_mv_values[i]);
+    }
+    for (i = 0; i < t->saved_pending_top; i++) {
+        int m;
+        if (!t->saved_pending_stack[i].pending_throw)
+            continue;  /* see gc_mark_thread_roots */
+        gc_update_slot(&t->saved_pending_stack[i].pending_tag);
+        gc_update_slot(&t->saved_pending_stack[i].pending_value);
+        for (m = 0; m < t->saved_pending_stack[i].pending_mv_count &&
+                    m < CL_MAX_MV; m++)
+            gc_update_slot(&t->saved_pending_stack[i].pending_mv_values[m]);
+    }
     gc_update_slot(&t->pending_lambda_name);  /* see gc_mark counterpart */
 
     /* Thread metadata */

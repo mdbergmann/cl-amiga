@@ -1125,24 +1125,42 @@ static CL_Obj bi_merge(CL_Obj *args, int n)
     }
 }
 
-/* Insertion sort for vectors — in-place, stable */
-static void vector_insertion_sort(CL_Obj *data, int32_t len, CL_Obj pred, CL_Obj key_fn)
+/* Insertion sort for general vectors — in-place, stable.
+ *
+ * Takes the vector CL_Obj, NOT a raw data pointer: the :key/predicate
+ * calls run arbitrary Lisp whose allocations can compact the heap and
+ * relocate the vector, so the data pointer must be re-derived from the
+ * rooted SEQ after every such call (reading or writing through a
+ * pre-compaction pointer would corrupt whatever now lives at the old
+ * location).  The element and key locals held across those calls are
+ * rooted for the same reason. */
+#define VIS_DATA(seq) cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(seq))
+static void vector_insertion_sort(CL_Obj seq, int32_t len, CL_Obj pred, CL_Obj key_fn)
 {
     int32_t i, j;
+    CL_Obj val = CL_NIL, kval = CL_NIL;
+    if (len <= 1) return;
+    CL_GC_PROTECT(seq);
+    CL_GC_PROTECT(pred);
+    CL_GC_PROTECT(key_fn);
+    CL_GC_PROTECT(val);
+    CL_GC_PROTECT(kval);
     for (i = 1; i < len; i++) {
-        CL_Obj val = data[i];
-        CL_Obj kval = apply_key(key_fn, val);
+        val = VIS_DATA(seq)[i];
+        kval = apply_key(key_fn, val);
         j = i - 1;
         while (j >= 0) {
-            CL_Obj kj = apply_key(key_fn, data[j]);
+            CL_Obj kj = apply_key(key_fn, VIS_DATA(seq)[j]);
             if (CL_NULL_P(call_test(pred, kval, kj)))
                 break;
-            data[j + 1] = data[j];
+            VIS_DATA(seq)[j + 1] = VIS_DATA(seq)[j];
             j--;
         }
-        data[j + 1] = val;
+        VIS_DATA(seq)[j + 1] = val;
     }
+    CL_GC_UNPROTECT(5);
 }
+#undef VIS_DATA
 
 /* Set element I of a string / bit-vector / vector sequence. */
 static void array_seq_set(CL_Obj seq, int32_t i, CL_Obj v)
@@ -1210,7 +1228,7 @@ static CL_Obj bi_sort(CL_Obj *args, int n)
 
     if (CL_VECTOR_P(seq)) {
         CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
-        vector_insertion_sort(cl_vector_data(v), (int32_t)cl_vector_active_length(v), pred, key_fn);
+        vector_insertion_sort(seq, (int32_t)cl_vector_active_length(v), pred, key_fn);
         return args[0];
     }
 
