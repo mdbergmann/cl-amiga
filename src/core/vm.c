@@ -2920,6 +2920,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             nlx->compiler_mark = cl_compiler_mark();
             nlx->mv_count = 1;
             nlx->saved_pending_mark = cl_saved_pending_top;
+            nlx->saved_jit_depth = CT->jit_depth;
 
             {
 #ifdef DEBUG_NLX
@@ -2950,6 +2951,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 cl_restart_top = nlx->restart_mark;
                 cl_error_frame_top = nlx->error_mark;
                 gc_root_count = nlx->gc_root_mark;
+                cl_jit_restore_depth(nlx->saved_jit_depth);
                 cl_compiler_restore_to(nlx->compiler_mark);
                 cl_saved_pending_top = nlx->saved_pending_mark;
                 {
@@ -3080,6 +3082,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             nlx->gc_root_mark = gc_root_count;
             nlx->compiler_mark = cl_compiler_mark();
             nlx->saved_pending_mark = cl_saved_pending_top;
+            nlx->saved_jit_depth = CT->jit_depth;
 
             {
 #ifdef DEBUG_NLX
@@ -3115,6 +3118,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 cl_restart_top = nlx->restart_mark;
                 cl_error_frame_top = nlx->error_mark;
                 gc_root_count = nlx->gc_root_mark;
+                cl_jit_restore_depth(nlx->saved_jit_depth);
                 cl_compiler_restore_to(nlx->compiler_mark);
                 cl_saved_pending_top = nlx->saved_pending_mark;
                 {
@@ -3588,6 +3592,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             nlx->compiler_mark = cl_compiler_mark();
             nlx->mv_count = 1;
             nlx->saved_pending_mark = cl_saved_pending_top;
+            nlx->saved_jit_depth = CT->jit_depth;
 
             if (CL_SETJMP(nlx->buf) == 0) {
                 /* Normal path: body executes */
@@ -3610,6 +3615,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 cl_restart_top = nlx->restart_mark;
                 cl_error_frame_top = nlx->error_mark;
                 gc_root_count = nlx->gc_root_mark;
+                cl_jit_restore_depth(nlx->saved_jit_depth);
                 cl_compiler_restore_to(nlx->compiler_mark);
                 cl_saved_pending_top = nlx->saved_pending_mark;
                 {
@@ -3709,6 +3715,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 cl_pending_error_code = 0;
                 cl_pending_error_msg[0] = '\0';
                 nlx->saved_pending_mark = cl_saved_pending_top;
+                nlx->saved_jit_depth = CT->jit_depth;
                 cl_nlx_top++;
 
 
@@ -3740,6 +3747,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 cl_restart_top = nlx->restart_mark;
                 cl_error_frame_top = nlx->error_mark;
                 gc_root_count = nlx->gc_root_mark;
+                cl_jit_restore_depth(nlx->saved_jit_depth);
                 cl_compiler_restore_to(nlx->compiler_mark);
                 cl_saved_pending_top = nlx->saved_pending_mark;
                 /* The saved slot was pushed at arming time (before the throw).
@@ -3943,28 +3951,23 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 }
                 /* No more UWPROT — propagate to error handler.
                  * Restore VM state to before this cl_vm_eval call
-                 * so subsequent evaluations start from a clean state. */
+                 * so subsequent evaluations start from a clean state,
+                 * then longjmp via cl_error_frame_longjmp, which applies
+                 * the per-frame snapshot restores (gc roots, jit depth,
+                 * FASL readers, compiler chain, handler/restart tops) the
+                 * bare longjmp here used to skip — a rethrow through an
+                 * unwind-protect cleanup otherwise left gc_root_count
+                 * pointing at unwound C stack slots. */
                 {
                     int err_code = cl_pending_error_code;
                     cl_pending_throw = 0;
-                    cl_nlx_top = 0;
-                    cl_saved_pending_top = 0;
-                    cl_dynbind_restore_to(0);
-                    cl_handler_top = 0;
-                    cl_restart_top = 0;
                     cl_vm.fp = base_fp;
                     cl_vm.sp = cl_vm.frames[base_fp].bp;
                     cl_error_code = err_code;
                     strncpy(cl_error_msg, cl_pending_error_msg, sizeof(cl_error_msg) - 1);
                     cl_error_msg[sizeof(cl_error_msg) - 1] = '\0';
-                    if (cl_error_frame_top > 0) {
-                        /* Don't decrement here — CL_UNCATCH at the catch site pops */
-                        CL_LONGJMP(cl_error_frames[cl_error_frame_top - 1].buf, err_code);
-                    }
-                    platform_write_string("FATAL ERROR: ");
-                    platform_write_string(cl_error_msg);
-                    platform_write_string("\n");
-                    exit(1);
+                    /* Don't decrement here — CL_UNCATCH at the catch site pops */
+                    cl_error_frame_longjmp(err_code);
                 }
             }
             /* !should_rethrow: nop — pending state parked for enclosing UWP */

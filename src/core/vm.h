@@ -108,6 +108,13 @@ typedef struct {
     int mv_count;          /* multiple value count to preserve across NLX */
     CL_Obj mv_values[CL_MAX_MV]; /* multiple values to preserve across NLX */
     int saved_pending_mark; /* saved_pending_top depth at frame creation */
+    int saved_jit_depth;   /* CT->jit_depth at frame creation.  Restored on
+                            * every longjmp landing (like the CL_ErrorFrame
+                            * twin): a THROW/RETURN-FROM/GO that unwinds past
+                            * cl_jit_invoke skips its C epilogue, and a stale
+                            * jit_depth makes the next JIT entry keep a stale
+                            * jit_stack_top — the conservative GC scan window
+                            * then excludes live JIT frames (missed roots). */
 } CL_NLXFrame;
 
 /* --- Condition handler binding stack --- */
