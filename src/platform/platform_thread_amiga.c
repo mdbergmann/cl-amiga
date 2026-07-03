@@ -406,6 +406,20 @@ int platform_atomic_cas(volatile uint32_t *ptr, uint32_t expected,
     return ok;
 }
 
+void platform_memory_barrier(void)
+{
+    /* Single-core 68k: no CPU reordering; only compiler reordering must
+     * be prevented.  GCC: an empty asm with a memory clobber.  Other
+     * compilers (vbcc): Forbid/Permit — opaque libcalls the compiler
+     * cannot reorder stores across. */
+#if defined(__GNUC__)
+    __asm__ __volatile__("" ::: "memory");
+#else
+    Forbid();
+    Permit();
+#endif
+}
+
 /* ================================================================
  * TLS (Thread-Local Storage via tc_UserData)
  *
