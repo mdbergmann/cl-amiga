@@ -22,13 +22,19 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-/* Helper to register a builtin */
+/* Helper to register a builtin.  sym is protected across the function
+ * alloc and the CL_Symbol* derived only afterward — cl_make_function can
+ * compact and leave both stale. */
 static void defun(const char *name, CL_CFunc func, int min, int max)
 {
     CL_Obj sym = cl_intern_in(name, (uint32_t)strlen(name), cl_package_cl);
-    CL_Obj fn = cl_make_function(func, sym, min, max);
-    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    CL_Obj fn;
+    CL_Symbol *s;
+    CL_GC_PROTECT(sym);
+    fn = cl_make_function(func, sym, min, max);
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     s->function = fn;
+    CL_GC_UNPROTECT(1);
 }
 
 static void check_number(CL_Obj obj, const char *op)
@@ -211,11 +217,10 @@ static CL_Obj bi_sqrt(CL_Obj *args, int n)
         int want_double = CL_DOUBLE_FLOAT_P(cx->realpart) ||
                           CL_DOUBLE_FLOAT_P(cx->imagpart);
         if (b < 0.0) im = -im;
-        if (want_double)
-            return cl_make_complex(cl_make_double_float(re),
-                                   cl_make_double_float(im));
-        return cl_make_complex(cl_make_single_float((float)re),
-                               cl_make_single_float((float)im));
+        /* make_complex_double_result protects the first float across the
+         * second's allocation — nested make_complex(alloc, alloc) leaves
+         * the first result stale when the second compacts. */
+        return make_complex_double_result(re, im, want_double);
     }
 
     /* Integer perfect-square fast path: (sqrt 4) → 2 (integer), (sqrt 9) → 3. */
@@ -237,18 +242,7 @@ static CL_Obj bi_sqrt(CL_Obj *args, int n)
         int is_dbl = CL_DOUBLE_FLOAT_P(x);
         if (val < 0.0) {
             /* Negative real: result is pure-imaginary complex. */
-            double im = sqrt(-val);
-            CL_Obj zero = is_dbl ? cl_make_double_float(0.0)
-                                 : cl_make_single_float(0.0f);
-            CL_Obj imag = is_dbl ? cl_make_double_float(im)
-                                 : cl_make_single_float((float)im);
-            CL_GC_PROTECT(zero);
-            CL_GC_PROTECT(imag);
-            {
-                CL_Obj r = cl_make_complex(zero, imag);
-                CL_GC_UNPROTECT(2);
-                return r;
-            }
+            return make_complex_double_result(0.0, sqrt(-val), is_dbl);
         }
         return make_result(sqrt(val), is_dbl);
     }
@@ -486,11 +480,8 @@ static CL_Obj bi_expt_float(CL_Obj *args, int n)
             double exp_re = exp(scaled_re);
             double r_re = exp_re * cos(scaled_im);
             double r_im = exp_re * sin(scaled_im);
-            if (is_double)
-                return cl_make_complex(cl_make_double_float(r_re),
-                                       cl_make_double_float(r_im));
-            return cl_make_complex(cl_make_single_float((float)r_re),
-                                   cl_make_single_float((float)r_im));
+            /* Protected two-step alloc (nested make_complex temps go stale). */
+            return make_complex_double_result(r_re, r_im, is_double);
         }
 
         result = pow(base, power);

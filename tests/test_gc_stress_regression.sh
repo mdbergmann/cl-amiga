@@ -2726,6 +2726,269 @@ check_contains "ephemeral compiled closures die and finalize cleanly under GC st
 check_absent   "no corruption from dead-bytecode TYPE_BYTECODE finalizer under GC stress" \
   "corrupted pointer\|not of type\|Guru\|double free" "$out"
 
+# --- Tier-3 audit: numeric tower with big operands under GC stress ----------
+# Every operation below crosses at least one allocating call while holding a
+# bignum/ratio/complex intermediate (audit 2026-07 tier 3, batch A): negate/
+# abs raw-limb memcpy after cl_make_bignum, mod's divisor deref after
+# bignum_from_limbs, ash right-shift floor check through a stale limb ptr,
+# isqrt's protect-after-alloc, ratio +/- nested-mul temps, ratio negate/abs
+# stale CL_Ratio*, complex sqrt/expt nested float temps, do_rounding's
+# GC-invisible pair[] and q/r staleness, mod/rem ratio paths protecting
+# already-stale values, signum/lcm/max/dpb/boole stale operand copies, and
+# RANDOM's PRNG-state WRITE through a dangling pointer after cl_make_bignum.
+# Expected values verified by hand against exact arithmetic.
+cat > "$WORK/tier3-numeric.lisp" <<'LISPEOF'
+(let ((ok t))
+  (macrolet ((chk (name form want)
+               `(let ((got ,form))
+                  (unless (equalp got ,want)
+                    (format t "T3N-BAD ~a:~s~%" ,name got)
+                    (setf ok nil)))))
+    (dotimes (i 3)
+      (chk "neg-big"   (- (expt 10 30)) (* -1 (expt 10 30)))
+      (chk "abs-big"   (abs (- (expt 10 30))) (expt 10 30))
+      (chk "mod-big"   (mod (- (1+ (expt 10 30))) (expt 10 25))
+                       (1- (expt 10 25)))
+      (chk "ash-floor" (ash (- (1+ (expt 2 100))) -3) (- (1+ (expt 2 97))))
+      (chk "isqrt-big" (isqrt (expt 10 30)) (expt 10 15))
+      (chk "ratio-add" (+ 12345678901234567890/7 1/3)
+                       37037036703703703677/21)
+      (chk "ratio-sub" (- 12345678901234567890/7 1/3)
+                       37037036703703703663/21)
+      (chk "ratio-neg" (- 12345678901234567890/7) -12345678901234567890/7)
+      (chk "ratio-abs" (abs -12345678901234567890/7) 12345678901234567890/7)
+      (chk "sqrt-cx"   (sqrt #C(-4.0 0.0)) #C(0.0 2.0))
+      (chk "sqrt-neg"  (sqrt -4.0) #C(0.0 2.0))
+      (chk "expt-neg"  (< (abs (- (imagpart (expt -4.0 0.5)) 2.0)) 1.0e-5) t)
+      (chk "floor-1r"  (multiple-value-list (floor 12345678901234567890/7))
+                       (list 1763668414462081127 1/7))
+      (chk "ceil-1r"   (multiple-value-list (ceiling -12345678901234567890/7))
+                       (list -1763668414462081127 -1/7))
+      (chk "round-2r"  (round 12345678901234567890/7 3) 587889471487360376)
+      (chk "fround-2r" (multiple-value-bind (q r) (ffloor 12345678901234567890/7 3)
+                         (and (floatp q) r))
+                       15/7)
+      (chk "mod-ratio" (mod 12345678901234567890/7 3/2) 9/14)
+      (chk "rem-ratio" (rem -12345678901234567890/7 3/2) -9/14)
+      (chk "signum"    (signum -3.5) -1.0)
+      (chk "lcm-big"   (lcm (expt 2 70) 243) (* (expt 2 70) 243))
+      (chk "gcd-big"   (gcd (expt 2 70) (expt 2 65)) (expt 2 65))
+      (chk "max-mixed" (max 1.5 12345678901234567890) 12345678901234567890)
+      (chk "min-mixed" (min 1.5 12345678901234567890) 1.5)
+      (chk "dpb-64"    (dpb -1 (byte 64 0) 0) (1- (expt 2 64)))
+      (chk "ldb-64"    (ldb (byte 64 0) (1- (expt 2 64))) (1- (expt 2 64)))
+      (chk "maskf-64"  (mask-field (byte 64 4) (1- (expt 2 68)))
+                       (- (1- (expt 2 68)) 15))
+      (chk "depf-64"   (deposit-field 0 (byte 64 0) (1- (expt 2 68)))
+                       (* 15 (expt 2 64)))
+      (chk "andc1-big" (boole boole-andc1 (expt 2 70) (+ (expt 2 70) 5)) 5)
+      (chk "andc2-big" (boole boole-andc2 (+ (expt 2 70) 5) (expt 2 70)) 5)
+      (chk "orc1-big"  (boole boole-orc1 -1 (expt 2 70)) (expt 2 70))
+      (chk "orc2-big"  (boole boole-orc2 (expt 2 70) -1) (expt 2 70))
+      ;; RANDOM with a bignum limit: pre-fix, xorshift128_next WROTE the PRNG
+      ;; state through a pointer dangling after cl_make_bignum — heap smash.
+      (let ((r (random (expt 2 64))))
+        (chk "random-big" (and (integerp r) (>= r 0) (< r (expt 2 64))) t))
+      ;; make-random-state copies the seed through a re-derived source ptr
+      (let ((s (make-random-state)))
+        (chk "mrs" (random-state-p s) t)
+        (let ((s2 (make-random-state s)))
+          (chk "mrs-copy" (random-state-p s2) t)))))
+  (format t "T3-NUMERIC:~a~%" ok))
+LISPEOF
+out=$(run_stress "$WORK/tier3-numeric.lisp")
+check_contains "tier-3 numeric-tower fixes survive big operands under GC stress" "T3-NUMERIC:T" "$out"
+check_absent   "no tier-3 numeric corruption under GC stress" \
+  "T3N-BAD\|corrupted pointer\|not of type\|Guru" "$out"
+
+# --- Tier-3 audit: typep/coerce/subtypep with allocating type walks ---------
+# Every check crosses an allocating call while holding obj/type-spec locals
+# (audit 2026-07 tier 3, batch B): deftype expander cl_vm_apply in
+# typep_symbol/typep_check/bi_subtypep (stale obj/type2), OR/AND/MEMBER walk
+# cursors across recursion, bignum range arithmetic in unsigned-byte/
+# signed-byte/integer/mod specs, coerce sequence converters deriving source
+# pointers before the result alloc, and the recursive complex-coerce calls
+# whose C-array args were unrooted.
+cat > "$WORK/tier3-types.lisp" <<'LISPEOF'
+(deftype t3-small () '(integer 0 10))
+(deftype t3-pair (a b) `(cons ,a ,b))
+(let ((ok t))
+  (macrolet ((chk (name form want)
+               `(let ((got ,form))
+                  (unless (equalp got ,want)
+                    (format t "T3T-BAD ~a:~s~%" ,name got)
+                    (setf ok nil)))))
+    (dotimes (i 3)
+      (chk "tp-dt"    (typep 5 't3-small) t)
+      (chk "tp-param" (typep '(1 . a) '(t3-pair integer symbol)) t)
+      (chk "tp-or"    (typep "x" '(or t3-small string)) t)
+      (chk "tp-and"   (typep 5 '(and t3-small (integer 3 7))) t)
+      (chk "tp-ratio" (typep 2/3 '(rational 0 1)) t)
+      (chk "tp-ub"    (typep (1- (expt 2 64)) '(unsigned-byte 64)) t)
+      (chk "tp-ub-no" (typep (expt 2 64) '(unsigned-byte 64)) nil)
+      (chk "tp-sb"    (typep (- (expt 2 40)) '(signed-byte 64)) t)
+      (chk "tp-int"   (typep (expt 2 70) (list 'integer 0 (expt 2 71))) t)
+      (chk "tp-cx"    (typep #C(1 2) '(complex t3-small)) t)
+      (chk "tp-cons"  (typep '(1 . 2) '(cons t3-small *)) t)
+      (chk "co-str"   (coerce '(#\a #\b #\c) 'string) "abc")
+      (chk "co-vstr"  (coerce #(#\a #\b) 'string) "ab")
+      (chk "co-bv"    (coerce '(1 0 1) 'bit-vector) #*101)
+      (chk "co-list"  (coerce #(1 2 3) 'list) '(1 2 3))
+      (chk "co-lbv"   (coerce #*101 'list) '(1 0 1))
+      (chk "co-lstr"  (coerce "abc" 'list) '(#\a #\b #\c))
+      (chk "co-vec"   (coerce "ab" 'vector) #(#\a #\b))
+      (chk "co-vbv"   (coerce #*10 'vector) #(1 0))
+      (chk "co-vlist" (coerce '(1 2) 'vector) #(1 2))
+      (chk "co-fn"    (funcall (coerce '(lambda (x) (* x 2)) 'function) 21) 42)
+      (chk "co-cx"    (coerce 2 '(complex single-float)) #C(2.0 0.0))
+      (chk "st-dt"    (multiple-value-list (subtypep 't3-small 'integer))
+                      '(t t))
+      (chk "st-dt2"   (subtypep 't3-small '(vector t)) nil)
+      (chk "st-or"    (subtypep '(or t3-small string) '(or string integer)) t)
+      (chk "st-and"   (subtypep '(and integer (not real)) nil) t)
+      (chk "st-mem"   (subtypep '(member 1 2) 't3-small) t)
+      (chk "st-not"   (subtypep 'null '(not null)) nil)
+      ;; equalp on complex went through the ordered comparator (always NIL
+      ;; for floats) — must use numeric = per CLHS
+      (chk "eqp-cx"   (equalp (sqrt -4.0) #C(0.0 2.0)) t)
+      (chk "eqp-cxr"  (equalp #C(1/3 2/7) #C(1/3 2/7)) t)))
+  (format t "T3-TYPES:~a~%" ok))
+LISPEOF
+out=$(run_stress "$WORK/tier3-types.lisp")
+check_contains "tier-3 typep/coerce/subtypep fixes survive GC stress" "T3-TYPES:T" "$out"
+check_absent   "no tier-3 type-system corruption under GC stress" \
+  "T3T-BAD\|corrupted pointer\|not of type\|Guru" "$out"
+
+# --- Tier-3 audit: package mutation / bit-vector ops / plist under stress ---
+# (audit 2026-07 tier 3, batch C): bitvec_binop/bit_not read source data
+# through pointers derived BEFORE resolve_result's allocation; package.c
+# import/export/use-package/add-package-local-nickname stored new conses
+# through pre-compaction CL_Package*/table pointers; (setf get) nested
+# conses left the indicator stale; the REPL history fix (+/++ after eval
+# compaction) is exercised implicitly by every --eval below.
+cat > "$WORK/tier3-pkgbits.lisp" <<'LISPEOF'
+(defpackage :t3s-a (:use :cl))
+(defpackage :t3s-b (:use :cl))
+(let ((ok t))
+  (macrolet ((chk (name form want)
+               `(let ((got ,form))
+                  (unless (equalp got ,want)
+                    (format t "T3P-BAD ~a:~s~%" ,name got)
+                    (setf ok nil)))))
+    (dotimes (i 3)
+      (chk "bit-and"  (bit-and #*10101100 #*11001010) #*10001000)
+      (chk "bit-ior"  (bit-ior #*1010 #*1100) #*1110)
+      (chk "bit-xor"  (bit-xor #*1010 #*1100) #*0110)
+      (chk "bit-eqv"  (bit-eqv #*1010 #*1100) #*1001)
+      (chk "bit-not"  (bit-not #*1010) #*0101)
+      (chk "bit-t"    (let ((a (copy-seq #*1010))) (bit-and a #*1100 t) a)
+                      #*1000)
+      ;; import an inherited symbol then export it (import+export cons
+      ;; stores through re-derived package pointers)
+      (let ((s (intern (format nil "T3SYM~d" i) :t3s-a)))
+        (export s :t3s-a)
+        (chk "export" (nth-value 1 (find-symbol (symbol-name s) :t3s-a))
+             :external)
+        (import s :t3s-b)
+        (chk "import" (eq (find-symbol (symbol-name s) :t3s-b) s) t))
+      ;; use-package prepends to the use-list through a re-derived pkg
+      (let ((pu (make-package (format nil "T3USE~d" i) :use nil)))
+        (use-package :t3s-a pu)
+        (chk "use-pkg" (and (member (find-package :t3s-a)
+                                    (package-use-list pu)) t) t)
+        (clamiga::add-package-local-nickname (format nil "N~d" i) :t3s-a pu)
+        (delete-package pu))
+      (shadow (format nil "T3SHADOW~d" i) :t3s-b)
+      ;; (setf get) with a NEW indicator prepends two conses to the plist
+      (let ((sym (intern (format nil "T3PL~d" i) :t3s-b)))
+        (setf (get sym 'k1) (list i))
+        (setf (get sym 'k2) (list (* i 2)))
+        (chk "setf-get" (list (get sym 'k1) (get sym 'k2))
+             (list (list i) (list (* i 2)))))))
+  (format t "T3-PKGBITS:~a~%" ok))
+LISPEOF
+out=$(run_stress "$WORK/tier3-pkgbits.lisp")
+check_contains "tier-3 package/bit-vector fixes survive GC stress" "T3-PKGBITS:T" "$out"
+check_absent   "no tier-3 package/bit-vector corruption under GC stress" \
+  "T3P-BAD\|corrupted pointer\|not of type\|Guru" "$out"
+
+# --- Tier-3 audit: condition creation/display + describe/inspect ------------
+# (audit 2026-07 tier 3, batch D): make-condition/coerce_to_condition held a
+# stale type symbol across the initarg cons loop + initform applies and baked
+# it into the condition; the bi_error family handed a stale cond to the
+# debugger after a declining handler allocated; bi_warn's muffle path had a
+# LIFO root bug (lazy muffle_handler protect) AND never restored the handler
+# active mask on the muffle longjmp (functional: only the first of several
+# warns under one handler-bind was caught); slot-add stored through a
+# pre-compaction condition pointer; describe read struct/condition fields
+# through pointers staled by PRINT-OBJECT hook prints.
+cat > "$WORK/tier3-conds.lisp" <<'LISPEOF'
+(define-condition t3d-cond (error)
+  ((a :initarg :a :reader t3d-a :initform (list 41))
+   (b :initarg :b :reader t3d-b))
+  (:default-initargs :b 7)
+  (:report (lambda (c s) (format s "t3d a=~a" (t3d-a c)))))
+(defstruct t3d-pt x y)
+(let ((ok t))
+  (macrolet ((chk (name form want)
+               `(let ((got ,form))
+                  (unless (equalp got ,want)
+                    (format t "T3D-BAD ~a:~s~%" ,name got)
+                    (setf ok nil)))))
+    (dotimes (i 3)
+      (chk "mkcond"    (t3d-a (make-condition 't3d-cond)) '(41))
+      (chk "mkcond-di" (t3d-b (make-condition 't3d-cond)) 7)
+      (chk "err-sym"   (handler-case (error 't3d-cond :a (list i))
+                         (t3d-cond (c) (list (t3d-a c) (t3d-b c))))
+                       (list (list i) 7))
+      (chk "err-decl"  (handler-case
+                           (handler-bind ((error (lambda (c)
+                                                   (declare (ignore c)) nil)))
+                             (error "boom ~a" i))
+                         (simple-error (c)
+                           (and (search (format nil "boom ~a" i)
+                                        (format nil "~a" c)) t)))
+                       t)
+      ;; three warns under ONE handler-bind — pre-fix only the first was
+      ;; caught (active mask not restored across the muffle longjmp)
+      (chk "warn-x3"   (let ((n 0))
+                         (handler-bind ((warning (lambda (c)
+                                                   (declare (ignore c))
+                                                   (incf n)
+                                                   (muffle-warning))))
+                           (warn "w1") (warn "w2") (warn "w3"))
+                         n)
+                       3)
+      (chk "slot-add"  (let ((c (make-condition 't3d-cond :a 1)))
+                         (setf (slot-value c 'fresh-slot) (list i))
+                         (slot-value c 'fresh-slot))
+                       (list i))
+      (chk "iri"       (restart-case
+                           (invoke-restart-interactively
+                            (find-restart 'use-these))
+                         (use-these (&rest vals)
+                           :interactive (lambda () (list 1 2 3))
+                           vals))
+                       '(1 2 3))
+      (chk "desc-st"   (and (with-output-to-string (s)
+                              (describe (make-t3d-pt :x (list i) :y "why") s))
+                            t) t)
+      (chk "desc-cond" (and (with-output-to-string (s)
+                              (describe (make-condition 't3d-cond) s))
+                            t) t)
+      (chk "desc-vec"  (and (with-output-to-string (s)
+                              (describe (vector 1 "two" 3.0) s))
+                            t) t)
+      (chk "desc-sym"  (and (with-output-to-string (s) (describe 'car s)) t) t)
+      (chk "desc-path" (and (with-output-to-string (s)
+                              (describe #P"/tmp/x.lisp" s)) t) t)))
+  (format t "T3-CONDS:~a~%" ok))
+LISPEOF
+out=$(run_stress "$WORK/tier3-conds.lisp")
+check_contains "tier-3 condition/describe fixes survive GC stress" "T3-CONDS:T" "$out"
+check_absent   "no tier-3 condition corruption under GC stress" \
+  "T3D-BAD\|corrupted pointer\|not of type\|Guru" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

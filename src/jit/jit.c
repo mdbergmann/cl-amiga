@@ -971,7 +971,10 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
         default:
             return 0;
         }
-        if (ip + step > bc->code_len + 1) return 0;
+        /* Strict bound: the final opcode's operands must end exactly at
+         * code_len ("+ 1" let them extend one byte past it, weakening the
+         * validator the OP_CLOSURE arm relies on). */
+        if (ip + step > bc->code_len) return 0;
         ip += step;
     }
     return 1;
@@ -2739,6 +2742,12 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             tmpl = (CL_Bytecode *)CL_OBJ_TO_PTR(tmpl_obj);
             n_upvals_local = tmpl->n_upvalues;
             if (ip + 2 * n_upvals_local > bc->code_len) goto fail;
+            /* Gate n_upvalues like the n_extra>1000 gate: the LEA stack
+             * drop below is a 16-bit displacement (12 + 4*n), which wraps
+             * negative past ~8188 upvalues — unreachable from the real
+             * compiler (uint8_t capture indices), but a corrupt FASL sets
+             * the field freely and would get silent stack corruption. */
+            if (n_upvals_local > 1000) goto fail;
 
             cache_flush(cb, &cache_head, &cache_depth);
 
@@ -3044,12 +3053,13 @@ void cl_jit_compile(CL_Bytecode *bc)
     code = cb_finish(&cb, &len);
     if (code == NULL) { jit_relocs_free(&relocs); return; }
 
-    bc->native_code = code;
-    bc->native_len  = len;
-
-    /* Hand the reloc table to the bytecode.  Right-size it: the walker
-     * over-allocates geometrically, so copy into an exact buffer (and
-     * keep NULL when there were no heap immediates). */
+    /* Install RELOCS BEFORE native_code: the compactor forwards baked
+     * immediates only when BOTH fields are non-NULL (mem.c), so the
+     * reverse order would ship stale immediates if a compaction could
+     * ever intervene between the two stores.  Today this window is
+     * allocation-free under cooperative STW (compaction cannot occur
+     * mid-compile) — the ordering makes the invariant structural rather
+     * than incidental. */
     if (relocs.count > 0) {
         uint32_t *tab = (uint32_t *)platform_alloc(
             (unsigned long)relocs.count * sizeof(uint32_t));
@@ -3057,8 +3067,6 @@ void cl_jit_compile(CL_Bytecode *bc)
             /* Can't store the table → can't safely keep the native code. */
             jit_relocs_free(&relocs);
             platform_free(code);
-            bc->native_code = NULL;
-            bc->native_len  = 0;
             return;
         }
         {
@@ -3070,8 +3078,13 @@ void cl_jit_compile(CL_Bytecode *bc)
     }
     jit_relocs_free(&relocs);
 
-    /* Flush I-cache so the freshly written bytes aren't stale on
-     * 68040/060.  On 68020/030 this is a no-op (no write-back I-cache). */
+    bc->native_code = code;
+    bc->native_len  = len;
+
+    /* Flush I-cache so the freshly written bytes aren't served stale.
+     * REQUIRED on every 68020+ — the 020/030 also have a 256-byte
+     * I-cache; only the 68000/010 lack one.  Do NOT gate this on
+     * 040/060. */
     platform_cache_clear(code, len);
 }
 

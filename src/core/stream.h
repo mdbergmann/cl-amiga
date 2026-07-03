@@ -88,6 +88,12 @@ void cl_stream_write_byte(CL_Obj stream, int byte);
 /* Write a string (len bytes) to stream. */
 void cl_stream_write_string(CL_Obj stream, const char *str, uint32_t len);
 
+/* Arena-safe variant: writes strobj (a base string) [start,end) by chunking
+ * through a C buffer, re-deriving the source per chunk — required whenever
+ * the source lives in the arena and the stream can block (file/socket). */
+void cl_stream_write_lisp_string(CL_Obj stream, CL_Obj strobj,
+                                 uint32_t start, uint32_t end);
+
 /* Peek at next character without consuming. Returns -1 on EOF. */
 int  cl_stream_peek_char(CL_Obj stream);
 

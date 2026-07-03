@@ -113,12 +113,20 @@ static CL_Obj do_rounding(CL_Obj *args, int n, int mode,
             CL_Obj q;
             pair[0] = cl_numerator(num);
             pair[1] = cl_denominator(num);
+            /* pair[] is a plain C array — invisible to GC.  The recursive
+             * call allocates throughout and re-reads both slots via its
+             * args pointer, so root them here. */
+            CL_GC_PROTECT(pair[0]);
+            CL_GC_PROTECT(pair[1]);
             q = do_rounding(pair, 2, mode, name, float_quotient);
+            CL_GC_UNPROTECT(2);
             CL_GC_PROTECT(q);
-            cl_mv_values[1] = cl_arith_sub(num,
-                                           float_quotient
-                                           ? double_to_integer(cl_to_double(q))
-                                           : q);
+            if (float_quotient) {
+                CL_Obj iq = double_to_integer(cl_to_double(q));
+                cl_mv_values[1] = cl_arith_sub(args[0], iq);
+            } else {
+                cl_mv_values[1] = cl_arith_sub(args[0], q);
+            }
             CL_GC_UNPROTECT(1);
             cl_mv_values[0] = q;
             cl_mv_count = 2;
@@ -159,13 +167,21 @@ static CL_Obj do_rounding(CL_Obj *args, int n, int mode,
          * (floor a_n/a_d  b_n/b_d) = (floor a_n*b_d  a_d*b_n)
          * then remainder = num - q * args[1] */
         CL_Obj int_a, int_b, q, r;
+        /* args[] is rooted (VM stack or a protected pair[] from the 1-arg
+         * ratio path), but the num local copy goes stale after every
+         * allocating call — re-read args[0] instead.  q and r stay
+         * protected across the whole adjust sequence: each add/sub below
+         * can allocate and would leave the other one stale. */
         int_a = cl_arith_mul(cl_numerator(num), cl_denominator(args[1]));
         CL_GC_PROTECT(int_a);
-        int_b = cl_arith_mul(cl_denominator(num), cl_numerator(args[1]));
+        int_b = cl_arith_mul(cl_denominator(args[0]), cl_numerator(args[1]));
         CL_GC_UNPROTECT(1);
 
         q = cl_arith_truncate(int_a, int_b);
-        r = cl_arith_sub(num, cl_arith_mul(q, args[1]));
+        CL_GC_PROTECT(q);
+        r = cl_arith_mul(q, args[1]);
+        r = cl_arith_sub(args[0], r);
+        CL_GC_PROTECT(r);
 
         /* Adjust based on rounding mode */
         if (mode != ROUND_TRUNCATE && !cl_arith_zerop(r)) {
@@ -180,11 +196,16 @@ static CL_Obj do_rounding(CL_Obj *args, int n, int mode,
                     r = cl_arith_sub(r, args[1]);
                 }
             } else { /* ROUND_ROUND */
-                CL_Obj abs_2r = cl_arith_abs(cl_arith_add(r, r));
-                CL_Obj abs_b = cl_arith_abs(args[1]);
-                int cmp = cl_arith_compare(abs_2r, abs_b);
+                CL_Obj abs_2r, abs_b;
+                int cmp;
+                abs_2r = cl_arith_add(r, r);
+                abs_2r = cl_arith_abs(abs_2r);
+                CL_GC_PROTECT(abs_2r);
+                abs_b = cl_arith_abs(args[1]);
+                cmp = cl_arith_compare(abs_2r, abs_b);
+                CL_GC_UNPROTECT(1);
                 if (cmp > 0 || (cmp == 0 && !cl_arith_evenp(q))) {
-                    if (cl_arith_minusp(num) == cl_arith_minusp(args[1])) {
+                    if (cl_arith_minusp(args[0]) == cl_arith_minusp(args[1])) {
                         q = cl_arith_add(q, CL_MAKE_FIXNUM(1));
                         r = cl_arith_sub(r, args[1]);
                     } else {
@@ -201,6 +222,7 @@ static CL_Obj do_rounding(CL_Obj *args, int n, int mode,
         cl_mv_count = 2;
         cl_mv_values[0] = q;
         cl_mv_values[1] = r;
+        CL_GC_UNPROTECT(2);
         return q;
     }
 
@@ -362,24 +384,24 @@ static CL_Obj bi_rem(CL_Obj *args, int n)
         r = fmod(a, b);
         return is_dbl ? cl_make_double_float(r) : cl_make_single_float((float)r);
     }
-    /* Ratio case: rem(a,b) = a - truncate(a,b) * b */
+    /* Ratio case: rem(a,b) = a - truncate(a,b) * b.
+     * args[] is rooted — read a/b from it fresh after each alloc instead
+     * of keeping local copies that go stale. */
     if (CL_RATIO_P(args[0]) || CL_RATIO_P(args[1])) {
         /* Compute a/b as ratio, then truncate to integer */
         CL_Obj quot = cl_ratio_div(args[0], args[1]);
-        CL_Obj a = args[0], b = args[1];
-        CL_Obj trunc_q;
+        CL_Obj trunc_q, result;
         if (CL_INTEGER_P(quot)) {
             trunc_q = quot;
         } else {
             /* Truncate ratio to integer: truncate(num/den) */
             trunc_q = cl_arith_truncate(cl_numerator(quot), cl_denominator(quot));
         }
-        CL_GC_PROTECT(a); CL_GC_PROTECT(b); CL_GC_PROTECT(trunc_q);
-        {
-            CL_Obj result = cl_arith_sub(a, cl_arith_mul(trunc_q, b));
-            CL_GC_UNPROTECT(3);
-            return result;
-        }
+        CL_GC_PROTECT(trunc_q);
+        result = cl_arith_mul(trunc_q, args[1]);
+        result = cl_arith_sub(args[0], result);
+        CL_GC_UNPROTECT(1);
+        return result;
     }
     /* Integer case */
     if (CL_FIXNUM_P(args[0]) && CL_FIXNUM_P(args[1])) {
@@ -412,39 +434,38 @@ static CL_Obj bi_mod(CL_Obj *args, int n)
             r += b;
         return is_dbl ? cl_make_double_float(r) : cl_make_single_float((float)r);
     }
-    /* Ratio case: mod(a,b) = a - floor(a,b) * b */
+    /* Ratio case: mod(a,b) = a - floor(a,b) * b.
+     * Everything held across an allocating call is protected BEFORE the
+     * alloc (the old code protected after — rooting already-stale values),
+     * and a/b are re-read from the rooted args[] instead of local copies. */
     if (CL_RATIO_P(args[0]) || CL_RATIO_P(args[1])) {
         CL_Obj quot = cl_ratio_div(args[0], args[1]);
-        CL_Obj a = args[0], b = args[1];
-        CL_Obj floor_q;
+        CL_Obj floor_q, result;
         if (CL_INTEGER_P(quot)) {
             floor_q = quot;
         } else {
-            /* Floor ratio: floor(num/den) */
+            /* Floor ratio: floor(num/den), adjusting toward -inf. */
             CL_Obj num = cl_numerator(quot);
             CL_Obj den = cl_denominator(quot);
-            CL_Obj trunc_q = cl_arith_truncate(num, den);
-            /* Adjust: if result is negative and not exact, subtract 1 */
-            CL_GC_PROTECT(trunc_q); CL_GC_PROTECT(num); CL_GC_PROTECT(den);
-            {
-                CL_Obj check = cl_arith_mul(trunc_q, den);
-                CL_GC_UNPROTECT(3);
-                CL_GC_PROTECT(trunc_q); CL_GC_PROTECT(check);
-                if (cl_arith_compare(check, num) != 0 && cl_arith_minusp(quot)) {
-                    CL_GC_UNPROTECT(2);
-                    floor_q = cl_arith_sub(trunc_q, CL_MAKE_FIXNUM(1));
-                } else {
-                    CL_GC_UNPROTECT(2);
-                    floor_q = trunc_q;
-                }
+            CL_Obj trunc_q, check;
+            int neg = cl_arith_minusp(quot);
+            CL_GC_PROTECT(num);
+            CL_GC_PROTECT(den);
+            trunc_q = cl_arith_truncate(num, den);
+            CL_GC_PROTECT(trunc_q);
+            check = cl_arith_mul(trunc_q, den);
+            if (cl_arith_compare(check, num) != 0 && neg) {
+                floor_q = cl_arith_sub(trunc_q, CL_MAKE_FIXNUM(1));
+            } else {
+                floor_q = trunc_q;
             }
-        }
-        CL_GC_PROTECT(a); CL_GC_PROTECT(b); CL_GC_PROTECT(floor_q);
-        {
-            CL_Obj result = cl_arith_sub(a, cl_arith_mul(floor_q, b));
             CL_GC_UNPROTECT(3);
-            return result;
         }
+        CL_GC_PROTECT(floor_q);
+        result = cl_arith_mul(floor_q, args[1]);
+        result = cl_arith_sub(args[0], result);
+        CL_GC_UNPROTECT(1);
+        return result;
     }
     /* Integer case */
     return cl_arith_mod(args[0], args[1]);
@@ -593,15 +614,16 @@ static CL_Obj bi_abs(CL_Obj *args, int n)
  * complex it yields the unit-magnitude direction. */
 static CL_Obj bi_signum(CL_Obj *args, int n)
 {
-    CL_Obj a, abs_a, result;
+    CL_Obj abs_a, result;
     CL_UNUSED(n);
     check_number(args[0], "SIGNUM");
     if (cl_arith_zerop(args[0]))
         return args[0];
-    a = args[0];
-    abs_a = cl_arith_abs(a);
+    abs_a = cl_arith_abs(args[0]);
     CL_GC_PROTECT(abs_a);
-    result = cl_arith_div(a, abs_a);
+    /* args[0] re-read from the rooted slot — a local copy taken before
+     * cl_arith_abs would be stale after its allocation. */
+    result = cl_arith_div(args[0], abs_a);
     CL_GC_UNPROTECT(1);
     return result;
 }
@@ -639,32 +661,33 @@ static CL_Obj bi_phase(CL_Obj *args, int n)
     }
 }
 
+/* MAX/MIN track the winning INDEX, not a value copy: cl_arith_compare
+ * allocates on the ratio and float-vs-rational paths, which would leave a
+ * held CL_Obj copy stale — args[] itself is rooted and forwarded. */
 static CL_Obj bi_max(CL_Obj *args, int n)
 {
-    CL_Obj result;
+    int best = 0;
     int i;
     check_number(args[0], "MAX");
-    result = args[0];
     for (i = 1; i < n; i++) {
         check_number(args[i], "MAX");
-        if (cl_arith_compare(args[i], result) > 0)
-            result = args[i];
+        if (cl_arith_compare(args[i], args[best]) > 0)
+            best = i;
     }
-    return result;
+    return args[best];
 }
 
 static CL_Obj bi_min(CL_Obj *args, int n)
 {
-    CL_Obj result;
+    int best = 0;
     int i;
     check_number(args[0], "MIN");
-    result = args[0];
     for (i = 1; i < n; i++) {
         check_number(args[i], "MIN");
-        if (cl_arith_compare(args[i], result) < 0)
-            result = args[i];
+        if (cl_arith_compare(args[i], args[best]) < 0)
+            best = i;
     }
-    return result;
+    return args[best];
 }
 
 /* --- Extended integer functions --- */
@@ -701,8 +724,12 @@ static CL_Obj bi_lcm(CL_Obj *args, int n)
             result = CL_MAKE_FIXNUM(0);
             break;
         }
+        /* b is read again after gcd/truncate allocate — keep it rooted. */
+        CL_GC_PROTECT(b);
         g = cl_arith_gcd(result, b);
-        result = cl_arith_mul(cl_arith_truncate(result, g), b);
+        g = cl_arith_truncate(result, g);
+        result = cl_arith_mul(g, b);
+        CL_GC_UNPROTECT(1);
     }
     CL_GC_UNPROTECT(1);
     return result;
@@ -849,18 +876,23 @@ static CL_Obj bi_byte_position(CL_Obj *args, int n)
 /* (ldb bytespec integer) — extract bit field */
 static CL_Obj bi_ldb(CL_Obj *args, int n)
 {
-    CL_Obj size, pos, shifted, mask;
+    CL_Obj size, pos, neg, shifted, mask;
     CL_UNUSED(n);
     if (!CL_CONS_P(args[0]))
         cl_error(CL_ERR_TYPE, "LDB: not a byte specifier");
     check_integer(args[1], "LDB");
-    size = cl_car(args[0]);
+    /* Bytespec components are re-read from the rooted args[0] after each
+     * allocating step — a captured copy goes stale once anything compacts
+     * (only matters for bignum size/pos, but the re-read is free). */
     pos = cl_cdr(args[0]);
+    neg = cl_arith_negate(pos);
     /* shifted = ash(integer, -position) */
-    shifted = cl_arith_ash(args[1], cl_arith_negate(pos));
-    /* mask = (1 << size) - 1 = ash(1, size) - 1 */
+    shifted = cl_arith_ash(args[1], neg);
     CL_GC_PROTECT(shifted);
-    mask = cl_arith_sub(cl_arith_ash(CL_MAKE_FIXNUM(1), size), CL_MAKE_FIXNUM(1));
+    /* mask = (1 << size) - 1 = ash(1, size) - 1 */
+    size = cl_car(args[0]);
+    mask = cl_arith_ash(CL_MAKE_FIXNUM(1), size);
+    mask = cl_arith_sub(mask, CL_MAKE_FIXNUM(1));
     CL_GC_UNPROTECT(1);
     return cl_arith_logand(shifted, mask);
 }
@@ -868,28 +900,33 @@ static CL_Obj bi_ldb(CL_Obj *args, int n)
 /* (dpb newbyte bytespec integer) — deposit bit field */
 static CL_Obj bi_dpb(CL_Obj *args, int n)
 {
-    CL_Obj size, pos, mask, shifted_mask, cleared, new_bits;
+    CL_Obj size, pos, mask, shifted_mask, cleared, new_bits, notm;
     CL_UNUSED(n);
     check_integer(args[0], "DPB");
     if (!CL_CONS_P(args[1]))
         cl_error(CL_ERR_TYPE, "DPB: not a byte specifier");
     check_integer(args[2], "DPB");
     size = cl_car(args[1]);
-    pos = cl_cdr(args[1]);
-    /* mask = (1 << size) - 1 */
-    mask = cl_arith_sub(cl_arith_ash(CL_MAKE_FIXNUM(1), size), CL_MAKE_FIXNUM(1));
+    /* mask = (1 << size) - 1.  mask is a bignum whenever size >= 31, and
+     * it is read again for new_bits below — keep it protected across ALL
+     * the intervening allocating calls (the old code unprotected it before
+     * lognot/logand and read it stale afterward). */
+    mask = cl_arith_ash(CL_MAKE_FIXNUM(1), size);
+    mask = cl_arith_sub(mask, CL_MAKE_FIXNUM(1));
     CL_GC_PROTECT(mask);
     /* shifted_mask = ash(mask, position) */
+    pos = cl_cdr(args[1]);
     shifted_mask = cl_arith_ash(mask, pos);
-    CL_GC_UNPROTECT(1);
     CL_GC_PROTECT(shifted_mask);
     /* Clear the field in integer */
-    cleared = cl_arith_logand(args[2], cl_arith_lognot(shifted_mask));
-    CL_GC_UNPROTECT(1);
+    notm = cl_arith_lognot(shifted_mask);
+    cleared = cl_arith_logand(args[2], notm);
     CL_GC_PROTECT(cleared);
     /* Shift new value into position, masked */
-    new_bits = cl_arith_ash(cl_arith_logand(args[0], mask), pos);
-    CL_GC_UNPROTECT(1);
+    new_bits = cl_arith_logand(args[0], mask);
+    pos = cl_cdr(args[1]);
+    new_bits = cl_arith_ash(new_bits, pos);
+    CL_GC_UNPROTECT(3);
     return cl_arith_logior(cleared, new_bits);
 }
 
@@ -909,9 +946,10 @@ static CL_Obj bi_mask_field(CL_Obj *args, int n)
         cl_error(CL_ERR_TYPE, "MASK-FIELD: not a byte specifier");
     check_integer(args[1], "MASK-FIELD");
     size = cl_car(args[0]);
-    pos = cl_cdr(args[0]);
-    mask = cl_arith_sub(cl_arith_ash(CL_MAKE_FIXNUM(1), size), CL_MAKE_FIXNUM(1));
+    mask = cl_arith_ash(CL_MAKE_FIXNUM(1), size);
+    mask = cl_arith_sub(mask, CL_MAKE_FIXNUM(1));
     CL_GC_PROTECT(mask);
+    pos = cl_cdr(args[0]);  /* re-read after the mask allocs */
     shifted_mask = cl_arith_ash(mask, pos);
     CL_GC_UNPROTECT(1);
     return cl_arith_logand(args[1], shifted_mask);
@@ -927,19 +965,22 @@ static CL_Obj bi_deposit_field(CL_Obj *args, int n)
         cl_error(CL_ERR_TYPE, "DEPOSIT-FIELD: not a byte specifier");
     check_integer(args[2], "DEPOSIT-FIELD");
     size = cl_car(args[1]);
-    pos = cl_cdr(args[1]);
-    mask = cl_arith_sub(cl_arith_ash(CL_MAKE_FIXNUM(1), size), CL_MAKE_FIXNUM(1));
+    mask = cl_arith_ash(CL_MAKE_FIXNUM(1), size);
+    mask = cl_arith_sub(mask, CL_MAKE_FIXNUM(1));
     CL_GC_PROTECT(mask);
+    pos = cl_cdr(args[1]);  /* re-read after the mask allocs */
     shifted_mask = cl_arith_ash(mask, pos);
-    CL_GC_UNPROTECT(1);
     CL_GC_PROTECT(shifted_mask);
-    /* Clear the field in integer */
-    cleared = cl_arith_logand(args[2], cl_arith_lognot(shifted_mask));
-    CL_GC_UNPROTECT(1);
+    /* Clear the field in integer.  shifted_mask stays protected — it is
+     * read again for new_bits after lognot/logand allocate. */
+    {
+        CL_Obj notm = cl_arith_lognot(shifted_mask);
+        cleared = cl_arith_logand(args[2], notm);
+    }
     CL_GC_PROTECT(cleared);
     /* Extract field bits from newbyte at position (already in position) */
     new_bits = cl_arith_logand(args[0], shifted_mask);
-    CL_GC_UNPROTECT(1);
+    CL_GC_UNPROTECT(3);
     return cl_arith_logior(cleared, new_bits);
 }
 
@@ -970,10 +1011,13 @@ static CL_Obj bi_boole(CL_Obj *args, int n)
     case 9:  return cl_arith_lognot(cl_arith_logxor(a, b));   /* EQV */
     case 10: return cl_arith_lognot(cl_arith_logand(a, b));   /* NAND */
     case 11: return cl_arith_lognot(cl_arith_logior(a, b));   /* NOR */
-    case 12: return cl_arith_logand(cl_arith_lognot(a), b);   /* ANDC1 */
-    case 13: return cl_arith_logand(a, cl_arith_lognot(b));   /* ANDC2 */
-    case 14: return cl_arith_logior(cl_arith_lognot(a), b);   /* ORC1 */
-    case 15: return cl_arith_logior(a, cl_arith_lognot(b));   /* ORC2 */
+    /* ANDC1/ANDC2/ORC1/ORC2: lognot allocates, so the OTHER operand is
+     * re-read from the rooted args[] after it — the a/b copies captured
+     * above would be stale. */
+    case 12: a = cl_arith_lognot(a);  return cl_arith_logand(a, args[2]); /* ANDC1 */
+    case 13: b = cl_arith_lognot(b);  return cl_arith_logand(args[1], b); /* ANDC2 */
+    case 14: a = cl_arith_lognot(a);  return cl_arith_logior(a, args[2]); /* ORC1 */
+    case 15: b = cl_arith_lognot(b);  return cl_arith_logior(args[1], b); /* ORC2 */
     default:
         cl_error(CL_ERR_ARGS, "BOOLE: invalid operation %d", op);
         return CL_NIL;

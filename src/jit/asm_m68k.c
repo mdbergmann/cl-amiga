@@ -11,6 +11,23 @@
 
 #include "jit/asm_m68k.h"
 
+/* addq/subq encode only immediates 1..8 (8 encoded as data field 0).
+ * A larger immediate would silently WRAP (12 emits #4) — every call site
+ * passes 1..8 today (larger drops route through LEA); catch violations
+ * loudly in debug builds instead of emitting wrong code. */
+#ifdef DEBUG_JIT
+#include <stdio.h>
+#define M68K_CHECK_QIMM(imm)                                              \
+    do {                                                                  \
+        if ((imm) < 1 || (imm) > 8)                                       \
+            fprintf(stderr,                                               \
+                    "[JIT] BUG: addq/subq immediate %d outside 1..8 "     \
+                    "(would wrap in the encoder)\n", (int)(imm));         \
+    } while (0)
+#else
+#define M68K_CHECK_QIMM(imm) ((void)0)
+#endif
+
 /* NOP: opcode 0100 1110 0111 0001 (0x4E71).
  * M68000 PRM §4-145: "Performs no operation". */
 void m68k_emit_nop(CodeBuf *cb)
@@ -132,9 +149,12 @@ void m68k_emit_move_l_postinc_an_to_dn(CodeBuf *cb, M68kReg an, M68kReg dn)
  * EA mode=001 (An direct).  2 bytes. */
 void m68k_emit_addq_l_an(CodeBuf *cb, uint8_t imm, M68kReg an)
 {
-    uint8_t data = (imm == 8) ? 0 : (uint8_t)(imm & 7);
-    uint16_t enc = (uint16_t)(0x5000 | ((uint16_t)data << 9) |
-                              (2 << 6) | (1 << 3) | (an & 7));
+    uint8_t data;
+    uint16_t enc;
+    M68K_CHECK_QIMM(imm);
+    data = (imm == 8) ? 0 : (uint8_t)(imm & 7);
+    enc = (uint16_t)(0x5000 | ((uint16_t)data << 9) |
+                     (2 << 6) | (1 << 3) | (an & 7));
     cb_emit_u16(cb, enc);
 }
 
@@ -237,18 +257,24 @@ void m68k_emit_sub_l_dn_to_dm(CodeBuf *cb, M68kReg dn, M68kReg dm)
  * SUBQ (vs ADDQ), size=10 (long), mode=000 (Dn).  2 bytes. */
 void m68k_emit_subq_l_dn(CodeBuf *cb, uint8_t imm, M68kReg dn)
 {
-    uint8_t data = (imm == 8) ? 0 : (uint8_t)(imm & 7);
-    uint16_t enc = (uint16_t)(0x5100 | ((uint16_t)data << 9) |
-                              (2 << 6) | (dn & 7));
+    uint8_t data;
+    uint16_t enc;
+    M68K_CHECK_QIMM(imm);
+    data = (imm == 8) ? 0 : (uint8_t)(imm & 7);
+    enc = (uint16_t)(0x5100 | ((uint16_t)data << 9) |
+                     (2 << 6) | (dn & 7));
     cb_emit_u16(cb, enc);
 }
 
 /* ADDQ.L #imm,Dn: bit 8 = 0 (ADDQ).  2 bytes. */
 void m68k_emit_addq_l_dn(CodeBuf *cb, uint8_t imm, M68kReg dn)
 {
-    uint8_t data = (imm == 8) ? 0 : (uint8_t)(imm & 7);
-    uint16_t enc = (uint16_t)(0x5000 | ((uint16_t)data << 9) |
-                              (2 << 6) | (dn & 7));
+    uint8_t data;
+    uint16_t enc;
+    M68K_CHECK_QIMM(imm);
+    data = (imm == 8) ? 0 : (uint8_t)(imm & 7);
+    enc = (uint16_t)(0x5000 | ((uint16_t)data << 9) |
+                     (2 << 6) | (dn & 7));
     cb_emit_u16(cb, enc);
 }
 

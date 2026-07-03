@@ -893,8 +893,10 @@ static void fmt_case_convert(FmtCtx *ctx, FmtDirective *d)
         }
     }
 
-    /* Write to output stream */
-    cl_stream_write_string(ctx->stream, data, len);
+    /* Write to output stream — via the arena-safe chunked writer: data
+     * points into the arena and a blocking file/socket write can park in
+     * a safe region while a peer compaction moves it (MT). */
+    cl_stream_write_lisp_string(ctx->stream, result, 0, len);
 
     /* Update parent arg index */
     ctx->ai = sub.ai;

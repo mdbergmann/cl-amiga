@@ -28,9 +28,13 @@ extern void cl_format_to_stream(CL_Obj stream, CL_Obj *args, int n);
 static void defun(const char *name, CL_CFunc func, int min, int max)
 {
     CL_Obj sym = cl_intern_in(name, (uint32_t)strlen(name), cl_package_cl);
-    CL_Obj fn = cl_make_function(func, sym, min, max);
-    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    CL_Obj fn;
+    CL_Symbol *s;
+    CL_GC_PROTECT(sym);
+    fn = cl_make_function(func, sym, min, max);
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     s->function = fn;
+    CL_GC_UNPROTECT(1);
 }
 
 /*
@@ -413,9 +417,13 @@ static int cond_type_matches_depth(CL_Obj cond_type, CL_Obj handler_type, int de
         CL_Obj expander = cl_get_type_expander(handler_type);
         if (!CL_NULL_P(expander)) {
             CL_Obj expanded;
+            /* handler_type must be forwarded too: the identity guard below
+             * compares it against expanded, and a stale offset would make
+             * the comparison misfire (one wrong expansion decision). */
             CL_GC_PROTECT(cond_type);
+            CL_GC_PROTECT(handler_type);
             expanded = cl_vm_apply(expander, NULL, 0);
-            CL_GC_UNPROTECT(1);
+            CL_GC_UNPROTECT(2);
             if (!CL_NULL_P(expanded) && expanded != handler_type)
                 return cond_type_matches_depth(cond_type, expanded, depth + 1);
         }
@@ -558,13 +566,16 @@ static CL_Obj bi_make_condition(CL_Obj *args, int n)
             report_string = args[i + 1];
     }
 
-    /* Fill in any :default-initargs the caller omitted (CLHS make-condition). */
-    slots = merge_default_initargs(type_sym, slots, &report_string);
+    /* Fill in any :default-initargs the caller omitted (CLHS make-condition).
+     * type_sym (a local copy) is stale after the cons loop above — read the
+     * type from the rooted args[0] for every remaining use, or the stale
+     * offset gets baked into the condition's type_name. */
+    slots = merge_default_initargs(args[0], slots, &report_string);
     /* Evaluate slot :initforms for any slot still unsupplied (CLHS 7.1.3). */
-    slots = apply_condition_slot_initforms(type_sym, slots);
+    slots = apply_condition_slot_initforms(args[0], slots);
 
     {
-        CL_Obj result = cl_make_condition(type_sym, slots, report_string);
+        CL_Obj result = cl_make_condition(args[0], slots, report_string);
         CL_GC_UNPROTECT(2);
         return result;
     }
@@ -1091,15 +1102,22 @@ static CL_Obj bi_set_condition_slot_value(CL_Obj *args, int n)
                 slots = cl_cdr(slots);
             }
         }
-        /* Slot not found in alist — add it */
+        /* Slot not found in alist — add it.  Each cons can compact: split
+         * them and re-derive cond before the store (the old code's store
+         * went through a cond captured before the SECOND cons, writing
+         * into the condition's old location), and keep value rooted for
+         * the return. */
         {
             CL_Obj new_pair;
             CL_GC_PROTECT(cond_obj);
             CL_GC_PROTECT(key);
+            CL_GC_PROTECT(value);
             new_pair = cl_cons(key, value);
+            new_pair = cl_cons(new_pair,
+                               ((CL_Condition *)CL_OBJ_TO_PTR(cond_obj))->slots);
             cond = (CL_Condition *)CL_OBJ_TO_PTR(cond_obj);
-            cond->slots = cl_cons(new_pair, cond->slots);
-            CL_GC_UNPROTECT(2);
+            cond->slots = new_pair;
+            CL_GC_UNPROTECT(3);
         }
     }
     return value;
@@ -1238,6 +1256,10 @@ static CL_NORETURN void signal_type_error_core(CL_Obj datum, CL_Obj expected_typ
 
     CL_GC_UNPROTECT(4); /* datum, expected_type, report, slots */
 
+    /* cond stays rooted across the signal: a handler that runs and
+     * declines allocates freely, and a stale cond would reach the
+     * debugger.  Both calls unwind via longjmp, restoring the roots. */
+    CL_GC_PROTECT(cond);
     cl_signal_condition(cond);
     cl_error_from_condition(cond);
 }
@@ -1309,6 +1331,8 @@ void cl_signal_arith_error(CL_Obj type_sym, CL_Obj operation, CL_Obj operands,
 
     CL_GC_UNPROTECT(5); /* type_sym, operation, operands, report, slots */
 
+    /* Root cond across the signal — see signal_type_error_core. */
+    CL_GC_PROTECT(cond);
     cl_signal_condition(cond);
     cl_error_from_condition(cond);
 }
@@ -1347,6 +1371,8 @@ static void signal_cell_error(CL_Obj type_sym, CL_Obj name,
 
     CL_GC_UNPROTECT(3); /* name, report, slots */
 
+    /* Root cond across the signal — see signal_type_error_core. */
+    CL_GC_PROTECT(cond);
     cl_signal_condition(cond);
     cl_error_from_condition(cond);
 }
@@ -1383,13 +1409,16 @@ CL_Obj cl_create_condition_from_error(int code, const char *msg)
     }
 
     if (msg && msg[0]) {
+        /* type_sym (a boot symbol picked above) is passed to
+         * cl_make_condition after these allocs — root it too. */
+        CL_GC_PROTECT(type_sym);
         report = cl_make_string(msg, (uint32_t)strlen(msg));
         CL_GC_PROTECT(report);
         {
             CL_Obj pair = cl_cons(KW_FORMAT_CONTROL, report);
             slots = cl_cons(pair, CL_NIL);
         }
-        CL_GC_UNPROTECT(1);
+        CL_GC_UNPROTECT(2);
     }
 
     return cl_make_condition(type_sym, slots, report);
@@ -1539,12 +1568,14 @@ static CL_Obj coerce_to_condition(CL_Obj *args, int n, CL_Obj default_type)
 
         /* Fill in any :default-initargs not supplied at the signal site
          * (CLHS define-condition :default-initargs).  This is what makes
-         * (error 'my-error) carry my-error's default :format-control etc. */
-        slots = merge_default_initargs(arg, slots, &report);
-        slots = apply_condition_slot_initforms(arg, slots);
+         * (error 'my-error) carry my-error's default :format-control etc.
+         * The arg local copy is stale after the cons loop above — read the
+         * type from the rooted args[0] for every remaining use. */
+        slots = merge_default_initargs(args[0], slots, &report);
+        slots = apply_condition_slot_initforms(args[0], slots);
 
         {
-            CL_Obj result = cl_make_condition(arg, slots, report);
+            CL_Obj result = cl_make_condition(args[0], slots, report);
             CL_GC_UNPROTECT(2);
             return result;
         }
@@ -1554,6 +1585,11 @@ static CL_Obj coerce_to_condition(CL_Obj *args, int n, CL_Obj default_type)
         /* (error "msg" a b) → simple-condition with :format-control + :format-arguments */
         CL_Obj pair, slots, fmt_args;
         int i;
+        /* default_type is a boot symbol (SIMPLE-ERROR/-WARNING/-CONDITION)
+         * read after all the conses below — boot symbols rarely move, but
+         * they DO relocate under heap-scale fragmentation (cf. the
+         * *READTABLE* root fix), so root it like everything else. */
+        CL_GC_PROTECT(default_type);
         CL_GC_PROTECT(arg);
         /* Collect format arguments (args[1..n-1]) into a list */
         fmt_args = CL_NIL;
@@ -1570,7 +1606,7 @@ static CL_Obj coerce_to_condition(CL_Obj *args, int n, CL_Obj default_type)
         slots = cl_cons(pair, slots);
         {
             CL_Obj result = cl_make_condition(default_type, slots, arg);
-            CL_GC_UNPROTECT(3);
+            CL_GC_UNPROTECT(4);
             return result;
         }
     }
@@ -1592,10 +1628,15 @@ static CL_Obj muffle_handler = CL_NIL;
 
 static CL_Obj get_muffle_handler(void)
 {
+    /* muffle_handler is registered as a GLOBAL root at init (see
+     * cl_builtins_condition_init).  The old lazy CL_GC_PROTECT here was a
+     * root-discipline bug: pushed mid-WARN it sat between bi_warn's own
+     * cond/tag roots, so the caller's CL_GC_UNPROTECT(2) popped the wrong
+     * entries and left a permanent root pointing at a dead C-stack slot —
+     * later compactions wrote forwarded values through it. */
     if (CL_NULL_P(muffle_handler)) {
         extern CL_Obj cl_eval_string(const char *str);
         muffle_handler = cl_eval_string("(lambda () nil)");
-        CL_GC_PROTECT(muffle_handler);  /* permanent root */
     }
     return muffle_handler;
 }
@@ -1609,9 +1650,11 @@ static CL_Obj bi_warn(CL_Obj *args, int n)
     int saved_handler_top = cl_handler_top;
     int muffled = 0;
 
-    /* Create unique catch tag for muffle-warning */
-    tag = cl_cons(SYM_MUFFLE_WARNING, CL_NIL);
+    /* Create unique catch tag for muffle-warning.  cond is protected
+     * BEFORE the cons — protecting after would root an already-stale
+     * offset when the cons compacts. */
     CL_GC_PROTECT(cond);
+    tag = cl_cons(SYM_MUFFLE_WARNING, CL_NIL);
     CL_GC_PROTECT(tag);
 
     /* Push NLX catch frame for the muffle-warning restart */
@@ -1631,6 +1674,13 @@ static CL_Obj bi_warn(CL_Obj *args, int n)
         frame->gc_root_mark = gc_root_count;
         frame->compiler_mark = cl_compiler_mark();
         frame->saved_pending_mark = cl_saved_pending_top;
+        /* Snapshot the handler ACTIVE mask too: cl_signal_condition
+         * disables the running handler's band while it executes, and the
+         * muffle longjmp skips cl_signal_condition's own restore.  Without
+         * this the WARNING handler stayed band-disabled after the first
+         * muffle, so only the FIRST of several warns under one
+         * handler-bind was caught (pre-existing, found in tier 3). */
+        frame->handler_active_mask = cl_handler_active_mask;
         cl_nlx_top++;
 
         /* Push muffle-warning restart */
@@ -1667,6 +1717,7 @@ static CL_Obj bi_warn(CL_Obj *args, int n)
             CL_NLXFrame *f = &cl_nlx_stack[cl_nlx_top];
             cl_dynbind_restore_to(f->dyn_mark);
             cl_handler_top = f->handler_mark;
+            cl_handler_active_mask = f->handler_active_mask;
             cl_restart_top = f->restart_mark;
             cl_error_frame_top = f->error_mark;
             gc_root_count = f->gc_root_mark;
@@ -1734,7 +1785,11 @@ static CL_Obj bi_error(CL_Obj *args, int n)
          * stream + formatting), and a compaction would leave the local a
          * stale offset — the re-derive below would then write
          * report_string into the object's OLD location and the stale
-         * cond would be signaled. */
+         * cond would be signaled.  The protect extends across
+         * cl_signal_condition too: a handler that runs and DECLINES
+         * allocates freely, and the stale cond would then be handed to
+         * the debugger.  Both calls below unwind via longjmp, which
+         * restores the root count — the protect needs no explicit pop. */
         CL_GC_PROTECT(cond);
         c = (CL_Condition *)CL_OBJ_TO_PTR(cond);
         rpt = format_condition_report(c);
@@ -1742,7 +1797,6 @@ static CL_Obj bi_error(CL_Obj *args, int n)
             c = (CL_Condition *)CL_OBJ_TO_PTR(cond);  /* GC may have moved it */
             c->report_string = rpt;
         }
-        CL_GC_UNPROTECT(1);
     }
 
     cl_signal_condition(cond);
@@ -1834,24 +1888,35 @@ static int restart_applicable(int i, CL_Obj condition)
  * achieve this by throwing a dispatch cons (handler . args-list) to the catch
  * tag; the catch landing in compile_restart_case applies the handler after the
  * unwind has already run. */
+/* Invoke the restart at binding i with an already-built argument LIST.
+ * Used directly by the interactive path, where the arguments come back
+ * from Lisp as a list — copying them through a C array would leave the
+ * later elements stale once the first cl_cons compacts. */
+static CL_Obj invoke_restart_with_list(int i, CL_Obj args_list)
+{
+    CL_Obj dispatch_cons;
+    /* Build dispatch cons (handler . args-list); the handler slot lives in
+     * the GC-rooted restart stack, read at call time. */
+    dispatch_cons = cl_cons(cl_restart_stack[i].handler, args_list);
+    cl_throw_to_tag(cl_restart_stack[i].tag, dispatch_cons);
+    return CL_NIL; /* unreachable */
+}
+
 static CL_Obj invoke_restart_at_binding(int i, CL_Obj *call_args, int n_call)
 {
     CL_Obj args_list = CL_NIL;
-    CL_Obj dispatch_cons;
     int j;
 
-    /* Build argument list; protect args_list across each allocating cl_cons. */
+    /* Build argument list; protect args_list across each allocating cl_cons.
+     * call_args points into the rooted VM stack at every call site (or is a
+     * single-element array read before the first cons), so re-reading
+     * call_args[j] after a compaction is safe. */
     CL_GC_PROTECT(args_list);
     for (j = n_call - 1; j >= 0; j--)
         args_list = cl_cons(call_args[j], args_list);
-
-    /* Re-read handler after potential GC compaction (fields are GC-rooted in
-     * the thread struct).  Build dispatch cons (handler . args-list). */
-    dispatch_cons = cl_cons(cl_restart_stack[i].handler, args_list);
     CL_GC_UNPROTECT(1);
 
-    cl_throw_to_tag(cl_restart_stack[i].tag, dispatch_cons);
-    return CL_NIL; /* unreachable */
+    return invoke_restart_with_list(i, args_list);
 }
 
 /* (invoke-restart restart-designator &rest args) */
@@ -1872,8 +1937,6 @@ static CL_Obj bi_invoke_restart_interactively(CL_Obj *args, int n)
 {
     int i = find_restart_binding(args[0]);
     CL_Obj interactive, arglist = CL_NIL;
-    CL_Obj call_args[16];
-    int n_call = 0;
     CL_UNUSED(n);
 
     if (i < 0) {
@@ -1886,16 +1949,13 @@ static CL_Obj bi_invoke_restart_interactively(CL_Obj *args, int n)
     interactive = ((CL_Restart *)CL_OBJ_TO_PTR(cl_restart_stack[i].restart))
                       ->interactive;
     if (!CL_NULL_P(interactive)) {
-        CL_Obj tmp;
         arglist = cl_vm_apply(interactive, NULL, 0);
-        CL_GC_PROTECT(arglist);
-        for (tmp = arglist; !CL_NULL_P(tmp) && n_call < 16; tmp = cl_cdr(tmp))
-            call_args[n_call++] = cl_car(tmp);
-        CL_GC_UNPROTECT(1);
-        /* find_restart_binding again — heap may have compacted, but indices
-         * into the GC-rooted restart_stack remain valid; nothing was popped. */
+        /* Pass the returned list straight through — snapshotting it into a
+         * C array left elements 2..n stale after the dispatch cons
+         * compacted (the array is invisible to GC).  Indices into the
+         * GC-rooted restart_stack stay valid; nothing was popped. */
     }
-    return invoke_restart_at_binding(i, call_args, n_call);
+    return invoke_restart_with_list(i, arglist);
 }
 
 /* (find-restart identifier &optional condition) — return the innermost
@@ -2089,4 +2149,5 @@ void cl_builtins_condition_init(void)
      * against these, so both sides must track through compaction. */
     cl_gc_register_root(&SYM_STORE_VALUE);
     cl_gc_register_root(&SYM_USE_VALUE);
+    cl_gc_register_root(&muffle_handler);
 }

@@ -216,12 +216,24 @@ void cl_fasl_gc_update_readers(void (*update_fn)(CL_Obj *));
  * user code that can compact. */
 void cl_fasl_mlf_prepass(CL_Obj bc_vec, int bc_count);
 void cl_fasl_mlf_cleanup(void);
+/* Non-zero while a compile-file's MLF cache is live (prepass ran, cleanup
+ * pending).  Lets LOAD reap a cache leaked by an unwound compile-file. */
+int  cl_fasl_mlf_active_p(void);
 void cl_fasl_gc_mark_mlf(void);
 void cl_fasl_gc_update_mlf(void (*update_fn)(CL_Obj *));
 /* Error-unwind snapshot/restore of the active-reader count (cl_error longjmps
  * past cl_fasl_reader_unregister; the error frame restores the count). */
 int  cl_fasl_reader_save_count(void);
 void cl_fasl_reader_restore_count(int n);
+
+/* Active-WRITER registry: GC-roots a persistent writer's gensym dedup table
+ * across bi_load's interleaved compile/eval/serialize (see fasl.c). */
+void cl_fasl_writer_register(CL_FaslWriter *w);
+void cl_fasl_writer_unregister(CL_FaslWriter *w);
+int  cl_fasl_writer_save_count(void);
+void cl_fasl_writer_restore_count(int n);
+void cl_fasl_gc_mark_writers(void);
+void cl_fasl_gc_update_writers(void (*update_fn)(CL_Obj *));
 
 #ifdef DEBUG_FASL
 /* --- Per-unit serialization histogram (debug builds only) ---

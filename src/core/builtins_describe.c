@@ -12,6 +12,7 @@
 #include "error.h"
 #include "printer.h"
 #include "stream.h"
+#include "string_utils.h"
 #include "vm.h"
 #include "float.h"
 #include "../platform/platform.h"
@@ -22,9 +23,13 @@
 static void defun(const char *name, CL_CFunc func, int min, int max)
 {
     CL_Obj sym = cl_intern_in(name, (uint32_t)strlen(name), cl_package_cl);
-    CL_Obj fn = cl_make_function(func, sym, min, max);
-    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    CL_Obj fn;
+    CL_Symbol *s;
+    CL_GC_PROTECT(sym);
+    fn = cl_make_function(func, sym, min, max);
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     s->function = fn;
+    CL_GC_UNPROTECT(1);
 }
 
 /* --- Helpers --- */
@@ -83,30 +88,44 @@ static int list_length(CL_Obj obj)
     return len;
 }
 
-/* --- Type-specific describers --- */
+/* --- Type-specific describers ---
+ *
+ * GC discipline (audit 2026-07 tier 3): every write_* helper can allocate —
+ * printing an element may dispatch a PRINT-OBJECT hook via cl_vm_apply, and
+ * the stream itself may be a Gray stream applying Lisp methods.  So each
+ * describer (a) protects its stream and obj params for the duration (the
+ * local copies go stale after the first allocating write otherwise), (b)
+ * snapshots scalar fields into C locals BEFORE the first write, and (c)
+ * keeps heap-object fields in protected CL_Obj locals rather than re-reading
+ * them through a raw pointer captured up front. */
 
 static void describe_nil(CL_Obj stream)
 {
+    CL_GC_PROTECT(stream);
     write_line(stream, "NIL is the symbol NIL");
     write_line(stream, "  It is also the empty list and the boolean false.");
     write_line(stream, "  Value: NIL");
     write_line(stream, "  Type: NULL");
+    CL_GC_UNPROTECT(1);
 }
 
 static void describe_fixnum(CL_Obj obj, CL_Obj stream)
 {
     char buf[64];
     int32_t val = CL_FIXNUM_VAL(obj);
+    CL_GC_PROTECT(stream);
     write_obj(stream, obj);
     write_line(stream, " is a FIXNUM");
     snprintf(buf, sizeof(buf), "  Value: %d", (int)val);
     write_line(stream, buf);
+    CL_GC_UNPROTECT(1);
 }
 
 static void describe_character(CL_Obj obj, CL_Obj stream)
 {
     char buf[64];
     int ch = CL_CHAR_VAL(obj);
+    CL_GC_PROTECT(stream);
     write_obj(stream, obj);
     write_line(stream, " is a CHARACTER");
     if (ch >= 32 && ch < 127) {
@@ -115,27 +134,44 @@ static void describe_character(CL_Obj obj, CL_Obj stream)
     }
     snprintf(buf, sizeof(buf), "  Char-code: %d", ch);
     write_line(stream, buf);
+    CL_GC_UNPROTECT(1);
 }
 
 static void describe_symbol(CL_Obj obj, CL_Obj stream)
 {
     CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(obj);
-    CL_String *name_str;
+    CL_Obj name = sym->name;
+    CL_Obj pkgname = CL_NULL_P(sym->package)
+                     ? CL_NIL
+                     : ((CL_Package *)CL_OBJ_TO_PTR(sym->package))->name;
+    CL_Obj fn = sym->function;
+    CL_Obj plist = sym->plist;
+    uint32_t flags = sym->flags;
+    int have_pkg = !CL_NULL_P(sym->package);
+
+    CL_GC_PROTECT(stream);
+    CL_GC_PROTECT(obj);
+    CL_GC_PROTECT(name);
+    CL_GC_PROTECT(pkgname);
+    CL_GC_PROTECT(fn);
+    CL_GC_PROTECT(plist);
 
     write_obj(stream, obj);
     write_line(stream, " is a SYMBOL");
 
-    name_str = (CL_String *)CL_OBJ_TO_PTR(sym->name);
     write_str(stream, "  Name: \"");
-    cl_stream_write_string(stream, name_str->data, name_str->length);
+    if (cl_string_is_base(name)) {
+        /* Arena-safe chunked write (see cl_stream_write_lisp_string). */
+        cl_stream_write_lisp_string(stream, name, 0,
+            ((CL_String *)CL_OBJ_TO_PTR(name))->length);
+    } else {
+        write_obj(stream, name);
+    }
     write_line(stream, "\"");
 
-    if (!CL_NULL_P(sym->package)) {
+    if (have_pkg) {
         write_str(stream, "  Package: ");
-        {
-            CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(sym->package);
-            write_obj(stream, pkg->name);
-        }
+        write_obj(stream, pkgname);
         write_nl(stream);
     } else {
         write_line(stream, "  Package: NIL (uninterned)");
@@ -152,33 +188,37 @@ static void describe_symbol(CL_Obj obj, CL_Obj stream)
         }
     }
 
-    if (sym->function != CL_UNBOUND) {
+    if (fn != CL_UNBOUND) {
         write_str(stream, "  Function: ");
-        write_obj(stream, sym->function);
+        write_obj(stream, fn);
         write_nl(stream);
     }
 
-    if (!CL_NULL_P(sym->plist)) {
+    if (!CL_NULL_P(plist)) {
         write_str(stream, "  Plist: ");
-        write_obj(stream, sym->plist);
+        write_obj(stream, plist);
         write_nl(stream);
     }
 
     /* Flags */
-    if (sym->flags) {
+    if (flags) {
         write_str(stream, "  Flags:");
-        if (sym->flags & CL_SYM_SPECIAL)  write_str(stream, " SPECIAL");
-        if (sym->flags & CL_SYM_CONSTANT) write_str(stream, " CONSTANT");
-        if (sym->flags & CL_SYM_EXPORTED) write_str(stream, " EXPORTED");
-        if (sym->flags & CL_SYM_TRACED)   write_str(stream, " TRACED");
-        if (sym->flags & CL_SYM_INLINE)   write_str(stream, " INLINE");
+        if (flags & CL_SYM_SPECIAL)  write_str(stream, " SPECIAL");
+        if (flags & CL_SYM_CONSTANT) write_str(stream, " CONSTANT");
+        if (flags & CL_SYM_EXPORTED) write_str(stream, " EXPORTED");
+        if (flags & CL_SYM_TRACED)   write_str(stream, " TRACED");
+        if (flags & CL_SYM_INLINE)   write_str(stream, " INLINE");
         write_nl(stream);
     }
+    CL_GC_UNPROTECT(6);
 }
 
 static void describe_cons(CL_Obj obj, CL_Obj stream)
 {
     int len;
+
+    CL_GC_PROTECT(stream);
+    CL_GC_PROTECT(obj);
 
     write_obj(stream, obj);
     write_line(stream, " is a CONS");
@@ -198,141 +238,188 @@ static void describe_cons(CL_Obj obj, CL_Obj stream)
     write_str(stream, "  Cdr: ");
     write_obj(stream, cl_cdr(obj));
     write_nl(stream);
+    CL_GC_UNPROTECT(2);
 }
 
 static void describe_string(CL_Obj obj, CL_Obj stream)
 {
-    CL_String *str = (CL_String *)CL_OBJ_TO_PTR(obj);
+    uint32_t len = ((CL_String *)CL_OBJ_TO_PTR(obj))->length;
     char buf[64];
 
+    CL_GC_PROTECT(stream);
     write_obj(stream, obj);
     write_line(stream, " is a STRING");
-    snprintf(buf, sizeof(buf), "  Length: %u", (unsigned)str->length);
+    snprintf(buf, sizeof(buf), "  Length: %u", (unsigned)len);
     write_line(stream, buf);
+    CL_GC_UNPROTECT(1);
 }
 
 static void describe_function(CL_Obj obj, CL_Obj stream)
 {
     CL_Function *fn = (CL_Function *)CL_OBJ_TO_PTR(obj);
+    CL_Obj fname = fn->name;
+    int min_args = fn->min_args;
+    int max_args = fn->max_args;
     char buf[64];
+
+    CL_GC_PROTECT(stream);
+    CL_GC_PROTECT(fname);
 
     write_obj(stream, obj);
     write_line(stream, " is a FUNCTION");
     write_line(stream, "  Type: built-in");
 
     write_str(stream, "  Name: ");
-    write_obj(stream, fn->name);
+    write_obj(stream, fname);
     write_nl(stream);
 
-    snprintf(buf, sizeof(buf), "  Min-args: %d", fn->min_args);
+    snprintf(buf, sizeof(buf), "  Min-args: %d", min_args);
     write_line(stream, buf);
-    if (fn->max_args < 0) {
+    if (max_args < 0) {
         write_line(stream, "  Max-args: variable");
     } else {
-        snprintf(buf, sizeof(buf), "  Max-args: %d", fn->max_args);
+        snprintf(buf, sizeof(buf), "  Max-args: %d", max_args);
         write_line(stream, buf);
     }
+    CL_GC_UNPROTECT(2);
 }
 
 static void describe_closure(CL_Obj obj, CL_Obj stream)
 {
     CL_Closure *cl = (CL_Closure *)CL_OBJ_TO_PTR(obj);
-    CL_Bytecode *bc;
+    CL_Obj bc_name = CL_NIL;
+    uint16_t arity = 0;
+    uint16_t n_upvalues = 0;
+    int have_bc = 0;
     char buf[64];
+
+    if (CL_BYTECODE_P(cl->bytecode)) {
+        CL_Bytecode *bc = (CL_Bytecode *)CL_OBJ_TO_PTR(cl->bytecode);
+        bc_name = bc->name;
+        arity = bc->arity;
+        n_upvalues = bc->n_upvalues;
+        have_bc = 1;
+    }
+
+    CL_GC_PROTECT(stream);
+    CL_GC_PROTECT(bc_name);
 
     write_obj(stream, obj);
     write_line(stream, " is a COMPILED-FUNCTION");
 
-    if (CL_BYTECODE_P(cl->bytecode)) {
-        bc = (CL_Bytecode *)CL_OBJ_TO_PTR(cl->bytecode);
-        if (!CL_NULL_P(bc->name)) {
+    if (have_bc) {
+        if (!CL_NULL_P(bc_name)) {
             write_str(stream, "  Name: ");
-            write_obj(stream, bc->name);
+            write_obj(stream, bc_name);
             write_nl(stream);
         }
-        snprintf(buf, sizeof(buf), "  Arity: %d", (int)(bc->arity & 0x7FFF));
+        snprintf(buf, sizeof(buf), "  Arity: %d", (int)(arity & 0x7FFF));
         write_line(stream, buf);
-        if (bc->arity & 0x8000)
+        if (arity & 0x8000)
             write_line(stream, "  Has &rest parameter");
-        if (bc->n_upvalues > 0) {
-            snprintf(buf, sizeof(buf), "  Upvalues: %u", (unsigned)bc->n_upvalues);
+        if (n_upvalues > 0) {
+            snprintf(buf, sizeof(buf), "  Upvalues: %u", (unsigned)n_upvalues);
             write_line(stream, buf);
         }
     }
+    CL_GC_UNPROTECT(2);
 }
 
 static void describe_vector(CL_Obj obj, CL_Obj stream)
 {
     CL_Vector *vec = (CL_Vector *)CL_OBJ_TO_PTR(obj);
     char buf[64];
-    uint32_t active_len, show, i;
-    CL_Obj *data;
+    uint32_t length = vec->length;
+    uint32_t fill_pointer = vec->fill_pointer;
+    uint32_t vflags = vec->flags;
+    uint32_t active_len = cl_vector_active_length(vec);
+    uint32_t show, i;
+
+    CL_GC_PROTECT(stream);
+    CL_GC_PROTECT(obj);
 
     write_obj(stream, obj);
     write_line(stream, " is a VECTOR");
-    snprintf(buf, sizeof(buf), "  Length: %u", (unsigned)vec->length);
+    snprintf(buf, sizeof(buf), "  Length: %u", (unsigned)length);
     write_line(stream, buf);
 
-    if (vec->fill_pointer != CL_NO_FILL_POINTER) {
-        snprintf(buf, sizeof(buf), "  Fill-pointer: %u", (unsigned)vec->fill_pointer);
+    if (fill_pointer != CL_NO_FILL_POINTER) {
+        snprintf(buf, sizeof(buf), "  Fill-pointer: %u", (unsigned)fill_pointer);
         write_line(stream, buf);
     }
-    if (vec->flags & CL_VEC_FLAG_ADJUSTABLE)
+    if (vflags & CL_VEC_FLAG_ADJUSTABLE)
         write_line(stream, "  Adjustable: T");
 
-    active_len = cl_vector_active_length(vec);
-    data = cl_vector_data(vec);
     show = active_len > 5 ? 5 : active_len;
     if (show > 0) {
         write_str(stream, "  Elements:");
         for (i = 0; i < show; i++) {
+            /* re-derive the data pointer per element — each write above
+             * can compact */
+            CL_Obj elt =
+                cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(obj))[i];
             write_str(stream, " ");
-            write_obj(stream, data[i]);
+            write_obj(stream, elt);
         }
         if (active_len > 5)
             write_str(stream, " ...");
         write_nl(stream);
     }
+    CL_GC_UNPROTECT(2);
 }
 
 static void describe_package(CL_Obj obj, CL_Obj stream)
 {
     CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(obj);
+    CL_Obj name = pkg->name;
+    CL_Obj nicknames = pkg->nicknames;
+    CL_Obj use_list = pkg->use_list;
+    uint32_t sym_count = pkg->sym_count;
     char buf[64];
+
+    CL_GC_PROTECT(stream);
+    CL_GC_PROTECT(name);
+    CL_GC_PROTECT(nicknames);
+    CL_GC_PROTECT(use_list);
 
     write_obj(stream, obj);
     write_line(stream, " is a PACKAGE");
 
     write_str(stream, "  Name: ");
-    write_obj(stream, pkg->name);
+    write_obj(stream, name);
     write_nl(stream);
 
-    if (!CL_NULL_P(pkg->nicknames)) {
+    if (!CL_NULL_P(nicknames)) {
         write_str(stream, "  Nicknames: ");
-        write_obj(stream, pkg->nicknames);
+        write_obj(stream, nicknames);
         write_nl(stream);
     }
 
-    if (!CL_NULL_P(pkg->use_list)) {
+    if (!CL_NULL_P(use_list)) {
         write_str(stream, "  Use-list: ");
-        write_obj(stream, pkg->use_list);
+        write_obj(stream, use_list);
         write_nl(stream);
     }
 
-    snprintf(buf, sizeof(buf), "  Symbol-count: %u", (unsigned)pkg->sym_count);
+    snprintf(buf, sizeof(buf), "  Symbol-count: %u", (unsigned)sym_count);
     write_line(stream, buf);
+    CL_GC_UNPROTECT(4);
 }
 
 static void describe_hashtable(CL_Obj obj, CL_Obj stream)
 {
     CL_Hashtable *ht = (CL_Hashtable *)CL_OBJ_TO_PTR(obj);
+    uint32_t count = ht->count;
+    uint32_t bucket_count = ht->bucket_count;
+    uint8_t test = ht->test;
     char buf[64];
     const char *test_name;
 
+    CL_GC_PROTECT(stream);
     write_obj(stream, obj);
     write_line(stream, " is a HASH-TABLE");
 
-    switch (ht->test) {
+    switch (test) {
         case CL_HT_TEST_EQ:     test_name = "EQ";     break;
         case CL_HT_TEST_EQL:    test_name = "EQL";    break;
         case CL_HT_TEST_EQUAL:  test_name = "EQUAL";  break;
@@ -341,120 +428,162 @@ static void describe_hashtable(CL_Obj obj, CL_Obj stream)
     }
     snprintf(buf, sizeof(buf), "  Test: %s", test_name);
     write_line(stream, buf);
-    snprintf(buf, sizeof(buf), "  Count: %u", (unsigned)ht->count);
+    snprintf(buf, sizeof(buf), "  Count: %u", (unsigned)count);
     write_line(stream, buf);
-    snprintf(buf, sizeof(buf), "  Size: %u", (unsigned)ht->bucket_count);
+    snprintf(buf, sizeof(buf), "  Size: %u", (unsigned)bucket_count);
     write_line(stream, buf);
+    CL_GC_UNPROTECT(1);
 }
 
 static void describe_struct(CL_Obj obj, CL_Obj stream)
 {
     CL_Struct *st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
+    CL_Obj type_desc = st->type_desc;
+    uint32_t n_slots = st->n_slots;
     char buf[64];
 
     extern CL_Obj cl_struct_slot_names(CL_Obj type_name);
 
+    CL_GC_PROTECT(stream);
+    CL_GC_PROTECT(obj);
+    CL_GC_PROTECT(type_desc);
+
+    /* Printing the struct itself consults the PRINT-OBJECT hook — st is
+     * stale after this first write already. */
     write_obj(stream, obj);
     write_line(stream, " is a STRUCTURE");
 
     write_str(stream, "  Type: ");
-    write_obj(stream, st->type_desc);
+    write_obj(stream, type_desc);
     write_nl(stream);
 
-    snprintf(buf, sizeof(buf), "  Slots: %u", (unsigned)st->n_slots);
+    snprintf(buf, sizeof(buf), "  Slots: %u", (unsigned)n_slots);
     write_line(stream, buf);
 
-    /* Show slot names and values */
+    /* Show slot names and values — cl_struct_slot_names allocates, and
+     * every element print can too: keep the name cursor rooted and read
+     * each slot through a freshly derived pointer. */
     {
-        CL_Obj names = cl_struct_slot_names(st->type_desc);
+        CL_Obj names = cl_struct_slot_names(type_desc);
         uint32_t i = 0;
-        while (!CL_NULL_P(names) && i < st->n_slots) {
+        CL_GC_PROTECT(names);
+        while (!CL_NULL_P(names) && i < n_slots) {
             write_str(stream, "  ");
             write_obj(stream, cl_car(names));
             write_str(stream, ": ");
-            write_obj(stream, st->slots[i]);
+            write_obj(stream, ((CL_Struct *)CL_OBJ_TO_PTR(obj))->slots[i]);
             write_nl(stream);
             names = cl_cdr(names);
             i++;
         }
+        CL_GC_UNPROTECT(1);
     }
+    CL_GC_UNPROTECT(3);
 }
 
 static void describe_condition(CL_Obj obj, CL_Obj stream)
 {
     CL_Condition *cond = (CL_Condition *)CL_OBJ_TO_PTR(obj);
+    CL_Obj type_name = cond->type_name;
+    CL_Obj report_string = cond->report_string;
+    CL_Obj slots = cond->slots;
+
+    CL_GC_PROTECT(stream);
+    CL_GC_PROTECT(type_name);
+    CL_GC_PROTECT(report_string);
+    CL_GC_PROTECT(slots);
 
     write_obj(stream, obj);
     write_line(stream, " is a CONDITION");
 
     write_str(stream, "  Type: ");
-    write_obj(stream, cond->type_name);
+    write_obj(stream, type_name);
     write_nl(stream);
 
-    if (!CL_NULL_P(cond->report_string)) {
+    if (!CL_NULL_P(report_string)) {
         write_str(stream, "  Report: ");
-        write_obj(stream, cond->report_string);
+        write_obj(stream, report_string);
         write_nl(stream);
     }
 
-    if (!CL_NULL_P(cond->slots)) {
+    if (!CL_NULL_P(slots)) {
         write_str(stream, "  Slots: ");
-        write_obj(stream, cond->slots);
+        write_obj(stream, slots);
         write_nl(stream);
     }
+    CL_GC_UNPROTECT(4);
 }
 
 static void describe_bignum(CL_Obj obj, CL_Obj stream)
 {
     CL_Bignum *bn = (CL_Bignum *)CL_OBJ_TO_PTR(obj);
+    uint16_t sign = bn->sign;
+    uint16_t length = bn->length;
     char buf[64];
 
+    CL_GC_PROTECT(stream);
     write_obj(stream, obj);
     write_line(stream, " is a BIGNUM");
 
-    snprintf(buf, sizeof(buf), "  Sign: %s", bn->sign ? "negative" : "positive");
+    snprintf(buf, sizeof(buf), "  Sign: %s", sign ? "negative" : "positive");
     write_line(stream, buf);
-    snprintf(buf, sizeof(buf), "  Limbs: %u", (unsigned)bn->length);
+    snprintf(buf, sizeof(buf), "  Limbs: %u", (unsigned)length);
     write_line(stream, buf);
+    CL_GC_UNPROTECT(1);
 }
 
 static void describe_single_float(CL_Obj obj, CL_Obj stream)
 {
+    CL_GC_PROTECT(stream);
     write_obj(stream, obj);
     write_line(stream, " is a SINGLE-FLOAT");
+    CL_GC_UNPROTECT(1);
 }
 
 static void describe_double_float(CL_Obj obj, CL_Obj stream)
 {
+    CL_GC_PROTECT(stream);
     write_obj(stream, obj);
     write_line(stream, " is a DOUBLE-FLOAT");
+    CL_GC_UNPROTECT(1);
 }
 
 static void describe_ratio(CL_Obj obj, CL_Obj stream)
 {
     CL_Ratio *r = (CL_Ratio *)CL_OBJ_TO_PTR(obj);
+    CL_Obj num = r->numerator;
+    CL_Obj den = r->denominator;
+
+    CL_GC_PROTECT(stream);
+    CL_GC_PROTECT(num);
+    CL_GC_PROTECT(den);
 
     write_obj(stream, obj);
     write_line(stream, " is a RATIO");
 
     write_str(stream, "  Numerator: ");
-    write_obj(stream, r->numerator);
+    write_obj(stream, num);
     write_nl(stream);
     write_str(stream, "  Denominator: ");
-    write_obj(stream, r->denominator);
+    write_obj(stream, den);
     write_nl(stream);
+    CL_GC_UNPROTECT(3);
 }
 
 static void describe_stream(CL_Obj obj, CL_Obj stream)
 {
     CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(obj);
+    uint8_t direction = st->direction;
+    uint8_t stream_type = st->stream_type;
+    uint32_t sflags = st->flags;
     const char *dir;
     const char *stype;
 
+    CL_GC_PROTECT(stream);
     write_obj(stream, obj);
     write_line(stream, " is a STREAM");
 
-    switch (st->direction) {
+    switch (direction) {
         case CL_STREAM_INPUT:  dir = "INPUT";  break;
         case CL_STREAM_OUTPUT: dir = "OUTPUT"; break;
         case CL_STREAM_IO:     dir = "IO";     break;
@@ -463,7 +592,7 @@ static void describe_stream(CL_Obj obj, CL_Obj stream)
     write_str(stream, "  Direction: ");
     write_line(stream, dir);
 
-    switch (st->stream_type) {
+    switch (stream_type) {
         case CL_STREAM_CONSOLE: stype = "CONSOLE"; break;
         case CL_STREAM_FILE:    stype = "FILE";    break;
         case CL_STREAM_STRING:  stype = "STRING";  break;
@@ -473,52 +602,72 @@ static void describe_stream(CL_Obj obj, CL_Obj stream)
     write_line(stream, stype);
 
     write_str(stream, "  Open: ");
-    write_line(stream, (st->flags & CL_STREAM_FLAG_OPEN) ? "T" : "NIL");
+    write_line(stream, (sflags & CL_STREAM_FLAG_OPEN) ? "T" : "NIL");
+    CL_GC_UNPROTECT(1);
 }
 
 static void describe_random_state(CL_Obj obj, CL_Obj stream)
 {
+    CL_GC_PROTECT(stream);
     write_obj(stream, obj);
     write_line(stream, " is a RANDOM-STATE");
+    CL_GC_UNPROTECT(1);
 }
 
 static void describe_bit_vector(CL_Obj obj, CL_Obj stream)
 {
-    CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(obj);
+    uint32_t length = ((CL_BitVector *)CL_OBJ_TO_PTR(obj))->length;
     char buf[64];
 
+    CL_GC_PROTECT(stream);
     write_obj(stream, obj);
     write_line(stream, " is a BIT-VECTOR");
 
-    snprintf(buf, sizeof(buf), "  Length: %u", (unsigned)bv->length);
+    snprintf(buf, sizeof(buf), "  Length: %u", (unsigned)length);
     write_line(stream, buf);
+    CL_GC_UNPROTECT(1);
 }
 
 static void describe_pathname(CL_Obj obj, CL_Obj stream)
 {
     CL_Pathname *pn = (CL_Pathname *)CL_OBJ_TO_PTR(obj);
+    CL_Obj host = pn->host;
+    CL_Obj device = pn->device;
+    CL_Obj directory = pn->directory;
+    CL_Obj name = pn->name;
+    CL_Obj type = pn->type;
+    CL_Obj version = pn->version;
+
+    CL_GC_PROTECT(stream);
+    CL_GC_PROTECT(host);
+    CL_GC_PROTECT(device);
+    CL_GC_PROTECT(directory);
+    CL_GC_PROTECT(name);
+    CL_GC_PROTECT(type);
+    CL_GC_PROTECT(version);
 
     write_obj(stream, obj);
     write_line(stream, " is a PATHNAME");
 
     write_str(stream, "  Host: ");
-    write_obj(stream, pn->host);
+    write_obj(stream, host);
     write_nl(stream);
     write_str(stream, "  Device: ");
-    write_obj(stream, pn->device);
+    write_obj(stream, device);
     write_nl(stream);
     write_str(stream, "  Directory: ");
-    write_obj(stream, pn->directory);
+    write_obj(stream, directory);
     write_nl(stream);
     write_str(stream, "  Name: ");
-    write_obj(stream, pn->name);
+    write_obj(stream, name);
     write_nl(stream);
     write_str(stream, "  Type: ");
-    write_obj(stream, pn->type);
+    write_obj(stream, type);
     write_nl(stream);
     write_str(stream, "  Version: ");
-    write_obj(stream, pn->version);
+    write_obj(stream, version);
     write_nl(stream);
+    CL_GC_UNPROTECT(7);
 }
 
 /* --- Main dispatch --- */
@@ -565,8 +714,10 @@ void cl_describe_to_stream(CL_Obj obj, CL_Obj stream)
     if (CL_PATHNAME_P(obj))     { describe_pathname(obj, stream);     return; }
 
     /* Fallback */
+    CL_GC_PROTECT(stream);
     write_obj(stream, obj);
     write_line(stream, " is an unknown object");
+    CL_GC_UNPROTECT(1);
 }
 
 /* (describe object &optional stream) */

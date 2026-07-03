@@ -507,7 +507,13 @@ static CL_Obj bi_make_thread(CL_Obj *args, int n)
      * itself to live via cl_gc_thread_online once its OS thread starts. */
     cl_thread_register_newborn(child);
 
-    /* Create the Lisp-visible thread object */
+    /* Create the Lisp-visible thread object.
+     * ORDERING NOTE: this cl_alloc is also a mandatory SAFEPOINT between
+     * registering the newborn and creating its OS thread — historically
+     * the only thing closing the register-after-STW-request race.  The
+     * STW wait loop now re-requests unrequested live threads on every
+     * rescan (thread.c), so the invariant is structural, but keep the
+     * register→alloc→create order anyway. */
     CL_GC_PROTECT(func);
     CL_GC_PROTECT(name);
     tobj = (CL_ThreadObj *)cl_alloc(TYPE_THREAD, sizeof(CL_ThreadObj));
@@ -789,6 +795,12 @@ static CL_Obj bi_dump_thread_waits(CL_Obj *args, int n)
     CL_UNUSED(n);
     fprintf(stderr, "==== MP:DUMP-THREAD-WAITS (%u live threads) ====\n",
             cl_thread_count);
+    /* Walk the table under the list lock: the zombie reaper / a completing
+     * JOIN / gc_finalize_dead free workers concurrently, and this dump is
+     * a hang-triage entry point — called exactly when thread churn is
+     * pathological.  fprintf under the lock is acceptable here (diagnostic
+     * path, stderr). */
+    if (cl_thread_list_lock) platform_mutex_lock(cl_thread_list_lock);
     for (i = 0; i < CL_MAX_THREADS; i++) {
         CL_Thread *t = cl_thread_table[i];
         const char *st, *wk;
@@ -823,6 +835,7 @@ static CL_Obj bi_dump_thread_waits(CL_Obj *args, int n)
                 (int)t->gc_requested, (int)t->gc_stopped, (int)t->in_safe_region);
         fprintf(stderr, "\n");
     }
+    if (cl_thread_list_lock) platform_mutex_unlock(cl_thread_list_lock);
     fprintf(stderr, "==== end ====\n");
     fflush(stderr);
     return CL_NIL;
@@ -1046,6 +1059,14 @@ static CL_Obj bi_condition_wait(CL_Obj *args, int n)
     cv = (CL_CondVar *)CL_OBJ_TO_PTR(args[0]);
     lk = (CL_Lock *)CL_OBJ_TO_PTR(args[1]);
 
+    /* Bounds-check the ids before indexing (like acquire/release-lock):
+     * a stale or FASL-reconstructed wrapper with an out-of-range id was
+     * an OOB read instead of a clean error. */
+    if (cv->condvar_id >= CL_MAX_CONDVARS)
+        cl_error(CL_ERR_GENERAL, "MP:CONDITION-WAIT: invalid condvar id");
+    if (lk->lock_id >= CL_MAX_LOCKS)
+        cl_error(CL_ERR_GENERAL, "MP:CONDITION-WAIT: invalid lock id");
+
     cv_handle = cl_condvar_table[cv->condvar_id];
     mutex = cl_lock_table[lk->lock_id];
 
@@ -1117,6 +1138,8 @@ static CL_Obj bi_condition_notify(CL_Obj *args, int n)
                  "MP:CONDITION-NOTIFY: argument must be a condition-variable");
 
     cv = (CL_CondVar *)CL_OBJ_TO_PTR(args[0]);
+    if (cv->condvar_id >= CL_MAX_CONDVARS)
+        cl_error(CL_ERR_GENERAL, "MP:CONDITION-NOTIFY: invalid condvar id");
     cv_handle = cl_condvar_table[cv->condvar_id];
 
     if (!cv_handle)
@@ -1139,6 +1162,8 @@ static CL_Obj bi_condition_broadcast(CL_Obj *args, int n)
                  "MP:CONDITION-BROADCAST: argument must be a condition-variable");
 
     cv = (CL_CondVar *)CL_OBJ_TO_PTR(args[0]);
+    if (cv->condvar_id >= CL_MAX_CONDVARS)
+        cl_error(CL_ERR_GENERAL, "MP:CONDITION-BROADCAST: invalid condvar id");
     cv_handle = cl_condvar_table[cv->condvar_id];
 
     if (!cv_handle)
@@ -1196,12 +1221,20 @@ static CL_Obj bi_interrupt_thread(CL_Obj *args, int n)
                  "MP:INTERRUPT-THREAD: thread is no longer running");
     }
 
-    /* Store function, then set the pending flag.  The target consumes
-     * the pair at safepoints WITHOUT taking this lock, so the
-     * payload-before-flag order needs an explicit barrier — on ARM64
-     * the two stores can otherwise become visible flag-first and the
-     * target consumes pending with a stale (NIL) func, silently
-     * dropping the interrupt. */
+    /* Store function, then set the pending flag.  The target's consumer
+     * (cl_thread_handle_interrupt) now also takes this lock, but its
+     * initial interrupt_pending peek is lock-free, so the payload-before-
+     * flag order still needs an explicit barrier — on ARM64 the two
+     * stores can otherwise become visible flag-first and the target
+     * consumes pending with a stale (NIL) func, silently dropping the
+     * interrupt.
+     *
+     * KNOWN LIMITATION: delivery happens only at safepoints.  A target
+     * parked in mp:condition-wait or a blocking mp:acquire-lock does not
+     * run safepoints until its wait wakes — an interrupt (or destroy) of
+     * such a thread is deferred until then, and a wait that is never
+     * notified never delivers it.  (SBCL breaks waits via signals; we
+     * would need the publisher to broadcast target->wait_cv_id.) */
     target->interrupt_func = func;
     platform_memory_barrier();
     target->interrupt_pending = 1;
@@ -1315,10 +1348,14 @@ static CL_Obj bi_condition_variable_p(CL_Obj *args, int n)
 static void mp_defun(const char *name, CL_CFunc func, int min, int max)
 {
     CL_Obj sym = cl_intern_in(name, (uint32_t)strlen(name), cl_package_mp);
-    CL_Obj fn = cl_make_function(func, sym, min, max);
-    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    CL_Obj fn;
+    CL_Symbol *s;
+    CL_GC_PROTECT(sym);
+    fn = cl_make_function(func, sym, min, max);
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     s->function = fn;
     cl_export_symbol(sym, cl_package_mp);
+    CL_GC_UNPROTECT(1);
 }
 
 void cl_builtins_thread_init(void)
