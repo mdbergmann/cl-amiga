@@ -735,17 +735,18 @@ void compile_case(CL_Compiler *c, CL_Obj form, int error_if_no_match)
     if (env->local_count > env->max_locals)
         env->max_locals = env->local_count;
 
+    /* GC SAFETY: protect `clauses` BEFORE compile_expr(keyform) — the keyform
+     * compile macroexpands/allocates and can compact, and `form` is a by-value
+     * parameter copy the caller's protection does not forward.  Protecting
+     * here also covers the ecase pre-scan and clause-walk cl_cons calls. */
+    CL_GC_PROTECT(clauses);
+
     /* Compile and store keyform */
     c->in_tail = 0;
     compile_expr(c, keyform);
     cl_emit(c, OP_STORE);
     cl_emit(c, (uint8_t)temp_slot);
     cl_emit(c, OP_POP);
-
-    /* GC-protect clauses before the pre-scan: the cl_cons calls below
-     * allocate unconditionally and can trigger compaction, staling the
-     * arena-relative offset held in the 'clauses' C local. */
-    CL_GC_PROTECT(clauses);
 
     /* For ECASE, pre-scan the clause keys to build the expected-type
      * specifier (member k1 k2 ...) used in the fall-through TYPE-ERROR
@@ -923,6 +924,12 @@ void compile_typecase(CL_Compiler *c, CL_Obj form, int error_if_no_match)
     if (env->local_count > env->max_locals)
         env->max_locals = env->local_count;
 
+    /* GC SAFETY: protect `clauses` BEFORE compile_expr(keyform) — the keyform
+     * compile macroexpands/allocates and can compact, and `form` is a by-value
+     * parameter copy the caller's protection does not forward.  Protecting
+     * here also covers the intern/pre-scan/clause-walk allocations below. */
+    CL_GC_PROTECT(clauses);
+
     /* Compile and store keyform */
     c->in_tail = 0;
     compile_expr(c, keyform);
@@ -934,10 +941,6 @@ void compile_typecase(CL_Compiler *c, CL_Obj form, int error_if_no_match)
      * not cl_current_package (which may be KEYWORD during #+#. eval) */
     sym_typep = cl_intern_in("TYPEP", 5, cl_package_cl);
     typep_idx = cl_add_constant(c, sym_typep);
-
-    /* GC-protect clauses before the pre-scan: cl_cons below allocates
-     * and can trigger compaction, staling the 'clauses' C local. */
-    CL_GC_PROTECT(clauses);
 
     /* For ETYPECASE, pre-scan the clause type-specs to build the
      * expected-type specifier (or t1 t2 ...) used in the fall-through
@@ -1160,9 +1163,13 @@ void compile_nth_value(CL_Compiler *c, CL_Obj form)
          * so callers using multiple-value-list see only this one value */
         cl_emit(c, OP_MV_RESET);
     } else {
-        /* Dynamic index: stack will be [index] [primary] */
+        /* Dynamic index: stack will be [index] [primary].
+         * GC SAFETY: compile_expr(n_form) allocates/compacts and `form` is a
+         * by-value parameter copy — protect values_form across it. */
+        CL_GC_PROTECT(values_form);
         compile_expr(c, n_form);
         compile_expr(c, values_form);
+        CL_GC_UNPROTECT(1);
         cl_emit(c, OP_NTH_VALUE); /* pops primary, pops index, pushes result */
     }
 
@@ -1183,6 +1190,12 @@ void compile_multiple_value_prog1(CL_Compiler *c, CL_Obj form)
 
     c->in_tail = 0;
 
+    /* GC SAFETY: protect rest_forms BEFORE compile_expr(first_form) — that
+     * compile allocates/compacts, and the inner cursor block below would
+     * otherwise start from a stale offset (`form` is a by-value parameter
+     * copy the caller's protection does not forward). */
+    CL_GC_PROTECT(rest_forms);
+
     /* Compile first form — primary on stack, MV buffer set */
     compile_expr(c, first_form);
     cl_emit(c, OP_MV_TO_LIST);   /* pops primary, saves all values as a list */
@@ -1197,17 +1210,14 @@ void compile_multiple_value_prog1(CL_Compiler *c, CL_Obj form)
     cl_emit(c, (uint8_t)list_slot);
     cl_emit(c, OP_POP);
 
-    /* Evaluate remaining forms for effect */
-    {
-        CL_Obj rf = rest_forms;
-        CL_GC_PROTECT(rf);
-        while (!CL_NULL_P(rf)) {
-            compile_expr(c, cl_car(rf));
-            cl_emit(c, OP_POP);
-            rf = cl_cdr(rf);
-        }
-        CL_GC_UNPROTECT(1);
+    /* Evaluate remaining forms for effect — rest_forms is protected above
+     * and doubles as the walk cursor (forwarded on compaction). */
+    while (!CL_NULL_P(rest_forms)) {
+        compile_expr(c, cl_car(rest_forms));
+        cl_emit(c, OP_POP);
+        rest_forms = cl_cdr(rest_forms);
     }
+    CL_GC_UNPROTECT(1); /* rest_forms */
 
     /* Restore MV state by calling VALUES-LIST on saved list */
     {

@@ -658,10 +658,16 @@ static int nlx_scan_qq(CL_Obj tmpl, int mode, CL_Obj tag, int anon)
     if (CL_VECTOR_P(tmpl)) {
         CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(tmpl);
         uint32_t i, n = cl_vector_active_length(v);
-        CL_Obj *data = cl_vector_data(v);
-        for (i = 0; i < n; i++)
-            if (nlx_scan_qq(data[i], mode, tag, anon)) return 1;
-        return 0;
+        int r = 0;
+        /* GC SAFETY: nlx_scan macroexpands via the VM (allocates/compacts) —
+         * protect the vector and re-derive its raw data each iteration. */
+        CL_GC_PROTECT(tmpl);
+        for (i = 0; i < n; i++) {
+            CL_Obj *data = cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(tmpl));
+            if (nlx_scan_qq(data[i], mode, tag, anon)) { r = 1; break; }
+        }
+        CL_GC_UNPROTECT(1);
+        return r;
     }
     if (!CL_CONS_P(tmpl)) return 0;
     if (cl_car(tmpl) == SYM_UNQUOTE || cl_car(tmpl) == SYM_UNQUOTE_SPLICING)
@@ -669,12 +675,16 @@ static int nlx_scan_qq(CL_Obj tmpl, int mode, CL_Obj tag, int anon)
     if (cl_car(tmpl) == SYM_QUASIQUOTE) return 0;  /* deeper nesting: data */
     {
         CL_Obj cur = tmpl;
+        int r = 0;
+        /* GC SAFETY: protect the walk cursor across the allocating recursion. */
+        CL_GC_PROTECT(cur);
         while (CL_CONS_P(cur)) {
-            if (nlx_scan_qq(cl_car(cur), mode, tag, anon)) return 1;
+            if (nlx_scan_qq(cl_car(cur), mode, tag, anon)) { r = 1; break; }
             cur = cl_cdr(cur);
         }
+        CL_GC_UNPROTECT(1);
+        return r;
     }
-    return 0;
 }
 
 /* Single-form NLX walker.  Sees through user macros (a macro can hide a
@@ -1296,23 +1306,35 @@ void compile_tagbody(CL_Compiler *c, CL_Obj form)
     cursor = body;
     CL_GC_PROTECT(cursor);
 
-    /* Push tagbody info */
+    /* Push tagbody info.
+     * GC SAFETY: the slot becomes visible to the compiler GC mark/update
+     * walkers the moment tagbody_count is bumped, but slots are reused
+     * (count is saved/restored per tagbody) — `id` still holds the previous
+     * occupant's dead cons offset.  The cl_cons below allocates and can
+     * compact; the walkers would then trace/forward that dangling offset
+     * (observed as SIGBUS in cl_alloc while compiling nested dotimes).
+     * Initialize every traced field BEFORE the first allocation. */
     tb = &c->tagbodies[c->tagbody_count++];
     tb->n_tags = 0;
     tb->uses_nlx = needs_nlx;
+    tb->id = CL_NIL;
 
     /* Create unique tagbody identifier for NLX */
     if (needs_nlx)
         tb->id = cl_cons(CL_NIL, CL_NIL);  /* fresh cons cell as unique id */
-    else
-        tb->id = CL_NIL;
 
     /* First pass: collect all tags */
     cursor = body;
     while (!CL_NULL_P(cursor)) {
         CL_Obj item = cl_car(cursor);
         if (is_tagbody_tag(item)) {
-            CL_TagInfo *ti = &tb->tags[tb->n_tags++];
+            CL_TagInfo *ti;
+            if (tb->n_tags >= CL_MAX_TAGBODY_TAGS)
+                cl_error(CL_ERR_OVERFLOW,
+                         "TAGBODY has too many tags (max %d): "
+                         "consider raising CL_MAX_TAGBODY_TAGS",
+                         CL_MAX_TAGBODY_TAGS);
+            ti = &tb->tags[tb->n_tags++];
             ti->tag = item;
             ti->code_pos = -1;
             ti->n_forward = 0;
@@ -1943,6 +1965,10 @@ void compile_dolist(CL_Compiler *c, CL_Obj form)
         env->max_locals = env->local_count;
 
     /* Push block info for implicit block NIL */
+    if (c->block_count >= CL_MAX_BLOCKS)
+        cl_error(CL_ERR_OVERFLOW,
+                 "BLOCK nesting depth exceeded (%d): "
+                 "consider raising CL_MAX_BLOCKS", CL_MAX_BLOCKS);
     bi = &c->blocks[c->block_count++];
     bi->tag = CL_NIL;
     bi->n_patches = 0;
@@ -2136,6 +2162,10 @@ void compile_dotimes(CL_Compiler *c, CL_Obj form)
         env->max_locals = env->local_count;
 
     /* Push block info for implicit block NIL */
+    if (c->block_count >= CL_MAX_BLOCKS)
+        cl_error(CL_ERR_OVERFLOW,
+                 "BLOCK nesting depth exceeded (%d): "
+                 "consider raising CL_MAX_BLOCKS", CL_MAX_BLOCKS);
     bi = &c->blocks[c->block_count++];
     bi->tag = CL_NIL;
     bi->n_patches = 0;
@@ -2397,6 +2427,10 @@ void compile_do(CL_Compiler *c, CL_Obj form)
         env->max_locals = env->local_count;
 
     /* Push block info for implicit block NIL */
+    if (c->block_count >= CL_MAX_BLOCKS)
+        cl_error(CL_ERR_OVERFLOW,
+                 "BLOCK nesting depth exceeded (%d): "
+                 "consider raising CL_MAX_BLOCKS", CL_MAX_BLOCKS);
     bi = &c->blocks[c->block_count++];
     bi->tag = CL_NIL;
     bi->n_patches = 0;
@@ -2628,6 +2662,10 @@ void compile_do_star(CL_Compiler *c, CL_Obj form)
     if (env->local_count > env->max_locals)
         env->max_locals = env->local_count;
 
+    if (c->block_count >= CL_MAX_BLOCKS)
+        cl_error(CL_ERR_OVERFLOW,
+                 "BLOCK nesting depth exceeded (%d): "
+                 "consider raising CL_MAX_BLOCKS", CL_MAX_BLOCKS);
     bi = &c->blocks[c->block_count++];
     bi->tag = CL_NIL;
     bi->n_patches = 0;

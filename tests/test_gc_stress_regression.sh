@@ -2989,6 +2989,98 @@ check_contains "tier-3 condition/describe fixes survive GC stress" "T3-CONDS:T" 
 check_absent   "no tier-3 condition corruption under GC stress" \
   "T3D-BAD\|corrupted pointer\|not of type\|Guru" "$out"
 
+# --- Tier-4 audit batch 1: compiler stale-local sites -----------------------
+# (audit 2026-07 tier 4, batch 1) A cluster of compiler GC bugs where a form
+# component (clauses / defaults / cursors) was read before an allocating
+# compile_expr/scan and used after, or a struct slot was published to the
+# compiler GC walkers before being initialized:
+#   C1  compile_tagbody set tb->id via cl_cons while the reused slot still held
+#       the previous tagbody's dead cons offset -> the mark/update walkers
+#       traced a dangling offset during that alloc's compaction (SIGBUS in
+#       cl_alloc; THE dotimes-with-closure crash).  Fixed by tb->id=CL_NIL first.
+#   C2/C3 compile_case/compile_typecase protected `clauses` only AFTER
+#       compile_expr(keyform) (which macroexpands/allocates) -> stale clause list.
+#   C4  compile_lambda &key default restore wrote pre-compaction key-param
+#       symbols back into env->locals from a raw C save array -> later key params
+#       "Unbound variable".  Now restores from GC-forwarded ll.key_names.
+#   C6  %struct-set inline hook read val_form before compile_expr(obj_form).
+#   C7  scan_body_for_boxing SETQ/SETF handler walked pairs/pforms + re-used
+#       `val` across allocating setf-expander applies unprotected.
+#   C8  compile_multiple_value_prog1 staled rest_forms across compile first-form.
+#   C10 compile_nth_value dynamic-index staled values_form across compile n.
+#   C9  parse_lambda_list &key intern window: key_*[n] stored before n_keys bump
+#       (invisible to walkers during cl_intern_keyword) + unprotected cursor.
+#   C11/C12 scan_qq_for_boxing / nlx_scan_qq raw vector data + cursor across
+#       allocating recursion.
+cat > "$WORK/tier4-compiler.lisp" <<'EOF'
+(in-package :cl-user)
+;; C1: two NLX tagbodies (dotimes bodies that capture a closure) in one form.
+(defun t4-c1 ()
+  (let ((l '(1 2 3)) (ok t))
+    (dotimes (i 4) (mapc (lambda (x) x) l))
+    (dotimes (i 20) (let ((v i)) (lambda () v)))
+    ok))
+(format t "T4-C1:~a~%" (t4-c1))
+;; C2/C3: case/typecase whose keyform is a macro call (macroexpands+allocates).
+(defmacro t4-key () '(car (list 2)))
+(defun t4-c2 ()
+  (case (t4-key) (1 :one) (2 :two) (3 :three) (t :other)))
+(defun t4-c3 ()
+  (typecase (t4-key) (string :str) (integer :int) (t :other)))
+(format t "T4-C2:~a~%" (t4-c2))
+(format t "T4-C3:~a~%" (t4-c3))
+;; C4: &key default forms that macroexpand/allocate; later key must resolve.
+(defmacro t4-def () '(list 1 2 3))
+(defun t4-c4 (&key (a (t4-def)) b (c (length (t4-def))))
+  (list a b c))
+(format t "T4-C4:~a~%" (t4-c4 :b 9))
+;; C6: (setf (struct-accessor obj) val) where the object expr allocates.
+(defstruct t4-pt x y)
+(defun t4-c6 ()
+  (let ((ps (list (make-t4-pt :x 0 :y 0))))
+    (setf (t4-pt-x (car (progn (make-list 8) ps))) 42)
+    (t4-pt-x (car ps))))
+(format t "T4-C6:~a~%" (t4-c6))
+;; C7: setf of an outer var hidden behind an allocating expansion, inside a
+;; closure (boxing pre-scan walks the setf pair + re-reads val).
+(defun t4-c7 ()
+  (let ((acc 0))
+    (flet ((bump () (setf acc (+ acc (length (make-list 3))))))
+      (bump) (bump) acc)))
+(format t "T4-C7:~a~%" (t4-c7))
+;; C8: multiple-value-prog1 with an allocating first form and trailing forms.
+(defun t4-c8 ()
+  (multiple-value-list
+    (multiple-value-prog1 (values 1 2 3)
+      (make-list 5) (make-list 5))))
+(format t "T4-C8:~a~%" (t4-c8))
+;; C10: nth-value with a dynamic (non-constant) index.
+(defun t4-c10 (n)
+  (nth-value n (values :a :b :c)))
+(format t "T4-C10:~a~%" (t4-c10 (car (list 2))))
+;; C9: &key whose keyword has (almost certainly) never been interned before.
+(defun t4-c9 (&key t4-never-before-interned-kw)
+  t4-never-before-interned-kw)
+(format t "T4-C9:~a~%" (t4-c9 :t4-never-before-interned-kw :ok))
+;; C11/C12: quasiquote with a vector template + splices, driven by a macro.
+(defmacro t4-qq (&rest xs) `(vector 0 ,@xs (+ ,@xs)))
+(defun t4-c11 () (t4-qq 3 4 5))
+(format t "T4-C11:~a~%" (coerce (t4-c11) 'list))
+EOF
+out=$(run_stress "$WORK/tier4-compiler.lisp")
+check_contains "C1 nested NLX tagbody + closure compiles (no SIGBUS)"  "T4-C1:T"          "$out"
+check_contains "C2 case with macro keyform under GC stress"            "T4-C2:TWO"        "$out"
+check_contains "C3 typecase with macro keyform under GC stress"        "T4-C3:INT"        "$out"
+check_contains "C4 &key allocating defaults, later key resolves"       "T4-C4:((1 2 3) 9 3)" "$out"
+check_contains "C6 struct-setf with allocating object expr"            "T4-C6:42"         "$out"
+check_contains "C7 setf outer var behind alloc in closure (boxing)"    "T4-C7:6"          "$out"
+check_contains "C8 multiple-value-prog1 keeps all values"              "T4-C8:(1 2 3)"    "$out"
+check_contains "C10 nth-value dynamic index under GC stress"           "T4-C10:C"         "$out"
+check_contains "C9 fresh &key keyword interns cleanly under stress"    "T4-C9:OK"         "$out"
+check_contains "C11 quasiquote vector template + splice under stress"  "T4-C11:(0 3 4 5 12)" "$out"
+check_absent   "no unbound/undefined/CDR-type-error in tier-4 compiler cases" \
+  "Unbound variable\|Undefined\|not of type\|corrupted\|Guru" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]
