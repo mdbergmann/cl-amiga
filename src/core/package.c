@@ -1145,11 +1145,19 @@ void cl_package_init(void)
         }
     }
 
-    /* Note: roots are kept protected permanently (they're globals) */
+    /* Pop ALL package roots pushed above.  They must NOT stay on the
+     * thread root stack: the same addresses are registered as global
+     * roots right below, and gc_forward is not idempotent (the
+     * forwarding table is keyed by pre-compaction offsets), so a slot
+     * reachable from two root lists would be forwarded twice on
+     * compaction — the second lookup maps the already-new offset
+     * through an unrelated object's old offset, corrupting the global.
+     * cl_gc_register_root does not allocate, so no GC can run in the
+     * unprotected window before registration. */
 #ifdef PLATFORM_AMIGA
-    CL_GC_UNPROTECT(7);
+    CL_GC_UNPROTECT(9);
 #else
-    CL_GC_UNPROTECT(6);
+    CL_GC_UNPROTECT(8);
 #endif
 
     /* Register package globals for GC compaction forwarding */

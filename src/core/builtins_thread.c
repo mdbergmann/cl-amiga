@@ -43,11 +43,35 @@ static CL_Obj thread_abort_handler = CL_NIL;
 
 static CL_Obj get_thread_abort_handler(void)
 {
+    /* Lazy init must be serialized: two racing first-worker creations
+     * would otherwise BOTH see NIL and BOTH cl_gc_register_root the
+     * same address.  gc_forward is not idempotent, so a double-
+     * registered root is forwarded twice on compaction and ends up
+     * pointing at an unrelated object (and the unlocked
+     * n_global_roots++ can additionally lose a concurrent
+     * registration).  The roots themselves are registered once in
+     * cl_builtins_thread_init (registering a NIL-holding global is
+     * free); only the cached value is built lazily.
+     *
+     * cl_thread_list_lock must never be held across the allocating
+     * cl_eval_string call below: it is the exact lock cl_gc_stop_the_world
+     * takes to enumerate threads, and it is explicitly on the "do NOT use
+     * cl_gc_safe_mutex_lock" list in thread.c (its critical section is one
+     * GC itself touches).  Holding a raw platform_mutex_lock on it across
+     * an allocating call risks the lock's holder self-deadlocking as STW
+     * initiator, or a peer blocked on the lock (not at a safepoint) hanging
+     * STW's wait loop.  So build the value with no lock held at all, and
+     * only take the lock — briefly, non-allocating — to publish it
+     * first-writer-wins; a losing racer's redundant value is simply
+     * unreferenced and collected normally. */
     if (CL_NULL_P(thread_abort_handler)) {
         extern CL_Obj cl_eval_string(const char *str);
-        thread_abort_handler = cl_eval_string(
+        CL_Obj built = cl_eval_string(
             "(lambda (&rest args) (declare (ignore args)) nil)");
-        cl_gc_register_root(&thread_abort_handler);
+        platform_mutex_lock(cl_thread_list_lock);
+        if (CL_NULL_P(thread_abort_handler))
+            thread_abort_handler = built;
+        platform_mutex_unlock(cl_thread_list_lock);
     }
     return thread_abort_handler;
 }
@@ -60,9 +84,15 @@ static CL_Obj thread_abort_report = CL_NIL;
 
 static CL_Obj get_thread_abort_report(void)
 {
+    /* See get_thread_abort_handler for why this is locked, why the lock is
+     * never held across the allocating call, and why the root registration
+     * lives in cl_builtins_thread_init. */
     if (CL_NULL_P(thread_abort_report)) {
-        thread_abort_report = cl_make_string("Return to top level", 19);
-        cl_gc_register_root(&thread_abort_report);
+        CL_Obj built = cl_make_string("Return to top level", 19);
+        platform_mutex_lock(cl_thread_list_lock);
+        if (CL_NULL_P(thread_abort_report))
+            thread_abort_report = built;
+        platform_mutex_unlock(cl_thread_list_lock);
     }
     return thread_abort_report;
 }
@@ -1210,6 +1240,15 @@ void cl_builtins_thread_init(void)
 
     /* Pre-intern keywords */
     KW_NAME_THR = cl_intern_keyword("NAME", 4);
+
+    /* Register the lazily-built abort handler/report caches as GC roots
+     * exactly once, here at (single-threaded) boot.  Doing it inside the
+     * lazy getters raced: two concurrent first-worker creations could
+     * both register the same address, and gc_forward's non-idempotence
+     * turns a double-registered root into silent corruption on the next
+     * compaction. */
+    cl_gc_register_root(&thread_abort_handler);
+    cl_gc_register_root(&thread_abort_report);
 
     /* Create main thread's Lisp-visible thread object.  Give it a default
      * name ("main thread") to match bordeaux-threads / SBCL / CCL, which
