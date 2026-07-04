@@ -1,6 +1,6 @@
 # GC Audit Tier 4 — Fix Plan
 
-Status: **IN PROGRESS** — Batches 1 (compiler criticals), 2 (format/printer), 3 (IO/strings/reader) and 4 (sequences/lists/hash/VM) applied on branch fix/tier4-gc-corruption; batches 5-7 pending.
+Status: **IN PROGRESS** — Batches 1 (compiler criticals), 2 (format/printer), 3 (IO/strings/reader), 4 (sequences/lists/hash/VM) and 5 (mem.c GC-core/allocator hardening, 0c45205, Amiga 3561/0) applied on branch fix/tier4-gc-corruption; batches 6-7 pending.
 Findings source: 12-agent audit sweep 2026-07-03 (session 5580131b). ~85 findings, ~25 CRITICAL.
 Branch: `fix/tier4-gc-corruption` (create from master at c70b4e4 or later).
 
