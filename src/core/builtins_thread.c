@@ -438,9 +438,12 @@ static CL_Obj bi_make_thread(CL_Obj *args, int n)
          * worker reached status >= 2 (finished/aborted): NULL the slot,
          * detach the OS handle, free the worker.  The wrapper stays
          * alive (so EQ identity survives, name accessor still works),
-         * and gc_finalize_dead's `t->thread_obj == this wrapper` guard
-         * prevents the wrapper's eventual finalize from double-freeing
-         * an unrelated worker if the slot is later reused. */
+         * and gc_finalize_dead's table_gen compare (see mem.c) prevents
+         * the wrapper's eventual finalize from double-freeing an
+         * unrelated worker if the slot is later reused: reaping here
+         * does not bump cl_thread_table_gen[slot], so once a new worker
+         * later reoccupies the slot the wrapper's stale table_gen no
+         * longer matches and its finalize leaves the new occupant alone. */
         CL_Thread *zombie;
         int i;
         platform_mutex_lock(cl_thread_list_lock);
@@ -525,6 +528,9 @@ static CL_Obj bi_make_thread(CL_Obj *args, int n)
         cl_error(CL_ERR_STORAGE, "MP:MAKE-THREAD: cannot allocate thread object");
     }
     tobj->thread_id = (uint32_t)thread_id;
+    /* Safe to read unlocked: the slot's gen only changes when the slot is
+     * re-claimed, which cannot happen while our worker occupies it. */
+    tobj->table_gen = cl_thread_table_gen[thread_id];
     tobj->name = name;
     thread_obj = CL_PTR_TO_OBJ(tobj);
 
@@ -573,9 +579,16 @@ static CL_Obj bi_join_thread(CL_Obj *args, int n)
      * worker while a joiner was still parked inside the join. */
     platform_mutex_lock(cl_thread_list_lock);
     t = cl_thread_table[id];
-    if (!t) {
+    /* Slot-identity check: table slots are reused after a join or a
+     * zombie-reap.  Without the generation compare, a wrapper for a
+     * long-exited thread would join (and then FREE) whatever unrelated
+     * worker currently occupies its old slot — a double free of that
+     * worker when its own joiner finishes.  tobj was derived before the
+     * lock; no allocation happened since, so it is not stale (a peer STW
+     * compaction cannot complete while this thread runs unparked). */
+    if (!t || cl_thread_table_gen[id] != tobj->table_gen) {
         platform_mutex_unlock(cl_thread_list_lock);
-        cl_error(CL_ERR_GENERAL, "MP:JOIN-THREAD: thread already collected");
+        cl_error(CL_ERR_GENERAL, "MP:JOIN-THREAD: thread has already exited");
     }
     if (!t->platform_handle && !t->join_in_progress) {
         platform_mutex_unlock(cl_thread_list_lock);
@@ -669,8 +682,11 @@ static CL_Obj bi_thread_alive_p(CL_Obj *args, int n)
         int alive;
         platform_mutex_lock(cl_thread_list_lock);
         t = cl_thread_table[tobj->thread_id];
-        /* status: 0=created, 1=running, 2=finished, 3=aborted */
-        alive = (t && t->status <= 1);
+        /* status: 0=created, 1=running, 2=finished, 3=aborted.
+         * Generation mismatch = slot reused by an unrelated worker; this
+         * wrapper's thread exited long ago (see bi_join_thread). */
+        alive = (t && t->status <= 1 &&
+                 cl_thread_table_gen[tobj->thread_id] == tobj->table_gen);
         platform_mutex_unlock(cl_thread_list_lock);
         return alive ? CL_T : CL_NIL;
     }
@@ -701,6 +717,7 @@ static CL_Obj bi_current_thread(CL_Obj *args, int n)
                                                        sizeof(CL_ThreadObj));
         if (!tobj) return CL_NIL;
         tobj->thread_id = self->id;
+        tobj->table_gen = cl_thread_table_gen[self->id];
         tobj->name = self->name;
         self->thread_obj = CL_PTR_TO_OBJ(tobj);
         return self->thread_obj;
@@ -1209,7 +1226,11 @@ static CL_Obj bi_interrupt_thread(CL_Obj *args, int n)
      * stores (use-after-free write). */
     platform_mutex_lock(cl_thread_list_lock);
     target = cl_thread_table[tobj->thread_id];
-    if (!target) {
+    /* Generation mismatch = slot reused by an unrelated worker; without
+     * this check the interrupt would be delivered to an innocent thread
+     * (see bi_join_thread). */
+    if (!target ||
+        cl_thread_table_gen[tobj->thread_id] != tobj->table_gen) {
         platform_mutex_unlock(cl_thread_list_lock);
         cl_error(CL_ERR_GENERAL,
                  "MP:INTERRUPT-THREAD: thread has already exited");
@@ -1267,7 +1288,9 @@ static CL_Obj bi_destroy_thread(CL_Obj *args, int n)
     /* Same locking + publication discipline as MP:INTERRUPT-THREAD. */
     platform_mutex_lock(cl_thread_list_lock);
     target = cl_thread_table[tobj->thread_id];
-    if (!target) {
+    /* Same slot-identity discipline as MP:INTERRUPT-THREAD. */
+    if (!target ||
+        cl_thread_table_gen[tobj->thread_id] != tobj->table_gen) {
         platform_mutex_unlock(cl_thread_list_lock);
         cl_error(CL_ERR_GENERAL,
                  "MP:DESTROY-THREAD: thread has already exited");
@@ -1388,6 +1411,7 @@ void cl_builtins_thread_init(void)
     tobj = (CL_ThreadObj *)cl_alloc(TYPE_THREAD, sizeof(CL_ThreadObj));
     if (tobj) {
         tobj->thread_id = 0;
+        tobj->table_gen = cl_thread_table_gen[0];
         tobj->name = main_name;
         main_thread_obj = CL_PTR_TO_OBJ(tobj);
     }

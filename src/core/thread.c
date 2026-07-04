@@ -633,6 +633,7 @@ int cl_symbol_boundp(CL_Obj sym)
 /* ---- Side tables and worker thread allocation ---- */
 
 CL_Thread *cl_thread_table[CL_MAX_THREADS];
+uint32_t cl_thread_table_gen[CL_MAX_THREADS];
 void *cl_lock_table[CL_MAX_LOCKS];
 void *cl_condvar_table[CL_MAX_CONDVARS];
 
@@ -643,6 +644,10 @@ int cl_thread_table_alloc(CL_Thread *t)
     for (i = 0; i < CL_MAX_THREADS; i++) {
         if (!cl_thread_table[i]) {
             cl_thread_table[i] = t;
+            /* New occupancy: invalidate every wrapper still pointing at
+             * this slot from a previous occupant (see cl_thread_table_gen
+             * in thread.h). */
+            cl_thread_table_gen[i]++;
             result = i;
             break;
         }

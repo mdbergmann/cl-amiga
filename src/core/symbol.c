@@ -264,7 +264,7 @@ uint32_t cl_hash_string(const char *str, uint32_t len)
 CL_Obj cl_intern_in(const char *name, uint32_t len, CL_Obj package)
 {
     CL_Obj existing;
-    CL_Obj name_str, sym;
+    CL_Obj name_str, sym, cell;
     CL_Symbol *s;
     char namebuf[256];
     char *heapname = NULL;
@@ -296,18 +296,26 @@ CL_Obj cl_intern_in(const char *name, uint32_t len, CL_Obj package)
         return cl_normalize_nil_symbol(existing);
     }
 
-    /* Slow path: create symbol outside lock.
-     * Protect package — allocations below may trigger GC/compaction. */
+    /* Slow path: create the symbol AND its bucket cell outside the lock.
+     * Protect package — allocations below may trigger GC/compaction.
+     * The bucket cell must be pre-consed too: allocating while holding
+     * cl_package_rwlock can trigger a stop-the-world GC that waits for a
+     * peer blocked on the rdlock (any intern fast path), which can never
+     * park — a circular STW-vs-rwlock hang. */
     CL_GC_PROTECT(package);
     name_str = cl_make_string(name, len);
     CL_GC_PROTECT(name_str);
     sym = cl_make_symbol(name_str);
-    CL_GC_UNPROTECT(2);
+    CL_GC_PROTECT(sym);
+    cell = cl_cons(sym, CL_NIL);
+    CL_GC_UNPROTECT(3);
 
     s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     s->hash = cl_hash_string(name, len);
 
-    /* Write-lock with re-check */
+    /* Write-lock with re-check; the link inside the lock is plain stores
+     * only (cl_package_add_symbol_cell).  On the lost-race path our fresh
+     * symbol and cell simply become garbage. */
     if (cl_package_rwlock) platform_rwlock_wrlock(cl_package_rwlock);
     existing = cl_package_find_symbol_nolock(name, len, package);
     if (existing != CL_UNBOUND) {
@@ -315,7 +323,7 @@ CL_Obj cl_intern_in(const char *name, uint32_t len, CL_Obj package)
         if (heapname) platform_free(heapname);
         return cl_normalize_nil_symbol(existing);
     }
-    cl_package_add_symbol(package, sym);
+    cl_package_add_symbol_cell(package, sym, cell);
     if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
     if (heapname) platform_free(heapname);
     /* Newly-interned KEYWORD-package symbols are self-evaluating constants
@@ -888,8 +896,17 @@ void cl_symbol_init(void)
         n->value = CL_NIL;
     }
 
-    /* Set the global CL_T for use by type predicates */
+    /* Set the global CL_T for use by type predicates.  CL_T is a SEPARATE
+     * global from SYM_T (types.c), so it needs its OWN root registration:
+     * the compactor forwards registered addresses, not values — an
+     * unregistered CL_T silently went stale the first time a compaction
+     * moved the T symbol.  Latent for years because boot's allocation
+     * layout happened to leave no garbage below T (so it never moved);
+     * exposed the moment early-boot allocation patterns changed (tier-4
+     * batch 6: pre-consed package cells), when every builtin returning
+     * CL_T started returning whatever object landed at T's old offset. */
     CL_T = SYM_T;
+    cl_gc_register_root(&CL_T);
 
     /* *PACKAGE* is a special variable initialized to CL-USER */
     {

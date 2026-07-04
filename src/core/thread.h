@@ -415,6 +415,12 @@ void cl_thread_shutdown(void);
 /* Thread side table: maps thread_id -> CL_Thread* */
 #define CL_MAX_THREADS 256
 extern CL_Thread *cl_thread_table[CL_MAX_THREADS];
+/* Per-slot generation counter, bumped every time a slot is (re)claimed by
+ * cl_thread_table_alloc.  A CL_ThreadObj wrapper snapshots the value at
+ * creation (table_gen); a mismatch later means the slot was reused for an
+ * unrelated worker and the wrapper's thread has already exited.  Read/compared
+ * under cl_thread_list_lock (or during STW GC, when no peer can run). */
+extern uint32_t cl_thread_table_gen[CL_MAX_THREADS];
 
 /* Lock side table: maps lock_id -> void* (platform mutex).
  * Sized for sento workloads: each actor allocates ~3 locks (queue, mbox state,

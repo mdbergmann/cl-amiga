@@ -947,9 +947,9 @@ static CL_Obj bi_trace_function(CL_Obj *args, int n)
     if (!(s->flags & CL_SYM_TRACED)) {
         s->flags |= CL_SYM_TRACED;
         cl_trace_count++;
-        cl_tables_wrlock();
-        trace_list = cl_cons(args[0], trace_list);
-        cl_tables_rwunlock();
+        /* Cons outside the write lock (STW-vs-rwlock deadlock — see
+         * cl_table_prepend_locked). */
+        cl_table_prepend_locked(&trace_list, args[0]);
     }
     return args[0];
 }
