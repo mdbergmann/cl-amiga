@@ -222,6 +222,8 @@ void cl_dynbind_restore_to(int mark)
         cl_sync_current_package_from_dynamic();
 }
 
+void cl_gf_types_boot_init(void);   /* defined below with the GF type table */
+
 void cl_vm_init(uint32_t stack_size, int frame_size)
 {
     if (stack_size == 0) stack_size = CL_VM_STACK_SIZE;
@@ -243,6 +245,11 @@ void cl_vm_init(uint32_t stack_size, int frame_size)
     cl_pending_throw = 0;
     cl_mv_count = 1;
     cl_trace_depth = 0;
+
+    /* Funcallable-GF type table: register its GC roots HERE, while still
+     * single-threaded (see cl_gf_types_boot_init — racing the old fully-
+     * lazy registration double-registered roots, tier-4 audit V10). */
+    cl_gf_types_boot_init();
 }
 
 void cl_vm_shutdown(void)
@@ -416,13 +423,29 @@ static CL_Obj cl_gf_type_syms[CL_MAX_GF_TYPES];
 static int cl_gf_type_count = 0;
 static int cl_gf_types_inited = 0;
 
-static void cl_gf_types_init(void)
+static int cl_gf_roots_registered = 0;
+
+/* Root registration split out and run DETERMINISTICALLY from cl_vm_init
+ * (single-threaded boot): two threads racing the old fully-lazy init
+ * would both cl_gc_register_root the same addresses, and gc_forward is
+ * not idempotent — a double-registered root is silently corrupted by the
+ * next compaction (tier-4 audit V10).  The remaining lazy part (interning
+ * slot 0) is benign to race: cl_intern is MT-safe and both racers store
+ * the same symbol. */
+void cl_gf_types_boot_init(void)
 {
     int i;
+    if (cl_gf_roots_registered) return;
     for (i = 0; i < CL_MAX_GF_TYPES; i++) {
         cl_gf_type_syms[i] = CL_NIL;
         cl_gc_register_root(&cl_gf_type_syms[i]);
     }
+    cl_gf_roots_registered = 1;
+}
+
+static void cl_gf_types_init(void)
+{
+    cl_gf_types_boot_init();   /* idempotent; normally already done at boot */
     cl_gf_type_syms[0] = cl_intern("STANDARD-GENERIC-FUNCTION", 25);
     cl_gf_type_count = 1;
     cl_gf_types_inited = 1;

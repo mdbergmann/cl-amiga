@@ -596,20 +596,30 @@ static CL_Obj bi_join_thread(CL_Obj *args, int n)
     }
     if (t->join_in_progress) {
         /* Another joiner owns the OS-level join and the cleanup.  Wait
-         * for it to finish (table slot cleared), then read the result
-         * from the GC-managed wrapper like the owner does.  Pointer
-         * comparison only — `t` may be freed by the owner at any time. */
+         * for the owner to STAMP the wrapper (thread_id = -1, its final
+         * step), then read the result from the wrapper like the owner
+         * does.  Spinning on `cl_thread_table[id] == t` was ABA-prone:
+         * the freed CL_Thread could be reallocated at the same address
+         * for a NEW worker that reuses the slot, making the compare
+         * "equal" again and parking this waiter forever.  The wrapper
+         * read must happen OUTSIDE the safe region (args[0] is a rooted,
+         * forwarded VM slot, but a heap read from inside a safe region
+         * races the compaction itself); the enter/leave pair per round
+         * parks us whenever a GC is running. */
         platform_mutex_unlock(cl_thread_list_lock);
-        cl_gc_enter_safe_region();
-        while (cl_thread_table[id] == t)
+        for (;;) {
+            tobj = (CL_ThreadObj *)CL_OBJ_TO_PTR(args[0]);
+            if (tobj->thread_id == (uint32_t)-1)
+                break;
+            cl_gc_enter_safe_region();
             platform_thread_yield();
-        cl_gc_leave_safe_region();
-        /* The owner's cl_thread_table_free() is a plain store, not paired
-         * with a lock this waiter takes, so the unsynchronized read of
-         * cl_thread_table[id] above is not guaranteed to observe the
-         * owner's prior write of tobj->result on weakly-ordered hardware.
-         * Pair it with an explicit barrier, matching the rigor already
-         * applied to interrupt_pending/destroy_requested. */
+            cl_gc_leave_safe_region();
+        }
+        /* The owner's wrapper stamp is a plain store, not paired with a
+         * lock this waiter takes, so the read above is not guaranteed to
+         * observe the owner's prior write of tobj->result on weakly-
+         * ordered hardware.  Pair it with an explicit barrier, matching
+         * the rigor applied to interrupt_pending/destroy_requested. */
         platform_memory_barrier();
         tobj = (CL_ThreadObj *)CL_OBJ_TO_PTR(args[0]);  /* re-derive (moved?) */
         return tobj->result;
@@ -1140,13 +1150,22 @@ static CL_Obj bi_condition_wait(CL_Obj *args, int n)
         cl_error(CL_ERR_GENERAL,
                  "MP:CONDITION-WAIT: condvar or lock has been destroyed");
 
-    /* If we're about to park while holding a cl_tables_rwlock reader, every
-     * other thread that needs to take the writer lock will block forever.
-     * Treat as a hard bug: dump the holders and abort so we can find the
-     * leaky path before we ship a deadlock. */
+    /* If we're about to park while holding an internal rwlock reader
+     * (compiler tables), every thread that needs the matching writer lock
+     * will block forever.  Treat as a hard bug: dump the holders and abort
+     * so we can find the leaky path before we ship a deadlock.
+     *
+     * NOTE: this cannot yet also guard cl_package_rwlock — thread.h's
+     * rdlock_package_held counter has no writer (package.c/symbol.c take
+     * cl_package_rwlock directly via platform_rwlock_rdlock(), not through
+     * a counted wrapper), so it is always 0.  Checking it here would be
+     * dead code implying protection that doesn't exist.  Re-add it once a
+     * cl_tables_rdlock_at()-style counted wrapper exists for the package
+     * rwlock (and cl_tables_dump_rdlock_holders walks it too). */
     if (CL_MT() && cl_get_current_thread()->rdlock_tables_held > 0) {
         cl_tables_dump_rdlock_holders(
-            "[BUG] mp:condition-wait while holding cl_tables_rwlock reader:");
+            "[BUG] mp:condition-wait while holding an internal rwlock "
+            "reader (tables):");
         cl_capture_backtrace();
         fprintf(stderr, "%s", cl_get_current_thread()->backtrace_buf);
         fflush(stderr);
