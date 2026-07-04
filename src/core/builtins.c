@@ -792,7 +792,9 @@ static CL_Obj bi_mapcar(CL_Obj *args, int n)
     CL_Obj call_args[16];
     int i;
 
-    if (nlists > 16) nlists = 16;
+    if (nlists > 16)
+        cl_error(CL_ERR_ARGS,
+                 "MAPCAR: too many list arguments (%d; max 16)", nlists);
     for (i = 0; i < nlists; i++)
         lists[i] = args[i + 1];
 
@@ -961,13 +963,25 @@ static CL_Obj bi_trace_function(CL_Obj *args, int n)
     CL_UNUSED(n);
     if (!CL_SYMBOL_P(args[0]))
         cl_error(CL_ERR_TYPE, "TRACE: not a symbol");
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
-    if (!(s->flags & CL_SYM_TRACED)) {
-        s->flags |= CL_SYM_TRACED;
-        cl_trace_count++;
+    /* Claim the flag under the tables write lock: the flags |= and
+     * cl_trace_count++ are read-modify-writes, and two threads tracing
+     * concurrently could lose one of the flag updates / skew the count
+     * (nothing in this section allocates, so holding the lock is safe). */
+    {
+        int newly = 0;
+        cl_tables_wrlock();
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
+        if (!(s->flags & CL_SYM_TRACED)) {
+            s->flags |= CL_SYM_TRACED;
+            cl_trace_count++;
+            newly = 1;
+        }
+        cl_tables_rwunlock();
         /* Cons outside the write lock (STW-vs-rwlock deadlock — see
-         * cl_table_prepend_locked). */
-        cl_table_prepend_locked(&trace_list, args[0]);
+         * cl_table_prepend_locked).  Only the thread that claimed the flag
+         * prepends, so the list gets no duplicates. */
+        if (newly)
+            cl_table_prepend_locked(&trace_list, args[0]);
     }
     return args[0];
 }
@@ -980,9 +994,16 @@ static CL_Obj bi_untrace_function(CL_Obj *args, int n)
         cl_error(CL_ERR_TYPE, "UNTRACE: not a symbol");
     s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
     if (s->flags & CL_SYM_TRACED) {
+        cl_tables_wrlock();
+        /* Flag/count RMW under the same lock as the list edit — and
+         * re-check under the lock so two concurrent UNTRACEs don't both
+         * decrement the count. */
+        if (!(s->flags & CL_SYM_TRACED)) {
+            cl_tables_rwunlock();
+            return args[0];
+        }
         s->flags &= ~CL_SYM_TRACED;
         cl_trace_count--;
-        cl_tables_wrlock();
         {
             CL_Obj prev = CL_NIL, curr = trace_list;
             while (!CL_NULL_P(curr)) {

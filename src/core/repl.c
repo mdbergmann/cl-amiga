@@ -500,6 +500,19 @@ void cl_repl(void)
         if (accum_len + line_len < REPL_BUF_SIZE - 1) {
             memcpy(accum + accum_len, line, line_len);
             accum_len += line_len;
+        } else {
+            /* Overflow used to drop the line silently, then evaluate the
+             * truncated (often unbalanced or wrong) form.  Discard and say
+             * so instead. */
+            cl_write_cstring_to_stdout(
+                "; Error: input form exceeds the REPL buffer (4095 chars) "
+                "- discarded.\n"
+                ";        Load long forms from a file with (load ...) "
+                "instead.\n");
+            accum_len = 0;
+            depth = 0;
+            repl_prompt();
+            continue;
         }
         accum[accum_len] = '\0';
 
@@ -611,6 +624,14 @@ void cl_repl_batch(void)
         if (accum_len + line_len < REPL_BUF_SIZE - 1) {
             memcpy(accum + accum_len, line, line_len);
             accum_len += line_len;
+        } else {
+            /* See cl_repl: never evaluate a silently-truncated form. */
+            cl_write_cstring_to_stdout(
+                "; Error: input form exceeds the REPL buffer (4095 chars) "
+                "- discarded.\n");
+            accum_len = 0;
+            depth = 0;
+            continue;
         }
         accum[accum_len] = '\0';
 

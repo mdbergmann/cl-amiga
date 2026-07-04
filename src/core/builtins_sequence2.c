@@ -171,7 +171,9 @@ static CL_Obj bi_every(CL_Obj *args, int n)
     int32_t idx = 0;
     CL_Obj last_result = SYM_T;
 
-    if (nseqs > 16) nseqs = 16;
+    if (nseqs > 16)
+        cl_error(CL_ERR_ARGS,
+                 "EVERY: too many sequence arguments (%d; max 16)", nseqs);
     for (i = 0; i < nseqs; i++) {
         seqs[i] = args[i + 1];
         lens[i] = every_seq_len(seqs[i]);
@@ -226,7 +228,9 @@ static CL_Obj bi_some(CL_Obj *args, int n)
     int32_t idx = 0;
     CL_Obj result = CL_NIL;
 
-    if (nseqs > 16) nseqs = 16;
+    if (nseqs > 16)
+        cl_error(CL_ERR_ARGS,
+                 "SOME: too many sequence arguments (%d; max 16)", nseqs);
     for (i = 0; i < nseqs; i++) {
         seqs[i] = args[i + 1];
         lens[i] = every_seq_len(seqs[i]);
@@ -581,7 +585,9 @@ static CL_Obj bi_map(CL_Obj *args, int n)
     }
 
     func = cl_coerce_funcdesig(args[1], "MAP");
-    if (nseqs > 16) nseqs = 16;
+    if (nseqs > 16)
+        cl_error(CL_ERR_ARGS,
+                 "MAP: too many sequence arguments (%d; max 16)", nseqs);
     for (i = 0; i < nseqs; i++) {
         seqs[i] = args[i + 2];
         orig_seqs[i] = seqs[i];

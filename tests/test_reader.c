@@ -12,6 +12,8 @@
 #include "core/builtins.h"
 #include "core/repl.h"
 #include "platform/platform.h"
+#include <stdlib.h>
+#include <string.h>
 
 static void setup(void)
 {
@@ -796,6 +798,87 @@ TEST(read_label_nil_dotpair)
     ASSERT(a == b);           /* shared, not patched incorrectly */
 }
 
+/* --- tier-4 batch 7b: token caps signal reader errors, not silent splits --- */
+
+static int read_signals_error(const char *str)
+{
+    int err;
+    CL_CATCH(err);
+    if (err == CL_ERR_NONE) {
+        reads(str);
+        CL_UNCATCH();
+        return 0;
+    }
+    CL_UNCATCH();
+    return 1;
+}
+
+TEST(long_symbol_token_errors)
+{
+    /* A >255-char token used to stop consuming at 255 and silently split
+     * into TWO tokens.  Now a reader error. */
+    char buf[512];
+    memset(buf, 'A', 300);
+    buf[300] = '\0';
+    ASSERT_EQ_INT(read_signals_error(buf), 1);
+    /* Exactly 255 chars still reads fine. */
+    memset(buf, 'B', 255);
+    buf[255] = '\0';
+    ASSERT_EQ_INT(read_signals_error(buf), 0);
+}
+
+TEST(long_number_token_errors)
+{
+    /* The infamous case: a 300-digit integer parsed as TWO bignums. */
+    char buf[512];
+    memset(buf, '5', 300);
+    buf[300] = '\0';
+    ASSERT_EQ_INT(read_signals_error(buf), 1);
+    /* #x-radix numbers share the cap. */
+    buf[0] = '#'; buf[1] = 'x';
+    memset(buf + 2, '1', 300);
+    buf[302] = '\0';
+    ASSERT_EQ_INT(read_signals_error(buf), 1);
+}
+
+TEST(long_string_literal_errors)
+{
+    /* >4095-byte string literals used to silently truncate. */
+    char *buf = (char *)malloc(5210);
+    int r;
+    buf[0] = '"';
+    memset(buf + 1, 'x', 5000);
+    buf[5001] = '"';
+    buf[5002] = '\0';
+    r = read_signals_error(buf);
+    free(buf);
+    ASSERT_EQ_INT(r, 1);
+}
+
+TEST(long_bitvector_literal_errors)
+{
+    /* #* bits past 4095 used to be silently dropped. */
+    char *buf = (char *)malloc(5210);
+    int r;
+    buf[0] = '#'; buf[1] = '*';
+    memset(buf + 2, '1', 5000);
+    buf[5002] = '\0';
+    r = read_signals_error(buf);
+    free(buf);
+    ASSERT_EQ_INT(r, 1);
+}
+
+TEST(long_char_name_errors)
+{
+    /* #\LongName past 31 chars used to split into a char + a symbol. */
+    char buf[64];
+    buf[0] = '#'; buf[1] = '\\';
+    memset(buf + 2, 'q', 40);
+    buf[42] = '\0';
+    ASSERT_EQ_INT(read_signals_error(buf), 1);
+    ASSERT_EQ_INT(read_signals_error("#\\Newline"), 0);
+}
+
 int main(void)
 {
     test_init();
@@ -885,6 +968,12 @@ int main(void)
     RUN(read_label_circular_list);
     RUN(read_label_independent_per_read);
     RUN(read_label_nil_dotpair);
+
+    RUN(long_symbol_token_errors);
+    RUN(long_number_token_errors);
+    RUN(long_string_literal_errors);
+    RUN(long_bitvector_literal_errors);
+    RUN(long_char_name_errors);
 
     /* Regression: nested reader invocation must not clobber outer stream */
     RUN(nested_read_preserves_outer_stream);

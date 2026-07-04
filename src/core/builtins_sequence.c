@@ -2397,7 +2397,9 @@ static CL_Obj bi_map_into(CL_Obj *args, int n)
     int32_t idx = 0, result_cap;
     int j, result_is_list, result_is_array;
 
-    if (n_seqs > 16) n_seqs = 16;
+    if (n_seqs > 16)
+        cl_error(CL_ERR_ARGS,
+                 "MAP-INTO: too many sequence arguments (%d; max 16)", n_seqs);
     for (j = 0; j < n_seqs; j++)
         seqs[j] = args[j + 2];
 

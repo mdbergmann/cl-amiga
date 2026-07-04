@@ -791,7 +791,9 @@ static CL_Obj bi_mapc(CL_Obj *args, int n)
     CL_Obj call_args[16];
     int i;
 
-    if (nlists > 16) nlists = 16;
+    if (nlists > 16)
+        cl_error(CL_ERR_ARGS,
+                 "MAPC: too many list arguments (%d; max 16)", nlists);
     for (i = 0; i < nlists; i++)
         lists[i] = args[i + 1];
 
@@ -827,7 +829,9 @@ static CL_Obj bi_mapcan(CL_Obj *args, int n)
     CL_Obj result = CL_NIL, tail = CL_NIL;
     int i;
 
-    if (nlists > 16) nlists = 16;
+    if (nlists > 16)
+        cl_error(CL_ERR_ARGS,
+                 "MAPCAN: too many list arguments (%d; max 16)", nlists);
     for (i = 0; i < nlists; i++)
         lists[i] = args[i + 1];
 
@@ -879,7 +883,9 @@ static CL_Obj bi_maplist(CL_Obj *args, int n)
     CL_Obj result = CL_NIL, tail = CL_NIL;
     int i;
 
-    if (nlists > 16) nlists = 16;
+    if (nlists > 16)
+        cl_error(CL_ERR_ARGS,
+                 "MAPLIST: too many list arguments (%d; max 16)", nlists);
     for (i = 0; i < nlists; i++)
         lists[i] = args[i + 1];
 
@@ -924,14 +930,17 @@ maplist_done:
 
 static CL_Obj bi_mapl(CL_Obj *args, int n)
 {
-    CL_Obj func = args[0];
+    /* coerce: MAPL accepts a function designator (symbol) like its siblings */
+    CL_Obj func = cl_coerce_funcdesig(args[0], "MAPL");
     CL_Obj first_list = args[1];
     int nlists = n - 1;
     CL_Obj lists[16];
     CL_Obj call_args[16];
     int i;
 
-    if (nlists > 16) nlists = 16;
+    if (nlists > 16)
+        cl_error(CL_ERR_ARGS,
+                 "MAPL: too many list arguments (%d; max 16)", nlists);
     for (i = 0; i < nlists; i++)
         lists[i] = args[i + 1];
 
@@ -961,14 +970,17 @@ mapl_done:
 
 static CL_Obj bi_mapcon(CL_Obj *args, int n)
 {
-    CL_Obj func = args[0];
+    /* coerce: MAPCON accepts a function designator (symbol) like its siblings */
+    CL_Obj func = cl_coerce_funcdesig(args[0], "MAPCON");
     int nlists = n - 1;
     CL_Obj lists[16];
     CL_Obj call_args[16];
     CL_Obj result = CL_NIL, tail = CL_NIL;
     int i;
 
-    if (nlists > 16) nlists = 16;
+    if (nlists > 16)
+        cl_error(CL_ERR_ARGS,
+                 "MAPCON: too many list arguments (%d; max 16)", nlists);
     for (i = 0; i < nlists; i++)
         lists[i] = args[i + 1];
 
