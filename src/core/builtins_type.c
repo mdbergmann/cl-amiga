@@ -1161,20 +1161,46 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
             return cl_make_string(sname, (uint32_t)strlen(sname));
         }
         if (CL_CHAR_P(obj)) {
-            char c = (char)CL_CHAR_VAL(obj);
-            return cl_make_string(&c, 1);
+#ifdef CL_WIDE_STRINGS
+            if (CL_CHAR_VAL(obj) > 0x7F) {
+                uint32_t cp = (uint32_t)CL_CHAR_VAL(obj);
+                return cl_make_wide_string(&cp, 1);
+            }
+#endif
+            {
+                char c = (char)CL_CHAR_VAL(obj);
+                return cl_make_string(&c, 1);
+            }
         }
         /* Coerce list of characters to string.  obj is rooted across the
          * result allocation and the cursor re-read from it afterward —
-         * pre-fix, p walked a stale list after cl_make_string compacted. */
+         * pre-fix, p walked a stale list after cl_make_string compacted.
+         * A non-ASCII character anywhere promotes the result to a wide
+         * string — cl_string_set_char_at on a narrow string silently
+         * truncates the code point to its low byte. */
         if (CL_NULL_P(obj) || CL_CONS_P(obj)) {
             CL_Obj p = obj;
             uint32_t len = 0;
             uint32_t i;
             CL_Obj result;
+#ifdef CL_WIDE_STRINGS
+            int wide = 0;
+            while (!CL_NULL_P(p)) {
+                CL_Obj elem = cl_car(p);
+                if (CL_CHAR_P(elem) && CL_CHAR_VAL(elem) > 0x7F) wide = 1;
+                len++;
+                p = cl_cdr(p);
+            }
+#else
             while (!CL_NULL_P(p)) { len++; p = cl_cdr(p); }
+#endif
             CL_GC_PROTECT(obj);
+#ifdef CL_WIDE_STRINGS
+            result = wide ? cl_make_wide_string(NULL, len)
+                          : cl_make_string(NULL, len);
+#else
             result = cl_make_string(NULL, len);
+#endif
             p = obj;
             CL_GC_UNPROTECT(1);
             for (i = 0; i < len; i++) {
@@ -1187,15 +1213,27 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
             return result;
         }
         /* Coerce vector of characters to string — derive the data pointer
-         * only AFTER the result allocation. */
+         * only AFTER the result allocation.  Wide promotion as above. */
         if (CL_VECTOR_P(obj)) {
             uint32_t len =
                 cl_vector_active_length((CL_Vector *)CL_OBJ_TO_PTR(obj));
             uint32_t i;
             CL_Obj result;
             CL_Obj *elts;
+#ifdef CL_WIDE_STRINGS
+            int wide = 0;
+            elts = cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(obj));
+            for (i = 0; i < len; i++) {
+                if (CL_CHAR_P(elts[i]) && CL_CHAR_VAL(elts[i]) > 0x7F) wide = 1;
+            }
+#endif
             CL_GC_PROTECT(obj);
+#ifdef CL_WIDE_STRINGS
+            result = wide ? cl_make_wide_string(NULL, len)
+                          : cl_make_string(NULL, len);
+#else
             result = cl_make_string(NULL, len);
+#endif
             elts = cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(obj));
             CL_GC_UNPROTECT(1);
             for (i = 0; i < len; i++) {

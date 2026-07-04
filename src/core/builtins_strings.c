@@ -1025,37 +1025,22 @@ static void concat_iterate(CL_Obj seq, concat_cb cb, void *ctx)
     CL_GC_UNPROTECT(1);
 }
 
-/* Callback context for string result */
-#ifdef CL_WIDE_STRINGS
-typedef struct { uint32_t *buf; uint32_t pos; uint32_t cap; int has_wide; } concat_str_ctx;
-static void concat_str_cb(CL_Obj elem, void *ctx_)
-{
-    concat_str_ctx *ctx = (concat_str_ctx *)ctx_;
-    if (CL_CHAR_P(elem)) {
-        int code = CL_CHAR_VAL(elem);
-        if (ctx->pos < ctx->cap)
-            ctx->buf[ctx->pos++] = (uint32_t)code;
-        if (code > 0x7F) ctx->has_wide = 1;
-    } else {
-        cl_error(CL_ERR_TYPE, "CONCATENATE: element is not a character for string result");
-    }
-}
-#else
-typedef struct { char *buf; uint32_t pos; uint32_t cap; } concat_str_ctx;
-static void concat_str_cb(CL_Obj elem, void *ctx_)
-{
-    concat_str_ctx *ctx = (concat_str_ctx *)ctx_;
-    if (CL_CHAR_P(elem)) {
-        if (ctx->pos < ctx->cap)
-            ctx->buf[ctx->pos++] = (char)CL_CHAR_VAL(elem);
-    } else {
-        cl_error(CL_ERR_TYPE, "CONCATENATE: element is not a character for string result");
-    }
-}
-#endif
-
 /* Callback context for vector result */
 typedef struct { CL_Obj vec; uint32_t pos; } concat_vec_ctx;
+
+/* String result: stage the characters into a GC vector (shared concat_vec_ctx
+ * shape).  A fixed C buffer silently truncated results past 4096 chars and,
+ * in wide builds, put a ~20KB frame on the (64K Amiga) C stack. */
+static void concat_str_vec_cb(CL_Obj elem, void *ctx_)
+{
+    concat_vec_ctx *ctx = (concat_vec_ctx *)ctx_;
+    CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(ctx->vec);
+    if (!CL_CHAR_P(elem))
+        cl_error(CL_ERR_TYPE,
+                 "CONCATENATE: element is not a character for string result");
+    if (ctx->pos < cl_vector_active_length(v))
+        cl_vector_data(v)[ctx->pos++] = elem;
+}
 static void concat_vec_cb(CL_Obj elem, void *ctx_)
 {
     concat_vec_ctx *ctx = (concat_vec_ctx *)ctx_;
@@ -1215,27 +1200,37 @@ static CL_Obj bi_concatenate(CL_Obj *args, int n)
     /* String result types */
     if (strcmp(tname, "STRING") == 0 || strcmp(tname, "SIMPLE-STRING") == 0 ||
         strcmp(tname, "BASE-STRING") == 0 || strcmp(tname, "SIMPLE-BASE-STRING") == 0) {
-#ifdef CL_WIDE_STRINGS
-        uint32_t cpbuf[4096];
-        concat_str_ctx ctx = { cpbuf, 0, 4096, 0 };
+        uint32_t total = concat_total_length(args, n);
+        concat_vec_ctx ctx;
+        CL_Obj result;
+        uint32_t j;
+        ctx.vec = cl_make_vector(total);
+        ctx.pos = 0;
+        CL_GC_PROTECT(ctx.vec);
         for (i = 1; i < n; i++)
-            concat_iterate(args[i], concat_str_cb, &ctx);
-        if (ctx.has_wide)
-            return cl_make_wide_string(cpbuf, ctx.pos);
+            concat_iterate(args[i], concat_str_vec_cb, &ctx);
         {
-            char buf[4096];
-            uint32_t j;
-            for (j = 0; j < ctx.pos; j++)
-                buf[j] = (char)cpbuf[j];
-            return cl_make_string(buf, ctx.pos);
-        }
+            CL_Vector *kv = (CL_Vector *)CL_OBJ_TO_PTR(ctx.vec);
+            CL_Obj *kd = cl_vector_data(kv);
+#ifdef CL_WIDE_STRINGS
+            int wide = 0;
+            for (j = 0; j < ctx.pos; j++) {
+                if (CL_CHAR_VAL(kd[j]) > 0x7F) { wide = 1; break; }
+            }
+            result = wide ? cl_make_wide_string(NULL, ctx.pos)
+                          : cl_make_string(NULL, ctx.pos);
 #else
-        char buf[4096];
-        concat_str_ctx ctx = { buf, 0, sizeof(buf) };
-        for (i = 1; i < n; i++)
-            concat_iterate(args[i], concat_str_cb, &ctx);
-        return cl_make_string(buf, ctx.pos);
+            result = cl_make_string(NULL, ctx.pos);
 #endif
+            /* Re-derive after the result allocation, then fill (no
+             * allocation in this loop, so kd stays valid). */
+            kv = (CL_Vector *)CL_OBJ_TO_PTR(ctx.vec);
+            kd = cl_vector_data(kv);
+            for (j = 0; j < ctx.pos; j++)
+                cl_string_set_char_at(result, j, CL_CHAR_VAL(kd[j]));
+        }
+        CL_GC_UNPROTECT(1);
+        return result;
     }
 
     /* Vector result types */

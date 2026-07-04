@@ -1259,17 +1259,20 @@ static void array_seq_set(CL_Obj seq, int32_t i, CL_Obj v)
 }
 
 /* In-place stable insertion sort for string / bit-vector sequences.  Elements
- * are snapshotted into a C array first; for these element types the values are
- * immediate (characters / bits), so the snapshot is unaffected by a compacting
- * GC triggered inside the :key / predicate calls. */
+ * are snapshotted into a GC vector first; for these element types the values
+ * are immediate (characters / bits), so only the vector itself can move under
+ * a compacting GC triggered inside the :key / predicate calls — SORT_TMP
+ * re-derives the data pointer on every access.  A GC vector rather than
+ * platform_alloc so a user :key/predicate longjmp (handler-case) cannot leak
+ * the snapshot permanently. */
+#define SORT_TMP(vec) cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(vec))
 static void array_seq_insertion_sort(CL_Obj seq, int32_t len, CL_Obj pred, CL_Obj key_fn)
 {
     int32_t i, j;
-    CL_Obj *tmp;
+    CL_Obj tmpv;
     CL_Obj val = CL_NIL, kval = CL_NIL;
     if (len <= 1) return;
-    tmp = (CL_Obj *)platform_alloc((uint32_t)(len * (int32_t)sizeof(CL_Obj)));
-    CL_GC_PROTECT(seq);    /* writeback after sort may compact via apply_key/call_test */
+    CL_GC_PROTECT(seq);    /* the snapshot alloc + user calls may compact */
     CL_GC_PROTECT(pred);
     CL_GC_PROTECT(key_fn);
     /* kval (and val, if a :key ever returns it) is held across the inner
@@ -1278,22 +1281,23 @@ static void array_seq_insertion_sort(CL_Obj seq, int32_t len, CL_Obj pred, CL_Ob
      * (mirrors vector_insertion_sort). */
     CL_GC_PROTECT(val);
     CL_GC_PROTECT(kval);
-    for (i = 0; i < len; i++) tmp[i] = seq_elt(seq, i);
+    tmpv = cl_make_vector((uint32_t)len);
+    CL_GC_PROTECT(tmpv);
+    for (i = 0; i < len; i++) SORT_TMP(tmpv)[i] = seq_elt(seq, i);
     for (i = 1; i < len; i++) {
-        val = tmp[i];
+        val = SORT_TMP(tmpv)[i];
         kval = apply_key(key_fn, val);
         j = i - 1;
         while (j >= 0) {
-            CL_Obj kj = apply_key(key_fn, tmp[j]);
+            CL_Obj kj = apply_key(key_fn, SORT_TMP(tmpv)[j]);
             if (CL_NULL_P(call_test(pred, kval, kj))) break;
-            tmp[j + 1] = tmp[j];
+            SORT_TMP(tmpv)[j + 1] = SORT_TMP(tmpv)[j];
             j--;
         }
-        tmp[j + 1] = val;
+        SORT_TMP(tmpv)[j + 1] = val;
     }
-    for (i = 0; i < len; i++) array_seq_set(seq, i, tmp[i]);
-    CL_GC_UNPROTECT(5);
-    platform_free(tmp);
+    for (i = 0; i < len; i++) array_seq_set(seq, i, SORT_TMP(tmpv)[i]);
+    CL_GC_UNPROTECT(6);
 }
 
 static CL_Obj bi_sort(CL_Obj *args, int n)
