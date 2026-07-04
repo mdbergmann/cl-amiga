@@ -1000,12 +1000,19 @@ static CL_Obj bi_acquire_lock(CL_Obj *args, int n)
              * runs another safepoint, so MP:DESTROY-THREAD /
              * MP:INTERRUPT-THREAD aimed at a thread parked here was
              * deferred until the lock came free — forever, if it never
-             * did.  Escalating trylock: a yield-spin phase first (typical
-             * MP critical sections are short, so contended handoffs stay
-             * fast — no added latency for e.g. sento queue locks), then
-             * 10ms sleeps with an interrupt_pending check each round.
-             * The handler runs OUTSIDE the safe region (it touches the
-             * heap and may longjmp on a destroy). */
+             * did.  Trylock with a yield-spin phase first (typical MP
+             * critical sections are short, so contended handoffs stay
+             * fast), then PARK on the shared cl_lock_park_cv:
+             * bi_release_lock broadcasts it whenever waiters are
+             * registered, so a handoff wakes us immediately (the 10ms
+             * sleep-poll this replaces collapsed sento message throughput
+             * ~6x — threads slept out their quantum long after the lock
+             * came free).  The timed backstop bounds interrupt delivery
+             * and self-heals any lost-wake edge; wake_interrupted_waiter
+             * additionally broadcasts the parking cv on interrupt/destroy
+             * so delivery is prompt, not backstop-bound.  The interrupt
+             * handler runs OUTSIDE the safe region (it touches the heap
+             * and may longjmp on a destroy). */
             int spins = 0;
             cl_gc_enter_safe_region();
             while (platform_mutex_trylock(mutex) != 0) {
@@ -1021,7 +1028,25 @@ static CL_Obj bi_acquire_lock(CL_Obj *args, int n)
                     spins++;
                     platform_thread_yield();
                 } else {
-                    platform_sleep_ms(10);
+                    /* Register, then re-try under the parking mutex: a
+                     * release between the failed trylock above and the
+                     * registration below reads waiters BEFORE we bump it
+                     * and won't broadcast — the re-try closes that gap
+                     * (the lock it released is free now).  A release that
+                     * reads waiters AFTER the bump serializes on the
+                     * parking mutex, so its broadcast can't slip into the
+                     * gap between our re-try and the wait. */
+                    platform_mutex_lock(cl_lock_park_mutex);
+                    cl_lock_park_waiters++;
+                    if (platform_mutex_trylock(mutex) == 0) {
+                        cl_lock_park_waiters--;
+                        platform_mutex_unlock(cl_lock_park_mutex);
+                        break;
+                    }
+                    platform_condvar_wait_timeout(cl_lock_park_cv,
+                                                  cl_lock_park_mutex, 100);
+                    cl_lock_park_waiters--;
+                    platform_mutex_unlock(cl_lock_park_mutex);
                 }
             }
             cl_gc_leave_safe_region();
@@ -1070,6 +1095,20 @@ static CL_Obj bi_release_lock(CL_Obj *args, int n)
     if (cl_lock_depth[lk->lock_id] == 0)
         cl_lock_held[lk->lock_id] = NULL;
     platform_mutex_unlock(mutex);
+    /* Wake parked contended acquirers (see bi_acquire_lock).  The racy
+     * waiters read keeps the uncontended path at zero extra cost; a
+     * parker's registration is ordered before its final trylock (both
+     * under the parking mutex), so if its trylock saw the mutex still
+     * locked, the unlock above — and hence this read — happens after the
+     * bump and sees it.  Taking the parking mutex before broadcasting
+     * closes the register-vs-park window: a registrant that hasn't parked
+     * yet still holds the parking mutex, so the broadcast waits for it. */
+    platform_memory_barrier();
+    if (cl_lock_park_waiters > 0) {
+        platform_mutex_lock(cl_lock_park_mutex);
+        platform_condvar_broadcast(cl_lock_park_cv);
+        platform_mutex_unlock(cl_lock_park_mutex);
+    }
     return CL_NIL;
 }
 
@@ -1342,8 +1381,20 @@ static CL_Obj bi_condition_broadcast(CL_Obj *args, int n)
 static void wake_interrupted_waiter(int wait_kind, int cv_id, int lock_id)
 {
     void *cv_handle, *mutex;
+    if (wait_kind == 3) {
+        /* Lock-acquire park (bi_acquire_lock): waiters share the global
+         * parking cv.  Broadcast under the parking mutex so a target
+         * mid-registration (holds the mutex until its condvar wait
+         * releases it) can't miss the wake; its next loop round consumes
+         * the interrupt.  The 100ms timed backstop covers the pre-spin
+         * window where the target isn't parked yet. */
+        platform_mutex_lock(cl_lock_park_mutex);
+        platform_condvar_broadcast(cl_lock_park_cv);
+        platform_mutex_unlock(cl_lock_park_mutex);
+        return;
+    }
     if (wait_kind != 1 && wait_kind != 2)
-        return;   /* not cv-parked; a lock-acquire park polls the flag */
+        return;   /* not cv-parked */
     if (cv_id < 0 || cv_id >= CL_MAX_CONDVARS)
         return;
     cv_handle = cl_condvar_table[cv_id];
@@ -1430,12 +1481,11 @@ static CL_Obj bi_interrupt_thread(CL_Obj *args, int n)
      * consumes pending with a stale (NIL) func, silently dropping the
      * interrupt.
      *
-     * KNOWN LIMITATION: delivery happens only at safepoints.  A target
-     * parked in mp:condition-wait or a blocking mp:acquire-lock does not
-     * run safepoints until its wait wakes — an interrupt (or destroy) of
-     * such a thread is deferred until then, and a wait that is never
-     * notified never delivers it.  (SBCL breaks waits via signals; we
-     * would need the publisher to broadcast target->wait_cv_id.) */
+     * Parked targets (mp:condition-wait, blocking mp:acquire-lock) are
+     * woken via wake_interrupted_waiter below (I5): cv-parked threads get
+     * their wait cv broadcast, lock-parked threads get the shared parking
+     * cv broadcast, and both consume the interrupt inside the waiting
+     * builtin itself. */
     target->interrupt_func = func;
     platform_memory_barrier();
     target->interrupt_pending = 1;
