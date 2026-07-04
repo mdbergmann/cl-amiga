@@ -976,17 +976,37 @@ static CL_Obj bi_file_position(CL_Obj *args, int n)
     if (st->stream_type != CL_STREAM_FILE)
         return CL_NIL;
     if (n > 1 && !CL_NULL_P(args[1])) {
-        /* Set position */
+        /* Set position — accept a bignum too: positions past CL_FIXNUM_MAX
+         * (~1GB) are bignums on 32-bit, and the getter below returns them. */
         long pos = 0;
-        if (CL_FIXNUM_P(args[1]))
+        if (CL_FIXNUM_P(args[1])) {
             pos = (long)CL_FIXNUM_VAL(args[1]);
+        } else if (CL_BIGNUM_P(args[1])) {
+            CL_Bignum *b = (CL_Bignum *)CL_OBJ_TO_PTR(args[1]);
+            uint32_t v = 0;
+            if (b->sign || b->length > 2)
+                cl_error(CL_ERR_ARGS,
+                         "FILE-POSITION: position out of range");
+            if (b->length > 0) v = b->limbs[0];
+            if (b->length > 1) v |= (uint32_t)b->limbs[1] << 16;
+            if (v > 0x7FFFFFFFu)
+                cl_error(CL_ERR_ARGS,
+                         "FILE-POSITION: position out of range");
+            pos = (long)v;
+        } else if (!CL_NULL_P(args[1])) {
+            cl_signal_type_error(args[1], "INTEGER", "FILE-POSITION");
+        }
         return platform_file_set_position((PlatformFile)st->handle_id, pos) == 0
             ? CL_T : CL_NIL;
     }
-    /* Get position */
+    /* Get position — positions past CL_FIXNUM_MAX must come back as a
+     * bignum, not silently truncated by the fixnum tag shift (files past
+     * ~1GB reported garbage offsets). */
     {
         long pos = platform_file_position((PlatformFile)st->handle_id);
         if (pos < 0) return CL_NIL;
+        if (pos > (long)CL_FIXNUM_MAX)
+            return cl_bignum_from_uint32((uint32_t)pos);
         return CL_MAKE_FIXNUM((int32_t)pos);
     }
 }
@@ -1007,6 +1027,8 @@ static CL_Obj bi_file_length(CL_Obj *args, int n)
     end = platform_file_length((PlatformFile)st->handle_id);
     platform_file_set_position((PlatformFile)st->handle_id, cur);
     if (end < 0) return CL_NIL;
+    if (end > (long)CL_FIXNUM_MAX)
+        return cl_bignum_from_uint32((uint32_t)end);
     return CL_MAKE_FIXNUM((int32_t)end);
 }
 
@@ -1776,6 +1798,37 @@ static CL_Obj bi_file_string_length(CL_Obj *args, int n)
 
 void cl_builtins_stream_init(void)
 {
+    /* Register the cached-symbol roots BEFORE the interns below: each
+     * cl_intern_keyword can allocate and compact, and a value assigned to a
+     * not-yet-registered slot would go stale before its registration at the
+     * end of init (ST9 — same shape as the fixed *READTABLE* boot bug;
+     * registering a still-NIL slot is safe, the GC walkers skip NIL). */
+    cl_gc_register_root(&GRAY_FUND_INPUT_SYM);
+    cl_gc_register_root(&GRAY_FUND_OUTPUT_SYM);
+    cl_gc_register_root(&KW_START);
+    cl_gc_register_root(&KW_END);
+    cl_gc_register_root(&KW_ABORT_KW);
+    cl_gc_register_root(&KW_DIRECTION);
+    cl_gc_register_root(&KW_INPUT);
+    cl_gc_register_root(&KW_OUTPUT);
+    cl_gc_register_root(&KW_IO);
+    cl_gc_register_root(&KW_PROBE);
+    cl_gc_register_root(&KW_IF_EXISTS);
+    cl_gc_register_root(&KW_IF_DOES_NOT_EXIST);
+    cl_gc_register_root(&KW_SUPERSEDE);
+    cl_gc_register_root(&KW_APPEND);
+    cl_gc_register_root(&KW_ERROR_KW);
+    cl_gc_register_root(&KW_CREATE);
+    cl_gc_register_root(&KW_NEW_VERSION);
+    cl_gc_register_root(&KW_RENAME);
+    cl_gc_register_root(&KW_RENAME_AND_DELETE);
+    cl_gc_register_root(&KW_OVERWRITE);
+    cl_gc_register_root(&KW_ELEMENT_TYPE_OPEN);
+    cl_gc_register_root(&KW_EXTERNAL_FORMAT);
+    cl_gc_register_root(&KW_LATIN_1);
+    cl_gc_register_root(&KW_STREAM_DEFAULT);
+    cl_gc_register_root(&standard_string_reader_fn);
+
     /* Pre-intern keyword symbols */
     KW_START   = cl_intern_keyword("START", 5);
     KW_END     = cl_intern_keyword("END", 3);
@@ -1888,30 +1941,4 @@ void cl_builtins_stream_init(void)
     defun("READTABLE-CASE", bi_readtable_case, 0, 1);
     cl_register_builtin("%SETF-READTABLE-CASE", bi_setf_readtable_case, 2, 2, cl_package_clamiga);
 
-    /* Register cached symbols for GC compaction forwarding */
-    cl_gc_register_root(&GRAY_FUND_INPUT_SYM);
-    cl_gc_register_root(&GRAY_FUND_OUTPUT_SYM);
-    cl_gc_register_root(&KW_START);
-    cl_gc_register_root(&KW_END);
-    cl_gc_register_root(&KW_ABORT_KW);
-    cl_gc_register_root(&KW_DIRECTION);
-    cl_gc_register_root(&KW_INPUT);
-    cl_gc_register_root(&KW_OUTPUT);
-    cl_gc_register_root(&KW_IO);
-    cl_gc_register_root(&KW_PROBE);
-    cl_gc_register_root(&KW_IF_EXISTS);
-    cl_gc_register_root(&KW_IF_DOES_NOT_EXIST);
-    cl_gc_register_root(&KW_SUPERSEDE);
-    cl_gc_register_root(&KW_APPEND);
-    cl_gc_register_root(&KW_ERROR_KW);
-    cl_gc_register_root(&KW_CREATE);
-    cl_gc_register_root(&KW_NEW_VERSION);
-    cl_gc_register_root(&KW_RENAME);
-    cl_gc_register_root(&KW_RENAME_AND_DELETE);
-    cl_gc_register_root(&KW_OVERWRITE);
-    cl_gc_register_root(&KW_ELEMENT_TYPE_OPEN);
-    cl_gc_register_root(&KW_EXTERNAL_FORMAT);
-    cl_gc_register_root(&KW_LATIN_1);
-    cl_gc_register_root(&KW_STREAM_DEFAULT);
-    cl_gc_register_root(&standard_string_reader_fn);
 }

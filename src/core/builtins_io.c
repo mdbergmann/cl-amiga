@@ -124,17 +124,16 @@ static CL_Obj bi_write(CL_Obj *args, int n)
 {
     CL_Obj stream;
     int i;
-    /* GC SAFETY (audit tier 4, IO2): the snapshot of the *PRINT-* specials
-     * must be GC-rooted across cl_write_to_stream — the print compacts, and
-     * restoring from unrooted C locals would write stale offsets back into
-     * the print-control symbols.  cl_print_controls_save registers every
-     * slot as a root; cl_print_controls_restore pops them. */
-    CL_Obj saved_ctrl[CL_PRINT_CTRL_COUNT];
+    /* The keyword overrides are THREAD-LOCAL dynamic binds (tier-4 FS16):
+     * the old save/set-global/restore pattern raced every peer thread's
+     * printer between the set and the restore.  cl_dynbind_c mirrors
+     * OP_DYNBIND (the dyn stack is GC-marked and forwarded, so no manual
+     * rooting of saved values is needed), and cl_dynbind_restore_to pops
+     * the binds — removing the transient TLV entries entirely. */
+    int dyn_mark = cl_dyn_top;
 
     /* Default: *standard-output* */
     stream = cl_symbol_value(SYM_STANDARD_OUTPUT);
-
-    cl_print_controls_save(saved_ctrl);
 
     /* Parse keyword arguments (start at index 1, pairs) */
     for (i = 1; i + 1 < n; i += 2) {
@@ -147,41 +146,41 @@ static CL_Obj bi_write(CL_Obj *args, int n)
                 stream = val;
             }
         } else if (kw == KW_WR_ESCAPE) {
-            cl_set_symbol_value(SYM_PRINT_ESCAPE, val);
+            cl_dynbind_c(SYM_PRINT_ESCAPE, val);
         } else if (kw == KW_WR_READABLY) {
-            cl_set_symbol_value(SYM_PRINT_READABLY, val);
+            cl_dynbind_c(SYM_PRINT_READABLY, val);
         } else if (kw == KW_WR_BASE) {
-            cl_set_symbol_value(SYM_PRINT_BASE, val);
+            cl_dynbind_c(SYM_PRINT_BASE, val);
         } else if (kw == KW_WR_RADIX) {
-            cl_set_symbol_value(SYM_PRINT_RADIX, val);
+            cl_dynbind_c(SYM_PRINT_RADIX, val);
         } else if (kw == KW_WR_LEVEL) {
-            cl_set_symbol_value(SYM_PRINT_LEVEL, val);
+            cl_dynbind_c(SYM_PRINT_LEVEL, val);
         } else if (kw == KW_WR_LENGTH) {
-            cl_set_symbol_value(SYM_PRINT_LENGTH, val);
+            cl_dynbind_c(SYM_PRINT_LENGTH, val);
         } else if (kw == KW_WR_CASE) {
-            cl_set_symbol_value(SYM_PRINT_CASE, val);
+            cl_dynbind_c(SYM_PRINT_CASE, val);
         } else if (kw == KW_WR_GENSYM) {
-            cl_set_symbol_value(SYM_PRINT_GENSYM, val);
+            cl_dynbind_c(SYM_PRINT_GENSYM, val);
         } else if (kw == KW_WR_ARRAY) {
-            cl_set_symbol_value(SYM_PRINT_ARRAY, val);
+            cl_dynbind_c(SYM_PRINT_ARRAY, val);
         } else if (kw == KW_WR_CIRCLE) {
-            cl_set_symbol_value(SYM_PRINT_CIRCLE, val);
+            cl_dynbind_c(SYM_PRINT_CIRCLE, val);
         } else if (kw == KW_WR_PRETTY) {
-            cl_set_symbol_value(SYM_PRINT_PRETTY, val);
+            cl_dynbind_c(SYM_PRINT_PRETTY, val);
         } else if (kw == KW_WR_RIGHT_MARGIN) {
-            cl_set_symbol_value(SYM_PRINT_RIGHT_MARGIN, val);
+            cl_dynbind_c(SYM_PRINT_RIGHT_MARGIN, val);
         } else if (kw == KW_WR_PPRINT_DISPATCH) {
-            cl_set_symbol_value(SYM_PRINT_PPRINT_DISPATCH, val);
+            cl_dynbind_c(SYM_PRINT_PPRINT_DISPATCH, val);
         }
     }
 
     /* Print args[0] (rooted VM slot), not a stale entry copy — and return
      * it, for the same reason.  `stream` is current here: nothing between
-     * its assignment and this call allocates (cl_set_symbol_value is
+     * its assignment and this call allocates (cl_dynbind_c is
      * non-allocating). */
     cl_write_to_stream(args[0], stream);
 
-    cl_print_controls_restore(saved_ctrl);
+    cl_dynbind_restore_to(dyn_mark);
 
     return args[0];
 }
@@ -210,22 +209,17 @@ static CL_Obj bi_princ(CL_Obj *args, int n)
 static CL_Obj bi_pprint(CL_Obj *args, int n)
 {
     CL_Obj stream = resolve_output_stream_io(args, n, 1);
-    CL_Obj prev_e = cl_symbol_value(SYM_PRINT_ESCAPE);
-    CL_Obj prev_p = cl_symbol_value(SYM_PRINT_PRETTY);
-    /* GC SAFETY (audit tier 4, IO3): the newline write can grow a string
-     * stream (allocates/compacts) — `stream` must stay forwarded for the
-     * cl_write_to_stream call, and the saved *PRINT-ESCAPE* and
-     * *PRINT-PRETTY* values must stay forwarded for the restore. */
+    /* Thread-local dynamic binds (FS16) — see bi_write.  The dyn stack is
+     * GC-marked, so the saved values need no manual roots; `stream` still
+     * does (the newline write can grow a string stream and compact). */
+    int dyn_mark = cl_dyn_top;
     CL_GC_PROTECT(stream);
-    CL_GC_PROTECT(prev_e);
-    CL_GC_PROTECT(prev_p);
-    cl_set_symbol_value(SYM_PRINT_ESCAPE, SYM_T);
-    cl_set_symbol_value(SYM_PRINT_PRETTY, SYM_T);
+    cl_dynbind_c(SYM_PRINT_ESCAPE, SYM_T);
+    cl_dynbind_c(SYM_PRINT_PRETTY, SYM_T);
     cl_stream_write_char(stream, '\n');
     cl_write_to_stream(args[0], stream);
-    cl_set_symbol_value(SYM_PRINT_ESCAPE, prev_e);
-    cl_set_symbol_value(SYM_PRINT_PRETTY, prev_p);
-    CL_GC_UNPROTECT(3);
+    cl_dynbind_restore_to(dyn_mark);
+    CL_GC_UNPROTECT(1);
     return CL_NIL;
 }
 

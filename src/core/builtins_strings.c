@@ -1518,37 +1518,36 @@ static CL_Obj bi_write_to_string(CL_Obj *args, int n)
 {
     char buf[1024];
     int len, i;
-    /* GC SAFETY (audit tier 4, FS12): the print below compacts — the saved
-     * *PRINT-* values must be GC-rooted or the restore writes stale offsets
-     * back into the control symbols (see cl_print_controls_save). */
-    CL_Obj saved_ctrl[CL_PRINT_CTRL_COUNT];
+    /* Keyword overrides are THREAD-LOCAL dynamic binds (tier-4 FS16, was
+     * FS12's rooted global save/restore): mutating the global cells raced
+     * every peer thread's printer between set and restore.  The dyn stack
+     * is GC-marked, so no manual rooting of saved values is needed. */
+    int dyn_mark = cl_dyn_top;
     int has_keywords = (n > 1);
 
     if (has_keywords) {
-        cl_print_controls_save(saved_ctrl);
-
         for (i = 1; i + 1 < n; i += 2) {
             CL_Obj kw = args[i];
             CL_Obj val = args[i + 1];
-            if (kw == KW_WTS_ESCAPE)        cl_set_symbol_value(SYM_PRINT_ESCAPE, val);
-            else if (kw == KW_WTS_READABLY) cl_set_symbol_value(SYM_PRINT_READABLY, val);
-            else if (kw == KW_WTS_BASE)     cl_set_symbol_value(SYM_PRINT_BASE, val);
-            else if (kw == KW_WTS_RADIX)    cl_set_symbol_value(SYM_PRINT_RADIX, val);
-            else if (kw == KW_WTS_LEVEL)    cl_set_symbol_value(SYM_PRINT_LEVEL, val);
-            else if (kw == KW_WTS_LENGTH)   cl_set_symbol_value(SYM_PRINT_LENGTH, val);
-            else if (kw == KW_WTS_CASE)     cl_set_symbol_value(SYM_PRINT_CASE, val);
-            else if (kw == KW_WTS_GENSYM)   cl_set_symbol_value(SYM_PRINT_GENSYM, val);
-            else if (kw == KW_WTS_ARRAY)    cl_set_symbol_value(SYM_PRINT_ARRAY, val);
-            else if (kw == KW_WTS_CIRCLE)   cl_set_symbol_value(SYM_PRINT_CIRCLE, val);
-            else if (kw == KW_WTS_PRETTY)   cl_set_symbol_value(SYM_PRINT_PRETTY, val);
-            else if (kw == KW_WTS_RIGHT_MARGIN) cl_set_symbol_value(SYM_PRINT_RIGHT_MARGIN, val);
+            if (kw == KW_WTS_ESCAPE)        cl_dynbind_c(SYM_PRINT_ESCAPE, val);
+            else if (kw == KW_WTS_READABLY) cl_dynbind_c(SYM_PRINT_READABLY, val);
+            else if (kw == KW_WTS_BASE)     cl_dynbind_c(SYM_PRINT_BASE, val);
+            else if (kw == KW_WTS_RADIX)    cl_dynbind_c(SYM_PRINT_RADIX, val);
+            else if (kw == KW_WTS_LEVEL)    cl_dynbind_c(SYM_PRINT_LEVEL, val);
+            else if (kw == KW_WTS_LENGTH)   cl_dynbind_c(SYM_PRINT_LENGTH, val);
+            else if (kw == KW_WTS_CASE)     cl_dynbind_c(SYM_PRINT_CASE, val);
+            else if (kw == KW_WTS_GENSYM)   cl_dynbind_c(SYM_PRINT_GENSYM, val);
+            else if (kw == KW_WTS_ARRAY)    cl_dynbind_c(SYM_PRINT_ARRAY, val);
+            else if (kw == KW_WTS_CIRCLE)   cl_dynbind_c(SYM_PRINT_CIRCLE, val);
+            else if (kw == KW_WTS_PRETTY)   cl_dynbind_c(SYM_PRINT_PRETTY, val);
+            else if (kw == KW_WTS_RIGHT_MARGIN) cl_dynbind_c(SYM_PRINT_RIGHT_MARGIN, val);
         }
     }
 
     len = cl_prin1_to_string(args[0], buf, sizeof(buf));
 
     if (has_keywords)
-        cl_print_controls_restore(saved_ctrl);
+        cl_dynbind_restore_to(dyn_mark);
 
     return cl_make_string(buf, (uint32_t)len);
 }

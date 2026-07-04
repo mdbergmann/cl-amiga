@@ -195,6 +195,20 @@ test-fast: $(TEST_BINS) host
 		echo "FAIL"; \
 		failed=1; \
 	fi; \
+	echo "--- test_gc_stream_finalize ---"; \
+	if sh $(TEST_SRCDIR)/test_gc_stream_finalize.sh $(BUILDDIR)/clamiga; then \
+		echo "PASS"; \
+	else \
+		echo "FAIL"; \
+		failed=1; \
+	fi; \
+	echo "--- test_mt_print_controls ---"; \
+	if sh $(TEST_SRCDIR)/test_mt_print_controls.sh $(BUILDDIR)/clamiga; then \
+		echo "PASS"; \
+	else \
+		echo "FAIL"; \
+		failed=1; \
+	fi; \
 	echo "--- test_mt_gc_regression ---"; \
 	if sh $(TEST_SRCDIR)/test_mt_gc_regression.sh $(BUILDDIR)/clamiga; then \
 		echo "PASS"; \

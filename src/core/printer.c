@@ -135,39 +135,11 @@ void cl_printer_state_reset(void)
     CT->pr_circle_active = 0;
 }
 
-/* --- GC-safe *PRINT-* control save/restore (WRITE / PPRINT / W-T-S) ---
- *
- * The keyword-override builtins snapshot all print-control specials, set the
- * overrides, print, and restore.  The snapshot lives in a caller C array —
- * under compacting GC every slot must be a registered root or the restore
- * writes pre-compaction offsets back into the symbol values, corrupting
- * the *PRINT-CASE* / *PRINT-LEVEL* etc. bindings for the rest of the
- * session (audit tier 4: IO2 bi_write, IO3 bi_pprint, FS12 write-to-string).
- * Pointers-to-symbols (not values): the SYM_PRINT_* globals are themselves
- * forwarded on compaction, so the table must chase them per call. */
-static CL_Obj *print_ctrl_syms[CL_PRINT_CTRL_COUNT] = {
-    &SYM_PRINT_ESCAPE, &SYM_PRINT_READABLY, &SYM_PRINT_BASE, &SYM_PRINT_RADIX,
-    &SYM_PRINT_LEVEL, &SYM_PRINT_LENGTH, &SYM_PRINT_CASE, &SYM_PRINT_GENSYM,
-    &SYM_PRINT_ARRAY, &SYM_PRINT_CIRCLE, &SYM_PRINT_PRETTY,
-    &SYM_PRINT_RIGHT_MARGIN, &SYM_PRINT_PPRINT_DISPATCH
-};
-
-void cl_print_controls_save(CL_Obj *saved)
-{
-    int i;
-    for (i = 0; i < CL_PRINT_CTRL_COUNT; i++) {
-        saved[i] = cl_symbol_value(*print_ctrl_syms[i]);
-        CL_GC_PROTECT(saved[i]);
-    }
-}
-
-void cl_print_controls_restore(CL_Obj *saved)
-{
-    int i;
-    for (i = 0; i < CL_PRINT_CTRL_COUNT; i++)
-        cl_set_symbol_value(*print_ctrl_syms[i], saved[i]);
-    CL_GC_UNPROTECT(CL_PRINT_CTRL_COUNT);
-}
+/* The *PRINT-* keyword-override builtins (WRITE / PPRINT / W-T-S / FORMAT's
+ * ~D renderer) install THREAD-LOCAL dynamic binds via cl_dynbind_c and pop
+ * them with cl_dynbind_restore_to — see tier-4 FS16.  The former
+ * cl_print_controls_save/restore global-snapshot helpers are gone: mutating
+ * the global cells raced peer threads' printers between set and restore. */
 
 /* Returns 1 if obj is currently being printed (re-entrant on same object).
  * Used to short-circuit print-object-hook dispatch on circular structures. */
@@ -1813,7 +1785,6 @@ void cl_write_to_stream(CL_Obj obj, CL_Obj stream)
 
 void cl_prin1_to_stream(CL_Obj obj, CL_Obj stream)
 {
-    CL_Obj prev_e;
     if (CL_NULL_P(SYM_PRINT_ESCAPE)) {
         /* Before init — fall through directly */
         CL_Obj prev = printer_stream;
@@ -1825,20 +1796,21 @@ void cl_prin1_to_stream(CL_Obj obj, CL_Obj stream)
         CL_GC_UNPROTECT(1);
         return;
     }
-    /* GC SAFETY (restore class): the print can compact; the saved special
-     * value may be a heap object — protect it so the restore rebinds the
-     * forwarded offset, not a stale one.  Same in the variants below. */
-    prev_e = cl_symbol_value(SYM_PRINT_ESCAPE);
-    CL_GC_PROTECT(prev_e);
-    cl_set_symbol_value(SYM_PRINT_ESCAPE, CL_T);
-    cl_write_to_stream(obj, stream);
-    cl_set_symbol_value(SYM_PRINT_ESCAPE, prev_e);
-    CL_GC_UNPROTECT(1);
+    /* Thread-local dynamic bind (tier-4 FS16): mutating the global
+     * *PRINT-ESCAPE* cell raced peer threads' printers between set and
+     * restore.  The dyn stack is GC-marked, so the saved value needs no
+     * manual root (supersedes the tier-4 IO2 restore-class protects).
+     * Same in the variants below. */
+    {
+        int dyn_mark = cl_dyn_top;
+        cl_dynbind_c(SYM_PRINT_ESCAPE, CL_T);
+        cl_write_to_stream(obj, stream);
+        cl_dynbind_restore_to(dyn_mark);
+    }
 }
 
 void cl_princ_to_stream(CL_Obj obj, CL_Obj stream)
 {
-    CL_Obj prev_e, prev_r;
     if (CL_NULL_P(SYM_PRINT_ESCAPE)) {
         CL_Obj prev = printer_stream;
         CL_GC_PROTECT(prev);
@@ -1849,16 +1821,13 @@ void cl_princ_to_stream(CL_Obj obj, CL_Obj stream)
         CL_GC_UNPROTECT(1);
         return;
     }
-    prev_e = cl_symbol_value(SYM_PRINT_ESCAPE);
-    prev_r = cl_symbol_value(SYM_PRINT_READABLY);
-    CL_GC_PROTECT(prev_e);
-    CL_GC_PROTECT(prev_r);
-    cl_set_symbol_value(SYM_PRINT_ESCAPE, CL_NIL);
-    cl_set_symbol_value(SYM_PRINT_READABLY, CL_NIL);
-    cl_write_to_stream(obj, stream);
-    cl_set_symbol_value(SYM_PRINT_ESCAPE, prev_e);
-    cl_set_symbol_value(SYM_PRINT_READABLY, prev_r);
-    CL_GC_UNPROTECT(2);
+    {
+        int dyn_mark = cl_dyn_top;
+        cl_dynbind_c(SYM_PRINT_ESCAPE, CL_NIL);
+        cl_dynbind_c(SYM_PRINT_READABLY, CL_NIL);
+        cl_write_to_stream(obj, stream);
+        cl_dynbind_restore_to(dyn_mark);
+    }
 }
 
 void cl_print_to_stream(CL_Obj obj, CL_Obj stream)
@@ -1955,40 +1924,34 @@ static int write_to_buffer_internal(CL_Obj obj, char *buf, int bufsize)
 
 int cl_prin1_to_string(CL_Obj obj, char *buf, int bufsize)
 {
-    CL_Obj prev_e;
     int result;
     if (CL_NULL_P(SYM_PRINT_ESCAPE)) {
         /* Before init */
         return write_to_buffer_internal(obj, buf, bufsize);
     }
-    /* GC SAFETY (restore class): protect the saved special values across
-     * the print — see cl_prin1_to_stream. */
-    prev_e = cl_symbol_value(SYM_PRINT_ESCAPE);
-    CL_GC_PROTECT(prev_e);
-    cl_set_symbol_value(SYM_PRINT_ESCAPE, CL_T);
-    result = write_to_buffer_internal(obj, buf, bufsize);
-    cl_set_symbol_value(SYM_PRINT_ESCAPE, prev_e);
-    CL_GC_UNPROTECT(1);
+    /* Thread-local dynamic bind — see cl_prin1_to_stream. */
+    {
+        int dyn_mark = cl_dyn_top;
+        cl_dynbind_c(SYM_PRINT_ESCAPE, CL_T);
+        result = write_to_buffer_internal(obj, buf, bufsize);
+        cl_dynbind_restore_to(dyn_mark);
+    }
     return result;
 }
 
 int cl_princ_to_string(CL_Obj obj, char *buf, int bufsize)
 {
-    CL_Obj prev_e, prev_r;
     int result;
     if (CL_NULL_P(SYM_PRINT_ESCAPE)) {
         return write_to_buffer_internal(obj, buf, bufsize);
     }
-    prev_e = cl_symbol_value(SYM_PRINT_ESCAPE);
-    prev_r = cl_symbol_value(SYM_PRINT_READABLY);
-    CL_GC_PROTECT(prev_e);
-    CL_GC_PROTECT(prev_r);
-    cl_set_symbol_value(SYM_PRINT_ESCAPE, CL_NIL);
-    cl_set_symbol_value(SYM_PRINT_READABLY, CL_NIL);
-    result = write_to_buffer_internal(obj, buf, bufsize);
-    cl_set_symbol_value(SYM_PRINT_ESCAPE, prev_e);
-    cl_set_symbol_value(SYM_PRINT_READABLY, prev_r);
-    CL_GC_UNPROTECT(2);
+    {
+        int dyn_mark = cl_dyn_top;
+        cl_dynbind_c(SYM_PRINT_ESCAPE, CL_NIL);
+        cl_dynbind_c(SYM_PRINT_READABLY, CL_NIL);
+        result = write_to_buffer_internal(obj, buf, bufsize);
+        cl_dynbind_restore_to(dyn_mark);
+    }
     return result;
 }
 

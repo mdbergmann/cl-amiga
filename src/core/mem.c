@@ -5,6 +5,7 @@
 #include "readtable.h"
 #include "package.h"
 #include "stream.h"
+#include "reader.h"   /* cl_srcloc_table (GC invalidate/forward hooks) */
 #include "../platform/platform.h"
 #include "../platform/platform_thread.h"
 #include <stdarg.h>
@@ -2251,6 +2252,36 @@ static void gc_mark(void)
  * Called from gc_sweep with the world stopped, so the per-table mutex used
  * by cl_lock_table_alloc / cl_condvar_table_alloc is not needed: no other
  * thread can mutate the tables here. */
+/* R-srcloc: the reader's cons→source-line table is keyed by arena OFFSETS.
+ * Two staleness modes corrupt its diagnostics: (a) a key whose cons died —
+ * a later object allocated at the same offset false-matches and reports a
+ * WRONG file/line; (b) after compaction, a surviving cons moved and its
+ * (correct) entry becomes unreachable while its old offset may false-match.
+ * Fix: clear dead keys right after marking (mark bits still set), and
+ * forward surviving keys while the forwarding table is alive. */
+static void gc_srcloc_invalidate_dead(void)
+{
+    uint32_t i;
+    for (i = 0; i < CL_SRCLOC_SIZE; i++) {
+        CL_Obj k = cl_srcloc_table[i].cons_obj;
+        if (CL_NULL_P(k) || CL_FIXNUM_P(k) || CL_CHAR_P(k)) continue;
+        if (k >= cl_heap.bump || !CL_HDR_MARKED(CL_OBJ_TO_PTR(k)))
+            cl_srcloc_table[i].cons_obj = CL_NIL;
+    }
+}
+
+static CL_Obj gc_forward(CL_Obj obj);   /* defined with the compactor below */
+
+static void gc_srcloc_forward(void)
+{
+    uint32_t i;
+    for (i = 0; i < CL_SRCLOC_SIZE; i++) {
+        CL_Obj k = cl_srcloc_table[i].cons_obj;
+        if (CL_NULL_P(k) || CL_FIXNUM_P(k) || CL_CHAR_P(k)) continue;
+        cl_srcloc_table[i].cons_obj = gc_forward(k);
+    }
+}
+
 static void gc_finalize_dead(uint8_t *ptr)
 {
     switch (CL_HDR_TYPE(ptr)) {
@@ -2271,14 +2302,42 @@ static void gc_finalize_dead(uint8_t *ptr)
         bc->native_reloc_count = 0;
         break;
     }
-    case TYPE_STREAM:
+    case TYPE_STREAM: {
         /* Output-stream outbuf slots are NOT freed here.  Freeing a dead
          * stream's st->out_buf_handle is unsafe: the slot's handle may already
          * have been recycled by a live string-output-stream (handles are
          * reused as soon as a slot is freed), so re-finalizing a stale corpse
          * would free the LIVE stream's buffer.  Outbufs are reclaimed instead
-         * by the mark-driven cl_stream_outbuf_gc_reclaim() after marking. */
+         * by the mark-driven cl_stream_outbuf_gc_reclaim() after marking.
+         *
+         * OS handles, however, ARE closed here (ST8): a dead file/socket
+         * stream that was never CLOSEd would otherwise leak its fd forever —
+         * long-running servers exhaust the descriptor table.  The close uses
+         * GC-context variants (platform_file_close is already safe-region-
+         * free on both platforms; platform_socket_close_gc skips the
+         * write-buffer flush and its safe-region bracket — buffered output
+         * on an UNREACHABLE stream is forfeit, and entering a safe region
+         * while this thread orchestrates the collection is forbidden).  The
+         * OPEN flag gates it: a properly closed stream cleared it (under the
+         * iolock/CAS discipline in cl_stream_close), and clearing it here
+         * makes a coalesce-path re-finalize a no-op.  Runs under STW — no
+         * concurrent closer can race the flag. */
+        CL_Stream *st = (CL_Stream *)ptr;
+        if ((st->flags & CL_STREAM_FLAG_OPEN) && st->handle_id != 0 &&
+            (st->stream_type == CL_STREAM_FILE ||
+             st->stream_type == CL_STREAM_SOCKET)) {
+            st->flags &= ~CL_STREAM_FLAG_OPEN;
+            fprintf(stderr, "[GC] warning: closing a %s stream that was "
+                    "dropped without CLOSE (handle %u)\n",
+                    st->stream_type == CL_STREAM_FILE ? "file" : "socket",
+                    (unsigned)st->handle_id);
+            if (st->stream_type == CL_STREAM_FILE)
+                platform_file_close((PlatformFile)st->handle_id);
+            else
+                platform_socket_close_gc((PlatformSocket)st->handle_id);
+        }
         break;
+    }
     case TYPE_LOCK: {
         /* If a program drops every reference to a lock wrapper while some
          * thread still HOLDS the platform mutex (acquired earlier, wrapper
@@ -3607,6 +3666,7 @@ void cl_gc_compact(void)
     /* Reclaim outbuf slots of streams that didn't survive marking, BEFORE the
      * slide overwrites their (now-dead) stream objects. */
     cl_stream_outbuf_gc_reclaim();
+    gc_srcloc_invalidate_dead();
 
 #ifdef DEBUG_GC
     /* Verify parent→child mark invariant immediately after marking so that
@@ -3662,6 +3722,7 @@ void cl_gc_compact(void)
 
     /* Pass 3: Update all references */
     gc_update_all_references();
+    gc_srcloc_forward();
 
     /* Pass 4: Slide objects */
     gc_slide();
@@ -4157,6 +4218,7 @@ void cl_gc(void)
     /* Reclaim outbuf slots no live stream pinned, before gc_sweep coalesces
      * the dead stream objects into free blocks. */
     cl_stream_outbuf_gc_reclaim();
+    gc_srcloc_invalidate_dead();
 #ifdef DEBUG_GC
     gc_verify_marked();
     if (gc_verify_errors > 0)
