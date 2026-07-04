@@ -2039,6 +2039,26 @@ void cl_fasl_read_bytes(CL_FaslReader *r, void *out, uint32_t len)
     r->pos += len;
 }
 
+/* Sanity-check an element count read from the byte stream.  Each element
+ * occupies at least min_bytes of the remaining input, so any larger count
+ * means a corrupted/truncated file — and must be rejected HERE: raw u32
+ * counts fed to the allocators wrap their alloc_size arithmetic (see the
+ * CL_MAX_* caps in mem.h), and FASL_TAG_STRING's own platform_alloc(len+1)
+ * wraps to a tiny buffer that cl_fasl_read_bytes then overruns.  Rejecting
+ * with BAD_LENGTH gives a clean "deserialize failed" error instead of a
+ * storage-error abort (or a heap smash).  Returns 0 and sets r->error on
+ * violation. */
+static int fasl_check_count(CL_FaslReader *r, uint32_t count,
+                            uint32_t min_bytes, uint32_t max_count)
+{
+    if (count > max_count ||
+        (min_bytes > 0 && count > (r->size - r->pos) / min_bytes)) {
+        r->error = FASL_ERR_BAD_LENGTH;
+        return 0;
+    }
+    return 1;
+}
+
 uint32_t cl_fasl_read_header(CL_FaslReader *r)
 {
     uint32_t magic;
@@ -2273,6 +2293,7 @@ CL_Obj cl_fasl_deserialize_obj(CL_FaslReader *r)
         char *tmp;
         CL_Obj result;
         if (r->error) return CL_NIL;
+        if (!fasl_check_count(r, len, 1, CL_MAX_STRING_CHARS)) return CL_NIL;
         tmp = (char *)platform_alloc(len + 1);
         if (!tmp) return CL_NIL;
         cl_fasl_read_bytes(r, tmp, len);
@@ -2289,6 +2310,8 @@ CL_Obj cl_fasl_deserialize_obj(CL_FaslReader *r)
         uint32_t i;
         CL_Obj result;
         if (r->error) return CL_NIL;
+        if (!fasl_check_count(r, len, 4, CL_MAX_WIDE_STRING_CHARS))
+            return CL_NIL;
         tmp = (uint32_t *)platform_alloc(len * sizeof(uint32_t));
         if (!tmp) return CL_NIL;
         for (i = 0; i < len; i++)
@@ -2423,6 +2446,8 @@ CL_Obj cl_fasl_deserialize_obj(CL_FaslReader *r)
         CL_Bignum *bn;
         uint32_t i;
         if (r->error) return CL_NIL;
+        if (!fasl_check_count(r, n_limbs, 2, CL_MAX_BIGNUM_LIMBS))
+            return CL_NIL;
         result = cl_make_bignum(n_limbs, sign);
         bn = (CL_Bignum *)CL_OBJ_TO_PTR(result);
         for (i = 0; i < n_limbs; i++)
@@ -2436,6 +2461,8 @@ CL_Obj cl_fasl_deserialize_obj(CL_FaslReader *r)
         CL_Vector *v;
         uint32_t i;
         if (r->error) return CL_NIL;
+        /* Each element is at least a 1-byte tag in the remaining input. */
+        if (!fasl_check_count(r, len, 1, CL_MAX_VECTOR_ELTS)) return CL_NIL;
         result = cl_make_vector(len);
         CL_GC_PROTECT(result);
         v = (CL_Vector *)CL_OBJ_TO_PTR(result);
@@ -2461,6 +2488,21 @@ CL_Obj cl_fasl_deserialize_obj(CL_FaslReader *r)
         for (k = 0; k < rank; k++)
             dims[k] = cl_fasl_read_u32(r);
         if (r->error) return CL_NIL;
+        if (!fasl_check_count(r, len, 1, CL_MAX_VECTOR_ELTS)) return CL_NIL;
+        /* len must equal the dims product (overflow-guarded) — a mismatch
+         * means a corrupt file whose element loop would run past the
+         * allocated total. */
+        {
+            uint32_t prod = 1;
+            for (k = 0; k < rank; k++) {
+                if (dims[k] != 0 && prod > CL_MAX_VECTOR_ELTS / dims[k]) {
+                    r->error = FASL_ERR_BAD_LENGTH;
+                    return CL_NIL;
+                }
+                prod *= dims[k];
+            }
+            if (prod != len) { r->error = FASL_ERR_BAD_LENGTH; return CL_NIL; }
+        }
         result = cl_make_array(len, rank, dims, CL_VEC_FLAG_MULTIDIM,
                                CL_NO_FILL_POINTER);
         CL_GC_PROTECT(result);
@@ -2476,11 +2518,16 @@ CL_Obj cl_fasl_deserialize_obj(CL_FaslReader *r)
 
     case FASL_TAG_BIT_VECTOR: {
         uint32_t nbits = cl_fasl_read_u32(r);
-        uint32_t n_words = CL_BV_WORDS(nbits);
+        uint32_t n_words;
         CL_Obj result;
         CL_BitVector *bv;
         uint32_t i;
         if (r->error) return CL_NIL;
+        /* Cap nbits BEFORE CL_BV_WORDS (whose `+ 31` wraps near
+         * UINT32_MAX), then require the words to fit the remaining input. */
+        if (!fasl_check_count(r, nbits, 0, CL_MAX_BV_BITS)) return CL_NIL;
+        n_words = CL_BV_WORDS(nbits);
+        if (!fasl_check_count(r, n_words, 4, 0xFFFFFFFFu)) return CL_NIL;
         result = cl_make_bit_vector(nbits);
         bv = (CL_BitVector *)CL_OBJ_TO_PTR(result);
         for (i = 0; i < n_words; i++)
@@ -2514,6 +2561,9 @@ CL_Obj cl_fasl_deserialize_obj(CL_FaslReader *r)
         type_desc = cl_fasl_deserialize_obj(r);
         n_slots = cl_fasl_read_u32(r);
         if (r->error) return CL_NIL;
+        /* Each slot is at least a 1-byte tag in the remaining input. */
+        if (!fasl_check_count(r, n_slots, 1, CL_MAX_STRUCT_SLOTS))
+            return CL_NIL;
         CL_GC_PROTECT(type_desc);
         st_obj = cl_make_struct(type_desc, n_slots);
         CL_GC_PROTECT(st_obj);
@@ -2802,6 +2852,7 @@ static const char *fasl_err_name(int err)
     case FASL_ERR_BAD_VERSION: return "BAD_VERSION";
     case FASL_ERR_BAD_TAG:     return "BAD_TAG";
     case FASL_ERR_TOO_DEEP:    return "TOO_DEEP";
+    case FASL_ERR_BAD_LENGTH:  return "BAD_LENGTH";
     default:                   return "UNKNOWN";
     }
 }

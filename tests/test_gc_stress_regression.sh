@@ -2472,10 +2472,14 @@ check_absent   "no garbage code points in wide-string copies under GC stress" \
 # already advanced the bump pointer; the guard's longjmp left a
 # headerless region inside the walked bump front, and every later arena
 # walk (sweep/forwarding/slide) desynced there — live objects above the
-# hole were overwritten.  (ash 1 100000000) requests ~12.5MB of bignum
-# limbs in a single allocation, hitting the guard.  ((make-array 3000000)
-# no longer reaches it: the ARRAY-DIMENSION-LIMIT check rejects the
-# dimension first — asserted separately below.)
+# hole were overwritten.  (ash 1 100000000) requests ~6.25M bignum limbs
+# in a single allocation; since the tier-4 M1 caps it is rejected by
+# cl_make_bignum's element-count guard ("exceeds the maximum heap object
+# size"), one layer BEFORE cl_alloc's byte-size guard ("Allocation too
+# large for header") — both signal the same clean cl_storage_error.
+# ((make-array 3000000) no longer reaches either: the
+# ARRAY-DIMENSION-LIMIT check rejects the dimension first — asserted
+# separately below.)
 # Note: the oversized-allocation guard signals via cl_storage_error (a
 # C-level error frame, deliberately allocation-free), which aborts the
 # offending top-level form rather than unwinding into handler-case; the
@@ -2499,7 +2503,7 @@ cat > "$WORK/bigalloc.lisp" <<'EOF'
     (format t "BIGALLOC-2:~a~%" ok)))
 EOF
 out=$(run_stress "$WORK/bigalloc.lisp")
-check_contains "oversized bignum allocation signals a clean storage error" "Allocation too large for header" "$out"
+check_contains "oversized bignum allocation signals a clean storage error" "exceeds the maximum heap object size" "$out"
 check_contains "oversized make-array signals a clean dimension-limit error" "exceeds ARRAY-DIMENSION-LIMIT" "$out"
 check_contains "heap fully intact after oversized-allocation error"   "BIGALLOC-2:T" "$out"
 check_absent   "no arena-walk corruption after oversized allocation" \
