@@ -1190,11 +1190,14 @@ static CL_Obj bi_condition_wait(CL_Obj *args, int n)
             self->wait_cv_id = (int)cv->condvar_id;
             self->wait_lock_id = (int)lock_id;
             /* Pre-park interrupt check, ordered AFTER publishing the wait
-             * registration above (see the untimed path below). */
+             * registration above.  Consumed HERE, not deferred to "the
+             * next safepoint" — see the untimed path below for the
+             * Amiga-JIT rationale. */
             platform_memory_barrier();
             if (self->interrupt_pending) {
                 self->wait_kind = 0;
-                return CL_T;   /* spurious wakeup — permitted */
+                cl_thread_handle_interrupt(self);  /* longjmps on destroy */
+                return CL_T;   /* interrupt ran — spurious wakeup */
             }
         }
         cl_gc_enter_safe_region();
@@ -1207,6 +1210,9 @@ static CL_Obj bi_condition_wait(CL_Obj *args, int n)
          * regardless of any recursion depth held before the wait. */
         cl_lock_held[lock_id] = cl_get_current_thread();
         cl_lock_depth[lock_id] = 1;
+        /* Post-wake delivery (see the untimed path). */
+        if (self && self->interrupt_pending)
+            cl_thread_handle_interrupt(self);
         return timed_out ? CL_NIL : CL_T;
     }
 
@@ -1229,8 +1235,19 @@ static CL_Obj bi_condition_wait(CL_Obj *args, int n)
              * forever, for a wait that is never notified. */
             platform_memory_barrier();
             if (self->interrupt_pending) {
+                /* Consume the interrupt HERE, not at "the next safepoint":
+                 * on the Amiga JIT path a caller loop like
+                 * (loop (mp:condition-wait cv lk)) contains NO safepoints
+                 * (JIT'd code polls nothing; builtin calls go through
+                 * cl_vm_apply without a safepoint), so returning T just
+                 * spun the loop through this check forever and the
+                 * destroy was never delivered — the FS-UAE hang that
+                 * caught this.  A destroy longjmps out while the caller
+                 * holds the wait mutex — identical to a loop-safepoint
+                 * delivery, which also runs with the mutex re-acquired. */
                 self->wait_kind = 0;
-                return CL_T;   /* spurious wakeup — permitted */
+                cl_thread_handle_interrupt(self);  /* longjmps on destroy */
+                return CL_T;   /* interrupt ran — spurious wakeup */
             }
         }
         cl_gc_enter_safe_region();
@@ -1242,6 +1259,11 @@ static CL_Obj bi_condition_wait(CL_Obj *args, int n)
          * of any recursion depth held before the wait. */
         cl_lock_held[lock_id] = cl_get_current_thread();
         cl_lock_depth[lock_id] = 1;
+        /* Post-wake delivery (same JIT-no-safepoint rationale as above):
+         * the publisher's wakeup must lead to consumption HERE — the
+         * caller's predicate loop may never reach a safepoint. */
+        if (self && self->interrupt_pending)
+            cl_thread_handle_interrupt(self);
     }
     return CL_T;
 }
