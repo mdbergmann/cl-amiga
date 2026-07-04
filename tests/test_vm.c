@@ -10373,6 +10373,44 @@ TEST(eval_remove_concatenate_wide_chars_preserved)
 }
 #endif
 
+/* --- tier-4 batch 7c: print-control dynbinds, bignum file positions --- */
+
+TEST(eval_print_override_restored_after_error)
+{
+    /* FS16: the *PRINT-* keyword overrides are thread-local dynamic binds
+     * now.  The discriminating case: when printing SIGNALS and an outer
+     * handler catches, the old global save/set/restore skipped its restore
+     * — *PRINT-BASE* stayed clobbered at 2 for the rest of the session.
+     * A dynamic bind unwinds with the non-local exit. */
+    ASSERT_STR_EQ(eval_print(
+        "(progn"
+        "  (defclass t7c-boom () ())"
+        "  (defmethod print-object ((o t7c-boom) s) (error \"boom\"))"
+        "  (handler-case (write-to-string (make-instance 't7c-boom) :base 2)"
+        "    (error () nil))"
+        "  *print-base*)"), "10");
+    /* Normal path unchanged: override applies, then unwinds. */
+    ASSERT_STR_EQ(eval_print(
+        "(list (write-to-string 255 :base 16) *print-base*)"),
+        "(\"FF\" 10)");
+}
+
+TEST(eval_file_position_bignum)
+{
+    /* ST7: positions past CL_FIXNUM_MAX (~1GB) were truncated by the fixnum
+     * tag shift.  Seek past that in a (sparse) temp file and read the
+     * position back — must round-trip as a bignum. */
+    ASSERT_STR_EQ(eval_print(
+        "(with-open-file (s \"t7c-pos.tmp\" :direction :output"
+        "                   :if-exists :supersede)"
+        "  (let ((big (+ 1073741823 6)))"
+        "    (file-position s big)"
+        "    (prog1 (list (= (file-position s) big)"
+        "                 (typep (file-position s) 'bignum))"
+        "      (close s)"
+        "      (delete-file \"t7c-pos.tmp\"))))"), "(T T)");
+}
+
 /* --- tier-4 batch 7b: hashtable hash/equality contract (AH5) --- */
 
 TEST(eval_hashtable_wide_string_keys)
@@ -11452,6 +11490,8 @@ int main(void)
     RUN(eval_heap_exhaustion_error);
     RUN(builtin_fptr_plausible_unaligned);
 
+    RUN(eval_print_override_restored_after_error);
+    RUN(eval_file_position_bignum);
     RUN(eval_hashtable_wide_string_keys);
     RUN(eval_hashtable_equalp_vector_keys);
     RUN(eval_hashtable_equal_bitvector_keys);

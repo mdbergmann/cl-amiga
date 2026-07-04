@@ -3645,6 +3645,36 @@ check_contains "tier-4 batch 7b cases run to completion" "T4B7B-DONE" "$out"
 check_absent   "no corruption in tier-4 batch 7b cases" \
   "corrupted pointer\|not of type\|Guru\|SIGSEGV\|badmark" "$out"
 
+# ---------------------------------------------------------------------------
+# Tier-4 batch 7c: print-control overrides are TLV dynamic binds now — the
+# bind/restore pushes dyn-stack entries whose saved values must be forwarded
+# across the compactions the print itself triggers.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- tier-4 batch 7c: print-control dynbinds under stress ---"
+cat > "$WORK/tier4-b7c.lisp" <<'EOF'
+(format t "T4B7C-W:~a ~a~%" (write-to-string 255 :base 16) *print-base*)
+(format t "T4B7C-L:~a~%" (write-to-string '(1 (2 (3))) :level 1))
+(let ((s (make-string-output-stream)))
+  (write 10 :stream s :base 2 :radix t)
+  (format t "T4B7C-S:~a ~a~%" (get-output-stream-string s) *print-base*))
+(format t "T4B7C-F:~a~%" (format nil "~X/~O/~B" 255 8 5))
+(let ((v nil))
+  (dotimes (i 50)
+    (setf v (write-to-string (list i (format nil "x~A" i)) :length 1)))
+  (format t "T4B7C-N:~a~%" v))
+(format t "T4B7C-DONE~%")
+EOF
+out=$(run_stress "$WORK/tier4-b7c.lisp")
+check_contains "B7c write-to-string base dynbind" "T4B7C-W:FF 10" "$out"
+check_contains "B7c write-to-string level dynbind" "T4B7C-L:(1 #)" "$out"
+check_contains "B7c write stream base+radix dynbind" "T4B7C-S:#b1010 10" "$out"
+check_contains "B7c format radix renderer dynbind" "T4B7C-F:FF/10/101" "$out"
+check_contains "B7c repeated override loop stays consistent" "T4B7C-N:(49 ...)" "$out"
+check_contains "tier-4 batch 7c cases run to completion" "T4B7C-DONE" "$out"
+check_absent   "no corruption in tier-4 batch 7c cases" \
+  "corrupted pointer\|not of type\|Guru\|SIGSEGV\|badmark" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

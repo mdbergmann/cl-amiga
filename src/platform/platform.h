@@ -81,6 +81,11 @@ typedef uint32_t PlatformSocket;
  * historical behaviour. */
 PlatformSocket platform_socket_connect(const char *host, int port, int connect_ms);
 void           platform_socket_close(PlatformSocket sh);
+/* GC-sweep variant: close without flushing buffered output and without
+ * entering a GC safe region — only for the stop-the-world sweep finalizer
+ * (the normal close's flush brackets a safe region, which must not run on
+ * the thread orchestrating the collection). */
+void           platform_socket_close_gc(PlatformSocket sh);
 int            platform_socket_read(PlatformSocket sh);       /* Read one byte, -1 EOF/err, -2 timeout */
 int            platform_socket_write(PlatformSocket sh, int byte); /* Write one byte, 0=ok, -1=err, -2=timeout */
 int            platform_socket_write_buf(PlatformSocket sh, const char *buf, uint32_t len); /* 0=ok,-1=err,-2=timeout */

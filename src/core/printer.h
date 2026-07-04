@@ -36,15 +36,11 @@ void cl_printer_state_restore(CL_PrinterState s);
  * flight has been abandoned. */
 void cl_printer_state_reset(void);
 
-/* GC-safe save/restore of the *PRINT-* control specials (WRITE, PPRINT,
- * WRITE-TO-STRING keyword overrides).  save() snapshots the current values
- * into the caller's array AND registers every slot as a GC root, so the
- * saved values are forwarded when the print in between compacts the heap;
- * restore() writes the (forwarded) values back and pops the roots.  Calls
- * must nest LIFO with any CL_GC_PROTECTs the caller does in between. */
-#define CL_PRINT_CTRL_COUNT 13
-void cl_print_controls_save(CL_Obj *saved);    /* saved[CL_PRINT_CTRL_COUNT] */
-void cl_print_controls_restore(CL_Obj *saved);
+/* The *PRINT-* keyword-override builtins (WRITE / PPRINT / W-T-S / FORMAT's
+ * ~D renderer) install THREAD-LOCAL dynamic binds via cl_dynbind_c and pop
+ * them with cl_dynbind_restore_to — see tier-4 FS16.  The former
+ * cl_print_controls_save/restore global-snapshot helpers are gone: mutating
+ * the global cells raced peer threads' printers between set and restore. */
 
 /* Core: print object honoring current *print-* bindings */
 void cl_write_to_stream(CL_Obj obj, CL_Obj stream);

@@ -10,6 +10,7 @@
 #define CL_THREAD_NO_MACROS  /* access struct members directly */
 #include "thread.h"
 #include "symbol.h"
+#include "package.h"
 #include "error.h"
 #include "vm.h"
 #include "../platform/platform.h"
@@ -635,6 +636,27 @@ CL_Obj cl_symbol_value(CL_Obj sym)
         if (v != CL_TLV_ABSENT) return v;
     }
     return ((CL_Symbol *)CL_OBJ_TO_PTR(sym))->value;
+}
+
+/* C-level dynamic binding, mirroring OP_DYNBIND: installs a THREAD-LOCAL
+ * override restored by cl_dynbind_restore_to(mark).  For C builtins that
+ * temporarily override specials (the *PRINT-* controls in WRITE /
+ * WRITE-TO-STRING / PPRINT / FORMAT's ~D renderer): writing the GLOBAL cell
+ * and restoring it later races every peer thread's reader between the set
+ * and the restore (tier-4 FS16).  Restoring to a CL_TLV_ABSENT old value
+ * REMOVES the TLV entry, so a transient bind leaves no per-thread residue. */
+void cl_dynbind_c(CL_Obj sym, CL_Obj val)
+{
+    CL_Thread *t = CT;
+    CL_Obj old = cl_tlv_get(t, sym);
+    if (t->dyn_top >= CL_MAX_DYN_BINDINGS)
+        cl_error(CL_ERR_OVERFLOW, "Dynamic binding stack overflow");
+    t->dyn_stack[t->dyn_top].symbol = sym;
+    t->dyn_stack[t->dyn_top].old_value = old;
+    t->dyn_top++;
+    cl_tlv_set(t, sym, val);
+    if (sym == SYM_STAR_PACKAGE)
+        cl_sync_current_package_from_dynamic();
 }
 
 void cl_set_symbol_value(CL_Obj sym, CL_Obj val)

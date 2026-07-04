@@ -8244,6 +8244,18 @@
   (length (symbol-name (read-from-string
                         (make-string 255 :initial-element #\a)))))
 
+; --- Tier-4 batch 7c: print-control overrides are thread-local dynbinds ---
+(check "t4b7c write-to-string base override + restore" '("FF" 10)
+  (list (write-to-string 255 :base 16) *print-base*))
+(check "t4b7c write stream base+radix override" "#b1010"
+  (let ((s (make-string-output-stream)))
+    (write 10 :stream s :base 2 :radix t)
+    (get-output-stream-string s)))
+(check "t4b7c format radix renderer" "FF/10/101"
+  (format nil "~X/~O/~B" 255 8 5))
+(check "t4b7c print-level override" "(1 #)"
+  (write-to-string '(1 (2 (3))) :level 1))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

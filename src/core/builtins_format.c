@@ -333,23 +333,17 @@ static int32_t fmt_param(FmtDirective *d, int idx, int32_t defval)
 static char *render_integer(CL_Obj obj, int32_t base, char *buf, int bufsz,
                             int *len_out)
 {
-    /* Use printer to render in given base */
-    CL_Obj prev_b = cl_symbol_value(SYM_PRINT_BASE);
-    CL_Obj prev_x = cl_symbol_value(SYM_PRINT_RADIX);
+    /* Use printer to render in given base.  Thread-local dynamic binds
+     * (tier-4 FS16): mutating the global *PRINT-BASE* / *PRINT-RADIX*
+     * cells raced peer threads' printers between set and restore.  The dyn
+     * stack is GC-marked, so the saved values need no manual roots. */
+    int dyn_mark = cl_dyn_top;
     int len;
 
-    /* GC SAFETY: cl_princ_to_string can compact (pprint dispatch typep,
-     * print hooks); the saved values are heap objects when *print-radix*
-     * is T (a heap symbol) — protect so the restore writes the forwarded
-     * offsets, not stale ones. */
-    CL_GC_PROTECT(prev_b);
-    CL_GC_PROTECT(prev_x);
-    cl_set_symbol_value(SYM_PRINT_BASE, CL_MAKE_FIXNUM(base));
-    cl_set_symbol_value(SYM_PRINT_RADIX, CL_NIL);
+    cl_dynbind_c(SYM_PRINT_BASE, CL_MAKE_FIXNUM(base));
+    cl_dynbind_c(SYM_PRINT_RADIX, CL_NIL);
     len = cl_princ_to_string(obj, buf, bufsz);
-    cl_set_symbol_value(SYM_PRINT_BASE, prev_b);
-    cl_set_symbol_value(SYM_PRINT_RADIX, prev_x);
-    CL_GC_UNPROTECT(2);
+    cl_dynbind_restore_to(dyn_mark);
     *len_out = len;
     return buf;
 }

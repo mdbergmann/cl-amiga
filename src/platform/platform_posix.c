@@ -855,6 +855,30 @@ void platform_socket_close(PlatformSocket sh)
     }
 }
 
+void platform_socket_close_gc(PlatformSocket sh)
+{
+    /* As platform_socket_close, but no socket_flush_wbuf — its drain loop
+     * brackets a GC safe region, which must not run during the sweep.  A
+     * plain close() is fast and safe-region-free. */
+    SockSlot *s = sock_slot(sh);
+    if (sh > 0 && s && s->fd >= 0) {
+        int fd;
+        IOBuf *buf;
+        socket_table_lock();
+        fd = s->fd;
+        buf = s->buf;
+        s->fd = -1;
+        s->buf = NULL;
+        s->rtimeout = 0;
+        s->wtimeout = 0;
+        s->next_free = socket_free_head;
+        socket_free_head = (int)sh;
+        socket_table_unlock();
+        if (fd >= 0) close(fd);
+        iobuf_free(buf);
+    }
+}
+
 void platform_socket_set_timeout(PlatformSocket sh, int read_ms, int write_ms)
 {
     SockSlot *s = sock_slot(sh);

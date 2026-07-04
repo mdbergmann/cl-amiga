@@ -96,9 +96,14 @@ static int current_line(void)
 static void srcloc_record(CL_Obj cons_obj, int line)
 {
     uint32_t idx = (cons_obj >> 2) % CL_SRCLOC_SIZE;
-    cl_srcloc_table[idx].cons_obj = cons_obj;
+    /* Ordered writes: this diagnostics-only table is written without a lock
+     * (concurrent reader threads), so invalidate the key FIRST — a
+     * concurrent cl_srcloc_lookup then never pairs the new key with the old
+     * entry's line/file. */
+    cl_srcloc_table[idx].cons_obj = CL_NIL;
     cl_srcloc_table[idx].line = (uint16_t)line;
     cl_srcloc_table[idx].file_id = cl_current_file_id;
+    cl_srcloc_table[idx].cons_obj = cons_obj;
 }
 
 /* Skip whitespace and comments */
@@ -789,8 +794,7 @@ check_keyword:
         return CL_NIL;
     }
 
-intern_symbol:
-    /* Regular symbol (also reached via goto for escaped tokens) */
+    /* Regular symbol */
     return cl_intern(buf, (uint32_t)len);
 }
 

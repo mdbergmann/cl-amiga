@@ -567,6 +567,9 @@ void cl_gc_safe_mutex_lock(void *mutex);
 
 /* TLV table operations */
 CL_Obj cl_tlv_get(CL_Thread *t, CL_Obj sym);
+/* C-level dynamic bind (thread-local, like OP_DYNBIND); pair with
+ * cl_dynbind_restore_to(mark) from vm.h. */
+void   cl_dynbind_c(CL_Obj sym, CL_Obj val);
 void   cl_tlv_set(CL_Thread *t, CL_Obj sym, CL_Obj val);
 void   cl_tlv_remove(CL_Thread *t, CL_Obj sym);
 /* Rebuild the TLV table after a compacting GC relocated symbols (the table is

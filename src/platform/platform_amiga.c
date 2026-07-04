@@ -1384,7 +1384,7 @@ static int reactor_ensure(void)
 
 /* ===== Client side (any thread): marshal a request and block on the reply ===== */
 
-static void sock_call(SockReq *req)
+static void sock_call_impl(SockReq *req, int use_safe_region)
 {
     struct MsgPort rp;
     BYTE sig;
@@ -1413,11 +1413,19 @@ static void sock_call(SockReq *req)
     req->msg.mn_ReplyPort    = &rp;
 
     PutMsg(reactor_port, &req->msg);
-    cl_gc_enter_safe_region();
+    /* The GC-sweep close path must not enter a safe region (the sweeping
+     * thread owns the collection); the reactor is a plain exec Task, not a
+     * stopped Lisp thread, so the Wait completes under STW regardless. */
+    if (use_safe_region) cl_gc_enter_safe_region();
     WaitPort(&rp);
-    cl_gc_leave_safe_region();
+    if (use_safe_region) cl_gc_leave_safe_region();
     GetMsg(&rp);
     FreeSignal(sig);
+}
+
+static void sock_call(SockReq *req)
+{
+    sock_call_impl(req, 1);
 }
 
 /* Flush the slot's pending write buffer to the wire via the reactor. */
@@ -1474,6 +1482,18 @@ void platform_socket_close(PlatformSocket sh)
     memset(&req, 0, sizeof(req));
     req.op = REQ_CLOSE; req.slot = sh;
     sock_call(&req);
+}
+
+void platform_socket_close_gc(PlatformSocket sh)
+{
+    /* Sweep-finalizer variant: skip the flush (buffered output on an
+     * unreachable stream is forfeit; sock_flush also brackets a safe
+     * region) and Wait without entering a safe region. */
+    SockReq req;
+    if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE) return;
+    memset(&req, 0, sizeof(req));
+    req.op = REQ_CLOSE; req.slot = sh;
+    sock_call_impl(&req, 0);
 }
 
 int platform_socket_read(PlatformSocket sh)
