@@ -1,6 +1,6 @@
 # GC Audit Tier 4 — Fix Plan
 
-Status: **IN PROGRESS** — Batches 1-6 applied (6a 8cd41de, 6b 2325548, 6c 561cf93; Amiga 3566/0); batch 7 (conformance tail) applied as 7a 74e2fc8, 7b 85a387e, 7c (this commit) — pending final Amiga FS-UAE run + merge.
+Status: **DONE — MERGED to master (1e20dfd, 2026-07-04)**. All batches applied: 1-5, 6 (6a 8cd41de, 6b 2325548, 6c 561cf93), 7 (7a 74e2fc8, 7b 85a387e, 7c 20cb5d3, fixup 1513fa8). Boundary gates: host fast tier + gc-stress 351/351 + host-cold-test + Amiga FS-UAE 3587/0. No FASL bump anywhere in the sweep.
 Findings source: 12-agent audit sweep 2026-07-03 (session 5580131b). ~85 findings, ~25 CRITICAL.
 Branch: `fix/tier4-gc-corruption` (create from master at c70b4e4 or later).
 
