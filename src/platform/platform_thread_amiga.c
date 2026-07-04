@@ -67,10 +67,24 @@ typedef struct {
 static void amiga_thread_entry(void)
 {
     struct Task *me = FindTask(NULL);
-    AmigaThread *at = (AmigaThread *)me->tc_UserData;
+    AmigaThread *at;
     struct Task *joiner_local;
     BYTE sig_local;
     int free_self;
+    LONG spins = 0;
+
+    /* The parent stores tc_UserData under Forbid() — but CreateNewProc
+     * can Wait() internally (DOS packet round-trip), and Wait() BREAKS a
+     * Forbid(), so this child may start running before the parent's
+     * store.  dos.library zeroes the new process's Task fields, so poll
+     * until the parent's non-NULL store becomes visible.  Bounded (~60s
+     * of Delay(1) ticks) so a genuinely broken state exits instead of
+     * spinning a zombie process forever. */
+    while (!(at = (AmigaThread *)me->tc_UserData)) {
+        if (++spins > 3000)
+            return;
+        Delay(1);
+    }
 
     at->result = at->func(at->arg);
 

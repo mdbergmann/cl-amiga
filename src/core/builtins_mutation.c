@@ -370,13 +370,11 @@ static CL_Obj bi_get_defsetf_setter(CL_Obj *args, int n)
 
 static CL_Obj bi_register_setf_expander(CL_Obj *args, int n)
 {
-    /* (%register-setf-expander accessor-sym expander-fn) */
-    CL_Obj pair;
+    /* (%register-setf-expander accessor-sym expander-fn)
+     * Cons outside the write lock (STW-vs-rwlock deadlock — see
+     * cl_table_prepend_locked). */
     CL_UNUSED(n);
-    pair = cl_cons(args[0], args[1]);
-    cl_tables_wrlock();
-    setf_expander_table = cl_cons(pair, setf_expander_table);
-    cl_tables_rwunlock();
+    cl_table_prepend_locked(&setf_expander_table, cl_cons(args[0], args[1]));
     return args[0];
 }
 

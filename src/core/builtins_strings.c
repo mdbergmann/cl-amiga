@@ -666,8 +666,11 @@ static CL_Obj bi_string_trim(CL_Obj *args, int n)
     CL_Obj set, str;
     uint32_t start, end;
     CL_UNUSED(n);
-    set = args[0];
+    /* GC SAFETY (audit tier 4, FS10): coerce_to_string_obj allocates for a
+     * character/symbol designator — read the char-bag from the rooted
+     * args[0] slot AFTER the coerce, not before. */
     str = coerce_to_string_obj(args[1], "STRING-TRIM");
+    set = args[0];
     start = 0;
     end = cl_string_length(str);
     while (start < end && trim_char_in_set(cl_string_char_at(str, start), set)) start++;
@@ -680,8 +683,9 @@ static CL_Obj bi_string_left_trim(CL_Obj *args, int n)
     CL_Obj set, str;
     uint32_t start, len;
     CL_UNUSED(n);
-    set = args[0];
+    /* GC SAFETY (audit tier 4, FS10): re-read set after the allocating coerce */
     str = coerce_to_string_obj(args[1], "STRING-LEFT-TRIM");
+    set = args[0];
     start = 0;
     len = cl_string_length(str);
     while (start < len && trim_char_in_set(cl_string_char_at(str, start), set)) start++;
@@ -693,8 +697,9 @@ static CL_Obj bi_string_right_trim(CL_Obj *args, int n)
     CL_Obj set, str;
     uint32_t end;
     CL_UNUSED(n);
-    set = args[0];
+    /* GC SAFETY (audit tier 4, FS10): re-read set after the allocating coerce */
     str = coerce_to_string_obj(args[1], "STRING-RIGHT-TRIM");
+    set = args[0];
     end = cl_string_length(str);
     while (end > 0 && trim_char_in_set(cl_string_char_at(str, end - 1), set)) end--;
     return cl_string_substring(str, 0, end);
@@ -1020,37 +1025,22 @@ static void concat_iterate(CL_Obj seq, concat_cb cb, void *ctx)
     CL_GC_UNPROTECT(1);
 }
 
-/* Callback context for string result */
-#ifdef CL_WIDE_STRINGS
-typedef struct { uint32_t *buf; uint32_t pos; uint32_t cap; int has_wide; } concat_str_ctx;
-static void concat_str_cb(CL_Obj elem, void *ctx_)
-{
-    concat_str_ctx *ctx = (concat_str_ctx *)ctx_;
-    if (CL_CHAR_P(elem)) {
-        int code = CL_CHAR_VAL(elem);
-        if (ctx->pos < ctx->cap)
-            ctx->buf[ctx->pos++] = (uint32_t)code;
-        if (code > 0x7F) ctx->has_wide = 1;
-    } else {
-        cl_error(CL_ERR_TYPE, "CONCATENATE: element is not a character for string result");
-    }
-}
-#else
-typedef struct { char *buf; uint32_t pos; uint32_t cap; } concat_str_ctx;
-static void concat_str_cb(CL_Obj elem, void *ctx_)
-{
-    concat_str_ctx *ctx = (concat_str_ctx *)ctx_;
-    if (CL_CHAR_P(elem)) {
-        if (ctx->pos < ctx->cap)
-            ctx->buf[ctx->pos++] = (char)CL_CHAR_VAL(elem);
-    } else {
-        cl_error(CL_ERR_TYPE, "CONCATENATE: element is not a character for string result");
-    }
-}
-#endif
-
 /* Callback context for vector result */
 typedef struct { CL_Obj vec; uint32_t pos; } concat_vec_ctx;
+
+/* String result: stage the characters into a GC vector (shared concat_vec_ctx
+ * shape).  A fixed C buffer silently truncated results past 4096 chars and,
+ * in wide builds, put a ~20KB frame on the (64K Amiga) C stack. */
+static void concat_str_vec_cb(CL_Obj elem, void *ctx_)
+{
+    concat_vec_ctx *ctx = (concat_vec_ctx *)ctx_;
+    CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(ctx->vec);
+    if (!CL_CHAR_P(elem))
+        cl_error(CL_ERR_TYPE,
+                 "CONCATENATE: element is not a character for string result");
+    if (ctx->pos < cl_vector_active_length(v))
+        cl_vector_data(v)[ctx->pos++] = elem;
+}
 static void concat_vec_cb(CL_Obj elem, void *ctx_)
 {
     concat_vec_ctx *ctx = (concat_vec_ctx *)ctx_;
@@ -1168,12 +1158,22 @@ static CL_Obj bi_concatenate(CL_Obj *args, int n)
                 /* (vector elt-type [length]) — capture the length constraint. */
                 CL_Obj lenarg = (CL_NULL_P(rest) || CL_NULL_P(cl_cdr(rest)))
                                     ? CL_NIL : cl_car(cl_cdr(rest));
+                int is_char, is_bit;
                 if (CL_FIXNUM_P(lenarg)) len_con = CL_FIXNUM_VAL(lenarg);
-                if (!CL_NULL_P(rest) &&
-                    concat_elt_type_is_char(cl_car(rest), 8))
+                /* GC SAFETY (audit tier 4, FS11): the elt-type checks can run
+                 * a deftype expander (cl_vm_apply — compacts), e.g.
+                 * (concatenate '(vector octet) …).  Keep the compound type
+                 * rooted and re-derive rest after each check. */
+                CL_GC_PROTECT(result_type);
+                is_char = !CL_NULL_P(rest) &&
+                          concat_elt_type_is_char(cl_car(rest), 8);
+                rest = cl_cdr(result_type);
+                is_bit = !is_char && !CL_NULL_P(rest) &&
+                         concat_elt_type_is_bit(cl_car(rest), 8);
+                CL_GC_UNPROTECT(1);
+                if (is_char)
                     result_type = cl_intern_in("STRING", 6, cl_package_cl);
-                else if (!CL_NULL_P(rest) &&
-                         concat_elt_type_is_bit(cl_car(rest), 8))
+                else if (is_bit)
                     result_type = cl_intern_in("BIT-VECTOR", 10, cl_package_cl);
                 else
                     result_type = cl_intern_in("VECTOR", 6, cl_package_cl);
@@ -1200,27 +1200,37 @@ static CL_Obj bi_concatenate(CL_Obj *args, int n)
     /* String result types */
     if (strcmp(tname, "STRING") == 0 || strcmp(tname, "SIMPLE-STRING") == 0 ||
         strcmp(tname, "BASE-STRING") == 0 || strcmp(tname, "SIMPLE-BASE-STRING") == 0) {
-#ifdef CL_WIDE_STRINGS
-        uint32_t cpbuf[4096];
-        concat_str_ctx ctx = { cpbuf, 0, 4096, 0 };
+        uint32_t total = concat_total_length(args, n);
+        concat_vec_ctx ctx;
+        CL_Obj result;
+        uint32_t j;
+        ctx.vec = cl_make_vector(total);
+        ctx.pos = 0;
+        CL_GC_PROTECT(ctx.vec);
         for (i = 1; i < n; i++)
-            concat_iterate(args[i], concat_str_cb, &ctx);
-        if (ctx.has_wide)
-            return cl_make_wide_string(cpbuf, ctx.pos);
+            concat_iterate(args[i], concat_str_vec_cb, &ctx);
         {
-            char buf[4096];
-            uint32_t j;
-            for (j = 0; j < ctx.pos; j++)
-                buf[j] = (char)cpbuf[j];
-            return cl_make_string(buf, ctx.pos);
-        }
+            CL_Vector *kv = (CL_Vector *)CL_OBJ_TO_PTR(ctx.vec);
+            CL_Obj *kd = cl_vector_data(kv);
+#ifdef CL_WIDE_STRINGS
+            int wide = 0;
+            for (j = 0; j < ctx.pos; j++) {
+                if (CL_CHAR_VAL(kd[j]) > 0x7F) { wide = 1; break; }
+            }
+            result = wide ? cl_make_wide_string(NULL, ctx.pos)
+                          : cl_make_string(NULL, ctx.pos);
 #else
-        char buf[4096];
-        concat_str_ctx ctx = { buf, 0, sizeof(buf) };
-        for (i = 1; i < n; i++)
-            concat_iterate(args[i], concat_str_cb, &ctx);
-        return cl_make_string(buf, ctx.pos);
+            result = cl_make_string(NULL, ctx.pos);
 #endif
+            /* Re-derive after the result allocation, then fill (no
+             * allocation in this loop, so kd stays valid). */
+            kv = (CL_Vector *)CL_OBJ_TO_PTR(ctx.vec);
+            kd = cl_vector_data(kv);
+            for (j = 0; j < ctx.pos; j++)
+                cl_string_set_char_at(result, j, CL_CHAR_VAL(kd[j]));
+        }
+        CL_GC_UNPROTECT(1);
+        return result;
     }
 
     /* Vector result types */
@@ -1508,61 +1518,36 @@ static CL_Obj bi_write_to_string(CL_Obj *args, int n)
 {
     char buf[1024];
     int len, i;
-    CL_Symbol *se = NULL, *sr = NULL, *sb = NULL, *sx = NULL;
-    CL_Symbol *sl = NULL, *sn = NULL, *sc = NULL, *sg = NULL;
-    CL_Symbol *sa = NULL, *si = NULL, *sp = NULL, *sm = NULL;
-    CL_Obj prev_e, prev_r, prev_b, prev_x, prev_l, prev_n;
-    CL_Obj prev_c, prev_g, prev_a, prev_i, prev_p, prev_m;
+    /* Keyword overrides are THREAD-LOCAL dynamic binds (tier-4 FS16, was
+     * FS12's rooted global save/restore): mutating the global cells raced
+     * every peer thread's printer between set and restore.  The dyn stack
+     * is GC-marked, so no manual rooting of saved values is needed. */
+    int dyn_mark = cl_dyn_top;
     int has_keywords = (n > 1);
 
     if (has_keywords) {
-        prev_e = cl_symbol_value(SYM_PRINT_ESCAPE);
-        prev_r = cl_symbol_value(SYM_PRINT_READABLY);
-        prev_b = cl_symbol_value(SYM_PRINT_BASE);
-        prev_x = cl_symbol_value(SYM_PRINT_RADIX);
-        prev_l = cl_symbol_value(SYM_PRINT_LEVEL);
-        prev_n = cl_symbol_value(SYM_PRINT_LENGTH);
-        prev_c = cl_symbol_value(SYM_PRINT_CASE);
-        prev_g = cl_symbol_value(SYM_PRINT_GENSYM);
-        prev_a = cl_symbol_value(SYM_PRINT_ARRAY);
-        prev_i = cl_symbol_value(SYM_PRINT_CIRCLE);
-        prev_p = cl_symbol_value(SYM_PRINT_PRETTY);
-        prev_m = cl_symbol_value(SYM_PRINT_RIGHT_MARGIN);
-
         for (i = 1; i + 1 < n; i += 2) {
             CL_Obj kw = args[i];
             CL_Obj val = args[i + 1];
-            if (kw == KW_WTS_ESCAPE)        cl_set_symbol_value(SYM_PRINT_ESCAPE, val);
-            else if (kw == KW_WTS_READABLY) cl_set_symbol_value(SYM_PRINT_READABLY, val);
-            else if (kw == KW_WTS_BASE)     cl_set_symbol_value(SYM_PRINT_BASE, val);
-            else if (kw == KW_WTS_RADIX)    cl_set_symbol_value(SYM_PRINT_RADIX, val);
-            else if (kw == KW_WTS_LEVEL)    cl_set_symbol_value(SYM_PRINT_LEVEL, val);
-            else if (kw == KW_WTS_LENGTH)   cl_set_symbol_value(SYM_PRINT_LENGTH, val);
-            else if (kw == KW_WTS_CASE)     cl_set_symbol_value(SYM_PRINT_CASE, val);
-            else if (kw == KW_WTS_GENSYM)   cl_set_symbol_value(SYM_PRINT_GENSYM, val);
-            else if (kw == KW_WTS_ARRAY)    cl_set_symbol_value(SYM_PRINT_ARRAY, val);
-            else if (kw == KW_WTS_CIRCLE)   cl_set_symbol_value(SYM_PRINT_CIRCLE, val);
-            else if (kw == KW_WTS_PRETTY)   cl_set_symbol_value(SYM_PRINT_PRETTY, val);
-            else if (kw == KW_WTS_RIGHT_MARGIN) cl_set_symbol_value(SYM_PRINT_RIGHT_MARGIN, val);
+            if (kw == KW_WTS_ESCAPE)        cl_dynbind_c(SYM_PRINT_ESCAPE, val);
+            else if (kw == KW_WTS_READABLY) cl_dynbind_c(SYM_PRINT_READABLY, val);
+            else if (kw == KW_WTS_BASE)     cl_dynbind_c(SYM_PRINT_BASE, val);
+            else if (kw == KW_WTS_RADIX)    cl_dynbind_c(SYM_PRINT_RADIX, val);
+            else if (kw == KW_WTS_LEVEL)    cl_dynbind_c(SYM_PRINT_LEVEL, val);
+            else if (kw == KW_WTS_LENGTH)   cl_dynbind_c(SYM_PRINT_LENGTH, val);
+            else if (kw == KW_WTS_CASE)     cl_dynbind_c(SYM_PRINT_CASE, val);
+            else if (kw == KW_WTS_GENSYM)   cl_dynbind_c(SYM_PRINT_GENSYM, val);
+            else if (kw == KW_WTS_ARRAY)    cl_dynbind_c(SYM_PRINT_ARRAY, val);
+            else if (kw == KW_WTS_CIRCLE)   cl_dynbind_c(SYM_PRINT_CIRCLE, val);
+            else if (kw == KW_WTS_PRETTY)   cl_dynbind_c(SYM_PRINT_PRETTY, val);
+            else if (kw == KW_WTS_RIGHT_MARGIN) cl_dynbind_c(SYM_PRINT_RIGHT_MARGIN, val);
         }
     }
 
     len = cl_prin1_to_string(args[0], buf, sizeof(buf));
 
-    if (has_keywords) {
-        cl_set_symbol_value(SYM_PRINT_ESCAPE, prev_e);
-        cl_set_symbol_value(SYM_PRINT_READABLY, prev_r);
-        cl_set_symbol_value(SYM_PRINT_BASE, prev_b);
-        cl_set_symbol_value(SYM_PRINT_RADIX, prev_x);
-        cl_set_symbol_value(SYM_PRINT_LEVEL, prev_l);
-        cl_set_symbol_value(SYM_PRINT_LENGTH, prev_n);
-        cl_set_symbol_value(SYM_PRINT_CASE, prev_c);
-        cl_set_symbol_value(SYM_PRINT_GENSYM, prev_g);
-        cl_set_symbol_value(SYM_PRINT_ARRAY, prev_a);
-        cl_set_symbol_value(SYM_PRINT_CIRCLE, prev_i);
-        cl_set_symbol_value(SYM_PRINT_PRETTY, prev_p);
-        cl_set_symbol_value(SYM_PRINT_RIGHT_MARGIN, prev_m);
-    }
+    if (has_keywords)
+        cl_dynbind_restore_to(dyn_mark);
 
     return cl_make_string(buf, (uint32_t)len);
 }

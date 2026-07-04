@@ -144,40 +144,61 @@ CL_Obj cl_package_find_symbol_nolock(const char *name, uint32_t len, CL_Obj pack
     return CL_UNBOUND;
 }
 
-static void import_symbol_nolock(CL_Obj sym, CL_Obj package)
+/* Link SYMBOL into PACKAGE's own bucket chain through the pre-allocated
+ * cons CELL — plain stores only, NO allocation.  This is the only way a
+ * symbol may be added while holding cl_package_rwlock: allocating under
+ * the write lock can trigger a stop-the-world GC that waits for every
+ * peer thread to park, while a peer blocked on the rdlock (any intern
+ * fast path) can never park — a circular STW-vs-rwlock hang.  Callers
+ * cons CELL outside the lock; the raw pointers derived here are stable
+ * because no allocation (hence no compaction) happens under the lock. */
+static void package_link_symbol_cell(CL_Obj package, CL_Obj symbol,
+                                     CL_Obj cell)
+{
+    CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
+    CL_Vector *tbl = (CL_Vector *)CL_OBJ_TO_PTR(pkg->symbols);
+    CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(symbol);
+    CL_Cons *c = (CL_Cons *)CL_OBJ_TO_PTR(cell);
+    uint32_t idx = sym->hash % tbl->length;
+    c->car = symbol;
+    c->cdr = tbl->data[idx];
+    tbl->data[idx] = cell;
+    pkg->sym_count++;
+}
+
+/* Import SYM into PACKAGE's own table via the pre-allocated CELL (consed
+ * by the caller OUTSIDE the package lock — see package_link_symbol_cell).
+ * Returns 0 on success or no-op, -1 on a name conflict.  Deliberately
+ * does NOT cl_error here: the callers hold cl_package_rwlock, and a
+ * longjmp from under the write lock would leak it and deadlock every
+ * later intern. */
+static int import_symbol_nolock(CL_Obj sym, CL_Obj package, CL_Obj cell)
 {
     CL_Symbol *s;
     CL_String *sname;
     CL_Obj existing;
 
-    if (CL_NULL_P(sym)) return;
+    if (CL_NULL_P(sym)) return 0;
     s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     sname = (CL_String *)CL_OBJ_TO_PTR(s->name);
 
     existing = find_own_symbol(sname->data, sname->length, package);
     if (existing != CL_UNBOUND) {
-        if (existing == sym) return;
-        cl_error(CL_ERR_GENERAL, "IMPORT conflict: symbol already present in package");
-        return;
+        if (existing == sym) return 0;
+        return -1;   /* conflict — caller reports after unlocking */
     }
 
     {
         CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
         CL_Vector *tbl = (CL_Vector *)CL_OBJ_TO_PTR(pkg->symbols);
+        CL_Cons *c = (CL_Cons *)CL_OBJ_TO_PTR(cell);
         uint32_t idx = s->hash % tbl->length;
-        CL_Obj chain;
-
-        CL_GC_PROTECT(package);
-        CL_GC_PROTECT(sym);
-        chain = cl_cons(sym, tbl->data[idx]);
-        /* Re-derive after the cons: the store must hit the MOVED table,
-         * not the pre-compaction location (cf. cl_package_add_symbol). */
-        pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
-        tbl = (CL_Vector *)CL_OBJ_TO_PTR(pkg->symbols);
-        tbl->data[idx] = chain;
+        c->car = sym;
+        c->cdr = tbl->data[idx];
+        tbl->data[idx] = cell;
         pkg->sym_count++;
-        CL_GC_UNPROTECT(2);
     }
+    return 0;
 }
 
 /* ---- public API ---- */
@@ -209,29 +230,27 @@ CL_Obj cl_make_package(const char *name)
     return CL_PTR_TO_OBJ(pkg);
 }
 
+/* Non-allocating variant: link SYMBOL as a present symbol of PACKAGE
+ * (setting its home package) through the pre-allocated CELL.  Safe to
+ * call while holding cl_package_rwlock — see package_link_symbol_cell. */
+void cl_package_add_symbol_cell(CL_Obj package, CL_Obj symbol, CL_Obj cell)
+{
+    package_link_symbol_cell(package, symbol, cell);
+    ((CL_Symbol *)CL_OBJ_TO_PTR(symbol))->package = package;
+}
+
+/* Allocating convenience wrapper — must NOT be called while holding
+ * cl_package_rwlock (the cons can trigger a stop-the-world GC; see
+ * package_link_symbol_cell).  Lock-free callers (boot, single-threaded
+ * setup) only. */
 void cl_package_add_symbol(CL_Obj package, CL_Obj symbol)
 {
-    CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
-    CL_Vector *tbl = (CL_Vector *)CL_OBJ_TO_PTR(pkg->symbols);
-    CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(symbol);
-    uint32_t idx = sym->hash % tbl->length;
-    CL_Obj chain = tbl->data[idx];
-
-    /* Prepend to bucket — cl_cons may trigger GC/compaction */
+    CL_Obj cell;
     CL_GC_PROTECT(package);
     CL_GC_PROTECT(symbol);
-    CL_GC_PROTECT(chain);
-    chain = cl_cons(symbol, chain);
-    CL_GC_UNPROTECT(3);
-
-    /* Re-derive pointers after potential GC/compaction */
-    pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
-    tbl = (CL_Vector *)CL_OBJ_TO_PTR(pkg->symbols);
-    sym = (CL_Symbol *)CL_OBJ_TO_PTR(symbol);
-    tbl->data[idx] = chain;
-
-    sym->package = package;
-    pkg->sym_count++;
+    cell = cl_cons(symbol, CL_NIL);
+    CL_GC_UNPROTECT(2);
+    cl_package_add_symbol_cell(package, symbol, cell);
 }
 
 /* Public API: returns CL_NIL when not found (preserved historical contract
@@ -353,27 +372,39 @@ CL_Obj cl_find_package(const char *name, uint32_t len)
 void cl_register_package(CL_Obj pkg)
 {
     CL_Package *p = (CL_Package *)CL_OBJ_TO_PTR(pkg);
-    CL_Obj entry;
+    CL_Obj entry, cell;
 
+    /* Both conses run OUTSIDE the write lock; the registry is linked with
+     * plain stores inside it (allocating under cl_package_rwlock risks an
+     * STW-vs-rwlock deadlock — see package_link_symbol_cell). */
     CL_GC_PROTECT(pkg);
     entry = cl_cons(p->name, pkg);
-    CL_GC_PROTECT(entry);
+    cell = cl_cons(entry, CL_NIL);
+    CL_GC_UNPROTECT(1);
     if (cl_package_rwlock) platform_rwlock_wrlock(cl_package_rwlock);
-    cl_package_registry = cl_cons(entry, cl_package_registry);
+    ((CL_Cons *)CL_OBJ_TO_PTR(cell))->cdr = cl_package_registry;
+    cl_package_registry = cell;
     if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
-    CL_GC_UNPROTECT(2);
 }
 
 void cl_export_symbol(CL_Obj sym, CL_Obj package)
 {
     CL_Symbol *s;
     CL_String *sname;
+    CL_Obj cell_import, cell_export;
+    int conflict;
     if (CL_NULL_P(sym)) return;
-    /* sym and package are read again after import_symbol_nolock and the
-     * exported-list cons — both allocate, so root the parameters for the
-     * whole function and re-derive raw pointers after each alloc. */
+    /* Pre-cons both cells the locked section might need OUTSIDE the lock
+     * (allocating under cl_package_rwlock risks an STW-vs-rwlock deadlock
+     * — see package_link_symbol_cell).  An unused cell simply becomes
+     * garbage.  All raw pointers are derived after the conses; they stay
+     * valid through the lock because no allocation happens under it. */
     CL_GC_PROTECT(sym);
     CL_GC_PROTECT(package);
+    cell_import = cl_cons(sym, CL_NIL);
+    CL_GC_PROTECT(cell_import);
+    cell_export = cl_cons(sym, CL_NIL);
+    CL_GC_UNPROTECT(3);
     s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     sname = (CL_String *)CL_OBJ_TO_PTR(s->name);
 
@@ -382,26 +413,27 @@ void cl_export_symbol(CL_Obj sym, CL_Obj package)
     /* If symbol is not present in package's own table, import it first.
        Per CL spec: "If the symbol is accessible via use-package,
        it is first imported into package, after which it is exported." */
+    conflict = 0;
     if (find_own_symbol(sname->data, sname->length, package) == CL_UNBOUND) {
-        import_symbol_nolock(sym, package);
+        conflict = import_symbol_nolock(sym, package, cell_import);
     }
 
     /* Add to package's exported list (idempotent). */
-    if (!exported_p_nolock(sym, package)) {
-        CL_Package *pkg;
-        CL_Obj chain;
-        chain = cl_cons(sym, ((CL_Package *)CL_OBJ_TO_PTR(package))->exported_symbols);
-        pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
-        pkg->exported_symbols = chain;
+    if (!conflict && !exported_p_nolock(sym, package)) {
+        CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
+        ((CL_Cons *)CL_OBJ_TO_PTR(cell_export))->cdr = pkg->exported_symbols;
+        pkg->exported_symbols = cell_export;
     }
     /* Keep the legacy global flag in sync (used by printer / describe
      * fast paths and by FASL loader as a "any package exports this"
      * heuristic).  Source of truth for find-symbol is the per-package
      * list above. */
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
-    s->flags |= CL_SYM_EXPORTED;
+    if (!conflict)
+        s->flags |= CL_SYM_EXPORTED;
     if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
-    CL_GC_UNPROTECT(2);
+    if (conflict)
+        cl_error(CL_ERR_GENERAL,
+                 "EXPORT conflict: symbol already present in package");
 }
 
 /* Unexport SYM from PACKAGE.  Removes SYM from PACKAGE's exported list
@@ -437,46 +469,86 @@ void cl_unexport_symbol(CL_Obj sym, CL_Obj package)
 
 void cl_import_symbol(CL_Obj sym, CL_Obj package)
 {
+    CL_Obj cell;
+    int conflict;
     if (CL_NULL_P(sym)) return;
+    /* Pre-cons the bucket cell outside the lock; report a conflict only
+     * AFTER unlocking (a longjmp from under the write lock would leak it
+     * and deadlock every later intern). */
+    CL_GC_PROTECT(sym);
+    CL_GC_PROTECT(package);
+    cell = cl_cons(sym, CL_NIL);
+    CL_GC_UNPROTECT(2);
     if (cl_package_rwlock) platform_rwlock_wrlock(cl_package_rwlock);
-    import_symbol_nolock(sym, package);
+    conflict = import_symbol_nolock(sym, package, cell);
     if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
+    if (conflict)
+        cl_error(CL_ERR_GENERAL,
+                 "IMPORT conflict: symbol already present in package");
 }
 
 void cl_shadow_symbol(const char *name, uint32_t len, CL_Obj package)
 {
     CL_Obj existing;
+    char namebuf[256];
+    char *heapname = NULL;
+    uint32_t h;
 
-    if (cl_package_rwlock) platform_rwlock_wrlock(cl_package_rwlock);
+    /* NAME may point INTO the moving heap (a Lisp string's data); the
+     * allocations below can relocate it, and the re-check under the lock
+     * reads it after those allocations.  Copy to GC-immune C memory
+     * up-front (mirrors cl_intern_in). */
+    if (len < sizeof(namebuf)) {
+        memcpy(namebuf, name, len);
+        name = namebuf;
+    } else {
+        heapname = (char *)platform_alloc(len);
+        if (heapname) {
+            memcpy(heapname, name, len);
+            name = heapname;
+        }
+    }
+    h = cl_hash_string(name, len);
+
+    /* Fast path: already directly present. */
+    if (cl_package_rwlock) platform_rwlock_rdlock(cl_package_rwlock);
     existing = find_own_symbol(name, len, package);
-
+    if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
     if (existing != CL_UNBOUND) {
-        /* Symbol already directly present — nothing to do */
-        if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
+        if (heapname) platform_free(heapname);
         return;
     }
 
-    /* Create new symbol in this package.  package is protected BEFORE the
-     * first alloc (the old code protected it after cl_make_string — rooting
-     * an already-stale value), and the hash is computed from the caller's
-     * name buffer before anything can move it. */
+    /* Create the symbol AND its bucket cell OUTSIDE the lock (allocating
+     * under cl_package_rwlock risks an STW-vs-rwlock deadlock — see
+     * package_link_symbol_cell), then re-check + link with plain stores
+     * inside it (mirrors the cl_intern_in slow path). */
     {
-        uint32_t h = cl_hash_string(name, len);
         CL_Obj name_str;
         CL_Obj sym;
+        CL_Obj cell;
         CL_Symbol *s;
 
         CL_GC_PROTECT(package);
         name_str = cl_make_string(name, len);
         CL_GC_PROTECT(name_str);
         sym = cl_make_symbol(name_str);
-        CL_GC_UNPROTECT(2);
+        CL_GC_PROTECT(sym);
+        cell = cl_cons(sym, CL_NIL);
+        CL_GC_UNPROTECT(3);
 
         s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
         s->hash = h;
-        cl_package_add_symbol(package, sym);
+
+        if (cl_package_rwlock) platform_rwlock_wrlock(cl_package_rwlock);
+        existing = find_own_symbol(name, len, package);
+        if (existing == CL_UNBOUND)
+            cl_package_add_symbol_cell(package, sym, cell);
+        /* else: raced with a concurrent intern/shadow — theirs wins,
+         * our fresh symbol and cell become garbage. */
+        if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
     }
-    if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
+    if (heapname) platform_free(heapname);
 }
 
 void cl_use_package(CL_Obj pkg_to_use, CL_Obj using_pkg)
@@ -486,30 +558,36 @@ void cl_use_package(CL_Obj pkg_to_use, CL_Obj using_pkg)
 
     if (pkg_to_use == using_pkg) return;
 
-    if (cl_package_rwlock) platform_rwlock_wrlock(cl_package_rwlock);
-    user = (CL_Package *)CL_OBJ_TO_PTR(using_pkg);
-
-    /* Check if already in use-list */
-    list = user->use_list;
-    while (!CL_NULL_P(list)) {
-        if (cl_car(list) == pkg_to_use) {
-            if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
-            return; /* already using */
-        }
-        list = cl_cdr(list);
-    }
-
-    /* Add to use-list.  The cons can compact — re-derive user before the
-     * store so it hits the moved package, not the old location. */
-    CL_GC_PROTECT(using_pkg);
-    CL_GC_PROTECT(pkg_to_use);
+    /* Pre-cons the use-list cell OUTSIDE the lock (allocating under
+     * cl_package_rwlock risks an STW-vs-rwlock deadlock — see
+     * package_link_symbol_cell); the dup-check and the link both run
+     * inside it with plain stores.  On the already-using path the fresh
+     * cell simply becomes garbage. */
     {
-        CL_Obj cell = cl_cons(pkg_to_use, user->use_list);
+        CL_Obj cell;
+        CL_GC_PROTECT(using_pkg);
+        CL_GC_PROTECT(pkg_to_use);
+        cell = cl_cons(pkg_to_use, CL_NIL);
+        CL_GC_UNPROTECT(2);
+
+        if (cl_package_rwlock) platform_rwlock_wrlock(cl_package_rwlock);
         user = (CL_Package *)CL_OBJ_TO_PTR(using_pkg);
+
+        /* Check if already in use-list */
+        list = user->use_list;
+        while (!CL_NULL_P(list)) {
+            if (cl_car(list) == pkg_to_use) {
+                if (cl_package_rwlock)
+                    platform_rwlock_unlock(cl_package_rwlock);
+                return; /* already using */
+            }
+            list = cl_cdr(list);
+        }
+
+        ((CL_Cons *)CL_OBJ_TO_PTR(cell))->cdr = user->use_list;
         user->use_list = cell;
+        if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
     }
-    CL_GC_UNPROTECT(2);
-    if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
 }
 
 void cl_unuse_package(CL_Obj pkg_to_unuse, CL_Obj using_pkg)
@@ -544,6 +622,19 @@ void cl_add_package_local_nickname(CL_Obj nick_str, CL_Obj target_pkg, CL_Obj in
     CL_Package *p;
     CL_String *ns;
     CL_Obj list;
+    CL_Obj entry, cell;
+
+    /* Pre-cons both cells OUTSIDE the lock (allocating under
+     * cl_package_rwlock risks an STW-vs-rwlock deadlock — see
+     * package_link_symbol_cell); dup-check and link run inside it with
+     * plain stores.  On the replace path the fresh cells become garbage. */
+    CL_GC_PROTECT(in_pkg);
+    CL_GC_PROTECT(nick_str);
+    CL_GC_PROTECT(target_pkg);
+    entry = cl_cons(nick_str, target_pkg);
+    CL_GC_PROTECT(entry);
+    cell = cl_cons(entry, CL_NIL);
+    CL_GC_UNPROTECT(4);
 
     if (cl_package_rwlock) platform_rwlock_wrlock(cl_package_rwlock);
     p = (CL_Package *)CL_OBJ_TO_PTR(in_pkg);
@@ -552,10 +643,10 @@ void cl_add_package_local_nickname(CL_Obj nick_str, CL_Obj target_pkg, CL_Obj in
 
     /* Check for duplicate — replace if exists */
     while (!CL_NULL_P(list)) {
-        CL_Obj entry = cl_car(list);
-        if (str_eq(cl_car(entry), ns->data, ns->length)) {
+        CL_Obj e = cl_car(list);
+        if (str_eq(cl_car(e), ns->data, ns->length)) {
             /* Replace target */
-            CL_Cons *c = (CL_Cons *)CL_OBJ_TO_PTR(entry);
+            CL_Cons *c = (CL_Cons *)CL_OBJ_TO_PTR(e);
             c->cdr = target_pkg;
             if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
             return;
@@ -563,22 +654,9 @@ void cl_add_package_local_nickname(CL_Obj nick_str, CL_Obj target_pkg, CL_Obj in
         list = cl_cdr(list);
     }
 
-    /* Prepend new entry.  Both conses can compact — re-derive p before
-     * each store (the old code stored through a p captured before the
-     * second cons). */
-    {
-        CL_Obj entry;
-        CL_GC_PROTECT(in_pkg);
-        CL_GC_PROTECT(nick_str);
-        CL_GC_PROTECT(target_pkg);
-        entry = cl_cons(nick_str, target_pkg);
-        CL_GC_PROTECT(entry);
-        p = (CL_Package *)CL_OBJ_TO_PTR(in_pkg);
-        entry = cl_cons(entry, p->local_nicknames);
-        p = (CL_Package *)CL_OBJ_TO_PTR(in_pkg);
-        p->local_nicknames = entry;
-        CL_GC_UNPROTECT(4);
-    }
+    /* Prepend the pre-built (nick . target) entry. */
+    ((CL_Cons *)CL_OBJ_TO_PTR(cell))->cdr = p->local_nicknames;
+    p->local_nicknames = cell;
     if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
 }
 

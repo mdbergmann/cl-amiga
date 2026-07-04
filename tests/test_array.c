@@ -941,6 +941,57 @@ TEST(adjust_array_repeated_regrow)
         /* len 13 + v[0]=0 + v[7]=14 + v[12]=104 */ 131);
 }
 
+TEST(adjust_array_negative_dimension)
+{
+    /* CLHS: a negative dimension must signal a catchable error — before the
+       tier-4 fix the (uint32_t) cast wrapped it to a near-2^32 length whose
+       alloc_size computation wrapped again inside cl_make_array: a silent
+       heap smash, not an error. */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case"
+        "  (adjust-array (make-array 3 :adjustable t) -1)"
+        "  (error () :caught))"), ":CAUGHT");
+    /* List-dims spelling takes the same wrap path */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case"
+        "  (adjust-array (make-array 3 :adjustable t) '(-7))"
+        "  (error () :caught))"), ":CAUGHT");
+}
+
+TEST(adjust_array_dimension_limit)
+{
+    /* Dimensions above ARRAY-DIMENSION-LIMIT are a catchable error too. */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case"
+        "  (adjust-array (make-array 3 :adjustable t)"
+        "                (1+ array-dimension-limit))"
+        "  (error () :caught))"), ":CAUGHT");
+}
+
+TEST(vector_push_extend_bad_extension)
+{
+    /* A negative extension arg used to wrap old_len + ext (uint32) and
+       allocate a tiny backing store whose new_data[fp] write landed out of
+       bounds — must be a catchable error instead. */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case"
+        "  (let ((v (make-array 2 :fill-pointer 2 :adjustable t)))"
+        "    (vector-push-extend 9 v -5))"
+        "  (error () :caught))"), ":CAUGHT");
+    /* An extension that would exceed ARRAY-DIMENSION-LIMIT errors (the
+       extension is a minimum, so clamping would silently violate it). */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case"
+        "  (let ((v (make-array 2 :fill-pointer 2 :adjustable t)))"
+        "    (vector-push-extend 9 v (+ array-dimension-limit 1)))"
+        "  (error () :caught))"), ":CAUGHT");
+    /* A legal explicit extension still works and honors the minimum. */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((v (make-array 2 :fill-pointer 2 :adjustable t)))"
+        "  (vector-push-extend 9 v 7)"
+        "  (aref v 2))"), 9);
+}
+
 /* ============================================================ */
 /* Displaced arrays                                             */
 /* ============================================================ */
@@ -1479,6 +1530,9 @@ int main(void)
     RUN(adjust_array_override_fp);
     RUN(adjust_array_repeated_regrow);
     RUN(adjust_array_identity);
+    RUN(adjust_array_negative_dimension);
+    RUN(adjust_array_dimension_limit);
+    RUN(vector_push_extend_bad_extension);
 
     /* Displaced arrays */
     RUN(displaced_vector_basic);

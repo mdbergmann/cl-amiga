@@ -6,12 +6,15 @@
 #include "core/symbol.h"
 #include "core/reader.h"
 #include "core/stream.h"
+#include "core/string_utils.h"
 #include "core/printer.h"
 #include "core/compiler.h"
 #include "core/vm.h"
 #include "core/builtins.h"
 #include "core/repl.h"
 #include "platform/platform.h"
+#include <stdlib.h>
+#include <string.h>
 
 static void setup(void)
 {
@@ -796,6 +799,156 @@ TEST(read_label_nil_dotpair)
     ASSERT(a == b);           /* shared, not patched incorrectly */
 }
 
+/* --- tier-4 batch 7b: token caps signal reader errors, not silent splits --- */
+
+static int read_signals_error(const char *str)
+{
+    int err;
+    CL_CATCH(err);
+    if (err == CL_ERR_NONE) {
+        reads(str);
+        CL_UNCATCH();
+        return 0;
+    }
+    CL_UNCATCH();
+    return 1;
+}
+
+TEST(long_symbol_token_errors)
+{
+    /* A >255-char token used to stop consuming at 255 and silently split
+     * into TWO tokens.  Now a reader error. */
+    char buf[512];
+    memset(buf, 'A', 300);
+    buf[300] = '\0';
+    ASSERT_EQ_INT(read_signals_error(buf), 1);
+    /* Exactly 255 chars still reads fine. */
+    memset(buf, 'B', 255);
+    buf[255] = '\0';
+    ASSERT_EQ_INT(read_signals_error(buf), 0);
+}
+
+TEST(long_number_token_errors)
+{
+    /* The infamous case: a 300-digit integer parsed as TWO bignums. */
+    char buf[512];
+    memset(buf, '5', 300);
+    buf[300] = '\0';
+    ASSERT_EQ_INT(read_signals_error(buf), 1);
+    /* #x-radix numbers share the cap. */
+    buf[0] = '#'; buf[1] = 'x';
+    memset(buf + 2, '1', 300);
+    buf[302] = '\0';
+    ASSERT_EQ_INT(read_signals_error(buf), 1);
+}
+
+TEST(long_string_literal_grows)
+{
+    /* >4095-byte string literals used to silently truncate at 4095 (and an
+     * intermediate fix errored, which broke loading log4cl — its
+     * pattern-layout docstring is >4KB and CLHS puts no limit on string
+     * literals).  The reader buffer grows: the full literal round-trips. */
+    char *buf = (char *)malloc(20050);
+    CL_Obj str;
+    buf[0] = '"';
+    memset(buf + 1, 'x', 20000);
+    buf[20001] = '"';
+    buf[20002] = '\0';
+    str = reads(buf);
+    free(buf);
+    ASSERT(CL_ANY_STRING_P(str));
+    ASSERT_EQ_INT((int)cl_string_length(str), 20000);
+    ASSERT_EQ_INT(cl_string_char_at(str, 19999), 'x');
+}
+
+TEST(string_literal_growth_survives_socket_read_timeout)
+{
+    /* read_char() can longjmp out from underneath read_string() when the
+     * underlying stream is a socket whose read deadline elapses mid-literal
+     * (stream_raise_timeout) -- bypassing every explicit free in the
+     * heap-growth path above and leaking the >4096-byte buffer.  Drive a
+     * real socket timeout while a literal is heap-grown, then prove the
+     * reader still works correctly afterward: the next read_string call on
+     * this thread must reclaim the orphaned buffer instead of leaking it
+     * (or corrupting state) on every subsequent aborted read. */
+    int bound_port = 0;
+    CL_Obj listener = cl_make_listen_stream(0, 1, &bound_port);
+    CL_Obj client, conn;
+    char chunk[5000];
+    int err;
+    char *buf2;
+    CL_Obj str;
+
+    ASSERT(!CL_NULL_P(listener));
+    ASSERT(bound_port > 0);
+
+    client = cl_make_socket_stream("127.0.0.1", bound_port, 0);
+    ASSERT(!CL_NULL_P(client));
+    conn = cl_socket_stream_accept(listener);
+    ASSERT(!CL_NULL_P(conn));
+
+    /* Opening quote + >4096 bytes forces read_string's heap-growth path;
+     * the closing quote is never sent, so the client's next read blocks
+     * until the timeout below fires. */
+    memset(chunk, 'x', sizeof(chunk));
+    cl_stream_write_char(conn, '"');
+    cl_stream_write_string(conn, chunk, (uint32_t)sizeof(chunk));
+
+    cl_socket_stream_set_timeout(client, 0, 100); /* 100ms read timeout */
+
+    CL_CATCH(err);
+    if (err == CL_ERR_NONE) {
+        cl_read_from_stream(client);
+        CL_UNCATCH();
+        ASSERT(0); /* expected a socket read timeout */
+    } else {
+        CL_UNCATCH();
+        ASSERT_EQ_INT(err, CL_ERR_TIMEOUT);
+    }
+
+    cl_stream_close(conn);
+    cl_stream_close(client);
+    cl_stream_close(listener);
+
+    /* Same thread, fresh literal: must round-trip cleanly, proving the
+     * per-thread orphan slot reclaimed the leaked buffer rather than
+     * leaving the reader (or the heap) corrupted. */
+    buf2 = (char *)malloc(5010);
+    buf2[0] = '"';
+    memset(buf2 + 1, 'y', 5000);
+    buf2[5001] = '"';
+    buf2[5002] = '\0';
+    str = reads(buf2);
+    free(buf2);
+    ASSERT(CL_ANY_STRING_P(str));
+    ASSERT_EQ_INT((int)cl_string_length(str), 5000);
+    ASSERT_EQ_INT(cl_string_char_at(str, 4999), 'y');
+}
+
+TEST(long_bitvector_literal_errors)
+{
+    /* #* bits past 4095 used to be silently dropped. */
+    char *buf = (char *)malloc(5210);
+    int r;
+    buf[0] = '#'; buf[1] = '*';
+    memset(buf + 2, '1', 5000);
+    buf[5002] = '\0';
+    r = read_signals_error(buf);
+    free(buf);
+    ASSERT_EQ_INT(r, 1);
+}
+
+TEST(long_char_name_errors)
+{
+    /* #\LongName past 31 chars used to split into a char + a symbol. */
+    char buf[64];
+    buf[0] = '#'; buf[1] = '\\';
+    memset(buf + 2, 'q', 40);
+    buf[42] = '\0';
+    ASSERT_EQ_INT(read_signals_error(buf), 1);
+    ASSERT_EQ_INT(read_signals_error("#\\Newline"), 0);
+}
+
 int main(void)
 {
     test_init();
@@ -885,6 +1038,13 @@ int main(void)
     RUN(read_label_circular_list);
     RUN(read_label_independent_per_read);
     RUN(read_label_nil_dotpair);
+
+    RUN(long_symbol_token_errors);
+    RUN(long_number_token_errors);
+    RUN(long_string_literal_grows);
+    RUN(string_literal_growth_survives_socket_read_timeout);
+    RUN(long_bitvector_literal_errors);
+    RUN(long_char_name_errors);
 
     /* Regression: nested reader invocation must not clobber outer stream */
     RUN(nested_read_preserves_outer_stream);

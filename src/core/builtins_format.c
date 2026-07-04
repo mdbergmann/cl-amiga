@@ -26,9 +26,6 @@
 
 #define FMT_MAX_PARAMS 4
 #define FMT_PARAM_UNSET (-1)
-/* Upper bound on the number of args copied into a GC-rooted buffer in
- * cl_format_to_stream — matches the runtime call-arguments-limit. */
-#define FMT_MAX_ARGS 64
 
 typedef struct {
     int32_t params[FMT_MAX_PARAMS];
@@ -71,6 +68,18 @@ static void fmt_run(FmtCtx *ctx);
  * The returned pointer is safe to scan with byte-oriented code: '~' (0x7E)
  * only ever appears as a literal '~' in valid UTF-8.
  */
+/* platform_alloc with a loud failure: several format paths memcpy into the
+ * returned buffer unchecked, so a NULL from an exhausted C heap (plausible on
+ * an 8MB Amiga) must error rather than crash or silently drop output. */
+static void *fmt_alloc(uint32_t size)
+{
+    void *p = platform_alloc(size);
+    if (!p)
+        cl_error(CL_ERR_STORAGE,
+                 "FORMAT: out of memory allocating %u bytes", (unsigned)size);
+    return p;
+}
+
 static const char *fmt_str_as_utf8(CL_Obj str_obj, char **out_alloc)
 {
     *out_alloc = NULL;
@@ -78,8 +87,7 @@ static const char *fmt_str_as_utf8(CL_Obj str_obj, char **out_alloc)
     if (CL_WIDE_STRING_P(str_obj)) {
         CL_WideString *ws = (CL_WideString *)CL_OBJ_TO_PTR(str_obj);
         uint32_t budget = ws->length * 4 + 1;
-        char *buf = (char *)platform_alloc(budget);
-        if (!buf) return "";
+        char *buf = (char *)fmt_alloc(budget);
         cl_wide_string_to_utf8(str_obj, buf, budget);
         *out_alloc = buf;
         return buf;
@@ -88,8 +96,7 @@ static const char *fmt_str_as_utf8(CL_Obj str_obj, char **out_alloc)
     {
         CL_String *s = (CL_String *)CL_OBJ_TO_PTR(str_obj);
         uint32_t len = s->length;
-        char *buf = (char *)platform_alloc(len + 1);
-        if (!buf) return "";
+        char *buf = (char *)fmt_alloc(len + 1);
         memcpy(buf, s->data, len);
         buf[len] = '\0';
         *out_alloc = buf;
@@ -326,16 +333,17 @@ static int32_t fmt_param(FmtDirective *d, int idx, int32_t defval)
 static char *render_integer(CL_Obj obj, int32_t base, char *buf, int bufsz,
                             int *len_out)
 {
-    /* Use printer to render in given base */
-    CL_Obj prev_b = cl_symbol_value(SYM_PRINT_BASE);
-    CL_Obj prev_x = cl_symbol_value(SYM_PRINT_RADIX);
+    /* Use printer to render in given base.  Thread-local dynamic binds
+     * (tier-4 FS16): mutating the global *PRINT-BASE* / *PRINT-RADIX*
+     * cells raced peer threads' printers between set and restore.  The dyn
+     * stack is GC-marked, so the saved values need no manual roots. */
+    int dyn_mark = cl_dyn_top;
     int len;
 
-    cl_set_symbol_value(SYM_PRINT_BASE, CL_MAKE_FIXNUM(base));
-    cl_set_symbol_value(SYM_PRINT_RADIX, CL_NIL);
+    cl_dynbind_c(SYM_PRINT_BASE, CL_MAKE_FIXNUM(base));
+    cl_dynbind_c(SYM_PRINT_RADIX, CL_NIL);
     len = cl_princ_to_string(obj, buf, bufsz);
-    cl_set_symbol_value(SYM_PRINT_BASE, prev_b);
-    cl_set_symbol_value(SYM_PRINT_RADIX, prev_x);
+    cl_dynbind_restore_to(dyn_mark);
     *len_out = len;
     return buf;
 }
@@ -348,7 +356,11 @@ static void fmt_padded_integer(FmtCtx *ctx, FmtDirective *d, int32_t base)
 {
     CL_Obj arg = fmt_next_arg(ctx);
     char raw[128];
-    char with_commas[192];
+    /* Worst case: every digit of raw[] gets a group separator (comma-interval
+     * 1) — dlen digits + dlen-1 separators + NUL = 2*127 = 254 bytes for the
+     * 127-digit raw[] cap.  Must hold that or the copy loop below smashes the
+     * stack (`(format nil "~,,,1:D" (expt 10 100))` overran the old 192). */
+    char with_commas[256];
     int raw_len;
     int32_t mincol   = fmt_param(d, 0, 0);
     int32_t padchar  = fmt_param(d, 1, (int32_t)' ');
@@ -376,39 +388,21 @@ static void fmt_padded_integer(FmtCtx *ctx, FmtDirective *d, int32_t base)
 
     /* Insert commas if :modifier */
     if (d->colon && comma_int > 0 && dlen > comma_int) {
-        int n_commas = (dlen - 1) / comma_int;
-        int out_len = dlen + n_commas;
-        int si = dlen - 1;
-        int di = out_len - 1;
-        int count = 0;
-        if (out_len >= (int)sizeof(with_commas))
-            out_len = (int)sizeof(with_commas) - 1;
-        with_commas[out_len] = '\0';
-        for (; si >= 0 && di >= 0; si--, di--) {
-            with_commas[di] = digits[si];
-            count++;
-            if (count == comma_int && si > 0 && di > 0) {
-                di--;
-                with_commas[di] = (char)commachar;
-                count = 0;
-            }
+        int wi = 0, ri;
+        for (ri = 0; ri < dlen; ri++) {
+            /* Up to 2 bytes this iteration (separator + digit) + NUL after
+             * the loop.  Unreachable while raw[] caps dlen at 127, but stay
+             * loud rather than smash the stack if that ever changes. */
+            if (wi >= (int)sizeof(with_commas) - 3)
+                cl_error(CL_ERR_GENERAL,
+                         "FORMAT ~~:D: grouped digits exceed internal buffer");
+            if (ri > 0 && ((dlen - ri) % comma_int == 0))
+                with_commas[wi++] = (char)commachar;
+            with_commas[wi++] = digits[ri];
         }
-        digits = with_commas + di + (di >= 0 ? 0 : 1);
-        /* Recalculate — point to start */
-        if (di < 0) di = 0;
+        with_commas[wi] = '\0';
         digits = with_commas;
-        /* Actually let's just recalculate properly */
-        {
-            int wi = 0, ri = 0;
-            for (ri = 0; ri < dlen; ri++) {
-                if (ri > 0 && ((dlen - ri) % comma_int == 0))
-                    with_commas[wi++] = (char)commachar;
-                with_commas[wi++] = (negative ? raw[ri + 1] : raw[ri]);
-            }
-            with_commas[wi] = '\0';
-            digits = with_commas;
-            dlen = wi;
-        }
+        dlen = wi;
     }
 
     /* Compute final length with sign */
@@ -775,9 +769,13 @@ static void fmt_goto(FmtCtx *ctx, FmtDirective *d)
         ctx->ai -= (int)n;
         if (ctx->ai < 0) ctx->ai = 0;
     } else {
-        /* ~n* — skip forward n args (default 1) */
+        /* ~n* — skip forward n args (default 1).  Clamp both ends: a
+         * negative parameter (e.g. `~-5*`, or V taking a negative arg)
+         * would otherwise index before ctx->args[] — OOB read fed to the
+         * printer (mirror the lower clamp in the `:` branch). */
         int32_t n = fmt_param(d, 0, 1);
         ctx->ai += (int)n;
+        if (ctx->ai < 0) ctx->ai = 0;
         if (ctx->ai > ctx->nargs) ctx->ai = ctx->nargs;
     }
 }
@@ -830,7 +828,7 @@ static void fmt_case_convert(FmtCtx *ctx, FmtDirective *d)
          * So the body text is from body_start to body_end - 2. */
         body_len = (int)(body_end - 2 - body_start);
         if (body_len < 0) body_len = 0;
-        body_copy = (char *)platform_alloc((uint32_t)body_len + 1);
+        body_copy = (char *)fmt_alloc((uint32_t)body_len + 1);
         memcpy(body_copy, body_start, (uint32_t)body_len);
         body_copy[body_len] = '\0';
 
@@ -848,6 +846,75 @@ static void fmt_case_convert(FmtCtx *ctx, FmtDirective *d)
         tmp_st->out_buf_handle = 0;
     }
     CL_GC_UNPROTECT(1);
+
+#ifdef CL_WIDE_STRINGS
+    if (CL_WIDE_STRING_P(result)) {
+        /* Wide result (body printed non-Latin-1 chars): the case loops below
+         * assume 1-byte CL_String data — running them over UTF-32 code units
+         * garbles the text (and reads the wrong length field).  Run the same
+         * ASCII-range case ops per code point instead; non-ASCII code points
+         * are left untouched (treated as word separators, matching the
+         * narrow path's behavior for non-alpha bytes). */
+        CL_WideString *ws = (CL_WideString *)CL_OBJ_TO_PTR(result);
+        uint32_t *wd = ws->data;
+        uint32_t wlen = ws->length;
+
+        if (d->colon && d->atsign) {
+            /* ~:@( — uppercase all */
+            for (i = 0; i < wlen; i++) {
+                if (wd[i] >= 'a' && wd[i] <= 'z')
+                    wd[i] -= 32;
+            }
+        } else if (d->atsign) {
+            /* ~@( — capitalize first word only */
+            int first = 1;
+            for (i = 0; i < wlen; i++) {
+                if (wd[i] >= 'A' && wd[i] <= 'Z') {
+                    if (!first) wd[i] += 32;
+                    first = 0;
+                } else if (wd[i] >= 'a' && wd[i] <= 'z') {
+                    if (first) { wd[i] -= 32; first = 0; }
+                }
+            }
+        } else if (d->colon) {
+            /* ~:( — capitalize each word */
+            int word_start = 1;
+            for (i = 0; i < wlen; i++) {
+                if (wd[i] >= 'A' && wd[i] <= 'Z') {
+                    if (!word_start) wd[i] += 32;
+                    word_start = 0;
+                } else if (wd[i] >= 'a' && wd[i] <= 'z') {
+                    if (word_start) wd[i] -= 32;
+                    word_start = 0;
+                } else {
+                    word_start = 1;
+                }
+            }
+        } else {
+            /* ~( — lowercase all */
+            for (i = 0; i < wlen; i++) {
+                if (wd[i] >= 'A' && wd[i] <= 'Z')
+                    wd[i] += 32;
+            }
+        }
+
+        /* cl_stream_write_lisp_string is a base-string byte writer — a wide
+         * string must go out per code point.  Re-derive the data pointer per
+         * character: the write can allocate (stream buffer growth) or park
+         * in a safe region (MT) and the string may move. */
+        CL_GC_PROTECT(result);
+        for (i = 0; i < wlen; i++) {
+            uint32_t cp =
+                ((CL_WideString *)CL_OBJ_TO_PTR(result))->data[i];
+            cl_stream_write_char(ctx->stream, (int)cp);
+        }
+        CL_GC_UNPROTECT(1);
+        ctx->ai = sub.ai;
+        ctx->pos = body_end;
+        return;
+    }
+#endif
+
     rs = (CL_String *)CL_OBJ_TO_PTR(result);
     data = rs->data;
     len = rs->length;
@@ -988,7 +1055,7 @@ static void fmt_conditional(FmtCtx *ctx, FmtDirective *d)
         const char *ce = clause_ends[selected];
         int clen = (int)(ce - cs);
         if (clen > 0) {
-            char *clause_copy = (char *)platform_alloc((uint32_t)clen + 1);
+            char *clause_copy = (char *)fmt_alloc((uint32_t)clen + 1);
             FmtCtx sub;
             memcpy(clause_copy, cs, (uint32_t)clen);
             clause_copy[clen] = '\0';
@@ -1029,7 +1096,7 @@ static void fmt_iteration(FmtCtx *ctx, FmtDirective *d)
 
     body_len = (int)(body_end - 2 - body_start);
     if (body_len < 0) body_len = 0;
-    body_copy = (char *)platform_alloc((uint32_t)body_len + 1);
+    body_copy = (char *)fmt_alloc((uint32_t)body_len + 1);
     memcpy(body_copy, body_start, (uint32_t)body_len);
     body_copy[body_len] = '\0';
 
@@ -1038,35 +1105,39 @@ static void fmt_iteration(FmtCtx *ctx, FmtDirective *d)
         /* ~^ in sub-context only terminates current step, not whole iteration */
         while (ctx->ai < ctx->nargs && iter_count < max_iter) {
             CL_Obj sublist = fmt_next_arg(ctx);
-            /* Build args array from sublist */
+            /* Stage the sublist elements on the VM stack: GC-rooted across
+             * fmt_run (which can allocate and compact — user ~/fn/, number
+             * printing) and uncapped — a fixed 64-slot C snapshot silently
+             * dropped sublist elements past 64. */
             CL_Obj tmp;
             int sub_n = 0;
-            CL_Obj sub_args[64];
+            int sbase = cl_vm.sp;
+            int sstaged = cl_vm.sp;
             FmtCtx sub;
 
             tmp = sublist;
-            while (!CL_NULL_P(tmp) && sub_n < 64) {
-                sub_args[sub_n++] = cl_car(tmp);
+            while (!CL_NULL_P(tmp)) {
+                if (sub_n >= CL_CALL_ARGS_LIMIT) {
+                    cl_vm.sp = sstaged;
+                    cl_error(CL_ERR_ARGS,
+                             "FORMAT ~~:@{: sublist too long "
+                             "(call-arguments-limit is %d)",
+                             CL_CALL_ARGS_LIMIT);
+                }
+                cl_vm_push(cl_car(tmp));
+                sub_n++;
                 tmp = cl_cdr(tmp);
             }
 
             sub.stream = ctx->stream;
             sub.fmt = body_copy;
             sub.pos = body_copy;
-            sub.args = sub_args;
+            sub.args = &cl_vm.stack[sbase];
             sub.nargs = sub_n;
             sub.ai = 0;
             sub.escape = 0;
-            /* GC SAFETY: fmt_run can allocate (user ~/fn/, number printing)
-             * and compact — root the C-array snapshot so its entries are
-             * forwarded while the body runs. */
-            {
-                int k;
-                for (k = 0; k < sub_n; k++)
-                    CL_GC_PROTECT(sub_args[k]);
-                fmt_run(&sub);
-                cl_gc_pop_roots(sub_n);
-            }
+            fmt_run(&sub);
+            cl_vm.sp = sstaged;
             /* ~^ only terminates current step for ~:@{ */
             iter_count++;
         }
@@ -1096,30 +1167,35 @@ static void fmt_iteration(FmtCtx *ctx, FmtDirective *d)
             CL_Obj sublist = cl_car(list);
             CL_Obj tmp;
             int sub_n = 0;
-            CL_Obj sub_args[64];
+            int sbase = cl_vm.sp;
+            int sstaged = cl_vm.sp;
             FmtCtx sub;
 
+            /* Stage on the VM stack — rooted across fmt_run, no 64-element
+             * cap (see ~:@{). */
             tmp = sublist;
-            while (!CL_NULL_P(tmp) && sub_n < 64) {
-                sub_args[sub_n++] = cl_car(tmp);
+            while (!CL_NULL_P(tmp)) {
+                if (sub_n >= CL_CALL_ARGS_LIMIT) {
+                    cl_vm.sp = sstaged;
+                    cl_error(CL_ERR_ARGS,
+                             "FORMAT ~~:{: sublist too long "
+                             "(call-arguments-limit is %d)",
+                             CL_CALL_ARGS_LIMIT);
+                }
+                cl_vm_push(cl_car(tmp));
+                sub_n++;
                 tmp = cl_cdr(tmp);
             }
 
             sub.stream = ctx->stream;
             sub.fmt = body_copy;
             sub.pos = body_copy;
-            sub.args = sub_args;
+            sub.args = &cl_vm.stack[sbase];
             sub.nargs = sub_n;
             sub.ai = 0;
             sub.escape = 0;
-            /* GC SAFETY: root the snapshot across fmt_run (see ~:@{). */
-            {
-                int k;
-                for (k = 0; k < sub_n; k++)
-                    CL_GC_PROTECT(sub_args[k]);
-                fmt_run(&sub);
-                cl_gc_pop_roots(sub_n);
-            }
+            fmt_run(&sub);
+            cl_vm.sp = sstaged;
             /* ~^ only terminates current step for ~:{ */
 
             list = cl_cdr(list);
@@ -1199,23 +1275,37 @@ static void fmt_recursive(FmtCtx *ctx, FmtDirective *d)
      * args inline. */
     if (CL_FUNCTION_P(fmt_str_obj) || CL_BYTECODE_P(fmt_str_obj) ||
         CL_CLOSURE_P(fmt_str_obj) || cl_funcallable_instance_p(fmt_str_obj)) {
-        CL_Obj call_args[64];
         /* cl_vm_apply pushes its frame over the VM-stack region that ctx->args
          * points into, clobbering the parent's not-yet-consumed args (so a
          * directive after ~? would read garbage).  Snapshot the parent args
-         * into a GC-rooted local across the apply, then copy the GC-updated
-         * values back into the (stable) VM-stack arg slots.  Scoped to this
-         * rare function-control path so ordinary FORMAT pays nothing. */
-        CL_Obj saved[FMT_MAX_ARGS];
+         * into a GC-rooted vector across the apply, then copy the GC-updated
+         * values back into the (stable) VM-stack arg slots.  A vector (not a
+         * fixed C array) so >64-arg FORMAT calls keep all args — a 64-slot
+         * snapshot silently dropped/garbled args past 64.  Scoped to this
+         * rare function-control path so ordinary FORMAT pays nothing.
+         *
+         * The call args are staged on the VM stack (GC-rooted, no fixed cap);
+         * cl_vm_apply copies them into its own frame before running any user
+         * code, so this staging slice only needs to survive until the apply
+         * starts. */
+        CL_Obj saved_vec;
+        CL_Obj *sd;
         int sn = ctx->nargs;
         int si;
         int cn = 0;
-        if (sn > FMT_MAX_ARGS) sn = FMT_MAX_ARGS;
-        for (si = 0; si < sn; si++) {
-            saved[si] = ctx->args[si];
-            cl_gc_push_root(&saved[si]);
-        }
-        call_args[cn++] = ctx->stream;
+        int base, staged_sp;
+        CL_GC_PROTECT(fmt_str_obj);
+        saved_vec = cl_make_vector((uint32_t)sn);
+        CL_GC_PROTECT(saved_vec);
+        /* No allocation between here and the apply — sd stays valid and the
+         * ctx->args slots read below are the (rooted, forwarded) originals. */
+        sd = cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(saved_vec));
+        for (si = 0; si < sn; si++)
+            sd[si] = ctx->args[si];
+        base = cl_vm.sp;
+        staged_sp = cl_vm.sp;
+        cl_vm_push(ctx->stream);
+        cn++;
         if (d->atsign) {
             /* ~@? — pass remaining parent args inline.  The function returns
              * the unconsumed tail as a list (CLHS 22.3.6.4); use that to
@@ -1226,10 +1316,20 @@ static void fmt_recursive(FmtCtx *ctx, FmtDirective *d)
             CL_Obj result;
             CL_Obj tmp;
             int remaining;
-            while (ctx->ai < ctx->nargs && cn < 64)
-                call_args[cn++] = ctx->args[ctx->ai++];
+            while (ctx->ai < ctx->nargs) {
+                if (cn >= CL_CALL_ARGS_LIMIT) {
+                    cl_vm.sp = staged_sp;
+                    cl_error(CL_ERR_ARGS,
+                             "FORMAT ~~@?: too many arguments "
+                             "(call-arguments-limit is %d)",
+                             CL_CALL_ARGS_LIMIT);
+                }
+                cl_vm_push(sd[ctx->ai++]);
+                cn++;
+            }
             n_passed = cn - 1; /* exclude stream */
-            result = cl_vm_apply(fmt_str_obj, call_args, cn);
+            result = cl_vm_apply(fmt_str_obj, &cl_vm.stack[base], cn);
+            cl_vm.sp = staged_sp;
             remaining = 0;
             tmp = result;
             while (CL_CONS_P(tmp)) { remaining++; tmp = cl_cdr(tmp); }
@@ -1237,17 +1337,27 @@ static void fmt_recursive(FmtCtx *ctx, FmtDirective *d)
         } else {
             /* ~? — next arg is a list of args for the control. */
             CL_Obj arg_list = fmt_next_arg(ctx);
-            while (!CL_NULL_P(arg_list) && cn < 64) {
-                call_args[cn++] = cl_car(arg_list);
+            while (!CL_NULL_P(arg_list)) {
+                if (cn >= CL_CALL_ARGS_LIMIT) {
+                    cl_vm.sp = staged_sp;
+                    cl_error(CL_ERR_ARGS,
+                             "FORMAT ~~?: too many arguments in list "
+                             "(call-arguments-limit is %d)",
+                             CL_CALL_ARGS_LIMIT);
+                }
+                cl_vm_push(cl_car(arg_list));
+                cn++;
                 arg_list = cl_cdr(arg_list);
             }
-            cl_vm_apply(fmt_str_obj, call_args, cn);
+            cl_vm_apply(fmt_str_obj, &cl_vm.stack[base], cn);
+            cl_vm.sp = staged_sp;
         }
         /* Restore the parent args (relocated by any GC during the apply) into
          * their stable VM-stack slots so trailing directives read correctly. */
+        sd = cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(saved_vec));
         for (si = 0; si < sn; si++)
-            ctx->args[si] = saved[si];
-        cl_gc_pop_roots(sn);
+            ctx->args[si] = sd[si];
+        CL_GC_UNPROTECT(2);
         return;
     }
 
@@ -1270,22 +1380,34 @@ static void fmt_recursive(FmtCtx *ctx, FmtDirective *d)
         fmt_run(&sub);
         ctx->ai = sub.ai;
     } else {
-        /* ~? — consume format string + list of args */
+        /* ~? — consume format string + list of args.  Stage the args on
+         * the VM stack: GC-rooted across the sub-run (which can compact)
+         * and uncapped — a fixed 64-slot C snapshot silently dropped args
+         * past 64. */
         CL_Obj arg_list = fmt_next_arg(ctx);
         CL_Obj tmp;
         int sub_n = 0;
-        CL_Obj sub_args[64];
+        int sbase = cl_vm.sp;
+        int sstaged = cl_vm.sp;
 
         tmp = arg_list;
-        while (!CL_NULL_P(tmp) && sub_n < 64) {
-            sub_args[sub_n++] = cl_car(tmp);
+        while (!CL_NULL_P(tmp)) {
+            if (sub_n >= CL_CALL_ARGS_LIMIT) {
+                cl_vm.sp = sstaged;
+                cl_error(CL_ERR_ARGS,
+                         "FORMAT ~~?: too many arguments in list "
+                         "(call-arguments-limit is %d)", CL_CALL_ARGS_LIMIT);
+            }
+            cl_vm_push(cl_car(tmp));
+            sub_n++;
             tmp = cl_cdr(tmp);
         }
 
-        sub.args = sub_args;
+        sub.args = &cl_vm.stack[sbase];
         sub.nargs = sub_n;
         sub.ai = 0;
         fmt_run(&sub);
+        cl_vm.sp = sstaged;
     }
 
     if (alloc) platform_free(alloc);
@@ -1414,7 +1536,7 @@ static void fmt_justify(FmtCtx *ctx, FmtDirective *d)
         int j;
 
         if (blen < 0) blen = 0;
-        body_copy = (char *)platform_alloc((uint32_t)blen + 1);
+        body_copy = (char *)fmt_alloc((uint32_t)blen + 1);
         memcpy(body_copy, seg_starts[i], (uint32_t)blen);
         body_copy[blen] = '\0';
 
@@ -1439,7 +1561,7 @@ static void fmt_justify(FmtCtx *ctx, FmtDirective *d)
          * the padding math, and each character re-emitted via
          * cl_stream_write_char (which re-encodes wide code points). */
         rlen = (int)cl_string_length(result);
-        cps = (uint32_t *)platform_alloc((uint32_t)(rlen > 0 ? rlen : 1) *
+        cps = (uint32_t *)fmt_alloc((uint32_t)(rlen > 0 ? rlen : 1) *
                                          (uint32_t)sizeof(uint32_t));
         for (j = 0; j < rlen; j++)
             cps[j] = (uint32_t)cl_string_char_at(result, (uint32_t)j);
@@ -1780,12 +1902,12 @@ static void fmt_run(FmtCtx *ctx)
 static CL_Obj bi__formatter_inner(CL_Obj *args, int nargs)
 {
     CL_Obj stream, ctrl, arg_list;
-    CL_Obj fmt_buf[FMT_MAX_ARGS + 2];
     char *alloc = NULL;
     const char *fmt;
     FmtCtx ctx;
     int n = 0, i, consumed;
     CL_Obj tmp;
+    int base, staged_sp;
 
     if (nargs < 3) return CL_NIL;
     stream   = args[0];
@@ -1797,26 +1919,36 @@ static CL_Obj bi__formatter_inner(CL_Obj *args, int nargs)
         return CL_NIL;
     }
 
-    fmt_buf[0] = stream;
-    fmt_buf[1] = ctrl;
+    /* Stage stream+ctrl+args on the VM stack: GC-rooted for the whole
+     * fmt_run (which can compact), and uncapped — a fixed 64-slot C buffer
+     * silently dropped format args past 64. */
+    base = cl_vm.sp;
+    staged_sp = cl_vm.sp;
+    cl_vm_push(stream);
+    cl_vm_push(ctrl);
     tmp = arg_list;
-    while (!CL_NULL_P(tmp) && CL_CONS_P(tmp) && n < FMT_MAX_ARGS) {
-        fmt_buf[2 + n] = cl_car(tmp);
+    while (!CL_NULL_P(tmp) && CL_CONS_P(tmp)) {
+        if (2 + n >= CL_CALL_ARGS_LIMIT) {
+            cl_vm.sp = staged_sp;
+            cl_error(CL_ERR_ARGS,
+                     "%%formatter-inner: too many format arguments "
+                     "(call-arguments-limit is %d)", CL_CALL_ARGS_LIMIT);
+        }
+        cl_vm_push(cl_car(tmp));
         n++;
         tmp = cl_cdr(tmp);
     }
 
-    /* GC-root the args buffer and the original arg_list: fmt_run can compact. */
-    for (i = 0; i < 2 + n; i++)
-        cl_gc_push_root(&fmt_buf[i]);
+    /* Root the original arg_list — the unconsumed tail is derived from it
+     * after fmt_run. */
     cl_gc_push_root(&arg_list);
 
-    fmt = fmt_str_as_utf8(fmt_buf[1], &alloc);
+    fmt = fmt_str_as_utf8(cl_vm.stack[base + 1], &alloc);
 
-    ctx.stream = fmt_buf[0];
+    ctx.stream = cl_vm.stack[base];
     ctx.fmt    = fmt;
     ctx.pos    = fmt;
-    ctx.args   = fmt_buf;
+    ctx.args   = &cl_vm.stack[base];
     ctx.nargs  = 2 + n;
     ctx.ai     = 2;
     ctx.escape = 0;
@@ -1824,7 +1956,8 @@ static CL_Obj bi__formatter_inner(CL_Obj *args, int nargs)
     fmt_run(&ctx);
 
     consumed = ctx.ai - 2;
-    cl_gc_pop_roots(3 + n); /* fmt_buf[0..n+1] + arg_list */
+    cl_vm.sp = staged_sp;
+    cl_gc_pop_roots(1); /* arg_list */
     if (alloc) platform_free(alloc);
 
     /* Return nthcdr(consumed, arg_list) — the unconsumed argument tail. */

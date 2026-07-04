@@ -594,37 +594,45 @@ static CL_Obj bi_delete_if(CL_Obj *args, int n)
     return bi_delete_if_export(args, n);
 }
 
+/* Recursive core of NSUBST — same shape and GC-safety rules as subst_rec:
+ * every parameter is a by-value C local of THIS frame, so each level roots
+ * its own copies before call_test/the recursion can compact.  The destructive
+ * car/cdr stores re-derive the cons pointer from the rooted `tree` AFTER the
+ * recursion (the pre-recursion pointer may be a stale offset). */
+static CL_Obj nsubst_rec(CL_Obj new_obj, CL_Obj old_obj, CL_Obj tree,
+                         CL_Obj test_fn)
+{
+    CL_Obj car_r, cdr_r;
+
+    CL_GC_PROTECT(new_obj);
+    CL_GC_PROTECT(old_obj);
+    CL_GC_PROTECT(tree);
+    CL_GC_PROTECT(test_fn);
+
+    if (!CL_NULL_P(call_test(test_fn, old_obj, tree))) {
+        CL_GC_UNPROTECT(4);
+        return new_obj;
+    }
+    if (!CL_CONS_P(tree)) {
+        CL_GC_UNPROTECT(4);
+        return tree;
+    }
+
+    car_r = nsubst_rec(new_obj, old_obj, cl_car(tree), test_fn);
+    ((CL_Cons *)CL_OBJ_TO_PTR(tree))->car = car_r;
+    cdr_r = nsubst_rec(new_obj, old_obj, cl_cdr(tree), test_fn);
+    ((CL_Cons *)CL_OBJ_TO_PTR(tree))->cdr = cdr_r;
+    CL_GC_UNPROTECT(4);
+    return tree;
+}
+
 static CL_Obj bi_nsubst(CL_Obj *args, int n)
 {
-    CL_Obj new_obj = args[0], old_obj = args[1], tree = args[2];
+    /* args[] is a rooted VM-stack slice, so re-reading it after the
+     * (potentially allocating) keyword handling in extract_test_arg is
+     * safe (mirrors bi_subst). */
     CL_Obj test_fn = extract_test_arg(args, n, 3);
-
-    if (!CL_NULL_P(call_test(test_fn, old_obj, tree)))
-        return new_obj;
-    if (!CL_CONS_P(tree))
-        return tree;
-
-    {
-        CL_Obj sub_args[5];
-        CL_Obj car_r;
-        sub_args[0] = new_obj;
-        sub_args[1] = old_obj;
-        sub_args[2] = cl_car(tree);
-        if (n > 3) { sub_args[3] = args[3]; sub_args[4] = args[4]; }
-        car_r = bi_nsubst(sub_args, n);
-        ((CL_Cons *)CL_OBJ_TO_PTR(tree))->car = car_r;
-    }
-    {
-        CL_Obj sub_args[5];
-        CL_Obj cdr_r;
-        sub_args[0] = new_obj;
-        sub_args[1] = old_obj;
-        sub_args[2] = cl_cdr(tree);
-        if (n > 3) { sub_args[3] = args[3]; sub_args[4] = args[4]; }
-        cdr_r = bi_nsubst(sub_args, n);
-        ((CL_Cons *)CL_OBJ_TO_PTR(tree))->cdr = cdr_r;
-    }
-    return tree;
+    return nsubst_rec(args[0], args[1], args[2], test_fn);
 }
 
 /* --- Copy/construction --- */
@@ -783,7 +791,9 @@ static CL_Obj bi_mapc(CL_Obj *args, int n)
     CL_Obj call_args[16];
     int i;
 
-    if (nlists > 16) nlists = 16;
+    if (nlists > 16)
+        cl_error(CL_ERR_ARGS,
+                 "MAPC: too many list arguments (%d; max 16)", nlists);
     for (i = 0; i < nlists; i++)
         lists[i] = args[i + 1];
 
@@ -819,7 +829,9 @@ static CL_Obj bi_mapcan(CL_Obj *args, int n)
     CL_Obj result = CL_NIL, tail = CL_NIL;
     int i;
 
-    if (nlists > 16) nlists = 16;
+    if (nlists > 16)
+        cl_error(CL_ERR_ARGS,
+                 "MAPCAN: too many list arguments (%d; max 16)", nlists);
     for (i = 0; i < nlists; i++)
         lists[i] = args[i + 1];
 
@@ -871,7 +883,9 @@ static CL_Obj bi_maplist(CL_Obj *args, int n)
     CL_Obj result = CL_NIL, tail = CL_NIL;
     int i;
 
-    if (nlists > 16) nlists = 16;
+    if (nlists > 16)
+        cl_error(CL_ERR_ARGS,
+                 "MAPLIST: too many list arguments (%d; max 16)", nlists);
     for (i = 0; i < nlists; i++)
         lists[i] = args[i + 1];
 
@@ -916,14 +930,17 @@ maplist_done:
 
 static CL_Obj bi_mapl(CL_Obj *args, int n)
 {
-    CL_Obj func = args[0];
+    /* coerce: MAPL accepts a function designator (symbol) like its siblings */
+    CL_Obj func = cl_coerce_funcdesig(args[0], "MAPL");
     CL_Obj first_list = args[1];
     int nlists = n - 1;
     CL_Obj lists[16];
     CL_Obj call_args[16];
     int i;
 
-    if (nlists > 16) nlists = 16;
+    if (nlists > 16)
+        cl_error(CL_ERR_ARGS,
+                 "MAPL: too many list arguments (%d; max 16)", nlists);
     for (i = 0; i < nlists; i++)
         lists[i] = args[i + 1];
 
@@ -953,14 +970,17 @@ mapl_done:
 
 static CL_Obj bi_mapcon(CL_Obj *args, int n)
 {
-    CL_Obj func = args[0];
+    /* coerce: MAPCON accepts a function designator (symbol) like its siblings */
+    CL_Obj func = cl_coerce_funcdesig(args[0], "MAPCON");
     int nlists = n - 1;
     CL_Obj lists[16];
     CL_Obj call_args[16];
     CL_Obj result = CL_NIL, tail = CL_NIL;
     int i;
 
-    if (nlists > 16) nlists = 16;
+    if (nlists > 16)
+        cl_error(CL_ERR_ARGS,
+                 "MAPCON: too many list arguments (%d; max 16)", nlists);
     for (i = 0; i < nlists; i++)
         lists[i] = args[i + 1];
 
@@ -1073,10 +1093,13 @@ static CL_Obj bi_make_list(CL_Obj *args, int n)
         }
     }
 
+    /* init_elem is re-read on every iteration after the previous cl_cons may
+     * have compacted — root it alongside the growing result. */
     CL_GC_PROTECT(result);
+    CL_GC_PROTECT(init_elem);
     for (i = 0; i < count; i++)
         result = cl_cons(init_elem, result);
-    CL_GC_UNPROTECT(1);
+    CL_GC_UNPROTECT(2);
     return result;
 }
 

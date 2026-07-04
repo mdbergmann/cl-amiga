@@ -2472,10 +2472,14 @@ check_absent   "no garbage code points in wide-string copies under GC stress" \
 # already advanced the bump pointer; the guard's longjmp left a
 # headerless region inside the walked bump front, and every later arena
 # walk (sweep/forwarding/slide) desynced there — live objects above the
-# hole were overwritten.  (ash 1 100000000) requests ~12.5MB of bignum
-# limbs in a single allocation, hitting the guard.  ((make-array 3000000)
-# no longer reaches it: the ARRAY-DIMENSION-LIMIT check rejects the
-# dimension first — asserted separately below.)
+# hole were overwritten.  (ash 1 100000000) requests ~6.25M bignum limbs
+# in a single allocation; since the tier-4 M1 caps it is rejected by
+# cl_make_bignum's element-count guard ("exceeds the maximum heap object
+# size"), one layer BEFORE cl_alloc's byte-size guard ("Allocation too
+# large for header") — both signal the same clean cl_storage_error.
+# ((make-array 3000000) no longer reaches either: the
+# ARRAY-DIMENSION-LIMIT check rejects the dimension first — asserted
+# separately below.)
 # Note: the oversized-allocation guard signals via cl_storage_error (a
 # C-level error frame, deliberately allocation-free), which aborts the
 # offending top-level form rather than unwinding into handler-case; the
@@ -2499,7 +2503,7 @@ cat > "$WORK/bigalloc.lisp" <<'EOF'
     (format t "BIGALLOC-2:~a~%" ok)))
 EOF
 out=$(run_stress "$WORK/bigalloc.lisp")
-check_contains "oversized bignum allocation signals a clean storage error" "Allocation too large for header" "$out"
+check_contains "oversized bignum allocation signals a clean storage error" "exceeds the maximum heap object size" "$out"
 check_contains "oversized make-array signals a clean dimension-limit error" "exceeds ARRAY-DIMENSION-LIMIT" "$out"
 check_contains "heap fully intact after oversized-allocation error"   "BIGALLOC-2:T" "$out"
 check_absent   "no arena-walk corruption after oversized allocation" \
@@ -2988,6 +2992,688 @@ out=$(run_stress "$WORK/tier3-conds.lisp")
 check_contains "tier-3 condition/describe fixes survive GC stress" "T3-CONDS:T" "$out"
 check_absent   "no tier-3 condition corruption under GC stress" \
   "T3D-BAD\|corrupted pointer\|not of type\|Guru" "$out"
+
+# --- Tier-4 audit batch 1: compiler stale-local sites -----------------------
+# (audit 2026-07 tier 4, batch 1) A cluster of compiler GC bugs where a form
+# component (clauses / defaults / cursors) was read before an allocating
+# compile_expr/scan and used after, or a struct slot was published to the
+# compiler GC walkers before being initialized:
+#   C1  compile_tagbody set tb->id via cl_cons while the reused slot still held
+#       the previous tagbody's dead cons offset -> the mark/update walkers
+#       traced a dangling offset during that alloc's compaction (SIGBUS in
+#       cl_alloc; THE dotimes-with-closure crash).  Fixed by tb->id=CL_NIL first.
+#   C2/C3 compile_case/compile_typecase protected `clauses` only AFTER
+#       compile_expr(keyform) (which macroexpands/allocates) -> stale clause list.
+#   C4  compile_lambda &key default restore wrote pre-compaction key-param
+#       symbols back into env->locals from a raw C save array -> later key params
+#       "Unbound variable".  Now restores from GC-forwarded ll.key_names.
+#   C6  %struct-set inline hook read val_form before compile_expr(obj_form).
+#   C7  scan_body_for_boxing SETQ/SETF handler walked pairs/pforms + re-used
+#       `val` across allocating setf-expander applies unprotected.
+#   C8  compile_multiple_value_prog1 staled rest_forms across compile first-form.
+#   C10 compile_nth_value dynamic-index staled values_form across compile n.
+#   C9  parse_lambda_list &key intern window: key_*[n] stored before n_keys bump
+#       (invisible to walkers during cl_intern_keyword) + unprotected cursor.
+#   C11/C12 scan_qq_for_boxing / nlx_scan_qq raw vector data + cursor across
+#       allocating recursion.
+cat > "$WORK/tier4-compiler.lisp" <<'EOF'
+(in-package :cl-user)
+;; C1: two NLX tagbodies (dotimes bodies that capture a closure) in one form.
+(defun t4-c1 ()
+  (let ((l '(1 2 3)) (ok t))
+    (dotimes (i 4) (mapc (lambda (x) x) l))
+    (dotimes (i 20) (let ((v i)) (lambda () v)))
+    ok))
+(format t "T4-C1:~a~%" (t4-c1))
+;; C2/C3: case/typecase whose keyform is a macro call (macroexpands+allocates).
+(defmacro t4-key () '(car (list 2)))
+(defun t4-c2 ()
+  (case (t4-key) (1 :one) (2 :two) (3 :three) (t :other)))
+(defun t4-c3 ()
+  (typecase (t4-key) (string :str) (integer :int) (t :other)))
+(format t "T4-C2:~a~%" (t4-c2))
+(format t "T4-C3:~a~%" (t4-c3))
+;; C4: &key default forms that macroexpand/allocate; later key must resolve.
+(defmacro t4-def () '(list 1 2 3))
+(defun t4-c4 (&key (a (t4-def)) b (c (length (t4-def))))
+  (list a b c))
+(format t "T4-C4:~a~%" (t4-c4 :b 9))
+;; C6: (setf (struct-accessor obj) val) where the object expr allocates.
+(defstruct t4-pt x y)
+(defun t4-c6 ()
+  (let ((ps (list (make-t4-pt :x 0 :y 0))))
+    (setf (t4-pt-x (car (progn (make-list 8) ps))) 42)
+    (t4-pt-x (car ps))))
+(format t "T4-C6:~a~%" (t4-c6))
+;; C7: setf of an outer var hidden behind an allocating expansion, inside a
+;; closure (boxing pre-scan walks the setf pair + re-reads val).
+(defun t4-c7 ()
+  (let ((acc 0))
+    (flet ((bump () (setf acc (+ acc (length (make-list 3))))))
+      (bump) (bump) acc)))
+(format t "T4-C7:~a~%" (t4-c7))
+;; C8: multiple-value-prog1 with an allocating first form and trailing forms.
+(defun t4-c8 ()
+  (multiple-value-list
+    (multiple-value-prog1 (values 1 2 3)
+      (make-list 5) (make-list 5))))
+(format t "T4-C8:~a~%" (t4-c8))
+;; C10: nth-value with a dynamic (non-constant) index.
+(defun t4-c10 (n)
+  (nth-value n (values :a :b :c)))
+(format t "T4-C10:~a~%" (t4-c10 (car (list 2))))
+;; C9: &key whose keyword has (almost certainly) never been interned before.
+(defun t4-c9 (&key t4-never-before-interned-kw)
+  t4-never-before-interned-kw)
+(format t "T4-C9:~a~%" (t4-c9 :t4-never-before-interned-kw :ok))
+;; C11/C12: quasiquote with a vector template + splices, driven by a macro.
+(defmacro t4-qq (&rest xs) `(vector 0 ,@xs (+ ,@xs)))
+(defun t4-c11 () (t4-qq 3 4 5))
+(format t "T4-C11:~a~%" (coerce (t4-c11) 'list))
+EOF
+out=$(run_stress "$WORK/tier4-compiler.lisp")
+check_contains "C1 nested NLX tagbody + closure compiles (no SIGBUS)"  "T4-C1:T"          "$out"
+check_contains "C2 case with macro keyform under GC stress"            "T4-C2:TWO"        "$out"
+check_contains "C3 typecase with macro keyform under GC stress"        "T4-C3:INT"        "$out"
+check_contains "C4 &key allocating defaults, later key resolves"       "T4-C4:((1 2 3) 9 3)" "$out"
+check_contains "C6 struct-setf with allocating object expr"            "T4-C6:42"         "$out"
+check_contains "C7 setf outer var behind alloc in closure (boxing)"    "T4-C7:6"          "$out"
+check_contains "C8 multiple-value-prog1 keeps all values"              "T4-C8:(1 2 3)"    "$out"
+check_contains "C10 nth-value dynamic index under GC stress"           "T4-C10:C"         "$out"
+check_contains "C9 fresh &key keyword interns cleanly under stress"    "T4-C9:OK"         "$out"
+check_contains "C11 quasiquote vector template + splice under stress"  "T4-C11:(0 3 4 5 12)" "$out"
+check_absent   "no unbound/undefined/CDR-type-error in tier-4 compiler cases" \
+  "Unbound variable\|Undefined\|not of type\|corrupted\|Guru" "$out"
+
+# --- Tier-4 audit batch 2: format stack smash + printer element loops -------
+# (audit 2026-07 tier 4, batch 2)
+#   FS1 fmt_padded_integer comma loop had no bounds check: 101 digits with
+#       comma-interval 1 wrote 201 bytes into char with_commas[192] (SMASH).
+#   FS2 fmt_recursive ~? string-control snapshot sub_args[64] was not rooted
+#       across fmt_run (sibling of the fixed ~{~} bug).
+#   P1  printer TYPE_STRUCT: cl_struct_slot_names ALLOCATES but ran before the
+#       protect; type name + n_slots then read through the stale struct ptr.
+#   P2/P3 vector/#nA element loops held a raw cl_vector_data pointer across
+#       recursive print_obj (struct elements always allocate slot names).
+#   P4  try_pprint_dispatch: cl_typep can run a deftype expander (allocates);
+#       cursor/best_fn/caller obj went stale.  Also: in buffer mode the
+#       dispatch fn was handed a NIL stream and its output silently dropped.
+#   P5  TYPE_RESTART report-function path never re-derived r/obj across three
+#       allocating calls; wide report text degraded to #<RESTART>.
+#   P6  saved printer_stream / *print-escape* restores were unprotected C
+#       locals across the print (stale offsets written back on restore).
+#   FS4 render_integer stale-restored *print-base*/*print-radix*.
+#   P7  TYPE_COMPLEX/TYPE_RATIO read components through a raw ptr mid-print.
+#   P10 longjmp out of a print hook / pprint-dispatch fn leaked pr_depth,
+#       pr_inprog_top, pprint_dispatch_active, circle_active (dispatch
+#       permanently disabled, "#<...>" markers).  Now restored via
+#       CL_ErrorFrame/CL_NLXFrame printer_mark.
+cat > "$WORK/tier4-printer.lisp" <<'EOF'
+(in-package :cl-user)
+;; P1/P2: vector of structs — every element print allocates (slot names).
+(defstruct t4b-pt x y)
+(format t "T4B-P2:~a~%"
+        (format nil "~S" (vector (make-t4b-pt :x 1 :y 2) (make-t4b-pt :x 3 :y 4))))
+;; P3: multi-dimensional array of structs (print_array_slice re-derive).
+(format t "T4B-P3:~a~%"
+        (format nil "~S" (make-array '(2 2)
+                          :initial-contents (list (list (make-t4b-pt :x 1 :y 2) 5)
+                                                  (list 6 (make-t4b-pt :x 3 :y 4))))))
+;; P1: struct nested inside a struct (slot_names window + slot loop).
+(defstruct t4b-box inner tag)
+(format t "T4B-P1:~a~%"
+        (format nil "~S" (make-t4b-box :inner (make-t4b-pt :x 7 :y 8) :tag :k)))
+;; P4: pprint dispatch where cl_typep runs a deftype expander per entry.
+(deftype t4b-small () '(integer 0 9))
+(set-pprint-dispatch 't4b-small (lambda (s obj) (format s "<small ~D>" obj)))
+(format t "T4B-P4:~a~%" (write-to-string 5 :pretty t))
+;; P5: restart whose report FUNCTION conses while printing (princ of restart).
+(format t "T4B-P5:~a~%"
+        (restart-case
+            (let ((r (find-restart 't4b-resume)))
+              (format nil "~A" r))
+          (t4b-resume () :report
+                       (lambda (s) (format s "resume-~{~A~}" (list 1 2 3)))
+                       nil)))
+;; P5 conformance: report emitting non-ASCII (wide string) must still splice.
+(format t "T4B-P5W:~a~%"
+        (restart-case
+            (let ((r (find-restart 't4b-wide)))
+              (format nil "~A" r))
+          (t4b-wide () :report
+                     (lambda (s) (format s "<r~aport>" "ë"))
+                     nil)))
+;; P6: print-object method that re-enters the printer via (format nil ...).
+(defstruct t4b-inner v)
+(defmethod print-object ((o t4b-inner) s)
+  (format s "[inner ~A]" (format nil "~A" (t4b-inner-v o))))
+(format t "T4B-P6:~a~%" (format nil "~A" (make-t4b-inner :v (list 1 2))))
+;; P7: ratio with bignum numerator + complex.
+(format t "T4B-P7:~a~%" (format nil "~S ~S" (/ (expt 10 30) 3) (complex 1 -2)))
+;; FS2: ~? string control with heap args and a trailing parent directive.
+(format t "T4B-FS2:~a~%" (format nil "~? ~A" "<~A+~A>" (list (list 1) "x") (list 9)))
+;; FS1: comma grouping of a 101-digit bignum (old stack smash).
+(format t "T4B-FS1:~a~%" (length (format nil "~,,,1:D" (expt 10 100))))
+;; FS4: *print-base*/*print-radix* restore across render_integer.
+(format t "T4B-FS4:~a~%" (let ((*print-radix* t) (*print-base* 2))
+                           (format nil "~X" 255)
+                           (write-to-string 3)))
+;; P10: an aborted print must not leak printer state.
+(defparameter *t4b-n* 0)
+(defstruct t4b-once v)
+(defmethod print-object ((o t4b-once) s)
+  (incf *t4b-n*)
+  (if (= *t4b-n* 1) (error "first print boom") (format s "[ok ~A]" (t4b-once-v o))))
+(defparameter *t4b-obj* (make-t4b-once :v 7))
+(format t "T4B-P10A:~a~%" (handler-case (format nil "~A" *t4b-obj*) (error () :caught)))
+;; same object again: a leaked pr_inprog entry would print #<...> instead.
+(format t "T4B-P10B:~a~%" (format nil "~A" *t4b-obj*))
+;; a pprint-dispatch fn that errors must not disable dispatch forever.
+;; (LET-bind *print-pretty* rather than write-to-string :pretty — the
+;; keyword path's global set/restore is skipped on the abort; that restore
+;; class is the batch-3 FS12/IO2 item.)
+(deftype t4b-neg () '(integer -9 -1))
+(set-pprint-dispatch 't4b-neg (lambda (s o) (declare (ignore s o)) (error "dispatch boom")))
+(format t "T4B-P10C:~a~%" (handler-case (let ((*print-pretty* t)) (prin1-to-string -5))
+                            (error () :caught)))
+(format t "T4B-P10D:~a~%" (let ((*print-pretty* t)) (prin1-to-string 5)))
+;; IO5 (pulled forward from batch 3): set-pprint-dispatch removal-path rebuild
+;; conses under stress; the surviving entry must still dispatch.
+(set-pprint-dispatch 't4b-neg nil)
+(format t "T4B-IO5:~a ~a~%"
+        (let ((*print-pretty* t)) (prin1-to-string -5))
+        (let ((*print-pretty* t)) (prin1-to-string 5)))
+EOF
+out=$(run_stress "$WORK/tier4-printer.lisp")
+check_contains "P2 vector of structs prints under GC stress" \
+  "T4B-P2:#(#S(T4B-PT :X 1 :Y 2) #S(T4B-PT :X 3 :Y 4))" "$out"
+check_contains "P3 #2A array of structs prints under GC stress" \
+  "T4B-P3:#2A((#S(T4B-PT :X 1 :Y 2) 5) (6 #S(T4B-PT :X 3 :Y 4)))" "$out"
+check_contains "P1 nested struct slot names print under GC stress" \
+  "T4B-P1:#S(T4B-BOX :INNER #S(T4B-PT :X 7 :Y 8) :TAG :K)" "$out"
+check_contains "P4 pprint dispatch via deftype + buffer-mode capture" \
+  "T4B-P4:<small 5>" "$out"
+check_contains "P5 restart report function output under GC stress" \
+  "T4B-P5:resume-123" "$out"
+check_contains "P5W wide restart report splices" \
+  "T4B-P5W:<r" "$out"
+check_absent   "P5W not degraded to #<RESTART>" \
+  "T4B-P5W:#<RESTART" "$out"
+check_contains "P6 nested print via print-object method" \
+  "T4B-P6:\[inner (1 2)\]" "$out"
+check_contains "P7 bignum ratio + complex print under GC stress" \
+  "T4B-P7:1000000000000000000000000000000/3 #C(1 -2)" "$out"
+check_contains "FS2 ~? string-control args survive fmt_run compaction" \
+  "T4B-FS2:<(1)+x> (9)" "$out"
+check_contains "FS1 101-digit comma grouping (no stack smash)" \
+  "T4B-FS1:201" "$out"
+check_contains "FS4 print-base/radix restored across render_integer" \
+  "T4B-FS4:#b11" "$out"
+check_contains "P10 aborted print caught" "T4B-P10A:CAUGHT" "$out"
+check_contains "P10 no leaked pr_inprog marker on reprint" \
+  "T4B-P10B:\[ok 7\]" "$out"
+check_contains "P10 erroring dispatch fn caught" "T4B-P10C:CAUGHT" "$out"
+check_contains "P10 pprint dispatch still enabled after aborted dispatch" \
+  "T4B-P10D:<small 5>" "$out"
+check_contains "IO5 set-pprint-dispatch removal rebuild under GC stress" \
+  "T4B-IO5:-5 <small 5>" "$out"
+check_absent   "no corruption in tier-4 printer/format cases" \
+  "T4B-BAD\|corrupted pointer\|not of type\|Guru\|SIGSEGV" "$out"
+
+# --- Tier-4 audit batch 3: IO / strings / reader ----------------------------
+# (audit 2026-07 tier 4, batch 3)
+#   IO2/IO3/FS12 write/pprint/write-to-string saved the *PRINT-* controls in
+#       unrooted C locals across the (compacting) print — the restore wrote
+#       stale offsets back into the control symbols, corrupting *PRINT-BASE*
+#       etc. for the rest of the session.  Now a shared rooted-snapshot helper
+#       (cl_print_controls_save/restore).  bi_write also returned a stale obj.
+#   IO4  read-delimited-list held `stream` unprotected across nested reads.
+#   IO6/IO7 copy-pprint-dispatch / pprint-dispatch walked cursors across
+#       allocating cl_cons / cl_typep (deftype expander) calls.
+#   IO8  require walked the pathnames list + a C-local load_args slot across
+#       bi_load (which compacts massively and re-reads args[0]).
+#   IO9  macroexpand held form/env across expander applies; macroexpand-1's
+#       expanded-p EQ test compared against a stale form copy.
+#   IO10 disassemble read through a stale CL_Bytecode* while the output
+#       stream (string/Gray) allocated.
+#   IO12 bi_load/compile-file-pathname passed an unrooted C-local merge_args
+#       slot to allocating bi_merge_pathnames.
+#   FS10 string-trim family read the char-bag from args[0] BEFORE the coerce
+#       of a char designator allocated.
+#   FS11 concatenate compound result-type staled `rest` across the deftype-
+#       expanding element-type checks.
+#   R1   #nA reader flattened nested lists with unprotected work[]/cursor.
+#   R2/R3/R4 nested-read save/restore staled saved_stream/saved_uninterned.
+#   R5   feature keyword roots registered only after all three interns.
+#   R6   (conformance) quote/backquote/#'/dotted-cdr/#nA embedded the 0x06
+#       CL_READER_SKIP sentinel when a false #+/#- preceded the sub-form.
+mkdir -p "$WORK"
+cat > "$WORK/t4io-mod.lisp" <<'EOF'
+(if (boundp 'cl-user::*t4io-mod-loads*)
+    (incf cl-user::*t4io-mod-loads*)
+    (defparameter cl-user::*t4io-mod-loads* 1))
+(provide "t4io-mod")
+EOF
+cat > "$WORK/tier4-io.lisp" <<'EOF'
+(in-package :cl-user)
+;; IO2: write keyword overrides restore *print-base* and return the object.
+(format t "T4C-IO2:~a ~a ~a~%"
+        (let ((s (make-string-output-stream)))
+          (write 255 :stream s :base 16)
+          (get-output-stream-string s))
+        (write-to-string 255)
+        (let ((s (make-string-output-stream))) (write 7 :stream s)))
+;; FS12: write-to-string keyword overrides restore.
+(format t "T4C-FS12:~a ~a~%" (write-to-string 255 :base 16) (write-to-string 255))
+;; IO3: pprint restores the caller's *print-escape*/*print-pretty* bindings.
+(format t "T4C-IO3:~a~%"
+        (let ((*print-escape* nil))
+          (let ((s (make-string-output-stream))) (pprint '(1 2) s))
+          (if *print-escape* :leaked :restored)))
+;; IO4: read-delimited-list conses per element under stress.
+(format t "T4C-IO4:~s~%"
+        (with-input-from-string (in "1 2 3 4 5 6 7 8 9 10 ]")
+          (read-delimited-list #\] in)))
+;; IO7: pprint-dispatch builtin walks entries across deftype-expanding typep.
+(deftype t4c-small () '(integer 0 9))
+(deftype t4c-big () '(integer 100 999))
+(set-pprint-dispatch 't4c-small (lambda (s o) (format s "[sm ~d]" o)))
+(set-pprint-dispatch 't4c-big (lambda (s o) (format s "[bg ~d]" o)))
+(format t "T4C-IO7:~a~%"
+        (let ((fn (pprint-dispatch 5)))
+          (with-output-to-string (s) (funcall fn s 5))))
+;; IO6: copy-pprint-dispatch rebuild loop; copy must still dispatch.
+(format t "T4C-IO6:~a ~a~%"
+        (length (copy-pprint-dispatch))
+        (if (nth-value 1 (pprint-dispatch 5 (copy-pprint-dispatch))) :hit :miss))
+;; IO9: macroexpand chains + correct expanded-p secondary values.
+(defmacro t4c-m1 (x) (list 't4c-m2 x))
+(defmacro t4c-m2 (x) (list 'list x x))
+(format t "T4C-IO9:~s ~s ~s~%"
+        (multiple-value-list (macroexpand '(t4c-m1 3)))
+        (nth-value 1 (macroexpand-1 '(quote z)))
+        (nth-value 1 (macroexpand-1 '(t4c-m2 1))))
+;; IO10: disassemble to a string stream (allocating output path).
+(defun t4c-d (x) (+ x 1))
+(format t "T4C-IO10:~a~%"
+        (let ((out (with-output-to-string (*standard-output*)
+                     (disassemble 't4c-d))))
+          (if (and (search "Disassembly" out) (search "Constants" out)) :ok :fail)))
+;; IO12: compile-file-pathname merges through the rooted args slot.
+(format t "T4C-IO12:~a~%" (pathname-type (compile-file-pathname "t4c-x.lisp")))
+;; IO8: require with a LIST of pathnames (two loads of the same module file).
+(require "t4io-mod" (list (merge-pathnames "t4io-mod.lisp" *load-pathname*)
+                          (merge-pathnames "t4io-mod.lisp" *load-pathname*)))
+(format t "T4C-IO8:~a ~a~%" *t4io-mod-loads*
+        (if (member "t4io-mod" *modules* :test 'equal) :provided :missing))
+;; FS10: char designator char-bag allocates in the coerce.
+(format t "T4C-FS10:~a|~a|~a~%"
+        (string-trim "x" #\a)
+        (string-left-trim '(#\a) "aabca")
+        (string-right-trim "A" 'xa))
+;; FS11: concatenate with a deftype-compound result type.
+(deftype t4c-oct () '(unsigned-byte 8))
+(format t "T4C-FS11:~s ~s~%"
+        (concatenate '(vector t4c-oct) #(1 2) #(3))
+        (concatenate '(vector character) "ab" "c"))
+;; R1: #3A flatten conses per element under stress.
+(defparameter *t4c-arr*
+  (read-from-string "#3A(((1 2) (3 4)) ((5 6) (7 8)))"))
+(format t "T4C-R1:~a ~a ~a~%"
+        (aref *t4c-arr* 0 0 0) (aref *t4c-arr* 1 0 1) (aref *t4c-arr* 1 1 1))
+;; R2/R3: nested read (read-from-string inside #. during an outer read).
+(format t "T4C-R2:~s~%"
+        (read-from-string "(a #.(cl:read-from-string \"(x y)\") b)"))
+;; R5: first cons feature-expressions of the session — the operator-keyword
+;; interns inside ensure_feature_keywords can compact while expr is live.
+(format t "T4C-R5:~s ~s ~s~%"
+        (read-from-string "#+(and) 7")
+        (read-from-string "#-(or) 8")
+        (read-from-string "#+(and common-lisp (not t4c-no-such-ft)) 9"))
+;; R6: false #+/#- must skip cleanly inside quote/function/dotted/array forms.
+(format t "T4C-R6:~s ~s ~s ~s~%"
+        (read-from-string "'#+t4c-no-such-feature foo bar")
+        (read-from-string "#'#+t4c-no-such-feature foo bar")
+        (read-from-string "(a . #+t4c-no-such-feature b c)")
+        (read-from-string "#2A#+t4c-no-such-feature x ((1 2) (3 4))"))
+;; R6b: false #+/#- must also skip cleanly inside #. read-time eval.
+(format t "T4C-R6B:~s~%"
+        (read-from-string "#.#+t4c-no-such-feature x 5"))
+(format t "T4C-DONE~%")
+EOF
+out=$(run_stress "$WORK/tier4-io.lisp")
+check_contains "IO2 write :base override restored + returns object" \
+  "T4C-IO2:FF 255 7" "$out"
+check_contains "FS12 write-to-string :base override restored" \
+  "T4C-FS12:FF 255" "$out"
+check_contains "IO3 pprint restores caller print-control bindings" \
+  "T4C-IO3:RESTORED" "$out"
+check_contains "IO4 read-delimited-list under GC stress" \
+  "T4C-IO4:(1 2 3 4 5 6 7 8 9 10)" "$out"
+check_contains "IO7 pprint-dispatch walk across deftype typep" \
+  "T4C-IO7:\[sm 5\]" "$out"
+check_contains "IO6 copy-pprint-dispatch rebuild + copy dispatches" \
+  "T4C-IO6:2 HIT" "$out"
+check_contains "IO9 macroexpand chain + expanded-p values" \
+  "T4C-IO9:((LIST 3 3) T) NIL T" "$out"
+check_contains "IO10 disassemble to allocating string stream" \
+  "T4C-IO10:OK" "$out"
+check_contains "IO12 compile-file-pathname through rooted merge slot" \
+  "T4C-IO12:fasl" "$out"
+check_contains "IO8 require list-of-pathnames loads all + provides" \
+  "T4C-IO8:2 PROVIDED" "$out"
+check_contains "FS10 string-trim family char designators" \
+  "T4C-FS10:a|bca|X" "$out"
+check_contains "FS11 concatenate deftype compound result types" \
+  "T4C-FS11:#(1 2 3) \"abc\"" "$out"
+check_contains "R1 #3A reader flatten under GC stress" \
+  "T4C-R1:1 6 8" "$out"
+check_contains "R2 nested read-from-string restores reader state" \
+  "T4C-R2:(A (X Y) B)" "$out"
+check_contains "R5 first-use cons feature expressions" \
+  "T4C-R5:7 8 9" "$out"
+check_contains "R6 skip sentinel filtered in quote/fn/dotted/#nA" \
+  "T4C-R6:(QUOTE BAR) (FUNCTION BAR) (A . C) #2A((1 2) (3 4))" "$out"
+check_contains "R6b skip sentinel filtered in #. read-time eval" \
+  "T4C-R6B:5" "$out"
+check_contains "tier-4 io/strings/reader cases run to completion" \
+  "T4C-DONE" "$out"
+check_absent   "no corruption in tier-4 io/strings/reader cases" \
+  "corrupted pointer\|not of type\|Guru\|SIGSEGV\|badmark" "$out"
+
+# ============================================================================
+# Tier-4 batch 4: sequences / lists / hashtable / VM opcodes under GC stress.
+# Each case targets one audited stale-local / unrooted-cursor site; the
+# allocating lambdas ((car (list x)) etc.) force a compaction inside every
+# user-callback window so pre-fix binaries corrupt deterministically.
+# ============================================================================
+cat > "$WORK/tier4-seq.lisp" <<'EOF'
+(in-package :cl-user)
+;; S4: list merge sort roots pred/key across the recursive sorts.
+(format t "T4S-S4:~s ~s~%"
+        (sort (list 5 3 8 1 9 2 7 6 4)
+              (lambda (a b) (< (car (list a)) (car (list b)))))
+        (sort (list 3 1 2) #'< :key (lambda (x) (car (list x)))))
+;; S6: string/bit-vector insertion sort roots kval across the inner loop
+;; (:key returns a fresh heap string here).
+(format t "T4S-S6:~a ~s~%"
+        (sort (copy-seq "dcba") #'string< :key #'string)
+        (sort (copy-seq #*0110)
+              (lambda (a b) (< (car (list a)) (car (list b))))))
+;; S5: map to string/vector re-reads the seq cursors after the result alloc.
+(format t "T4S-S5:~a ~s~%"
+        (map 'string #'char-upcase (coerce "hello" 'list))
+        (map 'vector (lambda (x) (* x 2)) (list 1 2 3 4 5)))
+;; S7: map result-type via deftype expansion + (or ...) branch resolution.
+(deftype t4s-str () 'string)
+(format t "T4S-S7:~a ~s~%"
+        (map 't4s-str #'char-upcase "abc")
+        (map '(or symbol (vector t 3)) #'1+ (list 1 2 3)))
+;; S8: merge classifies a deftype result-type BEFORE reading operands.
+(deftype t4s-lst () 'list)
+(format t "T4S-S8:~s ~s~%"
+        (merge 't4s-lst (list 1 3 5) (list 2 4 6) #'<)
+        (merge 'vector (vector 1 4) (list 2 3) #'<
+               :key (lambda (x) (car (list x)))))
+;; S1: remove family re-reads elem after the allocating match test.
+(format t "T4S-S1:~s ~s~%"
+        (remove 3 (list 1 2 3 4 3 5)
+                :test (lambda (a b) (eql a (car (list b)))))
+        (remove-if (lambda (x) (oddp (car (list x))))
+                   (list 1 2 3 4 5 6) :from-end t :count 2))
+;; S2/S3: reduce seeds its list cursor from the rooted arg slot.
+(format t "T4S-S2:~s ~s ~s~%"
+        (reduce #'cons (list 1 2 3 4) :from-end t :initial-value 'end)
+        (reduce (lambda (a e) (cons e a)) (list 1 2 3 4) :initial-value nil)
+        (reduce #'+ (list 1 2 3) :from-end t
+                :key (lambda (x) (car (list x)))))
+;; L1: nsubst stores through the per-frame rooted tree after user :test.
+(format t "T4S-L1:~s~%"
+        (nsubst 'x 'b (list 'a (list 'b 'c) 'b)
+                :test (lambda (a b) (eq a (car (list b))))))
+;; L2: reverse of vector/bit-vector re-derives from the protected seq.
+(format t "T4S-L2:~s ~s~%" (reverse (vector 1 2 3 4 5)) (reverse #*10010))
+;; L3: make-list re-reads the heap :initial-element on every cons.
+(let ((l (make-list 12 :initial-element (list 'x))))
+  (format t "T4S-L3:~a ~s~%"
+          (count-if (lambda (e) (equal e '(x))) l) (first l)))
+;; AH1: hash iteration (LOOP + maphash, backed by %hash-table-pairs) conses
+;; per entry while walking bucket chains.
+(let ((h (make-hash-table)))
+  (dotimes (i 10) (setf (gethash i h) (* i i)))
+  (format t "T4S-AH1:~a ~a~%"
+          (loop for v being the hash-values of h sum v)
+          (let ((n 0))
+            (maphash (lambda (k v) (declare (ignore k v)) (incf n)) h)
+            n)))
+;; AH2: make-array materializes keywords from rooted args[] slots after the
+;; deftype classify (keyword ORDER matters: values before :element-type).
+(deftype t4s-oct () '(unsigned-byte 8))
+(deftype t4s-any () 't)
+(format t "T4S-AH2:~s ~s~%"
+        (make-array 4 :initial-contents (list 1 2 3 4)
+                      :element-type 't4s-oct)
+        (let ((a (make-array (list 2 2) :initial-element (list 7)
+                             :element-type 't4s-any)))
+          (aref a 1 1)))
+;; V2/V3/V4: def* opcodes push the (forwarded) constants-pool entry, not the
+;; pre-registrar stale local.
+(format t "T4S-V2:~a~%" (defmacro t4s-dm (x) (list 'list x)))
+(format t "T4S-V3:~a~%" (deftype t4s-ty () 'integer))
+(defun t4s-get (x) (car x))
+(defun t4s-set (x v) (setf (car x) v))
+(format t "T4S-V4:~a~%" (defsetf t4s-get t4s-set))
+;; V1: OP_ASSERT_TYPE re-reads val/type-spec across the deftype-expanding
+;; typep and between the condition-slot conses.
+(deftype t4s-small () '(integer 0 9))
+(format t "T4S-V1:~a ~s~%"
+        (the t4s-small 5)
+        (handler-case (let ((v 99)) (the t4s-small v))
+          (type-error (c) (list (type-error-datum c)
+                                (type-error-expected-type c)))))
+;; V5/V6: traced user fn (incl. tail-recursive self-call) — the trace prints
+;; allocate; func_obj/callee_bc must be re-derived after them.
+(defun t4s-tr (n) (if (zerop n) (list 'done) (t4s-tr (1- n))))
+(trace t4s-tr)
+(format t "T4S-V5:~s~%" (t4s-tr 3))
+(untrace t4s-tr)
+;; V5b: traced builtin via OP_CALL (f re-derived, result rooted).
+(trace char-upcase)
+(format t "T4S-V5B:~s~%" (char-upcase #\a))
+(untrace char-upcase)
+;; V7: traced builtin via OP_APPLY (apply_func rooted, result rooted).
+(trace +)
+(format t "T4S-V7:~a~%" (apply #'+ 1 2 (list 3 4)))
+(untrace +)
+(format t "T4S-DONE~%")
+EOF
+out=$(run_stress "$WORK/tier4-seq.lisp")
+check_contains "S4 sort with allocating pred/key" \
+  "T4S-S4:(1 2 3 4 5 6 7 8 9) (1 2 3)" "$out"
+check_contains "S6 string/bit-vector sort with heap kval" \
+  "T4S-S6:abcd #\*0011" "$out"
+check_contains "S5 map string/vector cursors re-read after result alloc" \
+  "T4S-S5:HELLO #(2 4 6 8 10)" "$out"
+check_contains "S7 map deftype + (or ...) result-types" \
+  "T4S-S7:ABC #(2 3 4)" "$out"
+check_contains "S8 merge deftype result-type classified first" \
+  "T4S-S8:(1 2 3 4 5 6) #(1 2 3 4)" "$out"
+check_contains "S1 remove family re-reads elem after match test" \
+  "T4S-S1:(1 2 4 5) (1 2 4 6)" "$out"
+check_contains "S2/S3 reduce cursors from rooted arg slot" \
+  "T4S-S2:(1 2 3 4 . END) (4 3 2 1) 6" "$out"
+check_contains "L1 nsubst destructive stores through rooted tree" \
+  "T4S-L1:(A (X C) X)" "$out"
+check_contains "L2 reverse vector/bit-vector re-derives protected seq" \
+  "T4S-L2:#(5 4 3 2 1) #\*01001" "$out"
+check_contains "L3 make-list heap initial-element rooted" \
+  "T4S-L3:12 (X)" "$out"
+check_contains "AH1 hash iteration chain cursor rooted" \
+  "T4S-AH1:285 10" "$out"
+check_contains "AH2 make-array keywords from rooted slots after classify" \
+  "T4S-AH2:#(1 2 3 4) (7)" "$out"
+check_contains "V2 defmacro pushes forwarded pool entry" \
+  "T4S-V2:T4S-DM" "$out"
+check_contains "V3 deftype pushes forwarded pool entry" \
+  "T4S-V3:T4S-TY" "$out"
+check_contains "V4 defsetf pushes forwarded pool entry" \
+  "T4S-V4:T4S-GET" "$out"
+check_contains "V1 assert-type re-reads across deftype typep" \
+  "T4S-V1:5 (99 T4S-SMALL)" "$out"
+check_contains "V5 traced tail-recursive fn under stress" \
+  "T4S-V5:(DONE)" "$out"
+check_contains "V5b traced builtin call under stress" \
+  "T4S-V5B:#\\\\A" "$out"
+check_contains "V7 traced builtin apply under stress" \
+  "T4S-V7:10" "$out"
+check_contains "tier-4 sequence/list/hash/vm cases run to completion" \
+  "T4S-DONE" "$out"
+check_absent   "no corruption in tier-4 sequence/list/hash/vm cases" \
+  "corrupted pointer\|not of type\|Guru\|SIGSEGV\|badmark" "$out"
+
+# ---------------------------------------------------------------------------
+# Tier-4 batch 7a: fixed C buffers replaced with GC staging (VM stack /
+# GC vectors / GC bit-vectors).  Every replacement introduces an allocating
+# call into a path that previously performed none — exercise them under
+# per-alloc compaction so a missed protect/re-derive corrupts deterministically.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- tier-4 batch 7a: uncapped apply/format/string staging ---"
+cat > "$WORK/tier4-b7a.lisp" <<'EOF'
+;; bi_apply VM-stack spread (>64 args through the C APPLY path).
+(format t "T4B7-A1:~a~%"
+        (funcall #'apply #'+ (make-list 100 :initial-element 1)))
+;; remove_from_string keep_vec staging + width-preserving result build,
+;; with an allocating :test crossing every element.
+(format t "T4B7-S9:~a~%"
+        (length (remove #\a (make-string 1200 :initial-element #\b)
+                        :test (lambda (a b) (list a b) (char= a b)))))
+;; concatenate string staging vector (>4096 result).
+(format t "T4B7-S13:~a~%"
+        (length (concatenate 'string
+                             (make-string 3000 :initial-element #\x)
+                             (make-string 2000 :initial-element #\y))))
+;; remove-duplicates KEEP bit-vector with allocating :test.
+(format t "T4B7-RD:~s~%"
+        (remove-duplicates (list 1 2 1 3 2 4)
+                           :test (lambda (a b) (list a b) (eql a b))))
+;; remove_from_vector / bitvector KEEP bit-vector with allocating :key.
+(format t "T4B7-RV:~s ~s~%"
+        (remove 2 (vector 1 2 3 2 4) :key (lambda (x) (list x) x))
+        (remove 0 (make-array 5 :element-type 'bit
+                                :initial-contents '(0 1 0 1 1))
+                :key (lambda (b) (list b) b)))
+;; REPLACE snapshot GC vector (self-overlap correctness preserved).
+(format t "T4B7-RP:~s~%"
+        (let ((v (vector 1 2 3 4 5)))
+          (replace v v :start1 1 :start2 0 :end2 4)))
+;; string sort SORT_TMP GC-vector staging with allocating :key.
+(format t "T4B7-SS:~a~%"
+        (sort (copy-seq "dcba") #'char< :key (lambda (c) (list c) c)))
+;; format ~? / ~:{ / FORMATTER staging on the VM stack past 64 slots.
+(let ((ctrl (with-output-to-string (s)
+              (dotimes (i 80) (write-string "~A" s)))))
+  (format t "T4B7-F1:~a~%"
+          (length (format nil "~?" ctrl (make-list 80 :initial-element 7))))
+  (format t "T4B7-F2:~a~%"
+          (length (with-output-to-string (s)
+                    (apply (eval (list 'formatter ctrl)) s
+                           (make-list 80 :initial-element 3))))))
+(format t "T4B7-F3:~a~%"
+        (length (format nil "~:{~@{~A~}~}"
+                        (list (make-list 90 :initial-element 1)))))
+;; coerce list/vector -> string width preservation (wide builds).
+(format t "T4B7-CO:~a~%"
+        (char-code (char (coerce (list #\a (code-char 20013)) 'string) 1)))
+(format t "T4B7-DONE~%")
+EOF
+out=$(run_stress "$WORK/tier4-b7a.lisp")
+check_contains "B7a apply VM-stack spread past 64 args" "T4B7-A1:100" "$out"
+check_contains "B7a remove string keep_vec staging uncapped" "T4B7-S9:1200" "$out"
+check_contains "B7a concatenate string staging uncapped" "T4B7-S13:5000" "$out"
+check_contains "B7a remove-duplicates KEEP bit-vector" "T4B7-RD:(1 3 2 4)" "$out"
+check_contains "B7a remove vector/bitvector KEEP bit-vector" \
+  "T4B7-RV:#(1 3 4) #\*111" "$out"
+check_contains "B7a replace snapshot GC vector" "T4B7-RP:#(1 1 2 3 4)" "$out"
+check_contains "B7a string sort GC-vector staging" "T4B7-SS:abcd" "$out"
+check_contains "B7a format ~? staging past 64 args" "T4B7-F1:80" "$out"
+check_contains "B7a formatter-inner staging past 64 args" "T4B7-F2:80" "$out"
+check_contains "B7a iteration sublist staging past 64 elements" "T4B7-F3:90" "$out"
+check_contains "B7a coerce wide char preserved" "T4B7-CO:20013" "$out"
+check_contains "tier-4 batch 7a cases run to completion" "T4B7-DONE" "$out"
+check_absent   "no corruption in tier-4 batch 7a cases" \
+  "corrupted pointer\|not of type\|Guru\|SIGSEGV\|badmark" "$out"
+
+# ---------------------------------------------------------------------------
+# Tier-4 batch 7b: hashtable content hashes (wide strings, bit-vectors,
+# EQUALP vectors).  The new hash paths run inside gc_rehash_table after every
+# compaction — exercise insert/lookup with allocation churn between them so a
+# hash/equality mismatch (or a rehash through the new code) misses
+# deterministically.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- tier-4 batch 7b: hashtable content-hash contract ---"
+cat > "$WORK/tier4-b7b.lisp" <<'EOF'
+(let ((ht (make-hash-table :test 'equal)) (ok t))
+  (dotimes (i 40)
+    (setf (gethash (format nil "w~A~A" (code-char 20013) i) ht) i))
+  (dotimes (i 40)
+    (list i i)   ; churn between lookups
+    (unless (eql (gethash (format nil "w~A~A" (code-char 20013) i) ht) i)
+      (setf ok nil)))
+  (format t "T4B7B-W:~a ~a~%" ok (hash-table-count ht)))
+(let ((ht (make-hash-table :test 'equal)) (ok t))
+  (dotimes (i 20)
+    (let ((bv (make-array 8 :element-type 'bit :initial-element 0)))
+      (dotimes (j 8) (setf (aref bv j) (if (logbitp j i) 1 0)))
+      (setf (gethash bv ht) i)))
+  (dotimes (i 20)
+    (let ((bv (make-array 8 :element-type 'bit :initial-element 0)))
+      (dotimes (j 8) (setf (aref bv j) (if (logbitp j i) 1 0)))
+      (unless (eql (gethash bv ht) i) (setf ok nil))))
+  (format t "T4B7B-BV:~a~%" ok))
+(let ((ht (make-hash-table :test 'equalp)))
+  (setf (gethash (vector 1 (list 2) "x") ht) :deep)
+  (format t "T4B7B-EQV:~a~%" (gethash (vector 1 (list 2) "x") ht)))
+(format t "T4B7B-DONE~%")
+EOF
+out=$(run_stress "$WORK/tier4-b7b.lisp")
+check_contains "B7b wide-string EQUAL keys content-hashed" "T4B7B-W:T 40" "$out"
+check_contains "B7b bit-vector EQUAL keys content-hashed" "T4B7B-BV:T" "$out"
+check_contains "B7b EQUALP vector keys content-hashed" "T4B7B-EQV:DEEP" "$out"
+check_contains "tier-4 batch 7b cases run to completion" "T4B7B-DONE" "$out"
+check_absent   "no corruption in tier-4 batch 7b cases" \
+  "corrupted pointer\|not of type\|Guru\|SIGSEGV\|badmark" "$out"
+
+# ---------------------------------------------------------------------------
+# Tier-4 batch 7c: print-control overrides are TLV dynamic binds now — the
+# bind/restore pushes dyn-stack entries whose saved values must be forwarded
+# across the compactions the print itself triggers.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- tier-4 batch 7c: print-control dynbinds under stress ---"
+cat > "$WORK/tier4-b7c.lisp" <<'EOF'
+(format t "T4B7C-W:~a ~a~%" (write-to-string 255 :base 16) *print-base*)
+(format t "T4B7C-L:~a~%" (write-to-string '(1 (2 (3))) :level 1))
+(let ((s (make-string-output-stream)))
+  (write 10 :stream s :base 2 :radix t)
+  (format t "T4B7C-S:~a ~a~%" (get-output-stream-string s) *print-base*))
+(format t "T4B7C-F:~a~%" (format nil "~X/~O/~B" 255 8 5))
+(let ((v nil))
+  (dotimes (i 50)
+    (setf v (write-to-string (list i (format nil "x~A" i)) :length 1)))
+  (format t "T4B7C-N:~a~%" v))
+(format t "T4B7C-DONE~%")
+EOF
+out=$(run_stress "$WORK/tier4-b7c.lisp")
+check_contains "B7c write-to-string base dynbind" "T4B7C-W:FF 10" "$out"
+check_contains "B7c write-to-string level dynbind" "T4B7C-L:(1 #)" "$out"
+check_contains "B7c write stream base+radix dynbind" "T4B7C-S:#b1010 10" "$out"
+check_contains "B7c format radix renderer dynbind" "T4B7C-F:FF/10/101" "$out"
+check_contains "B7c repeated override loop stays consistent" "T4B7C-N:(49 ...)" "$out"
+check_contains "tier-4 batch 7c cases run to completion" "T4B7C-DONE" "$out"
+check_absent   "no corruption in tier-4 batch 7c cases" \
+  "corrupted pointer\|not of type\|Guru\|SIGSEGV\|badmark" "$out"
 
 echo ""
 echo "$passed passed, $failed failed, $total total"

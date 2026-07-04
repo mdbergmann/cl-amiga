@@ -2,6 +2,7 @@
 #define CL_VM_H
 
 #include "types.h"
+#include "printer.h"
 #include <setjmp.h>
 #include <stdio.h>
 
@@ -115,6 +116,12 @@ typedef struct {
                             * jit_depth makes the next JIT entry keep a stale
                             * jit_stack_top — the conservative GC scan window
                             * then excludes live JIT frames (missed roots). */
+    CL_PrinterState printer_mark; /* printer flags at frame creation.  Restored
+                            * on the longjmp landing so a THROW out of a print
+                            * hook / pprint-dispatch fn can't leak pr_depth,
+                            * pr_inprog_top, pr_pprint_dispatch_active or
+                            * pr_circle_active (see printer.h; mirrors the
+                            * CL_ErrorFrame.saved_printer twin). */
 } CL_NLXFrame;
 
 /* --- Condition handler binding stack --- */

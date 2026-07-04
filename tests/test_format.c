@@ -269,6 +269,149 @@ TEST(with_output_to_string_target)
         "1");
 }
 
+/* ================================================================
+ * Tier-4 GC audit batch 2 — format directive regressions
+ * ================================================================ */
+
+TEST(grouped_integer_100_digits_no_smash)
+{
+    /* FS1: ~,,,1:D groups EVERY digit; (expt 10 100) renders 101 digits +
+     * 100 separators = 201 bytes, which overran the old 192-byte
+     * with_commas[] on the C stack (stack smash).  Verify the full grouped
+     * string: length, leading 1, 100 commas, all other digits 0. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (format nil \"~,,,1:D\" (expt 10 100))))"
+        "  (list (length s) (char s 0) (count #\\, s)"
+        "        (every (lambda (c) (char= c #\\0)) (remove #\\, (subseq s 1)))))"),
+        "(201 #\\1 100 T)");
+}
+
+TEST(grouped_integer_grouping_correct)
+{
+    /* The rewritten single grouping loop must keep ordinary output intact,
+     * including custom comma char and interval. */
+    ASSERT_STR_EQ(eval_print("(format nil \"~:D\" 1234567)"), "\"1,234,567\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~:D\" -1234567)"), "\"-1,234,567\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~,,'.,2:D\" 123456)"), "\"12.34.56\"");
+}
+
+TEST(goto_negative_and_overshoot_clamp)
+{
+    /* FS3: plain ~n* with a negative n indexed before the arg vector
+     * (ctx->args[-3] OOB read fed to the printer).  Both directions must
+     * clamp instead of crashing/reading garbage. */
+    ASSERT_STR_EQ(eval_print("(stringp (format nil \"~-5*~A\" 1))"), "T");
+    ASSERT_STR_EQ(eval_print("(format nil \"~A~100*x\" 1)"), "\"1x\"");
+}
+
+TEST(recursive_format_string_control)
+{
+    /* FS2: ~? with a string control snapshots the arg list into a C array;
+     * behavior check here, GC-stress coverage in the shell suite. */
+    ASSERT_STR_EQ(eval_print("(format nil \"~? ~A\" \"<~A ~A>\" (list 1 2) 3)"),
+                  "\"<1 2> 3\"");
+}
+
+/* --- tier-4 batch 7a: 64-arg format caps removed (FS5) --- */
+
+TEST(recursive_format_over_64_args)
+{
+    /* ~? (string control) staged the arg list in a sub_args[64] C array —
+     * args past 64 were silently dropped.  100 one-digit args through a
+     * 100-directive control must all print. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((ctrl (with-output-to-string (s)"
+        "              (dotimes (i 100) (write-string \"~A\" s)))))"
+        "  (length (format nil \"~?\" ctrl (make-list 100 :initial-element 7))))"),
+        "100");
+    /* ~@? function control with >64 remaining parent args: the parent-arg
+     * snapshot (and restore) was capped at 64. */
+    ASSERT_STR_EQ(eval_print(
+        "(let* ((ctrl (with-output-to-string (s)"
+        "               (dotimes (i 70) (write-string \"~A\" s))))"
+        "       (f (eval (list 'formatter ctrl))))"
+        "  (length (apply #'format nil \"~@?\" f"
+        "                 (make-list 70 :initial-element 5))))"),
+        "70");
+}
+
+TEST(formatter_inner_over_64_args)
+{
+    /* %FORMATTER-INNER staged stream+ctrl+args in fmt_buf[66] — a FORMATTER
+     * function invoked with >64 args silently dropped the tail. */
+    ASSERT_STR_EQ(eval_print(
+        "(let* ((ctrl (with-output-to-string (s)"
+        "               (dotimes (i 100) (write-string \"~A\" s))))"
+        "       (f (eval (list 'formatter ctrl))))"
+        "  (length (with-output-to-string (s)"
+        "            (apply f s (make-list 100 :initial-element 3)))))"),
+        "100");
+}
+
+TEST(iteration_sublist_over_64_elements)
+{
+    /* ~:{ / ~:@{ staged each sublist in a sub_args[64] C array — sublist
+     * elements past 64 silently vanished from the output. */
+    ASSERT_STR_EQ(eval_print(
+        "(length (format nil \"~:{~@{~A~}~}\""
+        "                (list (make-list 100 :initial-element 1))))"),
+        "100");
+    ASSERT_STR_EQ(eval_print(
+        "(length (format nil \"~:@{~@{~A~}~}\""
+        "                (make-list 100 :initial-element 2)))"),
+        "100");
+}
+
+#ifdef CL_WIDE_STRINGS
+TEST(case_convert_wide_string)
+{
+    /* FS6: ~( ~) cast a wide (UTF-32) intermediate result to CL_String and
+     * ran byte-wise ASCII case ops over the code units, garbling non-ASCII
+     * text (e.g. U+4E2D's 0x4E byte reads as 'N' and got +32'd).  ASCII
+     * chars must still convert; non-ASCII code points pass through intact. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (coerce (list #\\A (code-char #x4E2D) #\\B) 'string)))"
+        "  (let ((r (format nil \"~(~A~)\" s)))"
+        "    (list (length r) (char r 0)"
+        "          (char= (char r 1) (code-char #x4E2D)) (char r 2))))"),
+        "(3 #\\a T #\\b)");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (coerce (list #\\a (code-char #x4E2D) #\\b) 'string)))"
+        "  (let ((r (format nil \"~:@(~A~)\" s)))"
+        "    (list (char r 0) (char= (char r 1) (code-char #x4E2D))"
+        "          (char r 2))))"),
+        "(#\\A T #\\B)");
+}
+
+TEST(case_convert_wide_capitalize_each_word)
+{
+    /* ~:( capitalize-each-word: a non-ASCII code point is not alpha, so it
+     * acts as a word separator (matching the narrow path's behavior for
+     * non-alpha bytes) and each side gets its own initial capitalized. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (coerce (list #\\a (code-char #x4E2D) #\\b) 'string)))"
+        "  (let ((r (format nil \"~:(~A~)\" s)))"
+        "    (list (length r) (char r 0)"
+        "          (char= (char r 1) (code-char #x4E2D)) (char r 2))))"),
+        "(3 #\\A T #\\B)");
+}
+
+TEST(case_convert_wide_capitalize_first_word)
+{
+    /* ~@( capitalize-first-word: only the very first alpha character is
+     * uppercased; a non-ASCII code point does not reset the "first word"
+     * tracking (matching the narrow path's whitespace handling). */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (coerce (list #\\A #\\B #\\Space (code-char #x4E2D)"
+        "                        #\\C #\\D) 'string)))"
+        "  (let ((r (format nil \"~@(~A~)\" s)))"
+        "    (list (length r) (char r 0) (char r 1) (char r 2)"
+        "          (char= (char r 3) (code-char #x4E2D)) (char r 4)"
+        "          (char r 5))))"),
+        "(6 #\\A #\\b #\\Space T #\\c #\\d)");
+}
+#endif
+
 int main(void)
 {
     setup();
@@ -292,6 +435,20 @@ int main(void)
     RUN(format_a_wide_string);
     RUN(with_output_to_string_wide);
     RUN(justify_wide_glyph_segments);
+
+    RUN(grouped_integer_100_digits_no_smash);
+    RUN(grouped_integer_grouping_correct);
+    RUN(goto_negative_and_overshoot_clamp);
+    RUN(recursive_format_string_control);
+
+    RUN(recursive_format_over_64_args);
+    RUN(formatter_inner_over_64_args);
+    RUN(iteration_sublist_over_64_elements);
+#ifdef CL_WIDE_STRINGS
+    RUN(case_convert_wide_string);
+    RUN(case_convert_wide_capitalize_each_word);
+    RUN(case_convert_wide_capitalize_first_word);
+#endif
 
     teardown();
     REPORT();

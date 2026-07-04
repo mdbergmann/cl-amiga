@@ -60,6 +60,20 @@ void cl_tables_rwunlock(void)
     platform_rwlock_unlock(cl_tables_rwlock);
 }
 
+/* See compiler.h.  The cons happens OUTSIDE the write lock (cl_cons roots
+ * its own arguments); the raw cell pointer derived after it stays valid
+ * through the lock acquisition because this thread never parks while
+ * blocked on the rwlock — a peer's stop-the-world compaction must wait
+ * for us, so no relocation can happen between the cons and the store. */
+void cl_table_prepend_locked(CL_Obj *table_p, CL_Obj value)
+{
+    CL_Obj cell = cl_cons(value, CL_NIL);
+    cl_tables_wrlock();
+    ((CL_Cons *)CL_OBJ_TO_PTR(cell))->cdr = *table_p;
+    *table_p = cell;
+    cl_tables_rwunlock();
+}
+
 void cl_tables_dump_rdlock_holders(const char *header)
 {
     int i;
@@ -463,6 +477,11 @@ static void parse_lambda_list(CL_Obj params, CL_ParsedLambdaList *ll)
     memset(ll, 0, sizeof(*ll));
     ll->rest_name = CL_NIL;
 
+    /* GC SAFETY: cl_intern_keyword in the &key branch can intern a new
+     * keyword (allocates, can compact) — protect the walk cursor so the
+     * advancing cl_cdr doesn't follow a stale offset. */
+    CL_GC_PROTECT(p);
+
     while (!CL_NULL_P(p)) {
         CL_Obj item = cl_car(p);
         p = cl_cdr(p);
@@ -480,6 +499,8 @@ static void parse_lambda_list(CL_Obj params, CL_ParsedLambdaList *ll)
             ll->required[ll->n_required++] = item;
             break;
         case 1:
+            if (ll->n_optional >= CL_MAX_LOCALS)
+                cl_error(CL_ERR_GENERAL, "Too many optional parameters (max %d)", CL_MAX_LOCALS);
             if (CL_CONS_P(item)) {
                 ll->opt_names[ll->n_optional] = cl_car(item);
                 ll->opt_defaults[ll->n_optional] = cl_car(cl_cdr(item));
@@ -493,8 +514,6 @@ static void parse_lambda_list(CL_Obj params, CL_ParsedLambdaList *ll)
                 ll->opt_defaults[ll->n_optional] = CL_NIL;
                 ll->opt_suppliedp[ll->n_optional] = CL_NIL;
             }
-            if (ll->n_optional >= CL_MAX_LOCALS)
-                cl_error(CL_ERR_GENERAL, "Too many optional parameters (max %d)", CL_MAX_LOCALS);
             ll->n_optional++;
             break;
         case 2:
@@ -502,41 +521,51 @@ static void parse_lambda_list(CL_Obj params, CL_ParsedLambdaList *ll)
             ll->has_rest = 1;
             state = 3;
             break;
-        case 3:
+        case 3: {
+            int ki;
+            if (ll->n_keys >= CL_MAX_LOCALS)
+                cl_error(CL_ERR_GENERAL, "Too many keyword parameters (max %d)", CL_MAX_LOCALS);
+            ki = ll->n_keys;
             if (CL_CONS_P(item)) {
                 CL_Obj name_part = cl_car(item);
                 if (CL_CONS_P(name_part)) {
                     /* ((:keyword var) default svar) — explicit keyword name */
-                    ll->key_keywords[ll->n_keys] = cl_car(name_part);
-                    ll->key_names[ll->n_keys] = cl_car(cl_cdr(name_part));
+                    ll->key_keywords[ki] = cl_car(name_part);
+                    ll->key_names[ki] = cl_car(cl_cdr(name_part));
                 } else {
                     /* (name default svar) — keyword inferred from name */
-                    ll->key_names[ll->n_keys] = name_part;
-                    ll->key_keywords[ll->n_keys] = CL_NIL; /* set below if not set */
+                    ll->key_names[ki] = name_part;
+                    ll->key_keywords[ki] = CL_NIL; /* set below if not set */
                 }
-                ll->key_defaults[ll->n_keys] = cl_car(cl_cdr(item));
+                ll->key_defaults[ki] = cl_car(cl_cdr(item));
                 /* Third element is supplied-p variable: (...  default svar) */
                 {
                     CL_Obj cddr = cl_cdr(cl_cdr(item));
-                    ll->key_suppliedp[ll->n_keys] = CL_NULL_P(cddr) ? CL_NIL : cl_car(cddr);
+                    ll->key_suppliedp[ki] = CL_NULL_P(cddr) ? CL_NIL : cl_car(cddr);
                 }
             } else {
-                ll->key_names[ll->n_keys] = item;
-                ll->key_defaults[ll->n_keys] = CL_NIL;
-                ll->key_suppliedp[ll->n_keys] = CL_NIL;
-                ll->key_keywords[ll->n_keys] = CL_NIL;
+                ll->key_names[ki] = item;
+                ll->key_defaults[ki] = CL_NIL;
+                ll->key_suppliedp[ki] = CL_NIL;
+                ll->key_keywords[ki] = CL_NIL;
             }
+            /* GC SAFETY: publish the slot to the compiler GC walkers BEFORE the
+             * allocating cl_intern_keyword below — the mark/update walkers only
+             * cover key_* indices < n_keys, so a compaction during the intern
+             * would leave the name/default/suppliedp offsets just stored above
+             * stale (never forwarded).  Bump n_keys first. */
+            ll->n_keys++;
             /* Infer keyword from variable name if not explicitly set */
-            if (ll->key_keywords[ll->n_keys] == CL_NIL) {
-                const char *name_str = cl_symbol_name(ll->key_names[ll->n_keys]);
-                ll->key_keywords[ll->n_keys] = cl_intern_keyword(
+            if (ll->key_keywords[ki] == CL_NIL) {
+                const char *name_str = cl_symbol_name(ll->key_names[ki]);
+                ll->key_keywords[ki] = cl_intern_keyword(
                     name_str, (uint32_t)strlen(name_str));
             }
-            if (ll->n_keys >= CL_MAX_LOCALS)
-                cl_error(CL_ERR_GENERAL, "Too many keyword parameters (max %d)", CL_MAX_LOCALS);
-            ll->n_keys++;
             break;
+        }
         case 4:
+            if (ll->n_aux >= CL_MAX_LOCALS)
+                cl_error(CL_ERR_GENERAL, "Too many &aux bindings (max %d)", CL_MAX_LOCALS);
             if (CL_CONS_P(item)) {
                 ll->aux_names[ll->n_aux] = cl_car(item);
                 ll->aux_inits[ll->n_aux] = cl_car(cl_cdr(item));
@@ -544,12 +573,11 @@ static void parse_lambda_list(CL_Obj params, CL_ParsedLambdaList *ll)
                 ll->aux_names[ll->n_aux] = item;
                 ll->aux_inits[ll->n_aux] = CL_NIL;
             }
-            if (ll->n_aux >= CL_MAX_LOCALS)
-                cl_error(CL_ERR_GENERAL, "Too many &aux bindings (max %d)", CL_MAX_LOCALS);
             ll->n_aux++;
             break;
         }
     }
+    CL_GC_UNPROTECT(1); /* p */
 }
 
 void compile_lambda(CL_Compiler *c, CL_Obj form)
@@ -717,10 +745,8 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
         if (!CL_NULL_P(inner->ll.key_defaults[i])) {
             int skip_pos, j;
             /* Hide current and later key params from local env */
-            CL_Obj saved_key_locals[CL_MAX_LOCALS];
             for (j = i; j < inner->ll.n_keys; j++) {
                 int s = inner->key_slot_indices[j];
-                saved_key_locals[j - i] = env->locals[s];
                 env->locals[s] = CL_MAKE_FIXNUM(0); /* non-symbol sentinel */
             }
             cl_emit(inner, OP_LOAD);
@@ -736,9 +762,15 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
             cl_emit(inner, (uint8_t)inner->key_slot_indices[i]);
             cl_emit(inner, OP_POP);
             cl_patch_jump(inner, skip_pos);
-            /* Restore hidden key params */
+            /* Restore hidden key params.
+             * GC SAFETY: restore from inner->ll.key_names (forwarded by the
+             * compiler GC walkers), NOT from a raw C save array — the
+             * compile_expr above can compact, and a saved pre-compaction
+             * symbol offset written back here leaves later key params
+             * "Unbound variable" / corrupted.  The slots held exactly
+             * ll.key_names[j] (set via cl_env_add_local above). */
             for (j = i; j < inner->ll.n_keys; j++) {
-                env->locals[inner->key_slot_indices[j]] = saved_key_locals[j - i];
+                env->locals[inner->key_slot_indices[j]] = inner->ll.key_names[j];
             }
         }
     }
@@ -1010,10 +1042,17 @@ static void scan_qq_for_boxing(CL_Obj tmpl, CL_Obj *vars, int n_vars,
     if (CL_VECTOR_P(tmpl)) {
         CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(tmpl);
         uint32_t i, n = cl_vector_active_length(v);
-        CL_Obj *data = cl_vector_data(v);
-        for (i = 0; i < n; i++)
+        /* GC SAFETY: the recursive scan macroexpands unquoted subforms via
+         * cl_vm_apply (allocates/compacts).  Protect the vector CL_Obj and
+         * re-derive the raw data pointer each iteration — a raw `data` held
+         * across the recursion would dangle after compaction. */
+        CL_GC_PROTECT(tmpl);
+        for (i = 0; i < n; i++) {
+            CL_Obj *data = cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(tmpl));
             scan_qq_for_boxing(data[i], vars, n_vars,
                                mutated, captured, closure_depth);
+        }
+        CL_GC_UNPROTECT(1);
         return;
     }
 
@@ -1029,14 +1068,17 @@ static void scan_qq_for_boxing(CL_Obj tmpl, CL_Obj *vars, int n_vars,
     /* Nested quasiquote — skip deeper nesting levels */
     if (cl_car(tmpl) == SYM_QUASIQUOTE) return;
 
-    /* Walk list elements looking for unquotes */
+    /* Walk list elements looking for unquotes.
+     * GC SAFETY: the recursive scan allocates — protect the walk cursor. */
     {
         CL_Obj cur = tmpl;
+        CL_GC_PROTECT(cur);
         while (CL_CONS_P(cur)) {
             scan_qq_for_boxing(cl_car(cur), vars, n_vars,
                                mutated, captured, closure_depth);
             cur = cl_cdr(cur);
         }
+        CL_GC_UNPROTECT(1);
     }
 }
 
@@ -1145,6 +1187,10 @@ top:
     /* (setq var val var val ...) or (setf place val place val ...) */
     if (head == SYM_SETQ || head == SYM_SETF) {
         CL_Obj pairs = rest;
+        /* GC SAFETY: the recursive scans and setf-expander cl_vm_apply below
+         * allocate/compact — protect the walk cursor like the sibling
+         * LET/CASE/DO/FLET/handler-bind handlers (fixed in prior tiers). */
+        CL_GC_PROTECT(pairs);
         while (CL_CONS_P(pairs) && CL_CONS_P(cl_cdr(pairs))) {
             CL_Obj place = cl_car(pairs);
             CL_Obj val = cl_car(cl_cdr(pairs));
@@ -1190,7 +1236,9 @@ top:
             } else if (CL_CONS_P(place) && cl_car(place) == SYM_PROGN) {
                 /* (setf (progn form... var) val) — the inner place is mutated */
                 CL_Obj pforms = cl_cdr(place);
-                /* Walk to last element (the actual place) */
+                /* Walk to last element (the actual place).
+                 * GC SAFETY: the recursive scan allocates — protect cursor. */
+                CL_GC_PROTECT(pforms);
                 while (CL_CONS_P(pforms) && CL_CONS_P(cl_cdr(pforms))) {
                     scan_body_for_boxing(cl_car(pforms), vars, n_vars,
                                          mutated, captured, closure_depth);
@@ -1207,6 +1255,7 @@ top:
                                              mutated, captured, closure_depth);
                     }
                 }
+                CL_GC_UNPROTECT(1); /* pforms */
             } else if (CL_CONS_P(place) &&
                        cl_car(place) == cl_intern_in("VALUES", 6, cl_package_cl)) {
                 /* (setf (values v1 v2 ...) val) — each vi is mutated.  This
@@ -1313,9 +1362,13 @@ top:
                 scan_body_for_boxing(place, vars, n_vars,
                                      mutated, captured, closure_depth);
             }
+            /* GC SAFETY: the place processing above can compact — re-read
+             * `val` through the protected cursor before scanning it. */
+            val = cl_car(cl_cdr(pairs));
             scan_body_for_boxing(val, vars, n_vars, mutated, captured, closure_depth);
             pairs = cl_cdr(cl_cdr(pairs));
         }
+        CL_GC_UNPROTECT(1); /* pairs */
         return;
     }
 
@@ -1984,7 +2037,12 @@ static CL_Obj compile_let(CL_Compiler *c, CL_Obj form, int sequential)
                to the first x, not the second (which doesn't exist yet). */
             {
                 int scan_count = 0;
+                /* GC SAFETY: scan_body_for_boxing macroexpands via cl_vm_apply
+                 * (allocates/compacts) — the walk cursor must be protected or
+                 * cl_cdr(b) re-reads through a stale offset (the parallel-LET
+                 * twin determine_boxed_vars protects its cursors). */
                 b = bindings;
+                CL_GC_PROTECT(b);
                 while (!CL_NULL_P(b)) {
                     CL_Obj binding = cl_car(b);
                     if (CL_CONS_P(binding))
@@ -1993,14 +2051,17 @@ static CL_Obj compile_let(CL_Compiler *c, CL_Obj form, int sequential)
                     scan_count++;
                     b = cl_cdr(b);
                 }
+                CL_GC_UNPROTECT(1);
             }
             {
                 CL_Obj cur = body;
+                CL_GC_PROTECT(cur);
                 while (CL_CONS_P(cur)) {
                     scan_body_for_boxing(cl_car(cur), all_vars, n_all,
                                          mutated, captured, 0);
                     cur = cl_cdr(cur);
                 }
+                CL_GC_UNPROTECT(1);
             }
             cl_gc_pop_roots(n_all);
             for (bi = 0; bi < n_all; bi++)
@@ -3834,8 +3895,13 @@ static void compile_call(CL_Compiler *c, CL_Obj form)
                     int32_t idx = CL_FIXNUM_VAL(idx_form);
                     if (idx >= 0 && idx <= 255) {
                         compile_expr(c, obj_form);
-                        if (is_set)
+                        if (is_set) {
+                            /* GC SAFETY: compile_expr(obj_form) can compact —
+                             * re-derive val_form from the protected `args`
+                             * rather than using the pre-compaction offset. */
+                            val_form = cl_car(cl_cdr(cl_cdr(args)));
                             compile_expr(c, val_form);
+                        }
                         cl_emit(c, is_ref ? OP_STRUCT_REF : OP_STRUCT_SET);
                         cl_emit(c, (uint8_t)idx);
                         CL_GC_UNPROTECT(1);
@@ -4613,15 +4679,9 @@ CL_Obj cl_macroexpand_1_env(CL_Obj form, CL_Obj lex_env)
 
 void cl_register_macro(CL_Obj name, CL_Obj expander)
 {
-    CL_Obj pair;
-    CL_GC_PROTECT(name);
-    CL_GC_PROTECT(expander);
-    pair = cl_cons(name, expander);
-    CL_GC_PROTECT(pair);            /* the 2nd cons can compact — keep PAIR live */
-    cl_tables_wrlock();
-    macro_table = cl_cons(pair, macro_table);
-    cl_tables_rwunlock();
-    CL_GC_UNPROTECT(3);
+    /* Both conses run OUTSIDE the write lock (see cl_table_prepend_locked
+     * — allocating under cl_tables_wrlock can deadlock STW-vs-rwlock). */
+    cl_table_prepend_locked(&macro_table, cl_cons(name, expander));
 }
 
 /* Snapshot-and-release iteration:
@@ -4675,15 +4735,7 @@ CL_Obj cl_get_macro(CL_Obj name)
  * which then trips the OP_STRUCT_REF compiler hook. */
 void cl_register_compiler_macro(CL_Obj name, CL_Obj expander)
 {
-    CL_Obj pair;
-    CL_GC_PROTECT(name);
-    CL_GC_PROTECT(expander);
-    pair = cl_cons(name, expander);
-    CL_GC_PROTECT(pair);            /* the 2nd cons can compact — keep PAIR live */
-    cl_tables_wrlock();
-    compiler_macro_table = cl_cons(pair, compiler_macro_table);
-    cl_tables_rwunlock();
-    CL_GC_UNPROTECT(3);
+    cl_table_prepend_locked(&compiler_macro_table, cl_cons(name, expander));
 }
 
 CL_Obj cl_get_compiler_macro(CL_Obj name)
@@ -4731,15 +4783,7 @@ int cl_compiler_notinline_p(CL_Compiler *c, CL_Obj func)
 
 void cl_register_type(CL_Obj name, CL_Obj expander)
 {
-    CL_Obj pair;
-    CL_GC_PROTECT(name);
-    CL_GC_PROTECT(expander);
-    pair = cl_cons(name, expander);
-    CL_GC_PROTECT(pair);            /* the 2nd cons can compact — keep PAIR live */
-    cl_tables_wrlock();
-    type_table = cl_cons(pair, type_table);
-    cl_tables_rwunlock();
-    CL_GC_UNPROTECT(3);
+    cl_table_prepend_locked(&type_table, cl_cons(name, expander));
 }
 
 CL_Obj cl_get_type_expander(CL_Obj name)
@@ -4770,15 +4814,7 @@ CL_Obj cl_setf_function_symbol(CL_Obj accessor)
 
 void cl_register_setf_function(CL_Obj accessor, CL_Obj setf_fn_sym)
 {
-    CL_Obj pair;
-    CL_GC_PROTECT(accessor);
-    CL_GC_PROTECT(setf_fn_sym);
-    pair = cl_cons(accessor, setf_fn_sym);
-    CL_GC_PROTECT(pair);            /* the 2nd cons can compact — keep PAIR live */
-    cl_tables_wrlock();
-    setf_fn_table = cl_cons(pair, setf_fn_table);
-    cl_tables_rwunlock();
-    CL_GC_UNPROTECT(3);
+    cl_table_prepend_locked(&setf_fn_table, cl_cons(accessor, setf_fn_sym));
 }
 
 /* --- Public API --- */
@@ -5061,9 +5097,19 @@ CL_Obj cl_symbol_macrolet_lex_env(CL_Obj bindings, CL_Obj inherited_lex_env)
 
 CL_Obj cl_compile_defun(CL_Obj name, CL_Obj lambda_list, CL_Obj body)
 {
-    CL_Obj form = cl_cons(SYM_DEFUN,
-                          cl_cons(name,
-                                  cl_cons(lambda_list, body)));
+    CL_Obj form;
+    /* GC SAFETY: build the form one cons at a time with the arguments
+     * protected — a bare nested cl_cons(name, cl_cons(...)) evaluates the
+     * inner cons first, which can compact and stale `name`/`lambda_list`
+     * before the outer cons reads them. */
+    CL_GC_PROTECT(name);
+    CL_GC_PROTECT(lambda_list);
+    CL_GC_PROTECT(body);
+    form = cl_cons(lambda_list, body);
+    CL_GC_PROTECT(form);
+    form = cl_cons(name, form);
+    form = cl_cons(SYM_DEFUN, form);
+    CL_GC_UNPROTECT(4);
     return cl_compile(form);
 }
 

@@ -270,9 +270,9 @@ static CL_Obj bi_register_struct_type(CL_Obj *args, int n)
     entry = cl_cons(parent, entry);
     entry = cl_cons(n_slots_obj, entry);
     entry = cl_cons(name, entry);
-    cl_tables_wrlock();
-    struct_table = cl_cons(entry, struct_table);
-    cl_tables_rwunlock();
+    /* Final cons happens outside the write lock (STW-vs-rwlock deadlock —
+     * see cl_table_prepend_locked). */
+    cl_table_prepend_locked(&struct_table, entry);
 
     CL_GC_UNPROTECT(3);
     return name;

@@ -10307,6 +10307,199 @@ TEST(builtin_fptr_plausible_unaligned)
 #endif
 }
 
+/* --- tier-4 batch 7a: fixed-size C buffer caps removed --- */
+
+TEST(eval_apply_builtin_over_64_args)
+{
+    /* The C bi_apply path (reached when APPLY itself is applied, e.g. via
+     * FUNCALL #'APPLY) staged args in a flat_args[64] C array and silently
+     * dropped everything past 64.  It now spreads onto the VM stack up to
+     * CALL-ARGUMENTS-LIMIT. */
+    ASSERT_STR_EQ(eval_print(
+        "(funcall #'apply #'+ (make-list 100 :initial-element 1))"), "100");
+    /* Spread initial args + trailing list through the same path. */
+    ASSERT_STR_EQ(eval_print(
+        "(funcall #'apply #'+ 1 2 3 (make-list 97 :initial-element 1))"),
+        "103");
+    /* Sanity: the result reflects the LAST args, not just the first 64. */
+    ASSERT_STR_EQ(eval_print(
+        "(funcall #'apply #'max (append (make-list 99 :initial-element 1)"
+        "                               (list 42)))"), "42");
+}
+
+TEST(eval_remove_string_over_1023_chars)
+{
+    /* remove_from_string staged the kept characters in a char buf[1024],
+     * silently truncating results at 1023 characters. */
+    ASSERT_STR_EQ(eval_print(
+        "(length (remove #\\a (make-string 2000 :initial-element #\\b)))"),
+        "2000");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (concatenate 'string (make-string 1500 :initial-element #\\b)"
+        "                              \"a\""
+        "                              (make-string 100 :initial-element #\\c))))"
+        "  (length (remove #\\a s)))"), "1600");
+}
+
+TEST(eval_concatenate_string_over_4096_chars)
+{
+    /* bi_concatenate's string path staged into a 4096-slot buffer and
+     * silently truncated longer results. */
+    ASSERT_STR_EQ(eval_print(
+        "(length (concatenate 'string"
+        "  (make-string 3000 :initial-element #\\x)"
+        "  (make-string 3000 :initial-element #\\y)))"), "6000");
+    /* Last characters survive intact. */
+    ASSERT_STR_EQ(eval_print(
+        "(char (concatenate 'string (make-string 5000 :initial-element #\\x)"
+        "                           \"z\") 5000)"), "#\\z");
+}
+
+#ifdef CL_WIDE_STRINGS
+TEST(eval_remove_concatenate_wide_chars_preserved)
+{
+    /* remove_from_string narrowed every kept char with a (char) cast,
+     * mangling wide characters; concatenate must keep them wide too. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (coerce (list #\\a (code-char #x4E2D) #\\b) 'string)))"
+        "  (let ((r (remove #\\a s)))"
+        "    (list (length r) (char= (char r 0) (code-char #x4E2D))"
+        "          (char r 1))))"), "(2 T #\\b)");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((r (concatenate 'string \"ab\""
+        "           (coerce (list (code-char #x4E2D)) 'string))))"
+        "  (list (length r) (char= (char r 2) (code-char #x4E2D))))"),
+        "(3 T)");
+}
+#endif
+
+/* --- tier-4 batch 7c: print-control dynbinds, bignum file positions --- */
+
+TEST(eval_print_override_restored_after_error)
+{
+    /* FS16: the *PRINT-* keyword overrides are thread-local dynamic binds
+     * now.  The discriminating case: when printing SIGNALS and an outer
+     * handler catches, the old global save/set/restore skipped its restore
+     * — *PRINT-BASE* stayed clobbered at 2 for the rest of the session.
+     * A dynamic bind unwinds with the non-local exit. */
+    ASSERT_STR_EQ(eval_print(
+        "(progn"
+        "  (defclass t7c-boom () ())"
+        "  (defmethod print-object ((o t7c-boom) s) (error \"boom\"))"
+        "  (handler-case (write-to-string (make-instance 't7c-boom) :base 2)"
+        "    (error () nil))"
+        "  *print-base*)"), "10");
+    /* Normal path unchanged: override applies, then unwinds. */
+    ASSERT_STR_EQ(eval_print(
+        "(list (write-to-string 255 :base 16) *print-base*)"),
+        "(\"FF\" 10)");
+}
+
+TEST(eval_file_position_bignum)
+{
+    /* ST7: positions past CL_FIXNUM_MAX (~1GB) were truncated by the fixnum
+     * tag shift.  Seek past that in a (sparse) temp file and read the
+     * position back — must round-trip as a bignum. */
+    ASSERT_STR_EQ(eval_print(
+        "(with-open-file (s \"t7c-pos.tmp\" :direction :output"
+        "                   :if-exists :supersede)"
+        "  (let ((big (+ 1073741823 6)))"
+        "    (file-position s big)"
+        "    (prog1 (list (= (file-position s) big)"
+        "                 (typep (file-position s) 'bignum))"
+        "      (close s)"
+        "      (delete-file \"t7c-pos.tmp\"))))"), "(T T)");
+}
+
+/* --- tier-4 batch 7b: hashtable hash/equality contract (AH5) --- */
+
+TEST(eval_hashtable_wide_string_keys)
+{
+    /* Wide strings were identity-hashed but content-compared: an EQUAL
+     * lookup with a fresh string of the same characters missed. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((ht (make-hash-table :test 'equal)) (ok t))"
+        "  (dotimes (i 30)"
+        "    (setf (gethash (format nil \"k~A~A\" (code-char 20013) i) ht) i))"
+        "  (dotimes (i 30)"
+        "    (unless (eql (gethash (format nil \"k~A~A\" (code-char 20013) i) ht) i)"
+        "      (setf ok nil)))"
+        "  (list ok (hash-table-count ht)))"), "(T 30)");
+}
+
+TEST(eval_hashtable_equalp_vector_keys)
+{
+    /* EQUALP descends vectors in keys_equal but hashed them by identity —
+     * a fresh equal-content vector key missed. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((ht (make-hash-table :test 'equalp)))"
+        "  (setf (gethash (vector 1 2 3) ht) :v)"
+        "  (gethash (vector 1 2 3) ht))"), ":V");
+}
+
+TEST(eval_hashtable_equal_bitvector_keys)
+{
+    /* keys_equal had no bit-vector branch: equal-content bit-vector keys
+     * never matched (CLHS EQUAL descends bit-vectors). */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((ht (make-hash-table :test 'equal)))"
+        "  (setf (gethash #*1011 ht) :bv)"
+        "  (gethash (copy-seq #*1011) ht))"), ":BV");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((ht (make-hash-table :test 'equal)))"
+        "  (setf (gethash #*1011 ht) :bv)"
+        "  (gethash #*1010 ht))"), "NIL");
+}
+
+TEST(eval_hashtable_equal_vector_identity)
+{
+    /* CLHS: EQUAL on general vectors is EQ — the same object is found,
+     * a fresh equal-content vector is not (matches the EQUAL builtin). */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((ht (make-hash-table :test 'equal)) (v (vector 1 2)))"
+        "  (setf (gethash v ht) :id)"
+        "  (list (gethash v ht) (gethash (vector 1 2) ht)))"), "(:ID NIL)");
+}
+
+TEST(eval_hashtable_equalp_wide_char_no_low_byte_match)
+{
+    /* EQUALP char compare used a (char) cast: U+4E41 (low byte #x41) and
+     * #\A compared \"equalp\" and hashed to the same bucket — a false hit. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((ht (make-hash-table :test 'equalp)))"
+        "  (setf (gethash (code-char 20033) ht) :wide)"
+        "  (list (gethash #\\A ht) (gethash (code-char 20033) ht)))"),
+        "(NIL :WIDE)");
+}
+
+/* --- tier-4 batch 7b: map-family designators and 16-list caps --- */
+
+TEST(eval_mapl_mapcon_symbol_designators)
+{
+    /* MAPL/MAPCON rejected symbol function designators (missing
+     * cl_coerce_funcdesig, unlike their siblings). */
+    ASSERT_STR_EQ(eval_print("(mapl 'identity (list 1 2))"), "(1 2)");
+    ASSERT_STR_EQ(eval_print("(mapcon 'list (list 1 2))"), "((1 2) (2))");
+}
+
+TEST(eval_map_family_over_16_seqs_errors)
+{
+    /* The silent 16-list clamp dropped whole argument sequences; it is a
+     * loud error now. */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (apply #'mapcar #'+ (make-list 17 :initial-element '(1)))"
+        "  (error () :err))"), ":ERR");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (apply #'map 'list #'+ (make-list 17 :initial-element '(1)))"
+        "  (error () :err))"), ":ERR");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (apply #'every #'= (make-list 17 :initial-element '(1)))"
+        "  (error () :err))"), ":ERR");
+    /* 16 sequences still work. */
+    ASSERT_STR_EQ(eval_print(
+        "(apply #'mapcar #'+ (make-list 16 :initial-element '(1)))"), "(16)");
+}
+
 int main(void)
 {
     test_init();
@@ -11296,6 +11489,23 @@ int main(void)
      * unreliable afterwards.  Append new tests ABOVE this line. */
     RUN(eval_heap_exhaustion_error);
     RUN(builtin_fptr_plausible_unaligned);
+
+    RUN(eval_print_override_restored_after_error);
+    RUN(eval_file_position_bignum);
+    RUN(eval_hashtable_wide_string_keys);
+    RUN(eval_hashtable_equalp_vector_keys);
+    RUN(eval_hashtable_equal_bitvector_keys);
+    RUN(eval_hashtable_equal_vector_identity);
+    RUN(eval_hashtable_equalp_wide_char_no_low_byte_match);
+    RUN(eval_mapl_mapcon_symbol_designators);
+    RUN(eval_map_family_over_16_seqs_errors);
+
+    RUN(eval_apply_builtin_over_64_args);
+    RUN(eval_remove_string_over_1023_chars);
+    RUN(eval_concatenate_string_over_4096_chars);
+#ifdef CL_WIDE_STRINGS
+    RUN(eval_remove_concatenate_wide_chars_preserved);
+#endif
 
     teardown();
     REPORT();

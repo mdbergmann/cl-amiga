@@ -825,6 +825,7 @@ void *cl_jit_runtime_block_alloc(CL_Obj tag)
     nlx->restart_mark        = cl_restart_top;
     nlx->gc_root_mark        = gc_root_count;
     nlx->compiler_mark       = cl_compiler_mark();
+    nlx->printer_mark        = cl_printer_state_save();
     nlx->saved_jit_depth     = CT->jit_depth;
     nlx->mv_count            = 1;
     return &nlx->buf;
@@ -878,6 +879,7 @@ CL_Obj cl_jit_runtime_block_post_longjmp(void)
     gc_root_count           = nlx->gc_root_mark;
     cl_jit_restore_depth(nlx->saved_jit_depth);
     cl_compiler_restore_to(nlx->compiler_mark);
+    cl_printer_state_restore(nlx->printer_mark);
     cl_mv_count = nlx->mv_count;
     for (mi = 0; mi < cl_mv_count && mi < CL_MAX_MV; mi++)
         cl_mv_values[mi] = nlx->mv_values[mi];
@@ -974,6 +976,7 @@ void *cl_jit_runtime_catch_alloc(CL_Obj tag)
     nlx->restart_mark        = cl_restart_top;
     nlx->gc_root_mark        = gc_root_count;
     nlx->compiler_mark       = cl_compiler_mark();
+    nlx->printer_mark        = cl_printer_state_save();
     nlx->saved_jit_depth     = CT->jit_depth;
     nlx->mv_count            = 1;
     return &nlx->buf;
@@ -1021,6 +1024,7 @@ CL_Obj cl_jit_runtime_catch_post_longjmp(void)
     gc_root_count           = nlx->gc_root_mark;
     cl_jit_restore_depth(nlx->saved_jit_depth);
     cl_compiler_restore_to(nlx->compiler_mark);
+    cl_printer_state_restore(nlx->printer_mark);
     cl_mv_count = nlx->mv_count;
     for (mi = 0; mi < cl_mv_count && mi < CL_MAX_MV; mi++)
         cl_mv_values[mi] = nlx->mv_values[mi];
@@ -1098,6 +1102,7 @@ void *cl_jit_runtime_uwprot_alloc(void)
     nlx->restart_mark        = cl_restart_top;
     nlx->gc_root_mark        = gc_root_count;
     nlx->compiler_mark       = cl_compiler_mark();
+    nlx->printer_mark        = cl_printer_state_save();
     nlx->saved_jit_depth     = CT->jit_depth;
     nlx->mv_count            = 1;
     return &nlx->buf;
@@ -1143,6 +1148,7 @@ void cl_jit_runtime_uwprot_post_longjmp(void)
     gc_root_count           = nlx->gc_root_mark;
     cl_jit_restore_depth(nlx->saved_jit_depth);
     cl_compiler_restore_to(nlx->compiler_mark);
+    cl_printer_state_restore(nlx->printer_mark);
     /* Intentionally don't touch cl_mv_count / cl_mv_values: the
      * protected-form's MVs are captured via OP_MV_TO_LIST in the
      * compiled cleanup epilogue, and the throw site may have arranged
@@ -1495,6 +1501,7 @@ void *cl_jit_runtime_tagbody_alloc(CL_Obj tagbody_id)
     nlx->restart_mark        = cl_restart_top;
     nlx->gc_root_mark        = gc_root_count;
     nlx->compiler_mark       = cl_compiler_mark();
+    nlx->printer_mark        = cl_printer_state_save();
     nlx->saved_jit_depth     = CT->jit_depth;
     nlx->mv_count            = 1;
     return &nlx->buf;
@@ -1538,6 +1545,7 @@ CL_Obj cl_jit_runtime_tagbody_post_longjmp(void)
     gc_root_count           = nlx->gc_root_mark;
     cl_jit_restore_depth(nlx->saved_jit_depth);
     cl_compiler_restore_to(nlx->compiler_mark);
+    cl_printer_state_restore(nlx->printer_mark);
     cl_mv_count             = 1;
 
     tag_index = nlx->result;

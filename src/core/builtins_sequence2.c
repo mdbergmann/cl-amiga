@@ -171,7 +171,9 @@ static CL_Obj bi_every(CL_Obj *args, int n)
     int32_t idx = 0;
     CL_Obj last_result = SYM_T;
 
-    if (nseqs > 16) nseqs = 16;
+    if (nseqs > 16)
+        cl_error(CL_ERR_ARGS,
+                 "EVERY: too many sequence arguments (%d; max 16)", nseqs);
     for (i = 0; i < nseqs; i++) {
         seqs[i] = args[i + 1];
         lens[i] = every_seq_len(seqs[i]);
@@ -226,7 +228,9 @@ static CL_Obj bi_some(CL_Obj *args, int n)
     int32_t idx = 0;
     CL_Obj result = CL_NIL;
 
-    if (nseqs > 16) nseqs = 16;
+    if (nseqs > 16)
+        cl_error(CL_ERR_ARGS,
+                 "SOME: too many sequence arguments (%d; max 16)", nseqs);
     for (i = 0; i < nseqs; i++) {
         seqs[i] = args[i + 1];
         lens[i] = every_seq_len(seqs[i]);
@@ -515,6 +519,10 @@ static CL_Obj bi_map(CL_Obj *args, int n)
      * deftype via cl_vm_apply, which can allocate/compact.  Only args[]
      * (GC-rooted) is live at this point, so no offsets are stale across it. */
     rt = seq_result_type_class(result_type, 16);
+    /* Re-read from the rooted args[0]: the classify may have run a deftype
+     * expander (cl_vm_apply) and compacted, staling the local copy that the
+     * (or ...) walk / re-classification below dereference. */
+    result_type = args[0];
     if (rt < 0) {
         /* An (or t1 t2 ...) of sequence subtypes is a valid MAP result-type
          * (MAP.48 / MAP.ERROR.11): the result must be a member of one of the
@@ -577,7 +585,9 @@ static CL_Obj bi_map(CL_Obj *args, int n)
     }
 
     func = cl_coerce_funcdesig(args[1], "MAP");
-    if (nseqs > 16) nseqs = 16;
+    if (nseqs > 16)
+        cl_error(CL_ERR_ARGS,
+                 "MAP: too many sequence arguments (%d; max 16)", nseqs);
     for (i = 0; i < nseqs; i++) {
         seqs[i] = args[i + 2];
         orig_seqs[i] = seqs[i];
@@ -619,6 +629,10 @@ static CL_Obj bi_map(CL_Obj *args, int n)
             CL_GC_PROTECT(func);
             result = cl_make_string(NULL, (uint32_t)min_len);
             CL_GC_PROTECT(result);
+            /* Re-read the cursors from args[] (rooted VM-stack slots) — the
+             * cl_make_string above can compact, and protecting the stale
+             * copies below would root pre-compaction offsets. */
+            for (i = 0; i < nseqs; i++) seqs[i] = orig_seqs[i] = args[i + 2];
             /* Protect seq cursors across call_func (see rt==0 note). */
             for (i = 0; i < nseqs; i++) { CL_GC_PROTECT(seqs[i]); CL_GC_PROTECT(orig_seqs[i]); }
             for (idx = 0; idx < min_len; idx++) {
@@ -640,6 +654,9 @@ static CL_Obj bi_map(CL_Obj *args, int n)
             CL_GC_PROTECT(func);
             result = cl_make_vector((uint32_t)min_len);
             CL_GC_PROTECT(result);
+            /* Re-read the cursors from args[] after the allocation (see the
+             * string branch above). */
+            for (i = 0; i < nseqs; i++) seqs[i] = orig_seqs[i] = args[i + 2];
             /* Protect seq cursors across call_func (see rt==0 note). */
             for (i = 0; i < nseqs; i++) { CL_GC_PROTECT(seqs[i]); CL_GC_PROTECT(orig_seqs[i]); }
             for (idx = 0; idx < min_len; idx++) {
@@ -984,15 +1001,19 @@ static CL_Obj list_merge_sort(CL_Obj list, CL_Obj pred, CL_Obj key_fn)
 
     /* GC-protect list and mid across recursive calls:
        each recursive sort triggers merges that call key/pred functions,
-       which can allocate and trigger GC */
+       which can allocate and trigger GC.  pred/key_fn are by-value C locals
+       of THIS frame too — without their own roots the recursive sorts leave
+       them stale before they're passed on to list_merge. */
     CL_GC_PROTECT(list);
     CL_GC_PROTECT(mid);
+    CL_GC_PROTECT(pred);
+    CL_GC_PROTECT(key_fn);
 
     list = list_merge_sort(list, pred, key_fn);
     mid = list_merge_sort(mid, pred, key_fn);
 
     result = list_merge(list, mid, pred, key_fn);
-    CL_GC_UNPROTECT(2);
+    CL_GC_UNPROTECT(4);
     return result;
 }
 
@@ -1059,38 +1080,40 @@ static CL_Obj seq_to_gc_vector(CL_Obj seq, int32_t *out_len)
  * Merge two sorted sequences into one sorted sequence of result-type. */
 static CL_Obj bi_merge(CL_Obj *args, int n)
 {
-    CL_Obj result_type = args[0];
-    CL_Obj seq1 = args[1];
-    CL_Obj seq2 = args[2];
-    CL_Obj pred = cl_coerce_funcdesig(args[3], "MERGE");
+    CL_Obj seq1, seq2, pred;
     CL_Obj key_fn = CL_NIL;
     int i, rt;
     int32_t len_constraint = -1;
 
+    /* Classify the result-type FIRST: seq_ctor_type_class can run a deftype
+     * expander (cl_vm_apply) that allocates/compacts.  Classification:
+     * 0=null 1=list 2=string 3=vector 4=bit-vector; len_constraint is the
+     * declared length, or -1 when unspecified / `*`.  Every other operand is
+     * read from args[] (GC-rooted VM-stack slots) afterwards, so nothing is
+     * live across the expander. */
+    rt = seq_ctor_type_class(args[0], 16, &len_constraint);
+    if (rt < 0)
+        cl_error(CL_ERR_ARGS, "MERGE: unsupported result-type");
+
     cl_check_seq_keywords(args, n, 4, SK_KEY);
+    pred = cl_coerce_funcdesig(args[3], "MERGE");
+    CL_GC_PROTECT(pred);   /* the :key coerce below may allocate/compact */
     for (i = 4; i + 1 < n; i += 2) {
         if (args[i] == KW_KEY)
             key_fn = CL_NULL_P(args[i + 1]) ? CL_NIL : cl_coerce_funcdesig(args[i + 1], ":KEY");
     }
-
-    /* Classify the result-type: 0=null 1=list 2=string 3=vector 4=bit-vector.
-     * len_constraint is the declared length, or -1 when unspecified / `*`. */
-    rt = seq_ctor_type_class(result_type, 16, &len_constraint);
-    if (rt < 0)
-        cl_error(CL_ERR_ARGS, "MERGE: unsupported result-type");
+    CL_GC_PROTECT(key_fn);
+    seq1 = args[1];
+    seq2 = args[2];
+    CL_GC_PROTECT(seq1);
+    CL_GC_PROTECT(seq2);
 
     /* Fast path: list merge when both inputs are lists */
     if (rt == 1 && (CL_NULL_P(seq1) || CL_CONS_P(seq1)) &&
                    (CL_NULL_P(seq2) || CL_CONS_P(seq2))) {
-        CL_GC_PROTECT(seq1);
-        CL_GC_PROTECT(seq2);
-        CL_GC_PROTECT(pred);
-        CL_GC_PROTECT(key_fn);
-        {
-            CL_Obj r = list_merge(seq1, seq2, pred, key_fn);
-            CL_GC_UNPROTECT(4);
-            return r;
-        }
+        CL_Obj r = list_merge(seq1, seq2, pred, key_fn);
+        CL_GC_UNPROTECT(4);
+        return r;
     }
 
     /* General path: collect into GC vectors, merge, build result.
@@ -1103,10 +1126,8 @@ static CL_Obj bi_merge(CL_Obj *args, int n)
         int32_t n1 = 0, n2 = 0, ntotal, ia, ib, io;
         CL_Obj result = CL_NIL, tail = CL_NIL;
 
-        CL_GC_PROTECT(seq1);
-        CL_GC_PROTECT(seq2);
-        CL_GC_PROTECT(pred);
-        CL_GC_PROTECT(key_fn);
+        /* seq1/seq2/pred/key_fn are already rooted above (4 outer roots);
+         * the UNPROTECT(7) sites below pop these 3 plus those 4. */
         CL_GC_PROTECT(a1);
         CL_GC_PROTECT(a2);
         CL_GC_PROTECT(out);
@@ -1244,34 +1265,45 @@ static void array_seq_set(CL_Obj seq, int32_t i, CL_Obj v)
 }
 
 /* In-place stable insertion sort for string / bit-vector sequences.  Elements
- * are snapshotted into a C array first; for these element types the values are
- * immediate (characters / bits), so the snapshot is unaffected by a compacting
- * GC triggered inside the :key / predicate calls. */
+ * are snapshotted into a GC vector first; for these element types the values
+ * are immediate (characters / bits), so only the vector itself can move under
+ * a compacting GC triggered inside the :key / predicate calls — SORT_TMP
+ * re-derives the data pointer on every access.  A GC vector rather than
+ * platform_alloc so a user :key/predicate longjmp (handler-case) cannot leak
+ * the snapshot permanently. */
+#define SORT_TMP(vec) cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(vec))
 static void array_seq_insertion_sort(CL_Obj seq, int32_t len, CL_Obj pred, CL_Obj key_fn)
 {
     int32_t i, j;
-    CL_Obj *tmp;
+    CL_Obj tmpv;
+    CL_Obj val = CL_NIL, kval = CL_NIL;
     if (len <= 1) return;
-    tmp = (CL_Obj *)platform_alloc((uint32_t)(len * (int32_t)sizeof(CL_Obj)));
-    CL_GC_PROTECT(seq);    /* writeback after sort may compact via apply_key/call_test */
+    CL_GC_PROTECT(seq);    /* the snapshot alloc + user calls may compact */
     CL_GC_PROTECT(pred);
     CL_GC_PROTECT(key_fn);
-    for (i = 0; i < len; i++) tmp[i] = seq_elt(seq, i);
+    /* kval (and val, if a :key ever returns it) is held across the inner
+     * apply_key/call_test loop, which can compact — root both so a heap
+     * object returned by :key isn't a stale offset by the second compare
+     * (mirrors vector_insertion_sort). */
+    CL_GC_PROTECT(val);
+    CL_GC_PROTECT(kval);
+    tmpv = cl_make_vector((uint32_t)len);
+    CL_GC_PROTECT(tmpv);
+    for (i = 0; i < len; i++) SORT_TMP(tmpv)[i] = seq_elt(seq, i);
     for (i = 1; i < len; i++) {
-        CL_Obj val = tmp[i];
-        CL_Obj kval = apply_key(key_fn, val);
+        val = SORT_TMP(tmpv)[i];
+        kval = apply_key(key_fn, val);
         j = i - 1;
         while (j >= 0) {
-            CL_Obj kj = apply_key(key_fn, tmp[j]);
+            CL_Obj kj = apply_key(key_fn, SORT_TMP(tmpv)[j]);
             if (CL_NULL_P(call_test(pred, kval, kj))) break;
-            tmp[j + 1] = tmp[j];
+            SORT_TMP(tmpv)[j + 1] = SORT_TMP(tmpv)[j];
             j--;
         }
-        tmp[j + 1] = val;
+        SORT_TMP(tmpv)[j + 1] = val;
     }
-    for (i = 0; i < len; i++) array_seq_set(seq, i, tmp[i]);
-    CL_GC_UNPROTECT(3);
-    platform_free(tmp);
+    for (i = 0; i < len; i++) array_seq_set(seq, i, SORT_TMP(tmpv)[i]);
+    CL_GC_UNPROTECT(6);
 }
 
 static CL_Obj bi_sort(CL_Obj *args, int n)
