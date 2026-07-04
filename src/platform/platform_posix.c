@@ -219,7 +219,25 @@ PlatformFile platform_file_open(const char *path, int mode)
     default: return PLATFORM_FILE_INVALID;
     }
 
-    f = fopen(path, fmode);
+    /* Copy the path to C memory, then bracket the fopen in a GC safe
+     * region: open can block (network FS, spinning disk wake-up), and a
+     * peer's stop-the-world GC would otherwise stall for its whole
+     * duration.  The copy is mandatory — `path` may point into the
+     * moving Lisp arena, and inside the safe region a peer compaction
+     * can relocate it mid-syscall.  Oversized paths (>1023 bytes) fall
+     * back to the unbracketed direct call (accepted STW stall). */
+    {
+        char pathbuf[1024];
+        size_t plen = strlen(path);
+        if (plen < sizeof(pathbuf)) {
+            memcpy(pathbuf, path, plen + 1);
+            cl_gc_enter_safe_region();
+            f = fopen(pathbuf, fmode);
+            cl_gc_leave_safe_region();
+        } else {
+            f = fopen(path, fmode);
+        }
+    }
     if (!f) return PLATFORM_FILE_INVALID;
 
     /* Find free slot (slot 0 is reserved as INVALID) — claim under the
@@ -255,6 +273,14 @@ void platform_file_close(PlatformFile fh)
     if (f) fclose(f);
 }
 
+/* Per-character read/write and small buffered writes are deliberately NOT
+ * bracketed in GC safe regions: they are hot paths (LOAD reads source
+ * character by character) and stdio buffers them, so the underlying
+ * syscall runs only every ~4KB and completes quickly on local disks.
+ * The enter/leave pair costs a gc_mutex lock + condvar broadcast each —
+ * per character that would dwarf the I/O itself.  A peer STW GC stalls
+ * for at most one short buffered-syscall; accepted (mirrors the FFI
+ * decision in the tier-4 audit). */
 int platform_file_getchar(PlatformFile fh)
 {
     if (fh > 0 && fh < PLATFORM_FILE_TABLE_SIZE && file_table[fh])
@@ -264,9 +290,7 @@ int platform_file_getchar(PlatformFile fh)
 
 int platform_file_write_string(PlatformFile fh, const char *str)
 {
-    if (fh > 0 && fh < PLATFORM_FILE_TABLE_SIZE && file_table[fh])
-        return fputs(str, file_table[fh]) >= 0 ? 0 : -1;
-    return -1;
+    return platform_file_write_buf(fh, str, (uint32_t)strlen(str));
 }
 
 int platform_file_write_char(PlatformFile fh, int ch)
@@ -278,16 +302,48 @@ int platform_file_write_char(PlatformFile fh, int ch)
 
 int platform_file_write_buf(PlatformFile fh, const char *buf, uint32_t len)
 {
-    if (fh > 0 && fh < PLATFORM_FILE_TABLE_SIZE && file_table[fh])
-        return (fwrite(buf, 1, (size_t)len, file_table[fh]) == (size_t)len) ? 0 : -1;
-    return -1;
+    /* Large writes (FASL emission, WRITE-SEQUENCE) can block for real —
+     * bracket them.  `buf` may point into the moving arena, so each
+     * chunk is copied to the C stack BEFORE entering the safe region
+     * (inside it a peer compaction can move the source).  Small writes
+     * (< one chunk) stay unbracketed like the per-char path above. */
+    char chunk[4096];
+    uint32_t pos = 0;
+    FILE *f;
+    if (!(fh > 0 && fh < PLATFORM_FILE_TABLE_SIZE && file_table[fh]))
+        return -1;
+    f = file_table[fh];
+    if (len <= sizeof(chunk))
+        return (fwrite(buf, 1, (size_t)len, f) == (size_t)len) ? 0 : -1;
+    while (pos < len) {
+        uint32_t nb = len - pos;
+        size_t written;
+        if (nb > sizeof(chunk)) nb = (uint32_t)sizeof(chunk);
+        memcpy(chunk, buf + pos, nb);
+        cl_gc_enter_safe_region();
+        written = fwrite(chunk, 1, (size_t)nb, f);
+        cl_gc_leave_safe_region();
+        if (written != (size_t)nb) return -1;
+        pos += nb;
+    }
+    /* NOTE: `buf` is read across safe regions above, so a >chunk-sized
+     * write requires C-memory input.  That holds for every current
+     * caller: the FASL writer passes a platform_alloc'd buffer, and the
+     * stream layer chunks arena-backed strings through rooted CL_Objs
+     * (cl_stream_write_lisp_string) before reaching this level. */
+    return 0;
 }
 
 int platform_file_flush(PlatformFile fh)
 {
-    if (fh > 0 && fh < PLATFORM_FILE_TABLE_SIZE && file_table[fh])
-        return (fflush(file_table[fh]) == 0) ? 0 : -1;
-    return -1;
+    int rc;
+    if (!(fh > 0 && fh < PLATFORM_FILE_TABLE_SIZE && file_table[fh]))
+        return -1;
+    /* Flush pushes up to a full stdio buffer to disk — bracket it. */
+    cl_gc_enter_safe_region();
+    rc = (fflush(file_table[fh]) == 0) ? 0 : -1;
+    cl_gc_leave_safe_region();
+    return rc;
 }
 
 int platform_file_eof(PlatformFile fh)
@@ -306,19 +362,28 @@ long platform_file_position(PlatformFile fh)
 
 int platform_file_set_position(PlatformFile fh, long pos)
 {
-    if (fh > 0 && fh < PLATFORM_FILE_TABLE_SIZE && file_table[fh])
-        return fseek(file_table[fh], pos, SEEK_SET) == 0 ? 0 : -1;
-    return -1;
+    int rc;
+    if (!(fh > 0 && fh < PLATFORM_FILE_TABLE_SIZE && file_table[fh]))
+        return -1;
+    /* A seek can flush buffered writes to disk — bracket it (no arena
+     * data is touched inside). */
+    cl_gc_enter_safe_region();
+    rc = fseek(file_table[fh], pos, SEEK_SET) == 0 ? 0 : -1;
+    cl_gc_leave_safe_region();
+    return rc;
 }
 
 long platform_file_length(PlatformFile fh)
 {
     if (fh > 0 && fh < PLATFORM_FILE_TABLE_SIZE && file_table[fh]) {
-        long cur = ftell(file_table[fh]);
-        long end;
-        fseek(file_table[fh], 0, SEEK_END);
-        end = ftell(file_table[fh]);
-        fseek(file_table[fh], cur, SEEK_SET);
+        long cur, end;
+        FILE *f = file_table[fh];
+        cl_gc_enter_safe_region();
+        cur = ftell(f);
+        fseek(f, 0, SEEK_END);
+        end = ftell(f);
+        fseek(f, cur, SEEK_SET);
+        cl_gc_leave_safe_region();
         return end;
     }
     return -1;
@@ -333,8 +398,16 @@ uint32_t platform_time_ms(void)
 
 void platform_sleep_ms(uint32_t milliseconds)
 {
-    if (milliseconds > 0)
+    if (milliseconds > 0) {
+        /* A sleeping thread cannot reach a safepoint — without the safe
+         * region every peer's stop-the-world GC stalls for the whole
+         * nap (SLEEP naps in 100ms chunks; MP polling loops in 10ms).
+         * Safe regions nest (safe_region_depth), so callers already
+         * inside one are fine. */
+        cl_gc_enter_safe_region();
         usleep(milliseconds * 1000);
+        cl_gc_leave_safe_region();
+    }
 }
 
 uint32_t platform_universal_time(void)
@@ -397,7 +470,24 @@ int platform_getcwd(char *buf, int bufsize)
 
 int platform_system(const char *command)
 {
-    int status = system(command);
+    int status;
+    /* `command` typically points straight into a Lisp string's arena data
+     * (EXT:SYSTEM-COMMAND passes s->data), and system() blocks for the
+     * child's whole runtime — both reasons to copy to C memory FIRST and
+     * only then enter the safe region (inside it a peer compaction can
+     * relocate the source).  OOM fallback: run unbracketed from the
+     * original pointer (accepted STW stall, no relocation risk). */
+    size_t clen = strlen(command);
+    char *cmdbuf = (char *)malloc(clen + 1);
+    if (cmdbuf) {
+        memcpy(cmdbuf, command, clen + 1);
+        cl_gc_enter_safe_region();
+        status = system(cmdbuf);
+        cl_gc_leave_safe_region();
+        free(cmdbuf);
+    } else {
+        status = system(command);
+    }
     if (status == -1) return -1;
     if (WIFEXITED(status)) return WEXITSTATUS(status);
     if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
@@ -409,11 +499,27 @@ char **platform_directory(const char *pattern, int *count_out)
     glob_t g;
     char **result;
     int i;
+    char patbuf[1024];
+    size_t plen;
+    int rc;
 
     *count_out = 0;
+    /* Copy the pattern to C memory and bracket the glob: directory
+     * enumeration touches the disk (possibly a network FS) and the
+     * pattern may point into the moving arena.  Oversized patterns run
+     * unbracketed from the original pointer (accepted STW stall). */
+    plen = strlen(pattern);
     /* GLOB_MARK appends '/' to directory entries so callers can
        distinguish directories from files (needed for CL DIRECTORY). */
-    if (glob(pattern, GLOB_MARK, NULL, &g) != 0) {
+    if (plen < sizeof(patbuf)) {
+        memcpy(patbuf, pattern, plen + 1);
+        cl_gc_enter_safe_region();
+        rc = glob(patbuf, GLOB_MARK, NULL, &g);
+        cl_gc_leave_safe_region();
+    } else {
+        rc = glob(pattern, GLOB_MARK, NULL, &g);
+    }
+    if (rc != 0) {
         return NULL;
     }
     result = (char **)malloc(((size_t)g.gl_pathc + 1) * sizeof(char *));

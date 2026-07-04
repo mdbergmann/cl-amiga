@@ -2280,19 +2280,37 @@ static void gc_finalize_dead(uint8_t *ptr)
          * by the mark-driven cl_stream_outbuf_gc_reclaim() after marking. */
         break;
     case TYPE_LOCK: {
-        /* KNOWN LIMITATION: if a program drops every reference to a lock
-         * wrapper while some thread still HOLDS the platform mutex
-         * (acquired earlier, wrapper discarded), this destroys a locked
-         * mutex — undefined behavior on pthreads.  Blocked WAITERS are
-         * safe (their args root the wrapper); only a holder-with-no-
-         * reference is exposed.  Tracking held state would need a
-         * per-lock owner field — deferred (tier-3 audit I8). */
+        /* If a program drops every reference to a lock wrapper while some
+         * thread still HOLDS the platform mutex (acquired earlier, wrapper
+         * discarded), destroying the mutex is undefined behavior on
+         * pthreads.  cl_lock_held[]/cl_lock_depth[] track the holder and its
+         * nested-acquire count (set/incremented by acquire, decremented by
+         * release, cleared once depth reaches 0; read here during STW =
+         * race-free): a held mutex is deliberately LEAKED — the table slot
+         * and holder/depth entries are cleared so the id can be reused, but
+         * the OS mutex survives for the (now unreachable) holder.  Blocked
+         * WAITERS are safe regardless (their args root the wrapper).
+         * Closes tier-3 I8. */
         CL_Lock *lk = (CL_Lock *)ptr;
         if (lk->lock_id < CL_MAX_LOCKS) {
             void *h = cl_lock_table[lk->lock_id];
             if (h) {
                 cl_lock_table[lk->lock_id] = NULL;
-                platform_mutex_destroy(h);
+                if (cl_lock_held[lk->lock_id]) {
+                    static int lock_leak_warned = 0;
+                    cl_lock_held[lk->lock_id] = NULL;
+                    cl_lock_depth[lk->lock_id] = 0;
+                    if (!lock_leak_warned) {
+                        lock_leak_warned = 1;
+                        fprintf(stderr, "[MP] warning: a lock was garbage-"
+                                "collected while still held - leaking its OS "
+                                "mutex (destroying a held mutex is undefined "
+                                "behavior); further leaks are silent\n");
+                    }
+                } else {
+                    cl_lock_depth[lk->lock_id] = 0;
+                    platform_mutex_destroy(h);
+                }
             }
         }
         break;

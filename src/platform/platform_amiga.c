@@ -229,13 +229,29 @@ PlatformFile platform_file_open(const char *path, int mode)
     default: return PLATFORM_FILE_INVALID;
     }
 
-    fh = Open((STRPTR)path, amode);
-    if (!fh) return PLATFORM_FILE_INVALID;
-
-    /* For append mode, seek to end */
-    if (mode == PLATFORM_FILE_APPEND) {
-        Seek(fh, 0, OFFSET_END);
+    /* Copy the path to C memory, then bracket the Open in a GC safe
+     * region: Open on floppy/slow media blocks for real, and a peer's
+     * stop-the-world GC would stall for its whole duration.  The copy is
+     * mandatory — `path` may point into the moving Lisp arena, and a
+     * peer compaction inside the safe region can relocate it.  Oversized
+     * paths run unbracketed from the original pointer. */
+    {
+        char pathbuf[1024];
+        size_t plen = strlen(path);
+        if (plen < sizeof(pathbuf)) {
+            memcpy(pathbuf, path, plen + 1);
+            cl_gc_enter_safe_region();
+            fh = Open((STRPTR)pathbuf, amode);
+            if (fh && mode == PLATFORM_FILE_APPEND)
+                Seek(fh, 0, OFFSET_END);
+            cl_gc_leave_safe_region();
+        } else {
+            fh = Open((STRPTR)path, amode);
+            if (fh && mode == PLATFORM_FILE_APPEND)
+                Seek(fh, 0, OFFSET_END);
+        }
     }
+    if (!fh) return PLATFORM_FILE_INVALID;
 
     /* Find free slot (slot 0 reserved) — claim under the table mutex so
      * two concurrent opens never claim the same index. */
@@ -259,10 +275,16 @@ static int file_flush_wbuf(PlatformFile fh)
 {
     IOBuf *b;
     LONG written;
+    BPTR h;
     if (fh == 0 || fh >= PLATFORM_FILE_TABLE_SIZE) return -1;
     b = file_buf[fh];
     if (!b || b->wlen == 0) return 0;
-    written = Write(file_table[fh], (APTR)b->wbuf, (LONG)b->wlen);
+    h = file_table[fh];
+    /* The 4KB Write to floppy/slow media blocks; wbuf is C memory, so
+     * bracketing is safe (a peer compaction cannot move it). */
+    cl_gc_enter_safe_region();
+    written = Write(h, (APTR)b->wbuf, (LONG)b->wlen);
+    cl_gc_leave_safe_region();
     if (written != (LONG)b->wlen) return -1;
     b->wlen = 0;
     return 0;
@@ -301,9 +323,15 @@ int platform_file_getchar(PlatformFile fh)
     if (b) {
         if (b->rpos < b->rlen)
             return (unsigned char)b->rbuf[b->rpos++];
-        /* Refill read buffer */
+        /* Refill read buffer.  The 4KB Read from floppy/slow media
+         * blocks; rbuf is C memory, so bracketing is safe.  The per-char
+         * fast path above stays bracket-free (hot LOAD path). */
         {
-            LONG n = Read(file_table[fh], (APTR)b->rbuf, PLATFORM_IOBUF_SIZE);
+            BPTR h = file_table[fh];
+            LONG n;
+            cl_gc_enter_safe_region();
+            n = Read(h, (APTR)b->rbuf, PLATFORM_IOBUF_SIZE);
+            cl_gc_leave_safe_region();
             if (n <= 0) return -1;
             b->rpos = 1;
             b->rlen = (int)n;
@@ -358,10 +386,30 @@ int platform_file_write_buf(PlatformFile fh, const char *buf, uint32_t len)
         }
         return 0;
     }
-    /* Fallback: direct write */
+    /* Fallback (no IOBuf — allocation failed at open): chunk through a
+     * C stack buffer so the blocking Write can be bracketed.  Each copy
+     * happens OUTSIDE the safe region; the syscall inside it reads only
+     * the C copy.  NOTE: `buf` is re-read across earlier chunks' safe
+     * regions, so multi-chunk writes require C-memory input — which
+     * holds for every current caller (the stream layer chunks arena
+     * strings through rooted CL_Objs before reaching platform level;
+     * the FASL writer passes platform memory). */
     {
-        LONG written = Write(file_table[fh], (APTR)buf, (LONG)len);
-        return (written == (LONG)len) ? 0 : -1;
+        char chunk[512];
+        uint32_t pos = 0;
+        BPTR h = file_table[fh];
+        while (pos < len) {
+            uint32_t nb = len - pos;
+            LONG written;
+            if (nb > (uint32_t)sizeof(chunk)) nb = (uint32_t)sizeof(chunk);
+            memcpy(chunk, buf + pos, nb);
+            cl_gc_enter_safe_region();
+            written = Write(h, (APTR)chunk, (LONG)nb);
+            cl_gc_leave_safe_region();
+            if (written != (LONG)nb) return -1;
+            pos += nb;
+        }
+        return 0;
     }
 }
 
@@ -398,13 +446,19 @@ int platform_file_set_position(PlatformFile fh, long pos)
 {
     if (fh > 0 && fh < PLATFORM_FILE_TABLE_SIZE && file_table[fh]) {
         IOBuf *b = file_buf[fh];
+        BPTR h = file_table[fh];
+        int rc;
         /* Flush writes and invalidate read buffer on seek */
         if (b) {
             file_flush_wbuf(fh);
             b->rpos = 0;
             b->rlen = 0;
         }
-        return Seek(file_table[fh], pos, OFFSET_BEGINNING) >= 0 ? 0 : -1;
+        /* The Seek hits the disk on AmigaDOS — bracket it. */
+        cl_gc_enter_safe_region();
+        rc = Seek(h, pos, OFFSET_BEGINNING) >= 0 ? 0 : -1;
+        cl_gc_leave_safe_region();
+        return rc;
     }
     return -1;
 }
@@ -412,11 +466,14 @@ int platform_file_set_position(PlatformFile fh, long pos)
 long platform_file_length(PlatformFile fh)
 {
     if (fh > 0 && fh < PLATFORM_FILE_TABLE_SIZE && file_table[fh]) {
-        long cur = Seek(file_table[fh], 0, OFFSET_CURRENT);
-        long end;
-        Seek(file_table[fh], 0, OFFSET_END);
-        end = Seek(file_table[fh], 0, OFFSET_CURRENT);
-        Seek(file_table[fh], cur, OFFSET_BEGINNING);
+        BPTR h = file_table[fh];
+        long cur, end;
+        cl_gc_enter_safe_region();
+        cur = Seek(h, 0, OFFSET_CURRENT);
+        Seek(h, 0, OFFSET_END);
+        end = Seek(h, 0, OFFSET_CURRENT);
+        Seek(h, cur, OFFSET_BEGINNING);
+        cl_gc_leave_safe_region();
         return end;
     }
     return -1;
@@ -434,8 +491,14 @@ void platform_sleep_ms(uint32_t milliseconds)
 {
     /* Delay() takes ticks (1/50s = 20ms each). Round up. */
     LONG ticks = (LONG)((milliseconds + 19) / 20);
-    if (ticks > 0)
+    if (ticks > 0) {
+        /* A sleeping task cannot reach a safepoint — without the safe
+         * region every peer's stop-the-world GC stalls for the whole
+         * nap.  Safe regions nest (safe_region_depth). */
+        cl_gc_enter_safe_region();
         Delay(ticks);
+        cl_gc_leave_safe_region();
+    }
 }
 
 uint32_t platform_universal_time(void)
@@ -571,7 +634,23 @@ int platform_getcwd(char *buf, int bufsize)
 
 int platform_system(const char *command)
 {
-    LONG rc = SystemTagList((STRPTR)command, NULL);
+    LONG rc;
+    /* `command` typically points into a Lisp string's arena data
+     * (EXT:SYSTEM-COMMAND passes s->data) and SystemTagList blocks for
+     * the child's whole runtime — copy to C memory FIRST, then bracket
+     * (a peer compaction inside the safe region can move the source).
+     * OOM fallback: run unbracketed from the original pointer. */
+    size_t clen = strlen(command);
+    char *cmdbuf = (char *)malloc(clen + 1);
+    if (cmdbuf) {
+        memcpy(cmdbuf, command, clen + 1);
+        cl_gc_enter_safe_region();
+        rc = SystemTagList((STRPTR)cmdbuf, NULL);
+        cl_gc_leave_safe_region();
+        free(cmdbuf);
+    } else {
+        rc = SystemTagList((STRPTR)command, NULL);
+    }
     return (int)rc;
 }
 
@@ -614,6 +693,10 @@ char **platform_directory(const char *pattern, int *count_out)
     result = (char **)malloc((size_t)(capacity + 1) * sizeof(char *));
     if (!result) { FreeVec(ap); return NULL; }
 
+    /* Directory enumeration hits the disk per entry; everything touched
+     * inside (amiga_pat, ap, result — all C memory) is compaction-proof,
+     * so bracket the whole walk.  MatchFirst/MatchNext do the blocking. */
+    cl_gc_enter_safe_region();
     rc = MatchFirst((STRPTR)amiga_pat, ap);
     while (rc == 0) {
         if (count >= capacity) {
@@ -640,6 +723,7 @@ char **platform_directory(const char *pattern, int *count_out)
         rc = MatchNext(ap);
     }
     MatchEnd(ap);
+    cl_gc_leave_safe_region();
     FreeVec(ap);
 
     if (result) {
