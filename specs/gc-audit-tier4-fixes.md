@@ -170,16 +170,16 @@ Batch 6b tests: tests/test_mt_interrupt_parked.sh (deterministic — pre-fix at 
 
 ## Batch 7 — Conformance / diagnostics tail (optional, after corruption fixes)
 
-- [ ] bi_apply C path silent 64-arg truncation (builtins.c:838-861) — route through the VM-stack spread like OP_APPLY or error loudly.
-- [ ] FS5 FMT_MAX_ARGS=64 vs CAL 4096 (~? function-control clobbers args[64..]); %formatter-inner 64 cap.
-- [ ] FS6 fmt_case_convert wide-string type confusion (garbled ~( ~) output on non-ASCII).
+- [x] **bi_apply C path silent 64-arg truncation (7a)** — spreads onto the VM stack (rooted, no cap up to CALL-ARGUMENTS-LIMIT); sp restored on every exit path.
+- [x] **FS5 (7a)** — ~? function-control parent-arg snapshot is now an uncapped GC vector (copy-back after apply); call args staged on the VM stack. Same treatment for the ~? string-control sub_args[64], %formatter-inner fmt_buf[66], and both ~:{/~:@{ sublist sub_args[64] caps (all silently dropped elements past 64). FMT_MAX_ARGS deleted.
+- [x] **FS6 (7a)** — fmt_case_convert branches on CL_WIDE_STRING_P: per-code-point ASCII case ops + per-code-point output (cl_stream_write_lisp_string is a base-string byte writer — feeding it a wide string emitted the raw UTF-32 low bytes).
 - [ ] AH5 hashtable hash/equality contract: content-hash wide strings + EQUALP vectors; add keys_equal bit-vector branch (CLHS EQUAL).
-- [ ] S9 remove_from_string 1024-char truncation + wide-char mangling; FS13 concatenate-string 4096 truncation (+ ~20KB stack frame in wide builds — heap-allocate).
+- [x] **S9 + FS13 (7a)** — remove_from_string stages kept chars in a GC vector (no 1023 truncation, no (char) wide mangling, width-preserving result); concatenate string path stages in a GC vector (no 4096 truncation, no 20KB wide stack frame). Bonus find while testing: COERCE char/list/vector→string narrowed wide chars the same way — now promotes to a wide string when any code point > 0x7F.
 - [ ] Reader token caps should signal reader errors instead of silently splitting/truncating (symbol >255 → two tokens; 300-digit bignum parses as two numbers!; strings >4095; #* bits; #\ names) — per the diagnostics policy.
 - [ ] R-srcloc: cons-offset-keyed srcloc table gives wrong file/line after compaction + unlocked MT writes (cosmetic).
 - [ ] ST7 file-position/length bignum instead of fixnum truncation (>~512MB files); ST8 finalize-close leaked fds (design decision: warn vs auto-close); ST9 register stream-layer roots immediately after assignment.
 - [ ] mapl/mapcon missing cl_coerce_funcdesig; mapcar-family silent 16-list cap; every/some/map/map-into 16-seq caps → error or document.
-- [ ] FS7 platform_alloc NULL checks in format; S-LOW platform_alloc leaks on user-fn longjmp (use GC vectors or error-frame cleanup).
+- [x] **FS7 + S-LOW (7a)** — format's platform_alloc sites route through fmt_alloc (loud CL_ERR_STORAGE instead of NULL-deref / silent ""), and the sequence-family buffers held across user :test/:key calls are GC objects now (KEEP_BV_* bit-vectors in remove_from_vector/bitvector + remove-duplicates, GC-vector snapshot in bi_replace, SORT_TMP GC vector in array_seq_insertion_sort) — a user-fn longjmp can no longer leak them. Note: CL_CATCH-based cleanup was rejected — a Lisp handler-case catch longjmps PAST intervening C error frames, so only GC staging is leak-proof.
 - [ ] repl.c REPL_BUF_SIZE silent truncation → error message; bi_trace_function RMW under wrlock.
 - [ ] FS16/print-control globals → real TLV dynamic binds (removes MT value races; supersedes the batch-3 snapshot helper).
 

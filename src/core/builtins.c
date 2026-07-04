@@ -849,8 +849,13 @@ static CL_Obj bi_apply(CL_Obj *args, int n)
 {
     CL_Obj func = args[0];
     CL_Obj arglist;
-    CL_Obj flat_args[64];
+    /* Spread the flattened args onto the VM stack (GC-rooted, no fixed C
+     * cap) rather than a C array — a fixed flat_args[64] silently dropped
+     * args past 64 while OP_APPLY handles CALL-ARGUMENTS-LIMIT (4096). */
+    int base = cl_vm.sp;
+    int saved_sp = cl_vm.sp;
     int nflat = 0;
+    CL_Obj result;
 
     /* (apply func arg1 arg2 ... arglist) */
     if (n == 2) {
@@ -859,14 +864,22 @@ static CL_Obj bi_apply(CL_Obj *args, int n)
         int i;
         /* Spread initial args, last arg is the list */
         for (i = 1; i < n - 1; i++) {
-            if (nflat < 64) flat_args[nflat++] = args[i];
+            cl_vm_push(args[i]);
+            nflat++;
         }
         arglist = args[n - 1];
     }
 
     /* Flatten remaining arglist */
     while (!CL_NULL_P(arglist)) {
-        if (nflat < 64) flat_args[nflat++] = cl_car(arglist);
+        if (nflat >= CL_CALL_ARGS_LIMIT) {
+            cl_vm.sp = saved_sp;
+            cl_error(CL_ERR_ARGS,
+                     "APPLY: too many arguments (call-arguments-limit is %d)",
+                     CL_CALL_ARGS_LIMIT);
+        }
+        cl_vm_push(cl_car(arglist));
+        nflat++;
         arglist = cl_cdr(arglist);
     }
 
@@ -874,26 +887,31 @@ static CL_Obj bi_apply(CL_Obj *args, int n)
     if (CL_SYMBOL_P(func)) {
         CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(func);
         func = s->function;
-        if (CL_NULL_P(func) || func == CL_UNBOUND)
+        if (CL_NULL_P(func) || func == CL_UNBOUND) {
+            cl_vm.sp = saved_sp;
             cl_error(CL_ERR_TYPE, "APPLY: symbol has no function binding");
+        }
     }
     func = cl_unwrap_funcallable(func);
 
     if (CL_FUNCTION_P(func)) {
         CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(func);
         if (!f->func) {
+            cl_vm.sp = saved_sp;
             cl_error(CL_ERR_TYPE, "APPLY: NULL function pointer in %s",
                      CL_NULL_P(f->name) ? "?" : cl_symbol_name(f->name));
         }
-        /* via cl_vm_apply: it GC-roots flat_args (a C-local array, not on the
-         * VM stack) across the call so the applied builtin can compact while
-         * reading its own args. */
-        return cl_vm_apply(func, flat_args, nflat);
+        result = cl_vm_apply(func, &cl_vm.stack[base], nflat);
+        cl_vm.sp = saved_sp;
+        return result;
     }
     if (CL_BYTECODE_P(func) || CL_CLOSURE_P(func)) {
-        return cl_vm_apply(func, flat_args, nflat);
+        result = cl_vm_apply(func, &cl_vm.stack[base], nflat);
+        cl_vm.sp = saved_sp;
+        return result;
     }
 
+    cl_vm.sp = saved_sp;
     cl_error(CL_ERR_TYPE, "APPLY: not a function");
     return CL_NIL;
 }

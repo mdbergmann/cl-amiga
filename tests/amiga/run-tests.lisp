@@ -8178,6 +8178,42 @@
 (check "t4 traced builtin apply" 10 (apply #'+ 1 2 (list 3 4)))
 (untrace +)
 
+; --- Tier-4 batch 7a: fixed C-buffer caps removed (apply/format/strings) ---
+; bi_apply's C path (reached when APPLY itself is funcalled) silently dropped
+; args past 64; it now spreads onto the VM stack.
+(check "t4b7 apply builtin past 64 args" 100
+  (funcall #'apply #'+ (make-list 100 :initial-element 1)))
+; remove_from_string truncated results at 1023 chars (char buf[1024]).
+(check "t4b7 remove string past 1023 chars" 2000
+  (length (remove #\a (make-string 2000 :initial-element #\b))))
+; concatenate's string path truncated results at 4096 chars.
+(check "t4b7 concatenate string past 4096 chars" 6000
+  (length (concatenate 'string (make-string 3000 :initial-element #\x)
+                       (make-string 3000 :initial-element #\y))))
+; ~? staged its arg list in a 64-slot C array; FORMATTER's %formatter-inner
+; and the ~:{ sublist path had the same cap.
+(let ((t4b7-ctrl (with-output-to-string (s)
+                   (dotimes (i 80) (write-string "~A" s)))))
+  (check "t4b7 format ~? past 64 args" 80
+    (length (format nil "~?" t4b7-ctrl (make-list 80 :initial-element 7))))
+  (check "t4b7 formatter past 64 args" 80
+    (length (with-output-to-string (s)
+              (apply (eval (list 'formatter t4b7-ctrl)) s
+                     (make-list 80 :initial-element 3))))))
+(check "t4b7 format iteration sublist past 64 elements" 90
+  (length (format nil "~:{~@{~A~}~}" (list (make-list 90 :initial-element 1)))))
+; remove-duplicates / remove / sort / replace keep-flag and snapshot staging
+; moved to GC objects (no leak when a user :test/:key does a non-local exit)
+; -- behavior must be unchanged.
+(check "t4b7 remove-duplicates keeps last occurrences" '(1 3 2 4)
+  (remove-duplicates (list 1 2 1 3 2 4)))
+(check "t4b7 replace self-overlap snapshot" '(1 1 2 3 4)
+  (coerce (let ((v (vector 1 2 3 4 5)))
+            (replace v v :start1 1 :start2 0 :end2 4))
+          'list))
+(check "t4b7 string sort staging" "abcd"
+  (sort (copy-seq "dcba") #'char<))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

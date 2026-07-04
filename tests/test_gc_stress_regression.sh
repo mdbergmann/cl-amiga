@@ -3531,6 +3531,79 @@ check_contains "tier-4 sequence/list/hash/vm cases run to completion" \
 check_absent   "no corruption in tier-4 sequence/list/hash/vm cases" \
   "corrupted pointer\|not of type\|Guru\|SIGSEGV\|badmark" "$out"
 
+# ---------------------------------------------------------------------------
+# Tier-4 batch 7a: fixed C buffers replaced with GC staging (VM stack /
+# GC vectors / GC bit-vectors).  Every replacement introduces an allocating
+# call into a path that previously performed none — exercise them under
+# per-alloc compaction so a missed protect/re-derive corrupts deterministically.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- tier-4 batch 7a: uncapped apply/format/string staging ---"
+cat > "$WORK/tier4-b7a.lisp" <<'EOF'
+;; bi_apply VM-stack spread (>64 args through the C APPLY path).
+(format t "T4B7-A1:~a~%"
+        (funcall #'apply #'+ (make-list 100 :initial-element 1)))
+;; remove_from_string keep_vec staging + width-preserving result build,
+;; with an allocating :test crossing every element.
+(format t "T4B7-S9:~a~%"
+        (length (remove #\a (make-string 1200 :initial-element #\b)
+                        :test (lambda (a b) (list a b) (char= a b)))))
+;; concatenate string staging vector (>4096 result).
+(format t "T4B7-S13:~a~%"
+        (length (concatenate 'string
+                             (make-string 3000 :initial-element #\x)
+                             (make-string 2000 :initial-element #\y))))
+;; remove-duplicates KEEP bit-vector with allocating :test.
+(format t "T4B7-RD:~s~%"
+        (remove-duplicates (list 1 2 1 3 2 4)
+                           :test (lambda (a b) (list a b) (eql a b))))
+;; remove_from_vector / bitvector KEEP bit-vector with allocating :key.
+(format t "T4B7-RV:~s ~s~%"
+        (remove 2 (vector 1 2 3 2 4) :key (lambda (x) (list x) x))
+        (remove 0 (make-array 5 :element-type 'bit
+                                :initial-contents '(0 1 0 1 1))
+                :key (lambda (b) (list b) b)))
+;; REPLACE snapshot GC vector (self-overlap correctness preserved).
+(format t "T4B7-RP:~s~%"
+        (let ((v (vector 1 2 3 4 5)))
+          (replace v v :start1 1 :start2 0 :end2 4)))
+;; string sort SORT_TMP GC-vector staging with allocating :key.
+(format t "T4B7-SS:~a~%"
+        (sort (copy-seq "dcba") #'char< :key (lambda (c) (list c) c)))
+;; format ~? / ~:{ / FORMATTER staging on the VM stack past 64 slots.
+(let ((ctrl (with-output-to-string (s)
+              (dotimes (i 80) (write-string "~A" s)))))
+  (format t "T4B7-F1:~a~%"
+          (length (format nil "~?" ctrl (make-list 80 :initial-element 7))))
+  (format t "T4B7-F2:~a~%"
+          (length (with-output-to-string (s)
+                    (apply (eval (list 'formatter ctrl)) s
+                           (make-list 80 :initial-element 3))))))
+(format t "T4B7-F3:~a~%"
+        (length (format nil "~:{~@{~A~}~}"
+                        (list (make-list 90 :initial-element 1)))))
+;; coerce list/vector -> string width preservation (wide builds).
+(format t "T4B7-CO:~a~%"
+        (char-code (char (coerce (list #\a (code-char 20013)) 'string) 1)))
+(format t "T4B7-DONE~%")
+EOF
+out=$(run_stress "$WORK/tier4-b7a.lisp")
+check_contains "B7a apply VM-stack spread past 64 args" "T4B7-A1:100" "$out"
+check_contains "B7a remove string keep_vec staging uncapped" "T4B7-S9:1200" "$out"
+check_contains "B7a concatenate string staging uncapped" "T4B7-S13:5000" "$out"
+check_contains "B7a remove-duplicates KEEP bit-vector" "T4B7-RD:(1 3 2 4)" "$out"
+check_contains "B7a remove vector/bitvector KEEP bit-vector" \
+  "T4B7-RV:#(1 3 4) #\*111" "$out"
+check_contains "B7a replace snapshot GC vector" "T4B7-RP:#(1 1 2 3 4)" "$out"
+check_contains "B7a string sort GC-vector staging" "T4B7-SS:abcd" "$out"
+check_contains "B7a format ~? staging past 64 args" "T4B7-F1:80" "$out"
+check_contains "B7a formatter-inner staging past 64 args" "T4B7-F2:80" "$out"
+check_contains "B7a iteration sublist staging past 64 elements" "T4B7-F3:90" "$out"
+check_contains "B7a coerce wide char preserved" "T4B7-CO:20013" "$out"
+check_contains "tier-4 batch 7a cases run to completion" "T4B7-DONE" "$out"
+check_absent   "no corruption in tier-4 batch 7a cases" \
+  "corrupted pointer\|not of type\|Guru\|SIGSEGV\|badmark" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

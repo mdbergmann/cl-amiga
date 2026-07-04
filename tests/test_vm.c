@@ -10307,6 +10307,72 @@ TEST(builtin_fptr_plausible_unaligned)
 #endif
 }
 
+/* --- tier-4 batch 7a: fixed-size C buffer caps removed --- */
+
+TEST(eval_apply_builtin_over_64_args)
+{
+    /* The C bi_apply path (reached when APPLY itself is applied, e.g. via
+     * FUNCALL #'APPLY) staged args in a flat_args[64] C array and silently
+     * dropped everything past 64.  It now spreads onto the VM stack up to
+     * CALL-ARGUMENTS-LIMIT. */
+    ASSERT_STR_EQ(eval_print(
+        "(funcall #'apply #'+ (make-list 100 :initial-element 1))"), "100");
+    /* Spread initial args + trailing list through the same path. */
+    ASSERT_STR_EQ(eval_print(
+        "(funcall #'apply #'+ 1 2 3 (make-list 97 :initial-element 1))"),
+        "103");
+    /* Sanity: the result reflects the LAST args, not just the first 64. */
+    ASSERT_STR_EQ(eval_print(
+        "(funcall #'apply #'max (append (make-list 99 :initial-element 1)"
+        "                               (list 42)))"), "42");
+}
+
+TEST(eval_remove_string_over_1023_chars)
+{
+    /* remove_from_string staged the kept characters in a char buf[1024],
+     * silently truncating results at 1023 characters. */
+    ASSERT_STR_EQ(eval_print(
+        "(length (remove #\\a (make-string 2000 :initial-element #\\b)))"),
+        "2000");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (concatenate 'string (make-string 1500 :initial-element #\\b)"
+        "                              \"a\""
+        "                              (make-string 100 :initial-element #\\c))))"
+        "  (length (remove #\\a s)))"), "1600");
+}
+
+TEST(eval_concatenate_string_over_4096_chars)
+{
+    /* bi_concatenate's string path staged into a 4096-slot buffer and
+     * silently truncated longer results. */
+    ASSERT_STR_EQ(eval_print(
+        "(length (concatenate 'string"
+        "  (make-string 3000 :initial-element #\\x)"
+        "  (make-string 3000 :initial-element #\\y)))"), "6000");
+    /* Last characters survive intact. */
+    ASSERT_STR_EQ(eval_print(
+        "(char (concatenate 'string (make-string 5000 :initial-element #\\x)"
+        "                           \"z\") 5000)"), "#\\z");
+}
+
+#ifdef CL_WIDE_STRINGS
+TEST(eval_remove_concatenate_wide_chars_preserved)
+{
+    /* remove_from_string narrowed every kept char with a (char) cast,
+     * mangling wide characters; concatenate must keep them wide too. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (coerce (list #\\a (code-char #x4E2D) #\\b) 'string)))"
+        "  (let ((r (remove #\\a s)))"
+        "    (list (length r) (char= (char r 0) (code-char #x4E2D))"
+        "          (char r 1))))"), "(2 T #\\b)");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((r (concatenate 'string \"ab\""
+        "           (coerce (list (code-char #x4E2D)) 'string))))"
+        "  (list (length r) (char= (char r 2) (code-char #x4E2D))))"),
+        "(3 T)");
+}
+#endif
+
 int main(void)
 {
     test_init();
@@ -11296,6 +11362,13 @@ int main(void)
      * unreliable afterwards.  Append new tests ABOVE this line. */
     RUN(eval_heap_exhaustion_error);
     RUN(builtin_fptr_plausible_unaligned);
+
+    RUN(eval_apply_builtin_over_64_args);
+    RUN(eval_remove_string_over_1023_chars);
+    RUN(eval_concatenate_string_over_4096_chars);
+#ifdef CL_WIDE_STRINGS
+    RUN(eval_remove_concatenate_wide_chars_preserved);
+#endif
 
     teardown();
     REPORT();
