@@ -6660,6 +6660,59 @@
                    (mp:make-thread (lambda () (* 4 10))))))
     (mapcar #'mp:join-thread threads)))
 
+; --- Tier-4 batch 6: interrupt/destroy delivery to PARKED threads (I5) ---
+; Pre-fix, interrupts were delivered only at safepoints; a target parked in
+; mp:condition-wait (never notified) or a blocking mp:acquire-lock never ran
+; another safepoint, so mp:destroy-thread of it was deferred FOREVER and the
+; destroyer's join hung (the FS-UAE watchdog would kill the whole suite).
+(check "t4b6 destroy thread parked in condition-wait" :done
+  (let* ((lk (mp:make-lock))
+         (cv (mp:make-condition-variable))
+         (th (mp:make-thread
+               (lambda ()
+                 (mp:acquire-lock lk)
+                 (loop (mp:condition-wait cv lk))))))
+    (sleep 0.4)
+    (mp:destroy-thread th)
+    (handler-case (mp:join-thread th) (error () nil))
+    :done))
+
+(check "t4b6 destroy thread parked in acquire-lock" :done
+  (let ((lk (mp:make-lock)))
+    (mp:acquire-lock lk)
+    (let ((th (mp:make-thread (lambda () (mp:acquire-lock lk) :got))))
+      (sleep 0.4)
+      (mp:destroy-thread th)
+      (handler-case (mp:join-thread th) (error () nil))
+      (mp:release-lock lk))
+    :done))
+
+; T1 (batch 6a): operations on a wrapper for an exited thread refuse cleanly
+; (generation counter) — join errors, alive-p is NIL, interrupt errors.
+(check "t4b6 stale wrapper join errors after exit" '(:err nil :err)
+  (let ((th (mp:make-thread (lambda () 1))))
+    (mp:join-thread th)
+    (list (handler-case (progn (mp:join-thread th) :joined)
+            (error () :err))
+          (mp:thread-alive-p th)
+          (handler-case (progn (mp:interrupt-thread th (lambda () nil)) :sent)
+            (error () :err)))))
+
+; I8 (batch 6b): dropping the last reference to a HELD lock leaks the OS
+; mutex instead of destroying it under the holder — must not crash/Guru.
+(check "t4b6 held lock finalize leaks not destroys" :ok
+  (progn (let ((l (mp:make-lock))) (mp:acquire-lock l))
+         (gc) (gc)
+         :ok))
+
+; ST5 (batch 6a): closing a synonym stream whose symbol holds a NON-stream
+; must not scribble stream fields into the object.
+(defvar *t4b6-not-a-stream* (copy-seq "keep me intact"))
+(check "t4b6 synonym close to non-stream is safe" t
+  (progn (handler-case (close (make-synonym-stream '*t4b6-not-a-stream*))
+           (error () nil))
+         (string= *t4b6-not-a-stream* "keep me intact")))
+
 ; NOTE: the GC-safe-region fix for the "STW GC deadlocks behind a thread parked
 ; in a blocking socket syscall" bug (the SLY :spawn read-loop deadlock) is
 ; regression-tested at the C level in tests/test_gc_threaded.c
@@ -7918,6 +7971,290 @@
            vals)))
 (check "t3 merge-pathnames relative" "f"
        (pathname-name (merge-pathnames "sub/f.lisp" #P"/base/d/")))
+
+; --- Tier-4 audit batch 2: format directives + printer element loops ---
+; Mirrors the host gc-stress tier4-printer block (see
+; tests/test_gc_stress_regression.sh); behavior-level checks here.
+(defstruct t4b-pt x y)
+(check "t4 print vector of structs" "#(#S(T4B-PT :X 1 :Y 2) #S(T4B-PT :X 3 :Y 4))"
+       (format nil "~S" (vector (make-t4b-pt :x 1 :y 2) (make-t4b-pt :x 3 :y 4))))
+(check "t4 print #2A of structs" "#2A((#S(T4B-PT :X 1 :Y 2) 5) (6 #S(T4B-PT :X 3 :Y 4)))"
+       (format nil "~S" (make-array '(2 2)
+                         :initial-contents (list (list (make-t4b-pt :x 1 :y 2) 5)
+                                                 (list 6 (make-t4b-pt :x 3 :y 4))))))
+(check "t4 grouped 101-digit bignum length" 201
+       (length (format nil "~,,,1:D" (expt 10 100))))
+(check "t4 grouped integer commas" "1,234,567" (format nil "~:D" 1234567))
+(check "t4 goto negative clamps" t (stringp (format nil "~-5*~A" 1)))
+(check "t4 recursive format string control" "<1 2> 3"
+       (format nil "~? ~A" "<~A ~A>" (list 1 2) 3))
+(check "t4 print-base/radix restore" "#b11"
+       (let ((*print-radix* t) (*print-base* 2))
+         (format nil "~X" 255)
+         (write-to-string 3)))
+(deftype t4b-small () '(integer 0 9))
+(set-pprint-dispatch 't4b-small (lambda (s obj) (format s "<small ~D>" obj)))
+(check "t4 pprint dispatch buffer-mode capture" "<small 5>"
+       (write-to-string 5 :pretty t))
+(check "t4 restart report fn print" "resume-123"
+       (restart-case
+           (let ((r (find-restart 't4b-resume)))
+             (format nil "~A" r))
+         (t4b-resume () :report
+                      (lambda (s) (format s "resume-~{~A~}" (list 1 2 3)))
+                      nil)))
+(defparameter *t4b-n* 0)
+(defstruct t4b-once v)
+(defmethod print-object ((o t4b-once) s)
+  (incf *t4b-n*)
+  (if (= *t4b-n* 1) (error "first print boom") (format s "[ok ~A]" (t4b-once-v o))))
+(defparameter *t4b-obj* (make-t4b-once :v 7))
+(check "t4 aborted print caught" :caught
+       (handler-case (progn (format nil "~A" *t4b-obj*) :printed)
+         (error () :caught)))
+(check "t4 no leaked pr-inprog marker" "[ok 7]" (format nil "~A" *t4b-obj*))
+(deftype t4b-neg () '(integer -9 -1))
+(set-pprint-dispatch 't4b-neg (lambda (s o) (declare (ignore s o)) (error "dispatch boom")))
+(check "t4 erroring dispatch fn caught" :caught
+       (handler-case (progn (let ((*print-pretty* t)) (prin1-to-string -5)) :printed)
+         (error () :caught)))
+(check "t4 pprint dispatch survives aborted dispatch" "<small 5>"
+       (let ((*print-pretty* t)) (prin1-to-string 5)))
+(set-pprint-dispatch 't4b-neg nil)
+(check "t4 set-pprint-dispatch removal" "-5"
+       (let ((*print-pretty* t)) (prin1-to-string -5)))
+(check "t4 uwprot after completed throw" 1
+       (let ((tag (cons nil nil)))
+         (catch tag (throw tag 1))
+         (unwind-protect (progn (make-list 10) 1) (make-list 100))))
+
+; --- Tier-4 audit batch 3: IO / strings / reader ---
+; Mirrors the host gc-stress tier4-io block (see
+; tests/test_gc_stress_regression.sh); behavior-level checks here.
+(check "t4 write :base override restored" "255"
+       (progn (let ((s (make-string-output-stream)))
+                (write 255 :stream s :base 16))
+              (write-to-string 255)))
+(check "t4 write returns its object" 7
+       (let ((s (make-string-output-stream))) (write 7 :stream s)))
+(check "t4 write-to-string :base restored" '("FF" "255")
+       (list (write-to-string 255 :base 16) (write-to-string 255)))
+(check "t4 pprint restores print-escape binding" :restored
+       (let ((*print-escape* nil))
+         (let ((s (make-string-output-stream))) (pprint '(1 2) s))
+         (if *print-escape* :leaked :restored)))
+(check "t4 read-delimited-list" '(1 2 3 4 5)
+       (with-input-from-string (in "1 2 3 4 5 ]")
+         (read-delimited-list #\] in)))
+(deftype t4c-small () '(integer 0 9))
+; priority 5 so this entry beats the batch-2 t4b-small entry (same range)
+(set-pprint-dispatch 't4c-small (lambda (s o) (format s "[sm ~d]" o)) 5)
+(check "t4 pprint-dispatch lookup + funcall" "[sm 5]"
+       (let ((fn (pprint-dispatch 5)))
+         (with-output-to-string (s) (funcall fn s 5))))
+(check "t4 copy-pprint-dispatch copy dispatches" :hit
+       (if (nth-value 1 (pprint-dispatch 5 (copy-pprint-dispatch))) :hit :miss))
+(defmacro t4c-m1 (x) (list 't4c-m2 x))
+(defmacro t4c-m2 (x) (list 'list x x))
+(check "t4 macroexpand chain + expanded-p" '((list 3 3) t)
+       (multiple-value-list (macroexpand '(t4c-m1 3))))
+(check "t4 macroexpand-1 unchanged expanded-p" nil
+       (nth-value 1 (macroexpand-1 '(quote z))))
+(defun t4c-d (x) (+ x 1))
+(check "t4 disassemble to string stream" :ok
+       (let ((out (with-output-to-string (*standard-output*)
+                    (disassemble 't4c-d))))
+         (if (and (search "Disassembly" out) (search "Constants" out)) :ok :fail)))
+(check "t4 string-trim char designator" "a" (string-trim "x" #\a))
+(check "t4 string-right-trim symbol designator" "X" (string-right-trim "A" 'xa))
+(deftype t4c-oct () '(unsigned-byte 8))
+(check "t4 concatenate deftype compound type" '(1 2 3)
+       (coerce (concatenate '(vector t4c-oct) #(1 2) #(3)) 'list))
+(check "t4 #3A reader" '(1 6 8)
+       (let ((a (read-from-string "#3A(((1 2) (3 4)) ((5 6) (7 8)))")))
+         (list (aref a 0 0 0) (aref a 1 0 1) (aref a 1 1 1))))
+(check "t4 nested read-from-string" '(a (x y) b)
+       (read-from-string "(a #.(cl:read-from-string \"(x y)\") b)"))
+(check "t4 cons feature expressions" '(7 8 9)
+       (list (read-from-string "#+(and) 7")
+             (read-from-string "#-(or) 8")
+             (read-from-string "#+(and common-lisp (not t4c-no-such-ft)) 9")))
+(check "t4 skip sentinel quote" '(quote bar)
+       (read-from-string "'#+t4c-no-such-feature foo bar"))
+(check "t4 skip sentinel function" '(function bar)
+       (read-from-string "#'#+t4c-no-such-feature foo bar"))
+(check "t4 skip sentinel dotted cdr" '(a . c)
+       (read-from-string "(a . #+t4c-no-such-feature b c)"))
+(check "t4 skip sentinel #nA contents" 4
+       (aref (read-from-string "#2A#+t4c-no-such-feature x ((1 2) (3 4))") 1 1))
+(check "t4 skip sentinel #. read-time eval" 5
+       (read-from-string "#.#+t4c-no-such-feature x 5"))
+
+; --- Tier-4 audit batch 4: sequences / lists / hashtable / VM opcodes ---
+; Mirrors the host gc-stress tier4-seq block (see
+; tests/test_gc_stress_regression.sh); behavior-level checks here.
+(check "t4 sort list allocating pred" '(1 2 3 4 5 6 7 8 9)
+       (sort (list 5 3 8 1 9 2 7 6 4)
+             (lambda (a b) (< (car (list a)) (car (list b))))))
+(check "t4 sort string heap key" "abcd"
+       (sort (copy-seq "dcba") #'string< :key #'string))
+(check "t4 sort bit-vector allocating pred" #*0011
+       (sort (copy-seq #*0110)
+             (lambda (a b) (< (car (list a)) (car (list b))))))
+(check "t4 map vector cursors" '(2 4 6 8 10)
+       (coerce (map 'vector (lambda (x) (* x 2)) (list 1 2 3 4 5)) 'list))
+(check "t4 map string result" "HELLO"
+       (map 'string #'char-upcase (coerce "hello" 'list)))
+(deftype t4s-str () 'string)
+(check "t4 map deftype result-type" "ABC" (map 't4s-str #'char-upcase "abc"))
+(check "t4 map or result-type" '(2 3 4)
+       (coerce (map '(or symbol (vector t 3)) #'1+ (list 1 2 3)) 'list))
+(deftype t4s-lst () 'list)
+(check "t4 merge deftype result-type" '(1 2 3 4 5 6)
+       (merge 't4s-lst (list 1 3 5) (list 2 4 6) #'<))
+(check "t4 merge vector allocating key" '(1 2 3 4)
+       (coerce (merge 'vector (vector 1 4) (list 2 3) #'<
+                      :key (lambda (x) (car (list x)))) 'list))
+(check "t4 remove allocating test" '(1 2 4 5)
+       (remove 3 (list 1 2 3 4 3 5)
+               :test (lambda (a b) (eql a (car (list b))))))
+(check "t4 remove-if from-end count" '(1 2 4 6)
+       (remove-if (lambda (x) (oddp (car (list x))))
+                  (list 1 2 3 4 5 6) :from-end t :count 2))
+(check "t4 reduce from-end initial" '(1 2 3 4 . end)
+       (reduce #'cons (list 1 2 3 4) :from-end t :initial-value 'end))
+(check "t4 reduce allocating key" 6
+       (reduce #'+ (list 1 2 3) :from-end t :key (lambda (x) (car (list x)))))
+(check "t4 nsubst allocating test" '(a (x c) x)
+       (nsubst 'x 'b (list 'a (list 'b 'c) 'b)
+               :test (lambda (a b) (eq a (car (list b))))))
+(check "t4 reverse vector" '(5 4 3 2 1)
+       (coerce (reverse (vector 1 2 3 4 5)) 'list))
+(check "t4 reverse bit-vector" #*01001 (reverse #*10010))
+(check "t4 make-list heap init" '(12 (x))
+       (let ((l (make-list 12 :initial-element (list 'x))))
+         (list (count-if (lambda (e) (equal e '(x))) l) (first l))))
+(check "t4 hash iteration" '(285 10)
+       (let ((h (make-hash-table)))
+         (dotimes (i 10) (setf (gethash i h) (* i i)))
+         (list (loop for v being the hash-values of h sum v)
+               (let ((n 0))
+                 (maphash (lambda (k v) (declare (ignore k v)) (incf n)) h)
+                 n))))
+(deftype t4s-oct () '(unsigned-byte 8))
+(deftype t4s-any () 't)
+(check "t4 make-array contents before deftype elt" '(1 2 3 4)
+       (coerce (make-array 4 :initial-contents (list 1 2 3 4)
+                             :element-type 't4s-oct) 'list))
+(check "t4 make-array list dims deftype elt" '(7)
+       (aref (make-array (list 2 2) :initial-element (list 7)
+                         :element-type 't4s-any) 1 1))
+(check "t4 adjust-array negative dim" :caught
+       (handler-case (adjust-array (make-array 3 :adjustable t) -1)
+         (error () :caught)))
+(check "t4 vpe negative extension" :caught
+       (handler-case (let ((v (make-array 2 :fill-pointer 2 :adjustable t)))
+                       (vector-push-extend 9 v -5))
+         (error () :caught)))
+(check "t4 defmacro value" 't4s-dm4 (defmacro t4s-dm4 (x) (list 'list x)))
+(check "t4 deftype value" 't4s-ty4 (deftype t4s-ty4 () 'integer))
+(defun t4s-get4 (x) (car x))
+(defun t4s-set4 (x v) (setf (car x) v))
+(check "t4 defsetf value" 't4s-get4 (defsetf t4s-get4 t4s-set4))
+(deftype t4s-small4 () '(integer 0 9))
+(check "t4 the deftype ok" 5 (the t4s-small4 5))
+(check "t4 the deftype type-error slots" '(99 t4s-small4)
+       (handler-case (let ((v 99)) (the t4s-small4 v))
+         (type-error (c) (list (type-error-datum c)
+                               (type-error-expected-type c)))))
+(defun t4s-tr4 (n) (if (zerop n) (list 'done) (t4s-tr4 (1- n))))
+(trace t4s-tr4)
+(check "t4 traced tail-recursive fn" '(done) (t4s-tr4 3))
+(untrace t4s-tr4)
+(trace char-upcase)
+(check "t4 traced builtin call" #\A (char-upcase #\a))
+(untrace char-upcase)
+(trace +)
+(check "t4 traced builtin apply" 10 (apply #'+ 1 2 (list 3 4)))
+(untrace +)
+
+; --- Tier-4 batch 7a: fixed C-buffer caps removed (apply/format/strings) ---
+; bi_apply's C path (reached when APPLY itself is funcalled) silently dropped
+; args past 64; it now spreads onto the VM stack.
+(check "t4b7 apply builtin past 64 args" 100
+  (funcall #'apply #'+ (make-list 100 :initial-element 1)))
+; remove_from_string truncated results at 1023 chars (char buf[1024]).
+(check "t4b7 remove string past 1023 chars" 2000
+  (length (remove #\a (make-string 2000 :initial-element #\b))))
+; concatenate's string path truncated results at 4096 chars.
+(check "t4b7 concatenate string past 4096 chars" 6000
+  (length (concatenate 'string (make-string 3000 :initial-element #\x)
+                       (make-string 3000 :initial-element #\y))))
+; ~? staged its arg list in a 64-slot C array; FORMATTER's %formatter-inner
+; and the ~:{ sublist path had the same cap.
+(let ((t4b7-ctrl (with-output-to-string (s)
+                   (dotimes (i 80) (write-string "~A" s)))))
+  (check "t4b7 format ~? past 64 args" 80
+    (length (format nil "~?" t4b7-ctrl (make-list 80 :initial-element 7))))
+  (check "t4b7 formatter past 64 args" 80
+    (length (with-output-to-string (s)
+              (apply (eval (list 'formatter t4b7-ctrl)) s
+                     (make-list 80 :initial-element 3))))))
+(check "t4b7 format iteration sublist past 64 elements" 90
+  (length (format nil "~:{~@{~A~}~}" (list (make-list 90 :initial-element 1)))))
+; remove-duplicates / remove / sort / replace keep-flag and snapshot staging
+; moved to GC objects (no leak when a user :test/:key does a non-local exit)
+; -- behavior must be unchanged.
+(check "t4b7 remove-duplicates keeps last occurrences" '(1 3 2 4)
+  (remove-duplicates (list 1 2 1 3 2 4)))
+(check "t4b7 replace self-overlap snapshot" '(1 1 2 3 4)
+  (coerce (let ((v (vector 1 2 3 4 5)))
+            (replace v v :start1 1 :start2 0 :end2 4))
+          'list))
+(check "t4b7 string sort staging" "abcd"
+  (sort (copy-seq "dcba") #'char<))
+
+; --- Tier-4 batch 7b: hashtable contract + map designators + reader caps ---
+; keys_equal gained a bit-vector branch (CLHS EQUAL descends bit-vectors)
+; and general vectors are EQ-keyed under EQUAL like the EQUAL builtin.
+(check "t4b7 equal ht bit-vector keys" :bv
+  (let ((ht (make-hash-table :test 'equal)))
+    (setf (gethash #*1011 ht) :bv)
+    (gethash (copy-seq #*1011) ht)))
+(check "t4b7 equalp ht vector keys" :v
+  (let ((ht (make-hash-table :test 'equalp)))
+    (setf (gethash (vector 1 2 3) ht) :v)
+    (gethash (vector 1 2 3) ht)))
+(check "t4b7 equal ht general vector is eq-keyed" '(:id nil)
+  (let ((ht (make-hash-table :test 'equal)) (v (vector 1 2)))
+    (setf (gethash v ht) :id)
+    (list (gethash v ht) (gethash (vector 1 2) ht))))
+; MAPL/MAPCON accept symbol designators like their siblings.
+(check "t4b7 mapl symbol designator" '(1 2) (mapl 'identity (list 1 2)))
+(check "t4b7 mapcon symbol designator" '((1 2) (2)) (mapcon 'list (list 1 2)))
+; The silent 16-list clamp on the map family is a loud error now.
+(check "t4b7 mapcar over 16 lists errors" :err
+  (handler-case (apply #'mapcar #'+ (make-list 17 :initial-element '(1)))
+    (error () :err)))
+; Reader token caps signal errors instead of silently splitting/truncating.
+(check "t4b7 300-digit number read errors" :err
+  (handler-case (read-from-string (make-string 300 :initial-element #\5))
+    (error () :err)))
+(check "t4b7 255-char symbol still reads" 255
+  (length (symbol-name (read-from-string
+                        (make-string 255 :initial-element #\a)))))
+
+; --- Tier-4 batch 7c: print-control overrides are thread-local dynbinds ---
+(check "t4b7c write-to-string base override + restore" '("FF" 10)
+  (list (write-to-string 255 :base 16) *print-base*))
+(check "t4b7c write stream base+radix override" "#b1010"
+  (let ((s (make-string-output-stream)))
+    (write 10 :stream s :base 2 :radix t)
+    (get-output-stream-string s)))
+(check "t4b7c format radix renderer" "FF/10/101"
+  (format nil "~X/~O/~B" 255 8 5))
+(check "t4b7c print-level override" "(1 #)"
+  (write-to-string '(1 (2 (3))) :level 1))
 
 ; --- Summary ---
 (format t "~%=== Results ===~%")

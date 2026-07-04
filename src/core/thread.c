@@ -10,6 +10,7 @@
 #define CL_THREAD_NO_MACROS  /* access struct members directly */
 #include "thread.h"
 #include "symbol.h"
+#include "package.h"
 #include "error.h"
 #include "vm.h"
 #include "../platform/platform.h"
@@ -75,6 +76,11 @@ void cl_thread_register_newborn(CL_Thread *t)
 void cl_thread_unregister(CL_Thread *t)
 {
     CL_Thread **pp;
+    /* Null-guard: a worker that exits during process teardown can arrive
+     * here after cl_thread_shutdown tore the registry lock down (only
+     * possible in the count<=1 shutdown path; with workers left the lock
+     * is deliberately leaked, see cl_thread_shutdown). */
+    if (!cl_thread_list_lock) return;
     platform_mutex_lock(cl_thread_list_lock);
     for (pp = &cl_thread_list; *pp; pp = &(*pp)->next) {
         if (*pp == t) {
@@ -145,6 +151,15 @@ void cl_gc_enter_safe_region(void)
      * with, so a "safe region" is a no-op.  Guards against locking a destroyed
      * gc_mutex (ObtainSemaphore(NULL) on Amiga) during exit teardown. */
     if (!gc_mutex) return;
+    /* Nested region: the platform layer brackets blocking syscalls too
+     * (sleep/file/system), and those may run inside builtin-level
+     * brackets.  Only the OUTERMOST pair performs the real transition —
+     * an inner leave clearing in_safe_region would hand a "stopped"
+     * thread back to heap-touching code mid-GC.  Depth is owner-only.
+     * jit_park_sp keeps the OUTER capture: it is higher on the stack, so
+     * it covers all JIT frames the inner region would cover and more. */
+    if (self->safe_region_depth++ > 0)
+        return;
     /* Freeze point for JIT-stack scanning: the blocking syscall we are about to
      * enter runs on stack BELOW here, while any JIT-spilled operands live ABOVE
      * — so [jit_park_sp .. jit_stack_top) covers exactly this thread's JIT
@@ -162,10 +177,18 @@ void cl_gc_leave_safe_region(void)
     CL_Thread *self = (CL_Thread *)platform_tls_get();
     if (!self) return;
     if (!gc_mutex) return;  /* see cl_gc_enter_safe_region */
-    /* Re-capture the freeze point: the syscall has returned, so we are about to
-     * park at this frame (below our still-intact JIT frames) until GC finishes. */
-    self->jit_park_sp = CL_CAPTURE_SP();
+    /* Inner leave of a nested region: nothing to do (see enter).  The
+     * depth-0 clamp tolerates an unmatched leave (defensive). */
+    if (self->safe_region_depth > 0 && --self->safe_region_depth > 0)
+        return;
     platform_mutex_lock(gc_mutex);
+    /* Re-capture the freeze point AFTER acquiring gc_mutex: the syscall has
+     * returned and we are about to park at this frame (below our still-
+     * intact JIT frames) until GC finishes.  Captured before the lock, a
+     * peer's compaction that starts while we block ON the lock would scan
+     * from a stamp above the mutex frames — capturing under the lock makes
+     * the stamp cover this exact park frame (tier-4 audit T7). */
+    self->jit_park_sp = CL_CAPTURE_SP();
     /* If a GC is currently running, park here until it completes — we
      * cannot return to the heap-touching caller while the world is
      * stopped, otherwise we'd race the mark/sweep. */
@@ -432,11 +455,19 @@ void cl_thread_handle_interrupt(CL_Thread *t)
 
     /* Defer while holding an internal rwlock reader: an interrupt closure
      * that signals — or a destroy — unwinds via longjmp, and nothing
-     * restores rdlock_tables_held/rdlock_package_held on that path.  The
-     * leaked reader count then blocks the next writer FOREVER (process-
-     * wide hang).  Leaving interrupt_pending set retries at the next
-     * safepoint outside the locked section. */
-    if (t->rdlock_tables_held > 0 || t->rdlock_package_held > 0)
+     * restores rdlock_tables_held on that path.  The leaked reader count
+     * then blocks the next writer FOREVER (process-wide hang).  Leaving
+     * interrupt_pending set retries at the next safepoint outside the
+     * locked section.
+     *
+     * NOTE: rdlock_package_held is declared (thread.h) but nothing
+     * currently increments it — cl_package_rwlock is taken directly via
+     * platform_rwlock_rdlock() in package.c/symbol.c, not through a
+     * counted wrapper like cl_tables_rdlock_at().  Until that wrapper
+     * exists, checking it here would always read 0, so it is
+     * intentionally omitted rather than included as dead, misleading
+     * coverage. */
+    if (t->rdlock_tables_held > 0)
         return;
 
     /* Pair with the publisher's barrier (bi_interrupt_thread /
@@ -472,14 +503,20 @@ void cl_thread_handle_interrupt(CL_Thread *t)
         return;  /* not reached — longjmps */
     }
 
-    /* interrupt-thread: call the pending function */
+    /* interrupt-thread: call the pending function.  Protect the C local:
+     * t->interrupt_func was just cleared (the old root), and cl_vm_apply
+     * copies its func argument only after some allocating setup on the
+     * closure path — an unrooted `func` across that window is the usual
+     * stale-local hazard (tier-4 audit F7). */
     func = t->interrupt_func;
     t->interrupt_func = CL_NIL;
     t->interrupt_pending = 0;
     if (cl_thread_list_lock) platform_mutex_unlock(cl_thread_list_lock);
 
     if (!CL_NULL_P(func)) {
+        CL_GC_PROTECT(func);
         cl_vm_apply(func, NULL, 0);
+        CL_GC_UNPROTECT(1);
     }
 }
 
@@ -601,6 +638,27 @@ CL_Obj cl_symbol_value(CL_Obj sym)
     return ((CL_Symbol *)CL_OBJ_TO_PTR(sym))->value;
 }
 
+/* C-level dynamic binding, mirroring OP_DYNBIND: installs a THREAD-LOCAL
+ * override restored by cl_dynbind_restore_to(mark).  For C builtins that
+ * temporarily override specials (the *PRINT-* controls in WRITE /
+ * WRITE-TO-STRING / PPRINT / FORMAT's ~D renderer): writing the GLOBAL cell
+ * and restoring it later races every peer thread's reader between the set
+ * and the restore (tier-4 FS16).  Restoring to a CL_TLV_ABSENT old value
+ * REMOVES the TLV entry, so a transient bind leaves no per-thread residue. */
+void cl_dynbind_c(CL_Obj sym, CL_Obj val)
+{
+    CL_Thread *t = CT;
+    CL_Obj old = cl_tlv_get(t, sym);
+    if (t->dyn_top >= CL_MAX_DYN_BINDINGS)
+        cl_error(CL_ERR_OVERFLOW, "Dynamic binding stack overflow");
+    t->dyn_stack[t->dyn_top].symbol = sym;
+    t->dyn_stack[t->dyn_top].old_value = old;
+    t->dyn_top++;
+    cl_tlv_set(t, sym, val);
+    if (sym == SYM_STAR_PACKAGE)
+        cl_sync_current_package_from_dynamic();
+}
+
 void cl_set_symbol_value(CL_Obj sym, CL_Obj val)
 {
     CL_Thread *t = (cl_thread_count <= 1)
@@ -633,8 +691,11 @@ int cl_symbol_boundp(CL_Obj sym)
 /* ---- Side tables and worker thread allocation ---- */
 
 CL_Thread *cl_thread_table[CL_MAX_THREADS];
+uint32_t cl_thread_table_gen[CL_MAX_THREADS];
 void *cl_lock_table[CL_MAX_LOCKS];
 void *cl_condvar_table[CL_MAX_CONDVARS];
+CL_Thread *cl_lock_held[CL_MAX_LOCKS];   /* see thread.h */
+uint32_t cl_lock_depth[CL_MAX_LOCKS];    /* see thread.h */
 
 int cl_thread_table_alloc(CL_Thread *t)
 {
@@ -643,6 +704,10 @@ int cl_thread_table_alloc(CL_Thread *t)
     for (i = 0; i < CL_MAX_THREADS; i++) {
         if (!cl_thread_table[i]) {
             cl_thread_table[i] = t;
+            /* New occupancy: invalidate every wrapper still pointing at
+             * this slot from a previous occupant (see cl_thread_table_gen
+             * in thread.h). */
+            cl_thread_table_gen[i]++;
             result = i;
             break;
         }
@@ -834,6 +899,23 @@ void cl_thread_shutdown(void)
     /* Keep cl_main_thread_ptr valid — the crash handler accesses
      * thread state (cl_vm.sp, etc.) via the CT macro.  Setting it
      * to NULL would cause a SIGSEGV in the handler itself. */
+
+    /* With worker threads still registered, destroying the GC/registry
+     * primitives yanks them out from under live code: the next worker
+     * safepoint locks a destroyed gc_mutex (UB on pthreads, a NULL
+     * ObtainSemaphore on Amiga), and its exit path locks a destroyed
+     * cl_thread_list_lock.  Deliberately LEAK them instead — the process
+     * is exiting, the OS reclaims everything. */
+    if (cl_thread_count > 0) {
+        static int warned = 0;
+        if (!warned) {
+            warned = 1;
+            fprintf(stderr, "[MP] shutdown with %u worker thread(s) still "
+                    "running — leaking GC/thread primitives (safe; process "
+                    "is exiting)\n", (unsigned)cl_thread_count);
+        }
+        return;
+    }
 
     /* Destroy GC coordination */
     if (gc_condvar) {

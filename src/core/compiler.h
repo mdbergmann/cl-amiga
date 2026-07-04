@@ -132,6 +132,14 @@ extern void *cl_tables_rwlock;
 void cl_tables_rdlock_at(const char *site);
 void cl_tables_wrlock(void);
 void cl_tables_rwunlock(void);
+/* Prepend VALUE onto the (prepend-only, snapshot-walked) list at *TABLE_P
+ * under the tables write lock, WITHOUT allocating while the lock is held.
+ * Allocating inside cl_tables_wrlock deadlocks under MT: the allocation
+ * can trigger a stop-the-world GC that waits for every peer thread to
+ * park, while a peer blocked on cl_tables_rdlock/wrlock can never park —
+ * a circular STW-vs-rwlock wait.  TABLE_P must be the address of a
+ * GC-rooted global table head (stable address, marked from mem.c). */
+void cl_table_prepend_locked(CL_Obj *table_p, CL_Obj value);
 /* Snapshot per-thread cl_tables_rwlock reader counts (and the sites
  * that took them) to stderr. */
 void cl_tables_dump_rdlock_holders(const char *header);

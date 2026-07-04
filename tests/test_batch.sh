@@ -75,6 +75,29 @@ check "batch_skip_blank_lines" "3" "$result"
 result=$(echo '(list 1 2 3)' | "$CLAMIGA" --no-userinit --batch 2>&1)
 check "batch_list_result" "(1 2 3)" "$result"
 
+# --- REPL buffer overflow: loud discard, never a silently-truncated eval ---
+# A multi-line form larger than the 4096-char accumulator used to have its
+# overflowing lines silently dropped, then the mangled prefix was evaluated.
+# It must now print a diagnostic, discard the form, and keep the session
+# usable (the trailing (+ 40 2) still evaluates).
+
+bigform=$(awk 'BEGIN{print "(list";for(i=0;i<60;i++){s="";for(j=0;j<40;j++)s=s" 1";print s};print ")"}')
+result=$(printf '%s
+(+ 40 2)
+' "$bigform" | "$CLAMIGA" --no-userinit --batch 2>&1)
+total=$((total + 1))
+case "$result" in
+  *"exceeds the REPL buffer"*)
+    case "$result" in
+      *42*) echo "  ok  repl_overflow_discards_loudly"; passed=$((passed + 1)) ;;
+      *) echo "  FAIL  repl_overflow_discards_loudly (session dead after discard)"
+         failed=$((failed + 1)) ;;
+    esac ;;
+  *)
+    echo "  FAIL  repl_overflow_discards_loudly (no diagnostic printed)"
+    failed=$((failed + 1)) ;;
+esac
+
 # --- Summary ---
 
 echo ""

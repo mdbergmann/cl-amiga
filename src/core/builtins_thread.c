@@ -438,9 +438,12 @@ static CL_Obj bi_make_thread(CL_Obj *args, int n)
          * worker reached status >= 2 (finished/aborted): NULL the slot,
          * detach the OS handle, free the worker.  The wrapper stays
          * alive (so EQ identity survives, name accessor still works),
-         * and gc_finalize_dead's `t->thread_obj == this wrapper` guard
-         * prevents the wrapper's eventual finalize from double-freeing
-         * an unrelated worker if the slot is later reused. */
+         * and gc_finalize_dead's table_gen compare (see mem.c) prevents
+         * the wrapper's eventual finalize from double-freeing an
+         * unrelated worker if the slot is later reused: reaping here
+         * does not bump cl_thread_table_gen[slot], so once a new worker
+         * later reoccupies the slot the wrapper's stale table_gen no
+         * longer matches and its finalize leaves the new occupant alone. */
         CL_Thread *zombie;
         int i;
         platform_mutex_lock(cl_thread_list_lock);
@@ -525,6 +528,9 @@ static CL_Obj bi_make_thread(CL_Obj *args, int n)
         cl_error(CL_ERR_STORAGE, "MP:MAKE-THREAD: cannot allocate thread object");
     }
     tobj->thread_id = (uint32_t)thread_id;
+    /* Safe to read unlocked: the slot's gen only changes when the slot is
+     * re-claimed, which cannot happen while our worker occupies it. */
+    tobj->table_gen = cl_thread_table_gen[thread_id];
     tobj->name = name;
     thread_obj = CL_PTR_TO_OBJ(tobj);
 
@@ -573,9 +579,16 @@ static CL_Obj bi_join_thread(CL_Obj *args, int n)
      * worker while a joiner was still parked inside the join. */
     platform_mutex_lock(cl_thread_list_lock);
     t = cl_thread_table[id];
-    if (!t) {
+    /* Slot-identity check: table slots are reused after a join or a
+     * zombie-reap.  Without the generation compare, a wrapper for a
+     * long-exited thread would join (and then FREE) whatever unrelated
+     * worker currently occupies its old slot — a double free of that
+     * worker when its own joiner finishes.  tobj was derived before the
+     * lock; no allocation happened since, so it is not stale (a peer STW
+     * compaction cannot complete while this thread runs unparked). */
+    if (!t || cl_thread_table_gen[id] != tobj->table_gen) {
         platform_mutex_unlock(cl_thread_list_lock);
-        cl_error(CL_ERR_GENERAL, "MP:JOIN-THREAD: thread already collected");
+        cl_error(CL_ERR_GENERAL, "MP:JOIN-THREAD: thread has already exited");
     }
     if (!t->platform_handle && !t->join_in_progress) {
         platform_mutex_unlock(cl_thread_list_lock);
@@ -583,20 +596,30 @@ static CL_Obj bi_join_thread(CL_Obj *args, int n)
     }
     if (t->join_in_progress) {
         /* Another joiner owns the OS-level join and the cleanup.  Wait
-         * for it to finish (table slot cleared), then read the result
-         * from the GC-managed wrapper like the owner does.  Pointer
-         * comparison only — `t` may be freed by the owner at any time. */
+         * for the owner to STAMP the wrapper (thread_id = -1, its final
+         * step), then read the result from the wrapper like the owner
+         * does.  Spinning on `cl_thread_table[id] == t` was ABA-prone:
+         * the freed CL_Thread could be reallocated at the same address
+         * for a NEW worker that reuses the slot, making the compare
+         * "equal" again and parking this waiter forever.  The wrapper
+         * read must happen OUTSIDE the safe region (args[0] is a rooted,
+         * forwarded VM slot, but a heap read from inside a safe region
+         * races the compaction itself); the enter/leave pair per round
+         * parks us whenever a GC is running. */
         platform_mutex_unlock(cl_thread_list_lock);
-        cl_gc_enter_safe_region();
-        while (cl_thread_table[id] == t)
+        for (;;) {
+            tobj = (CL_ThreadObj *)CL_OBJ_TO_PTR(args[0]);
+            if (tobj->thread_id == (uint32_t)-1)
+                break;
+            cl_gc_enter_safe_region();
             platform_thread_yield();
-        cl_gc_leave_safe_region();
-        /* The owner's cl_thread_table_free() is a plain store, not paired
-         * with a lock this waiter takes, so the unsynchronized read of
-         * cl_thread_table[id] above is not guaranteed to observe the
-         * owner's prior write of tobj->result on weakly-ordered hardware.
-         * Pair it with an explicit barrier, matching the rigor already
-         * applied to interrupt_pending/destroy_requested. */
+            cl_gc_leave_safe_region();
+        }
+        /* The owner's wrapper stamp is a plain store, not paired with a
+         * lock this waiter takes, so the read above is not guaranteed to
+         * observe the owner's prior write of tobj->result on weakly-
+         * ordered hardware.  Pair it with an explicit barrier, matching
+         * the rigor applied to interrupt_pending/destroy_requested. */
         platform_memory_barrier();
         tobj = (CL_ThreadObj *)CL_OBJ_TO_PTR(args[0]);  /* re-derive (moved?) */
         return tobj->result;
@@ -669,8 +692,11 @@ static CL_Obj bi_thread_alive_p(CL_Obj *args, int n)
         int alive;
         platform_mutex_lock(cl_thread_list_lock);
         t = cl_thread_table[tobj->thread_id];
-        /* status: 0=created, 1=running, 2=finished, 3=aborted */
-        alive = (t && t->status <= 1);
+        /* status: 0=created, 1=running, 2=finished, 3=aborted.
+         * Generation mismatch = slot reused by an unrelated worker; this
+         * wrapper's thread exited long ago (see bi_join_thread). */
+        alive = (t && t->status <= 1 &&
+                 cl_thread_table_gen[tobj->thread_id] == tobj->table_gen);
         platform_mutex_unlock(cl_thread_list_lock);
         return alive ? CL_T : CL_NIL;
     }
@@ -701,6 +727,7 @@ static CL_Obj bi_current_thread(CL_Obj *args, int n)
                                                        sizeof(CL_ThreadObj));
         if (!tobj) return CL_NIL;
         tobj->thread_id = self->id;
+        tobj->table_gen = cl_thread_table_gen[self->id];
         tobj->name = self->name;
         self->thread_obj = CL_PTR_TO_OBJ(tobj);
         return self->thread_obj;
@@ -960,18 +987,60 @@ static CL_Obj bi_acquire_lock(CL_Obj *args, int n)
         /* Blocking acquire — bracket with safe region so a concurrent
          * stop-the-world GC does not deadlock waiting on this thread. */
         CL_Thread *self = CL_MT() ? cl_get_current_thread() : NULL;
+        uint32_t lock_id = lk->lock_id;
         if (self) {
             self->wait_kind = 3;
-            self->wait_lock_id = (int)lk->lock_id;
+            self->wait_lock_id = (int)lock_id;
             self->wait_cv_id = -1;
         }
-        cl_gc_enter_safe_region();
-        platform_mutex_lock(mutex);
-        cl_gc_leave_safe_region();
+        if (!self) {
+            platform_mutex_lock(mutex);
+        } else {
+            /* Interruptible acquire: a plain platform_mutex_lock never
+             * runs another safepoint, so MP:DESTROY-THREAD /
+             * MP:INTERRUPT-THREAD aimed at a thread parked here was
+             * deferred until the lock came free — forever, if it never
+             * did.  Escalating trylock: a yield-spin phase first (typical
+             * MP critical sections are short, so contended handoffs stay
+             * fast — no added latency for e.g. sento queue locks), then
+             * 10ms sleeps with an interrupt_pending check each round.
+             * The handler runs OUTSIDE the safe region (it touches the
+             * heap and may longjmp on a destroy). */
+            int spins = 0;
+            cl_gc_enter_safe_region();
+            while (platform_mutex_trylock(mutex) != 0) {
+                if (self->interrupt_pending) {
+                    cl_gc_leave_safe_region();
+                    self->wait_kind = 0;
+                    cl_thread_handle_interrupt(self);  /* longjmps on destroy */
+                    self->wait_kind = 3;
+                    self->wait_lock_id = (int)lock_id;
+                    cl_gc_enter_safe_region();
+                }
+                if (spins < 256) {
+                    spins++;
+                    platform_thread_yield();
+                } else {
+                    platform_sleep_ms(10);
+                }
+            }
+            cl_gc_leave_safe_region();
+        }
         if (self) self->wait_kind = 0;
+        /* Owner tracking — see thread.h.  Set single-threaded too: the
+         * finalize-while-held hazard (gc_finalize_dead TYPE_LOCK) does
+         * not need a second thread to bite.  Depth counts nested
+         * acquires so a recursive lock stays "held" until it has been
+         * released as many times as it was acquired. */
+        cl_lock_held[lock_id] = cl_get_current_thread();
+        cl_lock_depth[lock_id]++;
         return CL_T;
     } else {
-        return (platform_mutex_trylock(mutex) == 0) ? CL_T : CL_NIL;
+        if (platform_mutex_trylock(mutex) != 0)
+            return CL_NIL;
+        cl_lock_held[lk->lock_id] = cl_get_current_thread();
+        cl_lock_depth[lk->lock_id]++;
+        return CL_T;
     }
 }
 
@@ -993,6 +1062,13 @@ static CL_Obj bi_release_lock(CL_Obj *args, int n)
     if (!mutex)
         cl_error(CL_ERR_GENERAL, "MP:RELEASE-LOCK: lock has been destroyed");
 
+    /* Clear owner tracking BEFORE the unlock (owner-only mutation while
+     * still holding — see thread.h).  Only clear the owner once the nested
+     * depth reaches 0, so a recursively-held lock stays tracked as held
+     * until it has been released as many times as it was acquired. */
+    if (cl_lock_depth[lk->lock_id] > 0) cl_lock_depth[lk->lock_id]--;
+    if (cl_lock_depth[lk->lock_id] == 0)
+        cl_lock_held[lk->lock_id] = NULL;
     platform_mutex_unlock(mutex);
     return CL_NIL;
 }
@@ -1074,13 +1150,22 @@ static CL_Obj bi_condition_wait(CL_Obj *args, int n)
         cl_error(CL_ERR_GENERAL,
                  "MP:CONDITION-WAIT: condvar or lock has been destroyed");
 
-    /* If we're about to park while holding a cl_tables_rwlock reader, every
-     * other thread that needs to take the writer lock will block forever.
-     * Treat as a hard bug: dump the holders and abort so we can find the
-     * leaky path before we ship a deadlock. */
+    /* If we're about to park while holding an internal rwlock reader
+     * (compiler tables), every thread that needs the matching writer lock
+     * will block forever.  Treat as a hard bug: dump the holders and abort
+     * so we can find the leaky path before we ship a deadlock.
+     *
+     * NOTE: this cannot yet also guard cl_package_rwlock — thread.h's
+     * rdlock_package_held counter has no writer (package.c/symbol.c take
+     * cl_package_rwlock directly via platform_rwlock_rdlock(), not through
+     * a counted wrapper), so it is always 0.  Checking it here would be
+     * dead code implying protection that doesn't exist.  Re-add it once a
+     * cl_tables_rdlock_at()-style counted wrapper exists for the package
+     * rwlock (and cl_tables_dump_rdlock_holders walks it too). */
     if (CL_MT() && cl_get_current_thread()->rdlock_tables_held > 0) {
         cl_tables_dump_rdlock_holders(
-            "[BUG] mp:condition-wait while holding cl_tables_rwlock reader:");
+            "[BUG] mp:condition-wait while holding an internal rwlock "
+            "reader (tables):");
         cl_capture_backtrace();
         fprintf(stderr, "%s", cl_get_current_thread()->backtrace_buf);
         fflush(stderr);
@@ -1093,6 +1178,7 @@ static CL_Obj bi_condition_wait(CL_Obj *args, int n)
         uint32_t ms;
         int timed_out;
         CL_Thread *self = CL_MT() ? cl_get_current_thread() : NULL;
+        uint32_t lock_id = lk->lock_id;
         if (secs <= 0.0)
             ms = 0;
         else if (secs > 4294967.0)
@@ -1102,26 +1188,82 @@ static CL_Obj bi_condition_wait(CL_Obj *args, int n)
         if (self) {
             self->wait_kind = 2;
             self->wait_cv_id = (int)cv->condvar_id;
-            self->wait_lock_id = (int)lk->lock_id;
+            self->wait_lock_id = (int)lock_id;
+            /* Pre-park interrupt check, ordered AFTER publishing the wait
+             * registration above.  Consumed HERE, not deferred to "the
+             * next safepoint" — see the untimed path below for the
+             * Amiga-JIT rationale. */
+            platform_memory_barrier();
+            if (self->interrupt_pending) {
+                self->wait_kind = 0;
+                cl_thread_handle_interrupt(self);  /* longjmps on destroy */
+                return CL_T;   /* interrupt ran — spurious wakeup */
+            }
         }
         cl_gc_enter_safe_region();
         timed_out = platform_condvar_wait_timeout(cv_handle, mutex, ms);
         cl_gc_leave_safe_region();
         if (self) self->wait_kind = 0;
+        /* The wait re-acquired the user mutex; whoever held it in between
+         * cleared/claimed the owner entry — re-claim it (see thread.h).
+         * The underlying condvar wait always re-locks at depth 1,
+         * regardless of any recursion depth held before the wait. */
+        cl_lock_held[lock_id] = cl_get_current_thread();
+        cl_lock_depth[lock_id] = 1;
+        /* Post-wake delivery (see the untimed path). */
+        if (self && self->interrupt_pending)
+            cl_thread_handle_interrupt(self);
         return timed_out ? CL_NIL : CL_T;
     }
 
     {
         CL_Thread *self = CL_MT() ? cl_get_current_thread() : NULL;
+        uint32_t lock_id = lk->lock_id;
         if (self) {
             self->wait_kind = 1;
             self->wait_cv_id = (int)cv->condvar_id;
-            self->wait_lock_id = (int)lk->lock_id;
+            self->wait_lock_id = (int)lock_id;
+            /* Pre-park interrupt check (I5).  Ordering matters: the wait
+             * registration above is published BEFORE this read, and the
+             * interrupt publisher stores interrupt_pending BEFORE reading
+             * the registration.  So either we see the flag here and skip
+             * the park (spurious wakeup — the interrupt runs at the next
+             * safepoint), or the publisher sees our registration and
+             * wakes us via lock-then-broadcast on this cv.  Without this
+             * pair, an interrupt/destroy aimed at a parked thread was
+             * deferred until someone else happened to notify the cv —
+             * forever, for a wait that is never notified. */
+            platform_memory_barrier();
+            if (self->interrupt_pending) {
+                /* Consume the interrupt HERE, not at "the next safepoint":
+                 * on the Amiga JIT path a caller loop like
+                 * (loop (mp:condition-wait cv lk)) contains NO safepoints
+                 * (JIT'd code polls nothing; builtin calls go through
+                 * cl_vm_apply without a safepoint), so returning T just
+                 * spun the loop through this check forever and the
+                 * destroy was never delivered — the FS-UAE hang that
+                 * caught this.  A destroy longjmps out while the caller
+                 * holds the wait mutex — identical to a loop-safepoint
+                 * delivery, which also runs with the mutex re-acquired. */
+                self->wait_kind = 0;
+                cl_thread_handle_interrupt(self);  /* longjmps on destroy */
+                return CL_T;   /* interrupt ran — spurious wakeup */
+            }
         }
         cl_gc_enter_safe_region();
         platform_condvar_wait(cv_handle, mutex);
         cl_gc_leave_safe_region();
         if (self) self->wait_kind = 0;
+        /* Re-claim owner tracking after the internal re-acquire.  The
+         * underlying condvar wait always re-locks at depth 1, regardless
+         * of any recursion depth held before the wait. */
+        cl_lock_held[lock_id] = cl_get_current_thread();
+        cl_lock_depth[lock_id] = 1;
+        /* Post-wake delivery (same JIT-no-safepoint rationale as above):
+         * the publisher's wakeup must lead to consumption HERE — the
+         * caller's predicate loop may never reach a safepoint. */
+        if (self && self->interrupt_pending)
+            cl_thread_handle_interrupt(self);
     }
     return CL_T;
 }
@@ -1178,6 +1320,61 @@ static CL_Obj bi_condition_broadcast(CL_Obj *args, int n)
  * Thread interruption
  * ================================================================ */
 
+/* Wake a target parked in MP:CONDITION-WAIT after publishing an
+ * interrupt/destroy to it (I5).  The wait state (kind + cv/lock ids) was
+ * captured under cl_thread_list_lock right after the interrupt_pending
+ * store; this runs AFTER releasing it (blocking on a user mutex while
+ * holding the registry lock would stall every thread operation).
+ *
+ * Guarantee: lock-then-broadcast on the target's wait mutex.  During the
+ * target's pre-park window it HOLDS that mutex, so our acquire succeeds
+ * only once the target has atomically parked (condvar wait releases it)
+ * — the broadcast then reliably reaches it.  If the target instead saw
+ * interrupt_pending in its own pre-park check (bi_condition_wait), it
+ * never parks and no wakeup is needed.  The trylock is bounded: if some
+ * THIRD thread holds the mutex long-term the target cannot be pre-park
+ * (it would hold the mutex itself), so an unlocked broadcast suffices.
+ *
+ * The captured ids are inherently racy (the target publishes wait state
+ * without the registry lock) and the table slots can be freed/reused
+ * after capture — a mis-aimed broadcast is a spurious wakeup, which
+ * condition-wait users must tolerate anyway. */
+static void wake_interrupted_waiter(int wait_kind, int cv_id, int lock_id)
+{
+    void *cv_handle, *mutex;
+    if (wait_kind != 1 && wait_kind != 2)
+        return;   /* not cv-parked; a lock-acquire park polls the flag */
+    if (cv_id < 0 || cv_id >= CL_MAX_CONDVARS)
+        return;
+    cv_handle = cl_condvar_table[cv_id];
+    if (!cv_handle)
+        return;
+    mutex = (lock_id >= 0 && lock_id < CL_MAX_LOCKS)
+                ? cl_lock_table[lock_id] : NULL;
+    if (mutex) {
+        int tries, got = 0;
+        /* The window where the target is genuinely about to park (holds
+         * its own mutex, about to call condvar_wait) is only a few
+         * instructions wide — a long bound here does not improve the odds
+         * of catching it.  It does, however, impose worst-case latency on
+         * the caller (MP:INTERRUPT-THREAD/MP:DESTROY-THREAD) whenever the
+         * target is merely busy holding the mutex for unrelated reasons
+         * and never parks.  Keep the bound short (20 x 10ms = 200ms): per
+         * the file header comment above, an unlocked broadcast is safe
+         * and sufficient once some other thread holds the mutex long-term. */
+        cl_gc_enter_safe_region();
+        for (tries = 0; tries < 20; tries++) {
+            if (platform_mutex_trylock(mutex) == 0) { got = 1; break; }
+            platform_sleep_ms(10);
+        }
+        cl_gc_leave_safe_region();
+        platform_condvar_broadcast(cv_handle);
+        if (got) platform_mutex_unlock(mutex);
+    } else {
+        platform_condvar_broadcast(cv_handle);
+    }
+}
+
 /* (mp:interrupt-thread thread function) -> t */
 static CL_Obj bi_interrupt_thread(CL_Obj *args, int n)
 {
@@ -1209,7 +1406,11 @@ static CL_Obj bi_interrupt_thread(CL_Obj *args, int n)
      * stores (use-after-free write). */
     platform_mutex_lock(cl_thread_list_lock);
     target = cl_thread_table[tobj->thread_id];
-    if (!target) {
+    /* Generation mismatch = slot reused by an unrelated worker; without
+     * this check the interrupt would be delivered to an innocent thread
+     * (see bi_join_thread). */
+    if (!target ||
+        cl_thread_table_gen[tobj->thread_id] != tobj->table_gen) {
         platform_mutex_unlock(cl_thread_list_lock);
         cl_error(CL_ERR_GENERAL,
                  "MP:INTERRUPT-THREAD: thread has already exited");
@@ -1238,7 +1439,19 @@ static CL_Obj bi_interrupt_thread(CL_Obj *args, int n)
     target->interrupt_func = func;
     platform_memory_barrier();
     target->interrupt_pending = 1;
-    platform_mutex_unlock(cl_thread_list_lock);
+    /* Capture the target's wait registration for the parked-thread wakeup
+     * (I5).  The barrier orders the pending store before these loads —
+     * paired with the target's publish-registration-then-check-pending
+     * sequence in bi_condition_wait, at least one side always observes
+     * the other. */
+    platform_memory_barrier();
+    {
+        int t_kind = target->wait_kind;
+        int t_cv   = target->wait_cv_id;
+        int t_lk   = target->wait_lock_id;
+        platform_mutex_unlock(cl_thread_list_lock);
+        wake_interrupted_waiter(t_kind, t_cv, t_lk);
+    }
 
     return CL_T;
 }
@@ -1267,7 +1480,9 @@ static CL_Obj bi_destroy_thread(CL_Obj *args, int n)
     /* Same locking + publication discipline as MP:INTERRUPT-THREAD. */
     platform_mutex_lock(cl_thread_list_lock);
     target = cl_thread_table[tobj->thread_id];
-    if (!target) {
+    /* Same slot-identity discipline as MP:INTERRUPT-THREAD. */
+    if (!target ||
+        cl_thread_table_gen[tobj->thread_id] != tobj->table_gen) {
         platform_mutex_unlock(cl_thread_list_lock);
         cl_error(CL_ERR_GENERAL,
                  "MP:DESTROY-THREAD: thread has already exited");
@@ -1283,7 +1498,15 @@ static CL_Obj bi_destroy_thread(CL_Obj *args, int n)
     target->destroy_requested = 1;
     platform_memory_barrier();
     target->interrupt_pending = 1;
-    platform_mutex_unlock(cl_thread_list_lock);
+    /* Parked-thread wakeup — same protocol as MP:INTERRUPT-THREAD. */
+    platform_memory_barrier();
+    {
+        int t_kind = target->wait_kind;
+        int t_cv   = target->wait_cv_id;
+        int t_lk   = target->wait_lock_id;
+        platform_mutex_unlock(cl_thread_list_lock);
+        wake_interrupted_waiter(t_kind, t_cv, t_lk);
+    }
 
     return CL_T;
 }
@@ -1388,6 +1611,7 @@ void cl_builtins_thread_init(void)
     tobj = (CL_ThreadObj *)cl_alloc(TYPE_THREAD, sizeof(CL_ThreadObj));
     if (tobj) {
         tobj->thread_id = 0;
+        tobj->table_gen = cl_thread_table_gen[0];
         tobj->name = main_name;
         main_thread_obj = CL_PTR_TO_OBJ(tobj);
     }

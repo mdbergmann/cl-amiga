@@ -96,9 +96,14 @@ static int current_line(void)
 static void srcloc_record(CL_Obj cons_obj, int line)
 {
     uint32_t idx = (cons_obj >> 2) % CL_SRCLOC_SIZE;
-    cl_srcloc_table[idx].cons_obj = cons_obj;
+    /* Ordered writes: this diagnostics-only table is written without a lock
+     * (concurrent reader threads), so invalidate the key FIRST — a
+     * concurrent cl_srcloc_lookup then never pairs the new key with the old
+     * entry's line/file. */
+    cl_srcloc_table[idx].cons_obj = CL_NIL;
     cl_srcloc_table[idx].line = (uint16_t)line;
     cl_srcloc_table[idx].file_id = cl_current_file_id;
+    cl_srcloc_table[idx].cons_obj = cons_obj;
 }
 
 /* Skip whitespace and comments */
@@ -163,13 +168,16 @@ static CL_Obj kw_not = CL_NIL;
 
 static void ensure_feature_keywords(void)
 {
+    /* GC SAFETY (audit tier 4, R5): register each cached symbol as a root
+     * IMMEDIATELY after its intern — the next cl_intern_keyword can compact,
+     * and a root registered afterwards would pin a stale offset permanently
+     * (these are one-shot registrations). */
     if (CL_NULL_P(kw_and)) {
         kw_and = cl_intern_keyword("AND", 3);
-        kw_or  = cl_intern_keyword("OR", 2);
-        kw_not = cl_intern_keyword("NOT", 3);
-        /* Register cached symbols for GC compaction forwarding */
         cl_gc_register_root(&kw_and);
+        kw_or  = cl_intern_keyword("OR", 2);
         cl_gc_register_root(&kw_or);
+        kw_not = cl_intern_keyword("NOT", 3);
         cl_gc_register_root(&kw_not);
     }
 }
@@ -183,9 +191,16 @@ static int eval_feature_expr(CL_Obj expr)
         return feature_member(expr);
     }
     if (CL_CONS_P(expr)) {
-        CL_Obj head = cl_car(expr);
-        CL_Obj rest = cl_cdr(expr);
+        CL_Obj head, rest;
+        /* First-call interns can compact — keep expr forwarded across the
+         * ensure and read head/rest AFTER it (R5), so neither the expr cons
+         * nor the freshly-registered kw_* roots are stale for the compares
+         * below. */
+        CL_GC_PROTECT(expr);
         ensure_feature_keywords();
+        CL_GC_UNPROTECT(1);
+        head = cl_car(expr);
+        rest = cl_cdr(expr);
         if (head == kw_and) {
             /* (:and f1 f2 ...) — all must be true */
             while (CL_CONS_P(rest)) {
@@ -243,9 +258,12 @@ static CL_Obj read_radix_number(int radix)
     int i;
 
     /* Read token */
-    while (len < 255) {
+    for (;;) {
         ch = read_char();
         if (is_delimiter(ch)) { unread_char(ch); break; }
+        if (len >= 255)
+            cl_reader_error(CL_ERR_PARSE,
+                "Number after #-radix prefix longer than 255 characters");
         buf[len++] = (char)cl_ascii_toupper(ch);
     }
     buf[len] = '\0';
@@ -516,12 +534,23 @@ static CL_Obj read_atom_with_prefix(const char *prefix, int prefix_len)
 
     if (prefix && prefix_len > 0) {
         int p;
-        if (prefix_len > 255) prefix_len = 255;
+        if (prefix_len > 255)
+            cl_reader_error(CL_ERR_PARSE,
+                "Token prefix longer than 255 characters (symbol limit)");
         for (p = 0; p < prefix_len; p++)
             buf[len++] = (char)cl_ascii_toupper((unsigned char)prefix[p]);
     }
 
-    while (len < 255) {
+    /* Token cap: 255 characters.  Exceeding it must be a reader error —
+     * the old bounded loop simply stopped consuming, silently splitting a
+     * long symbol into two tokens (and a 300-digit number into two
+     * numbers!). */
+#define ATOM_CAP_CHECK() \
+    do { if (len >= 255) \
+        cl_reader_error(CL_ERR_PARSE, \
+            "Token longer than 255 characters (symbol/number limit)"); \
+    } while (0)
+    for (;;) {
         ch = read_char();
         if (ch < 0) break;  /* EOF */
 
@@ -541,7 +570,8 @@ static CL_Obj read_atom_with_prefix(const char *prefix, int prefix_len)
                     ch = read_char();
                     if (ch < 0) break;
                 }
-                if (len < 255) buf[len++] = (char)ch;  /* NO case conversion */
+                ATOM_CAP_CHECK();
+                buf[len++] = (char)ch;  /* NO case conversion */
             }
             continue;
         }
@@ -551,7 +581,8 @@ static CL_Obj read_atom_with_prefix(const char *prefix, int prefix_len)
             has_escape = 1;
             ch = read_char();
             if (ch < 0) break;
-            if (len < 255) buf[len++] = (char)ch;  /* NO case conversion */
+            ATOM_CAP_CHECK();
+            buf[len++] = (char)ch;  /* NO case conversion */
             continue;
         }
 
@@ -559,8 +590,10 @@ static CL_Obj read_atom_with_prefix(const char *prefix, int prefix_len)
             unread_char(ch);
             break;
         }
+        ATOM_CAP_CHECK();
         buf[len++] = (char)cl_ascii_toupper(ch);
     }
+#undef ATOM_CAP_CHECK
     buf[len] = '\0';
 
     if (len == 0 && !has_escape) {
@@ -761,21 +794,86 @@ check_keyword:
         return CL_NIL;
     }
 
-intern_symbol:
-    /* Regular symbol (also reached via goto for escaped tokens) */
+    /* Regular symbol */
     return cl_intern(buf, (uint32_t)len);
 }
 
-/* Read a string literal */
+/* Per-thread stash for read_string's heap-grown buffer (see below).  Indexed
+ * by CT->id, which is always < CL_MAX_THREADS (main thread is 0; mp:make-thread
+ * assigns from the same range — see thread.c/builtins_thread.c). */
+static char *rdstr_orphan_buf[CL_MAX_THREADS];
+
+/* Read a string literal.  The buffer GROWS: real-world string literals
+ * exceed any fixed cap (log4cl's pattern-layout docstring is >4KB), the old
+ * fixed buffer silently truncated them, and erroring at a cap broke loading
+ * conforming libraries — CLHS puts no length limit on string literals.
+ * Growth is geometric into platform memory.
+ *
+ * read_char() can itself longjmp out from underneath this loop — e.g.
+ * stream_raise_timeout() on a socket stream whose read deadline elapses
+ * mid-literal — bypassing every explicit free below.  So the heap buffer is
+ * also mirrored into a per-thread stash (rdstr_orphan_buf) on every grow;
+ * the next read_string call on this thread reclaims (frees) any buffer left
+ * there by a longjmp that skipped the normal free, bounding the leak to at
+ * most one stale buffer per thread instead of one per aborted read. */
 static CL_Obj read_string(void)
 {
-    char buf[4096]; /* UTF-8 encoded buffer */
-    int len = 0;
+    char stack_buf[4096]; /* UTF-8 encoded; covers the common case */
+    char *buf = stack_buf;
+    uint32_t cap = (uint32_t)sizeof(stack_buf);
+    uint32_t len = 0;
     int ch;
+    CL_Obj result;
+
+    if (rdstr_orphan_buf[CT->id]) {
+        platform_free(rdstr_orphan_buf[CT->id]);
+        rdstr_orphan_buf[CT->id] = NULL;
+    }
+
+#define RDSTR_ENSURE(n) \
+    do { \
+        if (len + (uint32_t)(n) + 1 > cap) { \
+            uint32_t newcap; \
+            char *nb_; \
+            if (cap > UINT32_MAX / 2) { \
+                if (buf != stack_buf) platform_free(buf); \
+                rdstr_orphan_buf[CT->id] = NULL; \
+                cl_reader_error(CL_ERR_STORAGE, \
+                    "String literal too large (over %u bytes)", \
+                    (unsigned)cap); \
+            } \
+            newcap = cap * 2; \
+            while (len + (uint32_t)(n) + 1 > newcap) { \
+                if (newcap > UINT32_MAX / 2) { \
+                    if (buf != stack_buf) platform_free(buf); \
+                    rdstr_orphan_buf[CT->id] = NULL; \
+                    cl_reader_error(CL_ERR_STORAGE, \
+                        "String literal too large (over %u bytes)", \
+                        (unsigned)newcap); \
+                } \
+                newcap *= 2; \
+            } \
+            nb_ = (char *)platform_alloc(newcap); \
+            if (!nb_) { \
+                if (buf != stack_buf) platform_free(buf); \
+                rdstr_orphan_buf[CT->id] = NULL; \
+                cl_reader_error(CL_ERR_STORAGE, \
+                    "String literal: out of memory at %u bytes", \
+                    (unsigned)len); \
+            } \
+            memcpy(nb_, buf, len); \
+            if (buf != stack_buf) platform_free(buf); \
+            buf = nb_; \
+            cap = newcap; \
+            rdstr_orphan_buf[CT->id] = buf; \
+        } \
+    } while (0)
 
     for (;;) {
         ch = read_char();
         if (ch < 0) {
+            if (buf != stack_buf) platform_free(buf);
+            rdstr_orphan_buf[CT->id] = NULL;
             cl_reader_error(CL_ERR_PARSE, "Unterminated string");
             return CL_NIL;
         }
@@ -783,6 +881,8 @@ static CL_Obj read_string(void)
         if (ch == '\\') {
             ch = read_char();
             if (ch < 0) {
+                if (buf != stack_buf) platform_free(buf);
+                rdstr_orphan_buf[CT->id] = NULL;
                 cl_reader_error(CL_ERR_PARSE, "Unterminated string escape");
                 return CL_NIL;
             }
@@ -799,20 +899,28 @@ static CL_Obj read_string(void)
             char tmp[4];
             int nb = cl_utf8_encode(ch, tmp);
             int j;
-            for (j = 0; j < nb && len < 4095; j++)
+            RDSTR_ENSURE(nb);
+            for (j = 0; j < nb; j++)
                 buf[len++] = tmp[j];
         } else
 #endif
         {
-            if (len < 4095) buf[len++] = (char)ch;
+            RDSTR_ENSURE(1);
+            buf[len++] = (char)ch;
         }
     }
     buf[len] = '\0';
+#undef RDSTR_ENSURE
 #ifdef CL_WIDE_STRINGS
-    return cl_utf8_to_cl_string(buf, (uint32_t)len);
+    result = cl_utf8_to_cl_string(buf, len);
 #else
-    return cl_make_string(buf, (uint32_t)len);
+    result = cl_make_string(buf, len);
 #endif
+    if (buf != stack_buf) {
+        platform_free(buf);
+        rdstr_orphan_buf[CT->id] = NULL;
+    }
+    return result;
 }
 
 /* Read a standard "..." string body from STREAM, assuming the opening quote
@@ -875,8 +983,10 @@ static CL_Obj read_list(void)
                 int next = read_char();
                 if (is_delimiter(next)) {
                     unread_char(next);
-                    /* Read cdr of dotted pair */
-                    elem = read_expr();
+                    /* Read cdr of dotted pair — skip past #+/#- voids (R6),
+                     * else the 0x06 skip sentinel becomes the list's cdr */
+                    do { elem = read_expr(); }
+                    while (elem == CL_READER_SKIP && !eof_seen);
                     if (!CL_NULL_P(tail)) {
                         ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = elem;
                     }
@@ -950,12 +1060,17 @@ static CL_Obj read_expr(void)
     case '(':
         return read_list();
 
+    /* NOTE (audit tier 4, R6 / CLHS 2.4.8.17): a false #+/#- consumes its
+     * feature expression AND the following form, yielding nothing — so
+     * every "read one sub-form" site below must loop past CL_READER_SKIP
+     * (e.g. '#+nope foo bar must read as 'BAR), or the internal 0x06
+     * sentinel leaks into user structure. */
     case '\'': /* quote */
-        obj = read_expr();
+        do { obj = read_expr(); } while (obj == CL_READER_SKIP && !eof_seen);
         return cl_cons(SYM_QUOTE, cl_cons(obj, CL_NIL));
 
     case '`': /* quasiquote */
-        obj = read_expr();
+        do { obj = read_expr(); } while (obj == CL_READER_SKIP && !eof_seen);
         return cl_cons(SYM_QUASIQUOTE, cl_cons(obj, CL_NIL));
 
     case ',': /* unquote / unquote-splicing */
@@ -966,11 +1081,11 @@ static CL_Obj read_expr(void)
          * expansion, and iterate relies on the form being accepted at
          * read time).  Treat them the same here. */
         if (ch == '@' || ch == '.') {
-            obj = read_expr();
+            do { obj = read_expr(); } while (obj == CL_READER_SKIP && !eof_seen);
             return cl_cons(SYM_UNQUOTE_SPLICING, cl_cons(obj, CL_NIL));
         }
         unread_char(ch);
-        obj = read_expr();
+        do { obj = read_expr(); } while (obj == CL_READER_SKIP && !eof_seen);
         return cl_cons(SYM_UNQUOTE, cl_cons(obj, CL_NIL));
 
     case '#': {
@@ -1016,8 +1131,8 @@ static CL_Obj read_expr(void)
             return CL_READER_SKIP;
         }
         if (ch == '\'') {
-            /* #'foo => (FUNCTION foo) */
-            obj = read_expr();
+            /* #'foo => (FUNCTION foo) — skip past #+/#- voids (R6) */
+            do { obj = read_expr(); } while (obj == CL_READER_SKIP && !eof_seen);
             return cl_cons(SYM_FUNCTION, cl_cons(obj, CL_NIL));
         }
         if (ch == '\\') {
@@ -1032,9 +1147,12 @@ static CL_Obj read_expr(void)
                 char name[32];
                 int nlen = 0;
                 name[nlen++] = (char)ch;
-                while (nlen < 31) {
+                for (;;) {
                     ch = read_char();
                     if (is_delimiter(ch)) { unread_char(ch); break; }
+                    if (nlen >= 31)
+                        cl_reader_error(CL_ERR_PARSE,
+                            "Character name after #\\ longer than 31 characters");
                     name[nlen++] = (char)ch;
                 }
                 name[nlen] = '\0';
@@ -1116,7 +1234,7 @@ static CL_Obj read_expr(void)
             int sym_has_escape = 0;
             CL_Obj name_str, new_sym, cell;
             CL_Readtable *rt = cl_readtable_current();
-            while (sym_len < 255) {
+            for (;;) {
                 ch2 = read_char();
                 if (ch2 < 0) break;  /* EOF */
                 /* Multiple escape: |...| — read literally with no
@@ -1140,7 +1258,10 @@ static CL_Obj read_expr(void)
                             ch2 = read_char();
                             if (ch2 < 0) break;
                         }
-                        if (sym_len < 255) sym_buf[sym_len++] = (char)ch2;
+                        if (sym_len >= 255)
+                            cl_reader_error(CL_ERR_PARSE,
+                                "#: symbol name longer than 255 characters");
+                        sym_buf[sym_len++] = (char)ch2;
                     }
                     continue;
                 }
@@ -1149,10 +1270,16 @@ static CL_Obj read_expr(void)
                     sym_has_escape = 1;
                     ch2 = read_char();
                     if (ch2 < 0) break;
-                    if (sym_len < 255) sym_buf[sym_len++] = (char)ch2;
+                    if (sym_len >= 255)
+                        cl_reader_error(CL_ERR_PARSE,
+                            "#: symbol name longer than 255 characters");
+                    sym_buf[sym_len++] = (char)ch2;
                     continue;
                 }
                 if (is_delimiter(ch2)) { unread_char(ch2); break; }
+                if (sym_len >= 255)
+                    cl_reader_error(CL_ERR_PARSE,
+                        "#: symbol name longer than 255 characters");
                 sym_buf[sym_len++] = (char)cl_ascii_toupper(ch2);
             }
             sym_buf[sym_len] = '\0';
@@ -1223,7 +1350,10 @@ static CL_Obj read_expr(void)
             for (;;) {
                 int c2 = read_char();
                 if (c2 == '0' || c2 == '1') {
-                    if (blen < 4095) bits[blen++] = (char)c2;
+                    if (blen >= 4095)
+                        cl_reader_error(CL_ERR_PARSE,
+                            "Bit-vector literal #* longer than 4095 bits");
+                    bits[blen++] = (char)c2;
                 } else {
                     if (c2 >= 0) unread_char(c2);
                     break;
@@ -1396,9 +1526,11 @@ static CL_Obj read_expr(void)
         }
         if (ch == '.') {
             /* #. read-time eval */
-            CL_Obj form = read_expr();
+            CL_Obj form;
             CL_Obj bytecode, result;
             CL_Symbol *re_sym;
+
+            do { form = read_expr(); } while (form == CL_READER_SKIP && !eof_seen);
 
             if (read_suppress) return CL_NIL;
 
@@ -1434,7 +1566,7 @@ static CL_Obj read_expr(void)
                 if (ch == 'A' || ch == 'a') {
                     /* #nA(...) — n-dimensional array */
                     int rank = num_val;
-                    CL_Obj contents = read_expr();
+                    CL_Obj contents;
                     uint32_t dims[8];
                     uint32_t total = 1;
                     int d;
@@ -1442,6 +1574,10 @@ static CL_Obj read_expr(void)
                     CL_Vector *vp;
                     CL_Obj flat_elems = CL_NIL;
                     CL_Obj flat_tail = CL_NIL;
+
+                    /* skip past #+/#- voids before the contents form (R6) */
+                    do { contents = read_expr(); }
+                    while (contents == CL_READER_SKIP && !eof_seen);
 
                     if (read_suppress) return CL_NIL;
                     if (rank < 0 || rank > 8) {
@@ -1481,16 +1617,33 @@ static CL_Obj read_expr(void)
 
                     /* Recursively flatten nested lists into flat_elems */
                     {
-                        /* Use a simple iterative approach with a work stack */
-                        /* For simplicity, we flatten recursively for depth = rank */
+                        /* Use a simple iterative approach with a work stack.
+                         * GC SAFETY (audit tier 4, R1): every cl_cons below
+                         * can compact — the per-level cursors work[0..7] and
+                         * the inner list cursor must be registered roots
+                         * (rank is capped at 8 above), or the walk continues
+                         * through pre-compaction offsets after the first
+                         * element is consed. */
                         CL_Obj work[8]; /* One per dimension level */
+                        CL_Obj lst = CL_NIL;
                         int level = 0;
                         uint32_t fi = 0;
+                        int wi;
+                        for (wi = 1; wi < 8; wi++) work[wi] = CL_NIL;
                         work[0] = contents;
+                        CL_GC_PROTECT(work[0]);
+                        CL_GC_PROTECT(work[1]);
+                        CL_GC_PROTECT(work[2]);
+                        CL_GC_PROTECT(work[3]);
+                        CL_GC_PROTECT(work[4]);
+                        CL_GC_PROTECT(work[5]);
+                        CL_GC_PROTECT(work[6]);
+                        CL_GC_PROTECT(work[7]);
+                        CL_GC_PROTECT(lst);
                         while (fi < total) {
                             if (level == rank - 1) {
                                 /* Innermost: collect elements from list */
-                                CL_Obj lst = work[level];
+                                lst = work[level];
                                 while (CL_CONS_P(lst) && fi < total) {
                                     CL_Obj cell = cl_cons(cl_car(lst), CL_NIL);
                                     if (CL_NULL_P(flat_elems)) {
@@ -1518,6 +1671,7 @@ static CL_Obj read_expr(void)
                                 }
                             }
                         }
+                        CL_GC_UNPROTECT(9); /* work[0..7], lst */
                     }
 
                     arr = cl_make_array(total, (uint8_t)rank, dims, 0,
@@ -1617,9 +1771,13 @@ CL_Obj cl_read(void)
     reader_line = 1;
     eof_seen = 0;
     rd_uninterned = CL_NIL;
+    /* GC SAFETY (audit tier 4, R4): read_expr compacts — the saved
+     * uninterned alist must stay forwarded for the nested-read restore. */
+    CL_GC_PROTECT(saved_uninterned);
     do { result = read_expr(); } while (result == CL_READER_SKIP && !eof_seen);
     CT->rd_last_eof = eof_seen;
     rd_uninterned = saved_uninterned;
+    CL_GC_UNPROTECT(1);
     return result;
 }
 
@@ -1654,10 +1812,14 @@ CL_Obj cl_read_from_stream(CL_Obj stream)
      * we must GC-protect `stream` and re-derive `st` before writing back
      * st->line. Without this, st->line = reader_line writes to the stream's
      * stale (now-relocated) slot, corrupting whatever object — frequently a
-     * cons cell of the freshly-read list — now occupies that memory. */
+     * cons cell of the freshly-read list — now occupies that memory.
+     * saved_stream too (audit tier 4, R2): it was the one unprotected member
+     * of the save set — restoring it stale left CT->rd_stream pointing into
+     * a pre-compaction offset for the parent read. */
     CL_GC_PROTECT(stream);
     CL_GC_PROTECT(saved_labels);
     CL_GC_PROTECT(saved_uninterned);
+    CL_GC_PROTECT(saved_stream);
     do { result = read_expr(); } while (result == CL_READER_SKIP && !eof_seen);
 
     st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
@@ -1669,7 +1831,7 @@ CL_Obj cl_read_from_stream(CL_Obj stream)
     rd_uninterned = saved_uninterned;
     rd_labels     = saved_labels;
     rd_label_backrefs = saved_backrefs;
-    CL_GC_UNPROTECT(3); /* stream, saved_labels, saved_uninterned */
+    CL_GC_UNPROTECT(4); /* stream, saved_labels, saved_uninterned, saved_stream */
     return result;
 }
 
@@ -1685,9 +1847,13 @@ CL_Obj cl_read_from_string(CL_ReadStream *stream)
     CL_Stream *st;
     CL_Obj result;
 
-    /* Protect saved alists before any allocation — cl_make_string can compact */
+    /* Protect saved alists before any allocation — cl_make_string can compact.
+     * saved_stream too (audit tier 4, R3): the setup allocs AND read_expr
+     * compact; restoring a stale saved_stream corrupts the parent reader's
+     * stream for the rest of its read. */
     CL_GC_PROTECT(saved_labels);
     CL_GC_PROTECT(saved_uninterned);
+    CL_GC_PROTECT(saved_stream);
     str = cl_make_string(stream->buf, (uint32_t)stream->len);
     CL_GC_PROTECT(str);
     s = cl_make_string_input_stream(str, (uint32_t)stream->pos, (uint32_t)stream->len);
@@ -1743,7 +1909,7 @@ CL_Obj cl_read_from_string(CL_ReadStream *stream)
     rd_uninterned = saved_uninterned;
     rd_labels     = saved_labels;
     rd_label_backrefs = saved_backrefs;
-    CL_GC_UNPROTECT(3); /* s, saved_labels, saved_uninterned */
+    CL_GC_UNPROTECT(4); /* s, saved_labels, saved_uninterned, saved_stream */
     return result;
 }
 

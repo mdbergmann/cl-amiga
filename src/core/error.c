@@ -51,6 +51,7 @@ int cl_error_frame_push(void)
     cl_error_frames[cl_error_frame_top].saved_handler_top = cl_handler_top;
     cl_error_frames[cl_error_frame_top].saved_handler_active_mask = cl_handler_active_mask;
     cl_error_frames[cl_error_frame_top].saved_restart_top = cl_restart_top;
+    cl_error_frames[cl_error_frame_top].saved_printer = cl_printer_state_save();
     return cl_error_frame_top++;
 }
 
@@ -98,6 +99,10 @@ CL_NORETURN void cl_error_frame_longjmp(int code)
         cl_handler_active_mask = cl_error_frames[cl_error_frame_top - 1].saved_handler_active_mask;
         if (cl_restart_top > cl_error_frames[cl_error_frame_top - 1].saved_restart_top)
             cl_restart_top = cl_error_frames[cl_error_frame_top - 1].saved_restart_top;
+        /* Repair printer state abandoned by prints we are unwinding out of
+         * (aborted pprint-dispatch fn / print hook / stream error) — see
+         * CL_ErrorFrame.saved_printer. */
+        cl_printer_state_restore(cl_error_frames[cl_error_frame_top - 1].saved_printer);
         CL_LONGJMP(cl_error_frames[cl_error_frame_top - 1].buf, code);
     }
 
@@ -116,6 +121,10 @@ CL_NORETURN void cl_error_frame_longjmp(int code)
     cl_jit_restore_depth(0);
     cl_debugger_depth = 0;
     cl_in_debugger = 0;
+    /* Reset printer state abandoned by an aborted print (see
+     * CL_ErrorFrame.saved_printer) — at the outermost frame every print
+     * has been unwound, so all four flags go back to idle. */
+    cl_printer_state_reset();
 
     if (cl_error_frame_top > 0) {
         /* Drop any active FASL readers — their stack-local CL_FaslReaders are
@@ -188,6 +197,7 @@ void cl_error(int code, const char *fmt, ...)
         cl_jit_restore_depth(0);
         cl_debugger_depth = 0;
         cl_in_debugger = 0;
+        cl_printer_state_reset();
         if (cl_error_frame_top > 0) {
             /* Don't decrement here — CL_UNCATCH at the catch site pops.
              * For nested frames, restore gc_root_count to the catch-site

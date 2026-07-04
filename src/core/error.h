@@ -2,6 +2,7 @@
 #define CL_ERROR_H
 
 #include "types.h"
+#include "printer.h"
 #include <setjmp.h>
 
 /*
@@ -109,6 +110,12 @@ typedef struct {
      * disabled-handler band is re-enabled when a C-level cl_error longjmp
      * unwinds out of the handler that disabled it.  Mirrors saved_handler_top. */
     uint64_t saved_handler_active_mask;
+    /* Printer per-thread state at push time — restored on the unwind path
+     * so an aborted print (longjmp out of a pprint-dispatch fn, print hook,
+     * or stream error) can't leak pr_depth / pr_inprog_top /
+     * pr_pprint_dispatch_active / pr_circle_active.  See CL_PrinterState in
+     * printer.h.  Mirrors saved_gc_roots. */
+    CL_PrinterState saved_printer;
 } CL_ErrorFrame;
 
 /* Push an error frame.  Returns the frame index, or -1 on overflow.

@@ -979,6 +979,10 @@ static CL_Obj remove_from_list(CL_Obj seq, int32_t start, int32_t end,
     CL_GC_PROTECT(item);
     CL_GC_PROTECT(test_fn);
     CL_GC_PROTECT(key_fn);
+    /* `seq` is re-read for the second from-end pass after the counting pass
+     * has already run allocating apply_key/call_test calls — protect it so
+     * that re-read doesn't start from a stale offset. */
+    CL_GC_PROTECT(seq);
 
     if (from_end && count >= 0) {
         /* Two-pass: count matches from end */
@@ -1031,7 +1035,12 @@ static CL_Obj remove_from_list(CL_Obj seq, int32_t start, int32_t end,
                 }
             }
             if (!match) {
-                CL_Obj cell = cl_cons(elem, CL_NIL);
+                CL_Obj cell;
+                /* Re-read elem: the match test above ran allocating
+                 * apply_key/call_test — `cur` is a forwarded root, the
+                 * pre-test elem copy may be a stale offset. */
+                elem = cl_car(cur);
+                cell = cl_cons(elem, CL_NIL);
                 if (CL_NULL_P(result)) result = cell;
                 else ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
                 tail = cell;
@@ -1061,7 +1070,11 @@ static CL_Obj remove_from_list(CL_Obj seq, int32_t start, int32_t end,
             if (should_remove) {
                 removed++;
             } else {
-                CL_Obj cell = cl_cons(elem, CL_NIL);
+                CL_Obj cell;
+                /* Re-read elem after the allocating match test (see the
+                 * from-end pass above). */
+                elem = cl_car(cur);
+                cell = cl_cons(elem, CL_NIL);
                 if (CL_NULL_P(result)) result = cell;
                 else ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
                 tail = cell;
@@ -1069,7 +1082,7 @@ static CL_Obj remove_from_list(CL_Obj seq, int32_t start, int32_t end,
         }
     }
 
-    CL_GC_UNPROTECT(6); /* key_fn, test_fn, item, cur, tail, result */
+    CL_GC_UNPROTECT(7); /* seq, key_fn, test_fn, item, cur, tail, result */
     return result;
 }
 
@@ -1262,9 +1275,10 @@ static CL_Obj remove_from_string(CL_Obj seq, CL_Obj item_or_pred,
                                   int32_t count, int from_end, int mode)
 {
     int32_t slen = (int32_t)cl_string_length(seq);
-    char buf[1024];
     int32_t out = 0, i, removed = 0;
     int32_t skip_matches = 0;   /* leading matches to KEEP for :from-end + :count */
+    CL_Obj keep_vec;
+    CL_Obj result;
 
     if (end < 0) end = slen;
 
@@ -1275,6 +1289,14 @@ static CL_Obj remove_from_string(CL_Obj seq, CL_Obj item_or_pred,
     CL_GC_PROTECT(item_or_pred);
     CL_GC_PROTECT(test_fn);
     CL_GC_PROTECT(key_fn);
+
+    /* Kept characters are staged in a GC vector, not a fixed C buffer: a
+     * 1024-byte buffer silently truncated results past 1023 chars, and its
+     * (char) narrowing mangled wide characters.  Character objects are
+     * immediates, so storing them never allocates; the vector is reclaimed
+     * by GC even if a user :test/:key function longjmps (handler-case). */
+    keep_vec = cl_make_vector((uint32_t)slen);
+    CL_GC_PROTECT(keep_vec);
 
     /* :from-end with a :count removes the LAST `count` matches.  Count all
      * matches in [start,end) first, then keep the leading (total - count). */
@@ -1289,7 +1311,7 @@ static CL_Obj remove_from_string(CL_Obj seq, CL_Obj item_or_pred,
         if (skip_matches < 0) skip_matches = 0;
     }
 
-    for (i = 0; i < slen && out < (int32_t)sizeof(buf) - 1; i++) {
+    for (i = 0; i < slen; i++) {
         CL_Obj elem = CL_MAKE_CHAR(cl_string_char_at(seq, (uint32_t)i));
         int should_remove = 0;
         int gate = from_end ? 1 : (count < 0 || removed < count);
@@ -1305,12 +1327,48 @@ static CL_Obj remove_from_string(CL_Obj seq, CL_Obj item_or_pred,
         if (should_remove) {
             removed++;
         } else {
-            buf[out++] = (char)cl_string_char_at(seq, (uint32_t)i);
+            /* Re-derive the data pointer per store: the match call above
+             * can compact and move keep_vec. */
+            CL_Vector *kv = (CL_Vector *)CL_OBJ_TO_PTR(keep_vec);
+            cl_vector_data(kv)[out++] = elem;
         }
     }
-    CL_GC_UNPROTECT(4);  /* seq, item_or_pred, test_fn, key_fn */
-    return cl_make_string(buf, (uint32_t)out);
+
+    /* Build the result from the kept characters, preserving width. */
+    {
+        CL_Vector *kv = (CL_Vector *)CL_OBJ_TO_PTR(keep_vec);
+        CL_Obj *kd = cl_vector_data(kv);
+#ifdef CL_WIDE_STRINGS
+        int wide = 0;
+        for (i = 0; i < out; i++) {
+            if (CL_CHAR_VAL(kd[i]) > 0x7F) { wide = 1; break; }
+        }
+        result = wide ? cl_make_wide_string(NULL, (uint32_t)out)
+                      : cl_make_string(NULL, (uint32_t)out);
+#else
+        result = cl_make_string(NULL, (uint32_t)out);
+#endif
+        /* Re-derive after the result allocation, then fill (no allocation
+         * in this loop, so kd stays valid). */
+        kv = (CL_Vector *)CL_OBJ_TO_PTR(keep_vec);
+        kd = cl_vector_data(kv);
+        for (i = 0; i < out; i++)
+            cl_string_set_char_at(result, (uint32_t)i, CL_CHAR_VAL(kd[i]));
+    }
+    CL_GC_UNPROTECT(5);  /* seq, item_or_pred, test_fn, key_fn, keep_vec */
+    return result;
 }
+
+/* Keep-flag arrays for the remove/remove-duplicates family are staged in a
+ * GC bit-vector, not platform_alloc memory: the flag array is held across
+ * user :test/:key calls, and if one of those longjmps (handler-case) a
+ * platform_alloc buffer leaks permanently — a GC object is simply collected.
+ * The macros re-derive the object pointer on every access because those same
+ * user calls can compact and move the bit-vector. */
+#define KEEP_BV_SET(obj, i, b) \
+    cl_bv_set_bit((CL_BitVector *)CL_OBJ_TO_PTR(obj), (uint32_t)(i), (b))
+#define KEEP_BV_GET(obj, i) \
+    cl_bv_get_bit((CL_BitVector *)CL_OBJ_TO_PTR(obj), (uint32_t)(i))
 
 /* remove_from_bitvector: shared bit-vector path for remove/remove-if/remove-if-not.
    mode: 0=test-item, 1=pred, 2=pred-not, 3=test-not-item */
@@ -1322,14 +1380,11 @@ static CL_Obj remove_from_bitvector(CL_Obj seq, int32_t start, int32_t end,
     CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
     int32_t bvlen = (int32_t)cl_bv_active_length(bv);
     int32_t i, out = 0, removed = 0;
-    uint8_t *keep;
+    CL_Obj keep;
     CL_Obj result;
 
     if (end < 0) end = bvlen;
     if (bvlen == 0) return cl_make_bit_vector(0);
-
-    keep = (uint8_t *)platform_alloc((uint32_t)bvlen);
-    memset(keep, 1, (uint32_t)bvlen);
 
     /* GC SAFETY: same as remove_from_vector — the user :test/:key calls can
      * compact, and seq/item/test_fn/key_fn are re-read across them. */
@@ -1337,6 +1392,11 @@ static CL_Obj remove_from_bitvector(CL_Obj seq, int32_t start, int32_t end,
     CL_GC_PROTECT(item);
     CL_GC_PROTECT(test_fn);
     CL_GC_PROTECT(key_fn);
+
+    keep = cl_make_bit_vector((uint32_t)bvlen);
+    CL_GC_PROTECT(keep);
+    for (i = 0; i < bvlen; i++)
+        KEEP_BV_SET(keep, i, 1);
 
     if (from_end && count >= 0) {
         /* Two-pass: count total matches, then skip first (total-count) from front */
@@ -1380,7 +1440,7 @@ static CL_Obj remove_from_bitvector(CL_Obj seq, int32_t start, int32_t end,
                     if (skip_count > 0) {
                         skip_count--;
                     } else {
-                        keep[i] = 0;
+                        KEEP_BV_SET(keep, i, 0);
                     }
                 }
             }
@@ -1404,7 +1464,7 @@ static CL_Obj remove_from_bitvector(CL_Obj seq, int32_t start, int32_t end,
                     should_remove = CL_NULL_P(call_1(item, keyed));
             }
             if (should_remove) {
-                keep[i] = 0;
+                KEEP_BV_SET(keep, i, 0);
                 removed++;
             }
         }
@@ -1412,7 +1472,7 @@ static CL_Obj remove_from_bitvector(CL_Obj seq, int32_t start, int32_t end,
 
     /* Count surviving bits */
     for (i = 0; i < bvlen; i++)
-        if (keep[i]) out++;
+        if (KEEP_BV_GET(keep, i)) out++;
 
     result = cl_make_bit_vector((uint32_t)out);
     bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
@@ -1420,7 +1480,7 @@ static CL_Obj remove_from_bitvector(CL_Obj seq, int32_t start, int32_t end,
         CL_BitVector *rbv = (CL_BitVector *)CL_OBJ_TO_PTR(result);
         int32_t j = 0;
         for (i = 0; i < bvlen; i++) {
-            if (keep[i]) {
+            if (KEEP_BV_GET(keep, i)) {
                 if (cl_bv_get_bit(bv, (uint32_t)i))
                     cl_bv_set_bit(rbv, (uint32_t)j, 1);
                 j++;
@@ -1428,8 +1488,7 @@ static CL_Obj remove_from_bitvector(CL_Obj seq, int32_t start, int32_t end,
         }
     }
 
-    CL_GC_UNPROTECT(4);  /* seq, item, test_fn, key_fn */
-    platform_free(keep);
+    CL_GC_UNPROTECT(5);  /* seq, item, test_fn, key_fn, keep */
     return result;
 }
 
@@ -1452,14 +1511,11 @@ static CL_Obj remove_from_vector(CL_Obj seq, int32_t start, int32_t end,
     v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
     vlen = (int32_t)cl_vector_active_length(v);
     int32_t i, out = 0, removed = 0;
-    uint8_t *keep;
+    CL_Obj keep;
     CL_Obj result;
 
     if (end < 0) end = vlen;
     if (vlen == 0) return make_seq_result_like(seq, 0);
-
-    keep = (uint8_t *)platform_alloc((uint32_t)vlen);
-    memset(keep, 1, (uint32_t)vlen);
 
     /* GC SAFETY: apply_key/call_test/call_1 run user code that can compact.
      * seq is re-dereferenced every iteration and item/test_fn/key_fn are
@@ -1469,6 +1525,11 @@ static CL_Obj remove_from_vector(CL_Obj seq, int32_t start, int32_t end,
     CL_GC_PROTECT(item);
     CL_GC_PROTECT(test_fn);
     CL_GC_PROTECT(key_fn);
+
+    keep = cl_make_bit_vector((uint32_t)vlen);
+    CL_GC_PROTECT(keep);
+    for (i = 0; i < vlen; i++)
+        KEEP_BV_SET(keep, i, 1);
 
     if (from_end && count >= 0) {
         int32_t total_matches = 0, skip_count;
@@ -1509,7 +1570,7 @@ static CL_Obj remove_from_vector(CL_Obj seq, int32_t start, int32_t end,
                     match = CL_NULL_P(call_1(item, keyed));
                 if (match) {
                     if (skip_count > 0) skip_count--;
-                    else keep[i] = 0;
+                    else KEEP_BV_SET(keep, i, 0);
                 }
             }
         }
@@ -1531,14 +1592,14 @@ static CL_Obj remove_from_vector(CL_Obj seq, int32_t start, int32_t end,
                     should_remove = CL_NULL_P(call_1(item, keyed));
             }
             if (should_remove) {
-                keep[i] = 0;
+                KEEP_BV_SET(keep, i, 0);
                 removed++;
             }
         }
     }
 
     for (i = 0; i < vlen; i++)
-        if (keep[i]) out++;
+        if (KEEP_BV_GET(keep, i)) out++;
 
     /* A string-vector (adjustable/fill-pointer character array) must yield a
      * STRING, not a general (vector character); make_seq_result_like picks the
@@ -1551,13 +1612,12 @@ static CL_Obj remove_from_vector(CL_Obj seq, int32_t start, int32_t end,
         CL_Obj *elts = cl_vector_data(v);
         int32_t j = 0;
         for (i = 0; i < vlen; i++) {
-            if (keep[i])
+            if (KEEP_BV_GET(keep, i))
                 arr_seq_set(result, j++, elts[i]);
         }
     }
 
-    CL_GC_UNPROTECT(4);  /* seq, item, test_fn, key_fn */
-    platform_free(keep);
+    CL_GC_UNPROTECT(5);  /* seq, item, test_fn, key_fn, keep */
     return result;
 }
 
@@ -1723,31 +1783,35 @@ static CL_Obj bi_remove_duplicates(CL_Obj *args, int n)
      * later); with :from-end T the first is kept (dropped if it recurs earlier).
      * Indices outside [start,end) are always kept. */
     {
-        uint8_t *keep = (uint8_t *)platform_alloc((uint32_t)(len > 0 ? len : 1));
-        for (i = 0; i < len; i++) keep[i] = 1;
+        /* GC bit-vector, not platform_alloc: the flags live across rd_match
+         * user code, and a handler-case longjmp out of it would leak a C
+         * allocation permanently (see KEEP_BV_SET). */
+        CL_Obj keep = cl_make_bit_vector((uint32_t)(len > 0 ? len : 1));
+        CL_GC_PROTECT(keep);
+        for (i = 0; i < len; i++) KEEP_BV_SET(keep, i, 1);
         for (i = sa.start; i < end; i++) {
             /* Read both elements fresh from the protected snapshot on every
              * comparison — rd_match runs user code that can compact, which
              * would leave a pre-read `ei` stale for the next j iteration. */
             if (!sa.from_end) {
                 for (j = i + 1; j < end; j++) {
-                    if (keep[j] && rd_match(&sa, arr_seq_get(tmp, i),
-                                            arr_seq_get(tmp, j))) { keep[i] = 0; break; }
+                    if (KEEP_BV_GET(keep, j) && rd_match(&sa, arr_seq_get(tmp, i),
+                                            arr_seq_get(tmp, j))) { KEEP_BV_SET(keep, i, 0); break; }
                 }
             } else {
                 for (j = sa.start; j < i; j++) {
-                    if (keep[j] && rd_match(&sa, arr_seq_get(tmp, i),
-                                            arr_seq_get(tmp, j))) { keep[i] = 0; break; }
+                    if (KEEP_BV_GET(keep, j) && rd_match(&sa, arr_seq_get(tmp, i),
+                                            arr_seq_get(tmp, j))) { KEEP_BV_SET(keep, i, 0); break; }
                 }
             }
         }
-        for (i = 0; i < len; i++) if (keep[i]) kept++;
+        for (i = 0; i < len; i++) if (KEEP_BV_GET(keep, i)) kept++;
 
         if (is_list) {
             CL_Obj elem = CL_NIL;
             CL_GC_PROTECT(elem);
             for (i = 0; i < len; i++) {
-                if (keep[i]) {
+                if (KEEP_BV_GET(keep, i)) {
                     CL_Obj cell;
                     elem = arr_seq_get(tmp, i);
                     cell = cl_cons(elem, CL_NIL);
@@ -1761,9 +1825,9 @@ static CL_Obj bi_remove_duplicates(CL_Obj *args, int n)
             int32_t k = 0;
             result = make_seq_result_like(seq, (uint32_t)kept);
             for (i = 0; i < len; i++)
-                if (keep[i]) arr_seq_set(result, k++, arr_seq_get(tmp, i));
+                if (KEEP_BV_GET(keep, i)) arr_seq_set(result, k++, arr_seq_get(tmp, i));
         }
-        platform_free(keep);
+        CL_GC_UNPROTECT(1);  /* keep */
     }
 
     CL_GC_UNPROTECT(4);
@@ -1975,7 +2039,11 @@ static CL_Obj bi_reduce(CL_Obj *args, int n)
         CL_GC_PROTECT(func);
         CL_GC_PROTECT(key_fn);  /* stale otherwise once apply_key/call_test compacts */
 
-        if (!(CL_CONS_P(seq) || CL_NULL_P(seq))) {
+        /* Test args[1], not the local seq: when there is no :initial-value the
+         * apply_key above may already have compacted, staling the local (and a
+         * stale offset can misclassify, sending a list down the random-access
+         * path or vice versa). */
+        if (!(CL_CONS_P(args[1]) || CL_NULL_P(args[1]))) {
             /* Any array sequence (vector / string / bit-vector): random access.
              * Read through args[1] each iteration — the VM-stack slot is a
              * forwarded root, unlike the local `seq` copy which goes stale
@@ -1992,7 +2060,10 @@ static CL_Obj bi_reduce(CL_Obj *args, int n)
              * apply_key/call_test trigger — unlike a platform_alloc C array,
              * whose CL_Obj entries (arena offsets) would go stale. */
             CL_Obj vec = cl_make_vector((uint32_t)(sub_len < 0 ? 0 : sub_len));
-            CL_Obj cur = seq;
+            /* Seed the cursor from args[1] (a forwarded VM-stack slot), not the
+             * local seq: both the cl_make_vector above and the no-initial-value
+             * apply_key earlier can compact, leaving seq a stale offset. */
+            CL_Obj cur = args[1];
             int32_t idx = 0, j = 0;
             CL_GC_PROTECT(vec);
             /* Collection does not allocate (cl_car/cl_cdr only), so `cur` and the
@@ -2029,8 +2100,10 @@ static CL_Obj bi_reduce(CL_Obj *args, int n)
     CL_GC_PROTECT(func);
     CL_GC_PROTECT(key_fn);
 
-    if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
-        CL_Obj cur = seq;
+    /* args[1], not the stale local seq: the no-initial-value apply_key above
+     * may have compacted (same window as the :from-end path). */
+    if (CL_CONS_P(args[1]) || CL_NULL_P(args[1])) {
+        CL_Obj cur = args[1];
         int32_t idx = 0;
         /* GC-protect the list cursor: call_test (the reducing fn) and apply_key
          * may allocate and compact, relocating the list (see the map note). */
@@ -2166,25 +2239,35 @@ static CL_Obj bi_replace(CL_Obj *args, int n)
     if (end2 - start2 < count) count = end2 - start2;
     if (count <= 0) return seq1;
 
-    /* Snapshot the source region first.  No allocation happens between this and
-     * the write-back, so the C buffer stays valid; snapshotting also makes the
-     * copy correct when seq1 and seq2 are the same object with overlapping
-     * regions (CLHS REPLACE). */
+    /* Snapshot the source region first — it makes the copy correct when seq1
+     * and seq2 are the same object with overlapping regions (CLHS REPLACE).
+     * A GC vector, not platform_alloc: seq_elt/arr_seq_set can signal a
+     * type-error mid-copy (improper list, typed-array element mismatch), and
+     * the longjmp would leak a C allocation; a GC object is just collected.
+     * The snapshot allocation itself may compact, so it happens before any
+     * raw pointer derivation; the fill/write-back loops below perform no
+     * allocation, so the one data-pointer derivation stays valid. */
     {
-        CL_Obj *buf = (CL_Obj *)platform_alloc((uint32_t)(count * (int32_t)sizeof(CL_Obj)));
+        CL_Obj buf;
+        CL_Obj *bd;
+        CL_GC_PROTECT(seq1);
+        CL_GC_PROTECT(seq2);
+        buf = cl_make_vector((uint32_t)count);
+        CL_GC_PROTECT(buf);
+        bd = cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(buf));
         for (i = 0; i < count; i++)
-            buf[i] = seq_elt(seq2, start2 + i);
+            bd[i] = seq_elt(seq2, start2 + i);
 
         if (CL_CONS_P(seq1)) {
             CL_Obj cur1 = seq1;
             for (i = 0; i < start1 && !CL_NULL_P(cur1); i++) cur1 = cl_cdr(cur1);
             for (j = 0; j < count && !CL_NULL_P(cur1); j++, cur1 = cl_cdr(cur1))
-                ((CL_Cons *)CL_OBJ_TO_PTR(cur1))->car = buf[j];
+                ((CL_Cons *)CL_OBJ_TO_PTR(cur1))->car = bd[j];
         } else {
             for (i = 0; i < count; i++)
-                arr_seq_set(seq1, start1 + i, buf[i]);
+                arr_seq_set(seq1, start1 + i, bd[i]);
         }
-        platform_free(buf);
+        CL_GC_UNPROTECT(3);
     }
 
     return seq1;
@@ -2314,7 +2397,9 @@ static CL_Obj bi_map_into(CL_Obj *args, int n)
     int32_t idx = 0, result_cap;
     int j, result_is_list, result_is_array;
 
-    if (n_seqs > 16) n_seqs = 16;
+    if (n_seqs > 16)
+        cl_error(CL_ERR_ARGS,
+                 "MAP-INTO: too many sequence arguments (%d; max 16)", n_seqs);
     for (j = 0; j < n_seqs; j++)
         seqs[j] = args[j + 2];
 

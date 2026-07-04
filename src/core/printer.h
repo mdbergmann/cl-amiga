@@ -11,6 +11,37 @@
  * and delegate to write.
  */
 
+/* Snapshot of the printer's leak-prone per-thread flags, embedded in
+ * CL_ErrorFrame and CL_NLXFrame.  A longjmp/THROW out of a user
+ * pprint-dispatch function, print-object hook, or stream error abandons the
+ * printing C frames without their epilogues; nothing else ever repairs these:
+ *   - pr_pprint_dispatch_active stuck at 1 silently disables the user's
+ *     pprint dispatch table forever,
+ *   - a leaked pr_inprog_top makes later prints of the same objects emit
+ *     "#<...>" re-entrancy markers,
+ *   - a leaked pr_depth accumulates toward the hard recursion cap in nested
+ *     buffer prints,
+ *   - a leaked pr_circle_active reuses a stale circle table (wrong #n#/#n=).
+ * Save at frame push, restore on the longjmp landing (mirrors gc_root_mark). */
+typedef struct {
+    int32_t depth;
+    int32_t inprog_top;
+    int32_t dispatch_active;
+    int32_t circle_active;
+} CL_PrinterState;
+
+CL_PrinterState cl_printer_state_save(void);
+void cl_printer_state_restore(CL_PrinterState s);
+/* Reset to idle — for the outermost (REPL) unwind where every print in
+ * flight has been abandoned. */
+void cl_printer_state_reset(void);
+
+/* The *PRINT-* keyword-override builtins (WRITE / PPRINT / W-T-S / FORMAT's
+ * ~D renderer) install THREAD-LOCAL dynamic binds via cl_dynbind_c and pop
+ * them with cl_dynbind_restore_to — see tier-4 FS16.  The former
+ * cl_print_controls_save/restore global-snapshot helpers are gone: mutating
+ * the global cells raced peer threads' printers between set and restore. */
+
 /* Core: print object honoring current *print-* bindings */
 void cl_write_to_stream(CL_Obj obj, CL_Obj stream);
 

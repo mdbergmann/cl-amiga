@@ -78,6 +78,39 @@ static uint32_t hash_string_ci(const char *str, uint32_t len)
     return hash;
 }
 
+#ifdef CL_WIDE_STRINGS
+/* Content hash for a wide (or any) Lisp string, per code point.  Must agree
+ * with cl_hash_string/hash_string_ci for ASCII content: keys_equal compares a
+ * wide "abc" and a narrow "abc" as EQUAL, so both must land in the same
+ * bucket.  XORing the low byte of each code point achieves that (collisions
+ * between distinct wide chars are fine — only equal-must-hash-equal matters). */
+static uint32_t hash_wide_string(CL_Obj s, int ci)
+{
+    uint32_t hash = 0;
+    uint32_t i, len = cl_string_length(s);
+    for (i = 0; i < len; i++) {
+        int ch = cl_string_char_at(s, i);
+        if (ci && ch >= 'A' && ch <= 'Z') ch += 32;
+        hash = ((hash << 5) | (hash >> 27)) ^ (uint8_t)ch;
+    }
+    return hash;
+}
+#endif
+
+/* Content hash for a bit-vector over its active length — keys_equal compares
+ * bit-vectors elementwise under EQUAL/EQUALP (CLHS), so the hash must be
+ * content-based too or equal keys land in different buckets. */
+static uint32_t hash_bit_vector_content(CL_Obj obj)
+{
+    CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(obj);
+    uint32_t len = cl_bv_active_length(bv);
+    uint32_t hash = len * 2654435761u;
+    uint32_t i;
+    for (i = 0; i < len; i++)
+        hash = ((hash << 5) | (hash >> 27)) ^ (uint32_t)cl_bv_get_bit(bv, i);
+    return hash;
+}
+
 /* --- Bit mixer for identity/fixnum hashing --- */
 
 static inline uint32_t hash_mix(uint32_t h)
@@ -167,11 +200,30 @@ static uint32_t hash_obj(CL_Obj obj, uint32_t test)
                 return hash_string_ci(s->data, s->length);
             return cl_hash_string(s->data, s->length);
         }
+#ifdef CL_WIDE_STRINGS
+        if (type == TYPE_WIDE_STRING)
+            /* keys_equal content-compares wide strings under EQUAL/EQUALP —
+             * an identity hash made equal keys un-findable after the first
+             * rehash/collision (AH5). */
+            return hash_wide_string(obj, test == CL_HT_TEST_EQUALP);
+#endif
+        if (type == TYPE_BIT_VECTOR)
+            return hash_bit_vector_content(obj);
         if (type == TYPE_SYMBOL)
             return hash_mix(obj);
         if (type == TYPE_CONS) {
             /* Hash first element only (avoid deep recursion) */
             return hash_obj(cl_car(obj), test) * 31 + 1;
+        }
+        if (type == TYPE_VECTOR && test == CL_HT_TEST_EQUALP) {
+            /* EQUALP descends vectors (keys_equal) — fold in length and the
+             * first element only, mirroring the cons rule above.  Uses the
+             * same raw length/data fields keys_equal reads. */
+            CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
+            uint32_t h = v->length * 31u + 2u;
+            if (v->length > 0)
+                h = h * 31u + hash_obj(v->data[0], test);
+            return h;
         }
     }
 
@@ -222,8 +274,11 @@ static int keys_equal(CL_Obj a, CL_Obj b, uint32_t test)
     if (a == b) return 1;
     if (CL_CHAR_P(a) && CL_CHAR_P(b)) {
         if (test == CL_HT_TEST_EQUALP) {
-            char ca = (char)CL_CHAR_VAL(a);
-            char cb = (char)CL_CHAR_VAL(b);
+            /* int, not (char): a (char) cast truncated wide code points to
+             * their low byte, so distinct wide chars sharing a low byte
+             * compared "equalp" (e.g. U+4E41 vs #\A). */
+            int ca = CL_CHAR_VAL(a);
+            int cb = CL_CHAR_VAL(b);
             if (ca >= 'A' && ca <= 'Z') ca += 32;
             if (cb >= 'A' && cb <= 'Z') cb += 32;
             return ca == cb;
@@ -273,7 +328,26 @@ static int keys_equal(CL_Obj a, CL_Obj b, uint32_t test)
                keys_equal(cl_cdr(a), cl_cdr(b), test);
     }
 
-    if (CL_VECTOR_P(a) && CL_VECTOR_P(b)) {
+    /* Bit-vectors: EQUAL (and EQUALP) descend bit-vectors elementwise over
+     * the active length (CLHS 5.3 EQUAL).  Previously fell through to the
+     * final return 0, so equal-content bit-vector keys never matched. */
+    if (CL_BIT_VECTOR_P(a) && CL_BIT_VECTOR_P(b)) {
+        CL_BitVector *ba = (CL_BitVector *)CL_OBJ_TO_PTR(a);
+        CL_BitVector *bb = (CL_BitVector *)CL_OBJ_TO_PTR(b);
+        uint32_t la = cl_bv_active_length(ba);
+        uint32_t lb = cl_bv_active_length(bb);
+        uint32_t i;
+        if (la != lb) return 0;
+        for (i = 0; i < la; i++)
+            if (cl_bv_get_bit(ba, i) != cl_bv_get_bit(bb, i)) return 0;
+        return 1;
+    }
+
+    /* General vectors: only EQUALP descends them — CLHS EQUAL on arrays
+     * (other than strings and bit-vectors) is EQ, which the identity check
+     * at the top already handled.  The old unconditional descent violated
+     * the contract with hash_obj (content compare + identity hash → misses). */
+    if (test == CL_HT_TEST_EQUALP && CL_VECTOR_P(a) && CL_VECTOR_P(b)) {
         CL_Vector *va = (CL_Vector *)CL_OBJ_TO_PTR(a);
         CL_Vector *vb = (CL_Vector *)CL_OBJ_TO_PTR(b);
         uint32_t i;
@@ -928,6 +1002,7 @@ static CL_Obj bi_hash_table_pairs(CL_Obj *args, int n)
     CL_Obj ht_obj = args[0];
     CL_Hashtable *ht;
     CL_Obj result = CL_NIL;
+    CL_Obj chain = CL_NIL;
     uint32_t i;
     CL_UNUSED(n);
 
@@ -936,10 +1011,15 @@ static CL_Obj bi_hash_table_pairs(CL_Obj *args, int n)
 
     CL_GC_PROTECT(ht_obj);
     CL_GC_PROTECT(result);
+    /* The chain cursor is walked across the allocating cl_cons below —
+     * without a root the compaction leaves it a stale offset and the next
+     * cl_cdr walks garbage (mirrors the bi_maphash fix).  This backs
+     * with-hash-table-iterator and LOOP hash iteration. */
+    CL_GC_PROTECT(chain);
 
     ht = (CL_Hashtable *)CL_OBJ_TO_PTR(ht_obj);
     for (i = 0; i < ht->bucket_count; i++) {
-        CL_Obj chain = ht_get_buckets(ht)[i];
+        chain = ht_get_buckets(ht)[i];
         while (!CL_NULL_P(chain)) {
             CL_Obj pair = cl_car(chain);
             result = cl_cons(pair, result);
@@ -949,7 +1029,7 @@ static CL_Obj bi_hash_table_pairs(CL_Obj *args, int n)
         }
     }
 
-    CL_GC_UNPROTECT(2);
+    CL_GC_UNPROTECT(3);
     return result;
 }
 

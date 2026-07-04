@@ -57,10 +57,16 @@ static void defun(const char *name, CL_CFunc func, int min, int max)
 static void extfun(const char *name, CL_CFunc func, int min, int max)
 {
     CL_Obj sym = cl_intern_in(name, (uint32_t)strlen(name), cl_package_ext);
-    CL_Obj fn = cl_make_function(func, sym, min, max);
-    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    CL_Obj fn;
+    CL_Symbol *s;
+    /* GC SAFETY (audit tier 4, IO11): cl_make_function allocates — sym must
+     * stay forwarded and s re-derived after it (mirror defun above). */
+    CL_GC_PROTECT(sym);
+    fn = cl_make_function(func, sym, min, max);
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     s->function = fn;
     cl_export_symbol(sym, cl_package_ext);
+    CL_GC_UNPROTECT(1);
 }
 
 /* --- Stream resolution helper (matches builtins_stream.c pattern) --- */
@@ -116,37 +122,18 @@ static CL_Obj SYM_EW_EVAL_SYM;  /* CL:EVAL (distinct from SYM_EVAL_WHEN) */
  */
 static CL_Obj bi_write(CL_Obj *args, int n)
 {
-    CL_Obj obj = args[0];
     CL_Obj stream;
-    CL_Symbol *sym;
     int i;
-
-    /* Symbol pointers for save/restore */
-    CL_Symbol *se = NULL, *sr = NULL, *sb = NULL, *sx = NULL;
-    CL_Symbol *sl = NULL, *sn = NULL, *sc = NULL, *sg = NULL;
-    CL_Symbol *sa = NULL, *si = NULL, *sp = NULL, *sm = NULL;
-    CL_Symbol *sd = NULL;
-    CL_Obj prev_e, prev_r, prev_b, prev_x, prev_l, prev_n;
-    CL_Obj prev_c, prev_g, prev_a, prev_i, prev_p, prev_m;
-    CL_Obj prev_d;
+    /* The keyword overrides are THREAD-LOCAL dynamic binds (tier-4 FS16):
+     * the old save/set-global/restore pattern raced every peer thread's
+     * printer between the set and the restore.  cl_dynbind_c mirrors
+     * OP_DYNBIND (the dyn stack is GC-marked and forwarded, so no manual
+     * rooting of saved values is needed), and cl_dynbind_restore_to pops
+     * the binds — removing the transient TLV entries entirely. */
+    int dyn_mark = cl_dyn_top;
 
     /* Default: *standard-output* */
     stream = cl_symbol_value(SYM_STANDARD_OUTPUT);
-
-    /* Save current values */
-    se = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_ESCAPE);    prev_e = cl_symbol_value(SYM_PRINT_ESCAPE);
-    sr = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_READABLY);  prev_r = cl_symbol_value(SYM_PRINT_READABLY);
-    sb = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_BASE);      prev_b = cl_symbol_value(SYM_PRINT_BASE);
-    sx = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_RADIX);     prev_x = cl_symbol_value(SYM_PRINT_RADIX);
-    sl = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_LEVEL);     prev_l = cl_symbol_value(SYM_PRINT_LEVEL);
-    sn = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_LENGTH);    prev_n = cl_symbol_value(SYM_PRINT_LENGTH);
-    sc = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_CASE);      prev_c = cl_symbol_value(SYM_PRINT_CASE);
-    sg = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_GENSYM);    prev_g = cl_symbol_value(SYM_PRINT_GENSYM);
-    sa = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_ARRAY);     prev_a = cl_symbol_value(SYM_PRINT_ARRAY);
-    si = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_CIRCLE);    prev_i = cl_symbol_value(SYM_PRINT_CIRCLE);
-    sp = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_PRETTY);    prev_p = cl_symbol_value(SYM_PRINT_PRETTY);
-    sm = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_RIGHT_MARGIN); prev_m = cl_symbol_value(SYM_PRINT_RIGHT_MARGIN);
-    sd = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_PPRINT_DISPATCH); prev_d = cl_symbol_value(SYM_PRINT_PPRINT_DISPATCH);
 
     /* Parse keyword arguments (start at index 1, pairs) */
     for (i = 1; i + 1 < n; i += 2) {
@@ -159,52 +146,43 @@ static CL_Obj bi_write(CL_Obj *args, int n)
                 stream = val;
             }
         } else if (kw == KW_WR_ESCAPE) {
-            cl_set_symbol_value(SYM_PRINT_ESCAPE, val);
+            cl_dynbind_c(SYM_PRINT_ESCAPE, val);
         } else if (kw == KW_WR_READABLY) {
-            cl_set_symbol_value(SYM_PRINT_READABLY, val);
+            cl_dynbind_c(SYM_PRINT_READABLY, val);
         } else if (kw == KW_WR_BASE) {
-            cl_set_symbol_value(SYM_PRINT_BASE, val);
+            cl_dynbind_c(SYM_PRINT_BASE, val);
         } else if (kw == KW_WR_RADIX) {
-            cl_set_symbol_value(SYM_PRINT_RADIX, val);
+            cl_dynbind_c(SYM_PRINT_RADIX, val);
         } else if (kw == KW_WR_LEVEL) {
-            cl_set_symbol_value(SYM_PRINT_LEVEL, val);
+            cl_dynbind_c(SYM_PRINT_LEVEL, val);
         } else if (kw == KW_WR_LENGTH) {
-            cl_set_symbol_value(SYM_PRINT_LENGTH, val);
+            cl_dynbind_c(SYM_PRINT_LENGTH, val);
         } else if (kw == KW_WR_CASE) {
-            cl_set_symbol_value(SYM_PRINT_CASE, val);
+            cl_dynbind_c(SYM_PRINT_CASE, val);
         } else if (kw == KW_WR_GENSYM) {
-            cl_set_symbol_value(SYM_PRINT_GENSYM, val);
+            cl_dynbind_c(SYM_PRINT_GENSYM, val);
         } else if (kw == KW_WR_ARRAY) {
-            cl_set_symbol_value(SYM_PRINT_ARRAY, val);
+            cl_dynbind_c(SYM_PRINT_ARRAY, val);
         } else if (kw == KW_WR_CIRCLE) {
-            cl_set_symbol_value(SYM_PRINT_CIRCLE, val);
+            cl_dynbind_c(SYM_PRINT_CIRCLE, val);
         } else if (kw == KW_WR_PRETTY) {
-            cl_set_symbol_value(SYM_PRINT_PRETTY, val);
+            cl_dynbind_c(SYM_PRINT_PRETTY, val);
         } else if (kw == KW_WR_RIGHT_MARGIN) {
-            cl_set_symbol_value(SYM_PRINT_RIGHT_MARGIN, val);
+            cl_dynbind_c(SYM_PRINT_RIGHT_MARGIN, val);
         } else if (kw == KW_WR_PPRINT_DISPATCH) {
-            cl_set_symbol_value(SYM_PRINT_PPRINT_DISPATCH, val);
+            cl_dynbind_c(SYM_PRINT_PPRINT_DISPATCH, val);
         }
     }
 
-    cl_write_to_stream(obj, stream);
+    /* Print args[0] (rooted VM slot), not a stale entry copy — and return
+     * it, for the same reason.  `stream` is current here: nothing between
+     * its assignment and this call allocates (cl_dynbind_c is
+     * non-allocating). */
+    cl_write_to_stream(args[0], stream);
 
-    /* Restore all values */
-    cl_set_symbol_value(SYM_PRINT_ESCAPE, prev_e);
-    cl_set_symbol_value(SYM_PRINT_READABLY, prev_r);
-    cl_set_symbol_value(SYM_PRINT_BASE, prev_b);
-    cl_set_symbol_value(SYM_PRINT_RADIX, prev_x);
-    cl_set_symbol_value(SYM_PRINT_LEVEL, prev_l);
-    cl_set_symbol_value(SYM_PRINT_LENGTH, prev_n);
-    cl_set_symbol_value(SYM_PRINT_CASE, prev_c);
-    cl_set_symbol_value(SYM_PRINT_GENSYM, prev_g);
-    cl_set_symbol_value(SYM_PRINT_ARRAY, prev_a);
-    cl_set_symbol_value(SYM_PRINT_CIRCLE, prev_i);
-    cl_set_symbol_value(SYM_PRINT_PRETTY, prev_p);
-    cl_set_symbol_value(SYM_PRINT_RIGHT_MARGIN, prev_m);
-    cl_set_symbol_value(SYM_PRINT_PPRINT_DISPATCH, prev_d);
+    cl_dynbind_restore_to(dyn_mark);
 
-    return obj;
+    return args[0];
 }
 
 static CL_Obj bi_print(CL_Obj *args, int n)
@@ -231,14 +209,17 @@ static CL_Obj bi_princ(CL_Obj *args, int n)
 static CL_Obj bi_pprint(CL_Obj *args, int n)
 {
     CL_Obj stream = resolve_output_stream_io(args, n, 1);
-    CL_Obj prev_e = cl_symbol_value(SYM_PRINT_ESCAPE);
-    CL_Obj prev_p = cl_symbol_value(SYM_PRINT_PRETTY);
-    cl_set_symbol_value(SYM_PRINT_ESCAPE, SYM_T);
-    cl_set_symbol_value(SYM_PRINT_PRETTY, SYM_T);
+    /* Thread-local dynamic binds (FS16) — see bi_write.  The dyn stack is
+     * GC-marked, so the saved values need no manual roots; `stream` still
+     * does (the newline write can grow a string stream and compact). */
+    int dyn_mark = cl_dyn_top;
+    CL_GC_PROTECT(stream);
+    cl_dynbind_c(SYM_PRINT_ESCAPE, SYM_T);
+    cl_dynbind_c(SYM_PRINT_PRETTY, SYM_T);
     cl_stream_write_char(stream, '\n');
     cl_write_to_stream(args[0], stream);
-    cl_set_symbol_value(SYM_PRINT_ESCAPE, prev_e);
-    cl_set_symbol_value(SYM_PRINT_PRETTY, prev_p);
+    cl_dynbind_restore_to(dyn_mark);
+    CL_GC_UNPROTECT(1);
     return CL_NIL;
 }
 
@@ -466,9 +447,16 @@ static CL_Obj bi_load(CL_Obj *args, int n)
             cl_error(CL_ERR_TYPE, "LOAD: argument must be a string or pathname");
             path_pn = CL_NIL;  /* unreachable */
         }
+        /* GC SAFETY (audit tier 4, IO12): merge_args[0] is a C-local array
+         * slot, not a rooted VM slice — bi_merge_pathnames allocates, so the
+         * slot must be a registered root (mirror bi_compile_file). */
         merge_args[0] = path_pn;
+        CL_GC_PROTECT(merge_args[0]);
         path_pn = bi_merge_pathnames(merge_args, 1);
+        CL_GC_UNPROTECT(1);
+        CL_GC_PROTECT(path_pn);
         cl_coerce_to_namestring(path_pn, ns_buf, sizeof(ns_buf));
+        CL_GC_UNPROTECT(1);
         args[0] = cl_make_string(ns_buf, (uint32_t)strlen(ns_buf));
     }
     /* Expand leading ~ to home directory */
@@ -542,12 +530,19 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                         } else if (magic == CL_FASL_MAGIC) {
                             /* Try loading from FASL; fall back to source on error */
                             int fasl_err;
-                            /* Bind load-pathname and load-truename */
+                            /* Bind load-pathname and load-truename.
+                             * GC SAFETY (audit tier 4, IO1): protect
+                             * load_pathname_obj BEFORE the second
+                             * cl_parse_namestring — it allocates, and the
+                             * old protect-after left a stale offset bound
+                             * into *LOAD-PATHNAME* (ASDF reads it
+                             * constantly).  Mirrors bi_compile_file. */
                             {
                                 extern CL_Obj cl_parse_namestring(const char *str, uint32_t len);
                                 load_pathname_obj = cl_parse_namestring(path_buf,
                                     (uint32_t)strlen(path_buf));
                             }
+                            CL_GC_PROTECT(load_pathname_obj);
                             {
                                 char resolved[512];
                                 if (platform_realpath(path_buf, resolved, (int)sizeof(resolved))) {
@@ -558,7 +553,6 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                                     load_truename_obj = load_pathname_obj;
                                 }
                             }
-                            CL_GC_PROTECT(load_pathname_obj);
                             CL_GC_PROTECT(load_truename_obj);
                             lp_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_PATHNAME);
                             lt_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_TRUENAME);
@@ -654,12 +648,16 @@ static CL_Obj bi_load(CL_Obj *args, int n)
         }
     }
 
-    /* Bind *load-pathname* and *load-truename* per CL spec */
+    /* Bind *load-pathname* and *load-truename* per CL spec.
+     * GC SAFETY (audit tier 4, IO1): protect load_pathname_obj BEFORE the
+     * second cl_parse_namestring (it allocates) — see the FASL-cache twin
+     * above. */
     {
         extern CL_Obj cl_parse_namestring(const char *str, uint32_t len);
         load_pathname_obj = cl_parse_namestring(path_buf,
                                                 (uint32_t)strlen(path_buf));
     }
+    CL_GC_PROTECT(load_pathname_obj);
     /* Resolve truename to absolute path */
     {
         char resolved[512];
@@ -671,7 +669,6 @@ static CL_Obj bi_load(CL_Obj *args, int n)
             load_truename_obj = load_pathname_obj;
         }
     }
-    CL_GC_PROTECT(load_pathname_obj);
     CL_GC_PROTECT(load_truename_obj);
     lp_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_PATHNAME);
     lt_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_TRUENAME);
@@ -1961,9 +1958,15 @@ static CL_Obj bi_compile_file_pathname(CL_Obj *args, int n)
             cl_error(CL_ERR_TYPE, "COMPILE-FILE-PATHNAME: argument must be a string or pathname");
             return CL_NIL;
         }
+        /* GC SAFETY (audit tier 4, IO12): root the C-local args slot across
+         * the allocating merge (mirror bi_compile_file). */
         merge_args[0] = path_pn;
+        CL_GC_PROTECT(merge_args[0]);
         path_pn = bi_merge_pathnames(merge_args, 1);
+        CL_GC_UNPROTECT(1);
+        CL_GC_PROTECT(path_pn);
         cl_coerce_to_namestring(path_pn, ns_buf, sizeof(ns_buf));
+        CL_GC_UNPROTECT(1);
 
         expanded = platform_expand_home(ns_buf, in_path, (int)sizeof(in_path));
         if (expanded != in_path) {
@@ -2051,8 +2054,13 @@ static CL_Obj bi_read_delimited_list(CL_Obj *args, int n)
         stream = args[1];
     }
 
+    /* GC SAFETY (audit tier 4, IO4): the nested reads and the cons loop
+     * compact — `stream` is a C local (possibly from a *standard-input*
+     * lookup, not a rooted args[] slot) and must stay forwarded across
+     * iterations. */
     CL_GC_PROTECT(result);
     CL_GC_PROTECT(tail);
+    CL_GC_PROTECT(stream);
 
     for (;;) {
         /* Skip whitespace */
@@ -2061,7 +2069,7 @@ static CL_Obj bi_read_delimited_list(CL_Obj *args, int n)
             if (ch == -1)
                 cl_error(CL_ERR_EOF, "READ-DELIMITED-LIST: unexpected end of file");
             if (ch == delim_char) {
-                CL_GC_UNPROTECT(2);
+                CL_GC_UNPROTECT(3);
                 return result;
             }
             if (ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r')
@@ -2071,7 +2079,7 @@ static CL_Obj bi_read_delimited_list(CL_Obj *args, int n)
         cl_stream_unread_char(stream, ch);
         obj = cl_read_from_stream(stream);
         if (cl_reader_eof()) {
-            CL_GC_UNPROTECT(2);
+            CL_GC_UNPROTECT(3);
             cl_error(CL_ERR_EOF, "READ-DELIMITED-LIST: unexpected end of file");
             return CL_NIL;
         }
@@ -2154,8 +2162,11 @@ static CL_Obj bi_macroexpand_1(CL_Obj *args, int n)
         return form;
     }
     expansion = cl_macroexpand_1_env(form, env);
+    /* GC SAFETY (audit tier 4, IO9): the expander call compacts — compare
+     * against the rooted (forwarded) args[0] slot, not the stale `form`
+     * copy, or an unchanged form reports expanded-p = T. */
     cl_mv_values[0] = expansion;
-    cl_mv_values[1] = (expansion == form) ? CL_NIL : SYM_T;
+    cl_mv_values[1] = (expansion == args[0]) ? CL_NIL : SYM_T;
     cl_mv_count = 2;
     return expansion;
 }
@@ -2165,33 +2176,41 @@ static CL_Obj bi_macroexpand(CL_Obj *args, int n)
 {
     CL_Obj form = args[0];
     CL_Obj env = (n >= 2) ? args[1] : CL_NIL;
-    CL_Obj any_expansion = CL_NIL;
+    int any_expansion = 0;
     /* Symbol input: apply symbol-macro once (chased below). */
     if (CL_SYMBOL_P(form) && !CL_NULL_P(form)) {
         CL_Obj sm;
         if (!CL_NULL_P(env) && lex_env_lookup_symbol_macro(env, form, &sm)) {
-            any_expansion = SYM_T;
+            any_expansion = 1;
             form = sm;
         } else if (cl_lookup_global_symbol_macro_p(form, &sm)) {
-            any_expansion = SYM_T;
+            any_expansion = 1;
             form = sm;
         }
     }
     if (!CL_CONS_P(form)) {
         cl_mv_values[0] = form;
-        cl_mv_values[1] = any_expansion;
+        cl_mv_values[1] = any_expansion ? SYM_T : CL_NIL;
         cl_mv_count = 2;
         return form;
     }
+    /* GC SAFETY (audit tier 4, IO9): every cl_macroexpand_1_env call can run
+     * an expander (cl_vm_apply) and compact.  `form` must stay forwarded for
+     * the unchanged-form EQ test, and `env` — a heap alist walked again on
+     * the next iteration — must stay forwarded too.  expanded-p is tracked
+     * as a C int so no stale SYM_T copy is ever written to mv_values. */
+    CL_GC_PROTECT(form);
+    CL_GC_PROTECT(env);
     for (;;) {
         CL_Obj expanded = cl_macroexpand_1_env(form, env);
         if (expanded == form) break;
-        any_expansion = SYM_T;
+        any_expansion = 1;
         form = expanded;
         if (!CL_CONS_P(form)) break;
     }
+    CL_GC_UNPROTECT(2);
     cl_mv_values[0] = form;
-    cl_mv_values[1] = any_expansion;
+    cl_mv_values[1] = any_expansion ? SYM_T : CL_NIL;
     cl_mv_count = 2;
     return form;
 }
@@ -2632,16 +2651,35 @@ static DisasmInfo disasm_opcode_info(uint8_t op)
     return info;
 }
 
-static void disasm_bytecode(CL_Bytecode *bc)
+static void disasm_bytecode(CL_Obj bcobj)
 {
+    /* GC SAFETY (audit tier 4, IO10): the output stream may be a string or
+     * Gray stream (Sly) — every cl_write_cstring_to_stdout / prin1 below can
+     * allocate and compact, moving the CL_Bytecode object.  code/constants
+     * are platform_alloc'd (stable addresses; the constants SLOTS are
+     * forwarded in place by the compactor), so hoist them plus all scalar
+     * fields ONCE before the first write, keep bcobj rooted, and never read
+     * through a pre-write `bc` pointer again. */
+    CL_Bytecode *bc = (CL_Bytecode *)CL_OBJ_TO_PTR(bcobj);
     uint8_t *code = bc->code;
+    CL_Obj *constants = bc->constants;
     uint32_t len = bc->code_len;
+    uint16_t n_constants = bc->n_constants;
+    uint16_t arity = bc->arity;
+    uint8_t n_optional = bc->n_optional;
+    uint8_t n_keys = bc->n_keys;
+    uint8_t flags = bc->flags;
+    uint16_t n_locals = bc->n_locals;
+    uint16_t n_upvalues = bc->n_upvalues;
     uint32_t ip = 0;
     char line[256];
     char annot[128];
 
+    CL_GC_PROTECT(bcobj);
+
     /* Header */
     cl_write_cstring_to_stdout("Disassembly of ");
+    bc = (CL_Bytecode *)CL_OBJ_TO_PTR(bcobj);
     if (!CL_NULL_P(bc->name)) {
         cl_prin1_to_string(bc->name, annot, sizeof(annot));
         cl_write_cstring_to_stdout(annot);
@@ -2652,18 +2690,18 @@ static void disasm_bytecode(CL_Bytecode *bc)
 
     /* Metadata */
     {
-        int req = bc->arity & 0x7FFF;
-        int has_rest = (bc->arity >> 15) & 1;
+        int req = arity & 0x7FFF;
+        int has_rest = (arity >> 15) & 1;
         snprintf(line, sizeof(line), "  %d required, %d optional, %d key%s%s\n",
-                req, (int)bc->n_optional, (int)bc->n_keys,
+                req, (int)n_optional, (int)n_keys,
                 has_rest ? ", &rest" : "",
-                (bc->flags & 2) ? ", &allow-other-keys" : "");
+                (flags & 2) ? ", &allow-other-keys" : "");
         cl_write_cstring_to_stdout(line);
         snprintf(line, sizeof(line), "  %lu locals, %lu upvalues\n",
-                (unsigned long)bc->n_locals, (unsigned long)bc->n_upvalues);
+                (unsigned long)n_locals, (unsigned long)n_upvalues);
         cl_write_cstring_to_stdout(line);
         snprintf(line, sizeof(line), "  %lu bytes, %lu constants\n\n",
-                (unsigned long)len, (unsigned long)bc->n_constants);
+                (unsigned long)len, (unsigned long)n_constants);
         cl_write_cstring_to_stdout(line);
     }
 
@@ -2699,12 +2737,12 @@ static void disasm_bytecode(CL_Bytecode *bc)
             uint16_t val = (uint16_t)((code[ip] << 8) | code[ip + 1]);
             ip += 2;
             annot[0] = '\0';
-            if (val < bc->n_constants &&
+            if (val < n_constants &&
                 (op == OP_CONST || op == OP_GLOAD || op == OP_GSTORE ||
                  op == OP_FLOAD || op == OP_DEFMACRO || op == OP_DEFTYPE || op == OP_DYNBIND ||
                  op == OP_CLOSURE || op == OP_HANDLER_PUSH || op == OP_ASSERT_TYPE ||
                  op == OP_BLOCK_PUSH || op == OP_BLOCK_RETURN)) {
-                cl_prin1_to_string(bc->constants[val], annot, sizeof(annot));
+                cl_prin1_to_string(constants[val], annot, sizeof(annot));
             }
             if (annot[0]) {
                 snprintf(line, sizeof(line), "  %04lu: %-12s %-4u ; %s\n",
@@ -2730,12 +2768,15 @@ static void disasm_bytecode(CL_Bytecode *bc)
             }
 
             /* OP_CLOSURE: read and print capture descriptors */
-            if (op == OP_CLOSURE && val < bc->n_constants) {
-                CL_Obj tmpl = bc->constants[val];
+            if (op == OP_CLOSURE && val < n_constants) {
+                CL_Obj tmpl = constants[val];
                 if (CL_BYTECODE_P(tmpl)) {
-                    CL_Bytecode *tmpl_bc = (CL_Bytecode *)CL_OBJ_TO_PTR(tmpl);
+                    /* hoist n_upvalues: tmpl_bc goes stale after the first
+                     * allocating write below */
+                    int tmpl_nup =
+                        ((CL_Bytecode *)CL_OBJ_TO_PTR(tmpl))->n_upvalues;
                     int ci;
-                    for (ci = 0; ci < tmpl_bc->n_upvalues; ci++) {
+                    for (ci = 0; ci < tmpl_nup; ci++) {
                         uint8_t is_local = code[ip++];
                         uint8_t cap_idx = code[ip++];
                         snprintf(line, sizeof(line),
@@ -2774,24 +2815,26 @@ static void disasm_bytecode(CL_Bytecode *bc)
         }
     }
 
-    /* Constants pool */
-    if (bc->n_constants > 0) {
+    /* Constants pool — constants[ci] is re-read per iteration from the
+     * stable platform array; the compactor forwards those slots in place. */
+    if (n_constants > 0) {
         uint16_t ci;
         cl_write_cstring_to_stdout("\nConstants:\n");
-        for (ci = 0; ci < bc->n_constants; ci++) {
-            cl_prin1_to_string(bc->constants[ci], annot, sizeof(annot));
+        for (ci = 0; ci < n_constants; ci++) {
+            cl_prin1_to_string(constants[ci], annot, sizeof(annot));
             snprintf(line, sizeof(line), "  %u: %s\n",
                     (unsigned int)ci, annot);
             cl_write_cstring_to_stdout(line);
         }
     }
     cl_write_cstring_to_stdout("\n");
+    CL_GC_UNPROTECT(1); /* bcobj */
 }
 
 static CL_Obj bi_disassemble(CL_Obj *args, int n)
 {
     CL_Obj arg = args[0];
-    CL_Bytecode *bc = NULL;
+    CL_Obj bcobj = CL_NIL;
     CL_UNUSED(n);
 
     /* Accept symbol — resolve to function binding (same fallback as OP_FLOAD) */
@@ -2809,25 +2852,30 @@ static CL_Obj bi_disassemble(CL_Obj *args, int n)
     }
 
     if (CL_BYTECODE_P(arg)) {
-        bc = (CL_Bytecode *)CL_OBJ_TO_PTR(arg);
+        bcobj = arg;
     } else if (CL_CLOSURE_P(arg)) {
         CL_Closure *cl = (CL_Closure *)CL_OBJ_TO_PTR(arg);
         if (CL_BYTECODE_P(cl->bytecode))
-            bc = (CL_Bytecode *)CL_OBJ_TO_PTR(cl->bytecode);
+            bcobj = cl->bytecode;
     } else if (CL_FUNCTION_P(arg)) {
-        CL_Function *fn = (CL_Function *)CL_OBJ_TO_PTR(arg);
+        /* GC SAFETY (audit tier 4, IO10): the "Built-in function: " write can
+         * allocate (string/Gray stream) and move the function object — root
+         * the name before the write instead of reading fn->name after it. */
+        CL_Obj fname = ((CL_Function *)CL_OBJ_TO_PTR(arg))->name;
         char nbuf[128];
+        CL_GC_PROTECT(fname);
         cl_write_cstring_to_stdout("Built-in function: ");
-        cl_prin1_to_string(fn->name, nbuf, sizeof(nbuf));
+        cl_prin1_to_string(fname, nbuf, sizeof(nbuf));
         cl_write_cstring_to_stdout(nbuf);
         cl_write_cstring_to_stdout("\n  (no bytecode to disassemble)\n");
+        CL_GC_UNPROTECT(1);
         return CL_NIL;
     }
 
-    if (!bc)
+    if (CL_NULL_P(bcobj))
         cl_error(CL_ERR_TYPE, "DISASSEMBLE: argument must be a function or symbol");
 
-    disasm_bytecode(bc);
+    disasm_bytecode(bcobj);
     return CL_NIL;
 }
 
@@ -3177,7 +3225,7 @@ static CL_Obj bi_set_pprint_dispatch(CL_Obj *args, int n)
     CL_Obj function = args[1];
     int32_t priority = 0;
     CL_Symbol *sym;
-    CL_Obj table, prev, cur, entry, new_entry;
+    CL_Obj table, cur, entry, new_entry;
 
     if (n >= 3 && CL_FIXNUM_P(args[2]))
         priority = CL_FIXNUM_VAL(args[2]);
@@ -3189,34 +3237,28 @@ static CL_Obj bi_set_pprint_dispatch(CL_Obj *args, int n)
     else
         table = cl_symbol_value(SYM_PRINT_PPRINT_DISPATCH);
 
-    /* If function is nil, remove matching entry */
+    /* GC SAFETY (audit tier 4, IO5): both rebuild loops below cons per
+     * iteration — the cursor, the accumulating result and the table must be
+     * rooted or every entry after the first compaction is consed from stale
+     * offsets (corrupt table → CAR-type-error/dead-closure crashes on the
+     * next pretty print).  type_spec/function are re-read from the rooted
+     * args[] slots after allocs instead of trusting the C locals. */
+
+    /* If function is nil, remove matching entry (rebuild without it) */
     if (CL_NULL_P(function)) {
-        prev = CL_NIL;
+        CL_Obj result = CL_NIL;
+        CL_GC_PROTECT(result);
         cur = table;
+        CL_GC_PROTECT(cur);
         while (!CL_NULL_P(cur)) {
+            type_spec = args[0];
             entry = cl_car(cur);
-            if (cl_car(entry) == type_spec) {
-                if (CL_NULL_P(prev))
-                    table = cl_cdr(cur);
-                else {
-                    /* Can't rplacd easily from C, rebuild without this entry */
-                    CL_Obj result = CL_NIL;
-                    CL_Obj scan = table;
-                    CL_GC_PROTECT(result);
-                    while (!CL_NULL_P(scan)) {
-                        if (scan != cur)
-                            result = cl_cons(cl_car(scan), result);
-                        scan = cl_cdr(scan);
-                    }
-                    CL_GC_UNPROTECT(1);
-                    table = result;
-                }
-                break;
-            }
-            prev = cur;
+            if (cl_car(entry) != type_spec)
+                result = cl_cons(entry, result);
             cur = cl_cdr(cur);
         }
-        cl_set_symbol_value(SYM_PRINT_PPRINT_DISPATCH, table);
+        CL_GC_UNPROTECT(2);
+        cl_set_symbol_value(SYM_PRINT_PPRINT_DISPATCH, result);
         return CL_NIL;
     }
 
@@ -3225,26 +3267,27 @@ static CL_Obj bi_set_pprint_dispatch(CL_Obj *args, int n)
         CL_Obj result = CL_NIL;
         CL_GC_PROTECT(result);
         cur = table;
+        CL_GC_PROTECT(cur);
         while (!CL_NULL_P(cur)) {
+            type_spec = args[0];
             entry = cl_car(cur);
             if (cl_car(entry) != type_spec)
-                result = cl_cons(cl_car(cur), result);
+                result = cl_cons(entry, result);
             cur = cl_cdr(cur);
         }
-        CL_GC_UNPROTECT(1);
+        CL_GC_UNPROTECT(2);
         table = result;
     }
 
-    /* Build new entry: (type-spec priority . function) */
-    new_entry = cl_cons(CL_MAKE_FIXNUM(priority), function);
+    /* Build new entry (type-spec priority . function) and push it onto the
+     * table.  Each cons can compact: keep table rooted and read
+     * type-spec/function from the rooted args[] slots. */
+    CL_GC_PROTECT(table);
+    new_entry = cl_cons(CL_MAKE_FIXNUM(priority), args[1]);
     CL_GC_PROTECT(new_entry);
-    new_entry = cl_cons(type_spec, new_entry);
-    CL_GC_UNPROTECT(1);
-
-    /* Cons onto front of table */
-    CL_GC_PROTECT(new_entry);
+    new_entry = cl_cons(args[0], new_entry);
     table = cl_cons(new_entry, table);
-    CL_GC_UNPROTECT(1);
+    CL_GC_UNPROTECT(2);
 
     cl_set_symbol_value(SYM_PRINT_PPRINT_DISPATCH, table);
     return CL_NIL;
@@ -3256,38 +3299,39 @@ static CL_Obj bi_set_pprint_dispatch(CL_Obj *args, int n)
  */
 static CL_Obj bi_pprint_dispatch(CL_Obj *args, int n)
 {
-    CL_Obj object = args[0];
     CL_Obj table = (n >= 2 && !CL_NULL_P(args[1])) ? args[1] : cl_symbol_value(SYM_PRINT_PPRINT_DISPATCH);
     CL_Obj best_fn = CL_NIL;
     int32_t best_priority = -999999;
-    CL_Obj cur, entry;
+    CL_Obj cur;
 
+    /* GC SAFETY (audit tier 4, IO7): cl_typep can run a deftype expander
+     * (cl_vm_apply — allocates/compacts).  Keep the cursor and the winning
+     * function rooted; read the object from the rooted args[0] slot and
+     * re-derive the entry from the forwarded cursor AFTER each typep call. */
     cur = table;
+    CL_GC_PROTECT(cur);
+    CL_GC_PROTECT(best_fn);
     while (!CL_NULL_P(cur)) {
-        CL_Obj type_spec, prio_fn;
+        CL_Obj entry, prio_fn;
         int32_t prio;
-        CL_Obj fn;
-        CL_Obj typep_args[2];
-        CL_Obj typep_result;
+        int matches;
 
         entry = cl_car(cur);
-        type_spec = cl_car(entry);
         prio_fn = cl_cdr(entry);
         prio = CL_FIXNUM_P(cl_car(prio_fn)) ? CL_FIXNUM_VAL(cl_car(prio_fn)) : 0;
-        fn = cl_cdr(prio_fn);
 
-        /* Check if object matches type-spec using typep */
-        typep_args[0] = object;
-        typep_args[1] = type_spec;
-        typep_result = cl_typep(object, type_spec) ? SYM_T : CL_NIL;
+        matches = cl_typep(args[0], cl_car(entry));
 
-        if (!CL_NULL_P(typep_result) && prio > best_priority) {
+        if (matches && prio > best_priority) {
             best_priority = prio;
-            best_fn = fn;
+            /* re-derive through the forwarded cursor — the pre-typep
+             * entry/fn locals may be stale after a compaction */
+            best_fn = cl_cdr(cl_cdr(cl_car(cur)));
         }
 
         cur = cl_cdr(cur);
     }
+    CL_GC_UNPROTECT(2);
 
     cl_mv_count = 2;
     cl_mv_values[0] = best_fn;
@@ -3305,14 +3349,17 @@ static CL_Obj bi_copy_pprint_dispatch(CL_Obj *args, int n)
     CL_Obj result = CL_NIL;
     CL_Obj cur;
 
-    /* Rebuild list (reverses order, but that's fine for alists) */
+    /* Rebuild list (reverses order, but that's fine for alists).
+     * GC SAFETY (audit tier 4, IO6): each cl_cons can compact — the cursor
+     * must stay forwarded alongside the accumulating result. */
     cur = table;
     CL_GC_PROTECT(result);
+    CL_GC_PROTECT(cur);
     while (!CL_NULL_P(cur)) {
         result = cl_cons(cl_car(cur), result);
         cur = cl_cdr(cur);
     }
-    CL_GC_UNPROTECT(1);
+    CL_GC_UNPROTECT(2);
     return result;
 }
 
@@ -3410,21 +3457,32 @@ static CL_Obj bi_require(CL_Obj *args, int n)
         return CL_NIL;
 
     if (n >= 2 && !CL_NULL_P(args[1])) {
-        /* Pathnames provided */
+        /* Pathnames provided.
+         * GC SAFETY (audit tier 4, IO8): bi_load compacts freely — the
+         * load_args[0] C slot must be a registered root (bi_load treats
+         * args[0] as a rooted, forwarded slot and re-reads it after its own
+         * allocs), and the pathnames cursor must stay forwarded across each
+         * load. */
         CL_Obj pathnames = args[1];
         if (CL_STRING_P(pathnames) || CL_PATHNAME_P(pathnames)) {
             /* Single pathname */
             CL_Obj load_args[1];
             load_args[0] = pathnames;
+            CL_GC_PROTECT(load_args[0]);
             bi_load(load_args, 1);
+            CL_GC_UNPROTECT(1);
         } else if (CL_CONS_P(pathnames)) {
             /* List of pathnames */
+            CL_Obj load_args[1];
+            CL_GC_PROTECT(pathnames);
+            load_args[0] = CL_NIL;
+            CL_GC_PROTECT(load_args[0]);
             while (!CL_NULL_P(pathnames)) {
-                CL_Obj load_args[1];
                 load_args[0] = cl_car(pathnames);
                 bi_load(load_args, 1);
                 pathnames = cl_cdr(pathnames);
             }
+            CL_GC_UNPROTECT(2);
         } else {
             cl_error(CL_ERR_TYPE, "REQUIRE: pathnames must be a string, pathname, or list");
         }
@@ -3526,8 +3584,10 @@ static CL_Obj bi_require(CL_Obj *args, int n)
             cl_error(CL_ERR_GENERAL, "REQUIRE: cannot find module file");
 
         path_obj = cl_make_string(path, (uint32_t)strlen(path));
-        CL_GC_PROTECT(path_obj);
+        /* Root the load_args slot itself (not just path_obj) — bi_load
+         * re-reads args[0] after its own compactions. */
         load_args[0] = path_obj;
+        CL_GC_PROTECT(load_args[0]);
         bi_load(load_args, 1);
         CL_GC_UNPROTECT(1);
     }

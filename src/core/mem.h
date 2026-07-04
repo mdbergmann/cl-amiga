@@ -73,6 +73,38 @@ void cl_storage_error(const char *fmt, ...);
 /* Allocate a heap object (triggers GC if needed) */
 void *cl_alloc(uint8_t type, uint32_t size);
 
+/* --- Per-type element-count caps ---
+ * The 23-bit header size field caps any single allocation at
+ * CL_HDR_SIZE_MASK bytes; cl_alloc guards the BYTE size at entry.  But
+ * the convenience allocators compute alloc_size = header + count*elt in
+ * uint32 arithmetic, which WRAPS for counts >= 2^30 (CL_Obj elements)
+ * and sails past the byte guard with a tiny wrapped size — the element
+ * loops then scribble far beyond the block.  Normal Lisp entry points
+ * are bounded by ARRAY-DIMENSION-LIMIT checks, but the FASL reader
+ * passes raw u32 lengths from disk, so a corrupted/truncated .fasl
+ * reaches these allocators with arbitrary counts.  Each allocator
+ * rejects counts above these limits BEFORE computing alloc_size
+ * (cl_storage_error, same as cl_alloc's byte guard); the FASL reader
+ * checks them too for a cleaner "deserialize failed" diagnostic. */
+#define CL_MAX_STRING_CHARS \
+    ((uint32_t)(CL_HDR_SIZE_MASK - sizeof(CL_String) - 1))
+#ifdef CL_WIDE_STRINGS
+#define CL_MAX_WIDE_STRING_CHARS \
+    ((uint32_t)((CL_HDR_SIZE_MASK - sizeof(CL_WideString)) / sizeof(uint32_t)))
+#endif
+#define CL_MAX_VECTOR_ELTS \
+    ((uint32_t)((CL_HDR_SIZE_MASK - sizeof(CL_Vector)) / sizeof(CL_Obj)))
+#define CL_MAX_STRUCT_SLOTS \
+    ((uint32_t)((CL_HDR_SIZE_MASK - sizeof(CL_Struct)) / sizeof(CL_Obj)))
+#define CL_MAX_BIGNUM_LIMBS \
+    ((uint32_t)((CL_HDR_SIZE_MASK - sizeof(CL_Bignum)) / sizeof(uint16_t)))
+#define CL_MAX_BV_BITS \
+    ((uint32_t)((CL_HDR_SIZE_MASK - sizeof(CL_BitVector)) / sizeof(uint32_t)) * 32u)
+/* Largest power-of-two bucket count whose inline bucket array fits the
+ * header size field (cl_make_hashtable rounds up to a power of two, and
+ * the round-up loop itself would spin forever on counts > 2^31). */
+#define CL_MAX_HT_BUCKETS  (1u << 20)
+
 /* Convenience allocators */
 CL_Obj cl_cons(CL_Obj car, CL_Obj cdr);
 CL_Obj cl_make_string(const char *str, uint32_t len);

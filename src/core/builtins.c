@@ -253,10 +253,16 @@ static CL_Obj bi_reverse(CL_Obj *args, int n)
     if (CL_VECTOR_P(seq)) {
         CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
         uint32_t alen = cl_vector_active_length(v);
-        CL_Obj result = cl_make_vector(alen);
-        CL_Vector *rv = (CL_Vector *)CL_OBJ_TO_PTR(result);
+        CL_Obj result;
+        CL_Vector *rv;
         uint32_t i;
-        /* Re-fetch after potential GC */
+        /* Protect seq across the allocation: the "re-fetch" below must go
+         * through the FORWARDED value — re-deriving from an unprotected
+         * (stale) offset after a compaction reads whatever now lives there. */
+        CL_GC_PROTECT(seq);
+        result = cl_make_vector(alen);
+        CL_GC_UNPROTECT(1);
+        rv = (CL_Vector *)CL_OBJ_TO_PTR(result);
         v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
         for (i = 0; i < alen; i++)
             cl_vector_data(rv)[i] = cl_vector_data(v)[alen - 1 - i];
@@ -265,9 +271,13 @@ static CL_Obj bi_reverse(CL_Obj *args, int n)
     if (CL_BIT_VECTOR_P(seq)) {
         CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
         uint32_t blen = cl_bv_active_length(bv);   /* honour fill pointer */
-        CL_Obj result = cl_make_bit_vector(blen);
-        CL_BitVector *rv = (CL_BitVector *)CL_OBJ_TO_PTR(result);
+        CL_Obj result;
+        CL_BitVector *rv;
         uint32_t i;
+        CL_GC_PROTECT(seq);   /* see the vector branch above */
+        result = cl_make_bit_vector(blen);
+        CL_GC_UNPROTECT(1);
+        rv = (CL_BitVector *)CL_OBJ_TO_PTR(result);
         bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
         for (i = 0; i < blen; i++)
             cl_bv_set_bit(rv, i, cl_bv_get_bit(bv, blen - 1 - i));
@@ -782,7 +792,9 @@ static CL_Obj bi_mapcar(CL_Obj *args, int n)
     CL_Obj call_args[16];
     int i;
 
-    if (nlists > 16) nlists = 16;
+    if (nlists > 16)
+        cl_error(CL_ERR_ARGS,
+                 "MAPCAR: too many list arguments (%d; max 16)", nlists);
     for (i = 0; i < nlists; i++)
         lists[i] = args[i + 1];
 
@@ -839,8 +851,13 @@ static CL_Obj bi_apply(CL_Obj *args, int n)
 {
     CL_Obj func = args[0];
     CL_Obj arglist;
-    CL_Obj flat_args[64];
+    /* Spread the flattened args onto the VM stack (GC-rooted, no fixed C
+     * cap) rather than a C array — a fixed flat_args[64] silently dropped
+     * args past 64 while OP_APPLY handles CALL-ARGUMENTS-LIMIT (4096). */
+    int base = cl_vm.sp;
+    int saved_sp = cl_vm.sp;
     int nflat = 0;
+    CL_Obj result;
 
     /* (apply func arg1 arg2 ... arglist) */
     if (n == 2) {
@@ -849,14 +866,22 @@ static CL_Obj bi_apply(CL_Obj *args, int n)
         int i;
         /* Spread initial args, last arg is the list */
         for (i = 1; i < n - 1; i++) {
-            if (nflat < 64) flat_args[nflat++] = args[i];
+            cl_vm_push(args[i]);
+            nflat++;
         }
         arglist = args[n - 1];
     }
 
     /* Flatten remaining arglist */
     while (!CL_NULL_P(arglist)) {
-        if (nflat < 64) flat_args[nflat++] = cl_car(arglist);
+        if (nflat >= CL_CALL_ARGS_LIMIT) {
+            cl_vm.sp = saved_sp;
+            cl_error(CL_ERR_ARGS,
+                     "APPLY: too many arguments (call-arguments-limit is %d)",
+                     CL_CALL_ARGS_LIMIT);
+        }
+        cl_vm_push(cl_car(arglist));
+        nflat++;
         arglist = cl_cdr(arglist);
     }
 
@@ -864,26 +889,31 @@ static CL_Obj bi_apply(CL_Obj *args, int n)
     if (CL_SYMBOL_P(func)) {
         CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(func);
         func = s->function;
-        if (CL_NULL_P(func) || func == CL_UNBOUND)
+        if (CL_NULL_P(func) || func == CL_UNBOUND) {
+            cl_vm.sp = saved_sp;
             cl_error(CL_ERR_TYPE, "APPLY: symbol has no function binding");
+        }
     }
     func = cl_unwrap_funcallable(func);
 
     if (CL_FUNCTION_P(func)) {
         CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(func);
         if (!f->func) {
+            cl_vm.sp = saved_sp;
             cl_error(CL_ERR_TYPE, "APPLY: NULL function pointer in %s",
                      CL_NULL_P(f->name) ? "?" : cl_symbol_name(f->name));
         }
-        /* via cl_vm_apply: it GC-roots flat_args (a C-local array, not on the
-         * VM stack) across the call so the applied builtin can compact while
-         * reading its own args. */
-        return cl_vm_apply(func, flat_args, nflat);
+        result = cl_vm_apply(func, &cl_vm.stack[base], nflat);
+        cl_vm.sp = saved_sp;
+        return result;
     }
     if (CL_BYTECODE_P(func) || CL_CLOSURE_P(func)) {
-        return cl_vm_apply(func, flat_args, nflat);
+        result = cl_vm_apply(func, &cl_vm.stack[base], nflat);
+        cl_vm.sp = saved_sp;
+        return result;
     }
 
+    cl_vm.sp = saved_sp;
     cl_error(CL_ERR_TYPE, "APPLY: not a function");
     return CL_NIL;
 }
@@ -933,13 +963,25 @@ static CL_Obj bi_trace_function(CL_Obj *args, int n)
     CL_UNUSED(n);
     if (!CL_SYMBOL_P(args[0]))
         cl_error(CL_ERR_TYPE, "TRACE: not a symbol");
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
-    if (!(s->flags & CL_SYM_TRACED)) {
-        s->flags |= CL_SYM_TRACED;
-        cl_trace_count++;
+    /* Claim the flag under the tables write lock: the flags |= and
+     * cl_trace_count++ are read-modify-writes, and two threads tracing
+     * concurrently could lose one of the flag updates / skew the count
+     * (nothing in this section allocates, so holding the lock is safe). */
+    {
+        int newly = 0;
         cl_tables_wrlock();
-        trace_list = cl_cons(args[0], trace_list);
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
+        if (!(s->flags & CL_SYM_TRACED)) {
+            s->flags |= CL_SYM_TRACED;
+            cl_trace_count++;
+            newly = 1;
+        }
         cl_tables_rwunlock();
+        /* Cons outside the write lock (STW-vs-rwlock deadlock — see
+         * cl_table_prepend_locked).  Only the thread that claimed the flag
+         * prepends, so the list gets no duplicates. */
+        if (newly)
+            cl_table_prepend_locked(&trace_list, args[0]);
     }
     return args[0];
 }
@@ -952,9 +994,16 @@ static CL_Obj bi_untrace_function(CL_Obj *args, int n)
         cl_error(CL_ERR_TYPE, "UNTRACE: not a symbol");
     s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
     if (s->flags & CL_SYM_TRACED) {
+        cl_tables_wrlock();
+        /* Flag/count RMW under the same lock as the list edit — and
+         * re-check under the lock so two concurrent UNTRACEs don't both
+         * decrement the count. */
+        if (!(s->flags & CL_SYM_TRACED)) {
+            cl_tables_rwunlock();
+            return args[0];
+        }
         s->flags &= ~CL_SYM_TRACED;
         cl_trace_count--;
-        cl_tables_wrlock();
         {
             CL_Obj prev = CL_NIL, curr = trace_list;
             while (!CL_NULL_P(curr)) {
@@ -1054,16 +1103,22 @@ static CL_Obj bi_jit_dump_bytes(CL_Obj *args, int n)
     if (bc->native_code == NULL || bc->native_len == 0) return CL_NIL;
 
     /* Build the byte list back-to-front so each cl_cons prepends — no
-     * tail pointer needed.  GC-protect the in-progress head; the
-     * bc->native_code buffer is platform_alloc'd (outside the arena)
-     * so it's stable across collections. */
-    result = CL_NIL;
-    CL_GC_PROTECT(result);
-    for (i = bc->native_len; i > 0; i--) {
-        result = cl_cons(CL_MAKE_FIXNUM((int32_t)bc->native_code[i - 1]),
-                         result);
+     * tail pointer needed.  GC-protect the in-progress head.  The
+     * native_code buffer is platform_alloc'd (outside the arena) so it's
+     * stable across collections — but `bc` itself is an ARENA pointer that
+     * goes stale on the first compacting cl_cons, so hoist the buffer
+     * pointer and length into C locals before the loop. */
+    {
+        const uint8_t *native_code = bc->native_code;
+        uint32_t native_len = bc->native_len;
+        result = CL_NIL;
+        CL_GC_PROTECT(result);
+        for (i = native_len; i > 0; i--) {
+            result = cl_cons(CL_MAKE_FIXNUM((int32_t)native_code[i - 1]),
+                             result);
+        }
+        CL_GC_UNPROTECT(1);
     }
-    CL_GC_UNPROTECT(1);
     return result;
 }
 
