@@ -759,17 +759,15 @@ static CL_Obj bi_register_condition_type(CL_Obj *args, int n)
         entry = cl_cons(parents, CL_NIL);   /* (parent) */
         parents = entry;
     }
-    /* parents is now a (possibly empty) proper list of parent symbols */
+    /* parents is now a (possibly empty) proper list of parent symbols.
+     * Both table conses run outside the write lock (STW-vs-rwlock
+     * deadlock — see cl_table_prepend_locked). */
     entry = cl_cons(name, parents);   /* (name . parents) — name re-read post-alloc */
-    cl_tables_wrlock();
-    condition_hierarchy = cl_cons(entry, condition_hierarchy);
-    cl_tables_rwunlock();
+    cl_table_prepend_locked(&condition_hierarchy, entry);
 
     /* Add (name . slot-pairs) to condition_slot_table */
     entry = cl_cons(name, slot_pairs);
-    cl_tables_wrlock();
-    condition_slot_table = cl_cons(entry, condition_slot_table);
-    cl_tables_rwunlock();
+    cl_table_prepend_locked(&condition_slot_table, entry);
     CL_GC_UNPROTECT(4);
 
     return name;
@@ -948,11 +946,10 @@ static CL_Obj bi_set_condition_default_initargs(CL_Obj *args, int n)
     CL_GC_PROTECT(name);
     CL_GC_PROTECT(initargs);
     entry = cl_cons(name, initargs);   /* (name . plist) */
-    CL_GC_PROTECT(entry);
-    cl_tables_wrlock();
-    condition_default_initargs = cl_cons(entry, condition_default_initargs);
-    cl_tables_rwunlock();
-    CL_GC_UNPROTECT(3);
+    /* Cons outside the write lock (STW-vs-rwlock deadlock — see
+     * cl_table_prepend_locked). */
+    cl_table_prepend_locked(&condition_default_initargs, entry);
+    CL_GC_UNPROTECT(2);
     return name;
 }
 
@@ -973,11 +970,10 @@ static CL_Obj bi_register_condition_slot_initforms(CL_Obj *args, int n)
     CL_GC_PROTECT(name);
     CL_GC_PROTECT(specs);
     entry = cl_cons(name, specs);   /* (name . specs) */
-    CL_GC_PROTECT(entry);
-    cl_tables_wrlock();
-    condition_slot_initforms = cl_cons(entry, condition_slot_initforms);
-    cl_tables_rwunlock();
-    CL_GC_UNPROTECT(3);
+    /* Cons outside the write lock (STW-vs-rwlock deadlock — see
+     * cl_table_prepend_locked). */
+    cl_table_prepend_locked(&condition_slot_initforms, entry);
+    CL_GC_UNPROTECT(2);
     return name;
 }
 

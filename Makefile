@@ -230,6 +230,27 @@ test-fast: $(TEST_BINS) host
 		echo "FAIL"; \
 		failed=1; \
 	fi; \
+	echo "--- test_mt_thread_identity ---"; \
+	if sh $(TEST_SRCDIR)/test_mt_thread_identity.sh $(BUILDDIR)/clamiga; then \
+		echo "PASS"; \
+	else \
+		echo "FAIL"; \
+		failed=1; \
+	fi; \
+	echo "--- test_mt_intern_stw ---"; \
+	if sh $(TEST_SRCDIR)/test_mt_intern_stw.sh $(BUILDDIR)/clamiga; then \
+		echo "PASS"; \
+	else \
+		echo "FAIL"; \
+		failed=1; \
+	fi; \
+	echo "--- test_mt_stream_close_race ---"; \
+	if sh $(TEST_SRCDIR)/test_mt_stream_close_race.sh $(BUILDDIR)/clamiga; then \
+		echo "PASS"; \
+	else \
+		echo "FAIL"; \
+		failed=1; \
+	fi; \
 	echo "--- test_load_keywords ---"; \
 	if sh $(TEST_SRCDIR)/test_load_keywords.sh $(BUILDDIR)/clamiga; then \
 		echo "PASS"; \
@@ -304,6 +325,8 @@ test-gc-stress:
 		DEBUG_FLAGS="-DDEBUG_GC_STRESS"
 	@echo "--- test_gc_stress_regression ---"
 	@sh $(TEST_SRCDIR)/test_gc_stress_regression.sh $(GC_STRESS_BUILDDIR)/clamiga
+	@echo "--- test_mt_intern_stw (CLAMIGA_GC_STRESS=1) ---"
+	@CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_mt_intern_stw.sh $(GC_STRESS_BUILDDIR)/clamiga
 
 # `make test-mt-thread-exit-race` builds a dedicated DEBUG_THREAD_RACE_HOOKS
 # binary whose sole purpose (see the constructor in src/core/thread.c) is to

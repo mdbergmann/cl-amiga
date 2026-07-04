@@ -303,9 +303,17 @@ uint32_t cl_stream_alloc_outbuf(uint32_t initial_size)
 
 void cl_stream_free_outbuf(uint32_t handle)
 {
-    if (handle > 0 && handle < CL_STREAM_BUF_TABLE_SIZE &&
-        outbuf_table[handle].data) {
+    /* The .data occupancy check must run INSIDE the table mutex: with the
+     * old outside-the-lock check, two concurrent frees of the same handle
+     * could both see non-NULL and double-platform_free the buffer (worse:
+     * the slot may be re-claimed between them, freeing a live stream's
+     * buffer). */
+    if (handle > 0 && handle < CL_STREAM_BUF_TABLE_SIZE) {
         if (CL_MT()) platform_mutex_lock(cl_stream_table_mutex);
+        if (!outbuf_table[handle].data) {
+            if (CL_MT()) platform_mutex_unlock(cl_stream_table_mutex);
+            return;
+        }
         platform_free(outbuf_table[handle].data);
         outbuf_table[handle].data = NULL;
         outbuf_table[handle].capacity = 0;
@@ -452,7 +460,11 @@ static CL_Obj resolve_synonym(CL_Obj stream)
     while (st->stream_type == CL_STREAM_SYNONYM) {
         CL_Obj sym = st->string_buf;  /* symbol stored here */
         stream = cl_symbol_value(sym);
-        if (CL_NULL_P(stream) || !CL_HEAP_P(stream))
+        /* Require a real CL_Stream, like resolve_stream: the synonym's
+         * symbol can be bound to anything — e.g. a Gray stream, which is
+         * a CLOS instance (CL_Struct).  Treating that as a CL_Stream and
+         * writing st-> fields into it corrupts the instance. */
+        if (CL_NULL_P(stream) || !CL_STREAM_P(stream))
             return CL_NIL;
         st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
     }
@@ -1025,11 +1037,18 @@ int cl_stream_peek_char(CL_Obj stream)
     stream = resolve_stream(stream, 0);
     if (CL_NULL_P(stream)) return -1;
     {
-        int ch = cl_stream_read_char(stream);
+        /* cl_stream_read_char can block (socket/console) inside a GC safe
+         * region, letting a peer compact and relocate the stream.  Root
+         * the local so it is forwarded, and derive st only AFTER the read
+         * — otherwise the unread_char store scribbles into freed arena. */
+        int ch;
+        CL_GC_PROTECT(stream);
+        ch = cl_stream_read_char(stream);
         if (ch != -1) {
             CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
             st->unread_char = ch;
         }
+        CL_GC_UNPROTECT(1);
         return ch;
     }
 }
@@ -1067,7 +1086,34 @@ void cl_stream_close(CL_Obj stream)
     st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
     CL_GC_UNPROTECT(1);
 
-    st->flags &= ~CL_STREAM_FLAG_OPEN;
+    /* Claim the close.  The OPEN check at function entry ran BEFORE the
+     * lock (TOCTOU): two concurrent CLOSE calls could both pass it, both
+     * clear the flag and both run the platform close — the second close
+     * hits an fd/handle slot the platform may already have RECYCLED for
+     * an unrelated stream, killing a live connection or file.
+     *  - FILE/SOCKET: re-check under the iolock just acquired.
+     *  - No-iolock types (string/cbuf/console): claim the flag bit with an
+     *    atomic CAS; the loser sees OPEN already gone and bails.  The CAS
+     *    targets arena memory, which is safe here: no allocation happens
+     *    between the re-derive above and the claim, so the stream cannot
+     *    move (a peer STW compaction must wait for this running thread). */
+    if (iolock) {
+        if (!(st->flags & CL_STREAM_FLAG_OPEN)) {
+            platform_mutex_unlock(iolock);
+            return;
+        }
+        st->flags &= ~CL_STREAM_FLAG_OPEN;
+    } else {
+        for (;;) {
+            uint32_t old = st->flags;
+            if (!(old & CL_STREAM_FLAG_OPEN))
+                return;                      /* lost the race — already closed */
+            if (!CL_MT()) { st->flags = old & ~CL_STREAM_FLAG_OPEN; break; }
+            if (platform_atomic_cas(&st->flags, old,
+                                    old & ~CL_STREAM_FLAG_OPEN))
+                break;
+        }
+    }
 
     /* Capture the handle/type before any teardown call: platform_socket_flush
      * and platform_socket_close (and the file equivalents) enter GC safe

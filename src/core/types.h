@@ -603,6 +603,12 @@ typedef struct {
 typedef struct {
     CL_Header hdr;
     uint32_t thread_id;   /* Side table index -> CL_Thread* */
+    uint32_t table_gen;   /* Generation of the table slot at wrapper-creation
+                           * time (cl_thread_table_gen[thread_id]).  Table slots
+                           * are reused after a join/reap; a wrapper whose gen no
+                           * longer matches the slot's refers to a thread that
+                           * has already exited — JOIN/INTERRUPT/DESTROY must not
+                           * act on the slot's NEW occupant through it. */
     CL_Obj name;          /* CL string or NIL */
     CL_Obj result;        /* Worker's return value, published here before the
                            * worker unregisters.  Lives on the GC-managed

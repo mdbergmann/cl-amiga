@@ -30,8 +30,14 @@ void cl_package_init(void);
 /* Create a new package */
 CL_Obj cl_make_package(const char *name);
 
-/* Add a symbol to a package's symbol table */
+/* Add a symbol to a package's symbol table (allocates — must NOT be
+ * called while holding cl_package_rwlock) */
 void cl_package_add_symbol(CL_Obj package, CL_Obj symbol);
+
+/* Non-allocating: link SYMBOL into PACKAGE through the pre-allocated cons
+ * CELL.  The only add-symbol form that may run while cl_package_rwlock is
+ * held (allocating under the lock risks an STW-vs-rwlock deadlock). */
+void cl_package_add_symbol_cell(CL_Obj package, CL_Obj symbol, CL_Obj cell);
 
 /* Look up a symbol in a package (and its use-list) */
 CL_Obj cl_package_find_symbol(const char *name, uint32_t len, CL_Obj package);

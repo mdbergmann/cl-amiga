@@ -2811,12 +2811,9 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             uint16_t upd_idx = read_u16(code, &ip);
             CL_Obj accessor = constants[acc_idx];
             CL_Obj updater  = constants[upd_idx];
-            {
-                CL_Obj pair = cl_cons(accessor, updater);
-                cl_tables_wrlock();
-                setf_table = cl_cons(pair, setf_table);
-                cl_tables_rwunlock();
-            }
+            /* Cons outside the write lock (STW-vs-rwlock deadlock — see
+             * cl_table_prepend_locked). */
+            cl_table_prepend_locked(&setf_table, cl_cons(accessor, updater));
             /* Re-read after the allocating conses (see OP_DEFMACRO). */
             cl_vm_push(constants[acc_idx]);
             VM_BREAK;

@@ -137,12 +137,30 @@ char *platform_file_read(const char *path, unsigned long *size_out)
 static FILE *file_table[PLATFORM_FILE_TABLE_SIZE];
 static int file_table_init = 0;
 
+/* Serialises slot claim (open) and slot release (close) so two threads can
+ * never race a claim onto the same index or double-fclose one slot (mirrors
+ * socket_table_mutex).  Per-byte read/write paths on a caller-owned slot run
+ * unlocked, like the socket table.  Initialised on first use, which is
+ * single-threaded (boot loads files before any worker thread exists). */
+static void *file_table_mutex = NULL;
+
+static void file_table_lock(void)
+{
+    if (file_table_mutex) platform_mutex_lock(file_table_mutex);
+}
+
+static void file_table_unlock(void)
+{
+    if (file_table_mutex) platform_mutex_unlock(file_table_mutex);
+}
+
 static void file_table_ensure_init(void)
 {
     if (!file_table_init) {
         int i;
         for (i = 0; i < PLATFORM_FILE_TABLE_SIZE; i++)
             file_table[i] = NULL;
+        platform_mutex_init(&file_table_mutex);
         file_table_init = 1;
     }
 }
@@ -204,13 +222,17 @@ PlatformFile platform_file_open(const char *path, int mode)
     f = fopen(path, fmode);
     if (!f) return PLATFORM_FILE_INVALID;
 
-    /* Find free slot (slot 0 is reserved as INVALID) */
+    /* Find free slot (slot 0 is reserved as INVALID) — claim under the
+     * table mutex so two concurrent opens never claim the same index. */
+    file_table_lock();
     for (i = 1; i < PLATFORM_FILE_TABLE_SIZE; i++) {
         if (file_table[i] == NULL) {
             file_table[i] = f;
+            file_table_unlock();
             return (PlatformFile)i;
         }
     }
+    file_table_unlock();
 
     /* No free slots */
     fclose(f);
@@ -219,10 +241,18 @@ PlatformFile platform_file_open(const char *path, int mode)
 
 void platform_file_close(PlatformFile fh)
 {
-    if (fh > 0 && fh < PLATFORM_FILE_TABLE_SIZE && file_table[fh]) {
-        fclose(file_table[fh]);
+    FILE *f = NULL;
+    if (fh > 0 && fh < PLATFORM_FILE_TABLE_SIZE) {
+        /* Detach under the mutex (double-close protection: only one caller
+         * observes the non-NULL slot), fclose outside it — the flush inside
+         * fclose can block, and holding the table lock across it would
+         * stall every concurrent open/close. */
+        file_table_lock();
+        f = file_table[fh];
         file_table[fh] = NULL;
+        file_table_unlock();
     }
+    if (f) fclose(f);
 }
 
 int platform_file_getchar(PlatformFile fh)

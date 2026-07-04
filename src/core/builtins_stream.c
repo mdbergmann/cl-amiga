@@ -1667,7 +1667,16 @@ static CL_Obj bi_listen(CL_Obj *args, int n)
          * available" means a client connection is pending, which is what the
          * usocket cl-amiga backend's wait-for-input uses to drive
          * hunchentoot's accept loop. */
-        int r = platform_socket_data_available((PlatformSocket)st->handle_id);
+        /* Capture the handle BEFORE the probe and re-derive st AFTER it:
+         * on AmigaOS the probe goes through the socket reactor's safe
+         * region, so a peer's compaction can relocate the stream while we
+         * wait — the EOF-flag RMW below must not go through a stale st. */
+        uint32_t handle = st->handle_id;
+        int r;
+        CL_GC_PROTECT(stream);
+        r = platform_socket_data_available((PlatformSocket)handle);
+        st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+        CL_GC_UNPROTECT(1);
         if (r == 2)                       /* EOF: peer closed */
             st->flags |= CL_STREAM_FLAG_EOF;
         return (r == 1) ? CL_T : CL_NIL;

@@ -184,6 +184,23 @@ static BPTR file_table[PLATFORM_FILE_TABLE_SIZE];
 static IOBuf *file_buf[PLATFORM_FILE_TABLE_SIZE];
 static int file_table_init = 0;
 
+/* Serialises slot claim (open) and slot release (close) so two threads can
+ * never race a claim onto the same index or double-Close one slot (mirrors
+ * the POSIX file_table_mutex / socket_table_mutex).  Per-byte read/write
+ * paths on a caller-owned slot run unlocked.  Initialised on first use,
+ * which is single-threaded (boot loads files before any worker exists). */
+static void *file_table_mutex = NULL;
+
+static void file_table_lock(void)
+{
+    if (file_table_mutex) platform_mutex_lock(file_table_mutex);
+}
+
+static void file_table_unlock(void)
+{
+    if (file_table_mutex) platform_mutex_unlock(file_table_mutex);
+}
+
 static void file_table_ensure_init(void)
 {
     if (!file_table_init) {
@@ -192,6 +209,7 @@ static void file_table_ensure_init(void)
             file_table[i] = 0;
             file_buf[i] = NULL;
         }
+        platform_mutex_init(&file_table_mutex);
         file_table_init = 1;
     }
 }
@@ -219,14 +237,18 @@ PlatformFile platform_file_open(const char *path, int mode)
         Seek(fh, 0, OFFSET_END);
     }
 
-    /* Find free slot (slot 0 reserved) */
+    /* Find free slot (slot 0 reserved) — claim under the table mutex so
+     * two concurrent opens never claim the same index. */
+    file_table_lock();
     for (i = 1; i < PLATFORM_FILE_TABLE_SIZE; i++) {
         if (file_table[i] == 0) {
             file_table[i] = fh;
             file_buf[i] = iobuf_alloc();
+            file_table_unlock();
             return (PlatformFile)i;
         }
     }
+    file_table_unlock();
 
     Close(fh);
     return PLATFORM_FILE_INVALID;
@@ -248,13 +270,26 @@ static int file_flush_wbuf(PlatformFile fh)
 
 void platform_file_close(PlatformFile fh)
 {
-    if (fh > 0 && fh < PLATFORM_FILE_TABLE_SIZE && file_table[fh]) {
-        file_flush_wbuf(fh);
-        Close(file_table[fh]);
+    BPTR h = 0;
+    IOBuf *b = NULL;
+    if (fh > 0 && fh < PLATFORM_FILE_TABLE_SIZE) {
+        /* Detach under the mutex (double-close protection: only one caller
+         * observes the non-zero slot); flush + Close outside it — DOS
+         * Close/Write can block, and holding the table lock across them
+         * would stall every concurrent open/close. */
+        file_table_lock();
+        h = file_table[fh];
+        b = file_buf[fh];
         file_table[fh] = 0;
-        iobuf_free(file_buf[fh]);
         file_buf[fh] = NULL;
+        file_table_unlock();
     }
+    if (h) {
+        if (b && b->wlen > 0)
+            Write(h, (APTR)b->wbuf, (LONG)b->wlen);
+        Close(h);
+    }
+    iobuf_free(b);
 }
 
 int platform_file_getchar(PlatformFile fh)

@@ -2349,8 +2349,19 @@ static void gc_finalize_dead(uint8_t *ptr)
         CL_ThreadObj *to = (CL_ThreadObj *)ptr;
         if (to->thread_id != 0 && to->thread_id < CL_MAX_THREADS) {
             CL_Thread *t = cl_thread_table[to->thread_id];
+            /* table_gen compare: exact slot-reuse guard — the wrapper's
+             * generation must match the slot's current occupancy.  This
+             * replaces the old `t->thread_obj == CL_PTR_TO_OBJ(ptr)`
+             * back-compare: t->thread_obj stops being forwarded once the
+             * worker unregisters, so after any post-unregister compaction
+             * it held a stale offset, the compare failed, and the worker
+             * leaked until the table-full reaper ran.  The generation pair
+             * is immune to relocation (plain integers) and is unique per
+             * occupancy, so it is both safe against slot reuse AND exact.
+             * Safe to read without the list lock: sweep runs during STW,
+             * no peer can reclaim the slot concurrently. */
             if (t && t != cl_main_thread_ptr && t->status >= 2 &&
-                t->thread_obj == CL_PTR_TO_OBJ(ptr)) {
+                cl_thread_table_gen[to->thread_id] == to->table_gen) {
                 cl_thread_table[to->thread_id] = NULL;
                 if (t->platform_handle) {
                     platform_thread_detach(t->platform_handle);

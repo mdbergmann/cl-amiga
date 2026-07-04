@@ -60,6 +60,20 @@ void cl_tables_rwunlock(void)
     platform_rwlock_unlock(cl_tables_rwlock);
 }
 
+/* See compiler.h.  The cons happens OUTSIDE the write lock (cl_cons roots
+ * its own arguments); the raw cell pointer derived after it stays valid
+ * through the lock acquisition because this thread never parks while
+ * blocked on the rwlock — a peer's stop-the-world compaction must wait
+ * for us, so no relocation can happen between the cons and the store. */
+void cl_table_prepend_locked(CL_Obj *table_p, CL_Obj value)
+{
+    CL_Obj cell = cl_cons(value, CL_NIL);
+    cl_tables_wrlock();
+    ((CL_Cons *)CL_OBJ_TO_PTR(cell))->cdr = *table_p;
+    *table_p = cell;
+    cl_tables_rwunlock();
+}
+
 void cl_tables_dump_rdlock_holders(const char *header)
 {
     int i;
@@ -4665,15 +4679,9 @@ CL_Obj cl_macroexpand_1_env(CL_Obj form, CL_Obj lex_env)
 
 void cl_register_macro(CL_Obj name, CL_Obj expander)
 {
-    CL_Obj pair;
-    CL_GC_PROTECT(name);
-    CL_GC_PROTECT(expander);
-    pair = cl_cons(name, expander);
-    CL_GC_PROTECT(pair);            /* the 2nd cons can compact — keep PAIR live */
-    cl_tables_wrlock();
-    macro_table = cl_cons(pair, macro_table);
-    cl_tables_rwunlock();
-    CL_GC_UNPROTECT(3);
+    /* Both conses run OUTSIDE the write lock (see cl_table_prepend_locked
+     * — allocating under cl_tables_wrlock can deadlock STW-vs-rwlock). */
+    cl_table_prepend_locked(&macro_table, cl_cons(name, expander));
 }
 
 /* Snapshot-and-release iteration:
@@ -4727,15 +4735,7 @@ CL_Obj cl_get_macro(CL_Obj name)
  * which then trips the OP_STRUCT_REF compiler hook. */
 void cl_register_compiler_macro(CL_Obj name, CL_Obj expander)
 {
-    CL_Obj pair;
-    CL_GC_PROTECT(name);
-    CL_GC_PROTECT(expander);
-    pair = cl_cons(name, expander);
-    CL_GC_PROTECT(pair);            /* the 2nd cons can compact — keep PAIR live */
-    cl_tables_wrlock();
-    compiler_macro_table = cl_cons(pair, compiler_macro_table);
-    cl_tables_rwunlock();
-    CL_GC_UNPROTECT(3);
+    cl_table_prepend_locked(&compiler_macro_table, cl_cons(name, expander));
 }
 
 CL_Obj cl_get_compiler_macro(CL_Obj name)
@@ -4783,15 +4783,7 @@ int cl_compiler_notinline_p(CL_Compiler *c, CL_Obj func)
 
 void cl_register_type(CL_Obj name, CL_Obj expander)
 {
-    CL_Obj pair;
-    CL_GC_PROTECT(name);
-    CL_GC_PROTECT(expander);
-    pair = cl_cons(name, expander);
-    CL_GC_PROTECT(pair);            /* the 2nd cons can compact — keep PAIR live */
-    cl_tables_wrlock();
-    type_table = cl_cons(pair, type_table);
-    cl_tables_rwunlock();
-    CL_GC_UNPROTECT(3);
+    cl_table_prepend_locked(&type_table, cl_cons(name, expander));
 }
 
 CL_Obj cl_get_type_expander(CL_Obj name)
@@ -4822,15 +4814,7 @@ CL_Obj cl_setf_function_symbol(CL_Obj accessor)
 
 void cl_register_setf_function(CL_Obj accessor, CL_Obj setf_fn_sym)
 {
-    CL_Obj pair;
-    CL_GC_PROTECT(accessor);
-    CL_GC_PROTECT(setf_fn_sym);
-    pair = cl_cons(accessor, setf_fn_sym);
-    CL_GC_PROTECT(pair);            /* the 2nd cons can compact — keep PAIR live */
-    cl_tables_wrlock();
-    setf_fn_table = cl_cons(pair, setf_fn_table);
-    cl_tables_rwunlock();
-    CL_GC_UNPROTECT(3);
+    cl_table_prepend_locked(&setf_fn_table, cl_cons(accessor, setf_fn_sym));
 }
 
 /* --- Public API --- */
