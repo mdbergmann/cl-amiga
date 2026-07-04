@@ -291,6 +291,13 @@ typedef struct CL_Thread_s {
      * stopped — it cannot reach a Lisp-level safepoint, but it also cannot
      * race the GC. */
     volatile uint8_t in_safe_region;
+    /* Nesting depth for cl_gc_enter/leave_safe_region.  Owner-only.  Safe
+     * regions nest (e.g. the platform layer brackets a blocking syscall
+     * that a builtin already bracketed): only the OUTERMOST enter/leave
+     * pair touches gc_mutex / in_safe_region — an inner leave clearing the
+     * flag early would let this thread return to heap-touching code while
+     * a peer's STW GC still counts it as stopped. */
+    int safe_region_depth;
 
     /* ---- Thread interruption ---- */
     volatile uint8_t interrupt_pending;   /* 1 = check interrupt_func or destroy */
@@ -442,6 +449,25 @@ extern uint32_t cl_thread_table_gen[CL_MAX_THREADS];
 #define CL_MAX_CONDVARS 16384
 #endif
 extern void *cl_lock_table[CL_MAX_LOCKS];
+
+/* Owner tracking for cl_lock_table entries: cl_lock_held[id] is set by the
+ * acquiring thread AFTER platform_mutex_lock succeeds and cleared by the
+ * releasing thread BEFORE platform_mutex_unlock (owner-only mutation while
+ * holding the mutex).  gc_finalize_dead(TYPE_LOCK) reads it during STW
+ * (race-free) and LEAKS the OS mutex instead of destroying a held one
+ * (pthread_mutex_destroy of a locked mutex is UB).
+ *
+ * cl_lock_depth[id] counts nested acquires by the current owner (recursive
+ * locks via MP:MAKE-RECURSIVE-LOCK can be acquired N>1 times by the same
+ * thread and are still genuinely OS-locked after only one release).
+ * bi_acquire_lock increments it on every successful acquire; bi_release_lock
+ * decrements it and only clears cl_lock_held once it reaches 0, so a
+ * recursive lock stays correctly "held" for gc_finalize_dead until it is
+ * released as many times as it was acquired.  gc_finalize_dead resets both
+ * to 0 when it frees a table slot (held or not) so a reused lock_id starts
+ * clean. */
+extern CL_Thread *cl_lock_held[CL_MAX_LOCKS];
+extern uint32_t cl_lock_depth[CL_MAX_LOCKS];
 
 /* Condvar side table: maps condvar_id -> void* (platform condvar).
  * Sized to mirror CL_MAX_LOCKS so condvar-paired lock workloads scale. */

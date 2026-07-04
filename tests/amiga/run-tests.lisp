@@ -6660,6 +6660,59 @@
                    (mp:make-thread (lambda () (* 4 10))))))
     (mapcar #'mp:join-thread threads)))
 
+; --- Tier-4 batch 6: interrupt/destroy delivery to PARKED threads (I5) ---
+; Pre-fix, interrupts were delivered only at safepoints; a target parked in
+; mp:condition-wait (never notified) or a blocking mp:acquire-lock never ran
+; another safepoint, so mp:destroy-thread of it was deferred FOREVER and the
+; destroyer's join hung (the FS-UAE watchdog would kill the whole suite).
+(check "t4b6 destroy thread parked in condition-wait" :done
+  (let* ((lk (mp:make-lock))
+         (cv (mp:make-condition-variable))
+         (th (mp:make-thread
+               (lambda ()
+                 (mp:acquire-lock lk)
+                 (loop (mp:condition-wait cv lk))))))
+    (sleep 0.4)
+    (mp:destroy-thread th)
+    (handler-case (mp:join-thread th) (error () nil))
+    :done))
+
+(check "t4b6 destroy thread parked in acquire-lock" :done
+  (let ((lk (mp:make-lock)))
+    (mp:acquire-lock lk)
+    (let ((th (mp:make-thread (lambda () (mp:acquire-lock lk) :got))))
+      (sleep 0.4)
+      (mp:destroy-thread th)
+      (handler-case (mp:join-thread th) (error () nil))
+      (mp:release-lock lk))
+    :done))
+
+; T1 (batch 6a): operations on a wrapper for an exited thread refuse cleanly
+; (generation counter) — join errors, alive-p is NIL, interrupt errors.
+(check "t4b6 stale wrapper join errors after exit" '(:err nil :err)
+  (let ((th (mp:make-thread (lambda () 1))))
+    (mp:join-thread th)
+    (list (handler-case (progn (mp:join-thread th) :joined)
+            (error () :err))
+          (mp:thread-alive-p th)
+          (handler-case (progn (mp:interrupt-thread th (lambda () nil)) :sent)
+            (error () :err)))))
+
+; I8 (batch 6b): dropping the last reference to a HELD lock leaks the OS
+; mutex instead of destroying it under the holder — must not crash/Guru.
+(check "t4b6 held lock finalize leaks not destroys" :ok
+  (progn (let ((l (mp:make-lock))) (mp:acquire-lock l))
+         (gc) (gc)
+         :ok))
+
+; ST5 (batch 6a): closing a synonym stream whose symbol holds a NON-stream
+; must not scribble stream fields into the object.
+(defvar *t4b6-not-a-stream* (copy-seq "keep me intact"))
+(check "t4b6 synonym close to non-stream is safe" t
+  (progn (handler-case (close (make-synonym-stream '*t4b6-not-a-stream*))
+           (error () nil))
+         (string= *t4b6-not-a-stream* "keep me intact")))
+
 ; NOTE: the GC-safe-region fix for the "STW GC deadlocks behind a thread parked
 ; in a blocking socket syscall" bug (the SLY :spawn read-loop deadlock) is
 ; regression-tested at the C level in tests/test_gc_threaded.c
