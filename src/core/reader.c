@@ -798,16 +798,82 @@ check_keyword:
     return cl_intern(buf, (uint32_t)len);
 }
 
-/* Read a string literal */
+/* Per-thread stash for read_string's heap-grown buffer (see below).  Indexed
+ * by CT->id, which is always < CL_MAX_THREADS (main thread is 0; mp:make-thread
+ * assigns from the same range — see thread.c/builtins_thread.c). */
+static char *rdstr_orphan_buf[CL_MAX_THREADS];
+
+/* Read a string literal.  The buffer GROWS: real-world string literals
+ * exceed any fixed cap (log4cl's pattern-layout docstring is >4KB), the old
+ * fixed buffer silently truncated them, and erroring at a cap broke loading
+ * conforming libraries — CLHS puts no length limit on string literals.
+ * Growth is geometric into platform memory.
+ *
+ * read_char() can itself longjmp out from underneath this loop — e.g.
+ * stream_raise_timeout() on a socket stream whose read deadline elapses
+ * mid-literal — bypassing every explicit free below.  So the heap buffer is
+ * also mirrored into a per-thread stash (rdstr_orphan_buf) on every grow;
+ * the next read_string call on this thread reclaims (frees) any buffer left
+ * there by a longjmp that skipped the normal free, bounding the leak to at
+ * most one stale buffer per thread instead of one per aborted read. */
 static CL_Obj read_string(void)
 {
-    char buf[4096]; /* UTF-8 encoded buffer */
-    int len = 0;
+    char stack_buf[4096]; /* UTF-8 encoded; covers the common case */
+    char *buf = stack_buf;
+    uint32_t cap = (uint32_t)sizeof(stack_buf);
+    uint32_t len = 0;
     int ch;
+    CL_Obj result;
+
+    if (rdstr_orphan_buf[CT->id]) {
+        platform_free(rdstr_orphan_buf[CT->id]);
+        rdstr_orphan_buf[CT->id] = NULL;
+    }
+
+#define RDSTR_ENSURE(n) \
+    do { \
+        if (len + (uint32_t)(n) + 1 > cap) { \
+            uint32_t newcap; \
+            char *nb_; \
+            if (cap > UINT32_MAX / 2) { \
+                if (buf != stack_buf) platform_free(buf); \
+                rdstr_orphan_buf[CT->id] = NULL; \
+                cl_reader_error(CL_ERR_STORAGE, \
+                    "String literal too large (over %u bytes)", \
+                    (unsigned)cap); \
+            } \
+            newcap = cap * 2; \
+            while (len + (uint32_t)(n) + 1 > newcap) { \
+                if (newcap > UINT32_MAX / 2) { \
+                    if (buf != stack_buf) platform_free(buf); \
+                    rdstr_orphan_buf[CT->id] = NULL; \
+                    cl_reader_error(CL_ERR_STORAGE, \
+                        "String literal too large (over %u bytes)", \
+                        (unsigned)newcap); \
+                } \
+                newcap *= 2; \
+            } \
+            nb_ = (char *)platform_alloc(newcap); \
+            if (!nb_) { \
+                if (buf != stack_buf) platform_free(buf); \
+                rdstr_orphan_buf[CT->id] = NULL; \
+                cl_reader_error(CL_ERR_STORAGE, \
+                    "String literal: out of memory at %u bytes", \
+                    (unsigned)len); \
+            } \
+            memcpy(nb_, buf, len); \
+            if (buf != stack_buf) platform_free(buf); \
+            buf = nb_; \
+            cap = newcap; \
+            rdstr_orphan_buf[CT->id] = buf; \
+        } \
+    } while (0)
 
     for (;;) {
         ch = read_char();
         if (ch < 0) {
+            if (buf != stack_buf) platform_free(buf);
+            rdstr_orphan_buf[CT->id] = NULL;
             cl_reader_error(CL_ERR_PARSE, "Unterminated string");
             return CL_NIL;
         }
@@ -815,6 +881,8 @@ static CL_Obj read_string(void)
         if (ch == '\\') {
             ch = read_char();
             if (ch < 0) {
+                if (buf != stack_buf) platform_free(buf);
+                rdstr_orphan_buf[CT->id] = NULL;
                 cl_reader_error(CL_ERR_PARSE, "Unterminated string escape");
                 return CL_NIL;
             }
@@ -831,28 +899,28 @@ static CL_Obj read_string(void)
             char tmp[4];
             int nb = cl_utf8_encode(ch, tmp);
             int j;
-            if (len + nb > 4095)
-                cl_reader_error(CL_ERR_PARSE,
-                    "String literal longer than 4095 bytes (reader limit)");
+            RDSTR_ENSURE(nb);
             for (j = 0; j < nb; j++)
                 buf[len++] = tmp[j];
         } else
 #endif
         {
-            /* Erroring beats the old silent truncation: a >4095-byte string
-             * literal used to lose its tail without any diagnostic. */
-            if (len >= 4095)
-                cl_reader_error(CL_ERR_PARSE,
-                    "String literal longer than 4095 bytes (reader limit)");
+            RDSTR_ENSURE(1);
             buf[len++] = (char)ch;
         }
     }
     buf[len] = '\0';
+#undef RDSTR_ENSURE
 #ifdef CL_WIDE_STRINGS
-    return cl_utf8_to_cl_string(buf, (uint32_t)len);
+    result = cl_utf8_to_cl_string(buf, len);
 #else
-    return cl_make_string(buf, (uint32_t)len);
+    result = cl_make_string(buf, len);
 #endif
+    if (buf != stack_buf) {
+        platform_free(buf);
+        rdstr_orphan_buf[CT->id] = NULL;
+    }
+    return result;
 }
 
 /* Read a standard "..." string body from STREAM, assuming the opening quote
