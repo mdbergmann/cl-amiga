@@ -697,6 +697,11 @@ void *cl_condvar_table[CL_MAX_CONDVARS];
 CL_Thread *cl_lock_held[CL_MAX_LOCKS];   /* see thread.h */
 uint32_t cl_lock_depth[CL_MAX_LOCKS];    /* see thread.h */
 
+/* Global lock-acquire parking lot — see thread.h. */
+void *cl_lock_park_mutex = NULL;
+void *cl_lock_park_cv = NULL;
+volatile uint32_t cl_lock_park_waiters = 0;
+
 int cl_thread_table_alloc(CL_Thread *t)
 {
     int i, result = -1;
@@ -853,6 +858,11 @@ void cl_thread_init(void)
     platform_mutex_init(&gc_mutex);
     platform_condvar_init(&gc_condvar);
 
+    /* Initialize the lock-acquire parking lot (see thread.h) */
+    platform_mutex_init(&cl_lock_park_mutex);
+    platform_condvar_init(&cl_lock_park_cv);
+    cl_lock_park_waiters = 0;
+
     /* Allocate NLX stack */
     cl_main_thread.nlx_stack = (CL_NLXFrame *)platform_alloc(
         CL_MAX_NLX_FRAMES * sizeof(CL_NLXFrame));
@@ -925,6 +935,16 @@ void cl_thread_shutdown(void)
     if (gc_mutex) {
         platform_mutex_destroy(gc_mutex);
         gc_mutex = NULL;
+    }
+
+    /* Destroy the lock-acquire parking lot */
+    if (cl_lock_park_cv) {
+        platform_condvar_destroy(cl_lock_park_cv);
+        cl_lock_park_cv = NULL;
+    }
+    if (cl_lock_park_mutex) {
+        platform_mutex_destroy(cl_lock_park_mutex);
+        cl_lock_park_mutex = NULL;
     }
 
     /* Destroy thread registry lock */

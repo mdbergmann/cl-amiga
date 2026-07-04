@@ -11,8 +11,10 @@
 #   2. the interrupt/destroy publisher acquires the target's wait mutex
 #      and broadcasts its condvar, so the target either saw the flag
 #      pre-park or is parked and receives the broadcast;
-#   3. blocking acquire-lock is a trylock + 10ms-sleep loop that checks
-#      interrupt_pending each round.
+#   3. blocking acquire-lock is a trylock loop (yield-spin phase, then
+#      parked on the shared lock-parking condvar) that checks
+#      interrupt_pending each round; the publisher broadcasts the parking
+#      cv and a timed backstop bounds delivery.
 # T5: exiting the process while spinner workers are still running must
 # not crash in teardown (gc_mutex/list-lock destroyed under live threads
 # pre-fix; now deliberately leaked when workers remain).

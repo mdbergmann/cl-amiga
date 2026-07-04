@@ -473,6 +473,23 @@ extern uint32_t cl_lock_depth[CL_MAX_LOCKS];
  * Sized to mirror CL_MAX_LOCKS so condvar-paired lock workloads scale. */
 extern void *cl_condvar_table[CL_MAX_CONDVARS];
 
+/* Global parking lot for contended blocking MP:ACQUIRE-LOCK (all locks
+ * share it).  A blocking acquire that exhausts its trylock/yield spin
+ * phase registers in cl_lock_park_waiters (under cl_lock_park_mutex) and
+ * parks on cl_lock_park_cv with a timed backstop; bi_release_lock
+ * broadcasts the cv whenever waiters are registered, so a lock handoff
+ * wakes the waiter immediately instead of on a sleep-poll grid (the
+ * 10ms-sleep escalation this replaces collapsed sento message throughput
+ * ~6x).  wake_interrupted_waiter broadcasts it too, so interrupt/destroy
+ * reaches lock-parked threads promptly (I5); the timed backstop bounds
+ * delivery even on a lost wake.  Sharing one cv means a broadcast wakes
+ * parked waiters of unrelated locks — they retrylock, fail, and re-park;
+ * with realistic thread counts that herd is tiny, and it frees us from
+ * per-lock condvar lifecycle management (16K table slots, finalizers). */
+extern void *cl_lock_park_mutex;
+extern void *cl_lock_park_cv;
+extern volatile uint32_t cl_lock_park_waiters;
+
 /* Allocate and initialize a new CL_Thread for a worker */
 CL_Thread *cl_thread_alloc_worker(void);
 

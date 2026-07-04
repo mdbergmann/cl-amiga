@@ -6698,6 +6698,32 @@
           (handler-case (progn (mp:interrupt-thread th (lambda () nil)) :sent)
             (error () :err)))))
 
+; Tier-4 follow-up: contended blocking acquire-lock parks on the shared
+; lock-parking condvar (broadcast by release-lock) instead of sleep-polling
+; on a 10ms grid — the poll grid collapsed sento message throughput ~6x on
+; host.  No timing assertion here (14MHz 68020, 20ms Delay ticks): this
+; exercises the park/broadcast path functionally — waiters must all be
+; woken (no lost broadcast = no hang; the FS-UAE watchdog catches one) and
+; mutual exclusion must hold under work done inside the critical section.
+(check "t4-lockpark contended waiters all woken, counter exact" 300
+  (let ((lk (mp:make-lock))
+        (counter (list 0)))
+    (let ((workers
+            (let ((acc nil))
+              (dotimes (i 3 (nreverse acc))
+                (push (mp:make-thread
+                        (lambda ()
+                          (dotimes (j 100)
+                            (mp:acquire-lock lk)
+                            (let ((work 0))
+                              (dotimes (k 50) (setq work (+ work k)))
+                              (setf (car counter)
+                                    (+ 1 (car counter) (* 0 work))))
+                            (mp:release-lock lk))))
+                      acc)))))
+      (dolist (th workers) (mp:join-thread th)))
+    (car counter)))
+
 ; I8 (batch 6b): dropping the last reference to a HELD lock leaks the OS
 ; mutex instead of destroying it under the holder — must not crash/Guru.
 (check "t4b6 held lock finalize leaks not destroys" :ok
