@@ -1584,7 +1584,10 @@ static CL_Obj bi_vector_push(CL_Obj *args, int n)
    Note: arena allocator cannot resize in-place, so the old vector object
    is patched with the new capacity by copying back over the old allocation
    if the new size fits, otherwise errors. Pre-allocate enough capacity. */
-static CL_Obj bi_vector_push_extend(CL_Obj *args, int n)
+/* Non-static: exercised directly by tests/test_gc_mem_hardening.c to hit
+ * the rank>1 displacement backstop without needing Lisp-level access to a
+ * rank>1 fill-pointer/adjustable vector (unreachable via MAKE-ARRAY). */
+CL_Obj bi_vector_push_extend(CL_Obj *args, int n)
 {
     CL_Vector *vec;
     uint32_t fp, new_cap, old_len, i;
@@ -1657,7 +1660,17 @@ static CL_Obj bi_vector_push_extend(CL_Obj *args, int n)
     /* Store new element */
     new_data[fp] = args[0];
 
-    /* Displace old vector to new backing vector */
+    /* Displace old vector to new backing vector.
+     * GC displacement contract: the backing ref lives at
+     * data[CL_DISP_BASE_IDX] — data[rank] for rank>1, data[0] otherwise.
+     * This in-place write assumes rank<=1; on a rank>1 array the GC's
+     * mark/relocate would read a dimension fixnum as the backing pointer
+     * and silently corrupt.  Unreachable today (fill pointers exist only
+     * on vectors), so fail loudly if the invariant ever breaks. */
+    if (vec->rank > 1)
+        cl_error(CL_ERR_GENERAL,
+                 "VECTOR-PUSH-EXTEND: internal error — cannot displace a "
+                 "rank-%u array in place", (unsigned)vec->rank);
     vec->data[0] = new_arr;
     vec->data[1] = CL_MAKE_FIXNUM(0);  /* displacement offset = 0 */
     vec->flags |= CL_VEC_FLAG_DISPLACED;
@@ -1691,7 +1704,8 @@ static CL_Obj bi_vector_pop(CL_Obj *args, int n)
 /* ======================================================= */
 
 /* (adjust-array array new-dimensions &key :initial-element :fill-pointer) → new-array */
-static CL_Obj bi_adjust_array(CL_Obj *args, int n)
+/* Non-static: see bi_vector_push_extend comment above. */
+CL_Obj bi_adjust_array(CL_Obj *args, int n)
 {
     CL_Vector *old_vec;
     CL_Vector *new_vec;
@@ -1801,7 +1815,14 @@ static CL_Obj bi_adjust_array(CL_Obj *args, int n)
     }
 
     if (old_vec->flags & CL_VEC_FLAG_ADJUSTABLE) {
-        /* Adjustable: modify in place via displacement (CL spec identity) */
+        /* Adjustable: modify in place via displacement (CL spec identity).
+         * Same GC displacement contract as VECTOR-PUSH-EXTEND: the
+         * data[0]/data[1] writes require rank<=1 (guarded at entry; this
+         * backstop keeps the GC contract loud if that guard ever moves). */
+        if (old_vec->rank > 1)
+            cl_error(CL_ERR_GENERAL,
+                     "ADJUST-ARRAY: internal error — cannot displace a "
+                     "rank-%u array in place", (unsigned)old_vec->rank);
         old_vec->data[0] = new_arr;
         old_vec->data[1] = CL_MAKE_FIXNUM(0);  /* displacement offset = 0 */
         old_vec->flags |= CL_VEC_FLAG_DISPLACED;

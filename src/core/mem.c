@@ -56,6 +56,8 @@ static int gc_mark_overflow = 0;  /* Set when mark stack overflows */
 /* Forward declarations */
 static void gc_mark(void);
 static void gc_sweep(void);
+static void gc_reset_transient_state(void);
+static int root_slot_independently_forwarded(CL_Obj *slot);
 void gc_mark_obj(CL_Obj obj);
 static void gc_mark_push(CL_Obj obj);
 static void *alloc_from_free_list(uint32_t *sizep, uint32_t max_steps);
@@ -85,6 +87,13 @@ static int gc_verify_errors;  /* defined/reset inside gc_verify_marked */
  * Allocated via platform_alloc during compaction, freed afterwards. */
 static uint32_t *gc_fwd_table = NULL;
 static uint32_t gc_fwd_table_entries = 0;
+
+/* Bump level at which the last forwarding-table platform_alloc failed
+ * (0 = none).  While the bump front is at or above this level a
+ * sweep-triggered compaction attempt (cl_alloc trigger 2) would fail the
+ * same way — full mark work for nothing — so trigger 2 is gated on it.
+ * Cleared by a successful compaction (which also resets the bump). */
+static uint32_t gc_fwd_fail_bump = 0;
 
 /* Track last GC cycle at which compaction ran — prevents infinite loops
  * when the heap is genuinely full (no fragmentation to reclaim). */
@@ -190,6 +199,12 @@ void cl_mem_init(uint32_t heap_size)
     gc_root_count = 0;
     gc_mark_top = 0;
 
+    /* Reset GC state that survives in static storage across heap
+     * re-initialization (each C unit test, embedded restarts): pending
+     * flags and JIT scan/pin bookkeeping hold offsets and decisions from
+     * the PREVIOUS arena. */
+    gc_reset_transient_state();
+
     /* Reset the global root registry: registered slots are static C
      * globals still holding offsets into the PREVIOUS heap after a
      * shutdown/re-init cycle.  Marking them before their init functions
@@ -229,6 +244,12 @@ static uint32_t        *jit_pinned       = NULL;
 static int              jit_pinned_count = 0;
 static int              jit_pinned_cap   = 0;
 
+/* Set when jit_pin_record could not grow jit_pinned[] (platform_alloc
+ * OOM): the pinned set is incomplete, so cl_gc_compact MUST NOT move
+ * anything this cycle — a live JIT frame's spilled C-stack word would
+ * keep the old offset of a relocated object.  Reset by gc_mark. */
+static int              gc_jit_pin_oom   = 0;
+
 /* Free-list snapshot for the conservative JIT-stack scan.  A free block's
  * header word is its raw size (<= CL_HDR_SIZE_MASK), which reads as an
  * UNMARKED TYPE_CONS — so a stale spill word holding a freed offset would
@@ -249,6 +270,19 @@ static int              jit_scan_free_valid = 0;
  * cl_gc_compact flushes the CPU caches once at the end so 68040/060
  * don't execute stale instruction-cache copies of the patched code. */
 static int gc_native_code_patched = 0;
+
+/* Reset static GC bookkeeping on heap re-initialization — see the call
+ * in cl_mem_init.  (Defined here, below all the statics it touches.) */
+static void gc_reset_transient_state(void)
+{
+    gc_compact_pending = 0;
+    gc_mark_overflow = 0;
+    gc_fwd_fail_bump = 0;
+    gc_jit_pin_oom = 0;
+    jit_pinned_count = 0;
+    jit_scan_free_count = 0;
+    jit_scan_free_valid = 0;
+}
 
 void cl_mem_shutdown(void)
 {
@@ -285,9 +319,20 @@ void cl_mem_shutdown(void)
     }
 }
 
+/* Wrap-safe bump-fit check.  The naive `bump + size <= arena_size` wraps
+ * in uint32 when bump sits near the end of a ~4GB arena (size is capped
+ * at CL_HDR_SIZE_MASK by cl_alloc, but bump + 8MB can still exceed
+ * UINT32_MAX for arena sizes above ~4GB-8MB) — the wrapped sum passes
+ * the check and hands out a pointer past the arena.  Non-static so the
+ * unit test can exercise the wrap arithmetic without a 4GB heap. */
+int cl_bump_fits(uint32_t bump, uint32_t size, uint32_t arena_size)
+{
+    return size <= arena_size && bump <= arena_size - size;
+}
+
 static void *alloc_from_bump(uint32_t size)
 {
-    if (cl_heap.bump + size <= cl_heap.arena_size) {
+    if (cl_bump_fits(cl_heap.bump, size, cl_heap.arena_size)) {
         void *ptr = cl_heap.arena + cl_heap.bump;
         cl_heap.bump += size;
         return ptr;
@@ -475,7 +520,9 @@ void *cl_alloc(uint8_t type, uint32_t size)
             uint32_t probe_live_hwm = cl_heap.arena_size - (cl_heap.arena_size >> 3);
             int will_compact_t2 = (gc_last_compact_cycle != cl_heap.gc_count) &&
                                   (cl_heap.total_allocated < probe_live_hwm) &&
-                                  (gc_sweeps_since_compact >= GC_SWEEPS_BEFORE_COMPACT);
+                                  (gc_sweeps_since_compact >= GC_SWEEPS_BEFORE_COMPACT) &&
+                                  !(gc_fwd_fail_bump &&
+                                    cl_heap.bump >= gc_fwd_fail_bump);
             if (!will_compact_t2)
                 ptr = alloc_from_free_list(&size, CL_FREELIST_PROBE_LIMIT);
         }
@@ -511,8 +558,16 @@ void *cl_alloc(uint8_t type, uint32_t size)
             uint32_t live_hwm =
                 cl_heap.arena_size - (cl_heap.arena_size >> 3);   /* 7/8 arena */
             int compaction_worthwhile = (cl_heap.total_allocated < live_hwm);
+            /* Trigger 2 is additionally gated on the forwarding-table OOM
+             * latch (gc_fwd_fail_bump): re-attempting at the same bump
+             * level would fail the same platform_alloc again after a full
+             * (wasted) mark pass.  Trigger 1 (!ptr) is exempt — when
+             * compaction is the ONLY way to satisfy the allocation it
+             * must be attempted regardless. */
+            int fwd_blocked = (gc_fwd_fail_bump != 0 &&
+                               cl_heap.bump >= gc_fwd_fail_bump);
             if (!ptr ||
-                (compaction_worthwhile &&
+                (compaction_worthwhile && !fwd_blocked &&
                  gc_sweeps_since_compact >= GC_SWEEPS_BEFORE_COMPACT)) {
                 gc_compact_pending = 1;
                 gc_last_compact_cycle = cl_heap.gc_count;
@@ -574,10 +629,19 @@ CL_Obj cl_cons(CL_Obj car, CL_Obj cdr)
 
 CL_Obj cl_make_string(const char *str, uint32_t len)
 {
-    uint32_t alloc_size = sizeof(CL_String) + len + 1;
+    uint32_t alloc_size;
     CL_String *s;
     char stack_buf[256];
     char *safe_str = NULL;
+
+    /* Cap BEFORE computing alloc_size — len near UINT32_MAX wraps the
+     * `+ len + 1` arithmetic past cl_alloc's byte-size guard (see the
+     * CL_MAX_* block in mem.h). */
+    if (len > CL_MAX_STRING_CHARS)
+        cl_storage_error("MAKE-STRING: length %u exceeds the maximum "
+                         "heap object size (max %u characters)",
+                         (unsigned)len, (unsigned)CL_MAX_STRING_CHARS);
+    alloc_size = sizeof(CL_String) + len + 1;
 
     /* If str points into the arena, copy to a safe buffer first.
      * cl_alloc below may trigger GC compaction which moves arena objects,
@@ -590,10 +654,15 @@ CL_Obj cl_make_string(const char *str, uint32_t len)
             safe_str = stack_buf;
         } else {
             safe_str = (char *)platform_alloc(len + 1);
-            if (safe_str) {
-                memcpy(safe_str, str, len);
-                safe_str[len] = '\0';
-            }
+            if (!safe_str)
+                /* MUST NOT fall back to the arena pointer: cl_alloc below
+                 * can compact, leaving `str` pointing at moved/freed bytes
+                 * — the memcpy would then build a silent garbage string.
+                 * Fail loudly instead. */
+                cl_storage_error("MAKE-STRING: out of C memory copying a "
+                                 "%u-char arena-resident source", (unsigned)len);
+            memcpy(safe_str, str, len);
+            safe_str[len] = '\0';
         }
         str = safe_str ? safe_str : str;
     }
@@ -617,10 +686,18 @@ CL_Obj cl_make_string(const char *str, uint32_t len)
 #ifdef CL_WIDE_STRINGS
 CL_Obj cl_make_wide_string(const uint32_t *chars, uint32_t len)
 {
-    uint32_t alloc_size = sizeof(CL_WideString) + len * sizeof(uint32_t);
+    uint32_t alloc_size;
     CL_WideString *s;
     uint32_t stack_buf[64];
     uint32_t *safe_chars = NULL;
+
+    /* Cap BEFORE computing alloc_size — len >= 2^30 wraps the `* 4`
+     * arithmetic past cl_alloc's byte-size guard (see mem.h). */
+    if (len > CL_MAX_WIDE_STRING_CHARS)
+        cl_storage_error("MAKE-WIDE-STRING: length %u exceeds the maximum "
+                         "heap object size (max %u wide characters)",
+                         (unsigned)len, (unsigned)CL_MAX_WIDE_STRING_CHARS);
+    alloc_size = sizeof(CL_WideString) + len * sizeof(uint32_t);
 
     /* If chars points into the arena, copy to a safe buffer first.
      * cl_alloc below may trigger GC compaction which moves arena objects,
@@ -632,8 +709,13 @@ CL_Obj cl_make_wide_string(const uint32_t *chars, uint32_t len)
             safe_chars = stack_buf;
         } else {
             safe_chars = (uint32_t *)platform_alloc(len * sizeof(uint32_t));
-            if (safe_chars)
-                memcpy(safe_chars, chars, len * sizeof(uint32_t));
+            if (!safe_chars)
+                /* Same rule as cl_make_string: never keep the arena
+                 * pointer across the allocating call below. */
+                cl_storage_error("MAKE-WIDE-STRING: out of C memory copying a "
+                                 "%u-char arena-resident wide source",
+                                 (unsigned)len);
+            memcpy(safe_chars, chars, len * sizeof(uint32_t));
         }
         chars = safe_chars ? safe_chars : chars;
     }
@@ -691,8 +773,17 @@ CL_Obj cl_make_function(CL_CFunc func, CL_Obj name, int min_args, int max_args)
 
 CL_Obj cl_make_vector(uint32_t length)
 {
-    uint32_t alloc_size = sizeof(CL_Vector) + length * sizeof(CL_Obj);
-    CL_Vector *v = (CL_Vector *)cl_alloc(TYPE_VECTOR, alloc_size);
+    uint32_t alloc_size;
+    CL_Vector *v;
+    /* Cap BEFORE computing alloc_size — length >= 2^30 wraps the `* 4`
+     * arithmetic past cl_alloc's byte-size guard (see mem.h).  Reachable
+     * with corrupted FASL vector lengths (raw u32 from disk). */
+    if (length > CL_MAX_VECTOR_ELTS)
+        cl_storage_error("MAKE-VECTOR: length %u exceeds the maximum "
+                         "heap object size (max %u elements)",
+                         (unsigned)length, (unsigned)CL_MAX_VECTOR_ELTS);
+    alloc_size = sizeof(CL_Vector) + length * sizeof(CL_Obj);
+    v = (CL_Vector *)cl_alloc(TYPE_VECTOR, alloc_size);
     if (!v) return CL_NIL;
     v->length = length;
     v->fill_pointer = CL_NO_FILL_POINTER;
@@ -708,9 +799,17 @@ CL_Obj cl_make_array(uint32_t total, uint8_t rank, uint32_t *dims,
                      uint8_t flags, uint32_t fill_ptr)
 {
     /* For multi-dim (rank>1): store dimensions in data[0..rank-1], elements at data[rank..] */
-    uint32_t n_data = (rank > 1) ? (uint32_t)rank + total : total;
+    uint32_t n_data;
     uint32_t alloc_size;
     CL_Vector *v;
+    /* Cap BEFORE computing n_data/alloc_size — see cl_make_vector. */
+    if (total > CL_MAX_VECTOR_ELTS ||
+        (rank > 1 && (uint32_t)rank > CL_MAX_VECTOR_ELTS - total))
+        cl_storage_error("MAKE-ARRAY: total size %u (rank %u) exceeds the "
+                         "maximum heap object size (max %u elements)",
+                         (unsigned)total, (unsigned)rank,
+                         (unsigned)CL_MAX_VECTOR_ELTS);
+    n_data = (rank > 1) ? (uint32_t)rank + total : total;
     /* Adjustable vectors need at least 2 data slots for displacement:
        data[0] = backing vector, data[1] = displaced-index-offset */
     if ((flags & (CL_VEC_FLAG_ADJUSTABLE | CL_VEC_FLAG_FILL_POINTER)) && n_data < 2)
@@ -757,6 +856,14 @@ CL_Obj cl_make_hashtable(uint32_t bucket_count, uint32_t test)
 {
     uint32_t alloc_size;
     CL_Hashtable *ht;
+
+    /* Cap BEFORE the power-of-two round-up: counts > 2^31 make the
+     * round-up loop below spin forever (p <<= 1 wraps to 0), and large
+     * counts wrap alloc_size past cl_alloc's byte-size guard (mem.h). */
+    if (bucket_count > CL_MAX_HT_BUCKETS)
+        cl_storage_error("MAKE-HASH-TABLE: %u buckets exceeds the maximum "
+                         "heap object size (max %u)",
+                         (unsigned)bucket_count, (unsigned)CL_MAX_HT_BUCKETS);
 
     /* Round up to power of 2 for fast bitmask indexing (avoids division) */
     if (bucket_count < 2) bucket_count = 2;
@@ -823,8 +930,16 @@ CL_Obj cl_make_restart(CL_Obj name, CL_Obj function, CL_Obj report,
 
 CL_Obj cl_make_struct(CL_Obj type_name, uint32_t n_slots)
 {
-    uint32_t alloc_size = sizeof(CL_Struct) + n_slots * sizeof(CL_Obj);
+    uint32_t alloc_size;
     CL_Struct *st;
+
+    /* Cap BEFORE computing alloc_size — see cl_make_vector.  Reachable
+     * with corrupted FASL struct slot counts (raw u32 from disk). */
+    if (n_slots > CL_MAX_STRUCT_SLOTS)
+        cl_storage_error("MAKE-STRUCT: %u slots exceeds the maximum "
+                         "heap object size (max %u)",
+                         (unsigned)n_slots, (unsigned)CL_MAX_STRUCT_SLOTS);
+    alloc_size = sizeof(CL_Struct) + n_slots * sizeof(CL_Obj);
 
     CL_GC_PROTECT(type_name);
     st = (CL_Struct *)cl_alloc(TYPE_STRUCT, alloc_size);
@@ -839,8 +954,15 @@ CL_Obj cl_make_struct(CL_Obj type_name, uint32_t n_slots)
 
 CL_Obj cl_make_bignum(uint32_t n_limbs, uint32_t sign)
 {
-    uint32_t alloc_size = sizeof(CL_Bignum) + n_limbs * sizeof(uint16_t);
-    CL_Bignum *bn = (CL_Bignum *)cl_alloc(TYPE_BIGNUM, alloc_size);
+    uint32_t alloc_size;
+    CL_Bignum *bn;
+    /* Cap BEFORE computing alloc_size — see cl_make_vector. */
+    if (n_limbs > CL_MAX_BIGNUM_LIMBS)
+        cl_storage_error("MAKE-BIGNUM: %u limbs exceeds the maximum "
+                         "heap object size (max %u)",
+                         (unsigned)n_limbs, (unsigned)CL_MAX_BIGNUM_LIMBS);
+    alloc_size = sizeof(CL_Bignum) + n_limbs * sizeof(uint16_t);
+    bn = (CL_Bignum *)cl_alloc(TYPE_BIGNUM, alloc_size);
     if (!bn) return CL_NIL;
     bn->length = n_limbs;
     bn->sign = sign;
@@ -923,9 +1045,18 @@ CL_Obj cl_make_random_state(uint32_t seed)
 
 CL_Obj cl_make_bit_vector(uint32_t nbits)
 {
-    uint32_t nwords = CL_BV_WORDS(nbits);
-    uint32_t alloc_size = sizeof(CL_BitVector) + nwords * sizeof(uint32_t);
-    CL_BitVector *bv = (CL_BitVector *)cl_alloc(TYPE_BIT_VECTOR, alloc_size);
+    uint32_t nwords;
+    uint32_t alloc_size;
+    CL_BitVector *bv;
+    /* Cap BEFORE CL_BV_WORDS — nbits near UINT32_MAX wraps the `+ 31`
+     * arithmetic to a tiny word count (see mem.h). */
+    if (nbits > CL_MAX_BV_BITS)
+        cl_storage_error("MAKE-BIT-VECTOR: length %u exceeds the maximum "
+                         "heap object size (max %u bits)",
+                         (unsigned)nbits, (unsigned)CL_MAX_BV_BITS);
+    nwords = CL_BV_WORDS(nbits);
+    alloc_size = sizeof(CL_BitVector) + nwords * sizeof(uint32_t);
+    bv = (CL_BitVector *)cl_alloc(TYPE_BIT_VECTOR, alloc_size);
     if (!bv) return CL_NIL;
     bv->length = nbits;
     bv->fill_pointer = CL_NO_FILL_POINTER;
@@ -1449,11 +1580,13 @@ static int cand_cmp(const void *a, const void *b)
 }
 
 /* Append a validated pinned offset.  Called from gc_scan_jit_native_stack's
- * ascending arena walk, so the array stays sorted; skip consecutive
- * duplicates (multiple stack slots can reference the same object).  On
- * OOM the object is still marked live (gc_mark_obj already ran) — it just
- * won't be pinned, so it may move; that reintroduces the staleness risk
- * for this one cycle but never corrupts, so a best-effort append is safe. */
+ * ascending arena walk, so the array stays sorted per scan; skip
+ * consecutive duplicates (multiple stack slots can reference the same
+ * object).  On OOM the object is still marked live (gc_mark_obj already
+ * ran) but it is NOT safe to simply leave it unpinned: a compaction would
+ * relocate it while the JIT frame's spilled offset stays stale — silent
+ * corruption on resume.  Set gc_jit_pin_oom so cl_gc_compact degrades to
+ * a non-moving mark+sweep for this cycle. */
 static void jit_pin_record(uint32_t offset)
 {
     if (jit_pinned_count > 0 && jit_pinned[jit_pinned_count - 1] == offset)
@@ -1462,7 +1595,17 @@ static void jit_pin_record(uint32_t offset)
         int new_cap = jit_pinned_cap ? jit_pinned_cap * 2 : 256;
         uint32_t *buf = (uint32_t *)platform_alloc(
             (unsigned long)new_cap * sizeof(uint32_t));
-        if (!buf) return;
+        if (!buf) {
+            static int pin_oom_warned = 0;
+            gc_jit_pin_oom = 1;
+            if (!pin_oom_warned) {
+                pin_oom_warned = 1;
+                platform_write_string(
+                    "GC: JIT pin-table allocation failed — compaction "
+                    "suppressed for this cycle (mark+sweep only)\n");
+            }
+            return;
+        }
         if (jit_pinned) {
             memcpy(buf, jit_pinned, (size_t)jit_pinned_count * sizeof(uint32_t));
             platform_free(jit_pinned);
@@ -1541,6 +1684,7 @@ static void gc_scan_jit_native_stack(CL_Thread *t)
     uint32_t *candidates;
     int n_cand = 0;
     int upper;
+    int cand_cap;
     char *scan_lo;
     char *scan_hi;
     uintptr_t addr;
@@ -1576,57 +1720,74 @@ static void gc_scan_jit_native_stack(CL_Thread *t)
 
     /* Exact upper bound: one slot per 4-byte aligned word in the window. */
     upper = (int)(((uintptr_t)scan_hi - addr) / 4);
-    if (!jit_scan_cand_reserve(upper)) {
+    if (jit_scan_cand_reserve(upper)) {
+        candidates = jit_scan_cand_buf;
+        cand_cap = upper;
+    } else {
+        /* OOM fallback: a SKIPPED scan would leave JIT-only-reachable
+         * objects unmarked — the following sweep frees them under the
+         * live JIT frame (real corruption, not merely "less precise").
+         * Degrade to chunked scanning through a small static buffer
+         * instead: correct, needs no memory, costs one extra arena walk
+         * per full chunk. */
+        static uint32_t emergency_buf[256];
         if (!oom_warned) {
             oom_warned = 1;
             platform_write_string(
                 "GC: JIT native-stack scan buffer allocation failed — "
-                "some values may not be conservatively rooted this cycle\n");
+                "falling back to chunked scanning (slower, still safe)\n");
         }
-        return;
-    }
-    candidates = jit_scan_cand_buf;
-
-    /* Phase 1: collect candidate offsets. */
-    for (; addr + 4 <= (uintptr_t)scan_hi; addr += 4) {
-        CL_Obj w = *(const CL_Obj *)(uintptr_t)addr;
-        if (CL_NULL_P(w) || CL_FIXNUM_P(w) || CL_CHAR_P(w)) continue;
-        if (w >= cl_heap.arena_size) continue;
-        candidates[n_cand++] = (uint32_t)w;
+        candidates = emergency_buf;
+        cand_cap = (int)(sizeof(emergency_buf) / sizeof(emergency_buf[0]));
     }
 
-    if (n_cand == 0) return;
-
-    /* Sort candidates so the arena walk can binary-search. */
-    qsort(candidates, n_cand, sizeof(candidates[0]), cand_cmp);
-
-    /* Snapshot the free list once per GC cycle so the walk below can
-     * reject candidates that point at free blocks (their header word is
-     * a raw size that masquerades as an unmarked TYPE_CONS). */
-    if (!jit_scan_free_valid)
-        jit_scan_collect_free_snapshot();
-
-    /* Phase 2: walk the arena bump-front; for each real header
-     * offset that appears in `candidates`, mark it.  Walking from
-     * CL_ALIGN (offset 0 is reserved for NIL) by header size,
-     * matching gc_sweep's iteration. */
-    p   = cl_heap.arena + CL_ALIGN;
-    end = cl_heap.arena + cl_heap.bump;
-    while (p < end) {
-        uint32_t size = CL_HDR_SIZE(p);
-        uint32_t offset;
-        if (size == 0) break;       /* defensive: malformed header */
-        offset = (uint32_t)(p - cl_heap.arena);
-        if (cand_bsearch(candidates, n_cand, offset) &&
-            !gc_offset_is_free_block(offset)) {
-            gc_mark_obj((CL_Obj)offset);
-            /* Pin it: the compactor must not move an object reachable only
-             * through a conservative (offset-valued) C-stack reference, or
-             * the JIT's spilled pointer would dangle.  Recorded in ascending
-             * order (this walk is monotonic) for gc_compute_forwarding. */
-            jit_pin_record(offset);
+    /* Chunked scan: collect up to cand_cap candidate offsets, resolve
+     * them against the arena, repeat until the window is exhausted.  The
+     * normal path (cand_cap == upper) runs exactly one iteration. */
+    while (addr + 4 <= (uintptr_t)scan_hi) {
+        /* Phase 1: collect candidate offsets. */
+        n_cand = 0;
+        for (; addr + 4 <= (uintptr_t)scan_hi && n_cand < cand_cap; addr += 4) {
+            CL_Obj w = *(const CL_Obj *)(uintptr_t)addr;
+            if (CL_NULL_P(w) || CL_FIXNUM_P(w) || CL_CHAR_P(w)) continue;
+            if (w >= cl_heap.arena_size) continue;
+            candidates[n_cand++] = (uint32_t)w;
         }
-        p += size;
+
+        if (n_cand == 0) break;   /* window exhausted with no candidates */
+
+        /* Sort candidates so the arena walk can binary-search. */
+        qsort(candidates, n_cand, sizeof(candidates[0]), cand_cmp);
+
+        /* Snapshot the free list once per GC cycle so the walk below can
+         * reject candidates that point at free blocks (their header word is
+         * a raw size that masquerades as an unmarked TYPE_CONS). */
+        if (!jit_scan_free_valid)
+            jit_scan_collect_free_snapshot();
+
+        /* Phase 2: walk the arena bump-front; for each real header
+         * offset that appears in `candidates`, mark it.  Walking from
+         * CL_ALIGN (offset 0 is reserved for NIL) by header size,
+         * matching gc_sweep's iteration. */
+        p   = cl_heap.arena + CL_ALIGN;
+        end = cl_heap.arena + cl_heap.bump;
+        while (p < end) {
+            uint32_t size = CL_HDR_SIZE(p);
+            uint32_t offset;
+            if (size == 0) break;       /* defensive: malformed header */
+            offset = (uint32_t)(p - cl_heap.arena);
+            if (cand_bsearch(candidates, n_cand, offset) &&
+                !gc_offset_is_free_block(offset)) {
+                gc_mark_obj((CL_Obj)offset);
+                /* Pin it: the compactor must not move an object reachable
+                 * only through a conservative (offset-valued) C-stack
+                 * reference, or the JIT's spilled pointer would dangle.
+                 * Ascending within one chunk; gc_compute_forwarding sorts
+                 * the aggregate (chunks/threads can interleave). */
+                jit_pin_record(offset);
+            }
+            p += size;
+        }
     }
 }
 
@@ -1714,6 +1875,23 @@ int cl_gc_audit_roots(void)
         }
     }
 
+    /* Informational: roots aliasing an independently-forwarded thread
+     * region (VM stack, mv_values, pending throw values, dyn/handler/
+     * restart stacks, vm_extra_args, compiler chain).  Harmless by
+     * construction — gc_update_registered_roots skips them — but each
+     * marks a redundant CL_GC_PROTECT worth removing at the source.
+     * Not counted as violations. */
+    for (t = cl_thread_list; t; t = t->next) {
+        for (i = 0; i < t->gc_root_count; i++) {
+            if (root_slot_independently_forwarded(t->gc_roots[i])) {
+                fprintf(stderr, "GC root audit: note — thread root #%d "
+                        "aliases an independently-forwarded thread region "
+                        "(redundant CL_GC_PROTECT; skipped by the root "
+                        "dedup pass)\n", i);
+            }
+        }
+    }
+
     if (multithread)
         cl_gc_resume_the_world();
 
@@ -1792,6 +1970,18 @@ static void gc_mark_thread_roots(CL_Thread *t)
         GC_DBG_SRC("mv_values", i);
         gc_mark_obj(t->mv_values[i]);
     }
+    /* NOTE: pre_call_mv_values is deliberately NOT marked (nor forwarded
+     * in gc_update_thread_roots).  call_builtin (vm.c) snapshots mv_values
+     * into it immediately before every builtin invocation, and the only
+     * consumers (THROW's NLX capture paths in builtins_io.c) read it back
+     * BEFORE any allocating call in that window — verified zero-alloc, so
+     * no GC can observe a live-but-unmarked value there.  Outside that
+     * window the array holds stale offsets from completed calls; marking
+     * those would set mark bits at non-object-start offsets and corrupt
+     * the arena walk (same hazard as nlx_stack[i].mv_values above).
+     * REGRESSION HAZARD: if an NLX builtin ever allocates before
+     * consuming pre_call_mv_values, these slots must instead be marked +
+     * forwarded under a validity flag, like pending_mv_values below. */
     GC_DBG_SRC("pending_tag/value", 0);
     gc_mark_obj(t->pending_tag);
     gc_mark_obj(t->pending_value);
@@ -1931,6 +2121,7 @@ static void gc_mark(void)
      * (gc_scan_jit_native_stack, reached via gc_mark_thread_roots) rebuilds
      * it this cycle.  Stays empty unless a JIT frame is live. */
     jit_pinned_count = 0;
+    gc_jit_pin_oom = 0;
     /* Invalidate the free-list snapshot — the free list has changed since
      * the last cycle; the first JIT-stack scan this cycle re-collects it. */
     jit_scan_free_valid = 0;
@@ -2548,7 +2739,8 @@ static void gc_update_thread_roots(CL_Thread *t)
     /* The gc_roots[] stack (CL_Obj* pointers to C locals) is NOT forwarded
      * here — gc_update_registered_roots forwards all threads' entries from
      * one deduplicated address list, so a slot registered twice (or one
-     * aliasing a VM-stack slot below) is forwarded exactly once. */
+     * aliasing any of the independently-forwarded regions below) is
+     * forwarded exactly once. */
 
     /* Dynamic binding stack */
     for (i = 0; i < t->dyn_top; i++) {
@@ -2587,7 +2779,8 @@ static void gc_update_thread_roots(CL_Thread *t)
     for (i = 0; i < t->vm.fp; i++)
         gc_update_slot(&t->vm.frames[i].bytecode);
 
-    /* Multiple values and pending throw state */
+    /* Multiple values and pending throw state.
+     * (pre_call_mv_values deliberately excluded — see the mark phase.) */
     for (i = 0; i < CL_MAX_MV; i++)
         gc_update_slot(&t->mv_values[i]);
     gc_update_slot(&t->pending_tag);
@@ -2699,10 +2892,11 @@ static void gc_update_thread_roots(CL_Thread *t)
  * already-rooted VM-stack slot like CL_GC_PROTECT(args[i])) corrupted
  * with layout-roulette timing.  This pass forwards all dynamically-
  * registered slots (global_roots[] + every thread's gc_roots[]) from one
- * sorted, deduplicated address list, and skips addresses that alias a
- * live VM-stack slot (those are owned by the vm.stack loop in
- * gc_update_thread_roots) — making duplicate registration harmless by
- * construction.  cl_gc_audit_roots remains the tool for locating the
+ * sorted, deduplicated address list, and skips addresses that alias any
+ * independently-forwarded thread region (VM stack, mv_values, pending
+ * throw values, dyn/handler/restart stacks, vm_extra_args, compiler
+ * chain — see root_slot_independently_forwarded) — making duplicate
+ * registration harmless by construction.  cl_gc_audit_roots remains the tool for locating the
  * offending registration site.  (gc_root_slot_buf itself is declared with
  * the other persistent GC buffers near the top of the file, so
  * cl_mem_shutdown can free it.) */
@@ -2715,15 +2909,91 @@ static int root_slot_cmp(const void *a, const void *b)
     return 0;
 }
 
-/* Does slot point into a thread's live VM stack slice [stack, stack+sp)?
- * Those slots are forwarded exactly once by gc_update_thread_roots. */
-static int root_slot_on_vm_stack(CL_Obj *slot)
+/* Probe callback for testing whether a slot address is owned by an
+ * external per-thread forwarding walker (compiler chain).  Reusing the
+ * walker itself as the membership test guarantees this can never drift
+ * from what gc_update_thread_roots actually forwards. */
+static CL_Obj *gc_probe_slot;
+static int     gc_probe_hit;
+static void gc_probe_check(CL_Obj *slot)
+{
+    if (slot == gc_probe_slot) gc_probe_hit = 1;
+}
+
+/* Does slot alias a per-thread region that gc_update_thread_roots
+ * forwards independently?  Those slots must be SKIPPED by the
+ * registered-root pass, or they are forwarded twice (gc_forward is not
+ * idempotent — double-forwarding rewrites the slot to an unrelated
+ * object).  Historically only the VM value stack was exempted; a root
+ * registered against mv_values / pending_mv_values / the dyn/handler/
+ * restart stacks / vm_extra_args / a compiler-chain slot still
+ * double-forwarded with layout-roulette timing.  Every range below is
+ * bounded exactly like its forwarding loop in gc_update_thread_roots —
+ * an out-of-bounds alias (e.g. beyond dyn_top) is NOT independently
+ * forwarded and must stay in the registered-root pass. */
+static int root_slot_independently_forwarded(CL_Obj *slot)
 {
     CL_Thread *t;
     for (t = cl_thread_list; t; t = t->next) {
+        /* VM value stack [stack, stack+sp) */
         if (t->vm.stack && slot >= t->vm.stack &&
             slot < t->vm.stack + t->vm.sp)
             return 1;
+        /* Multiple-values buffer (forwarded unconditionally, all slots) */
+        if (slot >= t->mv_values && slot < t->mv_values + CL_MAX_MV)
+            return 1;
+        /* In-flight THROW secondary values — forwarded only while a
+         * throw is pending, and only up to pending_mv_count. */
+        if (t->pending_throw &&
+            slot >= t->pending_mv_values &&
+            slot < t->pending_mv_values +
+                   (t->pending_mv_count < CL_MAX_MV ? t->pending_mv_count
+                                                    : CL_MAX_MV))
+            return 1;
+        /* Dynamic-binding / handler / restart stacks: every CL_Obj field
+         * of an entry below the top is forwarded by its walker loop. */
+        if ((char *)slot >= (char *)t->dyn_stack &&
+            (char *)slot <  (char *)(t->dyn_stack + t->dyn_top))
+            return 1;
+        if ((char *)slot >= (char *)t->handler_stack &&
+            (char *)slot <  (char *)(t->handler_stack + t->handler_top))
+            return 1;
+        if ((char *)slot >= (char *)t->restart_stack &&
+            (char *)slot <  (char *)(t->restart_stack + t->restart_top))
+            return 1;
+        /* VM extra-args buffer (&rest processing) */
+        if (slot >= t->vm_extra_args_buf &&
+            slot < t->vm_extra_args_buf + t->vm_extra_count)
+            return 1;
+        /* Saved pending-throw snapshots: pending_tag/pending_value/
+         * pending_mv_values[] of each armed (pending_throw) entry below
+         * saved_pending_top are forwarded unconditionally by
+         * gc_update_thread_roots — mirror those exact bounds here. */
+        if (t->saved_pending_stack) {
+            int spi;
+            for (spi = 0; spi < t->saved_pending_top; spi++) {
+                CL_SavedPending *sp = &t->saved_pending_stack[spi];
+                if (!sp->pending_throw)
+                    continue;
+                if (slot == &sp->pending_tag || slot == &sp->pending_value)
+                    return 1;
+                if (slot >= sp->pending_mv_values &&
+                    slot < sp->pending_mv_values +
+                           (sp->pending_mv_count < CL_MAX_MV
+                                ? sp->pending_mv_count : CL_MAX_MV))
+                    return 1;
+            }
+        }
+        /* Compiler-chain constants/blocks/tagbodies/env — walked by
+         * cl_compiler_gc_update_thread; probe with the walker itself. */
+        if (t->active_compiler) {
+            extern void cl_compiler_gc_update_thread(CL_Thread *th,
+                                                     void (*update_fn)(CL_Obj *));
+            gc_probe_slot = slot;
+            gc_probe_hit = 0;
+            cl_compiler_gc_update_thread(t, gc_probe_check);
+            if (gc_probe_hit) return 1;
+        }
     }
     return 0;
 }
@@ -2760,7 +3030,7 @@ static void gc_update_registered_roots(void)
             gc_update_slot(global_roots[j]);
         for (t = cl_thread_list; t; t = t->next)
             for (j = 0; j < t->gc_root_count; j++)
-                if (!root_slot_on_vm_stack(t->gc_roots[j]))
+                if (!root_slot_independently_forwarded(t->gc_roots[j]))
                     gc_update_slot(t->gc_roots[j]);
         return;
     }
@@ -2780,11 +3050,11 @@ static void gc_update_registered_roots(void)
 #endif
             continue;               /* duplicate registration — forward once */
         }
-        if (root_slot_on_vm_stack(gc_root_slot_buf[i])) {
+        if (root_slot_independently_forwarded(gc_root_slot_buf[i])) {
 #ifdef DEBUG_GC
             aliased++;
 #endif
-            continue;               /* owned by the vm.stack forwarding loop */
+            continue;               /* owned by a thread-region forwarding loop */
         }
         gc_update_slot(gc_root_slot_buf[i]);
     }
@@ -2792,7 +3062,7 @@ static void gc_update_registered_roots(void)
 #ifdef DEBUG_GC
     if (dups || aliased)
         fprintf(stderr, "GC: root dedup skipped %u duplicate and %u "
-                "VM-stack-aliased registration(s) this compaction "
+                "thread-region-aliased registration(s) this compaction "
                 "(harmless, but run ext:%%gc-audit-roots to find the "
                 "redundant CL_GC_PROTECT / cl_gc_register_root)\n",
                 (unsigned)dups, (unsigned)aliased);
@@ -2878,8 +3148,9 @@ static void gc_update_all_references(void)
 
     /* Registered root slots (global_roots[] + all thread gc_roots[]),
      * deduplicated so a doubly-registered slot is forwarded exactly once.
-     * Disjoint from the passes above/below: entries aliasing a live
-     * VM-stack slot are skipped (the vm.stack loop owns those). */
+     * Disjoint from the passes above/below: entries aliasing an
+     * independently-forwarded thread region are skipped (that region's
+     * own forwarding loop owns them). */
     gc_update_registered_roots();
 
     /* Update shared globals */
@@ -3312,6 +3583,24 @@ void cl_gc_compact(void)
         gc_dump_roots_dbg();
 #endif
 
+    /* JIT pin-table OOM during marking: the pinned set is incomplete, so
+     * moving anything would strand a live JIT frame's spilled offsets.
+     * Degrade to a non-moving mark+sweep for this cycle (the mark phase
+     * above is complete — only relocation is unsafe). */
+    if (gc_jit_pin_oom) {
+#ifdef DEBUG_GC
+        platform_write_string("GC: compact suppressed (JIT pin-table OOM), "
+                              "falling back to sweep\n");
+#endif
+        gc_sweep();
+        cl_heap.gc_count++;
+        /* Don't let the sweep-forever escape immediately re-attempt a
+         * doomed compaction on every following allocation. */
+        gc_sweeps_since_compact = 0;
+        if (multithread) cl_gc_resume_the_world();
+        return;
+    }
+
     /* Allocate forwarding table */
     if (!gc_fwd_alloc()) {
 #ifdef DEBUG_GC
@@ -3320,6 +3609,16 @@ void cl_gc_compact(void)
 #endif
         gc_sweep();
         cl_heap.gc_count++;
+        /* Reset the sweep-forever escape counter and remember the bump
+         * level that failed: without this, gc_sweeps_since_compact stays
+         * >= GC_SWEEPS_BEFORE_COMPACT, so EVERY following bump-exhausted
+         * allocation re-runs a doomed full mark (+ failed table alloc +
+         * sweep) — a permanent 100%-CPU GC-thrash regime.  cl_alloc's
+         * trigger 2 skips re-attempts until the bump front is below the
+         * recorded failure level (the table size is proportional to it);
+         * trigger 1 (compaction as last resort) still always tries. */
+        gc_sweeps_since_compact = 0;
+        gc_fwd_fail_bump = cl_heap.bump;
         if (multithread) cl_gc_resume_the_world();
         return;
     }
@@ -3362,6 +3661,7 @@ void cl_gc_compact(void)
     /* The bump pointer was just reset to the end of the surviving objects, so
      * the sweep-forever escape counter starts fresh — see gc_sweeps_since_compact. */
     gc_sweeps_since_compact = 0;
+    gc_fwd_fail_bump = 0;   /* table allocation succeeded at this size */
 
 #ifdef DEBUG_GC
     /* Post-compaction verification: check all live objects have valid refs */
@@ -3668,6 +3968,17 @@ static void gc_verify_marked(void)
 static int gc_is_freed(uint32_t offset)
 {
     uint8_t *p = cl_heap.arena + offset;
+    /* The poison word lives at bytes 8..11 — it must stay inside the
+     * walked arena (callers pass arbitrary CL_Obj values here). */
+    if (offset + 12 > cl_heap.bump)
+        return 0;
+    /* Blocks of exactly sizeof(CL_FreeBlock) — the 8-byte pin-gap chunks
+     * gc_make_free_gap can emit — have no room for poison: their bytes
+     * 8..11 belong to the NEXT block, so testing them would misreport
+     * based on a neighbor's data.  Treat as not-freed (a false negative
+     * only; this is a DEBUG_GC diagnostic helper). */
+    if (CL_HDR_SIZE(p) <= sizeof(CL_FreeBlock))
+        return 0;
     /* Freed blocks have poison at offset 8 (after the 8-byte CL_FreeBlock header) */
     return (p[8] == 0xDE && p[9] == 0xDE && p[10] == 0xDE && p[11] == 0xDE);
 }
