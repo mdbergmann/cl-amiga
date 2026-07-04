@@ -180,10 +180,14 @@ void cl_gc_leave_safe_region(void)
      * depth-0 clamp tolerates an unmatched leave (defensive). */
     if (self->safe_region_depth > 0 && --self->safe_region_depth > 0)
         return;
-    /* Re-capture the freeze point: the syscall has returned, so we are about to
-     * park at this frame (below our still-intact JIT frames) until GC finishes. */
-    self->jit_park_sp = CL_CAPTURE_SP();
     platform_mutex_lock(gc_mutex);
+    /* Re-capture the freeze point AFTER acquiring gc_mutex: the syscall has
+     * returned and we are about to park at this frame (below our still-
+     * intact JIT frames) until GC finishes.  Captured before the lock, a
+     * peer's compaction that starts while we block ON the lock would scan
+     * from a stamp above the mutex frames — capturing under the lock makes
+     * the stamp cover this exact park frame (tier-4 audit T7). */
+    self->jit_park_sp = CL_CAPTURE_SP();
     /* If a GC is currently running, park here until it completes — we
      * cannot return to the heap-touching caller while the world is
      * stopped, otherwise we'd race the mark/sweep. */
@@ -450,11 +454,19 @@ void cl_thread_handle_interrupt(CL_Thread *t)
 
     /* Defer while holding an internal rwlock reader: an interrupt closure
      * that signals — or a destroy — unwinds via longjmp, and nothing
-     * restores rdlock_tables_held/rdlock_package_held on that path.  The
-     * leaked reader count then blocks the next writer FOREVER (process-
-     * wide hang).  Leaving interrupt_pending set retries at the next
-     * safepoint outside the locked section. */
-    if (t->rdlock_tables_held > 0 || t->rdlock_package_held > 0)
+     * restores rdlock_tables_held on that path.  The leaked reader count
+     * then blocks the next writer FOREVER (process-wide hang).  Leaving
+     * interrupt_pending set retries at the next safepoint outside the
+     * locked section.
+     *
+     * NOTE: rdlock_package_held is declared (thread.h) but nothing
+     * currently increments it — cl_package_rwlock is taken directly via
+     * platform_rwlock_rdlock() in package.c/symbol.c, not through a
+     * counted wrapper like cl_tables_rdlock_at().  Until that wrapper
+     * exists, checking it here would always read 0, so it is
+     * intentionally omitted rather than included as dead, misleading
+     * coverage. */
+    if (t->rdlock_tables_held > 0)
         return;
 
     /* Pair with the publisher's barrier (bi_interrupt_thread /
@@ -490,14 +502,20 @@ void cl_thread_handle_interrupt(CL_Thread *t)
         return;  /* not reached — longjmps */
     }
 
-    /* interrupt-thread: call the pending function */
+    /* interrupt-thread: call the pending function.  Protect the C local:
+     * t->interrupt_func was just cleared (the old root), and cl_vm_apply
+     * copies its func argument only after some allocating setup on the
+     * closure path — an unrooted `func` across that window is the usual
+     * stale-local hazard (tier-4 audit F7). */
     func = t->interrupt_func;
     t->interrupt_func = CL_NIL;
     t->interrupt_pending = 0;
     if (cl_thread_list_lock) platform_mutex_unlock(cl_thread_list_lock);
 
     if (!CL_NULL_P(func)) {
+        CL_GC_PROTECT(func);
         cl_vm_apply(func, NULL, 0);
+        CL_GC_UNPROTECT(1);
     }
 }
 

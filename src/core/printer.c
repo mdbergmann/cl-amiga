@@ -421,6 +421,64 @@ static void out_str(const char *s)
     }
 }
 
+/* ---- Arena-safe printer output (tier-4 audit, P-out_str) ----
+ *
+ * out_str(s->data) with an ARENA pointer is unsafe under MT: the stream
+ * write inside can block (contended per-stream iolock, socket back-
+ * pressure) in a GC safe region, a peer thread's compaction relocates the
+ * string, and the write keeps reading the pre-move address — silently
+ * emitting (and worse, the platform layer reading) freed arena memory.
+ * These helpers take the CL_Obj instead: it is rooted (so the compactor
+ * forwards the local), and the bytes are copied chunk-by-chunk into a C
+ * buffer with the data pointer re-derived from the forwarded root per
+ * chunk — the cl_stream_write_lisp_string pattern, incl. the m68k
+ * `volatile` workaround.  Column tracking runs inside out_str/out_char on
+ * the C copy.  The out path never allocates, so single-threaded behavior
+ * is unchanged. */
+static void out_str_lisp(CL_Obj strobj)
+{
+    char chunk[257];
+    uint32_t start = 0, end;
+    if (!CL_HEAP_P(strobj) ||
+        CL_HDR_TYPE(CL_OBJ_TO_PTR(strobj)) != TYPE_STRING)
+        return;
+    end = ((CL_String *)CL_OBJ_TO_PTR(strobj))->length;
+    CL_GC_PROTECT(strobj);
+    while (start < end) {
+        uint32_t nb = end - start;
+        const char *volatile src =
+            ((CL_String *)CL_OBJ_TO_PTR(strobj))->data;
+        if (nb > (uint32_t)sizeof(chunk) - 1)
+            nb = (uint32_t)sizeof(chunk) - 1;
+        memcpy(chunk, src + start, nb);
+        chunk[nb] = '\0';
+        out_str(chunk);
+        start += nb;
+    }
+    CL_GC_UNPROTECT(1);
+}
+
+#ifdef CL_WIDE_STRINGS
+/* Wide-string variant: per code point through out_char (which UTF-8
+ * encodes per destination), re-deriving the data pointer from the rooted
+ * object every iteration — out_char itself can block and let a peer
+ * compact between characters. */
+static void out_wide_str_lisp(CL_Obj wobj)
+{
+    uint32_t i, len;
+    if (!CL_HEAP_P(wobj) ||
+        CL_HDR_TYPE(CL_OBJ_TO_PTR(wobj)) != TYPE_WIDE_STRING)
+        return;
+    len = ((CL_WideString *)CL_OBJ_TO_PTR(wobj))->length;
+    CL_GC_PROTECT(wobj);
+    for (i = 0; i < len; i++) {
+        CL_WideString *tw = (CL_WideString *)CL_OBJ_TO_PTR(wobj);
+        out_char((int)tw->data[i]);
+    }
+    CL_GC_UNPROTECT(1);
+}
+#endif
+
 /* Base-aware integer output honoring *print-base* and *print-radix* */
 static void out_integer(int32_t val, int32_t base, int radix)
 {
@@ -587,6 +645,33 @@ static void out_symbol_name(const char *name)
     }
 }
 
+/* Arena-safe variant of out_symbol_name (see out_str_lisp): takes the
+ * NAME STRING CL_Obj, copies it whole into C memory BEFORE any output
+ * call can block, then runs the *print-case* logic on the copy.  A whole
+ * copy (not chunks) because the case logic scans the full name up front
+ * (needs-bars check) and tracks word state across characters. */
+static void out_symbol_name_lisp(CL_Obj name_str)
+{
+    char sbuf[512];
+    uint32_t len;
+    if (!CL_HEAP_P(name_str) ||
+        CL_HDR_TYPE(CL_OBJ_TO_PTR(name_str)) != TYPE_STRING)
+        return;
+    len = ((CL_String *)CL_OBJ_TO_PTR(name_str))->length;
+    if (len < sizeof(sbuf)) {
+        memcpy(sbuf, ((CL_String *)CL_OBJ_TO_PTR(name_str))->data, len);
+        sbuf[len] = '\0';
+        out_symbol_name(sbuf);
+    } else {
+        char *hbuf = (char *)platform_alloc(len + 1);
+        if (!hbuf) return;
+        memcpy(hbuf, ((CL_String *)CL_OBJ_TO_PTR(name_str))->data, len);
+        hbuf[len] = '\0';
+        out_symbol_name(hbuf);
+        platform_free(hbuf);
+    }
+}
+
 /* Check if sprintf result looks like a plain integer (all digits, no decimal/exponent) */
 static int needs_decimal(const char *buf)
 {
@@ -728,18 +813,23 @@ static void print_list(CL_Obj obj)
 
 static void print_string(CL_Obj obj)
 {
-    CL_String *s = (CL_String *)CL_OBJ_TO_PTR(obj);
-    uint32_t i;
+    uint32_t i, len = ((CL_String *)CL_OBJ_TO_PTR(obj))->length;
     /* Base strings (TYPE_STRING) hold latin-1 bytes: a byte 0x80..0xFF is a
      * codepoint in [128,255], not a UTF-8 fragment. Read each byte UNSIGNED so
      * high bytes take out_char's encode path (cl_stream_write_char UTF-8-encodes
      * codepoints > 0x7F for non-latin-1 streams). Reading it as a signed `char`
      * would sign-extend 0xFC to -4, dodge the `ch > 0x7F` test, and emit a lone
-     * raw byte that get-output-stream-string then mis-decodes to U+FFFD. */
+     * raw byte that get-output-stream-string then mis-decodes to U+FFFD.
+     *
+     * GC SAFETY (MT): out_char can block in a stream write, letting a peer
+     * compact — root obj and re-derive the data pointer per character
+     * instead of holding one CL_String* across the loop (see out_str_lisp). */
+    CL_GC_PROTECT(obj);
     if (print_escape_p() || print_readably_p()) {
         out_char('"');
-        for (i = 0; i < s->length; i++) {
-            int ch = (unsigned char)s->data[i];
+        for (i = 0; i < len; i++) {
+            int ch = (unsigned char)
+                ((CL_String *)CL_OBJ_TO_PTR(obj))->data[i];
             if (ch == '"' || ch == '\\') out_char('\\');
             if (ch == '\n') { out_char('\\'); out_char('n'); continue; }
             if (ch == '\t') { out_char('\\'); out_char('t'); continue; }
@@ -748,9 +838,11 @@ static void print_string(CL_Obj obj)
         out_char('"');
     } else {
         /* princ: per-char (not out_str) so high bytes are encoded, not dumped raw */
-        for (i = 0; i < s->length; i++)
-            out_char((unsigned char)s->data[i]);
+        for (i = 0; i < len; i++)
+            out_char((unsigned char)
+                     ((CL_String *)CL_OBJ_TO_PTR(obj))->data[i]);
     }
+    CL_GC_UNPROTECT(1);
 }
 
 /* Recursive helper for multi-dim array printing.
@@ -875,16 +967,12 @@ static int try_pprint_dispatch(CL_Obj *obj_p)
         }
         CL_GC_UNPROTECT(4);
         if (CL_STRING_P(text)) {
-            CL_String *ts = (CL_String *)CL_OBJ_TO_PTR(text);
-            out_str(ts->data);
+            out_str_lisp(text);
         }
 #ifdef CL_WIDE_STRINGS
         else if (CL_HEAP_P(text) &&
                  CL_HDR_TYPE(CL_OBJ_TO_PTR(text)) == TYPE_WIDE_STRING) {
-            CL_WideString *tw = (CL_WideString *)CL_OBJ_TO_PTR(text);
-            uint32_t twi;
-            for (twi = 0; twi < tw->length; twi++)
-                out_char((int)tw->data[twi]);
+            out_wide_str_lisp(text);
         }
 #endif
     }
@@ -1057,37 +1145,48 @@ static void print_obj(CL_Obj obj)
         /* Per CLHS 22.1.3.3.1: when *print-escape* and *print-readably*
          * are both NIL (PRINC / ~A), a symbol is written using just its
          * name characters — no #:, no leading colon for keywords, no
-         * package qualifier.  Otherwise we print a readable form. */
+         * package qualifier.  Otherwise we print a readable form.
+         *
+         * GC SAFETY (MT): every out_* below can block and let a peer
+         * compact, so obj is rooted for the whole case and the name /
+         * package-name strings go through the *_lisp writers with the
+         * pointers re-derived through the forwarded root per use. */
         int escape = print_escape_p() || print_readably_p();
+        CL_GC_PROTECT(obj);
         if (!escape) {
-            out_symbol_name(cl_symbol_name(obj));
+            out_symbol_name_lisp(sym->name);
         } else if (CL_NULL_P(sym->package)) {
             /* Uninterned symbol — #: prefix only if *print-gensym* */
             if (print_gensym_p())
                 out_str("#:");
-            out_symbol_name(cl_symbol_name(obj));
+            out_symbol_name_lisp(((CL_Symbol *)CL_OBJ_TO_PTR(obj))->name);
         } else if (sym->package == cl_package_keyword) {
             out_char(':');
-            out_symbol_name(cl_symbol_name(obj));
+            out_symbol_name_lisp(((CL_Symbol *)CL_OBJ_TO_PTR(obj))->name);
         } else if (sym->package == cl_current_package ||
                    cl_package_find_symbol(cl_symbol_name(obj),
                        ((CL_String *)CL_OBJ_TO_PTR(sym->name))->length,
                        cl_current_package) == obj) {
             /* Accessible in current package — no prefix */
-            out_symbol_name(cl_symbol_name(obj));
+            out_symbol_name_lisp(((CL_Symbol *)CL_OBJ_TO_PTR(obj))->name);
         } else {
             /* Symbol from another package — single colon if its home
-             * package exports it, double colon otherwise. */
+             * package exports it, double colon otherwise.  The package
+             * and its name are re-derived through the rooted obj after
+             * each potentially-blocking write. */
             CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(sym->package);
-            CL_String *pkg_name = (CL_String *)CL_OBJ_TO_PTR(pkg->name);
-            out_symbol_name(pkg_name->data);
-            if (cl_symbol_external_p(obj, sym->package)) {
+            out_symbol_name_lisp(pkg->name);
+            /* sym is stale after the blocking write above — re-derive
+             * the home package through the rooted obj. */
+            if (cl_symbol_external_p(obj,
+                    ((CL_Symbol *)CL_OBJ_TO_PTR(obj))->package)) {
                 out_char(':');
             } else {
                 out_str("::");
             }
-            out_symbol_name(cl_symbol_name(obj));
+            out_symbol_name_lisp(((CL_Symbol *)CL_OBJ_TO_PTR(obj))->name);
         }
+        CL_GC_UNPROTECT(1);
         break;
     }
 
@@ -1097,12 +1196,16 @@ static void print_obj(CL_Obj obj)
 
 #ifdef CL_WIDE_STRINGS
     case TYPE_WIDE_STRING: {
-        CL_WideString *ws = (CL_WideString *)CL_OBJ_TO_PTR(obj);
+        uint32_t wlen = ((CL_WideString *)CL_OBJ_TO_PTR(obj))->length;
+        /* GC SAFETY (MT): out_char can block — root obj and re-derive the
+         * data pointer per code point (see out_wide_str_lisp). */
+        CL_GC_PROTECT(obj);
         if (print_escape_p() || print_readably_p()) {
             uint32_t i;
             out_char('"');
-            for (i = 0; i < ws->length; i++) {
-                uint32_t ch = ws->data[i];
+            for (i = 0; i < wlen; i++) {
+                uint32_t ch =
+                    ((CL_WideString *)CL_OBJ_TO_PTR(obj))->data[i];
                 if (ch == '"' || ch == '\\') out_char('\\');
                 if (ch == '\n') { out_char('\\'); out_char('n'); continue; }
                 if (ch == '\t') { out_char('\\'); out_char('t'); continue; }
@@ -1122,44 +1225,61 @@ static void print_obj(CL_Obj obj)
              * whenever a wide string was princ'd — including via
              * WITH-OUTPUT-TO-STRING / FORMAT ~A of a string argument. */
             uint32_t i;
-            for (i = 0; i < ws->length; i++)
-                out_char((int)ws->data[i]);
+            for (i = 0; i < wlen; i++)
+                out_char((int)((CL_WideString *)CL_OBJ_TO_PTR(obj))->data[i]);
         }
+        CL_GC_UNPROTECT(1);
         break;
     }
 #endif
 
+    /* GC SAFETY (MT) for the three function printers: the leading write
+     * can block and let a peer compact — root obj and re-derive the name
+     * through the forwarded local afterwards (out_str_lisp of the name
+     * string keeps the historical no-*print-case* semantics). */
     case TYPE_FUNCTION: {
-        CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(obj);
+        CL_GC_PROTECT(obj);
         out_str("#<FUNCTION ");
-        if (!CL_NULL_P(f->name))
-            out_str(cl_symbol_name(f->name));
-        else
-            out_str("anonymous");
+        {
+            CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(obj);
+            if (!CL_NULL_P(f->name))
+                out_str_lisp(((CL_Symbol *)CL_OBJ_TO_PTR(f->name))->name);
+            else
+                out_str("anonymous");
+        }
         out_char('>');
+        CL_GC_UNPROTECT(1);
         break;
     }
 
     case TYPE_CLOSURE: {
-        CL_Closure *cl = (CL_Closure *)CL_OBJ_TO_PTR(obj);
-        CL_Bytecode *bc = (CL_Bytecode *)CL_OBJ_TO_PTR(cl->bytecode);
+        CL_GC_PROTECT(obj);
         out_str("#<CLOSURE ");
-        if (!CL_NULL_P(bc->name))
-            out_str(cl_symbol_name(bc->name));
-        else
-            out_str("anonymous");
+        {
+            CL_Closure *cl = (CL_Closure *)CL_OBJ_TO_PTR(obj);
+            CL_Bytecode *bc = (CL_Bytecode *)CL_OBJ_TO_PTR(cl->bytecode);
+            if (!CL_NULL_P(bc->name))
+                out_str_lisp(((CL_Symbol *)CL_OBJ_TO_PTR(bc->name))->name);
+            else
+                out_str("anonymous");
+        }
         out_char('>');
+        CL_GC_UNPROTECT(1);
         break;
     }
 
     case TYPE_BYTECODE: {
-        CL_Bytecode *bc = (CL_Bytecode *)CL_OBJ_TO_PTR(obj);
+        CL_GC_PROTECT(obj);
         out_str("#<COMPILED-FUNCTION ");
-        if (!CL_NULL_P(bc->name))
-            out_str(cl_symbol_name(bc->name));
-        else
-            out_str("anonymous");
+        {
+            CL_Bytecode *bc = (CL_Bytecode *)CL_OBJ_TO_PTR(obj);
+            if (!CL_NULL_P(bc->name))
+                out_str_lisp(((CL_Symbol *)CL_OBJ_TO_PTR(bc->name))->name);
+            else
+                out_str("anonymous");
+        }
         out_char('>');
+        CL_GC_UNPROTECT(1);
         break;
     }
 
@@ -1264,11 +1384,13 @@ static void print_obj(CL_Obj obj)
     }
 
     case TYPE_PACKAGE: {
-        CL_Package *p = (CL_Package *)CL_OBJ_TO_PTR(obj);
-        CL_String *name = (CL_String *)CL_OBJ_TO_PTR(p->name);
+        /* GC SAFETY (MT): the first write can block — root obj so the
+         * name read afterwards goes through the forwarded local. */
+        CL_GC_PROTECT(obj);
         out_str("#<PACKAGE ");
-        out_str(name->data);
+        out_str_lisp(((CL_Package *)CL_OBJ_TO_PTR(obj))->name);
         out_char('>');
+        CL_GC_UNPROTECT(1);
         break;
     }
 
@@ -1328,8 +1450,7 @@ static void print_obj(CL_Obj obj)
                 }
                 if (!CL_NULL_P(result) && CL_HEAP_P(result) &&
                     CL_HDR_TYPE(CL_OBJ_TO_PTR(result)) == TYPE_STRING) {
-                    CL_String *rs = (CL_String *)CL_OBJ_TO_PTR(result);
-                    out_str(rs->data);
+                    out_str_lisp(result);
                     break; /* hook handled it */
                 }
             }
@@ -1358,8 +1479,12 @@ static void print_obj(CL_Obj obj)
         out_str("#S(");
         if (pretty && pp_indent_top < PP_INDENT_MAX)
             pp_indent_stack[pp_indent_top++] = current_column;
+        /* st is stale after the blocking write above (MT peer compaction)
+         * — re-derive through the rooted obj; type/slot names go through
+         * out_str_lisp (arena-safe, historical no-*print-case* form). */
+        st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
         if (!CL_NULL_P(st->type_desc))
-            out_str(cl_symbol_name(st->type_desc));
+            out_str_lisp(((CL_Symbol *)CL_OBJ_TO_PTR(st->type_desc))->name);
         {
             uint32_t nslots = st->n_slots;
             for (i = 0; i < nslots; i++) {
@@ -1369,7 +1494,8 @@ static void print_obj(CL_Obj obj)
                     out_char(' ');
                 if (!CL_NULL_P(slot_names)) {
                     out_char(':');
-                    out_str(cl_symbol_name(cl_car(slot_names)));
+                    out_str_lisp(((CL_Symbol *)CL_OBJ_TO_PTR(
+                        cl_car(slot_names)))->name);
                     slot_names = cl_cdr(slot_names);
                 }
                 out_char(' ');
@@ -1425,30 +1551,37 @@ static void print_obj(CL_Obj obj)
                         CL_HDR_TYPE(CL_OBJ_TO_PTR(result)) == TYPE_STRING) {
                         CL_String *rs = (CL_String *)CL_OBJ_TO_PTR(result);
                         if (rs->length > 0) {
-                            out_str(rs->data);
+                            out_str_lisp(result);
                             break;
                         }
                     }
                 }
             }
             if (!CL_NULL_P(cond->report_string)) {
-                CL_String *rs = (CL_String *)CL_OBJ_TO_PTR(cond->report_string);
-                out_str(rs->data);
+                out_str_lisp(cond->report_string);
                 break;
             }
         }
+        /* GC SAFETY (MT): each write below can block and let a peer
+         * compact — root obj and re-derive cond after every write.
+         * out_str_lisp of the symbol's NAME string keeps the historical
+         * out_str(cl_symbol_name(...)) semantics (no *print-case*). */
+        CL_GC_PROTECT(obj);
         out_str("#<CONDITION ");
+        cond = (CL_Condition *)CL_OBJ_TO_PTR(obj);
         if (!CL_NULL_P(cond->type_name))
-            out_str(cl_symbol_name(cond->type_name));
+            out_str_lisp(
+                ((CL_Symbol *)CL_OBJ_TO_PTR(cond->type_name))->name);
         else
             out_str("CONDITION");
+        cond = (CL_Condition *)CL_OBJ_TO_PTR(obj);
         if (!CL_NULL_P(cond->report_string)) {
-            CL_String *rs = (CL_String *)CL_OBJ_TO_PTR(cond->report_string);
             out_str(": \"");
-            out_str(rs->data);
+            out_str_lisp(((CL_Condition *)CL_OBJ_TO_PTR(obj))->report_string);
             out_char('"');
         }
         out_char('>');
+        CL_GC_UNPROTECT(1);
         break;
     }
 
@@ -1460,8 +1593,7 @@ static void print_obj(CL_Obj obj)
         if (!print_escape_p() && !print_readably_p() &&
             !CL_NULL_P(r->report)) {
             if (CL_STRING_P(r->report)) {
-                CL_String *rs = (CL_String *)CL_OBJ_TO_PTR(r->report);
-                out_str(rs->data);
+                out_str_lisp(r->report);
                 break;
             }
             /* Report function: call it with a fresh string output stream,
@@ -1495,8 +1627,7 @@ static void print_obj(CL_Obj obj)
                 CL_GC_UNPROTECT(3);
                 r = (CL_Restart *)CL_OBJ_TO_PTR(obj);
                 if (CL_STRING_P(text)) {
-                    CL_String *ts = (CL_String *)CL_OBJ_TO_PTR(text);
-                    out_str(ts->data);
+                    out_str_lisp(text);
                     break;
                 }
 #ifdef CL_WIDE_STRINGS
@@ -1505,22 +1636,24 @@ static void print_obj(CL_Obj obj)
                  * the #<RESTART ...> fallback (out_char UTF-8-encodes). */
                 if (CL_HEAP_P(text) &&
                     CL_HDR_TYPE(CL_OBJ_TO_PTR(text)) == TYPE_WIDE_STRING) {
-                    CL_WideString *tw = (CL_WideString *)CL_OBJ_TO_PTR(text);
-                    uint32_t twi;
-                    for (twi = 0; twi < tw->length; twi++)
-                        out_char((int)tw->data[twi]);
+                    out_wide_str_lisp(text);
                     break;
                 }
 #endif
             }
         }
-        /* Escaped form (or no report): #<RESTART NAME>. */
+        /* Escaped form (or no report): #<RESTART NAME>.  GC SAFETY (MT):
+         * the write can block — root obj, re-derive r after it. */
+        CL_GC_PROTECT(obj);
         out_str("#<RESTART");
+        r = (CL_Restart *)CL_OBJ_TO_PTR(obj);
         if (!CL_NULL_P(r->name)) {
             out_char(' ');
-            out_str(cl_symbol_name(r->name));
+            out_str_lisp(((CL_Symbol *)CL_OBJ_TO_PTR(
+                ((CL_Restart *)CL_OBJ_TO_PTR(obj))->name))->name);
         }
         out_char('>');
+        CL_GC_UNPROTECT(1);
         break;
     }
 
