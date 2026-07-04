@@ -3325,7 +3325,12 @@ static int gc_key_addr_sensitive(CL_Obj key, uint32_t test)
     case TYPE_COMPLEX:
         return 0;                 /* value-based hash under eql/equal/equalp */
     case TYPE_STRING:
-        /* eql hashes a string by identity; equal/equalp by contents */
+#ifdef CL_WIDE_STRINGS
+    case TYPE_WIDE_STRING:
+#endif
+    case TYPE_BIT_VECTOR:
+        /* eql hashes these by identity; equal/equalp by contents (wide
+         * strings and bit-vectors gained content hashes in tier-4 AH5). */
         return (test == CL_HT_TEST_EQL) ? 1 : 0;
     case TYPE_CONS:
         if (test == CL_HT_TEST_EQL)

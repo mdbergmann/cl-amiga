@@ -253,9 +253,12 @@ static CL_Obj read_radix_number(int radix)
     int i;
 
     /* Read token */
-    while (len < 255) {
+    for (;;) {
         ch = read_char();
         if (is_delimiter(ch)) { unread_char(ch); break; }
+        if (len >= 255)
+            cl_reader_error(CL_ERR_PARSE,
+                "Number after #-radix prefix longer than 255 characters");
         buf[len++] = (char)cl_ascii_toupper(ch);
     }
     buf[len] = '\0';
@@ -526,12 +529,23 @@ static CL_Obj read_atom_with_prefix(const char *prefix, int prefix_len)
 
     if (prefix && prefix_len > 0) {
         int p;
-        if (prefix_len > 255) prefix_len = 255;
+        if (prefix_len > 255)
+            cl_reader_error(CL_ERR_PARSE,
+                "Token prefix longer than 255 characters (symbol limit)");
         for (p = 0; p < prefix_len; p++)
             buf[len++] = (char)cl_ascii_toupper((unsigned char)prefix[p]);
     }
 
-    while (len < 255) {
+    /* Token cap: 255 characters.  Exceeding it must be a reader error —
+     * the old bounded loop simply stopped consuming, silently splitting a
+     * long symbol into two tokens (and a 300-digit number into two
+     * numbers!). */
+#define ATOM_CAP_CHECK() \
+    do { if (len >= 255) \
+        cl_reader_error(CL_ERR_PARSE, \
+            "Token longer than 255 characters (symbol/number limit)"); \
+    } while (0)
+    for (;;) {
         ch = read_char();
         if (ch < 0) break;  /* EOF */
 
@@ -551,7 +565,8 @@ static CL_Obj read_atom_with_prefix(const char *prefix, int prefix_len)
                     ch = read_char();
                     if (ch < 0) break;
                 }
-                if (len < 255) buf[len++] = (char)ch;  /* NO case conversion */
+                ATOM_CAP_CHECK();
+                buf[len++] = (char)ch;  /* NO case conversion */
             }
             continue;
         }
@@ -561,7 +576,8 @@ static CL_Obj read_atom_with_prefix(const char *prefix, int prefix_len)
             has_escape = 1;
             ch = read_char();
             if (ch < 0) break;
-            if (len < 255) buf[len++] = (char)ch;  /* NO case conversion */
+            ATOM_CAP_CHECK();
+            buf[len++] = (char)ch;  /* NO case conversion */
             continue;
         }
 
@@ -569,8 +585,10 @@ static CL_Obj read_atom_with_prefix(const char *prefix, int prefix_len)
             unread_char(ch);
             break;
         }
+        ATOM_CAP_CHECK();
         buf[len++] = (char)cl_ascii_toupper(ch);
     }
+#undef ATOM_CAP_CHECK
     buf[len] = '\0';
 
     if (len == 0 && !has_escape) {
@@ -809,12 +827,20 @@ static CL_Obj read_string(void)
             char tmp[4];
             int nb = cl_utf8_encode(ch, tmp);
             int j;
-            for (j = 0; j < nb && len < 4095; j++)
+            if (len + nb > 4095)
+                cl_reader_error(CL_ERR_PARSE,
+                    "String literal longer than 4095 bytes (reader limit)");
+            for (j = 0; j < nb; j++)
                 buf[len++] = tmp[j];
         } else
 #endif
         {
-            if (len < 4095) buf[len++] = (char)ch;
+            /* Erroring beats the old silent truncation: a >4095-byte string
+             * literal used to lose its tail without any diagnostic. */
+            if (len >= 4095)
+                cl_reader_error(CL_ERR_PARSE,
+                    "String literal longer than 4095 bytes (reader limit)");
+            buf[len++] = (char)ch;
         }
     }
     buf[len] = '\0';
@@ -1049,9 +1075,12 @@ static CL_Obj read_expr(void)
                 char name[32];
                 int nlen = 0;
                 name[nlen++] = (char)ch;
-                while (nlen < 31) {
+                for (;;) {
                     ch = read_char();
                     if (is_delimiter(ch)) { unread_char(ch); break; }
+                    if (nlen >= 31)
+                        cl_reader_error(CL_ERR_PARSE,
+                            "Character name after #\\ longer than 31 characters");
                     name[nlen++] = (char)ch;
                 }
                 name[nlen] = '\0';
@@ -1133,7 +1162,7 @@ static CL_Obj read_expr(void)
             int sym_has_escape = 0;
             CL_Obj name_str, new_sym, cell;
             CL_Readtable *rt = cl_readtable_current();
-            while (sym_len < 255) {
+            for (;;) {
                 ch2 = read_char();
                 if (ch2 < 0) break;  /* EOF */
                 /* Multiple escape: |...| — read literally with no
@@ -1157,7 +1186,10 @@ static CL_Obj read_expr(void)
                             ch2 = read_char();
                             if (ch2 < 0) break;
                         }
-                        if (sym_len < 255) sym_buf[sym_len++] = (char)ch2;
+                        if (sym_len >= 255)
+                            cl_reader_error(CL_ERR_PARSE,
+                                "#: symbol name longer than 255 characters");
+                        sym_buf[sym_len++] = (char)ch2;
                     }
                     continue;
                 }
@@ -1166,10 +1198,16 @@ static CL_Obj read_expr(void)
                     sym_has_escape = 1;
                     ch2 = read_char();
                     if (ch2 < 0) break;
-                    if (sym_len < 255) sym_buf[sym_len++] = (char)ch2;
+                    if (sym_len >= 255)
+                        cl_reader_error(CL_ERR_PARSE,
+                            "#: symbol name longer than 255 characters");
+                    sym_buf[sym_len++] = (char)ch2;
                     continue;
                 }
                 if (is_delimiter(ch2)) { unread_char(ch2); break; }
+                if (sym_len >= 255)
+                    cl_reader_error(CL_ERR_PARSE,
+                        "#: symbol name longer than 255 characters");
                 sym_buf[sym_len++] = (char)cl_ascii_toupper(ch2);
             }
             sym_buf[sym_len] = '\0';
@@ -1240,7 +1278,10 @@ static CL_Obj read_expr(void)
             for (;;) {
                 int c2 = read_char();
                 if (c2 == '0' || c2 == '1') {
-                    if (blen < 4095) bits[blen++] = (char)c2;
+                    if (blen >= 4095)
+                        cl_reader_error(CL_ERR_PARSE,
+                            "Bit-vector literal #* longer than 4095 bits");
+                    bits[blen++] = (char)c2;
                 } else {
                     if (c2 >= 0) unread_char(c2);
                     break;

@@ -3604,6 +3604,47 @@ check_contains "tier-4 batch 7a cases run to completion" "T4B7-DONE" "$out"
 check_absent   "no corruption in tier-4 batch 7a cases" \
   "corrupted pointer\|not of type\|Guru\|SIGSEGV\|badmark" "$out"
 
+# ---------------------------------------------------------------------------
+# Tier-4 batch 7b: hashtable content hashes (wide strings, bit-vectors,
+# EQUALP vectors).  The new hash paths run inside gc_rehash_table after every
+# compaction — exercise insert/lookup with allocation churn between them so a
+# hash/equality mismatch (or a rehash through the new code) misses
+# deterministically.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- tier-4 batch 7b: hashtable content-hash contract ---"
+cat > "$WORK/tier4-b7b.lisp" <<'EOF'
+(let ((ht (make-hash-table :test 'equal)) (ok t))
+  (dotimes (i 40)
+    (setf (gethash (format nil "w~A~A" (code-char 20013) i) ht) i))
+  (dotimes (i 40)
+    (list i i)   ; churn between lookups
+    (unless (eql (gethash (format nil "w~A~A" (code-char 20013) i) ht) i)
+      (setf ok nil)))
+  (format t "T4B7B-W:~a ~a~%" ok (hash-table-count ht)))
+(let ((ht (make-hash-table :test 'equal)) (ok t))
+  (dotimes (i 20)
+    (let ((bv (make-array 8 :element-type 'bit :initial-element 0)))
+      (dotimes (j 8) (setf (aref bv j) (if (logbitp j i) 1 0)))
+      (setf (gethash bv ht) i)))
+  (dotimes (i 20)
+    (let ((bv (make-array 8 :element-type 'bit :initial-element 0)))
+      (dotimes (j 8) (setf (aref bv j) (if (logbitp j i) 1 0)))
+      (unless (eql (gethash bv ht) i) (setf ok nil))))
+  (format t "T4B7B-BV:~a~%" ok))
+(let ((ht (make-hash-table :test 'equalp)))
+  (setf (gethash (vector 1 (list 2) "x") ht) :deep)
+  (format t "T4B7B-EQV:~a~%" (gethash (vector 1 (list 2) "x") ht)))
+(format t "T4B7B-DONE~%")
+EOF
+out=$(run_stress "$WORK/tier4-b7b.lisp")
+check_contains "B7b wide-string EQUAL keys content-hashed" "T4B7B-W:T 40" "$out"
+check_contains "B7b bit-vector EQUAL keys content-hashed" "T4B7B-BV:T" "$out"
+check_contains "B7b EQUALP vector keys content-hashed" "T4B7B-EQV:DEEP" "$out"
+check_contains "tier-4 batch 7b cases run to completion" "T4B7B-DONE" "$out"
+check_absent   "no corruption in tier-4 batch 7b cases" \
+  "corrupted pointer\|not of type\|Guru\|SIGSEGV\|badmark" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

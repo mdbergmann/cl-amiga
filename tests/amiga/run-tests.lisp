@@ -8214,6 +8214,36 @@
 (check "t4b7 string sort staging" "abcd"
   (sort (copy-seq "dcba") #'char<))
 
+; --- Tier-4 batch 7b: hashtable contract + map designators + reader caps ---
+; keys_equal gained a bit-vector branch (CLHS EQUAL descends bit-vectors)
+; and general vectors are EQ-keyed under EQUAL like the EQUAL builtin.
+(check "t4b7 equal ht bit-vector keys" :bv
+  (let ((ht (make-hash-table :test 'equal)))
+    (setf (gethash #*1011 ht) :bv)
+    (gethash (copy-seq #*1011) ht)))
+(check "t4b7 equalp ht vector keys" :v
+  (let ((ht (make-hash-table :test 'equalp)))
+    (setf (gethash (vector 1 2 3) ht) :v)
+    (gethash (vector 1 2 3) ht)))
+(check "t4b7 equal ht general vector is eq-keyed" '(:id nil)
+  (let ((ht (make-hash-table :test 'equal)) (v (vector 1 2)))
+    (setf (gethash v ht) :id)
+    (list (gethash v ht) (gethash (vector 1 2) ht))))
+; MAPL/MAPCON accept symbol designators like their siblings.
+(check "t4b7 mapl symbol designator" '(1 2) (mapl 'identity (list 1 2)))
+(check "t4b7 mapcon symbol designator" '((1 2) (2)) (mapcon 'list (list 1 2)))
+; The silent 16-list clamp on the map family is a loud error now.
+(check "t4b7 mapcar over 16 lists errors" :err
+  (handler-case (apply #'mapcar #'+ (make-list 17 :initial-element '(1)))
+    (error () :err)))
+; Reader token caps signal errors instead of silently splitting/truncating.
+(check "t4b7 300-digit number read errors" :err
+  (handler-case (read-from-string (make-string 300 :initial-element #\5))
+    (error () :err)))
+(check "t4b7 255-char symbol still reads" 255
+  (length (symbol-name (read-from-string
+                        (make-string 255 :initial-element #\a)))))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

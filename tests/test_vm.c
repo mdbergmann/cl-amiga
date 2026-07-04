@@ -10373,6 +10373,95 @@ TEST(eval_remove_concatenate_wide_chars_preserved)
 }
 #endif
 
+/* --- tier-4 batch 7b: hashtable hash/equality contract (AH5) --- */
+
+TEST(eval_hashtable_wide_string_keys)
+{
+    /* Wide strings were identity-hashed but content-compared: an EQUAL
+     * lookup with a fresh string of the same characters missed. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((ht (make-hash-table :test 'equal)) (ok t))"
+        "  (dotimes (i 30)"
+        "    (setf (gethash (format nil \"k~A~A\" (code-char 20013) i) ht) i))"
+        "  (dotimes (i 30)"
+        "    (unless (eql (gethash (format nil \"k~A~A\" (code-char 20013) i) ht) i)"
+        "      (setf ok nil)))"
+        "  (list ok (hash-table-count ht)))"), "(T 30)");
+}
+
+TEST(eval_hashtable_equalp_vector_keys)
+{
+    /* EQUALP descends vectors in keys_equal but hashed them by identity —
+     * a fresh equal-content vector key missed. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((ht (make-hash-table :test 'equalp)))"
+        "  (setf (gethash (vector 1 2 3) ht) :v)"
+        "  (gethash (vector 1 2 3) ht))"), ":V");
+}
+
+TEST(eval_hashtable_equal_bitvector_keys)
+{
+    /* keys_equal had no bit-vector branch: equal-content bit-vector keys
+     * never matched (CLHS EQUAL descends bit-vectors). */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((ht (make-hash-table :test 'equal)))"
+        "  (setf (gethash #*1011 ht) :bv)"
+        "  (gethash (copy-seq #*1011) ht))"), ":BV");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((ht (make-hash-table :test 'equal)))"
+        "  (setf (gethash #*1011 ht) :bv)"
+        "  (gethash #*1010 ht))"), "NIL");
+}
+
+TEST(eval_hashtable_equal_vector_identity)
+{
+    /* CLHS: EQUAL on general vectors is EQ — the same object is found,
+     * a fresh equal-content vector is not (matches the EQUAL builtin). */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((ht (make-hash-table :test 'equal)) (v (vector 1 2)))"
+        "  (setf (gethash v ht) :id)"
+        "  (list (gethash v ht) (gethash (vector 1 2) ht)))"), "(:ID NIL)");
+}
+
+TEST(eval_hashtable_equalp_wide_char_no_low_byte_match)
+{
+    /* EQUALP char compare used a (char) cast: U+4E41 (low byte #x41) and
+     * #\A compared \"equalp\" and hashed to the same bucket — a false hit. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((ht (make-hash-table :test 'equalp)))"
+        "  (setf (gethash (code-char 20033) ht) :wide)"
+        "  (list (gethash #\\A ht) (gethash (code-char 20033) ht)))"),
+        "(NIL :WIDE)");
+}
+
+/* --- tier-4 batch 7b: map-family designators and 16-list caps --- */
+
+TEST(eval_mapl_mapcon_symbol_designators)
+{
+    /* MAPL/MAPCON rejected symbol function designators (missing
+     * cl_coerce_funcdesig, unlike their siblings). */
+    ASSERT_STR_EQ(eval_print("(mapl 'identity (list 1 2))"), "(1 2)");
+    ASSERT_STR_EQ(eval_print("(mapcon 'list (list 1 2))"), "((1 2) (2))");
+}
+
+TEST(eval_map_family_over_16_seqs_errors)
+{
+    /* The silent 16-list clamp dropped whole argument sequences; it is a
+     * loud error now. */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (apply #'mapcar #'+ (make-list 17 :initial-element '(1)))"
+        "  (error () :err))"), ":ERR");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (apply #'map 'list #'+ (make-list 17 :initial-element '(1)))"
+        "  (error () :err))"), ":ERR");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (apply #'every #'= (make-list 17 :initial-element '(1)))"
+        "  (error () :err))"), ":ERR");
+    /* 16 sequences still work. */
+    ASSERT_STR_EQ(eval_print(
+        "(apply #'mapcar #'+ (make-list 16 :initial-element '(1)))"), "(16)");
+}
+
 int main(void)
 {
     test_init();
@@ -11362,6 +11451,14 @@ int main(void)
      * unreliable afterwards.  Append new tests ABOVE this line. */
     RUN(eval_heap_exhaustion_error);
     RUN(builtin_fptr_plausible_unaligned);
+
+    RUN(eval_hashtable_wide_string_keys);
+    RUN(eval_hashtable_equalp_vector_keys);
+    RUN(eval_hashtable_equal_bitvector_keys);
+    RUN(eval_hashtable_equal_vector_identity);
+    RUN(eval_hashtable_equalp_wide_char_no_low_byte_match);
+    RUN(eval_mapl_mapcon_symbol_designators);
+    RUN(eval_map_family_over_16_seqs_errors);
 
     RUN(eval_apply_builtin_over_64_args);
     RUN(eval_remove_string_over_1023_chars);
