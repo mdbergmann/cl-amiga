@@ -9,6 +9,47 @@ Related: [specs/performance.md](../specs/performance.md) is the optimization
 
 ---
 
+## 2026-07-05 — MAKE-LOAD-FORM pre-pass hash index (host)
+
+**Commit**: follows `64d6d8f`. Fix for the profiling finding that
+`fasl_mlf_seen_p` / `cl_fasl_mlf_lookup` linear scans made the FASL writer's
+make-load-form pre-pass O(n²) — ~85% of all cold-compile CPU (14,713 of ~17k
+leaf samples) once any loaded library defines a `make-load-form` method
+(cl-ppcre, serapeum, log4cl, local-time, trivia, cffi, ironclad, fset all
+do, so the gate is effectively always open in real sessions). See
+specs/performance.md item 1.9.
+
+**Environment**: Apple M3 Ultra, macOS 26.5.2, `make host`, warm FASL cache,
+cwd = repo root.
+
+| Measurement | pre-fix | post-fix |
+|---|---|---|
+| `(asdf:load-system "sento" :force :all)` full dep recompile, 192M heap | 18,283 ms | **1,864 ms (9.8x)** |
+| bench-opt `compile.file-mlf` (2 compiles of a 20k-cons graph + load) | 123 ms | **23 ms** |
+| bench-opt `compile.file-plain` (same, MLF gate closed — control) | 22 ms | 22 ms |
+| warm `(ql:quickload "sento")` (unaffected — no compile) | 840 ms | 840 ms |
+
+Post-fix, `cl_fasl_mlf_prepass` no longer appears in the profile at all; the
+cold-compile leaf leaders are now the compiler's macro-lookup chain
+(`cl_macro_p` 1009 + `cl_get_macro` 184 + `cl_get_compiler_macro` 157
+samples) and the VM loop (`cl_vm_run` 874) — the next profiling candidates.
+
+Also measured (context for deprioritizing spec item 2.4): set-operation call
+counters during a full sento quickload — `intersection`/`union`/`subsetp`
+0 calls; `adjoin` 91 and `set-difference` 20 calls, all on lists ≤ 40
+elements.
+
+**Reproduce**:
+
+```
+echo '(quit)' | ./build/host/clamiga --heap 64M --load trunk/bench-opt.lisp
+# recompile timing: (ql:quickload "sento" :silent t) then
+#   (time (asdf:load-system "sento" :force :all))  at --heap 192M
+# profile: run the recompile in background, then: sample <pid> 20
+```
+
+---
+
 ## 2026-07-05 — bench-opt baseline (host, pre-optimization)
 
 **Commit**: `ac39e3c` + new `trunk/bench-opt.lisp`. Baseline for the pending
@@ -48,7 +89,12 @@ against closed-form expected values (`fails=0`).
 | clos.accessor | 92 | 0 | 0 |
 | alloc.mixed-churn | 82 | 57,603,416 | 1 |
 | alloc.cons-churn | 53 | 16,000,016 | 0 |
+| compile.file-plain * | 22 | 1,635,384 | 0 |
+| compile.file-mlf * | 123 | 1,636,736 | 0 |
 | **total** | **1460** | | |
+
+\* The `compile.*` pair was added to the suite the same day, just before the
+MLF pre-pass fix landed (see the entry above); values here are pre-fix.
 
 Run-to-run stability: a second full run totaled 1452 ms (~0.5% variance);
 individual benchmarks repeat within ±2 ms.
