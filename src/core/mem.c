@@ -49,10 +49,39 @@ uint8_t *cl_arena_base = NULL;  /* Global arena base for offset↔pointer conver
  * gc_root_stack is a local macro below. */
 #define gc_root_stack (CT->gc_roots)
 
-/* GC mark stack (iterative marking) */
-static CL_Obj gc_mark_stack[CL_GC_MARK_STACK_SIZE];
-static int gc_mark_top = 0;
-static int gc_mark_overflow = 0;  /* Set when mark stack overflows */
+/* GC mark stack (iterative marking).
+ *
+ * Starts on a small static buffer (BSS — always available, cannot fail) and
+ * GROWS geometrically on demand up to a heap-proportional cap; see
+ * gc_mark_stack_grow.  Growth matters: an object with more unmarked children
+ * than the stack has free slots (a >4K-element vector, a large hash table)
+ * overflows it, and the overflow fallback below is QUADRATIC — each full-arena
+ * re-scan pass recovers at most ~one-stack-full of dropped children, so a
+ * large live heap needs live/capacity passes, each pass re-visiting every
+ * marked object's children.  Measured on a 210MB live heap: 49 s per GC with
+ * a fixed 4096-entry stack vs 35 ms with a large-enough stack.  The re-scan
+ * loop in gc_mark is kept as the correctness fallback for when growth fails
+ * (platform_alloc OOM or cap reached) — it is slow but never wrong.
+ * Growth happens with the world stopped (mark runs under STW), so no other
+ * thread can observe the buffer swap. */
+static CL_Obj   gc_mark_stack_initial[CL_GC_MARK_STACK_SIZE];
+static CL_Obj  *gc_mark_stack = gc_mark_stack_initial;
+static uint32_t gc_mark_stack_cap = CL_GC_MARK_STACK_SIZE;
+static uint32_t gc_mark_top = 0;
+static int gc_mark_overflow = 0;    /* Set when mark stack overflows */
+static int gc_mark_grow_failed = 0; /* Per-cycle latch: stop re-attempting a
+                                     * failed grow on every subsequent push
+                                     * this cycle.  Reset by gc_mark. */
+/* Monotonic diagnostics (exposed via ext:%gc-mark-stats and cl_mem_stats):
+ * grows = successful capacity doublings; rescan passes = full-arena overflow
+ * recovery passes — nonzero means the quadratic fallback ran (a growth
+ * failure), which is worth knowing about long before it becomes a 49s GC. */
+static uint32_t gc_mark_stack_grows = 0;
+static uint32_t gc_mark_rescan_passes = 0;
+/* Test hook: when nonzero, caps growth at this many entries so the overflow
+ * re-scan fallback can be exercised deterministically (see
+ * tests/test_gc_markstack.c).  0 = normal heap-proportional cap. */
+static uint32_t gc_mark_stack_test_limit = 0;
 
 /* Forward declarations */
 static void gc_mark(void);
@@ -61,6 +90,7 @@ static void gc_reset_transient_state(void);
 static int root_slot_independently_forwarded(CL_Obj *slot);
 void gc_mark_obj(CL_Obj obj);
 static void gc_mark_push(CL_Obj obj);
+static void gc_mark_stack_release(void);
 static void *alloc_from_free_list(uint32_t *sizep, uint32_t max_steps);
 static void *alloc_from_bump(uint32_t size);
 
@@ -198,7 +228,13 @@ void cl_mem_init(uint32_t heap_size)
     gc_sweeps_since_compact = 0;
 
     gc_root_count = 0;
-    gc_mark_top = 0;
+    /* Drop any grown mark stack from a previous heap: the growth cap is
+     * derived from the (possibly different) new arena size, and unit tests
+     * re-init with small heaps.  Also resets gc_mark_top. */
+    gc_mark_stack_release();
+    gc_mark_stack_grows = 0;
+    gc_mark_rescan_passes = 0;
+    gc_mark_stack_test_limit = 0;
 
     /* Reset GC state that survives in static storage across heap
      * re-initialization (each C unit test, embedded restarts): pending
@@ -278,6 +314,7 @@ static void gc_reset_transient_state(void)
 {
     gc_compact_pending = 0;
     gc_mark_overflow = 0;
+    gc_mark_grow_failed = 0;
     gc_fwd_fail_bump = 0;
     gc_jit_pin_oom = 0;
     jit_pinned_count = 0;
@@ -291,6 +328,7 @@ void cl_mem_shutdown(void)
         platform_free(cl_heap.arena);
         cl_heap.arena = NULL;
     }
+    gc_mark_stack_release();
     if (jit_scan_cand_buf) {
         platform_free(jit_scan_cand_buf);
         jit_scan_cand_buf = NULL;
@@ -1234,6 +1272,83 @@ static int gc_dbg_root_idx = -1;
 #define GC_DBG_SRC(tag, idx) ((void)0)
 #endif
 
+/* Double the mark stack's capacity (up to a heap-proportional cap).  Runs
+ * with the world stopped and the stack contents are plain arena offsets, so
+ * an alloc+copy+free swap is safe at any push.  Returns 1 on success, 0 when
+ * growth is not possible (cap reached or platform_alloc OOM) — the caller
+ * then falls back to the overflow re-scan protocol.  A failure latches for
+ * the rest of the cycle so a heap under memory pressure doesn't re-attempt
+ * the same failing allocation on every subsequent push. */
+static int gc_mark_stack_grow(void)
+{
+    uint32_t max_cap, new_cap;
+    CL_Obj *new_buf;
+
+    if (gc_mark_grow_failed)
+        return 0;
+
+    /* Cap the stack's C-heap footprint at ~1/32 of the arena size (entries
+     * are 4 bytes, so arena_size/128 entries).  Worst-case marking frontier
+     * is bounded by the live object count, but that bound is far larger than
+     * any real workload's frontier — the cap exists so a pathological graph
+     * degrades to the (correct) re-scan fallback instead of doubling RAM
+     * usage.  On the 68020/8MB target a 4MB heap caps at 32K entries (128KB),
+     * covering e.g. a full 32K-element vector of fresh children. */
+    max_cap = cl_heap.arena_size / 128u;
+    if (max_cap < CL_GC_MARK_STACK_SIZE)
+        max_cap = CL_GC_MARK_STACK_SIZE;
+    if (gc_mark_stack_test_limit && max_cap > gc_mark_stack_test_limit)
+        max_cap = gc_mark_stack_test_limit;
+
+    if (gc_mark_stack_cap >= max_cap) {
+        gc_mark_grow_failed = 1;
+        return 0;
+    }
+    new_cap = gc_mark_stack_cap * 2u;
+    if (new_cap > max_cap)
+        new_cap = max_cap;
+
+    new_buf = (CL_Obj *)platform_alloc((unsigned long)new_cap * sizeof(CL_Obj));
+    if (!new_buf) {
+        gc_mark_grow_failed = 1;
+        return 0;
+    }
+    memcpy(new_buf, gc_mark_stack, (size_t)gc_mark_top * sizeof(CL_Obj));
+    if (gc_mark_stack != gc_mark_stack_initial)
+        platform_free(gc_mark_stack);
+    gc_mark_stack = new_buf;
+    gc_mark_stack_cap = new_cap;
+    gc_mark_stack_grows++;
+    return 1;
+}
+
+/* Release a grown mark stack back to the static initial buffer.  Called on
+ * heap re-init/shutdown; NOT called between GC cycles — a workload that grew
+ * the stack once will grow it again, so keeping the buffer (bounded by the
+ * cap above) avoids per-GC alloc churn. */
+static void gc_mark_stack_release(void)
+{
+    if (gc_mark_stack != gc_mark_stack_initial) {
+        platform_free(gc_mark_stack);
+        gc_mark_stack = gc_mark_stack_initial;
+    }
+    gc_mark_stack_cap = CL_GC_MARK_STACK_SIZE;
+    gc_mark_top = 0;
+}
+
+void cl_gc_mark_stack_stats(uint32_t *cap_entries, uint32_t *grows,
+                            uint32_t *rescan_passes)
+{
+    if (cap_entries)   *cap_entries   = gc_mark_stack_cap;
+    if (grows)         *grows         = gc_mark_stack_grows;
+    if (rescan_passes) *rescan_passes = gc_mark_rescan_passes;
+}
+
+void cl_gc_mark_stack_set_test_limit(uint32_t max_entries)
+{
+    gc_mark_stack_test_limit = max_entries;
+}
+
 static void gc_mark_push(CL_Obj obj)
 {
     /* Skip immediates and out-of-bounds */
@@ -1278,16 +1393,22 @@ static void gc_mark_push(CL_Obj obj)
     }
 #endif
 
-    if (gc_mark_top < CL_GC_MARK_STACK_SIZE) {
-        gc_mark_stack[gc_mark_top++] = obj;
-    } else {
-#ifdef DEBUG_GC
-        if (!gc_mark_overflow) {
-            platform_write_string("GC: mark stack overflow, will re-scan heap\n");
+    if (gc_mark_top >= gc_mark_stack_cap && !gc_mark_stack_grow()) {
+        /* Growth impossible (cap/OOM): drop the child and let gc_mark's
+         * full-arena re-scan loop recover it.  Slow (quadratic) but correct.
+         * Warn once per process — a silent fallback here is how a 50s GC
+         * pause hides from every normal build. */
+        static int overflow_warned = 0;
+        if (!overflow_warned) {
+            overflow_warned = 1;
+            platform_write_string("GC: mark stack cannot grow "
+                                  "(OOM or cap); falling back to heap "
+                                  "re-scan — expect slow GC cycles\n");
         }
-#endif
         gc_mark_overflow = 1;
+        return;
     }
+    gc_mark_stack[gc_mark_top++] = obj;
 }
 
 static void gc_mark_children(void *ptr, uint8_t type)
@@ -2118,6 +2239,10 @@ static void gc_mark(void)
     CL_Thread *t;
 
     gc_mark_overflow = 0;
+    /* Re-arm mark-stack growth: a previous cycle's OOM may have been
+     * transient (the failing platform_alloc can succeed now), and the
+     * heap-proportional cap re-derives from the current arena anyway. */
+    gc_mark_grow_failed = 0;
     /* Reset the pinned-object set; the conservative JIT-stack scan
      * (gc_scan_jit_native_stack, reached via gc_mark_thread_roots) rebuilds
      * it this cycle.  Stays empty unless a JIT frame is live. */
@@ -2223,12 +2348,17 @@ static void gc_mark(void)
     }
 
     /* Handle mark stack overflow: re-scan heap for marked objects whose
-     * children may not have been pushed.  Repeat until no overflow. */
+     * children may not have been pushed.  Repeat until no overflow.
+     * Only reachable when gc_mark_stack_grow failed (cap/OOM) — each pass
+     * is O(arena) and recovers at most ~one-stack-full of dropped children,
+     * so this is the quadratic last resort, not the normal path.  The pass
+     * counter feeds ext:%gc-mark-stats so the fallback is observable. */
     while (gc_mark_overflow) {
         uint8_t *ptr = cl_heap.arena + CL_ALIGN;
         uint8_t *end = cl_heap.arena + cl_heap.bump;
 
         gc_mark_overflow = 0;
+        gc_mark_rescan_passes++;
         while (ptr < end) {
             uint32_t size = CL_HDR_SIZE(ptr);
             if (size == 0) break;
@@ -4304,5 +4434,11 @@ void cl_mem_stats(void)
             (unsigned long)cl_heap.arena_size,
             (unsigned long)(cl_heap.arena_size - cl_heap.total_allocated),
             (unsigned long)cl_heap.gc_count);
+    platform_write_string(buf);
+    sprintf(buf, "GC mark stack: %lu entries (%lu grows, "
+            "%lu overflow re-scan passes)\n",
+            (unsigned long)gc_mark_stack_cap,
+            (unsigned long)gc_mark_stack_grows,
+            (unsigned long)gc_mark_rescan_passes);
     platform_write_string(buf);
 }

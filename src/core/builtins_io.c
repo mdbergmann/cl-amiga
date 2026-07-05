@@ -2958,6 +2958,22 @@ static CL_Obj bi_ext_gc_compact(CL_Obj *args, int n)
     return CL_NIL;
 }
 
+/* (ext:%gc-mark-stats) — GC mark-stack diagnostics as a 3-element list:
+ * (capacity-entries grow-count rescan-pass-count).  A nonzero rescan-pass
+ * count means the mark stack could not grow (cap or OOM) and the GC fell
+ * back to the quadratic full-arena overflow re-scan — the pathology that
+ * turns GC cycles on large live heaps from milliseconds into seconds. */
+static CL_Obj bi_ext_gc_mark_stats(CL_Obj *args, int n)
+{
+    uint32_t cap, grows, rescans;
+    CL_UNUSED(args); CL_UNUSED(n);
+    cl_gc_mark_stack_stats(&cap, &grows, &rescans);
+    return cl_cons(CL_MAKE_FIXNUM((int32_t)cap),
+                   cl_cons(CL_MAKE_FIXNUM((int32_t)grows),
+                           cl_cons(CL_MAKE_FIXNUM((int32_t)rescans),
+                                   CL_NIL)));
+}
+
 /* (ext:%gc-audit-roots) — count double-registered GC roots (global vs.
  * global, global vs. any thread root stack).  gc_forward is not
  * idempotent, so any double-registered root silently corrupts on
@@ -3982,6 +3998,7 @@ void cl_builtins_io_init(void)
     /* Extension functions (EXT package) */
     extfun("GC", bi_ext_gc, 0, 0);
     extfun("GC-COMPACT", bi_ext_gc_compact, 0, 0);
+    extfun("%GC-MARK-STATS", bi_ext_gc_mark_stats, 0, 0);
     extfun("%GC-AUDIT-ROOTS", bi_ext_gc_audit_roots, 0, 0);
     extfun("GETENV", bi_getenv, 1, 1);
     extfun("GETCWD", bi_getcwd, 0, 0);

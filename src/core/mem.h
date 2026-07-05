@@ -12,7 +12,13 @@
  */
 
 #define CL_DEFAULT_HEAP_SIZE  (4 * 1024 * 1024)  /* 4MB */
+/* INITIAL GC mark-stack capacity (entries).  The stack grows geometrically
+ * on demand up to a heap-proportional cap (see gc_mark_stack_grow in mem.c);
+ * this constant only sizes the always-available static baseline buffer.
+ * Overridable for experiments/regression tests. */
+#ifndef CL_GC_MARK_STACK_SIZE
 #define CL_GC_MARK_STACK_SIZE 4096
+#endif
 #define CL_GC_ROOT_STACK_SIZE 1024
 #define CL_MIN_ALLOC_SIZE     16  /* Minimum allocation (aligned) */
 
@@ -181,6 +187,18 @@ void cl_gc_compact_if_pending(void);
 
 /* Debug/stats */
 void cl_mem_stats(void);
+
+/* GC mark-stack diagnostics: current capacity (entries), successful grow
+ * operations, and full-arena overflow re-scan passes (monotonic; nonzero
+ * means the quadratic overflow fallback ran — growth failed on cap/OOM).
+ * Any out-param may be NULL.  Exposed to Lisp as (ext:%gc-mark-stats). */
+void cl_gc_mark_stack_stats(uint32_t *cap_entries, uint32_t *grows,
+                            uint32_t *rescan_passes);
+
+/* Test hook: cap mark-stack growth at max_entries so the overflow re-scan
+ * fallback can be exercised deterministically (0 = normal heap-proportional
+ * cap).  Reset by cl_mem_init. */
+void cl_gc_mark_stack_set_test_limit(uint32_t max_entries);
 
 #include "thread.h"
 
