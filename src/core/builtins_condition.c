@@ -2095,6 +2095,17 @@ static CL_Obj bi_use_value(CL_Obj *args, int n)
 
 void cl_builtins_condition_init(void)
 {
+    /* After a shutdown/re-init cycle (test harnesses) these statics
+     * still hold PREVIOUS-arena offsets, and gc_mark marks them —
+     * setting "mark bits" at interior positions of unrelated
+     * fresh-arena objects, i.e. silent corruption whose victim moves
+     * with heap layout (see cl_mem_init's n_global_roots reset).
+     * No-op in a normal once-per-process boot. */
+    condition_hierarchy = CL_NIL;
+    condition_slot_table = CL_NIL;
+    condition_default_initargs = CL_NIL;
+    condition_slot_initforms = CL_NIL;
+
     /* Build condition type hierarchy */
     build_hierarchy();
 

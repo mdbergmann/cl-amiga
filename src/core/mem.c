@@ -3352,6 +3352,14 @@ static void gc_update_shared_roots(void)
         extern void cl_fasl_gc_update_mlf(void (*update_fn)(CL_Obj *));
         cl_fasl_gc_update_mlf(gc_update_slot);
     }
+
+    /* Struct registry hash index — its keys (name symbols) and cached
+     * entry values just moved; mark it stale so it rebuilds lazily
+     * before the next lookup (builtins_struct.c). */
+    {
+        extern void cl_struct_index_gc_invalidate(void);
+        cl_struct_index_gc_invalidate();
+    }
 }
 
 /* Pass 3: Walk all live heap objects + all roots and update references */

@@ -321,6 +321,13 @@ test-fast: $(TEST_BINS) host
 		echo "FAIL"; \
 		failed=1; \
 	fi; \
+	echo "--- test_struct_slot_access ---"; \
+	if sh $(TEST_SRCDIR)/test_struct_slot_access.sh $(BUILDDIR)/clamiga; then \
+		echo "PASS"; \
+	else \
+		echo "FAIL"; \
+		failed=1; \
+	fi; \
 	echo "--- test_defconstant_fasl ---"; \
 	if sh $(TEST_SRCDIR)/test_defconstant_fasl.sh $(BUILDDIR)/clamiga; then \
 		echo "PASS"; \

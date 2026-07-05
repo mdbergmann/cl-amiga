@@ -5265,6 +5265,37 @@
 (let ((s (make-sv-amiga-struct :a 100 :b 200)))
   (check "struct fallback a" 100 (slot-value s 'a))
   (check "struct fallback b" 200 (slot-value s 'b)))
+
+; --- struct registry hash index + %STRUCT-SLOT-INDEX (spec 3.1) ---
+;; The registry is prepended on registration; bury a type behind later
+;; registrations so lookups must resolve a non-head entry, then verify
+;; the full slot-value protocol and that the index survives compaction.
+(defstruct sidx-amiga (x 3) (y 4))
+(dotimes (i 60)
+  (clamiga::%register-struct-type
+   (make-symbol (format nil "SIDX-AMIGA-FILLER-~D" i)) 1 nil '((f nil))))
+(check "struct-index slot index x" 0 (clamiga::%struct-slot-index 'sidx-amiga 'x))
+(check "struct-index slot index y" 1 (clamiga::%struct-slot-index 'sidx-amiga 'y))
+(check "struct-index missing slot" nil (clamiga::%struct-slot-index 'sidx-amiga 'nope))
+(check "struct-index unknown type" nil (clamiga::%struct-slot-index 'sidx-amiga-no-such 'x))
+(let ((s (make-sidx-amiga)))
+  (check "struct-index buried slot-value" 7 (+ (slot-value s 'x) (slot-value s 'y)))
+  (setf (slot-value s 'y) 40)
+  (check "struct-index buried setf slot-value" 40 (slot-value s 'y))
+  (check "struct-index buried slot-boundp" t (slot-boundp s 'x))
+  (check "struct-index buried typep" t (typep s 'sidx-amiga)))
+(ext:gc-compact)
+(check "struct-index survives compaction" 1
+       (clamiga::%struct-slot-index 'sidx-amiga 'y))
+(check "struct-index slot-value after compaction" 3
+       (slot-value (make-sidx-amiga) 'x))
+;; Re-registration: the NEWEST entry must win (first-match semantics).
+(clamiga::%register-struct-type 'sidx-amiga-re 1 nil '((a nil)))
+(clamiga::%register-struct-type 'sidx-amiga-re 3 nil '((p nil) (q nil) (r nil)))
+(check "struct-index redefinition newest wins" 2
+       (clamiga::%struct-slot-index 'sidx-amiga-re 'r))
+(check "struct-index redefinition drops old slot" nil
+       (clamiga::%struct-slot-index 'sidx-amiga-re 'a))
 (defclass sv-amiga-unbnd () ((u)))
 (defmethod slot-unbound ((class t) (inst sv-amiga-unbnd) slot-name)
   (declare (ignore class slot-name))

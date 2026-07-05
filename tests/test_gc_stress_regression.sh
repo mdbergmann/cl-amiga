@@ -3717,6 +3717,40 @@ check_contains "mark-stack case runs to completion" "MSTK-DONE" "$out"
 check_absent   "no corruption in mark-stack case" \
   "corrupted pointer\|not of type\|Guru\|SIGSEGV\|badmark" "$out"
 
+# --- Struct registry hash index under compact-every-alloc ------------------
+# Spec 3.1: find_struct_entry probes an open-addressing index whose keys
+# (name symbols) and cached entry values are arena offsets; EVERY compaction
+# marks it dirty and the next lookup rebuilds it under the tables wrlock
+# (platform_alloc only — a rebuild must never allocate from the arena).
+# Under stress each allocating iteration compacts, so this loop exercises
+# the dirty→rebuild→probe cycle hundreds of times, plus the zero-alloc
+# %STRUCT-SLOT-INDEX slot resolution in SLOT-VALUE / (SETF SLOT-VALUE).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- struct registry index: slot-value under compact-every-alloc ---"
+cat > "$WORK/structidx.lisp" <<'EOF'
+(defstruct sidx-node (x 3) (y 4))
+;; Bury the type behind later registrations (registry is prepended), so
+;; a rebuild that drops or misorders entries would resolve wrongly.
+(dotimes (i 40)
+  (clamiga::%register-struct-type
+   (make-symbol (format nil "SIDX-FILLER-~D" i)) 1 nil '((f nil))))
+(let ((s (make-sidx-node)) (acc 0))
+  (dotimes (i 200)
+    (setq acc (+ acc (slot-value s 'x) (slot-value s 'y)))
+    (setf (slot-value s 'y) (- 11 (slot-value s 'y))))  ; y alternates 4 <-> 7
+  (format t "SIDX-SUM:~a~%" acc))
+(format t "SIDX-TYPEP:~a~%" (typep (make-sidx-node) 'sidx-node))
+(format t "SIDX-DONE~%")
+EOF
+out=$(run_stress "$WORK/structidx.lisp")
+# y alternates 4,7 per iteration: sum = 200*3 + 100*(4+7) = 1700
+check_contains "struct slot-value stable across rebuilds" "SIDX-SUM:1700" "$out"
+check_contains "struct typep resolves under stress"       "SIDX-TYPEP:T"  "$out"
+check_contains "struct-index case runs to completion"     "SIDX-DONE"     "$out"
+check_absent   "no corruption in struct-index case" \
+  "corrupted pointer\|not of type\|Guru\|SIGSEGV\|badmark" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

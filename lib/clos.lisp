@@ -694,13 +694,11 @@ directly instead of attempting a symbol lookup."
 (defun %find-struct-slot-index (instance slot-name)
   "Return the slot index in INSTANCE for SLOT-NAME, or NIL if not found.
    INSTANCE must be a structure."
-  (let ((names (%struct-slot-names (%struct-type-name instance)))
-        (idx 0))
-    (block found
-      (dolist (n names nil)
-        (when (eq n slot-name)
-          (return-from found idx))
-        (incf idx)))))
+  ;; Hot path: every SLOT-VALUE / (SETF SLOT-VALUE) / SLOT-BOUNDP on a
+  ;; struct instance resolves through here.  %STRUCT-SLOT-INDEX matches
+  ;; the name against the registry specs in C without consing (the old
+  ;; %STRUCT-SLOT-NAMES shape allocated a fresh name list per access).
+  (%struct-slot-index (%struct-type-name instance) slot-name))
 
 (defun slot-value (instance slot-name)
   "Return the value of SLOT-NAME in INSTANCE."

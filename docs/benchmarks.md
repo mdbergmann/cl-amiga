@@ -9,6 +9,53 @@ Related: [specs/performance.md](../specs/performance.md) is the optimization
 
 ---
 
+## 2026-07-05 — struct registry hash index + zero-alloc slot resolution (host)
+
+**Commit**: follows `5308c96`. First half of spec item 3.1, driven by the
+sento actor-benchmark runtime profile (the largest attackable CPU cluster
+after the VM loop was slot-access machinery: `get_slot_specs` 1,028 +
+`bi_gethash` 512 + `cl_struct_slot_names` / `bi_class_of` / `bi_struct_ref`
+leaf samples). Two fixes:
+
+- `find_struct_entry` now probes an O(1) open-addressing hash index over the
+  struct registry instead of walking the prepended alist (early-defined
+  types paid a full O(types) walk on every access); the index is marked
+  dirty on registration and on compaction, and rebuilt lazily
+  (`platform_alloc` only).
+- `SLOT-VALUE` / `(SETF SLOT-VALUE)` / `SLOT-BOUNDP` on struct instances
+  resolve slots via the new zero-allocation `%STRUCT-SLOT-INDEX` builtin —
+  the old path consed a fresh slot-name list per access
+  (`cl_struct_slot_names`) and matched it linearly in Lisp.
+
+New `struct.*` benchmarks in bench-opt (the type is buried behind 256 later
+registrations, matching real-session registry positions; the pre-existing
+`clos.*` benches take the CLOS slot-index-table hash path and never hit the
+struct registry):
+
+| Benchmark | pre-fix | post-fix |
+|---|---|---|
+| struct.slot-value (200k accesses/run) | 143 ms, 6,400,008 bytes | **53 ms, 0 bytes** |
+| struct.typep | 50 ms | **12 ms** |
+| struct.accessor (constant-index %STRUCT-REF — target/control) | 6 ms | 6 ms |
+| clos.slot-value (CLOS hash path — control) | 55 ms | 55 ms |
+| compile.file-plain / compile.file-mlf (registry lookups at compile time) | 27 / 27 ms | **20 / 20 ms** |
+
+struct.slot-value is now at parity with the CLOS-instance hash path. The
+remaining gap to struct.accessor (53 vs 6 ms) is generic-lookup overhead —
+`class-of` + the `%find-struct-slot-index` call chain — which is the second
+half of 3.1 (direct-index accessor closures at class finalization).
+
+**Environment**: Apple M3 Ultra, macOS 26.5.2, `make host`, warm FASL cache,
+`--heap 64M`, cwd = repo root.
+
+**Reproduce**:
+
+```
+echo '(quit)' | ./build/host/clamiga --heap 64M --load trunk/bench-opt.lisp
+```
+
+---
+
 ## 2026-07-05 — MAKE-LOAD-FORM pre-pass hash index (host)
 
 **Commit**: follows `64d6d8f`. Fix for the profiling finding that
