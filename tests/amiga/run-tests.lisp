@@ -422,6 +422,32 @@
              (= (length (car live)) 400)
              (< collections 1000))))))
 
+; --- Allocator: growable GC mark stack (wide object graphs) ---
+; Companion to the host C regression tests/test_gc_markstack.c.  The GC mark
+; stack starts at 4096 entries and must GROW when a single object has more
+; unmarked children (here: an 8000-slot vector of fresh conses).  Before the
+; growth fix the overflow fell back — silently — to a full-arena re-scan per
+; ~4096 recovered children, turning GC cycles on large live heaps quadratic
+; (measured 49 s vs 35 ms per mark-sweep on a 210MB host heap; found via
+; "loading from Sly is 60% slower" 2026-07-05).  Asserts: the graph survives
+; the GC intact, the stack grew, and the quadratic re-scan fallback (third
+; stat) never ran.  Stats are process-monotonic, so re-scans staying 0 also
+; covers every OTHER GC this suite has triggered up to this point.
+(check "growable mark stack: wide vector marks intact, no re-scan" t
+  (let ((wide (make-array 8000)))
+    (dotimes (i 8000) (setf (aref wide i) (cons i (* i 2))))
+    (ext:gc)
+    (let ((bad 0)
+          (stats (ext:%gc-mark-stats)))
+      (dotimes (i 8000)
+        (let ((c (aref wide i)))
+          (unless (and (consp c) (eql (car c) i) (eql (cdr c) (* i 2)))
+            (incf bad))))
+      (and (= bad 0)
+           (>= (first stats) 8192)     ; capacity grew past the wide push
+           (plusp (second stats))      ; via at least one grow operation
+           (zerop (third stats))))))   ; quadratic re-scan fallback never ran
+
 ; --- Quasiquote ---
 (check "qq atom" 42 `42)
 (check "qq symbol" 'foo `foo)

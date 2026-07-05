@@ -759,6 +759,15 @@ static CL_Obj bi_room(CL_Obj *args, int n)
             (unsigned long)cl_heap.gc_count,
             (unsigned long)cl_heap.compact_count);
     cl_write_cstring_to_stdout(buf);
+    {
+        uint32_t ms_cap, ms_grows, ms_rescans;
+        cl_gc_mark_stack_stats(&ms_cap, &ms_grows, &ms_rescans);
+        sprintf(buf, "  mark stack: %lu entries, %lu grows, "
+                "%lu overflow re-scan passes\n",
+                (unsigned long)ms_cap, (unsigned long)ms_grows,
+                (unsigned long)ms_rescans);
+        cl_write_cstring_to_stdout(buf);
+    }
 
     cl_mv_count = 0;
     return CL_NIL;

@@ -3675,6 +3675,48 @@ check_contains "tier-4 batch 7c cases run to completion" "T4B7C-DONE" "$out"
 check_absent   "no corruption in tier-4 batch 7c cases" \
   "corrupted pointer\|not of type\|Guru\|SIGSEGV\|badmark" "$out"
 
+# ---------------------------------------------------------------------------
+# Growable GC mark stack: a vector with more children than the initial
+# 4096-entry mark stack forces gc_mark_stack_grow DURING the compactions this
+# very script forces on every allocation — the grown buffer, the buffer swap,
+# and the marked graph must all survive a moving GC.  The stats check pins the
+# invariant that growth (not the quadratic overflow re-scan fallback) handled
+# it: a re-scan pass appearing here means growth silently broke, which is a
+# 1000x GC slowdown on large live heaps (the 2026-07-05 Sly-load finding).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- growable mark stack: wide vector under compact-every-alloc ---"
+cat > "$WORK/markstack.lisp" <<'EOF'
+;; Build the conses under stress (deep list — stack-friendly), then one wide
+;; 5000-slot vector (> 4096 initial mark-stack entries).  Every allocation
+;; after the COERCE compacts with the wide vector live, so each mark must
+;; grow the stack or fall back.
+(defparameter *wide*
+  (coerce (let ((acc nil))
+            (dotimes (i 5000) (push (cons i (* i 2)) acc))
+            (nreverse acc))
+          'vector))
+(ext:gc-compact)
+(ext:gc-compact)
+(let ((bad 0))
+  (dotimes (i 5000)
+    (let ((c (aref *wide* i)))
+      (unless (and (consp c) (eql (car c) i) (eql (cdr c) (* i 2)))
+        (incf bad))))
+  (format t "MSTK-INTACT:~a~%" bad))
+(let ((stats (ext:%gc-mark-stats)))
+  (format t "MSTK-GREW:~a~%" (if (plusp (second stats)) "YES" "NO"))
+  (format t "MSTK-RESCANS:~a~%" (third stats)))
+(format t "MSTK-DONE~%")
+EOF
+out=$(run_stress "$WORK/markstack.lisp")
+check_contains "wide vector intact after stress compactions" "MSTK-INTACT:0" "$out"
+check_contains "mark stack grew past its initial capacity" "MSTK-GREW:YES" "$out"
+check_contains "no overflow re-scan pass ran (growth handled it)" "MSTK-RESCANS:0" "$out"
+check_contains "mark-stack case runs to completion" "MSTK-DONE" "$out"
+check_absent   "no corruption in mark-stack case" \
+  "corrupted pointer\|not of type\|Guru\|SIGSEGV\|badmark" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

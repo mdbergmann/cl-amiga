@@ -9,6 +9,44 @@ Related: [specs/performance.md](../specs/performance.md) is the optimization
 
 ---
 
+## 2026-07-05 — GC mark phase on large live heaps (host, growable mark stack)
+
+**Commit**: growable GC mark stack (follows `72fe7ed`). Found investigating
+"`(asdf:load-system :chipi-ui/tests)` takes 21s from a Sly session vs 13s
+from a fresh REPL" — the difference was never multi-threading (MT allocator
+path, worker-thread eval, and slynk mREPL streaming all measured within
+noise of the single-threaded baseline); it was the *live-heap size* of the
+long-running Sly image. The fixed 4096-entry mark stack silently overflowed
+on any object with more unmarked children, and each full-arena overflow
+re-scan pass recovers only ~one-stack-full — quadratic marking.
+
+**Environment**: Apple M3 Ultra, macOS 26.5.2, `make host`, warm FASL
+cache, `--heap 512M`, cwd = repo root, chipi-ui dependency closure from
+`~/Development/MySources/cl-hab/ocicl`.
+
+**Single mark-sweep `(ext:gc)`, 210MB live** (160 x 65536-element vectors
+of fresh conses — worst-case wide fan-out):
+
+| Build | one GC cycle |
+|---|---|
+| fixed 4096-entry mark stack (pre-fix) | 49,248 ms |
+| growable mark stack (this change) | 56 ms |
+
+**`(asdf:load-system :chipi-ui/tests)`, warm FASLs, 512M heap**:
+
+| Scenario | pre-fix | post-fix |
+|---|---|---|
+| fresh image, main thread | 12,800 ms (3 GCs) | 11,066 ms (3 GCs) |
+| + 200MB live ballast (reproduces the user's Sly-session shape: 9 GCs, ~330MB used) | >10 min (killed) | 11,772 ms |
+
+**Reproduce**: build ballast with
+`(loop repeat 160 collect (let ((v (make-array 65536))) (dotimes (i 65536) (setf (aref v i) (cons i i))) v))`,
+then `(time (ext:gc))`. Growth/fallback observability:
+`(ext:%gc-mark-stats)` → `(capacity grows rescan-passes)`; a nonzero third
+element means growth failed (cap/OOM) and the quadratic fallback ran.
+
+---
+
 ## 2026-07-05 — sento actor throughput (host)
 
 **Commit**: `2e5f7c4` (post tier-4 GC audit + contended acquire-lock
