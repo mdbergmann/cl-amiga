@@ -47,17 +47,173 @@ CL_Obj cl_struct_set_sym = CL_NIL;
 
 /* --- Registry lookup helpers --- */
 
+/* --- Registry hash index ---
+ *
+ * find_struct_entry used to walk the struct_table alist linearly.  The
+ * registry is PREPENDED on registration, so early-defined types (base
+ * conditions, library structs) sit at the tail and pay a full
+ * O(registered-types) walk — and SLOT-VALUE on a struct instance
+ * resolves its slot through here on EVERY access (2026-07-05 sento
+ * runtime profile: the largest attackable CPU cluster after the VM
+ * dispatch loop itself).
+ *
+ * The index is an open-addressing table mapping type-name symbol ->
+ * registry entry, in the style of the FASL writer's MLF index (fasl.c):
+ *
+ * - Compaction moves symbols and entries, invalidating both the hashed
+ *   key bits and the cached entry values.  cl_struct_index_gc_invalidate
+ *   (called from the compaction update phase, all mutators stopped)
+ *   marks the index dirty; it is rebuilt lazily on the next lookup.
+ * - Registration marks the index dirty in the same wrlock critical
+ *   section that prepends the entry, so a probe of a CLEAN index is
+ *   always consistent with the alist.  Registration is rare and a
+ *   rebuild is O(types) — negligible even during cold loads.
+ * - Rebuilds allocate with platform_alloc only (never the arena), so a
+ *   rebuild cannot itself trigger GC, and they walk the alist with raw
+ *   cons access — cl_car can cl_error→longjmp, which must not happen
+ *   while holding the wrlock (leaked-reader lesson, see fallback below).
+ * - On OOM or a malformed alist cell the index is disabled permanently
+ *   and lookups fall back to the linear walk — slower, never wrong. */
+
+typedef struct {
+    CL_Obj name;    /* type-name symbol; CL_NIL (== 0) = empty slot */
+    CL_Obj entry;   /* registry entry (name n-slots parent (specs)) */
+} StructIndexSlot;
+
+static struct {
+    StructIndexSlot *slots;
+    uint32_t cap;   /* power of two; 0 = unallocated */
+    int dirty;      /* alist changed or compaction moved objects */
+    int disabled;   /* OOM / malformed cell — permanent linear fallback */
+} struct_index;
+
+static uint32_t struct_name_hash(CL_Obj obj)
+{
+    /* Heap offsets are CL_ALIGN-aligned, so shift the always-zero low
+     * bits out before Knuth's golden-ratio multiplier (see
+     * fasl_obj_hash in fasl.c). */
+#if CL_ALIGN == 8
+    return ((uint32_t)obj >> 3) * 2654435769u;
+#else
+    return ((uint32_t)obj >> 2) * 2654435769u;
+#endif
+}
+
+/* Mark the index stale.  Called from gc_update_shared_roots during the
+ * compaction update phase (world stopped) — and mirrored inline, under
+ * the tables wrlock, by bi_register_struct_type. */
+void cl_struct_index_gc_invalidate(void)
+{
+    struct_index.dirty = 1;
+}
+
+/* (Re)build the index from the current struct_table.  Caller holds the
+ * tables wrlock.  Returns 1 when the index is usable; 0 disables it. */
+static int struct_index_rebuild(void)
+{
+    uint32_t count = 0, cap, mask;
+    StructIndexSlot *slots;
+    CL_Obj list;
+
+    /* Validate + count with raw cons access (no cl_car: it can
+     * cl_error→longjmp out from under the held wrlock). */
+    for (list = struct_table; !CL_NULL_P(list); ) {
+        CL_Cons *c;
+        if (!CL_CONS_P(list)) goto disable;
+        c = (CL_Cons *)CL_OBJ_TO_PTR(list);
+        if (!CL_CONS_P(c->car)) goto disable;
+        if (!CL_SYMBOL_P(((CL_Cons *)CL_OBJ_TO_PTR(c->car))->car)) goto disable;
+        count++;
+        list = c->cdr;
+    }
+
+    cap = 64;
+    while (cap < count * 2 + 1) cap <<= 1;
+    slots = (StructIndexSlot *)platform_alloc(cap * sizeof(StructIndexSlot));
+    if (!slots) goto disable;
+    memset(slots, 0, cap * sizeof(StructIndexSlot));   /* CL_NIL == 0 */
+    mask = cap - 1;
+
+    /* Head-first insert, first key wins — matches the linear walk's
+     * first-match semantics when a type has been re-registered. */
+    for (list = struct_table; !CL_NULL_P(list); ) {
+        CL_Cons *c = (CL_Cons *)CL_OBJ_TO_PTR(list);
+        CL_Obj entry = c->car;
+        CL_Obj name = ((CL_Cons *)CL_OBJ_TO_PTR(entry))->car;
+        uint32_t slot = struct_name_hash(name) & mask;
+        while (!CL_NULL_P(slots[slot].name) && slots[slot].name != name)
+            slot = (slot + 1) & mask;
+        if (CL_NULL_P(slots[slot].name)) {
+            slots[slot].name = name;
+            slots[slot].entry = entry;
+        }
+        list = c->cdr;
+    }
+
+    if (struct_index.slots) platform_free(struct_index.slots);
+    struct_index.slots = slots;
+    struct_index.cap = cap;
+    struct_index.dirty = 0;
+    return 1;
+
+disable:
+    if (struct_index.slots) platform_free(struct_index.slots);
+    struct_index.slots = NULL;
+    struct_index.cap = 0;
+    struct_index.disabled = 1;
+    return 0;
+}
+
+/* Probe a CLEAN index for TYPE_NAME.  Caller holds the tables lock.
+ * Pure memory reads — cannot error, cannot allocate. */
+static CL_Obj struct_index_probe(CL_Obj type_name)
+{
+    uint32_t mask = struct_index.cap - 1;
+    uint32_t slot = struct_name_hash(type_name) & mask;
+    while (!CL_NULL_P(struct_index.slots[slot].name)) {
+        if (struct_index.slots[slot].name == type_name)
+            return struct_index.slots[slot].entry;
+        slot = (slot + 1) & mask;
+    }
+    return CL_NIL;
+}
+
 /* Find registry entry for a struct type name.
  * Returns the entry (name n-slots parent (slot-names...)) or NIL.
  *
- * Snapshot-and-release: struct_table is only ever PREPENDED to, so once
- * we capture the head pointer under the rdlock we can release the lock
- * and walk the snapshot.  Holding the rdlock across cl_car (which can
- * cl_error → longjmp on a corrupt cell) leaked readers and ultimately
- * tripped the bi_condition_wait safety abort in sento dispatcher tests. */
+ * Fast path: O(1) probe of the hash index under the rdlock.  A dirty
+ * or unbuilt index is rebuilt under the wrlock first.
+ *
+ * Fallback (index disabled): snapshot-and-release linear walk —
+ * struct_table is only ever PREPENDED to, so once we capture the head
+ * pointer under the rdlock we can release the lock and walk the
+ * snapshot.  Holding the rdlock across cl_car (which can cl_error →
+ * longjmp on a corrupt cell) leaked readers and ultimately tripped the
+ * bi_condition_wait safety abort in sento dispatcher tests. */
 static CL_Obj find_struct_entry(CL_Obj type_name)
 {
-    CL_Obj list;
+    CL_Obj list, result;
+
+    cl_tables_rdlock();
+    if (struct_index.slots && !struct_index.dirty && !struct_index.disabled) {
+        result = struct_index_probe(type_name);
+        cl_tables_rwunlock();
+        return result;
+    }
+    cl_tables_rwunlock();
+
+    if (!struct_index.disabled) {
+        cl_tables_wrlock();
+        if (!struct_index.disabled &&
+            (struct_index.slots && !struct_index.dirty
+             ? 1 : struct_index_rebuild())) {
+            result = struct_index_probe(type_name);
+            cl_tables_rwunlock();
+            return result;
+        }
+        cl_tables_rwunlock();
+    }
+
     cl_tables_rdlock();
     list = struct_table;
     cl_tables_rwunlock();
@@ -270,9 +426,19 @@ static CL_Obj bi_register_struct_type(CL_Obj *args, int n)
     entry = cl_cons(parent, entry);
     entry = cl_cons(n_slots_obj, entry);
     entry = cl_cons(name, entry);
-    /* Final cons happens outside the write lock (STW-vs-rwlock deadlock —
-     * see cl_table_prepend_locked). */
-    cl_table_prepend_locked(&struct_table, entry);
+    /* Prepend + index dirty-mark must be ONE wrlock critical section,
+     * so a probe of a clean index is always consistent with the alist.
+     * The head cell is consed OUTSIDE the lock (arena allocation under
+     * the wrlock is an STW-vs-rwlock deadlock — see
+     * cl_table_prepend_locked, whose shape this mirrors). */
+    {
+        CL_Obj cell = cl_cons(entry, CL_NIL);
+        cl_tables_wrlock();
+        ((CL_Cons *)CL_OBJ_TO_PTR(cell))->cdr = struct_table;
+        struct_table = cell;
+        struct_index.dirty = 1;
+        cl_tables_rwunlock();
+    }
 
     CL_GC_UNPROTECT(3);
     return name;
@@ -449,6 +615,29 @@ static CL_Obj bi_struct_slot_specs(CL_Obj *args, int n)
     return get_slot_specs(args[0]);
 }
 
+/* (%struct-slot-index type-name slot-name) — position of SLOT-NAME in
+ * struct type TYPE-NAME's slots, or NIL.  Zero-allocation: SLOT-VALUE /
+ * (SETF SLOT-VALUE) / SLOT-BOUNDP on struct instances resolve slots
+ * through here on every access (clos.lisp %find-struct-slot-index); the
+ * previous shape (%STRUCT-SLOT-NAMES + Lisp-side linear match) consed a
+ * fresh name list per access. */
+static CL_Obj bi_struct_slot_index(CL_Obj *args, int n)
+{
+    CL_Obj specs = get_slot_specs(args[0]);
+    int32_t idx = 0;
+    CL_UNUSED(n);
+
+    while (!CL_NULL_P(specs)) {
+        CL_Obj spec = cl_car(specs);
+        CL_Obj name = CL_CONS_P(spec) ? cl_car(spec) : spec;
+        if (name == args[1])
+            return CL_MAKE_FIXNUM(idx);
+        idx++;
+        specs = cl_cdr(specs);
+    }
+    return CL_NIL;
+}
+
 /* (%struct-slot-count type-name) — for :include support in macro */
 static CL_Obj bi_struct_slot_count(CL_Obj *args, int n)
 {
@@ -604,6 +793,23 @@ static CL_Obj bi_struct_change_class(CL_Obj *args, int n)
 
 void cl_builtins_struct_init(void)
 {
+    /* A re-initialized runtime (test harnesses: cl_mem_shutdown +
+     * cl_mem_init + *_init again) starts with a FRESH arena, but these
+     * statics survive and still hold the previous runtime's arena
+     * offsets.  A stale struct_table tail gets marked/updated by the GC
+     * as if live — garbage treated as object starts, corrupting the
+     * heap on the next compaction (surfaced as a layout-dependent
+     * "CAR: not of type LIST" in test_gc_markstack's fresh-runtime
+     * phase).  Reset registry, CLOS class table and index; in a normal
+     * once-per-process boot this is a no-op. */
+    struct_table = CL_NIL;
+    cl_clos_class_table = CL_NIL;
+    if (struct_index.slots) platform_free(struct_index.slots);
+    struct_index.slots = NULL;
+    struct_index.cap = 0;
+    struct_index.dirty = 0;
+    struct_index.disabled = 0;
+
     cl_register_builtin("%REGISTER-STRUCT-TYPE", bi_register_struct_type, 4, 4, cl_package_clamiga);
     cl_register_builtin("%MAKE-STRUCT", bi_make_struct, 1, -1, cl_package_clamiga);
     cl_register_builtin("%REGISTER-FUNCALLABLE-GF-TYPE",
@@ -620,6 +826,7 @@ void cl_builtins_struct_init(void)
     cl_register_builtin("STRUCTUREP", bi_structurep, 1, 1, cl_package_clamiga);
     cl_register_builtin("%STRUCT-SLOT-NAMES", bi_struct_slot_names, 1, 1, cl_package_clamiga);
     cl_register_builtin("%STRUCT-SLOT-SPECS", bi_struct_slot_specs, 1, 1, cl_package_clamiga);
+    cl_register_builtin("%STRUCT-SLOT-INDEX", bi_struct_slot_index, 2, 2, cl_package_clamiga);
     cl_register_builtin("%STRUCT-SLOT-COUNT", bi_struct_slot_count, 1, 1, cl_package_clamiga);
     cl_register_builtin("%CLASS-OF", bi_class_of, 1, 1, cl_package_clamiga);
     cl_register_builtin("%SET-CLOS-CLASS-TABLE", bi_set_clos_class_table, 1, 1, cl_package_clamiga);

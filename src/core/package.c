@@ -1141,6 +1141,14 @@ void cl_package_init(void)
     if (!cl_package_rwlock)
         platform_rwlock_init(&cl_package_rwlock);
 
+    /* After a shutdown/re-init cycle (test harnesses) the registry
+     * still holds PREVIOUS-arena offsets; cl_make_package below would
+     * prepend onto that stale tail, and gc_mark_obj(cl_package_registry)
+     * would then set "mark bits" at interior positions of unrelated
+     * fresh-arena objects — silent corruption whose victim moves with
+     * heap layout.  No-op in a normal once-per-process boot. */
+    cl_package_registry = CL_NIL;
+
     /* Create the three standard packages */
     cl_package_cl = cl_make_package("COMMON-LISP");
     CL_GC_PROTECT(cl_package_cl);

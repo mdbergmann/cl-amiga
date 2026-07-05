@@ -5361,6 +5361,13 @@ void cl_compiler_init(void)
     setf_table = CL_NIL;
     type_table = CL_NIL;
     compiler_macro_table = CL_NIL;
+    /* These two were missing from the reset: after a shutdown/re-init
+     * cycle (test harnesses) they still hold PREVIOUS-arena offsets, and
+     * gc_mark marks them — setting "mark bits" at interior positions of
+     * unrelated fresh-arena objects, i.e. silent corruption whose victim
+     * moves with heap layout (see cl_mem_init's n_global_roots reset). */
+    setf_fn_table = CL_NIL;
+    setf_expander_table = CL_NIL;
 
     if (!cl_tables_rwlock)
         platform_rwlock_init(&cl_tables_rwlock);

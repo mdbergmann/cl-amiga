@@ -13,7 +13,7 @@
 ;;;   2.5  free-list size class segregation
 ;;;        -> alloc.*
 ;;;   3.1  CLOS slot access optimization
-;;;        -> clos.slot-value, clos.accessor
+;;;        -> clos.slot-value, clos.accessor, struct.*
 ;;;   3.2  keyword argument pre-computation
 ;;;        -> kw.call-8keys, clos.make-instance
 ;;;   3.3  cl_mv_count write reduction
@@ -425,6 +425,59 @@ Verify the (deterministic) result against EXPECTED."
                  (dotimes (i n)
                    (setq s (+ s (%bo-point-x p) (%bo-point-y p)))))
                s))))
+
+;; =====================================================================
+;; struct.* — DEFSTRUCT slot access (spec 3.1).  The 2026-07-05 sento
+;; runtime profile showed SLOT-VALUE on struct instances resolving the
+;; slot on EVERY access: a linear walk of the struct registry alist
+;; (find_struct_entry) plus a freshly consed slot-name list per access
+;; (cl_struct_slot_names).  The clos.* benches above miss this path
+;; entirely — CLOS instances take the slot-index-table hash path.
+;;
+;; The registry is PREPENDED on registration, so a struct defined right
+;; here would sit at the list head and pay almost no walk.  Real
+;; workloads access types defined EARLY (base conditions, library
+;; structs) that sit behind hundreds of later registrations — so bury
+;; %bo-node behind 256 filler registrations before timing it.
+
+(defstruct %bo-node (x 0) (y 0))
+
+(let ((filler-specs '((f1 nil) (f2 nil))))
+  (dotimes (i 256)
+    (clamiga::%register-struct-type
+     (make-symbol (format nil "%BO-FILLER-~D" i)) 2 nil filler-specs)))
+
+(let ((n 10000) (reps (%bo-scaled 10))
+      (s (make-%bo-node :x 3 :y 4)))
+  ;; Registry walk + name-list cons + linear name match per access.
+  (%bo-run "struct.slot-value" (* 7 n)
+           (lambda ()
+             (let ((acc 0))
+               (dotimes (r reps)
+                 (setq acc 0)
+                 (dotimes (i n)
+                   (setq acc (+ acc (slot-value s 'x) (slot-value s 'y)))))
+               acc)))
+  ;; Reference point: defstruct accessors compile to a constant-index
+  ;; %STRUCT-REF — the target cost for the slot-value path above.
+  (%bo-run "struct.accessor" (* 7 n)
+           (lambda ()
+             (let ((acc 0))
+               (dotimes (r reps)
+                 (setq acc 0)
+                 (dotimes (i n)
+                   (setq acc (+ acc (%bo-node-x s) (%bo-node-y s)))))
+               acc)))
+  ;; TYPEP on a struct type: cl_is_struct_type / cl_struct_type_matches
+  ;; do the same registry walk (211 leaf samples in the compile profile).
+  (%bo-run "struct.typep" n
+           (lambda ()
+             (let ((acc 0))
+               (dotimes (r reps)
+                 (setq acc 0)
+                 (dotimes (i n)
+                   (setq acc (+ acc (if (typep s '%bo-node) 1 0)))))
+               acc))))
 
 ;; =====================================================================
 ;; alloc.* — allocator behavior (spec 2.5 free-list size classes).

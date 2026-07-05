@@ -362,6 +362,65 @@ TEST(struct_type_list)
     ASSERT_STR_EQ(eval_print("(tl1-value *tl*)"), "\"x\"");
 }
 
+/* --- Registry hash index + %STRUCT-SLOT-INDEX (spec 3.1) --- */
+
+TEST(struct_slot_index_builtin)
+{
+    eval_print("(defstruct si1 (a 1) (b 2) (c 3))");
+    ASSERT_STR_EQ(eval_print("(clamiga::%struct-slot-index 'si1 'a)"), "0");
+    ASSERT_STR_EQ(eval_print("(clamiga::%struct-slot-index 'si1 'b)"), "1");
+    ASSERT_STR_EQ(eval_print("(clamiga::%struct-slot-index 'si1 'c)"), "2");
+    ASSERT_STR_EQ(eval_print("(clamiga::%struct-slot-index 'si1 'nope)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(clamiga::%struct-slot-index 'si1-no-such-type 'a)"), "NIL");
+}
+
+TEST(struct_registry_buried_type)
+{
+    /* The registry is PREPENDED on registration: a type defined before
+     * many others sits at the alist tail.  The hash index must find it
+     * regardless of position (the pre-index linear walk paid a full
+     * O(types) scan here). */
+    int i;
+    char buf[160];
+    eval_print("(defstruct si2 (x 0) (y 0))");
+    for (i = 0; i < 80; i++) {
+        snprintf(buf, sizeof(buf),
+                 "(clamiga::%%register-struct-type (make-symbol \"SI2-F%d\")"
+                 " 1 nil '((f nil)))", i);
+        eval_print(buf);
+    }
+    ASSERT_STR_EQ(eval_print("(clamiga::%struct-slot-index 'si2 'y)"), "1");
+    ASSERT_STR_EQ(eval_print("(typep (make-si2) 'si2)"), "T");
+    ASSERT_STR_EQ(eval_print("(si2-y (make-si2 :x 1 :y 2))"), "2");
+}
+
+TEST(struct_registry_redefinition_newest_wins)
+{
+    /* Re-registering a name prepends a fresh entry; lookups must see
+     * the NEWEST entry — the linear walk's first-match semantics. */
+    eval_print("(clamiga::%register-struct-type 'si3 1 nil '((a nil)))");
+    eval_print("(clamiga::%register-struct-type 'si3 3 nil"
+               " '((p nil) (q nil) (r nil)))");
+    ASSERT_STR_EQ(eval_print("(clamiga::%struct-slot-count 'si3)"), "3");
+    ASSERT_STR_EQ(eval_print("(clamiga::%struct-slot-index 'si3 'r)"), "2");
+    ASSERT_STR_EQ(eval_print("(clamiga::%struct-slot-index 'si3 'a)"), "NIL");
+}
+
+TEST(struct_registry_index_survives_compaction)
+{
+    /* Compaction relocates the name symbols and entries the index
+     * caches; the GC hook marks it dirty and the next lookup must
+     * rebuild and still resolve correctly. */
+    eval_print("(defstruct si4 (v 41))");
+    ASSERT_STR_EQ(eval_print("(clamiga::%struct-slot-index 'si4 'v)"), "0");
+    cl_gc_compact();
+    ASSERT_STR_EQ(eval_print("(clamiga::%struct-slot-index 'si4 'v)"), "0");
+    ASSERT_STR_EQ(eval_print("(typep (make-si4) 'si4)"), "T");
+    cl_gc_compact();
+    ASSERT_STR_EQ(eval_print("(si4-v (make-si4))"), "41");
+    ASSERT_STR_EQ(eval_print("(clamiga::%struct-slot-index 'si4 'nope)"), "NIL");
+}
+
 int main(void)
 {
     test_init();
@@ -403,6 +462,12 @@ int main(void)
     RUN(struct_type_vector);
     RUN(struct_type_vector_compound);
     RUN(struct_type_list);
+
+    /* Registry hash index + %STRUCT-SLOT-INDEX */
+    RUN(struct_slot_index_builtin);
+    RUN(struct_registry_buried_type);
+    RUN(struct_registry_redefinition_newest_wins);
+    RUN(struct_registry_index_survives_compaction);
 
     teardown();
     REPORT();
