@@ -9,6 +9,76 @@ Related: [specs/performance.md](../specs/performance.md) is the optimization
 
 ---
 
+## 2026-07-05 — bench-opt baseline (host, pre-optimization)
+
+**Commit**: `ac39e3c` + new `trunk/bench-opt.lisp`. Baseline for the pending
+items in [specs/performance.md](../specs/performance.md) — 1.3 (declaim-speed:
+const folding / dead branches / check elision), 1.8 (peephole), 2.4 (set ops
+in C), 2.5 (free-list size classes), 3.1 (CLOS slot access), 3.2 (keyword
+pre-computation), 3.3 (mv_count writes) — captured **before** any of them
+land. Each benchmark maps to a spec item (see the file header); results are
+best-of-3 with a warmup run, pure bytecode, deterministic workloads verified
+against closed-form expected values (`fails=0`).
+
+**Environment**: Apple M3 Ultra, macOS 26.5.2, `make host`, warm FASL cache,
+`--heap 64M`, cwd = repo root.
+
+| Benchmark | ms | bytes consed | gc |
+|---|---|---|---|
+| vm.fixnum-loop | 72 | 0 | 0 |
+| vm.local-shuffle | 63 | 0 | 0 |
+| vm.call-return | 63 | 0 | 0 |
+| opt.const-fold | 39 | 0 | 0 |
+| opt.dead-branch | 49 | 0 | 0 |
+| safety1.svref-loop | 48 | 0 | 0 |
+| safety0.svref-loop | 48 | 0 | 0 |
+| safety1.call-args | 53 | 0 | 0 |
+| safety0.call-args | 53 | 0 | 0 |
+| set.intersection-small | 36 | 432,000 | 0 |
+| set.union-small | 53 | 1,200,000 | 0 |
+| set.intersection-large | 67 | 24,080 | 0 |
+| set.union-large | 99 | 72,080 | 0 |
+| set.difference-large | 68 | 24,080 | 0 |
+| set.subsetp-large | 82 | 0 | 0 |
+| set.intersection-equal | 45 | 32,320 | 0 |
+| set.intersection-key | 59 | 24,160 | 0 |
+| kw.call-8keys | 85 | 0 | 0 |
+| clos.make-instance | 91 | 12,000,000 | 0 |
+| clos.slot-value | 60 | 0 | 0 |
+| clos.accessor | 92 | 0 | 0 |
+| alloc.mixed-churn | 82 | 57,603,416 | 1 |
+| alloc.cons-churn | 53 | 16,000,016 | 0 |
+| **total** | **1460** | | |
+
+Run-to-run stability: a second full run totaled 1452 ms (~0.5% variance);
+individual benchmarks repeat within ±2 ms.
+
+Notes for later comparisons:
+
+- `safety0.*` vs `safety1.*` pairs time equal today (only `the`'s
+  `OP_ASSERT_TYPE` is safety-gated); item 1.3's check elision should open a
+  gap in favor of `safety0.*`.
+- The `set.*-large` benchmarks are the O(n*m) → O(n+m) headline for 2.4;
+  `set.*-small` guards against the C-builtin version regressing small inputs.
+- `alloc.mixed-churn` is sized to cycle the GC (gc ≥ 1) so the free list is
+  actually populated and exercised — keep it that way or 2.5 won't show.
+
+**Reproduce**:
+
+```
+echo '(quit)' | ./build/host/clamiga --heap 64M --load trunk/bench-opt.lisp
+```
+
+On Amiga, scale down the repetition counts and the large-set size first:
+
+```lisp
+(defparameter cl-user::*bo-scale* 1/20)
+(defparameter cl-user::*bo-set-size* 150)
+(load "trunk/bench-opt.lisp")
+```
+
+---
+
 ## 2026-07-05 — GC mark phase on large live heaps (host, growable mark stack)
 
 **Commit**: growable GC mark stack (follows `72fe7ed`). Found investigating

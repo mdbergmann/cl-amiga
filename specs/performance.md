@@ -447,6 +447,11 @@ Recommended sequence balancing impact vs. risk:
 
 ## Validation
 
+- **Every pending item has a dedicated micro-benchmark in `trunk/bench-opt.lisp`**
+  (deterministic workloads, closed-form result verification, machine-parseable
+  output). Capture a before/after delta against the baseline logged in
+  [docs/benchmarks.md](../docs/benchmarks.md) when landing an optimization,
+  and append the new numbers there.
 - All 656+ host tests must pass after each phase
 - Amiga test suite must pass via FS-UAE after each phase
 - Integration tests: `load-and-test-5am.lisp` (57/57), `load-and-test-fset.lisp` (17/17)
