@@ -638,6 +638,101 @@ static CL_Obj bi_struct_slot_index(CL_Obj *args, int n)
     return CL_NIL;
 }
 
+/* --- Fused fast-path slot access (spec 3.1, second half) ---
+ *
+ * SLOT-VALUE and the DEFCLASS-generated accessor functions used to pay
+ * ~4 Lisp calls + ~8 builtin dispatches per access (class-of, the
+ * slot-index-table branch, %STRUCT-SLOT-INDEX, then a separate
+ * %STRUCT-REF).  These two builtins fuse the whole common case into ONE
+ * builtin call: type-name -> registry entry (O(1) hash probe) -> slot
+ * index (short EQ scan of the specs) -> direct slot read/write.
+ *
+ * They are deliberately NON-ERRORING and NON-ALLOCATING: any case the
+ * fast path cannot handle (not a struct, unregistered type, no such
+ * instance slot, index beyond n_slots on an obsolete instance) reports
+ * a miss and the Lisp caller falls back to the full SLOT-VALUE protocol
+ * — which owns :CLASS-allocated slots, conditions, SLOT-UNBOUND, and
+ * the "no slot named X" error.  Because the registry entry is looked up
+ * by the instance's own type_desc on EVERY access, the resolved index
+ * is always the current layout: correct across class redefinition and
+ * for subclass instances whose inherited slots sit at different indices
+ * (the hazard a captured-index accessor closure would have).
+ *
+ * The specs list is walked with raw checked cons access, not cl_car:
+ * these run on the hottest Lisp path and must not error out of a
+ * malformed registry cell — a malformed cell is just a miss. */
+
+/* Return the specs list ((name default) ...) of a registry entry, or
+ * CL_NIL if the entry shape is unexpected.  Raw, non-erroring cadddr. */
+static CL_Obj struct_entry_specs_raw(CL_Obj entry)
+{
+    int i;
+    for (i = 0; i < 3; i++) {
+        if (!CL_CONS_P(entry)) return CL_NIL;
+        entry = ((CL_Cons *)CL_OBJ_TO_PTR(entry))->cdr;
+    }
+    if (!CL_CONS_P(entry)) return CL_NIL;
+    return ((CL_Cons *)CL_OBJ_TO_PTR(entry))->car;
+}
+
+/* Resolve SLOT_NAME to its index in OBJ's registered layout.
+ * Returns the index, or -1 on any miss.  Non-erroring, non-allocating. */
+static int32_t struct_slot_resolve(CL_Obj obj, CL_Obj slot_name)
+{
+    CL_Struct *st;
+    CL_Obj entry, specs;
+    int32_t idx = 0;
+
+    if (!CL_STRUCT_P(obj))
+        return -1;
+    st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
+    /* find_struct_entry never allocates from the arena (index rebuilds
+     * use platform_alloc), so st cannot move underneath us. */
+    entry = find_struct_entry(st->type_desc);
+    if (CL_NULL_P(entry))
+        return -1;
+    specs = struct_entry_specs_raw(entry);
+    while (CL_CONS_P(specs)) {
+        CL_Cons *c = (CL_Cons *)CL_OBJ_TO_PTR(specs);
+        CL_Obj name = CL_CONS_P(c->car)
+            ? ((CL_Cons *)CL_OBJ_TO_PTR(c->car))->car
+            : c->car;
+        if (name == slot_name)
+            return ((uint32_t)idx < st->n_slots) ? idx : -1;
+        idx++;
+        specs = c->cdr;
+    }
+    return -1;
+}
+
+/* (%struct-slot-value obj slot-name miss) — value of the instance slot
+ * SLOT-NAME in OBJ, or MISS when the fast path does not apply.  Callers
+ * pass the slot-unbound marker as MISS, so an unbound CLOS slot (whose
+ * storage holds that marker) also reads back as a miss and routes to
+ * the slow path's SLOT-UNBOUND protocol for free. */
+static CL_Obj bi_struct_slot_value(CL_Obj *args, int n)
+{
+    int32_t idx = struct_slot_resolve(args[0], args[1]);
+    CL_UNUSED(n);
+    if (idx < 0)
+        return args[2];
+    return ((CL_Struct *)CL_OBJ_TO_PTR(args[0]))->slots[idx];
+}
+
+/* (%struct-slot-store obj slot-name value) — store VALUE into the
+ * instance slot SLOT-NAME of OBJ.  Returns T when stored, NIL when the
+ * fast path does not apply (caller falls back to (SETF SLOT-VALUE)'s
+ * full protocol). */
+static CL_Obj bi_struct_slot_store(CL_Obj *args, int n)
+{
+    int32_t idx = struct_slot_resolve(args[0], args[1]);
+    CL_UNUSED(n);
+    if (idx < 0)
+        return CL_NIL;
+    ((CL_Struct *)CL_OBJ_TO_PTR(args[0]))->slots[idx] = args[2];
+    return SYM_T;
+}
+
 /* (%struct-slot-count type-name) — for :include support in macro */
 static CL_Obj bi_struct_slot_count(CL_Obj *args, int n)
 {
@@ -683,11 +778,12 @@ static CL_Obj class_name_sym(const char *name, uint32_t len)
     return cl_intern_in(name, len, cl_package_cl);
 }
 
-static CL_Obj bi_class_of(CL_Obj *args, int n)
+/* Core of %CLASS-OF: map any object to its CL class-name symbol.
+ * May allocate ONLY on an intern miss (never after boot — every name
+ * below is a standard preinterned CL symbol); callers that hold raw
+ * CL_Obj locals across it must still GC-protect them. */
+static CL_Obj class_of_type_name(CL_Obj obj)
 {
-    CL_Obj obj = args[0];
-    CL_UNUSED(n);
-
     if (CL_NULL_P(obj))
         return class_name_sym("NULL", 4);
     if (CL_FIXNUM_P(obj))
@@ -752,6 +848,82 @@ static CL_Obj bi_class_of(CL_Obj *args, int n)
         }
     }
     return class_name_sym("T", 1);
+}
+
+static CL_Obj bi_class_of(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    return class_of_type_name(args[0]);
+}
+
+/* (%gf-ic-emf gf a) / (%gf-ic-emf gf a b) — probe GF's inline cache
+ * (GF slot 8: (class . emf) for 1-arg GFs, (class1 class2 . emf) for
+ * 2-arg) against the receivers' classes.  Returns the cached EMF on a
+ * hit, NIL on any miss — the Lisp slow path (%GF-DISPATCH-*-SLOW) owns
+ * everything else, including populating the cache.
+ *
+ * This fuses the per-call dispatch chain the arity-specialized
+ * discriminators used to run in Lisp — (gf-inline-cache gf) call,
+ * CLASS-OF call (builtin + *CLASS-TABLE* gethash), EQ compare — into
+ * one builtin call (spec 3.1, second half: the class-of/generic-lookup
+ * chain was the measured remainder of accessor cost).
+ *
+ * Non-erroring by design: any unexpected shape is a miss.  A receiver
+ * whose type name is not in *CLASS-TABLE* is a miss too — the slow
+ * path's CLASS-OF resolves it to the T class and dispatches correctly
+ * (such a receiver can never legitimately hit an IC entry, since ICs
+ * are populated with table-resident classes).
+ *
+ * GC note: class_of_type_name can allocate only on an intern miss
+ * (never after boot).  Both names are resolved BEFORE the ic cons is
+ * read, and name1 is protected across the name2 resolution, so nothing
+ * here holds a stale offset even in that worst case. */
+static CL_Obj bi_gf_ic_emf(CL_Obj *args, int n)
+{
+    CL_Obj name1, name2 = CL_NIL, cls1, cls2 = CL_NIL, ic;
+    CL_Struct *st;
+    CL_Cons *c;
+    int two = (n == 3);
+
+    if (!CL_STRUCT_P(args[0]))
+        return CL_NIL;
+
+    name1 = class_of_type_name(args[1]);
+    if (two) {
+        CL_GC_PROTECT(name1);
+        name2 = class_of_type_name(args[2]);
+        CL_GC_UNPROTECT(1);
+    }
+
+    cl_tables_rdlock();
+    if (CL_NULL_P(cl_clos_class_table)) {
+        cl_tables_rwunlock();
+        return CL_NIL;
+    }
+    cls1 = ht_eq_lookup(cl_clos_class_table, name1);
+    if (two)
+        cls2 = ht_eq_lookup(cl_clos_class_table, name2);
+    cl_tables_rwunlock();
+    if (CL_NULL_P(cls1) || (two && CL_NULL_P(cls2)))
+        return CL_NIL;
+
+    st = (CL_Struct *)CL_OBJ_TO_PTR(args[0]);
+    if (st->n_slots < 9)
+        return CL_NIL;
+    ic = st->slots[8];
+    if (!CL_CONS_P(ic))
+        return CL_NIL;
+    c = (CL_Cons *)CL_OBJ_TO_PTR(ic);
+    if (c->car != cls1)
+        return CL_NIL;
+    if (!two)
+        return c->cdr;
+    if (!CL_CONS_P(c->cdr))
+        return CL_NIL;
+    c = (CL_Cons *)CL_OBJ_TO_PTR(c->cdr);
+    if (c->car != cls2)
+        return CL_NIL;
+    return c->cdr;
 }
 
 /* --- Registration --- */
@@ -827,8 +999,11 @@ void cl_builtins_struct_init(void)
     cl_register_builtin("%STRUCT-SLOT-NAMES", bi_struct_slot_names, 1, 1, cl_package_clamiga);
     cl_register_builtin("%STRUCT-SLOT-SPECS", bi_struct_slot_specs, 1, 1, cl_package_clamiga);
     cl_register_builtin("%STRUCT-SLOT-INDEX", bi_struct_slot_index, 2, 2, cl_package_clamiga);
+    cl_register_builtin("%STRUCT-SLOT-VALUE", bi_struct_slot_value, 3, 3, cl_package_clamiga);
+    cl_register_builtin("%STRUCT-SLOT-STORE", bi_struct_slot_store, 3, 3, cl_package_clamiga);
     cl_register_builtin("%STRUCT-SLOT-COUNT", bi_struct_slot_count, 1, 1, cl_package_clamiga);
     cl_register_builtin("%CLASS-OF", bi_class_of, 1, 1, cl_package_clamiga);
+    cl_register_builtin("%GF-IC-EMF", bi_gf_ic_emf, 2, 3, cl_package_clamiga);
     cl_register_builtin("%SET-CLOS-CLASS-TABLE", bi_set_clos_class_table, 1, 1, cl_package_clamiga);
     cl_register_builtin("%STRUCT-CHANGE-CLASS", bi_struct_change_class, 3, 3, cl_package_clamiga);
 

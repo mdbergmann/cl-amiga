@@ -700,8 +700,34 @@ directly instead of attempting a symbol lookup."
   ;; %STRUCT-SLOT-NAMES shape allocated a fresh name list per access).
   (%struct-slot-index (%struct-type-name instance) slot-name))
 
+;;; Fast path (spec 3.1, second half): %STRUCT-SLOT-VALUE fuses
+;;; type-name -> registry entry (O(1) hash) -> slot index -> slot read
+;;; into one non-erroring builtin call, passing *SLOT-UNBOUND-MARKER* as
+;;; the miss sentinel.  A miss means "not the simple case" — not a
+;;; struct/instance, unregistered type, :CLASS-allocated slot (those are
+;;; not in the registry), no such slot, or a genuinely unbound slot
+;;; (whose storage holds the marker) — and falls back to the full
+;;; protocol below, which owns SLOT-UNBOUND, condition objects, :CLASS
+;;; storage, and error reporting.  The registry is consulted on EVERY
+;;; access, so the resolved index always reflects the instance's own
+;;; current layout — correct across class redefinition and for subclass
+;;; instances whose inherited slots sit at different indices.
+;;; SLOT-VALUE-USING-CLASS extensions flip
+;;; *SLOT-ACCESS-PROTOCOL-EXTENDED-P*, which bypasses the fast path
+;;; entirely so user methods still intercept every access.
+
 (defun slot-value (instance slot-name)
   "Return the value of SLOT-NAME in INSTANCE."
+  (if *slot-access-protocol-extended-p*
+      (%slot-value-slow instance slot-name)
+      (let ((v (%struct-slot-value instance slot-name *slot-unbound-marker*)))
+        (if (eq v *slot-unbound-marker*)
+            (%slot-value-slow instance slot-name)
+            v))))
+
+(defun %slot-value-slow (instance slot-name)
+  "Full SLOT-VALUE protocol: SLOT-VALUE-USING-CLASS routing, :CLASS
+   slots, unbound slots, condition objects, and error reporting."
   (let* ((class (class-of instance))
          (index-table (class-slot-index-table class)))
     (cond
@@ -739,6 +765,16 @@ Specialize via defmethod to provide lazy initialization."
 
 (defun %set-slot-value (instance slot-name new-value)
   "Set the value of SLOT-NAME in INSTANCE to NEW-VALUE."
+  ;; Fast path mirrors SLOT-VALUE's: one fused builtin call for the
+  ;; simple instance-slot case, full protocol otherwise.  The extended-
+  ;; protocol check comes FIRST so (SETF SLOT-VALUE-USING-CLASS) methods
+  ;; see the write before any storage is touched.
+  (if (or *slot-access-protocol-extended-p*
+          (not (%struct-slot-store instance slot-name new-value)))
+      (%set-slot-value-slow instance slot-name new-value)
+      new-value))
+
+(defun %set-slot-value-slow (instance slot-name new-value)
   (let* ((class (class-of instance))
          (index-table (class-slot-index-table class)))
     (cond
@@ -770,6 +806,16 @@ Specialize via defmethod to provide lazy initialization."
 (defun slot-boundp (instance slot-name)
   "Return T if SLOT-NAME is bound in INSTANCE.
    Structures are always considered bound (DEFSTRUCT slots have initial values)."
+  ;; Fast path: a non-marker read means the slot exists and is bound.
+  ;; A miss can be "unbound" (-> NIL), "no such slot" (-> error), or any
+  ;; other non-simple case — the slow path distinguishes them.
+  (if (or *slot-access-protocol-extended-p*
+          (eq (%struct-slot-value instance slot-name *slot-unbound-marker*)
+              *slot-unbound-marker*))
+      (%slot-boundp-slow instance slot-name)
+      t))
+
+(defun %slot-boundp-slow (instance slot-name)
   (let* ((class (class-of instance))
          (index-table (class-slot-index-table class)))
     (cond
@@ -1222,6 +1268,30 @@ Specialize via defmethod to provide lazy initialization."
        ',(append writers (mapcar (lambda (a) `(setf ,a)) accessors))
        ',documentation)))
 
+;;; Accessor body templates (spec 3.1, second half).  The symbols the
+;;; templates reference (*SLOT-ACCESS-PROTOCOL-EXTENDED-P*,
+;;; *SLOT-UNBOUND-MARKER*, %STRUCT-SLOT-VALUE, %STRUCT-SLOT-STORE) are
+;;; captured as symbol objects when clos.lisp is read, so expansions
+;;; compiled in user packages (and their FASLs) reference the same
+;;; home-package symbols regardless of *PACKAGE*.
+
+(defun %accessor-reader-body (obj-var slot-name)
+  "Body form for a DEFCLASS :reader/:accessor function on SLOT-NAME."
+  `(if *slot-access-protocol-extended-p*
+       (slot-value ,obj-var ',slot-name)
+       (let ((v (%struct-slot-value ,obj-var ',slot-name
+                                    *slot-unbound-marker*)))
+         (if (eq v *slot-unbound-marker*)
+             (slot-value ,obj-var ',slot-name)
+             v))))
+
+(defun %accessor-writer-body (obj-var slot-name val-var)
+  "Body form for a DEFCLASS :writer/:accessor setter on SLOT-NAME."
+  `(if (or *slot-access-protocol-extended-p*
+           (not (%struct-slot-store ,obj-var ',slot-name ,val-var)))
+       (setf (slot-value ,obj-var ',slot-name) ,val-var)
+       ,val-var))
+
 (defmacro defclass (name direct-superclasses slot-specifiers &rest class-options)
   "Define a new CLOS class."
   (let ((accessor-defs nil)
@@ -1243,22 +1313,27 @@ Specialize via defmethod to provide lazy initialization."
              (readers (%slot-spec-all-options parsed :reader))
              (writers (%slot-spec-all-options parsed :writer)))
         (push (%slot-spec->direct-def-form spec) slot-def-forms)
-        ;; Generate accessor functions
+        ;; Generate accessor functions.  Each inlines the fused
+        ;; %STRUCT-SLOT-VALUE / %STRUCT-SLOT-STORE fast path (see
+        ;; SLOT-VALUE above) instead of calling SLOT-VALUE, saving a
+        ;; full function call per access on the hot path; any miss —
+        ;; :CLASS slot, unbound slot, extended slot-access protocol,
+        ;; wrong object type — falls back to SLOT-VALUE's full protocol.
         (dolist (accessor accessors)
           (let ((setter-name (clamiga::%setf-store-symbol accessor)))
             (push `(defun ,accessor (obj)
-                     (slot-value obj ',slot-name))
+                     ,(%accessor-reader-body 'obj slot-name))
                   accessor-defs)
             (push `(defun ,setter-name (val obj)
-                     (setf (slot-value obj ',slot-name) val))
+                     ,(%accessor-writer-body 'obj slot-name 'val))
                   accessor-defs)))
         (dolist (reader readers)
           (push `(defun ,reader (obj)
-                   (slot-value obj ',slot-name))
+                   ,(%accessor-reader-body 'obj slot-name))
                 accessor-defs))
         (dolist (writer writers)
           (push `(defun ,writer (val obj)
-                   (setf (slot-value obj ',slot-name) val))
+                   ,(%accessor-writer-body 'obj slot-name 'val))
                 accessor-defs))))
     (setq slot-def-forms (nreverse slot-def-forms))
     (setq accessor-defs (nreverse accessor-defs))
@@ -2310,21 +2385,23 @@ When called with no arguments, passes the original method arguments."
    closure when the GF takes 1, 2, or 3 required arguments and no
    non-required parameters, otherwise the variadic fallback."
   (let ((nreq (%gf-lambda-list-required-count lambda-list)))
+    ;; The hit path is a single %GF-IC-EMF builtin call: it reads the
+    ;; inline cache, computes the receivers' classes, and compares — in
+    ;; C (spec 3.1).  NIL means "no verified cache hit"; every miss goes
+    ;; through the unchanged Lisp slow path, which also populates the
+    ;; cache.
     (case nreq
       ((1)
        (named-lambda %gf-dispatch-1 (a)
-         (let ((ic (gf-inline-cache gf)))
-           (if (and ic (eq (car ic) (class-of a)))
-               (funcall (cdr ic) a)
+         (let ((emf (%gf-ic-emf gf a)))
+           (if emf
+               (funcall emf a)
                (%gf-dispatch-1-slow gf a)))))
       ((2)
        (named-lambda %gf-dispatch-2 (a b)
-         (let ((ic (gf-inline-cache gf)))
-           (if (and ic
-                    (eq (car ic) (class-of a))
-                    (let ((rest (cdr ic)))
-                      (and (consp rest) (eq (car rest) (class-of b)))))
-               (funcall (cddr ic) a b)
+         (let ((emf (%gf-ic-emf gf a b)))
+           (if emf
+               (funcall emf a b)
                (%gf-dispatch-2-slow gf a b)))))
       (otherwise
        (named-lambda %gf-dispatch-entry (&rest args)
@@ -3068,27 +3145,30 @@ already-existing GF the installed combination is preserved."
              (readers (%slot-spec-all-options parsed :reader))
              (writers (%slot-spec-all-options parsed :writer)))
         (push (%slot-spec->direct-def-form spec) slot-def-forms)
-        ;; Generate GF-based accessor methods
+        ;; Generate GF-based accessor methods.  Method bodies inline the
+        ;; fused %STRUCT-SLOT-VALUE / %STRUCT-SLOT-STORE fast path (see
+        ;; %ACCESSOR-READER-BODY) instead of calling SLOT-VALUE; any
+        ;; miss falls back to SLOT-VALUE's full protocol.
         (dolist (accessor accessors)
           (push `(defgeneric ,accessor (obj)) accessor-defs)
           (push `(defmethod ,accessor ((obj ,name))
-                   (slot-value obj ',slot-name))
+                   ,(%accessor-reader-body 'obj slot-name))
                 accessor-defs)
           ;; Writer: use defgeneric + defmethod for (setf accessor)
           ;; so additional methods can be added without replacing the original
           (push `(defgeneric (setf ,accessor) (val obj)) accessor-defs)
           (push `(defmethod (setf ,accessor) (val (obj ,name))
-                   (setf (slot-value obj ',slot-name) val))
+                   ,(%accessor-writer-body 'obj slot-name 'val))
                 accessor-defs))
         (dolist (reader readers)
           (push `(defgeneric ,reader (obj)) accessor-defs)
           (push `(defmethod ,reader ((obj ,name))
-                   (slot-value obj ',slot-name))
+                   ,(%accessor-reader-body 'obj slot-name))
                 accessor-defs))
         (dolist (writer writers)
           (push `(defgeneric ,writer (val obj)) accessor-defs)
           (push `(defmethod ,writer (val (obj ,name))
-                   (setf (slot-value obj ',slot-name) val))
+                   ,(%accessor-writer-body 'obj slot-name 'val))
                 accessor-defs))))
     (setq slot-def-forms (nreverse slot-def-forms))
     (setq accessor-defs (nreverse accessor-defs))

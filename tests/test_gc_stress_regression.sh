@@ -3751,6 +3751,53 @@ check_contains "struct-index case runs to completion"     "SIDX-DONE"     "$out"
 check_absent   "no corruption in struct-index case" \
   "corrupted pointer\|not of type\|Guru\|SIGSEGV\|badmark" "$out"
 
+# --- Fused slot access + GF inline-cache probe (spec 3.1, 2nd half) --------
+# %STRUCT-SLOT-VALUE / %STRUCT-SLOT-STORE resolve slots through the registry
+# index, and the arity-specialized GF discriminators probe the inline cache
+# via the %GF-IC-EMF builtin.  Every object involved — the IC cons, class
+# metaobjects, registry entries, name symbols — moves on every allocation
+# under stress, so a stale offset in any of them would misdispatch or read
+# a wrong slot.  Also covers the fallback edges: an unbound slot, a :CLASS
+# slot (not in the registry), and a subclass instance reached through the
+# superclass accessor (inherited slot at a DIFFERENT index — the hazard a
+# captured-index closure would have).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- fused slot access + GF IC probe under compact-every-alloc ---"
+cat > "$WORK/fastslot.lisp" <<'EOF'
+(defclass fs-base ()
+  ((x :initarg :x :accessor fs-x)
+   (u :accessor fs-u)                          ; stays unbound
+   (c :allocation :class :initform 5 :accessor fs-c)))
+(defclass fs-sub (fs-base)
+  ((z :initform 100 :accessor fs-z)))          ; shifts X's index in FS-SUB
+(let ((b (make-instance 'fs-base :x 3))
+      (s (make-instance 'fs-sub  :x 30))
+      (acc 0))
+  (dotimes (i 150)
+    (setq acc (+ acc (fs-x b) (fs-x s) (fs-c b) (fs-z s)))
+    (setf (fs-x b) (- 7 (fs-x b)))             ; x alternates 3 <-> 4
+    (setf (fs-x s) (- 70 (fs-x s))))           ; x alternates 30 <-> 40
+  (format t "FS-SUM:~a~%" acc)
+  (format t "FS-UNBOUND:~a~%"
+          (handler-case (progn (fs-u b) "NO-ERROR")
+            (error () "SIGNALED")))
+  (format t "FS-BOUNDP:~a/~a~%" (slot-boundp b 'u) (slot-boundp b 'x))
+  (setf (fs-c b) 6)
+  (format t "FS-CLASS-SLOT:~a~%" (fs-c s)))    ; shared :class storage
+(format t "FS-DONE~%")
+EOF
+out=$(run_stress "$WORK/fastslot.lisp")
+# per iteration: x-b alternates 3,4 (sum 525) + x-s alternates 30,40 (5250)
+#              + c 5 (750) + z 100 (15000) = 21525
+check_contains "accessors stable across stress compactions" "FS-SUM:21525" "$out"
+check_contains "unbound slot still signals through accessor" "FS-UNBOUND:SIGNALED" "$out"
+check_contains "slot-boundp fast/slow paths agree" "FS-BOUNDP:NIL/T" "$out"
+check_contains ":class slot shared through accessor" "FS-CLASS-SLOT:6" "$out"
+check_contains "fused slot-access case runs to completion" "FS-DONE" "$out"
+check_absent   "no corruption in fused slot-access case" \
+  "corrupted pointer\|not of type\|Guru\|SIGSEGV\|badmark" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

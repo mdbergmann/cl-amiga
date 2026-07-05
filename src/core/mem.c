@@ -2494,7 +2494,12 @@ static void gc_finalize_dead(uint8_t *ptr)
                         fprintf(stderr, "[MP] warning: a lock was garbage-"
                                 "collected while still held - leaking its OS "
                                 "mutex (destroying a held mutex is undefined "
-                                "behavior); further leaks are silent\n");
+                                "behavior). Common cause: MP:DESTROY-THREAD "
+                                "of a thread inside a critical section "
+                                "(WITH-LOCK-HELD / MP:CONDITION-WAIT) - the "
+                                "lock can never be released, so the leak is "
+                                "deliberate and benign; further leaks are "
+                                "silent\n");
                     }
                 } else {
                     cl_lock_depth[lk->lock_id] = 0;

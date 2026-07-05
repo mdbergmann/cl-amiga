@@ -5211,6 +5211,67 @@
 (check "ensure-class creates" 'cf-amiga-ec (class-name (find-class 'cf-amiga-ec)))
 (check "ensure-class slot count" 1 (length (class-slots (find-class 'cf-amiga-ec))))
 
+; --- Fused fast-path slot access (spec 3.1, second half) ---
+;; These run while *SLOT-ACCESS-PROTOCOL-EXTENDED-P* is still NIL, so
+;; SLOT-VALUE and the DEFCLASS-generated accessors take the fused
+;; %STRUCT-SLOT-VALUE / %STRUCT-SLOT-STORE builtins and the GF
+;; discriminators hit the %GF-IC-EMF inline-cache probe.
+(defvar *fsv-miss* (make-symbol "MISS"))
+(defstruct fsv-amiga-st (a 10) (b 20))
+(check "fused read hit" 20
+       (clamiga::%struct-slot-value (make-fsv-amiga-st) 'b *fsv-miss*))
+(check "fused read no-such-slot miss" t
+       (eq (clamiga::%struct-slot-value (make-fsv-amiga-st) 'nope *fsv-miss*) *fsv-miss*))
+(check "fused read non-struct miss" t
+       (eq (clamiga::%struct-slot-value 42 'a *fsv-miss*) *fsv-miss*))
+(let ((s (make-fsv-amiga-st)))
+  (check "fused store hit" t (clamiga::%struct-slot-store s 'a 99))
+  (check "fused store took effect" 99 (fsv-amiga-st-a s))
+  (check "fused store no-such-slot miss" nil (clamiga::%struct-slot-store s 'nope 1))
+  (check "fused store non-struct miss" nil (clamiga::%struct-slot-store 42 'a 1)))
+(defclass fsv-amiga-base ()
+  ((x :initarg :x :accessor fsv-amiga-x)
+   (u :accessor fsv-amiga-u)
+   (c :allocation :class :initform 5 :accessor fsv-amiga-c)))
+(defclass fsv-amiga-sub (fsv-amiga-base)
+  ((z :initform 100 :accessor fsv-amiga-z)))
+(let ((b (make-instance 'fsv-amiga-base :x 3))
+      (s (make-instance 'fsv-amiga-sub :x 30)))
+  (check "accessor read" 3 (fsv-amiga-x b))
+  (setf (fsv-amiga-x b) 4)
+  (check "accessor write" 4 (fsv-amiga-x b))
+  ;; Subclass instance through the superclass accessor: Z sits before
+  ;; the inherited X in FSV-AMIGA-SUB's layout, so a captured/stale
+  ;; index would read the wrong slot here.
+  (check "accessor on subclass shifted index" 30 (fsv-amiga-x s))
+  (check "accessor subclass own slot" 100 (fsv-amiga-z s))
+  ;; Unbound slot: fast path reads the marker -> slow path signals.
+  (check "accessor unbound signals" :fsv-unbound
+         (handler-case (fsv-amiga-u b) (error () :fsv-unbound)))
+  (check "slot-boundp unbound via fast front" nil (slot-boundp b 'u))
+  (check "slot-boundp bound via fast front" t (slot-boundp b 'x))
+  ;; :CLASS slot is not in the struct registry -> accessor falls back
+  ;; to the full protocol and reads/writes the shared cons cell.
+  (check "accessor :class slot read" 5 (fsv-amiga-c b))
+  (setf (fsv-amiga-c b) 6)
+  (check "accessor :class slot shared" 6 (fsv-amiga-c s)))
+;; GF inline-cache probe: cold before any dispatch, populated by the
+;; first dispatch, misses on a receiver of another class, never errors
+;; on junk input.
+(defstruct fsv-amiga-probe-st (v 7))
+(defgeneric fsv-amiga-probe (x))
+(defmethod fsv-amiga-probe ((x fsv-amiga-probe-st)) (fsv-amiga-probe-st-v x))
+(check "gf-ic-emf cold cache miss" nil
+       (functionp (clamiga::%gf-ic-emf (gethash 'fsv-amiga-probe *generic-function-table*)
+                                       (make-fsv-amiga-probe-st))))
+(check "gf dispatch through probe path" 7 (fsv-amiga-probe (make-fsv-amiga-probe-st)))
+(check "gf-ic-emf populated after dispatch" t
+       (functionp (clamiga::%gf-ic-emf (gethash 'fsv-amiga-probe *generic-function-table*)
+                                       (make-fsv-amiga-probe-st))))
+(check "gf-ic-emf wrong class miss" nil
+       (clamiga::%gf-ic-emf (gethash 'fsv-amiga-probe *generic-function-table*) 42))
+(check "gf-ic-emf non-gf miss" nil (clamiga::%gf-ic-emf 42 42))
+
 ; --- Slot-access protocol (MOP) ---
 (defclass sv-amiga-fast () ((x :initarg :x :initform 10)))
 (check "protocol flag clean" nil *slot-access-protocol-extended-p*)
@@ -5237,6 +5298,25 @@
   (declare (ignore slot))
   (* 10 (call-next-method)))
 (check "around modifies read" 30 (slot-value (make-instance 'sv-amiga-mod :v 3) 'v))
+;; DEFCLASS-generated accessors must also honor the extended protocol:
+;; once the flag is set they bypass the fused fast path entirely, so
+;; SLOT-VALUE-USING-CLASS :around methods intercept accessor reads and
+;; writes too.
+(defclass sv-amiga-mod-acc2 () ((q :initarg :q :accessor sv-amiga-mod-q)))
+(defmethod slot-value-using-class :around ((class t) (inst sv-amiga-mod-acc2) slot)
+  (declare (ignore slot))
+  (* 100 (call-next-method)))
+(check "accessor honors extended protocol" 700
+       (sv-amiga-mod-q (make-instance 'sv-amiga-mod-acc2 :q 7)))
+(defvar *sv-amiga-acc-writes* 0)
+(defmethod (setf slot-value-using-class) :around (nv (class t) (inst sv-amiga-mod-acc2) slot)
+  (declare (ignore nv slot))
+  (setq *sv-amiga-acc-writes* (+ *sv-amiga-acc-writes* 1))
+  (call-next-method))
+(let ((inst (make-instance 'sv-amiga-mod-acc2 :q 0)))
+  (setf (sv-amiga-mod-q inst) 5)
+  (check "setf accessor routes through protocol" t (> *sv-amiga-acc-writes* 0))
+  (check "setf accessor stored via protocol" 500 (sv-amiga-mod-q inst)))
 (defclass sv-amiga-set () ((w :initarg :w :initform 0)))
 (defvar *sv-amiga-writes* nil)
 (defmethod (setf slot-value-using-class) :around (new-value (class t) (inst sv-amiga-set) slot)

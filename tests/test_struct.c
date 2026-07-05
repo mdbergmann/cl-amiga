@@ -406,6 +406,73 @@ TEST(struct_registry_redefinition_newest_wins)
     ASSERT_STR_EQ(eval_print("(clamiga::%struct-slot-index 'si3 'a)"), "NIL");
 }
 
+/* --- Fused fast-path slot access (spec 3.1, second half) --- */
+
+TEST(struct_slot_value_fastpath_builtin)
+{
+    /* Hit: resolves through the registry hash index in one call. */
+    eval_print("(defstruct fp1 (a 10) (b 20))");
+    eval_print("(defparameter *fp-miss* (make-symbol \"MISS\"))");
+    ASSERT_STR_EQ(eval_print(
+        "(clamiga::%struct-slot-value (make-fp1) 'b *fp-miss*)"), "20");
+    /* Miss: no such slot -> the sentinel, never an error. */
+    ASSERT_STR_EQ(eval_print(
+        "(eq (clamiga::%struct-slot-value (make-fp1) 'nope *fp-miss*)"
+        " *fp-miss*)"), "T");
+    /* Miss: not a struct (fixnum, list, NIL). */
+    ASSERT_STR_EQ(eval_print(
+        "(eq (clamiga::%struct-slot-value 42 'a *fp-miss*) *fp-miss*)"), "T");
+    ASSERT_STR_EQ(eval_print(
+        "(eq (clamiga::%struct-slot-value '(1 2) 'a *fp-miss*) *fp-miss*)"),
+        "T");
+    ASSERT_STR_EQ(eval_print(
+        "(eq (clamiga::%struct-slot-value nil 'a *fp-miss*) *fp-miss*)"), "T");
+}
+
+TEST(struct_slot_store_fastpath_builtin)
+{
+    eval_print("(defstruct fp2 (x 1))");
+    eval_print("(defparameter *fp2* (make-fp2))");
+    /* Hit: stores and returns T. */
+    ASSERT_STR_EQ(eval_print(
+        "(clamiga::%struct-slot-store *fp2* 'x 99)"), "T");
+    ASSERT_STR_EQ(eval_print("(fp2-x *fp2*)"), "99");
+    /* Miss: no such slot / not a struct -> NIL, nothing stored. */
+    ASSERT_STR_EQ(eval_print(
+        "(clamiga::%struct-slot-store *fp2* 'nope 5)"), "NIL");
+    ASSERT_STR_EQ(eval_print(
+        "(clamiga::%struct-slot-store 42 'x 5)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(fp2-x *fp2*)"), "99");
+}
+
+TEST(gf_ic_emf_probe)
+{
+    /* The IC probe returns the cached EMF only when the receivers'
+     * classes match the populated inline cache; anything else — cold
+     * cache, wrong class, non-GF — is NIL (slow path). */
+    eval_print("(defstruct fp3 (v 7))");
+    eval_print("(defgeneric fp-probe (x))");
+    eval_print("(defmethod fp-probe ((x fp3)) (fp3-v x))");
+    eval_print("(defparameter *fp3* (make-fp3))");
+    /* Cold cache: probe misses, call still dispatches correctly. */
+    ASSERT_STR_EQ(eval_print(
+        "(functionp (clamiga::%gf-ic-emf"
+        " (gethash 'fp-probe *generic-function-table*) *fp3*))"),
+        "NIL");
+    ASSERT_STR_EQ(eval_print("(fp-probe *fp3*)"), "7");
+    /* Populated by the first dispatch: probe now returns the EMF. */
+    ASSERT_STR_EQ(eval_print(
+        "(functionp (clamiga::%gf-ic-emf"
+        " (gethash 'fp-probe *generic-function-table*) *fp3*))"),
+        "T");
+    /* Wrong receiver class: miss. */
+    ASSERT_STR_EQ(eval_print(
+        "(clamiga::%gf-ic-emf"
+        " (gethash 'fp-probe *generic-function-table*) 42)"), "NIL");
+    /* Non-GF first argument: miss, not an error. */
+    ASSERT_STR_EQ(eval_print("(clamiga::%gf-ic-emf 42 *fp3*)"), "NIL");
+}
+
 TEST(struct_registry_index_survives_compaction)
 {
     /* Compaction relocates the name symbols and entries the index
