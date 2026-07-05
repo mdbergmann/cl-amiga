@@ -87,6 +87,39 @@ out=$(run_quiet '
 check_contains "missing slot signals error"     "ERR:"         "$out"
 check_contains "missing slot error names slot"  "NO-SUCH-SLOT" "$out"
 
+# --- 4b. Fused fast path + accessor semantics (spec 3.1, second half) ---
+# DEFCLASS accessors and SLOT-VALUE now front the full protocol with the
+# fused %STRUCT-SLOT-VALUE / %STRUCT-SLOT-STORE builtins and the GF
+# discriminators probe the inline cache via %GF-IC-EMF.  Pin the
+# semantics the fast path must preserve: subclass instances through a
+# superclass accessor (shifted slot index), unbound-slot signalling,
+# :CLASS-allocated slots, and SLOT-VALUE-USING-CLASS interception.
+out=$(run_quiet '
+(defclass ssa-base ()
+  ((x :initarg :x :accessor ssa-x)
+   (u :accessor ssa-u)
+   (c :allocation :class :initform 5 :accessor ssa-c)))
+(defclass ssa-sub (ssa-base)
+  ((z :initform 100 :accessor ssa-z)))
+(let ((b (make-instance (quote ssa-base) :x 3))
+      (s (make-instance (quote ssa-sub) :x 30)))
+  (setf (ssa-x b) 4)
+  (format t "ACC:~a~%" (ssa-x b))
+  (format t "SUBACC:~a/~a~%" (ssa-x s) (ssa-z s))
+  (format t "UNBOUND:~a~%"
+          (handler-case (ssa-u b) (error () :signaled)))
+  (setf (ssa-c b) 6)
+  (format t "CLASSSLOT:~a~%" (ssa-c s)))
+(defmethod slot-value-using-class :around ((class t) (inst ssa-base) slot)
+  (declare (ignore slot))
+  (* 100 (call-next-method)))
+(format t "SVUC:~a~%" (ssa-x (make-instance (quote ssa-base) :x 7)))')
+check_contains "accessor write/read round-trip"           "ACC:4"        "$out"
+check_contains "subclass via superclass accessor (index)" "SUBACC:30/100" "$out"
+check_contains "unbound slot signals through accessor"    "UNBOUND:SIGNALED" "$out"
+check_contains ":class slot shared through accessor"      "CLASSSLOT:6"  "$out"
+check_contains "accessor honors slot-value-using-class"   "SVUC:700"     "$out"
+
 # --- 5. Lookups resolve after explicit compaction (index rebuild) ---
 out=$(run_quiet '
 (defstruct ssa-gc (v 41))

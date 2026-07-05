@@ -9,6 +9,57 @@ Related: [specs/performance.md](../specs/performance.md) is the optimization
 
 ---
 
+## 2026-07-05 — fused slot access + C GF inline-cache probe (host)
+
+**Commit**: follows `fd2ecf4`. Second half of spec item 3.1. Three changes:
+
+- New fused `%STRUCT-SLOT-VALUE` / `%STRUCT-SLOT-STORE` builtins: type-name →
+  registry entry (O(1) hash probe) → slot index → direct slot read/write in
+  ONE non-erroring builtin call. `SLOT-VALUE` / `(SETF SLOT-VALUE)` /
+  `SLOT-BOUNDP` front the full protocol with it (the old front paid ~4 Lisp
+  calls + ~8 builtin dispatches per access: `class-of`, the index-table
+  branch, `%STRUCT-SLOT-INDEX`, a separate `%STRUCT-REF`). Works for both
+  DEFSTRUCT and CLOS instances; any non-simple case (`:CLASS` slot, unbound,
+  extended protocol, wrong type) falls back to the unchanged full protocol.
+- DEFCLASS-generated `:accessor`/`:reader`/`:writer` methods inline the fused
+  fast path in the method body instead of calling `SLOT-VALUE`.
+- New `%GF-IC-EMF` builtin fuses the 1/2-arg GF discriminators' inline-cache
+  hit path (read GF slot 8 + receiver `class-of` + `*CLASS-TABLE*` lookup +
+  compare) into one call — this part speeds up ALL 1/2-arg GF dispatch.
+
+| Benchmark | pre (first half only) | post |
+|---|---|---|
+| clos.slot-value (200k accesses/run) | 55 ms | **18 ms** |
+| clos.accessor (GF dispatch + read) | 92 ms | **28 ms** |
+| struct.slot-value | 53 ms | **18 ms** |
+| struct.accessor (constant-index %STRUCT-REF — control) | 6 ms | 6 ms |
+| clos.make-instance (2k instances + accessor reads/run) | 91 ms | **72 ms** |
+
+Isolated probe (1M reads of one slot, bytecode): accessor 243 → 141 ms,
+`slot-value` 96 ms. The remaining accessor-vs-struct.accessor gap (28 vs
+6 ms) is generic dispatch itself — funcallable-instance unwrap +
+discriminator closure + method-function call — not slot resolution.
+
+**Real-world impact** — sento actor smoke benchmark
+(`trunk/run-sento-bench.lisp`, 2s x 2 iterations, 2 producers, `:pinned`
+`tell`), the workload whose runtime profile motivated spec 3.1:
+
+| | msg/s |
+|---|---|
+| baseline (2e5f7c4, pre-3.1) | 55,709 |
+| after 3.1 both halves | **118,036 (2.1x)** |
+
+**Environment**: Apple M3 Ultra, macOS 26.5.2, `make host`, warm FASL cache,
+`--heap 64M`, cwd = repo root.
+
+**Reproduce**:
+
+```
+echo '(quit)' | ./build/host/clamiga --heap 64M --load trunk/bench-opt.lisp
+```
+
+---
+
 ## 2026-07-05 — struct registry hash index + zero-alloc slot resolution (host)
 
 **Commit**: follows `5308c96`. First half of spec item 3.1, driven by the
