@@ -239,6 +239,41 @@ finalization path in `src/core/compiler.c` when `cl_optimize_settings.speed >= 2
 
 ---
 
+### 1.9 MAKE-LOAD-FORM Pre-Pass Hash Index ✅ DONE (2026-07-05)
+
+**Problem** (found by profiling, not planned): `fasl_mlf_seen_p` and `cl_fasl_mlf_lookup`
+in `src/core/fasl.c` were linear scans, making the FASL writer's MAKE-LOAD-FORM pre-pass
+**O(n²)** in the number of unique heap objects reachable from a file's constants. The
+`%make-load-form-active-p` gate that was meant to make the pre-pass zero-cost is
+effectively always open in real sessions — cl-ppcre, serapeum, log4cl, local-time, trivia,
+cffi, ironclad, and fset all define `make-load-form` methods, so once any of them loads,
+every subsequent `compile-file` pays the full walk. Measured at **~85% of all
+cold-compile CPU** (14,713 of ~17k leaf samples) during `(asdf:load-system "sento"
+:force :all)`.
+
+**Design**: open-addressing hash indices (`CL_Obj` → array position+1, golden-ratio
+hash, linear probing) over the existing GC-rooted `seen[]`/`objs[]` arrays, in the style
+of the writer's shared-object dedup table. The arrays and their GC mark/update hooks are
+unchanged. Compaction hazard: a `%FASL-LOAD-FORM` call can trigger a moving GC, which
+rewrites the arrays and invalidates every hashed position — `cl_fasl_gc_update_mlf`
+marks the indices dirty and they rebuild lazily before the next probe (rebuilds use
+`platform_alloc` only, never the arena, so they cannot themselves trigger GC). On table
+OOM the index is disabled and callers fall back to the original linear scan.
+
+**Result**: full sento dependency-tree recompile **18.28s → 1.86s (9.8x)**;
+`bench-opt` `compile.file-mlf` **123ms → 23ms** (parity with the gate-closed
+`compile.file-plain` at 22ms). No FASL version bump — writer-internal only.
+Regression test: `tests/test_make_load_form.sh` case 4 (3000-cons graph with nested MLF
+instance); the gc-stress suite's MLF case covers the dirty-rebuild-after-compaction path.
+
+**Post-fix profile note**: with the pre-pass fixed, cold-compile leaf samples are led by
+the macro-lookup chain (`cl_macro_p` + `cl_get_macro` + `cl_get_compiler_macro` ≈ 1350
+samples vs 874 for the whole VM loop) — the next profiling-driven candidate.
+
+**Files**: `src/core/fasl.c`, `tests/test_make_load_form.sh`, `trunk/bench-opt.lisp`
+
+---
+
 ## Benchmark Summary (vs ECL 24.5.10)
 
 Benchmark suite: `bench.lisp` — factorial, fibonacci, Takeuchi, list-ops, hash-table.
@@ -319,9 +354,17 @@ for (...) { hash ^= byte; hash *= 16777619u; }
 
 ---
 
-### 2.4 Set Operations as C Builtins
+### 2.4 Set Operations as C Builtins — DEPRIORITIZED (measured 2026-07-05)
 
-**Problem**: `union`, `intersection`, `set-difference`, `subsetp` are pure Lisp with O(n*m) nested `dolist` + `member`. Hot path in ASDF package operations.
+**Reality check**: instrumenting `intersection`/`union`/`set-difference`/`subsetp`/`adjoin`
+with call counters during a full `(ql:quickload "sento")` measured **zero** calls to
+`intersection`/`union`/`subsetp` and 111 trivial calls total (`adjoin` 91,
+`set-difference` 20, all lists ≤ 40 elements — microseconds of work). The "hot path in
+ASDF" premise below is false for real workloads; the bundled runtime has only 3
+definition-time call sites. Kept as backlog for algorithmic completeness; the
+`set.*` benchmarks in `trunk/bench-opt.lisp` stand ready if this is ever picked up.
+
+**Problem**: `union`, `intersection`, `set-difference`, `subsetp` are pure Lisp with O(n*m) nested `dolist` + `member`.
 
 **Current code** (`lib/boot.lisp`):
 ```lisp
@@ -441,9 +484,16 @@ Recommended sequence balancing impact vs. risk:
 | 3 | 1.1 (CLOS dispatch cache) | ✅ DONE (b315f2a) |
 | 4 | 1.4 (computed goto), 1.5 (TLV bypass) | ✅ DONE |
 | 5 | 1.6 (HT rehash + hash fix), 1.7 (32-bit limb bignum mul) | ✅ DONE (3c58761, fbb7e29) |
-| 6 | 1.3 (declaim-speed: const-fold + dead-branch + check-elision + local-declare scoping), 2.4 (set ops in C) | Pending |
-| 7 | 1.8 (bytecode peephole post-pass, after 1.3 + profiling), 2.5 (free-list segregation) | Pending |
-| 8 | 3.1 (slot access), 3.2 (keyword pre-comp) | Pending |
+| 6 | 1.9 (MLF pre-pass hash index — found by profiling; 9.8x cold compile) | ✅ DONE (2026-07-05) |
+| 7 | 1.3 (declaim-speed: const-fold + dead-branch + check-elision + local-declare scoping) | Pending |
+| 8 | 1.8 (bytecode peephole post-pass, after 1.3 + profiling), 2.5 (free-list segregation) | Pending |
+| 9 | 3.1 (slot access), 3.2 (keyword pre-comp) | Pending |
+| — | 2.4 (set ops in C) | Deprioritized — measured near-zero real-world use (2026-07-05) |
+
+Lesson from phase 6: **profile a real workload before picking the next item** — the
+biggest win so far (1.9) was not in the plan, and a planned item (2.4) measured
+irrelevant. The macro-lookup chain (`cl_macro_p`/`cl_get_macro`/`cl_get_compiler_macro`)
+is the current cold-compile leader; re-profile before starting phase 7.
 
 ## Validation
 

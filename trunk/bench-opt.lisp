@@ -460,6 +460,54 @@ Verify the (deterministic) result against EXPECTED."
   (%bo-run "alloc.cons-churn" len
            (lambda () (%bo-alloc-cons len reps))))
 
+;; =====================================================================
+;; compile.* — COMPILE-FILE round-trip (make-load-form pre-pass, profiled
+;; 2026-07-05; also captures reader/compiler/FASL-writer throughput).
+;; compile.file-plain runs with NO make-load-form method defined, so the
+;; writer's pre-pass is gated off.  compile.file-mlf defines one first —
+;; the gate then stays open, as it does in any real session once
+;; log4cl/serapeum/cl-ppcre/... is loaded — so the delta between the two
+;; isolates the pre-pass cost over the file's constant graph (~2N unique
+;; conses).  These must run LAST: defining the method opens the gate for
+;; the rest of the image's lifetime.
+
+(defvar *bo-src-path*  #+amigaos "T:bo-mlf-src.lisp" #-amigaos "/tmp/bo-mlf-src.lisp")
+(defvar *bo-fasl-path* #+amigaos "T:bo-mlf-src.fasl" #-amigaos "/tmp/bo-mlf-src.fasl")
+
+(defun %bo-write-compile-src (n with-box)
+  "Write a source file whose one form carries a literal constant graph
+of ~2N conses (N-element spine, one pair per element)."
+  (with-open-file (s *bo-src-path* :direction :output :if-exists :supersede)
+    (format s "(defparameter cl-user::*bo-mlf-data*~%  '(")
+    (dotimes (i n)
+      (format s "(~D . ~D) " i (* 2 i)))
+    (format s "))~%")
+    (when with-box
+      (format s "(defparameter cl-user::*bo-mlf-box* #.(cl-user::make-%bo-mlf-box :v 42))~%"))))
+
+(defun %bo-compile-bench (n reps with-box)
+  (%bo-write-compile-src n with-box)
+  (dotimes (r reps)
+    (compile-file *bo-src-path* :output-file *bo-fasl-path*))
+  (load *bo-fasl-path*)
+  (let ((d (%bo-digest (symbol-value 'cl-user::*bo-mlf-data*) #'car)))
+    (if with-box
+        (cons (car d) (+ (cdr d) (%bo-mlf-box-v (symbol-value 'cl-user::*bo-mlf-box*))))
+        d)))
+
+(let ((n 10000) (reps (%bo-scaled 2)))
+  (%bo-run "compile.file-plain" (cons n (%bo-sum-below n))
+           (lambda () (%bo-compile-bench n reps nil))))
+
+(defstruct %bo-mlf-box v)
+(defmethod make-load-form ((b %bo-mlf-box) &optional env)
+  (declare (ignore env))
+  (values (list 'make-%bo-mlf-box :v (%bo-mlf-box-v b)) nil))
+
+(let ((n 10000) (reps (%bo-scaled 2)))
+  (%bo-run "compile.file-mlf" (cons n (+ (%bo-sum-below n) 42))
+           (lambda () (%bo-compile-bench n reps t))))
+
 ;; ---------------------------------------------------------------------
 
 (clamiga::%jit-set-active *bo-prior-jit*)

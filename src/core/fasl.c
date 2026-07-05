@@ -85,6 +85,49 @@ void cl_fasl_writer_release(CL_FaslWriter *w)
  * exists (the case for virtually every file), the graph walk is skipped
  * entirely and serialization behaves exactly as before. */
 
+static uint32_t fasl_obj_hash(CL_Obj obj)
+{
+    /* Heap offsets are always CL_ALIGN-aligned (8-byte host / 4-byte
+     * Amiga, see mem.h), so their low bits are always zero; shift those
+     * out before applying Knuth's golden-ratio multiplier so every bit
+     * of the result — including the low bits callers select via
+     * `& mask` — carries entropy from the offset, instead of clustering
+     * into a fraction of the table's slots. */
+#if CL_ALIGN == 8
+    return ((uint32_t)obj >> 3) * 2654435769u;
+#else
+    return ((uint32_t)obj >> 2) * 2654435769u;
+#endif
+}
+
+/* Hash index over a backing CL_Obj array (seen[] / objs[] below).
+ *
+ * fasl_mlf_seen_p and cl_fasl_mlf_lookup were linear scans, which made
+ * the pre-pass O(n²) in the number of unique heap objects reachable
+ * from a file's constants — measured at ~85% of ALL cold-compile CPU
+ * once any loaded library defines a MAKE-LOAD-FORM method (log4cl,
+ * serapeum, cl-ppcre, local-time, ... all do, so in real sessions the
+ * gate is effectively always open).  Each index is an open-addressing
+ * table mapping CL_Obj -> position+1 in its backing array (0 = empty
+ * slot), in the style of the writer's shared-object dedup table below.
+ *
+ * Compaction hazard: the backing arrays hold raw arena offsets that
+ * cl_fasl_gc_update_mlf rewrites when a %FASL-LOAD-FORM call triggers a
+ * moving GC — invalidating every probe position keyed on the old bits.
+ * The update hook therefore just marks the index dirty; it is rebuilt
+ * lazily before the next probe.  Rebuilds use platform_alloc only
+ * (never the arena), so a rebuild cannot itself trigger GC.
+ *
+ * OOM fallback: if a table allocation fails the index is disabled for
+ * the rest of the pre-pass and callers fall back to the original
+ * linear scan — slower, never wrong. */
+typedef struct {
+    uint32_t *slots;    /* position+1 into the backing array; 0 = empty */
+    uint32_t  cap;      /* power of two; 0 = unallocated */
+    int       dirty;    /* backing objects moved by compaction — rebuild */
+    int       disabled; /* table allocation failed — linear fallback */
+} FaslMlfIndex;
+
 typedef struct {
     /* Result cache — persists through the whole serialize loop.  One
      * entry per literal object that has a MAKE-LOAD-FORM method. */
@@ -101,9 +144,94 @@ typedef struct {
     uint32_t seen_count;
     uint32_t seen_cap;
     int      active;          /* nonzero between prepass and cleanup */
+    FaslMlfIndex seen_index;  /* hash index over seen[] (walk phase) */
+    FaslMlfIndex objs_index;  /* hash index over objs[] (serialize phase) */
 } FaslMlfState;
 
 static FaslMlfState g_mlf;    /* zero-initialized; single-threaded compile-file */
+
+static void fasl_mlf_index_free(FaslMlfIndex *ix)
+{
+    if (ix->slots) platform_free(ix->slots);
+    ix->slots = NULL;
+    ix->cap = 0;
+    ix->dirty = 0;
+    ix->disabled = 0;
+}
+
+/* (Re)build IX from ARR[0..count) (entries are unique by construction).
+ * Returns 1 when the index is usable, 0 on OOM (index disabled). */
+static int fasl_mlf_index_rebuild(FaslMlfIndex *ix, const CL_Obj *arr,
+                                  uint32_t count)
+{
+    uint32_t cap = 64, k, mask;
+    uint32_t *slots;
+    while (cap < count * 2 + 1) cap <<= 1;
+    slots = (uint32_t *)platform_alloc(cap * sizeof(uint32_t));
+    if (!slots) {
+        fasl_mlf_index_free(ix);
+        ix->disabled = 1;
+        return 0;
+    }
+    memset(slots, 0, cap * sizeof(uint32_t));
+    mask = cap - 1;
+    for (k = 0; k < count; k++) {
+        uint32_t slot = fasl_obj_hash(arr[k]) & mask;
+        while (slots[slot] != 0) slot = (slot + 1) & mask;
+        slots[slot] = k + 1;
+    }
+    if (ix->slots) platform_free(ix->slots);
+    ix->slots = slots;
+    ix->cap = cap;
+    ix->dirty = 0;
+    return 1;
+}
+
+/* Ensure IX is allocated and current; 0 => caller must linear-scan. */
+static int fasl_mlf_index_ready(FaslMlfIndex *ix, const CL_Obj *arr,
+                                uint32_t count)
+{
+    if (ix->disabled) return 0;
+    if (!ix->slots || ix->dirty)
+        return fasl_mlf_index_rebuild(ix, arr, count);
+    return 1;
+}
+
+/* Probe IX for OBJ; on hit store its ARR position in *POS and return 1.
+ * Caller must have checked fasl_mlf_index_ready first. */
+static int fasl_mlf_index_find(const FaslMlfIndex *ix, const CL_Obj *arr,
+                               CL_Obj obj, uint32_t *pos)
+{
+    uint32_t mask = ix->cap - 1;
+    uint32_t slot = fasl_obj_hash(obj) & mask;
+    uint32_t e;
+    while ((e = ix->slots[slot]) != 0) {
+        if (arr[e - 1] == obj) {
+            *pos = e - 1;
+            return 1;
+        }
+        slot = (slot + 1) & mask;
+    }
+    return 0;
+}
+
+/* Register the just-appended ARR[count-1] in IX, growing (via rebuild)
+ * when the new entry would push past 50% load.  Best-effort: on OOM the
+ * index is disabled and lookups fall back to linear scans. */
+static void fasl_mlf_index_add(FaslMlfIndex *ix, const CL_Obj *arr,
+                               uint32_t count)
+{
+    uint32_t mask, slot;
+    if (ix->disabled) return;
+    if (!ix->slots || ix->dirty || count * 2 + 1 > ix->cap) {
+        (void)fasl_mlf_index_rebuild(ix, arr, count);  /* inserts all */
+        return;
+    }
+    mask = ix->cap - 1;
+    slot = fasl_obj_hash(arr[count - 1]) & mask;
+    while (ix->slots[slot] != 0) slot = (slot + 1) & mask;
+    ix->slots[slot] = count;   /* position+1, position == count-1 */
+}
 
 /* Mirror of the metaobject test in fasl_ser_step's TYPE_STRUCT case:
  * STANDARD-CLASS / BUILT-IN-CLASS / FUNCALLABLE-STANDARD-CLASS structs
@@ -179,16 +307,31 @@ static int fasl_mlf_cache_push(CL_Obj obj, CL_Obj creation, CL_Obj init)
     g_mlf.creations[g_mlf.count] = creation;
     g_mlf.inits[g_mlf.count] = init;
     g_mlf.count++;
+    fasl_mlf_index_add(&g_mlf.objs_index, g_mlf.objs, g_mlf.count);
     return 1;
 }
 
 /* True if a container object has already been enqueued/walked. */
 static int fasl_mlf_seen_p(CL_Obj obj)
 {
-    uint32_t k;
+    uint32_t k, pos;
+    if (fasl_mlf_index_ready(&g_mlf.seen_index, g_mlf.seen,
+                             g_mlf.seen_count))
+        return fasl_mlf_index_find(&g_mlf.seen_index, g_mlf.seen, obj, &pos);
     for (k = 0; k < g_mlf.seen_count; k++)
         if (g_mlf.seen[k] == obj) return 1;
     return 0;
+}
+
+/* Push OBJ onto seen[] and register it in the seen index.  Returns 0
+ * only on OOM of the array itself (caller aborts the walk). */
+static int fasl_mlf_seen_push(CL_Obj obj)
+{
+    if (!fasl_mlf_arr_push(&g_mlf.seen, &g_mlf.seen_count,
+                           &g_mlf.seen_cap, obj))
+        return 0;
+    fasl_mlf_index_add(&g_mlf.seen_index, g_mlf.seen, g_mlf.seen_count);
+    return 1;
 }
 
 /* Look up OBJECT's cached load form.  Hot path: called for every struct
@@ -196,7 +339,15 @@ static int fasl_mlf_seen_p(CL_Obj obj)
  * is empty and this returns immediately. */
 static int cl_fasl_mlf_lookup(CL_Obj obj, CL_Obj *creation, CL_Obj *init)
 {
-    uint32_t k;
+    uint32_t k, pos;
+    if (g_mlf.count == 0) return 0;
+    if (fasl_mlf_index_ready(&g_mlf.objs_index, g_mlf.objs, g_mlf.count)) {
+        if (!fasl_mlf_index_find(&g_mlf.objs_index, g_mlf.objs, obj, &pos))
+            return 0;
+        *creation = g_mlf.creations[pos];
+        *init = g_mlf.inits[pos];
+        return 1;
+    }
     for (k = 0; k < g_mlf.count; k++) {
         if (g_mlf.objs[k] == obj) {
             *creation = g_mlf.creations[k];
@@ -235,6 +386,10 @@ void cl_fasl_gc_update_mlf(void (*update_fn)(CL_Obj *))
     }
     for (k = 0; k < g_mlf.work_count; k++) update_fn(&g_mlf.work[k]);
     for (k = 0; k < g_mlf.seen_count; k++) update_fn(&g_mlf.seen[k]);
+    /* The rewritten entries hash differently now — invalidate the
+     * indices; they rebuild lazily on the next probe. */
+    g_mlf.seen_index.dirty = 1;
+    g_mlf.objs_index.dirty = 1;
 }
 
 /* Free all pre-pass state and reset.  Safe to call repeatedly. */
@@ -245,6 +400,8 @@ void cl_fasl_mlf_cleanup(void)
     if (g_mlf.inits)     platform_free(g_mlf.inits);
     if (g_mlf.work)      platform_free(g_mlf.work);
     if (g_mlf.seen)      platform_free(g_mlf.seen);
+    fasl_mlf_index_free(&g_mlf.seen_index);
+    fasl_mlf_index_free(&g_mlf.objs_index);
     memset(&g_mlf, 0, sizeof(g_mlf));
 }
 
@@ -256,6 +413,7 @@ static void fasl_mlf_free_walk_state(void)
     if (g_mlf.seen) { platform_free(g_mlf.seen); g_mlf.seen = NULL; }
     g_mlf.work_count = g_mlf.work_cap = 0;
     g_mlf.seen_count = g_mlf.seen_cap = 0;
+    fasl_mlf_index_free(&g_mlf.seen_index);
 }
 
 /* Resolve a CLAMIGA-package function by name; CL_NIL if undefined
@@ -337,8 +495,7 @@ void cl_fasl_mlf_prepass(CL_Obj bc_vec, int bc_count)
         switch (htype) {
         case TYPE_CONS: {
             if (fasl_mlf_seen_p(obj)) break;
-            if (!fasl_mlf_arr_push(&g_mlf.seen, &g_mlf.seen_count,
-                                   &g_mlf.seen_cap, obj)) goto done;
+            if (!fasl_mlf_seen_push(obj)) goto done;
             if (!fasl_mlf_enqueue(cl_car(obj))) goto done;
             if (!fasl_mlf_enqueue(cl_cdr(obj))) goto done;
             break;
@@ -347,8 +504,7 @@ void cl_fasl_mlf_prepass(CL_Obj bc_vec, int bc_count)
             CL_Vector *v;
             uint32_t k;
             if (fasl_mlf_seen_p(obj)) break;
-            if (!fasl_mlf_arr_push(&g_mlf.seen, &g_mlf.seen_count,
-                                   &g_mlf.seen_cap, obj)) goto done;
+            if (!fasl_mlf_seen_push(obj)) goto done;
             v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
             for (k = 0; k < v->length; k++)
                 if (!fasl_mlf_enqueue(cl_vector_data(v)[k])) goto done;
@@ -358,8 +514,7 @@ void cl_fasl_mlf_prepass(CL_Obj bc_vec, int bc_count)
             CL_Bytecode *bc;
             uint16_t k;
             if (fasl_mlf_seen_p(obj)) break;
-            if (!fasl_mlf_arr_push(&g_mlf.seen, &g_mlf.seen_count,
-                                   &g_mlf.seen_cap, obj)) goto done;
+            if (!fasl_mlf_seen_push(obj)) goto done;
             bc = (CL_Bytecode *)CL_OBJ_TO_PTR(obj);
             for (k = 0; k < bc->n_constants; k++)
                 if (!fasl_mlf_enqueue(bc->constants[k])) goto done;
@@ -372,8 +527,7 @@ void cl_fasl_mlf_prepass(CL_Obj bc_vec, int bc_count)
             CL_Closure *cl_obj;
             uint32_t n_upvalues, k, alloc_size;
             if (fasl_mlf_seen_p(obj)) break;
-            if (!fasl_mlf_arr_push(&g_mlf.seen, &g_mlf.seen_count,
-                                   &g_mlf.seen_cap, obj)) goto done;
+            if (!fasl_mlf_seen_push(obj)) goto done;
             cl_obj = (CL_Closure *)CL_OBJ_TO_PTR(obj);
             if (!fasl_mlf_enqueue(cl_obj->bytecode)) goto done;
             alloc_size = CL_HDR_SIZE(cl_obj);
@@ -387,8 +541,7 @@ void cl_fasl_mlf_prepass(CL_Obj bc_vec, int bc_count)
             uint32_t seen_idx;
             int sf, ss, sn, sroots, err;
             if (fasl_mlf_seen_p(obj)) break;
-            if (!fasl_mlf_arr_push(&g_mlf.seen, &g_mlf.seen_count,
-                                   &g_mlf.seen_cap, obj)) goto done;
+            if (!fasl_mlf_seen_push(obj)) goto done;
             seen_idx = g_mlf.seen_count - 1;   /* obj's stable, GC-rooted slot */
             /* CLOS metaobjects serialize as CLASS_REF — never load forms,
              * and their cyclic slots must not be walked. */
@@ -514,12 +667,8 @@ void cl_fasl_write_header(CL_FaslWriter *w, uint32_t n_units)
 #define FASL_SHARED_HASH_INIT_CAP 64u
 #define FASL_SHARED_HASH_MAX_CAP  131072u
 
-static uint32_t fasl_obj_hash(CL_Obj obj)
-{
-    /* Knuth's golden-ratio multiplier — distributes clustered arena
-     * offsets evenly across the table. */
-    return (uint32_t)obj * 2654435769u;
-}
+/* fasl_obj_hash is defined above the MAKE-LOAD-FORM pre-pass state,
+ * which shares it. */
 
 /* Resize shared_hash to new_cap (a power of two), rehashing existing
  * entries from shared_objs[0..shared_count).  Returns 1 on success, 0

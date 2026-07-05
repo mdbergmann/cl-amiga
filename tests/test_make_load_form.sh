@@ -124,6 +124,35 @@ run_case "nested_in_list" \
         (= (funcall (find-symbol "PT-X" "MLF3") (second lst)) 9)
         (= (third lst) 3)))'
 
+# 4. Large constant graph (thousands of unique conses) with a shared
+#    substructure and an MLF instance mixed in — regression for the
+#    pre-pass seen-set hash index (2026-07-05; formerly an O(n²) linear
+#    scan).  Verifies the walk still terminates correctly on a big
+#    graph and the nested instance is reconstructed via its load form.
+#    (EQ identity of the shared tail is NOT asserted — the writer does
+#    not preserve cons-level sharing today, verified pre-existing.)
+run_case "large_graph_hash_index" \
+'(defpackage :mlf4 (:use :cl))
+(in-package :mlf4)
+(defclass node () ((tag :initarg :tag :accessor node-tag)))
+(defmethod make-load-form ((n node) &optional env)
+  (declare (ignore env))
+  (make-load-form-saving-slots n))
+(defvar *big*
+  (quote #.(let ((shared (list :s 1 2 3)) (acc nil))
+             (dotimes (i 3000) (push (cons i shared) acc))
+             (push (make-instance (quote node) :tag 77) acc)
+             acc)))' \
+'(let* ((big (symbol-value (find-symbol "*BIG*" "MLF4")))
+        (node (first big))
+        (pairs (rest big)))
+   (and (= (length pairs) 3000)
+        (= (funcall (find-symbol "NODE-TAG" "MLF4") node) 77)
+        (equal (cdr (first pairs)) (list :s 1 2 3))
+        (equal (cdr (first (last pairs))) (list :s 1 2 3))
+        (= (car (first pairs)) 2999)
+        (= (car (first (last pairs))) 0)))'
+
 echo ""
 echo "test_make_load_form: $passed passed, $failed failed"
 [ "$failed" -eq 0 ]
