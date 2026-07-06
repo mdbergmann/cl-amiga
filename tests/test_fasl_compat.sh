@@ -8,9 +8,10 @@ passed=0
 failed=0
 total=0
 TMPDIR="${TMPDIR:-/tmp}"
-# Cache path includes CL_FASL_VERSION ("-faslN" suffix) — wildcard so the
-# test cleans every version's cache, not just the current one.
-CACHE_GLOB="$HOME/.cache/common-lisp/cl-amiga-0.1*"
+# Cache path includes the impl version and CL_FASL_VERSION ("-faslN"
+# suffix) — wildcard on both so the test matches the current build and
+# cleans every version's cache, independent of CL_VERSION_STRING bumps.
+CACHE_GLOB="$HOME/.cache/common-lisp/cl-amiga-*"
 
 check() {
     desc="$1"

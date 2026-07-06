@@ -19,7 +19,7 @@
 #include <stddef.h>
 
 /* Version string — used for FASL cache paths */
-#define CL_VERSION_STRING "0.1"
+#define CL_VERSION_STRING "0.2"
 
 typedef uint32_t CL_Obj;
 
