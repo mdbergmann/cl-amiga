@@ -76,7 +76,7 @@ clamiga --heap 24M
 
 ### Quicklisp
 
-Quicklisp runs on CL-Amiga, but the stock client doesn't recognise this implementation and pulls in libraries that assume features we don't have yet. So the project ships a small compat layer plus a handful of library shims, and keeps the bootstrap entirely on its own side. The goal is to upstream all of it once the remaining API gaps close.
+Quicklisp runs on CL-Amiga, but the stock client doesn't recognise this implementation and pulls in libraries that assume features we don't have yet. So the project ships a small compat layer, a set of **library backends** — maintained forks of a few systems that now carry first-class CL-Amiga support behind `#+cl-amiga` / `#+clamiga` branches — and a tiny `swank` stub, and keeps the bootstrap entirely on its own side. The library forks are deliberately minimal and exist to be upstreamed once the remaining API gaps close.
 
 **Installing Quicklisp on a fresh system** (where `~/quicklisp/` — Amiga: `S:quicklisp/` — does not exist yet). Do this once:
 
@@ -86,7 +86,7 @@ Quicklisp runs on CL-Amiga, but the stock client doesn't recognise this implemen
 (cl-amiga-ql:install)                 ; downloads + installs the QL client, patches networking
 ```
 
-`cl-amiga-ql:install` runs the standard `quicklisp-quickstart:install`, catches the network error it raises (CL-Amiga isn't a registered `ql-impl` yet), loads the compat shim so networking works, and retries the dist install. The shims also need to be on disk: run `make install-shims` once from the repo root to symlink them into `~/quicklisp/local-projects`.
+`cl-amiga-ql:install` runs the standard `quicklisp-quickstart:install`, catches the network error it raises (CL-Amiga isn't a registered `ql-impl` yet), loads the compat shim so networking works, and retries the dist install. Two more things need to be on disk in `~/quicklisp/local-projects` (Amiga: `S:quicklisp/local-projects`): the `swank` stub — run `make install-shims` once from the repo root to symlink it in — and the CL-Amiga **library forks** (listed below), which you install by cloning them into that directory. Quicklisp's local-projects searcher then resolves both ahead of the stock dist releases.
 
 **Using Quicklisp** in any later session, once it is installed:
 
@@ -99,7 +99,12 @@ Quicklisp runs on CL-Amiga, but the stock client doesn't recognise this implemen
 **What we patch** (the local changes shipped with the project):
 
 - `lib/quicklisp-compat.lisp` — routes Quicklisp's networking through `ext:open-tcp-stream` and plain CL stream ops (working around generic-function dispatch limits in the stock `ql-network` interface), supplies a minimal `make-broadcast-stream` for its HTTP layer, adapts `directory-entries` to CL-Amiga's `directory`, and maps the bordeaux-threads v2 surface onto the `MP` package.
-- `contrib/shims/` (installed by `make install-shims`) — `closer-mop` (re-exports CL-Amiga's AMOP subset under CLOSER-MOP names), `trivial-cltl2` (the CLtL2 functions serapeum/trivia call), `introspect-environment` (a working `typexpand` built on CL-Amiga's deftype expander table, so callers like serapeum's `explode-type` can resolve user `deftype` aliases), `trivial-garbage` (weak hash-tables), and `swank` (a tiny stub package — several libraries such as clack name the `swank` system only to reach a couple of symbols for an optional remote-debug server they never start). Downstream libraries `:use` these by name; the shims let them resolve via Quicklisp's local-projects searcher.
+- **CL-Amiga library forks** (cloned into `~/quicklisp/local-projects`) — maintained forks of four systems that carry first-class CL-Amiga support behind `#+cl-amiga` / `#+clamiga` branches, so a stock `quickload` resolves them like any other implementation backend rather than needing a replacement package:
+  - [`closer-mop`](https://codeberg.org/mdbergmann/closer-mop) — a `#+clamiga` package definition plus a `closer-clamiga.lisp` backend file that re-export CL-Amiga's native AMOP subset under the CLOSER-MOP / C2MOP / C2CL names.
+  - [`trivial-cltl2`](https://github.com/mdbergmann/trivial-cltl2) — a `clamiga.lisp` backend supplying the CLtL2 functions serapeum/trivia call (`declaration-information`, `variable-information`, `function-information`, `compiler-let`, `parse-macro` / `enclose`).
+  - [`introspect-environment`](https://github.com/mdbergmann/introspect-environment) — a `#+cl-amiga` `typexpand` / `typexpand-1` built on CL-Amiga's deftype expander table (`clamiga::%type-expander`), so callers like serapeum's `explode-type` can resolve user `deftype` aliases.
+  - [`trivial-garbage`](https://github.com/mdbergmann/trivial-garbage) — `#+cl-amiga` finalizers and weak pointers, with weak hash-tables falling back to ordinary (strong) tables.
+- `contrib/shims/swank` (installed by `make install-shims`) — a tiny stub package: several libraries such as clack name the `swank` system only to reach a couple of symbols for an optional remote-debug server they never start. It stays a shim (there is no upstream to fork) and resolves via Quicklisp's local-projects searcher.
 - `lib/asdf.lisp` — `#+cl-amiga` adaptations: real binary FASL compile/load for cross-session persistence, AmigaOS path/device handling, and `*asdf-session*` NULL-safety.
 
 Libraries confirmed working via `quickload` + `asdf:test-system` (`trunk/run-load-and-test-all.sh`) include **fiveam**, **FSet**, **cl-spark**, **str**, **closer-mop**, **CFFI**, **chipi** (cl-hab), and **Sento** — plus, on the host, the **drakma** HTTP/HTTPS client and the **Hunchentoot** web server (these two need a TCP/IP stack; see [Integration test scripts](#integration-test-scripts)). Loading these pulls in and exercises a much wider dependency graph along the way — **alexandria, serapeum, lparallel, log4cl, bordeaux-threads, cl+ssl, usocket, chipz, cl-who** and friends. Sento cold-compiles its full dependency tree, so give it ~96–128M of heap (more for a cold cache) and `stack 800000` on Amiga.
@@ -548,7 +553,7 @@ Point-in-time benchmark results (sento actor throughput on host, Amiga JIT call 
 - **Amiga GUI bindings are incomplete** — the Intuition/Graphics/GadTools abstractions cover common use cases (windows, drawing, gadgets, menus) but not the full API surface; more libraries (ASL requesters, Layers, Commodities) are not yet wrapped
 - **Composite streams** — `make-two-way-stream` is implemented (with `two-way-stream-input-stream` / `two-way-stream-output-stream`); `make-broadcast-stream` and `make-concatenated-stream` are not yet implemented (`make-broadcast-stream` has a minimal workaround in `lib/quicklisp-compat.lisp`)
 - **Stream external formats** — character streams default to UTF-8; `(open … :external-format :latin-1)` (also `:iso-8859-1`) selects an 8-bit-transparent stream where each code point 0–255 maps to a single raw byte with no transcoding, for byte-faithful I/O over a character stream (e.g. an `rfc2388` multipart upload written to a temp file). `stream-external-format` reports `:latin-1` / `:default`. Other named encodings are not yet selectable. See `tests/test_stream.c` (`open_latin1_*`) and `tests/amiga/run-tests.lisp` for usage.
-- **Threading** — `MP` package covers the core bordeaux-threads surface (threads with `interrupt`/`destroy`, mutex + recursive locks, named condition variables with timeout, `with-lock-held` / `with-recursive-lock-held`, type predicates). `(ql:quickload :bordeaux-threads)` and Quicklisp itself currently rely on local patches we ship — `lib/quicklisp-compat.lisp` (maps the BT v2 surface onto `MP`, adapts Quicklisp's network/HTTP layer) plus the shims in `contrib/shims/` symlinked into `~/quicklisp/local-projects` by `make install-shims`; the plan is to upstream these once the remaining API gaps close. Not yet covered: semaphores, atomic integers, `with-timeout`, `:timeout` on `acquire-lock`
+- **Threading** — `MP` package covers the core bordeaux-threads surface (threads with `interrupt`/`destroy`, mutex + recursive locks, named condition variables with timeout, `with-lock-held` / `with-recursive-lock-held`, type predicates). `(ql:quickload :bordeaux-threads)` and Quicklisp itself currently rely on local patches we ship — `lib/quicklisp-compat.lisp` (maps the BT v2 surface onto `MP`, adapts Quicklisp's network/HTTP layer) plus the CL-Amiga library forks and the `swank` stub in `~/quicklisp/local-projects` (the stub symlinked by `make install-shims`, the forks cloned in — see [Quicklisp](#quicklisp)); the plan is to upstream these once the remaining API gaps close. Not yet covered: semaphores, atomic integers, `with-timeout`, `:timeout` on `acquire-lock`
 - **ANSI CL gaps** — while major subsystems work (CLOS, conditions, packages, the full numeric tower, arrays, pathnames, streams, loop, format), some corners of the spec remain unimplemented
 - **Socket timeout clock on AmigaOS** — the socket read/write timeout deadlines are measured with a `DateStamp`-based millisecond clock, which resets at midnight. A timeout window that straddles 00:00 can therefore fire early or late by up to the elapsed-since-midnight amount — a once-a-day edge that is harmless for the typical second-scale timeouts but not exact. Switching the Amiga deadline source to a monotonic `timer.device` clock would remove it. (POSIX is unaffected.)
 - **Socket write timeouts over loopback** — a `:output` timeout fires only when the send genuinely cannot make progress (the peer's receive window and the local send buffer are both full). On a `127.0.0.1` connection the host kernel may buffer the data effectively without bound — macOS, in particular, keeps a loopback socket writable no matter how much unread data is queued — so a write timeout will not trigger there even against a peer that never reads. This is a host-buffering property, not a CL-Amiga limit; write timeouts behave normally against real remote peers and on AmigaOS. (Read timeouts are unaffected and fire reliably everywhere.) Because of this, the write-timeout path is exercised by the success-path test (a timed write to a draining peer) rather than a loopback saturation test; it shares the same readiness-wait/deadline mechanism as the read path (`poll` on POSIX, `WaitSelect` on AmigaOS).
@@ -590,14 +595,16 @@ lib/
   ffi.lisp        FFI utilities (defcstruct, with-foreign-alloc)
   gray-streams.lisp   Gray streams protocol
   asdf.lisp       ASDF (Another System Definition Facility, with CL-Amiga adaptations)
-  quicklisp*.lisp Quicklisp install + compatibility shims
+  quicklisp*.lisp Quicklisp install + compatibility layer
   amiga/          AmigaOS Lisp libraries (loaded on demand)
     ffi.lisp        Tag lists, defcfun, with-library
     intuition.lisp  Windows, screens, IDCMP events
     graphics.lisp   Drawing, text rendering
     gadtools.lisp   GadTools gadgets, menus
 contrib/
-  shims/          closer-mop / trivial-cltl2 / introspect-environment / trivial-garbage / swank shims for Quicklisp
+  shims/          swank stub for Quicklisp (closer-mop / trivial-cltl2 /
+                  introspect-environment / trivial-garbage now live as
+                  CL-Amiga library forks in ~/quicklisp/local-projects)
 examples/
   gfx/            Graphics demos (bouncing-lines.lisp)
 tests/
