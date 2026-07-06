@@ -3925,12 +3925,12 @@ class to react."
 ;;; ====================================================================
 ;;;
 ;;; Symbols and classes that closer-mop imports from an implementation's
-;;; MOP package.  We keep them in CL so `import-from :common-lisp` in a
-;;; closer-mop shim yields the right objects.  Most of these shims are
-;;; placeholders — user-defined metaclasses are out of scope — but the
-;;; names must exist for closer-mop's DEFPACKAGE :IMPORT-FROM to succeed
-;;; and for downstream libraries (serapeum, trivia, lisp-namespace) to
-;;; reference a non-bound-to-error symbol.
+;;; MOP package.  We keep them in CL/MOP so the CL-Amiga closer-mop fork's
+;;; #+clamiga package — which (:use #:common-lisp #:mop) and re-exports —
+;;; yields the right objects.  Most of these are placeholders — user-defined
+;;; metaclasses are out of scope — but the names must exist for the fork's
+;;; DEFPACKAGE to succeed and for downstream libraries (serapeum, trivia,
+;;; lisp-namespace) to reference a non-bound-to-error symbol.
 
 ;;; --- Abstract metaobject / specializer class stubs ---
 ;;; AMOP places all reified MOP entities under METAOBJECT, with

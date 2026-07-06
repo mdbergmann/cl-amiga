@@ -11,13 +11,15 @@
 ;; Load Gray Streams implementation (needed by trivial-gray-streams)
 (load (merge-pathnames "lib/gray-streams.lisp" *default-pathname-defaults*))
 
-;; NOTE: CL-Amiga ships replacement shims for a handful of systems
-;; (currently closer-mop and trivial-cltl2) under `contrib/shims/`.
-;; These are installed into quicklisp's own local-projects tree via
-;; `make install-shims` (or manually on Amiga), so quicklisp picks
-;; them up through its normal search — no extra registration here.
-;; Long-term these should merge upstream so stock quicklisp just
-;; works on CL-Amiga.
+;; NOTE: a handful of systems (closer-mop, trivial-cltl2,
+;; introspect-environment, trivial-garbage) carry first-class CL-Amiga
+;; support in maintained forks that live in quicklisp's own
+;; local-projects tree (cloned in; see README's Quicklisp section).
+;; The `swank` stub under `contrib/shims/` is symlinked in by
+;; `make install-shims`.  Quicklisp picks all of them up through its
+;; normal local-projects search — no extra registration here.  Long-term
+;; the fork branches should merge upstream so stock quicklisp just works
+;; on CL-Amiga.
 
 (in-package #:ql-impl)
 

@@ -2668,8 +2668,8 @@ static CL_Obj bi_subtypep(CL_Obj *args, int n)
  * for the symbol NAME, or NIL if NAME has no deftype expander.
  *
  * Exposes the internal deftype type_table to Lisp so a portable typexpand
- * can be implemented on top of it (see the introspect-environment shim,
- * contrib/shims/introspect-environment/).  The returned closure takes the
+ * can be implemented on top of it (see the CL-Amiga introspect-environment
+ * fork's #+cl-amiga typexpand in default.lisp).  The returned closure takes the
  * compound type's arguments — e.g. the expander for `(deftype foo (a b) ...)`
  * is applied to (a b); an atom deftype's expander takes no arguments. */
 static CL_Obj bi_type_expander(CL_Obj *args, int n)

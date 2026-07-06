@@ -1,4 +1,4 @@
-;; Load and exercise closer-mop via the CL-Amiga shim.
+;; Load and exercise closer-mop via the CL-Amiga library fork.
 ;; Works on both host and Amiga.
 
 (require "asdf")
@@ -6,17 +6,17 @@
 
 ;; Make the quicklisp-managed dependencies resolvable through ASDF.
 ;; All quicklisp handling lives in this helper; this script only uses
-;; asdf:load-system. closer-mop itself is the CL-Amiga shim under
-;; contrib/shims/, picked up via quicklisp's local-projects searcher
-;; (install it once with `make install-shims`).
+;; asdf:load-system. closer-mop itself is the CL-Amiga library fork,
+;; cloned into quicklisp's local-projects tree and picked up via its
+;; local-projects searcher (see README's Quicklisp section).
 (load "trunk/load-libs-ql.lisp")
 
-(format t "~%--- Loading closer-mop (CL-Amiga shim) ---~%")
+(format t "~%--- Loading closer-mop (CL-Amiga fork) ---~%")
 (asdf:load-system :closer-mop)
 
 (in-package :cl-user)
 
-(format t "~%--- Smoke-testing shim bindings ---~%")
+(format t "~%--- Smoke-testing closer-mop bindings ---~%")
 
 (defun report (label value)
   (format t "  ~A => ~S~%" label value))
@@ -65,4 +65,4 @@
   (report "eql-specializer-object"
           (c2mop:eql-specializer-object (c2mop:intern-eql-specializer 'sym)))
   (report "slot-value via SVUC" (slot-value inst 'x))
-  (format t "~%--- closer-mop shim OK ---~%"))
+  (format t "~%--- closer-mop fork OK ---~%"))

@@ -418,13 +418,14 @@ $(BUILDDIR)/tests/%: $(TEST_SRCDIR)/%.c $(TEST_SRCDIR)/test.h $(LIB_TEST_OBJS)
 # empty FASL cache.  Exercises the source-load + auto-cache path that
 # carries lib/clos.lisp + lib/asdf.lisp + sento's full dependency tree
 # through the compiler and FASL writer in one shot.  Catches regressions
-# the C tests don't see — e.g. broken `make install-shims` symlinks
-# falling back to upstream trivial-garbage and rejecting cl-amiga
-# (caught a stale-symlink regression that hid for ~2 weeks).
+# the C tests don't see — e.g. a missing/stock trivial-garbage backend
+# (upstream trivial-garbage rejects cl-amiga as an unsupported Lisp,
+# so the CL-Amiga fork must be present in local-projects).
 #
 # Auto-skipped when prerequisites aren't met (no quicklisp install, no
-# trunk script, no installed shims) so the target is safe to keep in
-# `make test` for contributors without a quicklisp setup.
+# trunk script, no CL-Amiga library forks in local-projects) so the
+# target is safe to keep in `make test` for contributors without a
+# quicklisp setup.
 HOST_COLD_TEST_SCRIPT  = trunk/load-and-test-sento-system.lisp
 HOST_COLD_TEST_LOG     = $(BUILDDIR)/cold-test.log
 # Wall-clock watchdog (seconds). Matches the cold-sento headroom in
@@ -441,8 +442,8 @@ host-cold-test: host
 	  echo "=== host-cold-test: $(HOST_COLD_TEST_SCRIPT) missing — skipped ==="; \
 	  exit 0; \
 	fi; \
-	if [ ! -L "$(QL_LOCAL_PROJECTS)/trivial-garbage" ]; then \
-	  echo "=== host-cold-test: shims not installed (run 'make install-shims') — skipped ==="; \
+	if [ ! -d "$(QL_LOCAL_PROJECTS)/trivial-garbage" ]; then \
+	  echo "=== host-cold-test: CL-Amiga library forks not in local-projects — skipped ==="; \
 	  exit 0; \
 	fi; \
 	echo "=== host-cold-test: clearing FASL cache and running $(HOST_COLD_TEST_SCRIPT) ==="; \
@@ -539,12 +540,15 @@ fasl: $(BUILDDIR)/clamiga
 
 QL_LOCAL_PROJECTS ?= $(HOME)/quicklisp/local-projects
 
-# Install CL-Amiga's shim systems (closer-mop, trivial-cltl2,
-# trivial-garbage) into quicklisp's local-projects tree via symlink.
-# Needed on dev hosts where quicklisp is installed — these shims are
-# NOT required on Amiga when quicklisp isn't in use.  Long-term goal:
-# merge the #+clamiga branches upstream so stock packages work out of
-# the box, at which point this target becomes obsolete.
+# Install CL-Amiga's `swank` stub system into quicklisp's local-projects
+# tree via symlink.  Needed on dev hosts where quicklisp is installed —
+# this stub is NOT required on Amiga when quicklisp isn't in use.
+#
+# The closer-mop / trivial-cltl2 / introspect-environment / trivial-garbage
+# systems are NO LONGER shims: they are maintained CL-Amiga library forks
+# that carry #+cl-amiga / #+clamiga support directly, installed by cloning
+# them into local-projects (see the Quicklisp section of README.md).  Only
+# the `swank` stub — which has no upstream to fork — is symlinked here.
 #
 # Symlink handling rules:
 #   - Broken symlink (dangling target):     re-create pointing at $$src
@@ -560,7 +564,7 @@ QL_LOCAL_PROJECTS ?= $(HOME)/quicklisp/local-projects
 # packages and reject cl-amiga as an "unsupported Lisp".
 install-shims:
 	@mkdir -p $(QL_LOCAL_PROJECTS)
-	@for shim in closer-mop trivial-cltl2 trivial-garbage swank introspect-environment; do \
+	@for shim in swank; do \
 	  src="$(CURDIR)/contrib/shims/$$shim"; \
 	  dst="$(QL_LOCAL_PROJECTS)/$$shim"; \
 	  if [ -L "$$dst" ]; then \
