@@ -609,6 +609,25 @@ shutdown:
     SHUTDOWN_TRACE("platform done");
     cl_thread_shutdown();
     SHUTDOWN_TRACE("thread done");
+
+    /* If worker threads are still running, cl_thread_shutdown() deliberately
+     * LEAKED the GC/thread primitives rather than yank them out from under
+     * live code (see thread.c).  For the same reason we must NOT free the
+     * arena here: those workers keep reading the arena and symbol table (e.g.
+     * a spinner evaluating (loop until *stop* ...) calls cl_symbol_value,
+     * which dereferences arena-relative offsets).  cl_mem_shutdown() would
+     * free it out from under them, and returning from main then runs glibc's
+     * post-main teardown while the same threads are still live — either way a
+     * SIGSEGV (or hang) in teardown.  Skip the free and terminate the process
+     * immediately via _exit(); the OS reclaims the arena and everything else.
+     * This mirrors the Amiga fast-exit path below, but is required on every
+     * platform whenever workers outlive the main thread. */
+    if (cl_thread_count > 0) {
+        SHUTDOWN_TRACE("workers still running — fast _exit, arena left to OS");
+        fflush(NULL);
+        _exit(cl_exit_code);
+    }
+
     cl_mem_shutdown();
     SHUTDOWN_TRACE("mem done");
 
