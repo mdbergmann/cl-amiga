@@ -475,6 +475,41 @@ static void cache_dup(CodeBuf *cb, int *head, int *depth)
     }
 }
 
+/* --- shared helper-call emit templates -----------------------------------
+ *
+ * The "flush the operand cache → push args as C-ABI operands → JSR the
+ * runtime helper → drop args → push the D0 result" sequence is emitted
+ * verbatim at ~a dozen opcodes.  The cache_flush is load-bearing: cached
+ * D5/D6/D7 heap values are invisible to the conservative JIT-stack scan
+ * (mem.c::gc_scan_jit_native_stack), so any helper that may allocate (or
+ * merely cl_error / cl_signal_type_error) must run with the cache
+ * spilled to the m68k stack.  Callers pop the operands into registers
+ * first: D1=b/D0=a for the 2-arg form, D0 for the 1-arg form.  Emit-time
+ * only — the generated m68k is byte-identical to the inline sequences. */
+static void emit_helper_call_2(CodeBuf *cb, int *head, int *depth, uint32_t helper)
+{
+    cache_flush(cb, head, depth);
+    m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
+    m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+    m68k_emit_jsr_abs_l(cb, helper);
+    m68k_emit_addq_l_an(cb, 8, REG_A7);
+    cache_push_dn(cb, head, depth, REG_D0);
+}
+
+/* 1-arg form.  `flush` is 0 only for the handful of non-allocating,
+ * non-signalling helpers (e.g. cl_jit_runtime_cell_ref) that are safe to
+ * call with the cache still live. */
+static void emit_helper_call_1(CodeBuf *cb, int *head, int *depth,
+                               uint32_t helper, int flush)
+{
+    if (flush)
+        cache_flush(cb, head, depth);
+    m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+    m68k_emit_jsr_abs_l(cb, helper);
+    m68k_emit_addq_l_an(cb, 4, REG_A7);
+    cache_push_dn(cb, head, depth, REG_D0);
+}
+
 /* --- CL_Obj immediate emitters (relocation-aware) ------------------------
  *
  * Every place that bakes a heap CL_Obj as a literal operand routes
@@ -1231,12 +1266,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_mul;
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);   /* b */
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);   /* a */
-            cache_flush(cb, &cache_head, &cache_depth);
-            m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
-            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
-            m68k_emit_jsr_abs_l(cb, helper);
-            m68k_emit_addq_l_an(cb, 8, REG_A7);
-            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
+            emit_helper_call_2(cb, &cache_head, &cache_depth, helper);
             break;
         }
 
@@ -1252,12 +1282,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_div;
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);   /* b */
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);   /* a */
-            cache_flush(cb, &cache_head, &cache_depth);
-            m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
-            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
-            m68k_emit_jsr_abs_l(cb, helper);
-            m68k_emit_addq_l_an(cb, 8, REG_A7);
-            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
+            emit_helper_call_2(cb, &cache_head, &cache_depth, helper);
             break;
         }
 
@@ -1396,13 +1421,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_progv_bind;
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);  /* values_list */
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);  /* symbols_list */
-            cache_flush(cb, &cache_head, &cache_depth);
-            /* Push C args R→L: values_list, symbols_list. */
-            m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
-            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
-            m68k_emit_jsr_abs_l(cb, helper);
-            m68k_emit_addq_l_an(cb, 8, REG_A7);
-            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
+            emit_helper_call_2(cb, &cache_head, &cache_depth, helper);
             break;
         }
 
@@ -1418,13 +1437,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_progv_unbind;
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);  /* result */
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);  /* mark */
-            cache_flush(cb, &cache_head, &cache_depth);
-            /* Push C args R→L: result, mark. */
-            m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
-            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
-            m68k_emit_jsr_abs_l(cb, helper);
-            m68k_emit_addq_l_an(cb, 8, REG_A7);
-            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
+            emit_helper_call_2(cb, &cache_head, &cache_depth, helper);
             break;
         }
 
@@ -1886,11 +1899,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
              * scan can reach any cached operand-stack values. */
             uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_mv_to_list;
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
-            cache_flush(cb, &cache_head, &cache_depth);
-            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
-            m68k_emit_jsr_abs_l(cb, helper);
-            m68k_emit_addq_l_an(cb, 4, REG_A7);
-            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
+            emit_helper_call_1(cb, &cache_head, &cache_depth, helper, 1);
             break;
         }
 
@@ -2123,14 +2132,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_apply;
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);  /* arglist */
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);  /* func */
-            cache_flush(cb, &cache_head, &cache_depth);
-            /* Push C args right-to-left: arglist, then func.  After
-             * JSR: func at 4(a7), arglist at 8(a7). */
-            m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
-            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
-            m68k_emit_jsr_abs_l(cb, helper);
-            m68k_emit_addq_l_an(cb, 8, REG_A7);
-            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
+            emit_helper_call_2(cb, &cache_head, &cache_depth, helper);
             break;
         }
 
@@ -2146,11 +2148,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
                 ? (uint32_t)(uintptr_t)&cl_jit_runtime_car
                 : (uint32_t)(uintptr_t)&cl_jit_runtime_cdr;
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
-            cache_flush(cb, &cache_head, &cache_depth);
-            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
-            m68k_emit_jsr_abs_l(cb, helper);
-            m68k_emit_addq_l_an(cb, 4, REG_A7);
-            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
+            emit_helper_call_1(cb, &cache_head, &cache_depth, helper, 1);
             break;
         }
 
@@ -2204,12 +2202,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_rplaca;
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);  /* new_car */
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);  /* cons_obj */
-            cache_flush(cb, &cache_head, &cache_depth);
-            m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);       /* push new_car */
-            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);       /* push cons_obj */
-            m68k_emit_jsr_abs_l(cb, helper);
-            m68k_emit_addq_l_an(cb, 8, REG_A7);
-            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
+            emit_helper_call_2(cb, &cache_head, &cache_depth, helper);
             break;
         }
 
@@ -2219,12 +2212,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_rplacd;
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);  /* new_cdr */
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);  /* cons_obj */
-            cache_flush(cb, &cache_head, &cache_depth);
-            m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
-            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
-            m68k_emit_jsr_abs_l(cb, helper);
-            m68k_emit_addq_l_an(cb, 8, REG_A7);
-            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
+            emit_helper_call_2(cb, &cache_head, &cache_depth, helper);
             break;
         }
 
@@ -2263,12 +2251,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_nth_value;
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);  /* primary */
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);  /* idx_obj */
-            cache_flush(cb, &cache_head, &cache_depth);
-            m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);       /* push primary */
-            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);       /* push idx_obj */
-            m68k_emit_jsr_abs_l(cb, helper);
-            m68k_emit_addq_l_an(cb, 8, REG_A7);
-            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
+            emit_helper_call_2(cb, &cache_head, &cache_depth, helper);
             break;
         }
 
@@ -2436,12 +2419,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_cons;
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);  /* cdr */
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);  /* car */
-            cache_flush(cb, &cache_head, &cache_depth);
-            m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);       /* push cdr */
-            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);       /* push car */
-            m68k_emit_jsr_abs_l(cb, helper);
-            m68k_emit_addq_l_an(cb, 8, REG_A7);
-            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
+            emit_helper_call_2(cb, &cache_head, &cache_depth, helper);
             break;
         }
 
@@ -2594,11 +2572,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
              * 4 drops it after the JSR returns. */
             uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_make_cell;
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
-            cache_flush(cb, &cache_head, &cache_depth);
-            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
-            m68k_emit_jsr_abs_l(cb, helper);
-            m68k_emit_addq_l_an(cb, 4, REG_A7);
-            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
+            emit_helper_call_1(cb, &cache_head, &cache_depth, helper, 1);
             break;
         }
 
@@ -2607,13 +2581,11 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
              * (plain deref), but it dereferences an arena-relative
              * CL_Obj — needs CL_OBJ_TO_PTR which uses cl_heap.arena_base.
              * Routing through the helper keeps the addressing in C
-             * where the base is in scope and matches the VM exactly. */
+             * where the base is in scope and matches the VM exactly.
+             * Non-allocating → emit_helper_call_1 with flush=0. */
             uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_cell_ref;
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
-            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
-            m68k_emit_jsr_abs_l(cb, helper);
-            m68k_emit_addq_l_an(cb, 4, REG_A7);
-            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
+            emit_helper_call_1(cb, &cache_head, &cache_depth, helper, 0);
             break;
         }
 

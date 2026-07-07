@@ -130,12 +130,24 @@ NOTE: pure refactor of in-memory tables, no on-disk format change → no
   NOT DONE (smaller / more paths, deferred): `limb_alloc`/`limb_free` stack-or-
   heap boilerplate (mul/truncate/mod/gcd/ash), `bignum_remainder` (gcd's inlined
   divmod), `complex_binop`, `cl_bignum_from_u64` covering FFI's 4-limb path.
-- **T2.5 DEFERRED** — JIT/runtime.c NLX families. `jit.c`/`runtime.c` are
-  **m68k-only** (not compiled for the host — only codebuf.o is), so every change
-  can be validated *only* via cross-compile + FS-UAE, and the memory log has a
-  long tail of Amiga-only JIT/GC-forwarding corruption bugs living exactly in
-  this code. High risk, zero host coverage. Do as its own dedicated,
-  Amiga-validated change (like T1.3). Not started.
+- **T2.5 IN PROGRESS (2026-07-07)** — JIT/runtime.c NLX families. `jit.c`/
+  `runtime.c` are **m68k-only** (not compiled for the host — only codebuf.o
+  is), so every change is validated *only* via cross-compile + FS-UAE.
+  - **Batch 1 DONE** — runtime.c NLX families + jit.c Family 1 (helper-call
+    templates). runtime.c: `nlx_alloc_common(type,tag)` (block/catch/tagbody
+    share it; uwprot calls it then overwrites code/constants/bytecode from the
+    current VM frame), `nlx_pop_type(type)` (uwprot wrapper appends
+    `cl_pending_throw=0`), `nlx_restore_core(nlx)` (SP/FP + 8 marks, shared by
+    all four *_post_longjmp) + `nlx_restore_common()` (block/catch = core + full
+    MV set + return result; tagbody/uwprot written longhand on top of core),
+    `real_cmp(a,b,kind,op)` behind the 4 lt/gt/le/ge JSR entry points. jit.c:
+    `emit_helper_call_2` (9 sites: MUL/DIV/PROGV_BIND/PROGV_UNBIND/APPLY/RPLACA/
+    RPLACD/NTH_VALUE/CONS) + `emit_helper_call_1(...,flush)` (MV_TO_LIST/CAR/CDR/
+    MAKE_CELL flush=1, CELL_REF flush=0) — emitted m68k is byte-identical.
+    net −155 lines. Amiga FS-UAE 3625/0. host + gc-stress green.
+  - **Batch 2 (compute_landing_ip)**: pending.
+  - **Family 2 (emit_nlx_setjmp_frame)**: assess — highest-risk emitter; may
+    stay hand-written given the Amiga-only NLX/JIT corruption history.
 
 ### T2.1 Compiler: merge `compile_do` / `compile_do_star` (~200 lines)
 `compiler_special.c` @2276 / @2538 — two ~260-line near-duplicates differing
