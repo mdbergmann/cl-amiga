@@ -92,36 +92,32 @@ CL_Obj cl_jit_runtime_sub(CL_Obj a, CL_Obj b)
     return cl_arith_sub(a, b);
 }
 
-/* Slow-path `<` (2 args), returns CL_T or CL_NIL.  Matches the VM's
- * OP_LT slow path: type-check as REAL (CLHS 12.1.4.1 rejects
- * complex), then cl_arith_compare for the cross-type compare. */
-CL_Obj cl_jit_runtime_lt(CL_Obj a, CL_Obj b)
+/* Slow-path REAL comparisons (`<` `>` `<=` `>=`), each returning CL_T or
+ * CL_NIL.  Matches the VM's OP_LT/GT/LE/GE slow path: type-check as REAL
+ * (CLHS 12.1.4.1 rejects complex), then cl_arith_compare for the
+ * cross-type compare.  The four entry points below stay distinct
+ * exported JSR targets for the JIT; they differ only in the wanted sign
+ * of cl_arith_compare's result and the operator name in the type-error
+ * message, so they share this body. */
+enum { CMP_LT, CMP_GT, CMP_LE, CMP_GE };
+static CL_Obj real_cmp(CL_Obj a, CL_Obj b, int kind, const char *op)
 {
-    if (!CL_REALP(a)) cl_signal_type_error(a, "REAL", "<");
-    if (!CL_REALP(b)) cl_signal_type_error(b, "REAL", "<");
-    return cl_arith_compare(a, b) < 0 ? CL_T : CL_NIL;
+    int c;
+    if (!CL_REALP(a)) cl_signal_type_error(a, "REAL", op);
+    if (!CL_REALP(b)) cl_signal_type_error(b, "REAL", op);
+    c = cl_arith_compare(a, b);
+    switch (kind) {
+        case CMP_LT: return c <  0 ? CL_T : CL_NIL;
+        case CMP_GT: return c >  0 ? CL_T : CL_NIL;
+        case CMP_LE: return c <= 0 ? CL_T : CL_NIL;
+        default:     return c >= 0 ? CL_T : CL_NIL;   /* CMP_GE */
+    }
 }
 
-CL_Obj cl_jit_runtime_gt(CL_Obj a, CL_Obj b)
-{
-    if (!CL_REALP(a)) cl_signal_type_error(a, "REAL", ">");
-    if (!CL_REALP(b)) cl_signal_type_error(b, "REAL", ">");
-    return cl_arith_compare(a, b) > 0 ? CL_T : CL_NIL;
-}
-
-CL_Obj cl_jit_runtime_le(CL_Obj a, CL_Obj b)
-{
-    if (!CL_REALP(a)) cl_signal_type_error(a, "REAL", "<=");
-    if (!CL_REALP(b)) cl_signal_type_error(b, "REAL", "<=");
-    return cl_arith_compare(a, b) <= 0 ? CL_T : CL_NIL;
-}
-
-CL_Obj cl_jit_runtime_ge(CL_Obj a, CL_Obj b)
-{
-    if (!CL_REALP(a)) cl_signal_type_error(a, "REAL", ">=");
-    if (!CL_REALP(b)) cl_signal_type_error(b, "REAL", ">=");
-    return cl_arith_compare(a, b) >= 0 ? CL_T : CL_NIL;
-}
+CL_Obj cl_jit_runtime_lt(CL_Obj a, CL_Obj b) { return real_cmp(a, b, CMP_LT, "<"); }
+CL_Obj cl_jit_runtime_gt(CL_Obj a, CL_Obj b) { return real_cmp(a, b, CMP_GT, ">"); }
+CL_Obj cl_jit_runtime_le(CL_Obj a, CL_Obj b) { return real_cmp(a, b, CMP_LE, "<="); }
+CL_Obj cl_jit_runtime_ge(CL_Obj a, CL_Obj b) { return real_cmp(a, b, CMP_GE, ">="); }
 
 /* Slow-path `=` (2 args).  Accepts NUMBER (not just REAL — `=` is
  * defined for complex per CLHS 12.1.4.1).  Falls through to
@@ -802,13 +798,22 @@ static int jit_nlx_frame_is_stale(CL_NLXFrame *nlx)
     return target->code != nlx->code;
 }
 
-void *cl_jit_runtime_block_alloc(CL_Obj tag)
+/* Shared NLX-frame allocator for BLOCK/CATCH/TAGBODY and the common
+ * portion of UWPROT.  Reserves cl_nlx_stack[cl_nlx_top] without
+ * committing it (the matching *_commit bumps cl_nlx_top).  The VM
+ * longjmp channel (catch_ip/offset/code/constants/bytecode) is dead for
+ * JIT-owned frames — our JSR setjmp lands the longjmp in native code —
+ * so those are zero-filled here; UWPROT overwrites code/constants/
+ * bytecode with the current VM frame's values after this returns.
+ * Returns the reserved frame so the caller can hand &nlx->buf to the
+ * emitted setjmp. */
+static CL_NLXFrame *nlx_alloc_common(int type, CL_Obj tag)
 {
     CL_NLXFrame *nlx;
     if (cl_nlx_top >= cl_nlx_max)
         cl_error(CL_ERR_OVERFLOW, "NLX stack overflow");
     nlx = &cl_nlx_stack[cl_nlx_top];
-    nlx->type           = CL_NLX_BLOCK;
+    nlx->type           = (uint8_t)type;
     nlx->vm_sp          = cl_vm.sp;
     nlx->vm_fp          = cl_vm.fp;
     nlx->tag            = tag;
@@ -828,7 +833,65 @@ void *cl_jit_runtime_block_alloc(CL_Obj tag)
     nlx->printer_mark        = cl_printer_state_save();
     nlx->saved_jit_depth     = CT->jit_depth;
     nlx->mv_count            = 1;
-    return &nlx->buf;
+    return nlx;
+}
+
+/* Search-backward pop shared by BLOCK/CATCH/TAGBODY/UWPROT: a tail call
+ * inside the body may have leaked an intervening NLX frame, so a blind
+ * --top would unwind to the wrong slot (mirrors the VM's OP_*_POP). */
+static void nlx_pop_type(int type)
+{
+    int i;
+    for (i = cl_nlx_top - 1; i >= 0; i--) {
+        if (cl_nlx_stack[i].type == type) {
+            cl_nlx_top = i;
+            return;
+        }
+    }
+    if (cl_nlx_top > 0) cl_nlx_top--;
+}
+
+/* Restore the SP/FP + dyn/handler/restart/gc-root/jit-depth/compiler/
+ * printer marks captured at frame alloc — shared by all four
+ * *_post_longjmp helpers.  SP/FP must be rewound here: the longjmp may
+ * have fired from arbitrarily deep VM execution (e.g. an inner lambda
+ * invoked via cl_jit_runtime_call → cl_vm_apply that did a return-from
+ * across the closure boundary).  cl_vm_apply's normal-exit restore is
+ * skipped on longjmp, so SP/FP are left at the inner callee's last
+ * position; subsequent OP_CALL dispatches would then operate on a stale
+ * stack and silently overwrite live operands a few frames up.  The VM's
+ * matching paths do the same (see vm.c OP_BLOCK_RETURN). */
+static void nlx_restore_core(CL_NLXFrame *nlx)
+{
+    cl_vm.sp = nlx->vm_sp;
+    cl_vm.fp = nlx->vm_fp;
+    cl_dynbind_restore_to(nlx->dyn_mark);
+    cl_handler_top          = nlx->handler_mark;
+    cl_handler_active_mask  = nlx->handler_active_mask;
+    cl_restart_top          = nlx->restart_mark;
+    gc_root_count           = nlx->gc_root_mark;
+    cl_jit_restore_depth(nlx->saved_jit_depth);
+    cl_compiler_restore_to(nlx->compiler_mark);
+    cl_printer_state_restore(nlx->printer_mark);
+}
+
+/* BLOCK/CATCH longjmp arrival: core restore + full multiple-value set +
+ * return the stashed result.  (TAGBODY and UWPROT diverge on the MV
+ * handling and are written out longhand.) */
+static CL_Obj nlx_restore_common(void)
+{
+    CL_NLXFrame *nlx = &cl_nlx_stack[cl_nlx_top];
+    int mi;
+    nlx_restore_core(nlx);
+    cl_mv_count = nlx->mv_count;
+    for (mi = 0; mi < cl_mv_count && mi < CL_MAX_MV; mi++)
+        cl_mv_values[mi] = nlx->mv_values[mi];
+    return nlx->result;
+}
+
+void *cl_jit_runtime_block_alloc(CL_Obj tag)
+{
+    return &nlx_alloc_common(CL_NLX_BLOCK, tag)->buf;
 }
 
 void cl_jit_runtime_block_commit(void)
@@ -838,53 +901,12 @@ void cl_jit_runtime_block_commit(void)
 
 void cl_jit_runtime_block_pop(void)
 {
-    /* Same search-backward semantics as VM's OP_BLOCK_POP: a tail call
-     * inside the block body may have leaked an intervening frame, so a
-     * blind --top would unwind to the wrong slot. */
-    int bi;
-    for (bi = cl_nlx_top - 1; bi >= 0; bi--) {
-        if (cl_nlx_stack[bi].type == CL_NLX_BLOCK) {
-            cl_nlx_top = bi;
-            return;
-        }
-    }
-    if (cl_nlx_top > 0) cl_nlx_top--;
+    nlx_pop_type(CL_NLX_BLOCK);
 }
 
 CL_Obj cl_jit_runtime_block_post_longjmp(void)
 {
-    CL_NLXFrame *nlx = &cl_nlx_stack[cl_nlx_top];
-    CL_Obj result;
-    int mi;
-
-    /* Restore cl_vm.sp / cl_vm.fp to the state captured at BLOCK_PUSH.
-     * The longjmp may have fired from arbitrarily deep VM execution
-     * (e.g. an inner lambda invoked via cl_jit_runtime_call →
-     * cl_vm_apply that did a return-from across the closure boundary).
-     * cl_vm_apply's normal-exit restore is skipped on longjmp, so SP/FP
-     * are left at the inner lambda's last position.  Subsequent OP_CALL
-     * dispatches from JIT'd code or the cl_jit_invoke caller's cleanup
-     * (sp -= nargs+1; push result) then operate on a stale stack and
-     * silently overwrite live operands a few frames up — the symptom we
-     * hit is that a literal pushed by the caller before the JIT'd call
-     * is no longer where the post-call code expects it.  The VM's
-     * matching path does the same restore (see vm.c OP_BLOCK_RETURN). */
-    cl_vm.sp = nlx->vm_sp;
-    cl_vm.fp = nlx->vm_fp;
-
-    cl_dynbind_restore_to(nlx->dyn_mark);
-    cl_handler_top          = nlx->handler_mark;
-    cl_handler_active_mask  = nlx->handler_active_mask;
-    cl_restart_top          = nlx->restart_mark;
-    gc_root_count           = nlx->gc_root_mark;
-    cl_jit_restore_depth(nlx->saved_jit_depth);
-    cl_compiler_restore_to(nlx->compiler_mark);
-    cl_printer_state_restore(nlx->printer_mark);
-    cl_mv_count = nlx->mv_count;
-    for (mi = 0; mi < cl_mv_count && mi < CL_MAX_MV; mi++)
-        cl_mv_values[mi] = nlx->mv_values[mi];
-    result = nlx->result;
-    return result;
+    return nlx_restore_common();
 }
 
 void cl_jit_runtime_block_return(CL_Obj tag, CL_Obj value)
@@ -953,33 +975,7 @@ void cl_jit_runtime_block_return(CL_Obj tag, CL_Obj value)
 
 void *cl_jit_runtime_catch_alloc(CL_Obj tag)
 {
-    CL_NLXFrame *nlx;
-    if (cl_nlx_top >= cl_nlx_max)
-        cl_error(CL_ERR_OVERFLOW, "NLX stack overflow");
-    nlx = &cl_nlx_stack[cl_nlx_top];
-    nlx->type           = CL_NLX_CATCH;
-    nlx->vm_sp          = cl_vm.sp;
-    nlx->vm_fp          = cl_vm.fp;
-    nlx->tag            = tag;
-    nlx->result         = CL_NIL;
-    /* VM-channel fields unused for JIT-owned frames — our JSR setjmp
-     * captured the frame, so longjmp returns into native code. */
-    nlx->catch_ip       = 0;
-    nlx->offset         = 0;
-    nlx->code           = NULL;
-    nlx->constants      = NULL;
-    nlx->bytecode       = CL_NIL;
-    nlx->base_fp        = 0;
-    nlx->dyn_mark            = cl_dyn_top;
-    nlx->handler_mark        = cl_handler_top;
-    nlx->handler_active_mask = cl_handler_active_mask;
-    nlx->restart_mark        = cl_restart_top;
-    nlx->gc_root_mark        = gc_root_count;
-    nlx->compiler_mark       = cl_compiler_mark();
-    nlx->printer_mark        = cl_printer_state_save();
-    nlx->saved_jit_depth     = CT->jit_depth;
-    nlx->mv_count            = 1;
-    return &nlx->buf;
+    return &nlx_alloc_common(CL_NLX_CATCH, tag)->buf;
 }
 
 void cl_jit_runtime_catch_commit(void)
@@ -989,47 +985,12 @@ void cl_jit_runtime_catch_commit(void)
 
 void cl_jit_runtime_catch_pop(void)
 {
-    /* Same search-backward semantics as VM's OP_UNCATCH: a tail call
-     * inside the catch body may have leaked an intervening BLOCK /
-     * TAGBODY / UWPROT frame, so a blind --top would unwind the wrong
-     * slot. */
-    int ci;
-    for (ci = cl_nlx_top - 1; ci >= 0; ci--) {
-        if (cl_nlx_stack[ci].type == CL_NLX_CATCH) {
-            cl_nlx_top = ci;
-            return;
-        }
-    }
-    if (cl_nlx_top > 0) cl_nlx_top--;
+    nlx_pop_type(CL_NLX_CATCH);
 }
 
 CL_Obj cl_jit_runtime_catch_post_longjmp(void)
 {
-    /* Same SP/FP + marks + MV restore as block_post_longjmp.  See that
-     * helper's commentary for why SP/FP must be rewound here too: a
-     * throw from arbitrarily-deep VM execution skips cl_vm_apply's
-     * normal-exit restore, leaving SP/FP at the inner callee's last
-     * position. */
-    CL_NLXFrame *nlx = &cl_nlx_stack[cl_nlx_top];
-    CL_Obj result;
-    int mi;
-
-    cl_vm.sp = nlx->vm_sp;
-    cl_vm.fp = nlx->vm_fp;
-
-    cl_dynbind_restore_to(nlx->dyn_mark);
-    cl_handler_top          = nlx->handler_mark;
-    cl_handler_active_mask  = nlx->handler_active_mask;
-    cl_restart_top          = nlx->restart_mark;
-    gc_root_count           = nlx->gc_root_mark;
-    cl_jit_restore_depth(nlx->saved_jit_depth);
-    cl_compiler_restore_to(nlx->compiler_mark);
-    cl_printer_state_restore(nlx->printer_mark);
-    cl_mv_count = nlx->mv_count;
-    for (mi = 0; mi < cl_mv_count && mi < CL_MAX_MV; mi++)
-        cl_mv_values[mi] = nlx->mv_values[mi];
-    result = nlx->result;
-    return result;
+    return nlx_restore_common();
 }
 
 /* --- OP_UWPROT / OP_UWPOP / OP_UWRETHROW --------------------------------
@@ -1072,39 +1033,20 @@ CL_Obj cl_jit_runtime_catch_post_longjmp(void)
  *      Cases 1 and 2 do not return; case 0 returns to the JIT caller. */
 void *cl_jit_runtime_uwprot_alloc(void)
 {
-    CL_NLXFrame *nlx;
-    CL_Frame    *cur;
-    if (cl_nlx_top >= cl_nlx_max)
-        cl_error(CL_ERR_OVERFLOW, "NLX stack overflow");
-    nlx = &cl_nlx_stack[cl_nlx_top];
     /* Snapshot the current VM frame's code/constants/bytecode so the
      * staleness check (target->code == nlx->code) used by every site
      * that scans for interposing UWPROT frames — cl_error_unwind,
      * block_return, uwprot_rethrow — treats this frame as live.  The
      * VM's OP_UWPROT does the same; without it, JIT-owned UWPROT
      * frames appear stale, throws bypass cleanup, and the
-     * walker-uwp-throw test fails (cleanup count stays 0). */
-    cur = (cl_vm.fp > 0) ? &cl_vm.frames[cl_vm.fp - 1] : NULL;
-    nlx->type           = CL_NLX_UWPROT;
-    nlx->vm_sp          = cl_vm.sp;
-    nlx->vm_fp          = cl_vm.fp;
-    nlx->tag            = CL_NIL;
-    nlx->result         = CL_NIL;
-    nlx->catch_ip       = 0;
-    nlx->offset         = 0;
+     * walker-uwp-throw test fails (cleanup count stays 0).  Everything
+     * else is the shared frame setup; nlx_alloc_common zero-fills
+     * code/constants/bytecode, which we overwrite here. */
+    CL_Frame    *cur = (cl_vm.fp > 0) ? &cl_vm.frames[cl_vm.fp - 1] : NULL;
+    CL_NLXFrame *nlx = nlx_alloc_common(CL_NLX_UWPROT, CL_NIL);
     nlx->code           = cur ? cur->code      : NULL;
     nlx->constants      = cur ? cur->constants : NULL;
     nlx->bytecode       = cur ? cur->bytecode  : CL_NIL;
-    nlx->base_fp        = 0;
-    nlx->dyn_mark            = cl_dyn_top;
-    nlx->handler_mark        = cl_handler_top;
-    nlx->handler_active_mask = cl_handler_active_mask;
-    nlx->restart_mark        = cl_restart_top;
-    nlx->gc_root_mark        = gc_root_count;
-    nlx->compiler_mark       = cl_compiler_mark();
-    nlx->printer_mark        = cl_printer_state_save();
-    nlx->saved_jit_depth     = CT->jit_depth;
-    nlx->mv_count            = 1;
     return &nlx->buf;
 }
 
@@ -1115,15 +1057,9 @@ void cl_jit_runtime_uwprot_commit(void)
 
 void cl_jit_runtime_uwprot_pop(void)
 {
-    int ui;
-    for (ui = cl_nlx_top - 1; ui >= 0; ui--) {
-        if (cl_nlx_stack[ui].type == CL_NLX_UWPROT) {
-            cl_nlx_top = ui;
-            goto done;
-        }
-    }
-    if (cl_nlx_top > 0) cl_nlx_top--;
-done:
+    /* Normal-exit pop, then clear any pending-throw record so a
+     * subsequent non-throwing exit past this UWPROT doesn't rethrow. */
+    nlx_pop_type(CL_NLX_UWPROT);
     cl_pending_throw = 0;
 }
 
@@ -1133,22 +1069,7 @@ void cl_jit_runtime_uwprot_post_longjmp(void)
      * site triggered the longjmp (cl_error, block_return, throw, …).
      * Read the frame's saved marks and restore. */
     CL_NLXFrame *nlx = &cl_nlx_stack[cl_nlx_top];
-    /* Same SP/FP restore rationale as cl_jit_runtime_block_post_longjmp:
-     * a longjmp from deep inside cl_vm_run (via cl_jit_runtime_call)
-     * bypasses cl_vm_apply's saved_sp/base_fp restore.  The cleanup
-     * forms run next in JIT'd code; they will themselves invoke OP_CALL
-     * → cl_jit_runtime_call which needs cl_vm.sp at the UWPROT-time
-     * baseline so its own cl_vm_apply book-keeping doesn't drift. */
-    cl_vm.sp = nlx->vm_sp;
-    cl_vm.fp = nlx->vm_fp;
-    cl_dynbind_restore_to(nlx->dyn_mark);
-    cl_handler_top          = nlx->handler_mark;
-    cl_handler_active_mask  = nlx->handler_active_mask;
-    cl_restart_top          = nlx->restart_mark;
-    gc_root_count           = nlx->gc_root_mark;
-    cl_jit_restore_depth(nlx->saved_jit_depth);
-    cl_compiler_restore_to(nlx->compiler_mark);
-    cl_printer_state_restore(nlx->printer_mark);
+    nlx_restore_core(nlx);
     /* Intentionally don't touch cl_mv_count / cl_mv_values: the
      * protected-form's MVs are captured via OP_MV_TO_LIST in the
      * compiled cleanup epilogue, and the throw site may have arranged
@@ -1477,34 +1398,7 @@ void cl_jit_runtime_restart_pop(uint32_t count)
 
 void *cl_jit_runtime_tagbody_alloc(CL_Obj tagbody_id)
 {
-    CL_NLXFrame *nlx;
-    if (cl_nlx_top >= cl_nlx_max)
-        cl_error(CL_ERR_OVERFLOW, "NLX stack overflow");
-    nlx = &cl_nlx_stack[cl_nlx_top];
-    nlx->type           = CL_NLX_TAGBODY;
-    nlx->vm_sp          = cl_vm.sp;
-    nlx->vm_fp          = cl_vm.fp;
-    nlx->tag            = tagbody_id;
-    nlx->result         = CL_NIL;
-    /* JIT lands its longjmp in native code via the JSR setjmp the
-     * walker emits; the VM's catch_ip/offset/code/constants/bytecode
-     * channel is unused for JIT-owned frames. */
-    nlx->catch_ip       = 0;
-    nlx->offset         = 0;
-    nlx->code           = NULL;
-    nlx->constants      = NULL;
-    nlx->bytecode       = CL_NIL;
-    nlx->base_fp        = 0;
-    nlx->dyn_mark            = cl_dyn_top;
-    nlx->handler_mark        = cl_handler_top;
-    nlx->handler_active_mask = cl_handler_active_mask;
-    nlx->restart_mark        = cl_restart_top;
-    nlx->gc_root_mark        = gc_root_count;
-    nlx->compiler_mark       = cl_compiler_mark();
-    nlx->printer_mark        = cl_printer_state_save();
-    nlx->saved_jit_depth     = CT->jit_depth;
-    nlx->mv_count            = 1;
-    return &nlx->buf;
+    return &nlx_alloc_common(CL_NLX_TAGBODY, tagbody_id)->buf;
 }
 
 void cl_jit_runtime_tagbody_commit(void)
@@ -1514,39 +1408,18 @@ void cl_jit_runtime_tagbody_commit(void)
 
 void cl_jit_runtime_tagbody_pop(void)
 {
-    /* Search-backward decrement (matches VM OP_TAGBODY_POP): a tail
-     * call inside the body may have leaked an intervening frame. */
-    int bi;
-    for (bi = cl_nlx_top - 1; bi >= 0; bi--) {
-        if (cl_nlx_stack[bi].type == CL_NLX_TAGBODY) {
-            cl_nlx_top = bi;
-            return;
-        }
-    }
-    if (cl_nlx_top > 0) cl_nlx_top--;
+    nlx_pop_type(CL_NLX_TAGBODY);
 }
 
 CL_Obj cl_jit_runtime_tagbody_post_longjmp(void)
 {
     /* cl_nlx_top was set to this frame's index by GO before the
-     * longjmp; read the saved marks and restore.  Same SP/FP restore
-     * rationale as block_post_longjmp (longjmp may have come from
-     * deep inside cl_vm_run via cl_jit_runtime_call). */
+     * longjmp; read the saved marks and restore. */
     CL_NLXFrame *nlx = &cl_nlx_stack[cl_nlx_top];
     CL_Obj tag_index;
 
-    cl_vm.sp = nlx->vm_sp;
-    cl_vm.fp = nlx->vm_fp;
-
-    cl_dynbind_restore_to(nlx->dyn_mark);
-    cl_handler_top          = nlx->handler_mark;
-    cl_handler_active_mask  = nlx->handler_active_mask;
-    cl_restart_top          = nlx->restart_mark;
-    gc_root_count           = nlx->gc_root_mark;
-    cl_jit_restore_depth(nlx->saved_jit_depth);
-    cl_compiler_restore_to(nlx->compiler_mark);
-    cl_printer_state_restore(nlx->printer_mark);
-    cl_mv_count             = 1;
+    nlx_restore_core(nlx);
+    cl_mv_count = 1;
 
     tag_index = nlx->result;
     /* Re-arm: a tagbody stays usable for repeated GO until the
