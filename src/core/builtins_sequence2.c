@@ -11,19 +11,6 @@
 /* From compiler.c — expand a (def)type name/specifier; CL_NIL if none. */
 extern CL_Obj cl_get_type_expander(CL_Obj name);
 
-/* Helper to register a builtin */
-static void defun(const char *name, CL_CFunc func, int min, int max)
-{
-    CL_Obj sym = cl_intern_in(name, (uint32_t)strlen(name), cl_package_cl);
-    CL_Obj fn;
-    CL_Symbol *s;
-    CL_GC_PROTECT(sym);
-    fn = cl_make_function(func, sym, min, max);
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
-    s->function = fn;
-    CL_GC_UNPROTECT(1);
-}
-
 /* --- Pre-interned keyword symbols --- */
 
 static CL_Obj KW_TEST = CL_NIL;

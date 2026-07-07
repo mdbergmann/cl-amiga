@@ -20,19 +20,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-/* Helper to register a builtin */
-static void defun(const char *name, CL_CFunc func, int min, int max)
-{
-    CL_Obj sym = cl_intern_in(name, (uint32_t)strlen(name), cl_package_cl);
-    CL_Obj fn;
-    CL_Symbol *s;
-    CL_GC_PROTECT(sym);
-    fn = cl_make_function(func, sym, min, max);
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
-    s->function = fn;
-    CL_GC_UNPROTECT(1);
-}
-
 /* ================================================================
  * Namestring parsing
  * ================================================================ */

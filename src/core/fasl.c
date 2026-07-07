@@ -1840,95 +1840,115 @@ void cl_fasl_reader_init(CL_FaslReader *r, const uint8_t *data, uint32_t size)
  * Loads can nest (a CLASS_REF runs FIND-CLASS, which may load another
  * FASL), so we keep a small stack of active readers. */
 #define FASL_MAX_ACTIVE_READERS 16
-static CL_FaslReader *fasl_active_readers[FASL_MAX_ACTIVE_READERS];
-static uint32_t       fasl_active_reader_owners[FASL_MAX_ACTIVE_READERS]; /* CT->id per slot */
-static int            fasl_active_reader_count = 0;
-/* Protects the registry in multi-threaded mode.  Initialized lazily on the
- * first cl_fasl_reader_register call, which always runs on the main thread
- * during single-threaded boot before any secondary thread is created. */
-static void          *fasl_registry_mutex = NULL;
+#define FASL_MAX_ACTIVE_WRITERS 8
 
-void cl_fasl_reader_register(CL_FaslReader *r)
+/* Generic active-object registry shared by the reader and writer tables.
+ * Both are a small fixed array of active CL_Fasl{Reader,Writer} pointers plus
+ * a parallel owner-thread id per slot, guarded by one mutex.  The register /
+ * unregister / save_count / restore_count logic is byte-identical between the
+ * two, so it lives once here (fasl_reg_*) and the eight public entry points
+ * below are thin wrappers.  items[] is void* so both element types share this
+ * code without type-punning; the GC mark/update walkers cast back to the
+ * concrete type. */
+typedef struct {
+    void    **items;   /* active CL_FaslReader* / CL_FaslWriter* pointers */
+    uint32_t *owners;  /* CT->id that registered each slot */
+    int       count;
+    int       cap;
+} FaslRegistry;
+
+static void    *fasl_reader_slots[FASL_MAX_ACTIVE_READERS];
+static uint32_t  fasl_reader_owners[FASL_MAX_ACTIVE_READERS];
+static void    *fasl_writer_slots[FASL_MAX_ACTIVE_WRITERS];
+static uint32_t  fasl_writer_owners[FASL_MAX_ACTIVE_WRITERS];
+
+static FaslRegistry fasl_reader_reg =
+    { fasl_reader_slots, fasl_reader_owners, 0, FASL_MAX_ACTIVE_READERS };
+static FaslRegistry fasl_writer_reg =
+    { fasl_writer_slots, fasl_writer_owners, 0, FASL_MAX_ACTIVE_WRITERS };
+
+/* Protects both registries in multi-threaded mode.  Initialized lazily on the
+ * first register call, which always runs on the main thread during single-
+ * threaded boot before any secondary thread is created. */
+static void *fasl_registry_mutex = NULL;
+
+static void fasl_reg_add(FaslRegistry *reg, void *item, const char *what)
 {
     int ok;
     if (!fasl_registry_mutex)
         platform_mutex_init(&fasl_registry_mutex);
 
     if (CL_MT()) platform_mutex_lock(fasl_registry_mutex);
-    ok = fasl_active_reader_count < FASL_MAX_ACTIVE_READERS;
+    ok = reg->count < reg->cap;
     if (ok) {
-        fasl_active_readers[fasl_active_reader_count] = r;
-        fasl_active_reader_owners[fasl_active_reader_count] = CT->id;
-        fasl_active_reader_count++;
+        reg->items[reg->count] = item;
+        reg->owners[reg->count] = CT->id;
+        reg->count++;
     }
     if (CL_MT()) platform_mutex_unlock(fasl_registry_mutex);
 
     if (!ok)
-        cl_error(CL_ERR_GENERAL, "FASL: active-reader table full (max %d)",
-                 FASL_MAX_ACTIVE_READERS);
+        cl_error(CL_ERR_GENERAL, "FASL: active-%s table full (max %d)",
+                 what, reg->cap);
 }
 
-void cl_fasl_reader_unregister(CL_FaslReader *r)
+static void fasl_reg_remove(FaslRegistry *reg, void *item)
 {
     int i;
     if (CL_MT()) platform_mutex_lock(fasl_registry_mutex);
     /* Common case: LIFO pop (registration nests with load recursion). */
-    if (fasl_active_reader_count > 0 &&
-        fasl_active_readers[fasl_active_reader_count - 1] == r) {
-        fasl_active_reader_count--;
+    if (reg->count > 0 && reg->items[reg->count - 1] == item) {
+        reg->count--;
         if (CL_MT()) platform_mutex_unlock(fasl_registry_mutex);
         return;
     }
     /* Defensive out-of-order removal. */
-    for (i = fasl_active_reader_count - 1; i >= 0; i--) {
-        if (fasl_active_readers[i] == r) {
+    for (i = reg->count - 1; i >= 0; i--) {
+        if (reg->items[i] == item) {
             int j;
-            for (j = i; j < fasl_active_reader_count - 1; j++) {
-                fasl_active_readers[j] = fasl_active_readers[j + 1];
-                fasl_active_reader_owners[j] = fasl_active_reader_owners[j + 1];
+            for (j = i; j < reg->count - 1; j++) {
+                reg->items[j] = reg->items[j + 1];
+                reg->owners[j] = reg->owners[j + 1];
             }
-            fasl_active_reader_count--;
-            if (CL_MT()) platform_mutex_unlock(fasl_registry_mutex);
-            return;
+            reg->count--;
+            break;
         }
     }
     if (CL_MT()) platform_mutex_unlock(fasl_registry_mutex);
 }
 
-/* Error-unwind support: cl_error longjmps out of a FASL load without running
- * cl_fasl_reader_unregister, which would leave a dangling pointer to the now-
- * unwound stack-local CL_FaslReader in the active list.  The error-frame
- * machinery snapshots this count on push and restores it on unwind (mirroring
- * saved_gc_roots), dropping any readers whose C frames were unwound.
- *
- * In multi-threaded mode the count is PER-THREAD: save_count returns how many
- * readers the calling thread currently has active, and restore_count removes
- * only that thread's excess entries — a thread-A unwind never evicts a reader
+/* Error-unwind support: cl_error longjmps out of a FASL load/save without
+ * running the matching unregister, which would leave a dangling pointer to the
+ * now-unwound stack-local reader/writer in the active list.  The error-frame
+ * machinery snapshots the count on push and restores it on unwind (mirroring
+ * saved_gc_roots).  In multi-threaded mode the count is PER-THREAD: save_count
+ * returns how many entries the calling thread has active, and restore_count
+ * removes only that thread's excess — a thread-A unwind never evicts an entry
  * registered concurrently by thread B. */
-int cl_fasl_reader_save_count(void)
+static int fasl_reg_save_count(FaslRegistry *reg)
 {
     if (!CL_MT())
-        return fasl_active_reader_count;
+        return reg->count;
     {
         uint32_t tid = CT->id;
         int i, count = 0;
         if (!fasl_registry_mutex) return 0;
         platform_mutex_lock(fasl_registry_mutex);
-        for (i = 0; i < fasl_active_reader_count; i++)
-            if (fasl_active_reader_owners[i] == tid)
+        for (i = 0; i < reg->count; i++)
+            if (reg->owners[i] == tid)
                 count++;
         platform_mutex_unlock(fasl_registry_mutex);
         return count;
     }
 }
 
-void cl_fasl_reader_restore_count(int n)
+static void fasl_reg_restore_count(FaslRegistry *reg, int n)
 {
     int i;
     if (n < 0) return;
     if (!CL_MT()) {
-        if (n <= fasl_active_reader_count)
-            fasl_active_reader_count = n;
+        if (n <= reg->count)
+            reg->count = n;
         return;
     }
     if (!fasl_registry_mutex) return;
@@ -1936,20 +1956,20 @@ void cl_fasl_reader_restore_count(int n)
         uint32_t tid = CT->id;
         int thread_count = 0;
         platform_mutex_lock(fasl_registry_mutex);
-        for (i = 0; i < fasl_active_reader_count; i++)
-            if (fasl_active_reader_owners[i] == tid)
+        for (i = 0; i < reg->count; i++)
+            if (reg->owners[i] == tid)
                 thread_count++;
         /* Remove excess entries from the end (LIFO).  Backward scan is safe:
          * removing at index i shifts i+1..count-1 down, but those slots were
          * already visited in earlier iterations. */
-        for (i = fasl_active_reader_count - 1; i >= 0 && thread_count > n; i--) {
-            if (fasl_active_reader_owners[i] == tid) {
+        for (i = reg->count - 1; i >= 0 && thread_count > n; i--) {
+            if (reg->owners[i] == tid) {
                 int j;
-                for (j = i; j < fasl_active_reader_count - 1; j++) {
-                    fasl_active_readers[j] = fasl_active_readers[j + 1];
-                    fasl_active_reader_owners[j] = fasl_active_reader_owners[j + 1];
+                for (j = i; j < reg->count - 1; j++) {
+                    reg->items[j] = reg->items[j + 1];
+                    reg->owners[j] = reg->owners[j + 1];
                 }
-                fasl_active_reader_count--;
+                reg->count--;
                 thread_count--;
             }
         }
@@ -1957,127 +1977,38 @@ void cl_fasl_reader_restore_count(int n)
     }
 }
 
-/* --- Active-writer registry: GC-rooting of the writer's gensym dedup ---
- *
- * bi_load's auto-cache serializes one FASL unit per top-level form,
- * INTERLEAVED with reading/compiling/evaluating the next forms (which
- * allocate and compact).  The persistent file-level CL_FaslWriter's
- * gensym_objs[] holds CL_Obj offsets across all of that; without
- * mark+update hooks a moved/collected gensym's old offset could collide
- * with a DIFFERENT live gensym's new offset, making the EQ dedup compare
- * emit a GENSYM_REF to the wrong id — a silently wrong cached FASL.
- * (bi_compile_file serializes after all evaluation and needs no rooting;
- * cf_emit_fasl_unit's per-unit writer never crosses an allocation.) */
-#define FASL_MAX_ACTIVE_WRITERS 8
-static CL_FaslWriter *fasl_active_writers[FASL_MAX_ACTIVE_WRITERS];
-static uint32_t       fasl_active_writer_owners[FASL_MAX_ACTIVE_WRITERS];
-static int            fasl_active_writer_count = 0;
+/* --- Public reader registry entry points ---
+ * A reader's gensym_objs[]/shared_objs[] hold CL_Obj references to already-
+ * deserialized objects that a forward GENSYM_REF/OBJ_REF resolves through, so
+ * they must stay live and be forwarded across a mid-load compaction even before
+ * the objects are stitched into the reachable graph (see the rooting rationale
+ * above cl_fasl_gc_mark_readers).  Loads nest (a CLASS_REF may load another
+ * FASL), hence the stack of active readers. */
+void cl_fasl_reader_register(CL_FaslReader *r)   { fasl_reg_add(&fasl_reader_reg, r, "reader"); }
+void cl_fasl_reader_unregister(CL_FaslReader *r) { fasl_reg_remove(&fasl_reader_reg, r); }
+int  cl_fasl_reader_save_count(void)             { return fasl_reg_save_count(&fasl_reader_reg); }
+void cl_fasl_reader_restore_count(int n)         { fasl_reg_restore_count(&fasl_reader_reg, n); }
 
-void cl_fasl_writer_register(CL_FaslWriter *w)
-{
-    int ok;
-    if (!fasl_registry_mutex)
-        platform_mutex_init(&fasl_registry_mutex);
-
-    if (CL_MT()) platform_mutex_lock(fasl_registry_mutex);
-    ok = fasl_active_writer_count < FASL_MAX_ACTIVE_WRITERS;
-    if (ok) {
-        fasl_active_writers[fasl_active_writer_count] = w;
-        fasl_active_writer_owners[fasl_active_writer_count] = CT->id;
-        fasl_active_writer_count++;
-    }
-    if (CL_MT()) platform_mutex_unlock(fasl_registry_mutex);
-
-    if (!ok)
-        cl_error(CL_ERR_GENERAL, "FASL: active-writer table full (max %d)",
-                 FASL_MAX_ACTIVE_WRITERS);
-}
-
-void cl_fasl_writer_unregister(CL_FaslWriter *w)
-{
-    int i;
-    if (CL_MT()) platform_mutex_lock(fasl_registry_mutex);
-    if (fasl_active_writer_count > 0 &&
-        fasl_active_writers[fasl_active_writer_count - 1] == w) {
-        fasl_active_writer_count--;
-        if (CL_MT()) platform_mutex_unlock(fasl_registry_mutex);
-        return;
-    }
-    for (i = fasl_active_writer_count - 1; i >= 0; i--) {
-        if (fasl_active_writers[i] == w) {
-            int j;
-            for (j = i; j < fasl_active_writer_count - 1; j++) {
-                fasl_active_writers[j] = fasl_active_writers[j + 1];
-                fasl_active_writer_owners[j] = fasl_active_writer_owners[j + 1];
-            }
-            fasl_active_writer_count--;
-            if (CL_MT()) platform_mutex_unlock(fasl_registry_mutex);
-            return;
-        }
-    }
-    if (CL_MT()) platform_mutex_unlock(fasl_registry_mutex);
-}
-
-/* Error-unwind support — mirrors cl_fasl_reader_save/restore_count: a
- * longjmp out of bi_load would otherwise leave a registry entry pointing
- * at the (leaked) writer forever, retaining its gensyms and eventually
- * filling the table. */
-int cl_fasl_writer_save_count(void)
-{
-    if (!CL_MT())
-        return fasl_active_writer_count;
-    {
-        uint32_t tid = CT->id;
-        int i, count = 0;
-        if (!fasl_registry_mutex) return 0;
-        platform_mutex_lock(fasl_registry_mutex);
-        for (i = 0; i < fasl_active_writer_count; i++)
-            if (fasl_active_writer_owners[i] == tid)
-                count++;
-        platform_mutex_unlock(fasl_registry_mutex);
-        return count;
-    }
-}
-
-void cl_fasl_writer_restore_count(int n)
-{
-    int i;
-    if (n < 0) return;
-    if (!CL_MT()) {
-        if (n <= fasl_active_writer_count)
-            fasl_active_writer_count = n;
-        return;
-    }
-    if (!fasl_registry_mutex) return;
-    {
-        uint32_t tid = CT->id;
-        int thread_count = 0;
-        platform_mutex_lock(fasl_registry_mutex);
-        for (i = 0; i < fasl_active_writer_count; i++)
-            if (fasl_active_writer_owners[i] == tid)
-                thread_count++;
-        for (i = fasl_active_writer_count - 1; i >= 0 && thread_count > n; i--) {
-            if (fasl_active_writer_owners[i] == tid) {
-                int j;
-                for (j = i; j < fasl_active_writer_count - 1; j++) {
-                    fasl_active_writers[j] = fasl_active_writers[j + 1];
-                    fasl_active_writer_owners[j] = fasl_active_writer_owners[j + 1];
-                }
-                fasl_active_writer_count--;
-                thread_count--;
-            }
-        }
-        platform_mutex_unlock(fasl_registry_mutex);
-    }
-}
+/* --- Public writer registry entry points ---
+ * bi_load's auto-cache serializes one FASL unit per top-level form, interleaved
+ * with reading/compiling/evaluating the next forms (which allocate and
+ * compact).  The persistent file-level writer's gensym_objs[] holds CL_Obj
+ * offsets across all of that; without mark+update hooks a moved/collected
+ * gensym's old offset could collide with a different live gensym's new offset,
+ * making the EQ dedup emit a GENSYM_REF to the wrong id — a silently wrong
+ * cached FASL. */
+void cl_fasl_writer_register(CL_FaslWriter *w)   { fasl_reg_add(&fasl_writer_reg, w, "writer"); }
+void cl_fasl_writer_unregister(CL_FaslWriter *w) { fasl_reg_remove(&fasl_writer_reg, w); }
+int  cl_fasl_writer_save_count(void)             { return fasl_reg_save_count(&fasl_writer_reg); }
+void cl_fasl_writer_restore_count(int n)         { fasl_reg_restore_count(&fasl_writer_reg, n); }
 
 void cl_fasl_gc_mark_writers(void)
 {
     extern void gc_mark_obj(CL_Obj obj);
     int i;
     uint16_t k;
-    for (i = 0; i < fasl_active_writer_count; i++) {
-        CL_FaslWriter *w = fasl_active_writers[i];
+    for (i = 0; i < fasl_writer_reg.count; i++) {
+        CL_FaslWriter *w = (CL_FaslWriter *)fasl_writer_reg.items[i];
         for (k = 0; k < w->gensym_count; k++)
             gc_mark_obj(w->gensym_objs[k]);
     }
@@ -2087,8 +2018,8 @@ void cl_fasl_gc_update_writers(void (*update_fn)(CL_Obj *))
 {
     int i;
     uint16_t k;
-    for (i = 0; i < fasl_active_writer_count; i++) {
-        CL_FaslWriter *w = fasl_active_writers[i];
+    for (i = 0; i < fasl_writer_reg.count; i++) {
+        CL_FaslWriter *w = (CL_FaslWriter *)fasl_writer_reg.items[i];
         for (k = 0; k < w->gensym_count; k++)
             update_fn(&w->gensym_objs[k]);
     }
@@ -2100,8 +2031,8 @@ void cl_fasl_gc_mark_readers(void)
     extern void gc_mark_obj(CL_Obj obj);
     int i;
     uint16_t k;
-    for (i = 0; i < fasl_active_reader_count; i++) {
-        CL_FaslReader *r = fasl_active_readers[i];
+    for (i = 0; i < fasl_reader_reg.count; i++) {
+        CL_FaslReader *r = (CL_FaslReader *)fasl_reader_reg.items[i];
         for (k = 0; k < r->gensym_count; k++)
             gc_mark_obj(r->gensym_objs[k]);
         if (r->shared_objs) {
@@ -2116,8 +2047,8 @@ void cl_fasl_gc_update_readers(void (*update_fn)(CL_Obj *))
 {
     int i;
     uint16_t k;
-    for (i = 0; i < fasl_active_reader_count; i++) {
-        CL_FaslReader *r = fasl_active_readers[i];
+    for (i = 0; i < fasl_reader_reg.count; i++) {
+        CL_FaslReader *r = (CL_FaslReader *)fasl_reader_reg.items[i];
         for (k = 0; k < r->gensym_count; k++)
             update_fn(&r->gensym_objs[k]);
         if (r->shared_objs) {

@@ -40,19 +40,6 @@ static void path_directory(const char *path, char *dir, uint32_t dirsz);
 static void mkdir_p(const char *path);
 
 
-/* Helper to register a builtin */
-static void defun(const char *name, CL_CFunc func, int min, int max)
-{
-    CL_Obj sym = cl_intern_in(name, (uint32_t)strlen(name), cl_package_cl);
-    CL_Obj fn;
-    CL_Symbol *s;
-    CL_GC_PROTECT(sym);
-    fn = cl_make_function(func, sym, min, max);
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
-    s->function = fn;
-    CL_GC_UNPROTECT(1);
-}
-
 /* Helper to register an extension builtin in the EXT package (exported) */
 static void extfun(const char *name, CL_CFunc func, int min, int max)
 {
@@ -369,12 +356,65 @@ static int cf_emit_fasl_unit(CL_FaslWriter *fw,
 
 /* --- Load --- */
 
+/* Resolve a LOAD / COMPILE-FILE input designator (string or pathname) to a
+ * C namestring in out[0..outsz-1]: parse → merge with
+ * *default-pathname-defaults* (CL spec) → coerce → expand a leading ~.
+ * `who` names the calling operator for error messages.  Signals on a
+ * non-string/non-pathname input or an over-long resolved path.
+ *
+ * Consolidates the identical parse/merge/coerce/expand block that used to be
+ * copy-pasted in bi_load, bi_compile_file, and bi_compile_file_pathname (the
+ * fragmentation behind the f52cb57 truncation bug — see the note above). */
+static void cl_resolve_input_namestring(CL_Obj input, char *out, size_t outsz,
+                                        const char *who)
+{
+    extern CL_Obj cl_parse_namestring(const char *str, uint32_t len);
+    extern const char *cl_coerce_to_namestring(CL_Obj arg, char *buf,
+                                               uint32_t bufsz);
+    extern CL_Obj bi_merge_pathnames(CL_Obj *margs, int mn);
+    CL_Obj path_pn;
+    CL_Obj merge_args[1];
+    char ns_buf[1024];
+    const char *expanded;
+
+    if (CL_PATHNAME_P(input)) {
+        path_pn = input;
+    } else if (CL_STRING_P(input)) {
+        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(input);
+        path_pn = cl_parse_namestring(s->data, s->length);
+    } else {
+        cl_error(CL_ERR_TYPE, "%s: argument must be a string or pathname", who);
+        return;  /* unreachable */
+    }
+    /* GC SAFETY (audit tier 4, IO12): merge_args[0]/path_pn are C-local slots
+     * (not VM-rooted) and bi_merge_pathnames / coerce allocate — root them
+     * across the calls or a compaction leaves a stale pre-move offset and
+     * corrupts the resolved namestring. */
+    merge_args[0] = path_pn;
+    CL_GC_PROTECT(merge_args[0]);
+    path_pn = bi_merge_pathnames(merge_args, 1);
+    CL_GC_UNPROTECT(1);
+    CL_GC_PROTECT(path_pn);
+    cl_coerce_to_namestring(path_pn, ns_buf, sizeof(ns_buf));
+    CL_GC_UNPROTECT(1);
+
+    expanded = platform_expand_home(ns_buf, out, (int)outsz);
+    if (expanded != out) {
+        /* No ~ expansion happened — copy the merged namestring as-is. */
+        size_t nslen = strlen(ns_buf);
+        if (nslen >= outsz)
+            cl_error(CL_ERR_GENERAL, "%s: path too long", who);
+        memcpy(out, ns_buf, nslen);
+        out[nslen] = '\0';
+    }
+}
+
 static CL_Obj bi_load(CL_Obj *args, int n)
 {
-    CL_String *path_str;
-    /* The load path as a C copy: the CL_String moves under compaction and
-     * this function allocates all over (parse-namestring, compile, eval) —
-     * a path_str->data read after any of those would be stale. */
+    /* The load path as a C copy: the input CL_String moves under compaction
+     * and this function allocates all over (parse-namestring, compile, eval) —
+     * a namestring read after any of those would be stale, so we resolve into
+     * this fixed buffer up front. */
     char path_buf[1024];
     char *buf;
     unsigned long size;
@@ -427,54 +467,11 @@ static CL_Obj bi_load(CL_Obj *args, int n)
             cl_current_package = pkg_val;
     }
 
-    /* Per CL spec: merge filespec with *default-pathname-defaults* so that
-       relative paths resolve against the caller's bound default, not just cwd.
-       Both string and pathname inputs are coerced through MERGE-PATHNAMES. */
-    {
-        extern CL_Obj cl_parse_namestring(const char *str, uint32_t len);
-        extern const char *cl_coerce_to_namestring(CL_Obj arg, char *buf, uint32_t bufsz);
-        extern CL_Obj bi_merge_pathnames(CL_Obj *args, int n);
-        CL_Obj path_pn;
-        CL_Obj merge_args[1];
-        char ns_buf[1024];
-
-        if (CL_PATHNAME_P(args[0])) {
-            path_pn = args[0];
-        } else if (CL_STRING_P(args[0])) {
-            CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
-            path_pn = cl_parse_namestring(s->data, s->length);
-        } else {
-            cl_error(CL_ERR_TYPE, "LOAD: argument must be a string or pathname");
-            path_pn = CL_NIL;  /* unreachable */
-        }
-        /* GC SAFETY (audit tier 4, IO12): merge_args[0] is a C-local array
-         * slot, not a rooted VM slice — bi_merge_pathnames allocates, so the
-         * slot must be a registered root (mirror bi_compile_file). */
-        merge_args[0] = path_pn;
-        CL_GC_PROTECT(merge_args[0]);
-        path_pn = bi_merge_pathnames(merge_args, 1);
-        CL_GC_UNPROTECT(1);
-        CL_GC_PROTECT(path_pn);
-        cl_coerce_to_namestring(path_pn, ns_buf, sizeof(ns_buf));
-        CL_GC_UNPROTECT(1);
-        args[0] = cl_make_string(ns_buf, (uint32_t)strlen(ns_buf));
-    }
-    /* Expand leading ~ to home directory */
-    {
-        CL_String *tmp_s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
-        if (tmp_s->length > 0 && tmp_s->data[0] == '~') {
-            char expand_buf[1024];
-            const char *expanded = platform_expand_home(tmp_s->data,
-                expand_buf, (int)sizeof(expand_buf));
-            if (expanded != tmp_s->data) {
-                args[0] = cl_make_string(expanded, (uint32_t)strlen(expanded));
-            }
-        }
-    }
-
-    path_str = (CL_String *)CL_OBJ_TO_PTR(args[0]);
-    strncpy(path_buf, path_str->data, sizeof(path_buf) - 1);
-    path_buf[sizeof(path_buf) - 1] = '\0';
+    /* Resolve the filespec into path_buf: parse → merge with
+       *default-pathname-defaults* (CL spec, so relative paths resolve against
+       the caller's bound default, not just cwd) → coerce → expand a leading ~.
+       See cl_resolve_input_namestring. */
+    cl_resolve_input_namestring(args[0], path_buf, sizeof(path_buf), "LOAD");
 
     /* :if-does-not-exist NIL → return NIL without erroring.
        Check before the FASL cache block so we never substitute a stale cached
@@ -1184,107 +1181,50 @@ static int cf_process_toplevel_eval_when(CL_Obj form,
         else if (s == KW_EW_EX || s == SYM_EW_EVAL_SYM) has_ex = 1;
     }
 
-    if (has_ct && has_lt) {
-        /* CLHS Table 3-9 CT+LT: compile-time evaluation AND load-time emission.
-         * Each body form is compiled, evaluated at compile time, and collected
-         * for FASL.  This is necessary so that forms like DEFPACKAGE (which
-         * expand to (eval-when (:ct :lt :ex) (let ((pkg ...)) ...))) create the
-         * package at compile time, allowing subsequent (in-package ...) forms in
-         * the same compilation unit to use the fast compile_in_package path and
-         * switch cl_current_package. */
-        rest = body;
-        CL_GC_PROTECT(rest);
-        while (!CL_NULL_P(rest)) {
-            CL_Obj sub = cl_car(rest);
-            CL_Obj bc;
-            if (CL_CONS_P(sub) && cl_car(sub) == SYM_IN_PACKAGE)
-                saw_in_package = 1;
-            cl_ltv_init_count = 0;
-            CL_GC_PROTECT(sub);
-            bc = CL_CONS_P(lex_env) ? cl_compile_lex(sub, lex_env) : cl_compile(sub);
-            CL_GC_UNPROTECT(1);
-            cl_ltv_init_count = 0;
-            if (!CL_NULL_P(bc)) {
-                CL_GC_PROTECT(bc);
-                cl_vm_eval(bc);
-                cl_gc_compact_if_pending();
-                cf_bc_vec_append(bc_vec_p, bc_count_p, bc);
+    /* CLHS Table 3-9.  Each active situation combination reduces to two
+     * booleans over the same per-form loop:
+     *   - do_eval    : evaluate the compiled form at compile time
+     *   - do_collect : emit the compiled form into the FASL
+     * CT+LT evaluates AND collects (so e.g. DEFPACKAGE — which expands to
+     * (eval-when (:ct :lt :ex) ...) — creates the package at compile time,
+     * letting later (in-package ...) forms in the same unit use the fast
+     * compile_in_package path).  CT / EX evaluate only; LT collects only.
+     * (EX at a non-top-level position behaves like CT here.) */
+    {
+        int do_eval = 0, do_collect = 0, active = 1;
+        if (has_ct && has_lt)      { do_eval = 1; do_collect = 1; }
+        else if (has_ct)           { do_eval = 1; }
+        else if (has_lt)           { do_collect = 1; }
+        else if (has_ex)           { do_eval = 1; }
+        else                       { active = 0; }  /* no active situation */
+
+        if (active) {
+            rest = body;
+            CL_GC_PROTECT(rest);
+            while (!CL_NULL_P(rest)) {
+                CL_Obj sub = cl_car(rest);
+                CL_Obj bc;
+                if (CL_CONS_P(sub) && cl_car(sub) == SYM_IN_PACKAGE)
+                    saw_in_package = 1;
+                cl_ltv_init_count = 0;
+                CL_GC_PROTECT(sub);
+                bc = CL_CONS_P(lex_env) ? cl_compile_lex(sub, lex_env)
+                                        : cl_compile(sub);
                 CL_GC_UNPROTECT(1);
+                cl_ltv_init_count = 0;  /* discard unless collected into FASL */
+                if (!CL_NULL_P(bc)) {
+                    CL_GC_PROTECT(bc);
+                    if (do_eval) cl_vm_eval(bc);
+                    cl_gc_compact_if_pending();
+                    if (do_collect)
+                        cf_bc_vec_append(bc_vec_p, bc_count_p, bc);
+                    CL_GC_UNPROTECT(1);
+                }
+                rest = cl_cdr(rest);
             }
-            rest = cl_cdr(rest);
-        }
-        CL_GC_UNPROTECT(1);
-    } else if (has_ct) {
-        /* CT only: compile+eval each body; no FASL emission. */
-        rest = body;
-        CL_GC_PROTECT(rest);
-        while (!CL_NULL_P(rest)) {
-            CL_Obj sub = cl_car(rest);
-            CL_Obj bc;
-            if (CL_CONS_P(sub) && cl_car(sub) == SYM_IN_PACKAGE)
-                saw_in_package = 1;
-            cl_ltv_init_count = 0;
-            CL_GC_PROTECT(sub);
-            bc = CL_CONS_P(lex_env) ? cl_compile_lex(sub, lex_env) : cl_compile(sub);
             CL_GC_UNPROTECT(1);
-            cl_ltv_init_count = 0; /* discard — no FASL emission in CT-only */
-            if (!CL_NULL_P(bc)) {
-                CL_GC_PROTECT(bc);
-                cl_vm_eval(bc);
-                cl_gc_compact_if_pending();
-                CL_GC_UNPROTECT(1);
-            }
-            rest = cl_cdr(rest);
         }
-        CL_GC_UNPROTECT(1);
-    } else if (has_lt) {
-        /* LT only: compile+collect each body; no compile-time eval. */
-        rest = body;
-        CL_GC_PROTECT(rest);
-        while (!CL_NULL_P(rest)) {
-            CL_Obj sub = cl_car(rest);
-            CL_Obj bc;
-            if (CL_CONS_P(sub) && cl_car(sub) == SYM_IN_PACKAGE)
-                saw_in_package = 1;
-            cl_ltv_init_count = 0;
-            CL_GC_PROTECT(sub);
-            bc = CL_CONS_P(lex_env) ? cl_compile_lex(sub, lex_env) : cl_compile(sub);
-            CL_GC_UNPROTECT(1);
-            cl_ltv_init_count = 0;
-            if (!CL_NULL_P(bc)) {
-                CL_GC_PROTECT(bc);
-                cl_gc_compact_if_pending();
-                cf_bc_vec_append(bc_vec_p, bc_count_p, bc);
-                CL_GC_UNPROTECT(1);
-            }
-            rest = cl_cdr(rest);
-        }
-        CL_GC_UNPROTECT(1);
-    } else if (has_ex) {
-        /* EX only (not at top level in compile-file): compile+eval; no emit. */
-        rest = body;
-        CL_GC_PROTECT(rest);
-        while (!CL_NULL_P(rest)) {
-            CL_Obj sub = cl_car(rest);
-            CL_Obj bc;
-            if (CL_CONS_P(sub) && cl_car(sub) == SYM_IN_PACKAGE)
-                saw_in_package = 1;
-            cl_ltv_init_count = 0;
-            CL_GC_PROTECT(sub);
-            bc = CL_CONS_P(lex_env) ? cl_compile_lex(sub, lex_env) : cl_compile(sub);
-            CL_GC_UNPROTECT(1);
-            cl_ltv_init_count = 0; /* discard — no FASL emission in EX-only */
-            if (!CL_NULL_P(bc)) {
-                CL_GC_PROTECT(bc);
-                cl_vm_eval(bc);
-                cl_gc_compact_if_pending();
-                CL_GC_UNPROTECT(1);
-            }
-            rest = cl_cdr(rest);
-        }
-        CL_GC_UNPROTECT(1);
     }
-    /* else: no active situation — do nothing */
 
     CL_GC_UNPROTECT(1); /* lex_env */
     return saw_in_package;
@@ -1522,48 +1462,9 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
             cl_current_package = pkg_val2;
     }
 
-    /* Resolve input path: parse, merge with *default-pathname-defaults*
-       per CL spec, then expand ~. */
-    {
-        extern CL_Obj bi_merge_pathnames(CL_Obj *args, int n);
-        CL_Obj path_pn;
-        CL_Obj merge_args[1];
-        char ns_buf[1024];
-        const char *expanded;
-
-        if (CL_PATHNAME_P(args[0])) {
-            path_pn = args[0];
-        } else if (CL_STRING_P(args[0])) {
-            CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
-            path_pn = cl_parse_namestring(s->data, s->length);
-        } else {
-            cl_error(CL_ERR_TYPE, "COMPILE-FILE: argument must be a string or pathname");
-            return CL_NIL;
-        }
-        /* GC-protect path_pn across the allocating merge/coerce calls.
-         * merge_args[0] is a C-local array slot (not VM-rooted), so under
-         * compacting GC bi_merge_pathnames would otherwise read a stale,
-         * pre-compaction offset and corrupt the resolved namestring. */
-        merge_args[0] = path_pn;
-        CL_GC_PROTECT(merge_args[0]);
-        path_pn = bi_merge_pathnames(merge_args, 1);
-        CL_GC_UNPROTECT(1);
-        CL_GC_PROTECT(path_pn);
-        cl_coerce_to_namestring(path_pn, ns_buf, sizeof(ns_buf));
-        CL_GC_UNPROTECT(1);
-
-        expanded = platform_expand_home(ns_buf, in_path, (int)sizeof(in_path));
-        if (expanded != in_path) {
-            /* No ~ expansion — copy merged namestring as-is */
-            size_t nslen = strlen(ns_buf);
-            if (nslen >= sizeof(in_path)) {
-                cl_error(CL_ERR_GENERAL, "COMPILE-FILE: path too long");
-                return CL_NIL;
-            }
-            memcpy(in_path, ns_buf, nslen);
-            in_path[nslen] = '\0';
-        }
-    }
+    /* Resolve input path into in_path: parse → merge with
+       *default-pathname-defaults* (CL spec) → coerce → expand ~. */
+    cl_resolve_input_namestring(args[0], in_path, sizeof(in_path), "COMPILE-FILE");
 
     /* Default output: cache path, fallback to next-to-source */
     if (!make_fasl_cache_path(in_path, out_path, sizeof(out_path)))
@@ -1940,45 +1841,10 @@ static CL_Obj bi_compile_file_pathname(CL_Obj *args, int n)
     extern const char *cl_coerce_to_namestring(CL_Obj arg, char *buf, uint32_t bufsz);
     extern CL_Obj cl_parse_namestring(const char *str, uint32_t len);
 
-    /* Resolve input path: parse, merge with *default-pathname-defaults*,
-       then expand ~. */
-    {
-        extern CL_Obj bi_merge_pathnames(CL_Obj *margs, int mn);
-        CL_Obj path_pn;
-        CL_Obj merge_args[1];
-        char ns_buf[1024];
-        const char *expanded;
-
-        if (CL_PATHNAME_P(args[0])) {
-            path_pn = args[0];
-        } else if (CL_STRING_P(args[0])) {
-            CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
-            path_pn = cl_parse_namestring(s->data, s->length);
-        } else {
-            cl_error(CL_ERR_TYPE, "COMPILE-FILE-PATHNAME: argument must be a string or pathname");
-            return CL_NIL;
-        }
-        /* GC SAFETY (audit tier 4, IO12): root the C-local args slot across
-         * the allocating merge (mirror bi_compile_file). */
-        merge_args[0] = path_pn;
-        CL_GC_PROTECT(merge_args[0]);
-        path_pn = bi_merge_pathnames(merge_args, 1);
-        CL_GC_UNPROTECT(1);
-        CL_GC_PROTECT(path_pn);
-        cl_coerce_to_namestring(path_pn, ns_buf, sizeof(ns_buf));
-        CL_GC_UNPROTECT(1);
-
-        expanded = platform_expand_home(ns_buf, in_path, (int)sizeof(in_path));
-        if (expanded != in_path) {
-            size_t nslen = strlen(ns_buf);
-            if (nslen >= sizeof(in_path)) {
-                cl_error(CL_ERR_GENERAL, "COMPILE-FILE-PATHNAME: path too long");
-                return CL_NIL;
-            }
-            memcpy(in_path, ns_buf, nslen);
-            in_path[nslen] = '\0';
-        }
-    }
+    /* Resolve input path into in_path: parse → merge with
+       *default-pathname-defaults* (CL spec) → coerce → expand ~. */
+    cl_resolve_input_namestring(args[0], in_path, sizeof(in_path),
+                                "COMPILE-FILE-PATHNAME");
 
     /* Default: cache path, fallback to next-to-source */
     if (!make_fasl_cache_path(in_path, out_path, sizeof(out_path)))

@@ -1879,6 +1879,79 @@ CL_Obj compile_labels(CL_Compiler *c, CL_Obj form)
 
 /* --- Loop forms --- */
 
+/* Shared loop building blocks used by DOLIST / DOTIMES / DO / DO*. */
+
+/* CLHS 3.6/6.1.6: the body of a loop macro is an implicit TAGBODY.  Strip
+ * DECLARE forms, wrap the rest in a single (tagbody ...), compile it, and POP
+ * its NIL result.  `body` must already be GC-protected by the caller. */
+static void compile_implicit_tagbody_body(CL_Compiler *c, CL_Obj body)
+{
+    CL_Obj b = body;
+    CL_Obj tb_forms = CL_NIL, tb_tail = CL_NIL;
+    CL_Obj tagbody_form;
+    /* GC-protect b/tb_forms/tb_tail — cl_cons inside the loop can compact. */
+    CL_GC_PROTECT(b);
+    CL_GC_PROTECT(tb_forms);
+    CL_GC_PROTECT(tb_tail);
+    while (!CL_NULL_P(b)) {
+        CL_Obj bform = cl_car(b);
+        if (!(CL_CONS_P(bform) && cl_car(bform) == SYM_DECLARE)) {
+            CL_Obj cell = cl_cons(bform, CL_NIL);
+            if (CL_NULL_P(tb_forms)) tb_forms = cell;
+            else ((CL_Cons *)CL_OBJ_TO_PTR(tb_tail))->cdr = cell;
+            tb_tail = cell;
+        }
+        b = cl_cdr(b);
+    }
+    tagbody_form = cl_cons(SYM_TAGBODY, tb_forms);
+    CL_GC_PROTECT(tagbody_form);
+    compile_expr(c, tagbody_form);
+    cl_emit(c, OP_POP);  /* tagbody always leaves NIL */
+    CL_GC_UNPROTECT(4);  /* tagbody_form, tb_tail, tb_forms, b */
+}
+
+/* Allocate a result slot and push an implicit BLOCK NIL for a loop form.
+ * Returns the result slot index; *bi_out receives the block-info pointer. */
+static int push_loop_nil_block(CL_Compiler *c, CL_BlockInfo **bi_out)
+{
+    CL_CompEnv *env = c->env;
+    int result_slot = env->local_count;
+    CL_BlockInfo *bi;
+    env->locals[result_slot] = CL_NIL;  /* Clear stale binding */
+    env->local_count++;
+    if (env->local_count > env->max_locals)
+        env->max_locals = env->local_count;
+    if (c->block_count >= CL_MAX_BLOCKS)
+        cl_error(CL_ERR_OVERFLOW,
+                 "BLOCK nesting depth exceeded (%d): "
+                 "consider raising CL_MAX_BLOCKS", CL_MAX_BLOCKS);
+    bi = &c->blocks[c->block_count++];
+    bi->tag = CL_NIL;
+    bi->n_patches = 0;
+    bi->result_slot = result_slot;
+    bi->uses_nlx = 0;
+    bi->dyn_depth = c->special_depth;
+    *bi_out = bi;
+    return result_slot;
+}
+
+/* Loop epilogue: patch all RETURN-FROM NIL exits to here, load the result
+ * slot, clear boxed locals, and restore the block/local counts. */
+static void emit_loop_epilogue(CL_Compiler *c, CL_BlockInfo *bi,
+                               int result_slot, int saved_local_count,
+                               int saved_block_count)
+{
+    CL_CompEnv *env = c->env;
+    int i;
+    for (i = 0; i < bi->n_patches; i++)
+        cl_patch_jump(c, bi->exit_patches[i]);
+    cl_emit(c, OP_LOAD);
+    cl_emit(c, (uint8_t)result_slot);
+    cl_env_clear_boxed(env, saved_local_count);
+    c->block_count = saved_block_count;
+    env->local_count = saved_local_count;
+}
+
 void compile_dolist(CL_Compiler *c, CL_Obj form)
 {
     /* (dolist (var list-form [result-form]) body...) */
@@ -1895,7 +1968,6 @@ void compile_dolist(CL_Compiler *c, CL_Obj form)
     int loop_start, jnil_pos;
     int var_boxed = 0;
     CL_BlockInfo *bi;
-    int i;
 
     /* GC SAFETY: see compile_dotimes — these locals index into the
      * (protected) enclosing form but are not rewritten by the compactor, and
@@ -1957,24 +2029,8 @@ void compile_dolist(CL_Compiler *c, CL_Obj form)
         env->boxed[var_slot] = 1;
     }
 
-    /* Allocate result slot for implicit block NIL */
-    result_slot = env->local_count;
-    env->locals[result_slot] = CL_NIL;
-    env->local_count++;
-    if (env->local_count > env->max_locals)
-        env->max_locals = env->local_count;
-
-    /* Push block info for implicit block NIL */
-    if (c->block_count >= CL_MAX_BLOCKS)
-        cl_error(CL_ERR_OVERFLOW,
-                 "BLOCK nesting depth exceeded (%d): "
-                 "consider raising CL_MAX_BLOCKS", CL_MAX_BLOCKS);
-    bi = &c->blocks[c->block_count++];
-    bi->tag = CL_NIL;
-    bi->n_patches = 0;
-    bi->result_slot = result_slot;
-    bi->uses_nlx = 0;
-    bi->dyn_depth = c->special_depth;
+    /* Allocate result slot + push implicit block NIL */
+    result_slot = push_loop_nil_block(c, &bi);
 
     /* loop_start: LOAD iter_slot, JNIL -> end */
     loop_start = c->code_pos;
@@ -2002,41 +2058,8 @@ void compile_dolist(CL_Compiler *c, CL_Obj form)
     cl_emit(c, (uint8_t)iter_slot);
     cl_emit(c, OP_POP);
 
-    /* CLHS 3.6: the body of DOLIST is an implicit TAGBODY.  Strip leading
-       declarations (they don't belong inside tagbody), then compile a
-       single (tagbody body...) form so go-tags in the body resolve and
-       (go tag) works.  TAGBODY returns NIL, which we POP — matching the
-       existing "body values are discarded" semantics. */
-    {
-        CL_Obj b = body;
-        CL_Obj tb_forms = CL_NIL, tb_tail = CL_NIL;
-        CL_Obj tagbody_form;
-        CL_GC_PROTECT(b);
-        CL_GC_PROTECT(tb_forms);
-        CL_GC_PROTECT(tb_tail);
-        while (!CL_NULL_P(b)) {
-            CL_Obj form = cl_car(b);
-            if (CL_CONS_P(form) && cl_car(form) == SYM_DECLARE) {
-                b = cl_cdr(b);
-                continue;
-            }
-            {
-                CL_Obj cell = cl_cons(form, CL_NIL);
-                if (CL_NULL_P(tb_forms)) {
-                    tb_forms = cell;
-                } else {
-                    ((CL_Cons *)CL_OBJ_TO_PTR(tb_tail))->cdr = cell;
-                }
-                tb_tail = cell;
-            }
-            b = cl_cdr(b);
-        }
-        tagbody_form = cl_cons(SYM_TAGBODY, tb_forms);
-        CL_GC_PROTECT(tagbody_form);
-        compile_expr(c, tagbody_form);
-        cl_emit(c, OP_POP);
-        CL_GC_UNPROTECT(4);
-    }
+    /* CLHS 3.6: the body of DOLIST is an implicit TAGBODY. */
+    compile_implicit_tagbody_body(c, body);
 
     /* Backward jump to loop_start */
     cl_emit_loop_jump(c, OP_JMP, loop_start);
@@ -2065,19 +2088,7 @@ void compile_dolist(CL_Compiler *c, CL_Obj form)
     cl_emit(c, (uint8_t)result_slot);
     cl_emit(c, OP_POP);
 
-    /* Patch all return-from NIL jumps to here */
-    for (i = 0; i < bi->n_patches; i++)
-        cl_patch_jump(c, bi->exit_patches[i]);
-
-    /* Load result */
-    cl_emit(c, OP_LOAD);
-    cl_emit(c, (uint8_t)result_slot);
-
-    cl_env_clear_boxed(env, saved_local_count);
-
-    /* Restore */
-    c->block_count = saved_block_count;
-    env->local_count = saved_local_count;
+    emit_loop_epilogue(c, bi, result_slot, saved_local_count, saved_block_count);
 
     CL_GC_UNPROTECT(5);  /* form, binding, body, var, result_form */
 }
@@ -2098,7 +2109,6 @@ void compile_dotimes(CL_Compiler *c, CL_Obj form)
     int loop_start, jtrue_pos;
     int var_boxed = 0;
     CL_BlockInfo *bi;
-    int i;
 
     /* GC SAFETY: form/binding/body/var/result_form are sub-cells of the
      * (protected) enclosing form, but these C locals hold raw arena offsets
@@ -2154,24 +2164,8 @@ void compile_dotimes(CL_Compiler *c, CL_Obj form)
         CL_GC_UNPROTECT(1);
     }
 
-    /* Allocate result slot for implicit block NIL */
-    result_slot = env->local_count;
-    env->locals[result_slot] = CL_NIL;
-    env->local_count++;
-    if (env->local_count > env->max_locals)
-        env->max_locals = env->local_count;
-
-    /* Push block info for implicit block NIL */
-    if (c->block_count >= CL_MAX_BLOCKS)
-        cl_error(CL_ERR_OVERFLOW,
-                 "BLOCK nesting depth exceeded (%d): "
-                 "consider raising CL_MAX_BLOCKS", CL_MAX_BLOCKS);
-    bi = &c->blocks[c->block_count++];
-    bi->tag = CL_NIL;
-    bi->n_patches = 0;
-    bi->result_slot = result_slot;
-    bi->uses_nlx = 0;
-    bi->dyn_depth = c->special_depth;
+    /* Allocate result slot + push implicit block NIL */
+    result_slot = push_loop_nil_block(c, &bi);
 
     /* var = 0 (boxed: wrap in cell) */
     cl_emit_const(c, CL_MAKE_FIXNUM(0));
@@ -2194,36 +2188,7 @@ void compile_dotimes(CL_Compiler *c, CL_Obj form)
     jtrue_pos = cl_emit_jump(c, OP_JTRUE);
 
     /* CLHS 3.6: the body of DOTIMES is an implicit TAGBODY. */
-    {
-        CL_Obj b = body;
-        CL_Obj tb_forms = CL_NIL, tb_tail = CL_NIL;
-        CL_Obj tagbody_form;
-        CL_GC_PROTECT(b);
-        CL_GC_PROTECT(tb_forms);
-        CL_GC_PROTECT(tb_tail);
-        while (!CL_NULL_P(b)) {
-            CL_Obj form = cl_car(b);
-            if (CL_CONS_P(form) && cl_car(form) == SYM_DECLARE) {
-                b = cl_cdr(b);
-                continue;
-            }
-            {
-                CL_Obj cell = cl_cons(form, CL_NIL);
-                if (CL_NULL_P(tb_forms)) {
-                    tb_forms = cell;
-                } else {
-                    ((CL_Cons *)CL_OBJ_TO_PTR(tb_tail))->cdr = cell;
-                }
-                tb_tail = cell;
-            }
-            b = cl_cdr(b);
-        }
-        tagbody_form = cl_cons(SYM_TAGBODY, tb_forms);
-        CL_GC_PROTECT(tagbody_form);
-        compile_expr(c, tagbody_form);
-        cl_emit(c, OP_POP);
-        CL_GC_UNPROTECT(4);
-    }
+    compile_implicit_tagbody_body(c, body);
 
     /* Increment: var = var + 1 */
     cl_emit(c, OP_LOAD);
@@ -2256,26 +2221,22 @@ void compile_dotimes(CL_Compiler *c, CL_Obj form)
     cl_emit(c, (uint8_t)result_slot);
     cl_emit(c, OP_POP);
 
-    /* Patch all return-from NIL jumps to here */
-    for (i = 0; i < bi->n_patches; i++)
-        cl_patch_jump(c, bi->exit_patches[i]);
-
-    /* Load result */
-    cl_emit(c, OP_LOAD);
-    cl_emit(c, (uint8_t)result_slot);
-
-    cl_env_clear_boxed(env, saved_local_count);
-
-    /* Restore */
-    c->block_count = saved_block_count;
-    env->local_count = saved_local_count;
+    emit_loop_epilogue(c, bi, result_slot, saved_local_count, saved_block_count);
 
     CL_GC_UNPROTECT(5);  /* form, binding, body, var, result_form */
 }
 
-void compile_do(CL_Compiler *c, CL_Obj form)
+/* Shared implementation of DO (sequential=0) and DO* (sequential=1).
+ * The two forms differ only in their init and step phases:
+ *   - DO evaluates all inits in parallel (onto the stack, then stores
+ *     back-to-front) and steps in parallel; DO* binds/steps sequentially.
+ * Everything else — binding parse, boxing pre-scan, implicit block NIL,
+ * end-test loop, implicit tagbody body, result forms — is identical.
+ * (Mirrors compile_let(c, form, sequential) for LET/LET*.) */
+static void compile_do_impl(CL_Compiler *c, CL_Obj form, int sequential)
 {
-    /* (do ((var init [step])...) (end-test result...) body...) */
+    /* (do  ((var init [step])...) (end-test result...) body...)
+     * (do* ((var init [step])...) (end-test result...) body...) */
     CL_Obj var_clauses = cl_car(cl_cdr(form));
     CL_Obj end_clause = cl_car(cl_cdr(cl_cdr(form)));
     CL_Obj body = cl_cdr(cl_cdr(cl_cdr(form)));
@@ -2376,67 +2337,76 @@ void compile_do(CL_Compiler *c, CL_Obj form)
 
     c->in_tail = 0;
 
-    /* Parallel init: evaluate all init forms onto stack.
-     * Walk var_clauses with a protected cursor — compile_expr can compact inits[] stale. */
-    {
+    if (sequential) {
+        /* DO*: sequential init — evaluate and store each var immediately.
+         * Walk var_clauses with a protected cursor — compile_expr can compact
+         * inits[]/vars[] stale. */
         CL_Obj vc = var_clauses;
         CL_GC_PROTECT(vc);
         for (i = 0; i < n; i++) {
-            CL_Obj clause = cl_car(vc);  /* bare symbol => init is NIL */
+            CL_Obj clause = cl_car(vc);  /* bare symbol => init NIL, sym is var */
             compile_expr(c, CL_CONS_P(clause) ? cl_car(cl_cdr(clause)) : CL_NIL);
-            vc = cl_cdr(vc);
-        }
-        CL_GC_UNPROTECT(1);
-    }
-
-    /* Register all vars as locals — re-walk var_clauses; compile_expr above made vars[] stale */
-    {
-        CL_Obj vc = var_clauses;
-        for (i = 0; i < n; i++) {
-            CL_Obj clause = cl_car(vc);  /* bare symbol => the symbol is the var */
+            /* Re-read var from protected cursor after compile_expr may have compacted */
+            clause = cl_car(vc);
             cl_env_add_local(env, CL_CONS_P(clause) ? cl_car(clause) : clause);
-            vc = cl_cdr(vc);
-        }
-    }
-
-    /* Store back-to-front */
-    for (i = n - 1; i >= 0; i--) {
-        cl_emit(c, OP_STORE);
-        cl_emit(c, (uint8_t)(saved_local_count + i));
-        cl_emit(c, OP_POP);
-    }
-
-    /* Box vars that need it */
-    for (i = 0; i < n; i++) {
-        if (do_boxed[i]) {
-            cl_emit(c, OP_LOAD);
-            cl_emit(c, (uint8_t)(saved_local_count + i));
-            cl_emit(c, OP_MAKE_CELL);
+            if (do_boxed[i]) {
+                cl_emit(c, OP_MAKE_CELL);
+                env->boxed[saved_local_count + i] = 1;
+            }
             cl_emit(c, OP_STORE);
             cl_emit(c, (uint8_t)(saved_local_count + i));
             cl_emit(c, OP_POP);
-            env->boxed[saved_local_count + i] = 1;
+            vc = cl_cdr(vc);
+        }
+        CL_GC_UNPROTECT(1);
+    } else {
+        /* DO: parallel init — evaluate all init forms onto stack.
+         * Walk var_clauses with a protected cursor — compile_expr can compact
+         * inits[] stale. */
+        {
+            CL_Obj vc = var_clauses;
+            CL_GC_PROTECT(vc);
+            for (i = 0; i < n; i++) {
+                CL_Obj clause = cl_car(vc);  /* bare symbol => init is NIL */
+                compile_expr(c, CL_CONS_P(clause) ? cl_car(cl_cdr(clause)) : CL_NIL);
+                vc = cl_cdr(vc);
+            }
+            CL_GC_UNPROTECT(1);
+        }
+
+        /* Register all vars as locals — re-walk var_clauses; compile_expr above made vars[] stale */
+        {
+            CL_Obj vc = var_clauses;
+            for (i = 0; i < n; i++) {
+                CL_Obj clause = cl_car(vc);  /* bare symbol => the symbol is the var */
+                cl_env_add_local(env, CL_CONS_P(clause) ? cl_car(clause) : clause);
+                vc = cl_cdr(vc);
+            }
+        }
+
+        /* Store back-to-front */
+        for (i = n - 1; i >= 0; i--) {
+            cl_emit(c, OP_STORE);
+            cl_emit(c, (uint8_t)(saved_local_count + i));
+            cl_emit(c, OP_POP);
+        }
+
+        /* Box vars that need it */
+        for (i = 0; i < n; i++) {
+            if (do_boxed[i]) {
+                cl_emit(c, OP_LOAD);
+                cl_emit(c, (uint8_t)(saved_local_count + i));
+                cl_emit(c, OP_MAKE_CELL);
+                cl_emit(c, OP_STORE);
+                cl_emit(c, (uint8_t)(saved_local_count + i));
+                cl_emit(c, OP_POP);
+                env->boxed[saved_local_count + i] = 1;
+            }
         }
     }
 
-    /* Allocate result slot for implicit block NIL */
-    result_slot = env->local_count;
-    env->locals[result_slot] = CL_NIL;  /* Clear stale binding */
-    env->local_count++;
-    if (env->local_count > env->max_locals)
-        env->max_locals = env->local_count;
-
-    /* Push block info for implicit block NIL */
-    if (c->block_count >= CL_MAX_BLOCKS)
-        cl_error(CL_ERR_OVERFLOW,
-                 "BLOCK nesting depth exceeded (%d): "
-                 "consider raising CL_MAX_BLOCKS", CL_MAX_BLOCKS);
-    bi = &c->blocks[c->block_count++];
-    bi->tag = CL_NIL;
-    bi->n_patches = 0;
-    bi->result_slot = result_slot;
-    bi->uses_nlx = 0;
-    bi->dyn_depth = c->special_depth;
+    /* Allocate result slot + push implicit block NIL */
+    result_slot = push_loop_nil_block(c, &bi);
 
     /* loop_start: compile end-test, JTRUE -> end */
     loop_start = c->code_pos;
@@ -2444,61 +2414,60 @@ void compile_do(CL_Compiler *c, CL_Obj form)
     jtrue_pos = cl_emit_jump(c, OP_JTRUE);
 
     /* Compile body as an implicit tagbody per CLHS 6.1.6. */
-    {
-        CL_Obj b = body;
-        CL_Obj clean = CL_NIL, tail = CL_NIL;
-        CL_Obj tb_form;
-        /* GC-protect b and clean — cl_cons inside the loop can compact */
-        CL_GC_PROTECT(b);
-        CL_GC_PROTECT(clean);
-        CL_GC_PROTECT(tail);
-        while (!CL_NULL_P(b)) {
-            CL_Obj bform = cl_car(b);
-            if (!(CL_CONS_P(bform) && cl_car(bform) == SYM_DECLARE)) {
-                CL_Obj cell = cl_cons(bform, CL_NIL);
-                if (CL_NULL_P(clean)) { clean = cell; tail = cell; }
-                else {
-                    ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
-                    tail = cell;
-                }
-            }
-            b = cl_cdr(b);
-        }
-        tb_form = cl_cons(SYM_TAGBODY, clean);
-        CL_GC_PROTECT(tb_form);
-        compile_expr(c, tb_form);
-        cl_emit(c, OP_POP);  /* tagbody always leaves NIL */
-        CL_GC_UNPROTECT(4);  /* tb_form, tail, clean, b */
-    }
+    compile_implicit_tagbody_body(c, body);
 
-    /* Parallel step: evaluate all step forms (or load current value).
-     * Walk var_clauses with a protected cursor — compile_expr can compact steps[] stale. */
-    {
+    if (sequential) {
+        /* DO*: sequential step — evaluate and store each immediately.
+         * Walk var_clauses with a protected cursor — compile_expr can compact
+         * steps[] stale. */
         CL_Obj vc = var_clauses;
         CL_GC_PROTECT(vc);
         for (i = 0; i < n; i++) {
             if (has_step[i]) {
                 CL_Obj clause = cl_car(vc);
                 compile_expr(c, cl_car(cl_cdr(cl_cdr(clause))));
-            } else {
-                cl_emit(c, OP_LOAD);
+                if (do_boxed[i]) {
+                    cl_emit(c, OP_CELL_SET_LOCAL);
+                } else {
+                    cl_emit(c, OP_STORE);
+                }
                 cl_emit(c, (uint8_t)(saved_local_count + i));
-                if (do_boxed[i]) cl_emit(c, OP_CELL_REF);
+                cl_emit(c, OP_POP);
             }
             vc = cl_cdr(vc);
         }
         CL_GC_UNPROTECT(1);
-    }
-
-    /* Store all back-to-front */
-    for (i = n - 1; i >= 0; i--) {
-        if (do_boxed[i]) {
-            cl_emit(c, OP_CELL_SET_LOCAL);
-        } else {
-            cl_emit(c, OP_STORE);
+    } else {
+        /* DO: parallel step — evaluate all step forms (or load current value).
+         * Walk var_clauses with a protected cursor — compile_expr can compact
+         * steps[] stale. */
+        {
+            CL_Obj vc = var_clauses;
+            CL_GC_PROTECT(vc);
+            for (i = 0; i < n; i++) {
+                if (has_step[i]) {
+                    CL_Obj clause = cl_car(vc);
+                    compile_expr(c, cl_car(cl_cdr(cl_cdr(clause))));
+                } else {
+                    cl_emit(c, OP_LOAD);
+                    cl_emit(c, (uint8_t)(saved_local_count + i));
+                    if (do_boxed[i]) cl_emit(c, OP_CELL_REF);
+                }
+                vc = cl_cdr(vc);
+            }
+            CL_GC_UNPROTECT(1);
         }
-        cl_emit(c, (uint8_t)(saved_local_count + i));
-        cl_emit(c, OP_POP);
+
+        /* Store all back-to-front */
+        for (i = n - 1; i >= 0; i--) {
+            if (do_boxed[i]) {
+                cl_emit(c, OP_CELL_SET_LOCAL);
+            } else {
+                cl_emit(c, OP_STORE);
+            }
+            cl_emit(c, (uint8_t)(saved_local_count + i));
+            cl_emit(c, OP_POP);
+        }
     }
 
     /* Backward jump to loop_start */
@@ -2520,244 +2489,20 @@ void compile_do(CL_Compiler *c, CL_Obj form)
 
     CL_GC_UNPROTECT(4);  /* var_clauses, body, end_test, result_forms */
 
-    /* Patch all return-from NIL jumps to here */
-    for (i = 0; i < bi->n_patches; i++)
-        cl_patch_jump(c, bi->exit_patches[i]);
+    emit_loop_epilogue(c, bi, result_slot, saved_local_count, saved_block_count);
+}
 
-    /* Load result */
-    cl_emit(c, OP_LOAD);
-    cl_emit(c, (uint8_t)result_slot);
-
-    cl_env_clear_boxed(env, saved_local_count);
-
-    /* Restore */
-    c->block_count = saved_block_count;
-    env->local_count = saved_local_count;
+void compile_do(CL_Compiler *c, CL_Obj form)
+{
+    /* (do ((var init [step])...) (end-test result...) body...) */
+    compile_do_impl(c, form, 0);
 }
 
 void compile_do_star(CL_Compiler *c, CL_Obj form)
 {
     /* (do* ((var init [step])...) (end-test result...) body...)
      * Like do, but bindings and steps are sequential. */
-    CL_Obj var_clauses = cl_car(cl_cdr(form));
-    CL_Obj end_clause = cl_car(cl_cdr(cl_cdr(form)));
-    CL_Obj body = cl_cdr(cl_cdr(cl_cdr(form)));
-    CL_Obj end_test = cl_car(end_clause);
-    CL_Obj result_forms = cl_cdr(end_clause);
-    CL_CompEnv *env = c->env;
-    int saved_local_count = env->local_count;
-    int saved_tail = c->in_tail;
-    int saved_block_count = c->block_count;
-
-    CL_Obj vars[CL_MAX_BINDINGS];
-    CL_Obj inits[CL_MAX_BINDINGS];
-    CL_Obj steps[CL_MAX_BINDINGS];
-    int has_step[CL_MAX_BINDINGS];
-    uint8_t do_boxed[CL_MAX_BINDINGS];
-    int n = 0;
-    int i;
-    int loop_start, jtrue_pos;
-    int result_slot;
-    CL_BlockInfo *bi;
-
-    {
-        CL_Obj vc = var_clauses;
-        while (!CL_NULL_P(vc) && n < CL_MAX_BINDINGS) {
-            CL_Obj clause = cl_car(vc);
-            /* CLHS 6.1.1: a var-spec may be a bare symbol (var with no
-             * init/step, bound to NIL) or a list (var [init [step]]). */
-            if (CL_CONS_P(clause)) {
-                vars[n] = cl_car(clause);
-                inits[n] = cl_car(cl_cdr(clause));
-                if (!CL_NULL_P(cl_cdr(cl_cdr(clause)))) {
-                    steps[n] = cl_car(cl_cdr(cl_cdr(clause)));
-                    has_step[n] = 1;
-                } else {
-                    steps[n] = CL_NIL;
-                    has_step[n] = 0;
-                }
-            } else {
-                vars[n] = clause;
-                inits[n] = CL_NIL;
-                steps[n] = CL_NIL;
-                has_step[n] = 0;
-            }
-            n++;
-            vc = cl_cdr(vc);
-        }
-    }
-
-    /* Check which vars need boxing */
-    {
-        uint8_t mutated[CL_MAX_BINDINGS], captured[CL_MAX_BINDINGS];
-        CL_Obj cur;
-        memset(mutated, 0, (size_t)n);
-        memset(captured, 0, (size_t)n);
-        memset(do_boxed, 0, (size_t)n);
-        /* GC-protect BEFORE the boxing pre-scan — scan_body_for_boxing
-         * macroexpands in the VM (allocates, can compact); root vars[] and
-         * steps[] across the scans and walk with a protected cursor (same
-         * discipline as determine_boxed_vars / compile_do). */
-        CL_GC_PROTECT(var_clauses);
-        CL_GC_PROTECT(body);
-        CL_GC_PROTECT(end_test);
-        CL_GC_PROTECT(result_forms);
-        for (i = 0; i < n; i++)
-            CL_GC_PROTECT(vars[i]);
-        for (i = 0; i < n; i++)
-            CL_GC_PROTECT(steps[i]);
-        cur = body;
-        CL_GC_PROTECT(cur);
-        while (CL_CONS_P(cur)) {
-            scan_body_for_boxing(cl_car(cur), vars, n, mutated, captured, 0);
-            cur = cl_cdr(cur);
-        }
-        scan_body_for_boxing(end_test, vars, n, mutated, captured, 0);
-        cur = result_forms;
-        while (CL_CONS_P(cur)) {
-            scan_body_for_boxing(cl_car(cur), vars, n, mutated, captured, 0);
-            cur = cl_cdr(cur);
-        }
-        CL_GC_UNPROTECT(1);  /* cur */
-        for (i = 0; i < n; i++)
-            scan_body_for_boxing(steps[i], vars, n, mutated, captured, 0);
-        cl_gc_pop_roots(2 * n);  /* vars[], steps[] */
-        for (i = 0; i < n; i++) {
-            do_boxed[i] = (has_step[i] && captured[i]) ? 1 :
-                          (mutated[i] && captured[i]) ? 1 : 0;
-        }
-        /* var_clauses/body/end_test/result_forms stay protected: compile_expr
-         * below compacts too — the matching UNPROTECT(4) is at function end. */
-    }
-
-    c->in_tail = 0;
-
-    /* Sequential init: evaluate and store each var immediately.
-     * Walk var_clauses with a protected cursor — compile_expr can compact inits[]/vars[] stale. */
-    {
-        CL_Obj vc = var_clauses;
-        CL_GC_PROTECT(vc);
-        for (i = 0; i < n; i++) {
-            CL_Obj clause = cl_car(vc);  /* bare symbol => init NIL, sym is var */
-            compile_expr(c, CL_CONS_P(clause) ? cl_car(cl_cdr(clause)) : CL_NIL);
-            /* Re-read var from protected cursor after compile_expr may have compacted */
-            clause = cl_car(vc);
-            cl_env_add_local(env, CL_CONS_P(clause) ? cl_car(clause) : clause);
-            if (do_boxed[i]) {
-                cl_emit(c, OP_MAKE_CELL);
-                env->boxed[saved_local_count + i] = 1;
-            }
-            cl_emit(c, OP_STORE);
-            cl_emit(c, (uint8_t)(saved_local_count + i));
-            cl_emit(c, OP_POP);
-            vc = cl_cdr(vc);
-        }
-        CL_GC_UNPROTECT(1);
-    }
-
-    /* Allocate result slot for implicit block NIL */
-    result_slot = env->local_count;
-    env->locals[result_slot] = CL_NIL;
-    env->local_count++;
-    if (env->local_count > env->max_locals)
-        env->max_locals = env->local_count;
-
-    if (c->block_count >= CL_MAX_BLOCKS)
-        cl_error(CL_ERR_OVERFLOW,
-                 "BLOCK nesting depth exceeded (%d): "
-                 "consider raising CL_MAX_BLOCKS", CL_MAX_BLOCKS);
-    bi = &c->blocks[c->block_count++];
-    bi->tag = CL_NIL;
-    bi->n_patches = 0;
-    bi->result_slot = result_slot;
-    bi->uses_nlx = 0;
-    bi->dyn_depth = c->special_depth;
-
-    /* loop_start: compile end-test, JTRUE -> end */
-    loop_start = c->code_pos;
-    compile_expr(c, end_test);
-    jtrue_pos = cl_emit_jump(c, OP_JTRUE);
-
-    /* Compile body as an implicit tagbody per CLHS 6.1.6.  (go tag) inside
-     * a DO / DO* body must find tags defined there.  Strip leading
-     * (declare ...) forms the same way tagbody ignores them. */
-    {
-        CL_Obj b = body;
-        CL_Obj clean = CL_NIL, tail = CL_NIL;
-        CL_Obj tb_form;
-        /* GC-protect b, clean, and tail — cl_cons inside the loop can compact */
-        CL_GC_PROTECT(b);
-        CL_GC_PROTECT(clean);
-        CL_GC_PROTECT(tail);
-        while (!CL_NULL_P(b)) {
-            CL_Obj bform = cl_car(b);
-            if (!(CL_CONS_P(bform) && cl_car(bform) == SYM_DECLARE)) {
-                CL_Obj cell = cl_cons(bform, CL_NIL);
-                if (CL_NULL_P(clean)) { clean = cell; tail = cell; }
-                else {
-                    ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
-                    tail = cell;
-                }
-            }
-            b = cl_cdr(b);
-        }
-        tb_form = cl_cons(SYM_TAGBODY, clean);
-        CL_GC_PROTECT(tb_form);
-        compile_expr(c, tb_form);
-        cl_emit(c, OP_POP);  /* tagbody always leaves NIL */
-        CL_GC_UNPROTECT(4);  /* tb_form, tail, clean, b */
-    }
-
-    /* Sequential step: evaluate and store each immediately.
-     * Walk var_clauses with a protected cursor — compile_expr can compact steps[] stale. */
-    {
-        CL_Obj vc = var_clauses;
-        CL_GC_PROTECT(vc);
-        for (i = 0; i < n; i++) {
-            if (has_step[i]) {
-                CL_Obj clause = cl_car(vc);
-                compile_expr(c, cl_car(cl_cdr(cl_cdr(clause))));
-                if (do_boxed[i]) {
-                    cl_emit(c, OP_CELL_SET_LOCAL);
-                } else {
-                    cl_emit(c, OP_STORE);
-                }
-                cl_emit(c, (uint8_t)(saved_local_count + i));
-                cl_emit(c, OP_POP);
-            }
-            vc = cl_cdr(vc);
-        }
-        CL_GC_UNPROTECT(1);
-    }
-
-    cl_emit_loop_jump(c, OP_JMP, loop_start);
-
-    /* end: */
-    cl_patch_jump(c, jtrue_pos);
-
-    /* Compile result forms or NIL */
-    c->in_tail = saved_tail;
-    if (!CL_NULL_P(result_forms)) {
-        compile_progn(c, result_forms);
-    } else {
-        cl_emit(c, OP_NIL);
-    }
-    cl_emit(c, OP_STORE);
-    cl_emit(c, (uint8_t)result_slot);
-    cl_emit(c, OP_POP);
-
-    CL_GC_UNPROTECT(4);  /* var_clauses, body, end_test, result_forms */
-
-    for (i = 0; i < bi->n_patches; i++)
-        cl_patch_jump(c, bi->exit_patches[i]);
-
-    cl_emit(c, OP_LOAD);
-    cl_emit(c, (uint8_t)result_slot);
-
-    cl_env_clear_boxed(env, saved_local_count);
-
-    c->block_count = saved_block_count;
-    env->local_count = saved_local_count;
+    compile_do_impl(c, form, 1);
 }
 
 /* --- handler-bind --- */

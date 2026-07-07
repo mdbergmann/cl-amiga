@@ -58,11 +58,7 @@ void cl_register_builtins(const CL_BuiltinDesc *table, uint32_t count,
     }
 }
 
-/* Helper to register a builtin in CL */
-static void defun(const char *name, CL_CFunc func, int min, int max)
-{
-    cl_register_builtin(name, func, min, max, cl_package_cl);
-}
+/* defun() (register a builtin into COMMON-LISP) is shared from builtins.h. */
 
 /* Register a not-yet-implemented CL function stub (variadic). */
 #define defstub(name) defun(name, bi_unimplemented_stub, 0, -1)

@@ -421,45 +421,11 @@ CL_Obj cl_bignum_normalize(CL_Obj obj)
     return obj;
 }
 
-CL_Obj cl_bignum_from_int32(int32_t val)
-{
-    CL_Obj obj;
-    CL_Bignum *bn;
-    uint32_t uval;
-    uint32_t sign;
-
-    /* Try fixnum first */
-    if (val >= CL_FIXNUM_MIN && val <= CL_FIXNUM_MAX)
-        return CL_MAKE_FIXNUM(val);
-
-    sign = val < 0 ? 1 : 0;
-    uval = val < 0 ? (uint32_t)(-(int32_t)val) : (uint32_t)val;
-
-    obj = cl_make_bignum(2, sign);
-    bn = (CL_Bignum *)CL_OBJ_TO_PTR(obj);
-    bn->limbs[0] = (uint16_t)(uval & 0xFFFF);
-    bn->limbs[1] = (uint16_t)(uval >> 16);
-    return cl_bignum_normalize(obj);
-}
-
-/* Create a bignum from unsigned 32-bit value (public, sign=0) */
-CL_Obj cl_bignum_from_uint32(uint32_t val)
-{
-    CL_Obj obj;
-    CL_Bignum *bn;
-
-    if (val == 0) return CL_MAKE_FIXNUM(0);
-    if (val <= (uint32_t)CL_FIXNUM_MAX)
-        return CL_MAKE_FIXNUM((int32_t)val);
-
-    obj = cl_make_bignum(2, 0);
-    bn = (CL_Bignum *)CL_OBJ_TO_PTR(obj);
-    bn->limbs[0] = (uint16_t)(val & 0xFFFF);
-    bn->limbs[1] = (uint16_t)(val >> 16);
-    return cl_bignum_normalize(obj);
-}
-
-/* Create a bignum from unsigned 32-bit value with sign */
+/* Create a bignum from a 32-bit magnitude + sign (0 = non-negative).
+ * The one place the 2-limb layout is built; the public int32/uint32
+ * constructors are thin wrappers.  Returns a fixnum when the value fits
+ * (fixnums are 31-bit signed: [CL_FIXNUM_MIN, CL_FIXNUM_MAX], and
+ * -CL_FIXNUM_MIN == 0x40000000). */
 static CL_Obj bignum_from_uint32(uint32_t val, uint32_t sign)
 {
     CL_Obj obj;
@@ -478,6 +444,19 @@ static CL_Obj bignum_from_uint32(uint32_t val, uint32_t sign)
     bn->limbs[0] = (uint16_t)(val & 0xFFFF);
     bn->limbs[1] = (uint16_t)(val >> 16);
     return cl_bignum_normalize(obj);
+}
+
+CL_Obj cl_bignum_from_int32(int32_t val)
+{
+    uint32_t sign = val < 0 ? 1 : 0;
+    uint32_t uval = val < 0 ? (uint32_t)(-(int32_t)val) : (uint32_t)val;
+    return bignum_from_uint32(uval, sign);
+}
+
+/* Create a bignum from unsigned 32-bit value (public, sign=0) */
+CL_Obj cl_bignum_from_uint32(uint32_t val)
+{
+    return bignum_from_uint32(val, 0);
 }
 
 /* Build a bignum from limb array, normalize */
@@ -602,6 +581,61 @@ static void complex_parts(CL_Obj x, CL_Obj *re, CL_Obj *im)
     }
 }
 
+/* Cold integer add/sub tail, shared by cl_arith_add / cl_arith_sub.
+ * Both operands are integers that reached the bignum path (not two fixnums
+ * whose result fits).  `subtract` negates b's sign first, so subtraction is
+ * "add with b negated" — the magnitude combine below is then identical.
+ * GC-safe: al/bl (which may point into a's/b's arena limbs) are fully
+ * consumed by the non-allocating bignum_{add,sub}_mag before the allocating
+ * bignum_from_limbs runs, so no stale-offset window opens. */
+static CL_Obj bignum_addsub(CL_Obj a, CL_Obj b, int subtract)
+{
+    uint16_t ta[2], tb[2];
+    uint32_t a_len, b_len, a_sign, b_sign;
+    const uint16_t *al, *bl;
+    uint16_t result_stack[256];
+    uint16_t *result;
+    uint32_t r_len, max_len;
+    int heap_result = 0;
+    CL_Obj res;
+
+    al = to_limbs(a, &a_len, &a_sign, ta);
+    bl = to_limbs(b, &b_len, &b_sign, tb);
+
+    if (subtract)
+        b_sign = b_sign ? 0 : 1;  /* subtract = add with b's sign flipped */
+
+    max_len = (a_len > b_len ? a_len : b_len) + 1;
+    if (max_len <= 256) {
+        result = result_stack;
+    } else {
+        result = (uint16_t *)platform_alloc(max_len * sizeof(uint16_t));
+        heap_result = 1;
+    }
+
+    if (a_sign == b_sign) {
+        /* Same sign: add magnitudes */
+        r_len = bignum_add_mag(al, a_len, bl, b_len, result);
+        res = bignum_from_limbs(result, r_len, a_sign);
+    } else {
+        /* Different signs: subtract smaller magnitude from larger */
+        int cmp = bignum_compare_mag(al, a_len, bl, b_len);
+        if (cmp == 0) {
+            if (heap_result) platform_free(result);
+            return CL_MAKE_FIXNUM(0);
+        }
+        if (cmp > 0) {
+            r_len = bignum_sub_mag(al, a_len, bl, b_len, result);
+            res = bignum_from_limbs(result, r_len, a_sign);
+        } else {
+            r_len = bignum_sub_mag(bl, b_len, al, a_len, result);
+            res = bignum_from_limbs(result, r_len, b_sign);
+        }
+    }
+    if (heap_result) platform_free(result);
+    return res;
+}
+
 CL_Obj cl_arith_add(CL_Obj a, CL_Obj b)
 {
     /* Complex path: compute components, recurse for each, canonicalize.
@@ -638,49 +672,7 @@ CL_Obj cl_arith_add(CL_Obj a, CL_Obj b)
         /* Overflow: fall through to bignum path */
     }
 
-    {
-        uint16_t ta[2], tb[2];
-        uint32_t a_len, b_len, a_sign, b_sign;
-        const uint16_t *al, *bl;
-        uint16_t result_stack[256];
-        uint16_t *result;
-        uint32_t r_len, max_len;
-        int heap_result = 0;
-
-        al = to_limbs(a, &a_len, &a_sign, ta);
-        bl = to_limbs(b, &b_len, &b_sign, tb);
-
-        max_len = (a_len > b_len ? a_len : b_len) + 1;
-        if (max_len <= 256) {
-            result = result_stack;
-        } else {
-            result = (uint16_t *)platform_alloc(max_len * sizeof(uint16_t));
-            heap_result = 1;
-        }
-
-        if (a_sign == b_sign) {
-            /* Same sign: add magnitudes */
-            CL_Obj res;
-            r_len = bignum_add_mag(al, a_len, bl, b_len, result);
-            res = bignum_from_limbs(result, r_len, a_sign);
-            if (heap_result) platform_free(result);
-            return res;
-        } else {
-            /* Different signs: subtract smaller from larger magnitude */
-            int cmp = bignum_compare_mag(al, a_len, bl, b_len);
-            CL_Obj res;
-            if (cmp == 0) { if (heap_result) platform_free(result); return CL_MAKE_FIXNUM(0); }
-            if (cmp > 0) {
-                r_len = bignum_sub_mag(al, a_len, bl, b_len, result);
-                res = bignum_from_limbs(result, r_len, a_sign);
-            } else {
-                r_len = bignum_sub_mag(bl, b_len, al, a_len, result);
-                res = bignum_from_limbs(result, r_len, b_sign);
-            }
-            if (heap_result) platform_free(result);
-            return res;
-        }
-    }
+    return bignum_addsub(a, b, 0);
 }
 
 CL_Obj cl_arith_sub(CL_Obj a, CL_Obj b)
@@ -716,50 +708,7 @@ CL_Obj cl_arith_sub(CL_Obj a, CL_Obj b)
             return CL_MAKE_FIXNUM(diff);
     }
 
-    {
-        uint16_t ta[2], tb[2];
-        uint32_t a_len, b_len, a_sign, b_sign;
-        const uint16_t *al, *bl;
-        uint16_t result_stack[256];
-        uint16_t *result;
-        uint32_t r_len, max_len;
-        int heap_result = 0;
-
-        al = to_limbs(a, &a_len, &a_sign, ta);
-        bl = to_limbs(b, &b_len, &b_sign, tb);
-
-        /* Flip sign of b, then add */
-        b_sign = b_sign ? 0 : 1;
-
-        max_len = (a_len > b_len ? a_len : b_len) + 1;
-        if (max_len <= 256) {
-            result = result_stack;
-        } else {
-            result = (uint16_t *)platform_alloc(max_len * sizeof(uint16_t));
-            heap_result = 1;
-        }
-
-        if (a_sign == b_sign) {
-            CL_Obj res;
-            r_len = bignum_add_mag(al, a_len, bl, b_len, result);
-            res = bignum_from_limbs(result, r_len, a_sign);
-            if (heap_result) platform_free(result);
-            return res;
-        } else {
-            int cmp = bignum_compare_mag(al, a_len, bl, b_len);
-            CL_Obj res;
-            if (cmp == 0) { if (heap_result) platform_free(result); return CL_MAKE_FIXNUM(0); }
-            if (cmp > 0) {
-                r_len = bignum_sub_mag(al, a_len, bl, b_len, result);
-                res = bignum_from_limbs(result, r_len, a_sign);
-            } else {
-                r_len = bignum_sub_mag(bl, b_len, al, a_len, result);
-                res = bignum_from_limbs(result, r_len, b_sign);
-            }
-            if (heap_result) platform_free(result);
-            return res;
-        }
-    }
+    return bignum_addsub(a, b, 1);
 }
 
 CL_Obj cl_arith_mul(CL_Obj a, CL_Obj b)
@@ -1902,13 +1851,49 @@ static CL_Obj from_twos_complement(const uint16_t *buf, uint32_t len)
     }
 }
 
-CL_Obj cl_arith_logand(CL_Obj a, CL_Obj b)
+/* Bitwise ops for the cold (>fixnum) case.  The three CL bitwise operators
+ * (LOGAND/LOGIOR/LOGXOR) share the entire two's-complement machinery and
+ * differ only in the per-limb operator, so the callers keep their 1-line
+ * fixnum fast path inline (see cl_arith_logand) and route the bignum tail
+ * here.  `op` is loop-invariant, so -O3 loop-unswitching lifts the switch out
+ * of the limb loop — no per-limb branch cost. */
+typedef enum { BITOP_AND, BITOP_IOR, BITOP_XOR } BignumBitop;
+
+static CL_Obj bignum_bitop(CL_Obj a, CL_Obj b, BignumBitop op, const char *name)
 {
     uint16_t ba[128], bb[128];
     int a_neg, b_neg;
     uint32_t a_len, b_len, max_len, i;
     uint16_t result[128];
 
+    check_integer(a, name);
+    check_integer(b, name);
+
+    a_len = to_twos_complement(a, ba, 128, &a_neg);
+    b_len = to_twos_complement(b, bb, 128, &b_neg);
+    max_len = a_len > b_len ? a_len : b_len;
+    if (max_len > 128) max_len = 128;
+
+    /* Sign-extend the shorter operand, then combine limb by limb. */
+    {
+        uint16_t a_ext = a_neg ? 0xFFFF : 0;
+        uint16_t b_ext = b_neg ? 0xFFFF : 0;
+        for (i = 0; i < max_len; i++) {
+            uint16_t av = i < a_len ? ba[i] : a_ext;
+            uint16_t bv = i < b_len ? bb[i] : b_ext;
+            switch (op) {
+                case BITOP_AND: result[i] = (uint16_t)(av & bv); break;
+                case BITOP_IOR: result[i] = (uint16_t)(av | bv); break;
+                case BITOP_XOR: result[i] = (uint16_t)(av ^ bv); break;
+            }
+        }
+    }
+
+    return from_twos_complement(result, max_len);
+}
+
+CL_Obj cl_arith_logand(CL_Obj a, CL_Obj b)
+{
     /* Fixnum fast path.  Bits 30 and 31 of any int32 in fixnum range
      * are equal (sign extension), so AND/OR/XOR of two such values
      * has bits 30 and 31 equal in the result — i.e. always fits in
@@ -1916,89 +1901,21 @@ CL_Obj cl_arith_logand(CL_Obj a, CL_Obj b)
      * cl_make_bignum round-trip. */
     if (CL_FIXNUM_P(a) && CL_FIXNUM_P(b))
         return CL_MAKE_FIXNUM(CL_FIXNUM_VAL(a) & CL_FIXNUM_VAL(b));
-
-    check_integer(a, "LOGAND");
-    check_integer(b, "LOGAND");
-
-    a_len = to_twos_complement(a, ba, 128, &a_neg);
-    b_len = to_twos_complement(b, bb, 128, &b_neg);
-    max_len = a_len > b_len ? a_len : b_len;
-    if (max_len > 128) max_len = 128;
-
-    /* Sign-extend shorter operand */
-    {
-        uint16_t a_ext = a_neg ? 0xFFFF : 0;
-        uint16_t b_ext = b_neg ? 0xFFFF : 0;
-        for (i = 0; i < max_len; i++) {
-            uint16_t av = i < a_len ? ba[i] : a_ext;
-            uint16_t bv = i < b_len ? bb[i] : b_ext;
-            result[i] = av & bv;
-        }
-    }
-
-    return from_twos_complement(result, max_len);
+    return bignum_bitop(a, b, BITOP_AND, "LOGAND");
 }
 
 CL_Obj cl_arith_logior(CL_Obj a, CL_Obj b)
 {
-    uint16_t ba[128], bb[128];
-    int a_neg, b_neg;
-    uint32_t a_len, b_len, max_len, i;
-    uint16_t result[128];
-
     if (CL_FIXNUM_P(a) && CL_FIXNUM_P(b))
         return CL_MAKE_FIXNUM(CL_FIXNUM_VAL(a) | CL_FIXNUM_VAL(b));
-
-    check_integer(a, "LOGIOR");
-    check_integer(b, "LOGIOR");
-
-    a_len = to_twos_complement(a, ba, 128, &a_neg);
-    b_len = to_twos_complement(b, bb, 128, &b_neg);
-    max_len = a_len > b_len ? a_len : b_len;
-    if (max_len > 128) max_len = 128;
-
-    {
-        uint16_t a_ext = a_neg ? 0xFFFF : 0;
-        uint16_t b_ext = b_neg ? 0xFFFF : 0;
-        for (i = 0; i < max_len; i++) {
-            uint16_t av = i < a_len ? ba[i] : a_ext;
-            uint16_t bv = i < b_len ? bb[i] : b_ext;
-            result[i] = av | bv;
-        }
-    }
-
-    return from_twos_complement(result, max_len);
+    return bignum_bitop(a, b, BITOP_IOR, "LOGIOR");
 }
 
 CL_Obj cl_arith_logxor(CL_Obj a, CL_Obj b)
 {
-    uint16_t ba[128], bb[128];
-    int a_neg, b_neg;
-    uint32_t a_len, b_len, max_len, i;
-    uint16_t result[128];
-
     if (CL_FIXNUM_P(a) && CL_FIXNUM_P(b))
         return CL_MAKE_FIXNUM(CL_FIXNUM_VAL(a) ^ CL_FIXNUM_VAL(b));
-
-    check_integer(a, "LOGXOR");
-    check_integer(b, "LOGXOR");
-
-    a_len = to_twos_complement(a, ba, 128, &a_neg);
-    b_len = to_twos_complement(b, bb, 128, &b_neg);
-    max_len = a_len > b_len ? a_len : b_len;
-    if (max_len > 128) max_len = 128;
-
-    {
-        uint16_t a_ext = a_neg ? 0xFFFF : 0;
-        uint16_t b_ext = b_neg ? 0xFFFF : 0;
-        for (i = 0; i < max_len; i++) {
-            uint16_t av = i < a_len ? ba[i] : a_ext;
-            uint16_t bv = i < b_len ? bb[i] : b_ext;
-            result[i] = av ^ bv;
-        }
-    }
-
-    return from_twos_complement(result, max_len);
+    return bignum_bitop(a, b, BITOP_XOR, "LOGXOR");
 }
 
 CL_Obj cl_arith_lognot(CL_Obj a)

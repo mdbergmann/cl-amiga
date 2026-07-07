@@ -28,9 +28,10 @@ int cl_debugger_enabled = 0;
 
 static CL_Obj SYM_DEBUGGER_HOOK;
 
-/* Helper to register a builtin (also exports from CL package since
- * cl_debugger_init runs after the bulk cl_package_export_all_cl_symbols call) */
-static void defun(const char *name, CL_CFunc func, int min, int max)
+/* Helper to register a builtin AND export it from the CL package (plain defun()
+ * from builtins.h only registers; cl_debugger_init runs after the bulk
+ * cl_package_export_all_cl_symbols call, so these need an explicit export). */
+static void defun_exported(const char *name, CL_CFunc func, int min, int max)
 {
     CL_Obj sym = cl_intern_in(name, (uint32_t)strlen(name), cl_package_cl);
     CL_Obj fn;
@@ -446,7 +447,7 @@ void cl_debugger_init(void)
     cl_export_symbol(SYM_DEBUGGER_HOOK, cl_package_cl);
 
     /* Register invoke-debugger builtin */
-    defun("INVOKE-DEBUGGER", bi_invoke_debugger, 1, 1);
+    defun_exported("INVOKE-DEBUGGER", bi_invoke_debugger, 1, 1);
 
     /* Register cached symbols for GC compaction forwarding */
     cl_gc_register_root(&SYM_DEBUGGER_HOOK);
