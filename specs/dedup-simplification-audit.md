@@ -222,6 +222,55 @@ Keep fixnum fast paths inline; only factor the COLD large-operand tails.
 
 ## Tier 3 — repeated guard/predicate boilerplate (adds up, ~900 lines)
 
+### STATUS (2026-07-07)
+Five host-validated commits (batches 1–5); net ~−440 lines. Every change is
+behavior-preserving — body-generating macros / static inlines emit the same
+code (hot paths — char=/char<, VM OP_LT.., seq access — stay inline, no runtime
+mode switch or function-pointer indirection). host `make test` +
+`make test-gc-stress` (366/366) green after each. No FASL wire-byte change → no
+`CL_FASL_VERSION` bump (batch 5 keeps the on-disk layout byte-identical).
+**Amiga: DONE** — the whole tier cross-compiled and passed FS-UAE **3625/0**
+(full suite + JIT loop bench) after batch 5.
+
+- **Batch 1 DONE** — builtins guards. `builtins_strings.c`
+  DEFINE_CHAR_ORDER_CMP / DEFINE_CHAR_NE_CMP (12 char comparators, FOLD selects
+  case sensitivity) + `require_char` (13 accessors). `builtins.h`
+  DEFINE_TYPE_PREDICATE (12 `bi_*p` one-liners across 7 files).
+  `require_hash_table` (11 sites). `require_condition` +
+  DEFINE_COND_SLOT_READER (10 condition slot accessors). `builtins_arith.c`
+  DEFINE_REAL_CHAIN_CMP (</>/<=/>=), DEFINE_MINMAX, DEFINE_LOGFOLD.
+- **Batch 2 DONE** — VM opcodes + cross-file. `vm.c` VM_ORDER_CMP (OP_LT/GT/
+  LE/GE, inline, byte-identical) + VM_REQUIRE_CONSTANTS (OP_CONST/GSTORE/FLOAD;
+  OP_GLOAD keeps its own — extra backtrace). Shared `cl_classify_vec_elt_code`
+  (was classify_general_elt_code == coerce_general_elt_code) and
+  `cl_resolve_input/output_stream` (io.c's copy deleted).
+- **Batch 3 DONE** — `package.c` pkg_lock_read/write/unlock inlines (~40
+  guards), pkg_list_remove_eq (UNEXPORT/UNUSE), export_symbols_where(pred) (the
+  bulk-export counted-advance double loop; NULL pred = all, else has-binding
+  AND not `%`).
+- **Batch 4 DONE** — `printer.c` out_radix_prefix (fixnum/bignum/ratio) +
+  print_float(value, is_double) (merged single/double); stream.c
+  cl_finish_string_output_stream (6 sites, prevents outbuf leaks).
+- **Batch 5 DONE** — `fasl.c` fasl_double_to_be / fasl_double_from_be (the
+  DOUBLE_FLOAT endian read/write twin).
+- **NOT DONE / DEFERRED**:
+  - `require_symbol` (mutation) — heterogeneous SYMBOL-OR-NIL handling / two
+    error mechanisms; a single helper would change NIL-remap behavior. Skipped.
+  - `require_fp_vector` — the described 4× pattern isn't present in
+    builtins_array.c as such (spec over-count). Skipped.
+  - `thread` / `builtins_thread` (table alloc/free, lock/condvar preamble,
+    timed vs untimed condition-wait) — m68k thread paths; needs Amiga FS-UAE
+    validation. Do as its own Amiga-validated change (like T1.3 / T2.5).
+  - `seq_elt`/`seq_length`/`call_test` cross-TU promotion + bi_read stream
+    logic — HOT, cross-TU; deferred.
+  - printer `*print-object-hook*` STRUCT-vs-CONDITION dispatch — delicate
+    per-type GC re-derivation; deferred.
+  - FASL RATIO/COMPLEX/PATHNAME multi-object read blocks + gc mark/update
+    visitor — entangled with the serialization state machine; deferred.
+  - `error.c` per-frame restore — the EXIT path restores a *different* subset;
+    the spec flags this as a latent inconsistency, so it needs a behavior
+    decision, not a mechanical fold. Deferred.
+
 ### Builtins guards
 - **Char comparators**: 12 near-identical fns (`builtins_strings.c`
   104-175 + 1830-1901). String side already solved via `string_cmp_op` +
