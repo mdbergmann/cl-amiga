@@ -14,6 +14,21 @@ void cl_builtins_init(void);
 void cl_register_builtin(const char *name, CL_CFunc func,
                           int min, int max, CL_Obj package);
 
+/* COMMON-LISP package handle (defined in package.c); declared here so the
+ * shared defun() helper below can register into it without pulling in
+ * package.h. */
+extern CL_Obj cl_package_cl;
+
+/* Shared helper: register a builtin into the COMMON-LISP package.
+ * Every builtins_*.c used to carry its own byte-identical copy of this
+ * (a GC-protected intern + make_function + set-function-cell); they now
+ * share this one.  static inline so each TU that does not call it emits
+ * nothing and no linker symbol is produced. */
+static inline void defun(const char *name, CL_CFunc func, int min, int max)
+{
+    cl_register_builtin(name, func, min, max, cl_package_cl);
+}
+
 /* Static descriptor used by table-driven init.
  * min/max are int16 to keep the entry compact (max == -1 means &rest). */
 typedef struct {

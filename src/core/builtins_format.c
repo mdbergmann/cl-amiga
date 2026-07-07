@@ -130,6 +130,33 @@ static int fmt_args_remaining(FmtCtx *ctx)
     return ctx->nargs - ctx->ai;
 }
 
+/* Stage the elements of `list` onto the VM stack so a sub-context can use
+ * them as its args: GC-rooted across the following fmt_run (which allocates
+ * and can compact) and uncapped beyond CALL-ARGUMENTS-LIMIT — a fixed 64-slot
+ * C snapshot silently dropped elements past 64.  Returns the count pushed and
+ * stores the pre-staging sp in *base (the caller reads args from
+ * &cl_vm.stack[*base] and restores cl_vm.sp = *base after the sub-run).  On
+ * overflow, restores sp and signals with `who` naming the directive. */
+static int fmt_stage_list(CL_Obj list, int *base, const char *who)
+{
+    int n = 0;
+    int start = cl_vm.sp;
+    CL_Obj tmp = list;
+    *base = start;
+    while (!CL_NULL_P(tmp)) {
+        if (n >= CL_CALL_ARGS_LIMIT) {
+            cl_vm.sp = start;
+            cl_error(CL_ERR_ARGS,
+                     "FORMAT %s: too many arguments "
+                     "(call-arguments-limit is %d)", who, CL_CALL_ARGS_LIMIT);
+        }
+        cl_vm_push(cl_car(tmp));
+        n++;
+        tmp = cl_cdr(tmp);
+    }
+    return n;
+}
+
 /*
  * Parse a format directive starting at ctx->pos (which points just past '~').
  * After return, ctx->pos points past the directive character.
@@ -1105,29 +1132,9 @@ static void fmt_iteration(FmtCtx *ctx, FmtDirective *d)
         /* ~^ in sub-context only terminates current step, not whole iteration */
         while (ctx->ai < ctx->nargs && iter_count < max_iter) {
             CL_Obj sublist = fmt_next_arg(ctx);
-            /* Stage the sublist elements on the VM stack: GC-rooted across
-             * fmt_run (which can allocate and compact — user ~/fn/, number
-             * printing) and uncapped — a fixed 64-slot C snapshot silently
-             * dropped sublist elements past 64. */
-            CL_Obj tmp;
-            int sub_n = 0;
-            int sbase = cl_vm.sp;
-            int sstaged = cl_vm.sp;
+            int sbase;
+            int sub_n = fmt_stage_list(sublist, &sbase, "~~:@{");
             FmtCtx sub;
-
-            tmp = sublist;
-            while (!CL_NULL_P(tmp)) {
-                if (sub_n >= CL_CALL_ARGS_LIMIT) {
-                    cl_vm.sp = sstaged;
-                    cl_error(CL_ERR_ARGS,
-                             "FORMAT ~~:@{: sublist too long "
-                             "(call-arguments-limit is %d)",
-                             CL_CALL_ARGS_LIMIT);
-                }
-                cl_vm_push(cl_car(tmp));
-                sub_n++;
-                tmp = cl_cdr(tmp);
-            }
 
             sub.stream = ctx->stream;
             sub.fmt = body_copy;
@@ -1137,7 +1144,7 @@ static void fmt_iteration(FmtCtx *ctx, FmtDirective *d)
             sub.ai = 0;
             sub.escape = 0;
             fmt_run(&sub);
-            cl_vm.sp = sstaged;
+            cl_vm.sp = sbase;
             /* ~^ only terminates current step for ~:@{ */
             iter_count++;
         }
@@ -1165,27 +1172,9 @@ static void fmt_iteration(FmtCtx *ctx, FmtDirective *d)
         CL_GC_PROTECT(list);
         while (!CL_NULL_P(list) && iter_count < max_iter) {
             CL_Obj sublist = cl_car(list);
-            CL_Obj tmp;
-            int sub_n = 0;
-            int sbase = cl_vm.sp;
-            int sstaged = cl_vm.sp;
+            int sbase;
+            int sub_n = fmt_stage_list(sublist, &sbase, "~~:{");
             FmtCtx sub;
-
-            /* Stage on the VM stack — rooted across fmt_run, no 64-element
-             * cap (see ~:@{). */
-            tmp = sublist;
-            while (!CL_NULL_P(tmp)) {
-                if (sub_n >= CL_CALL_ARGS_LIMIT) {
-                    cl_vm.sp = sstaged;
-                    cl_error(CL_ERR_ARGS,
-                             "FORMAT ~~:{: sublist too long "
-                             "(call-arguments-limit is %d)",
-                             CL_CALL_ARGS_LIMIT);
-                }
-                cl_vm_push(cl_car(tmp));
-                sub_n++;
-                tmp = cl_cdr(tmp);
-            }
 
             sub.stream = ctx->stream;
             sub.fmt = body_copy;
@@ -1195,7 +1184,7 @@ static void fmt_iteration(FmtCtx *ctx, FmtDirective *d)
             sub.ai = 0;
             sub.escape = 0;
             fmt_run(&sub);
-            cl_vm.sp = sstaged;
+            cl_vm.sp = sbase;
             /* ~^ only terminates current step for ~:{ */
 
             list = cl_cdr(list);
@@ -1380,34 +1369,17 @@ static void fmt_recursive(FmtCtx *ctx, FmtDirective *d)
         fmt_run(&sub);
         ctx->ai = sub.ai;
     } else {
-        /* ~? — consume format string + list of args.  Stage the args on
-         * the VM stack: GC-rooted across the sub-run (which can compact)
-         * and uncapped — a fixed 64-slot C snapshot silently dropped args
-         * past 64. */
+        /* ~? — consume format string + list of args, staged on the VM stack
+         * (GC-rooted across the sub-run, uncapped). */
         CL_Obj arg_list = fmt_next_arg(ctx);
-        CL_Obj tmp;
-        int sub_n = 0;
-        int sbase = cl_vm.sp;
-        int sstaged = cl_vm.sp;
-
-        tmp = arg_list;
-        while (!CL_NULL_P(tmp)) {
-            if (sub_n >= CL_CALL_ARGS_LIMIT) {
-                cl_vm.sp = sstaged;
-                cl_error(CL_ERR_ARGS,
-                         "FORMAT ~~?: too many arguments in list "
-                         "(call-arguments-limit is %d)", CL_CALL_ARGS_LIMIT);
-            }
-            cl_vm_push(cl_car(tmp));
-            sub_n++;
-            tmp = cl_cdr(tmp);
-        }
+        int sbase;
+        int sub_n = fmt_stage_list(arg_list, &sbase, "~~?");
 
         sub.args = &cl_vm.stack[sbase];
         sub.nargs = sub_n;
         sub.ai = 0;
         fmt_run(&sub);
-        cl_vm.sp = sstaged;
+        cl_vm.sp = sbase;
     }
 
     if (alloc) platform_free(alloc);

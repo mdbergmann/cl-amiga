@@ -1411,188 +1411,215 @@ static void gc_mark_push(CL_Obj obj)
     gc_mark_stack[gc_mark_top++] = obj;
 }
 
+/* --- Shared object-slot walker (used by mark and compaction-update) ---------
+ * gc_mark_children and gc_update_children walk the identical per-type set of
+ * CL_Obj slots; they differ only in the operation applied to each slot
+ * (mark-push a value vs forward a slot in place) and in two type-specific
+ * tails.  The layout is therefore written ONCE here as an X-macro and each
+ * function instantiates it by defining GC_VISIT plus the two _TAIL hooks.
+ * Because it is macro expansion the generated code is identical to two
+ * hand-written switches — zero per-object overhead on this hot GC path.
+ *
+ * Callers must define, before invoking:
+ *   GC_VISIT(slot)          operate on one CL_Obj lvalue slot
+ *   GC_BYTECODE_TAIL(bc)    extra work for TYPE_BYTECODE (native reloc forward)
+ *   GC_STREAM_TAIL(st)      extra work for TYPE_STREAM   (outbuf pin)
+ * and #undef them afterward. */
+#define GC_WALK_OBJ_CHILDREN(ptr, type)                                       \
+    switch (type) {                                                           \
+    case TYPE_CONS: {                                                         \
+        CL_Cons *c = (CL_Cons *)(ptr);                                        \
+        GC_VISIT(c->car);                                                     \
+        GC_VISIT(c->cdr);                                                     \
+        break;                                                               \
+    }                                                                        \
+    case TYPE_SYMBOL: {                                                       \
+        CL_Symbol *s = (CL_Symbol *)(ptr);                                    \
+        GC_VISIT(s->name);                                                    \
+        if (s->value != CL_UNBOUND) GC_VISIT(s->value);                       \
+        if (s->function != CL_UNBOUND) GC_VISIT(s->function);                 \
+        GC_VISIT(s->plist);                                                   \
+        GC_VISIT(s->package);                                                 \
+        break;                                                               \
+    }                                                                        \
+    case TYPE_FUNCTION: {                                                     \
+        CL_Function *f = (CL_Function *)(ptr);                                \
+        GC_VISIT(f->name);                                                    \
+        break;                                                               \
+    }                                                                        \
+    case TYPE_CLOSURE: {                                                      \
+        CL_Closure *cl = (CL_Closure *)(ptr);                                 \
+        uint32_t size = CL_HDR_SIZE(ptr);                                     \
+        uint32_t n_upvals = (size - sizeof(CL_Closure)) / sizeof(CL_Obj);     \
+        uint32_t i;                                                           \
+        GC_VISIT(cl->bytecode);                                               \
+        for (i = 0; i < n_upvals; i++)                                        \
+            GC_VISIT(cl->upvalues[i]);                                        \
+        break;                                                               \
+    }                                                                        \
+    case TYPE_BYTECODE: {                                                     \
+        CL_Bytecode *bc = (CL_Bytecode *)(ptr);                               \
+        uint16_t i;                                                           \
+        GC_VISIT(bc->name);                                                   \
+        GC_VISIT(bc->source_lambda_list);                                     \
+        for (i = 0; i < bc->n_constants; i++)                                 \
+            GC_VISIT(bc->constants[i]);                                       \
+        if (bc->key_syms) {                                                   \
+            for (i = 0; i < bc->n_keys; i++)                                  \
+                GC_VISIT(bc->key_syms[i]);                                    \
+        }                                                                     \
+        GC_BYTECODE_TAIL(bc);                                                 \
+        break;                                                               \
+    }                                                                        \
+    case TYPE_VECTOR: {                                                       \
+        CL_Vector *v = (CL_Vector *)(ptr);                                    \
+        uint32_t i;                                                           \
+        if (v->flags & CL_VEC_FLAG_DISPLACED) {                              \
+            GC_VISIT(v->data[CL_DISP_BASE_IDX(v)]);                           \
+        } else {                                                             \
+            uint32_t n_entries = (v->rank > 1) ? (uint32_t)v->rank + v->length \
+                                               : v->length;                   \
+            for (i = 0; i < n_entries; i++)                                   \
+                GC_VISIT(v->data[i]);                                         \
+        }                                                                    \
+        break;                                                               \
+    }                                                                        \
+    case TYPE_PACKAGE: {                                                      \
+        CL_Package *p = (CL_Package *)(ptr);                                  \
+        GC_VISIT(p->name);                                                    \
+        GC_VISIT(p->symbols);                                                 \
+        GC_VISIT(p->use_list);                                                \
+        GC_VISIT(p->nicknames);                                               \
+        GC_VISIT(p->local_nicknames);                                         \
+        GC_VISIT(p->shadowing_symbols);                                       \
+        GC_VISIT(p->exported_symbols);                                        \
+        break;                                                               \
+    }                                                                        \
+    case TYPE_HASHTABLE: {                                                    \
+        CL_Hashtable *ht = (CL_Hashtable *)(ptr);                             \
+        uint32_t i;                                                           \
+        GC_VISIT(ht->bucket_vec);                                             \
+        if (!CL_NULL_P(ht->bucket_vec)) {                                     \
+            /* Buckets live in the external vector; walking it covers them */ \
+        } else {                                                             \
+            for (i = 0; i < ht->bucket_count; i++)                            \
+                GC_VISIT(ht->buckets[i]);                                     \
+        }                                                                    \
+        break;                                                               \
+    }                                                                        \
+    case TYPE_CONDITION: {                                                    \
+        CL_Condition *cond = (CL_Condition *)(ptr);                           \
+        GC_VISIT(cond->type_name);                                            \
+        GC_VISIT(cond->slots);                                                \
+        GC_VISIT(cond->report_string);                                       \
+        break;                                                               \
+    }                                                                        \
+    case TYPE_RESTART: {                                                      \
+        CL_Restart *r = (CL_Restart *)(ptr);                                  \
+        GC_VISIT(r->name);                                                    \
+        GC_VISIT(r->function);                                                \
+        GC_VISIT(r->report);                                                  \
+        GC_VISIT(r->interactive);                                             \
+        GC_VISIT(r->test);                                                    \
+        GC_VISIT(r->tag);                                                     \
+        break;                                                               \
+    }                                                                        \
+    case TYPE_STRUCT: {                                                       \
+        CL_Struct *st = (CL_Struct *)(ptr);                                   \
+        uint32_t i;                                                           \
+        GC_VISIT(st->type_desc);                                              \
+        for (i = 0; i < st->n_slots; i++)                                     \
+            GC_VISIT(st->slots[i]);                                           \
+        break;                                                               \
+    }                                                                        \
+    case TYPE_STREAM: {                                                       \
+        CL_Stream *st = (CL_Stream *)(ptr);                                   \
+        GC_VISIT(st->string_buf);                                             \
+        GC_VISIT(st->element_type);                                           \
+        GC_STREAM_TAIL(st);                                                   \
+        break;                                                               \
+    }                                                                        \
+    case TYPE_RATIO: {                                                        \
+        CL_Ratio *r = (CL_Ratio *)(ptr);                                      \
+        GC_VISIT(r->numerator);                                               \
+        GC_VISIT(r->denominator);                                             \
+        break;                                                               \
+    }                                                                        \
+    case TYPE_COMPLEX: {                                                      \
+        CL_Complex *cx = (CL_Complex *)(ptr);                                 \
+        GC_VISIT(cx->realpart);                                               \
+        GC_VISIT(cx->imagpart);                                              \
+        break;                                                               \
+    }                                                                        \
+    case TYPE_PATHNAME: {                                                     \
+        CL_Pathname *pn = (CL_Pathname *)(ptr);                               \
+        GC_VISIT(pn->host);                                                   \
+        GC_VISIT(pn->device);                                                 \
+        GC_VISIT(pn->directory);                                             \
+        GC_VISIT(pn->name);                                                   \
+        GC_VISIT(pn->type);                                                   \
+        GC_VISIT(pn->version);                                                \
+        break;                                                               \
+    }                                                                        \
+    case TYPE_CELL: {                                                         \
+        CL_Cell *cell = (CL_Cell *)(ptr);                                     \
+        GC_VISIT(cell->value);                                                \
+        break;                                                               \
+    }                                                                        \
+    case TYPE_THREAD: {                                                       \
+        CL_ThreadObj *to = (CL_ThreadObj *)(ptr);                            \
+        GC_VISIT(to->name);                                                   \
+        GC_VISIT(to->result);                                                 \
+        break;                                                               \
+    }                                                                        \
+    case TYPE_LOCK: {                                                         \
+        CL_Lock *lk = (CL_Lock *)(ptr);                                       \
+        GC_VISIT(lk->name);                                                   \
+        break;                                                               \
+    }                                                                        \
+    case TYPE_CONDVAR: {                                                      \
+        CL_CondVar *cv = (CL_CondVar *)(ptr);                                 \
+        GC_VISIT(cv->name);                                                   \
+        break;                                                               \
+    }                                                                        \
+    case TYPE_STRING:                                                         \
+    case TYPE_BIGNUM:                                                         \
+    case TYPE_SINGLE_FLOAT:                                                    \
+    case TYPE_DOUBLE_FLOAT:                                                    \
+    case TYPE_RANDOM_STATE:                                                    \
+    case TYPE_BIT_VECTOR:                                                      \
+    case TYPE_FOREIGN_POINTER:                                                 \
+    CL_GC_WIDE_STRING_CASE                                                     \
+        /* No CL_Obj children — raw numeric/state/byte data */                \
+        break;                                                               \
+    default:                                                                  \
+        break;                                                               \
+    }
+
+#ifdef CL_WIDE_STRINGS
+#define CL_GC_WIDE_STRING_CASE case TYPE_WIDE_STRING:
+#else
+#define CL_GC_WIDE_STRING_CASE
+#endif
+
 static void gc_mark_children(void *ptr, uint8_t type)
 {
 #if defined(DEBUG_GC) || defined(DEBUG_GC_STRESS)
     gc_dbg_mark_parent = ptr;
 #endif
-    switch (type) {
-    case TYPE_CONS: {
-        CL_Cons *c = (CL_Cons *)ptr;
-        gc_mark_push(c->car);
-        gc_mark_push(c->cdr);
-        break;
-    }
-    case TYPE_SYMBOL: {
-        CL_Symbol *s = (CL_Symbol *)ptr;
-        gc_mark_push(s->name);
-        if (s->value != CL_UNBOUND) gc_mark_push(s->value);
-        if (s->function != CL_UNBOUND) gc_mark_push(s->function);
-        gc_mark_push(s->plist);
-        gc_mark_push(s->package);
-        break;
-    }
-    case TYPE_FUNCTION: {
-        CL_Function *f = (CL_Function *)ptr;
-        gc_mark_push(f->name);
-        break;
-    }
-    case TYPE_CLOSURE: {
-        CL_Closure *cl = (CL_Closure *)ptr;
-        uint32_t size = CL_HDR_SIZE(ptr);
-        uint32_t n_upvals = (size - sizeof(CL_Closure)) / sizeof(CL_Obj);
-        uint32_t i;
-        gc_mark_push(cl->bytecode);
-        for (i = 0; i < n_upvals; i++)
-            gc_mark_push(cl->upvalues[i]);
-        break;
-    }
-    case TYPE_BYTECODE: {
-        CL_Bytecode *bc = (CL_Bytecode *)ptr;
-        uint16_t i;
-        gc_mark_push(bc->name);
-        gc_mark_push(bc->source_lambda_list);
-        for (i = 0; i < bc->n_constants; i++)
-            gc_mark_push(bc->constants[i]);
-        /* Mark keyword symbols if present */
-        if (bc->key_syms) {
-            for (i = 0; i < bc->n_keys; i++)
-                gc_mark_push(bc->key_syms[i]);
-        }
-        break;
-    }
-    case TYPE_VECTOR: {
-        CL_Vector *v = (CL_Vector *)ptr;
-        uint32_t i;
-        if (v->flags & CL_VEC_FLAG_DISPLACED) {
-            /* Displaced: the backing vector reference is at data[base]
-             * (base skips multi-dim dimension storage). */
-            gc_mark_push(v->data[CL_DISP_BASE_IDX(v)]);
-        } else {
-            /* For multi-dim: data[0..rank-1] are dim fixnums, elements at data[rank..] */
-            uint32_t n_entries = (v->rank > 1) ? (uint32_t)v->rank + v->length : v->length;
-            for (i = 0; i < n_entries; i++)
-                gc_mark_push(v->data[i]);
-        }
-        break;
-    }
-    case TYPE_PACKAGE: {
-        CL_Package *p = (CL_Package *)ptr;
-        gc_mark_push(p->name);
-        gc_mark_push(p->symbols);
-        gc_mark_push(p->use_list);
-        gc_mark_push(p->nicknames);
-        gc_mark_push(p->local_nicknames);
-        gc_mark_push(p->shadowing_symbols);
-        gc_mark_push(p->exported_symbols);
-        break;
-    }
-    case TYPE_HASHTABLE: {
-        CL_Hashtable *ht = (CL_Hashtable *)ptr;
-        uint32_t i;
-        gc_mark_push(ht->bucket_vec);
-        if (!CL_NULL_P(ht->bucket_vec)) {
-            /* Buckets in external vector — marking the vector marks its contents */
-        } else {
-            for (i = 0; i < ht->bucket_count; i++)
-                gc_mark_push(ht->buckets[i]);
-        }
-        break;
-    }
-    case TYPE_CONDITION: {
-        CL_Condition *cond = (CL_Condition *)ptr;
-        gc_mark_push(cond->type_name);
-        gc_mark_push(cond->slots);
-        gc_mark_push(cond->report_string);
-        break;
-    }
-    case TYPE_RESTART: {
-        CL_Restart *r = (CL_Restart *)ptr;
-        gc_mark_push(r->name);
-        gc_mark_push(r->function);
-        gc_mark_push(r->report);
-        gc_mark_push(r->interactive);
-        gc_mark_push(r->test);
-        gc_mark_push(r->tag);
-        break;
-    }
-    case TYPE_STRUCT: {
-        CL_Struct *st = (CL_Struct *)ptr;
-        uint32_t i;
-        gc_mark_push(st->type_desc);
-        for (i = 0; i < st->n_slots; i++)
-            gc_mark_push(st->slots[i]);
-        break;
-    }
-    case TYPE_STREAM: {
-        CL_Stream *st = (CL_Stream *)ptr;
-        gc_mark_push(st->string_buf);
-        gc_mark_push(st->element_type);
-        /* Pin this live output stream's outbuf slot so the post-mark reclaim
-         * (cl_stream_outbuf_gc_reclaim) doesn't free a buffer still in use. */
-        if ((st->direction & CL_STREAM_OUTPUT) && st->out_buf_handle != 0)
-            cl_stream_outbuf_gc_mark_use(st->out_buf_handle);
-        break;
-    }
-    case TYPE_RATIO: {
-        CL_Ratio *r = (CL_Ratio *)ptr;
-        gc_mark_push(r->numerator);
-        gc_mark_push(r->denominator);
-        break;
-    }
-    case TYPE_COMPLEX: {
-        CL_Complex *cx = (CL_Complex *)ptr;
-        gc_mark_push(cx->realpart);
-        gc_mark_push(cx->imagpart);
-        break;
-    }
-    case TYPE_PATHNAME: {
-        CL_Pathname *pn = (CL_Pathname *)ptr;
-        gc_mark_push(pn->host);
-        gc_mark_push(pn->device);
-        gc_mark_push(pn->directory);
-        gc_mark_push(pn->name);
-        gc_mark_push(pn->type);
-        gc_mark_push(pn->version);
-        break;
-    }
-    case TYPE_CELL: {
-        CL_Cell *cell = (CL_Cell *)ptr;
-        gc_mark_push(cell->value);
-        break;
-    }
-    case TYPE_THREAD: {
-        CL_ThreadObj *to = (CL_ThreadObj *)ptr;
-        gc_mark_push(to->name);
-        gc_mark_push(to->result);
-        break;
-    }
-    case TYPE_LOCK: {
-        CL_Lock *lk = (CL_Lock *)ptr;
-        gc_mark_push(lk->name);
-        break;
-    }
-    case TYPE_CONDVAR: {
-        CL_CondVar *cv = (CL_CondVar *)ptr;
-        gc_mark_push(cv->name);
-        break;
-    }
-    case TYPE_FOREIGN_POINTER:
-        /* No CL_Obj children */
-        break;
-    case TYPE_BIGNUM:
-    case TYPE_SINGLE_FLOAT:
-    case TYPE_DOUBLE_FLOAT:
-    case TYPE_RANDOM_STATE:
-    case TYPE_BIT_VECTOR:
-#ifdef CL_WIDE_STRINGS
-    case TYPE_WIDE_STRING:
-#endif
-        /* No children — raw numeric/state data */
-        break;
-    default:
-        break;
-    }
+#define GC_VISIT(slot) gc_mark_push(slot)
+#define GC_BYTECODE_TAIL(bc) ((void)(bc))
+    /* Pin this live output stream's outbuf slot so the post-mark reclaim
+     * (cl_stream_outbuf_gc_reclaim) doesn't free a buffer still in use. */
+#define GC_STREAM_TAIL(st)                                                    \
+    do {                                                                      \
+        if (((st)->direction & CL_STREAM_OUTPUT) && (st)->out_buf_handle != 0)\
+            cl_stream_outbuf_gc_mark_use((st)->out_buf_handle);               \
+    } while (0)
+    GC_WALK_OBJ_CHILDREN(ptr, type);
+#undef GC_VISIT
+#undef GC_BYTECODE_TAIL
+#undef GC_STREAM_TAIL
 }
 
 void gc_mark_obj(CL_Obj obj)
@@ -2757,199 +2784,43 @@ static void gc_update_slot(CL_Obj *slot)
     *slot = gc_forward(*slot);
 }
 
-/* Pass 3a: Update children of a single heap object (mirrors gc_mark_children) */
+/* Pass 3a: Update children of a single heap object.  Shares the per-type slot
+ * layout with gc_mark_children via the GC_WALK_OBJ_CHILDREN X-macro above;
+ * here each slot is forwarded in place and TYPE_BYTECODE additionally patches
+ * CL_Obj immediates baked into JIT'd native code. */
 static void gc_update_children(void *ptr, uint8_t type)
 {
-    switch (type) {
-    case TYPE_CONS: {
-        CL_Cons *c = (CL_Cons *)ptr;
-        gc_update_slot(&c->car);
-        gc_update_slot(&c->cdr);
-        break;
-    }
-    case TYPE_SYMBOL: {
-        CL_Symbol *s = (CL_Symbol *)ptr;
-        gc_update_slot(&s->name);
-        if (s->value != CL_UNBOUND) gc_update_slot(&s->value);
-        if (s->function != CL_UNBOUND) gc_update_slot(&s->function);
-        gc_update_slot(&s->plist);
-        gc_update_slot(&s->package);
-        break;
-    }
-    case TYPE_FUNCTION: {
-        CL_Function *f = (CL_Function *)ptr;
-        gc_update_slot(&f->name);
-        break;
-    }
-    case TYPE_CLOSURE: {
-        CL_Closure *cl = (CL_Closure *)ptr;
-        uint32_t size = CL_HDR_SIZE(ptr);
-        uint32_t n_upvals = (size - sizeof(CL_Closure)) / sizeof(CL_Obj);
-        uint32_t i;
-        gc_update_slot(&cl->bytecode);
-        for (i = 0; i < n_upvals; i++)
-            gc_update_slot(&cl->upvalues[i]);
-        break;
-    }
-    case TYPE_BYTECODE: {
-        CL_Bytecode *bc = (CL_Bytecode *)ptr;
-        uint16_t i;
-        gc_update_slot(&bc->name);
-        gc_update_slot(&bc->source_lambda_list);
-        for (i = 0; i < bc->n_constants; i++)
-            gc_update_slot(&bc->constants[i]);
-        if (bc->key_syms) {
-            for (i = 0; i < bc->n_keys; i++)
-                gc_update_slot(&bc->key_syms[i]);
-        }
-        /* Forward CL_Obj heap references baked as 32-bit immediates into
-         * the JIT'd native code.  native_relocs lists the byte offset of
-         * each such 4-byte big-endian field; without this pass a moving
-         * compaction would leave stale arena offsets in executable code
-         * (m68k JIT only — native_relocs is NULL on host / non-JIT). The
-         * code buffer is platform_alloc'd (does not itself move), so the
-         * raw pointer stays valid whether we visit the object's old or
-         * new copy; only the referenced objects shift.  Stop-the-world
-         * GC means no thread is mid-fetch of these bytes. */
-        if (bc->native_code && bc->native_relocs) {
-            uint32_t r;
-            for (r = 0; r < bc->native_reloc_count; r++) {
-                uint8_t *p = bc->native_code + bc->native_relocs[r];
-                CL_Obj old = ((CL_Obj)p[0] << 24) | ((CL_Obj)p[1] << 16) |
-                             ((CL_Obj)p[2] << 8)  |  (CL_Obj)p[3];
-                CL_Obj nw = gc_forward(old);
-                if (nw != old) {
-                    p[0] = (uint8_t)(nw >> 24); p[1] = (uint8_t)(nw >> 16);
-                    p[2] = (uint8_t)(nw >> 8);  p[3] = (uint8_t)(nw);
-                    gc_native_code_patched = 1;
-                }
-            }
-        }
-        break;
-    }
-    case TYPE_VECTOR: {
-        CL_Vector *v = (CL_Vector *)ptr;
-        uint32_t i;
-        if (v->flags & CL_VEC_FLAG_DISPLACED) {
-            gc_update_slot(&v->data[CL_DISP_BASE_IDX(v)]);
-        } else {
-            uint32_t n_entries = (v->rank > 1) ? (uint32_t)v->rank + v->length : v->length;
-            for (i = 0; i < n_entries; i++)
-                gc_update_slot(&v->data[i]);
-        }
-        break;
-    }
-    case TYPE_PACKAGE: {
-        CL_Package *p = (CL_Package *)ptr;
-        gc_update_slot(&p->name);
-        gc_update_slot(&p->symbols);
-        gc_update_slot(&p->use_list);
-        gc_update_slot(&p->nicknames);
-        gc_update_slot(&p->local_nicknames);
-        gc_update_slot(&p->shadowing_symbols);
-        gc_update_slot(&p->exported_symbols);
-        break;
-    }
-    case TYPE_HASHTABLE: {
-        CL_Hashtable *ht = (CL_Hashtable *)ptr;
-        uint32_t i;
-        gc_update_slot(&ht->bucket_vec);
-        if (!CL_NULL_P(ht->bucket_vec)) {
-            /* External bucket vector — its contents updated when we walk that object */
-        } else {
-            for (i = 0; i < ht->bucket_count; i++)
-                gc_update_slot(&ht->buckets[i]);
-        }
-        break;
-    }
-    case TYPE_CONDITION: {
-        CL_Condition *cond = (CL_Condition *)ptr;
-        gc_update_slot(&cond->type_name);
-        gc_update_slot(&cond->slots);
-        gc_update_slot(&cond->report_string);
-        break;
-    }
-    case TYPE_RESTART: {
-        CL_Restart *r = (CL_Restart *)ptr;
-        gc_update_slot(&r->name);
-        gc_update_slot(&r->function);
-        gc_update_slot(&r->report);
-        gc_update_slot(&r->interactive);
-        gc_update_slot(&r->test);
-        gc_update_slot(&r->tag);
-        break;
-    }
-    case TYPE_STRUCT: {
-        CL_Struct *st = (CL_Struct *)ptr;
-        uint32_t i;
-        gc_update_slot(&st->type_desc);
-        for (i = 0; i < st->n_slots; i++)
-            gc_update_slot(&st->slots[i]);
-        break;
-    }
-    case TYPE_STREAM: {
-        CL_Stream *st = (CL_Stream *)ptr;
-        gc_update_slot(&st->string_buf);
-        gc_update_slot(&st->element_type);
-        break;
-    }
-    case TYPE_RATIO: {
-        CL_Ratio *r = (CL_Ratio *)ptr;
-        gc_update_slot(&r->numerator);
-        gc_update_slot(&r->denominator);
-        break;
-    }
-    case TYPE_COMPLEX: {
-        CL_Complex *cx = (CL_Complex *)ptr;
-        gc_update_slot(&cx->realpart);
-        gc_update_slot(&cx->imagpart);
-        break;
-    }
-    case TYPE_PATHNAME: {
-        CL_Pathname *pn = (CL_Pathname *)ptr;
-        gc_update_slot(&pn->host);
-        gc_update_slot(&pn->device);
-        gc_update_slot(&pn->directory);
-        gc_update_slot(&pn->name);
-        gc_update_slot(&pn->type);
-        gc_update_slot(&pn->version);
-        break;
-    }
-    case TYPE_CELL: {
-        CL_Cell *cell = (CL_Cell *)ptr;
-        gc_update_slot(&cell->value);
-        break;
-    }
-    case TYPE_THREAD: {
-        CL_ThreadObj *to = (CL_ThreadObj *)ptr;
-        gc_update_slot(&to->name);
-        gc_update_slot(&to->result);
-        break;
-    }
-    case TYPE_LOCK: {
-        CL_Lock *lk = (CL_Lock *)ptr;
-        gc_update_slot(&lk->name);
-        break;
-    }
-    case TYPE_CONDVAR: {
-        CL_CondVar *cv = (CL_CondVar *)ptr;
-        gc_update_slot(&cv->name);
-        break;
-    }
-    case TYPE_STRING:
-    case TYPE_BIGNUM:
-    case TYPE_SINGLE_FLOAT:
-    case TYPE_DOUBLE_FLOAT:
-    case TYPE_RANDOM_STATE:
-    case TYPE_BIT_VECTOR:
-    case TYPE_FOREIGN_POINTER:
-#ifdef CL_WIDE_STRINGS
-    case TYPE_WIDE_STRING:
-#endif
-        break;
-    default:
-        break;
-    }
+#define GC_VISIT(slot) gc_update_slot(&(slot))
+    /* Forward CL_Obj heap references baked as 32-bit immediates into the JIT'd
+     * native code.  native_relocs lists the byte offset of each such 4-byte
+     * big-endian field; without this a moving compaction would leave stale
+     * arena offsets in executable code (m68k JIT only — native_relocs is NULL
+     * on host / non-JIT).  The code buffer is platform_alloc'd (does not move),
+     * so the raw pointer stays valid whether we visit the object's old or new
+     * copy; only the referenced objects shift.  Stop-the-world GC means no
+     * thread is mid-fetch of these bytes. */
+#define GC_BYTECODE_TAIL(bc)                                                  \
+    do {                                                                      \
+        if ((bc)->native_code && (bc)->native_relocs) {                       \
+            uint32_t r_;                                                       \
+            for (r_ = 0; r_ < (bc)->native_reloc_count; r_++) {               \
+                uint8_t *p_ = (bc)->native_code + (bc)->native_relocs[r_];     \
+                CL_Obj old = ((CL_Obj)p_[0] << 24) | ((CL_Obj)p_[1] << 16) |   \
+                             ((CL_Obj)p_[2] << 8)  |  (CL_Obj)p_[3];           \
+                CL_Obj nw = gc_forward(old);                                   \
+                if (nw != old) {                                              \
+                    p_[0] = (uint8_t)(nw >> 24); p_[1] = (uint8_t)(nw >> 16);  \
+                    p_[2] = (uint8_t)(nw >> 8);  p_[3] = (uint8_t)(nw);        \
+                    gc_native_code_patched = 1;                               \
+                }                                                            \
+            }                                                                \
+        }                                                                    \
+    } while (0)
+#define GC_STREAM_TAIL(st) ((void)(st))
+    GC_WALK_OBJ_CHILDREN(ptr, type);
+#undef GC_VISIT
+#undef GC_BYTECODE_TAIL
+#undef GC_STREAM_TAIL
 }
 
 /* Pass 3b: Update per-thread roots (mirrors gc_mark_thread_roots).
