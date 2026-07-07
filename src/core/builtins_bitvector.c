@@ -14,11 +14,7 @@
 /* PREDICATES                                              */
 /* ======================================================= */
 
-static CL_Obj bi_bit_vector_p(CL_Obj *args, int n)
-{
-    CL_UNUSED(n);
-    return CL_BIT_VECTOR_P(args[0]) ? SYM_T : CL_NIL;
-}
+DEFINE_TYPE_PREDICATE(bi_bit_vector_p, CL_BIT_VECTOR_P)
 
 static CL_Obj bi_simple_bit_vector_p(CL_Obj *args, int n)
 {
