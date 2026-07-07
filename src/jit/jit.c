@@ -810,6 +810,90 @@ static int patches_push(BranchPatch **patches, uint32_t *n, uint32_t *cap,
     return 1;
 }
 
+/* Emit the shared tail of the four inline-setjmp NLX frames
+ * (BLOCK/CATCH/TAGBODY/UWPROT).  The alloc sequence differs per NLX type
+ * (const-pool tag, popped runtime tag, or no arg) and stays hand-written
+ * at each site; from the setjmp onward the emitted m68k is identical:
+ *
+ *   push D0 (=&buf); JSR setjmp; drop arg
+ *   TST.L D0; BEQ normal_path
+ *   JSR post_longjmp; [push D0 result]; BRA landing
+ *   normal_path: patch BEQ here; JSR commit
+ *
+ * `push_result` is 1 for BLOCK/CATCH/TAGBODY (the longjmp arm leaves the
+ * block/catch value or tagbody tag_index on the operand stack) and 0 for
+ * UWPROT (its post_longjmp returns void).  The landing branch is patched
+ * immediately for an already-emitted backward target, else queued in the
+ * forward-patch list.  Returns 0 (caller does `goto fail`) on a >16-bit
+ * displacement or a patch-list allocation failure. */
+static int emit_nlx_setjmp_tail(CodeBuf *cb, uint32_t post_longjmp_helper,
+                                uint32_t commit_helper, int push_result,
+                                uint32_t landing_bc_ip, uint32_t ip,
+                                const int32_t *bc_to_native,
+                                BranchPatch **patches, uint32_t *n_patches,
+                                uint32_t *cap_patches)
+{
+    int32_t beq_pc, bra_pc, normal_path_off;
+
+    /* setjmp(D0 = &buf): push D0, JSR setjmp, drop arg. */
+    m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+    m68k_emit_jsr_abs_l(cb, cl_jit_setjmp_addr);
+    m68k_emit_addq_l_an(cb, 4, REG_A7);
+
+    /* TST.L D0 — Z set on the normal (zero) setjmp return. */
+    m68k_emit_tst_l_dn(cb, REG_D0);
+    beq_pc = (int32_t)cb_len(cb) + 2;
+    m68k_emit_beq_w(cb, 0);   /* → normal_path, patched below */
+
+    /* NLX path inline: post_longjmp → [push result] → BRA landing. */
+    m68k_emit_jsr_abs_l(cb, post_longjmp_helper);
+    if (push_result)
+        m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+    bra_pc = (int32_t)cb_len(cb) + 2;
+    if (landing_bc_ip < ip && bc_to_native[landing_bc_ip] >= 0) {
+        int32_t disp = bc_to_native[landing_bc_ip] - bra_pc;
+        if (disp < -32768 || disp > 32767) return 0;
+        m68k_emit_bra_w(cb, (int16_t)disp);
+    } else {
+        if (!patches_push(patches, n_patches, cap_patches,
+                          (uint32_t)bra_pc, landing_bc_ip)) return 0;
+        m68k_emit_bra_w(cb, 0);
+    }
+
+    /* normal_path: patch the BEQ to land here, then commit. */
+    normal_path_off = (int32_t)cb_len(cb);
+    m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)beq_pc,
+                      (int16_t)(normal_path_off - beq_pc));
+    m68k_emit_jsr_abs_l(cb, commit_helper);
+    return 1;
+}
+
+/* Resolve a signed branch offset to an absolute bytecode IP, mirroring
+ * the VM's dispatch arithmetic (landing = base ± offset).  `base` is the
+ * IP the offset is measured from — i.e. the IP *after* the branch
+ * operand has been consumed (catch_ip in VM terms): the prescan passes
+ * `ip + operand_width` since ip still points at the opcode there, the
+ * emitter passes plain `ip` since it has already advanced past the
+ * operand.  Sets *ok=0 (and returns 0) when the target underflows past 0
+ * or overflows past code_len; callers translate that into their local
+ * failure action (`return 0` in the prescan, `goto fail` in the
+ * emitter). */
+static uint32_t compute_landing_ip(int32_t offset, uint32_t base,
+                                   uint32_t code_len, int *ok)
+{
+    uint32_t landing;
+    if (offset < 0) {
+        uint32_t neg = (uint32_t)(-offset);
+        if (neg > base) { *ok = 0; return 0; }
+        landing = base - neg;
+    } else {
+        landing = base + (uint32_t)offset;
+    }
+    if (landing > code_len) { *ok = 0; return 0; }
+    *ok = 1;
+    return landing;
+}
+
 /* Walk the bytecode once to find every IP that is the target of a
  * branch.  Sets `is_target[ip] = 1` for each such IP.  Used by
  * walker_compile to know where to flush the cache so the cache state
@@ -859,17 +943,13 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
         case OP_JMP: case OP_JNIL: case OP_JTRUE: {
             int32_t offset;
             uint32_t target;
+            int ok;
             step = 5;
             if (ip + 5 > bc->code_len) return 0;
             offset = read_i32_be(bc->code + ip + 1);
-            if (offset < 0) {
-                uint32_t neg = (uint32_t)(-offset);
-                if (neg > ip + 5) return 0;
-                target = ip + 5 - neg;
-            } else {
-                target = ip + 5 + (uint32_t)offset;
-            }
-            if (target > bc->code_len) return 0;
+            /* catch_ip in the VM = ip after the i32 = ip + 5. */
+            target = compute_landing_ip(offset, ip + 5, bc->code_len, &ok);
+            if (!ok) return 0;
             is_target[target] = 1;
             break;
         }
@@ -880,18 +960,13 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
              * non-zero setjmp return, so it's a real branch target. */
             int32_t offset;
             uint32_t landing_ip;
+            int ok;
             step = 7;
             if (ip + 7 > bc->code_len) return 0;
             offset = read_i32_be(bc->code + ip + 3);
             /* catch_ip in the VM = ip after reading u16 + i32 = ip + 7. */
-            if (offset < 0) {
-                uint32_t neg = (uint32_t)(-offset);
-                if (neg > ip + 7) return 0;
-                landing_ip = ip + 7 - neg;
-            } else {
-                landing_ip = ip + 7 + (uint32_t)offset;
-            }
-            if (landing_ip > bc->code_len) return 0;
+            landing_ip = compute_landing_ip(offset, ip + 7, bc->code_len, &ok);
+            if (!ok) return 0;
             is_target[landing_ip] = 1;
             break;
         }
@@ -905,17 +980,12 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
              * OP_BLOCK_PUSH's prescan arm. */
             int32_t offset;
             uint32_t landing_ip;
+            int ok;
             step = 7;
             if (ip + 7 > bc->code_len) return 0;
             offset = read_i32_be(bc->code + ip + 3);
-            if (offset < 0) {
-                uint32_t neg = (uint32_t)(-offset);
-                if (neg > ip + 7) return 0;
-                landing_ip = ip + 7 - neg;
-            } else {
-                landing_ip = ip + 7 + (uint32_t)offset;
-            }
-            if (landing_ip > bc->code_len) return 0;
+            landing_ip = compute_landing_ip(offset, ip + 7, bc->code_len, &ok);
+            if (!ok) return 0;
             is_target[landing_ip] = 1;
             break;
         }
@@ -927,17 +997,12 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
              * branch target so the cache flushes on arrival. */
             int32_t offset;
             uint32_t landing_ip;
+            int ok;
             step = 5;
             if (ip + 5 > bc->code_len) return 0;
             offset = read_i32_be(bc->code + ip + 1);
-            if (offset < 0) {
-                uint32_t neg = (uint32_t)(-offset);
-                if (neg > ip + 5) return 0;
-                landing_ip = ip + 5 - neg;
-            } else {
-                landing_ip = ip + 5 + (uint32_t)offset;
-            }
-            if (landing_ip > bc->code_len) return 0;
+            landing_ip = compute_landing_ip(offset, ip + 5, bc->code_len, &ok);
+            if (!ok) return 0;
             is_target[landing_ip] = 1;
             break;
         }
@@ -949,17 +1014,12 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
              * protect's emit). */
             int32_t offset;
             uint32_t landing_ip;
+            int ok;
             step = 5;
             if (ip + 5 > bc->code_len) return 0;
             offset = read_i32_be(bc->code + ip + 1);
-            if (offset < 0) {
-                uint32_t neg = (uint32_t)(-offset);
-                if (neg > ip + 5) return 0;
-                landing_ip = ip + 5 - neg;
-            } else {
-                landing_ip = ip + 5 + (uint32_t)offset;
-            }
-            if (landing_ip > bc->code_len) return 0;
+            landing_ip = compute_landing_ip(offset, ip + 5, bc->code_len, &ok);
+            if (!ok) return 0;
             is_target[landing_ip] = 1;
             break;
         }
@@ -1475,8 +1535,6 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             CL_Obj tag;
             int32_t bc_offset;
             uint32_t landing_bc_ip;
-            int32_t beq_pc, bra_pc;
-            int32_t normal_path_off;
             uint32_t alloc_helper      = (uint32_t)(uintptr_t)&cl_jit_runtime_block_alloc;
             uint32_t commit_helper     = (uint32_t)(uintptr_t)&cl_jit_runtime_block_commit;
             uint32_t post_longjmp_helper = (uint32_t)(uintptr_t)&cl_jit_runtime_block_post_longjmp;
@@ -1491,14 +1549,12 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
 
             /* landing_bc_ip mirrors VM: catch_ip = ip (now == start
              * of body), so landing = ip + bc_offset. */
-            if (bc_offset < 0) {
-                uint32_t neg = (uint32_t)(-bc_offset);
-                if (neg > ip) goto fail;
-                landing_bc_ip = ip - neg;
-            } else {
-                landing_bc_ip = ip + (uint32_t)bc_offset;
+            {
+                int ok;
+                landing_bc_ip = compute_landing_ip(bc_offset, ip,
+                                                   bc->code_len, &ok);
+                if (!ok) goto fail;
             }
-            if (landing_bc_ip > bc->code_len) goto fail;
 
             cache_flush(cb, &cache_head, &cache_depth);
 
@@ -1507,41 +1563,11 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             m68k_emit_jsr_abs_l(cb, alloc_helper);
             m68k_emit_addq_l_an(cb, 4, REG_A7);
 
-            /* setjmp(D0=&buf): push D0, JSR setjmp, drop arg. */
-            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
-            m68k_emit_jsr_abs_l(cb, cl_jit_setjmp_addr);
-            m68k_emit_addq_l_an(cb, 4, REG_A7);
-
-            /* TST.L D0 — sets Z if zero (= normal setjmp return). */
-            m68k_emit_tst_l_dn(cb, REG_D0);
-            beq_pc = (int32_t)cb_len(cb) + 2;
-            m68k_emit_beq_w(cb, 0);   /* → normal_path, patched below */
-
-            /* NLX path inline: post_longjmp → push result → bra landing. */
-            m68k_emit_jsr_abs_l(cb, post_longjmp_helper);
-            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
-            bra_pc = (int32_t)cb_len(cb) + 2;
-
-            /* Forward BRA.W to landing.  If landing's native offset is
-             * already known (backward target — unusual but possible
-             * for self-referential block macros), patch immediately;
-             * else queue as a forward patch. */
-            if (landing_bc_ip < ip && bc_to_native[landing_bc_ip] >= 0) {
-                int32_t disp = bc_to_native[landing_bc_ip] - bra_pc;
-                if (disp < -32768 || disp > 32767) goto fail;
-                m68k_emit_bra_w(cb, (int16_t)disp);
-            } else {
-                if (!patches_push(&patches, &n_patches, &cap_patches,
-                                  (uint32_t)bra_pc, landing_bc_ip)) goto fail;
-                m68k_emit_bra_w(cb, 0);
-            }
-
-            /* normal_path: patch the BEQ to land here, then commit. */
-            normal_path_off = (int32_t)cb_len(cb);
-            m68k_patch_disp16(cb_data(cb), cb_len(cb),
-                              (uint32_t)beq_pc,
-                              (int16_t)(normal_path_off - beq_pc));
-            m68k_emit_jsr_abs_l(cb, commit_helper);
+            /* setjmp → dispatch → push result → BRA landing → commit. */
+            if (!emit_nlx_setjmp_tail(cb, post_longjmp_helper, commit_helper,
+                                      /*push_result*/1, landing_bc_ip, ip,
+                                      bc_to_native, &patches, &n_patches,
+                                      &cap_patches)) goto fail;
             /* Cache depth stays 0; body executes from here. */
             break;
         }
@@ -1597,8 +1623,6 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
              *   - the matching pop is OP_UNCATCH, not OP_BLOCK_POP. */
             int32_t bc_offset;
             uint32_t landing_bc_ip;
-            int32_t beq_pc, bra_pc;
-            int32_t normal_path_off;
             uint32_t alloc_helper        = (uint32_t)(uintptr_t)&cl_jit_runtime_catch_alloc;
             uint32_t commit_helper       = (uint32_t)(uintptr_t)&cl_jit_runtime_catch_commit;
             uint32_t post_longjmp_helper = (uint32_t)(uintptr_t)&cl_jit_runtime_catch_post_longjmp;
@@ -1609,14 +1633,12 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
 
             /* landing_bc_ip mirrors VM: catch_ip = ip (now == start
              * of body), so landing = ip + bc_offset. */
-            if (bc_offset < 0) {
-                uint32_t neg = (uint32_t)(-bc_offset);
-                if (neg > ip) goto fail;
-                landing_bc_ip = ip - neg;
-            } else {
-                landing_bc_ip = ip + (uint32_t)bc_offset;
+            {
+                int ok;
+                landing_bc_ip = compute_landing_ip(bc_offset, ip,
+                                                   bc->code_len, &ok);
+                if (!ok) goto fail;
             }
-            if (landing_bc_ip > bc->code_len) goto fail;
 
             /* Tag (TOS) goes through D0 → (a7) as the alloc helper's
              * sole arg.  Flush after the pop so all other cached
@@ -1629,37 +1651,11 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             m68k_emit_jsr_abs_l(cb, alloc_helper);
             m68k_emit_addq_l_an(cb, 4, REG_A7);
 
-            /* setjmp(D0=&buf): push D0, JSR setjmp, drop arg. */
-            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
-            m68k_emit_jsr_abs_l(cb, cl_jit_setjmp_addr);
-            m68k_emit_addq_l_an(cb, 4, REG_A7);
-
-            /* TST.L D0 — sets Z if zero (= normal setjmp return). */
-            m68k_emit_tst_l_dn(cb, REG_D0);
-            beq_pc = (int32_t)cb_len(cb) + 2;
-            m68k_emit_beq_w(cb, 0);   /* → normal_path, patched below */
-
-            /* NLX path inline: post_longjmp → push result → bra landing. */
-            m68k_emit_jsr_abs_l(cb, post_longjmp_helper);
-            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
-            bra_pc = (int32_t)cb_len(cb) + 2;
-
-            if (landing_bc_ip < ip && bc_to_native[landing_bc_ip] >= 0) {
-                int32_t disp = bc_to_native[landing_bc_ip] - bra_pc;
-                if (disp < -32768 || disp > 32767) goto fail;
-                m68k_emit_bra_w(cb, (int16_t)disp);
-            } else {
-                if (!patches_push(&patches, &n_patches, &cap_patches,
-                                  (uint32_t)bra_pc, landing_bc_ip)) goto fail;
-                m68k_emit_bra_w(cb, 0);
-            }
-
-            /* normal_path: patch the BEQ to land here, then commit. */
-            normal_path_off = (int32_t)cb_len(cb);
-            m68k_patch_disp16(cb_data(cb), cb_len(cb),
-                              (uint32_t)beq_pc,
-                              (int16_t)(normal_path_off - beq_pc));
-            m68k_emit_jsr_abs_l(cb, commit_helper);
+            /* setjmp → dispatch → push result → BRA landing → commit. */
+            if (!emit_nlx_setjmp_tail(cb, post_longjmp_helper, commit_helper,
+                                      /*push_result*/1, landing_bc_ip, ip,
+                                      bc_to_native, &patches, &n_patches,
+                                      &cap_patches)) goto fail;
             /* Cache depth stays 0; body executes from here. */
             break;
         }
@@ -1691,8 +1687,6 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             CL_Obj tagbody_id;
             int32_t bc_offset;
             uint32_t landing_bc_ip;
-            int32_t beq_pc, bra_pc;
-            int32_t normal_path_off;
             uint32_t alloc_helper        = (uint32_t)(uintptr_t)&cl_jit_runtime_tagbody_alloc;
             uint32_t commit_helper       = (uint32_t)(uintptr_t)&cl_jit_runtime_tagbody_commit;
             uint32_t post_longjmp_helper = (uint32_t)(uintptr_t)&cl_jit_runtime_tagbody_post_longjmp;
@@ -1707,14 +1701,12 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
 
             /* landing_bc_ip mirrors VM: catch_ip == ip after consuming
              * the 6-byte operand, so landing = ip + bc_offset. */
-            if (bc_offset < 0) {
-                uint32_t neg = (uint32_t)(-bc_offset);
-                if (neg > ip) goto fail;
-                landing_bc_ip = ip - neg;
-            } else {
-                landing_bc_ip = ip + (uint32_t)bc_offset;
+            {
+                int ok;
+                landing_bc_ip = compute_landing_ip(bc_offset, ip,
+                                                   bc->code_len, &ok);
+                if (!ok) goto fail;
             }
-            if (landing_bc_ip > bc->code_len) goto fail;
 
             cache_flush(cb, &cache_head, &cache_depth);
 
@@ -1723,36 +1715,13 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             m68k_emit_jsr_abs_l(cb, alloc_helper);
             m68k_emit_addq_l_an(cb, 4, REG_A7);
 
-            /* setjmp(D0 = &buf). */
-            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
-            m68k_emit_jsr_abs_l(cb, cl_jit_setjmp_addr);
-            m68k_emit_addq_l_an(cb, 4, REG_A7);
-
-            m68k_emit_tst_l_dn(cb, REG_D0);
-            beq_pc = (int32_t)cb_len(cb) + 2;
-            m68k_emit_beq_w(cb, 0);   /* → normal_path, patched below */
-
-            /* NLX path: post_longjmp returns tag_index in D0; push it
-             * onto the operand stack then BRA to the dispatch shim. */
-            m68k_emit_jsr_abs_l(cb, post_longjmp_helper);
-            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
-            bra_pc = (int32_t)cb_len(cb) + 2;
-            if (landing_bc_ip < ip && bc_to_native[landing_bc_ip] >= 0) {
-                int32_t disp = bc_to_native[landing_bc_ip] - bra_pc;
-                if (disp < -32768 || disp > 32767) goto fail;
-                m68k_emit_bra_w(cb, (int16_t)disp);
-            } else {
-                if (!patches_push(&patches, &n_patches, &cap_patches,
-                                  (uint32_t)bra_pc, landing_bc_ip)) goto fail;
-                m68k_emit_bra_w(cb, 0);
-            }
-
-            /* normal_path: patch BEQ, then commit. */
-            normal_path_off = (int32_t)cb_len(cb);
-            m68k_patch_disp16(cb_data(cb), cb_len(cb),
-                              (uint32_t)beq_pc,
-                              (int16_t)(normal_path_off - beq_pc));
-            m68k_emit_jsr_abs_l(cb, commit_helper);
+            /* setjmp → dispatch → push tag_index → BRA landing → commit.
+             * The pushed D0 is the tag_index the dispatch shim (emitted
+             * right after the landing) routes on. */
+            if (!emit_nlx_setjmp_tail(cb, post_longjmp_helper, commit_helper,
+                                      /*push_result*/1, landing_bc_ip, ip,
+                                      bc_to_native, &patches, &n_patches,
+                                      &cap_patches)) goto fail;
             /* Cache depth stays 0; tagbody body executes from here. */
             break;
         }
@@ -1814,8 +1783,6 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
              *     it just restores the marks the alloc captured. */
             int32_t bc_offset;
             uint32_t landing_bc_ip;
-            int32_t beq_pc, bra_pc;
-            int32_t normal_path_off;
             uint32_t alloc_helper        = (uint32_t)(uintptr_t)&cl_jit_runtime_uwprot_alloc;
             uint32_t commit_helper       = (uint32_t)(uintptr_t)&cl_jit_runtime_uwprot_commit;
             uint32_t post_longjmp_helper = (uint32_t)(uintptr_t)&cl_jit_runtime_uwprot_post_longjmp;
@@ -1825,48 +1792,25 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             ip += 4;
 
             /* landing_bc_ip = ip + offset (catch_ip == ip after the i32). */
-            if (bc_offset < 0) {
-                uint32_t neg = (uint32_t)(-bc_offset);
-                if (neg > ip) goto fail;
-                landing_bc_ip = ip - neg;
-            } else {
-                landing_bc_ip = ip + (uint32_t)bc_offset;
+            {
+                int ok;
+                landing_bc_ip = compute_landing_ip(bc_offset, ip,
+                                                   bc->code_len, &ok);
+                if (!ok) goto fail;
             }
-            if (landing_bc_ip > bc->code_len) goto fail;
 
             cache_flush(cb, &cache_head, &cache_depth);
 
             /* alloc: no arg.  D0 = &nlx->buf. */
             m68k_emit_jsr_abs_l(cb, alloc_helper);
 
-            /* setjmp(D0 = &buf). */
-            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
-            m68k_emit_jsr_abs_l(cb, cl_jit_setjmp_addr);
-            m68k_emit_addq_l_an(cb, 4, REG_A7);
-
-            m68k_emit_tst_l_dn(cb, REG_D0);
-            beq_pc = (int32_t)cb_len(cb) + 2;
-            m68k_emit_beq_w(cb, 0);   /* → normal_path */
-
-            /* Longjmp path: restore marks, branch to landing. */
-            m68k_emit_jsr_abs_l(cb, post_longjmp_helper);
-            bra_pc = (int32_t)cb_len(cb) + 2;
-            if (landing_bc_ip < ip && bc_to_native[landing_bc_ip] >= 0) {
-                int32_t disp = bc_to_native[landing_bc_ip] - bra_pc;
-                if (disp < -32768 || disp > 32767) goto fail;
-                m68k_emit_bra_w(cb, (int16_t)disp);
-            } else {
-                if (!patches_push(&patches, &n_patches, &cap_patches,
-                                  (uint32_t)bra_pc, landing_bc_ip)) goto fail;
-                m68k_emit_bra_w(cb, 0);
-            }
-
-            /* normal_path: patch BEQ, then commit. */
-            normal_path_off = (int32_t)cb_len(cb);
-            m68k_patch_disp16(cb_data(cb), cb_len(cb),
-                              (uint32_t)beq_pc,
-                              (int16_t)(normal_path_off - beq_pc));
-            m68k_emit_jsr_abs_l(cb, commit_helper);
+            /* setjmp → dispatch → BRA landing → commit.  push_result=0:
+             * uwprot_post_longjmp returns void, nothing goes on the
+             * operand stack (cleanup runs for side effects only). */
+            if (!emit_nlx_setjmp_tail(cb, post_longjmp_helper, commit_helper,
+                                      /*push_result*/0, landing_bc_ip, ip,
+                                      bc_to_native, &patches, &n_patches,
+                                      &cap_patches)) goto fail;
             break;
         }
 
@@ -2859,17 +2803,13 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             int32_t offset;
             uint32_t target_bc_off;
             uint32_t patch_off;
+            int ok;
             if (ip + 4 > bc->code_len) goto fail;
             offset = read_i32_be(bc->code + ip);
             ip += 4;
-            if (offset < 0) {
-                uint32_t neg = (uint32_t)(-offset);
-                if (neg > ip) goto fail;
-                target_bc_off = ip - neg;
-            } else {
-                target_bc_off = ip + (uint32_t)offset;
-            }
-            if (target_bc_off > bc->code_len) goto fail;
+            /* catch_ip == ip after consuming the i32 operand. */
+            target_bc_off = compute_landing_ip(offset, ip, bc->code_len, &ok);
+            if (!ok) goto fail;
 
             if (op == OP_JNIL || op == OP_JTRUE) {
                 cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
