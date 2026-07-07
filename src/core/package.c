@@ -26,6 +26,23 @@ CL_Obj cl_package_registry = CL_NIL;
 
 void *cl_package_rwlock = NULL;
 
+/* Package-registry rwlock guards.  The lock is NULL until the threading
+ * subsystem installs it (single-threaded startup runs lock-free), so every
+ * acquire/release is guarded by a NULL check — these inlines fold the ~40
+ * copies of that guard.  static inline → identical codegen, no call. */
+static inline void pkg_lock_read(void)
+{
+    if (cl_package_rwlock) platform_rwlock_rdlock(cl_package_rwlock);
+}
+static inline void pkg_lock_write(void)
+{
+    if (cl_package_rwlock) platform_rwlock_wrlock(cl_package_rwlock);
+}
+static inline void pkg_unlock(void)
+{
+    if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
+}
+
 /* Refresh cl_current_package from the dynamic *PACKAGE* binding.
  * Safe to call before SYM_STAR_PACKAGE is interned (SYM_STAR_PACKAGE
  * starts at CL_NIL during early init) or before a package object is
@@ -120,9 +137,9 @@ int cl_symbol_external_p(CL_Obj sym, CL_Obj package)
 {
     int r;
     if (CL_NULL_P(sym) || CL_NULL_P(package)) return 0;
-    if (cl_package_rwlock) platform_rwlock_rdlock(cl_package_rwlock);
+    pkg_lock_read();
     r = exported_p_nolock(sym, package);
-    if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
+    pkg_unlock();
     return r;
 }
 
@@ -260,9 +277,9 @@ void cl_package_add_symbol(CL_Obj package, CL_Obj symbol)
 CL_Obj cl_package_find_external(const char *name, uint32_t len, CL_Obj package)
 {
     CL_Obj result;
-    if (cl_package_rwlock) platform_rwlock_rdlock(cl_package_rwlock);
+    pkg_lock_read();
     result = find_external_nolock(name, len, package);
-    if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
+    pkg_unlock();
     if (result == CL_UNBOUND) return CL_NIL;
     return normalize_nil(result);
 }
@@ -270,9 +287,9 @@ CL_Obj cl_package_find_external(const char *name, uint32_t len, CL_Obj package)
 CL_Obj cl_package_find_symbol(const char *name, uint32_t len, CL_Obj package)
 {
     CL_Obj result;
-    if (cl_package_rwlock) platform_rwlock_rdlock(cl_package_rwlock);
+    pkg_lock_read();
     result = cl_package_find_symbol_nolock(name, len, package);
-    if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
+    pkg_unlock();
     if (result == CL_UNBOUND) return CL_NIL;
     return normalize_nil(result);
 }
@@ -282,7 +299,7 @@ CL_Obj cl_find_symbol_with_status(const char *name, uint32_t len,
 {
     CL_Obj sym;
 
-    if (cl_package_rwlock) platform_rwlock_rdlock(cl_package_rwlock);
+    pkg_lock_read();
 
     /* Search own symbol table first */
     sym = find_own_symbol(name, len, package);
@@ -292,7 +309,7 @@ CL_Obj cl_find_symbol_with_status(const char *name, uint32_t len,
         } else {
             *status = 1; /* :INTERNAL */
         }
-        if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
+        pkg_unlock();
         return normalize_nil(sym);
     }
 
@@ -304,7 +321,7 @@ CL_Obj cl_find_symbol_with_status(const char *name, uint32_t len,
             CL_Obj found = find_external_nolock(name, len, cl_car(uses));
             if (found != CL_UNBOUND) {
                 *status = 3; /* :INHERITED */
-                if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
+                pkg_unlock();
                 return normalize_nil(found);
             }
             uses = cl_cdr(uses);
@@ -312,7 +329,7 @@ CL_Obj cl_find_symbol_with_status(const char *name, uint32_t len,
     }
 
     *status = 0; /* not found */
-    if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
+    pkg_unlock();
     return CL_NIL;
 }
 
@@ -321,7 +338,7 @@ CL_Obj cl_find_package(const char *name, uint32_t len)
     CL_Obj reg;
     CL_Obj result = CL_NIL;
 
-    if (cl_package_rwlock) platform_rwlock_rdlock(cl_package_rwlock);
+    pkg_lock_read();
 
     /* CDR-10: Check local nicknames of current package first */
     if (!CL_NULL_P(cl_current_package)) {
@@ -331,7 +348,7 @@ CL_Obj cl_find_package(const char *name, uint32_t len)
             CL_Obj entry = cl_car(lnicks);
             if (str_eq(cl_car(entry), name, len)) {
                 result = cl_cdr(entry);
-                if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
+                pkg_unlock();
                 return result;
             }
             lnicks = cl_cdr(lnicks);
@@ -347,7 +364,7 @@ CL_Obj cl_find_package(const char *name, uint32_t len)
 
         /* Check primary name */
         if (str_eq(p->name, name, len)) {
-            if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
+            pkg_unlock();
             return pkg;
         }
 
@@ -356,7 +373,7 @@ CL_Obj cl_find_package(const char *name, uint32_t len)
             CL_Obj nicks = p->nicknames;
             while (!CL_NULL_P(nicks)) {
                 if (str_eq(cl_car(nicks), name, len)) {
-                    if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
+                    pkg_unlock();
                     return pkg;
                 }
                 nicks = cl_cdr(nicks);
@@ -365,7 +382,7 @@ CL_Obj cl_find_package(const char *name, uint32_t len)
 
         reg = cl_cdr(reg);
     }
-    if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
+    pkg_unlock();
     return CL_NIL;
 }
 
@@ -381,10 +398,10 @@ void cl_register_package(CL_Obj pkg)
     entry = cl_cons(p->name, pkg);
     cell = cl_cons(entry, CL_NIL);
     CL_GC_UNPROTECT(1);
-    if (cl_package_rwlock) platform_rwlock_wrlock(cl_package_rwlock);
+    pkg_lock_write();
     ((CL_Cons *)CL_OBJ_TO_PTR(cell))->cdr = cl_package_registry;
     cl_package_registry = cell;
-    if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
+    pkg_unlock();
 }
 
 void cl_export_symbol(CL_Obj sym, CL_Obj package)
@@ -408,7 +425,7 @@ void cl_export_symbol(CL_Obj sym, CL_Obj package)
     s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     sname = (CL_String *)CL_OBJ_TO_PTR(s->name);
 
-    if (cl_package_rwlock) platform_rwlock_wrlock(cl_package_rwlock);
+    pkg_lock_write();
 
     /* If symbol is not present in package's own table, import it first.
        Per CL spec: "If the symbol is accessible via use-package,
@@ -430,7 +447,7 @@ void cl_export_symbol(CL_Obj sym, CL_Obj package)
      * list above. */
     if (!conflict)
         s->flags |= CL_SYM_EXPORTED;
-    if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
+    pkg_unlock();
     if (conflict)
         cl_error(CL_ERR_GENERAL,
                  "EXPORT conflict: symbol already present in package");
@@ -441,30 +458,39 @@ void cl_export_symbol(CL_Obj sym, CL_Obj package)
  * cleared only when the symbol's home package is PACKAGE — keeping the
  * "any package considers this symbol exported" hint useful for printer
  * and describe fast paths. */
-void cl_unexport_symbol(CL_Obj sym, CL_Obj package)
+/* Splice the first cons whose car == ITEM out of the singly-linked list rooted
+ * at *head (a package struct field), relinking cdrs in place — no allocation,
+ * so the raw pointers derived under the package write lock stay valid.
+ * Returns 1 if an element was removed.  Shared by UNEXPORT and UNUSE-PACKAGE
+ * (the by-string local-nickname remover keeps its own loop — different key). */
+static int pkg_list_remove_eq(CL_Obj *head, CL_Obj item)
 {
-    CL_Symbol *s;
-    CL_Package *pkg;
-    CL_Obj prev = CL_NIL;
-    CL_Obj list;
-    if (CL_NULL_P(sym)) return;
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
-    if (cl_package_rwlock) platform_rwlock_wrlock(cl_package_rwlock);
-    pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
-    list = pkg->exported_symbols;
+    CL_Obj prev = CL_NIL, list = *head;
     while (!CL_NULL_P(list)) {
-        if (cl_car(list) == sym) {
+        if (cl_car(list) == item) {
             CL_Obj next = cl_cdr(list);
-            if (CL_NULL_P(prev)) pkg->exported_symbols = next;
+            if (CL_NULL_P(prev)) *head = next;
             else ((CL_Cons *)CL_OBJ_TO_PTR(prev))->cdr = next;
-            break;
+            return 1;
         }
         prev = list;
         list = cl_cdr(list);
     }
+    return 0;
+}
+
+void cl_unexport_symbol(CL_Obj sym, CL_Obj package)
+{
+    CL_Symbol *s;
+    CL_Package *pkg;
+    if (CL_NULL_P(sym)) return;
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    pkg_lock_write();
+    pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
+    pkg_list_remove_eq(&pkg->exported_symbols, sym);
     if (s->package == package)
         s->flags &= ~CL_SYM_EXPORTED;
-    if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
+    pkg_unlock();
 }
 
 void cl_import_symbol(CL_Obj sym, CL_Obj package)
@@ -479,9 +505,9 @@ void cl_import_symbol(CL_Obj sym, CL_Obj package)
     CL_GC_PROTECT(package);
     cell = cl_cons(sym, CL_NIL);
     CL_GC_UNPROTECT(2);
-    if (cl_package_rwlock) platform_rwlock_wrlock(cl_package_rwlock);
+    pkg_lock_write();
     conflict = import_symbol_nolock(sym, package, cell);
-    if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
+    pkg_unlock();
     if (conflict)
         cl_error(CL_ERR_GENERAL,
                  "IMPORT conflict: symbol already present in package");
@@ -511,9 +537,9 @@ void cl_shadow_symbol(const char *name, uint32_t len, CL_Obj package)
     h = cl_hash_string(name, len);
 
     /* Fast path: already directly present. */
-    if (cl_package_rwlock) platform_rwlock_rdlock(cl_package_rwlock);
+    pkg_lock_read();
     existing = find_own_symbol(name, len, package);
-    if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
+    pkg_unlock();
     if (existing != CL_UNBOUND) {
         if (heapname) platform_free(heapname);
         return;
@@ -540,13 +566,13 @@ void cl_shadow_symbol(const char *name, uint32_t len, CL_Obj package)
         s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
         s->hash = h;
 
-        if (cl_package_rwlock) platform_rwlock_wrlock(cl_package_rwlock);
+        pkg_lock_write();
         existing = find_own_symbol(name, len, package);
         if (existing == CL_UNBOUND)
             cl_package_add_symbol_cell(package, sym, cell);
         /* else: raced with a concurrent intern/shadow — theirs wins,
          * our fresh symbol and cell become garbage. */
-        if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
+        pkg_unlock();
     }
     if (heapname) platform_free(heapname);
 }
@@ -570,15 +596,14 @@ void cl_use_package(CL_Obj pkg_to_use, CL_Obj using_pkg)
         cell = cl_cons(pkg_to_use, CL_NIL);
         CL_GC_UNPROTECT(2);
 
-        if (cl_package_rwlock) platform_rwlock_wrlock(cl_package_rwlock);
+        pkg_lock_write();
         user = (CL_Package *)CL_OBJ_TO_PTR(using_pkg);
 
         /* Check if already in use-list */
         list = user->use_list;
         while (!CL_NULL_P(list)) {
             if (cl_car(list) == pkg_to_use) {
-                if (cl_package_rwlock)
-                    platform_rwlock_unlock(cl_package_rwlock);
+                pkg_unlock();
                 return; /* already using */
             }
             list = cl_cdr(list);
@@ -586,35 +611,17 @@ void cl_use_package(CL_Obj pkg_to_use, CL_Obj using_pkg)
 
         ((CL_Cons *)CL_OBJ_TO_PTR(cell))->cdr = user->use_list;
         user->use_list = cell;
-        if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
+        pkg_unlock();
     }
 }
 
 void cl_unuse_package(CL_Obj pkg_to_unuse, CL_Obj using_pkg)
 {
     CL_Package *user;
-    CL_Obj prev, list;
-
-    if (cl_package_rwlock) platform_rwlock_wrlock(cl_package_rwlock);
+    pkg_lock_write();
     user = (CL_Package *)CL_OBJ_TO_PTR(using_pkg);
-    prev = CL_NIL;
-    list = user->use_list;
-
-    while (!CL_NULL_P(list)) {
-        if (cl_car(list) == pkg_to_unuse) {
-            if (CL_NULL_P(prev)) {
-                user->use_list = cl_cdr(list);
-            } else {
-                CL_Cons *c = (CL_Cons *)CL_OBJ_TO_PTR(prev);
-                c->cdr = cl_cdr(list);
-            }
-            if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
-            return;
-        }
-        prev = list;
-        list = cl_cdr(list);
-    }
-    if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
+    pkg_list_remove_eq(&user->use_list, pkg_to_unuse);
+    pkg_unlock();
 }
 
 void cl_add_package_local_nickname(CL_Obj nick_str, CL_Obj target_pkg, CL_Obj in_pkg)
@@ -636,7 +643,7 @@ void cl_add_package_local_nickname(CL_Obj nick_str, CL_Obj target_pkg, CL_Obj in
     cell = cl_cons(entry, CL_NIL);
     CL_GC_UNPROTECT(4);
 
-    if (cl_package_rwlock) platform_rwlock_wrlock(cl_package_rwlock);
+    pkg_lock_write();
     p = (CL_Package *)CL_OBJ_TO_PTR(in_pkg);
     ns = (CL_String *)CL_OBJ_TO_PTR(nick_str);
     list = p->local_nicknames;
@@ -648,7 +655,7 @@ void cl_add_package_local_nickname(CL_Obj nick_str, CL_Obj target_pkg, CL_Obj in
             /* Replace target */
             CL_Cons *c = (CL_Cons *)CL_OBJ_TO_PTR(e);
             c->cdr = target_pkg;
-            if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
+            pkg_unlock();
             return;
         }
         list = cl_cdr(list);
@@ -657,7 +664,7 @@ void cl_add_package_local_nickname(CL_Obj nick_str, CL_Obj target_pkg, CL_Obj in
     /* Prepend the pre-built (nick . target) entry. */
     ((CL_Cons *)CL_OBJ_TO_PTR(cell))->cdr = p->local_nicknames;
     p->local_nicknames = cell;
-    if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
+    pkg_unlock();
 }
 
 void cl_remove_package_local_nickname(const char *name, uint32_t len, CL_Obj from_pkg)
@@ -665,7 +672,7 @@ void cl_remove_package_local_nickname(const char *name, uint32_t len, CL_Obj fro
     CL_Package *p;
     CL_Obj prev, list;
 
-    if (cl_package_rwlock) platform_rwlock_wrlock(cl_package_rwlock);
+    pkg_lock_write();
     p = (CL_Package *)CL_OBJ_TO_PTR(from_pkg);
     prev = CL_NIL;
     list = p->local_nicknames;
@@ -679,13 +686,13 @@ void cl_remove_package_local_nickname(const char *name, uint32_t len, CL_Obj fro
                 CL_Cons *c = (CL_Cons *)CL_OBJ_TO_PTR(prev);
                 c->cdr = cl_cdr(list);
             }
-            if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
+            pkg_unlock();
             return;
         }
         prev = list;
         list = cl_cdr(list);
     }
-    if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
+    pkg_unlock();
 }
 
 /* Export every symbol presently in PACKAGE's own symbol table.
@@ -717,7 +724,15 @@ static void clear_exported_listed(CL_Obj list)
     }
 }
 
-static void export_all_present_symbols(CL_Obj package)
+/* Export every symbol in PACKAGE's own table for which PRED returns true
+ * (PRED == NULL exports all).  Sets CL_SYM_EXPORTED and pushes each onto
+ * pkg->exported_symbols.  GC compaction during cl_cons can relocate the
+ * package, its symbol-table vector, and the chain conses, so the chain
+ * pointer is re-read every iteration and a counted advance makes progress.
+ * PRED must not allocate (it runs between the raw `s` deref and its use —
+ * the same constraint the inlined symbol_has_binding check already relied on).
+ * Shared by cl_package_export_all_cl_symbols and the CL-defined discovery. */
+static void export_symbols_where(CL_Obj package, int (*pred)(CL_Obj sym))
 {
     uint32_t i, table_len;
     CL_GC_PROTECT(package);
@@ -740,18 +755,20 @@ static void export_all_present_symbols(CL_Obj package)
             if (CL_NULL_P(list)) break;
             sym = cl_car(list);
             s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
-            if (!(s->flags & CL_SYM_EXPORTED))
-                s->flags |= CL_SYM_EXPORTED;
-            if (!(s->flags & CL_SYM_LISTED)) {
-                CL_Obj cell;
-                CL_GC_PROTECT(sym);
-                cell = cl_cons(sym, CL_NIL);
-                CL_GC_UNPROTECT(1);
-                pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
-                ((CL_Cons *)CL_OBJ_TO_PTR(cell))->cdr = pkg->exported_symbols;
-                pkg->exported_symbols = cell;
-                s = (CL_Symbol *)CL_OBJ_TO_PTR(sym); /* re-resolve after cl_cons */
-                s->flags |= CL_SYM_LISTED;
+            if (pred == NULL || pred(sym)) {
+                if (!(s->flags & CL_SYM_EXPORTED))
+                    s->flags |= CL_SYM_EXPORTED;
+                if (!(s->flags & CL_SYM_LISTED)) {
+                    CL_Obj cell;
+                    CL_GC_PROTECT(sym);
+                    cell = cl_cons(sym, CL_NIL);
+                    CL_GC_UNPROTECT(1);
+                    pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
+                    ((CL_Cons *)CL_OBJ_TO_PTR(cell))->cdr = pkg->exported_symbols;
+                    pkg->exported_symbols = cell;
+                    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym); /* re-resolve after cl_cons */
+                    s->flags |= CL_SYM_LISTED;
+                }
             }
             consumed++;
         }
@@ -761,6 +778,11 @@ static void export_all_present_symbols(CL_Obj package)
         clear_exported_listed(pkg->exported_symbols);
     }
     CL_GC_UNPROTECT(1);
+}
+
+static void export_all_present_symbols(CL_Obj package)
+{
+    export_symbols_where(package, NULL);
 }
 
 void cl_package_export_all_cl_symbols(void)
@@ -803,84 +825,33 @@ static int symbol_has_binding(CL_Obj sym)
     return 0;
 }
 
+/* Export predicate for the COMMON-LISP discovery pass.  Two rules:
+ *  1. Require an actual Lisp-level binding (symbol_has_binding).  The global
+ *     CL_SYM_EXPORTED flag is NOT a valid heuristic here: it is set whenever
+ *     ANY package exports the symbol, so a user defpackage that does
+ *     (:export #:body) would flip it on the same BODY symbol boot.lisp
+ *     accidentally interned in CL, which would then re-add BODY to
+ *     COMMON-LISP's external set and break the ANSI NO-EXTRA-SYMBOLS test.
+ *  2. Never export internal `%`-prefixed helpers.  No standard CL symbol
+ *     starts with `%`; boot.lisp / clos.lisp define `%loop-...`/`%ccase-...`
+ *     helpers as plain DEFUNs in CL (the current package during bootstrap),
+ *     so whichever happen to be defined before this pass would otherwise leak
+ *     into COMMON-LISP's external set — a timing-dependent inconsistency.
+ * Non-allocating, as export_symbols_where requires. */
+static int cl_symbol_is_exportable_defined(CL_Obj sym)
+{
+    const char *nm;
+    if (!symbol_has_binding(sym)) return 0;
+    nm = cl_symbol_name(sym);
+    if (nm && nm[0] == '%') return 0;
+    return 1;
+}
+
 void cl_package_export_defined_cl_symbols(void)
 {
-    /* Walk CL package, exporting each symbol with a real binding (or
-     * already pre-flagged from boot).  Pushes onto cl_package_cl's
-     * exported_symbols list so find-symbol returns :EXTERNAL.
-     * Counted-advance pattern handles cl_cons-induced GC compaction. */
-    uint32_t i, table_len;
-    CL_Obj package = cl_package_cl;
-    CL_GC_PROTECT(package);
-    {
-        CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
-        CL_Vector *tbl = (CL_Vector *)CL_OBJ_TO_PTR(pkg->symbols);
-        table_len = tbl->length;
-        mark_exported_listed(pkg->exported_symbols);
-    }
-    for (i = 0; i < table_len; i++) {
-        uint32_t consumed = 0;
-        for (;;) {
-            CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
-            CL_Vector *tbl = (CL_Vector *)CL_OBJ_TO_PTR(pkg->symbols);
-            CL_Obj list = tbl->data[i];
-            uint32_t skip = consumed;
-            CL_Obj sym;
-            CL_Symbol *s;
-            int should_export;
-            while (skip-- > 0 && !CL_NULL_P(list)) list = cl_cdr(list);
-            if (CL_NULL_P(list)) break;
-            sym = cl_car(list);
-            s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
-            /* Don't use the global CL_SYM_EXPORTED flag as a heuristic
-             * here.  The flag is set whenever ANY package exports the
-             * symbol, so a defpackage in user code that does
-             * (:export #:body) would flip the flag on the same BODY
-             * symbol that boot.lisp accidentally interned in CL —
-             * which would then propagate through this discovery pass
-             * and re-add BODY to COMMON-LISP's exported set, breaking
-             * the ANSI NO-EXTRA-SYMBOLS test.  Restrict to actual
-             * Lisp-level bindings: function, value, macro, type,
-             * struct, or CLOS class. */
-            should_export = symbol_has_binding(sym);
-            /* Never export internal `%`-prefixed helpers.  No standard
-             * CL symbol starts with `%`; the prefix is this project's
-             * internal-helper convention.  boot.lisp / clos.lisp define
-             * a number of `%loop-...`, `%ccase-...`, `%object-load-form-...`
-             * helpers as plain DEFUNs in the CL package (current package
-             * during bootstrap), giving them function bindings.  Without
-             * this guard, whichever ones happen to be defined before this
-             * discovery pass runs would leak into COMMON-LISP's external
-             * set and fail the ANSI NO-EXTRA-SYMBOLS-EXPORTED test, while
-             * those defined afterwards stay internal — a timing-dependent
-             * inconsistency.  Skip them unconditionally. */
-            if (should_export) {
-                const char *nm = cl_symbol_name(sym);
-                if (nm && nm[0] == '%') should_export = 0;
-            }
-            if (should_export) {
-                if (!(s->flags & CL_SYM_EXPORTED))
-                    s->flags |= CL_SYM_EXPORTED;
-                if (!(s->flags & CL_SYM_LISTED)) {
-                    CL_Obj cell;
-                    CL_GC_PROTECT(sym);
-                    cell = cl_cons(sym, CL_NIL);
-                    CL_GC_UNPROTECT(1);
-                    pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
-                    ((CL_Cons *)CL_OBJ_TO_PTR(cell))->cdr = pkg->exported_symbols;
-                    pkg->exported_symbols = cell;
-                    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym); /* re-resolve after cl_cons */
-                    s->flags |= CL_SYM_LISTED;
-                }
-            }
-            consumed++;
-        }
-    }
-    {
-        CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
-        clear_exported_listed(pkg->exported_symbols);
-    }
-    CL_GC_UNPROTECT(1);
+    /* Walk CL package, exporting each symbol with a real binding (or already
+     * pre-flagged from boot) so find-symbol returns :EXTERNAL. */
+    export_symbols_where(cl_package_cl, cl_symbol_is_exportable_defined);
 
     /* Keywords, CLAMIGA, and MOP are always fully exported */
     export_all_present_symbols(cl_package_keyword);
