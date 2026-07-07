@@ -569,132 +569,56 @@ static CL_Obj bi_make_condition(CL_Obj *args, int n)
 }
 
 /* (conditionp obj) */
-static CL_Obj bi_conditionp(CL_Obj *args, int n)
+DEFINE_TYPE_PREDICATE(bi_conditionp, CL_CONDITION_P)
+
+/* Type-check O is a condition and return its CL_Condition*; signals a
+ * TYPE-ERROR tagged with WHO otherwise.  Backs both CONDITION-TYPE-NAME and
+ * every slot reader below. */
+static CL_Condition *require_condition(CL_Obj o, const char *who)
 {
-    CL_UNUSED(n);
-    return CL_CONDITION_P(args[0]) ? SYM_T : CL_NIL;
+    if (!CL_CONDITION_P(o))
+        cl_error(CL_ERR_TYPE, "%s: not a condition", who);
+    return (CL_Condition *)CL_OBJ_TO_PTR(o);
 }
+
+/* Define a condition slot reader `(who condition) => (slot-value condition KW)`.
+ * All the standard-condition accessors below share this exact body — only the
+ * accessor name, its diagnostic tag, and the keyword differ.  Kept as a
+ * body-generating macro so each stays a distinct registrable function. */
+#define DEFINE_COND_SLOT_READER(fn, who, KW)                        \
+    static CL_Obj fn(CL_Obj *args, int n)                           \
+    {                                                               \
+        CL_UNUSED(n);                                               \
+        return slot_lookup(require_condition(args[0], who)->slots, KW); \
+    }
 
 /* (condition-type-name condition) */
 static CL_Obj bi_condition_type_name(CL_Obj *args, int n)
 {
-    CL_Condition *cond;
     CL_UNUSED(n);
-    if (!CL_CONDITION_P(args[0]))
-        cl_error(CL_ERR_TYPE, "CONDITION-TYPE-NAME: not a condition");
-    cond = (CL_Condition *)CL_OBJ_TO_PTR(args[0]);
-    return cond->type_name;
+    return require_condition(args[0], "CONDITION-TYPE-NAME")->type_name;
 }
 
-/* (simple-condition-format-control condition) */
-static CL_Obj bi_simple_condition_format_control(CL_Obj *args, int n)
-{
-    CL_Condition *cond;
-    CL_UNUSED(n);
-    if (!CL_CONDITION_P(args[0]))
-        cl_error(CL_ERR_TYPE, "SIMPLE-CONDITION-FORMAT-CONTROL: not a condition");
-    cond = (CL_Condition *)CL_OBJ_TO_PTR(args[0]);
-    return slot_lookup(cond->slots, KW_FORMAT_CONTROL);
-}
-
-/* (simple-condition-format-arguments condition) */
-static CL_Obj bi_simple_condition_format_arguments(CL_Obj *args, int n)
-{
-    CL_Condition *cond;
-    CL_UNUSED(n);
-    if (!CL_CONDITION_P(args[0]))
-        cl_error(CL_ERR_TYPE, "SIMPLE-CONDITION-FORMAT-ARGUMENTS: not a condition");
-    cond = (CL_Condition *)CL_OBJ_TO_PTR(args[0]);
-    return slot_lookup(cond->slots, KW_FORMAT_ARGUMENTS);
-}
-
-/* (type-error-datum condition) */
-static CL_Obj bi_type_error_datum(CL_Obj *args, int n)
-{
-    CL_Condition *cond;
-    CL_UNUSED(n);
-    if (!CL_CONDITION_P(args[0]))
-        cl_error(CL_ERR_TYPE, "TYPE-ERROR-DATUM: not a condition");
-    cond = (CL_Condition *)CL_OBJ_TO_PTR(args[0]);
-    return slot_lookup(cond->slots, KW_DATUM);
-}
-
-/* (type-error-expected-type condition) */
-static CL_Obj bi_type_error_expected_type(CL_Obj *args, int n)
-{
-    CL_Condition *cond;
-    CL_UNUSED(n);
-    if (!CL_CONDITION_P(args[0]))
-        cl_error(CL_ERR_TYPE, "TYPE-ERROR-EXPECTED-TYPE: not a condition");
-    cond = (CL_Condition *)CL_OBJ_TO_PTR(args[0]);
-    return slot_lookup(cond->slots, KW_EXPECTED_TYPE);
-}
-
-/* (stream-error-stream condition) */
-static CL_Obj bi_stream_error_stream(CL_Obj *args, int n)
-{
-    CL_Condition *cond;
-    CL_UNUSED(n);
-    if (!CL_CONDITION_P(args[0]))
-        cl_error(CL_ERR_TYPE, "STREAM-ERROR-STREAM: not a condition");
-    cond = (CL_Condition *)CL_OBJ_TO_PTR(args[0]);
-    return slot_lookup(cond->slots, KW_STREAM);
-}
-
-/* (package-error-package condition) */
-static CL_Obj bi_package_error_package(CL_Obj *args, int n)
-{
-    CL_Condition *cond;
-    CL_UNUSED(n);
-    if (!CL_CONDITION_P(args[0]))
-        cl_error(CL_ERR_TYPE, "PACKAGE-ERROR-PACKAGE: not a condition");
-    cond = (CL_Condition *)CL_OBJ_TO_PTR(args[0]);
-    return slot_lookup(cond->slots, KW_PACKAGE);
-}
-
-/* (cell-error-name condition) */
-static CL_Obj bi_cell_error_name(CL_Obj *args, int n)
-{
-    CL_Condition *cond;
-    CL_UNUSED(n);
-    if (!CL_CONDITION_P(args[0]))
-        cl_error(CL_ERR_TYPE, "CELL-ERROR-NAME: not a condition");
-    cond = (CL_Condition *)CL_OBJ_TO_PTR(args[0]);
-    return slot_lookup(cond->slots, KW_NAME);
-}
-
-/* (arithmetic-error-operands condition) */
-static CL_Obj bi_arithmetic_error_operands(CL_Obj *args, int n)
-{
-    CL_Condition *cond;
-    CL_UNUSED(n);
-    if (!CL_CONDITION_P(args[0]))
-        cl_error(CL_ERR_TYPE, "ARITHMETIC-ERROR-OPERANDS: not a condition");
-    cond = (CL_Condition *)CL_OBJ_TO_PTR(args[0]);
-    return slot_lookup(cond->slots, KW_OPERANDS);
-}
-
-/* (arithmetic-error-operation condition) */
-static CL_Obj bi_arithmetic_error_operation(CL_Obj *args, int n)
-{
-    CL_Condition *cond;
-    CL_UNUSED(n);
-    if (!CL_CONDITION_P(args[0]))
-        cl_error(CL_ERR_TYPE, "ARITHMETIC-ERROR-OPERATION: not a condition");
-    cond = (CL_Condition *)CL_OBJ_TO_PTR(args[0]);
-    return slot_lookup(cond->slots, KW_OPERATION);
-}
-
-/* (file-error-pathname condition) */
-static CL_Obj bi_file_error_pathname(CL_Obj *args, int n)
-{
-    CL_Condition *cond;
-    CL_UNUSED(n);
-    if (!CL_CONDITION_P(args[0]))
-        cl_error(CL_ERR_TYPE, "FILE-ERROR-PATHNAME: not a condition");
-    cond = (CL_Condition *)CL_OBJ_TO_PTR(args[0]);
-    return slot_lookup(cond->slots, KW_PATHNAME);
-}
+DEFINE_COND_SLOT_READER(bi_simple_condition_format_control,
+                        "SIMPLE-CONDITION-FORMAT-CONTROL",   KW_FORMAT_CONTROL)
+DEFINE_COND_SLOT_READER(bi_simple_condition_format_arguments,
+                        "SIMPLE-CONDITION-FORMAT-ARGUMENTS", KW_FORMAT_ARGUMENTS)
+DEFINE_COND_SLOT_READER(bi_type_error_datum,
+                        "TYPE-ERROR-DATUM",                  KW_DATUM)
+DEFINE_COND_SLOT_READER(bi_type_error_expected_type,
+                        "TYPE-ERROR-EXPECTED-TYPE",          KW_EXPECTED_TYPE)
+DEFINE_COND_SLOT_READER(bi_stream_error_stream,
+                        "STREAM-ERROR-STREAM",               KW_STREAM)
+DEFINE_COND_SLOT_READER(bi_package_error_package,
+                        "PACKAGE-ERROR-PACKAGE",             KW_PACKAGE)
+DEFINE_COND_SLOT_READER(bi_cell_error_name,
+                        "CELL-ERROR-NAME",                   KW_NAME)
+DEFINE_COND_SLOT_READER(bi_arithmetic_error_operands,
+                        "ARITHMETIC-ERROR-OPERANDS",         KW_OPERANDS)
+DEFINE_COND_SLOT_READER(bi_arithmetic_error_operation,
+                        "ARITHMETIC-ERROR-OPERATION",        KW_OPERATION)
+DEFINE_COND_SLOT_READER(bi_file_error_pathname,
+                        "FILE-ERROR-PATHNAME",               KW_PATHNAME)
 
 /* --- User-defined condition types --- */
 

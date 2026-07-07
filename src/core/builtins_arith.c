@@ -514,54 +514,27 @@ static CL_Obj bi_numneq(CL_Obj *args, int n)
 }
 
 /* The ordered comparators (<, <=, >, >=) require real arguments per
-   CLHS 12.1.4.1 — complex is not in the domain. */
-static CL_Obj bi_lt(CL_Obj *args, int n)
-{
-    int i;
-    for (i = 0; i < n - 1; i++) {
-        check_real(args[i], "<");
-        check_real(args[i+1], "<");
-        if (cl_arith_compare(args[i], args[i+1]) >= 0)
-            return CL_NIL;
+   CLHS 12.1.4.1 — complex is not in the domain.  They share one body shape:
+   walk adjacent pairs and fail when cl_arith_compare violates the order.
+   FAILOP is the *negated* relation (the chain fails when it holds), matching
+   the hand-written comparators exactly. */
+#define DEFINE_REAL_CHAIN_CMP(fn, who, FAILOP)                       \
+    static CL_Obj fn(CL_Obj *args, int n)                            \
+    {                                                                \
+        int i;                                                       \
+        for (i = 0; i < n - 1; i++) {                                \
+            check_real(args[i], who);                                \
+            check_real(args[i+1], who);                              \
+            if (cl_arith_compare(args[i], args[i+1]) FAILOP 0)       \
+                return CL_NIL;                                       \
+        }                                                            \
+        return SYM_T;                                                \
     }
-    return SYM_T;
-}
 
-static CL_Obj bi_gt(CL_Obj *args, int n)
-{
-    int i;
-    for (i = 0; i < n - 1; i++) {
-        check_real(args[i], ">");
-        check_real(args[i+1], ">");
-        if (cl_arith_compare(args[i], args[i+1]) <= 0)
-            return CL_NIL;
-    }
-    return SYM_T;
-}
-
-static CL_Obj bi_le(CL_Obj *args, int n)
-{
-    int i;
-    for (i = 0; i < n - 1; i++) {
-        check_real(args[i], "<=");
-        check_real(args[i+1], "<=");
-        if (cl_arith_compare(args[i], args[i+1]) > 0)
-            return CL_NIL;
-    }
-    return SYM_T;
-}
-
-static CL_Obj bi_ge(CL_Obj *args, int n)
-{
-    int i;
-    for (i = 0; i < n - 1; i++) {
-        check_real(args[i], ">=");
-        check_real(args[i+1], ">=");
-        if (cl_arith_compare(args[i], args[i+1]) < 0)
-            return CL_NIL;
-    }
-    return SYM_T;
-}
+DEFINE_REAL_CHAIN_CMP(bi_lt, "<",  >=)
+DEFINE_REAL_CHAIN_CMP(bi_gt, ">",  <=)
+DEFINE_REAL_CHAIN_CMP(bi_le, "<=", >)
+DEFINE_REAL_CHAIN_CMP(bi_ge, ">=", <)
 
 /* --- Numeric predicates --- */
 
@@ -664,31 +637,24 @@ static CL_Obj bi_phase(CL_Obj *args, int n)
 /* MAX/MIN track the winning INDEX, not a value copy: cl_arith_compare
  * allocates on the ratio and float-vs-rational paths, which would leave a
  * held CL_Obj copy stale — args[] itself is rooted and forwarded. */
-static CL_Obj bi_max(CL_Obj *args, int n)
-{
-    int best = 0;
-    int i;
-    check_number(args[0], "MAX");
-    for (i = 1; i < n; i++) {
-        check_number(args[i], "MAX");
-        if (cl_arith_compare(args[i], args[best]) > 0)
-            best = i;
+/* MAX/MIN return the extreme argument; they differ only in the diagnostic tag
+ * and which direction of cl_arith_compare wins. */
+#define DEFINE_MINMAX(fn, who, PICKOP)                          \
+    static CL_Obj fn(CL_Obj *args, int n)                       \
+    {                                                           \
+        int best = 0;                                           \
+        int i;                                                  \
+        check_number(args[0], who);                             \
+        for (i = 1; i < n; i++) {                               \
+            check_number(args[i], who);                         \
+            if (cl_arith_compare(args[i], args[best]) PICKOP 0) \
+                best = i;                                       \
+        }                                                       \
+        return args[best];                                      \
     }
-    return args[best];
-}
 
-static CL_Obj bi_min(CL_Obj *args, int n)
-{
-    int best = 0;
-    int i;
-    check_number(args[0], "MIN");
-    for (i = 1; i < n; i++) {
-        check_number(args[i], "MIN");
-        if (cl_arith_compare(args[i], args[best]) < 0)
-            best = i;
-    }
-    return args[best];
-}
+DEFINE_MINMAX(bi_max, "MAX", >)
+DEFINE_MINMAX(bi_min, "MIN", <)
 
 /* --- Extended integer functions --- */
 
@@ -765,44 +731,25 @@ static CL_Obj bi_ash(CL_Obj *args, int n)
     return cl_arith_ash(args[0], args[1]);
 }
 
-static CL_Obj bi_logand(CL_Obj *args, int n)
-{
-    CL_Obj result = CL_MAKE_FIXNUM(-1);
-    int i;
-    CL_GC_PROTECT(result);
-    for (i = 0; i < n; i++) {
-        check_integer(args[i], "LOGAND");
-        result = cl_arith_logand(result, args[i]);
+/* LOGAND/LOGIOR/LOGXOR fold their integer args with a per-op identity element.
+ * result is GC-protected because cl_arith_log* can allocate a bignum. */
+#define DEFINE_LOGFOLD(fn, who, IDENT, FOLDFN)                  \
+    static CL_Obj fn(CL_Obj *args, int n)                       \
+    {                                                           \
+        CL_Obj result = CL_MAKE_FIXNUM(IDENT);                  \
+        int i;                                                  \
+        CL_GC_PROTECT(result);                                  \
+        for (i = 0; i < n; i++) {                               \
+            check_integer(args[i], who);                        \
+            result = FOLDFN(result, args[i]);                   \
+        }                                                       \
+        CL_GC_UNPROTECT(1);                                     \
+        return result;                                          \
     }
-    CL_GC_UNPROTECT(1);
-    return result;
-}
 
-static CL_Obj bi_logior(CL_Obj *args, int n)
-{
-    CL_Obj result = CL_MAKE_FIXNUM(0);
-    int i;
-    CL_GC_PROTECT(result);
-    for (i = 0; i < n; i++) {
-        check_integer(args[i], "LOGIOR");
-        result = cl_arith_logior(result, args[i]);
-    }
-    CL_GC_UNPROTECT(1);
-    return result;
-}
-
-static CL_Obj bi_logxor(CL_Obj *args, int n)
-{
-    CL_Obj result = CL_MAKE_FIXNUM(0);
-    int i;
-    CL_GC_PROTECT(result);
-    for (i = 0; i < n; i++) {
-        check_integer(args[i], "LOGXOR");
-        result = cl_arith_logxor(result, args[i]);
-    }
-    CL_GC_UNPROTECT(1);
-    return result;
-}
+DEFINE_LOGFOLD(bi_logand, "LOGAND", -1, cl_arith_logand)
+DEFINE_LOGFOLD(bi_logior, "LOGIOR",  0, cl_arith_logior)
+DEFINE_LOGFOLD(bi_logxor, "LOGXOR",  0, cl_arith_logxor)
 
 static CL_Obj bi_lognot(CL_Obj *args, int n)
 {
@@ -1024,35 +971,11 @@ static CL_Obj bi_boole(CL_Obj *args, int n)
     }
 }
 
-static CL_Obj bi_numberp(CL_Obj *args, int n)
-{
-    CL_UNUSED(n);
-    return CL_NUMBER_P(args[0]) ? SYM_T : CL_NIL;
-}
-
-static CL_Obj bi_integerp(CL_Obj *args, int n)
-{
-    CL_UNUSED(n);
-    return CL_INTEGER_P(args[0]) ? SYM_T : CL_NIL;
-}
-
-static CL_Obj bi_floatp(CL_Obj *args, int n)
-{
-    CL_UNUSED(n);
-    return CL_FLOATP(args[0]) ? SYM_T : CL_NIL;
-}
-
-static CL_Obj bi_realp(CL_Obj *args, int n)
-{
-    CL_UNUSED(n);
-    return CL_REALP(args[0]) ? SYM_T : CL_NIL;
-}
-
-static CL_Obj bi_rationalp(CL_Obj *args, int n)
-{
-    CL_UNUSED(n);
-    return CL_RATIONAL_P(args[0]) ? SYM_T : CL_NIL;
-}
+DEFINE_TYPE_PREDICATE(bi_numberp,   CL_NUMBER_P)
+DEFINE_TYPE_PREDICATE(bi_integerp,  CL_INTEGER_P)
+DEFINE_TYPE_PREDICATE(bi_floatp,    CL_FLOATP)
+DEFINE_TYPE_PREDICATE(bi_realp,     CL_REALP)
+DEFINE_TYPE_PREDICATE(bi_rationalp, CL_RATIONAL_P)
 
 /* --- Complex number functions --- */
 
@@ -1101,11 +1024,7 @@ static CL_Obj bi_complex(CL_Obj *args, int n)
     return cl_make_complex(real, imag);
 }
 
-static CL_Obj bi_complexp(CL_Obj *args, int n)
-{
-    CL_UNUSED(n);
-    return CL_COMPLEX_P(args[0]) ? SYM_T : CL_NIL;
-}
+DEFINE_TYPE_PREDICATE(bi_complexp, CL_COMPLEX_P)
 
 static CL_Obj bi_realpart(CL_Obj *args, int n)
 {

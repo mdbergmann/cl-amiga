@@ -359,6 +359,18 @@ static CL_Obj SYM_EQL_HT = CL_NIL;
 static CL_Obj SYM_EQUAL_HT = CL_NIL;
 static CL_Obj SYM_EQUALP_HT = CL_NIL;
 
+/* Type-check O is a hash table and return its CL_Hashtable*; signals a
+ * TYPE-ERROR tagged with WHO otherwise.  Collapses the guard/deref idiom
+ * repeated across the hash-table builtins.  The returned pointer is only valid
+ * until the next allocation (same as an inline CL_OBJ_TO_PTR), so callers that
+ * allocate must re-derive it — exactly as before. */
+static CL_Hashtable *require_hash_table(CL_Obj o, const char *who)
+{
+    if (!CL_HASHTABLE_P(o))
+        cl_error(CL_ERR_TYPE, "%s: not a hash table", who);
+    return (CL_Hashtable *)CL_OBJ_TO_PTR(o);
+}
+
 /* --- Rehashing --- */
 
 /* Grow the hash table when load factor > 75%.
@@ -529,10 +541,7 @@ static CL_Obj bi_gethash(CL_Obj *args, int n)
     uint32_t bucket_idx;
     CL_Obj chain;
 
-    if (!CL_HASHTABLE_P(ht_obj))
-        cl_error(CL_ERR_TYPE, "GETHASH: not a hash table");
-
-    ht = (CL_Hashtable *)CL_OBJ_TO_PTR(ht_obj);
+    ht = require_hash_table(ht_obj, "GETHASH");
     /* For a synchronized table hold the lock across the whole walk so a
      * concurrent rehash (which swaps bucket_vec and bucket_count and relinks
      * cells between buckets) can never be observed half-applied.  The walk is
@@ -718,10 +727,7 @@ static CL_Obj bi_setf_gethash(CL_Obj *args, int n)
     CL_Obj chain;
     CL_UNUSED(n);
 
-    if (!CL_HASHTABLE_P(ht_obj))
-        cl_error(CL_ERR_TYPE, "(SETF GETHASH): not a hash table");
-
-    ht = (CL_Hashtable *)CL_OBJ_TO_PTR(ht_obj);
+    ht = require_hash_table(ht_obj, "(SETF GETHASH)");
     if ((ht->flags & CL_HT_FLAG_SYNC) && CL_MT())
         return bi_setf_gethash_sync(ht_obj, key, value);
 
@@ -798,10 +804,7 @@ static CL_Obj bi_remhash(CL_Obj *args, int n)
     CL_Obj prev, cursor;
     CL_UNUSED(n);
 
-    if (!CL_HASHTABLE_P(ht_obj))
-        cl_error(CL_ERR_TYPE, "REMHASH: not a hash table");
-
-    ht = (CL_Hashtable *)CL_OBJ_TO_PTR(ht_obj);
+    ht = require_hash_table(ht_obj, "REMHASH");
     /* Allocation-free — safe to hold the sync lock across the whole unlink. */
     {
         int locked = ht_sync_enter(ht);
@@ -846,10 +849,7 @@ static CL_Obj bi_maphash(CL_Obj *args, int n)
     uint32_t i;
     CL_UNUSED(n);
 
-    if (!CL_HASHTABLE_P(ht_obj))
-        cl_error(CL_ERR_TYPE, "MAPHASH: not a hash table");
-
-    ht = (CL_Hashtable *)CL_OBJ_TO_PTR(ht_obj);
+    ht = require_hash_table(ht_obj, "MAPHASH");
 
     CL_GC_PROTECT(func);
     CL_GC_PROTECT(ht_obj);
@@ -894,10 +894,7 @@ static CL_Obj bi_clrhash(CL_Obj *args, int n)
     uint32_t i;
     CL_UNUSED(n);
 
-    if (!CL_HASHTABLE_P(args[0]))
-        cl_error(CL_ERR_TYPE, "CLRHASH: not a hash table");
-
-    ht = (CL_Hashtable *)CL_OBJ_TO_PTR(args[0]);
+    ht = require_hash_table(args[0], "CLRHASH");
     {
         int locked = ht_sync_enter(ht);
         CL_Obj *bkts = ht_get_buckets(ht);
@@ -914,18 +911,11 @@ static CL_Obj bi_hash_table_count(CL_Obj *args, int n)
     CL_Hashtable *ht;
     CL_UNUSED(n);
 
-    if (!CL_HASHTABLE_P(args[0]))
-        cl_error(CL_ERR_TYPE, "HASH-TABLE-COUNT: not a hash table");
-
-    ht = (CL_Hashtable *)CL_OBJ_TO_PTR(args[0]);
+    ht = require_hash_table(args[0], "HASH-TABLE-COUNT");
     return CL_MAKE_FIXNUM(ht->count);
 }
 
-static CL_Obj bi_hash_table_p(CL_Obj *args, int n)
-{
-    CL_UNUSED(n);
-    return CL_HASHTABLE_P(args[0]) ? SYM_T : CL_NIL;
-}
+DEFINE_TYPE_PREDICATE(bi_hash_table_p, CL_HASHTABLE_P)
 
 /* CLHS: HASH-TABLE-SIZE — the "current size", i.e. the bucket capacity
    that the table was allocated with.  We return bucket_count, which is
@@ -934,9 +924,7 @@ static CL_Obj bi_hash_table_size(CL_Obj *args, int n)
 {
     CL_Hashtable *ht;
     CL_UNUSED(n);
-    if (!CL_HASHTABLE_P(args[0]))
-        cl_error(CL_ERR_TYPE, "HASH-TABLE-SIZE: not a hash table");
-    ht = (CL_Hashtable *)CL_OBJ_TO_PTR(args[0]);
+    ht = require_hash_table(args[0], "HASH-TABLE-SIZE");
     return CL_MAKE_FIXNUM((int32_t)ht->bucket_count);
 }
 
@@ -946,9 +934,7 @@ static CL_Obj bi_hash_table_test(CL_Obj *args, int n)
 {
     CL_Hashtable *ht;
     CL_UNUSED(n);
-    if (!CL_HASHTABLE_P(args[0]))
-        cl_error(CL_ERR_TYPE, "HASH-TABLE-TEST: not a hash table");
-    ht = (CL_Hashtable *)CL_OBJ_TO_PTR(args[0]);
+    ht = require_hash_table(args[0], "HASH-TABLE-TEST");
     switch (ht->test) {
     case CL_HT_TEST_EQ:     return SYM_EQ_HT;
     case CL_HT_TEST_EQL:    return SYM_EQL_HT;
@@ -963,8 +949,7 @@ static CL_Obj bi_hash_table_test(CL_Obj *args, int n)
 static CL_Obj bi_hash_table_rehash_size(CL_Obj *args, int n)
 {
     CL_UNUSED(n);
-    if (!CL_HASHTABLE_P(args[0]))
-        cl_error(CL_ERR_TYPE, "HASH-TABLE-REHASH-SIZE: not a hash table");
+    (void)require_hash_table(args[0], "HASH-TABLE-REHASH-SIZE");
     return cl_make_single_float(1.5f);
 }
 
@@ -974,8 +959,7 @@ static CL_Obj bi_hash_table_rehash_size(CL_Obj *args, int n)
 static CL_Obj bi_hash_table_rehash_threshold(CL_Obj *args, int n)
 {
     CL_UNUSED(n);
-    if (!CL_HASHTABLE_P(args[0]))
-        cl_error(CL_ERR_TYPE, "HASH-TABLE-REHASH-THRESHOLD: not a hash table");
+    (void)require_hash_table(args[0], "HASH-TABLE-REHASH-THRESHOLD");
     return cl_make_single_float(0.75f);
 }
 
@@ -993,8 +977,7 @@ static CL_Obj bi_hash_table_pairs(CL_Obj *args, int n)
     uint32_t i;
     CL_UNUSED(n);
 
-    if (!CL_HASHTABLE_P(ht_obj))
-        cl_error(CL_ERR_TYPE, "%HASH-TABLE-PAIRS: not a hash table");
+    (void)require_hash_table(ht_obj, "%HASH-TABLE-PAIRS");
 
     CL_GC_PROTECT(ht_obj);
     CL_GC_PROTECT(result);

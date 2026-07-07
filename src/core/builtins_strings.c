@@ -82,91 +82,61 @@ static int cl_tolower(int c)
 
 /* --- Character functions --- */
 
-static CL_Obj bi_characterp(CL_Obj *args, int n)
-{
-    CL_UNUSED(n);
-    return CL_CHAR_P(args[0]) ? SYM_T : CL_NIL;
-}
+DEFINE_TYPE_PREDICATE(bi_characterp, CL_CHAR_P)
 
-static CL_Obj bi_char_eq(CL_Obj *args, int n)
-{
-    int i;
-    for (i = 0; i < n; i++)
-        if (!CL_CHAR_P(args[i]))
-            cl_error(CL_ERR_TYPE, "CHAR=: not a character");
-    for (i = 1; i < n; i++)
-        if (CL_CHAR_VAL(args[i-1]) != CL_CHAR_VAL(args[i]))
-            return CL_NIL;
-    return SYM_T;
-}
+/* Char comparison chains all share one body shape; FOLD selects case
+ * sensitivity: CL_CHAR_VAL for char=/char</... (exact), char_upcase_val for
+ * char-equal/char-lessp/... (case-insensitive).  These are body-generating
+ * macros — NOT a runtime mode switch — so the emitted code is byte-identical
+ * to the hand-written comparators (char=/char< are hot). */
+#define DEFINE_CHAR_ORDER_CMP(fn, who, FOLD, OP)                      \
+    static CL_Obj fn(CL_Obj *args, int n)                            \
+    {                                                                \
+        int i;                                                       \
+        for (i = 0; i < n; i++)                                      \
+            if (!CL_CHAR_P(args[i]))                                 \
+                cl_error(CL_ERR_TYPE, who ": not a character");      \
+        for (i = 1; i < n; i++)                                      \
+            if (!(FOLD(args[i-1]) OP FOLD(args[i])))                 \
+                return CL_NIL;                                       \
+        return SYM_T;                                                \
+    }
 
-static CL_Obj bi_char_ne(CL_Obj *args, int n)
-{
-    int i, j;
-    for (i = 0; i < n; i++)
-        if (!CL_CHAR_P(args[i]))
-            cl_error(CL_ERR_TYPE, "CHAR/=: not a character");
-    for (i = 0; i < n; i++)
-        for (j = i + 1; j < n; j++)
-            if (CL_CHAR_VAL(args[i]) == CL_CHAR_VAL(args[j]))
-                return CL_NIL;
-    return SYM_T;
-}
+#define DEFINE_CHAR_NE_CMP(fn, who, FOLD)                            \
+    static CL_Obj fn(CL_Obj *args, int n)                           \
+    {                                                               \
+        int i, j;                                                   \
+        for (i = 0; i < n; i++)                                     \
+            if (!CL_CHAR_P(args[i]))                                \
+                cl_error(CL_ERR_TYPE, who ": not a character");     \
+        for (i = 0; i < n; i++)                                     \
+            for (j = i + 1; j < n; j++)                             \
+                if (FOLD(args[i]) == FOLD(args[j]))                 \
+                    return CL_NIL;                                  \
+        return SYM_T;                                               \
+    }
 
-static CL_Obj bi_char_lt(CL_Obj *args, int n)
-{
-    int i;
-    for (i = 0; i < n; i++)
-        if (!CL_CHAR_P(args[i]))
-            cl_error(CL_ERR_TYPE, "CHAR<: not a character");
-    for (i = 1; i < n; i++)
-        if (!(CL_CHAR_VAL(args[i-1]) < CL_CHAR_VAL(args[i])))
-            return CL_NIL;
-    return SYM_T;
-}
+DEFINE_CHAR_ORDER_CMP(bi_char_eq, "CHAR=",  CL_CHAR_VAL, ==)
+DEFINE_CHAR_NE_CMP   (bi_char_ne, "CHAR/=", CL_CHAR_VAL)
+DEFINE_CHAR_ORDER_CMP(bi_char_lt, "CHAR<",  CL_CHAR_VAL, <)
+DEFINE_CHAR_ORDER_CMP(bi_char_gt, "CHAR>",  CL_CHAR_VAL, >)
+DEFINE_CHAR_ORDER_CMP(bi_char_le, "CHAR<=", CL_CHAR_VAL, <=)
+DEFINE_CHAR_ORDER_CMP(bi_char_ge, "CHAR>=", CL_CHAR_VAL, >=)
 
-static CL_Obj bi_char_gt(CL_Obj *args, int n)
+/* Type-check O is a character and return its code point; signals a TYPE-ERROR
+ * tagged with WHO otherwise.  Collapses the check/extract idiom repeated across
+ * the single-arg char accessors. */
+static int require_char(CL_Obj o, const char *who)
 {
-    int i;
-    for (i = 0; i < n; i++)
-        if (!CL_CHAR_P(args[i]))
-            cl_error(CL_ERR_TYPE, "CHAR>: not a character");
-    for (i = 1; i < n; i++)
-        if (!(CL_CHAR_VAL(args[i-1]) > CL_CHAR_VAL(args[i])))
-            return CL_NIL;
-    return SYM_T;
-}
-
-static CL_Obj bi_char_le(CL_Obj *args, int n)
-{
-    int i;
-    for (i = 0; i < n; i++)
-        if (!CL_CHAR_P(args[i]))
-            cl_error(CL_ERR_TYPE, "CHAR<=: not a character");
-    for (i = 1; i < n; i++)
-        if (!(CL_CHAR_VAL(args[i-1]) <= CL_CHAR_VAL(args[i])))
-            return CL_NIL;
-    return SYM_T;
-}
-
-static CL_Obj bi_char_ge(CL_Obj *args, int n)
-{
-    int i;
-    for (i = 0; i < n; i++)
-        if (!CL_CHAR_P(args[i]))
-            cl_error(CL_ERR_TYPE, "CHAR>=: not a character");
-    for (i = 1; i < n; i++)
-        if (!(CL_CHAR_VAL(args[i-1]) >= CL_CHAR_VAL(args[i])))
-            return CL_NIL;
-    return SYM_T;
+    if (!CL_CHAR_P(o))
+        cl_error(CL_ERR_TYPE, "%s: not a character", who);
+    return CL_CHAR_VAL(o);
 }
 
 static CL_Obj bi_char_code(CL_Obj *args, int n)
 {
     CL_UNUSED(n);
-    if (!CL_CHAR_P(args[0]))
-        cl_error(CL_ERR_TYPE, "CHAR-CODE: not a character");
-    return CL_MAKE_FIXNUM(CL_CHAR_VAL(args[0]));
+    return CL_MAKE_FIXNUM(require_char(args[0], "CHAR-CODE"));
 }
 
 static CL_Obj bi_code_char(CL_Obj *args, int n)
@@ -182,9 +152,7 @@ static CL_Obj bi_code_char(CL_Obj *args, int n)
 static CL_Obj bi_char_int(CL_Obj *args, int n)
 {
     CL_UNUSED(n);
-    if (!CL_CHAR_P(args[0]))
-        cl_error(CL_ERR_TYPE, "CHAR-INT: not a character");
-    return CL_MAKE_FIXNUM(CL_CHAR_VAL(args[0]));
+    return CL_MAKE_FIXNUM(require_char(args[0], "CHAR-INT"));
 }
 
 /* (character object) => character
@@ -223,9 +191,7 @@ static CL_Obj bi_char_upcase(CL_Obj *args, int n)
 {
     int c;
     CL_UNUSED(n);
-    if (!CL_CHAR_P(args[0]))
-        cl_error(CL_ERR_TYPE, "CHAR-UPCASE: not a character");
-    c = CL_CHAR_VAL(args[0]);
+    c = require_char(args[0], "CHAR-UPCASE");
     return CL_MAKE_CHAR(cl_toupper(c));
 }
 
@@ -233,9 +199,7 @@ static CL_Obj bi_char_downcase(CL_Obj *args, int n)
 {
     int c;
     CL_UNUSED(n);
-    if (!CL_CHAR_P(args[0]))
-        cl_error(CL_ERR_TYPE, "CHAR-DOWNCASE: not a character");
-    c = CL_CHAR_VAL(args[0]);
+    c = require_char(args[0], "CHAR-DOWNCASE");
     return CL_MAKE_CHAR(cl_tolower(c));
 }
 
@@ -243,9 +207,7 @@ static CL_Obj bi_upper_case_p(CL_Obj *args, int n)
 {
     int c;
     CL_UNUSED(n);
-    if (!CL_CHAR_P(args[0]))
-        cl_error(CL_ERR_TYPE, "UPPER-CASE-P: not a character");
-    c = CL_CHAR_VAL(args[0]);
+    c = require_char(args[0], "UPPER-CASE-P");
     return cl_isupper(c) ? SYM_T : CL_NIL;
 }
 
@@ -253,9 +215,7 @@ static CL_Obj bi_lower_case_p(CL_Obj *args, int n)
 {
     int c;
     CL_UNUSED(n);
-    if (!CL_CHAR_P(args[0]))
-        cl_error(CL_ERR_TYPE, "LOWER-CASE-P: not a character");
-    c = CL_CHAR_VAL(args[0]);
+    c = require_char(args[0], "LOWER-CASE-P");
     return cl_islower(c) ? SYM_T : CL_NIL;
 }
 
@@ -263,18 +223,14 @@ static CL_Obj bi_alpha_char_p(CL_Obj *args, int n)
 {
     int c;
     CL_UNUSED(n);
-    if (!CL_CHAR_P(args[0]))
-        cl_error(CL_ERR_TYPE, "ALPHA-CHAR-P: not a character");
-    c = CL_CHAR_VAL(args[0]);
+    c = require_char(args[0], "ALPHA-CHAR-P");
     return cl_isalpha(c) ? SYM_T : CL_NIL;
 }
 
 static CL_Obj bi_digit_char_p(CL_Obj *args, int n)
 {
     int c, radix, weight;
-    if (!CL_CHAR_P(args[0]))
-        cl_error(CL_ERR_TYPE, "DIGIT-CHAR-P: not a character");
-    c = CL_CHAR_VAL(args[0]);
+    c = require_char(args[0], "DIGIT-CHAR-P");
     radix = (n > 1 && CL_FIXNUM_P(args[1])) ? CL_FIXNUM_VAL(args[1]) : 10;
     if (c >= '0' && c <= '9')
         weight = c - '0';
@@ -1671,9 +1627,7 @@ static CL_Obj bi_char_name(CL_Obj *args, int n)
 {
     int c, i;
     CL_UNUSED(n);
-    if (!CL_CHAR_P(args[0]))
-        cl_error(CL_ERR_TYPE, "CHAR-NAME: not a character");
-    c = CL_CHAR_VAL(args[0]);
+    c = require_char(args[0], "CHAR-NAME");
     for (i = 0; char_names[i].name; i++) {
         if (char_names[i].code == c)
             return cl_make_string(char_names[i].name,
@@ -1754,9 +1708,7 @@ static CL_Obj bi_graphic_char_p(CL_Obj *args, int n)
 {
     int c;
     CL_UNUSED(n);
-    if (!CL_CHAR_P(args[0]))
-        cl_error(CL_ERR_TYPE, "GRAPHIC-CHAR-P: not a character");
-    c = CL_CHAR_VAL(args[0]);
+    c = require_char(args[0], "GRAPHIC-CHAR-P");
     return (c >= 32 && c < 127) ? SYM_T : CL_NIL;
 }
 
@@ -1764,9 +1716,7 @@ static CL_Obj bi_standard_char_p(CL_Obj *args, int n)
 {
     int c;
     CL_UNUSED(n);
-    if (!CL_CHAR_P(args[0]))
-        cl_error(CL_ERR_TYPE, "STANDARD-CHAR-P: not a character");
-    c = CL_CHAR_VAL(args[0]);
+    c = require_char(args[0], "STANDARD-CHAR-P");
     /* Standard chars: graphic chars + space + newline */
     return ((c >= 32 && c < 127) || c == '\n') ? SYM_T : CL_NIL;
 }
@@ -1775,9 +1725,7 @@ static CL_Obj bi_alphanumericp(CL_Obj *args, int n)
 {
     int c;
     CL_UNUSED(n);
-    if (!CL_CHAR_P(args[0]))
-        cl_error(CL_ERR_TYPE, "ALPHANUMERICP: not a character");
-    c = CL_CHAR_VAL(args[0]);
+    c = require_char(args[0], "ALPHANUMERICP");
     return (cl_isalpha(c) || (c >= '0' && c <= '9')) ? SYM_T : CL_NIL;
 }
 
@@ -1801,9 +1749,7 @@ static CL_Obj bi_both_case_p(CL_Obj *args, int n)
 {
     int c;
     CL_UNUSED(n);
-    if (!CL_CHAR_P(args[0]))
-        cl_error(CL_ERR_TYPE, "BOTH-CASE-P: not a character");
-    c = CL_CHAR_VAL(args[0]);
+    c = require_char(args[0], "BOTH-CASE-P");
     return cl_isalpha(c) ? SYM_T : CL_NIL;
 }
 
@@ -1814,78 +1760,12 @@ static int char_upcase_val(CL_Obj c)
     return v;
 }
 
-static CL_Obj bi_char_equal(CL_Obj *args, int n)
-{
-    int i;
-    for (i = 0; i < n; i++)
-        if (!CL_CHAR_P(args[i]))
-            cl_error(CL_ERR_TYPE, "CHAR-EQUAL: not a character");
-    for (i = 1; i < n; i++)
-        if (char_upcase_val(args[i-1]) != char_upcase_val(args[i]))
-            return CL_NIL;
-    return SYM_T;
-}
-
-static CL_Obj bi_char_not_equal(CL_Obj *args, int n)
-{
-    int i, j;
-    for (i = 0; i < n; i++)
-        if (!CL_CHAR_P(args[i]))
-            cl_error(CL_ERR_TYPE, "CHAR-NOT-EQUAL: not a character");
-    for (i = 0; i < n; i++)
-        for (j = i + 1; j < n; j++)
-            if (char_upcase_val(args[i]) == char_upcase_val(args[j]))
-                return CL_NIL;
-    return SYM_T;
-}
-
-static CL_Obj bi_char_lessp(CL_Obj *args, int n)
-{
-    int i;
-    for (i = 0; i < n; i++)
-        if (!CL_CHAR_P(args[i]))
-            cl_error(CL_ERR_TYPE, "CHAR-LESSP: not a character");
-    for (i = 1; i < n; i++)
-        if (!(char_upcase_val(args[i-1]) < char_upcase_val(args[i])))
-            return CL_NIL;
-    return SYM_T;
-}
-
-static CL_Obj bi_char_greaterp(CL_Obj *args, int n)
-{
-    int i;
-    for (i = 0; i < n; i++)
-        if (!CL_CHAR_P(args[i]))
-            cl_error(CL_ERR_TYPE, "CHAR-GREATERP: not a character");
-    for (i = 1; i < n; i++)
-        if (!(char_upcase_val(args[i-1]) > char_upcase_val(args[i])))
-            return CL_NIL;
-    return SYM_T;
-}
-
-static CL_Obj bi_char_not_greaterp(CL_Obj *args, int n)
-{
-    int i;
-    for (i = 0; i < n; i++)
-        if (!CL_CHAR_P(args[i]))
-            cl_error(CL_ERR_TYPE, "CHAR-NOT-GREATERP: not a character");
-    for (i = 1; i < n; i++)
-        if (!(char_upcase_val(args[i-1]) <= char_upcase_val(args[i])))
-            return CL_NIL;
-    return SYM_T;
-}
-
-static CL_Obj bi_char_not_lessp(CL_Obj *args, int n)
-{
-    int i;
-    for (i = 0; i < n; i++)
-        if (!CL_CHAR_P(args[i]))
-            cl_error(CL_ERR_TYPE, "CHAR-NOT-LESSP: not a character");
-    for (i = 1; i < n; i++)
-        if (!(char_upcase_val(args[i-1]) >= char_upcase_val(args[i])))
-            return CL_NIL;
-    return SYM_T;
-}
+DEFINE_CHAR_ORDER_CMP(bi_char_equal,        "CHAR-EQUAL",        char_upcase_val, ==)
+DEFINE_CHAR_NE_CMP   (bi_char_not_equal,    "CHAR-NOT-EQUAL",    char_upcase_val)
+DEFINE_CHAR_ORDER_CMP(bi_char_lessp,        "CHAR-LESSP",        char_upcase_val, <)
+DEFINE_CHAR_ORDER_CMP(bi_char_greaterp,     "CHAR-GREATERP",     char_upcase_val, >)
+DEFINE_CHAR_ORDER_CMP(bi_char_not_greaterp, "CHAR-NOT-GREATERP", char_upcase_val, <=)
+DEFINE_CHAR_ORDER_CMP(bi_char_not_lessp,    "CHAR-NOT-LESSP",    char_upcase_val, >=)
 
 /* --- MAKE-STRING --- */
 

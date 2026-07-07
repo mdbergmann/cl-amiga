@@ -407,11 +407,7 @@ static CL_Obj coerce_to_pathname(CL_Obj arg)
  * ================================================================ */
 
 /* (pathnamep thing) */
-static CL_Obj bi_pathnamep(CL_Obj *args, int n)
-{
-    CL_UNUSED(n);
-    return CL_PATHNAME_P(args[0]) ? SYM_T : CL_NIL;
-}
+DEFINE_TYPE_PREDICATE(bi_pathnamep, CL_PATHNAME_P)
 
 /* (pathname thing) — coerce string or pathname to pathname */
 static CL_Obj bi_pathname(CL_Obj *args, int n)

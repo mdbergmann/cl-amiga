@@ -581,11 +581,7 @@ static CL_Obj bi_struct_type_name(CL_Obj *args, int n)
 }
 
 /* (structurep obj) */
-static CL_Obj bi_structurep(CL_Obj *args, int n)
-{
-    CL_UNUSED(n);
-    return CL_STRUCT_P(args[0]) ? SYM_T : CL_NIL;
-}
+DEFINE_TYPE_PREDICATE(bi_structurep, CL_STRUCT_P)
 
 /* (%struct-slot-names type-name) — for :include support in macro */
 static CL_Obj bi_struct_slot_names(CL_Obj *args, int n)

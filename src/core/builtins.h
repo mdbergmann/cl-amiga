@@ -29,6 +29,18 @@ static inline void defun(const char *name, CL_CFunc func, int min, int max)
     cl_register_builtin(name, func, min, max, cl_package_cl);
 }
 
+/* Define a one-argument type-predicate builtin whose body is just
+ * `return PRED(args[0]) ? SYM_T : CL_NIL;`.  PRED is a predicate macro such as
+ * CL_CHAR_P / CL_HASHTABLE_P.  Expands to the exact hand-written body (same
+ * codegen), folding the ~20 near-identical `bi_*p` one-liners across the
+ * builtins_*.c files into a single declaration each. */
+#define DEFINE_TYPE_PREDICATE(fn, PRED)              \
+    static CL_Obj fn(CL_Obj *args, int n)            \
+    {                                                \
+        CL_UNUSED(n);                                \
+        return PRED(args[0]) ? SYM_T : CL_NIL;       \
+    }
+
 /* Static descriptor used by table-driven init.
  * min/max are int16 to keep the entry compact (max == -1 means &rest). */
 typedef struct {
