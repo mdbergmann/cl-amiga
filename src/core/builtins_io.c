@@ -56,20 +56,8 @@ static void extfun(const char *name, CL_CFunc func, int min, int max)
     CL_GC_UNPROTECT(1);
 }
 
-/* --- Stream resolution helper (matches builtins_stream.c pattern) --- */
-
-static CL_Obj resolve_output_stream_io(CL_Obj *args, int n, int idx)
-{
-    CL_Obj s;
-    if (idx >= n || CL_NULL_P(args[idx]))
-        return cl_symbol_value(SYM_STANDARD_OUTPUT);
-    s = args[idx];
-    if (s == CL_T)
-        return cl_symbol_value(SYM_TERMINAL_IO);
-    if (!CL_STREAM_P(s))
-        cl_error(CL_ERR_TYPE, "argument is not a stream");
-    return s;
-}
+/* Output-stream resolution is shared with builtins_stream.c
+ * (cl_resolve_output_stream, declared in stream.h). */
 
 /* --- Keywords for WRITE --- */
 
@@ -174,28 +162,28 @@ static CL_Obj bi_write(CL_Obj *args, int n)
 
 static CL_Obj bi_print(CL_Obj *args, int n)
 {
-    CL_Obj stream = resolve_output_stream_io(args, n, 1);
+    CL_Obj stream = cl_resolve_output_stream(args, n, 1);
     cl_print_to_stream(args[0], stream);
     return args[0];
 }
 
 static CL_Obj bi_prin1(CL_Obj *args, int n)
 {
-    CL_Obj stream = resolve_output_stream_io(args, n, 1);
+    CL_Obj stream = cl_resolve_output_stream(args, n, 1);
     cl_prin1_to_stream(args[0], stream);
     return args[0];
 }
 
 static CL_Obj bi_princ(CL_Obj *args, int n)
 {
-    CL_Obj stream = resolve_output_stream_io(args, n, 1);
+    CL_Obj stream = cl_resolve_output_stream(args, n, 1);
     cl_princ_to_stream(args[0], stream);
     return args[0];
 }
 
 static CL_Obj bi_pprint(CL_Obj *args, int n)
 {
-    CL_Obj stream = resolve_output_stream_io(args, n, 1);
+    CL_Obj stream = cl_resolve_output_stream(args, n, 1);
     /* Thread-local dynamic binds (FS16) — see bi_write.  The dyn stack is
      * GC-marked, so the saved values need no manual roots; `stream` still
      * does (the newline write can grow a string stream and compact). */

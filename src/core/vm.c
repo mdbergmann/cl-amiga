@@ -1302,6 +1302,34 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
 #undef cl_mv_values
 #define cl_mv_values (thr->mv_values)
 
+    /* OP_LT/GT/LE/GE share one body: fixnum fast path, else a REAL type check
+     * and cl_arith_compare.  OP is used identically in both paths so codegen is
+     * byte-identical to the four hand-written cases.  Inline macro (not a
+     * helper call) — these are hot. */
+#define VM_ORDER_CMP(OP, opname) do {                                        \
+        CL_Obj b = cl_vm_pop(), a = cl_vm_pop();                             \
+        if (CL_FIXNUM_P(a) && CL_FIXNUM_P(b)) {                              \
+            cl_vm_push(CL_FIXNUM_VAL(a) OP CL_FIXNUM_VAL(b) ? SYM_T : CL_NIL); \
+        } else {                                                            \
+            if (!CL_REALP(a)) cl_signal_type_error(a, "REAL", opname);      \
+            if (!CL_REALP(b)) cl_signal_type_error(b, "REAL", opname);      \
+            cl_vm_push(cl_arith_compare(a, b) OP 0 ? SYM_T : CL_NIL);       \
+        }                                                                   \
+        cl_mv_count = 1;                                                     \
+    } while (0)
+
+    /* Shared NULL-constant-pool bug guard for the const-referencing opcodes.
+     * "Should never happen"; the fprintf + cl_error tag the offending opcode.
+     * Requires a local `idx` in scope.  (OP_GLOAD keeps its own copy — it also
+     * dumps a backtrace.) */
+#define VM_REQUIRE_CONSTANTS(opname) do {                                    \
+        if (!constants) {                                                    \
+            fprintf(stderr, "[VM] BUG: " opname " with NULL constants "     \
+                    "(idx=%u fp=%d ip=%u)\n", idx, cl_vm.fp, ip);           \
+            cl_error(CL_ERR_GENERAL, opname " with NULL constants ptr");    \
+        }                                                                   \
+    } while (0)
+
     CL_Frame *frame = &cl_vm.frames[cl_vm.fp - 1];
     uint8_t *code = frame->code;
     CL_Obj *constants = frame->constants;
@@ -1609,11 +1637,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
 
         VM_CASE(OP_CONST): {
             uint16_t idx = read_u16(code, &ip);
-            if (!constants) {
-                fprintf(stderr, "[VM] BUG: OP_CONST with NULL constants (idx=%u fp=%d ip=%u)\n",
-                        idx, cl_vm.fp, ip);
-                cl_error(CL_ERR_GENERAL, "OP_CONST with NULL constants ptr");
-            }
+            VM_REQUIRE_CONSTANTS("OP_CONST");
             cl_vm_push(constants[idx]);
             cl_mv_count = 1;
             VM_BREAK;
@@ -1665,11 +1689,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
         VM_CASE(OP_GSTORE): {
             uint16_t idx = read_u16(code, &ip);
             CL_Obj sym;
-            if (!constants) {
-                fprintf(stderr, "[VM] BUG: OP_GSTORE with NULL constants (idx=%u fp=%d ip=%u)\n",
-                        idx, cl_vm.fp, ip);
-                cl_error(CL_ERR_GENERAL, "OP_GSTORE with NULL constants ptr");
-            }
+            VM_REQUIRE_CONSTANTS("OP_GSTORE");
             sym = constants[idx];
             cl_set_symbol_value(sym, cl_vm.stack[cl_vm.sp - 1]);
             if (sym == SYM_STAR_PACKAGE)
@@ -1680,11 +1700,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
         VM_CASE(OP_FLOAD): {
             uint16_t idx = read_u16(code, &ip);
             CL_Obj sym;
-            if (!constants) {
-                fprintf(stderr, "[VM] BUG: OP_FLOAD with NULL constants (idx=%u fp=%d ip=%u)\n",
-                        idx, cl_vm.fp, ip);
-                cl_error(CL_ERR_GENERAL, "OP_FLOAD with NULL constants ptr");
-            }
+            VM_REQUIRE_CONSTANTS("OP_FLOAD");
             sym = constants[idx];
             /* Validate sym is a valid symbol before dereferencing */
             if (!CL_HEAP_P(sym) || sym >= cl_heap.arena_size ||
@@ -1966,57 +1982,10 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
         }
 
         /* Ordered comparators reject complex per CLHS 12.1.4.1. */
-        VM_CASE(OP_LT): {
-            CL_Obj b = cl_vm_pop(), a = cl_vm_pop();
-            if (CL_FIXNUM_P(a) && CL_FIXNUM_P(b)) {
-                cl_vm_push(CL_FIXNUM_VAL(a) < CL_FIXNUM_VAL(b) ? SYM_T : CL_NIL);
-            } else {
-                if (!CL_REALP(a)) cl_signal_type_error(a, "REAL", "<");
-                if (!CL_REALP(b)) cl_signal_type_error(b, "REAL", "<");
-                cl_vm_push(cl_arith_compare(a, b) < 0 ? SYM_T : CL_NIL);
-            }
-            cl_mv_count = 1;
-            VM_BREAK;
-        }
-
-        VM_CASE(OP_GT): {
-            CL_Obj b = cl_vm_pop(), a = cl_vm_pop();
-            if (CL_FIXNUM_P(a) && CL_FIXNUM_P(b)) {
-                cl_vm_push(CL_FIXNUM_VAL(a) > CL_FIXNUM_VAL(b) ? SYM_T : CL_NIL);
-            } else {
-                if (!CL_REALP(a)) cl_signal_type_error(a, "REAL", ">");
-                if (!CL_REALP(b)) cl_signal_type_error(b, "REAL", ">");
-                cl_vm_push(cl_arith_compare(a, b) > 0 ? SYM_T : CL_NIL);
-            }
-            cl_mv_count = 1;
-            VM_BREAK;
-        }
-
-        VM_CASE(OP_LE): {
-            CL_Obj b = cl_vm_pop(), a = cl_vm_pop();
-            if (CL_FIXNUM_P(a) && CL_FIXNUM_P(b)) {
-                cl_vm_push(CL_FIXNUM_VAL(a) <= CL_FIXNUM_VAL(b) ? SYM_T : CL_NIL);
-            } else {
-                if (!CL_REALP(a)) cl_signal_type_error(a, "REAL", "<=");
-                if (!CL_REALP(b)) cl_signal_type_error(b, "REAL", "<=");
-                cl_vm_push(cl_arith_compare(a, b) <= 0 ? SYM_T : CL_NIL);
-            }
-            cl_mv_count = 1;
-            VM_BREAK;
-        }
-
-        VM_CASE(OP_GE): {
-            CL_Obj b = cl_vm_pop(), a = cl_vm_pop();
-            if (CL_FIXNUM_P(a) && CL_FIXNUM_P(b)) {
-                cl_vm_push(CL_FIXNUM_VAL(a) >= CL_FIXNUM_VAL(b) ? SYM_T : CL_NIL);
-            } else {
-                if (!CL_REALP(a)) cl_signal_type_error(a, "REAL", ">=");
-                if (!CL_REALP(b)) cl_signal_type_error(b, "REAL", ">=");
-                cl_vm_push(cl_arith_compare(a, b) >= 0 ? SYM_T : CL_NIL);
-            }
-            cl_mv_count = 1;
-            VM_BREAK;
-        }
+        VM_CASE(OP_LT): { VM_ORDER_CMP(<,  "<");  VM_BREAK; }
+        VM_CASE(OP_GT): { VM_ORDER_CMP(>,  ">");  VM_BREAK; }
+        VM_CASE(OP_LE): { VM_ORDER_CMP(<=, "<="); VM_BREAK; }
+        VM_CASE(OP_GE): { VM_ORDER_CMP(>=, ">="); VM_BREAK; }
 
         VM_CASE(OP_NOT): {
             CL_Obj a = cl_vm_pop();

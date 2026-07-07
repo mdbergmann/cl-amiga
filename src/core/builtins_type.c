@@ -962,30 +962,6 @@ static int coerce_elt_type_is_bit(CL_Obj type, int depth)
     return 0;
 }
 
-/* Classify a general (non-char, non-bit) coerce element type into a
- * CL_VEC_ELT_* code so (coerce x '(vector single-float)) builds a vector that
- * reports the specialized ARRAY-ELEMENT-TYPE (serapeum VECT-TYPE; alexandria
- * COPY-SEQUENCE.1 via coerce).  Mirrors classify_general_elt_code in
- * builtins_array.c; only the numeric types clamiga specializes are recognized,
- * everything else stays CL_VEC_ELT_T. */
-static uint8_t coerce_general_elt_code(CL_Obj type, int depth)
-{
-    if (depth <= 0 || !CL_SYMBOL_P(type)) return CL_VEC_ELT_T;
-    {
-        const char *nm = cl_symbol_name(type);
-        CL_Obj ex;
-        if (strcmp(nm, "FIXNUM") == 0) return CL_VEC_ELT_FIXNUM;
-        if (strcmp(nm, "SINGLE-FLOAT") == 0 || strcmp(nm, "SHORT-FLOAT") == 0)
-            return CL_VEC_ELT_SINGLE_FLOAT;
-        if (strcmp(nm, "DOUBLE-FLOAT") == 0 || strcmp(nm, "LONG-FLOAT") == 0)
-            return CL_VEC_ELT_DOUBLE_FLOAT;
-        ex = cl_get_type_expander(type);
-        if (!CL_NULL_P(ex))
-            return coerce_general_elt_code(cl_vm_apply(ex, NULL, 0), depth - 1);
-    }
-    return CL_VEC_ELT_T;
-}
-
 static CL_Obj bi_coerce(CL_Obj *args, int n)
 {
     CL_Obj obj = args[0];
@@ -1023,7 +999,7 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
                  * type means a bit-vector; otherwise a general vector (we
                  * don't otherwise specialize). */
                 /* eargs is re-read after coerce_elt_type_is_char/bit and
-                 * coerce_general_elt_code, all of which can run an
+                 * cl_classify_vec_elt_code, all of which can run an
                  * elt-type deftype expander via cl_vm_apply — root it. */
                 CL_Obj eargs = cl_cdr(result_type);
                 CL_GC_PROTECT(eargs);
@@ -1037,7 +1013,7 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
                     /* General vector: preserve a specialized numeric element
                      * type (e.g. (vector single-float)) on the result. */
                     if (!CL_NULL_P(eargs))
-                        coerce_vec_elt_code = coerce_general_elt_code(cl_car(eargs), 8);
+                        coerce_vec_elt_code = cl_classify_vec_elt_code(cl_car(eargs), 8);
                     result_type = cl_intern_in("VECTOR", 6, cl_package_cl);
                 }
                 CL_GC_UNPROTECT(1);

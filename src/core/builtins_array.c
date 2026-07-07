@@ -95,8 +95,10 @@ static void classify_array_elt_type(CL_Obj type, int depth,
  * (FIXNUM, SINGLE/DOUBLE-FLOAT), so a general (VECTOR T) and a
  * (VECTOR FIXNUM) stay distinguishable.  Elements are still stored as tagged
  * CL_Obj regardless of code.  GC: cl_vm_apply may compact, but TYPE is a
- * GC-rooted builtin arg and no unrooted CL_Obj is held across the apply. */
-static uint8_t classify_general_elt_code(CL_Obj type, int depth)
+ * GC-rooted builtin arg and no unrooted CL_Obj is held across the apply.
+ * Shared with builtins_type.c's COERCE (declared in builtins.h) — it used to
+ * carry a byte-identical `coerce_general_elt_code` copy. */
+uint8_t cl_classify_vec_elt_code(CL_Obj type, int depth)
 {
     const char *nm;
     CL_Obj ex;
@@ -111,7 +113,7 @@ static uint8_t classify_general_elt_code(CL_Obj type, int depth)
         return CL_VEC_ELT_DOUBLE_FLOAT;
     ex = cl_get_type_expander(type);
     if (!CL_NULL_P(ex))
-        return classify_general_elt_code(cl_vm_apply(ex, NULL, 0), depth - 1);
+        return cl_classify_vec_elt_code(cl_vm_apply(ex, NULL, 0), depth - 1);
     return CL_VEC_ELT_T;
 }
 
@@ -302,7 +304,7 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
             /* Record a specialized general (non-bit/non-char) element type so
              * the array is distinguishable from a (VECTOR T). */
             if (has_element_type_spec && !element_type_char && !element_type_bit)
-                element_type_code = classify_general_elt_code(element_type, 16);
+                element_type_code = cl_classify_vec_elt_code(element_type, 16);
         } else if (args[i] == KW_DISPLACED_TO) {
             dt_idx = i + 1;
             has_displaced_to = !CL_NULL_P(args[i + 1]);
@@ -1290,7 +1292,7 @@ static CL_Obj bi_array_in_bounds_p(CL_Obj *args, int n)
  * clamiga upgrades to CHARACTER (strings), BIT (bit-vectors), and the
  * specialized numeric types FIXNUM / SINGLE-FLOAT / DOUBLE-FLOAT (which it
  * keeps distinct from T so a (VECTOR FIXNUM) is not a (VECTOR T) — see
- * classify_general_elt_code).  Everything else upgrades to T. */
+ * cl_classify_vec_elt_code).  Everything else upgrades to T. */
 static CL_Obj bi_upgraded_array_element_type(CL_Obj *args, int n)
 {
     CL_Obj typespec = args[0];
@@ -1307,7 +1309,7 @@ static CL_Obj bi_upgraded_array_element_type(CL_Obj *args, int n)
         return cl_intern("CHARACTER", 9);
     if (is_bit)
         return cl_intern("BIT", 3);
-    return elt_code_to_type(classify_general_elt_code(typespec, 16));
+    return elt_code_to_type(cl_classify_vec_elt_code(typespec, 16));
 }
 
 /* ======================================================= */
