@@ -452,6 +452,27 @@ static void out_wide_str_lisp(CL_Obj wobj)
 #endif
 
 /* Base-aware integer output honoring *print-base* and *print-radix* */
+/* Emit the read-syntax radix prefix for BASE: #b (2), #o (8), #x (16),
+ * #Nr (any other non-decimal base).  Base 10 gets no prefix.  Shared by the
+ * fixnum / bignum / ratio printers (each still emits its own trailing '.' for
+ * decimal integers, since ratios omit it). */
+static void out_radix_prefix(int32_t base)
+{
+    switch (base) {
+    case 2:  out_str("#b"); break;
+    case 8:  out_str("#o"); break;
+    case 16: out_str("#x"); break;
+    default:
+        if (base != 10) {
+            char rbuf[8];
+            sprintf(rbuf, "#%d", (int)base);
+            out_str(rbuf);
+            out_char('r');
+        }
+        break;
+    }
+}
+
 static void out_integer(int32_t val, int32_t base, int radix)
 {
     static const char digit_chars[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -460,22 +481,8 @@ static void out_integer(int32_t val, int32_t base, int radix)
     uint32_t uval;
     int negative = 0;
 
-    /* Radix prefix */
-    if (radix) {
-        switch (base) {
-        case 2:  out_str("#b"); break;
-        case 8:  out_str("#o"); break;
-        case 16: out_str("#x"); break;
-        default:
-            if (base != 10) {
-                char rbuf[8];
-                sprintf(rbuf, "#%d", (int)base);
-                out_str(rbuf);
-                out_char('r');
-            }
-            break;
-        }
-    }
+    if (radix)
+        out_radix_prefix(base);
 
     /* Handle sign */
     if (val < 0) {
@@ -669,38 +676,29 @@ static int default_float_is_double(void)
     return (strcmp(name, "DOUBLE-FLOAT") == 0 || strcmp(name, "LONG-FLOAT") == 0);
 }
 
-static void print_single_float(float value)
-{
-    char buf[32];
-    char *e;
-    int emit_marker = default_float_is_double();
-    cl_float_shortest_g(buf, (int)sizeof(buf), (double)value, 0);
-    e = strchr(buf, 'e');
-    if (!e) e = strchr(buf, 'E');
-    if (e) {
-        *e = emit_marker ? 'f' : 'e';
-    } else if (needs_decimal(buf)) {
-        strcat(buf, emit_marker ? ".0f0" : ".0");
-    } else if (emit_marker) {
-        strcat(buf, "f0");
-    }
-    out_str(buf);
-}
-
-static void print_double_float(double value)
+/* Print a single (is_double=0) or double (is_double=1) float in CL read
+ * syntax.  A type marker (f0/d0 or the exponent char f/d) is emitted only when
+ * the value's type differs from *read-default-float-format* — a single needs
+ * one iff the default is double, a double iff the default is single — so a
+ * round-trip re-reads the same type.  Folds the two mirror-image printers. */
+static void print_float(double value, int is_double)
 {
     char buf[48];
     char *e;
-    int omit_marker = default_float_is_double();
-    cl_float_shortest_g(buf, (int)sizeof(buf), value, 1);
+    int default_double = default_float_is_double();
+    int need_marker = is_double ? !default_double : default_double;
+    char marker_exp = is_double ? 'd' : 'f';
+    const char *marker_suffix = is_double ? "d0" : "f0";
+    cl_float_shortest_g(buf, (int)sizeof(buf), value, is_double);
     e = strchr(buf, 'e');
     if (!e) e = strchr(buf, 'E');
     if (e) {
-        *e = omit_marker ? 'e' : 'd';
+        *e = need_marker ? marker_exp : 'e';
     } else if (needs_decimal(buf)) {
-        strcat(buf, omit_marker ? ".0" : ".0d0");
-    } else if (!omit_marker) {
-        strcat(buf, "d0");
+        strcat(buf, ".0");
+        if (need_marker) strcat(buf, marker_suffix);
+    } else if (need_marker) {
+        strcat(buf, marker_suffix);
     }
     out_str(buf);
 }
@@ -931,12 +929,7 @@ static int try_pprint_dispatch(CL_Obj *obj_p)
         call_args[1] = *obj_p;
         cl_vm_apply(best_fn, call_args, 2);
         pprint_dispatch_active = 0;
-        text = cl_get_output_stream_string(sstream);
-        {
-            CL_Stream *tmp_st = (CL_Stream *)CL_OBJ_TO_PTR(sstream);
-            cl_stream_free_outbuf(tmp_st->out_buf_handle);
-            tmp_st->out_buf_handle = 0;
-        }
+        text = cl_finish_string_output_stream(sstream);
         CL_GC_UNPROTECT(4);
         if (CL_STRING_P(text)) {
             out_str_lisp(text);
@@ -1019,21 +1012,8 @@ static void print_obj(CL_Obj obj)
     if (CL_BIGNUM_P(obj)) {
         int32_t base = print_base();
         int radix = print_radix_p();
-        if (radix) {
-            switch (base) {
-            case 2:  out_str("#b"); break;
-            case 8:  out_str("#o"); break;
-            case 16: out_str("#x"); break;
-            default:
-                if (base != 10) {
-                    char rbuf[8];
-                    sprintf(rbuf, "#%d", (int)base);
-                    out_str(rbuf);
-                    out_char('r');
-                }
-                break;
-            }
-        }
+        if (radix)
+            out_radix_prefix(base);
         cl_bignum_print_base(obj, base, out_str);
         if (radix && base == 10) out_char('.');
         return;
@@ -1050,21 +1030,8 @@ static void print_obj(CL_Obj obj)
         CL_Obj den = r->denominator;
         CL_GC_PROTECT(den);
         /* Radix prefix (same as bignum/fixnum but NO trailing dot) */
-        if (radix) {
-            switch (base) {
-            case 2:  out_str("#b"); break;
-            case 8:  out_str("#o"); break;
-            case 16: out_str("#x"); break;
-            default:
-                if (base != 10) {
-                    char rbuf[8];
-                    sprintf(rbuf, "#%d", (int)base);
-                    out_str(rbuf);
-                    out_char('r');
-                }
-                break;
-            }
-        }
+        if (radix)
+            out_radix_prefix(base);
         /* Print numerator */
         if (CL_FIXNUM_P(num))
             out_integer(CL_FIXNUM_VAL(num), base, 0);
@@ -1098,12 +1065,12 @@ static void print_obj(CL_Obj obj)
     }
 
     if (CL_SINGLE_FLOAT_P(obj)) {
-        print_single_float(((CL_SingleFloat *)CL_OBJ_TO_PTR(obj))->value);
+        print_float((double)((CL_SingleFloat *)CL_OBJ_TO_PTR(obj))->value, 0);
         return;
     }
 
     if (CL_DOUBLE_FLOAT_P(obj)) {
-        print_double_float(((CL_DoubleFloat *)CL_OBJ_TO_PTR(obj))->value);
+        print_float(((CL_DoubleFloat *)CL_OBJ_TO_PTR(obj))->value, 1);
         return;
     }
 
@@ -1590,12 +1557,7 @@ static void print_obj(CL_Obj obj)
                  * for the #<RESTART NAME> fallback below. */
                 obj = pr_inprog[pr_inprog_top];
                 CL_GC_PROTECT(obj);
-                text = cl_get_output_stream_string(sstream);
-                {
-                    CL_Stream *tmp_st = (CL_Stream *)CL_OBJ_TO_PTR(sstream);
-                    cl_stream_free_outbuf(tmp_st->out_buf_handle);
-                    tmp_st->out_buf_handle = 0;
-                }
+                text = cl_finish_string_output_stream(sstream);
                 CL_GC_UNPROTECT(3);
                 r = (CL_Restart *)CL_OBJ_TO_PTR(obj);
                 if (CL_STRING_P(text)) {

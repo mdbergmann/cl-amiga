@@ -866,12 +866,7 @@ static void fmt_case_convert(FmtCtx *ctx, FmtDirective *d)
     }
 
     /* Get the result string and free the temp stream's outbuf */
-    result = cl_get_output_stream_string(sstream);
-    {
-        CL_Stream *tmp_st = (CL_Stream *)CL_OBJ_TO_PTR(sstream);
-        cl_stream_free_outbuf(tmp_st->out_buf_handle);
-        tmp_st->out_buf_handle = 0;
-    }
+    result = cl_finish_string_output_stream(sstream);
     CL_GC_UNPROTECT(1);
 
 #ifdef CL_WIDE_STRINGS
@@ -1521,12 +1516,7 @@ static void fmt_justify(FmtCtx *ctx, FmtDirective *d)
         fmt_run(&sub);
         platform_free(body_copy);
 
-        result = cl_get_output_stream_string(sstream);
-        {
-            CL_Stream *tmp_st = (CL_Stream *)CL_OBJ_TO_PTR(sstream);
-            cl_stream_free_outbuf(tmp_st->out_buf_handle);
-            tmp_st->out_buf_handle = 0;
-        }
+        result = cl_finish_string_output_stream(sstream);
         /* Copy the code points out of the arena into C heap.  Using the
          * character accessors keeps base and wide (UTF-32) result strings
          * correct — the segment length must be measured in characters for

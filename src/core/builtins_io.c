@@ -212,11 +212,7 @@ static CL_Obj bi_format(CL_Obj *args, int n)
         CL_GC_PROTECT(sstream);
         cl_format_to_stream(sstream, args, n);
         {
-            CL_Obj result = cl_get_output_stream_string(sstream);
-            /* Free the temp outbuf slot to avoid exhausting the table */
-            CL_Stream *tmp_st = (CL_Stream *)CL_OBJ_TO_PTR(sstream);
-            cl_stream_free_outbuf(tmp_st->out_buf_handle);
-            tmp_st->out_buf_handle = 0;
+            CL_Obj result = cl_finish_string_output_stream(sstream);
             CL_GC_UNPROTECT(1);
             return result;
         }

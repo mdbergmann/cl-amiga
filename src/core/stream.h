@@ -117,6 +117,12 @@ CL_Obj cl_make_string_output_stream(void);
 /* Extract accumulated string from string output stream and reset buffer. */
 CL_Obj cl_get_output_stream_string(CL_Obj stream);
 
+/* Return SSTREAM's accumulated string (as cl_get_output_stream_string) and, in
+ * addition, free the stream's platform output buffer and clear its handle.
+ * For transient string-output-streams whose outbuf would otherwise leak; folds
+ * the get-string + free-outbuf idiom repeated in printer/format/io/condition. */
+CL_Obj cl_finish_string_output_stream(CL_Obj sstream);
+
 /* Create a bidirectional TCP socket stream connected to host:port.
  * connect_ms > 0 bounds the connect handshake (unreachable host fails fast);
  * 0 blocks until the OS gives up.  Returns CL_NIL on connection failure. */
