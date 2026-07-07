@@ -636,6 +636,39 @@ void cl_fasl_write_bytes(CL_FaslWriter *w, const void *data, uint32_t len)
     w->pos += len;
 }
 
+/* Double floats are stored big-endian on disk regardless of host byte order.
+ * These two helpers fold the identical host-endianness detect-and-swap dance
+ * that the DOUBLE_FLOAT writer and reader each carried inline.  Byte layout on
+ * disk is unchanged, so no CL_FASL_VERSION bump is required. */
+static void fasl_double_to_be(double v, uint8_t out[8])
+{
+    union { double d; uint8_t b[8]; } u;
+    memcpy(out, &v, 8);
+    u.d = 1.0;
+    if (u.b[0] != 0x3F) {          /* little-endian host: reverse to big-endian */
+        uint8_t rev[8];
+        int i;
+        for (i = 0; i < 8; i++) rev[i] = out[7 - i];
+        memcpy(out, rev, 8);
+    }
+}
+
+static double fasl_double_from_be(const uint8_t in[8])
+{
+    union { double d; uint8_t b[8]; } u;
+    double d;
+    u.d = 1.0;
+    if (u.b[0] == 0x3F) {          /* big-endian host */
+        memcpy(&d, in, 8);
+    } else {                       /* little-endian host: reverse */
+        uint8_t rev[8];
+        int i;
+        for (i = 0; i < 8; i++) rev[i] = in[7 - i];
+        memcpy(&d, rev, 8);
+    }
+    return d;
+}
+
 void cl_fasl_write_header(CL_FaslWriter *w, uint32_t n_units)
 {
     cl_fasl_write_u32(w, CL_FASL_MAGIC);
@@ -1218,19 +1251,8 @@ static int fasl_ser_step(CL_FaslWriter *w, FaslSerStack *s)
             CL_DoubleFloat *df = (CL_DoubleFloat *)CL_OBJ_TO_PTR(obj);
             uint8_t bytes[8];
             cl_fasl_write_u8(w, FASL_TAG_DOUBLE_FLOAT);
-            memcpy(bytes, &df->value, 8);
-            {
-                union { double d; uint8_t b[8]; } u;
-                u.d = 1.0;
-                if (u.b[0] == 0x3F) {
-                    cl_fasl_write_bytes(w, bytes, 8);
-                } else {
-                    uint8_t rev[8];
-                    int i;
-                    for (i = 0; i < 8; i++) rev[i] = bytes[7 - i];
-                    cl_fasl_write_bytes(w, rev, 8);
-                }
-            }
+            fasl_double_to_be(df->value, bytes);
+            cl_fasl_write_bytes(w, bytes, 8);
             return 1;
         }
 
@@ -2472,25 +2494,9 @@ CL_Obj cl_fasl_deserialize_obj(CL_FaslReader *r)
 
     case FASL_TAG_DOUBLE_FLOAT: {
         uint8_t bytes[8];
-        double d;
         cl_fasl_read_bytes(r, bytes, 8);
         if (r->error) return CL_NIL;
-        /* Convert from big-endian to native */
-        {
-            union { double d; uint8_t b[8]; } u;
-            u.d = 1.0;
-            if (u.b[0] == 0x3F) {
-                /* Big-endian host */
-                memcpy(&d, bytes, 8);
-            } else {
-                /* Little-endian host: reverse */
-                uint8_t rev[8];
-                int i;
-                for (i = 0; i < 8; i++) rev[i] = bytes[7 - i];
-                memcpy(&d, rev, 8);
-            }
-        }
-        return cl_make_double_float(d);
+        return cl_make_double_float(fasl_double_from_be(bytes));
     }
 
     case FASL_TAG_RATIO: {
