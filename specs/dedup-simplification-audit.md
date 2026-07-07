@@ -144,10 +144,19 @@ NOTE: pure refactor of in-memory tables, no on-disk format change → no
     `emit_helper_call_2` (9 sites: MUL/DIV/PROGV_BIND/PROGV_UNBIND/APPLY/RPLACA/
     RPLACD/NTH_VALUE/CONS) + `emit_helper_call_1(...,flush)` (MV_TO_LIST/CAR/CDR/
     MAKE_CELL flush=1, CELL_REF flush=0) — emitted m68k is byte-identical.
-    net −155 lines. Amiga FS-UAE 3625/0. host + gc-stress green.
-  - **Batch 2 (compute_landing_ip)**: pending.
-  - **Family 2 (emit_nlx_setjmp_frame)**: assess — highest-risk emitter; may
-    stay hand-written given the Amiga-only NLX/JIT corruption history.
+    net −155 lines (committed −314/+171). Amiga FS-UAE 3625/0. host +
+    gc-stress green.
+  - **Batch 2 DONE** — jit.c Family 3 (`compute_landing_ip`) + Family 2
+    (`emit_nlx_setjmp_tail`), both emit-time.
+    `compute_landing_ip(offset, base, code_len, &ok)` folds the 10 copies of
+    the "signed offset → landing IP" idiom (5 prescan pass `base = ip+operand
+    width` since ip still points at the opcode; 5 emit pass plain `ip` since
+    already advanced — the `>ip+5`/`>ip+7`/`>ip` variance was correct, not a
+    bug, and is now expressed once). `emit_nlx_setjmp_tail(...,push_result,...)`
+    folds the byte-identical setjmp→TST/BEQ→post_longjmp→[push D0]→BRA-landing→
+    BEQ-patch→commit tail of BLOCK/CATCH/TAGBODY/UWPROT (alloc arg-shape stays
+    hand-written per site; `push_result=0` for UWPROT's void post_longjmp).
+    Emitted m68k byte-identical. Amiga FS-UAE 3625/0.
 
 ### T2.1 Compiler: merge `compile_do` / `compile_do_star` (~200 lines)
 `compiler_special.c` @2276 / @2538 — two ~260-line near-duplicates differing
