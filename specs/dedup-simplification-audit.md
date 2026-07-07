@@ -130,9 +130,11 @@ NOTE: pure refactor of in-memory tables, no on-disk format change → no
   NOT DONE (smaller / more paths, deferred): `limb_alloc`/`limb_free` stack-or-
   heap boilerplate (mul/truncate/mod/gcd/ash), `bignum_remainder` (gcd's inlined
   divmod), `complex_binop`, `cl_bignum_from_u64` covering FFI's 4-limb path.
-- **T2.5 IN PROGRESS (2026-07-07)** — JIT/runtime.c NLX families. `jit.c`/
-  `runtime.c` are **m68k-only** (not compiled for the host — only codebuf.o
-  is), so every change is validated *only* via cross-compile + FS-UAE.
+- **T2.5 DONE (2026-07-07)** — JIT/runtime.c NLX families, two Amiga-validated
+  commits (batch 1 `0ef0c7d`, batch 2 `43f867b`; net ~−350 lines across
+  jit.c/runtime.c). `jit.c`/`runtime.c` are **m68k-only** (not compiled for the
+  host — only codebuf.o is), so every change was validated *only* via
+  cross-compile + FS-UAE (3625/0 each). All five bullet groups below are done.
   - **Batch 1 DONE** — runtime.c NLX families + jit.c Family 1 (helper-call
     templates). runtime.c: `nlx_alloc_common(type,tag)` (block/catch/tagbody
     share it; uwprot calls it then overwrites code/constants/bytecode from the
