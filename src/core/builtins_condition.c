@@ -491,14 +491,7 @@ static CL_Obj format_condition_report(CL_Condition *c)
         CL_GC_PROTECT(sstream);
         args_buf[0] = sstream;  /* destination (unused by cl_format_to_stream) */
         cl_format_to_stream(sstream, args_buf, 2 + list_len);
-        result = cl_get_output_stream_string(sstream);
-        {
-            /* Re-derive the stream pointer from the rooted sstream — the
-             * result-string allocation above may have compacted. */
-            CL_Stream *tmp_st = (CL_Stream *)CL_OBJ_TO_PTR(sstream);
-            cl_stream_free_outbuf(tmp_st->out_buf_handle);
-            tmp_st->out_buf_handle = 0;
-        }
+        result = cl_finish_string_output_stream(sstream);
         CL_GC_UNPROTECT(1 + 2 + list_len);
         return result;
     }

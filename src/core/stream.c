@@ -1281,6 +1281,25 @@ CL_Obj cl_get_output_stream_string(CL_Obj stream)
     return result;
 }
 
+CL_Obj cl_finish_string_output_stream(CL_Obj sstream)
+{
+    /* Collect the accumulated string, then release the temp stream's platform
+     * output buffer and clear the handle so it is neither reused nor leaked.
+     * Callers that build a transient string-output-stream (printer / format /
+     * io / condition report) all repeated this get-string + free-outbuf pair.
+     * SSTREAM is GC-protected here because cl_get_output_stream_string
+     * allocates and can relocate the stream before the free/clear below. */
+    CL_Obj text;
+    CL_Stream *st;
+    CL_GC_PROTECT(sstream);
+    text = cl_get_output_stream_string(sstream);
+    st = (CL_Stream *)CL_OBJ_TO_PTR(sstream);
+    cl_stream_free_outbuf(st->out_buf_handle);
+    st->out_buf_handle = 0;
+    CL_GC_UNPROTECT(1);
+    return text;
+}
+
 CL_Obj cl_make_socket_stream(const char *host, int port, int connect_ms)
 {
     PlatformSocket sh = platform_socket_connect(host, port, connect_ms);
