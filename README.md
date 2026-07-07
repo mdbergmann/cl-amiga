@@ -12,9 +12,11 @@ CL-Amiga is a bytecode-compiled Common Lisp environment written in C (C89/C99). 
 
 There are already excellent Common Lisp implementations — SBCL, CCL, ECL, Clasp, CLISP — so why another one?
 
-**Because none of them run on a classic Amiga.** The high-performance implementations (SBCL, CCL) are native-code compilers tied to modern architectures — x86-64, ARM, PPC — with no 68k backend and a memory footprint measured in tens of megabytes. The portable ones make assumptions a 1990s machine can't meet: ECL compiles Lisp to C and needs a full C toolchain (and libc) present *at runtime* to `compile-file`; Clasp is built on LLVM and targets C++ interop. CLISP, the closest in spirit — a compact bytecode interpreter in C — hasn't had a maintained 68k AmigaOS build in decades.
+**Because none of them run on the Amiga** — neither the classic 68k machines nor the PPC-based next-gen systems (MorphOS, AmigaOS 4). The high-performance implementations (SBCL, CCL) are native-code compilers tied to modern architectures — x86-64, ARM, PPC — with no 68k backend and a memory footprint measured in tens of megabytes. The portable ones make assumptions a 1990s machine can't meet: ECL compiles Lisp to C and needs a full C toolchain (and libc) present *at runtime* to `compile-file`; Clasp is built on LLVM and targets C++ interop. CLISP, the closest in spirit — a compact bytecode interpreter in C — hasn't had a maintained AmigaOS build in decades.
 
 CL-Amiga is built for the constraint the others ignore: **a 68020 at 14 MHz with 8 MB of RAM.** It's a self-contained bytecode VM in portable C89/C99 with no external runtime dependencies — no libffi (there's a hand-written 68k trampoline), no LLVM, no C compiler needed at runtime. Values are 32-bit tagged words and heap pointers are arena-relative offsets, keeping the whole object model 32-bit-clean; a compacting GC keeps a small heap from fragmenting, and on real 68k hardware there's an optional native JIT. Yet it's ambitious enough on the language side to load ASDF, run Quicklisp, and pass the self-tests of real libraries (Alexandria, FSet, fiveam, Sento) — and it runs identically on a modern macOS/Linux host, where most development actually happens.
+
+Because execution is bytecode, the object model is **architecture-agnostic**: the same compiled Lisp runs unchanged on 68k and PowerPC. The primary, fully-working target is classic **AmigaOS 3+** on 68020+; a **native MorphOS (PPC)** build is in progress, and **AmigaOS 4** — the other PPC-based next-gen system — is a natural target on the same path. So while the design's tightest constraint is the classic Amiga, the aim is the whole Amiga family, not just the 68k machines.
 
 In short: it exists to bring a modern, ANSI-aiming, library-capable Common Lisp to hardware every other implementation left behind — without giving up comfortable development on a fast host.
 
@@ -24,9 +26,9 @@ In short: it exists to bring a modern, ANSI-aiming, library-capable Common Lisp 
 
 ### How it compares
 
-| Implementation | Approach | Classic 68k Amiga? | Footprint | Notes |
+| Implementation | Approach | Amiga family (68k / PPC)? | Footprint | Notes |
 |---|---|---|---|---|
-| **CL-Amiga** | Bytecode VM in C, optional m68k JIT | **Yes** — its whole reason to exist | Tiny (runs in 8 MB) | Alpha; ANSI coverage incomplete |
+| **CL-Amiga** | Bytecode VM in C, optional m68k JIT | **Yes** — its whole reason to exist (68k now; MorphOS/OS4 PPC in progress) | Tiny (runs in 8 MB) | Alpha; ANSI coverage incomplete |
 | **ECL** | Lisp → C, bytecode fallback | No | Medium, but needs a C toolchain at runtime to `compile-file` | Very portable/embeddable on modern hosts |
 | **CCL** | Native compiler | No (x86-64/ARM/PPC only) | Large | Fast and mature; no 68k backend |
 | **Clasp** | LLVM-based, C++ interop | No | Very large (needs LLVM) | Best for C++/scientific interop |
