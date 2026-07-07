@@ -165,4 +165,12 @@ void cl_write_cstring_to_error(const char *s);
 void cl_write_cstring_to_debug_io(const char *s);
 void cl_write_cstring_to_trace(const char *s);
 
+/* Resolve a stream-designator argument at args[idx] to a concrete stream:
+ * missing or NIL yields the standard input/output stream, T yields
+ * *terminal-io*, a stream yields itself, anything else is a TYPE-ERROR.
+ * Shared by builtins_stream.c and builtins_io.c (which used to carry
+ * byte-identical copies). */
+CL_Obj cl_resolve_input_stream(CL_Obj *args, int n, int idx);
+CL_Obj cl_resolve_output_stream(CL_Obj *args, int n, int idx);
+
 #endif /* CL_STREAM_H */

@@ -58,7 +58,7 @@ static CL_Obj KW_LATIN_1 = CL_NIL;            /* :latin-1 (stream-external-forma
 
 /* --- Stream argument resolution helpers --- */
 
-static CL_Obj resolve_input_stream(CL_Obj *args, int n, int idx)
+CL_Obj cl_resolve_input_stream(CL_Obj *args, int n, int idx)
 {
     CL_Obj s;
     if (idx >= n || CL_NULL_P(args[idx]))
@@ -71,7 +71,7 @@ static CL_Obj resolve_input_stream(CL_Obj *args, int n, int idx)
     return s;
 }
 
-static CL_Obj resolve_output_stream(CL_Obj *args, int n, int idx)
+CL_Obj cl_resolve_output_stream(CL_Obj *args, int n, int idx)
 {
     CL_Obj s;
     if (idx >= n || CL_NULL_P(args[idx]))
@@ -145,7 +145,7 @@ static CL_Obj bi_interactive_stream_p(CL_Obj *args, int n)
 /* (read-char &optional stream eof-error-p eof-value recursive-p) */
 static CL_Obj bi_read_char(CL_Obj *args, int n)
 {
-    CL_Obj stream = resolve_input_stream(args, n, 0);
+    CL_Obj stream = cl_resolve_input_stream(args, n, 0);
     int eof_error_p = (n < 2 || !CL_NULL_P(args[1]));
     int ch;
 
@@ -167,7 +167,7 @@ static CL_Obj bi_write_char(CL_Obj *args, int n)
     CL_Obj stream;
     if (!CL_CHAR_P(args[0]))
         cl_error(CL_ERR_TYPE, "WRITE-CHAR: argument is not a character");
-    stream = resolve_output_stream(args, n, 1);
+    stream = cl_resolve_output_stream(args, n, 1);
     cl_stream_write_char(stream, CL_CHAR_VAL(args[0]));
     return args[0];
 }
@@ -222,7 +222,7 @@ static CL_Obj bi_write_byte(CL_Obj *args, int n)
 static CL_Obj bi_peek_char(CL_Obj *args, int n)
 {
     CL_Obj peek_type = (n >= 1) ? args[0] : CL_NIL;
-    CL_Obj stream = resolve_input_stream(args, n, 1);
+    CL_Obj stream = cl_resolve_input_stream(args, n, 1);
     int eof_error_p = (n < 3 || !CL_NULL_P(args[2]));
     CL_Obj eof_value = (n >= 4) ? args[3] : CL_NIL;
     int ch;
@@ -278,7 +278,7 @@ static CL_Obj bi_unread_char(CL_Obj *args, int n)
     CL_Stream *st;
     if (!CL_CHAR_P(args[0]))
         cl_error(CL_ERR_TYPE, "UNREAD-CHAR: argument is not a character");
-    stream = resolve_input_stream(args, n, 1);
+    stream = cl_resolve_input_stream(args, n, 1);
     st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
     if (st->unread_char != -1)
         cl_error(CL_ERR_GENERAL, "UNREAD-CHAR: already unreading a character");
@@ -290,7 +290,7 @@ static CL_Obj bi_unread_char(CL_Obj *args, int n)
  * => string, missing-newline-p (2 values) */
 static CL_Obj bi_read_line(CL_Obj *args, int n)
 {
-    CL_Obj stream = resolve_input_stream(args, n, 0);
+    CL_Obj stream = cl_resolve_input_stream(args, n, 0);
     int eof_error_p = (n < 2 || !CL_NULL_P(args[1]));
     CL_Obj eof_value = (n >= 3) ? args[2] : CL_NIL;
     char stack_buf[256];
@@ -388,7 +388,7 @@ static CL_Obj bi_write_string(CL_Obj *args, int n)
     slen = cl_string_length(args[0]);
     end = slen;
 
-    stream = resolve_output_stream(args, n, 1);
+    stream = cl_resolve_output_stream(args, n, 1);
 
     /* Parse keyword args starting from index 2 */
     for (i = 2; i + 1 < n; i += 2) {
@@ -431,7 +431,7 @@ static CL_Obj bi_write_line(CL_Obj *args, int n)
 {
     bi_write_string(args, n);
     {
-        CL_Obj stream = resolve_output_stream(args, n, 1);
+        CL_Obj stream = cl_resolve_output_stream(args, n, 1);
         cl_stream_write_char(stream, '\n');
     }
     return args[0];
@@ -440,7 +440,7 @@ static CL_Obj bi_write_line(CL_Obj *args, int n)
 /* (terpri &optional stream) => NIL */
 static CL_Obj bi_terpri(CL_Obj *args, int n)
 {
-    CL_Obj stream = resolve_output_stream(args, n, 0);
+    CL_Obj stream = cl_resolve_output_stream(args, n, 0);
     cl_stream_write_char(stream, '\n');
     return CL_NIL;
 }
@@ -448,7 +448,7 @@ static CL_Obj bi_terpri(CL_Obj *args, int n)
 /* (fresh-line &optional stream) => T if newline written, NIL if at BOL */
 static CL_Obj bi_fresh_line(CL_Obj *args, int n)
 {
-    CL_Obj stream = resolve_output_stream(args, n, 0);
+    CL_Obj stream = cl_resolve_output_stream(args, n, 0);
     CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
     if (st->charpos != 0) {
         cl_stream_write_char(stream, '\n');
@@ -1663,7 +1663,7 @@ static CL_Obj bi_stream_external_format(CL_Obj *args, int n)
  * Returns T if a character is immediately available from the stream. */
 static CL_Obj bi_listen(CL_Obj *args, int n)
 {
-    CL_Obj stream = resolve_input_stream(args, n, 0);
+    CL_Obj stream = cl_resolve_input_stream(args, n, 0);
     CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
     if (st->unread_char != -1) return CL_T;
     if (st->flags & CL_STREAM_FLAG_EOF) return CL_NIL;
@@ -1705,7 +1705,7 @@ static CL_Obj bi_clear_input(CL_Obj *args, int n)
  * or signals/returns eof-value at end of file. */
 static CL_Obj bi_read_char_no_hang(CL_Obj *args, int n)
 {
-    CL_Obj stream = resolve_input_stream(args, n, 0);
+    CL_Obj stream = cl_resolve_input_stream(args, n, 0);
     int eof_error_p = (n < 2 || !CL_NULL_P(args[1]));
     CL_Obj eof_value = (n >= 3) ? args[2] : CL_NIL;
     CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
