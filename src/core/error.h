@@ -51,6 +51,7 @@
 
 typedef struct {
     jmp_buf buf;
+    CL_JMPBUF_GUARD        /* MorphOS PPC setjmp overrun guard — see types.h */
     int active;
     /* gc_root_count at the time this frame was pushed.  cl_error_unwind
      * restores `gc_root_count` to this value before longjmping back to
@@ -186,6 +187,19 @@ CL_NORETURN void cl_error_frame_longjmp(int code);
  * snapshot on a longjmp landing — used by the CL_ErrorFrame and
  * CL_NLXFrame restore paths. */
 void cl_jit_restore_depth(int new_depth);
+
+/* Startup guard: verify CL_JMPBUF_GUARD (types.h) is large enough to absorb
+ * this platform's setjmp() write, aborting with a precise message if not.
+ * Catches the MorphOS PPC setjmp-overrun corruption at boot.  Call once during
+ * early init. */
+void cl_setjmp_overrun_check(void);
+
+/* Terminate the process from a fatal (non-recoverable) runtime path,
+ * restoring this task's saved TLS slot first (see cl_thread_restore_main_tls)
+ * so the MorphOS -noixemul crt0's post-main teardown doesn't dereference a
+ * stale CL_Thread*.  Use instead of a bare exit() for any fatal exit that
+ * runs after cl_thread_init(). */
+CL_NORETURN void cl_fatal_exit(int code);
 
 /* Unwind with an existing condition object. Caller must have already
  * signaled via cl_signal_condition. Preserves the condition so the

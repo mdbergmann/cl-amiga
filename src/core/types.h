@@ -21,6 +21,38 @@
 /* Version string — used for FASL cache paths */
 #define CL_VERSION_STRING "0.2"
 
+/*
+ * setjmp() buffer-overrun guard (MorphOS PPC).
+ *
+ * On MorphOS PPC with -noixemul, the C library's setjmp() writes a register
+ * save area that is LARGER than the toolchain's own `jmp_buf` typedef reports
+ * (observed sizeof(jmp_buf)==444, but the real save area also spills the
+ * AltiVec vector registers v20-v31 = 192 bytes the header does not count).
+ * The extra bytes overrun whatever struct fields follow an embedded jmp_buf —
+ * this silently zeroed CL_NLXFrame.vm_sp/vm_fp/tag, so tagbody/GO could never
+ * find its frame and every CL_CATCH/error frame was corrupted the same way.
+ *
+ * Fix: reserve dead space immediately AFTER any embedded jmp_buf so the
+ * overrun lands there instead of in live fields.  512 bytes comfortably
+ * covers the AltiVec area plus alignment slop; cl_setjmp_overrun_check()
+ * (called at startup) measures the true overrun and aborts if this guard is
+ * ever too small.  On every other target the overrun does not occur and this
+ * expands to nothing, so there is zero cost off MorphOS.
+ */
+#define CL_JMPBUF_GUARD_BYTES 512
+#if defined(PLATFORM_MORPHOS)
+#  define CL_JMPBUF_GUARD  char _cl_jmpbuf_guard[CL_JMPBUF_GUARD_BYTES];
+/* Bytes actually reserved after an embedded jmp_buf on this target — what
+ * cl_setjmp_overrun_check() must compare the measured overrun against.
+ * CL_JMPBUF_GUARD_BYTES alone is the wrong comparison off MorphOS: the
+ * CL_JMPBUF_GUARD field above expands to nothing there, so the true
+ * reserved space is 0, not 512. */
+#  define CL_JMPBUF_GUARD_RESERVED_BYTES CL_JMPBUF_GUARD_BYTES
+#else
+#  define CL_JMPBUF_GUARD  /* no setjmp overrun on this target */
+#  define CL_JMPBUF_GUARD_RESERVED_BYTES 0
+#endif
+
 typedef uint32_t CL_Obj;
 
 /* Arena base pointer — needed for offset↔pointer conversion */

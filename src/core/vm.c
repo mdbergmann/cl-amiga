@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdarg.h>
 
 /* Local macros for statics moved into CL_Thread */
 #define vm_extra_args       (CT->vm_extra_args_buf)
@@ -381,23 +382,37 @@ void cl_nlx_overflow_summary(const char *where)
 
 
 #ifdef DEBUG_NLX
-/* Dump the current NLX (non-local-exit) frame stack to stderr.  Built only
- * with -DDEBUG_NLX; used to diagnose platform-specific setjmp/longjmp
- * divergence (e.g. MorphOS 68k emulation vs. real 68k).  Non-static so
- * builtins_io.c (bi_throw) can call it at the "No catch for tag" site. */
+/* Route NLX debug output through the platform stdout handle (Output() on
+ * AmigaOS/MorphOS) instead of C-stdio stderr.  Under -noixemul (and AmigaOS
+ * generally) stderr is a separate handle that the shell's redirect does not
+ * capture, so fprintf(stderr) never reaches the log that holds the boot/FATAL
+ * lines.  cl_write_cstring_to_stdout writes to the same handle those use. */
+void cl_nlx_dbg(const char *fmt, ...)
+{
+    char buf[256];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    cl_write_cstring_to_stdout(buf);
+}
+
+/* Dump the current NLX (non-local-exit) frame stack.  Built only with
+ * -DDEBUG_NLX; used to diagnose platform-specific setjmp/longjmp divergence
+ * (e.g. MorphOS PPC vs. real 68k).  Non-static so builtins_io.c (bi_throw)
+ * can call it at the "No catch for tag" site. */
 void cl_nlx_debug_dump(const char *where, unsigned tag)
 {
     int k;
     static const char *tn[4] = { "CATCH", "UWPROT", "BLOCK", "TAGBODY" };
-    fprintf(stderr, "[NLX] %s tag=0x%08x top=%d\n", where, tag, cl_nlx_top);
+    cl_nlx_dbg("[NLX] %s tag=0x%08x top=%d\n", where, tag, cl_nlx_top);
     for (k = cl_nlx_top; k >= 0 && k < cl_nlx_max; k--) {
         int t = cl_nlx_stack[k].type;
-        fprintf(stderr, "        [%d] type=%s tag=0x%08x vm_sp=%d vm_fp=%d\n",
+        cl_nlx_dbg("        [%d] type=%s tag=0x%08x vm_sp=%d vm_fp=%d\n",
                 k, (t >= 0 && t < 4) ? tn[t] : "?",
                 (unsigned)cl_nlx_stack[k].tag,
                 cl_nlx_stack[k].vm_sp, cl_nlx_stack[k].vm_fp);
     }
-    fflush(stderr);
 }
 #endif
 
@@ -2974,9 +2989,8 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             {
 #ifdef DEBUG_NLX
             int _sj_ret = CL_SETJMP(nlx->buf);
-            fprintf(stderr, "[NLX] BLOCK_PUSH setjmp ret=%d top=%d tag=0x%08x sp=%d fp=%d\n",
+            cl_nlx_dbg("[NLX] BLOCK_PUSH setjmp ret=%d top=%d tag=0x%08x sp=%d fp=%d\n",
                     _sj_ret, cl_nlx_top, (unsigned)block_tag, cl_vm.sp, cl_vm.fp);
-            fflush(stderr);
             if (_sj_ret == 0) {
 #else
             if (CL_SETJMP(nlx->buf) == 0) {
@@ -3025,9 +3039,8 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                         cl_mv_values[mi] = nlx->mv_values[mi]; }
                     cl_vm_push(block_result);
 #ifdef DEBUG_NLX
-                    fprintf(stderr, "[NLX] BLOCK_PUSH resume: sp=%d fp=%d top=%d\n",
+                    cl_nlx_dbg("[NLX] BLOCK_PUSH resume: sp=%d fp=%d top=%d\n",
                             cl_vm.sp, cl_vm.fp, cl_nlx_top);
-                    fflush(stderr);
 #endif
                 }
             }
@@ -3068,8 +3081,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     cl_nlx_stack[i].tag == block_tag) {
                     int j;
 #ifdef DEBUG_NLX
-                    fprintf(stderr, "[NLX] BLOCK_RETURN match at frame %d, longjmp\n", i);
-                    fflush(stderr);
+                    cl_nlx_dbg("[NLX] BLOCK_RETURN match at frame %d, longjmp\n", i);
 #endif
                     /* Check for interposing UWPROT frames (skip stale ones) */
                     for (j = cl_nlx_top - 1; j > i; j--) {
@@ -3138,9 +3150,8 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             {
 #ifdef DEBUG_NLX
             int _sj_ret = CL_SETJMP(nlx->buf);
-            fprintf(stderr, "[NLX] TAGBODY_PUSH setjmp ret=%d top=%d id=0x%08x sp=%d fp=%d\n",
+            cl_nlx_dbg("[NLX] TAGBODY_PUSH setjmp ret=%d top=%d id=0x%08x sp=%d fp=%d\n",
                     _sj_ret, cl_nlx_top, (unsigned)tagbody_id, cl_vm.sp, cl_vm.fp);
-            fflush(stderr);
             if (_sj_ret == 0) {
 #else
             if (CL_SETJMP(nlx->buf) == 0) {
@@ -3191,9 +3202,8 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     cl_nlx_top++;
                     cl_vm_push(tag_index);
 #ifdef DEBUG_NLX
-                    fprintf(stderr, "[NLX] TAGBODY_PUSH resume: tag_index=%d sp=%d fp=%d top=%d\n",
+                    cl_nlx_dbg("[NLX] TAGBODY_PUSH resume: tag_index=%d sp=%d fp=%d top=%d\n",
                             (int)CL_FIXNUM_VAL(tag_index), cl_vm.sp, cl_vm.fp, cl_nlx_top);
-                    fflush(stderr);
 #endif
                 }
             }
@@ -3233,8 +3243,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     cl_nlx_stack[i].tag == tagbody_id) {
                     int j;
 #ifdef DEBUG_NLX
-                    fprintf(stderr, "[NLX] TAGBODY_GO match at frame %d, longjmp\n", i);
-                    fflush(stderr);
+                    cl_nlx_dbg("[NLX] TAGBODY_GO match at frame %d, longjmp\n", i);
 #endif
                     /* Check for interposing UWPROT frames (skip stale ones) */
                     for (j = cl_nlx_top - 1; j > i; j--) {
@@ -3257,9 +3266,8 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 }
             }
 #ifdef DEBUG_NLX
-            fprintf(stderr, "[NLX] TAGBODY_GO: NO MATCHING FRAME for id=0x%08x\n",
+            cl_nlx_dbg("[NLX] TAGBODY_GO: NO MATCHING FRAME for id=0x%08x\n",
                     (unsigned)tagbody_id);
-            fflush(stderr);
 #endif
             cl_error(CL_ERR_GENERAL, "GO: tagbody frame not found");
             VM_BREAK;

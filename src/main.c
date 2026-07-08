@@ -418,6 +418,9 @@ int main(int argc, char *argv[])
 
     /* Initialize subsystems in dependency order */
     cl_error_init();
+    /* Validate the setjmp-overrun guard before any CL_CATCH / NLX frame is
+     * used (MorphOS PPC setjmp writes past sizeof(jmp_buf) — see types.h). */
+    cl_setjmp_overrun_check();
     cl_mem_init(heap_size ? heap_size : CL_DEFAULT_HEAP_SIZE);
     cl_package_init();
     cl_symbol_init();
@@ -621,7 +624,20 @@ shutdown:
      * SIGSEGV (or hang) in teardown.  Skip the free and terminate the process
      * immediately via _exit(); the OS reclaims the arena and everything else.
      * This mirrors the Amiga fast-exit path below, but is required on every
-     * platform whenever workers outlive the main thread. */
+     * platform whenever workers outlive the main thread.
+     *
+     * No cl_thread_restore_main_tls() call needed here: _exit() — unlike
+     * exit()/abort() — intentionally bypasses the crt0 post-main teardown
+     * that re-reads tc_UserData (that bypass is why _exit() is used on the
+     * non-MorphOS Amiga path below too), so a stale tc_UserData can't be
+     * observed after it.  Restoring it here would instead be actively
+     * harmful: cl_get_current_thread()'s fast path only trusts
+     * cl_main_thread_ptr when cl_thread_count<=1, so while workers are still
+     * registered (as here) it resolves CT via this task's TLS — corrupting
+     * that TLS out from under a live crash handler or worker safepoint is
+     * exactly the kind of "yank shared state out from under live code" this
+     * whole branch exists to avoid (see the leaked-primitives comment in
+     * cl_thread_shutdown). */
     if (cl_thread_count > 0) {
         SHUTDOWN_TRACE("workers still running — fast _exit, arena left to OS");
         fflush(NULL);
@@ -631,20 +647,35 @@ shutdown:
     cl_mem_shutdown();
     SHUTDOWN_TRACE("mem done");
 
-#ifdef PLATFORM_AMIGA
-    /* MorphOS / AmigaOS (-noixemul): every clamiga-owned resource is already
+#if defined(PLATFORM_AMIGA) && !defined(PLATFORM_MORPHOS)
+    /* m68k AmigaOS (-noixemul): every clamiga-owned resource is already
      * released above, but *returning* from main runs the C runtime's post-main
      * teardown (atexit handlers + fclose of the buffered stdio streams bound to
-     * the console).  On MorphOS that teardown hangs — the process is left frozen
-     * in the Task list and the Shell never regains control.  Since our own
-     * cleanup is complete and the OS reclaims the rest on process exit, flush any
-     * pending C stdio and terminate via _exit(), which hands the return code back
-     * to DOS without running the hanging teardown. */
+     * the console), which hangs — the process is left frozen in the Task list
+     * and the Shell never regains control.  Since our own cleanup is complete
+     * and the OS reclaims the rest on process exit, flush any pending C stdio
+     * and terminate via _exit(), which hands the return code back to DOS
+     * without running the hanging teardown. */
     SHUTDOWN_TRACE("calling fflush(NULL)");
     fflush(NULL);
     SHUTDOWN_TRACE("fflush done — calling _exit");
     _exit(cl_exit_code);
     SHUTDOWN_TRACE("_exit returned (should never happen)");
+#elif defined(PLATFORM_MORPHOS)
+    /* MorphOS PPC: the _exit() workaround above was masking the setjmp jmp_buf
+     * overrun that corrupted every NLX/error frame throughout the run (fixed
+     * 2026-07-08, commit 253f6b7).  With that gone, return from main normally
+     * and let crt0 run its teardown — the process was hanging in exec/Wait()
+     * inside _exit, not in the C runtime cleanup.  Flush stdio first, then fall
+     * through to the return below. */
+    SHUTDOWN_TRACE("calling fflush(NULL)");
+    fflush(NULL);
+    /* Restore the main task's tc_UserData before returning: cl_thread_init
+     * overwrote it with our CL_Thread*, and MorphOS's -noixemul crt0 re-reads
+     * tc_UserData during its post-main teardown.  Leaving our pointer there is
+     * what froze the machine after "returning from main". */
+    cl_thread_restore_main_tls();
+    SHUTDOWN_TRACE("fflush done, TLS restored — returning from main");
 #endif
 #undef SHUTDOWN_TRACE
 

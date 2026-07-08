@@ -24,6 +24,11 @@
 static CL_Thread cl_main_thread;
 CL_Thread *cl_main_thread_ptr = NULL;
 
+/* The main task's TLS slot value (tc_UserData on AmigaOS/MorphOS) as it was
+ * BEFORE cl_thread_init overwrote it — restored at exit so the C runtime's
+ * post-main teardown finds its own context, not our CL_Thread*. */
+static void *cl_saved_main_tls = NULL;
+
 /* ---- Thread registry ---- */
 CL_Thread  *cl_thread_list      = NULL;
 void       *cl_thread_list_lock = NULL;
@@ -844,8 +849,18 @@ void cl_thread_init(void)
 {
     memset(&cl_main_thread, 0, sizeof(CL_Thread));
 
-    /* Initialize TLS and set main thread as current */
+    /* Initialize TLS and set main thread as current.
+     *
+     * Save whatever the OS/C-runtime had stored in this task's TLS slot BEFORE
+     * we overwrite it.  On AmigaOS/MorphOS platform_tls_* is the task's
+     * tc_UserData, which the -noixemul C runtime may use for its own per-task
+     * context.  We never read our value back on the main thread (CT uses the
+     * cl_main_thread_ptr global while single-threaded), but the runtime re-reads
+     * tc_UserData during crt0's post-main teardown — leaving our CL_Thread* there
+     * makes that teardown dereference garbage and freeze the machine.  Restore
+     * the saved value at exit via cl_thread_restore_main_tls(). */
     platform_tls_init();
+    cl_saved_main_tls = platform_tls_get();
     platform_tls_set(&cl_main_thread);
     cl_main_thread_ptr = &cl_main_thread;
 
@@ -891,6 +906,24 @@ void cl_thread_init(void)
     /* Register main thread in both registry and side table */
     cl_thread_register(&cl_main_thread);
     cl_thread_table[0] = &cl_main_thread;
+}
+
+/* Restore the main task's TLS slot (tc_UserData) to the value it held before
+ * cl_thread_init overwrote it.  Must run before the process exits so the C
+ * runtime's post-main teardown reads its own per-task context rather than our
+ * CL_Thread* (see cl_thread_init).  Idempotent and safe on every platform —
+ * EXCEPT that platform_tls_set() always writes the *calling* task/thread's
+ * slot, so this must only be called from the main thread: calling it from a
+ * worker (e.g. a fatal-exit path reached on a worker thread while others are
+ * still registered) would stomp that worker's own TLS slot with the main
+ * thread's saved value instead, corrupting cl_get_current_thread()'s TLS
+ * fallback for it (used whenever cl_thread_count > 1) rather than restoring
+ * anything.  Guard against that misuse here so every call site (including
+ * fatal-exit paths that can run on any thread) is safe unconditionally. */
+void cl_thread_restore_main_tls(void)
+{
+    if (CT != cl_main_thread_ptr) return;
+    platform_tls_set(cl_saved_main_tls);
 }
 
 void cl_thread_shutdown(void)
