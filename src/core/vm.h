@@ -74,6 +74,7 @@ void cl_dynbind_restore_to(int mark);
 typedef struct {
     uint8_t type;          /* CL_NLX_CATCH or CL_NLX_UWPROT */
     jmp_buf buf;
+    CL_JMPBUF_GUARD        /* MorphOS PPC setjmp overrun guard — see types.h */
     int vm_sp;
     int vm_fp;
     CL_Obj tag;            /* catch tag (CATCH only) */

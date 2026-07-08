@@ -62,6 +62,58 @@ void cl_error_init(void)
     cl_error_msg[0] = '\0';
 }
 
+/* Verify CL_JMPBUF_GUARD is large enough to absorb this platform's setjmp()
+ * write.  On MorphOS PPC (-noixemul) setjmp writes a register save area larger
+ * than the toolchain's jmp_buf typedef reports, overrunning the fields that
+ * follow an embedded jmp_buf (see types.h and the CL_NLXFrame / CL_ErrorFrame
+ * layouts).  This measures the true overrun at startup and aborts with a
+ * precise, actionable message if the compiled-in guard is too small — turning
+ * a silent memory-corruption bug into a loud boot-time diagnostic.  On targets
+ * with no overrun the measured value is 0 and this is a cheap no-op. */
+void cl_setjmp_overrun_check(void)
+{
+    /* jmp_buf first, canary tail contiguous immediately after it (unsigned
+     * char has alignment 1, so no padding gap can hide the overrun). */
+    struct { jmp_buf b; unsigned char tail[1024]; } probe;
+    int i, last = -1, overrun;
+    char msg[192];
+
+    memset(probe.tail, 0xA5, sizeof(probe.tail));
+    /* setjmp only — we never longjmp back here; the return value is unused. */
+    (void)CL_SETJMP(probe.b);
+    for (i = 0; i < (int)sizeof(probe.tail); i++)
+        if (probe.tail[i] != 0xA5) last = i;
+    overrun = last + 1;  /* bytes setjmp wrote past sizeof(jmp_buf) */
+
+#ifdef DEBUG_NLX
+    snprintf(msg, sizeof(msg),
+             "[NLX] setjmp overrun check: sizeof(jmp_buf)=%d overrun=%d guard=%d\n",
+             (int)sizeof(jmp_buf), overrun, (int)CL_JMPBUF_GUARD_RESERVED_BYTES);
+    cl_write_cstring_to_stdout(msg);
+#endif
+
+    /* Compare against the space actually reserved on THIS target
+     * (CL_JMPBUF_GUARD_RESERVED_BYTES: 0 off MorphOS, CL_JMPBUF_GUARD_BYTES on
+     * MorphOS) — not the bare CL_JMPBUF_GUARD_BYTES constant, which would
+     * silently accept a nonzero overrun on a target where CL_JMPBUF_GUARD
+     * expands to nothing. */
+    if (overrun > CL_JMPBUF_GUARD_RESERVED_BYTES) {
+        snprintf(msg, sizeof(msg),
+                 "FATAL: setjmp() overruns jmp_buf by %d bytes but only %d are "
+                 "reserved — raise CL_JMPBUF_GUARD_BYTES in types.h\n",
+                 overrun, (int)CL_JMPBUF_GUARD_RESERVED_BYTES);
+        cl_write_cstring_to_stdout(msg);
+        /* cl_thread_init() (called just before this check runs — see main.c)
+         * already overwrote this task's TLS slot (tc_UserData on MorphOS).
+         * Restore it before aborting so the -noixemul crt0's SIGABRT teardown
+         * doesn't dereference our CL_Thread* and freeze the machine — the same
+         * hazard cl_thread_restore_main_tls() exists to close on the graceful
+         * shutdown path. */
+        cl_thread_restore_main_tls();
+        abort();
+    }
+}
+
 /* Longjmp to the current top C error frame, restoring the per-frame
  * snapshots exactly like cl_error's own unwind.  Shared by
  * cl_error_unwind and the deferred-error replay paths — vm.c's
@@ -142,7 +194,20 @@ CL_NORETURN void cl_error_frame_longjmp(int code)
     platform_write_string(cl_error_msg);
     cl_color_reset();
     platform_write_string("\n");
-    exit(1);
+    cl_fatal_exit(1);
+}
+
+/* Terminate the process from a fatal (non-recoverable) runtime path.
+ * cl_thread_init() overwrites this task's TLS slot (tc_UserData on
+ * MorphOS/AmigaOS) with our CL_Thread*; restoring it here — not just on the
+ * graceful shutdown path in main.c — keeps every fatal exit() out of the
+ * MorphOS -noixemul crt0 post-main-teardown freeze that
+ * cl_thread_restore_main_tls() exists to prevent.  Safe/no-op on every other
+ * platform (see cl_thread_restore_main_tls). */
+CL_NORETURN void cl_fatal_exit(int code)
+{
+    cl_thread_restore_main_tls();
+    exit(code);
 }
 
 /* Unwind after the debugger returned — shared between cl_error and
@@ -212,7 +277,7 @@ void cl_error(int code, const char *fmt, ...)
             cl_compiler_force_restore_to(cl_error_frames[cl_error_frame_top - 1].saved_active_compiler);
             CL_LONGJMP(cl_error_frames[cl_error_frame_top - 1].buf, code);
         }
-        exit(cl_exit_code);
+        cl_fatal_exit(cl_exit_code);
     }
 
     /* Capture backtrace while VM frames are still intact */

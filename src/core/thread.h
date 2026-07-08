@@ -376,6 +376,9 @@ static inline CL_Thread *cl_get_current_thread(void)
 /* Initialize/shutdown thread system */
 void cl_thread_init(void);
 void cl_thread_shutdown(void);
+/* Restore the main task's TLS slot (tc_UserData) to its pre-init value.
+ * Call once just before the process exits — see cl_thread_init. */
+void cl_thread_restore_main_tls(void);
 
 /* ---- Thread creation API ---- */
 
