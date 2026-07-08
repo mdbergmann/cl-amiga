@@ -14,3 +14,6 @@ verify/realamiga/*
 !verify/realamiga/verify.fs-uae
 !verify/realamiga/verify-lowend.fs-uae
 !verify/realamiga/run-fs-uae.sh
+
+# MorphOS debug trace artifact
+mosdebug.log
