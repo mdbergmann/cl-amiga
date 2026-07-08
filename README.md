@@ -29,7 +29,7 @@ In short: it exists to bring a modern, ANSI-aiming, library-capable Common Lisp 
 | Implementation | Approach | Amiga family (68k / PPC)? | Footprint | Notes |
 |---|---|---|---|---|
 | **CL-Amiga** | Bytecode VM in C, optional m68k JIT | **Yes** — its whole reason to exist (68k now; MorphOS/OS4 PPC in progress) | Tiny (runs in 8 MB) | Alpha; ANSI coverage incomplete |
-| **ECL** | Lisp → C, bytecode fallback | No | Medium, but needs a C toolchain at runtime to `compile-file` | Very portable/embeddable on modern hosts |
+| **ECL** | Lisp → C, bytecode fallback | No | Medium | Very portable/embeddable on modern hosts |
 | **CCL** | Native compiler | No (x86-64/ARM/PPC only) | Large | Fast and mature; no 68k backend |
 | **Clasp** | LLVM-based, C++ interop | No | Very large (needs LLVM) | Best for C++/scientific interop |
 | **SBCL** | Native compiler | No | Large | Fastest mainstream CL; modern arch only |
