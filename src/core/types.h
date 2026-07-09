@@ -18,8 +18,63 @@
 #include <stdint.h>
 #include <stddef.h>
 
-/* Version string — used for FASL cache paths */
-#define CL_VERSION_STRING "0.3"
+/*
+ * Version — the ONE place to bump.
+ *
+ * Everything else derives from these three numbers, so a release bump touches
+ * this block and nothing else.  Two consumers exist, and they need different
+ * shapes:
+ *
+ *   CL_VERSION_STRING       "0.3"    major.minor — keys the FASL cache path
+ *                                    (~/.cache/common-lisp/cl-amiga-<ver>-fasl<n>/),
+ *                                    so it changes only on a minor bump and a
+ *                                    patch release keeps its warm cache.
+ *   CL_VERSION_STRING_FULL  "0.3.0"  major.minor.patch — LISP-IMPLEMENTATION-VERSION.
+ *
+ * Use CL_VERSION_LEN_FULL rather than a literal length when constructing a
+ * Lisp string from it: a hardcoded length silently truncates the moment a
+ * component reaches two digits (e.g. "0.10.0" is 6 chars, not 5).
+ */
+#define CL_VERSION_MAJOR 0
+#define CL_VERSION_MINOR 3
+#define CL_VERSION_PATCH 0
+
+/* Release date, DD.MM.YYYY — the format AmigaOS's Version command expects. */
+#define CL_VERSION_DATE "09.07.2026"
+
+/* Two levels: the inner macro must see the expanded number, not the name. */
+#define CL_VERSION_STR_(x) #x
+#define CL_VERSION_STR(x)  CL_VERSION_STR_(x)
+
+#define CL_VERSION_STRING \
+    CL_VERSION_STR(CL_VERSION_MAJOR) "." CL_VERSION_STR(CL_VERSION_MINOR)
+
+#define CL_VERSION_STRING_FULL \
+    CL_VERSION_STRING "." CL_VERSION_STR(CL_VERSION_PATCH)
+
+/* Compile-time length of CL_VERSION_STRING_FULL (excludes the NUL). */
+#define CL_VERSION_LEN_FULL ((uint32_t)(sizeof(CL_VERSION_STRING_FULL) - 1))
+
+/*
+ * AmigaOS version cookie.  `Version clamiga` in a Shell scans the executable
+ * for a "$VER: " marker and prints the rest of the line, so the layout is
+ * fixed by the OS: "$VER: <name> <version>.<revision> (<DD.MM.YYYY>)".
+ *
+ * Defined as cl_version_cookie in types.c.  Nothing references it (the OS
+ * reads raw bytes), so it must be marked CL_USED or -flto drops it.
+ */
+#define CL_VERSION_TAG \
+    "$VER: clamiga " CL_VERSION_STRING " (" CL_VERSION_DATE ")"
+
+/* Force emission of an otherwise-unreferenced definition (GNU extension; the
+   m68k-amigaos and host toolchains are both GCC-compatible). */
+#if defined(__GNUC__) || defined(__clang__)
+#define CL_USED __attribute__((used))
+#else
+#define CL_USED
+#endif
+
+extern const char cl_version_cookie[];
 
 /*
  * setjmp() buffer-overrun guard (MorphOS PPC).

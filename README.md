@@ -85,6 +85,25 @@ toggles, and safety guarantees.
 ./clamiga --heap 8M            # Start with 8 MB heap
 ```
 
+### Version
+
+From Lisp, on any platform:
+
+```lisp
+(lisp-implementation-type)     ; => "CL-Amiga"
+(lisp-implementation-version)  ; => "0.3.0"
+```
+
+On AmigaOS the binary also carries a standard `$VER:` cookie, so the Shell's
+`Version` command works without starting the REPL:
+
+```
+1> Version clamiga
+clamiga 0.3 (09.07.2026)
+```
+
+See `tests/test_version.c` for the full contract.
+
 ### Heap and stack sizing
 
 The default heap is **4 MB**. Larger workloads need more:
