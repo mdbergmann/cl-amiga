@@ -3472,7 +3472,7 @@ static CL_Obj bi_lisp_implementation_type(CL_Obj *args, int n)
 static CL_Obj bi_lisp_implementation_version(CL_Obj *args, int n)
 {
     CL_UNUSED(args); CL_UNUSED(n);
-    return cl_make_string("0.2.0", 5);
+    return cl_make_string("0.3.0", 5);
 }
 
 static CL_Obj bi_software_type(CL_Obj *args, int n)
