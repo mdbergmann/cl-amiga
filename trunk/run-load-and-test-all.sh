@@ -119,7 +119,11 @@ fmt_kind() {
   log="$1"
   if   grep -q "FSet Results" "$log";                       then echo fset
   elif grep -qE "^passed: [0-9]" "$log";                   then echo rt          # ansi rt:do-tests
-  elif grep -q "shim OK" "$log";                           then echo closermop   # smoke test, no numbers
+  # trunk/load-and-test-closer-mop.lisp's final banner. Matched loosely (the
+  # word between "closer-mop" and "OK" is not pinned) because an exact match
+  # silently desynced once: the banner went "shim OK" -> "fork OK" and this
+  # probe kept looking for the old string, demoting a clean run to "none".
+  elif grep -qE '^--- closer-mop .* OK ---' "$log";        then echo closermop   # smoke test, no numbers
   elif grep -qE "Pass: [0-9]+ \(" "$log";                  then echo fiveam      # 5am/str/sento/chipi
   elif grep -q "CLOG loaded: all probed entry points" "$log"; then echo clog      # clog smoke test
   else                                                          echo none
@@ -194,8 +198,12 @@ if [ -n "$TALLY_DIR" ]; then
   total_pass=0
   total_fail=0
   total_scripts=0
-  printf '%-32s %s\n' "LOG" "COUNTS"
-  printf '%-32s %s\n' "---" "------"
+  # KIND echoes fmt_kind's verdict. Without it the tally path only observes
+  # counts_for(), and a log misclassified as "none" is indistinguishable from a
+  # correctly-classified "closermop" -- both tally 0/0. Printing the kind is what
+  # lets tests/test_test_extra.sh pin the probes.
+  printf '%-32s %-10s %s\n' "LOG" "KIND" "COUNTS"
+  printf '%-32s %-10s %s\n' "---" "----" "------"
   for log in "$TALLY_DIR"/*.log; do
     [ -e "$log" ] || continue
     total_scripts=$((total_scripts + 1))
@@ -204,7 +212,7 @@ if [ -n "$TALLY_DIR" ]; then
     c_fail=$(echo "$counts" | awk '{print $2}')
     total_pass=$((total_pass + c_pass))
     total_fail=$((total_fail + c_fail))
-    printf '%-32s pass=%-5d fail=%d\n' "$(basename "$log")" "$c_pass" "$c_fail"
+    printf '%-32s %-10s pass=%-5d fail=%d\n' "$(basename "$log")" "$(fmt_kind "$log")" "$c_pass" "$c_fail"
   done
   echo ""
   echo "=== GRAND TOTAL ==="

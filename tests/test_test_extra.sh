@@ -59,13 +59,31 @@ cat > "$fixture_pass/fset.log" << 'EOF'
 === FSet Results: 17 passed, 0 failed, 0 errors ===
 EOF
 
-# closer-mop smoke test: "shim OK" — contributes 0/0 to numeric tally
-cat > "$fixture_fail/closer-mop.log" << 'EOF'
-shim OK
-EOF
-cat > "$fixture_pass/closer-mop.log" << 'EOF'
-shim OK
-EOF
+# closer-mop smoke test: no per-test numbers — contributes 0/0 to the numeric
+# tally, but must still classify as "closermop" rather than "none".
+#
+# The fixture line is DERIVED from the real script rather than copied, because
+# copying is precisely how this broke once: commit 47c0182 reworded the banner
+# "shim OK" -> "fork OK", the runner's probe kept grepping for "shim OK", and
+# this fixture kept its own stale copy — so the test agreed with the bug and a
+# clean closer-mop run was reported as "?? no recognized summary". If the banner
+# is ever reworded beyond what the probe tolerates, the sed yields "" and the
+# guard below fails loudly instead of silently drifting again.
+closer_script="$SCRIPT_DIR/../trunk/load-and-test-closer-mop.lisp"
+closer_banner=$(sed -n 's/.*"~%\(--- closer-mop [^~]*\)~%".*/\1/p' "$closer_script")
+
+total=$((total + 1))
+if [ -n "$closer_banner" ]; then
+    echo "  ok  closer_mop_banner_extracted_from_script"
+    passed=$((passed + 1))
+else
+    echo "  FAIL  closer_mop_banner_extracted_from_script"
+    echo "    no '--- closer-mop ... OK ---' banner found in $closer_script"
+    failed=$((failed + 1))
+fi
+
+printf '%s\n' "$closer_banner" > "$fixture_fail/closer-mop.log"
+printf '%s\n' "$closer_banner" > "$fixture_pass/closer-mop.log"
 
 # unrecognized format — contributes 0/0
 cat > "$fixture_fail/unknown.log" << 'EOF'
@@ -87,6 +105,19 @@ EOF
 # ---- Tests against failure fixture ----
 
 output=$(sh "$RUNNER" --tally-dir "$fixture_fail" 2>&1)
+
+# ---- Per-log format classification (fmt_kind) ----
+# Pin every probe. Numeric totals alone can't catch a broken probe: a log that
+# falls through to "none" tallies 0/0, exactly like a correctly-classified
+# closermop log, so the grand total stays green while the summary table says
+# "?? no recognized summary".
+kind_of() { echo "$output" | awk -v f="$1" '$1 == f { print $2 }'; }
+
+check "kind_closermop" "closermop" "$(kind_of closer-mop.log)"
+check "kind_fiveam"    "fiveam"    "$(kind_of fiveam.log)"
+check "kind_rt"        "rt"        "$(kind_of rt.log)"
+check "kind_fset"      "fset"      "$(kind_of fset.log)"
+check "kind_unrecognized_is_none" "none" "$(kind_of unknown.log)"
 
 grand_tests=$(echo "$output" | grep "^tests:")
 check "grand_total_pass_count_with_failures" "tests:   32 passed, 5 failed" "$grand_tests"
