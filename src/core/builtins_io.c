@@ -3472,7 +3472,8 @@ static CL_Obj bi_lisp_implementation_type(CL_Obj *args, int n)
 static CL_Obj bi_lisp_implementation_version(CL_Obj *args, int n)
 {
     CL_UNUSED(args); CL_UNUSED(n);
-    return cl_make_string("0.3.0", 5);
+    /* Derived from CL_VERSION_* in types.h — never spell the version here. */
+    return cl_make_string(CL_VERSION_STRING_FULL, CL_VERSION_LEN_FULL);
 }
 
 static CL_Obj bi_software_type(CL_Obj *args, int n)
