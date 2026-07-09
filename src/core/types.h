@@ -19,7 +19,7 @@
 #include <stddef.h>
 
 /* Version string — used for FASL cache paths */
-#define CL_VERSION_STRING "0.2"
+#define CL_VERSION_STRING "0.3"
 
 /*
  * setjmp() buffer-overrun guard (MorphOS PPC).
