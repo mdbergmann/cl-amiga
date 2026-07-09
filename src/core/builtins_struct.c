@@ -930,32 +930,68 @@ static CL_Obj bi_gf_ic_emf(CL_Obj *args, int n)
  * SLOT-UNBOUND protocol for free — the same trick bi_struct_slot_value
  * uses.  Allocation-free means no GC can run here, so nothing needs
  * protecting across the type_desc read. */
-static CL_Obj bi_gf_reader_ic(CL_Obj *args, int n)
+/* CLOS's *SLOT-UNBOUND-MARKER*, published from clos.lisp via
+ * %SET-SLOT-UNBOUND-MARKER.  cl_gf_reader_ic_probe needs it to tell an
+ * unbound slot (whose storage holds the marker) apart from a real value,
+ * because unlike the Lisp entry point it has no caller-supplied MISS to
+ * hand back.  GC root: it is an arena-resident uninterned symbol that the
+ * compactor relocates.  While it is still CL_NIL (before clos.lisp loads)
+ * the probe reports a miss for every call, so the fast path is inert
+ * rather than wrong. */
+static CL_Obj cl_slot_unbound_marker = CL_NIL;
+
+/* Shared hit path for a reader-only GF.  Returns the slot value, or
+ * CL_UNBOUND to mean "miss, use the full dispatch".  CL_UNBOUND is not a
+ * valid CL_Obj and can never be a slot's value, so it is unambiguous.
+ *
+ * An unbound slot reports a miss, which routes the caller to the
+ * SLOT-UNBOUND protocol.  So does a slot holding the marker before the
+ * marker has been published (both are CL_NIL then) — inert, not wrong. */
+CL_Obj cl_gf_reader_ic_probe(CL_Obj gfobj, CL_Obj obj)
 {
     CL_Struct *gf, *st;
     CL_Cons *c;
-    CL_Obj ic;
+    CL_Obj ic, v;
     int32_t idx;
-    CL_UNUSED(n);
 
-    if (!CL_STRUCT_P(args[0]) || !CL_STRUCT_P(args[1]))
-        return args[2];
-    gf = (CL_Struct *)CL_OBJ_TO_PTR(args[0]);
+    if (!CL_STRUCT_P(gfobj) || !CL_STRUCT_P(obj))
+        return CL_UNBOUND;
+    gf = (CL_Struct *)CL_OBJ_TO_PTR(gfobj);
     if (gf->n_slots < 9)
-        return args[2];
+        return CL_UNBOUND;
     ic = gf->slots[8];
     if (!CL_CONS_P(ic))
-        return args[2];
+        return CL_UNBOUND;
     c = (CL_Cons *)CL_OBJ_TO_PTR(ic);
     if (!CL_FIXNUM_P(c->cdr))
-        return args[2];     /* EMF-shaped cache, not ours */
-    st = (CL_Struct *)CL_OBJ_TO_PTR(args[1]);
+        return CL_UNBOUND;     /* EMF-shaped cache, not ours */
+    st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
     if (c->car != st->type_desc)
-        return args[2];
+        return CL_UNBOUND;
     idx = (int32_t)CL_FIXNUM_VAL(c->cdr);
     if (idx < 0 || (uint32_t)idx >= st->n_slots)
-        return args[2];
-    return st->slots[idx];
+        return CL_UNBOUND;
+    v = st->slots[idx];
+    if (v == cl_slot_unbound_marker)
+        return CL_UNBOUND;     /* unbound slot -> SLOT-UNBOUND protocol */
+    return v;
+}
+
+static CL_Obj bi_gf_reader_ic(CL_Obj *args, int n)
+{
+    CL_Obj v;
+    CL_UNUSED(n);
+    v = cl_gf_reader_ic_probe(args[0], args[1]);
+    return (v == CL_UNBOUND) ? args[2] : v;
+}
+
+/* (%set-slot-unbound-marker marker) — publish CLOS's unbound-slot marker
+ * to the VM's reader fast path.  Called once from clos.lisp. */
+static CL_Obj bi_set_slot_unbound_marker(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    cl_slot_unbound_marker = args[0];
+    return args[0];
 }
 
 /* --- Registration --- */
@@ -1008,6 +1044,7 @@ void cl_builtins_struct_init(void)
      * once-per-process boot this is a no-op. */
     struct_table = CL_NIL;
     cl_clos_class_table = CL_NIL;
+    cl_slot_unbound_marker = CL_NIL;
     if (struct_index.slots) platform_free(struct_index.slots);
     struct_index.slots = NULL;
     struct_index.cap = 0;
@@ -1037,6 +1074,8 @@ void cl_builtins_struct_init(void)
     cl_register_builtin("%CLASS-OF", bi_class_of, 1, 1, cl_package_clamiga);
     cl_register_builtin("%GF-IC-EMF", bi_gf_ic_emf, 2, 3, cl_package_clamiga);
     cl_register_builtin("%GF-READER-IC", bi_gf_reader_ic, 3, 3, cl_package_clamiga);
+    cl_register_builtin("%SET-SLOT-UNBOUND-MARKER", bi_set_slot_unbound_marker,
+                        1, 1, cl_package_clamiga);
     cl_register_builtin("%SET-CLOS-CLASS-TABLE", bi_set_clos_class_table, 1, 1, cl_package_clamiga);
     cl_register_builtin("%STRUCT-CHANGE-CLASS", bi_struct_change_class, 3, 3, cl_package_clamiga);
 
@@ -1048,4 +1087,5 @@ void cl_builtins_struct_init(void)
     cl_struct_set_sym = cl_intern_in("%STRUCT-SET", 11, cl_package_clamiga);
     cl_gc_register_root(&cl_struct_ref_sym);
     cl_gc_register_root(&cl_struct_set_sym);
+    cl_gc_register_root(&cl_slot_unbound_marker);
 }

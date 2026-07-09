@@ -677,6 +677,12 @@ directly instead of attempting a symbol lookup."
 ;;; Sentinel value for unbound slots — uninterned so it can't collide
 (defvar *slot-unbound-marker* (make-symbol "SLOT-UNBOUND"))
 
+;;; Publish the marker to the VM's reader fast path (OP_CALL), which has to
+;;; tell an unbound slot from a real value without a caller-supplied MISS.
+;;; Until this runs the fast path reports a miss for every call — inert,
+;;; not wrong.
+(%set-slot-unbound-marker *slot-unbound-marker*)
+
 ;;; When NIL, SLOT-VALUE / SLOT-BOUNDP / SLOT-MAKUNBOUND / (SETF SLOT-VALUE)
 ;;; bypass generic dispatch and go straight to %STRUCT-REF / %STRUCT-SET —
 ;;; preserving the tight loop we rely on for fiveam, fset, etc.
@@ -3452,6 +3458,13 @@ already-existing GF the installed combination is preserved."
 (defun set-funcallable-instance-function (gf fn)
   "AMOP: install FN as the discriminating function of GF.  Future calls
 to GF invoke FN in place of the standard dispatch.  Returns GF."
+  ;; The VM answers calls to a promoted reader GF straight from the inline
+  ;; cache, bypassing slot 3 entirely — so retract the promotion before
+  ;; retargeting slot 3, or FN would simply never run.  Clearing the cache
+  ;; unconditionally is a cheap belt-and-braces: it is only a cache.
+  (when (gethash gf *reader-gfs*)
+    (%demote-reader-gf gf))
+  (%set-gf-inline-cache gf nil)
   (%set-gf-discriminating-function gf fn)
   gf)
 
