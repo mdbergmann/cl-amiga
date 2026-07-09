@@ -417,6 +417,10 @@ Verify the (deterministic) result against EXPECTED."
                  (dotimes (i n)
                    (setq s (+ s (slot-value p 'x) (slot-value p 'y)))))
                s)))
+  ;; Reader-GF fast dispatch: %BO-POINT-X/Y are DEFCLASS-generated readers, so
+  ;; their GFs are promoted and OP_CALL answers the call straight from the
+  ;; inline cache.  The metric to watch is clos.accessor / struct.accessor
+  ;; (the constant-index floor below) — 1.20x as of 2026-07-09.
   (%bo-run "clos.accessor" (* 7 n)
            (lambda ()
              (let ((s 0))
