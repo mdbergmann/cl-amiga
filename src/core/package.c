@@ -997,6 +997,7 @@ static const char *const clos_internal_names[] = {
     "*METAOBJECT-DEPENDENTS*",
     "*METHOD-COMBINATIONS*", "*NEXT-METHOD-P-FUNCTION*",
     /* *PRINT-OBJECT-HOOK* is interned directly in CLAMIGA by symbol.c. */
+    "*READER-GFS*", "*READER-METHOD-SLOTS*",
     "*SLOT-ACCESS-PROTOCOL-EXTENDED-P*",
     "*SLOT-UNBOUND-MARKER*",
     /* BODY and TEST are too generic to safely pre-intern in CLAMIGA —
