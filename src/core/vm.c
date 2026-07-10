@@ -2066,6 +2066,32 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 cl_vm.stack[cl_vm.sp - nargs - 1] = func_obj;
             }
 
+            /* Reader-GF fast path: a monomorphic accessor call is answered
+             * right here — no unwrap to the discriminating function, no
+             * frame, no bytecode body.  cl_gf_reader_ic_probe matches the
+             * GF's inline cache against the receiver's type_desc and yields
+             * CL_UNBOUND on a miss (or on an unbound slot), which falls
+             * through to ordinary dispatch below.  Non-allocating, so no GC
+             * can run here and nothing needs GC-protecting.
+             *
+             * OP_TAILCALL is excluded on purpose: it must unwind the caller's
+             * frame, which this shortcut does not do.  Tail-position accessor
+             * calls still take the (already fast) Lisp reader discriminator.
+             *
+             * Bypassing slot 3 is only sound because a GF holding a reader IC
+             * is one CLOS promoted; SET-FUNCALLABLE-INSTANCE-FUNCTION demotes
+             * it before retargeting slot 3, so a user-installed function can
+             * never be skipped. */
+            if (!is_tail && nargs == 1 && cl_funcallable_instance_p(func_obj)) {
+                CL_Obj slot_v = cl_gf_reader_ic_probe(func_obj, arg_base[0]);
+                if (slot_v != CL_UNBOUND) {
+                    cl_vm.sp -= (nargs + 1);
+                    cl_vm_push(slot_v);
+                    cl_mv_count = 1;
+                    VM_BREAK;
+                }
+            }
+
             /* Unwrap funcallable instances (GF struct → discriminating fn). */
             if (cl_funcallable_instance_p(func_obj)) {
                 func_obj = cl_unwrap_funcallable(func_obj);

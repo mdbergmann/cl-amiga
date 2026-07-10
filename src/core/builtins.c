@@ -1755,7 +1755,6 @@ void cl_builtins_init(void)
     defstub("PRINT-NOT-READABLE-OBJECT");
     /* STORE-VALUE / USE-VALUE are real restart-invoking functions defined in
      * builtins_condition.c (CLHS 9.1) — not stubs. */
-    defstub("UNBOUND-SLOT-INSTANCE");
     defstub("Y-OR-N-P");
     defstub("YES-OR-NO-P");
 

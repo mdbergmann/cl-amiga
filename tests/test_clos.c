@@ -683,6 +683,102 @@ TEST(slot_value_unbound_error)
     ASSERT(strncmp(eval_print("(slot-value *test-pt* 'x)"), "ERROR:", 6) == 0);
 }
 
+/* --- UNBOUND-SLOT: the condition SLOT-UNBOUND signals (CLHS 7.7.11) ---
+   Reading an unbound slot must signal a condition of type UNBOUND-SLOT — a
+   CELL-ERROR subtype whose CELL-ERROR-NAME is the slot name and whose
+   UNBOUND-SLOT-INSTANCE is the object.  Signalling a bare SIMPLE-ERROR would
+   still be caught by an (error ...) clause, so these tests pin the type and
+   both slots rather than merely "something was signalled". */
+
+TEST(unbound_slot_condition_via_slot_value)
+{
+    eval_print("(defclass ubs-a () ((x :reader ubs-ax) (y :initform 7)))");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (slot-value (make-instance 'ubs-a) 'x) "
+        "  (unbound-slot () :ok))"),
+        ":OK");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (slot-value (make-instance 'ubs-a) 'x) "
+        "  (unbound-slot (c) (cell-error-name c)))"),
+        "X");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((o (make-instance 'ubs-a))) "
+        "  (handler-case (slot-value o 'x) "
+        "    (unbound-slot (c) (eq (unbound-slot-instance c) o))))"),
+        "T");
+}
+
+TEST(unbound_slot_condition_via_reader_gf)
+{
+    /* The reader-GF fast path answers accessor calls inside OP_CALL; a slot
+       holding the unbound marker must fall out of it into the same protocol.
+       Called twice so the warm inline cache is exercised too. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((o (make-instance 'ubs-a))) "
+        "  (handler-case (ubs-ax o) "
+        "    (unbound-slot (c) (list (cell-error-name c) "
+        "                            (eq (unbound-slot-instance c) o)))))"),
+        "(X T)");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((o (make-instance 'ubs-a))) "
+        "  (handler-case (ubs-ax o) "
+        "    (unbound-slot (c) (list (cell-error-name c) "
+        "                            (eq (unbound-slot-instance c) o)))))"),
+        "(X T)");
+}
+
+TEST(unbound_slot_condition_after_makunbound)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((o (make-instance 'ubs-a))) "
+        "  (slot-makunbound o 'y) "
+        "  (handler-case (slot-value o 'y) "
+        "    (unbound-slot (c) (cell-error-name c))))"),
+        "Y");
+}
+
+TEST(unbound_slot_is_a_cell_error)
+{
+    ASSERT_STR_EQ(eval_print("(subtypep 'unbound-slot 'cell-error)"), "T");
+    ASSERT_STR_EQ(eval_print("(subtypep 'unbound-slot 'error)"), "T");
+    /* A handler for any supertype still catches it. */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (slot-value (make-instance 'ubs-a) 'x) "
+        "  (cell-error () :cell))"),
+        ":CELL");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (slot-value (make-instance 'ubs-a) 'x) (error () :err))"),
+        ":ERR");
+}
+
+TEST(unbound_slot_report_names_slot_and_instance)
+{
+    /* :format-control / :format-arguments still interpolate, so the printed
+       report is unchanged from the old bare-ERROR message. */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (slot-value (make-instance 'ubs-a) 'x) "
+        "  (unbound-slot (c) (and (search \"The slot X is unbound\" "
+        "                                 (princ-to-string c)) t)))"),
+        "T");
+}
+
+TEST(unbound_slot_instance_accessor)
+{
+    /* Constructible by hand, and the accessor reads the :INSTANCE initarg. */
+    ASSERT_STR_EQ(eval_print(
+        "(typep (make-condition 'unbound-slot :name 'q :instance 42) 'unbound-slot)"),
+        "T");
+    ASSERT_STR_EQ(eval_print(
+        "(unbound-slot-instance (make-condition 'unbound-slot :name 'q :instance 42))"),
+        "42");
+    /* Absent :instance reads as NIL, not an error. */
+    ASSERT_STR_EQ(eval_print(
+        "(unbound-slot-instance (make-condition 'unbound-slot :name 'q))"),
+        "NIL");
+    /* Not a condition -> type error. */
+    ASSERT(strncmp(eval_print("(unbound-slot-instance 42)"), "ERROR:", 6) == 0);
+}
+
 TEST(slot_exists_p_true)
 {
     ASSERT_STR_EQ(eval_print("(slot-exists-p *test-pt* 'x)"), "T");
@@ -4514,6 +4610,12 @@ int main(void)
     RUN(slot_boundp_true);
     RUN(slot_makunbound_and_boundp);
     RUN(slot_value_unbound_error);
+    RUN(unbound_slot_condition_via_slot_value);
+    RUN(unbound_slot_condition_via_reader_gf);
+    RUN(unbound_slot_condition_after_makunbound);
+    RUN(unbound_slot_is_a_cell_error);
+    RUN(unbound_slot_report_names_slot_and_instance);
+    RUN(unbound_slot_instance_accessor);
     RUN(slot_exists_p_true);
     RUN(slot_exists_p_false);
     RUN(slot_value_no_such_slot);
