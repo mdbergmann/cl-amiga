@@ -48,6 +48,12 @@ CL-Amiga can load **ASDF**, install and run **Quicklisp**, and successfully quic
 
 A broad test suite covers the implementation, including threading, CLOS, conditions, the full numeric tower, FFI, the m68k JIT, and AmigaOS GUI (Intuition/Graphics/GadTools).
 
+### Screenshots
+
+| AmigaOS 3 | MorphOS |
+|---|---|
+| ![CL-Amiga booting and running the bouncing-lines GFX example on AmigaOS 3](docs/scrshts/clamiga-bounce.jpg) | ![CL-Amiga booting and running Hello World on MorphOS](docs/scrshts/clamiga-mos.png) |
+
 ## Building
 
 ### Host (macOS / Linux)
