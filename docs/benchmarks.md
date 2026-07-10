@@ -9,6 +9,53 @@ Related: [specs/performance.md](../specs/performance.md) is the optimization
 
 ---
 
+## 2026-07-10 — SLOT-VALUE compile-time inline + (type, slot) pair index (host)
+
+**Commit**: follows `e0d1ca0`.
+
+`SLOT-VALUE` and `(SETF (SLOT-VALUE ...))` are ordinary DEFUNs, so every
+access paid a full Lisp call frame before reaching the fused
+`%STRUCT-SLOT-VALUE`/`%STRUCT-SLOT-STORE` builtin — the frame, not the slot
+lookup, was the bulk of the cost.  Three changes, no new opcode, no FASL
+format change:
+
+1. **Compiler macros** on `SLOT-VALUE` and `%SET-SLOT-VALUE` (clos.lisp)
+   splice the DEFUN bodies' fast-path test into every compiled call site —
+   the same treatment DEFCLASS accessors and `WITH-SLOTS` already got.
+2. **`compile_setf` routes defsetf updaters through `compile_call`**
+   (compiler.c) instead of hand-emitting `OP_FLOAD`/`OP_CALL`, so the
+   `%SET-SLOT-VALUE` macro can fire at all (and any defsetf setter now
+   benefits from compiler macros / builtin opcodes).
+3. **A `(type-name, slot-name) → index` pair table** built alongside the
+   struct-registry hash index (builtins_struct.c), same lock and same
+   dirty/disabled lifecycle, replaces `struct_slot_resolve`'s linear
+   specs-list walk — O(1) for any slot of any width class.
+
+**Environment**: macOS arm64, host bytecode VM, best-of-3.
+
+**Reproduce**: 8 unrolled accesses per iteration, 250k iterations, instance
+in a local; 12-slot class for the depth rows.
+
+| ns per access | before | after |
+|---|---|---|
+| `(slot-value p 'x)` read, slot 0 of 2 | 77.5 | 56.0 |
+| `(setf (slot-value p 'x) v)` write | 72.5 | 51.0 |
+| read, slot 0 of 12 | 59.0¹ | 56.0 |
+| read, slot 11 of 12 | 68.0¹ | 56.0 |
+
+¹ measured with the inline already applied, isolating the pair index: the
+walk cost ~0.75 ns per slot position; now flat.
+
+Tracked by `clos.slot-value` (18 → 15 ms; the loop harness dilutes the
+per-access delta) and the new `clos.slot-value-deep` (15 ms, equal to the
+shallow case) in `trunk/bench-opt.lisp`; `struct.slot-value` 19 → 15 ms.
+The reader-GF accessor path (17.5 ns) remains faster — it answers in
+`OP_CALL` with no call at all — but the "slot-value is 4× a reader" inversion
+is now ~2×, and `FUNCALL`/`APPLY` of `#'SLOT-VALUE` still routes through the
+DEFUN unchanged.
+
+---
+
 ## 2026-07-10 — polymorphic reader-GF inline cache (host)
 
 **Commit**: follows `58f524c`.

@@ -5402,6 +5402,48 @@
        (rg-amiga-sfix (make-instance 'rg-amiga-sfi)))
 (check "unrelated reader still fast" 3 (rg-amiga-x (make-instance 'rg-amiga-a)))
 
+; --- SLOT-VALUE compiler-macro inline + (type, slot) pair index ---
+; SLOT-VALUE and (SETF (SLOT-VALUE ...)) compile to an inlined fast-path
+; test (compiler macros in clos.lisp; compile_setf routes defsetf updaters
+; through compile_call), and struct_slot_resolve answers through the pair
+; index built alongside the struct type index.  Same latch caveat as the
+; reader-GF section: these MUST stay above "Slot-access protocol" below.
+(defclass sv-amiga-i () ((x :initform 1) (y :initform 2)))
+(defvar *sv-amiga-log* nil)
+(defvar *sv-amiga-inst* (make-instance 'sv-amiga-i))
+; place subforms evaluate once each, left-to-right, before the value
+(check "inlined setf slot-value eval order" '((:obj :name :val) 5)
+       (progn (setq *sv-amiga-log* nil)
+              (setf (slot-value (progn (push :obj *sv-amiga-log*) *sv-amiga-inst*)
+                                (progn (push :name *sv-amiga-log*) 'x))
+                    (progn (push :val *sv-amiga-log*) 5))
+              (list (nreverse *sv-amiga-log*) (slot-value *sv-amiga-inst* 'x))))
+(check "inlined setf returns the value" 11 (setf (slot-value *sv-amiga-inst* 'x) 11))
+(check "funcall #'slot-value agrees" 11 (funcall #'slot-value *sv-amiga-inst* 'x))
+; non-constant slot-name goes through the macro's gensym-bound path
+(check "variable slot-name" '(11 2)
+       (mapcar (lambda (n) (slot-value *sv-amiga-inst* n)) '(x y)))
+; every slot of a wide class resolves through the pair index
+(defclass sv-amiga-wide ()
+  ((s0 :initform 0) (s1 :initform 10) (s2 :initform 20) (s3 :initform 30)
+   (s4 :initform 40) (s5 :initform 50) (s6 :initform 60) (s7 :initform 70)
+   (s8 :initform 80) (s9 :initform 90) (s10 :initform 100) (s11 :initform 110)))
+(check "wide class deep slots via pair index" '(0 50 110)
+       (let ((p (make-instance 'sv-amiga-wide)))
+         (list (slot-value p 's0) (slot-value p 's5) (slot-value p 's11))))
+; redefinition must invalidate the pair index, not read a stale position
+(defclass sv-amiga-redef () ((a :initform 1) (b :initform 2)))
+(check "pair index before redef" 2 (slot-value (make-instance 'sv-amiga-redef) 'b))
+(defclass sv-amiga-redef () ((pad1 :initform 0) (pad2 :initform 0) (b :initform 9)))
+(check "pair index after redef" 9 (slot-value (make-instance 'sv-amiga-redef) 'b))
+; unbound slot routes to the SLOT-UNBOUND protocol through the inline
+(defclass sv-amiga-ub () ((x)))
+(check "inlined slot-value unbound-slot" '(x t)
+       (let ((o (make-instance 'sv-amiga-ub)))
+         (handler-case (progn (slot-value o 'x) "NO-ERROR")
+           (unbound-slot (c) (list (cell-error-name c)
+                                   (eq (unbound-slot-instance c) o))))))
+
 ; --- Slot-access protocol (MOP) ---
 (defclass sv-amiga-fast () ((x :initarg :x :initform 10)))
 (check "protocol flag clean" nil *slot-access-protocol-extended-p*)

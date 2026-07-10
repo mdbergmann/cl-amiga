@@ -66,9 +66,27 @@ typedef struct {
     CL_Obj entry;   /* registry entry (name n-slots parent (specs)) */
 } StructIndexSlot;
 
+/* Second-level index: (type-name, slot-name) -> slot index.  Built in
+ * the same rebuild pass, guarded by the same dirty/disabled flags and
+ * the same tables lock, so it can never be inconsistent with the type
+ * index or the alist.  It exists because struct_slot_resolve — the
+ * per-access cost of every SLOT-VALUE — otherwise walks the type's
+ * specs list linearly: ~0.75ns per slot walked, so wide CLOS classes
+ * paid measurably more for their later slots (59 -> 67ns at slot 11 of
+ * 12, host 2026-07-10).  A clean-index probe answers any slot of any
+ * type in O(1), and a probe miss is definitive ("no such slot") because
+ * the rebuild enumerates every spec of every winning entry. */
+typedef struct {
+    CL_Obj name;    /* type-name symbol; CL_NIL (== 0) = empty slot */
+    CL_Obj slot;    /* slot-name symbol */
+    int32_t idx;    /* position in the instance's slot vector */
+} SlotIdxSlot;
+
 static struct {
     StructIndexSlot *slots;
     uint32_t cap;   /* power of two; 0 = unallocated */
+    SlotIdxSlot *pairs;
+    uint32_t pair_cap;  /* power of two; 0 = unallocated */
     int dirty;      /* alist changed or compaction moved objects */
     int disabled;   /* OOM / malformed cell — permanent linear fallback */
 } struct_index;
@@ -84,6 +102,15 @@ static uint32_t struct_name_hash(CL_Obj obj)
     return ((uint32_t)obj >> 2) * 2654435769u;
 #endif
 }
+
+static uint32_t slot_pair_hash(CL_Obj name, CL_Obj slot)
+{
+    /* Mix the two symbol hashes with distinct multipliers so (A,B) and
+     * (B,A) land differently. */
+    return struct_name_hash(name) ^ (struct_name_hash(slot) * 2246822519u);
+}
+
+static CL_Obj struct_entry_specs_raw(CL_Obj entry);  /* defined below */
 
 /* Mark the index stale.  Called from gc_update_shared_roots during the
  * compaction update phase (world stopped) — and mirrored inline, under
@@ -136,6 +163,63 @@ static int struct_index_rebuild(void)
         list = c->cdr;
     }
 
+    /* Second pass: the (type, slot) -> index pair table, enumerated
+     * from the WINNING entry of each type (the type table just built),
+     * so re-registered types contribute only their current layout.
+     * Spec cells may be (name default) conses or bare name symbols —
+     * same tolerance as struct_slot_resolve's walk; a malformed spec
+     * tail just ends that type's slots (the walk stops there too). */
+    {
+        SlotIdxSlot *pairs;
+        uint32_t pair_count = 0, pair_cap, pair_mask, i;
+
+        for (i = 0; i < cap; i++) {
+            CL_Obj specs;
+            if (CL_NULL_P(slots[i].name)) continue;
+            specs = struct_entry_specs_raw(slots[i].entry);
+            while (CL_CONS_P(specs)) {
+                pair_count++;
+                specs = ((CL_Cons *)CL_OBJ_TO_PTR(specs))->cdr;
+            }
+        }
+
+        pair_cap = 64;
+        while (pair_cap < pair_count * 2 + 1) pair_cap <<= 1;
+        pairs = (SlotIdxSlot *)platform_alloc(pair_cap * sizeof(SlotIdxSlot));
+        if (!pairs) { platform_free(slots); goto disable; }
+        memset(pairs, 0, pair_cap * sizeof(SlotIdxSlot));  /* CL_NIL == 0 */
+        pair_mask = pair_cap - 1;
+
+        for (i = 0; i < cap; i++) {
+            CL_Obj specs;
+            int32_t idx = 0;
+            if (CL_NULL_P(slots[i].name)) continue;
+            specs = struct_entry_specs_raw(slots[i].entry);
+            while (CL_CONS_P(specs)) {
+                CL_Cons *c = (CL_Cons *)CL_OBJ_TO_PTR(specs);
+                CL_Obj sname = CL_CONS_P(c->car)
+                    ? ((CL_Cons *)CL_OBJ_TO_PTR(c->car))->car
+                    : c->car;
+                uint32_t p = slot_pair_hash(slots[i].name, sname) & pair_mask;
+                while (!CL_NULL_P(pairs[p].name) &&
+                       !(pairs[p].name == slots[i].name && pairs[p].slot == sname))
+                    p = (p + 1) & pair_mask;
+                /* first duplicate wins — matches the walk's first match */
+                if (CL_NULL_P(pairs[p].name)) {
+                    pairs[p].name = slots[i].name;
+                    pairs[p].slot = sname;
+                    pairs[p].idx  = idx;
+                }
+                idx++;
+                specs = c->cdr;
+            }
+        }
+
+        if (struct_index.pairs) platform_free(struct_index.pairs);
+        struct_index.pairs = pairs;
+        struct_index.pair_cap = pair_cap;
+    }
+
     if (struct_index.slots) platform_free(struct_index.slots);
     struct_index.slots = slots;
     struct_index.cap = cap;
@@ -146,6 +230,9 @@ disable:
     if (struct_index.slots) platform_free(struct_index.slots);
     struct_index.slots = NULL;
     struct_index.cap = 0;
+    if (struct_index.pairs) platform_free(struct_index.pairs);
+    struct_index.pairs = NULL;
+    struct_index.pair_cap = 0;
     struct_index.disabled = 1;
     return 0;
 }
@@ -657,6 +744,23 @@ static CL_Obj struct_entry_specs_raw(CL_Obj entry)
     return ((CL_Cons *)CL_OBJ_TO_PTR(entry))->car;
 }
 
+/* Probe a CLEAN pair index for (TYPE_NAME, SLOT_NAME).  Caller holds
+ * the tables lock.  Returns the slot index, or -1 — and -1 is
+ * definitive, because the rebuild enumerated every spec of every
+ * winning entry.  Pure memory reads — cannot error, cannot allocate. */
+static int32_t slot_pair_probe(CL_Obj type_name, CL_Obj slot_name)
+{
+    uint32_t mask = struct_index.pair_cap - 1;
+    uint32_t p = slot_pair_hash(type_name, slot_name) & mask;
+    while (!CL_NULL_P(struct_index.pairs[p].name)) {
+        if (struct_index.pairs[p].name == type_name &&
+            struct_index.pairs[p].slot == slot_name)
+            return struct_index.pairs[p].idx;
+        p = (p + 1) & mask;
+    }
+    return -1;
+}
+
 /* Resolve SLOT_NAME to its index in OBJ's registered layout.
  * Returns the index, or -1 on any miss.  Non-erroring, non-allocating. */
 static int32_t struct_slot_resolve(CL_Obj obj, CL_Obj slot_name)
@@ -668,6 +772,18 @@ static int32_t struct_slot_resolve(CL_Obj obj, CL_Obj slot_name)
     if (!CL_STRUCT_P(obj))
         return -1;
     st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
+
+    /* O(1) pair-index probe — the per-access path of every SLOT-VALUE.
+     * Falls through to the rebuild-then-walk path only when the index
+     * is dirty, unbuilt, or disabled. */
+    cl_tables_rdlock();
+    if (struct_index.pairs && !struct_index.dirty && !struct_index.disabled) {
+        int32_t pidx = slot_pair_probe(st->type_desc, slot_name);
+        cl_tables_rwunlock();
+        return (pidx >= 0 && (uint32_t)pidx < st->n_slots) ? pidx : -1;
+    }
+    cl_tables_rwunlock();
+
     /* find_struct_entry never allocates from the arena (index rebuilds
      * use platform_alloc), so st cannot move underneath us. */
     entry = find_struct_entry(st->type_desc);
@@ -1064,6 +1180,9 @@ void cl_builtins_struct_init(void)
     if (struct_index.slots) platform_free(struct_index.slots);
     struct_index.slots = NULL;
     struct_index.cap = 0;
+    if (struct_index.pairs) platform_free(struct_index.pairs);
+    struct_index.pairs = NULL;
+    struct_index.pair_cap = 0;
     struct_index.dirty = 0;
     struct_index.disabled = 0;
 

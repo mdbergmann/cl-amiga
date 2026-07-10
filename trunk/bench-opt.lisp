@@ -449,6 +449,27 @@ Verify the (deterministic) result against EXPECTED."
                    (setq s (+ s (%bo-point-x p) (%bo-point-x q)))))
                s))))
 
+;; Deep slot of a wide class (2026-07-10): SLOT-VALUE is compile-time
+;; inlined (no Lisp call frame) and resolves through the (type, slot)
+;; pair index, so a late slot costs the same as slot 0.  Before the pair
+;; index the specs-list walk added ~0.75ns per slot position.  Watch
+;; clos.slot-value-deep staying equal to clos.slot-value.
+(defclass %bo-wide ()
+  ((s0 :initform 0) (s1 :initform 1) (s2 :initform 2) (s3 :initform 3)
+   (s4 :initform 4) (s5 :initform 5) (s6 :initform 6) (s7 :initform 7)
+   (s8 :initform 8) (s9 :initform 9) (s10 :initform 10) (s11 :initform 11)))
+
+(let ((n 10000) (reps (%bo-scaled 10))
+      (p (make-instance '%bo-wide)))
+  (%bo-run "clos.slot-value-deep" (* 21 n)
+           (lambda ()
+             (let ((s 0))
+               (dotimes (r reps)
+                 (setq s 0)
+                 (dotimes (i n)
+                   (setq s (+ s (slot-value p 's10) (slot-value p 's11)))))
+               s))))
+
 ;; =====================================================================
 ;; struct.* — DEFSTRUCT slot access (spec 3.1).  The 2026-07-05 sento
 ;; runtime profile showed SLOT-VALUE on struct instances resolving the

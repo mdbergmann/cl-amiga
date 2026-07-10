@@ -779,6 +779,96 @@ TEST(unbound_slot_instance_accessor)
     ASSERT(strncmp(eval_print("(unbound-slot-instance 42)"), "ERROR:", 6) == 0);
 }
 
+/* --- SLOT-VALUE compiler-macro inline + (type, slot) pair index ---
+   SLOT-VALUE and (SETF SLOT-VALUE) compile to an inlined fast-path test
+   (compiler macros in clos.lisp; compile_setf routes defsetf updaters
+   through compile_call so the %SET-SLOT-VALUE macro fires), and
+   struct_slot_resolve answers through the pair index rebuilt alongside
+   the struct type index.  These pin the behaviors the inline and the
+   index must not change.  NOTE: they exercise the fast path, so they
+   must run BEFORE anything defines a SLOT-VALUE-USING-CLASS method —
+   *SLOT-ACCESS-PROTOCOL-EXTENDED-P* is a one-way latch. */
+
+TEST(slot_value_inline_setf_eval_order)
+{
+    /* Place subforms evaluate once each, left-to-right, before the
+       value (CLHS 5.1.1.1.1) — the gensym-let expansion and the
+       compile_setf call-form rewrite must both preserve that.  The
+       slot-name is a non-constant form here, covering the macro's
+       gensym-bound name path. */
+    eval_print("(defclass svi-a () ((x :initform 1)))");
+    eval_print("(defvar *svi-log* nil)");
+    eval_print("(defvar *svi-inst* (make-instance 'svi-a))");
+    ASSERT_STR_EQ(eval_print(
+        "(progn (setq *svi-log* nil) "
+        "       (setf (slot-value (progn (push :obj *svi-log*) *svi-inst*) "
+        "                         (progn (push :name *svi-log*) 'x)) "
+        "             (progn (push :val *svi-log*) 5)) "
+        "       (list (nreverse *svi-log*) (slot-value *svi-inst* 'x)))"),
+        "((:OBJ :NAME :VAL) 5)");
+}
+
+TEST(slot_value_inline_read_eval_order)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(progn (setq *svi-log* nil) "
+        "       (list (slot-value (progn (push :obj *svi-log*) *svi-inst*) "
+        "                         (progn (push :name *svi-log*) 'x)) "
+        "             (nreverse *svi-log*)))"),
+        "(5 (:OBJ :NAME))");
+}
+
+TEST(slot_value_inline_setf_returns_value)
+{
+    ASSERT_STR_EQ(eval_print("(setf (slot-value *svi-inst* 'x) 11)"), "11");
+    ASSERT_STR_EQ(eval_print("(slot-value *svi-inst* 'x)"), "11");
+}
+
+TEST(slot_value_inline_no_such_slot_errors)
+{
+    ASSERT(strncmp(eval_print("(slot-value *svi-inst* 'no-such-slot)"),
+                   "ERROR:", 6) == 0);
+    ASSERT(strncmp(eval_print("(setf (slot-value *svi-inst* 'no-such-slot) 1)"),
+                   "ERROR:", 6) == 0);
+}
+
+TEST(slot_value_funcall_bypasses_inline)
+{
+    /* FUNCALL/APPLY of #'SLOT-VALUE goes through the DEFUN, not the
+       compiler macro — same answer either way. */
+    ASSERT_STR_EQ(eval_print("(funcall #'slot-value *svi-inst* 'x)"), "11");
+    ASSERT_STR_EQ(eval_print("(apply #'slot-value (list *svi-inst* 'x))"), "11");
+}
+
+TEST(slot_value_pair_index_wide_class)
+{
+    /* Every slot of a 12-slot class resolves through the pair index —
+       a wrong or colliding pair entry reads the wrong slot. */
+    eval_print("(defclass svi-w () "
+               "  ((s0 :initform 0) (s1 :initform 10) (s2 :initform 20) "
+               "   (s3 :initform 30) (s4 :initform 40) (s5 :initform 50) "
+               "   (s6 :initform 60) (s7 :initform 70) (s8 :initform 80) "
+               "   (s9 :initform 90) (s10 :initform 100) (s11 :initform 110)))");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((p (make-instance 'svi-w))) "
+        "  (list (slot-value p 's0) (slot-value p 's5) (slot-value p 's11)))"),
+        "(0 50 110)");
+}
+
+TEST(slot_value_pair_index_class_redef)
+{
+    /* Redefinition re-registers the type: the pair index must go dirty
+       and rebuild, or a stale (type, slot) -> index entry silently
+       reads the wrong slot of instances created after the redef. */
+    eval_print("(defclass svi-r () ((a :initform 1) (b :initform 2)))");
+    ASSERT_STR_EQ(eval_print("(slot-value (make-instance 'svi-r) 'b)"), "2");
+    eval_print("(defclass svi-r () "
+               "  ((pad1 :initform 0) (pad2 :initform 0) (b :initform 9)))");
+    ASSERT_STR_EQ(eval_print("(slot-value (make-instance 'svi-r) 'b)"), "9");
+    ASSERT_STR_EQ(eval_print(
+        "(setf (slot-value (make-instance 'svi-r) 'pad1) 33)"), "33");
+}
+
 TEST(slot_exists_p_true)
 {
     ASSERT_STR_EQ(eval_print("(slot-exists-p *test-pt* 'x)"), "T");
@@ -4616,6 +4706,13 @@ int main(void)
     RUN(unbound_slot_is_a_cell_error);
     RUN(unbound_slot_report_names_slot_and_instance);
     RUN(unbound_slot_instance_accessor);
+    RUN(slot_value_inline_setf_eval_order);
+    RUN(slot_value_inline_read_eval_order);
+    RUN(slot_value_inline_setf_returns_value);
+    RUN(slot_value_inline_no_such_slot_errors);
+    RUN(slot_value_funcall_bypasses_inline);
+    RUN(slot_value_pair_index_wide_class);
+    RUN(slot_value_pair_index_class_redef);
     RUN(slot_exists_p_true);
     RUN(slot_exists_p_false);
     RUN(slot_value_no_such_slot);

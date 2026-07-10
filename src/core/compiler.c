@@ -3354,23 +3354,37 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                 cl_tables_rwunlock();
             }
             if (found) {
-                CL_Obj args = cl_cdr(place);
-                int nargs = 0;
-                int idx = cl_add_constant(c, updater);
-                cl_emit(c, OP_FLOAD);
-                cl_emit_u16(c, (uint16_t)idx);
-                /* GC-protect args cursor — compile_expr can compact, making it stale */
-                CL_GC_PROTECT(args);
-                while (!CL_NULL_P(args)) {
-                    compile_expr(c, cl_car(args));
-                    nargs++;
-                    args = cl_cdr(args);
+                /* Build (UPDATER place-args... VAL) and compile it as an
+                 * ordinary call instead of hand-emitting OP_FLOAD/OP_CALL:
+                 * compile_call then consults a compiler macro on the
+                 * updater (e.g. %SET-SLOT-VALUE's fast-path inline in
+                 * clos.lisp) and can emit dedicated builtin opcodes.
+                 * Evaluation order is unchanged — place subforms
+                 * left-to-right, then the value form (CLHS 5.1.1.1.1).
+                 *
+                 * GC SAFETY: cl_cons can compact — every CL_Obj local
+                 * that lives across an allocation is protected, including
+                 * the list cursor. */
+                CL_Obj rev = CL_NIL, call_form = CL_NIL, arg_cursor;
+                CL_GC_PROTECT(updater);
+                CL_GC_PROTECT(place);
+                CL_GC_PROTECT(val_form);
+                CL_GC_PROTECT(rev);
+                CL_GC_PROTECT(call_form);
+                arg_cursor = cl_cdr(place);
+                CL_GC_PROTECT(arg_cursor);
+                while (!CL_NULL_P(arg_cursor)) {
+                    rev = cl_cons(cl_car(arg_cursor), rev);
+                    arg_cursor = cl_cdr(arg_cursor);
                 }
-                CL_GC_UNPROTECT(1);                       /* args */
-                compile_expr(c, val_form);
-                nargs++;
-                cl_emit(c, OP_CALL);
-                cl_emit(c, (uint8_t)nargs);
+                rev = cl_cons(val_form, rev);
+                while (!CL_NULL_P(rev)) {
+                    call_form = cl_cons(cl_car(rev), call_form);
+                    rev = cl_cdr(rev);
+                }
+                call_form = cl_cons(updater, call_form);
+                compile_expr(c, call_form);
+                CL_GC_UNPROTECT(6);  /* updater place val_form rev call_form arg_cursor */
             } else {
                 /* Check define-setf-expander table.
                  * Expander fn takes (place-form value-form) and returns
