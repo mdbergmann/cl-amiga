@@ -50,6 +50,10 @@
  *     stack-local CL_Obj[256] (matches OP_CALL's u8 nargs limit) and
  *     dispatches via cl_vm_apply, so closures, builtins, and
  *     JIT-compiled callees all route through the existing call path.
+ *     cl_vm_apply also answers promoted reader-GF calls from the CLOS
+ *     inline cache before unwrapping the GF (the JIT-side equivalent
+ *     of the interpreter's OP_CALL reader probe), so JIT'd accessor
+ *     calls never enter the VM on a cache hit.
  *     Returns the callee's primary value in D0; the m68k operand
  *     stack is unchanged across the helper, the caller pops func+args
  *     and pushes the result with a single LEA.

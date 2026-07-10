@@ -5318,9 +5318,13 @@
 ; every reader GF permanently.  Run after it and each check below would pass
 ; vacuously on the slow path -- so each one first asserts the GF is promoted.
 ;
-; On Amiga the m68k JIT does not route through the bytecode OP_CALL, so JIT'd
-; callers fall back to the Lisp reader discriminator.  Both paths must agree,
-; which is exactly what these exercise.
+; On Amiga the m68k JIT does not route through the bytecode OP_CALL; JIT'd
+; callers reach cl_jit_runtime_call -> cl_vm_apply, whose reader-IC probe
+; answers the call before the GF is unwrapped to the discriminating function
+; (FUNCALL and APPLY probe the same way in their builtins).  Every defun'd
+; caller below is JIT-compiled on Amiga, so these checks exercise that probe
+; end-to-end; direct top-level calls exercise the interpreter's OP_CALL probe.
+; All paths must agree.
 (defclass rg-amiga-a () ((x :initform 3 :reader rg-amiga-x)
                          (n :initform nil :reader rg-amiga-n)
                          (u :reader rg-amiga-u)))
@@ -5372,12 +5376,46 @@
          (handler-case (progn (rg-amiga-u o) "NO-ERROR")
            (unbound-slot (c) (list (cell-error-name c)
                                    (eq (unbound-slot-instance c) o))))))
-; tail position (OP_TAILCALL, excluded from the VM fast path) and FUNCALL/APPLY
-; (which route through slot 3) must agree with the direct call
+; tail position (OP_TAILCALL, excluded from the VM fast path; the JIT's
+; tailcall fallback funnels through cl_vm_apply's probe) and FUNCALL/APPLY
+; (probed in their builtins) must agree with the direct call
 (defun rg-amiga-tail (o) (rg-amiga-x o))
 (check "tail-position reader" 3 (rg-amiga-tail (make-instance 'rg-amiga-a)))
 (check "funcall reader" 3 (funcall #'rg-amiga-x (make-instance 'rg-amiga-a)))
 (check "apply reader" 3 (apply #'rg-amiga-x (list (make-instance 'rg-amiga-a))))
+; a probe hit must leave exactly one value
+(check "funcall reader single value" '(3)
+       (multiple-value-list (funcall #'rg-amiga-x (make-instance 'rg-amiga-a))))
+; unbound slot is a probe miss on every trampoline: SLOT-UNBOUND must signal
+(check "unbound slot signals through funcall" 'u
+       (handler-case (funcall #'rg-amiga-u (make-instance 'rg-amiga-a))
+         (unbound-slot (c) (cell-error-name c))))
+; JIT'd caller, non-tail position: on Amiga this is the
+; cl_jit_runtime_call -> cl_vm_apply probe end-to-end.  (This cannot live in
+; test-jit.lisp — that file loads AFTER the slot-access-protocol latch below,
+; where every reader GF is already demoted.)
+(defun rg-amiga-mid (o) (let ((v (rg-amiga-x o))) (+ v 1)))
+(check "JIT'd caller non-tail reader" 4 (rg-amiga-mid (make-instance 'rg-amiga-a)))
+; prove the caller genuinely executes as native code where the JIT is active
+; (vacuous under --no-jit and on host, where the check below is skipped)
+(check "reader-calling defun runs native" t
+       (if (clamiga::%jit-active-p)
+           (let ((before (clamiga::%jit-invoke-count)))
+             (rg-amiga-mid (make-instance 'rg-amiga-a))
+             (> (clamiga::%jit-invoke-count) before))
+           t))
+; a hit never rewrites slot 8: the spine staying EQ across JIT'd-caller,
+; funcall, and apply calls proves the probes answered them
+(check "trampoline probes hit, spine stays EQ" '(t (3 30))
+       (let ((a (make-instance 'rg-amiga-a)) (b (make-instance 'rg-amiga-b)))
+         (rg-amiga-x a) (rg-amiga-x b)
+         (let ((ic (clamiga::gf-inline-cache #'rg-amiga-x)) (acc nil))
+           (dotimes (i 5)
+             (rg-amiga-mid a) (rg-amiga-tail b)
+             (push (funcall #'rg-amiga-x a) acc)
+             (push (apply #'rg-amiga-x (list b)) acc))
+           (list (eq ic (clamiga::gf-inline-cache #'rg-amiga-x))
+                 (remove-duplicates (nreverse acc))))))
 ; accessor writer round-trip
 (defclass rg-amiga-w () ((x :initform 1 :accessor rg-amiga-wx)))
 (check "accessor write then read" 42
@@ -5388,6 +5426,14 @@
 (defmethod rg-amiga-sx :around ((o rg-amiga-s)) (* 100 (call-next-method)))
 (check "around demotes reader GF" nil (and (gethash #'rg-amiga-sx clamiga:*reader-gfs*) t))
 (check "around runs" 1000 (rg-amiga-sx (make-instance 'rg-amiga-s)))
+; demotion must disarm the trampoline probes too
+(check "around runs through funcall" 1000
+       (funcall #'rg-amiga-sx (make-instance 'rg-amiga-s)))
+(check "around runs through apply" 1000
+       (apply #'rg-amiga-sx (list (make-instance 'rg-amiga-s))))
+(defun rg-amiga-around-mid (o) (rg-amiga-sx o))
+(check "around runs through JIT'd caller" 1000
+       (rg-amiga-around-mid (make-instance 'rg-amiga-s)))
 ; class redefinition moves the slot; the cached index must be invalidated
 (defclass rg-amiga-redef () ((a :initform 'one :reader rg-amiga-ra)))
 (check "redef before" 'one (rg-amiga-ra (make-instance 'rg-amiga-redef)))
@@ -5400,6 +5446,8 @@
 (check "set-funcallable demotes" nil (and (gethash #'rg-amiga-sfix clamiga:*reader-gfs*) t))
 (check "set-funcallable-instance-function wins" 'hijacked
        (rg-amiga-sfix (make-instance 'rg-amiga-sfi)))
+(check "set-funcallable-instance-function wins via funcall" 'hijacked
+       (funcall #'rg-amiga-sfix (make-instance 'rg-amiga-sfi)))
 (check "unrelated reader still fast" 3 (rg-amiga-x (make-instance 'rg-amiga-a)))
 
 ; --- SLOT-VALUE compiler-macro inline + (type, slot) pair index ---

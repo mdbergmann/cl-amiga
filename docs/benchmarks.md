@@ -9,6 +9,53 @@ Related: [specs/performance.md](../specs/performance.md) is the optimization
 
 ---
 
+## 2026-07-10 — reader-GF inline cache reaches JIT'd callers + call trampolines (Amiga + host)
+
+**Commit**: follows the SLOT-VALUE entry below.
+
+The m68k JIT never executes the bytecode `OP_CALL`, so on the platform this
+project exists for, every reader-GF access still unwrapped to the Lisp
+discriminating function — the caveat noted in the two entries below.  No
+native codegen was needed to close it: every JIT'd call funnels through
+`cl_jit_runtime_call → cl_vm_apply`, and `cl_gf_reader_ic_probe` reads
+everything it needs (GF slot 8, receiver `type_desc`) fresh at runtime, so
+the probe now runs at the top of `cl_vm_apply` — before the GF unwrap
+discards the identity the cache is keyed on.  No baked immediates, no
+`native_relocs` involvement.  The same probe-before-unwrap was added to the
+other C trampolines that lost the GF identity early: `bi_funcall`,
+`bi_apply`, the VM's inline `OP_APPLY`, and the sequence helpers' `call_1`.
+
+**Environment (Amiga)**: FS-UAE A4000/68040 + UAE JIT
+(`verify/realamiga/verify.fs-uae`), `--heap 8M`, m68k JIT active.  Relative
+deltas are what matter; absolute times are emulator-specific.
+8-unrolled reader loop inside a JIT'd DEFUN, 240k calls per timing.
+
+| µs per call (JIT'd caller) | before | after | speedup |
+|---|---|---|---|
+| reader, direct call | 26.17 | **5.83** | 4.5× |
+| reader via FUNCALL | 25.75 | **5.67** | 4.5× |
+| reader via APPLY | 24.00 | **3.33** | 7.2× |
+
+**Host**: compiled `(apply #'reader (list o))` (inline `OP_APPLY`) halved,
+77 → 40 ns/call (the remainder is the harness's per-call arglist consing).
+Compiled `(funcall #'reader o)` emits plain `OP_CALL` and was already at the
+28.5 ns tier.  `clos.accessor` / `clos.accessor-poly` in bench-opt unchanged
+at 7 ms — the interpreter fast path is untouched.
+
+Not covered (follow-up): MAPCAR-family and `:key`/`:test` callers unwrap the
+GF at designator-coercion time (`cl_coerce_funcdesig`), so their per-element
+calls still take the Lisp discriminator tier (~107 ns/elt host).  Routing
+them through the probe means auditing the 28 `cl_coerce_funcdesig` call
+sites' "returns one of three flat types" contract.
+
+Verified: host `make test` + `test_clos_reader` 17/17, gc-stress 384/384,
+FS-UAE suite 3674/3674 (new checks assert the IC spine stays EQ across
+JIT'd-caller/funcall/apply calls, and that demotion by `:around` methods,
+`SET-FUNCALLABLE-INSTANCE-FUNCTION`, and the slot-access-protocol latch
+disarms every trampoline probe).
+
+---
+
 ## 2026-07-10 — SLOT-VALUE compile-time inline + (type, slot) pair index (host)
 
 **Commit**: follows `e0d1ca0`.
@@ -88,7 +135,8 @@ Tracked by `clos.accessor-poly` in `trunk/bench-opt.lisp` (7 ms, identical to
 the monomorphic `clos.accessor`, zero allocation).  The m68k JIT caveat from
 the 2026-07-09 entry still applies: JIT'd callers reach the same probe
 through the Lisp reader discriminator, so they get the polymorphic hits too,
-at that tier's cost.
+at that tier's cost.  *(Resolved 2026-07-10 — see the JIT'd-callers entry
+above.)*
 
 ---
 
@@ -138,7 +186,9 @@ a meaningless 1.05× ratio). The number above is after `compile-file`.
 Tracked by `clos.accessor` ÷ `struct.accessor` in `trunk/bench-opt.lisp`.
 The m68k JIT does not route through the bytecode `OP_CALL`, so JIT'd callers
 fall back to the Lisp reader discriminator (72 ns tier) until the JIT call
-sequence learns the same probe.
+sequence learns the same probe.  *(Resolved 2026-07-10 — the probe moved into
+`cl_vm_apply`, which the JIT call helper funnels through; see the
+JIT'd-callers entry above.)*
 
 ---
 
