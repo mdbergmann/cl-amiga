@@ -5076,6 +5076,40 @@
 (check "make-instance by class" 1 (let ((p (make-instance (find-class 'point) :x 1 :y 2))) (point-x p)))
 (check "make-instance inherited" '(1 2 3) (let ((p (make-instance 'point3d :x 1 :y 2 :z 3))) (list (point-x p) (point-y p) (point-z p))))
 
+; --- UNBOUND-SLOT condition (CLHS 7.7.11) ---
+; Reading an unbound slot signals UNBOUND-SLOT, a CELL-ERROR subtype carrying
+; the slot name and the instance — not a bare SIMPLE-ERROR.
+(defclass ubs-amiga () ((x :reader ubs-amiga-x) (y :initform 7)))
+(check "unbound slot signals unbound-slot" :ok
+       (handler-case (slot-value (make-instance 'ubs-amiga) 'x)
+         (unbound-slot () :ok)))
+(check "unbound-slot cell-error-name" 'x
+       (handler-case (slot-value (make-instance 'ubs-amiga) 'x)
+         (unbound-slot (c) (cell-error-name c))))
+(check "unbound-slot-instance is the object" t
+       (let ((o (make-instance 'ubs-amiga)))
+         (handler-case (slot-value o 'x)
+           (unbound-slot (c) (eq (unbound-slot-instance c) o)))))
+(check "unbound-slot through reader gf" '(x t)
+       (let ((o (make-instance 'ubs-amiga)))
+         (handler-case (ubs-amiga-x o)
+           (unbound-slot (c) (list (cell-error-name c)
+                                   (eq (unbound-slot-instance c) o))))))
+(check "unbound-slot after slot-makunbound" 'y
+       (let ((o (make-instance 'ubs-amiga)))
+         (slot-makunbound o 'y)
+         (handler-case (slot-value o 'y) (unbound-slot (c) (cell-error-name c)))))
+(check "unbound-slot is a cell-error" :cell
+       (handler-case (slot-value (make-instance 'ubs-amiga) 'x)
+         (cell-error () :cell)))
+(check "unbound-slot subtypep cell-error" t (subtypep 'unbound-slot 'cell-error))
+(check "unbound-slot report names the slot" t
+       (handler-case (slot-value (make-instance 'ubs-amiga) 'x)
+         (unbound-slot (c) (and (search "The slot X is unbound"
+                                        (princ-to-string c)) t))))
+(check "unbound-slot-instance accessor" 42
+       (unbound-slot-instance (make-condition 'unbound-slot :name 'q :instance 42)))
+
 ; --- CLOS Phase 5: defgeneric + defmethod ---
 (defgeneric greet (obj))
 (defmethod greet ((p point)) (list 'point (point-x p) (point-y p)))
@@ -5247,7 +5281,7 @@
   (check "accessor subclass own slot" 100 (fsv-amiga-z s))
   ;; Unbound slot: fast path reads the marker -> slow path signals.
   (check "accessor unbound signals" :fsv-unbound
-         (handler-case (fsv-amiga-u b) (error () :fsv-unbound)))
+         (handler-case (fsv-amiga-u b) (unbound-slot () :fsv-unbound)))
   (check "slot-boundp unbound via fast front" nil (slot-boundp b 'u))
   (check "slot-boundp bound via fast front" t (slot-boundp b 'x))
   ;; :CLASS slot is not in the struct registry -> accessor falls back
@@ -5301,12 +5335,16 @@
          (list (rg-amiga-x a) (rg-amiga-x b) (rg-amiga-x a) (rg-amiga-x b))))
 (check "NIL-valued slot is not the unbound marker" nil
        (rg-amiga-n (make-instance 'rg-amiga-a)))
-(check "unbound slot signals through reader" "SIGNALED"
-       (handler-case (progn (rg-amiga-u (make-instance 'rg-amiga-a)) "NO-ERROR")
-         (error () "SIGNALED")))
-(check "unbound slot signals again (no bad cache hit)" "SIGNALED"
-       (handler-case (progn (rg-amiga-u (make-instance 'rg-amiga-a)) "NO-ERROR")
-         (error () "SIGNALED")))
+(check "unbound slot signals through reader" '(u t)
+       (let ((o (make-instance 'rg-amiga-a)))
+         (handler-case (progn (rg-amiga-u o) "NO-ERROR")
+           (unbound-slot (c) (list (cell-error-name c)
+                                   (eq (unbound-slot-instance c) o))))))
+(check "unbound slot signals again (no bad cache hit)" '(u t)
+       (let ((o (make-instance 'rg-amiga-a)))
+         (handler-case (progn (rg-amiga-u o) "NO-ERROR")
+           (unbound-slot (c) (list (cell-error-name c)
+                                   (eq (unbound-slot-instance c) o))))))
 ; tail position (OP_TAILCALL, excluded from the VM fast path) and FUNCALL/APPLY
 ; (which route through slot 3) must agree with the direct call
 (defun rg-amiga-tail (o) (rg-amiga-x o))

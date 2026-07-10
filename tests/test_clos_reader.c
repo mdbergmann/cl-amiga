@@ -112,14 +112,21 @@ TEST(reader_gf_nil_value_is_not_unbound)
 TEST(reader_gf_unbound_slot_signals)
 {
     /* An unbound slot's storage holds the marker, which reads back as a cache
-     * miss and routes to the SLOT-UNBOUND protocol.  It must signal every
-     * time, and never leak the marker as a value. */
+     * miss and routes to the SLOT-UNBOUND protocol.  It must signal an
+     * UNBOUND-SLOT naming the slot and the instance every time, and never leak
+     * the marker as a value.  Signalled twice: cold cache, then warm. */
     eval_print("(defclass rg-u () ((x :reader rg-ux)))");
     ASSERT_STR_EQ(eval_print("(and (gethash #'rg-ux clamiga:*reader-gfs*) t)"), "T");
     ASSERT_STR_EQ(eval_print(
-        "(handler-case (rg-ux (make-instance 'rg-u)) (error () :signaled))"), ":SIGNALED");
+        "(let ((o (make-instance 'rg-u))) "
+        "  (handler-case (rg-ux o) "
+        "    (unbound-slot (c) (list (cell-error-name c) "
+        "                            (eq (unbound-slot-instance c) o)))))"), "(X T)");
     ASSERT_STR_EQ(eval_print(
-        "(handler-case (rg-ux (make-instance 'rg-u)) (error () :signaled))"), ":SIGNALED");
+        "(let ((o (make-instance 'rg-u))) "
+        "  (handler-case (rg-ux o) "
+        "    (unbound-slot (c) (list (cell-error-name c) "
+        "                            (eq (unbound-slot-instance c) o)))))"), "(X T)");
     /* ... and reads normally once bound. */
     ASSERT_STR_EQ(eval_print(
         "(let ((o (make-instance 'rg-u)))"
