@@ -487,6 +487,14 @@ uint32_t platform_time_ms(void)
     return (uint32_t)(ds.ds_Minute * 60000UL + ds.ds_Tick * 20UL);
 }
 
+uint32_t platform_run_time_ms(void)
+{
+    /* AmigaOS exec has no per-task CPU accounting — wall-clock time is the
+     * best available approximation (and close to exact on a machine where
+     * clamiga is the only busy task). */
+    return platform_time_ms();
+}
+
 void platform_sleep_ms(uint32_t milliseconds)
 {
     /* Delay() takes ticks (1/50s = 20ms each). Round up. */

@@ -111,6 +111,9 @@ PlatformSocket platform_socket_accept(PlatformSocket listener);
 
 /* Timing */
 uint32_t platform_time_ms(void);   /* Monotonic milliseconds (for elapsed time) */
+/* Process CPU time (user+system) in milliseconds.  On platforms without
+ * per-task CPU accounting (AmigaOS) this falls back to wall-clock time. */
+uint32_t platform_run_time_ms(void);
 void     platform_sleep_ms(uint32_t milliseconds);
 uint32_t platform_universal_time(void); /* Seconds since 1900-01-01 00:00:00 UTC */
 

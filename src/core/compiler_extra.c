@@ -2652,19 +2652,21 @@ void compile_time(CL_Compiler *c, CL_Obj form)
     /* (time expr) — evaluate expr, print timing/allocation stats, return result */
     CL_Obj body = cl_cdr(form);
     int saved_tail = c->in_tail;
-    int start_time_slot, start_consed_slot, start_gc_slot, result_slot;
-    int get_time_idx, get_consed_idx, get_gc_idx, report_idx;
+    int start_time_slot, start_run_slot, start_consed_slot, start_gc_slot, result_slot;
+    int get_time_idx, get_run_idx, get_consed_idx, get_gc_idx, report_idx;
 
     if (CL_NULL_P(body))
         cl_error(CL_ERR_ARGS, "TIME: missing expression");
 
     c->in_tail = 0;
     start_time_slot = alloc_temp_slot(c->env);
+    start_run_slot = alloc_temp_slot(c->env);
     start_consed_slot = alloc_temp_slot(c->env);
     start_gc_slot = alloc_temp_slot(c->env);
     result_slot = alloc_temp_slot(c->env);
 
     get_time_idx = cl_add_constant(c, cl_intern_in("%GET-INTERNAL-TIME", 18, cl_package_clamiga));
+    get_run_idx = cl_add_constant(c, cl_intern_in("%GET-RUN-TIME", 13, cl_package_clamiga));
     get_consed_idx = cl_add_constant(c, cl_intern_in("%GET-BYTES-CONSED", 17, cl_package_clamiga));
     get_gc_idx = cl_add_constant(c, cl_intern_in("%GET-GC-COUNT", 13, cl_package_clamiga));
     report_idx = cl_add_constant(c, cl_intern_in("%TIME-REPORT", 12, cl_package_clamiga));
@@ -2676,6 +2678,15 @@ void compile_time(CL_Compiler *c, CL_Obj form)
     cl_emit(c, 0);
     cl_emit(c, OP_STORE);
     cl_emit(c, (uint8_t)start_time_slot);
+    cl_emit(c, OP_POP);
+
+    /* Capture start run (CPU) time */
+    cl_emit(c, OP_FLOAD);
+    cl_emit_u16(c, (uint16_t)get_run_idx);
+    cl_emit(c, OP_CALL);
+    cl_emit(c, 0);
+    cl_emit(c, OP_STORE);
+    cl_emit(c, (uint8_t)start_run_slot);
     cl_emit(c, OP_POP);
 
     /* Capture start bytes consed */
@@ -2704,7 +2715,8 @@ void compile_time(CL_Compiler *c, CL_Obj form)
     cl_emit(c, (uint8_t)result_slot);
     cl_emit(c, OP_POP);
 
-    /* Print timing: FLOAD %TIME-REPORT, LOAD start_time, start_consed, start_gc, CALL 3 */
+    /* Print timing: FLOAD %TIME-REPORT, LOAD start_time, start_consed,
+     * start_gc, start_run, CALL 4 */
     cl_emit(c, OP_FLOAD);
     cl_emit_u16(c, (uint16_t)report_idx);
     cl_emit(c, OP_LOAD);
@@ -2713,8 +2725,10 @@ void compile_time(CL_Compiler *c, CL_Obj form)
     cl_emit(c, (uint8_t)start_consed_slot);
     cl_emit(c, OP_LOAD);
     cl_emit(c, (uint8_t)start_gc_slot);
+    cl_emit(c, OP_LOAD);
+    cl_emit(c, (uint8_t)start_run_slot);
     cl_emit(c, OP_CALL);
-    cl_emit(c, 3);
+    cl_emit(c, 4);
     cl_emit(c, OP_POP);  /* Discard %TIME-REPORT result (NIL) */
 
     /* Restore body result */

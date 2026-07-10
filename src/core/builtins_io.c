@@ -2737,6 +2737,12 @@ static CL_Obj bi_get_internal_time(CL_Obj *args, int n)
     return CL_MAKE_FIXNUM((int32_t)(platform_time_ms() & 0x7FFFFFFF));
 }
 
+static CL_Obj bi_get_run_time(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    return CL_MAKE_FIXNUM((int32_t)(platform_run_time_ms() & CL_FIXNUM_MAX));
+}
+
 /* (%BOOT-QUIET-P) -> T iff main.c set --batch / --script flag.  Used by
  * lib/clos.lisp's %clos-trace so the "; [clos] ..." progress lines stay
  * out of piped batch output. */
@@ -2839,8 +2845,8 @@ static CL_Obj bi_time_report(CL_Obj *args, int n)
     uint32_t start_time, end_time, elapsed;
     uint32_t start_consed, end_consed, bytes_consed;
     uint32_t start_gc, end_gc, gc_cycles;
+    uint32_t start_run, end_run, cpu_elapsed;
     char buf[256];
-    CL_UNUSED(n);
 
     start_time = (uint32_t)CL_FIXNUM_VAL(args[0]);
     start_consed = (uint32_t)CL_FIXNUM_VAL(args[1]);
@@ -2860,13 +2866,31 @@ static CL_Obj bi_time_report(CL_Obj *args, int n)
         ? (end_gc - start_gc)
         : ((0x7FFFFFFF - start_gc) + end_gc + 1);
 
-    snprintf(buf, sizeof(buf),
-             "Evaluation took %lu ms; %lu bytes consed; %lu GC cycles; %lu/%lu heap bytes used.\n",
-             (unsigned long)elapsed,
-             (unsigned long)bytes_consed,
-             (unsigned long)gc_cycles,
-             (unsigned long)cl_heap.total_allocated,
-             (unsigned long)cl_heap.arena_size);
+    /* 4th arg (start run/CPU time) is optional: bytecode compiled before it
+     * existed (stale user .fasl) still calls with 3 args. */
+    if (n >= 4) {
+        start_run = (uint32_t)CL_FIXNUM_VAL(args[3]);
+        end_run = platform_run_time_ms() & CL_FIXNUM_MAX;
+        cpu_elapsed = (end_run >= start_run)
+            ? (end_run - start_run)
+            : ((CL_FIXNUM_MAX - start_run) + end_run + 1);
+        snprintf(buf, sizeof(buf),
+                 "Evaluation took %lu ms real, %lu ms cpu; %lu bytes consed; %lu GC cycles; %lu/%lu heap bytes used.\n",
+                 (unsigned long)elapsed,
+                 (unsigned long)cpu_elapsed,
+                 (unsigned long)bytes_consed,
+                 (unsigned long)gc_cycles,
+                 (unsigned long)cl_heap.total_allocated,
+                 (unsigned long)cl_heap.arena_size);
+    } else {
+        snprintf(buf, sizeof(buf),
+                 "Evaluation took %lu ms; %lu bytes consed; %lu GC cycles; %lu/%lu heap bytes used.\n",
+                 (unsigned long)elapsed,
+                 (unsigned long)bytes_consed,
+                 (unsigned long)gc_cycles,
+                 (unsigned long)cl_heap.total_allocated,
+                 (unsigned long)cl_heap.arena_size);
+    }
     cl_write_cstring_to_trace(buf);
     return CL_NIL;
 }
@@ -2894,8 +2918,12 @@ static CL_Obj bi_get_internal_real_time(CL_Obj *args, int n)
 
 static CL_Obj bi_get_internal_run_time(CL_Obj *args, int n)
 {
+    /* CLHS 25.1.4.2: run time = "execution time", implementation-defined.
+     * We report process CPU time (user+system); on AmigaOS the platform
+     * layer falls back to wall-clock time (no per-task CPU accounting).
+     * No epoch shift needed: CPU time starts near 0 at process start. */
     CL_UNUSED(args); CL_UNUSED(n);
-    return CL_MAKE_FIXNUM((int32_t)(cl_internal_time_now_ms() & CL_FIXNUM_MAX));
+    return CL_MAKE_FIXNUM((int32_t)(platform_run_time_ms() & CL_FIXNUM_MAX));
 }
 
 static CL_Obj bi_sleep(CL_Obj *args, int n)
@@ -3809,11 +3837,12 @@ void cl_builtins_io_init(void)
 
     /* Timing (internal helpers for TIME special form) */
     cl_register_builtin("%GET-INTERNAL-TIME", bi_get_internal_time, 0, 0, cl_package_clamiga);
+    cl_register_builtin("%GET-RUN-TIME",      bi_get_run_time,      0, 0, cl_package_clamiga);
     cl_register_builtin("%BOOT-QUIET-P",      bi_boot_quiet_p,      0, 0, cl_package_clamiga);
     cl_register_builtin("%BOOT-TRACE-CLOS",   bi_boot_trace_clos,   3, 3, cl_package_clamiga);
     cl_register_builtin("%GET-BYTES-CONSED", bi_get_bytes_consed, 0, 0, cl_package_clamiga);
     cl_register_builtin("%GET-GC-COUNT", bi_get_gc_count, 0, 0, cl_package_clamiga);
-    cl_register_builtin("%TIME-REPORT", bi_time_report, 3, 3, cl_package_clamiga);
+    cl_register_builtin("%TIME-REPORT", bi_time_report, 3, 4, cl_package_clamiga);
     defun("GET-INTERNAL-REAL-TIME", bi_get_internal_real_time, 0, 0);
     defun("GET-INTERNAL-RUN-TIME", bi_get_internal_run_time, 0, 0);
     {
