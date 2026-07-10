@@ -1000,6 +1000,7 @@ static const char *const clos_internal_names[] = {
     "*READER-GFS*", "*READER-METHOD-SLOTS*",
     "*SLOT-ACCESS-PROTOCOL-EXTENDED-P*",
     "*SLOT-UNBOUND-MARKER*",
+    "*WRITER-GFS*", "*WRITER-METHOD-SLOTS*",
     /* BODY and TEST are too generic to safely pre-intern in CLAMIGA —
      * doing so would alias user-code symbols of the same name through
      * the CL :use CLAMIGA inheritance chain.  They leak from
