@@ -6020,6 +6020,37 @@ TEST(eval_time_stats)
         "(let ((before (%get-bytes-consed)))"
         "  (cons 1 2)"
         "  (> (%get-bytes-consed) before))"), "T");
+
+    /* Start-value helpers must stay within fixnum range: a mask wider than
+     * CL_FIXNUM_MAX sets the fixnum sign bit once the underlying counter
+     * passes 2^30 and reads back negative (regression: 0x7FFFFFFF masks) */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((x (%get-internal-time)))"
+        "  (and (integerp x) (<= 0 x most-positive-fixnum) t))"), "T");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((x (%get-run-time)))"
+        "  (and (integerp x) (<= 0 x most-positive-fixnum) t))"), "T");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((x (%get-bytes-consed)))"
+        "  (and (integerp x) (<= 0 x most-positive-fixnum) t))"), "T");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((x (%get-gc-count)))"
+        "  (and (integerp x) (<= 0 x most-positive-fixnum) t))"), "T");
+}
+
+TEST(eval_time_report_counter_wrap)
+{
+    /* %TIME-REPORT wraparound branch: start values at most-positive-fixnum
+     * force end < start, so the elapsed figures must come from the modulus
+     * arithmetic (CL_FIXNUM_MAX) instead of underflowing. */
+    const char *out = eval_print(
+        "(with-output-to-string (*trace-output*)"
+        "  (%time-report most-positive-fixnum most-positive-fixnum"
+        "                most-positive-fixnum most-positive-fixnum))");
+    ASSERT(strstr(out, "ms real") != NULL);
+    ASSERT(strstr(out, "ms cpu") != NULL);
+    ASSERT(strstr(out, "consed") != NULL);
+    ASSERT(strstr(out, "GC cycles") != NULL);
 }
 
 TEST(eval_time_trace_redirect)
@@ -11021,6 +11052,7 @@ int main(void)
     RUN(eval_time_stats);
     RUN(eval_time_trace_redirect);
     RUN(eval_time_report_legacy_three_args);
+    RUN(eval_time_report_counter_wrap);
     RUN(eval_get_internal_real_time);
     RUN(eval_get_internal_run_time);
     RUN(eval_srcloc_load_backtrace);
