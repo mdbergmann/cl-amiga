@@ -2499,6 +2499,33 @@ CL_Obj compile_locally(CL_Compiler *c, CL_Obj form)
 
 /* --- The --- */
 
+/* CLHS 4.2.3: compound FUNCTION and VALUES type specifiers may only be
+ * used for declaration, never for discrimination — TYPEP must signal an
+ * error on them.  THE therefore must not emit a runtime OP_ASSERT_TYPE
+ * for such a spec, nor for a compound spec that contains one (e.g.
+ * (or null (function () t))).  Returns 1 if the spec is safe to hand to
+ * TYPEP at runtime. */
+static int the_spec_checkable_p(CL_Obj spec)
+{
+    CL_Obj head;
+    if (!CL_CONS_P(spec))
+        return 1;
+    head = cl_car(spec);
+    if (head == SYM_FUNCTION ||
+        head == cl_intern_in("VALUES", 6, cl_package_cl))
+        return 0;
+    if (head == SYM_AND || head == SYM_OR ||
+        head == cl_intern_in("NOT", 3, cl_package_cl)) {
+        CL_Obj rest = cl_cdr(spec);
+        while (CL_CONS_P(rest)) {
+            if (!the_spec_checkable_p(cl_car(rest)))
+                return 0;
+            rest = cl_cdr(rest);
+        }
+    }
+    return 1;
+}
+
 void compile_the(CL_Compiler *c, CL_Obj form)
 {
     /* (the type-spec value-form) */
@@ -2511,18 +2538,13 @@ void compile_the(CL_Compiler *c, CL_Obj form)
     type_spec = cl_car(args);
     value_form = cl_car(cl_cdr(args));
 
-    /* Values type specifier (CLHS 4.2.3): (values ...) is only meaningful for
-     * multi-value return-type annotation, not for runtime typep on a single
-     * value.  Per CLHS 5.3.2 "the", implementations are permitted but not
-     * required to check that the number of values matches.  We skip the
-     * assertion entirely, matching the behavior of major implementations. */
-    if (CL_CONS_P(type_spec)) {
-        CL_Obj head = cl_car(type_spec);
-        if (CL_SYMBOL_P(head) &&
-            head == cl_intern_in("VALUES", 6, cl_package_cl)) {
-            compile_expr(c, value_form);
-            return;
-        }
+    /* Declaration-only specs (compound FUNCTION/VALUES, CLHS 4.2.3): skip
+     * the assertion entirely, matching the behavior of major
+     * implementations.  Per CLHS 5.3.2 "the", checking is permitted but
+     * not required, and TYPEP would signal on these specs at runtime. */
+    if (!the_spec_checkable_p(type_spec)) {
+        compile_expr(c, value_form);
+        return;
     }
 
     if (c->optimize_settings.safety >= 1) {
