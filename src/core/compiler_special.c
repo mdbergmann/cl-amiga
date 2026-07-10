@@ -262,8 +262,10 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
             }
             CL_GC_UNPROTECT(1);
             /* Optionals exhausted with no following &rest/&key: per CLHS any
-             * leftover element is a too-many arity error. */
-            {
+             * leftover element is a too-many arity error.  "Should signal"
+             * (CLHS 1.4.2.3) — required only in safe code, so (safety 0)
+             * elides the guard (spec 1.3 check elision). */
+            if (c->optimize_settings.safety >= 1) {
                 int ok_pos;
                 cl_emit(c, OP_LOAD);
                 cl_emit(c, (uint8_t)pos_slot);
@@ -426,8 +428,9 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
         }
 
         /* Required parameter: the list must still have an element here.
-         * (CLHS: too-few elements must signal an error.) */
-        {
+         * (CLHS: too-few elements "should signal" — safe code only, so
+         * (safety 0) elides the guard; see too-many note above.) */
+        if (c->optimize_settings.safety >= 1) {
             int ok_pos;
             cl_emit(c, OP_LOAD);
             cl_emit(c, (uint8_t)pos_slot);
@@ -490,8 +493,9 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
     /* Natural loop exit: a proper, required-only pattern (no &rest/&optional/
      * &key/&body and no dotted tail) was fully consumed.  Per CLHS the list
      * must now be exhausted; any leftover element is a too-many arity error.
-     * The &-keyword and dotted paths jump straight to `done:`, skipping this. */
-    {
+     * The &-keyword and dotted paths jump straight to `done:`, skipping this.
+     * Elided at (safety 0) — see the "should signal" notes above. */
+    if (c->optimize_settings.safety >= 1) {
         int ok_pos;
         cl_emit(c, OP_LOAD);
         cl_emit(c, (uint8_t)pos_slot);
@@ -509,9 +513,16 @@ void compile_destructuring_bind(CL_Compiler *c, CL_Obj form)
     CL_Obj pattern = cl_car(cl_cdr(form));
     CL_Obj expr = cl_car(cl_cdr(cl_cdr(form)));
     CL_Obj body = cl_cdr(cl_cdr(cl_cdr(form)));
+    CL_Obj rest_body;
     CL_CompEnv *env = c->env;
     int saved_local_count = env->local_count;
     int saved_tail = c->in_tail;
+    /* Scope this destructuring-bind's own body (declare (optimize ...)) —
+     * saved/restored the same way compile_body does for LET/lambda bodies
+     * (CLHS 3.3.4), but captured here so it is already in effect when
+     * compile_destructure_pattern emits the too-few/too-many arity guards
+     * below, not just for the body compiled afterward. */
+    CL_OptimizeSettings saved_optimize = c->optimize_settings;
     int pos_slot;
 
     /* GC-protect pattern and body — compile_expr can compact, making them stale */
@@ -526,18 +537,29 @@ void compile_destructuring_bind(CL_Compiler *c, CL_Obj form)
     cl_emit(c, (uint8_t)pos_slot);
     cl_emit(c, OP_POP);
 
+    /* Strip and apply the body's own leading declarations (including a
+     * body-scoped (declare (optimize (safety 0)))) BEFORE walking the
+     * pattern, so it elides THIS destructuring-bind's own arity guards —
+     * not just an enclosing scope's declaration.  rest_body is a cursor
+     * into the GC-protected `body` list; protect it separately since a
+     * default-value form compiled below (compile_destructure_pattern) can
+     * compact and leave a bare local cursor stale. */
+    rest_body = process_body_declarations(c, body);
+    CL_GC_PROTECT(rest_body);
+
     /* Walk pattern, binding variables */
     compile_destructure_pattern(c, pos_slot, pattern);
 
-    /* Compile body */
+    /* Compile the remainder of the body (declarations already stripped) */
     c->in_tail = saved_tail;
-    compile_body(c, body);
+    compile_body(c, rest_body);
 
-    CL_GC_UNPROTECT(2);  /* pattern, body */
+    CL_GC_UNPROTECT(3);  /* rest_body, pattern, body */
     cl_env_clear_boxed(env, saved_local_count);
 
     /* Restore scope */
     env->local_count = saved_local_count;
+    c->optimize_settings = saved_optimize;
 }
 
 /* --- Block / Return --- */

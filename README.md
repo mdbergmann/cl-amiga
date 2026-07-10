@@ -441,31 +441,43 @@ rest are parsed and accepted as conforming no-ops.
 
 - **`declaim`** processes its specifiers at compile time (it is a compiler special
   form); **`proclaim`** is the runtime function form and processes the same
-  specifiers. **`declare`** handles leading declarations in a body — `special`
-  declarations are scoped to the current binding form, all other specifiers are
-  applied globally.
+  specifiers — both apply globally. **`declare`** handles leading declarations in
+  a body; `special` and `optimize` declarations are lexically scoped to that body
+  (CLHS 3.3.4) and stop applying when it ends.
 - **`special`** — *honored.* Marks the variable as dynamically bound (per-thread
   dynamic bindings / TLV). `declaim`/`proclaim` make it globally special; a local
   `(declare (special x))` is scoped to its binding form.
-- **`optimize`** — *partially honored.* The qualities `speed`, `safety`, `space`,
-  and `debug` are parsed (bare `quality` ≡ level 3; values clamped to 0–3) and
-  stored in a global settings record (all default to 1). Only **`safety`** is
-  currently consulted: at `safety 0` the runtime type check that a `(the type
-  value)` form would otherwise emit (`OP_ASSERT_TYPE`) is omitted and tail
-  position is preserved; at `safety ≥ 1` the check is emitted. `speed`, `space`,
-  and `debug` are recorded but do not yet affect code generation.
-  `compilation-speed` is interned (so libraries can name `cl:compilation-speed`)
-  but ignored, and any non-standard quality — e.g. `security` — is silently
-  accepted and ignored.
-- **`inline` / `notinline`** — set/clear an inline flag on the function symbol
-  (visible via `describe`), but the compiler does not yet perform inlining or
-  suppress it based on the flag.
+- **`optimize`** — *honored.* The qualities `speed`, `safety`, `space`, and
+  `debug` are parsed (bare `quality` ≡ level 3; values clamped to 0–3; all
+  default to 1). A `declaim`/`proclaim` sets the global baseline; a body
+  `(declare (optimize ...))` overrides it for that body only.
+  - At **`speed ≥ 1`** (the default) the compiler folds calls to pure fixnum
+    builtins with constant arguments (`+ - * 1+ 1- ash logand logior logxor
+    not null = < > <= >=`) into a single constant load, and eliminates the
+    dead branch of an `if` whose test is a compile-time constant (this also
+    collapses `when`/`unless`/`and`/`or` with constant operands). Folding is
+    value-transparent: anything that would overflow fixnum range or involve
+    floats/ratios is left to the runtime. `(optimize (speed 0))` disables both.
+  - At **`safety 0`** the `(the type value)` runtime check (`OP_ASSERT_TYPE`)
+    and the `destructuring-bind` too-few/too-many arity guards are not emitted;
+    at `safety ≥ 1` they are.
+  - `compilation-speed` is interned (so libraries can name
+    `cl:compilation-speed`) but ignored, and any non-standard quality — e.g.
+    `security` — is silently accepted and ignored.
+- **`inline` / `notinline`** — `notinline` is *honored*: it suppresses
+  compiler-macro expansion, constant folding, and the builtin-to-opcode
+  inlining for the named functions, forcing real out-of-line calls.
+  `inline` sets a flag on the function symbol (visible via `describe`) but
+  does not yet force inlining of user functions.
 - **`type`, `ftype`, `ignore`, `ignorable`, `dynamic-extent`** — accepted but
   currently no-ops (no type propagation, unused-variable warnings, or
   stack-allocation).
 
-See `cl_process_declaration_specifier` in `src/core/compiler_extra.c` and
-`compile_the` (the `safety`-gated type assertion) for the implementation.
+See `tests/test_optimize.c` and the "Optimize declarations" section of
+`tests/amiga/run-tests.lisp` for runnable examples of the folding,
+dead-branch, scoping, and check-elision behavior; the implementation lives in
+`try_fold_constant`/`compile_if`/`compile_call` (`src/core/compiler.c`) and
+`cl_process_declaration_specifier` (`src/core/compiler_extra.c`).
 
 ## Building for AmigaOS
 

@@ -116,7 +116,26 @@ typedef struct {
     uint8_t space;   /* 0-3, default 1 */
 } CL_OptimizeSettings;
 
-extern CL_OptimizeSettings cl_optimize_settings;
+/* Opaque forward declaration — full definition in compiler_internal.h.
+ * Only used here as a pointer type, mirroring thread.h's forward
+ * declaration for CL_Thread.active_compiler. */
+struct CL_Compiler_s;
+
+/* Effective settings the compiler consults while emitting code now live in
+ * CL_Compiler.optimize_settings (compiler_internal.h) instead of a shared
+ * global: each compile has its own private CL_Compiler chain (never shared
+ * across threads — see cl_active_compiler / CL_Thread.active_compiler), so
+ * a body (declare (optimize ...)) override — scoped per CLHS 3.3.4 via
+ * save/restore around the declaring body's postlude — can never leak into
+ * a concurrent compile on another thread the way a single process-wide
+ * cl_optimize_settings global could.  A freshly pushed CL_Compiler inherits
+ * its parent's current effective settings, or cl_optimize_global when it is
+ * the root of a fresh top-level compile. */
+
+/* Proclaimed baseline, written only by DECLAIM/PROCLAIM under
+ * cl_tables_wrlock().  Body-scoped declarations never touch it; it is what
+ * seeds a fresh top-level compile's effective settings. */
+extern CL_OptimizeSettings cl_optimize_global;
 
 /* Thread-safety: rwlock protecting all compiler/definition tables */
 extern void *cl_tables_rwlock;
@@ -151,8 +170,15 @@ void cl_tables_dump_rdlock_holders(const char *header);
 #define cl_tables_rdlock() \
     cl_tables_rdlock_at(__FILE__ ":" _CL_RWL_XSTR(__LINE__))
 
-/* Process a single declaration specifier (for proclaim/declaim) */
-void cl_process_declaration_specifier(CL_Obj spec);
+/* Process a single declaration specifier.  `proclaimed` selects the scope
+ * of an (optimize ...) specifier: 1 for DECLAIM/PROCLAIM (updates the
+ * global baseline AND, when C is non-NULL, the effective settings), 0 for
+ * a body (declare ...) (updates only the effective settings, which the
+ * enclosing body's postlude restores).  C is the compiler whose
+ * optimize_settings should reflect the change immediately (NULL when
+ * called outside any active compile, e.g. the PROCLAIM builtin invoked
+ * from the top-level REPL — only the global baseline is updated then). */
+void cl_process_declaration_specifier(struct CL_Compiler_s *c, CL_Obj spec, int proclaimed);
 
 /* GC marking: mark all CL_Obj values referenced by active compiler(s) */
 void cl_compiler_gc_mark(void);

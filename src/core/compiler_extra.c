@@ -2283,8 +2283,15 @@ void compile_defmacro(CL_Compiler *c, CL_Obj form)
 /* --- Declaration processing --- */
 
 /* Process a single declaration specifier, applying global side effects.
- * Used by declaim, proclaim, and declare (for special). */
-void cl_process_declaration_specifier(CL_Obj spec)
+ * Used by declaim, proclaim, and declare (for special).
+ *
+ * `proclaimed` (see compiler.h): for (optimize ...), 1 also writes the
+ * global baseline cl_optimize_global (under cl_tables_wrlock — it is
+ * shared across threads); 0 (body declare) writes only C's effective
+ * optimize_settings, which the enclosing body's postlude restores when the
+ * body's scope ends.  C's optimize_settings is written unlocked either
+ * way: it is exclusively owned by the thread running this compile. */
+void cl_process_declaration_specifier(CL_Compiler *c, CL_Obj spec, int proclaimed)
 {
     CL_Obj head;
 
@@ -2340,12 +2347,23 @@ void cl_process_declaration_specifier(CL_Obj spec)
             }
             if (val < 0) val = 0;
             if (val > 3) val = 3;
-            cl_tables_wrlock();
-            if (name == SYM_SPEED) cl_optimize_settings.speed = (uint8_t)val;
-            else if (name == SYM_SAFETY) cl_optimize_settings.safety = (uint8_t)val;
-            else if (name == SYM_DEBUG) cl_optimize_settings.debug = (uint8_t)val;
-            else if (name == SYM_SPACE) cl_optimize_settings.space = (uint8_t)val;
-            cl_tables_rwunlock();
+            /* C's optimize_settings is exclusively owned by this thread's
+             * compile chain — no lock needed (see the function comment). */
+            if (c) {
+                if (name == SYM_SPEED) c->optimize_settings.speed = (uint8_t)val;
+                else if (name == SYM_SAFETY) c->optimize_settings.safety = (uint8_t)val;
+                else if (name == SYM_DEBUG) c->optimize_settings.debug = (uint8_t)val;
+                else if (name == SYM_SPACE) c->optimize_settings.space = (uint8_t)val;
+            }
+            if (proclaimed) {
+                /* cl_optimize_global is process-wide: lock it. */
+                cl_tables_wrlock();
+                if (name == SYM_SPEED) cl_optimize_global.speed = (uint8_t)val;
+                else if (name == SYM_SAFETY) cl_optimize_global.safety = (uint8_t)val;
+                else if (name == SYM_DEBUG) cl_optimize_global.debug = (uint8_t)val;
+                else if (name == SYM_SPACE) cl_optimize_global.space = (uint8_t)val;
+                cl_tables_rwunlock();
+            }
             quals = cl_cdr(quals);
         }
     }
@@ -2405,7 +2423,6 @@ int is_locally_special(CL_Obj var, CL_Obj local_specials)
 CL_Obj process_body_declarations(CL_Compiler *c, CL_Obj body)
 {
     CL_Obj forms = body;
-    (void)c;
 
     while (!CL_NULL_P(forms)) {
         CL_Obj form = cl_car(forms);
@@ -2442,7 +2459,7 @@ CL_Obj process_body_declarations(CL_Compiler *c, CL_Obj body)
                     }
                 }
                 if (!(CL_CONS_P(spec) && cl_car(spec) == SYM_SPECIAL_DECL))
-                    cl_process_declaration_specifier(spec);
+                    cl_process_declaration_specifier(c, spec, 0);
                 specs = cl_cdr(specs);
             }
         }
@@ -2458,7 +2475,7 @@ void compile_declaim(CL_Compiler *c, CL_Obj form)
     /* (declaim decl-spec ...) — process each globally, emit NIL */
     CL_Obj specs = cl_cdr(form);
     while (!CL_NULL_P(specs)) {
-        cl_process_declaration_specifier(cl_car(specs));
+        cl_process_declaration_specifier(c, cl_car(specs), 1);
         specs = cl_cdr(specs);
     }
     cl_emit(c, OP_NIL);
@@ -2508,7 +2525,7 @@ void compile_the(CL_Compiler *c, CL_Obj form)
         }
     }
 
-    if (cl_optimize_settings.safety >= 1) {
+    if (c->optimize_settings.safety >= 1) {
         /* Disable tail position: ASSERT_TYPE must run after value form */
         int saved_tail = c->in_tail;
         int idx;

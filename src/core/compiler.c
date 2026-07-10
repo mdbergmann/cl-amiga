@@ -146,8 +146,28 @@ CL_Obj SETF_HELPER_GETF = CL_NIL;
  * disambiguate. */
 CL_Obj SYM_LEX_LOCAL_MACRO = CL_NIL;
 
-/* Global optimization settings */
-CL_OptimizeSettings cl_optimize_settings = {1, 1, 1, 1};
+/* Proclaimed optimize baseline (DECLAIM/PROCLAIM).  Per-compile effective
+ * settings live in CL_Compiler.optimize_settings instead of a shared
+ * global — see compiler.h and cl_compiler_seed_optimize_settings below. */
+CL_OptimizeSettings cl_optimize_global   = {1, 1, 1, 1};
+
+/* Seed a freshly pushed compiler's effective optimize settings: inherit
+ * from the immediately enclosing compiler in the active chain, or from the
+ * proclaimed baseline when COMP is the root of a fresh top-level compile
+ * (no enclosing compiler on this thread).  Each CL_Compiler is exclusively
+ * owned by the thread that pushed it, so the inherited-from-parent path
+ * needs no lock; the global-baseline path takes cl_tables_rdlock() to pair
+ * with the wrlock DECLAIM/PROCLAIM take when writing cl_optimize_global. */
+static void cl_compiler_seed_optimize_settings(CL_Compiler *comp)
+{
+    if (comp->parent) {
+        comp->optimize_settings = comp->parent->optimize_settings;
+    } else {
+        cl_tables_rdlock();
+        comp->optimize_settings = cl_optimize_global;
+        cl_tables_rwunlock();
+    }
+}
 
 /* --- Source-file intern pool --- */
 /* CL_Bytecode.source_file holds a const char* that must outlive the bytecode
@@ -304,6 +324,253 @@ int alloc_temp_slot(CL_CompEnv *env)
     return slot;
 }
 
+/* --- Compile-time constant folding (spec 1.3, gated on speed >= 1) ---
+ *
+ * A call to a pure CL arithmetic/logic builtin whose arguments are all
+ * compile-time constants is evaluated here and emitted as a single
+ * constant load instead of CONST/CONST/OP.  Fixnum-only: any operand or
+ * intermediate result outside fixnum range declines (returns 0) and the
+ * call compiles normally, so bignum/float/ratio semantics stay with the
+ * runtime.  Purely a read of the form tree — never allocates, so it is
+ * GC-neutral by construction. */
+
+enum {
+    FOLD_NONE = 0,
+    FOLD_ADD, FOLD_SUB, FOLD_MUL,
+    FOLD_1PLUS, FOLD_1MINUS,
+    FOLD_ASH, FOLD_LOGAND, FOLD_LOGIOR, FOLD_LOGXOR,
+    FOLD_NOT,
+    FOLD_NUMEQ, FOLD_LT, FOLD_GT, FOLD_LE, FOLD_GE
+};
+
+/* Nested folds recurse in C (the trampoline exists precisely because
+ * source can nest deeply) — cap the depth and decline beyond it. */
+#define CL_FOLD_MAX_DEPTH 32
+
+/* Classify FUNC as a foldable pure CL builtin.  Mirrors
+ * inline_builtin_opcode's reasoning: CLHS 11.1.2.1.2 forbids conforming
+ * programs from redefining COMMON-LISP functions, so the compile-time
+ * value is authoritative.  NULL folds like NOT (identical semantics). */
+static int foldable_builtin(CL_Obj func)
+{
+    CL_Symbol *s;
+    CL_String *name;
+
+    if (!CL_SYMBOL_P(func)) return FOLD_NONE;
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(func);
+    if (s->package != cl_package_cl) return FOLD_NONE;
+    name = (CL_String *)CL_OBJ_TO_PTR(s->name);
+
+    switch (name->length) {
+    case 1:
+        switch (name->data[0]) {
+        case '+': return FOLD_ADD;
+        case '-': return FOLD_SUB;
+        case '*': return FOLD_MUL;
+        case '=': return FOLD_NUMEQ;
+        case '<': return FOLD_LT;
+        case '>': return FOLD_GT;
+        }
+        break;
+    case 2:
+        if (name->data[0] == '<' && name->data[1] == '=') return FOLD_LE;
+        if (name->data[0] == '>' && name->data[1] == '=') return FOLD_GE;
+        if (name->data[0] == '1' && name->data[1] == '+') return FOLD_1PLUS;
+        if (name->data[0] == '1' && name->data[1] == '-') return FOLD_1MINUS;
+        break;
+    case 3:
+        if (memcmp(name->data, "NOT", 3) == 0) return FOLD_NOT;
+        if (memcmp(name->data, "ASH", 3) == 0) return FOLD_ASH;
+        break;
+    case 4:
+        if (memcmp(name->data, "NULL", 4) == 0) return FOLD_NOT;
+        break;
+    case 6:
+        if (memcmp(name->data, "LOGAND", 6) == 0) return FOLD_LOGAND;
+        if (memcmp(name->data, "LOGIOR", 6) == 0) return FOLD_LOGIOR;
+        if (memcmp(name->data, "LOGXOR", 6) == 0) return FOLD_LOGXOR;
+        break;
+    }
+    return FOLD_NONE;
+}
+
+static int fold_in_fixnum_range(int64_t v)
+{
+    return v >= (int64_t)CL_FIXNUM_MIN && v <= (int64_t)CL_FIXNUM_MAX;
+}
+
+/* Attempt compile-time evaluation of FORM.  On success stores the value
+ * (a fixnum, T, NIL, or a quoted literal) in *out and returns 1; on any
+ * doubt returns 0 and the caller emits the form normally.  Never
+ * allocates and never signals — malformed arg lists (dotted, wrong
+ * arity) decline so the regular compile path produces its diagnostics. */
+static int try_fold_constant(CL_Compiler *c, CL_Obj form, CL_Obj *out, int depth)
+{
+    CL_Obj head, rest;
+    int op;
+
+    if (depth > CL_FOLD_MAX_DEPTH) return 0;
+
+    /* Constant atoms.  The symbol NIL is CL_NIL itself; other symbols
+     * are variables (or symbol macros) — not folded. */
+    if (CL_FIXNUM_P(form)) { *out = form; return 1; }
+    if (CL_NULL_P(form))   { *out = CL_NIL; return 1; }
+    if (form == SYM_T)     { *out = SYM_T;  return 1; }
+    if (!CL_CONS_P(form))  return 0;
+
+    head = cl_car(form);
+    rest = cl_cdr(form);
+
+    /* (quote X): X is a literal constant of any type — usable directly
+     * by NOT, and by the numeric ops when X is a fixnum. */
+    if (head == SYM_QUOTE && CL_CONS_P(rest) && CL_NULL_P(cl_cdr(rest))) {
+        *out = cl_car(rest);
+        return 1;
+    }
+
+    op = foldable_builtin(head);
+    if (op == FOLD_NONE) return 0;
+
+    /* A local FLET/LABELS binding or function upvalue shadows the CL
+     * builtin; (declare (notinline ...)) explicitly forbids folding. */
+    if (cl_env_lookup_local_fun(c->env, head) >= 0) return 0;
+    if (c->env && cl_env_resolve_fun_upvalue(c->env, head) >= 0) return 0;
+    if (cl_compiler_notinline_p(c, head)) return 0;
+
+    if (op == FOLD_NOT) {
+        CL_Obj v;
+        if (!CL_CONS_P(rest) || !CL_NULL_P(cl_cdr(rest))) return 0;
+        if (!try_fold_constant(c, cl_car(rest), &v, depth + 1)) return 0;
+        *out = CL_NULL_P(v) ? SYM_T : CL_NIL;
+        return 1;
+    }
+
+    if (op == FOLD_1PLUS || op == FOLD_1MINUS) {
+        CL_Obj v;
+        int64_t r;
+        if (!CL_CONS_P(rest) || !CL_NULL_P(cl_cdr(rest))) return 0;
+        if (!try_fold_constant(c, cl_car(rest), &v, depth + 1)) return 0;
+        if (!CL_FIXNUM_P(v)) return 0;
+        r = (int64_t)CL_FIXNUM_VAL(v) + (op == FOLD_1PLUS ? 1 : -1);
+        if (!fold_in_fixnum_range(r)) return 0;
+        *out = CL_MAKE_FIXNUM((int32_t)r);
+        return 1;
+    }
+
+    if (op == FOLD_ASH) {
+        CL_Obj vn, vc;
+        int64_t n, r;
+        int32_t count;
+        if (!CL_CONS_P(rest) || !CL_CONS_P(cl_cdr(rest)) ||
+            !CL_NULL_P(cl_cdr(cl_cdr(rest)))) return 0;
+        if (!try_fold_constant(c, cl_car(rest), &vn, depth + 1)) return 0;
+        if (!try_fold_constant(c, cl_car(cl_cdr(rest)), &vc, depth + 1)) return 0;
+        if (!CL_FIXNUM_P(vn) || !CL_FIXNUM_P(vc)) return 0;
+        n = CL_FIXNUM_VAL(vn);
+        count = CL_FIXNUM_VAL(vc);
+        if (count >= 0) {
+            /* Left shift via multiply — shifting a negative int64 is UB.
+             * count > 30 can only stay in fixnum range for n == 0; keep
+             * the guard simple and decline (runtime handles bignums). */
+            if (count > 30) return 0;
+            r = n * ((int64_t)1 << count);
+        } else {
+            /* ASH right shift is floor division by 2^|count| (CLHS),
+             * exact for negative n too. */
+            int32_t k = -count;
+            int64_t d;
+            if (k > 62) k = 62;  /* |n| < 2^31: result is already 0 / -1 */
+            d = (int64_t)1 << k;
+            r = (n >= 0) ? n / d : (n - (d - 1)) / d;
+        }
+        if (!fold_in_fixnum_range(r)) return 0;
+        *out = CL_MAKE_FIXNUM((int32_t)r);
+        return 1;
+    }
+
+    /* Variadic arithmetic / bitwise / comparison chain */
+    {
+        int64_t acc = 0, prev = 0;
+        int have_acc = 0, cmp_true = 1, n = 0;
+        int is_arith = (op == FOLD_ADD || op == FOLD_SUB || op == FOLD_MUL);
+        int is_logic = (op == FOLD_LOGAND || op == FOLD_LOGIOR || op == FOLD_LOGXOR);
+
+        switch (op) {
+        case FOLD_ADD:    acc = 0;  have_acc = 1; break;
+        case FOLD_MUL:    acc = 1;  have_acc = 1; break;
+        case FOLD_LOGAND: acc = -1; have_acc = 1; break;
+        case FOLD_LOGIOR: acc = 0;  have_acc = 1; break;
+        case FOLD_LOGXOR: acc = 0;  have_acc = 1; break;
+        default: break;  /* FOLD_SUB / comparisons seed from first arg */
+        }
+
+        while (CL_CONS_P(rest)) {
+            CL_Obj v;
+            int64_t x;
+            if (!try_fold_constant(c, cl_car(rest), &v, depth + 1)) return 0;
+            if (!CL_FIXNUM_P(v)) return 0;
+            x = CL_FIXNUM_VAL(v);
+            switch (op) {
+            case FOLD_ADD:    acc += x; break;
+            case FOLD_MUL:    acc *= x; break;
+            case FOLD_LOGAND: acc &= x; break;
+            case FOLD_LOGIOR: acc |= x; break;
+            case FOLD_LOGXOR: acc ^= x; break;
+            case FOLD_SUB:
+                if (!have_acc) { acc = x; have_acc = 1; }
+                else acc -= x;
+                break;
+            default:  /* comparison chain over adjacent pairs */
+                if (n > 0) {
+                    switch (op) {
+                    case FOLD_NUMEQ: if (prev != x) cmp_true = 0; break;
+                    case FOLD_LT:    if (prev >= x) cmp_true = 0; break;
+                    case FOLD_GT:    if (prev <= x) cmp_true = 0; break;
+                    case FOLD_LE:    if (prev >  x) cmp_true = 0; break;
+                    case FOLD_GE:    if (prev <  x) cmp_true = 0; break;
+                    }
+                }
+                prev = x;
+                break;
+            }
+            /* Immediate range check keeps the int64 arithmetic exact:
+             * operands are 31-bit, so one op on an in-range accumulator
+             * cannot overflow int64, and an out-of-range accumulator
+             * aborts folding before the next op. */
+            if (is_arith && !fold_in_fixnum_range(acc)) return 0;
+            n++;
+            rest = cl_cdr(rest);
+        }
+        if (!CL_NULL_P(rest)) return 0;  /* dotted arg list */
+
+        if (is_arith || is_logic) {
+            if (op == FOLD_SUB) {
+                if (n == 0) return 0;  /* (-) is a program error — don't hide it */
+                if (n == 1) {
+                    int64_t r = -acc;
+                    if (!fold_in_fixnum_range(r)) return 0;
+                    *out = CL_MAKE_FIXNUM((int32_t)r);
+                    return 1;
+                }
+            }
+            /* (+) => 0, (*) => 1, (logand) => -1, ... are all valid CL */
+            *out = CL_MAKE_FIXNUM((int32_t)acc);
+            return 1;
+        }
+        if (n == 0) return 0;  /* (=) etc. is a program error */
+        *out = cmp_true ? SYM_T : CL_NIL;
+        return 1;
+    }
+}
+
+/* Emit a folded constant value with the cheapest available opcode. */
+static void emit_folded_constant(CL_Compiler *c, CL_Obj val)
+{
+    if (CL_NULL_P(val))       cl_emit(c, OP_NIL);
+    else if (val == SYM_T)    cl_emit(c, OP_T);
+    else                      cl_emit_const(c, val);
+}
+
 /* --- Basic special forms --- */
 
 static void compile_quote(CL_Compiler *c, CL_Obj form)
@@ -345,6 +612,29 @@ static CL_Obj compile_if(CL_Compiler *c, CL_Obj form)
 
     rest = cl_cdr(form);
     test = cl_car(rest);
+
+    /* Dead-branch elimination (spec 1.3, speed >= 1): a compile-time
+     * constant test selects one branch at compile time — the dead branch
+     * is never emitted and the JNIL/JMP pair disappears.  Covers the
+     * expansions of WHEN/UNLESS/AND/OR with constant operands.  A false
+     * test with no ELSE returns the literal NIL form, which the
+     * trampoline compiles to OP_NIL (CLHS 5.2: (if test then) with a
+     * false test yields NIL).  try_fold_constant never allocates, so the
+     * sub-form reads below cannot go stale. */
+    if (c->optimize_settings.speed >= 1) {
+        CL_Obj test_val;
+        if (try_fold_constant(c, test, &test_val, 0)) {
+            CL_Obj live;
+            if (!CL_NULL_P(test_val)) {
+                live = cl_car(cl_cdr(rest));  /* THEN */
+            } else {
+                CL_Obj cdr2 = cl_cdr(cl_cdr(rest));
+                live = CL_NULL_P(cdr2) ? CL_NIL : cl_car(cdr2);  /* ELSE */
+            }
+            CL_GC_UNPROTECT(1);  /* form */
+            return live;  /* c->in_tail untouched — live branch keeps tail position */
+        }
+    }
 
     c->in_tail = 0;
     compile_expr(c, test);
@@ -404,6 +694,10 @@ CL_TailFrame *cl_tail_push(CL_Compiler *c)
     }
     tf = &c->tail_stack[c->tail_count++];
     tf->cont_form = CL_NIL;  /* default: no continuation */
+    /* Snapshot the effective optimize settings unconditionally (4 bytes) so
+     * no declaration-accepting prelude can forget it; only postludes of
+     * bodies that process declarations restore from it. */
+    tf->saved_optimize = c->optimize_settings;
     return tf;
 }
 
@@ -626,6 +920,7 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
      * is referenced by C stack frames throughout compile_lambda. */
     inner->parent = cl_active_compiler;
     inner->protect = 1;
+    cl_compiler_seed_optimize_settings(inner);
     cl_active_compiler = inner;
 
     parse_lambda_list(params, &inner->ll);
@@ -1995,6 +2290,11 @@ static CL_Obj compile_let(CL_Compiler *c, CL_Obj form, int sequential)
     int saved_tail = c->in_tail;
     int special_count = 0;
     int saved_notinline_count = c->notinline_count;
+    /* Captured at entry (like saved_notinline_count): the LET tail frame is
+     * pushed only AFTER process_body_declarations has applied any body
+     * (declare (optimize ...)), so cl_tail_push's own snapshot would be too
+     * late — it must be overwritten with this pre-declaration value. */
+    CL_OptimizeSettings saved_optimize = c->optimize_settings;
 
     /* GC-protect form components that survive across allocating calls */
     CL_GC_PROTECT(bindings);
@@ -2249,9 +2549,19 @@ static CL_Obj compile_let(CL_Compiler *c, CL_Obj form, int sequential)
         tf->special_count = special_count;
         tf->saved_tail = saved_tail;
         tf->saved_notinline_count = saved_notinline_count;
+        tf->saved_optimize = saved_optimize;  /* pre-declaration snapshot */
         tf->n_gc_roots = 0;
         return tail;
     }
+}
+
+/* Restore the effective optimize settings saved at body entry (scoped
+ * (declare (optimize ...)) ends with its body).  Cheap no-op when the
+ * body declared nothing — the common case. */
+static void restore_optimize_settings(CL_Compiler *c, const CL_OptimizeSettings *saved)
+{
+    if (memcmp(&c->optimize_settings, saved, sizeof(*saved)) != 0)
+        c->optimize_settings = *saved;
 }
 
 /* Emit the deferred postlude for a popped tail frame.  Called from
@@ -2272,10 +2582,12 @@ static CL_Obj emit_tail_postlude(CL_Compiler *c, CL_TailFrame *tf)
         cl_env_clear_boxed(c->env, tf->saved_local_count);
         c->env->local_count = tf->saved_local_count;
         c->notinline_count = tf->saved_notinline_count;
+        restore_optimize_settings(c, &tf->saved_optimize);
         return CL_NIL;
     case CL_TAIL_LOCALLY:
         /* Pure body wrapper, but pop any notinline names it declared. */
         c->notinline_count = tf->saved_notinline_count;
+        restore_optimize_settings(c, &tf->saved_optimize);
         return CL_NIL;
     case CL_TAIL_PROGN:
         /* No postlude — pure body wrapper. */
@@ -2283,10 +2595,12 @@ static CL_Obj emit_tail_postlude(CL_Compiler *c, CL_TailFrame *tf)
     case CL_TAIL_SYMBOL_MACROLET:
         c->env->symbol_macro_count = tf->saved_macro_count;
         c->notinline_count = tf->saved_notinline_count;
+        restore_optimize_settings(c, &tf->saved_optimize);
         return CL_NIL;
     case CL_TAIL_MACROLET:
         c->env->local_macro_count = tf->saved_macro_count;
         c->notinline_count = tf->saved_notinline_count;
+        restore_optimize_settings(c, &tf->saved_optimize);
         return CL_NIL;
     case CL_TAIL_PROGV:
         cl_emit(c, OP_PROGV_UNBIND);
@@ -2329,6 +2643,7 @@ static CL_Obj emit_tail_postlude(CL_Compiler *c, CL_TailFrame *tf)
         c->env->local_count = tf->saved_local_count;
         c->in_tail = tf->saved_tail;
         c->notinline_count = tf->saved_notinline_count;
+        restore_optimize_settings(c, &tf->saved_optimize);
         return CL_NIL;
     case CL_TAIL_FLET:
     case CL_TAIL_LABELS:
@@ -2337,6 +2652,7 @@ static CL_Obj emit_tail_postlude(CL_Compiler *c, CL_TailFrame *tf)
         c->env->local_fun_count = tf->saved_block_count;  /* reused: saved_local_fun_count */
         c->in_tail = tf->saved_tail;
         c->notinline_count = tf->saved_notinline_count;
+        restore_optimize_settings(c, &tf->saved_optimize);
         return CL_NIL;
     case CL_TAIL_EVAL_WHEN:
         /* No postlude — pure body wrapper. */
@@ -3819,6 +4135,23 @@ static void compile_call(CL_Compiler *c, CL_Obj form)
         }
     }
 
+    /* Constant folding (spec 1.3, speed >= 1): a pure-builtin call whose
+     * arguments are all compile-time constants collapses to one constant
+     * load — (+ 1 2) emits CONST 3 instead of CONST 1; CONST 2; ADD.  Run
+     * AFTER compiler-macro expansion has had a chance to fire (above): a
+     * compiler macro defined on a foldable builtin name (+, -, ash, ...)
+     * must still see the call even when every argument happens to be a
+     * compile-time constant — folding first would silently bypass it. */
+    if (c->optimize_settings.speed >= 1 && CL_SYMBOL_P(func)) {
+        CL_Obj folded;
+        if (try_fold_constant(c, form, &folded, 0)) {
+            emit_folded_constant(c, folded);
+            CL_GC_UNPROTECT(1);  /* args */
+            c->in_tail = saved_tail;
+            return;
+        }
+    }
+
     /* AmigaOS FFI fast-path: (amiga:%ffi-call base-sym offset regspec args...)
      * Form invariant (defcfun is the only emitter): arg 0 is a symbol literal
      * naming the library-base var, arg 1 is the LVO offset (fixnum), arg 2 is
@@ -3931,8 +4264,11 @@ static void compile_call(CL_Compiler *c, CL_Obj form)
      * VM opcode for this arity AND isn't shadowed by a local
      * function or upvalue, emit the opcode directly.  Saves the
      * FLOAD + CALL (~3 bytes + dispatch through call_builtin) per
-     * call site, and removes one symbol from the constants pool. */
+     * call site, and removes one symbol from the constants pool.
+     * (declare (notinline ...)) forbids this per CLHS 3.2.2.3 —
+     * such calls must compile as real out-of-line calls. */
     if (CL_SYMBOL_P(func) &&
+        !cl_compiler_notinline_p(c, func) &&
         cl_env_lookup_local_fun(c->env, func) < 0 &&
         (!c->env || cl_env_resolve_fun_upvalue(c->env, func) < 0))
     {
@@ -4033,6 +4369,11 @@ void compile_body(CL_Compiler *c, CL_Obj forms)
      * that compile_expr won't drain (its own tail_base captures them
      * as already-existing).  We drain explicitly afterward. */
     int tail_base = c->tail_count;
+    /* Scope any body (declare (optimize ...)) to this body: compile_body
+     * drains its own frames (no enclosing postlude restores for us), so
+     * snapshot here and restore on every exit.  Covers lambda/defun and
+     * destructuring-bind bodies. */
+    CL_OptimizeSettings saved_optimize = c->optimize_settings;
     CL_Obj tail = compile_body_tail(c, forms);
     /* A NIL `tail` is ambiguous: it can mean either an empty body OR that the
      * tail form is the literal NIL.  When compile_body_tail pushed a
@@ -4044,6 +4385,7 @@ void compile_body(CL_Compiler *c, CL_Obj forms)
      * was pushed (genuinely empty body, or a single literal NIL form). */
     if (CL_NULL_P(tail) && c->tail_count == tail_base) {
         cl_emit(c, OP_NIL);
+        restore_optimize_settings(c, &saved_optimize);
         return;
     }
     compile_expr(c, tail);
@@ -4053,6 +4395,7 @@ void compile_body(CL_Compiler *c, CL_Obj forms)
         if (!CL_NULL_P(cont))
             compile_expr(c, cont);
     }
+    restore_optimize_settings(c, &saved_optimize);
 }
 
 /* Look up a global symbol-macro expansion stored on the symbol's plist
@@ -4935,6 +5278,7 @@ static CL_Obj cl_compile_env(CL_Obj expr, CL_Obj lex_env)
 
     /* Register compiler for GC root marking */
     comp->parent = cl_active_compiler;
+    cl_compiler_seed_optimize_settings(comp);
     cl_active_compiler = comp;
 
     /* Protect from NLX-triggered cl_compiler_restore_to while the compile_expr
@@ -5063,6 +5407,7 @@ CL_Obj cl_macrolet_lex_env(CL_Obj bindings, CL_Obj inherited_lex_env)
     env = cl_env_create(NULL);
     comp->env = env;
     comp->parent = cl_active_compiler;
+    cl_compiler_seed_optimize_settings(comp);
     cl_active_compiler = comp;
 
     /* Layer inherited bindings first, then this macrolet's expanders on top. */
@@ -5091,6 +5436,7 @@ CL_Obj cl_symbol_macrolet_lex_env(CL_Obj bindings, CL_Obj inherited_lex_env)
     env = cl_env_create(NULL);
     comp->env = env;
     comp->parent = cl_active_compiler;
+    cl_compiler_seed_optimize_settings(comp);
     cl_active_compiler = comp;
 
     if (CL_CONS_P(inherited_lex_env))
@@ -5482,6 +5828,11 @@ void cl_compiler_restore_to(void *saved)
         if (c->env) cl_env_destroy(c->env);
         cl_compiler_pool_release(c);
     }
+    /* No optimize-settings backstop needed here: the effective settings
+     * live on the CL_Compiler structs just freed above, not in a
+     * process-wide global, so nothing can leak past a fully-unwound
+     * chain — the next fresh top-level compile re-seeds from
+     * cl_optimize_global via cl_compiler_seed_optimize_settings. */
 }
 
 /* Like cl_compiler_restore_to but frees compilers regardless of their `protect`
@@ -5503,4 +5854,7 @@ void cl_compiler_force_restore_to(void *saved)
         if (c->env) cl_env_destroy(c->env);
         cl_compiler_pool_release(c);
     }
+    /* See cl_compiler_restore_to: no optimize-settings backstop needed —
+     * the effective settings live on the freed CL_Compiler structs, not a
+     * process-wide global. */
 }
