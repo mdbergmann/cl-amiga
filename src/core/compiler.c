@@ -1,4 +1,5 @@
 #include "compiler_internal.h"
+#include "peephole.h"
 #include "thread.h"
 #include "../platform/platform_thread.h"
 #include "../jit/jit.h"
@@ -151,6 +152,14 @@ CL_Obj SYM_LEX_LOCAL_MACRO = CL_NIL;
  * global — see compiler.h and cl_compiler_seed_optimize_settings below. */
 CL_OptimizeSettings cl_optimize_global   = {1, 1, 1, 1};
 
+/* CLAMIGA_FORCE_SPEED=0..3 pins the effective speed for every compile in
+ * the process, overriding both the proclaimed baseline and body (declare
+ * (optimize (speed ...))) forms.  -1 = no override.  Set once at startup
+ * (main.c) before any user code compiles; the differential test harness
+ * uses it to run an unmodified corpus with the peephole pass forced fully
+ * on (3) and fully off (0) and compare results. */
+int cl_optimize_force_speed = -1;
+
 /* Seed a freshly pushed compiler's effective optimize settings: inherit
  * from the immediately enclosing compiler in the active chain, or from the
  * proclaimed baseline when COMP is the root of a fresh top-level compile
@@ -167,6 +176,9 @@ static void cl_compiler_seed_optimize_settings(CL_Compiler *comp)
         comp->optimize_settings = cl_optimize_global;
         cl_tables_rwunlock();
     }
+    if (cl_optimize_force_speed >= 0)
+        comp->optimize_settings.speed = (uint8_t)cl_optimize_force_speed;
+    comp->peep_speed_max = comp->optimize_settings.speed;
 }
 
 /* --- Source-file intern pool --- */
@@ -1214,6 +1226,12 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
         }
     }
     cl_emit(inner, OP_RET);
+
+    /* Peephole post-pass (no-op unless the effective speed reached >= 2;
+     * rewrites inner->code/code_pos/line_entries in place, shrink-only).
+     * Runs before the bytecode object is built so FASL serialization and
+     * the m68k JIT both consume the optimized stream. */
+    cl_peephole_optimize(inner);
 
     /* Build bytecode object */
     bc = (CL_Bytecode *)cl_alloc(TYPE_BYTECODE, sizeof(CL_Bytecode));
@@ -5303,6 +5321,9 @@ static CL_Obj cl_compile_env(CL_Obj expr, CL_Obj lex_env)
     compile_expr(comp, expr);
 
     cl_emit(comp, OP_HALT);
+
+    /* Peephole post-pass — see the compile_lambda call site. */
+    cl_peephole_optimize(comp);
 
     bc = (CL_Bytecode *)cl_alloc(TYPE_BYTECODE, sizeof(CL_Bytecode));
     if (!bc) {

@@ -461,6 +461,14 @@ rest are parsed and accepted as conforming no-ops.
   - At **`safety 0`** the `(the type value)` runtime check (`OP_ASSERT_TYPE`)
     and the `destructuring-bind` too-few/too-many arity guards are not emitted;
     at `safety ≥ 1` they are.
+  - At **`speed ≥ 2`** a bytecode **peephole post-pass** runs over each
+    compiled function: it removes store-then-reload round trips and discarded
+    pure values, fuses `(not ...)` tests into inverted branches, threads
+    jump-to-jump chains, and deletes unreachable code — typically 8–12%
+    faster on load/store-heavy loops, and the m68k JIT compiles the optimized
+    stream for free. The rewrite is semantics-preserving: type errors from
+    discarded values (e.g. `(car 5)`), multiple-values state, and non-local
+    exits all behave exactly as at `speed 0`.
   - `compilation-speed` is interned (so libraries can name
     `cl:compilation-speed`) but ignored, and any non-standard quality — e.g.
     `security` — is silently accepted and ignored.
@@ -478,6 +486,13 @@ See `tests/test_optimize.c` and the "Optimize declarations" section of
 dead-branch, scoping, and check-elision behavior; the implementation lives in
 `try_fold_constant`/`compile_if`/`compile_call` (`src/core/compiler.c`) and
 `cl_process_declaration_specifier` (`src/core/compiler_extra.c`).
+
+For the peephole post-pass, `tests/test_peephole.c` demonstrates every
+rewrite pattern and guard, and `tests/peephole-corpus.lisp` +
+`tests/test_peephole_diff.sh` run the same code with the pass forced off and
+on (`CLAMIGA_FORCE_SPEED=0` vs `3` — the env var pins the effective `speed`
+for a whole process, handy for A/B testing any workload) and require
+identical output.
 
 ## Building for AmigaOS
 

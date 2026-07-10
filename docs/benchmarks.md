@@ -593,3 +593,31 @@ test suite (`trunk/bench-jit-loop.lisp`).
 | Benchmark | result |
 |---|---|
 | JIT-BENCH (2,000,000 calls) | 25,120 ms → 79,618 calls/sec |
+
+---
+
+## 2026-07-10 — Spec 1.8: bytecode peephole post-pass (speed >= 2)
+
+**Branch**: `feat/peephole-speed2`. Host, Apple M3 Ultra, `make host`,
+`--heap 64M`, `trunk/bench-opt.lisp` best-of-3, pure bytecode, `fails=0`
+in both runs. Comparison: default (`speed 1`, pass off) vs
+`CLAMIGA_FORCE_SPEED=3` (pass on for every compile). The vm.* rows are
+the pass's target workloads (store/load traffic, call-return around
+tight loops); the set./clos./struct./alloc. rows are dominated by C
+builtins and move little, as expected.
+
+| Benchmark | speed 1 | forced speed 3 | delta |
+|---|---|---|---|
+| vm.fixnum-loop | 58 ms | 53 ms | -8.6% |
+| vm.local-shuffle | 49 ms | 45 ms | -8.2% |
+| vm.call-return | 57 ms | 50 ms | -12.3% |
+| opt.dead-branch | 35 ms | 32 ms | -8.6% |
+| safety1.svref-loop | 44 ms | 39 ms | -11.4% |
+| safety1.call-args | 51 ms | 46 ms | -9.8% |
+
+**Reproduce**:
+
+```
+./build/host/clamiga --no-userinit --heap 64M --non-interactive --load trunk/bench-opt.lisp
+CLAMIGA_FORCE_SPEED=3 ./build/host/clamiga --no-userinit --heap 64M --non-interactive --load trunk/bench-opt.lisp
+```

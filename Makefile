@@ -43,6 +43,7 @@ CORE_SRC     = $(SRCDIR)/core/types.c \
                $(SRCDIR)/core/compiler.c \
                $(SRCDIR)/core/compiler_special.c \
                $(SRCDIR)/core/compiler_extra.c \
+               $(SRCDIR)/core/peephole.c \
                $(SRCDIR)/core/vm.c \
                $(SRCDIR)/core/builtins.c \
                $(SRCDIR)/core/builtins_arith.c \
@@ -335,6 +336,13 @@ test-fast: $(TEST_BINS) host
 		echo "FAIL"; \
 		failed=1; \
 	fi; \
+	echo "--- test_peephole_diff ---"; \
+	if sh $(TEST_SRCDIR)/test_peephole_diff.sh $(BUILDDIR)/clamiga; then \
+		echo "PASS"; \
+	else \
+		echo "FAIL"; \
+		failed=1; \
+	fi; \
 	echo "--- test_defvar_special_fasl ---"; \
 	if sh $(TEST_SRCDIR)/test_defvar_special_fasl.sh $(BUILDDIR)/clamiga; then \
 		echo "PASS"; \
@@ -369,6 +377,8 @@ test-gc-stress:
 	@sh $(TEST_SRCDIR)/test_gc_stress_regression.sh $(GC_STRESS_BUILDDIR)/clamiga
 	@echo "--- test_mt_intern_stw (CLAMIGA_GC_STRESS=1) ---"
 	@CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_mt_intern_stw.sh $(GC_STRESS_BUILDDIR)/clamiga
+	@echo "--- test_peephole_diff (CLAMIGA_GC_STRESS=1, forced compaction) ---"
+	@CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_peephole_diff.sh $(GC_STRESS_BUILDDIR)/clamiga
 
 # `make test-mt-thread-exit-race` builds a dedicated DEBUG_THREAD_RACE_HOOKS
 # binary whose sole purpose (see the constructor in src/core/thread.c) is to

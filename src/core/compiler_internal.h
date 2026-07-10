@@ -218,6 +218,15 @@ typedef struct CL_Compiler_s {
      * this struct is pushed onto the active-compiler chain; see
      * cl_compiler_seed_optimize_settings in compiler.c. */
     CL_OptimizeSettings optimize_settings;
+    /* High-water mark of optimize_settings.speed over this compile.  Body
+     * (declare (optimize ...)) settings are restored by the declaring
+     * scope's postlude, so by finalization time optimize_settings.speed may
+     * be back below the level the body asked for; the peephole post-pass
+     * (peephole.c) gates on this mark instead so (defun f () (declare
+     * (optimize (speed 3))) ...) still gets optimized.  Updated wherever
+     * speed is written: cl_compiler_seed_optimize_settings and
+     * cl_process_declaration_specifier. */
+    uint8_t peep_speed_max;
 } CL_Compiler;
 
 /* --- Shared globals (defined in compiler.c) --- */

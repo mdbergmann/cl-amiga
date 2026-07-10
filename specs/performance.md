@@ -232,11 +232,44 @@ gains at `(safety 0)`.
 
 ---
 
-### 1.8 Bytecode Peephole Post-Pass (gated behind `speed >= 2`)
+### 1.8 Bytecode Peephole Post-Pass (gated behind `speed >= 2`) ✅ DONE (2026-07-10)
 
 The higher-ceiling, higher-risk companion to 1.3. Build this **only after 1.3 ships and profiling
 shows the emit-time wins are insufficient** — and build it as a proper decode → rewrite → re-encode
 pass, never as in-place byte twiddling.
+
+**Shipped** as `src/core/peephole.c`, exactly the decode → rewrite → re-encode shape below, with
+these deltas from the plan:
+
+- `OP_STORE` **peeks** (locals[n] = TOS without popping), so the store-reload pattern is
+  `STORE n; POP; LOAD n → STORE n` (deletes two instructions), not the planned `DUP; STORE n`.
+- The pure-pop whitelist is `CONST/NIL/T/LOAD/DUP/UPVAL` only — `CAR`/arith signal type errors
+  that must survive at any speed (ANSI), so they are never deletable.
+- `cl_mv_count` discipline: `CONST/NIL/T/UPVAL` write it, `LOAD/DUP/POP` don't. Deleting a
+  writing pair (and dropping `OP_NOT` in the branch fusion) requires a forward scan proving the
+  write is masked by another writer before any observer (`MV_LOAD/MV_TO_LIST/NTH_VALUE/RET/CALL`);
+  when unprovable, the NOT fusion substitutes `OP_MV_RESET` (same length) instead of deleting.
+- `OP_TAILCALL` **falls through** for builtin callees (vm.c pushes the result and continues to
+  the following RET) — classifying it unconditional deleted live RETs; caught by `make test`.
+- NLX landing pads (`CATCH/UWPROT/BLOCK_PUSH/TAGBODY_PUSH` i32 offsets) relocate like jumps and
+  are never threaded; the pc-keyed source line map is remapped during re-encode.
+- **Single source of truth**: `opcodes.h` is now an X-macro (`CL_OPCODE_LIST`) carrying operand
+  shape + dataflow flags per opcode; the enum, the disassembler (whose private table had drifted —
+  ~10 newer opcodes missing) and the peephole decoder all derive from it. Unknown/undecodable
+  bytes make the pass bail out and leave the bytecode untouched — a misclassified future opcode
+  costs a missed optimization, never a miscompile.
+- Gate: high-water mark of the effective speed during the compile (`CL_Compiler.peep_speed_max`),
+  because body `(declare (optimize ...))` is scope-restored before finalization.
+- **Differential harness**: `CLAMIGA_FORCE_SPEED=0..3` pins the effective speed process-wide
+  (like `CLAMIGA_GC_STRESS`), so ANY corpus/suite A/Bs the pass unmodified.
+  `tests/test_peephole_diff.sh` runs `tests/peephole-corpus.lisp` at 0/2/3 and requires identical
+  output; wired into `make test` and (under forced compaction) `make test-gc-stress`.
+  `tests/test_peephole.c` covers every pattern, every bail-out, and decoder exhaustiveness over
+  the full opcode list.
+
+**Measured** (host, M3 Ultra, `CLAMIGA_FORCE_SPEED=3` vs default speed 1, bench-opt best-of-3):
+vm.fixnum-loop 58→53 ms, vm.local-shuffle 49→45 ms, vm.call-return 57→50 ms,
+safety1.svref-loop 44→39 ms — ~8–12% on VM-dispatch-heavy loops; see docs/benchmarks.md.
 
 **The dominating constraint — relative jumps**: jumps encode a **relative i32 offset**
 (`cl_patch_jump`, `compiler.c:254`: `offset = code_pos - (patch_pos + 4)`; `cl_emit_loop_jump`
@@ -534,7 +567,7 @@ Recommended sequence balancing impact vs. risk:
 | 5 | 1.6 (HT rehash + hash fix), 1.7 (32-bit limb bignum mul) | ✅ DONE (3c58761, fbb7e29) |
 | 6 | 1.9 (MLF pre-pass hash index — found by profiling; 9.8x cold compile) | ✅ DONE (2026-07-05) |
 | 7 | 1.3 (declaim-speed: const-fold + dead-branch + check-elision + local-declare scoping) | ✅ DONE (2026-07-10) |
-| 8 | 1.8 (bytecode peephole post-pass, after 1.3 + profiling), 2.5 (free-list segregation) | Pending |
+| 8 | 1.8 (bytecode peephole post-pass, after 1.3 + profiling), 2.5 (free-list segregation) | ✅ 1.8 DONE (2026-07-10); 2.5 pending |
 | 9 | 3.1 (slot access), 3.2 (keyword pre-comp) | ✅ 3.1 DONE (2026-07-05: registry hash index + fused slot-access builtins + C GF inline-cache probe); 3.2 pending |
 | — | 2.4 (set ops in C) | Deprioritized — measured near-zero real-world use (2026-07-05) |
 

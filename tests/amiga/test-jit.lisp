@@ -13,6 +13,18 @@
 ;;; Relies on `*pass-count*` / `*fail-count*` and the `check` helper
 ;;; established by run-tests.lisp.
 
+; The byte-emission goldens below document the exact native code the JIT
+; produces for KNOWN speed-1 bytecode shapes.  run-tests.lisp declaims
+; (optimize (speed 3)) long before loading this file, which would route
+; every defun here through the peephole post-pass (spec 1.8) and change
+; the input bytecode out from under the goldens (e.g. the STORE;POP;LOAD
+; result tail collapses to STORE, so fast-path template matchers no longer
+; fire and walker output shrinks).  Pin the input; peephole-vs-JIT
+; interaction is covered by the "peep ..." checks in run-tests.lisp, which
+; run at speed 3 with the JIT active.  The suite's speed-3 baseline is
+; restored at the end of this file.
+(declaim (optimize (speed 1)))
+
 ; --- Byte-pipeline smoke: %JIT-COMPILE-STUB writes NOP+RTS into a
 ; function's native_code slot, %JIT-DUMP-BYTES reads it back. ---
 
@@ -1952,3 +1964,7 @@
     (ext:gc-compact)
     (defun jit-after-free-probe () 42)
     (jit-after-free-probe)))
+
+; Restore the suite-wide baseline established by run-tests.lisp's
+; "declaim optimize" test — sections after this load expect speed 3.
+(declaim (optimize (speed 3)))
