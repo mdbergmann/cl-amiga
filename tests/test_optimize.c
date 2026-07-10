@@ -327,6 +327,30 @@ TEST(dbind_own_body_declare_elides_own_guards)
         "  (error () :signaled))"));
 }
 
+TEST(the_declaration_only_specs_skip_assert)
+{
+    /* Regression (found by jzon via chipi): compound FUNCTION and VALUES
+     * type specifiers are declaration-only (CLHS 4.2.3) — TYPEP signals on
+     * them, so THE at safety >= 1 must not emit a runtime assert for them.
+     * Before this fix, (the (function ...) x) compiled at default safety
+     * raised "TYPEP: invalid compound type specifier head: FUNCTION". */
+    ASSERT_STR_EQ("42", eval_str(
+        "(funcall (the (function () t) (lambda () 42)))"));
+    ASSERT_STR_EQ("7", eval_str("(the (values t &optional) 7)"));
+    /* ...including when nested inside OR / AND / NOT compounds. */
+    ASSERT_STR_EQ("NIL", eval_str(
+        "(the (or null (function () t)) nil)"));
+    ASSERT_STR_EQ("5", eval_str(
+        "(the (and t (function (t) t)) 5)"));
+    /* Plain FUNCTION (non-compound) stays checkable and still signals. */
+    ASSERT_STR_EQ(":SIGNALED", eval_str(
+        "(handler-case (eval '(the function 3)) (error () :signaled))"));
+    /* Ordinary compound specs still assert at default safety. */
+    ASSERT_STR_EQ(":SIGNALED", eval_str(
+        "(handler-case (eval '(the (or fixnum symbol) \"s\"))"
+        "  (error () :signaled))"));
+}
+
 /* --- Folding through QUOTE and constants of other types --- */
 
 TEST(fold_quote_and_t)
@@ -419,6 +443,7 @@ int main(void)
     RUN(dbind_guards_elided_at_safety_0);
     RUN(dbind_guards_signal_at_default_safety);
     RUN(dbind_own_body_declare_elides_own_guards);
+    RUN(the_declaration_only_specs_skip_assert);
     RUN(fold_quote_and_t);
 
     /* Cross-thread isolation: no ordering constraint on other tests, but

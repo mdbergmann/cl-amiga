@@ -2742,6 +2742,13 @@
 (check "the or fixnum null 2" nil (the (or fixnum null) nil))
 (check "the nested" 3 (the fixnum (the fixnum (+ 1 2))))
 (check "the type-error" t (handler-case (progn (the fixnum "oops") nil) (type-error () t)))
+; compound FUNCTION/VALUES specs are declaration-only (CLHS 4.2.3):
+; THE must not hand them to TYPEP at runtime (jzon regression)
+(check "the compound function" 42 (funcall (the (function () t) (lambda () 42))))
+(check "the values spec" 7 (the (values t &optional) 7))
+(check "the or-with-function" nil (the (or null (function () t)) nil))
+(check "the plain function still checks" t
+       (handler-case (progn (the function 3) nil) (type-error () t)))
 (declaim (optimize (safety 0)))
 (check "the safety 0" "oops" (the fixnum "oops"))
 (declaim (optimize (safety 1)))
