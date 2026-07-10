@@ -3868,6 +3868,22 @@ cat > "$WORK/readergf.lisp" <<'EOF'
   (dotimes (i 20)
     (dolist (o os) (make-list 2) (setq acc (+ acc (rg-ex o)))))
   (format t "RG-EVICT:~a~%" acc))                    ; 20 * (1+2+3+4+5) = 300
+;; trampoline probes (cl_vm_apply — the JIT call helper's path — plus the
+;; FUNCALL and APPLY builtins) read the IC spine and the receiver's type_desc
+;; fresh on every call; compaction relocating the spine conses between calls
+;; must never yield a stale read.  APPLY's probe reads the arg from the VM
+;; stack after flattening; FUNCALL's from args[].  50 * (30+30+7) = 3350.
+(let ((b (make-instance 'rg-b)) (acc 0))
+  (dotimes (i 50)
+    (make-list 4)
+    (setq acc (+ acc (funcall #'rg-x b)
+                     (apply #'rg-x (list b))
+                     (funcall #'rg-x (make-instance 'rg-a)))))
+  (format t "RG-TRAMPOLINE:~a~%" acc))
+(defclass rg-tu () ((u2 :reader rg-tu-u)))
+(format t "RG-UNBOUND-FUNCALL:~a~%"
+        (handler-case (funcall #'rg-tu-u (make-instance 'rg-tu))
+          (unbound-slot (c) (cell-error-name c))))
 (format t "RG-DONE~%")
 EOF
 out=$(run_stress "$WORK/readergf.lisp")
@@ -3878,6 +3894,10 @@ check_contains "unbound slot signals UNBOUND-SLOT with intact slots through read
   "RG-UNBOUND:U:SAME" "$out"
 check_contains "reader IC invalidated by class redefinition" "RG-REDEF:350" "$out"
 check_contains "reader IC eviction under stress stays correct" "RG-EVICT:300" "$out"
+check_contains "trampoline probes (funcall/apply/vm_apply) stable under stress" \
+  "RG-TRAMPOLINE:3350" "$out"
+check_contains "unbound slot signals through funcall probe" \
+  "RG-UNBOUND-FUNCALL:U2" "$out"
 check_contains "reader-GF case runs to completion" "RG-DONE" "$out"
 check_absent   "no corruption in reader-GF case" \
   "corrupted pointer\|not of type\|Guru\|SIGSEGV\|badmark" "$out"

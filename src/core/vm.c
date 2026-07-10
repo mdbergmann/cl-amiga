@@ -507,6 +507,28 @@ CL_Obj cl_vm_apply(CL_Obj func, CL_Obj *args, int nargs)
      */
     int i;
 
+    /* Reader-GF fast path, same probe as OP_CALL's (see cl_vm_run): a
+     * one-arg call to a promoted reader GF is answered right here — no
+     * unwrap to the discriminating function, no stub frame, no VM entry.
+     * This is the path every JIT'd call takes (cl_jit_runtime_call and
+     * cl_jit_runtime_apply both land here with the raw GF struct), so on
+     * the m68k target this probe IS the reader fast path; it also serves
+     * host trampolines (MAPCAR/REDUCE/SORT keys and tests, APPLY).
+     * cl_gf_reader_ic_probe is non-allocating and non-erroring; a miss
+     * (or unbound slot) yields CL_UNBOUND and falls through to full
+     * dispatch below.  Unlike OP_TAILCALL there is no frame to unwind —
+     * cl_vm_apply is call-and-return — so no tail exclusion is needed.
+     * On a hit, leave the same mv state a normal 1-value return would
+     * (mirrors call_builtin). */
+    if (nargs == 1 && cl_funcallable_instance_p(func)) {
+        CL_Obj slot_v = cl_gf_reader_ic_probe(func, args[0]);
+        if (slot_v != CL_UNBOUND) {
+            cl_mv_count = 1;
+            cl_mv_values[0] = slot_v;
+            return slot_v;
+        }
+    }
+
     /* Unwrap funcallable instances (e.g. a generic-function struct) so the
      * standard call path sees the underlying discriminating function. */
     func = cl_unwrap_funcallable(func);
@@ -3398,6 +3420,24 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 if (CL_NULL_P(apply_func) || apply_func == CL_UNBOUND)
                     cl_error(CL_ERR_TYPE, "APPLY: symbol has no function binding");
             }
+
+            /* Reader-GF fast path — same probe as OP_CALL's, before the
+             * unwrap below discards the GF identity.  OP_APPLY is
+             * call-and-return (nothing to unwind), so unlike OP_TAILCALL
+             * there is no tail exclusion.  Non-allocating, so the
+             * apply_func root stays balanced on this early exit. */
+            if (nflat == 1 && cl_funcallable_instance_p(apply_func)) {
+                CL_Obj slot_v =
+                    cl_gf_reader_ic_probe(apply_func, cl_vm.stack[args_base]);
+                if (slot_v != CL_UNBOUND) {
+                    cl_vm.sp = args_base;   /* drop the spread arg */
+                    cl_vm_push(slot_v);
+                    cl_mv_count = 1;
+                    CL_GC_UNPROTECT(1);     /* apply_func */
+                    VM_BREAK;
+                }
+            }
+
             /* Unwrap funcallable instances (GF struct → discriminating fn). */
             apply_func = cl_unwrap_funcallable(apply_func);
 
