@@ -442,6 +442,21 @@ definition-time call sites. Kept as backlog for algorithmic completeness; the
 
 **Files**: `src/core/builtins_struct.c`, `lib/clos.lisp`
 
+**Follow-up — ✅ DONE (2026-07-10): SLOT-VALUE compile-time inline + pair index.**
+After the reader-GF fast dispatch work, `SLOT-VALUE` was still ~4× slower than
+a promoted reader — inverted from what users expect.  The remaining cost was
+the full Lisp call frame of the `SLOT-VALUE`/`%SET-SLOT-VALUE` DEFUNs plus the
+linear specs-list walk in `struct_slot_resolve`.  Fixed without a new opcode
+or FASL format change: compiler macros on both DEFUNs splice the fast-path
+test into every compiled call site (`lib/clos.lisp`); `compile_setf` routes
+defsetf updaters through `compile_call` so setter compiler macros can fire at
+all (`compiler.c`); and a `(type-name, slot-name) → index` pair table built
+alongside the registry hash index makes resolution O(1) at any slot position
+(`builtins_struct.c`).  Measured (host, 8-unrolled, best-of-3): read 77.5 →
+**56 ns**, write 72.5 → **51 ns**, deep slot 11-of-12 68 → **56 ns** (flat).
+Tracked by `clos.slot-value` / `clos.slot-value-deep` / `struct.slot-value`
+in bench-opt.  See docs/benchmarks.md 2026-07-10.
+
 ---
 
 ### 3.2 Keyword Argument Pre-computation

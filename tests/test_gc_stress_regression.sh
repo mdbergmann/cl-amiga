@@ -3882,6 +3882,73 @@ check_contains "reader-GF case runs to completion" "RG-DONE" "$out"
 check_absent   "no corruption in reader-GF case" \
   "corrupted pointer\|not of type\|Guru\|SIGSEGV\|badmark" "$out"
 
+# ---------------------------------------------------------------------------
+# SLOT-VALUE compiler-macro inline + (type, slot) pair index under
+# compact-every-alloc.
+#
+# (SLOT-VALUE obj 'x) and (SETF (SLOT-VALUE obj 'x) v) compile to an inlined
+# fast-path test (compiler macros in clos.lisp); compile_setf builds the
+# updater call form with cl_cons at COMPILE time (GC-protected cursors — this
+# whole file compiles under stress, exercising that path constantly).  At run
+# time struct_slot_resolve answers through the pair index, which compaction
+# invalidates on EVERY alloc here: each access after a cons goes through a
+# full dirty -> rebuild -> probe cycle, and a stale or misforwarded pair
+# entry reads the wrong slot.  Class redefinition must also invalidate it.
+# ---------------------------------------------------------------------------
+cat > "$WORK/slotvalue.lisp" <<'EOF'
+(defclass sv-a () ((x :initform 5) (y :initform 6)))
+(defclass sv-w ()
+  ((s0 :initform 0) (s1 :initform 1) (s2 :initform 2) (s3 :initform 3)
+   (s4 :initform 4) (s5 :initform 5) (s6 :initform 6) (s7 :initform 7)
+   (s8 :initform 8) (s9 :initform 9) (s10 :initform 10) (s11 :initform 11)))
+;; inlined read+write with allocation churn between accesses: the pair
+;; index is rebuilt under stress on practically every access
+(let ((a (make-instance 'sv-a)) (acc 0))
+  (dotimes (i 60)
+    (make-list 3)
+    (setf (slot-value a 'x) (+ (slot-value a 'x) 1))
+    (setq acc (+ acc (slot-value a 'y))))
+  (format t "SV-RW:~a:~a~%" (slot-value a 'x) acc))     ; 5+60=65, 60*6=360
+;; deep slot of a wide class through the pair index
+(let ((w (make-instance 'sv-w)) (acc 0))
+  (dotimes (i 40) (make-list 2) (setq acc (+ acc (slot-value w 's11))))
+  (format t "SV-WIDE:~a~%" acc))                        ; 40 * 11 = 440
+;; non-constant slot-name (the macro's gensym-bound path)
+(let ((a (make-instance 'sv-a)) (names (list 'x 'y)) (acc 0))
+  (dotimes (i 30)
+    (make-list 2)
+    (dolist (n names) (setq acc (+ acc (slot-value a n)))))
+  (format t "SV-VARNAME:~a~%" acc))                     ; 30 * (5+6) = 330
+;; unbound slot routes to the SLOT-UNBOUND protocol through the inline
+(defclass sv-u () ((x) (y :initform 3)))
+(let ((u (make-instance 'sv-u)))
+  (format t "SV-UNBOUND:~a~%"
+          (handler-case (slot-value u 'x)
+            (unbound-slot () (slot-value u 'y)))))      ; 3
+;; class redefinition moves the slot: a stale pair entry reads a pad slot
+(defclass sv-r () ((a :initform 1) (b :initform 2)))
+(let ((acc 0))
+  (dotimes (i 20) (make-list 2)
+    (setq acc (+ acc (slot-value (make-instance 'sv-r) 'b))))
+  (format t "SV-PREREDEF:~a~%" acc))                    ; 20 * 2 = 40
+(defclass sv-r () ((pad1 :initform 0) (pad2 :initform 0) (b :initform 9)))
+(let ((acc 0))
+  (dotimes (i 20) (make-list 2)
+    (setq acc (+ acc (slot-value (make-instance 'sv-r) 'b))))
+  (format t "SV-REDEF:~a~%" acc))                       ; 20 * 9 = 180
+(format t "SV-DONE~%")
+EOF
+out=$(run_stress "$WORK/slotvalue.lisp")
+check_contains "inlined slot-value read+write stable under stress" "SV-RW:65:360" "$out"
+check_contains "wide-class deep slot through pair index" "SV-WIDE:440" "$out"
+check_contains "non-constant slot-name path" "SV-VARNAME:330" "$out"
+check_contains "unbound slot signals UNBOUND-SLOT through inline" "SV-UNBOUND:3" "$out"
+check_contains "pair index correct before redefinition" "SV-PREREDEF:40" "$out"
+check_contains "pair index invalidated by class redefinition" "SV-REDEF:180" "$out"
+check_contains "slot-value case runs to completion" "SV-DONE" "$out"
+check_absent   "no corruption in slot-value case" \
+  "corrupted pointer\|not of type\|Guru\|SIGSEGV\|badmark" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

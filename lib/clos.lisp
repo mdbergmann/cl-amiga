@@ -817,6 +817,58 @@ Specialize via defmethod to provide lazy initialization."
 
 (defsetf slot-value %set-slot-value)
 
+;;; Compile-time inlining of the SLOT-VALUE fast path.  SLOT-VALUE and
+;;; %SET-SLOT-VALUE are ordinary DEFUNs, so every access paid a full
+;;; Lisp call frame before reaching the fused %STRUCT-SLOT-VALUE /
+;;; %STRUCT-SLOT-STORE builtin — the frame, not the slot lookup, is the
+;;; bulk of the cost.  These compiler macros splice the DEFUN bodies'
+;;; exact fast-path test into every compiled call site, the same
+;;; treatment DEFCLASS accessors already get from the body templates
+;;; below; WITH-SLOTS expands to SLOT-VALUE forms and inherits this.
+;;;
+;;; Semantics are identical to the DEFUNs: the extended-protocol check
+;;; and the unbound-marker miss fall back to the same slow-path
+;;; functions.  (DECLAIM (NOTINLINE SLOT-VALUE)) inhibits the expansion
+;;; (compile_call checks notinline before consulting compiler macros),
+;;; and FUNCALL/APPLY of #'SLOT-VALUE still goes through the DEFUN.
+;;;
+;;; The instance form is always LET-bound (it may be a symbol-macro or
+;;; have effects; the expansion references it twice).  A constant
+;;; slot-name — the common (slot-value obj 'x) shape — is spliced in
+;;; directly; re-evaluating a constant is unobservable, so evaluation
+;;; order is preserved either way.
+
+(defun %slot-name-constant-p (form)
+  (or (keywordp form)
+      (and (consp form) (eq (car form) 'quote))))
+
+(define-compiler-macro slot-value (instance slot-name)
+  (let* ((obj (gensym "OBJ"))
+         (const-p (%slot-name-constant-p slot-name))
+         (name (if const-p slot-name (gensym "NAME")))
+         (v (gensym "V")))
+    `(let ((,obj ,instance)
+           ,@(unless const-p `((,name ,slot-name))))
+       (if *slot-access-protocol-extended-p*
+           (%slot-value-slow ,obj ,name)
+           (let ((,v (%struct-slot-value ,obj ,name *slot-unbound-marker*)))
+             (if (eq ,v *slot-unbound-marker*)
+                 (%slot-value-slow ,obj ,name)
+                 ,v))))))
+
+(define-compiler-macro %set-slot-value (instance slot-name new-value)
+  (let* ((obj (gensym "OBJ"))
+         (const-p (%slot-name-constant-p slot-name))
+         (name (if const-p slot-name (gensym "NAME")))
+         (val (gensym "VAL")))
+    `(let ((,obj ,instance)
+           ,@(unless const-p `((,name ,slot-name)))
+           (,val ,new-value))
+       (if (or *slot-access-protocol-extended-p*
+               (not (%struct-slot-store ,obj ,name ,val)))
+           (%set-slot-value-slow ,obj ,name ,val)
+           ,val))))
+
 (defun slot-boundp (instance slot-name)
   "Return T if SLOT-NAME is bound in INSTANCE.
    Structures are always considered bound (DEFSTRUCT slots have initial values)."
@@ -1291,19 +1343,24 @@ Specialize via defmethod to provide lazy initialization."
 
 (defun %accessor-reader-body (obj-var slot-name)
   "Body form for a DEFCLASS :reader/:accessor function on SLOT-NAME."
+  ;; Fall back to %SLOT-VALUE-SLOW directly, not SLOT-VALUE: the
+  ;; SLOT-VALUE compiler macro would re-inline the fast-path test this
+  ;; body just failed, bloating every generated accessor for nothing.
+  ;; %SLOT-VALUE-SLOW re-checks the extended-protocol latch itself, so
+  ;; both fallback reasons route exactly as SLOT-VALUE's DEFUN does.
   `(if *slot-access-protocol-extended-p*
-       (slot-value ,obj-var ',slot-name)
+       (%slot-value-slow ,obj-var ',slot-name)
        (let ((v (%struct-slot-value ,obj-var ',slot-name
                                     *slot-unbound-marker*)))
          (if (eq v *slot-unbound-marker*)
-             (slot-value ,obj-var ',slot-name)
+             (%slot-value-slow ,obj-var ',slot-name)
              v))))
 
 (defun %accessor-writer-body (obj-var slot-name val-var)
   "Body form for a DEFCLASS :writer/:accessor setter on SLOT-NAME."
   `(if (or *slot-access-protocol-extended-p*
            (not (%struct-slot-store ,obj-var ',slot-name ,val-var)))
-       (setf (slot-value ,obj-var ',slot-name) ,val-var)
+       (%set-slot-value-slow ,obj-var ',slot-name ,val-var)
        ,val-var))
 
 (defmacro defclass (name direct-superclasses slot-specifiers &rest class-options)
