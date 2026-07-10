@@ -427,6 +427,19 @@ int main(int argc, char *argv[])
     cl_reader_init();
     cl_printer_init();
     cl_compiler_init();
+
+    /* CLAMIGA_FORCE_SPEED=0..3 pins (optimize (speed N)) for the whole
+     * process, overriding declaim/declare — the peephole differential
+     * harness runs the same corpus at 0 and 3 and compares results. */
+    {
+        char fsbuf[8];
+        const char *fs = platform_getenv("CLAMIGA_FORCE_SPEED", fsbuf,
+                                         (int)sizeof(fsbuf));
+        if (fs && fs[0] >= '0' && fs[0] <= '3' && fs[1] == '\0') {
+            extern int cl_optimize_force_speed;
+            cl_optimize_force_speed = fs[0] - '0';
+        }
+    }
     cl_jit_init();
     if (no_jit) cl_jit_set_active(0);
     cl_vm_init(stack_entries, frame_count);

@@ -2350,7 +2350,17 @@ void cl_process_declaration_specifier(CL_Compiler *c, CL_Obj spec, int proclaime
             /* C's optimize_settings is exclusively owned by this thread's
              * compile chain — no lock needed (see the function comment). */
             if (c) {
-                if (name == SYM_SPEED) c->optimize_settings.speed = (uint8_t)val;
+                if (name == SYM_SPEED) {
+                    extern int cl_optimize_force_speed;
+                    if (cl_optimize_force_speed >= 0)
+                        val = cl_optimize_force_speed;
+                    c->optimize_settings.speed = (uint8_t)val;
+                    /* High-water mark for the peephole post-pass: body
+                     * declares are scope-restored before finalization, so
+                     * the pass gates on the maximum ever in effect. */
+                    if ((uint8_t)val > c->peep_speed_max)
+                        c->peep_speed_max = (uint8_t)val;
+                }
                 else if (name == SYM_SAFETY) c->optimize_settings.safety = (uint8_t)val;
                 else if (name == SYM_DEBUG) c->optimize_settings.debug = (uint8_t)val;
                 else if (name == SYM_SPACE) c->optimize_settings.space = (uint8_t)val;

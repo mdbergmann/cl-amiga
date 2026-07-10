@@ -222,7 +222,7 @@ Phases 1-10 are complete. The system has:
 - `gentemp`, `*gensym-counter*`
 
 **Optimization:**
-- Bytecode peephole optimizer (fused opcodes, constant folding, dead code elimination, jump threading)
+- ~~Bytecode peephole optimizer~~ ✅ DONE 2026-07-10 (spec 1.8: `src/core/peephole.c`, gated on `speed >= 2` — store-reload elimination, pure-pop elision, NOT-branch fusion, jump threading, dead code; constant folding + dead branches landed earlier via spec 1.3)
 - Compiler optimizations (function inlining)
 - Generational or incremental GC
 - Dispatch caching for generic functions

@@ -8810,6 +8810,62 @@
   (locally (declare (optimize (safety 0)))
     (destructuring-bind (a b) '(1) (list a b))))
 
+; --- Peephole post-pass (spec 1.8, speed >= 2) ---
+; The (declaim (optimize (speed 3))) earlier in this file already routes
+; most of the suite through the pass; these cases target each rewrite
+; pattern and each guard explicitly.  The m68k JIT consumes the rewritten
+; bytecode, so on Amiga this also validates the JIT walker over optimized
+; streams.
+(defun peep-setq-chain (x)
+  (declare (optimize (speed 3)))
+  (setq x (+ x 1)) (setq x (* x 2)) (setq x (- x 3)) x)
+(check "peep setq chain" 19 (peep-setq-chain 10))
+(defun peep-not-if (x)
+  (declare (optimize (speed 3)))
+  (if (not (< x 10)) :big :small))
+(check "peep not-if small" :small (peep-not-if 5))
+(check "peep not-if big" :big (peep-not-if 50))
+(defun peep-loop (n)
+  (declare (optimize (speed 3)))
+  (let ((s 0)) (dotimes (i n) (setq s (+ s i))) s))
+(check "peep loop backward jump" 4950 (peep-loop 100))
+(defun peep-tagbody (n)
+  (declare (optimize (speed 3)))
+  (let ((s 0) (i 0))
+    (tagbody
+     top (when (>= i n) (go done))
+         (setq s (+ s i)) (setq i (+ i 1)) (go top)
+     done)
+    s))
+(check "peep tagbody landing pad" 4950 (peep-tagbody 100))
+(defun peep-catch (x)
+  (declare (optimize (speed 3)))
+  (catch 'peep-tag (when x (throw 'peep-tag :thrown)) :fell))
+(check "peep catch thrown" :thrown (peep-catch t))
+(check "peep catch fell" :fell (peep-catch nil))
+(defun peep-mv ()
+  (declare (optimize (speed 3)))
+  (progn 42 (values 1 2 3)))
+(check "peep mv preserved" '(1 2 3) (multiple-value-list (peep-mv)))
+(defun peep-discard-car (x)
+  (declare (optimize (speed 3)))
+  (progn (car x) :ok))
+(check "peep discarded car signals" :signaled
+  (handler-case (peep-discard-car 5) (type-error () :signaled)))
+(check "peep discarded car ok" :ok (peep-discard-car '(1)))
+(defun peep-closure (n)
+  (declare (optimize (speed 3)))
+  (let ((acc nil))
+    (dotimes (i n) (push (let ((j i)) (lambda () j)) acc))
+    (let ((s 0)) (dolist (f acc) (setq s (+ s (funcall f)))) s)))
+(check "peep closure captures" 45 (peep-closure 10))
+(defun peep-dead-branch (x)
+  (declare (optimize (speed 3)))
+  (if (< x 0) (if (< x -10) :ll :l) (if (> x 10) :h :m)))
+(check "peep nested branches" '(:ll :l :m :h)
+  (list (peep-dead-branch -50) (peep-dead-branch -5)
+        (peep-dead-branch 5) (peep-dead-branch 50)))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

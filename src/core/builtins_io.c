@@ -2419,86 +2419,26 @@ static CL_Obj bi_gentemp(CL_Obj *args, int n)
 
 /* --- Disassemble --- */
 
-typedef struct {
-    const char *name;
-    uint8_t arg_type;
-} DisasmInfo;
+/* Opcode names and operand shapes come from the shared CL_OPCODE_LIST table
+ * (opcodes.h / cl_opcode_info) — the same source the peephole decoder uses,
+ * so the disassembler can never drift out of sync with the instruction set
+ * again (its previous private table was missing ~10 newer opcodes, which
+ * desynchronized all output after the first TAGBODY/PROGV/DEFSETF/DEFVAR/
+ * STRUCT_REF instruction). */
 
-static DisasmInfo disasm_opcode_info(uint8_t op)
+/* Does this u16-operand opcode index the constant pool? (for annotation) */
+static int disasm_u16_is_const(uint8_t op)
 {
-    DisasmInfo info;
-    info.name = NULL;
-    info.arg_type = OP_ARG_NONE;
-
     switch (op) {
-    case OP_CONST:      info.name = "CONST";      info.arg_type = OP_ARG_U16; break;
-    case OP_LOAD:       info.name = "LOAD";       info.arg_type = OP_ARG_U8;  break;
-    case OP_STORE:      info.name = "STORE";      info.arg_type = OP_ARG_U8;  break;
-    case OP_GLOAD:      info.name = "GLOAD";      info.arg_type = OP_ARG_U16; break;
-    case OP_GSTORE:     info.name = "GSTORE";     info.arg_type = OP_ARG_U16; break;
-    case OP_UPVAL:      info.name = "UPVAL";      info.arg_type = OP_ARG_U8;  break;
-    case OP_POP:        info.name = "POP";        break;
-    case OP_DUP:        info.name = "DUP";        break;
-    case OP_CONS:       info.name = "CONS";       break;
-    case OP_CAR:        info.name = "CAR";        break;
-    case OP_CDR:        info.name = "CDR";        break;
-    case OP_ADD:        info.name = "ADD";        break;
-    case OP_SUB:        info.name = "SUB";        break;
-    case OP_MUL:        info.name = "MUL";        break;
-    case OP_DIV:        info.name = "DIV";        break;
-    case OP_EQ:         info.name = "EQ";         break;
-    case OP_LT:         info.name = "LT";         break;
-    case OP_GT:         info.name = "GT";         break;
-    case OP_LE:         info.name = "LE";         break;
-    case OP_GE:         info.name = "GE";         break;
-    case OP_NUMEQ:      info.name = "NUMEQ";     break;
-    case OP_NOT:        info.name = "NOT";        break;
-    case OP_JMP:        info.name = "JMP";        info.arg_type = OP_ARG_I32; break;
-    case OP_JNIL:       info.name = "JNIL";       info.arg_type = OP_ARG_I32; break;
-    case OP_JTRUE:      info.name = "JTRUE";      info.arg_type = OP_ARG_I32; break;
-    case OP_CALL:       info.name = "CALL";       info.arg_type = OP_ARG_U8;  break;
-    case OP_TAILCALL:   info.name = "TAILCALL";   info.arg_type = OP_ARG_U8;  break;
-    case OP_RET:        info.name = "RET";        break;
-    case OP_CLOSURE:    info.name = "CLOSURE";    info.arg_type = OP_ARG_U16; break;
-    case OP_APPLY:      info.name = "APPLY";      break;
-    case OP_LIST:       info.name = "LIST";       info.arg_type = OP_ARG_U8;  break;
-    case OP_NIL:        info.name = "NIL";        break;
-    case OP_T:          info.name = "T";          break;
-    case OP_FLOAD:      info.name = "FLOAD";      info.arg_type = OP_ARG_U16; break;
-    case OP_FSTORE:     info.name = "FSTORE";     info.arg_type = OP_ARG_U16; break;
-    case OP_MAKE_CELL:  info.name = "MAKE_CELL";  break;
-    case OP_CELL_REF:   info.name = "CELL_REF";   break;
-    case OP_CELL_SET_LOCAL: info.name = "CELL_SET_LOCAL"; info.arg_type = OP_ARG_U8; break;
-    case OP_CELL_SET_UPVAL: info.name = "CELL_SET_UPVAL"; info.arg_type = OP_ARG_U8; break;
-    case OP_DEFMACRO:   info.name = "DEFMACRO";   info.arg_type = OP_ARG_U16; break;
-    case OP_DEFTYPE:    info.name = "DEFTYPE";    info.arg_type = OP_ARG_U16; break;
-    case OP_HANDLER_PUSH: info.name = "HANDLER_PUSH"; info.arg_type = OP_ARG_U16; break;
-    case OP_HANDLER_POP:  info.name = "HANDLER_POP";  info.arg_type = OP_ARG_U8;  break;
-    case OP_RESTART_PUSH: info.name = "RESTART_PUSH"; info.arg_type = OP_ARG_U16; break;
-    case OP_RESTART_POP:  info.name = "RESTART_POP";  info.arg_type = OP_ARG_U8;  break;
-    case OP_ASSERT_TYPE:  info.name = "ASSERT_TYPE";  info.arg_type = OP_ARG_U16; break;
-    case OP_BLOCK_PUSH:   info.name = "BLOCK_PUSH";  info.arg_type = OP_ARG_U16; break;
-    case OP_BLOCK_POP:    info.name = "BLOCK_POP";   break;
-    case OP_BLOCK_RETURN: info.name = "BLOCK_RETURN"; info.arg_type = OP_ARG_U16; break;
-    case OP_ARGC:       info.name = "ARGC";       break;
-    case OP_CATCH:      info.name = "CATCH";      info.arg_type = OP_ARG_I32; break;
-    case OP_UNCATCH:    info.name = "UNCATCH";    break;
-    case OP_UWPROT:     info.name = "UWPROT";     info.arg_type = OP_ARG_I32; break;
-    case OP_UWPOP:      info.name = "UWPOP";      break;
-    case OP_UWRETHROW:  info.name = "UWRETHROW";  break;
-    case OP_MV_LOAD:    info.name = "MV_LOAD";    info.arg_type = OP_ARG_U8;  break;
-    case OP_MV_TO_LIST: info.name = "MV_TO_LIST"; break;
-    case OP_NTH_VALUE:  info.name = "NTH_VALUE";  break;
-    case OP_DYNBIND:    info.name = "DYNBIND";    info.arg_type = OP_ARG_U16; break;
-    case OP_DYNUNBIND:  info.name = "DYNUNBIND";  info.arg_type = OP_ARG_U8;  break;
-    case OP_RPLACA:     info.name = "RPLACA";     break;
-    case OP_RPLACD:     info.name = "RPLACD";     break;
-    case OP_ASET:       info.name = "ASET";       break;
-    case OP_MV_RESET:   info.name = "MV_RESET";   break;
-    case OP_HALT:       info.name = "HALT";       break;
-    default: break;
+    case OP_CONST: case OP_GLOAD: case OP_GSTORE: case OP_FLOAD:
+    case OP_FSTORE: case OP_DEFMACRO: case OP_DEFTYPE: case OP_DYNBIND:
+    case OP_CLOSURE: case OP_HANDLER_PUSH: case OP_RESTART_PUSH:
+    case OP_ASSERT_TYPE: case OP_BLOCK_PUSH: case OP_BLOCK_RETURN:
+    case OP_TAGBODY_PUSH: case OP_TAGBODY_GO: case OP_DEFVAR:
+        return 1;
+    default:
+        return 0;
     }
-    return info;
 }
 
 static void disasm_bytecode(CL_Obj bcobj)
@@ -2559,53 +2499,51 @@ static void disasm_bytecode(CL_Obj bcobj)
     while (ip < len) {
         uint32_t start_ip = ip;
         uint8_t op = code[ip++];
-        DisasmInfo info = disasm_opcode_info(op);
+        const CL_OpcodeInfo *info = cl_opcode_info(op);
 
-        if (!info.name) {
+        if (!info) {
             snprintf(line, sizeof(line), "  %04lu: ???          0x%02X\n",
                     (unsigned long)start_ip, (unsigned int)op);
             cl_write_cstring_to_stdout(line);
             continue;
         }
 
-        switch (info.arg_type) {
-        case OP_ARG_NONE:
+        switch ((CL_OperandKind)info->operands) {
+        case CL_OPND_NONE:
             snprintf(line, sizeof(line), "  %04lu: %s\n",
-                    (unsigned long)start_ip, info.name);
+                    (unsigned long)start_ip, info->name);
             cl_write_cstring_to_stdout(line);
             break;
 
-        case OP_ARG_U8: {
+        case CL_OPND_U8: {
             uint8_t val = code[ip++];
             snprintf(line, sizeof(line), "  %04lu: %-12s %u\n",
-                    (unsigned long)start_ip, info.name, (unsigned int)val);
+                    (unsigned long)start_ip, info->name, (unsigned int)val);
             cl_write_cstring_to_stdout(line);
             break;
         }
 
-        case OP_ARG_U16: {
+        case CL_OPND_U16:
+        case CL_OPND_U16_JREL:
+        case CL_OPND_CLOSURE: {
             uint16_t val = (uint16_t)((code[ip] << 8) | code[ip + 1]);
             ip += 2;
             annot[0] = '\0';
-            if (val < n_constants &&
-                (op == OP_CONST || op == OP_GLOAD || op == OP_GSTORE ||
-                 op == OP_FLOAD || op == OP_DEFMACRO || op == OP_DEFTYPE || op == OP_DYNBIND ||
-                 op == OP_CLOSURE || op == OP_HANDLER_PUSH || op == OP_ASSERT_TYPE ||
-                 op == OP_BLOCK_PUSH || op == OP_BLOCK_RETURN)) {
+            if (val < n_constants && disasm_u16_is_const(op)) {
                 cl_prin1_to_string(constants[val], annot, sizeof(annot));
             }
             if (annot[0]) {
                 snprintf(line, sizeof(line), "  %04lu: %-12s %-4u ; %s\n",
-                        (unsigned long)start_ip, info.name,
+                        (unsigned long)start_ip, info->name,
                         (unsigned int)val, annot);
             } else {
                 snprintf(line, sizeof(line), "  %04lu: %-12s %u\n",
-                        (unsigned long)start_ip, info.name, (unsigned int)val);
+                        (unsigned long)start_ip, info->name, (unsigned int)val);
             }
             cl_write_cstring_to_stdout(line);
 
-            /* OP_BLOCK_PUSH: also has i32 offset after u16 const_idx */
-            if (op == OP_BLOCK_PUSH) {
+            /* BLOCK_PUSH/TAGBODY_PUSH: i32 landing-pad offset after the u16 */
+            if (info->operands == CL_OPND_U16_JREL) {
                 int32_t boff = (int32_t)(((uint32_t)code[ip] << 24) |
                                          ((uint32_t)code[ip + 1] << 16) |
                                          ((uint32_t)code[ip + 2] << 8) |
@@ -2618,7 +2556,7 @@ static void disasm_bytecode(CL_Obj bcobj)
             }
 
             /* OP_CLOSURE: read and print capture descriptors */
-            if (op == OP_CLOSURE && val < n_constants) {
+            if (info->operands == CL_OPND_CLOSURE && val < n_constants) {
                 CL_Obj tmpl = constants[val];
                 if (CL_BYTECODE_P(tmpl)) {
                     /* hoist n_upvalues: tmpl_bc goes stale after the first
@@ -2640,25 +2578,44 @@ static void disasm_bytecode(CL_Obj bcobj)
             break;
         }
 
-        case OP_ARG_I16: {
-            int16_t val = (int16_t)((code[ip] << 8) | code[ip + 1]);
-            ip += 2;
-            snprintf(line, sizeof(line), "  %04lu: %-12s %+d    ; -> %04lu\n",
-                    (unsigned long)start_ip, info.name, (int)val,
-                    (unsigned long)((int32_t)ip + (int32_t)val));
+        case CL_OPND_U16_U16: {
+            uint16_t a = (uint16_t)((code[ip] << 8) | code[ip + 1]);
+            uint16_t b = (uint16_t)((code[ip + 2] << 8) | code[ip + 3]);
+            ip += 4;
+            snprintf(line, sizeof(line), "  %04lu: %-12s %u %u\n",
+                    (unsigned long)start_ip, info->name,
+                    (unsigned int)a, (unsigned int)b);
             cl_write_cstring_to_stdout(line);
             break;
         }
 
-        case OP_ARG_I32: {
+        case CL_OPND_JREL: {
             int32_t val = (int32_t)(((uint32_t)code[ip] << 24) |
                                     ((uint32_t)code[ip + 1] << 16) |
                                     ((uint32_t)code[ip + 2] << 8) |
                                     (uint32_t)code[ip + 3]);
             ip += 4;
             snprintf(line, sizeof(line), "  %04lu: %-12s %+d    ; -> %04lu\n",
-                    (unsigned long)start_ip, info.name, (int)val,
+                    (unsigned long)start_ip, info->name, (int)val,
                     (unsigned long)((int32_t)ip + val));
+            cl_write_cstring_to_stdout(line);
+            break;
+        }
+
+        case CL_OPND_AMIGA: {
+            /* u16 base-sym-idx, i16 offset, u32 regspec, u8 nargs */
+            uint16_t sidx = (uint16_t)((code[ip] << 8) | code[ip + 1]);
+            int16_t loff = (int16_t)((code[ip + 2] << 8) | code[ip + 3]);
+            uint32_t regspec = ((uint32_t)code[ip + 4] << 24) |
+                               ((uint32_t)code[ip + 5] << 16) |
+                               ((uint32_t)code[ip + 6] << 8) |
+                               (uint32_t)code[ip + 7];
+            uint8_t nargs = code[ip + 8];
+            ip += 9;
+            snprintf(line, sizeof(line),
+                    "  %04lu: %-12s sym %u off %d regspec 0x%08lx nargs %u\n",
+                    (unsigned long)start_ip, info->name, (unsigned int)sidx,
+                    (int)loff, (unsigned long)regspec, (unsigned int)nargs);
             cl_write_cstring_to_stdout(line);
             break;
         }
