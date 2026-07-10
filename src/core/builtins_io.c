@@ -2731,10 +2731,13 @@ static CL_Obj bi_disassemble(CL_Obj *args, int n)
 
 /* --- Timing --- */
 
+/* The TIME start-value helpers mask with CL_FIXNUM_MAX (30 bits): anything
+ * wider no longer fits the tagged-fixnum encoding and reads back negative.
+ * %TIME-REPORT's wraparound arithmetic uses the same modulus. */
 static CL_Obj bi_get_internal_time(CL_Obj *args, int n)
 {
     CL_UNUSED(args); CL_UNUSED(n);
-    return CL_MAKE_FIXNUM((int32_t)(platform_time_ms() & 0x7FFFFFFF));
+    return CL_MAKE_FIXNUM((int32_t)(platform_time_ms() & CL_FIXNUM_MAX));
 }
 
 static CL_Obj bi_get_run_time(CL_Obj *args, int n)
@@ -2783,13 +2786,13 @@ static CL_Obj bi_boot_trace_clos(CL_Obj *args, int n)
 static CL_Obj bi_get_bytes_consed(CL_Obj *args, int n)
 {
     CL_UNUSED(args); CL_UNUSED(n);
-    return CL_MAKE_FIXNUM((int32_t)(cl_heap.total_consed & 0x7FFFFFFF));
+    return CL_MAKE_FIXNUM((int32_t)(cl_heap.total_consed & CL_FIXNUM_MAX));
 }
 
 static CL_Obj bi_get_gc_count(CL_Obj *args, int n)
 {
     CL_UNUSED(args); CL_UNUSED(n);
-    return CL_MAKE_FIXNUM((int32_t)(cl_heap.gc_count & 0x7FFFFFFF));
+    return CL_MAKE_FIXNUM((int32_t)(cl_heap.gc_count & CL_FIXNUM_MAX));
 }
 
 /* ext:gc — trigger garbage collection + pending compaction */
@@ -2852,19 +2855,19 @@ static CL_Obj bi_time_report(CL_Obj *args, int n)
     start_consed = (uint32_t)CL_FIXNUM_VAL(args[1]);
     start_gc = (uint32_t)CL_FIXNUM_VAL(args[2]);
 
-    end_time = platform_time_ms() & 0x7FFFFFFF;
-    end_consed = cl_heap.total_consed & 0x7FFFFFFF;
-    end_gc = cl_heap.gc_count & 0x7FFFFFFF;
+    end_time = platform_time_ms() & CL_FIXNUM_MAX;
+    end_consed = cl_heap.total_consed & CL_FIXNUM_MAX;
+    end_gc = cl_heap.gc_count & CL_FIXNUM_MAX;
 
     elapsed = (end_time >= start_time)
         ? (end_time - start_time)
-        : ((0x7FFFFFFF - start_time) + end_time + 1);
+        : ((CL_FIXNUM_MAX - start_time) + end_time + 1);
     bytes_consed = (end_consed >= start_consed)
         ? (end_consed - start_consed)
-        : ((0x7FFFFFFF - start_consed) + end_consed + 1);
+        : ((CL_FIXNUM_MAX - start_consed) + end_consed + 1);
     gc_cycles = (end_gc >= start_gc)
         ? (end_gc - start_gc)
-        : ((0x7FFFFFFF - start_gc) + end_gc + 1);
+        : ((CL_FIXNUM_MAX - start_gc) + end_gc + 1);
 
     /* 4th arg (start run/CPU time) is optional: bytecode compiled before it
      * existed (stale user .fasl) still calls with 3 args. */

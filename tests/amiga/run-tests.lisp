@@ -2137,6 +2137,14 @@
   (let ((before (get-internal-run-time)))
     (dotimes (i 10000))
     (>= (get-internal-run-time) before)))
+; TIME start-value helpers stay in fixnum range (regression: 31-bit masks
+; overflowed the 30-bit fixnum encoding once a counter passed 2^30)
+(check "time helpers fixnum range" t
+  (and (<= 0 (%get-internal-time) most-positive-fixnum)
+       (<= 0 (%get-run-time) most-positive-fixnum)
+       (<= 0 (%get-bytes-consed) most-positive-fixnum)
+       (<= 0 (%get-gc-count) most-positive-fixnum)
+       t))
 
 ; --- Time stream redirection ---
 (check "time captured by *trace-output*" t
