@@ -430,6 +430,25 @@ Verify the (deterministic) result against EXPECTED."
                    (setq s (+ s (%bo-point-x p) (%bo-point-y p)))))
                s))))
 
+;; Polymorphic accessor: the same reader GF called on alternating receiver
+;; classes.  The IC holds up to 4 (TYPE-NAME . SLOT-INDEX) entries, so both
+;; classes hit; with the old single-entry cache every alternation was a full
+;; slow dispatch + %COMPUTE-APPLICABLE-METHODS (~80x per access, 2026-07-10).
+;; Watch clos.accessor-poly staying close to clos.accessor.
+(defclass %bo-point3 (%bo-point) ((z :initform 0)))
+
+(let ((n 10000) (reps (%bo-scaled 10))
+      (p (make-instance '%bo-point :x 3 :y 4))
+      (q (make-instance '%bo-point3 :x 30 :y 40)))
+  (%bo-run "clos.accessor-poly" (* 33 n)
+           (lambda ()
+             (let ((s 0))
+               (dotimes (r reps)
+                 (setq s 0)
+                 (dotimes (i n)
+                   (setq s (+ s (%bo-point-x p) (%bo-point-x q)))))
+               s))))
+
 ;; =====================================================================
 ;; struct.* — DEFSTRUCT slot access (spec 3.1).  The 2026-07-05 sento
 ;; runtime profile showed SLOT-VALUE on struct instances resolving the

@@ -15,9 +15,10 @@
 /* Reader-GF fast dispatch lives in its own test image on purpose.
  *
  * A GF whose whole method set is DEFCLASS-generated readers for one slot is
- * "promoted": its inline cache holds (TYPE-NAME . SLOT-INDEX) and OP_CALL
- * answers the call directly, without unwrapping to the discriminating
- * function.  Promotion requires *SLOT-ACCESS-PROTOCOL-EXTENDED-P* to be NIL.
+ * "promoted": its inline cache holds up to 4 (TYPE-NAME . SLOT-INDEX)
+ * entries and OP_CALL answers the call directly, without unwrapping to the
+ * discriminating function.  Promotion requires
+ * *SLOT-ACCESS-PROTOCOL-EXTENDED-P* to be NIL.
  *
  * That flag is a ONE-WAY LATCH: defining any SLOT-VALUE-USING-CLASS method
  * sets it for the life of the image, and REMOVE-METHOD does not clear it.
@@ -91,6 +92,68 @@ TEST(reader_gf_polymorphic_differing_slot_indices)
         "(let ((a (make-instance 'rg-p)) (b (make-instance 'rg-q)) (acc nil))"
         "  (dotimes (i 3) (push (rg-px a) acc) (push (rg-px b) acc))"
         "  (nreverse acc))"), "(1 2 1 2 1 2)");
+}
+
+TEST(reader_gf_polymorphic_ic_caches_all_classes)
+{
+    /* The IC is a list of (TYPE-NAME . SLOT-INDEX) entries.  After one call
+     * per class both classes must be cached, and further alternation must be
+     * all hits: a hit never rewrites slot 8, so the spine staying EQ proves
+     * the fast path answered every call (the old monomorphic cache rewrote
+     * the IC on every alternation). */
+    eval_print("(defclass rg-ppa () ((x :initform :a :reader rg-ppx)))");
+    eval_print("(defclass rg-ppb () ((pad :initform 0) (x :initform :b :reader rg-ppx)))");
+    ASSERT_STR_EQ(eval_print("(and (gethash #'rg-ppx clamiga:*reader-gfs*) t)"), "T");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((a (make-instance 'rg-ppa)) (b (make-instance 'rg-ppb)))"
+        "  (rg-ppx a) (rg-ppx b)"
+        "  (let ((ic (clamiga::gf-inline-cache #'rg-ppx)) (acc nil))"
+        "    (dotimes (i 5) (push (rg-ppx a) acc) (push (rg-ppx b) acc))"
+        "    (list (length ic)"
+        "          (eq ic (clamiga::gf-inline-cache #'rg-ppx))"
+        "          (remove-duplicates (nreverse acc)))))"),
+        "(2 T (:A :B))");
+}
+
+TEST(reader_gf_polymorphic_eviction_cap)
+{
+    /* Five receiver classes exceed the 4-entry cap: the oldest entry is
+     * evicted, the IC never grows past 4, and every class still reads its
+     * own value (evicted classes just take the slow path again). */
+    eval_print("(defclass rg-e1 () ((x :initform 1 :reader rg-ex)))");
+    eval_print("(defclass rg-e2 () ((x :initform 2 :reader rg-ex)))");
+    eval_print("(defclass rg-e3 () ((x :initform 3 :reader rg-ex)))");
+    eval_print("(defclass rg-e4 () ((x :initform 4 :reader rg-ex)))");
+    eval_print("(defclass rg-e5 () ((pad :initform 0) (x :initform 5 :reader rg-ex)))");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((os (list (make-instance 'rg-e1) (make-instance 'rg-e2)"
+        "                (make-instance 'rg-e3) (make-instance 'rg-e4)"
+        "                (make-instance 'rg-e5)))"
+        "      (acc nil) (maxlen 0))"
+        "  (dotimes (i 3)"
+        "    (dolist (o os)"
+        "      (push (rg-ex o) acc)"
+        "      (setq maxlen (max maxlen"
+        "                        (length (clamiga::gf-inline-cache #'rg-ex))))))"
+        "  (list maxlen (nreverse acc)))"),
+        "(4 (1 2 3 4 5 1 2 3 4 5 1 2 3 4 5))");
+}
+
+TEST(reader_gf_polymorphic_unbound_mix)
+{
+    /* One class's slot bound, the other's unbound, alternating: the bound
+     * class must keep hitting its IC entry while the unbound one signals
+     * UNBOUND-SLOT every time — an unbound read is a probe miss and must
+     * never install a wrong entry that masks the next signal. */
+    eval_print("(defclass rg-mb () ((x :initform :ok :reader rg-mx)))");
+    eval_print("(defclass rg-mu () ((x :reader rg-mx)))");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((b (make-instance 'rg-mb)) (u (make-instance 'rg-mu)) (acc nil))"
+        "  (dotimes (i 3)"
+        "    (push (rg-mx b) acc)"
+        "    (push (handler-case (rg-mx u) (unbound-slot () :unbound)) acc))"
+        "  (nreverse acc))"),
+        "(:OK :UNBOUND :OK :UNBOUND :OK :UNBOUND)");
 }
 
 TEST(reader_gf_inherited_by_subclass)
@@ -238,6 +301,9 @@ int main(void)
      * every reader GF.  It must run last. */
     RUN(reader_gf_promoted_and_reads);
     RUN(reader_gf_polymorphic_differing_slot_indices);
+    RUN(reader_gf_polymorphic_ic_caches_all_classes);
+    RUN(reader_gf_polymorphic_eviction_cap);
+    RUN(reader_gf_polymorphic_unbound_mix);
     RUN(reader_gf_inherited_by_subclass);
     RUN(reader_gf_nil_value_is_not_unbound);
     RUN(reader_gf_unbound_slot_signals);

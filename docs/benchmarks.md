@@ -9,6 +9,42 @@ Related: [specs/performance.md](../specs/performance.md) is the optimization
 
 ---
 
+## 2026-07-10 — polymorphic reader-GF inline cache (host)
+
+**Commit**: follows `58f524c`.
+
+The reader IC (GF slot 8) was a single `(TYPE-NAME . SLOT-INDEX)` entry, so a
+call site alternating between receiver classes missed on every call — and a
+miss is the full slow dispatch plus `%COMPUTE-APPLICABLE-METHODS` plus an IC
+rewrite.  Now the IC is a list of up to 4 entries, most-recently-missed
+first; `cl_gf_reader_ic_probe` walks it with one word-compare per entry, and
+the miss path carries surviving entries over instead of discarding them.
+
+**Environment**: macOS arm64, host bytecode VM, best-of-3.
+
+**Reproduce**: 8 unrolled reader calls per iteration on one GF; receivers
+cycle through 1, 2 or 4 classes (subclasses of one base, each with its own
+`type_desc`), 250k iterations.
+
+| ns per slot access | before | after |
+|---|---|---|
+| 1 class (mono) | 16.5 | 17.5 |
+| 2 classes alternating | ~1340 | 17.5 |
+| 4 classes alternating | ~1340 | 18.5 |
+
+The ~80x alternation penalty is gone; the monomorphic path pays one extra
+spine dereference (~1 ns).  Beyond 4 receiver classes the cap evicts the
+oldest entry and cycling receivers miss again — bounded, correct, and no
+worse than the old behaviour.
+
+Tracked by `clos.accessor-poly` in `trunk/bench-opt.lisp` (7 ms, identical to
+the monomorphic `clos.accessor`, zero allocation).  The m68k JIT caveat from
+the 2026-07-09 entry still applies: JIT'd callers reach the same probe
+through the Lisp reader discriminator, so they get the polymorphic hits too,
+at that tier's cost.
+
+---
+
 ## 2026-07-09 — reader-GF fast dispatch (host)
 
 **Commits**: `5291e7d` (reader inline cache + Lisp discriminator), then

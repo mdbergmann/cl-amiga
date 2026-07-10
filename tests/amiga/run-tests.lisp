@@ -5308,8 +5308,9 @@
 
 ; --- Reader-GF fast dispatch ---
 ; A GF whose whole method set is DEFCLASS-generated readers for one slot is
-; "promoted": its inline cache holds (TYPE-NAME . SLOT-INDEX) and OP_CALL
-; answers the call without unwrapping to the discriminating function.
+; "promoted": its inline cache holds up to 4 (TYPE-NAME . SLOT-INDEX) entries
+; (polymorphic, so alternating receiver classes hit too) and OP_CALL answers
+; the call without unwrapping to the discriminating function.
 ;
 ; These MUST stay above the "Slot-access protocol" section below: the
 ; DEFMETHOD SLOT-VALUE-USING-CLASS there latches
@@ -5330,9 +5331,35 @@
 (check "reader on other class, different index" 30
        (rg-amiga-x (make-instance 'rg-amiga-b)))
 (check "reader on subclass" 3 (rg-amiga-x (make-instance 'rg-amiga-c)))
-(check "polymorphic thrash stays correct" '(3 30 3 30)
+(check "polymorphic alternation stays correct" '(3 30 3 30)
        (let ((a (make-instance 'rg-amiga-a)) (b (make-instance 'rg-amiga-b)))
          (list (rg-amiga-x a) (rg-amiga-x b) (rg-amiga-x a) (rg-amiga-x b))))
+; the IC caches one entry per receiver class; alternating calls are all hits,
+; and a hit never rewrites slot 8 — the spine staying EQ proves it
+(check "polymorphic IC caches both classes and hits" '(t t)
+       (let ((a (make-instance 'rg-amiga-a)) (b (make-instance 'rg-amiga-b)))
+         (rg-amiga-x a) (rg-amiga-x b)
+         (let ((ic (clamiga::gf-inline-cache #'rg-amiga-x)))
+           (dotimes (i 5) (rg-amiga-x a) (rg-amiga-x b))
+           (list (>= (length ic) 2)
+                 (eq ic (clamiga::gf-inline-cache #'rg-amiga-x))))))
+; five receiver classes exceed the 4-entry cap: oldest evicted, values correct
+(defclass rg-amiga-e1 () ((x :initform 1 :reader rg-amiga-ex)))
+(defclass rg-amiga-e2 () ((x :initform 2 :reader rg-amiga-ex)))
+(defclass rg-amiga-e3 () ((x :initform 3 :reader rg-amiga-ex)))
+(defclass rg-amiga-e4 () ((x :initform 4 :reader rg-amiga-ex)))
+(defclass rg-amiga-e5 () ((pad :initform 0) (x :initform 5 :reader rg-amiga-ex)))
+(check "polymorphic IC eviction cap" '(4 (1 2 3 4 5 1 2 3 4 5))
+       (let ((os (list (make-instance 'rg-amiga-e1) (make-instance 'rg-amiga-e2)
+                       (make-instance 'rg-amiga-e3) (make-instance 'rg-amiga-e4)
+                       (make-instance 'rg-amiga-e5)))
+             (acc nil) (maxlen 0))
+         (dotimes (i 2)
+           (dolist (o os)
+             (push (rg-amiga-ex o) acc)
+             (setq maxlen (max maxlen
+                               (length (clamiga::gf-inline-cache #'rg-amiga-ex))))))
+         (list maxlen (nreverse acc))))
 (check "NIL-valued slot is not the unbound marker" nil
        (rg-amiga-n (make-instance 'rg-amiga-a)))
 (check "unbound slot signals through reader" '(u t)

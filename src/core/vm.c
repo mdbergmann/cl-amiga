@@ -2066,13 +2066,15 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 cl_vm.stack[cl_vm.sp - nargs - 1] = func_obj;
             }
 
-            /* Reader-GF fast path: a monomorphic accessor call is answered
-             * right here — no unwrap to the discriminating function, no
-             * frame, no bytecode body.  cl_gf_reader_ic_probe matches the
-             * GF's inline cache against the receiver's type_desc and yields
-             * CL_UNBOUND on a miss (or on an unbound slot), which falls
-             * through to ordinary dispatch below.  Non-allocating, so no GC
-             * can run here and nothing needs GC-protecting.
+            /* Reader-GF fast path: an accessor call is answered right here
+             * — no unwrap to the discriminating function, no frame, no
+             * bytecode body.  cl_gf_reader_ic_probe matches the receiver's
+             * type_desc against the GF's inline cache (up to 4 entries, so
+             * a call site alternating between a few receiver classes still
+             * hits) and yields CL_UNBOUND on a miss (or on an unbound
+             * slot), which falls through to ordinary dispatch below.
+             * Non-allocating, so no GC can run here and nothing needs
+             * GC-protecting.
              *
              * OP_TAILCALL is excluded on purpose: it must unwind the caller's
              * frame, which this shortcut does not do.  Tail-position accessor
