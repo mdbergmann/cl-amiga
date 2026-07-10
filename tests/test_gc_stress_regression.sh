@@ -3806,16 +3806,19 @@ check_absent   "no corruption in fused slot-access case" \
 # ---------------------------------------------------------------------------
 # Reader-GF fast dispatch under compact-every-alloc.
 #
-# A promoted reader GF caches (TYPE-NAME . SLOT-INDEX) in GF slot 8, and
-# OP_CALL reads the receiver's slot straight out of that cache.  Both the
-# cached cons and the type-name symbol are arena-resident and get RELOCATED by
-# the compactor, as does the receiver; a missed forward anywhere in that chain
-# hands back a stale offset and the reader silently returns garbage (or reads
-# out of bounds).  The IC is also rebuilt on every miss, so compaction between
-# the fill and the next hit is exercised constantly here.
+# A promoted reader GF caches up to 4 (TYPE-NAME . SLOT-INDEX) entries in GF
+# slot 8, and OP_CALL reads the receiver's slot straight out of that cache.
+# The list spine, the entry conses and the type-name symbols are all
+# arena-resident and get RELOCATED by the compactor, as does the receiver; a
+# missed forward anywhere in that chain hands back a stale offset and the
+# reader silently returns garbage (or reads out of bounds).  The IC is also
+# rebuilt on every miss (carrying the surviving entries over onto a fresh
+# spine), so compaction between the fill and the next hit is exercised
+# constantly here.
 #
-# Covers: monomorphic hits, polymorphic thrash across two classes whose slot
-# sits at a DIFFERENT index, an inherited reader, a NIL-valued slot (must not
+# Covers: monomorphic hits, polymorphic hits across three classes (one with
+# the slot at a DIFFERENT index, one a subclass), eviction when a fifth class
+# overflows the 4-entry cap, an inherited reader, a NIL-valued slot (must not
 # be confused with the unbound marker, which the VM compares by identity), an
 # unbound slot, and a class redefinition that moves the slot.
 # ---------------------------------------------------------------------------
@@ -3850,6 +3853,21 @@ cat > "$WORK/readergf.lisp" <<'EOF'
 (let ((acc 0))
   (dotimes (i 50) (make-list 4) (setq acc (+ acc (rg-x (make-instance 'rg-a)))))
   (format t "RG-REDEF:~a~%" acc))                    ; 50 * 7 = 350
+;; five receiver classes overflow the 4-entry IC: constant eviction means the
+;; miss path (snapshot old entries, cons a fresh spine) runs under compaction
+;; on every access, and evicted classes must still read their own value
+(defclass rg-e1 () ((x :initform 1 :reader rg-ex)))
+(defclass rg-e2 () ((x :initform 2 :reader rg-ex)))
+(defclass rg-e3 () ((x :initform 3 :reader rg-ex)))
+(defclass rg-e4 () ((x :initform 4 :reader rg-ex)))
+(defclass rg-e5 () ((pad :initform 0) (x :initform 5 :reader rg-ex)))
+(let ((os (list (make-instance 'rg-e1) (make-instance 'rg-e2)
+                (make-instance 'rg-e3) (make-instance 'rg-e4)
+                (make-instance 'rg-e5)))
+      (acc 0))
+  (dotimes (i 20)
+    (dolist (o os) (make-list 2) (setq acc (+ acc (rg-ex o)))))
+  (format t "RG-EVICT:~a~%" acc))                    ; 20 * (1+2+3+4+5) = 300
 (format t "RG-DONE~%")
 EOF
 out=$(run_stress "$WORK/readergf.lisp")
@@ -3859,6 +3877,7 @@ check_contains "NIL-valued slot is not the unbound marker" "RG-NIL:NIL" "$out"
 check_contains "unbound slot signals UNBOUND-SLOT with intact slots through reader IC" \
   "RG-UNBOUND:U:SAME" "$out"
 check_contains "reader IC invalidated by class redefinition" "RG-REDEF:350" "$out"
+check_contains "reader IC eviction under stress stays correct" "RG-EVICT:300" "$out"
 check_contains "reader-GF case runs to completion" "RG-DONE" "$out"
 check_absent   "no corruption in reader-GF case" \
   "corrupted pointer\|not of type\|Guru\|SIGSEGV\|badmark" "$out"

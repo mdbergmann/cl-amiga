@@ -2431,6 +2431,13 @@ When called with no arguments, passes the original method arguments."
 ;;; slot index.  That skips both the effective-method funcall and the
 ;;; per-access CLASS-OF + slot-index resolution %STRUCT-SLOT-VALUE pays.
 ;;;
+;;; The cache is polymorphic: a list of up to 4 (TYPE-NAME . SLOT-INDEX)
+;;; entries, most-recently-missed first.  One entry per receiver class
+;;; means a call site alternating between a few classes (including
+;;; subclasses, which have their own type-desc) hits for all of them —
+;;; with a single entry every alternation was a full slow dispatch plus
+;;; %COMPUTE-APPLICABLE-METHODS, measured ~80x the hit cost per access.
+;;;
 ;;; Correctness gates, all of them load-bearing:
 ;;;   - every method is a generated reader for the SAME slot, unqualified,
 ;;;     under standard method combination, on a 1-required-argument GF;
@@ -2448,6 +2455,9 @@ When called with no arguments, passes the original method arguments."
 ;;;
 ;;; The reader IC shares GF slot 8 with the EMF IC, so it inherits every
 ;;; existing invalidation site (add/remove-method, class redefinition).
+;;; The shapes stay unambiguous: EMF caches put a class object in the
+;;; car ((class . emf) / (class1 class2 . emf)); the reader IC's first
+;;; element is a (TYPE-NAME . SLOT-INDEX) cons.
 
 (defvar *reader-method-slots* (clamiga::%make-sync-hash-table 'eq)
   "Method object -> slot name, for DEFCLASS-generated reader methods.
@@ -2481,18 +2491,42 @@ When called with no arguments, passes the original method arguments."
                  (setq slot s))))
          slot)))
 
+(defun %reader-ic-entries (ic)
+  "IC when it is reader-shaped — a list of (TYPE-NAME . SLOT-INDEX)
+   entries — else NIL.  The EMF caches sharing slot 8 put a class object
+   (never a cons) in their car, so one CONSP look disambiguates."
+  (if (and (consp ic) (consp (car ic))) ic nil))
+
 (defun %gf-reader-1-miss (gf a slot-name)
   "Reader IC miss (or unbound slot).  Take the ordinary slow path, then
-   cache (TYPE-NAME . SLOT-INDEX) for A's class — after the slow path, so
-   its own EMF-cache write to slot 8 does not clobber ours."
-  (multiple-value-prog1 (%gf-dispatch-1-slow gf a)
-    (when (and (not *slot-access-protocol-extended-p*)
-               (structurep a)
-               (%compute-applicable-methods gf (list a)))
-      (let* ((type-name (%struct-type-name a))
-             (idx (%struct-slot-index type-name slot-name)))
-        (when idx
-          (%set-gf-inline-cache gf (cons type-name idx)))))))
+   push (TYPE-NAME . SLOT-INDEX) for A's class onto the reader IC,
+   keeping up to 3 other classes' entries (the C probe walks at most 4;
+   pushing evicts the oldest).  The old entries are snapshotted BEFORE
+   the slow path, whose own EMF-cache write to slot 8 would otherwise
+   throw them away on every miss.  Each kept entry's index is
+   re-validated against the current tables, so an entry made stale by a
+   class redefinition racing this dispatch cannot be resurrected.
+   Entry conses are never mutated and each install builds a fresh
+   spine, so a probe mid-walk on another thread only ever sees a
+   consistent list."
+  (let ((old (%reader-ic-entries (gf-inline-cache gf))))
+    (multiple-value-prog1 (%gf-dispatch-1-slow gf a)
+      (when (and (not *slot-access-protocol-extended-p*)
+                 (structurep a)
+                 (%compute-applicable-methods gf (list a)))
+        (let* ((type-name (%struct-type-name a))
+               (idx (%struct-slot-index type-name slot-name)))
+          (when idx
+            (let ((kept nil) (n 0))
+              (dolist (e old)
+                (when (and (< n 3) (consp e))
+                  (let ((ty (car e)))
+                    (when (and (not (eq ty type-name))
+                               (eql (cdr e) (%struct-slot-index ty slot-name)))
+                      (push e kept)
+                      (setq n (+ n 1))))))
+              (%set-gf-inline-cache
+               gf (cons (cons type-name idx) (nreverse kept))))))))))
 
 (defun %make-reader-discriminator (gf slot-name)
   (let ((miss *slot-unbound-marker*))

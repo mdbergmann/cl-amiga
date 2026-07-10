@@ -910,15 +910,19 @@ static CL_Obj bi_gf_ic_emf(CL_Obj *args, int n)
 
 /* (%gf-reader-ic gf obj miss) — hit path for a reader-only generic
  * function (see %MAKE-READER-DISCRIMINATOR in clos.lisp).  GF slot 8
- * holds the reader inline cache, shaped (TYPE-NAME . SLOT-INDEX).  The
- * EMF inline cache read by %GF-IC-EMF shares slot 8 but puts a function
- * in the cdr, so a non-fixnum cdr means "not a reader cache" and reads
- * as a miss — the two shapes can never be confused, and every existing
- * slot-8 invalidation (ADD-METHOD, REMOVE-METHOD, class redefinition)
- * invalidates this cache too.
+ * holds the reader inline cache: a list of up to CL_READER_IC_MAX
+ * (TYPE-NAME . SLOT-INDEX) entries, most-recently-missed first, so one
+ * call site serving a few receiver classes hits for all of them instead
+ * of thrashing through full dispatch on every alternation (measured
+ * ~80x per access).  The EMF inline caches that share slot 8 put a
+ * class object in their car ((class . emf) / (class1 class2 . emf));
+ * reader entries are conses, so a non-cons first element means "not a
+ * reader cache" and reads as a miss — the shapes can never be confused,
+ * and every existing slot-8 invalidation (ADD-METHOD, REMOVE-METHOD,
+ * class redefinition) invalidates this cache too.
  *
  * A struct's class identity is its type_desc symbol, right in the object
- * header, so the hit path is a single word compare.  It pays neither
+ * header, so each probe step is a single word compare.  It pays neither
  * CLASS-OF's intern nor the *CLASS-TABLE* and slot-index hash probes
  * that %STRUCT-SLOT-VALUE pays on every access — that resolution chain
  * was the measured bulk of accessor cost.
@@ -940,6 +944,11 @@ static CL_Obj bi_gf_ic_emf(CL_Obj *args, int n)
  * rather than wrong. */
 static CL_Obj cl_slot_unbound_marker = CL_NIL;
 
+/* Max reader-IC entries the probe walks.  %GF-READER-1-MISS in clos.lisp
+ * caps installs at the same depth (1 fresh + 3 kept); the walk cap also
+ * bounds OP_CALL's worst case against a malformed over-long list. */
+#define CL_READER_IC_MAX 4
+
 /* Shared hit path for a reader-only GF.  Returns the slot value, or
  * CL_UNBOUND to mean "miss, use the full dispatch".  CL_UNBOUND is not a
  * valid CL_Obj and can never be a slot's value, so it is unambiguous.
@@ -950,9 +959,10 @@ static CL_Obj cl_slot_unbound_marker = CL_NIL;
 CL_Obj cl_gf_reader_ic_probe(CL_Obj gfobj, CL_Obj obj)
 {
     CL_Struct *gf, *st;
-    CL_Cons *c;
-    CL_Obj ic, v;
+    CL_Cons *spine, *e;
+    CL_Obj ic, entry, v;
     int32_t idx;
+    int i;
 
     if (!CL_STRUCT_P(gfobj) || !CL_STRUCT_P(obj))
         return CL_UNBOUND;
@@ -960,21 +970,27 @@ CL_Obj cl_gf_reader_ic_probe(CL_Obj gfobj, CL_Obj obj)
     if (gf->n_slots < 9)
         return CL_UNBOUND;
     ic = gf->slots[8];
-    if (!CL_CONS_P(ic))
-        return CL_UNBOUND;
-    c = (CL_Cons *)CL_OBJ_TO_PTR(ic);
-    if (!CL_FIXNUM_P(c->cdr))
-        return CL_UNBOUND;     /* EMF-shaped cache, not ours */
     st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
-    if (c->car != st->type_desc)
-        return CL_UNBOUND;
-    idx = (int32_t)CL_FIXNUM_VAL(c->cdr);
-    if (idx < 0 || (uint32_t)idx >= st->n_slots)
-        return CL_UNBOUND;
-    v = st->slots[idx];
-    if (v == cl_slot_unbound_marker)
-        return CL_UNBOUND;     /* unbound slot -> SLOT-UNBOUND protocol */
-    return v;
+    for (i = 0; i < CL_READER_IC_MAX && CL_CONS_P(ic); i++) {
+        spine = (CL_Cons *)CL_OBJ_TO_PTR(ic);
+        entry = spine->car;
+        if (!CL_CONS_P(entry))
+            return CL_UNBOUND; /* EMF-shaped cache, not ours */
+        e = (CL_Cons *)CL_OBJ_TO_PTR(entry);
+        if (!CL_FIXNUM_P(e->cdr))
+            return CL_UNBOUND; /* not a reader entry */
+        if (e->car == st->type_desc) {
+            idx = (int32_t)CL_FIXNUM_VAL(e->cdr);
+            if (idx < 0 || (uint32_t)idx >= st->n_slots)
+                return CL_UNBOUND;
+            v = st->slots[idx];
+            if (v == cl_slot_unbound_marker)
+                return CL_UNBOUND; /* unbound -> SLOT-UNBOUND protocol */
+            return v;
+        }
+        ic = spine->cdr;
+    }
+    return CL_UNBOUND;
 }
 
 static CL_Obj bi_gf_reader_ic(CL_Obj *args, int n)
