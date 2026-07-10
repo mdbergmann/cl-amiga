@@ -160,8 +160,15 @@ static CL_Obj call_1(CL_Obj fn, CL_Obj arg)
         CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(fn);
         fn = s->function;
     }
-    if (cl_funcallable_instance_p(fn))
+    if (cl_funcallable_instance_p(fn)) {
+        /* Reader-GF fast path: a promoted reader used as :key/:test-arg or
+         * mapped function ((mapcar #'reader xs), (remove-if-not #'reader xs))
+         * answers straight from the inline cache — no unwrap, no VM entry.
+         * Probe before the unwrap discards the GF identity. */
+        CL_Obj v = cl_gf_reader_ic_probe(fn, arg);
+        if (v != CL_UNBOUND) return v;
         fn = cl_unwrap_funcallable(fn);
+    }
     if (CL_FUNCTION_P(fn) || CL_BYTECODE_P(fn) || CL_CLOSURE_P(fn))
         /* cl_vm_apply GC-roots pargs across the call. */
         return cl_vm_apply(fn, pargs, 1);

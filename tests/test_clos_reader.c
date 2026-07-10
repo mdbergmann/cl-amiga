@@ -246,13 +246,64 @@ TEST(reader_gf_class_redefinition_reorders_slots)
 TEST(reader_gf_tailcall_funcall_and_apply_paths)
 {
     /* OP_TAILCALL is excluded from the VM fast path (it must unwind the
-     * caller's frame); FUNCALL / APPLY route through slot 3.  All three must
-     * still produce the right value. */
+     * caller's frame); FUNCALL / APPLY answer from their own probes (see
+     * reader_gf_trampoline_probes below).  All three must still produce
+     * the right value. */
     eval_print("(defclass rg-tc () ((x :initform :val :reader rg-tcx)))");
     eval_print("(defun rg-tail-read (o) (rg-tcx o))");
     ASSERT_STR_EQ(eval_print("(rg-tail-read (make-instance 'rg-tc))"), ":VAL");
     ASSERT_STR_EQ(eval_print("(funcall #'rg-tcx (make-instance 'rg-tc))"), ":VAL");
     ASSERT_STR_EQ(eval_print("(apply #'rg-tcx (list (make-instance 'rg-tc)))"), ":VAL");
+}
+
+TEST(reader_gf_trampoline_probes)
+{
+    /* The C trampolines probe the reader IC before unwrapping the GF to its
+     * discriminating function: cl_vm_apply (the path every m68k-JIT'd call
+     * takes via cl_jit_runtime_call), bi_funcall, bi_apply, the VM's inline
+     * OP_APPLY (compiled (apply ...) forms), and the sequence helpers'
+     * call_1.  MAPCAR itself unwraps at designator-coercion time and
+     * reaches the (also cached) Lisp discriminator — included here for value
+     * agreement across paths.  A hit never rewrites slot 8, so the spine
+     * staying EQ across the funcall/apply calls proves they were answered by
+     * a cache hit, not by slow dispatch re-installing entries. */
+    eval_print("(defclass rg-tp1 () ((x :initform 1 :reader rg-tpx)"
+               "                     (u :reader rg-tpu)))");
+    eval_print("(defclass rg-tp2 () ((pad :initform 0)"
+               "                     (x :initform 2 :reader rg-tpx)))");
+    ASSERT_STR_EQ(eval_print("(and (gethash #'rg-tpx clamiga:*reader-gfs*) t)"), "T");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((a (make-instance 'rg-tp1)) (b (make-instance 'rg-tp2)))"
+        "  (rg-tpx a) (rg-tpx b)"  /* fill the IC for both classes */
+        "  (let ((ic (clamiga::gf-inline-cache #'rg-tpx)) (acc nil))"
+        "    (dotimes (i 5)"
+        "      (push (funcall #'rg-tpx a) acc)"
+        "      (push (apply #'rg-tpx (list b)) acc))"
+        "    (list (eq ic (clamiga::gf-inline-cache #'rg-tpx))"
+        "          (remove-duplicates (nreverse acc))"
+        "          (mapcar #'rg-tpx (list a b a b)))))"),
+        "(T (1 2) (1 2 1 2))");
+    /* a probe hit must leave exactly one value, like any reader call */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (funcall #'rg-tpx (make-instance 'rg-tp1)))"), "(1)");
+    /* indirect APPLY runs the bi_apply builtin (a compiled (apply ...) form
+     * takes the inline OP_APPLY, which has its own probe) */
+    ASSERT_STR_EQ(eval_print(
+        "(funcall #'apply #'rg-tpx (list (make-instance 'rg-tp2)))"), "2");
+    /* an unbound slot is a probe miss and must reach SLOT-UNBOUND */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (funcall #'rg-tpu (make-instance 'rg-tp1))"
+        "  (unbound-slot (c) (cell-error-name c)))"), "U");
+    /* demotion must disarm the trampoline probes too: after an :around
+     * method, funcall/apply/mapcar have to run the full method chain */
+    eval_print("(defmethod rg-tpx :around ((o rg-tp1)) (* 100 (call-next-method)))");
+    ASSERT_STR_EQ(eval_print("(and (gethash #'rg-tpx clamiga:*reader-gfs*) t)"), "NIL");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((a (make-instance 'rg-tp1)) (b (make-instance 'rg-tp2)))"
+        "  (list (funcall #'rg-tpx a)"
+        "        (apply #'rg-tpx (list a))"
+        "        (mapcar #'rg-tpx (list a b))))"),
+        "(100 100 (100 2))");
 }
 
 TEST(reader_gf_set_funcallable_instance_function_wins)
@@ -289,6 +340,9 @@ TEST(reader_gf_slot_value_using_class_demotes_all)
     /* the protocol is now honoured by readers, not bypassed */
     ASSERT_STR_EQ(eval_print("(rg-tkx (make-instance 'rg-tracked))"), "3000");
     ASSERT_STR_EQ(eval_print("(rg-px (make-instance 'rg-p))"), "1000");
+    /* ... including through the trampoline probes (funcall/apply/mapcar) */
+    ASSERT_STR_EQ(eval_print("(funcall #'rg-tkx (make-instance 'rg-tracked))"), "3000");
+    ASSERT_STR_EQ(eval_print("(mapcar #'rg-px (list (make-instance 'rg-p)))"), "(1000)");
 }
 
 int main(void)
@@ -313,6 +367,7 @@ int main(void)
     RUN(reader_gf_accessor_writer_roundtrip);
     RUN(reader_gf_class_redefinition_reorders_slots);
     RUN(reader_gf_tailcall_funcall_and_apply_paths);
+    RUN(reader_gf_trampoline_probes);
     RUN(reader_gf_set_funcallable_instance_function_wins);
     RUN(reader_gf_slot_value_using_class_demotes_all);
 

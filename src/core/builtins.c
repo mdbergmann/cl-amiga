@@ -890,6 +890,16 @@ static CL_Obj bi_apply(CL_Obj *args, int n)
             cl_error(CL_ERR_TYPE, "APPLY: symbol has no function binding");
         }
     }
+    /* Reader-GF fast path — same probe as bi_funcall's, before the unwrap
+     * discards the GF identity.  (apply #'reader (list x)) answers from
+     * the inline cache. */
+    if (nflat == 1 && cl_funcallable_instance_p(func)) {
+        CL_Obj v = cl_gf_reader_ic_probe(func, cl_vm.stack[base]);
+        if (v != CL_UNBOUND) {
+            cl_vm.sp = saved_sp;
+            return v;
+        }
+    }
     func = cl_unwrap_funcallable(func);
 
     if (CL_FUNCTION_P(func)) {
@@ -923,6 +933,14 @@ static CL_Obj bi_funcall(CL_Obj *args, int n)
         func = s->function;
         if (CL_NULL_P(func) || func == CL_UNBOUND)
             cl_error(CL_ERR_TYPE, "FUNCALL: symbol has no function binding");
+    }
+    /* Reader-GF fast path: probe before the unwrap below discards the GF
+     * identity cl_vm_apply's own probe would need.  (funcall #'reader x)
+     * answers straight from the inline cache; a miss falls through to
+     * ordinary dispatch.  Non-allocating; mv state is call_builtin's. */
+    if (n == 2 && cl_funcallable_instance_p(func)) {
+        CL_Obj v = cl_gf_reader_ic_probe(func, args[1]);
+        if (v != CL_UNBOUND) return v;
     }
     func = cl_unwrap_funcallable(func);
     if (CL_FUNCTION_P(func)) {
