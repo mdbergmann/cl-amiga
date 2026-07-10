@@ -9,6 +9,56 @@ Related: [specs/performance.md](../specs/performance.md) is the optimization
 
 ---
 
+## 2026-07-09 — reader-GF fast dispatch (host)
+
+**Commits**: `5291e7d` (reader inline cache + Lisp discriminator), then
+`05c2aa2` (answer the call in `OP_CALL`).
+
+A GF whose whole method set is the DEFCLASS-generated readers for one slot is
+promoted: its inline cache (GF slot 8) holds `(TYPE-NAME . SLOT-INDEX)`, and
+`OP_CALL` answers the call by comparing the receiver's `type_desc` and reading
+the slot — no unwrap to the discriminating function, no frame, and none of the
+per-access `CLASS-OF` + `*CLASS-TABLE*` + slot-index hash probes that
+`%STRUCT-SLOT-VALUE` pays.
+
+**Environment**: macOS arm64, host bytecode VM (the JIT is m68k-only, so this
+is pure bytecode). Best-of-3, ~1s per timed run.
+
+**Reproduce**: a portable port of the `SLOT-ACCESS/READER` benchmark from
+Daniel Kochmański's [*A brief note about slot access cost in Common
+Lisp*](https://turtleware.eu/posts/A-brief-note-about-slot-access-cost-in-Common-Lisp.html)
+— 100 unrolled reader calls per iteration on a 10-slot class. Cross-checked
+against SBCL 2.6.5 and ECL 26.5.5 on the same machine.
+
+| ns per slot access | before | + Lisp discriminator | + `OP_CALL` |
+|---|---|---|---|
+| reader GF | 148.3 | 72.0 | **28.5** |
+| reader ÷ struct-ref (24.7 ns) | 6.00× | 2.91× | **1.20×** |
+| reader ÷ plain 1-arg call (44.5 ns) | 3.32× | 1.62× | **0.65×** |
+| reader ÷ `slot-value` (103.6 ns) | 1.47× | 0.67× | **0.27×** |
+
+A reader now costs 20% more than a raw constant-index struct slot read, and
+*less than an ordinary function call* — because there is no call.
+
+Reference points on the same machine and benchmark (native compilers, so the
+absolute times are not comparable to a bytecode VM; the ratio is):
+
+| | reader GF | reader ÷ struct-ref |
+|---|---|---|
+| SBCL 2.6.5 | 2.61 ns | 5.14× |
+| ECL 26.5.5 (`compile-file`) | 13.22 ns | 2.59× |
+| clamiga (this entry) | 28.5 ns | **1.20×** |
+
+Note: ECL's `--load` of *source* runs its bytecode interpreter (53 ns/access,
+a meaningless 1.05× ratio). The number above is after `compile-file`.
+
+Tracked by `clos.accessor` ÷ `struct.accessor` in `trunk/bench-opt.lisp`.
+The m68k JIT does not route through the bytecode `OP_CALL`, so JIT'd callers
+fall back to the Lisp reader discriminator (72 ns tier) until the JIT call
+sequence learns the same probe.
+
+---
+
 ## 2026-07-05 — fused slot access + C GF inline-cache probe (host)
 
 **Commit**: follows `fd2ecf4`. Second half of spec item 3.1. Three changes:

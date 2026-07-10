@@ -220,6 +220,12 @@ int cl_funcallable_instance_p(CL_Obj obj);
  * Idempotent; STANDARD-GENERIC-FUNCTION is always registered. */
 void cl_register_funcallable_gf_type(CL_Obj sym);
 
+/* Reader-GF inline-cache hit path (builtins_struct.c).  Returns the slot
+ * value, or CL_UNBOUND for "miss — take the full dispatch".  Non-allocating.
+ * Used by OP_CALL to answer a monomorphic accessor call without building a
+ * frame; see %MAKE-READER-DISCRIMINATOR in lib/clos.lisp. */
+CL_Obj cl_gf_reader_ic_probe(CL_Obj gfobj, CL_Obj obj);
+
 /* Push/pop on VM value stack (for builtins) */
 void cl_vm_push(CL_Obj val);
 CL_Obj cl_vm_pop(void);

@@ -612,6 +612,8 @@ DEFINE_COND_SLOT_READER(bi_arithmetic_error_operation,
                         "ARITHMETIC-ERROR-OPERATION",        KW_OPERATION)
 DEFINE_COND_SLOT_READER(bi_file_error_pathname,
                         "FILE-ERROR-PATHNAME",               KW_PATHNAME)
+DEFINE_COND_SLOT_READER(bi_unbound_slot_instance,
+                        "UNBOUND-SLOT-INSTANCE",             KW_INSTANCE)
 
 /* --- User-defined condition types --- */
 
@@ -2031,6 +2033,7 @@ void cl_builtins_condition_init(void)
     defun("ARITHMETIC-ERROR-OPERANDS", bi_arithmetic_error_operands, 1, 1);
     defun("ARITHMETIC-ERROR-OPERATION", bi_arithmetic_error_operation, 1, 1);
     defun("FILE-ERROR-PATHNAME", bi_file_error_pathname, 1, 1);
+    defun("UNBOUND-SLOT-INSTANCE", bi_unbound_slot_instance, 1, 1);
 
     /* User-defined condition types */
     cl_register_builtin("%REGISTER-CONDITION-TYPE", bi_register_condition_type, 3, 3, cl_package_clamiga);

@@ -5076,6 +5076,40 @@
 (check "make-instance by class" 1 (let ((p (make-instance (find-class 'point) :x 1 :y 2))) (point-x p)))
 (check "make-instance inherited" '(1 2 3) (let ((p (make-instance 'point3d :x 1 :y 2 :z 3))) (list (point-x p) (point-y p) (point-z p))))
 
+; --- UNBOUND-SLOT condition (CLHS 7.7.11) ---
+; Reading an unbound slot signals UNBOUND-SLOT, a CELL-ERROR subtype carrying
+; the slot name and the instance — not a bare SIMPLE-ERROR.
+(defclass ubs-amiga () ((x :reader ubs-amiga-x) (y :initform 7)))
+(check "unbound slot signals unbound-slot" :ok
+       (handler-case (slot-value (make-instance 'ubs-amiga) 'x)
+         (unbound-slot () :ok)))
+(check "unbound-slot cell-error-name" 'x
+       (handler-case (slot-value (make-instance 'ubs-amiga) 'x)
+         (unbound-slot (c) (cell-error-name c))))
+(check "unbound-slot-instance is the object" t
+       (let ((o (make-instance 'ubs-amiga)))
+         (handler-case (slot-value o 'x)
+           (unbound-slot (c) (eq (unbound-slot-instance c) o)))))
+(check "unbound-slot through reader gf" '(x t)
+       (let ((o (make-instance 'ubs-amiga)))
+         (handler-case (ubs-amiga-x o)
+           (unbound-slot (c) (list (cell-error-name c)
+                                   (eq (unbound-slot-instance c) o))))))
+(check "unbound-slot after slot-makunbound" 'y
+       (let ((o (make-instance 'ubs-amiga)))
+         (slot-makunbound o 'y)
+         (handler-case (slot-value o 'y) (unbound-slot (c) (cell-error-name c)))))
+(check "unbound-slot is a cell-error" :cell
+       (handler-case (slot-value (make-instance 'ubs-amiga) 'x)
+         (cell-error () :cell)))
+(check "unbound-slot subtypep cell-error" t (subtypep 'unbound-slot 'cell-error))
+(check "unbound-slot report names the slot" t
+       (handler-case (slot-value (make-instance 'ubs-amiga) 'x)
+         (unbound-slot (c) (and (search "The slot X is unbound"
+                                        (princ-to-string c)) t))))
+(check "unbound-slot-instance accessor" 42
+       (unbound-slot-instance (make-condition 'unbound-slot :name 'q :instance 42)))
+
 ; --- CLOS Phase 5: defgeneric + defmethod ---
 (defgeneric greet (obj))
 (defmethod greet ((p point)) (list 'point (point-x p) (point-y p)))
@@ -5247,7 +5281,7 @@
   (check "accessor subclass own slot" 100 (fsv-amiga-z s))
   ;; Unbound slot: fast path reads the marker -> slow path signals.
   (check "accessor unbound signals" :fsv-unbound
-         (handler-case (fsv-amiga-u b) (error () :fsv-unbound)))
+         (handler-case (fsv-amiga-u b) (unbound-slot () :fsv-unbound)))
   (check "slot-boundp unbound via fast front" nil (slot-boundp b 'u))
   (check "slot-boundp bound via fast front" t (slot-boundp b 'x))
   ;; :CLASS slot is not in the struct registry -> accessor falls back
@@ -5271,6 +5305,75 @@
 (check "gf-ic-emf wrong class miss" nil
        (clamiga::%gf-ic-emf (gethash 'fsv-amiga-probe *generic-function-table*) 42))
 (check "gf-ic-emf non-gf miss" nil (clamiga::%gf-ic-emf 42 42))
+
+; --- Reader-GF fast dispatch ---
+; A GF whose whole method set is DEFCLASS-generated readers for one slot is
+; "promoted": its inline cache holds (TYPE-NAME . SLOT-INDEX) and OP_CALL
+; answers the call without unwrapping to the discriminating function.
+;
+; These MUST stay above the "Slot-access protocol" section below: the
+; DEFMETHOD SLOT-VALUE-USING-CLASS there latches
+; *SLOT-ACCESS-PROTOCOL-EXTENDED-P* for the rest of the image, which demotes
+; every reader GF permanently.  Run after it and each check below would pass
+; vacuously on the slow path -- so each one first asserts the GF is promoted.
+;
+; On Amiga the m68k JIT does not route through the bytecode OP_CALL, so JIT'd
+; callers fall back to the Lisp reader discriminator.  Both paths must agree,
+; which is exactly what these exercise.
+(defclass rg-amiga-a () ((x :initform 3 :reader rg-amiga-x)
+                         (n :initform nil :reader rg-amiga-n)
+                         (u :reader rg-amiga-u)))
+(defclass rg-amiga-b () ((pad :initform 0) (x :initform 30 :reader rg-amiga-x)))
+(defclass rg-amiga-c (rg-amiga-a) ((z :initform 100)))
+(check "reader GF promoted" t (and (gethash #'rg-amiga-x clamiga:*reader-gfs*) t))
+(check "reader on base" 3 (rg-amiga-x (make-instance 'rg-amiga-a)))
+(check "reader on other class, different index" 30
+       (rg-amiga-x (make-instance 'rg-amiga-b)))
+(check "reader on subclass" 3 (rg-amiga-x (make-instance 'rg-amiga-c)))
+(check "polymorphic thrash stays correct" '(3 30 3 30)
+       (let ((a (make-instance 'rg-amiga-a)) (b (make-instance 'rg-amiga-b)))
+         (list (rg-amiga-x a) (rg-amiga-x b) (rg-amiga-x a) (rg-amiga-x b))))
+(check "NIL-valued slot is not the unbound marker" nil
+       (rg-amiga-n (make-instance 'rg-amiga-a)))
+(check "unbound slot signals through reader" '(u t)
+       (let ((o (make-instance 'rg-amiga-a)))
+         (handler-case (progn (rg-amiga-u o) "NO-ERROR")
+           (unbound-slot (c) (list (cell-error-name c)
+                                   (eq (unbound-slot-instance c) o))))))
+(check "unbound slot signals again (no bad cache hit)" '(u t)
+       (let ((o (make-instance 'rg-amiga-a)))
+         (handler-case (progn (rg-amiga-u o) "NO-ERROR")
+           (unbound-slot (c) (list (cell-error-name c)
+                                   (eq (unbound-slot-instance c) o))))))
+; tail position (OP_TAILCALL, excluded from the VM fast path) and FUNCALL/APPLY
+; (which route through slot 3) must agree with the direct call
+(defun rg-amiga-tail (o) (rg-amiga-x o))
+(check "tail-position reader" 3 (rg-amiga-tail (make-instance 'rg-amiga-a)))
+(check "funcall reader" 3 (funcall #'rg-amiga-x (make-instance 'rg-amiga-a)))
+(check "apply reader" 3 (apply #'rg-amiga-x (list (make-instance 'rg-amiga-a))))
+; accessor writer round-trip
+(defclass rg-amiga-w () ((x :initform 1 :accessor rg-amiga-wx)))
+(check "accessor write then read" 42
+       (let ((o (make-instance 'rg-amiga-w))) (setf (rg-amiga-wx o) 42) (rg-amiga-wx o)))
+; an :around method retracts the fast path
+(defclass rg-amiga-s () ((x :initform 10 :reader rg-amiga-sx)))
+(check "sx fast before around" 10 (rg-amiga-sx (make-instance 'rg-amiga-s)))
+(defmethod rg-amiga-sx :around ((o rg-amiga-s)) (* 100 (call-next-method)))
+(check "around demotes reader GF" nil (and (gethash #'rg-amiga-sx clamiga:*reader-gfs*) t))
+(check "around runs" 1000 (rg-amiga-sx (make-instance 'rg-amiga-s)))
+; class redefinition moves the slot; the cached index must be invalidated
+(defclass rg-amiga-redef () ((a :initform 'one :reader rg-amiga-ra)))
+(check "redef before" 'one (rg-amiga-ra (make-instance 'rg-amiga-redef)))
+(defclass rg-amiga-redef () ((pad :initform 0) (a :initform 'two :reader rg-amiga-ra)))
+(check "redef after slot reorder" 'two (rg-amiga-ra (make-instance 'rg-amiga-redef)))
+; SET-FUNCALLABLE-INSTANCE-FUNCTION must beat the VM's slot-3 bypass
+(defclass rg-amiga-sfi () ((x :initform 'orig :reader rg-amiga-sfix)))
+(check "sfix fast" 'orig (rg-amiga-sfix (make-instance 'rg-amiga-sfi)))
+(set-funcallable-instance-function #'rg-amiga-sfix (lambda (o) (declare (ignore o)) 'hijacked))
+(check "set-funcallable demotes" nil (and (gethash #'rg-amiga-sfix clamiga:*reader-gfs*) t))
+(check "set-funcallable-instance-function wins" 'hijacked
+       (rg-amiga-sfix (make-instance 'rg-amiga-sfi)))
+(check "unrelated reader still fast" 3 (rg-amiga-x (make-instance 'rg-amiga-a)))
 
 ; --- Slot-access protocol (MOP) ---
 (defclass sv-amiga-fast () ((x :initarg :x :initform 10)))

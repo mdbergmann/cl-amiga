@@ -163,6 +163,7 @@ CL_Obj KW_PACKAGE = CL_NIL;
 CL_Obj KW_OPERANDS = CL_NIL;
 CL_Obj KW_OPERATION = CL_NIL;
 CL_Obj KW_PATHNAME = CL_NIL;
+CL_Obj KW_INSTANCE = CL_NIL;
 
 /* REPL history symbols */
 CL_Obj SYM_STAR = CL_NIL;
@@ -614,6 +615,7 @@ void cl_symbol_init(void)
     KW_OPERANDS                  = cl_intern_keyword("OPERANDS", 8);
     KW_OPERATION                 = cl_intern_keyword("OPERATION", 9);
     KW_PATHNAME                  = cl_intern_keyword("PATHNAME", 8);
+    KW_INSTANCE                  = cl_intern_keyword("INSTANCE", 8);
 
     /* REPL history symbols — intern multi-char ones now;
        *, +, - will be looked up in cl_repl_init() after builtins register them */
@@ -1091,6 +1093,7 @@ void cl_symbol_init(void)
     cl_gc_register_root(&KW_OPERANDS);
     cl_gc_register_root(&KW_OPERATION);
     cl_gc_register_root(&KW_PATHNAME);
+    cl_gc_register_root(&KW_INSTANCE);
     cl_gc_register_root(&SYM_STAR);
     cl_gc_register_root(&SYM_STARSTAR);
     cl_gc_register_root(&SYM_STARSTARSTAR);
