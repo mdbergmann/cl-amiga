@@ -767,7 +767,15 @@ directly instead of attempting a symbol lookup."
   "Called when an unbound slot is accessed. Default signals an error.
 Specialize via defmethod to provide lazy initialization."
   (declare (ignore class))
-  (error "The slot ~S is unbound in ~S" slot-name instance))
+  ;; CLHS 7.7.10 / unbound-slot: the error is of type UNBOUND-SLOT, a
+  ;; CELL-ERROR subtype whose CELL-ERROR-NAME is the slot name and whose
+  ;; UNBOUND-SLOT-INSTANCE is the object.  Handlers written against the
+  ;; standard catch (unbound-slot) and inspect both.
+  (error 'unbound-slot
+         :name slot-name
+         :instance instance
+         :format-control "The slot ~S is unbound in ~S"
+         :format-arguments (list slot-name instance)))
 
 (defun %set-slot-value (instance slot-name new-value)
   "Set the value of SLOT-NAME in INSTANCE to NEW-VALUE."

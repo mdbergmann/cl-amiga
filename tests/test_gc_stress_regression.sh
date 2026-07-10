@@ -3779,9 +3779,13 @@ cat > "$WORK/fastslot.lisp" <<'EOF'
     (setf (fs-x b) (- 7 (fs-x b)))             ; x alternates 3 <-> 4
     (setf (fs-x s) (- 70 (fs-x s))))           ; x alternates 30 <-> 40
   (format t "FS-SUM:~a~%" acc)
+  ;; the UNBOUND-SLOT condition's :name / :instance slots are consed while
+  ;; every allocation forces a compaction — both must survive relocation
   (format t "FS-UNBOUND:~a~%"
           (handler-case (progn (fs-u b) "NO-ERROR")
-            (error () "SIGNALED")))
+            (unbound-slot (c)
+              (format nil "~a:~a" (cell-error-name c)
+                      (if (eq (unbound-slot-instance c) b) "SAME" "OTHER")))))
   (format t "FS-BOUNDP:~a/~a~%" (slot-boundp b 'u) (slot-boundp b 'x))
   (setf (fs-c b) 6)
   (format t "FS-CLASS-SLOT:~a~%" (fs-c s)))    ; shared :class storage
@@ -3791,7 +3795,8 @@ out=$(run_stress "$WORK/fastslot.lisp")
 # per iteration: x-b alternates 3,4 (sum 525) + x-s alternates 30,40 (5250)
 #              + c 5 (750) + z 100 (15000) = 21525
 check_contains "accessors stable across stress compactions" "FS-SUM:21525" "$out"
-check_contains "unbound slot still signals through accessor" "FS-UNBOUND:SIGNALED" "$out"
+check_contains "unbound slot signals UNBOUND-SLOT with intact slots through accessor" \
+  "FS-UNBOUND:U:SAME" "$out"
 check_contains "slot-boundp fast/slow paths agree" "FS-BOUNDP:NIL/T" "$out"
 check_contains ":class slot shared through accessor" "FS-CLASS-SLOT:6" "$out"
 check_contains "fused slot-access case runs to completion" "FS-DONE" "$out"
@@ -3833,9 +3838,12 @@ cat > "$WORK/readergf.lisp" <<'EOF'
     (setq acc (+ acc (rg-x a) (rg-x b) (rg-x c))))
   (format t "RG-SUM:~a~%" acc))                      ; 150 * (3+30+3) = 5400
 (format t "RG-NIL:~a~%" (rg-n (make-instance 'rg-a)))
-(format t "RG-UNBOUND:~a~%"
-        (handler-case (progn (rg-u (make-instance 'rg-a)) "NO-ERROR")
-          (error () "SIGNALED")))
+(let ((o (make-instance 'rg-a)))
+  (format t "RG-UNBOUND:~a~%"
+          (handler-case (progn (rg-u o) "NO-ERROR")
+            (unbound-slot (c)
+              (format nil "~a:~a" (cell-error-name c)
+                      (if (eq (unbound-slot-instance c) o) "SAME" "OTHER"))))))
 ;; redefinition moves X to a new index; the cached index must be invalidated
 (defclass rg-a () ((pad1 :initform 0) (pad2 :initform 0)
                    (x :initform 7 :reader rg-x)))
@@ -3848,7 +3856,8 @@ out=$(run_stress "$WORK/readergf.lisp")
 check_contains "reader GF is promoted under stress" "RG-PROMOTED:T" "$out"
 check_contains "reader IC stable across stress compactions" "RG-SUM:5400" "$out"
 check_contains "NIL-valued slot is not the unbound marker" "RG-NIL:NIL" "$out"
-check_contains "unbound slot still signals through reader IC" "RG-UNBOUND:SIGNALED" "$out"
+check_contains "unbound slot signals UNBOUND-SLOT with intact slots through reader IC" \
+  "RG-UNBOUND:U:SAME" "$out"
 check_contains "reader IC invalidated by class redefinition" "RG-REDEF:350" "$out"
 check_contains "reader-GF case runs to completion" "RG-DONE" "$out"
 check_absent   "no corruption in reader-GF case" \

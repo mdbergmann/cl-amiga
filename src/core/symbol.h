@@ -194,6 +194,7 @@ extern CL_Obj KW_PACKAGE;
 extern CL_Obj KW_OPERANDS;
 extern CL_Obj KW_OPERATION;
 extern CL_Obj KW_PATHNAME;
+extern CL_Obj KW_INSTANCE;
 
 /* REPL history symbols */
 extern CL_Obj SYM_STAR;          /* * — last result */
