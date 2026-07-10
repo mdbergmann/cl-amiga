@@ -2132,11 +2132,16 @@
 (defun time-sq (x) (* x x))
 (check "time defun" 25 (time (time-sq 5)))
 (check "get-internal-real-time" t (integerp (get-internal-real-time)))
+(check "get-internal-run-time" t (integerp (get-internal-run-time)))
+(check "run-time non-decreasing" t
+  (let ((before (get-internal-run-time)))
+    (dotimes (i 10000))
+    (>= (get-internal-run-time) before)))
 
 ; --- Time stream redirection ---
 (check "time captured by *trace-output*" t
   (let ((s (with-output-to-string (*trace-output*) (time (+ 1 2)))))
-    (and (search "ms" s) (search "consed" s) t)))
+    (and (search "ms real" s) (search "ms cpu" s) (search "consed" s) t)))
 
 ; --- Source location tracking ---
 ; Reader line tracking is implicitly tested by batch mode itself

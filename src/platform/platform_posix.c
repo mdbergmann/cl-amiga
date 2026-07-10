@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <sys/socket.h>
@@ -394,6 +395,18 @@ uint32_t platform_time_ms(void)
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return (uint32_t)((tv.tv_sec * 1000) + (tv.tv_usec / 1000));
+}
+
+uint32_t platform_run_time_ms(void)
+{
+    /* getrusage over clock(): clock() wraps after ~72 minutes of CPU at
+     * CLOCKS_PER_SEC=1000000 on 32-bit. */
+    struct rusage ru;
+    if (getrusage(RUSAGE_SELF, &ru) == 0) {
+        return (uint32_t)((ru.ru_utime.tv_sec + ru.ru_stime.tv_sec) * 1000
+                          + (ru.ru_utime.tv_usec + ru.ru_stime.tv_usec) / 1000);
+    }
+    return platform_time_ms();
 }
 
 void platform_sleep_ms(uint32_t milliseconds)

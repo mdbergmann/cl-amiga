@@ -6028,7 +6028,24 @@ TEST(eval_time_trace_redirect)
     const char *out = eval_print(
         "(with-output-to-string (*trace-output*)"
         "  (time 42))");
-    ASSERT(strstr(out, "ms") != NULL);
+    ASSERT(strstr(out, "ms real") != NULL);
+    ASSERT(strstr(out, "ms cpu") != NULL);
+    ASSERT(strstr(out, "consed") != NULL);
+    ASSERT(strstr(out, "GC cycles") != NULL);
+}
+
+TEST(eval_time_report_legacy_three_args)
+{
+    /* Backward compat: bytecode compiled before the 4th (CPU-time) arg
+     * existed calls %TIME-REPORT with only 3 args (start-time,
+     * start-consed, start-gc). That path must still print a valid report,
+     * without the "real"/"cpu" split introduced for the 4-arg form. */
+    const char *out = eval_print(
+        "(with-output-to-string (*trace-output*)"
+        "  (%time-report (%get-internal-time) (%get-bytes-consed) (%get-gc-count)))");
+    ASSERT(strstr(out, "ms;") != NULL);
+    ASSERT(strstr(out, "ms real") == NULL);
+    ASSERT(strstr(out, "ms cpu") == NULL);
     ASSERT(strstr(out, "consed") != NULL);
     ASSERT(strstr(out, "GC cycles") != NULL);
 }
@@ -6044,6 +6061,16 @@ TEST(eval_get_internal_run_time)
     /* CLHS 25.1.4.2: get-internal-run-time returns a non-negative integer */
     ASSERT_STR_EQ(eval_print("(integerp (get-internal-run-time))"), "T");
     ASSERT_STR_EQ(eval_print("(>= (get-internal-run-time) 0)"), "T");
+
+    /* Run time (CPU) is monotonically non-decreasing */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((before (get-internal-run-time)))"
+        "  (dotimes (i 100000))"
+        "  (>= (get-internal-run-time) before))"), "T");
+
+    /* %GET-RUN-TIME (internal TIME helper) returns a non-negative fixnum */
+    ASSERT_STR_EQ(eval_print("(integerp (%get-run-time))"), "T");
+    ASSERT_STR_EQ(eval_print("(>= (%get-run-time) 0)"), "T");
 }
 
 /* --- Source location tracking --- */
@@ -10993,6 +11020,7 @@ int main(void)
     RUN(eval_time_defun);
     RUN(eval_time_stats);
     RUN(eval_time_trace_redirect);
+    RUN(eval_time_report_legacy_three_args);
     RUN(eval_get_internal_real_time);
     RUN(eval_get_internal_run_time);
     RUN(eval_srcloc_load_backtrace);
