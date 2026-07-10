@@ -99,6 +99,12 @@ typedef struct {
     /* (declare (notinline ...)) scope: count to restore in the postlude so
      * notinline names declared in a body stop applying once the body ends. */
     int      saved_notinline_count;
+    /* (declare (optimize ...)) scope: effective settings at body entry,
+     * snapshotted unconditionally by cl_tail_push and restored by the
+     * postludes of declaration-accepting bodies (LET, LOCALLY, FLET, ...)
+     * so a body-local optimize declaration ends with the body (CLHS 3.3.4)
+     * instead of leaking into sibling forms. */
+    CL_OptimizeSettings saved_optimize;
     /* Continuation form to dispatch when this postlude drains (used by
      * IF_AFTER_THEN to carry the ELSE form across THEN's compilation).
      * GC-traced via cl_compiler_gc_mark_thread's tail_stack walk.
@@ -203,6 +209,15 @@ typedef struct CL_Compiler_s {
      * stack scoped by saved_notinline_count markers in body postludes. */
     CL_Obj notinline_fns[CL_MAX_NOTINLINE];
     int notinline_count;
+    /* Effective (declare (optimize ...)) settings for this compile chain.
+     * Exclusively owned by the thread running this compile (CL_Compiler
+     * structs are never shared across threads — see cl_active_compiler),
+     * so no lock is needed to read/write it, unlike the proclaimed
+     * baseline cl_optimize_global.  Seeded from the parent compiler (or
+     * cl_optimize_global at the root of a fresh top-level compile) when
+     * this struct is pushed onto the active-compiler chain; see
+     * cl_compiler_seed_optimize_settings in compiler.c. */
+    CL_OptimizeSettings optimize_settings;
 } CL_Compiler;
 
 /* --- Shared globals (defined in compiler.c) --- */

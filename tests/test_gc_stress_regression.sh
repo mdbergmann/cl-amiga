@@ -4038,6 +4038,67 @@ check_contains "slot-value case runs to completion" "SV-DONE" "$out"
 check_absent   "no corruption in slot-value case" \
   "corrupted pointer\|not of type\|Guru\|SIGSEGV\|badmark" "$out"
 
+# ---------------------------------------------------------------------------
+# Spec 1.3 optimize support: constant folding, dead-branch elimination, and
+# scoped (declare (optimize ...)) under forced compaction.  try_fold_constant
+# itself never allocates, but the surrounding compile paths (compile_call
+# fall-through after a declined fold, compile_if's folded-test early return,
+# safety-0 destructuring-bind emission) all run interleaved with allocating
+# compiles here — a stale-form bug in those hand-offs would corrupt the
+# constant pool exactly like the historical compile_if staleness bug.
+cat > "$WORK/optfold.lisp" <<'EOF'
+;; folded and non-folded calls interleaved with allocation-heavy compiles
+(defun of-mixed (x)
+  (let ((k (+ 1 2 3)))                        ; folds to 6
+    (list k (+ x k) (if (> 2 1) (* 2 21) (error "dead")))))
+(format t "OF-MIXED:~A~%" (of-mixed 10))
+;; declined folds (overflow / floats) still compile+run correctly
+(defun of-declined () (list (+ 1073741823 1) (* 1000000 1000000)))
+(format t "OF-DECLINED:~A~%" (of-declined))
+;; scoped optimize declarations across nested bodies under stress
+(defun of-scoped ()
+  (locally (declare (optimize (safety 0) (speed 0)))
+    (let ((a (+ 1 2)))                        ; speed 0: not folded
+      (locally (declare (optimize (speed 1)))
+        (+ a (+ 10 20))))))                   ; inner folds to 30
+(format t "OF-SCOPED:~A~%" (of-scoped))
+(format t "OF-SAFETY-RESTORED:~A~%"
+        (handler-case (eval '(the fixnum "s")) (error () :signaled)))
+;; safety-0 destructuring-bind (guard-free emission path)
+(format t "OF-DBIND:~A~%"
+        (locally (declare (optimize (safety 0)))
+          (destructuring-bind (a b) '(1) (list a b))))
+;; safety-0 declared in the destructuring-bind's OWN body rather than an
+;; enclosing scope — exercises the new GC-protected rest_body cursor in
+;; compile_destructuring_bind (process_body_declarations is now applied
+;; before compile_destructure_pattern emits the arity guards).
+(format t "OF-DBIND-OWN:~A~%"
+        (destructuring-bind (a b) '(1)
+          (declare (optimize (safety 0)))
+          (list a b)))
+;; dead-branch elimination inside a loop body compiled under stress
+(defun of-deadloop (n)
+  (let ((s 0))
+    (dotimes (i n)
+      (when (< -1 0) (setq s (+ s i)))        ; test folds true
+      (unless (< -1 0) (error "dead")))       ; test folds false
+    s))
+(format t "OF-DEADLOOP:~A~%" (of-deadloop 100))
+(format t "OF-DONE~%")
+EOF
+out=$(run_stress "$WORK/optfold.lisp")
+check_contains "constant folding stable under stress" "OF-MIXED:(6 16 42)" "$out"
+check_contains "declined folds reach runtime bignum path" \
+  "OF-DECLINED:(1073741824 1000000000000)" "$out"
+check_contains "scoped optimize declares under stress" "OF-SCOPED:33" "$out"
+check_contains "safety restored after scoped body" "OF-SAFETY-RESTORED:SIGNALED" "$out"
+check_contains "safety-0 dbind emission under stress" "OF-DBIND:(1 NIL)" "$out"
+check_contains "safety-0 declared in dbind's own body under stress" "OF-DBIND-OWN:(1 NIL)" "$out"
+check_contains "dead-branch elimination in loop body" "OF-DEADLOOP:4950" "$out"
+check_contains "optimize case runs to completion" "OF-DONE" "$out"
+check_absent   "no corruption in optimize case" \
+  "corrupted pointer\|not of type\|Guru\|SIGSEGV\|badmark" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

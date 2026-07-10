@@ -977,7 +977,12 @@ static CL_Obj bi_funcall(CL_Obj *args, int n)
 static CL_Obj bi_proclaim(CL_Obj *args, int n)
 {
     CL_UNUSED(n);
-    cl_process_declaration_specifier(args[0]);
+    /* No CL_Compiler in scope here (PROCLAIM is a runtime function, not a
+     * compile-time-only special form) — this only updates the proclaimed
+     * baseline cl_optimize_global.  A fresh top-level compile always seeds
+     * its effective settings from that baseline, so the update is visible
+     * to every subsequent compile regardless of thread. */
+    cl_process_declaration_specifier(NULL, args[0], 1);
     return CL_NIL;
 }
 

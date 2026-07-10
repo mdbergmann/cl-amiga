@@ -71,7 +71,7 @@ Maximize throughput and minimize latency of the CL-Amiga bytecode VM and runtime
 
 ---
 
-### 1.3 `(declaim (optimize speed))` Support — Emit-Time Speed-Gated Optimization
+### 1.3 `(declaim (optimize speed))` Support — Emit-Time Speed-Gated Optimization ✅ DONE (2026-07-10)
 
 This is the realistic, low-risk home for `(declaim (optimize (speed 3)))` support. It groups
 constant folding, dead-branch elimination, and safety-gated check elision into a single
@@ -123,6 +123,37 @@ gains at `(safety 0)`.
 
 **Files**: `src/core/compiler.c` (`compile_call`, `compile_if`), `src/core/compiler_extra.c`
 (local-declare save/restore around `locally`/`defun`/`lambda` bodies).
+
+**Implementation (2026-07-10)**:
+- **Scoping**: `cl_optimize_settings` is now the *effective* settings; a new
+  `cl_optimize_global` holds the DECLAIM/PROCLAIM baseline
+  (`cl_process_declaration_specifier` grew a `proclaimed` flag). Every
+  `cl_tail_push` snapshots the effective settings into the tail frame (4 bytes);
+  the postludes of declaration-accepting bodies (LET, LOCALLY, MVB, FLET,
+  LABELS, MACROLET, SYMBOL-MACROLET) restore them, `compile_body` brackets
+  lambda/defun/destructuring-bind bodies, and the NLX compiler-chain unwind
+  resets effective = global when no compilation is active.
+- **Constant folding** (`try_fold_constant`, gated `speed >= 1` — the default):
+  `+ - * 1+ 1- ash logand logior logxor not null = < > <= >=` over fixnum
+  constants (incl. nested and quoted); any overflow / non-fixnum operand /
+  local-function shadow / `notinline` declines to the normal emit path.
+  Allocation-free by construction, so GC-neutral.
+- **Dead-branch elimination** (in `compile_if`, gated `speed >= 1`): a foldable
+  constant test compiles only the live branch — no JNIL/JMP, dead branch never
+  emitted; the live branch keeps tail position.
+- **Check elision at `(safety 0)`**: destructuring-bind too-few/too-many
+  guards elided (CLHS 1.4.2.3 "should signal" = safe code only); `the` was
+  already elided. **Deferred**: arity and array bounds checks are enforced
+  inside the VM's OP_CALL/OP_ASET handlers (not emitted per call site), so
+  eliding them needs a bytecode/`CL_Bytecode` format change — 1.8-era work.
+- **Bonus conformance fix**: `inline_builtin_opcode` now honors
+  `(declare (notinline ...))` (CLHS 3.2.2.3), matching the folding path.
+- **Measured** (bench-opt, host M3 Ultra): opt.const-fold 39→20 ms,
+  opt.dead-branch 49→35 ms, vm.fixnum-loop 72→61 ms, vm.local-shuffle
+  63→51 ms. See docs/benchmarks.md 2026-07-10 entry.
+- **Tests**: `tests/test_optimize.c` (21 host tests), optimize section in
+  `tests/amiga/run-tests.lisp`, gc-stress case in
+  `tests/test_gc_stress_regression.sh`.
 
 ---
 
@@ -502,7 +533,7 @@ Recommended sequence balancing impact vs. risk:
 | 4 | 1.4 (computed goto), 1.5 (TLV bypass) | ✅ DONE |
 | 5 | 1.6 (HT rehash + hash fix), 1.7 (32-bit limb bignum mul) | ✅ DONE (3c58761, fbb7e29) |
 | 6 | 1.9 (MLF pre-pass hash index — found by profiling; 9.8x cold compile) | ✅ DONE (2026-07-05) |
-| 7 | 1.3 (declaim-speed: const-fold + dead-branch + check-elision + local-declare scoping) | Pending |
+| 7 | 1.3 (declaim-speed: const-fold + dead-branch + check-elision + local-declare scoping) | ✅ DONE (2026-07-10) |
 | 8 | 1.8 (bytecode peephole post-pass, after 1.3 + profiling), 2.5 (free-list segregation) | Pending |
 | 9 | 3.1 (slot access), 3.2 (keyword pre-comp) | ✅ 3.1 DONE (2026-07-05: registry hash index + fused slot-access builtins + C GF inline-cache probe); 3.2 pending |
 | — | 2.4 (set ops in C) | Deprioritized — measured near-zero real-world use (2026-07-05) |

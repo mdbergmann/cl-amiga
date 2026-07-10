@@ -9,6 +9,40 @@ Related: [specs/performance.md](../specs/performance.md) is the optimization
 
 ---
 
+## 2026-07-10 — spec 1.3: optimize support (const folding + dead branches + check elision)
+
+**Commit**: follows `e388fe2`.
+
+`(declaim (optimize ...))` / body `(declare (optimize ...))` now drive the
+compiler (lexically scoped per CLHS 3.3.4).  At `speed >= 1` (the default),
+calls to pure fixnum builtins with constant arguments fold to a single
+`CONST` (`(+ 1 2 3)`: 20 bytes / 4 constants → 9 bytes / 1 constant, tested
+via disassembly), and constant `IF` tests compile only the live branch.  At
+`(safety 0)`, destructuring-bind arity guards and the `THE` type assert are
+elided.  See specs/performance.md § 1.3 for the design and file list.
+
+**Environment**: Apple M3 Ultra, macOS 26.5.2, `make host`, warm FASL cache,
+`--heap 64M`, cwd = repo root.  Baseline = the 2026-07-05 bench-opt entry
+below (same flags; note the 07-05 numbers predate the CLOS slot-access
+specs, so only the rows below are attributable to 1.3).
+
+**Reproduce**: `echo '(quit)' | ./build/host/clamiga --heap 64M --load trunk/bench-opt.lisp`
+
+| Benchmark | before (07-05) | after | delta |
+|---|---|---|---|
+| opt.const-fold | 39 ms | **20 ms** | 1.95× |
+| opt.dead-branch | 49 ms | **35 ms** | 1.4× |
+| vm.fixnum-loop | 72 ms | **61 ms** | 1.18× |
+| vm.local-shuffle | 63 ms | **51 ms** | 1.24× |
+| vm.call-return | 63 ms | 60 ms | ~1.05× |
+| safety1.svref-loop | 48 ms | 44 ms | ~1.09× |
+
+All 30 bench-opt checks pass (`fails=0`).  The safety0.* rows are unchanged
+because arity/bounds checks live in the VM's call/aref handlers, not at the
+emit site — elision for those is deferred to the 1.8-era bytecode work.
+
+---
+
 ## 2026-07-10 — writer-GF inline cache: (setf (x obj) v) fast dispatch (host)
 
 **Commit**: follows `25e1fd9`.

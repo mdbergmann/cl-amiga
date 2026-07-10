@@ -8755,6 +8755,41 @@
 (check "t4b7c print-level override" "(1 #)"
   (write-to-string '(1 (2 (3))) :level 1))
 
+; --- Optimize declarations (spec 1.3): folding / dead branches / scoping ---
+; Constant folding must be value-transparent (these run with speed 1 default,
+; so the calls below fold at compile time — results must match the runtime).
+(check "opt fold arith" 13 (+ 1 (* 2 3) (- 10 4)))
+(check "opt fold ash floor" -5 (ash -17 -2))
+(check "opt fold logops" '(8 14 6) (list (logand 12 10) (logior 12 10) (logxor 12 10)))
+(check "opt fold cmp chain" '(t nil) (list (< 1 2 3) (< 1 3 2)))
+(check "opt fold not/null" '(t nil t) (list (not nil) (not 5) (null '())))
+; Overflow must decline folding and reach the runtime bignum path
+(check "opt fold overflow declines" 1073741824 (+ 1073741823 1))
+(check "opt fold mul overflow declines" 1000000000000 (* 1000000 1000000))
+; Dead-branch elimination: the dead branch is never compiled or run
+(check "opt dead branch then" :live (if (> 2 1) :live (error "dead")))
+(check "opt dead branch else" :else (if (= 1 2) (error "dead") :else))
+(check "opt dead when nil" nil (when nil (error "dead")))
+; FLET shadow suppresses folding of the CL builtin
+(check "opt fold flet shadow" '(1 2) (flet ((+ (a b) (list a b))) (+ 1 2)))
+; notinline suppresses folding and opcode inlining, value unchanged
+(check "opt fold notinline" 3 (locally (declare (notinline +)) (+ 1 2)))
+; speed 0 disables folding, value unchanged
+(check "opt fold speed 0" 3 (locally (declare (optimize (speed 0))) (+ 1 2)))
+; Scoping: body (declare (optimize (safety 0))) elides THE check inside...
+(check "opt local safety 0 elides the-check" "x"
+  (locally (declare (optimize (safety 0))) (the fixnum "x")))
+; ...and is restored after the body ends (THE signals again)
+(check "opt safety restored after body" :signaled
+  (handler-case (eval '(the fixnum "y")) (error () :signaled)))
+; destructuring-bind guards: signal at default safety, elided at safety 0
+(check "opt dbind too-few signals" :signaled
+  (handler-case (eval '(destructuring-bind (a b) '(1) (list a b)))
+    (error () :signaled)))
+(check "opt dbind guards elided at safety 0" '(1 nil)
+  (locally (declare (optimize (safety 0)))
+    (destructuring-bind (a b) '(1) (list a b))))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)
