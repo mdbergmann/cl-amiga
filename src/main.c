@@ -535,13 +535,13 @@ int main(int argc, char *argv[])
         platform_write_string("  )))     ");
         cl_color_set(CL_COLOR_RED);
         platform_write_string("\\\\\n");
-        /* Line 2:  )))       \\          CL-Amiga v0.2 */
+        /* Line 2:  )))       \\          CL-Amiga v<version> */
         cl_color_set(CL_COLOR_LIGHT_BLUE);
         platform_write_string(" )))       ");
         cl_color_set(CL_COLOR_RED);
         platform_write_string("\\\\          ");
         cl_color_set(CL_COLOR_DIM_CYAN);
-        platform_write_string("CL-Amiga v0.2\n");
+        platform_write_string("CL-Amiga v" CL_VERSION_STRING "\n");
         /* Line 3: )))         \\ */
         cl_color_set(CL_COLOR_LIGHT_BLUE);
         platform_write_string(")))         ");
