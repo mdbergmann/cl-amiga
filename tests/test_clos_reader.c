@@ -321,6 +321,168 @@ TEST(reader_gf_set_funcallable_instance_function_wins)
     ASSERT_STR_EQ(eval_print("(rg-px (make-instance 'rg-p))"), "1");
 }
 
+/* --- Writer-GF fast dispatch ---
+ *
+ * The mirror machinery for (setf (x obj) v): a GF whose whole method set is
+ * DEFCLASS-generated writer methods for one slot is promoted, its IC entries
+ * encode the slot index as (- -1 idx) — always negative — and OP_CALL's
+ * 2-arg probe stores directly.  CLAMIGA:*WRITER-GFS* records promotion.
+ * Same latch caveat as the reader tests: everything here must run before
+ * reader_gf_slot_value_using_class_demotes_all. */
+
+TEST(writer_gf_promoted_and_stores)
+{
+    eval_print("(defclass wg-p () ((x :initform 1 :accessor wg-px)))");
+    ASSERT_STR_EQ(eval_print("(and (gethash #'(setf wg-px) clamiga:*writer-gfs*) t)"), "T");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((o (make-instance 'wg-p)))"
+        "  (list (wg-px o) (setf (wg-px o) 42) (wg-px o)))"), "(1 42 42)");
+}
+
+TEST(writer_gf_writer_option_promoted)
+{
+    /* :writer names the GF directly (no setf wrapper); it takes (VAL OBJ). */
+    eval_print("(defclass wg-wo () ((x :initform 0 :writer wg-set-x :reader wg-wox)))");
+    ASSERT_STR_EQ(eval_print("(and (gethash #'wg-set-x clamiga:*writer-gfs*) t)"), "T");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((o (make-instance 'wg-wo)))"
+        "  (list (wg-set-x 7 o) (wg-wox o)))"), "(7 7)");
+}
+
+TEST(writer_gf_polymorphic_differing_slot_indices)
+{
+    /* Same writer on two classes where X sits at a DIFFERENT index; the IC
+     * caches one negative-encoded entry per class, and a hit never rewrites
+     * slot 8 — the spine staying EQ proves the fast path stored them. */
+    eval_print("(defclass wg-qa () ((x :initform 0 :accessor wg-qx)))");
+    eval_print("(defclass wg-qb () ((pad :initform 0) (x :initform 0 :accessor wg-qx)))");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((a (make-instance 'wg-qa)) (b (make-instance 'wg-qb)))"
+        "  (setf (wg-qx a) 1) (setf (wg-qx b) 2)"
+        "  (let ((ic (clamiga::gf-inline-cache #'(setf wg-qx))))"
+        "    (dotimes (i 5) (setf (wg-qx a) i) (setf (wg-qx b) (* 10 i)))"
+        "    (list (length ic)"
+        "          (eq ic (clamiga::gf-inline-cache #'(setf wg-qx)))"
+        "          (wg-qx a) (wg-qx b)"
+        "          (slot-value b 'pad))))"),  /* neighbour slot untouched */
+        "(2 T 4 40 0)");
+}
+
+TEST(writer_gf_arity_error_not_slot_read)
+{
+    /* The writer IC's negative index encoding exists so the 1-arg reader
+     * probe can never answer a call to a promoted writer GF: a 1-arg call
+     * must reach the slow path and signal, not return the slot's value. */
+    eval_print("(defclass wg-ar () ((x :initform :leak :accessor wg-arx)))");
+    eval_print("(let ((o (make-instance 'wg-ar))) (setf (wg-arx o) :leak))");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (funcall #'(setf wg-arx) (make-instance 'wg-ar))"
+        "  (error () :err))"), ":ERR");
+    /* ... and 3-arg calls must error too, not store */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (funcall #'(setf wg-arx) 1 (make-instance 'wg-ar) 2)"
+        "  (error () :err))"), ":ERR");
+}
+
+TEST(writer_gf_setf_returns_value_and_single)
+{
+    eval_print("(defclass wg-rv () ((x :initform 0 :accessor wg-rvx)))");
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (setf (wg-rvx (make-instance 'wg-rv)) 5))"), "(5)");
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (funcall #'(setf wg-rvx) 6 (make-instance 'wg-rv)))"),
+        "(6)");
+}
+
+TEST(writer_gf_unbound_slot_becomes_bound)
+{
+    /* Writing an unbound slot binds it — no SLOT-UNBOUND involvement. */
+    eval_print("(defclass wg-u () ((x :accessor wg-ux)))");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((o (make-instance 'wg-u)))"
+        "  (list (slot-boundp o 'x) (setf (wg-ux o) :now) (wg-ux o)))"),
+        "(NIL :NOW :NOW)");
+}
+
+TEST(writer_gf_trampoline_probes)
+{
+    /* funcall / apply / indirect apply answer from the C trampolines'
+     * 2-arg writer probes; the spine staying EQ proves cache hits. */
+    eval_print("(defclass wg-tp1 () ((x :initform 0 :accessor wg-tpx)))");
+    eval_print("(defclass wg-tp2 () ((pad :initform 0) (x :initform 0 :accessor wg-tpx)))");
+    ASSERT_STR_EQ(eval_print("(and (gethash #'(setf wg-tpx) clamiga:*writer-gfs*) t)"), "T");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((a (make-instance 'wg-tp1)) (b (make-instance 'wg-tp2)))"
+        "  (setf (wg-tpx a) 0) (setf (wg-tpx b) 0)"  /* fill the IC */
+        "  (let ((ic (clamiga::gf-inline-cache #'(setf wg-tpx))))"
+        "    (dotimes (i 5)"
+        "      (funcall #'(setf wg-tpx) i a)"
+        "      (apply #'(setf wg-tpx) (* 10 i) (list b)))"
+        "    (funcall #'apply #'(setf wg-tpx) (list 99 a))"
+        "    (list (eq ic (clamiga::gf-inline-cache #'(setf wg-tpx)))"
+        "          (wg-tpx a) (wg-tpx b))))"),
+        "(T 99 40)");
+}
+
+TEST(writer_gf_after_method_demotes)
+{
+    /* sento-style: an :after method on a setter must retract the fast path
+     * — a probe hit would silently skip it. */
+    eval_print("(defclass wg-s () ((x :initform 0 :accessor wg-sx)"
+               "                   (log :initform nil :accessor wg-slog)))");
+    eval_print("(let ((o (make-instance 'wg-s))) (setf (wg-sx o) 1))");
+    eval_print("(defmethod (setf wg-sx) :after (val (o wg-s))"
+               "  (push val (slot-value o 'log)))");
+    ASSERT_STR_EQ(eval_print("(and (gethash #'(setf wg-sx) clamiga:*writer-gfs*) t)"), "NIL");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((o (make-instance 'wg-s)))"
+        "  (setf (wg-sx o) 7)"
+        "  (funcall #'(setf wg-sx) 8 o)"          /* trampolines disarmed too */
+        "  (list (wg-sx o) (wg-slog o)))"), "(8 (8 7))");
+}
+
+TEST(writer_gf_no_applicable_method)
+{
+    eval_print("(defclass wg-n () ((x :initform 0 :accessor wg-nx)))");
+    eval_print("(defclass wg-unrelated () ((x :initform 5)))");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (setf (wg-nx (make-instance 'wg-unrelated)) 1)"
+        "  (error () :nam))"), ":NAM");
+    /* the unrelated class's slot was not written through the wrong IC */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((o (make-instance 'wg-n))) (setf (wg-nx o) 3) (wg-nx o))"), "3");
+}
+
+TEST(writer_gf_class_redefinition_reorders_slots)
+{
+    /* The cache stores a slot INDEX; redefining the class so the slot moves
+     * must invalidate it, or the store lands in the wrong slot. */
+    eval_print("(defclass wg-redef () ((a :initform :one :accessor wg-redef-a)))");
+    eval_print("(setf (wg-redef-a (make-instance 'wg-redef)) :warm)");
+    eval_print("(defclass wg-redef () ((pad :initform :pad)"
+               "                       (a :initform :two :accessor wg-redef-a)))");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((o (make-instance 'wg-redef)))"
+        "  (setf (wg-redef-a o) :new)"
+        "  (list (wg-redef-a o) (slot-value o 'pad)))"), "(:NEW :PAD)");
+}
+
+TEST(writer_gf_set_funcallable_instance_function_wins)
+{
+    eval_print("(defclass wg-sfi () ((x :initform 0 :accessor wg-sfix)))");
+    eval_print("(setf (wg-sfix (make-instance 'wg-sfi)) 1)");
+    eval_print("(set-funcallable-instance-function"
+               "  #'(setf wg-sfix) (lambda (v o) (declare (ignore v o)) :hijacked))");
+    ASSERT_STR_EQ(eval_print("(and (gethash #'(setf wg-sfix) clamiga:*writer-gfs*) t)"), "NIL");
+    ASSERT_STR_EQ(eval_print(
+        "(funcall #'(setf wg-sfix) 9 (make-instance 'wg-sfi))"), ":HIJACKED");
+    /* the hijacked function does not store — proof slot 3 was reached and
+     * the old IC store path is disarmed (SETF itself returns the new value
+     * by construction, so observe the slot instead) */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((o (make-instance 'wg-sfi))) (setf (wg-sfix o) 9) (wg-sfix o))"), "0");
+}
+
 /* MUST BE THE LAST reader-GF test, and effectively the last test in this
  * file: defining a SLOT-VALUE-USING-CLASS method latches
  * *SLOT-ACCESS-PROTOCOL-EXTENDED-P* for the remainder of the image, demoting
@@ -329,7 +491,10 @@ TEST(reader_gf_slot_value_using_class_demotes_all)
 {
     ASSERT_STR_EQ(eval_print("clamiga:*slot-access-protocol-extended-p*"), "NIL");
     eval_print("(defclass rg-tracked () ((x :initform 3 :reader rg-tkx)))");
+    eval_print("(defclass wg-tracked () ((x :initform 0 :accessor wg-tkx)))");
     ASSERT_STR_EQ(eval_print("(rg-tkx (make-instance 'rg-tracked))"), "3");
+    eval_print("(setf (wg-tkx (make-instance 'wg-tracked)) 1)"); /* warm the IC */
+    ASSERT_STR_EQ(eval_print("(and (gethash #'(setf wg-tkx) clamiga:*writer-gfs*) t)"), "T");
     eval_print("(defmethod slot-value-using-class :around"
                "    ((c standard-class) obj slotd)"
                "  (let ((v (call-next-method)))"
@@ -337,6 +502,13 @@ TEST(reader_gf_slot_value_using_class_demotes_all)
     ASSERT_STR_EQ(eval_print("clamiga:*slot-access-protocol-extended-p*"), "T");
     ASSERT_STR_EQ(eval_print("(and (gethash #'rg-tkx clamiga:*reader-gfs*) t)"), "NIL");
     ASSERT_STR_EQ(eval_print("(and (gethash #'rg-px clamiga:*reader-gfs*) t)"), "NIL");
+    /* the latch demotes writer GFs too */
+    ASSERT_STR_EQ(eval_print("(and (gethash #'(setf wg-tkx) clamiga:*writer-gfs*) t)"), "NIL");
+    /* a demoted writer still stores (through the full protocol); the read
+     * back shows the user's SLOT-VALUE-USING-CLASS method being honoured */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((o (make-instance 'wg-tracked)))"
+        "  (setf (wg-tkx o) 7) (wg-tkx o))"), "7000");
     /* the protocol is now honoured by readers, not bypassed */
     ASSERT_STR_EQ(eval_print("(rg-tkx (make-instance 'rg-tracked))"), "3000");
     ASSERT_STR_EQ(eval_print("(rg-px (make-instance 'rg-p))"), "1000");
@@ -369,6 +541,19 @@ int main(void)
     RUN(reader_gf_tailcall_funcall_and_apply_paths);
     RUN(reader_gf_trampoline_probes);
     RUN(reader_gf_set_funcallable_instance_function_wins);
+
+    RUN(writer_gf_promoted_and_stores);
+    RUN(writer_gf_writer_option_promoted);
+    RUN(writer_gf_polymorphic_differing_slot_indices);
+    RUN(writer_gf_arity_error_not_slot_read);
+    RUN(writer_gf_setf_returns_value_and_single);
+    RUN(writer_gf_unbound_slot_becomes_bound);
+    RUN(writer_gf_trampoline_probes);
+    RUN(writer_gf_after_method_demotes);
+    RUN(writer_gf_no_applicable_method);
+    RUN(writer_gf_class_redefinition_reorders_slots);
+    RUN(writer_gf_set_funcallable_instance_function_wins);
+
     RUN(reader_gf_slot_value_using_class_demotes_all);
 
     teardown();

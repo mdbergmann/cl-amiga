@@ -528,6 +528,16 @@ CL_Obj cl_vm_apply(CL_Obj func, CL_Obj *args, int nargs)
             return slot_v;
         }
     }
+    /* Writer-GF fast path, ditto for (setf (x obj) v): args are (VAL OBJ)
+     * per CLHS 5.1.1.2.  Covers the JIT'd writer calls the same way. */
+    if (nargs == 2 && cl_funcallable_instance_p(func)) {
+        CL_Obj slot_v = cl_gf_writer_ic_probe(func, args[0], args[1]);
+        if (slot_v != CL_UNBOUND) {
+            cl_mv_count = 1;
+            cl_mv_values[0] = slot_v;
+            return slot_v;
+        }
+    }
 
     /* Unwrap funcallable instances (e.g. a generic-function struct) so the
      * standard call path sees the underlying discriminating function. */
@@ -2116,6 +2126,22 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 }
             }
 
+            /* Writer-GF fast path: the mirror image for (setf (x obj) v) —
+             * a 2-arg call to a promoted writer GF ((setf x) takes VAL OBJ,
+             * new-value first per CLHS 5.1.1.2) stores into the cached slot
+             * index and returns VAL right here.  Same tail exclusion and
+             * slot-3-bypass justification as the reader probe above. */
+            if (!is_tail && nargs == 2 && cl_funcallable_instance_p(func_obj)) {
+                CL_Obj slot_v = cl_gf_writer_ic_probe(func_obj, arg_base[0],
+                                                      arg_base[1]);
+                if (slot_v != CL_UNBOUND) {
+                    cl_vm.sp -= (nargs + 1);
+                    cl_vm_push(slot_v);
+                    cl_mv_count = 1;
+                    VM_BREAK;
+                }
+            }
+
             /* Unwrap funcallable instances (GF struct → discriminating fn). */
             if (cl_funcallable_instance_p(func_obj)) {
                 func_obj = cl_unwrap_funcallable(func_obj);
@@ -3431,6 +3457,19 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     cl_gf_reader_ic_probe(apply_func, cl_vm.stack[args_base]);
                 if (slot_v != CL_UNBOUND) {
                     cl_vm.sp = args_base;   /* drop the spread arg */
+                    cl_vm_push(slot_v);
+                    cl_mv_count = 1;
+                    CL_GC_UNPROTECT(1);     /* apply_func */
+                    VM_BREAK;
+                }
+            }
+            /* Writer-GF fast path, ditto: (apply #'(setf x) val obj ...). */
+            if (nflat == 2 && cl_funcallable_instance_p(apply_func)) {
+                CL_Obj slot_v =
+                    cl_gf_writer_ic_probe(apply_func, cl_vm.stack[args_base],
+                                          cl_vm.stack[args_base + 1]);
+                if (slot_v != CL_UNBOUND) {
+                    cl_vm.sp = args_base;   /* drop the spread args */
                     cl_vm_push(slot_v);
                     cl_mv_count = 1;
                     CL_GC_UNPROTECT(1);     /* apply_func */

@@ -226,6 +226,13 @@ void cl_register_funcallable_gf_type(CL_Obj sym);
  * frame; see %MAKE-READER-DISCRIMINATOR in lib/clos.lisp. */
 CL_Obj cl_gf_reader_ic_probe(CL_Obj gfobj, CL_Obj obj);
 
+/* Writer-GF inline-cache hit path (builtins_struct.c).  Stores VAL into the
+ * cached slot and returns VAL, or CL_UNBOUND for "miss — take the full
+ * dispatch".  Non-allocating.  Used by OP_CALL to answer a (setf accessor)
+ * call without building a frame; see %MAKE-WRITER-DISCRIMINATOR in
+ * lib/clos.lisp. */
+CL_Obj cl_gf_writer_ic_probe(CL_Obj gfobj, CL_Obj val, CL_Obj obj);
+
 /* Push/pop on VM value stack (for builtins) */
 void cl_vm_push(CL_Obj val);
 CL_Obj cl_vm_pop(void);

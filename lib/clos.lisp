@@ -2626,6 +2626,116 @@ When called with no arguments, passes the original method arguments."
     (when gf (%refresh-reader-discriminator gf)))
   method)
 
+;;; --- Writer-GF fast dispatch ---
+;;;
+;;; The mirror image for (setf (x obj) v): a GF whose entire method set
+;;; is DEFCLASS-generated writer methods for one slot means exactly
+;;; "store the first argument into slot N of the second" ((setf x) takes
+;;; VAL OBJ, new-value first, per CLHS 5.1.1.2).  Promotion, demotion,
+;;; invalidation, and thread-safety rules are identical to the reader
+;;; machinery above — see that block's comment for the reasoning.
+;;;
+;;; The writer IC shares GF slot 8 and reuses the (TYPE-NAME . FIXNUM)
+;;; entry shape, but encodes the slot index as (- -1 index) — always
+;;; negative — so the reader and writer C probes can never answer from
+;;; each other's caches (a 1-arg call to a promoted writer GF must reach
+;;; the slow path and signal its arity error, not read the slot).
+
+(defvar *writer-method-slots* (clamiga::%make-sync-hash-table 'eq)
+  "Method object -> slot name, for DEFCLASS-generated writer methods.
+   Same concurrent-mutation hazard as *READER-METHOD-SLOTS*.")
+(defvar *writer-gfs* (clamiga::%make-sync-hash-table 'eq)
+  "GF -> slot name, for GFs currently running the writer discriminator.
+   Same concurrent-mutation hazard as *READER-METHOD-SLOTS*.")
+
+(defun %gf-writer-slot-name (gf)
+  "Slot name when every method of GF is a generated writer for that one
+   slot and GF is a plain 2-argument standard-combination GF; else NIL."
+  (let ((methods (gf-methods gf))
+        (slot nil))
+    (and methods
+         (not *slot-access-protocol-extended-p*)
+         (eql 2 (%gf-lambda-list-required-count (gf-lambda-list gf)))
+         (let ((combo (gf-method-combination gf)))
+           (or (null combo)
+               (eq (method-combination-name combo) 'standard)))
+         (dolist (m methods t)
+           (let ((s (gethash m *writer-method-slots*)))
+             (when (or (null s) (method-qualifiers m))
+               (return nil))
+             (if slot
+                 (unless (eq s slot) (return nil))
+                 (setq slot s))))
+         slot)))
+
+(defun %gf-writer-1-miss (gf val obj slot-name)
+  "Writer IC miss.  Take the ordinary slow path (which performs the
+   store through the full protocol), then push (TYPE-NAME . (- -1 IDX))
+   for OBJ's class onto the writer IC.  Snapshot/re-validate/fresh-spine
+   discipline is %GF-READER-1-MISS's — see its docstring.
+   %READER-IC-ENTRIES' shape check covers writer entries too (both are
+   lists of conses; only the cdr's sign differs)."
+  (let ((old (%reader-ic-entries (gf-inline-cache gf))))
+    (multiple-value-prog1 (%gf-dispatch-2-slow gf val obj)
+      (when (and (not *slot-access-protocol-extended-p*)
+                 (structurep obj)
+                 (%compute-applicable-methods gf (list val obj)))
+        (let* ((type-name (%struct-type-name obj))
+               (idx (%struct-slot-index type-name slot-name)))
+          (when idx
+            (let ((kept nil) (n 0))
+              (dolist (e old)
+                (when (and (< n 3) (consp e))
+                  (let* ((ty (car e))
+                         (i (and (not (eq ty type-name))
+                                 (%struct-slot-index ty slot-name))))
+                    (when (and i (eql (cdr e) (- -1 i)))
+                      (push e kept)
+                      (setq n (+ n 1))))))
+              (%set-gf-inline-cache
+               gf (cons (cons type-name (- -1 idx)) (nreverse kept))))))))))
+
+(defun %make-writer-discriminator (gf slot-name)
+  (let ((miss *slot-unbound-marker*))
+    (named-lambda %gf-dispatch-2-writer (val obj)
+      (let ((v (%gf-writer-ic gf val obj miss)))
+        (if (eq v miss)
+            (%gf-writer-1-miss gf val obj slot-name)
+            v)))))
+
+(defun %demote-writer-gf (gf)
+  (remhash gf *writer-gfs*)
+  (%set-gf-inline-cache gf nil)
+  (%set-gf-discriminating-function gf
+    (%build-discriminating-function gf (gf-lambda-list gf))))
+
+(defun %refresh-writer-discriminator (gf)
+  "Install or retract GF's writer fast-path discriminating function."
+  (let ((slot (%gf-writer-slot-name gf)))
+    (cond (slot
+           (setf (gethash gf *writer-gfs*) slot)
+           (%set-gf-inline-cache gf nil)
+           (%set-gf-discriminating-function gf
+             (%make-writer-discriminator gf slot)))
+          ((gethash gf *writer-gfs*)
+           (%demote-writer-gf gf)))))
+
+(defun %demote-all-writer-gfs ()
+  "Called when *SLOT-ACCESS-PROTOCOL-EXTENDED-P* flips: no writer GF may
+   bypass (SETF SLOT-VALUE) once the slot-access protocol has user methods."
+  (let ((gfs nil))
+    (maphash (lambda (gf slot) (declare (ignore slot)) (push gf gfs))
+             *writer-gfs*)
+    (dolist (gf gfs) (%demote-writer-gf gf))))
+
+(defun %note-writer-method (method slot-name)
+  "Tag METHOD as a DEFCLASS-generated writer for SLOT-NAME and reconsider
+   its GF for the writer fast path.  Returns METHOD."
+  (setf (gethash method *writer-method-slots*) slot-name)
+  (let ((gf (method-generic-function method)))
+    (when gf (%refresh-writer-discriminator gf)))
+  method)
+
 ;;; --- ensure-generic-function ---
 
 (defun ensure-generic-function (name &key lambda-list
@@ -2666,6 +2776,13 @@ already-existing GF the installed combination is preserved."
                 (%set-gf-method-combination existing new-combo)
                 (%set-gf-dispatch-cache existing nil)
                 (%set-gf-inline-cache existing nil)
+                ;; A promoted reader/writer GF bypasses the effective-method
+                ;; machinery entirely; a non-standard combination must
+                ;; retract that (the refresh re-checks the combination).
+                (when (gethash existing *reader-gfs*)
+                  (%refresh-reader-discriminator existing))
+                (when (gethash existing *writer-gfs*)
+                  (%refresh-writer-discriminator existing))
                 (%notify-dependents existing 'reinitialize-instance
                                     :method-combination new-combo))))
           (when (null (gf-method-combination existing))
@@ -2960,7 +3077,8 @@ already-existing GF the installed combination is preserved."
       (dolist (m (gf-methods gf))
         (when (and (equal (method-qualifiers m) qualifiers)
                    (equal (method-specializers m) specializers))
-          (remhash m *reader-method-slots*)))
+          (remhash m *reader-method-slots*)
+          (remhash m *writer-method-slots*)))
       (%set-gf-methods gf
         (cons method
               (remove-if (lambda (m)
@@ -2978,13 +3096,16 @@ already-existing GF the installed combination is preserved."
     (when (and (%slot-access-protocol-gf-p gf-name)
                (> (length (gf-methods gf)) 1))
       (setq *slot-access-protocol-extended-p* t)
-      ;; SLOT-VALUE now has user methods behind it; no reader GF may keep
-      ;; bypassing it.
-      (%demote-all-reader-gfs))
-    ;; A method added to a reader GF (an :around, or a primary that is not
-    ;; a generated reader) retracts the fast path.
+      ;; SLOT-VALUE / (SETF SLOT-VALUE) now have user methods behind them;
+      ;; no reader or writer GF may keep bypassing them.
+      (%demote-all-reader-gfs)
+      (%demote-all-writer-gfs))
+    ;; A method added to a reader/writer GF (an :around, or a primary that
+    ;; is not a generated accessor method) retracts the fast path.
     (when (gethash gf *reader-gfs*)
       (%refresh-reader-discriminator gf))
+    (when (gethash gf *writer-gfs*)
+      (%refresh-writer-discriminator gf))
     (%notify-dependents gf 'add-method method)
     method))
 
@@ -3005,8 +3126,11 @@ already-existing GF the installed combination is preserved."
   ;; Clear the back-link so the method object no longer claims membership.
   (%set-method-generic-function method nil)
   (remhash method *reader-method-slots*)
+  (remhash method *writer-method-slots*)
   (when (gethash gf *reader-gfs*)
     (%refresh-reader-discriminator gf))
+  (when (gethash gf *writer-gfs*)
+    (%refresh-writer-discriminator gf))
   (%notify-dependents gf 'remove-method method)
   gf)
 
@@ -3394,8 +3518,10 @@ already-existing GF the installed combination is preserved."
           ;; Writer: use defgeneric + defmethod for (setf accessor)
           ;; so additional methods can be added without replacing the original
           (push `(defgeneric (setf ,accessor) (val obj)) accessor-defs)
-          (push `(defmethod (setf ,accessor) (val (obj ,name))
-                   ,(%accessor-writer-body 'obj slot-name 'val))
+          (push `(%note-writer-method
+                   (defmethod (setf ,accessor) (val (obj ,name))
+                     ,(%accessor-writer-body 'obj slot-name 'val))
+                   ',slot-name)
                 accessor-defs))
         (dolist (reader readers)
           (push `(defgeneric ,reader (obj)) accessor-defs)
@@ -3406,8 +3532,10 @@ already-existing GF the installed combination is preserved."
                 accessor-defs))
         (dolist (writer writers)
           (push `(defgeneric ,writer (val obj)) accessor-defs)
-          (push `(defmethod ,writer (val (obj ,name))
-                   ,(%accessor-writer-body 'obj slot-name 'val))
+          (push `(%note-writer-method
+                   (defmethod ,writer (val (obj ,name))
+                     ,(%accessor-writer-body 'obj slot-name 'val))
+                   ',slot-name)
                 accessor-defs))))
     (setq slot-def-forms (nreverse slot-def-forms))
     (setq accessor-defs (nreverse accessor-defs))
@@ -3557,12 +3685,14 @@ already-existing GF the installed combination is preserved."
 (defun set-funcallable-instance-function (gf fn)
   "AMOP: install FN as the discriminating function of GF.  Future calls
 to GF invoke FN in place of the standard dispatch.  Returns GF."
-  ;; The VM answers calls to a promoted reader GF straight from the inline
-  ;; cache, bypassing slot 3 entirely — so retract the promotion before
-  ;; retargeting slot 3, or FN would simply never run.  Clearing the cache
-  ;; unconditionally is a cheap belt-and-braces: it is only a cache.
+  ;; The VM answers calls to a promoted reader/writer GF straight from the
+  ;; inline cache, bypassing slot 3 entirely — so retract the promotion
+  ;; before retargeting slot 3, or FN would simply never run.  Clearing the
+  ;; cache unconditionally is a cheap belt-and-braces: it is only a cache.
   (when (gethash gf *reader-gfs*)
     (%demote-reader-gf gf))
+  (when (gethash gf *writer-gfs*)
+    (%demote-writer-gf gf))
   (%set-gf-inline-cache gf nil)
   (%set-gf-discriminating-function gf fn)
   gf)

@@ -3903,6 +3903,75 @@ check_absent   "no corruption in reader-GF case" \
   "corrupted pointer\|not of type\|Guru\|SIGSEGV\|badmark" "$out"
 
 # ---------------------------------------------------------------------------
+# Writer-GF fast dispatch under compact-every-alloc.
+#
+# The mirror machinery for (setf (x obj) v): writer IC entries reuse the
+# reader's (TYPE-NAME . FIXNUM) cons shape with the slot index encoded
+# negative, and OP_CALL's 2-arg probe stores straight through the cached
+# index.  Same relocation hazards as the reader case (spine, entry conses,
+# type-name symbols, receiver all move under compaction), plus one of its
+# own: the stored VALUE must land in the relocated receiver, not a stale
+# copy — a missed forward writes into freed/moved memory.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- writer-GF fast dispatch under compact-every-alloc ---"
+cat > "$WORK/writergf.lisp" <<'EOF'
+(defclass wg-a () ((x :initform 0 :accessor wg-x)
+                   (guard :initform :g)))            ; neighbour must survive
+(defclass wg-b () ((pad :initform 0) (x :initform 0 :accessor wg-x)))
+(format t "WG-PROMOTED:~a~%" (and (gethash #'(setf wg-x) clamiga:*writer-gfs*) t))
+;; polymorphic store loop: each iteration conses to force compaction between
+;; stores, alternating two classes whose X sits at DIFFERENT indices
+(let ((a (make-instance 'wg-a))
+      (b (make-instance 'wg-b))
+      (acc 0))
+  (dotimes (i 150)
+    (make-list 4)
+    (setf (wg-x a) i)
+    (setf (wg-x b) (* 2 i))
+    (setq acc (+ acc (wg-x a) (wg-x b))))
+  (format t "WG-SUM:~a:~a~%" acc (slot-value a 'guard)))  ; 3*sum(0..149)=33525
+;; the stored value itself is a fresh heap object each time: it must survive
+;; the compactions after the store and read back intact
+(let ((a (make-instance 'wg-a)) (acc 0))
+  (dotimes (i 100)
+    (setf (wg-x a) (list i (* 10 i)))
+    (make-list 6)
+    (setq acc (+ acc (car (wg-x a)) (cadr (wg-x a)))))
+  (format t "WG-HEAPVAL:~a~%" acc))                  ; 11*sum(0..99) = 54450
+;; redefinition moves X to a new index; a stale cached index would store into
+;; the wrong slot (clobbering PAD1) or read back the initform
+(defclass wg-a () ((pad1 :initform :p1) (pad2 :initform :p2)
+                   (x :initform 0 :accessor wg-x)))
+(let ((o (make-instance 'wg-a)) (acc 0))
+  (dotimes (i 50) (make-list 4) (setf (wg-x o) i) (setq acc (+ acc (wg-x o))))
+  (format t "WG-REDEF:~a:~a~%" acc (slot-value o 'pad1)))  ; 1225:P1
+;; trampoline probes: FUNCALL/APPLY builtins + cl_vm_apply store paths
+(let ((b (make-instance 'wg-b)) (acc 0))
+  (dotimes (i 50)
+    (make-list 4)
+    (funcall #'(setf wg-x) i b)
+    (setq acc (+ acc (wg-x b)))
+    (apply #'(setf wg-x) (* 3 i) (list b))
+    (setq acc (+ acc (wg-x b))))
+  (format t "WG-TRAMPOLINE:~a~%" acc))               ; 4*sum(0..49) = 4900
+(format t "WG-DONE~%")
+EOF
+out=$(run_stress "$WORK/writergf.lisp")
+check_contains "writer GF is promoted under stress" "WG-PROMOTED:T" "$out"
+check_contains "writer IC stores stable across stress compactions" \
+  "WG-SUM:33525:G" "$out"
+check_contains "heap-allocated stored values survive compaction" \
+  "WG-HEAPVAL:54450" "$out"
+check_contains "writer IC invalidated by class redefinition" \
+  "WG-REDEF:1225:P1" "$out"
+check_contains "writer trampoline probes (funcall/apply) stable under stress" \
+  "WG-TRAMPOLINE:4900" "$out"
+check_contains "writer-GF case runs to completion" "WG-DONE" "$out"
+check_absent   "no corruption in writer-GF case" \
+  "corrupted pointer\|not of type\|Guru\|SIGSEGV\|badmark" "$out"
+
+# ---------------------------------------------------------------------------
 # SLOT-VALUE compiler-macro inline + (type, slot) pair index under
 # compact-every-alloc.
 #

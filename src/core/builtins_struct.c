@@ -1117,6 +1117,70 @@ static CL_Obj bi_gf_reader_ic(CL_Obj *args, int n)
     return (v == CL_UNBOUND) ? args[2] : v;
 }
 
+/* Writer counterpart of cl_gf_reader_ic_probe: (setf (x obj) val) on a
+ * promoted writer-only GF stores straight into the cached slot index.
+ * Writer IC entries reuse the (TYPE-NAME . FIXNUM) cons shape but encode
+ * the slot index as (- -1 idx) — always negative — so the reader and
+ * writer probes can never answer from each other's caches: the reader
+ * probe rejects a negative index, and this probe rejects a non-negative
+ * one.  (Without that, a 1-arg call to a promoted writer GF whose
+ * receiver matched an entry would return the slot value instead of
+ * signalling the arity error.)  EMF caches stay unambiguous as before:
+ * their first element is a class object, never a cons.
+ *
+ * Returns VAL on a hit; CL_UNBOUND means "miss, take full dispatch".
+ * Storing the unbound-slot marker itself is reported as a miss so the
+ * full SLOT-VALUE protocol decides what that means — the probe must
+ * never manufacture an unbound slot on its own.  Non-allocating and
+ * non-erroring, same as the reader probe. */
+CL_Obj cl_gf_writer_ic_probe(CL_Obj gfobj, CL_Obj val, CL_Obj obj)
+{
+    CL_Struct *gf, *st;
+    CL_Cons *spine, *e;
+    CL_Obj ic, entry;
+    int32_t idx;
+    int i;
+
+    if (!CL_STRUCT_P(gfobj) || !CL_STRUCT_P(obj))
+        return CL_UNBOUND;
+    if (val == cl_slot_unbound_marker)
+        return CL_UNBOUND; /* never fabricate an unbound slot */
+    gf = (CL_Struct *)CL_OBJ_TO_PTR(gfobj);
+    if (gf->n_slots < 9)
+        return CL_UNBOUND;
+    ic = gf->slots[8];
+    st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
+    for (i = 0; i < CL_READER_IC_MAX && CL_CONS_P(ic); i++) {
+        spine = (CL_Cons *)CL_OBJ_TO_PTR(ic);
+        entry = spine->car;
+        if (!CL_CONS_P(entry))
+            return CL_UNBOUND; /* EMF-shaped cache, not ours */
+        e = (CL_Cons *)CL_OBJ_TO_PTR(entry);
+        if (!CL_FIXNUM_P(e->cdr))
+            return CL_UNBOUND; /* not an accessor entry */
+        idx = (int32_t)CL_FIXNUM_VAL(e->cdr);
+        if (idx >= 0)
+            return CL_UNBOUND; /* reader IC, not a writer's */
+        if (e->car == st->type_desc) {
+            idx = -1 - idx;
+            if ((uint32_t)idx >= st->n_slots)
+                return CL_UNBOUND;
+            st->slots[idx] = val;
+            return val;
+        }
+        ic = spine->cdr;
+    }
+    return CL_UNBOUND;
+}
+
+static CL_Obj bi_gf_writer_ic(CL_Obj *args, int n)
+{
+    CL_Obj v;
+    CL_UNUSED(n);
+    v = cl_gf_writer_ic_probe(args[0], args[1], args[2]);
+    return (v == CL_UNBOUND) ? args[3] : v;
+}
+
 /* (%set-slot-unbound-marker marker) — publish CLOS's unbound-slot marker
  * to the VM's reader fast path.  Called once from clos.lisp. */
 static CL_Obj bi_set_slot_unbound_marker(CL_Obj *args, int n)
@@ -1209,6 +1273,7 @@ void cl_builtins_struct_init(void)
     cl_register_builtin("%CLASS-OF", bi_class_of, 1, 1, cl_package_clamiga);
     cl_register_builtin("%GF-IC-EMF", bi_gf_ic_emf, 2, 3, cl_package_clamiga);
     cl_register_builtin("%GF-READER-IC", bi_gf_reader_ic, 3, 3, cl_package_clamiga);
+    cl_register_builtin("%GF-WRITER-IC", bi_gf_writer_ic, 4, 4, cl_package_clamiga);
     cl_register_builtin("%SET-SLOT-UNBOUND-MARKER", bi_set_slot_unbound_marker,
                         1, 1, cl_package_clamiga);
     cl_register_builtin("%SET-CLOS-CLASS-TABLE", bi_set_clos_class_table, 1, 1, cl_package_clamiga);

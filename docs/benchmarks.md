@@ -9,6 +9,52 @@ Related: [specs/performance.md](../specs/performance.md) is the optimization
 
 ---
 
+## 2026-07-10 — writer-GF inline cache: (setf (x obj) v) fast dispatch (host)
+
+**Commit**: follows `25e1fd9`.
+
+The reader fast path left writers untouched: `(setf (x obj) v)` was a plain
+2-arg GF call through the full discriminator (EMF inline cache + effective
+method funcall + `%ACCESSOR-WRITER-BODY`'s per-store slot resolution).  This
+entry adds the mirror machinery: a GF whose whole method set is
+DEFCLASS-generated writer methods for one slot is promoted
+(`CLAMIGA:*WRITER-GFS*`), and the same probe sites that answer reader calls
+(`OP_CALL`, `cl_vm_apply` — the m68k-JIT funnel — `bi_funcall`, `bi_apply`,
+the VM's inline `OP_APPLY`) store straight through the cached slot index on
+a 2-arg call.  Writer IC entries reuse the reader's `(TYPE-NAME . FIXNUM)`
+cons shape with the index encoded negative (`(- -1 idx)`), so the two probes
+can never answer from each other's caches (a 1-arg call to a promoted writer
+GF still signals its arity error) and every existing slot-8 invalidation
+site covers writers for free.
+
+**Environment**: macOS arm64, host bytecode VM, best-of-3.
+
+**Reproduce**: 8 unrolled stores per iteration, 250k iterations, instance in
+a local; the poly row alternates two classes whose slot sits at different
+indices.
+
+| ns per store | before | after | speedup |
+|---|---|---|---|
+| `(setf (x obj) v)`, 1 class | 144.5 | **16.0** | 9.0× |
+| 2 classes alternating | 390.0 | **17.0** | 23× |
+| via `FUNCALL #'(setf x)` | 618.5 | **17.0** | 36× |
+| accessor read (control) | 13.5 | 13.5 | — |
+
+Writes now cost the same as promoted reads — the symmetric result the reader
+entries below established for the read side.  Real workloads write about as
+often as they read (sento actors mutate state constantly), so this closes
+the last accessor-shaped gap on the hot path.
+
+Tracked by `clos.accessor-write` in `trunk/bench-opt.lisp` (7 ms, identical
+to `clos.accessor`, zero allocation).
+
+Verified: host `make test` + `test_clos_reader` 28/28 (11 new writer tests
+incl. arity-error-not-slot-read, `:after`-method demotion, redefinition,
+`SET-FUNCALLABLE-INSTANCE-FUNCTION`, latch demotion), gc-stress 391/391
+(new writer-GF compact-every-alloc case), FS-UAE suite.
+
+---
+
 ## 2026-07-10 — reader-GF inline cache reaches JIT'd callers + call trampolines (Amiga + host)
 
 **Commit**: follows the SLOT-VALUE entry below.

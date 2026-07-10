@@ -900,6 +900,15 @@ static CL_Obj bi_apply(CL_Obj *args, int n)
             return v;
         }
     }
+    /* Writer-GF fast path, ditto: (apply #'(setf x) val obj-list). */
+    if (nflat == 2 && cl_funcallable_instance_p(func)) {
+        CL_Obj v = cl_gf_writer_ic_probe(func, cl_vm.stack[base],
+                                         cl_vm.stack[base + 1]);
+        if (v != CL_UNBOUND) {
+            cl_vm.sp = saved_sp;
+            return v;
+        }
+    }
     func = cl_unwrap_funcallable(func);
 
     if (CL_FUNCTION_P(func)) {
@@ -940,6 +949,11 @@ static CL_Obj bi_funcall(CL_Obj *args, int n)
      * ordinary dispatch.  Non-allocating; mv state is call_builtin's. */
     if (n == 2 && cl_funcallable_instance_p(func)) {
         CL_Obj v = cl_gf_reader_ic_probe(func, args[1]);
+        if (v != CL_UNBOUND) return v;
+    }
+    /* Writer-GF fast path, ditto: (funcall #'(setf x) val obj). */
+    if (n == 3 && cl_funcallable_instance_p(func)) {
+        CL_Obj v = cl_gf_writer_ic_probe(func, args[1], args[2]);
         if (v != CL_UNBOUND) return v;
     }
     func = cl_unwrap_funcallable(func);

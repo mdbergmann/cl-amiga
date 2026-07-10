@@ -5450,6 +5450,114 @@
        (funcall #'rg-amiga-sfix (make-instance 'rg-amiga-sfi)))
 (check "unrelated reader still fast" 3 (rg-amiga-x (make-instance 'rg-amiga-a)))
 
+; --- Writer-GF fast dispatch ---
+; The mirror machinery for (setf (x obj) v): a GF whose whole method set is
+; DEFCLASS-generated writer methods for one slot is promoted, its IC entries
+; encode the slot index negative ((- -1 idx)), and the VM's 2-arg probes
+; (OP_CALL, cl_vm_apply — the JIT path — FUNCALL/APPLY builtins, OP_APPLY)
+; store straight through the cached index.  Same latch caveat as the reader
+; section: these MUST stay above "Slot-access protocol" below.
+(defclass wg-amiga-a () ((x :initform 0 :accessor wg-amiga-x)
+                         (guard :initform :g)))
+(defclass wg-amiga-b () ((pad :initform 0) (x :initform 0 :accessor wg-amiga-x)))
+(check "writer GF promoted" t (and (gethash #'(setf wg-amiga-x) clamiga:*writer-gfs*) t))
+(check "writer stores and setf returns value" '(42 42)
+       (let ((o (make-instance 'wg-amiga-a)))
+         (list (setf (wg-amiga-x o) 42) (wg-amiga-x o))))
+(check "writer neighbour slot untouched" :g
+       (let ((o (make-instance 'wg-amiga-a)))
+         (setf (wg-amiga-x o) 9) (slot-value o 'guard)))
+; alternating classes with X at DIFFERENT indices: one negative-encoded IC
+; entry per class; a hit never rewrites slot 8, so the spine staying EQ
+; proves the fast path performed the stores
+(check "writer polymorphic alternation, spine stays EQ" '(t 4 40)
+       (let ((a (make-instance 'wg-amiga-a)) (b (make-instance 'wg-amiga-b)))
+         (setf (wg-amiga-x a) 0) (setf (wg-amiga-x b) 0)
+         (let ((ic (clamiga::gf-inline-cache #'(setf wg-amiga-x))))
+           (dotimes (i 5) (setf (wg-amiga-x a) i) (setf (wg-amiga-x b) (* 10 i)))
+           (list (eq ic (clamiga::gf-inline-cache #'(setf wg-amiga-x)))
+                 (wg-amiga-x a) (wg-amiga-x b)))))
+; :writer option names the GF directly; it takes (VAL OBJ)
+(defclass wg-amiga-wo () ((x :initform 0 :writer wg-amiga-set-x :reader wg-amiga-wox)))
+(check "writer via :writer option promoted" t
+       (and (gethash #'wg-amiga-set-x clamiga:*writer-gfs*) t))
+(check ":writer stores" '(7 7)
+       (let ((o (make-instance 'wg-amiga-wo)))
+         (list (wg-amiga-set-x 7 o) (wg-amiga-wox o))))
+; a 1-arg call to a promoted writer GF must signal, never read the slot
+; (this is what the negative index encoding guarantees)
+(check "writer arity error, not slot read" :err
+       (handler-case (funcall #'(setf wg-amiga-x) (make-instance 'wg-amiga-a))
+         (error () :err)))
+; writing an unbound slot binds it
+(defclass wg-amiga-u () ((x :accessor wg-amiga-ux)))
+(check "write binds unbound slot" '(nil :now)
+       (let ((o (make-instance 'wg-amiga-u)))
+         (list (slot-boundp o 'x)
+               (progn (setf (wg-amiga-ux o) :now) (wg-amiga-ux o)))))
+; trampolines: FUNCALL/APPLY builtins and, in JIT'd callers, cl_vm_apply
+(check "funcall writer" 5
+       (let ((o (make-instance 'wg-amiga-a)))
+         (funcall #'(setf wg-amiga-x) 5 o) (wg-amiga-x o)))
+(check "funcall writer single value" '(6)
+       (multiple-value-list (funcall #'(setf wg-amiga-x) 6 (make-instance 'wg-amiga-a))))
+(check "apply writer" 7
+       (let ((o (make-instance 'wg-amiga-a)))
+         (apply #'(setf wg-amiga-x) 7 (list o)) (wg-amiga-x o)))
+; JIT'd caller, non-tail position: on Amiga this is the
+; cl_jit_runtime_call -> cl_vm_apply writer probe end-to-end
+(defun wg-amiga-mid (v o) (setf (wg-amiga-x o) v) (wg-amiga-x o))
+(check "JIT'd caller writer" 11 (wg-amiga-mid 11 (make-instance 'wg-amiga-a)))
+(check "writer-calling defun runs native" t
+       (if (clamiga::%jit-active-p)
+           (let ((before (clamiga::%jit-invoke-count)))
+             (wg-amiga-mid 12 (make-instance 'wg-amiga-a))
+             (> (clamiga::%jit-invoke-count) before))
+           t))
+; an :after method on the setter retracts the fast path (a probe hit would
+; silently skip it) — the sento-actor pattern
+(defclass wg-amiga-s () ((x :initform 0 :accessor wg-amiga-sx)
+                         (log :initform nil)))
+(check "sx write fast before after-method" 1
+       (let ((o (make-instance 'wg-amiga-s))) (setf (wg-amiga-sx o) 1) (wg-amiga-sx o)))
+(defmethod (setf wg-amiga-sx) :after (val (o wg-amiga-s))
+  (push val (slot-value o 'log)))
+(check "after-method demotes writer GF" nil
+       (and (gethash #'(setf wg-amiga-sx) clamiga:*writer-gfs*) t))
+(check "after-method runs on write" '(8 (8 7))
+       (let ((o (make-instance 'wg-amiga-s)))
+         (setf (wg-amiga-sx o) 7)
+         (funcall #'(setf wg-amiga-sx) 8 o)     ; trampolines disarmed too
+         (list (wg-amiga-sx o) (slot-value o 'log))))
+; class redefinition moves the slot; the cached index must be invalidated
+(defclass wg-amiga-redef () ((a :initform :one :accessor wg-amiga-ra)))
+(check "writer redef before" :warm
+       (let ((o (make-instance 'wg-amiga-redef)))
+         (setf (wg-amiga-ra o) :warm) (wg-amiga-ra o)))
+(defclass wg-amiga-redef () ((pad :initform :pad)
+                             (a :initform :two :accessor wg-amiga-ra)))
+(check "writer redef after slot reorder" '(:new :pad)
+       (let ((o (make-instance 'wg-amiga-redef)))
+         (setf (wg-amiga-ra o) :new)
+         (list (wg-amiga-ra o) (slot-value o 'pad))))
+; SET-FUNCALLABLE-INSTANCE-FUNCTION must beat the VM's slot-3 bypass
+(defclass wg-amiga-sfi () ((x :initform 0 :accessor wg-amiga-sfix)))
+(check "sfix write fast" 1
+       (let ((o (make-instance 'wg-amiga-sfi)))
+         (setf (wg-amiga-sfix o) 1) (wg-amiga-sfix o)))
+(set-funcallable-instance-function
+  #'(setf wg-amiga-sfix) (lambda (v o) (declare (ignore v o)) 'hijacked))
+(check "set-funcallable demotes writer" nil
+       (and (gethash #'(setf wg-amiga-sfix) clamiga:*writer-gfs*) t))
+(check "set-funcallable wins for writer" 'hijacked
+       (funcall #'(setf wg-amiga-sfix) 9 (make-instance 'wg-amiga-sfi)))
+(check "hijacked writer does not store" 0
+       (let ((o (make-instance 'wg-amiga-sfi)))
+         (setf (wg-amiga-sfix o) 9) (wg-amiga-sfix o)))
+(check "unrelated writer still fast" 13
+       (let ((o (make-instance 'wg-amiga-a)))
+         (setf (wg-amiga-x o) 13) (wg-amiga-x o)))
+
 ; --- SLOT-VALUE compiler-macro inline + (type, slot) pair index ---
 ; SLOT-VALUE and (SETF (SLOT-VALUE ...)) compile to an inlined fast-path
 ; test (compiler macros in clos.lisp; compile_setf routes defsetf updaters
@@ -5511,6 +5619,14 @@
   (push (slot-definition-name slot) *sv-amiga-log*)
   (call-next-method))
 (check "protocol flag extended" t *slot-access-protocol-extended-p*)
+; the latch demotes every promoted reader AND writer GF (see the reader-GF /
+; writer-GF sections above, which ran while the flag was still NIL)
+(check "latch demoted reader GFs" nil (and (gethash #'rg-amiga-x clamiga:*reader-gfs*) t))
+(check "latch demoted writer GFs" nil
+       (and (gethash #'(setf wg-amiga-x) clamiga:*writer-gfs*) t))
+(check "demoted writer still stores" 21
+       (let ((o (make-instance 'wg-amiga-a)))
+         (setf (wg-amiga-x o) 21) (wg-amiga-x o)))
 (check "around read returns orig" 'orig (slot-value (make-instance 'sv-amiga-obs) 'k))
 (check "around read logged" 'k (first *sv-amiga-log*))
 (defclass sv-amiga-mod () ((v :initarg :v :initform 1)))

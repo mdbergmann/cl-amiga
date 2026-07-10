@@ -449,6 +449,23 @@ Verify the (deterministic) result against EXPECTED."
                    (setq s (+ s (%bo-point-x p) (%bo-point-x q)))))
                s))))
 
+;; Writer-GF fast dispatch (2026-07-10): (SETF %BO-POINT-X)/(SETF %BO-POINT-Y)
+;; are DEFCLASS-generated writer methods, so their GFs are promoted and
+;; OP_CALL's 2-arg probe stores straight through the inline cache (entries
+;; carry the slot index negative-encoded to stay distinct from reader
+;; entries).  Watch clos.accessor-write staying close to clos.accessor.
+(let ((n 10000) (reps (%bo-scaled 10))
+      (p (make-instance '%bo-point :x 0 :y 0)))
+  (%bo-run "clos.accessor-write" (* 2 (%bo-sum-below n))
+           (lambda ()
+             (let ((s 0))
+               (dotimes (r reps)
+                 (setq s 0)
+                 (dotimes (i n)
+                   (setq s (+ s (setf (%bo-point-x p) i)
+                              (setf (%bo-point-y p) i)))))
+               s))))
+
 ;; Deep slot of a wide class (2026-07-10): SLOT-VALUE is compile-time
 ;; inlined (no Lisp call frame) and resolves through the (type, slot)
 ;; pair index, so a late slot costs the same as slot 0.  Before the pair
