@@ -439,9 +439,14 @@ cl-amiga accepts the full ANSI declaration syntax so that portable code compiles
 without error, but only a subset of declarations currently changes behavior. The
 rest are parsed and accepted as conforming no-ops.
 
-- **`declaim`** processes its specifiers at compile time (it is a compiler special
-  form); **`proclaim`** is the runtime function form and processes the same
-  specifiers — both apply globally. **`declare`** handles leading declarations in
+- **`declaim`** processes its specifiers at compile time *and* emits a
+  `proclaim` call that runs whenever the form is executed — REPL, source load,
+  or compiled-FASL load (per CLHS it behaves like `eval-when` with
+  `:compile-toplevel :load-toplevel :execute`). So a library's
+  `(declaim (optimize ...))` or `(declaim (special ...))` still takes global
+  effect when its cached FASL is loaded, not only when it was compiled.
+  **`proclaim`** is the plain runtime function form for the same specifiers —
+  both apply globally. **`declare`** handles leading declarations in
   a body; `special` and `optimize` declarations are lexically scoped to that body
   (CLHS 3.3.4) and stop applying when it ends.
 - **`special`** — *honored.* Marks the variable as dynamically bound (per-thread
@@ -664,6 +669,7 @@ Point-in-time benchmark results (sento actor throughput on host, Amiga JIT call 
 - **Stream external formats** — character streams default to UTF-8; `(open … :external-format :latin-1)` (also `:iso-8859-1`) selects an 8-bit-transparent stream where each code point 0–255 maps to a single raw byte with no transcoding, for byte-faithful I/O over a character stream (e.g. an `rfc2388` multipart upload written to a temp file). `stream-external-format` reports `:latin-1` / `:default`. Other named encodings are not yet selectable. See `tests/test_stream.c` (`open_latin1_*`) and `tests/amiga/run-tests.lisp` for usage.
 - **Threading** — `MP` package covers the core bordeaux-threads surface (threads with `interrupt`/`destroy`, mutex + recursive locks, named condition variables with timeout, `with-lock-held` / `with-recursive-lock-held`, type predicates). `(ql:quickload :bordeaux-threads)` and Quicklisp itself currently rely on local patches we ship — `lib/quicklisp-compat.lisp` (maps the BT v2 surface onto `MP`, adapts Quicklisp's network/HTTP layer) plus the CL-Amiga library forks and the `swank` stub in `~/quicklisp/local-projects` (the stub symlinked by `make install-shims`, the forks cloned in — see [Quicklisp](#quicklisp)); the plan is to upstream these once the remaining API gaps close. Not yet covered: semaphores, atomic integers, `with-timeout`, `:timeout` on `acquire-lock`
 - **ANSI CL gaps** — while major subsystems work (CLOS, conditions, packages, the full numeric tower, arrays, pathnames, streams, loop, format), some corners of the spec remain unimplemented
+- **CPU time on AmigaOS** — `get-internal-run-time` (and the "cpu" figure that `time` prints) measures real process CPU time on POSIX hosts via `getrusage`, but falls back to wall-clock time on AmigaOS because exec has no per-task CPU accounting — there, run time and real time report the same value.
 - **Socket timeout clock on AmigaOS** — the socket read/write timeout deadlines are measured with a `DateStamp`-based millisecond clock, which resets at midnight. A timeout window that straddles 00:00 can therefore fire early or late by up to the elapsed-since-midnight amount — a once-a-day edge that is harmless for the typical second-scale timeouts but not exact. Switching the Amiga deadline source to a monotonic `timer.device` clock would remove it. (POSIX is unaffected.)
 - **Socket write timeouts over loopback** — a `:output` timeout fires only when the send genuinely cannot make progress (the peer's receive window and the local send buffer are both full). On a `127.0.0.1` connection the host kernel may buffer the data effectively without bound — macOS, in particular, keeps a loopback socket writable no matter how much unread data is queued — so a write timeout will not trigger there even against a peer that never reads. This is a host-buffering property, not a CL-Amiga limit; write timeouts behave normally against real remote peers and on AmigaOS. (Read timeouts are unaffected and fire reliably everywhere.) Because of this, the write-timeout path is exercised by the success-path test (a timed write to a draining peer) rather than a loopback saturation test; it shares the same readiness-wait/deadline mechanism as the read path (`poll` on POSIX, `WaitSelect` on AmigaOS).
 
