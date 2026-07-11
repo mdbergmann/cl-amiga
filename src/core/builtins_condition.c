@@ -1132,9 +1132,22 @@ static CL_NORETURN void signal_type_error_core(CL_Obj datum, CL_Obj expected_typ
     CL_GC_PROTECT(datum);
     CL_GC_PROTECT(expected_type);
 
-    snprintf(msgbuf, sizeof(msgbuf),
-             "%s: argument is not of type %s", fn_name,
-             type_name_for_msg ? type_name_for_msg : "(see expected-type)");
+    /* Name the datum's observed type in the report — "not of type
+     * STRUCTURE" alone is undiagnosable in the field (was it NIL? a
+     * fixnum? a wild offset from corruption?).  cl_type_name reads the
+     * heap header, so guard against an out-of-arena offset (corruption)
+     * and report it as such instead of dereferencing it. */
+    {
+        const char *got;
+        if (CL_HEAP_P(datum) && datum >= cl_heap.arena_size)
+            got = "an out-of-arena object reference";
+        else
+            got = cl_type_name(datum);
+        snprintf(msgbuf, sizeof(msgbuf),
+                 "%s: argument is not of type %s (got %s)", fn_name,
+                 type_name_for_msg ? type_name_for_msg : "(see expected-type)",
+                 got);
+    }
     report = cl_make_string(msgbuf, (uint32_t)strlen(msgbuf));
     CL_GC_PROTECT(report);
 

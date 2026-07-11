@@ -622,6 +622,11 @@ static CL_Obj bi_struct_set(CL_Obj *args, int n)
     if (idx < 0 || (uint32_t)idx >= st->n_slots)
         cl_error(CL_ERR_ARGS, "%%STRUCT-SET: index %d out of range", idx);
 
+    /* Publication barrier — same reasoning as OP_STRUCT_SET in vm.c: the
+     * stored value may be a freshly-built object graph read lock-free by
+     * peer threads (CLOS dispatch metadata); order its initializing
+     * stores before the publishing store on weakly-ordered CPUs. */
+    if (CL_MT()) platform_memory_barrier();
     st->slots[idx] = args[2];
     return args[2];
 }
@@ -827,6 +832,8 @@ static CL_Obj bi_struct_slot_store(CL_Obj *args, int n)
     CL_UNUSED(n);
     if (idx < 0)
         return CL_NIL;
+    /* Publication barrier — see OP_STRUCT_SET in vm.c. */
+    if (CL_MT()) platform_memory_barrier();
     ((CL_Struct *)CL_OBJ_TO_PTR(args[0]))->slots[idx] = args[2];
     return SYM_T;
 }
@@ -1165,6 +1172,11 @@ CL_Obj cl_gf_writer_ic_probe(CL_Obj gfobj, CL_Obj val, CL_Obj obj)
             idx = -1 - idx;
             if ((uint32_t)idx >= st->n_slots)
                 return CL_UNBOUND;
+            /* Publication barrier — see OP_STRUCT_SET in vm.c.  This is
+             * the (setf accessor) fast path: it stores user values into
+             * instance slots just like %STRUCT-SLOT-STORE, so it gets
+             * the same ordering guarantee. */
+            if (CL_MT()) platform_memory_barrier();
             st->slots[idx] = val;
             return val;
         }
