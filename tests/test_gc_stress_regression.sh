@@ -13,6 +13,16 @@
 # The binary MUST be a DEBUG_GC_STRESS build — the env var is a no-op otherwise.
 
 CLAMIGA="${1:-build/host-gcstress/clamiga}"
+
+# macOS has no `timeout`; coreutils installs it as `gtimeout` (same detection
+# as the other shell tests).
+TIMEOUT=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
+if [ -z "$TIMEOUT" ]; then
+    echo "SKIP test_gc_stress_regression: neither timeout nor gtimeout on PATH"
+    echo "0 passed, 0 failed, 0 total"
+    exit 0
+fi
+
 passed=0
 failed=0
 total=0
@@ -33,7 +43,7 @@ fi
 # CLAMIGA_GC_STRESS= still enables stress and would corrupt the FASL itself).
 compile_fasl() {
     src="$1"; fasl="$2"
-    env -u CLAMIGA_GC_STRESS timeout 60 "$CLAMIGA" --no-userinit --heap 64M \
+    env -u CLAMIGA_GC_STRESS "$TIMEOUT" 60 "$CLAMIGA" --no-userinit --heap 64M \
         --non-interactive \
         --eval "(progn (compile-file \"$src\" :output-file \"$fasl\") (format t \"COMPILED~%\"))" \
         2>/dev/null | grep -q COMPILED
@@ -41,7 +51,7 @@ compile_fasl() {
 
 # Run under GC stress, capture stdout+stderr.
 run_stress() {
-    CLAMIGA_GC_STRESS=1 timeout 90 "$CLAMIGA" --no-userinit --heap 48M \
+    CLAMIGA_GC_STRESS=1 "$TIMEOUT" 90 "$CLAMIGA" --no-userinit --heap 48M \
         --non-interactive --load "$1" 2>&1
 }
 
@@ -1797,7 +1807,7 @@ if echo "$out" | grep -q "MLF-COMPILED"; then
 (load "$WORK/mlf-s.fasl")
 (format t "MLF-SLOAD:~a~%" (gcstress-mlf::mlf-probe))
 EOF
-    out2=$(env -u CLAMIGA_GC_STRESS timeout 60 "$CLAMIGA" --no-userinit --heap 48M \
+    out2=$(env -u CLAMIGA_GC_STRESS "$TIMEOUT" 60 "$CLAMIGA" --no-userinit --heap 48M \
                --non-interactive --load "$WORK/mlf-s-load.lisp" 2>&1)
     check_contains "FASL written under GC-stress compile reconstructs correctly" "MLF-SLOAD:(hi 7 T)" "$out2"
     check_absent   "no corruption in FASL written by pre-pass under stress"      "Undefined\|Unbound\|type 0\|corrupted" "$out2"
