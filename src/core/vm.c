@@ -4293,6 +4293,22 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 cl_error(CL_ERR_ARGS,
                          "%%STRUCT-SET: index %u out of range (n_slots=%u)",
                          (unsigned)idx, (unsigned)st->n_slots);
+            /* Publication barrier: this store may make a freshly-built
+             * object graph reachable to peer threads that read the slot
+             * WITHOUT a lock (CLOS dispatch metadata — gf-methods,
+             * dispatch-cache, inline-cache — is lock-free on the reader
+             * side by design).  On weakly-ordered CPUs (arm64 macOS) a
+             * plain store can become visible before the stores that
+             * initialized the object it points to, so a peer would read
+             * uninitialized cons/struct/hashtable innards (observed as a
+             * once-per-tens-of-millions %STRUCT-REF type error, or a hang
+             * walking a half-visible hash table).  The full barrier orders
+             * every prior initializing store before the publishing store;
+             * readers are ordered by address dependency and need nothing.
+             * On single-core m68k this is only a compiler barrier (free);
+             * x86 TSO never reorders stores, so it is belt-and-braces
+             * there. */
+            if (CL_MT()) platform_memory_barrier();
             st->slots[idx] = val;
             cl_vm_push(val);
             cl_mv_count = 1;
