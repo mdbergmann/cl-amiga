@@ -70,7 +70,7 @@ cat > "$tmp" <<'EOF'
 (format t "MT-IDENTITY-DONE~%")
 EOF
 
-out=$("$TIMEOUT" 120 "$CLAMIGA" --no-userinit --load "$tmp" 2>&1)
+out=$("$TIMEOUT" 120 "$CLAMIGA" --no-userinit --non-interactive --load "$tmp" </dev/null 2>&1)
 status=$?
 fail() {
     echo "FAIL mt_thread_identity ($1)"

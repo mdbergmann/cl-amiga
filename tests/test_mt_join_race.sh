@@ -72,7 +72,7 @@ EOF
 runs=6
 i=1
 while [ $i -le $runs ]; do
-    out=$("$TIMEOUT" 60 "$CLAMIGA" --no-userinit --load "$tmp" 2>&1)
+    out=$("$TIMEOUT" 60 "$CLAMIGA" --no-userinit --non-interactive --load "$tmp" </dev/null 2>&1)
     status=$?
     if [ $status -ne 0 ]; then
         echo "FAIL mt_join_race (run $i/$runs — exit $status: crash/hang)"

@@ -28,7 +28,7 @@ cat > "$WORK/finalize.lisp" <<LISPEOF
 (quit)
 LISPEOF
 
-out=$("$CLAMIGA" --no-userinit --load "$WORK/finalize.lisp" 2>&1)
+out=$("$CLAMIGA" --no-userinit --load "$WORK/finalize.lisp" </dev/null 2>&1)
 
 total=$((total + 1))
 case "$out" in
@@ -64,7 +64,7 @@ cat > "$WORK/finalize-socket.lisp" <<LISPEOF
 (quit)
 LISPEOF
 
-out=$("$CLAMIGA" --no-userinit --load "$WORK/finalize-socket.lisp" 2>&1)
+out=$("$CLAMIGA" --no-userinit --load "$WORK/finalize-socket.lisp" </dev/null 2>&1)
 
 total=$((total + 1))
 case "$out" in

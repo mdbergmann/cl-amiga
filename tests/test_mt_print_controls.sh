@@ -34,7 +34,7 @@ cat > "$WORK/mt-print-controls.lisp" <<'LISPEOF'
 (quit)
 LISPEOF
 
-out=$("$CLAMIGA" --no-userinit --load "$WORK/mt-print-controls.lisp" 2>&1)
+out=$("$CLAMIGA" --no-userinit --load "$WORK/mt-print-controls.lisp" </dev/null 2>&1)
 
 total=$((total + 1))
 case "$out" in
