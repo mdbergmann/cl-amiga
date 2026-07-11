@@ -125,7 +125,8 @@ fi
 
 i=1
 while [ $i -le $runs ]; do
-    out=$("$TIMEOUT" "$run_timeout" "$CLAMIGA" --no-userinit --heap 24M --load "$tmp" 2>&1)
+    out=$("$TIMEOUT" "$run_timeout" "$CLAMIGA" --no-userinit --heap 24M \
+              --non-interactive --load "$tmp" </dev/null 2>&1)
     status=$?
     if [ $status -ne 0 ]; then
         echo "FAIL mt_intern_stw (run $i/$runs — exit $status: hang or crash)"

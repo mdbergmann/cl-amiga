@@ -99,7 +99,7 @@ EOF
 runs=3
 i=1
 while [ $i -le $runs ]; do
-    out=$("$TIMEOUT" 60 "$CLAMIGA" --no-userinit --load "$tmp" 2>&1)
+    out=$("$TIMEOUT" 60 "$CLAMIGA" --no-userinit --non-interactive --load "$tmp" </dev/null 2>&1)
     status=$?
     fail() {
         echo "FAIL mt_interrupt_parked (run $i/$runs — $1)"

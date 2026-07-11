@@ -89,7 +89,7 @@ cat > "$tmp" <<'EOF'
 (quit)
 EOF
 
-out=$("$TIMEOUT" 120 "$CLAMIGA" --load "$tmp" 2>&1)
+out=$("$TIMEOUT" 120 "$CLAMIGA" --load "$tmp" </dev/null 2>&1)
 status=$?
 
 if [ $status -ne 0 ]; then

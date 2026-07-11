@@ -70,7 +70,8 @@ EOF
 runs=3
 i=1
 while [ $i -le $runs ]; do
-    out=$("$TIMEOUT" 90 "$CLAMIGA" --no-userinit --heap 16M --load "$tmp" 2>&1)
+    out=$("$TIMEOUT" 90 "$CLAMIGA" --no-userinit --heap 16M \
+              --non-interactive --load "$tmp" </dev/null 2>&1)
     status=$?
     fail() {
         echo "FAIL mt_print_stress (run $i/$runs — $1)"
