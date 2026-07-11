@@ -2482,12 +2482,48 @@ CL_Obj process_body_declarations(CL_Compiler *c, CL_Obj body)
 
 void compile_declaim(CL_Compiler *c, CL_Obj form)
 {
-    /* (declaim decl-spec ...) — process each globally, emit NIL */
-    CL_Obj specs = cl_cdr(form);
+    /* (declaim decl-spec ...) — CLHS: behaves like (eval-when
+     * (:compile-toplevel :load-toplevel :execute) (proclaim 'spec) ...).
+     * Two legs:
+     *   1. :compile-toplevel — process each spec globally NOW, so it is in
+     *      force for the rest of this compilation unit (and, as permitted
+     *      by "it is unspecified whether the compile-time side effects
+     *      persist", for the rest of the process).
+     *   2. :load-toplevel/:execute — emit a runtime (PROCLAIM 'spec) call
+     *      per spec.  Without this leg a declaim compiled into a FASL
+     *      evaporated: loading the fasl left the proclaimed baseline
+     *      untouched, so a library's (declaim (optimize ...)) or (declaim
+     *      (special ...)) silently stopped applying to later compiles
+     *      whenever its fasl was cache-warm.
+     * PROCLAIM tolerates every spec kind (unknown heads are no-ops in
+     * cl_process_declaration_specifier), and re-running the compile-time
+     * leg when the form is evaluated directly is idempotent. */
+    CL_Obj sym_proclaim;
+    int fidx;
+    CL_Obj specs;
+    CL_GC_PROTECT(form);
+    /* PROCLAIM is interned by cl_builtins_init long before any compile, so
+     * this is a lookup — but protect FORM first anyway in case it ever
+     * allocates. */
+    sym_proclaim = cl_intern_in("PROCLAIM", 8, cl_package_cl);
+    fidx = cl_add_constant(c, sym_proclaim);
+    specs = cl_cdr(form);
+    CL_GC_PROTECT(specs);
     while (!CL_NULL_P(specs)) {
-        cl_process_declaration_specifier(c, cl_car(specs), 1);
+        CL_Obj spec = cl_car(specs);
+        /* Stash SPEC into the (GC-rooted, forwarded-in-place) constant pool
+         * and emit the call BEFORE processing it — processing may allocate,
+         * which would leave the raw SPEC local holding a stale offset. */
+        cl_emit(c, OP_FLOAD);
+        cl_emit_u16(c, (uint16_t)fidx);
+        cl_emit_const(c, spec);
+        cl_emit(c, OP_CALL);
+        cl_emit(c, 1);
+        cl_emit(c, OP_POP);
+        cl_process_declaration_specifier(c, spec, 1);
         specs = cl_cdr(specs);
     }
+    CL_GC_UNPROTECT(2);  /* form, specs */
     cl_emit(c, OP_NIL);
 }
 
