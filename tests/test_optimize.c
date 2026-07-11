@@ -266,6 +266,60 @@ TEST(declaim_is_global_and_persists)
         "(handler-case (eval '(the fixnum \"h\")) (error () :signaled))"));
 }
 
+/* CLHS DECLAIM behaves like (eval-when (:compile-toplevel :load-toplevel
+ * :execute) (proclaim 'spec) ...): the proclamations are made at compile
+ * time ("also made at compile-time" for top-level forms in a file) AND
+ * whenever the form executes — which includes LOAD of the compiled file.
+ * The load-time leg must survive the FASL round trip: loading a fasl whose
+ * source declaimed something must re-establish the proclamation in a
+ * process where it is not currently in force.  (Regression: compile_declaim
+ * used to emit only OP_NIL, so declaims evaporated from compiled files —
+ * with a warm fasl cache a library's declaims silently stopped applying.) */
+TEST(declaim_proclamations_survive_fasl_round_trip)
+{
+    char src[512], fasl[512], form[1200];
+    const char *tmp = getenv("TMPDIR");
+    FILE *f;
+    if (!tmp || !tmp[0]) tmp = "/tmp";
+    snprintf(src, sizeof(src), "%s/cl_declaim_rt.lisp", tmp);
+    snprintf(fasl, sizeof(fasl), "%s/cl_declaim_rt.fasl", tmp);
+    f = fopen(src, "w");
+    ASSERT(f != NULL);
+    if (!f) return;
+    fputs("(declaim (optimize (speed 3)) (special *dc-rt-var*))\n", f);
+    fclose(f);
+
+    snprintf(form, sizeof(form),
+             "(compile-file \"%s\" :output-file \"%s\")", src, fasl);
+    cl_eval_string(form);
+
+    /* The compile-time leg (same process) already set speed=3 and marked
+     * the var special — undo BOTH, so the assertions below can only pass
+     * via the load-time leg executing out of the fasl. */
+    cl_eval_string("(proclaim '(optimize (speed 1)))");
+    {
+        CL_Obj sym = cl_eval_string("'*dc-rt-var*");
+        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+        s->flags &= (uint32_t)~CL_SYM_SPECIAL;
+    }
+    ASSERT_EQ_INT(cl_optimize_global.speed, 1);
+
+    snprintf(form, sizeof(form), "(load \"%s\")", fasl);
+    cl_eval_string(form);
+
+    ASSERT_EQ_INT(cl_optimize_global.speed, 3);
+    {
+        CL_Obj sym = cl_eval_string("'*dc-rt-var*");
+        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+        ASSERT((s->flags & CL_SYM_SPECIAL) != 0);
+    }
+
+    /* restore the default baseline for the remaining tests */
+    cl_eval_string("(proclaim '(optimize (speed 1) (safety 1)))");
+    remove(src);
+    remove(fasl);
+}
+
 TEST(nested_scopes_restore_in_order)
 {
     /* speed 0 outer disables folding; inner speed 1 re-enables; after the
@@ -439,6 +493,7 @@ int main(void)
     RUN(defun_declare_does_not_leak);
     RUN(let_declare_scopes_to_body);
     RUN(declaim_is_global_and_persists);
+    RUN(declaim_proclamations_survive_fasl_round_trip);
     RUN(nested_scopes_restore_in_order);
     RUN(dbind_guards_elided_at_safety_0);
     RUN(dbind_guards_signal_at_default_safety);

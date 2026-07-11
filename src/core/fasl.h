@@ -26,7 +26,7 @@
 #include "../platform/platform.h"
 
 #define CL_FASL_MAGIC    0x434C4641  /* "CLFA" */
-#define CL_FASL_VERSION  22  /* v22: (defvar name) with no init-form now emits a runtime (%MARK-SPECIAL 'name) call so the special proclamation works for variables loaded from a precompiled FASL (the compile-time CL_SYM_SPECIAL flag does not survive into a fresh load — bare defvars were non-special on load, breaking dynamic LET binding e.g. serapeum DEFPLACE). Changes the bytecode emitted for every no-init defvar; bumping forces stale cached FASLs to be recompiled. v21: defconstant emits a runtime (%MARK-CONSTANT 'name) call so CONSTANTP works for FASL-loaded constants. */
+#define CL_FASL_VERSION  23  /* v23: top-level DECLAIM now emits a runtime (PROCLAIM 'spec) call per specifier so proclamations survive the FASL round trip (CLHS: declaim ~ eval-when (:compile-toplevel :load-toplevel :execute) proclaim — previously only the compile-time leg existed and declaims evaporated from compiled files). Changes the bytecode emitted for every top-level declaim; bumping forces stale cached FASLs (compiled by the old compiler, still silently dropping declaims on load) to be recompiled. v22: (defvar name) with no init-form now emits a runtime (%MARK-SPECIAL 'name) call so the special proclamation works for variables loaded from a precompiled FASL (the compile-time CL_SYM_SPECIAL flag does not survive into a fresh load — bare defvars were non-special on load, breaking dynamic LET binding e.g. serapeum DEFPLACE). v21: defconstant emits a runtime (%MARK-CONSTANT 'name) call so CONSTANTP works for FASL-loaded constants. */
 
 /* Serialized constant type tags */
 #define FASL_TAG_NIL         0x00

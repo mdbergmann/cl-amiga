@@ -6453,6 +6453,22 @@
 (load "T:fasl-locmac.fasl")
 (check "locally defmacro available later" '(:loc 9) *cf-loc*)
 
+; A top-level DECLAIM must survive the FASL round trip (CLHS: declaim ~
+; eval-when (:compile-toplevel :load-toplevel :execute) proclaim) — loading
+; the fasl must re-establish the proclamation.  compile-file's compile-time
+; leg sets safety 0 in this session too, so reset to safety 1 in between;
+; only the load-time leg can flip it back to 0.
+(with-open-file (s "T:fasl-declaim.lisp" :direction :output :if-exists :supersede)
+  (write-string "(declaim (optimize (safety 0)))" s) (terpri s))
+(compile-file "T:fasl-declaim.lisp" :output-file "T:fasl-declaim.fasl")
+(declaim (optimize (safety 1)))
+(check "declaim reset control: THE signals at safety 1" :signaled
+  (handler-case (eval '(the fixnum "dc")) (error () :signaled)))
+(load "T:fasl-declaim.fasl")
+(check "declaim survives fasl round trip (safety 0 after load)" "dc"
+  (eval '(the fixnum "dc")))
+(declaim (optimize (safety 1)))
+
 ; --- COMPILE-FILE reader package vs *PACKAGE* churn ---
 ; The reader interns each form's symbols using the package set by the file's
 ; IN-PACKAGE forms.  A compile-time *PACKAGE* change by means other than
