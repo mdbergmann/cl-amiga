@@ -9,6 +9,43 @@ Related: [specs/performance.md](../specs/performance.md) is the optimization
 
 ---
 
+## 2026-07-11 — MT publication barrier: no sento throughput cost (A/B)
+
+**Commit**: `f45a91a` (barrier `17dee11` + CLOS registry sync `f45a91a`).
+
+Regression check after the arm64 publication-barrier fix, which issues
+`platform_memory_barrier()` before every struct-slot store when threads are
+live — sento's message path is the most barrier-dense MT workload we have.
+Controlled A/B: two binaries identical except the four barrier sites
+(`17dee11` applied vs reverted), interleaved runs (barrier / no-barrier /
+barrier / no-barrier) so thermal and session drift cancel, warm speed-3
+ASDF cache, otherwise the docs/sento-bench-results-0.3.md long-run config
+at 30 iterations (`:dispatcher :pinned`, `:with-reply-p nil`,
+`:load-threads 8`, `:duration 10`).
+
+**Environment**: Apple M3 Ultra, macOS 26.5.2, `--heap 192M`,
+`CLAMIGA_FORCE_SPEED=3`.
+
+| Leg (msg/s AVG)   | barrier | no-barrier |
+| ----------------- | ------: | ---------: |
+| Round 1           | 144,378 |    143,076 |
+| Round 2           | 144,910 |    146,141 |
+| **Mean**          | **144,644** | **144,608** |
+
+Dead even (+0.02%, standard error ≈ 1.1k), and both variants sit at the
+0.3-documented speed-3 ceiling (145,592) — the sync-table CLOS registries
+(loaded by both binaries) cost nothing either, as expected (registries are
+not on the per-message path).
+
+Method note: a plain sequential rerun of the full 0.3 protocol first showed
+an apparent −5–9% across the board; the interleaved A/B exposed it as
+session drift (the suspect legs ran after ~45 min of sustained all-core
+load). For future regression checks, interleave the builds under test —
+same-session sequential runs of this benchmark drift by more than the
+effect sizes of interest.
+
+---
+
 ## 2026-07-10 — spec 1.3: optimize support (const folding + dead branches + check elision)
 
 **Commit**: follows `e388fe2`.
