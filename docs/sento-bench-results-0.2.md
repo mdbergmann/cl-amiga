@@ -6,6 +6,8 @@ later runs can be compared like-for-like.
 
 Related: [docs/benchmarks.md](benchmarks.md) is the general runtime/optimization
 measurement log; this file focuses on the sento actor benchmark specifically.
+[sento-bench-results-0.3.md](sento-bench-results-0.3.md) is the follow-up
+measurement comparing `(optimize (speed 1))` vs `(speed 3)` (peephole post-pass).
 
 The benchmark is `sento.bench::run-benchmark` from the cl-gserver/sento
 `bench.lisp`. It stands up an actor system, spawns N sender threads that flood a

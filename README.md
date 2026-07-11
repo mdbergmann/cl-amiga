@@ -487,12 +487,39 @@ dead-branch, scoping, and check-elision behavior; the implementation lives in
 `try_fold_constant`/`compile_if`/`compile_call` (`src/core/compiler.c`) and
 `cl_process_declaration_specifier` (`src/core/compiler_extra.c`).
 
-For the peephole post-pass, `tests/test_peephole.c` demonstrates every
-rewrite pattern and guard, and `tests/peephole-corpus.lisp` +
-`tests/test_peephole_diff.sh` run the same code with the pass forced off and
-on (`CLAMIGA_FORCE_SPEED=0` vs `3` — the env var pins the effective `speed`
-for a whole process, handy for A/B testing any workload) and require
-identical output.
+### The peephole post-pass in practice
+
+**How it works**: when a function finishes compiling with an effective
+`speed ≥ 2`, its bytecode is decoded into an instruction list, rewritten
+(store-reload elimination, discarded-pure-value removal, `(not ...)` branch
+fusion, jump threading, dead code), and re-encoded with all jump and
+non-local-exit offsets recomputed. The pass is fail-safe: anything it does
+not fully understand makes it leave the bytecode untouched, so it can never
+miscompile — only miss an optimization.
+
+**When it applies**: at **compile time only** — inside `defun`, `compile`,
+`compile-file`, and source `load` — whenever the function's effective
+`speed` is ≥ 2, whether that comes from a `declaim`/`proclaim` baseline, a
+body `(declare (optimize (speed ...)))`, or the `CLAMIGA_FORCE_SPEED`
+environment variable (which pins the effective `speed` for the whole
+process, overriding declarations — handy for A/B testing any workload).
+
+**FASL caches**: the optimization is baked into the compiled bytecode, so a
+`.fasl` compiled at `speed 3` stays optimized for everyone who loads it,
+regardless of their current settings. The flip side: **loading a cached FASL
+never re-runs the compiler**, so code compiled at `speed 1` stays
+unoptimized until it is actually recompiled — raising `speed` (or setting
+`CLAMIGA_FORCE_SPEED=3`) afterwards has no effect on a warm cache. To push
+an already-compiled library through the pass, clear its FASL cache first
+(for ASDF/Quicklisp systems on the host: `~/.cache/common-lisp/cl-amiga-*`)
+and reload.
+
+`tests/test_peephole.c` demonstrates every rewrite pattern and guard, and
+`tests/peephole-corpus.lisp` + `tests/test_peephole_diff.sh` run the same
+code with the pass forced off and on (`CLAMIGA_FORCE_SPEED=0` vs `3`) and
+require identical output. The design rationale and rewrite-soundness
+arguments live in the `src/core/peephole.c` header comment and
+`specs/performance.md` §1.8.
 
 ## Building for AmigaOS
 
