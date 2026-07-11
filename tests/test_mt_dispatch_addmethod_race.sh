@@ -32,6 +32,21 @@
 # fix thousands of dispatches per run wrongly error; after it every run
 # reports zero failures and a genuine no-applicable-method still errors.
 #
+# SECOND root cause this guards (weak memory ordering, arm64 hosts): even
+# with the single atomic list store, the CPU may make that publishing store
+# visible to a peer core BEFORE the stores that initialized the freshly-built
+# cons cell / method struct it points to (arm64 permits store-store
+# reordering; x86 TSO does not).  A lock-free dispatcher walking the list in
+# that nanosecond window read garbage — observed as a once-per-tens-of-
+# millions "%STRUCT-REF: argument is not of type STRUCTURE" dispatch error,
+# and (via the same unordered publication of a fresh dispatch-cache hash
+# table) as a rare hang in the writer-writer phase below.  Fix: OP_STRUCT_SET
+# / %STRUCT-SET / %STRUCT-SLOT-STORE issue a memory barrier before the slot
+# store when threads are live, ordering initialization before publication
+# (vm.c / builtins_struct.c; free on single-core m68k).  The dispatcher
+# handlers below capture the actual condition text so any recurrence is
+# diagnosable straight from the test output.
+#
 # Run: sh tests/test_mt_dispatch_addmethod_race.sh build/host/clamiga
 
 CLAMIGA="${1:-build/host/clamiga}"
@@ -59,14 +74,20 @@ cat > "$tmp" <<'EOF'
 (defparameter *o* (make-instance 'load-op))
 (defparameter *c* (make-instance 'sys))
 (defparameter *fails* 0)
+(defparameter *fail-reports* '())
 (defparameter *lk* (mp:make-lock))
 
 ;; Dispatchers: (act-status nil o c) must ALWAYS resolve to the null method.
+;; A failure records WHAT went wrong (condition type + text, or the wrong
+;; value) — "fails=1" alone is undiagnosable for a once-per-millions race.
 (defun dispatcher ()
   (dotimes (i 20000)
-    (let ((r (handler-case (act-status nil *o* *c*) (error () :FAIL))))
+    (let ((r (handler-case (act-status nil *o* *c*)
+               (error (e) (list :ERROR (format nil "~a: ~a" (type-of e) e))))))
       (unless (eq r :null-method)
-        (mp:with-lock-held (*lk*) (setf *fails* (+ *fails* 1)))))))
+        (mp:with-lock-held (*lk*)
+          (setf *fails* (+ *fails* 1))
+          (push (if (consp r) r (list :WRONG-VALUE r)) *fail-reports*))))))
 
 ;; Redefiners: repeatedly re-install the null method (each install first
 ;; removes the existing matching method — the exact window the fix closes).
@@ -84,6 +105,8 @@ cat > "$tmp" <<'EOF'
 (defmethod only-str ((x string)) :s)
 (let ((genuine (handler-case (only-str 42) (error () :caught))))
   (format t "MT-DISP fails=~a genuine=~a~%" *fails* genuine))
+(dolist (rep *fail-reports*)
+  (format t "MT-DISP-ERROR ~s~%" rep))
 
 ;; Writer-writer race: two threads installing GENUINELY DIFFERENT methods
 ;; (distinct EQL specializers) on the SAME gf concurrently.  This targets the
@@ -113,6 +136,35 @@ cat > "$tmp" <<'EOF'
     (let ((v (handler-case (wgf n) (error () :FAIL))))
       (unless (eql v n) (setf missing (+ missing 1)))))
   (format t "MT-WRITERS missing=~a~%" missing))
+
+;; Intern-identity race: two threads install methods with the SAME EQL
+;; specializer values concurrently.  INTERN-EQL-SPECIALIZER must return
+;; the one canonical (EQ) specializer per value even when both threads
+;; miss the table at once — a duplicated specializer is invisible at
+;; dispatch (both apply) but breaks method REPLACEMENT: the installer
+;; compares specializer lists with EQUAL (EQ on specializer structs), so
+;; a second install with a duplicate specializer fails to supersede the
+;; first and the GF accumulates duplicate methods.  The method COUNT is
+;; the tell.  Also guards *EQL-SPECIALIZER-TABLE* itself against
+;; concurrent-insert corruption (missing entries / cyclic chains — the
+;; pre-fix plain table lost ~25% of concurrently inserted keys and could
+;; hang GETHASH forever on a cycle; this phase is what hung pre-fix).
+(defgeneric wgf2 (x))
+(defparameter *n-shared* 100)
+(defun same-writer ()
+  (dotimes (n *n-shared*)
+    (eval `(defmethod wgf2 ((x (eql ,n))) ,n))))
+
+(let ((threads '()))
+  (dotimes (w 2) (push (mp:make-thread #'same-writer) threads))
+  (dolist (th threads) (mp:join-thread th)))
+
+(let ((missing 0))
+  (dotimes (n *n-shared*)
+    (let ((v (handler-case (wgf2 n) (error () :FAIL))))
+      (unless (eql v n) (setf missing (+ missing 1)))))
+  (format t "MT-INTERN methods=~a missing=~a~%"
+          (length (clamiga::gf-methods #'wgf2)) missing))
 EOF
 
 # Pre-fix this errors hundreds of times per run (deterministic); the fixed
@@ -133,12 +185,16 @@ while [ "$i" -lt "$RUNS" ]; do
         echo "    output: $(echo "$out" | tail -8)"
         echo ""; echo "0 passed, 1 failed, 1 total"; echo "FAIL"; exit 1
     elif ! echo "$out" | grep -q "MT-DISP fails=0 genuine=CAUGHT"; then
-        echo "  FAIL mt_dispatch_addmethod_race (run $i/$RUNS — spurious no-applicable-method or masked genuine miss)"
-        echo "    output: $(echo "$out" | grep 'MT-DISP' | head -2)"
+        echo "  FAIL mt_dispatch_addmethod_race (run $i/$RUNS — spurious dispatch failure or masked genuine miss)"
+        echo "    output: $(echo "$out" | grep 'MT-DISP' | head -6)"
         echo ""; echo "0 passed, 1 failed, 1 total"; echo "FAIL"; exit 1
     elif ! echo "$out" | grep -q "MT-WRITERS missing=0"; then
         echo "  FAIL mt_dispatch_addmethod_race (run $i/$RUNS — writer-writer race lost a distinct method install)"
         echo "    output: $(echo "$out" | grep 'MT-WRITERS' | head -2)"
+        echo ""; echo "0 passed, 1 failed, 1 total"; echo "FAIL"; exit 1
+    elif ! echo "$out" | grep -q "MT-INTERN methods=100 missing=0"; then
+        echo "  FAIL mt_dispatch_addmethod_race (run $i/$RUNS — same-value EQL intern race: duplicate specializers or lost methods)"
+        echo "    output: $(echo "$out" | grep 'MT-INTERN' | head -2)"
         echo ""; echo "0 passed, 1 failed, 1 total"; echo "FAIL"; exit 1
     fi
 done

@@ -120,7 +120,13 @@
 
 ;;; --- Class registry ---
 
-(defvar *class-table* (make-hash-table :test 'eq))
+;; Synchronized: DEFCLASS/ENSURE-CLASS run on whatever thread loads code,
+;; so concurrent loads mutate this table at once; a plain table's bucket
+;; chains corrupt under concurrent insert/rehash (see *EQL-SPECIALIZER-
+;; TABLE*).  Note the C fast paths (class-of/typep via ht_eq_lookup in
+;; builtins_struct.c) still read it lock-free; they are exposed only
+;; while a defclass is actually in flight on another thread.
+(defvar *class-table* (clamiga::%make-sync-hash-table 'eq))
 
 ;; Register with C for typep to check CLOS class-precedence-lists
 (%set-clos-class-table *class-table*)
@@ -623,7 +629,20 @@ directly instead of attempting a symbol lookup."
 (%make-bootstrap-class 'eql-specializer
   (list (find-class 'standard-object)))
 
-(defvar *eql-specializer-table* (make-hash-table :test 'eql))
+;; Synchronized: interning happens on every DEFMETHOD with an EQL
+;; specializer, and defmethods run on whatever thread loads the code —
+;; two threads loading concurrently mutate this table at once.  A plain
+;; table's bucket chains corrupt under concurrent insert/rehash (observed
+;; as silently missing entries and as a hard hang walking a cyclic
+;; chain), same hazard %MAKE-DISPATCH-CACHE documents.
+(defvar *eql-specializer-table* (clamiga::%make-sync-hash-table 'eql))
+
+(defvar *eql-specializer-intern-lock* (mp:make-lock "eql-specializer-intern")
+  "Serializes the get-or-create in INTERN-EQL-SPECIALIZER.  The sync
+   table makes each gethash/put individually safe, but without this lock
+   two threads interning the SAME value could both miss and create two
+   non-EQ specializers — breaking the EQ identity the MOP guarantees
+   (and with it method replacement, which compares specializers).")
 
 (defun eql-specializer-p (object)
   "Return T if OBJECT is an EQL-SPECIALIZER metaobject."
@@ -638,13 +657,20 @@ directly instead of attempting a symbol lookup."
   "AMOP: return the canonical EQL-SPECIALIZER for OBJECT. Repeated calls
    with EQL-identical OBJECTs return the same metaobject so that method
    equality and dispatch caching can use EQ."
+  ;; Lock-free hit path; misses take the lock and re-check so exactly
+  ;; one specializer is ever created per value.
   (multiple-value-bind (existing found-p)
       (gethash object *eql-specializer-table*)
     (if found-p
         existing
-        (let ((spec (%make-struct 'eql-specializer object)))
-          (setf (gethash object *eql-specializer-table*) spec)
-          spec))))
+        (mp:with-lock-held (*eql-specializer-intern-lock*)
+          (multiple-value-bind (raced raced-p)
+              (gethash object *eql-specializer-table*)
+            (if raced-p
+                raced
+                (let ((spec (%make-struct 'eql-specializer object)))
+                  (setf (gethash object *eql-specializer-table*) spec)
+                  spec)))))))
 
 ;;; --- Register condition types as CLOS classes (for method dispatch) ---
 
@@ -1622,7 +1648,10 @@ Specialize via defmethod to provide lazy initialization."
 (defun %set-method-simple-primary-p (m val) (%struct-set m 5 val))
 
 ;;; --- GF table ---
-(defvar *generic-function-table* (make-hash-table :test 'equal))
+;; Synchronized: DEFGENERIC/ENSURE-GENERIC-FUNCTION run on the loading
+;; thread; concurrent loads mutate this table at once (see
+;; *EQL-SPECIALIZER-TABLE* for the plain-table corruption hazard).
+(defvar *generic-function-table* (clamiga::%make-sync-hash-table 'equal))
 
 ;;; --- call-next-method support ---
 (defvar *call-next-method-function* nil)
@@ -1638,9 +1667,12 @@ Specialize via defmethod to provide lazy initialization."
 ;;; UPDATE-DEPENDENT are defined later in this file; %NOTIFY-DEPENDENTS
 ;;; is the internal broadcaster invoked from ENSURE-CLASS, ADD-METHOD,
 ;;; REMOVE-METHOD, and ENSURE-GENERIC-FUNCTION.
-(defvar *metaobject-dependents* (make-hash-table :test 'eq)
+(defvar *metaobject-dependents* (clamiga::%make-sync-hash-table 'eq)
   "EQ hash from class or generic-function metaobject to a list of
-registered dependents (via ADD-DEPENDENT).")
+registered dependents (via ADD-DEPENDENT).  Synchronized: read by
+%NOTIFY-DEPENDENTS on every method (un)install from any thread while
+ADD-DEPENDENT may mutate it on another (see *EQL-SPECIALIZER-TABLE*
+for the plain-table corruption hazard).")
 
 (defun %notify-dependents (metaobject &rest initargs)
   "Broadcast UPDATE-DEPENDENT to each dependent of METAOBJECT with
@@ -3878,8 +3910,11 @@ since user-defined method classes are out of scope."
 
 ;;; Keyed by SYMBOL-NAME so a combination registered in one package
 ;;; resolves from any other package (e.g. CL-USER refers to STANDARD
-;;; even though the registry entry was interned in CL).
-(defvar *method-combinations* (make-hash-table :test 'equal))
+;;; even though the registry entry was interned in CL).  Synchronized:
+;;; DEFINE-METHOD-COMBINATION registers from the loading thread while
+;;; ENSURE-GENERIC-FUNCTION resolves from any other (see
+;;; *EQL-SPECIALIZER-TABLE* for the plain-table corruption hazard).
+(defvar *method-combinations* (clamiga::%make-sync-hash-table 'equal))
 
 (defun %method-combination-key (name)
   (if (symbolp name) (symbol-name name) name))
