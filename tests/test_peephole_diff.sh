@@ -17,6 +17,17 @@
 
 CLAMIGA="${1:-build/host/clamiga}"
 CORPUS="$(dirname "$0")/peephole-corpus.lisp"
+
+# macOS has no `timeout`; coreutils installs it as `gtimeout` (same detection
+# as the other shell tests — a hardcoded `timeout` fails every run with 127
+# on the macOS CI runner).
+TIMEOUT=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
+if [ -z "$TIMEOUT" ]; then
+    echo "SKIP test_peephole_diff: neither timeout nor gtimeout on PATH"
+    echo "0 passed, 0 failed, 0 total"
+    exit 0
+fi
+
 TMPDIR="${TMPDIR:-/tmp}"
 WORK="$TMPDIR/clamiga_peep_$$"
 mkdir -p "$WORK"
@@ -33,7 +44,7 @@ fi
 
 run_at_speed() {
     speed="$1"; out="$2"
-    CLAMIGA_FORCE_SPEED="$speed" timeout 120 "$CLAMIGA" --no-userinit \
+    CLAMIGA_FORCE_SPEED="$speed" "$TIMEOUT" 120 "$CLAMIGA" --no-userinit \
         --non-interactive --load "$CORPUS" >"$out.raw" 2>&1
     rc=$?
     # strip "; [boot] N ms" style progress lines — timing noise, not results
