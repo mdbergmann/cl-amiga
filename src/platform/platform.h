@@ -44,6 +44,34 @@ void  platform_drain_input(void);  /* Drain residual data from stdin (AmigaOS CL
  * reporting instead of deadlocking on a read no one will ever satisfy. */
 int   platform_stdin_is_interactive(void);
 
+/* --- TTY control (raw mode / size / input availability) ---------------
+ * Backing for EXT:TTY-RAW-MODE and EXT:TTY-SIZE, and for LISTEN /
+ * READ-CHAR-NO-HANG on console streams.  All operate on the process
+ * console (POSIX: stdin/stdout; Amiga: Input()/Output()). */
+
+/* Enter (enable != 0) or leave (enable == 0) raw mode: no echo, no line
+ * buffering, characters delivered as typed (POSIX: termios; Amiga:
+ * SetMode raw).  Returns 0 on success, -1 on failure (console is not an
+ * interactive terminal, or the OS refused).  Idempotent in both
+ * directions.  The platform layer restores cooked mode on process exit
+ * as crash insurance, but callers should pair enable/disable. */
+int   platform_tty_raw(int enable);
+
+/* Non-zero iff raw mode is currently active. */
+int   platform_tty_raw_active(void);
+
+/* Console size in character cells.  On success fills *cols and *rows and
+ * returns 0; returns -1 when the size cannot be determined (not a
+ * terminal, or the query failed) — callers pick their own fallback. */
+int   platform_tty_size(int *cols, int *rows);
+
+/* Returns 1 if platform_getchar() would return without blocking, else 0.
+ * Exact while raw mode is active (raw-mode reads bypass the C library's
+ * input buffering); best-effort in cooked mode, where line buffering can
+ * hide already-buffered characters (a 0 then is conservative, matching
+ * LISTEN's historical behavior). */
+int   platform_tty_char_avail(void);
+
 /* File I/O (bulk read) */
 char *platform_file_read(const char *path, unsigned long *size_out);
 

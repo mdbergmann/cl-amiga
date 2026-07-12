@@ -61,12 +61,130 @@ int platform_read_line(char *buf, int bufsize)
     return 1;
 }
 
+/* --- TTY control (raw mode / size / input availability) ---------------
+ *
+ * Raw mode = SetMode(Input(), 1): the console handler delivers characters
+ * as typed, with no echo and no line editing.  While raw is active,
+ * console reads bypass the buffered FGetC and use Read() directly with a
+ * private one-byte pushback, so the WaitForChar() availability probe and
+ * the read agree on what is pending (FGetC would buffer ahead and make
+ * WaitForChar lie about an escape sequence's tail).
+ *
+ * Single-reader assumption: like the pre-existing FGetC path, console
+ * input is not safe for concurrent readers; a TUI reads keys from one
+ * thread. */
+
+static int tty_raw_active = 0;
+static int tty_pushback = -1;
+
+int platform_tty_raw(int enable)
+{
+    BPTR in = Input();
+    if (!in || !IsInteractive(in))
+        return -1;
+    if ((enable != 0) == (tty_raw_active != 0))
+        return 0;
+    if (!SetMode(in, enable ? 1 : 0))
+        return -1;
+    tty_raw_active = enable ? 1 : 0;
+    return 0;
+}
+
+int platform_tty_raw_active(void)
+{
+    return tty_raw_active;
+}
+
+int platform_tty_char_avail(void)
+{
+    BPTR in = Input();
+    if (tty_pushback != -1)
+        return 1;
+    if (!in)
+        return 0;
+    if (!IsInteractive(in))
+        return 1;   /* file/pipe input: data (or EOF) is always "ready" */
+    return WaitForChar(in, 1) ? 1 : 0;   /* 1 microsecond: poll, don't wait */
+}
+
+int platform_tty_size(int *cols, int *rows)
+{
+    BPTR in = Input();
+    BPTR out = Output();
+    int was_raw = tty_raw_active;
+    char buf[64];
+    int len = 0;
+
+    if (!in || !out || !IsInteractive(in) || !IsInteractive(out))
+        return -1;
+    /* The report below is only readable unbuffered/unechoed in raw mode. */
+    if (!was_raw && platform_tty_raw(1) != 0)
+        return -1;
+
+    /* CSI "0 q" = WINDOW STATUS REQUEST; the console handler answers
+     * CSI "1;1;<rows>;<cols> r" (bottom/right in character cells). */
+    Write(out, (APTR)"\x9b" "0 q", 4);
+    while (len < (int)sizeof(buf) - 1) {
+        char c;
+        if (!WaitForChar(in, 250000))   /* 250ms guard: never wedge */
+            break;
+        if (Read(in, &c, 1) != 1)
+            break;
+        buf[len++] = c;
+        if (c == 'r')
+            break;
+    }
+    if (!was_raw)
+        platform_tty_raw(0);
+
+    /* Parse the four ';'-separated numbers of the report.  Typed-ahead
+     * input can precede the CSI, so scan rather than anchor at buf[0]. */
+    if (len > 0 && buf[len - 1] == 'r') {
+        int vals[4];
+        int nv = 0;
+        int i = 0;
+        while (i < len && nv < 4) {
+            if (buf[i] >= '0' && buf[i] <= '9') {
+                int v = 0;
+                while (i < len && buf[i] >= '0' && buf[i] <= '9') {
+                    v = v * 10 + (buf[i] - '0');
+                    i++;
+                }
+                vals[nv++] = v;
+            } else {
+                i++;
+            }
+        }
+        if (nv == 4 && vals[2] > 0 && vals[3] > 0) {
+            *rows = vals[2];
+            *cols = vals[3];
+            return 0;
+        }
+    }
+    return -1;
+}
+
 int platform_getchar(void)
 {
     BPTR in = Input();
     int c;
+    if (tty_pushback != -1) {
+        c = tty_pushback;
+        tty_pushback = -1;
+        return c;
+    }
     if (!in)
         return -1;
+    if (tty_raw_active) {
+        /* Raw TUI regime: bypass FGetC's buffer so the WaitForChar()
+         * availability probe and this read agree on what is pending. */
+        UBYTE b;
+        LONG r;
+        cl_gc_enter_safe_region();
+        r = Read(in, &b, 1);
+        cl_gc_leave_safe_region();
+        return (r == 1) ? (int)b : -1;
+    }
     /* Same blocking-stdin rationale as platform_read_line: the CONSOLE stream's
      * read-char parks here, so bracket it as a GC safe region. */
     cl_gc_enter_safe_region();
@@ -77,9 +195,18 @@ int platform_getchar(void)
 
 void platform_ungetchar(int ch)
 {
-    BPTR in = Input();
-    if (in) {
-        UnGetC(in, ch);
+    if (tty_raw_active) {
+        /* Raw reads bypass the buffered I/O layer, so UnGetC's buffer would
+         * be invisible; park the char in the platform pushback instead
+         * (getchar checks it first in either mode). */
+        tty_pushback = ch;
+        return;
+    }
+    {
+        BPTR in = Input();
+        if (in) {
+            UnGetC(in, ch);
+        }
     }
 }
 
@@ -1613,6 +1740,11 @@ void platform_init(void)
 
 void platform_shutdown(void)
 {
+    /* Restore the console to cooked mode if a TUI died without cleaning up —
+     * a raw-mode CLI window would otherwise stay unusable after exit. */
+    if (tty_raw_active)
+        platform_tty_raw(0);
+
     /* Tell the reactor to close every socket, drop SocketBase, and exit.  The
      * reactor replies before tearing down, so this returns once it is done. */
     if (reactor_port) {

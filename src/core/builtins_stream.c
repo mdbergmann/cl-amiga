@@ -28,6 +28,14 @@
 #include <stdlib.h>
 #include <stdio.h>
 
+/* Declared (non-static) in stream.c.  Resolves a synonym-stream /
+ * two-way-stream designator to the concrete backing stream for the given
+ * direction (0 = input side, else output side) — e.g. *TERMINAL-IO* is a
+ * two-way-stream over *STANDARD-INPUT* and *STANDARD-OUTPUT* (cl_stream_init),
+ * so console-specific field checks below must unwrap it to reach the actual
+ * console CL_Stream carrying unread_char/flags/stream_type state. */
+CL_Obj cl_stream_resolve_backing(CL_Obj stream, int writing);
+
 /* --- Pre-interned keyword symbols --- */
 
 static CL_Obj KW_START = CL_NIL;
@@ -132,12 +140,20 @@ static CL_Obj bi_make_test_stream(CL_Obj *args, int n)
 /* (interactive-stream-p stream) => T or NIL */
 static CL_Obj bi_interactive_stream_p(CL_Obj *args, int n)
 {
-    CL_Stream *st;
+    CL_Obj rs;
     CL_UNUSED(n);
     if (!CL_STREAM_P(args[0]))
         cl_error(CL_ERR_TYPE, "INTERACTIVE-STREAM-P: argument is not a stream");
-    st = (CL_Stream *)CL_OBJ_TO_PTR(args[0]);
-    return (st->stream_type == CL_STREAM_CONSOLE) ? CL_T : CL_NIL;
+    /* args[0] may be a synonym-/two-way-stream (e.g. *TERMINAL-IO*) wrapping
+     * a console stream; resolve both directions since either child could be
+     * the console. */
+    rs = cl_stream_resolve_backing(args[0], 0);
+    if (CL_STREAM_P(rs) && ((CL_Stream *)CL_OBJ_TO_PTR(rs))->stream_type == CL_STREAM_CONSOLE)
+        return CL_T;
+    rs = cl_stream_resolve_backing(args[0], 1);
+    if (CL_STREAM_P(rs) && ((CL_Stream *)CL_OBJ_TO_PTR(rs))->stream_type == CL_STREAM_CONSOLE)
+        return CL_T;
+    return CL_NIL;
 }
 
 /* --- Step 3 builtins: Stream I/O --- */
@@ -1664,7 +1680,14 @@ static CL_Obj bi_stream_external_format(CL_Obj *args, int n)
 static CL_Obj bi_listen(CL_Obj *args, int n)
 {
     CL_Obj stream = cl_resolve_input_stream(args, n, 0);
-    CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+    CL_Stream *st;
+    /* Unwrap a synonym-/two-way-stream designator (e.g. *TERMINAL-IO*) to
+     * the concrete input-side stream so unread_char/flags/stream_type below
+     * are read from the object that actually carries that state — the
+     * wrapper's own fields are never touched by READ-CHAR/UNREAD-CHAR. */
+    stream = cl_stream_resolve_backing(stream, 0);
+    if (!CL_STREAM_P(stream)) return CL_NIL;
+    st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
     if (st->unread_char != -1) return CL_T;
     if (st->flags & CL_STREAM_FLAG_EOF) return CL_NIL;
     if (st->stream_type == CL_STREAM_STRING || st->stream_type == CL_STREAM_CBUF)
@@ -1690,6 +1713,13 @@ static CL_Obj bi_listen(CL_Obj *args, int n)
             st->flags |= CL_STREAM_FLAG_EOF;
         return (r == 1) ? CL_T : CL_NIL;
     }
+    if (st->stream_type == CL_STREAM_CONSOLE) {
+        /* Exact while EXT:TTY-RAW-MODE is active (raw console reads bypass
+         * the C library's input buffering); best-effort conservative in
+         * cooked mode.  This is what lets a TUI's input loop poll the
+         * console without blocking. */
+        return platform_tty_char_avail() ? CL_T : CL_NIL;
+    }
     return CL_NIL;  /* conservative: unknown availability */
 }
 
@@ -1708,18 +1738,34 @@ static CL_Obj bi_read_char_no_hang(CL_Obj *args, int n)
     CL_Obj stream = cl_resolve_input_stream(args, n, 0);
     int eof_error_p = (n < 2 || !CL_NULL_P(args[1]));
     CL_Obj eof_value = (n >= 3) ? args[2] : CL_NIL;
-    CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+    /* Unwrap to the concrete input-side stream for the availability check —
+     * same reasoning as bi_listen: unread_char/flags/stream_type live on the
+     * backing stream, not on a synonym-/two-way-stream wrapper like
+     * *TERMINAL-IO*.  `backing` is CL_NIL for a designator that fails to
+     * resolve (e.g. a synonym whose symbol is unbound); leave `available`
+     * false in that case and fall through to cl_stream_read_char(stream)
+     * below, which resolves (and fails) the same way cl_stream_read_char
+     * always has, keeping error/EOF behavior unchanged for that edge case. */
+    CL_Obj backing = cl_stream_resolve_backing(stream, 0);
+    CL_Stream *st = CL_STREAM_P(backing) ? (CL_Stream *)CL_OBJ_TO_PTR(backing) : NULL;
     int available;
 
     /* Check if a character is immediately available */
-    available = (st->unread_char != -1) ||
+    available = st && ((st->unread_char != -1) ||
                 (!(st->flags & CL_STREAM_FLAG_EOF) &&
                  (st->stream_type == CL_STREAM_STRING || st->stream_type == CL_STREAM_CBUF) &&
-                 st->position < st->out_buf_len);
+                 st->position < st->out_buf_len));
+    /* Console availability mirrors LISTEN: exact in raw mode, conservative
+     * in cooked mode (see bi_listen). */
+    if (!available && st &&
+        st->stream_type == CL_STREAM_CONSOLE &&
+        !(st->flags & CL_STREAM_FLAG_EOF) &&
+        platform_tty_char_avail())
+        available = 1;
 
     if (!available) {
         /* Check for EOF */
-        if (st->flags & CL_STREAM_FLAG_EOF) {
+        if (st && (st->flags & CL_STREAM_FLAG_EOF)) {
             if (eof_error_p)
                 cl_error(CL_ERR_EOF, "READ-CHAR-NO-HANG: end of file");
             return eof_value;

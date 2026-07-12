@@ -4109,6 +4109,38 @@ check_contains "optimize case runs to completion" "OF-DONE" "$out"
 check_absent   "no corruption in optimize case" \
   "corrupted pointer\|not of type\|Guru\|SIGSEGV\|badmark" "$out"
 
+# --- Case: EXT TTY builtins under forced compaction -------------------------
+# EXT:TTY-P / EXT:TTY-SIZE / EXT:TTY-RAW-MODE (the cl-tuition raw-mode
+# primitives).  Headless stdin here is not a terminal, so the assertions
+# pin the non-tty contract (NIL results, no error) while every call — and
+# TTY-SIZE's result-cons path when a terminal IS attached — runs with a
+# compaction before each allocation.  The behavioral pty leg lives in
+# tests/test_tty.c.
+cat > "$WORK/tty.lisp" <<'EOF'
+(let ((keep '()) (ok t))
+  (dotimes (i 100)
+    (push (list i (format nil "t~d" i)) keep)
+    (let ((p (ext:tty-p))
+          (s (ext:tty-size)))
+      (unless (typep p 'boolean) (setf ok nil))
+      (unless (or (null s)
+                  (and (consp s) (integerp (car s)) (integerp (cdr s))))
+        (setf ok nil))
+      ;; raw mode must fail cleanly (NIL) without a tty, succeed with one
+      (unless (typep (ext:tty-raw-mode nil) 'boolean) (setf ok nil))))
+  (ext:gc-compact)
+  (dotimes (i 100)
+    (let ((e (nth (- 99 i) keep)))
+      (unless (and (eql (first e) i)
+                   (string= (second e) (format nil "t~d" i)))
+        (setf ok nil))))
+  (format t "TTY-STRESS:~a~%" ok))
+EOF
+out=$(run_stress "$WORK/tty.lisp")
+check_contains "EXT tty builtins stable under stress" "TTY-STRESS:T" "$out"
+check_absent   "no corruption in tty case" \
+  "corrupted pointer\|not of type\|Guru\|SIGSEGV\|badmark" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

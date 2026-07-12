@@ -47,6 +47,33 @@ read/write deadlines via `socket-stream-timeout` — a timed-out operation signa
 | `system-command` | function | Run a host/AmigaOS shell command |
 | `defglobal` | macro | Define a global (non-dynamic) variable |
 
+## Terminal control (TUI raw mode)
+
+Primitives for full-screen terminal applications (e.g. the
+[cl-tuition](https://github.com/atgreen/cl-tuition) TUI library): raw mode
+turns off echo and line buffering so single keypresses arrive immediately,
+and while it is active `listen` / `read-char-no-hang` on the console report
+input availability exactly — a TUI input loop can poll without blocking.
+POSIX hosts use termios; AmigaOS uses the console handler's raw mode.
+See `tests/test_tty.c` for a complete usage example.
+
+```lisp
+(when (ext:tty-p)
+  (ext:tty-raw-mode t)                    ; no echo, keys arrive as typed
+  (unwind-protect
+       (loop for ch = (read-char-no-hang) ; NIL until a key is pressed
+             until (eql ch #\q))
+    (ext:tty-raw-mode nil)))              ; always restore cooked mode
+
+(ext:tty-size)                            ; => (cols . rows), or NIL
+```
+
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `tty-p` | function | `T` iff stdin is an interactive terminal/console |
+| `tty-raw-mode` | function | Enable (`t`) / disable (`nil`) raw mode; returns `T` on success |
+| `tty-size` | function | Terminal size as `(cols . rows)`, or `NIL` when unknown |
+
 ## Introspection / debugging (SLY backend)
 
 | Symbol | Kind | Description |

@@ -21,6 +21,11 @@
 CL_Obj cl_stdin_stream = 0;
 CL_Obj cl_stdout_stream = 0;
 CL_Obj cl_stderr_stream = 0;
+/* Bidirectional console stream backing *TERMINAL-IO* / *DEBUG-IO* /
+ * *QUERY-IO* — CLHS specifies all three as bidirectional.  Reading resolves
+ * to the same console input as *STANDARD-INPUT* (platform_getchar), writing
+ * to the same console output as *STANDARD-OUTPUT*. */
+static CL_Obj cl_terminal_io_stream = 0;
 
 /* --- Output buffer side table --- */
 
@@ -178,7 +183,31 @@ void cl_stream_init(void)
     CL_GC_PROTECT(cl_stdout_stream);
 
     cl_stderr_stream = cl_make_stream(CL_STREAM_OUTPUT, CL_STREAM_CONSOLE);
-    CL_GC_UNPROTECT(2);
+    CL_GC_PROTECT(cl_stderr_stream);
+
+    /* *TERMINAL-IO* was historically bound to the OUTPUT-only stdout
+     * singleton, which made (read-char t) — and any TUI reading from
+     * *terminal-io* (cl-tuition) — see instant EOF.  A bidirectional
+     * stream fixes that, but it must not be an independent CL_STREAM_CONSOLE
+     * object: UNREAD-CHAR pushback (CL_Stream.unread_char) is per-stream-object
+     * state, and a separate console object would make a char pushed back via
+     * *STANDARD-INPUT* invisible to *TERMINAL-IO* (and vice versa) — silent
+     * data loss, and LISTEN/READ-CHAR would then block despite a pending
+     * char.  Make it a two-way-stream over the SAME stdin/stdout objects so
+     * reads and writes resolve (via resolve_stream) to the identical
+     * CL_Stream backing *STANDARD-INPUT* and *STANDARD-OUTPUT* — one shared
+     * unread_char, one shared EOF flag, one shared position. */
+    {
+        CL_Stream *tst;
+        cl_terminal_io_stream = cl_make_stream(CL_STREAM_IO, CL_STREAM_TWO_WAY);
+        /* cl_stdin_stream/cl_stdout_stream are still CL_GC_PROTECT'd above,
+         * so the allocation just above has already forwarded them if it
+         * triggered compaction — safe to read the globals now. */
+        tst = (CL_Stream *)CL_OBJ_TO_PTR(cl_terminal_io_stream);
+        tst->string_buf = cl_stdin_stream;     /* input child */
+        tst->element_type = cl_stdout_stream;  /* output child */
+    }
+    CL_GC_UNPROTECT(3);
 
     /* The C runtime writes through these cached handles directly
      * (platform console I/O, REPL banner, error output).  The stream
@@ -191,6 +220,7 @@ void cl_stream_init(void)
     cl_gc_register_root(&cl_stdin_stream);
     cl_gc_register_root(&cl_stdout_stream);
     cl_gc_register_root(&cl_stderr_stream);
+    cl_gc_register_root(&cl_terminal_io_stream);
 
     /* Bind standard stream variables to console streams */
     s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STANDARD_INPUT);
@@ -206,13 +236,13 @@ void cl_stream_init(void)
     s->value = cl_stdout_stream;
 
     s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_DEBUG_IO);
-    s->value = cl_stdout_stream;
+    s->value = cl_terminal_io_stream;
 
     s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_QUERY_IO);
-    s->value = cl_stdout_stream;
+    s->value = cl_terminal_io_stream;
 
     s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_TERMINAL_IO);
-    s->value = cl_stdout_stream;
+    s->value = cl_terminal_io_stream;
 }
 
 void cl_stream_shutdown(void)
@@ -493,6 +523,20 @@ static CL_Obj resolve_stream(CL_Obj stream, int writing)
             return stream;
         }
     }
+}
+
+/* Public wrapper around resolve_stream for builtins that must inspect
+ * low-level CL_Stream state directly (LISTEN, READ-CHAR-NO-HANG,
+ * INTERACTIVE-STREAM-P) instead of going through cl_stream_read_char/
+ * cl_stream_write_char.  Those builtins must unwrap synonym-stream /
+ * two-way-stream designators (e.g. *TERMINAL-IO*, see cl_stream_init) to the
+ * concrete backing stream, or they inspect fields (unread_char, flags,
+ * stream_type) on the wrapper object instead of the child that actually
+ * carries the state.  `writing` selects the output child of a two-way
+ * stream (else input child); returns CL_NIL if stream doesn't resolve. */
+CL_Obj cl_stream_resolve_backing(CL_Obj stream, int writing)
+{
+    return resolve_stream(stream, writing);
 }
 
 /* --- Stream I/O operations --- */
