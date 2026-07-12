@@ -16,6 +16,8 @@
 #include <time.h>
 #include <unistd.h>
 #include <errno.h>
+#include <termios.h>
+#include <sys/ioctl.h>
 #include <glob.h>
 #include <limits.h>
 #include <dlfcn.h>
@@ -75,9 +77,148 @@ int platform_read_line(char *buf, int bufsize)
     return 1;
 }
 
+/* --- TTY control (raw mode / size / input availability) ---------------
+ *
+ * Raw mode switches console reads from stdio (getchar) to direct read(2)
+ * with a private one-byte pushback.  This is what makes the LISTEN /
+ * READ-CHAR-NO-HANG select() probe exact: getchar() reads ahead into
+ * stdio's buffer, so select() on fd 0 would claim "nothing pending" while
+ * the tail of an escape sequence sits in that buffer — stalling a TUI's
+ * input decoder.  In cooked mode reads stay on stdio (no behavior change
+ * for the REPL / piped-stdin paths, which mix fgets and getchar).
+ *
+ * Single-reader assumption: like the pre-existing getchar path, console
+ * input is not safe for concurrent readers; a TUI reads keys from one
+ * thread. */
+
+static struct termios tty_saved_termios;
+static int tty_saved_valid = 0;
+static int tty_raw_active = 0;
+static int tty_pushback = -1;
+
+/* Crash insurance: never leave the user's shell in raw mode if the process
+ * exits (cl_error longjmp escapes, ext:quit, crash-to-exit) while a TUI is
+ * up.  Registered once on first raw-mode entry. */
+static void tty_restore_at_exit(void)
+{
+    if (tty_raw_active && tty_saved_valid) {
+        tcsetattr(STDIN_FILENO, TCSANOW, &tty_saved_termios);
+        tty_raw_active = 0;
+    }
+}
+
+int platform_tty_raw(int enable)
+{
+    static int atexit_registered = 0;
+    struct termios t;
+
+    if (!isatty(STDIN_FILENO))
+        return -1;
+
+    if (enable) {
+        if (tty_raw_active)
+            return 0;
+        if (tcgetattr(STDIN_FILENO, &tty_saved_termios) != 0)
+            return -1;
+        tty_saved_valid = 1;
+        t = tty_saved_termios;
+        /* cfmakeraw-style, except OPOST stays on so '\n' still expands to
+         * CR+LF — warnings and backtraces printed mid-TUI stay readable. */
+        t.c_lflag &= ~(tcflag_t)(ICANON | ECHO | ECHOE | ECHOK | ECHONL |
+                                 ISIG | IEXTEN);
+        t.c_iflag &= ~(tcflag_t)(IGNBRK | BRKINT | PARMRK | ISTRIP |
+                                 INLCR | IGNCR | ICRNL | IXON);
+        t.c_cflag = (t.c_cflag & ~(tcflag_t)(CSIZE | PARENB)) | CS8;
+        t.c_cc[VMIN] = 1;    /* block until at least one byte */
+        t.c_cc[VTIME] = 0;
+        if (tcsetattr(STDIN_FILENO, TCSANOW, &t) != 0)
+            return -1;
+        tty_raw_active = 1;
+        if (!atexit_registered) {
+            atexit(tty_restore_at_exit);
+            atexit_registered = 1;
+        }
+        return 0;
+    }
+
+    if (!tty_raw_active)
+        return 0;
+    if (tty_saved_valid && tcsetattr(STDIN_FILENO, TCSANOW, &tty_saved_termios) != 0)
+        return -1;
+    tty_raw_active = 0;
+    return 0;
+}
+
+int platform_tty_raw_active(void)
+{
+    return tty_raw_active;
+}
+
+int platform_tty_char_avail(void)
+{
+    fd_set rfds;
+    struct timeval tv;
+    int r;
+    if (tty_pushback != -1)
+        return 1;
+    FD_ZERO(&rfds);
+    FD_SET(STDIN_FILENO, &rfds);
+    tv.tv_sec = 0;
+    tv.tv_usec = 0;
+    do {
+        r = select(STDIN_FILENO + 1, &rfds, NULL, NULL, &tv);
+    } while (r == -1 && errno == EINTR);
+    return (r > 0) ? 1 : 0;
+}
+
+int platform_tty_size(int *cols, int *rows)
+{
+    struct winsize ws;
+    /* stdout first (a TUI's frames go there), then stdin, then the
+     * controlling terminal — stdio may be partially redirected. */
+    if ((ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 ||
+         ioctl(STDIN_FILENO, TIOCGWINSZ, &ws) == 0) &&
+        ws.ws_col > 0 && ws.ws_row > 0) {
+        *cols = ws.ws_col;
+        *rows = ws.ws_row;
+        return 0;
+    }
+    {
+        int fd = open("/dev/tty", O_RDONLY);
+        if (fd >= 0) {
+            int ok = (ioctl(fd, TIOCGWINSZ, &ws) == 0 &&
+                      ws.ws_col > 0 && ws.ws_row > 0);
+            close(fd);
+            if (ok) {
+                *cols = ws.ws_col;
+                *rows = ws.ws_row;
+                return 0;
+            }
+        }
+    }
+    return -1;
+}
+
 int platform_getchar(void)
 {
     int c;
+    if (tty_pushback != -1) {
+        c = tty_pushback;
+        tty_pushback = -1;
+        return c;
+    }
+    if (tty_raw_active) {
+        /* Raw TUI regime: bypass stdio so the platform_tty_char_avail()
+         * select() probe and this read agree on what is pending. */
+        unsigned char b;
+        ssize_t r;
+        cl_gc_enter_safe_region();
+        do {
+            r = read(STDIN_FILENO, &b, 1);
+        } while (r == -1 && errno == EINTR);
+        cl_gc_leave_safe_region();
+        return (r == 1) ? (int)b : -1;
+    }
     /* Same blocking-stdin rationale as platform_read_line: the CONSOLE stream's
      * read-char parks here, so bracket it as a GC safe region. */
     cl_gc_enter_safe_region();
@@ -88,6 +229,13 @@ int platform_getchar(void)
 
 void platform_ungetchar(int ch)
 {
+    if (tty_raw_active) {
+        /* Raw reads bypass stdio, so ungetc()'s buffer would be invisible;
+         * park the char in the platform pushback instead (getchar checks it
+         * first in either mode, so a later cooked read still sees it). */
+        tty_pushback = ch;
+        return;
+    }
     ungetc(ch, stdin);
 }
 
@@ -1199,7 +1347,11 @@ void platform_init(void)
 
 void platform_shutdown(void)
 {
-    /* Nothing needed on POSIX */
+    /* Restore cooked mode if a TUI died without cleaning up (the atexit
+     * handler also covers this, but shutdown runs earlier and matters for
+     * the AmigaOS ordering — keep both platforms symmetric). */
+    if (tty_raw_active)
+        platform_tty_raw(0);
 }
 
 void platform_cache_clear(void *addr, uint32_t len)

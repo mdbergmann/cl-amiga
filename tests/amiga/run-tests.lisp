@@ -8882,6 +8882,41 @@
   (list (peep-dead-branch -50) (peep-dead-branch -5)
         (peep-dead-branch 5) (peep-dead-branch 50)))
 
+; --- EXT TTY primitives (raw mode / size / console availability) ---
+; Backing for TUI libraries (cl-tuition): EXT:TTY-RAW-MODE / EXT:TTY-SIZE
+; plus exact LISTEN / READ-CHAR-NO-HANG on the console while raw.
+; This suite runs with stdout redirected into the results log and stdin
+; on the CLI console, so the assertions check the CONTRACT (types, no
+; error, clean cooked-mode restore) rather than one environment's
+; answers — the behavioral leg with a real pty lives in tests/test_tty.c.
+(check "tty-p returns boolean" t (typep (ext:tty-p) 'boolean))
+(check "tty-size nil or positive cell pair" t
+  (let ((s (ext:tty-size)))
+    (or (null s)
+        (and (consp s)
+             (integerp (car s)) (integerp (cdr s))
+             (> (car s) 0) (> (cdr s) 0)))))
+(check "tty-raw-mode toggles and restores" t
+  (if (ext:tty-p)
+      ; interactive console: both transitions must succeed, and a second
+      ; disable must stay a successful no-op (idempotence)
+      (and (ext:tty-raw-mode t)
+           (ext:tty-raw-mode nil)
+           (ext:tty-raw-mode nil)
+           t)
+      ; non-interactive stdin: enabling must fail cleanly with NIL
+      (null (ext:tty-raw-mode t))))
+; *TERMINAL-IO* must be bidirectional (CLHS) — it was historically bound
+; to the output-only stdout singleton, so (read-char t) saw instant EOF.
+(check "terminal-io is an input stream" t (input-stream-p *terminal-io*))
+(check "terminal-io is an output stream" t (output-stream-p *terminal-io*))
+(check "console listen does not block" t (typep (listen) 'boolean))
+(check "console read-char-no-hang does not block" t
+  (let ((c (read-char-no-hang *standard-input* nil :eof)))
+    ; no typed input pending: NIL; leaked type-ahead: a character;
+    ; redirected-and-drained stdin: :eof — never a hang, never an error
+    (or (null c) (characterp c) (eq c :eof))))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

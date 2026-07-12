@@ -3524,6 +3524,38 @@ static CL_Obj bi_getenv(CL_Obj *args, int n)
     }
 }
 
+/* (ext:tty-p) => T iff stdin is an interactive terminal (a real console).
+ * Lets TUI code decide up front whether raw mode can work at all. */
+static CL_Obj bi_ext_tty_p(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    return platform_stdin_is_interactive() ? CL_T : CL_NIL;
+}
+
+/* (ext:tty-raw-mode enable) => T on success, NIL on failure.
+ * ENABLE non-NIL puts the console in raw mode (no echo, no line buffering,
+ * characters delivered as typed); NIL restores cooked mode.  Fails (NIL)
+ * when stdin is not an interactive terminal.  While raw mode is active,
+ * LISTEN and READ-CHAR-NO-HANG on console streams report availability
+ * exactly.  The runtime restores cooked mode on exit as crash insurance,
+ * but callers should pair enable/disable (e.g. via unwind-protect). */
+static CL_Obj bi_ext_tty_raw_mode(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    return (platform_tty_raw(!CL_NULL_P(args[0])) == 0) ? CL_T : CL_NIL;
+}
+
+/* (ext:tty-size) => (cols . rows) or NIL when the size is unknown
+ * (stdin/stdout not a terminal, or the query failed). */
+static CL_Obj bi_ext_tty_size(CL_Obj *args, int n)
+{
+    int cols, rows;
+    CL_UNUSED(args); CL_UNUSED(n);
+    if (platform_tty_size(&cols, &rows) != 0)
+        return CL_NIL;
+    return cl_cons(CL_MAKE_FIXNUM(cols), CL_MAKE_FIXNUM(rows));
+}
+
 static CL_Obj bi_getcwd(CL_Obj *args, int n)
 {
     char buf[1024];
@@ -3842,6 +3874,9 @@ void cl_builtins_io_init(void)
     extfun("%GC-AUDIT-ROOTS", bi_ext_gc_audit_roots, 0, 0);
     extfun("GETENV", bi_getenv, 1, 1);
     extfun("GETCWD", bi_getcwd, 0, 0);
+    extfun("TTY-P", bi_ext_tty_p, 0, 0);
+    extfun("TTY-RAW-MODE", bi_ext_tty_raw_mode, 1, 1);
+    extfun("TTY-SIZE", bi_ext_tty_size, 0, 0);
     extfun("SYSTEM-COMMAND", bi_system_command, 1, 1);
     extfun("OPEN-TCP-STREAM", bi_open_tcp_stream, 2, 3);
     extfun("SOCKET-LISTEN", bi_socket_listen, 1, 2);
