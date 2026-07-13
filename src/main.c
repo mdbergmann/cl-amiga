@@ -211,6 +211,7 @@ static void print_usage(void)
         "  --color          Force color output\n"
         "  --no-color       Disable color output\n"
         "  --no-jit         Disable the m68k JIT (functions stay bytecode-only)\n"
+        "  --boot-log       Print boot phase timings (\"; [boot] ...\")\n"
         "  --help           Show this help message\n"
         "\n"
         "Sizes accept K, M, G suffixes (e.g. 8M, 512K, 1G).\n"
@@ -272,6 +273,7 @@ int main(int argc, char *argv[])
     int no_userinit = 0;
     int script = 0;
     int no_jit = 0;
+    int boot_log = 0;
     const char *script_file = NULL;
     CLAction actions[MAX_ACTIONS];
     int action_count = 0;
@@ -310,6 +312,8 @@ int main(int argc, char *argv[])
             non_interactive = 1;
         } else if (strcmp(argv[i], "--no-jit") == 0) {
             no_jit = 1;
+        } else if (strcmp(argv[i], "--boot-log") == 0) {
+            boot_log = 1;
         } else if (strcmp(argv[i], "--no-userinit") == 0) {
             no_userinit = 1;
         } else if (strcmp(argv[i], "--help") == 0) {
@@ -405,10 +409,10 @@ int main(int argc, char *argv[])
     if (!color_set)
         cl_repl_color = !(batch || script || non_interactive);
 
-    /* In --batch the caller pipes stdin and matches stdout exactly, so the
-     * "; [boot] ..." progress lines would break tests.  Stay quiet then. */
-    if (batch || script)
-        cl_quiet_boot = 1;
+    /* Boot progress lines ("; [boot] ...") are opt-in via --boot-log —
+     * useful on a slow Amiga boot or when chasing a startup-time regression,
+     * noise otherwise (and piped tests match stdout exactly). */
+    cl_quiet_boot = !boot_log;
 
     platform_init();
     cl_thread_init();  /* Must be first — sets up CT for all other init */

@@ -2795,9 +2795,9 @@ static CL_Obj bi_get_run_time(CL_Obj *args, int n)
     return CL_MAKE_FIXNUM((int32_t)(platform_run_time_ms() & CL_FIXNUM_MAX));
 }
 
-/* (%BOOT-QUIET-P) -> T iff main.c set --batch / --script flag.  Used by
- * lib/clos.lisp's %clos-trace so the "; [clos] ..." progress lines stay
- * out of piped batch output. */
+/* (%BOOT-QUIET-P) -> T unless --boot-log was given.  Used by
+ * lib/clos.lisp's %clos-trace so the "; [clos] ..." progress lines only
+ * appear when boot logging was requested. */
 static CL_Obj bi_boot_quiet_p(CL_Obj *args, int n)
 {
     CL_UNUSED(args); CL_UNUSED(n);
@@ -2809,7 +2809,7 @@ static CL_Obj bi_boot_quiet_p(CL_Obj *args, int n)
  * Same path as the C-side BOOT_TIME() macro; the helper falls back to
  * platform_write_string when *standard-output* isn't a stream yet, so this
  * is safe even when cl_stream_init has been skipped (e.g. some unit tests).
- * No-op when --batch or --script is in effect. */
+ * No-op unless --boot-log is in effect. */
 static CL_Obj bi_boot_trace_clos(CL_Obj *args, int n)
 {
     if (n != 3 || cl_quiet_boot) return CL_NIL;

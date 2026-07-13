@@ -9001,6 +9001,14 @@
     ; redirected-and-drained stdin: :eof — never a hang, never an error
     (or (null c) (characterp c) (eq c :eof))))
 
+; --- Boot logging is opt-in (--boot-log) ---
+; The suite launches clamiga WITHOUT --boot-log, so the boot must have been
+; quiet: %BOOT-QUIET-P reports T and %BOOT-TRACE-CLOS no-ops (returns NIL
+; and writes nothing into the results log).
+(check "boot is quiet by default" t (clamiga::%boot-quiet-p))
+(check "boot trace no-ops when quiet" nil
+  (clamiga::%boot-trace-clos 1 1 "must-not-appear-in-results-log"))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

@@ -85,8 +85,7 @@ void cl_jit_init(void)
     jit_active = 1;
 
     if (!cl_quiet_boot) {
-        cl_write_cstring_to_stdout(
-            "; [jit] m68k template backend: matchers (0-arg literal, 1..6-arg pass-through) + per-opcode walker\n");
+        cl_write_cstring_to_stdout("; [jit] m68k native backend enabled\n");
     }
 }
 

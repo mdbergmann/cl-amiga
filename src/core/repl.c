@@ -708,10 +708,11 @@ static void init_history_symbol(CL_Obj sym)
     s->value = CL_NIL;
 }
 
-/* Boot-phase progress + timing.  Useful info during the 30+ s lower-end
- * Amiga boot, trivial overhead on a fast host.  Suppressed in --batch
- * (cl_quiet_boot=1) so piped tests match output exactly. */
-int cl_quiet_boot = 0;
+/* Boot-phase progress + timing.  Useful during the 30+ s lower-end Amiga
+ * boot and for spotting startup-time regressions.  Opt-in: main.c clears
+ * cl_quiet_boot only when --boot-log is given, so normal (and piped-test)
+ * output stays clean. */
+int cl_quiet_boot = 1;
 static void boot_timing_log(const char *phase, uint32_t t_start, uint32_t *t_prev)
 {
     uint32_t now = platform_time_ms();
@@ -826,7 +827,6 @@ void cl_repl_init_no_userinit(int no_userinit)
 {
     uint32_t t_start = platform_time_ms();
     uint32_t t_prev  = t_start;
-    BOOT_TIME("enter cl_repl_init_no_userinit");
     /* Load standard library in CL package so macros/functions are
        accessible from any package that :use's CL */
     CL_Obj saved_pkg = cl_current_package;
@@ -849,14 +849,12 @@ void cl_repl_init_no_userinit(int no_userinit)
        ~140 such helpers and their leakage breaks the ANSI
        NO-EXTRA-SYMBOLS-EXPORTED-FROM-COMMON-LISP test. */
     cl_intern_clos_internals_in_clamiga();
-    BOOT_TIME("intern CLOS internals in CLAMIGA");
 
     /* Export all CL symbols defined so far (from symbol_init + builtins_init).
        This must happen BEFORE any eval_string or boot.lisp loading that runs
        in the CL package — those passes intern stray symbols (e.g. macro
        parameter names like BODY/TEST) that should NOT be exported. */
     cl_package_export_all_cl_symbols();
-    BOOT_TIME("export all CL symbols");
 
     /* Define WHEN / UNLESS as macros so boot.lisp can use them.  These run
        AFTER cl_package_export_all_cl_symbols on purpose: the parameter
@@ -865,7 +863,7 @@ void cl_repl_init_no_userinit(int no_userinit)
        (no binding → not exported). */
     cl_eval_string("(defmacro when (test &rest body) (list 'if test (cons 'progn body)))");
     cl_eval_string("(defmacro unless (test &rest body) (list 'if test nil (cons 'progn body)))");
-    BOOT_TIME("define WHEN/UNLESS macros");
+    BOOT_TIME("core setup");
 
     /* Suppress *load-verbose* during internal boot/clos loading */
     {
@@ -916,11 +914,11 @@ void cl_repl_init_no_userinit(int no_userinit)
 #endif
         (void)boot_loaded;
     }
-    BOOT_TIME("load boot (FASL or source)");
+    BOOT_TIME("boot library");
 
     /* Load CLOS so defclass/defgeneric/defmethod are available */
     cl_eval_string("(require \"clos\")");
-    BOOT_TIME("load CLOS");
+    BOOT_TIME("CLOS");
 
     /* Re-enable *load-verbose* for user code */
     {
@@ -932,7 +930,6 @@ void cl_repl_init_no_userinit(int no_userinit)
        (function, value, macro, type, struct, or CLOS class).
        Stray symbols interned by boot.lisp/clos.lisp macro bodies are skipped. */
     cl_package_export_defined_cl_symbols();
-    BOOT_TIME("export defined CL symbols");
     cl_current_package = saved_pkg;
     {
         CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);
@@ -958,7 +955,7 @@ void cl_repl_init_no_userinit(int no_userinit)
     init_history_symbol(SYM_PLUSPLUS);
     init_history_symbol(SYM_PLUSPLUSPLUS);
     init_history_symbol(SYM_MINUS);
-    BOOT_TIME("ready (REPL prompt next)");
+    BOOT_TIME("ready");
 }
 
 void cl_repl_init(void)
