@@ -6,8 +6,8 @@
 ;;; ---- Boot-phase profiling ----
 ;;; Info messages so future regressions in CLOS load time show up
 ;;; immediately.  Same shape as the C-level "; [boot] ..." markers in
-;;; cl_repl_init_no_userinit; suppressed in --batch / --script (where
-;;; piped tests match output exactly).
+;;; cl_repl_init_no_userinit; opt-in via --boot-log (quiet otherwise,
+;;; so piped tests match output exactly).
 ;;; Goes through the C builtin %BOOT-TRACE-CLOS rather than (format t)
 ;;; so unit-test setups that skip cl_stream_init still work.
 (defparameter *%clos-load-start* (get-internal-real-time))
@@ -695,7 +695,7 @@ directly instead of attempting a symbol lookup."
     (or (gethash type-name *class-table*)
         (find-class 't))))
 
-(%clos-trace "Bootstrap + slot/EQL/CPL helpers")
+(%clos-trace "bootstrap classes")
 ;;; ====================================================================
 ;;; Phase 1: Slot Access Infrastructure
 ;;; ====================================================================
@@ -991,7 +991,7 @@ Specialize via defmethod to provide lazy initialization."
                 (mapcar #'class-precedence-list supers)
                 (list supers)))))))
 
-(%clos-trace "Phase 1 (slot access) + Phase 2 (C3 linearization)")
+(%clos-trace "slot access")
 ;;; ====================================================================
 ;;; Phase 3: defclass
 ;;; ====================================================================
@@ -1442,7 +1442,7 @@ Specialize via defmethod to provide lazy initialization."
        ,@accessor-defs
        (find-class ',name))))
 
-(%clos-trace "Phase 3 (defclass)")
+(%clos-trace "defclass")
 ;;; ====================================================================
 ;;; Phase 4: make-instance + Initialization
 ;;; ====================================================================
@@ -1538,7 +1538,7 @@ Specialize via defmethod to provide lazy initialization."
       (apply #'initialize-instance instance initargs)
       instance)))
 
-(%clos-trace "Phase 4 (make-instance + initialization)")
+(%clos-trace "make-instance")
 ;;; ====================================================================
 ;;; Phase 5: defgeneric + defmethod + Dispatch
 ;;; ====================================================================
@@ -3181,7 +3181,7 @@ already-existing GF the installed combination is preserved."
                    simple-primary-p)))
     (%install-method-in-gf gf method)))
 
-(%clos-trace "Phase 5 (defgeneric + defmethod + dispatch)")
+(%clos-trace "generic functions")
 ;;; ====================================================================
 ;;; Phase 6: with-slots
 ;;; ====================================================================
@@ -3324,7 +3324,7 @@ already-existing GF the installed combination is preserved."
     (declare (ignore initargs))
     (funcall %ai-fn class)))
 
-(%clos-trace "Phase 6 (with-slots) + Phase 7 (convert to GFs)")
+(%clos-trace "with-slots + GF conversion")
 ;;; ====================================================================
 ;;; Slot-access protocol (MOP)
 ;;; ====================================================================
@@ -3580,7 +3580,7 @@ already-existing GF the installed combination is preserved."
        ,@accessor-defs
        (find-class ',name))))
 
-(%clos-trace "Slot-access + class finalization MOP protocols")
+(%clos-trace "class finalization")
 ;;; ====================================================================
 ;;; Phase 8: change-class + reinitialize-instance
 ;;; ====================================================================
@@ -3875,7 +3875,7 @@ since user-defined method classes are out of scope."
     (add-method gf method)
     method))
 
-(%clos-trace "Phase 8 + 9 (change-class, print-object) + funcallable + method MOP")
+(%clos-trace "change-class + print-object")
 ;;; ====================================================================
 ;;; Method combination protocol (MOP)
 ;;; ====================================================================
@@ -4330,7 +4330,7 @@ class to react."
   (declare (ignore metaobject dependent initargs))
   nil)
 
-(%clos-trace "Method combination protocol")
+(%clos-trace "method combination")
 ;;; ====================================================================
 ;;; Portable MOP shims (closer-mop compatibility layer)
 ;;; ====================================================================
@@ -4597,7 +4597,7 @@ protocol hook a user metaclass would override to substitute a subclass."
 (defmethod (setf documentation) (new-value x doc-type)
   (setf (gethash (cons x doc-type) *documentation-table*) new-value))
 
-(%clos-trace "Portable MOP shims")
+(%clos-trace "MOP shims")
 
 ;;; ====================================================================
 ;;; MAKE-LOAD-FORM (CLHS 3.2.4.4 / Section 7.6)

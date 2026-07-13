@@ -23,9 +23,9 @@ void cl_load_file(const char *path);
 void cl_repl_init(void);
 void cl_repl_init_no_userinit(int no_userinit);
 
-/* When non-zero, cl_repl_init suppresses "; [boot] ..." progress lines.
- * Set by main.c before init when --batch is in effect, so piped tests
- * that match output exactly aren't polluted by the boot trace. */
+/* When non-zero (the default), cl_repl_init suppresses "; [boot] ..."
+ * progress lines.  main.c clears it only when --boot-log is given, so
+ * normal output and piped tests that match output exactly stay clean. */
 extern int cl_quiet_boot;
 
 /* Minimal init: C builtins only, no boot.lisp/CLOS loading.

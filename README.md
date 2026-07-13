@@ -89,7 +89,12 @@ toggles, and safety guarantees.
 ./clamiga                      # Start REPL
 ./clamiga --load hello.lisp    # Same as above
 ./clamiga --heap 8M            # Start with 8 MB heap
+./clamiga --boot-log           # Print boot phase timings ("; [boot] ...")
 ```
+
+`--help` lists all options. `--boot-log` is handy on slow Amiga hardware
+(shows progress during the multi-second boot) and for spotting startup-time
+regressions; see `tests/test_boot_log.sh` for the exact behavior.
 
 ### Version
 
