@@ -333,7 +333,7 @@ Foreign calls/callbacks are host-only; on AmigaOS use the library-vector model
 
 ## Emacs (SLY) integration
 
-CL-Amiga speaks the SLYNK protocol, so you can drive it from Emacs with [SLY](https://github.com/joaotavora/sly) — REPL, completion, `M-.`, the inspector, and the SLDB debugger. This targets the **host** build (`build/host/clamiga`) and needs a SLY checkout whose `slynk/backend/` includes the CL-Amiga backend (`clamiga.lisp`).
+CL-Amiga speaks the SLYNK protocol, so you can drive it from Emacs with [SLY](https://github.com/joaotavora/sly) — REPL, completion, `M-.`, the inspector, and the SLDB debugger. This targets the **host** build (`build/host/clamiga`) and needs a SLY checkout whose `slynk/backend/` includes the CL-Amiga backend (`clamiga.lisp`) — [this SLY fork](https://github.com/mdbergmann/sly) ships it.
 
 clamiga comes up exactly like every other implementation — there is no clamiga-specific Lisp startup file or init form. The backend (`slynk/backend/clamiga.lisp`) pulls in clamiga's Gray streams itself via `(require "gray-streams")`, which needs to locate the bundled `lib/`.
 
@@ -391,7 +391,12 @@ tail -f /dev/null | ./build/host/clamiga --heap 96M \
 
 ## ICL integration
 
-[ICL](https://github.com/atgreen/icl) (Interactive Common Lisp) is a terminal/browser REPL frontend that drives an inferior Lisp over the SLYNK protocol — the same protocol CL-Amiga already speaks for SLY, so clamiga works as an ICL backend. Register it in `~/.iclrc`:
+[ICL](https://github.com/atgreen/icl) (Interactive Common Lisp) is a terminal/browser REPL frontend that drives an inferior Lisp over the SLYNK protocol — the same protocol CL-Amiga already speaks for SLY, so clamiga works as an ICL backend. You need two things:
+
+1. **A SLYNK with the CL-Amiga backend** — the same [SLY fork](https://github.com/mdbergmann/sly) the Emacs integration uses (it ships `slynk/backend/clamiga.lisp`). ICL is pointed at it via `ICL_SLYNK_PATH` so it loads this SLYNK instead of its bundled upstream copy.
+2. **ICL itself.** Stock ICL (≤ 1.23.10) crashes with `malformed property list` when `icl:configure-lisp` registers an implementation that isn't in its built-in table; use [this fork](https://github.com/mdbergmann/icl), which carries the fix until it lands upstream.
+
+Register clamiga in `~/.iclrc`:
 
 ```lisp
 ;; Let clamiga's (require ...) find its bundled lib/ from any directory.
@@ -401,12 +406,18 @@ tail -f /dev/null | ./build/host/clamiga --heap 96M \
 ;; point it at your SLY checkout (trailing slash required).
 (setf (uiop:getenv "ICL_SLYNK_PATH") "/path/to/sly/slynk/")
 
+;; The 4 MB default heap thrashes the GC once SLYNK loads;
+;; 96M is a practical minimum.
 (icl:configure-lisp :clamiga
   :program "/path/to/cl-amiga/build/host/clamiga"
-  :args '("--heap" "96M"))
+  :args '("--heap" "96M")
+  :eval-arg "--eval")
+
+;; Optional: make clamiga the default for a plain `icl`.
+;; (setf icl:*default-lisp* :clamiga)
 ```
 
-Then run `icl --lisp clamiga`. ICL spawns clamiga, loads SLYNK via ASDF, and connects; evaluation, completion, `,doc`, the inspector, and the browser UI all run against the clamiga image.
+Then run `icl --lisp clamiga`. ICL spawns clamiga, loads SLYNK via ASDF, and connects; evaluation, completion, `,doc`, the inspector, and the browser UI all run against the clamiga image. If something goes wrong at startup, `icl --verbose --lisp clamiga --eval '(+ 1 2)'` shows the spawn command and wire traffic.
 
 ## Package Reference
 
