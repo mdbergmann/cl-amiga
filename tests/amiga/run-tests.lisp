@@ -3099,6 +3099,80 @@
   (handler-case (two-way-stream-output-stream (make-string-input-stream ""))
     (error (c) (declare (ignore c)) :type-error)))
 
+; --- Broadcast / concatenated streams (CLHS 21.2) ---
+(check "broadcast-stream fans out writes" '("hi!" "hi!")
+  (let* ((a (make-string-output-stream))
+         (b (make-string-output-stream))
+         (bc (make-broadcast-stream a b)))
+    (write-string "hi" bc)
+    (write-char #\! bc)
+    (list (get-output-stream-string a) (get-output-stream-string b))))
+(check "broadcast-stream no components discards" :ok
+  (let ((bc (make-broadcast-stream)))
+    (write-string "dropped" bc)
+    (finish-output bc)
+    :ok))
+(check "broadcast-stream-streams identity" t
+  (let* ((a (make-string-output-stream))
+         (bc (make-broadcast-stream a)))
+    (eq (car (broadcast-stream-streams bc)) a)))
+(check "broadcast-stream typep" t
+  (typep (make-broadcast-stream) 'broadcast-stream))
+(check "broadcast-stream fresh-line uses component column" '(t nil)
+  (let* ((a (make-string-output-stream))
+         (bc (make-broadcast-stream a)))
+    (write-string "x" bc)
+    (list (fresh-line bc) (fresh-line bc))))
+(check "make-broadcast-stream rejects input stream" :type-error
+  (handler-case (make-broadcast-stream (make-string-input-stream ""))
+    (error (c) (declare (ignore c)) :type-error)))
+(check "concatenated-stream reads in order" "abcdef"
+  (let ((cc (make-concatenated-stream
+             (make-string-input-stream "abc")
+             (make-string-input-stream "")
+             (make-string-input-stream "def")))
+        (acc (make-string-output-stream)))
+    (loop for ch = (read-char cc nil nil) while ch
+          do (write-char ch acc))
+    (get-output-stream-string acc)))
+(check "concatenated-stream no components is eof" :eof
+  (read-char (make-concatenated-stream) nil :eof))
+(check "concatenated-stream-streams drains to nil" nil
+  (let ((cc (make-concatenated-stream (make-string-input-stream "a"))))
+    (read-char cc)
+    (read-char cc nil nil)
+    (concatenated-stream-streams cc)))
+(check "concatenated-stream read-line spans components" "foobar"
+  (read-line (make-concatenated-stream
+              (make-string-input-stream "foo")
+              (make-string-input-stream (format nil "bar~%")))))
+(check "concatenated-stream typep" t
+  (typep (make-concatenated-stream) 'concatenated-stream))
+(check "make-concatenated-stream rejects output stream" :type-error
+  (handler-case (make-concatenated-stream (make-string-output-stream))
+    (error (c) (declare (ignore c)) :type-error)))
+(check "icl slynk muffle pattern (two-way over concatenated+broadcast)" '(:eof :eof)
+  (let* ((null-stream (make-broadcast-stream))
+         (dbg (make-two-way-stream (make-concatenated-stream) null-stream)))
+    (write-line "muffled" dbg)
+    (list (read-char dbg nil :eof) (read-line dbg nil :eof))))
+(check "load from stream (CLHS filespec stream)" 42
+  (progn
+    (with-input-from-string (s "(defvar cl-user::*lfs-var* 41)
+                                (defun cl-user::lfs-fn () (1+ cl-user::*lfs-var*))")
+      (load s))
+    (cl-user::lfs-fn)))
+(check "load from stream binds *package*" t
+  (let ((before (package-name *package*)))
+    (with-input-from-string (s "(in-package :keyword)") (load s))
+    (string= before (package-name *package*))))
+(check "load from stream binds *load-pathname* to nil" '(t nil)
+  (progn
+    (with-input-from-string (s "(defvar cl-user::*lfs-lp* :unset)
+                                (setq cl-user::*lfs-lp* *load-pathname*)")
+      (load s))
+    (list t cl-user::*lfs-lp*)))
+
 ; --- TCP sockets (server side: socket-listen / socket-accept / socket-local-port) ---
 ; FS-UAE provides a TCP stack (bsdsocket.library on Amiga), so these run for
 ; real.  Single-threaded loopback pattern, same as the host tests: a loopback
@@ -7844,7 +7918,17 @@
     (let* ((sis (make-string-input-stream "native"))
            (buf (make-string 6)))
       (read-sequence buf sis)
-      (check "read-sequence native unaffected" "native" buf)))
+      (check "read-sequence native unaffected" "native" buf))
+    ; make-broadcast-stream/make-concatenated-stream fan out only to native
+    ; CL_Stream components in C (stream.c); a Gray-stream component must be
+    ; rejected at construction rather than silently dropping output or
+    ; being skipped as if already at EOF.
+    (check "make-broadcast-stream rejects gray output component" :type-error
+      (handler-case (make-broadcast-stream (make-instance 'test-gs-cap))
+        (error (c) (declare (ignore c)) :type-error)))
+    (check "make-concatenated-stream rejects gray input component" :type-error
+      (handler-case (make-concatenated-stream (make-instance 'test-gs-qin))
+        (error (c) (declare (ignore c)) :type-error))))
   (error (e)
     (setq *fail-count* (+ *fail-count* 1))
     (format t "FAIL: gray-stream regression - ~A~%" e)))

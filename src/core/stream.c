@@ -685,6 +685,34 @@ int cl_stream_read_char(CL_Obj stream)
         return ch;
     }
 
+    /* Concatenated streams: read from the first remaining component; on its
+     * EOF pop it and continue with the next; EOF only after the last
+     * component is exhausted (CLHS 21.1).  The recursive read can block
+     * inside a GC safe region (console/socket child) where a peer STW-GC
+     * compacts the arena, so keep the wrapper's offset rooted and re-derive
+     * st before every st-> access. */
+    if (st->stream_type == CL_STREAM_CONCATENATED) {
+        CL_GC_PROTECT(stream);
+        for (;;) {
+            st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+            if (!CL_CONS_P(st->string_buf)) {
+                ch = -1;
+                break;
+            }
+            ch = cl_stream_read_char(cl_car(st->string_buf));
+            if (ch != -1)
+                break;
+            st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+            st->string_buf = cl_cdr(st->string_buf);
+        }
+        st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+        if (ch == -1)
+            st->flags |= CL_STREAM_FLAG_EOF;
+        CL_GC_UNPROTECT(1);
+        if (iolock) platform_mutex_unlock(iolock);
+        return ch;
+    }
+
     /* String streams return code points directly (no UTF-8 layer) */
     if (st->stream_type == CL_STREAM_STRING) {
         if (CL_NULL_P(st->string_buf)) {
@@ -770,6 +798,30 @@ int cl_stream_read_byte(CL_Obj stream)
         return ch;
     }
 
+    /* Concatenated streams: same pop-on-EOF walk as cl_stream_read_char,
+     * with raw byte reads (see the GC hazard note there). */
+    if (st->stream_type == CL_STREAM_CONCATENATED) {
+        CL_GC_PROTECT(stream);
+        for (;;) {
+            st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+            if (!CL_CONS_P(st->string_buf)) {
+                ch = -1;
+                break;
+            }
+            ch = cl_stream_read_byte(cl_car(st->string_buf));
+            if (ch != -1)
+                break;
+            st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+            st->string_buf = cl_cdr(st->string_buf);
+        }
+        st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+        if (ch == -1)
+            st->flags |= CL_STREAM_FLAG_EOF;
+        CL_GC_UNPROTECT(1);
+        if (iolock) platform_mutex_unlock(iolock);
+        return ch;
+    }
+
     /* String streams: return code point (for string-as-bytes) */
     if (st->stream_type == CL_STREAM_STRING) {
         if (CL_NULL_P(st->string_buf)) {
@@ -824,6 +876,21 @@ void cl_stream_write_char(CL_Obj stream, int ch)
         return;
     if (!(st->direction & CL_STREAM_OUTPUT))
         return;
+
+    /* Broadcast streams: fan the write out to every component (CLHS 21.1);
+     * with no components the output is discarded.  A recursive write can
+     * block inside a GC safe region (file/socket child) where a peer STW-GC
+     * compacts the arena, so keep the list cursor rooted across each call. */
+    if (st->stream_type == CL_STREAM_BROADCAST) {
+        CL_Obj comps = st->string_buf;
+        CL_GC_PROTECT(comps);
+        while (CL_CONS_P(comps)) {
+            cl_stream_write_char(cl_car(comps), ch);
+            comps = cl_cdr(comps);
+        }
+        CL_GC_UNPROTECT(1);
+        return;
+    }
 
 #ifdef CL_WIDE_STRINGS
     encode = (ch > 0x7F) && !(st->flags & CL_STREAM_FLAG_LATIN1);
@@ -932,6 +999,18 @@ void cl_stream_write_byte(CL_Obj stream, int byte)
     if (!(st->direction & CL_STREAM_OUTPUT))
         return;
 
+    /* Broadcast: fan out to every component (see cl_stream_write_char). */
+    if (st->stream_type == CL_STREAM_BROADCAST) {
+        CL_Obj comps = st->string_buf;
+        CL_GC_PROTECT(comps);
+        while (CL_CONS_P(comps)) {
+            cl_stream_write_byte(cl_car(comps), byte);
+            comps = cl_cdr(comps);
+        }
+        CL_GC_UNPROTECT(1);
+        return;
+    }
+
     iolock = stream_lock_for(st, 1);
     /* See cl_stream_read_char: the contended path can enter a GC safe region
      * and let a peer compact the arena while we're blocked, so protect the
@@ -984,6 +1063,21 @@ void cl_stream_write_string(CL_Obj stream, const char *str, uint32_t len)
         return;
     if (!(st->direction & CL_STREAM_OUTPUT))
         return;
+
+    /* Broadcast: fan out to every component (see cl_stream_write_char).
+     * str is a caller-owned C buffer (arena-resident sources must already
+     * go through cl_stream_write_lisp_string's stack chunking), so it stays
+     * valid even if a recursive blocking write lets a peer GC compact. */
+    if (st->stream_type == CL_STREAM_BROADCAST) {
+        CL_Obj comps = st->string_buf;
+        CL_GC_PROTECT(comps);
+        while (CL_CONS_P(comps)) {
+            cl_stream_write_string(cl_car(comps), str, len);
+            comps = cl_cdr(comps);
+        }
+        CL_GC_UNPROTECT(1);
+        return;
+    }
 
     iolock = stream_lock_for(st, 1);
     /* See cl_stream_read_char: the contended path can enter a GC safe region
@@ -1476,6 +1570,33 @@ CL_Obj cl_make_two_way_stream(CL_Obj input_stream, CL_Obj output_stream)
     st = (CL_Stream *)CL_OBJ_TO_PTR(s);
     st->string_buf = input_stream;   /* input child */
     st->element_type = output_stream; /* output child */
+    return s;
+}
+
+/* streams: proper list of component output streams (may be NIL — such a
+ * broadcast stream discards all output, CLHS 21.1). */
+CL_Obj cl_make_broadcast_stream_list(CL_Obj streams)
+{
+    CL_Obj s;
+    /* cl_make_stream allocates and may compact — keep the list forwarded. */
+    CL_GC_PROTECT(streams);
+    s = cl_make_stream(CL_STREAM_OUTPUT, CL_STREAM_BROADCAST);
+    if (!CL_NULL_P(s))
+        ((CL_Stream *)CL_OBJ_TO_PTR(s))->string_buf = streams;
+    CL_GC_UNPROTECT(1);
+    return s;
+}
+
+/* streams: proper list of component input streams (may be NIL — such a
+ * concatenated stream is immediately at end of file, CLHS 21.1). */
+CL_Obj cl_make_concatenated_stream_list(CL_Obj streams)
+{
+    CL_Obj s;
+    CL_GC_PROTECT(streams);
+    s = cl_make_stream(CL_STREAM_INPUT, CL_STREAM_CONCATENATED);
+    if (!CL_NULL_P(s))
+        ((CL_Stream *)CL_OBJ_TO_PTR(s))->string_buf = streams;
+    CL_GC_UNPROTECT(1);
     return s;
 }
 

@@ -156,6 +156,12 @@ CL_Obj cl_make_synonym_stream(CL_Obj symbol);
 /* Create a two-way stream: reads from input_stream, writes to output_stream. */
 CL_Obj cl_make_two_way_stream(CL_Obj input_stream, CL_Obj output_stream);
 
+/* Create a broadcast stream fanning writes out to a list of output streams. */
+CL_Obj cl_make_broadcast_stream_list(CL_Obj streams);
+
+/* Create a concatenated stream reading a list of input streams in order. */
+CL_Obj cl_make_concatenated_stream_list(CL_Obj streams);
+
 /* --- Stream-aware write helpers ---
  *
  * Write a C string to the stream currently bound to `sym`.  If the symbol

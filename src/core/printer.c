@@ -1625,8 +1625,12 @@ static void print_obj(CL_Obj obj)
 
     case TYPE_STREAM: {
         CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(obj);
-        if (st->stream_type == CL_STREAM_TWO_WAY) {
-            out_str("#<TWO-WAY-STREAM");
+        if (st->stream_type == CL_STREAM_TWO_WAY ||
+            st->stream_type == CL_STREAM_BROADCAST ||
+            st->stream_type == CL_STREAM_CONCATENATED) {
+            out_str(st->stream_type == CL_STREAM_TWO_WAY   ? "#<TWO-WAY-STREAM" :
+                    st->stream_type == CL_STREAM_BROADCAST ? "#<BROADCAST-STREAM" :
+                                                             "#<CONCATENATED-STREAM");
             if (!(st->flags & CL_STREAM_FLAG_OPEN))
                 out_str(" (closed)");
             out_char('>');

@@ -8,8 +8,11 @@
 ;;; This provides the TCP networking that quicklisp needs to download
 ;;; archives, and works around CL-Amiga compiler limitations.
 
-;; Load Gray Streams implementation (needed by trivial-gray-streams)
-(load (merge-pathnames "lib/gray-streams.lisp" *default-pathname-defaults*))
+;; Load Gray Streams implementation (needed by trivial-gray-streams).
+;; REQUIRE resolves lib/ against the CWD and falls back to $CLAMIGA_HOME,
+;; so this works when clamiga is launched outside the source root (editor,
+;; ICL) — a cwd-relative LOAD here would not.
+(require "gray-streams")
 
 ;; NOTE: a handful of systems (closer-mop, trivial-cltl2,
 ;; introspect-environment, trivial-garbage) carry first-class CL-Amiga
@@ -60,24 +63,10 @@
 
 (in-package #:ql-http)
 
-;; Workaround: make-broadcast-stream not yet implemented.
-;; Quicklisp uses (make-broadcast-stream) for :quietly t in http-fetch.
-;; Provide a minimal version that discards all output.
-;; Workaround: make-broadcast-stream not yet implemented in CL-Amiga.
-;; Quicklisp uses (make-broadcast-stream) for :quietly t in http-fetch.
-;; The symbol got interned in ql-http (since it wasn't in CL when quicklisp loaded).
-;; Define it there, and also in CL for general use.
-(in-package "COMMON-LISP")
-(defun make-broadcast-stream (&rest streams)
-  (declare (ignore streams))
-  (make-string-output-stream))
-(export 'make-broadcast-stream)
-
-;; Also define on the ql-http-interned symbol
-(in-package "QL-HTTP")
-(defun make-broadcast-stream (&rest streams)
-  (declare (ignore streams))
-  (make-string-output-stream))
+;; MAKE-BROADCAST-STREAM is a real builtin now (CLHS 21.2); quicklisp's
+;; (make-broadcast-stream) for :quietly t works directly.  The historical
+;; string-output-stream workaround that lived here silently shadowed the
+;; builtin — keep this file free of CL redefinitions.
 
 (in-package #:ql-impl-util)
 
