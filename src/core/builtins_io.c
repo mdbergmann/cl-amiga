@@ -451,6 +451,98 @@ static CL_Obj bi_load(CL_Obj *args, int n)
             cl_current_package = pkg_val;
     }
 
+    /* CLHS: LOAD's filespec may be an (already open) stream — read and
+     * evaluate forms from it until end of file, with *load-pathname* and
+     * *load-truename* bound to NIL.  This is how SLYNK and ICL inject code:
+     * (with-input-from-string (s ...) (load s)).  Gray streams are CLOS
+     * instances, not CL_Streams, and fall through to the type error in
+     * cl_resolve_input_namestring. */
+    if (CL_STREAM_P(args[0])) {
+        stream = args[0];
+        CL_GC_PROTECT(stream);
+
+        saved_load_pathname = cl_symbol_value(SYM_STAR_LOAD_PATHNAME);
+        saved_load_truename = cl_symbol_value(SYM_STAR_LOAD_TRUENAME);
+        CL_GC_PROTECT(saved_load_pathname);
+        CL_GC_PROTECT(saved_load_truename);
+        cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, CL_NIL);
+        cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, CL_NIL);
+
+        /* Source-file context: forms from a stream have no backing file. */
+        prev_file = cl_current_source_file;
+        prev_file_id = cl_current_file_id;
+        prev_line = cl_reader_get_line();
+        cl_current_source_file = cl_intern_source_file("<stream>");
+        cl_current_file_id++;
+        cl_reader_reset_line();
+
+        for (;;) {
+            int err;
+            int saved_fp, saved_sp, saved_nlx;
+
+            expr = cl_read_from_stream(stream);
+            if (cl_reader_eof()) break;
+
+            /* Save VM state so we can restore on error (cl_error longjmps
+               past cl_vm_eval's OP_HALT, leaving fp/sp/nlx leaked) —
+               mirrors the file-load loop below. */
+            saved_fp = cl_vm.fp;
+            saved_sp = cl_vm.sp;
+            saved_nlx = cl_nlx_top;
+            {
+            int saved_gc_roots = gc_root_count;
+
+            CL_CATCH(err);
+            if (err == CL_ERR_NONE) {
+                CL_GC_PROTECT(expr);
+                bytecode = cl_compile(expr);
+                CL_GC_UNPROTECT(1);
+                if (!CL_NULL_P(bytecode)) {
+                    CL_GC_PROTECT(bytecode);
+                    cl_vm_eval(bytecode);
+                    /* Safe point: run pending compaction between forms */
+                    cl_gc_compact_if_pending();
+                    CL_GC_UNPROTECT(1); /* bytecode */
+                }
+                CL_UNCATCH();
+            } else {
+                cl_vm.fp = saved_fp;
+                cl_vm.sp = saved_sp;
+                cl_nlx_top = saved_nlx;
+                gc_root_count = saved_gc_roots;
+                CL_UNCATCH();
+                /* Propagate exit request — don't swallow (quit) */
+                if (err == CL_ERR_EXIT) {
+                    cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, saved_load_pathname);
+                    cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, saved_load_truename);
+                    cl_current_source_file = prev_file;
+                    cl_current_file_id = prev_file_id;
+                    cl_reader_set_line(prev_line);
+                    cl_current_package = saved_package;
+                    cl_set_symbol_value(SYM_STAR_PACKAGE, saved_package);
+                    CL_GC_UNPROTECT(4); /* saved_lt, saved_lp, stream, saved_package */
+                    cl_error(CL_ERR_EXIT, "");
+                }
+                cl_error_print();
+            }
+            }
+        }
+
+        cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, saved_load_pathname);
+        cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, saved_load_truename);
+        CL_GC_UNPROTECT(3); /* saved_lt, saved_lp, stream */
+
+        cl_current_source_file = prev_file;
+        cl_current_file_id = prev_file_id;
+        cl_reader_set_line(prev_line);
+
+        cl_current_package = saved_package;
+        cl_set_symbol_value(SYM_STAR_PACKAGE, saved_package);
+
+        CL_GC_UNPROTECT(1); /* saved_package */
+        return SYM_T;
+    }
+
     /* Resolve the filespec into path_buf: parse → merge with
        *default-pathname-defaults* (CL spec, so relative paths resolve against
        the caller's bound default, not just cwd) → coerce → expand a leading ~.

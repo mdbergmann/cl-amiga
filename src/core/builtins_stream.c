@@ -462,15 +462,39 @@ static CL_Obj bi_terpri(CL_Obj *args, int n)
 }
 
 /* (fresh-line &optional stream) => T if newline written, NIL if at BOL */
+/* FRESH-LINE core: consult the column of the stream that actually carries
+ * it.  Synonym/two-way wrappers never update their own charpos, so unwrap to
+ * the output backing; a broadcast stream performs the operation on every
+ * component and returns the last component's result (CLHS 21.1.1.1.1). */
+static int stream_fresh_line(CL_Obj stream)
+{
+    CL_Stream *st;
+    stream = cl_stream_resolve_backing(stream, 1);
+    if (!CL_STREAM_P(stream)) return 0;
+    st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+    if (st->stream_type == CL_STREAM_BROADCAST) {
+        int r = 0;
+        CL_Obj comps = st->string_buf;
+        /* the recursive write can block and compact — keep the cursor rooted */
+        CL_GC_PROTECT(comps);
+        while (CL_CONS_P(comps)) {
+            r = stream_fresh_line(cl_car(comps));
+            comps = cl_cdr(comps);
+        }
+        CL_GC_UNPROTECT(1);
+        return r;
+    }
+    if (st->charpos != 0) {
+        cl_stream_write_char(stream, '\n');
+        return 1;
+    }
+    return 0;
+}
+
 static CL_Obj bi_fresh_line(CL_Obj *args, int n)
 {
     CL_Obj stream = cl_resolve_output_stream(args, n, 0);
-    CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
-    if (st->charpos != 0) {
-        cl_stream_write_char(stream, '\n');
-        return CL_T;
-    }
-    return CL_NIL;
+    return stream_fresh_line(stream) ? CL_T : CL_NIL;
 }
 
 /* Flush a stream for finish/force-output.  Shared so a socket write deadline
@@ -485,6 +509,19 @@ static void flush_output_stream(CL_Stream *st)
         if (platform_socket_flush((PlatformSocket)st->handle_id) == PLATFORM_SOCKET_TIMEOUT)
             cl_error(CL_ERR_TIMEOUT, "WRITE on socket stream timed out after %u ms",
                      (unsigned)st->write_timeout_ms);
+    } else if (st->stream_type == CL_STREAM_BROADCAST) {
+        /* Fan the flush out to every component (CLHS 21.1.1.1.1).  A child
+         * flush can block in a GC safe region and compact the arena, so keep
+         * the cursor rooted and re-derive each child from the rooted list. */
+        CL_Obj comps = st->string_buf;
+        CL_GC_PROTECT(comps);
+        while (CL_CONS_P(comps)) {
+            CL_Obj child = cl_stream_resolve_backing(cl_car(comps), 1);
+            if (CL_STREAM_P(child))
+                flush_output_stream((CL_Stream *)CL_OBJ_TO_PTR(child));
+            comps = cl_cdr(comps);
+        }
+        CL_GC_UNPROTECT(1);
     }
 }
 
@@ -670,6 +707,95 @@ static CL_Obj bi_two_way_stream_output_stream(CL_Obj *args, int n)
     if (st->stream_type != CL_STREAM_TWO_WAY)
         cl_error(CL_ERR_TYPE, "TWO-WAY-STREAM-OUTPUT-STREAM: not a two-way stream");
     return st->element_type;
+}
+
+/* (make-broadcast-stream &rest streams)
+ * Output written to the result is fanned out to every component stream;
+ * with no components all output is discarded (CLHS 21.1).
+ * The C fan-out in stream.c only dispatches to native CL_Stream objects, so
+ * Gray-stream (CLOS) components — unlike make-two-way-stream, which has a
+ * Lisp-level shim that dispatches to Gray generic functions — must be
+ * rejected here rather than silently dropping their output. */
+static CL_Obj bi_make_broadcast_stream(CL_Obj *args, int n)
+{
+    CL_Obj list = CL_NIL;
+    CL_Obj s;
+    int i;
+    for (i = 0; i < n; i++) {
+        if (!is_output_stream_designator(args[i]))
+            cl_error(CL_ERR_TYPE,
+                     "MAKE-BROADCAST-STREAM: argument %d is not an output stream",
+                     i + 1);
+        if (!CL_STREAM_P(args[i]))
+            cl_error(CL_ERR_TYPE,
+                     "MAKE-BROADCAST-STREAM: argument %d is a Gray stream, which is "
+                     "not supported as a broadcast-stream component",
+                     i + 1);
+    }
+    /* args[] is GC-rooted by cl_vm_apply; the list under construction is
+     * not — protect it across the consing loop and the constructor. */
+    CL_GC_PROTECT(list);
+    for (i = n - 1; i >= 0; i--)
+        list = cl_cons(args[i], list);
+    s = cl_make_broadcast_stream_list(list);
+    CL_GC_UNPROTECT(1);
+    return s;
+}
+
+/* (broadcast-stream-streams broadcast-stream) */
+static CL_Obj bi_broadcast_stream_streams(CL_Obj *args, int n)
+{
+    CL_Stream *st;
+    CL_UNUSED(n);
+    if (!CL_STREAM_P(args[0]) ||
+        ((CL_Stream *)CL_OBJ_TO_PTR(args[0]))->stream_type != CL_STREAM_BROADCAST)
+        cl_error(CL_ERR_TYPE, "BROADCAST-STREAM-STREAMS: argument is not a broadcast stream");
+    st = (CL_Stream *)CL_OBJ_TO_PTR(args[0]);
+    return st->string_buf;
+}
+
+/* (make-concatenated-stream &rest streams)
+ * Reads components left to right, popping each at EOF; with no components
+ * the stream is immediately at end of file (CLHS 21.1).
+ * The C read loop in stream.c only dispatches to native CL_Stream objects, so
+ * Gray-stream (CLOS) components must be rejected here rather than being
+ * silently skipped as if they were already at EOF. */
+static CL_Obj bi_make_concatenated_stream(CL_Obj *args, int n)
+{
+    CL_Obj list = CL_NIL;
+    CL_Obj s;
+    int i;
+    for (i = 0; i < n; i++) {
+        if (!is_input_stream_designator(args[i]))
+            cl_error(CL_ERR_TYPE,
+                     "MAKE-CONCATENATED-STREAM: argument %d is not an input stream",
+                     i + 1);
+        if (!CL_STREAM_P(args[i]))
+            cl_error(CL_ERR_TYPE,
+                     "MAKE-CONCATENATED-STREAM: argument %d is a Gray stream, which is "
+                     "not supported as a concatenated-stream component",
+                     i + 1);
+    }
+    CL_GC_PROTECT(list);
+    for (i = n - 1; i >= 0; i--)
+        list = cl_cons(args[i], list);
+    s = cl_make_concatenated_stream_list(list);
+    CL_GC_UNPROTECT(1);
+    return s;
+}
+
+/* (concatenated-stream-streams concatenated-stream)
+ * Returns the streams still to be read from, current one first (CLHS) —
+ * exactly the internal remaining-components list. */
+static CL_Obj bi_concatenated_stream_streams(CL_Obj *args, int n)
+{
+    CL_Stream *st;
+    CL_UNUSED(n);
+    if (!CL_STREAM_P(args[0]) ||
+        ((CL_Stream *)CL_OBJ_TO_PTR(args[0]))->stream_type != CL_STREAM_CONCATENATED)
+        cl_error(CL_ERR_TYPE, "CONCATENATED-STREAM-STREAMS: argument is not a concatenated stream");
+    st = (CL_Stream *)CL_OBJ_TO_PTR(args[0]);
+    return st->string_buf;
 }
 
 /* (get-output-stream-string stream) */
@@ -1688,6 +1814,17 @@ static CL_Obj bi_listen(CL_Obj *args, int n)
     stream = cl_stream_resolve_backing(stream, 0);
     if (!CL_STREAM_P(stream)) return CL_NIL;
     st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+    /* A concatenated stream listens on its current component.  Popping an
+     * exhausted head is the read path's job, so when the head is at EOF but
+     * a later component has data this stays conservatively NIL. */
+    while (st->stream_type == CL_STREAM_CONCATENATED) {
+        if (st->unread_char != -1) return CL_T;
+        if (st->flags & CL_STREAM_FLAG_EOF) return CL_NIL;
+        if (!CL_CONS_P(st->string_buf)) return CL_NIL;
+        stream = cl_stream_resolve_backing(cl_car(st->string_buf), 0);
+        if (!CL_STREAM_P(stream)) return CL_NIL;
+        st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+    }
     if (st->unread_char != -1) return CL_T;
     if (st->flags & CL_STREAM_FLAG_EOF) return CL_NIL;
     if (st->stream_type == CL_STREAM_STRING || st->stream_type == CL_STREAM_CBUF)
@@ -1918,6 +2055,10 @@ void cl_builtins_stream_init(void)
     defun("MAKE-TWO-WAY-STREAM", bi_make_two_way_stream, 2, 2);
     defun("TWO-WAY-STREAM-INPUT-STREAM", bi_two_way_stream_input_stream, 1, 1);
     defun("TWO-WAY-STREAM-OUTPUT-STREAM", bi_two_way_stream_output_stream, 1, 1);
+    defun("MAKE-BROADCAST-STREAM", bi_make_broadcast_stream, 0, -1);
+    defun("BROADCAST-STREAM-STREAMS", bi_broadcast_stream_streams, 1, 1);
+    defun("MAKE-CONCATENATED-STREAM", bi_make_concatenated_stream, 0, -1);
+    defun("CONCATENATED-STREAM-STREAMS", bi_concatenated_stream_streams, 1, 1);
 
     /* Step 8: File streams */
     defun("OPEN", bi_open, 1, -1);

@@ -249,9 +249,15 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
         if (!CL_STREAM_P(obj)) return 0;
         return ((CL_Stream *)CL_OBJ_TO_PTR(obj))->stream_type == CL_STREAM_TWO_WAY;
     }
-    if (strcmp(tname, "BROADCAST-STREAM") == 0 ||
-        strcmp(tname, "CONCATENATED-STREAM") == 0 ||
-        strcmp(tname, "ECHO-STREAM") == 0) return 0;
+    if (strcmp(tname, "BROADCAST-STREAM") == 0) {
+        if (!CL_STREAM_P(obj)) return 0;
+        return ((CL_Stream *)CL_OBJ_TO_PTR(obj))->stream_type == CL_STREAM_BROADCAST;
+    }
+    if (strcmp(tname, "CONCATENATED-STREAM") == 0) {
+        if (!CL_STREAM_P(obj)) return 0;
+        return ((CL_Stream *)CL_OBJ_TO_PTR(obj))->stream_type == CL_STREAM_CONCATENATED;
+    }
+    if (strcmp(tname, "ECHO-STREAM") == 0) return 0;
     if (strcmp(tname, "RANDOM-STATE") == 0) return CL_RANDOM_STATE_P(obj);
     if (strcmp(tname, "PATHNAME") == 0)     return CL_PATHNAME_P(obj);
     if (strcmp(tname, "LOGICAL-PATHNAME") == 0) return 0;

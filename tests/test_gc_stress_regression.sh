@@ -4141,6 +4141,51 @@ check_contains "EXT tty builtins stable under stress" "TTY-STRESS:T" "$out"
 check_absent   "no corruption in tty case" \
   "corrupted pointer\|not of type\|Guru\|SIGSEGV\|badmark" "$out"
 
+# --- Broadcast / concatenated streams under stress -------------------------
+# The constructors cons the component list across allocating calls, the
+# broadcast write path walks that list while recursive writes allocate
+# (string-output-stream growth), and the concatenated read path pops it
+# while recursive reads run — every one of those cursors must stay rooted
+# across compaction or the fan-out writes into / reads from a stale offset.
+cat > "$WORK/bcast.lisp" <<'EOF'
+(let ((ok t))
+  (dotimes (i 50)
+    (let* ((a (make-string-output-stream))
+           (b (make-string-output-stream))
+           (bc (make-broadcast-stream a b)))
+      (write-string (format nil "row~d" i) bc)
+      (fresh-line bc)
+      (let ((ea (get-output-stream-string a))
+            (eb (get-output-stream-string b))
+            (want (format nil "row~d~%" i)))
+        (unless (and (string= ea want) (string= eb want))
+          (setf ok nil))))
+    (let* ((cc (make-concatenated-stream
+                (make-string-input-stream (format nil "ab~d" i))
+                (make-string-input-stream "")
+                (make-string-input-stream (format nil "cd~d" i))))
+           (acc (make-string-output-stream)))
+      (loop for ch = (read-char cc nil nil) while ch
+            do (write-char ch acc))
+      (unless (string= (get-output-stream-string acc)
+                       (format nil "ab~dcd~d" i i))
+        (setf ok nil))
+      (unless (null (concatenated-stream-streams cc))
+        (setf ok nil))))
+  ;; LOAD from a stream: bi_load's stream branch holds the stream and
+  ;; per-form objects across compile/eval, which allocate freely.
+  (dotimes (i 10)
+    (with-input-from-string (s (format nil "(defparameter cl-user::*lfs-stress* ~d)" i))
+      (load s))
+    (unless (= (symbol-value 'cl-user::*lfs-stress*) i)
+      (setf ok nil)))
+  (format t "BCAST-STRESS:~a~%" ok))
+EOF
+out=$(run_stress "$WORK/bcast.lisp")
+check_contains "broadcast/concatenated streams stable under stress" "BCAST-STRESS:T" "$out"
+check_absent   "no corruption in broadcast/concatenated case" \
+  "corrupted pointer\|not of type\|Guru\|SIGSEGV\|badmark\|not a stream" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

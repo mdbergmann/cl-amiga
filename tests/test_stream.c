@@ -3182,6 +3182,292 @@ TEST(make_two_way_stream_rejects_non_stream)
     ASSERT(result == cl_intern_keyword("TYPE-ERROR", 10));
 }
 
+/* --- Broadcast stream tests (CLHS 21.2 MAKE-BROADCAST-STREAM) --- */
+
+TEST(broadcast_stream_fans_out_writes)
+{
+    CL_Obj result = cl_eval_string(
+        "(let* ((a (make-string-output-stream))"
+        "       (b (make-string-output-stream))"
+        "       (bc (make-broadcast-stream a b)))"
+        "  (write-string \"hel\" bc)"
+        "  (write-char #\\l bc)"
+        "  (princ \"o!\" bc)"
+        "  (list (get-output-stream-string a) (get-output-stream-string b)))");
+    char buf[64];
+    cl_prin1_to_string(result, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(\"hello!\" \"hello!\")");
+}
+
+TEST(broadcast_stream_no_components_discards)
+{
+    /* CLHS: with no components, all output is discarded. */
+    CL_Obj result = cl_eval_string(
+        "(let ((bc (make-broadcast-stream)))"
+        "  (write-string \"dropped\" bc)"
+        "  (terpri bc)"
+        "  (finish-output bc)"
+        "  (list (streamp bc) (output-stream-p bc) (input-stream-p bc)"
+        "        (broadcast-stream-streams bc)))");
+    char buf[64];
+    cl_prin1_to_string(result, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(T T NIL NIL)");
+}
+
+TEST(broadcast_stream_streams_accessor)
+{
+    CL_Obj result = cl_eval_string(
+        "(let* ((a (make-string-output-stream))"
+        "       (b (make-string-output-stream))"
+        "       (bc (make-broadcast-stream a b))"
+        "       (comps (broadcast-stream-streams bc)))"
+        "  (list (length comps) (eq (first comps) a) (eq (second comps) b)))");
+    char buf[64];
+    cl_prin1_to_string(result, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(2 T T)");
+}
+
+TEST(broadcast_stream_nested_and_two_way_component)
+{
+    /* Components may themselves be composite output streams. */
+    CL_Obj result = cl_eval_string(
+        "(let* ((a (make-string-output-stream))"
+        "       (b (make-string-output-stream))"
+        "       (tw (make-two-way-stream (make-string-input-stream \"\") b))"
+        "       (bc (make-broadcast-stream (make-broadcast-stream a) tw)))"
+        "  (write-string \"xy\" bc)"
+        "  (list (get-output-stream-string a) (get-output-stream-string b)))");
+    char buf[64];
+    cl_prin1_to_string(result, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(\"xy\" \"xy\")");
+}
+
+TEST(broadcast_stream_fresh_line_uses_component_column)
+{
+    /* FRESH-LINE must consult the components' column, not the wrapper's:
+     * writes go through the wrapper without updating its charpos. */
+    CL_Obj result = cl_eval_string(
+        "(let* ((a (make-string-output-stream))"
+        "       (bc (make-broadcast-stream a)))"
+        "  (write-string \"x\" bc)"
+        "  (list (fresh-line bc) (fresh-line bc)"
+        "        (get-output-stream-string a)"
+        "        (fresh-line (make-broadcast-stream))))");
+    char buf[64];
+    cl_prin1_to_string(result, buf, sizeof(buf));
+    /* clamiga's prin1 escapes a newline inside a string as \n */
+    ASSERT_STR_EQ(buf, "(T NIL \"x\\n\" NIL)");
+}
+
+TEST(broadcast_stream_typep_and_printer)
+{
+    CL_Obj result = cl_eval_string(
+        "(let ((bc (make-broadcast-stream)))"
+        "  (list (typep bc 'broadcast-stream)"
+        "        (typep bc 'stream)"
+        "        (typep bc 'concatenated-stream)"
+        "        (subseq (with-output-to-string (s) (prin1 bc s)) 0 18)))");
+    char buf[80];
+    cl_prin1_to_string(result, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(T T NIL \"#<BROADCAST-STREAM\")");
+}
+
+TEST(make_broadcast_stream_rejects_non_output_stream)
+{
+    CL_Obj result;
+    result = cl_eval_string(
+        "(handler-case (make-broadcast-stream 42)"
+        "  (error (c) (declare (ignore c)) :type-error))");
+    ASSERT(result == cl_intern_keyword("TYPE-ERROR", 10));
+
+    result = cl_eval_string(
+        "(handler-case (make-broadcast-stream (make-string-input-stream \"\"))"
+        "  (error (c) (declare (ignore c)) :type-error))");
+    ASSERT(result == cl_intern_keyword("TYPE-ERROR", 10));
+
+    result = cl_eval_string(
+        "(handler-case (broadcast-stream-streams (make-string-output-stream))"
+        "  (error (c) (declare (ignore c)) :type-error))");
+    ASSERT(result == cl_intern_keyword("TYPE-ERROR", 10));
+}
+
+/* --- Concatenated stream tests (CLHS 21.2 MAKE-CONCATENATED-STREAM) --- */
+
+TEST(concatenated_stream_reads_in_order)
+{
+    /* Includes an empty middle component: pop-on-EOF must skip it. */
+    CL_Obj result = cl_eval_string(
+        "(let ((cc (make-concatenated-stream"
+        "           (make-string-input-stream \"abc\")"
+        "           (make-string-input-stream \"\")"
+        "           (make-string-input-stream \"def\")))"
+        "      (acc (make-string-output-stream)))"
+        "  (loop for ch = (read-char cc nil nil) while ch"
+        "        do (write-char ch acc))"
+        "  (list (get-output-stream-string acc) (read-char cc nil :eof)))");
+    char buf[64];
+    cl_prin1_to_string(result, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(\"abcdef\" :EOF)");
+}
+
+TEST(concatenated_stream_no_components_is_eof)
+{
+    /* CLHS: with no components, the stream is immediately at end of file. */
+    CL_Obj result = cl_eval_string(
+        "(let ((cc (make-concatenated-stream)))"
+        "  (list (read-char cc nil :eof)"
+        "        (input-stream-p cc) (output-stream-p cc)"
+        "        (concatenated-stream-streams cc)))");
+    char buf[64];
+    cl_prin1_to_string(result, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(:EOF T NIL NIL)");
+}
+
+TEST(concatenated_stream_streams_drains)
+{
+    /* The accessor returns the streams still to be read, current first. */
+    CL_Obj result = cl_eval_string(
+        "(let* ((s1 (make-string-input-stream \"a\"))"
+        "       (s2 (make-string-input-stream \"b\"))"
+        "       (cc (make-concatenated-stream s1 s2)))"
+        "  (list (length (concatenated-stream-streams cc))"
+        "        (progn (read-char cc) (read-char cc)"
+        "               (eq (first (concatenated-stream-streams cc)) s2))"
+        "        (progn (read-char cc nil nil)"
+        "               (concatenated-stream-streams cc))))");
+    char buf[64];
+    cl_prin1_to_string(result, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(2 T NIL)");
+}
+
+TEST(concatenated_stream_read_line_spans_components)
+{
+    /* READ-LINE must keep reading across a component boundary. */
+    CL_Obj result = cl_eval_string(
+        "(let ((cc (make-concatenated-stream"
+        "           (make-string-input-stream \"foo\")"
+        "           (make-string-input-stream (format nil \"bar~%next\")))))"
+        "  (list (read-line cc) (read-line cc nil :eof)))");
+    char buf[64];
+    cl_prin1_to_string(result, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(\"foobar\" \"next\")");
+}
+
+TEST(concatenated_stream_unread_and_peek)
+{
+    CL_Obj result = cl_eval_string(
+        "(let ((cc (make-concatenated-stream (make-string-input-stream \"ab\"))))"
+        "  (let ((c1 (read-char cc)))"
+        "    (unread-char c1 cc)"
+        "    (list (peek-char nil cc) (read-char cc) (read-char cc))))");
+    char buf[64];
+    cl_prin1_to_string(result, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(#\\a #\\a #\\b)");
+}
+
+TEST(concatenated_stream_listen)
+{
+    CL_Obj result = cl_eval_string(
+        "(list (listen (make-concatenated-stream (make-string-input-stream \"z\")))"
+        "      (listen (make-concatenated-stream)))");
+    char buf[32];
+    cl_prin1_to_string(result, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(T NIL)");
+}
+
+TEST(concatenated_stream_read_from_it)
+{
+    /* READ (the reader) through a concatenated stream, form split across
+     * components. */
+    CL_Obj result = cl_eval_string(
+        "(read (make-concatenated-stream"
+        "       (make-string-input-stream \"(1 2\")"
+        "       (make-string-input-stream \" 3)\")))");
+    char buf[32];
+    cl_prin1_to_string(result, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(1 2 3)");
+}
+
+TEST(concatenated_stream_typep_and_printer)
+{
+    CL_Obj result = cl_eval_string(
+        "(let ((cc (make-concatenated-stream)))"
+        "  (list (typep cc 'concatenated-stream)"
+        "        (typep cc 'stream)"
+        "        (typep cc 'broadcast-stream)"
+        "        (subseq (with-output-to-string (s) (prin1 cc s)) 0 21)))");
+    char buf[80];
+    cl_prin1_to_string(result, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(T T NIL \"#<CONCATENATED-STREAM\")");
+}
+
+TEST(make_concatenated_stream_rejects_non_input_stream)
+{
+    CL_Obj result;
+    result = cl_eval_string(
+        "(handler-case (make-concatenated-stream 42)"
+        "  (error (c) (declare (ignore c)) :type-error))");
+    ASSERT(result == cl_intern_keyword("TYPE-ERROR", 10));
+
+    result = cl_eval_string(
+        "(handler-case (make-concatenated-stream (make-string-output-stream))"
+        "  (error (c) (declare (ignore c)) :type-error))");
+    ASSERT(result == cl_intern_keyword("TYPE-ERROR", 10));
+
+    result = cl_eval_string(
+        "(handler-case (concatenated-stream-streams (make-string-input-stream \"\"))"
+        "  (error (c) (declare (ignore c)) :type-error))");
+    ASSERT(result == cl_intern_keyword("TYPE-ERROR", 10));
+}
+
+TEST(load_from_stream)
+{
+    /* CLHS: LOAD's filespec may be a stream — the ICL/SLYNK injection path
+     * is (with-input-from-string (s "...") (load s)). */
+    CL_Obj result = cl_eval_string(
+        "(progn"
+        "  (with-input-from-string (s \"(defvar cl-user::*lfs-var* 41)"
+        " (defun cl-user::lfs-fn () (1+ cl-user::*lfs-var*))\")"
+        "    (load s))"
+        "  (cl-user::lfs-fn))");
+    ASSERT(result == CL_MAKE_FIXNUM(42));
+
+    /* LOAD binds *package*: an in-package inside the stream must not leak. */
+    result = cl_eval_string(
+        "(let ((before (package-name *package*)))"
+        "  (with-input-from-string (s \"(in-package :keyword)\") (load s))"
+        "  (string= before (package-name *package*)))");
+    ASSERT(result == CL_T);
+
+    /* *load-pathname* / *load-truename* are NIL for a stream filespec,
+     * and LOAD returns true (empty stream included). */
+    result = cl_eval_string(
+        "(list (with-input-from-string (s \"(defvar cl-user::*lfs-lp* *load-pathname*)\")"
+        "        (load s))"
+        "      cl-user::*lfs-lp*"
+        "      (with-input-from-string (s \"\") (load s)))");
+    {
+        char buf[32];
+        cl_prin1_to_string(result, buf, sizeof(buf));
+        ASSERT_STR_EQ(buf, "(T NIL T)");
+    }
+}
+
+TEST(broadcast_concatenated_icl_slynk_muffle_pattern)
+{
+    /* The exact composite ICL's slynk init builds to muffle load output:
+     * *debug-io* = two-way over an empty concatenated (instant EOF input)
+     * and a broadcast null sink.  Reads see EOF, writes are discarded. */
+    CL_Obj result = cl_eval_string(
+        "(let* ((null-stream (make-broadcast-stream))"
+        "       (dbg (make-two-way-stream (make-concatenated-stream) null-stream)))"
+        "  (write-line \"muffled\" dbg)"
+        "  (list (read-char dbg nil :eof) (read-line dbg nil :eof)))");
+    char buf[32];
+    cl_prin1_to_string(result, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(:EOF :EOF)");
+}
+
 /* ===== Socket read/write timeout tests ===== */
 
 /* A read on a socket with a timeout set, when the peer sends nothing, returns
@@ -3572,6 +3858,26 @@ int main(void)
     RUN(two_way_stream_typep);
     RUN(two_way_stream_printer);
     RUN(two_way_stream_accessor_type_error);
+
+    /* Broadcast / concatenated streams (CLHS 21.2) */
+    RUN(broadcast_stream_fans_out_writes);
+    RUN(broadcast_stream_no_components_discards);
+    RUN(broadcast_stream_streams_accessor);
+    RUN(broadcast_stream_nested_and_two_way_component);
+    RUN(broadcast_stream_fresh_line_uses_component_column);
+    RUN(broadcast_stream_typep_and_printer);
+    RUN(make_broadcast_stream_rejects_non_output_stream);
+    RUN(concatenated_stream_reads_in_order);
+    RUN(concatenated_stream_no_components_is_eof);
+    RUN(concatenated_stream_streams_drains);
+    RUN(concatenated_stream_read_line_spans_components);
+    RUN(concatenated_stream_unread_and_peek);
+    RUN(concatenated_stream_listen);
+    RUN(concatenated_stream_read_from_it);
+    RUN(concatenated_stream_typep_and_printer);
+    RUN(make_concatenated_stream_rejects_non_input_stream);
+    RUN(load_from_stream);
+    RUN(broadcast_concatenated_icl_slynk_muffle_pattern);
     RUN(make_two_way_stream_rejects_non_stream);
 
     /* Reader + stream integration (Step 6) */

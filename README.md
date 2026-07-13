@@ -153,7 +153,7 @@ Quicklisp runs on CL-Amiga, but the stock client doesn't recognise this implemen
 
 **What we patch** (the local changes shipped with the project):
 
-- `lib/quicklisp-compat.lisp` — routes Quicklisp's networking through `ext:open-tcp-stream` and plain CL stream ops (working around generic-function dispatch limits in the stock `ql-network` interface), supplies a minimal `make-broadcast-stream` for its HTTP layer, adapts `directory-entries` to CL-Amiga's `directory`, and maps the bordeaux-threads v2 surface onto the `MP` package.
+- `lib/quicklisp-compat.lisp` — routes Quicklisp's networking through `ext:open-tcp-stream` and plain CL stream ops (working around generic-function dispatch limits in the stock `ql-network` interface), adapts `directory-entries` to CL-Amiga's `directory`, and maps the bordeaux-threads v2 surface onto the `MP` package.
 - **CL-Amiga library forks** (cloned into `~/quicklisp/local-projects`) — maintained forks that carry first-class CL-Amiga support behind `#+cl-amiga` / `#+clamiga` branches, so a stock `quickload` resolves them like any other implementation backend rather than needing a replacement package. See the [Library forks (CL-Amiga backends)](#library-forks-cl-amiga-backends) table below for the full list.
 - `contrib/shims/swank` (installed by `make install-shims`) — a tiny stub package: several libraries such as clack name the `swank` system only to reach a couple of symbols for an optional remote-debug server they never start. It stays a shim (there is no upstream to fork) and resolves via Quicklisp's local-projects searcher.
 - `lib/asdf.lisp` — `#+cl-amiga` adaptations: real binary FASL compile/load for cross-session persistence, AmigaOS path/device handling, and `*asdf-session*` NULL-safety.
@@ -388,6 +388,25 @@ tail -f /dev/null | ./build/host/clamiga --heap 96M \
     --eval '(funcall (read-from-string "slynk-loader:init"))' \
     --eval '(funcall (read-from-string "slynk:create-server") :port 4005 :dont-close t)'
 ```
+
+## ICL integration
+
+[ICL](https://github.com/atgreen/icl) (Interactive Common Lisp) is a terminal/browser REPL frontend that drives an inferior Lisp over the SLYNK protocol — the same protocol CL-Amiga already speaks for SLY, so clamiga works as an ICL backend. Register it in `~/.iclrc`:
+
+```lisp
+;; Let clamiga's (require ...) find its bundled lib/ from any directory.
+(setf (uiop:getenv "CLAMIGA_HOME") "/path/to/cl-amiga")
+
+;; ICL must load a SLYNK whose slynk/backend/ includes clamiga.lisp —
+;; point it at your SLY checkout (trailing slash required).
+(setf (uiop:getenv "ICL_SLYNK_PATH") "/path/to/sly/slynk/")
+
+(icl:configure-lisp :clamiga
+  :program "/path/to/cl-amiga/build/host/clamiga"
+  :args '("--heap" "96M"))
+```
+
+Then run `icl --lisp clamiga`. ICL spawns clamiga, loads SLYNK via ASDF, and connects; evaluation, completion, `,doc`, the inspector, and the browser UI all run against the clamiga image.
 
 ## Package Reference
 
@@ -665,7 +684,7 @@ Point-in-time benchmark results (sento actor throughput on host, Amiga JIT call 
 
 - **Alpha status** — the core language works well enough to run real CL libraries, but corners of the ANSI CL spec remain unimplemented (logical pathnames, some `defstruct` options, full CLOS MOP)
 - **Amiga GUI bindings are incomplete** — the Intuition/Graphics/GadTools abstractions cover common use cases (windows, drawing, gadgets, menus) but not the full API surface; more libraries (ASL requesters, Layers, Commodities) are not yet wrapped
-- **Composite streams** — `make-two-way-stream` is implemented (with `two-way-stream-input-stream` / `two-way-stream-output-stream`); `make-broadcast-stream` and `make-concatenated-stream` are not yet implemented (`make-broadcast-stream` has a minimal workaround in `lib/quicklisp-compat.lisp`)
+- **Composite streams** — `make-two-way-stream`, `make-broadcast-stream`, and `make-concatenated-stream` are implemented with their `-streams` accessors (see the composite-stream tests in `tests/test_stream.c` / `tests/amiga/run-tests.lisp` for usage); `make-echo-stream` is not yet implemented
 - **Stream external formats** — character streams default to UTF-8; `(open … :external-format :latin-1)` (also `:iso-8859-1`) selects an 8-bit-transparent stream where each code point 0–255 maps to a single raw byte with no transcoding, for byte-faithful I/O over a character stream (e.g. an `rfc2388` multipart upload written to a temp file). `stream-external-format` reports `:latin-1` / `:default`. Other named encodings are not yet selectable. See `tests/test_stream.c` (`open_latin1_*`) and `tests/amiga/run-tests.lisp` for usage.
 - **Threading** — `MP` package covers the core bordeaux-threads surface (threads with `interrupt`/`destroy`, mutex + recursive locks, named condition variables with timeout, `with-lock-held` / `with-recursive-lock-held`, type predicates). `(ql:quickload :bordeaux-threads)` and Quicklisp itself currently rely on local patches we ship — `lib/quicklisp-compat.lisp` (maps the BT v2 surface onto `MP`, adapts Quicklisp's network/HTTP layer) plus the CL-Amiga library forks and the `swank` stub in `~/quicklisp/local-projects` (the stub symlinked by `make install-shims`, the forks cloned in — see [Quicklisp](#quicklisp)); the plan is to upstream these once the remaining API gaps close. Not yet covered: semaphores, atomic integers, `with-timeout`, `:timeout` on `acquire-lock`
 - **ANSI CL gaps** — while major subsystems work (CLOS, conditions, packages, the full numeric tower, arrays, pathnames, streams, loop, format), some corners of the spec remain unimplemented

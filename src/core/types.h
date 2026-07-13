@@ -591,6 +591,8 @@ typedef struct {
 #define CL_STREAM_SYNONYM  4  /* Synonym stream: delegates to symbol's value */
 #define CL_STREAM_SOCKET   5  /* TCP socket stream (bidirectional, binary) */
 #define CL_STREAM_TWO_WAY  6  /* Two-way: input=string_buf child, output=element_type child */
+#define CL_STREAM_BROADCAST     7  /* Broadcast: string_buf = list of output streams; writes fan out */
+#define CL_STREAM_CONCATENATED  8  /* Concatenated: string_buf = list of remaining input streams */
 
 /* Stream flags */
 #define CL_STREAM_FLAG_OPEN  0x01
