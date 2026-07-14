@@ -299,6 +299,13 @@ test-fast: $(TEST_BINS) host
 		echo "FAIL"; \
 		failed=1; \
 	fi; \
+	echo "--- test_lock_diag ---"; \
+	if sh $(TEST_SRCDIR)/test_lock_diag.sh $(BUILDDIR)/clamiga; then \
+		echo "PASS"; \
+	else \
+		echo "FAIL"; \
+		failed=1; \
+	fi; \
 	echo "--- test_mt_lock_contention_throughput ---"; \
 	if sh $(TEST_SRCDIR)/test_mt_lock_contention_throughput.sh $(BUILDDIR)/clamiga; then \
 		echo "PASS"; \

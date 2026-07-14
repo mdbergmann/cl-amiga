@@ -4186,6 +4186,138 @@ check_contains "broadcast/concatenated streams stable under stress" "BCAST-STRES
 check_absent   "no corruption in broadcast/concatenated case" \
   "corrupted pointer\|not of type\|Guru\|SIGSEGV\|badmark\|not a stream" "$out"
 
+# --- Case: EXT UDP datagram stream send/receive under GC stress -------------
+# Bug-shaped path (src/core/builtins_io.c, bi_udp_stream_receive): the
+# blocking receive captures handle_id/read_timeout_ms as scalars BEFORE
+# platform_udp_recv parks in a GC safe region across the (potentially
+# compacting) blocking call, then re-derives the CL_Vector* from args[1]
+# (GC-rooted) afterward rather than reusing a pointer captured before the
+# safe region.  A stale re-derive would corrupt the datagram bytes written
+# into the buffer or crash.  EXT:OPEN-UDP-STREAM only exposes connect()'d
+# sockets (no bind-to-fixed-port / sendto-to-arbitrary-peer), so a real
+# round trip needs an unconnected recvfrom/sendto echo peer on the other
+# end — a python helper stands in for that peer, since no pure-Lisp UDP
+# server is exposed by this runtime (see tests/test_stream.c's C-forked
+# start_udp_peer for the equivalent non-stress unit test).
+PYTHON=$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)
+if [ -z "$PYTHON" ]; then
+    echo "  SKIP  UDP stream GC stress: no python3/python on PATH for echo peer"
+else
+    cat > "$WORK/udp_echo_peer.py" <<'PYEOF'
+import socket, sys
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+sys.stdout.flush()
+s.settimeout(85)
+try:
+    data, addr = s.recvfrom(4096)
+    s.sendto(bytes(reversed(data)), addr)
+except Exception:
+    pass
+PYEOF
+    "$PYTHON" "$WORK/udp_echo_peer.py" \
+        > "$WORK/udp_echo_peer.out" 2>"$WORK/udp_echo_peer.err" &
+    udp_peer_pid=$!
+    i=0
+    while [ ! -s "$WORK/udp_echo_peer.out" ] && [ $i -lt 30 ]; do
+        sleep 0.1
+        i=$((i + 1))
+    done
+    UDP_PORT=$(cat "$WORK/udp_echo_peer.out" 2>/dev/null)
+    if [ -z "$UDP_PORT" ]; then
+        echo "  SKIP  UDP stream GC stress: echo peer failed to report a port"
+        kill "$udp_peer_pid" 2>/dev/null
+    else
+        cat > "$WORK/udp.lisp" <<EOF
+(let ((s (ext:open-udp-stream "127.0.0.1" $UDP_PORT))
+      (buf (make-array 16 :element-type '(unsigned-byte 8) :initial-element 0)))
+  (ext:udp-stream-send s (coerce #(1 2 3 4 5) '(vector (unsigned-byte 8))) 5)
+  (let ((len (ext:udp-stream-receive s buf)))
+    (close s)
+    (format t "UDP:~a:~a~%" len (coerce (subseq buf 0 len) 'list))))
+EOF
+        out=$(run_stress "$WORK/udp.lisp")
+        wait "$udp_peer_pid" 2>/dev/null
+        check_contains "udp-stream-send/receive round trip correct under GC stress" \
+            "UDP:5:(5 4 3 2 1)" "$out"
+        check_absent   "no corruption in udp-stream-receive vector re-derive after safe-region recv" \
+            "Unbound variable\|Undefined\|type 0\|corrupted\|not of type" "$out"
+    fi
+fi
+
+# --- Case: slow-lock-wait diagnostic (CLAMIGA_LOCK_DIAG) under GC stress ----
+# Bug-shaped path (src/core/builtins_thread.c, lock_wait_report): the waiter
+# parks inside a GC safe region while the HOLDER allocates — under stress
+# every one of those allocations compacts the heap and relocates the lock
+# object and the name strings.  The report must therefore run OUTSIDE the
+# safe region and re-derive the CL_Lock* from GC-rooted args[0]; a stale
+# pre-park pointer would print garbage or crash.  Assert the diagnostic
+# still names the (relocated) lock and holder correctly, and that the
+# contended acquire itself survives.
+cat > "$WORK/lockdiag.lisp" <<'EOF'
+(defvar *held* nil)
+(let* ((lk (mp:make-lock "stress-lock"))
+       (th (mp:make-thread
+            (lambda ()
+              (mp:acquire-lock lk)
+              (setf *held* t)
+              ;; Churn allocations while holding the lock: under
+              ;; CLAMIGA_GC_STRESS=1 each one forces a compaction while
+              ;; the main thread is parked in its acquire wait.
+              (dotimes (i 200) (make-list 20))
+              (sleep 0.3)
+              (mp:release-lock lk))
+            :name "stress-holder")))
+  (loop until *held* do (sleep 0.01))
+  (mp:acquire-lock lk)
+  (mp:release-lock lk)
+  (mp:join-thread th)
+  (format t "LOCKDIAG-STRESS-OK~%"))
+EOF
+out=$(CLAMIGA_GC_STRESS=1 CLAMIGA_LOCK_DIAG=50 "$TIMEOUT" 90 "$CLAMIGA" \
+      --no-userinit --heap 48M --non-interactive \
+      --load "$WORK/lockdiag.lisp" </dev/null 2>&1)
+check_contains "contended acquire completes under stress with diag enabled" \
+  "LOCKDIAG-STRESS-OK" "$out"
+check_contains "diag names relocated lock and holder after compactions" \
+  'for lock [0-9]* "stress-lock" held by tid=[0-9]* "stress-holder"' "$out"
+check_absent   "no corruption in lock_wait_report heap re-derive" \
+  "corrupted\|not of type\|Guru\|SIGSEGV\|badmark\|Unbound" "$out"
+
+# --- Case: condition/deftype hash index under forced compaction ------------
+# Bug-shaped path (compiler.c CL_AlistIndex, builtins_condition.c cond_index,
+# compiler.c type_index): TYPEP resolves symbol type specs through hash
+# indexes keyed by symbol arena-offsets.  Under stress EVERY allocation
+# compacts and relocates the key symbols, so every lookup exercises the
+# invalidate -> rebuild-under-wrlock path; a missed invalidation or a stale
+# cached entry would make TYPEP/HANDLER-CASE silently mismatch (wrong
+# answer, no crash) — assert exact answers, including the redefinition
+# head-most-wins semantics the index must preserve from the linear walk.
+cat > "$WORK/typeidx.lisp" <<'EOF'
+(define-condition ix-base (error) ())
+(define-condition ix-sub (ix-base) ())
+(deftype ix-alias () 'integer)
+(let ((ok t))
+  (dotimes (i 50)
+    (unless (and (typep (make-condition 'ix-sub) 'ix-base)
+                 (not (typep (make-condition 'ix-base) 'ix-sub))
+                 (typep 5 'ix-alias)
+                 (not (typep "s" 'ix-alias))
+                 (eq :caught (handler-case (error 'ix-sub)
+                               (ix-base () :caught))))
+      (setf ok nil)))
+  (deftype ix-alias () 'string)
+  (unless (and (typep "s" 'ix-alias) (not (typep 5 'ix-alias)))
+    (setf ok nil))
+  (format t "TYPE-INDEX-STRESS:~a~%" (if ok "OK" "MISMATCH")))
+EOF
+out=$(run_stress "$WORK/typeidx.lisp")
+check_contains "condition/deftype index answers stay exact under compaction storm" \
+  "TYPE-INDEX-STRESS:OK" "$out"
+check_absent   "no corruption in index rebuild path" \
+  "corrupted\|not of type\|Guru\|SIGSEGV\|badmark\|Unbound" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

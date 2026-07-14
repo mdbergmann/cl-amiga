@@ -3231,10 +3231,15 @@ static void gc_update_shared_roots(void)
 
     /* Struct registry hash index — its keys (name symbols) and cached
      * entry values just moved; mark it stale so it rebuilds lazily
-     * before the next lookup (builtins_struct.c). */
+     * before the next lookup (builtins_struct.c).  Ditto the condition
+     * hierarchy and deftype table indexes (CL_AlistIndex, compiler.h). */
     {
         extern void cl_struct_index_gc_invalidate(void);
+        extern void cl_condition_index_gc_invalidate(void);
+        extern void cl_type_index_gc_invalidate(void);
         cl_struct_index_gc_invalidate();
+        cl_condition_index_gc_invalidate();
+        cl_type_index_gc_invalidate();
     }
 }
 

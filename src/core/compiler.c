@@ -75,6 +75,157 @@ void cl_table_prepend_locked(CL_Obj *table_p, CL_Obj value)
     cl_tables_rwunlock();
 }
 
+/* --- Generic symbol->entry alist hash index (see compiler.h) --- */
+
+static uint32_t alist_index_hash(CL_Obj obj)
+{
+    /* Heap offsets are CL_ALIGN-aligned, so shift the always-zero low
+     * bits out before Knuth's golden-ratio multiplier (same hash as the
+     * struct registry index / the FASL writer's MLF index). */
+#if CL_ALIGN == 8
+    return ((uint32_t)obj >> 3) * 2654435769u;
+#else
+    return ((uint32_t)obj >> 2) * 2654435769u;
+#endif
+}
+
+/* (Re)build IX from its current alist.  Caller holds the tables wrlock.
+ * Returns 1 when the index is usable; 0 disables it.  Raw cons access
+ * throughout — cl_car can cl_error→longjmp out from under the held
+ * wrlock (leaked-reader lesson, see the fallback in _find). */
+static int alist_index_rebuild(CL_AlistIndex *ix)
+{
+    uint32_t count = 0, cap, mask;
+    CL_AlistIndexSlot *slots;
+    CL_Obj list;
+
+    for (list = *ix->table_p; !CL_NULL_P(list); ) {
+        CL_Cons *c;
+        if (!CL_CONS_P(list)) goto disable;
+        c = (CL_Cons *)CL_OBJ_TO_PTR(list);
+        if (!CL_CONS_P(c->car)) goto disable;
+        if (!CL_SYMBOL_P(((CL_Cons *)CL_OBJ_TO_PTR(c->car))->car)) goto disable;
+        count++;
+        list = c->cdr;
+    }
+
+    cap = 64;
+    while (cap < count * 2 + 1) cap <<= 1;
+    slots = (CL_AlistIndexSlot *)platform_alloc(cap * sizeof(CL_AlistIndexSlot));
+    if (!slots) goto disable;
+    memset(slots, 0, cap * sizeof(CL_AlistIndexSlot));   /* CL_NIL == 0 */
+    mask = cap - 1;
+
+    /* Head-first insert, first key wins — matches the linear walk's
+     * first-match semantics when a key has been re-registered. */
+    for (list = *ix->table_p; !CL_NULL_P(list); ) {
+        CL_Cons *c = (CL_Cons *)CL_OBJ_TO_PTR(list);
+        CL_Obj entry = c->car;
+        CL_Obj name = ((CL_Cons *)CL_OBJ_TO_PTR(entry))->car;
+        uint32_t slot = alist_index_hash(name) & mask;
+        while (!CL_NULL_P(slots[slot].name) && slots[slot].name != name)
+            slot = (slot + 1) & mask;
+        if (CL_NULL_P(slots[slot].name)) {
+            slots[slot].name = name;
+            slots[slot].entry = entry;
+        }
+        list = c->cdr;
+    }
+
+    if (ix->slots) platform_free(ix->slots);
+    ix->slots = slots;
+    ix->cap = cap;
+    ix->dirty = 0;
+    return 1;
+
+disable:
+    if (ix->slots) platform_free(ix->slots);
+    ix->slots = NULL;
+    ix->cap = 0;
+    ix->disabled = 1;
+    return 0;
+}
+
+/* Probe a CLEAN index for KEY.  Caller holds the tables lock.
+ * Pure memory reads — cannot error, cannot allocate. */
+static CL_Obj alist_index_probe(CL_AlistIndex *ix, CL_Obj key)
+{
+    uint32_t mask = ix->cap - 1;
+    uint32_t slot = alist_index_hash(key) & mask;
+    while (!CL_NULL_P(ix->slots[slot].name)) {
+        if (ix->slots[slot].name == key)
+            return ix->slots[slot].entry;
+        slot = (slot + 1) & mask;
+    }
+    return CL_NIL;
+}
+
+CL_Obj cl_alist_index_find(CL_AlistIndex *ix, CL_Obj key)
+{
+    CL_Obj list, result;
+
+    cl_tables_rdlock();
+    if (ix->slots && !ix->dirty && !ix->disabled) {
+        result = alist_index_probe(ix, key);
+        cl_tables_rwunlock();
+        return result;
+    }
+    cl_tables_rwunlock();
+
+    if (!ix->disabled) {
+        cl_tables_wrlock();
+        if (!ix->disabled &&
+            (ix->slots && !ix->dirty ? 1 : alist_index_rebuild(ix))) {
+            result = alist_index_probe(ix, key);
+            cl_tables_rwunlock();
+            return result;
+        }
+        cl_tables_rwunlock();
+    }
+
+    /* Fallback (index disabled): snapshot-and-release linear walk — the
+     * alist is only ever PREPENDED to, so once we capture the head under
+     * the rdlock we can release the lock and walk the snapshot. */
+    cl_tables_rdlock();
+    list = *ix->table_p;
+    cl_tables_rwunlock();
+    while (!CL_NULL_P(list)) {
+        CL_Obj entry = cl_car(list);
+        if (cl_car(entry) == key)
+            return entry;
+        list = cl_cdr(list);
+    }
+    return CL_NIL;
+}
+
+void cl_alist_index_prepend(CL_AlistIndex *ix, CL_Obj value)
+{
+    /* Cons OUTSIDE the write lock (arena allocation under the wrlock is
+     * an STW-vs-rwlock deadlock — see cl_table_prepend_locked, whose
+     * shape this mirrors); prepend + dirty-mark are ONE critical section
+     * so a probe of a clean index is always consistent with the alist. */
+    CL_Obj cell = cl_cons(value, CL_NIL);
+    cl_tables_wrlock();
+    ((CL_Cons *)CL_OBJ_TO_PTR(cell))->cdr = *ix->table_p;
+    *ix->table_p = cell;
+    ix->dirty = 1;
+    cl_tables_rwunlock();
+}
+
+void cl_alist_index_invalidate(CL_AlistIndex *ix)
+{
+    ix->dirty = 1;
+}
+
+void cl_alist_index_reset(CL_AlistIndex *ix)
+{
+    if (ix->slots) platform_free(ix->slots);
+    ix->slots = NULL;
+    ix->cap = 0;
+    ix->dirty = 0;
+    ix->disabled = 0;
+}
+
 void cl_tables_dump_rdlock_holders(const char *header)
 {
     int i;
@@ -5173,24 +5324,27 @@ int cl_compiler_notinline_p(CL_Compiler *c, CL_Obj func)
 
 /* --- Type table (for deftype) --- */
 
+/* Hash-indexed: TYPEP consults cl_get_type_expander for every symbol
+ * type spec that isn't a struct/condition type, so a linear walk made
+ * TYPEP O(deftypes) (see CL_AlistIndex in compiler.h). */
+static CL_AlistIndex type_index = { &type_table, NULL, 0, 0, 0 };
+
+/* Compaction moved the index's key symbols and entry conses — mark it
+ * stale (called from the compaction update phase, world stopped). */
+void cl_type_index_gc_invalidate(void)
+{
+    cl_alist_index_invalidate(&type_index);
+}
+
 void cl_register_type(CL_Obj name, CL_Obj expander)
 {
-    cl_table_prepend_locked(&type_table, cl_cons(name, expander));
+    cl_alist_index_prepend(&type_index, cl_cons(name, expander));
 }
 
 CL_Obj cl_get_type_expander(CL_Obj name)
 {
-    CL_Obj list;
-    cl_tables_rdlock();
-    list = type_table;
-    cl_tables_rwunlock();
-    while (!CL_NULL_P(list)) {
-        CL_Obj pair = cl_car(list);
-        if (cl_car(pair) == name)
-            return cl_cdr(pair);
-        list = cl_cdr(list);
-    }
-    return CL_NIL;
+    CL_Obj pair = cl_alist_index_find(&type_index, name);
+    return CL_NULL_P(pair) ? CL_NIL : cl_cdr(pair);
 }
 
 /* --- Setf function table --- */
@@ -5758,6 +5912,7 @@ void cl_compiler_init(void)
     macro_table = CL_NIL;
     setf_table = CL_NIL;
     type_table = CL_NIL;
+    cl_alist_index_reset(&type_index);
     compiler_macro_table = CL_NIL;
     /* These two were missing from the reset: after a shutdown/re-init
      * cycle (test harnesses) they still hold PREVIOUS-arena offsets, and

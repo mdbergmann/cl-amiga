@@ -9,6 +9,8 @@
 #   verify/linux-arm64/run.sh                 # load-verify, then exit
 #   ETA_STAY=1 verify/linux-arm64/run.sh      # keep running, slynk on :4005
 #   CLAMIGA_HEAP=768M verify/linux-arm64/run.sh
+#   CLAMIGA_LOCK_DIAG=1000 verify/linux-arm64/run.sh  # report MP lock waits >1s
+#                                             # (named lock + holder, stderr)
 #
 # Notes:
 #   * KNX (192.168.50.40) is reached from the container via NAT; the gateway
@@ -52,6 +54,7 @@ exec docker run --rm --platform linux/arm64 \
     --add-host mini.local:127.0.0.1 \
     --add-host picellar:127.0.0.1 \
     -e CLAMIGA_HEAP="${CLAMIGA_HEAP:-512M}" \
+    -e CLAMIGA_LOCK_DIAG="${CLAMIGA_LOCK_DIAG:-}" \
     $STAY_ARGS \
     -v "$REPO":/cl-amiga:ro \
     -v "$SRC":"$SRC":ro \

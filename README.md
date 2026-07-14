@@ -454,7 +454,14 @@ diffs the real package exports against a committed snapshot; run
 - **Memory-efficient** — bump allocator with free-list fallback, mark-and-sweep GC with sliding compaction (auto-triggered when fragmentation blocks an allocation that a normal GC couldn't satisfy); designed for 68020 @ 14 MHz with 8 MB RAM
 - **Platform abstraction** — all OS calls go through `platform.h` (POSIX and AmigaOS implementations)
 - **FFI** — generic foreign pointer type + peek/poke (all platforms); 68k assembly trampoline for AmigaOS register-based library calls
-- **Threading** (MP package) — kernel threads, per-thread dynamic bindings (TLV), locks, named condition variables, thread interruption/destruction, type predicates; stop-the-world GC with safepoints; POSIX pthreads (with `__thread`-backed TLS) and AmigaOS processes/SignalSemaphores
+- **Threading** (MP package) — kernel threads, per-thread dynamic bindings (TLV), locks, named condition variables, thread interruption/destruction, type predicates; stop-the-world GC with safepoints; POSIX pthreads (with `__thread`-backed TLS) and AmigaOS processes/SignalSemaphores.
+  Two built-in hang-triage diagnostics: `(mp:dump-thread-waits)` prints every
+  live thread's current wait state (which lock/condvar it is blocked on), and
+  setting `CLAMIGA_LOCK_DIAG=<ms>` in the environment makes any blocking
+  `mp:acquire-lock` that waits past the threshold report the contended lock by
+  name, the current holder thread and what *it* is blocked on, and the total
+  wait once the lock is finally acquired (`CLAMIGA_LOCK_DIAG=1` selects the
+  1000 ms default). See `tests/test_lock_diag.sh` for the exact output format.
 - **TCP networking** — BSD sockets (POSIX) and bsdsocket.library (AmigaOS). On the
   POSIX host the socket table grows on demand, so a server can hold thousands of
   simultaneous connections (readiness waits use `poll`, which has no `FD_SETSIZE`
