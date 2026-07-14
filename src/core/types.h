@@ -602,6 +602,10 @@ typedef struct {
  * Set by OPEN :external-format :latin-1; only meaningful for CL_WIDE_STRINGS
  * builds (non-wide builds are already raw 8-bit). */
 #define CL_STREAM_FLAG_LATIN1 0x04
+/* UDP datagram socket stream (stream_type CL_STREAM_SOCKET): I/O is
+ * message-oriented via EXT:UDP-STREAM-SEND/-RECEIVE; the byte-stream
+ * read/write paths reject it. */
+#define CL_STREAM_FLAG_DGRAM  0x08
 
 typedef struct {
     CL_Header hdr;

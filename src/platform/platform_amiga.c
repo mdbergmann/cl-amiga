@@ -1063,7 +1063,12 @@ typedef struct { uint32_t bits[CL_FDSET_WORDS]; } CL_fdset;
 /* ---- Reactor request protocol ---- */
 enum {
     REQ_CONNECT = 1, REQ_LISTEN, REQ_ACCEPT,
-    REQ_READFILL, REQ_WRITE, REQ_CLOSE, REQ_SHUTDOWN, REQ_POLL
+    REQ_READFILL, REQ_WRITE, REQ_CLOSE, REQ_SHUTDOWN, REQ_POLL,
+    /* UDP: connect a datagram socket.  Datagram I/O itself reuses
+     * REQ_READFILL (one recv = one datagram into the caller's buffer) and
+     * REQ_WRITE (UDP send never partial-sends, so pend_wpos stays 0). */
+    REQ_UDP_CONNECT,
+    REQ_ENDPOINT     /* getsockname: dotted-quad into req->buf, port into out_port */
 };
 
 typedef struct SockReq {
@@ -1334,6 +1339,61 @@ static void reactor_do_listen(SockReq *req)
     reactor_reply(req);
 }
 
+/* Connected UDP socket: socket(SOCK_DGRAM) + connect() — the connect only
+ * records the peer (no handshake), so it completes immediately.  No IOBuf:
+ * datagram I/O goes straight between the caller's buffer and the fd. */
+static void reactor_udp_connect(SockReq *req)
+{
+    struct hostent *he;
+    struct sockaddr_in addr;
+    LONG fd;
+    int slot;
+
+    he = gethostbyname((STRPTR)req->host);
+    if (!he) { req->result = -1; req->out_slot = PLATFORM_SOCKET_INVALID; reactor_reply(req); return; }
+
+    fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) { req->result = -1; req->out_slot = PLATFORM_SOCKET_INVALID; reactor_reply(req); return; }
+
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((unsigned short)req->port);
+    memcpy(&addr.sin_addr, he->h_addr_list[0], (size_t)he->h_length);
+
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        CloseSocket(fd); req->result = -1; req->out_slot = PLATFORM_SOCKET_INVALID; reactor_reply(req); return;
+    }
+    reactor_set_nonblock(fd);
+    slot = reactor_alloc_slot(fd, 0);   /* no IOBuf: message I/O only */
+    if (slot < 0) { CloseSocket(fd); req->result = -1; req->out_slot = PLATFORM_SOCKET_INVALID; }
+    else          { req->result = 0;  req->out_slot = (PlatformSocket)slot; }
+    reactor_reply(req);
+}
+
+/* getsockname: dotted-quad local address into req->buf (>= 16 bytes, a C
+ * stack buffer of the calling thread — shared address space), port into
+ * out_port. */
+static void reactor_do_endpoint(SockReq *req)
+{
+    int slot = (int)req->slot;
+    LONG fd = socket_table[slot];
+    struct sockaddr_in addr;
+    cl_socklen_t alen = sizeof(addr);
+    if (fd < 0) { req->result = -1; reactor_reply(req); return; }
+    memset(&addr, 0, sizeof(addr));
+    if (getsockname(fd, (struct sockaddr *)&addr, &alen) < 0) {
+        req->result = -1; reactor_reply(req); return;
+    }
+    {
+        const unsigned char *b = (const unsigned char *)&addr.sin_addr;
+        sprintf(req->buf, "%u.%u.%u.%u",
+                (unsigned)b[0], (unsigned)b[1], (unsigned)b[2], (unsigned)b[3]);
+        req->out_port = ntohs(addr.sin_port);
+    }
+    req->result = 0;
+    reactor_reply(req);
+}
+
 static void reactor_do_close(SockReq *req)
 {
     int slot = (int)req->slot;
@@ -1368,6 +1428,8 @@ static void reactor_handle(SockReq *req)
     case REQ_READFILL: reactor_try_read(req);      break;
     case REQ_WRITE:    reactor_try_write(req);     break;
     case REQ_POLL:     reactor_try_poll(req);      break;
+    case REQ_UDP_CONNECT: reactor_udp_connect(req); break;
+    case REQ_ENDPOINT: reactor_do_endpoint(req);   break;
     case REQ_CLOSE:    reactor_do_close(req);      break;
     default:           req->result = -1; reactor_reply(req); break;
     }
@@ -1664,6 +1726,64 @@ void platform_socket_close(PlatformSocket sh)
     memset(&req, 0, sizeof(req));
     req.op = REQ_CLOSE; req.slot = sh;
     sock_call(&req);
+}
+
+PlatformSocket platform_udp_connect(const char *host, int port)
+{
+    SockReq req;
+    /* Stack-copy the hostname — sock_call brackets a GC safe region and a
+     * compaction could move an arena-resident string. */
+    char host_buf[256];
+    strncpy(host_buf, host, sizeof(host_buf) - 1);
+    host_buf[sizeof(host_buf) - 1] = '\0';
+    memset(&req, 0, sizeof(req));
+    req.op = REQ_UDP_CONNECT; req.host = host_buf; req.port = port;
+    sock_call(&req);
+    return req.out_slot;
+}
+
+int platform_udp_send(PlatformSocket sh, const uint8_t *buf, uint32_t len)
+{
+    /* One datagram per REQ_WRITE.  UDP send() never partial-sends, so the
+     * reactor's pend_wpos continuation logic stays at offset 0. */
+    SockReq req;
+    if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE) return -1;
+    memset(&req, 0, sizeof(req));
+    req.op = REQ_WRITE; req.slot = sh;
+    req.buf = (char *)buf; req.len = len;
+    req.timeout_ms = socket_wtimeout[sh];
+    sock_call(&req);
+    return req.result;   /* 0 = ok, -1 = error, -2 = timeout */
+}
+
+int platform_udp_recv(PlatformSocket sh, uint8_t *buf, uint32_t maxlen)
+{
+    /* One datagram per REQ_READFILL, received directly into the caller's
+     * buffer (shared address space).  Unlike the TCP byte path, 0 here is a
+     * valid (empty) datagram, not EOF. */
+    SockReq req;
+    if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE) return -1;
+    memset(&req, 0, sizeof(req));
+    req.op = REQ_READFILL; req.slot = sh;
+    req.buf = (char *)buf; req.len = maxlen;
+    req.timeout_ms = socket_rtimeout[sh];
+    sock_call(&req);
+    if (req.result == PLATFORM_SOCKET_TIMEOUT) return PLATFORM_SOCKET_TIMEOUT;
+    if (req.result < 0) return -1;
+    return req.result;
+}
+
+int platform_socket_local_endpoint(PlatformSocket sh, char *ip_out, int *port_out)
+{
+    SockReq req;
+    if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE) return -1;
+    memset(&req, 0, sizeof(req));
+    req.op = REQ_ENDPOINT; req.slot = sh;
+    req.buf = ip_out; req.len = 16;   /* C stack buffer — safe across the safe region */
+    sock_call(&req);
+    if (req.result != 0) return -1;
+    if (port_out) *port_out = req.out_port;
+    return 0;
 }
 
 void platform_socket_close_gc(PlatformSocket sh)

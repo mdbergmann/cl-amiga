@@ -1339,6 +1339,31 @@ TEST(print_object_custom)
         "#<PRINTABLE hello>");
 }
 
+/* CLHS 22.1.3.12: *print-level* applies BEFORE print-object dispatch — at
+ * the level limit the object prints as "#" and the custom method is NOT
+ * invoked.  Regression: mutually-referencing instances whose print-object
+ * formats BOTH peers (fan-out 2) recursed hook->format->hook to the
+ * printer's hard depth cap (2^60+ CLOS dispatches — chipi's item<->binding
+ * log lines took minutes each). */
+TEST(print_object_honors_print_level)
+{
+    eval_print(
+        "(defclass plevel-node () "
+        "  ((a :accessor plevel-a :initform nil) "
+        "   (b :accessor plevel-b :initform nil)))");
+    eval_print(
+        "(defmethod print-object ((n plevel-node) s) "
+        "  (format s \"#<pnode ~a ~a>\" (plevel-a n) (plevel-b n)))");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((x (make-instance 'plevel-node)) "
+        "      (y (make-instance 'plevel-node))) "
+        "  (setf (plevel-a x) y (plevel-b x) y "
+        "        (plevel-a y) x (plevel-b y) x) "
+        "  (let ((*print-level* 2)) "
+        "    (< (length (princ-to-string x)) 100)))"),
+        "T");
+}
+
 TEST(print_object_default_struct)
 {
     /* Structs without a print-object method use default #S(...) */
@@ -4773,6 +4798,7 @@ int main(void)
     RUN(print_object_class);
     RUN(print_object_gf);
     RUN(print_object_custom);
+    RUN(print_object_honors_print_level);
     RUN(print_object_default_struct);
 
     /* slot-value on DEFSTRUCT instances */

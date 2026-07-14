@@ -1097,6 +1097,29 @@
 (check "d-bind nested" '(1 2 3 (4 5)) (destructuring-bind (a (b c) &rest d) '(1 (2 3) 4 5) (list a b c d)))
 (check "d-bind &rest" '(1 (2 3)) (destructuring-bind (a &rest b) '(1 2 3) (list a b)))
 (check "d-bind &optional default" '(1 10) (destructuring-bind (a &optional (b 10)) '(1) (list a b)))
+;; CLHS 22.1.3.12: *print-level* bounds custom print-object dispatch — at
+;; the limit the object prints "#", the method is NOT invoked (regression:
+;; mutually-referencing instances with fan-out-2 print-object recursed to
+;; the printer hard cap; chipi item<->binding log lines took minutes)
+(defclass plevel-node () ((a :accessor plevel-a :initform nil)
+                          (b :accessor plevel-b :initform nil)))
+(defmethod print-object ((n plevel-node) s)
+  (format s "#<pnode ~a ~a>" (plevel-a n) (plevel-b n)))
+(check "print-level bounds print-object" t
+  (let ((x (make-instance 'plevel-node))
+        (y (make-instance 'plevel-node)))
+    (setf (plevel-a x) y (plevel-b x) y
+          (plevel-a y) x (plevel-b y) x)
+    (let ((*print-level* 2))
+      (< (length (princ-to-string x)) 100))))
+
+;; CLHS 3.4.5: dotted lambda list == trailing &rest (eta-hab regression)
+(check "d-bind dotted pair" '(1 2) (destructuring-bind (a . b) '(1 . 2) (list a b)))
+(check "d-bind dotted tail" '(1 2 (3 4)) (destructuring-bind (a b . c) '(1 2 3 4) (list a b c)))
+(check "d-bind dotted nested" '(1 2 3 (4)) (destructuring-bind (a (b . c) . d) '(1 (2 . 3) 4) (list a b c d)))
+(check "d-bind dotted after &optional" '(1 2 (3)) (destructuring-bind (a &optional b . c) '(1 2 3) (list a b c)))
+(check "d-bind dotted macroexpand path" '(1 2 (3))
+       (eval (macroexpand-1 '(destructuring-bind (a &optional b . c) '(1 2 3) (list a b c)))))
 (check "d-bind &optional provided" '(1 2) (destructuring-bind (a &optional (b 10)) '(1 2) (list a b)))
 (check "d-bind &body" '(1 (2 3)) (destructuring-bind (a &body b) '(1 2 3) (list a b)))
 ; CLHS: a list that does not match the lambda-list structure must signal an error.
@@ -1131,6 +1154,26 @@
   (nth-value 1 (macroexpand-1 '(destructuring-bind (a b) y (list a b)))))
 (check "d-bind expansion runs" '(1 2 3 (4 5))
   (eval (macroexpand-1 '(destructuring-bind (a (b c) &rest d) '(1 (2 3) 4 5) (list a b c d)))))
+; CLHS 3.4.5: a dotted tail after &key/&aux is malformed — the dotted
+; abbreviation stands in the &rest position, which must precede &key/&aux.
+; Both the compiler special form AND the %dbind-expand macroexpansion path
+; must reject it identically.  The compiler special form signals its error
+; at COMPILE time, so the destructuring-bind must be wrapped in (eval '...)
+; rather than written directly — a direct compile-time error would abort
+; compiling the whole enclosing (check ...) top-level form before CHECK's
+; own handler-case (or one written here) ever gets installed to catch it.
+(check "d-bind dotted after &key errors" :err
+  (handler-case (eval '(destructuring-bind (a &key b . c) '(1 :b 2 3 4) (list a b c)))
+    (error () :err)))
+(check "d-bind dotted after &key errors (macroexpand path)" :err
+  (handler-case (eval (macroexpand-1 '(destructuring-bind (a &key b . c) '(1 :b 2 3 4) (list a b c))))
+    (error () :err)))
+(check "d-bind dotted after &aux errors" :err
+  (handler-case (eval '(destructuring-bind (a &aux (b 1) . c) '(1) (list a b c)))
+    (error () :err)))
+(check "d-bind dotted after &aux errors (macroexpand path)" :err
+  (handler-case (eval (macroexpand-1 '(destructuring-bind (a &aux (b 1) . c) '(1) (list a b c))))
+    (error () :err)))
 
 ; --- define-modify-macro with &optional (var default) ---
 ; Regression: the (delta 1) spec was spliced whole into the call form, emitting
@@ -3233,6 +3276,39 @@
                   (char-code (read-char s)))
              (close c) (close s)))
       (close l))))
+
+; --- UDP datagram sockets (ext:open-udp-stream & co.) ---
+; UDP connect only records the peer (no handshake), so these run without a
+; live peer: the datagram to the discard port goes nowhere, and the receive
+; must trip the read timeout rather than block the suite.
+(check "udp open + local endpoint" t
+  (let ((s (ext:open-udp-stream "127.0.0.1" 9)))
+    (unwind-protect
+         (multiple-value-bind (ip port)
+             (ext:socket-stream-local-endpoint s)
+           (and (stringp ip) (integerp port) (> port 0)))
+      (close s))))
+(check "udp send returns t" t
+  (let ((s (ext:open-udp-stream "127.0.0.1" 9)))
+    (unwind-protect
+         (ext:udp-stream-send s (coerce #(1 2 3) '(vector (unsigned-byte 8))) 3)
+      (close s))))
+; No send before the receive: a datagram to the (dead) discard port raises
+; an ICMP port-unreachable that a connected UDP socket reports as an error
+; on the NEXT recv — which would mask the timeout being tested here.
+(check "udp receive timeout" :timed-out
+  (let ((s (ext:open-udp-stream "127.0.0.1" 9))
+        (buf (make-array 8 :element-type '(unsigned-byte 8))))
+    (unwind-protect
+         (progn
+           (setf (ext:socket-stream-timeout s :input) 0.2)
+           (handler-case (progn (ext:udp-stream-receive s buf) :data)
+             (ext:socket-timeout () :timed-out)))
+      (close s))))
+(check "udp send rejects non-udp stream" :rejected
+  (handler-case (ext:udp-stream-send (make-string-output-stream)
+                                     (make-array 1 :element-type '(unsigned-byte 8)))
+    (error () :rejected)))
 
 ; --- Socket read/write timeouts (ext:socket-stream-timeout) ---
 ; (setf (ext:socket-stream-timeout stream :input/:output) seconds) arms a
