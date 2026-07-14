@@ -3478,6 +3478,27 @@ static CL_Obj bi_require(CL_Obj *args, int n)
                     have_lisp = platform_file_exists(lisp_path);
                 }
             }
+
+            /* Executable-relative fallback (mirrors the boot.lisp search in
+               repl.c): a deployed layout has lib/ next to the binary, the
+               in-repo build has it two levels above build/host/clamiga — so
+               a plain `clamiga` on $PATH works from any directory without
+               CLAMIGA_HOME. */
+            if (!have_fasl && !have_lisp) {
+                char prefix[300];
+                if (platform_executable_prefix(prefix, (int)sizeof(prefix))) {
+                    static const char *rels[] = { "", "../../" };
+                    int ri;
+                    for (ri = 0; ri < 2 && !have_fasl && !have_lisp; ri++) {
+                        snprintf(fasl_path, sizeof(fasl_path), "%s%slib/%.*s.fasl",
+                                 prefix, rels[ri], (int)len, name);
+                        snprintf(lisp_path, sizeof(lisp_path), "%s%slib/%.*s.lisp",
+                                 prefix, rels[ri], (int)len, name);
+                        have_fasl = platform_file_exists(fasl_path);
+                        have_lisp = platform_file_exists(lisp_path);
+                    }
+                }
+            }
 #endif
 
             /* Pre-validate FASL header — if magic or version mismatches the
@@ -3526,8 +3547,21 @@ static CL_Obj bi_require(CL_Obj *args, int n)
             }
         }
 
-        if (!found)
-            cl_error(CL_ERR_GENERAL, "REQUIRE: cannot find module file");
+        if (!found) {
+            char msg[512];
+            snprintf(msg, sizeof(msg),
+                     "REQUIRE: cannot find module \"%.*s\" - looked for "
+                     "lib/%.*s.fasl and lib/%.*s.lisp under the current "
+#ifdef PLATFORM_AMIGA
+                     "directory and PROGDIR:.",
+#else
+                     "directory, $CLAMIGA_HOME, and the clamiga executable's "
+                     "directory. If clamiga runs outside its installation, "
+                     "set CLAMIGA_HOME to the cl-amiga directory.",
+#endif
+                     (int)len, name, (int)len, name, (int)len, name);
+            cl_error(CL_ERR_GENERAL, "%s", msg);
+        }
 
         path_obj = cl_make_string(path, (uint32_t)strlen(path));
         /* Root the load_args slot itself (not just path_obj) — bi_load

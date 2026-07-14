@@ -827,6 +827,7 @@ void cl_repl_init_no_userinit(int no_userinit)
 {
     uint32_t t_start = platform_time_ms();
     uint32_t t_prev  = t_start;
+    int boot_loaded = 0;
     /* Load standard library in CL package so macros/functions are
        accessible from any package that :use's CL */
     CL_Obj saved_pkg = cl_current_package;
@@ -881,7 +882,6 @@ void cl_repl_init_no_userinit(int no_userinit)
             { "PROGDIR:lib/boot.fasl", "PROGDIR:lib/boot.lisp" },
 #endif
         };
-        int boot_loaded = 0;
         int bi;
         int npairs = (int)(sizeof(fasl_src_pairs) / sizeof(fasl_src_pairs[0]));
 
@@ -911,13 +911,56 @@ void cl_repl_init_no_userinit(int no_userinit)
                 boot_loaded = try_load_boot_pair(fasl_path, src_path);
             }
         }
+
+        /* Executable-relative fallback: covers a deployed layout (lib/ next
+           to the clamiga binary) and the in-repo build (build/host/clamiga
+           with lib/ two levels up), so a plain `clamiga` on $PATH — symlink
+           included — finds its runtime from any directory with no
+           environment setup at all. */
+        if (!boot_loaded) {
+            char prefix[512];
+            if (platform_executable_prefix(prefix, (int)sizeof(prefix))) {
+                static const char *rels[] = { "", "../../" };
+                int ri;
+                for (ri = 0; ri < 2 && !boot_loaded; ri++) {
+                    char fasl_path[700], src_path[700];
+                    snprintf(fasl_path, sizeof(fasl_path), "%s%slib/boot.fasl",
+                             prefix, rels[ri]);
+                    snprintf(src_path, sizeof(src_path), "%s%slib/boot.lisp",
+                             prefix, rels[ri]);
+                    boot_loaded = try_load_boot_pair(fasl_path, src_path);
+                }
+            }
+        }
 #endif
-        (void)boot_loaded;
+        if (!boot_loaded) {
+            /* Without boot.lisp the session is a bare C core: no standard
+               macros, no CLOS, and every REQUIRE will fail.  Say exactly
+               what is wrong and how to fix it instead of letting the first
+               (require ...) die with a generic error. */
+            cl_write_cstring_to_stdout(
+                "; Error: clamiga cannot locate its runtime library (lib/boot.lisp).\n"
+#ifdef PLATFORM_AMIGA
+                ";        Searched lib/ under the current directory and PROGDIR:lib/.\n"
+                ";        Run clamiga from (or install it into) its distribution\n"
+                ";        directory so lib/ sits next to the binary.\n"
+#else
+                ";        Searched lib/ under the current directory, $CLAMIGA_HOME/lib/,\n"
+                ";        and lib/ next to (and ../../lib/ above) the clamiga executable.\n"
+                ";        Set CLAMIGA_HOME to your cl-amiga checkout/installation, e.g.\n"
+                ";            export CLAMIGA_HOME=/path/to/cl-amiga\n"
+#endif
+                ";        Continuing without the standard library - most Common Lisp\n"
+                ";        features and REQUIRE will not work.\n");
+        }
     }
     BOOT_TIME("boot library");
 
-    /* Load CLOS so defclass/defgeneric/defmethod are available */
-    cl_eval_string("(require \"clos\")");
+    /* Load CLOS so defclass/defgeneric/defmethod are available.  Pointless
+       without boot (require would just fail again) — the diagnostic above
+       already explained the real problem. */
+    if (boot_loaded)
+        cl_eval_string("(require \"clos\")");
     BOOT_TIME("CLOS");
 
     /* Re-enable *load-verbose* for user code */

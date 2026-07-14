@@ -23,6 +23,9 @@
 #include <dlfcn.h>
 #include <pthread.h>
 #include <ffi.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>   /* _NSGetExecutablePath (platform_executable_prefix) */
+#endif
 
 /* GC stop-the-world cooperation (defined in core/thread.c).  Forward-declared
  * here rather than #including core/thread.h so the platform layer stays free of
@@ -620,6 +623,39 @@ const char *platform_getenv(const char *name, char *buf, int bufsize)
 {
     (void)buf; (void)bufsize;
     return getenv(name);
+}
+
+const char *platform_executable_prefix(char *buf, int bufsize)
+{
+    char resolved[PATH_MAX];
+#if defined(__APPLE__)
+    char raw[PATH_MAX];
+    uint32_t rawsz = (uint32_t)sizeof(raw);
+    if (_NSGetExecutablePath(raw, &rawsz) != 0)
+        return NULL;
+    if (!realpath(raw, resolved))
+        return NULL;
+#elif defined(__linux__)
+    ssize_t n = readlink("/proc/self/exe", resolved, sizeof(resolved) - 1);
+    if (n <= 0)
+        return NULL;
+    resolved[n] = '\0';
+#else
+    /* No portable way to find the executable on other POSIX systems —
+     * callers fall back to cwd-relative lookup and $CLAMIGA_HOME. */
+    return NULL;
+#endif
+    /* Strip the executable name, keep the trailing slash */
+    {
+        char *slash = strrchr(resolved, '/');
+        if (!slash)
+            return NULL;
+        slash[1] = '\0';
+    }
+    if ((int)strlen(resolved) >= bufsize)
+        return NULL;
+    strcpy(buf, resolved);
+    return buf;
 }
 
 int platform_getcwd(char *buf, int bufsize)

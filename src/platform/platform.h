@@ -166,6 +166,13 @@ const char *platform_expand_home(const char *path, char *buf, int bufsize);
 /* Environment */
 const char *platform_getenv(const char *name, char *buf, int bufsize);
 
+/* Directory of the running executable as a prefix ready for direct
+ * concatenation with a relative path: "<dir>/" (trailing slash included) on
+ * POSIX, "PROGDIR:" on AmigaOS.  Symlinks to the executable are resolved.
+ * Used to locate the bundled lib/ regardless of the process cwd.  Returns
+ * buf on success, NULL when the location cannot be determined. */
+const char *platform_executable_prefix(char *buf, int bufsize);
+
 /* Subprocess execution */
 int platform_system(const char *command);
 

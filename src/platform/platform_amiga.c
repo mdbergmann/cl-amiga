@@ -791,6 +791,16 @@ const char *platform_getenv(const char *name, char *buf, int bufsize)
     return buf;
 }
 
+const char *platform_executable_prefix(char *buf, int bufsize)
+{
+    /* PROGDIR: is the executable's directory; as a device-style prefix it
+     * concatenates directly with a relative path (PROGDIR:lib/...). */
+    if (bufsize < (int)sizeof("PROGDIR:"))
+        return NULL;
+    strcpy(buf, "PROGDIR:");
+    return buf;
+}
+
 int platform_getcwd(char *buf, int bufsize)
 {
     BPTR lock = Lock("", ACCESS_READ);
