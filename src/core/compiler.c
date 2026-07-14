@@ -5017,13 +5017,23 @@ CL_Obj cl_macroexpand_1_env(CL_Obj form, CL_Obj lex_env)
     if (CL_SYMBOL_P(head) && CL_CONS_P(lex_env)) {
         expander = lex_env_local_macro(lex_env, head);
         if (!CL_NULL_P(expander)) {
+            CL_Obj saved_expanding = cl_expansion_ctx_get(cl_expanding_form_sym);
             call_args[0] = form;
             call_args[1] = lex_env;
             CL_GC_PROTECT(form);
             CL_GC_PROTECT(expander);
             CL_GC_PROTECT(lex_env);
+            CL_GC_PROTECT(saved_expanding);
+            /* Error context: if the expander signals, cl_error snapshots
+             * this so the report names the form being expanded.  On the
+             * error path the restore below is skipped (longjmp) — correct:
+             * the innermost failing form stays visible.  Per-thread TLV
+             * value (see error.h), not a raw global, so a peer thread
+             * expanding concurrently never sees or clobbers this. */
+            cl_tlv_set(CT, cl_expanding_form_sym, form);
             expanded = cl_vm_apply(expander, call_args, 2);
-            CL_GC_UNPROTECT(3);
+            cl_tlv_set(CT, cl_expanding_form_sym, saved_expanding);
+            CL_GC_UNPROTECT(4);
             return expanded;
         }
     }
@@ -5038,13 +5048,20 @@ CL_Obj cl_macroexpand_1_env(CL_Obj form, CL_Obj lex_env)
     call_args[0] = form;
     call_args[1] = lex_env;
 
-    CL_GC_PROTECT(form);
-    CL_GC_PROTECT(expander);
-    CL_GC_PROTECT(lex_env);
+    {
+        CL_Obj saved_expanding = cl_expansion_ctx_get(cl_expanding_form_sym);
+        CL_GC_PROTECT(form);
+        CL_GC_PROTECT(expander);
+        CL_GC_PROTECT(lex_env);
+        CL_GC_PROTECT(saved_expanding);
 
-    expanded = cl_vm_apply(expander, call_args, 2);
+        /* Error context — see the macrolet branch above. */
+        cl_tlv_set(CT, cl_expanding_form_sym, form);
+        expanded = cl_vm_apply(expander, call_args, 2);
+        cl_tlv_set(CT, cl_expanding_form_sym, saved_expanding);
 
-    CL_GC_UNPROTECT(3);
+        CL_GC_UNPROTECT(4);
+    }
 
     return expanded;
 }

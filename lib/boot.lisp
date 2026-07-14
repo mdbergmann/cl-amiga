@@ -1832,10 +1832,23 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
         (setq p (cddr p))))
     `(let ,(reverse bindings) ,@(reverse sets) nil)))
 
-;; read-from-string — read an S-expression from a string
-(defun read-from-string (string &optional eof-error-p eof-value)
-  (let ((s (make-string-input-stream string)))
-    (read s eof-error-p eof-value)))
+;; read-from-string (CLHS): reads from the substring bounded by START/END and
+;; returns two values — the object read and the index of the first character
+;; not read (uiop/asdf rely on both the keyword arguments and the position).
+;; EOF-ERROR-P defaults to T per the spec.  Per CLHS 23.1.2, plain READ (the
+;; PRESERVE-WHITESPACE-NIL default) consumes the single whitespace character
+;; that terminated the token's lookahead, while READ-PRESERVING-WHITESPACE
+;; leaves it unread — so (read-from-string "1 3 5") reads "1" and reports
+;; position 2 (past the trailing space), not 1.
+(defun read-from-string (string &optional (eof-error-p t) eof-value
+                                &key (start 0) end preserve-whitespace)
+  (let ((s (make-string-input-stream string start end)))
+    (let ((obj (read s eof-error-p eof-value)))
+      (unless preserve-whitespace
+        (let ((ch (peek-char nil s nil nil)))
+          (when (and ch (member ch '(#\Space #\Tab #\Newline #\Return #\Page)))
+            (read-char s nil nil))))
+      (values obj (file-position s)))))
 
 ;; read-preserving-whitespace — same as read for our implementation
 (defun read-preserving-whitespace (&optional stream (eof-error-p t) eof-value recursive-p)

@@ -55,6 +55,26 @@ int cl_error_frame_push(void)
     return cl_error_frame_top++;
 }
 
+/* Storage for the symbols documented in error.h.  Lets the error report say
+ * WHICH form's expansion blew up — e.g. a feature-conditional macro call
+ * that read as too few arguments ((defctype :size #+64-bit :uint64) with no
+ * 64-BIT feature) is invisible from the expander's own arity error without
+ * this.  The symbols are interned (and GC-rooted) by cl_symbol_init, which
+ * runs after cl_package_init — too late to do from cl_error_init, which
+ * runs first (see main.c's init order) — so they start out CL_NIL here and
+ * are only ever assigned once, at boot, before any second thread exists. */
+CL_Obj cl_expanding_form_sym = CL_NIL;
+CL_Obj cl_error_expanding_form_sym = CL_NIL;
+
+/* Per-thread read of an expansion-context TLV cell (see error.h), with the
+ * CL_TLV_ABSENT "no entry yet" sentinel normalized to CL_NIL so callers
+ * never have to special-case it. */
+CL_Obj cl_expansion_ctx_get(CL_Obj sym)
+{
+    CL_Obj v = cl_tlv_get(CT, sym);
+    return (v == CL_TLV_ABSENT) ? CL_NIL : v;
+}
+
 void cl_error_init(void)
 {
     cl_error_frame_top = 0;
@@ -249,6 +269,10 @@ void cl_error(int code, const char *fmt, ...)
     vsnprintf(cl_error_msg, sizeof(cl_error_msg), fmt, ap);
     va_end(ap);
 
+    /* Macroexpansion error context is snapshot in cl_capture_backtrace —
+     * the bottleneck every raise path (cl_error, cl_raise_condition, the
+     * VM/builtin type-error helpers) funnels through. */
+
     /* Exit request: skip debugger/conditions, just unwind */
     if (code == CL_ERR_EXIT) {
         cl_nlx_top = 0;
@@ -395,6 +419,17 @@ void cl_error_print(void)
     cl_write_cstring_to_error(cl_error_msg);
     cl_color_reset();
     cl_write_cstring_to_error("\n");
+    {
+        CL_Obj ef = cl_expansion_ctx_get(cl_error_expanding_form_sym);
+        if (!CL_NULL_P(ef)) {
+            char fbuf[256];
+            cl_prin1_to_string(ef, fbuf, (int)sizeof(fbuf));
+            cl_write_cstring_to_error("While macroexpanding: ");
+            cl_write_cstring_to_error(fbuf);
+            cl_write_cstring_to_error("\n");
+            cl_tlv_set(CT, cl_error_expanding_form_sym, CL_NIL);
+        }
+    }
     if (cl_backtrace_buf[0] != '\0') {
         cl_write_cstring_to_error("Backtrace:\n");
         cl_write_cstring_to_error(cl_backtrace_buf);

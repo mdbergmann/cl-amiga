@@ -869,6 +869,22 @@ void cl_capture_backtrace(void)
     int max_show = 20;
     int depth = 0;
 
+    /* Snapshot the macroexpansion error context AT RAISE TIME: this is the
+     * bottleneck every raise path funnels through (cl_error,
+     * cl_raise_condition, the VM/builtin type-error helpers).  Both cells
+     * are per-thread TLV values (see error.h) — this reads/clears only the
+     * CURRENT thread's, so it can never race a peer thread's expansion.
+     * cl_expanding_form_sym is live only while an expander runs, so
+     * capturing it here can never attribute a later, unrelated error to an
+     * expansion that already finished.  Clearing the live slot afterwards
+     * matters too: the raise longjmps past cl_macroexpand_1_env's restore,
+     * and a caught-and-recovered expansion error must not leave a stale
+     * form behind to mislabel the next error raised outside any
+     * expansion. */
+    cl_tlv_set(CT, cl_error_expanding_form_sym,
+               cl_expansion_ctx_get(cl_expanding_form_sym));
+    cl_tlv_set(CT, cl_expanding_form_sym, CL_NIL);
+
     cl_backtrace_buf[0] = '\0';
     /* Snapshot the frame depth so a debugger-hook (SLDB) can introspect the
      * error-time backtrace via cl_vm_backtrace_list / cl_vm_frame_locals even

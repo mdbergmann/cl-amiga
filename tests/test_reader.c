@@ -629,6 +629,100 @@ TEST(nested_read_preserves_outer_stream)
     }
 }
 
+/* READ-FROM-STRING conformance (CLHS): accepts :START/:END/
+ * :PRESERVE-WHITESPACE keywords, returns the index of the first unread
+ * character as a second value, and EOF-ERROR-P defaults to T.  uiop/asdf
+ * call it with the full keyword form when reading .asd files — the old
+ * (string &optional eof-error-p eof-value) signature broke loading
+ * cserial-port.asd ("Too many arguments to READ-FROM-STRING"). */
+TEST(read_from_string_keywords_and_position)
+{
+    /* "(a b) c", :start 1 :end 5 reads "A" starting at index 1, terminated
+     * by the space at index 2 — CLHS 23.1.2: plain READ (PRESERVE-WHITESPACE
+     * NIL, the default) consumes that single terminating whitespace
+     * character, so the reported position is 3, not 2. */
+    CL_Obj v = cl_eval_string(
+        "(multiple-value-list (read-from-string \"(a b) c\" t nil :start 1 :end 5))");
+    char buf[64];
+    cl_prin1_to_string(v, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(A 3)");
+}
+
+TEST(read_from_string_position_default_range)
+{
+    /* "  foo  " reads FOO (indices 2-4), terminated by the space at index 5,
+     * which plain READ consumes — position 6, not 5 (see CLHS 23.1.2). */
+    CL_Obj v = cl_eval_string(
+        "(multiple-value-list (read-from-string \"  foo  \"))");
+    char buf[64];
+    cl_prin1_to_string(v, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(FOO 6)");
+}
+
+TEST(read_from_string_eof_error_p_defaults_to_t)
+{
+    CL_Obj v = cl_eval_string(
+        "(handler-case (read-from-string \"\") (end-of-file () :eof))");
+    char buf[64];
+    cl_prin1_to_string(v, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, ":EOF");
+}
+
+TEST(read_from_string_preserve_whitespace_accepted)
+{
+    CL_Obj v = cl_eval_string(
+        "(read-from-string \"xy \" t nil :preserve-whitespace t)");
+    char buf[64];
+    cl_prin1_to_string(v, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "XY");
+}
+
+/* CLHS 23.1.2's own read-from-string example: (read-from-string "1 3 5")
+ * => 1, 2 — plain READ consumes the single trailing whitespace character
+ * that terminated the "1" token, so the position lands past the space. */
+TEST(read_from_string_clhs_example_consumes_trailing_whitespace)
+{
+    CL_Obj v = cl_eval_string(
+        "(multiple-value-list (read-from-string \"1 3 5\"))");
+    char buf[64];
+    cl_prin1_to_string(v, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(1 2)");
+}
+
+/* READ-PRESERVING-WHITESPACE must NOT consume the terminating whitespace
+ * (CLHS 23.1.2) — contrast with plain READ above. */
+TEST(read_preserving_whitespace_does_not_consume_terminator)
+{
+    CL_Obj v = cl_eval_string(
+        "(let ((s (make-string-input-stream \"1 3 5\")))"
+        "  (list (read-preserving-whitespace s) (file-position s)))");
+    char buf[64];
+    cl_prin1_to_string(v, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(1 1)");
+}
+
+/* The runtime itself must provide word-size and endianness features (as
+ * SBCL/CCL do): CFFI sizes :SIZE/:SSIZE via #+64-bit / #+32-bit and babel
+ * selects codecs via endianness.  Leaving these to a patched
+ * trivial-features made (defctype :size #+64-bit :uint64 #+32-bit :uint32)
+ * read as the malformed (defctype :size) on hosts whose trivial-features
+ * predated the word-size patch (eta-hab on Debian arm64). */
+TEST(features_word_size_and_endianness)
+{
+    CL_Obj v = cl_eval_string(
+        "(list (if (member :64-bit *features*) 1 0)"
+        "      (if (member :32-bit *features*) 1 0)"
+        "      (if (member :little-endian *features*) 1 0)"
+        "      (if (member :big-endian *features*) 1 0))");
+    int f64 = (int)CL_FIXNUM_VAL(cl_car(v));
+    int f32 = (int)CL_FIXNUM_VAL(cl_car(cl_cdr(v)));
+    int fle = (int)CL_FIXNUM_VAL(cl_car(cl_cdr(cl_cdr(v))));
+    int fbe = (int)CL_FIXNUM_VAL(cl_car(cl_cdr(cl_cdr(cl_cdr(v)))));
+    /* Exactly one word-size feature and exactly one endianness feature. */
+    ASSERT_EQ_INT(f64 + f32, 1);
+    ASSERT_EQ_INT(fle + fbe, 1);
+}
+
 /* Regression: cl_read_from_stream must not reset the line counter to 1 on
  * every call; the stream's `line` field should persist so loaders see real
  * source-line numbers across top-level forms. */
@@ -1045,6 +1139,15 @@ int main(void)
     RUN(string_literal_growth_survives_socket_read_timeout);
     RUN(long_bitvector_literal_errors);
     RUN(long_char_name_errors);
+
+    /* READ-FROM-STRING conformance + runtime-provided features */
+    RUN(read_from_string_keywords_and_position);
+    RUN(read_from_string_position_default_range);
+    RUN(read_from_string_eof_error_p_defaults_to_t);
+    RUN(read_from_string_preserve_whitespace_accepted);
+    RUN(read_from_string_clhs_example_consumes_trailing_whitespace);
+    RUN(read_preserving_whitespace_does_not_consume_terminator);
+    RUN(features_word_size_and_endianness);
 
     /* Regression: nested reader invocation must not clobber outer stream */
     RUN(nested_read_preserves_outer_stream);

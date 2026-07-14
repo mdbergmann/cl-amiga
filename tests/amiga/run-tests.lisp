@@ -2450,6 +2450,34 @@
          (b (cadr x)))
     (and (null (car a)) (null (cdr a)) (eq a b))))
 
+; READ-FROM-STRING conformance (CLHS): :start/:end/:preserve-whitespace
+; keywords, second value = index of first unread char, EOF-ERROR-P
+; defaults to T.  uiop/asdf read .asd files with the full keyword form.
+; Per CLHS 23.1.2, plain READ (the PRESERVE-WHITESPACE-NIL default)
+; consumes the single trailing whitespace character that terminated the
+; token, so the reported position lands one past that character.
+(check "read-from-string keywords+position" '(a 3)
+       (multiple-value-list (read-from-string "(a b) c" t nil :start 1 :end 5)))
+(check "read-from-string position" '(foo 6)
+       (multiple-value-list (read-from-string "  foo  ")))
+(check "read-from-string eof default signals" :eof
+       (handler-case (read-from-string "") (end-of-file () :eof)))
+(check "read-from-string preserve-whitespace" 'xy
+       (read-from-string "xy " t nil :preserve-whitespace t))
+(check "read-from-string clhs example" '(1 2)
+       (multiple-value-list (read-from-string "1 3 5")))
+(check "read-preserving-whitespace does not consume terminator" '(1 1)
+       (let ((s (make-string-input-stream "1 3 5")))
+         (list (read-preserving-whitespace s) (file-position s))))
+
+; Word-size + endianness features come from the runtime itself (CFFI sizes
+; :SIZE via #+64-bit/#+32-bit, babel picks codecs via endianness).  The
+; m68k/AmigaOS target is 32-bit big-endian.
+(check "features 32-bit" t (and (member :32-bit *features*) t))
+(check "features not 64-bit" nil (member :64-bit *features*))
+(check "features big-endian" t (and (member :big-endian *features*) t))
+(check "features not little-endian" nil (member :little-endian *features*))
+
 ; Printer: base string with a high byte (> 127) round-trips through a string
 ; output stream as its real code point, not the U+FFFD replacement char.
 ; (Host CL_WIDE_STRINGS regression for print_string's signed-char bug; on the
