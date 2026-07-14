@@ -3,6 +3,7 @@
 
 #include <proto/exec.h>
 #include <proto/dos.h>
+#include <dos/dosextens.h>  /* struct FileHandle (drain of RunCommand's arg-line stuffing) */
 #include <string.h>
 #include <stdlib.h>   /* malloc/realloc (platform_directory) */
 
@@ -213,9 +214,45 @@ void platform_ungetchar(int ch)
 void platform_drain_input(void)
 {
     /* AmigaOS CLI leaks command line text to Input() (stdin).
-     * Drain any pending chars before the interactive REPL starts. */
+     * Drain any pending chars before the interactive REPL starts.
+     *
+     * The leak has TWO layers, and both must be drained:
+     *
+     * 1. The Shell's RunCommand() stuffs the command-line tail (arguments +
+     *    terminating '\n' — just "\n" when clamiga is started with no
+     *    arguments) into the input FileHandle's internal buffer so that
+     *    ReadArgs()-style commands can parse their arguments from Input().
+     *    clamiga takes its arguments from argv instead, so that text is
+     *    still sitting unread in fh_Buf when the REPL starts.
+     *    WaitForChar() asks the console HANDLER for pending characters and
+     *    never sees handle-level buffered bytes, so the loop below missed
+     *    them: the REPL's first FGets() returned the leaked line
+     *    immediately and the empty-line skip re-printed the prompt — the
+     *    "double prompt" seen at startup on AmigaOS and MorphOS.
+     *    Consume the buffered bytes directly (the fh_Pos < fh_End check
+     *    means FGetC serves them from the buffer and cannot block).
+     *
+     * 2. Type-ahead queued in the console handler itself — the
+     *    WaitForChar() poll below covers that.
+     *
+     * Both layers are gated on IsInteractive(in): the RunCommand() fh_Buf
+     * stuffing is a Shell/console-only behavior, but a redirected file or
+     * pipe handle can equally arrive with DOS read-ahead already sitting in
+     * fh_Buf, so draining layer 1 unconditionally could eat real piped
+     * input. Gate both loops so file/pipe stdin is never touched.
+     *
+     * No automated regression test: the leak requires a real interactive
+     * console launched through the Shell's RunCommand() path, which the
+     * FS-UAE test harness (--non-interactive, redirected I/O) never
+     * exercises — verify interactively on AmigaOS/MorphOS. */
     BPTR in = Input();
+    struct FileHandle *fh;
     if (!in) return;
+    if (!IsInteractive(in)) return;
+    fh = (struct FileHandle *)BADDR(in);
+    while (fh->fh_Buf != 0 && fh->fh_Pos >= 0 && fh->fh_Pos < fh->fh_End) {
+        if (FGetC(in) < 0) break;
+    }
     while (WaitForChar(in, 1000)) {  /* 1ms timeout per char */
         if (FGetC(in) < 0) break;
     }
