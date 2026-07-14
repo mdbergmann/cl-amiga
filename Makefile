@@ -10,10 +10,15 @@ FFI_CFLAGS := $(shell pkg-config --cflags libffi 2>/dev/null)
 FFI_LIBS   := $(shell pkg-config --libs libffi 2>/dev/null || echo -lffi)
 ifneq ($(UNAME_S),Darwin)
 FFI_LIBS   += -ldl
+# glibc < 2.34 (e.g. Debian 11 / older Raspberry Pi OS) ships libpthread as a
+# separate library, so the pthread_* symbols in platform_thread_posix.c need
+# -pthread at compile AND link time (newer glibc and macOS resolve them from
+# libc/libSystem, which is why the omission only surfaced there).
+PTHREAD_FLAGS = -pthread
 endif
 
-CFLAGS_HOST = -std=c99 -D_GNU_SOURCE -Wall -Wextra -Wpedantic -g -O3 -flto -DPLATFORM_POSIX -DCL_WIDE_STRINGS $(FFI_CFLAGS) $(DEBUG_FLAGS)
-HOST_LIBS   = -lm $(FFI_LIBS)
+CFLAGS_HOST = -std=c99 -D_GNU_SOURCE -Wall -Wextra -Wpedantic -g -O3 -flto -DPLATFORM_POSIX -DCL_WIDE_STRINGS $(PTHREAD_FLAGS) $(FFI_CFLAGS) $(DEBUG_FLAGS)
+HOST_LIBS   = -lm $(PTHREAD_FLAGS) $(FFI_LIBS)
 
 # Test builds deliberately drop -flto and use -O1 instead of -O3.  The shipped
 # clamiga binary is built once at -O3 -flto, but the ~50 unit-test binaries each
@@ -23,7 +28,7 @@ HOST_LIBS   = -lm $(FFI_LIBS)
 # fast enough for the suite (gc-stress, which needs the optimized binary, builds
 # its own -O3 clamiga separately and is unaffected).  Test objects live in their
 # own tree so they never clash with the -O3 -flto objects linked into clamiga.
-CFLAGS_TEST = -std=c99 -D_GNU_SOURCE -Wall -Wextra -Wpedantic -g -O1 -DPLATFORM_POSIX -DCL_WIDE_STRINGS $(FFI_CFLAGS) $(DEBUG_FLAGS)
+CFLAGS_TEST = -std=c99 -D_GNU_SOURCE -Wall -Wextra -Wpedantic -g -O1 -DPLATFORM_POSIX -DCL_WIDE_STRINGS $(PTHREAD_FLAGS) $(FFI_CFLAGS) $(DEBUG_FLAGS)
 
 SRCDIR   = src
 BUILDDIR = build/host
