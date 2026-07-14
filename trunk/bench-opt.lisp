@@ -541,6 +541,31 @@ Verify the (deterministic) result against EXPECTED."
                acc))))
 
 ;; =====================================================================
+;; type.* — TYPEP symbol-spec resolution through the condition-hierarchy
+;; and deftype-table hash indexes (CL_AlistIndex, 2026-07-14).  With 100
+;; registered conditions + 100 deftypes, the pre-index linear walks made
+;; every symbol TYPEP pay O(conditions) in cl_is_condition_type — even
+;; when the answer was "not a condition type" — plus O(deftypes) in
+;; cl_get_type_expander (eta-hab: one log4cl line printing an actor graph
+;; ran one TYPEP per node and held the appender lock for ~60s).
+(dotimes (i 100)
+  (eval `(define-condition ,(intern (format nil "%BO-COND~D" i)) (error) ()))
+  (eval `(deftype ,(intern (format nil "%BO-TYPE~D" i)) () 'integer)))
+(let ((n 3000) (reps (%bo-scaled 10))
+      (c (make-condition '%bo-cond0)))
+  (%bo-run "type.typep-cond-deftype" (* 3 n)
+           (lambda ()
+             (let ((acc 0))
+               (dotimes (r reps)
+                 (setq acc 0)
+                 (dotimes (i n)
+                   (setq acc (+ acc
+                                (if (typep c 'error) 1 0)         ; parent chain hit
+                                (if (typep 5 '%bo-type50) 1 0)    ; deftype expansion
+                                (if (typep c '%bo-type50) 0 1))))) ; indexed miss
+               acc))))
+
+;; =====================================================================
 ;; alloc.* — allocator behavior (spec 2.5 free-list size classes).
 ;; Mixed object sizes retained in a 512-slot ring: continuous frees of
 ;; assorted sizes keep the free list populated and exercised.

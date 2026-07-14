@@ -809,6 +809,20 @@ static void dump_print_name(CL_Obj name)
     }
 }
 
+/* Human-readable form of CL_Thread.wait_kind (see thread.h).  Shared by
+ * MP:DUMP-THREAD-WAITS and the slow-lock-wait diagnostic. */
+static const char *wait_kind_name(int wk)
+{
+    switch (wk) {
+    case 0: return "RUN";
+    case 1: return "CONDWAIT";
+    case 2: return "CONDWAIT/timeout";
+    case 3: return "LOCK-ACQUIRE(block)";
+    case 4: return "GC-STW-WAIT";
+    default: return "?";
+    }
+}
+
 /* (mp:dump-thread-waits) -> nil
  * Diagnostic: print, for every live thread, what synchronization primitive it
  * is currently blocked on.  Distinguishes a lost-wakeup (a worker still parked
@@ -839,14 +853,7 @@ static CL_Obj bi_dump_thread_waits(CL_Obj *args, int n)
         case 3: st = "aborted";  break;
         default: st = "?";       break;
         }
-        switch (t->wait_kind) {
-        case 0: wk = "RUN";                 break;
-        case 1: wk = "CONDWAIT";            break;
-        case 2: wk = "CONDWAIT/timeout";    break;
-        case 3: wk = "LOCK-ACQUIRE(block)"; break;
-        case 4: wk = "GC-STW-WAIT";         break;
-        default: wk = "?";                  break;
-        }
+        wk = wait_kind_name(t->wait_kind);
         fprintf(stderr, "  tid=%-3u status=%-8s name=\"", t->id, st);
         dump_print_name(t->name);
         fprintf(stderr, "\" %s", wk);
@@ -962,6 +969,116 @@ static CL_Obj bi_make_recursive_lock(CL_Obj *args, int n)
     return cl_lock_alloc_obj(1, name, "MP:MAKE-RECURSIVE-LOCK");
 }
 
+/* ---- Slow-lock-wait diagnostic (CLAMIGA_LOCK_DIAG) ----
+ *
+ * When the CLAMIGA_LOCK_DIAG environment variable is set, a blocking
+ * MP:ACQUIRE-LOCK that has waited at least the threshold reports the
+ * contended lock (id + name), the waiting thread, and the current HOLDER
+ * — including what the holder itself is blocked on — to stderr, repeats
+ * while still parked, and reports once more when the lock is finally
+ * acquired (with the total wait).  The env value is the threshold in
+ * milliseconds; "1" or a non-numeric value selects the 1000ms default.
+ *
+ * Unlike MP:DUMP-THREAD-WAITS (which must be called at exactly the right
+ * moment from a watchdog), this triages an intermittent stall from
+ * clamiga's own output: the report fires from inside the stalled wait and
+ * names the culprit.  Runtime diagnostic, not DEBUG-flag instrumentation:
+ * always compiled, zero cost when the env var is unset (one cached-static
+ * read per contended park iteration, a path that is already slow). */
+
+#define CL_LOCK_DIAG_REPEAT_MS 5000  /* re-report cadence while still parked */
+
+static int32_t lock_diag_threshold_ms(void)
+{
+    /* -2 = env not read yet; -1 = disabled; >=2 = threshold in ms.  The
+     * unsynchronized lazy init is a benign race: every thread computes the
+     * same value from the same environment. */
+    static int32_t cached = -2;
+    if (cached == -2) {
+        char envbuf[32];
+        const char *s = platform_getenv("CLAMIGA_LOCK_DIAG", envbuf,
+                                        (int)sizeof(envbuf));
+        if (!s || !*s)
+            cached = -1;
+        else {
+            int v = atoi(s);
+            cached = (v >= 2) ? v : 1000;
+        }
+    }
+    return cached;
+}
+
+/* Print one slow-wait observation for the lock in `lock_obj`.
+ *
+ * MUST be called OUTSIDE the GC safe region: it reads heap objects (the
+ * lock's and threads' name strings), which a peer's compacting GC could be
+ * relocating while the caller is parked.  The caller passes the lock as the
+ * re-read GC-rooted args[0] value — any CL_Lock* captured before the park
+ * is potentially stale after a compaction.
+ *
+ * `acquired` != 0 prints the final "acquired after N ms" form instead of
+ * the still-waiting form. */
+static void lock_wait_report(CL_Obj lock_obj, uint32_t lock_id,
+                             uint32_t waited_ms, int acquired)
+{
+    CL_Thread *self = cl_get_current_thread();
+    CL_Lock *lk = (CL_Lock *)CL_OBJ_TO_PTR(lock_obj);
+
+    fprintf(stderr, "MP:ACQUIRE-LOCK diag: tid=%u \"", self->id);
+    dump_print_name(self->name);
+    if (acquired) {
+        fprintf(stderr, "\" acquired lock %u \"", lock_id);
+        dump_print_name(lk->name);
+        fprintf(stderr, "\" after %u ms\n", waited_ms);
+        fflush(stderr);
+        return;
+    }
+    fprintf(stderr, "\" waiting %u ms for lock %u \"", waited_ms, lock_id);
+    dump_print_name(lk->name);
+    fputc('"', stderr);
+
+    /* Identify the holder.  cl_lock_held is owner-maintained, so the read
+     * is racy by design (diagnostic).  Dereference the pointer only after
+     * re-finding it in the thread table under the list lock, so the zombie
+     * reaper / a completing JOIN cannot free the holder mid-print.  The
+     * list lock is only ever held for short bounded sections (the STW
+     * request/scan loops release it before parking on gc_condvar), so
+     * blocking on it here cannot deadlock. */
+    if (cl_thread_list_lock) platform_mutex_lock(cl_thread_list_lock);
+    {
+        CL_Thread *holder = cl_lock_held[lock_id];
+        int live = 0;
+        if (holder) {
+            int i;
+            for (i = 0; i < CL_MAX_THREADS; i++) {
+                if (cl_thread_table[i] == holder) { live = 1; break; }
+            }
+        }
+        if (holder && live) {
+            fprintf(stderr, " held by tid=%u \"", holder->id);
+            dump_print_name(holder->name);
+            fprintf(stderr, "\" depth=%u holder-state=%s",
+                    cl_lock_depth[lock_id], wait_kind_name(holder->wait_kind));
+            if (holder->wait_kind == 1 || holder->wait_kind == 2)
+                fprintf(stderr, " cv=%d lock=%d",
+                        holder->wait_cv_id, holder->wait_lock_id);
+            else if (holder->wait_kind == 3)
+                fprintf(stderr, " lock=%d", holder->wait_lock_id);
+            if (holder->in_safe_region)
+                fprintf(stderr, " [in-safe-region: blocking syscall]");
+        } else if (holder) {
+            fprintf(stderr, " held by an already-exited thread"
+                            " (lock leaked by its holder?)");
+        } else {
+            fprintf(stderr, " with no tracked holder"
+                            " (released this instant?)");
+        }
+    }
+    if (cl_thread_list_lock) platform_mutex_unlock(cl_thread_list_lock);
+    fputc('\n', stderr);
+    fflush(stderr);
+}
+
 /* (mp:acquire-lock lock &optional wait) -> bool */
 static CL_Obj bi_acquire_lock(CL_Obj *args, int n)
 {
@@ -1014,8 +1131,31 @@ static CL_Obj bi_acquire_lock(CL_Obj *args, int n)
              * handler runs OUTSIDE the safe region (it touches the heap
              * and may longjmp on a destroy). */
             int spins = 0;
+            int32_t diag_ms = lock_diag_threshold_ms();
+            uint32_t wait_start = 0, next_report = 0;
+            int waited = 0;
             cl_gc_enter_safe_region();
             while (platform_mutex_trylock(mutex) != 0) {
+                if (diag_ms >= 0) {
+                    uint32_t now = platform_time_ms();
+                    if (!waited) {
+                        waited = 1;
+                        wait_start = now;
+                        next_report = now + (uint32_t)diag_ms;
+                    } else if ((int32_t)(now - next_report) >= 0) {
+                        /* Report OUTSIDE the safe region: a peer's
+                         * compacting GC may be relocating the heap while
+                         * we are parked, and the report reads heap
+                         * objects.  args[0] is GC-rooted (VM stack), so
+                         * re-reading it inside the report yields the
+                         * forwarded lock object. */
+                        cl_gc_leave_safe_region();
+                        lock_wait_report(args[0], lock_id,
+                                         now - wait_start, 0);
+                        cl_gc_enter_safe_region();
+                        next_report = now + CL_LOCK_DIAG_REPEAT_MS;
+                    }
+                }
                 if (self->interrupt_pending) {
                     cl_gc_leave_safe_region();
                     self->wait_kind = 0;
@@ -1050,6 +1190,15 @@ static CL_Obj bi_acquire_lock(CL_Obj *args, int n)
                 }
             }
             cl_gc_leave_safe_region();
+            if (waited) {
+                /* `waited` is only set when the diagnostic is enabled.
+                 * Report the total wait once the acquire finally succeeds,
+                 * so a stall's duration is measured, not eyeballed.  We
+                 * are outside the safe region here — heap reads are safe. */
+                uint32_t total = platform_time_ms() - wait_start;
+                if (total >= (uint32_t)diag_ms)
+                    lock_wait_report(args[0], lock_id, total, 1);
+            }
         }
         if (self) self->wait_kind = 0;
         /* Owner tracking — see thread.h.  Set single-threaded too: the

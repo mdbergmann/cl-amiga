@@ -9,6 +9,34 @@ Related: [specs/performance.md](../specs/performance.md) is the optimization
 
 ---
 
+## 2026-07-14 — condition-hierarchy + deftype table hash indexes (TYPEP)
+
+**Commit**: on top of `fd52e4a`. **Env**: macOS host, `make host` (-O3).
+
+TYPEP on a symbol type spec probes the struct registry (indexed since
+spec 3.1), then `cl_is_condition_type` and `cl_get_type_expander` — both
+were linear alist walks, so every symbol TYPEP paid O(registered
+conditions + deftypes) even when the answer was "no".  Real-world impact
+(eta-hab on linux-arm64, diagnosed via `CLAMIGA_LOCK_DIAG` + in-container
+gdb): the print-object hook runs one TYPEP per printed node, so a single
+log4cl log line printing an actor/queue graph held the serialized appender
+lock for **~60s per appender**, stalling main/watcher/timer threads 1–2
+minutes per log event during the item-definition phase.  Both tables now
+use the generic `CL_AlistIndex` open-addressing index (compiler.h), same
+protocol as the struct registry index.
+
+Repro: `./build/host/clamiga --heap 64M --load trunk/bench-opt.lisp`
+(bench registers 100 conditions + 100 deftypes first).
+
+| Benchmark (ms, best of runs) | before | after | delta |
+|---|---|---|---|
+| type.typep-cond-deftype | 40 | **15** | 2.7× |
+| struct.typep (control, already indexed) | 16 | 16 | — |
+
+The micro-bench understates the field case: eta-hab registers several
+hundred condition types (every loaded library's `define-condition`s), and
+the walk cost scales with that count while the indexed probe stays O(1).
+
 ## 2026-07-11 — MT publication barrier: no sento throughput cost (A/B)
 
 **Commit**: `f45a91a` (barrier `17dee11` + CLOS registry sync `f45a91a`).

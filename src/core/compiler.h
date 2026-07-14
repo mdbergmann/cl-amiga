@@ -163,6 +163,53 @@ void cl_table_prepend_locked(CL_Obj *table_p, CL_Obj value);
  * that took them) to stderr. */
 void cl_tables_dump_rdlock_holders(const char *header);
 
+/* --- Generic symbol->entry hash index over a prepend-only alist ---
+ *
+ * O(1) lookup for the cl_tables_rwlock-guarded alists whose every entry
+ * is keyed by a symbol in its CAR — the generalization of the struct
+ * registry index (builtins_struct.c, spec 3.1).  TYPEP on a symbol probes
+ * the struct registry, the condition hierarchy, AND the deftype table
+ * before reaching the CLOS class hash table; with hundreds of registered
+ * conditions/deftypes those linear walks made every TYPEP O(types) —
+ * measured as multi-minute log4cl appender stalls when the print-object
+ * hook ran one TYPEP per printed node (eta-hab item-definition phase,
+ * 2026-07-14, diagnosed via CLAMIGA_LOCK_DIAG).
+ *
+ * Same protocol as the struct index: probes run under the tables rdlock
+ * against a CLEAN index; a dirty/unbuilt index is rebuilt lazily under
+ * the wrlock with platform_alloc only (no arena allocation, no cl_error
+ * while the lock is held); compaction invalidates via
+ * cl_alist_index_invalidate (world stopped); registration through
+ * cl_alist_index_prepend dirty-marks in the same wrlock critical section
+ * as the prepend; OOM or a malformed cell disables the index permanently
+ * and lookups fall back to the linear snapshot walk — slower, never
+ * wrong. */
+typedef struct {
+    CL_Obj name;    /* key symbol; CL_NIL (== 0) = empty slot */
+    CL_Obj entry;   /* the full alist entry whose CAR is `name` */
+} CL_AlistIndexSlot;
+
+typedef struct {
+    CL_Obj *table_p;          /* the indexed alist global (GC-rooted) */
+    CL_AlistIndexSlot *slots;
+    uint32_t cap;             /* power of two; 0 = unallocated */
+    int dirty;                /* alist changed or compaction moved objects */
+    int disabled;             /* OOM / malformed cell — permanent fallback */
+} CL_AlistIndex;
+
+/* Find the first entry whose CAR is KEY, or NIL.  First-match semantics
+ * identical to the linear walk (head-most entry wins on re-registration). */
+CL_Obj cl_alist_index_find(CL_AlistIndex *ix, CL_Obj key);
+/* Prepend VALUE onto *ix->table_p and dirty-mark the index in one wrlock
+ * critical section (allocation-free under the lock, like
+ * cl_table_prepend_locked). */
+void cl_alist_index_prepend(CL_AlistIndex *ix, CL_Obj value);
+/* Mark the index stale (compaction moved keys/entries; world stopped). */
+void cl_alist_index_invalidate(CL_AlistIndex *ix);
+/* Free and re-enable the index (module re-init alongside the table's
+ * own = CL_NIL reset). */
+void cl_alist_index_reset(CL_AlistIndex *ix);
+
 /* Compile-time stringification of __LINE__ so each rdlock site reports
  * its file:line in the diagnostic output. */
 #define _CL_RWL_STR(x)  #x

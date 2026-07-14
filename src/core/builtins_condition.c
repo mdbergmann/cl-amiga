@@ -57,6 +57,22 @@ extern void cl_format_to_stream(CL_Obj stream, CL_Obj *args, int n);
  */
 CL_Obj condition_hierarchy = CL_NIL;
 
+/* Hash index over condition_hierarchy (see CL_AlistIndex in compiler.h).
+ * TYPEP calls cl_is_condition_type for EVERY symbol type spec that is not
+ * a struct type — for non-condition symbols that was a full O(conditions)
+ * walk per call.  With eta-hab's ~hundreds of registered conditions and a
+ * print-object hook doing one TYPEP per printed node, a single log4cl log
+ * line took ~60s while holding the appender lock, stalling every logging
+ * thread (diagnosed 2026-07-14 via CLAMIGA_LOCK_DIAG + in-container gdb). */
+static CL_AlistIndex cond_index = { &condition_hierarchy, NULL, 0, 0, 0 };
+
+/* Compaction moved the index's key symbols and entry conses — mark it
+ * stale (called from the compaction update phase, world stopped). */
+void cl_condition_index_gc_invalidate(void)
+{
+    cl_alist_index_invalidate(&cond_index);
+}
+
 /* Slot table for user-defined condition types:
  * ((type-name . ((slot-name . :initarg) ...)) ...) */
 CL_Obj condition_slot_table = CL_NIL;
@@ -292,20 +308,11 @@ static void build_hierarchy(void)
 
 /* Look up parent list for a type in the hierarchy alist.
  * Returns CDR of the matching entry (list of parents), or NIL.
- * Snapshot-and-release: condition_hierarchy is only prepended to. */
+ * O(1) via the hash index (linear-walk fallback inside _find). */
 static CL_Obj find_parents(CL_Obj type_sym)
 {
-    CL_Obj list;
-    cl_tables_rdlock();
-    list = condition_hierarchy;
-    cl_tables_rwunlock();
-    while (!CL_NULL_P(list)) {
-        CL_Obj entry = cl_car(list);
-        if (cl_car(entry) == type_sym)
-            return cl_cdr(entry);
-        list = cl_cdr(list);
-    }
-    return CL_NIL;
+    CL_Obj entry = cl_alist_index_find(&cond_index, type_sym);
+    return CL_NULL_P(entry) ? CL_NIL : cl_cdr(entry);
 }
 
 /* Check if cond_type is a subtype of (or equal to) handler_type.
@@ -498,20 +505,11 @@ static CL_Obj format_condition_report(CL_Condition *c)
 }
 
 /* Check if a symbol is a known condition type in the hierarchy.
- * Snapshot-and-release. */
+ * O(1) via the hash index — this is on TYPEP's path for every symbol
+ * type spec, where the answer is usually "no" (a full walk pre-index). */
 int cl_is_condition_type(CL_Obj type_sym)
 {
-    CL_Obj list;
-    cl_tables_rdlock();
-    list = condition_hierarchy;
-    cl_tables_rwunlock();
-    while (!CL_NULL_P(list)) {
-        CL_Obj entry = cl_car(list);
-        if (cl_car(entry) == type_sym)
-            return 1;
-        list = cl_cdr(list);
-    }
-    return 0;
+    return !CL_NULL_P(cl_alist_index_find(&cond_index, type_sym));
 }
 
 /* --- Builtins --- */
@@ -667,9 +665,11 @@ static CL_Obj bi_register_condition_type(CL_Obj *args, int n)
     }
     /* parents is now a (possibly empty) proper list of parent symbols.
      * Both table conses run outside the write lock (STW-vs-rwlock
-     * deadlock — see cl_table_prepend_locked). */
+     * deadlock — see cl_table_prepend_locked).  The hierarchy prepend
+     * goes through the indexed variant so the hash index is dirty-marked
+     * in the same wrlock critical section. */
     entry = cl_cons(name, parents);   /* (name . parents) — name re-read post-alloc */
-    cl_table_prepend_locked(&condition_hierarchy, entry);
+    cl_alist_index_prepend(&cond_index, entry);
 
     /* Add (name . slot-pairs) to condition_slot_table */
     entry = cl_cons(name, slot_pairs);
@@ -2021,12 +2021,17 @@ void cl_builtins_condition_init(void)
      * with heap layout (see cl_mem_init's n_global_roots reset).
      * No-op in a normal once-per-process boot. */
     condition_hierarchy = CL_NIL;
+    cl_alist_index_reset(&cond_index);
     condition_slot_table = CL_NIL;
     condition_default_initargs = CL_NIL;
     condition_slot_initforms = CL_NIL;
 
     /* Build condition type hierarchy */
     build_hierarchy();
+    /* build_hierarchy prepends the builtin entries with raw assignments
+     * (single-threaded init, no lock needed) — mark the index stale so
+     * the first lookup rebuilds over them. */
+    cl_alist_index_invalidate(&cond_index);
 
     /* Register builtins */
     defun("MAKE-CONDITION", bi_make_condition, 1, -1);

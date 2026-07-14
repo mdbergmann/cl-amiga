@@ -1908,6 +1908,30 @@
 (check "deftype upgraded-array-element-type" 'character
        (upgraded-array-element-type 'my-char))
 
+; --- Type system: condition/deftype table hash index ---
+; TYPEP resolves symbol type specs through hash indexes over the condition
+; hierarchy and the deftype table (CL_AlistIndex).  Three index-specific
+; hazards: (1) a compacting GC relocates the key symbols, so a lookup after
+; (gc) must hit the rebuilt index, not stale offsets; (2) redefinition
+; prepends, and the index must preserve the linear walk's head-most-wins
+; semantics; (3) a fresh definition made AFTER the index was built must be
+; visible immediately (registration dirty-marks the index).
+(deftype %ix-shadowed () 'integer)
+(check "index deftype pre-gc" t (typep 5 '%ix-shadowed))
+(gc) (gc)
+(check "index deftype survives compaction" t (typep 5 '%ix-shadowed))
+(deftype %ix-shadowed () 'string)
+(check "index deftype redefinition wins (pos)" t (typep "s" '%ix-shadowed))
+(check "index deftype redefinition wins (neg)" nil (typep 5 '%ix-shadowed))
+(define-condition %ix-cond (error) ())
+(check "index condition visible after define" t
+       (typep (make-condition '%ix-cond) '%ix-cond))
+(gc)
+(check "index condition survives compaction" t
+       (typep (make-condition '%ix-cond) 'error))
+(check "index non-condition symbol misses cleanly" nil
+       (typep 42 '%ix-cond))
+
 ; CLAMIGA::%TYPE-EXPANDER exposes the deftype expander table to Lisp so a
 ; portable TYPEXPAND can resolve user deftype aliases (introspect-environment
 ; shim → serapeum EXPLODE-TYPE).  A built-in type name has no expander; an
