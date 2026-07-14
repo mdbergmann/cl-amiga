@@ -3188,6 +3188,93 @@ TEST(eval_destructuring_bind_optional_provided)
         "(1 2)");
 }
 
+/* CLHS 3.4.5: a destructuring lambda list may be dotted — (a . b) is the
+ * abbreviation for (a &rest b).  Regression: eta-hab's
+ * (destructuring-bind (name . label) '(sym . "str") ...) faulted with
+ * "CAR: argument is not of type LIST". */
+TEST(eval_destructuring_bind_dotted_pair)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(destructuring-bind (a . b) '(1 . 2) (list a b))"),
+        "(1 2)");
+}
+
+TEST(eval_destructuring_bind_dotted_tail)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(destructuring-bind (a b . c) '(1 2 3 4) (list a b c))"),
+        "(1 2 (3 4))");
+}
+
+TEST(eval_destructuring_bind_dotted_nested)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(destructuring-bind (a (b . c) . d) '(1 (2 . 3) 4) (list a b c d))"),
+        "(1 2 3 (4))");
+}
+
+TEST(eval_destructuring_bind_dotted_after_optional)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(destructuring-bind (a &optional b . c) '(1 2 3) (list a b c))"),
+        "(1 2 (3))");
+}
+
+TEST(eval_destructuring_bind_dotted_optional_defaulted)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(destructuring-bind (a &optional (b 9) . c) '(1) (list a b c))"),
+        "(1 9 NIL)");
+}
+
+/* The boot.lisp macro expander (%dbind-expand) is a separate path from the
+ * compiler special form — the boxing/NLX pre-scans macroexpand through it,
+ * which is where eta-hab actually faulted.  Exercise it explicitly. */
+TEST(eval_destructuring_bind_dotted_macroexpand_path)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(eval (macroexpand-1 "
+        "  '(destructuring-bind (a &optional b . c) '(1 2 3) (list a b c))))"),
+        "(1 2 (3))");
+}
+
+/* Regression: a dotted tail after &key (or &aux) is malformed per CLHS
+ * 3.4.5 — the dotted abbreviation stands in the &rest position, which must
+ * precede &key/&aux.  Both destructuring-bind paths (the compiler special
+ * form AND the boot.lisp %dbind-expand macro used by MACROEXPAND/code
+ * walkers) must reject it identically, rather than one silently accepting
+ * malformed input the other errors on.
+ *
+ * The compiler special form path signals its cl_error at COMPILE TIME
+ * (compile_destructure_pattern runs while compiling the enclosing
+ * handler-case form), so the error aborts compilation of the whole
+ * top-level form before any handler-case protection is installed — it
+ * surfaces as an uncaught top-level error, not something handler-case can
+ * catch.  The macroexpand-1 path runs %dbind-expand as an ordinary
+ * function call at RUNTIME (inside the handler-case's dynamic extent), so
+ * its (error ...) call is caught normally. */
+TEST(eval_destructuring_bind_dotted_after_key_rejected)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(destructuring-bind (a &key b . c) '(1 :b 2 3 4) (list a b c))"),
+        "ERROR:1");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (eval (macroexpand-1 "
+        "  '(destructuring-bind (a &key b . c) '(1 :b 2 3 4) (list a b c))))"
+        "  (error () :err))"), ":ERR");
+}
+
+TEST(eval_destructuring_bind_dotted_after_aux_rejected)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(destructuring-bind (a &aux (b 1) . c) '(1) (list a b c))"),
+        "ERROR:1");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (eval (macroexpand-1 "
+        "  '(destructuring-bind (a &aux (b 1) . c) '(1) (list a b c))))"
+        "  (error () :err))"), ":ERR");
+}
+
 TEST(eval_destructuring_bind_body)
 {
     ASSERT_STR_EQ(eval_print(
@@ -10818,6 +10905,14 @@ int main(void)
     RUN(eval_destructuring_bind_rest);
     RUN(eval_destructuring_bind_optional);
     RUN(eval_destructuring_bind_optional_provided);
+    RUN(eval_destructuring_bind_dotted_pair);
+    RUN(eval_destructuring_bind_dotted_tail);
+    RUN(eval_destructuring_bind_dotted_nested);
+    RUN(eval_destructuring_bind_dotted_after_optional);
+    RUN(eval_destructuring_bind_dotted_optional_defaulted);
+    RUN(eval_destructuring_bind_dotted_macroexpand_path);
+    RUN(eval_destructuring_bind_dotted_after_key_rejected);
+    RUN(eval_destructuring_bind_dotted_after_aux_rejected);
     RUN(eval_destructuring_bind_body);
     RUN(eval_destructuring_bind_key);
     RUN(eval_destructuring_bind_optional_rest_key);

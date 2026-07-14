@@ -401,6 +401,22 @@ Spec is var | (var ...) | ((keyword var) ...)."
              (b cur src)
              (scan ll 0 cur)))
          (scan (ll mode cur)        ; mode: 0=required 1=optional 2=key 3=aux
+           ;; CLHS 3.4.5: a destructuring lambda list may be dotted —
+           ;; (a . b) is equivalent to (a &rest b).  An atomic tail binds
+           ;; the rest of the source and ends the walk.  The dotted
+           ;; abbreviation stands in the &rest position, which must precede
+           ;; &key/&aux (CLHS 3.4.5) — mirror compile_destructure_pattern's
+           ;; rejection of a dotted tail in mode 2/3 instead of silently
+           ;; accepting it.
+           (when (and ll (atom ll))
+             (when (>= mode 2)
+               (error "destructuring-bind: dotted lambda-list tail ~S after ~A ~
+                       (the dotted abbreviation stands in the &rest position, ~
+                       which must precede ~A)"
+                      ll (if (= mode 2) "&key" "&aux")
+                      (if (= mode 2) "&key" "&aux")))
+             (b ll cur)
+             (return-from scan nil))
            (when ll
              (let ((item (car ll)))
                (cond

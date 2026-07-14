@@ -8,6 +8,7 @@ third_party/
 .claude/scheduled_tasks.lock
 T:fasl*
 verify/*
+!verify/linux-arm64/
 !verify/realamiga/
 verify/realamiga/*
 !verify/realamiga/call-on-ustartup

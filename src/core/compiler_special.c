@@ -86,7 +86,11 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
         if (elem == SYM_AMP_AUX) {
             CL_Obj rest = cl_cdr(pattern);
             CL_GC_PROTECT(rest);
-            while (!CL_NULL_P(rest)) {
+            /* CONS_P (not !NULL_P): a dotted tail after &aux is malformed
+             * per CLHS 3.4.5 (the dotted abbreviation stands in the &rest
+             * position, which precedes &aux) — diagnose it clearly below
+             * rather than faulting in cl_car. */
+            while (CL_CONS_P(rest)) {
                 CL_Obj spec = cl_car(rest);
                 CL_Obj var = spec, init = CL_NIL;
                 int slot;
@@ -107,6 +111,12 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
                 cl_emit(c, OP_POP);
                 rest = cl_cdr(rest);
             }
+            if (!CL_NULL_P(rest))
+                cl_error(CL_ERR_GENERAL,
+                         "destructuring-bind: dotted lambda-list tail %s after &aux "
+                         "(the dotted abbreviation stands in the &rest position, "
+                         "which must precede &aux)",
+                         CL_SYMBOL_P(rest) ? cl_symbol_name(rest) : "?");
             CL_GC_UNPROTECT(1);
             goto done; /* aux is terminal — no arity check */
         }
@@ -154,7 +164,10 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
             CL_Obj rest = cl_cdr(pattern);
             /* GC-protect cursor — compile_expr (default_val) can compact, making rest stale */
             CL_GC_PROTECT(rest);
-            while (!CL_NULL_P(rest)) {
+            /* CONS_P (not !NULL_P): a dotted tail — (a &optional b . c),
+             * the CLHS 3.4.5 abbreviation for a trailing &rest var — ends
+             * the loop and is bound below instead of faulting in cl_car. */
+            while (CL_CONS_P(rest)) {
                 CL_Obj opt = cl_car(rest);
                 CL_Obj var;
                 CL_Obj default_val = CL_NIL;
@@ -258,7 +271,21 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
                 }
 
                 rest = cl_cdr(rest);
-                elem = CL_NULL_P(rest) ? CL_NIL : cl_car(rest);
+                elem = CL_CONS_P(rest) ? cl_car(rest) : CL_NIL;
+            }
+            if (!CL_NULL_P(rest)) {
+                /* Dotted tail: bind it to the remaining list, like the
+                 * required-path dotted handling below. */
+                if (CL_SYMBOL_P(rest)) {
+                    int slot = cl_env_add_local(env, rest);
+                    cl_emit(c, OP_LOAD);
+                    cl_emit(c, (uint8_t)pos_slot);
+                    cl_emit(c, OP_STORE);
+                    cl_emit(c, (uint8_t)slot);
+                    cl_emit(c, OP_POP);
+                }
+                CL_GC_UNPROTECT(1);
+                goto done; /* dotted tail absorbs the remainder — no too-many check */
             }
             CL_GC_UNPROTECT(1);
             /* Optionals exhausted with no following &rest/&key: per CLHS any
@@ -286,7 +313,11 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
             /* GC-protect cursor — compile_expr (default_val) can compact, making rest stale */
             CL_GC_PROTECT(rest);
 
-            while (!CL_NULL_P(rest)) {
+            /* CONS_P (not !NULL_P): a dotted tail after &key is malformed
+             * per CLHS 3.4.5 (the dotted abbreviation stands in the &rest
+             * position, which precedes &key) — diagnose it clearly below
+             * rather than faulting in cl_car. */
+            while (CL_CONS_P(rest)) {
                 CL_Obj spec = cl_car(rest);
                 CL_Obj var, keyword_sym, default_val = CL_NIL;
                 CL_Obj supplied_p = CL_NIL;
@@ -423,6 +454,12 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
 
                 rest = cl_cdr(rest);
             }
+            if (!CL_NULL_P(rest))
+                cl_error(CL_ERR_GENERAL,
+                         "destructuring-bind: dotted lambda-list tail %s after &key "
+                         "(the dotted abbreviation stands in the &rest position, "
+                         "which must precede &key)",
+                         CL_SYMBOL_P(rest) ? cl_symbol_name(rest) : "?");
             CL_GC_UNPROTECT(1);
             goto done;
         }

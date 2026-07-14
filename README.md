@@ -467,6 +467,16 @@ diffs the real package exports against a committed snapshot; run
   returns the current setting. See `tests/test_stream.c`
   (`platform_socket_table_grows_many_connections`, `socket_read_timeout_*`,
   `eval_socket_stream_timeout_*`) and `tests/amiga/run-tests.lisp` for usage.
+- **UDP networking** — connected datagram sockets:
+  `(ext:open-udp-stream host port)` returns a UDP socket stream;
+  `(ext:udp-stream-send stream buffer &optional length)` sends one datagram,
+  `(ext:udp-stream-receive stream buffer &optional max-length)` blocks for one
+  (honoring the same `ext:socket-stream-timeout` places), and
+  `(ext:socket-stream-local-endpoint stream)` returns the local dotted-quad
+  address and port (getsockname — TCP streams too). The usocket fork maps
+  `:datagram` sockets onto these, which is what KNXnet/IP tunneling (knx-conn)
+  uses. See `tests/test_stream.c` (`eval_udp_stream_*`) and
+  `tests/amiga/run-tests.lisp` for usage.
 
 ### Declarations (`declaim` / `proclaim` / `declare`)
 

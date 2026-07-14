@@ -2050,6 +2050,141 @@ TEST(eval_open_tcp_stream_write_byte)
     { int status; waitpid(pid, &status, 0); }
 }
 
+/* --- UDP datagram socket streams (EXT:OPEN-UDP-STREAM & co.) --- */
+
+/* Bind a UDP socket on 127.0.0.1 with an OS-assigned port; returns the port
+ * and stores the fd.  The UDP analogue of start_echo_server. */
+static int start_udp_peer(int *peer_fd)
+{
+    struct sockaddr_in addr;
+    socklen_t addrlen = sizeof(addr);
+    *peer_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (*peer_fd < 0) return -1;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
+    if (bind(*peer_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        close(*peer_fd);
+        return -1;
+    }
+    if (getsockname(*peer_fd, (struct sockaddr *)&addr, &addrlen) < 0) {
+        close(*peer_fd);
+        return -1;
+    }
+    return ntohs(addr.sin_port);
+}
+
+TEST(eval_udp_stream_roundtrip)
+{
+    int peer_fd, port;
+    pid_t pid;
+    char expr[512];
+    CL_Obj result;
+
+    port = start_udp_peer(&peer_fd);
+    ASSERT(port > 0);
+
+    /* Child: receive one datagram, echo it back reversed. */
+    pid = fork();
+    if (pid == 0) {
+        unsigned char buf[64];
+        struct sockaddr_in from;
+        socklen_t flen = sizeof(from);
+        ssize_t n = recvfrom(peer_fd, buf, sizeof(buf), 0,
+                             (struct sockaddr *)&from, &flen);
+        if (n > 0) {
+            ssize_t i;
+            unsigned char rev[64];
+            for (i = 0; i < n; i++) rev[i] = buf[n - 1 - i];
+            sendto(peer_fd, rev, (size_t)n, 0, (struct sockaddr *)&from, flen);
+        }
+        close(peer_fd);
+        _exit(0);
+    }
+    close(peer_fd);
+
+    /* Send #(1 2 3 4 5), expect (5 4 3 2 1) back. */
+    snprintf(expr, sizeof(expr),
+        "(let ((s (ext:open-udp-stream \"127.0.0.1\" %d))"
+        "      (buf (make-array 16 :element-type '(unsigned-byte 8)"
+        "                          :initial-element 0)))"
+        "  (ext:udp-stream-send s (coerce #(1 2 3 4 5)"
+        "                                 '(vector (unsigned-byte 8))) 5)"
+        "  (let ((len (ext:udp-stream-receive s buf)))"
+        "    (close s)"
+        "    (and (= len 5)"
+        "         (equal (coerce (subseq buf 0 5) 'list) '(5 4 3 2 1)))))",
+        port);
+    result = cl_eval_string(expr);
+    ASSERT(result == CL_T);
+
+    { int status; waitpid(pid, &status, 0); }
+}
+
+TEST(eval_udp_stream_receive_timeout)
+{
+    int peer_fd, port;
+    char expr[384];
+    CL_Obj result;
+
+    /* A bound-but-silent peer: nothing ever arrives, the read timeout must
+     * fire and raise EXT:SOCKET-TIMEOUT. */
+    port = start_udp_peer(&peer_fd);
+    ASSERT(port > 0);
+
+    snprintf(expr, sizeof(expr),
+        "(let ((s (ext:open-udp-stream \"127.0.0.1\" %d))"
+        "      (buf (make-array 8 :element-type '(unsigned-byte 8))))"
+        "  (setf (ext:socket-stream-timeout s :input) 0.15)"
+        "  (prog1 (handler-case (progn (ext:udp-stream-receive s buf) :data)"
+        "           (ext:socket-timeout () :timed-out))"
+        "    (close s)))",
+        port);
+    result = cl_eval_string(expr);
+    {
+        CL_Obj expected = cl_eval_string(":timed-out");
+        ASSERT(result == expected);
+    }
+    close(peer_fd);
+}
+
+TEST(eval_udp_stream_local_endpoint)
+{
+    int peer_fd, port;
+    char expr[384];
+    CL_Obj result;
+
+    port = start_udp_peer(&peer_fd);
+    ASSERT(port > 0);
+
+    /* Connected UDP: getsockname must yield the loopback address and a
+     * non-zero ephemeral port. */
+    snprintf(expr, sizeof(expr),
+        "(let ((s (ext:open-udp-stream \"127.0.0.1\" %d)))"
+        "  (multiple-value-bind (ip lport)"
+        "      (ext:socket-stream-local-endpoint s)"
+        "    (close s)"
+        "    (and (string= ip \"127.0.0.1\") (integerp lport) (> lport 0))))",
+        port);
+    result = cl_eval_string(expr);
+    ASSERT(result == CL_T);
+    close(peer_fd);
+}
+
+TEST(eval_udp_stream_type_errors)
+{
+    /* The datagram entry points must reject non-UDP streams with a clear
+     * type error rather than corrupting the byte-stream state. */
+    CL_Obj result = cl_eval_string(
+        "(handler-case (ext:udp-stream-send *standard-output*"
+        "                (make-array 1 :element-type '(unsigned-byte 8)))"
+        "  (type-error () :rejected)"
+        "  (error () :rejected))");
+    CL_Obj expected = cl_eval_string(":rejected");
+    ASSERT(result == expected);
+}
+
 /* --- Server-side TCP socket tests (listen/accept) --- */
 
 /* Single-threaded loopback round trip exercising the raw platform layer.
@@ -3953,6 +4088,10 @@ int main(void)
     RUN(eval_open_tcp_stream_connect_failure);
     RUN(eval_open_tcp_stream_read_byte);
     RUN(eval_open_tcp_stream_write_byte);
+    RUN(eval_udp_stream_roundtrip);
+    RUN(eval_udp_stream_receive_timeout);
+    RUN(eval_udp_stream_local_endpoint);
+    RUN(eval_udp_stream_type_errors);
     RUN(platform_socket_listen_accept);
     RUN(platform_socket_listen_busy_port);
     RUN(platform_socket_table_grows_many_connections);

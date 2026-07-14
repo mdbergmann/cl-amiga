@@ -137,6 +137,24 @@ PlatformSocket platform_socket_listen(int port, int loopback, int *actual_port);
  * handle (a normal read/write socket) or PLATFORM_SOCKET_INVALID on error. */
 PlatformSocket platform_socket_accept(PlatformSocket listener);
 
+/* UDP (datagram) sockets.  A connected UDP socket shares the handle table
+ * with TCP sockets — platform_socket_close / _set_timeout /
+ * _data_available work on it — but I/O is message-oriented through the two
+ * functions below; the byte-stream read/write/flush entry points are never
+ * used on a UDP handle. */
+PlatformSocket platform_udp_connect(const char *host, int port);
+/* Send LEN bytes as one datagram.  0=ok, -1=error, -2=timeout (when a write
+ * timeout is set via platform_socket_set_timeout). */
+int platform_udp_send(PlatformSocket sh, const uint8_t *buf, uint32_t len);
+/* Receive one datagram into buf (blocks; honors the read timeout set via
+ * platform_socket_set_timeout).  Returns the received length (truncated to
+ * maxlen by the OS), -1 on error/closed socket, -2 on timeout. */
+int platform_udp_recv(PlatformSocket sh, uint8_t *buf, uint32_t maxlen);
+/* Local endpoint of a connected socket (TCP or UDP): writes the dotted-quad
+ * address into ip_out (must hold >= 16 bytes) and the port into *port_out.
+ * 0=ok, -1=error. */
+int platform_socket_local_endpoint(PlatformSocket sh, char *ip_out, int *port_out);
+
 /* Timing */
 uint32_t platform_time_ms(void);   /* Monotonic milliseconds (for elapsed time) */
 /* Process CPU time (user+system) in milliseconds.  On platforms without

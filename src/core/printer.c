@@ -1360,6 +1360,18 @@ static void print_obj(CL_Obj obj)
         extern CL_Obj cl_struct_slot_names(CL_Obj type_name);
         CL_Obj slot_names;
 
+        /* *print-level* applies BEFORE the print-object hook (CLHS
+         * 22.1.3.12: at the level limit the object prints as "#" — the
+         * custom PRINT-OBJECT method is not consulted).  Without this,
+         * mutually-referencing CLOS/struct graphs (e.g. chipi's
+         * item <-> binding) recurse hook -> format ~A -> hook all the way
+         * to the hard cap, each level paying a full CLOS dispatch — a
+         * single log line then takes minutes regardless of *print-level*. */
+        if (max_depth >= 0 && current_depth >= max_depth) {
+            out_char('#');
+            break;
+        }
+
         /* *print-object-hook*: if set, call it for custom struct printing.
          * Hook takes (object) and returns a string to output, or NIL
          * to fall through to default printing.  Bump current_depth

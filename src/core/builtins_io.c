@@ -3820,6 +3820,219 @@ static CL_Obj bi_socket_local_port(CL_Obj *args, int n)
     return CL_MAKE_FIXNUM(port);
 }
 
+/* --- UDP datagram socket streams ---
+ *
+ * Message-oriented I/O for KNXnet/IP-style protocols (usocket's
+ * datagram-usocket maps onto these).  The stream is a CL_STREAM_SOCKET with
+ * CL_STREAM_FLAG_DGRAM; CLOSE and the socket timeout accessors work on it,
+ * while character/byte stream I/O is rejected by the type checks below. */
+
+static CL_Stream *check_udp_stream(CL_Obj obj, const char *who)
+{
+    CL_Stream *st;
+    if (!CL_STREAM_P(obj))
+        cl_error(CL_ERR_TYPE, "%s: argument must be a UDP socket stream", who);
+    st = (CL_Stream *)CL_OBJ_TO_PTR(obj);
+    if (st->stream_type != CL_STREAM_SOCKET || !(st->flags & CL_STREAM_FLAG_DGRAM))
+        cl_error(CL_ERR_TYPE, "%s: argument must be a UDP socket stream "
+                 "(see EXT:OPEN-UDP-STREAM)", who);
+    if (!(st->flags & CL_STREAM_FLAG_OPEN))
+        cl_error(CL_ERR_GENERAL, "%s: stream is closed", who);
+    return st;
+}
+
+/* Validate an octet vector argument and return its usable length (fill
+ * pointer if active, else total length).  Displaced/multi-dim vectors are
+ * rejected — the send/receive paths index v->data[] directly. */
+static CL_Vector *check_octet_vector(CL_Obj obj, const char *who, uint32_t *len_out)
+{
+    CL_Vector *v;
+    if (!CL_VECTOR_P(obj))
+        cl_error(CL_ERR_TYPE, "%s: buffer must be a vector", who);
+    v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
+    if (v->flags & (CL_VEC_FLAG_DISPLACED | CL_VEC_FLAG_MULTIDIM | CL_VEC_FLAG_STRING))
+        cl_error(CL_ERR_TYPE,
+                 "%s: buffer must be a simple (non-displaced) octet vector", who);
+    *len_out = (v->fill_pointer != CL_NO_FILL_POINTER) ? v->fill_pointer : v->length;
+    return v;
+}
+
+/* (ext:open-udp-stream host port) => stream
+ * Opens a connected UDP (datagram) socket to host:port and returns a socket
+ * stream for it.  I/O goes through EXT:UDP-STREAM-SEND / -RECEIVE (one call
+ * per datagram); close with CL:CLOSE.  Read/write timeouts set via
+ * (SETF EXT:SOCKET-STREAM-TIMEOUT) apply to the datagram operations. */
+static CL_Obj bi_open_udp_stream(CL_Obj *args, int n)
+{
+    CL_String *host_str;
+    int port;
+    CL_Obj stream;
+    char host_buf[256];
+    uint32_t hl;
+    CL_UNUSED(n);
+    if (!CL_STRING_P(args[0]))
+        cl_error(CL_ERR_TYPE, "EXT:OPEN-UDP-STREAM: host must be a string");
+    if (!CL_FIXNUM_P(args[1]))
+        cl_error(CL_ERR_TYPE, "EXT:OPEN-UDP-STREAM: port must be an integer");
+    host_str = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+    port = CL_FIXNUM_VAL(args[1]);
+    if (port < 1 || port > 65535)
+        cl_error(CL_ERR_GENERAL, "EXT:OPEN-UDP-STREAM: port must be 1-65535");
+    /* Copy the hostname off the arena — cl_make_udp_socket_stream allocates
+     * (and DNS parks in a safe region), so host_str->data can move. */
+    hl = host_str->length;
+    if (hl >= sizeof(host_buf))
+        cl_error(CL_ERR_GENERAL,
+                 "EXT:OPEN-UDP-STREAM: hostname too long (%u bytes, max %u)",
+                 (unsigned)hl, (unsigned)sizeof(host_buf) - 1);
+    memcpy(host_buf, host_str->data, hl);
+    host_buf[hl] = '\0';
+    stream = cl_make_udp_socket_stream(host_buf, port);
+    if (CL_NULL_P(stream))
+        cl_error(CL_ERR_GENERAL,
+                 "EXT:OPEN-UDP-STREAM: failed to open UDP socket to %s:%d "
+                 "(host unresolvable or no route)", host_buf, port);
+    return stream;
+}
+
+#define UDP_STACK_BUF 2048
+
+/* (ext:udp-stream-send stream buffer &optional length) => t
+ * Sends the first LENGTH octets of BUFFER (defaults to its fill pointer /
+ * length) as ONE datagram on the connected UDP stream. */
+static CL_Obj bi_udp_stream_send(CL_Obj *args, int n)
+{
+    CL_Stream *st;
+    CL_Vector *v;
+    uint32_t len, i;
+    uint32_t handle, wtmo;
+    uint8_t sbuf[UDP_STACK_BUF];
+    uint8_t *buf;
+    int rc;
+    st = check_udp_stream(args[0], "EXT:UDP-STREAM-SEND");
+    v = check_octet_vector(args[1], "EXT:UDP-STREAM-SEND", &len);
+    if (n >= 3 && !CL_NULL_P(args[2])) {
+        if (!CL_FIXNUM_P(args[2]) || CL_FIXNUM_VAL(args[2]) < 0)
+            cl_error(CL_ERR_TYPE,
+                     "EXT:UDP-STREAM-SEND: length must be a non-negative integer");
+        if ((uint32_t)CL_FIXNUM_VAL(args[2]) > v->length)
+            cl_error(CL_ERR_GENERAL,
+                     "EXT:UDP-STREAM-SEND: length %ld exceeds buffer size %u",
+                     (long)CL_FIXNUM_VAL(args[2]), (unsigned)v->length);
+        len = (uint32_t)CL_FIXNUM_VAL(args[2]);
+    }
+    if (len > 65507)
+        cl_error(CL_ERR_GENERAL,
+                 "EXT:UDP-STREAM-SEND: %u octets exceed the maximum UDP "
+                 "datagram size (65507)", (unsigned)len);
+    buf = (len <= UDP_STACK_BUF) ? sbuf : (uint8_t *)malloc(len);
+    if (!buf)
+        cl_error(CL_ERR_GENERAL, "EXT:UDP-STREAM-SEND: out of memory");
+    for (i = 0; i < len; i++) {
+        CL_Obj e = v->data[i];
+        if (!CL_FIXNUM_P(e) || CL_FIXNUM_VAL(e) < 0 || CL_FIXNUM_VAL(e) > 255) {
+            if (buf != sbuf) free(buf);
+            cl_error(CL_ERR_TYPE,
+                     "EXT:UDP-STREAM-SEND: buffer element %u is not an octet (0-255)",
+                     (unsigned)i);
+        }
+        buf[i] = (uint8_t)CL_FIXNUM_VAL(e);
+    }
+    /* Capture the handle + timeout before the platform call: the send parks
+     * in a GC safe region, and compaction can move the stream object. */
+    handle = st->handle_id;
+    wtmo = st->write_timeout_ms;
+    rc = platform_udp_send((PlatformSocket)handle, buf, len);
+    if (buf != sbuf) free(buf);
+    if (rc == PLATFORM_SOCKET_TIMEOUT)
+        cl_error(CL_ERR_TIMEOUT,
+                 "EXT:UDP-STREAM-SEND: send timed out after %u ms", (unsigned)wtmo);
+    if (rc != 0)
+        cl_error(CL_ERR_GENERAL, "EXT:UDP-STREAM-SEND: send failed");
+    return CL_T;
+}
+
+/* (ext:udp-stream-receive stream buffer &optional max-length) => length
+ * Blocks until one datagram arrives on the connected UDP stream, stores its
+ * octets into BUFFER (up to MAX-LENGTH, defaulting to the buffer size) and
+ * returns the datagram length.  A read timeout set via
+ * (SETF EXT:SOCKET-STREAM-TIMEOUT) raises EXT:SOCKET-TIMEOUT. */
+static CL_Obj bi_udp_stream_receive(CL_Obj *args, int n)
+{
+    CL_Stream *st;
+    CL_Vector *v;
+    uint32_t maxlen, i;
+    uint32_t handle, rtmo;
+    uint8_t sbuf[UDP_STACK_BUF];
+    uint8_t *buf;
+    int rc;
+    st = check_udp_stream(args[0], "EXT:UDP-STREAM-RECEIVE");
+    v = check_octet_vector(args[1], "EXT:UDP-STREAM-RECEIVE", &maxlen);
+    maxlen = v->length;   /* capacity, not fill pointer, bounds a receive */
+    if (n >= 3 && !CL_NULL_P(args[2])) {
+        if (!CL_FIXNUM_P(args[2]) || CL_FIXNUM_VAL(args[2]) < 0)
+            cl_error(CL_ERR_TYPE,
+                     "EXT:UDP-STREAM-RECEIVE: max-length must be a non-negative integer");
+        if ((uint32_t)CL_FIXNUM_VAL(args[2]) < maxlen)
+            maxlen = (uint32_t)CL_FIXNUM_VAL(args[2]);
+    }
+    buf = (maxlen <= UDP_STACK_BUF) ? sbuf : (uint8_t *)malloc(maxlen ? maxlen : 1);
+    if (!buf)
+        cl_error(CL_ERR_GENERAL, "EXT:UDP-STREAM-RECEIVE: out of memory");
+    /* Capture handle + timeout first: the blocking recv parks in a GC safe
+     * region and compaction can move the stream object meanwhile. */
+    handle = st->handle_id;
+    rtmo = st->read_timeout_ms;
+    rc = platform_udp_recv((PlatformSocket)handle, buf, maxlen);
+    if (rc == PLATFORM_SOCKET_TIMEOUT) {
+        if (buf != sbuf) free(buf);
+        cl_error(CL_ERR_TIMEOUT,
+                 "EXT:UDP-STREAM-RECEIVE: no datagram within %u ms", (unsigned)rtmo);
+    }
+    if (rc < 0) {
+        if (buf != sbuf) free(buf);
+        cl_error(CL_ERR_GENERAL,
+                 "EXT:UDP-STREAM-RECEIVE: receive failed (socket closed?)");
+    }
+    /* GC SAFETY: re-derive the vector pointer — the safe region above may
+     * have let a compaction move it (args[] itself is GC-rooted). */
+    v = (CL_Vector *)CL_OBJ_TO_PTR(args[1]);
+    for (i = 0; i < (uint32_t)rc; i++)
+        v->data[i] = CL_MAKE_FIXNUM(buf[i]);
+    if (buf != sbuf) free(buf);
+    return CL_MAKE_FIXNUM(rc);
+}
+
+/* (ext:socket-stream-local-endpoint stream) => ip-string, port
+ * Local address/port of a connected TCP or UDP socket stream (getsockname).
+ * usocket's get-local-name/get-local-port build on this — KNXnet/IP needs
+ * the real local endpoint for its HPAI structures. */
+static CL_Obj bi_socket_stream_local_endpoint(CL_Obj *args, int n)
+{
+    CL_Stream *st;
+    char ip[16];
+    int port = 0;
+    uint32_t handle;
+    CL_Obj ip_obj;
+    CL_UNUSED(n);
+    if (!CL_STREAM_P(args[0]))
+        cl_error(CL_ERR_TYPE,
+                 "EXT:SOCKET-STREAM-LOCAL-ENDPOINT: argument must be a socket stream");
+    st = (CL_Stream *)CL_OBJ_TO_PTR(args[0]);
+    if (st->stream_type != CL_STREAM_SOCKET || !(st->flags & CL_STREAM_FLAG_OPEN))
+        cl_error(CL_ERR_TYPE,
+                 "EXT:SOCKET-STREAM-LOCAL-ENDPOINT: argument must be an open socket stream");
+    handle = st->handle_id;
+    if (platform_socket_local_endpoint((PlatformSocket)handle, ip, &port) != 0)
+        cl_error(CL_ERR_GENERAL,
+                 "EXT:SOCKET-STREAM-LOCAL-ENDPOINT: getsockname failed");
+    ip_obj = cl_make_string(ip, (uint32_t)strlen(ip));
+    cl_mv_count = 2;
+    cl_mv_values[0] = ip_obj;
+    cl_mv_values[1] = CL_MAKE_FIXNUM(port);
+    return ip_obj;
+}
+
 /* Decode a :INPUT / :OUTPUT / :IO direction keyword into which-timeout flags.
  * *do_read and *do_write are set accordingly; signals a type error otherwise. */
 static void socket_timeout_dir(CL_Obj dir, const char *fn, int *do_read, int *do_write)
@@ -4008,6 +4221,10 @@ void cl_builtins_io_init(void)
     extfun("SOCKET-LISTEN", bi_socket_listen, 1, 2);
     extfun("SOCKET-ACCEPT", bi_socket_accept, 1, 1);
     extfun("SOCKET-LOCAL-PORT", bi_socket_local_port, 1, 1);
+    extfun("OPEN-UDP-STREAM", bi_open_udp_stream, 2, 2);
+    extfun("UDP-STREAM-SEND", bi_udp_stream_send, 2, 3);
+    extfun("UDP-STREAM-RECEIVE", bi_udp_stream_receive, 2, 3);
+    extfun("SOCKET-STREAM-LOCAL-ENDPOINT", bi_socket_stream_local_endpoint, 1, 1);
     extfun("SOCKET-STREAM-TIMEOUT", bi_socket_stream_timeout, 2, 2);
     extfun("%SET-SOCKET-STREAM-TIMEOUT", bi_set_socket_stream_timeout, 3, 3);
 

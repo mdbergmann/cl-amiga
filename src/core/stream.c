@@ -1455,6 +1455,24 @@ CL_Obj cl_make_socket_stream(const char *host, int port, int connect_ms)
     return s;
 }
 
+CL_Obj cl_make_udp_socket_stream(const char *host, int port)
+{
+    PlatformSocket sh = platform_udp_connect(host, port);
+    CL_Obj s;
+    CL_Stream *st;
+    if (sh == PLATFORM_SOCKET_INVALID)
+        return CL_NIL;
+    s = cl_make_stream(CL_STREAM_IO, CL_STREAM_SOCKET);
+    if (CL_NULL_P(s)) {
+        platform_socket_close(sh);
+        return CL_NIL;
+    }
+    st = (CL_Stream *)CL_OBJ_TO_PTR(s);
+    st->handle_id = (uint32_t)sh;
+    st->flags |= CL_STREAM_FLAG_DGRAM;
+    return s;
+}
+
 CL_Obj cl_make_listen_stream(int port, int loopback, int *actual_port)
 {
     int bound_port = 0;

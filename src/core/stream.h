@@ -127,6 +127,9 @@ CL_Obj cl_finish_string_output_stream(CL_Obj sstream);
  * connect_ms > 0 bounds the connect handshake (unreachable host fails fast);
  * 0 blocks until the OS gives up.  Returns CL_NIL on connection failure. */
 CL_Obj cl_make_socket_stream(const char *host, int port, int connect_ms);
+/* Connected UDP datagram socket stream (CL_STREAM_FLAG_DGRAM set); I/O via
+ * the EXT:UDP-STREAM-SEND/-RECEIVE builtins, closed with CL:CLOSE. */
+CL_Obj cl_make_udp_socket_stream(const char *host, int port);
 
 /* Create a listening (server) socket stream bound to `port`.
  * loopback != 0 binds 127.0.0.1 only; otherwise all interfaces.

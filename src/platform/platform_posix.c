@@ -1376,6 +1376,116 @@ PlatformSocket platform_socket_accept(PlatformSocket listener)
     }
 }
 
+/* --- UDP (datagram) sockets ---
+ *
+ * Connected UDP: socket(SOCK_DGRAM) + connect() fixes the peer so plain
+ * send()/recv() work and the OS filters foreign datagrams.  Handles share
+ * the TCP slot table (claimed without an IOBuf — UDP I/O is message-based,
+ * never byte-buffered), so close / set_timeout / data_available just work. */
+
+PlatformSocket platform_udp_connect(const char *host, int port)
+{
+    struct hostent *he;
+    struct sockaddr_in addr;
+    int fd;
+    char host_buf[256];
+
+    socket_table_ensure_init();
+
+    /* Stack-copy the hostname: host may point into the Lisp arena and the
+     * DNS safe region below lets a peer thread's compaction move it. */
+    {
+        size_t hl = strlen(host);
+        if (hl >= sizeof(host_buf)) return PLATFORM_SOCKET_INVALID;
+        memcpy(host_buf, host, hl + 1);
+    }
+
+    cl_gc_enter_safe_region();
+    he = gethostbyname(host_buf);
+    cl_gc_leave_safe_region();
+    if (!he) return PLATFORM_SOCKET_INVALID;
+
+    fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) return PLATFORM_SOCKET_INVALID;
+
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((uint16_t)port);
+    memcpy(&addr.sin_addr, he->h_addr_list[0], (size_t)he->h_length);
+
+    /* connect() on a datagram socket only records the peer — no handshake,
+     * no blocking — so no timeout/safe-region dance is needed. */
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        close(fd);
+        return PLATFORM_SOCKET_INVALID;
+    }
+
+    {
+        PlatformSocket sh;
+        socket_table_lock();
+        sh = socket_claim_locked(fd, 0);   /* no IOBuf: message I/O only */
+        socket_table_unlock();
+        if (sh == PLATFORM_SOCKET_INVALID) {
+            close(fd);
+            return PLATFORM_SOCKET_INVALID;
+        }
+        return sh;
+    }
+}
+
+int platform_udp_send(PlatformSocket sh, const uint8_t *buf, uint32_t len)
+{
+    SockSlot *s = sock_slot(sh);
+    int fd;
+    ssize_t n;
+    if (sh == 0 || !s || s->fd < 0) return -1;
+    fd = s->fd;
+    if (s->wtimeout > 0) {
+        int r = socket_wait_ready(fd, s->wtimeout, 1);
+        if (r == 0) return PLATFORM_SOCKET_TIMEOUT;
+        if (r < 0) return -1;
+    }
+    cl_gc_enter_safe_region();
+    n = send(fd, buf, (size_t)len, 0);
+    cl_gc_leave_safe_region();
+    return (n == (ssize_t)len) ? 0 : -1;
+}
+
+int platform_udp_recv(PlatformSocket sh, uint8_t *buf, uint32_t maxlen)
+{
+    SockSlot *s = sock_slot(sh);
+    int fd;
+    ssize_t n;
+    if (sh == 0 || !s || s->fd < 0) return -1;
+    fd = s->fd;
+    if (s->rtimeout > 0) {
+        int r = socket_wait_ready(fd, s->rtimeout, 0);
+        if (r == 0) return PLATFORM_SOCKET_TIMEOUT;
+        if (r < 0) return -1;
+    }
+    /* recv blocks until a datagram arrives — stay GC-cooperative. */
+    cl_gc_enter_safe_region();
+    n = recv(fd, buf, (size_t)maxlen, 0);
+    cl_gc_leave_safe_region();
+    if (n < 0) return -1;
+    return (int)n;
+}
+
+int platform_socket_local_endpoint(PlatformSocket sh, char *ip_out, int *port_out)
+{
+    SockSlot *s = sock_slot(sh);
+    struct sockaddr_in addr;
+    socklen_t alen = (socklen_t)sizeof(addr);
+    const unsigned char *b;
+    if (sh == 0 || !s || s->fd < 0) return -1;
+    memset(&addr, 0, sizeof(addr));
+    if (getsockname(s->fd, (struct sockaddr *)&addr, &alen) < 0) return -1;
+    b = (const unsigned char *)&addr.sin_addr;
+    snprintf(ip_out, 16, "%u.%u.%u.%u", b[0], b[1], b[2], b[3]);
+    if (port_out) *port_out = (int)ntohs(addr.sin_port);
+    return 0;
+}
+
 void platform_init(void)
 {
     /* Nothing needed on POSIX */
