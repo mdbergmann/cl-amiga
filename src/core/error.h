@@ -249,6 +249,22 @@ void cl_error_print(void);
 /* Initialize error system */
 void cl_error_init(void);
 
+/* Macroexpansion error context (see error.c).  cl_expanding_form_sym and
+ * cl_error_expanding_form_sym are Lisp symbols (interned once at boot by
+ * cl_symbol_init, never mutated afterward) used as per-thread TLV keys —
+ * NOT raw C globals holding the ephemeral form itself — so two threads
+ * compiling concurrently each see only their own in-progress expansion
+ * (this VM has no GIL; see CLAUDE.md Threading).  cl_expanding_form_sym's
+ * per-thread TLV value is the innermost form whose expander is currently
+ * running (maintained by cl_macroexpand_1_env via cl_tlv_set);
+ * cl_error_expanding_form_sym's is its snapshot, taken by
+ * cl_capture_backtrace, so cl_error_print can report which form's
+ * expansion failed.  Read either with cl_expansion_ctx_get(), which
+ * normalizes the CL_TLV_ABSENT sentinel to CL_NIL. */
+extern CL_Obj cl_expanding_form_sym;
+extern CL_Obj cl_error_expanding_form_sym;
+CL_Obj cl_expansion_ctx_get(CL_Obj sym);
+
 #include "thread.h"
 
 #endif /* CL_ERROR_H */

@@ -2,6 +2,7 @@
 #include "package.h"
 #include "mem.h"
 #include "thread.h"
+#include "error.h"
 #include "../platform/platform.h"
 #include "../platform/platform_thread.h"
 #include <string.h>
@@ -827,6 +828,24 @@ void cl_symbol_init(void)
         features = cl_cons(cl_intern_keyword("X86-64", 6), features);
 #endif
 #endif
+        /* Word size and endianness of the RUNNING binary.  Portability
+         * layers (trivial-features) and FFI users (CFFI sizes :SIZE/:SSIZE
+         * via #+64-bit/#+32-bit, babel picks codecs via endianness) expect
+         * the implementation to provide these — SBCL/CCL do.  Deriving them
+         * here from the compiler makes feature-conditional code work even
+         * with an unpatched trivial-features. */
+        if (sizeof(void *) == 8)
+            features = cl_cons(cl_intern_keyword("64-BIT", 6), features);
+        else
+            features = cl_cons(cl_intern_keyword("32-BIT", 6), features);
+        {
+            union { uint32_t u; uint8_t b[4]; } ec;
+            ec.u = 1;
+            if (ec.b[0] == 1)
+                features = cl_cons(cl_intern_keyword("LITTLE-ENDIAN", 13), features);
+            else
+                features = cl_cons(cl_intern_keyword("BIG-ENDIAN", 10), features);
+        }
         features = cl_cons(KW_COMMON_LISP, features);
         features = cl_cons(KW_CL_AMIGA, features);
         {
@@ -839,6 +858,10 @@ void cl_symbol_init(void)
             features = cl_cons(kw_unicode, features);
         }
 #endif
+        /* Re-derive s: the cl_cons/cl_intern_keyword calls above can
+         * trigger a compacting GC, which would leave a pointer fetched
+         * before the loop stale. */
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_FEATURES);
         s->value = features;
     }
     /* Reader dereferences this handle on every #+ / #- — forward it across
@@ -1167,6 +1190,21 @@ void cl_symbol_init(void)
     cl_gc_register_root(&KW_UNIX);
     cl_gc_register_root(&KW_AMIGAOS);
     cl_gc_register_root(&KW_M68K);
+
+    /* CLAMIGA::%EXPANDING-FORM / CLAMIGA::%ERROR-EXPANDING-FORM (see
+     * error.h) — hidden TLV keys for the macroexpansion error context.
+     * Interned here (not in cl_error_init, which runs before packages
+     * exist) and never reassigned afterward, so registering them as GC
+     * roots is a one-time, race-free write, same as every other symbol
+     * above. */
+    cl_expanding_form_sym = cl_intern_in("%EXPANDING-FORM",
+                                          (uint32_t)(sizeof("%EXPANDING-FORM") - 1),
+                                          cl_package_clamiga);
+    cl_error_expanding_form_sym = cl_intern_in("%ERROR-EXPANDING-FORM",
+                                                (uint32_t)(sizeof("%ERROR-EXPANDING-FORM") - 1),
+                                                cl_package_clamiga);
+    cl_gc_register_root(&cl_expanding_form_sym);
+    cl_gc_register_root(&cl_error_expanding_form_sym);
 
     /* Export all CL symbols so CL-USER inherits them.
        Also called again after cl_builtins_init() for builtin names. */
