@@ -24,6 +24,13 @@
 #     local-projects directly is NOT safe: quicklisp rewrites its
 #     system-index.txt with container-absolute paths, corrupting the host's
 #     index.  Only the dist cache (releases) is shared read-write.
+#   * /root/quicklisp/dists/quicklisp/installed is a container-private
+#     tmpfs for the same reason: quicklisp's install markers hold ABSOLUTE
+#     paths, and container-side installs would stamp /root/... paths into
+#     the shared metadata — the host then treats those releases as not
+#     installed (this silently broke clog resolution for
+#     load-and-test-chipi-ui on the host).  The entry script seeds the
+#     tmpfs from the host's markers with paths rewritten to /root.
 #   * ~/Development/MySources and ~/quicklisp are also mounted at their
 #     macOS paths so the host's absolute symlinks (the swank stub ->
 #     cl-amiga/contrib/shims, ~/common-lisp entries, ...) resolve.
@@ -61,6 +68,7 @@ exec docker run --rm --platform linux/arm64 \
     -v "$HOME/quicklisp":/root/quicklisp \
     -v "$HOME/quicklisp":"$HOME/quicklisp":ro \
     --tmpfs /root/quicklisp/local-projects \
+    --tmpfs /root/quicklisp/dists/quicklisp/installed \
     -e MAC_QL="$HOME/quicklisp" \
     -v clamiga-verify-linux-arm64-cache:/root/.cache \
     -v "$SRC/cl-hab":/work/cl-hab:ro \

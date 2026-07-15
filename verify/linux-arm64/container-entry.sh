@@ -41,6 +41,21 @@ for p in "${MAC_QL:-/root/quicklisp}"/local-projects/*/; do
     ln -sfn "$p" "/root/quicklisp/local-projects/$name"
 done
 
+# /root/quicklisp/dists/quicklisp/installed is a container-private tmpfs
+# (see run.sh): quicklisp install markers hold absolute paths, and letting
+# the container write /root/... paths into the shared metadata makes the
+# host treat those releases as uninstalled.  Seed the tmpfs from the host's
+# markers with the paths rewritten for the container, so already-installed
+# releases resolve without re-extraction.
+for d in releases systems; do
+    mkdir -p "/root/quicklisp/dists/quicklisp/installed/$d"
+    for f in "${MAC_QL:-/root/quicklisp}"/dists/quicklisp/installed/$d/*.txt; do
+        [ -e "$f" ] || continue
+        sed "s|^${MAC_QL:-/root/quicklisp}/|/root/quicklisp/|" "$f" \
+            > "/root/quicklisp/dists/quicklisp/installed/$d/$(basename "$f")"
+    done
+done
+
 # Mirror the developer host's ~/common-lisp symlinks (ASDF source registry).
 mkdir -p /root/common-lisp
 ln -sf /work/cl-hab/chipi.asd /root/common-lisp/chipi.asd
