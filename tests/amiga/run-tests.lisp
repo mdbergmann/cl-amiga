@@ -1112,6 +1112,25 @@
           (plevel-a y) x (plevel-b y) x)
     (let ((*print-level* 2))
       (< (length (princ-to-string x)) 100))))
+;; Regression: a print-object method whose output contains a non-ASCII char
+;; returns a WIDE string from the hook; the C check accepted only narrow
+;; strings and fell back to raw #S(...) all-slots printing (eta-hab's
+;; umlaut-labeled item graphs then printed exponentially).
+(defclass wide-po-node () ((w-label :accessor w-label :initform nil)))
+(defmethod print-object ((n wide-po-node) s)
+  (format s "#<wide-po ~a>" (w-label n)))
+(check "print-object wide-string result honored" t
+  (let ((n (make-instance 'wide-po-node)))
+    (setf (w-label n)
+          (concatenate 'string "F" (string (code-char 252)) "llgrad"))
+    (and (eql 0 (search "#<wide-po F" (princ-to-string n)))
+         (null (search "#S(" (princ-to-string n)))
+         (eql 0 (search "#<wide-po" (format nil "~a" n))))))
+(define-condition wide-po-cond (error) ()
+  (:report (lambda (c s) (declare (ignore c))
+             (format s "kaputt: ~a!" (string (code-char 252))))))
+(check "condition wide-string report honored" 0
+  (search "kaputt: " (princ-to-string (make-condition 'wide-po-cond))))
 
 ;; CLHS 3.4.5: dotted lambda list == trailing &rest (eta-hab regression)
 (check "d-bind dotted pair" '(1 2) (destructuring-bind (a . b) '(1 . 2) (list a b)))

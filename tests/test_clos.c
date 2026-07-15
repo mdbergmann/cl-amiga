@@ -1364,6 +1364,49 @@ TEST(print_object_honors_print_level)
         "T");
 }
 
+/* Regression: a PRINT-OBJECT method whose output contains a non-ASCII
+ * character comes back from the hook's with-output-to-string as a WIDE
+ * string; the C hook-result check used to accept only narrow strings and
+ * silently discarded the method's output, degrading the object to the raw
+ * all-slots #S(...) form.  That exposes object-graph edges the method
+ * deliberately elides — chipi's umlaut-labeled item graphs then printed
+ * exponentially (minutes per log line in eta-hab). */
+TEST(print_object_wide_string_result)
+{
+    eval_print(
+        "(defclass wide-po-node () "
+        "  ((w-label :accessor w-label :initform nil)))");
+    eval_print(
+        "(defmethod print-object ((n wide-po-node) s) "
+        "  (format s \"#<wide-po ~a>\" (w-label n)))");
+    eval_print("(defvar *wpo* (make-instance 'wide-po-node))");
+    eval_print(
+        "(setf (w-label *wpo*) "
+        "  (concatenate 'string \"F\" (string (code-char 252)) \"llgrad\"))");
+    /* method output honored, not raw #S(...) */
+    ASSERT_STR_EQ(eval_print(
+        "(eql 0 (search \"#<wide-po F\" (princ-to-string *wpo*)))"), "T");
+    ASSERT_STR_EQ(eval_print(
+        "(search \"#S(\" (princ-to-string *wpo*))"), "NIL");
+    /* same through the format ~a C path */
+    ASSERT_STR_EQ(eval_print(
+        "(eql 0 (search \"#<wide-po\" (format nil \"~a\" *wpo*)))"), "T");
+}
+
+/* Same class of bug on the TYPE_CONDITION hook site: a :report whose
+ * output contains a non-ASCII character must still reach the princ'd
+ * text via the hook. */
+TEST(condition_report_wide_string)
+{
+    eval_print(
+        "(define-condition wide-po-cond (error) () "
+        "  (:report (lambda (c s) (declare (ignore c)) "
+        "     (format s \"kaputt: ~a!\" (string (code-char 252))))))");
+    ASSERT_STR_EQ(eval_print(
+        "(eql 0 (search \"kaputt: \" "
+        "  (princ-to-string (make-condition 'wide-po-cond))))"), "T");
+}
+
 TEST(print_object_default_struct)
 {
     /* Structs without a print-object method use default #S(...) */
@@ -4799,6 +4842,8 @@ int main(void)
     RUN(print_object_gf);
     RUN(print_object_custom);
     RUN(print_object_honors_print_level);
+    RUN(print_object_wide_string_result);
+    RUN(condition_report_wide_string);
     RUN(print_object_default_struct);
 
     /* slot-value on DEFSTRUCT instances */
