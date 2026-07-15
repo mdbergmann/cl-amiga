@@ -196,6 +196,14 @@ void cl_tlab_retire(struct CL_Thread_s *t);
 /* Manually trigger GC */
 void cl_gc(void);
 
+/* Allocation-triggered GC with redundant-cycle dedup: collects only if the
+ * GC epoch (cl_heap.gc_count) still equals seen_gc_count once this thread
+ * has stopped the world — i.e. no peer collected in the meantime.  Returns
+ * 1 if a collection ran, 0 if it was skipped as redundant (the caller
+ * should retry its allocation and fall back to cl_gc() on a miss).
+ * Single-threaded it always collects. */
+int cl_gc_if_stale(uint32_t seen_gc_count);
+
 /* Compacting GC — slides live objects to eliminate fragmentation.
  * MUST be called at a safe point where no C locals hold CL_Obj values.
  * Safe points: REPL top-level, explicit (ext:gc), after top-level eval. */
@@ -218,6 +226,20 @@ void cl_gc_mark_stack_stats(uint32_t *cap_entries, uint32_t *grows,
  * fallback can be exercised deterministically (0 = normal heap-proportional
  * cap).  Reset by cl_mem_init. */
 void cl_gc_mark_stack_set_test_limit(uint32_t max_entries);
+
+/* Cumulative GC phase timers (microseconds since cl_mem_init): time spent
+ * waiting for stop-the-world, in the mark phase, in the sweep phase, and in
+ * whole compaction cycles (compaction's internal mark/sweep counts toward
+ * compact only).  Any out-param may be NULL.  Exposed to Lisp as
+ * (ext:%gc-time-stats). */
+void cl_gc_time_stats(uint64_t *stw_us, uint64_t *mark_us,
+                      uint64_t *sweep_us, uint64_t *compact_us);
+
+/* Stop-the-world diagnostics: number of multi-threaded stop events, the
+ * worst single stop wait (microseconds), and how many allocation-triggered
+ * collections were deduped as redundant (cl_gc_if_stale skips).  Any
+ * out-param may be NULL. */
+void cl_gc_stw_stats(uint32_t *stops, uint64_t *max_us, uint32_t *epoch_skips);
 
 #include "thread.h"
 

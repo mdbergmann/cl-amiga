@@ -659,6 +659,13 @@ uint32_t platform_run_time_ms(void)
     return platform_time_ms();
 }
 
+uint64_t platform_time_us(void)
+{
+    /* DateStamp ticks are 1/50s — microsecond resolution is not available
+     * without opening timer.device; scale the ms clock instead. */
+    return (uint64_t)platform_time_ms() * 1000u;
+}
+
 void platform_sleep_ms(uint32_t milliseconds)
 {
     /* Delay() takes ticks (1/50s = 20ms each). Round up. */

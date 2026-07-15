@@ -155,8 +155,40 @@ int platform_udp_recv(PlatformSocket sh, uint8_t *buf, uint32_t maxlen);
  * 0=ok, -1=error. */
 int platform_socket_local_endpoint(PlatformSocket sh, char *ip_out, int *port_out);
 
+/* --- Page write-watch (generational GC dirty tracking; POSIX only) ---
+ * The generational collector (CL_GENGC, see core/mem.h) tracks old→young
+ * stores by hardware page protection instead of a source-level write
+ * barrier: old-space pages are made read-only after each GC; the first
+ * store to a clean page faults, the handler records the page in a dirty
+ * bitmap and re-enables writes, and the store retries.  AmigaOS (no MMU
+ * on the 68020 target) does not implement these — they are only
+ * referenced from CL_GENGC code, which is compiled out there. */
+
+/* Page-aligned region allocation (mmap).  Returns NULL on failure. */
+void *platform_alloc_pages(uint32_t size);
+void  platform_free_pages(void *ptr, uint32_t size);
+uint32_t platform_page_size(void);
+
+/* Install the process write-fault handler (SIGSEGV/SIGBUS) covering
+ * [base, base+len).  dirty_bitmap holds 1 bit per page of the region
+ * (len/page_size/8 bytes, caller-owned); a faulting store to a protected
+ * page atomically sets its bit, re-enables the page and returns.  Faults
+ * outside the region chain to the previous handler/default disposition.
+ * Returns 0 on success. */
+int  platform_write_watch_install(uint8_t *base, uint32_t len,
+                                  volatile uint8_t *dirty_bitmap);
+void platform_write_watch_remove(void);
+
+/* Protect/unprotect [addr, addr+len) (page-aligned) against writes.
+ * Returns 0 on success. */
+int  platform_page_protect(uint8_t *addr, uint32_t len, int readonly);
+
 /* Timing */
 uint32_t platform_time_ms(void);   /* Monotonic milliseconds (for elapsed time) */
+/* Monotonic microseconds (for elapsed time).  64-bit so accumulated phase
+ * timers (GC diagnostics) never wrap in practice; NOT for heap objects.
+ * AmigaOS resolution is the 1/50s DateStamp tick scaled to microseconds. */
+uint64_t platform_time_us(void);
 /* Process CPU time (user+system) in milliseconds.  On platforms without
  * per-task CPU accounting (AmigaOS) this falls back to wall-clock time. */
 uint32_t platform_run_time_ms(void);

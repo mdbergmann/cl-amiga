@@ -2882,6 +2882,39 @@ static CL_Obj bi_ext_gc_mark_stats(CL_Obj *args, int n)
                                    CL_NIL)));
 }
 
+/* (ext:%gc-time-stats) — cumulative GC phase timers as a 9-element list:
+ * (gc-count compact-count stw-seconds mark-seconds sweep-seconds
+ *  compact-seconds stw-stops stw-max-seconds epoch-skips).  Counts are
+ * fixnums; the phase timers are double-floats of seconds since heap init.
+ * stw = waiting for other threads to park (stw-stops events; stw-max is the
+ * worst single stop); mark/sweep = sweep-GC phases; compact = whole
+ * compaction cycles (their internal mark/sweep counts toward compact only);
+ * epoch-skips = allocation-triggered collections deduped as redundant
+ * because a peer thread collected first.  Together they show how much wall
+ * time the runtime spends collecting — and in which phase — which is the
+ * primary telemetry for allocation-heavy workload tuning. */
+static CL_Obj bi_ext_gc_time_stats(CL_Obj *args, int n)
+{
+    uint64_t stw, mark, sweep, compact, stw_max;
+    uint32_t stops, skips;
+    CL_Obj result = CL_NIL;
+    CL_UNUSED(args); CL_UNUSED(n);
+    cl_gc_time_stats(&stw, &mark, &sweep, &compact);
+    cl_gc_stw_stats(&stops, &stw_max, &skips);
+    CL_GC_PROTECT(result);
+    result = cl_cons(CL_MAKE_FIXNUM((int32_t)(skips & CL_FIXNUM_MAX)), result);
+    result = cl_cons(cl_make_double_float((double)stw_max / 1e6), result);
+    result = cl_cons(CL_MAKE_FIXNUM((int32_t)(stops & CL_FIXNUM_MAX)), result);
+    result = cl_cons(cl_make_double_float((double)compact / 1e6), result);
+    result = cl_cons(cl_make_double_float((double)sweep / 1e6), result);
+    result = cl_cons(cl_make_double_float((double)mark / 1e6), result);
+    result = cl_cons(cl_make_double_float((double)stw / 1e6), result);
+    result = cl_cons(CL_MAKE_FIXNUM((int32_t)(cl_heap.compact_count & CL_FIXNUM_MAX)), result);
+    result = cl_cons(CL_MAKE_FIXNUM((int32_t)(cl_heap.gc_count & CL_FIXNUM_MAX)), result);
+    CL_GC_UNPROTECT(1);
+    return result;
+}
+
 /* (ext:%stream-outbuf-stats) — string-output-stream buffer table diagnostics
  * as a 2-element list: (used-slots total-slots).  used-slots is the number of
  * allocated platform buffers (live streams + dead-but-uncollected ones);
@@ -4225,6 +4258,7 @@ void cl_builtins_io_init(void)
     extfun("GC", bi_ext_gc, 0, 0);
     extfun("GC-COMPACT", bi_ext_gc_compact, 0, 0);
     extfun("%GC-MARK-STATS", bi_ext_gc_mark_stats, 0, 0);
+    extfun("%GC-TIME-STATS", bi_ext_gc_time_stats, 0, 0);
     extfun("%STREAM-OUTBUF-STATS", bi_ext_stream_outbuf_stats, 0, 0);
     extfun("%GC-AUDIT-ROOTS", bi_ext_gc_audit_roots, 0, 0);
     extfun("GETENV", bi_getenv, 1, 1);
