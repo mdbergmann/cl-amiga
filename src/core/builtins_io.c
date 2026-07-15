@@ -2882,6 +2882,21 @@ static CL_Obj bi_ext_gc_mark_stats(CL_Obj *args, int n)
                                    CL_NIL)));
 }
 
+/* (ext:%stream-outbuf-stats) — string-output-stream buffer table diagnostics
+ * as a 2-element list: (used-slots total-slots).  used-slots is the number of
+ * allocated platform buffers (live streams + dead-but-uncollected ones);
+ * total-slots grows on demand in 256-slot blocks.  A used count that keeps
+ * climbing across GCs indicates streams that are written to but never CLOSEd
+ * (their buffers are only reclaimed when the GC proves the stream dead). */
+static CL_Obj bi_ext_stream_outbuf_stats(CL_Obj *args, int n)
+{
+    uint32_t used, capacity;
+    CL_UNUSED(args); CL_UNUSED(n);
+    cl_stream_outbuf_table_stats(&used, &capacity);
+    return cl_cons(CL_MAKE_FIXNUM((int32_t)used),
+                   cl_cons(CL_MAKE_FIXNUM((int32_t)capacity), CL_NIL));
+}
+
 /* (ext:%gc-audit-roots) — count double-registered GC roots (global vs.
  * global, global vs. any thread root stack).  gc_forward is not
  * idempotent, so any double-registered root silently corrupts on
@@ -4210,6 +4225,7 @@ void cl_builtins_io_init(void)
     extfun("GC", bi_ext_gc, 0, 0);
     extfun("GC-COMPACT", bi_ext_gc_compact, 0, 0);
     extfun("%GC-MARK-STATS", bi_ext_gc_mark_stats, 0, 0);
+    extfun("%STREAM-OUTBUF-STATS", bi_ext_stream_outbuf_stats, 0, 0);
     extfun("%GC-AUDIT-ROOTS", bi_ext_gc_audit_roots, 0, 0);
     extfun("GETENV", bi_getenv, 1, 1);
     extfun("GETCWD", bi_getcwd, 0, 0);

@@ -33,31 +33,83 @@ typedef struct {
     char    *data;
     uint32_t capacity;
     uint32_t length;
+    /* GC mark bit.  The outbuf side table is reclaimed by the GC driven by
+     * STREAM LIVENESS, not by finalizing dead corpses: freeing a slot from a
+     * dead stream's st->out_buf_handle is unsafe because that handle may
+     * already have been reused by a *live* string-output-stream (handles are
+     * recycled the moment a slot's data is freed).  Re-finalizing the stale
+     * corpse would then free the live stream's buffer, silently truncating
+     * its output (observed as chunga READ-LINE* returning "" for a non-empty
+     * HTTP header under concurrent GC, desyncing drakma's response framing).
+     * Instead, each GC clears these bits, marks the slot of every LIVE output
+     * stream, then frees any slot still allocated but unmarked. */
+    uint8_t  inuse;
+    /* Creation-window pin.  A freshly allocated outbuf is not yet referenced
+     * by any stream object, so the liveness-driven reclaim above would free
+     * it out from under the stream being built — a window a *preemptive*
+     * stop-the-world GC (AmigaOS task suspension) can hit between
+     * cl_stream_alloc_outbuf returning the handle and the caller storing it
+     * in st->out_buf_handle.  alloc pins the slot; the caller unpins once the
+     * live, GC-reachable stream owns it.  Pinned slots are never reclaimed;
+     * mark-begin does NOT clear pins. */
+    uint8_t  pinned;
 } CL_OutBuf;
 
-static CL_OutBuf outbuf_table[CL_STREAM_BUF_TABLE_SIZE];
+/* The table grows on demand as a segmented directory of fixed-size blocks
+ * (same pattern as cl_sock_lock_dir below): block 0 is static, further blocks
+ * are lazily platform_alloc'd and NEVER freed or moved, so the I/O hot paths
+ * (putchar/write/data/len) can index a slot without the table mutex.  Growth
+ * replaces the old fixed-256-slot behavior of forcing a FULL stop-the-world
+ * GC on every allocation once the table saturated — under logging-heavy
+ * loads (one transient string-output-stream per printed node) that turned
+ * printing into a GC storm (~33 full GCs/sec observed in eta-hab).  Dead
+ * unclosed outbufs are still reclaimed by every normal GC via the mark-driven
+ * sweep below, so the table only grows to the true peak of simultaneously
+ * live + not-yet-collected buffers. */
+#define CL_OUTBUF_BLOCK_SHIFT 8   /* log2(CL_STREAM_BUF_TABLE_SIZE) */
+#define CL_OUTBUF_BLOCK_SIZE  CL_STREAM_BUF_TABLE_SIZE       /* 256 slots/block */
+#define CL_OUTBUF_BLOCK_MASK  (CL_OUTBUF_BLOCK_SIZE - 1)
+#define CL_OUTBUF_MAX_BLOCKS  64                    /* up to 16384 handles */
+#if CL_STREAM_BUF_TABLE_SIZE != (1 << CL_OUTBUF_BLOCK_SHIFT)
+#error "CL_OUTBUF_BLOCK_SHIFT must be log2(CL_STREAM_BUF_TABLE_SIZE)"
+#endif
+
+static CL_OutBuf outbuf_block0[CL_OUTBUF_BLOCK_SIZE];
+static CL_OutBuf * volatile outbuf_dir[CL_OUTBUF_MAX_BLOCKS] = { outbuf_block0 };
+/* Count of allocated blocks.  Grows only under cl_stream_table_mutex; the
+ * matching outbuf_dir[] entry is published (fully zero-initialised) BEFORE
+ * the count, so an unlocked reader that sees the new count also sees the
+ * block pointer. */
+static volatile uint32_t outbuf_nblocks = 1;
+
 static int stream_initialized = 0;
 
-/* GC mark bitmap for outbuf slots.  The outbuf side table is reclaimed by the
- * GC driven by STREAM LIVENESS, not by finalizing dead corpses: freeing a
- * slot from a dead stream's st->out_buf_handle is unsafe because that handle
- * may already have been reused by a *live* string-output-stream (handles are
- * recycled the moment a slot's data is freed).  Re-finalizing the stale corpse
- * would then free the live stream's buffer, silently truncating its output
- * (observed as chunga READ-LINE* returning "" for a non-empty HTTP header
- * under concurrent GC, desyncing drakma's response framing).  Instead, each GC
- * clears this bitmap, marks the slot of every LIVE output stream, then frees
- * any slot still allocated but unmarked. */
-static uint8_t outbuf_inuse[CL_STREAM_BUF_TABLE_SIZE];
+/* Resolve a handle to its slot, or NULL for handle 0 / out of range.  Safe
+ * without the table mutex: blocks are never freed or moved once published. */
+static CL_OutBuf *outbuf_at(uint32_t handle)
+{
+    uint32_t blk = handle >> CL_OUTBUF_BLOCK_SHIFT;
+    CL_OutBuf *b;
+    if (handle == 0 || blk >= outbuf_nblocks) return NULL;
+    b = outbuf_dir[blk];
+    return b ? &b[handle & CL_OUTBUF_BLOCK_MASK] : NULL;
+}
 
-/* Creation-window pin.  A freshly allocated outbuf is not yet referenced by
- * any stream object, so the liveness-driven reclaim above would free it out
- * from under the stream being built — a window a *preemptive* stop-the-world
- * GC (AmigaOS task suspension) can hit between cl_stream_alloc_outbuf returning
- * the handle and the caller storing it in st->out_buf_handle.  alloc pins the
- * slot; the caller unpins once the live, GC-reachable stream owns it.  Pinned
- * slots are never reclaimed; mark-begin does NOT clear pins. */
-static uint8_t outbuf_pinned[CL_STREAM_BUF_TABLE_SIZE];
+/* Occupancy snapshot for diagnostics (ext:%stream-outbuf-stats, DEBUG_STREAM).
+ * Caller holds the table mutex for an exact count; without it the count is
+ * approximate (fine for diagnostics). */
+static void outbuf_stats(uint32_t *used_out, uint32_t *capacity_out)
+{
+    uint32_t blk, i, used = 0, nb = outbuf_nblocks;
+    for (blk = 0; blk < nb; blk++) {
+        CL_OutBuf *b = outbuf_dir[blk];
+        if (!b) continue;
+        for (i = 0; i < CL_OUTBUF_BLOCK_SIZE; i++)
+            if (b[i].data) used++;
+    }
+    if (used_out) *used_out = used;
+    if (capacity_out) *capacity_out = nb * CL_OUTBUF_BLOCK_SIZE - 1;
+}
 
 /* Mutex protecting outbuf_table and cbuf_table slot allocation/deallocation */
 static void *cl_stream_table_mutex = NULL;
@@ -166,12 +218,22 @@ void cl_stream_init(void)
         platform_mutex_init(&cl_file_io_mutex);
     /* Per-socket lock blocks are allocated lazily on first use (sock_lock_pair). */
 
-    for (i = 0; i < CL_STREAM_BUF_TABLE_SIZE; i++) {
-        outbuf_table[i].data = NULL;
-        outbuf_table[i].capacity = 0;
-        outbuf_table[i].length = 0;
-        outbuf_inuse[i] = 0;
-        outbuf_pinned[i] = 0;
+    /* Reset every slot in every allocated block (re-init keeps the blocks —
+     * they are never freed — but must not carry stale entries; see the
+     * shared-C-global re-init corruption class). */
+    {
+        uint32_t blk;
+        for (blk = 0; blk < outbuf_nblocks; blk++) {
+            CL_OutBuf *b = outbuf_dir[blk];
+            if (!b) continue;
+            for (i = 0; i < CL_OUTBUF_BLOCK_SIZE; i++) {
+                b[i].data = NULL;
+                b[i].capacity = 0;
+                b[i].length = 0;
+                b[i].inuse = 0;
+                b[i].pinned = 0;
+            }
+        }
     }
     stream_initialized = 1;
 
@@ -247,11 +309,17 @@ void cl_stream_init(void)
 
 void cl_stream_shutdown(void)
 {
-    int i;
-    for (i = 0; i < CL_STREAM_BUF_TABLE_SIZE; i++) {
-        if (outbuf_table[i].data) {
-            platform_free(outbuf_table[i].data);
-            outbuf_table[i].data = NULL;
+    uint32_t blk, i;
+    /* Free the buffers but keep the directory blocks: they may be indexed by
+     * a straggler and are reused verbatim after a re-init. */
+    for (blk = 0; blk < outbuf_nblocks; blk++) {
+        CL_OutBuf *b = outbuf_dir[blk];
+        if (!b) continue;
+        for (i = 0; i < CL_OUTBUF_BLOCK_SIZE; i++) {
+            if (b[i].data) {
+                platform_free(b[i].data);
+                b[i].data = NULL;
+            }
         }
     }
     stream_initialized = 0;
@@ -281,54 +349,97 @@ CL_Obj cl_make_stream(uint32_t direction, uint32_t stream_type)
 
 uint32_t cl_stream_alloc_outbuf(uint32_t initial_size)
 {
-    int i, retry;
+    uint32_t blk, i, nb;
+    int gc_ran = 0;
     char *data;
 
     if (!stream_initialized) cl_stream_init();
     if (initial_size == 0) initial_size = 256;
 
     if (CL_MT()) platform_mutex_lock(cl_stream_table_mutex);
-    for (retry = 0; retry < 2; retry++) {
-    /* Slot 0 is reserved as invalid */
-    for (i = 1; i < CL_STREAM_BUF_TABLE_SIZE; i++) {
-        if (outbuf_table[i].data == NULL) {
-            data = (char *)platform_alloc(initial_size);
-            if (!data) {
-                if (CL_MT()) platform_mutex_unlock(cl_stream_table_mutex);
-                return 0;
-            }
-            outbuf_table[i].data = data;
-            outbuf_table[i].capacity = initial_size;
-            outbuf_table[i].length = 0;
-            outbuf_pinned[i] = 1;  /* protect until the owning stream is set */
+    for (;;) {
+        nb = outbuf_nblocks;
+        for (blk = 0; blk < nb; blk++) {
+            CL_OutBuf *b = outbuf_dir[blk];
+            /* Handle 0 (block 0, slot 0) is reserved as invalid */
+            for (i = (blk == 0 ? 1 : 0); i < CL_OUTBUF_BLOCK_SIZE; i++) {
+                if (b[i].data == NULL) {
+                    data = (char *)platform_alloc(initial_size);
+                    if (!data) {
+                        if (CL_MT()) platform_mutex_unlock(cl_stream_table_mutex);
+                        return 0;
+                    }
+                    b[i].data = data;
+                    b[i].capacity = initial_size;
+                    b[i].length = 0;
+                    b[i].inuse = 0;
+                    b[i].pinned = 1;  /* protect until the owning stream is set */
 #ifdef DEBUG_STREAM
-            {
-                char dbg[64];
-                int used = 0, j;
-                for (j = 1; j < CL_STREAM_BUF_TABLE_SIZE; j++)
-                    if (outbuf_table[j].data) used++;
-                snprintf(dbg, sizeof(dbg), "[STREAM] alloc slot %d (%d/%d used)\n",
-                         i, used, CL_STREAM_BUF_TABLE_SIZE - 1);
-                platform_write_string(dbg);
-            }
+                    {
+                        char dbg[80];
+                        uint32_t used, cap;
+                        outbuf_stats(&used, &cap);
+                        snprintf(dbg, sizeof(dbg),
+                                 "[STREAM] alloc slot %u (%u/%u used)\n",
+                                 (unsigned)((blk << CL_OUTBUF_BLOCK_SHIFT) | i),
+                                 (unsigned)used, (unsigned)cap);
+                        platform_write_string(dbg);
+                    }
 #endif
+                    if (CL_MT()) platform_mutex_unlock(cl_stream_table_mutex);
+                    return (blk << CL_OUTBUF_BLOCK_SHIFT) | i;
+                }
+            }
+        }
+        /* All allocated slots occupied — grow the directory by one block.
+         * Growing (instead of forcing a GC, as the fixed-size table did)
+         * keeps a saturated table from turning every string-output-stream
+         * creation into a full stop-the-world collection; dead unclosed
+         * outbufs are still reclaimed by every normal GC. */
+        if (nb < CL_OUTBUF_MAX_BLOCKS) {
+            CL_OutBuf *b = (CL_OutBuf *)platform_alloc(
+                (uint32_t)(CL_OUTBUF_BLOCK_SIZE * sizeof(CL_OutBuf)));
+            if (b) {
+                for (i = 0; i < CL_OUTBUF_BLOCK_SIZE; i++) {
+                    b[i].data = NULL;
+                    b[i].capacity = 0;
+                    b[i].length = 0;
+                    b[i].inuse = 0;
+                    b[i].pinned = 0;
+                }
+                outbuf_dir[nb] = b;       /* publish only after full init */
+                outbuf_nblocks = nb + 1;  /* count published after the block */
+#ifdef DEBUG_STREAM
+                {
+                    char dbg[80];
+                    snprintf(dbg, sizeof(dbg),
+                             "[STREAM] outbuf table grown to %u blocks (%u slots)\n",
+                             (unsigned)(nb + 1),
+                             (unsigned)((nb + 1) * CL_OUTBUF_BLOCK_SIZE - 1));
+                    platform_write_string(dbg);
+                }
+#endif
+                continue;
+            }
+        }
+        /* Directory exhausted (or block allocation failed): GC once to
+         * reclaim dead streams' buffers, then rescan.  Only reached at
+         * CL_OUTBUF_MAX_BLOCKS * CL_OUTBUF_BLOCK_SIZE simultaneously
+         * allocated buffers or under OOM. */
+        if (gc_ran) break;
+        gc_ran = 1;
+        {
+            extern void cl_gc(void);
             if (CL_MT()) platform_mutex_unlock(cl_stream_table_mutex);
-            return (uint32_t)i;
+            cl_gc();
+            if (CL_MT()) platform_mutex_lock(cl_stream_table_mutex);
         }
     }
-    /* All slots occupied — run GC to finalize dead streams, then retry */
-    if (retry == 0) {
-        extern void cl_gc(void);
-        if (CL_MT()) platform_mutex_unlock(cl_stream_table_mutex);
-        cl_gc();
-        if (CL_MT()) platform_mutex_lock(cl_stream_table_mutex);
-    }
-    } /* end retry loop */
     if (CL_MT()) platform_mutex_unlock(cl_stream_table_mutex);
 #ifdef DEBUG_STREAM
     platform_write_string("[STREAM] outbuf table FULL after GC\n");
 #endif
-    return 0;  /* No free slots even after GC */
+    return 0;  /* No free slots even after growth + GC */
 }
 
 void cl_stream_free_outbuf(uint32_t handle)
@@ -338,25 +449,25 @@ void cl_stream_free_outbuf(uint32_t handle)
      * could both see non-NULL and double-platform_free the buffer (worse:
      * the slot may be re-claimed between them, freeing a live stream's
      * buffer). */
-    if (handle > 0 && handle < CL_STREAM_BUF_TABLE_SIZE) {
+    CL_OutBuf *buf = outbuf_at(handle);
+    if (buf) {
         if (CL_MT()) platform_mutex_lock(cl_stream_table_mutex);
-        if (!outbuf_table[handle].data) {
+        if (!buf->data) {
             if (CL_MT()) platform_mutex_unlock(cl_stream_table_mutex);
             return;
         }
-        platform_free(outbuf_table[handle].data);
-        outbuf_table[handle].data = NULL;
-        outbuf_table[handle].capacity = 0;
-        outbuf_table[handle].length = 0;
-        outbuf_pinned[handle] = 0;
+        platform_free(buf->data);
+        buf->data = NULL;
+        buf->capacity = 0;
+        buf->length = 0;
+        buf->pinned = 0;
 #ifdef DEBUG_STREAM
         {
-            char dbg[64];
-            int used = 0, j;
-            for (j = 1; j < CL_STREAM_BUF_TABLE_SIZE; j++)
-                if (outbuf_table[j].data) used++;
-            snprintf(dbg, sizeof(dbg), "[STREAM] free  slot %d (%d/%d used)\n",
-                     (int)handle, used, CL_STREAM_BUF_TABLE_SIZE - 1);
+            char dbg[80];
+            uint32_t used, cap;
+            outbuf_stats(&used, &cap);
+            snprintf(dbg, sizeof(dbg), "[STREAM] free  slot %u (%u/%u used)\n",
+                     (unsigned)handle, (unsigned)used, (unsigned)cap);
             platform_write_string(dbg);
         }
 #endif
@@ -366,34 +477,37 @@ void cl_stream_free_outbuf(uint32_t handle)
 
 char *cl_stream_outbuf_data(uint32_t handle)
 {
-    if (handle > 0 && handle < CL_STREAM_BUF_TABLE_SIZE)
-        return outbuf_table[handle].data;
-    return NULL;
+    CL_OutBuf *buf = outbuf_at(handle);
+    return buf ? buf->data : NULL;
 }
 
-/* --- Mark-driven outbuf reclamation (see outbuf_inuse comment above) --- */
+/* --- Mark-driven outbuf reclamation (see CL_OutBuf.inuse comment above) --- */
 
-/* Called once at the start of every GC mark phase: clear the in-use bitmap. */
+/* Called once at the start of every GC mark phase: clear the in-use bits. */
 void cl_stream_outbuf_gc_mark_begin(void)
 {
-    uint32_t i;
-    for (i = 0; i < CL_STREAM_BUF_TABLE_SIZE; i++)
-        outbuf_inuse[i] = 0;
+    uint32_t blk, i;
+    for (blk = 0; blk < outbuf_nblocks; blk++) {
+        CL_OutBuf *b = outbuf_dir[blk];
+        if (!b) continue;
+        for (i = 0; i < CL_OUTBUF_BLOCK_SIZE; i++)
+            b[i].inuse = 0;
+    }
 }
 
 /* Called while marking each LIVE output stream: pin its outbuf slot. */
 void cl_stream_outbuf_gc_mark_use(uint32_t handle)
 {
-    if (handle > 0 && handle < CL_STREAM_BUF_TABLE_SIZE)
-        outbuf_inuse[handle] = 1;
+    CL_OutBuf *buf = outbuf_at(handle);
+    if (buf) buf->inuse = 1;
 }
 
 /* Release the creation-window pin once a live stream owns the slot; from here
  * on the slot is protected by the mark phase (cl_stream_outbuf_gc_mark_use). */
 void cl_stream_outbuf_unpin(uint32_t handle)
 {
-    if (handle > 0 && handle < CL_STREAM_BUF_TABLE_SIZE)
-        outbuf_pinned[handle] = 0;
+    CL_OutBuf *buf = outbuf_at(handle);
+    if (buf) buf->pinned = 0;
 }
 
 /* Called after marking completes (world stopped, so no table mutex needed —
@@ -401,29 +515,41 @@ void cl_stream_outbuf_unpin(uint32_t handle)
  * pinned.  These belong to streams that became unreachable this cycle. */
 void cl_stream_outbuf_gc_reclaim(void)
 {
-    uint32_t i;
-    for (i = 1; i < CL_STREAM_BUF_TABLE_SIZE; i++) {
-        if (outbuf_table[i].data && !outbuf_inuse[i] && !outbuf_pinned[i]) {
-            platform_free(outbuf_table[i].data);
-            outbuf_table[i].data = NULL;
-            outbuf_table[i].capacity = 0;
-            outbuf_table[i].length = 0;
+    uint32_t blk, i;
+    for (blk = 0; blk < outbuf_nblocks; blk++) {
+        CL_OutBuf *b = outbuf_dir[blk];
+        if (!b) continue;
+        for (i = (blk == 0 ? 1 : 0); i < CL_OUTBUF_BLOCK_SIZE; i++) {
+            if (b[i].data && !b[i].inuse && !b[i].pinned) {
+                platform_free(b[i].data);
+                b[i].data = NULL;
+                b[i].capacity = 0;
+                b[i].length = 0;
+            }
         }
     }
 }
 
 uint32_t cl_stream_outbuf_len(uint32_t handle)
 {
-    if (handle > 0 && handle < CL_STREAM_BUF_TABLE_SIZE)
-        return outbuf_table[handle].length;
-    return 0;
+    CL_OutBuf *buf = outbuf_at(handle);
+    return buf ? buf->length : 0;
+}
+
+/* Diagnostics hook for ext:%stream-outbuf-stats (builtins_io.c). */
+void cl_stream_outbuf_table_stats(uint32_t *used, uint32_t *capacity)
+{
+    outbuf_stats(used, capacity);
 }
 
 static void outbuf_grow(uint32_t handle, uint32_t needed)
 {
-    CL_OutBuf *buf = &outbuf_table[handle];
-    uint32_t new_cap = buf->capacity;
+    CL_OutBuf *buf = outbuf_at(handle);
+    uint32_t new_cap;
     char *new_data;
+
+    if (!buf || !buf->data) return;
+    new_cap = buf->capacity;
 
     while (new_cap < needed)
         new_cap *= 2;
@@ -439,10 +565,8 @@ static void outbuf_grow(uint32_t handle, uint32_t needed)
 void cl_stream_outbuf_putchar(CL_Stream *st, int ch)
 {
     uint32_t h = st->out_buf_handle;
-    CL_OutBuf *buf;
-    if (h == 0 || h >= CL_STREAM_BUF_TABLE_SIZE) return;
-    buf = &outbuf_table[h];
-    if (!buf->data) return;
+    CL_OutBuf *buf = outbuf_at(h);
+    if (!buf || !buf->data) return;
 
     if (buf->length + 1 >= buf->capacity)
         outbuf_grow(h, buf->length + 2);
@@ -457,10 +581,8 @@ void cl_stream_outbuf_write(CL_Stream *st, const char *str)
 {
     uint32_t h = st->out_buf_handle;
     uint32_t len;
-    CL_OutBuf *buf;
-    if (h == 0 || h >= CL_STREAM_BUF_TABLE_SIZE) return;
-    buf = &outbuf_table[h];
-    if (!buf->data || !str) return;
+    CL_OutBuf *buf = outbuf_at(h);
+    if (!buf || !buf->data || !str) return;
 
     len = (uint32_t)strlen(str);
     if (buf->length + len >= buf->capacity)
@@ -475,10 +597,10 @@ void cl_stream_outbuf_write(CL_Stream *st, const char *str)
 
 void cl_stream_outbuf_reset(uint32_t handle)
 {
-    if (handle > 0 && handle < CL_STREAM_BUF_TABLE_SIZE &&
-        outbuf_table[handle].data) {
-        outbuf_table[handle].length = 0;
-        outbuf_table[handle].data[0] = '\0';
+    CL_OutBuf *buf = outbuf_at(handle);
+    if (buf && buf->data) {
+        buf->length = 0;
+        buf->data[0] = '\0';
     }
 }
 
@@ -1272,8 +1394,18 @@ void cl_stream_close(CL_Obj stream)
             }
             break;
         case CL_STREAM_STRING:
-            if ((dir & CL_STREAM_OUTPUT) && obh != 0)
+            if ((dir & CL_STREAM_OUTPUT) && obh != 0) {
                 cl_stream_free_outbuf(obh);
+                /* Clear the stream's handle so this (still reachable, now
+                 * closed) stream can't pin the slot in the GC mark phase
+                 * after the handle is recycled by another live stream —
+                 * that pin would keep a genuinely dead stream's buffer from
+                 * being reclaimed.  Safe to touch st here: the STRING path
+                 * entered no GC safe region since st was re-derived above
+                 * (cl_stream_free_outbuf takes only a plain mutex), so the
+                 * stream cannot have moved. */
+                st->out_buf_handle = 0;
+            }
             break;
         case CL_STREAM_CBUF:
             if (handle > 0 && handle < CL_CBUF_TABLE_SIZE) {
@@ -1362,8 +1494,9 @@ CL_Obj cl_make_string_output_stream(void)
     if (h == 0) {
         CL_GC_UNPROTECT(1);
         cl_error(0,
-                 "String output stream buffer table exhausted (%d slots)",
-                 CL_STREAM_BUF_TABLE_SIZE - 1);
+                 "String output stream buffer table exhausted "
+                 "(all %d slots in use after growth and GC, or out of memory)",
+                 CL_OUTBUF_MAX_BLOCKS * CL_OUTBUF_BLOCK_SIZE - 1);
         return CL_NIL;
     }
     st = (CL_Stream *)CL_OBJ_TO_PTR(s);   /* derive after alloc — s may have moved */

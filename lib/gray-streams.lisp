@@ -602,13 +602,20 @@ the position where end-of-file was reached."))
           (push (car rest) result)
           (push (cadr rest) result)))))
 
+  ;; The gray fallbacks below capture through WITH-OUTPUT-TO-STRING (not a bare
+  ;; MAKE-STRING-OUTPUT-STREAM) so the temp stream is CLOSEd on exit and its
+  ;; platform outbuf slot is freed eagerly.  A bare, never-closed temp stream
+  ;; leaks its outbuf until the next GC; per-output-call leaks saturate the
+  ;; outbuf table under logging-heavy loads (one slot per princ/format call).
+
   ;; PRINC
   (defun princ (object &optional stream)
     (let ((s (%resolve-output-stream stream)))
       (if (%gray-stream-p s)
-          (let ((tmp (make-string-output-stream)))
-            (funcall orig-princ object tmp)
-            (write-string (get-output-stream-string tmp) s)
+          (progn
+            (write-string (with-output-to-string (tmp)
+                            (funcall orig-princ object tmp))
+                          s)
             object)
           (funcall orig-princ object s))))
 
@@ -616,9 +623,10 @@ the position where end-of-file was reached."))
   (defun prin1 (object &optional stream)
     (let ((s (%resolve-output-stream stream)))
       (if (%gray-stream-p s)
-          (let ((tmp (make-string-output-stream)))
-            (funcall orig-prin1 object tmp)
-            (write-string (get-output-stream-string tmp) s)
+          (progn
+            (write-string (with-output-to-string (tmp)
+                            (funcall orig-prin1 object tmp))
+                          s)
             object)
           (funcall orig-prin1 object s))))
 
@@ -626,9 +634,10 @@ the position where end-of-file was reached."))
   (defun print (object &optional stream)
     (let ((s (%resolve-output-stream stream)))
       (if (%gray-stream-p s)
-          (let ((tmp (make-string-output-stream)))
-            (funcall orig-print object tmp)
-            (write-string (get-output-stream-string tmp) s)
+          (progn
+            (write-string (with-output-to-string (tmp)
+                            (funcall orig-print object tmp))
+                          s)
             object)
           (funcall orig-print object s))))
 
@@ -637,10 +646,10 @@ the position where end-of-file was reached."))
     (let* ((raw-stream (getf args :stream *standard-output*))
            (s (%resolve-output-stream raw-stream)))
       (if (%gray-stream-p s)
-          (let ((tmp (make-string-output-stream))
-                (other-args (%plist-drop-key args :stream)))
-            (apply orig-write object :stream tmp other-args)
-            (write-string (get-output-stream-string tmp) s)
+          (let ((other-args (%plist-drop-key args :stream)))
+            (write-string (with-output-to-string (tmp)
+                            (apply orig-write object :stream tmp other-args))
+                          s)
             object)
           (apply orig-write object args))))
 
@@ -656,9 +665,10 @@ the position where end-of-file was reached."))
                      (two-way-stream-output-stream dest0)
                      dest0)))
          (if (%gray-stream-p s)
-             (let ((tmp (make-string-output-stream)))
-               (apply orig-format tmp control-string format-args)
-               (write-string (get-output-stream-string tmp) s)
+             (progn
+               (write-string (with-output-to-string (tmp)
+                               (apply orig-format tmp control-string format-args))
+                             s)
                nil)
              (apply orig-format destination control-string format-args))))))
 
@@ -666,9 +676,10 @@ the position where end-of-file was reached."))
   (defun pprint (object &optional stream)
     (let ((s (%resolve-output-stream stream)))
       (if (%gray-stream-p s)
-          (let ((tmp (make-string-output-stream)))
-            (funcall orig-pprint object tmp)
-            (write-string (get-output-stream-string tmp) s)
+          (progn
+            (write-string (with-output-to-string (tmp)
+                            (funcall orig-pprint object tmp))
+                          s)
             nil)
           (funcall orig-pprint object s))))
 

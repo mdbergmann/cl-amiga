@@ -4318,6 +4318,41 @@ check_contains "condition/deftype index answers stay exact under compaction stor
 check_absent   "no corruption in index rebuild path" \
   "corrupted\|not of type\|Guru\|SIGSEGV\|badmark\|Unbound" "$out"
 
+# --- Case: outbuf table growth + eager close under forced compaction --------
+# Bug-shaped path (stream.c segmented outbuf directory): >256 simultaneously
+# open string-output-streams force the side table to grow past its first
+# block WHILE every arena allocation compacts the heap.  Each stream object
+# relocates on every compaction; its out_buf_handle must keep resolving to
+# the same (never-moving) directory slot, growth must publish new blocks
+# safely mid-storm, and the mark-driven reclaim must walk ALL blocks (a
+# reclaim that only swept block 0 would leak or, worse, free live block-1
+# buffers).  Content is verified per stream, then everything is CLOSEd and
+# the eager free must return the table to its starting occupancy.
+cat > "$WORK/outbufgrow.lisp" <<'EOF'
+(let ((base (car (ext:%stream-outbuf-stats)))
+      (streams nil))
+  (dotimes (i 300)
+    (let ((s (make-string-output-stream)))
+      (format s "content-~D" i)
+      (push s streams)))
+  (setf streams (nreverse streams))
+  (let ((ok t) (i 0))
+    (dolist (s streams)
+      (unless (string= (get-output-stream-string s)
+                       (format nil "content-~D" i))
+        (setf ok nil))
+      (incf i))
+    (dolist (s streams) (close s))
+    (format t "OUTBUF-GROWTH-STRESS:~a~%"
+            (if (and ok (<= (car (ext:%stream-outbuf-stats)) (+ base 5)))
+                "OK" "MISMATCH"))))
+EOF
+out=$(run_stress "$WORK/outbufgrow.lisp")
+check_contains "outbuf table grows and frees eagerly under compaction storm" \
+  "OUTBUF-GROWTH-STRESS:OK" "$out"
+check_absent   "no corruption in segmented outbuf directory" \
+  "corrupted\|not of type\|Guru\|SIGSEGV\|badmark\|Unbound" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]
