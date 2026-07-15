@@ -3158,6 +3158,14 @@ cat > "$WORK/tier4-printer.lisp" <<'EOF'
 (defmethod print-object ((o t4b-inner) s)
   (format s "[inner ~A]" (format nil "~A" (t4b-inner-v o))))
 (format t "T4B-P6:~a~%" (format nil "~A" (make-t4b-inner :v (list 1 2))))
+;; P6W: a print-object hook result that is a WIDE string (non-ASCII char in
+;; the method output) must be honored under GC stress — not silently
+;; degraded to raw all-slots #S(...) printing (eta-hab umlaut-label
+;; regression; the wide result allocates in out_wide_str_lisp's out path).
+(defstruct t4b-wpo v)
+(defmethod print-object ((o t4b-wpo) s)
+  (format s "[wpo-~a-~a]" (string (code-char 252)) (t4b-wpo-v o)))
+(format t "T4B-P6W:~a~%" (format nil "~A" (make-t4b-wpo :v 7)))
 ;; P7: ratio with bignum numerator + complex.
 (format t "T4B-P7:~a~%" (format nil "~S ~S" (/ (expt 10 30) 3) (complex 1 -2)))
 ;; FS2: ~? string control with heap args and a trailing parent directive.
@@ -3211,6 +3219,10 @@ check_absent   "P5W not degraded to #<RESTART>" \
   "T4B-P5W:#<RESTART" "$out"
 check_contains "P6 nested print via print-object method" \
   "T4B-P6:\[inner (1 2)\]" "$out"
+check_contains "P6W wide print-object result honored under GC stress" \
+  "T4B-P6W:\[wpo-" "$out"
+check_absent   "P6W not degraded to raw #S all-slots print" \
+  "T4B-P6W:#S(" "$out"
 check_contains "P7 bignum ratio + complex print under GC stress" \
   "T4B-P7:1000000000000000000000000000000/3 #C(1 -2)" "$out"
 check_contains "FS2 ~? string-control args survive fmt_run compaction" \

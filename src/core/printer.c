@@ -451,6 +451,37 @@ static void out_wide_str_lisp(CL_Obj wobj)
 }
 #endif
 
+/* Emit a *print-object-hook* result if it is a non-empty string and
+ * return 1; return 0 to let the caller fall through to default printing.
+ * Must accept wide strings: with-output-to-string in the hook returns a
+ * TYPE_WIDE_STRING whenever the method's output contains any non-ASCII
+ * character (e.g. an umlaut in a slot value), and rejecting it silently
+ * degrades the object to the raw all-slots #S(...) form — which exposes
+ * object-graph edges the PRINT-OBJECT method deliberately elides and can
+ * blow printing up exponentially on cyclic graphs. */
+static int out_hook_result(CL_Obj result)
+{
+    void *p;
+    if (CL_NULL_P(result) || !CL_HEAP_P(result))
+        return 0;
+    p = CL_OBJ_TO_PTR(result);
+    if (CL_HDR_TYPE(p) == TYPE_STRING) {
+        if (((CL_String *)p)->length == 0)
+            return 0;
+        out_str_lisp(result);
+        return 1;
+    }
+#ifdef CL_WIDE_STRINGS
+    if (CL_HDR_TYPE(p) == TYPE_WIDE_STRING) {
+        if (((CL_WideString *)p)->length == 0)
+            return 0;
+        out_wide_str_lisp(result);
+        return 1;
+    }
+#endif
+    return 0;
+}
+
 /* Base-aware integer output honoring *print-base* and *print-radix* */
 /* Emit the read-syntax radix prefix for BASE: #b (2), #o (8), #x (16),
  * #Nr (any other non-decimal base).  Base 10 gets no prefix.  Shared by the
@@ -1399,11 +1430,8 @@ static void print_obj(CL_Obj obj)
                     obj = pr_inprog[pr_inprog_top];
                     st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
                 }
-                if (!CL_NULL_P(result) && CL_HEAP_P(result) &&
-                    CL_HDR_TYPE(CL_OBJ_TO_PTR(result)) == TYPE_STRING) {
-                    out_str_lisp(result);
+                if (out_hook_result(result))
                     break; /* hook handled it */
-                }
             }
         } else if (!CL_NULL_P(SYM_PRINT_OBJECT_HOOK) && pr_inprog_contains(obj)) {
             /* Re-entrant on the same object — emit a marker and stop. */
@@ -1498,14 +1526,8 @@ static void print_obj(CL_Obj obj)
                         obj = pr_inprog[pr_inprog_top];
                         cond = (CL_Condition *)CL_OBJ_TO_PTR(obj);
                     }
-                    if (!CL_NULL_P(result) && CL_HEAP_P(result) &&
-                        CL_HDR_TYPE(CL_OBJ_TO_PTR(result)) == TYPE_STRING) {
-                        CL_String *rs = (CL_String *)CL_OBJ_TO_PTR(result);
-                        if (rs->length > 0) {
-                            out_str_lisp(result);
-                            break;
-                        }
-                    }
+                    if (out_hook_result(result))
+                        break;
                 }
             }
             if (!CL_NULL_P(cond->report_string)) {
