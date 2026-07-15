@@ -50,6 +50,11 @@
 
 static void setup(void)
 {
+    /* This suite tests the CLASSIC collector's free-list mechanics
+     * (bounded probe, sweep/compact interplay).  Under the generational
+     * collector the free list is intentionally unused (majors are always
+     * compactions), so pin classic mode for the whole binary. */
+    setenv("CLAMIGA_GENGC", "0", 1);
     platform_init();
     cl_thread_init();
     cl_error_init();

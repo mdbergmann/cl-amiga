@@ -134,6 +134,26 @@ stack 400000
 clamiga --heap 24M
 ```
 
+### Garbage collection
+
+On macOS/Linux hosts CL-Amiga runs a **generational collector**: all
+allocation is a lock-free bump in a nursery region, and most collections are
+cheap minor cycles that only trace the young objects (old→young references
+are tracked by hardware page protection, so there is no write-barrier cost
+in compiled code).  Full compacting collections still run when old space
+fills.  On AmigaOS the classic mark-sweep-compact collector is used — the
+generational machinery needs an MMU and is compiled out there.
+
+- `CLAMIGA_GENGC=0` (environment) selects the classic collector on the host
+  (useful for A/B measurements; behavior is identical, only pause costs
+  differ).
+- `(ext:gc)` forces a full collection, `(ext:%gc-minor)` a minor cycle.
+- `(ext:%gc-time-stats)` and `(ext:%gengc-stats)` expose collector telemetry
+  (per-phase times, minor counts, promoted bytes, dirty-page counts).
+
+See `tests/test_gengc.c` and `tests/test_gengc_watch.c` for the behavioral
+contract, and `specs/generational-gc.md` for the design.
+
 ### Quicklisp
 
 Quicklisp runs on CL-Amiga, but the stock client doesn't recognise this implementation and pulls in libraries that assume features we don't have yet. So the project ships a small compat layer, a set of **library backends** — maintained forks of a few systems that now carry first-class CL-Amiga support behind `#+cl-amiga` / `#+clamiga` branches — and a tiny `swank` stub, and keeps the bootstrap entirely on its own side. The library forks are deliberately minimal and exist to be upstreamed once the remaining API gaps close.

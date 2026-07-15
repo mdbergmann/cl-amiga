@@ -7,6 +7,47 @@ command, and results, so later runs can be compared like-for-like.
 Related: [specs/performance.md](../specs/performance.md) is the optimization
 *plan*; this file is the *measured results* log.
 
+## 2026-07-15 — Generational GC (host): sliding nursery + dirty-page tracking
+
+**Branch**: `perf/gengc` (on top of the TLAB branch).  Design:
+[specs/generational-gc.md](../specs/generational-gc.md).  Host collections
+are now mostly MINOR cycles that trace only live young objects (survivor
+list collected during mark — dead nursery space is never walked) plus the
+old-space pages actually written since the last GC (mprotect write-watch);
+survivors slide onto the old-space watermark.  Majors are full compactions.
+Also in this round: GC-epoch dedup of redundant back-to-back stop-the-world
+collections, and minor-first reclamation for the bounded lock/condvar/
+thread handle tables (their exhaustion path used to force a full
+collection — the dominant GC cost of the ask benchmark).
+
+**Environment**: Apple M3 Ultra, macOS 26.5.2, `make host`, `--heap 192M`.
+Benchmark: `sento.bench::run-benchmark` (`:num-shared-workers 8,
+:load-threads 8, :duration 5, :num-iterations 6`).  A/B on the SAME binary
+via `CLAMIGA_GENGC=0` (classic collector, incl. the epoch dedup).
+
+| Cell (avg msg/s)  | classic | gengc | delta |
+| ----------------- | ------: | ----: | ----: |
+| PINNED tell       | 164,215 | **186,124** | **+13%** |
+| PINNED ask        |  25,849 |  **32,489** | **+26%** |
+
+GC cost telemetry (`ext:%gc-time-stats` / `ext:%gengc-stats`, per 31s cell):
+
+| Cell | collector | GC share of wall | shape |
+| ---- | --------- | ---------------: | ----- |
+| tell | classic   | 2.5% | 20 sweeps, 1 compact |
+| tell | gengc     | **1.4%** | 12 minors @ ~6ms, 6 compacts |
+| ask  | classic   | 6.8% | 139 sweeps @ ~11.5ms mark+sweep |
+| ask  | gengc     | **1.7%** | 126 minors @ ~1.8ms, 6 compacts |
+
+Worst single stop-the-world pause dropped 52ms → 8.6ms.  The ask cell's
+handle-table fix matters beyond gengc: with classic GC the table exhaustion
+still costs a full sweep every ~0.25s.
+
+**Reproduce**: load `trunk/load-sento-bench.lisp`, then run
+`sento.bench::run-benchmark` with the config above (per cell:
+`:with-reply-p`/`:async-ask-p`); read `(ext:%gc-time-stats)` /
+`(ext:%gengc-stats)` around the run; A/B with `CLAMIGA_GENGC=0`.
+
 ---
 
 ## 2026-07-14 — condition-hierarchy + deftype table hash indexes (TYPEP)

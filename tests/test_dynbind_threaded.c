@@ -327,11 +327,15 @@ TEST(gc_with_tlv_entries)
     CL_Obj sym = cl_intern("*GC-TLV-TEST*", 14);
     CL_Obj str;
 
-    /* Create a heap object and store in TLV */
+    /* Create a heap object and store in TLV.  BOTH locals stay protected
+     * across the collection: under the generational collector cl_gc() is
+     * a MOVING collection (compaction), so an unprotected CL_Obj local
+     * held across it goes stale — the long-documented GC-safety rule,
+     * which the old sweep-only cl_gc() merely never enforced. */
     str = cl_make_string("hello-gc", 8);
+    CL_GC_PROTECT(sym);
     CL_GC_PROTECT(str);
     cl_tlv_set(t, sym, str);
-    CL_GC_UNPROTECT(1);
 
     /* Force GC */
     cl_gc();
@@ -348,6 +352,7 @@ TEST(gc_with_tlv_entries)
     }
 
     cl_tlv_remove(t, sym);
+    CL_GC_UNPROTECT(2);
 }
 
 /* ================================================================

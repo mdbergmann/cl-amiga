@@ -132,10 +132,16 @@ static void gc_dump_roots_dbg(void);
 static int gc_verify_errors;  /* defined/reset inside gc_verify_marked */
 #endif
 
-/* Compaction forwarding table — maps old_offset/CL_ALIGN -> new_offset.
- * Allocated via platform_alloc during compaction, freed afterwards. */
+/* Compaction forwarding table — maps (old_offset - gc_fwd_base)/CL_ALIGN
+ * -> new_offset.  Allocated via platform_alloc during compaction, freed
+ * afterwards.  gc_fwd_base is 0 for a full compaction (table spans the
+ * whole bump region) and gen_old_top for a minor (nursery) collection,
+ * where only nursery offsets can move — gc_forward returns anything below
+ * the base unchanged, which is what lets every compaction-era updater be
+ * reused verbatim by the generational collector. */
 static uint32_t *gc_fwd_table = NULL;
 static uint32_t gc_fwd_table_entries = 0;
+static uint32_t gc_fwd_base = 0;
 
 /* Bump level at which the last forwarding-table platform_alloc failed
  * (0 = none).  While the bump front is at or above this level a
@@ -371,12 +377,337 @@ void cl_tlab_retire(CL_Thread *t)
 static void gc_tlab_reset_all(void) {}
 #endif /* CL_TLAB */
 
+#ifdef CL_GENGC
+/* ================================================================
+ * Generational GC (CL_GENGC) — sliding nursery with promotion-by-
+ * watermark and hardware dirty-page tracking.  Design and the full
+ * interactions audit: specs/generational-gc.md.
+ *
+ * Arena layout:   [CL_ALIGN, gen_old_top)   old space  (dense, RO)
+ *                 [gen_old_top, arena_size) nursery    (bump, RW)
+ *
+ * Invariants (all load-bearing):
+ *  - ALL allocation bumps inside the nursery; the free list is unused
+ *    while gen mode is enabled (majors are always compactions).
+ *  - Sticky marks: every live old object keeps its header mark bit SET
+ *    between collections, so gc_mark_obj's "skip if marked" check
+ *    terminates a minor trace at the old generation with no new code.
+ *    Nursery objects are born unmarked.
+ *  - Old space is mprotect-ed read-only after every collection; the
+ *    write-watch fault handler records first-stores per page in
+ *    gen_dirty.  A page that is clean at the next minor GC cannot
+ *    reference any object allocated after the previous one.
+ *  - Old space is DENSE (no free blocks): built only by compaction and
+ *    by sequential promotion, so a linear header walk from any known
+ *    object start stays in sync.  gen_cross[] (crossing map) gives each
+ *    page's first object start so single dirty pages can be walked
+ *    precisely without scanning the whole heap.
+ * ================================================================ */
+
+#define GEN_CROSS_NONE 0xFFFFFFFFu
+
+static int      gen_enabled = 0;   /* runtime switch (mmap+watch OK, env) */
+static uint32_t gen_old_top = CL_ALIGN;  /* old/nursery watermark */
+static volatile uint8_t *gen_dirty = NULL;   /* 1 bit per arena page */
+static uint32_t *gen_cross = NULL; /* per page: first object start offset */
+static uint32_t gen_page = 0;      /* platform page size */
+static uint32_t gen_npages = 0;    /* arena pages */
+static int      gen_protected = 0; /* old space currently read-only */
+static int      gen_arena_pages = 0; /* arena from platform_alloc_pages */
+
+/* Diagnostics (ext:%gengc-stats) */
+static uint32_t gen_minor_count = 0;
+static uint64_t gc_time_minor_us = 0;
+static uint64_t gen_promoted_bytes = 0;
+static uint32_t gen_dirty_last = 0;
+
+/* Rehash work list: post-slide offsets of hash tables encountered on
+ * dirty pages / among survivors during a minor cycle.  Grown on demand;
+ * survives across cycles (capacity only). */
+static uint32_t *gen_ht_list = NULL;
+static uint32_t gen_ht_count = 0, gen_ht_cap = 0;
+
+/* Survivor list: offsets of live nursery objects, recorded by gc_mark_obj
+ * while gen_minor_active — the whole point is that a minor cycle touches
+ * only LIVE young objects, never walking the (dominant) dead nursery
+ * space.  gen_live_new[] holds each survivor's assigned post-slide offset
+ * (parallel array, filled after the list is sorted); gc_forward binary-
+ * searches the pair during a minor instead of using a nursery-sized
+ * forwarding table (which would cost an ~O(nursery) allocate+zero per
+ * cycle).  Capacity persists across cycles. */
+static uint32_t *gen_live = NULL;
+static uint32_t *gen_live_new = NULL;
+static uint32_t gen_live_count = 0, gen_live_cap = 0;
+static int gen_minor_active = 0;   /* mark phase records survivors */
+static int gen_minor_fwd = 0;      /* gc_forward uses the survivor list */
+static int gen_live_oom = 0;       /* list growth failed — escalate */
+
+/* Young finalizable objects (streams/locks/condvars/threads/bytecode/
+ * foreign pointers), recorded at allocation time.  A minor never walks
+ * dead nursery space, so without this list a dead young lock's platform
+ * handle would leak until the next major.  Entries are dropped every
+ * minor: dead ones are finalized, survivors are old afterwards (the next
+ * major's full walk owns them). */
+static uint32_t *gen_fin = NULL;
+static uint32_t gen_fin_count = 0, gen_fin_cap = 0;
+
+/* Types gc_finalize_dead releases external resources for. */
+static int gen_type_finalizable(uint8_t type)
+{
+    return type == TYPE_BYTECODE || type == TYPE_STREAM ||
+           type == TYPE_LOCK || type == TYPE_CONDVAR ||
+           type == TYPE_FOREIGN_POINTER || type == TYPE_THREAD;
+}
+
+static void gen_live_note(uint32_t off)
+{
+    if (gen_live_count == gen_live_cap) {
+        uint32_t ncap = gen_live_cap ? gen_live_cap * 2 : 4096;
+        uint32_t *nl = (uint32_t *)platform_alloc(ncap * sizeof(uint32_t));
+        uint32_t *nn = (uint32_t *)platform_alloc(ncap * sizeof(uint32_t));
+        if (!nl || !nn) {
+            if (nl) platform_free(nl);
+            if (nn) platform_free(nn);
+            gen_live_oom = 1;
+            return;
+        }
+        if (gen_live) {
+            memcpy(nl, gen_live, gen_live_count * sizeof(uint32_t));
+            platform_free(gen_live);
+            platform_free(gen_live_new);
+        }
+        gen_live = nl;
+        gen_live_new = nn;
+        gen_live_cap = ncap;
+    }
+    gen_live[gen_live_count++] = off;
+}
+
+/* Record a freshly allocated finalizable object.  Callers on the lock-free
+ * TLAB path pass locked=0 and this takes alloc_mutex itself (finalizable
+ * allocations are rare — streams, locks — so the cost is irrelevant). */
+static void gen_fin_note(uint32_t off, int need_lock)
+{
+    if (need_lock) platform_mutex_lock(alloc_mutex);
+    if (gen_fin_count == gen_fin_cap) {
+        uint32_t ncap = gen_fin_cap ? gen_fin_cap * 2 : 1024;
+        uint32_t *nf = (uint32_t *)platform_alloc(ncap * sizeof(uint32_t));
+        if (!nf) {
+            /* Degraded: the object's external resources are reclaimed at
+             * the next major instead. */
+            if (need_lock) platform_mutex_unlock(alloc_mutex);
+            return;
+        }
+        if (gen_fin) {
+            memcpy(nf, gen_fin, gen_fin_count * sizeof(uint32_t));
+            platform_free(gen_fin);
+        }
+        gen_fin = nf;
+        gen_fin_cap = ncap;
+    }
+    gen_fin[gen_fin_count++] = off;
+    if (need_lock) platform_mutex_unlock(alloc_mutex);
+}
+
+int cl_gengc_enabled(void) { return gen_enabled; }
+
+/* Protect [0, gen_old_top) read-only (page-truncated).  The straddling
+ * page (old tail + nursery head) stays writable — mark it dirty so the
+ * next minor scans its old objects unconditionally. */
+static void gen_protect_old(void)
+{
+    uint32_t ro_bytes;
+    if (!gen_enabled) return;
+    ro_bytes = (gen_old_top / gen_page) * gen_page;
+    if (ro_bytes > 0)
+        platform_page_protect(cl_heap.arena, ro_bytes, 1);
+    if (gen_old_top > ro_bytes) {
+        uint32_t p = gen_old_top / gen_page;
+        gen_dirty[p >> 3] |= (uint8_t)(1u << (p & 7u));
+    }
+    gen_protected = 1;
+}
+
+/* Drop protection over the whole arena (GC passes write mark bits and
+ * slide anywhere; re-init/shutdown must leave pages writable). */
+static void gen_unprotect_all(void)
+{
+    if (gen_protected) {
+        platform_page_protect(cl_heap.arena, gen_npages * gen_page, 0);
+        gen_protected = 0;
+    }
+}
+
+/* Record obj_offset as a (possibly) first object start in its page. */
+static void gen_cross_note(uint32_t obj_offset)
+{
+    uint32_t p = obj_offset / gen_page;
+    if (gen_cross[p] == GEN_CROSS_NONE || obj_offset < gen_cross[p])
+        gen_cross[p] = obj_offset;
+}
+
+/* Offset of the object COVERING byte `pos` (pos < gen_old_top): start at
+ * the nearest page at/below pos with a recorded first start, then walk
+ * forward.  Old space is dense, so the walk stays header-synced. */
+static uint32_t gen_covering_object(uint32_t pos)
+{
+    uint32_t p = pos / gen_page;
+    uint32_t off;
+    while (gen_cross[p] == GEN_CROSS_NONE || gen_cross[p] > pos) {
+        if (p == 0) return CL_ALIGN;   /* degenerate: walk from arena start */
+        p--;
+    }
+    off = gen_cross[p];
+    for (;;) {
+        uint32_t size = CL_HDR_SIZE(cl_heap.arena + off);
+        if (size == 0) return pos;     /* desync guard — caller re-checks */
+        if (off + size > pos) return off;
+        off += size;
+    }
+}
+
+void cl_gc_pretouch(const void *ptr, uint32_t len)
+{
+    uint32_t off, end, p, plast;
+    const uint8_t *cp = (const uint8_t *)ptr;
+    if (!gen_enabled || !gen_protected || len == 0) return;
+    if (cp < cl_heap.arena) return;
+    off = (uint32_t)(cp - cl_heap.arena);
+    if (off >= gen_old_top) return;            /* nursery/beyond: RW */
+    end = off + len;
+    if (end > gen_old_top) end = gen_old_top;
+    p = off / gen_page;
+    plast = (end - 1) / gen_page;
+    for (; p <= plast; p++)
+        gen_dirty[p >> 3] |= (uint8_t)(1u << (p & 7u));
+    platform_page_protect(cl_heap.arena + (off / gen_page) * gen_page,
+                          (plast - off / gen_page + 1) * gen_page, 0);
+}
+
+void cl_gengc_stats(uint32_t *minors, uint64_t *minor_us,
+                    uint64_t *promoted_bytes, uint32_t *old_top,
+                    uint32_t *dirty_last)
+{
+    if (minors)         *minors         = gen_minor_count;
+    if (minor_us)       *minor_us       = gc_time_minor_us;
+    if (promoted_bytes) *promoted_bytes = gen_promoted_bytes;
+    if (old_top)        *old_top        = gen_old_top;
+    if (dirty_last)     *dirty_last     = gen_dirty_last;
+}
+
+/* Append a (forwarded) hashtable offset to the minor rehash work list. */
+static void gen_ht_note(uint32_t off)
+{
+    if (gen_ht_count == gen_ht_cap) {
+        uint32_t ncap = gen_ht_cap ? gen_ht_cap * 2 : 64;
+        uint32_t *nl = (uint32_t *)platform_alloc(ncap * sizeof(uint32_t));
+        if (!nl) return;  /* degraded: table missed — rehashed on major */
+        if (gen_ht_list) {
+            memcpy(nl, gen_ht_list, gen_ht_count * sizeof(uint32_t));
+            platform_free(gen_ht_list);
+        }
+        gen_ht_list = nl;
+        gen_ht_cap = ncap;
+    }
+    gen_ht_list[gen_ht_count++] = off;
+}
+
+/* Tear down / reset all generational state (heap re-init, shutdown). */
+static void gen_reset(void)
+{
+    gen_unprotect_all();
+    platform_write_watch_remove();
+    if (gen_dirty) { platform_free((void *)gen_dirty); gen_dirty = NULL; }
+    if (gen_cross) { platform_free(gen_cross); gen_cross = NULL; }
+    if (gen_ht_list) {
+        platform_free(gen_ht_list);
+        gen_ht_list = NULL;
+        gen_ht_cap = gen_ht_count = 0;
+    }
+    if (gen_live) {
+        platform_free(gen_live);
+        platform_free(gen_live_new);
+        gen_live = gen_live_new = NULL;
+        gen_live_cap = gen_live_count = 0;
+    }
+    if (gen_fin) {
+        platform_free(gen_fin);
+        gen_fin = NULL;
+        gen_fin_cap = gen_fin_count = 0;
+    }
+    gen_minor_active = 0;
+    gen_minor_fwd = 0;
+    gen_live_oom = 0;
+    gen_enabled = 0;
+    gen_old_top = CL_ALIGN;
+    gen_page = gen_npages = 0;
+    gen_minor_count = 0;
+    gc_time_minor_us = 0;
+    gen_promoted_bytes = 0;
+    gen_dirty_last = 0;
+}
+#endif /* CL_GENGC */
+
 void cl_mem_init(uint32_t heap_size)
 {
     if (heap_size == 0)
         heap_size = CL_DEFAULT_HEAP_SIZE;
 
+#ifdef CL_GENGC
+    /* Reset any previous heap's generational state FIRST: protection must
+     * be dropped and the fault handler detached before the old arena is
+     * freed below (a handler pointing at freed watch state would turn the
+     * next unrelated crash into chaos).  Documented stale-static bug
+     * class: every gen_* variable is re-derived for the new arena. */
+    gen_reset();
+
+    /* Page-aligned arena so old space can be mprotect-ed.  Fall back to
+     * the classic allocator (and classic GC) if mmap is unavailable. */
+    {
+        const char *env = getenv("CLAMIGA_GENGC");
+        int want_gen = !(env && env[0] == '0' && env[1] == '\0');
+        cl_heap.arena = NULL;
+        if (want_gen) {
+            /* Round the watch region up to whole pages; the arena itself
+             * keeps the requested byte size. */
+            gen_page = platform_page_size();
+            gen_npages = (heap_size + gen_page - 1) / gen_page;
+            cl_heap.arena =
+                (uint8_t *)platform_alloc_pages(gen_npages * gen_page);
+            if (cl_heap.arena) {
+                gen_dirty = (volatile uint8_t *)
+                    platform_alloc((gen_npages + 7) / 8);
+                gen_cross = (uint32_t *)
+                    platform_alloc(gen_npages * sizeof(uint32_t));
+                if (gen_dirty && gen_cross &&
+                    platform_write_watch_install(cl_heap.arena,
+                                                 gen_npages * gen_page,
+                                                 gen_dirty) == 0) {
+                    uint32_t i;
+                    for (i = 0; i < gen_npages; i++)
+                        gen_cross[i] = GEN_CROSS_NONE;
+                    gen_arena_pages = 1;
+                    gen_enabled = 1;
+                } else {
+                    /* Partial setup failed — release and fall back. */
+                    if (gen_dirty) { platform_free((void *)gen_dirty); gen_dirty = NULL; }
+                    if (gen_cross) { platform_free(gen_cross); gen_cross = NULL; }
+                    platform_free_pages(cl_heap.arena, gen_npages * gen_page);
+                    cl_heap.arena = NULL;
+                    platform_write_string(
+                        "clamiga: generational GC unavailable "
+                        "(mmap/write-watch setup failed) — classic GC\n");
+                }
+            }
+        }
+        if (!cl_heap.arena) {
+            gen_arena_pages = 0;
+            cl_heap.arena = (uint8_t *)platform_alloc(heap_size);
+        }
+    }
+#else
     cl_heap.arena = (uint8_t *)platform_alloc(heap_size);
+#endif
     if (!cl_heap.arena) {
         char msg[96];
         snprintf(msg, sizeof(msg),
@@ -587,6 +918,18 @@ static void gc_reset_transient_state(void)
 
 void cl_mem_shutdown(void)
 {
+#ifdef CL_GENGC
+    {
+        int was_pages = gen_arena_pages;
+        uint32_t watch_bytes = gen_npages * gen_page;
+        gen_reset();   /* unprotect + detach handler before freeing */
+        if (cl_heap.arena && was_pages) {
+            platform_free_pages(cl_heap.arena, watch_bytes);
+            cl_heap.arena = NULL;
+            gen_arena_pages = 0;
+        }
+    }
+#endif
     if (cl_heap.arena) {
         platform_free(cl_heap.arena);
         cl_heap.arena = NULL;
@@ -811,6 +1154,14 @@ void *cl_alloc(uint8_t type, uint32_t size)
         if (ptr) {
             memset(ptr, 0, size);
             ((CL_Header *)ptr)->header = CL_MAKE_HDR(type, size);
+#ifdef CL_GENGC
+            /* Young finalizable objects are tracked so a minor GC can
+             * release their external resources without walking dead
+             * nursery space.  Rare types — the note takes alloc_mutex
+             * itself (we are on the lock-free path here). */
+            if (gen_enabled && gen_type_finalizable(type))
+                gen_fin_note((uint32_t)((uint8_t *)ptr - cl_heap.arena), 1);
+#endif
             return ptr;
         }
     }
@@ -827,6 +1178,42 @@ void *cl_alloc(uint8_t type, uint32_t size)
         /* Try free list (may update size if using entire oversized block) */
         ptr = alloc_from_free_list(&size, CL_FREELIST_PROBE_LIMIT);
     }
+#ifdef CL_GENGC
+    if (!ptr && gen_enabled) {
+        /* Nursery exhausted: minor collection first (traces only the live
+         * young set + dirty pages, slides survivors onto the watermark and
+         * resets the bump), escalating to a full compaction when the minor
+         * is refused, is deduped away without freeing enough, or old space
+         * has grown to the point that nursery headroom is gone (< 1/8 of
+         * the arena — reclaim the floating old garbage instead of minor-
+         * thrashing a sliver of nursery). */
+        uint32_t seen_gc_count = cl_heap.gc_count;
+        int minor_ok;
+        if (multi) platform_mutex_unlock(alloc_mutex);
+        minor_ok = cl_gc_minor(seen_gc_count);
+        if (multi) platform_mutex_lock(alloc_mutex);
+        if (minor_ok &&
+            cl_heap.arena_size - gen_old_top >= cl_heap.arena_size / 8)
+            ptr = alloc_from_bump(size);
+        if (!ptr) {
+            if (multi) platform_mutex_unlock(alloc_mutex);
+            cl_gc_compact();
+            if (multi) platform_mutex_lock(alloc_mutex);
+            ptr = alloc_from_bump(size);
+            if (!ptr && !gen_enabled) {
+                /* The compaction degraded to a classic sweep (fallback
+                 * paths disable gen mode) — the space is on the free
+                 * list now. */
+                ptr = alloc_from_free_list(&size, 0 /* unbounded */);
+            }
+        }
+        if (!ptr) {
+            if (multi) platform_mutex_unlock(alloc_mutex);
+            cl_storage_error("Heap exhausted (requested %u bytes)",
+                             (unsigned)size);
+        }
+    }
+#endif /* CL_GENGC */
     if (!ptr) {
         /* Bump exhausted and the bounded free-list probe missed.  Sweep first:
          * it is cheaper than compaction, may itself free a fit, AND recomputes
@@ -956,6 +1343,13 @@ void *cl_alloc(uint8_t type, uint32_t size)
     ((CL_Header *)ptr)->header = CL_MAKE_HDR(type, size);
     cl_heap.total_allocated += size;
     cl_heap.total_consed += size;
+
+#ifdef CL_GENGC
+    /* See the TLAB-path twin above; here alloc_mutex is already held
+     * (or the process is single-threaded) — no extra locking. */
+    if (gen_enabled && gen_type_finalizable(type))
+        gen_fin_note((uint32_t)((uint8_t *)ptr - cl_heap.arena), 0);
+#endif
 
     if (multi) platform_mutex_unlock(alloc_mutex);
 
@@ -1999,6 +2393,14 @@ void gc_mark_obj(CL_Obj obj)
     }
 #endif
     CL_HDR_SET_MARK(ptr);
+#ifdef CL_GENGC
+    /* Minor cycles: record every live nursery object as it is discovered —
+     * the survivor list is what lets the rest of the minor never touch
+     * dead nursery space.  gc_mark_obj's marked-check above guarantees
+     * exactly one note per object. */
+    if (gen_minor_active && obj >= gen_old_top)
+        gen_live_note(obj);
+#endif
     gc_mark_children(ptr, CL_HDR_TYPE(ptr));
 }
 
@@ -3020,6 +3422,7 @@ static void gc_sweep(void)
 /* Allocate / free forwarding table */
 static int gc_fwd_alloc(void)
 {
+    gc_fwd_base = 0;
     gc_fwd_table_entries = cl_heap.bump / CL_ALIGN;
     gc_fwd_table = (uint32_t *)platform_alloc(
         gc_fwd_table_entries * sizeof(uint32_t));
@@ -3102,7 +3505,31 @@ static CL_Obj gc_forward(CL_Obj obj)
         return obj;
     if (obj >= cl_heap.bump)
         return obj;
-    idx = obj / CL_ALIGN;
+#ifdef CL_GENGC
+    if (gen_minor_fwd) {
+        /* Minor cycle: forward via binary search over the sorted survivor
+         * list instead of a nursery-sized table (whose allocate+zero would
+         * cost O(nursery) per cycle).  Old-space offsets never move in a
+         * minor; a nursery offset absent from the list references a DEAD
+         * object (possible in weak-ish side tables) and is left alone. */
+        uint32_t lo, hi;
+        if (obj < gen_old_top)
+            return obj;
+        lo = 0;
+        hi = gen_live_count;
+        while (lo < hi) {
+            uint32_t mid = (lo + hi) / 2;
+            if (gen_live[mid] < obj)      lo = mid + 1;
+            else if (gen_live[mid] > obj) hi = mid;
+            else                          return gen_live_new[mid];
+        }
+        return obj;
+    }
+#endif
+    if (obj < gc_fwd_base)           /* below a minor cycle's nursery base:
+                                      * old space never moves in a minor */
+        return obj;
+    idx = (obj - gc_fwd_base) / CL_ALIGN;
     if (idx >= gc_fwd_table_entries)
         return obj;
     fwd = gc_fwd_table[idx];
@@ -3574,10 +4001,12 @@ static void gc_update_shared_roots(void)
     }
 }
 
-/* Pass 3: Walk all live heap objects + all roots and update references */
-static void gc_update_all_references(void)
+/* Pass 3 (roots half): update every non-heap root slot through the
+ * forwarding table.  Shared verbatim between a full compaction and a
+ * minor (nursery) collection — gc_forward leaves non-forwarded (old)
+ * offsets unchanged, so this is safe and cheap in both. */
+static void gc_update_all_roots(void)
 {
-    uint8_t *ptr, *end;
     CL_Thread *t;
 
     /* Update per-thread roots */
@@ -3593,6 +4022,14 @@ static void gc_update_all_references(void)
 
     /* Update shared globals */
     gc_update_shared_roots();
+}
+
+/* Pass 3: Walk all live heap objects + all roots and update references */
+static void gc_update_all_references(void)
+{
+    uint8_t *ptr, *end;
+
+    gc_update_all_roots();
 
     /* Walk all live heap objects and update their children */
     ptr = cl_heap.arena + CL_ALIGN;
@@ -3682,6 +4119,16 @@ static void gc_slide(void)
 
     cl_heap.free_list = 0;
 
+#ifdef CL_GENGC
+    /* Full compaction rebuilds old space from scratch — restart the
+     * crossing map; entries are re-noted as objects are placed below. */
+    if (gen_enabled) {
+        uint32_t i;
+        for (i = 0; i < gen_npages; i++)
+            gen_cross[i] = GEN_CROSS_NONE;
+    }
+#endif
+
     while (ptr < end) {
         uint32_t size = CL_HDR_SIZE(ptr);
         if (size == 0) break;
@@ -3690,8 +4137,16 @@ static void gc_slide(void)
             uint32_t old_offset = (uint32_t)(ptr - cl_heap.arena);
             uint32_t new_offset = gc_fwd_table[old_offset / CL_ALIGN];
 
-            /* Clear mark bit before copying */
-            CL_HDR_CLR_MARK(ptr);
+#ifdef CL_GENGC
+            /* Sticky-mark invariant: in gen mode every live (old) object
+             * keeps its mark bit set between collections, so the copied
+             * survivor must stay marked; a major collection clears all
+             * marks up front instead (see cl_gc_compact). */
+            if (gen_enabled)
+                gen_cross_note(new_offset);
+            else
+#endif
+                CL_HDR_CLR_MARK(ptr);
 
             /* Gap before this object's new position (only at pins) → free. */
             if (new_offset > fill)
@@ -4007,6 +4462,26 @@ void cl_gc_compact(void)
      * forwarding/slide parse them as dead regions. */
     gc_tlab_reset_all();
 
+#ifdef CL_GENGC
+    if (gen_enabled) {
+        uint8_t *cptr, *cend;
+        /* The passes below write mark bits and slide objects everywhere —
+         * drop old-space protection for the duration. */
+        gen_unprotect_all();
+        /* Sticky marks would prune the FULL trace at the roots (gc_mark_obj
+         * skips marked objects) — clear every mark bit first so this
+         * collection sees the true live set.  One linear walk. */
+        cptr = cl_heap.arena + CL_ALIGN;
+        cend = cl_heap.arena + cl_heap.bump;
+        while (cptr < cend) {
+            uint32_t csize = CL_HDR_SIZE(cptr);
+            if (csize == 0) break;
+            CL_HDR_CLR_MARK(cptr);
+            cptr += csize;
+        }
+    }
+#endif
+
 #ifdef DEBUG_GC
     platform_write_string("GC: compaction starting...\n");
 #endif
@@ -4040,6 +4515,17 @@ void cl_gc_compact(void)
                               "falling back to sweep\n");
 #endif
         gc_sweep();
+#ifdef CL_GENGC
+        /* The sweep just rebuilt a free list and cleared survivor marks —
+         * exactly the classic collector's state, and incompatible with the
+         * generational invariants (dense old space, sticky marks).  Drop
+         * to classic mode for the rest of the session. */
+        if (gen_enabled) {
+            gen_enabled = 0;
+            platform_write_string("clamiga: generational GC disabled "
+                                  "(compaction fallback) — classic GC\n");
+        }
+#endif
         cl_heap.gc_count++;
         /* Don't let the sweep-forever escape immediately re-attempt a
          * doomed compaction on every following allocation. */
@@ -4056,6 +4542,15 @@ void cl_gc_compact(void)
                               "falling back to sweep\n");
 #endif
         gc_sweep();
+#ifdef CL_GENGC
+        /* See the pin-OOM fallback above: post-sweep heap state is
+         * classic, so gen mode must stand down. */
+        if (gen_enabled) {
+            gen_enabled = 0;
+            platform_write_string("clamiga: generational GC disabled "
+                                  "(forwarding-table OOM) — classic GC\n");
+        }
+#endif
         cl_heap.gc_count++;
         /* Reset the sweep-forever escape counter and remember the bump
          * level that failed: without this, gc_sweeps_since_compact stays
@@ -4112,6 +4607,21 @@ void cl_gc_compact(void)
      * the sweep-forever escape counter starts fresh — see gc_sweeps_since_compact. */
     gc_sweeps_since_compact = 0;
     gc_fwd_fail_bump = 0;   /* table allocation succeeded at this size */
+
+#ifdef CL_GENGC
+    if (gen_enabled) {
+        /* Everything live is now dense below the bump front and (per the
+         * gen-mode gc_slide) still mark-bitted: it becomes the new old
+         * space.  Start a fresh dirty era over it.  The young-finalizable
+         * list is invalidated wholesale: its offsets predate the slide,
+         * dead entries were finalized by the slide, and survivors are old
+         * now (the next major's full walk owns them). */
+        gen_fin_count = 0;
+        gen_old_top = cl_heap.bump;
+        memset((void *)gen_dirty, 0, (gen_npages + 7) / 8);
+        gen_protect_old();
+    }
+#endif
 
 #ifdef DEBUG_GC
     /* Post-compaction verification: check all live objects have valid refs */
@@ -4182,6 +4692,206 @@ void cl_gc_compact(void)
     if (multithread)
         cl_gc_resume_the_world();
 }
+
+#ifdef CL_GENGC
+/* ================================================================
+ * Minor (nursery) collection — see the design block above cl_mem_init
+ * and specs/generational-gc.md.
+ * ================================================================ */
+
+/* Walk the old-space objects overlapping dirty pages exactly once, in
+ * ascending offset order.  mode 0: push children into the mark stack
+ * (gc_mark_children skips marked old objects, so only nursery references
+ * survive the filter).  mode 1: forward children in place and note
+ * hash tables for the post-slide rehash.  Returns 0 on a header-walk
+ * desync (caller must escalate to a full compaction), 1 otherwise. */
+static int gen_walk_dirty_objects(int mode)
+{
+    uint32_t last_start = 0;
+    uint32_t p;
+    uint32_t dirty_pages = 0;
+    /* Pages that intersect [CL_ALIGN, gen_old_top) */
+    uint32_t old_pages = (gen_old_top + gen_page - 1) / gen_page;
+
+    for (p = 0; p < old_pages; p++) {
+        uint32_t pos, page_end, off;
+        if (!(gen_dirty[p >> 3] & (uint8_t)(1u << (p & 7u))))
+            continue;
+        dirty_pages++;
+        pos = p * gen_page;
+        page_end = pos + gen_page;
+        if (pos < CL_ALIGN) pos = CL_ALIGN;
+        if (page_end > gen_old_top) page_end = gen_old_top;
+        if (pos >= page_end)
+            continue;
+
+        off = gen_covering_object(pos);
+        while (off < page_end) {
+            uint8_t *ptr = cl_heap.arena + off;
+            uint32_t size = CL_HDR_SIZE(ptr);
+            if (size == 0)
+                return 0;              /* desync — refuse the minor */
+            if (off > last_start) {    /* spanning objects visit once */
+                if (mode == 0) {
+                    gc_mark_children(ptr, CL_HDR_TYPE(ptr));
+                } else {
+                    gc_update_children(ptr, CL_HDR_TYPE(ptr));
+                    if (CL_HDR_TYPE(ptr) == TYPE_HASHTABLE &&
+                        ((CL_Hashtable *)ptr)->count > 0)
+                        gen_ht_note(off);   /* old tables don't move */
+                }
+                last_start = off;
+            }
+            off += size;
+        }
+    }
+    if (mode == 0)
+        gen_dirty_last = dirty_pages;
+    return 1;
+}
+
+/* qsort comparator for the survivor list (ascending offsets). */
+static int gen_off_cmp(const void *a, const void *b)
+{
+    uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
+    return (x < y) ? -1 : (x > y);
+}
+
+int cl_gc_minor(uint32_t seen_gc_count)
+{
+    int multithread = (cl_thread_count > 1);
+    uint64_t t0;
+    uint32_t new_top, i;
+
+    if (!gen_enabled)
+        return 0;
+
+    t0 = gc_stop_world_timed(multithread);
+
+    /* Same redundant-cycle dedup as cl_gc_if_stale: a peer collected while
+     * we raced for initiator-ship — let the caller retry allocation. */
+    if (multithread && cl_heap.gc_count != seen_gc_count) {
+        gc_epoch_skips++;
+        cl_gc_resume_the_world();   /* multithread here by construction */
+        return 1;
+    }
+
+    gc_tlab_reset_all();
+
+    /* GC passes write mark bits / slide within the nursery and read+write
+     * old space (rehash) — drop protection for the duration. */
+    gen_unprotect_all();
+
+    /* --- Mark live nursery objects, collecting the survivor list ---
+     * (a) all roots via the standard enumeration: sticky old marks
+     *     terminate the trace at the old generation;
+     * (b) precise children of old objects on dirty pages.
+     * Every pass below iterates the survivor list — a minor never walks
+     * the (dominant) dead nursery space. */
+    gen_live_count = 0;
+    gen_live_oom = 0;
+    gen_minor_active = 1;
+    gc_mark();
+    if (!gen_walk_dirty_objects(0)) {
+        /* desync: escalate — cl_gc_compact re-clears marks */
+        gen_minor_active = 0;
+        if (multithread) cl_gc_resume_the_world();
+        return 0;
+    }
+    while (gc_mark_top > 0)
+        gc_mark_obj(gc_mark_stack[--gc_mark_top]);
+    gen_minor_active = 0;
+    if (gc_mark_overflow || gen_live_oom ||
+        jit_pinned_count > 0 || gc_jit_pin_oom) {
+        /* Overflow recovery would need a full-heap rescan (sticky marks
+         * make it O(heap)), a failed survivor-list growth leaves the list
+         * incomplete, and pinned JIT frames never happen on hosts — all
+         * are escalate-to-major events, not errors.  The world stays
+         * consistent: compaction clears all marks up front. */
+        if (multithread) cl_gc_resume_the_world();
+        return 0;
+    }
+    gc_srcloc_invalidate_dead();
+
+    /* --- Assign survivor addresses: slide down onto the watermark --- */
+    qsort(gen_live, (size_t)gen_live_count, sizeof(uint32_t), gen_off_cmp);
+    new_top = gen_old_top;
+    for (i = 0; i < gen_live_count; i++) {
+        gen_live_new[i] = new_top;
+        new_top += CL_HDR_SIZE(cl_heap.arena + gen_live[i]);
+    }
+    gen_minor_fwd = 1;   /* gc_forward now resolves via the list */
+
+    /* --- Update references (old addresses still valid) --- */
+    gen_ht_count = 0;
+    gc_update_all_roots();
+    gc_srcloc_forward();
+    if (!gen_walk_dirty_objects(1)) {
+        /* Cannot happen: the mode-0 walk of the SAME pages over the SAME
+         * crossing map succeeded moments ago under stop-the-world.  If it
+         * does, roots are already forwarded and there is no rollback —
+         * fail loudly instead of corrupting silently. */
+        platform_write_string("FATAL: gengc dirty-page walk desynced "
+                              "mid-update — heap invariant broken\n");
+        exit(1);
+    }
+    /* Survivors' own children + young hash tables (note POST-slide offs) */
+    for (i = 0; i < gen_live_count; i++) {
+        uint8_t *ptr = cl_heap.arena + gen_live[i];
+        gc_update_children(ptr, CL_HDR_TYPE(ptr));
+        if (CL_HDR_TYPE(ptr) == TYPE_HASHTABLE &&
+            ((CL_Hashtable *)ptr)->count > 0)
+            gen_ht_note(gen_live_new[i]);
+    }
+
+    /* --- Finalize dead young finalizable objects (recorded at allocation
+     * time — the only dead nursery objects a minor must still visit) --- */
+    for (i = 0; i < gen_fin_count; i++) {
+        uint8_t *ptr = cl_heap.arena + gen_fin[i];
+        if (!CL_HDR_MARKED(ptr))
+            gc_finalize_dead(ptr);
+        /* marked entries are promoted below; the next major's full walk
+         * owns their finalization from here on */
+    }
+    gen_fin_count = 0;
+
+    /* --- Slide survivors down; they keep their mark bit (old now) --- */
+    for (i = 0; i < gen_live_count; i++) {
+        uint32_t old_off = gen_live[i];
+        uint32_t new_off = gen_live_new[i];
+        uint32_t size = CL_HDR_SIZE(cl_heap.arena + old_off);
+        gen_cross_note(new_off);
+        if (new_off != old_off)
+            memmove(cl_heap.arena + new_off, cl_heap.arena + old_off, size);
+    }
+    gen_minor_fwd = 0;
+
+    /* --- Post-move fixups --- */
+    for (i = 0; i < gen_ht_count; i++) {
+        CL_Hashtable *ht = (CL_Hashtable *)(cl_heap.arena + gen_ht_list[i]);
+        gc_rehash_table(ht);
+    }
+    gen_ht_count = 0;
+    gc_rehash_tlv_tables();
+
+    gen_promoted_bytes += new_top - gen_old_top;
+    cl_heap.total_allocated = new_top - CL_ALIGN;
+    gen_old_top = new_top;
+    cl_heap.bump = new_top;
+
+    /* Fresh dirty era: everything below the watermark is protected. */
+    memset((void *)gen_dirty, 0, (gen_npages + 7) / 8);
+    gen_protect_old();
+
+    cl_heap.gc_count++;
+    gen_minor_count++;
+    gc_time_minor_us += platform_time_us() - t0;
+
+    if (multithread)
+        cl_gc_resume_the_world();
+    return 1;
+}
+#endif /* CL_GENGC */
 
 /* Post-GC verification: check all marked objects have valid children.
  * Must be called AFTER gc_mark() but BEFORE gc_sweep() (marks still set).
@@ -4678,8 +5388,21 @@ static uint64_t gc_stop_world_timed(int multithread)
 
 void cl_gc(void)
 {
-    int multithread = (cl_thread_count > 1);
-    uint64_t t0 = gc_stop_world_timed(multithread);
+    int multithread;
+    uint64_t t0;
+
+#ifdef CL_GENGC
+    /* Gen mode has no sweep collector: a sweep would rebuild the free
+     * list inside old space and break its density (and clear the sticky
+     * marks).  An explicit full GC is a compaction there. */
+    if (gen_enabled) {
+        cl_gc_compact();
+        return;
+    }
+#endif
+
+    multithread = (cl_thread_count > 1);
+    t0 = gc_stop_world_timed(multithread);
 
     cl_gc_stopped(t0);
 
@@ -4688,10 +5411,35 @@ void cl_gc(void)
         cl_gc_resume_the_world();
 }
 
+void cl_gc_reclaim_young(void)
+{
+#ifdef CL_GENGC
+    if (gen_enabled) {
+        /* A refused minor is fine here — the caller escalates to a full
+         * cl_gc() when its retry still finds no free slot. */
+        (void)cl_gc_minor(cl_heap.gc_count);
+        return;
+    }
+#endif
+    cl_gc();
+}
+
 int cl_gc_if_stale(uint32_t seen_gc_count)
 {
-    int multithread = (cl_thread_count > 1);
-    uint64_t t0 = gc_stop_world_timed(multithread);
+    int multithread;
+    uint64_t t0;
+
+#ifdef CL_GENGC
+    /* Defensive: the gen-mode allocation path uses cl_gc_minor and never
+     * reaches this, but any other caller gets full-GC semantics. */
+    if (gen_enabled) {
+        cl_gc_compact();
+        return 1;
+    }
+#endif
+
+    multithread = (cl_thread_count > 1);
+    t0 = gc_stop_world_timed(multithread);
 
     /* Allocation-triggered GC dedup: when N threads exhaust the bump front
      * near-simultaneously, each loser of the stop-the-world initiator race
