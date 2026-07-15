@@ -3997,13 +3997,16 @@ TEST(eval_keywordp)
 
 /* Regression: compiler use-after-free of the per-form compiler env.
  *
- * cl_compile_env created its CL_Compiler/CL_CompEnv but did not set
- * comp->protect (compile_lambda does).  When a subform macroexpansion performs
- * a non-local exit, the VM unwind runs cl_compiler_restore_to, which would
- * free the in-progress compiler — and cl_env_destroy its env — out from under
- * the running compile.  The subsequent c->env dereference (e.g.
- * cl_env_lookup_local_macro) was then a heap-use-after-free; it crashed
- * compiling babel's INSTANTIATE-CONCRETE-MAPPINGS form (found via ASan).
+ * cl_compile_env created its CL_Compiler/CL_CompEnv but (unlike
+ * compile_lambda) did not shield it from NLX unwinds.  When a subform
+ * macroexpansion performs a non-local exit, the VM landing unwinds the
+ * active-compiler chain, which would free the in-progress compiler — and
+ * cl_env_destroy its env — out from under the running compile.  The
+ * subsequent c->env dereference (e.g. cl_env_lookup_local_macro) was then a
+ * heap-use-after-free; it crashed compiling babel's
+ * INSTANTIATE-CONCRETE-MAPPINGS form (found via ASan).  Today the shield is
+ * the anchor test in cl_compiler_unwind_to: a compiler owned by a still-live
+ * C frame anchors shallower than the NLX landing frame and is never freed.
  *
  * This exercises the path: a macro that performs a handler-case NLX during its
  * own expansion, used inside compiled lambda-bearing forms, iterated to churn
