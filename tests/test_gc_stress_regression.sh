@@ -4353,6 +4353,45 @@ check_contains "outbuf table grows and frees eagerly under compaction storm" \
 check_absent   "no corruption in segmented outbuf directory" \
   "corrupted\|not of type\|Guru\|SIGSEGV\|badmark\|Unbound" "$out"
 
+# --- Case: compiler-chain unwind across NLX under compaction storm ----------
+# Bug-shaped path (compiler.c cl_compiler_unwind_to): a compile error caught
+# by HANDLER-CASE longjmps to the VM NLX landing, which must free the
+# abandoned compiler (and cl_env_destroy its env) — the old protect-flag walk
+# left it on the active-compiler chain, so later compiles inherited its stale
+# optimize settings (DECLAIM dead) and could walk its freed env.  A throwing
+# macroexpander must also cross an in-progress compile without freeing the
+# live enclosing compiler.  Under forced compaction every alloc, any
+# mis-freed/leaked compiler env corrupts the GC walk of the chain
+# immediately, so this doubles as a chain-integrity check.
+cat > "$WORK/chainunwind.lisp" <<'EOF'
+(defmacro %gcs-throwing-macro () (throw 'gcs-tag :thrown))
+(defmacro %gcs-self-catching-macro ()
+  (catch 'gcs-inner (throw 'gcs-inner ''survived)))
+(let ((ok t))
+  (dotimes (i 10)
+    (handler-case
+        (eval '(destructuring-bind (a &key b . c) '(1 :b 2) (list a b c)))
+      (error () nil))
+    (unless (eq :thrown
+                (catch 'gcs-tag
+                  (eval '(funcall (lambda () (list (%gcs-throwing-macro)))))))
+      (setf ok nil))
+    (unless (eq 'survived
+                (eval '(funcall (lambda () (%gcs-self-catching-macro)))))
+      (setf ok nil)))
+  (declaim (optimize (safety 0)))
+  (unless (equal "elided" (handler-case (eval '(the fixnum "elided"))
+                            (type-error () :dead)))
+    (setf ok nil))
+  (declaim (optimize (safety 1)))
+  (format t "CHAIN-UNWIND-STRESS:~a~%" (if ok "OK" "MISMATCH")))
+EOF
+out=$(run_stress "$WORK/chainunwind.lisp")
+check_contains "compiler chain unwinds exactly across NLX under compaction storm" \
+  "CHAIN-UNWIND-STRESS:OK" "$out"
+check_absent   "no corruption from freed/leaked compiler envs" \
+  "corrupted\|not of type\|Guru\|SIGSEGV\|badmark\|Unbound\|use-after" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

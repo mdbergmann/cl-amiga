@@ -3107,7 +3107,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 cl_error_frame_top = nlx->error_mark;
                 gc_root_count = nlx->gc_root_mark;
                 cl_jit_restore_depth(nlx->saved_jit_depth);
-                cl_compiler_restore_to(nlx->compiler_mark);
+                cl_compiler_unwind_to(nlx->compiler_mark, CL_CAPTURE_SP());
                 cl_printer_state_restore(nlx->printer_mark);
                 cl_saved_pending_top = nlx->saved_pending_mark;
                 {
@@ -3273,7 +3273,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 cl_error_frame_top = nlx->error_mark;
                 gc_root_count = nlx->gc_root_mark;
                 cl_jit_restore_depth(nlx->saved_jit_depth);
-                cl_compiler_restore_to(nlx->compiler_mark);
+                cl_compiler_unwind_to(nlx->compiler_mark, CL_CAPTURE_SP());
                 cl_printer_state_restore(nlx->printer_mark);
                 cl_saved_pending_top = nlx->saved_pending_mark;
                 {
@@ -3820,7 +3820,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 cl_error_frame_top = nlx->error_mark;
                 gc_root_count = nlx->gc_root_mark;
                 cl_jit_restore_depth(nlx->saved_jit_depth);
-                cl_compiler_restore_to(nlx->compiler_mark);
+                cl_compiler_unwind_to(nlx->compiler_mark, CL_CAPTURE_SP());
                 cl_printer_state_restore(nlx->printer_mark);
                 cl_saved_pending_top = nlx->saved_pending_mark;
                 {
@@ -3973,7 +3973,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 cl_error_frame_top = nlx->error_mark;
                 gc_root_count = nlx->gc_root_mark;
                 cl_jit_restore_depth(nlx->saved_jit_depth);
-                cl_compiler_restore_to(nlx->compiler_mark);
+                cl_compiler_unwind_to(nlx->compiler_mark, CL_CAPTURE_SP());
                 cl_printer_state_restore(nlx->printer_mark);
                 cl_saved_pending_top = nlx->saved_pending_mark;
                 /* The saved slot was pushed at arming time (before the throw).

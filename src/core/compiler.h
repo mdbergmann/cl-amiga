@@ -234,10 +234,17 @@ void cl_compiler_gc_mark_thread(struct CL_Thread_s *t);
 
 /* Save/restore active compiler chain across non-local exits.
  * cl_compiler_mark() returns an opaque snapshot.
- * cl_compiler_restore_to() frees any compilers allocated since the mark. */
+ * cl_compiler_unwind_to() frees compilers allocated since the mark whose
+ * owning C-stack frame was abandoned by the longjmp: LANDING_ANCHOR is the
+ * landing site's own frame (CL_CAPTURE_SP() at the setjmp-return point), and
+ * a compiler is freed only while its recorded anchor is strictly deeper.
+ * A compiler owned by a still-live frame (an in-progress compile enclosing
+ * the landing VM run) anchors shallower and stops the walk, so it is never
+ * freed out from under the C code using it. */
 void *cl_compiler_mark(void);
-void cl_compiler_restore_to(void *saved);
-/* Error-frame unwind variant: frees abandoned compilers even if protect=1. */
+void cl_compiler_unwind_to(void *saved, void *landing_anchor);
+/* Error-frame unwind variant: the C-level catch predates every abandoned
+ * frame, so everything down to the mark is freed unconditionally. */
 void cl_compiler_force_restore_to(void *saved);
 
 /* Intern a source-file path into a process-lifetime pool and return
