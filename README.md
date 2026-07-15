@@ -102,7 +102,7 @@ From Lisp, on any platform:
 
 ```lisp
 (lisp-implementation-type)     ; => "CL-Amiga"
-(lisp-implementation-version)  ; => "0.3.0"
+(lisp-implementation-version)  ; => "0.4.0"
 ```
 
 On AmigaOS the binary also carries a standard `$VER:` cookie, so the Shell's
@@ -110,7 +110,7 @@ On AmigaOS the binary also carries a standard `$VER:` cookie, so the Shell's
 
 ```
 1> Version clamiga
-clamiga 0.3 (09.07.2026)
+clamiga 0.4 (15.07.2026)
 ```
 
 See `tests/test_version.c` for the full contract.

@@ -25,22 +25,22 @@
  * this block and nothing else.  Two consumers exist, and they need different
  * shapes:
  *
- *   CL_VERSION_STRING       "0.3"    major.minor — keys the FASL cache path
+ *   CL_VERSION_STRING       "0.4"    major.minor — keys the FASL cache path
  *                                    (~/.cache/common-lisp/cl-amiga-<ver>-fasl<n>/),
  *                                    so it changes only on a minor bump and a
  *                                    patch release keeps its warm cache.
- *   CL_VERSION_STRING_FULL  "0.3.0"  major.minor.patch — LISP-IMPLEMENTATION-VERSION.
+ *   CL_VERSION_STRING_FULL  "0.4.0"  major.minor.patch — LISP-IMPLEMENTATION-VERSION.
  *
  * Use CL_VERSION_LEN_FULL rather than a literal length when constructing a
  * Lisp string from it: a hardcoded length silently truncates the moment a
  * component reaches two digits (e.g. "0.10.0" is 6 chars, not 5).
  */
 #define CL_VERSION_MAJOR 0
-#define CL_VERSION_MINOR 3
+#define CL_VERSION_MINOR 4
 #define CL_VERSION_PATCH 0
 
 /* Release date, DD.MM.YYYY — the format AmigaOS's Version command expects. */
-#define CL_VERSION_DATE "09.07.2026"
+#define CL_VERSION_DATE "15.07.2026"
 
 /* Two levels: the inner macro must see the expanded number, not the name. */
 #define CL_VERSION_STR_(x) #x
