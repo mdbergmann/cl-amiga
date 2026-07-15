@@ -2129,11 +2129,12 @@
                         (get-output-stream-string s))))
   (check "trace stream silent after untrace" "" captured))
 
-;; Regression: creating MANY string-output-streams in a loop exhausts the
-;; internal outbuf table; the table-full path runs a GC to reclaim dead
-;; streams, which must not sweep/relocate the not-yet-rooted stream being
-;; built (was returned dangling -> "argument is not a stream").  Each newly
-;; created stream must stay a valid, writable string stream across that GC.
+;; Regression: creating MANY string-output-streams in a loop fills the
+;; internal outbuf table; that path grows the table (and, at the growth
+;; ceiling, runs a GC to reclaim dead streams) and must not sweep/relocate
+;; the not-yet-rooted stream being built (was returned dangling ->
+;; "argument is not a stream").  Each newly created stream must stay a
+;; valid, writable string stream throughout.
 (check "string-output-stream survives table-full GC churn" t
        (let ((all-ok t))
          (dotimes (i 800)
@@ -2169,6 +2170,33 @@
                       (ext:gc))))
              (unless (string= s "Content-Length: 32 (ok)") (incf fails))))
          fails))
+
+;; The outbuf side table grows on demand in 256-slot blocks (it is no longer
+;; a fixed 256-slot table that forced a full GC per allocation once
+;; saturated).  Hold well over one block's worth of open string streams at
+;; once; every stream must keep its own content, and closing them all must
+;; release the slots (eager free on CLOSE, checked via
+;; ext:%stream-outbuf-stats).
+(check "outbuf table grows past one block, close frees eagerly" t
+       (let ((base (car (ext:%stream-outbuf-stats)))
+             (streams nil)
+             (ok t))
+         (dotimes (i 300)
+           (let ((s (make-string-output-stream)))
+             (write-string "c-" s)
+             (princ i s)
+             (push s streams)))
+         (setf streams (nreverse streams))
+         (let ((i 0))
+           (dolist (s streams)
+             (unless (string= (get-output-stream-string s)
+                              (with-output-to-string (tmp)
+                                (write-string "c-" tmp)
+                                (princ i tmp)))
+               (setf ok nil))
+             (incf i)))
+         (dolist (s streams) (close s))
+         (and ok (<= (car (ext:%stream-outbuf-stats)) (+ base 5)))))
 
 ; --- Backtrace (error recovery) ---
 ; Test that errors in nested calls don't break subsequent evaluation
@@ -7942,7 +7970,23 @@
       (handler-case (error "test-error-msg")
         (error (e)
           (princ e g)
-          (check "gray princ condition" t (> (length (gs-flush g)) 0)))))
+          (check "gray princ condition" t (> (length (gs-flush g)) 0))))
+      ; Regression: the Gray printing fallbacks (princ/prin1/print/write/
+      ; format/pprint) capture through a temp string-output-stream that must
+      ; be CLOSEd — the old code never closed it, leaking one outbuf slot per
+      ; call until the next GC (under logging-heavy loads that saturated the
+      ; table and turned printing into a per-node full-GC storm).  50 rounds
+      ; x 4 calls = 200 slots if leaked; eagerly closed, the occupancy stays
+      ; within nesting depth of where it started.
+      (check "gray printing fallbacks free outbufs eagerly" t
+             (let ((before (car (ext:%stream-outbuf-stats))))
+               (dotimes (i 50)
+                 (princ i g)
+                 (prin1 i g)
+                 (format g "x~D" i)
+                 (write i :stream g))
+               (gs-flush g)
+               (< (- (car (ext:%stream-outbuf-stats)) before) 10))))
     ; --- item-2 continued: Gray two-way stream ---
     (defclass test-gs-qin (gray:fundamental-character-input-stream)
       ((chars :initarg :chars :initform nil)))

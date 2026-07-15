@@ -17,6 +17,9 @@
 
 /* --- Output buffer side table --- */
 
+/* Slots per directory block.  The side table is a segmented directory that
+ * grows on demand, one block at a time (see stream.c); this is the size of
+ * one block — NOT a table capacity cap. */
 #define CL_STREAM_BUF_TABLE_SIZE 256
 
 /* Singleton console streams */
@@ -53,6 +56,10 @@ void cl_stream_outbuf_unpin(uint32_t handle);
 
 /* Get pointer to output buffer data */
 char *cl_stream_outbuf_data(uint32_t handle);
+
+/* Occupancy diagnostics: *used = allocated slots, *capacity = total slots
+ * across all currently allocated directory blocks (grows on demand). */
+void cl_stream_outbuf_table_stats(uint32_t *used, uint32_t *capacity);
 
 /* Get output buffer length */
 uint32_t cl_stream_outbuf_len(uint32_t handle);

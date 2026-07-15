@@ -234,6 +234,80 @@ TEST(outbuf_dead_stream_reclaimed)
     ASSERT(cl_stream_outbuf_data(h) == NULL);
 }
 
+/* The outbuf side table is a segmented directory that grows on demand (one
+ * 256-slot block at a time) instead of forcing a full stop-the-world GC on
+ * every allocation once a fixed table saturated — under logging-heavy loads
+ * (a transient string-output-stream per printed node) the fixed table turned
+ * printing into a GC storm.  Holding well over one block's worth of buffers
+ * simultaneously must work, hand back distinct handles, and keep every
+ * buffer's content intact. */
+TEST(outbuf_table_grows_past_one_block)
+{
+    enum { N = 3 * CL_STREAM_BUF_TABLE_SIZE / 2 };  /* 384: forces 2nd block */
+    static uint32_t handles[N];
+    int i, j;
+    int saw_second_block = 0;
+
+    for (i = 0; i < N; i++) {
+        handles[i] = cl_stream_alloc_outbuf(16);
+        ASSERT(handles[i] != 0);
+        ASSERT(cl_stream_outbuf_data(handles[i]) != NULL);
+        if (handles[i] >= CL_STREAM_BUF_TABLE_SIZE)
+            saw_second_block = 1;
+        for (j = 0; j < i; j++)
+            ASSERT(handles[j] != handles[i]);
+    }
+    ASSERT(saw_second_block);
+
+    /* Content survives per slot across the whole set (write via a forged
+     * stream so we exercise the same putchar path real streams use). */
+    {
+        CL_Obj s = cl_make_stream(CL_STREAM_OUTPUT, CL_STREAM_STRING);
+        CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(s);
+        for (i = 0; i < N; i++) {
+            st->out_buf_handle = handles[i];
+            cl_stream_outbuf_putchar(st, 'A' + (i % 26));
+        }
+        for (i = 0; i < N; i++) {
+            ASSERT_EQ_INT((int)cl_stream_outbuf_len(handles[i]), 1);
+            ASSERT(cl_stream_outbuf_data(handles[i])[0] == (char)('A' + (i % 26)));
+        }
+        st->out_buf_handle = 0;
+    }
+
+    for (i = 0; i < N; i++)
+        cl_stream_free_outbuf(handles[i]);
+    for (i = 0; i < N; i++)
+        ASSERT(cl_stream_outbuf_data(handles[i]) == NULL);
+}
+
+/* CLOSE on a string output stream frees its outbuf slot eagerly AND clears
+ * the stream's handle.  A still-reachable closed stream keeping a stale
+ * handle would pin that slot in the GC mark phase after the handle is
+ * recycled by another stream, blocking reclamation of a dead stream's
+ * buffer. */
+TEST(close_string_stream_frees_and_clears_outbuf_handle)
+{
+    CL_Obj s = cl_make_string_output_stream();
+    CL_Stream *st;
+    uint32_t h;
+
+    CL_GC_PROTECT(s);
+    st = (CL_Stream *)CL_OBJ_TO_PTR(s);
+    h = st->out_buf_handle;
+    ASSERT(h != 0);
+    cl_stream_outbuf_putchar(st, 'X');
+    ASSERT(cl_stream_outbuf_data(h) != NULL);
+
+    cl_stream_close(s);
+
+    st = (CL_Stream *)CL_OBJ_TO_PTR(s);
+    ASSERT_EQ_INT((int)st->out_buf_handle, 0);      /* handle cleared */
+    ASSERT(cl_stream_outbuf_data(h) == NULL);       /* slot freed eagerly */
+    ASSERT(!(st->flags & CL_STREAM_FLAG_OPEN));
+    CL_GC_UNPROTECT(1);
+}
+
 TEST(outbuf_putchar)
 {
     CL_Obj s = cl_make_stream(CL_STREAM_OUTPUT, CL_STREAM_STRING);
@@ -605,13 +679,12 @@ TEST(string_output_stream_write_string)
 }
 
 /* Regression: cl_make_string_output_stream must GC-protect its freshly-built
- * stream across cl_stream_alloc_outbuf.  When the outbuf table fills, that call
- * runs an internal GC (to finalize dead streams) which would otherwise sweep or
- * relocate the not-yet-rooted new stream, returning a dangling/stale object —
- * surfacing later as "argument is not a stream".  Loop creating MANY unreachable
- * string-output-streams: once the table is full (~CL_STREAM_BUF_TABLE_SIZE) the
- * internal GC fires on every subsequent make, so each new stream must remain a
- * valid, writable string stream. */
+ * stream across cl_stream_alloc_outbuf.  That call can run an internal GC (at
+ * directory exhaustion) which would otherwise sweep or relocate the
+ * not-yet-rooted new stream, returning a dangling/stale object — surfacing
+ * later as "argument is not a stream".  Loop creating MANY unreachable
+ * string-output-streams — the table grows by blocks as they accumulate, and
+ * every stream must remain a valid, writable string stream throughout. */
 TEST(make_string_output_stream_survives_table_full_gc)
 {
     int i;
@@ -3939,6 +4012,8 @@ int main(void)
     RUN(outbuf_alloc_free);
     RUN(outbuf_live_survives_dead_stream_sharing_handle);
     RUN(outbuf_dead_stream_reclaimed);
+    RUN(outbuf_table_grows_past_one_block);
+    RUN(close_string_stream_frees_and_clears_outbuf_handle);
     RUN(outbuf_putchar);
     RUN(outbuf_write_string);
     RUN(outbuf_growth);
