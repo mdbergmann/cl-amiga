@@ -12,6 +12,15 @@
  */
 
 #define CL_DEFAULT_HEAP_SIZE  (4 * 1024 * 1024)  /* 4MB */
+
+/* Per-thread allocation buffers (TLABs) — host-only by default.  On the
+ * 8MB/68020 Amiga target, multi-threaded allocation rates never amortize
+ * the extra code and per-thread chunk footprint, and binary size matters
+ * there; the feature compiles out entirely.  Define CL_FORCE_TLAB to
+ * enable it on Amiga anyway (experiments), CL_NO_TLAB to disable on host. */
+#if (!defined(PLATFORM_AMIGA) || defined(CL_FORCE_TLAB)) && !defined(CL_NO_TLAB)
+#define CL_TLAB 1
+#endif
 /* INITIAL GC mark-stack capacity (entries).  The stack grows geometrically
  * on demand up to a heap-proportional cap (see gc_mark_stack_grow in mem.c);
  * this constant only sizes the always-available static baseline buffer.
@@ -65,6 +74,8 @@ typedef struct {
     uint32_t compact_count;     /* Number of compaction cycles */
     uint32_t freelist_steps;    /* Total free-list blocks walked (monotonic
                                  * diagnostic; spots O(n) walk pathologies) */
+    uint32_t tlab_refills;      /* TLAB chunks carved (monotonic diagnostic;
+                                 * high rate = chunk size too small) */
 } CL_Heap;
 
 extern CL_Heap cl_heap;
@@ -173,6 +184,14 @@ void cl_gc_register_root(CL_Obj *root_ptr);
  * the number of violations (0 = clean). */
 int cl_gc_audit_roots(void);
 
+
+/* Retire a thread's TLAB (flush cons accounting, drop the chunk).  The
+ * uncut remainder is already formatted as a walkable hole; the next sweep
+ * reclaims it.  Called by cl_thread_unregister; safe for a finished thread. */
+#ifdef CL_TLAB
+struct CL_Thread_s;
+void cl_tlab_retire(struct CL_Thread_s *t);
+#endif
 
 /* Manually trigger GC */
 void cl_gc(void);

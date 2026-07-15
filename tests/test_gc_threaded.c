@@ -1066,6 +1066,387 @@ TEST(concurrent_gc_vs_map_error_unwind)
 }
 
 /* ================================================================
+ * Regression: shared C-global Lisp tables must be reset by cl_mem_init.
+ *
+ * gc_mark marks a set of shared globals DIRECTLY (package registry,
+ * compiler/CLOS/condition tables, readtable closures) — not through the
+ * resettable registered-root table.  After a mid-process heap
+ * shutdown/re-init (every C unit test does this; embedded restarts
+ * would too), those statics still held offsets into the FREED arena.
+ * As soon as the new heap's bump front grew past such a stale offset,
+ * the offset passed gc_mark's plausibility validation and a mark bit
+ * was stamped into the middle of whatever live object now spans it —
+ * observed as 0x800000 (CL_HDR_MARK_BIT) ORed into a cons cdr, i.e.
+ * silent corruption of unrelated data.  The old tests never allocated
+ * far enough past the stale offsets to trip it; the TLAB tests below
+ * do, which is how it surfaced.
+ * ================================================================ */
+
+TEST(shared_tables_reset_on_heap_reinit)
+{
+    extern CL_Obj macro_table, setf_table, setf_fn_table,
+        setf_expander_table, type_table, compiler_macro_table;
+    extern CL_Obj cl_clos_class_table, struct_table, condition_hierarchy,
+        condition_slot_table, condition_default_initargs,
+        condition_slot_initforms;
+    CL_Obj keep = CL_NIL;
+    int cycle, i;
+
+    /* setup() populated the package registry et al. in the original 4MB
+     * heap, at low offsets.  Re-init with a fresh small heap. */
+    cl_mem_shutdown();
+    cl_mem_init(512 * 1024);
+
+    /* The crisp invariant: every unconditionally-marked shared global
+     * must have been cleared by cl_mem_init. */
+    ASSERT(CL_NULL_P(cl_package_registry));
+    ASSERT(CL_NULL_P(macro_table));
+    ASSERT(CL_NULL_P(setf_table));
+    ASSERT(CL_NULL_P(setf_fn_table));
+    ASSERT(CL_NULL_P(setf_expander_table));
+    ASSERT(CL_NULL_P(type_table));
+    ASSERT(CL_NULL_P(compiler_macro_table));
+    ASSERT(CL_NULL_P(cl_clos_class_table));
+    ASSERT(CL_NULL_P(struct_table));
+    ASSERT(CL_NULL_P(condition_hierarchy));
+    ASSERT(CL_NULL_P(condition_slot_table));
+    ASSERT(CL_NULL_P(condition_default_initargs));
+    ASSERT(CL_NULL_P(condition_slot_initforms));
+
+    /* The behavioral leg: push the bump front well past every old
+     * table offset, then GC repeatedly.  Pre-fix, one of these marks
+     * walked a stale offset and corrupted the protected list. */
+    CL_GC_PROTECT(keep);
+    for (cycle = 0; cycle < 6; cycle++) {
+        keep = CL_NIL;
+        for (i = 0; i < 2000; i++)
+            keep = cl_cons(CL_MAKE_FIXNUM(i), keep);
+        cl_gc();
+        {
+            CL_Obj walk = keep;
+            int expected = 1999;
+            while (!CL_NULL_P(walk)) {
+                ASSERT(CL_CONS_P(walk));
+                ASSERT_EQ_INT(CL_FIXNUM_VAL(cl_car(walk)), expected);
+                walk = cl_cdr(walk);
+                expected--;
+            }
+            ASSERT_EQ_INT(expected, -1);
+        }
+        cl_gc_compact();
+    }
+    CL_GC_UNPROTECT(1);
+
+    /* Restore the standard test heap.  NOTE: package/symbol state is
+     * gone either way (the arena it lived in was freed at the first
+     * re-init above) — same contract every heap-re-init test lives by. */
+    cl_mem_shutdown();
+    cl_mem_init(4 * 1024 * 1024);
+}
+
+/* ================================================================
+ * TLAB — per-thread allocation buffers (multi-threaded fast path)
+ *
+ * These tests force the TLAB machinery through its full lifecycle:
+ * refills (chunk exhaustion), STW GC clearing all TLABs mid-allocation
+ * (gc_tlab_reset_all), compaction sliding objects allocated from TLAB
+ * chunks, mixed TLAB/shared-path sizes, and the multi→single-thread
+ * transition leaving formatted holes for the next sweep to reclaim.
+ * Heaps are sized small so chunks are small (heap/64) and every worker
+ * refills many times through real GC cycles.
+ * ================================================================ */
+
+#ifdef CL_TLAB
+
+/* Worker: build a list of (i . "i-as-string") pairs — conses AND
+ * variable-length strings, both cut from the TLAB — then validate every
+ * element, so a hole-formatting or double-hand-out bug shows up as a
+ * corrupted car/string rather than only as a crash. */
+typedef struct {
+    CL_Thread    thread;
+    int          alloc_count;
+    int          result_ok;
+} TlabWorkerCtx;
+
+static void *tlab_list_builder(void *arg)
+{
+    TlabWorkerCtx *ctx = (TlabWorkerCtx *)arg;
+    CL_Thread *t = &ctx->thread;
+    int i;
+    CL_Obj list = CL_NIL;
+
+    platform_tls_set(t);
+    cl_thread_register(t);
+
+    t->gc_roots[0] = &list;
+    t->gc_root_count = 1;
+
+    for (i = 0; i < ctx->alloc_count; i++) {
+        char nb[32];
+        CL_Obj str, pair;
+        snprintf(nb, sizeof(nb), "v%d", i);
+        str = cl_make_string(nb, (uint32_t)strlen(nb));
+        pair = cl_cons(CL_MAKE_FIXNUM(i), str);
+        list = cl_cons(pair, list);
+    }
+
+    ctx->result_ok = 1;
+    {
+        CL_Obj walk = list;
+        int expected = ctx->alloc_count - 1;
+        while (!CL_NULL_P(walk)) {
+            CL_Obj pair = cl_car(walk);
+            char nb[32];
+            CL_String *s;
+            if (!CL_CONS_P(pair) ||
+                CL_FIXNUM_VAL(cl_car(pair)) != expected ||
+                !CL_STRING_P(cl_cdr(pair))) {
+                ctx->result_ok = 0;
+                break;
+            }
+            snprintf(nb, sizeof(nb), "v%d", expected);
+            s = (CL_String *)CL_OBJ_TO_PTR(cl_cdr(pair));
+            if (strcmp((char *)s->data, nb) != 0) {
+                ctx->result_ok = 0;
+                break;
+            }
+            walk = cl_cdr(walk);
+            expected--;
+        }
+        if (expected != -1)
+            ctx->result_ok = 0;
+    }
+
+    t->gc_root_count = 0;
+    cl_thread_unregister(t);
+    return NULL;
+}
+
+TEST(tlab_concurrent_refills_and_gc)
+{
+    void *handles[4];
+    TlabWorkerCtx workers[4];
+    int i;
+    uint32_t refills_before;
+
+    /* 512K heap → 8K chunks; 4 workers × 2000 pairs (cons+string ≈ 48+
+     * bytes each) → each worker refills its TLAB many times and the
+     * combined churn forces several STW GC cycles mid-allocation. */
+    cl_mem_shutdown();
+    cl_mem_init(512 * 1024);
+    refills_before = cl_heap.tlab_refills;
+
+    for (i = 0; i < 4; i++) {
+        memset(&workers[i], 0, sizeof(TlabWorkerCtx));
+        workers[i].thread.id = (uint32_t)(i + 1);
+        workers[i].thread.status = 1;
+        workers[i].thread.mv_count = 1;
+        workers[i].alloc_count = 2000;
+    }
+
+    for (i = 0; i < 4; i++)
+        platform_thread_create(&handles[i], tlab_list_builder, &workers[i], 0);
+    for (i = 0; i < 4; i++)
+        platform_thread_join(handles[i], NULL);
+
+    for (i = 0; i < 4; i++)
+        ASSERT_EQ_INT(workers[i].result_ok, 1);
+
+    /* The fast path must actually have engaged — otherwise this test is
+     * vacuously green while the TLAB never ran. */
+    ASSERT(cl_heap.tlab_refills > refills_before);
+
+    cl_mem_shutdown();
+    cl_mem_init(4 * 1024 * 1024);
+}
+
+/* Worker: alternate TLAB-sized allocations with vectors ABOVE
+ * tlab_max_obj (shared mutex path) so both allocators interleave in one
+ * thread, while the main thread hammers full compactions.  Vector
+ * contents are validated element-by-element after the storm — a TLAB
+ * hole mis-parsed by the compactor's linear walk corrupts the slide and
+ * shows up here. */
+typedef struct {
+    CL_Thread     thread;
+    volatile int  ready;
+    volatile int  done;
+    int           iters;
+    int           result_ok;
+} TlabMixCtx;
+
+static void *tlab_mixed_size_worker(void *arg)
+{
+    TlabMixCtx *ctx = (TlabMixCtx *)arg;
+    CL_Thread *t = &ctx->thread;
+    int i, j;
+    CL_Obj keep = CL_NIL;   /* list of (fixnum . vector) */
+
+    platform_tls_set(t);
+    cl_thread_register(t);
+    t->gc_roots[0] = &keep;
+    t->gc_root_count = 1;
+    ctx->ready = 1;
+
+    ctx->result_ok = 1;
+    for (i = 0; i < ctx->iters; i++) {
+        /* 600 CL_Obj slots ≈ 2.4KB payload > tlab_max_obj (1K at an 8K
+         * chunk) → shared path; the pair/backbone conses → TLAB path. */
+        CL_Obj vec = cl_make_vector(600);
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(vec);
+        for (j = 0; j < 600; j++)
+            v->data[j] = CL_MAKE_FIXNUM(i * 600 + j);
+        keep = cl_cons(cl_cons(CL_MAKE_FIXNUM(i), vec), keep);
+        /* Keep only the last 4 vectors live so the heap doesn't fill:
+         * older ones become compaction fodder. */
+        if (i >= 4) {
+            CL_Obj walk = keep;
+            int k;
+            for (k = 0; k < 3; k++) walk = cl_cdr(walk);
+            ((CL_Cons *)CL_OBJ_TO_PTR(walk))->cdr = CL_NIL;
+        }
+    }
+
+    /* Validate the survivors. */
+    {
+        CL_Obj walk = keep;
+        int idx = ctx->iters - 1;
+        while (!CL_NULL_P(walk) && ctx->result_ok) {
+            CL_Obj pair = cl_car(walk);
+            CL_Vector *v;
+            if (!CL_CONS_P(pair) ||
+                CL_FIXNUM_VAL(cl_car(pair)) != idx ||
+                !CL_VECTOR_P(cl_cdr(pair))) {
+                ctx->result_ok = 0;
+                break;
+            }
+            v = (CL_Vector *)CL_OBJ_TO_PTR(cl_cdr(pair));
+            for (j = 0; j < 600; j++) {
+                if (v->data[j] != CL_MAKE_FIXNUM(idx * 600 + j)) {
+                    ctx->result_ok = 0;
+                    break;
+                }
+            }
+            walk = cl_cdr(walk);
+            idx--;
+        }
+    }
+
+    t->gc_root_count = 0;
+    cl_thread_unregister(t);
+    ctx->done = 1;
+    return NULL;
+}
+
+TEST(tlab_mixed_sizes_vs_concurrent_compaction)
+{
+    void *handles[2];
+    TlabMixCtx ctxs[2];
+    int i, spins;
+
+    cl_mem_shutdown();
+    cl_mem_init(512 * 1024);
+
+    for (i = 0; i < 2; i++) {
+        memset(&ctxs[i], 0, sizeof(TlabMixCtx));
+        ctxs[i].thread.id = (uint32_t)(i + 1);
+        ctxs[i].thread.status = 1;
+        ctxs[i].thread.mv_count = 1;
+        ctxs[i].iters = 150;
+    }
+
+    for (i = 0; i < 2; i++)
+        platform_thread_create(&handles[i], tlab_mixed_size_worker, &ctxs[i], 0);
+    for (i = 0; i < 2; i++)
+        while (!ctxs[i].ready)
+            platform_sleep_ms(1);
+
+    /* Hammer moving compactions while both workers cut from TLABs; every
+     * cycle clears their chunks (gc_tlab_reset_all) and slides survivors
+     * across the formatted holes.  Spin cap = hang safety net. */
+    spins = 0;
+    while ((!ctxs[0].done || !ctxs[1].done) && spins < 1000000) {
+        cl_gc_compact();
+        spins++;
+    }
+
+    for (i = 0; i < 2; i++)
+        platform_thread_join(handles[i], NULL);
+
+    for (i = 0; i < 2; i++) {
+        ASSERT_EQ_INT(ctxs[i].done, 1);
+        ASSERT_EQ_INT(ctxs[i].result_ok, 1);
+    }
+
+    cl_mem_shutdown();
+    cl_mem_init(4 * 1024 * 1024);
+}
+
+/* Multi→single transition: workers leave abandoned (retired) chunks
+ * behind as formatted holes; after they exit, single-threaded sweep AND
+ * compaction must parse those holes, reclaim them, and keep main-thread
+ * data intact.  Exercises cl_tlab_retire via cl_thread_unregister. */
+TEST(tlab_leftover_holes_reclaimed_after_threads_exit)
+{
+    void *handles[3];
+    TlabWorkerCtx workers[3];
+    int i;
+    CL_Obj keep = CL_NIL;
+    uint32_t live_before, live_after;
+
+    cl_mem_shutdown();
+    cl_mem_init(512 * 1024);
+
+    keep = CL_NIL;
+    CL_GC_PROTECT(keep);
+    for (i = 0; i < 100; i++)
+        keep = cl_cons(CL_MAKE_FIXNUM(i), keep);
+
+    for (i = 0; i < 3; i++) {
+        memset(&workers[i], 0, sizeof(TlabWorkerCtx));
+        workers[i].thread.id = (uint32_t)(i + 1);
+        workers[i].thread.status = 1;
+        workers[i].thread.mv_count = 1;
+        workers[i].alloc_count = 500;
+    }
+    for (i = 0; i < 3; i++)
+        platform_thread_create(&handles[i], tlab_list_builder, &workers[i], 0);
+    for (i = 0; i < 3; i++)
+        platform_thread_join(handles[i], NULL);
+    for (i = 0; i < 3; i++)
+        ASSERT_EQ_INT(workers[i].result_ok, 1);
+
+    /* Single-threaded again.  Sweep must reclaim the workers' dead data
+     * AND their abandoned chunk holes (they coalesce into free blocks)... */
+    ASSERT_EQ_INT((int)cl_thread_count, 1);
+    cl_gc();
+    live_before = cl_heap.total_allocated;
+
+    /* ...and a moving compaction must walk the swept arena cleanly. */
+    cl_gc_compact();
+    live_after = cl_heap.total_allocated;
+    ASSERT(live_after <= live_before);
+
+    /* Main-thread data survived both. */
+    {
+        CL_Obj walk = keep;
+        int expected = 99;
+        while (!CL_NULL_P(walk)) {
+            ASSERT(CL_CONS_P(walk));
+            ASSERT_EQ_INT(CL_FIXNUM_VAL(cl_car(walk)), expected);
+            walk = cl_cdr(walk);
+            expected--;
+        }
+        ASSERT_EQ_INT(expected, -1);
+    }
+
+    CL_GC_UNPROTECT(1);
+    cl_mem_shutdown();
+    cl_mem_init(4 * 1024 * 1024);
+}
+
+#endif /* CL_TLAB */
+
+/* ================================================================
  * main
  * ================================================================ */
 
@@ -1106,6 +1487,18 @@ int main(void)
      * gc_root_count (the sento gc_mark SEGV) — deterministic + concurrent */
     RUN(error_unwind_restores_gc_roots_nested);
     RUN(concurrent_gc_vs_map_error_unwind);
+
+    /* Regression: unconditionally-marked shared Lisp globals (package
+     * registry, compiler tables, ...) must be reset on heap re-init */
+    RUN(shared_tables_reset_on_heap_reinit);
+
+#ifdef CL_TLAB
+    /* TLAB: per-thread allocation buffers (refills, GC reset, compaction,
+     * mixed sizes, multi→single leftovers) */
+    RUN(tlab_concurrent_refills_and_gc);
+    RUN(tlab_mixed_sizes_vs_concurrent_compaction);
+    RUN(tlab_leftover_holes_reclaimed_after_threads_exit);
+#endif
 
     teardown();
 
