@@ -267,6 +267,171 @@ TEST(concurrent_alloc_with_gc)
 }
 
 /* ================================================================
+ * GC-epoch dedup (cl_gc_if_stale)
+ *
+ * When N threads exhaust the bump front near-simultaneously, each loser
+ * of the stop-the-world initiator race used to run its own full
+ * mark-sweep on the heap a peer had JUST swept.  cl_gc_if_stale skips
+ * the collection when the GC epoch advanced before this thread became
+ * initiator.  The skip requires a multi-threaded world (single-threaded
+ * there is no race, so it must always collect).
+ * ================================================================ */
+
+TEST(gc_if_stale_single_thread_always_collects)
+{
+    uint32_t before = cl_heap.gc_count;
+
+    /* Current epoch: collects */
+    ASSERT_EQ_INT(cl_gc_if_stale(before), 1);
+    ASSERT_EQ_INT((int)(cl_heap.gc_count - before), 1);
+
+    /* Stale epoch, but single-threaded — no peer can have collected for
+     * us, so it must STILL collect (the dedup is MT-only by design). */
+    ASSERT_EQ_INT(cl_gc_if_stale(before), 1);
+    ASSERT_EQ_INT((int)(cl_heap.gc_count - before), 2);
+}
+
+/* Peer that parks inside a GC safe region until released, making the
+ * process multi-threaded (cl_thread_count > 1) without ever touching the
+ * heap — the main thread can then run STW GCs deterministically. */
+typedef struct {
+    CL_Thread    thread;
+    volatile int ready;
+    volatile int hold;
+} SafeParkCtx;
+
+static void *safe_region_parker(void *arg)
+{
+    SafeParkCtx *ctx = (SafeParkCtx *)arg;
+    platform_tls_set(&ctx->thread);
+    cl_thread_register(&ctx->thread);
+    cl_gc_enter_safe_region();
+    ctx->ready = 1;
+    while (ctx->hold)
+        platform_thread_yield();
+    cl_gc_leave_safe_region();
+    cl_thread_unregister(&ctx->thread);
+    return NULL;
+}
+
+TEST(gc_if_stale_skips_when_epoch_advanced)
+{
+    SafeParkCtx ctx;
+    void *handle;
+    uint32_t seen, after_peer_gc, skips_before, skips_after;
+
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.thread.id = 91;
+    ctx.thread.status = 1;
+    ctx.thread.mv_count = 1;
+    ctx.hold = 1;
+    platform_thread_create(&handle, safe_region_parker, &ctx, 0);
+    while (!ctx.ready)
+        platform_thread_yield();
+
+    /* Record the epoch a hypothetical allocator saw, then let "a peer"
+     * (here: this thread, standing in for one) collect — the epoch
+     * advances past what the caller observed. */
+    seen = cl_heap.gc_count;
+    cl_gc();
+    after_peer_gc = cl_heap.gc_count;
+    ASSERT_EQ_INT((int)(after_peer_gc - seen), 1);
+
+    /* Stale epoch + multi-threaded → the redundant collection is skipped
+     * and counted. */
+    cl_gc_stw_stats(NULL, NULL, &skips_before);
+    ASSERT_EQ_INT(cl_gc_if_stale(seen), 0);
+    ASSERT_EQ_INT((int)(cl_heap.gc_count - after_peer_gc), 0);
+    cl_gc_stw_stats(NULL, NULL, &skips_after);
+    ASSERT_EQ_INT((int)(skips_after - skips_before), 1);
+
+    /* Fresh epoch → collects normally. */
+    ASSERT_EQ_INT(cl_gc_if_stale(cl_heap.gc_count), 1);
+    ASSERT_EQ_INT((int)(cl_heap.gc_count - after_peer_gc), 1);
+
+    ctx.hold = 0;
+    platform_thread_join(handle, NULL);
+}
+
+/* ================================================================
+ * GC phase timers (cl_gc_time_stats / cl_gc_stw_stats) — the stats
+ * exposed by (ext:%gc-time-stats).  Verifies the counters/timers move in
+ * the expected phase when a sweep GC, a compaction, and a stop-the-world
+ * event each run, and stay put otherwise (e.g. compact_us must not move
+ * on a plain sweep GC).
+ * ================================================================ */
+
+TEST(gc_time_stats_and_stw_stats_accumulate)
+{
+    SafeParkCtx ctx;
+    void *handle;
+    CL_Obj garbage;
+    uint64_t stw0, mark0, sweep0, compact0;
+    uint64_t stw1, mark1, sweep1, compact1;
+    uint32_t stops0, skips0, stops1, skips1;
+    uint64_t stw_max0, stw_max1;
+    uint32_t gc_before, compact_before;
+    int i;
+
+    /* Sweep GC: mark_us/sweep_us accumulate, compact_us/STW stats do not.
+     * Cons real garbage first so mark/sweep have measurable work to do. */
+    garbage = CL_NIL;
+    CL_GC_PROTECT(garbage);
+    for (i = 0; i < 2000; i++)
+        garbage = cl_cons(CL_MAKE_FIXNUM(i), garbage);
+    garbage = CL_NIL;  /* drop it — next GCs reclaim it as real garbage */
+
+    cl_gc_time_stats(&stw0, &mark0, &sweep0, &compact0);
+    cl_gc_stw_stats(&stops0, &stw_max0, &skips0);
+    gc_before = cl_heap.gc_count;
+
+    for (i = 0; i < 20; i++)
+        cl_gc();
+    ASSERT_EQ_INT((int)(cl_heap.gc_count - gc_before), 20);
+
+    cl_gc_time_stats(&stw1, &mark1, &sweep1, &compact1);
+    ASSERT(mark1 + sweep1 > mark0 + sweep0);
+    ASSERT_EQ(compact1, compact0);
+
+    cl_gc_stw_stats(&stops1, &stw_max1, &skips1);
+    ASSERT_EQ_INT((int)(stops1 - stops0), 0);  /* single-threaded: no STW event */
+    CL_GC_UNPROTECT(1);
+
+    /* Compaction: compact_us and compact_count move; mark/sweep untouched
+     * (cl_gc_compact runs its own internal mark/sweep, counted separately). */
+    compact_before = cl_heap.compact_count;
+    cl_gc_time_stats(&stw0, &mark0, &sweep0, &compact0);
+    cl_gc_compact();
+    ASSERT_EQ_INT((int)(cl_heap.compact_count - compact_before), 1);
+    cl_gc_time_stats(&stw1, &mark1, &sweep1, &compact1);
+    ASSERT(compact1 > compact0);
+    ASSERT_EQ(mark1, mark0);
+    ASSERT_EQ(sweep1, sweep0);
+
+    /* Stop-the-world: a parked peer thread makes cl_gc() take the real STW
+     * path — stops/stw_us move. */
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.thread.id = 92;
+    ctx.thread.status = 1;
+    ctx.thread.mv_count = 1;
+    ctx.hold = 1;
+    platform_thread_create(&handle, safe_region_parker, &ctx, 0);
+    while (!ctx.ready)
+        platform_thread_yield();
+
+    cl_gc_stw_stats(&stops0, &stw_max0, &skips0);
+    cl_gc_time_stats(&stw0, NULL, NULL, NULL);
+    cl_gc();
+    cl_gc_stw_stats(&stops1, &stw_max1, &skips1);
+    cl_gc_time_stats(&stw1, NULL, NULL, NULL);
+    ASSERT_EQ_INT((int)(stops1 - stops0), 1);
+    ASSERT(stw1 > stw0);
+
+    ctx.hold = 0;
+    platform_thread_join(handle, NULL);
+}
+
+/* ================================================================
  * Safepoint smoke test — verify CL_SAFEPOINT() doesn't crash
  * when gc_requested is 0
  * ================================================================ */
@@ -1468,6 +1633,13 @@ int main(void)
     RUN(concurrent_alloc_2_threads);
     RUN(concurrent_alloc_4_threads);
     RUN(concurrent_alloc_with_gc);
+
+    /* GC-epoch dedup of redundant allocation-triggered collections */
+    RUN(gc_if_stale_single_thread_always_collects);
+    RUN(gc_if_stale_skips_when_epoch_advanced);
+
+    /* GC phase timers exposed by (ext:%gc-time-stats) */
+    RUN(gc_time_stats_and_stw_stats_accumulate);
 
     /* Regression: STW GC vs. thread blocked in a socket syscall */
     RUN(stw_gc_with_thread_blocked_in_accept);

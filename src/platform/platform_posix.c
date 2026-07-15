@@ -46,6 +46,125 @@ void *platform_alloc(unsigned long size)
     return p;
 }
 
+/* --- Page write-watch (generational GC dirty tracking) --------------- */
+
+#include <sys/mman.h>
+#include <signal.h>
+
+uint32_t platform_page_size(void)
+{
+    long ps = sysconf(_SC_PAGESIZE);
+    return (ps > 0) ? (uint32_t)ps : 4096u;
+}
+
+void *platform_alloc_pages(uint32_t size)
+{
+    void *p = mmap(NULL, (size_t)size, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANON, -1, 0);
+    return (p == MAP_FAILED) ? NULL : p;  /* mmap memory is zero-filled */
+}
+
+void platform_free_pages(void *ptr, uint32_t size)
+{
+    if (ptr)
+        munmap(ptr, (size_t)size);
+}
+
+int platform_page_protect(uint8_t *addr, uint32_t len, int readonly)
+{
+    return mprotect(addr, (size_t)len,
+                    readonly ? PROT_READ : (PROT_READ | PROT_WRITE));
+}
+
+/* Watch state.  Written only with the watch uninstalled or under the GC's
+ * stop-the-world (install/remove happen at heap init/shutdown); read by
+ * the fault handler on any thread. */
+static uint8_t *volatile ww_base = NULL;
+static uint32_t ww_len = 0;
+static volatile uint8_t *ww_bitmap = NULL;
+static uint32_t ww_pagesize = 0;
+static int ww_installed = 0;
+static struct sigaction ww_prev_segv, ww_prev_bus;
+
+/* Chain a fault that is not ours to the previous disposition.  Restoring
+ * the previous handler and re-raising from the faulting context makes the
+ * default action (crash with the real si_addr) take effect. */
+static void ww_chain(int sig, siginfo_t *si, void *uctx)
+{
+    struct sigaction *prev = (sig == SIGBUS) ? &ww_prev_bus : &ww_prev_segv;
+    if ((prev->sa_flags & SA_SIGINFO) && prev->sa_sigaction) {
+        prev->sa_sigaction(sig, si, uctx);
+        return;
+    }
+    if (prev->sa_handler != SIG_DFL && prev->sa_handler != SIG_IGN &&
+        prev->sa_handler) {
+        prev->sa_handler(sig);
+        return;
+    }
+    sigaction(sig, prev, NULL);
+    raise(sig);
+}
+
+static void ww_handler(int sig, siginfo_t *si, void *uctx)
+{
+    uint8_t *addr = (uint8_t *)si->si_addr;
+    uint8_t *base = ww_base;
+    if (base && addr >= base && (uint32_t)(addr - base) < ww_len) {
+        uint32_t page = (uint32_t)(addr - base) / ww_pagesize;
+        /* Atomic: peer threads can fault on pages sharing the bitmap byte. */
+        __sync_or_and_fetch((uint8_t *)&ww_bitmap[page >> 3],
+                            (uint8_t)(1u << (page & 7u)));
+        if (mprotect(base + (size_t)page * ww_pagesize, ww_pagesize,
+                     PROT_READ | PROT_WRITE) == 0)
+            return;  /* store retries and succeeds */
+        /* mprotect failed inside a fault handler — nothing sane left. */
+    }
+    ww_chain(sig, si, uctx);
+}
+
+int platform_write_watch_install(uint8_t *base, uint32_t len,
+                                 volatile uint8_t *dirty_bitmap)
+{
+    struct sigaction sa;
+
+    ww_pagesize = platform_page_size();
+    ww_bitmap = dirty_bitmap;
+    ww_len = len;
+    ww_base = base;
+
+    if (!ww_installed) {
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_sigaction = ww_handler;
+        sa.sa_flags = SA_SIGINFO;
+        sigemptyset(&sa.sa_mask);
+        /* Both signals: macOS reports write-protection faults as SIGBUS,
+         * Linux as SIGSEGV. */
+        if (sigaction(SIGSEGV, &sa, &ww_prev_segv) != 0) {
+            ww_base = NULL;
+            return -1;
+        }
+        if (sigaction(SIGBUS, &sa, &ww_prev_bus) != 0) {
+            sigaction(SIGSEGV, &ww_prev_segv, NULL);
+            ww_base = NULL;
+            return -1;
+        }
+        ww_installed = 1;
+    }
+    return 0;
+}
+
+void platform_write_watch_remove(void)
+{
+    if (ww_installed) {
+        sigaction(SIGSEGV, &ww_prev_segv, NULL);
+        sigaction(SIGBUS, &ww_prev_bus, NULL);
+        ww_installed = 0;
+    }
+    ww_base = NULL;
+    ww_bitmap = NULL;
+    ww_len = 0;
+}
+
 void platform_free(void *ptr)
 {
     free(ptr);
@@ -546,6 +665,13 @@ uint32_t platform_time_ms(void)
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return (uint32_t)((tv.tv_sec * 1000) + (tv.tv_usec / 1000));
+}
+
+uint64_t platform_time_us(void)
+{
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (uint64_t)tv.tv_sec * 1000000u + (uint64_t)tv.tv_usec;
 }
 
 uint32_t platform_run_time_ms(void)

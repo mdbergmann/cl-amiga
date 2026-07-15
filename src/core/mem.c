@@ -83,9 +83,25 @@ static uint32_t gc_mark_rescan_passes = 0;
  * tests/test_gc_markstack.c).  0 = normal heap-proportional cap. */
 static uint32_t gc_mark_stack_test_limit = 0;
 
+/* Cumulative GC phase timers (microseconds, monotonic; exposed via
+ * ext:%gc-time-stats and cl_mem_stats).  stw = waiting for other threads to
+ * park at the start of a collection; mark/sweep = the sweep-GC phases as
+ * timed in cl_gc; compact = whole cl_gc_compact cycles (which run their own
+ * mark internally — compaction time is NOT double-counted into mark/sweep).
+ * Updated only with the world stopped / single-threaded, so plain u64s. */
+static uint64_t gc_time_stw_us = 0;
+static uint64_t gc_time_mark_us = 0;
+static uint64_t gc_time_sweep_us = 0;
+static uint64_t gc_time_compact_us = 0;
+static uint64_t gc_time_stw_max_us = 0;  /* worst single stop */
+static uint32_t gc_stw_stops = 0;        /* stop-the-world events */
+static uint32_t gc_epoch_skips = 0;      /* redundant GCs deduped (see
+                                          * cl_gc_if_stale) */
+
 /* Forward declarations */
 static void gc_mark(void);
 static void gc_sweep(void);
+static uint64_t gc_stop_world_timed(int multithread);
 static void gc_reset_transient_state(void);
 static int root_slot_independently_forwarded(CL_Obj *slot);
 static void *alloc_from_bump(uint32_t size);
@@ -433,6 +449,13 @@ void cl_mem_init(uint32_t heap_size)
     gc_mark_stack_grows = 0;
     gc_mark_rescan_passes = 0;
     gc_mark_stack_test_limit = 0;
+    gc_time_stw_us = 0;
+    gc_time_mark_us = 0;
+    gc_time_sweep_us = 0;
+    gc_time_compact_us = 0;
+    gc_time_stw_max_us = 0;
+    gc_stw_stops = 0;
+    gc_epoch_skips = 0;
 
     /* Reset GC state that survives in static storage across heap
      * re-initialization (each C unit test, embedded restarts): pending
@@ -810,10 +833,31 @@ void *cl_alloc(uint8_t type, uint32_t size)
          * the live-set size (cl_heap.total_allocated) so the compaction decision
          * below uses a FRESH measurement — not a stale high-water that an
          * earlier transient peak could pin near the arena size.  Release
-         * alloc_mutex first so other threads can reach safepoints during STW. */
+         * alloc_mutex first so other threads can reach safepoints during STW.
+         *
+         * cl_gc_if_stale dedups the redundant-GC burst: if a peer thread
+         * collected while we raced for stop-the-world initiator-ship, it
+         * skips (returns 0) and we first retry the allocation against the
+         * peer's fresh sweep; only if that retry ALSO misses do we run our
+         * own full collection. */
+        uint32_t seen_gc_count = cl_heap.gc_count;
+        int collected;
         if (multi) platform_mutex_unlock(alloc_mutex);
-        cl_gc();
+        collected = cl_gc_if_stale(seen_gc_count);
         if (multi) platform_mutex_lock(alloc_mutex);
+        if (!collected) {
+            ptr = alloc_from_bump(size);
+            if (!ptr)
+                ptr = alloc_from_free_list(&size, CL_FREELIST_PROBE_LIMIT);
+            if (!ptr) {
+                /* The peer's cycle left no fit for us — collect for real. */
+                if (multi) platform_mutex_unlock(alloc_mutex);
+                cl_gc();
+                if (multi) platform_mutex_lock(alloc_mutex);
+                collected = 1;
+            }
+        }
+        if (collected) {
         gc_sweeps_since_compact++;
         ptr = alloc_from_bump(size);
         if (!ptr) {
@@ -887,6 +931,7 @@ void *cl_alloc(uint8_t type, uint32_t size)
                 ptr = alloc_from_bump(size);
             }
         }
+        }  /* if (collected) — skipped when a peer's GC already satisfied us */
     }
     if (!ptr) {
         /* Last resort before declaring the heap exhausted: the fit may be
@@ -1617,6 +1662,22 @@ void cl_gc_mark_stack_stats(uint32_t *cap_entries, uint32_t *grows,
 void cl_gc_mark_stack_set_test_limit(uint32_t max_entries)
 {
     gc_mark_stack_test_limit = max_entries;
+}
+
+void cl_gc_time_stats(uint64_t *stw_us, uint64_t *mark_us,
+                      uint64_t *sweep_us, uint64_t *compact_us)
+{
+    if (stw_us)     *stw_us     = gc_time_stw_us;
+    if (mark_us)    *mark_us    = gc_time_mark_us;
+    if (sweep_us)   *sweep_us   = gc_time_sweep_us;
+    if (compact_us) *compact_us = gc_time_compact_us;
+}
+
+void cl_gc_stw_stats(uint32_t *stops, uint64_t *max_us, uint32_t *epoch_skips)
+{
+    if (stops)       *stops       = gc_stw_stops;
+    if (max_us)      *max_us      = gc_time_stw_max_us;
+    if (epoch_skips) *epoch_skips = gc_epoch_skips;
 }
 
 static void gc_mark_push(CL_Obj obj)
@@ -3939,9 +4000,7 @@ void cl_gc_compact_if_pending(void)
 void cl_gc_compact(void)
 {
     int multithread = (cl_thread_count > 1);
-
-    if (multithread)
-        cl_gc_stop_the_world();
+    uint64_t t0 = gc_stop_world_timed(multithread);
 
     /* Same invariant as cl_gc: no thread may keep cutting from a chunk the
      * passes below reclaim or slide.  Remainders are formatted holes, so
@@ -3985,6 +4044,7 @@ void cl_gc_compact(void)
         /* Don't let the sweep-forever escape immediately re-attempt a
          * doomed compaction on every following allocation. */
         gc_sweeps_since_compact = 0;
+        gc_time_compact_us += platform_time_us() - t0;
         if (multithread) cl_gc_resume_the_world();
         return;
     }
@@ -4007,6 +4067,7 @@ void cl_gc_compact(void)
          * trigger 1 (compaction as last resort) still always tries. */
         gc_sweeps_since_compact = 0;
         gc_fwd_fail_bump = cl_heap.bump;
+        gc_time_compact_us += platform_time_us() - t0;
         if (multithread) cl_gc_resume_the_world();
         return;
     }
@@ -4115,6 +4176,8 @@ void cl_gc_compact(void)
         platform_write_string(buf);
     }
 #endif
+
+    gc_time_compact_us += platform_time_us() - t0;
 
     if (multithread)
         cl_gc_resume_the_world();
@@ -4491,13 +4554,12 @@ static void gc_verify_after_sweep(void)
 }
 #endif
 
-void cl_gc(void)
+/* Core of a sweep GC — runs with the world already stopped (or
+ * single-threaded).  Split out so cl_gc_if_stale can decide AFTER winning
+ * the stop-the-world race whether a collection is still needed. */
+static void cl_gc_stopped(uint64_t t0)
 {
-    int multithread = (cl_thread_count > 1);
-
-    /* Stop all other threads if multi-threaded */
-    if (multithread)
-        cl_gc_stop_the_world();
+    uint64_t t1;
 
     /* Drop every thread's TLAB before any pass runs: gc_sweep rebuilds the
      * free list from unmarked regions, so an active chunk tail (already a
@@ -4520,6 +4582,9 @@ void cl_gc(void)
      * the dead stream objects into free blocks. */
     cl_stream_outbuf_gc_reclaim();
     gc_srcloc_invalidate_dead();
+    t1 = platform_time_us();
+    gc_time_mark_us += t1 - t0;
+    t0 = t1;
 #ifdef DEBUG_GC
     gc_verify_marked();
     if (gc_verify_errors > 0)
@@ -4577,6 +4642,7 @@ void cl_gc(void)
     }
 #endif
     gc_sweep();
+    gc_time_sweep_us += platform_time_us() - t0;
 #ifdef DEBUG_GC
     gc_verify_after_sweep();
 #endif
@@ -4591,10 +4657,62 @@ void cl_gc(void)
         platform_write_string(buf);
     }
 #endif
+}
+
+/* Stop the world (multi-threaded), accounting the wait into the STW phase
+ * timers, and return the timestamp at which the world was stopped. */
+static uint64_t gc_stop_world_timed(int multithread)
+{
+    uint64_t t0, t1;
+    if (!multithread)
+        return platform_time_us();
+    t0 = platform_time_us();
+    cl_gc_stop_the_world();
+    t1 = platform_time_us();
+    gc_time_stw_us += t1 - t0;
+    gc_stw_stops++;
+    if (t1 - t0 > gc_time_stw_max_us)
+        gc_time_stw_max_us = t1 - t0;
+    return t1;
+}
+
+void cl_gc(void)
+{
+    int multithread = (cl_thread_count > 1);
+    uint64_t t0 = gc_stop_world_timed(multithread);
+
+    cl_gc_stopped(t0);
 
     /* Resume all stopped threads */
     if (multithread)
         cl_gc_resume_the_world();
+}
+
+int cl_gc_if_stale(uint32_t seen_gc_count)
+{
+    int multithread = (cl_thread_count > 1);
+    uint64_t t0 = gc_stop_world_timed(multithread);
+
+    /* Allocation-triggered GC dedup: when N threads exhaust the bump front
+     * near-simultaneously, each loser of the stop-the-world initiator race
+     * used to run its own full mark-sweep on the heap a peer had JUST
+     * swept — a burst of redundant back-to-back stop-the-world cycles.  If
+     * the GC epoch advanced between the caller observing exhaustion (under
+     * alloc_mutex) and this thread winning initiator-ship, the heap state
+     * that motivated this call is gone: skip, and let the caller retry its
+     * allocation against the peer's sweep (it falls back to a real cl_gc
+     * if the retry still finds no fit). */
+    if (multithread && cl_heap.gc_count != seen_gc_count) {
+        gc_epoch_skips++;
+        cl_gc_resume_the_world();
+        return 0;
+    }
+
+    cl_gc_stopped(t0);
+
+    if (multithread)
+        cl_gc_resume_the_world();
+    return 1;
 }
 
 void cl_mem_stats(void)
