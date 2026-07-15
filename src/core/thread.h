@@ -273,6 +273,26 @@ typedef struct CL_Thread_s {
     CL_TLVEntry tlv_table[CL_TLV_TABLE_SIZE];
     uint32_t    tlv_entry_count;  /* number of active TLV entries — 0 = skip probes */
 
+#ifdef CL_TLAB
+    /* ---- Per-thread allocation buffer (TLAB) ----
+     * Arena OFFSETS bounding this thread's private bump chunk; 0/0 = no
+     * chunk.  Only meaningful while cl_thread_count > 1 (cl_alloc's fast
+     * path); carved from the shared bump front / free list under
+     * alloc_mutex, then cut without any locking by the owning thread.
+     * The uncut remainder [tlab_cur, tlab_end) is kept formatted as a
+     * CL_FreeBlock hole at ALL times so every linear arena walk (sweep,
+     * forwarding, slide, conservative JIT scan) parses it.  Every GC
+     * cycle clears all threads' TLABs during stop-the-world (mandatory:
+     * gc_sweep rebuilds the free list and would otherwise hand an active
+     * tail to another thread).  Owner-written; a peer touches these only
+     * during STW (gc_tlab_reset_all) or after the thread finished
+     * (cl_tlab_retire from unregister). */
+    uint32_t tlab_cur;
+    uint32_t tlab_end;
+    uint32_t tlab_consed;   /* object bytes cut since the last flush to
+                             * cl_heap.total_consed (refill/GC/retire) */
+#endif /* CL_TLAB */
+
     /* ---- GC coordination ---- */
     volatile uint8_t gc_requested;
     volatile uint8_t gc_stopped;
@@ -492,6 +512,11 @@ extern void *cl_condvar_table[CL_MAX_CONDVARS];
 extern void *cl_lock_park_mutex;
 extern void *cl_lock_park_cv;
 extern volatile uint32_t cl_lock_park_waiters;
+
+/* Reset every Lisp-heap reference gc_mark_thread_roots walks (stale after
+ * a heap re-initialization — see cl_mem_init).  Keep in sync with
+ * gc_mark_thread_roots in mem.c. */
+void cl_thread_reset_lisp_state(CL_Thread *t);
 
 /* Allocate and initialize a new CL_Thread for a worker */
 CL_Thread *cl_thread_alloc_worker(void);

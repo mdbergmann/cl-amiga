@@ -686,3 +686,45 @@ builtins and move little, as expected.
 ./build/host/clamiga --no-userinit --heap 64M --non-interactive --load trunk/bench-opt.lisp
 CLAMIGA_FORCE_SPEED=3 ./build/host/clamiga --no-userinit --heap 64M --non-interactive --load trunk/bench-opt.lisp
 ```
+
+---
+
+## 2026-07-15 — TLAB: per-thread allocation buffers (host, MT)
+
+**Branch**: `perf/tlab-alloc`.  With more than one thread registered,
+every `cl_alloc` used to serialize on the global `alloc_mutex`; at actor
+message rates the mutex handoff dominated the per-message cost.  Each
+thread now cuts objects lock-free from a private chunk (TLAB, default
+32K, `CLAMIGA_TLAB_CHUNK` overrides, compiled out on Amiga) refilled
+from the shared bump front / free list under the mutex once per chunk.
+Uncut chunk remainders stay formatted as walkable free-block holes;
+every GC cycle drops all TLABs during stop-the-world.
+
+**Environment**: Apple M3 Ultra, macOS 26.5.2, `make host`,
+`--heap 192M`, default speed.  Benchmark: `sento.bench::run-benchmark`
+matrix as in [sento-bench-results-0.3.md](sento-bench-results-0.3.md)
+(`:num-shared-workers 8, :load-threads 8, :duration 5,
+:num-iterations 6`).  Baseline = the speed-1 column measured there
+(commit `360abd4`).
+
+| Dispatcher | Reply mode | baseline | TLAB | delta |
+| ---------- | ---------- | -------: | ---: | ----: |
+| PINNED     | tell       | 142,836 | **188,711** | +32% |
+| PINNED     | ask-s      |  62,644 |  78,259 | +25% |
+| PINNED     | ask        |  13,387 | **27,308** | +104% |
+| SHARED     | tell       |  22,249 |  27,420 | +23% |
+| SHARED     | ask-s      |  25,073 | **46,758** | +86% |
+| SHARED     | ask        |  10,754 |  14,848 | +38% |
+
+- The allocation-heaviest cells gained the most: `ask` allocates a
+  future/promise per message and doubled on the pinned dispatcher;
+  `shared/ask-s` (+86%) pays queue-handoff plus reply allocation.
+- SHARED/`ask` is the noisiest cell (dev ±5.6k on 14.8k); treat its
+  delta as indicative.
+- Cross-implementation context (same machine, same config, measured
+  2026-07-15): SBCL 2.6.5 pinned/tell 1.44M msg/s, ECL 26.5.5 512k.
+  The TLAB moves clamiga from 1/10 to ~1/7.6 of SBCL on that cell.
+
+**Reproduce**: run the 6-cell matrix via
+`sento.bench::run-benchmark` after `(load "trunk/load-sento-bench.lisp")`;
+A/B by setting `CLAMIGA_TLAB_CHUNK=0` (disables TLABs at runtime).

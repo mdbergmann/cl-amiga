@@ -81,6 +81,13 @@ void cl_thread_register_newborn(CL_Thread *t)
 void cl_thread_unregister(CL_Thread *t)
 {
     CL_Thread **pp;
+#ifdef CL_TLAB
+    /* Drop the exiting thread's TLAB before it leaves the registry: once
+     * off the list, gc_tlab_reset_all can no longer flush it.  The uncut
+     * remainder is already a formatted hole; the next sweep reclaims it.
+     * Must run BEFORE taking the list lock (retire takes alloc_mutex). */
+    cl_tlab_retire(t);
+#endif
     /* Null-guard: a worker that exits during process teardown can arrive
      * here after cl_thread_shutdown tore the registry lock down (only
      * possible in the count<=1 shutdown path; with workers left the lock
@@ -831,6 +838,60 @@ CL_Thread *cl_thread_alloc_worker(void)
     t->status = 0; /* created */
 
     return t;
+}
+
+/* Reset every Lisp-heap reference gc_mark_thread_roots walks for this
+ * thread.  Called by cl_mem_init for each REGISTERED thread on heap
+ * re-initialization: the arena those CL_Obj values pointed into was just
+ * freed, so each one is a stale offset that — once the fresh heap's bump
+ * front grows past it — passes gc_mark's plausibility validation and
+ * stamps a mark bit into the middle of an unrelated live object (the
+ * "stale static tables on re-init" corruption class; see the shared-
+ * globals reset in cl_mem_init and the regression tests in
+ * tests/test_gc_threaded.c).  Keep the field list in sync with
+ * gc_mark_thread_roots in mem.c. */
+void cl_thread_reset_lisp_state(CL_Thread *t)
+{
+    int i;
+    t->gc_root_count = 0;
+    t->dyn_top = 0;
+    t->nlx_top = 0;
+    t->handler_top = 0;
+    t->handler_floor = 0;
+    t->handler_active_mask = 0;
+    t->restart_top = 0;
+    t->restart_floor = 0;
+    t->vm.sp = 0;
+    t->vm.fp = 0;
+    for (i = 0; i < CL_MAX_MV; i++)
+        t->mv_values[i] = CL_NIL;   /* marked unconditionally, all slots */
+    t->pending_throw = 0;
+    t->pending_tag = CL_NIL;
+    t->pending_value = CL_NIL;
+    t->pending_mv_count = 0;
+    t->saved_pending_top = 0;
+    t->pending_lambda_name = CL_NIL;
+    t->name = CL_NIL;
+    t->result = CL_NIL;
+    t->interrupt_func = CL_NIL;
+    t->thread_obj = CL_NIL;
+    t->current_lex_env = CL_NIL;
+    t->rd_stream = CL_NIL;
+    t->rd_uninterned = CL_NIL;
+    t->rd_labels = CL_NIL;
+    t->pr_stream = CL_NIL;
+    t->pr_inprog_top = 0;
+    t->pr_circle_active = 0;
+    for (i = 0; i < CL_CIRCLE_HT_SIZE; i++)
+        t->pr_circle_keys[i] = CL_NIL;
+    t->ltv_init_count = 0;
+    t->active_compiler = NULL;   /* GC walks the compiler chain too */
+    for (i = 0; i < CL_TLV_TABLE_SIZE; i++) {
+        t->tlv_table[i].symbol = CL_NIL;
+        t->tlv_table[i].value = CL_NIL;
+    }
+    t->tlv_entry_count = 0;
+    t->vm_extra_count = 0;   /* cl_vm_gc_mark_extra_thread walks this too */
 }
 
 void cl_thread_free_worker(CL_Thread *t)

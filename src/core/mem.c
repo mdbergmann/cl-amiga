@@ -88,6 +88,8 @@ static void gc_mark(void);
 static void gc_sweep(void);
 static void gc_reset_transient_state(void);
 static int root_slot_independently_forwarded(CL_Obj *slot);
+static void *alloc_from_bump(uint32_t size);
+static void *alloc_from_free_list(uint32_t *sizep, uint32_t max_steps);
 void gc_mark_obj(CL_Obj obj);
 static void gc_mark_push(CL_Obj obj);
 static void gc_mark_stack_release(void);
@@ -201,6 +203,158 @@ static uint32_t align_up(uint32_t size)
     return (size + CL_ALIGN - 1) & ~(CL_ALIGN - 1);
 }
 
+#ifdef CL_TLAB
+/* ================================================================
+ * TLAB — per-thread allocation buffers (multi-threaded fast path)
+ *
+ * With >1 thread registered, every cl_alloc used to serialize on
+ * alloc_mutex — at actor-workload allocation rates the mutex (and its
+ * cache-line ping-pong) dominates the per-message cost.  Instead, each
+ * thread carves a private CHUNK from the shared bump front (or, when the
+ * bump is exhausted, the free list) once per ~chunk of allocation, and
+ * cuts objects from it with NO locking.
+ *
+ * Invariants (all load-bearing — see gc_sweep/gc_compute_forwarding):
+ *  - The uncut remainder [tlab_cur, tlab_end) is formatted as a
+ *    CL_FreeBlock at ALL times (size = remainder, not linked into the
+ *    free list), so every linear arena walk parses the chunk.  A cut
+ *    rewrites the remainder header BEFORE the object header/memset
+ *    touches disjoint bytes below it.
+ *  - Cuts never leave a remainder smaller than CL_MIN_ALLOC_SIZE: an
+ *    undersized tail is absorbed into the object (same precedent as
+ *    alloc_from_free_list's use-entire-block path).
+ *  - Every GC cycle clears ALL threads' TLABs during stop-the-world
+ *    (gc_tlab_reset_all).  Mandatory, not an optimization: gc_sweep
+ *    rebuilds the free list from unmarked regions, so an active tail
+ *    would be handed to another thread while the owner keeps cutting.
+ *    Threads refill on their next allocation.
+ *  - There is no safepoint between a cut and its header write, so a
+ *    stop-the-world initiator can never walk a headerless cut (STW
+ *    waits for this thread to park; it parks only at safepoints).
+ *
+ * Single-threaded execution (including the whole DEBUG_GC_STRESS suite)
+ * never takes this path: cl_alloc gates it on `multi`.
+ * ================================================================ */
+
+/* Chunk size: configured once per heap in cl_mem_init (0 = disabled).
+ * CLAMIGA_TLAB_CHUNK=<bytes> overrides; scaled down on small heaps so
+ * N threads' chunks can't consume a test-sized arena. */
+#ifndef CL_TLAB_CHUNK
+#define CL_TLAB_CHUNK (32u * 1024u)
+#endif
+#define CL_TLAB_MIN_CHUNK 4096u
+static uint32_t tlab_chunk_size = 0;
+static uint32_t tlab_max_obj    = 0;   /* larger objects go the shared path */
+
+/* Format [off, off+len) as a dead, walkable region (len >= 8, aligned).
+ * Not linked into the free list — the next sweep reclaims/coalesces it. */
+static void tlab_format_hole(uint32_t off, uint32_t len)
+{
+    CL_FreeBlock *fb = (CL_FreeBlock *)(cl_heap.arena + off);
+    fb->size = len;
+    fb->next_offset = 0;
+}
+
+/* Owner-only, lock-free: cut `*sizep` bytes from t's chunk.  May grow
+ * *sizep by up to CL_MIN_ALLOC_SIZE-CL_ALIGN (absorbed tail).  Returns
+ * NULL when no chunk or it doesn't fit (caller refills). */
+static void *tlab_cut(CL_Thread *t, uint32_t *sizep)
+{
+    uint32_t size = *sizep;
+    uint32_t rem;
+    void *ptr;
+
+    if (!t->tlab_end)
+        return NULL;
+    rem = t->tlab_end - t->tlab_cur;
+    if (size > rem)
+        return NULL;
+    if (rem - size < CL_MIN_ALLOC_SIZE) {
+        size = rem;                 /* absorb undersized tail */
+        *sizep = size;
+    }
+    ptr = cl_heap.arena + t->tlab_cur;
+    t->tlab_cur += size;
+    if (t->tlab_cur == t->tlab_end)
+        t->tlab_cur = t->tlab_end = 0;
+    else
+        tlab_format_hole(t->tlab_cur, t->tlab_end - t->tlab_cur);
+    t->tlab_consed += size;
+    return ptr;
+}
+
+/* Carve a fresh chunk for t and cut the first object from it.  Caller
+ * MUST hold alloc_mutex.  Any abandoned remainder of the previous chunk
+ * stays behind as a formatted hole (< tlab_max_obj bytes; the next sweep
+ * reclaims it).  Falls back to the bounded free-list probe when the bump
+ * front is exhausted, so TLABs stay effective in the sweep-only regime
+ * between compactions.  Returns NULL when neither source can supply a
+ * chunk — the caller degrades to the shared slow path. */
+static void *tlab_refill_cut(CL_Thread *t, uint32_t *sizep)
+{
+    void    *chunk;
+    uint32_t chunk_size = tlab_chunk_size;
+    uint32_t chunk_off;
+
+    if (!chunk_size)
+        return NULL;
+    chunk = alloc_from_bump(chunk_size);
+    if (!chunk) {
+        /* May return a larger block (use-entire-block path) — honor it. */
+        chunk = alloc_from_free_list(&chunk_size, CL_FREELIST_PROBE_LIMIT);
+    }
+    if (!chunk)
+        return NULL;
+    chunk_off = (uint32_t)((uint8_t *)chunk - cl_heap.arena);
+
+    cl_heap.total_consed += t->tlab_consed;
+    t->tlab_consed = 0;
+    /* Chunk-granular: counts the whole chunk as allocated up front; the
+     * next sweep recomputes the exact figure.  Errs toward "heap fuller
+     * than it is", which only makes the compaction heuristics fire
+     * earlier, never later. */
+    cl_heap.total_allocated += chunk_size;
+    cl_heap.tlab_refills++;
+
+    tlab_format_hole(chunk_off, chunk_size);
+    t->tlab_cur = chunk_off;
+    t->tlab_end = chunk_off + chunk_size;
+    return tlab_cut(t, sizep);
+}
+
+/* Clear every registered thread's TLAB.  Called with the world stopped
+ * (or single-threaded) at the top of each GC cycle, and on heap re-init.
+ * Remainders are already formatted holes — the sweep/compaction that
+ * follows reclaims them; owners refill on their next allocation. */
+static void gc_tlab_reset_all(void)
+{
+    CL_Thread *t;
+    for (t = cl_thread_list; t; t = t->next) {
+        t->tlab_cur = t->tlab_end = 0;
+        cl_heap.total_consed += t->tlab_consed;
+        t->tlab_consed = 0;
+    }
+}
+
+/* Thread-exit retirement (see mem.h).  Runs on a live heap, so the
+ * counter flush needs alloc_mutex; the remainder hole needs nothing. */
+void cl_tlab_retire(CL_Thread *t)
+{
+    int multi = (cl_thread_count > 1);
+    if (!t->tlab_end && !t->tlab_consed)
+        return;
+    if (multi && alloc_mutex) platform_mutex_lock(alloc_mutex);
+    t->tlab_cur = t->tlab_end = 0;
+    cl_heap.total_consed += t->tlab_consed;
+    t->tlab_consed = 0;
+    if (multi && alloc_mutex) platform_mutex_unlock(alloc_mutex);
+}
+#else /* !CL_TLAB */
+/* Feature compiled out (Amiga binary-size gate — see mem.h).  Keep the
+ * GC-entry hook as a no-op so call sites stay unconditional. */
+static void gc_tlab_reset_all(void) {}
+#endif /* CL_TLAB */
+
 void cl_mem_init(uint32_t heap_size)
 {
     if (heap_size == 0)
@@ -224,10 +378,54 @@ void cl_mem_init(uint32_t heap_size)
     cl_heap.gc_count = 0;
     cl_heap.compact_count = 0;
     cl_heap.freelist_steps = 0;
+    cl_heap.tlab_refills = 0;
     gc_last_compact_cycle = 0xFFFFFFFF;
     gc_sweeps_since_compact = 0;
 
-    gc_root_count = 0;
+#ifdef CL_TLAB
+    /* TLAB chunk size for this heap.  CLAMIGA_TLAB_CHUNK=<bytes> overrides
+     * (0 disables); otherwise CL_TLAB_CHUNK, scaled down so per-thread
+     * chunks can't dominate a small (test-sized) arena, and disabled
+     * entirely when even the minimum chunk would be outsized. */
+    {
+        uint32_t chunk = CL_TLAB_CHUNK;
+        const char *e = getenv("CLAMIGA_TLAB_CHUNK");
+        if (e)
+            chunk = (uint32_t)atol(e);
+        if (chunk) {
+            uint32_t cap = heap_size / 64u;
+            if (chunk > cap) chunk = cap;
+            chunk &= ~(uint32_t)(CL_ALIGN - 1);
+            if (chunk < CL_TLAB_MIN_CHUNK)
+                chunk = 0;
+        }
+        tlab_chunk_size = chunk;
+        tlab_max_obj = chunk / 8u;
+    }
+
+    /* Clear stale TLABs on every registered thread: their offsets point
+     * into the PREVIOUS arena (unit tests re-init with fresh heaps). */
+    {
+        CL_Thread *t;
+        for (t = cl_thread_list; t; t = t->next) {
+            t->tlab_cur = t->tlab_end = 0;
+            t->tlab_consed = 0;
+        }
+    }
+#endif /* CL_TLAB */
+
+    /* Reset EVERY registered thread's Lisp-heap references (root stacks,
+     * mv_values, pending/handler/restart/reader/printer/TLV state, ...)
+     * — all of them are stale offsets into the arena just freed, and
+     * gc_mark_thread_roots walks them unconditionally.  Same bug class as
+     * the shared-globals reset below; resetting only the CURRENT thread's
+     * gc_root_count (the old behavior) left e.g. main's mv_values[] from
+     * a pre-re-init cl_error pointing into the fresh arena. */
+    {
+        CL_Thread *rt;
+        for (rt = cl_thread_list; rt; rt = rt->next)
+            cl_thread_reset_lisp_state(rt);
+    }
     /* Drop any grown mark stack from a previous heap: the growth cap is
      * derived from the (possibly different) new arena size, and unit tests
      * re-init with small heaps.  Also resets gc_mark_top. */
@@ -248,6 +446,48 @@ void cl_mem_init(uint32_t heap_size)
      * re-assign and re-register would set mark bits at arbitrary offsets
      * in the fresh arena. */
     n_global_roots = 0;
+
+    /* Reset the UNCONDITIONALLY-marked shared Lisp globals for the same
+     * reason (the documented "stale static tables on re-init" bug class).
+     * gc_mark marks these directly — not through the resettable registry
+     * above — so after a heap re-init they still hold offsets from the
+     * PREVIOUS arena.  Marking such a stale offset in the fresh arena
+     * stamps a mark bit into the middle of whatever live object now spans
+     * it (the classic 0x800000-in-a-cdr corruption), as soon as the new
+     * bump front grows past the old offset so it passes validation.
+     * Observed deterministically from the C unit tests' shutdown/re-init
+     * pattern; see shared_tables_reset_on_heap_reinit in
+     * tests/test_gc_threaded.c.  Every value here is invalid by
+     * definition — the arena they pointed into was just freed. */
+    macro_table = CL_NIL;
+    setf_table = CL_NIL;
+    setf_fn_table = CL_NIL;
+    setf_expander_table = CL_NIL;
+    type_table = CL_NIL;
+    compiler_macro_table = CL_NIL;
+    cl_clos_class_table = CL_NIL;
+    struct_table = CL_NIL;
+    condition_hierarchy = CL_NIL;
+    condition_slot_table = CL_NIL;
+    condition_default_initargs = CL_NIL;
+    condition_slot_initforms = CL_NIL;
+    cl_package_registry = CL_NIL;
+    {
+        extern CL_Obj *cl_main_thread_lisp_obj_ptr(void);
+        *cl_main_thread_lisp_obj_ptr() = CL_NIL;
+    }
+    /* Readtable pool user macro closures (marked per allocated entry) */
+    {
+        int rt, ch;
+        for (rt = 0; rt < CL_RT_POOL_SIZE; rt++) {
+            if (!(cl_readtable_alloc_mask & (1u << rt)))
+                continue;
+            for (ch = 0; ch < CL_RT_CHARS; ch++) {
+                cl_readtable_pool[rt].macro_fn[ch] = CL_NIL;
+                cl_readtable_pool[rt].dispatch_fn[ch] = CL_NIL;
+            }
+        }
+    }
 
     /* Initialize allocation mutex */
     platform_mutex_init(&alloc_mutex);
@@ -462,7 +702,14 @@ void *cl_alloc(uint8_t type, uint32_t size)
     /* Force a compacting (moving) GC before every allocation so that any
      * CL_Obj C local held unprotected across an allocating call is reliably
      * corrupted (relocated out from under the stale local).  Single-thread
-     * only; gated behind a build flag — compiles to nothing normally. */
+     * only; gated behind a build flag — compiles to nothing normally.
+     *
+     * NOTE: the `!multi` gate means the TLAB fast path below (CL_TLAB,
+     * multi-threaded only) never runs under gc-stress — the two are
+     * mutually exclusive by construction.  TLAB coverage instead comes
+     * from tlab_mixed_sizes_vs_concurrent_compaction in
+     * tests/test_gc_threaded.c, which hammers concurrent compaction
+     * against live TLAB cutting without the per-alloc stress hook. */
     if (!multi && cl_gc_stress_ready && !cl_gc_stress_active) {
         cl_gc_stress_active = 1;
         {
@@ -522,6 +769,29 @@ void *cl_alloc(uint8_t type, uint32_t size)
     if (size > CL_HDR_SIZE_MASK)
         cl_storage_error("Allocation too large for header: %u bytes (max %u)",
                          (unsigned)size, (unsigned)CL_HDR_SIZE_MASK);
+
+#ifdef CL_TLAB
+    /* TLAB fast path (multi-threaded only): cut from this thread's private
+     * chunk without touching alloc_mutex; refill under the mutex when the
+     * chunk is spent.  Objects above tlab_max_obj take the shared path so
+     * a large vector doesn't waste most of a chunk.  When even a refill
+     * fails (bump front AND bounded free-list probe exhausted), fall
+     * through to the shared slow path below, which GCs/compacts. */
+    if (multi && size <= tlab_max_obj) {
+        CL_Thread *t = cl_get_current_thread();
+        ptr = tlab_cut(t, &size);
+        if (!ptr) {
+            platform_mutex_lock(alloc_mutex);
+            ptr = tlab_refill_cut(t, &size);
+            platform_mutex_unlock(alloc_mutex);
+        }
+        if (ptr) {
+            memset(ptr, 0, size);
+            ((CL_Header *)ptr)->header = CL_MAKE_HDR(type, size);
+            return ptr;
+        }
+    }
+#endif /* CL_TLAB */
 
     if (multi) platform_mutex_lock(alloc_mutex);
 
@@ -3673,6 +3943,11 @@ void cl_gc_compact(void)
     if (multithread)
         cl_gc_stop_the_world();
 
+    /* Same invariant as cl_gc: no thread may keep cutting from a chunk the
+     * passes below reclaim or slide.  Remainders are formatted holes, so
+     * forwarding/slide parse them as dead regions. */
+    gc_tlab_reset_all();
+
 #ifdef DEBUG_GC
     platform_write_string("GC: compaction starting...\n");
 #endif
@@ -4224,6 +4499,13 @@ void cl_gc(void)
     if (multithread)
         cl_gc_stop_the_world();
 
+    /* Drop every thread's TLAB before any pass runs: gc_sweep rebuilds the
+     * free list from unmarked regions, so an active chunk tail (already a
+     * formatted hole) would otherwise be handed out twice — once by the
+     * free list, once by the owning thread's next cut.  Runs even when
+     * single-threaded to reclaim leftovers after thread-count dropped. */
+    gc_tlab_reset_all();
+
 #ifdef DEBUG_GC
     {
         char buf[128];
@@ -4330,4 +4612,10 @@ void cl_mem_stats(void)
             (unsigned long)gc_mark_stack_grows,
             (unsigned long)gc_mark_rescan_passes);
     platform_write_string(buf);
+#ifdef CL_TLAB
+    sprintf(buf, "TLAB: %lu-byte chunks, %lu refills\n",
+            (unsigned long)tlab_chunk_size,
+            (unsigned long)cl_heap.tlab_refills);
+    platform_write_string(buf);
+#endif
 }
