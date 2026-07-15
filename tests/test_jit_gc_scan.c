@@ -42,6 +42,11 @@ static int test_is_freed(uint32_t offset)
 
 static void setup(void)
 {
+    /* The conservative JIT-stack scan validates candidates against the
+     * free-list snapshot — CLASSIC collector machinery (the m68k JIT and
+     * the generational collector never coexist; gen mode keeps no free
+     * list).  Pin classic mode so sweeps still produce free blocks. */
+    setenv("CLAMIGA_GENGC", "0", 1);
     platform_init();
     cl_thread_init();
     cl_error_init();

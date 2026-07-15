@@ -65,6 +65,7 @@ Any C code that holds `CL_Obj` values across allocating calls **must** GC-protec
 - **Fix**: wrap with `CL_GC_PROTECT(var)` before the loop and `CL_GC_UNPROTECT(n)` after
 - **Why it matters**: this is a **compacting (moving) GC** — when fragmentation forces compaction (which can be triggered inside any allocating call), live objects are relocated and arena-relative offsets are rewritten. A `CL_Obj` C local that isn't GC-protected will (a) be swept/freed if unreachable, or (b) hold a stale offset after objects move — either way silently corrupting memory. `CL_GC_PROTECT` registers the variable's address so the compactor forwards it.
 - **Note**: values on the VM stack (`cl_vm.stack`) and in `args[]` (builtin function arguments) are already GC-rooted — no need to protect those
+- **Host runs a generational collector** (`CL_GENGC`, see `specs/generational-gc.md`): minor collections MOVE young objects and `cl_gc()` itself is a moving (compacting) collection under it — never assume an explicit GC call is non-moving. The protection discipline above is exactly sufficient; `CLAMIGA_GENGC=0` selects the classic collector (always on Amiga).
 
 ## Debugging & Troubleshooting
 

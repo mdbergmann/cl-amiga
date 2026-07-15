@@ -21,6 +21,16 @@
 #if (!defined(PLATFORM_AMIGA) || defined(CL_FORCE_TLAB)) && !defined(CL_NO_TLAB)
 #define CL_TLAB 1
 #endif
+/* Generational GC (sliding nursery + hardware dirty-page tracking) — see
+ * specs/generational-gc.md.  Requires page protection (mprotect), so it is
+ * POSIX-only; the AmigaOS target (no MMU assumed) compiles it out entirely
+ * and keeps the classic mark-sweep-compact collector.  CL_NO_GENGC
+ * disables it at build time on hosts; CLAMIGA_GENGC=0 disables at runtime
+ * (classic mode, for A/B benchmarking and as a field escape hatch). */
+#if defined(PLATFORM_POSIX) && !defined(CL_NO_GENGC)
+#define CL_GENGC 1
+#endif
+
 /* INITIAL GC mark-stack capacity (entries).  The stack grows geometrically
  * on demand up to a heap-proportional cap (see gc_mark_stack_grow in mem.c);
  * this constant only sizes the always-available static baseline buffer.
@@ -196,6 +206,15 @@ void cl_tlab_retire(struct CL_Thread_s *t);
 /* Manually trigger GC */
 void cl_gc(void);
 
+/* Cheap reclamation pass for bounded external-handle tables (locks,
+ * condvars, threads): when a table fills, most dead handle-owners are
+ * RECENT objects, so under the generational collector a minor cycle
+ * usually frees the slots at a fraction of a full collection's cost.
+ * Falls back to cl_gc() in classic mode.  Callers retry their table
+ * allocation afterwards and escalate to cl_gc() (a full collection) on a
+ * second miss. */
+void cl_gc_reclaim_young(void);
+
 /* Allocation-triggered GC with redundant-cycle dedup: collects only if the
  * GC epoch (cl_heap.gc_count) still equals seen_gc_count once this thread
  * has stopped the world — i.e. no peer collected in the meantime.  Returns
@@ -211,6 +230,37 @@ void cl_gc_compact(void);
 
 /* Run pending compaction if needed.  Call at safe points (REPL, top-level). */
 void cl_gc_compact_if_pending(void);
+
+#ifdef CL_GENGC
+/* Minor (nursery) collection: trace live young objects from roots + dirty
+ * old pages, slide survivors down onto the old-space watermark, reset the
+ * nursery bump.  seen_gc_count enables the same redundant-cycle dedup as
+ * cl_gc_if_stale.  Returns 1 if a minor cycle ran (or was deduped — either
+ * way the caller should retry its allocation), 0 if minor collection is
+ * unavailable/refused (caller escalates to cl_gc_compact). */
+int cl_gc_minor(uint32_t seen_gc_count);
+
+/* Is the generational collector active this session? */
+int cl_gengc_enabled(void);
+
+/* Pre-touch a heap range a SYSCALL is about to write into (file read,
+ * socket recv, ...).  A userspace store to a protected old-space page
+ * faults into the write-watch handler and retries transparently, but a
+ * kernel write returns EFAULT instead — so such sites must dirty+unlock
+ * the target range explicitly before the call.  No-op for nursery/foreign
+ * pointers and when protection is not armed. */
+void cl_gc_pretouch(const void *ptr, uint32_t len);
+
+/* Diagnostics for ext:%gengc-stats: minor cycle count, cumulative minor
+ * time (us), bytes promoted, old-space watermark, dirty pages scanned in
+ * the last minor.  Any out-param may be NULL. */
+void cl_gengc_stats(uint32_t *minors, uint64_t *minor_us,
+                    uint64_t *promoted_bytes, uint32_t *old_top,
+                    uint32_t *dirty_last);
+#else
+/* Classic-only builds: keep call sites unconditional. */
+#define cl_gc_pretouch(ptr, len) ((void)0)
+#endif
 
 /* Debug/stats */
 void cl_mem_stats(void);

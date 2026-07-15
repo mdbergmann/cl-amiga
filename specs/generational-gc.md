@@ -1,6 +1,7 @@
 # Generational GC: nursery + dirty-page tracking (host-only)
 
-Status: DESIGN — implementation in phases (A: quick wins, B: nursery)
+Status: IMPLEMENTED (Phase A + Phase B core, 2026-07-15) — see
+"Implementation notes" at the end for deltas from the original design.
 Branch: perf/tlab-alloc follow-up
 Date: 2026-07-15
 
@@ -227,3 +228,61 @@ objects, visit each CL_Obj child slot via the existing
 - This is the foundation the "GC cost at allocation rate" problem actually
   needs; TLABs already removed the lock, this removes the per-cycle
   O(live)+O(arena) tax.
+
+## Implementation notes (2026-07-15)
+
+Deltas and decisions made during implementation:
+
+- **cl_gc() is a moving collection under gen mode** (routes to
+  cl_gc_compact; there is no sweep collector in gen mode).  Any C code
+  holding unprotected CL_Obj locals across an *explicit* cl_gc() was
+  relying on the old sweep's non-moving behavior — that was always a
+  violation of the documented GC-safety discipline, merely unenforced.
+  The runtime's own cl_gc() sites (outbuf/lock/condvar/thread table
+  exhaustion retries) operate on off-heap handles and are safe; one unit
+  test needed its locals properly protected.
+- **EFAULT audit came out empty**: every kernel write lands in off-heap
+  staging buffers (platform iobufs, malloc'd read buffers, the UDP
+  stack-buffer pattern) — a consequence of the earlier compaction-safety
+  work, which already forced heap buffers out of blocking syscalls.
+  cl_gc_pretouch exists (and is tested) for future sites.
+- **Minor-cycle escalation contract**: cl_gc_minor returns 0 (caller runs
+  cl_gc_compact) on: gen disabled, crossing-map desync before any update,
+  mark-stack overflow, JIT pins present, forwarding-table OOM.  A desync
+  after root forwarding began is a loud fatal (cannot roll back).
+- **Fallback demotion**: if a compaction degrades to its sweep fallback
+  (forwarding-table OOM / JIT pin OOM), gen mode disables itself for the
+  session — the sweep rebuilt a free list and cleared sticky marks, which
+  is exactly the classic collector's state.
+- **Classic-mechanics tests** (free-list probe bounds, sweep-forever
+  escape, JIT free-snapshot scan, epoch-dedup semantics) pin
+  CLAMIGA_GENGC=0; everything else in the suite runs under gen mode.
+- Old space is protected page-truncated; the old/nursery straddling page
+  stays writable and is marked always-dirty for the next minor.
+- The minor's fwd table is nursery-ranged via gc_fwd_base; gc_forward
+  returns old-space offsets unchanged, which is what lets all compaction
+  updaters (thread/registered/shared roots, srcloc, TLV rehash) be reused
+  verbatim.
+- Minor rehash set = hash tables overlapping dirty pages + young tables,
+  collected during the update walks; TLV tables rehash every minor
+  (per-thread, small).
+- **Survivor list instead of nursery walks** (v2): the first cut walked
+  the nursery [old_top, bump) linearly for forwarding/update/slide —
+  O(consumed nursery) per minor (~52ms at 192M).  Now gc_mark_obj records
+  each live young object while `gen_minor_active`; every minor pass
+  iterates that (sorted) list, and gc_forward binary-searches it in place
+  of a nursery-sized forwarding table.  Dead young FINALIZABLE objects
+  (streams/locks/condvars/threads/bytecode/foreign-ptrs) are tracked in an
+  allocation-time side list so their external resources are still released
+  without walking dead space.  Minor cost dropped to ~1.8–6ms.
+- **Handle-table exhaustion reclaims minor-first** (v2): bi_make_lock /
+  bi_make_condition-variable / bi_make_thread used to run cl_gc() when
+  their bounded tables filled — under gen mode that meant a FULL
+  compaction every ~16K handle allocations (the dominant GC cost of the
+  sento ask cell: 128 compactions per 31s run).  They now call
+  cl_gc_reclaim_young() (a minor; dead handle-owners are mostly recent)
+  and only escalate to cl_gc() if the retry still finds no slot.
+
+Measured results: see docs/benchmarks.md (2026-07-15 generational GC
+entry) — sento pinned/tell +13%, pinned/ask +26% vs the same binary with
+CLAMIGA_GENGC=0.

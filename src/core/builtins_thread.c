@@ -423,8 +423,22 @@ static CL_Obj bi_make_thread(CL_Obj *args, int n)
     /* Allocate side table slot.  The table is bounded but slots are
      * reclaimed at GC sweep when the wrapping CL_ThreadObj becomes
      * unreachable (see gc_finalize_dead, TYPE_THREAD).  Run GC once
-     * and retry — same pattern as bi_make_lock. */
+     * and retry — same pattern as bi_make_lock.
+     *
+     * func/name are plain CL_Obj C locals (copies of the still-rooted
+     * args[] slots), not GC roots themselves: both cl_gc_reclaim_young()
+     * and cl_gc() below are moving collections under the generational
+     * collector, so they must stay GC-protected across this entire span,
+     * not just around the final cl_alloc(). */
+    CL_GC_PROTECT(func);
+    CL_GC_PROTECT(name);
     thread_id = cl_thread_table_alloc(child);
+    if (thread_id < 0) {
+        /* Dead thread objects are mostly RECENT — a minor cycle usually
+         * frees their slots; a full collection is the second resort. */
+        cl_gc_reclaim_young();
+        thread_id = cl_thread_table_alloc(child);
+    }
     if (thread_id < 0) {
         cl_gc();
         thread_id = cl_thread_table_alloc(child);
@@ -466,6 +480,7 @@ static CL_Obj bi_make_thread(CL_Obj *args, int n)
         thread_id = cl_thread_table_alloc(child);
     }
     if (thread_id < 0) {
+        CL_GC_UNPROTECT(2);
         cl_thread_free_worker(child);
         cl_error(CL_ERR_GENERAL, "MP:MAKE-THREAD: thread table full (max %d)",
                  CL_MAX_THREADS);
@@ -516,9 +531,11 @@ static CL_Obj bi_make_thread(CL_Obj *args, int n)
      * the only thing closing the register-after-STW-request race.  The
      * STW wait loop now re-requests unrequested live threads on every
      * rescan (thread.c), so the invariant is structural, but keep the
-     * register→alloc→create order anyway. */
-    CL_GC_PROTECT(func);
-    CL_GC_PROTECT(name);
+     * register→alloc→create order anyway.
+     *
+     * func/name are still the protect pair pushed before the table-alloc
+     * retries above; unprotect here once this cl_alloc (their last
+     * allocation-adjacent use) is done. */
     tobj = (CL_ThreadObj *)cl_alloc(TYPE_THREAD, sizeof(CL_ThreadObj));
     CL_GC_UNPROTECT(2);
     if (!tobj) {
@@ -922,21 +939,35 @@ CL_Obj cl_lock_alloc_obj(int recursive, CL_Obj name, const char *err_prefix)
     if (rc != 0)
         cl_error(CL_ERR_GENERAL, "%s: failed to create mutex", err_prefix);
 
+    /* `name` is a plain CL_Obj C local (the caller's copy), not itself a GC
+     * root: both cl_gc_reclaim_young() and cl_gc() below are moving
+     * collections under the generational collector, so it must stay
+     * GC-protected across this entire span, not just around the final
+     * cl_alloc(). */
+    CL_GC_PROTECT(name);
     lock_id = cl_lock_table_alloc(mutex_handle);
     if (lock_id < 0) {
-        /* Lock table is bounded but slots are reclaimed at GC sweep when
-         * the wrapping CL_Lock heap object becomes unreachable.  Run GC
-         * once and retry — typical pattern for GC-managed external slots. */
+        /* Lock table is bounded but slots are reclaimed when the wrapping
+         * CL_Lock heap object becomes unreachable.  Dead locks are mostly
+         * RECENT (per-message futures etc.), so try a minor cycle first;
+         * escalate to a full collection only if that freed nothing.  This
+         * matters: workloads that cons a lock per message hit this path
+         * every ~table-size messages, and a full collection here was the
+         * dominant GC cost of the sento ask benchmark. */
+        cl_gc_reclaim_young();
+        lock_id = cl_lock_table_alloc(mutex_handle);
+    }
+    if (lock_id < 0) {
         cl_gc();
         lock_id = cl_lock_table_alloc(mutex_handle);
     }
     if (lock_id < 0) {
+        CL_GC_UNPROTECT(1);
         platform_mutex_destroy(mutex_handle);
         cl_error(CL_ERR_GENERAL, "%s: lock table full (max %d)",
                  err_prefix, CL_MAX_LOCKS);
     }
 
-    CL_GC_PROTECT(name);
     lk = (CL_Lock *)cl_alloc(TYPE_LOCK, sizeof(CL_Lock));
     CL_GC_UNPROTECT(1);
     if (!lk) {
@@ -1277,20 +1308,29 @@ static CL_Obj bi_make_condition_variable(CL_Obj *args, int n)
         cl_error(CL_ERR_GENERAL,
                  "MP:MAKE-CONDITION-VARIABLE: failed to create condvar");
 
+    /* `name` is a plain CL_Obj C local, not itself a GC root: both
+     * cl_gc_reclaim_young() and cl_gc() below are moving collections under
+     * the generational collector, so it must stay GC-protected across this
+     * entire span, not just around the final cl_alloc(). */
+    CL_GC_PROTECT(name);
     cv_id = cl_condvar_table_alloc(cv_handle);
     if (cv_id < 0) {
-        /* See bi_make_lock for rationale on the GC retry. */
+        /* See bi_make_lock for rationale on the minor-first GC retry. */
+        cl_gc_reclaim_young();
+        cv_id = cl_condvar_table_alloc(cv_handle);
+    }
+    if (cv_id < 0) {
         cl_gc();
         cv_id = cl_condvar_table_alloc(cv_handle);
     }
     if (cv_id < 0) {
+        CL_GC_UNPROTECT(1);
         platform_condvar_destroy(cv_handle);
         cl_error(CL_ERR_GENERAL,
                  "MP:MAKE-CONDITION-VARIABLE: condvar table full (max %d)",
                  CL_MAX_CONDVARS);
     }
 
-    CL_GC_PROTECT(name);
     cv = (CL_CondVar *)cl_alloc(TYPE_CONDVAR, sizeof(CL_CondVar));
     CL_GC_UNPROTECT(1);
     if (!cv) {

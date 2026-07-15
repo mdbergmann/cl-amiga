@@ -2915,6 +2915,41 @@ static CL_Obj bi_ext_gc_time_stats(CL_Obj *args, int n)
     return result;
 }
 
+#ifdef CL_GENGC
+/* (ext:%gengc-stats) — generational collector diagnostics as a 6-element
+ * list: (enabled-p minor-count minor-seconds promoted-bytes old-top
+ * dirty-pages-last-minor).  enabled-p is T/NIL (NIL = classic collector:
+ * CLAMIGA_GENGC=0, setup failure, or a fallback demotion); the rest are
+ * fixnums except minor-seconds (double-float).  promoted-bytes is
+ * cumulative; old-top is the current old-space watermark in bytes. */
+static CL_Obj bi_ext_gengc_stats(CL_Obj *args, int n)
+{
+    uint32_t minors, old_top, dirty_last;
+    uint64_t minor_us, promoted;
+    CL_Obj result = CL_NIL;
+    CL_UNUSED(args); CL_UNUSED(n);
+    cl_gengc_stats(&minors, &minor_us, &promoted, &old_top, &dirty_last);
+    CL_GC_PROTECT(result);
+    result = cl_cons(CL_MAKE_FIXNUM((int32_t)(dirty_last & CL_FIXNUM_MAX)), result);
+    result = cl_cons(CL_MAKE_FIXNUM((int32_t)(old_top & CL_FIXNUM_MAX)), result);
+    result = cl_cons(CL_MAKE_FIXNUM((int32_t)(promoted & CL_FIXNUM_MAX)), result);
+    result = cl_cons(cl_make_double_float((double)minor_us / 1e6), result);
+    result = cl_cons(CL_MAKE_FIXNUM((int32_t)(minors & CL_FIXNUM_MAX)), result);
+    result = cl_cons(cl_gengc_enabled() ? CL_T : CL_NIL, result);
+    CL_GC_UNPROTECT(1);
+    return result;
+}
+/* (ext:%gc-minor) — trigger a minor (nursery) collection now.  Returns T
+ * if a minor cycle ran, NIL if it was refused (gen mode disabled or the
+ * cycle escalated — callers wanting a guaranteed collection use ext:gc).
+ * Primarily a test/diagnostic hook: real minors are allocation-triggered. */
+static CL_Obj bi_ext_gc_minor(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    return cl_gc_minor(cl_heap.gc_count) ? CL_T : CL_NIL;
+}
+#endif /* CL_GENGC */
+
 /* (ext:%stream-outbuf-stats) — string-output-stream buffer table diagnostics
  * as a 2-element list: (used-slots total-slots).  used-slots is the number of
  * allocated platform buffers (live streams + dead-but-uncollected ones);
@@ -4259,6 +4294,10 @@ void cl_builtins_io_init(void)
     extfun("GC-COMPACT", bi_ext_gc_compact, 0, 0);
     extfun("%GC-MARK-STATS", bi_ext_gc_mark_stats, 0, 0);
     extfun("%GC-TIME-STATS", bi_ext_gc_time_stats, 0, 0);
+#ifdef CL_GENGC
+    extfun("%GENGC-STATS", bi_ext_gengc_stats, 0, 0);
+    extfun("%GC-MINOR", bi_ext_gc_minor, 0, 0);
+#endif
     extfun("%STREAM-OUTBUF-STATS", bi_ext_stream_outbuf_stats, 0, 0);
     extfun("%GC-AUDIT-ROOTS", bi_ext_gc_audit_roots, 0, 0);
     extfun("GETENV", bi_getenv, 1, 1);

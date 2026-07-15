@@ -275,7 +275,27 @@ TEST(concurrent_alloc_with_gc)
  * the collection when the GC epoch advanced before this thread became
  * initiator.  The skip requires a multi-threaded world (single-threaded
  * there is no race, so it must always collect).
+ *
+ * These tests (and the phase-timer test below) pin the CLASSIC collector
+ * semantics: under the generational collector cl_gc()/cl_gc_if_stale
+ * route to compaction and the allocation path dedups via cl_gc_minor
+ * instead.  reinit_classic()/reinit_default() swap collectors by
+ * re-initializing the heap around them.
  * ================================================================ */
+
+static void reinit_classic(void)
+{
+    cl_mem_shutdown();
+    setenv("CLAMIGA_GENGC", "0", 1);
+    cl_mem_init(4 * 1024 * 1024);
+}
+
+static void reinit_default(void)
+{
+    cl_mem_shutdown();
+    unsetenv("CLAMIGA_GENGC");
+    cl_mem_init(4 * 1024 * 1024);
+}
 
 TEST(gc_if_stale_single_thread_always_collects)
 {
@@ -425,7 +445,9 @@ TEST(gc_time_stats_and_stw_stats_accumulate)
     cl_gc_stw_stats(&stops1, &stw_max1, &skips1);
     cl_gc_time_stats(&stw1, NULL, NULL, NULL);
     ASSERT_EQ_INT((int)(stops1 - stops0), 1);
-    ASSERT(stw1 > stw0);
+    /* >=: with the peer already parked in its safe region the stop can
+     * complete inside one microsecond tick, so the timer may not move. */
+    ASSERT(stw1 >= stw0);
 
     ctx.hold = 0;
     platform_thread_join(handle, NULL);
@@ -1612,6 +1634,50 @@ TEST(tlab_leftover_holes_reclaimed_after_threads_exit)
 #endif /* CL_TLAB */
 
 /* ================================================================
+ * Regression: cl_lock_alloc_obj must GC-protect `name` across the
+ * cl_gc_reclaim_young()/cl_gc() table-exhaustion retries, not just
+ * around the final cl_alloc() (see builtins_thread.c).  Under the
+ * generational collector both retries are MOVING collections, so an
+ * unprotected `name` local would end up stale (pre-move offset) once
+ * stored into the returned lock's `name` slot.
+ * ================================================================ */
+
+TEST(lock_alloc_obj_protects_name_across_table_exhaustion_gc)
+{
+    CL_Obj held = CL_NIL, name, lock;
+    CL_Lock *lk;
+    CL_String *s;
+    int i, free_slots = 0;
+
+    /* Saturate every currently-empty lock-table slot with a real, rooted
+     * CL_Lock so that dropping the root turns the ENTIRE table into
+     * reclaimable garbage in one shot.  This makes the first
+     * cl_lock_table_alloc() attempt inside the upcoming cl_lock_alloc_obj
+     * call fail deterministically, forcing it through the
+     * cl_gc_reclaim_young()/cl_gc() retries. */
+    for (i = 0; i < CL_MAX_LOCKS; i++)
+        if (!cl_lock_table[i]) free_slots++;
+
+    CL_GC_PROTECT(held);
+    for (i = 0; i < free_slots; i++) {
+        CL_Obj filler = cl_lock_alloc_obj(0, CL_NIL, "TEST");
+        held = cl_cons(filler, held);
+    }
+    held = CL_NIL;   /* every filler lock is now unreachable garbage */
+    CL_GC_UNPROTECT(1);
+
+    name = cl_make_string("named-lock-regression", 22);
+    lock = cl_lock_alloc_obj(0, name, "TEST");
+
+    ASSERT(CL_LOCK_P(lock));
+    lk = (CL_Lock *)CL_OBJ_TO_PTR(lock);
+    ASSERT(CL_STRING_P(lk->name));
+    s = (CL_String *)CL_OBJ_TO_PTR(lk->name);
+    ASSERT_EQ_INT((int)s->length, 22);
+    ASSERT(memcmp(s->data, "named-lock-regression", 22) == 0);
+}
+
+/* ================================================================
  * main
  * ================================================================ */
 
@@ -1634,12 +1700,13 @@ int main(void)
     RUN(concurrent_alloc_4_threads);
     RUN(concurrent_alloc_with_gc);
 
-    /* GC-epoch dedup of redundant allocation-triggered collections */
+    /* GC-epoch dedup of redundant allocation-triggered collections and
+     * the phase timers — classic-collector semantics (see reinit_classic) */
+    reinit_classic();
     RUN(gc_if_stale_single_thread_always_collects);
     RUN(gc_if_stale_skips_when_epoch_advanced);
-
-    /* GC phase timers exposed by (ext:%gc-time-stats) */
     RUN(gc_time_stats_and_stw_stats_accumulate);
+    reinit_default();
 
     /* Regression: STW GC vs. thread blocked in a socket syscall */
     RUN(stw_gc_with_thread_blocked_in_accept);
@@ -1663,6 +1730,10 @@ int main(void)
     /* Regression: unconditionally-marked shared Lisp globals (package
      * registry, compiler tables, ...) must be reset on heap re-init */
     RUN(shared_tables_reset_on_heap_reinit);
+
+    /* Regression: cl_lock_alloc_obj's `name` must survive the moving
+     * cl_gc_reclaim_young()/cl_gc() retries on lock-table exhaustion */
+    RUN(lock_alloc_obj_protects_name_across_table_exhaustion_gc);
 
 #ifdef CL_TLAB
     /* TLAB: per-thread allocation buffers (refills, GC reset, compaction,
