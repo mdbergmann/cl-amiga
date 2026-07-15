@@ -1637,7 +1637,7 @@ static CL_Obj bi_warn(CL_Obj *args, int n)
             cl_restart_top = f->restart_mark;
             cl_error_frame_top = f->error_mark;
             gc_root_count = f->gc_root_mark;
-            cl_compiler_restore_to(f->compiler_mark);
+            cl_compiler_unwind_to(f->compiler_mark, CL_CAPTURE_SP());
             cl_printer_state_restore(f->printer_mark);
             cl_saved_pending_top = f->saved_pending_mark;
             cl_vm.sp = f->vm_sp;

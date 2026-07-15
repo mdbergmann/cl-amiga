@@ -1078,11 +1078,13 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
     CL_GC_PROTECT(params);
     CL_GC_PROTECT(body);
 
-    /* Register inner compiler for GC root marking.
-     * Protect from NLX-triggered cl_compiler_restore_to: this compiler
-     * is referenced by C stack frames throughout compile_lambda. */
+    /* Register inner compiler for GC root marking.  The anchor records this
+     * frame as the owner: an NLX landing in a VM run nested below this frame
+     * (e.g. a macroexpansion doing a non-local exit) must not free this
+     * compiler, while a longjmp that abandons this frame must — see
+     * cl_compiler_unwind_to. */
     inner->parent = cl_active_compiler;
-    inner->protect = 1;
+    inner->anchor = CL_CAPTURE_SP();
     cl_compiler_seed_optimize_settings(inner);
     cl_active_compiler = inner;
 
@@ -1387,7 +1389,6 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
     /* Build bytecode object */
     bc = (CL_Bytecode *)cl_alloc(TYPE_BYTECODE, sizeof(CL_Bytecode));
     if (!bc) {
-        inner->protect = 0;
         cl_active_compiler = inner->parent;
         cl_env_destroy(env);
         cl_compiler_pool_release(inner);
@@ -1473,7 +1474,6 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
     }
 
     /* Unregister inner compiler from GC root chain */
-    inner->protect = 0;
     cl_active_compiler = inner->parent;
 
     cl_env_destroy(env);
@@ -5465,23 +5465,23 @@ static CL_Obj cl_compile_env(CL_Obj expr, CL_Obj lex_env)
     comp->env = env;
     comp->in_tail = 0;
 
-    /* Register compiler for GC root marking */
+    /* Register compiler for GC root marking.  The anchor records this frame
+     * as the owner, which keeps the compiler alive across NLX landings in VM
+     * runs nested below it: a subform macroexpansion runs in the VM
+     * (cl_macroexpand_1_env → cl_vm_run); if it performs a non-local exit,
+     * the BLOCK/CATCH/UNWIND-PROTECT unwind calls cl_compiler_unwind_to,
+     * which must not free this compiler — and cl_env_destroy its env — out
+     * from under the in-progress compile.  The subsequent c->env dereference
+     * (e.g. cl_env_lookup_local_macro) would then be a heap-use-after-free
+     * (crashed compiling large macro-generated forms, e.g. babel's
+     * INSTANTIATE-CONCRETE-MAPPINGS).  A longjmp that abandons this frame
+     * instead frees the compiler at the landing — leaving it on the chain
+     * would poison every later top-level compile with this compiler's stale
+     * optimize settings (DECLAIM appears dead for the rest of the session). */
     comp->parent = cl_active_compiler;
+    comp->anchor = CL_CAPTURE_SP();
     cl_compiler_seed_optimize_settings(comp);
     cl_active_compiler = comp;
-
-    /* Protect from NLX-triggered cl_compiler_restore_to while the compile_expr
-     * below is on the C stack.  A subform macroexpansion runs in the VM
-     * (cl_macroexpand_1_env → cl_vm_run); if it performs a non-local exit, the
-     * BLOCK/CATCH/UNWIND-PROTECT unwind calls cl_compiler_restore_to, which
-     * would otherwise free this compiler — and cl_env_destroy its env — out
-     * from under the in-progress compile.  The subsequent c->env dereference
-     * (e.g. cl_env_lookup_local_macro) would then be a heap-use-after-free.
-     * compile_lambda sets the same flag for the same reason; cl_compile_env
-     * previously omitted it, which crashed compiling large macro-generated
-     * forms (e.g. babel's INSTANTIATE-CONCRETE-MAPPINGS). Cleared before the
-     * normal teardown below. */
-    comp->protect = 1;
 
     /* Seed local macros AFTER linking into the active-compiler chain so the
      * installed expander closures are GC-rooted via comp->env during the
@@ -5499,7 +5499,6 @@ static CL_Obj cl_compile_env(CL_Obj expr, CL_Obj lex_env)
     bc = (CL_Bytecode *)cl_alloc(TYPE_BYTECODE, sizeof(CL_Bytecode));
     if (!bc) {
         platform_write_string("[compile] cl_alloc(TYPE_BYTECODE) FAILED\n");
-        comp->protect = 0;
         cl_active_compiler = comp->parent;  /* unlink before freeing */
         cl_env_destroy(env);
         cl_compiler_pool_release(comp);
@@ -5560,7 +5559,6 @@ static CL_Obj cl_compile_env(CL_Obj expr, CL_Obj lex_env)
     cl_jit_compile(bc);  /* no-op on host / when JIT_M68K undefined */
 
     /* Unregister compiler from GC root chain */
-    comp->protect = 0;
     cl_active_compiler = comp->parent;
 
     cl_env_destroy(env);
@@ -5599,6 +5597,7 @@ CL_Obj cl_macrolet_lex_env(CL_Obj bindings, CL_Obj inherited_lex_env)
     env = cl_env_create(NULL);
     comp->env = env;
     comp->parent = cl_active_compiler;
+    comp->anchor = CL_CAPTURE_SP();
     cl_compiler_seed_optimize_settings(comp);
     cl_active_compiler = comp;
 
@@ -5628,6 +5627,7 @@ CL_Obj cl_symbol_macrolet_lex_env(CL_Obj bindings, CL_Obj inherited_lex_env)
     env = cl_env_create(NULL);
     comp->env = env;
     comp->parent = cl_active_compiler;
+    comp->anchor = CL_CAPTURE_SP();
     cl_compiler_seed_optimize_settings(comp);
     cl_active_compiler = comp;
 
@@ -6006,38 +6006,58 @@ void *cl_compiler_mark(void)
     return (void *)cl_active_compiler;
 }
 
-void cl_compiler_restore_to(void *saved)
+/* NLX-landing unwind of the active-compiler chain.  Frees every compiler
+ * pushed since the mark whose owning C-stack frame was abandoned by the
+ * longjmp, and ONLY those:
+ *
+ *   - A compiler anchored strictly deeper than LANDING_ANCHOR (the landing
+ *     site's own frame) was pushed by a frame the longjmp discarded — it can
+ *     never be used again.  Leaving it on the chain would make every later
+ *     "top-level" compile a child that inherits its stale optimize settings
+ *     (DECLAIM/PROCLAIM appear dead for the rest of the session) and lets a
+ *     later compile walk its freed env (heap-use-after-free).
+ *
+ *   - A compiler anchored at or shallower than LANDING_ANCHOR is owned by a
+ *     C frame that is still live — e.g. an in-progress cl_compile_env /
+ *     compile_lambda whose macroexpansion re-entered the VM and did a
+ *     non-local exit that lands inside that nested VM run.  The walk stops
+ *     there; the owner frees it on its normal path.  (A live owner is always
+ *     shallower than the currently-executing landing frame, so the strict
+ *     depth test can never free a live compiler.)
+ *
+ * The anchor test also bounds the walk when SAVED is stale: the mark is a
+ * raw pointer and the compiler pool recycles addresses, so an old mark can
+ * ambiguously match a newer compiler.  Chain order is monotonic in stack
+ * depth (nested pushes come from nested calls), so the first
+ * at-or-shallower anchor ends the abandoned region regardless of the mark.
+ *
+ * No optimize-settings backstop is needed here: the effective settings live
+ * on the CL_Compiler structs just freed, not in a process-wide global — the
+ * next fresh top-level compile re-seeds from cl_optimize_global via
+ * cl_compiler_seed_optimize_settings. */
+void cl_compiler_unwind_to(void *saved, void *landing_anchor)
 {
     CL_Compiler *target = (CL_Compiler *)saved;
-    while (cl_active_compiler != target && cl_active_compiler != NULL) {
+    while (cl_active_compiler != target && cl_active_compiler != NULL
+           && (uintptr_t)cl_active_compiler->anchor < (uintptr_t)landing_anchor) {
         CL_Compiler *c = cl_active_compiler;
-        if (c->protect) {
-            /* Compiler is still in use by C code (e.g., compile_lambda's
-             * determine_boxed_vars which re-enters the VM for macroexpansion).
-             * Don't free it — it will be freed when compilation completes. */
-            return;
-        }
         cl_active_compiler = c->parent;
         if (c->env) cl_env_destroy(c->env);
         cl_compiler_pool_release(c);
     }
-    /* No optimize-settings backstop needed here: the effective settings
-     * live on the CL_Compiler structs just freed above, not in a
-     * process-wide global, so nothing can leak past a fully-unwound
-     * chain — the next fresh top-level compile re-seeds from
-     * cl_optimize_global via cl_compiler_seed_optimize_settings. */
 }
 
-/* Like cl_compiler_restore_to but frees compilers regardless of their `protect`
- * flag.  Used on the error-frame (condition) unwind path: a cl_error longjmp
- * abandons every C stack frame between the signal point and the catch, so any
- * compilers created in that window — including ones marked protect=1 because a
- * compile_lambda / cl_compile_env C frame was using them — are now unreachable.
- * They MUST be freed (newest first, so a child env is released before the parent
- * env it points at), otherwise the active-compiler chain is left dangling and a
- * later compile walks a freed parent env (heap-use-after-free in e.g.
- * cl_env_resolve_fun_upvalue).  Walking is bounded by the saved target, which
- * predates every abandoned frame, so live compilers below it are untouched. */
+/* Like cl_compiler_unwind_to but without the anchor bound: frees everything
+ * down to the mark.  Used on the error-frame (condition) unwind path: a
+ * cl_error longjmp abandons every C stack frame between the signal point and
+ * the C-level catch, so every compiler created in that window — including
+ * ones a compile_lambda / cl_compile_env C frame was still using — is now
+ * unreachable.  They MUST be freed (newest first, so a child env is released
+ * before the parent env it points at), otherwise the active-compiler chain is
+ * left dangling and a later compile walks a freed parent env
+ * (heap-use-after-free in e.g. cl_env_resolve_fun_upvalue).  Walking is
+ * bounded by the saved target, which predates every abandoned frame, so live
+ * compilers below it are untouched. */
 void cl_compiler_force_restore_to(void *saved)
 {
     CL_Compiler *target = (CL_Compiler *)saved;
@@ -6047,7 +6067,7 @@ void cl_compiler_force_restore_to(void *saved)
         if (c->env) cl_env_destroy(c->env);
         cl_compiler_pool_release(c);
     }
-    /* See cl_compiler_restore_to: no optimize-settings backstop needed —
+    /* See cl_compiler_unwind_to: no optimize-settings backstop needed —
      * the effective settings live on the freed CL_Compiler structs, not a
      * process-wide global. */
 }

@@ -1175,6 +1175,32 @@
   (handler-case (eval (macroexpand-1 '(destructuring-bind (a &aux (b 1) . c) '(1) (list a b c))))
     (error () :err)))
 
+;; Compiler-chain unwind regression: the compile-time errors just above are
+;; caught by HANDLER-CASE via longjmp, and the abandoned compiler must be
+;; freed at the NLX landing (anchor-based unwind).  The old protect-flag walk
+;; leaked it on the active-compiler chain, so every later "top-level" compile
+;; inherited its stale optimize settings — DECLAIM appeared dead for the rest
+;; of the session ("the safety 0" and "declaim survives fasl round trip"
+;; failed thousands of lines downstream of the leak here).
+(declaim (optimize (safety 0)))
+(check "declaim live after caught compile error" "ok"
+  (handler-case (eval '(the fixnum "ok")) (type-error () :declaim-dead)))
+(declaim (optimize (safety 1)))
+;; Live direction: a throwing macroexpander crosses the in-progress compile —
+;; its abandoned compilers are freed at the CATCH landing, but a landing
+;; inside the expander's own VM run must NOT free the enclosing live compiler.
+(defmacro %chain-throwing-macro () (throw 'chain-tag :thrown))
+(check "throw across in-progress compile" :thrown
+  (catch 'chain-tag (eval '(funcall (lambda () (list (%chain-throwing-macro)))))))
+(defmacro %chain-self-catching-macro ()
+  (catch 'chain-inner (throw 'chain-inner ''survived)))
+(check "in-progress compiler survives inner NLX landing" 'survived
+  (eval '(funcall (lambda () (%chain-self-catching-macro)))))
+(declaim (optimize (safety 0)))
+(check "declaim live after NLX-across-compile stress" "ok2"
+  (handler-case (eval '(the fixnum "ok2")) (type-error () :declaim-dead)))
+(declaim (optimize (safety 1)))
+
 ; --- define-modify-macro with &optional (var default) ---
 ; Regression: the (delta 1) spec was spliced whole into the call form, emitting
 ; (fn place (delta 1)) → "Undefined function: DELTA".

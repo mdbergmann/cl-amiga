@@ -172,7 +172,13 @@ typedef struct {
 /* Compiler state */
 typedef struct CL_Compiler_s {
     struct CL_Compiler_s *parent; /* for GC root chain */
-    uint8_t protect;  /* If set, cl_compiler_restore_to won't free this compiler */
+    /* C-stack frame that owns this compiler (CL_CAPTURE_SP() in the pushing
+     * function).  cl_compiler_unwind_to frees a compiler at an NLX landing
+     * only if this anchor is strictly deeper than the landing frame — i.e.
+     * the owning frame was abandoned by the longjmp.  Depth comparison
+     * relies on the stack-grows-down ABI assumption documented at
+     * CL_CAPTURE_SP (thread.h). */
+    void *anchor;
     uint8_t code[CL_MAX_CODE_SIZE];
     CL_Obj constants[CL_MAX_CONSTANTS];
     int code_pos;

@@ -27,7 +27,7 @@
 #include "core/thread.h"     /* cl_symbol_value / cl_set_symbol_value */
 #include "core/vm.h"         /* cl_dynbind_restore_to, CL_MAX_DYN_BINDINGS, CL_NLXFrame */
 #include "core/mem.h"        /* cl_heap.arena_size */
-#include "core/compiler.h"   /* cl_compiler_mark / cl_compiler_restore_to,
+#include "core/compiler.h"   /* cl_compiler_mark / cl_compiler_unwind_to,
                               * cl_amiga_ffi_call_dispatch */
 #include "core/string_utils.h" /* cl_string_length, cl_string_set_char_at */
 #include <setjmp.h>
@@ -860,8 +860,15 @@ static void nlx_pop_type(int type)
  * skipped on longjmp, so SP/FP are left at the inner callee's last
  * position; subsequent OP_CALL dispatches would then operate on a stale
  * stack and silently overwrite live operands a few frames up.  The VM's
- * matching paths do the same (see vm.c OP_BLOCK_RETURN). */
-static void nlx_restore_core(CL_NLXFrame *nlx)
+ * matching paths do the same (see vm.c OP_BLOCK_RETURN).
+ *
+ * LANDING_ANCHOR is CL_CAPTURE_SP() taken by the caller — the
+ * cl_jit_runtime_*_post_longjmp entry point the native JIT code JSRs to
+ * directly on the longjmp arm — not by this shared helper itself, so the
+ * anchor matches the true landing frame instead of being one C frame
+ * deeper (mirrors vm.c, which calls cl_compiler_unwind_to with
+ * CL_CAPTURE_SP() taken inline at the landing point). */
+static void nlx_restore_core(CL_NLXFrame *nlx, void *landing_anchor)
 {
     cl_vm.sp = nlx->vm_sp;
     cl_vm.fp = nlx->vm_fp;
@@ -871,18 +878,19 @@ static void nlx_restore_core(CL_NLXFrame *nlx)
     cl_restart_top          = nlx->restart_mark;
     gc_root_count           = nlx->gc_root_mark;
     cl_jit_restore_depth(nlx->saved_jit_depth);
-    cl_compiler_restore_to(nlx->compiler_mark);
+    cl_compiler_unwind_to(nlx->compiler_mark, landing_anchor);
     cl_printer_state_restore(nlx->printer_mark);
 }
 
 /* BLOCK/CATCH longjmp arrival: core restore + full multiple-value set +
  * return the stashed result.  (TAGBODY and UWPROT diverge on the MV
- * handling and are written out longhand.) */
-static CL_Obj nlx_restore_common(void)
+ * handling and are written out longhand.)  LANDING_ANCHOR is forwarded
+ * to nlx_restore_core unchanged — see its comment. */
+static CL_Obj nlx_restore_common(void *landing_anchor)
 {
     CL_NLXFrame *nlx = &cl_nlx_stack[cl_nlx_top];
     int mi;
-    nlx_restore_core(nlx);
+    nlx_restore_core(nlx, landing_anchor);
     cl_mv_count = nlx->mv_count;
     for (mi = 0; mi < cl_mv_count && mi < CL_MAX_MV; mi++)
         cl_mv_values[mi] = nlx->mv_values[mi];
@@ -906,7 +914,7 @@ void cl_jit_runtime_block_pop(void)
 
 CL_Obj cl_jit_runtime_block_post_longjmp(void)
 {
-    return nlx_restore_common();
+    return nlx_restore_common(CL_CAPTURE_SP());
 }
 
 void cl_jit_runtime_block_return(CL_Obj tag, CL_Obj value)
@@ -990,7 +998,7 @@ void cl_jit_runtime_catch_pop(void)
 
 CL_Obj cl_jit_runtime_catch_post_longjmp(void)
 {
-    return nlx_restore_common();
+    return nlx_restore_common(CL_CAPTURE_SP());
 }
 
 /* --- OP_UWPROT / OP_UWPOP / OP_UWRETHROW --------------------------------
@@ -1069,7 +1077,7 @@ void cl_jit_runtime_uwprot_post_longjmp(void)
      * site triggered the longjmp (cl_error, block_return, throw, …).
      * Read the frame's saved marks and restore. */
     CL_NLXFrame *nlx = &cl_nlx_stack[cl_nlx_top];
-    nlx_restore_core(nlx);
+    nlx_restore_core(nlx, CL_CAPTURE_SP());
     /* Intentionally don't touch cl_mv_count / cl_mv_values: the
      * protected-form's MVs are captured via OP_MV_TO_LIST in the
      * compiled cleanup epilogue, and the throw site may have arranged
@@ -1418,7 +1426,7 @@ CL_Obj cl_jit_runtime_tagbody_post_longjmp(void)
     CL_NLXFrame *nlx = &cl_nlx_stack[cl_nlx_top];
     CL_Obj tag_index;
 
-    nlx_restore_core(nlx);
+    nlx_restore_core(nlx, CL_CAPTURE_SP());
     cl_mv_count = 1;
 
     tag_index = nlx->result;
