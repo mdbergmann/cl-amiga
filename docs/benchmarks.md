@@ -25,23 +25,29 @@ Benchmark: `sento.bench::run-benchmark` (`:num-shared-workers 8,
 :load-threads 8, :duration 5, :num-iterations 6`).  A/B on the SAME binary
 via `CLAMIGA_GENGC=0` (classic collector, incl. the epoch dedup).
 
-| Cell (avg msg/s)  | classic | gengc | delta |
-| ----------------- | ------: | ----: | ----: |
-| PINNED tell       | 164,215 | **186,124** | **+13%** |
-| PINNED ask        |  25,849 |  **32,489** | **+26%** |
+Full 6-cell matrix (single session per collector, cells back-to-back;
+GC share = total collector time / cell wall time from the telemetry):
 
-GC cost telemetry (`ext:%gc-time-stats` / `ext:%gengc-stats`, per 31s cell):
+| Cell (avg msg/s) | classic | GC share | gengc | GC share | delta |
+| ---------------- | ------: | -------: | ----: | -------: | ----: |
+| PINNED tell      | 178,503 |  2.2% | 180,859 | 1.3% | +1.3% |
+| PINNED ask-s     |  76,904 | 21.5% | **91,230** | 3.6% | **+18.6%** |
+| PINNED ask       |  28,081 | 11.0% | **31,238** | 2.0% | **+11.2%** |
+| SHARED tell      |  26,949 |  2.5% | **31,531** | 3.8% | **+17.0%** |
+| SHARED ask-s     |  45,690 |  6.2% | **51,233** | 1.7% | **+12.1%** |
+| SHARED ask       |  18,305 |  6.2% | **24,601** | 1.4% | **+34.4%** |
 
-| Cell | collector | GC share of wall | shape |
-| ---- | --------- | ---------------: | ----- |
-| tell | classic   | 2.5% | 20 sweeps, 1 compact |
-| tell | gengc     | **1.4%** | 12 minors @ ~6ms, 6 compacts |
-| ask  | classic   | 6.8% | 139 sweeps @ ~11.5ms mark+sweep |
-| ask  | gengc     | **1.7%** | 126 minors @ ~1.8ms, 6 compacts |
+(An earlier 2-cell run measured pinned/tell 164.2k→186.1k (+13%) and
+pinned/ask 25.8k→32.5k (+26%) — run-to-run variance on the tell cell is
+substantial; the paired A/B within one session is the meaningful signal.)
 
-Worst single stop-the-world pause dropped 52ms → 8.6ms.  The ask cell's
-handle-table fix matters beyond gengc: with classic GC the table exhaustion
-still costs a full sweep every ~0.25s.
+Shape of the win: minors run at ~1.8–6ms (126 minors vs 139 full sweeps in
+the pinned/ask cell; full compactions dropped 128 → 6 once the lock/condvar
+table exhaustion stopped forcing them).  Worst single stop-the-world pause
+dropped 52ms → 8.6ms.  The reply-mode cells gain the most — they cons a
+lock+condvar per future, which both churns the handle tables (classic: a
+full sweep every ~0.25s, up to 21.5% of wall) and produces exactly the
+short-lived garbage a nursery reclaims for free.
 
 **Reproduce**: load `trunk/load-sento-bench.lisp`, then run
 `sento.bench::run-benchmark` with the config above (per cell:
