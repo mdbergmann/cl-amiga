@@ -272,8 +272,11 @@ Uses exec.library WaitPort."
   (ffi:make-foreign-pointer (window-uport window)))
 
 (defmacro event-loop (window &body clauses)
-  "Process IDCMP messages for WINDOW until a clause returns :quit.
-Each clause is (idcmp-class (msg) &body body).
+  "Process IDCMP messages for WINDOW until a clause calls (RETURN).
+Each clause is (idcmp-class (msg) &body body); the body runs BEFORE the
+message is replied, so it may read the message's fields, and (RETURN)
+inside a body exits the whole event loop (the message is still replied
+on the way out).
 Example:
   (event-loop win
     (#.+idcmp-closewindow+ (msg) (return))
@@ -281,25 +284,37 @@ Example:
       (format t \"Key: ~A~%\" (msg-code msg))))"
   (let ((port (gensym "PORT"))
         (msg (gensym "MSG"))
-        (class (gensym "CLASS")))
+        (class (gensym "CLASS"))
+        (dispatch (gensym "DISPATCH")))
+    ;; The clause bodies live in the DISPATCH flet, defined directly
+    ;; inside the (BLOCK NIL ...): there a plain (RETURN) exits the
+    ;; event loop.  Splicing the bodies into the LOOPs below would break
+    ;; that — LOOP establishes its own implicit BLOCK NIL, so (RETURN)
+    ;; would silently just drain-continue (a real field bug: quit keys
+    ;; and the close gadget did nothing).
     `(let ((,port (window-user-port ,window)))
        (block nil
-         (loop
-           (wait-port ,port)
+         (flet ((,dispatch (,class ,msg)
+                  (cond
+                    ,@(mapcar
+                       (lambda (clause)
+                         (destructuring-bind (idcmp-val (msg-var) &body body)
+                             clause
+                           `((eql ,class ,idcmp-val)
+                             (let ((,msg-var ,msg))
+                               (declare (ignorable ,msg-var))
+                               ,@body))))
+                       clauses))))
            (loop
-             (let ((,msg (get-msg ,port)))
-               (unless ,msg (return))  ; inner loop: no more messages
-               (let ((,class (msg-class ,msg)))
-                 (reply-msg ,msg)
-                 (cond
-                   ,@(mapcar
-                      (lambda (clause)
-                        (destructuring-bind (idcmp-val (msg-var) &body body) clause
-                          `((eql ,class ,idcmp-val)
-                            (let ((,msg-var ,msg))
-                              (declare (ignorable ,msg-var))
-                              ,@body))))
-                      clauses))))))))))
+             (wait-port ,port)
+             (loop
+               (let ((,msg (get-msg ,port)))
+                 (unless ,msg (return))  ; inner loop: no more messages
+                 ;; Reply AFTER the body (it reads message fields), and
+                 ;; also when the body exits the loop via (RETURN).
+                 (unwind-protect
+                     (,dispatch (msg-class ,msg) ,msg)
+                   (reply-msg ,msg))))))))))
 
 ;;; ================================================================
 ;;; Menu strip and gadget list management
