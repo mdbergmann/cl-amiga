@@ -16,10 +16,20 @@ make run     # play the demo campaign on data/cellar.map
 ```
 
 Walkabout keys: `w` forward, `s` back-step (keeps facing), `a`/`d` turn,
-`m` toggle the automap between explored-only and full (debug) view,
-`S`/`L` save/load (`tale.sav`), `q` quit.  In combat: `a` attack,
-`d` defend, `f` flee.  The host view shows the wireframe first-person
-view, the automap and the party roster side by side.
+`m` full-screen map view (`m`/`Esc` back, `f` toggles the omniscient
+debug view there), `S`/`L` save/load (`tale.sav`), `q` quit.  In
+combat: `a` attack, `d` defend, `f` flee.
+
+The screen is split Bard's Tale style (see
+[specs/ui-and-engine.md](specs/ui-and-engine.md)): the wireframe
+first-person view on the left, the active-spells strip next to it
+(shield, lamp, ... — fed by `add-effect`/`remove-effect`), the message
+log filling the right column — newest line at the bottom, older lines
+scrolling up — and the status line plus the party roster (up to
+7 rows) at the bottom.  The automap lives under `m`; levels can be
+large (30x30 like Bard's Tale I, up to 128x128).  On the Amiga the
+window uses the same PAL 640x256 geometry as the custom screen, so
+both displays lay out identically.
 
 On AmigaOS (the repo is mounted as `CLAmiga:` in the FS-UAE setup), the
 game runs in an Intuition window; Save/Load/Quit sit in the window's
@@ -30,6 +40,28 @@ right-Amiga shortcuts):
 cd CLAmiga:examples/games/lambda-tale
 stack 128000
 CLAmiga:build/amiga/clamiga --heap 8M --load src/main-amiga.lisp
+```
+
+The test suite runs on the Amiga the same way (it is not part of the
+parent repo's `test-amiga` run — the game is a separate subproject):
+
+```
+cd CLAmiga:examples/games/lambda-tale
+stack 128000
+CLAmiga:build/amiga/clamiga --heap 8M --non-interactive --load tests/run-tests.lisp
+```
+
+On AmigaOS the suite additionally runs GUI smoke tests and two
+unattended `*autoplay*` sessions (window and `:display :screen`).
+
+For the real thing the game opens its **own screen** instead of a
+window — nominal PAL 640x256 hires, picked RTG-aware through
+`graphics.library/BestModeIDA` (so Picasso96/CyberGraphX/MorphOS
+promote it to a suitable RTG mode), with a dungeon palette and a
+borderless backdrop window:
+
+```lisp
+(tale:play-amiga "data/cellar.map" :display :screen)
 ```
 
 ## Layout
@@ -55,6 +87,7 @@ src/main-amiga.lisp  Amiga walkabout entry point
 data/*.map           maps as ASCII art + story forms
 data/campaign.lisp   demo campaign: hero classes, monsters, starting party
 tests/run-tests.lisp test suite (make test)
+specs/               design constraints (UI layout, map scale, screens)
 ```
 
 The first-person view never looks around corners (Bard's Tale rules):
@@ -108,7 +141,9 @@ The op vocabulary — `message`, `set-flag`/`clear-flag`,
 ## Party and combat
 
 Heroes have Bard's Tale-ish stats (str/dex/iq/con/lck, descending AC,
-hit dice per class) and level up on xp thresholds.  Combat is
+hit dice per class) and level up on xp thresholds.  The roster holds
+up to 7 members (`join-party`): six regular heroes plus one guest slot
+for a summoned monster or story NPC.  Combat is
 round-based: the party declares actions (attack/defend, or try to
 flee), heroes strike first, then every surviving monster swings at a
 random front-rank hero.  All randomness goes through `*rng*`, so the
@@ -130,8 +165,11 @@ renderers, events, specials, party, combat and save games.
   the Amiga window front-end still needs an FS-UAE shakedown
 - **M2 (done)**: events + cell-specials story layer, party and character
   system, round-based combat, save games, demo campaign
-- **M3**: ILBM asset loading, blitted wall graphics, custom screen —
-  RTG-aware (MorphOS / Picasso96 / CyberGraphX): no chipset or planar
-  assumptions, screens via `BestModeID`, bitmaps via `AllocBitMap`,
-  blits through OS calls only
+- **M2.5 (done)**: Bard's Tale screen layout (scrolling message log,
+  active-spells strip, 7-slot party roster, full map under `m`),
+  large maps (30x30 up to 128x128), custom screen via
+  `BestModeID` (RTG-aware) — see `specs/ui-and-engine.md`
+- **M3**: ILBM asset loading, blitted wall graphics — RTG-aware
+  (MorphOS / Picasso96 / CyberGraphX): no chipset or planar
+  assumptions, bitmaps via `AllocBitMap`, blits through OS calls only
 - **M4**: town, shops, sound, polish

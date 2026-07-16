@@ -9,7 +9,7 @@
    ;; dice
    #:*rng* #:roll #:parse-dice #:roll-dice
    ;; map model
-   #:parse-map #:load-map-file
+   #:parse-map #:load-map-file #:map-viewport
    #:dungeon-map-name #:dungeon-map-width #:dungeon-map-height
    #:dungeon-map-wrap #:dungeon-map-start-x #:dungeon-map-start-y
    #:dungeon-map-start-facing
@@ -26,9 +26,12 @@
    ;; game state / movement
    #:new-game #:game-map #:game-knowledge #:game-x #:game-y #:game-facing
    #:game-party #:game-flags #:game-combat
+   #:game-effects #:add-effect #:remove-effect
    #:turn-left #:turn-right #:turn-around #:move-party #:observe
    ;; events and story flags
    #:on-event #:emit #:say #:flag #:set-flag #:clear-flag
+   ;; message log (the Bard's Tale text column)
+   #:attach-message-log #:log-message #:log-recent
    ;; cell specials
    #:trigger-special #:run-special #:teleport-party
    ;; heroes and the party
@@ -36,6 +39,7 @@
    #:hero-xp #:hero-max-hp #:hero-hp #:hero-str #:hero-dex #:hero-iq
    #:hero-con #:hero-lck #:hero-ac #:hero-damage #:hero-gold
    #:hero-alive-p #:alive-heroes #:party-alive-p #:front-ranks
+   #:+party-limit+ #:party-full-p #:join-party
    #:damage-hero #:heal-hero #:stat-bonus #:award-xp #:xp-for-level
    ;; combat
    #:define-monster #:find-monster-type #:monster-type-name

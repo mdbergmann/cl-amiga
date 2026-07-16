@@ -54,6 +54,29 @@ rolled 3d6 in the order str, dex, iq, con, lck."
 (defun hero-alive-p (hero)
   (> (hero-hp hero) 0))
 
+(defconstant +party-limit+ 7
+  "Maximum roster size: six regular heroes plus one guest slot (a
+summoned/charmed monster or story NPC, Bard's Tale tradition).")
+
+(defun party-full-p (game)
+  (>= (length (game-party game)) +party-limit+))
+
+(defun join-party (game hero)
+  "Append HERO to the party.  Returns T and emits :PARTY-JOINED on
+success; when the roster already holds +PARTY-LIMIT+ members, says so
+and returns NIL (no error — recruiting past a full party is a normal
+game situation, not a bug)."
+  (if (party-full-p game)
+      (progn
+        (say game "The party is full — ~A cannot join." (hero-name hero))
+        nil)
+      (progn
+        (setf (game-party game)
+              (append (game-party game) (list hero)))
+        (say game "~A joins the party!" (hero-name hero))
+        (emit game :party-joined hero)
+        t)))
+
 (defun alive-heroes (game)
   "The living party members, in party order."
   (remove-if-not #'hero-alive-p (game-party game)))

@@ -181,6 +181,120 @@ messages so far (oldest first)."
          (move-party g :forward)))
 
 ;;; ---------------------------------------------------------------------
+;;; Large maps and the minimap viewport (specs/ui-and-engine.md)
+
+(defun %big-map-art (w h)
+  "Art for a fully-walled WxH map with all interior edges open."
+  (with-output-to-string (s)
+    (dotimes (row (1+ (* 2 h)))
+      (dotimes (col (1+ (* 2 w)))
+        (write-char
+         (cond ((and (evenp row) (evenp col)) #\+)
+               ((evenp row)
+                (if (or (= row 0) (= row (* 2 h))) #\- #\Space))
+               ((evenp col)
+                (if (or (= col 0) (= col (* 2 w))) #\| #\Space))
+               (t #\Space))
+         s))
+      (write-char #\Newline s))))
+
+;; 30x30 — the Bard's Tale I level size, the spec's minimum.
+(let* ((m (parse-map (%big-map-art 30 30) :name "big30"))
+       (g (new-game m)))
+  (check "30x30 parses" '(30 30)
+         (list (dungeon-map-width m) (dungeon-map-height m)))
+  ;; viewport clamping: top-left corner, center, bottom-right corner
+  (multiple-value-bind (x0 y0 w h) (map-viewport m 0 0 6 6)
+    (check "viewport clamps at origin" '(0 0 6 6) (list x0 y0 w h)))
+  (multiple-value-bind (x0 y0 w h) (map-viewport m 15 15 6 6)
+    (check "viewport centers on the party" '(12 12 6 6) (list x0 y0 w h)))
+  (multiple-value-bind (x0 y0 w h) (map-viewport m 29 29 6 6)
+    (check "viewport clamps at the far corner" '(24 24 6 6)
+           (list x0 y0 w h)))
+  (multiple-value-bind (x0 y0 w h) (map-viewport m 29 0 6 6)
+    (check "viewport clamps mixed edges" '(24 0 6 6) (list x0 y0 w h)))
+  ;; walk the top corridor east and check movement + knowledge scale
+  (turn-right g)
+  (dotimes (i 10) (move-party g :forward))
+  (check "movement across a big map" '(10 0) (list (game-x g) (game-y g)))
+  (check-true "knowledge recorded far from origin"
+              (cell-explored-p (game-knowledge g) 10 0)))
+
+;; A viewport request larger than the map yields the whole map.
+(let ((m (parse-map *art* :name "small")))
+  (multiple-value-bind (x0 y0 w h) (map-viewport m 1 0 6 6)
+    (check "viewport of a small map is the whole map" '(0 0 3 2)
+           (list x0 y0 w h))))
+
+;; Region rendering (the full map view's clamped window): a 6x6 region
+;; is 13 art lines high, and the party arrow sits inside it.
+(let* ((m (parse-map (%big-map-art 30 30) :name "big30"))
+       (g (new-game m))
+       (lines (%split-lines
+               (multiple-value-bind (x0 y0 w h)
+                   (map-viewport m (game-x g) (game-y g) 6 6)
+                 (render-dungeon m :px (game-x g) :py (game-y g)
+                                   :facing (game-facing g)
+                                   :x0 x0 :y0 y0 :w w :h h)))))
+  (check "region render is 6 cells high" 13 (length lines))
+  (check "region render top border" "+-+-+-+-+-+-+" (first lines))
+  (check "region render party arrow" "|^" (second lines)))
+
+;; The region window follows the party: at the far corner the arrow
+;; renders at the region's bottom-right cell, and cells outside the
+;; region are not drawn.
+(let* ((m (parse-map (%big-map-art 30 30) :name "big30"))
+       (g (new-game m)))
+  (setf (game-x g) 29 (game-y g) 29)
+  (observe g)
+  (let ((lines (%split-lines
+                (multiple-value-bind (x0 y0 w h)
+                    (map-viewport m 29 29 6 6)
+                  (render-dungeon m :px 29 :py 29
+                                    :facing (game-facing g)
+                                    :x0 x0 :y0 y0 :w w :h h)))))
+    (check "region render height at far corner" 13 (length lines))
+    (check "region arrow at far corner" #\^
+           (char (nth 11 lines) 11))))
+
+;; 64x64: full save/load round-trip at flexible-map scale.
+(let* ((m (parse-map (%big-map-art 64 64) :name "big64"))
+       (g (new-game m)))
+  (check "64x64 parses" '(64 64)
+         (list (dungeon-map-width m) (dungeon-map-height m)))
+  (turn-right g)
+  (dotimes (i 5) (move-party g :forward))
+  ;; save needs a map FILE to reference: write the art out
+  (with-open-file (s "tests/tmp-big.map"
+                     :direction :output :if-exists :supersede)
+    (write-string (%big-map-art 64 64) s))
+  (let ((g2 (new-game (load-map-file "tests/tmp-big.map"))))
+    (turn-right g2)
+    (dotimes (i 5) (move-party g2 :forward))
+    (save-game g2 "tests/tmp-big.sav")
+    (let ((g3 (load-game "tests/tmp-big.sav")))
+      (check "64x64 save round-trips position" '(5 0)
+             (list (game-x g3) (game-y g3)))
+      (check-true "64x64 save round-trips knowledge"
+                  (cell-explored-p (game-knowledge g3) 3 0))
+      (check "64x64 unvisited cells stay unknown" nil
+             (cell-explored-p (game-knowledge g3) 3 5))))
+  (delete-file "tests/tmp-big.map")
+  (delete-file "tests/tmp-big.sav"))
+
+;; 128x128: the spec's upper flexibility bound — parse, move, viewport.
+(let* ((m (parse-map (%big-map-art 128 128) :name "big128"))
+       (g (new-game m)))
+  (check "128x128 parses" '(128 128)
+         (list (dungeon-map-width m) (dungeon-map-height m)))
+  (setf (game-x g) 100 (game-y g) 64)
+  (observe g)
+  (multiple-value-bind (x0 y0 w h) (map-viewport m 100 64 6 6)
+    (check "128x128 viewport" '(97 61 6 6) (list x0 y0 w h)))
+  (move-party g :forward)
+  (check "128x128 movement" '(100 63) (list (game-x g) (game-y g))))
+
+;;; ---------------------------------------------------------------------
 ;;; First-person view geometry
 
 (let* ((m (parse-map *art* :name "test"))
@@ -386,6 +500,41 @@ messages so far (oldest first)."
   (clear-flag g :quest)
   (check "clear-flag" nil (flag g :quest)))
 
+;; The message log: the Bard's Tale text column's backing store.
+(let* ((m (parse-map *art* :name "test"))
+       (g (new-game m))
+       (log (attach-message-log g :limit 3)))
+  (check "fresh log is empty" '() (log-recent log 10))
+  (say g "one")
+  (say g "two")
+  (check "log-recent returns oldest first" '("one" "two")
+         (log-recent log 10))
+  (check "log-recent trailing lines only" '("two") (log-recent log 1))
+  (say g "three")
+  (say g "four")
+  (check "log ring drops the oldest beyond the limit"
+         '("two" "three" "four") (log-recent log 10))
+  (log-message log "five")
+  (check "log-message appends directly" '("three" "four" "five")
+         (log-recent log 10)))
+
+;; Active spell effects (the UI's spell strip).
+(let* ((m (parse-map *art* :name "test"))
+       (g (new-game m)))
+  (check "fresh game has no active effects" '() (game-effects g))
+  (add-effect g "shield")
+  (add-effect g "lamp")
+  (check "effects accumulate in order" '("shield" "lamp")
+         (game-effects g))
+  (add-effect g "shield")
+  (check "add-effect ignores duplicates" '("shield" "lamp")
+         (game-effects g))
+  (remove-effect g "shield")
+  (check "remove-effect" '("lamp") (game-effects g))
+  (remove-effect g "not-there")
+  (check "removing an absent effect is quiet" '("lamp")
+         (game-effects g)))
+
 ;; Movement emits :enter-cell and :blocked.
 (let* ((m (parse-map *art* :name "test"))
        (g (new-game m))
@@ -552,6 +701,34 @@ messages so far (oldest first)."
   (check-true "party-defeated event after the last hero" wiped)
   (check "party-alive-p when wiped" nil (party-alive-p g))
   (check-true "fall message emitted" (search "falls" (first (funcall msgs)))))
+
+;; The roster holds up to +party-limit+ (7) members: 6 heroes + 1 guest.
+(check "party limit is seven" 7 +party-limit+)
+(let* ((m (parse-map *art* :name "test"))
+       (g (new-game m :party (with-rng () (list (make-hero "A" :tester)))))
+       (msgs (watch-messages g))
+       (joined '()))
+  (on-event g :party-joined (lambda (game h) (declare (ignore game))
+                              (push (hero-name h) joined)))
+  (check "party starts below the limit" nil (party-full-p g))
+  (dotimes (i 6)
+    (check-true (format nil "join-party accepts member ~D" (+ 2 i))
+                (with-rng () (join-party g (make-hero (format nil "H~D" i)
+                                                      :tester)))))
+  (check "party at the limit" 7 (length (game-party g)))
+  (check-true "party-full-p at the limit" (party-full-p g))
+  (check ":party-joined emitted per join" 6 (length joined))
+  (check "join-party refuses the 8th" nil
+         (with-rng () (join-party g (make-hero "Late" :tester))))
+  (check "refused hero not added" 7 (length (game-party g)))
+  (check-true "join message emitted"
+              (find-if (lambda (s) (search "joins the party" s))
+                       (funcall msgs)))
+  (check-true "full message emitted"
+              (find-if (lambda (s) (search "party is full" s))
+                       (funcall msgs)))
+  ;; combat still works with a full roster: front ranks stay three
+  (check "front ranks with a full party" 3 (length (front-ranks g))))
 
 (let* ((m (parse-map *art* :name "test"))
        (h (with-rng () (make-hero "A" :tester)))  ; 3 max hp
@@ -796,58 +973,132 @@ messages so far (oldest first)."
 
 #+amigaos
 (let* ((m (parse-map *art* :name "test"))
-       (g (new-game m)))
-  (check "amiga-ui draws into a real window without error" t
+       (g (new-game m))
+       (log (attach-message-log g)))
+  (say g "Smoke test line one.")
+  (say g "Smoke test line two.")
+  (add-effect g "shield")
+  (add-effect g "lamp")
+  (check "amiga-ui draws the play layout into a real window" t
          (amiga.intuition:with-window
              (win :title "Lambda's Tale Test"
-                  :left 20 :top 20
+                  :left 0 :top 0
                   :width *amiga-win-width* :height *amiga-win-height*
                   :idcmp amiga.intuition:+idcmp-closewindow+)
            (let* ((rp (amiga.intuition:window-rastport win))
-                  (bx (+ (amiga.intuition:window-border-left win) 6))
-                  (by (+ (amiga.intuition:window-border-top win) 6))
-                  (map-x (+ bx *amiga-fp-width* 16))
-                  (map-w (- *amiga-win-width* map-x 10))
-                  (status-y (+ by *amiga-fp-height* 18)))
-             (%amiga-draw-fp rp g bx by *amiga-fp-width* *amiga-fp-height*)
-             (%amiga-draw-map rp g map-x by map-w *amiga-fp-height* nil)
-             (%amiga-status rp g bx status-y
-                            (- *amiga-win-width* bx 10) "Smoke test")
+                  (l (%amiga-layout win rp)))
+             (%amiga-draw-fp rp g (ui-layout-bx l) (ui-layout-by l)
+                             (ui-layout-fp-w l) (ui-layout-fp-h l))
+             (%amiga-draw-effects rp g l)
+             (%amiga-draw-log rp log l)
+             (%amiga-status rp g l "Smoke test")
+             ;; the full map mode over the same window
+             (%amiga-draw-map-page rp g l nil)
+             (%amiga-draw-map-page rp g l t)
+             t))))
+
+;; The full map view must cope with a map bigger than the window —
+;; the layout the spec is actually about.
+#+amigaos
+(let* ((m (parse-map (%big-map-art 30 30) :name "big30"))
+       (g (new-game m))
+       (log (attach-message-log g)))
+  (setf (game-x g) 15 (game-y g) 15)
+  (observe g)
+  (check "amiga-ui map page on a 30x30 map" t
+         (amiga.intuition:with-window
+             (win :title "Lambda's Tale Test"
+                  :left 0 :top 0
+                  :width *amiga-win-width* :height *amiga-win-height*
+                  :idcmp amiga.intuition:+idcmp-closewindow+)
+           (let* ((rp (amiga.intuition:window-rastport win))
+                  (l (%amiga-layout win rp)))
+             (%amiga-draw-effects rp g l)
+             (%amiga-draw-log rp log l)
+             (%amiga-draw-map-page rp g l nil)
              t))))
 
 ;; GadTools menu strip (creation/layout via WITH-VISUAL-INFO/WITH-MENUS)
-;; and the party roster's rastport font-metric line spacing.
+;; and the party roster pane — with a full seven-member roster.
 #+amigaos
 (let* ((m (parse-map *art* :name "test"))
-       (a (with-rng (5) (make-hero "Alva" :tester)))
-       (b (with-rng (5) (make-hero "Berk" :tester)))
-       (g (new-game m :party (list a b))))
-  (check "amiga-ui menu strip and party roster draw without error" t
+       (g (new-game m :party
+                    (with-rng ()
+                      (loop for i from 1 to +party-limit+
+                            collect (make-hero (format nil "Hero~D" i)
+                                               :tester))))))
+  (check "amiga-ui menu strip and 7-row party roster draw without error" t
          (amiga.intuition:with-pub-screen (scr)
            (amiga.gadtools:with-visual-info (vi scr)
              (amiga.intuition:with-window
                  (win :title "Lambda's Tale Test"
-                      :left 20 :top 20
+                      :left 0 :top 0
                       :width *amiga-win-width* :height *amiga-win-height*
                       :idcmp amiga.intuition:+idcmp-closewindow+)
                (amiga.gadtools:with-menus (menu *menu-entries* vi win)
                  (let* ((rp (amiga.intuition:window-rastport win))
-                        (bx (+ (amiga.intuition:window-border-left win) 6))
-                        (by (+ (amiga.intuition:window-border-top win) 6))
-                        (status-y (+ by *amiga-fp-height* 18))
-                        (party-y (+ status-y 18)))
-                   (%amiga-party rp g bx party-y
-                                 (- *amiga-win-width* bx 10))
+                        (l (%amiga-layout win rp)))
+                   (%amiga-party rp g l)
                    t)))))))
+
+;; Custom screen support: open an own screen (RTG-aware mode pick),
+;; set the palette, draw into a backdrop window, close it all again.
+#+amigaos
+(let* ((m (parse-map *art* :name "test"))
+       (g (new-game m))
+       (log (attach-message-log g)))
+  (say g "Custom screen smoke test.")
+  (check "amiga-ui draws on an own custom screen" t
+         (amiga.intuition:with-screen
+             (scr :width *amiga-screen-width*
+                  :height *amiga-screen-height*
+                  :depth *amiga-screen-depth*
+                  :title "Lambda's Tale Test"
+                  :mode-id (amiga.gfx:best-mode-id
+                            :width *amiga-screen-width*
+                            :height *amiga-screen-height*
+                            :depth *amiga-screen-depth*))
+           (%game-screen-palette scr)
+           (check "custom screen reports its width" *amiga-screen-width*
+                  (amiga.intuition:screen-width scr))
+           (amiga.intuition:with-window
+               (win :title "Lambda's Tale Test"
+                    :left 0 :top 0
+                    :width (amiga.intuition:screen-width scr)
+                    :height (amiga.intuition:screen-height scr)
+                    :screen scr
+                    :flags (logior amiga.intuition:+wflg-borderless+
+                                   amiga.intuition:+wflg-backdrop+
+                                   amiga.intuition:+wflg-activate+)
+                    :idcmp amiga.intuition:+idcmp-closewindow+)
+             (let* ((rp (amiga.intuition:window-rastport win))
+                    (l (%amiga-layout win rp)))
+               (%amiga-draw-fp rp g (ui-layout-bx l) (ui-layout-by l)
+                               (ui-layout-fp-w l) (ui-layout-fp-h l))
+               (%amiga-draw-effects rp g l)
+               (%amiga-draw-log rp log l)
+               (%amiga-status rp g l "Screen smoke test")
+               (%amiga-party rp g l)
+               t)))))
 
 ;; *autoplay* drives a full unattended PLAY-AMIGA session: scripted keys
 ;; are fed one per INTUITICK (~10/s), ending in #\q so the event loop
 ;; exits on its own.  Verifies the whole real event path — window, menu
-;; strip, redraws, key dispatch — with no user at the keyboard.
+;; strip, redraws, key dispatch — with no user at the keyboard.  The
+;; script also enters map mode (m), toggles the debug full view (f)
+;; twice and leaves map mode (m) before quitting.
 #+amigaos
 (check "amiga-ui autoplay plays a scripted session and quits" :done
-       (let ((*autoplay* (list #\w #\d #\w #\a #\m #\q)))
+       (let ((*autoplay* (list #\w #\d #\w #\a #\m #\f #\f #\m #\s #\q)))
          (play-amiga "data/cellar.map")
+         :done))
+
+;; The same unattended session on an own custom screen (:display :screen)
+;; — the whole open-screen/backdrop-window/menus/event-loop path.
+#+amigaos
+(check "amiga-ui autoplay on an own custom screen" :done
+       (let ((*autoplay* (list #\w #\d #\m #\m #\q)))
+         (play-amiga "data/cellar.map" :display :screen)
          :done))
 
 ;;; ---------------------------------------------------------------------
