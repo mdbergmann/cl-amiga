@@ -6,12 +6,14 @@
    ;; directions
    #:+north+ #:+east+ #:+south+ #:+west+
    #:dir-index #:dir-keyword #:dir-opposite #:turn-dir
+   ;; dice
+   #:*rng* #:roll #:parse-dice #:roll-dice
    ;; map model
    #:parse-map #:load-map-file
    #:dungeon-map-name #:dungeon-map-width #:dungeon-map-height
    #:dungeon-map-wrap #:dungeon-map-start-x #:dungeon-map-start-y
    #:dungeon-map-start-facing
-   #:cell-wall #:cell-feature #:wall-passable-p #:neighbor
+   #:cell-wall #:cell-feature #:cell-special #:wall-passable-p #:neighbor
    ;; knowledge
    #:make-map-knowledge #:know-cell #:know-wall
    #:cell-explored-p #:wall-known-p
@@ -23,7 +25,26 @@
    #:view-slice-rx #:view-slice-ry #:view-slice-right-front
    ;; game state / movement
    #:new-game #:game-map #:game-knowledge #:game-x #:game-y #:game-facing
+   #:game-party #:game-flags #:game-combat
    #:turn-left #:turn-right #:turn-around #:move-party #:observe
+   ;; events and story flags
+   #:on-event #:emit #:say #:flag #:set-flag #:clear-flag
+   ;; cell specials
+   #:trigger-special #:run-special #:teleport-party
+   ;; heroes and the party
+   #:define-hero-class #:make-hero #:hero-name #:hero-class #:hero-level
+   #:hero-xp #:hero-max-hp #:hero-hp #:hero-str #:hero-dex #:hero-iq
+   #:hero-con #:hero-lck #:hero-ac #:hero-damage #:hero-gold
+   #:hero-alive-p #:alive-heroes #:party-alive-p #:front-ranks
+   #:damage-hero #:heal-hero #:stat-bonus #:award-xp #:xp-for-level
+   ;; combat
+   #:define-monster #:find-monster-type #:monster-type-name
+   #:monster-type-level #:monster-type-ac #:monster-type-xp
+   #:monster-kind #:monster-hp #:monster-alive-p
+   #:start-combat #:combat-round #:attempt-flee
+   #:combat-monsters #:alive-monsters #:combat-groups #:combat-banner
+   ;; save games
+   #:save-game #:load-game
    ;; rendering
    #:render-dungeon #:render-game #:render-first-person #:beside
    ;; interactive walkabout

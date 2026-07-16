@@ -19,6 +19,9 @@
 ;;;         anything else  stored as the cell's feature character
 ;;;                        (convention: '>' stairs down, '<' stairs up)
 ;;; Short lines are padded with spaces (missing edge characters read as open).
+;;;
+;;; After the art a map file may carry Lisp data forms (the story layer);
+;;; see LOAD-MAP-FILE below and specials.lisp for the op vocabulary.
 
 (in-package :tale)
 
@@ -62,6 +65,7 @@
   (wrap nil)          ; T = Bard's Tale-style toroidal map
   walls               ; (array (height width 4)) of :wall/:door/:open
   features            ; (array (height width)) of character or NIL
+  specials            ; hash (x . y) -> special ops list (see specials.lisp)
   (start-x 0)
   (start-y 0)
   (start-facing :north))
@@ -73,6 +77,13 @@
 (defun cell-feature (map x y)
   "The feature character of cell (X,Y), or NIL."
   (aref (dungeon-map-features map) y x))
+
+(defun cell-special (map x y)
+  "The special ops attached to cell (X,Y), or NIL.  SETF-able."
+  (gethash (cons x y) (dungeon-map-specials map)))
+
+(defun (setf cell-special) (ops map x y)
+  (setf (gethash (cons x y) (dungeon-map-specials map)) ops))
 
 (defun wall-passable-p (wall)
   (or (eq wall :open) (eq wall :door)))
@@ -160,17 +171,58 @@ Wrapping maps wrap around the edges; otherwise returns NIL off-map."
                   (t (setf (aref features y x) c)))))))
         (%make-dungeon-map :name name :width w :height h :wrap wrap
                            :walls walls :features features
+                           :specials (make-hash-table :test 'equal)
                            :start-x (or start-x 0)
                            :start-y (or start-y 0)
                            :start-facing start-facing)))))
 
+(defun %apply-map-form (map form path)
+  (unless (and (consp form) (symbolp (first form)))
+    (error "~A: invalid map form ~S (expected (special (x y) op...))"
+           path form))
+  (cond ((string-equal (symbol-name (first form)) "SPECIAL")
+         (destructuring-bind ((x y) &rest ops) (rest form)
+           (unless (and (integerp x) (< -1 x (dungeon-map-width map))
+                        (integerp y) (< -1 y (dungeon-map-height map)))
+             (error "~A: special cell (~S ~S) is outside the ~Dx~D map"
+                    path x y
+                    (dungeon-map-width map) (dungeon-map-height map)))
+           (setf (cell-special map x y) ops)))
+        (t (error "~A: unknown map form ~S (expected (special (x y) op...))"
+                  path (first form)))))
+
+(defun %parse-map-forms (map string path)
+  (with-input-from-string (in string)
+    (let ((*read-eval* nil)
+          (*package* (find-package :tale)))
+      (loop
+        (let ((form (read in nil in)))
+          (when (eq form in)
+            (return))
+          (%apply-map-form map form path))))))
+
 (defun load-map-file (path &key wrap (start-facing :north))
-  "Read the ASCII map file at PATH and parse it into a DUNGEON-MAP."
-  (parse-map (with-open-file (s path)
-               (with-output-to-string (out)
-                 (loop for line = (read-line s nil nil)
-                       while line
-                       do (progn
-                            (write-string line out)
-                            (write-char #\Newline out)))))
-             :name path :wrap wrap :start-facing start-facing))
+  "Read the ASCII map file at PATH and parse it into a DUNGEON-MAP.
+After the art the file may carry Lisp data forms — the story layer of
+the map, read with *READ-EVAL* bound to NIL and never evaluated:
+    (special (X Y) OP...)    attach a special to cell (X,Y)
+The forms section starts at the first line beginning with '(' or ';'
+\(no valid art line starts with either)."
+  (let ((art (make-string-output-stream))
+        (forms (make-string-output-stream))
+        (in-forms nil))
+    (with-open-file (s path)
+      (loop for line = (read-line s nil nil)
+            while line
+            do (progn
+                 (when (and (not in-forms)
+                            (> (length line) 0)
+                            (member (char line 0) '(#\( #\;)))
+                   (setf in-forms t))
+                 (let ((out (if in-forms forms art)))
+                   (write-string line out)
+                   (write-char #\Newline out)))))
+    (let ((map (parse-map (get-output-stream-string art)
+                          :name path :wrap wrap :start-facing start-facing)))
+      (%parse-map-forms map (get-output-stream-string forms) path)
+      map)))

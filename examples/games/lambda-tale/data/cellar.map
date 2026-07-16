@@ -2,10 +2,31 @@
 |@  |     | |
 +-+ +-+D+-+ +
 | |   |   | |
-+ +-+-+-+-+ +
++ + +-+-+ + +
 |      >    |
 +-+ +-+-+ +-+
 | | |   | | |
 + +D+ +-+ + +
 |   |      <|
 +-+-+-+-+-+-+
+
+;; Story layer: cell specials (data, never evaluated — see src/specials.lisp).
+
+(special (0 0)
+  (once (message "You descend into the cellar.  Rats squeal in the dark."
+                 "Find the stairs down (>).")))
+
+(special (1 2)
+  (once (message "Something stirs in the darkness...")
+        (encounter ("giant rat" "1d3+1"))))
+
+(special (0 4)
+  (once (message "A loose stone hides a small cache.")
+        (gold "3d10")))
+
+(special (5 4)
+  (message "The stairs up are barred from above."))
+
+(special (3 2)
+  (message "Stone stairs spiral down into darkness.  Your tale continues...")
+  (event :game-won))
