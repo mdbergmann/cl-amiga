@@ -1,0 +1,11 @@
+;;; Lambda's Tale — loader.  Load this file with the working directory
+;;; at the project root (examples/games/lambda-tale):  (load "src/load.lisp")
+
+(load "src/package.lisp")
+(load "src/map.lisp")
+(load "src/knowledge.lisp")
+(load "src/view.lisp")
+(load "src/game.lisp")
+(load "src/render.lisp")
+(load "src/render-fp.lisp")
+#+amigaos (load "src/amiga-ui.lisp")
