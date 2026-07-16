@@ -840,6 +840,16 @@ messages so far (oldest first)."
                                  (- *amiga-win-width* bx 10))
                    t)))))))
 
+;; *autoplay* drives a full unattended PLAY-AMIGA session: scripted keys
+;; are fed one per INTUITICK (~10/s), ending in #\q so the event loop
+;; exits on its own.  Verifies the whole real event path — window, menu
+;; strip, redraws, key dispatch — with no user at the keyboard.
+#+amigaos
+(check "amiga-ui autoplay plays a scripted session and quits" :done
+       (let ((*autoplay* (list #\w #\d #\w #\a #\m #\q)))
+         (play-amiga "data/cellar.map")
+         :done))
+
 ;;; ---------------------------------------------------------------------
 ;;; Summary
 

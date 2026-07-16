@@ -17,6 +17,10 @@
 
 (defparameter *save-file* "tale.sav")
 
+(defvar *autoplay* nil
+  "Testing hook: a list of key characters fed to the game one per
+Intuition tick (~10/s), driving a full unattended session.  :ESC quits.")
+
 (defparameter *amiga-win-width* 460)
 (defparameter *amiga-win-height* 260)
 (defparameter *amiga-fp-width* 240)
@@ -180,7 +184,9 @@ window's menu strip (right mouse button)."
                    :width *amiga-win-width* :height *amiga-win-height*
                    :idcmp (logior amiga.intuition:+idcmp-closewindow+
                                   amiga.intuition:+idcmp-vanillakey+
-                                  amiga.intuition:+idcmp-menupick+))
+                                  amiga.intuition:+idcmp-menupick+
+                                  ;; the *autoplay* heartbeat
+                                  amiga.intuition:+idcmp-intuiticks+))
             (amiga.gadtools:with-menus (menu *menu-entries* vi win)
               (let* ((rp (amiga.intuition:window-rastport win))
                      (bx (+ (amiga.intuition:window-border-left win) 6))
@@ -274,4 +280,8 @@ window's menu strip (right mouse button)."
                       (let* ((code (amiga.intuition:msg-code msg))
                              (c (if (= code 27) :esc (code-char code))))
                         (when (eq (act c) :quit)
+                          (return))))
+                    (amiga.intuition:+idcmp-intuiticks+ (msg)
+                      (when *autoplay*
+                        (when (eq (act (pop *autoplay*)) :quit)
                           (return))))))))))))))
