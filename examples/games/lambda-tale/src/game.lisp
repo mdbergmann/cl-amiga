@@ -11,7 +11,8 @@
   party               ; list of HERO (NIL for a bare walkabout)
   (flags (make-hash-table :test 'equal)) ; story flags (see events.lisp)
   handlers            ; event subscriptions: alist topic -> handler list
-  combat)             ; active COMBAT or NIL
+  combat              ; active COMBAT or NIL
+  effects)            ; active spell effects (shield, lamp, ...), see below
 
 (defun observe (game)
   "Record what the party can see from its position into the automap:
@@ -42,6 +43,26 @@ TRIGGER-SPECIAL once."
                        :party party)))
     (observe g)
     g))
+
+;;; Active spell effects — the UI's spell strip (shield, lamp, ...).
+;;; A placeholder for the coming spell system: story/test code manages
+;;; the list, the front-ends render it.  Effects are transient — they
+;;; do not live in save games yet (durations belong to the real spell
+;;; system, see specs/ui-and-engine.md).
+
+(defun add-effect (game name)
+  "Add active effect NAME (a string or symbol); duplicates are ignored.
+Returns the effect list."
+  (setf (game-effects game)
+        (append (game-effects game)
+                (unless (member name (game-effects game) :test #'equal)
+                  (list name))))
+  (game-effects game))
+
+(defun remove-effect (game name)
+  "Remove active effect NAME.  Returns the remaining effect list."
+  (setf (game-effects game)
+        (remove name (game-effects game) :test #'equal)))
 
 (defun turn-left (game)
   (setf (game-facing game) (turn-dir (game-facing game) -1))

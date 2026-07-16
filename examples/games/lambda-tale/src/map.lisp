@@ -102,6 +102,20 @@ Wrapping maps wrap around the edges; otherwise returns NIL off-map."
            (values nx ny))
           (t nil))))
 
+(defun map-viewport (map px py view-w view-h)
+  "The VIEW-W x VIEW-H cell window into MAP centered on (PX,PY), clamped
+to the map bounds — the full map view uses it to show what fits around
+the party (see specs/ui-and-engine.md).  Returns (values X0 Y0 W H) —
+the top-left cell and the actual size, smaller than requested when the
+map itself is smaller."
+  (let* ((mw (dungeon-map-width map))
+         (mh (dungeon-map-height map))
+         (w (min view-w mw))
+         (h (min view-h mh))
+         (x0 (max 0 (min (- px (floor w 2)) (- mw w))))
+         (y0 (max 0 (min (- py (floor h 2)) (- mh h)))))
+    (values x0 y0 w h)))
+
 ;;; ---------------------------------------------------------------------
 ;;; Parsing ASCII map art
 

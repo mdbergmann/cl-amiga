@@ -59,12 +59,16 @@
 ;;; ---------------------------------------------------------------------
 ;;; Automap
 
-(defun render-dungeon (map &key knowledge px py facing)
+(defun render-dungeon (map &key knowledge px py facing
+                                (x0 0) (y0 0) w h)
   "Render MAP as a multi-line string.
 KNOWLEDGE non-NIL filters to explored cells and seen walls.
-PX/PY/FACING draw the party arrow."
-  (let* ((w (dungeon-map-width map))
-         (h (dungeon-map-height map))
+PX/PY/FACING draw the party arrow.
+X0/Y0/W/H render only that cell region (default: the whole map) —
+the full map view uses this with MAP-VIEWPORT's result when the map
+is larger than the display."
+  (let* ((w (or w (dungeon-map-width map)))
+         (h (or h (dungeon-map-height map)))
          (grid (%make-grid (1+ (* 2 w)) (1+ (* 2 h)))))
     (labels ((put (col row ch)
                (%grid-put grid col row ch))
@@ -76,8 +80,8 @@ PX/PY/FACING draw the party arrow."
                             (:wall (if horizontal #\- #\|))
                             (:door #\D)
                             (t nil)))
-                      (cx (1+ (* 2 x)))
-                      (cy (1+ (* 2 y))))
+                      (cx (1+ (* 2 (- x x0))))
+                      (cy (1+ (* 2 (- y y0)))))
                  (when ch
                    (multiple-value-bind (col row)
                        (ecase i
@@ -92,17 +96,21 @@ PX/PY/FACING draw the party arrow."
                                 (put (1+ col) row #\+))
                          (progn (put col (1- row) #\+)
                                 (put col (1+ row) #\+))))))))
-      (dotimes (y h)
-        (dotimes (x w)
-          (dotimes (d 4)
-            (when (or (null knowledge) (wall-known-p knowledge x y d))
-              (draw-edge x y d)))
-          (when (or (null knowledge) (cell-explored-p knowledge x y))
-            (let ((f (cell-feature map x y)))
-              (when f
-                (put (1+ (* 2 x)) (1+ (* 2 y)) f))))))
-      (when (and px py)
-        (put (1+ (* 2 px)) (1+ (* 2 py))
+      (dotimes (ry h)
+        (dotimes (rx w)
+          (let ((x (+ rx x0))
+                (y (+ ry y0)))
+            (dotimes (d 4)
+              (when (or (null knowledge) (wall-known-p knowledge x y d))
+                (draw-edge x y d)))
+            (when (or (null knowledge) (cell-explored-p knowledge x y))
+              (let ((f (cell-feature map x y)))
+                (when f
+                  (put (1+ (* 2 rx)) (1+ (* 2 ry)) f)))))))
+      (when (and px py
+                 (<= x0 px) (< px (+ x0 w))
+                 (<= y0 py) (< py (+ y0 h)))
+        (put (1+ (* 2 (- px x0))) (1+ (* 2 (- py y0)))
              (char *dir-arrows* (dir-index (or facing +north+)))))
       (%grid->string grid))))
 

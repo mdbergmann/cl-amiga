@@ -40,6 +40,39 @@ TOPIC (a keyword).  Handlers on one topic run in subscription order."
   (emit game :message (apply #'format nil control args)))
 
 ;;; ---------------------------------------------------------------------
+;;; Message log: the Bard's Tale-style text column.  Front-ends attach
+;;; one to a game and render its trailing lines, newest at the bottom.
+
+(defstruct (message-log (:constructor %make-message-log))
+  (lines '())         ; newest first
+  (limit 100))
+
+(defun attach-message-log (game &key (limit 100))
+  "Subscribe a fresh MESSAGE-LOG to GAME's :MESSAGE events and return
+it.  The log keeps the most recent LIMIT messages."
+  (let ((log (%make-message-log :limit limit)))
+    (on-event game :message
+              (lambda (g text)
+                (declare (ignore g))
+                (log-message log text)))
+    log))
+
+(defun log-message (log text)
+  "Append TEXT to LOG, dropping the oldest line beyond the limit."
+  (push text (message-log-lines log))
+  (let ((tail (nthcdr (1- (message-log-limit log))
+                      (message-log-lines log))))
+    (when (consp tail)
+      (setf (cdr tail) nil)))
+  text)
+
+(defun log-recent (log n)
+  "The last N messages logged to LOG, oldest first — ready to draw top
+to bottom with the newest line at the bottom."
+  (let ((lines (message-log-lines log)))
+    (reverse (subseq lines 0 (min n (length lines))))))
+
+;;; ---------------------------------------------------------------------
 ;;; Story flags: arbitrary EQUAL-comparable keys the story sets and tests.
 ;;; Flags live in the save game, so anything stored must print readably.
 
