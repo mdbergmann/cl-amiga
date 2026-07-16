@@ -1225,10 +1225,48 @@ static CL_Obj call_builtin(CL_Function *func, CL_Obj *args, int nargs)
 #define C_STACK_LIMIT (3 * 1024 * 1024)  /* 3MB of 8MB, leave 5MB margin */
 #endif
 
+/* Deep-recursion guard for the reader and compiler: they push GC roots
+ * once per nesting level, and cl_gc_push_root abort()s the process at the
+ * CL_GC_ROOT_STACK_SIZE ceiling.  Signal a clean error while there is
+ * still headroom for the error path's own pushes (NLX landings restore
+ * gc_root_count, so unwinding from here is safe).  Deliberately NOT part
+ * of cl_check_c_stack: condition handlers run BEFORE the stack unwinds
+ * (CLHS 9.1), so the handler machinery (cl_vm_apply, builtins) executes
+ * with gc_root_count still at the ceiling — if those paths ran this
+ * check too, the handler would immediately re-signal and the original
+ * error could never be caught.  The reserved margin is what the handler
+ * runs in; cl_gc_push_root's hard abort remains the last-resort backstop. */
+void cl_check_recursion_guards(const char *context)
+{
+    if (gc_root_count >= CL_GC_ROOT_STACK_SIZE - 64) {
+        cl_error(CL_ERR_OVERFLOW,
+                 "GC root stack nearly exhausted in %s "
+                 "(%d of %d slots used): the form is nested too deeply.",
+                 context, gc_root_count, CL_GC_ROOT_STACK_SIZE);
+    }
+    cl_check_c_stack(context);
+}
+
 void cl_check_c_stack(const char *context)
 {
     volatile char probe;
     long used;
+
+    /* Platform-exact check first: on AmigaOS the shell `stack` is small
+     * and fixed (64K-400K), so the 3MB usage budget below can never fire
+     * before physical overflow — measure real headroom against the task's
+     * stack bounds instead.  16K margin covers the error-signaling path. */
+    {
+        long headroom = platform_stack_headroom();
+        if (headroom >= 0 && headroom < 16384) {
+            cl_error(CL_ERR_OVERFLOW,
+                     "C stack nearly exhausted in %s (%ld bytes left): "
+                     "the form is nested too deeply for this stack. "
+                     "Increase the stack (e.g. `stack 400000` in the "
+                     "Amiga shell) and retry.",
+                     context, headroom);
+        }
+    }
 #if defined(CL_ASAN_BUILD) || defined(__SANITIZE_ADDRESS__) || \
     (defined(__has_feature) && __has_feature(address_sanitizer))
     /* ASan's fake-stack puts each function's locals in a heap-allocated

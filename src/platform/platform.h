@@ -26,6 +26,16 @@
 #define CL_UNUSED(x)  (void)(x)
 #endif
 
+/* Keep a function out of its caller's stack frame.  Used to hoist large
+ * local buffers off recursive paths (reader/compiler recurse once per
+ * nesting level; Amiga shell stacks are small and fixed), which only
+ * works if the compiler doesn't inline the buffer right back. */
+#if defined(__GNUC__) || defined(__clang__)
+#define CL_NOINLINE __attribute__((noinline))
+#else
+#define CL_NOINLINE
+#endif
+
 /* Memory */
 void *platform_alloc(unsigned long size);
 void  platform_free(void *ptr);
@@ -222,6 +232,22 @@ const char *platform_getenv(const char *name, char *buf, int bufsize);
  * Used to locate the bundled lib/ regardless of the process cwd.  Returns
  * buf on success, NULL when the location cannot be determined. */
 const char *platform_executable_prefix(char *buf, int bufsize);
+
+/* Remaining C stack in bytes at the point of call, or -1 when the platform
+ * cannot tell (POSIX — big default stacks plus OS guard pages make the
+ * generic budget in cl_check_c_stack sufficient there).  On AmigaOS this
+ * measures against the task's real stack bounds (tc_SPLower): the shell
+ * `stack` is small and fixed, so deep recursion (compiler, VM) must be
+ * turned into a clean Lisp error before it silently corrupts memory. */
+long platform_stack_headroom(void);
+
+/* Directory LEVELS above the executable's directory, as a prefix ready for
+ * direct concatenation with a relative path (trailing separator included).
+ * On AmigaOS this resolves through dos.library ParentDir — the "PROGDIR:"
+ * prefix cannot express a parent climb ("PROGDIR://" is NOT parent-of-parent;
+ * climb slashes only apply to cwd-relative paths).  On POSIX it appends
+ * "../" per level to the executable prefix.  Returns 1 on success. */
+int platform_executable_ancestor_prefix(int levels, char *buf, int bufsize);
 
 /* Subprocess execution */
 int platform_system(const char *command);

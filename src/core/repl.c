@@ -890,7 +890,26 @@ void cl_repl_init_no_userinit(int no_userinit)
                                              fasl_src_pairs[bi][1]);
         }
 
-#ifndef PLATFORM_AMIGA
+#ifdef PLATFORM_AMIGA
+        /* Executable-relative in-repo layout (build/amiga/clamiga with lib/
+           two levels up) — mirrors the host's "../../" fallback below so
+           clamiga can be launched from any cwd, e.g. an example project
+           directory.  "PROGDIR://" cannot express this (parent-climb slashes
+           only apply to cwd-relative paths), so the ancestor is resolved
+           through dos.library ParentDir. */
+        if (!boot_loaded) {
+            char prefix[512];
+            if (platform_executable_ancestor_prefix(2, prefix,
+                                                    (int)sizeof(prefix))) {
+                char fasl_path[700], src_path[700];
+                snprintf(fasl_path, sizeof(fasl_path), "%slib/boot.fasl",
+                         prefix);
+                snprintf(src_path, sizeof(src_path), "%slib/boot.lisp",
+                         prefix);
+                boot_loaded = try_load_boot_pair(fasl_path, src_path);
+            }
+        }
+#else
         /* Host fallback: when clamiga is launched from a directory other than
            its source root (e.g. an editor/Sly session whose cwd follows the
            file buffer), cwd-relative "lib/" won't exist.  Honour $CLAMIGA_HOME
@@ -941,7 +960,8 @@ void cl_repl_init_no_userinit(int no_userinit)
             cl_write_cstring_to_stdout(
                 "; Error: clamiga cannot locate its runtime library (lib/boot.lisp).\n"
 #ifdef PLATFORM_AMIGA
-                ";        Searched lib/ under the current directory and PROGDIR:lib/.\n"
+                ";        Searched lib/ under the current directory, PROGDIR:lib/\n"
+                ";        and lib/ two levels above the binary (in-repo layout).\n"
                 ";        Run clamiga from (or install it into) its distribution\n"
                 ";        directory so lib/ sits next to the binary.\n"
 #else

@@ -3539,6 +3539,25 @@ static CL_Obj bi_require(CL_Obj *args, int n)
                 have_fasl = platform_file_exists(fasl_path);
                 have_lisp = platform_file_exists(lisp_path);
             }
+            /* Executable-relative in-repo layout (build/amiga/clamiga with
+               lib/ two levels up) — mirrors the boot.lisp search in repl.c
+               and the host's "../../" fallback, so REQUIRE works when
+               clamiga is launched from any cwd (e.g. an example project
+               directory).  "PROGDIR://" cannot express this (parent-climb
+               slashes only apply to cwd-relative paths), so the ancestor is
+               resolved through dos.library ParentDir. */
+            if (!have_fasl && !have_lisp) {
+                char prefix[300];
+                if (platform_executable_ancestor_prefix(2, prefix,
+                                                        (int)sizeof(prefix))) {
+                    snprintf(fasl_path, sizeof(fasl_path), "%slib/%.*s.fasl",
+                             prefix, (int)len, name);
+                    snprintf(lisp_path, sizeof(lisp_path), "%slib/%.*s.lisp",
+                             prefix, (int)len, name);
+                    have_fasl = platform_file_exists(fasl_path);
+                    have_lisp = platform_file_exists(lisp_path);
+                }
+            }
 #else
             /* Host fallback: when clamiga is launched from a directory other
                than its source root (e.g. an editor/Sly session whose cwd
@@ -3636,7 +3655,8 @@ static CL_Obj bi_require(CL_Obj *args, int n)
                      "REQUIRE: cannot find module \"%.*s\" - looked for "
                      "lib/%.*s.fasl and lib/%.*s.lisp under the current "
 #ifdef PLATFORM_AMIGA
-                     "directory and PROGDIR:.",
+                     "directory, PROGDIR: and two levels above the binary "
+                     "(in-repo layout).",
 #else
                      "directory, $CLAMIGA_HOME, and the clamiga executable's "
                      "directory. If clamiga runs outside its installation, "

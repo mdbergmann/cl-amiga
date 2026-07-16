@@ -457,6 +457,36 @@ void cl_patch_jump(CL_Compiler *c, int patch_pos)
     c->code[patch_pos + 3] = (uint8_t)(offset & 0xFF);
 }
 
+/* Pending-jump chains: instead of collecting patch positions in a
+ * caller-side array, thread the pending list through the 32-bit operand
+ * placeholders themselves — each unpatched jump's operand temporarily
+ * holds the position of the previous unpatched jump (CL_JUMP_CHAIN_END
+ * terminates).  A nesting level then needs one int of state instead of
+ * a patch array, which matters on small fixed Amiga shell stacks where
+ * nested AND/OR/COND/CASE compiles recurse once per level. */
+
+int cl_emit_jump_chain(CL_Compiler *c, uint8_t op, int chain)
+{
+    int pos = cl_emit_jump(c, op);
+    c->code[pos]     = (uint8_t)(((uint32_t)chain >> 24) & 0xFF);
+    c->code[pos + 1] = (uint8_t)(((uint32_t)chain >> 16) & 0xFF);
+    c->code[pos + 2] = (uint8_t)(((uint32_t)chain >> 8) & 0xFF);
+    c->code[pos + 3] = (uint8_t)((uint32_t)chain & 0xFF);
+    return pos;
+}
+
+void cl_patch_jump_chain(CL_Compiler *c, int chain)
+{
+    while (chain != CL_JUMP_CHAIN_END) {
+        int next = (int32_t)(((uint32_t)c->code[chain] << 24) |
+                             ((uint32_t)c->code[chain + 1] << 16) |
+                             ((uint32_t)c->code[chain + 2] << 8) |
+                             (uint32_t)c->code[chain + 3]);
+        cl_patch_jump(c, chain);
+        chain = next;
+    }
+}
+
 void cl_emit_loop_jump(CL_Compiler *c, uint8_t op, int target)
 {
     int32_t offset;
@@ -4691,6 +4721,16 @@ static void compile_symbol(CL_Compiler *c, CL_Obj sym)
 static int compile_expr_step(CL_Compiler *c, CL_Obj *expr_p)
 {
     CL_Obj expr = *expr_p;
+
+    /* Deeply nested forms (heavy macro towers) recurse through here once
+     * per level.  Without this check a form too deep for the task stack
+     * silently corrupts memory — on AmigaOS with a small shell `stack`
+     * this is a real field failure mode (compiling a large GUI function
+     * at `stack 128000` overflowed, poisoning the session AND the FASL
+     * it wrote).  cl_check_recursion_guards measures true headroom against
+     * the task's stack bounds (and the GC-root-stack ceiling) and signals
+     * a clean, actionable error. */
+    cl_check_recursion_guards("cl_compile");
 
     if (CL_NULL_P(expr))    { cl_emit(c, OP_NIL); return 0; }
     if (CL_FIXNUM_P(expr))  { cl_emit_const(c, expr); return 0; }
