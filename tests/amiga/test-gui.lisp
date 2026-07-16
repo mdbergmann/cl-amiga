@@ -46,6 +46,32 @@
   (amiga.intuition:with-pub-screen (scr)
     (not (ffi:null-pointer-p scr))))
 
+;; event-loop: (RETURN) from a clause body exits the WHOLE loop.
+;; Regression: clause bodies used to be spliced into the inner drain
+;; LOOP, whose implicit BLOCK NIL swallowed (RETURN) — quit keys and
+;; the close gadget did nothing.  Also verifies the body may read the
+;; message's fields (the message is replied only AFTER the body runs).
+;; Unattended: ACTIVEWINDOW arrives on open (window has WFLG_ACTIVATE)
+;; and INTUITICKS tick ~10/s for the active window, so one of the two
+;; clauses fires without any user input.
+;; *EVENT-LOOP-MAX-WAITS* bounds the wait: if the window never becomes
+;; active in the unattended run (e.g. a stolen focus in FS-UAE), this
+;; check fails cleanly with an error instead of blocking the whole
+;; suite on an unbounded WaitPort until the external watchdog kills it.
+(check "intuition-event-loop-return" :looped
+  (let ((amiga.intuition:*event-loop-max-waits* 250))  ; ~5s at 1 tick/poll
+    (amiga.intuition:with-window
+        (win :title "Loop Test" :width 150 :height 60
+             :idcmp (logior amiga.intuition:+idcmp-activewindow+
+                            amiga.intuition:+idcmp-intuiticks+))
+      (amiga.intuition:event-loop win
+        (amiga.intuition:+idcmp-activewindow+ (msg)
+          (when (plusp (amiga.intuition:msg-class msg))
+            (return :looped)))
+        (amiga.intuition:+idcmp-intuiticks+ (msg)
+          (when (plusp (amiga.intuition:msg-class msg))
+            (return :looped)))))))
+
 ; --- Graphics tests ---
 (require "amiga/graphics")
 
@@ -104,6 +130,17 @@
       (amiga.gfx:move-to rp 10 30)
       (amiga.gfx:gfx-text rp "Hello")
       t)))
+
+;; Font metric accessors: a fresh window's RastPort carries the screen
+;; font, so TxHeight is a small positive pixel count and TxBaseline
+;; sits inside the glyph (0 < baseline <= height).
+(check "graphics-font-metrics" t
+  (amiga.intuition:with-window (win :title "Font Test"
+                                    :width 200 :height 100)
+    (let* ((rp (amiga.intuition:window-rastport win))
+           (h (amiga.gfx:rastport-tx-height rp))
+           (b (amiga.gfx:rastport-tx-baseline rp)))
+      (and (> h 0) (< h 100) (> b 0) (<= b h)))))
 
 ; --- GadTools tests ---
 (require "amiga/gadtools")

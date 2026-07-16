@@ -23,12 +23,13 @@
    ;; IDCMP
    "GET-MSG" "REPLY-MSG" "WAIT-PORT"
    "MSG-CLASS" "MSG-CODE" "MSG-MOUSE-X" "MSG-MOUSE-Y"
-   "EVENT-LOOP"
+   "EVENT-LOOP" "*EVENT-LOOP-MAX-WAITS*"
    ;; IDCMP class constants
    "+IDCMP-CLOSEWINDOW+" "+IDCMP-GADGETUP+" "+IDCMP-GADGETDOWN+"
    "+IDCMP-MOUSEBUTTONS+" "+IDCMP-MOUSEMOVE+" "+IDCMP-RAWKEY+"
    "+IDCMP-MENUPICK+" "+IDCMP-REFRESHWINDOW+" "+IDCMP-NEWSIZE+"
-   "+IDCMP-VANILLAKEY+"
+   "+IDCMP-VANILLAKEY+" "+IDCMP-ACTIVEWINDOW+" "+IDCMP-INACTIVEWINDOW+"
+   "+IDCMP-INTUITICKS+"
    ;; Window flag constants
    "+WFLG-CLOSEGADGET+" "+WFLG-DRAGBAR+" "+WFLG-DEPTHGADGET+"
    "+WFLG-SIZEGADGET+" "+WFLG-ACTIVATE+" "+WFLG-SMART-REFRESH+"
@@ -70,6 +71,7 @@
 (defconstant +lvo-refresh-g-list+      -432)
 (defconstant +lvo-lock-pub-screen+     -510)
 (defconstant +lvo-unlock-pub-screen+   -516)
+(defconstant +lvo-dos-delay+           -198)  ; dos.library Delay(ticks), d1 = ticks
 
 ;;; Exec LVOs for message handling
 (defvar *exec-base* (ffi:make-foreign-pointer 4))  ; ExecBase at absolute addr 4
@@ -91,7 +93,10 @@
 (defconstant +idcmp-menupick+       #x00000100)
 (defconstant +idcmp-closewindow+    #x00000200)
 (defconstant +idcmp-rawkey+         #x00000400)
+(defconstant +idcmp-activewindow+   #x00040000)
+(defconstant +idcmp-inactivewindow+ #x00080000)
 (defconstant +idcmp-vanillakey+     #x00200000)
+(defconstant +idcmp-intuiticks+     #x00400000)
 
 ;;; ================================================================
 ;;; Window flag constants
@@ -247,6 +252,35 @@ Uses exec.library WaitPort."
     (amiga:call-library exec +lvo-reply-msg+
                         (list :a1 msg))))
 
+(defun dos-delay (ticks)
+  "Sleep for TICKS ticks (1/50s each on PAL) via dos.library Delay."
+  (with-library (dos "dos.library")
+    (amiga:call-library dos +lvo-dos-delay+ (list :d1 ticks))))
+
+(defvar *event-loop-max-waits* nil
+  "If non-NIL, bound EVENT-LOOP's wait for the next IDCMP message to
+this many polls of GET-MSG (paced one tick apart via dos.library
+Delay) instead of blocking on WAIT-PORT/WaitPort forever. Exhausting
+the bound signals an error. Intended for unattended test runs, where
+a message that never arrives (e.g. a stolen focus in FS-UAE) should
+fail that one test cleanly instead of hanging the whole suite until
+an external watchdog kills the emulator.")
+
+(defun wait-for-msg (port)
+  "Return the next message on PORT, removing it (like GET-MSG would).
+Without *EVENT-LOOP-MAX-WAITS* bound, blocks via WAIT-PORT (may wait
+forever). With it bound, polls GET-MSG directly instead, pacing one
+tick between attempts, and signals an error once the bound is
+exhausted with no message received."
+  (if (null *event-loop-max-waits*)
+      (progn (wait-port port) (get-msg port))
+      (dotimes (i *event-loop-max-waits*
+                  (error "EVENT-LOOP: no IDCMP message after ~D polls (bounded wait)"
+                         *event-loop-max-waits*))
+        (let ((msg (get-msg port)))
+          (when msg (return msg)))
+        (dos-delay 1))))
+
 (defun msg-class (msg)
   "Get the IDCMP class from an IntuiMessage."
   (intui-message-class msg))
@@ -276,7 +310,9 @@ Uses exec.library WaitPort."
 Each clause is (idcmp-class (msg) &body body); the body runs BEFORE the
 message is replied, so it may read the message's fields, and (RETURN)
 inside a body exits the whole event loop (the message is still replied
-on the way out).
+on the way out). Waiting for the next message blocks indefinitely
+unless *EVENT-LOOP-MAX-WAITS* is bound (see its docstring), in which
+case a message that never arrives signals an error instead of hanging.
 Example:
   (event-loop win
     (#.+idcmp-closewindow+ (msg) (return))
@@ -284,6 +320,7 @@ Example:
       (format t \"Key: ~A~%\" (msg-code msg))))"
   (let ((port (gensym "PORT"))
         (msg (gensym "MSG"))
+        (first-msg (gensym "FIRST-MSG"))
         (class (gensym "CLASS"))
         (dispatch (gensym "DISPATCH")))
     ;; The clause bodies live in the DISPATCH flet, defined directly
@@ -306,7 +343,12 @@ Example:
                                ,@body))))
                        clauses))))
            (loop
-             (wait-port ,port)
+             ;; WAIT-FOR-MSG blocks via WAIT-PORT unless
+             ;; *EVENT-LOOP-MAX-WAITS* bounds it (see its docstring).
+             (let ((,first-msg (wait-for-msg ,port)))
+               (unwind-protect
+                   (,dispatch (msg-class ,first-msg) ,first-msg)
+                 (reply-msg ,first-msg)))
              (loop
                (let ((,msg (get-msg ,port)))
                  (unless ,msg (return))  ; inner loop: no more messages
