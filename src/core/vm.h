@@ -239,6 +239,9 @@ CL_Obj cl_vm_pop(void);
 
 /* C stack overflow detection */
 void cl_check_c_stack(const char *context);
+/* cl_check_c_stack + GC-root-stack headroom; for per-nesting-level
+ * recursion entry points (reader, compiler) only — see vm.c. */
+void cl_check_recursion_guards(const char *context);
 
 /* Heuristic sanity check on a builtin's native function pointer (used before
  * dispatch to catch a clobbered func slot).  Returns 1 if plausible, 0 if it

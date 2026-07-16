@@ -104,8 +104,9 @@ Any C code that holds `CL_Obj` values across allocating calls **must** GC-protec
 
 ## Amiga Stack Requirements
 
-- **64K** (AmigaOS default) — sufficient for the core runtime and most of the test suite, but **~12K short** for the GUI test path: `(require "amiga/gadtools")` nests `bi_load` frames and source-compiles gadtools.lisp (deeply-nested macros → deep `cl_compile` recursion), overflowing 64K and silently corrupting memory. Bisected threshold: 65000 fails, 77000 passes — the test runner uses **77000**.
-- **128K** — sufficient for Quicklisp/FSet/fiveam (deep CLOS dispatch chains)
+- The reader and compiler recurse once per nesting level of the source. Since 2026-07 the per-level frames are small (pending-jump chains in the compiler, hoisted reader buffers) and both `read_expr` and `compile_expr_step` call `cl_check_recursion_guards` — a too-small stack now produces a clean, catchable "C stack nearly exhausted" error instead of silent memory corruption.
+- **64K** (AmigaOS default) — sufficient for the core runtime and most of the test suite, but NOT for the GUI load path: `(require "amiga/gadtools")` or the Lambda's Tale UI nests `bi_load` frames (~5K each) on top of deep reader recursion. Fails cleanly with the guard error.
+- **128K** — verified sufficient for a full from-source compile of the GUI/game path (test runner baseline) and for Quicklisp/FSet/fiveam (deep CLOS dispatch chains).
 
 The `stack` CLI command sets the stack before launching clamiga.
 

@@ -808,6 +808,50 @@ const char *platform_executable_prefix(char *buf, int bufsize)
     return buf;
 }
 
+long platform_stack_headroom(void)
+{
+    struct Task *t = FindTask(NULL);
+    char probe;
+    if (!t || !t->tc_SPLower)
+        return -1;
+    /* m68k stacks grow down: headroom = SP - lower bound. */
+    return (long)(&probe - (char *)t->tc_SPLower);
+}
+
+int platform_executable_ancestor_prefix(int levels, char *buf, int bufsize)
+{
+    BPTR lock = Lock((STRPTR)"PROGDIR:", ACCESS_READ);
+    int i;
+    size_t n;
+    if (!lock)
+        return 0;
+    for (i = 0; i < levels; i++) {
+        BPTR parent = ParentDir(lock);
+        UnLock(lock);
+        if (!parent)
+            return 0;
+        lock = parent;
+    }
+    if (!NameFromLock(lock, (STRPTR)buf, bufsize - 1)) {
+        UnLock(lock);
+        return 0;
+    }
+    UnLock(lock);
+    /* NameFromLock yields "Volume:" for a root or "Volume:dir/sub" for a
+     * directory — append '/' in the latter case so a relative file path
+     * concatenates directly. */
+    n = strlen(buf);
+    if (n == 0)
+        return 0;
+    if (buf[n - 1] != ':' && buf[n - 1] != '/') {
+        if ((int)n + 1 >= bufsize)
+            return 0;
+        buf[n] = '/';
+        buf[n + 1] = '\0';
+    }
+    return 1;
+}
+
 int platform_getcwd(char *buf, int bufsize)
 {
     BPTR lock = Lock("", ACCESS_READ);

@@ -276,6 +276,13 @@ int cl_add_constant(CL_Compiler *c, CL_Obj obj);
 void cl_emit_const(CL_Compiler *c, CL_Obj obj);
 int cl_emit_jump(CL_Compiler *c, uint8_t op);
 void cl_patch_jump(CL_Compiler *c, int patch_pos);
+
+/* Pending-jump chain threaded through the operand placeholders (see
+ * compiler.c).  Chain heads start at CL_JUMP_CHAIN_END; cl_emit_jump_chain
+ * returns the new head. */
+#define CL_JUMP_CHAIN_END (-1)
+int cl_emit_jump_chain(CL_Compiler *c, uint8_t op, int chain);
+void cl_patch_jump_chain(CL_Compiler *c, int chain);
 void cl_emit_loop_jump(CL_Compiler *c, uint8_t op, int target);
 
 /* --- Compile functions shared across files --- */

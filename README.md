@@ -127,12 +127,16 @@ The default heap is **4 MB**. Larger workloads need more:
 | FSet (functional collections)   | `--heap 24M`     | `stack 128000`    |
 | Fiveam (load + self-tests)      | `--heap 24M`     | `stack 128000`    |
 
-On AmigaOS, the default 64K stack is sufficient for basic use. For Quicklisp/ASDF workloads with deep CLOS dispatch chains, increase the stack:
+On AmigaOS, the default 64K stack is sufficient for basic use. For Quicklisp/ASDF workloads with deep CLOS dispatch chains, or when source-compiling GUI code (deeply nested macro towers), increase the stack:
 
 ```
-stack 400000
+stack 128000
 clamiga --heap 24M
 ```
+
+If the stack is too small for a deeply nested form, clamiga signals a clean
+`C stack nearly exhausted` error telling you to raise it — it never corrupts
+the session.
 
 ### Quicklisp
 

@@ -1029,11 +1029,49 @@ static CL_Obj read_list(void)
     }
 }
 
+/* #*0110 => simple bit vector.  Separate CL_NOINLINE function so the 4KB
+ * scan buffer stays out of read_expr's frame — read_expr recurses once per
+ * nesting level of the source, and on small fixed Amiga shell stacks a
+ * multi-KB frame per level overflows on deeply nested files. */
+static CL_NOINLINE CL_Obj read_bit_vector(void)
+{
+    char bits[4096];
+    int blen = 0;
+    uint32_t bi;
+    CL_Obj bvobj;
+    CL_BitVector *bv;
+    for (;;) {
+        int c2 = read_char();
+        if (c2 == '0' || c2 == '1') {
+            if (blen >= 4095)
+                cl_reader_error(CL_ERR_PARSE,
+                    "Bit-vector literal #* longer than 4095 bits");
+            bits[blen++] = (char)c2;
+        } else {
+            if (c2 >= 0) unread_char(c2);
+            break;
+        }
+    }
+    bvobj = cl_make_bit_vector((uint32_t)blen);
+    bv = (CL_BitVector *)CL_OBJ_TO_PTR(bvobj);
+    for (bi = 0; bi < (uint32_t)blen; bi++) {
+        if (bits[bi] == '1')
+            bv->data[bi / 32] |= (1u << (bi % 32));
+    }
+    return bvobj;
+}
+
 /* Read a single expression */
 static CL_Obj read_expr(void)
 {
     int ch;
     CL_Obj obj;
+
+    /* The reader recurses once per nesting level, consuming both C stack
+     * (on AmigaOS the shell stack is small and fixed; overflow corrupts
+     * memory silently) and GC-root-stack slots (hard abort at the
+     * ceiling).  Fail with a clean, actionable error instead. */
+    cl_check_recursion_guards("read");
 
     skip_whitespace();
     if (eof_seen) return CL_NIL;
@@ -1341,31 +1379,8 @@ static CL_Obj read_expr(void)
             }
         }
         if (ch == '*') {
-            /* #*0110 => simple bit vector */
-            char bits[4096];
-            int blen = 0;
-            uint32_t bi;
-            CL_Obj bvobj;
-            CL_BitVector *bv;
-            for (;;) {
-                int c2 = read_char();
-                if (c2 == '0' || c2 == '1') {
-                    if (blen >= 4095)
-                        cl_reader_error(CL_ERR_PARSE,
-                            "Bit-vector literal #* longer than 4095 bits");
-                    bits[blen++] = (char)c2;
-                } else {
-                    if (c2 >= 0) unread_char(c2);
-                    break;
-                }
-            }
-            bvobj = cl_make_bit_vector((uint32_t)blen);
-            bv = (CL_BitVector *)CL_OBJ_TO_PTR(bvobj);
-            for (bi = 0; bi < (uint32_t)blen; bi++) {
-                if (bits[bi] == '1')
-                    bv->data[bi / 32] |= (1u << (bi % 32));
-            }
-            return bvobj;
+            /* #*0110 => simple bit vector (buffer hoisted off this frame) */
+            return read_bit_vector();
         }
         if (ch == 'p' || ch == 'P') {
             /* #P"..." => pathname literal */

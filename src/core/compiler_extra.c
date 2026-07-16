@@ -10,10 +10,12 @@
 #include "../platform/platform_thread.h"
 #include <stdio.h>
 
-/* Maximum number of clauses/arguments in AND/OR/COND/CASE/TYPECASE.
- * Each clause needs one patch entry (jump offset to fix up later).
- * Stack usage: MAX_PATCHES * sizeof(int) = 2KB per array. */
-#define MAX_PATCHES 512
+/* Forward-jump fixups in AND/OR/COND/CASE/TYPECASE use pending-jump
+ * chains threaded through the operand placeholders (cl_emit_jump_chain /
+ * cl_patch_jump_chain) — one int of state per nesting level.  These
+ * compiles recurse once per level of nested conditionals (macro towers
+ * expand into deep COND/CASE chains), so per-frame patch arrays would
+ * multiply into tens of KB on small fixed Amiga shell stacks. */
 
 /* --- And / Or --- */
 
@@ -21,8 +23,7 @@ void compile_and(CL_Compiler *c, CL_Obj form)
 {
     CL_Obj args = cl_cdr(form);
     int saved_tail = c->in_tail;
-    int nil_patches[MAX_PATCHES];
-    int n_patches = 0;
+    int nil_chain = CL_JUMP_CHAIN_END;
 
     if (CL_NULL_P(args)) {
         /* (and) => T */
@@ -47,9 +48,7 @@ void compile_and(CL_Compiler *c, CL_Obj form)
             c->in_tail = 0;
             compile_expr(c, cl_car(args));
             cl_emit(c, OP_DUP);
-            if (n_patches >= MAX_PATCHES)
-                cl_error(CL_ERR_GENERAL, "AND: too many arguments (max %d)", MAX_PATCHES);
-            nil_patches[n_patches++] = cl_emit_jump(c, OP_JNIL);
+            nil_chain = cl_emit_jump_chain(c, OP_JNIL, nil_chain);
             cl_emit(c, OP_POP);
             cl_emit(c, OP_MV_RESET);
         }
@@ -58,19 +57,14 @@ void compile_and(CL_Compiler *c, CL_Obj form)
     CL_GC_UNPROTECT(1);
 
     /* Patch all nil-jumps to here (done label) */
-    {
-        int i;
-        for (i = 0; i < n_patches; i++)
-            cl_patch_jump(c, nil_patches[i]);
-    }
+    cl_patch_jump_chain(c, nil_chain);
 }
 
 void compile_or(CL_Compiler *c, CL_Obj form)
 {
     CL_Obj args = cl_cdr(form);
     int saved_tail = c->in_tail;
-    int true_patches[MAX_PATCHES];
-    int n_patches = 0;
+    int true_chain = CL_JUMP_CHAIN_END;
 
     if (CL_NULL_P(args)) {
         /* (or) => NIL */
@@ -95,9 +89,7 @@ void compile_or(CL_Compiler *c, CL_Obj form)
             c->in_tail = 0;
             compile_expr(c, cl_car(args));
             cl_emit(c, OP_DUP);
-            if (n_patches >= MAX_PATCHES)
-                cl_error(CL_ERR_GENERAL, "OR: too many arguments (max %d)", MAX_PATCHES);
-            true_patches[n_patches++] = cl_emit_jump(c, OP_JTRUE);
+            true_chain = cl_emit_jump_chain(c, OP_JTRUE, true_chain);
             cl_emit(c, OP_POP);
             cl_emit(c, OP_MV_RESET);
         }
@@ -106,11 +98,7 @@ void compile_or(CL_Compiler *c, CL_Obj form)
     CL_GC_UNPROTECT(1);
 
     /* Patch all true-jumps to here (done label) */
-    {
-        int i;
-        for (i = 0; i < n_patches; i++)
-            cl_patch_jump(c, true_patches[i]);
-    }
+    cl_patch_jump_chain(c, true_chain);
 }
 
 /* --- Cond --- */
@@ -119,8 +107,7 @@ void compile_cond(CL_Compiler *c, CL_Obj form)
 {
     CL_Obj clauses = cl_cdr(form);
     int saved_tail = c->in_tail;
-    int done_patches[MAX_PATCHES];
-    int n_done = 0;
+    int done_chain = CL_JUMP_CHAIN_END;
 
     if (CL_NULL_P(clauses)) {
         cl_emit(c, OP_NIL);
@@ -168,9 +155,7 @@ void compile_cond(CL_Compiler *c, CL_Obj form)
             }
 
             /* Always JMP past NIL fallthrough (even last non-t clause) */
-            if (n_done >= MAX_PATCHES)
-                cl_error(CL_ERR_GENERAL, "COND: too many clauses (max %d)", MAX_PATCHES);
-            done_patches[n_done++] = cl_emit_jump(c, OP_JMP);
+            done_chain = cl_emit_jump_chain(c, OP_JMP, done_chain);
 
             cl_patch_jump(c, jnil_pos);
             if (CL_NULL_P(body)) {
@@ -197,11 +182,7 @@ void compile_cond(CL_Compiler *c, CL_Obj form)
     }
 
     /* Patch all done-jumps */
-    {
-        int i;
-        for (i = 0; i < n_done; i++)
-            cl_patch_jump(c, done_patches[i]);
-    }
+    cl_patch_jump_chain(c, done_chain);
 }
 
 /* --- Quasiquote --- */
@@ -723,8 +704,7 @@ void compile_case(CL_Compiler *c, CL_Obj form, int error_if_no_match)
     int saved_local_count = env->local_count;
     int saved_tail = c->in_tail;
     int temp_slot;
-    int done_patches[MAX_PATCHES];
-    int n_done = 0;
+    int done_chain = CL_JUMP_CHAIN_END;
     int had_default = 0;
     CL_Obj ecase_expected = CL_NIL;
 
@@ -801,12 +781,9 @@ void compile_case(CL_Compiler *c, CL_Obj form, int error_if_no_match)
                 cl_emit(c, OP_NIL);
             else
                 compile_progn(c, body);
-            if (n_done >= MAX_PATCHES)
-                cl_error(CL_ERR_GENERAL, "CASE: too many clauses (max %d)", MAX_PATCHES);
-            done_patches[n_done++] = cl_emit_jump(c, OP_JMP);
+            done_chain = cl_emit_jump_chain(c, OP_JMP, done_chain);
         } else {
-            int body_patches[MAX_PATCHES];
-            int n_body = 0;
+            int body_chain = CL_JUMP_CHAIN_END;
             int next_clause_pos;
 
             /* Emit EQ tests for each key */
@@ -818,9 +795,7 @@ void compile_case(CL_Compiler *c, CL_Obj form, int error_if_no_match)
                     cl_emit(c, (uint8_t)temp_slot);
                     cl_emit_const(c, cl_car(k));
                     cl_emit(c, OP_EQ);
-                    if (n_body >= MAX_PATCHES)
-                        cl_error(CL_ERR_GENERAL, "CASE: too many keys in clause (max %d)", MAX_PATCHES);
-                    body_patches[n_body++] = cl_emit_jump(c, OP_JTRUE);
+                    body_chain = cl_emit_jump_chain(c, OP_JTRUE, body_chain);
                     k = cl_cdr(k);
                 }
             } else {
@@ -829,18 +804,14 @@ void compile_case(CL_Compiler *c, CL_Obj form, int error_if_no_match)
                 cl_emit(c, (uint8_t)temp_slot);
                 cl_emit_const(c, keys);
                 cl_emit(c, OP_EQ);
-                body_patches[n_body++] = cl_emit_jump(c, OP_JTRUE);
+                body_chain = cl_emit_jump_chain(c, OP_JTRUE, body_chain);
             }
 
             /* No key matched — jump to next clause */
             next_clause_pos = cl_emit_jump(c, OP_JMP);
 
             /* body: patch all key-match jumps here */
-            {
-                int j;
-                for (j = 0; j < n_body; j++)
-                    cl_patch_jump(c, body_patches[j]);
-            }
+            cl_patch_jump_chain(c, body_chain);
 
             /* Compile body */
             c->in_tail = saved_tail;
@@ -848,9 +819,7 @@ void compile_case(CL_Compiler *c, CL_Obj form, int error_if_no_match)
                 cl_emit(c, OP_NIL);
             else
                 compile_progn(c, body);
-            if (n_done >= MAX_PATCHES)
-                cl_error(CL_ERR_GENERAL, "CASE: too many clauses (max %d)", MAX_PATCHES);
-            done_patches[n_done++] = cl_emit_jump(c, OP_JMP);
+            done_chain = cl_emit_jump_chain(c, OP_JMP, done_chain);
 
             /* next_clause: */
             cl_patch_jump(c, next_clause_pos);
@@ -888,11 +857,7 @@ void compile_case(CL_Compiler *c, CL_Obj form, int error_if_no_match)
     CL_GC_UNPROTECT(1); /* clauses */
 
     /* Patch all done-jumps */
-    {
-        int i;
-        for (i = 0; i < n_done; i++)
-            cl_patch_jump(c, done_patches[i]);
-    }
+    cl_patch_jump_chain(c, done_chain);
 
     cl_env_clear_boxed(env, saved_local_count);
 
@@ -910,8 +875,7 @@ void compile_typecase(CL_Compiler *c, CL_Obj form, int error_if_no_match)
     int saved_local_count = env->local_count;
     int saved_tail = c->in_tail;
     int temp_slot;
-    int done_patches[MAX_PATCHES];
-    int n_done = 0;
+    int done_chain = CL_JUMP_CHAIN_END;
     int had_default = 0;
     CL_Obj sym_typep;
     int typep_idx;
@@ -981,9 +945,7 @@ void compile_typecase(CL_Compiler *c, CL_Obj form, int error_if_no_match)
                 cl_emit(c, OP_NIL);
             else
                 compile_progn(c, body);
-            if (n_done >= MAX_PATCHES)
-                cl_error(CL_ERR_GENERAL, "TYPECASE: too many clauses (max %d)", MAX_PATCHES);
-            done_patches[n_done++] = cl_emit_jump(c, OP_JMP);
+            done_chain = cl_emit_jump_chain(c, OP_JMP, done_chain);
         } else {
             int jnil_pos;
 
@@ -1003,9 +965,7 @@ void compile_typecase(CL_Compiler *c, CL_Obj form, int error_if_no_match)
                 cl_emit(c, OP_NIL);
             else
                 compile_progn(c, body);
-            if (n_done >= MAX_PATCHES)
-                cl_error(CL_ERR_GENERAL, "TYPECASE: too many clauses (max %d)", MAX_PATCHES);
-            done_patches[n_done++] = cl_emit_jump(c, OP_JMP);
+            done_chain = cl_emit_jump_chain(c, OP_JMP, done_chain);
 
             cl_patch_jump(c, jnil_pos);
         }
@@ -1042,11 +1002,7 @@ void compile_typecase(CL_Compiler *c, CL_Obj form, int error_if_no_match)
     CL_GC_UNPROTECT(1); /* clauses */
 
     /* Patch done-jumps */
-    {
-        int i;
-        for (i = 0; i < n_done; i++)
-            cl_patch_jump(c, done_patches[i]);
-    }
+    cl_patch_jump_chain(c, done_chain);
 
     cl_env_clear_boxed(env, saved_local_count);
 

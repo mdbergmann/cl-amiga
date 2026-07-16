@@ -784,6 +784,26 @@ const char *platform_executable_prefix(char *buf, int bufsize)
     return buf;
 }
 
+long platform_stack_headroom(void)
+{
+    /* No portable exact answer on POSIX; the generic 3MB usage budget in
+     * cl_check_c_stack plus the OS guard pages cover the host. */
+    return -1;
+}
+
+int platform_executable_ancestor_prefix(int levels, char *buf, int bufsize)
+{
+    int i;
+    if (!platform_executable_prefix(buf, bufsize))
+        return 0;
+    for (i = 0; i < levels; i++) {
+        if ((int)(strlen(buf) + 3) >= bufsize)
+            return 0;
+        strcat(buf, "../");
+    }
+    return 1;
+}
+
 int platform_getcwd(char *buf, int bufsize)
 {
     if (getcwd(buf, (size_t)bufsize) != NULL)
