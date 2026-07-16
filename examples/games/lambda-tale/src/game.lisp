@@ -7,7 +7,11 @@
   knowledge           ; map-knowledge
   (x 0)
   (y 0)
-  (facing +north+))   ; direction index 0..3
+  (facing +north+)    ; direction index 0..3
+  party               ; list of HERO (NIL for a bare walkabout)
+  (flags (make-hash-table :test 'equal)) ; story flags (see events.lisp)
+  handlers            ; event subscriptions: alist topic -> handler list
+  combat)             ; active COMBAT or NIL
 
 (defun observe (game)
   "Record what the party can see from its position into the automap:
@@ -25,13 +29,17 @@ side walls plus the front walls seen through open sides."
       (when (view-slice-rx s)
         (know-wall k (view-slice-rx s) (view-slice-ry s) f)))))
 
-(defun new-game (map)
-  "Start a fresh game on MAP at its start position."
+(defun new-game (map &key party)
+  "Start a fresh game on MAP at its start position, with PARTY (a list
+of heroes; NIL for a bare walkabout).  The start cell's special is NOT
+triggered here — subscribe your event handlers first, then call
+TRIGGER-SPECIAL once."
   (let ((g (%make-game :map map
                        :knowledge (make-map-knowledge map)
                        :x (dungeon-map-start-x map)
                        :y (dungeon-map-start-y map)
-                       :facing (dir-index (dungeon-map-start-facing map)))))
+                       :facing (dir-index (dungeon-map-start-facing map))
+                       :party party)))
     (observe g)
     g))
 
@@ -53,19 +61,30 @@ side walls plus the front walls seen through open sides."
 (defun move-party (game &optional (relative :forward))
   "Attempt to step the party one cell.  RELATIVE is :forward or :back
 \(a Bard's Tale back-step keeps the current facing).  Returns
-:moved, :door (stepped through a door) or :blocked."
+:moved, :door (stepped through a door) or :blocked.  Entering a cell
+emits :ENTER-CELL and triggers the cell's special; bumping a wall
+emits :BLOCKED.  Signals an error during combat — there is no walking
+away from a fight (see ATTEMPT-FLEE)."
+  (when (game-combat game)
+    (error "move-party: the party is in combat (attack or flee first)"))
   (let* ((dir (ecase relative
                 (:forward (game-facing game))
                 (:back (dir-opposite (game-facing game)))))
          (wall (cell-wall (game-map game) (game-x game) (game-y game) dir)))
     (if (not (wall-passable-p wall))
-        :blocked
+        (progn
+          (emit game :blocked (dir-keyword dir))
+          :blocked)
         (multiple-value-bind (nx ny)
             (neighbor (game-map game) (game-x game) (game-y game) dir)
           (if (null nx)
-              :blocked
+              (progn
+                (emit game :blocked (dir-keyword dir))
+                :blocked)
               (progn
                 (setf (game-x game) nx
                       (game-y game) ny)
                 (observe game)
+                (emit game :enter-cell nx ny)
+                (trigger-special game)
                 (if (eq wall :door) :door :moved)))))))

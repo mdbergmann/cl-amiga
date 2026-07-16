@@ -1,4 +1,5 @@
-;;; Lambda's Tale — test suite (M0: map model, movement, knowledge, renderer).
+;;; Lambda's Tale — test suite: map model, movement, knowledge, renderers
+;;; (M0/M1); dice, events, specials, party, combat, save games (M2).
 ;;; Run from the project root (examples/games/lambda-tale):  make test
 
 (load "src/load.lisp")
@@ -25,6 +26,22 @@
   `(check-true ,label
                (handler-case (progn ,@body nil)
                  (error () t))))
+
+(defmacro with-rng ((&rest values) &body body)
+  "Run BODY with *RNG* scripted: successive (roll N) calls return the
+next of VALUES (mod N), then 0 forever."
+  (let ((vals (gensym "VALS")))
+    `(let* ((,vals (list ,@values))
+            (*rng* (lambda (n) (mod (if ,vals (pop ,vals) 0) n))))
+       ,@body)))
+
+(defun watch-messages (game)
+  "Subscribe to GAME's :MESSAGE events; returns a closure yielding the
+messages so far (oldest first)."
+  (let ((msgs '()))
+    (on-event game :message
+              (lambda (g text) (declare (ignore g)) (push text msgs)))
+    (lambda () (reverse msgs))))
 
 ;;; ---------------------------------------------------------------------
 ;;; Test maps
@@ -312,6 +329,468 @@
   (check "cellar stairs up" #\< (cell-feature m 5 4)))
 
 ;;; ---------------------------------------------------------------------
+;;; Dice
+
+(multiple-value-bind (c s b) (parse-dice "2d6+1")
+  (check "parse-dice 2d6+1" '(2 6 1) (list c s b)))
+(multiple-value-bind (c s b) (parse-dice "1d8")
+  (check "parse-dice 1d8" '(1 8 0) (list c s b)))
+(multiple-value-bind (c s b) (parse-dice "3d4-1")
+  (check "parse-dice 3d4-1" '(3 4 -1) (list c s b)))
+(multiple-value-bind (c s b) (parse-dice 5)
+  (check "parse-dice integer constant" '(0 0 5) (list c s b)))
+(check-error "parse-dice rejects garbage" (parse-dice "banana"))
+(check-error "parse-dice rejects zero dice" (parse-dice "0d6"))
+(check-error "parse-dice rejects zero sides" (parse-dice "1d0"))
+
+(with-rng (3 4)
+  (check "roll-dice 2d6+1 scripted" 10 (roll-dice "2d6+1")))
+(with-rng ()
+  (check "roll-dice exhausted script rolls ones" 1 (roll-dice "1d8")))
+(check "roll-dice integer is constant" 7 (roll-dice 7))
+(with-rng (13)
+  (check "scripted roll wraps mod n" 3 (roll 10)))
+
+;;; ---------------------------------------------------------------------
+;;; Events and story flags
+
+(let* ((m (parse-map *art* :name "test"))
+       (g (new-game m))
+       (order '()))
+  (on-event g :ping (lambda (game x) (declare (ignore game))
+                      (push (list :a x) order)))
+  (on-event g :ping (lambda (game x) (declare (ignore game))
+                      (push (list :b x) order)))
+  (emit g :ping 7)
+  (check "handlers run in subscription order" '((:a 7) (:b 7))
+         (nreverse order))
+  (check "emit without subscribers is quiet" nil
+         (handler-case (progn (emit g :nobody-listens) nil)
+           (error () :boom))))
+
+(let* ((m (parse-map *art* :name "test"))
+       (g (new-game m))
+       (msgs (watch-messages g)))
+  (say g "hello ~D" 5)
+  (check "say formats into a :message event" '("hello 5") (funcall msgs)))
+
+(let* ((m (parse-map *art* :name "test"))
+       (g (new-game m)))
+  (check "unset flag is nil" nil (flag g :quest))
+  (set-flag g :quest)
+  (check "set-flag defaults to t" t (flag g :quest))
+  (set-flag g :quest 42)
+  (check "set-flag with value" 42 (flag g :quest))
+  (set-flag g '(:door "cellar" 1) :open)
+  (check "flags use equal keys" :open (flag g '(:door "cellar" 1)))
+  (clear-flag g :quest)
+  (check "clear-flag" nil (flag g :quest)))
+
+;; Movement emits :enter-cell and :blocked.
+(let* ((m (parse-map *art* :name "test"))
+       (g (new-game m))
+       (entered '())
+       (blocked '()))
+  (on-event g :enter-cell (lambda (game x y) (declare (ignore game))
+                            (push (list x y) entered)))
+  (on-event g :blocked (lambda (game dir) (declare (ignore game))
+                         (push dir blocked)))
+  (move-party g :forward)               ; north wall
+  (turn-right g)
+  (move-party g :forward)               ; east to (1,0)
+  (check "blocked event carries direction" '(:north) blocked)
+  (check "enter-cell event carries coordinates" '((1 0)) (nreverse entered)))
+
+;;; ---------------------------------------------------------------------
+;;; Cell specials
+
+;; message + set-flag on entry.
+(let* ((m (parse-map *art* :name "test"))
+       (g (new-game m))
+       (msgs (watch-messages g)))
+  (setf (cell-special m 1 0) '((message "It is dark here.")
+                               (set-flag :dark)))
+  (turn-right g)
+  (move-party g :forward)
+  (check "special message on entry" '("It is dark here.") (funcall msgs))
+  (check "special set a flag" t (flag g :dark)))
+
+;; trigger-special fires the start cell by hand (after wiring handlers).
+(let* ((m (parse-map *art* :name "test"))
+       (g (new-game m))
+       (msgs (watch-messages g)))
+  (setf (cell-special m 0 0) '((message "You are at the start.")))
+  (trigger-special g)
+  (check "trigger-special runs the standing cell"
+         '("You are at the start.") (funcall msgs)))
+
+;; once runs only the first time, ever.
+(let* ((m (parse-map *art* :name "test"))
+       (g (new-game m))
+       (msgs (watch-messages g)))
+  (setf (cell-special m 1 0) '((once (message "first time"))))
+  (turn-right g)
+  (move-party g :forward)
+  (move-party g :back)
+  (move-party g :forward)
+  (check "once fires a single time" '("first time") (funcall msgs)))
+
+;; when-flag / unless-flag branch on story flags.
+(let* ((m (parse-map *art* :name "test"))
+       (g (new-game m))
+       (msgs (watch-messages g)))
+  (setf (cell-special m 1 0) '((when-flag :key (message "yes"))
+                               (unless-flag :key (message "no"))))
+  (turn-right g)
+  (move-party g :forward)
+  (check "unless-flag branch without flag" '("no") (funcall msgs))
+  (set-flag g :key)
+  (move-party g :back)
+  (move-party g :forward)
+  (check "when-flag branch with flag" '("no" "yes") (funcall msgs)))
+
+;; teleport relocates, faces, records knowledge and chains the target's
+;; special.
+(let* ((m (parse-map *art* :name "test"))
+       (g (new-game m))
+       (msgs (watch-messages g)))
+  (setf (cell-special m 1 0) '((teleport 2 1 :south)))
+  (setf (cell-special m 2 1) '((message "arrived")))
+  (turn-right g)
+  (move-party g :forward)
+  (check "teleport position" '(2 1) (list (game-x g) (game-y g)))
+  (check "teleport facing" +south+ (game-facing g))
+  (check "teleport chains target special" '("arrived") (funcall msgs))
+  (check-true "teleport target explored"
+              (cell-explored-p (game-knowledge g) 2 1)))
+
+;; a teleport loop trips the recursion guard.
+(let* ((m (parse-map *art* :name "test"))
+       (g (new-game m)))
+  (setf (cell-special m 0 0) '((teleport 1 0)))
+  (setf (cell-special m 1 0) '((teleport 0 0)))
+  (check-error "teleport loop is caught" (trigger-special g)))
+
+;; teleport off the map is rejected.
+(let* ((m (parse-map *art* :name "test"))
+       (g (new-game m)))
+  (setf (cell-special m 0 0) '((teleport 9 9)))
+  (check-error "teleport off-map is rejected" (trigger-special g)))
+
+;; spin turns the party to a random facing, silently.
+(let* ((m (parse-map *art* :name "test"))
+       (g (new-game m))
+       (msgs (watch-messages g)))
+  (setf (cell-special m 1 0) '((spin)))
+  (turn-right g)
+  (with-rng (2)
+    (move-party g :forward))
+  (check "spinner facing" +south+ (game-facing g))
+  (check "spinner is silent" '() (funcall msgs)))
+
+;; unknown ops and malformed ops are loud.
+(let* ((m (parse-map *art* :name "test"))
+       (g (new-game m)))
+  (setf (cell-special m 0 0) '((frobnicate 1 2)))
+  (check-error "unknown special op is an error" (trigger-special g))
+  (setf (cell-special m 0 0) '(42))
+  (check-error "non-list special op is an error" (trigger-special g)))
+
+;;; ---------------------------------------------------------------------
+;;; Heroes and the party
+
+(define-hero-class :tester :hp-dice "1d8+2" :damage "1d6" :ac 8)
+
+(let ((h (with-rng (5) (make-hero "Bob" :tester))))
+  (check "hero name" "Bob" (hero-name h))
+  (check "hero class" :tester (hero-class h))
+  (check "hero hp from class hit dice" 8 (hero-max-hp h))
+  (check "hero starts at full hp" 8 (hero-hp h))
+  (check "hero str rolled 3d6" 3 (hero-str h))
+  (check "hero ac from class" 8 (hero-ac h))
+  (check "hero damage from class" "1d6" (hero-damage h))
+  (check "hero level 1" 1 (hero-level h))
+  (check-true "fresh hero is alive" (hero-alive-p h)))
+
+(check-error "make-hero rejects unknown class" (make-hero "X" :nonesuch))
+
+(check "stat-bonus 10" 0 (stat-bonus 10))
+(check "stat-bonus 12" 1 (stat-bonus 12))
+(check "stat-bonus 15" 2 (stat-bonus 15))
+(check "stat-bonus 9" -1 (stat-bonus 9))
+(check "stat-bonus 3" -4 (stat-bonus 3))
+
+(check "xp-for-level 2" 100 (xp-for-level 2))
+(check "xp-for-level 3" 300 (xp-for-level 3))
+
+;; Party queries, damage and healing.
+(let* ((m (parse-map *art* :name "test"))
+       (heroes (with-rng () (list (make-hero "A" :tester)
+                                  (make-hero "B" :tester)
+                                  (make-hero "C" :tester)
+                                  (make-hero "D" :tester))))
+       (g (new-game m :party heroes))
+       (msgs (watch-messages g))
+       (died '())
+       (wiped nil))
+  (on-event g :hero-died (lambda (game h) (declare (ignore game))
+                           (push (hero-name h) died)))
+  (on-event g :party-defeated (lambda (game) (declare (ignore game))
+                                (setf wiped t)))
+  (check "party of four alive" 4 (length (alive-heroes g)))
+  (check "front ranks are the first three" '("A" "B" "C")
+         (mapcar #'hero-name (front-ranks g)))
+  (damage-hero g (first heroes) 999)
+  (check "damage clamps hp at zero" 0 (hero-hp (first heroes)))
+  (check "hero-died event" '("A") died)
+  (check "front ranks skip the fallen" '("B" "C" "D")
+         (mapcar #'hero-name (front-ranks g)))
+  (check "three heroes standing" 3 (length (alive-heroes g)))
+  (check "party not wiped yet" nil wiped)
+  (dolist (h (rest heroes))
+    (damage-hero g h 999))
+  (check-true "party-defeated event after the last hero" wiped)
+  (check "party-alive-p when wiped" nil (party-alive-p g))
+  (check-true "fall message emitted" (search "falls" (first (funcall msgs)))))
+
+(let* ((m (parse-map *art* :name "test"))
+       (h (with-rng () (make-hero "A" :tester)))  ; 3 max hp
+       (g (new-game m :party (list h))))
+  (damage-hero g h 2)
+  (check "heal-hero returns hp gained" 1 (with-rng (0) (heal-hero g h 1)))
+  (check "heal-hero caps at max" 3 (progn (heal-hero g h 99) (hero-hp h))))
+
+;; Leveling: crossing a threshold rolls the class hit dice again.
+(let* ((m (parse-map *art* :name "test"))
+       (h (with-rng (5) (make-hero "A" :tester)))  ; 8 max hp
+       (g (new-game m :party (list h)))
+       (msgs (watch-messages g)))
+  (with-rng (4) (award-xp g h 100))
+  (check "level after 100 xp" 2 (hero-level h))
+  (check "level-up adds rolled hp" 15 (hero-max-hp h))
+  (check-true "level-up message" (search "level 2" (first (funcall msgs))))
+  (with-rng (4 4) (award-xp g h 500))   ; 600 xp: levels 3 and 4
+  (check "multiple level-ups in one award" 4 (hero-level h)))
+
+;;; ---------------------------------------------------------------------
+;;; Combat
+
+(define-monster "test rat"
+  :level 1 :hp-dice 3 :ac 10 :damage "1d2" :xp 10 :gold 6)
+
+(check-error "unknown monster type" (find-monster-type "grue"))
+
+(defun %combat-hero ()
+  "A deterministic level-1 :tester hero: 8 hp, str 10 (no bonus)."
+  (let ((h (with-rng (5) (make-hero "Alva" :tester))))
+    (setf (hero-str h) 10)
+    h))
+
+;; start-combat: dice group counts, banner, event, exclusivity.
+(let* ((m (parse-map *art* :name "test"))
+       (g (new-game m :party (list (%combat-hero))))
+       (msgs (watch-messages g))
+       (started '()))
+  (on-event g :combat-start (lambda (game monsters) (declare (ignore game))
+                              (setf started (length monsters))))
+  (with-rng (2)
+    (start-combat g '(("test rat" "1d3+1"))))
+  (check "dice group count spawns monsters" 4 started)
+  (check "combat groups count the living" '(("test rat" . 4))
+         (mapcar (lambda (grp) (cons (monster-type-name (car grp)) (cdr grp)))
+                 (combat-groups (game-combat g))))
+  (check "combat banner" '("You face 4 test rats!") (funcall msgs))
+  (check-error "no moving during combat" (move-party g :forward))
+  (check-error "no nested combat" (start-combat g '(("test rat" 1)))))
+
+;; A clean kill: hero hits, monster dies, rewards are handed out.
+(let* ((m (parse-map *art* :name "test"))
+       (h (%combat-hero))
+       (g (new-game m :party (list h)))
+       (msgs (watch-messages g))
+       (ended '()))
+  (on-event g :combat-end (lambda (game result) (declare (ignore game))
+                            (push result ended)))
+  (start-combat g '(("test rat" 1)))
+  (check "single-monster banner" '("You face 1 test rat!") (funcall msgs))
+  (check "victory round" :victory (with-rng (10 2) (combat-round g)))
+  (check "combat cleared after victory" nil (game-combat g))
+  (check "combat-end event" '(:victory) ended)
+  (check "xp awarded" 10 (hero-xp h))
+  (check "gold awarded" 6 (hero-gold h))
+  (check-true "slain message"
+              (find-if (lambda (s) (search "slays" s)) (funcall msgs)))
+  (check-true "victory message"
+              (find-if (lambda (s) (search "Victory" s)) (funcall msgs))))
+
+;; Miss, get hit back; defending raises AC for the round.
+(let* ((m (parse-map *art* :name "test"))
+       (h (%combat-hero))
+       (g (new-game m :party (list h)))
+       (msgs (watch-messages g)))
+  (start-combat g '(("test rat" 1)))
+  ;; hero d20=1 misses; rat targets hero, d20=12 hits ac 8, 1d2 -> 2.
+  (check "ongoing round" :ongoing (with-rng (0 0 11 1) (combat-round g)))
+  (check "monster damage landed" 6 (hero-hp h))
+  ;; defending: ac 8-4=4 needs 16+; rat d20=14 now misses.
+  (check "defend round ongoing" :ongoing
+         (with-rng (0 13) (combat-round g '(:defend))))
+  (check "defender untouched" 6 (hero-hp h))
+  (check-true "monster miss message"
+              (find-if (lambda (s) (search "misses Alva" s)) (funcall msgs)))
+  ;; without defending the same monster roll (d20=14 vs ac 8) hits.
+  (check "same roll hits when not defending" :ongoing
+         (with-rng (0 0 13 0) (combat-round g)))
+  (check "hit for 1d2 minimum" 5 (hero-hp h)))
+
+;; Defeat: the last hero falls to a monster.
+(let* ((m (parse-map *art* :name "test"))
+       (h (%combat-hero))
+       (g (new-game m :party (list h)))
+       (wiped nil))
+  (on-event g :party-defeated (lambda (game) (declare (ignore game))
+                                (setf wiped t)))
+  (start-combat g '(("test rat" 1)))
+  (setf (hero-hp h) 1)
+  (check "defeat round" :defeat (with-rng (0 0 11 1) (combat-round g)))
+  (check "combat cleared after defeat" nil (game-combat g))
+  (check-true "party-defeated emitted in combat" wiped))
+
+;; Fleeing: even odds; failure hands the monsters a free round.
+(let* ((m (parse-map *art* :name "test"))
+       (g (new-game m :party (list (%combat-hero)))))
+  (start-combat g '(("test rat" 1)))
+  (check "flee success" :fled (with-rng (10) (attempt-flee g)))
+  (check "combat cleared after fleeing" nil (game-combat g)))
+(let* ((m (parse-map *art* :name "test"))
+       (h (%combat-hero))
+       (g (new-game m :party (list h)))
+       (msgs (watch-messages g)))
+  (start-combat g '(("test rat" 1)))
+  (check "flee failure is ongoing" :ongoing
+         (with-rng (60 0 11 1) (attempt-flee g)))
+  (check "free round hurt the party" 6 (hero-hp h))
+  (check-true "no escape message"
+              (find-if (lambda (s) (search "No escape" s)) (funcall msgs))))
+
+(check-error "combat-round without combat"
+  (combat-round (new-game (parse-map *art*))))
+(check-error "attempt-flee without combat"
+  (attempt-flee (new-game (parse-map *art*))))
+
+;; The encounter special starts combat and skips the remaining ops.
+(let* ((m (parse-map *art* :name "test"))
+       (g (new-game m :party (list (%combat-hero))))
+       (msgs (watch-messages g)))
+  (setf (cell-special m 1 0) '((encounter ("test rat" 1))
+                               (message "never shown")))
+  (turn-right g)
+  (check "moving onto an encounter still reports the step" :moved
+         (move-party g :forward))
+  (check-true "encounter started combat" (game-combat g))
+  (check "ops after encounter are skipped" '("You face 1 test rat!")
+         (funcall msgs)))
+
+;;; ---------------------------------------------------------------------
+;;; Map files with a story layer
+
+(with-open-file (s "tests/tmp.map" :direction :output :if-exists :supersede)
+  (write-string "+-+-+
+|@  |
++-+-+
+
+;; the story layer
+(special (1 0) (message \"hello\") (set-flag :was-here))
+" s))
+(let ((m (load-map-file "tests/tmp.map")))
+  (check "map file art still parses" 2 (dungeon-map-width m))
+  (check "special read from map file"
+         '((message "hello") (set-flag :was-here))
+         (cell-special m 1 0))
+  (check "cells without specials" nil (cell-special m 0 0)))
+
+(with-open-file (s "tests/tmp.map" :direction :output :if-exists :supersede)
+  (write-string "+-+
+|@|
++-+
+(special (5 5) (message \"nope\"))
+" s))
+(check-error "out-of-range special coordinates rejected"
+  (load-map-file "tests/tmp.map"))
+
+(with-open-file (s "tests/tmp.map" :direction :output :if-exists :supersede)
+  (write-string "+-+
+|@|
++-+
+(frobnicate 1)
+" s))
+(check-error "unknown map form rejected" (load-map-file "tests/tmp.map"))
+(delete-file "tests/tmp.map")
+
+;; The shipped cellar map carries its story layer.
+(let ((m (load-map-file "data/cellar.map")))
+  (check-true "cellar start special" (cell-special m 0 0))
+  (check-true "cellar stairs-down special" (cell-special m 3 2)))
+
+;;; ---------------------------------------------------------------------
+;;; Save games
+
+(with-open-file (s "tests/tmp.map" :direction :output :if-exists :supersede)
+  (write-string "+-+-+-+
+|@  | |
++ +D+ +
+| |  <|
++-+-+-+
+
+(special (1 0) (message \"dusty\"))
+" s))
+
+(let* ((m (load-map-file "tests/tmp.map"))
+       (a (with-rng (5) (make-hero "Alva" :tester)))
+       (b (with-rng (5) (make-hero "Berk" :tester)))
+       (g (new-game m :party (list a b))))
+  (turn-right g)
+  (move-party g :forward)               ; to (1,0)
+  (set-flag g :quest 42)
+  (set-flag g '(:seen "door") t)
+  (damage-hero g a 3)
+  (setf (hero-xp b) 60)
+  (incf (hero-gold b) 17)
+  (save-game g "tests/tmp-save.lisp")
+  (let ((g2 (load-game "tests/tmp-save.lisp")))
+    (check "loaded position" '(1 0) (list (game-x g2) (game-y g2)))
+    (check "loaded facing" +east+ (game-facing g2))
+    (check "loaded flag value" 42 (flag g2 :quest))
+    (check "loaded equal-key flag" t (flag g2 '(:seen "door")))
+    (check "loaded party size" 2 (length (game-party g2)))
+    (let ((a2 (first (game-party g2)))
+          (b2 (second (game-party g2))))
+      (check "loaded hero name" "Alva" (hero-name a2))
+      (check "loaded hero class" :tester (hero-class a2))
+      (check "loaded hero damage taken" 5 (hero-hp a2))
+      (check "loaded hero max hp" 8 (hero-max-hp a2))
+      (check "loaded hero xp" 60 (hero-xp b2))
+      (check "loaded hero gold" 17 (hero-gold b2)))
+    (check-true "loaded knowledge: visited cell explored"
+                (cell-explored-p (game-knowledge g2) 1 0))
+    (check "loaded knowledge: unseen cell unexplored" nil
+           (cell-explored-p (game-knowledge g2) 1 1))
+    (check-true "loaded knowledge: seen wall known"
+                (wall-known-p (game-knowledge g2) 1 0 :north))
+    (check "loaded map keeps its story layer"
+           '((message "dusty")) (cell-special (game-map g2) 1 0))))
+
+;; Saving mid-combat is refused; junk files are rejected on load.
+(let* ((m (parse-map *art* :name "test"))
+       (g (new-game m :party (list (%combat-hero)))))
+  (start-combat g '(("test rat" 1)))
+  (check-error "no saving during combat" (save-game g "tests/tmp-save.lisp")))
+(check-error "load-game rejects non-save files"
+  (load-game "tests/tmp.map"))
+(delete-file "tests/tmp.map")
+(delete-file "tests/tmp-save.lisp")
+
+;;; ---------------------------------------------------------------------
 ;;; Amiga front-end smoke test (real Intuition window + graphics.library
 ;;; calls; only runs when this suite is loaded under AmigaOS clamiga).
 
@@ -335,6 +814,31 @@
              (%amiga-status rp g bx status-y
                             (- *amiga-win-width* bx 10) "Smoke test")
              t))))
+
+;; GadTools menu strip (creation/layout via WITH-VISUAL-INFO/WITH-MENUS)
+;; and the party roster's rastport font-metric line spacing.
+#+amigaos
+(let* ((m (parse-map *art* :name "test"))
+       (a (with-rng (5) (make-hero "Alva" :tester)))
+       (b (with-rng (5) (make-hero "Berk" :tester)))
+       (g (new-game m :party (list a b))))
+  (check "amiga-ui menu strip and party roster draw without error" t
+         (amiga.intuition:with-pub-screen (scr)
+           (amiga.gadtools:with-visual-info (vi scr)
+             (amiga.intuition:with-window
+                 (win :title "Lambda's Tale Test"
+                      :left 20 :top 20
+                      :width *amiga-win-width* :height *amiga-win-height*
+                      :idcmp amiga.intuition:+idcmp-closewindow+)
+               (amiga.gadtools:with-menus (menu *menu-entries* vi win)
+                 (let* ((rp (amiga.intuition:window-rastport win))
+                        (bx (+ (amiga.intuition:window-border-left win) 6))
+                        (by (+ (amiga.intuition:window-border-top win) 6))
+                        (status-y (+ by *amiga-fp-height* 18))
+                        (party-y (+ status-y 18)))
+                   (%amiga-party rp g bx party-y
+                                 (- *amiga-win-width* bx 10))
+                   t)))))))
 
 ;;; ---------------------------------------------------------------------
 ;;; Summary
