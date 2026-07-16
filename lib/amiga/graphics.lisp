@@ -18,6 +18,7 @@
    "GFX-TEXT" "TEXT-LENGTH"
    ;; RastPort accessors
    "RASTPORT-FGPEN" "RASTPORT-BGPEN" "RASTPORT-CP-X" "RASTPORT-CP-Y"
+   "RASTPORT-TX-HEIGHT" "RASTPORT-TX-BASELINE"
    ;; Draw modes
    "+JAM1+" "+JAM2+" "+COMPLEMENT+" "+INVERSVID+"))
 
@@ -59,10 +60,12 @@
 ;;; ================================================================
 
 (ffi:defcstruct rastport
-  (fgpen    :u8   25)   ; FgPen (foreground)
-  (bgpen    :u8   26)   ; BgPen (background)
-  (cp-x     :u16  36)   ; current pen X
-  (cp-y     :u16  38))  ; current pen Y
+  (fgpen       :u8   25)   ; FgPen (foreground)
+  (bgpen       :u8   26)   ; BgPen (background)
+  (cp-x        :u16  36)   ; current pen X
+  (cp-y        :u16  38)   ; current pen Y
+  (tx-height   :u16  58)   ; rp_TxHeight: current font height in pixels
+  (tx-baseline :u16  62))  ; rp_TxBaseline: baseline offset from glyph top
 
 ;;; ================================================================
 ;;; Drawing functions
