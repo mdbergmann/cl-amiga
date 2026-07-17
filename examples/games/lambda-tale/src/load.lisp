@@ -3,6 +3,7 @@
 
 (load "src/package.lisp")
 (load "src/dice.lisp")
+(load "src/ilbm.lisp")
 (load "src/map.lisp")
 (load "src/knowledge.lisp")
 (load "src/view.lisp")

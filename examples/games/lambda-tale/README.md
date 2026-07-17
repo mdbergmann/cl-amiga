@@ -71,6 +71,7 @@ borderless backdrop window:
 ```
 src/package.lisp     package TALE
 src/dice.lisp        dice notation ("2d6+1") and the scriptable *RNG*
+src/ilbm.lisp        IFF ILBM image reader/writer (pure CL, ByteRun1)
 src/map.lisp         dungeon map model + ASCII map parser + story layer
 src/knowledge.lisp   the party's automap knowledge (explored cells, seen walls)
 src/view.lisp        first-person view geometry (view cone, perspective
@@ -88,6 +89,8 @@ src/main.lisp        host walkabout entry point
 src/main-amiga.lisp  Amiga walkabout entry point
 data/*.map           maps as ASCII art + story forms
 data/campaign.lisp   demo campaign: hero classes, monsters, starting party
+data/gfx/*.iff       wall-piece ILBM assets (regenerate: make assets)
+tools/gen-walls.lisp procedural wall-art generator
 tests/run-tests.lisp test suite (make test)
 specs/               design constraints (UI layout, map scale, screens)
 ```
@@ -98,6 +101,26 @@ and the view-depth cap, and `view-display-list` flattens the result into
 line/door primitives that both the ASCII renderer and the Amiga
 `draw-line` renderer consume.  Walking and turning call `observe`, which
 records every wall the party can currently see into the automap.
+
+## Wall graphics
+
+On the Amiga the first-person view is drawn with **blitted wall
+graphics** (M3): every wall the view can show falls into a fixed
+Bard's Tale-style screen slot (`view-blit-list` — front walls, receding
+side walls, walls seen through open sides, each with a door variant, at
+four depths), and each slot is filled by a pre-rendered bitmap piece.
+The pieces live in `data/gfx/` as **IFF ILBM** files, loaded by the
+pure-Lisp reader in `src/ilbm.lisp` and drawn by the procedural
+generator in `tools/gen-walls.lisp` (`make assets` regenerates them;
+the test suite compares the checked-in files pixel-for-pixel against
+the generator, so art and code cannot drift apart).
+
+The rendering path is **RTG-safe** — no chipset or planar assumptions,
+so it works unchanged under Picasso96/CyberGraphX/MorphOS: pieces are
+uploaded once into `AllocBitMap` bitmaps in the display's native
+format (chunky pens through `WriteChunkyPixels`) and composited
+back-to-front with `BltBitMapRastPort`.  When the assets are missing
+the view falls back to the wireframe renderer.
 
 ## Engine vs. story
 
@@ -171,7 +194,8 @@ renderers, events, specials, party, combat and save games.
   active-spells strip, 7-slot party roster, full map under `m`),
   large maps (30x30 up to 128x128), custom screen via
   `BestModeID` (RTG-aware) — see `specs/ui-and-engine.md`
-- **M3**: ILBM asset loading, blitted wall graphics — RTG-aware
-  (MorphOS / Picasso96 / CyberGraphX): no chipset or planar
-  assumptions, bitmaps via `AllocBitMap`, blits through OS calls only
+- **M3 (done)**: ILBM asset loading (`src/ilbm.lisp`), blitted wall
+  graphics — RTG-aware (MorphOS / Picasso96 / CyberGraphX): no chipset
+  or planar assumptions, bitmaps via `AllocBitMap`, blits through OS
+  calls only; procedurally generated wall-piece assets (`make assets`)
 - **M4**: town, shops, sound, polish

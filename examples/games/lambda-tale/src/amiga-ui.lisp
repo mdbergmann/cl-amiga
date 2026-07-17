@@ -36,11 +36,11 @@ Intuition tick (~10/s), driving a full unattended session.  :ESC quits.")
 ;;; Window mode uses the same PAL-screen geometry as :display :screen,
 ;;; so the window fits (and fills) a 640x256 PAL Workbench and the two
 ;;; displays lay out identically.  Opened at 0,0 — a PAL screen has no
-;;; room to spare for an offset.
+;;; room to spare for an offset.  The first-person viewport size lives
+;;; in view.lisp (*FP-VIEW-WIDTH* x *FP-VIEW-HEIGHT*) — the wall-piece
+;;; assets are drawn for exactly those planes.
 (defparameter *amiga-win-width* 640)
 (defparameter *amiga-win-height* 256)
-(defparameter *amiga-fp-width* 240)
-(defparameter *amiga-fp-height* 130)
 
 ;;; :display :screen geometry — nominal PAL hires; BEST-MODE-ID promotes
 ;;; it to a suitable RTG mode on Picasso96/CyberGraphX/MorphOS.
@@ -86,12 +86,12 @@ Intuition tick (~10/s), driving a full unattended session.  :ESC quits.")
          (party-y (- bottom (* lh +party-limit+)))
          (status-y (- party-y lh 4))
          (content-bottom (- status-y 6))
-         (fp-h (min *amiga-fp-height* (- content-bottom by)))
-         (spells-x (+ bx *amiga-fp-width* 12))
+         (fp-h (min *fp-view-height* (- content-bottom by)))
+         (spells-x (+ bx *fp-view-width* 12))
          (log-x (+ spells-x *amiga-spells-width* 12)))
     (%make-ui-layout :bx bx :by by :right right :bottom bottom
                      :lh lh :base base
-                     :fp-w *amiga-fp-width* :fp-h fp-h
+                     :fp-w *fp-view-width* :fp-h fp-h
                      :spells-x spells-x :spells-w *amiga-spells-width*
                      :log-x log-x :log-w (- right log-x)
                      :col-h (- content-bottom by)
@@ -108,21 +108,106 @@ Intuition tick (~10/s), driving a full unattended session.  :ESC quits.")
   (amiga.gfx:draw-line rp (+ cx hw) (- cy hh) (+ cx hw) (+ cy hh))
   (amiga.gfx:set-a-pen rp 1))
 
-(defun %amiga-draw-fp (rp game ox oy w h)
-  "Draw the wireframe first-person view into the rastport at (OX,OY)."
+(defun %amiga-draw-fp (rp game ox oy w h &optional walls)
+  "Draw the first-person view into the rastport at (OX,OY): blitted
+wall graphics when WALLS (the loaded piece bitmaps) is available and
+the viewport has its full asset size, the wireframe otherwise."
   (amiga.gfx:set-a-pen rp 0)
   (amiga.gfx:rect-fill rp ox oy (+ ox w -1) (+ oy h -1))
   (amiga.gfx:set-a-pen rp 1)
   (let ((slices (compute-view (game-map game) (game-x game) (game-y game)
                               (game-facing game)))
         (planes (view-planes w h)))
-    (dolist (prim (view-display-list slices planes))
-      (ecase (first prim)
-        (:line (destructuring-bind (x0 y0 x1 y1) (rest prim)
-                 (amiga.gfx:draw-line rp (+ ox x0) (+ oy y0)
-                                      (+ ox x1) (+ oy y1))))
-        (:door (destructuring-bind (cx cy hw hh) (rest prim)
-                 (%amiga-door-rect rp (+ ox cx) (+ oy cy) hw hh)))))))
+    (if (and walls (= w *fp-view-width*) (= h *fp-view-height*))
+        (dolist (rec (view-blit-list slices planes))
+          (destructuring-bind (piece x y pw ph) rec
+            (let ((bm (gethash piece walls)))
+              (when bm
+                (amiga.gfx:blt-bitmap-rastport bm 0 0 rp
+                                               (+ ox x) (+ oy y) pw ph)))))
+        (dolist (prim (view-display-list slices planes))
+          (ecase (first prim)
+            (:line (destructuring-bind (x0 y0 x1 y1) (rest prim)
+                     (amiga.gfx:draw-line rp (+ ox x0) (+ oy y0)
+                                          (+ ox x1) (+ oy y1))))
+            (:door (destructuring-bind (cx cy hw hh) (rest prim)
+                     (%amiga-door-rect rp (+ ox cx) (+ oy cy) hw hh))))))))
+
+;;; ---------------------------------------------------------------------
+;;; Wall-piece assets (M3): the data/gfx ILBMs loaded into offscreen
+;;; bitmaps once per session.  RTG-safe: the window's own bitmap is the
+;;; AllocBitMap friend and sets the depth, so the pieces live in the
+;;; display's native format and every blit copies all its planes;
+;;; pixels go in as chunky bytes (WRITE-CHUNKY), never as planes.
+
+(defparameter *gfx-dir* "data/gfx/"
+  "Where the wall-piece ILBMs live, relative to the game directory.")
+
+(defun %window-bitmap (rp)
+  "The BitMap a window rastport renders into (rp_BitMap)."
+  (ffi:make-foreign-pointer (ffi:peek-u32 rp 4)))
+
+(defun %load-wall-assets (rp log)
+  "Load every wall piece from *GFX-DIR* into an offscreen bitmap;
+returns a hash of piece key -> bitmap, or NIL (falling back to the
+wireframe view) when the assets are missing or unreadable."
+  (let ((walls (make-hash-table :test #'equal))
+        (friend (%window-bitmap rp))
+        (depth (max 2 (amiga.gfx:get-bitmap-attr (%window-bitmap rp)
+                                                 amiga.gfx:+bma-depth+))))
+    (handler-case
+        (dolist (piece (wall-piece-names) walls)
+          (let ((file (concatenate 'string *gfx-dir* (wall-piece-file piece))))
+            (unless (probe-file file)
+              (error "missing wall asset ~A" file))
+            (let* ((img (read-ilbm file))
+                   (bm (amiga.gfx:alloc-bitmap (image-width img)
+                                               (image-height img)
+                                               depth
+                                               :friend friend)))
+              (setf (gethash piece walls) bm)
+              (amiga.gfx:with-bitmap-rastport (brp bm)
+                (amiga.gfx:write-chunky brp 0 0
+                                        (image-width img)
+                                        (image-height img)
+                                        (image-pixels img))))))
+      (error (e)
+        (%free-wall-assets walls)
+        (when log
+          (log-message log (format nil "No wall graphics (~A); wireframe view."
+                                   e)))
+        nil))))
+
+;;; The layout is designed around topaz 8 (10px line height): the fixed
+;;; pixel columns in the party pane, the glyph budgets in the strips
+;;; and the full 240x130 asset viewport all assume it.  RTG Workbenches
+;;; often default to a bigger system font, which would blow the layout
+;;; up and shrink the viewport below the wall assets' size — so the
+;;; game selects topaz 8 (a ROM font) on its rastport explicitly.
+
+(defun %with-game-font (fn)
+  "Call FN with the topaz 8 TextFont (NIL when unavailable — the
+layout then uses whatever the rastport carries); closes the font after
+FN returns."
+  (let ((font (amiga.gfx:open-font "topaz.font" 8)))
+    (unwind-protect
+        (funcall fn font)
+      (when font (amiga.gfx:close-font font)))))
+
+(defun %game-rastport (win font)
+  "The window's rastport with the game font selected."
+  (let ((rp (amiga.intuition:window-rastport win)))
+    (when font (amiga.gfx:set-font rp font))
+    rp))
+
+(defun %free-wall-assets (walls)
+  "Free the piece bitmaps; safe to call with NIL."
+  (when walls
+    (maphash (lambda (piece bm)
+               (declare (ignore piece))
+               (amiga.gfx:free-bitmap bm))
+             walls))
+  nil)
 
 (defun %amiga-draw-map-region (rp game ox oy cell x0 y0 vw vh full)
   "Draw automap cells [X0,X0+VW) x [Y0,Y0+VH) at (OX,OY), CELL pixels
@@ -385,9 +470,10 @@ borderless backdrop window."
                         :height *amiga-screen-height*
                         :depth *amiga-screen-depth*))
        (%game-screen-palette scr)
+       ;; no window title: on a backdrop window WA_Title still costs a
+       ;; title bar (border-top), and the screen already carries one
        (amiga.intuition:with-window
-           (win :title "Lambda's Tale"
-                :left 0 :top 0
+           (win :left 0 :top 0
                 :width (amiga.intuition:screen-width scr)
                 :height (amiga.intuition:screen-height scr)
                 :screen scr
@@ -430,13 +516,16 @@ button)."
                                  :party (when (fboundp 'default-party)
                                           (funcall 'default-party)))))
       (trigger-special game)
-      (%call-with-game-window
-       display
-       (lambda (scr win)
-         (amiga.gadtools:with-visual-info (vi scr)
-           (amiga.gadtools:with-menus (menu *menu-entries* vi win)
-             (let* ((rp (amiga.intuition:window-rastport win))
-                    (l (%amiga-layout win rp)))
+      (%with-game-font
+       (lambda (font)
+         (%call-with-game-window
+          display
+          (lambda (scr win)
+            (amiga.gadtools:with-visual-info (vi scr)
+              (amiga.gadtools:with-menus (menu *menu-entries* vi win)
+                (let* ((rp (%game-rastport win font))
+                       (l (%amiga-layout win rp))
+                       (walls (%load-wall-assets rp log)))
                (labels ((status-text ()
                           (cond ((eq over :won) "You win!  Press Q.")
                                 ((eq over :lost) "Game over.  Press Q.")
@@ -465,7 +554,8 @@ button)."
                                                 (ui-layout-bx l)
                                                 (ui-layout-by l)
                                                 (ui-layout-fp-w l)
-                                                (ui-layout-fp-h l))
+                                                (ui-layout-fp-h l)
+                                                walls)
                                 (%amiga-draw-effects rp game l)
                                 (%amiga-draw-compass rp game l)
                                 (%amiga-draw-log rp log l)
@@ -531,23 +621,26 @@ button)."
                                      (#\m (setf mode :map)
                                           (redraw)))
                                    nil)))))
-                 (redraw)
-                 (amiga.intuition:event-loop win
-                   (amiga.intuition:+idcmp-closewindow+ (msg)
-                     (return))
-                   (amiga.intuition:+idcmp-menupick+ (msg)
-                     (let ((code (amiga.intuition:msg-code msg)))
-                       (unless (= code +menu-null+)
-                         (case (%menu-item-number code)
-                           (0 (do-save) (redraw))
-                           (1 (do-load) (redraw))
-                           (3 (return))))))
-                   (amiga.intuition:+idcmp-vanillakey+ (msg)
-                     (let* ((code (amiga.intuition:msg-code msg))
-                            (c (if (= code 27) :esc (code-char code))))
-                       (when (eq (act c) :quit)
-                         (return))))
-                   (amiga.intuition:+idcmp-intuiticks+ (msg)
-                     (when *autoplay*
-                       (when (eq (act (pop *autoplay*)) :quit)
-                         (return))))))))))))))
+                 (unwind-protect
+                     (progn
+                       (redraw)
+                       (amiga.intuition:event-loop win
+                         (amiga.intuition:+idcmp-closewindow+ (msg)
+                           (return))
+                         (amiga.intuition:+idcmp-menupick+ (msg)
+                           (let ((code (amiga.intuition:msg-code msg)))
+                             (unless (= code +menu-null+)
+                               (case (%menu-item-number code)
+                                 (0 (do-save) (redraw))
+                                 (1 (do-load) (redraw))
+                                 (3 (return))))))
+                         (amiga.intuition:+idcmp-vanillakey+ (msg)
+                           (let* ((code (amiga.intuition:msg-code msg))
+                                  (c (if (= code 27) :esc (code-char code))))
+                             (when (eq (act c) :quit)
+                               (return))))
+                         (amiga.intuition:+idcmp-intuiticks+ (msg)
+                           (when *autoplay*
+                             (when (eq (act (pop *autoplay*)) :quit)
+                               (return))))))
+                   (setf walls (%free-wall-assets walls))))))))))))))
