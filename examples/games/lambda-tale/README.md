@@ -93,6 +93,7 @@ data/*.map           maps as ASCII art + story forms
 data/campaign.lisp   demo campaign: hero classes, monsters, starting party
 data/gfx/*.iff       the demo tile pack: wall pieces + floor/ceiling
                      ILBM assets (regenerate: make assets)
+gfx-city-demo/       example custom tile pack (night-sky city palette)
 tools/gen-walls.lisp procedural wall-art generator
 tests/run-tests.lisp test suite (make test)
 specs/               design constraints (UI layout, map scale, screens)
@@ -168,7 +169,10 @@ walls are composited over the backdrop with `BltMaskBitMapRastPort`
 (cookie-cut, RTG-safe); the `ceiling.iff`/`floor.iff` backdrops are
 opaque, so pen 0 there is plain black.
 
-See the "Backdrop slots" and wall-art sections of
+`gfx-city-demo/` is a worked example: the demo walls under a night
+sky and a tan street with their own `palette.iff` (regenerate with
+`gfx-city-demo/make-pack.lisp`, try it with `gfx-city-demo/run.lisp`).
+See also the "Backdrop slots" and wall-art sections of
 `tests/run-tests.lisp` for executable examples of the contract.
 
 ## Engine vs. story
