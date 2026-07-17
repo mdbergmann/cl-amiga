@@ -10,9 +10,10 @@
 
 (in-package :tale)
 
-;; Default: a window on the Workbench screen.  For the real thing —
-;; an own PAL custom screen (RTG-aware) — run:
-;;   (play-amiga "data/cellar.map" :display :screen)
+;; Opens the game's own PAL 640x256 16-color custom screen (RTG-aware
+;; via BestModeIDA).  For a development view in a window on the
+;; Workbench screen instead:
+;;   (play-amiga "data/cellar.map" :display :window)
 (play-amiga)
 
 (cl-user::quit 0)

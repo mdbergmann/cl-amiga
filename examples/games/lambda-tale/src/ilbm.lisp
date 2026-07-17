@@ -47,6 +47,30 @@
 (defun (setf pixel-ref) (pen image x y)
   (setf (aref (image-pixels image) (+ (* y (image-width image)) x)) pen))
 
+(defun image-transparent-p (image &optional (transparent 0))
+  "True when IMAGE uses the TRANSPARENT pen anywhere — i.e. it needs a
+cookie-cut mask rather than a plain opaque blit."
+  (find transparent (image-pixels image)))
+
+(defun mask-bytes (width height pixels &optional (transparent 0))
+  "A cookie-cut mask for the Amiga's BltMaskBitMapRastPort: one
+bitplane, row-major, MSB first (bit 7 = leftmost pixel of each byte),
+rows padded to a 16-pixel word like ILBM planes, with a 1 bit wherever
+PIXELS (row-major pen indices, WIDTH x HEIGHT) is not TRANSPARENT.
+Returns (VALUES byte-vector bytes-per-row).  Pure — the Amiga front
+end copies the bytes into a chip-RAM plane."
+  (let* ((bpr (%row-bytes width))
+         (out (make-array (* bpr height)
+                          :element-type '(unsigned-byte 8)
+                          :initial-element 0)))
+    (dotimes (y height)
+      (dotimes (x width)
+        (unless (= (aref pixels (+ (* y width) x)) transparent)
+          (let ((byte (+ (* y bpr) (ash x -3)))
+                (bit (- 7 (logand x 7))))
+            (setf (aref out byte) (logior (aref out byte) (ash 1 bit)))))))
+    (values out bpr)))
+
 ;;; ---------------------------------------------------------------------
 ;;; Big-endian byte plumbing
 

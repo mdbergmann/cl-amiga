@@ -17,8 +17,9 @@ make run     # play the demo campaign on data/cellar.map
 
 Walkabout keys: `w` forward, `s` back-step (keeps facing), `a`/`d` turn,
 `m` full-screen map view (`m`/`Esc` back, `f` toggles the omniscient
-debug view there), `S`/`L` save/load (`tale.sav`), `q` quit.  In
-combat: `a` attack, `d` defend, `f` flee.
+debug view there), `1`–`7` open that party member's character sheet
+(`1`–`7` switch heroes there, `Esc` back), `S`/`L` save/load
+(`tale.sav`), `q` quit.  In combat: `a` attack, `d` defend, `f` flee.
 
 The screen is split Bard's Tale style (see
 [specs/ui-and-engine.md](specs/ui-and-engine.md)): the wireframe
@@ -27,16 +28,20 @@ first-person view on the left, the active-spells strip next to it
 compass rose at its foot showing the party's facing, the message
 log filling the right column — newest line at the bottom, older lines
 scrolling up; each message starts with `>` and long ones word-wrap
-onto indented continuation lines — and the status line plus the party roster (up to
-7 rows) at the bottom.  The automap lives under `m`; levels can be
+onto indented continuation lines — and the status line plus the
+numbered party roster (up to 7 rows, each row's number opening its
+character sheet) at the bottom.  The automap lives under `m`; levels can be
 large (30x30 like Bard's Tale I, up to 128x128).  On the Amiga the
 window uses the same PAL 640x256 geometry as the custom screen, so
 both displays lay out identically.
 
-On AmigaOS (the repo is mounted as `CLAmiga:` in the FS-UAE setup), the
-game runs in an Intuition window; Save/Load/Quit sit in the window's
-menu strip (right mouse button, GadTools menus with the usual
-right-Amiga shortcuts):
+On AmigaOS (the repo is mounted as `CLAmiga:` in the FS-UAE setup),
+the game opens its **own screen** — nominal PAL 640x256 hires,
+16 colors, picked RTG-aware through `graphics.library/BestModeIDA`
+(so Picasso96/CyberGraphX/MorphOS promote it to a suitable RTG mode),
+with the tile pack's palette and a borderless backdrop window;
+Save/Load/Quit sit in the menu strip (right mouse button, GadTools
+menus with the usual right-Amiga shortcuts):
 
 ```
 cd CLAmiga:examples/games/lambda-tale
@@ -56,14 +61,11 @@ CLAmiga:build/amiga/clamiga --heap 8M --non-interactive --load tests/run-tests.l
 On AmigaOS the suite additionally runs GUI smoke tests and two
 unattended `*autoplay*` sessions (window and `:display :screen`).
 
-For the real thing the game opens its **own screen** instead of a
-window — nominal PAL 640x256 hires, picked RTG-aware through
-`graphics.library/BestModeIDA` (so Picasso96/CyberGraphX/MorphOS
-promote it to a suitable RTG mode), with a dungeon palette and a
-borderless backdrop window:
+For development there is also a window view on the Workbench screen
+(no custom palette — the window keeps the Workbench colors):
 
 ```lisp
-(tale:play-amiga "data/cellar.map" :display :screen)
+(tale:play-amiga "data/cellar.map" :display :window)
 ```
 
 ## Layout
@@ -89,7 +91,8 @@ src/main.lisp        host walkabout entry point
 src/main-amiga.lisp  Amiga walkabout entry point
 data/*.map           maps as ASCII art + story forms
 data/campaign.lisp   demo campaign: hero classes, monsters, starting party
-data/gfx/*.iff       wall-piece ILBM assets (regenerate: make assets)
+data/gfx/*.iff       the demo tile pack: wall pieces + floor/ceiling
+                     ILBM assets (regenerate: make assets)
 tools/gen-walls.lisp procedural wall-art generator
 tests/run-tests.lisp test suite (make test)
 specs/               design constraints (UI layout, map scale, screens)
@@ -118,9 +121,55 @@ the generator, so art and code cannot drift apart).
 The rendering path is **RTG-safe** — no chipset or planar assumptions,
 so it works unchanged under Picasso96/CyberGraphX/MorphOS: pieces are
 uploaded once into `AllocBitMap` bitmaps in the display's native
-format (chunky pens through `WriteChunkyPixels`) and composited
-back-to-front with `BltBitMapRastPort`.  When the assets are missing
-the view falls back to the wireframe renderer.
+format (chunky pens through `WriteChunkyPixels`).  Each frame draws the
+ceiling/floor backdrop first, then composites the walls back-to-front
+over it — the receding side pieces **cookie-cut** through a 1-bit mask
+(`BltMaskBitMapRastPort`, transparent where the piece uses pen 0), so
+the backdrop shows through the corners they don't cover instead of
+black wedges.  When the assets are missing the view falls back to the
+wireframe renderer.
+
+## Custom tile packs
+
+The demo art is replaceable: a **tile pack** is a directory of IFF
+ILBM files, selected per session with `play-amiga`'s `:gfx-dir`
+argument (default `"data/gfx/"`, the demo pack):
+
+```lisp
+(tale:play-amiga "data/cellar.map" :display :screen
+                                   :gfx-dir "gfx/city/")
+```
+
+A pack holds the 40 wall pieces plus optional extras:
+
+- `floor.iff` / `ceiling.iff` — the Bard's Tale split backdrop: the
+  ceiling fills the view above the horizon, the floor below, and the
+  walls blit on top, carving the perspective (a city pack draws sky
+  and street here).  Missing files leave the region black.
+- `palette.iff` — any ILBM whose CMAP provides the pack's colors.
+
+`(tale:print-tile-manifest)` prints the full contract — every
+filename with its exact pixel size — so custom art can be drawn to
+spec; mis-sized pieces are rejected at load time with a message
+naming the file and both sizes.
+
+The custom screen is 16 colors: **pens 0–3 are fixed UI colors**
+(black, white, grey, amber — text and wireframe stay readable in any
+pack), **pens 4–15 belong to the pack**, taken from `palette.iff`'s
+CMAP when present, else from `front-0.iff`'s.  Pack colors need
+`:display :screen` — a window on the Workbench screen keeps the
+Workbench palette.
+
+**Transparency:** in a *wall* piece **pen 0 is transparent** — the
+ceiling/floor backdrop shows through it, so the receding side walls
+don't stamp black wedges over the sky/floor.  Paint solid black inside
+a wall (mortar, joints, door frames) with **pen 4**, not pen 0.  The
+walls are composited over the backdrop with `BltMaskBitMapRastPort`
+(cookie-cut, RTG-safe); the `ceiling.iff`/`floor.iff` backdrops are
+opaque, so pen 0 there is plain black.
+
+See the "Backdrop slots" and wall-art sections of
+`tests/run-tests.lisp` for executable examples of the contract.
 
 ## Engine vs. story
 
@@ -198,4 +247,11 @@ renderers, events, specials, party, combat and save games.
   graphics — RTG-aware (MorphOS / Picasso96 / CyberGraphX): no chipset
   or planar assumptions, bitmaps via `AllocBitMap`, blits through OS
   calls only; procedurally generated wall-piece assets (`make assets`)
-- **M4**: town, shops, sound, polish
+- **M3.5 (done)**: swappable tile packs (`:gfx-dir`,
+  `print-tile-manifest`), 16-color custom screen with per-pack
+  palettes, ceiling/floor backdrop
+- **M4 (in progress)**: the game proper, kept simple —
+  numbered party roster + character sheet (`1`–`7`, **done**); next
+  town (map + location menu) and shops (items + gold); then sound and
+  polish.  The Bard's Tale II chrome and day/night sky are parked
+  until the game content lands.

@@ -58,6 +58,25 @@ rolled 3d6 in the order str, dex, iq, con, lck."
   "Maximum roster size: six regular heroes plus one guest slot (a
 summoned/charmed monster or story NPC, Bard's Tale tradition).")
 
+(defun hero-class-title (hero)
+  "The hero's class as a display string: :war-mage -> \"War Mage\"."
+  (string-capitalize (substitute #\Space #\- (string (hero-class hero)))))
+
+(defun hero-summary-lines (hero)
+  "The character sheet as a list of text lines — the full stat block a
+player sees when they open a roster slot.  Pure (no I/O), so both the
+Amiga sheet view and the tests render from the same source."
+  (list
+   (format nil "~A the ~A" (hero-name hero) (hero-class-title hero))
+   (format nil "Level ~D    XP ~D" (hero-level hero) (hero-xp hero))
+   (format nil "HP ~D/~D    AC ~D" (hero-hp hero) (hero-max-hp hero)
+           (hero-ac hero))
+   (format nil "STR ~D  DEX ~D  IQ ~D"
+           (hero-str hero) (hero-dex hero) (hero-iq hero))
+   (format nil "CON ~D  LCK ~D" (hero-con hero) (hero-lck hero))
+   (format nil "Gold ~D gp~@[   ~A~]" (hero-gold hero)
+           (unless (hero-alive-p hero) "(down)"))))
+
 (defun party-full-p (game)
   (>= (length (game-party game)) +party-limit+))
 

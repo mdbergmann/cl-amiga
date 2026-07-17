@@ -11,6 +11,7 @@
    ;; ILBM images
    #:make-image #:read-ilbm #:write-ilbm #:pixel-ref
    #:image-width #:image-height #:image-depth #:image-palette #:image-pixels
+   #:image-transparent-p #:mask-bytes
    ;; map model
    #:parse-map #:load-map-file #:map-viewport
    #:dungeon-map-name #:dungeon-map-width #:dungeon-map-height
@@ -22,7 +23,8 @@
    #:cell-explored-p #:wall-known-p
    ;; first-person view geometry
    #:+view-depth+ #:compute-view #:view-planes #:view-display-list
-   #:view-blit-list #:wall-piece-rect #:wall-piece-names
+   #:view-blit-list #:wall-piece-rect #:wall-piece-names #:wall-piece-file
+   #:backdrop-rects #:print-tile-manifest
    #:view-slice-depth #:view-slice-cx #:view-slice-cy
    #:view-slice-front #:view-slice-left #:view-slice-right
    #:view-slice-lx #:view-slice-ly #:view-slice-left-front
@@ -45,6 +47,7 @@
    #:hero-xp #:hero-max-hp #:hero-hp #:hero-str #:hero-dex #:hero-iq
    #:hero-con #:hero-lck #:hero-ac #:hero-damage #:hero-gold
    #:hero-alive-p #:alive-heroes #:party-alive-p #:front-ranks
+   #:hero-class-title #:hero-summary-lines
    #:+party-limit+ #:party-full-p #:join-party
    #:damage-hero #:heal-hero #:stat-bonus #:award-xp #:xp-for-level
    ;; combat
@@ -58,6 +61,6 @@
    ;; rendering
    #:render-dungeon #:render-game #:render-first-person #:beside
    ;; interactive walkabout
-   #:play #:play-amiga))
+   #:play #:play-amiga #:*gfx-dir*))
 
 (in-package :tale)

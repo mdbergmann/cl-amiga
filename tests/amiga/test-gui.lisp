@@ -229,6 +229,29 @@
               (amiga.gfx:read-pixel drp 12 3)   ; (2,1) -> (12,3)
               (amiga.gfx:read-pixel drp 9 3))))))  ; outside the blit
 
+;; BltMaskBitMapRastPort: cookie-cut a source through a 1-bit mask so
+;; only the masked-in pixels reach the destination (the rest keep what
+;; was there — how transparent wall corners let a backdrop show).
+(check "graphics-blt-mask-bitmap-rastport" '(3 0 0)
+  (amiga.gfx:with-bitmap (src 32 8 2)
+    (amiga.gfx:with-bitmap (dst 32 8 2)
+      ;; source: pen 3 across a 2x2 block at (0,0)
+      (amiga.gfx:with-bitmap-rastport (srp src)
+        (amiga.gfx:write-chunky srp 0 0 2 2 #(3 3 3 3)))
+      ;; mask: 16-wide blit -> 2 bytes/row, 4 rows; only row0 pixel0 set
+      (let ((mask (amiga:alloc-chip 8)))
+        (unwind-protect
+             (progn
+               (dotimes (i 8) (ffi:poke-u8 mask 0 i))
+               (ffi:poke-u8 mask #x80 0)
+               (amiga.gfx:with-bitmap-rastport (drp dst)
+                 (amiga.gfx:blt-mask-bitmap-rastport src 0 0 drp 10 2 16 4
+                                                     mask)
+                 (list (amiga.gfx:read-pixel drp 10 2)   ; masked in: 3
+                       (amiga.gfx:read-pixel drp 11 2)   ; src 3 but masked out
+                       (amiga.gfx:read-pixel drp 9 2)))) ; outside the blit
+          (amiga:free-chip mask))))))
+
 ; --- GadTools tests ---
 (require "amiga/gadtools")
 

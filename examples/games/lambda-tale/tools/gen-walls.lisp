@@ -1,9 +1,12 @@
 ;;; Lambda's Tale — procedural wall-art generator (M3).
 ;;;
-;;; Draws every wall piece named by WALL-PIECE-NAMES as a 4-color image
-;;; (the dungeon palette: black, white, grey, amber) sized to its
-;;; fixed screen slot for the *FP-VIEW-WIDTH* x *FP-VIEW-HEIGHT*
+;;; Draws every wall piece named by WALL-PIECE-NAMES (depth-3 images:
+;;; pen 0 transparent, plus white/grey/amber/black), plus the demo
+;;; ceiling/floor backdrops (BACKDROP-RECTS, opaque depth-2), sized to
+;;; their fixed screen slots for the *FP-VIEW-WIDTH* x *FP-VIEW-HEIGHT*
 ;;; perspective planes, and writes them as ILBM files into data/gfx/.
+;;; The receding side pieces leave their ceiling/floor corners at pen 0
+;;; so the backdrop shows through them (cookie-cut blit on the Amiga).
 ;;;
 ;;; Definitions only — load src/load.lisp first, then this file, then
 ;;; call (generate-wall-assets).  tools/make-assets.lisp is the script
@@ -19,14 +22,21 @@
 (in-package :tale)
 
 ;;; The dungeon palette, 8-bit components (SET-RGB4 nibbles x 17):
-;;; pen 0 black, pen 1 white, pen 2 grey, pen 3 amber.
+;;; pen 0 background, pen 1 white, pen 2 grey, pen 3 amber, pen 4 black.
+;;; Pen 0 is the TRANSPARENT key in wall pieces (the ceiling/floor
+;;; backdrop shows through it), so opaque black inside a wall — mortar,
+;;; joints, door frames — is drawn with pen 4, not pen 0.  Depth 3
+;;; (8 pens) holds pen 4; pens 5-7 are spare black.  The backdrops
+;;; (ceiling/floor) are opaque and keep pen 0 as plain black.
 (defparameter *wall-palette*
-  #((0 0 0) (255 255 255) (136 136 136) (255 170 51)))
+  #((0 0 0) (255 255 255) (136 136 136) (255 170 51)
+    (0 0 0) (0 0 0) (0 0 0) (0 0 0)))
 
-(defconstant +pen-bg+ 0)
+(defconstant +pen-bg+ 0)      ; transparent key in wall pieces
 (defconstant +pen-edge+ 1)
 (defconstant +pen-brick+ 2)
 (defconstant +pen-door+ 3)
+(defconstant +pen-mortar+ 4)  ; opaque black: mortar, joints, door frames
 
 (defparameter *brick-courses* 6
   "Brick courses over a full wall height.")
@@ -56,20 +66,22 @@
   "A flat brick wall filling W x H (front and flank pieces share the
 wall height at a given depth, so their brick courses line up).  DOOR
 non-NIL puts an amber door in the middle."
-  (let ((img (make-image w h 2 :palette *wall-palette*))
+  ;; Front and flank pieces fill their whole rectangle (no pen 0 left),
+  ;; so they are fully opaque — the backdrop never shows through them.
+  (let ((img (make-image w h 3 :palette *wall-palette*))
         (course (max 3 (round h *brick-courses*)))
         (brick (max 6 (round w 5))))
     (%img-fill img 0 0 (1- w) (1- h) +pen-brick+)
     ;; mortar: courses and running-bond joints
     (loop for y from course below h by course
           for row from 1
-          do (%img-fill img 0 y (1- w) y +pen-bg+)
+          do (%img-fill img 0 y (1- w) y +pen-mortar+)
              (loop for x from (if (evenp row) 0 (floor brick 2))
                      below w by brick
-                   do (%img-fill img x (- y course) x (1- y) +pen-bg+)))
+                   do (%img-fill img x (- y course) x (1- y) +pen-mortar+)))
     (loop for x from (floor brick 2) below w by brick
           do (%img-fill img x (* course (floor (1- h) course)) x (1- h)
-                        +pen-bg+))
+                        +pen-mortar+))
     ;; white edge highlight all around (the wireframe look)
     (%img-fill img 0 0 (1- w) 0 +pen-edge+)
     (%img-fill img 0 (1- h) (1- w) (1- h) +pen-edge+)
@@ -82,12 +94,13 @@ non-NIL puts an amber door in the middle."
              (dy (- h 1 dh)))
         (%img-fill img dx dy (+ dx dw -1) (- h 2) +pen-door+)
         ;; black frame + knob
-        (%img-fill img dx dy (+ dx dw -1) dy +pen-bg+)
-        (%img-fill img dx dy dx (- h 2) +pen-bg+)
-        (%img-fill img (+ dx dw -1) dy (+ dx dw -1) (- h 2) +pen-bg+)
+        (%img-fill img dx dy (+ dx dw -1) dy +pen-mortar+)
+        (%img-fill img dx dy dx (- h 2) +pen-mortar+)
+        (%img-fill img (+ dx dw -1) dy (+ dx dw -1) (- h 2) +pen-mortar+)
         (when (> dh 8)
           (let ((ky (+ dy (floor dh 2))))
-            (%img-fill img (+ dx dw -3) ky (+ dx dw -3) (1+ ky) +pen-bg+)))))
+            (%img-fill img (+ dx dw -3) ky (+ dx dw -3) (1+ ky)
+                       +pen-mortar+)))))
     img))
 
 ;;; ---------------------------------------------------------------------
@@ -96,10 +109,13 @@ non-NIL puts an amber door in the middle."
 (defun %draw-side-wall (w h top-far bot-far &key door)
   "A left-hand receding wall in a W x H band: the near edge (x = 0)
 spans the full height, the far edge (x = W-1) spans TOP-FAR..BOT-FAR.
-Ceiling and floor corners stay background.  DOOR puts a
+The ceiling and floor corners stay pen 0 (transparent) — the backdrop
+shows through them via the cookie-cut blit.  DOOR puts a
 perspective-skewed amber door on the wall.  Right-hand pieces are the
 mirror image (see %IMG-MIRROR-X)."
-  (let ((img (make-image w h 2 :palette *wall-palette*)))
+  ;; Depth 3: the wall itself uses the opaque black mortar pen (4); only
+  ;; the untouched corners keep pen 0, which is what makes them transparent.
+  (let ((img (make-image w h 3 :palette *wall-palette*)))
     (labels ((top-at (x) (round (* top-far x) (max 1 (1- w))))
              (bot-at (x) (- (1- h) (round (* (- (1- h) bot-far) x)
                                           (max 1 (1- w))))))
@@ -113,7 +129,7 @@ mirror image (see %IMG-MIRROR-X)."
                  (let* ((top (top-at x))
                         (bot (bot-at x))
                         (y (+ top (round (* k (- bot top)) *brick-courses*))))
-                   (setf (pixel-ref img x y) +pen-bg+))))
+                   (setf (pixel-ref img x y) +pen-mortar+))))
       ;; vertical joints, running bond per course
       (let ((brick (max 6 (round w 3))))
         (loop for k below *brick-courses*
@@ -126,7 +142,8 @@ mirror image (see %IMG-MIRROR-X)."
                                  (y1 (+ top (round (* (1+ k) (- bot top))
                                                    *brick-courses*))))
                             (loop for y from y0 to (min y1 (bot-at x))
-                                  do (setf (pixel-ref img x y) +pen-bg+))))))
+                                  do (setf (pixel-ref img x y)
+                                           +pen-mortar+))))))
       ;; door: skewed onto the wall, standing on the floor edge
       (when door
         (let ((dx0 (floor w 4))
@@ -138,7 +155,7 @@ mirror image (see %IMG-MIRROR-X)."
                      (loop for y from dtop below bot
                            do (setf (pixel-ref img x y)
                                     (if (or (= x dx0) (= x dx1) (= y dtop))
-                                        +pen-bg+
+                                        +pen-mortar+
                                         +pen-door+)))))))
       ;; white edge highlights: receding ceiling/floor edges + verticals
       (dotimes (x w)
@@ -149,6 +166,45 @@ mirror image (see %IMG-MIRROR-X)."
       (loop for y from (top-at (1- w)) to (bot-at (1- w))
             do (setf (pixel-ref img (1- w) y) +pen-edge+)))
     img))
+
+;;; ---------------------------------------------------------------------
+;;; Backdrops: the demo ceiling (dark rock) and floor (grey flagstones)
+;;; filling the two BACKDROP-RECTS slots above and below the horizon.
+
+(defun %draw-ceiling (w h)
+  "Near-black rock ceiling: black with a sparse deterministic grey
+speckle, keeping the corridor's dark dungeon mood."
+  (let ((img (make-image w h 2 :palette *wall-palette*)))
+    (dotimes (y h img)
+      (dotimes (x w)
+        (when (zerop (mod (+ (* 7 x) (* 13 y)) 41))
+          (setf (pixel-ref img x y) +pen-brick+))))))
+
+(defun %draw-floor (w h)
+  "Grey flagstone floor: large running-bond stone tiles with black
+joints (the same joint logic as %DRAW-FRONT-WALL, scaled up)."
+  (let* ((img (make-image w h 2 :palette *wall-palette*))
+         (course (max 8 (round h 4)))
+         (tile (max 16 (round w 6))))
+    (%img-fill img 0 0 (1- w) (1- h) +pen-brick+)
+    (loop for y from course below h by course
+          for row from 1
+          do (%img-fill img 0 y (1- w) y +pen-bg+)
+             (loop for x from (if (evenp row) 0 (floor tile 2))
+                     below w by tile
+                   do (%img-fill img x (- y course) x (1- y) +pen-bg+)))
+    (loop for x from (floor tile 2) below w by tile
+          do (%img-fill img x (* course (floor (1- h) course)) x (1- h)
+                        +pen-bg+))
+    img))
+
+(defun draw-backdrop-piece (key planes)
+  "Draw the :CEILING or :FLOOR demo backdrop at its slot size for
+PLANES."
+  (destructuring-bind (ceiling floor) (backdrop-rects planes)
+    (ecase key
+      (:ceiling (%draw-ceiling (third ceiling) (fourth ceiling)))
+      (:floor (%draw-floor (third floor) (fourth floor))))))
 
 ;;; ---------------------------------------------------------------------
 ;;; Piece dispatch
@@ -174,12 +230,18 @@ mirror image (see %IMG-MIRROR-X)."
                (if (eq side :r) (%img-mirror-x img) img)))))))))
 
 (defun generate-wall-assets (&key (dir "data/gfx/"))
-  "Draw all wall pieces and write them as ILBM files into DIR.
-Returns the number of files written."
+  "Draw all wall pieces plus the demo ceiling/floor backdrops and
+write them as ILBM files into DIR.  Returns the number of files
+written."
   (let ((planes (view-planes *fp-view-width* *fp-view-height*))
         (n 0))
     (ensure-directories-exist dir)
-    (dolist (piece (wall-piece-names) n)
+    (dolist (piece (wall-piece-names))
       (write-ilbm (draw-wall-piece piece planes)
                   (concatenate 'string dir (wall-piece-file piece)))
+      (incf n))
+    (dolist (key '(:ceiling :floor) n)
+      (write-ilbm (draw-backdrop-piece key planes)
+                  (concatenate 'string dir
+                               (string-downcase (symbol-name key)) ".iff"))
       (incf n))))
