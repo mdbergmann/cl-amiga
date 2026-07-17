@@ -16,8 +16,19 @@
    "RECT-FILL" "DRAW-ELLIPSE"
    ;; Text
    "GFX-TEXT" "TEXT-LENGTH"
+   ;; Fonts
+   "OPEN-FONT" "CLOSE-FONT" "SET-FONT"
    ;; Display database / palette
    "BEST-MODE-ID" "SET-RGB4"
+   ;; Bitmaps and blits (RTG-safe: all through OS calls)
+   "ALLOC-BITMAP" "FREE-BITMAP" "GET-BITMAP-ATTR" "WITH-BITMAP"
+   "INIT-RASTPORT" "WITH-BITMAP-RASTPORT"
+   "WRITE-CHUNKY" "WRITE-PIXEL" "READ-PIXEL" "BLT-BITMAP-RASTPORT"
+   "GFX-VERSION" "*WRITE-CHUNKY-FORCE-FALLBACK*"
+   "+BMF-CLEAR+" "+BMF-DISPLAYABLE+" "+BMF-INTERLEAVED+"
+   "+BMF-STANDARD+" "+BMF-MINPLANES+"
+   "+BMA-HEIGHT+" "+BMA-DEPTH+" "+BMA-WIDTH+" "+BMA-FLAGS+"
+   "+MINTERM-COPY+"
    ;; RastPort accessors
    "RASTPORT-FGPEN" "RASTPORT-BGPEN" "RASTPORT-CP-X" "RASTPORT-CP-Y"
    "RASTPORT-TX-HEIGHT" "RASTPORT-TX-BASELINE"
@@ -122,6 +133,41 @@
                               :d0 (length string)))))
 
 ;;; ================================================================
+;;; Fonts (graphics.library OpenFont — ROM fonts like topaz 8/9;
+;;; disk fonts need diskfont.library, not wrapped here)
+;;; ================================================================
+
+(defconstant +lvo-open-font+  -72)
+(defconstant +lvo-close-font+ -78)
+(defconstant +lvo-set-font+   -66)
+
+(defun open-font (name ysize)
+  "OpenFont via a TextAttr: the ROM font NAME (e.g. \"topaz.font\") at
+YSIZE pixels.  Returns a TextFont pointer, or NIL when the exact
+name/size isn't available.  Close with CLOSE-FONT after the last
+rastport using it is done."
+  (ffi:with-foreign-string (fname name)
+    ;; struct TextAttr: ta_Name (STRPTR), ta_YSize (UWORD),
+    ;; ta_Style (UBYTE), ta_Flags (UBYTE)
+    (ffi:with-foreign-alloc (ta 8)
+      (ffi:poke-u32 ta (ffi:foreign-pointer-address fname) 0)
+      (ffi:poke-u16 ta ysize 4)
+      (ffi:poke-u8 ta 0 6)
+      (ffi:poke-u8 ta 0 7)
+      (let ((font (amiga:call-library *gfx-base* +lvo-open-font+
+                                      (list :a0 ta))))
+        (if (zerop font)
+            nil
+            (ffi:make-foreign-pointer font))))))
+
+(defun close-font (font)
+  (amiga:call-library *gfx-base* +lvo-close-font+ (list :a1 font))
+  t)
+
+(amiga.ffi:defcfun set-font *gfx-base* -66
+  (:a1 rastport :a0 font))
+
+;;; ================================================================
 ;;; Display database (BestModeIDA) and palette
 ;;; ================================================================
 
@@ -158,6 +204,135 @@ suitable RTG mode, on a chipset Amiga a native one (e.g. PAL hires for
 
 (amiga.ffi:defcfun set-rgb4 *gfx-base* -288
   (:a0 viewport :d0 index :d1 red :d2 green :d3 blue) :void t)
+
+;;; ================================================================
+;;; Bitmaps and blits
+;;;
+;;; RTG-safe by construction: bitmaps come from AllocBitMap with a
+;;; friend bitmap (so Picasso96/CyberGraphX/MorphOS allocate their own
+;;; native format), pixels go in as chunky bytes through
+;;; WriteChunkyPixels (V40+; WritePixel fallback on plain V39), and
+;;; copies run through BltBitMapRastPort.  No planar layout, chip-ram
+;;; or bytes-per-row assumptions anywhere.
+;;; ================================================================
+
+(defconstant +lvo-alloc-bitmap+          -918)
+(defconstant +lvo-free-bitmap+           -924)
+(defconstant +lvo-get-bitmap-attr+       -960)
+(defconstant +lvo-blt-bitmap-rastport+   -606)
+
+;;; graphics/gfx.h
+(defconstant +bmf-clear+       #x0001)
+(defconstant +bmf-displayable+ #x0002)
+(defconstant +bmf-interleaved+ #x0004)
+(defconstant +bmf-standard+    #x0008)
+(defconstant +bmf-minplanes+   #x0010)
+(defconstant +bma-height+ 0)
+(defconstant +bma-depth+  4)
+(defconstant +bma-width+  8)
+(defconstant +bma-flags+  12)
+
+(defconstant +minterm-copy+ #xC0)      ; ABC|ABNC: plain source copy
+
+(defun gfx-version ()
+  "graphics.library version (lib_Version); WriteChunkyPixels needs 40+."
+  (ffi:peek-u16 *gfx-base* 20))
+
+(defun alloc-bitmap (width height depth &key (flags +bmf-clear+) friend)
+  "AllocBitMap: an offscreen bitmap, cleared by default.  Pass the
+screen's or window's bitmap as FRIEND so RTG systems allocate it in
+the display's native format.  Signals on failure."
+  (let ((bm (amiga:call-library *gfx-base* +lvo-alloc-bitmap+
+                                (list :d0 width :d1 height :d2 depth
+                                      :d3 flags
+                                      :a0 (or friend
+                                              (ffi:make-foreign-pointer 0))))))
+    (when (zerop bm)
+      (error "GFX:ALLOC-BITMAP failed (~Dx~Dx~D)" width height depth))
+    (ffi:make-foreign-pointer bm)))
+
+(defun free-bitmap (bitmap)
+  (amiga:call-library *gfx-base* +lvo-free-bitmap+ (list :a0 bitmap))
+  t)
+
+(defmacro with-bitmap ((var width height depth &rest keys) &body body)
+  "Allocate a bitmap, bind to VAR, free on exit."
+  `(let ((,var (alloc-bitmap ,width ,height ,depth ,@keys)))
+     (unwind-protect
+       (progn ,@body)
+       (free-bitmap ,var))))
+
+(amiga.ffi:defcfun get-bitmap-attr *gfx-base* -960
+  (:a0 bitmap :d1 attribute))
+
+(amiga.ffi:defcfun init-rastport *gfx-base* -198
+  (:a1 rastport) :void t)
+
+;;; struct RastPort is 100 bytes; rp_BitMap sits at offset 4.
+(defconstant +rastport-size+ 100)
+(defconstant +rp-bitmap-offset+ 4)
+
+(defmacro with-bitmap-rastport ((var bitmap) &body body)
+  "A scratch RastPort rendering into BITMAP: allocated, InitRastPort'd
+and pointed at the bitmap; freed on exit.  This is how chunky pixels
+get into an offscreen bitmap (WRITE-CHUNKY) and how drawing primitives
+can target one."
+  `(ffi:with-foreign-alloc (,var +rastport-size+)
+     (init-rastport ,var)
+     (ffi:poke-u32 ,var (ffi:foreign-pointer-address ,bitmap)
+                   +rp-bitmap-offset+)
+     ,@body))
+
+(amiga.ffi:defcfun write-pixel *gfx-base* -324
+  (:a1 rastport :d0 x :d1 y))
+
+(amiga.ffi:defcfun read-pixel *gfx-base* -318
+  (:a1 rastport :d0 x :d1 y))
+
+(amiga.ffi:defcfun %write-chunky-pixels *gfx-base* -1056
+  (:a0 rastport :d0 xstart :d1 ystart :d2 xstop :d3 ystop
+   :a2 array :d4 bytes-per-row) :void t)
+
+(defvar *write-chunky-force-fallback* nil
+  "When bound to non-NIL, WRITE-CHUNKY always takes the V39 per-pixel
+WritePixel path regardless of the actual graphics.library version.
+Lets the fallback path be exercised on CI's V40 test hosts, where
+\(>= (GFX-VERSION) 40) would otherwise always be true.")
+
+(defun write-chunky (rastport x y width height pens)
+  "Write the (unsigned-byte 8) vector PENS (row-major WIDTH x HEIGHT
+pen indices) into RASTPORT at (X,Y).  Uses WriteChunkyPixels on
+graphics.library V40+, falls back to per-pixel WritePixel on V39."
+  (let ((n (* width height)))
+    (when (< (length pens) n)
+      (error "GFX:WRITE-CHUNKY: pen vector has ~D elements, needs ~Dx~D=~D"
+             (length pens) width height n))
+    (if (and (not *write-chunky-force-fallback*) (>= (gfx-version) 40))
+        (ffi:with-foreign-alloc (buf n)
+          (dotimes (i n)
+            (ffi:poke-u8 buf (aref pens i) i))
+          (%write-chunky-pixels rastport x y
+                                (+ x width -1) (+ y height -1)
+                                buf width))
+        ;; V39: WritePixel draws with the foreground pen
+        (let ((i 0))
+          (dotimes (row height)
+            (dotimes (col width)
+              (set-a-pen rastport (aref pens i))
+              (write-pixel rastport (+ x col) (+ y row))
+              (incf i)))))
+    t))
+
+(defun blt-bitmap-rastport (src-bitmap src-x src-y dest-rastport
+                            dest-x dest-y width height
+                            &optional (minterm +minterm-copy+))
+  "BltBitMapRastPort: copy a WIDTH x HEIGHT region of SRC-BITMAP into
+DEST-RASTPORT at (DEST-X,DEST-Y)."
+  (amiga:call-library *gfx-base* +lvo-blt-bitmap-rastport+
+                      (list :a0 src-bitmap :d0 src-x :d1 src-y
+                            :a1 dest-rastport :d2 dest-x :d3 dest-y
+                            :d4 width :d5 height :d6 minterm))
+  t)
 
 ;;; ================================================================
 ;;; Provide module

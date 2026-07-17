@@ -46,6 +46,15 @@
   (amiga.intuition:with-pub-screen (scr)
     (not (ffi:null-pointer-p scr))))
 
+;; TITLE NIL opens an untitled window (no WA_Title tag sent) and reserves
+;; no title-bar space at the top edge — the borderless-backdrop case.
+(check "intuition-open-window-title-nil" t
+  (amiga.intuition:with-window (win :title nil :left 10 :top 10
+                                    :width 150 :height 80
+                                    :flags 0)
+    (and (not (ffi:null-pointer-p win))
+         (= (amiga.intuition:window-border-top win) 0))))
+
 ;; event-loop: (RETURN) from a clause body exits the WHOLE loop.
 ;; Regression: clause bodies used to be spliced into the inner drain
 ;; LOOP, whose implicit BLOCK NIL swallowed (RETURN) — quit keys and
@@ -141,6 +150,79 @@
            (h (amiga.gfx:rastport-tx-height rp))
            (b (amiga.gfx:rastport-tx-baseline rp)))
       (and (> h 0) (< h 100) (> b 0) (<= b h)))))
+
+;; OPEN-FONT/SET-FONT/CLOSE-FONT: open the ROM topaz.font at 8px, set it
+;; on a window's RastPort, verify the font metrics changed to match, and
+;; close it again (CLOSE-FONT must run before the last user goes away).
+(check "graphics-open-set-close-font" t
+  (amiga.intuition:with-window (win :title "Open Font Test"
+                                    :width 200 :height 100)
+    (let* ((rp (amiga.intuition:window-rastport win))
+           (font (amiga.gfx:open-font "topaz.font" 8)))
+      (unwind-protect
+          (and font
+               (progn (amiga.gfx:set-font rp font)
+                      (let ((h (amiga.gfx:rastport-tx-height rp))
+                            (b (amiga.gfx:rastport-tx-baseline rp)))
+                        (and (= h 8) (> b 0) (<= b h)))))
+        (when font (amiga.gfx:close-font font))))))
+
+; --- Bitmap / blit tests (offscreen, no window needed) ---
+
+(check "graphics-version-known" t (>= (amiga.gfx:gfx-version) 39))
+
+;; AllocBitMap + GetBitMapAttr: attributes are at least what was asked
+;; for (RTG drivers may round the width up)
+(check "graphics-alloc-bitmap-attrs" t
+  (amiga.gfx:with-bitmap (bm 64 32 2)
+    (and (>= (amiga.gfx:get-bitmap-attr bm amiga.gfx:+bma-width+) 64)
+         (>= (amiga.gfx:get-bitmap-attr bm amiga.gfx:+bma-height+) 32)
+         (>= (amiga.gfx:get-bitmap-attr bm amiga.gfx:+bma-depth+) 2))))
+
+;; Chunky pens in, pixels back: write a 4x2 pattern into an offscreen
+;; bitmap through a scratch rastport, read every pixel back, and check
+;; a neighbor outside the written rect stayed clear (BMF_CLEAR).
+(check "graphics-write-chunky-read-pixel" '(0 1 2 3 3 2 1 0 0)
+  (amiga.gfx:with-bitmap (bm 32 8 2)
+    (amiga.gfx:with-bitmap-rastport (rp bm)
+      (amiga.gfx:write-chunky rp 2 1 4 2 #(0 1 2 3 3 2 1 0))
+      (append (loop for (x y) in '((2 1) (3 1) (4 1) (5 1)
+                                   (2 2) (3 2) (4 2) (5 2))
+                    collect (amiga.gfx:read-pixel rp x y))
+              (list (amiga.gfx:read-pixel rp 6 1))))))
+
+;; Same pattern, forced through the V39 per-pixel WritePixel fallback
+;; (both FS-UAE test configs boot graphics.library v40, so this path
+;; is otherwise never exercised in CI).
+(check "graphics-write-chunky-fallback-read-pixel" '(0 1 2 3 3 2 1 0 0)
+  (let ((amiga.gfx:*write-chunky-force-fallback* t))
+    (amiga.gfx:with-bitmap (bm 32 8 2)
+      (amiga.gfx:with-bitmap-rastport (rp bm)
+        (amiga.gfx:write-chunky rp 2 1 4 2 #(0 1 2 3 3 2 1 0))
+        (append (loop for (x y) in '((2 1) (3 1) (4 1) (5 1)
+                                     (2 2) (3 2) (4 2) (5 2))
+                      collect (amiga.gfx:read-pixel rp x y))
+                (list (amiga.gfx:read-pixel rp 6 1)))))))
+
+(check "graphics-write-chunky-rejects-short-vector" t
+  (amiga.gfx:with-bitmap (bm 16 4 2)
+    (amiga.gfx:with-bitmap-rastport (rp bm)
+      (handler-case (progn (amiga.gfx:write-chunky rp 0 0 4 2 #(1 2 3))
+                           nil)
+        (error () t)))))
+
+;; BltBitMapRastPort: copy a region bitmap-to-bitmap and verify the
+;; pattern lands at the destination offset (and only there).
+(check "graphics-blt-bitmap-rastport" '(3 2 0)
+  (amiga.gfx:with-bitmap (src 32 8 2)
+    (amiga.gfx:with-bitmap (dst 32 8 2)
+      (amiga.gfx:with-bitmap-rastport (srp src)
+        (amiga.gfx:write-chunky srp 1 1 2 1 #(3 2)))
+      (amiga.gfx:with-bitmap-rastport (drp dst)
+        (amiga.gfx:blt-bitmap-rastport src 0 0 drp 10 2 8 4)
+        (list (amiga.gfx:read-pixel drp 11 3)   ; (1,1) -> (11,3)
+              (amiga.gfx:read-pixel drp 12 3)   ; (2,1) -> (12,3)
+              (amiga.gfx:read-pixel drp 9 3))))))  ; outside the blit
 
 ; --- GadTools tests ---
 (require "amiga/gadtools")
