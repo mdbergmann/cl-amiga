@@ -207,27 +207,33 @@ AMIGA.GFX:SET-RGB4 wants for setting the screen palette."
                                         +wflg-sizegadget+
                                         +wflg-activate+)))
   "Open an Intuition window via OpenWindowTagList.
+TITLE NIL opens an untitled window — that matters for borderless
+backdrop windows, where a WA_Title still costs a title bar
+\(window-border-top stays 0 only without one).
 Returns a foreign pointer to the Window struct, or signals an error."
-  (ffi:with-foreign-string (title-ptr title)
-    (let ((tag-pairs (list +wa-left+ left
-                           +wa-top+ top
-                           +wa-width+ width
-                           +wa-height+ height
-                           +wa-idcmp+ idcmp
-                           +wa-flags+ flags
-                           +wa-title+ title-ptr)))
-      (when screen
-        (setf tag-pairs (append tag-pairs
-                                (list +wa-customscreen+ screen))))
-      (let* ((tags (amiga.ffi:make-tag-list tag-pairs))
-             (result (amiga:call-library *intuition-base*
-                                         +lvo-open-window-tag-list+
-                                         (list :a0 (ffi:make-foreign-pointer 0)
-                                               :a1 tags))))
-        (ffi:free-foreign tags)
-        (if (zerop result)
-            (error "INTUITION:OPEN-WINDOW failed")
-            (ffi:make-foreign-pointer result))))))
+  (let ((title-ptr (and title (ffi:foreign-string title))))
+    (unwind-protect
+        (let ((tag-pairs (list +wa-left+ left
+                               +wa-top+ top
+                               +wa-width+ width
+                               +wa-height+ height
+                               +wa-idcmp+ idcmp
+                               +wa-flags+ flags)))
+          (when title-ptr
+            (setf tag-pairs (append tag-pairs (list +wa-title+ title-ptr))))
+          (when screen
+            (setf tag-pairs (append tag-pairs
+                                    (list +wa-customscreen+ screen))))
+          (let* ((tags (amiga.ffi:make-tag-list tag-pairs))
+                 (result (amiga:call-library *intuition-base*
+                                             +lvo-open-window-tag-list+
+                                             (list :a0 (ffi:make-foreign-pointer 0)
+                                                   :a1 tags))))
+            (ffi:free-foreign tags)
+            (if (zerop result)
+                (error "INTUITION:OPEN-WINDOW failed")
+              (ffi:make-foreign-pointer result))))
+      (when title-ptr (ffi:free-foreign title-ptr)))))
 
 (defun close-window (window)
   "Close an Intuition window."

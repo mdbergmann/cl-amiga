@@ -701,6 +701,32 @@ Lambda's Tale (`examples/games/lambda-tale`, run with
 `:display :screen`) exercises this path end-to-end; its Amiga test
 suite covers it.
 
+### Offscreen Bitmaps and Blits
+
+RTG-safe sprite/tile rendering: allocate bitmaps through the OS (pass
+the window's or screen's bitmap as `:friend` so Picasso96 / CyberGraphX
+/ MorphOS put them in the display's native format), fill them with
+chunky pen bytes, and composite with the blitter — no planar layout or
+chip-ram assumptions anywhere:
+
+```lisp
+(require "amiga/graphics")
+
+(amiga.gfx:with-bitmap (bm 32 32 2)          ; AllocBitMap/FreeBitMap
+  (amiga.gfx:with-bitmap-rastport (brp bm)   ; scratch RastPort on it
+    ;; row-major pen indices; WriteChunkyPixels on V40+,
+    ;; per-pixel fallback on V39
+    (amiga.gfx:write-chunky brp 0 0 4 2 #(0 1 2 3 3 2 1 0))
+    (amiga.gfx:read-pixel brp 1 0))          ; => 1
+  ;; blit into any window/screen rastport
+  (amiga.gfx:blt-bitmap-rastport bm 0 0 window-rp 10 20 32 32))
+```
+
+`get-bitmap-attr` (`+bma-width+`/`+bma-height+`/`+bma-depth+`) inspects
+what was really allocated.  See `tests/amiga/test-gui.lisp` for
+runnable examples; Lambda's Tale's blitted wall graphics
+(`examples/games/lambda-tale`, M3) are the end-to-end user.
+
 ### GadTools Gadgets
 
 ```lisp
