@@ -238,6 +238,62 @@ becomes one fixed-slot piece blit instead of wireframe lines."
       (nreverse blits))))
 
 ;;; ---------------------------------------------------------------------
+;;; Backdrop (floor and ceiling): the Bard's Tale split-region look.
+;;; One ceiling image fills the viewport above the horizon, one floor
+;;; image below it; the walls blit on top and carve the perspective
+;;; (their bases and tops bound the visible floor/sky trapezoid).
+
+(defun backdrop-rects (planes)
+  "The two backdrop slots ((X Y W H) (X Y W H)) — ceiling then floor —
+for the plane set PLANES.  Together they tile the viewport exactly,
+split at the horizon (the vertical center of the innermost plane)."
+  (destructuring-bind (px0 py0 px1 py1) (aref planes 0)
+    (destructuring-bind (qx0 qy0 qx1 qy1) (aref planes (1- (length planes)))
+      (declare (ignore qx0 qx1))
+      (let ((w (1+ (- px1 px0)))
+            (horizon (floor (+ qy0 qy1) 2)))
+        (list (list px0 py0 w (1+ (- horizon py0)))
+              (list px0 (1+ horizon) w (- py1 horizon)))))))
+
+;;; ---------------------------------------------------------------------
+;;; The tile-pack manifest: the contract a custom tile pack must meet.
+
+(defparameter *gfx-dir* "data/gfx/"
+  "The active tile pack: the directory holding the wall-piece ILBMs
+(and the optional floor.iff / ceiling.iff / palette.iff), relative to
+the game directory.  PLAY-AMIGA's :GFX-DIR argument rebinds it.")
+
+(defun print-tile-manifest (&optional (stream *standard-output*))
+  "Print the tile-pack contract: every asset file a pack directory may
+hold, with its exact pixel size for the canonical *FP-VIEW-WIDTH* x
+*FP-VIEW-HEIGHT* viewport, and the palette rules.  Returns the number
+of files listed."
+  (let* ((planes (view-planes *fp-view-width* *fp-view-height*))
+         (n 0))
+    (format stream "Tile-pack manifest (~Dx~D viewport, IFF ILBM files):~%"
+            *fp-view-width* *fp-view-height*)
+    (dolist (piece (wall-piece-names))
+      (destructuring-bind (x y w h) (wall-piece-rect planes piece)
+        (declare (ignore x y))
+        (format stream "  ~24A ~3Dx~D~%" (wall-piece-file piece) w h)
+        (incf n)))
+    (destructuring-bind (ceiling floor) (backdrop-rects planes)
+      (format stream "  ~24A ~3Dx~D  (optional backdrop above the horizon)~%"
+              "ceiling.iff" (third ceiling) (fourth ceiling))
+      (format stream "  ~24A ~3Dx~D  (optional backdrop below the horizon)~%"
+              "floor.iff" (third floor) (fourth floor))
+      (incf n 2))
+    (format stream "Palette: pens 0-3 are fixed UI colors (black, white, ~
+grey, amber);~%pens 4-15 belong to the pack — taken from palette.iff's ~
+CMAP when present,~%else from front-0.iff's (custom screen only; a ~
+Workbench window keeps~%the Workbench palette).~%")
+    (format stream "Transparency: in a WALL piece pen 0 is transparent — ~
+the ceiling/~%floor backdrop shows through it — so paint solid black ~
+with pen 4, not~%pen 0.  The ceiling/floor backdrops are opaque; pen 0 ~
+there is plain black.~%")
+    n))
+
+;;; ---------------------------------------------------------------------
 ;;; Compass rose: display geometry for the UI's facing indicator.
 
 (defun compass-points (facing cx cy r)

@@ -393,6 +393,66 @@ messages so far (oldest first)."
                     (view-blit-list (compute-view m 0 0 :east) planes))))
 
 ;;; ---------------------------------------------------------------------
+;;; Backdrop slots (ceiling/floor) and the tile-pack manifest
+
+(destructuring-bind (ceiling floor) (backdrop-rects (view-planes 240 130))
+  (check "ceiling backdrop slot" '(0 0 240 65) ceiling)
+  (check "floor backdrop slot" '(0 65 240 65) floor))
+
+;; the two slots tile any viewport exactly, split at the horizon
+(destructuring-bind (ceiling floor) (backdrop-rects (view-planes 33 17))
+  (destructuring-bind (cx cy cw ch) ceiling
+    (destructuring-bind (fx fy fw fh) floor
+      (check "small-viewport backdrops start at the top-left" '(0 0)
+             (list cx cy))
+      (check "small-viewport backdrops span the width" '(33 33)
+             (list cw fw))
+      (check "floor starts where the ceiling ends" (+ cy ch) fy)
+      (check "backdrops tile the viewport height" 17 (+ ch fh)))))
+
+(check "gfx-dir defaults to the demo pack" "data/gfx/" *gfx-dir*)
+
+(let ((manifest (with-output-to-string (s) (print-tile-manifest s))))
+  (check "manifest lists every pack file"
+         (+ 2 (length (wall-piece-names)))
+         (print-tile-manifest (make-broadcast-stream)))
+  (check-true "manifest names the wall pieces"
+              (search "side-door-2-l.iff" manifest))
+  (check-true "manifest names the backdrops"
+              (and (search "ceiling.iff" manifest)
+                   (search "floor.iff" manifest)))
+  (check-true "manifest states the palette contract"
+              (search "pens 4-15" manifest)))
+
+;;; ---------------------------------------------------------------------
+;;; Cookie-cut mask bytes (the Amiga transparent-blit source): a 1 bit
+;;; per opaque pixel, MSB first, rows padded to a 16-pixel word.
+
+(multiple-value-bind (m bpr)
+    (mask-bytes 10 2 (let ((p (make-array 20 :element-type '(unsigned-byte 8)
+                                          :initial-element 0)))
+                       (setf (aref p 2) 1 (aref p 3) 1 (aref p 8) 1)
+                       p))
+  (check "mask row is word-aligned" 2 bpr)
+  (check "mask covers every row" 4 (length m))
+  (check "mask row0 byte0 marks pixels 2,3" #x30 (aref m 0))
+  (check "mask row0 byte1 marks pixel 8" #x80 (aref m 1))
+  (check "mask clears an all-transparent row" 0 (+ (aref m 2) (aref m 3))))
+
+;; the transparent key need not be pen 0 (pen 3 here) — and pen 0 is not
+;; special: it counts as opaque when it isn't the key
+(check "mask honors a non-zero transparent key" #xEF
+       (aref (mask-bytes 8 1 #(0 1 2 3 4 5 6 7) 3) 0))
+
+(check-true "image-transparent-p spots the key"
+            (image-transparent-p (make-image 2 2 2)))       ; all pen 0
+(check-true "image-transparent-p is nil when fully painted"
+            (not (image-transparent-p
+                  (let ((img (make-image 2 2 2)))
+                    (dotimes (y 2 img) (dotimes (x 2)
+                                         (setf (pixel-ref img x y) 1)))))))
+
+;;; ---------------------------------------------------------------------
 ;;; Knowledge
 
 (let* ((m (parse-map *art* :name "test"))
@@ -758,6 +818,27 @@ messages so far (oldest first)."
   (check-true "fresh hero is alive" (hero-alive-p h)))
 
 (check-error "make-hero rejects unknown class" (make-hero "X" :nonesuch))
+
+;; Character sheet (the party-UI stat block): pure text, rendered by
+;; the Amiga :sheet page and tested here from the same source.
+(define-hero-class :war-mage :hp-dice "1d6" :damage "1d4" :ac 8)
+(check "hero-class-title spaces and capitalizes" "War Mage"
+       (hero-class-title (%make-hero :name "z" :class :war-mage)))
+(let* ((h (%make-hero :name "El Cid" :class :war-mage :level 3 :xp 1200
+                      :max-hp 11 :hp 9 :str 15 :dex 12 :iq 9 :con 14
+                      :lck 10 :ac 8 :gold 250))
+       (lines (hero-summary-lines h)))
+  (check "sheet has six lines" 6 (length lines))
+  (check "sheet name/class line" "El Cid the War Mage" (first lines))
+  (check "sheet level/xp line" "Level 3    XP 1200" (second lines))
+  (check "sheet hp/ac line" "HP 9/11    AC 8" (third lines))
+  (check "sheet primary stats line" "STR 15  DEX 12  IQ 9" (fourth lines))
+  (check "sheet secondary stats line" "CON 14  LCK 10" (fifth lines))
+  (check "sheet gold line, standing" "Gold 250 gp" (sixth lines)))
+;; a downed hero is flagged on the gold line
+(check "sheet marks a downed hero" "Gold 0 gp   (down)"
+       (sixth (hero-summary-lines
+               (%make-hero :name "x" :class :war-mage :hp 0))))
 
 (check "stat-bonus 10" 0 (stat-bonus 10))
 (check "stat-bonus 12" 1 (stat-bonus 12))
@@ -1223,6 +1304,23 @@ messages so far (oldest first)."
             (unless (equalp (image-pixels disk) (image-pixels drawn))
               (push (list piece :differs) stale))))))
   (check "all 40 data/gfx assets exist and match the generator" nil stale)
+  ;; the demo ceiling/floor backdrops are pinned the same way
+  (let ((stale '()))
+    (loop for key in '(:ceiling :floor)
+          for name in '("ceiling.iff" "floor.iff")
+          for rect in (backdrop-rects planes)
+          do (let ((file (concatenate 'string "data/gfx/" name)))
+               (if (not (probe-file file))
+                   (push (list key :missing) stale)
+                   (let ((disk (read-ilbm file))
+                         (drawn (draw-backdrop-piece key planes)))
+                     (unless (and (= (image-width disk) (third rect))
+                                  (= (image-height disk) (fourth rect)))
+                       (push (list key :wrong-size) stale))
+                     (unless (equalp (image-pixels disk)
+                                     (image-pixels drawn))
+                       (push (list key :differs) stale))))))
+    (check "the backdrop assets exist and match the generator" nil stale))
   ;; the reader restores the dungeon palette from the CMAP
   (check "asset palette carries the dungeon colors"
          (coerce *wall-palette* 'list)
@@ -1230,6 +1328,28 @@ messages so far (oldest first)."
                   (read-ilbm (concatenate 'string "data/gfx/"
                                           (wall-piece-file '(:front 0)))))
                  'list)))
+
+;; Transparency contract: receding side pieces keep pen-0 corners so the
+;; backdrop shows through the cookie-cut blit; front/flank pieces fill
+;; their whole rect (opaque), drawing black as the mortar pen, not pen 0.
+(let ((planes (view-planes *fp-view-width* *fp-view-height*)))
+  (check-true "wall pieces are depth 3"
+              (= 3 (image-depth (draw-wall-piece '(:front 0) planes))))
+  (check-true "a side piece leaves transparent corners"
+              (image-transparent-p (draw-wall-piece '(:side 0 :l) planes)))
+  (check "a side piece's far top corner is transparent" +pen-bg+
+         (let ((img (draw-wall-piece '(:side 0 :l) planes)))
+           (pixel-ref img (1- (image-width img)) 0)))
+  (check-true "a front piece is fully opaque"
+              (not (image-transparent-p (draw-wall-piece '(:front 0) planes))))
+  (check-true "a flank piece is fully opaque"
+              (not (image-transparent-p
+                    (draw-wall-piece '(:flank 0 :l) planes))))
+  (check-true "opaque black is the mortar pen (4), never pen 0"
+              (and (find +pen-mortar+
+                         (image-pixels (draw-wall-piece '(:front 0) planes)))
+                   (not (image-transparent-p
+                         (draw-wall-piece '(:front 0) planes))))))
 
 ;;; ---------------------------------------------------------------------
 ;;; Amiga front-end smoke test (real Intuition window + graphics.library
@@ -1303,6 +1423,8 @@ messages so far (oldest first)."
                  (let* ((rp (amiga.intuition:window-rastport win))
                         (l (%amiga-layout win rp)))
                    (%amiga-party rp g l)
+                   ;; the numbered roster's character-sheet page draws too
+                   (%amiga-draw-sheet rp g 0 l)
                    t)))))))
 
 ;; Custom screen support: open an own screen (RTG-aware mode pick),
@@ -1380,14 +1502,26 @@ messages so far (oldest first)."
          (check "borderless untitled backdrop window has no top border" 0
                 (amiga.intuition:window-border-top win))
          (let* ((rp (%game-rastport win font))
-                (l (%amiga-layout win rp))
-                (walls (%load-wall-assets rp nil)))
+                (l (%amiga-layout win rp)))
+          (multiple-value-bind (walls pack-palette)
+              (%load-wall-assets rp nil)
            (check "game font gives the designed line height" 10
                   (ui-layout-lh l))
            (check-true "wall assets load into bitmaps" walls)
            (when walls
-             (check "every wall piece got a bitmap"
-                    (length (wall-piece-names)) (hash-table-count walls))
+             (check "every pack piece got a bitmap (walls + backdrops)"
+                    (+ 2 (length (wall-piece-names)))
+                    (hash-table-count walls))
+             (check-true "the pack palette is the demo CMAP"
+                         (equalp pack-palette *wall-palette*))
+             ;; transparency wiring: receding side pieces carry a
+             ;; cookie-cut mask; opaque front pieces and backdrops don't
+             (check-true "a side piece got a cookie-cut mask"
+                         (cdr (gethash '(:side 0 :l) walls)))
+             (check-true "a front piece is an opaque blit (no mask)"
+                         (not (cdr (gethash '(:front 0) walls))))
+             (check-true "the ceiling backdrop is opaque (no mask)"
+                         (not (cdr (gethash '(:ceiling) walls))))
              (check-true "custom screen leaves the full asset-size viewport"
                          (= (ui-layout-fp-h l) *fp-view-height*))
              (%amiga-draw-fp rp g (ui-layout-bx l) (ui-layout-by l)
@@ -1397,8 +1531,18 @@ messages so far (oldest first)."
              ;; white highlight
              (check "blitted front wall edge pixel" 1
                     (amiga.gfx:read-pixel rp (+ (ui-layout-bx l) 100)
-                                          (+ (ui-layout-by l) 26))))
-           (%free-wall-assets walls)))))))
+                                          (+ (ui-layout-by l) 26)))
+             ;; above the front wall the ceiling backdrop shows: (100,25)
+             ;; is a speckle pixel ((7x+13y) mod 41 = 0 -> grey)
+             (check "blitted ceiling speckle pixel" 2
+                    (amiga.gfx:read-pixel rp (+ (ui-layout-bx l) 100)
+                                          (+ (ui-layout-by l) 25)))
+             ;; below the front wall the floor backdrop shows: (90,110)
+             ;; is flagstone fill (local floor row 45, between joints)
+             (check "blitted floor stone pixel" 2
+                    (amiga.gfx:read-pixel rp (+ (ui-layout-bx l) 90)
+                                          (+ (ui-layout-by l) 110))))
+           (%free-wall-assets walls))))))))
 
 ;; *autoplay* drives a full unattended PLAY-AMIGA session: scripted keys
 ;; are fed one per INTUITICK (~10/s), ending in #\q so the event loop
@@ -1406,18 +1550,27 @@ messages so far (oldest first)."
 ;; strip, redraws, key dispatch — with no user at the keyboard.  The
 ;; script also enters map mode (m), toggles the debug full view (f)
 ;; twice and leaves map mode (m) before quitting.
+;; The scripted keys also open a character sheet (1), switch to another
+;; roster slot (2) and leave it (:esc) — exercising the whole :sheet
+;; mode through the real event loop.
 #+amigaos
 (check "amiga-ui autoplay plays a scripted session and quits" :done
-       (let ((*autoplay* (list #\w #\d #\w #\a #\m #\f #\f #\m #\s #\q)))
-         (play-amiga "data/cellar.map")
+       (let ((*autoplay* (list #\w #\d #\1 #\2 :esc #\w #\a
+                               #\m #\f #\f #\m #\s #\q)))
+         ;; :window is the development view — :screen (the default)
+         ;; gets its own autoplay below
+         (play-amiga "data/cellar.map" :display :window)
          :done))
 
 ;; The same unattended session on an own custom screen (:display :screen)
-;; — the whole open-screen/backdrop-window/menus/event-loop path.
+;; — the whole open-screen/backdrop-window/menus/event-loop path, with
+;; the tile pack named explicitly (:gfx-dir): the depth-4 screen, the
+;; pack palette and the ceiling/floor backdrop all draw for real.
 #+amigaos
 (check "amiga-ui autoplay on an own custom screen" :done
        (let ((*autoplay* (list #\w #\d #\m #\m #\q)))
-         (play-amiga "data/cellar.map" :display :screen)
+         (play-amiga "data/cellar.map" :display :screen
+                                       :gfx-dir "data/gfx/")
          :done))
 
 ;;; ---------------------------------------------------------------------

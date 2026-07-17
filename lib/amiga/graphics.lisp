@@ -24,11 +24,12 @@
    "ALLOC-BITMAP" "FREE-BITMAP" "GET-BITMAP-ATTR" "WITH-BITMAP"
    "INIT-RASTPORT" "WITH-BITMAP-RASTPORT"
    "WRITE-CHUNKY" "WRITE-PIXEL" "READ-PIXEL" "BLT-BITMAP-RASTPORT"
+   "BLT-MASK-BITMAP-RASTPORT"
    "GFX-VERSION" "*WRITE-CHUNKY-FORCE-FALLBACK*"
    "+BMF-CLEAR+" "+BMF-DISPLAYABLE+" "+BMF-INTERLEAVED+"
    "+BMF-STANDARD+" "+BMF-MINPLANES+"
    "+BMA-HEIGHT+" "+BMA-DEPTH+" "+BMA-WIDTH+" "+BMA-FLAGS+"
-   "+MINTERM-COPY+"
+   "+MINTERM-COPY+" "+MINTERM-COOKIE+"
    ;; RastPort accessors
    "RASTPORT-FGPEN" "RASTPORT-BGPEN" "RASTPORT-CP-X" "RASTPORT-CP-Y"
    "RASTPORT-TX-HEIGHT" "RASTPORT-TX-BASELINE"
@@ -220,6 +221,7 @@ suitable RTG mode, on a chipset Amiga a native one (e.g. PAL hires for
 (defconstant +lvo-free-bitmap+           -924)
 (defconstant +lvo-get-bitmap-attr+       -960)
 (defconstant +lvo-blt-bitmap-rastport+   -606)
+(defconstant +lvo-blt-mask-bitmap-rastport+ -636)
 
 ;;; graphics/gfx.h
 (defconstant +bmf-clear+       #x0001)
@@ -233,6 +235,7 @@ suitable RTG mode, on a chipset Amiga a native one (e.g. PAL hires for
 (defconstant +bma-flags+  12)
 
 (defconstant +minterm-copy+ #xC0)      ; ABC|ABNC: plain source copy
+(defconstant +minterm-cookie+ #xE0)    ; cookie-cut through a mask plane
 
 (defun gfx-version ()
   "graphics.library version (lib_Version); WriteChunkyPixels needs 40+."
@@ -332,6 +335,22 @@ DEST-RASTPORT at (DEST-X,DEST-Y)."
                       (list :a0 src-bitmap :d0 src-x :d1 src-y
                             :a1 dest-rastport :d2 dest-x :d3 dest-y
                             :d4 width :d5 height :d6 minterm))
+  t)
+
+(defun blt-mask-bitmap-rastport (src-bitmap src-x src-y dest-rastport
+                                 dest-x dest-y width height mask
+                                 &optional (minterm +minterm-cookie+))
+  "BltMaskBitMapRastPort: copy a WIDTH x HEIGHT region of SRC-BITMAP into
+DEST-RASTPORT at (DEST-X,DEST-Y), cookie-cut through MASK — a single
+interleaved bitplane (chip RAM, word-padded rows; see the game's
+MASK-BYTES) with a 1 bit for every pixel to copy.  Pixels whose mask
+bit is 0 leave the destination untouched, so a backdrop drawn earlier
+shows through.  RTG-safe: an OS call, no chipset assumptions."
+  (amiga:call-library *gfx-base* +lvo-blt-mask-bitmap-rastport+
+                      (list :a0 src-bitmap :d0 src-x :d1 src-y
+                            :a1 dest-rastport :d2 dest-x :d3 dest-y
+                            :d4 width :d5 height :d6 minterm
+                            :a2 mask))
   t)
 
 ;;; ================================================================

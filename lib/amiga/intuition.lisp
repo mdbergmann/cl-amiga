@@ -19,7 +19,7 @@
    "WINDOW-BORDER-RIGHT" "WINDOW-BORDER-BOTTOM"
    "WINDOW-GZZ-WIDTH" "WINDOW-GZZ-HEIGHT"
    ;; Screen
-   "OPEN-SCREEN" "CLOSE-SCREEN" "WITH-SCREEN"
+   "OPEN-SCREEN" "CLOSE-SCREEN" "WITH-SCREEN" "SHOW-TITLE"
    "SCREEN-WIDTH" "SCREEN-HEIGHT" "SCREEN-BAR-HEIGHT" "SCREEN-VIEWPORT"
    ;; IDCMP
    "GET-MSG" "REPLY-MSG" "WAIT-PORT"
@@ -72,6 +72,7 @@
 (defconstant +lvo-refresh-g-list+      -432)
 (defconstant +lvo-lock-pub-screen+     -510)
 (defconstant +lvo-unlock-pub-screen+   -516)
+(defconstant +lvo-show-title+          -282)
 (defconstant +lvo-dos-delay+           -198)  ; dos.library Delay(ticks), d1 = ticks
 
 ;;; Exec LVOs for message handling
@@ -284,6 +285,14 @@ struct, or signals an error."
   "Close a custom Intuition screen (all its windows must be closed)."
   (amiga:call-library *intuition-base* +lvo-close-screen+
                       (list :a0 screen))
+  t)
+
+(defun show-title (screen show-it)
+  "ShowTitle: SHOW-IT non-NIL puts the screen's title bar in front of
+backdrop windows, NIL behind them (a full-screen backdrop window then
+covers it completely — how a game hides the OS bar)."
+  (amiga:call-library *intuition-base* +lvo-show-title+
+                      (list :a0 screen :d0 (if show-it 1 0)))
   t)
 
 (defmacro with-screen ((var &rest args) &body body)
