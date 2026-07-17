@@ -664,6 +664,43 @@ CL-Amiga provides Lisp bindings for Intuition, Graphics, and GadTools — loaded
       (#.amiga.intuition:+idcmp-closewindow+ (msg) (return)))))
 ```
 
+### Opening a Custom Screen
+
+Applications that want the whole display (games, demos) open their own
+screen instead of a window on Workbench.  Pick the display mode
+RTG-safely with `best-mode-id` (graphics.library `BestModeIDA` — on
+Picasso96/CyberGraphX/MorphOS it returns a suitable RTG mode, on a
+chipset Amiga a native one), then cover the screen with a borderless
+backdrop window for input and menus:
+
+```lisp
+(require "amiga/intuition")
+(require "amiga/graphics")
+
+(amiga.intuition:with-screen
+    (scr :width 640 :height 256 :depth 2 :title "My Screen"
+         :mode-id (amiga.gfx:best-mode-id :width 640 :height 256 :depth 2))
+  ;; screen palette: entry 0 black, entry 1 white
+  (let ((vp (amiga.intuition:screen-viewport scr)))
+    (amiga.gfx:set-rgb4 vp 0 0 0 0)
+    (amiga.gfx:set-rgb4 vp 1 15 15 15))
+  (amiga.intuition:with-window
+      (win :left 0 :top 0
+           :width (amiga.intuition:screen-width scr)
+           :height (amiga.intuition:screen-height scr)
+           :screen scr
+           :flags (logior amiga.intuition:+wflg-borderless+
+                          amiga.intuition:+wflg-backdrop+
+                          amiga.intuition:+wflg-activate+)
+           :idcmp amiga.intuition:+idcmp-vanillakey+)
+    (amiga.intuition:event-loop win
+      (#.amiga.intuition:+idcmp-vanillakey+ (msg) (return)))))
+```
+
+Lambda's Tale (`examples/games/lambda-tale`, run with
+`:display :screen`) exercises this path end-to-end; its Amiga test
+suite covers it.
+
 ### GadTools Gadgets
 
 ```lisp
