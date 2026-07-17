@@ -23,6 +23,7 @@
    #:view-slice-front #:view-slice-left #:view-slice-right
    #:view-slice-lx #:view-slice-ly #:view-slice-left-front
    #:view-slice-rx #:view-slice-ry #:view-slice-right-front
+   #:compass-points
    ;; game state / movement
    #:new-game #:game-map #:game-knowledge #:game-x #:game-y #:game-facing
    #:game-party #:game-flags #:game-combat
@@ -32,6 +33,7 @@
    #:on-event #:emit #:say #:flag #:set-flag #:clear-flag
    ;; message log (the Bard's Tale text column)
    #:attach-message-log #:log-message #:log-recent
+   #:wrap-text #:wrap-message
    ;; cell specials
    #:trigger-special #:run-special #:teleport-party
    ;; heroes and the party

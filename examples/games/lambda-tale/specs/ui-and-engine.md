@@ -49,7 +49,11 @@ solely in the full map mode under `m`.)
   carries them as `game-effects` (`add-effect`/`remove-effect`, EQUAL
   dedup); the strip renders one line per effect.  Until the spell
   system lands (M4) this is reserved space fed by story/test code;
-  effects are transient (not yet saved).
+  effects are transient (not yet saved).  The foot of the strip holds
+  a **compass rose** — N/E/S/W around a diamond, the needle and the
+  faced letter highlighted (`compass-points` provides the geometry);
+  turning is silent (no "You turn left." log noise), the compass and
+  status line carry that information.
 - **Status + party roster** (bottom, full width): position/facing/mode
   line and one roster row per party member — the layout must reserve
   room for **7 rows**.

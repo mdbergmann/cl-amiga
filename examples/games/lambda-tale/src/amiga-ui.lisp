@@ -180,13 +180,18 @@ the full map mode."
                                         (- (floor cell 2) 1))))
           (amiga.gfx:set-a-pen rp 1))))))
 
+(defparameter *amiga-compass-height* 56
+  "Vertical space at the foot of the middle column reserved for the
+compass rose.")
+
 (defun %amiga-draw-effects (rp game l)
   "The active-spells strip between the view and the text column:
-one line per active effect (shield, lamp, ...)."
+one line per active effect (shield, lamp, ...).  The bottom
+*AMIGA-COMPASS-HEIGHT* pixels belong to the compass rose."
   (let* ((ox (ui-layout-spells-x l))
          (oy (ui-layout-by l))
          (w (ui-layout-spells-w l))
-         (h (ui-layout-col-h l))
+         (h (max 0 (- (ui-layout-col-h l) *amiga-compass-height*)))
          (lh (ui-layout-lh l))
          (max-chars (max 4 (floor w 8))))
     (amiga.gfx:set-a-pen rp 0)
@@ -202,6 +207,37 @@ one line per active effect (shield, lamp, ...)."
                                        text))))
         (incf y lh)))))
 
+(defun %amiga-draw-compass (rp game l)
+  "Compass rose at the foot of the middle column: the four cardinal
+letters around a diamond, the needle pointing at the party's facing."
+  (let* ((ox (ui-layout-spells-x l))
+         (w (ui-layout-spells-w l))
+         (bottom (+ (ui-layout-by l) (ui-layout-col-h l)))
+         (h (min *amiga-compass-height* (ui-layout-col-h l)))
+         (cx (+ ox (floor w 2)))
+         (cy (- bottom (floor h 2)))
+         (r (max 6 (min (floor (- w 20) 2) (- (floor h 2) 6)))))
+    (amiga.gfx:set-a-pen rp 0)
+    (amiga.gfx:rect-fill rp ox (- bottom h) (+ ox w -1) (- bottom 1))
+    (destructuring-bind (needle letters)
+        (compass-points (game-facing game) cx cy r)
+      ;; the rose: a diamond through the needle's reach
+      (let ((ri (max 2 (- r 8))))
+        (amiga.gfx:set-a-pen rp 1)
+        (amiga.gfx:draw-line rp cx (- cy ri) (+ cx ri) cy)
+        (amiga.gfx:draw-line rp (+ cx ri) cy cx (+ cy ri))
+        (amiga.gfx:draw-line rp cx (+ cy ri) (- cx ri) cy)
+        (amiga.gfx:draw-line rp (- cx ri) cy cx (- cy ri)))
+      (destructuring-bind (x0 y0 x1 y1) needle
+        (amiga.gfx:set-a-pen rp 3)
+        (amiga.gfx:draw-line rp x0 y0 x1 y1))
+      (dolist (p letters)
+        (destructuring-bind (ch x y facing-p) p
+          (amiga.gfx:set-a-pen rp (if facing-p 3 1))
+          (amiga.gfx:move-to rp (- x 4) (+ y 3))
+          (amiga.gfx:gfx-text rp (string ch)))))
+    (amiga.gfx:set-a-pen rp 1)))
+
 (defun %amiga-draw-log (rp log l)
   "Message log column: trailing lines, newest at the bottom (spec: the
 Bard's Tale text column)."
@@ -211,17 +247,20 @@ Bard's Tale text column)."
          (h (ui-layout-col-h l))
          (lh (ui-layout-lh l))
          (n (max 1 (floor h lh)))
-         (lines (log-recent log n))
-         (max-chars (max 4 (floor w 8))))
+         (max-chars (max 4 (floor w 8)))
+         ;; Each message starts with "> "; long ones wrap onto indented
+         ;; continuation lines.  Keep the trailing N display lines so
+         ;; the newest stays at the bottom.
+         (wrapped (mapcan (lambda (m) (wrap-message m max-chars))
+                          (log-recent log n)))
+         (lines (last wrapped n)))
     (amiga.gfx:set-a-pen rp 0)
     (amiga.gfx:rect-fill rp ox oy (+ ox w -1) (+ oy h -1))
     (amiga.gfx:set-a-pen rp 1)
     (let ((y (+ oy (- h (* (length lines) lh)) (ui-layout-base l))))
       (dolist (m lines)
         (amiga.gfx:move-to rp ox y)
-        (amiga.gfx:gfx-text rp (if (> (length m) max-chars)
-                                   (subseq m 0 max-chars)
-                                   m))
+        (amiga.gfx:gfx-text rp m)
         (incf y lh)))))
 
 (defun %amiga-status (rp game l text)
@@ -428,6 +467,7 @@ button)."
                                                 (ui-layout-fp-w l)
                                                 (ui-layout-fp-h l))
                                 (%amiga-draw-effects rp game l)
+                                (%amiga-draw-compass rp game l)
                                 (%amiga-draw-log rp log l)
                                 (%amiga-status rp game l (status-text))
                                 (%amiga-party rp game l))))
@@ -486,12 +526,8 @@ button)."
                                    (case lc
                                      (#\w (%step :forward) (redraw))
                                      (#\s (%step :back) (redraw))
-                                     (#\a (turn-left game)
-                                          (say game "You turn left.")
-                                          (redraw))
-                                     (#\d (turn-right game)
-                                          (say game "You turn right.")
-                                          (redraw))
+                                     (#\a (turn-left game) (redraw))
+                                     (#\d (turn-right game) (redraw))
                                      (#\m (setf mode :map)
                                           (redraw)))
                                    nil)))))

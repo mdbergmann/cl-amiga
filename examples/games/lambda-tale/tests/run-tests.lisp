@@ -518,6 +518,48 @@ messages so far (oldest first)."
   (check "log-message appends directly" '("three" "four" "five")
          (log-recent log 10)))
 
+;; Word wrap for the text column (the Amiga log wraps long messages).
+(check "wrap: short text passes through" '("short") (wrap-text "short" 10))
+(check "wrap: exact width does not wrap" '("12345") (wrap-text "12345" 5))
+(check "wrap: empty string yields one empty line" '("") (wrap-text "" 10))
+(check "wrap: breaks at word boundaries"
+       '("El Cid hits the" "giant rat for 2" "damage.")
+       (wrap-text "El Cid hits the giant rat for 2 damage." 16))
+(check "wrap: space at the boundary"
+       '("one two" "three") (wrap-text "one two three" 7))
+(check "wrap: long word breaks hard"
+       '("aaaa" "aaaa" "aa") (wrap-text "aaaaaaaaaa" 4))
+(check "wrap: width floor of 1" '("a" "b") (wrap-text "ab" 0))
+(check-true "wrap: every line fits the width"
+            (every (lambda (line) (<= (length line) 12))
+                   (wrap-text "the quick brown fox jumps over the lazy dog" 12)))
+
+;; wrap-message: "> " marks where a message starts, continuations indent.
+(check "wrap-message: single line gets the marker"
+       '("> short") (wrap-message "short" 10))
+(check "wrap-message: continuation lines indent"
+       '("> one two" "  three") (wrap-message "one two three" 9))
+(check-true "wrap-message: every line fits the width"
+            (every (lambda (line) (<= (length line) 16))
+                   (wrap-message "El Cid hits the giant rat for 2 damage." 16)))
+(check "wrap-message: narrow width floor"
+       '("> a" "  b") (wrap-message "ab" 0))
+
+;; Compass-rose geometry (the UI's facing indicator).
+(destructuring-bind (needle letters) (compass-points +north+ 100 50 20)
+  (check "compass needle points north" '(100 50 100 38) needle)
+  (check "compass north letter" '(#\N 100 30 t) (first letters))
+  (check "compass east letter" '(#\E 120 50 nil) (second letters))
+  (check "compass south letter" '(#\S 100 70 nil) (third letters))
+  (check "compass west letter" '(#\W 80 50 nil) (fourth letters)))
+(destructuring-bind (needle letters) (compass-points +west+ 0 0 10)
+  (check "compass needle points west" '(0 0 -2 0) needle)
+  (check "only the facing letter is highlighted"
+         '(nil nil nil t) (mapcar #'fourth letters)))
+(destructuring-bind (needle letters) (compass-points +east+ 10 10 4)
+  (declare (ignore letters))
+  (check "compass needle keeps a minimum length" '(10 10 12 10) needle))
+
 ;; Active spell effects (the UI's spell strip).
 (let* ((m (parse-map *art* :name "test"))
        (g (new-game m)))
