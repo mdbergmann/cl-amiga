@@ -46,12 +46,17 @@
   (amiga.intuition:with-pub-screen (scr)
     (not (ffi:null-pointer-p scr))))
 
-;; TITLE NIL opens an untitled window (no WA_Title tag sent) and reserves
-;; no title-bar space at the top edge — the borderless-backdrop case.
+;; TITLE NIL opens an untitled window (no WA_Title tag sent).  On a
+;; BORDERLESS window that means a genuinely zero top border — with a
+;; WA_Title even a borderless window pays a title bar, which is what
+;; the :title nil support exists for (full-screen backdrop windows).
+;; A normal bordered window keeps its thin frame either way, so the
+;; zero-border assertion only holds for the borderless case.
 (check "intuition-open-window-title-nil" t
-  (amiga.intuition:with-window (win :title nil :left 10 :top 10
-                                    :width 150 :height 80
-                                    :flags 0)
+  (amiga.intuition:with-window
+      (win :title nil :left 10 :top 10
+           :width 150 :height 80
+           :flags amiga.intuition:+wflg-borderless+)
     (and (not (ffi:null-pointer-p win))
          (= (amiga.intuition:window-border-top win) 0))))
 
