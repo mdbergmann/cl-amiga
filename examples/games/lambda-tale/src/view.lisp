@@ -17,6 +17,12 @@
 
 (defconstant +view-depth+ 4)    ; cells visible ahead, including standing cell
 
+;;; The first-person viewport size shared by the Amiga front-end, the
+;;; wall-art generator and the tests: the wall-piece assets are drawn
+;;; for exactly these planes, so the three must agree.
+(defparameter *fp-view-width* 240)
+(defparameter *fp-view-height* 130)
+
 (defstruct (view-slice (:constructor %make-view-slice))
   (depth 0)
   cx cy               ; center cell coordinates
@@ -143,6 +149,93 @@ primitives, ordered back to front."
       (dolist (s (reverse slices))
         (draw-slice s))
       (nreverse prims))))
+
+;;; ---------------------------------------------------------------------
+;;; Wall pieces (M3): the Bard's Tale fixed-slot geometry for the blitted
+;;; view.  Every wall the view can show falls into one of a fixed set of
+;;; screen slots derived from the perspective planes; each slot is filled
+;;; by one pre-rendered bitmap piece.  The piece keys name both the
+;;; bitmaps in the asset cache and the files the art generator emits:
+;;;
+;;;   (:front d)             front wall across the corridor at depth d
+;;;   (:front-door d)        the same slot with a door in the wall
+;;;   (:side d :l/:r)        receding side wall (the trapezoid, with the
+;;;                          ceiling/floor corners baked in)
+;;;   (:side-door d :l/:r)   side wall with a door
+;;;   (:flank d :l/:r)       front wall of the neighbor cell seen through
+;;;                          an open side
+;;;   (:flank-door d :l/:r)  the same with a door
+;;;
+;;; VIEW-BLIT-LIST is the bitmap twin of VIEW-DISPLAY-LIST: same slice
+;;; walk, but flattened to (piece x y w h) blit records, back to front,
+;;; so the near pieces overdraw the far ones (rectangular blits with the
+;;; corners painted in the background color make that correct).
+
+(defun wall-piece-rect (planes piece)
+  "Screen slot (X Y W H) of PIECE for the plane set PLANES."
+  (destructuring-bind (kind depth &optional side) piece
+    (destructuring-bind (px0 py0 px1 py1) (aref planes depth)
+      (destructuring-bind (qx0 qy0 qx1 qy1) (aref planes (1+ depth))
+        (declare (ignorable qx1))
+        (ecase kind
+          ((:front :front-door)
+           (list qx0 qy0 (1+ (- qx1 qx0)) (1+ (- qy1 qy0))))
+          ((:side :side-door)
+           (if (eq side :l)
+               (list px0 py0 (1+ (- qx0 px0)) (1+ (- py1 py0)))
+               (list qx1 py0 (1+ (- px1 qx1)) (1+ (- py1 py0)))))
+          ((:flank :flank-door)
+           (if (eq side :l)
+               (list px0 qy0 (1+ (- qx0 px0)) (1+ (- qy1 qy0)))
+               (list qx1 qy0 (1+ (- px1 qx1)) (1+ (- qy1 qy0))))))))))
+
+(defun wall-piece-names ()
+  "All piece keys the view can ever ask for (the asset set)."
+  (loop for d below +view-depth+
+        append (list* (list :front d) (list :front-door d)
+                      (loop for kind in '(:side :side-door :flank :flank-door)
+                            append (list (list kind d :l)
+                                         (list kind d :r))))))
+
+(defun wall-piece-file (piece)
+  "Asset file name (under data/gfx/) for PIECE, e.g. \"side-door-2-l.iff\"."
+  (format nil "~{~A~^-~}.iff"
+          (mapcar (lambda (part) (string-downcase (princ-to-string part)))
+                  piece)))
+
+(defun view-blit-list (slices planes)
+  "Flatten SLICES into blit records (PIECE X Y W H), back to front.
+The bitmap twin of VIEW-DISPLAY-LIST — same wall logic, but each wall
+becomes one fixed-slot piece blit instead of wireframe lines."
+  (let ((blits '()))
+    (labels ((blit (kind depth &optional side)
+               (let ((piece (if side
+                                (list kind depth side)
+                                (list kind depth))))
+                 (push (cons piece (wall-piece-rect planes piece)) blits)))
+             (draw-slice (s)
+               (let ((d (view-slice-depth s)))
+                 ;; sides first, then the front wall on top of their seams
+                 (dolist (side '(:l :r))
+                   (let ((wall (if (eq side :l)
+                                   (view-slice-left s)
+                                   (view-slice-right s)))
+                         (beyond (if (eq side :l)
+                                     (view-slice-left-front s)
+                                     (view-slice-right-front s))))
+                     (case wall
+                       (:wall (blit :side d side))
+                       (:door (blit :side-door d side))
+                       (:open
+                        (case beyond
+                          (:wall (blit :flank d side))
+                          (:door (blit :flank-door d side)))))))
+                 (case (view-slice-front s)
+                   (:wall (blit :front d))
+                   (:door (blit :front-door d))))))
+      (dolist (s (reverse slices))
+        (draw-slice s))
+      (nreverse blits))))
 
 ;;; ---------------------------------------------------------------------
 ;;; Compass rose: display geometry for the UI's facing indicator.

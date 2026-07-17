@@ -110,6 +110,43 @@ The Amiga front-end supports two displays, selected by
   `with-screen` (OpenScreenTagList/CloseScreen) and
   `lib/amiga/graphics.lisp` provides `best-mode-id` and `set-rgb4`.
 
+## Wall graphics (M3)
+
+- The Amiga first-person view is composited from **pre-rendered wall
+  pieces** in fixed Bard's Tale screen slots; the slot geometry
+  (`wall-piece-rect` / `view-blit-list` in view.lisp) derives from the
+  same perspective planes as the wireframe display list, so both
+  renderers agree about where walls are.
+- Piece set per depth (4 depths): front wall, receding left/right side
+  walls (trapezoids with the ceiling/floor corners baked in — pieces
+  are rectangular blits, correctness comes from back-to-front order),
+  left/right flank walls (the neighbor's front wall seen through an
+  open side), each with a door variant — 40 pieces.
+- Assets are **IFF ILBM** files in `data/gfx/`, one per piece, named by
+  `wall-piece-file`.  `src/ilbm.lisp` is a pure-CL ILBM reader/writer
+  (ByteRun1 + uncompressed, interleaved masks skipped, unknown chunks
+  skipped) — it must keep working on the host, where the tests and the
+  art generator run.
+- Art is **generated, not hand-drawn**: `tools/gen-walls.lisp` draws
+  every piece procedurally (4-color dungeon palette: black, white,
+  grey brick, amber doors) and `make assets` writes the files.  The
+  test suite regenerates every piece in memory and compares it
+  **pixel-for-pixel** against the checked-in file — assets can never
+  drift from the generator.
+- Rendering is **RTG-safe, OS calls only** (the M3 roadmap rule): the
+  pieces are uploaded once per session into `AllocBitMap` bitmaps
+  (friend = the window's bitmap, depth = the display's, so blits copy
+  all planes), chunky pens via `WriteChunkyPixels` (V40+, per-pixel
+  fallback on V39), composited with `BltBitMapRastPort`.  No planar
+  poking, no chip-ram assumptions, no bytes-per-row math.
+- When `data/gfx/` is missing or unreadable the view **falls back to
+  the wireframe renderer** (and says so in the message log); the
+  blitted path also requires the layout's full 240x130 viewport.
+- `lib/amiga/graphics.lisp` carries the bindings: `alloc-bitmap` /
+  `free-bitmap` / `with-bitmap`, `get-bitmap-attr`, `init-rastport` /
+  `with-bitmap-rastport`, `write-chunky`, `read-pixel` / `write-pixel`,
+  `blt-bitmap-rastport`, `gfx-version`.
+
 ## Test requirements
 
 - Map: parse/movement/knowledge/save round-trip on generated 64x64 and
@@ -122,3 +159,10 @@ The Amiga front-end supports two displays, selected by
   the effects strip and map page), an unattended `*autoplay*` session
   that enters and leaves map mode, and a `:display :screen` session
   exercising the custom-screen path.
+- ILBM: reader/writer round trips (both compressions, pad-boundary
+  widths, depths 1-8), ByteRun1 edge cases, palette, unknown-chunk
+  skipping, corrupt-file errors.
+- Wall pieces: slot geometry (containment, mirroring, blit-list order
+  vs. the display list), asset/generator pixel equality for all 40
+  pieces; Amiga smoke test loads the assets into bitmaps, blits a view
+  and reads a known pixel back.

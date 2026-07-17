@@ -339,6 +339,60 @@ messages so far (oldest first)."
        (aref (view-planes 33 17) 0))
 
 ;;; ---------------------------------------------------------------------
+;;; Wall-piece slots and the blit list (M3)
+
+(check "wall-piece-names covers all kinds and depths"
+       (* +view-depth+ 10) (length (wall-piece-names)))
+
+(let ((planes (view-planes 240 130)))
+  ;; the fixed slots at the game's FP viewport size
+  (check "front slot at depth 0" '(48 26 144 78)
+         (wall-piece-rect planes '(:front 0)))
+  (check "front-door shares the front slot"
+         (wall-piece-rect planes '(:front 0))
+         (wall-piece-rect planes '(:front-door 0)))
+  (check "left side slot spans the full column" '(0 0 49 130)
+         (wall-piece-rect planes '(:side 0 :l)))
+  (check "left flank slot is the side band at wall height" '(0 26 49 78)
+         (wall-piece-rect planes '(:flank 0 :l)))
+  ;; left/right slots mirror around the viewport center
+  (let ((l (wall-piece-rect planes '(:side 1 :l)))
+        (r (wall-piece-rect planes '(:side 1 :r))))
+    (check "side slots mirror"
+           (list (first l) (third l))
+           (list (- 239 (first r) (1- (third r))) (third r))))
+  ;; every piece the view can ask for fits inside the viewport
+  (check "all piece slots lie inside the viewport" nil
+         (remove-if (lambda (piece)
+                      (destructuring-bind (x y w h)
+                          (wall-piece-rect planes piece)
+                        (and (<= 0 x) (<= 0 y) (< 0 w) (< 0 h)
+                             (<= (+ x w) 240) (<= (+ y h) 130))))
+                    (wall-piece-names))))
+
+;; The blit list mirrors the display-list wall logic: same map spots as
+;; the display-list tests above.
+(let* ((m (parse-map *art* :name "test"))
+       (planes (view-planes 240 130)))
+  (check "blit list: walled dead end"
+         '((:side 0 :l) (:flank 0 :r) (:front 0))
+         (mapcar #'first (view-blit-list (compute-view m 0 0 :north) planes)))
+  (check "blit list: corridor with side door, far to near"
+         '((:side 1 :l) (:side-door 1 :r) (:front 1)
+           (:side 0 :l) (:flank 0 :r))
+         (mapcar #'first (view-blit-list (compute-view m 0 0 :east) planes)))
+  ;; (1,0) facing south: east wall left, the open start cell right
+  ;; (open beyond -> no piece), the door dead ahead
+  (check "blit list: front door blocks the view"
+         '((:side 0 :l) (:front-door 0))
+         (mapcar #'first (view-blit-list (compute-view m 1 0 :south) planes)))
+  ;; each record carries its slot rect
+  (check "blit records carry their slot rects" nil
+         (remove-if (lambda (rec)
+                      (equal (rest rec) (wall-piece-rect planes (first rec))))
+                    (view-blit-list (compute-view m 0 0 :east) planes))))
+
+;;; ---------------------------------------------------------------------
 ;;; Knowledge
 
 (let* ((m (parse-map *art* :name "test"))
@@ -1010,6 +1064,174 @@ messages so far (oldest first)."
 (delete-file "tests/tmp-save.lisp")
 
 ;;; ---------------------------------------------------------------------
+;;; ILBM images (M3): the image model, ByteRun1, reader/writer round trips.
+
+(check-error "make-image rejects zero width" (make-image 0 5 2))
+(check-error "make-image rejects depth 9" (make-image 4 4 9))
+
+(let ((img (make-image 7 5 3)))
+  (check "fresh image is pen 0" 0 (pixel-ref img 6 4))
+  (setf (pixel-ref img 6 4) 5)
+  (check "pixel-ref reads back" 5 (pixel-ref img 6 4))
+  (check "row-major neighbors untouched" 0 (pixel-ref img 5 4)))
+
+;; ByteRun1 pack/unpack, straight on byte rows: repeats, literals,
+;; run-length caps at 128, runs of exactly 2 (stay literal) and 3.
+(labels ((rt (bytes label)
+           (let* ((row (coerce bytes '(vector (unsigned-byte 8))))
+                  (packed (coerce (%pack-byte-run1 row)
+                                  '(vector (unsigned-byte 8))))
+                  (out (make-array (length row)
+                                   :element-type '(unsigned-byte 8))))
+             (%unpack-byte-run1 packed 0 (length packed) out (length row)
+                                "test")
+             (check label (coerce row 'list) (coerce out 'list))
+             packed)))
+  (let ((packed (rt (make-list 300 :initial-element 7)
+                    "ByteRun1 round-trips a 300-byte repeat")))
+    (check-true "long repeat splits into 128-byte runs" (<= (length packed) 6)))
+  (rt (loop for i below 200 collect (mod i 251))
+      "ByteRun1 round-trips a 200-byte literal row")
+  (rt (loop for i below 40 collect (if (evenp i) 1 2))
+      "ByteRun1 round-trips alternating bytes")
+  (rt '(9 9 3 3 3 4 4 5 5 5 5) "runs of 2 stay literal, 3+ compress")
+  (rt '(1) "single-byte row")
+  (check-true "truncated ByteRun1 input signals"
+              (handler-case
+                  (let ((out (make-array 8 :element-type '(unsigned-byte 8))))
+                    (%unpack-byte-run1
+                     (coerce '(200) '(vector (unsigned-byte 8)))
+                     0 1 out 8 "test")
+                    nil)
+                (error () t))))
+
+;; Reader/writer round trips: both compressions, pad-boundary widths,
+;; depth 1 and depth 8, palette preserved.
+(labels ((checker (w h depth)
+           (let ((img (make-image w h depth)))
+             (dotimes (y h img)
+               (dotimes (x w)
+                 (setf (pixel-ref img x y)
+                       (mod (+ x (* 3 y)) (ash 1 depth)))))))
+         (same-image (label a b)
+           (check (format nil "~A: dimensions" label)
+                  (list (image-width a) (image-height a) (image-depth a))
+                  (list (image-width b) (image-height b) (image-depth b)))
+           (check-true (format nil "~A: pixels" label)
+                       (equalp (image-pixels a) (image-pixels b)))))
+  (dolist (compression '(1 0))
+    (dolist (dims '((7 5 2) (16 4 3) (17 3 4) (24 2 1) (33 2 8)))
+      (destructuring-bind (w h depth) dims
+        (let ((img (checker w h depth))
+              (path "tests/tmp-img.iff"))
+          (write-ilbm img path :compression compression)
+          (same-image (format nil "round trip ~Dx~Dx~D cmp ~D"
+                              w h depth compression)
+                      img (read-ilbm path))))))
+  ;; palette round trip (partial CMAP: only set entries are written)
+  (let ((img (checker 8 4 2)))
+    (setf (aref (image-palette img) 0) '(0 0 0)
+          (aref (image-palette img) 1) '(255 255 255)
+          (aref (image-palette img) 2) '(136 136 136)
+          (aref (image-palette img) 3) '(255 170 51))
+    (write-ilbm img "tests/tmp-img.iff")
+    (check "palette survives the round trip"
+           '(255 170 51)
+           (aref (image-palette (read-ilbm "tests/tmp-img.iff")) 3))))
+
+;; Unknown chunks are skipped (with odd-length padding): splice an ANNO
+;; chunk between BMHD and BODY by byte surgery and re-read.
+(let ((img (make-image 8 3 2)))
+  (setf (pixel-ref img 2 1) 3)
+  (write-ilbm img "tests/tmp-img.iff")
+  (let* ((bytes (with-open-file (s "tests/tmp-img.iff"
+                                   :element-type '(unsigned-byte 8))
+                  (let ((v (make-array (file-length s)
+                                       :element-type '(unsigned-byte 8))))
+                    (read-sequence v s)
+                    v)))
+         ;; ANNO chunk, 5 data bytes -> padded to 6 on disk
+         (anno (coerce (append (map 'list #'char-code "ANNO")
+                               '(0 0 0 5)
+                               (map 'list #'char-code "prop!")
+                               '(0))
+                       '(vector (unsigned-byte 8))))
+         (cut (+ 12 8 20))                 ; after FORM hdr + BMHD chunk
+         (spliced (concatenate '(vector (unsigned-byte 8))
+                               (subseq bytes 0 cut) anno
+                               (subseq bytes cut))))
+    ;; fix the FORM length
+    (let ((len (- (length spliced) 8)))
+      (setf (aref spliced 4) (ldb (byte 8 24) len)
+            (aref spliced 5) (ldb (byte 8 16) len)
+            (aref spliced 6) (ldb (byte 8 8) len)
+            (aref spliced 7) (ldb (byte 8 0) len)))
+    (with-open-file (s "tests/tmp-img.iff" :direction :output
+                       :element-type '(unsigned-byte 8)
+                       :if-exists :supersede)
+      (write-sequence spliced s))
+    (let ((back (read-ilbm "tests/tmp-img.iff")))
+      (check "reader skips unknown ANNO chunk" 3 (pixel-ref back 2 1)))))
+
+;; Not-an-ILBM and truncated BODY both signal clear errors.
+(with-open-file (s "tests/tmp-img.iff" :direction :output
+                   :element-type '(unsigned-byte 8)
+                   :if-exists :supersede)
+  (map nil (lambda (c) (write-byte (char-code c) s)) "just some text"))
+(check-error "read-ilbm rejects a non-IFF file"
+  (read-ilbm "tests/tmp-img.iff"))
+(let ((img (make-image 32 8 4)))
+  (write-ilbm img "tests/tmp-img.iff" :compression 0)
+  (let* ((bytes (with-open-file (s "tests/tmp-img.iff"
+                                   :element-type '(unsigned-byte 8))
+                  (let ((v (make-array (file-length s)
+                                       :element-type '(unsigned-byte 8))))
+                    (read-sequence v s)
+                    v))))
+    (with-open-file (s "tests/tmp-img.iff" :direction :output
+                       :element-type '(unsigned-byte 8)
+                       :if-exists :supersede)
+      (write-sequence (subseq bytes 0 (- (length bytes) 10)) s))
+    (check-error "read-ilbm rejects a truncated BODY"
+      (read-ilbm "tests/tmp-img.iff"))))
+(delete-file "tests/tmp-img.iff")
+
+;;; ---------------------------------------------------------------------
+;;; Wall-art assets (M3): the checked-in data/gfx ILBMs must match what
+;;; the generator draws today — pixel for pixel — so art and code can
+;;; never drift apart.  (Regenerate with `make assets` after changing
+;;; tools/gen-walls.lisp.)
+
+(load "tools/gen-walls.lisp")
+
+(check "wall-piece-file name" "side-door-2-l.iff"
+       (wall-piece-file '(:side-door 2 :l)))
+
+(let ((planes (view-planes *fp-view-width* *fp-view-height*))
+      (stale '()))
+  (dolist (piece (wall-piece-names))
+    (let ((file (concatenate 'string "data/gfx/" (wall-piece-file piece))))
+      (if (not (probe-file file))
+          (push (list piece :missing) stale)
+          (let ((disk (read-ilbm file))
+                (drawn (draw-wall-piece piece planes)))
+            (destructuring-bind (x y w h) (wall-piece-rect planes piece)
+              (declare (ignore x y))
+              (unless (and (= (image-width disk) w)
+                           (= (image-height disk) h))
+                (push (list piece :wrong-size) stale)))
+            (unless (equalp (image-pixels disk) (image-pixels drawn))
+              (push (list piece :differs) stale))))))
+  (check "all 40 data/gfx assets exist and match the generator" nil stale)
+  ;; the reader restores the dungeon palette from the CMAP
+  (check "asset palette carries the dungeon colors"
+         (coerce *wall-palette* 'list)
+         (coerce (image-palette
+                  (read-ilbm (concatenate 'string "data/gfx/"
+                                          (wall-piece-file '(:front 0)))))
+                 'list)))
+
+;;; ---------------------------------------------------------------------
 ;;; Amiga front-end smoke test (real Intuition window + graphics.library
 ;;; calls; only runs when this suite is loaded under AmigaOS clamiga).
 
@@ -1122,6 +1344,61 @@ messages so far (oldest first)."
                (%amiga-status rp g l "Screen smoke test")
                (%amiga-party rp g l)
                t)))))
+
+;; Wall-piece assets (M3): the data/gfx ILBMs load into offscreen
+;; bitmaps and the first-person view composits them with real OS blits.
+;; Runs on the game's own custom screen — the nominal PAL 640x256
+;; geometry guarantees the layout keeps the full 240x130 asset-size
+;; viewport (the FS-UAE Workbench can be shorter than 256 lines, where
+;; the view correctly falls back to the wireframe).
+#+amigaos
+(let* ((m (parse-map *art* :name "test"))
+       (g (new-game m)))
+  (%with-game-font
+   (lambda (font)
+     (amiga.intuition:with-screen
+         (scr :width *amiga-screen-width*
+              :height *amiga-screen-height*
+              :depth *amiga-screen-depth*
+              :title "Walls Test"
+              :mode-id (amiga.gfx:best-mode-id
+                        :width *amiga-screen-width*
+                        :height *amiga-screen-height*
+                        :depth *amiga-screen-depth*))
+       (%game-screen-palette scr)
+       ;; untitled: a backdrop window with a WA_Title still gets a
+       ;; title bar, which would push the layout below the asset size
+       (amiga.intuition:with-window
+           (win :title nil :left 0 :top 0
+                :width (amiga.intuition:screen-width scr)
+                :height (amiga.intuition:screen-height scr)
+                :screen scr
+                :flags (logior amiga.intuition:+wflg-borderless+
+                               amiga.intuition:+wflg-backdrop+
+                               amiga.intuition:+wflg-activate+)
+                :idcmp amiga.intuition:+idcmp-closewindow+)
+         (check "borderless untitled backdrop window has no top border" 0
+                (amiga.intuition:window-border-top win))
+         (let* ((rp (%game-rastport win font))
+                (l (%amiga-layout win rp))
+                (walls (%load-wall-assets rp nil)))
+           (check "game font gives the designed line height" 10
+                  (ui-layout-lh l))
+           (check-true "wall assets load into bitmaps" walls)
+           (when walls
+             (check "every wall piece got a bitmap"
+                    (length (wall-piece-names)) (hash-table-count walls))
+             (check-true "custom screen leaves the full asset-size viewport"
+                         (= (ui-layout-fp-h l) *fp-view-height*))
+             (%amiga-draw-fp rp g (ui-layout-bx l) (ui-layout-by l)
+                             (ui-layout-fp-w l) (ui-layout-fp-h l) walls)
+             ;; dead end at (0,0) facing north: the front wall piece
+             ;; lands on the plane-1 rect; its top edge row is the
+             ;; white highlight
+             (check "blitted front wall edge pixel" 1
+                    (amiga.gfx:read-pixel rp (+ (ui-layout-bx l) 100)
+                                          (+ (ui-layout-by l) 26))))
+           (%free-wall-assets walls)))))))
 
 ;; *autoplay* drives a full unattended PLAY-AMIGA session: scripted keys
 ;; are fed one per INTUITICK (~10/s), ending in #\q so the event loop

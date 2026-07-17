@@ -8,6 +8,9 @@
    #:dir-index #:dir-keyword #:dir-opposite #:turn-dir
    ;; dice
    #:*rng* #:roll #:parse-dice #:roll-dice
+   ;; ILBM images
+   #:make-image #:read-ilbm #:write-ilbm #:pixel-ref
+   #:image-width #:image-height #:image-depth #:image-palette #:image-pixels
    ;; map model
    #:parse-map #:load-map-file #:map-viewport
    #:dungeon-map-name #:dungeon-map-width #:dungeon-map-height
@@ -19,6 +22,7 @@
    #:cell-explored-p #:wall-known-p
    ;; first-person view geometry
    #:+view-depth+ #:compute-view #:view-planes #:view-display-list
+   #:view-blit-list #:wall-piece-rect #:wall-piece-names
    #:view-slice-depth #:view-slice-cx #:view-slice-cy
    #:view-slice-front #:view-slice-left #:view-slice-right
    #:view-slice-lx #:view-slice-ly #:view-slice-left-front
