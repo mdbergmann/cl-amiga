@@ -20,6 +20,7 @@
    "WINDOW-GZZ-WIDTH" "WINDOW-GZZ-HEIGHT"
    ;; Screen
    "OPEN-SCREEN" "CLOSE-SCREEN" "WITH-SCREEN"
+   "SCREEN-WIDTH" "SCREEN-HEIGHT" "SCREEN-BAR-HEIGHT" "SCREEN-VIEWPORT"
    ;; IDCMP
    "GET-MSG" "REPLY-MSG" "WAIT-PORT"
    "MSG-CLASS" "MSG-CODE" "MSG-MOUSE-X" "MSG-MOUSE-Y"
@@ -132,6 +133,22 @@
 (defconstant +wa-customscreen+ (+ +wa-dummy+ #x0D))
 
 ;;; ================================================================
+;;; Screen tag constants (for OpenScreenTagList, intuition/screens.h)
+;;; ================================================================
+
+(defconstant +sa-dummy+       (+ +tag-user+ 32))
+(defconstant +sa-left+        (+ +sa-dummy+ #x01))
+(defconstant +sa-top+         (+ +sa-dummy+ #x02))
+(defconstant +sa-width+       (+ +sa-dummy+ #x03))
+(defconstant +sa-height+      (+ +sa-dummy+ #x04))
+(defconstant +sa-depth+       (+ +sa-dummy+ #x05))
+(defconstant +sa-title+       (+ +sa-dummy+ #x08))
+(defconstant +sa-error-code+  (+ +sa-dummy+ #x0A))
+(defconstant +sa-display-id+  (+ +sa-dummy+ #x12))
+(defconstant +sa-show-title+  (+ +sa-dummy+ #x16))
+(defconstant +sa-quiet+       (+ +sa-dummy+ #x18))
+
+;;; ================================================================
 ;;; Struct layouts
 ;;; ================================================================
 
@@ -162,6 +179,20 @@
   (code        :u16  24)   ; im->Code
   (mouse-x     :u16  32)   ; im->MouseX
   (mouse-y     :u16  34))  ; im->MouseY
+
+;;; struct Screen (partial — from intuition/screens.h):
+;;;   0: NextScreen*  4: FirstWindow*  8: LeftEdge(W)  10: TopEdge(W)
+;;;  12: Width(W)    14: Height(W)    30: BarHeight(B)
+;;;  44: ViewPort (embedded struct — see SCREEN-VIEWPORT below)
+(ffi:defcstruct screen
+  (width      :u16 12)
+  (height     :u16 14)
+  (bar-height :u8  30))
+
+(defun screen-viewport (screen)
+  "Pointer to SCREEN's embedded ViewPort (offset 44) — what
+AMIGA.GFX:SET-RGB4 wants for setting the screen palette."
+  (ffi:make-foreign-pointer (+ (ffi:foreign-pointer-address screen) 44)))
 
 ;;; ================================================================
 ;;; Window management
@@ -210,6 +241,51 @@ Returns a foreign pointer to the Window struct, or signals an error."
      (unwind-protect
        (progn ,@body)
        (close-window ,var))))
+
+;;; ================================================================
+;;; Custom screens
+;;; ================================================================
+
+(defun open-screen (&key (width 640) (height 256) (depth 2)
+                         (title "CL-Amiga") mode-id show-title)
+  "Open a custom Intuition screen via OpenScreenTagList.
+MODE-ID non-NIL requests that display mode (SA_DisplayID) — obtain one
+RTG-safely with AMIGA.GFX:BEST-MODE-ID; NIL leaves the mode to
+Intuition's default.  SHOW-TITLE non-NIL shows the screen title bar
+\(menus work either way).  Returns a foreign pointer to the Screen
+struct, or signals an error."
+  (ffi:with-foreign-string (title-ptr title)
+    (let ((tag-pairs (list +sa-width+ width
+                           +sa-height+ height
+                           +sa-depth+ depth
+                           +sa-title+ title-ptr
+                           +sa-show-title+ (if show-title 1 0))))
+      (when mode-id
+        (setf tag-pairs (append tag-pairs
+                                (list +sa-display-id+ mode-id))))
+      (let* ((tags (amiga.ffi:make-tag-list tag-pairs))
+             (result (amiga:call-library *intuition-base*
+                                         +lvo-open-screen-tag-list+
+                                         (list :a0 (ffi:make-foreign-pointer 0)
+                                               :a1 tags))))
+        (ffi:free-foreign tags)
+        (if (zerop result)
+            (error "INTUITION:OPEN-SCREEN failed (~Dx~Dx~D~@[, mode #x~X~])"
+                   width height depth mode-id)
+            (ffi:make-foreign-pointer result))))))
+
+(defun close-screen (screen)
+  "Close a custom Intuition screen (all its windows must be closed)."
+  (amiga:call-library *intuition-base* +lvo-close-screen+
+                      (list :a0 screen))
+  t)
+
+(defmacro with-screen ((var &rest args) &body body)
+  "Open a custom screen, bind to VAR, close on exit."
+  `(let ((,var (open-screen ,@args)))
+     (unwind-protect
+       (progn ,@body)
+       (close-screen ,var))))
 
 ;;; ================================================================
 ;;; Window accessors

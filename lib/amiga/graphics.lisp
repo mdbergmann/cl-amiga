@@ -16,6 +16,8 @@
    "RECT-FILL" "DRAW-ELLIPSE"
    ;; Text
    "GFX-TEXT" "TEXT-LENGTH"
+   ;; Display database / palette
+   "BEST-MODE-ID" "SET-RGB4"
    ;; RastPort accessors
    "RASTPORT-FGPEN" "RASTPORT-BGPEN" "RASTPORT-CP-X" "RASTPORT-CP-Y"
    "RASTPORT-TX-HEIGHT" "RASTPORT-TX-BASELINE"
@@ -118,6 +120,44 @@
                         (list :a1 rastport
                               :a0 s
                               :d0 (length string)))))
+
+;;; ================================================================
+;;; Display database (BestModeIDA) and palette
+;;; ================================================================
+
+(defconstant +lvo-best-mode-id-a+ -1050)
+(defconstant +lvo-set-rgb4+       -288)
+
+;;; BIDTAG_* from graphics/modeid.h
+(defconstant +bidtag-nominal-width+  #x80000004)
+(defconstant +bidtag-nominal-height+ #x80000005)
+(defconstant +bidtag-desired-width+  #x80000006)
+(defconstant +bidtag-desired-height+ #x80000007)
+(defconstant +bidtag-depth+          #x80000008)
+
+(defun best-mode-id (&key (width 640) (height 256) (depth 2))
+  "Ask the display database (graphics.library/BestModeIDA) for the mode
+that best fits WIDTH x HEIGHT at DEPTH.  This is the RTG-safe way to
+pick a screen mode — on Picasso96/CyberGraphX/MorphOS it returns a
+suitable RTG mode, on a chipset Amiga a native one (e.g. PAL hires for
+640x256).  Returns the mode ID, or NIL when the database has no match
+\(caller falls back to opening the screen without SA_DisplayID)."
+  (let* ((tags (amiga.ffi:make-tag-list
+                (list +bidtag-nominal-width+  width
+                      +bidtag-nominal-height+ height
+                      +bidtag-desired-width+  width
+                      +bidtag-desired-height+ height
+                      +bidtag-depth+          depth)))
+         (id (amiga:call-library *gfx-base* +lvo-best-mode-id-a+
+                                 (list :a0 tags))))
+    (ffi:free-foreign tags)
+    ;; INVALID_ID is ~0; the call result may come back signed or unsigned.
+    (if (or (eql id -1) (eql id #xFFFFFFFF))
+        nil
+        id)))
+
+(amiga.ffi:defcfun set-rgb4 *gfx-base* -288
+  (:a0 viewport :d0 index :d1 red :d2 green :d3 blue) :void t)
 
 ;;; ================================================================
 ;;; Provide module
