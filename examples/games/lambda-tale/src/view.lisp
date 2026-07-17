@@ -143,3 +143,21 @@ primitives, ordered back to front."
       (dolist (s (reverse slices))
         (draw-slice s))
       (nreverse prims))))
+
+;;; ---------------------------------------------------------------------
+;;; Compass rose: display geometry for the UI's facing indicator.
+
+(defun compass-points (facing cx cy r)
+  "Compass-rose geometry around hub (CX,CY) with letter radius R:
+returns (NEEDLE LETTERS) where NEEDLE is the line (X0 Y0 X1 Y1) from
+the hub toward FACING and LETTERS is a list of (CHAR X Y FACING-P)
+anchor points for N/E/S/W, FACING-P marking the faced direction."
+  (let ((needle-r (max 2 (- r 8))))
+    (list (list cx cy
+                (+ cx (* (aref *dir-dx* facing) needle-r))
+                (+ cy (* (aref *dir-dy* facing) needle-r)))
+          (loop for d below 4
+                collect (list (char "NESW" d)
+                              (+ cx (* (aref *dir-dx* d) r))
+                              (+ cy (* (aref *dir-dy* d) r))
+                              (= d facing))))))

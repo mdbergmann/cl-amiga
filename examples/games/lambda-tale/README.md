@@ -23,9 +23,11 @@ combat: `a` attack, `d` defend, `f` flee.
 The screen is split Bard's Tale style (see
 [specs/ui-and-engine.md](specs/ui-and-engine.md)): the wireframe
 first-person view on the left, the active-spells strip next to it
-(shield, lamp, ... — fed by `add-effect`/`remove-effect`), the message
+(shield, lamp, ... — fed by `add-effect`/`remove-effect`) with a
+compass rose at its foot showing the party's facing, the message
 log filling the right column — newest line at the bottom, older lines
-scrolling up — and the status line plus the party roster (up to
+scrolling up; each message starts with `>` and long ones word-wrap
+onto indented continuation lines — and the status line plus the party roster (up to
 7 rows) at the bottom.  The automap lives under `m`; levels can be
 large (30x30 like Bard's Tale I, up to 128x128).  On the Amiga the
 window uses the same PAL 640x256 geometry as the custom screen, so

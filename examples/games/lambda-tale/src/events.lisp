@@ -72,6 +72,34 @@ to bottom with the newest line at the bottom."
   (let ((lines (message-log-lines log)))
     (reverse (subseq lines 0 (min n (length lines))))))
 
+(defun wrap-text (text width)
+  "Split TEXT into a list of lines at most WIDTH characters long,
+breaking at spaces; a word longer than WIDTH breaks mid-word.  Always
+returns at least one line (\"\" wraps to (\"\"))."
+  (let ((width (max 1 width))
+        (lines '()))
+    (loop
+      (when (<= (length text) width)
+        (push text lines)
+        (return))
+      (let ((break (position #\Space text :from-end t :end (1+ width))))
+        (if (and break (plusp break))
+            (setf lines (cons (subseq text 0 break) lines)
+                  text (subseq text (1+ break)))
+            (setf lines (cons (subseq text 0 width) lines)
+                  text (subseq text width)))))
+    (nreverse lines)))
+
+(defun wrap-message (text width)
+  "Wrap TEXT like WRAP-TEXT, marking where the message starts: the
+first line is prefixed with \"> \", continuation lines are indented to
+align.  Lines stay at most WIDTH characters long."
+  (let ((first t))
+    (mapcar (lambda (line)
+              (prog1 (concatenate 'string (if first "> " "  ") line)
+                (setf first nil)))
+            (wrap-text text (- (max 3 width) 2)))))
+
 ;;; ---------------------------------------------------------------------
 ;;; Story flags: arbitrary EQUAL-comparable keys the story sets and tests.
 ;;; Flags live in the save game, so anything stored must print readably.
