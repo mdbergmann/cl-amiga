@@ -1,0 +1,35 @@
++-+-+-+-+-+-+-+-+-+
+|                 |
++ +-+-+-+ +-+-+-+ +
+| | | | | | | | | |
++ +-+D+-+ +-+D+-+ +
+|                 |
++ + + +-+-+-+ + + +
+|     | | | |     |
++ + + +-+-+-+ + + +
+|                 |
++ + + + + + + + + +
+|        @        |
++ + + + + + + + + +
+|                 |
++-+-+-+-+-+-+-+-+-+
+
+;; The town of Closure — the demo campaign's city.  Cities are ordinary
+;; maps: the ZONE form marks the kind, LOCATION specials are the
+;; buildings, TRAVEL specials are the gates and stairs (see
+;; src/specials.lisp for the op vocabulary).
+
+(zone :kind :city :title "Closure")
+
+(special (4 5)
+  (once (message "Welcome to Closure, last stop before the depths."
+                 "Wolfgar's shoppe lies north-west; the tavern north-east.")))
+
+(special (2 1)
+  (location "Wolfgar's Arms & Armour" :shop
+            :stock (torch short-sword war-axe broadsword
+                    leather-armor chain-mail buckler)))
+
+(special (6 1)
+  (message "The Adventurer's Rest is dim and empty.  A trapdoor leads down.")
+  (travel "cellar.map"))

@@ -4,6 +4,67 @@ Design constraints for the game from M2.5 onward.  The test suite
 (`tests/run-tests.lisp`) is the executable form of this spec; when the
 two disagree, fix one of them.
 
+## Engine first
+
+Lambda's Tale is an **engine**; the shipped campaign is one instance of
+it.  Cities, dungeons, shops, items, monsters and story are all
+**first-class, data-driven concepts** — the engine never hard-codes a
+story fact, a map, a shop inventory or an item.  Anything M4 and later
+adds (towns, shops, sound, spells) must land as engine mechanics plus
+campaign data, never as code that knows about "the" town.
+
+## The world: zones and travel (M4)
+
+- A game world is a set of **zones** — ordinary map files linked by
+  travel.  A map file self-describes through a `(zone ...)` data form
+  after the art: `:kind` (`:dungeon` default, `:city`, ... — an open
+  set), `:title` (display name), `:wrap`, `:start-facing`.
+- **Cities and dungeons are the same thing to the engine**: maps with
+  walls, doors, specials.  `:kind` is data for campaigns and front-ends
+  (future: per-zone tile packs), not an engine branch.
+- The special op `(travel FILE [X Y] [FACING])` moves the party to
+  another zone: stairs, city gates, portals are all map data.  `FILE`
+  resolves relative to the current map's directory; the party arrives
+  at `(X,Y)`/`FACING` or the target's start.  Ops after a `travel` in
+  the same special are skipped (they belong to the cell just left).
+- The game keeps **every visited zone's map and automap knowledge
+  alive** (`game-zones`); traveling back restores both.  `:enter-zone`
+  is emitted on arrival; travel is depth-capped like teleport chains
+  and refused during combat.
+- Save games (v2) record the current zone plus **all zones' automap
+  knowledge**; other zones reload lazily from their map files when the
+  party travels back.
+- **A world is a directory**: map files plus a `campaign.lisp` beside
+  them.  `load-campaign` (called by both front-ends) loads the
+  campaign next to the starting map, so a designer's world brings its
+  own classes, monsters and items — never the demo's.
+
+## Locations, items and shops (M4)
+
+- A **location** is an enterable place on a cell — a building in a
+  city, a hut in a dungeon: the special op
+  `(location TITLE KIND ARG...)`.  Stepping onto the cell enters it;
+  the game gains a modal location state (like combat: no walking until
+  `leave-location`), `:enter-location`/`:leave-location` frame it.
+  KIND is an open set; the engine ships `:shop` mechanics, campaigns
+  script other kinds via events.
+- **Items are campaign data** (`define-item`): kind (`:weapon` /
+  `:armor` / `:shield` / `:misc`), price, damage dice, AC bonus
+  (descending AC — the bonus subtracts), optional class restrictions.
+- Heroes carry up to **8 items** (`+inventory-limit+`) and equip **one
+  weapon, one armor, one shield**; combat uses the equipped weapon's
+  dice and the equipment-adjusted AC (`hero-attack-dice`,
+  `hero-effective-ac`).  Packs and equipment live in save games.
+- A **shop** is a location with `:stock (ITEM-NAME...)` — unlimited
+  stock, Bard's Tale style; it buys anything back at half price.
+  Freshly bought equipment auto-equips when the slot is free and the
+  class allows it.
+- The shop interaction is modeled **platform-free** in the engine
+  (`shop-view` / `shop-lines` / `shop-act`): both front-ends feed keys
+  into the same model and draw the same text lines, so the whole flow
+  is testable on the host.  Keys: `1`-`7` pick the shopping hero,
+  `1`-`9` buy/sell, `s`/`b` flip the page, `Esc` back/leave.
+
 ## Map size
 
 - The engine must support dungeon levels of **at least 30x30 cells**
@@ -152,6 +213,19 @@ The Amiga front-end supports two displays, selected by
 - Map: parse/movement/knowledge/save round-trip on generated 64x64 and
   128x128 maps; `map-viewport` clamping at all four edges and on maps
   smaller than the requested window (map mode uses it to clamp).
+- World: zone-form parsing (kind/title/wrap/start-facing, bad kinds
+  rejected), relative path resolution (incl. Amiga volumes), travel
+  with per-zone knowledge persistence and zone reuse, ops-after-travel
+  skipping, travel-loop depth cap, save v2 round-trip across zones with
+  lazy knowledge restore, old save versions rejected.
+- Items: registry (titles, bad kinds), pack limit, equip rules (one
+  per kind, class restrictions, misc rejected), attack dice and
+  effective AC — including scripted combat rounds where the weapon
+  carries the kill and the armor turns the blow.
+- Shops: enter/leave events and modality, buy (gold, pack space,
+  auto-equip), sell (half price, unequip), and the full `shop-act` /
+  `shop-lines` interaction from hero pick to leaving; the shipped
+  town/cellar world walks end-to-end (gate, shoppe, tavern, ladder).
 - Message log: ring limit, trailing-lines query, oldest-first order.
 - Party: `join-party` up to 7, refusal at 8, `:party-joined` event.
 - Effects: `add-effect` dedup, `remove-effect`, fresh game has none.

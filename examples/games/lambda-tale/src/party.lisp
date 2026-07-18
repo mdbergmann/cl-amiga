@@ -16,8 +16,10 @@
   (hp 1)
   (str 10) (dex 10) (iq 10) (con 10) (lck 10)
   (ac 10)             ; descending: lower is better
-  (damage "1d4")      ; the hero's attack dice
-  (gold 0))
+  (damage "1d4")      ; the hero's bare attack dice (no weapon)
+  (gold 0)
+  (items '())         ; pack contents: item names, at most +inventory-limit+
+  (equipped '()))     ; equipped subset: one :weapon, :armor, :shield each
 
 (defvar *hero-classes* (make-hash-table :test 'eq))
 
@@ -35,9 +37,10 @@ and starting armor class.  Campaign data calls this."
              class))
     (getf plist key)))
 
-(defun make-hero (name class)
+(defun make-hero (name class &key (gold 0))
   "Create a level-1 hero of CLASS: hp from the class hit dice, abilities
-rolled 3d6 in the order str, dex, iq, con, lck."
+rolled 3d6 in the order str, dex, iq, con, lck.  GOLD is the starting
+purse (campaign data decides; dice strings welcome)."
   (let ((hp (max 1 (roll-dice (hero-class-property class :hp-dice)))))
     (%make-hero :name name :class class
                 :max-hp hp :hp hp
@@ -45,7 +48,8 @@ rolled 3d6 in the order str, dex, iq, con, lck."
                 :iq (roll-dice "3d6") :con (roll-dice "3d6")
                 :lck (roll-dice "3d6")
                 :ac (hero-class-property class :ac)
-                :damage (hero-class-property class :damage))))
+                :damage (hero-class-property class :damage)
+                :gold (roll-dice gold))))
 
 (defun stat-bonus (stat)
   "Bonus for an ability score: +1 per 2 points above 10, negative below."
@@ -75,7 +79,12 @@ Amiga sheet view and the tests render from the same source."
            (hero-str hero) (hero-dex hero) (hero-iq hero))
    (format nil "CON ~D  LCK ~D" (hero-con hero) (hero-lck hero))
    (format nil "Gold ~D gp~@[   ~A~]" (hero-gold hero)
-           (unless (hero-alive-p hero) "(down)"))))
+           (unless (hero-alive-p hero) "(down)"))
+   (format nil "Pack: ~:[nothing~;~:*~{~A~^, ~}~]"
+           (mapcar (lambda (name)
+                     (format nil "~A~:[~;*~]" (item-title name)
+                             (member name (hero-equipped hero))))
+                   (hero-items hero)))))
 
 (defun party-full-p (game)
   (>= (length (game-party game)) +party-limit+))

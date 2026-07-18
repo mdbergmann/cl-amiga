@@ -16,7 +16,8 @@
    #:parse-map #:load-map-file #:map-viewport
    #:dungeon-map-name #:dungeon-map-width #:dungeon-map-height
    #:dungeon-map-wrap #:dungeon-map-start-x #:dungeon-map-start-y
-   #:dungeon-map-start-facing
+   #:dungeon-map-start-facing #:dungeon-map-kind #:dungeon-map-title
+   #:map-title
    #:cell-wall #:cell-feature #:cell-special #:wall-passable-p #:neighbor
    ;; knowledge
    #:make-map-knowledge #:know-cell #:know-wall
@@ -35,6 +36,8 @@
    #:game-party #:game-flags #:game-combat
    #:game-effects #:add-effect #:remove-effect
    #:turn-left #:turn-right #:turn-around #:move-party #:observe
+   ;; the world: zones and travel
+   #:game-zones #:travel-party #:load-campaign
    ;; events and story flags
    #:on-event #:emit #:say #:flag #:set-flag #:clear-flag
    ;; message log (the Bard's Tale text column)
@@ -50,6 +53,17 @@
    #:hero-class-title #:hero-summary-lines
    #:+party-limit+ #:party-full-p #:join-party
    #:damage-hero #:heal-hero #:stat-bonus #:award-xp #:xp-for-level
+   ;; items, inventory and equipment
+   #:define-item #:find-item-type #:item-title #:item-usable-p
+   #:+inventory-limit+ #:hero-items #:hero-equipped #:hero-carrying-p
+   #:give-item #:drop-item #:equip-item #:unequip-item #:equipped-of-kind
+   #:hero-attack-dice #:hero-effective-ac
+   ;; locations and shops
+   #:game-location #:enter-location #:leave-location
+   #:location-title #:location-kind #:location-arg
+   #:shop-stock #:item-price #:item-sell-price #:buy-item #:sell-item
+   #:make-shop-view #:shop-view-hero #:shop-view-mode
+   #:shop-lines #:shop-act #:location-lines #:location-act
    ;; combat
    #:define-monster #:find-monster-type #:monster-type-name
    #:monster-type-level #:monster-type-ac #:monster-type-xp

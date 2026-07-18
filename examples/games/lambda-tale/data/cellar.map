@@ -12,6 +12,8 @@
 
 ;; Story layer: cell specials (data, never evaluated — see src/specials.lisp).
 
+(zone :kind :dungeon :title "the cellar")
+
 (special (0 0)
   (once (message "You descend into the cellar.  Rats squeal in the dark."
                  "Find the stairs down (>).")))
@@ -25,7 +27,8 @@
         (gold "3d10")))
 
 (special (5 4)
-  (message "The stairs up are barred from above."))
+  (message "You climb the ladder back up to the tavern.")
+  (travel "town.map" 6 2 :south))
 
 (special (3 2)
   (message "Stone stairs spiral down into darkness.  Your tale continues...")

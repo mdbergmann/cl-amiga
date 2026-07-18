@@ -11,9 +11,10 @@
 (in-package :tale)
 
 ;; Opens the game's own PAL 640x256 16-color custom screen (RTG-aware
-;; via BestModeIDA).  For a development view in a window on the
-;; Workbench screen instead:
-;;   (play-amiga "data/cellar.map" :display :window)
+;; via BestModeIDA).  The game starts in the town (data/town.map); the
+;; cellar dungeon lies below the tavern.  For a development view in a
+;; window on the Workbench screen instead:
+;;   (play-amiga "data/town.map" :display :window)
 (play-amiga)
 
 (cl-user::quit 0)

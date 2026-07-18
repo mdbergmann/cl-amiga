@@ -14,6 +14,20 @@
 (define-hero-class :bard     :hp-dice "1d8+2"  :damage "1d6" :ac 9)
 (define-hero-class :conjurer :hp-dice "1d6+1"  :damage "1d4" :ac 10)
 
+;;; Items (Wolfgar's stock — see data/town.map)
+
+(define-item 'torch         :price 2)
+(define-item 'short-sword   :kind :weapon :price 20 :damage "1d6+1")
+(define-item 'war-axe       :kind :weapon :price 40 :damage "1d8+1"
+             :classes '(:warrior :paladin))
+(define-item 'broadsword    :kind :weapon :price 80 :damage "2d4+2"
+             :classes '(:warrior :paladin :rogue))
+(define-item 'leather-armor :kind :armor :price 25 :ac 2)
+(define-item 'chain-mail    :kind :armor :price 90 :ac 4
+             :classes '(:warrior :paladin))
+(define-item 'buckler       :kind :shield :price 30 :ac 1
+             :classes '(:warrior :paladin :rogue :bard))
+
 ;;; Monsters
 
 (define-monster "giant rat"
@@ -26,7 +40,7 @@
 ;;; The starting party
 
 (defun default-party ()
-  (list (make-hero "El Cid" :warrior)
-        (make-hero "Corfid" :rogue)
-        (make-hero "Melody" :bard)
-        (make-hero "Zzgo"   :conjurer)))
+  (list (make-hero "El Cid" :warrior  :gold "3d20+60")
+        (make-hero "Corfid" :rogue    :gold "3d20+60")
+        (make-hero "Melody" :bard     :gold "3d20+60")
+        (make-hero "Zzgo"   :conjurer :gold "3d20+60")))

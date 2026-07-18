@@ -3,8 +3,8 @@
 (in-package :tale)
 
 (defstruct (game (:constructor %make-game))
-  map                 ; dungeon-map
-  knowledge           ; map-knowledge
+  map                 ; dungeon-map — the zone the party is in
+  knowledge           ; map-knowledge for the current zone
   (x 0)
   (y 0)
   (facing +north+)    ; direction index 0..3
@@ -12,7 +12,15 @@
   (flags (make-hash-table :test 'equal)) ; story flags (see events.lisp)
   handlers            ; event subscriptions: alist topic -> handler list
   combat              ; active COMBAT or NIL
-  effects)            ; active spell effects (shield, lamp, ...), see below
+  effects             ; active spell effects (shield, lamp, ...), see below
+  location            ; active LOCATION (shop, ...) or NIL, see locations.lisp
+  ;; The world: every zone the party has visited this session, keyed by
+  ;; map file path -> (MAP . KNOWLEDGE).  TRAVEL-PARTY switches zones,
+  ;; keeping each zone's map and automap knowledge alive.
+  (zones (make-hash-table :test 'equal))
+  ;; Automap knowledge of zones restored from a save but not yet
+  ;; revisited: alist path -> knowledge row lists (see save.lisp).
+  zone-knowledge)
 
 (defun observe (game)
   "Record what the party can see from its position into the automap:
@@ -41,8 +49,83 @@ TRIGGER-SPECIAL once."
                        :y (dungeon-map-start-y map)
                        :facing (dir-index (dungeon-map-start-facing map))
                        :party party)))
+    (setf (gethash (dungeon-map-name map) (game-zones g))
+          (cons map (game-knowledge g)))
     (observe g)
     g))
+
+;;; ---------------------------------------------------------------------
+;;; The world: travel between zones (cities, dungeons — all just maps).
+
+(defun %resolve-map-path (base file)
+  "Resolve FILE relative to the directory of BASE (the current map's
+file path).  FILE stays as-is when it is absolute (leading '/' or an
+Amiga volume ':')."
+  (if (or (and (> (length file) 0) (char= (char file 0) #\/))
+          (find #\: file))
+      file
+      (let* ((slash (position #\/ base :from-end t))
+             (colon (position #\: base :from-end t))
+             (cut (cond ((and slash colon) (max slash colon))
+                        (slash slash)
+                        (colon colon))))
+        (if cut
+            (concatenate 'string (subseq base 0 (1+ cut)) file)
+            file))))
+
+(defun load-campaign (map-file)
+  "Load the campaign that belongs to MAP-FILE: the campaign.lisp in
+the same directory as the map (hero classes, monsters, items, the
+starting party — see data/campaign.lisp for the demo).  A world is a
+directory of map files plus its campaign.lisp; the front-ends call
+this so a designer's own world brings its own definitions.  Returns
+the loaded path, or NIL when there is none."
+  (let ((path (%resolve-map-path map-file "campaign.lisp")))
+    (when (probe-file path)
+      (load path)
+      path)))
+
+(defun travel-party (game file &optional x y facing)
+  "Move the party to another zone: the map at FILE, resolved relative
+to the current map's directory.  The party arrives at cell (X,Y) facing
+FACING when given, else at the target map's start.  A zone already
+visited keeps its map and automap knowledge; a new one is loaded from
+disk.  Emits :ENTER-ZONE and :ENTER-CELL and triggers the arrival
+cell's special."
+  (when (game-combat game)
+    (error "travel-party: the party is in combat"))
+  (let* ((path (%resolve-map-path (dungeon-map-name (game-map game)) file))
+         (zone (gethash path (game-zones game)))
+         (map (car zone))
+         (knowledge (cdr zone)))
+    (unless zone
+      (setf map (load-map-file path)
+            knowledge (make-map-knowledge map))
+      ;; A save may carry this zone's automap knowledge from an earlier
+      ;; visit — restore it on first (re)entry.
+      (let ((pending (assoc path (game-zone-knowledge game) :test #'equal)))
+        (when pending
+          (%rows->knowledge knowledge (cdr pending))
+          (setf (game-zone-knowledge game)
+                (remove pending (game-zone-knowledge game)))))
+      (setf (gethash path (game-zones game)) (cons map knowledge)))
+    (let ((tx (or x (dungeon-map-start-x map)))
+          (ty (or y (dungeon-map-start-y map))))
+      (unless (and (integerp tx) (< -1 tx (dungeon-map-width map))
+                   (integerp ty) (< -1 ty (dungeon-map-height map)))
+        (error "Travel target (~S,~S) is outside the ~Dx~D map ~A"
+               tx ty (dungeon-map-width map) (dungeon-map-height map) path))
+      (setf (game-map game) map
+            (game-knowledge game) knowledge
+            (game-x game) tx
+            (game-y game) ty
+            (game-facing game)
+            (dir-index (or facing (dungeon-map-start-facing map))))
+      (observe game)
+      (emit game :enter-zone map)
+      (say game "You enter ~A." (map-title map))
+      (emit game :enter-cell tx ty)
+      (trigger-special game))))
 
 ;;; Active spell effects — the UI's spell strip (shield, lamp, ...).
 ;;; A placeholder for the coming spell system: story/test code manages
@@ -88,6 +171,9 @@ emits :BLOCKED.  Signals an error during combat — there is no walking
 away from a fight (see ATTEMPT-FLEE)."
   (when (game-combat game)
     (error "move-party: the party is in combat (attack or flee first)"))
+  (when (game-location game)
+    (error "move-party: the party is inside ~A (LEAVE-LOCATION first)"
+           (location-title (game-location game))))
   (let* ((dir (ecase relative
                 (:forward (game-facing game))
                 (:back (dir-opposite (game-facing game)))))
