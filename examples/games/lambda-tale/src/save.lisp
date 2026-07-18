@@ -1,15 +1,19 @@
 ;;; Lambda's Tale — save games.
 ;;;
 ;;; A save is a single readable Lisp form — data only, written with
-;;; PRIN1 and read back with *READ-EVAL* bound to NIL.  The map itself
-;;; is not saved: the save records the map file path (plus the load
-;;; options) and reloads it, then restores position, automap knowledge,
-;;; story flags and the party.  Story flag keys and values must print
+;;; PRIN1 and read back with *READ-EVAL* bound to NIL.  Maps themselves
+;;; are not saved: the save records the current zone's map file path
+;;; and reloads it (map files self-describe via their ZONE form), then
+;;; restores position, per-zone automap knowledge, story flags and the
+;;; party.  Zones other than the current one reload lazily when the
+;;; party travels back to them.  Story flag keys and values must print
 ;;; readably (symbols, numbers, strings, lists thereof).
 
 (in-package :tale)
 
-(defconstant +save-version+ 1)
+(defconstant +save-version+ 2)
+;; v2: multi-zone world — the save carries every visited zone's map file
+;; and automap knowledge (:zones), plus hero :items and :equipped.
 
 (defun %knowledge->rows (knowledge)
   (let ((bits (map-knowledge-bits knowledge))
@@ -42,7 +46,17 @@
         :max-hp (hero-max-hp h) :hp (hero-hp h)
         :str (hero-str h) :dex (hero-dex h) :iq (hero-iq h)
         :con (hero-con h) :lck (hero-lck h)
-        :ac (hero-ac h) :damage (hero-damage h) :gold (hero-gold h)))
+        :ac (hero-ac h) :damage (hero-damage h) :gold (hero-gold h)
+        :items (hero-items h) :equipped (hero-equipped h)))
+
+(defun %zones->alist (game)
+  "Every zone's automap knowledge: visited zones from the world table,
+plus save-restored zones the party has not revisited yet."
+  (let ((zones '()))
+    (maphash (lambda (path zone)
+               (push (cons path (%knowledge->rows (cdr zone))) zones))
+             (game-zones game))
+    (append (nreverse zones) (game-zone-knowledge game))))
 
 (defun save-game (game path)
   "Write GAME to PATH as one readable Lisp form.  Saving during combat
@@ -52,11 +66,9 @@ is not allowed.  Returns PATH."
   (let* ((map (game-map game))
          (form (list :lambda-tale-save +save-version+
                      :map-file (dungeon-map-name map)
-                     :wrap (dungeon-map-wrap map)
-                     :start-facing (dungeon-map-start-facing map)
                      :x (game-x game) :y (game-y game)
                      :facing (game-facing game)
-                     :knowledge (%knowledge->rows (game-knowledge game))
+                     :zones (%zones->alist game)
                      :flags (%flags->alist game)
                      :party (mapcar #'%hero->plist (game-party game)))))
     (with-open-file (s path :direction :output :if-exists :supersede)
@@ -67,9 +79,10 @@ is not allowed.  Returns PATH."
   path)
 
 (defun load-game (path)
-  "Load the save at PATH: reload its map file and return a fresh GAME
-with position, knowledge, flags and party restored.  Event handlers are
-not saved — subscribe them again on the returned game."
+  "Load the save at PATH: reload its current map file and return a
+fresh GAME with position, per-zone automap knowledge, flags and party
+restored.  Other visited zones' maps reload lazily on travel.  Event
+handlers are not saved — subscribe them again on the returned game."
   (let ((form (with-open-file (s path)
                 (let ((*read-eval* nil)
                       (*package* (find-package :tale)))
@@ -80,9 +93,8 @@ not saved — subscribe them again on the returned game."
       (error "~A: save version ~S, this build reads version ~D"
              path (second form) +save-version+))
     (let* ((data (cddr form))
-           (map (load-map-file (getf data :map-file)
-                               :wrap (getf data :wrap)
-                               :start-facing (getf data :start-facing)))
+           (map-file (getf data :map-file))
+           (map (load-map-file map-file))
            (game (new-game map
                            :party (mapcar (lambda (plist)
                                             (apply #'%make-hero plist))
@@ -90,7 +102,10 @@ not saved — subscribe them again on the returned game."
       (setf (game-x game) (getf data :x)
             (game-y game) (getf data :y)
             (game-facing game) (getf data :facing))
-      (%rows->knowledge (game-knowledge game) (getf data :knowledge))
+      (dolist (zone (getf data :zones))
+        (if (equal (car zone) map-file)
+            (%rows->knowledge (game-knowledge game) (cdr zone))
+            (push zone (game-zone-knowledge game))))
       (dolist (kv (getf data :flags))
         (set-flag game (car kv) (cdr kv)))
       (observe game)

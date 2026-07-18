@@ -828,13 +828,14 @@ messages so far (oldest first)."
                       :max-hp 11 :hp 9 :str 15 :dex 12 :iq 9 :con 14
                       :lck 10 :ac 8 :gold 250))
        (lines (hero-summary-lines h)))
-  (check "sheet has six lines" 6 (length lines))
+  (check "sheet has seven lines" 7 (length lines))
   (check "sheet name/class line" "El Cid the War Mage" (first lines))
   (check "sheet level/xp line" "Level 3    XP 1200" (second lines))
   (check "sheet hp/ac line" "HP 9/11    AC 8" (third lines))
   (check "sheet primary stats line" "STR 15  DEX 12  IQ 9" (fourth lines))
   (check "sheet secondary stats line" "CON 14  LCK 10" (fifth lines))
-  (check "sheet gold line, standing" "Gold 250 gp" (sixth lines)))
+  (check "sheet gold line, standing" "Gold 250 gp" (sixth lines))
+  (check "sheet pack line, empty pack" "Pack: nothing" (seventh lines)))
 ;; a downed hero is flagged on the gold line
 (check "sheet marks a downed hero" "Gold 0 gp   (down)"
        (sixth (hero-summary-lines
@@ -1046,6 +1047,128 @@ messages so far (oldest first)."
          (funcall msgs)))
 
 ;;; ---------------------------------------------------------------------
+;;; Items, inventory and equipment (M4)
+
+(define-item 't-torch   :price 2)
+(define-item 't-sword   :kind :weapon :price 10 :damage "1d6+2")
+(define-item 't-axe     :kind :weapon :price 14 :damage "1d8")
+(define-item 't-mail    :kind :armor  :price 20 :ac 4 :classes '(:tester))
+(define-item 't-buckler :kind :shield :price 6  :ac 1)
+
+(check "item-title capitalizes the name" "T Sword" (item-title 't-sword))
+(check "item-title override" "Fancy Lamp"
+       (item-title (define-item 't-lamp :title "Fancy Lamp" :price 1)))
+(check-error "unknown item rejected" (find-item-type 't-nonesuch))
+(check-error "define-item rejects a bad kind"
+  (define-item 't-bogus :kind :hat))
+
+(check "inventory limit is eight" 8 +inventory-limit+)
+
+;; Pack: give up to the limit, refuse the ninth, drop.
+(let* ((m (parse-map *art* :name "test"))
+       (h (%combat-hero))
+       (g (new-game m :party (list h)))
+       (msgs (watch-messages g)))
+  (dotimes (i 8)
+    (check-true (format nil "give-item accepts item ~D" (1+ i))
+                (give-item g h 't-torch)))
+  (check "pack holds eight" 8 (length (hero-items h)))
+  (check "give-item refuses the ninth" nil (give-item g h 't-sword))
+  (check-true "pack-full message"
+              (find-if (lambda (s) (search "pack is full" s))
+                       (funcall msgs)))
+  (check-true "drop-item removes one" (drop-item g h 't-torch))
+  (check "pack down to seven" 7 (length (hero-items h)))
+  (check "drop-item without the item" nil (drop-item g h 't-sword))
+  (check-error "give-item checks the item exists" (give-item g h 't-nada)))
+
+;; Equipment: one per kind, class restrictions, misc not equippable.
+(let* ((m (parse-map *art* :name "test"))
+       (h (%combat-hero))
+       (g (new-game m :party (list h)))
+       (msgs (watch-messages g)))
+  (check "bare attack dice are the class dice" "1d6" (hero-attack-dice h))
+  (check "bare effective ac is the class ac" 8 (hero-effective-ac h))
+  (check "equip-item needs the item in the pack" nil
+         (equip-item g h 't-sword))
+  (give-item g h 't-sword)
+  (give-item g h 't-axe)
+  (give-item g h 't-mail)
+  (give-item g h 't-buckler)
+  (give-item g h 't-torch)
+  (check-true "equip a weapon" (equip-item g h 't-sword))
+  (check "equipped weapon found" 't-sword (equipped-of-kind h :weapon))
+  (check "weapon changes the attack dice" "1d6+2" (hero-attack-dice h))
+  (check-true "equip message"
+              (find-if (lambda (s) (search "equips T Sword" s))
+                       (funcall msgs)))
+  (check-true "equipping a second weapon swaps it" (equip-item g h 't-axe))
+  (check "swapped weapon" 't-axe (equipped-of-kind h :weapon))
+  (check "only one weapon equipped" 1 (length (hero-equipped h)))
+  (check "the swapped-out sword stays in the pack" 5
+         (length (hero-items h)))
+  (check-true "equip armor (class allowed)" (equip-item g h 't-mail))
+  (check-true "equip a shield" (equip-item g h 't-buckler))
+  (check "armor and shield lower the descending ac" 3
+         (hero-effective-ac h))
+  (check "misc items cannot be equipped" nil (equip-item g h 't-torch))
+  (check-true "unequip returns t" (unequip-item g h 't-mail))
+  (check "unequip keeps the item in the pack" t
+         (not (not (hero-carrying-p h 't-mail))))
+  (check "ac back without the armor" 7 (hero-effective-ac h))
+  (check "unequip when not equipped" nil (unequip-item g h 't-mail))
+  ;; the character sheet's pack line marks equipped items with *
+  (check "sheet pack line marks equipped"
+         "Pack: T Sword, T Axe*, T Mail, T Buckler*, T Torch"
+         (seventh (hero-summary-lines h))))
+
+;; Class restrictions: a hero whose class the item excludes.
+(define-hero-class :t-wizard :hp-dice "1d4" :damage "1d3" :ac 10)
+(let* ((m (parse-map *art* :name "test"))
+       (h (with-rng () (make-hero "Wiz" :t-wizard)))
+       (g (new-game m :party (list h)))
+       (msgs (watch-messages g)))
+  (give-item g h 't-mail)
+  (check "class-restricted item refused" nil (equip-item g h 't-mail))
+  (check-true "cannot-use message"
+              (find-if (lambda (s) (search "cannot use" s))
+                       (funcall msgs)))
+  (check "item-usable-p for the wrong class" nil (item-usable-p h 't-mail))
+  (check-true "item-usable-p unrestricted" (item-usable-p h 't-torch)))
+
+;; Combat uses the equipment: weapon dice on the attack, effective AC
+;; against the monsters.
+(let* ((m (parse-map *art* :name "test"))
+       (h (%combat-hero))
+       (g (new-game m :party (list h))))
+  (give-item g h 't-sword)
+  (equip-item g h 't-sword)
+  (start-combat g '(("test rat" 1)))
+  ;; hero d20=11 hits ac 10; weapon 1d6+2 rolls 2 -> 5 damage, str 10
+  ;; adds nothing: the 3 hp rat dies in one blow.
+  (check "weapon dice carry the round" :victory
+         (with-rng (10 1) (combat-round g))))
+(let* ((m (parse-map *art* :name "test"))
+       (h (%combat-hero))
+       (g (new-game m :party (list h))))
+  (give-item g h 't-mail)
+  (equip-item g h 't-mail)
+  (give-item g h 't-buckler)
+  (equip-item g h 't-buckler)
+  (start-combat g '(("test rat" 1)))
+  ;; effective ac 3: the rat needs d20 >= 16 (1 + roll + level 1).
+  ;; hero misses (d20=1); rat d20=15 -> 17 < 20-3: a miss.
+  (check "armor turns the blow" :ongoing
+         (with-rng (0 0 14) (combat-round g)))
+  (check "no damage through the armor" 8 (hero-hp h))
+  ;; same roll against the bare hero would have hit (17 >= 12): take
+  ;; the armor off and let it land.
+  (unequip-item g h 't-mail)
+  (unequip-item g h 't-buckler)
+  (check "bare round" :ongoing (with-rng (0 0 14 0) (combat-round g)))
+  (check "the same swing hits without armor" 7 (hero-hp h)))
+
+;;; ---------------------------------------------------------------------
 ;;; Map files with a story layer
 
 (with-open-file (s "tests/tmp.map" :direction :output :if-exists :supersede)
@@ -1083,8 +1206,73 @@ messages so far (oldest first)."
 
 ;; The shipped cellar map carries its story layer.
 (let ((m (load-map-file "data/cellar.map")))
+  (check "cellar is a dungeon zone" :dungeon (dungeon-map-kind m))
   (check-true "cellar start special" (cell-special m 0 0))
-  (check-true "cellar stairs-down special" (cell-special m 3 2)))
+  (check-true "cellar stairs-down special" (cell-special m 3 2))
+  (check-true "cellar ladder leads back to town"
+              (find-if (lambda (op) (string-equal (first op) "TRAVEL"))
+                       (cell-special m 5 4))))
+
+;; The shipped town: a city zone whose buildings and gates are data.
+(let ((m (load-map-file "data/town.map")))
+  (check "town is a city zone" :city (dungeon-map-kind m))
+  (check "town title" "Closure" (map-title m))
+  (check-true "town shoppe location"
+              (find-if (lambda (op) (string-equal (first op) "LOCATION"))
+                       (cell-special m 2 1)))
+  (check-true "town tavern leads to the cellar"
+              (find-if (lambda (op) (string-equal (first op) "TRAVEL"))
+                       (cell-special m 6 1))))
+
+;; A world is a directory: the campaign.lisp NEXT TO the map file is
+;; the one that loads — a designer's own world brings its own classes,
+;; monsters and items, never the demo's.
+(with-open-file (s "tests/campaign.lisp" :direction :output
+                   :if-exists :supersede)
+  (write-string "(in-package :tale)
+(define-item 't-camp-ration :price 7)
+" s))
+(check "load-campaign finds the campaign next to the map"
+       "tests/campaign.lisp" (load-campaign "tests/anything.map"))
+(check "its definitions are live" 7 (item-price 't-camp-ration))
+(delete-file "tests/campaign.lisp")
+(check "no campaign next to the map" nil
+       (load-campaign "data/gfx/anything.map"))
+
+;; Walk the shipped world end-to-end: gate -> shoppe -> tavern -> cellar
+;; and back up — the demo campaign's whole overworld loop on real data.
+;; The shoppe's stock names campaign items, so the campaign loads first
+;; (exactly what PLAY/PLAY-AMIGA do).
+(load-campaign "data/town.map")
+(let* ((m (load-map-file "data/town.map"))
+       (g (new-game m)))
+  (trigger-special g)
+  ;; to the shoppe: N, around the well block, through the door
+  (move-party g)                          ; (4,4)
+  (turn-left g)
+  (move-party g) (move-party g)           ; (2,4)
+  (turn-right g)
+  (move-party g) (move-party g)           ; (2,2)
+  (check "shoppe door opens" :door (move-party g))
+  (check "the shoppe is a shop location" :shop
+         (location-kind (game-location g)))
+  (leave-location g)
+  ;; over to the tavern: back out, east along the street, up the door
+  (move-party g :back)                    ; (2,2)
+  (turn-right g)
+  (move-party g) (move-party g) (move-party g) (move-party g) ; (6,2)
+  (turn-left g)
+  (check "tavern trapdoor drops into the cellar" :door (move-party g))
+  (check "tavern travel landed in the cellar" "the cellar"
+         (map-title (game-map g)))
+  (check "cellar arrival at its start" '(0 0)
+         (list (game-x g) (game-y g)))
+  ;; the ladder back up: teleport to the cellar's < cell and step on it
+  (teleport-party g 5 4)
+  (check "ladder returns to the town" "Closure"
+         (map-title (game-map g)))
+  (check "ladder lands on the tavern doorstep" '(6 2)
+         (list (game-x g) (game-y g))))
 
 ;;; ---------------------------------------------------------------------
 ;;; Save games
@@ -1143,6 +1331,342 @@ messages so far (oldest first)."
   (load-game "tests/tmp.map"))
 (delete-file "tests/tmp.map")
 (delete-file "tests/tmp-save.lisp")
+
+;;; ---------------------------------------------------------------------
+;;; The world: zones and travel (M4).  Cities and dungeons are both
+;;; first-class: ordinary maps that self-describe through their ZONE
+;;; form, linked by TRAVEL specials.
+
+;; Relative map paths resolve against the current map's directory.
+(check "resolve sibling path" "data/town.map"
+       (%resolve-map-path "data/cellar.map" "town.map"))
+(check "resolve flat path" "town.map"
+       (%resolve-map-path "cellar.map" "town.map"))
+(check "resolve amiga volume base" "dh0:games/b.map"
+       (%resolve-map-path "dh0:games/a.map" "b.map"))
+(check "resolve volume-only base" "dh0:b.map"
+       (%resolve-map-path "dh0:a.map" "b.map"))
+(check "absolute posix target stays" "/maps/b.map"
+       (%resolve-map-path "data/a.map" "/maps/b.map"))
+(check "absolute amiga target stays" "vol:b.map"
+       (%resolve-map-path "data/a.map" "vol:b.map"))
+
+;; The two test zones: a city with a shop and a stairs-down cell, and a
+;; dungeon whose (1,0) leads back up.
+(with-open-file (s "tests/tmp-town.map" :direction :output
+                   :if-exists :supersede)
+  (write-string "+-+-+-+
+|@D  <|
++-+-+-+
+
+(zone :kind :city :title \"Testville\")
+(special (1 0)
+  (location \"The Test Shoppe\" :shop :stock (t-sword t-mail t-torch)))
+(special (2 0) (message \"Down you go.\") (travel \"tmp-dung.map\"))
+" s))
+(with-open-file (s "tests/tmp-dung.map" :direction :output
+                   :if-exists :supersede)
+  (write-string "+-+-+
+|@  |
++-+-+
+
+(zone :kind :dungeon :title \"Testpit\" :start-facing :east)
+(special (1 0)
+  (message \"A ladder leads up.\")
+  (travel \"tmp-town.map\" 0 0 :north)
+  (set-flag :after-travel))
+" s))
+
+;; Zone metadata comes from the file; plain maps stay dungeons.
+(let ((m (load-map-file "tests/tmp-town.map")))
+  (check "zone kind read" :city (dungeon-map-kind m))
+  (check "zone title read" "Testville" (dungeon-map-title m))
+  (check "map-title prefers the zone title" "Testville" (map-title m)))
+(let ((m (parse-map *art* :name "plain")))
+  (check "default zone kind" :dungeon (dungeon-map-kind m))
+  (check "map-title falls back to the name" "plain" (map-title m)))
+(let ((m (load-map-file "tests/tmp-dung.map")))
+  (check "zone start-facing applies" :east (dungeon-map-start-facing m)))
+(with-open-file (s "tests/tmp.map" :direction :output :if-exists :supersede)
+  (write-string "+-+
+|@|
++-+
+(zone :wrap t :start-facing :south)
+" s))
+(let ((m (load-map-file "tests/tmp.map")))
+  (check-true "zone :wrap applies" (dungeon-map-wrap m))
+  (check "zone :start-facing keyword form" :south
+         (dungeon-map-start-facing m)))
+(with-open-file (s "tests/tmp.map" :direction :output :if-exists :supersede)
+  (write-string "+-+
+|@|
++-+
+(zone :kind \"city\")
+" s))
+(check-error "zone kind must be a keyword" (load-map-file "tests/tmp.map"))
+(delete-file "tests/tmp.map")
+
+;; Travel: switch zones, keep each zone's map and knowledge alive.
+(let* ((m (load-map-file "tests/tmp-town.map"))
+       (g (new-game m))
+       (msgs (watch-messages g))
+       (zones '()))
+  (on-event g :enter-zone
+            (lambda (game map) (declare (ignore game))
+              (push (map-title map) zones)))
+  (check-true "town start explored"
+              (cell-explored-p (game-knowledge g) 0 0))
+  (travel-party g "tmp-dung.map")
+  (check "travel lands in the dungeon" "Testpit" (map-title (game-map g)))
+  (check "travel resolved the sibling path" "tests/tmp-dung.map"
+         (dungeon-map-name (game-map g)))
+  (check ":enter-zone emitted" '("Testpit") zones)
+  (check-true "enter-zone message"
+              (find-if (lambda (s) (search "You enter Testpit" s))
+                       (funcall msgs)))
+  (check "arrival at the target start" '(0 0)
+         (list (game-x g) (game-y g)))
+  (check "arrival facing the zone's start-facing" +east+ (game-facing g))
+  (check-true "dungeon knowledge is fresh"
+              (not (cell-explored-p (game-knowledge g) 1 0)))
+  ;; step east onto the ladder cell: its special travels back up, and
+  ;; the op AFTER the travel must not run (it belongs to the old cell)
+  (let ((dung-map (game-map g))
+        (dung-knowledge (game-knowledge g)))
+    (move-party g :forward)
+    (check "ladder special travels back to town" "Testville"
+           (map-title (game-map g)))
+    (check "explicit travel target position" '(0 0)
+           (list (game-x g) (game-y g)))
+    (check "explicit travel facing" +north+ (game-facing g))
+    (check "ops after travel are skipped" nil (flag g :after-travel))
+    (check-true "ladder message ran before the travel"
+                (find-if (lambda (s) (search "ladder" s)) (funcall msgs)))
+    ;; back down: the dungeon zone is reused, not reloaded
+    (travel-party g "tmp-dung.map")
+    (check-true "revisited zone keeps its map object"
+                (eq dung-map (game-map g)))
+    (check-true "revisited zone keeps its knowledge"
+                (eq dung-knowledge (game-knowledge g)))
+    (check-true "knowledge remembers the ladder cell"
+                (cell-explored-p (game-knowledge g) 1 0))))
+
+;; Travel guards: bad targets fail loudly.
+(let* ((m (load-map-file "tests/tmp-town.map"))
+       (g (new-game m)))
+  (check-error "travel to a missing map file"
+    (travel-party g "tmp-nonesuch.map"))
+  (check-error "travel target outside the map"
+    (travel-party g "tmp-dung.map" 9 9))
+  (start-combat g '(("test rat" 1)))
+  (check-error "no traveling during combat"
+    (travel-party g "tmp-dung.map")))
+
+;; A travel loop in map data hits the recursion cap instead of hanging.
+(with-open-file (s "tests/tmp-loop-a.map" :direction :output
+                   :if-exists :supersede)
+  (write-string "+-+
+|@|
++-+
+(special (0 0) (travel \"tmp-loop-b.map\"))
+" s))
+(with-open-file (s "tests/tmp-loop-b.map" :direction :output
+                   :if-exists :supersede)
+  (write-string "+-+
+|@|
++-+
+(special (0 0) (travel \"tmp-loop-a.map\"))
+" s))
+(check-error "travel loop capped"
+  (let ((g (new-game (load-map-file "tests/tmp-loop-a.map"))))
+    (trigger-special g)))
+(delete-file "tests/tmp-loop-a.map")
+(delete-file "tests/tmp-loop-b.map")
+
+;;; ---------------------------------------------------------------------
+;;; Locations and shops (M4)
+
+;; Stepping onto the shop cell enters the location; the game becomes
+;; modal like combat.
+(let* ((m (load-map-file "tests/tmp-town.map"))
+       (h (%combat-hero))
+       (g (new-game m :party (list h)))
+       (msgs (watch-messages g))
+       (entered '())
+       (left '()))
+  (on-event g :enter-location
+            (lambda (game loc) (declare (ignore game))
+              (push (location-title loc) entered)))
+  (on-event g :leave-location
+            (lambda (game loc) (declare (ignore game))
+              (push (location-title loc) left)))
+  (turn-right g)
+  (check "stepping into the shop passes the door" :door
+         (move-party g :forward))
+  (check-true "location is set" (game-location g))
+  (check "location title" "The Test Shoppe"
+         (location-title (game-location g)))
+  (check "location kind" :shop (location-kind (game-location g)))
+  (check "shop stock from map data" '(t-sword t-mail t-torch)
+         (shop-stock (game-location g)))
+  (check ":enter-location emitted" '("The Test Shoppe") entered)
+  (check-true "entry message"
+              (find-if (lambda (s) (search "enters The Test Shoppe" s))
+                       (funcall msgs)))
+  (check-error "no walking inside a location" (move-party g :forward))
+  (check-error "no nested locations"
+    (enter-location g '("Another" :shop)))
+  (check-true "leave-location returns the location" (leave-location g))
+  (check "location cleared" nil (game-location g))
+  (check ":leave-location emitted" '("The Test Shoppe") left)
+  (check "leave-location when outside" nil (leave-location g))
+  (check "movement works again" :moved (move-party g :forward)))
+
+;; Location specs are validated loudly.
+(let ((g (new-game (parse-map *art* :name "test"))))
+  (check-error "location title must be a string"
+    (enter-location g '(nope :shop)))
+  (check-error "location kind must be a keyword"
+    (enter-location g '("X" shop)))
+  (check-error "shop stock items must exist"
+    (enter-location g '("X" :shop :stock (t-nada)))))
+
+;; Buying and selling.
+(let* ((m (load-map-file "tests/tmp-town.map"))
+       (h (%combat-hero))
+       (g (new-game m :party (list h)))
+       (msgs (watch-messages g)))
+  (setf (hero-gold h) 30)
+  (check "item price" 10 (item-price 't-sword))
+  (check "sell price is half" 5 (item-sell-price 't-sword))
+  (check-true "buy a sword" (buy-item g h 't-sword))
+  (check "gold deducted" 20 (hero-gold h))
+  (check-true "bought item in the pack" (hero-carrying-p h 't-sword))
+  (check "fresh equipment auto-equips" 't-sword
+         (equipped-of-kind h :weapon))
+  (check-true "buy message"
+              (find-if (lambda (s) (search "buys T Sword for 10 gold" s))
+                       (funcall msgs)))
+  (check-true "buy a second sword" (buy-item g h 't-sword))
+  (check "no re-equip with a weapon in hand" 1 (length (hero-equipped h)))
+  (setf (hero-gold h) 1)
+  (check "cannot afford" nil (buy-item g h 't-torch))
+  (check "gold untouched on refusal" 1 (hero-gold h))
+  (check-true "afford message"
+              (find-if (lambda (s) (search "cannot afford" s))
+                       (funcall msgs)))
+  ;; fill the pack: the shop refuses when there is no room
+  (loop while (< (length (hero-items h)) +inventory-limit+)
+        do (give-item g h 't-torch))
+  (setf (hero-gold h) 50)
+  (check "full pack refuses the purchase" nil (buy-item g h 't-torch))
+  (check "gold untouched on a full pack" 50 (hero-gold h))
+  ;; selling: half price back, equipped items are unequipped
+  (check-true "sell the equipped sword" (sell-item g h 't-sword))
+  (check "sell pays half price" 55 (hero-gold h))
+  (check "selling unequips" nil (equipped-of-kind h :weapon))
+  (check-true "the second sword is still packed"
+              (hero-carrying-p h 't-sword))
+  (check "sell without the item" nil (sell-item g h 't-mail)))
+
+;; A class the armor excludes buys it without auto-equip.
+(let* ((m (load-map-file "tests/tmp-town.map"))
+       (h (with-rng () (make-hero "Wiz" :t-wizard)))
+       (g (new-game m :party (list h))))
+  (setf (hero-gold h) 30)
+  (check-true "wizard buys the mail anyway" (buy-item g h 't-mail))
+  (check "but does not auto-equip it" nil (equipped-of-kind h :armor)))
+
+;; The shared shop interaction model: both front-ends feed keys into
+;; SHOP-ACT and draw SHOP-LINES, so the whole flow tests here.
+(let* ((m (load-map-file "tests/tmp-town.map"))
+       (h (%combat-hero))
+       (g (new-game m :party (list h)))
+       (view (make-shop-view)))
+  (setf (hero-gold h) 30)
+  (turn-right g)
+  (move-party g :forward)               ; into the shop
+  (check-true "pick page shows the shop name"
+              (search "The Test Shoppe" (first (shop-lines g view))))
+  (check-true "pick page asks who shops"
+              (find-if (lambda (s) (search "Who is shopping?" s))
+                       (shop-lines g view)))
+  (check "digit picks the hero" nil (shop-act g view #\1))
+  (check-true "hero selected" (eq h (shop-view-hero view)))
+  (check-true "buy page lists the stock priced"
+              (find-if (lambda (s) (search "1) T Sword  10 gp" s))
+                       (shop-lines g view)))
+  (shop-act g view #\1)                 ; buy the sword
+  (check "shop-act buys" 20 (hero-gold h))
+  (check "s flips to the sell page" nil (shop-act g view #\s))
+  (check "sell mode" :sell (shop-view-mode view))
+  (check-true "sell page lists the pack with sell prices"
+              (find-if (lambda (s) (search "1) T Sword*  5 gp" s))
+                       (shop-lines g view)))
+  (shop-act g view #\1)                 ; sell it again
+  (check "shop-act sells" 25 (hero-gold h))
+  (check "escape backs out to the pick page" nil
+         (shop-act g view #\Escape))
+  (check "hero deselected" nil (shop-view-hero view))
+  (check "escape from the pick page leaves" :left
+         (shop-act g view #\Escape))
+  (check "location closed by the model" nil (game-location g)))
+
+;; Kinds the engine has no mechanics for still enter and leave cleanly.
+(let* ((g (new-game (parse-map *art* :name "test")))
+       (view (make-shop-view)))
+  (enter-location g '("Empty Hut" :hut))
+  (check-true "unknown kind gets the plain notice"
+              (find-if (lambda (s) (search "nothing to do" s))
+                       (location-lines g view)))
+  (check "escape leaves the unknown kind" :left
+         (location-act g view #\Escape))
+  (check "unknown kind left" nil (game-location g)))
+
+;;; ---------------------------------------------------------------------
+;;; Save games v2: the whole world round-trips — every visited zone's
+;;; knowledge, the party's packs and equipment.
+
+(let* ((m (load-map-file "tests/tmp-town.map"))
+       (h (%combat-hero))
+       (g (new-game m :party (list h))))
+  (give-item g h 't-sword)
+  (give-item g h 't-torch)
+  (equip-item g h 't-sword)
+  (travel-party g "tmp-dung.map")       ; explore the dungeon start
+  (travel-party g "tmp-town.map" 0 0 :north)
+  (save-game g "tests/tmp-save.lisp")
+  (let ((g2 (load-game "tests/tmp-save.lisp")))
+    (check "v2 load restores the current zone" "Testville"
+           (map-title (game-map g2)))
+    (check-true "v2 town knowledge restored"
+                (cell-explored-p (game-knowledge g2) 0 0))
+    (let ((h2 (first (game-party g2))))
+      (check "v2 pack restored" '(t-sword t-torch) (hero-items h2))
+      (check "v2 equipment restored" '(t-sword) (hero-equipped h2))
+      (check "v2 attack dice from restored gear" "1d6+2"
+             (hero-attack-dice h2)))
+    (check-true "unvisited zone knowledge kept pending"
+                (assoc "tests/tmp-dung.map" (game-zone-knowledge g2)
+                       :test #'equal))
+    ;; traveling back restores the pending knowledge
+    (travel-party g2 "tmp-dung.map")
+    (check-true "v2 dungeon knowledge restored on travel"
+                (cell-explored-p (game-knowledge g2) 0 0))
+    (check "pending knowledge consumed" nil
+           (assoc "tests/tmp-dung.map" (game-zone-knowledge g2)
+                  :test #'equal))))
+(delete-file "tests/tmp-save.lisp")
+
+;; Old save versions are rejected with a clear error.
+(with-open-file (s "tests/tmp-save.lisp" :direction :output
+                   :if-exists :supersede)
+  (write-string "(:lambda-tale-save 1 :map-file \"tests/tmp-town.map\")" s))
+(check-error "v1 saves are rejected" (load-game "tests/tmp-save.lisp"))
+(delete-file "tests/tmp-save.lisp")
+
+(delete-file "tests/tmp-town.map")
+(delete-file "tests/tmp-dung.map")
 
 ;;; ---------------------------------------------------------------------
 ;;; ILBM images (M3): the image model, ByteRun1, reader/writer round trips.
@@ -1427,6 +1951,32 @@ messages so far (oldest first)."
                    (%amiga-draw-sheet rp g 0 l)
                    t)))))))
 
+;; The location (shop) page draws over the play view — enter a shop
+;; location for real and render its menu pages.
+#+amigaos
+(let* ((m (parse-map *art* :name "test"))
+       (g (new-game m :party (with-rng () (list (make-hero "A" :tester)))))
+       (log (attach-message-log g))
+       (view (make-shop-view)))
+  (enter-location g '("Smoke Shoppe" :shop :stock (t-sword t-torch)))
+  (check "amiga-ui draws the location page" t
+         (amiga.intuition:with-window
+             (win :title "Lambda's Tale Test"
+                  :left 0 :top 0
+                  :width *amiga-win-width* :height *amiga-win-height*
+                  :idcmp amiga.intuition:+idcmp-closewindow+)
+           (let* ((rp (amiga.intuition:window-rastport win))
+                  (l (%amiga-layout win rp)))
+             (%amiga-draw-location rp g view l)   ; pick-hero page
+             (shop-act g view #\1)
+             (%amiga-draw-location rp g view l)   ; buy page
+             (shop-act g view #\s)
+             (%amiga-draw-location rp g view l)   ; sell page
+             (%amiga-draw-log rp log l)
+             (%amiga-status rp g l "Shop smoke test")
+             t)))
+  (leave-location g))
+
 ;; Custom screen support: open an own screen (RTG-aware mode pick),
 ;; set the palette, draw into a backdrop window, close it all again.
 #+amigaos
@@ -1560,6 +2110,18 @@ messages so far (oldest first)."
          ;; :window is the development view — :screen (the default)
          ;; gets its own autoplay below
          (play-amiga "data/cellar.map" :display :window)
+         :done))
+
+;; The town: an unattended session walks from the gate to Wolfgar's
+;; shoppe (a LOCATION special), shops for real through the event loop —
+;; pick a hero (1), buy a torch (1), flip to the sell page (s), sell it
+;; again (1), back out (Esc Esc) — steps back into the street and quits.
+#+amigaos
+(check "amiga-ui autoplay shops in the town" :done
+       (let ((*autoplay* (list #\w #\a #\w #\w #\d #\w #\w #\w
+                               #\1 #\1 #\s #\1 :esc :esc
+                               #\s #\q)))
+         (play-amiga "data/town.map" :display :window)
          :done))
 
 ;; The same unattended session on an own custom screen (:display :screen)

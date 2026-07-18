@@ -172,8 +172,7 @@ plaque under it, and the white message page shell."
     (amiga.gfx:rect-fill rp (1- bx) (1+ (+ by h)) (+ bx w) pb)
     (amiga.gfx:set-a-pen rp 1)
     (%chrome-rect rp (1- bx) (1+ (+ by h)) (+ bx w) pb)
-    (let* ((name (string-capitalize
-                  (dungeon-map-name (game-map game))))
+    (let* ((name (string-capitalize (map-title (game-map game))))
            (tw (* 8 (length name))))
       (amiga.gfx:move-to rp (+ bx (max 0 (floor (- w tw) 2)))
                          (+ py (ui-layout-base l)))
@@ -590,7 +589,7 @@ stat block on a white parchment page over the grey chrome."
          (px (+ ox 24))                 ; the page
          (py (+ oy 8))
          (pw 320)
-         (ph (+ (* lh 9) 12)))
+         (ph (+ (* lh 10) 12)))
     (amiga.gfx:set-a-pen rp 2)
     (amiga.gfx:rect-fill rp ox oy (ui-layout-right l) (ui-layout-bottom l))
     ;; page shadow, sheet, outline
@@ -600,10 +599,13 @@ stat block on a white parchment page over the grey chrome."
     (amiga.gfx:rect-fill rp px py (+ px pw) (+ py ph))
     (amiga.gfx:set-a-pen rp 0)
     (%chrome-rect rp px py (+ px pw) (+ py ph))
-    (let ((y (+ py 4 (ui-layout-base l))))
+    (let ((y (+ py 4 (ui-layout-base l)))
+          (max-chars (floor (- pw 16) 8)))
       (labels ((line (text)
                  (amiga.gfx:move-to rp (+ px 8) y)
-                 (amiga.gfx:gfx-text rp text)
+                 (amiga.gfx:gfx-text rp (if (> (length text) max-chars)
+                                            (subseq text 0 max-chars)
+                                            text))
                  (incf y lh)))
         (line (format nil "Character ~D of ~D" (1+ index)
                       (length (game-party game))))
@@ -613,6 +615,39 @@ stat block on a white parchment page over the grey chrome."
             (line text)))
         (incf y (floor lh 2))
         (line "1-7 view another   Esc back")))
+    (amiga.gfx:set-a-pen rp 1)))
+
+(defun %amiga-draw-location (rp game view l)
+  "Location page (shop menu): the location's menu lines on a white
+page over the view + spells area.  The log, status and roster panes
+stay live around it — gold and messages update as the party shops."
+  (let* ((ox (ui-layout-bx l))
+         (oy (ui-layout-by l))
+         (lh (ui-layout-lh l))
+         (px (+ ox 4))
+         (py (+ oy 4))
+         (pw (+ (ui-layout-fp-w l) (ui-layout-spells-w l) 4))
+         (ph (- (ui-layout-col-h l) 8))
+         (max-lines (floor (- ph 8) lh))
+         (max-chars (floor (- pw 16) 8))
+         (lines (location-lines game view)))
+    ;; page shadow, sheet, outline — same look as the character sheet
+    (amiga.gfx:set-a-pen rp 0)
+    (amiga.gfx:rect-fill rp (+ px 2) (+ py 2) (+ px pw 2) (+ py ph 2))
+    (amiga.gfx:set-a-pen rp 1)
+    (amiga.gfx:rect-fill rp px py (+ px pw) (+ py ph))
+    (amiga.gfx:set-a-pen rp 0)
+    (%chrome-rect rp px py (+ px pw) (+ py ph))
+    (let ((y (+ py 4 (ui-layout-base l)))
+          (n 0))
+      (dolist (text lines)
+        (when (< n max-lines)
+          (amiga.gfx:move-to rp (+ px 8) y)
+          (amiga.gfx:gfx-text rp (if (> (length text) max-chars)
+                                     (subseq text 0 max-chars)
+                                     text))
+          (incf y lh)
+          (incf n))))
     (amiga.gfx:set-a-pen rp 1)))
 
 (defun %amiga-draw-map-page (rp game l full)
@@ -738,10 +773,12 @@ borderless backdrop window."
 ;;; ---------------------------------------------------------------------
 ;;; The game proper
 
-(defun play-amiga (&optional (map-file "data/cellar.map")
+(defun play-amiga (&optional (map-file "data/town.map")
                    &key (display :screen) (gfx-dir *gfx-dir*))
-  "Interactive walkabout.  Loads data/campaign.lisp (classes, monsters,
-party) when present.  DISPLAY is :screen (the default: an own PAL-ish
+  "Interactive walkabout.  Loads the campaign.lisp next to the map
+file (classes, monsters, items, party) when present — a designer's own
+world directory brings its own campaign.
+DISPLAY is :screen (the default: an own PAL-ish
 16-color custom screen, RTG-aware) or :window (a development view on
 the Workbench screen).  GFX-DIR names the tile pack: a directory of
 wall-piece ILBMs plus the optional floor.iff / ceiling.iff /
@@ -751,10 +788,10 @@ Workbench palette.
 Keys: W forward, S back-step, A/D turn, M map mode (M/Esc leaves it,
 F toggles the debug full view there), 1-7 open a party member's
 character sheet (1-7 switch heroes there, Esc leaves), Q/Esc quit;
-in combat A attack, D defend, F flee.  Save/Load/Quit sit in the menu
-strip (right mouse button)."
-  (when (probe-file "data/campaign.lisp")
-    (load "data/campaign.lisp"))
+in combat A attack, D defend, F flee; in a location (shop) 1-9
+choose, S/B switch sell/buy, Esc back/leave.  Save/Load/Quit sit in
+the menu strip (right mouse button)."
+  (load-campaign map-file)
   (let* ((*gfx-dir* gfx-dir)
          (map (load-map-file map-file))
          (game nil)
@@ -762,9 +799,21 @@ strip (right mouse button)."
          (mode :play)       ; :play, :map (full map view) or :sheet
          (full nil)         ; omniscient map (debug), map mode only
          (sheet-hero 0)     ; party index shown in :sheet mode
+         (shopv nil)        ; SHOP-VIEW while inside a location
+         (zone-dirty nil)   ; party traveled: the chrome needs a repaint
          (over nil))
     (labels ((wire (g)
                (setf log (attach-message-log g))
+               (setf shopv (when (game-location g) (make-shop-view)))
+               (on-event g :enter-location
+                         (lambda (gm loc) (declare (ignore gm loc))
+                           (setf shopv (make-shop-view))))
+               (on-event g :leave-location
+                         (lambda (gm loc) (declare (ignore gm loc))
+                           (setf shopv nil)))
+               (on-event g :enter-zone
+                         (lambda (gm map) (declare (ignore gm map))
+                           (setf zone-dirty t)))
                (on-event g :game-won
                          (lambda (gm) (declare (ignore gm))
                            (setf over :won)))
@@ -796,6 +845,8 @@ strip (right mouse button)."
                                 ((eq over :lost) "Game over.  Press Q.")
                                 ((game-combat game)
                                  "COMBAT!  A attack  D defend  F flee")
+                                ((game-location game)
+                                 (location-title (game-location game)))
                                 (t "W/S move  A/D turn  M map  1-7 hero")))
                         (clear-inner ()
                           ;; Grey-wipe the content area (a bit beyond
@@ -826,20 +877,32 @@ strip (right mouse button)."
                         (leave-sheet ()
                           (fresh-play))
                         (redraw ()
+                          ;; travel switched zones: repaint the chrome
+                          ;; first (the plaque carries the zone title)
+                          (when zone-dirty
+                            (setf zone-dirty nil)
+                            (clear-inner)
+                            (%chrome-frames rp game l))
                           (cond
                             ((eq mode :map)
                              (%amiga-draw-map-page rp game l full))
                             ((eq mode :sheet)
                              (%amiga-draw-sheet rp game sheet-hero l))
                             (t
-                             (%amiga-draw-fp rp game
-                                             (ui-layout-bx l)
-                                             (ui-layout-by l)
-                                             (ui-layout-fp-w l)
-                                             (ui-layout-fp-h l)
-                                             walls)
-                             (%amiga-draw-effects rp game l)
-                             (%amiga-draw-compass rp game l)
+                             (if (game-location game)
+                                 (%amiga-draw-location
+                                  rp game
+                                  (or shopv (setf shopv (make-shop-view)))
+                                  l)
+                                 (progn
+                                   (%amiga-draw-fp rp game
+                                                   (ui-layout-bx l)
+                                                   (ui-layout-by l)
+                                                   (ui-layout-fp-w l)
+                                                   (ui-layout-fp-h l)
+                                                   walls)
+                                   (%amiga-draw-effects rp game l)
+                                   (%amiga-draw-compass rp game l)))
                              (%amiga-draw-log rp log l)
                              (%amiga-status rp game l (status-text))
                              (%amiga-party rp game l))))
@@ -861,7 +924,8 @@ strip (right mouse button)."
                               (progn
                                 (setf game (wire (load-game *save-file*)))
                                 (setf over nil
-                                      mode :play)
+                                      mode :play
+                                      zone-dirty nil)
                                 ;; loading may leave map mode (menu
                                 ;; item) or change the map — repaint
                                 ;; the chrome (plaque carries the name)
@@ -890,6 +954,26 @@ strip (right mouse button)."
                                                    +party-limit+))
                                           (open-sheet (1- (digit-char-p c)))
                                           nil)))
+                                  ((game-location game)
+                                   ;; inside a shop: the shared model
+                                   ;; handles the keys (Esc backs out /
+                                   ;; leaves; Q still quits the game)
+                                   (if (eql lc #\q)
+                                       :quit
+                                       (let ((key (if (eq c :esc)
+                                                      #\Escape
+                                                      c)))
+                                         (when (characterp key)
+                                           (location-act
+                                            game
+                                            (or shopv
+                                                (setf shopv
+                                                      (make-shop-view)))
+                                            key))
+                                         (if (game-location game)
+                                             (redraw)
+                                             (fresh-play))
+                                         nil)))
                                   ((or (eql lc #\q) (eql c :esc)) :quit)
                                   (over nil) ; game ended: only Q/Esc react
                                   ((game-combat game)

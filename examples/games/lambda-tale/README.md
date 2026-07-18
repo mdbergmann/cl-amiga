@@ -12,7 +12,7 @@ directory:
 
 ```
 make test    # run the test suite
-make run     # play the demo campaign on data/cellar.map
+make run     # play the demo campaign (starts in the town, data/town.map)
 ```
 
 Walkabout keys: `w` forward, `s` back-step (keeps facing), `a`/`d` turn,
@@ -20,6 +20,9 @@ Walkabout keys: `w` forward, `s` back-step (keeps facing), `a`/`d` turn,
 debug view there), `1`–`7` open that party member's character sheet
 (`1`–`7` switch heroes there, `Esc` back), `S`/`L` save/load
 (`tale.sav`), `q` quit.  In combat: `a` attack, `d` defend, `f` flee.
+Inside a location (a shop): `1`–`7` pick the shopping hero, `1`–`9`
+buy or sell, `s`/`b` flip between the buy and sell pages, `Esc`
+back/leave.
 
 The screen is split Bard's Tale style (see
 [specs/ui-and-engine.md](specs/ui-and-engine.md)): the wireframe
@@ -65,7 +68,7 @@ For development there is also a window view on the Workbench screen
 (no custom palette — the window keeps the Workbench colors):
 
 ```lisp
-(tale:play-amiga "data/cellar.map" :display :window)
+(tale:play-amiga "data/town.map" :display :window)
 ```
 
 ## Layout
@@ -81,11 +84,14 @@ src/view.lisp        first-person view geometry (view cone, perspective
 src/game.lisp        game state, movement, automap observation
 src/events.lisp      engine event bus + story flags
 src/party.lisp       heroes, classes, xp/levels, party queries
+src/items.lisp       item types, packs and equipment
 src/combat.lisp      monster types, round-based combat
 src/specials.lisp    cell-special interpreter (the story op vocabulary)
+src/locations.lisp   locations (shops): mechanics + shared menu model
 src/save.lisp        save games (readable Lisp data, never evaluated)
 src/render.lisp      ASCII automap renderer (player view + omniscient debug view)
 src/render-fp.lisp   ASCII wireframe first-person renderer
+src/host-ui.lisp     host front-end (interactive ASCII walkabout, PLAY)
 src/amiga-ui.lisp    AmigaOS front-end (Intuition window, graphics.library)
 src/main.lisp        host walkabout entry point
 src/main-amiga.lisp  Amiga walkabout entry point
@@ -177,13 +183,64 @@ See also the "Backdrop slots" and wall-art sections of
 
 ## Engine vs. story
 
-The engine never hard-codes story facts.  It emits events (`:message`,
-`:enter-cell`, `:blocked`, `:combat-start`, `:combat-end`, `:hero-died`,
+Lambda's Tale is an **engine**; the shipped campaign is one instance of
+it.  The engine never hard-codes story facts.  It emits events
+(`:message`, `:enter-cell`, `:enter-zone`, `:enter-location`,
+`:blocked`, `:combat-start`, `:combat-end`, `:hero-died`,
 `:party-defeated`, ...) that the front-end and the campaign subscribe to
 with `on-event`; story state lives in flags (`set-flag`/`flag`).  A
 campaign is pure data on top of the engine: hero classes
-(`define-hero-class`), monsters (`define-monster`) and maps with cell
-specials.  `data/campaign.lisp` plus `data/cellar.map` form the demo.
+(`define-hero-class`), monsters (`define-monster`), items
+(`define-item`) and maps with cell specials.  `data/campaign.lisp` plus
+`data/town.map` and `data/cellar.map` form the demo.
+
+## The world: cities, dungeons, shops
+
+A world is a set of **zones** — ordinary map files linked by travel.
+Cities and dungeons are both first-class and both just maps: a
+`(zone :kind :city :title "Closure")` form in the map file says what a
+zone is, and the `(travel FILE [X Y] [FACING])` special op links zones
+together — city gates, stairs and portals are all map data.  The game
+keeps every visited zone's map and automap knowledge alive, and save
+games carry the whole world.
+
+A **location** — a shop, or any enterable building — is the
+`(location TITLE KIND ARG...)` special op on a cell.  The engine ships
+shop mechanics: items are campaign data (`define-item` — weapons,
+armor, shields with prices, damage dice, AC bonuses and class
+restrictions), heroes carry up to 8 items and equip one weapon, armor
+and shield, combat uses the equipped gear, and shops sell their
+`:stock` and buy anything back at half price.  The demo town of
+Closure has Wolfgar's equipment shoppe and a tavern whose trapdoor
+leads down into the cellar dungeon.
+
+### Building your own world
+
+A world is a **directory**: map files plus a `campaign.lisp` beside
+them — `play` and `play-amiga` load the campaign next to whatever map
+you start, so your world brings its own classes, monsters and items,
+never the demo's.  Put a shop wherever you want it, stocked however
+you see fit:
+
+```
+mygame/campaign.lisp     (define-item 'rusty-dagger :kind :weapon
+                           :price 5 :damage "1d4") ...
+mygame/village.map       the art, then:
+                         (zone :kind :city :title "Frogmorton")
+                         (special (3 7)
+                           (location "Bree's Bargains" :shop
+                                     :stock (rusty-dagger torch)))
+                         (special (9 2) (travel "warrens.map"))
+mygame/warrens.map       (zone :kind :dungeon :title "the warrens") ...
+```
+
+```lisp
+(tale:play "mygame/village.map")
+```
+
+Everything is data read with `*read-eval*` bound to `NIL` except
+`campaign.lisp`, which is a Lisp file of `define-*` calls (the demo's
+`data/campaign.lisp` is the template).
 
 ## Map format
 
@@ -207,14 +264,17 @@ After the art a map file may carry its story layer as Lisp data forms
 (read with `*read-eval*` bound to `NIL`, never evaluated):
 
 ```lisp
+(zone :kind :dungeon :title "the cellar")
+
 (special (1 2)
   (once (message "Something stirs in the darkness...")
         (encounter ("giant rat" "1d3+1"))))
 ```
 
 The op vocabulary — `message`, `set-flag`/`clear-flag`,
-`when-flag`/`unless-flag`, `once`, `teleport`, `spin`, `damage`, `heal`,
-`gold`, `encounter`, `event` — is documented in `src/specials.lisp`.
+`when-flag`/`unless-flag`, `once`, `teleport`, `travel`, `location`,
+`spin`, `damage`, `heal`, `gold`, `encounter`, `event` — is documented
+in `src/specials.lisp`.
 
 ## Party and combat
 
@@ -228,11 +288,13 @@ random front-rank hero.  All randomness goes through `*rng*`, so the
 test suite scripts entire fights deterministically.
 
 Save games (`save-game`/`load-game`) are a single readable Lisp form:
-map file reference, position, automap knowledge, story flags and party.
+the current zone's map file, position, every visited zone's automap
+knowledge, story flags and the party with packs and equipment.
 
 The test suite (`tests/run-tests.lisp`) doubles as the executable
 specification for the map model, movement, knowledge tracking,
-renderers, events, specials, party, combat and save games.
+renderers, events, specials, zones and travel, party, items, shops,
+combat and save games.
 
 ## Roadmap
 
@@ -255,7 +317,9 @@ renderers, events, specials, party, combat and save games.
   `print-tile-manifest`), 16-color custom screen with per-pack
   palettes, ceiling/floor backdrop
 - **M4 (in progress)**: the game proper, kept simple —
-  numbered party roster + character sheet (`1`–`7`, **done**); next
-  town (map + location menu) and shops (items + gold); then sound and
-  polish.  The Bard's Tale II chrome and day/night sky are parked
-  until the game content lands.
+  numbered party roster + character sheet (`1`–`7`, **done**);
+  the world as first-class data: zones (`(zone ...)`, cities and
+  dungeons alike), cross-map travel, locations, items and shops
+  (**done** — the demo town of Closure links to the cellar);
+  next sound, then polish.  The Bard's Tale II chrome and day/night
+  sky are parked until the game content lands.

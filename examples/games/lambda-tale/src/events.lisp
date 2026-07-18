@@ -8,6 +8,9 @@
 ;;; Events the engine emits:
 ;;;   :message TEXT          something to show the player
 ;;;   :enter-cell X Y        the party entered a cell (move or teleport)
+;;;   :enter-zone MAP        the party traveled to another zone (map)
+;;;   :enter-location LOC    the party entered a location (shop, ...)
+;;;   :leave-location LOC    ... and left it again
 ;;;   :blocked DIR           the party bumped into a wall
 ;;;   :combat-start MONSTERS combat began
 ;;;   :combat-end RESULT     combat ended (:victory, :defeat or :fled)

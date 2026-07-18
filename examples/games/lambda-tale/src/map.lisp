@@ -59,7 +59,9 @@
 ;;; Map structure
 
 (defstruct (dungeon-map (:constructor %make-dungeon-map))
-  (name "unnamed")
+  (name "unnamed")    ; identity: the file path the map was loaded from
+  (kind :dungeon)     ; zone kind: :dungeon, :city, ... (map data, open set)
+  title               ; display name from the ZONE form, or NIL
   (width 0)
   (height 0)
   (wrap nil)          ; T = Bard's Tale-style toroidal map
@@ -69,6 +71,10 @@
   (start-x 0)
   (start-y 0)
   (start-facing :north))
+
+(defun map-title (map)
+  "The map's display name: its ZONE :title, else its file name."
+  (or (dungeon-map-title map) (dungeon-map-name map)))
 
 (defun cell-wall (map x y dir)
   "The wall of cell (X,Y) in direction DIR, as seen from inside the cell."
@@ -192,7 +198,8 @@ map itself is smaller."
 
 (defun %apply-map-form (map form path)
   (unless (and (consp form) (symbolp (first form)))
-    (error "~A: invalid map form ~S (expected (special (x y) op...))"
+    (error "~A: invalid map form ~S (expected (zone ...) or ~
+            (special (x y) op...))"
            path form))
   (cond ((string-equal (symbol-name (first form)) "SPECIAL")
          (destructuring-bind ((x y) &rest ops) (rest form)
@@ -202,7 +209,20 @@ map itself is smaller."
                     path x y
                     (dungeon-map-width map) (dungeon-map-height map)))
            (setf (cell-special map x y) ops)))
-        (t (error "~A: unknown map form ~S (expected (special (x y) op...))"
+        ((string-equal (symbol-name (first form)) "ZONE")
+         (destructuring-bind (&key kind title wrap start-facing) (rest form)
+           (when kind
+             (unless (keywordp kind)
+               (error "~A: zone :kind ~S must be a keyword (:city, :dungeon, ...)"
+                      path kind))
+             (setf (dungeon-map-kind map) kind))
+           (when title (setf (dungeon-map-title map) title))
+           (when wrap (setf (dungeon-map-wrap map) wrap))
+           (when start-facing
+             (setf (dungeon-map-start-facing map)
+                   (dir-keyword start-facing)))))
+        (t (error "~A: unknown map form ~S (expected (zone ...) or ~
+                   (special (x y) op...))"
                   path (first form)))))
 
 (defun %parse-map-forms (map string path)
@@ -219,9 +239,13 @@ map itself is smaller."
   "Read the ASCII map file at PATH and parse it into a DUNGEON-MAP.
 After the art the file may carry Lisp data forms — the story layer of
 the map, read with *READ-EVAL* bound to NIL and never evaluated:
+    (zone :kind KIND :title TITLE :wrap W :start-facing DIR)
+                             zone metadata: KIND is :dungeon (default),
+                             :city, ... — maps self-describe what they are
     (special (X Y) OP...)    attach a special to cell (X,Y)
 The forms section starts at the first line beginning with '(' or ';'
-\(no valid art line starts with either)."
+\(no valid art line starts with either).  The :wrap and :start-facing
+keyword arguments below are overridden by a ZONE form in the file."
   (let ((art (make-string-output-stream))
         (forms (make-string-output-stream))
         (in-forms nil))

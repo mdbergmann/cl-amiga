@@ -12,6 +12,13 @@
 ;;;                              (one ONCE per cell; keyed by map + cell)
 ;;;   (teleport X Y [FACING])    relocate the party; the target cell's
 ;;;                              special triggers too (depth-capped)
+;;;   (travel FILE [X Y] [FACING])  move the party to another zone (map
+;;;                              file, relative to this map's directory):
+;;;                              stairs, city gates, portals — cities and
+;;;                              dungeons are all just maps (see
+;;;                              TRAVEL-PARTY in game.lisp)
+;;;   (location TITLE KIND ARG...)  enter a location (shop, temple, ...)
+;;;                              on this cell — see locations.lisp
 ;;;   (spin)                     face a random direction (silently —
 ;;;                              classic spinner squares)
 ;;;   (damage DICE [TEXT])       hurt every living hero (DICE each)
@@ -41,12 +48,15 @@ the start cell's special (after subscribing your event handlers)."
     (values)))
 
 (defun run-special (game ops)
-  "Interpret the special OPS in order.  Once combat starts the remaining
-ops are skipped — they would run mid-fight."
-  (dolist (op ops)
-    (when (game-combat game)
-      (return))
-    (run-special-op game op))
+  "Interpret the special OPS in order.  Once combat starts — or a
+TRAVEL op switches zones — the remaining ops are skipped: they belong
+to the cell the party just left."
+  (let ((map (game-map game)))
+    (dolist (op ops)
+      (when (or (game-combat game)
+                (not (eq map (game-map game))))
+        (return))
+      (run-special-op game op)))
   (values))
 
 (defun run-special-op (game op)
@@ -73,6 +83,15 @@ ops are skipped — they would run mid-fight."
          (run-special game (rest op)))))
     (teleport
      (teleport-party game (second op) (third op) (fourth op)))
+    (travel
+     ;; (travel FILE), (travel FILE FACING), (travel FILE X Y [FACING])
+     (destructuring-bind (file &rest args) (rest op)
+       (if (or (null args) (not (integerp (first args))))
+           (travel-party game file nil nil (first args))
+           (travel-party game file (first args) (second args)
+                         (third args)))))
+    (location
+     (enter-location game (rest op)))
     (spin
      (setf (game-facing game) (roll 4))
      (observe game))
