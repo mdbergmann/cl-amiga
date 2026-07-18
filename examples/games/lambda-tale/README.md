@@ -92,6 +92,7 @@ src/map.lisp         dungeon map model + ASCII map parser + story layer
 src/knowledge.lisp   the party's automap knowledge (explored cells, seen walls)
 src/view.lisp        first-person view geometry (view cone, perspective
                      planes, backend-independent display list)
+src/time.lisp        the game clock: day/night, darkness, timed effects
 src/game.lisp        game state, movement, automap observation
 src/events.lisp      engine event bus + story flags
 src/party.lisp       heroes, classes, xp/levels, party queries
@@ -302,9 +303,21 @@ After the art a map file may carry its story layer as Lisp data forms
 ```
 
 The op vocabulary — `message`, `set-flag`/`clear-flag`,
-`when-flag`/`unless-flag`, `once`, `teleport`, `travel`, `location`,
-`spin`, `damage`, `heal`, `gold`, `encounter`, `event` — is documented
-in `src/specials.lisp`.
+`when-flag`/`unless-flag`, `at-night`/`at-day`, `once`, `teleport`,
+`travel`, `location`, `spin`, `damage`, `heal`, `gold`, `encounter`,
+`event` — is documented in `src/specials.lisp`.
+
+## Time, day and night
+
+The game has a clock (shown in the status line): every step, turn and
+combat round costs a minute, a fresh game starts at day 1, 08:00, and
+daylight runs 06:00–20:00 — `:sunrise`/`:sunset` events fire at the
+boundaries and the `at-night`/`at-day` special ops make map encounters
+time-dependent.  At night outdoors — and at any hour in a zone
+declared `(zone ... :dark t)` — the party sees (and maps) only one
+cell ahead unless a light effect burns; active effects can carry
+durations on the clock and wear off with a message.  See the "Game
+time" sections of `tests/run-tests.lisp` for the exact rules.
 
 ## Party and combat
 
@@ -318,8 +331,9 @@ random front-rank hero.  All randomness goes through `*rng*`, so the
 test suite scripts entire fights deterministically.
 
 Save games (`save-game`/`load-game`) are a single readable Lisp form:
-the current zone's map file, position, every visited zone's automap
-knowledge, story flags and the party with packs and equipment.
+the current zone's map file, position, the game clock, active effects,
+every visited zone's automap knowledge, story flags and the party with
+packs and equipment.
 
 The test suite (`tests/run-tests.lisp`) doubles as the executable
 specification for the map model, movement, knowledge tracking,

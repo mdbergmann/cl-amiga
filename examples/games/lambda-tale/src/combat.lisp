@@ -174,6 +174,7 @@ living monster; then the surviving monsters strike back.  Returns
   (let ((combat (game-combat game)))
     (unless combat
       (error "combat-round: no combat is in progress"))
+    (advance-time game)
     (let ((pairs (mapcar (lambda (h) (cons h (or (pop actions) :attack)))
                          (alive-heroes game))))
       (setf (combat-defenders combat)

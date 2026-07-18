@@ -42,7 +42,7 @@
   "The active-spells strip: one line per active effect."
   (with-output-to-string (s)
     (dolist (e (game-effects game))
-      (format s "~A~%" (string-downcase (princ-to-string e))))))
+      (format s "~A~%" (effect-label e)))))
 
 (defun %combat-pane (game)
   (with-output-to-string (s)
@@ -120,9 +120,10 @@ the map file (classes, monsters, items, party) when present."
                (terpri)
                (when (game-party game)
                  (format t "~A~%" (%party-pane game)))
-               (format t "Pos (~D,~D) facing ~A~%"
+               (format t "Pos (~D,~D) facing ~A   ~A~%"
                        (game-x game) (game-y game)
-                       (dir-keyword (game-facing game)))
+                       (dir-keyword (game-facing game))
+                       (clock-line game))
                (dolist (m (log-recent log *log-lines*))
                  (format t "> ~A~%" m))
                (cond ((game-combat game)

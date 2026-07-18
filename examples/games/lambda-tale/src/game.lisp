@@ -8,11 +8,12 @@
   (x 0)
   (y 0)
   (facing +north+)    ; direction index 0..3
+  (time *new-game-minutes*) ; game minutes since campaign start (time.lisp)
   party               ; list of HERO (NIL for a bare walkabout)
   (flags (make-hash-table :test 'equal)) ; story flags (see events.lisp)
   handlers            ; event subscriptions: alist topic -> handler list
   combat              ; active COMBAT or NIL
-  effects             ; active spell effects (shield, lamp, ...), see below
+  effects             ; active EFFECT records (shield, light, ...), see below
   location            ; active LOCATION (shop, ...) or NIL, see locations.lisp
   ;; The world: every zone the party has visited this session, keyed by
   ;; map file path -> (MAP . KNOWLEDGE).  TRAVEL-PARTY switches zones,
@@ -29,7 +30,8 @@ side walls plus the front walls seen through open sides."
   (let ((k (game-knowledge game))
         (f (game-facing game)))
     (know-cell k (game-x game) (game-y game))
-    (dolist (s (compute-view (game-map game) (game-x game) (game-y game) f))
+    (dolist (s (compute-view (game-map game) (game-x game) (game-y game) f
+                             (game-view-depth game)))
       (know-wall k (view-slice-cx s) (view-slice-cy s) f)
       (know-wall k (view-slice-cx s) (view-slice-cy s) (turn-dir f -1))
       (know-wall k (view-slice-cx s) (view-slice-cy s) (turn-dir f 1))
@@ -143,38 +145,78 @@ cell's special."
       (emit game :enter-cell tx ty)
       (trigger-special game))))
 
-;;; Active spell effects — the UI's spell strip (shield, lamp, ...).
-;;; A placeholder for the coming spell system: story/test code manages
-;;; the list, the front-ends render it.  Effects are transient — they
-;;; do not live in save games yet (durations belong to the real spell
-;;; system, see specs/ui-and-engine.md).
+;;; Active effects — the UI's spell strip (shield, light, ...).
+;;; An effect is a record: a display name, an optional expiry on the
+;;; game clock (ADVANCE-TIME announces and drops it, see time.lisp)
+;;; and a payload plist of engine facts the mechanics read:
+;;;   (:ac N)     party armor class bonus (see HERO-EFFECTIVE-AC)
+;;;   (:light t)  the party carries light (see GAME-DARK-P)
+;;; Effects live in save games (see save.lisp).
 
-(defun add-effect (game name)
-  "Add active effect NAME (a string or symbol); duplicates are ignored.
+(defstruct (effect (:constructor %make-effect))
+  name          ; display key (string or symbol); EQUAL identity
+  expires-at    ; game minute the effect ends, or NIL (until removed)
+  payload)      ; readable plist of engine facts: (:ac N), (:light t)
+
+(defun add-effect (game name &key duration payload)
+  "Add active effect NAME (a string or symbol).  DURATION minutes from
+now sets the expiry (NIL = until removed); PAYLOAD is a readable plist
+of engine facts.  Re-adding NAME refreshes its expiry and payload in
+place — a recast spell burns anew, keeping its spot in the strip.
 Returns the effect list."
-  (setf (game-effects game)
-        (append (game-effects game)
-                (unless (member name (game-effects game) :test #'equal)
-                  (list name))))
+  (let ((expires (when duration (+ (game-time game) duration)))
+        (existing (find-effect game name)))
+    (if existing
+        (setf (effect-expires-at existing) expires
+              (effect-payload existing) payload)
+        (setf (game-effects game)
+              (append (game-effects game)
+                      (list (%make-effect :name name
+                                          :expires-at expires
+                                          :payload payload))))))
   (game-effects game))
 
 (defun remove-effect (game name)
   "Remove active effect NAME.  Returns the remaining effect list."
   (setf (game-effects game)
-        (remove name (game-effects game) :test #'equal)))
+        (remove name (game-effects game)
+                :key #'effect-name :test #'equal)))
+
+(defun find-effect (game name)
+  "The active EFFECT named NAME, or NIL."
+  (find name (game-effects game) :key #'effect-name :test #'equal))
+
+(defun effect-label (effect)
+  "EFFECT's display string for the UI's effects strip."
+  (string-downcase (princ-to-string (effect-name effect))))
+
+(defun effects-ac-bonus (game)
+  "The summed :AC bonuses of the active effects (a party-wide shield)."
+  (let ((n 0))
+    (dolist (e (game-effects game) n)
+      (incf n (or (getf (effect-payload e) :ac) 0)))))
+
+(defun light-active-p (game)
+  "True when any active effect carries light (a :LIGHT payload)."
+  (and (some (lambda (e) (getf (effect-payload e) :light))
+             (game-effects game))
+       t))
 
 (defun turn-left (game)
   (setf (game-facing game) (turn-dir (game-facing game) -1))
+  (advance-time game)
   (observe game)
   (dir-keyword (game-facing game)))
 
 (defun turn-right (game)
   (setf (game-facing game) (turn-dir (game-facing game) 1))
+  (advance-time game)
   (observe game)
   (dir-keyword (game-facing game)))
 
 (defun turn-around (game)
   (setf (game-facing game) (dir-opposite (game-facing game)))
+  (advance-time game)
   (observe game)
   (dir-keyword (game-facing game)))
 
@@ -207,6 +249,11 @@ away from a fight (see ATTEMPT-FLEE)."
               (progn
                 (setf (game-x game) nx
                       (game-y game) ny)
+                ;; The step costs time before the party looks around:
+                ;; a light that gutters out right now shrinks what this
+                ;; very step maps, and an AT-NIGHT special on the target
+                ;; cell must see the post-step clock.
+                (advance-time game)
                 (observe game)
                 (emit game :enter-cell nx ny)
                 (trigger-special game)

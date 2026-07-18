@@ -32,16 +32,17 @@
   lx ly left-front    ; left side cell + its front wall (when left is :open)
   rx ry right-front)  ; right side cell + its front wall (when right is :open)
 
-(defun compute-view (map x y facing)
+(defun compute-view (map x y facing &optional (depth +view-depth+))
   "List of VIEW-SLICEs visible from (X,Y) looking FACING, nearest first.
-Stops at a solid or door front wall, an off-map edge, or +VIEW-DEPTH+."
+Stops at a solid or door front wall, an off-map edge, or DEPTH cells
+\(default +VIEW-DEPTH+; darkness passes 1 — see GAME-VIEW-DEPTH)."
   (let* ((f (dir-index facing))
          (ldir (turn-dir f -1))
          (rdir (turn-dir f 1))
          (slices '())
          (cx x)
          (cy y))
-    (dotimes (d +view-depth+)
+    (dotimes (d depth)
       (let ((front (cell-wall map cx cy f))
             (left (cell-wall map cx cy ldir))
             (right (cell-wall map cx cy rdir))

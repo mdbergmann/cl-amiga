@@ -738,22 +738,185 @@ messages so far (oldest first)."
   (declare (ignore letters))
   (check "compass needle keeps a minimum length" '(10 10 12 10) needle))
 
-;; Active spell effects (the UI's spell strip).
+;; Active effects (the UI's spell strip): records with an optional
+;; expiry on the game clock and a payload plist of engine facts.
 (let* ((m (parse-map *art* :name "test"))
        (g (new-game m)))
   (check "fresh game has no active effects" '() (game-effects g))
   (add-effect g "shield")
   (add-effect g "lamp")
   (check "effects accumulate in order" '("shield" "lamp")
-         (game-effects g))
+         (mapcar #'effect-name (game-effects g)))
   (add-effect g "shield")
-  (check "add-effect ignores duplicates" '("shield" "lamp")
-         (game-effects g))
+  (check "re-adding keeps one entry in place" '("shield" "lamp")
+         (mapcar #'effect-name (game-effects g)))
+  (check "an undated effect has no expiry" nil
+         (effect-expires-at (find-effect g "shield")))
   (remove-effect g "shield")
-  (check "remove-effect" '("lamp") (game-effects g))
+  (check "remove-effect" '("lamp") (mapcar #'effect-name (game-effects g)))
   (remove-effect g "not-there")
   (check "removing an absent effect is quiet" '("lamp")
-         (game-effects g)))
+         (mapcar #'effect-name (game-effects g)))
+  ;; durations and payloads
+  (add-effect g "mage flame" :duration 60 :payload '(:light t))
+  (check "duration sets the expiry on the clock"
+         (+ (game-time g) 60)
+         (effect-expires-at (find-effect g "mage flame")))
+  (check-true "payload is stored"
+              (getf (effect-payload (find-effect g "mage flame")) :light))
+  (check-true "a :light payload lights the party" (light-active-p g))
+  (add-effect g "mage flame" :duration 10 :payload '(:light t))
+  (check "re-adding refreshes the expiry"
+         (+ (game-time g) 10)
+         (effect-expires-at (find-effect g "mage flame")))
+  (check "effect-label downcases for the strip" "mage flame"
+         (effect-label (find-effect g "mage flame")))
+  (add-effect g "stone skin" :duration 30 :payload '(:ac 2))
+  (add-effect g "blessing" :payload '(:ac 1))
+  (check ":ac payloads sum into the party bonus" 3 (effects-ac-bonus g))
+  (check "lamp carries no :ac payload" nil
+         (getf (effect-payload (find-effect g "lamp")) :ac)))
+
+;;; ---------------------------------------------------------------------
+;;; Game time: the clock, day and night, darkness
+
+;; The clock: action costs and the display line.
+(let* ((m (parse-map *art* :name "test"))
+       (g (new-game m)))
+  (check "a fresh game starts at *new-game-minutes*"
+         *new-game-minutes* (game-time g))
+  (check "fresh clock line" "Day 1, 08:00" (clock-line g))
+  (turn-right g)                       ; face east
+  (check "a turn costs one minute" (+ *new-game-minutes* 1) (game-time g))
+  (check "step east" :moved (move-party g :forward))
+  (check "a step costs one minute" (+ *new-game-minutes* 2) (game-time g))
+  (turn-left g)                        ; face north into the border wall
+  (let ((before (game-time g)))
+    (check "a blocked step is blocked" :blocked (move-party g :forward))
+    (check "a blocked step costs nothing" before (game-time g)))
+  (setf (game-time g) (+ +minutes-per-day+ (* 13 60) 5))
+  (check "clock line formats day and zero-padded time"
+         "Day 2, 13:05" (clock-line g)))
+
+;; Daylight boundaries: [06:00, 20:00).
+(check-true "05:59 is night" (not (daylight-p 359)))
+(check-true "06:00 is day" (daylight-p 360))
+(check-true "19:59 is day" (daylight-p 1199))
+(check-true "20:00 is night" (not (daylight-p 1200)))
+(check-true "daylight wraps across days"
+            (daylight-p (+ +minutes-per-day+ 360)))
+
+;; advance-time: boundary events and effect expiry.
+(let* ((m (parse-map *art* :name "test"))
+       (g (new-game m))
+       (msgs (watch-messages g))
+       (events '()))
+  (on-event g :sunset (lambda (game) (declare (ignore game))
+                        (push :sunset events)))
+  (on-event g :sunrise (lambda (game) (declare (ignore game))
+                         (push :sunrise events)))
+  (setf (game-time g) 1199)
+  (advance-time g)
+  (check "crossing 20:00 emits :sunset" '(:sunset) events)
+  (check-true "night falls in the log"
+              (member "Night falls." (funcall msgs) :test #'equal))
+  (setf (game-time g) (+ +minutes-per-day+ 359))
+  (advance-time g)
+  (check "crossing 06:00 emits :sunrise" '(:sunrise :sunset) events)
+  (check-true "the sun rises in the log"
+              (member "The sun rises." (funcall msgs) :test #'equal))
+  ;; a timed effect expires with a message and an event
+  (let ((expired '()))
+    (on-event g :effect-expired
+              (lambda (game name) (declare (ignore game))
+                (push name expired)))
+    (add-effect g "mage flame" :duration 5 :payload '(:light t))
+    (advance-time g 3)
+    (check "an unexpired effect stays" '("mage flame")
+           (mapcar #'effect-name (game-effects g)))
+    (advance-time g 2)
+    (check "the effect expires on time" '() (game-effects g))
+    (check "expiry emits :effect-expired" '("mage flame") expired)
+    (check-true "expiry is announced"
+                (member "Mage flame wears off." (funcall msgs)
+                        :test #'equal))))
+
+;; Darkness: night and :dark zones shrink the view (and the automap) to
+;; one cell; a light effect restores it.
+(defparameter *corridor-art*
+"+-+-+-+-+
+|@      |
++-+-+-+-+")
+
+(let* ((m (parse-map *corridor-art* :name "dark-test" :start-facing :east))
+       (g (new-game m)))
+  (check "daylight: full view depth" +view-depth+ (game-view-depth g))
+  (check-true "daylight outdoors is not dark" (not (game-dark-p g)))
+  (setf (game-time g) 1200)            ; 20:00 — night
+  (check-true "night outdoors is dark" (game-dark-p g))
+  (check "night: view depth one" 1 (game-view-depth g))
+  (check "darkness truncates compute-view" 1
+         (length (compute-view (game-map g) (game-x g) (game-y g)
+                               (game-facing g) (game-view-depth g))))
+  (add-effect g "torchlight" :payload '(:light t))
+  (check-true "a light effect defeats the night" (not (game-dark-p g)))
+  (check "lit night: full view depth" +view-depth+ (game-view-depth g))
+  (remove-effect g "torchlight")
+  (check "light gone: dark again" 1 (game-view-depth g)))
+
+;; The automap honors darkness: what the party cannot see it cannot map.
+;; The game must be born at night — NEW-GAME's first OBSERVE already maps.
+(let* ((m (parse-map *corridor-art* :name "dark-map" :start-facing :east))
+       (g (let ((*new-game-minutes* 1200))
+            (new-game m))))
+  ;; the corridor runs east from (0,0); at night the party sees only its
+  ;; own cell — the far wall of (2,0) stays unknown
+  (check-true "night automap: standing cell is known"
+              (cell-explored-p (game-knowledge g) 0 0))
+  (check-true "night automap: two cells ahead is unknown"
+              (not (wall-known-p (game-knowledge g) 2 0 +east+)))
+  (add-effect g "torchlight" :payload '(:light t))
+  (observe g)
+  (check-true "lit automap: two cells ahead is known"
+              (wall-known-p (game-knowledge g) 2 0 +east+)))
+
+;; A (zone :dark t) zone is dark at any hour.
+(let ((path "tests/tmp-dark.map"))
+  (with-open-file (s path :direction :output :if-exists :supersede)
+    (write-string "+-+-+
+|@  |
++-+-+
+(zone :kind :dungeon :title \"the crypt\" :dark t)
+" s))
+  (let* ((m (load-map-file path))
+         (g (new-game m)))
+    (check-true "zone :dark parses" (dungeon-map-dark m))
+    (check-true "a :dark zone is dark at noon"
+                (progn (setf (game-time g) 720) (game-dark-p g)))
+    (add-effect g "mage flame" :payload '(:light t))
+    (check-true "light works underground too" (not (game-dark-p g))))
+  (delete-file path))
+
+;; at-night / at-day specials: pure clock tests.
+(let* ((m (parse-map *art* :name "test"))
+       (g (new-game m))
+       (msgs (watch-messages g)))
+  (setf (cell-special m 1 0)
+        '((at-night (message "Eyes glitter in the dark."))
+          (at-day (message "The lane lies quiet."))))
+  (turn-right g)                       ; face east
+  (setf (game-time g) 719)             ; the step lands at noon
+  (move-party g :forward)
+  (check "at-day runs by day" '("The lane lies quiet.") (funcall msgs))
+  (move-party g :back)                 ; back-step keeps facing east
+  (setf (game-time g) 1249)            ; the step lands well into night
+  (move-party g :forward)
+  (check-true "at-night runs by night"
+              (member "Eyes glitter in the dark." (funcall msgs)
+                      :test #'equal))
+  (check-true "at-day stays quiet by night"
+              (= 1 (count "The lane lies quiet." (funcall msgs)
+                          :test #'equal))))
 
 ;; Movement emits :enter-cell and :blocked.
 (let* ((m (parse-map *art* :name "test"))
@@ -1377,10 +1540,12 @@ messages so far (oldest first)."
 (special (1 0) (message \"dusty\"))
 " s))
 
+(define-hero-class :t-caster :hp-dice "1d4" :damage "1d3" :ac 10 :caster t)
 (let* ((m (load-map-file "tests/tmp.map"))
        (a (with-rng (5) (make-hero "Alva" :tester)))
        (b (with-rng (5) (make-hero "Berk" :tester)))
-       (g (new-game m :party (list a b))))
+       (c (with-rng (5) (make-hero "Cael" :t-caster)))
+       (g (new-game m :party (list a b c))))
   (turn-right g)
   (move-party g :forward)               ; to (1,0)
   (set-flag g :quest 42)
@@ -1388,21 +1553,40 @@ messages so far (oldest first)."
   (damage-hero g a 3)
   (setf (hero-xp b) 60)
   (incf (hero-gold b) 17)
+  (decf (hero-sp c))
+  (setf (game-time g) 700)
+  (add-effect g "mage flame" :duration 60 :payload '(:light t))
+  (add-effect g "blessing" :payload '(:ac 1))
   (save-game g "tests/tmp-save.lisp")
   (let ((g2 (load-game "tests/tmp-save.lisp")))
     (check "loaded position" '(1 0) (list (game-x g2) (game-y g2)))
     (check "loaded facing" +east+ (game-facing g2))
+    (check "loaded clock" 700 (game-time g2))
+    (check "loaded effects in order" '("mage flame" "blessing")
+           (mapcar #'effect-name (game-effects g2)))
+    (check "loaded effect keeps its expiry" 760
+           (effect-expires-at (find-effect g2 "mage flame")))
+    (check "loaded effect keeps its payload" '(:light t)
+           (effect-payload (find-effect g2 "mage flame")))
+    (check "loaded undated effect stays undated" nil
+           (effect-expires-at (find-effect g2 "blessing")))
+    (check "loaded :ac payload feeds the party bonus" 1
+           (effects-ac-bonus g2))
     (check "loaded flag value" 42 (flag g2 :quest))
     (check "loaded equal-key flag" t (flag g2 '(:seen "door")))
-    (check "loaded party size" 2 (length (game-party g2)))
+    (check "loaded party size" 3 (length (game-party g2)))
     (let ((a2 (first (game-party g2)))
-          (b2 (second (game-party g2))))
+          (b2 (second (game-party g2)))
+          (c2 (third (game-party g2))))
       (check "loaded hero name" "Alva" (hero-name a2))
       (check "loaded hero class" :tester (hero-class a2))
       (check "loaded hero damage taken" 5 (hero-hp a2))
       (check "loaded hero max hp" 8 (hero-max-hp a2))
       (check "loaded hero xp" 60 (hero-xp b2))
-      (check "loaded hero gold" 17 (hero-gold b2)))
+      (check "loaded hero gold" 17 (hero-gold b2))
+      (check-true "loaded caster hero is still a caster" (hero-caster-p c2))
+      (check "loaded caster max-sp" (hero-max-sp c) (hero-max-sp c2))
+      (check "loaded caster sp" (hero-sp c) (hero-sp c2)))
     (check-true "loaded knowledge: visited cell explored"
                 (cell-explored-p (game-knowledge g2) 1 0))
     (check "loaded knowledge: unseen cell unexplored" nil
@@ -1714,7 +1898,7 @@ messages so far (oldest first)."
   (check "unknown kind left" nil (game-location g)))
 
 ;;; ---------------------------------------------------------------------
-;;; Save games v2: the whole world round-trips — every visited zone's
+;;; Save games: the whole world round-trips — every visited zone's
 ;;; knowledge, the party's packs and equipment.
 
 (let* ((m (load-map-file "tests/tmp-town.map"))
@@ -1727,21 +1911,21 @@ messages so far (oldest first)."
   (travel-party g "tmp-town.map" 0 0 :north)
   (save-game g "tests/tmp-save.lisp")
   (let ((g2 (load-game "tests/tmp-save.lisp")))
-    (check "v2 load restores the current zone" "Testville"
+    (check "world load restores the current zone" "Testville"
            (map-title (game-map g2)))
-    (check-true "v2 town knowledge restored"
+    (check-true "world town knowledge restored"
                 (cell-explored-p (game-knowledge g2) 0 0))
     (let ((h2 (first (game-party g2))))
-      (check "v2 pack restored" '(t-sword t-torch) (hero-items h2))
-      (check "v2 equipment restored" '(t-sword) (hero-equipped h2))
-      (check "v2 attack dice from restored gear" "1d6+2"
+      (check "world pack restored" '(t-sword t-torch) (hero-items h2))
+      (check "world equipment restored" '(t-sword) (hero-equipped h2))
+      (check "world attack dice from restored gear" "1d6+2"
              (hero-attack-dice h2)))
     (check-true "unvisited zone knowledge kept pending"
                 (assoc "tests/tmp-dung.map" (game-zone-knowledge g2)
                        :test #'equal))
     ;; traveling back restores the pending knowledge
     (travel-party g2 "tmp-dung.map")
-    (check-true "v2 dungeon knowledge restored on travel"
+    (check-true "world dungeon knowledge restored on travel"
                 (cell-explored-p (game-knowledge g2) 0 0))
     (check "pending knowledge consumed" nil
            (assoc "tests/tmp-dung.map" (game-zone-knowledge g2)
@@ -1753,6 +1937,10 @@ messages so far (oldest first)."
                    :if-exists :supersede)
   (write-string "(:lambda-tale-save 1 :map-file \"tests/tmp-town.map\")" s))
 (check-error "v1 saves are rejected" (load-game "tests/tmp-save.lisp"))
+(with-open-file (s "tests/tmp-save.lisp" :direction :output
+                   :if-exists :supersede)
+  (write-string "(:lambda-tale-save 2 :map-file \"tests/tmp-town.map\" :x 0 :y 0 :facing 0)" s))
+(check-error "v2 saves are rejected" (load-game "tests/tmp-save.lisp"))
 (delete-file "tests/tmp-save.lisp")
 
 (delete-file "tests/tmp-town.map")
