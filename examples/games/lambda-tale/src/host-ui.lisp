@@ -1,10 +1,11 @@
 ;;; Lambda's Tale — host front-end: interactive ASCII walkabout (PLAY).
 ;;;
 ;;; Keys: w=forward  s=back-step  a=turn left  d=turn right
-;;;       m=full map view  S=save  L=load  q=quit
+;;;       m=full map view  c=cast a spell  S=save  L=load  q=quit
 ;;; In the map view: m/Esc=back  f=toggle omniscient (debug)  q=quit
-;;; In combat: a=attack  d=defend  f=flee
+;;; In combat: a=attack  d=defend  c=cast  f=flee
 ;;; In a location (shop): 1-9=choose  s/b=sell/buy page  Esc=back/leave
+;;; In the cast menu: 1-9=choose caster/spell/target  Esc=back/cancel
 ;;;
 ;;; Layout per specs/ui-and-engine.md: first-person view beside the
 ;;; active-spells strip, party roster (up to 7 rows), message log with
@@ -72,10 +73,12 @@ the map file (classes, monsters, items, party) when present."
          (mode :play)        ; :play or :map (the full-map view)
          (full nil)          ; omniscient automap (debug), map mode only
          (shop nil)          ; SHOP-VIEW while inside a location
+         (cast nil)          ; CAST-VIEW while the cast menu is open
          (over nil))
     (labels ((wire (g)
                (setf log (attach-message-log g))
                (setf shop (when (game-location g) (make-shop-view)))
+               (setf cast nil)
                (on-event g :enter-location
                          (lambda (game loc)
                            (declare (ignore game loc))
@@ -111,12 +114,16 @@ the map file (classes, monsters, items, party) when present."
                          (dungeon-map-height (game-map game))
                          full)))
              (draw-play-page ()
-               (if (game-location game)
-                   (dolist (line (location-lines game shop))
-                     (format t "~A~%" line))
-                   (format t "~A~%"
-                           (beside (render-first-person game)
-                                   (%effects-pane game))))
+               (cond (cast
+                      (dolist (line (cast-lines game cast))
+                        (format t "~A~%" line)))
+                     ((game-location game)
+                      (dolist (line (location-lines game shop))
+                        (format t "~A~%" line)))
+                     (t
+                      (format t "~A~%"
+                              (beside (render-first-person game)
+                                      (%effects-pane game)))))
                (terpri)
                (when (game-party game)
                  (format t "~A~%" (%party-pane game)))
@@ -126,13 +133,16 @@ the map file (classes, monsters, items, party) when present."
                        (clock-line game))
                (dolist (m (log-recent log *log-lines*))
                  (format t "> ~A~%" m))
-               (cond ((game-combat game)
-                      (format t "~A~%[a]ttack [d]efend [f]lee~%"
+               (cond (cast
+                      (when (game-combat game)
+                        (format t "~A~%" (%combat-pane game))))
+                     ((game-combat game)
+                      (format t "~A~%[a]ttack [d]efend [c]ast [f]lee~%"
                               (%combat-pane game)))
                      ((game-location game))
                      (t
                       (format t "[w]=forward [s]=back [a]=left [d]=right ~
-                                 [m]=map [S]ave [L]oad [q]=quit~%"))))
+                                 [m]=map [c]ast [S]ave [L]oad [q]=quit~%"))))
              (draw ()
                (%clear-screen)
                (format t "=== Lambda's Tale ===  ~A (~Dx~D)~%~%"
@@ -154,9 +164,19 @@ the map file (classes, monsters, items, party) when present."
                                               (declare (ignore h))
                                               :defend)
                                             (alive-heroes game))))
+                 (#\c (open-cast t))
                  (#\f (attempt-flee game))
                  (#\q :quit)
                  (t nil)))
+             (open-cast (in-combat)
+               (if (some #'hero-caster-p (alive-heroes game))
+                   (setf cast (make-cast-view :in-combat in-combat))
+                   (note "No one here can cast."))
+               nil)
+             (cast-menu-act (c)
+               (case (cast-act game cast c)
+                 ((:done :cancelled) (setf cast nil)))
+               nil)
              (map-act (c)
                (case c
                  ((#\m #\M #\Escape) (setf mode :play) nil)
@@ -186,10 +206,12 @@ the map file (classes, monsters, items, party) when present."
                          nil)
                     (#\m (setf mode :map)
                          nil)
+                    (#\c (open-cast nil))
                     (#\q :quit)
                     (t nil)))))
              (act (c)
                (cond ((eq mode :map) (map-act c))
+                     (cast (cast-menu-act c))
                      ((game-combat game) (combat-act c))
                      ((game-location game)
                       (location-act game shop c)

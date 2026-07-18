@@ -53,7 +53,8 @@
    #:trigger-special #:run-special #:teleport-party
    ;; heroes and the party
    #:define-hero-class #:make-hero #:hero-name #:hero-class #:hero-level
-   #:hero-xp #:hero-max-hp #:hero-hp #:hero-str #:hero-dex #:hero-iq
+   #:hero-xp #:hero-max-hp #:hero-hp #:hero-max-sp #:hero-sp
+   #:hero-caster-p #:hero-str #:hero-dex #:hero-iq
    #:hero-con #:hero-lck #:hero-ac #:hero-damage #:hero-gold
    #:hero-alive-p #:alive-heroes #:party-alive-p #:front-ranks
    #:hero-class-title #:hero-summary-lines
@@ -70,6 +71,11 @@
    #:shop-stock #:item-price #:item-sell-price #:buy-item #:sell-item
    #:make-shop-view #:shop-view-hero #:shop-view-mode
    #:shop-lines #:shop-act #:location-lines #:location-act
+   ;; spells
+   #:define-spell #:find-spell-type #:spell-title #:spell-target-kind
+   #:spell-known-p #:spell-castable-p #:spells-for-hero #:cast-spell
+   #:make-cast-view #:cast-view-hero #:cast-view-spell
+   #:cast-lines #:cast-act #:*sp-regen-minutes*
    ;; combat
    #:define-monster #:find-monster-type #:monster-type-name
    #:monster-type-level #:monster-type-ac #:monster-type-xp

@@ -649,10 +649,10 @@ stat block on a white parchment page over the grey chrome."
         (line "1-7 view another   Esc back")))
     (amiga.gfx:set-a-pen rp 1)))
 
-(defun %amiga-draw-location (rp game view l)
-  "Location page (shop menu): the location's menu lines on a white
-page over the view column.  The log, status and roster panes stay
-live around it — gold and messages update as the party shops."
+(defun %amiga-draw-page (rp menu-lines l)
+  "A menu page (shop, cast, save slots): MENU-LINES on a white page
+over the view column.  The log, status and roster panes stay live
+around it — gold and messages update as the party acts."
   (let* ((ox (ui-layout-bx l))
          (oy (ui-layout-by l))
          (lh (ui-layout-lh l))
@@ -664,7 +664,7 @@ live around it — gold and messages update as the party shops."
          (max-lines (floor (- ph 8) lh))
          (max-chars (floor (- pw 16) cw))
          (lines (mapcan (lambda (text) (wrap-text text max-chars))
-                        (location-lines game view))))
+                        menu-lines)))
     ;; page shadow, sheet, outline — same look as the character sheet
     (amiga.gfx:set-a-pen rp 0)
     (amiga.gfx:rect-fill rp (+ px 2) (+ py 2) (+ px pw 2) (+ py ph 2))
@@ -845,11 +845,13 @@ the menu strip (right mouse button)."
          (full nil)         ; omniscient map (debug), map mode only
          (sheet-hero 0)     ; party index shown in :sheet mode
          (shopv nil)        ; SHOP-VIEW while inside a location
+         (castv nil)        ; CAST-VIEW while the cast menu is open
          (zone-dirty nil)   ; party traveled: the chrome needs a repaint
          (over nil))
     (labels ((wire (g)
                (setf log (attach-message-log g))
                (setf shopv (when (game-location g) (make-shop-view)))
+               (setf castv nil)
                (on-event g :enter-location
                          (lambda (gm loc) (declare (ignore gm loc))
                            (setf shopv (make-shop-view))))
@@ -905,11 +907,12 @@ the menu strip (right mouse button)."
                         (status-text ()
                           (cond ((eq over :won) "You win!  Press Q.")
                                 ((eq over :lost) "Game over.  Press Q.")
+                                (castv "Choose: 1-9 pick, Esc back")
                                 ((game-combat game)
-                                 "COMBAT!  A attack  D defend  F flee")
+                                 "COMBAT!  A atk  D def  C cast  F flee")
                                 ((game-location game)
                                  (location-title (game-location game)))
-                                (t "W/S move  A/D turn  M map  1-7 hero")))
+                                (t "W/S move  A/D turn  M map  C cast")))
                         (clear-inner ()
                           ;; Grey-wipe the content area (a bit beyond
                           ;; it, to catch the frames and shadows) when
@@ -953,19 +956,25 @@ the menu strip (right mouse button)."
                             ((eq mode :sheet)
                              (%amiga-draw-sheet rp game sheet-hero l))
                             (t
-                             (if (game-location game)
-                                 (%amiga-draw-location
-                                  rp game
-                                  (or shopv (setf shopv (make-shop-view)))
-                                  l)
-                                 (progn
-                                   (%amiga-draw-fp rp game
-                                                   (ui-layout-bx l)
-                                                   (ui-layout-by l)
-                                                   (ui-layout-fp-w l)
-                                                   (ui-layout-fp-h l)
-                                                   walls)
-                                   (%amiga-draw-band rp game l)))
+                             (cond (castv
+                                    (%amiga-draw-page
+                                     rp (cast-lines game castv) l))
+                                   ((game-location game)
+                                    (%amiga-draw-page
+                                     rp
+                                     (location-lines
+                                      game
+                                      (or shopv
+                                          (setf shopv (make-shop-view))))
+                                     l))
+                                   (t
+                                    (%amiga-draw-fp rp game
+                                                    (ui-layout-bx l)
+                                                    (ui-layout-by l)
+                                                    (ui-layout-fp-w l)
+                                                    (ui-layout-fp-h l)
+                                                    walls)
+                                    (%amiga-draw-band rp game l)))
                              (%amiga-draw-log rp log l)
                              (%amiga-status rp game l (status-text))
                              (%amiga-party rp game l))))
@@ -976,6 +985,22 @@ the menu strip (right mouse button)."
                           (case (move-party game relative)
                             (:door (say game "You pass through a door."))
                             (:blocked (say game "You bump into a wall."))))
+                        (open-cast (in-combat)
+                          (if (some #'hero-caster-p (alive-heroes game))
+                              (setf castv
+                                    (make-cast-view :in-combat in-combat))
+                              (log-message log "No one here can cast."))
+                          (redraw))
+                        (cast-menu-act (c)
+                          (let ((key (if (eq c :esc) #\Escape c)))
+                            (when (characterp key)
+                              (case (cast-act game castv key)
+                                ((:done :cancelled)
+                                 (setf castv nil)
+                                 (fresh-play)
+                                 (return-from cast-menu-act nil)))))
+                          (redraw)
+                          nil)
                         (do-save ()
                           (if (game-combat game)
                               (log-message log "No saving during combat.")
@@ -1019,6 +1044,11 @@ the menu strip (right mouse button)."
                                                    +party-limit+))
                                           (open-sheet (1- (digit-char-p c)))
                                           nil)))
+                                  (castv
+                                   ;; cast menu: the shared model eats
+                                   ;; every key (digits pick, Esc backs
+                                   ;; out) — see spells.lisp
+                                   (cast-menu-act c))
                                   ((game-location game)
                                    ;; inside a shop: the shared model
                                    ;; handles the keys (Esc backs out /
@@ -1051,6 +1081,7 @@ the menu strip (right mouse button)."
                                                            :defend)
                                                          (alive-heroes game)))
                                           (redraw))
+                                     (#\c (open-cast t))
                                      (#\f (attempt-flee game) (redraw)))
                                    nil)
                                   ((eql c #\S) (do-save) (redraw) nil)
@@ -1065,6 +1096,7 @@ the menu strip (right mouse button)."
                                      (#\s (%step :back) (redraw))
                                      (#\a (turn-left game) (redraw))
                                      (#\d (turn-right game) (redraw))
+                                     (#\c (open-cast nil))
                                      (#\m (setf mode :map)
                                           (redraw)))
                                    nil)))))

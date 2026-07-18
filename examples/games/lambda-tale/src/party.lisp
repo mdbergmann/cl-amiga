@@ -14,6 +14,8 @@
   (xp 0)
   (max-hp 1)
   (hp 1)
+  (max-sp 0)          ; spell points; 0 = not a caster
+  (sp 0)
   (str 10) (dex 10) (iq 10) (con 10) (lck 10)
   (ac 10)             ; descending: lower is better
   (damage "1d4")      ; the hero's bare attack dice (no weapon)
@@ -23,11 +25,13 @@
 
 (defvar *hero-classes* (make-hash-table :test 'eq))
 
-(defun define-hero-class (name &key (hp-dice "1d8") (damage "1d4") (ac 10))
+(defun define-hero-class (name &key (hp-dice "1d8") (damage "1d4") (ac 10)
+                                    caster)
   "Register hero class NAME (a keyword) with its hit dice, attack dice
-and starting armor class.  Campaign data calls this."
+and starting armor class; CASTER T marks a spell-casting class (spell
+points from level and IQ, see %HERO-MAX-SP).  Campaign data calls this."
   (setf (gethash name *hero-classes*)
-        (list :hp-dice hp-dice :damage damage :ac ac))
+        (list :hp-dice hp-dice :damage damage :ac ac :caster caster))
   name)
 
 (defun hero-class-property (class key)
@@ -41,12 +45,17 @@ and starting armor class.  Campaign data calls this."
   "Create a level-1 hero of CLASS: hp from the class hit dice, abilities
 rolled 3d6 in the order str, dex, iq, con, lck.  GOLD is the starting
 purse (campaign data decides; dice strings welcome)."
-  (let ((hp (max 1 (roll-dice (hero-class-property class :hp-dice)))))
+  ;; Keep the roll order (hp, str, dex, iq, con, lck, gold) — the test
+  ;; suite scripts heroes through *RNG* and depends on it.
+  (let* ((hp (max 1 (roll-dice (hero-class-property class :hp-dice))))
+         (str (roll-dice "3d6")) (dex (roll-dice "3d6"))
+         (iq (roll-dice "3d6")) (con (roll-dice "3d6"))
+         (lck (roll-dice "3d6"))
+         (sp (%hero-max-sp class 1 iq)))
     (%make-hero :name name :class class
                 :max-hp hp :hp hp
-                :str (roll-dice "3d6") :dex (roll-dice "3d6")
-                :iq (roll-dice "3d6") :con (roll-dice "3d6")
-                :lck (roll-dice "3d6")
+                :max-sp sp :sp sp
+                :str str :dex dex :iq iq :con con :lck lck
                 :ac (hero-class-property class :ac)
                 :damage (hero-class-property class :damage)
                 :gold (roll-dice gold))))
@@ -54,6 +63,17 @@ purse (campaign data decides; dice strings welcome)."
 (defun stat-bonus (stat)
   "Bonus for an ability score: +1 per 2 points above 10, negative below."
   (floor (- stat 10) 2))
+
+(defun %hero-max-sp (class level iq)
+  "Spell points for a CLASS/LEVEL/IQ hero: 2 per level plus the IQ
+bonus for casters (minimum 1); everyone else has none."
+  (if (hero-class-property class :caster)
+      (max 1 (+ (* 2 level) (stat-bonus iq)))
+      0))
+
+(defun hero-caster-p (hero)
+  "True when HERO can cast spells (a caster class with spell points)."
+  (> (hero-max-sp hero) 0))
 
 (defun hero-alive-p (hero)
   (> (hero-hp hero) 0))
@@ -73,8 +93,12 @@ Amiga sheet view and the tests render from the same source."
   (list
    (format nil "~A the ~A" (hero-name hero) (hero-class-title hero))
    (format nil "Level ~D    XP ~D" (hero-level hero) (hero-xp hero))
-   (format nil "HP ~D/~D    AC ~D" (hero-hp hero) (hero-max-hp hero)
-           (hero-ac hero))
+   (if (hero-caster-p hero)
+       (format nil "HP ~D/~D  SP ~D/~D  AC ~D"
+               (hero-hp hero) (hero-max-hp hero)
+               (hero-sp hero) (hero-max-sp hero) (hero-ac hero))
+       (format nil "HP ~D/~D    AC ~D" (hero-hp hero) (hero-max-hp hero)
+               (hero-ac hero)))
    (format nil "STR ~D  DEX ~D  IQ ~D"
            (hero-str hero) (hero-dex hero) (hero-iq hero))
    (format nil "CON ~D  LCK ~D" (hero-con hero) (hero-lck hero))
@@ -151,6 +175,12 @@ and :PARTY-DEFEATED when nobody is left standing.  Returns remaining hp."
                                                      :hp-dice)))))
     (incf (hero-max-hp hero) gain)
     (incf (hero-hp hero) gain))
+  ;; casters grow spell points like hit points: the new maximum arrives
+  ;; as fresh, ready-to-burn sp
+  (let ((new-sp (%hero-max-sp (hero-class hero) (hero-level hero)
+                              (hero-iq hero))))
+    (incf (hero-sp hero) (max 0 (- new-sp (hero-max-sp hero))))
+    (setf (hero-max-sp hero) new-sp))
   (say game "~A rises to level ~D!" (hero-name hero) (hero-level hero)))
 
 (defun award-xp (game hero amount)

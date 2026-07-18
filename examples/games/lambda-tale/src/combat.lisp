@@ -102,18 +102,24 @@ may be dice (see PARSE-DICE).  Returns the new COMBAT."
   "Roll d20 + BONUS against descending AC: hit on 20 - AC or better."
   (>= (+ 1 (roll 20) bonus) (- 20 ac)))
 
+(defun %strike-monster (game attacker-name monster dmg)
+  "Apply DMG to MONSTER with the hit/slay transcript — shared by melee
+and damage spells so the log reads the same either way."
+  (let ((type (monster-kind monster)))
+    (decf (monster-hp monster) dmg)
+    (if (monster-alive-p monster)
+        (say game "~A hits the ~A for ~D damage."
+             attacker-name (monster-type-name type) dmg)
+        (say game "~A slays the ~A!"
+             attacker-name (monster-type-name type)))))
+
 (defun %hero-attack (game hero monster)
   (let ((type (monster-kind monster)))
     (if (%attack-hits-p (+ (hero-level hero) (stat-bonus (hero-str hero)))
                         (monster-type-ac type))
-        (let ((dmg (max 1 (+ (roll-dice (hero-attack-dice hero))
-                             (stat-bonus (hero-str hero))))))
-          (decf (monster-hp monster) dmg)
-          (if (monster-alive-p monster)
-              (say game "~A hits the ~A for ~D damage."
-                   (hero-name hero) (monster-type-name type) dmg)
-              (say game "~A slays the ~A!"
-                   (hero-name hero) (monster-type-name type))))
+        (%strike-monster game (hero-name hero) monster
+                         (max 1 (+ (roll-dice (hero-attack-dice hero))
+                                   (stat-bonus (hero-str hero)))))
         (say game "~A misses the ~A."
              (hero-name hero) (monster-type-name type)))))
 
@@ -121,7 +127,7 @@ may be dice (see PARSE-DICE).  Returns the new COMBAT."
   (let* ((targets (front-ranks game))
          (hero (nth (roll (length targets)) targets))
          (type (monster-kind monster))
-         (ac (- (hero-effective-ac hero)
+         (ac (- (hero-effective-ac hero game)
                 (if (member hero (combat-defenders combat)) 4 0))))
     (if (%attack-hits-p (monster-type-level type) ac)
         (let ((dmg (max 1 (roll-dice (monster-type-damage type)))))
@@ -168,9 +174,11 @@ may be dice (see PARSE-DICE).  Returns the new COMBAT."
 
 (defun combat-round (game &optional actions)
   "Fight one round.  ACTIONS lists an action per living hero in party
-order — :attack (the default) or :defend.  Heroes strike the first
-living monster; then the surviving monsters strike back.  Returns
-:victory, :defeat or :ongoing."
+order — :attack (the default), :defend, or (:cast SPELL [TARGET]) to
+cast a spell (see CAST-SPELL; a failed cast wastes the round).  Heroes
+strike the first living monster; then the surviving monsters strike
+back.  The round costs one clock tick.  Returns :victory, :defeat or
+:ongoing."
   (let ((combat (game-combat game)))
     (unless combat
       (error "combat-round: no combat is in progress"))
@@ -183,10 +191,13 @@ living monster; then the surviving monsters strike back.  Returns
                 (when (eq (cdr p) :defend)
                   (push (car p) d)))))
       (dolist (p pairs)
-        (when (eq (cdr p) :attack)
-          (let ((target (first (alive-monsters combat))))
-            (when target
-              (%hero-attack game (car p) target))))))
+        (let ((a (cdr p)))
+          (cond ((eq a :attack)
+                 (let ((target (first (alive-monsters combat))))
+                   (when target
+                     (%hero-attack game (car p) target))))
+                ((and (consp a) (eq (first a) :cast))
+                 (cast-spell game (car p) (second a) (third a)))))))
     (%monsters-act game combat)
     (%combat-outcome game combat)))
 
