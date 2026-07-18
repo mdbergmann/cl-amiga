@@ -21,7 +21,7 @@ campaign data, never as code that knows about "the" town.
   set), `:title` (display name), `:wrap`, `:start-facing`.
 - **Cities and dungeons are the same thing to the engine**: maps with
   walls, doors, specials.  `:kind` is data for campaigns and front-ends
-  (future: per-zone tile packs), not an engine branch.
+  (per-zone tile packs via the ZONE form's :gfx), not an engine branch.
 - The special op `(travel FILE [X Y] [FACING])` moves the party to
   another zone: stairs, city gates, portals are all map data.  `FILE`
   resolves relative to the current map's directory; the party arrives
@@ -86,35 +86,40 @@ ate the text column's space without earning it; the automap lives
 solely in the full map mode under `m`.)
 
 ```
-+----------------------+--------+------------------+
-|                      | active |  message log     |
-|  first-person view   | spells |  (newest line at |
-|                      | shield |   the bottom,    |
-|                      | lamp   |   older lines    |
-+----------------------+ ...    |   scroll up)     |
-| status line          |        |                  |
++----------------------+---------------------------+
+|                      |  message log              |
+|  first-person view   |  (newest line at the      |
+|                      |   bottom, older lines     |
+|                      |   scroll up)              |
++----------------------+---------------------------+
+| location plaque      | active effects  | compass |
++----------------------+---------------------------+
+| status line                                      |
 | party roster (up to 7 rows)                      |
 +--------------------------------------------------+
 ```
 
-- **Message log** (right column, full height): everything the game
-  says — combat transcript, door/wall feedback, story messages —
-  appended at the bottom, older lines scrolling up, exactly like Bard's
-  Tale's text column.  Backed by the engine's `attach-message-log`
-  ring (`:message` events); front-ends render as many trailing lines
-  as fit.  This column gets the space the minimap used to take — text
-  history is the point of the right side.
-- **Active spells strip** (between the first-person view and the text
-  column): a narrow column listing the party's active effects — shield,
-  lamp/light, levitation and friends, Bard's Tale style.  The engine
-  carries them as `game-effects` (`add-effect`/`remove-effect`, EQUAL
-  dedup); the strip renders one line per effect.  Until the spell
-  system lands (M4) this is reserved space fed by story/test code;
-  effects are transient (not yet saved).  The foot of the strip holds
-  a **compass rose** — N/E/S/W around a diamond, the needle and the
-  faced letter highlighted (`compass-points` provides the geometry);
-  turning is silent (no "You turn left." log noise), the compass and
-  status line carry that information.
+(Revised 2026-07-18 for the lo-res display profile: the narrow
+active-spells strip between the view and the text column did not fit
+320 pixels, so both profiles share this two-column split — BT1/BT3 on
+the Amiga use the same arrangement.)
+
+- **Message log** (right column): everything the game says — combat
+  transcript, door/wall feedback, story messages — appended at the
+  bottom, older lines scrolling up, exactly like Bard's Tale's text
+  column.  Backed by the engine's `attach-message-log` ring
+  (`:message` events); front-ends render as many trailing lines as
+  fit.
+- **Effects + compass band** (the foot of the log column): the party's
+  active effects — shield, lamp/light, levitation and friends, Bard's
+  Tale style — as one line each at the left.  The engine carries them
+  as `game-effects` (`add-effect`/`remove-effect`, EQUAL dedup).
+  Until the spell system lands (M4) this is reserved space fed by
+  story/test code; effects are transient (not yet saved).  The right
+  of the band holds the **compass rose** — N/E/S/W around a diamond,
+  the needle and the faced letter highlighted (`compass-points`
+  provides the geometry); turning is silent (no "You turn left." log
+  noise), the compass and status line carry that information.
 - **Status + party roster** (bottom, full width): position/facing/mode
   line and one roster row per party member — the layout must reserve
   room for **7 rows**.
@@ -150,23 +155,30 @@ The Amiga front-end supports two displays, selected by
   screen, as before.  This stays the development default because it
   coexists with the shell running the test suite.
 - `:screen` — the game opens its **own Intuition screen** and covers it
-  with a borderless backdrop window (input + menus as usual).  On a
-  real (chipset) Amiga the natural mode is **PAL 640x256 hires**; on
-  RTG systems (Picasso96/CyberGraphX/MorphOS) an equivalent small mode
-  such as 320x256 or 640x256 is fine.
+  with a borderless backdrop window (input + menus as usual).
+- Screen geometry, viewport, tile pack and layout tuning come from a
+  **display profile** (`src/profiles.lisp`, `play-amiga`'s `:profile`
+  argument): **`:lores`** — 320x256 PAL lores, 5 bitplanes (32
+  colors), the ECS target and the default (half the chip-RAM/DMA cost
+  of hires, near-square pixels for the art, the Bard's Tale
+  presentation) — and **`:hires`** — 640x256 PAL hires, 4 bitplanes
+  (16 colors), the classic look with the larger 240x130 viewport.  A
+  future target (say a big RTG screen) is a new profile plus an asset
+  pack, not new code.
 - Mode selection must be **RTG-aware, no chipset assumptions** (this is
   the M3 roadmap rule): ask the display database via
-  `graphics.library/BestModeIDA` for a nominal 640x256, depth 2 mode
+  `graphics.library/BestModeIDA` for the profile's nominal geometry
   and open the screen with whatever ID it returns; only fall back to a
-  plain PAL hires request when the database has no answer.  Bitmaps and
+  plain PAL request when the database has no answer.  Bitmaps and
   rendering stay behind OS calls only.
-- The window and the screen share the same **PAL 640x256 geometry** —
-  the window version must fit (and fill) a PAL Workbench, and both
-  displays lay out identically.  The layout is computed from the
-  actual inner width/height, so the window's title bar, the borderless
-  screen, and whatever an RTG driver promotes the mode to all come out
-  right.  On a PAL Workbench the window opens at 0,0 — there is no
-  room for an offset.
+- The window and the screen share the profile's geometry — the window
+  version must fit a PAL Workbench, and both displays lay out
+  identically.  The layout is computed from the actual inner
+  width/height and the rastport font's metrics (line height and
+  character cell — no hardcoded 8px glyph math), so the window's
+  title bar, the borderless screen, and whatever an RTG driver
+  promotes the mode to all come out right.  On a PAL Workbench the
+  window opens at 0,0 — there is no room for an offset.
 - `lib/amiga/intuition.lisp` provides `open-screen` / `close-screen` /
   `with-screen` (OpenScreenTagList/CloseScreen) and
   `lib/amiga/graphics.lisp` provides `best-mode-id` and `set-rgb4`.
@@ -183,8 +195,10 @@ The Amiga front-end supports two displays, selected by
   are rectangular blits, correctness comes from back-to-front order),
   left/right flank walls (the neighbor's front wall seen through an
   open side), each with a door variant — 40 pieces.
-- Assets are **IFF ILBM** files in `data/gfx/`, one per piece, named by
-  `wall-piece-file`.  `src/ilbm.lisp` is a pure-CL ILBM reader/writer
+- Assets are **IFF ILBM** files, one per piece, named by
+  `wall-piece-file` — one pack per display profile (`data/gfx/` for
+  `:lores`, `data/gfx-hires/` for `:hires`), since the piece sizes
+  derive from the profile's viewport.  `src/ilbm.lisp` is a pure-CL ILBM reader/writer
   (ByteRun1 + uncompressed, interleaved masks skipped, unknown chunks
   skipped) — it must keep working on the host, where the tests and the
   art generator run.
@@ -200,9 +214,10 @@ The Amiga front-end supports two displays, selected by
   all planes), chunky pens via `WriteChunkyPixels` (V40+, per-pixel
   fallback on V39), composited with `BltBitMapRastPort`.  No planar
   poking, no chip-ram assumptions, no bytes-per-row math.
-- When `data/gfx/` is missing or unreadable the view **falls back to
-  the wireframe renderer** (and says so in the message log); the
-  blitted path also requires the layout's full 240x130 viewport.
+- When the active pack is missing, unreadable or sized for another
+  profile the view **falls back to the wireframe renderer** (and says
+  so in the message log); the blitted path also requires the layout's
+  full profile-viewport size.
 - `lib/amiga/graphics.lisp` carries the bindings: `alloc-bitmap` /
   `free-bitmap` / `with-bitmap`, `get-bitmap-attr`, `init-rastport` /
   `with-bitmap-rastport`, `write-chunky`, `read-pixel` / `write-pixel`,

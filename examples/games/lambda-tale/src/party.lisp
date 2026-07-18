@@ -1,7 +1,7 @@
 ;;; Lambda's Tale — heroes and the party.
 ;;;
 ;;; Hero classes are campaign data, not engine facts: the campaign
-;;; registers them with DEFINE-HERO-CLASS (see data/campaign.lisp) and
+;;; registers them with DEFINE-HERO-CLASS (see worlds/closure/campaign.lisp) and
 ;;; MAKE-HERO rolls a level-1 character of that class.  Armor class is
 ;;; Bard's Tale style descending: lower is better, unarmored is 10.
 

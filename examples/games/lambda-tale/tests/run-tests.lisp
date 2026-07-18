@@ -370,6 +370,24 @@ messages so far (oldest first)."
                              (<= (+ x w) 240) (<= (+ y h) 130))))
                     (wall-piece-names))))
 
+;; the same slots at the lores profile's 160x112 viewport
+(let ((planes (view-planes 160 112)))
+  (check "lores view-planes plane 1" '(32 22 127 89) (aref planes 1))
+  (check "lores front slot at depth 0" '(32 22 96 68)
+         (wall-piece-rect planes '(:front 0)))
+  (check "lores left side slot spans the full column" '(0 0 33 112)
+         (wall-piece-rect planes '(:side 0 :l)))
+  (check "lores left flank slot is the side band at wall height"
+         '(0 22 33 68)
+         (wall-piece-rect planes '(:flank 0 :l)))
+  (check "lores piece slots lie inside the viewport" nil
+         (remove-if (lambda (piece)
+                      (destructuring-bind (x y w h)
+                          (wall-piece-rect planes piece)
+                        (and (<= 0 x) (<= 0 y) (< 0 w) (< 0 h)
+                             (<= (+ x w) 160) (<= (+ y h) 112))))
+                    (wall-piece-names))))
+
 ;; The blit list mirrors the display-list wall logic: same map spots as
 ;; the display-list tests above.
 (let* ((m (parse-map *art* :name "test"))
@@ -399,6 +417,10 @@ messages so far (oldest first)."
   (check "ceiling backdrop slot" '(0 0 240 65) ceiling)
   (check "floor backdrop slot" '(0 65 240 65) floor))
 
+(destructuring-bind (ceiling floor) (backdrop-rects (view-planes 160 112))
+  (check "lores ceiling backdrop slot" '(0 0 160 56) ceiling)
+  (check "lores floor backdrop slot" '(0 56 160 56) floor))
+
 ;; the two slots tile any viewport exactly, split at the horizon
 (destructuring-bind (ceiling floor) (backdrop-rects (view-planes 33 17))
   (destructuring-bind (cx cy cw ch) ceiling
@@ -422,7 +444,49 @@ messages so far (oldest first)."
               (and (search "ceiling.iff" manifest)
                    (search "floor.iff" manifest)))
   (check-true "manifest states the palette contract"
-              (search "pens 4-15" manifest)))
+              (search "pens 4-31" manifest)))
+
+;;; ---------------------------------------------------------------------
+;;; Display profiles (src/profiles.lisp): the per-target bundles of
+;;; screen geometry, viewport, tile pack and layout tuning.
+
+(check "find-display-profile resolves :lores" *lores-profile*
+       (find-display-profile :lores))
+(check "find-display-profile resolves :hires" *hires-profile*
+       (find-display-profile :hires))
+(check "find-display-profile passes a profile through" *lores-profile*
+       (find-display-profile *lores-profile*))
+(check-true "find-display-profile rejects an unknown name"
+            (handler-case (progn (find-display-profile :vga) nil)
+              (error () t)))
+
+(check "the default profile's pack is the default gfx-dir"
+       (display-profile-gfx-dir *display-profile*) *gfx-dir*)
+(check "the default profile's viewport is the default viewport"
+       (list (display-profile-fp-width *display-profile*)
+             (display-profile-fp-height *display-profile*))
+       (list *fp-view-width* *fp-view-height*))
+
+(let ((outer-w *fp-view-width*)
+      (outer-dir *gfx-dir*))
+  (with-display-profile (:hires)
+    (check "with-display-profile binds the profile" :hires
+           (display-profile-name *display-profile*))
+    (check "with-display-profile binds the viewport" '(240 130)
+           (list *fp-view-width* *fp-view-height*))
+    (check "with-display-profile binds the pack dir"
+           (display-profile-gfx-dir *hires-profile*) *gfx-dir*))
+  (check "with-display-profile restores the viewport"
+         outer-w *fp-view-width*)
+  (check "with-display-profile restores the pack dir"
+         outer-dir *gfx-dir*))
+
+(with-display-profile (:hires)
+  (let ((manifest (with-output-to-string (s) (print-tile-manifest s))))
+    (check-true "hires manifest names its viewport"
+                (search "240x130 viewport" manifest))
+    (check-true "hires manifest states the 16-color palette contract"
+                (search "pens 4-15" manifest))))
 
 ;;; ---------------------------------------------------------------------
 ;;; Cookie-cut mask bytes (the Amiga transparent-blit source): a 1 bit
@@ -550,7 +614,7 @@ messages so far (oldest first)."
 ;;; ---------------------------------------------------------------------
 ;;; Sample map loads
 
-(let ((m (load-map-file "data/cellar.map")))
+(let ((m (load-map-file "worlds/closure/cellar.map")))
   (check "cellar width" 6 (dungeon-map-width m))
   (check "cellar height" 5 (dungeon-map-height m))
   (check "cellar stairs down" #\> (cell-feature m 3 2))
@@ -1205,7 +1269,7 @@ messages so far (oldest first)."
 (delete-file "tests/tmp.map")
 
 ;; The shipped cellar map carries its story layer.
-(let ((m (load-map-file "data/cellar.map")))
+(let ((m (load-map-file "worlds/closure/cellar.map")))
   (check "cellar is a dungeon zone" :dungeon (dungeon-map-kind m))
   (check-true "cellar start special" (cell-special m 0 0))
   (check-true "cellar stairs-down special" (cell-special m 3 2))
@@ -1214,7 +1278,7 @@ messages so far (oldest first)."
                        (cell-special m 5 4))))
 
 ;; The shipped town: a city zone whose buildings and gates are data.
-(let ((m (load-map-file "data/town.map")))
+(let ((m (load-map-file "worlds/closure/town.map")))
   (check "town is a city zone" :city (dungeon-map-kind m))
   (check "town title" "Closure" (map-title m))
   (check-true "town shoppe location"
@@ -1222,7 +1286,29 @@ messages so far (oldest first)."
                        (cell-special m 2 1)))
   (check-true "town tavern leads to the cellar"
               (find-if (lambda (op) (string-equal (first op) "TRAVEL"))
-                       (cell-special m 6 1))))
+                       (cell-special m 6 1)))
+  (check "town declares the city tile pack" "gfx-city-demo/"
+         (dungeon-map-gfx m)))
+
+;; Zone tile packs: (zone :gfx DIR) names the zone's pack, and
+;; ZONE-GFX-DIR resolves it in two steps — relative to the map file's
+;; directory when the pack lives there (self-contained world), else
+;; relative to the game directory (a shipped pack).
+(check-error "zone :gfx must be a directory string"
+  (%apply-map-form (parse-map *art*) '(zone :gfx 42) "x.map"))
+(let* ((m (parse-map *art* :name "data/x.map"))
+       (g (new-game m)))
+  (%apply-map-form m '(zone :gfx "gfx/") "data/x.map")
+  (check "zone :gfx parses" "gfx/" (dungeon-map-gfx m))
+  (check "zone pack resolves map-relative when it lives there"
+         "data/gfx/" (zone-gfx-dir g)))
+(let* ((m (parse-map *art* :name "worlds/closure/x.map"))
+       (g (new-game m)))
+  (%apply-map-form m '(zone :gfx "gfx-city-demo/") "x.map")
+  (check "zone pack falls back to the game directory"
+         "gfx-city-demo/" (zone-gfx-dir g)))
+(check "a zone without :gfx has no pack" nil
+       (zone-gfx-dir (new-game (parse-map *art*))))
 
 ;; A world is a directory: the campaign.lisp NEXT TO the map file is
 ;; the one that loads — a designer's own world brings its own classes,
@@ -1243,10 +1329,12 @@ messages so far (oldest first)."
 ;; and back up — the demo campaign's whole overworld loop on real data.
 ;; The shoppe's stock names campaign items, so the campaign loads first
 ;; (exactly what PLAY/PLAY-AMIGA do).
-(load-campaign "data/town.map")
-(let* ((m (load-map-file "data/town.map"))
+(load-campaign "worlds/closure/town.map")
+(let* ((m (load-map-file "worlds/closure/town.map"))
        (g (new-game m)))
   (trigger-special g)
+  (check "the town's zone pack is the shipped city pack" "gfx-city-demo/"
+         (zone-gfx-dir g))
   ;; to the shoppe: N, around the well block, through the door
   (move-party g)                          ; (4,4)
   (turn-left g)
@@ -1265,6 +1353,8 @@ messages so far (oldest first)."
   (check "tavern trapdoor drops into the cellar" :door (move-party g))
   (check "tavern travel landed in the cellar" "the cellar"
          (map-title (game-map g)))
+  (check "the cellar zone has no pack (profile default)" nil
+         (zone-gfx-dir g))
   (check "cellar arrival at its start" '(0 0)
          (list (game-x g) (game-y g)))
   ;; the ladder back up: teleport to the cellar's < cell and step on it
@@ -1338,8 +1428,8 @@ messages so far (oldest first)."
 ;;; form, linked by TRAVEL specials.
 
 ;; Relative map paths resolve against the current map's directory.
-(check "resolve sibling path" "data/town.map"
-       (%resolve-map-path "data/cellar.map" "town.map"))
+(check "resolve sibling path" "worlds/closure/town.map"
+       (%resolve-map-path "worlds/closure/cellar.map" "town.map"))
 (check "resolve flat path" "town.map"
        (%resolve-map-path "cellar.map" "town.map"))
 (check "resolve amiga volume base" "dh0:games/b.map"
@@ -1802,56 +1892,67 @@ messages so far (oldest first)."
 (delete-file "tests/tmp-img.iff")
 
 ;;; ---------------------------------------------------------------------
-;;; Wall-art assets (M3): the checked-in data/gfx ILBMs must match what
-;;; the generator draws today — pixel for pixel — so art and code can
-;;; never drift apart.  (Regenerate with `make assets` after changing
-;;; tools/gen-walls.lisp.)
+;;; Wall-art assets (M3): the checked-in tile packs — one per display
+;;; profile — must match what the generator draws today, pixel for
+;;; pixel, so art and code can never drift apart.  (Regenerate with
+;;; `make assets` after changing tools/gen-walls.lisp.)
 
 (load "tools/gen-walls.lisp")
 
 (check "wall-piece-file name" "side-door-2-l.iff"
        (wall-piece-file '(:side-door 2 :l)))
 
-(let ((planes (view-planes *fp-view-width* *fp-view-height*))
-      (stale '()))
-  (dolist (piece (wall-piece-names))
-    (let ((file (concatenate 'string "data/gfx/" (wall-piece-file piece))))
-      (if (not (probe-file file))
-          (push (list piece :missing) stale)
-          (let ((disk (read-ilbm file))
-                (drawn (draw-wall-piece piece planes)))
-            (destructuring-bind (x y w h) (wall-piece-rect planes piece)
-              (declare (ignore x y))
-              (unless (and (= (image-width disk) w)
-                           (= (image-height disk) h))
-                (push (list piece :wrong-size) stale)))
-            (unless (equalp (image-pixels disk) (image-pixels drawn))
-              (push (list piece :differs) stale))))))
-  (check "all 40 data/gfx assets exist and match the generator" nil stale)
-  ;; the demo ceiling/floor backdrops are pinned the same way
-  (let ((stale '()))
-    (loop for key in '(:ceiling :floor)
-          for name in '("ceiling.iff" "floor.iff")
-          for rect in (backdrop-rects planes)
-          do (let ((file (concatenate 'string "data/gfx/" name)))
-               (if (not (probe-file file))
-                   (push (list key :missing) stale)
-                   (let ((disk (read-ilbm file))
-                         (drawn (draw-backdrop-piece key planes)))
-                     (unless (and (= (image-width disk) (third rect))
-                                  (= (image-height disk) (fourth rect)))
-                       (push (list key :wrong-size) stale))
-                     (unless (equalp (image-pixels disk)
-                                     (image-pixels drawn))
-                       (push (list key :differs) stale))))))
-    (check "the backdrop assets exist and match the generator" nil stale))
-  ;; the reader restores the dungeon palette from the CMAP
-  (check "asset palette carries the dungeon colors"
-         (coerce *wall-palette* 'list)
-         (coerce (image-palette
-                  (read-ilbm (concatenate 'string "data/gfx/"
-                                          (wall-piece-file '(:front 0)))))
-                 'list)))
+;; one checked-in pack per display profile, each pinned to the
+;; generator at that profile's viewport
+(dolist (profile *display-profiles*)
+  (with-display-profile (profile)
+    (let ((planes (view-planes *fp-view-width* *fp-view-height*))
+          (dir *gfx-dir*)
+          (stale '()))
+      (dolist (piece (wall-piece-names))
+        (let ((file (concatenate 'string dir (wall-piece-file piece))))
+          (if (not (probe-file file))
+              (push (list piece :missing) stale)
+              (let ((disk (read-ilbm file))
+                    (drawn (draw-wall-piece piece planes)))
+                (destructuring-bind (x y w h) (wall-piece-rect planes piece)
+                  (declare (ignore x y))
+                  (unless (and (= (image-width disk) w)
+                               (= (image-height disk) h))
+                    (push (list piece :wrong-size) stale)))
+                (unless (equalp (image-pixels disk) (image-pixels drawn))
+                  (push (list piece :differs) stale))))))
+      (check (format nil "all 40 ~A assets exist and match the generator"
+                     dir)
+             nil stale)
+      ;; the demo ceiling/floor backdrops are pinned the same way
+      (let ((stale '()))
+        (loop for key in '(:ceiling :floor)
+              for name in '("ceiling.iff" "floor.iff")
+              for rect in (backdrop-rects planes)
+              do (let ((file (concatenate 'string dir name)))
+                   (if (not (probe-file file))
+                       (push (list key :missing) stale)
+                       (let ((disk (read-ilbm file))
+                             (drawn (draw-backdrop-piece key planes)))
+                         (unless (and (= (image-width disk) (third rect))
+                                      (= (image-height disk)
+                                         (fourth rect)))
+                           (push (list key :wrong-size) stale))
+                         (unless (equalp (image-pixels disk)
+                                         (image-pixels drawn))
+                           (push (list key :differs) stale))))))
+        (check (format nil "the ~A backdrop assets match the generator"
+                       dir)
+               nil stale))
+      ;; the reader restores the dungeon palette from the CMAP
+      (check (format nil "~A palette carries the dungeon colors" dir)
+             (coerce *wall-palette* 'list)
+             (coerce (image-palette
+                      (read-ilbm (concatenate 'string dir
+                                              (wall-piece-file
+                                               '(:front 0)))))
+                     'list)))))
 
 ;; Transparency contract: receding side pieces keep pen-0 corners so the
 ;; backdrop shows through the cookie-cut blit; front/flank pieces fill
@@ -1891,13 +1992,14 @@ messages so far (oldest first)."
          (amiga.intuition:with-window
              (win :title "Lambda's Tale Test"
                   :left 0 :top 0
-                  :width *amiga-win-width* :height *amiga-win-height*
+                  :width (display-profile-win-width *display-profile*)
+                  :height (display-profile-win-height *display-profile*)
                   :idcmp amiga.intuition:+idcmp-closewindow+)
            (let* ((rp (amiga.intuition:window-rastport win))
                   (l (%amiga-layout win rp)))
              (%amiga-draw-fp rp g (ui-layout-bx l) (ui-layout-by l)
                              (ui-layout-fp-w l) (ui-layout-fp-h l))
-             (%amiga-draw-effects rp g l)
+             (%amiga-draw-band rp g l)
              (%amiga-draw-log rp log l)
              (%amiga-status rp g l "Smoke test")
              ;; the full map mode over the same window
@@ -1917,11 +2019,12 @@ messages so far (oldest first)."
          (amiga.intuition:with-window
              (win :title "Lambda's Tale Test"
                   :left 0 :top 0
-                  :width *amiga-win-width* :height *amiga-win-height*
+                  :width (display-profile-win-width *display-profile*)
+                  :height (display-profile-win-height *display-profile*)
                   :idcmp amiga.intuition:+idcmp-closewindow+)
            (let* ((rp (amiga.intuition:window-rastport win))
                   (l (%amiga-layout win rp)))
-             (%amiga-draw-effects rp g l)
+             (%amiga-draw-band rp g l)
              (%amiga-draw-log rp log l)
              (%amiga-draw-map-page rp g l nil)
              t))))
@@ -1941,7 +2044,8 @@ messages so far (oldest first)."
              (amiga.intuition:with-window
                  (win :title "Lambda's Tale Test"
                       :left 0 :top 0
-                      :width *amiga-win-width* :height *amiga-win-height*
+                      :width (display-profile-win-width *display-profile*)
+                  :height (display-profile-win-height *display-profile*)
                       :idcmp amiga.intuition:+idcmp-closewindow+)
                (amiga.gadtools:with-menus (menu *menu-entries* vi win)
                  (let* ((rp (amiga.intuition:window-rastport win))
@@ -1963,7 +2067,8 @@ messages so far (oldest first)."
          (amiga.intuition:with-window
              (win :title "Lambda's Tale Test"
                   :left 0 :top 0
-                  :width *amiga-win-width* :height *amiga-win-height*
+                  :width (display-profile-win-width *display-profile*)
+                  :height (display-profile-win-height *display-profile*)
                   :idcmp amiga.intuition:+idcmp-closewindow+)
            (let* ((rp (amiga.intuition:window-rastport win))
                   (l (%amiga-layout win rp)))
@@ -1986,16 +2091,20 @@ messages so far (oldest first)."
   (say g "Custom screen smoke test.")
   (check "amiga-ui draws on an own custom screen" t
          (amiga.intuition:with-screen
-             (scr :width *amiga-screen-width*
-                  :height *amiga-screen-height*
-                  :depth *amiga-screen-depth*
+             (scr :width (display-profile-screen-width *display-profile*)
+                  :height (display-profile-screen-height *display-profile*)
+                  :depth (display-profile-screen-depth *display-profile*)
                   :title "Lambda's Tale Test"
                   :mode-id (amiga.gfx:best-mode-id
-                            :width *amiga-screen-width*
-                            :height *amiga-screen-height*
-                            :depth *amiga-screen-depth*))
+                            :width (display-profile-screen-width
+                                    *display-profile*)
+                            :height (display-profile-screen-height
+                                     *display-profile*)
+                            :depth (display-profile-screen-depth
+                                    *display-profile*)))
            (%game-screen-palette scr)
-           (check "custom screen reports its width" *amiga-screen-width*
+           (check "custom screen reports its width"
+                  (display-profile-screen-width *display-profile*)
                   (amiga.intuition:screen-width scr))
            (amiga.intuition:with-window
                (win :title "Lambda's Tale Test"
@@ -2011,88 +2120,111 @@ messages so far (oldest first)."
                     (l (%amiga-layout win rp)))
                (%amiga-draw-fp rp g (ui-layout-bx l) (ui-layout-by l)
                                (ui-layout-fp-w l) (ui-layout-fp-h l))
-               (%amiga-draw-effects rp g l)
+               (%amiga-draw-band rp g l)
                (%amiga-draw-log rp log l)
                (%amiga-status rp g l "Screen smoke test")
                (%amiga-party rp g l)
                t)))))
 
-;; Wall-piece assets (M3): the data/gfx ILBMs load into offscreen
-;; bitmaps and the first-person view composits them with real OS blits.
-;; Runs on the game's own custom screen — the nominal PAL 640x256
-;; geometry guarantees the layout keeps the full 240x130 asset-size
-;; viewport (the FS-UAE Workbench can be shorter than 256 lines, where
-;; the view correctly falls back to the wireframe).
+;; Wall-piece assets (M3): each profile's pack ILBMs load into
+;; offscreen bitmaps and the first-person view composits them with
+;; real OS blits.  Runs on the game's own custom screen — the
+;; profile's nominal PAL geometry guarantees the layout keeps the full
+;; asset-size viewport (the FS-UAE Workbench can be shorter than 256
+;; lines, where the view correctly falls back to the wireframe).
+;; Read-back probes, dead end at (0,0) facing north: the front wall
+;; piece's top row is the white edge highlight; above it the ceiling
+;; backdrop shows a speckle ((7x+13y) mod 41 = 0 -> grey); below it
+;; the floor backdrop shows flagstone fill between the joints.
 #+amigaos
-(let* ((m (parse-map *art* :name "test"))
-       (g (new-game m)))
-  (%with-game-font
-   (lambda (font)
-     (amiga.intuition:with-screen
-         (scr :width *amiga-screen-width*
-              :height *amiga-screen-height*
-              :depth *amiga-screen-depth*
-              :title "Walls Test"
-              :mode-id (amiga.gfx:best-mode-id
-                        :width *amiga-screen-width*
-                        :height *amiga-screen-height*
-                        :depth *amiga-screen-depth*))
-       (%game-screen-palette scr)
-       ;; untitled: a backdrop window with a WA_Title still gets a
-       ;; title bar, which would push the layout below the asset size
-       (amiga.intuition:with-window
-           (win :title nil :left 0 :top 0
-                :width (amiga.intuition:screen-width scr)
-                :height (amiga.intuition:screen-height scr)
-                :screen scr
-                :flags (logior amiga.intuition:+wflg-borderless+
-                               amiga.intuition:+wflg-backdrop+
-                               amiga.intuition:+wflg-activate+)
-                :idcmp amiga.intuition:+idcmp-closewindow+)
-         (check "borderless untitled backdrop window has no top border" 0
-                (amiga.intuition:window-border-top win))
-         (let* ((rp (%game-rastport win font))
-                (l (%amiga-layout win rp)))
-          (multiple-value-bind (walls pack-palette)
-              (%load-wall-assets rp nil)
-           (check "game font gives the designed line height" 10
-                  (ui-layout-lh l))
-           (check-true "wall assets load into bitmaps" walls)
-           (when walls
-             (check "every pack piece got a bitmap (walls + backdrops)"
-                    (+ 2 (length (wall-piece-names)))
-                    (hash-table-count walls))
-             (check-true "the pack palette is the demo CMAP"
-                         (equalp pack-palette *wall-palette*))
-             ;; transparency wiring: receding side pieces carry a
-             ;; cookie-cut mask; opaque front pieces and backdrops don't
-             (check-true "a side piece got a cookie-cut mask"
-                         (cdr (gethash '(:side 0 :l) walls)))
-             (check-true "a front piece is an opaque blit (no mask)"
-                         (not (cdr (gethash '(:front 0) walls))))
-             (check-true "the ceiling backdrop is opaque (no mask)"
-                         (not (cdr (gethash '(:ceiling) walls))))
-             (check-true "custom screen leaves the full asset-size viewport"
-                         (= (ui-layout-fp-h l) *fp-view-height*))
-             (%amiga-draw-fp rp g (ui-layout-bx l) (ui-layout-by l)
-                             (ui-layout-fp-w l) (ui-layout-fp-h l) walls)
-             ;; dead end at (0,0) facing north: the front wall piece
-             ;; lands on the plane-1 rect; its top edge row is the
-             ;; white highlight
-             (check "blitted front wall edge pixel" 1
-                    (amiga.gfx:read-pixel rp (+ (ui-layout-bx l) 100)
-                                          (+ (ui-layout-by l) 26)))
-             ;; above the front wall the ceiling backdrop shows: (100,25)
-             ;; is a speckle pixel ((7x+13y) mod 41 = 0 -> grey)
-             (check "blitted ceiling speckle pixel" 2
-                    (amiga.gfx:read-pixel rp (+ (ui-layout-bx l) 100)
-                                          (+ (ui-layout-by l) 25)))
-             ;; below the front wall the floor backdrop shows: (90,110)
-             ;; is flagstone fill (local floor row 45, between joints)
-             (check "blitted floor stone pixel" 2
-                    (amiga.gfx:read-pixel rp (+ (ui-layout-bx l) 90)
-                                          (+ (ui-layout-by l) 110))))
-           (%free-wall-assets walls))))))))
+(dolist (spec '((:lores (80 22) (43 21) (70 96))
+                (:hires (100 26) (100 25) (90 110))))
+ (destructuring-bind (pname front-xy ceiling-xy floor-xy) spec
+  (with-display-profile (pname)
+   (let* ((m (parse-map *art* :name "test"))
+          (g (new-game m)))
+    (%with-game-font
+     (lambda (font)
+      (amiga.intuition:with-screen
+          (scr :width (display-profile-screen-width *display-profile*)
+               :height (display-profile-screen-height *display-profile*)
+               :depth (display-profile-screen-depth *display-profile*)
+               :title "Walls Test"
+               :mode-id (amiga.gfx:best-mode-id
+                         :width (display-profile-screen-width
+                                 *display-profile*)
+                         :height (display-profile-screen-height
+                                  *display-profile*)
+                         :depth (display-profile-screen-depth
+                                 *display-profile*)))
+        (%game-screen-palette scr)
+        ;; untitled: a backdrop window with a WA_Title still gets a
+        ;; title bar, which would push the layout below the asset size
+        (amiga.intuition:with-window
+            (win :title nil :left 0 :top 0
+                 :width (amiga.intuition:screen-width scr)
+                 :height (amiga.intuition:screen-height scr)
+                 :screen scr
+                 :flags (logior amiga.intuition:+wflg-borderless+
+                                amiga.intuition:+wflg-backdrop+
+                                amiga.intuition:+wflg-activate+)
+                 :idcmp amiga.intuition:+idcmp-closewindow+)
+          (check (format nil "~A: backdrop window has no top border" pname)
+                 0 (amiga.intuition:window-border-top win))
+          (let* ((rp (%game-rastport win font))
+                 (l (%amiga-layout win rp)))
+           (multiple-value-bind (walls pack-palette)
+               (%load-wall-assets rp nil)
+            (check (format nil "~A: game font gives the designed ~
+line height" pname)
+                   10 (ui-layout-lh l))
+            (check-true (format nil "~A: wall assets load into bitmaps"
+                                pname)
+                        walls)
+            (when walls
+              (check (format nil "~A: every pack piece got a bitmap ~
+(walls + backdrops)" pname)
+                     (+ 2 (length (wall-piece-names)))
+                     (hash-table-count walls))
+              (check-true (format nil "~A: the pack palette is the ~
+demo CMAP" pname)
+                          (equalp pack-palette *wall-palette*))
+              ;; transparency wiring: receding side pieces carry a
+              ;; cookie-cut mask; opaque front pieces and backdrops don't
+              (check-true (format nil "~A: a side piece got a ~
+cookie-cut mask" pname)
+                          (cdr (gethash '(:side 0 :l) walls)))
+              (check-true (format nil "~A: a front piece is an opaque ~
+blit (no mask)" pname)
+                          (not (cdr (gethash '(:front 0) walls))))
+              (check-true (format nil "~A: the ceiling backdrop is ~
+opaque (no mask)" pname)
+                          (not (cdr (gethash '(:ceiling) walls))))
+              (check-true (format nil "~A: custom screen leaves the ~
+full asset-size viewport" pname)
+                          (= (ui-layout-fp-h l) *fp-view-height*))
+              (%amiga-draw-fp rp g (ui-layout-bx l) (ui-layout-by l)
+                              (ui-layout-fp-w l) (ui-layout-fp-h l)
+                              walls)
+              (destructuring-bind (fx fy) front-xy
+                (check (format nil "~A: blitted front wall edge pixel"
+                               pname)
+                       1
+                       (amiga.gfx:read-pixel rp (+ (ui-layout-bx l) fx)
+                                             (+ (ui-layout-by l) fy))))
+              (destructuring-bind (cx cy) ceiling-xy
+                (check (format nil "~A: blitted ceiling speckle pixel"
+                               pname)
+                       2
+                       (amiga.gfx:read-pixel rp (+ (ui-layout-bx l) cx)
+                                             (+ (ui-layout-by l) cy))))
+              (destructuring-bind (sx sy) floor-xy
+                (check (format nil "~A: blitted floor stone pixel"
+                               pname)
+                       2
+                       (amiga.gfx:read-pixel rp (+ (ui-layout-bx l) sx)
+                                             (+ (ui-layout-by l) sy)))))
+            (%free-wall-assets walls)))))))))))
 
 ;; *autoplay* drives a full unattended PLAY-AMIGA session: scripted keys
 ;; are fed one per INTUITICK (~10/s), ending in #\q so the event loop
@@ -2109,30 +2241,44 @@ messages so far (oldest first)."
                                #\m #\f #\f #\m #\s #\q)))
          ;; :window is the development view — :screen (the default)
          ;; gets its own autoplay below
-         (play-amiga "data/cellar.map" :display :window)
+         (play-amiga "worlds/closure/cellar.map" :display :window)
          :done))
 
 ;; The town: an unattended session walks from the gate to Wolfgar's
 ;; shoppe (a LOCATION special), shops for real through the event loop —
 ;; pick a hero (1), buy a torch (1), flip to the sell page (s), sell it
-;; again (1), back out (Esc Esc) — steps back into the street and quits.
+;; again (1), back out (Esc Esc) — steps back into the street, walks
+;; east to the tavern and drops through the trapdoor into the cellar:
+;; the town's (ZONE :GFX ...) city pack swaps for the cellar's default
+;; pack on the way (the wall-bitmap reload path), then quits.
 #+amigaos
-(check "amiga-ui autoplay shops in the town" :done
+(check "amiga-ui autoplay shops in the town and drops to the cellar"
+       :done
        (let ((*autoplay* (list #\w #\a #\w #\w #\d #\w #\w #\w
                                #\1 #\1 #\s #\1 :esc :esc
-                               #\s #\q)))
-         (play-amiga "data/town.map" :display :window)
+                               #\s #\d #\w #\w #\w #\w #\a #\w #\q)))
+         (play-amiga "worlds/closure/town.map" :display :window)
          :done))
 
 ;; The same unattended session on an own custom screen (:display :screen)
 ;; — the whole open-screen/backdrop-window/menus/event-loop path, with
-;; the tile pack named explicitly (:gfx-dir): the depth-4 screen, the
-;; pack palette and the ceiling/floor backdrop all draw for real.
+;; the tile pack named explicitly (:gfx-dir): the lores depth-5 screen,
+;; the pack palette and the ceiling/floor backdrop all draw for real.
 #+amigaos
 (check "amiga-ui autoplay on an own custom screen" :done
        (let ((*autoplay* (list #\w #\d #\m #\m #\q)))
-         (play-amiga "data/cellar.map" :display :screen
+         (play-amiga "worlds/closure/cellar.map" :display :screen
                                        :gfx-dir "data/gfx/")
+         :done))
+
+;; The hires profile end to end: its 640x256 depth-4 screen, the
+;; 240x130 viewport and the data/gfx-hires pack, through the same
+;; scripted event loop.
+#+amigaos
+(check "amiga-ui autoplay on the hires profile" :done
+       (let ((*autoplay* (list #\w #\d #\m #\m #\q)))
+         (play-amiga "worlds/closure/cellar.map" :display :screen
+                                       :profile :hires)
          :done))
 
 ;;; ---------------------------------------------------------------------

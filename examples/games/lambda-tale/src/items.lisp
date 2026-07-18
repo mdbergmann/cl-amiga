@@ -1,7 +1,7 @@
 ;;; Lambda's Tale — items, inventory and equipment.
 ;;;
 ;;; Item types are campaign data, not engine facts: the campaign
-;;; registers them with DEFINE-ITEM (see data/campaign.lisp) and maps
+;;; registers them with DEFINE-ITEM (see worlds/closure/campaign.lisp) and maps
 ;;; refer to them by name in shop stock lists.  The engine only knows
 ;;; the mechanics: a hero carries up to +INVENTORY-LIMIT+ items and can
 ;;; equip one weapon, one armor and one shield at a time.  Armor class

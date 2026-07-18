@@ -229,19 +229,22 @@ PLANES."
                                          :door (eq kind :side-door))))
                (if (eq side :r) (%img-mirror-x img) img)))))))))
 
-(defun generate-wall-assets (&key (dir "data/gfx/"))
-  "Draw all wall pieces plus the demo ceiling/floor backdrops and
-write them as ILBM files into DIR.  Returns the number of files
-written."
-  (let ((planes (view-planes *fp-view-width* *fp-view-height*))
-        (n 0))
-    (ensure-directories-exist dir)
-    (dolist (piece (wall-piece-names))
-      (write-ilbm (draw-wall-piece piece planes)
-                  (concatenate 'string dir (wall-piece-file piece)))
-      (incf n))
-    (dolist (key '(:ceiling :floor) n)
-      (write-ilbm (draw-backdrop-piece key planes)
-                  (concatenate 'string dir
-                               (string-downcase (symbol-name key)) ".iff"))
-      (incf n))))
+(defun generate-wall-assets (&key (profile *display-profile*) dir)
+  "Draw all wall pieces plus the demo ceiling/floor backdrops for
+PROFILE's viewport and write them as ILBM files into DIR (default: the
+profile's tile-pack directory).  Returns the number of files written."
+  (with-display-profile (profile)
+    (let ((dir (or dir *gfx-dir*))
+          (planes (view-planes *fp-view-width* *fp-view-height*))
+          (n 0))
+      (ensure-directories-exist dir)
+      (dolist (piece (wall-piece-names))
+        (write-ilbm (draw-wall-piece piece planes)
+                    (concatenate 'string dir (wall-piece-file piece)))
+        (incf n))
+      (dolist (key '(:ceiling :floor) n)
+        (write-ilbm (draw-backdrop-piece key planes)
+                    (concatenate 'string dir
+                                 (string-downcase (symbol-name key))
+                                 ".iff"))
+        (incf n)))))

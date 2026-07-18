@@ -12,7 +12,7 @@ directory:
 
 ```
 make test    # run the test suite
-make run     # play the demo campaign (starts in the town, data/town.map)
+make run     # play the demo campaign (starts in the town, worlds/closure/town.map)
 ```
 
 Walkabout keys: `w` forward, `s` back-step (keeps facing), `a`/`d` turn,
@@ -25,23 +25,31 @@ buy or sell, `s`/`b` flip between the buy and sell pages, `Esc`
 back/leave.
 
 The screen is split Bard's Tale style (see
-[specs/ui-and-engine.md](specs/ui-and-engine.md)): the wireframe
-first-person view on the left, the active-spells strip next to it
-(shield, lamp, ... — fed by `add-effect`/`remove-effect`) with a
-compass rose at its foot showing the party's facing, the message
-log filling the right column — newest line at the bottom, older lines
+[specs/ui-and-engine.md](specs/ui-and-engine.md)): the first-person
+view with the location plaque under it on the left, the message log
+filling the right column — newest line at the bottom, older lines
 scrolling up; each message starts with `>` and long ones word-wrap
-onto indented continuation lines — and the status line plus the
-numbered party roster (up to 7 rows, each row's number opening its
-character sheet) at the bottom.  The automap lives under `m`; levels can be
-large (30x30 like Bard's Tale I, up to 128x128).  On the Amiga the
-window uses the same PAL 640x256 geometry as the custom screen, so
-both displays lay out identically.
+onto indented continuation lines — with the active effects (shield,
+lamp, ... — fed by `add-effect`/`remove-effect`) and a compass rose
+showing the party's facing in a band at the log's foot, and the
+status line plus the numbered party roster (up to 7 rows, each row's
+number opening its character sheet) at the bottom.  The automap lives
+under `m`; levels can be large (30x30 like Bard's Tale I, up to
+128x128).  On the Amiga the window uses the same geometry as the
+custom screen, so both displays lay out identically.
 
 On AmigaOS (the repo is mounted as `CLAmiga:` in the FS-UAE setup),
-the game opens its **own screen** — nominal PAL 640x256 hires,
-16 colors, picked RTG-aware through `graphics.library/BestModeIDA`
-(so Picasso96/CyberGraphX/MorphOS promote it to a suitable RTG mode),
+the game opens its **own screen** whose geometry comes from a
+**display profile** (`play-amiga`'s `:profile` argument):
+
+- **`:lores`** (the default) — 320x256 PAL lores, **32 colors**, the
+  ECS target: half the chip-RAM/DMA cost of hires and near-square
+  pixels for the art.
+- **`:hires`** — 640x256 PAL hires, 16 colors, the classic
+  presentation with the larger 240x130 viewport.
+
+Both are picked RTG-aware through `graphics.library/BestModeIDA` (so
+Picasso96/CyberGraphX/MorphOS promote them to a suitable RTG mode),
 with the tile pack's palette and a borderless backdrop window;
 Save/Load/Quit sit in the menu strip (right mouse button, GadTools
 menus with the usual right-Amiga shortcuts):
@@ -61,20 +69,23 @@ stack 128000
 CLAmiga:build/amiga/clamiga --heap 8M --non-interactive --load tests/run-tests.lisp
 ```
 
-On AmigaOS the suite additionally runs GUI smoke tests and two
-unattended `*autoplay*` sessions (window and `:display :screen`).
+On AmigaOS the suite additionally runs GUI smoke tests (both display
+profiles) and four unattended `*autoplay*` sessions (window, town
+shopping, `:display :screen`, and the `:hires` profile).
 
 For development there is also a window view on the Workbench screen
 (no custom palette — the window keeps the Workbench colors):
 
 ```lisp
-(tale:play-amiga "data/town.map" :display :window)
+(tale:play-amiga "worlds/closure/town.map" :display :window)
 ```
 
 ## Layout
 
 ```
 src/package.lisp     package TALE
+src/profiles.lisp    display profiles (:lores / :hires — screen geometry,
+                     viewport, tile pack, layout tuning per target)
 src/dice.lisp        dice notation ("2d6+1") and the scriptable *RNG*
 src/ilbm.lisp        IFF ILBM image reader/writer (pure CL, ByteRun1)
 src/map.lisp         dungeon map model + ASCII map parser + story layer
@@ -95,10 +106,12 @@ src/host-ui.lisp     host front-end (interactive ASCII walkabout, PLAY)
 src/amiga-ui.lisp    AmigaOS front-end (Intuition window, graphics.library)
 src/main.lisp        host walkabout entry point
 src/main-amiga.lisp  Amiga walkabout entry point
-data/*.map           maps as ASCII art + story forms
-data/campaign.lisp   demo campaign: hero classes, monsters, starting party
-data/gfx/*.iff       the demo tile pack: wall pieces + floor/ceiling
-                     ILBM assets (regenerate: make assets)
+worlds/closure/      the demo world: town.map + cellar.map (ASCII art
+                     + story forms) and campaign.lisp (hero classes,
+                     monsters, items, starting party)
+data/gfx/*.iff       the demo tile pack for :lores (wall pieces +
+                     floor/ceiling ILBM assets; regenerate: make assets)
+data/gfx-hires/*.iff the same pack drawn for the :hires viewport
 gfx-city-demo/       example custom tile pack (night-sky city palette)
 tools/gen-walls.lisp procedural wall-art generator
 tests/run-tests.lisp test suite (make test)
@@ -119,9 +132,11 @@ graphics** (M3): every wall the view can show falls into a fixed
 Bard's Tale-style screen slot (`view-blit-list` — front walls, receding
 side walls, walls seen through open sides, each with a door variant, at
 four depths), and each slot is filled by a pre-rendered bitmap piece.
-The pieces live in `data/gfx/` as **IFF ILBM** files, loaded by the
+The pieces are **IFF ILBM** files — one pack per display profile,
+`data/gfx/` for `:lores` and `data/gfx-hires/` for `:hires` (each
+profile's viewport dictates the piece sizes) — loaded by the
 pure-Lisp reader in `src/ilbm.lisp` and drawn by the procedural
-generator in `tools/gen-walls.lisp` (`make assets` regenerates them;
+generator in `tools/gen-walls.lisp` (`make assets` regenerates both;
 the test suite compares the checked-in files pixel-for-pixel against
 the generator, so art and code cannot drift apart).
 
@@ -139,12 +154,21 @@ wireframe renderer.
 ## Custom tile packs
 
 The demo art is replaceable: a **tile pack** is a directory of IFF
-ILBM files, selected per session with `play-amiga`'s `:gfx-dir`
-argument (default `"data/gfx/"`, the demo pack):
+ILBM files.  A **zone declares its own pack** in its map file —
+`(zone :kind :city :gfx "gfx-city-demo/")` — and travel swaps packs as
+the party crosses zones (the demo town of Closure wears the city pack;
+its cellar keeps the default dungeon stone).  The directory resolves
+relative to the map file when the pack lives in the world directory,
+else relative to the game directory (a shipped pack).  `play-amiga`'s
+`:gfx-dir` argument overrides everything for the session; without
+either, the active profile's pack applies (`"data/gfx/"` for
+`:lores`).  A pack is drawn for one profile's viewport; a mis-sized
+pack is rejected at load time and the view falls back to the
+wireframe:
 
 ```lisp
-(tale:play-amiga "data/cellar.map" :display :screen
-                                   :gfx-dir "gfx/city/")
+(tale:play-amiga "worlds/closure/cellar.map" :display :screen
+                                             :gfx-dir "gfx/city/")
 ```
 
 A pack holds the 40 wall pieces plus optional extras:
@@ -156,14 +180,16 @@ A pack holds the 40 wall pieces plus optional extras:
 - `palette.iff` — any ILBM whose CMAP provides the pack's colors.
 
 `(tale:print-tile-manifest)` prints the full contract — every
-filename with its exact pixel size — so custom art can be drawn to
-spec; mis-sized pieces are rejected at load time with a message
-naming the file and both sizes.
+filename with its exact pixel size for the **active profile** (wrap it
+in `tale:with-display-profile` for another one) — so custom art can
+be drawn to spec; mis-sized pieces are rejected at load time with a
+message naming the file and both sizes.
 
-The custom screen is 16 colors: **pens 0–3 are fixed UI colors**
-(black, white, grey, amber — text and wireframe stay readable in any
-pack), **pens 4–15 belong to the pack**, taken from `palette.iff`'s
-CMAP when present, else from `front-0.iff`'s.  Pack colors need
+On the custom screen **pens 0–3 are fixed UI colors** (black, white,
+grey, amber — text and wireframe stay readable in any pack); the
+remaining pens **belong to the pack** — 4–31 on the 32-color `:lores`
+screen, 4–15 on `:hires` — taken from `palette.iff`'s CMAP when
+present, else from `front-0.iff`'s.  Pack colors need
 `:display :screen` — a window on the Workbench screen keeps the
 Workbench palette.
 
@@ -191,18 +217,20 @@ it.  The engine never hard-codes story facts.  It emits events
 with `on-event`; story state lives in flags (`set-flag`/`flag`).  A
 campaign is pure data on top of the engine: hero classes
 (`define-hero-class`), monsters (`define-monster`), items
-(`define-item`) and maps with cell specials.  `data/campaign.lisp` plus
-`data/town.map` and `data/cellar.map` form the demo.
+(`define-item`) and maps with cell specials.  `worlds/closure/campaign.lisp` plus
+`worlds/closure/town.map` and `worlds/closure/cellar.map` form the demo.
 
 ## The world: cities, dungeons, shops
 
 A world is a set of **zones** — ordinary map files linked by travel.
 Cities and dungeons are both first-class and both just maps: a
-`(zone :kind :city :title "Closure")` form in the map file says what a
-zone is, and the `(travel FILE [X Y] [FACING])` special op links zones
-together — city gates, stairs and portals are all map data.  The game
-keeps every visited zone's map and automap knowledge alive, and save
-games carry the whole world.
+`(zone :kind :city :title "Closure" :gfx "gfx-city-demo/")` form in
+the map file says what a zone is (and, optionally, which tile pack it
+wears), and the `(travel FILE [X Y] [FACING])` special op links zones
+together — city gates, stairs and portals are all map data.  A world
+can hold any number of cities and dungeons — every zone is its own
+file, and each keeps its own map and automap knowledge alive for the
+whole session; save games carry the whole world.
 
 A **location** — a shop, or any enterable building — is the
 `(location TITLE KIND ARG...)` special op on a cell.  The engine ships
@@ -226,12 +254,14 @@ you see fit:
 mygame/campaign.lisp     (define-item 'rusty-dagger :kind :weapon
                            :price 5 :damage "1d4") ...
 mygame/village.map       the art, then:
-                         (zone :kind :city :title "Frogmorton")
+                         (zone :kind :city :title "Frogmorton"
+                               :gfx "gfx/")   ; the world's own pack
                          (special (3 7)
                            (location "Bree's Bargains" :shop
                                      :stock (rusty-dagger torch)))
                          (special (9 2) (travel "warrens.map"))
 mygame/warrens.map       (zone :kind :dungeon :title "the warrens") ...
+mygame/gfx/*.iff         optional zone tile pack (see the manifest)
 ```
 
 ```lisp
@@ -240,12 +270,12 @@ mygame/warrens.map       (zone :kind :dungeon :title "the warrens") ...
 
 Everything is data read with `*read-eval*` bound to `NIL` except
 `campaign.lisp`, which is a Lisp file of `define-*` calls (the demo's
-`data/campaign.lisp` is the template).
+`worlds/closure/campaign.lisp` is the template).
 
 ## Map format
 
 Maps are ASCII art on a `(2W+1) x (2H+1)` character grid — see the header
-of `src/map.lisp` for the exact rules and `data/cellar.map` for an example:
+of `src/map.lisp` for the exact rules and `worlds/closure/cellar.map` for an example:
 
 ```
 +-+-+-+
@@ -314,8 +344,10 @@ combat and save games.
   or planar assumptions, bitmaps via `AllocBitMap`, blits through OS
   calls only; procedurally generated wall-piece assets (`make assets`)
 - **M3.5 (done)**: swappable tile packs (`:gfx-dir`,
-  `print-tile-manifest`), 16-color custom screen with per-pack
-  palettes, ceiling/floor backdrop
+  `print-tile-manifest`), custom screen with per-pack palettes,
+  ceiling/floor backdrop; display profiles (`:profile`) — 32-color
+  lo-res ECS default, 16-color hi-res alternative, each with its own
+  generated pack
 - **M4 (in progress)**: the game proper, kept simple —
   numbered party roster + character sheet (`1`–`7`, **done**);
   the world as first-class data: zones (`(zone ...)`, cities and

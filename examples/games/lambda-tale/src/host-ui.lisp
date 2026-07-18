@@ -61,7 +61,7 @@ ASCII rendering; falls back to 38x11 cells for unknown terminals."
     (map-viewport (game-map game) (game-x game) (game-y game)
                   cells-w cells-h)))
 
-(defun play (&optional (map-file "data/town.map"))
+(defun play (&optional (map-file "worlds/closure/town.map"))
   "Interactive walkabout on MAP-FILE.  Uses raw TTY keys when available,
 falls back to line input otherwise.  Loads the campaign.lisp next to
 the map file (classes, monsters, items, party) when present."

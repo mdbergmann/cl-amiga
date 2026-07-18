@@ -1,14 +1,18 @@
 ;;; Lambda's Tale — AmigaOS front-end (Intuition window or custom screen,
-;;; wireframe view).  Layout per specs/ui-and-engine.md:
+;;; wireframe view).  Layout per specs/ui-and-engine.md, the Bard's
+;;; Tale two-column split, sized by the active display profile:
 ;;;
-;;;   +--------------------+------+------------------+
-;;;   | first-person view  |spells| message log      |
-;;;   |                    |shield| (newest at the   |
-;;;   |                    |lamp  |  bottom, older   |
-;;;   +--------------------+ ...  |  scrolling up)   |
-;;;   | status line        |      |                  |
-;;;   | party roster (7 rows)                        |
-;;;   +----------------------------------------------+
+;;;   +--------------------+----------------------+
+;;;   | first-person view  | message log          |
+;;;   |                    | (newest at the       |
+;;;   |                    |  bottom, older       |
+;;;   +--------------------+  scrolling up)       |
+;;;   | location plaque    +----------------------+
+;;;   |                    | effects     | compass|
+;;;   +--------------------+----------------------+
+;;;   | status line                               |
+;;;   | party roster (7 rows)                     |
+;;;   +-------------------------------------------+
 ;;;
 ;;; The automap lives in a full-screen map mode under the 'm' key.
 ;;;
@@ -17,8 +21,8 @@
 ;;; AMIGA.GADTOOLS symbols resolve.
 ;;;
 ;;; Pens: 0 background, 1 wireframe/text, 3 doors and the party marker;
-;;; on the custom screen pens 4-15 carry the tile pack's colors (see
-;;; %APPLY-PACK-PALETTE).
+;;; on the custom screen pens 4 up to the profile's depth carry the
+;;; tile pack's colors (see %APPLY-PACK-PALETTE).
 ;;;
 ;;; Save/Load/Quit live in an Intuition menu strip (right mouse button),
 ;;; built with gadtools.library — the Amiga-native place for them.
@@ -35,23 +39,12 @@
   "Testing hook: a list of key characters fed to the game one per
 Intuition tick (~10/s), driving a full unattended session.  :ESC quits.")
 
-;;; Window mode uses the same PAL-screen geometry as :display :screen,
-;;; so the window fits (and fills) a 640x256 PAL Workbench and the two
-;;; displays lay out identically.  Opened at 0,0 — a PAL screen has no
-;;; room to spare for an offset.  The first-person viewport size lives
-;;; in view.lisp (*FP-VIEW-WIDTH* x *FP-VIEW-HEIGHT*) — the wall-piece
-;;; assets are drawn for exactly those planes.
-(defparameter *amiga-win-width* 640)
-(defparameter *amiga-win-height* 256)
-
-;;; :display :screen geometry — nominal PAL hires; BEST-MODE-ID promotes
-;;; it to a suitable RTG mode on Picasso96/CyberGraphX/MorphOS.
-(defparameter *amiga-screen-width* 640)
-(defparameter *amiga-screen-height* 256)
-(defparameter *amiga-screen-depth* 4)   ; 16 colors: pens 0-3 UI, 4-15 pack
-
-(defparameter *amiga-spells-width* 64
-  "Width of the active-spells strip between the view and the text column.")
+;;; Screen and window geometry, viewport size and tile pack all come
+;;; from the active DISPLAY-PROFILE (src/profiles.lisp) — PLAY-AMIGA's
+;;; :PROFILE argument selects one.  Window mode uses the profile's
+;;; window size at 0,0 so both displays lay out identically;
+;;; BEST-MODE-ID promotes the screen mode on Picasso96/CyberGraphX/
+;;; MorphOS RTG systems.
 
 (defconstant +game-idcmp+
   (logior amiga.intuition:+idcmp-closewindow+
@@ -69,10 +62,11 @@ Intuition tick (~10/s), driving a full unattended session.  :ESC quits.")
   bx by            ; content top-left (inside the chrome ring)
   right bottom     ; content right/bottom edges
   lh base          ; text line height / baseline (rastport font metrics)
+  cw               ; character cell width (rastport font metrics)
   fp-w fp-h        ; first-person view size
-  spells-x spells-w ; active-spells strip
   log-x log-w      ; message log column
-  col-h            ; height of the strip and the log/page column
+  col-h            ; height of the log/page column
+  band-y band-h    ; effects + compass band at the log column's foot
   plaque-y         ; location plaque top (under the view)
   status-y         ; status pane top
   hdr-y            ; party roster header row top
@@ -83,9 +77,10 @@ Intuition tick (~10/s), driving a full unattended session.  :ESC quits.")
   ;; The Bard's Tale chrome (border ring, framed view, plaque, roster
   ;; header) needs the full 256-line backdrop; a bordered Workbench
   ;; window skips the ring so the framed view still fits.
-  (let* ((ring-p (zerop (amiga.intuition:window-border-top win)))
-         (pad-x (if ring-p 12 4))
-         (pad-y (if ring-p 10 4))
+  (let* ((p *display-profile*)
+         (ring-p (zerop (amiga.intuition:window-border-top win)))
+         (pad-x (if ring-p (display-profile-pad-x p) 4))
+         (pad-y (if ring-p (display-profile-pad-y p) 4))
          (bx (+ (amiga.intuition:window-border-left win) pad-x))
          (by (+ (amiga.intuition:window-border-top win) pad-y))
          (right (- (amiga.intuition:window-width win)
@@ -94,19 +89,24 @@ Intuition tick (~10/s), driving a full unattended session.  :ESC quits.")
                     (amiga.intuition:window-border-bottom win) pad-y))
          (lh (+ (amiga.gfx:rastport-tx-height rp) 2))
          (base (amiga.gfx:rastport-tx-baseline rp))
+         (cw (max 1 (amiga.gfx:text-length rp "M")))
          (party-y (- bottom (* lh +party-limit+)))
          (hdr-y (- party-y lh))
          (status-y (- hdr-y lh 1))
          (fp-h (min *fp-view-height* (- status-y 1 (+ lh 3) by)))
          (plaque-y (+ by fp-h 1))
-         (spells-x (+ bx *fp-view-width* 12))
-         (log-x (+ spells-x *amiga-spells-width* 12)))
+         (col-h (- (+ plaque-y lh 1) by))
+         (log-x (+ bx *fp-view-width* (display-profile-view-gap p)))
+         ;; the band sits at the foot of the log column, its bottom
+         ;; flush with the page interior (one above the page outline)
+         (band-h (min (display-profile-band-height p) (- col-h 2)))
+         (band-y (- (+ by col-h -1) band-h)))
     (%make-ui-layout :bx bx :by by :right right :bottom bottom
-                     :lh lh :base base
+                     :lh lh :base base :cw cw
                      :fp-w *fp-view-width* :fp-h fp-h
-                     :spells-x spells-x :spells-w *amiga-spells-width*
                      :log-x log-x :log-w (- right log-x)
-                     :col-h (- (+ plaque-y lh 1) by)
+                     :col-h col-h
+                     :band-y band-y :band-h band-h
                      :plaque-y plaque-y
                      :status-y status-y :hdr-y hdr-y :party-y party-y
                      :ring-p ring-p)))
@@ -173,7 +173,7 @@ plaque under it, and the white message page shell."
     (amiga.gfx:set-a-pen rp 1)
     (%chrome-rect rp (1- bx) (1+ (+ by h)) (+ bx w) pb)
     (let* ((name (string-capitalize (map-title (game-map game))))
-           (tw (* 8 (length name))))
+           (tw (amiga.gfx:text-length rp name)))
       (amiga.gfx:move-to rp (+ bx (max 0 (floor (- w tw) 2)))
                          (+ py (ui-layout-base l)))
       (amiga.gfx:gfx-text rp name))
@@ -340,12 +340,12 @@ PRINT-TILE-MANIFEST)"
 wireframe view." e)))
           (values nil nil))))))
 
-;;; The layout is designed around topaz 8 (10px line height): the fixed
-;;; pixel columns in the party pane, the glyph budgets in the strips
-;;; and the full 240x130 asset viewport all assume it.  RTG Workbenches
-;;; often default to a bigger system font, which would blow the layout
-;;; up and shrink the viewport below the wall assets' size — so the
-;;; game selects topaz 8 (a ROM font) on its rastport explicitly.
+;;; The layout reads its text metrics (line height, character cell)
+;;; from the rastport font, but the profiles' region budgets are tuned
+;;; for topaz 8 (10px lines, 8px cells).  RTG Workbenches often default
+;;; to a bigger system font, which would shrink the viewport below the
+;;; wall assets' size — so the game selects topaz 8 (a ROM font) on its
+;;; rastport explicitly.
 
 (defun %with-game-font (fn)
   "Call FN with the topaz 8 TextFont (NIL when unavailable — the
@@ -376,11 +376,13 @@ page without a background-color box around every character."
              walls))
   nil)
 
-(defun %amiga-draw-map-region (rp game ox oy cell x0 y0 vw vh full)
+(defun %amiga-draw-map-region (rp game ox oy cell x0 y0 vw vh full
+                               &optional (cw 8))
   "Draw automap cells [X0,X0+VW) x [Y0,Y0+VH) at (OX,OY), CELL pixels
 per cell.  FULL non-NIL draws everything (debug); otherwise only what
-the party's knowledge holds.  Used for both the minimap viewport and
-the full map mode."
+the party's knowledge holds.  CW is the font's character cell width —
+feature glyphs draw only where a character fits.  Used for both the
+minimap viewport and the full map mode."
   (amiga.gfx:set-a-pen rp 0)
   (amiga.gfx:rect-fill rp ox oy (+ ox (* cell vw)) (+ oy (* cell vh)))
   (amiga.gfx:set-a-pen rp 1)
@@ -406,7 +408,7 @@ the full map mode."
                   (1 (amiga.gfx:draw-line rp (+ px cell) py
                                           (+ px cell) (+ py cell)))))))
           ;; feature glyph (needs room for a character)
-          (when (>= cell 8)
+          (when (>= cell cw)
             (let ((f (cell-feature map x y)))
               (when (and f (or full (cell-explored-p k x y)))
                 (amiga.gfx:set-a-pen rp 1)
@@ -432,46 +434,41 @@ the full map mode."
                                         (- (floor cell 2) 1))))
           (amiga.gfx:set-a-pen rp 1))))))
 
-(defparameter *amiga-compass-height* 56
-  "Vertical space at the foot of the middle column reserved for the
-compass rose.")
-
-(defun %amiga-draw-effects (rp game l)
-  "The active-spells strip between the view and the text column:
-one line per active effect (shield, lamp, ...).  The bottom
-*AMIGA-COMPASS-HEIGHT* pixels belong to the compass rose."
-  (let* ((ox (ui-layout-spells-x l))
-         (oy (ui-layout-by l))
-         (w (ui-layout-spells-w l))
-         (h (max 0 (- (ui-layout-col-h l) *amiga-compass-height*)))
+(defun %amiga-draw-band (rp game l)
+  "The band at the foot of the message-log column: active effects
+(shield, lamp, ...) as lines at the left, the compass rose — the four
+cardinal letters around a diamond, the needle pointing at the party's
+facing — in the BAND-H square at the right.  Black on the white page,
+separated from the log above by a thin rule."
+  (let* ((ox (ui-layout-log-x l))
+         (w (ui-layout-log-w l))
+         (right (ui-layout-right l))
+         (band-y (ui-layout-band-y l))
+         (band-h (ui-layout-band-h l))
+         (bottom (+ band-y band-h -1))
          (lh (ui-layout-lh l))
-         (max-chars (max 4 (floor w 8))))
-    (amiga.gfx:set-a-pen rp 2)
-    (amiga.gfx:rect-fill rp ox oy (+ ox w -1) (+ oy h -1))
+         (cw (ui-layout-cw l))
+         (rose-w band-h)                ; the rose's square at the right
+         (cx (- right 1 (floor rose-w 2)))
+         (cy (+ band-y (floor band-h 2)))
+         (r (max 6 (- (floor band-h 2) 6)))
+         (max-chars (max 4 (floor (- w rose-w 4) cw))))
+    ;; band interior on the white page, plus the rule under the log
+    (amiga.gfx:set-a-pen rp 1)
+    (amiga.gfx:rect-fill rp (- ox 3) band-y (- right 1) bottom)
     (amiga.gfx:set-a-pen rp 0)
-    (let ((y (+ oy (ui-layout-base l))))
+    (amiga.gfx:draw-line rp (- ox 3) band-y (- right 1) band-y)
+    ;; active effects, one line each
+    (let ((y (+ band-y 2 (ui-layout-base l))))
       (dolist (e (game-effects game))
-        (when (< y (+ oy h))
+        (when (< y bottom)
           (let ((text (string-downcase (princ-to-string e))))
             (amiga.gfx:move-to rp ox y)
             (amiga.gfx:gfx-text rp (if (> (length text) max-chars)
                                        (subseq text 0 max-chars)
                                        text))))
         (incf y lh)))
-    (amiga.gfx:set-a-pen rp 1)))
-
-(defun %amiga-draw-compass (rp game l)
-  "Compass rose at the foot of the middle column: the four cardinal
-letters around a diamond, the needle pointing at the party's facing."
-  (let* ((ox (ui-layout-spells-x l))
-         (w (ui-layout-spells-w l))
-         (bottom (+ (ui-layout-by l) (ui-layout-col-h l)))
-         (h (min *amiga-compass-height* (ui-layout-col-h l)))
-         (cx (+ ox (floor w 2)))
-         (cy (- bottom (floor h 2)))
-         (r (max 6 (min (floor (- w 20) 2) (- (floor h 2) 6)))))
-    (amiga.gfx:set-a-pen rp 2)
-    (amiga.gfx:rect-fill rp ox (- bottom h) (+ ox w -1) (- bottom 1))
+    ;; compass rose
     (destructuring-bind (needle letters)
         (compass-points (game-facing game) cx cy r)
       ;; the rose: a diamond through the needle's reach
@@ -487,20 +484,21 @@ letters around a diamond, the needle pointing at the party's facing."
       (dolist (p letters)
         (destructuring-bind (ch x y facing-p) p
           (amiga.gfx:set-a-pen rp (if facing-p 3 0))
-          (amiga.gfx:move-to rp (- x 4) (+ y 3))
+          (amiga.gfx:move-to rp (- x (floor cw 2)) (+ y 3))
           (amiga.gfx:gfx-text rp (string ch)))))
     (amiga.gfx:set-a-pen rp 1)))
 
 (defun %amiga-draw-log (rp log l)
   "Message log: trailing lines, newest at the bottom, black text on
-the white page (the shell — outline and shadow — is %CHROME-FRAMES's)."
+the white page (the shell — outline and shadow — is %CHROME-FRAMES's;
+the column's foot below belongs to %AMIGA-DRAW-BAND)."
   (let* ((ox (ui-layout-log-x l))
          (oy (ui-layout-by l))
          (w (ui-layout-log-w l))
-         (h (- (ui-layout-col-h l) 2))
+         (h (- (ui-layout-band-y l) oy))
          (lh (ui-layout-lh l))
          (n (max 1 (floor (- h 2) lh)))
-         (max-chars (max 4 (floor (- w 4) 8)))
+         (max-chars (max 4 (floor (- w 4) (ui-layout-cw l))))
          ;; Each message starts with "> "; long ones wrap onto indented
          ;; continuation lines.  Keep the trailing N display lines so
          ;; the newest stays at the bottom.
@@ -520,19 +518,27 @@ the white page (the shell — outline and shadow — is %CHROME-FRAMES's)."
 
 (defun %amiga-hero-row (rp l y hero index)
   "One roster table row at baseline Y: number, name, level and gold in
-black; the hit points picked out in white; a downed hero in amber."
-  (let ((ox (ui-layout-bx l)))
-    (labels ((col (x pen text)
+black; the hit points picked out in white; a downed hero in amber.
+Columns come from the profile's ROSTER-COLS character cells."
+  (let* ((ox (ui-layout-bx l))
+         (cw (ui-layout-cw l))
+         (cols (display-profile-roster-cols *display-profile*))
+         ;; the name column runs up to one cell short of the level column
+         (name-w (- (getf cols :lv) 1 (getf cols :name))))
+    (labels ((col (cell pen text)
                (amiga.gfx:set-a-pen rp pen)
-               (amiga.gfx:move-to rp (+ ox x) y)
+               (amiga.gfx:move-to rp (+ ox (* cw cell)) y)
                (amiga.gfx:gfx-text rp text)))
-      (col 0   0 (format nil "~D" (1+ index)))
-      (col 16  0 (hero-name hero))
-      (col 146 0 (format nil "~D" (hero-level hero)))
-      (col 200 1 (format nil "~D/~D" (hero-hp hero) (hero-max-hp hero)))
-      (col 300 0 (format nil "~D" (hero-gold hero)))
+      (col (getf cols :no) 0 (format nil "~D" (1+ index)))
+      (col (getf cols :name) 0
+           (let ((name (hero-name hero)))
+             (if (> (length name) name-w) (subseq name 0 name-w) name)))
+      (col (getf cols :lv) 0 (format nil "~D" (hero-level hero)))
+      (col (getf cols :hits) 1
+           (format nil "~D/~D" (hero-hp hero) (hero-max-hp hero)))
+      (col (getf cols :gold) 0 (format nil "~D" (hero-gold hero)))
       (unless (hero-alive-p hero)
-        (col 370 3 "DOWN")))
+        (col (getf cols :down) 3 "DOWN")))
     (amiga.gfx:set-a-pen rp 1)))
 
 (defun %amiga-status (rp game l text)
@@ -563,14 +569,16 @@ The row number is the key that opens that hero's character sheet."
                          (ui-layout-right l)
                          (+ (ui-layout-party-y l) (* lh +party-limit+) -1))
     (amiga.gfx:set-a-pen rp 0)
-    (let ((y (+ oy (ui-layout-base l))))
-      (labels ((col (x text)
-                 (amiga.gfx:move-to rp (+ ox x) y)
+    (let ((y (+ oy (ui-layout-base l)))
+          (cw (ui-layout-cw l))
+          (cols (display-profile-roster-cols *display-profile*)))
+      (labels ((col (cell text)
+                 (amiga.gfx:move-to rp (+ ox (* cw cell)) y)
                  (amiga.gfx:gfx-text rp text)))
-        (col 16  "CHARACTER")
-        (col 146 "LV")
-        (col 200 "HITS")
-        (col 300 "GOLD")))
+        (col (getf cols :name) "CHARACTER")
+        (col (getf cols :lv)   "LV")
+        (col (getf cols :hits) "HITS")
+        (col (getf cols :gold) "GOLD")))
     (let ((y (+ (ui-layout-party-y l) (ui-layout-base l)))
           (i 0))
       (dolist (h (game-party game))
@@ -585,10 +593,11 @@ stat block on a white parchment page over the grey chrome."
   (let* ((ox (ui-layout-bx l))
          (oy (ui-layout-by l))
          (lh (ui-layout-lh l))
+         (cw (ui-layout-cw l))
          (hero (nth index (game-party game)))
-         (px (+ ox 24))                 ; the page
+         (px (+ ox (* 2 cw)))           ; the page
          (py (+ oy 8))
-         (pw 320)
+         (pw (min (* 40 cw) (- (ui-layout-right l) px (* 2 cw))))
          (ph (+ (* lh 10) 12)))
     (amiga.gfx:set-a-pen rp 2)
     (amiga.gfx:rect-fill rp ox oy (ui-layout-right l) (ui-layout-bottom l))
@@ -600,7 +609,7 @@ stat block on a white parchment page over the grey chrome."
     (amiga.gfx:set-a-pen rp 0)
     (%chrome-rect rp px py (+ px pw) (+ py ph))
     (let ((y (+ py 4 (ui-layout-base l)))
-          (max-chars (floor (- pw 16) 8)))
+          (max-chars (floor (- pw 16) cw)))
       (labels ((line (text)
                  (amiga.gfx:move-to rp (+ px 8) y)
                  (amiga.gfx:gfx-text rp (if (> (length text) max-chars)
@@ -619,18 +628,20 @@ stat block on a white parchment page over the grey chrome."
 
 (defun %amiga-draw-location (rp game view l)
   "Location page (shop menu): the location's menu lines on a white
-page over the view + spells area.  The log, status and roster panes
-stay live around it — gold and messages update as the party shops."
+page over the view column.  The log, status and roster panes stay
+live around it — gold and messages update as the party shops."
   (let* ((ox (ui-layout-bx l))
          (oy (ui-layout-by l))
          (lh (ui-layout-lh l))
+         (cw (ui-layout-cw l))
          (px (+ ox 4))
          (py (+ oy 4))
-         (pw (+ (ui-layout-fp-w l) (ui-layout-spells-w l) 4))
-         (ph (- (ui-layout-col-h l) 8))
+         (pw (ui-layout-fp-w l))
+         (ph (- (ui-layout-status-y l) 4 py))
          (max-lines (floor (- ph 8) lh))
-         (max-chars (floor (- pw 16) 8))
-         (lines (location-lines game view)))
+         (max-chars (floor (- pw 16) cw))
+         (lines (mapcan (lambda (text) (wrap-text text max-chars))
+                        (location-lines game view))))
     ;; page shadow, sheet, outline — same look as the character sheet
     (amiga.gfx:set-a-pen rp 0)
     (amiga.gfx:rect-fill rp (+ px 2) (+ py 2) (+ px pw 2) (+ py ph 2))
@@ -670,7 +681,8 @@ centered and clamped to what fits at a readable cell size."
     (amiga.gfx:rect-fill rp bx by (ui-layout-right l) (ui-layout-bottom l))
     (multiple-value-bind (x0 y0 w h)
         (map-viewport map (game-x game) (game-y game) vw vh)
-      (%amiga-draw-map-region rp game bx by cell x0 y0 w h full)
+      (%amiga-draw-map-region rp game bx by cell x0 y0 w h full
+                              (ui-layout-cw l))
       (amiga.gfx:set-a-pen rp 1)
       (amiga.gfx:move-to rp bx (- (ui-layout-bottom l)
                                   (- (ui-layout-lh l)
@@ -709,7 +721,8 @@ colors."
     (amiga.gfx:set-rgb4 vp 1 15 15 15)
     (amiga.gfx:set-rgb4 vp 2 10 10 10)
     (amiga.gfx:set-rgb4 vp 3 15 10 3)
-    (loop for pen from 4 below (ash 1 *amiga-screen-depth*)
+    (loop for pen from 4 below (ash 1 (display-profile-screen-depth
+                                       *display-profile*))
           do (amiga.gfx:set-rgb4 vp pen 0 0 0))))
 
 (defun %apply-pack-palette (scr palette)
@@ -719,7 +732,8 @@ READ-ILBM); entries 0-3 are ignored — those pens are the fixed UI
 colors — and the components scale to SET-RGB4 nibbles."
   (when palette
     (let ((vp (amiga.intuition:screen-viewport scr)))
-      (loop for pen from 4 below (min (ash 1 *amiga-screen-depth*)
+      (loop for pen from 4 below (min (ash 1 (display-profile-screen-depth
+                                              *display-profile*))
                                       (length palette))
             for rgb = (aref palette pen)
             when rgb
@@ -729,62 +743,69 @@ colors — and the components scale to SET-RGB4 nibbles."
                                      (floor (third rgb) 17))))))
 
 (defun %call-with-game-window (display fn)
-  "Open DISPLAY and call FN with the screen and window.
-:WINDOW — a window on the public (Workbench) screen, the development
-default.  :SCREEN — an own custom screen (nominal PAL 640x256 hires,
-chosen RTG-aware through AMIGA.GFX:BEST-MODE-ID) covered by a
-borderless backdrop window."
-  (ecase display
-    (:window
-     (amiga.intuition:with-pub-screen (scr)
-       (amiga.intuition:with-window
-           (win :title "Lambda's Tale"
-                :left 0 :top 0
-                :width *amiga-win-width* :height *amiga-win-height*
-                :idcmp +game-idcmp+)
-         (funcall fn scr win))))
-    (:screen
-     (amiga.intuition:with-screen
-         (scr :width *amiga-screen-width*
-              :height *amiga-screen-height*
-              :depth *amiga-screen-depth*
-              :title "Lambda's Tale"
-              :mode-id (amiga.gfx:best-mode-id
-                        :width *amiga-screen-width*
-                        :height *amiga-screen-height*
-                        :depth *amiga-screen-depth*))
-       (%game-screen-palette scr)
-       ;; the game owns the whole display: put the OS screen bar behind
-       ;; the backdrop window (Bard's Tale has no title bar)
-       (amiga.intuition:show-title scr nil)
-       ;; no window title: on a backdrop window WA_Title still costs a
-       ;; title bar (border-top), and the screen already carries one
-       (amiga.intuition:with-window
-           (win :left 0 :top 0
-                :width (amiga.intuition:screen-width scr)
-                :height (amiga.intuition:screen-height scr)
-                :screen scr
-                :flags (logior amiga.intuition:+wflg-borderless+
-                               amiga.intuition:+wflg-backdrop+
-                               amiga.intuition:+wflg-activate+)
-                :idcmp +game-idcmp+)
-         (funcall fn scr win))))))
+  "Open DISPLAY per the active *DISPLAY-PROFILE* and call FN with the
+screen and window.  :WINDOW — a window on the public (Workbench)
+screen, the development default.  :SCREEN — an own custom screen (the
+profile's nominal PAL geometry, chosen RTG-aware through
+AMIGA.GFX:BEST-MODE-ID) covered by a borderless backdrop window."
+  (let ((p *display-profile*))
+    (ecase display
+      (:window
+       (amiga.intuition:with-pub-screen (scr)
+         (amiga.intuition:with-window
+             (win :title "Lambda's Tale"
+                  :left 0 :top 0
+                  :width (display-profile-win-width p)
+                  :height (display-profile-win-height p)
+                  :idcmp +game-idcmp+)
+           (funcall fn scr win))))
+      (:screen
+       (amiga.intuition:with-screen
+           (scr :width (display-profile-screen-width p)
+                :height (display-profile-screen-height p)
+                :depth (display-profile-screen-depth p)
+                :title "Lambda's Tale"
+                :mode-id (amiga.gfx:best-mode-id
+                          :width (display-profile-screen-width p)
+                          :height (display-profile-screen-height p)
+                          :depth (display-profile-screen-depth p)))
+         (%game-screen-palette scr)
+         ;; the game owns the whole display: put the OS screen bar
+         ;; behind the backdrop window (Bard's Tale has no title bar)
+         (amiga.intuition:show-title scr nil)
+         ;; no window title: on a backdrop window WA_Title still costs
+         ;; a title bar (border-top), and the screen already carries one
+         (amiga.intuition:with-window
+             (win :left 0 :top 0
+                  :width (amiga.intuition:screen-width scr)
+                  :height (amiga.intuition:screen-height scr)
+                  :screen scr
+                  :flags (logior amiga.intuition:+wflg-borderless+
+                                 amiga.intuition:+wflg-backdrop+
+                                 amiga.intuition:+wflg-activate+)
+                  :idcmp +game-idcmp+)
+           (funcall fn scr win)))))))
 
 ;;; ---------------------------------------------------------------------
 ;;; The game proper
 
-(defun play-amiga (&optional (map-file "data/town.map")
-                   &key (display :screen) (gfx-dir *gfx-dir*))
+(defun play-amiga (&optional (map-file "worlds/closure/town.map")
+                   &key (display :screen) (profile *display-profile*)
+                     gfx-dir)
   "Interactive walkabout.  Loads the campaign.lisp next to the map
 file (classes, monsters, items, party) when present — a designer's own
 world directory brings its own campaign.
-DISPLAY is :screen (the default: an own PAL-ish
-16-color custom screen, RTG-aware) or :window (a development view on
-the Workbench screen).  GFX-DIR names the tile pack: a directory of
+DISPLAY is :screen (the default: an own custom screen, RTG-aware) or
+:window (a development view on the Workbench screen).  PROFILE is a
+DISPLAY-PROFILE or its name — :lores or :hires — and sets the screen
+geometry, viewport and default tile pack.  A zone may declare its own
+pack with (ZONE :GFX DIR) — see ZONE-GFX-DIR — swapped in when travel
+enters it; GFX-DIR here overrides both (precedence: GFX-DIR, then the
+zone's :GFX, then the profile's pack).  A pack is a directory of
 wall-piece ILBMs plus the optional floor.iff / ceiling.iff /
-palette.iff (see PRINT-TILE-MANIFEST for the contract); the pack's
-colors show on the custom screen — a Workbench window keeps the
-Workbench palette.
+palette.iff (see PRINT-TILE-MANIFEST for the contract, which depends
+on the profile); the pack's colors show on the custom screen — a
+Workbench window keeps the Workbench palette.
 Keys: W forward, S back-step, A/D turn, M map mode (M/Esc leaves it,
 F toggles the debug full view there), 1-7 open a party member's
 character sheet (1-7 switch heroes there, Esc leaves), Q/Esc quit;
@@ -792,7 +813,8 @@ in combat A attack, D defend, F flee; in a location (shop) 1-9
 choose, S/B switch sell/buy, Esc back/leave.  Save/Load/Quit sit in
 the menu strip (right mouse button)."
   (load-campaign map-file)
-  (let* ((*gfx-dir* gfx-dir)
+  (with-display-profile (profile)
+   (let* ((*gfx-dir* (or gfx-dir *gfx-dir*))
          (map (load-map-file map-file))
          (game nil)
          (log nil)
@@ -833,14 +855,31 @@ the menu strip (right mouse button)."
             (amiga.gadtools:with-visual-info (vi scr)
               (amiga.gadtools:with-menus (menu *menu-entries* vi win)
                 (let* ((rp (%game-rastport win font))
-                       (l (%amiga-layout win rp)))
-                 (multiple-value-bind (walls pack-palette)
-                     (%load-wall-assets rp log)
-                   ;; pack colors only on our own screen — a Workbench
-                   ;; window has no say over the Workbench palette
-                   (when (eq display :screen)
-                     (%apply-pack-palette scr pack-palette))
-               (labels ((status-text ()
+                       (l (%amiga-layout win rp))
+                       (walls nil)      ; loaded piece bitmaps
+                       (walls-dir nil)) ; the pack they came from
+               (labels ((effective-gfx-dir ()
+                          ;; precedence: the explicit :GFX-DIR argument,
+                          ;; then the zone's (ZONE :GFX ...), then the
+                          ;; profile's pack (bound into *GFX-DIR*)
+                          (or gfx-dir (zone-gfx-dir game) *gfx-dir*))
+                        (ensure-walls ()
+                          ;; (re)load the wall bitmaps when the wanted
+                          ;; pack changed — first draw, zone travel
+                          ;; (:GFX zones), load-game.  Pack colors only
+                          ;; on our own screen — a Workbench window has
+                          ;; no say over the Workbench palette.
+                          (let ((want (effective-gfx-dir)))
+                            (unless (equal want walls-dir)
+                              (setf walls (%free-wall-assets walls)
+                                    walls-dir want)
+                              (let ((*gfx-dir* want))
+                                (multiple-value-bind (w pal)
+                                    (%load-wall-assets rp log)
+                                  (setf walls w)
+                                  (when (eq display :screen)
+                                    (%apply-pack-palette scr pal)))))))
+                        (status-text ()
                           (cond ((eq over :won) "You win!  Press Q.")
                                 ((eq over :lost) "Game over.  Press Q.")
                                 ((game-combat game)
@@ -877,10 +916,12 @@ the menu strip (right mouse button)."
                         (leave-sheet ()
                           (fresh-play))
                         (redraw ()
-                          ;; travel switched zones: repaint the chrome
-                          ;; first (the plaque carries the zone title)
+                          ;; travel switched zones: swap in the zone's
+                          ;; tile pack and repaint the chrome first
+                          ;; (the plaque carries the zone title)
                           (when zone-dirty
                             (setf zone-dirty nil)
+                            (ensure-walls)
                             (clear-inner)
                             (%chrome-frames rp game l))
                           (cond
@@ -901,8 +942,7 @@ the menu strip (right mouse button)."
                                                    (ui-layout-fp-w l)
                                                    (ui-layout-fp-h l)
                                                    walls)
-                                   (%amiga-draw-effects rp game l)
-                                   (%amiga-draw-compass rp game l)))
+                                   (%amiga-draw-band rp game l)))
                              (%amiga-draw-log rp log l)
                              (%amiga-status rp game l (status-text))
                              (%amiga-party rp game l))))
@@ -927,8 +967,10 @@ the menu strip (right mouse button)."
                                       mode :play
                                       zone-dirty nil)
                                 ;; loading may leave map mode (menu
-                                ;; item) or change the map — repaint
+                                ;; item) or land in a zone with its own
+                                ;; tile pack — swap packs and repaint
                                 ;; the chrome (plaque carries the name)
+                                (ensure-walls)
                                 (clear-inner)
                                 (%chrome-frames rp game l)
                                 (log-message log "Game loaded."))
@@ -1005,6 +1047,7 @@ the menu strip (right mouse button)."
                                    nil)))))
                  (unwind-protect
                      (progn
+                       (ensure-walls)
                        (%chrome-bg rp win l)
                        (%chrome-frames rp game l)
                        (redraw)
