@@ -8,6 +8,9 @@
 ;;;   (set-flag KEY) (clear-flag KEY)
 ;;;   (when-flag KEY OP...)      run OP... if story flag KEY is set
 ;;;   (unless-flag KEY OP...)    ... if it is not
+;;;   (at-night OP...)           run OP... between 20:00 and 06:00
+;;;   (at-day OP...)             ... between 06:00 and 20:00 (pure clock
+;;;                              tests — zone darkness is irrelevant)
 ;;;   (once OP...)               run OP... only the first time ever
 ;;;                              (one ONCE per cell; keyed by map + cell)
 ;;;   (teleport X Y [FACING])    relocate the party; the target cell's
@@ -75,6 +78,12 @@ to the cell the party just left."
     (unless-flag
      (unless (flag game (second op))
        (run-special game (cddr op))))
+    (at-night
+     (unless (daylight-p (game-time game))
+       (run-special game (rest op))))
+    (at-day
+     (when (daylight-p (game-time game))
+       (run-special game (rest op))))
     (once
      (let ((key (list :once (dungeon-map-name (game-map game))
                       (game-x game) (game-y game))))

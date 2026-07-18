@@ -71,7 +71,8 @@
   (start-x 0)
   (start-y 0)
   (start-facing :north)
-  gfx)                ; zone's tile-pack dir from (ZONE :GFX ...), or NIL
+  gfx                 ; zone's tile-pack dir from (ZONE :GFX ...), or NIL
+  dark)               ; T = always dark (ZONE :DARK T) — needs a light
 
 (defun map-title (map)
   "The map's display name: its ZONE :title, else its file name."
@@ -211,7 +212,7 @@ map itself is smaller."
                     (dungeon-map-width map) (dungeon-map-height map)))
            (setf (cell-special map x y) ops)))
         ((string-equal (symbol-name (first form)) "ZONE")
-         (destructuring-bind (&key kind title wrap start-facing gfx)
+         (destructuring-bind (&key kind title wrap start-facing gfx dark)
              (rest form)
            (when kind
              (unless (keywordp kind)
@@ -227,7 +228,8 @@ map itself is smaller."
              (unless (stringp gfx)
                (error "~A: zone :gfx ~S must be a directory string ~
 (e.g. \"gfx/\")" path gfx))
-             (setf (dungeon-map-gfx map) gfx))))
+             (setf (dungeon-map-gfx map) gfx))
+           (when dark (setf (dungeon-map-dark map) t))))
         (t (error "~A: unknown map form ~S (expected (zone ...) or ~
                    (special (x y) op...))"
                   path (first form)))))
@@ -246,11 +248,12 @@ map itself is smaller."
   "Read the ASCII map file at PATH and parse it into a DUNGEON-MAP.
 After the art the file may carry Lisp data forms — the story layer of
 the map, read with *READ-EVAL* bound to NIL and never evaluated:
-    (zone :kind KIND :title TITLE :wrap W :start-facing DIR :gfx PACK)
-                             zone metadata: KIND is :dungeon (default),
+    (zone :kind KIND :title TITLE :wrap W :start-facing DIR :gfx PACK
+          :dark D)           zone metadata: KIND is :dungeon (default),
                              :city, ... — maps self-describe what they
                              are; PACK names the zone's tile-pack
-                             directory (see ZONE-GFX-DIR)
+                             directory (see ZONE-GFX-DIR); :dark T makes
+                             the zone dark at all hours (see GAME-DARK-P)
     (special (X Y) OP...)    attach a special to cell (X,Y)
 The forms section starts at the first line beginning with '(' or ';'
 \(no valid art line starts with either).  The :wrap and :start-facing

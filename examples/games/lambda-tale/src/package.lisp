@@ -17,7 +17,7 @@
    #:dungeon-map-name #:dungeon-map-width #:dungeon-map-height
    #:dungeon-map-wrap #:dungeon-map-start-x #:dungeon-map-start-y
    #:dungeon-map-start-facing #:dungeon-map-kind #:dungeon-map-title
-   #:map-title
+   #:dungeon-map-dark #:map-title
    #:cell-wall #:cell-feature #:cell-special #:wall-passable-p #:neighbor
    ;; knowledge
    #:make-map-knowledge #:know-cell #:know-wall
@@ -34,8 +34,14 @@
    ;; game state / movement
    #:new-game #:game-map #:game-knowledge #:game-x #:game-y #:game-facing
    #:game-party #:game-flags #:game-combat
-   #:game-effects #:add-effect #:remove-effect
+   #:game-effects #:add-effect #:remove-effect #:find-effect
+   #:effect-name #:effect-expires-at #:effect-payload #:effect-label
+   #:effects-ac-bonus #:light-active-p
    #:turn-left #:turn-right #:turn-around #:move-party #:observe
+   ;; game time, day and night
+   #:game-time #:advance-time #:daylight-p #:clock-line
+   #:game-dark-p #:game-view-depth
+   #:*minutes-per-action* #:*new-game-minutes* #:+minutes-per-day+
    ;; the world: zones and travel
    #:game-zones #:travel-party #:load-campaign
    ;; events and story flags

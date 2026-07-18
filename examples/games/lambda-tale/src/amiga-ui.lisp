@@ -204,7 +204,7 @@ the viewport has its full asset size, the wireframe otherwise.  The
 blitted view starts from the ceiling/floor backdrop (black where the
 pack has none); the walls carve the perspective on top of it."
   (let ((slices (compute-view (game-map game) (game-x game) (game-y game)
-                              (game-facing game)))
+                              (game-facing game) (game-view-depth game)))
         (planes (view-planes w h)))
     (if (and walls (= w *fp-view-width*) (= h *fp-view-height*))
         (progn
@@ -223,6 +223,19 @@ pack has none); the walls carve the perspective on top of it."
                            (amiga.gfx:rect-fill rp (+ ox x) (+ oy y)
                                                 (+ ox x pw -1)
                                                 (+ oy y ph -1))))))
+          ;; The wall of night: when darkness truncated the view at an
+          ;; open front, the backdrop must not show a lit corridor
+          ;; receding beyond it — black out the plane past the last
+          ;; visible cell before the walls go on top.
+          (let ((s (car (last slices))))
+            (when (and s
+                       (eq (view-slice-front s) :open)
+                       (game-dark-p game))
+              (destructuring-bind (qx0 qy0 qx1 qy1)
+                  (aref planes (1+ (view-slice-depth s)))
+                (amiga.gfx:set-a-pen rp 0)
+                (amiga.gfx:rect-fill rp (+ ox qx0) (+ oy qy0)
+                                     (+ ox qx1) (+ oy qy1)))))
           (amiga.gfx:set-a-pen rp 1)
           (dolist (rec (view-blit-list slices planes))
             (destructuring-bind (piece x y pw ph) rec
@@ -462,7 +475,7 @@ separated from the log above by a thin rule."
     (let ((y (+ band-y 2 (ui-layout-base l))))
       (dolist (e (game-effects game))
         (when (< y bottom)
-          (let ((text (string-downcase (princ-to-string e))))
+          (let ((text (effect-label e)))
             (amiga.gfx:move-to rp ox y)
             (amiga.gfx:gfx-text rp (if (> (length text) max-chars)
                                        (subseq text 0 max-chars)
@@ -542,19 +555,29 @@ Columns come from the profile's ROSTER-COLS character cells."
     (amiga.gfx:set-a-pen rp 1)))
 
 (defun %amiga-status (rp game l text)
-  "Status pane: position/facing plus contextual key help, black on the
-grey chrome."
+  "Status pane: position/facing plus contextual key help at the left,
+the game clock at the right, black on the grey chrome."
   (let ((ox (ui-layout-bx l))
-        (oy (ui-layout-status-y l)))
+        (oy (ui-layout-status-y l))
+        (right (ui-layout-right l)))
     (amiga.gfx:set-a-pen rp 2)
-    (amiga.gfx:rect-fill rp ox oy
-                         (ui-layout-right l) (+ oy (ui-layout-lh l) -1))
+    (amiga.gfx:rect-fill rp ox oy right (+ oy (ui-layout-lh l) -1))
     (amiga.gfx:set-a-pen rp 0)
-    (amiga.gfx:move-to rp ox (+ oy (ui-layout-base l)))
-    (amiga.gfx:gfx-text rp (format nil "(~D,~D) ~A  ~A"
-                                   (game-x game) (game-y game)
-                                   (dir-keyword (game-facing game))
-                                   text))
+    (let* ((clock (clock-line game))
+           (clock-w (* (ui-layout-cw l) (length clock)))
+           (left (format nil "(~D,~D) ~A  ~A"
+                         (game-x game) (game-y game)
+                         (dir-keyword (game-facing game))
+                         text))
+           (left-max (max 0 (floor (- right ox clock-w
+                                      (ui-layout-cw l))
+                                   (ui-layout-cw l)))))
+      (amiga.gfx:move-to rp ox (+ oy (ui-layout-base l)))
+      (amiga.gfx:gfx-text rp (if (> (length left) left-max)
+                                 (subseq left 0 left-max)
+                                 left))
+      (amiga.gfx:move-to rp (- right clock-w) (+ oy (ui-layout-base l)))
+      (amiga.gfx:gfx-text rp clock))
     (amiga.gfx:set-a-pen rp 1)))
 
 (defun %amiga-party (rp game l)

@@ -111,11 +111,13 @@ the Amiga use the same arrangement.)
   (`:message` events); front-ends render as many trailing lines as
   fit.
 - **Effects + compass band** (the foot of the log column): the party's
-  active effects — shield, lamp/light, levitation and friends, Bard's
-  Tale style — as one line each at the left.  The engine carries them
-  as `game-effects` (`add-effect`/`remove-effect`, EQUAL dedup).
-  Until the spell system lands (M4) this is reserved space fed by
-  story/test code; effects are transient (not yet saved).  The right
+  active effects — shield, light and friends, Bard's Tale style — as
+  one line each at the left.  The engine carries them as `game-effects`:
+  **records** with a display name, an optional expiry on the game clock
+  (`add-effect`'s `:duration`; `advance-time` announces and drops the
+  expired) and a payload plist of engine facts — `(:ac N)` feeds the
+  party's effective AC, `(:light t)` defeats darkness.  Re-adding a
+  name refreshes it in place.  Effects live in save games.  The right
   of the band holds the **compass rose** — N/E/S/W around a diamond,
   the needle and the faced letter highlighted (`compass-points`
   provides the geometry); turning is silent (no "You turn left." log
@@ -243,7 +245,16 @@ The Amiga front-end supports two displays, selected by
   town/cellar world walks end-to-end (gate, shoppe, tavern, ladder).
 - Message log: ring limit, trailing-lines query, oldest-first order.
 - Party: `join-party` up to 7, refusal at 8, `:party-joined` event.
-- Effects: `add-effect` dedup, `remove-effect`, fresh game has none.
+- Effects: `add-effect` refresh-in-place, `remove-effect`, fresh game
+  has none; durations set expiries on the clock, payloads round-trip
+  through saves, `:ac` payloads sum, `:light` defeats darkness.
+- Time: fresh game at day 1 08:00; steps, turns and combat rounds cost
+  a minute, blocked bumps are free; daylight boundary values;
+  `:sunrise`/`:sunset` events with their log lines; `clock-line`
+  formatting; timed-effect expiry (message + `:effect-expired`).
+- Darkness: night or `(zone :dark t)` shrink `game-view-depth` to 1 —
+  the view and the automap alike; a `(:light t)` effect restores the
+  full depth; `at-night`/`at-day` specials switch on the pure clock.
 - Amiga (FS-UAE suite): smoke tests for the layout draw calls (incl.
   the effects strip and map page), an unattended `*autoplay*` session
   that enters and leaves map mode, and a `:display :screen` session

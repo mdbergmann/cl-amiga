@@ -11,7 +11,9 @@
 
 (in-package :tale)
 
-(defconstant +save-version+ 2)
+(defconstant +save-version+ 3)
+;; v3: game time (:time), timed active effects (:effects) and hero
+;; spell points (:max-sp/:sp in the hero plists).
 ;; v2: multi-zone world — the save carries every visited zone's map file
 ;; and automap knowledge (:zones), plus hero :items and :equipped.
 
@@ -44,10 +46,18 @@
   (list :name (hero-name h) :class (hero-class h)
         :level (hero-level h) :xp (hero-xp h)
         :max-hp (hero-max-hp h) :hp (hero-hp h)
+        :max-sp (hero-max-sp h) :sp (hero-sp h)
         :str (hero-str h) :dex (hero-dex h) :iq (hero-iq h)
         :con (hero-con h) :lck (hero-lck h)
         :ac (hero-ac h) :damage (hero-damage h) :gold (hero-gold h)
         :items (hero-items h) :equipped (hero-equipped h)))
+
+(defun %effects->list (game)
+  (mapcar (lambda (e)
+            (list :name (effect-name e)
+                  :expires-at (effect-expires-at e)
+                  :payload (effect-payload e)))
+          (game-effects game)))
 
 (defun %zones->alist (game)
   "Every zone's automap knowledge: visited zones from the world table,
@@ -68,6 +78,8 @@ is not allowed.  Returns PATH."
                      :map-file (dungeon-map-name map)
                      :x (game-x game) :y (game-y game)
                      :facing (game-facing game)
+                     :time (game-time game)
+                     :effects (%effects->list game)
                      :zones (%zones->alist game)
                      :flags (%flags->alist game)
                      :party (mapcar #'%hero->plist (game-party game)))))
@@ -101,7 +113,13 @@ handlers are not saved — subscribe them again on the returned game."
                                           (getf data :party)))))
       (setf (game-x game) (getf data :x)
             (game-y game) (getf data :y)
-            (game-facing game) (getf data :facing))
+            (game-facing game) (getf data :facing)
+            ;; Clock and effects must be back before the final OBSERVE:
+            ;; a game saved at night must not map at daylight depth.
+            (game-time game) (getf data :time)
+            (game-effects game)
+            (mapcar (lambda (plist) (apply #'%make-effect plist))
+                    (getf data :effects)))
       (dolist (zone (getf data :zones))
         (if (equal (car zone) map-file)
             (%rows->knowledge (game-knowledge game) (cdr zone))

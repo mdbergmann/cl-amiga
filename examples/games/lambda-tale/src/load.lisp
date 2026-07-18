@@ -9,6 +9,7 @@
 (load "src/knowledge.lisp")
 (load "src/view.lisp")
 (load "src/game.lisp")
+(load "src/time.lisp")
 (load "src/events.lisp")
 (load "src/party.lisp")
 (load "src/items.lisp")
