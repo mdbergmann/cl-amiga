@@ -9,8 +9,8 @@
 
 (in-package :tale)
 
-;; The demo campaign starts in the town (data/town.map); the cellar
-;; dungeon lies below the tavern.
+;; The demo campaign starts in the town (worlds/closure/town.map);
+;; the cellar dungeon lies below the tavern.
 (play)
 
 (cl-user::quit 0)

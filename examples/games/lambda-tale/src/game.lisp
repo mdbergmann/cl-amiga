@@ -76,7 +76,7 @@ Amiga volume ':')."
 (defun load-campaign (map-file)
   "Load the campaign that belongs to MAP-FILE: the campaign.lisp in
 the same directory as the map (hero classes, monsters, items, the
-starting party — see data/campaign.lisp for the demo).  A world is a
+starting party — see worlds/closure/campaign.lisp for the demo).  A world is a
 directory of map files plus its campaign.lisp; the front-ends call
 this so a designer's own world brings its own definitions.  Returns
 the loaded path, or NIL when there is none."
@@ -84,6 +84,22 @@ the loaded path, or NIL when there is none."
     (when (probe-file path)
       (load path)
       path)))
+
+(defun zone-gfx-dir (game)
+  "The current zone's declared tile pack, or NIL: the map's
+(ZONE :GFX DIR), resolved in two steps so worlds stay portable —
+relative to the map file's directory when the pack lives there (a
+self-contained world directory), else relative to the game directory
+(a shipped pack like gfx-city-demo/).  The probe is the front-0.iff
+every pack must hold; a wrong directory still surfaces through the
+wall loader's loud wireframe fallback."
+  (let* ((map (game-map game))
+         (gfx (dungeon-map-gfx map)))
+    (when gfx
+      (let ((local (%resolve-map-path (dungeon-map-name map) gfx)))
+        (if (probe-file (concatenate 'string local "front-0.iff"))
+            local
+            gfx)))))
 
 (defun travel-party (game file &optional x y facing)
   "Move the party to another zone: the map at FILE, resolved relative

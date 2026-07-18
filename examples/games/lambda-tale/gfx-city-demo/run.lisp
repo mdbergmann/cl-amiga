@@ -6,6 +6,6 @@
 
 (in-package :tale)
 
-(play-amiga "data/cellar.map" :gfx-dir "gfx-city-demo/")
+(play-amiga "worlds/closure/cellar.map" :gfx-dir "gfx-city-demo/")
 
 (cl-user::quit 0)

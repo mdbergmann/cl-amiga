@@ -2,6 +2,7 @@
 ;;; at the project root (examples/games/lambda-tale):  (load "src/load.lisp")
 
 (load "src/package.lisp")
+(load "src/profiles.lisp")
 (load "src/dice.lisp")
 (load "src/ilbm.lisp")
 (load "src/map.lisp")

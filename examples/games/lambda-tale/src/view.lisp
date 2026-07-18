@@ -19,9 +19,11 @@
 
 ;;; The first-person viewport size shared by the Amiga front-end, the
 ;;; wall-art generator and the tests: the wall-piece assets are drawn
-;;; for exactly these planes, so the three must agree.
-(defparameter *fp-view-width* 240)
-(defparameter *fp-view-height* 130)
+;;; for exactly these planes, so the three must agree.  Initialized
+;;; from the default display profile; WITH-DISPLAY-PROFILE (and thus
+;;; PLAY-AMIGA's :PROFILE argument) rebinds them per target.
+(defparameter *fp-view-width* (display-profile-fp-width *display-profile*))
+(defparameter *fp-view-height* (display-profile-fp-height *display-profile*))
 
 (defstruct (view-slice (:constructor %make-view-slice))
   (depth 0)
@@ -258,10 +260,11 @@ split at the horizon (the vertical center of the innermost plane)."
 ;;; ---------------------------------------------------------------------
 ;;; The tile-pack manifest: the contract a custom tile pack must meet.
 
-(defparameter *gfx-dir* "data/gfx/"
+(defparameter *gfx-dir* (display-profile-gfx-dir *display-profile*)
   "The active tile pack: the directory holding the wall-piece ILBMs
 (and the optional floor.iff / ceiling.iff / palette.iff), relative to
-the game directory.  PLAY-AMIGA's :GFX-DIR argument rebinds it.")
+the game directory.  Defaults to the active display profile's pack;
+PLAY-AMIGA's :GFX-DIR argument and WITH-DISPLAY-PROFILE rebind it.")
 
 (defun print-tile-manifest (&optional (stream *standard-output*))
   "Print the tile-pack contract: every asset file a pack directory may
@@ -270,8 +273,11 @@ hold, with its exact pixel size for the canonical *FP-VIEW-WIDTH* x
 of files listed."
   (let* ((planes (view-planes *fp-view-width* *fp-view-height*))
          (n 0))
-    (format stream "Tile-pack manifest (~Dx~D viewport, IFF ILBM files):~%"
-            *fp-view-width* *fp-view-height*)
+    (format stream "Tile-pack manifest (~Dx~D viewport, ~A profile, ~
+IFF ILBM files):~%"
+            *fp-view-width* *fp-view-height*
+            (string-downcase
+             (princ-to-string (display-profile-name *display-profile*))))
     (dolist (piece (wall-piece-names))
       (destructuring-bind (x y w h) (wall-piece-rect planes piece)
         (declare (ignore x y))
@@ -284,9 +290,10 @@ of files listed."
               "floor.iff" (third floor) (fourth floor))
       (incf n 2))
     (format stream "Palette: pens 0-3 are fixed UI colors (black, white, ~
-grey, amber);~%pens 4-15 belong to the pack — taken from palette.iff's ~
+grey, amber);~%pens 4-~D belong to the pack — taken from palette.iff's ~
 CMAP when present,~%else from front-0.iff's (custom screen only; a ~
-Workbench window keeps~%the Workbench palette).~%")
+Workbench window keeps~%the Workbench palette).~%"
+            (1- (ash 1 (display-profile-screen-depth *display-profile*))))
     (format stream "Transparency: in a WALL piece pen 0 is transparent — ~
 the ceiling/~%floor backdrop shows through it — so paint solid black ~
 with pen 4, not~%pen 0.  The ceiling/floor backdrops are opaque; pen 0 ~

@@ -14,7 +14,7 @@
 (define-hero-class :bard     :hp-dice "1d8+2"  :damage "1d6" :ac 9)
 (define-hero-class :conjurer :hp-dice "1d6+1"  :damage "1d4" :ac 10)
 
-;;; Items (Wolfgar's stock — see data/town.map)
+;;; Items (Wolfgar's stock — see worlds/closure/town.map)
 
 (define-item 'torch         :price 2)
 (define-item 'short-sword   :kind :weapon :price 20 :damage "1d6+1")
