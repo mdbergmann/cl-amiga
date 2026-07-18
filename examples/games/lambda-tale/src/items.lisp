@@ -127,9 +127,13 @@ hero's bare (class) damage."
         (or (item-type-damage (find-item-type weapon)) (hero-damage hero))
         (hero-damage hero))))
 
-(defun hero-effective-ac (hero)
+(defun hero-effective-ac (hero &optional game)
   "HERO's armor class with equipment: descending AC minus the AC bonus
-of every equipped item."
+of every equipped item — and, when GAME is given, minus the party-wide
+:AC effect bonuses (a spell shield lowers it further)."
   (let ((ac (hero-ac hero)))
-    (dolist (name (hero-equipped hero) ac)
-      (decf ac (item-type-ac (find-item-type name))))))
+    (dolist (name (hero-equipped hero))
+      (decf ac (item-type-ac (find-item-type name))))
+    (when game
+      (decf ac (effects-ac-bonus game)))
+    ac))

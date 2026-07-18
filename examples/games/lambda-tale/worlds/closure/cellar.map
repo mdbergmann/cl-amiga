@@ -12,7 +12,7 @@
 
 ;; Story layer: cell specials (data, never evaluated — see src/specials.lisp).
 
-(zone :kind :dungeon :title "the cellar")
+(zone :kind :dungeon :title "the cellar" :dark t)
 
 (special (0 0)
   (once (message "You descend into the cellar.  Rats squeal in the dark."

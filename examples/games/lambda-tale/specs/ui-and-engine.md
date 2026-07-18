@@ -255,6 +255,14 @@ The Amiga front-end supports two displays, selected by
 - Darkness: night or `(zone :dark t)` shrink `game-view-depth` to 1 —
   the view and the automap alike; a `(:light t)` effect restores the
   full depth; `at-night`/`at-day` specials switch on the pure clock.
+- Spells: `define-spell` validation (exactly one effect, timed ones
+  need durations), class/level knowledge gates, refusals that say why
+  and cost nothing, scripted damage/heal/buff/light casts, sp payment
+  and daylight-outdoors regen (night, :dark zones and full sp regen
+  nothing), `(:cast SPELL [TARGET])` combat-round actions beside the
+  bare keywords, and the full `cast-lines`/`cast-act` key walk — out
+  of combat, in combat (one caster casts, the rest attack) and the
+  Esc unwind.
 - Amiga (FS-UAE suite): smoke tests for the layout draw calls (incl.
   the effects strip and map page), an unattended `*autoplay*` session
   that enters and leaves map mode, and a `:display :screen` session

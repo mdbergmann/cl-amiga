@@ -4,7 +4,9 @@
 ;;; step, turn and combat round costs *MINUTES-PER-ACTION*; bumping a
 ;;; wall costs nothing.  ADVANCE-TIME is the single clock entry point:
 ;;; it emits :SUNRISE/:SUNSET when the clock crosses the daylight
-;;; boundaries and expires timed effects (see game.lisp).
+;;; boundaries, expires timed effects (see game.lisp) and regenerates
+;;; caster spell points — Bard's Tale style, walking under the open
+;;; daytime sky restores the party's magic (see %REGEN-SP).
 ;;;
 ;;; Darkness: the first-person view shrinks to one cell when the party
 ;;; cannot see — at night in any outdoor zone, or always in a zone
@@ -23,6 +25,10 @@
 
 (defparameter *new-game-minutes* 480
   "The clock a fresh game starts at: day 1, 08:00.")
+
+(defparameter *sp-regen-minutes* 4
+  "Casters regain one spell point per this many daylight minutes spent
+outdoors (in a zone without :DARK) and out of combat.")
 
 (defun daylight-p (minutes)
   "True when the clock MINUTES falls in the 06:00-20:00 daylight window."
@@ -49,10 +55,10 @@ in darkness (see GAME-DARK-P)."
 
 (defun advance-time (game &optional (minutes *minutes-per-action*))
   "Advance the clock by MINUTES (default *MINUTES-PER-ACTION*): emit
-:SUNRISE/:SUNSET on a daylight boundary crossing and expire timed
-effects.  The boundary check compares only the endpoints — exact for
-small steps; a future long jump (a rest op) crossing more than one
-boundary would need a per-segment walk."
+:SUNRISE/:SUNSET on a daylight boundary crossing, expire timed effects
+and regenerate caster spell points.  The boundary check compares only
+the endpoints — exact for small steps; a future long jump (a rest op)
+crossing more than one boundary would need a per-segment walk."
   (let ((old (game-time game)))
     (incf (game-time game) minutes)
     (let ((new (game-time game)))
@@ -62,8 +68,26 @@ boundary would need a per-segment walk."
             ((and (daylight-p old) (not (daylight-p new)))
              (say game "Night falls.")
              (emit game :sunset)))
-      (%expire-effects game new)))
+      (%expire-effects game new)
+      (%regen-sp game old new)))
   (game-time game))
+
+(defun %regen-sp (game old new)
+  "Walking under the open daytime sky restores magic: on every clock
+minute in (OLD, NEW] that is daylight, falls in a zone without :DARK,
+is free of combat and hits a *SP-REGEN-MINUTES* boundary, every living
+caster below full regains one spell point."
+  (when (and (not (dungeon-map-dark (game-map game)))
+             (not (game-combat game)))
+    (let ((ticks 0))
+      (loop for m from (1+ old) to new
+            when (and (daylight-p m) (zerop (mod m *sp-regen-minutes*)))
+              do (incf ticks))
+      (when (plusp ticks)
+        (dolist (h (alive-heroes game))
+          (when (hero-caster-p h)
+            (setf (hero-sp h)
+                  (min (hero-max-sp h) (+ (hero-sp h) ticks)))))))))
 
 (defun %expire-effects (game now)
   "Drop every timed effect whose expiry has passed, announcing each."

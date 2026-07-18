@@ -1274,6 +1274,249 @@ messages so far (oldest first)."
          (funcall msgs)))
 
 ;;; ---------------------------------------------------------------------
+;;; Spells: casters, spell points, DEFINE-SPELL, casting, the cast menu
+
+(define-hero-class :t-mage :hp-dice "1d6+3" :damage "1d4" :ac 10 :caster t)
+
+(defun %combat-mage (&optional (name "Zzgo"))
+  "A deterministic level-1 :t-mage: 7 hp, iq 18 (+4 bonus, 6 sp)."
+  (let ((h (with-rng (3  0 0 0  0 0 0  5 5 5) (make-hero name :t-mage))))
+    (setf (hero-str h) 10)
+    h))
+
+;; Casters and spell points.
+(let ((mage (%combat-mage))
+      (grunt (%combat-hero)))
+  (check-true "a :caster class hero is a caster" (hero-caster-p mage))
+  (check "caster sp: 2 per level + iq bonus" 6 (hero-max-sp mage))
+  (check "caster starts at full sp" 6 (hero-sp mage))
+  (check-true "a plain class hero is no caster" (not (hero-caster-p grunt)))
+  (check "non-caster has no sp" 0 (hero-max-sp grunt))
+  (check-true "caster sheet shows sp"
+              (search "SP 6/6" (third (hero-summary-lines mage))))
+  (check-true "non-caster sheet stays sp-free"
+              (not (search "SP" (third (hero-summary-lines grunt))))))
+
+;; Leveling grows sp like hp: the new maximum arrives ready to burn.
+(let* ((m (parse-map *art* :name "test"))
+       (h (%combat-mage))
+       (g (new-game m :party (list h))))
+  (setf (hero-sp h) 1)
+  (with-rng (2) (award-xp g h 100))     ; level 2: max-sp 2*2+4 = 8
+  (check "level-up raises max sp" 8 (hero-max-sp h))
+  (check "level-up adds the growth to current sp" 3 (hero-sp h)))
+
+;; DEFINE-SPELL validation and the registry.
+(define-spell 'test-bolt  :cost 2 :level 1 :classes '(:t-mage)
+  :damage "1d4")
+(define-spell 'test-mend  :cost 2 :level 1 :classes '(:t-mage)
+  :heal "1d8")
+(define-spell 'test-shield :cost 3 :level 1 :classes '(:t-mage)
+  :buff-ac 2 :duration 30)
+(define-spell 'test-flame :cost 1 :level 1 :classes '(:t-mage)
+  :light t :duration 60)
+(define-spell 'test-lore  :cost 1 :level 3 :classes '(:t-mage)
+  :heal "1d4")
+
+(check "spell-title downcases the name" "test bolt" (spell-title 'test-bolt))
+(check-error "unknown spell rejected" (find-spell-type 'test-nonesuch))
+(check-error "define-spell needs exactly one effect"
+  (define-spell 'test-bogus :damage "1d4" :heal "1d4"))
+(check-error "define-spell needs an effect"
+  (define-spell 'test-bogus :cost 1))
+(check-error "a timed spell needs a duration"
+  (define-spell 'test-bogus :buff-ac 1))
+(check-error "duration must be a positive integer"
+  (define-spell 'test-bogus :light t :duration -5))
+
+;; Knowledge gates: class, level, caster-ness.
+(let ((mage (%combat-mage))
+      (grunt (%combat-hero)))
+  (check-true "mage knows a class spell" (spell-known-p mage 'test-bolt))
+  (check-true "non-caster knows nothing" (not (spell-known-p grunt 'test-bolt)))
+  (check-true "level gate holds" (not (spell-known-p mage 'test-lore)))
+  (setf (hero-level mage) 3)
+  (check-true "level gate opens" (spell-known-p mage 'test-lore))
+  (check "known spells in registration order"
+         '(test-bolt test-mend test-shield test-flame test-lore)
+         (spells-for-hero mage)))
+
+;; Cast refusals: each says why, costs nothing, returns NIL.
+(let* ((m (parse-map *art* :name "test"))
+       (mage (%combat-mage))
+       (g (new-game m :party (list mage)))
+       (msgs (watch-messages g)))
+  (check "damage spell out of combat refused" nil
+         (cast-spell g mage 'test-bolt))
+  (check-true "out-of-combat refusal says why"
+              (find-if (lambda (s) (search "nothing to strike" s))
+                       (funcall msgs)))
+  (setf (hero-sp mage) 1)
+  (check "unaffordable spell refused" nil (cast-spell g mage 'test-mend))
+  (check-true "no-sp refusal says why"
+              (find-if (lambda (s) (search "lacks the spell points" s))
+                       (funcall msgs)))
+  (check "refusals cost no sp" 1 (hero-sp mage))
+  (check "unknown-to-the-hero spell refused" nil
+         (cast-spell g (%combat-hero) 'test-bolt)))
+
+;; Damage cast in combat: auto-hits the first living monster.
+(let* ((m (parse-map *art* :name "test"))
+       (mage (%combat-mage))
+       (g (new-game m :party (list mage)))
+       (msgs (watch-messages g))
+       (cast '()))
+  (on-event g :spell-cast (lambda (game h name) (declare (ignore game))
+                            (push (list (hero-name h) name) cast)))
+  (start-combat g '(("test rat" 1)))    ; 3 hp
+  (check-true "bolt slays the rat"
+              (with-rng (2) (cast-spell g mage 'test-bolt)))  ; 1d4 -> 3
+  (check "cast paid its sp" 4 (hero-sp mage))
+  (check ":spell-cast emitted" '(("Zzgo" test-bolt)) cast)
+  (check-true "cast announced"
+              (find-if (lambda (s) (search "casts test bolt" s))
+                       (funcall msgs)))
+  (check-true "spell kill reads like a kill"
+              (find-if (lambda (s) (search "slays the test rat" s))
+                       (funcall msgs))))
+
+;; Heal targets a chosen hero; buffs and light become timed effects.
+(let* ((m (parse-map *art* :name "test"))
+       (mage (%combat-mage))
+       (grunt (%combat-hero))
+       (g (new-game m :party (list grunt mage))))
+  (damage-hero g grunt 5)
+  (check-true "mend heals the chosen hero"
+              (with-rng (3) (cast-spell g mage 'test-mend grunt)))
+  (check "heal landed on the target" 7 (hero-hp grunt))
+  (check-true "shield casts" (cast-spell g mage 'test-shield))
+  (check "shield lowers the party's effective ac" 6
+         (hero-effective-ac grunt g))
+  (check "plain ac untouched without game context" 8
+         (hero-effective-ac grunt))
+  (check "shield is a timed effect"
+         (+ (game-time g) 30)
+         (effect-expires-at (find-effect g "test shield")))
+  (check-true "flame casts" (cast-spell g mage 'test-flame))
+  (check-true "flame lights the party" (light-active-p g))
+  (advance-time g 30)
+  (check "expired shield stops shielding" 8 (hero-effective-ac grunt g))
+  (check-true "flame still burns" (light-active-p g))
+  (check "recasting an active effect pays and succeeds" 0
+         (progn (setf (hero-sp mage) 1)
+                (cast-spell g mage 'test-flame)
+                (hero-sp mage)))
+  (check "recast refreshed the flame's expiry"
+         (+ (game-time g) 60)
+         (effect-expires-at (find-effect g "test flame"))))
+
+;; combat-round accepts (:cast SPELL [TARGET]) beside :attack/:defend.
+(let* ((m (parse-map *art* :name "test"))
+       (grunt (%combat-hero))
+       (mage (%combat-mage))
+       (g (new-game m :party (list grunt mage))))
+  (start-combat g '(("test rat" 2)))  ; two rats, 3 hp each
+  ;; grunt attacks (d20=11 hits ac 10, 1d6=3 slays rat #1); the mage's
+  ;; bolt (1d4=3) slays rat #2; nobody is left to strike back.
+  (check "mixed action round wins" :victory
+         (with-rng (10 2 2)
+           (combat-round g (list :attack '(:cast test-bolt)))))
+  (check "the cast in the round paid sp" 4 (hero-sp mage)))
+
+;; SP regen: daylight, outdoors, out of combat — 1 sp per 4 minutes.
+(let* ((m (parse-map *corridor-art* :name "regen" :start-facing :east))
+       (mage (%combat-mage))
+       (g (new-game m :party (list mage))))
+  (setf (hero-sp mage) 0)
+  (setf (game-time g) 480)              ; day 1, 08:00 — daylight
+  (dotimes (i 8) (turn-right g))        ; 8 minutes pass outdoors
+  (check "eight daylight minutes regain two sp" 2 (hero-sp mage))
+  (setf (game-time g) 1240)             ; night
+  (dotimes (i 8) (turn-right g))
+  (check "night regains nothing" 2 (hero-sp mage))
+  (setf (hero-sp mage) (hero-max-sp mage))
+  (setf (game-time g) 480)
+  (dotimes (i 8) (turn-right g))
+  (check "regen caps at max sp" (hero-max-sp mage) (hero-sp mage)))
+
+;; No regen underground: a :dark zone shuts the sky out.
+(let ((path "tests/tmp-dark-regen.map"))
+  (with-open-file (s path :direction :output :if-exists :supersede)
+    (write-string "+-+-+
+|@  |
++-+-+
+(zone :dark t)
+" s))
+  (let* ((m (load-map-file path))
+         (mage (%combat-mage))
+         (g (new-game m :party (list mage))))
+    (setf (hero-sp mage) 0)
+    (setf (game-time g) 480)
+    (dotimes (i 8) (turn-right g))
+    (check "no regen in a :dark zone" 0 (hero-sp mage)))
+  (delete-file path))
+
+;; The cast menu model: the full key walk both frontends drive.
+(let* ((m (parse-map *art* :name "test"))
+       (grunt (%combat-hero))
+       (mage (%combat-mage))
+       (g (new-game m :party (list grunt mage)))
+       (view (make-cast-view)))
+  (check-true "caster page lists only casters"
+              (let ((lines (cast-lines g view)))
+                (and (find-if (lambda (s) (search "2) Zzgo" s)) lines)
+                     (not (find-if (lambda (s) (search "Alva" s)) lines)))))
+  (check "a non-caster digit is ignored" nil
+         (progn (cast-act g view #\1) (cast-view-hero view)))
+  (cast-act g view #\2)
+  (check "digit picks the caster by party slot" "Zzgo"
+         (hero-name (cast-view-hero view)))
+  (check-true "spell page shows the book"
+              (find-if (lambda (s) (search "test bolt" s))
+                       (cast-lines g view)))
+  ;; a damage spell out of combat: refused in place, menu stays open
+  (check "uncastable pick refuses and stays" nil (cast-act g view #\1))
+  (check-true "menu still open on the spell page"
+              (and (cast-view-hero view) (null (cast-view-spell view))))
+  ;; a heal walks on to the target page and commits
+  (damage-hero g grunt 3)
+  (cast-act g view #\2)                 ; test-mend -> target page
+  (check-true "heal pick opens the target page"
+              (find-if (lambda (s) (search "on whom?" s))
+                       (cast-lines g view)))
+  (check "target digit commits the cast" :done
+         (with-rng (7) (cast-act g view #\1)))
+  (check "menu cast healed the grunt" 8 (hero-hp grunt))
+  (check "menu cast paid the sp" 4 (hero-sp mage)))
+
+;; Esc unwinds the menu one page at a time, then cancels.
+(let* ((m (parse-map *art* :name "test"))
+       (mage (%combat-mage))
+       (g (new-game m :party (list mage)))
+       (view (make-cast-view)))
+  (cast-act g view #\1)
+  (cast-act g view #\2)                 ; test-mend -> target page
+  (check "esc leaves the target page" nil (cast-act g view #\Escape))
+  (check "back on the spell page" nil (cast-view-spell view))
+  (check "esc leaves the spell page" nil (cast-act g view #\Escape))
+  (check "back on the caster page" nil (cast-view-hero view))
+  (check "esc at the top cancels" :cancelled (cast-act g view #\Escape)))
+
+;; In combat the menu composes a full round: the caster casts, every
+;; other living hero attacks.
+(let* ((m (parse-map *art* :name "test"))
+       (grunt (%combat-hero))
+       (mage (%combat-mage))
+       (g (new-game m :party (list grunt mage)))
+       (view (make-cast-view :in-combat t)))
+  (start-combat g '(("test rat" 2)))
+  (cast-act g view #\2)                 ; Zzgo
+  ;; grunt attack: d20=11 hits, 1d6=3 slays; bolt 1d4=3 slays the other.
+  (check "combat commit fights the round" :done
+         (with-rng (10 2 2) (cast-act g view #\1)))
+  (check "the round is won" nil (game-combat g)))
+
+;;; ---------------------------------------------------------------------
 ;;; Items, inventory and equipment (M4)
 
 (define-item 't-torch   :price 2)
@@ -2260,11 +2503,11 @@ messages so far (oldest first)."
                   :idcmp amiga.intuition:+idcmp-closewindow+)
            (let* ((rp (amiga.intuition:window-rastport win))
                   (l (%amiga-layout win rp)))
-             (%amiga-draw-location rp g view l)   ; pick-hero page
+             (%amiga-draw-page rp (location-lines g view) l)   ; pick-hero page
              (shop-act g view #\1)
-             (%amiga-draw-location rp g view l)   ; buy page
+             (%amiga-draw-page rp (location-lines g view) l)   ; buy page
              (shop-act g view #\s)
-             (%amiga-draw-location rp g view l)   ; sell page
+             (%amiga-draw-page rp (location-lines g view) l)   ; sell page
              (%amiga-draw-log rp log l)
              (%amiga-status rp g l "Shop smoke test")
              t)))
@@ -2422,7 +2665,9 @@ full asset-size viewport" pname)
 ;; twice and leaves map mode (m) before quitting.
 ;; The scripted keys also open a character sheet (1), switch to another
 ;; roster slot (2) and leave it (:esc) — exercising the whole :sheet
-;; mode through the real event loop.
+;; mode through the real event loop.  The cellar is a :DARK zone, so
+;; the whole session renders at the one-cell darkness view depth (the
+;; :screen sessions below exercise the blit path's wall of night).
 #+amigaos
 (check "amiga-ui autoplay plays a scripted session and quits" :done
        (let ((*autoplay* (list #\w #\d #\1 #\2 :esc #\w #\a
@@ -2432,17 +2677,21 @@ full asset-size viewport" pname)
          (play-amiga "worlds/closure/cellar.map" :display :window)
          :done))
 
-;; The town: an unattended session walks from the gate to Wolfgar's
-;; shoppe (a LOCATION special), shops for real through the event loop —
-;; pick a hero (1), buy a torch (1), flip to the sell page (s), sell it
-;; again (1), back out (Esc Esc) — steps back into the street, walks
-;; east to the tavern and drops through the trapdoor into the cellar:
-;; the town's (ZONE :GFX ...) city pack swaps for the cellar's default
-;; pack on the way (the wall-bitmap reload path), then quits.
+;; The town: an unattended session first casts through the real event
+;; loop — open the cast menu (c), pick Zzgo the conjurer (4), cast
+;; mage flame (1) — then walks from the gate to Wolfgar's shoppe (a
+;; LOCATION special), shops for real — pick a hero (1), buy a torch
+;; (1), flip to the sell page (s), sell it again (1), back out
+;; (Esc Esc) — steps back into the street, walks east to the tavern
+;; and drops through the trapdoor into the cellar: the town's
+;; (ZONE :GFX ...) city pack swaps for the cellar's default pack on
+;; the way (the wall-bitmap reload path), and the cellar is a :DARK
+;; zone — Zzgo's flame is what keeps the view lit — then quits.
 #+amigaos
-(check "amiga-ui autoplay shops in the town and drops to the cellar"
+(check "amiga-ui autoplay casts, shops and drops to the dark cellar"
        :done
-       (let ((*autoplay* (list #\w #\a #\w #\w #\d #\w #\w #\w
+       (let ((*autoplay* (list #\c #\4 #\1
+                               #\w #\a #\w #\w #\d #\w #\w #\w
                                #\1 #\1 #\s #\1 :esc :esc
                                #\s #\d #\w #\w #\w #\w #\a #\w #\q)))
          (play-amiga "worlds/closure/town.map" :display :window)

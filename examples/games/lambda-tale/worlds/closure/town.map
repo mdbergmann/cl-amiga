@@ -35,3 +35,8 @@
 (special (6 1)
   (message "The Adventurer's Rest is dim and empty.  A trapdoor leads down.")
   (travel "cellar.map"))
+
+;; The alley between the shop rows is safe by day — and not by night.
+(special (4 1)
+  (at-night (message "Footpads leap from the shadows!")
+            (encounter ("footpad" "1d2"))))

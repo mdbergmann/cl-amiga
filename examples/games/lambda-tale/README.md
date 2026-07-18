@@ -18,11 +18,12 @@ make run     # play the demo campaign (starts in the town, worlds/closure/town.m
 Walkabout keys: `w` forward, `s` back-step (keeps facing), `a`/`d` turn,
 `m` full-screen map view (`m`/`Esc` back, `f` toggles the omniscient
 debug view there), `1`–`7` open that party member's character sheet
-(`1`–`7` switch heroes there, `Esc` back), `S`/`L` save/load
-(`tale.sav`), `q` quit.  In combat: `a` attack, `d` defend, `f` flee.
-Inside a location (a shop): `1`–`7` pick the shopping hero, `1`–`9`
-buy or sell, `s`/`b` flip between the buy and sell pages, `Esc`
-back/leave.
+(`1`–`7` switch heroes there, `Esc` back), `c` cast a spell (pick the
+caster, the spell and — for a heal — the target by number, `Esc`
+backs out), `S`/`L` save/load (`tale.sav`), `q` quit.  In combat:
+`a` attack, `d` defend, `c` cast, `f` flee.  Inside a location (a
+shop): `1`–`7` pick the shopping hero, `1`–`9` buy or sell, `s`/`b`
+flip between the buy and sell pages, `Esc` back/leave.
 
 The screen is split Bard's Tale style (see
 [specs/ui-and-engine.md](specs/ui-and-engine.md)): the first-person
@@ -97,6 +98,7 @@ src/game.lisp        game state, movement, automap observation
 src/events.lisp      engine event bus + story flags
 src/party.lisp       heroes, classes, xp/levels, party queries
 src/items.lisp       item types, packs and equipment
+src/spells.lisp      spell types, spell points, casting + the cast menu
 src/combat.lisp      monster types, round-based combat
 src/specials.lisp    cell-special interpreter (the story op vocabulary)
 src/locations.lisp   locations (shops): mechanics + shared menu model
@@ -218,7 +220,7 @@ it.  The engine never hard-codes story facts.  It emits events
 with `on-event`; story state lives in flags (`set-flag`/`flag`).  A
 campaign is pure data on top of the engine: hero classes
 (`define-hero-class`), monsters (`define-monster`), items
-(`define-item`) and maps with cell specials.  `worlds/closure/campaign.lisp` plus
+(`define-item`), spells (`define-spell`) and maps with cell specials.  `worlds/closure/campaign.lisp` plus
 `worlds/closure/town.map` and `worlds/closure/cellar.map` form the demo.
 
 ## The world: cities, dungeons, shops
@@ -325,10 +327,23 @@ Heroes have Bard's Tale-ish stats (str/dex/iq/con/lck, descending AC,
 hit dice per class) and level up on xp thresholds.  The roster holds
 up to 7 members (`join-party`): six regular heroes plus one guest slot
 for a summoned monster or story NPC.  Combat is
-round-based: the party declares actions (attack/defend, or try to
-flee), heroes strike first, then every surviving monster swings at a
-random front-rank hero.  All randomness goes through `*rng*`, so the
-test suite scripts entire fights deterministically.
+round-based: the party declares actions (attack/defend, cast a spell,
+or try to flee), heroes strike first, then every surviving monster
+swings at a random front-rank hero.  All randomness goes through
+`*rng*`, so the test suite scripts entire fights deterministically.
+
+## Spells
+
+Spells are campaign data (`define-spell`); the engine knows the
+mechanics: casters (`define-hero-class ... :caster t`) carry **spell
+points** (2 per level plus the IQ bonus) and pay them per cast, and a
+spell has exactly one engine-interpreted effect — damage (combat only,
+strikes the melee target), heal (one chosen hero), a timed party AC
+buff, or timed light (the answer to darkness).  Spell points trickle
+back Bard's Tale style while walking outdoors in daylight.  The demo
+conjurer's book — mage flame, arc fire, minor mend, stone skin — is
+in `worlds/closure/campaign.lisp`; the "Spells" test section of
+`tests/run-tests.lisp` is the executable specification.
 
 Save games (`save-game`/`load-game`) are a single readable Lisp form:
 the current zone's map file, position, the game clock, active effects,
@@ -367,5 +382,8 @@ combat and save games.
   the world as first-class data: zones (`(zone ...)`, cities and
   dungeons alike), cross-map travel, locations, items and shops
   (**done** — the demo town of Closure links to the cellar);
-  next sound, then polish.  The Bard's Tale II chrome and day/night
-  sky are parked until the game content lands.
+  day/night time with darkness, light and `at-night`/`at-day`
+  encounters (**done**); spells and spell points (**done** — the
+  conjurer's book lights the now-dark cellar);
+  next sound, then polish.  The Bard's Tale II chrome and the
+  day/night sky art are parked until the game content lands.
