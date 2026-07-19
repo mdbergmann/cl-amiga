@@ -240,7 +240,9 @@
 ;; The cellar is a :DARK zone, so the whole session renders at the
 ;; one-cell darkness view depth; the script walks, opens a character
 ;; sheet (1), switches hero (2), leaves it (:esc), and toggles map
-;; mode and its debug view.
+;; mode and its debug view.  This session keeps :DISPLAY :WINDOW —
+;; the Workbench-window development view — alive as a smoke test; the
+;; rest of the suite runs :DISPLAY :SCREEN, the game's presentation.
 #+amigaos
 (check "autoplay plays a scripted cellar session and quits" :done
        (let ((*autoplay* (list #\w #\d #\1 #\2 :esc #\w #\a
@@ -271,7 +273,7 @@
                                #\u #\1 #\1 #\q))
              ;; scratch save dir — keeps the real saves/ untouched
              (*save-dir* "tests/tmp-saves/"))
-         (play-amiga "worlds/closure/town.map" :display :window)
+         (play-amiga "worlds/closure/town.map" :display :screen)
          (when (probe-file "tests/tmp-saves/t1.sav")
            (delete-file "tests/tmp-saves/t1.sav"))
          :done))

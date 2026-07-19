@@ -493,6 +493,155 @@ page without a background-color box around every character."
              walls))
   nil)
 
+;;; ---------------------------------------------------------------------
+;;; The mouse pointer.  An own screen starts with unset sprite colors —
+;;; the pointer would be invisible black on black — so the game always
+;;; shows an explicit SetPointer sprite of its own: a pointing hand
+;;; (the built-in *HAND-POINTER-ART*), overridable per campaign by a
+;;; pointer.iff in the zone's tile pack (16 px wide at most, pens 1-3;
+;;; its CMAP entries 1-3 become screen colors 17-19, the hot spot is
+;;; the topmost-leftmost inked pixel).  The sprite is re-shown after
+;;; every palette change: Picasso96/RTG latches the pointer image and
+;;; its colors at SetPointer time, so setting colors 17-19 alone can
+;;; leave an already-shown pointer black.  During the loads that take
+;;; real seconds at 14MHz (tile packs on zone travel, a game load,
+;;; first-sight ILBM images) the pointer switches to a busy hourglass:
+;;; plane words (A B) per row, pixel value 1 (A) the sand, 2 (B) the
+;;; frame.
+
+(defvar *game-pointer* nil
+  "The standard in-game pointer as (CHIP HEIGHT XOFF YOFF) — chip-RAM
+sprite data currently shown on the game window — or NIL outside a
+session (the system default pointer then applies).")
+
+(defvar *pointer-window* nil
+  "The game window while a session runs.  Draw code deep below the
+event loop (the image cache) brackets its slow first-sight loads with
+the busy pointer through this.")
+
+(defun %pointer-chip (image)
+  "IMAGE as chip-RAM sprite data plus SET-POINTER geometry: returns
+\(CHIP HEIGHT XOFF YOFF); the caller frees CHIP (AMIGA:FREE-CHIP)."
+  (let* ((rows (pointer-sprite-rows image))
+         (chip (amiga:alloc-chip (* 2 (+ 2 (* 2 (length rows)) 2))))
+         (off 0))
+    (flet ((word (w) (ffi:poke-u16 chip w off) (incf off 2)))
+      (word 0) (word 0)                 ; position control
+      (dolist (row rows)
+        (word (first row))
+        (word (second row)))
+      (word 0) (word 0))                ; sprite terminator
+    (multiple-value-bind (hx hy) (pointer-hotspot image)
+      (list chip (length rows) (- hx) (- hy)))))
+
+(defun %apply-standard-pointer (win)
+  "Show the session's standard pointer (the hand) on WIN, or the
+system default when none is loaded."
+  (if *game-pointer*
+      (destructuring-bind (chip height xoff yoff) *game-pointer*
+        (amiga.intuition:set-pointer win chip height 16 xoff yoff))
+      (amiga.intuition:clear-pointer win)))
+
+(defun %pointer-image ()
+  "The standard pointer art: the tile pack's pointer.iff when the pack
+ships one (campaign-configurable), else the built-in hand.  A
+pointer.iff that will not load or breaks the sprite constraints logs
+to the trace and falls back to the hand."
+  (let ((file (and *gfx-dir*
+                   (concatenate 'string *gfx-dir* "pointer.iff"))))
+    (or (when (and file (probe-file file))
+          (handler-case
+              (let ((img (read-ilbm file)))
+                (pointer-sprite-rows img) ; validate geometry and pens
+                img)
+            (error (e)
+              (dlog "pointer.iff ~A rejected: ~A" file e)
+              nil)))
+        (hand-pointer-image))))
+
+(defun %ensure-standard-pointer (scr win display)
+  "(Re)build the standard pointer for the current tile pack and show
+it: art from %POINTER-IMAGE, its palette entries 1-3 into the sprite
+colors (screen colors 17-19) — on our own screen only; a Workbench
+window keeps the Workbench pointer colors."
+  (let ((img (%pointer-image)))
+    (when (and scr (eq display :screen))
+      (let ((vp (amiga.intuition:screen-viewport scr)))
+        (loop for i from 1 to 3
+              for rgb = (and (< i (length (image-palette img)))
+                             (aref (image-palette img) i))
+              when rgb
+                do (amiga.gfx:set-rgb4 vp (+ 16 i)
+                                       (floor (first rgb) 17)
+                                       (floor (second rgb) 17)
+                                       (floor (third rgb) 17)))))
+    (let ((old *game-pointer*))
+      (setf *game-pointer* (%pointer-chip img))
+      (%apply-standard-pointer win)
+      ;; the old sprite data is off the hardware only after the new
+      ;; SetPointer above, so it frees last
+      (when old (amiga:free-chip (first old))))))
+
+(defun %free-standard-pointer (win)
+  "Drop the standard pointer at session end: back to the system
+default, sprite data freed."
+  (when *game-pointer*
+    (amiga.intuition:clear-pointer win)
+    (amiga:free-chip (first *game-pointer*))
+    (setf *game-pointer* nil)))
+
+(defparameter *busy-pointer-image*
+  '((#x0000 #xFFFF)
+    (#x3FFC #x4002)
+    (#x1FF8 #x2004)
+    (#x0FF0 #x1008)
+    (#x07E0 #x0810)
+    (#x03C0 #x0420)
+    (#x0180 #x0240)
+    (#x0180 #x0240)
+    (#x03C0 #x0420)
+    (#x07E0 #x0810)
+    (#x0FF0 #x1008)
+    (#x1FF8 #x2004)
+    (#x3FFC #x4002)
+    (#x0000 #xFFFF)))
+
+(defun %make-busy-pointer-chip ()
+  "The busy-pointer image as chip-RAM sprite data ready for
+SET-POINTER: posctl words, (A B) per row, trailing words.  The caller
+frees it (AMIGA:FREE-CHIP) after the pointer moves off it."
+  (let* ((rows (length *busy-pointer-image*))
+         (chip (amiga:alloc-chip (* 2 (+ 2 (* 2 rows) 2))))
+         (off 0))
+    (flet ((word (w) (ffi:poke-u16 chip w off) (incf off 2)))
+      (word 0) (word 0)                 ; position control
+      (dolist (row *busy-pointer-image*)
+        (word (first row))              ; low plane: the sand
+        (word (second row)))            ; high plane: the frame
+      (word 0) (word 0))                ; sprite terminator
+    chip))
+
+(defvar *busy-pointer-active* nil
+  "Non-NIL while the busy pointer is up — nested loads (a game load
+that then swaps tile packs) keep the outer pointer instead of flashing
+it off halfway.")
+
+(defun %call-with-busy-pointer (win fn)
+  "Show the busy hourglass pointer on WIN while FN runs; puts the
+standard pointer (the hand — or the system default outside a session)
+back after and frees the sprite data.  Reentrant: a nested call runs
+FN directly under the already-shown pointer."
+  (if *busy-pointer-active*
+      (funcall fn)
+      (let ((chip (%make-busy-pointer-chip)))
+        (unwind-protect
+            (let ((*busy-pointer-active* t))
+              (amiga.intuition:set-pointer
+               win chip (length *busy-pointer-image*) 16 -7 -6)
+              (funcall fn))
+          (%apply-standard-pointer win)
+          (amiga:free-chip chip)))))
+
 ;;; The image cache: effects-band icons (effect :image), location
 ;;; pictures (the location op's :image) and character portraits (hero
 ;;; class :image) — arbitrary ILBMs loaded lazily on first draw into a
@@ -524,19 +673,25 @@ entry (BITMAP WIDTH HEIGHT MASK), MASK NIL for an opaque image."
 (defun %cached-image (rp images path log)
   "The cached entry (BITMAP WIDTH HEIGHT MASK) for the ILBM at PATH,
 loading it on first sight, or NIL — PATH is NIL, or the file would
-not load (said once in the log)."
+not load (said once in the log).  A first-sight load reads an ILBM
+from disk — seconds at 14MHz (a location picture on entering a shop),
+so it runs under the busy pointer."
   (when path
     (let ((entry (gethash path images)))
-      (cond ((eq entry :missing) nil)
-            (entry entry)
-            (t (handler-case
+      (flet ((load-it ()
+               (handler-case
                    (setf (gethash path images) (%load-image rp path))
                  (error (e)
                    (when log
                      (log-message log (format nil "No image ~A (~A)."
                                               path e)))
                    (setf (gethash path images) :missing)
-                   nil)))))))
+                   nil))))
+        (cond ((eq entry :missing) nil)
+              (entry entry)
+              (*pointer-window*
+               (%call-with-busy-pointer *pointer-window* #'load-it))
+              (t (load-it)))))))
 
 (defun %effect-icon (rp images game effect log)
   "EFFECT's cached icon entry (BITMAP WIDTH HEIGHT MASK), or NIL — no
@@ -1108,67 +1263,6 @@ menu bits 0-4, item bits 5-10, sub-item bits 11-15)."
   (logand (ash code -5) #x3F))
 
 ;;; ---------------------------------------------------------------------
-;;; The mouse pointer.  An own screen starts with unset sprite colors —
-;;; the pointer would be invisible black on black — so the palette
-;;; below also fills color registers 17-19 (the pointer is hardware
-;;; sprite 0), the classic red pointer with a dark outline.  During the
-;;; loads that take real seconds at 14MHz (tile packs on zone travel,
-;;; a game load) the pointer switches to a busy hourglass via
-;;; SetPointer, whose sprite image this is: plane words (A B) per row,
-;;; pixel value 1 (A) the red sand, 2 (B) the black frame.
-
-(defparameter *busy-pointer-image*
-  '((#x0000 #xFFFF)
-    (#x3FFC #x4002)
-    (#x1FF8 #x2004)
-    (#x0FF0 #x1008)
-    (#x07E0 #x0810)
-    (#x03C0 #x0420)
-    (#x0180 #x0240)
-    (#x0180 #x0240)
-    (#x03C0 #x0420)
-    (#x07E0 #x0810)
-    (#x0FF0 #x1008)
-    (#x1FF8 #x2004)
-    (#x3FFC #x4002)
-    (#x0000 #xFFFF)))
-
-(defun %make-busy-pointer-chip ()
-  "The busy-pointer image as chip-RAM sprite data ready for
-SET-POINTER: posctl words, (A B) per row, trailing words.  The caller
-frees it (AMIGA:FREE-CHIP) after CLEAR-POINTER."
-  (let* ((rows (length *busy-pointer-image*))
-         (chip (amiga:alloc-chip (* 2 (+ 2 (* 2 rows) 2))))
-         (off 0))
-    (flet ((word (w) (ffi:poke-u16 chip w off) (incf off 2)))
-      (word 0) (word 0)                 ; position control
-      (dolist (row *busy-pointer-image*)
-        (word (first row))              ; low plane: the sand
-        (word (second row)))            ; high plane: the frame
-      (word 0) (word 0))                ; sprite terminator
-    chip))
-
-(defvar *busy-pointer-active* nil
-  "Non-NIL while the busy pointer is up — nested loads (a game load
-that then swaps tile packs) keep the outer pointer instead of flashing
-it off halfway.")
-
-(defun %call-with-busy-pointer (win fn)
-  "Show the busy hourglass pointer on WIN while FN runs; restores the
-normal pointer (and frees the sprite data) after.  Reentrant: a nested
-call runs FN directly under the already-shown pointer."
-  (if *busy-pointer-active*
-      (funcall fn)
-      (let ((chip (%make-busy-pointer-chip)))
-        (unwind-protect
-            (let ((*busy-pointer-active* t))
-              (amiga.intuition:set-pointer
-               win chip (length *busy-pointer-image*) 16 -7 -6)
-              (funcall fn))
-          (amiga.intuition:clear-pointer win)
-          (amiga:free-chip chip)))))
-
-;;; ---------------------------------------------------------------------
 ;;; Display: Workbench window or own custom screen
 
 (defun %game-screen-palette (scr)
@@ -1235,10 +1329,12 @@ AMIGA.GFX:BEST-MODE-ID) covered by a borderless backdrop window."
                           :height (display-profile-screen-height p)
                           :depth (display-profile-screen-depth p)))
          (%game-screen-palette scr)
-         ;; no window title: on a backdrop window WA_Title still costs
-         ;; a title bar (border-top), and the screen already carries one
+         ;; :TITLE NIL, not merely omitted: on a backdrop window any
+         ;; WA_Title — including OPEN-WINDOW's default — still costs a
+         ;; title bar (border-top), and the screen already carries one
          (amiga.intuition:with-window
-             (win :left 0 :top 0
+             (win :title nil
+                  :left 0 :top 0
                   :width (amiga.intuition:screen-width scr)
                   :height (amiga.intuition:screen-height scr)
                   :screen scr
@@ -1395,7 +1491,13 @@ map/help/sheet pages close on a click outside a target — see
                                      (setf walls w)
                                      (when (eq display :screen)
                                        (%apply-pack-palette
-                                        scr pal)))))))))
+                                        scr pal))
+                                     ;; the pack may carry its own
+                                     ;; pointer.iff; re-showing also
+                                     ;; re-latches the sprite colors
+                                     ;; after the palette change (RTG)
+                                     (%ensure-standard-pointer
+                                      scr win display))))))))
                         (clear-inner ()
                           ;; Grey-wipe the content area (a bit beyond
                           ;; it, to catch the frames and shadows) when
@@ -1744,8 +1846,13 @@ map/help/sheet pages close on a click outside a target — see
                                      (#\m (setf mode :map)
                                           (redraw)))
                                    nil)))))
-                 (unwind-protect
+                 (let ((*pointer-window* win))
+                  (unwind-protect
                      (progn
+                       ;; the hand pointer is up before the first
+                       ;; (busy-bracketed) tile-pack load, so the busy
+                       ;; pointer has something to restore to
+                       (%ensure-standard-pointer scr win display)
                        (ensure-walls)
                        (%chrome-bg rp win l)
                        (%chrome-frames rp game l)
@@ -1792,6 +1899,7 @@ map/help/sheet pages close on a click outside a target — see
                                            entry)))
                                (when (and c (eq (act c) :quit))
                                  (return)))))))
+                   (%free-standard-pointer win)
                    (setf walls (%free-wall-assets walls)
                          icons (%free-images icons)
-                         log-lines (%free-log-lines log-lines)))))))))))))))
+                         log-lines (%free-log-lines log-lines))))))))))))))))
