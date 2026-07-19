@@ -84,6 +84,10 @@
    #:combat-monsters #:alive-monsters #:combat-groups #:combat-banner
    ;; save games
    #:save-game #:load-game
+   ;; named saves (the save/load slot menu)
+   #:*save-dir* #:slot-path #:ensure-save-dir #:save-slots
+   #:make-save-menu #:save-menu-mode #:save-menu-entry
+   #:save-menu-lines #:save-menu-act
    ;; rendering
    #:render-dungeon #:render-game #:render-first-person #:beside
    ;; interactive walkabout

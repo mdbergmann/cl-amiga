@@ -25,15 +25,15 @@
 ;;; tile pack's colors (see %APPLY-PACK-PALETTE).
 ;;;
 ;;; Save/Load/Quit live in an Intuition menu strip (right mouse button),
-;;; built with gadtools.library — the Amiga-native place for them.
+;;; built with gadtools.library — the Amiga-native place for them; both
+;;; items (and the S/L keys) open the shared save-slot picker
+;;; (src/save-menu.lisp), saves/NAME.sav.
 
 (require "amiga/intuition")
 (require "amiga/graphics")
 (require "amiga/gadtools")
 
 (in-package :tale)
-
-(defparameter *save-file* "tale.sav")
 
 (defvar *autoplay* nil
   "Testing hook: a list of key characters fed to the game one per
@@ -831,10 +831,13 @@ on the profile); the pack's colors show on the custom screen — a
 Workbench window keeps the Workbench palette.
 Keys: W forward, S back-step, A/D turn, M map mode (M/Esc leaves it,
 F toggles the debug full view there), 1-7 open a party member's
-character sheet (1-7 switch heroes there, Esc leaves), Q/Esc quit;
-in combat A attack, D defend, F flee; in a location (shop) 1-9
-choose, S/B switch sell/buy, Esc back/leave.  Save/Load/Quit sit in
-the menu strip (right mouse button)."
+character sheet (1-7 switch heroes there, Esc leaves), C cast a
+spell (pick caster/spell/target by number, Esc backs out), Q/Esc
+quit; in combat A attack, D defend, C cast, F flee; in a location
+(shop) 1-9 choose, S/B switch sell/buy, Esc back/leave.  Shift-S /
+Shift-L (and the menu strip's Save/Load, right mouse button) open
+the save-slot picker: 1-9 pick a slot, N names a new save
+(saves/NAME.sav), Esc cancels; Quit sits in the menu strip too."
   (load-campaign map-file)
   (with-display-profile (profile)
    (let* ((*gfx-dir* (or gfx-dir *gfx-dir*))
@@ -846,12 +849,15 @@ the menu strip (right mouse button)."
          (sheet-hero 0)     ; party index shown in :sheet mode
          (shopv nil)        ; SHOP-VIEW while inside a location
          (castv nil)        ; CAST-VIEW while the cast menu is open
+         (savem nil)        ; SAVE-MENU while the save/load picker is open
+         (saves-prior-mode :play) ; mode to return to when the picker closes
          (zone-dirty nil)   ; party traveled: the chrome needs a repaint
          (over nil))
     (labels ((wire (g)
                (setf log (attach-message-log g))
                (setf shopv (when (game-location g) (make-shop-view)))
                (setf castv nil)
+               (setf savem nil)
                (on-event g :enter-location
                          (lambda (gm loc) (declare (ignore gm loc))
                            (setf shopv (make-shop-view))))
@@ -907,6 +913,9 @@ the menu strip (right mouse button)."
                         (status-text ()
                           (cond ((eq over :won) "You win!  Press Q.")
                                 ((eq over :lost) "Game over.  Press Q.")
+                                (savem (if (eq (save-menu-mode savem) :save)
+                                           "Save: pick a slot or name one"
+                                           "Load: pick a slot"))
                                 (castv "Choose: 1-9 pick, Esc back")
                                 ((game-combat game)
                                  "COMBAT!  A atk  D def  C cast  F flee")
@@ -924,9 +933,11 @@ the menu strip (right mouse button)."
                                                (+ (ui-layout-right l) 2)
                                                (ui-layout-bottom l))
                           (amiga.gfx:set-a-pen rp 1))
-                        (fresh-play ()
-                          ;; back to the play page: chrome + panes
-                          (setf mode :play)
+                        (fresh-play (&optional (target-mode :play))
+                          ;; back to the play page (or, when a picker was
+                          ;; opened over the map/sheet view via the menu
+                          ;; strip, back to that view): chrome + panes
+                          (setf mode target-mode)
                           (clear-inner)
                           (%chrome-frames rp game l)
                           (redraw))
@@ -956,7 +967,10 @@ the menu strip (right mouse button)."
                             ((eq mode :sheet)
                              (%amiga-draw-sheet rp game sheet-hero l))
                             (t
-                             (cond (castv
+                             (cond (savem
+                                    (%amiga-draw-page
+                                     rp (save-menu-lines game savem) l))
+                                   (castv
                                     (%amiga-draw-page
                                      rp (cast-lines game castv) l))
                                    ((game-location game)
@@ -1001,28 +1015,49 @@ the menu strip (right mouse button)."
                                  (return-from cast-menu-act nil)))))
                           (redraw)
                           nil)
-                        (do-save ()
-                          (if (game-combat game)
-                              (log-message log "No saving during combat.")
-                              (progn
-                                (save-game game *save-file*)
-                                (log-message log "Game saved."))))
-                        (do-load ()
-                          (if (probe-file *save-file*)
-                              (progn
-                                (setf game (wire (load-game *save-file*)))
-                                (setf over nil
-                                      mode :play
-                                      zone-dirty nil)
-                                ;; loading may leave map mode (menu
-                                ;; item) or land in a zone with its own
-                                ;; tile pack — swap packs and repaint
-                                ;; the chrome (plaque carries the name)
-                                (ensure-walls)
-                                (clear-inner)
-                                (%chrome-frames rp game l)
-                                (log-message log "Game loaded."))
-                              (log-message log "No saved game found.")))
+                        (open-saves (menu-mode)
+                          ;; S/L keys and the GadTools Save/Load items
+                          ;; all land here; the picker draws over the
+                          ;; view column like a shop page.  The menu
+                          ;; strip can trigger this from :map/:sheet
+                          ;; mode too, so remember where to return.
+                          (setf saves-prior-mode mode)
+                          (setf savem (make-save-menu menu-mode)
+                                mode :play)
+                          (clear-inner)
+                          (%chrome-frames rp game l)
+                          (redraw))
+                        (saves-act (c)
+                          (let* ((key (if (eq c :esc) #\Escape c))
+                                 (r (when (characterp key)
+                                      (save-menu-act game savem key))))
+                            (cond ((eq r :closed)
+                                   (setf savem nil)
+                                   (fresh-play saves-prior-mode))
+                                  ((and (consp r) (eq (first r) :save))
+                                   (ensure-save-dir)
+                                   (save-game game (second r))
+                                   (log-message
+                                    log
+                                    (format nil "Saved ~A." (second r)))
+                                   (setf savem nil)
+                                   (fresh-play saves-prior-mode))
+                                  ((and (consp r) (eq (first r) :load))
+                                   (setf game (wire (load-game (second r))))
+                                   (setf over nil
+                                         mode :play
+                                         zone-dirty nil)
+                                   ;; loading may land in a zone with
+                                   ;; its own tile pack — swap packs and
+                                   ;; repaint the chrome (the plaque
+                                   ;; carries the zone name)
+                                   (ensure-walls)
+                                   (clear-inner)
+                                   (%chrome-frames rp game l)
+                                   (log-message log "Game loaded.")
+                                   (redraw))
+                                  (t (redraw))))
+                          nil)
                         (act (c)
                           "Handle key C; :quit means leave the event loop."
                           (let ((lc (if (characterp c) (char-downcase c) c)))
@@ -1044,6 +1079,12 @@ the menu strip (right mouse button)."
                                                    +party-limit+))
                                           (open-sheet (1- (digit-char-p c)))
                                           nil)))
+                                  (savem
+                                   ;; save/load picker: the shared model
+                                   ;; eats every key — digits pick slots
+                                   ;; and letters are name characters,
+                                   ;; so S/L/q cannot leak through
+                                   (saves-act c))
                                   (castv
                                    ;; cast menu: the shared model eats
                                    ;; every key (digits pick, Esc backs
@@ -1084,8 +1125,8 @@ the menu strip (right mouse button)."
                                      (#\c (open-cast t))
                                      (#\f (attempt-flee game) (redraw)))
                                    nil)
-                                  ((eql c #\S) (do-save) (redraw) nil)
-                                  ((eql c #\L) (do-load) (redraw) nil)
+                                  ((eql c #\S) (open-saves :save) nil)
+                                  ((eql c #\L) (open-saves :load) nil)
                                   ((and (characterp c) (digit-char-p c)
                                         (<= 1 (digit-char-p c) +party-limit+))
                                    (open-sheet (1- (digit-char-p c)))
@@ -1113,8 +1154,8 @@ the menu strip (right mouse button)."
                            (let ((code (amiga.intuition:msg-code msg)))
                              (unless (= code +menu-null+)
                                (case (%menu-item-number code)
-                                 (0 (do-save) (redraw))
-                                 (1 (do-load) (redraw))
+                                 (0 (open-saves :save))
+                                 (1 (open-saves :load))
                                  (3 (return))))))
                          (amiga.intuition:+idcmp-vanillakey+ (msg)
                            (let* ((code (amiga.intuition:msg-code msg))

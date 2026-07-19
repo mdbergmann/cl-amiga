@@ -18,6 +18,7 @@
 (load "src/locations.lisp")
 (load "src/spells.lisp")
 (load "src/save.lisp")
+(load "src/save-menu.lisp")
 (load "src/render.lisp")
 (load "src/render-fp.lisp")
 #+amigaos (load "src/amiga-ui.lisp")
