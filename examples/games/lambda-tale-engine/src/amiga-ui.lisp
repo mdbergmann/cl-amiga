@@ -74,7 +74,8 @@ exactly like a real left click.")
           ;; left-button clicks: everything play-able by key is
           ;; clickable too (see the hotspot list below)
           amiga.intuition:+idcmp-mousebuttons+
-          ;; the *autoplay* heartbeat
+          ;; the *autoplay* heartbeat and the pointer's hover tracking
+          ;; (hand vs pointing finger — see %TRACK-POINTER-HOT)
           amiga.intuition:+idcmp-intuiticks+))
 
 ;;; ---------------------------------------------------------------------
@@ -502,23 +503,38 @@ page without a background-color box around every character."
 ;;; ---------------------------------------------------------------------
 ;;; The mouse pointer.  An own screen starts with unset sprite colors —
 ;;; the pointer would be invisible black on black — so the game always
-;;; shows an explicit SetPointer sprite of its own: a pointing hand
-;;; (the built-in *HAND-POINTER-ART*), overridable per campaign by a
-;;; pointer.iff in the zone's tile pack (16 px wide at most, pens 1-3;
-;;; its CMAP entries 1-3 become screen colors 17-19, the hot spot is
-;;; the topmost-leftmost inked pixel).  The sprite is re-shown after
-;;; every palette change: Picasso96/RTG latches the pointer image and
-;;; its colors at SetPointer time, so setting colors 17-19 alone can
-;;; leave an already-shown pointer black.  During the loads that take
-;;; real seconds at 14MHz (tile packs on zone travel, a game load,
-;;; first-sight ILBM images) the pointer switches to a busy hourglass:
-;;; plane words (A B) per row, pixel value 1 (A) the sand, 2 (B) the
-;;; frame.
+;;; shows an explicit SetPointer sprite of its own.  Two states give
+;;; hover feedback: an open hand (the built-in *HAND-POINTER-ART*)
+;;; while nothing under the pointer reacts, and a pointing finger
+;;; (*POINT-POINTER-ART*) whenever the mouse rests on a click target
+;;; (*HOTSPOTS*) — tracked off the IntuiTicks heartbeat (~10/s), which
+;;; also re-checks a resting mouse after a redraw moved the targets;
+;;; no IDCMP_MOUSEMOVE flood on a 14MHz 68020.  Both are overridable
+;;; per campaign by a pointer.iff / pointer-click.iff in the zone's
+;;; tile pack (16 px wide at most, pens 1-3; the hand's CMAP entries
+;;; 1-3 become screen colors 17-19 — one sprite palette serves both —
+;;; the hot spot is the topmost-leftmost inked pixel).  The sprite is
+;;; re-shown after every palette change: Picasso96/RTG latches the
+;;; pointer image and its colors at SetPointer time, so setting colors
+;;; 17-19 alone can leave an already-shown pointer black.  During the
+;;; loads that take real seconds at 14MHz (tile packs on zone travel,
+;;; a game load, first-sight ILBM images) the pointer switches to a
+;;; busy hourglass: plane words (A B) per row, pixel value 1 (A) the
+;;; sand, 2 (B) the frame.
 
 (defvar *game-pointer* nil
-  "The standard in-game pointer as (CHIP HEIGHT XOFF YOFF) — chip-RAM
-sprite data currently shown on the game window — or NIL outside a
+  "The neutral in-game pointer (the hand) as (CHIP HEIGHT XOFF YOFF) —
+chip-RAM sprite data shown on the game window — or NIL outside a
 session (the system default pointer then applies).")
+
+(defvar *point-pointer* nil
+  "The click-target pointer (the pointing finger) as (CHIP HEIGHT XOFF
+YOFF), or NIL outside a session.")
+
+(defvar *pointer-hot* nil
+  "Non-NIL while the mouse rests on a click target —
+%APPLY-STANDARD-POINTER then shows the pointing finger instead of the
+hand.")
 
 (defvar *pointer-window* nil
   "The game window while a session runs.  Draw code deep below the
@@ -541,36 +557,53 @@ the busy pointer through this.")
       (list chip (length rows) (- hx) (- hy)))))
 
 (defun %apply-standard-pointer (win)
-  "Show the session's standard pointer (the hand) on WIN, or the
+  "Show the pointer matching the current hover state on WIN — the
+pointing finger over a click target, the hand elsewhere — or the
 system default when none is loaded."
-  (if *game-pointer*
-      (destructuring-bind (chip height xoff yoff) *game-pointer*
-        (amiga.intuition:set-pointer win chip height 16 xoff yoff))
-      (amiga.intuition:clear-pointer win)))
+  (let ((ptr (if (and *pointer-hot* *point-pointer*)
+                 *point-pointer*
+                 *game-pointer*)))
+    (if ptr
+        (destructuring-bind (chip height xoff yoff) ptr
+          (amiga.intuition:set-pointer win chip height 16 xoff yoff))
+        (amiga.intuition:clear-pointer win))))
 
-(defun %pointer-image ()
-  "The standard pointer art: the tile pack's pointer.iff when the pack
-ships one (campaign-configurable), else the built-in hand.  A
-pointer.iff that will not load or breaks the sprite constraints logs
-to the trace and falls back to the hand."
-  (let ((file (and *gfx-dir*
-                   (concatenate 'string *gfx-dir* "pointer.iff"))))
+(defun %track-pointer-hot (win x y)
+  "Flip between the hand and the pointing finger as the mouse at
+window pixel (X,Y) crosses click-target boundaries.  Called off
+IntuiTicks; only a state change touches SetPointer.  While the busy
+pointer is up only the state updates — the busy bracket's unwind
+re-applies the right sprite."
+  (let ((hot (and (%hotspot-at x y) t)))
+    (unless (eq hot *pointer-hot*)
+      (setf *pointer-hot* hot)
+      (unless *busy-pointer-active*
+        (%apply-standard-pointer win)))))
+
+(defun %pointer-image (name fallback)
+  "The pointer art from the tile pack's file NAME (pointer.iff /
+pointer-click.iff) when the pack ships one (campaign-configurable),
+else the built-in art from FALLBACK.  A file that will not load or
+breaks the sprite constraints logs to the trace and falls back."
+  (let ((file (and *gfx-dir* (concatenate 'string *gfx-dir* name))))
     (or (when (and file (probe-file file))
           (handler-case
               (let ((img (read-ilbm file)))
                 (pointer-sprite-rows img) ; validate geometry and pens
                 img)
             (error (e)
-              (dlog "pointer.iff ~A rejected: ~A" file e)
+              (dlog "~A ~A rejected: ~A" name file e)
               nil)))
-        (hand-pointer-image))))
+        (funcall fallback))))
 
 (defun %ensure-standard-pointer (scr win display)
-  "(Re)build the standard pointer for the current tile pack and show
-it: art from %POINTER-IMAGE, its palette entries 1-3 into the sprite
-colors (screen colors 17-19) — on our own screen only; a Workbench
-window keeps the Workbench pointer colors."
-  (let ((img (%pointer-image)))
+  "(Re)build both standard pointers for the current tile pack and show
+the one the hover state calls for: art from %POINTER-IMAGE, the hand's
+palette entries 1-3 into the sprite colors (screen colors 17-19; the
+hardware sprite has one palette, so the finger shares it) — on our own
+screen only; a Workbench window keeps the Workbench pointer colors."
+  (let ((img (%pointer-image "pointer.iff" #'hand-pointer-image))
+        (point (%pointer-image "pointer-click.iff" #'point-pointer-image)))
     (when (and scr (eq display :screen))
       (let ((vp (amiga.intuition:screen-viewport scr)))
         (loop for i from 1 to 3
@@ -581,20 +614,28 @@ window keeps the Workbench pointer colors."
                                        (floor (first rgb) 17)
                                        (floor (second rgb) 17)
                                        (floor (third rgb) 17)))))
-    (let ((old *game-pointer*))
-      (setf *game-pointer* (%pointer-chip img))
+    (let ((old *game-pointer*)
+          (old-point *point-pointer*))
+      (setf *game-pointer* (%pointer-chip img)
+            *point-pointer* (%pointer-chip point))
       (%apply-standard-pointer win)
       ;; the old sprite data is off the hardware only after the new
       ;; SetPointer above, so it frees last
-      (when old (amiga:free-chip (first old))))))
+      (when old (amiga:free-chip (first old)))
+      (when old-point (amiga:free-chip (first old-point))))))
 
 (defun %free-standard-pointer (win)
-  "Drop the standard pointer at session end: back to the system
+  "Drop the standard pointers at session end: back to the system
 default, sprite data freed."
+  (when (or *game-pointer* *point-pointer*)
+    (amiga.intuition:clear-pointer win))
   (when *game-pointer*
-    (amiga.intuition:clear-pointer win)
     (amiga:free-chip (first *game-pointer*))
-    (setf *game-pointer* nil)))
+    (setf *game-pointer* nil))
+  (when *point-pointer*
+    (amiga:free-chip (first *point-pointer*))
+    (setf *point-pointer* nil))
+  (setf *pointer-hot* nil))
 
 (defparameter *busy-pointer-image*
   '((#x0000 #xFFFF)
@@ -1893,6 +1934,12 @@ map/help/sheet pages close on a click outside a target — see
                                (when (and c (eq (act c) :quit))
                                  (return)))))
                          (amiga.intuition:+idcmp-intuiticks+ (msg)
+                           ;; hover feedback: the pointing finger over
+                           ;; a click target, the hand elsewhere
+                           (%track-pointer-hot
+                            win
+                            (amiga.intuition:msg-mouse-x msg)
+                            (amiga.intuition:msg-mouse-y msg))
                            (when *autoplay*
                              ;; a scripted entry is a key, or a
                              ;; (:click X Y) resolved through the same

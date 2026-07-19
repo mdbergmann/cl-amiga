@@ -340,8 +340,10 @@ The Amiga front-end supports two displays, selected by
   `:sunrise`/`:sunset` events with their log lines; `clock-line`
   formatting; timed-effect expiry (message + `:effect-expired`).
 - Darkness: night or `(zone :dark t)` shrink `game-view-depth` to 1 —
-  the view and the automap alike; a `(:light t)` effect restores the
-  full depth; `at-night`/`at-day` specials switch on the pure clock.
+  the view and the automap alike; `(zone :dark N)` keeps the zone dark
+  with N cells of sight (capped at `+view-depth+`); a `(:light t)`
+  effect restores the full depth; `at-night`/`at-day` specials switch
+  on the pure clock.
 - Spells: `define-spell` validation (exactly one effect, timed ones
   need durations), class/level knowledge gates, refusals that say why
   and cost nothing, scripted damage/heal/buff/light casts, sp payment
