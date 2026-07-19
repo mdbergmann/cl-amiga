@@ -57,7 +57,9 @@ For development there is also a window view on the Workbench screen
 
 Walkabout: `w` forward, `s` back-step (keeps facing), `a`/`d` turn,
 `m` full-screen map view (`m`/`Esc` back, `f` toggles the omniscient
-debug view there), `1`–`7` open that party member's character sheet
+debug view there; the footer shows the zone, position and game
+clock), `h` or `?` the help page with this key reference (`h`/`Esc`
+back), `1`–`7` open that party member's character sheet
 (`1`–`7` switch heroes there, `Esc` back), `c` cast a spell (pick the
 caster, the spell and — for a heal — the target by number, `Esc`
 backs out), `u` use an item — a torch, a potion — the same way (pick

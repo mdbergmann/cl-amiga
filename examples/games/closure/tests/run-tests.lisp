@@ -99,6 +99,15 @@
           (push (list file :missing) stale))))
   (check "the spell icons exist, 16x16 with the transparent key"
          nil stale))
+
+;; The town's ceiling is a plain, starless night sky: every pixel is
+;; the sky pen (regenerate with worlds/closure/gfx/make-pack.lisp).
+(let ((img (read-ilbm "worlds/closure/gfx/ceiling.iff"))
+      (pens '()))
+  (dotimes (y (image-height img))
+    (dotimes (x (image-width img))
+      (pushnew (pixel-ref img x y) pens)))
+  (check "the town ceiling is a flat starless sky" '(5) pens))
 (let* ((m (load-map-file "worlds/closure/town.map"))
        (g (new-game m :party (default-party)))
        (zzgo (fourth (game-party g))))

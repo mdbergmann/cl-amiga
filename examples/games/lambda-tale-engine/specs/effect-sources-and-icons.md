@@ -1,6 +1,9 @@
 # Effects: sources, icons, and the spell-driven compass
 
-Design sketch — not yet implemented.  Covers four connected changes:
+Design sketch — implemented 2026-07-19.  (Superseded detail: the
+Amiga effect strip now draws icons only, stacked vertically on the
+grey chrome, with no text labels — see specs/ui-and-engine.md for the
+current layout.)  Covers four connected changes:
 
 1. Remove the always-on compass rose; facing indication becomes a
    timed effect a spell grants (Bard's Tale's Magic Compass).

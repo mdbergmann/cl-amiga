@@ -2962,6 +2962,82 @@ messages so far (oldest first)."
            (pixel-ref ceiling 0 (1- (image-height ceiling))))))
 
 ;;; ---------------------------------------------------------------------
+;;; The help page: pure text both front-ends draw verbatim.
+
+(let ((lines (help-lines)))
+  (check-true "help-lines is a non-empty list of strings"
+              (and (consp lines) (every #'stringp lines)))
+  (check-true "help mentions movement, map and help keys"
+              (and (find-if (lambda (s) (search "W forward" s)) lines)
+                   (find-if (lambda (s) (search "M map" s)) lines)
+                   (find-if (lambda (s) (search "this help" s)) lines)))
+  (check-true "help mentions combat and save keys"
+              (and (find-if (lambda (s) (search "Combat:" s)) lines)
+                   (find-if (lambda (s) (search "save" s)) lines))))
+
+;;; ---------------------------------------------------------------------
+;;; The roster's class codes and column plists.
+
+(with-rng ()
+  (check "single-word class abbreviates to four letters" "TEST"
+         (hero-class-abbrev (make-hero "A" :tester))))
+(define-hero-class :war-mage :hp-dice "1d4" :caster t)
+(with-rng ()
+  (check "multi-word class abbreviates to its initials" "WM"
+         (hero-class-abbrev (make-hero "A" :war-mage))))
+
+;; Both profiles carry the full Bard's Tale column set, in order.
+(dolist (p (list *lores-profile* *hires-profile*))
+  (let ((cols (display-profile-roster-cols p)))
+    (check-true (format nil "~A roster columns are complete and ordered"
+                        (display-profile-name p))
+                (apply #'< (mapcar (lambda (k) (getf cols k))
+                           '(:no :name :ac :hit :hpts :spl :spts :cl))))))
+
+;;; ---------------------------------------------------------------------
+;;; The microfont: the message log's compact 5x7 pixel font.
+
+(check "microfont advance is 6 pixels" 6 +microfont-advance+)
+(check "microfont line height is 8 pixels" 8 +microfont-line-height+)
+(check "microfont text width" 30 (microfont-text-width "hello"))
+
+;; Glyph shapes: 'A' has its crossbar, space is blank; anything
+;; outside printable ASCII falls back to the hollow box.
+(check-true "glyph A"
+            (equalp #(#b01110 #b10001 #b10001 #b10001
+                      #b11111 #b10001 #b10001)
+                    (microfont-glyph #\A)))
+(check-true "space is blank" (equalp #(0 0 0 0 0 0 0)
+                                     (microfont-glyph #\Space)))
+(check-true "non-ASCII falls back to the box"
+            (eq *microfont-fallback* (microfont-glyph (code-char 200))))
+
+;; Rendering: row-major pens, FG where a glyph bit is set, BG
+;; elsewhere; WIDTH pads or cuts.
+(multiple-value-bind (pens w h) (microfont-line "A" 7 2)
+  (check "rendered width of one glyph cell" 6 w)
+  (check "rendered height is the line height" 8 h)
+  (check "buffer covers the cell" 48 (length pens))
+  ;; row 0 of 'A' is 01110 -> pens 2 7 7 7 2, then the spacing column
+  (check "top row pixels" '(2 7 7 7 2 2)
+         (loop for x below 6 collect (aref pens x)))
+  ;; row 4 is the 11111 crossbar
+  (check "crossbar row pixels" '(7 7 7 7 7 2)
+         (loop for x below 6 collect (aref pens (+ (* 4 6) x))))
+  ;; row 7 is the spacing row
+  (check "spacing row is background" '(2 2 2 2 2 2)
+         (loop for x below 6 collect (aref pens (+ (* 7 6) x)))))
+(multiple-value-bind (pens w h) (microfont-line "AB" 1 0 :width 8)
+  (declare (ignore pens))
+  (check "explicit width cuts the text" 8 w)
+  (check "height stays fixed" 8 h))
+(multiple-value-bind (pens w h) (microfont-line "" 1 0 :width 24)
+  (check "explicit width pads short text" 24 w)
+  (check "padded buffer is all background" 0
+         (loop for p across pens maximize p))
+  (check "padded height" 8 h))
+
+;;; ---------------------------------------------------------------------
 ;;; Amiga front-end smoke test (real Intuition window + graphics.library
 ;;; calls; only runs when this suite is loaded under AmigaOS clamiga).
 
@@ -2982,11 +3058,31 @@ messages so far (oldest first)."
                   :idcmp amiga.intuition:+idcmp-closewindow+)
            (let* ((rp (amiga.intuition:window-rastport win))
                   (l (%amiga-layout win rp)))
+             ;; layout invariants: the taller plaque, the roster right
+             ;; under it (no status line), the page/strip gap
+             (check "plaque is two pixels taller than a text line"
+                    (+ (ui-layout-plaque-y l) (ui-layout-lh l) 2)
+                    (ui-layout-plaque-b l))
+             (check "roster header sits right under the plaque"
+                    (+ (ui-layout-plaque-b l) 5) (ui-layout-hdr-y l))
+             (check-true "seven roster rows fit above the bottom edge"
+                         (<= (+ (ui-layout-party-y l)
+                                (* (ui-layout-lh l) +party-limit+))
+                             (ui-layout-bottom l)))
+             (check "the log page ends a gap above the effect strip"
+                    (ui-layout-band-y l) (+ (ui-layout-page-b l) 4))
              (%amiga-draw-fp rp g (ui-layout-bx l) (ui-layout-by l)
                              (ui-layout-fp-w l) (ui-layout-fp-h l))
              (%amiga-draw-band rp g l)
              (%amiga-draw-log rp log l)
-             (%amiga-status rp g l "Smoke test")
+             ;; the cached-bitmap log path (the live session's) and
+             ;; the help page draw too
+             (let ((cache (make-hash-table :test #'equal)))
+               (%amiga-draw-log rp log l cache)
+               (check-true "log lines were cached as bitmaps"
+                           (plusp (hash-table-count cache)))
+               (%free-log-lines cache))
+             (%amiga-draw-help rp l)
              ;; the full map mode over the same window
              (%amiga-draw-map-page rp g l nil)
              (%amiga-draw-map-page rp g l t)
@@ -3063,7 +3159,6 @@ messages so far (oldest first)."
              (shop-act g view #\s)
              (%amiga-draw-page rp (location-lines g view) l)   ; sell page
              (%amiga-draw-log rp log l)
-             (%amiga-status rp g l "Shop smoke test")
              t)))
   (leave-location g))
 
@@ -3092,7 +3187,7 @@ messages so far (oldest first)."
                   (display-profile-screen-width *display-profile*)
                   (amiga.intuition:screen-width scr))
            (amiga.intuition:with-window
-               (win :title "Lambda's Tale Test"
+               (win :title nil          ; the game's backdrop is untitled
                     :left 0 :top 0
                     :width (amiga.intuition:screen-width scr)
                     :height (amiga.intuition:screen-height scr)
@@ -3107,8 +3202,23 @@ messages so far (oldest first)."
                                (ui-layout-fp-w l) (ui-layout-fp-h l))
                (%amiga-draw-band rp g l)
                (%amiga-draw-log rp log l)
-               (%amiga-status rp g l "Screen smoke test")
                (%amiga-party rp g l)
+               ;; The game hides the OS screen bar: ShowTitle NIL plus
+               ;; the full-height backdrop window (%CALL-WITH-GAME-WINDOW
+               ;; does the same).  Probe the screen's own rastport
+               ;; (offset 84 in struct Screen): were the bar layer
+               ;; still in front, the screen bitmap's top rows would
+               ;; hold the bar's rendering, not our pixels.
+               (amiga.intuition:show-title scr nil)
+               (amiga.gfx:set-a-pen rp 3)
+               (amiga.gfx:rect-fill rp 0 0 50 3)
+               (amiga.gfx:set-a-pen rp 1)
+               (check "the screen bar stays hidden behind the backdrop"
+                      3
+                      (amiga.gfx:read-pixel
+                       (ffi:make-foreign-pointer
+                        (+ (ffi:foreign-pointer-address scr) 84))
+                       25 1))
                t)))))
 
 ;; Wall-piece assets (M3): each profile's pack ILBMs load into
@@ -3215,8 +3325,10 @@ full asset-size viewport" pname)
 ;; are fed one per INTUITICK (~10/s), ending in #\q so the event loop
 ;; exits on its own.  Verifies the whole real event path — window, menu
 ;; strip, redraws, key dispatch — with no user at the keyboard.  The
-;; script also enters map mode (m), toggles the debug full view (f)
-;; twice and leaves map mode (m) before quitting.
+;; script also opens the help page (h) and leaves it (Esc), enters map
+;; mode (m), toggles the debug full view (f) twice, opens help from
+;; the map view too (? — the second h returns to the map) and leaves
+;; map mode (m) before quitting.
 ;; The scripted keys also open a character sheet (1), switch to another
 ;; roster slot (2) and leave it (:esc) — exercising the whole :sheet
 ;; mode through the real event loop.  The fixture crypt is a :DARK
@@ -3226,7 +3338,8 @@ full asset-size viewport" pname)
 #+amigaos
 (check "amiga-ui autoplay plays a scripted session and quits" :done
        (let ((*autoplay* (list #\w #\d #\1 #\2 :esc #\w #\a
-                               #\m #\f #\f #\m #\s #\q)))
+                               #\h :esc
+                               #\m #\f #\f #\? #\h #\m #\s #\q)))
          ;; :window is the development view — :screen (the default)
          ;; gets its own autoplay below
          (play-amiga "tests/world/crypt.map" :display :window)
@@ -3235,7 +3348,7 @@ full asset-size viewport" pname)
 ;; The keep: an unattended session first casts through the real event
 ;; loop — open the cast menu (c), pick Wanda the wizard (2), cast the
 ;; flame (1), then the compass (4: the band draws the rose and the
-;; status line shows the facing for the rest of the session) — and
+;; map footer shows the facing for the rest of the session) — and
 ;; Wilhelm strikes up the march through the sing menu (p, 1, 1 — his
 ;; one tune).  Then it saves and reloads through the slot picker (S,
 ;; n, type "t1", Return; L, 1 — the whole name-entry and re-wire path

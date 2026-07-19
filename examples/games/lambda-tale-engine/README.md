@@ -89,9 +89,12 @@ specs/               design constraints (UI layout, map scale, screens)
 Both front-ends draw the Bard's Tale split screen (see
 [specs/ui-and-engine.md](specs/ui-and-engine.md)): the first-person
 view with the location plaque under it on the left, the scrolling
-message log on the right with the active-effects band at its foot —
-where the compass rose appears while a compass effect burns — and the
-status line plus the numbered party roster at the bottom.  The full automap lives under `m`; maps can be large (30x30
+message log on the right (in the engine's compact 5x7 microfont on
+the Amiga) with the active-effect icons stacked below it — where the
+compass rose appears while a compass effect burns — and the numbered
+party roster (`# CHARACTER AC HIT PTS SPL PTS CL`) at the bottom.
+The key reference lives on the help page under `h`/`?`; the map view's
+footer shows the zone, position and game clock.  The full automap lives under `m`; maps can be large (30x30
 like Bard's Tale I, up to 128x128).  The key bindings are listed in
 the [Closure README](../closure/README.md).  On the Amiga the window
 uses the same geometry as the custom screen, so both displays lay out
@@ -306,7 +309,7 @@ The op vocabulary — `message`, `set-flag`/`clear-flag`,
 
 ## Time, day and night
 
-The game has a clock (shown in the status line): every step, turn and
+The game has a clock (shown in the map view's footer): every step, turn and
 combat round costs a minute, a fresh game starts at day 1, 08:00, and
 daylight runs 06:00–20:00 — `:sunrise`/`:sunset` events fire at the
 boundaries and the `at-night`/`at-day` special ops make map encounters
@@ -336,9 +339,9 @@ spell has exactly one engine-interpreted effect — damage (combat only,
 strikes the melee target), heal (one chosen hero), a timed party AC
 buff, timed light (the answer to darkness), or a timed compass:
 Bard's Tale style, the party only sees which way it faces — the rose
-in the effects band, the facing in the status line — while a compass
+in the effect strip, the facing in the map footer — while a compass
 effect burns.  A timed spell may name an `:image`, the icon the
-effects band shows for it.  Spell points trickle back Bard's Tale
+effect strip shows for it.  Spell points trickle back Bard's Tale
 style while walking outdoors in daylight.  The "Spells" test section
 of `tests/run-tests.lisp` is the executable specification.
 

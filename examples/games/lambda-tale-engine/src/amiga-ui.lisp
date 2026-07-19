@@ -4,18 +4,22 @@
 ;;;
 ;;;   +--------------------+----------------------+
 ;;;   | first-person view  | message log          |
-;;;   |                    | (newest at the       |
-;;;   |                    |  bottom, older       |
-;;;   +--------------------+  scrolling up)       |
-;;;   | location plaque    +----------------------+
-;;;   |                    | effects band [+rose] |
+;;;   |                    | (microfont, newest   |
+;;;   |                    |  at the bottom)      |
 ;;;   +--------------------+----------------------+
-;;;   | status line                               |
-;;;   | party roster (7 rows)                     |
+;;;   | location plaque    | effect icons [+rose] |
+;;;   +--------------------+----------------------+
+;;;   | party roster (header + 7 rows)            |
 ;;;   +-------------------------------------------+
 ;;;
-;;; The compass rose appears in the band — and the facing in the status
-;;; line — only while a :COMPASS effect burns (COMPASS-ACTIVE-P).
+;;; There is no status line: the party roster sits right under the
+;;; view, the key reference lives on the help page ('h' or '?'), and
+;;; the position/clock show in the map mode's footer.  The message log
+;;; renders in the engine's compact 5x7 microfont (microfont.lisp) so
+;;; the narrow column holds more text.  Active effects show as icons
+;;; only, stacked vertically on the grey chrome below the log page;
+;;; the compass rose appears beside them — and the facing in the map
+;;; footer — only while a :COMPASS effect burns (COMPASS-ACTIVE-P).
 ;;;
 ;;; The automap lives in a full-screen map mode under the 'm' key.
 ;;;
@@ -69,9 +73,9 @@ Intuition tick (~10/s), driving a full unattended session.  :ESC quits.")
   fp-w fp-h        ; first-person view size
   log-x log-w      ; message log column
   col-h            ; height of the log/page column
-  band-y band-h    ; effects + compass band at the log column's foot
-  plaque-y         ; location plaque top (under the view)
-  status-y         ; status pane top
+  page-b           ; log page bottom edge (its outline row)
+  band-y band-h    ; effect icons + compass strip below the log page
+  plaque-y plaque-b ; location plaque top / bottom edges (under the view)
   hdr-y            ; party roster header row top
   party-y          ; party roster rows top
   ring-p)          ; draw the ornate border ring (full-screen backdrop)
@@ -93,25 +97,35 @@ Intuition tick (~10/s), driving a full unattended session.  :ESC quits.")
          (lh (+ (amiga.gfx:rastport-tx-height rp) 2))
          (base (amiga.gfx:rastport-tx-baseline rp))
          (cw (max 1 (amiga.gfx:text-length rp "M")))
-         (party-y (- bottom (* lh +party-limit+)))
-         (hdr-y (- party-y lh))
-         (status-y (- hdr-y lh 1))
-         (fp-h (min *fp-view-height* (- status-y 1 (+ lh 3) by)))
+         ;; top-down: view, plaque, then the roster right below —
+         ;; leftover space becomes bottom margin (no status line)
+         (fp-h (min *fp-view-height*
+                    (- bottom by
+                       (+ lh 3)                 ; the plaque
+                       (+ 5 lh)                 ; roster gap + header
+                       (* lh +party-limit+))))  ; roster rows
          (plaque-y (+ by fp-h 1))
-         (col-h (- (+ plaque-y lh 1) by))
+         (plaque-b (+ plaque-y lh 2))   ; 2px taller than a text line so
+                                        ; the glyphs clear both borders
+         (col-h (- (1+ plaque-b) by))
          (log-x (+ bx *fp-view-width* (display-profile-view-gap p)))
-         ;; the band sits at the foot of the log column, its bottom
-         ;; flush with the page interior (one above the page outline)
-         (band-h (min (display-profile-band-height p) (- col-h 2)))
-         (band-y (- (+ by col-h -1) band-h)))
+         ;; the effect strip sits at the foot of the log column, its
+         ;; bottom flush with the plaque's; the white log page ends a
+         ;; small gap above it
+         (band-h (min (display-profile-band-height p) (- col-h 8)))
+         (band-y (- (+ by col-h -1) band-h))
+         (page-b (- band-y 4))
+         (hdr-y (+ plaque-b 5))
+         (party-y (+ hdr-y lh)))
     (%make-ui-layout :bx bx :by by :right right :bottom bottom
                      :lh lh :base base :cw cw
                      :fp-w *fp-view-width* :fp-h fp-h
                      :log-x log-x :log-w (- right log-x)
                      :col-h col-h
+                     :page-b page-b
                      :band-y band-y :band-h band-h
-                     :plaque-y plaque-y
-                     :status-y status-y :hdr-y hdr-y :party-y party-y
+                     :plaque-y plaque-y :plaque-b plaque-b
+                     :hdr-y hdr-y :party-y party-y
                      :ring-p ring-p)))
 
 ;;; ---------------------------------------------------------------------
@@ -153,14 +167,15 @@ double-outline border ring on the full-screen backdrop."
 
 (defun %chrome-frames (rp game l)
   "The picture frame + drop shadow around the view, the location
-plaque under it, and the white message page shell."
+plaque under it, and the white message page shell (the page ends a
+small gap above the effect strip — see %AMIGA-DRAW-BAND)."
   (let* ((bx (ui-layout-bx l))
          (by (ui-layout-by l))
          (w (ui-layout-fp-w l))
          (h (ui-layout-fp-h l))
-         (lh (ui-layout-lh l))
          (py (ui-layout-plaque-y l))
-         (pb (+ py lh))                 ; plaque bottom
+         (pb (ui-layout-plaque-b l))    ; plaque bottom
+         (pg (ui-layout-page-b l))      ; log page bottom
          (lx (ui-layout-log-x l))
          (r (ui-layout-right l)))
     ;; view + plaque drop shadow (down-right, BT2 style)
@@ -170,23 +185,25 @@ plaque under it, and the white message page shell."
     ;; white picture frame around the view
     (amiga.gfx:set-a-pen rp 1)
     (%chrome-rect rp (1- bx) (1- by) (+ bx w) (+ by h))
-    ;; location plaque: black block, white border, centered map name
+    ;; location plaque: black block, white border, centered map name;
+    ;; the block is two pixels taller than a text line so the glyphs
+    ;; sit clear of both border rows
     (amiga.gfx:set-a-pen rp 0)
-    (amiga.gfx:rect-fill rp (1- bx) (1+ (+ by h)) (+ bx w) pb)
+    (amiga.gfx:rect-fill rp (1- bx) py (+ bx w) pb)
     (amiga.gfx:set-a-pen rp 1)
-    (%chrome-rect rp (1- bx) (1+ (+ by h)) (+ bx w) pb)
+    (%chrome-rect rp (1- bx) py (+ bx w) pb)
     (let* ((name (string-capitalize (map-title (game-map game))))
            (tw (amiga.gfx:text-length rp name)))
       (amiga.gfx:move-to rp (+ bx (max 0 (floor (- w tw) 2)))
-                         (+ py (ui-layout-base l)))
+                         (+ py 2 (ui-layout-base l)))
       (amiga.gfx:gfx-text rp name))
     ;; message page: white sheet with a black outline and shadow
     (amiga.gfx:set-a-pen rp 0)
-    (amiga.gfx:rect-fill rp (+ (- lx 4) 2) (+ by 1) (+ r 2) (+ pb 2))
+    (amiga.gfx:rect-fill rp (+ (- lx 4) 2) (+ by 1) (+ r 2) (+ pg 2))
     (amiga.gfx:set-a-pen rp 1)
-    (amiga.gfx:rect-fill rp (- lx 4) (1- by) r pb)
+    (amiga.gfx:rect-fill rp (- lx 4) (1- by) r pg)
     (amiga.gfx:set-a-pen rp 0)
-    (%chrome-rect rp (- lx 4) (1- by) r pb)
+    (%chrome-rect rp (- lx 4) (1- by) r pg)
     (amiga.gfx:set-a-pen rp 1)))
 
 ;;; ---------------------------------------------------------------------
@@ -448,6 +465,45 @@ once in the log; the band falls back to the text label)."
              icons))
   nil)
 
+;;; Message-log lines render in the engine's 5x7 microfont
+;;; (microfont.lisp) — smaller than topaz 8, so the narrow column
+;;; holds more text.  Each distinct display line is rasterized once
+;;; (black on the white page) into an offscreen bitmap and blitted on
+;;; every redraw — one OS call per line instead of a chunky upload,
+;;; which matters at 14MHz.  The cache is per session, keyed by the
+;;; (already truncated) line text.
+
+(defconstant +log-line-cache-limit+ 128
+  "Cache entries before the log-line bitmaps are flushed wholesale —
+far above the distinct lines ever on screen at once.")
+
+(defun %log-line-bitmap (rp lines text)
+  "The cached (BITMAP . WIDTH) for the log display line TEXT, LINES
+being the session's cache; renders and uploads it on first sight."
+  (or (gethash text lines)
+      (progn
+        (when (>= (hash-table-count lines) +log-line-cache-limit+)
+          (%free-log-lines lines)
+          (clrhash lines))
+        (multiple-value-bind (pens w h)
+            (microfont-line text 0 1)   ; black glyphs on the white page
+          (let* ((friend (%window-bitmap rp))
+                 (depth (max 2 (amiga.gfx:get-bitmap-attr
+                                friend amiga.gfx:+bma-depth+)))
+                 (bm (amiga.gfx:alloc-bitmap w h depth :friend friend)))
+            (amiga.gfx:with-bitmap-rastport (brp bm)
+              (amiga.gfx:write-chunky brp 0 0 w h pens))
+            (setf (gethash text lines) (cons bm w)))))))
+
+(defun %free-log-lines (lines)
+  "Free the cached log-line bitmaps; safe with NIL."
+  (when lines
+    (maphash (lambda (text entry)
+               (declare (ignore text))
+               (amiga.gfx:free-bitmap (car entry)))
+             lines))
+  nil)
+
 (defun %amiga-draw-map-region (rp game ox oy cell x0 y0 vw vh full
                                &optional (cw 8))
   "Draw automap cells [X0,X0+VW) x [Y0,Y0+VH) at (OX,OY), CELL pixels
@@ -507,68 +563,41 @@ minimap viewport and the full map mode."
           (amiga.gfx:set-a-pen rp 1))))))
 
 (defun %amiga-draw-band (rp game l &optional icons log)
-  "The band at the foot of the message-log column: active effects
-(shield, lamp, ...) as lines at the left — each with its icon blitted
-before the label when the effect carries an :IMAGE (ICONS is the
-session's icon cache, see %EFFECT-ICON) — and, only while a :COMPASS
-effect burns, the compass rose, the four cardinal letters around a
-diamond with the needle pointing at the party's facing, in the BAND-H
-square at the right.  Without a compass the effect lines get the whole
-band.  Black on the white page, separated from the log above by a thin
-rule."
+  "The effect strip below the log page, on the grey chrome (a small
+gap separates it from the page above): the active effects' icons only
+— no labels; casting/expiry is announced in the log — stacked
+vertically at the left (ICONS is the session's icon cache, see
+%EFFECT-ICON; an effect without a loadable icon shows nothing here).
+While a :COMPASS effect burns, the compass rose — the four cardinal
+letters around a diamond with the needle pointing at the party's
+facing — draws in the BAND-H square at the right."
   (let* ((ox (ui-layout-log-x l))
-         (w (ui-layout-log-w l))
          (right (ui-layout-right l))
          (band-y (ui-layout-band-y l))
          (band-h (ui-layout-band-h l))
          (bottom (+ band-y band-h -1))
-         (lh (ui-layout-lh l))
          (cw (ui-layout-cw l))
-         (base (ui-layout-base l))
          (compass (compass-active-p game))
-         (rose-w (if compass band-h 0)) ; the rose's square at the right
          (cx (- right 1 (floor band-h 2)))
          (cy (+ band-y (floor band-h 2)))
          (r (max 6 (- (floor band-h 2) 6))))
-    ;; band interior on the white page, plus the rule under the log
-    (amiga.gfx:set-a-pen rp 1)
-    (amiga.gfx:rect-fill rp (- ox 3) band-y (- right 1) bottom)
-    (amiga.gfx:set-a-pen rp 0)
-    (amiga.gfx:draw-line rp (- ox 3) band-y (- right 1) band-y)
-    ;; active effects, one line each: [icon] label
-    (let ((y (+ band-y 2 base)))
+    ;; the strip is bare chrome: grey-wipe it (covers icon churn)
+    (amiga.gfx:set-a-pen rp 2)
+    (amiga.gfx:rect-fill rp (- ox 4) band-y right bottom)
+    ;; effect icons, stacked vertically
+    (let ((x (- ox 4))
+          (y band-y))
       (dolist (e (game-effects game))
-        (let ((advance lh))
-          (when (< y bottom)
-            (let* ((entry (and icons (%effect-icon rp icons game e log)))
-                   (ty (- y base))
-                   (iw (if entry (second entry) 0))
-                   (ih (if entry (third entry) 0))
-                   ;; the icon draws only where it fits: above the
-                   ;; band's foot, clear of the rose's square
-                   (fits (and entry
-                              (<= (+ ty ih) bottom)
-                              (<= (+ iw (* 4 cw)) (- w rose-w 4)))))
-              (when fits
-                (let ((bm (first entry))
-                      (mask (fourth entry)))
-                  (if mask
-                      (amiga.gfx:blt-mask-bitmap-rastport
-                       bm 0 0 rp ox ty iw ih mask)
-                      (amiga.gfx:blt-bitmap-rastport
-                       bm 0 0 rp ox ty iw ih))
-                  (amiga.gfx:set-a-pen rp 0)
-                  (setf advance (max lh (+ ih 2)))))
-              (let* ((tx (if fits (+ ox iw 3) ox))
-                     (max-chars (max 4 (floor (- w rose-w 4
-                                                 (if fits (+ iw 3) 0))
-                                              cw)))
-                     (text (effect-label e)))
-                (amiga.gfx:move-to rp tx y)
-                (amiga.gfx:gfx-text rp (if (> (length text) max-chars)
-                                           (subseq text 0 max-chars)
-                                           text)))))
-          (incf y advance))))
+        (let ((entry (and icons (%effect-icon rp icons game e log))))
+          (when entry
+            (destructuring-bind (bm iw ih mask) entry
+              (when (<= (+ y ih -1) bottom)
+                (if mask
+                    (amiga.gfx:blt-mask-bitmap-rastport
+                     bm 0 0 rp x y iw ih mask)
+                    (amiga.gfx:blt-bitmap-rastport
+                     bm 0 0 rp x y iw ih))
+                (incf y (+ ih 2))))))))
     ;; compass rose, spell-granted
     (when compass
       (destructuring-bind (needle letters)
@@ -590,17 +619,20 @@ rule."
             (amiga.gfx:gfx-text rp (string ch))))))
     (amiga.gfx:set-a-pen rp 1)))
 
-(defun %amiga-draw-log (rp log l)
-  "Message log: trailing lines, newest at the bottom, black text on
-the white page (the shell — outline and shadow — is %CHROME-FRAMES's;
-the column's foot below belongs to %AMIGA-DRAW-BAND)."
+(defun %amiga-draw-log (rp log l &optional lines-cache)
+  "Message log: trailing lines, newest at the bottom, black microfont
+text on the white page (the shell — outline and shadow — is
+%CHROME-FRAMES's; the strip below the page belongs to
+%AMIGA-DRAW-BAND).  LINES-CACHE is the session's rendered-line bitmap
+cache (see %LOG-LINE-BITMAP); without one each line's pen buffer is
+uploaded directly — correct but slower, good enough for tests."
   (let* ((ox (ui-layout-log-x l))
          (oy (ui-layout-by l))
          (w (ui-layout-log-w l))
-         (h (- (ui-layout-band-y l) oy))
-         (lh (ui-layout-lh l))
+         (h (- (ui-layout-page-b l) oy))
+         (lh +microfont-line-height+)
          (n (max 1 (floor (- h 2) lh)))
-         (max-chars (max 4 (floor (- w 4) (ui-layout-cw l))))
+         (max-chars (max 4 (floor (- w 4) +microfont-advance+)))
          ;; Each message starts with "> "; long ones wrap onto indented
          ;; continuation lines.  Keep the trailing N display lines so
          ;; the newest stays at the bottom.
@@ -610,71 +642,58 @@ the column's foot below belongs to %AMIGA-DRAW-BAND)."
     ;; page interior (inside the black outline)
     (amiga.gfx:set-a-pen rp 1)
     (amiga.gfx:rect-fill rp (- ox 3) oy (+ ox w -1) (+ oy h -1))
-    (amiga.gfx:set-a-pen rp 0)
-    (let ((y (+ oy (- h (* (length lines) lh)) (ui-layout-base l) -2)))
+    (let ((y (+ oy (- h (* (length lines) lh)) -1)))
       (dolist (m lines)
-        (amiga.gfx:move-to rp ox y)
-        (amiga.gfx:gfx-text rp m)
+        (let ((text (if (> (length m) max-chars)
+                        (subseq m 0 max-chars)
+                        m)))
+          (if lines-cache
+              (destructuring-bind (bm . bw)
+                  (%log-line-bitmap rp lines-cache text)
+                (amiga.gfx:blt-bitmap-rastport bm 0 0 rp ox y bw lh))
+              (multiple-value-bind (pens pw ph)
+                  (microfont-line text 0 1)
+                (amiga.gfx:write-chunky rp ox y pw ph pens))))
         (incf y lh)))
     (amiga.gfx:set-a-pen rp 1)))
 
-(defun %amiga-hero-row (rp l y hero index)
-  "One roster table row at baseline Y: number, name, level and gold in
-black; the hit points picked out in white; a downed hero in amber.
-Columns come from the profile's ROSTER-COLS character cells."
+(defun %amiga-hero-row (rp game l y hero index)
+  "One roster table row at baseline Y, Bard's Tale columns: number,
+name, armor class (with equipment and spell effects), then
+max/current hit points and max/current spell points, and the class
+code.  The current points are picked out in white; a downed hero's
+name and hit points turn amber.  Columns come from the profile's
+ROSTER-COLS character cells."
   (let* ((ox (ui-layout-bx l))
          (cw (ui-layout-cw l))
          (cols (display-profile-roster-cols *display-profile*))
-         ;; the name column runs up to one cell short of the level column
-         (name-w (- (getf cols :lv) 1 (getf cols :name))))
+         ;; the name column runs up to one cell short of the AC column
+         (name-w (- (getf cols :ac) 1 (getf cols :name)))
+         (down (not (hero-alive-p hero))))
     (labels ((col (cell pen text)
                (amiga.gfx:set-a-pen rp pen)
                (amiga.gfx:move-to rp (+ ox (* cw cell)) y)
                (amiga.gfx:gfx-text rp text)))
       (col (getf cols :no) 0 (format nil "~D" (1+ index)))
-      (col (getf cols :name) 0
+      (col (getf cols :name) (if down 3 0)
            (let ((name (hero-name hero)))
              (if (> (length name) name-w) (subseq name 0 name-w) name)))
-      (col (getf cols :lv) 0 (format nil "~D" (hero-level hero)))
-      (col (getf cols :hits) 1
-           (format nil "~D/~D" (hero-hp hero) (hero-max-hp hero)))
-      (col (getf cols :gold) 0 (format nil "~D" (hero-gold hero)))
-      (unless (hero-alive-p hero)
-        (col (getf cols :down) 3 "DOWN")))
-    (amiga.gfx:set-a-pen rp 1)))
-
-(defun %amiga-status (rp game l text)
-  "Status pane: position — plus the facing, compass-granted — and
-contextual key help at the left, the game clock at the right, black on
-the grey chrome."
-  (let ((ox (ui-layout-bx l))
-        (oy (ui-layout-status-y l))
-        (right (ui-layout-right l)))
-    (amiga.gfx:set-a-pen rp 2)
-    (amiga.gfx:rect-fill rp ox oy right (+ oy (ui-layout-lh l) -1))
-    (amiga.gfx:set-a-pen rp 0)
-    (let* ((clock (clock-line game))
-           (clock-w (* (ui-layout-cw l) (length clock)))
-           (left (format nil "(~D,~D)~@[ ~A~]  ~A"
-                         (game-x game) (game-y game)
-                         (when (compass-active-p game)
-                           (dir-keyword (game-facing game)))
-                         text))
-           (left-max (max 0 (floor (- right ox clock-w
-                                      (ui-layout-cw l))
-                                   (ui-layout-cw l)))))
-      (amiga.gfx:move-to rp ox (+ oy (ui-layout-base l)))
-      (amiga.gfx:gfx-text rp (if (> (length left) left-max)
-                                 (subseq left 0 left-max)
-                                 left))
-      (amiga.gfx:move-to rp (- right clock-w) (+ oy (ui-layout-base l)))
-      (amiga.gfx:gfx-text rp clock))
+      (col (getf cols :ac) 0
+           (format nil "~D" (hero-effective-ac hero game)))
+      (col (getf cols :hit) 0 (format nil "~D" (hero-max-hp hero)))
+      (col (getf cols :hpts) (if down 3 1)
+           (format nil "~D" (hero-hp hero)))
+      (col (getf cols :spl) 0 (format nil "~D" (hero-max-sp hero)))
+      (col (getf cols :spts) 1 (format nil "~D" (hero-sp hero)))
+      (col (getf cols :cl) 0 (hero-class-abbrev hero)))
     (amiga.gfx:set-a-pen rp 1)))
 
 (defun %amiga-party (rp game l)
   "Party roster table, Bard's Tale style: a header row and one numbered
-row per hero, black on the grey chrome with the hit points in white.
-The row number is the key that opens that hero's character sheet."
+row per hero, right under the location plaque (there is no status
+line), black on the grey chrome with the current hit/spell points in
+white.  The row number is the key that opens that hero's character
+sheet."
   (let* ((ox (ui-layout-bx l))
          (oy (ui-layout-hdr-y l))
          (lh (ui-layout-lh l)))
@@ -690,15 +709,55 @@ The row number is the key that opens that hero's character sheet."
                  (amiga.gfx:move-to rp (+ ox (* cw cell)) y)
                  (amiga.gfx:gfx-text rp text)))
         (col (getf cols :name) "CHARACTER")
-        (col (getf cols :lv)   "LV")
-        (col (getf cols :hits) "HITS")
-        (col (getf cols :gold) "GOLD")))
+        (col (getf cols :ac)   "AC")
+        (col (getf cols :hit)  "HIT")
+        (col (getf cols :hpts) "PTS")
+        (col (getf cols :spl)  "SPL")
+        (col (getf cols :spts) "PTS")
+        (col (getf cols :cl)   "CL")))
     (let ((y (+ (ui-layout-party-y l) (ui-layout-base l)))
           (i 0))
       (dolist (h (game-party game))
-        (%amiga-hero-row rp l y h i)
+        (%amiga-hero-row rp game l y h i)
         (incf y lh)
         (incf i)))
+    (amiga.gfx:set-a-pen rp 1)))
+
+(defun %amiga-draw-help (rp l)
+  "The help page ('h' or '?'): the key-mapping reference (HELP-LINES)
+on a white parchment page over the grey chrome, like the character
+sheet."
+  (let* ((ox (ui-layout-bx l))
+         (oy (ui-layout-by l))
+         (lh (ui-layout-lh l))
+         (cw (ui-layout-cw l))
+         (lines (help-lines))
+         (px (+ ox (* 2 cw)))           ; the page
+         (py (+ oy 8))
+         (pw (min (* 40 cw) (- (ui-layout-right l) px (* 2 cw))))
+         (ph (min (- (ui-layout-bottom l) py 4)
+                  (+ (* lh (length lines)) 12)))
+         (max-lines (floor (- ph 8) lh))
+         (max-chars (floor (- pw 16) cw)))
+    (amiga.gfx:set-a-pen rp 2)
+    (amiga.gfx:rect-fill rp ox oy (ui-layout-right l) (ui-layout-bottom l))
+    ;; page shadow, sheet, outline — the character-sheet look
+    (amiga.gfx:set-a-pen rp 0)
+    (amiga.gfx:rect-fill rp (+ px 2) (+ py 2) (+ px pw 2) (+ py ph 2))
+    (amiga.gfx:set-a-pen rp 1)
+    (amiga.gfx:rect-fill rp px py (+ px pw) (+ py ph))
+    (amiga.gfx:set-a-pen rp 0)
+    (%chrome-rect rp px py (+ px pw) (+ py ph))
+    (let ((y (+ py 4 (ui-layout-base l)))
+          (n 0))
+      (dolist (text lines)
+        (when (< n max-lines)
+          (amiga.gfx:move-to rp (+ px 8) y)
+          (amiga.gfx:gfx-text rp (if (> (length text) max-chars)
+                                     (subseq text 0 max-chars)
+                                     text))
+          (incf y lh)
+          (incf n))))
     (amiga.gfx:set-a-pen rp 1)))
 
 (defun %amiga-draw-sheet (rp game index l)
@@ -742,16 +801,18 @@ stat block on a white parchment page over the grey chrome."
 
 (defun %amiga-draw-page (rp menu-lines l)
   "A menu page (shop, cast, save slots): MENU-LINES on a white page
-over the view column.  The log, status and roster panes stay live
-around it — gold and messages update as the party acts."
+over the view column.  The log and roster panes stay live around it —
+hit/spell points and messages update as the party acts.  Lines pack
+at one pixel of leading (tighter than the layout's LH) so a full shop
+page fits above the roster on the lo-res screen."
   (let* ((ox (ui-layout-bx l))
          (oy (ui-layout-by l))
-         (lh (ui-layout-lh l))
+         (lh (1+ (amiga.gfx:rastport-tx-height rp)))
          (cw (ui-layout-cw l))
          (px (+ ox 4))
          (py (+ oy 4))
          (pw (ui-layout-fp-w l))
-         (ph (- (ui-layout-status-y l) 4 py))
+         (ph (- (ui-layout-hdr-y l) 4 py))
          (max-lines (floor (- ph 8) lh))
          (max-chars (floor (- pw 16) cw))
          (lines (mapcan (lambda (text) (wrap-text text max-chars))
@@ -777,14 +838,20 @@ around it — gold and messages update as the party acts."
 
 (defun %amiga-draw-map-page (rp game l full)
   "Full map mode ('m'): the automap over the whole inner area, party
-centered and clamped to what fits at a readable cell size."
+centered and clamped to what fits at a readable cell size.  The
+two-line footer carries what the play page has no room for: the zone
+title, the party position — plus the facing while a compass burns —
+and the game clock (keys are on the help page)."
   (let* ((bx (ui-layout-bx l))
          (by (ui-layout-by l))
+         (right (ui-layout-right l))
+         (lh (ui-layout-lh l))
+         (cw (ui-layout-cw l))
          (map (game-map game))
          (mw (dungeon-map-width map))
          (mh (dungeon-map-height map))
-         (avail-w (- (ui-layout-right l) bx))
-         (avail-h (- (ui-layout-bottom l) by (ui-layout-lh l) 4))
+         (avail-w (- right bx))
+         (avail-h (- (ui-layout-bottom l) by (* 2 lh) 6))
          (cell (max 4 (min 16
                            (floor avail-w (max mw 1))
                            (floor avail-h (max mh 1)))))
@@ -792,19 +859,31 @@ centered and clamped to what fits at a readable cell size."
          (vh (min mh (floor avail-h cell))))
     ;; clear the whole inner area (the play panes underneath)
     (amiga.gfx:set-a-pen rp 0)
-    (amiga.gfx:rect-fill rp bx by (ui-layout-right l) (ui-layout-bottom l))
+    (amiga.gfx:rect-fill rp bx by right (ui-layout-bottom l))
     (multiple-value-bind (x0 y0 w h)
         (map-viewport map (game-x game) (game-y game) vw vh)
-      (%amiga-draw-map-region rp game bx by cell x0 y0 w h full
-                              (ui-layout-cw l))
-      (amiga.gfx:set-a-pen rp 1)
-      (amiga.gfx:move-to rp bx (- (ui-layout-bottom l)
-                                  (- (ui-layout-lh l)
-                                     (ui-layout-base l))))
-      (amiga.gfx:gfx-text
-       rp (format nil "Map ~D,~D..~D,~D of ~Dx~D~@[ FULL~]  ~
-                       M/Esc back  F full  Q quit"
-                  x0 y0 (+ x0 w -1) (+ y0 h -1) mw mh full)))))
+      (%amiga-draw-map-region rp game bx by cell x0 y0 w h full cw))
+    (amiga.gfx:set-a-pen rp 1)
+    (let* ((base-off (- lh (ui-layout-base l)))
+           (y1 (- (ui-layout-bottom l) lh base-off))  ; upper footer line
+           (y2 (- (ui-layout-bottom l) base-off))     ; lower footer line
+           (clock (clock-line game))
+           (clock-w (* cw (length clock)))
+           (place (format nil "~A  (~D,~D)~@[ ~A~]"
+                          (string-capitalize (map-title map))
+                          (game-x game) (game-y game)
+                          (when (compass-active-p game)
+                            (dir-keyword (game-facing game)))))
+           (place-max (max 0 (floor (- right bx clock-w cw) cw))))
+      (amiga.gfx:move-to rp bx y1)
+      (amiga.gfx:gfx-text rp (if (> (length place) place-max)
+                                 (subseq place 0 place-max)
+                                 place))
+      (amiga.gfx:move-to rp (- right clock-w) y1)
+      (amiga.gfx:gfx-text rp clock)
+      (amiga.gfx:move-to rp bx y2)
+      (amiga.gfx:gfx-text rp (format nil "~Dx~D map~@[  FULL~]"
+                                     mw mh full)))))
 
 ;;; The Game menu.  Item numbers (the bar counts as an item) are decoded
 ;;; from the MENUPICK code below: Save 0, Load 1, Quit 3.
@@ -922,23 +1001,25 @@ palette.iff (see PRINT-TILE-MANIFEST for the contract, which depends
 on the profile); the pack's colors show on the custom screen — a
 Workbench window keeps the Workbench palette.
 Keys: W forward, S back-step, A/D turn, M map mode (M/Esc leaves it,
-F toggles the debug full view there), 1-7 open a party member's
-character sheet (1-7 switch heroes there, Esc leaves), C cast a
-spell (pick caster/spell/target by number, Esc backs out), Q/Esc
-quit; in combat A attack, D defend, C cast, F flee; in a location
-(shop) 1-9 choose, S/B switch sell/buy, Esc back/leave.  Shift-S /
-Shift-L (and the menu strip's Save/Load, right mouse button) open
-the save-slot picker: 1-9 pick a slot, N names a new save
-(saves/NAME.sav), Esc cancels; Quit sits in the menu strip too."
+F toggles the debug full view there), H or ? the help page (the key
+reference — H/Esc leaves), 1-7 open a party member's character sheet
+(1-7 switch heroes there, Esc leaves), C cast a spell (pick
+caster/spell/target by number, Esc backs out), Q/Esc quit; in combat
+A attack, D defend, C cast, F flee; in a location (shop) 1-9 choose,
+S/B switch sell/buy, Esc back/leave.  Shift-S / Shift-L (and the
+menu strip's Save/Load, right mouse button) open the save-slot
+picker: 1-9 pick a slot, N names a new save (saves/NAME.sav), Esc
+cancels; Quit sits in the menu strip too."
   (load-campaign map-file)
   (with-display-profile (profile)
    (let* ((*gfx-dir* (or gfx-dir *gfx-dir*))
          (map (load-map-file map-file))
          (game nil)
          (log nil)
-         (mode :play)       ; :play, :map (full map view) or :sheet
+         (mode :play)       ; :play, :map (full map view), :sheet or :help
          (full nil)         ; omniscient map (debug), map mode only
          (sheet-hero 0)     ; party index shown in :sheet mode
+         (help-prior-mode :play) ; mode to return to when help closes
          (shopv nil)        ; SHOP-VIEW while inside a location
          (castv nil)        ; CAST-VIEW while the cast menu is open
          (usev nil)         ; USE-VIEW while the use menu is open
@@ -963,12 +1044,21 @@ the save-slot picker: 1-9 pick a slot, N names a new save
                (on-event g :enter-zone
                          (lambda (gm map) (declare (ignore gm map))
                            (setf zone-dirty t)))
+               ;; the status line is gone, so the prompts it used to
+               ;; carry go to the log instead
+               (on-event g :combat-start
+                         (lambda (gm monsters)
+                           (declare (ignore gm monsters))
+                           (log-message
+                            log "A atk  D def  C cast  P play  F flee")))
                (on-event g :game-won
                          (lambda (gm) (declare (ignore gm))
-                           (setf over :won)))
+                           (setf over :won)
+                           (log-message log "You win!  Press Q.")))
                (on-event g :party-defeated
                          (lambda (gm) (declare (ignore gm))
-                           (setf over :lost)))
+                           (setf over :lost)
+                           (log-message log "Game over.  Press Q.")))
                g))
       (setf game (wire (new-game map
                                  :party (when (fboundp 'default-party)
@@ -985,8 +1075,10 @@ the save-slot picker: 1-9 pick a slot, N names a new save
                        (l (%amiga-layout win rp))
                        (walls nil)      ; loaded piece bitmaps
                        (walls-dir nil)  ; the pack they came from
-                       (icons (make-hash-table :test #'equal)))
+                       (icons (make-hash-table :test #'equal))
                                         ; effects-band icon cache
+                       (log-lines (make-hash-table :test #'equal)))
+                                        ; rendered log-line bitmap cache
                (labels ((effective-gfx-dir ()
                           ;; precedence: the explicit :GFX-DIR argument,
                           ;; then the zone's (ZONE :GFX ...), then the
@@ -1008,20 +1100,6 @@ the save-slot picker: 1-9 pick a slot, N names a new save
                                   (setf walls w)
                                   (when (eq display :screen)
                                     (%apply-pack-palette scr pal)))))))
-                        (status-text ()
-                          (cond ((eq over :won) "You win!  Press Q.")
-                                ((eq over :lost) "Game over.  Press Q.")
-                                (savem (if (eq (save-menu-mode savem) :save)
-                                           "Save: pick a slot or name one"
-                                           "Load: pick a slot"))
-                                (castv "Choose: 1-9 pick, Esc back")
-                                (usev "Choose: 1-9 pick, Esc back")
-                                (singv "Choose: 1-9 pick, Esc back")
-                                ((game-combat game)
-                                 "COMBAT!  A atk  D def  C cast  F flee")
-                                ((game-location game)
-                                 (location-title (game-location game)))
-                                (t "W/S move  A/D turn  M map  C cast")))
                         (clear-inner ()
                           ;; Grey-wipe the content area (a bit beyond
                           ;; it, to catch the frames and shadows) when
@@ -1052,6 +1130,14 @@ the save-slot picker: 1-9 pick a slot, N names a new save
                             (redraw)))
                         (leave-sheet ()
                           (fresh-play))
+                        (open-help ()
+                          ;; 'h'/'?' from play or map mode: remember
+                          ;; where to return
+                          (setf help-prior-mode mode
+                                mode :help)
+                          (redraw))
+                        (leave-help ()
+                          (fresh-play help-prior-mode))
                         (redraw ()
                           ;; travel switched zones: swap in the zone's
                           ;; tile pack and repaint the chrome first
@@ -1066,6 +1152,8 @@ the save-slot picker: 1-9 pick a slot, N names a new save
                              (%amiga-draw-map-page rp game l full))
                             ((eq mode :sheet)
                              (%amiga-draw-sheet rp game sheet-hero l))
+                            ((eq mode :help)
+                             (%amiga-draw-help rp l))
                             (t
                              (cond (savem
                                     (%amiga-draw-page
@@ -1095,8 +1183,7 @@ the save-slot picker: 1-9 pick a slot, N names a new save
                                                     (ui-layout-fp-h l)
                                                     walls)
                                     (%amiga-draw-band rp game l icons log)))
-                             (%amiga-draw-log rp log l)
-                             (%amiga-status rp game l (status-text))
+                             (%amiga-draw-log rp log l log-lines)
                              (%amiga-party rp game l))))
                         (%step (relative)
                           ;; Log the notable step results; plain steps
@@ -1207,6 +1294,15 @@ the save-slot picker: 1-9 pick a slot, N names a new save
                                          ((eql lc #\f)
                                           (setf full (not full))
                                           (redraw)
+                                          nil)
+                                         ((or (eql lc #\h) (eql c #\?))
+                                          (open-help)
+                                          nil)))
+                                  ((eq mode :help)
+                                   (cond ((eql lc #\q) :quit)
+                                         ((or (eql lc #\h) (eql c #\?)
+                                              (eql c :esc))
+                                          (leave-help)
                                           nil)))
                                   ((eq mode :sheet)
                                    (cond ((eql lc #\q) :quit)
@@ -1285,6 +1381,8 @@ the save-slot picker: 1-9 pick a slot, N names a new save
                                      (#\c (open-cast nil))
                                      (#\u (open-use))
                                      (#\p (open-sing nil))
+                                     (#\h (open-help))
+                                     (#\? (open-help))
                                      (#\m (setf mode :map)
                                           (redraw)))
                                    nil)))))
@@ -1314,4 +1412,5 @@ the save-slot picker: 1-9 pick a slot, N names a new save
                              (when (eq (act (pop *autoplay*)) :quit)
                                (return))))))
                    (setf walls (%free-wall-assets walls)
-                         icons (%free-effect-icons icons)))))))))))))))
+                         icons (%free-effect-icons icons)
+                         log-lines (%free-log-lines log-lines)))))))))))))))

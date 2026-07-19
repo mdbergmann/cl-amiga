@@ -35,6 +35,8 @@
     (ld "songs.lisp")
     (ld "save.lisp")
     (ld "save-menu.lisp")
+    (ld "help.lisp")
+    (ld "microfont.lisp")
     (ld "render.lisp")
     (ld "render-fp.lisp")
     #+amigaos (ld "amiga-ui.lisp")

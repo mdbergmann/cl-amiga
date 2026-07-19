@@ -1,6 +1,6 @@
 ;;; The town of Closure's "city" tile pack (BT2 night street): the
-;;; engine's default wall pieces plus a tan street, a night sky with
-;;; stars, and a palette.iff carrying the pack colors (pens 4 up to
+;;; engine's default wall pieces plus a tan street, a plain night sky,
+;;; and a palette.iff carrying the pack colors (pens 4 up to
 ;;; the active profile's depth).  Lives inside the world directory —
 ;;; town.map declares it as (zone ... :gfx "gfx/"), resolved next to
 ;;; the map file — and doubles as the worked example of the engine's
@@ -49,14 +49,15 @@
 
 (let ((planes (view-planes *fp-view-width* *fp-view-height*)))
   (destructuring-bind (ceiling floor) (backdrop-rects planes)
-    ;; night sky: dark blue with sparse white stars — flat on purpose
-    ;; (the sky is at infinity, so distance bands would be wrong here)
+    ;; night sky: plain dark blue — flat on purpose (the sky is at
+    ;; infinity, so distance bands would be wrong here) and starless
+    ;; (a town ceiling full of white speckles read as noise over the
+    ;; buildings)
     (let* ((w (third ceiling)) (h (fourth ceiling))
            (img (make-image w h *city-depth* :palette *city-palette*)))
       (dotimes (y h)
         (dotimes (x w)
-          (setf (pixel-ref img x y)
-                (if (zerop (mod (+ (* 7 x) (* 13 y)) 89)) 1 5))))
+          (setf (pixel-ref img x y) 5)))
       (write-ilbm img (concatenate 'string *out* "ceiling.iff")))
     ;; tan street: solid distance bands darkening toward the horizon
     ;; (pens 6/7/8), split at the perspective-plane rows like the

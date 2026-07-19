@@ -37,7 +37,10 @@ absolute path under *ENGINE-DIR*."
   pad-x pad-y                 ; chrome ring pads (full-screen backdrop)
   view-gap                    ; px between the view column and the log
   band-height                 ; effects + compass band at the log's foot
-  roster-cols)                ; roster columns as a plist of char cells
+  roster-cols)                ; roster columns as a plist of char cells:
+                              ;   :no :name :ac :hit :hpts :spl :spts :cl
+                              ;   (the Bard's Tale table — max/current
+                              ;   hit and spell points, class code)
 
 ;;; The classic 640x256 PAL hires presentation: 16 colors, the 240x130
 ;;; viewport the original M3 wall packs were drawn for.
@@ -49,7 +52,8 @@ absolute path under *ENGINE-DIR*."
    :fp-width 240 :fp-height 130
    :gfx-dir (engine-path "data/gfx-hires/")
    :pad-x 12 :pad-y 10 :view-gap 12 :band-height 48
-   :roster-cols '(:no 0 :name 2 :lv 18 :hits 25 :gold 38 :down 46)))
+   :roster-cols '(:no 0 :name 2 :ac 20 :hit 25 :hpts 30
+                  :spl 36 :spts 41 :cl 46)))
 
 ;;; The ECS target: 320x256 PAL lores, 5 bitplanes (32 colors) — the
 ;;; Bard's Tale presentation.  Half the chip-RAM/DMA cost of hires and
@@ -62,7 +66,8 @@ absolute path under *ENGINE-DIR*."
    :fp-width 160 :fp-height 112
    :gfx-dir (engine-path "data/gfx/")
    :pad-x 10 :pad-y 10 :view-gap 12 :band-height 48
-   :roster-cols '(:no 0 :name 2 :lv 15 :hits 18 :gold 26 :down 33)))
+   :roster-cols '(:no 0 :name 2 :ac 13 :hit 17 :hpts 21
+                  :spl 25 :spts 29 :cl 33)))
 
 (defparameter *display-profiles*
   (list *lores-profile* *hires-profile*))

@@ -58,7 +58,7 @@
    #:hero-caster-p #:hero-str #:hero-dex #:hero-iq
    #:hero-con #:hero-lck #:hero-ac #:hero-damage #:hero-gold
    #:hero-alive-p #:alive-heroes #:party-alive-p #:front-ranks
-   #:hero-class-title #:hero-summary-lines
+   #:hero-class-title #:hero-class-abbrev #:hero-summary-lines
    #:+party-limit+ #:party-full-p #:join-party
    #:damage-hero #:heal-hero #:stat-bonus #:award-xp #:xp-for-level
    ;; items, inventory and equipment
@@ -102,6 +102,11 @@
    #:save-menu-lines #:save-menu-act
    ;; rendering
    #:render-dungeon #:render-game #:render-first-person #:beside
+   ;; the help screen
+   #:help-lines
+   ;; the microfont (the message log's compact 5x7 pixel font)
+   #:+microfont-advance+ #:+microfont-line-height+
+   #:microfont-glyph #:microfont-text-width #:microfont-line
    ;; interactive walkabout
    #:play #:play-amiga #:*gfx-dir*
    ;; engine home (self-located; default packs live under it)
