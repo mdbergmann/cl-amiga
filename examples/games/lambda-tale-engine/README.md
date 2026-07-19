@@ -169,10 +169,11 @@ A pack holds the 40 wall pieces plus optional extras:
   ceiling fills the view above the horizon, the floor below, and the
   walls blit on top, carving the perspective (a city pack draws sky
   and street here).  Missing files leave the region black.  The
-  default packs paint these as solid distance bands darkening toward
-  the horizon, split at the perspective-plane rows so each band lines
-  up with a corridor depth — a pack can use the same trick, since the
-  bands sit at fixed screen rows.
+  default packs paint the floor as one flat color and the ceiling as
+  solid distance bands darkening toward the horizon, split at the
+  perspective-plane rows so each band lines up with a corridor depth —
+  a pack can use the same trick, since the bands sit at fixed screen
+  rows.
 - `palette.iff` — any ILBM whose CMAP provides the pack's colors.
 
 `(tale:print-tile-manifest)` prints the full contract — every

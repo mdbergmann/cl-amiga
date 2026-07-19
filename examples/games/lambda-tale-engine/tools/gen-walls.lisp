@@ -17,17 +17,16 @@
 ;;; Style: grey brick walls with black mortar in perspective (courses
 ;;; and joints shrink with distance, side-wall courses converge along
 ;;; the receding edges), white edge highlights carrying the wireframe
-;;; look over, amber doors.  The floor and ceiling are solid distance
-;;; bands (no pattern — a flat texture under converging walls reads as
-;;; wallpaper): three shades darkening toward the horizon, split at
-;;; the perspective-plane rows so each band lines up with the corridor
-;;; cell at its depth.
+;;; look over, amber doors.  The floor is one solid grey (no pattern,
+;;; no distance shading); the ceiling is solid distance bands darkening
+;;; toward the horizon, split at the perspective-plane rows so each
+;;; band lines up with the corridor cell at its depth.
 
 (in-package :tale)
 
 ;;; The dungeon palette, 8-bit components (SET-RGB4 nibbles x 17):
 ;;; pen 0 background, pen 1 white, pen 2 grey, pen 3 amber, pen 4 black,
-;;; pens 5-7 grey shades for the backdrops' distance bands.
+;;; pen 5 the solid floor grey, pens 6-7 the ceiling's distance bands.
 ;;; Pen 0 is the TRANSPARENT key in wall pieces (the ceiling/floor
 ;;; backdrop shows through it), so opaque black inside a wall — mortar,
 ;;; joints, door frames — is drawn with pen 4, not pen 0.  The backdrops
@@ -41,8 +40,8 @@
 (defconstant +pen-brick+ 2)
 (defconstant +pen-door+ 3)
 (defconstant +pen-mortar+ 4)  ; opaque black: mortar, joints, door frames
-(defconstant +pen-mid+ 5)     ; mid grey: the mid-distance floor band
-(defconstant +pen-dim+ 6)     ; dim grey: far floor / near ceiling band
+(defconstant +pen-mid+ 5)     ; mid grey: the solid floor
+(defconstant +pen-dim+ 6)     ; dim grey: near ceiling band
 (defconstant +pen-dark+ 7)    ; dark grey: mid ceiling band
 
 (defparameter *brick-courses* 6
@@ -189,12 +188,13 @@ mirror image (see %IMG-MIRROR-X)."
     img))
 
 ;;; ---------------------------------------------------------------------
-;;; Backdrops: solid distance-banded ceiling and floor filling the two
-;;; BACKDROP-RECTS slots above and below the horizon.  The bands are
-;;; painted in screen space at the perspective-plane rows: the wall
-;;; pieces blit on top, so each band lines up with the corridor cell at
-;;; its depth (and shows through open sides at the same rows, which is
-;;; perspective-consistent for the corridor beyond).
+;;; Backdrops: the ceiling and floor filling the two BACKDROP-RECTS
+;;; slots above and below the horizon.  The ceiling is solid distance
+;;; bands painted in screen space at the perspective-plane rows: the
+;;; wall pieces blit on top, so each band lines up with the corridor
+;;; cell at its depth (and shows through open sides at the same rows,
+;;; which is perspective-consistent for the corridor beyond).  The
+;;; floor is one flat color — a single-pen "band" filling its slot.
 
 (defun %draw-backdrop (w h planes oy top-p pens &key (depth 3)
                                                      (palette *wall-palette*))
@@ -218,8 +218,9 @@ planes (their top rows) or the floor side (bottom rows)."
 
 (defun draw-backdrop-piece (key planes)
   "Draw the :CEILING or :FLOOR demo backdrop at its slot size for
-PLANES: three solid grey bands darkening toward the horizon (the
-ceiling ends in plain black), keeping the dark dungeon mood."
+PLANES: the ceiling as three solid grey bands darkening toward the
+horizon (ending in plain black), keeping the dark dungeon mood; the
+floor as one flat mid grey (no distance shading)."
   (destructuring-bind (ceiling floor) (backdrop-rects planes)
     (ecase key
       (:ceiling (%draw-backdrop (third ceiling) (fourth ceiling) planes
@@ -227,7 +228,7 @@ ceiling ends in plain black), keeping the dark dungeon mood."
                                 (vector +pen-dim+ +pen-dark+ +pen-bg+)))
       (:floor (%draw-backdrop (third floor) (fourth floor) planes
                               (second floor) nil
-                              (vector +pen-brick+ +pen-mid+ +pen-dim+))))))
+                              (vector +pen-mid+))))))
 
 ;;; ---------------------------------------------------------------------
 ;;; Piece dispatch
