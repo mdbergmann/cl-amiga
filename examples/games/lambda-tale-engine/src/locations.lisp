@@ -201,21 +201,98 @@ drops its view then), else NIL."
               nil)
              (t nil))))))
 
-(defun location-lines (game view)
-  "Menu lines for the current location: the shop model for :SHOP,
-a plain notice for kinds the engine has no mechanics for."
+;;; ---------------------------------------------------------------------
+;;; Tavern mechanics: the singers' watering hole.  A :TAVERN location
+;;; sells drinks — a drink refills a singer's tunes (see songs.lisp) —
+;;; and may hold the way down: (location TITLE :tavern :price N
+;;; :down FILE) travels to FILE through the trapdoor, Bard's Tale
+;;; cellar style.
+
+(defun tavern-price (location)
+  "The price of a drink at LOCATION (:PRICE, default 3 gold)."
+  (or (location-arg location :price) 3))
+
+(defun buy-drink (game hero)
+  "HERO buys a round at the current tavern: pays the price, and — for
+a singer — the tunes come flooding back (TUNES refilled to the
+maximum).  Returns T, or says why not and returns NIL."
+  (let ((price (tavern-price (game-location game))))
+    (cond ((< (hero-gold hero) price)
+           (say game "~A cannot afford a drink." (hero-name hero))
+           nil)
+          (t
+           (decf (hero-gold hero) price)
+           (if (hero-singer-p hero)
+               (progn
+                 (setf (hero-tunes hero) (hero-max-tunes hero))
+                 (say game "~A drinks; the tunes come flooding back."
+                      (hero-name hero)))
+               (say game "~A enjoys a fine ale." (hero-name hero)))
+           (emit game :drink hero)
+           t))))
+
+(defun tavern-lines (game)
+  "The tavern menu as text lines: one numbered row per party member,
+the drink price, and the trapdoor when the tavern has one."
   (let ((loc (game-location game)))
-    (if (eq (location-kind loc) :shop)
-        (shop-lines game view)
-        (list (format nil "*** ~A ***" (location-title loc)) ""
-              "There is nothing to do here."
-              "" "[Esc] leave"))))
+    (append
+     (list (format nil "*** ~A ***" (location-title loc)) ""
+           (format nil "A drink is ~D gold." (tavern-price loc)) "")
+     (let ((i 0))
+       (mapcar (lambda (h)
+                 (incf i)
+                 (format nil "~D) ~A  (~D gp~@[, Tunes ~A~])"
+                         i (hero-name h) (hero-gold h)
+                         (when (hero-singer-p h)
+                           (format nil "~D/~D" (hero-tunes h)
+                                   (hero-max-tunes h)))))
+               (game-party game)))
+     (list ""
+           (format nil "[1-7] drink~@[  [d] down the trapdoor~]  ~
+                        [Esc] leave"
+                   (location-arg loc :down))))))
+
+(defun tavern-act (game char)
+  "Apply key CHAR to the tavern menu: a digit buys that hero a drink,
+'d' takes the trapdoor down when the tavern has one, Esc leaves.
+Returns :LEFT when the party leaves the location, else NIL."
+  (let* ((loc (game-location game))
+         (down (location-arg loc :down))
+         (digit (digit-char-p char)))
+    (cond ((and digit (<= 1 digit (length (game-party game))))
+           (let ((h (nth (1- digit) (game-party game))))
+             (when (hero-alive-p h)
+               (buy-drink game h)))
+           nil)
+          ((and down (member char '(#\d #\D)))
+           (leave-location game)
+           (say game "Down through the trapdoor.")
+           (travel-party game down)
+           :left)
+          ((member char '(#\Escape #\l #\L #\q #\Q))
+           (leave-location game)
+           :left)
+          (t nil))))
+
+(defun location-lines (game view)
+  "Menu lines for the current location: the shop model for :SHOP, the
+tavern menu for :TAVERN, a plain notice for kinds the engine has no
+mechanics for."
+  (let ((loc (game-location game)))
+    (case (location-kind loc)
+      (:shop (shop-lines game view))
+      (:tavern (tavern-lines game))
+      (t (list (format nil "*** ~A ***" (location-title loc)) ""
+               "There is nothing to do here."
+               "" "[Esc] leave")))))
 
 (defun location-act (game view char)
-  "Apply key CHAR inside the current location (see SHOP-ACT)."
+  "Apply key CHAR inside the current location (see SHOP-ACT and
+TAVERN-ACT)."
   (let ((loc (game-location game)))
-    (if (eq (location-kind loc) :shop)
-        (shop-act game view char)
-        (when (member char '(#\Escape #\l #\L #\q #\Q))
-          (leave-location game)
-          :left))))
+    (case (location-kind loc)
+      (:shop (shop-act game view char))
+      (:tavern (tavern-act game char))
+      (t (when (member char '(#\Escape #\l #\L #\q #\Q))
+           (leave-location game)
+           :left)))))

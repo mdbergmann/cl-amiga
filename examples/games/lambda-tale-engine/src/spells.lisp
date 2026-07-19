@@ -14,6 +14,12 @@
 ;;;                           (an :AC effect record, see game.lisp)
 ;;;   :light T + :duration    the party carries light for N minutes
 ;;;                           (a :LIGHT effect — defeats darkness)
+;;;   :compass T + :duration  the party knows its facing for N minutes
+;;;                           (a :COMPASS effect — the UIs show the
+;;;                           rose and the facing only while one burns)
+;;; The timed kinds go through APPLY-EFFECT-SPEC (game.lisp), the
+;;; funnel shared with usable items; :IMAGE names the icon the effects
+;;; band draws for the installed effect.
 ;;;
 ;;; The cast interaction is modeled here too, platform-free (the
 ;;; SHOP-VIEW pattern): a CAST-VIEW holds the menu state, CAST-LINES
@@ -28,26 +34,31 @@
   (cost 1)            ; spell points to cast
   (level 1)           ; minimum caster level
   classes             ; caster classes allowed; NIL = any caster
-  effect)             ; one of (:damage DICE) (:heal DICE)
+  effect              ; one of (:damage DICE) (:heal DICE)
                       ; (:buff-ac N :duration MIN) (:light t :duration MIN)
+                      ; (:compass t :duration MIN)
+  image)              ; effects-band icon file for the timed kinds, or NIL
 
 (defvar *spell-types* (make-hash-table :test 'eq))
 (defvar *spell-names* '()
   "Spell names in registration order — the stable order of the menus.")
 
 (defun define-spell (name &key title (cost 1) (level 1) classes
-                               damage heal buff-ac light duration)
+                               damage heal buff-ac light compass duration
+                               image)
   "Register spell type NAME (a symbol).  Campaign data calls this.
-Exactly one of :DAMAGE DICE, :HEAL DICE, :BUFF-AC N or :LIGHT T names
-the effect; :BUFF-AC and :LIGHT need a :DURATION in game minutes.
+Exactly one of :DAMAGE DICE, :HEAL DICE, :BUFF-AC N, :LIGHT T or
+:COMPASS T names the effect; the timed kinds (:BUFF-AC, :LIGHT,
+:COMPASS) need a :DURATION in game minutes and may carry an :IMAGE —
+the icon file the effects band draws while the effect burns.
 TITLE defaults to the downcased name (MAGE-FLAME -> \"mage flame\")."
-  (let ((kinds (count-if #'identity (list damage heal buff-ac light))))
+  (let ((kinds (count-if #'identity (list damage heal buff-ac light compass))))
     (unless (= kinds 1)
       (error "define-spell ~S: exactly one of :damage :heal :buff-ac ~
-              :light must be given (got ~D)" name kinds))
-    (when (and (or buff-ac light) (not duration))
-      (error "define-spell ~S: :buff-ac and :light need a :duration ~
-              (game minutes)" name))
+              :light :compass must be given (got ~D)" name kinds))
+    (when (and (or buff-ac light compass) (not duration))
+      (error "define-spell ~S: :buff-ac, :light and :compass need a ~
+              :duration (game minutes)" name))
     (when (and duration (not (and (integerp duration) (plusp duration))))
       (error "define-spell ~S: :duration ~S must be a positive integer"
              name duration)))
@@ -60,7 +71,9 @@ TITLE defaults to the downcased name (MAGE-FLAME -> \"mage flame\")."
          :effect (cond (damage (list :damage damage))
                        (heal (list :heal heal))
                        (buff-ac (list :buff-ac buff-ac :duration duration))
-                       (light (list :light t :duration duration)))))
+                       (light (list :light t :duration duration))
+                       (compass (list :compass t :duration duration)))
+         :image image))
   ;; keep the registration order; a re-registration keeps its spot
   (unless (member name *spell-names*)
     (setf *spell-names* (append *spell-names* (list name))))
@@ -139,14 +152,9 @@ to strike); otherwise pays the sp, applies the effect, emits
          ((getf effect :heal)
           (heal-hero game (or target hero)
                      (max 0 (roll-dice (getf effect :heal)))))
-         ((getf effect :buff-ac)
-          (add-effect game (spell-type-title type)
-                      :duration (getf effect :duration)
-                      :payload (list :ac (getf effect :buff-ac))))
-         ((getf effect :light)
-          (add-effect game (spell-type-title type)
-                      :duration (getf effect :duration)
-                      :payload '(:light t))))
+         (t                             ; the timed kinds share one funnel
+          (apply-effect-spec game (spell-type-title type) effect
+                             :image (spell-type-image type))))
        (emit game :spell-cast hero name)
        t))))
 

@@ -30,12 +30,11 @@
 
 (special (2 1)
   (location "Wolfgar's Arms & Armour" :shop
-            :stock (torch short-sword war-axe broadsword
+            :stock (torch healing-potion short-sword war-axe broadsword
                     leather-armor chain-mail buckler)))
 
 (special (6 1)
-  (message "The Adventurer's Rest is dim and empty.  A trapdoor leads down.")
-  (travel "cellar.map"))
+  (location "The Adventurer's Rest" :tavern :price 4 :down "cellar.map"))
 
 ;; The alley between the shop rows is safe by day — and not by night.
 (special (4 1)

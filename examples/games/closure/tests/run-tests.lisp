@@ -47,9 +47,11 @@
   (check-true "town shoppe location"
               (find-if (lambda (op) (string-equal (first op) "LOCATION"))
                        (cell-special m 2 1)))
-  (check-true "town tavern leads to the cellar"
-              (find-if (lambda (op) (string-equal (first op) "TRAVEL"))
-                       (cell-special m 6 1)))
+  (check-true "town tavern is a location with the trapdoor below"
+              (let ((op (find-if (lambda (op)
+                                   (string-equal (first op) "LOCATION"))
+                                 (cell-special m 6 1))))
+                (and op (equal "cellar.map" (getf (cdddr op) :down)))))
   (check "town declares the city tile pack" "gfx/"
          (dungeon-map-gfx m)))
 
@@ -63,10 +65,15 @@
               (hero-caster-p h)))
 (check-true "the conjurer's book is complete"
             (every #'find-spell-type
-                   '(mage-flame arc-fire minor-mend stone-skin)))
+                   '(mage-flame arc-fire minor-mend stone-skin
+                     magic-compass)))
+(check-true "the bard is a singer class"
+            (hero-singer-p (make-hero "M" :bard)))
+(check-true "Melody's repertoire is complete"
+            (every #'find-song-type '(travellers-tune seekers-ballad)))
 (check-true "Wolfgar's stock exists"
             (every #'find-item-type
-                   '(torch short-sword war-axe broadsword
+                   '(torch healing-potion short-sword war-axe broadsword
                      leather-armor chain-mail buckler)))
 (check-true "the cellar's monsters exist"
             (every #'find-monster-type
@@ -77,13 +84,69 @@
          (hero-name (fourth party)))
   (check-true "Zzgo is the caster" (hero-caster-p (fourth party))))
 
+;; The timed spells' effects-band icons ship inside the world's gfx
+;; dir (regenerate with worlds/closure/gfx/make-pack.lisp) and resolve
+;; map-relative when cast.
+(let ((stale '()))
+  (dolist (file '("fx-flame.iff" "fx-shield.iff" "fx-compass.iff"))
+    (let ((path (concatenate 'string "worlds/closure/gfx/" file)))
+      (if (probe-file path)
+          (let ((img (read-ilbm path)))
+            (unless (and (= 16 (image-width img))
+                         (= 16 (image-height img))
+                         (image-transparent-p img))
+              (push (list file :malformed) stale)))
+          (push (list file :missing) stale))))
+  (check "the spell icons exist, 16x16 with the transparent key"
+         nil stale))
+(let* ((m (load-map-file "worlds/closure/town.map"))
+       (g (new-game m :party (default-party)))
+       (zzgo (fourth (game-party g))))
+  ;; rolled stats can leave a level-1 conjurer short of the 2 sp —
+  ;; top him up so the check is deterministic
+  (setf (hero-sp zzgo) (max (hero-sp zzgo) 2))
+  (check-true "Zzgo casts the magic compass"
+              (cast-spell g zzgo 'magic-compass))
+  (check-true "the party knows its facing" (compass-active-p g))
+  (check "the compass icon resolves inside the world"
+         "worlds/closure/gfx/fx-compass.iff"
+         (effect-image-path g (find-effect g "magic compass")))
+  ;; Melody strikes up the ballad: the song displaces nothing (the
+  ;; compass is a spell, not a song) and shows its icon
+  (let ((melody (third (game-party g))))
+    (check-true "Melody sings the seeker's ballad"
+                (sing-song g melody 'seekers-ballad))
+    (check "the ballad is the current song" "seekers ballad"
+           (effect-name (current-song g)))
+    (check "the ballad's icon resolves inside the world"
+           "worlds/closure/gfx/fx-compass.iff"
+           (effect-image-path g (current-song g)))
+    (check "the spell effect was not displaced" 2
+           (length (game-effects g)))))
+
+;; The torch is usable at last: burning one lights the party for an
+;; hour, spends it, and shows the flame icon in the band.
+(let* ((m (load-map-file "worlds/closure/cellar.map"))
+       (g (new-game m :party (default-party)))
+       (cid (first (game-party g))))
+  (check-true "the cellar is dark" (game-dark-p g))
+  (give-item g cid 'torch)
+  (check-true "El Cid burns a torch" (use-item g cid 'torch))
+  (check-true "the torch defeats the dark" (not (game-dark-p g)))
+  (check "the torch burns for an hour" (+ (game-time g) 60)
+         (effect-expires-at (find-effect g "Torch")))
+  (check "the torch shows the flame icon"
+         "worlds/closure/gfx/fx-flame.iff"
+         (effect-image-path g (find-effect g "Torch")))
+  (check "the torch is spent" nil (hero-carrying-p cid 'torch)))
+
 ;;; ---------------------------------------------------------------------
 ;;; Walk the shipped world end-to-end: gate -> shoppe -> tavern ->
 ;;; cellar and back up — the campaign's whole overworld loop on real
 ;;; data.
 
 (let* ((m (load-map-file "worlds/closure/town.map"))
-       (g (new-game m)))
+       (g (new-game m :party (default-party))))
   (trigger-special g)
   (check "the town's zone pack resolves inside the world directory"
          "worlds/closure/gfx/" (zone-gfx-dir g))
@@ -102,8 +165,19 @@
   (turn-right g)
   (move-party g) (move-party g) (move-party g) (move-party g) ; (6,2)
   (turn-left g)
-  (check "tavern trapdoor drops into the cellar" :door (move-party g))
-  (check "tavern travel landed in the cellar" "the cellar"
+  (check "the tavern door opens" :door (move-party g))
+  (check "the Adventurer's Rest is a tavern" :tavern
+         (location-kind (game-location g)))
+  (check "a drink at the Rest is four gold" 4
+         (tavern-price (game-location g)))
+  ;; Melody drinks (her tunes refill), then down the trapdoor
+  (let ((melody (third (game-party g))))
+    (setf (hero-tunes melody) 0)
+    (tavern-act g #\3)
+    (check "Melody's tunes came back" (hero-max-tunes melody)
+           (hero-tunes melody)))
+  (check "the trapdoor drops into the cellar" :left (tavern-act g #\d))
+  (check "the trapdoor landed in the cellar" "the cellar"
          (map-title (game-map g)))
   (check "the cellar zone has no pack (profile default)" nil
          (zone-gfx-dir g))
@@ -133,20 +207,26 @@
          :done))
 
 ;; The town: cast mage flame through the real event loop (c, Zzgo is
-;; 4, spell 1), save and reload through the slot picker (S n "t1"
-;; Return; L 1), walk from the gate to Wolfgar's shoppe, shop for
-;; real (buy a torch, sell it back), then east to the tavern and down
-;; the trapdoor into the dark cellar — the town's city pack swaps for
-;; the cellar's default pack on the way, and Zzgo's flame keeps the
-;; view lit — then quit.
+;; 4, spell 1) and let Melody strike up the traveller's tune (p, 3,
+;; song 1 — her one tune), save and reload through the slot picker
+;; (S n "t1" Return; L 1), walk from the gate to Wolfgar's shoppe,
+;; shop for real (buy two torches, sell one back), then east to the
+;; Adventurer's Rest: Melody drinks her tunes back (3) and the party
+;; takes the trapdoor down (d) into the dark cellar — the town's city
+;; pack swaps for the cellar's default pack on the way, and Zzgo's
+;; flame keeps the view lit — where El Cid burns the bought torch
+;; through the use menu (u, hero 1, item 1), then quit.
 #+amigaos
 (check "autoplay casts, saves, shops, drops to the dark cellar" :done
        (let ((*autoplay* (list #\c #\4 #\1
+                               #\p #\3 #\1
                                #\S #\n #\t #\1 #\Return
                                #\L #\1
                                #\w #\a #\w #\w #\d #\w #\w #\w
-                               #\1 #\1 #\s #\1 :esc :esc
-                               #\s #\d #\w #\w #\w #\w #\a #\w #\q))
+                               #\1 #\1 #\1 #\s #\1 :esc :esc
+                               #\s #\d #\w #\w #\w #\w #\a #\w
+                               #\3 #\d
+                               #\u #\1 #\1 #\q))
              ;; scratch save dir — keeps the real saves/ untouched
              (*save-dir* "tests/tmp-saves/"))
          (play-amiga "worlds/closure/town.map" :display :window)

@@ -148,33 +148,40 @@ cell's special."
 
 ;;; Active effects — the UI's spell strip (shield, light, ...).
 ;;; An effect is a record: a display name, an optional expiry on the
-;;; game clock (ADVANCE-TIME announces and drops it, see time.lisp)
-;;; and a payload plist of engine facts the mechanics read:
-;;;   (:ac N)     party armor class bonus (see HERO-EFFECTIVE-AC)
-;;;   (:light t)  the party carries light (see GAME-DARK-P)
+;;; game clock (ADVANCE-TIME announces and drops it, see time.lisp),
+;;; a payload plist of engine facts the mechanics read:
+;;;   (:ac N)      party armor class bonus (see HERO-EFFECTIVE-AC)
+;;;   (:light t)   the party carries light (see GAME-DARK-P)
+;;;   (:compass t) the party knows its facing (see COMPASS-ACTIVE-P)
+;;; and an optional icon image — a file name the front-end resolves
+;;; and draws in the effects band (NIL = the text label alone).
 ;;; Effects live in save games (see save.lisp).
 
 (defstruct (effect (:constructor %make-effect))
   name          ; display key (string or symbol); EQUAL identity
   expires-at    ; game minute the effect ends, or NIL (until removed)
-  payload)      ; readable plist of engine facts: (:ac N), (:light t)
+  payload       ; readable plist of engine facts: (:ac N), (:light t)
+  image)        ; icon file name for the effects band, or NIL
 
-(defun add-effect (game name &key duration payload)
+(defun add-effect (game name &key duration payload image)
   "Add active effect NAME (a string or symbol).  DURATION minutes from
 now sets the expiry (NIL = until removed); PAYLOAD is a readable plist
-of engine facts.  Re-adding NAME refreshes its expiry and payload in
-place — a recast spell burns anew, keeping its spot in the strip.
+of engine facts; IMAGE names the effect's icon file (NIL = text only).
+Re-adding NAME refreshes its expiry, payload and image in place — a
+recast spell burns anew, keeping its spot in the strip.
 Returns the effect list."
   (let ((expires (when duration (+ (game-time game) duration)))
         (existing (find-effect game name)))
     (if existing
         (setf (effect-expires-at existing) expires
-              (effect-payload existing) payload)
+              (effect-payload existing) payload
+              (effect-image existing) image)
         (setf (game-effects game)
               (append (game-effects game)
                       (list (%make-effect :name name
                                           :expires-at expires
-                                          :payload payload))))))
+                                          :payload payload
+                                          :image image))))))
   (game-effects game))
 
 (defun remove-effect (game name)
@@ -191,6 +198,14 @@ Returns the effect list."
   "EFFECT's display string for the UI's effects strip."
   (string-downcase (princ-to-string (effect-name effect))))
 
+(defun effect-image-path (game effect)
+  "EFFECT's icon file resolved like a zone tile pack — relative to the
+current map file's directory, so a self-contained world directory
+carries its own icons — or NIL when the effect has none."
+  (let ((image (effect-image effect)))
+    (when image
+      (%resolve-map-path (dungeon-map-name (game-map game)) image))))
+
 (defun effects-ac-bonus (game)
   "The summed :AC bonuses of the active effects (a party-wide shield)."
   (let ((n 0))
@@ -202,6 +217,30 @@ Returns the effect list."
   (and (some (lambda (e) (getf (effect-payload e) :light))
              (game-effects game))
        t))
+
+(defun compass-active-p (game)
+  "True when any active effect orients the party (a :COMPASS payload) —
+only then do the front-ends show the compass rose and the facing."
+  (and (some (lambda (e) (getf (effect-payload e) :compass))
+             (game-effects game))
+       t))
+
+(defun apply-effect-spec (game name spec &key image extra-payload)
+  "Install SPEC — (:buff-ac N :duration M), (:light t :duration M) or
+\(:compass t :duration M), the shared timed-effect vocabulary spells,
+usable items and songs speak — as active effect NAME with icon IMAGE.
+EXTRA-PAYLOAD is appended to the payload (a song's :SONG marker).
+Returns the effect list; rejects a spec naming no known effect."
+  (let ((payload
+          (cond ((getf spec :buff-ac) (list :ac (getf spec :buff-ac)))
+                ((getf spec :light) '(:light t))
+                ((getf spec :compass) '(:compass t))
+                (t (error "apply-effect-spec ~S: ~S names no timed ~
+                           effect (:buff-ac, :light or :compass)"
+                          name spec)))))
+    (add-effect game name :duration (getf spec :duration)
+                          :payload (append payload extra-payload)
+                          :image image)))
 
 (defun turn-left (game)
   (setf (game-facing game) (turn-dir (game-facing game) -1))

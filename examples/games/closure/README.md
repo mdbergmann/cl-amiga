@@ -60,12 +60,17 @@ Walkabout: `w` forward, `s` back-step (keeps facing), `a`/`d` turn,
 debug view there), `1`–`7` open that party member's character sheet
 (`1`–`7` switch heroes there, `Esc` back), `c` cast a spell (pick the
 caster, the spell and — for a heal — the target by number, `Esc`
-backs out), `S`/`L` open the save/load slot picker (`1`–`9` pick a
+backs out), `u` use an item — a torch, a potion — the same way (pick
+the user, the item and, for a heal, the target), `p` play a bard song
+(pick the singer and the song; one song plays at a time), `S`/`L`
+open the save/load slot picker (`1`–`9` pick a
 slot, `n` types a new save name, `Esc` cancels; saves live as
 `saves/NAME.sav`), `q` quit.  In combat:
-`a` attack, `d` defend, `c` cast, `f` flee.  Inside a location (a
-shop): `1`–`7` pick the shopping hero, `1`–`9` buy or sell, `s`/`b`
-flip between the buy and sell pages, `Esc` back/leave.  On the Amiga
+`a` attack, `d` defend, `c` cast, `p` play, `f` flee.  Inside a shop:
+`1`–`7` pick the shopping hero, `1`–`9` buy or sell, `s`/`b`
+flip between the buy and sell pages, `Esc` back/leave.  Inside the
+tavern: `1`–`7` buy that hero a drink (a singer's tunes come back),
+`d` down the trapdoor, `Esc` leave.  On the Amiga
 the Save/Load/Quit menu strip sits under the right mouse button
 (GadTools menus with the usual right-Amiga shortcuts).
 

@@ -75,12 +75,16 @@ engine has no default world; the game names its starting map."
          (full nil)          ; omniscient automap (debug), map mode only
          (shop nil)          ; SHOP-VIEW while inside a location
          (cast nil)          ; CAST-VIEW while the cast menu is open
+         (use nil)           ; USE-VIEW while the use menu is open
+         (sing nil)          ; SING-VIEW while the sing menu is open
          (menu nil)          ; SAVE-MENU while the save/load picker is open
          (over nil))
     (labels ((wire (g)
                (setf log (attach-message-log g))
                (setf shop (when (game-location g) (make-shop-view)))
                (setf cast nil)
+               (setf use nil)
+               (setf sing nil)
                (setf menu nil)
                (on-event g :enter-location
                          (lambda (game loc)
@@ -123,6 +127,12 @@ engine has no default world; the game names its starting map."
                      (cast
                       (dolist (line (cast-lines game cast))
                         (format t "~A~%" line)))
+                     (use
+                      (dolist (line (use-lines game use))
+                        (format t "~A~%" line)))
+                     (sing
+                      (dolist (line (sing-lines game sing))
+                        (format t "~A~%" line)))
                      ((game-location game)
                       (dolist (line (location-lines game shop))
                         (format t "~A~%" line)))
@@ -133,22 +143,26 @@ engine has no default world; the game names its starting map."
                (terpri)
                (when (game-party game)
                  (format t "~A~%" (%party-pane game)))
-               (format t "Pos (~D,~D) facing ~A   ~A~%"
+               ;; the facing is compass-granted (a :compass effect)
+               (format t "Pos (~D,~D)~@[ facing ~A~]   ~A~%"
                        (game-x game) (game-y game)
-                       (dir-keyword (game-facing game))
+                       (when (compass-active-p game)
+                         (dir-keyword (game-facing game)))
                        (clock-line game))
                (dolist (m (log-recent log *log-lines*))
                  (format t "> ~A~%" m))
-               (cond ((or menu cast)
+               (cond ((or menu cast use sing)
                       (when (game-combat game)
                         (format t "~A~%" (%combat-pane game))))
                      ((game-combat game)
-                      (format t "~A~%[a]ttack [d]efend [c]ast [f]lee~%"
+                      (format t "~A~%[a]ttack [d]efend [c]ast [p]lay ~
+                                 [f]lee~%"
                               (%combat-pane game)))
                      ((game-location game))
                      (t
                       (format t "[w]=forward [s]=back [a]=left [d]=right ~
-                                 [m]=map [c]ast [S]ave [L]oad [q]=quit~%"))))
+                                 [m]=map [c]ast [u]se [p]lay [S]ave ~
+                                 [L]oad [q]=quit~%"))))
              (draw ()
                (%clear-screen)
                (format t "=== Lambda's Tale ===  ~A (~Dx~D)~%~%"
@@ -171,6 +185,7 @@ engine has no default world; the game names its starting map."
                                               :defend)
                                             (alive-heroes game))))
                  (#\c (open-cast t))
+                 (#\p (open-sing t))
                  (#\f (attempt-flee game))
                  (#\q :quit)
                  (t nil)))
@@ -182,6 +197,24 @@ engine has no default world; the game names its starting map."
              (cast-menu-act (c)
                (case (cast-act game cast c)
                  ((:done :cancelled) (setf cast nil)))
+               nil)
+             (open-use ()
+               (if (some #'usable-items (alive-heroes game))
+                   (setf use (make-use-view))
+                   (note "No one carries anything to use."))
+               nil)
+             (use-menu-act (c)
+               (case (use-act game use c)
+                 ((:done :cancelled) (setf use nil)))
+               nil)
+             (open-sing (in-combat)
+               (if (some #'hero-singer-p (alive-heroes game))
+                   (setf sing (make-sing-view :in-combat in-combat))
+                   (note "No one here can play."))
+               nil)
+             (sing-menu-act (c)
+               (case (sing-act game sing c)
+                 ((:done :cancelled) (setf sing nil)))
                nil)
              (saves-act (c)
                (let ((r (save-menu-act game menu c)))
@@ -222,12 +255,16 @@ engine has no default world; the game names its starting map."
                     (#\m (setf mode :map)
                          nil)
                     (#\c (open-cast nil))
+                    (#\u (open-use))
+                    (#\p (open-sing nil))
                     (#\q :quit)
                     (t nil)))))
              (act (c)
                (cond ((eq mode :map) (map-act c))
                      (menu (saves-act c))
                      (cast (cast-menu-act c))
+                     (use (use-menu-act c))
+                     (sing (sing-menu-act c))
                      ((game-combat game) (combat-act c))
                      ((game-location game)
                       (location-act game shop c)

@@ -71,5 +71,13 @@
   (dotimes (x pens) (setf (pixel-ref img x 0) x))
   (write-ilbm img (concatenate 'string *out* "palette.iff")))
 
+;; effects-band icons for the campaign's timed spells
+;; (define-spell :image, resolved map-relative like the pack itself)
+(loop for (kind file) in '((:flame "fx-flame.iff")
+                           (:shield "fx-shield.iff")
+                           (:compass "fx-compass.iff"))
+      do (write-ilbm (draw-effect-icon kind)
+                     (concatenate 'string *out* file)))
+
 (format t "city pack written to ~A~%" *out*)
 (cl-user::quit 0)

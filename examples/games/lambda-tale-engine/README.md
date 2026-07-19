@@ -89,9 +89,9 @@ specs/               design constraints (UI layout, map scale, screens)
 Both front-ends draw the Bard's Tale split screen (see
 [specs/ui-and-engine.md](specs/ui-and-engine.md)): the first-person
 view with the location plaque under it on the left, the scrolling
-message log on the right with the active-effects/compass band at its
-foot, and the status line plus the numbered party roster at the
-bottom.  The full automap lives under `m`; maps can be large (30x30
+message log on the right with the active-effects band at its foot —
+where the compass rose appears while a compass effect burns — and the
+status line plus the numbered party roster at the bottom.  The full automap lives under `m`; maps can be large (30x30
 like Bard's Tale I, up to 128x128).  The key bindings are listed in
 the [Closure README](../closure/README.md).  On the Amiga the window
 uses the same geometry as the custom screen, so both displays lay out
@@ -228,7 +228,12 @@ shop mechanics: items are campaign data (`define-item` — weapons,
 armor, shields with prices, damage dice, AC bonuses and class
 restrictions), heroes carry up to 8 items and equip one weapon, armor
 and shield, combat uses the equipped gear, and shops sell their
-`:stock` and buy anything back at half price.
+`:stock` and buy anything back at half price.  An item can also be
+**usable** (`:use` — a torch, a potion): using it (`u`, the use menu)
+heals a chosen hero or installs a timed effect from the same
+vocabulary spells speak, a `:consumed` item is spent on use, and
+`:image` gives the effect its band icon.  See the "Usable items" test
+section of `tests/run-tests.lisp` for the exact rules.
 
 ### Building your own world
 
@@ -325,9 +330,27 @@ mechanics: casters (`define-hero-class ... :caster t`) carry **spell
 points** (2 per level plus the IQ bonus) and pay them per cast, and a
 spell has exactly one engine-interpreted effect — damage (combat only,
 strikes the melee target), heal (one chosen hero), a timed party AC
-buff, or timed light (the answer to darkness).  Spell points trickle
-back Bard's Tale style while walking outdoors in daylight.  The
-"Spells" test section of `tests/run-tests.lisp` is the executable
+buff, timed light (the answer to darkness), or a timed compass:
+Bard's Tale style, the party only sees which way it faces — the rose
+in the effects band, the facing in the status line — while a compass
+effect burns.  A timed spell may name an `:image`, the icon the
+effects band shows for it.  Spell points trickle back Bard's Tale
+style while walking outdoors in daylight.  The "Spells" test section
+of `tests/run-tests.lisp` is the executable specification.
+
+## Bard songs and taverns
+
+Songs are campaign data too (`define-song`): a song is always a timed
+effect from the same vocabulary (AC buff, light or compass, with a
+`:duration` and an optional `:image`).  Singers (`define-hero-class
+... :singer t`) pay **tunes** — one charge per song, one charge per
+level when rested — and only **one song plays at a time**: striking up
+a new one displaces the old, the Bard's Tale rule.  `p` opens the sing
+menu, and in combat `(:sing SONG)` is a party action beside attacking
+and casting.  Tunes come back with a drink at a **tavern** — a
+`(location TITLE :tavern :price N)` map special; a tavern may also
+hold the way below (`:down FILE`, the trapdoor to the cellar).  The
+"Bard songs" test section of `tests/run-tests.lisp` is the executable
 specification.
 
 ## Save games

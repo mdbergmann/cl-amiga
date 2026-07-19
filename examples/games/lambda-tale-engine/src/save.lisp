@@ -11,7 +11,9 @@
 
 (in-package :tale)
 
-(defconstant +save-version+ 3)
+(defconstant +save-version+ 4)
+;; v4: effect icon images (:image in the effect plists) and hero song
+;; tunes (:tunes in the hero plists).
 ;; v3: game time (:time), timed active effects (:effects) and hero
 ;; spell points (:max-sp/:sp in the hero plists).
 ;; v2: multi-zone world — the save carries every visited zone's map file
@@ -50,13 +52,15 @@
         :str (hero-str h) :dex (hero-dex h) :iq (hero-iq h)
         :con (hero-con h) :lck (hero-lck h)
         :ac (hero-ac h) :damage (hero-damage h) :gold (hero-gold h)
-        :items (hero-items h) :equipped (hero-equipped h)))
+        :items (hero-items h) :equipped (hero-equipped h)
+        :tunes (hero-tunes h)))
 
 (defun %effects->list (game)
   (mapcar (lambda (e)
             (list :name (effect-name e)
                   :expires-at (effect-expires-at e)
-                  :payload (effect-payload e)))
+                  :payload (effect-payload e)
+                  :image (effect-image e)))
           (game-effects game)))
 
 (defun %zones->alist (game)

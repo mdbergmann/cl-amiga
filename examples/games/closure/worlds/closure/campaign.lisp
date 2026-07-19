@@ -11,24 +11,38 @@
 (define-hero-class :warrior  :hp-dice "1d10+4" :damage "1d8" :ac 8)
 (define-hero-class :paladin  :hp-dice "1d10+3" :damage "1d8" :ac 8)
 (define-hero-class :rogue    :hp-dice "1d8+2"  :damage "1d6" :ac 9)
-(define-hero-class :bard     :hp-dice "1d8+2"  :damage "1d6" :ac 9)
+(define-hero-class :bard     :hp-dice "1d8+2"  :damage "1d6" :ac 9
+                             :singer t)
 (define-hero-class :conjurer :hp-dice "1d6+1"  :damage "1d4" :ac 10
                              :caster t)
 
 ;;; Spells (the conjurer's book — one of each engine effect kind)
 
 (define-spell 'mage-flame :cost 1 :level 1 :classes '(:conjurer)
-  :light t :duration 60)
+  :light t :duration 60 :image "gfx/fx-flame.iff")
 (define-spell 'arc-fire   :cost 2 :level 1 :classes '(:conjurer)
   :damage "1d4+1")
 (define-spell 'minor-mend :cost 2 :level 1 :classes '(:conjurer)
   :heal "1d8")
 (define-spell 'stone-skin :cost 3 :level 2 :classes '(:conjurer)
-  :buff-ac 2 :duration 30)
+  :buff-ac 2 :duration 30 :image "gfx/fx-shield.iff")
+(define-spell 'magic-compass :cost 2 :level 1 :classes '(:conjurer)
+  :compass t :duration 120 :image "gfx/fx-compass.iff")
+
+;;; Songs (Melody's repertoire — one tune per bard level, refilled
+;;; with a drink at the Adventurer's Rest)
+
+(define-song 'travellers-tune :level 1 :buff-ac 1 :duration 60
+  :image "gfx/fx-shield.iff")
+(define-song 'seekers-ballad  :level 1 :compass t :duration 60
+  :image "gfx/fx-compass.iff")
 
 ;;; Items (Wolfgar's stock — see worlds/closure/town.map)
 
-(define-item 'torch         :price 2)
+(define-item 'torch         :price 2 :consumed t
+             :use '(:light t :duration 60) :image "gfx/fx-flame.iff")
+(define-item 'healing-potion :price 25 :consumed t
+             :use '(:heal "2d4"))
 (define-item 'short-sword   :kind :weapon :price 20 :damage "1d6+1")
 (define-item 'war-axe       :kind :weapon :price 40 :damage "1d8+1"
              :classes '(:warrior :paladin))
