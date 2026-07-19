@@ -2,7 +2,7 @@
 ;;;
 ;;; Keys: w=forward  s=back-step  a=turn left  d=turn right
 ;;;       m=full map view  h/?=help page  c=cast a spell
-;;;       S=save  L=load  q=quit
+;;;       1-7=character sheet  S=save  L=load  q=quit
 ;;; In the map view: m/Esc=back  f=toggle omniscient (debug)  q=quit
 ;;; In the help page: h/Esc=back  q=quit
 ;;; In combat: a=attack  d=defend  c=cast  f=flee
@@ -73,8 +73,9 @@ engine has no default world; the game names its starting map."
   (let* ((map (load-map-file map-file))
          (game nil)
          (log nil)
-         (mode :play)        ; :play, :map (full-map view) or :help
+         (mode :play)        ; :play, :map (full-map view), :help or :sheet
          (full nil)          ; omniscient automap (debug), map mode only
+         (sheet-hero 0)      ; party index shown in :sheet mode
          (shop nil)          ; SHOP-VIEW while inside a location
          (cast nil)          ; CAST-VIEW while the cast menu is open
          (use nil)           ; USE-VIEW while the use menu is open
@@ -168,6 +169,9 @@ engine has no default world; the game names its starting map."
              (draw-help-page ()
                (dolist (line (help-lines))
                  (format t "~A~%" line)))
+             (draw-sheet-page ()
+               (dolist (line (hero-sheet-lines game sheet-hero))
+                 (format t "~A~%" line)))
              (draw ()
                (%clear-screen)
                (format t "=== Lambda's Tale ===  ~A (~Dx~D)~%~%"
@@ -177,6 +181,7 @@ engine has no default world; the game names its starting map."
                (case mode
                  (:map (draw-map-page))
                  (:help (draw-help-page))
+                 (:sheet (draw-sheet-page))
                  (t (draw-play-page)))
                (finish-output))
              (note (text)
@@ -248,12 +253,27 @@ engine has no default world; the game names its starting map."
                  ((#\h #\H #\? #\Escape) (setf mode :play) nil)
                  ((#\q #\Q) :quit)
                  (t nil)))
+             (open-sheet (i)
+               ;; '1'-'7': show that roster slot if it holds a hero
+               (when (nth i (game-party game))
+                 (setf sheet-hero i
+                       mode :sheet))
+               nil)
+             (sheet-act (c)
+               (let ((digit (digit-char-p c)))
+                 (cond ((and digit (<= 1 digit +party-limit+))
+                        (open-sheet (1- digit)))
+                       ((eql c #\Escape) (setf mode :play) nil)
+                       ((member c '(#\q #\Q)) :quit)
+                       (t nil))))
              (explore-act (c)
                (case c
                  (#\S (setf menu (make-save-menu :save))
                       nil)
                  (#\L (setf menu (make-save-menu :load))
                       nil)
+                 ((#\1 #\2 #\3 #\4 #\5 #\6 #\7)
+                  (open-sheet (1- (digit-char-p c))))
                  (t
                   (case (char-downcase c)
                     (#\w (note (%step-message (move-party game :forward)))
@@ -278,6 +298,7 @@ engine has no default world; the game names its starting map."
              (act (c)
                (cond ((eq mode :map) (map-act c))
                      ((eq mode :help) (help-act c))
+                     ((eq mode :sheet) (sheet-act c))
                      (menu (saves-act c))
                      (cast (cast-menu-act c))
                      (use (use-menu-act c))

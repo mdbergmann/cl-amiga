@@ -87,7 +87,10 @@ worlds/closure/      the world, one self-contained directory:
                      campaign.lisp (hero classes, spells, items,
                      monsters, starting party) and gfx/ — the town's
                      tile pack (night-sky city palette), the worked
-                     example of the engine's tile-pack contract;
+                     example of the engine's tile-pack contract, plus
+                     the shoppe/tavern pictures and the class
+                     portraits shown while those menus take over the
+                     message area;
                      regenerate: worlds/closure/gfx/make-pack.lisp
 tests/run-tests.lisp test suite (make test)
 ```

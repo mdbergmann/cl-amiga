@@ -100,6 +100,32 @@
   (check "the spell icons exist, 16x16 with the transparent key"
          nil stale))
 
+;; The takeover art ships inside the world's gfx dir too: the location
+;; pictures (shown in the view column while the shop/tavern menu takes
+;; over the message area) fill the lores viewport exactly; the class
+;; portraits (beside the character sheet) are the generator's standard
+;; square.  Regenerate with worlds/closure/gfx/make-pack.lisp.
+(let ((stale '()))
+  (dolist (file '("shop.iff" "tavern.iff"))
+    (let ((path (concatenate 'string "worlds/closure/gfx/" file)))
+      (if (probe-file path)
+          (let ((img (read-ilbm path)))
+            (unless (and (= (image-width img) *fp-view-width*)
+                         (= (image-height img) *fp-view-height*))
+              (push (list file :mis-sized) stale)))
+          (push (list file :missing) stale))))
+  (dolist (file '("hero-warrior.iff" "hero-paladin.iff" "hero-rogue.iff"
+                  "hero-bard.iff" "hero-conjurer.iff"))
+    (let ((path (concatenate 'string "worlds/closure/gfx/" file)))
+      (if (probe-file path)
+          (let ((img (read-ilbm path)))
+            (unless (and (= 64 (image-width img))
+                         (= 64 (image-height img)))
+              (push (list file :mis-sized) stale)))
+          (push (list file :missing) stale))))
+  (check "the location pictures and portraits exist at their sizes"
+         nil stale))
+
 ;; The town's ceiling is a plain, starless night sky: every pixel is
 ;; the sky pen (regenerate with worlds/closure/gfx/make-pack.lisp).
 (let ((img (read-ilbm "worlds/closure/gfx/ceiling.iff"))
@@ -168,6 +194,11 @@
   (check "shoppe door opens" :door (move-party g))
   (check "the shoppe is a shop location" :shop
          (location-kind (game-location g)))
+  (check "the shoppe's picture resolves inside the world"
+         "worlds/closure/gfx/shop.iff" (location-image-path g))
+  (check "El Cid's portrait resolves inside the world"
+         "worlds/closure/gfx/hero-warrior.iff"
+         (hero-image-path g (first (game-party g))))
   (leave-location g)
   ;; over to the tavern: back out, east along the street, up the door
   (move-party g :back)                    ; (2,2)
@@ -177,6 +208,8 @@
   (check "the tavern door opens" :door (move-party g))
   (check "the Adventurer's Rest is a tavern" :tavern
          (location-kind (game-location g)))
+  (check "the tavern's picture resolves inside the world"
+         "worlds/closure/gfx/tavern.iff" (location-image-path g))
   (check "a drink at the Rest is four gold" 4
          (tavern-price (game-location g)))
   ;; Melody drinks (her tunes refill), then down the trapdoor

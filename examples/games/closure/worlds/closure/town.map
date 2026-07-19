@@ -30,11 +30,13 @@
 
 (special (2 1)
   (location "Wolfgar's Arms & Armour" :shop
+            :image "gfx/shop.iff"
             :stock (torch healing-potion short-sword war-axe broadsword
                     leather-armor chain-mail buckler)))
 
 (special (6 1)
-  (location "The Adventurer's Rest" :tavern :price 4 :down "cellar.map"))
+  (location "The Adventurer's Rest" :tavern :price 4 :down "cellar.map"
+            :image "gfx/tavern.iff"))
 
 ;; The alley between the shop rows is safe by day — and not by night.
 (special (4 1)

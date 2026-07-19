@@ -1110,6 +1110,36 @@ messages so far (oldest first)."
        (sixth (hero-summary-lines
                (%make-hero :name "x" :class :war-mage :hp 0))))
 
+;; The character-sheet page (HERO-SHEET-LINES): header, the summary
+;; block, the key hints — the front-ends (the Amiga message-area
+;; takeover, the host :sheet mode) draw these verbatim.
+(let* ((m (parse-map *art* :name "test"))
+       (g (new-game m :party (with-rng ()
+                               (list (make-hero "A" :tester)
+                                     (make-hero "B" :tester)))))
+       (lines (hero-sheet-lines g 1)))
+  (check "sheet page header counts the roster" "*** Character 2 of 2 ***"
+         (first lines))
+  (check "sheet page embeds the summary block" "B the Tester"
+         (third lines))
+  (check "sheet page ends with the key hints"
+         "[1-7] view another  [Esc] back"
+         (first (last lines))))
+
+;; Class portraits: DEFINE-HERO-CLASS :IMAGE resolves map-relative
+;; (the effect-icon rule); a class without one has no portrait.
+(define-hero-class :t-faced :image "gfx/face.iff")
+(let* ((m (parse-map *art* :name "world/deep/test"))
+       (g (new-game m :party (with-rng ()
+                               (list (make-hero "F" :t-faced)
+                                     (make-hero "A" :tester))))))
+  (check "the portrait file is class data" "gfx/face.iff"
+         (hero-image (first (game-party g))))
+  (check "the portrait resolves beside the map" "world/deep/gfx/face.iff"
+         (hero-image-path g (first (game-party g))))
+  (check "a class without :image has no portrait" nil
+         (hero-image-path g (second (game-party g)))))
+
 (check "stat-bonus 10" 0 (stat-bonus 10))
 (check "stat-bonus 12" 1 (stat-bonus 12))
 (check "stat-bonus 15" 2 (stat-bonus 15))
@@ -2509,6 +2539,22 @@ messages so far (oldest first)."
          (location-act g view #\Escape))
   (check "unknown kind left" nil (game-location g)))
 
+;; Location pictures: the location op's :IMAGE resolves map-relative
+;; (the effect-icon rule) — the Amiga front-end shows it in the view
+;; column while the location's menu takes over the message area.
+(let ((g (new-game (parse-map *art* :name "world/town"))))
+  (enter-location g '("The Pictured Inn" :tavern :image "gfx/inn.iff"))
+  (check "location-image reads the :IMAGE arg" "gfx/inn.iff"
+         (location-image (game-location g)))
+  (check "the picture resolves beside the map" "world/gfx/inn.iff"
+         (location-image-path g))
+  (leave-location g)
+  (check "no location, no picture" nil (location-image-path g))
+  (enter-location g '("Bare Hut" :hut))
+  (check "a location without :IMAGE has no picture" nil
+         (location-image-path g))
+  (leave-location g))
+
 ;;; ---------------------------------------------------------------------
 ;;; Save games: the whole world round-trips — every visited zone's
 ;;; knowledge, the party's packs and equipment.
@@ -2943,6 +2989,26 @@ brick grid" d side)
   (check "an absolute image path passes through" "/elsewhere/x.iff"
          (effect-image-path g (find-effect g "abs"))))
 
+;; Takeover art: location scenes and portraits draw to the ordered
+;; size and stay within the fixed UI pens 0-3 (black, white, grey,
+;; amber) — a pack may only recolor pens 4+, so pictures painted with
+;; higher pens would change color under foreign packs.
+(dolist (kind '(:shop :tavern :hut))
+  (let ((img (draw-location-scene kind 60 44))
+        (maxpen 0))
+    (check (format nil "the ~A scene sizes to order" kind) '(60 44)
+           (list (image-width img) (image-height img)))
+    (dotimes (y 44)
+      (dotimes (x 60)
+        (setf maxpen (max maxpen (pixel-ref img x y)))))
+    (check-true (format nil "the ~A scene keeps to the UI pens" kind)
+                (<= maxpen 3))))
+(dolist (style '(:helm :crest :hood :cap :hat :plain))
+  (let ((img (draw-portrait style)))
+    (check (format nil "the ~A portrait is the standard size" style)
+           (list *portrait-size* *portrait-size*)
+           (list (image-width img) (image-height img)))))
+
 ;; Transparency contract: receding side pieces keep pen-0 corners so the
 ;; backdrop shows through the cookie-cut blit; front/flank pieces fill
 ;; their whole rect (opaque), drawing black as the mortar pen, not pen 0.
@@ -3171,15 +3237,17 @@ brick grid" d side)
                    (%amiga-draw-sheet rp g 0 l)
                    t)))))))
 
-;; The location (shop) page draws over the play view — enter a shop
-;; location for real and render its menu pages.
+;; The location interaction: the overlay page variant, the message-area
+;; takeover (menu lines + rule + log tail on the white page) and the
+;; view-column picture with its fall-back contract.
 #+amigaos
 (let* ((m (parse-map *art* :name "test"))
        (g (new-game m :party (with-rng () (list (make-hero "A" :tester)))))
        (log (attach-message-log g))
        (view (make-shop-view)))
+  (say g "Takeover smoke test line.")
   (enter-location g '("Smoke Shoppe" :shop :stock (t-sword t-torch)))
-  (check "amiga-ui draws the location page" t
+  (check "amiga-ui draws the location pages" t
          (amiga.intuition:with-window
              (win :title "Lambda's Tale Test"
                   :left 0 :top 0
@@ -3194,6 +3262,30 @@ brick grid" d side)
              (shop-act g view #\s)
              (%amiga-draw-page rp (location-lines g view) l)   ; sell page
              (%amiga-draw-log rp log l)
+             ;; the message-area takeover, uncached and cached: the
+             ;; location menu and the character sheet
+             (%amiga-draw-takeover rp (location-lines g view) log l)
+             (let ((cache (make-hash-table :test #'equal)))
+               (%amiga-draw-takeover rp (hero-sheet-lines g 0) log l cache)
+               (check-true "takeover lines were cached as bitmaps"
+                           (plusp (hash-table-count cache)))
+               (%free-log-lines cache))
+             ;; the view-column picture: a real ILBM draws and centers;
+             ;; a missing file defers to the caller (falls back to the
+             ;; first-person view) after logging once
+             (let ((images (make-hash-table :test #'equal))
+                   (path "tests/tmp-pic.iff"))
+               (write-ilbm (draw-location-scene :shop 40 30) path)
+               (check-true "a location picture draws in the view column"
+                           (%amiga-draw-picture rp images path l log))
+               (check "a missing picture defers to the caller" nil
+                      (%amiga-draw-picture rp images "tests/no-such.iff"
+                                           l log))
+               (check-true "the missing picture said so in the log"
+                           (find-if (lambda (s) (search "No image" s))
+                                    (log-recent log 5)))
+               (%free-images images)
+               (delete-file path))
              t)))
   (leave-location g))
 

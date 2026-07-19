@@ -27,15 +27,17 @@
 (defvar *hero-classes* (make-hash-table :test 'eq))
 
 (defun define-hero-class (name &key (hp-dice "1d8") (damage "1d4") (ac 10)
-                                    caster singer)
+                                    caster singer image)
   "Register hero class NAME (a keyword) with its hit dice, attack dice
 and starting armor class; CASTER T marks a spell-casting class (spell
 points from level and IQ, see %HERO-MAX-SP), SINGER T a song-playing
-class (one tune charge per level, see songs.lisp).  Campaign data
-calls this."
+class (one tune charge per level, see songs.lisp).  IMAGE names the
+class's portrait file (map-relative, like effect icons) — the Amiga
+front-end shows it beside the character sheet; NIL = no portrait.
+Campaign data calls this."
   (setf (gethash name *hero-classes*)
         (list :hp-dice hp-dice :damage damage :ac ac
-              :caster caster :singer singer))
+              :caster caster :singer singer :image image))
   name)
 
 (defun hero-class-property (class key)
@@ -146,6 +148,29 @@ Amiga sheet view and the tests render from the same source."
                      (format nil "~A~:[~;*~]" (item-title name)
                              (member name (hero-equipped hero))))
                    (hero-items hero)))))
+
+(defun hero-image (hero)
+  "HERO's portrait file name (the class's :IMAGE), or NIL."
+  (hero-class-property (hero-class hero) :image))
+
+(defun hero-image-path (game hero)
+  "HERO's portrait file resolved like an effect icon — relative to the
+current map file's directory — or NIL when the class has none."
+  (let ((image (hero-image hero)))
+    (when image
+      (%resolve-map-path (dungeon-map-name (game-map game)) image))))
+
+(defun hero-sheet-lines (game index)
+  "The character-sheet page for roster slot INDEX as text lines: a
+header, the hero's HERO-SUMMARY-LINES stat block and the key hints —
+the front-ends draw these verbatim (the SHOP-LINES pattern)."
+  (let ((hero (nth index (game-party game))))
+    (append
+     (list (format nil "*** Character ~D of ~D ***"
+                   (1+ index) (length (game-party game)))
+           "")
+     (when hero (hero-summary-lines hero))
+     (list "" "[1-7] view another  [Esc] back"))))
 
 (defun party-full-p (game)
   (>= (length (game-party game)) +party-limit+))

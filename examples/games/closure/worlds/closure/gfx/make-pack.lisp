@@ -79,5 +79,24 @@
       do (write-ilbm (draw-effect-icon kind)
                      (concatenate 'string *out* file)))
 
+;; location pictures (the location op's :image): shown in the view
+;; column while the shop/tavern menu takes over the message area —
+;; drawn at the viewport size so they fill the view slot exactly
+(loop for (kind file) in '((:shop "shop.iff")
+                           (:tavern "tavern.iff"))
+      do (write-ilbm (draw-location-scene kind
+                                          *fp-view-width* *fp-view-height*)
+                     (concatenate 'string *out* file)))
+
+;; class portraits (define-hero-class :image): shown in the view
+;; column beside the character-sheet takeover
+(loop for (style file) in '((:helm "hero-warrior.iff")
+                            (:crest "hero-paladin.iff")
+                            (:hood "hero-rogue.iff")
+                            (:cap "hero-bard.iff")
+                            (:hat "hero-conjurer.iff"))
+      do (write-ilbm (draw-portrait style)
+                     (concatenate 'string *out* file)))
+
 (format t "city pack written to ~A~%" *out*)
 (cl-user::quit 0)
