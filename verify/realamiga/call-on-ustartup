@@ -17,6 +17,19 @@
 ; lower-end target).  date timestamps before/after give total runtime;
 ; subtract the known ~38 s boot-to-REPL on this config to estimate
 ; test-suite time.
+;
+; One-shot boot override: a host-side launcher (e.g. the games'
+; run-amiga.sh) may drop an AmigaDOS script at
+; CLAmiga:build/amiga/boot-override to run INSTEAD of the test suite.
+; It is consumed before executing (copied to RAM: and deleted), so a
+; stale file can never hijack a later test run — and run-fs-uae.sh
+; clears any leftover on the host side too.
+IF EXISTS CLAmiga:build/amiga/boot-override
+  copy >NIL: CLAmiga:build/amiga/boot-override RAM:boot-override
+  delete >NIL: CLAmiga:build/amiga/boot-override
+  execute RAM:boot-override
+  SKIP done
+ENDIF
 cd CLAmiga:
 echo "=== avail before clamiga ===" >build/amiga/test-results.log
 avail >>build/amiga/test-results.log
@@ -29,3 +42,4 @@ date >>build/amiga/test-results.log
 ; Quit FS-UAE so `make test-amiga` returns without manual intervention.
 ; The host-side watchdog (run-fs-uae.sh) is the fallback if this no-ops.
 C:UAEquit
+LAB done

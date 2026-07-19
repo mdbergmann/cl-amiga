@@ -20,8 +20,11 @@ Build clamiga in the repo root first (`make host`), then from this
 directory:
 
 ```
-make test    # run the game's test suite (world, campaign, autoplay)
-make run     # play (host ASCII walkabout)
+make test      # run the game's test suite (world, campaign, autoplay)
+make run       # play (host ASCII walkabout)
+make run-amiga # play in FS-UAE: cross-compile and boot straight into
+               # the game (./run-amiga.sh; quitting the game closes
+               # the emulator — HEAP/STACK/CONFIG=lowend overridable)
 ```
 
 On AmigaOS (the repo is mounted as `CLAmiga:` in the FS-UAE setup) the

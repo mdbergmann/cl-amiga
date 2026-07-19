@@ -31,6 +31,11 @@ HARD_TIMEOUT="${HARD_TIMEOUT:-1800}"    # 30 min absolute ceiling
 
 mkdir -p build/amiga
 rm -f "$LOG"
+# A leftover boot-override (from an aborted run-amiga.sh session) would
+# make call-on-ustartup run the game instead of the test suite — clear it.
+# KEEP_BOOT_OVERRIDE=1 keeps a deliberately placed one (an unattended
+# custom run that still wants this watchdog, e.g. the game test suites).
+[ "${KEEP_BOOT_OVERRIDE:-0}" = 1 ] || rm -f build/amiga/boot-override
 
 kill_fsuae() {
 	kill "$FSUAE_PID" 2>/dev/null

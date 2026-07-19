@@ -302,6 +302,22 @@ there is plain black.~%")
     n))
 
 ;;; ---------------------------------------------------------------------
+;;; Title fitting: the location plaque under the view is only as wide
+;;; as the profile's view column, which is a tuning knob — so a zone
+;;; title can be wider than the plaque and must lose trailing
+;;; characters instead of overrunning the border into the log column.
+
+(defun fit-title (name measure max-w)
+  "NAME shortened by dropping trailing characters until (FUNCALL
+MEASURE NAME) is at most MAX-W pixels or one character remains.
+MEASURE is the front-end's text-width function (proportional fonts
+keep working); NAME is returned unchanged when it already fits."
+  (loop while (and (> (length name) 1)
+                   (> (funcall measure name) max-w))
+        do (setf name (subseq name 0 (1- (length name)))))
+  name)
+
+;;; ---------------------------------------------------------------------
 ;;; Compass rose: display geometry for the UI's facing indicator.
 
 (defun compass-points (facing cx cy r)

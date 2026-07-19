@@ -113,6 +113,13 @@ active-spells strip between the view and the text column did not fit
 320 pixels, so both profiles share this two-column split — BT1/BT3 on
 the Amiga use the same arrangement.)
 
+(Revised 2026-07-19: the columns settle at roughly **2/5 view, 3/5
+text** of the content span — the text matters more than the picture.
+The split is not engine code but a profile knob: the view column is
+exactly the profile's `fp-width` and the log always takes whatever is
+left, so a game or target that wants a different balance ships a
+profile, not a patch.)
+
 - **Message log** (right column): everything the game says — combat
   transcript, door/wall feedback, story messages — appended at the
   bottom, older lines scrolling up, exactly like Bard's Tale's text
