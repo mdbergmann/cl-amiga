@@ -479,6 +479,16 @@
 
 ; --- Format ---
 (check "format nil" nil (format t ""))
+; ~A/~S used a fixed 512-byte buffer: long strings truncated at 511 chars
+(check "format ~A long string" 2000
+       (length (format nil "~A" (make-string 2000 :initial-element #\x))))
+(check "format ~S long string" 2002
+       (length (format nil "~S" (make-string 2000 :initial-element #\x))))
+(check "format padded long string" 2100
+       (length (format nil "~2100A" (make-string 2000 :initial-element #\x))))
+; ~D used a fixed 128-byte buffer: bignums past ~127 digits truncated
+(check "format ~D big bignum" 201 (length (format nil "~D" (expt 10 200))))
+(check "format ~:D big bignum" 267 (length (format nil "~:D" (expt 10 200))))
 
 ; --- Phase 4: return / return-from ---
 (check "block return" 42 (block nil 1 (return 42) 3))
