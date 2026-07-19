@@ -2,7 +2,7 @@
 ;;;
 ;;; Draws every wall piece named by WALL-PIECE-NAMES (depth-3 images:
 ;;; pen 0 transparent, plus white/grey/amber/black), plus the demo
-;;; ceiling/floor backdrops (BACKDROP-RECTS, opaque depth-2), sized to
+;;; ceiling/floor backdrops (BACKDROP-RECTS, opaque depth-3), sized to
 ;;; their fixed screen slots for the *FP-VIEW-WIDTH* x *FP-VIEW-HEIGHT*
 ;;; perspective planes, and writes them as ILBM files into data/gfx/.
 ;;; The receding side pieces leave their ceiling/floor corners at pen 0
@@ -17,26 +17,33 @@
 ;;; Style: grey brick walls with black mortar in perspective (courses
 ;;; and joints shrink with distance, side-wall courses converge along
 ;;; the receding edges), white edge highlights carrying the wireframe
-;;; look over, amber doors.
+;;; look over, amber doors.  The floor and ceiling are solid distance
+;;; bands (no pattern — a flat texture under converging walls reads as
+;;; wallpaper): three shades darkening toward the horizon, split at
+;;; the perspective-plane rows so each band lines up with the corridor
+;;; cell at its depth.
 
 (in-package :tale)
 
 ;;; The dungeon palette, 8-bit components (SET-RGB4 nibbles x 17):
-;;; pen 0 background, pen 1 white, pen 2 grey, pen 3 amber, pen 4 black.
+;;; pen 0 background, pen 1 white, pen 2 grey, pen 3 amber, pen 4 black,
+;;; pens 5-7 grey shades for the backdrops' distance bands.
 ;;; Pen 0 is the TRANSPARENT key in wall pieces (the ceiling/floor
 ;;; backdrop shows through it), so opaque black inside a wall — mortar,
-;;; joints, door frames — is drawn with pen 4, not pen 0.  Depth 3
-;;; (8 pens) holds pen 4; pens 5-7 are spare black.  The backdrops
+;;; joints, door frames — is drawn with pen 4, not pen 0.  The backdrops
 ;;; (ceiling/floor) are opaque and keep pen 0 as plain black.
 (defparameter *wall-palette*
   #((0 0 0) (255 255 255) (136 136 136) (255 170 51)
-    (0 0 0) (0 0 0) (0 0 0) (0 0 0)))
+    (0 0 0) (85 85 85) (51 51 51) (34 34 34)))
 
 (defconstant +pen-bg+ 0)      ; transparent key in wall pieces
 (defconstant +pen-edge+ 1)
 (defconstant +pen-brick+ 2)
 (defconstant +pen-door+ 3)
 (defconstant +pen-mortar+ 4)  ; opaque black: mortar, joints, door frames
+(defconstant +pen-mid+ 5)     ; mid grey: the mid-distance floor band
+(defconstant +pen-dim+ 6)     ; dim grey: far floor / near ceiling band
+(defconstant +pen-dark+ 7)    ; dark grey: mid ceiling band
 
 (defparameter *brick-courses* 6
   "Brick courses over a full wall height.")
@@ -168,43 +175,45 @@ mirror image (see %IMG-MIRROR-X)."
     img))
 
 ;;; ---------------------------------------------------------------------
-;;; Backdrops: the demo ceiling (dark rock) and floor (grey flagstones)
-;;; filling the two BACKDROP-RECTS slots above and below the horizon.
+;;; Backdrops: solid distance-banded ceiling and floor filling the two
+;;; BACKDROP-RECTS slots above and below the horizon.  The bands are
+;;; painted in screen space at the perspective-plane rows: the wall
+;;; pieces blit on top, so each band lines up with the corridor cell at
+;;; its depth (and shows through open sides at the same rows, which is
+;;; perspective-consistent for the corridor beyond).
 
-(defun %draw-ceiling (w h)
-  "Near-black rock ceiling: black with a sparse deterministic grey
-speckle, keeping the corridor's dark dungeon mood."
-  (let ((img (make-image w h 2 :palette *wall-palette*)))
-    (dotimes (y h img)
-      (dotimes (x w)
-        (when (zerop (mod (+ (* 7 x) (* 13 y)) 41))
-          (setf (pixel-ref img x y) +pen-brick+))))))
-
-(defun %draw-floor (w h)
-  "Grey flagstone floor: large running-bond stone tiles with black
-joints (the same joint logic as %DRAW-FRONT-WALL, scaled up)."
-  (let* ((img (make-image w h 2 :palette *wall-palette*))
-         (course (max 8 (round h 4)))
-         (tile (max 16 (round w 6))))
-    (%img-fill img 0 0 (1- w) (1- h) +pen-brick+)
-    (loop for y from course below h by course
-          for row from 1
-          do (%img-fill img 0 y (1- w) y +pen-bg+)
-             (loop for x from (if (evenp row) 0 (floor tile 2))
-                     below w by tile
-                   do (%img-fill img x (- y course) x (1- y) +pen-bg+)))
-    (loop for x from (floor tile 2) below w by tile
-          do (%img-fill img x (* course (floor (1- h) course)) x (1- h)
-                        +pen-bg+))
-    img))
+(defun %draw-backdrop (w h planes oy top-p pens &key (depth 3)
+                                                     (palette *wall-palette*))
+  "One backdrop slot as solid distance bands: a W x H image whose band
+K spans the rows between perspective planes K and K+1 (screen rows,
+offset by the slot's top OY), filled with (AREF PENS K); the last band
+runs on to the horizon edge.  TOP-P selects the ceiling side of the
+planes (their top rows) or the floor side (bottom rows)."
+  (let ((img (make-image w h depth :palette palette))
+        (n (length pens)))
+    (dotimes (k n img)
+      (let* ((near (aref planes k))
+             (far (unless (= k (1- n)) (aref planes (1+ k))))
+             (y0 (if top-p
+                     (- (second near) oy)
+                     (if far (- (1+ (fourth far)) oy) 0)))
+             (y1 (if top-p
+                     (if far (- (1- (second far)) oy) (1- h))
+                     (- (fourth near) oy))))
+        (%img-fill img 0 y0 (1- w) y1 (aref pens k))))))
 
 (defun draw-backdrop-piece (key planes)
   "Draw the :CEILING or :FLOOR demo backdrop at its slot size for
-PLANES."
+PLANES: three solid grey bands darkening toward the horizon (the
+ceiling ends in plain black), keeping the dark dungeon mood."
   (destructuring-bind (ceiling floor) (backdrop-rects planes)
     (ecase key
-      (:ceiling (%draw-ceiling (third ceiling) (fourth ceiling)))
-      (:floor (%draw-floor (third floor) (fourth floor))))))
+      (:ceiling (%draw-backdrop (third ceiling) (fourth ceiling) planes
+                                (second ceiling) t
+                                (vector +pen-dim+ +pen-dark+ +pen-bg+)))
+      (:floor (%draw-backdrop (third floor) (fourth floor) planes
+                              (second floor) nil
+                              (vector +pen-brick+ +pen-mid+ +pen-dim+))))))
 
 ;;; ---------------------------------------------------------------------
 ;;; Piece dispatch
