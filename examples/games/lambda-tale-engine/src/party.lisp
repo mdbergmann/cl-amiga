@@ -101,9 +101,10 @@ summoned/charmed monster or story NPC, Bard's Tale tradition).")
   (string-capitalize (substitute #\Space #\- (string (hero-class hero)))))
 
 (defun hero-class-abbrev (hero)
-  "The hero's class as the roster's CL column code: the initials of a
-multi-word class, else the first four letters — :war-mage -> \"WM\",
-:conjurer -> \"CONJ\"."
+  "The hero's class as the roster's CL column code, always two
+characters so the name column keeps the room: the initials of the
+first two words of a multi-word class, else the first two letters —
+:war-mage -> \"WM\", :conjurer -> \"CO\"."
   (let* ((name (string (hero-class hero)))
          (words (loop with start = 0
                       for dash = (position #\- name :start start)
@@ -112,8 +113,8 @@ multi-word class, else the first four letters — :war-mage -> \"WM\",
                       do (setf start (1+ dash)))))
     (string-upcase
      (if (rest words)
-         (map 'string (lambda (w) (char w 0)) words)
-         (subseq name 0 (min 4 (length name)))))))
+         (map 'string (lambda (w) (char w 0)) (subseq words 0 2))
+         (subseq name 0 (min 2 (length name)))))))
 
 (defun hero-summary-lines (hero)
   "The character sheet as a list of text lines — the full stat block a
