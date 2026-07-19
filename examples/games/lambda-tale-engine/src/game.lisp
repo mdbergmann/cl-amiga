@@ -78,10 +78,11 @@ Amiga volume ':')."
 (defun load-campaign (map-file)
   "Load the campaign that belongs to MAP-FILE: the campaign.lisp in
 the same directory as the map (hero classes, monsters, items, the
-starting party — see worlds/closure/campaign.lisp for the demo).  A world is a
-directory of map files plus its campaign.lisp; the front-ends call
-this so a designer's own world brings its own definitions.  Returns
-the loaded path, or NIL when there is none."
+starting party — see the Closure game's worlds/closure/campaign.lisp
+for a worked example).  A world is a directory of map files plus its
+campaign.lisp; the front-ends call this so a designer's own world
+brings its own definitions.  Returns the loaded path, or NIL when
+there is none."
   (let ((path (%resolve-map-path map-file "campaign.lisp")))
     (when (probe-file path)
       (load path)
@@ -92,7 +93,7 @@ the loaded path, or NIL when there is none."
 (ZONE :GFX DIR), resolved in two steps so worlds stay portable —
 relative to the map file's directory when the pack lives there (a
 self-contained world directory), else relative to the game directory
-(a shipped pack like gfx-city-demo/).  The probe is the front-0.iff
+(a pack the game ships beside its worlds).  The probe is the front-0.iff
 every pack must hold; a wrong directory still surfaces through the
 wall loader's loud wireframe fallback."
   (let* ((map (game-map game))

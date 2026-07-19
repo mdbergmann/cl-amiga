@@ -1,94 +1,60 @@
-# Lambda's Tale
+# Lambda's Tale (engine)
 
-A Bard's Tale-style dungeon crawler written in Common Lisp for
-[cl-amiga](../../../README.md).  Separate subproject: the game is pure
-Lisp and runs on the host clamiga for development; the Amiga front-end
-renders in an Intuition window.
+A Bard's Tale-style dungeon-crawler **engine** written in Common Lisp
+for [cl-amiga](../../../README.md).  Separate subproject: the engine
+is pure Lisp and runs on the host clamiga for development; the Amiga
+front-end renders in an Intuition window or on an own custom screen.
 
-## Running
+The engine ships no story: a **game** is a sibling directory holding
+its worlds (maps + campaign) and loading the engine — the town of
+[Closure](../closure/README.md) next door is the playable example.
+The engine's own test suite plays a minimal fixture world
+(`tests/world/`).
+
+## Using the engine
 
 Build clamiga in the repo root first (`make host`), then from this
 directory:
 
 ```
-make test    # run the test suite
-make run     # play the demo campaign (starts in the town, worlds/closure/town.map)
+make test    # run the engine test suite (plays tests/world/)
+make assets  # regenerate the default tile packs (data/gfx*, tools/gen-walls.lisp)
 ```
 
-Walkabout keys: `w` forward, `s` back-step (keeps facing), `a`/`d` turn,
-`m` full-screen map view (`m`/`Esc` back, `f` toggles the omniscient
-debug view there), `1`–`7` open that party member's character sheet
-(`1`–`7` switch heroes there, `Esc` back), `c` cast a spell (pick the
-caster, the spell and — for a heal — the target by number, `Esc`
-backs out), `S`/`L` open the save/load slot picker (`1`–`9` pick a
-slot, `n` types a new save name, `Esc` cancels; saves live as
-`saves/NAME.sav`), `q` quit.  In combat:
-`a` attack, `d` defend, `c` cast, `f` flee.  Inside a location (a
-shop): `1`–`7` pick the shopping hero, `1`–`9` buy or sell, `s`/`b`
-flip between the buy and sell pages, `Esc` back/leave.
+A game loads the engine from wherever it lives and names its starting
+map — the engine is **self-locating** (it finds its own sources and
+default tile packs through `*load-truename*`, never through the
+working directory; the working directory belongs to the game):
 
-The screen is split Bard's Tale style (see
-[specs/ui-and-engine.md](specs/ui-and-engine.md)): the first-person
-view with the location plaque under it on the left, the message log
-filling the right column — newest line at the bottom, older lines
-scrolling up; each message starts with `>` and long ones word-wrap
-onto indented continuation lines — with the active effects (shield,
-lamp, ... — fed by `add-effect`/`remove-effect`) and a compass rose
-showing the party's facing in a band at the log's foot, and the
-status line plus the numbered party roster (up to 7 rows, each row's
-number opening its character sheet) at the bottom.  The automap lives
-under `m`; levels can be large (30x30 like Bard's Tale I, up to
-128x128).  On the Amiga the window uses the same geometry as the
-custom screen, so both displays lay out identically.
-
-On AmigaOS (the repo is mounted as `CLAmiga:` in the FS-UAE setup),
-the game opens its **own screen** whose geometry comes from a
-**display profile** (`play-amiga`'s `:profile` argument):
-
-- **`:lores`** (the default) — 320x256 PAL lores, **32 colors**, the
-  ECS target: half the chip-RAM/DMA cost of hires and near-square
-  pixels for the art.
-- **`:hires`** — 640x256 PAL hires, 16 colors, the classic
-  presentation with the larger 240x130 viewport.
-
-Both are picked RTG-aware through `graphics.library/BestModeIDA` (so
-Picasso96/CyberGraphX/MorphOS promote them to a suitable RTG mode),
-with the tile pack's palette and a borderless backdrop window;
-Save/Load/Quit sit in the menu strip (right mouse button, GadTools
-menus with the usual right-Amiga shortcuts):
-
-```
-cd CLAmiga:examples/games/lambda-tale
-stack 128000
-CLAmiga:build/amiga/clamiga --heap 8M --load src/main-amiga.lisp
+```lisp
+(load "../lambda-tale-engine/src/load.lisp")   ; host; on AmigaOS use a
+                                               ; volume path or self-locate
+                                               ; via *LOAD-TRUENAME* like
+                                               ; Closure's src/load.lisp
+(tale:play "mygame/village.map")               ; host front-end
+(tale:play-amiga "mygame/village.map")         ; AmigaOS front-end
 ```
 
 The test suite runs on the Amiga the same way (it is not part of the
-parent repo's `test-amiga` run — the game is a separate subproject):
+parent repo's `test-amiga` run — the engine is a separate subproject):
 
 ```
-cd CLAmiga:examples/games/lambda-tale
+cd CLAmiga:examples/games/lambda-tale-engine
 stack 128000
 CLAmiga:build/amiga/clamiga --heap 8M --non-interactive --load tests/run-tests.lisp
 ```
 
 On AmigaOS the suite additionally runs GUI smoke tests (both display
-profiles) and four unattended `*autoplay*` sessions (window, town
-shopping, `:display :screen`, and the `:hires` profile).
-
-For development there is also a window view on the Workbench screen
-(no custom palette — the window keeps the Workbench colors):
-
-```lisp
-(tale:play-amiga "worlds/closure/town.map" :display :window)
-```
+profiles) and three unattended `*autoplay*` sessions through the
+fixture world.
 
 ## Layout
 
 ```
 src/package.lisp     package TALE
 src/profiles.lisp    display profiles (:lores / :hires — screen geometry,
-                     viewport, tile pack, layout tuning per target)
+                     viewport, tile pack, layout tuning per target) and
+                     the self-located *ENGINE-DIR* / ENGINE-PATH
 src/dice.lisp        dice notation ("2d6+1") and the scriptable *RNG*
 src/ilbm.lisp        IFF ILBM image reader/writer (pure CL, ByteRun1)
 src/map.lisp         dungeon map model + ASCII map parser + story layer
@@ -110,19 +76,41 @@ src/render.lisp      ASCII automap renderer (player view + omniscient debug view
 src/render-fp.lisp   ASCII wireframe first-person renderer
 src/host-ui.lisp     host front-end (interactive ASCII walkabout, PLAY)
 src/amiga-ui.lisp    AmigaOS front-end (Intuition window, graphics.library)
-src/main.lisp        host walkabout entry point
-src/main-amiga.lisp  Amiga walkabout entry point
-worlds/closure/      the demo world: town.map + cellar.map (ASCII art
-                     + story forms) and campaign.lisp (hero classes,
-                     monsters, items, starting party)
-data/gfx/*.iff       the demo tile pack for :lores (wall pieces +
+data/gfx/*.iff       the default tile pack for :lores (wall pieces +
                      floor/ceiling ILBM assets; regenerate: make assets)
 data/gfx-hires/*.iff the same pack drawn for the :hires viewport
-gfx-city-demo/       example custom tile pack (night-sky city palette)
 tools/gen-walls.lisp procedural wall-art generator
-tests/run-tests.lisp test suite (make test)
+tests/run-tests.lisp engine test suite (make test)
+tests/world/         the minimal fixture world the suite plays (a keep,
+                     a dark crypt, a 30-line campaign)
 specs/               design constraints (UI layout, map scale, screens)
 ```
+
+Both front-ends draw the Bard's Tale split screen (see
+[specs/ui-and-engine.md](specs/ui-and-engine.md)): the first-person
+view with the location plaque under it on the left, the scrolling
+message log on the right with the active-effects/compass band at its
+foot, and the status line plus the numbered party roster at the
+bottom.  The full automap lives under `m`; maps can be large (30x30
+like Bard's Tale I, up to 128x128).  The key bindings are listed in
+the [Closure README](../closure/README.md).  On the Amiga the window
+uses the same geometry as the custom screen, so both displays lay out
+identically; the custom screen's geometry comes from a **display
+profile** (`play-amiga`'s `:profile` argument):
+
+- **`:lores`** (the default) — 320x256 PAL lores, **32 colors**, the
+  ECS target: half the chip-RAM/DMA cost of hires and near-square
+  pixels for the art.
+- **`:hires`** — 640x256 PAL hires, 16 colors, the classic
+  presentation with the larger 240x130 viewport.
+
+Both are picked RTG-aware through `graphics.library/BestModeIDA` (so
+Picasso96/CyberGraphX/MorphOS promote them to a suitable RTG mode),
+with the tile pack's palette and a borderless backdrop window;
+Save/Load/Quit sit in the menu strip (right mouse button, GadTools
+menus with the usual right-Amiga shortcuts).  For development there is
+also a window view on the Workbench screen (no custom palette):
+`(tale:play-amiga "mygame/village.map" :display :window)`.
 
 The first-person view never looks around corners (Bard's Tale rules):
 `compute-view` walks the cells straight ahead, stopping at walls, doors
@@ -159,23 +147,17 @@ wireframe renderer.
 
 ## Custom tile packs
 
-The demo art is replaceable: a **tile pack** is a directory of IFF
+The default art is replaceable: a **tile pack** is a directory of IFF
 ILBM files.  A **zone declares its own pack** in its map file —
-`(zone :kind :city :gfx "gfx-city-demo/")` — and travel swaps packs as
-the party crosses zones (the demo town of Closure wears the city pack;
-its cellar keeps the default dungeon stone).  The directory resolves
-relative to the map file when the pack lives in the world directory,
-else relative to the game directory (a shipped pack).  `play-amiga`'s
+`(zone :kind :city :gfx "gfx/")` — and travel swaps packs as the
+party crosses zones.  The directory resolves relative to the map file
+when the pack lives in the world directory, else relative to the game
+directory (a pack the game ships beside its worlds).  `play-amiga`'s
 `:gfx-dir` argument overrides everything for the session; without
-either, the active profile's pack applies (`"data/gfx/"` for
-`:lores`).  A pack is drawn for one profile's viewport; a mis-sized
-pack is rejected at load time and the view falls back to the
-wireframe:
-
-```lisp
-(tale:play-amiga "worlds/closure/cellar.map" :display :screen
-                                             :gfx-dir "gfx/city/")
-```
+either, the active profile's pack applies (the engine's own
+`data/gfx/` for `:lores`).  A pack is drawn for one profile's
+viewport; a mis-sized pack is rejected at load time and the view
+falls back to the wireframe.
 
 A pack holds the 40 wall pieces plus optional extras:
 
@@ -207,32 +189,34 @@ walls are composited over the backdrop with `BltMaskBitMapRastPort`
 (cookie-cut, RTG-safe); the `ceiling.iff`/`floor.iff` backdrops are
 opaque, so pen 0 there is plain black.
 
-`gfx-city-demo/` is a worked example: the demo walls under a night
-sky and a tan street with their own `palette.iff` (regenerate with
-`gfx-city-demo/make-pack.lisp`, try it with `gfx-city-demo/run.lisp`).
+The Closure game's world pack
+[`worlds/closure/gfx/`](../closure/worlds/closure/gfx) is a worked
+example: the default walls under a night sky and a tan street with
+their own `palette.iff`, declared map-relative by its `town.map`.
 See also the "Backdrop slots" and wall-art sections of
 `tests/run-tests.lisp` for executable examples of the contract.
 
 ## Engine vs. story
 
-Lambda's Tale is an **engine**; the shipped campaign is one instance of
-it.  The engine never hard-codes story facts.  It emits events
-(`:message`, `:enter-cell`, `:enter-zone`, `:enter-location`,
-`:blocked`, `:combat-start`, `:combat-end`, `:hero-died`,
-`:party-defeated`, ...) that the front-end and the campaign subscribe to
-with `on-event`; story state lives in flags (`set-flag`/`flag`).  A
-campaign is pure data on top of the engine: hero classes
-(`define-hero-class`), monsters (`define-monster`), items
-(`define-item`), spells (`define-spell`) and maps with cell specials.  `worlds/closure/campaign.lisp` plus
-`worlds/closure/town.map` and `worlds/closure/cellar.map` form the demo.
+Lambda's Tale is an **engine**; a game is one instance of it.  The
+engine never hard-codes story facts.  It emits events (`:message`,
+`:enter-cell`, `:enter-zone`, `:enter-location`, `:blocked`,
+`:combat-start`, `:combat-end`, `:hero-died`, `:party-defeated`, ...)
+that the front-end and the campaign subscribe to with `on-event`;
+story state lives in flags (`set-flag`/`flag`).  A campaign is pure
+data on top of the engine: hero classes (`define-hero-class`),
+monsters (`define-monster`), items (`define-item`), spells
+(`define-spell`) and maps with cell specials.  The
+[Closure game](../closure/README.md) is the shipped example; the
+engine suite's `tests/world/` is the minimal one.
 
 ## The world: cities, dungeons, shops
 
 A world is a set of **zones** — ordinary map files linked by travel.
 Cities and dungeons are both first-class and both just maps: a
-`(zone :kind :city :title "Closure" :gfx "gfx-city-demo/")` form in
-the map file says what a zone is (and, optionally, which tile pack it
-wears), and the `(travel FILE [X Y] [FACING])` special op links zones
+`(zone :kind :city :title "Frogmorton" :gfx "gfx/")` form in the map
+file says what a zone is (and, optionally, which tile pack it wears),
+and the `(travel FILE [X Y] [FACING])` special op links zones
 together — city gates, stairs and portals are all map data.  A world
 can hold any number of cities and dungeons — every zone is its own
 file, and each keeps its own map and automap knowledge alive for the
@@ -244,17 +228,14 @@ shop mechanics: items are campaign data (`define-item` — weapons,
 armor, shields with prices, damage dice, AC bonuses and class
 restrictions), heroes carry up to 8 items and equip one weapon, armor
 and shield, combat uses the equipped gear, and shops sell their
-`:stock` and buy anything back at half price.  The demo town of
-Closure has Wolfgar's equipment shoppe and a tavern whose trapdoor
-leads down into the cellar dungeon.
+`:stock` and buy anything back at half price.
 
 ### Building your own world
 
 A world is a **directory**: map files plus a `campaign.lisp` beside
 them — `play` and `play-amiga` load the campaign next to whatever map
-you start, so your world brings its own classes, monsters and items,
-never the demo's.  Put a shop wherever you want it, stocked however
-you see fit:
+you start, so your world brings its own classes, monsters and items.
+Put a shop wherever you want it, stocked however you see fit:
 
 ```
 mygame/campaign.lisp     (define-item 'rusty-dagger :kind :weapon
@@ -275,13 +256,15 @@ mygame/gfx/*.iff         optional zone tile pack (see the manifest)
 ```
 
 Everything is data read with `*read-eval*` bound to `NIL` except
-`campaign.lisp`, which is a Lisp file of `define-*` calls (the demo's
-`worlds/closure/campaign.lisp` is the template).
+`campaign.lisp`, which is a Lisp file of `define-*` calls (Closure's
+`worlds/closure/campaign.lisp` is the template; the engine suite's
+`tests/world/campaign.lisp` is the smallest possible one).
 
 ## Map format
 
 Maps are ASCII art on a `(2W+1) x (2H+1)` character grid — see the header
-of `src/map.lisp` for the exact rules and `worlds/closure/cellar.map` for an example:
+of `src/map.lisp` for the exact rules and `tests/world/crypt.map` for a
+small example:
 
 ```
 +-+-+-+
@@ -343,10 +326,11 @@ points** (2 per level plus the IQ bonus) and pay them per cast, and a
 spell has exactly one engine-interpreted effect — damage (combat only,
 strikes the melee target), heal (one chosen hero), a timed party AC
 buff, or timed light (the answer to darkness).  Spell points trickle
-back Bard's Tale style while walking outdoors in daylight.  The demo
-conjurer's book — mage flame, arc fire, minor mend, stone skin — is
-in `worlds/closure/campaign.lisp`; the "Spells" test section of
-`tests/run-tests.lisp` is the executable specification.
+back Bard's Tale style while walking outdoors in daylight.  The
+"Spells" test section of `tests/run-tests.lisp` is the executable
+specification.
+
+## Save games
 
 Save games (`save-game`/`load-game`) are a single readable Lisp form:
 the current zone's map file, position, the game clock, active effects,
@@ -367,10 +351,9 @@ combat and save games.
 - **M0 (done)**: map model, movement, automap knowledge, ASCII map view,
   interactive walkabout on the host
 - **M1 (done)**: wireframe first-person view (shared geometry + display
-  list, ASCII and Amiga renderers, automap fed by what the party sees);
-  the Amiga window front-end still needs an FS-UAE shakedown
+  list, ASCII and Amiga renderers, automap fed by what the party sees)
 - **M2 (done)**: events + cell-specials story layer, party and character
-  system, round-based combat, save games, demo campaign
+  system, round-based combat, save games
 - **M2.5 (done)**: Bard's Tale screen layout (scrolling message log,
   active-spells strip, 7-slot party roster, full map under `m`),
   large maps (30x30 up to 128x128), custom screen via
@@ -384,13 +367,9 @@ combat and save games.
   ceiling/floor backdrop; display profiles (`:profile`) — 32-color
   lo-res ECS default, 16-color hi-res alternative, each with its own
   generated pack
-- **M4 (in progress)**: the game proper, kept simple —
-  numbered party roster + character sheet (`1`–`7`, **done**);
-  the world as first-class data: zones (`(zone ...)`, cities and
-  dungeons alike), cross-map travel, locations, items and shops
-  (**done** — the demo town of Closure links to the cellar);
-  day/night time with darkness, light and `at-night`/`at-day`
-  encounters (**done**); spells and spell points (**done** — the
-  conjurer's book lights the now-dark cellar);
-  next sound, then polish.  The Bard's Tale II chrome and the
-  day/night sky art are parked until the game content lands.
+- **M4 (in progress)**: the game proper — now the separate
+  [Closure](../closure/README.md) subproject — plus engine support as
+  it needs it: zones/travel/shops (**done**), day/night and darkness
+  (**done**), spells (**done**), named saves (**done**); next sound,
+  then polish.  The Bard's Tale II chrome and the day/night sky art
+  are parked until the game content lands.

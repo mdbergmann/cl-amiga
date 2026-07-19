@@ -2,7 +2,7 @@
 # Deep/wide form compilation and the C-stack guard (reader + compiler).
 #
 # Regression for the 2026-07-16 Amiga silent-corruption bug: source-loading
-# a deeply nested macro tower (lambda-tale amiga-ui.lisp) at a small shell
+# a deeply nested macro tower (lambda-tale-engine amiga-ui.lisp) at a small shell
 # stack overflowed the C stack inside READ_EXPR recursion — the compiler's
 # stack guard never fired because the reader had no check at all, and the
 # per-recursion-level frames were huge (read_expr carried a 4KB #* scan

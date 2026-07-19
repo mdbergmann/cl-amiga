@@ -812,12 +812,13 @@ AMIGA.GFX:BEST-MODE-ID) covered by a borderless backdrop window."
 ;;; ---------------------------------------------------------------------
 ;;; The game proper
 
-(defun play-amiga (&optional (map-file "worlds/closure/town.map")
+(defun play-amiga (map-file
                    &key (display :screen) (profile *display-profile*)
                      gfx-dir)
-  "Interactive walkabout.  Loads the campaign.lisp next to the map
-file (classes, monsters, items, party) when present — a designer's own
-world directory brings its own campaign.
+  "Interactive walkabout on MAP-FILE.  Loads the campaign.lisp next to
+the map file (classes, monsters, items, party) when present — a
+designer's own world directory brings its own campaign; the engine has
+no default world.
 DISPLAY is :screen (the default: an own custom screen, RTG-aware) or
 :window (a development view on the Workbench screen).  PROFILE is a
 DISPLAY-PROFILE or its name — :lores or :hires — and sets the screen

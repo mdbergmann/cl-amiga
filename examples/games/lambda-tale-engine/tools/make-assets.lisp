@@ -1,9 +1,12 @@
 ;;; Lambda's Tale — regenerate the wall-piece assets: one pack per
 ;;; display profile (data/gfx/ for :lores, data/gfx-hires/ for :hires).
-;;; Run from the project root:  make assets
+;;; Self-locating (make assets works from any directory): the engine
+;;; root is this file's parent directory.
 
-(load "src/load.lisp")
-(load "tools/gen-walls.lisp")
+(let ((tools (directory-namestring *load-truename*)))
+  (load (concatenate 'string (subseq tools 0 (- (length tools) 6))
+                     "src/load.lisp")))
+(load (tale:engine-path "tools/gen-walls.lisp"))
 
 (dolist (p tale::*display-profiles*)
   (format t "Generating ~A wall pieces into ~A ...~%"

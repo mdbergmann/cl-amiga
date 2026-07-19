@@ -1,7 +1,7 @@
 ;;; Lambda's Tale — spells.
 ;;;
 ;;; Spell types are campaign data, not engine facts: the campaign
-;;; registers them with DEFINE-SPELL (see worlds/closure/campaign.lisp);
+;;; registers them with DEFINE-SPELL in its campaign.lisp;
 ;;; the engine only knows the mechanics.  Casters (hero classes with
 ;;; :CASTER T) pay spell points; SP regenerate while walking outdoors
 ;;; in daylight (see ADVANCE-TIME in time.lisp).
