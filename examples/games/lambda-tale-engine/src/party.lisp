@@ -100,6 +100,21 @@ summoned/charmed monster or story NPC, Bard's Tale tradition).")
   "The hero's class as a display string: :war-mage -> \"War Mage\"."
   (string-capitalize (substitute #\Space #\- (string (hero-class hero)))))
 
+(defun hero-class-abbrev (hero)
+  "The hero's class as the roster's CL column code: the initials of a
+multi-word class, else the first four letters — :war-mage -> \"WM\",
+:conjurer -> \"CONJ\"."
+  (let* ((name (string (hero-class hero)))
+         (words (loop with start = 0
+                      for dash = (position #\- name :start start)
+                      collect (subseq name start dash)
+                      while dash
+                      do (setf start (1+ dash)))))
+    (string-upcase
+     (if (rest words)
+         (map 'string (lambda (w) (char w 0)) words)
+         (subseq name 0 (min 4 (length name)))))))
+
 (defun hero-summary-lines (hero)
   "The character sheet as a list of text lines — the full stat block a
 player sees when they open a roster slot.  Pure (no I/O), so both the

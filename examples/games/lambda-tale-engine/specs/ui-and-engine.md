@@ -88,14 +88,13 @@ solely in the full map mode under `m`.)
 ```
 +----------------------+---------------------------+
 |                      |  message log              |
-|  first-person view   |  (newest line at the      |
-|                      |   bottom, older lines     |
-|                      |   scroll up)              |
+|  first-person view   |  (microfont, newest line  |
+|                      |   at the bottom, older    |
+|                      |   lines scroll up)        |
 +----------------------+---------------------------+
-| location plaque      | active effects [+ rose] |
+| location plaque      | effect icons [+ rose]     |
 +----------------------+---------------------------+
-| status line                                      |
-| party roster (up to 7 rows)                      |
+| party roster (header + up to 7 rows)             |
 +--------------------------------------------------+
 ```
 
@@ -109,32 +108,42 @@ the Amiga use the same arrangement.)
   bottom, older lines scrolling up, exactly like Bard's Tale's text
   column.  Backed by the engine's `attach-message-log` ring
   (`:message` events); front-ends render as many trailing lines as
-  fit.
-- **Effects band** (the foot of the log column): the party's active
-  effects — shield, light and friends, Bard's Tale style — as one
-  line each at the left.  The engine carries them as `game-effects`:
-  **records** with a display name, an optional expiry on the game clock
-  (`add-effect`'s `:duration`; `advance-time` announces and drops the
-  expired), a payload plist of engine facts — `(:ac N)` feeds the
-  party's effective AC, `(:light t)` defeats darkness, `(:compass t)`
-  orients the party — and an optional icon image: a file name resolved
-  against the current map's directory (`effect-image-path`, the zone
-  tile-pack rule), which the Amiga band blits before the label — 16x16
+  fit.  On the Amiga the log renders in the engine's own **5x7
+  microfont** (src/microfont.lisp — 6x8 cells, rendered once per
+  distinct line into a cached offscreen bitmap and blitted), smaller
+  than topaz 8 so the narrow column holds more text.
+- **Effect strip** (below the log page, separated by a small gap, on
+  the grey chrome): the party's active effects — shield, light and
+  friends, Bard's Tale style — as **icons only, stacked vertically**;
+  no text labels (the log announces casting and expiry).  The engine
+  carries them as `game-effects`: **records** with a display name, an
+  optional expiry on the game clock (`add-effect`'s `:duration`;
+  `advance-time` announces and drops the expired), a payload plist of
+  engine facts — `(:ac N)` feeds the party's effective AC, `(:light
+  t)` defeats darkness, `(:compass t)` orients the party — and an
+  optional icon image: a file name resolved against the current map's
+  directory (`effect-image-path`, the zone tile-pack rule) — 16x16
   ILBMs with pen 0 as the transparent key (`draw-effect-icon` in
   tools/gen-walls.lisp draws placeholder art; a file that will not
-  load logs once and the label stands alone).  The host UI stays text.
-  Re-adding a name refreshes it in place.  Effects live in save games.  While a
-  `:compass` effect burns (`compass-active-p`) the right of the band
-  holds the **compass rose** — N/E/S/W around a diamond, the needle
-  and the faced letter highlighted (`compass-points` provides the
-  geometry) — and the status line shows the facing; without one the
-  party has no facing readout (Bard's Tale's Magic Compass rule) and
-  the effect lines get the whole band.  Turning is silent (no "You
-  turn left." log noise).
-- **Status + party roster** (bottom, full width): position/mode line
-  (the facing appears only while a compass effect burns) and one
-  roster row per party member — the layout must reserve room for
-  **7 rows**.
+  load logs once and the effect shows nothing in the strip).  The
+  host UI stays text.  Re-adding a name refreshes it in place.
+  Effects live in save games.  While a `:compass` effect burns
+  (`compass-active-p`) the right of the strip holds the **compass
+  rose** — N/E/S/W around a diamond, the needle and the faced letter
+  highlighted (`compass-points` provides the geometry) — and the map
+  footer shows the facing; without one the party has no facing
+  readout (Bard's Tale's Magic Compass rule).  Turning is silent (no
+  "You turn left." log noise).
+- **Party roster** (bottom, full width, right under the location
+  plaque — there is **no status line**): a header row and one roster
+  row per party member, the Bard's Tale table — `# CHARACTER AC HIT
+  PTS SPL PTS CL` (max/current hit points, max/current spell points,
+  class code via `hero-class-abbrev`; a downed hero's name and hit
+  points turn amber) — the layout must reserve room for **7 rows**.
+  What the status line used to carry moved: the key reference to the
+  **help page** (`h`/`?`, `help-lines`), position/facing/clock to the
+  **map footer**, contextual prompts (combat keys, win/lose) into the
+  message log.
 
 ## Full map view (`m`)
 
@@ -143,8 +152,16 @@ the Amiga use the same arrangement.)
 - Map mode covers the entire window/screen, draws the explored automap
   centered on the party (clamped to what fits at a readable cell size),
   and returns to the play view on `m` or `Esc`.
+- The **two-line footer** carries what the play page has no room for:
+  the zone title, the party position `(x,y)` — plus the facing while a
+  compass effect burns — and the game clock on the first line, the map
+  size (and the `FULL` marker) on the second.  No key hints — those
+  live on the help page.
 - `f` inside map mode toggles the omniscient debug view (full map
   regardless of knowledge); it exists for development, not gameplay.
+- `h`/`?` opens the **help page** (the key reference, `help-lines`)
+  from both the play view and map mode; `h` or `Esc` returns to where
+  it was opened.
 - `q` still quits from map mode.  Map mode is unavailable during
   combat.
 

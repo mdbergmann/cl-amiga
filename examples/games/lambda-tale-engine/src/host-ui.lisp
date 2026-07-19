@@ -1,8 +1,10 @@
 ;;; Lambda's Tale — host front-end: interactive ASCII walkabout (PLAY).
 ;;;
 ;;; Keys: w=forward  s=back-step  a=turn left  d=turn right
-;;;       m=full map view  c=cast a spell  S=save  L=load  q=quit
+;;;       m=full map view  h/?=help page  c=cast a spell
+;;;       S=save  L=load  q=quit
 ;;; In the map view: m/Esc=back  f=toggle omniscient (debug)  q=quit
+;;; In the help page: h/Esc=back  q=quit
 ;;; In combat: a=attack  d=defend  c=cast  f=flee
 ;;; In a location (shop): 1-9=choose  s/b=sell/buy page  Esc=back/leave
 ;;; In the cast menu: 1-9=choose caster/spell/target  Esc=back/cancel
@@ -71,7 +73,7 @@ engine has no default world; the game names its starting map."
   (let* ((map (load-map-file map-file))
          (game nil)
          (log nil)
-         (mode :play)        ; :play or :map (the full-map view)
+         (mode :play)        ; :play, :map (full-map view) or :help
          (full nil)          ; omniscient automap (debug), map mode only
          (shop nil)          ; SHOP-VIEW while inside a location
          (cast nil)          ; CAST-VIEW while the cast menu is open
@@ -161,17 +163,21 @@ engine has no default world; the game names its starting map."
                      ((game-location game))
                      (t
                       (format t "[w]=forward [s]=back [a]=left [d]=right ~
-                                 [m]=map [c]ast [u]se [p]lay [S]ave ~
-                                 [L]oad [q]=quit~%"))))
+                                 [m]=map [h]elp [c]ast [u]se [p]lay ~
+                                 [S]ave [L]oad [q]=quit~%"))))
+             (draw-help-page ()
+               (dolist (line (help-lines))
+                 (format t "~A~%" line)))
              (draw ()
                (%clear-screen)
                (format t "=== Lambda's Tale ===  ~A (~Dx~D)~%~%"
                        (map-title (game-map game))
                        (dungeon-map-width (game-map game))
                        (dungeon-map-height (game-map game)))
-               (if (eq mode :map)
-                   (draw-map-page)
-                   (draw-play-page))
+               (case mode
+                 (:map (draw-map-page))
+                 (:help (draw-help-page))
+                 (t (draw-play-page)))
                (finish-output))
              (note (text)
                (when text
@@ -234,6 +240,12 @@ engine has no default world; the game names its starting map."
                (case c
                  ((#\m #\M #\Escape) (setf mode :play) nil)
                  ((#\f #\F) (setf full (not full)) nil)
+                 ((#\h #\H #\?) (setf mode :help) nil)
+                 ((#\q #\Q) :quit)
+                 (t nil)))
+             (help-act (c)
+               (case c
+                 ((#\h #\H #\? #\Escape) (setf mode :play) nil)
                  ((#\q #\Q) :quit)
                  (t nil)))
              (explore-act (c)
@@ -254,6 +266,10 @@ engine has no default world; the game names its starting map."
                          nil)
                     (#\m (setf mode :map)
                          nil)
+                    (#\h (setf mode :help)
+                         nil)
+                    (#\? (setf mode :help)
+                         nil)
                     (#\c (open-cast nil))
                     (#\u (open-use))
                     (#\p (open-sing nil))
@@ -261,6 +277,7 @@ engine has no default world; the game names its starting map."
                     (t nil)))))
              (act (c)
                (cond ((eq mode :map) (map-act c))
+                     ((eq mode :help) (help-act c))
                      (menu (saves-act c))
                      (cast (cast-menu-act c))
                      (use (use-menu-act c))
