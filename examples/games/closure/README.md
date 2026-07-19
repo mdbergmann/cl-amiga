@@ -74,7 +74,12 @@ flip between the buy and sell pages, `Esc` back/leave.  Inside the
 tavern: `1`–`7` buy that hero a drink (a singer's tunes come back),
 `d` down the trapdoor, `Esc` leave.  On the Amiga
 the Save/Load/Quit menu strip sits under the right mouse button
-(GadTools menus with the usual right-Amiga shortcuts).
+(GadTools menus with the usual right-Amiga shortcuts), and everything
+above also works by left click: the view walks (left/right quarters
+turn, the middle steps forward, its bottom band back), roster rows
+open the character sheets, menu rows and their `[s] sell`-style
+footer hints pick, and the map/help/sheet pages close on a click
+elsewhere.
 
 ## Layout
 

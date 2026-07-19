@@ -135,8 +135,9 @@ says why and returns NIL when the hero does not carry it."
   (%make-shop-view))
 
 (defun shop-lines (game view)
-  "The current shop menu as a list of text lines — the front-ends draw
-these verbatim (the same pattern as HERO-SUMMARY-LINES)."
+  "The current shop menu as a list of menu lines — the front-ends draw
+these verbatim (the same pattern as HERO-SUMMARY-LINES); option rows
+carry their pick key (see MENU-NUMBERED)."
   (let* ((loc (game-location game))
          (hero (shop-view-hero view)))
     (append
@@ -148,8 +149,9 @@ these verbatim (the same pattern as HERO-SUMMARY-LINES)."
          (let ((i 0))
            (mapcar (lambda (h)
                      (incf i)
-                     (format nil "~D) ~A  (~D gp)"
-                             i (hero-name h) (hero-gold h)))
+                     (menu-numbered i (format nil "~D) ~A  (~D gp)"
+                                              i (hero-name h)
+                                              (hero-gold h))))
                    (game-party game)))
          (list "" "[1-7] choose  [Esc] leave")))
        ((eq (shop-view-mode view) :buy)
@@ -160,8 +162,9 @@ these verbatim (the same pattern as HERO-SUMMARY-LINES)."
          (let ((i 0))
            (mapcar (lambda (name)
                      (incf i)
-                     (format nil "~D) ~A  ~D gp"
-                             i (item-title name) (item-price name)))
+                     (menu-numbered i (format nil "~D) ~A  ~D gp"
+                                              i (item-title name)
+                                              (item-price name))))
                    (shop-stock loc)))
          (list "" "[1-9] buy  [s] sell  [Esc] back")))
        (t
@@ -172,10 +175,11 @@ these verbatim (the same pattern as HERO-SUMMARY-LINES)."
          (let ((i 0))
            (mapcar (lambda (name)
                      (incf i)
-                     (format nil "~D) ~A~:[~;*~]  ~D gp"
-                             i (item-title name)
-                             (member name (hero-equipped hero))
-                             (item-sell-price name)))
+                     (menu-numbered i (format nil "~D) ~A~:[~;*~]  ~D gp"
+                                              i (item-title name)
+                                              (member name
+                                                      (hero-equipped hero))
+                                              (item-sell-price name))))
                    (hero-items hero)))
          (list "" "[1-9] sell  [b] buy  [Esc] back")))))))
 
@@ -257,11 +261,12 @@ the drink price, and the trapdoor when the tavern has one."
      (let ((i 0))
        (mapcar (lambda (h)
                  (incf i)
-                 (format nil "~D) ~A  (~D gp~@[, Tunes ~A~])"
-                         i (hero-name h) (hero-gold h)
-                         (when (hero-singer-p h)
-                           (format nil "~D/~D" (hero-tunes h)
-                                   (hero-max-tunes h)))))
+                 (menu-numbered
+                  i (format nil "~D) ~A  (~D gp~@[, Tunes ~A~])"
+                            i (hero-name h) (hero-gold h)
+                            (when (hero-singer-p h)
+                              (format nil "~D/~D" (hero-tunes h)
+                                      (hero-max-tunes h))))))
                (game-party game)))
      (list ""
            (format nil "[1-7] drink~@[  [d] down the trapdoor~]  ~

@@ -185,8 +185,9 @@ one round where the caster casts and everyone else attacks."
     :done))
 
 (defun cast-lines (game view)
-  "The current cast menu as a list of text lines — the front-ends draw
-these verbatim (the SHOP-LINES pattern)."
+  "The current cast menu as a list of menu lines — the front-ends draw
+these verbatim (the SHOP-LINES pattern); option rows carry their pick
+key (see MENU-NUMBERED)."
   (let ((hero (cast-view-hero view))
         (spell (cast-view-spell view)))
     (append
@@ -199,9 +200,10 @@ these verbatim (the SHOP-LINES pattern)."
            (mapcan (lambda (h)
                      (incf i)
                      (when (hero-caster-p h)
-                       (list (format nil "~D) ~A  (SP ~D/~D)"
-                                     i (hero-name h)
-                                     (hero-sp h) (hero-max-sp h)))))
+                       (list (menu-numbered
+                              i (format nil "~D) ~A  (SP ~D/~D)"
+                                        i (hero-name h)
+                                        (hero-sp h) (hero-max-sp h))))))
                    (game-party game)))
          (list "" "[1-7] choose  [Esc] cancel")))
        ((null spell)
@@ -212,11 +214,13 @@ these verbatim (the SHOP-LINES pattern)."
          (let ((i 0))
            (mapcar (lambda (name)
                      (incf i)
-                     (format nil "~D) ~A  ~D sp~:[  (no sp)~;~]"
-                             i (spell-title name)
-                             (spell-type-cost (find-spell-type name))
-                             (>= (hero-sp hero)
-                                 (spell-type-cost (find-spell-type name)))))
+                     (menu-numbered
+                      i (format nil "~D) ~A  ~D sp~:[  (no sp)~;~]"
+                                i (spell-title name)
+                                (spell-type-cost (find-spell-type name))
+                                (>= (hero-sp hero)
+                                    (spell-type-cost
+                                     (find-spell-type name))))))
                    (spells-for-hero hero)))
          (list "" "[1-9] cast  [Esc] back")))
        (t                              ; a healing spell picks its target
@@ -225,9 +229,10 @@ these verbatim (the SHOP-LINES pattern)."
          (let ((i 0))
            (mapcar (lambda (h)
                      (incf i)
-                     (format nil "~D) ~A  (HP ~D/~D)"
-                             i (hero-name h)
-                             (hero-hp h) (hero-max-hp h)))
+                     (menu-numbered
+                      i (format nil "~D) ~A  (HP ~D/~D)"
+                                i (hero-name h)
+                                (hero-hp h) (hero-max-hp h))))
                    (game-party game)))
          (list "" "[1-7] choose  [Esc] back")))))))
 

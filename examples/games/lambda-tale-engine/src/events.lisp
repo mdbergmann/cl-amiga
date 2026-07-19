@@ -115,6 +115,87 @@ align.  Lines stay at most WIDTH characters long."
             (wrap-text text (- (max 3 width) 2)))))
 
 ;;; ---------------------------------------------------------------------
+;;; Structured menu lines.  The menu generators (SHOP-LINES, CAST-LINES,
+;;; SAVE-MENU-LINES, ...) return text lines; a line that stands for a
+;;; pickable option carries the key that picks it as (TEXT . KEY), so a
+;;; pointing front-end can turn a click on the line into that key press
+;;; without parsing the text.  Plain informational lines stay strings.
+;;; Footer hints keep their bracket convention — "[s] sell  [Esc] back"
+;;; — and MENU-KEY-SPANS locates those tokens for per-segment hotspots.
+
+(defun menu-option (key text)
+  "TEXT as a menu line that key KEY picks."
+  (cons text key))
+
+(defun menu-numbered (i text)
+  "TEXT as menu option row I, picked by the digit key I (1-9); rows
+past 9 stay plain text — no key reaches them (the models only accept
+single-digit picks)."
+  (if (<= 1 i 9) (menu-option (digit-char i) text) text))
+
+(defun menu-line-text (line)
+  "The display text of a menu line (string or (TEXT . KEY))."
+  (if (consp line) (car line) line))
+
+(defun menu-line-key (line)
+  "The key a menu line stands for, or NIL for a plain line."
+  (if (consp line) (cdr line) nil))
+
+(defun menu-texts (lines)
+  "LINES with each menu line reduced to its display text."
+  (mapcar #'menu-line-text lines))
+
+(defun wrap-menu-line (line width)
+  "Wrap a menu line like WRAP-TEXT, carrying its key (when it has one)
+onto every wrapped row — a click on any row of a wrapped option picks
+it."
+  (let ((key (menu-line-key line)))
+    (mapcar (lambda (row) (if key (menu-option key row) row))
+            (wrap-text (menu-line-text line) width))))
+
+(defun %menu-token-key (token)
+  "The key a footer bracket token names: a single character stands for
+itself, \"Esc\" and \"Return\" for those keys; range tokens (\"1-9\")
+and anything else give NIL — the numbered option lines carry those."
+  (cond ((= (length token) 1) (char token 0))
+        ((string-equal token "Esc") #\Escape)
+        ((string-equal token "Return") #\Return)
+        (t nil)))
+
+(defun menu-key-spans (text)
+  "The clickable key hints in a footer line, by the generators' bracket
+convention (\"[1-9] buy  [s] sell  [Esc] back\"): a list of
+(START END KEY), END exclusive, each span running from its '[' over the
+following words up to the next hint (two spaces or the next '[') so the
+hint's label is part of its click target.  Range tokens and unmatched
+brackets yield no span."
+  (let ((spans '())
+        (len (length text))
+        (i 0))
+    (loop
+      (let ((open (position #\[ text :start i)))
+        (unless open (return))
+        (let ((close (position #\] text :start (1+ open))))
+          (unless close (return))
+          (let ((key (%menu-token-key (subseq text (1+ open) close)))
+                ;; the span runs to the next hint: a "  " gap or '['
+                (end (1+ close)))
+            (loop while (and (< end len)
+                             (char/= (char text end) #\[)
+                             (not (and (char= (char text end) #\Space)
+                                       (< (1+ end) len)
+                                       (char= (char text (1+ end))
+                                              #\Space))))
+                  do (incf end))
+            (loop while (and (> end (1+ close))
+                             (char= (char text (1- end)) #\Space))
+                  do (decf end))
+            (when key
+              (push (list open end key) spans))
+            (setf i (1+ close))))))
+    (nreverse spans)))
+
+;;; ---------------------------------------------------------------------
 ;;; Story flags: arbitrary EQUAL-comparable keys the story sets and tests.
 ;;; Flags live in the save game, so anything stored must print readably.
 
