@@ -191,7 +191,12 @@ Repeat runs of 3+ are encoded, everything else goes into literal runs
 
 (defun read-ilbm (file)
   "Read an IFF ILBM FILE; returns an IMAGE (chunky pens + palette).
-Signals a clear error on anything that isn't a well-formed ILBM."
+Signals a clear error on anything that isn't a well-formed ILBM.
+Every load leaves a timed line in the debug log when it is enabled."
+  (dlog-timed ("image ~A" file)
+    (%read-ilbm file)))
+
+(defun %read-ilbm (file)
   (let ((bytes
           (with-open-file (s file :element-type '(unsigned-byte 8))
             (let ((v (make-array (file-length s)

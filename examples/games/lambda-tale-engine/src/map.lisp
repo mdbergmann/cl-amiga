@@ -258,6 +258,10 @@ the map, read with *READ-EVAL* bound to NIL and never evaluated:
 The forms section starts at the first line beginning with '(' or ';'
 \(no valid art line starts with either).  The :wrap and :start-facing
 keyword arguments below are overridden by a ZONE form in the file."
+  (dlog-timed ("map ~A" path)
+    (%load-map-file path wrap start-facing)))
+
+(defun %load-map-file (path wrap start-facing)
   (let ((art (make-string-output-stream))
         (forms (make-string-output-stream))
         (in-forms nil))

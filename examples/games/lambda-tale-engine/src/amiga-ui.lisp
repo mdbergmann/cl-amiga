@@ -353,7 +353,8 @@ PRINT-TILE-MANIFEST)"
                    (amiga.gfx:with-bitmap-rastport (brp bm)
                      (amiga.gfx:write-chunky brp 0 0 w h
                                              (image-pixels img)))))))
-      (handler-case
+      (dlog-timed ("wall pack ~A" *gfx-dir*)
+       (handler-case
           (progn
             (dolist (piece (wall-piece-names))
               (let ((file (concatenate 'string *gfx-dir*
@@ -380,10 +381,11 @@ PRINT-TILE-MANIFEST)"
             (values walls palette))
         (error (e)
           (%free-wall-assets walls)
+          (dlog "wall pack ~A failed: ~A" *gfx-dir* e)
           (when log
             (log-message log (format nil "No wall graphics (~A); ~
 wireframe view." e)))
-          (values nil nil))))))
+          (values nil nil)))))))
 
 ;;; The layout reads its text metrics (line height, character cell)
 ;;; from the rastport font, but the profiles' region budgets are tuned
@@ -1137,6 +1139,8 @@ picker: 1-9 pick a slot, N names a new save (saves/NAME.sav), Esc
 cancels; Quit sits in the menu strip too."
   (load-campaign map-file)
   (with-display-profile (profile)
+   (dlog "play-amiga ~A display ~S profile ~S"
+         map-file display (display-profile-name *display-profile*))
    (let* ((*gfx-dir* (or gfx-dir *gfx-dir*))
          (map (load-map-file map-file))
          (game nil)
@@ -1439,6 +1443,7 @@ cancels; Quit sits in the menu strip too."
                           nil)
                         (act (c)
                           "Handle key C; :quit means leave the event loop."
+                          (dlog "key ~S mode ~S" c mode)
                           (let ((lc (if (characterp c) (char-downcase c) c)))
                             (cond ((eq mode :map)
                                    (cond ((eql lc #\q) :quit)

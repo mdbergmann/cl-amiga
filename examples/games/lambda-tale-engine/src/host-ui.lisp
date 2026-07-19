@@ -69,6 +69,7 @@ ASCII rendering; falls back to 38x11 cells for unknown terminals."
 falls back to line input otherwise.  Loads the campaign.lisp next to
 the map file (classes, monsters, items, party) when present — the
 engine has no default world; the game names its starting map."
+  (dlog "play ~A" map-file)
   (load-campaign map-file)
   (let* ((map (load-map-file map-file))
          (game nil)
@@ -296,6 +297,7 @@ engine has no default world; the game names its starting map."
                     (#\q :quit)
                     (t nil)))))
              (act (c)
+               (dlog "key ~S mode ~S" c mode)
                (cond ((eq mode :map) (map-act c))
                      ((eq mode :help) (help-act c))
                      ((eq mode :sheet) (sheet-act c))

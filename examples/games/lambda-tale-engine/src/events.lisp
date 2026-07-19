@@ -33,9 +33,20 @@ TOPIC (a keyword).  Handlers on one topic run in subscription order."
   topic)
 
 (defun emit (game topic &rest args)
-  "Emit event TOPIC: call each subscribed handler with GAME and ARGS."
-  (dolist (h (cdr (assoc topic (game-handlers game))))
-    (apply h game args))
+  "Emit event TOPIC: call each subscribed handler with GAME and ARGS.
+With the debug log enabled, every emission leaves a trace line: the
+topic, the arguments (briefly), the handler count and the time the
+handlers took."
+  (let ((handlers (cdr (assoc topic (game-handlers game)))))
+    (if *debug-log-stream*
+        (let ((start (get-internal-real-time)))
+          (dolist (h handlers)
+            (apply h game args))
+          (%dlog "event ~S~{ ~A~} handlers=~D [~D ms]"
+                 topic (mapcar #'%dlog-brief args) (length handlers)
+                 (%dlog-elapsed-ms start)))
+        (dolist (h handlers)
+          (apply h game args))))
   (values))
 
 (defun say (game control &rest args)
