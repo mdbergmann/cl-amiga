@@ -2186,6 +2186,130 @@ messages so far (oldest first)."
 (check-error "v2 saves are rejected" (load-game "tests/tmp-save.lisp"))
 (delete-file "tests/tmp-save.lisp")
 
+;;; ---------------------------------------------------------------------
+;;; Named saves: the save/load slot menu (src/save-menu.lisp)
+
+(check "slot-path names saves/NAME.sav" "saves/alpha.sav"
+       (slot-path "alpha"))
+(check-true "slot names allow letters, digits, - and _"
+            (every #'slot-name-char-p "Alpha-2_b"))
+(check-true "slot names refuse path characters"
+            (notany #'slot-name-char-p "/:. "))
+
+(let ((*save-dir* "tests/tmp-saves/"))
+  (check "no save dir means no slots" '() (save-slots))
+  (let* ((m (load-map-file "tests/tmp-town.map"))
+         (g (new-game m :party (list (%combat-hero))))
+         (view (make-save-menu :save)))
+    ;; an empty :save menu offers only the new-name entry
+    (check-true "empty save menu says so"
+                (find-if (lambda (s) (search "No saved games yet" s))
+                         (save-menu-lines g view)))
+    (check "digits without slots do nothing" nil (save-menu-act g view #\1))
+    ;; 'n' starts name entry; name chars accumulate, junk is ignored,
+    ;; backspace deletes, the live echo shows the name
+    (check "n opens the name entry" nil (save-menu-act g view #\n))
+    (dolist (c '(#\a #\l #\p #\h #\/ #\a))   ; the / must be ignored
+      (save-menu-act g view c))
+    (check "name entry keeps only name characters" "alpha"
+           (save-menu-entry view))
+    (save-menu-act g view #\Backspace)
+    (check "backspace deletes" "alph" (save-menu-entry view))
+    (save-menu-act g view #\a)
+    (check-true "the entry line echoes the name"
+                (find-if (lambda (s) (search "New name: alpha_" s))
+                         (save-menu-lines g view)))
+    ;; Return commits: the model returns the decision, the front-end
+    ;; executes it — exactly what both UIs do
+    (let ((r (save-menu-act g view #\Return)))
+      (check "return commits the new name" '(:save "tests/tmp-saves/alpha.sav")
+             r)
+      (ensure-save-dir)
+      (save-game g (second r)))
+    (check "the slot now lists" '("alpha") (save-slots))
+    ;; an empty name does not commit
+    (let ((view (make-save-menu :save)))
+      (save-menu-act g view #\n)
+      (check "return on an empty name stays" nil
+             (save-menu-act g view #\Return))
+      (check "esc leaves the name entry" nil
+             (save-menu-act g view #\Escape))
+      (check "back on the slot list" nil (save-menu-entry view))
+      ;; the fresh menu lists the existing slot; a digit overwrites it
+      (check-true "existing slot listed"
+                  (find-if (lambda (s) (search "1) alpha" s))
+                           (save-menu-lines g view)))
+      (check "digit picks the overwrite slot"
+             '(:save "tests/tmp-saves/alpha.sav")
+             (save-menu-act g view #\1))
+      (check "esc cancels the menu" :closed
+             (save-menu-act g view #\Escape)))
+    ;; the name cap holds
+    (let ((view (make-save-menu :save)))
+      (save-menu-act g view #\n)
+      (dotimes (i 20) (save-menu-act g view #\x))
+      (check "slot names cap at the limit" +slot-name-limit+
+             (length (save-menu-entry view))))
+    ;; load mode: pick the slot, execute the decision, world restored
+    (let ((view (make-save-menu :load)))
+      (check-true "load menu lists the slot"
+                  (find-if (lambda (s) (search "1) alpha" s))
+                           (save-menu-lines g view)))
+      (let ((r (save-menu-act g view #\1)))
+        (check "digit picks the load slot"
+               '(:load "tests/tmp-saves/alpha.sav") r)
+        (check "the picked save loads" "Testville"
+               (map-title (game-map (load-game (second r)))))))
+    ;; the Amiga vanillakey Return (code 13) commits too
+    (let ((view (make-save-menu :save)))
+      (save-menu-act g view #\n)
+      (save-menu-act g view #\b)
+      (check "code-char 13 commits like Return"
+             '(:save "tests/tmp-saves/b.sav")
+             (save-menu-act g view (code-char 13))))
+    ;; combat refuses politely: the page says so, digits do nothing,
+    ;; only Esc reacts — the shared rule both front-ends inherit
+    (start-combat g '(("test rat" 1)))
+    (let ((view (make-save-menu :save)))
+      (check-true "combat save page refuses"
+                  (find-if (lambda (s) (search "No saving during combat" s))
+                           (save-menu-lines g view)))
+      (check "combat ignores slot digits" nil (save-menu-act g view #\1))
+      (check "combat ignores the name key" nil (save-menu-act g view #\n))
+      (check "esc still closes in combat" :closed
+             (save-menu-act g view #\Escape)))
+    ;; loading is not blocked by combat at the menu level (the fight is
+    ;; abandoned with the old game object, like quitting to a save)
+    (let ((view (make-save-menu :load)))
+      (check "combat load still picks"
+             '(:load "tests/tmp-saves/alpha.sav")
+             (save-menu-act g view #\1))))
+  (delete-file "tests/tmp-saves/alpha.sav")
+  ;; the slot cap: with +MAX-SAVE-SLOTS+ slots already on disk, every
+  ;; one stays reachable by its single digit only if 'n' refuses to
+  ;; open a 10th — otherwise a name typed past the cap would be listed
+  ;; but never pickable by number (a real bug: no cap plus a
+  ;; single-digit-only picker leaves the extra slots orphaned)
+  (let* ((g (new-game (load-map-file "tests/tmp-town.map")
+                       :party (list (%combat-hero))))
+         (view (%make-save-menu
+                :mode :save
+                :slots (loop for i from 1 to +max-save-slots+
+                             collect (format nil "s~D" i)))))
+    (check "n is refused once the slot cap is reached" nil
+           (save-menu-act g view #\n))
+    (check "no name entry opens at the cap" nil (save-menu-entry view))
+    (check-true "the cap message is shown"
+                (find-if (lambda (s) (search "Slot limit reached" s))
+                         (save-menu-lines g view)))
+    ;; the cap message clears once a slot is picked
+    (check "picking a slot still works at the cap"
+           '(:save "tests/tmp-saves/s1.sav")
+           (save-menu-act g view #\1))
+    (check-true "the cap message is gone after a pick"
+                (notany (lambda (s) (search "Slot limit reached" s))
+                        (save-menu-lines g view)))))
+
 (delete-file "tests/tmp-town.map")
 (delete-file "tests/tmp-dung.map")
 
@@ -2679,22 +2803,31 @@ full asset-size viewport" pname)
 
 ;; The town: an unattended session first casts through the real event
 ;; loop — open the cast menu (c), pick Zzgo the conjurer (4), cast
-;; mage flame (1) — then walks from the gate to Wolfgar's shoppe (a
-;; LOCATION special), shops for real — pick a hero (1), buy a torch
-;; (1), flip to the sell page (s), sell it again (1), back out
-;; (Esc Esc) — steps back into the street, walks east to the tavern
-;; and drops through the trapdoor into the cellar: the town's
+;; mage flame (1) — then saves and reloads through the slot picker
+;; (S, n, type "t1", Return; L, 1 — the whole name-entry and re-wire
+;; path through real vanillakeys), walks from the gate to Wolfgar's
+;; shoppe (a LOCATION special), shops for real — pick a hero (1), buy
+;; a torch (1), flip to the sell page (s), sell it again (1), back
+;; out (Esc Esc) — steps back into the street, walks east to the
+;; tavern and drops through the trapdoor into the cellar: the town's
 ;; (ZONE :GFX ...) city pack swaps for the cellar's default pack on
 ;; the way (the wall-bitmap reload path), and the cellar is a :DARK
 ;; zone — Zzgo's flame is what keeps the view lit — then quits.
 #+amigaos
-(check "amiga-ui autoplay casts, shops and drops to the dark cellar"
+(check "amiga-ui autoplay casts, saves, shops, drops to the dark cellar"
        :done
        (let ((*autoplay* (list #\c #\4 #\1
+                               #\S #\n #\t #\1 #\Return
+                               #\L #\1
                                #\w #\a #\w #\w #\d #\w #\w #\w
                                #\1 #\1 #\s #\1 :esc :esc
-                               #\s #\d #\w #\w #\w #\w #\a #\w #\q)))
+                               #\s #\d #\w #\w #\w #\w #\a #\w #\q))
+             ;; scratch save, like every other test's tests/tmp-* state —
+             ;; keeps the real saves/ dir untouched by the test suite
+             (*save-dir* "tests/tmp-saves/"))
          (play-amiga "worlds/closure/town.map" :display :window)
+         (when (probe-file "tests/tmp-saves/t1.sav")
+           (delete-file "tests/tmp-saves/t1.sav"))
          :done))
 
 ;; The same unattended session on an own custom screen (:display :screen)

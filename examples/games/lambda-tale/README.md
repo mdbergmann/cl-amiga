@@ -20,7 +20,9 @@ Walkabout keys: `w` forward, `s` back-step (keeps facing), `a`/`d` turn,
 debug view there), `1`–`7` open that party member's character sheet
 (`1`–`7` switch heroes there, `Esc` back), `c` cast a spell (pick the
 caster, the spell and — for a heal — the target by number, `Esc`
-backs out), `S`/`L` save/load (`tale.sav`), `q` quit.  In combat:
+backs out), `S`/`L` open the save/load slot picker (`1`–`9` pick a
+slot, `n` types a new save name, `Esc` cancels; saves live as
+`saves/NAME.sav`), `q` quit.  In combat:
 `a` attack, `d` defend, `c` cast, `f` flee.  Inside a location (a
 shop): `1`–`7` pick the shopping hero, `1`–`9` buy or sell, `s`/`b`
 flip between the buy and sell pages, `Esc` back/leave.
@@ -103,6 +105,7 @@ src/combat.lisp      monster types, round-based combat
 src/specials.lisp    cell-special interpreter (the story op vocabulary)
 src/locations.lisp   locations (shops): mechanics + shared menu model
 src/save.lisp        save games (readable Lisp data, never evaluated)
+src/save-menu.lisp   named saves: the saves/ dir + the slot-picker menu
 src/render.lisp      ASCII automap renderer (player view + omniscient debug view)
 src/render-fp.lisp   ASCII wireframe first-person renderer
 src/host-ui.lisp     host front-end (interactive ASCII walkabout, PLAY)
@@ -348,7 +351,11 @@ in `worlds/closure/campaign.lisp`; the "Spells" test section of
 Save games (`save-game`/`load-game`) are a single readable Lisp form:
 the current zone's map file, position, the game clock, active effects,
 every visited zone's automap knowledge, story flags and the party with
-packs and equipment.
+packs and equipment.  Up to 9 **named saves** live side by side as
+`saves/NAME.sav`: both front-ends share the same slot picker (`S`/`L`,
+and the Save/Load menu items on the Amiga) — pick a slot by number or
+type a new name (refused once 9 slots exist, so every slot stays
+reachable by its digit) — and saving is refused during combat.
 
 The test suite (`tests/run-tests.lisp`) doubles as the executable
 specification for the map model, movement, knowledge tracking,

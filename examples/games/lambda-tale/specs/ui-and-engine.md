@@ -263,6 +263,12 @@ The Amiga front-end supports two displays, selected by
   bare keywords, and the full `cast-lines`/`cast-act` key walk — out
   of combat, in combat (one caster casts, the rest attack) and the
   Esc unwind.
+- Named saves: `slot-path`/`save-slots` (empty without the dir), the
+  full `save-menu-lines`/`save-menu-act` key walk — name entry with
+  junk-char rejection, Backspace, the live echo, the empty-name and
+  length guards, Return and code-13 commits, slot digits for
+  overwrite and load, the combat refusal page (digits dead, Esc
+  lives) — and a real save/load round trip through the picked paths.
 - Amiga (FS-UAE suite): smoke tests for the layout draw calls (incl.
   the effects strip and map page), an unattended `*autoplay*` session
   that enters and leaves map mode, and a `:display :screen` session

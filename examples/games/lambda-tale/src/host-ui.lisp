@@ -6,14 +6,14 @@
 ;;; In combat: a=attack  d=defend  c=cast  f=flee
 ;;; In a location (shop): 1-9=choose  s/b=sell/buy page  Esc=back/leave
 ;;; In the cast menu: 1-9=choose caster/spell/target  Esc=back/cancel
+;;; In the save/load menu: 1-9=pick a slot  n=new name (:save)
+;;;   Esc=back/cancel (see src/save-menu.lisp)
 ;;;
 ;;; Layout per specs/ui-and-engine.md: first-person view beside the
 ;;; active-spells strip, party roster (up to 7 rows), message log with
 ;;; the newest line at the bottom; the automap lives under 'm'.
 
 (in-package :tale)
-
-(defparameter *save-file* "tale.sav")
 
 (defparameter *log-lines* 10
   "Trailing message-log lines shown below the play view.")
@@ -74,11 +74,13 @@ the map file (classes, monsters, items, party) when present."
          (full nil)          ; omniscient automap (debug), map mode only
          (shop nil)          ; SHOP-VIEW while inside a location
          (cast nil)          ; CAST-VIEW while the cast menu is open
+         (menu nil)          ; SAVE-MENU while the save/load picker is open
          (over nil))
     (labels ((wire (g)
                (setf log (attach-message-log g))
                (setf shop (when (game-location g) (make-shop-view)))
                (setf cast nil)
+               (setf menu nil)
                (on-event g :enter-location
                          (lambda (game loc)
                            (declare (ignore game loc))
@@ -114,7 +116,10 @@ the map file (classes, monsters, items, party) when present."
                          (dungeon-map-height (game-map game))
                          full)))
              (draw-play-page ()
-               (cond (cast
+               (cond (menu
+                      (dolist (line (save-menu-lines game menu))
+                        (format t "~A~%" line)))
+                     (cast
                       (dolist (line (cast-lines game cast))
                         (format t "~A~%" line)))
                      ((game-location game)
@@ -133,7 +138,7 @@ the map file (classes, monsters, items, party) when present."
                        (clock-line game))
                (dolist (m (log-recent log *log-lines*))
                  (format t "> ~A~%" m))
-               (cond (cast
+               (cond ((or menu cast)
                       (when (game-combat game)
                         (format t "~A~%" (%combat-pane game))))
                      ((game-combat game)
@@ -177,6 +182,20 @@ the map file (classes, monsters, items, party) when present."
                (case (cast-act game cast c)
                  ((:done :cancelled) (setf cast nil)))
                nil)
+             (saves-act (c)
+               (let ((r (save-menu-act game menu c)))
+                 (cond ((eq r :closed) (setf menu nil))
+                       ((and (consp r) (eq (first r) :save))
+                        (ensure-save-dir)
+                        (save-game game (second r))
+                        (note (format nil "Game saved to ~A." (second r)))
+                        (setf menu nil))
+                       ((and (consp r) (eq (first r) :load))
+                        (setf game (wire (load-game (second r)))
+                              over nil
+                              mode :play)
+                        (note "Game loaded."))))
+               nil)
              (map-act (c)
                (case c
                  ((#\m #\M #\Escape) (setf mode :play) nil)
@@ -185,14 +204,9 @@ the map file (classes, monsters, items, party) when present."
                  (t nil)))
              (explore-act (c)
                (case c
-                 (#\S (save-game game *save-file*)
-                      (note (format nil "Game saved to ~A." *save-file*))
+                 (#\S (setf menu (make-save-menu :save))
                       nil)
-                 (#\L (if (probe-file *save-file*)
-                          (progn
-                            (setf game (wire (load-game *save-file*)))
-                            (note "Game loaded."))
-                          (note (format nil "No save at ~A." *save-file*)))
+                 (#\L (setf menu (make-save-menu :load))
                       nil)
                  (t
                   (case (char-downcase c)
@@ -211,6 +225,7 @@ the map file (classes, monsters, items, party) when present."
                     (t nil)))))
              (act (c)
                (cond ((eq mode :map) (map-act c))
+                     (menu (saves-act c))
                      (cast (cast-menu-act c))
                      ((game-combat game) (combat-act c))
                      ((game-location game)
