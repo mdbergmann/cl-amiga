@@ -2878,6 +2878,36 @@ messages so far (oldest first)."
                                                '(:front 0)))))
                      'list)))))
 
+;; Flank pieces are the same flat wall as the front piece at their
+;; depth, continued through the open side — their mortar joints must
+;; land on the FRONT slot's brick grid (bond offsets 0 / brick/2),
+;; carried across the seam via the pattern window, not on a grid
+;; scaled to the flank's own narrow slot (which showed a flat wall
+;; with three-times-smaller bricks on its adjacent segments).
+(let ((planes (view-planes *fp-view-width* *fp-view-height*)))
+  (dotimes (d 2)
+    (destructuring-bind (fx fy fw fh)
+        (wall-piece-rect planes (list :front d))
+      (declare (ignore fx fy fh))
+      (let ((brick (max 6 (round fw 5))))
+        (dolist (side '(:l :r))
+          (let* ((img (draw-wall-piece (list :flank d side) planes))
+                 (w (image-width img))
+                 (x0 (if (eq side :l) (- w) fw))  ; pattern window origin
+                 (joints '()))
+            ;; probe a row inside the first brick course (row 0 is the
+            ;; white edge highlight)
+            (dotimes (x w)
+              (when (= 4 (pixel-ref img x 2)) (push x joints)))
+            (check-true
+             (format nil "depth-~D ~A flank joints sit on the front ~
+brick grid" d side)
+             (and joints
+                  (every (lambda (x)
+                           (member (mod (+ x0 x) brick)
+                                   (list 0 (floor brick 2))))
+                         joints)))))))))
+
 ;; Effects-band icons: the generator draws 16x16 pen-0-keyed art, and
 ;; the fixture world's checked-in fx-needle.iff is pinned to it the
 ;; same way as the packs (regenerate with `make assets`).
@@ -2978,13 +3008,19 @@ messages so far (oldest first)."
 ;;; ---------------------------------------------------------------------
 ;;; The roster's class codes and column plists.
 
+;; Class codes are always two characters — the roster's CL column is
+;; two cells wide, leaving the freed room to the name column.
 (with-rng ()
-  (check "single-word class abbreviates to four letters" "TEST"
+  (check "single-word class abbreviates to two letters" "TE"
          (hero-class-abbrev (make-hero "A" :tester))))
 (define-hero-class :war-mage :hp-dice "1d4" :caster t)
 (with-rng ()
-  (check "multi-word class abbreviates to its initials" "WM"
+  (check "multi-word class abbreviates to two initials" "WM"
          (hero-class-abbrev (make-hero "A" :war-mage))))
+(define-hero-class :knight-of-the-realm :hp-dice "1d8")
+(with-rng ()
+  (check "many-word class caps at two initials" "KO"
+         (hero-class-abbrev (make-hero "A" :knight-of-the-realm))))
 
 ;; Both profiles carry the full Bard's Tale column set, in order.
 (dolist (p (list *lores-profile* *hires-profile*))
@@ -3220,6 +3256,27 @@ messages so far (oldest first)."
                         (+ (ffi:foreign-pointer-address scr) 84))
                        25 1))
                t)))))
+
+;; The same probe through the production path: %CALL-WITH-GAME-WINDOW
+;; (RTG-aware mode-id promotion + backdrop window + ShowTitle).  The
+;; game once called ShowTitle before opening the window; on a
+;; Picasso96-promoted screen the bar layer then stayed in front of the
+;; later-opened backdrop and the title bar was visible in play.
+;; ShowTitle must run after the window opens, and this probe holds it
+;; to that.
+#+amigaos
+(check "the screen bar stays hidden on the game window path" 3
+       (%call-with-game-window
+        :screen
+        (lambda (scr win)
+          (let ((rp (amiga.intuition:window-rastport win)))
+            (amiga.gfx:set-a-pen rp 3)
+            (amiga.gfx:rect-fill rp 0 0 50 3)
+            (amiga.gfx:set-a-pen rp 1)
+            (amiga.gfx:read-pixel
+             (ffi:make-foreign-pointer
+              (+ (ffi:foreign-pointer-address scr) 84))
+             25 1)))))
 
 ;; Wall-piece assets (M3): each profile's pack ILBMs load into
 ;; offscreen bitmaps and the first-person view composits them with

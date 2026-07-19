@@ -69,26 +69,40 @@
 ;;; ---------------------------------------------------------------------
 ;;; Front-facing walls (:front, :flank — flat rectangles)
 
-(defun %draw-front-wall (w h &key door)
+(defun %draw-front-wall (w h &key door (pattern-w w) (pattern-x0 0))
   "A flat brick wall filling W x H (front and flank pieces share the
-wall height at a given depth, so their brick courses line up).  DOOR
-non-NIL puts an amber door in the middle."
+wall height at a given depth, so their brick courses line up).  The
+brick length comes from PATTERN-W and the piece's horizontal placement
+within the wall's bond pattern from PATTERN-X0: a front piece is its
+own pattern (defaults), a flank piece passes the front slot's width
+and its offset from the front's left edge, so its bricks continue the
+front wall's coursing across the seam at the same scale.  (Flanks
+used to size bricks to their own narrow slot — the same flat wall at
+the same depth showed bricks three times smaller beside the front
+piece.)  DOOR non-NIL puts an amber door in the middle."
   ;; Front and flank pieces fill their whole rectangle (no pen 0 left),
   ;; so they are fully opaque — the backdrop never shows through them.
   (let ((img (make-image w h 3 :palette *wall-palette*))
         (course (max 3 (round h *brick-courses*)))
-        (brick (max 6 (round w 5))))
-    (%img-fill img 0 0 (1- w) (1- h) +pen-brick+)
-    ;; mortar: courses and running-bond joints
-    (loop for y from course below h by course
-          for row from 1
-          do (%img-fill img 0 y (1- w) y +pen-mortar+)
-             (loop for x from (if (evenp row) 0 (floor brick 2))
-                     below w by brick
-                   do (%img-fill img x (- y course) x (1- y) +pen-mortar+)))
-    (loop for x from (floor brick 2) below w by brick
-          do (%img-fill img x (* course (floor (1- h) course)) x (1- h)
-                        +pen-mortar+))
+        (brick (max 6 (round pattern-w 5))))
+    (labels ((joints (row-offset y0 y1)
+               ;; one course row's vertical joints: the global pattern
+               ;; columns congruent to ROW-OFFSET mod BRICK, clipped to
+               ;; this piece's [PATTERN-X0, PATTERN-X0+W) window
+               (loop for gx from (+ pattern-x0
+                                    (mod (- row-offset pattern-x0) brick))
+                       below (+ pattern-x0 w) by brick
+                     do (%img-fill img (- gx pattern-x0) y0
+                                   (- gx pattern-x0) y1 +pen-mortar+))))
+      (%img-fill img 0 0 (1- w) (1- h) +pen-brick+)
+      ;; mortar: courses and running-bond joints
+      (loop for y from course below h by course
+            for row from 1
+            do (%img-fill img 0 y (1- w) y +pen-mortar+)
+               (joints (if (evenp row) 0 (floor brick 2))
+                       (- y course) (1- y)))
+      (joints (floor brick 2)
+              (* course (floor (1- h) course)) (1- h)))
     ;; white edge highlight all around (the wireframe look)
     (%img-fill img 0 0 (1- w) 0 +pen-edge+)
     (%img-fill img 0 (1- h) (1- w) (1- h) +pen-edge+)
@@ -231,7 +245,16 @@ ceiling ends in plain black), keeping the dark dungeon mood."
             ((:front :front-door)
              (%draw-front-wall w h :door (eq kind :front-door)))
             ((:flank :flank-door)
-             (%draw-front-wall w h :door (eq kind :flank-door)))
+             ;; A flank is the same flat wall as the front piece at this
+             ;; depth, continued through the open side — its bricks must
+             ;; carry the front slot's scale and bond across the seam,
+             ;; not shrink to the flank's narrow strip.
+             (destructuring-bind (fx fy fw fh)
+                 (wall-piece-rect planes (list :front depth))
+               (declare (ignore fx fy fh))
+               (%draw-front-wall w h :door (eq kind :flank-door)
+                                 :pattern-w fw
+                                 :pattern-x0 (if (eq side :l) (- w) fw))))
             ((:side :side-door)
              (let ((img (%draw-side-wall w h
                                          (- qy0 py0) (- qy1 py0)

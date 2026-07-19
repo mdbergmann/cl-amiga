@@ -51,9 +51,9 @@ absolute path under *ENGINE-DIR*."
    :win-width 640 :win-height 256
    :fp-width 240 :fp-height 130
    :gfx-dir (engine-path "data/gfx-hires/")
-   :pad-x 12 :pad-y 10 :view-gap 12 :band-height 48
-   :roster-cols '(:no 0 :name 2 :ac 20 :hit 25 :hpts 30
-                  :spl 36 :spts 41 :cl 46)))
+   :pad-x 12 :pad-y 10 :view-gap 12 :band-height 20
+   :roster-cols '(:no 0 :name 2 :ac 22 :hit 27 :hpts 32
+                  :spl 38 :spts 43 :cl 48)))
 
 ;;; The ECS target: 320x256 PAL lores, 5 bitplanes (32 colors) — the
 ;;; Bard's Tale presentation.  Half the chip-RAM/DMA cost of hires and
@@ -65,9 +65,9 @@ absolute path under *ENGINE-DIR*."
    :win-width 320 :win-height 256
    :fp-width 160 :fp-height 112
    :gfx-dir (engine-path "data/gfx/")
-   :pad-x 10 :pad-y 10 :view-gap 12 :band-height 48
-   :roster-cols '(:no 0 :name 2 :ac 13 :hit 17 :hpts 21
-                  :spl 25 :spts 29 :cl 33)))
+   :pad-x 10 :pad-y 10 :view-gap 12 :band-height 20
+   :roster-cols '(:no 0 :name 2 :ac 15 :hit 19 :hpts 23
+                  :spl 27 :spts 31 :cl 35)))
 
 (defparameter *display-profiles*
   (list *lores-profile* *hires-profile*))

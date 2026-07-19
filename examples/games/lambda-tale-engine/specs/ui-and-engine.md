@@ -113,10 +113,12 @@ the Amiga use the same arrangement.)
   distinct line into a cached offscreen bitmap and blitted), smaller
   than topaz 8 so the narrow column holds more text.
 - **Effect strip** (below the log page, separated by a small gap, on
-  the grey chrome): the party's active effects — shield, light and
-  friends, Bard's Tale style — as **icons only, stacked vertically**;
-  no text labels (the log announces casting and expiry).  The engine
-  carries them as `game-effects`: **records** with a display name, an
+  the grey chrome; the profiles keep it **20px** — just clearing the
+  16px icons, so the log page above gets the room): the party's
+  active effects — shield, light and friends, Bard's Tale style — as
+  **icons only, laid out left to right in effect order**; no text
+  labels (the log announces casting and expiry).  The engine carries
+  them as `game-effects`: **records** with a display name, an
   optional expiry on the game clock (`add-effect`'s `:duration`;
   `advance-time` announces and drops the expired), a payload plist of
   engine facts — `(:ac N)` feeds the party's effective AC, `(:light
@@ -127,18 +129,22 @@ the Amiga use the same arrangement.)
   tools/gen-walls.lisp draws placeholder art; a file that will not
   load logs once and the effect shows nothing in the strip).  The
   host UI stays text.  Re-adding a name refreshes it in place.
-  Effects live in save games.  While a `:compass` effect burns
-  (`compass-active-p`) the right of the strip holds the **compass
-  rose** — N/E/S/W around a diamond, the needle and the faced letter
-  highlighted (`compass-points` provides the geometry) — and the map
-  footer shows the facing; without one the party has no facing
-  readout (Bard's Tale's Magic Compass rule).  Turning is silent (no
-  "You turn left." log noise).
+  Effects live in save games.  An effect that carries `(:compass t)`
+  shows the **live compass rose** in its own slot instead of its
+  icon — the diamond with the amber needle pointing at the party's
+  facing and the facing letter beside it — so the rose sits wherever
+  the granting spell/item/song sits in the strip, not at a fixed
+  corner (`compass-points` remains the full-rose geometry helper).
+  While one burns (`compass-active-p`) the map footer shows the
+  facing; without one the party has no facing readout (Bard's Tale's
+  Magic Compass rule).  Turning is silent (no "You turn left." log
+  noise).
 - **Party roster** (bottom, full width, right under the location
   plaque — there is **no status line**): a header row and one roster
   row per party member, the Bard's Tale table — `# CHARACTER AC HIT
   PTS SPL PTS CL` (max/current hit points, max/current spell points,
-  class code via `hero-class-abbrev`; a downed hero's name and hit
+  class code via `hero-class-abbrev` — always **two characters**, so
+  the name column keeps the room; a downed hero's name and hit
   points turn amber) — the layout must reserve room for **7 rows**.
   What the status line used to carry moved: the key reference to the
   **help page** (`h`/`?`, `help-lines`), position/facing/clock to the

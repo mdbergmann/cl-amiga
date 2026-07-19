@@ -90,9 +90,10 @@ Both front-ends draw the Bard's Tale split screen (see
 [specs/ui-and-engine.md](specs/ui-and-engine.md)): the first-person
 view with the location plaque under it on the left, the scrolling
 message log on the right (in the engine's compact 5x7 microfont on
-the Amiga) with the active-effect icons stacked below it — where the
-compass rose appears while a compass effect burns — and the numbered
-party roster (`# CHARACTER AC HIT PTS SPL PTS CL`) at the bottom.
+the Amiga) with a slim strip of active-effect icons below it, laid
+out in effect order — an effect granting a compass shows the live
+rose in its slot — and the numbered party roster (`# CHARACTER AC
+HIT PTS SPL PTS CL`, two-letter class codes) at the bottom.
 The key reference lives on the help page under `h`/`?`; the map view's
 footer shows the zone, position and game clock.  The full automap lives under `m`; maps can be large (30x30
 like Bard's Tale I, up to 128x128).  The key bindings are listed in

@@ -17,9 +17,11 @@
 ;;; the position/clock show in the map mode's footer.  The message log
 ;;; renders in the engine's compact 5x7 microfont (microfont.lisp) so
 ;;; the narrow column holds more text.  Active effects show as icons
-;;; only, stacked vertically on the grey chrome below the log page;
-;;; the compass rose appears beside them — and the facing in the map
-;;; footer — only while a :COMPASS effect burns (COMPASS-ACTIVE-P).
+;;; only, laid out left to right in effect order on the 20px grey
+;;; strip below the log page; an effect that grants a :COMPASS shows
+;;; the live rose in its own slot (no fixed compass corner), and the
+;;; facing also shows in the map footer while one burns
+;;; (COMPASS-ACTIVE-P).
 ;;;
 ;;; The automap lives in a full-screen map mode under the 'm' key.
 ;;;
@@ -564,59 +566,61 @@ minimap viewport and the full map mode."
 
 (defun %amiga-draw-band (rp game l &optional icons log)
   "The effect strip below the log page, on the grey chrome (a small
-gap separates it from the page above): the active effects' icons only
-— no labels; casting/expiry is announced in the log — stacked
-vertically at the left (ICONS is the session's icon cache, see
-%EFFECT-ICON; an effect without a loadable icon shows nothing here).
-While a :COMPASS effect burns, the compass rose — the four cardinal
-letters around a diamond with the needle pointing at the party's
-facing — draws in the BAND-H square at the right."
+gap separates it from the page above; the profiles keep the strip 20px
+— just clearing the 16px icons, so the log page above gets the room).
+One slot per active effect, laid out left to right in effect order —
+no labels; casting/expiry is announced in the log.  An effect's slot
+shows its icon (ICONS is the session's icon cache, see %EFFECT-ICON),
+except that an effect carrying a :COMPASS payload shows the live
+compass rose instead: the diamond with the amber needle pointing at
+the party's facing, the facing letter beside it.  The rose thus sits
+wherever the granting spell/item/song sits in the strip, not at a
+fixed spot.  An effect with neither icon nor :COMPASS shows nothing."
   (let* ((ox (ui-layout-log-x l))
          (right (ui-layout-right l))
          (band-y (ui-layout-band-y l))
          (band-h (ui-layout-band-h l))
          (bottom (+ band-y band-h -1))
          (cw (ui-layout-cw l))
-         (compass (compass-active-p game))
-         (cx (- right 1 (floor band-h 2)))
-         (cy (+ band-y (floor band-h 2)))
-         (r (max 6 (- (floor band-h 2) 6))))
+         (x (- ox 4)))
     ;; the strip is bare chrome: grey-wipe it (covers icon churn)
     (amiga.gfx:set-a-pen rp 2)
     (amiga.gfx:rect-fill rp (- ox 4) band-y right bottom)
-    ;; effect icons, stacked vertically
-    (let ((x (- ox 4))
-          (y band-y))
-      (dolist (e (game-effects game))
-        (let ((entry (and icons (%effect-icon rp icons game e log))))
-          (when entry
-            (destructuring-bind (bm iw ih mask) entry
-              (when (<= (+ y ih -1) bottom)
-                (if mask
-                    (amiga.gfx:blt-mask-bitmap-rastport
-                     bm 0 0 rp x y iw ih mask)
-                    (amiga.gfx:blt-bitmap-rastport
-                     bm 0 0 rp x y iw ih))
-                (incf y (+ ih 2))))))))
-    ;; compass rose, spell-granted
-    (when compass
-      (destructuring-bind (needle letters)
-          (compass-points (game-facing game) cx cy r)
-        ;; the rose: a diamond through the needle's reach
-        (let ((ri (max 2 (- r 8))))
-          (amiga.gfx:set-a-pen rp 0)
-          (amiga.gfx:draw-line rp cx (- cy ri) (+ cx ri) cy)
-          (amiga.gfx:draw-line rp (+ cx ri) cy cx (+ cy ri))
-          (amiga.gfx:draw-line rp cx (+ cy ri) (- cx ri) cy)
-          (amiga.gfx:draw-line rp (- cx ri) cy cx (- cy ri)))
-        (destructuring-bind (x0 y0 x1 y1) needle
-          (amiga.gfx:set-a-pen rp 3)
-          (amiga.gfx:draw-line rp x0 y0 x1 y1))
-        (dolist (p letters)
-          (destructuring-bind (ch x y facing-p) p
-            (amiga.gfx:set-a-pen rp (if facing-p 3 0))
-            (amiga.gfx:move-to rp (- x (floor cw 2)) (+ y 3))
-            (amiga.gfx:gfx-text rp (string ch))))))
+    (dolist (e (game-effects game))
+      (cond
+        ((getf (effect-payload e) :compass)
+         ;; the live rose in this effect's slot
+         (let* ((size (min band-h 16))
+                (cx (+ x (floor size 2)))
+                (cy (+ band-y (floor band-h 2)))
+                (ri (max 3 (1- (floor size 2))))
+                (f (game-facing game)))
+           (when (<= (+ x size 2 cw -1) right)
+             (amiga.gfx:set-a-pen rp 0)
+             (amiga.gfx:draw-line rp cx (- cy ri) (+ cx ri) cy)
+             (amiga.gfx:draw-line rp (+ cx ri) cy cx (+ cy ri))
+             (amiga.gfx:draw-line rp cx (+ cy ri) (- cx ri) cy)
+             (amiga.gfx:draw-line rp (- cx ri) cy cx (- cy ri))
+             (amiga.gfx:set-a-pen rp 3)
+             (amiga.gfx:draw-line rp cx cy
+                                  (+ cx (* (aref *dir-dx* f) (1- ri)))
+                                  (+ cy (* (aref *dir-dy* f) (1- ri))))
+             ;; the facing letter, amber, beside the rose
+             (amiga.gfx:move-to rp (+ x size 2) (+ cy 3))
+             (amiga.gfx:gfx-text rp (string (char "NESW" f)))
+             (incf x (+ size 2 cw 4)))))
+        (t
+         (let ((entry (and icons (%effect-icon rp icons game e log))))
+           (when entry
+             (destructuring-bind (bm iw ih mask) entry
+               (when (and (<= (+ x iw -1) right) (<= ih band-h))
+                 (let ((y (+ band-y (max 0 (floor (- band-h ih) 2)))))
+                   (if mask
+                       (amiga.gfx:blt-mask-bitmap-rastport
+                        bm 0 0 rp x y iw ih mask)
+                       (amiga.gfx:blt-bitmap-rastport
+                        bm 0 0 rp x y iw ih)))
+                 (incf x (+ iw 2)))))))))
     (amiga.gfx:set-a-pen rp 1)))
 
 (defun %amiga-draw-log (rp log l &optional lines-cache)
@@ -963,9 +967,6 @@ AMIGA.GFX:BEST-MODE-ID) covered by a borderless backdrop window."
                           :height (display-profile-screen-height p)
                           :depth (display-profile-screen-depth p)))
          (%game-screen-palette scr)
-         ;; the game owns the whole display: put the OS screen bar
-         ;; behind the backdrop window (Bard's Tale has no title bar)
-         (amiga.intuition:show-title scr nil)
          ;; no window title: on a backdrop window WA_Title still costs
          ;; a title bar (border-top), and the screen already carries one
          (amiga.intuition:with-window
@@ -977,6 +978,16 @@ AMIGA.GFX:BEST-MODE-ID) covered by a borderless backdrop window."
                                  amiga.intuition:+wflg-backdrop+
                                  amiga.intuition:+wflg-activate+)
                   :idcmp +game-idcmp+)
+           ;; the game owns the whole display: put the OS screen bar
+           ;; behind the backdrop window (Bard's Tale has no title
+           ;; bar).  This must run AFTER the window is open — ShowTitle
+           ;; rearranges the layers of the backdrop windows that exist
+           ;; at call time, and on RTG-promoted screens (Picasso96
+           ;; BestModeIDA modes) a backdrop window opened after the
+           ;; call still sat behind the bar layer: the title bar stayed
+           ;; visible in play even with SA_ShowTitle FALSE at
+           ;; OpenScreen.
+           (amiga.intuition:show-title scr nil)
            (funcall fn scr win)))))))
 
 ;;; ---------------------------------------------------------------------
