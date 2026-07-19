@@ -4466,6 +4466,30 @@ check_contains "compiler chain unwinds exactly across NLX under compaction storm
 check_absent   "no corruption from freed/leaked compiler envs" \
   "corrupted\|not of type\|Guru\|SIGSEGV\|badmark\|Unbound\|use-after" "$out"
 
+# --- Case: FORMAT ~A/~S and ~D long-output paths ---------------------------
+# The padded ~A/~S path and the bignum ~D path render through a
+# string-output-stream and hold ARG/SSTREAM/TEXT C locals across allocating
+# calls (stream creation, the printer, pad writes) — exercise them with
+# compaction forced at every allocation.
+cat > "$WORK/fmtlong.lisp" <<'EOF'
+(let ((s (make-string 1200 :initial-element #\x)))
+  (format t "FMT-PLAIN:~a~%" (length (format nil "~A" s)))
+  (format t "FMT-PAD:~a~%" (length (format nil "~1300A" s)))
+  (format t "FMT-RPAD:~a~%" (length (format nil "~1300@A" s)))
+  (format t "FMT-S:~a~%" (length (format nil "~S" s))))
+(format t "FMT-BIG:~a~%" (length (format nil "~D" (expt 10 200))))
+(format t "FMT-BIGC:~a~%" (length (format nil "~:D" (expt 10 200))))
+(format t "FMT-BIGPAD:~a~%" (length (format nil "~210D" (expt 10 200))))
+EOF
+out=$(run_stress "$WORK/fmtlong.lisp")
+check_contains "format ~A long string full length under compaction" "FMT-PLAIN:1200" "$out"
+check_contains "format padded ~A under compaction"                  "FMT-PAD:1300" "$out"
+check_contains "format right-padded ~A under compaction"            "FMT-RPAD:1300" "$out"
+check_contains "format ~S long string under compaction"             "FMT-S:1202" "$out"
+check_contains "format ~D big bignum under compaction"              "FMT-BIG:201" "$out"
+check_contains "format ~:D big bignum under compaction"             "FMT-BIGC:267" "$out"
+check_contains "format padded ~D big bignum under compaction"       "FMT-BIGPAD:210" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

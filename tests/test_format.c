@@ -295,6 +295,54 @@ TEST(grouped_integer_grouping_correct)
     ASSERT_STR_EQ(eval_print("(format nil \"~,,'.,2:D\" 123456)"), "\"12.34.56\"");
 }
 
+/* ~A/~S rendered their argument into a fixed 512-byte C buffer, silently
+ * truncating anything longer at 511 chars (a 2000-char string printed as
+ * 511).  The no-padding path must stream unbounded; the padded path must
+ * measure the true printed length for the pad math. */
+TEST(padded_obj_long_string_no_truncation)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(length (format nil \"~A\" (make-string 2000 :initial-element #\\x)))"),
+        "2000");
+    /* ~S adds the two quote chars */
+    ASSERT_STR_EQ(eval_print(
+        "(length (format nil \"~S\" (make-string 2000 :initial-element #\\x)))"),
+        "2002");
+    /* padded paths: left- and right-justified beyond the old buffer cap */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (format nil \"~2100A\" (make-string 2000 :initial-element #\\x))))"
+        "  (list (length s) (char s 1999) (char s 2000)))"),
+        "(2100 #\\x #\\Space)");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (format nil \"~2100@A\" (make-string 2000 :initial-element #\\x))))"
+        "  (list (length s) (char s 99) (char s 100)))"),
+        "(2100 #\\Space #\\x)");
+    /* padding shorter than the text leaves it untouched */
+    ASSERT_STR_EQ(eval_print("(format nil \"~10A\" \"abc\")"), "\"abc       \"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~10@A\" \"abc\")"), "\"       abc\"");
+}
+
+/* ~D/~B/~O/~X rendered integers into a fixed 128-byte buffer — a bignum
+ * past ~127 digits truncated.  The bignum path now renders through a
+ * string stream sized to fit. */
+TEST(padded_integer_big_bignum_no_truncation)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(length (format nil \"~D\" (expt 10 200)))"), "201");
+    /* grouped: 201 digits + 66 separators */
+    ASSERT_STR_EQ(eval_print(
+        "(length (format nil \"~:D\" (expt 10 200)))"), "267");
+    /* sign survives the bignum path */
+    ASSERT_STR_EQ(eval_print(
+        "(subseq (format nil \"~:D\" (- (expt 10 200))) 0 2)"), "\"-1\"");
+    /* other radices share the path */
+    ASSERT_STR_EQ(eval_print(
+        "(length (format nil \"~X\" (expt 16 150)))"), "151");
+    /* mincol padding on a bignum */
+    ASSERT_STR_EQ(eval_print(
+        "(length (format nil \"~210D\" (expt 10 200)))"), "210");
+}
+
 TEST(goto_negative_and_overshoot_clamp)
 {
     /* FS3: plain ~n* with a negative n indexed before the arg vector
@@ -438,6 +486,8 @@ int main(void)
 
     RUN(grouped_integer_100_digits_no_smash);
     RUN(grouped_integer_grouping_correct);
+    RUN(padded_obj_long_string_no_truncation);
+    RUN(padded_integer_big_bignum_no_truncation);
     RUN(goto_negative_and_overshoot_clamp);
     RUN(recursive_format_string_control);
 

@@ -382,12 +382,17 @@ static char *render_integer(CL_Obj obj, int32_t base, char *buf, int bufsz,
 static void fmt_padded_integer(FmtCtx *ctx, FmtDirective *d, int32_t base)
 {
     CL_Obj arg = fmt_next_arg(ctx);
-    char raw[128];
-    /* Worst case: every digit of raw[] gets a group separator (comma-interval
-     * 1) — dlen digits + dlen-1 separators + NUL = 2*127 = 254 bytes for the
-     * 127-digit raw[] cap.  Must hold that or the copy loop below smashes the
-     * stack (`(format nil "~,,,1:D" (expt 10 100))` overran the old 192). */
-    char with_commas[256];
+    /* Fixnums fit easily (32-bit is at most 32 binary digits + sign);
+     * bignums have no digit bound and render through a string stream into
+     * RAW_ALLOC below. */
+    char fixbuf[64];
+    /* Worst case: every digit gets a group separator (comma-interval 1) —
+     * dlen digits + dlen-1 separators + NUL.  Heap-allocated to match the
+     * unbounded bignum digit count (`(format nil "~,,,1:D" (expt 10 100))`
+     * smashed the stack when this was a fixed 192-byte buffer). */
+    char *with_commas_alloc = NULL;
+    char *raw_alloc = NULL;
+    const char *raw;
     int raw_len;
     int32_t mincol   = fmt_param(d, 0, 0);
     int32_t padchar  = fmt_param(d, 1, (int32_t)' ');
@@ -406,7 +411,35 @@ static void fmt_padded_integer(FmtCtx *ctx, FmtDirective *d, int32_t base)
         return;
     }
 
-    render_integer(arg, base, raw, sizeof(raw), &raw_len);
+    if (CL_FIXNUM_P(arg)) {
+        render_integer(arg, base, fixbuf, sizeof(fixbuf), &raw_len);
+        raw = fixbuf;
+    } else {
+        /* Bignum: unbounded digit count — render through a
+         * string-output-stream and copy the ASCII digits into a heap
+         * buffer sized to fit (a fixed 128-byte buffer here used to
+         * truncate ~D of integers past ~127 digits).  ARG/SSTREAM are
+         * bare C locals held across allocating calls — root them. */
+        CL_Obj sstream, text;
+        int dyn_mark;
+        int j;
+        CL_GC_PROTECT(arg);
+        sstream = cl_make_string_output_stream();
+        CL_GC_PROTECT(sstream);
+        dyn_mark = cl_dyn_top;
+        cl_dynbind_c(SYM_PRINT_BASE, CL_MAKE_FIXNUM(base));
+        cl_dynbind_c(SYM_PRINT_RADIX, CL_NIL);
+        cl_princ_to_stream(arg, sstream);
+        cl_dynbind_restore_to(dyn_mark);
+        text = cl_finish_string_output_stream(sstream);
+        raw_len = (int)cl_string_length(text);
+        raw_alloc = (char *)fmt_alloc((uint32_t)raw_len + 1);
+        for (j = 0; j < raw_len; j++)
+            raw_alloc[j] = (char)cl_string_char_at(text, (uint32_t)j);
+        raw_alloc[raw_len] = '\0';
+        raw = raw_alloc;
+        CL_GC_UNPROTECT(2);
+    }
 
     /* Separate sign from digits */
     negative = (raw[0] == '-');
@@ -416,19 +449,14 @@ static void fmt_padded_integer(FmtCtx *ctx, FmtDirective *d, int32_t base)
     /* Insert commas if :modifier */
     if (d->colon && comma_int > 0 && dlen > comma_int) {
         int wi = 0, ri;
+        with_commas_alloc = (char *)fmt_alloc((uint32_t)(2 * dlen) + 1);
         for (ri = 0; ri < dlen; ri++) {
-            /* Up to 2 bytes this iteration (separator + digit) + NUL after
-             * the loop.  Unreachable while raw[] caps dlen at 127, but stay
-             * loud rather than smash the stack if that ever changes. */
-            if (wi >= (int)sizeof(with_commas) - 3)
-                cl_error(CL_ERR_GENERAL,
-                         "FORMAT ~~:D: grouped digits exceed internal buffer");
             if (ri > 0 && ((dlen - ri) % comma_int == 0))
-                with_commas[wi++] = (char)commachar;
-            with_commas[wi++] = digits[ri];
+                with_commas_alloc[wi++] = (char)commachar;
+            with_commas_alloc[wi++] = digits[ri];
         }
-        with_commas[wi] = '\0';
-        digits = with_commas;
+        with_commas_alloc[wi] = '\0';
+        digits = with_commas_alloc;
         dlen = wi;
     }
 
@@ -449,6 +477,9 @@ static void fmt_padded_integer(FmtCtx *ctx, FmtDirective *d, int32_t base)
 
     /* Digits */
     cl_stream_write_string(ctx->stream, digits, (uint32_t)dlen);
+
+    if (with_commas_alloc) platform_free(with_commas_alloc);
+    if (raw_alloc) platform_free(raw_alloc);
 }
 
 /* ================================================================
@@ -462,15 +493,38 @@ static void fmt_padded_obj(FmtCtx *ctx, FmtDirective *d, int escape)
     int32_t colinc = fmt_param(d, 1, 1);
     int32_t minpad = fmt_param(d, 2, 0);
     int32_t padchar = fmt_param(d, 3, (int32_t)' ');
-    char buf[512];
+    CL_Obj sstream, text;
     int len;
     int total_pad;
     int i;
 
+    /* No padding requested (the overwhelmingly common ~A/~S): stream the
+     * object directly.  The printed text has no a priori length bound —
+     * a fixed rendering buffer here used to truncate long strings at its
+     * capacity (511 chars), silently losing output. */
+    if (mincol <= 0 && minpad <= 0) {
+        if (escape)
+            cl_prin1_to_stream(arg, ctx->stream);
+        else
+            cl_princ_to_stream(arg, ctx->stream);
+        return;
+    }
+
+    /* Padded: the pad math needs the printed length first, so render into
+     * a string-output-stream (unbounded), measure in characters, then emit.
+     * ARG/SSTREAM/TEXT are bare C locals held across allocating calls
+     * (stream creation, the printer, pad writes into a possibly growing
+     * string destination) — root them against the compacting GC. */
+    CL_GC_PROTECT(arg);
+    sstream = cl_make_string_output_stream();
+    CL_GC_PROTECT(sstream);
     if (escape)
-        len = cl_prin1_to_string(arg, buf, sizeof(buf));
+        cl_prin1_to_stream(arg, sstream);
     else
-        len = cl_princ_to_string(arg, buf, sizeof(buf));
+        cl_princ_to_stream(arg, sstream);
+    text = cl_finish_string_output_stream(sstream);
+    CL_GC_PROTECT(text);
+    len = (int)cl_string_length(text);
 
     /* Calculate padding needed */
     total_pad = minpad;
@@ -485,13 +539,14 @@ static void fmt_padded_obj(FmtCtx *ctx, FmtDirective *d, int escape)
         /* @A/@S: pad on left (right-justify) */
         for (i = 0; i < total_pad; i++)
             cl_stream_write_char(ctx->stream, (int)padchar);
-        cl_stream_write_string(ctx->stream, buf, (uint32_t)len);
+        cl_princ_to_stream(text, ctx->stream);
     } else {
         /* ~A/~S: pad on right (left-justify) */
-        cl_stream_write_string(ctx->stream, buf, (uint32_t)len);
+        cl_princ_to_stream(text, ctx->stream);
         for (i = 0; i < total_pad; i++)
             cl_stream_write_char(ctx->stream, (int)padchar);
     }
+    CL_GC_UNPROTECT(3);
 }
 
 /* ================================================================
