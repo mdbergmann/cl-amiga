@@ -73,8 +73,9 @@
             (every #'find-song-type '(travellers-tune seekers-ballad)))
 (check-true "Wolfgar's stock exists"
             (every #'find-item-type
-                   '(torch healing-potion short-sword war-axe broadsword
-                     leather-armor chain-mail buckler)))
+                   '(torch healing-potion lantern dagger short-sword
+                     mace war-axe broadsword leather-armor splint-mail
+                     chain-mail buckler tower-shield)))
 (check-true "the cellar's monsters exist"
             (every #'find-monster-type
                    '("giant rat" "kobold" "skeleton" "footpad")))
@@ -203,6 +204,30 @@
   (check "El Cid's portrait resolves inside the world"
          "worlds/closure/gfx/hero-warrior.iff"
          (hero-image-path g (first (game-party g))))
+  ;; Wolfgar's stock is deeper than a menu page: the buy list scrolls,
+  ;; and a digit picks within the visible window
+  (check-true "the stock outgrows a menu page"
+              (> (length (shop-stock (game-location g)))
+                 +menu-page-size+))
+  (let ((cid (first (game-party g)))
+        (view (make-shop-view)))
+    (setf (hero-gold cid) 200)
+    (shop-act g view #\1)               ; El Cid shops
+    (check-true "the deep stock shows its below marker"
+                (member "v more below [d]"
+                        (menu-texts (shop-lines g view)) :test #'equal))
+    (shop-act g view #\d)
+    (shop-act g view #\d)               ; to the bottom of the stock
+    (check "the stock window clamps at the tail" 8 (shop-view-top view))
+    (check-true "the tail window lists the tower shield"
+                (find-if (lambda (s) (search "5) Tower Shield" s))
+                         (menu-texts (shop-lines g view))))
+    (shop-act g view #\5)               ; buy it from the scrolled window
+    (check-true "the windowed digit buys the tower shield"
+                (hero-carrying-p cid 'tower-shield))
+    (check "the fresh shield auto-equips" 'tower-shield
+           (equipped-of-kind cid :shield))
+    (shop-act g view #\Escape))
   (leave-location g)
   ;; over to the tavern: back out, east along the street, up the door
   (move-party g :back)                    ; (2,2)
@@ -258,7 +283,8 @@
 ;; 4, spell 1) and let Melody strike up the traveller's tune (p, 3,
 ;; song 1 — her one tune), save and reload through the slot picker
 ;; (S n "t1" Return; L 1), walk from the gate to Wolfgar's shoppe,
-;; shop for real (buy two torches, sell one back), then east to the
+;; shop for real (scroll the deep stock down and back up, buy two
+;; torches, sell one back), then east to the
 ;; Adventurer's Rest: Melody drinks her tunes back (3) and the party
 ;; takes the trapdoor down (d) into the dark cellar — the town's city
 ;; pack swaps for the cellar's default pack on the way, and Zzgo's
@@ -271,7 +297,7 @@
                                #\S #\n #\t #\1 #\Return
                                #\L #\1
                                #\w #\a #\w #\w #\d #\w #\w #\w
-                               #\1 #\1 #\1 #\s #\1 :esc :esc
+                               #\1 #\d #\u #\1 #\1 #\s #\1 :esc :esc
                                #\s #\d #\w #\w #\w #\w #\a #\w
                                #\3 #\d
                                #\u #\1 #\1 #\q))

@@ -122,7 +122,8 @@ displaces any song already playing, installs the song's timed effect
 
 (defstruct (sing-view (:constructor %make-sing-view))
   hero                ; the chosen singer, or NIL while picking
-  in-combat)          ; T: committing fights one COMBAT-ROUND
+  in-combat           ; T: committing fights one COMBAT-ROUND
+  (top 0))            ; scroll offset into the song list
 
 (defun make-sing-view (&key in-combat)
   (%make-sing-view :in-combat in-combat))
@@ -165,12 +166,11 @@ key (see MENU-NUMBERED)."
                         (hero-name hero) (hero-tunes hero)
                         (hero-max-tunes hero))
                 "")
-          (let ((i 0))
-            (mapcar (lambda (name)
-                      (incf i)
-                      (menu-numbered
-                       i (format nil "~D) ~A" i (song-title name))))
-                    (songs-for-hero hero)))
+          (menu-scrolled-lines
+           (songs-for-hero hero) (sing-view-top view)
+           (lambda (i name)
+             (menu-numbered
+              i (format nil "~D) ~A" i (song-title name)))))
           (list "" "[1-9] play  [Esc] back"))))))
 
 (defun sing-act (game view char)
@@ -191,10 +191,17 @@ level, else NIL."
              (t nil)))
       ;; picking the song
       (t
-       (cond ((and digit (<= 1 digit (length (songs-for-hero hero))))
-              (%sing-commit game view
-                            (nth (1- digit) (songs-for-hero hero))))
+       (cond (digit
+              (let ((name (menu-window-pick (songs-for-hero hero)
+                                            (sing-view-top view) digit)))
+                (when name
+                  (%sing-commit game view name))))
              ((eql char #\Escape)
-              (setf (sing-view-hero view) nil)
+              (setf (sing-view-hero view) nil
+                    (sing-view-top view) 0)
               nil)
-             (t nil))))))
+             (t
+              (let ((top (menu-scroll (sing-view-top view) char
+                                      (length (songs-for-hero hero)))))
+                (when top (setf (sing-view-top view) top)))
+              nil))))))

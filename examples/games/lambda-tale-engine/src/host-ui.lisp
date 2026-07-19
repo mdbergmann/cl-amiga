@@ -8,6 +8,8 @@
 ;;; In combat: a=attack  d=defend  c=cast  f=flee
 ;;; In a location (shop): 1-9=choose  s/b=sell/buy page  Esc=back/leave
 ;;; In the cast menu: 1-9=choose caster/spell/target  Esc=back/cancel
+;;; Long menu lists (shop stock, packs, the character sheet) scroll
+;;; with u/d — digits pick within the visible window (see MENU-WINDOW)
 ;;; In the save/load menu: 1-9=pick a slot  n=new name (:save)
 ;;;   Esc=back/cancel (see src/save-menu.lisp)
 ;;;
@@ -77,6 +79,7 @@ engine has no default world; the game names its starting map."
          (mode :play)        ; :play, :map (full-map view), :help or :sheet
          (full nil)          ; omniscient automap (debug), map mode only
          (sheet-hero 0)      ; party index shown in :sheet mode
+         (sheet-top 0)       ; sheet scroll offset (u/d)
          (shop nil)          ; SHOP-VIEW while inside a location
          (cast nil)          ; CAST-VIEW while the cast menu is open
          (use nil)           ; USE-VIEW while the use menu is open
@@ -173,8 +176,8 @@ engine has no default world; the game names its starting map."
                (dolist (line (help-lines))
                  (format t "~A~%" line)))
              (draw-sheet-page ()
-               (dolist (line (hero-sheet-lines game sheet-hero))
-                 (format t "~A~%" line)))
+               (dolist (line (hero-sheet-lines game sheet-hero sheet-top))
+                 (format t "~A~%" (menu-line-text line))))
              (draw ()
                (%clear-screen)
                (format t "=== Lambda's Tale ===  ~A (~Dx~D)~%~%"
@@ -260,12 +263,16 @@ engine has no default world; the game names its starting map."
                ;; '1'-'7': show that roster slot if it holds a hero
                (when (nth i (game-party game))
                  (setf sheet-hero i
+                       sheet-top 0
                        mode :sheet))
                nil)
              (sheet-act (c)
-               (let ((digit (digit-char-p c)))
+               (let ((digit (digit-char-p c))
+                     (top (hero-sheet-scroll game sheet-hero
+                                             sheet-top c)))
                  (cond ((and digit (<= 1 digit +party-limit+))
                         (open-sheet (1- digit)))
+                       (top (setf sheet-top top) nil)
                        ((eql c #\Escape) (setf mode :play) nil)
                        ((member c '(#\q #\Q)) :quit)
                        (t nil))))

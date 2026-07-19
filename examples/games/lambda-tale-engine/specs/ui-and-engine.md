@@ -74,6 +74,23 @@ campaign data, never as code that knows about "the" town.
   redraw from exactly what was drawn, so the whole game plays by
   mouse: walk zones on the view, roster rows, menu rows, footer
   hints, and click-anywhere-to-close on the map/help/sheet pages.
+- Menu lists **scroll** (2026-07-19): a list deeper than a page
+  (`+menu-page-size+`, 7 — party-sized lists never scroll) windows to
+  page − 2 rows bracketed by clickable `^ more above [u]` /
+  `v more below [d]` marker rows; `u`/`d` move the window and digits
+  pick **within the visible window** (row 1 = the window's first
+  row), which keeps every item of an arbitrarily long list reachable
+  with single-digit keys.  The window math lives in one place
+  (`menu-window` / `menu-window-pick` / `menu-scroll` /
+  `menu-scrolled-lines` in events.lisp) and both the `*-lines`
+  renderers and the `*-act` key handlers go through it, so display
+  and picks cannot disagree.  It applies to the shop's buy/sell
+  pages, the use/cast/sing item lists and the save-slot picker; the
+  character sheet scrolls its stat block the same way (page 8, the
+  pack expanded to one row per item — `hero-sheet-lines`'s TOP
+  argument plus `hero-sheet-scroll`, the scroll offset itself staying
+  front-end state).  Scroll offsets reset when a menu changes page or
+  backs out.
 
 ## Map size
 
@@ -201,8 +218,9 @@ with pictures in the view column.)
   full-page sheet overlay (`%amiga-draw-sheet`) stays available as a
   drawing primitive but the play flow uses the takeover.
 - The sheet content is the platform-free `hero-sheet-lines` (header,
-  `hero-summary-lines` stat block, key hints); the host UI shows it
-  as its `:sheet` mode under the same keys (`1`-`7` switch, `Esc`
+  the stat block with the pack expanded to one row per item, key
+  hints); the host UI shows it as its `:sheet` mode under the same
+  keys (`1`-`7` switch, `u`/`d` scroll a long stat block, `Esc`
   back).
 
 ## Full map view (`m`)
@@ -330,6 +348,12 @@ The Amiga front-end supports two displays, selected by
   auto-equip), sell (half price, unequip), and the full `shop-act` /
   `shop-lines` interaction from hero pick to leaving; the shipped
   town/cellar world walks end-to-end (gate, shoppe, tavern, ladder).
+- Menu scrolling: the `menu-window` clamps (short lists whole, deep
+  lists windowed, offsets clamped at both ends), window-relative
+  digit picks, marker rows carrying the scroll keys, and scrolled
+  walks through the shop (buy and sell), use, cast, save-picker and
+  character-sheet models — including that offsets reset on page
+  flips/backing out and that a digit past the window picks nothing.
 - Message log: ring limit, trailing-lines query, oldest-first order.
 - Party: `join-party` up to 7, refusal at 8, `:party-joined` event.
 - Effects: `add-effect` refresh-in-place, `remove-effect`, fresh game

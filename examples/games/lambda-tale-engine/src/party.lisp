@@ -160,17 +160,56 @@ current map file's directory — or NIL when the class has none."
     (when image
       (%resolve-map-path (dungeon-map-name (game-map game)) image))))
 
-(defun hero-sheet-lines (game index)
+(defconstant +sheet-page-size+ 8
+  "Body rows the character-sheet page shows at once; a longer stat
+block (a full pack lists one row per item) scrolls with u/d — see
+MENU-WINDOW.")
+
+(defun %hero-sheet-body (hero)
+  "The sheet page's scrollable body: the HERO-SUMMARY-LINES stat block
+with the pack expanded to one row per item (equipped items starred),
+so a full pack scrolls instead of overflowing the page."
+  (append
+   (butlast (hero-summary-lines hero))  ; all but the joined pack line
+   (let ((items (hero-items hero)))
+     (if items
+         (cons "Pack:"
+               (mapcar (lambda (name)
+                         (format nil "  ~A~:[~;*~]" (item-title name)
+                                 (member name (hero-equipped hero))))
+                       items))
+         (list "Pack: nothing")))))
+
+(defun hero-sheet-lines (game index &optional (top 0))
   "The character-sheet page for roster slot INDEX as text lines: a
-header, the hero's HERO-SUMMARY-LINES stat block and the key hints —
-the front-ends draw these verbatim (the SHOP-LINES pattern)."
-  (let ((hero (nth index (game-party game))))
+header, the hero's stat block (windowed at scroll offset TOP when it
+overflows +SHEET-PAGE-SIZE+ rows, with clickable more-markers) and the
+key hints — the front-ends draw these verbatim (the SHOP-LINES
+pattern) and feed u/d through HERO-SHEET-SCROLL."
+  (let* ((hero (nth index (game-party game)))
+         (body (when hero (%hero-sheet-body hero))))
     (append
      (list (format nil "*** Character ~D of ~D ***"
                    (1+ index) (length (game-party game)))
            "")
-     (when hero (hero-summary-lines hero))
-     (list "" "[1-7] view another  [Esc] back"))))
+     (when hero
+       (menu-scrolled-lines body top
+                            (lambda (i line)
+                              (declare (ignore i))
+                              line)
+                            +sheet-page-size+))
+     (list ""
+           (if (> (length body) +sheet-page-size+)
+               "[1-7] view another  [u/d] scroll  [Esc] back"
+               "[1-7] view another  [Esc] back")))))
+
+(defun hero-sheet-scroll (game index top char)
+  "The sheet page's scroll offset after key CHAR (u/d — see
+MENU-SCROLL), or NIL when CHAR does not scroll or slot INDEX is empty."
+  (let ((hero (nth index (game-party game))))
+    (when hero
+      (menu-scroll top char (length (%hero-sheet-body hero))
+                   +sheet-page-size+))))
 
 (defun party-full-p (game)
   (>= (length (game-party game)) +party-limit+))

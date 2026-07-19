@@ -1477,7 +1477,9 @@ A attack, D defend, C cast, F flee; in a location (shop) 1-9 choose,
 S/B switch sell/buy, Esc back/leave — the location menu and the
 character sheet take over the message area, with the location's
 :image / the hero's portrait in the view column when the campaign
-ships one.  Shift-S / Shift-L (and the
+ships one.  A menu list longer than a page (a deep shop stock, a full
+pack on the sheet) scrolls: U/D move the window, digits pick within
+it, and the '^ more'/'v more' marker rows click as the scroll keys.  Shift-S / Shift-L (and the
 menu strip's Save/Load, right mouse button) open the save-slot
 picker: 1-9 pick a slot, N names a new save (saves/NAME.sav), Esc
 cancels; Quit sits in the menu strip too.
@@ -1498,6 +1500,7 @@ map/help/sheet pages close on a click outside a target — see
          (mode :play)       ; :play, :map (full map view), :sheet or :help
          (full nil)         ; omniscient map (debug), map mode only
          (sheet-hero 0)     ; party index shown in :sheet mode
+         (sheet-top 0)      ; sheet scroll offset (u/d)
          (help-prior-mode :play) ; mode to return to when help closes
          (shopv nil)        ; SHOP-VIEW while inside a location
          (castv nil)        ; CAST-VIEW while the cast menu is open
@@ -1617,6 +1620,7 @@ map/help/sheet pages close on a click outside a target — see
                           ;; it holds a hero, else stay put
                           (when (nth i (game-party game))
                             (setf sheet-hero i
+                                  sheet-top 0
                                   mode :sheet)
                             (redraw)))
                         (leave-sheet ()
@@ -1712,7 +1716,8 @@ map/help/sheet pages close on a click outside a target — see
                              ;; (log tail below the rule), else the log.
                              (cond ((eq mode :sheet)
                                     (%amiga-draw-takeover
-                                     rp (hero-sheet-lines game sheet-hero)
+                                     rp (hero-sheet-lines game sheet-hero
+                                                          sheet-top)
                                      log l log-lines))
                                    ((game-location game)
                                     (%amiga-draw-takeover
@@ -1862,6 +1867,15 @@ map/help/sheet pages close on a click outside a target — see
                                                (<= 1 (digit-char-p c)
                                                    +party-limit+))
                                           (open-sheet (1- (digit-char-p c)))
+                                          nil)
+                                         ((characterp c)
+                                          ;; u/d scroll a long stat block
+                                          (let ((top (hero-sheet-scroll
+                                                      game sheet-hero
+                                                      sheet-top c)))
+                                            (when top
+                                              (setf sheet-top top)
+                                              (redraw)))
                                           nil)))
                                   (savem
                                    ;; save/load picker: the shared model

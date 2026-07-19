@@ -164,7 +164,8 @@ to strike); otherwise pays the sp, applies the effect, emits
 (defstruct (cast-view (:constructor %make-cast-view))
   hero                ; the chosen caster, or NIL while picking
   spell               ; the chosen spell name, or NIL while picking
-  in-combat)          ; T: committing fights one COMBAT-ROUND
+  in-combat           ; T: committing fights one COMBAT-ROUND
+  (top 0))            ; scroll offset into the spell list
 
 (defun make-cast-view (&key in-combat)
   (%make-cast-view :in-combat in-combat))
@@ -211,17 +212,16 @@ key (see MENU-NUMBERED)."
          (list (format nil "~A casts.  SP ~D/~D"
                        (hero-name hero) (hero-sp hero) (hero-max-sp hero))
                "")
-         (let ((i 0))
-           (mapcar (lambda (name)
-                     (incf i)
-                     (menu-numbered
-                      i (format nil "~D) ~A  ~D sp~:[  (no sp)~;~]"
-                                i (spell-title name)
-                                (spell-type-cost (find-spell-type name))
-                                (>= (hero-sp hero)
-                                    (spell-type-cost
-                                     (find-spell-type name))))))
-                   (spells-for-hero hero)))
+         (menu-scrolled-lines
+          (spells-for-hero hero) (cast-view-top view)
+          (lambda (i name)
+            (menu-numbered
+             i (format nil "~D) ~A  ~D sp~:[  (no sp)~;~]"
+                       i (spell-title name)
+                       (spell-type-cost (find-spell-type name))
+                       (>= (hero-sp hero)
+                           (spell-type-cost
+                            (find-spell-type name)))))))
          (list "" "[1-9] cast  [Esc] back")))
        (t                              ; a healing spell picks its target
         (append
@@ -255,21 +255,28 @@ level, else NIL."
              (t nil)))
       ;; picking the spell
       ((null spell)
-       (cond ((and digit (<= 1 digit (length (spells-for-hero hero))))
-              (let ((name (nth (1- digit) (spells-for-hero hero))))
-                (if (spell-castable-p game hero name)
-                    (if (eq (spell-target-kind name) :hero)
-                        (progn (setf (cast-view-spell view) name) nil)
-                        (progn (setf (cast-view-spell view) name)
-                               (%cast-commit game view nil)))
-                    (progn
-                      (say game "~A cannot cast ~A now."
-                           (hero-name hero) (spell-title name))
-                      nil))))
+       (cond (digit
+              (let ((name (menu-window-pick (spells-for-hero hero)
+                                            (cast-view-top view) digit)))
+                (when name
+                  (if (spell-castable-p game hero name)
+                      (if (eq (spell-target-kind name) :hero)
+                          (progn (setf (cast-view-spell view) name) nil)
+                          (progn (setf (cast-view-spell view) name)
+                                 (%cast-commit game view nil)))
+                      (progn
+                        (say game "~A cannot cast ~A now."
+                             (hero-name hero) (spell-title name))
+                        nil)))))
              ((eql char #\Escape)
-              (setf (cast-view-hero view) nil)
+              (setf (cast-view-hero view) nil
+                    (cast-view-top view) 0)
               nil)
-             (t nil)))
+             (t
+              (let ((top (menu-scroll (cast-view-top view) char
+                                      (length (spells-for-hero hero)))))
+                (when top (setf (cast-view-top view) top)))
+              nil)))
       ;; picking the heal target
       (t
        (cond ((and digit (<= 1 digit (length (game-party game))))

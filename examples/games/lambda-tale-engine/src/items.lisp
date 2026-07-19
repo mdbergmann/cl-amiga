@@ -220,7 +220,8 @@ returns T."
 
 (defstruct (use-view (:constructor %make-use-view))
   hero                ; the chosen user, or NIL while picking
-  item)               ; the chosen item name, or NIL while picking
+  item                ; the chosen item name, or NIL while picking
+  (top 0))            ; scroll offset into the item list
 
 (defun make-use-view ()
   (%make-use-view))
@@ -253,12 +254,11 @@ key (see MENU-NUMBERED)."
        ((null item)
         (append
          (list (format nil "~A uses." (hero-name hero)) "")
-         (let ((i 0))
-           (mapcar (lambda (name)
-                     (incf i)
-                     (menu-numbered
-                      i (format nil "~D) ~A" i (item-title name))))
-                   (usable-items hero)))
+         (menu-scrolled-lines
+          (usable-items hero) (use-view-top view)
+          (lambda (i name)
+            (menu-numbered
+             i (format nil "~D) ~A" i (item-title name)))))
          (list "" "[1-9] use  [Esc] back")))
        (t                              ; a healing item picks its target
         (append
@@ -292,16 +292,23 @@ else NIL."
              (t nil)))
       ;; picking the item
       ((null item)
-       (cond ((and digit (<= 1 digit (length (usable-items hero))))
-              (let ((name (nth (1- digit) (usable-items hero))))
-                (setf (use-view-item view) name)
-                (if (getf (item-type-use (find-item-type name)) :heal)
-                    nil                 ; a heal picks its target next
-                    (%use-commit game view nil))))
+       (cond (digit
+              (let ((name (menu-window-pick (usable-items hero)
+                                            (use-view-top view) digit)))
+                (when name
+                  (setf (use-view-item view) name)
+                  (if (getf (item-type-use (find-item-type name)) :heal)
+                      nil               ; a heal picks its target next
+                      (%use-commit game view nil)))))
              ((eql char #\Escape)
-              (setf (use-view-hero view) nil)
+              (setf (use-view-hero view) nil
+                    (use-view-top view) 0)
               nil)
-             (t nil)))
+             (t
+              (let ((top (menu-scroll (use-view-top view) char
+                                      (length (usable-items hero)))))
+                (when top (setf (use-view-top view) top)))
+              nil)))
       ;; picking the heal target
       (t
        (cond ((and digit (<= 1 digit (length (game-party game))))

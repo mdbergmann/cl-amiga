@@ -75,7 +75,10 @@ slot, `n` types a new save name, `Esc` cancels; saves live as
 `1`–`7` pick the shopping hero, `1`–`9` buy or sell, `s`/`b`
 flip between the buy and sell pages, `Esc` back/leave.  Inside the
 tavern: `1`–`7` buy that hero a drink (a singer's tunes come back),
-`d` down the trapdoor, `Esc` leave.  On the Amiga
+`d` down the trapdoor, `Esc` leave.  A menu list deeper than a page —
+Wolfgar's full stock, a packed sell page, a long character sheet —
+scrolls: `u`/`d` (or clicking the `^ more`/`v more` rows) move the
+window and the digits pick within it.  On the Amiga
 the Save/Load/Quit menu strip sits under the right mouse button
 (GadTools menus with the usual right-Amiga shortcuts), and everything
 above also works by left click: the view walks (left/right quarters

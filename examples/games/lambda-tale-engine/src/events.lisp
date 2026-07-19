@@ -153,6 +153,73 @@ it."
     (mapcar (lambda (row) (if key (menu-option key row) row))
             (wrap-text (menu-line-text line) width))))
 
+;;; Menu scrolling: a list longer than a page shows a window of it,
+;;; bracketed by "more" marker rows that carry the scroll keys (u up,
+;;; d down) as their pick keys — so the markers click like any option
+;;; row.  Digits pick within the visible window (row 1 is the window's
+;;; first row), which also keeps every item of a long list reachable
+;;; with the single-digit keys the models speak.  The window math is
+;;; pure and shared: the *-LINES renderers and the *-ACT key handlers
+;;; both go through MENU-WINDOW, so what is drawn and what a digit
+;;; picks can never disagree.
+
+(defconstant +menu-page-size+ 7
+  "Menu rows a scrolling list may occupy at once.  At most this many
+items show whole; a longer list scrolls, showing +MENU-PAGE-SIZE+ - 2
+items per window (two rows go to the more-above/more-below markers).
+Seven keeps every party-sized list (+PARTY-LIMIT+ rows) un-scrolled.")
+
+(defun menu-window (n top &optional (page +menu-page-size+))
+  "The visible window of an N-item list scrolled to offset TOP:
+values (START END ABOVE-P BELOW-P), END exclusive.  A list of at most
+PAGE items shows whole; a longer one shows PAGE - 2 items starting at
+TOP (clamped so the window never runs off either end), ABOVE-P/BELOW-P
+telling whether hidden items remain above/below."
+  (if (<= n page)
+      (values 0 n nil nil)
+      (let* ((visible (- page 2))
+             (start (max 0 (min top (- n visible))))
+             (end (+ start visible)))
+        (values start end (> start 0) (< end n)))))
+
+(defun menu-window-pick (items top digit &optional (page +menu-page-size+))
+  "The element of ITEMS that DIGIT picks in the window at TOP — digit 1
+is the window's first visible row — or NIL when the digit runs past
+the window.  Returns (values ITEM ABSOLUTE-INDEX)."
+  (multiple-value-bind (start end) (menu-window (length items) top page)
+    (let ((index (+ start (1- digit))))
+      (when (and (<= 1 digit) (< index end))
+        (values (nth index items) index)))))
+
+(defun menu-scroll (top char n &optional (page +menu-page-size+))
+  "The scroll offset after key CHAR on an N-item list at TOP: u/U a
+window up, d/D a window down (each clamped at the ends), or NIL when
+CHAR is no scroll key or the list does not scroll."
+  (when (and (characterp char) (> n page))
+    (let ((visible (- page 2)))
+      (multiple-value-bind (start) (menu-window n top page)
+        (case char
+          ((#\u #\U) (max 0 (- start visible)))
+          ((#\d #\D) (min (- n visible) (+ start visible)))
+          (t nil))))))
+
+(defun menu-scrolled-lines (items top render &optional (page +menu-page-size+))
+  "Menu rows for ITEMS scrolled to TOP: each visible item rendered by
+RENDER — called with the 1-based display row number and the item, and
+returning a menu line (see MENU-NUMBERED) — with clickable marker rows
+above/below the window when hidden items remain there.  The whole
+section occupies at most PAGE rows."
+  (multiple-value-bind (start end above below)
+      (menu-window (length items) top page)
+    (append
+     (when above (list (menu-option #\u "^ more above [u]")))
+     (let ((i 0))
+       (mapcar (lambda (item)
+                 (incf i)
+                 (funcall render i item))
+               (subseq items start end)))
+     (when below (list (menu-option #\d "v more below [d]"))))))
+
 (defun %menu-token-key (token)
   "The key a footer bracket token names: a single character stands for
 itself, \"Esc\" and \"Return\" for those keys; range tokens (\"1-9\")

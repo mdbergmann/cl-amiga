@@ -49,16 +49,25 @@
              :use '(:light t :duration 60) :image "gfx/fx-flame.iff")
 (define-item 'healing-potion :price 25 :consumed t
              :use '(:heal "2d4"))
+(define-item 'lantern       :price 45
+             :use '(:light t :duration 240) :image "gfx/fx-flame.iff")
+(define-item 'dagger        :kind :weapon :price 8  :damage "1d4")
 (define-item 'short-sword   :kind :weapon :price 20 :damage "1d6+1")
+(define-item 'mace          :kind :weapon :price 30 :damage "1d6+2"
+             :classes '(:warrior :paladin))
 (define-item 'war-axe       :kind :weapon :price 40 :damage "1d8+1"
              :classes '(:warrior :paladin))
 (define-item 'broadsword    :kind :weapon :price 80 :damage "2d4+2"
              :classes '(:warrior :paladin :rogue))
 (define-item 'leather-armor :kind :armor :price 25 :ac 2)
+(define-item 'splint-mail   :kind :armor :price 60 :ac 3
+             :classes '(:warrior :paladin))
 (define-item 'chain-mail    :kind :armor :price 90 :ac 4
              :classes '(:warrior :paladin))
 (define-item 'buckler       :kind :shield :price 30 :ac 1
              :classes '(:warrior :paladin :rogue :bard))
+(define-item 'tower-shield  :kind :shield :price 60 :ac 2
+             :classes '(:warrior :paladin))
 
 ;;; Monsters
 

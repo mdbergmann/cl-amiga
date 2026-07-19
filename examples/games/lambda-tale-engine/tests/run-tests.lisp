@@ -791,6 +791,85 @@ messages so far (oldest first)."
 (check "spans: [n] new name parses" '((17 29 #\n))
        (menu-key-spans "[1-9] overwrite  [n] new name"))
 
+;; Menu scrolling: a list longer than +MENU-PAGE-SIZE+ (7) windows to
+;; 5 rows plus the more-above/more-below markers; the same MENU-WINDOW
+;; math drives the renderers and the digit picks, so they cannot
+;; disagree.
+(multiple-value-bind (start end above below) (menu-window 7 0)
+  (check "a page-sized list shows whole" '(0 7) (list start end))
+  (check "a page-sized list has no markers" '(nil nil)
+         (list above below)))
+(multiple-value-bind (start end above below) (menu-window 3 9)
+  (check "a short list ignores the offset" '(0 3) (list start end))
+  (check "a short list has no markers" '(nil nil) (list above below)))
+(multiple-value-bind (start end above below) (menu-window 12 0)
+  (check "a deep list windows to page - 2 rows" '(0 5) (list start end))
+  (check "only the below marker at the top" '(nil t)
+         (list above (and below t))))
+(multiple-value-bind (start end above below) (menu-window 12 3)
+  (check "mid-list window" '(3 8) (list start end))
+  (check "both markers mid-list" '(t t)
+         (list (and above t) (and below t))))
+(multiple-value-bind (start end above below) (menu-window 12 99)
+  (check "the offset clamps to the tail" '(7 12) (list start end))
+  (check "only the above marker at the bottom" '(t nil)
+         (list (and above t) below)))
+(multiple-value-bind (start end) (menu-window 12 -4)
+  (check "a negative offset clamps to the head" '(0 5) (list start end)))
+(multiple-value-bind (start end) (menu-window 10 0 8)
+  (check "the page size is a parameter" '(0 6) (list start end)))
+;; digits pick within the visible window
+(let ((items '(a b c d e f g h i j k l)))
+  (check "digit 1 picks the window's first row" 'f
+         (menu-window-pick items 5 1))
+  (check "digit 5 picks the window's last row" 'j
+         (menu-window-pick items 5 5))
+  (check "a digit past the window picks nothing" nil
+         (menu-window-pick items 5 6))
+  (check "the pick returns the absolute index" 7
+         (nth-value 1 (menu-window-pick items 5 3)))
+  (check "an unscrolled deep list picks from the head" 'e
+         (menu-window-pick items 0 5)))
+(let ((items '(a b)))
+  (check "a short list picks directly" 'b (menu-window-pick items 0 2))
+  (check "a digit past a short list picks nothing" nil
+         (menu-window-pick items 0 3)))
+;; u/d move the window; other keys and short lists say NIL
+(check "d scrolls a window down" 5 (menu-scroll 0 #\d 12))
+(check "d clamps at the tail" 7 (menu-scroll 5 #\d 12))
+(check "d at the tail stays" 7 (menu-scroll 7 #\d 12))
+(check "u scrolls a window up" 2 (menu-scroll 7 #\u 12))
+(check "u clamps at the head" 0 (menu-scroll 2 #\u 12))
+(check "U is u" 0 (menu-scroll 0 #\U 12))
+(check "a non-scroll key is not a scroll" nil (menu-scroll 0 #\x 12))
+(check "a non-character is not a scroll" nil (menu-scroll 0 :esc 12))
+(check "a short list never scrolls" nil (menu-scroll 0 #\d 7))
+;; the rendered window: marker rows carry the scroll keys
+(let ((items '("A" "B" "C" "D" "E" "F" "G" "H" "I")))
+  (let ((lines (menu-scrolled-lines
+                items 0
+                (lambda (i x) (menu-numbered i (format nil "~D) ~A" i x))))))
+    (check "top window: rows then the below marker"
+           '("1) A" "2) B" "3) C" "4) D" "5) E" "v more below [d]")
+           (menu-texts lines))
+    (check "the below marker carries the scroll key" #\d
+           (menu-line-key (first (last lines))))
+    (check "option rows renumber within the window" #\1
+           (menu-line-key (first lines))))
+  (let ((lines (menu-scrolled-lines
+                items 4
+                (lambda (i x) (menu-numbered i (format nil "~D) ~A" i x))))))
+    (check "tail window: the above marker then the tail rows"
+           '("^ more above [u]" "1) E" "2) F" "3) G" "4) H" "5) I")
+           (menu-texts lines))
+    (check "the above marker carries the scroll key" #\u
+           (menu-line-key (first lines)))))
+(check "a short list renders without markers" '("1) A" "2) B")
+       (menu-texts (menu-scrolled-lines
+                    '("A" "B") 0
+                    (lambda (i x)
+                      (menu-numbered i (format nil "~D) ~A" i x))))))
+
 ;; Compass-rose geometry (the UI's facing indicator).
 (destructuring-bind (needle letters) (compass-points +north+ 100 50 20)
   (check "compass needle points north" '(100 50 100 38) needle)
@@ -2686,6 +2765,153 @@ messages so far (oldest first)."
   (check "a location without :IMAGE has no picture" nil
          (location-image-path g))
   (leave-location g))
+
+;;; ---------------------------------------------------------------------
+;;; Menu scrolling on the interaction models: a stock/pack/spell list
+;;; deeper than a page windows with u/d and digits pick within the
+;;; visible window — the front-ends inherit all of it from the models.
+
+;; a nine-item stock: deeper than the page (7), windows to 5 rows
+(dolist (spec '((tscr-1 1) (tscr-2 2) (tscr-3 3) (tscr-4 4) (tscr-5 5)
+                (tscr-6 6) (tscr-7 7) (tscr-8 8) (tscr-9 9)))
+  (define-item (first spec) :price (second spec)))
+(let* ((h (%combat-hero))
+       (g (new-game (parse-map *art* :name "test") :party (list h)))
+       (view (make-shop-view)))
+  (setf (hero-gold h) 100)
+  (enter-location g '("The Deep Shoppe" :shop
+                      :stock (tscr-1 tscr-2 tscr-3 tscr-4 tscr-5
+                              tscr-6 tscr-7 tscr-8 tscr-9)))
+  (shop-act g view #\1)                 ; the hero shops
+  (let ((texts (menu-texts (shop-lines g view))))
+    (check-true "deep stock: the first window starts at the head"
+                (find-if (lambda (s) (search "1) Tscr 1" s)) texts))
+    (check-true "deep stock: the below marker shows"
+                (member "v more below [d]" texts :test #'equal))
+    (check "deep stock: no above marker at the head" nil
+           (member "^ more above [u]" texts :test #'equal)))
+  (check "d scrolls the stock" nil (shop-act g view #\d))
+  (check "the view holds the clamped offset" 4 (shop-view-top view))
+  (let ((texts (menu-texts (shop-lines g view))))
+    (check-true "scrolled stock: row 1 is the sixth item"
+                (find-if (lambda (s) (search "1) Tscr 5" s)) texts))
+    (check-true "scrolled stock: the above marker shows"
+                (member "^ more above [u]" texts :test #'equal))
+    (check "scrolled stock: no below marker at the tail" nil
+           (member "v more below [d]" texts :test #'equal)))
+  (shop-act g view #\2)                 ; buys the sixth item, tscr-6
+  (check "a digit buys within the window" '(tscr-6) (hero-items h))
+  (check "the windowed buy paid the right price" 94 (hero-gold h))
+  (check "a digit past the window buys nothing" nil
+         (progn (shop-act g view #\7) (rest (hero-items h))))
+  (check "u scrolls back to the head" nil (shop-act g view #\u))
+  (check "the offset is back at the head" 0 (shop-view-top view))
+  ;; the sell page scrolls the pack the same way
+  (dotimes (i 7) (give-item g h 'tscr-1))
+  (shop-act g view #\s)
+  (check "the page flip resets the offset" 0 (shop-view-top view))
+  (let ((texts (menu-texts (shop-lines g view))))
+    (check-true "a full pack scrolls on the sell page"
+                (member "v more below [d]" texts :test #'equal)))
+  (shop-act g view #\d)
+  (check "the pack window clamps to its tail" 3 (shop-view-top view))
+  (shop-act g view #\1)                 ; sells pack item 4 (tscr-1)
+  (check "a digit sells within the window" 7 (length (hero-items h)))
+  (check "escape resets the scroll offset" 0
+         (progn (shop-act g view #\Escape) (shop-view-top view)))
+  (leave-location g))
+
+;; the use menu windows a full pack of usable items
+(let* ((m (parse-map *art* :name "test"))
+       (h (%combat-hero))
+       (g (new-game m :party (list h)))
+       (v (make-use-view)))
+  (dotimes (i 8) (give-item g h 't-lantern))
+  (use-act g v #\1)                     ; the hero uses
+  (let ((texts (menu-texts (use-lines g v))))
+    (check-true "a full pack scrolls on the use menu"
+                (member "v more below [d]" texts :test #'equal)))
+  (check "d scrolls the use list" 3
+         (progn (use-act g v #\d) (use-view-top v)))
+  (check "a windowed digit resolves the use" :done (use-act g v #\1))
+  (check-true "the scrolled use landed" (light-active-p g)))
+
+;; the cast menu windows a deep spell book
+(dolist (name '(tscr-spell-1 tscr-spell-2 tscr-spell-3 tscr-spell-4))
+  (define-spell name :cost 1 :level 1 :classes '(:t-mage) :heal "1d4"))
+(let* ((m (parse-map *art* :name "test"))
+       (h (with-rng () (make-hero "Mage" :t-mage)))
+       (g (new-game m :party (list h)))
+       (v (make-cast-view))
+       (book (spells-for-hero h)))
+  (check-true "the test book is deeper than a page"
+              (> (length book) +menu-page-size+))
+  (cast-act g v #\1)                    ; the mage casts
+  (let ((texts (menu-texts (cast-lines g v))))
+    (check-true "a deep book scrolls on the cast menu"
+                (member "v more below [d]" texts :test #'equal)))
+  (cast-act g v #\d)
+  (check "the cast window scrolled" (- (length book) 5)
+         (cast-view-top v))
+  (let ((expected (nth (cast-view-top v) book)))
+    (cast-act g v #\1)
+    (check "a windowed digit picks the right spell" expected
+           (cast-view-spell v))))
+
+;; the save picker windows a slot list past the page
+(let* ((m (parse-map *art* :name "test"))
+       (g (new-game m))
+       (v (%make-save-menu
+           :mode :load
+           :slots '("s1" "s2" "s3" "s4" "s5" "s6" "s7" "s8" "s9"))))
+  (let ((texts (menu-texts (save-menu-lines g v))))
+    (check-true "nine slots scroll in the picker"
+                (member "v more below [d]" texts :test #'equal)))
+  (check "d scrolls the slots" nil (save-menu-act g v #\d))
+  (check "the slot window scrolled" 4 (save-menu-top v))
+  (check "a windowed digit loads the right slot"
+         (list :load (slot-path "s6"))
+         (save-menu-act g v #\2)))
+
+;; the character sheet windows a long stat block (a full pack lists
+;; one row per item) and scrolls through HERO-SHEET-SCROLL
+(let* ((m (parse-map *art* :name "test"))
+       (h (%combat-hero))
+       (g (new-game m :party (list h))))
+  (check "an empty pack still says so" "Pack: nothing"
+         (first (last (butlast (butlast (hero-sheet-lines g 0))))))
+  (check "a short sheet keeps the plain hints"
+         "[1-7] view another  [Esc] back"
+         (first (last (hero-sheet-lines g 0))))
+  (check "a short sheet does not scroll" nil
+         (hero-sheet-scroll g 0 0 #\d))
+  (give-item g h 't-sword)
+  (equip-item g h 't-sword)
+  (dotimes (i 7) (give-item g h 't-torch))
+  (let ((texts (menu-texts (hero-sheet-lines g 0))))
+    (check-true "a full pack scrolls the sheet"
+                (member "v more below [d]" texts :test #'equal))
+    (check-true "the sheet hints say so"
+                (member "[1-7] view another  [u/d] scroll  [Esc] back"
+                        texts :test #'equal)))
+  (let ((top (hero-sheet-scroll g 0 0 #\d)))
+    (check "the sheet scrolls by its window" 6 top)
+    (let ((texts (menu-texts (hero-sheet-lines g 0 top))))
+      (check-true "the scrolled sheet reaches the pack rows"
+                  (member "  T Sword*" texts :test #'equal))
+      (check-true "the scrolled sheet shows both markers"
+                  (and (member "^ more above [u]" texts :test #'equal)
+                       (member "v more below [d]" texts :test #'equal))))
+    (setf top (hero-sheet-scroll g 0 top #\d))
+    (check "the sheet clamps at its tail" 9 top)
+    (check-true "the tail window shows the last pack row"
+                (member "  T Torch"
+                        (menu-texts (hero-sheet-lines g 0 top))
+                        :test #'equal))
+    (check "u returns toward the head" 3
+           (hero-sheet-scroll g 0 top #\u)))
+  (check "an empty roster slot does not scroll" nil
+         (hero-sheet-scroll g 4 0 #\d)))
 
 ;;; ---------------------------------------------------------------------
 ;;; Save games: the whole world round-trips — every visited zone's
