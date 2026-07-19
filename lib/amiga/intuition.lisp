@@ -25,6 +25,10 @@
    "GET-MSG" "REPLY-MSG" "WAIT-PORT"
    "MSG-CLASS" "MSG-CODE" "MSG-MOUSE-X" "MSG-MOUSE-Y"
    "EVENT-LOOP" "*EVENT-LOOP-MAX-WAITS*"
+   ;; Mouse button codes (IDCMP_MOUSEBUTTONS msg-code values)
+   "+SELECTDOWN+" "+SELECTUP+" "+MENUDOWN+" "+MENUUP+"
+   ;; Mouse pointer
+   "SET-POINTER" "CLEAR-POINTER"
    ;; IDCMP class constants
    "+IDCMP-CLOSEWINDOW+" "+IDCMP-GADGETUP+" "+IDCMP-GADGETDOWN+"
    "+IDCMP-MOUSEBUTTONS+" "+IDCMP-MOUSEMOVE+" "+IDCMP-RAWKEY+"
@@ -73,6 +77,8 @@
 (defconstant +lvo-lock-pub-screen+     -510)
 (defconstant +lvo-unlock-pub-screen+   -516)
 (defconstant +lvo-show-title+          -282)
+(defconstant +lvo-set-pointer+         -270)
+(defconstant +lvo-clear-pointer+        -60)
 (defconstant +lvo-dos-delay+           -198)  ; dos.library Delay(ticks), d1 = ticks
 
 ;;; Exec LVOs for message handling
@@ -99,6 +105,15 @@
 (defconstant +idcmp-inactivewindow+ #x00080000)
 (defconstant +idcmp-vanillakey+     #x00200000)
 (defconstant +idcmp-intuiticks+     #x00400000)
+
+;;; IDCMP_MOUSEBUTTONS message codes (devices/inputevent.h IECODE_*):
+;;; left button = SELECTDOWN, released = SELECTUP (the UP_PREFIX bit);
+;;; the right button only arrives with WFLG_RMBTRAP — menus eat it
+;;; otherwise.
+(defconstant +selectdown+ #x68)
+(defconstant +selectup+   #xE8)
+(defconstant +menudown+   #x69)
+(defconstant +menuup+     #xE9)
 
 ;;; ================================================================
 ;;; Window flag constants
@@ -293,6 +308,26 @@ backdrop windows, NIL behind them (a full-screen backdrop window then
 covers it completely — how a game hides the OS bar)."
   (amiga:call-library *intuition-base* +lvo-show-title+
                       (list :a0 screen :d0 (if show-it 1 0)))
+  t)
+
+(defun set-pointer (window sprite-data height width x-offset y-offset)
+  "SetPointer: show a custom mouse pointer on WINDOW while it is
+active.  SPRITE-DATA is chip RAM in hardware sprite layout: two
+position-control words (0), then two data words per line (low plane
+first — pixel value 1/2/3 shows screen color 17/18/19), then two
+trailing words (0).  HEIGHT is the line count, WIDTH at most 16;
+X-OFFSET/Y-OFFSET place the hot spot (generally negative).  The
+pointer stays until CLEAR-POINTER; SPRITE-DATA must outlive it."
+  (amiga:call-library *intuition-base* +lvo-set-pointer+
+                      (list :a0 window :a1 sprite-data
+                            :d0 height :d1 width
+                            :d2 x-offset :d3 y-offset))
+  t)
+
+(defun clear-pointer (window)
+  "ClearPointer: restore WINDOW's default mouse pointer."
+  (amiga:call-library *intuition-base* +lvo-clear-pointer+
+                      (list :a0 window))
   t)
 
 (defmacro with-screen ((var &rest args) &body body)

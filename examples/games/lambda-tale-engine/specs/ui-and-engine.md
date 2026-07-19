@@ -64,6 +64,16 @@ campaign data, never as code that knows about "the" town.
   into the same model and draw the same text lines, so the whole flow
   is testable on the host.  Keys: `1`-`7` pick the shopping hero,
   `1`-`9` buy/sell, `s`/`b` flip the page, `Esc` back/leave.
+- Menu lines are **structured** (2026-07-19): a pickable option row is
+  `(TEXT . KEY)` (`menu-option`/`menu-numbered`, accessors
+  `menu-line-text`/`menu-line-key` in events.lisp), plain lines stay
+  strings, and footer hints keep the bracket convention (`[s] sell
+  [Esc] back`) located by `menu-key-spans`.  A pointing front-end maps
+  clicks on either straight to the model's keys — the Amiga UI's
+  hotspot list (`*hotspots*` in amiga-ui.lisp) is rebuilt on every
+  redraw from exactly what was drawn, so the whole game plays by
+  mouse: walk zones on the view, roster rows, menu rows, footer
+  hints, and click-anywhere-to-close on the map/help/sheet pages.
 
 ## Map size
 

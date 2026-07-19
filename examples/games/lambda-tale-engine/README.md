@@ -125,6 +125,18 @@ menus with the usual right-Amiga shortcuts).  For development there is
 also a window view on the Workbench screen (no custom palette):
 `(tale:play-amiga "mygame/village.map" :display :window)`.
 
+The whole game also **plays by mouse**: clicking the first-person view
+walks (left/right quarters turn, the middle steps forward, its bottom
+band steps back), clicking a roster row opens that character sheet,
+clicking a menu's numbered rows or its `[s] sell`-style footer hints
+acts as those keys, and the map/help/sheet pages close on a click
+elsewhere.  Menu option rows carry their pick key (`menu-option` /
+`menu-numbered` in `src/events.lisp`), so front-ends map clicks to
+keys without parsing the text; a busy hourglass pointer shows during
+tile-pack and save-game loads.  See the hotspot tests in
+`tests/run-tests.lisp` (`amiga-ui autoplay drives the game by mouse
+clicks`) for the full contract.
+
 The first-person view never looks around corners (Bard's Tale rules):
 `compute-view` walks the cells straight ahead, stopping at walls, doors
 and the view-depth cap, and `view-display-list` flattens the result into

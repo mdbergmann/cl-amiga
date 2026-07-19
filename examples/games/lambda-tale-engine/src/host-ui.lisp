@@ -125,21 +125,23 @@ engine has no default world; the game names its starting map."
                          (dungeon-map-height (game-map game))
                          full)))
              (draw-play-page ()
+               ;; menu lines may carry their pick key (see MENU-OPTION);
+               ;; the terminal draws the text only
                (cond (menu
                       (dolist (line (save-menu-lines game menu))
-                        (format t "~A~%" line)))
+                        (format t "~A~%" (menu-line-text line))))
                      (cast
                       (dolist (line (cast-lines game cast))
-                        (format t "~A~%" line)))
+                        (format t "~A~%" (menu-line-text line))))
                      (use
                       (dolist (line (use-lines game use))
-                        (format t "~A~%" line)))
+                        (format t "~A~%" (menu-line-text line))))
                      (sing
                       (dolist (line (sing-lines game sing))
-                        (format t "~A~%" line)))
+                        (format t "~A~%" (menu-line-text line))))
                      ((game-location game)
                       (dolist (line (location-lines game shop))
-                        (format t "~A~%" line)))
+                        (format t "~A~%" (menu-line-text line))))
                      (t
                       (format t "~A~%"
                               (beside (render-first-person game)

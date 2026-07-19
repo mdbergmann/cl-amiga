@@ -25,5 +25,6 @@
         "        C cast  P play  F flee"
         "Shop/menus: 1-9 pick  Esc back"
         "Map view: F full map (debug)"
+        "Mouse: click to walk and pick"
         ""
         "[H]/[Esc] back"))

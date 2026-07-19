@@ -81,13 +81,17 @@ Conveniences over `AMIGA`/`FFI` for the AmigaOS calling conventions.
 - **Public screens:** `lock-pub-screen`, `unlock-pub-screen`, `with-pub-screen`.
 - **IDCMP events:** `get-msg`, `reply-msg`, `wait-port`, `msg-class`, `msg-code`,
   `msg-mouse-x`, `msg-mouse-y`, `event-loop`.
+- **Mouse pointer:** `set-pointer` (custom sprite pointer, e.g. a busy
+  hourglass while loading), `clear-pointer`.
 - **Menus / gadgets on a window:** `set-menu-strip`, `clear-menu-strip`,
   `add-gadget-list`, `refresh-gadget-list`.
 - **Library base:** `*intuition-base*`.
 - **Constants:** IDCMP class flags `+idcmp-closewindow+`, `+idcmp-gadgetup+`,
   `+idcmp-gadgetdown+`, `+idcmp-mousebuttons+`, `+idcmp-mousemove+`,
   `+idcmp-rawkey+`, `+idcmp-menupick+`, `+idcmp-refreshwindow+`,
-  `+idcmp-newsize+`, `+idcmp-vanillakey+`; window flags `+wflg-*+`
+  `+idcmp-newsize+`, `+idcmp-vanillakey+`; mouse button codes
+  `+selectdown+`, `+selectup+`, `+menudown+`, `+menuup+`
+  (`+idcmp-mousebuttons+` `msg-code` values); window flags `+wflg-*+`
   (`+wflg-closegadget+`, `+wflg-dragbar+`, `+wflg-depthgadget+`,
   `+wflg-sizegadget+`, `+wflg-activate+`, `+wflg-smart-refresh+`,
   `+wflg-simple-refresh+`, `+wflg-backdrop+`, `+wflg-borderless+`,

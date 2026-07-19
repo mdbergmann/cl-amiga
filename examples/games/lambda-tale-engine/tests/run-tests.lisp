@@ -730,6 +730,47 @@ messages so far (oldest first)."
 (check "wrap-message: narrow width floor"
        '("> a" "  b") (wrap-message "ab" 0))
 
+;; Structured menu lines: an option line carries the key that picks it
+;; (MENU-OPTION / MENU-NUMBERED), plain lines stay strings, and the
+;; footer hints' bracket tokens locate as clickable spans
+;; (MENU-KEY-SPANS) — the pointing front-end turns clicks on either
+;; into key presses.
+(check "menu-option pairs text with its key" '("3) row" . #\3)
+       (menu-option #\3 "3) row"))
+(check "menu-line-text unwraps an option line" "3) row"
+       (menu-line-text (menu-option #\3 "3) row")))
+(check "menu-line-text passes a plain line through" "plain"
+       (menu-line-text "plain"))
+(check "menu-line-key reads the option key" #\7
+       (menu-line-key (menu-option #\7 "x")))
+(check "menu-line-key of a plain line is NIL" nil (menu-line-key "x"))
+(check "menu-numbered attaches the digit" '("2) b" . #\2)
+       (menu-numbered 2 "2) b"))
+(check "menu-numbered past nine stays plain" "10) c"
+       (menu-numbered 10 "10) c"))
+(check "menu-texts strips a mixed list" '("a" "1) b" "c")
+       (menu-texts (list "a" (menu-numbered 1 "1) b") "c")))
+(check "wrap-menu-line carries the key onto every row"
+       '(("1) one two" . #\1) ("three" . #\1))
+       (wrap-menu-line (menu-option #\1 "1) one two three") 10))
+(check "wrap-menu-line leaves plain rows plain"
+       '("one two" "three") (wrap-menu-line "one two three" 7))
+;; menu-key-spans: the "[s] sell  [Esc] back" footer convention
+(check "spans: single-char and Esc tokens, ranges skipped"
+       '((11 19 #\s) (21 31 #\Escape))
+       (menu-key-spans "[1-9] buy  [s] sell  [Esc] back"))
+(check "spans: a span runs over its words to the line's end"
+       '((0 21 #\d))
+       (menu-key-spans "[d] down the trapdoor"))
+(check "spans: Return commits, Esc cancels"
+       '((0 13 #\Return) (15 27 #\Escape))
+       (menu-key-spans "[Return] save  [Esc] cancel"))
+(check "spans: no brackets, no spans" '() (menu-key-spans "plain text"))
+(check "spans: an unmatched bracket yields nothing" '()
+       (menu-key-spans "an [unclosed token"))
+(check "spans: [n] new name parses" '((17 29 #\n))
+       (menu-key-spans "[1-9] overwrite  [n] new name"))
+
 ;; Compass-rose geometry (the UI's facing indicator).
 (destructuring-bind (needle letters) (compass-points +north+ 100 50 20)
   (check "compass needle points north" '(100 50 100 38) needle)
@@ -1621,7 +1662,12 @@ messages so far (oldest first)."
     (check "the bard picked" bard (sing-view-hero v))
     (check-true "the song page lists the march"
                 (find-if (lambda (s) (search "test march" s))
-                         (sing-lines g v)))
+                         (menu-texts (sing-lines g v))))
+    (check "the song row carries its pick key" #\1
+           (menu-line-key
+            (find-if (lambda (line)
+                       (search "test march" (menu-line-text line)))
+                     (sing-lines g v))))
     (sing-act g v #\Escape)
     (check "Esc backs out to the singer pick" nil (sing-view-hero v))
     (sing-act g v #\2)
@@ -1643,10 +1689,16 @@ messages so far (oldest first)."
   (check "the price is the location's" 5
          (tavern-price (game-location g)))
   (check-true "the menu shows the price"
-              (find-if (lambda (s) (search "5 gold" s)) (tavern-lines g)))
+              (find-if (lambda (s) (search "5 gold" s))
+                       (menu-texts (tavern-lines g))))
   (check-true "no trapdoor line without :down"
               (not (find-if (lambda (s) (search "trapdoor" s))
-                            (tavern-lines g))))
+                            (menu-texts (tavern-lines g)))))
+  (check "a drink row carries its hero's digit" #\2
+         (menu-line-key
+          (find-if (lambda (line)
+                     (search "2) " (menu-line-text line)))
+                   (tavern-lines g))))
   (check "a poor hero is refused" nil (buy-drink g bard))
   (check-true "cannot-afford message"
               (find-if (lambda (s) (search "cannot afford" s))
@@ -1681,7 +1733,7 @@ messages so far (oldest first)."
          (tavern-price (game-location g)))
   (check-true "the trapdoor is offered"
               (find-if (lambda (s) (search "down the trapdoor" s))
-                       (tavern-lines g)))
+                       (menu-texts (tavern-lines g))))
   (check "the trapdoor drops through" :left (tavern-act g #\d))
   (check "the trapdoor landed below" "the snug" (map-title (game-map g)))
   (check "the location is left behind" nil (game-location g)))
@@ -1740,9 +1792,14 @@ messages so far (oldest first)."
        (g (new-game m :party (list grunt mage)))
        (view (make-cast-view)))
   (check-true "caster page lists only casters"
-              (let ((lines (cast-lines g view)))
+              (let ((lines (menu-texts (cast-lines g view))))
                 (and (find-if (lambda (s) (search "2) Zzgo" s)) lines)
                      (not (find-if (lambda (s) (search "Alva" s)) lines)))))
+  (check "the caster row's key is its party slot" #\2
+         (menu-line-key
+          (find-if (lambda (line)
+                     (search "Zzgo" (menu-line-text line)))
+                   (cast-lines g view))))
   (check "a non-caster digit is ignored" nil
          (progn (cast-act g view #\1) (cast-view-hero view)))
   (cast-act g view #\2)
@@ -1750,7 +1807,7 @@ messages so far (oldest first)."
          (hero-name (cast-view-hero view)))
   (check-true "spell page shows the book"
               (find-if (lambda (s) (search "test bolt" s))
-                       (cast-lines g view)))
+                       (menu-texts (cast-lines g view))))
   ;; a damage spell out of combat: refused in place, menu stays open
   (check "uncastable pick refuses and stays" nil (cast-act g view #\1))
   (check-true "menu still open on the spell page"
@@ -1760,7 +1817,7 @@ messages so far (oldest first)."
   (cast-act g view #\2)                 ; test-mend -> target page
   (check-true "heal pick opens the target page"
               (find-if (lambda (s) (search "on whom?" s))
-                       (cast-lines g view)))
+                       (menu-texts (cast-lines g view))))
   (check "target digit commits the cast" :done
          (with-rng (7) (cast-act g view #\1)))
   (check "menu cast healed the grunt" 8 (hero-hp grunt))
@@ -1977,7 +2034,7 @@ messages so far (oldest first)."
     (check "hero 1 picked" a (use-view-hero v))
     (check-true "the item page lists the torch"
                 (find-if (lambda (s) (search "T Fx Torch" s))
-                         (use-lines g v)))
+                         (menu-texts (use-lines g v))))
     (use-act g v #\Escape)
     (check "Esc backs out to the user pick" nil (use-view-hero v))
     (use-act g v #\1)
@@ -1990,7 +2047,7 @@ messages so far (oldest first)."
     (check "the potion wants a target first" nil (use-act g v #\1))
     (check-true "the target page asks on whom"
                 (find-if (lambda (s) (search "on whom?" s))
-                         (use-lines g v)))
+                         (menu-texts (use-lines g v))))
     (damage-hero g b 4)
     (let ((before (hero-hp b)))
       (check "picking the target commits" :done
@@ -2506,19 +2563,29 @@ messages so far (oldest first)."
               (search "The Test Shoppe" (first (shop-lines g view))))
   (check-true "pick page asks who shops"
               (find-if (lambda (s) (search "Who is shopping?" s))
-                       (shop-lines g view)))
+                       (menu-texts (shop-lines g view))))
+  (check "the hero row carries its pick key" #\1
+         (menu-line-key
+          (find-if (lambda (line)
+                     (search "1) " (menu-line-text line)))
+                   (shop-lines g view))))
   (check "digit picks the hero" nil (shop-act g view #\1))
   (check-true "hero selected" (eq h (shop-view-hero view)))
   (check-true "buy page lists the stock priced"
               (find-if (lambda (s) (search "1) T Sword  10 gp" s))
-                       (shop-lines g view)))
+                       (menu-texts (shop-lines g view))))
+  (check "the stock row carries its pick key" #\1
+         (menu-line-key
+          (find-if (lambda (line)
+                     (search "T Sword" (menu-line-text line)))
+                   (shop-lines g view))))
   (shop-act g view #\1)                 ; buy the sword
   (check "shop-act buys" 20 (hero-gold h))
   (check "s flips to the sell page" nil (shop-act g view #\s))
   (check "sell mode" :sell (shop-view-mode view))
   (check-true "sell page lists the pack with sell prices"
               (find-if (lambda (s) (search "1) T Sword*  5 gp" s))
-                       (shop-lines g view)))
+                       (menu-texts (shop-lines g view))))
   (shop-act g view #\1)                 ; sell it again
   (check "shop-act sells" 25 (hero-gold h))
   (check "escape backs out to the pick page" nil
@@ -2653,7 +2720,12 @@ messages so far (oldest first)."
       ;; the fresh menu lists the existing slot; a digit overwrites it
       (check-true "existing slot listed"
                   (find-if (lambda (s) (search "1) alpha" s))
-                           (save-menu-lines g view)))
+                           (menu-texts (save-menu-lines g view))))
+      (check "the slot row carries its pick key" #\1
+             (menu-line-key
+              (find-if (lambda (line)
+                         (search "1) alpha" (menu-line-text line)))
+                       (save-menu-lines g view))))
       (check "digit picks the overwrite slot"
              '(:save "tests/tmp-saves/alpha.sav")
              (save-menu-act g view #\1))
@@ -2669,7 +2741,7 @@ messages so far (oldest first)."
     (let ((view (make-save-menu :load)))
       (check-true "load menu lists the slot"
                   (find-if (lambda (s) (search "1) alpha" s))
-                           (save-menu-lines g view)))
+                           (menu-texts (save-menu-lines g view))))
       (let ((r (save-menu-act g view #\1)))
         (check "digit picks the load slot"
                '(:load "tests/tmp-saves/alpha.sav") r)
@@ -2716,14 +2788,14 @@ messages so far (oldest first)."
     (check "no name entry opens at the cap" nil (save-menu-entry view))
     (check-true "the cap message is shown"
                 (find-if (lambda (s) (search "Slot limit reached" s))
-                         (save-menu-lines g view)))
+                         (menu-texts (save-menu-lines g view))))
     ;; the cap message clears once a slot is picked
     (check "picking a slot still works at the cap"
            '(:save "tests/tmp-saves/s1.sav")
            (save-menu-act g view #\1))
     (check-true "the cap message is gone after a pick"
                 (notany (lambda (s) (search "Slot limit reached" s))
-                        (save-menu-lines g view)))))
+                        (menu-texts (save-menu-lines g view))))))
 
 (delete-file "tests/tmp-town.map")
 (delete-file "tests/tmp-dung.map")
@@ -3256,7 +3328,7 @@ brick grid" d side)
                   :idcmp amiga.intuition:+idcmp-closewindow+)
            (let* ((rp (amiga.intuition:window-rastport win))
                   (l (%amiga-layout win rp)))
-             (%amiga-draw-page rp (location-lines g view) l)   ; pick-hero page
+             (%amiga-draw-page rp (location-lines g view) l)   ; pick-hero
              (shop-act g view #\1)
              (%amiga-draw-page rp (location-lines g view) l)   ; buy page
              (shop-act g view #\s)
@@ -3265,6 +3337,47 @@ brick grid" d side)
              ;; the message-area takeover, uncached and cached: the
              ;; location menu and the character sheet
              (%amiga-draw-takeover rp (location-lines g view) log l)
+             ;; roster rows click as their digits when enabled; the
+             ;; empty row below the party registers nothing
+             (let ((*hotspots* '()))
+               (%amiga-party rp g l t)
+               (check "roster: the hero row clicks as its digit" #\1
+                      (%hotspot-at (+ (ui-layout-bx l) 3)
+                                   (+ (ui-layout-party-y l) 2)))
+               (check "roster: an empty row is not a target" nil
+                      (%hotspot-at (+ (ui-layout-bx l) 3)
+                                   (+ (ui-layout-party-y l)
+                                      (ui-layout-lh l) 2))))
+             (let ((*hotspots* '()))
+               (%amiga-party rp g l)
+               (check "roster: not clickable unless asked" nil
+                      (%hotspot-at (+ (ui-layout-bx l) 3)
+                                   (+ (ui-layout-party-y l) 2))))
+             ;; the click-to-walk zones on the first-person view
+             (let ((*hotspots* '()))
+               (%register-move-zones l)
+               (let* ((bx (ui-layout-bx l)) (by (ui-layout-by l))
+                      (w (ui-layout-fp-w l)) (h (ui-layout-fp-h l))
+                      (cx (+ bx (floor w 2))))
+                 (check "view: the middle walks forward" #\w
+                        (%hotspot-at cx (+ by 4)))
+                 (check "view: the bottom middle steps back" #\s
+                        (%hotspot-at cx (+ by h -4)))
+                 (check "view: the left quarter turns left" #\a
+                        (%hotspot-at (+ bx 2) (+ by (floor h 2))))
+                 (check "view: the right quarter turns right" #\d
+                        (%hotspot-at (+ bx w -3) (+ by (floor h 2))))
+                 (check "view: outside the view is no target" nil
+                        (%hotspot-at (+ bx w 20) (+ by (floor h 2))))))
+             ;; the busy pointer brackets a load and restores, and a
+             ;; nested use keeps the outer pointer up
+             (check "busy pointer wraps a body and restores" :ok
+                    (%call-with-busy-pointer win
+                     (lambda ()
+                       (check "nested busy pointer runs the body" :inner
+                              (%call-with-busy-pointer
+                               win (lambda () :inner)))
+                       :ok)))
              (let ((cache (make-hash-table :test #'equal)))
                (%amiga-draw-takeover rp (hero-sheet-lines g 0) log l cache)
                (check-true "takeover lines were cached as bitmaps"
@@ -3287,6 +3400,112 @@ brick grid" d side)
                (%free-images images)
                (delete-file path))
              t)))
+  (leave-location g))
+
+;; Mouse hotspots on the menu renderers, with the game font selected
+;; the way PLAY-AMIGA always does — the page budgets are tuned for
+;; topaz 8, and on an RTG Workbench the system font would shrink the
+;; overlay page below the footer row.  Row positions are recomputed
+;; exactly the way the renderers wrap.
+#+amigaos
+(let* ((m (parse-map *art* :name "test"))
+       (g (new-game m :party (with-rng () (list (make-hero "A" :tester)))))
+       (log (attach-message-log g))
+       (view (make-shop-view)))
+  (enter-location g '("Smoke Shoppe" :shop :stock (t-sword t-torch)))
+  (check "amiga-ui menu hotspots sit on the drawn rows" t
+         (%with-game-font
+          (lambda (font)
+            (amiga.intuition:with-window
+                (win :title "Lambda's Tale Test"
+                     :left 0 :top 0
+                     :width (display-profile-win-width *display-profile*)
+                     :height (display-profile-win-height *display-profile*)
+                     :idcmp amiga.intuition:+idcmp-closewindow+)
+              (let* ((rp (%game-rastport win font))
+                     (l (%amiga-layout win rp)))
+                ;; the overlay page (cast/use/sing/save look the same)
+                (let* ((*hotspots* '())
+                       (lh (1+ (amiga.gfx:rastport-tx-height rp)))
+                       (cw (ui-layout-cw l))
+                       (px (+ (ui-layout-bx l) 4))
+                       (py (+ (ui-layout-by l) 4))
+                       (max-chars (floor (- (ui-layout-fp-w l) 16) cw))
+                       (rows (mapcan (lambda (line)
+                                       (wrap-menu-line line max-chars))
+                                     (location-lines g view)))
+                       (hero-row (position-if #'menu-line-key rows))
+                       (esc-row (position-if
+                                 (lambda (r)
+                                   (search "[Esc]" (menu-line-text r)))
+                                 rows))
+                       (esc-start
+                         (first
+                          (first
+                           (menu-key-spans
+                            (menu-line-text (nth esc-row rows))))))
+                       (row-y (lambda (n) (+ py 4 (* n lh) 2))))
+                  (%amiga-draw-page rp (location-lines g view) l)
+                  (check "page: clicking the hero row picks it" #\1
+                         (%hotspot-at (+ px 10)
+                                      (funcall row-y hero-row)))
+                  (check "page: clicking the footer's Esc hint leaves"
+                         :esc
+                         (%hotspot-at (+ px 8 (* esc-start cw) 2)
+                                      (funcall row-y esc-row)))
+                  (check "page: the title row is not a target" nil
+                         (%hotspot-at (+ px 10) (funcall row-y 0))))
+                ;; the message-area takeover (microfont geometry)
+                (let* ((*hotspots* '())
+                       (fresh (make-shop-view))
+                       (ox (ui-layout-log-x l))
+                       (oy (ui-layout-by l))
+                       (max-chars (max 4 (floor (- (ui-layout-log-w l)
+                                                   4)
+                                                +microfont-advance+)))
+                       (page-rows (max 1 (floor (- (ui-layout-page-b l)
+                                                   oy 2)
+                                                +microfont-line-height+)))
+                       (rows (let ((all
+                                     (mapcan
+                                      (lambda (line)
+                                        (wrap-menu-line line max-chars))
+                                      (location-lines g fresh))))
+                               ;; the renderer's overflow rule
+                               (if (> (length all) page-rows)
+                                   (delete-if (lambda (r)
+                                                (equal
+                                                 (menu-line-text r)
+                                                 ""))
+                                              all)
+                                   all)))
+                       (hero-row (position-if #'menu-line-key rows))
+                       (esc-row (position-if
+                                 (lambda (r)
+                                   (search "[Esc]" (menu-line-text r)))
+                                 rows))
+                       (esc-start
+                         (first
+                          (first
+                           (menu-key-spans
+                            (menu-line-text (nth esc-row rows))))))
+                       (row-y (lambda (n)
+                                (+ oy 1
+                                   (* n +microfont-line-height+) 3))))
+                  (%amiga-draw-takeover rp (location-lines g fresh)
+                                        log l)
+                  (check "takeover: clicking the hero row picks it" #\1
+                         (%hotspot-at (+ ox 2)
+                                      (funcall row-y hero-row)))
+                  (check "takeover: footer Esc hint leaves"
+                         :esc
+                         (%hotspot-at (+ ox (* esc-start
+                                               +microfont-advance+)
+                                         2)
+                                      (funcall row-y esc-row)))
+                  (check "takeover: the title row is not a target" nil
+                         (%hotspot-at (+ ox 2) (funcall row-y 0))))
+                t)))))
   (leave-location g))
 
 ;; Custom screen support: open an own screen (RTG-aware mode pick),
@@ -3548,6 +3767,24 @@ flat floor color" pname)
        (let ((*autoplay* (list #\w #\d #\m #\m #\q)))
          (play-amiga "tests/world/crypt.map" :display :screen
                                              :profile :hires)
+         :done))
+
+;; Mouse control through the same scripted loop: (:CLICK X Y) entries
+;; resolve through the live hotspot map exactly like a left click —
+;; the view's walk zones, a roster row (opens that character sheet)
+;; and the sheet's click-anywhere-else Esc.  The lores custom screen
+;; lays out deterministically (borderless backdrop, pads 10/10, the
+;; 160x112 view at 10,10; topaz-8 rows put party row 1 at y=150), so
+;; the script clicks absolute pixels.
+#+amigaos
+(check "amiga-ui autoplay drives the game by mouse clicks" :done
+       (let ((*autoplay* (list '(:click 90 60)   ; view middle: forward
+                               '(:click 20 60)   ; left quarter: turn
+                               '(:click 15 152)  ; roster row 1: sheet
+                               '(:click 90 60)   ; off-target: Esc back
+                               #\q)))
+         (play-amiga "tests/world/crypt.map" :display :screen
+                                             :gfx-dir (engine-path "data/gfx/"))
          :done))
 
 ;;; ---------------------------------------------------------------------

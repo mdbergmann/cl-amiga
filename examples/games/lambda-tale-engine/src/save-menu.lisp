@@ -70,8 +70,9 @@ must survive as file names on every platform, AmigaOS included)."
   (%make-save-menu :mode mode :slots (save-slots)))
 
 (defun save-menu-lines (game view)
-  "The current save/load menu as a list of text lines — the front-ends
-draw these verbatim (the SHOP-LINES pattern)."
+  "The current save/load menu as a list of menu lines — the front-ends
+draw these verbatim (the SHOP-LINES pattern); slot rows carry their
+pick key (see MENU-NUMBERED)."
   (let ((mode (save-menu-mode view))
         (slots (save-menu-slots view))
         (entry (save-menu-entry view))
@@ -91,7 +92,8 @@ draw these verbatim (the SHOP-LINES pattern)."
              (let ((i 0))
                (mapcar (lambda (name)
                          (incf i)
-                         (format nil "~D) ~A" i name))
+                         (menu-numbered
+                          i (format nil "~D) ~A" i name)))
                        slots))
              (list (if (eq mode :save) "No saved games yet." "No saved games.")))
          (if err (list "" err) nil)

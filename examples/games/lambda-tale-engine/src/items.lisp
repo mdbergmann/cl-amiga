@@ -230,8 +230,9 @@ returns T."
   :done)
 
 (defun use-lines (game view)
-  "The current use menu as a list of text lines — the front-ends draw
-these verbatim (the SHOP-LINES pattern)."
+  "The current use menu as a list of menu lines — the front-ends draw
+these verbatim (the SHOP-LINES pattern); option rows carry their pick
+key (see MENU-NUMBERED)."
   (let ((hero (use-view-hero view))
         (item (use-view-item view)))
     (append
@@ -243,9 +244,10 @@ these verbatim (the SHOP-LINES pattern)."
          (let ((i 0))
            (mapcar (lambda (h)
                      (incf i)
-                     (format nil "~D) ~A  (~D usable)"
-                             i (hero-name h)
-                             (length (usable-items h))))
+                     (menu-numbered
+                      i (format nil "~D) ~A  (~D usable)"
+                                i (hero-name h)
+                                (length (usable-items h)))))
                    (game-party game)))
          (list "" "[1-7] choose  [Esc] cancel")))
        ((null item)
@@ -254,7 +256,8 @@ these verbatim (the SHOP-LINES pattern)."
          (let ((i 0))
            (mapcar (lambda (name)
                      (incf i)
-                     (format nil "~D) ~A" i (item-title name)))
+                     (menu-numbered
+                      i (format nil "~D) ~A" i (item-title name))))
                    (usable-items hero)))
          (list "" "[1-9] use  [Esc] back")))
        (t                              ; a healing item picks its target
@@ -263,9 +266,10 @@ these verbatim (the SHOP-LINES pattern)."
          (let ((i 0))
            (mapcar (lambda (h)
                      (incf i)
-                     (format nil "~D) ~A  (HP ~D/~D)"
-                             i (hero-name h)
-                             (hero-hp h) (hero-max-hp h)))
+                     (menu-numbered
+                      i (format nil "~D) ~A  (HP ~D/~D)"
+                                i (hero-name h)
+                                (hero-hp h) (hero-max-hp h))))
                    (game-party game)))
          (list "" "[1-7] choose  [Esc] back")))))))
 

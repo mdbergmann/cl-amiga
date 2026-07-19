@@ -55,8 +55,10 @@
 (in-package :tale)
 
 (defvar *autoplay* nil
-  "Testing hook: a list of key characters fed to the game one per
-Intuition tick (~10/s), driving a full unattended session.  :ESC quits.")
+  "Testing hook: a list of inputs fed to the game one per Intuition
+tick (~10/s), driving a full unattended session — key characters,
+:ESC, or (:CLICK X Y) entries resolved through the mouse hotspot map
+exactly like a real left click.")
 
 ;;; Screen and window geometry, viewport size and tile pack all come
 ;;; from the active DISPLAY-PROFILE (src/profiles.lisp) — PLAY-AMIGA's
@@ -69,8 +71,76 @@ Intuition tick (~10/s), driving a full unattended session.  :ESC quits.")
   (logior amiga.intuition:+idcmp-closewindow+
           amiga.intuition:+idcmp-vanillakey+
           amiga.intuition:+idcmp-menupick+
+          ;; left-button clicks: everything play-able by key is
+          ;; clickable too (see the hotspot list below)
+          amiga.intuition:+idcmp-mousebuttons+
           ;; the *autoplay* heartbeat
           amiga.intuition:+idcmp-intuiticks+))
+
+;;; ---------------------------------------------------------------------
+;;; Mouse hotspots: the click-to-key map.  The game's whole input funnel
+;;; is ACT (one key character per action), so mouse support synthesizes
+;;; keys: every REDRAW rebuilds *HOTSPOTS* — the renderers register a
+;;; rectangle per pickable thing (a menu option row, its footer's [s]
+;;; hint, a roster row, a movement zone on the view) with the key it
+;;; stands for — and a left click feeds the key under the pointer into
+;;; ACT, which routes it exactly like the keyboard.  The list is
+;;; rebuilt on every redraw, so it always matches what is on screen and
+;;; which model currently eats the keys.
+
+(defvar *hotspots* '()
+  "Click targets of the current frame: entries (X0 Y0 X1 Y1 KEY),
+newest first — later registrations win, so a mode's whole-page
+catch-all goes in first and the specific targets after it.")
+
+(defun %hotspot (key x0 y0 x1 y1)
+  "Register the inclusive pixel rectangle as a click target for KEY (a
+character or :ESC).  NIL keys register nothing."
+  (when key
+    (push (list x0 y0 x1 y1 key) *hotspots*)))
+
+(defun %hotspot-at (x y)
+  "The key registered under pixel (X,Y), or NIL — most recently
+registered target first."
+  (dolist (spot *hotspots*)
+    (destructuring-bind (x0 y0 x1 y1 key) spot
+      (when (and (<= x0 x x1) (<= y0 y y1))
+        (return key)))))
+
+(defun %register-line-hotspots (line x y advance line-h row-x0 row-x1)
+  "Click targets for one drawn menu line: an option line (a key from
+MENU-LINE-KEY) gets the whole row ROW-X0..ROW-X1, and a plain line's
+bracket hints ([s] sell, [Esc] back — see MENU-KEY-SPANS) each get
+their own span.  (X,Y) is the drawn text's top-left, ADVANCE the fixed
+character cell width, LINE-H the row height."
+  (let ((key (menu-line-key line))
+        (y1 (+ y line-h -1)))
+    (if key
+        (%hotspot key row-x0 y row-x1 y1)
+        (dolist (span (menu-key-spans (menu-line-text line)))
+          (destructuring-bind (start end span-key) span
+            ;; Esc goes through ACT as :ESC — the same shape a real
+            ;; VANILLAKEY 27 arrives in, so every mode recognizes it
+            (%hotspot (if (eql span-key #\Escape) :esc span-key)
+                      (+ x (* start advance)) y
+                      (+ x (* end advance) -1) y1))))))
+
+(defun %register-move-zones (l)
+  "Click-to-walk zones on the first-person view: the left and right
+quarters turn (A/D), the middle walks forward (W) with a back-step
+band (S) along its bottom third."
+  (let* ((x0 (ui-layout-bx l))
+         (y0 (ui-layout-by l))
+         (w (ui-layout-fp-w l))
+         (h (ui-layout-fp-h l))
+         (x1 (+ x0 w -1))
+         (y1 (+ y0 h -1))
+         (q (floor w 4))
+         (split (+ y0 (floor (* h 2) 3))))
+    (%hotspot #\a x0 y0 (+ x0 q -1) y1)
+    (%hotspot #\d (- x1 q -1) y0 x1 y1)
+    (%hotspot #\w (+ x0 q) y0 (- x1 q) (1- split))
+    (%hotspot #\s (+ x0 q) split (- x1 q) y1)))
 
 ;;; ---------------------------------------------------------------------
 ;;; Layout: computed from the window's actual inner size, so the same
@@ -725,13 +795,16 @@ switching pages never leaves stale text.  LINES-CACHE as in
          (lh +microfont-line-height+)
          (rows (max 1 (floor (- h 2) lh)))
          (max-chars (max 4 (floor (- w 4) +microfont-advance+)))
-         (menu (let ((all (mapcan (lambda (text) (wrap-text text max-chars))
+         (menu (let ((all (mapcan (lambda (line)
+                                    (wrap-menu-line line max-chars))
                                   lines)))
                  ;; a page that overflows gives up its blank spacer
                  ;; lines before it truncates content (the lores shop
                  ;; page is the tight case)
                  (if (> (length all) rows)
-                     (delete "" all :test #'string=)
+                     (delete-if (lambda (line)
+                                  (equal (menu-line-text line) ""))
+                                all)
                      all)))
          (n-menu (min (length menu) rows))
          ;; the rule and the log tail live in whatever rows the menu
@@ -746,13 +819,17 @@ switching pages never leaves stale text.  LINES-CACHE as in
     (amiga.gfx:rect-fill rp (- ox 3) oy (+ ox w -1) (+ oy h -1))
     (let ((y (1+ oy))
           (n 0))
-      (dolist (text menu)
+      (dolist (line menu)
         (when (< n n-menu)
-          (%put-microfont-line rp lines-cache
-                               (if (> (length text) max-chars)
-                                   (subseq text 0 max-chars)
-                                   text)
-                               ox y)
+          (let ((text (menu-line-text line)))
+            (%put-microfont-line rp lines-cache
+                                 (if (> (length text) max-chars)
+                                     (subseq text 0 max-chars)
+                                     text)
+                                 ox y)
+            ;; a click on an option row / a footer hint is its key
+            (%register-line-hotspots line ox y +microfont-advance+ lh
+                                     (- ox 3) (+ ox w -1)))
           (incf y lh)
           (incf n))))
     ;; log tail, newest at the page bottom, under the rule
@@ -800,12 +877,14 @@ ROSTER-COLS character cells."
       (col (getf cols :cl) 0 (hero-class-abbrev hero)))
     (amiga.gfx:set-a-pen rp 1)))
 
-(defun %amiga-party (rp game l)
+(defun %amiga-party (rp game l &optional clickable)
   "Party roster table, Bard's Tale style: a header row and one numbered
 row per hero, right under the location plaque (there is no status
 line), black on the grey chrome with the current hit/spell points in
 white.  The row number is the key that opens that hero's character
-sheet."
+sheet; CLICKABLE non-NIL also registers each hero row as a click
+target for its digit — passed only when digits currently mean the
+roster (not while a menu model or a location eats them)."
   (let* ((ox (ui-layout-bx l))
          (oy (ui-layout-hdr-y l))
          (lh (ui-layout-lh l)))
@@ -828,10 +907,15 @@ sheet."
         (col (getf cols :spts) "PTS")
         (col (getf cols :cl)   "CL")))
     (let ((y (+ (ui-layout-party-y l) (ui-layout-base l)))
+          (row-y (ui-layout-party-y l))
           (i 0))
       (dolist (h (game-party game))
         (%amiga-hero-row rp game l y h i)
+        (when (and clickable (< i 9))
+          (%hotspot (digit-char (1+ i))
+                    ox row-y (ui-layout-right l) (+ row-y lh -1)))
         (incf y lh)
+        (incf row-y lh)
         (incf i)))
     (amiga.gfx:set-a-pen rp 1)))
 
@@ -932,7 +1016,7 @@ instead (%AMIGA-DRAW-TAKEOVER)."
          (ph (- (ui-layout-hdr-y l) 4 py))
          (max-lines (floor (- ph 8) lh))
          (max-chars (floor (- pw 16) cw))
-         (lines (mapcan (lambda (text) (wrap-text text max-chars))
+         (lines (mapcan (lambda (line) (wrap-menu-line line max-chars))
                         menu-lines)))
     ;; page shadow, sheet, outline — same look as the character sheet
     (amiga.gfx:set-a-pen rp 0)
@@ -943,12 +1027,17 @@ instead (%AMIGA-DRAW-TAKEOVER)."
     (%chrome-rect rp px py (+ px pw) (+ py ph))
     (let ((y (+ py 4 (ui-layout-base l)))
           (n 0))
-      (dolist (text lines)
+      (dolist (line lines)
         (when (< n max-lines)
-          (amiga.gfx:move-to rp (+ px 8) y)
-          (amiga.gfx:gfx-text rp (if (> (length text) max-chars)
-                                     (subseq text 0 max-chars)
-                                     text))
+          (let ((text (menu-line-text line)))
+            (amiga.gfx:move-to rp (+ px 8) y)
+            (amiga.gfx:gfx-text rp (if (> (length text) max-chars)
+                                       (subseq text 0 max-chars)
+                                       text))
+            ;; a click on an option row / a footer hint is its key
+            (%register-line-hotspots line (+ px 8)
+                                     (- y (ui-layout-base l)) cw lh
+                                     (1+ px) (+ px pw -1)))
           (incf y lh)
           (incf n))))
     (amiga.gfx:set-a-pen rp 1)))
@@ -1019,13 +1108,76 @@ menu bits 0-4, item bits 5-10, sub-item bits 11-15)."
   (logand (ash code -5) #x3F))
 
 ;;; ---------------------------------------------------------------------
+;;; The mouse pointer.  An own screen starts with unset sprite colors —
+;;; the pointer would be invisible black on black — so the palette
+;;; below also fills color registers 17-19 (the pointer is hardware
+;;; sprite 0), the classic red pointer with a dark outline.  During the
+;;; loads that take real seconds at 14MHz (tile packs on zone travel,
+;;; a game load) the pointer switches to a busy hourglass via
+;;; SetPointer, whose sprite image this is: plane words (A B) per row,
+;;; pixel value 1 (A) the red sand, 2 (B) the black frame.
+
+(defparameter *busy-pointer-image*
+  '((#x0000 #xFFFF)
+    (#x3FFC #x4002)
+    (#x1FF8 #x2004)
+    (#x0FF0 #x1008)
+    (#x07E0 #x0810)
+    (#x03C0 #x0420)
+    (#x0180 #x0240)
+    (#x0180 #x0240)
+    (#x03C0 #x0420)
+    (#x07E0 #x0810)
+    (#x0FF0 #x1008)
+    (#x1FF8 #x2004)
+    (#x3FFC #x4002)
+    (#x0000 #xFFFF)))
+
+(defun %make-busy-pointer-chip ()
+  "The busy-pointer image as chip-RAM sprite data ready for
+SET-POINTER: posctl words, (A B) per row, trailing words.  The caller
+frees it (AMIGA:FREE-CHIP) after CLEAR-POINTER."
+  (let* ((rows (length *busy-pointer-image*))
+         (chip (amiga:alloc-chip (* 2 (+ 2 (* 2 rows) 2))))
+         (off 0))
+    (flet ((word (w) (ffi:poke-u16 chip w off) (incf off 2)))
+      (word 0) (word 0)                 ; position control
+      (dolist (row *busy-pointer-image*)
+        (word (first row))              ; low plane: the sand
+        (word (second row)))            ; high plane: the frame
+      (word 0) (word 0))                ; sprite terminator
+    chip))
+
+(defvar *busy-pointer-active* nil
+  "Non-NIL while the busy pointer is up — nested loads (a game load
+that then swaps tile packs) keep the outer pointer instead of flashing
+it off halfway.")
+
+(defun %call-with-busy-pointer (win fn)
+  "Show the busy hourglass pointer on WIN while FN runs; restores the
+normal pointer (and frees the sprite data) after.  Reentrant: a nested
+call runs FN directly under the already-shown pointer."
+  (if *busy-pointer-active*
+      (funcall fn)
+      (let ((chip (%make-busy-pointer-chip)))
+        (unwind-protect
+            (let ((*busy-pointer-active* t))
+              (amiga.intuition:set-pointer
+               win chip (length *busy-pointer-image*) 16 -7 -6)
+              (funcall fn))
+          (amiga.intuition:clear-pointer win)
+          (amiga:free-chip chip)))))
+
+;;; ---------------------------------------------------------------------
 ;;; Display: Workbench window or own custom screen
 
 (defun %game-screen-palette (scr)
   "UI palette for the custom screen: black, white, the chrome grey and
 amber in pens 0-3 — fixed, tile packs may not change them.  Pens 4-15
 start black until %APPLY-PACK-PALETTE fills them with the pack's
-colors."
+colors.  Colors 17-19 are the mouse pointer's (sprite 0): the classic
+red pointer, dark outline, light gleam — unset they render the pointer
+invisibly black."
   (let ((vp (amiga.intuition:screen-viewport scr)))
     (amiga.gfx:set-rgb4 vp 0 0 0 0)
     (amiga.gfx:set-rgb4 vp 1 15 15 15)
@@ -1033,7 +1185,10 @@ colors."
     (amiga.gfx:set-rgb4 vp 3 15 10 3)
     (loop for pen from 4 below (ash 1 (display-profile-screen-depth
                                        *display-profile*))
-          do (amiga.gfx:set-rgb4 vp pen 0 0 0))))
+          do (amiga.gfx:set-rgb4 vp pen 0 0 0))
+    (amiga.gfx:set-rgb4 vp 17 14 4 4)
+    (amiga.gfx:set-rgb4 vp 18 3 0 0)
+    (amiga.gfx:set-rgb4 vp 19 14 14 12)))
 
 (defun %apply-pack-palette (scr palette)
   "Load the tile pack's colors into pens 4-15 of the custom screen.
@@ -1136,7 +1291,13 @@ character sheet take over the message area, with the location's
 ships one.  Shift-S / Shift-L (and the
 menu strip's Save/Load, right mouse button) open the save-slot
 picker: 1-9 pick a slot, N names a new save (saves/NAME.sav), Esc
-cancels; Quit sits in the menu strip too."
+cancels; Quit sits in the menu strip too.
+Everything key-driven clicks too: the view walks (left/right quarters
+turn, the middle steps forward, its bottom band back), a roster row
+opens that character sheet, a menu's numbered rows pick and its
+bracket hints ([s] sell, [Esc] back) act as their keys, and the
+map/help/sheet pages close on a click outside a target — see
+*HOTSPOTS*."
   (load-campaign map-file)
   (with-display-profile (profile)
    (dlog "play-amiga ~A display ~S profile ~S"
@@ -1219,17 +1380,22 @@ cancels; Quit sits in the menu strip too."
                           ;; pack changed — first draw, zone travel
                           ;; (:GFX zones), load-game.  Pack colors only
                           ;; on our own screen — a Workbench window has
-                          ;; no say over the Workbench palette.
+                          ;; no say over the Workbench palette.  The
+                          ;; load reads a directory of ILBMs — seconds
+                          ;; at 14MHz — so the busy pointer is up.
                           (let ((want (effective-gfx-dir)))
                             (unless (equal want walls-dir)
-                              (setf walls (%free-wall-assets walls)
-                                    walls-dir want)
-                              (let ((*gfx-dir* want))
-                                (multiple-value-bind (w pal)
-                                    (%load-wall-assets rp log)
-                                  (setf walls w)
-                                  (when (eq display :screen)
-                                    (%apply-pack-palette scr pal)))))))
+                              (%call-with-busy-pointer win
+                               (lambda ()
+                                 (setf walls (%free-wall-assets walls)
+                                       walls-dir want)
+                                 (let ((*gfx-dir* want))
+                                   (multiple-value-bind (w pal)
+                                       (%load-wall-assets rp log)
+                                     (setf walls w)
+                                     (when (eq display :screen)
+                                       (%apply-pack-palette
+                                        scr pal)))))))))
                         (clear-inner ()
                           ;; Grey-wipe the content area (a bit beyond
                           ;; it, to catch the frames and shadows) when
@@ -1271,6 +1437,10 @@ cancels; Quit sits in the menu strip too."
                           (redraw))
                         (leave-help ()
                           (fresh-play help-prior-mode))
+                        (menus-idle-p ()
+                          ;; no menu model is eating the keys
+                          (not (or savem castv usev singv
+                                   (game-location game))))
                         (redraw ()
                           ;; travel switched zones: swap in the zone's
                           ;; tile pack and repaint the chrome first
@@ -1280,6 +1450,16 @@ cancels; Quit sits in the menu strip too."
                             (ensure-walls)
                             (clear-inner)
                             (%chrome-frames rp game l))
+                          ;; the click targets are rebuilt with the
+                          ;; frame: a full-page catch-all (leave) first
+                          ;; where the mode has one, the renderers'
+                          ;; specific targets on top of it
+                          (setf *hotspots* '())
+                          (when (member mode '(:map :help :sheet))
+                            (%hotspot :esc
+                                      (ui-layout-bx l) (ui-layout-by l)
+                                      (ui-layout-right l)
+                                      (ui-layout-bottom l)))
                           (cond
                             ((eq mode :map)
                              (%amiga-draw-map-page rp game l full))
@@ -1325,6 +1505,13 @@ cancels; Quit sits in the menu strip too."
                                                         (ui-layout-fp-h l)
                                                         walls)))
                                     (%amiga-draw-band rp game l icons log)))
+                             ;; click-to-walk zones on the view — only
+                             ;; while W/A/S/D actually walk (no menu or
+                             ;; location eating keys, not in combat)
+                             (when (and (eq mode :play) (menus-idle-p)
+                                        (not (game-combat game))
+                                        (not over))
+                               (%register-move-zones l))
                              ;; The message area: taken over by the
                              ;; character sheet or the location's menu
                              ;; (log tail below the rule), else the log.
@@ -1342,7 +1529,12 @@ cancels; Quit sits in the menu strip too."
                                      log l log-lines))
                                    (t
                                     (%amiga-draw-log rp log l log-lines)))
-                             (%amiga-party rp game l))))
+                             ;; roster rows click as their digits when
+                             ;; digits mean the roster (sheet picks)
+                             (%amiga-party rp game l
+                                           (and (menus-idle-p)
+                                                (not (game-combat game))
+                                                (not over))))))
                         (%step (relative)
                           ;; Log the notable step results; plain steps
                           ;; stay quiet so the log tracks events, not
@@ -1426,15 +1618,19 @@ cancels; Quit sits in the menu strip too."
                                    (setf savem nil)
                                    (fresh-play saves-prior-mode))
                                   ((and (consp r) (eq (first r) :load))
-                                   (setf game (wire (load-game (second r))))
-                                   (setf over nil
-                                         mode :play
-                                         zone-dirty nil)
-                                   ;; loading may land in a zone with
-                                   ;; its own tile pack — swap packs and
-                                   ;; repaint the chrome (the plaque
-                                   ;; carries the zone name)
-                                   (ensure-walls)
+                                   (%call-with-busy-pointer win
+                                    (lambda ()
+                                      (setf game
+                                            (wire (load-game (second r))))
+                                      (setf over nil
+                                            mode :play
+                                            zone-dirty nil)
+                                      ;; loading may land in a zone
+                                      ;; with its own tile pack — swap
+                                      ;; packs and repaint the chrome
+                                      ;; (the plaque carries the zone
+                                      ;; name)
+                                      (ensure-walls)))
                                    (clear-inner)
                                    (%chrome-frames rp game l)
                                    (log-message log "Game loaded.")
@@ -1569,10 +1765,33 @@ cancels; Quit sits in the menu strip too."
                                   (c (if (= code 27) :esc (code-char code))))
                              (when (eq (act c) :quit)
                                (return))))
+                         (amiga.intuition:+idcmp-mousebuttons+ (msg)
+                           ;; a left click acts as the key registered
+                           ;; under the pointer (see *HOTSPOTS*)
+                           (when (= (amiga.intuition:msg-code msg)
+                                    amiga.intuition:+selectdown+)
+                             (let ((c (%hotspot-at
+                                       (amiga.intuition:msg-mouse-x msg)
+                                       (amiga.intuition:msg-mouse-y msg))))
+                               (dlog "click ~Dx~D -> ~S"
+                                     (amiga.intuition:msg-mouse-x msg)
+                                     (amiga.intuition:msg-mouse-y msg)
+                                     c)
+                               (when (and c (eq (act c) :quit))
+                                 (return)))))
                          (amiga.intuition:+idcmp-intuiticks+ (msg)
                            (when *autoplay*
-                             (when (eq (act (pop *autoplay*)) :quit)
-                               (return))))))
+                             ;; a scripted entry is a key, or a
+                             ;; (:click X Y) resolved through the same
+                             ;; hotspot map as a real button event
+                             (let* ((entry (pop *autoplay*))
+                                    (c (if (and (consp entry)
+                                                (eq (first entry) :click))
+                                           (%hotspot-at (second entry)
+                                                        (third entry))
+                                           entry)))
+                               (when (and c (eq (act c) :quit))
+                                 (return)))))))
                    (setf walls (%free-wall-assets walls)
                          icons (%free-images icons)
                          log-lines (%free-log-lines log-lines)))))))))))))))

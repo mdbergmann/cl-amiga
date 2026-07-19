@@ -140,8 +140,9 @@ one round where the singer sings and everyone else attacks."
     :done))
 
 (defun sing-lines (game view)
-  "The current sing menu as a list of text lines — the front-ends draw
-these verbatim (the SHOP-LINES pattern)."
+  "The current sing menu as a list of menu lines — the front-ends draw
+these verbatim (the SHOP-LINES pattern); option rows carry their pick
+key (see MENU-NUMBERED)."
   (let ((hero (sing-view-hero view)))
     (append
      (list "*** Play a Song ***" "")
@@ -152,10 +153,11 @@ these verbatim (the SHOP-LINES pattern)."
             (mapcan (lambda (h)
                       (incf i)
                       (when (hero-singer-p h)
-                        (list (format nil "~D) ~A  (Tunes ~D/~D)"
-                                      i (hero-name h)
-                                      (hero-tunes h)
-                                      (hero-max-tunes h)))))
+                        (list (menu-numbered
+                               i (format nil "~D) ~A  (Tunes ~D/~D)"
+                                         i (hero-name h)
+                                         (hero-tunes h)
+                                         (hero-max-tunes h))))))
                     (game-party game)))
           (list "" "[1-7] choose  [Esc] cancel"))
          (append
@@ -166,7 +168,8 @@ these verbatim (the SHOP-LINES pattern)."
           (let ((i 0))
             (mapcar (lambda (name)
                       (incf i)
-                      (format nil "~D) ~A" i (song-title name)))
+                      (menu-numbered
+                       i (format nil "~D) ~A" i (song-title name))))
                     (songs-for-hero hero)))
           (list "" "[1-9] play  [Esc] back"))))))
 
