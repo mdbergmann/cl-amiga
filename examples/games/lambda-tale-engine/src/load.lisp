@@ -17,6 +17,7 @@
 (let ((src (concatenate 'string cl-user::*lambda-tale-engine-root* "src/")))
   (flet ((ld (file) (load (concatenate 'string src file))))
     (ld "package.lisp")
+    (ld "debug-log.lisp")
     (ld "profiles.lisp")
     (ld "dice.lisp")
     (ld "ilbm.lisp")

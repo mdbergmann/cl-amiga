@@ -85,7 +85,8 @@ brings its own definitions.  Returns the loaded path, or NIL when
 there is none."
   (let ((path (%resolve-map-path map-file "campaign.lisp")))
     (when (probe-file path)
-      (load path)
+      (dlog-timed ("campaign ~A" path)
+        (load path))
       path)))
 
 (defun zone-gfx-dir (game)

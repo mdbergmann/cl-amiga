@@ -3551,6 +3551,123 @@ flat floor color" pname)
          :done))
 
 ;;; ---------------------------------------------------------------------
+;;; The debug log (src/debug-log.lisp): a timestamped trace file —
+;;; image/map/campaign loads with durations, emitted events, key
+;;; presses — switchable at runtime and free when off.
+
+(defun %slurp-file (path)
+  (with-open-file (s path)
+    (let ((out (make-string-output-stream)))
+      (loop for line = (read-line s nil nil)
+            while line
+            do (progn (write-string line out)
+                      (write-char #\Newline out)))
+      (get-output-stream-string out))))
+
+(let ((path "tests/tmp-saves/debug.log"))
+  (when (probe-file path) (delete-file path))
+  (check "debug log is off by default" nil (debug-log-enabled-p))
+  (dlog "never written")
+  (check-true "dlog while disabled writes no file"
+              (not (probe-file path)))
+  (check "enable returns the path" path (debug-log-enable path))
+  (check-true "enabled-p reports the open log" (debug-log-enabled-p))
+  (dlog "hello ~A ~D" "world" 42)
+  (check "dlog-timed returns its body's value" 3
+         (dlog-timed ("timed block") (+ 1 2)))
+  (check "dlog-timed passes multiple values through" '(:a :b)
+         (multiple-value-list (dlog-timed ("mv block") (values :a :b))))
+  ;; events trace with brief arguments and the handler count
+  (let ((g (new-game (parse-map *art* :name "log fixture"))))
+    (on-event g :ping (lambda (gm n) (declare (ignore gm n))))
+    (emit g :ping 7)
+    (emit g :enter-zone (game-map g)))
+  ;; the loaders leave timed lines
+  (load-map-file "tests/world/keep.map")
+  (read-ilbm (engine-path "data/gfx/ceiling.iff"))
+  (debug-log-disable)
+  (check "disable closes the log" nil (debug-log-enabled-p))
+  (let ((text (%slurp-file path)))
+    (check-true "the log opens with the session banner"
+                (search "debug log enabled" text))
+    (check-true "lines carry a bracketed timestamp"
+                (eql #\[ (char text 0)))
+    (check-true "the timestamp has a millisecond fraction"
+                (let ((dot (position #\. text)))
+                  (and dot (< dot (position #\] text)))))
+    (check-true "dlog formats its arguments"
+                (search "hello world 42" text))
+    (check-true "dlog-timed writes the begin line"
+                (search "timed block ..." text))
+    (check-true "dlog-timed writes the timed done line"
+                (search "timed block done [" text))
+    (check-true "done lines carry a millisecond duration"
+                (search " ms]" text))
+    (check-true "an event line names topic, args and handler count"
+                (search "event :PING 7 handlers=1" text))
+    (check-true "event arguments print briefly"
+                (search "#<map log fixture>" text))
+    (check-true "a map load leaves a timed line"
+                (search "map tests/world/keep.map done [" text))
+    (check-true "an image load leaves a timed line"
+                (search "ceiling.iff done [" text))
+    (check-true "the log closes with the banner"
+                (search "debug log disabled" text)))
+  ;; off means off: nothing is written; re-enabling appends
+  (let ((len (length (%slurp-file path))))
+    (dlog "dropped")
+    (check "dlog after disable writes nothing"
+           len (length (%slurp-file path)))
+    (debug-log-enable path)
+    (debug-log-disable)
+    (check-true "re-enabling appends a second session"
+                (> (length (%slurp-file path)) len)))
+  (delete-file path))
+
+;; Regression: the whole-second fields (from GET-UNIVERSAL-TIME) and the
+;; millisecond field (from GET-INTERNAL-REAL-TIME) once came from two
+;; clocks with unrelated epochs, so the printed ".mmm" did not actually
+;; belong to the printed HH:MM:SS.  Pin the wall-clock anchor to a known
+;; moment and confirm the printed date/time matches DECODE-UNIVERSAL-TIME
+;; of that exact anchor — that only holds when both fields derive from
+;; the same anchored clock.
+(let ((path "tests/tmp-saves/debug-clock.log"))
+  (when (probe-file path) (delete-file path))
+  (debug-log-enable path)
+  (setf *debug-log-anchor-universal* 1000000000
+        *debug-log-anchor-real* (get-internal-real-time))
+  (dlog "clock check")
+  (debug-log-disable)
+  (let ((text (%slurp-file path)))
+    (multiple-value-bind (sec min hour day month year)
+        (decode-universal-time 1000000000)
+      (check-true "sec/min/hour and the ms fraction derive from the same anchored clock"
+                  (search (format nil "~4,'0D-~2,'0D-~2,'0D ~2,'0D:~2,'0D:~2,'0D."
+                                  year month day hour min sec)
+                          text))))
+  (delete-file path))
+
+;; The debug log traces a real session end to end: the session line,
+;; every key through the real event loop, the wall-pack image loads
+;; and the emitted events.
+#+amigaos
+(check-true "amiga-ui autoplay leaves a debug-log trace"
+            (let ((path "tests/tmp-saves/debug-amiga.log")
+                  (*autoplay* (list #\w #\q)))
+              (when (probe-file path) (delete-file path))
+              (debug-log-enable path)
+              (play-amiga "tests/world/crypt.map" :display :window)
+              (debug-log-disable)
+              (let ((text (%slurp-file path)))
+                (prog1 (and (search "play-amiga tests/world/crypt.map" text)
+                            (search "key #\\w mode :PLAY" text)
+                            (search "wall pack" text)
+                            (search "image" text)
+                            (search "event :" text)
+                            t)
+                  (delete-file path)))))
+
+;;; ---------------------------------------------------------------------
 ;;; Summary
 
 (format t "~%Lambda's Tale engine tests: ~D checks, ~D failures.~%"

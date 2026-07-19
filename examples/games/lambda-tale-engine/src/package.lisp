@@ -109,6 +109,9 @@
    ;; the microfont (the message log's compact 5x7 pixel font)
    #:+microfont-advance+ #:+microfont-line-height+
    #:microfont-glyph #:microfont-text-width #:microfont-line
+   ;; debug log (timestamped trace file, see src/debug-log.lisp)
+   #:*debug-log-path* #:debug-log-enable #:debug-log-disable
+   #:debug-log-enabled-p #:dlog #:dlog-timed
    ;; interactive walkabout
    #:play #:play-amiga #:*gfx-dir*
    ;; engine home (self-located; default packs live under it)

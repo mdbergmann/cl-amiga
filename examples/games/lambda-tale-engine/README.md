@@ -398,6 +398,21 @@ specification for the map model, movement, knowledge tracking,
 renderers, events, specials, zones and travel, party, items, shops,
 combat and save games.
 
+## Debug log
+
+`(tale:debug-log-enable)` opens a timestamped trace file
+(`tale-debug.log` by default, or pass a path) and
+`(tale:debug-log-disable)` closes it again; setting the environment
+variable `TALE_DEBUG_LOG` (a path, or `1` for the default) enables it
+as the engine loads.  While enabled, the engine logs every image, map
+and campaign load with its duration, every emitted event with its
+handler count, and every key press — each line wall-clock timestamped
+with a millisecond fraction and flushed immediately, so a session that
+crashes still leaves the trace up to the moment it died.  Off by
+default and free when off.  Game code can write its own lines with
+`(tale:dlog "..." args...)` and time a block with `tale:dlog-timed`;
+see the debug-log section of `tests/run-tests.lisp` for usage.
+
 ## Roadmap
 
 - **M0 (done)**: map model, movement, automap knowledge, ASCII map view,
