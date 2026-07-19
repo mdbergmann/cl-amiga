@@ -151,6 +151,43 @@ the Amiga use the same arrangement.)
   **map footer**, contextual prompts (combat keys, win/lose) into the
   message log.
 
+## Message-area takeovers (locations, character sheet)
+
+(Added 2026-07-19: interactions used to draw as a page over the view
+column; the user-directed rework moved them into the message area,
+with pictures in the view column.)
+
+- Entering a **location** (shop, tavern, any kind) or opening a
+  **character sheet** (`1`-`7`) does not cover the view column with a
+  menu page: the interaction **takes over the message area** — its
+  menu lines render at the top of the log page (microfont on the
+  Amiga, `%amiga-draw-takeover`), and the trailing log lines keep
+  scrolling below a separator rule, so game feedback (a purchase, a
+  drink) stays visible while the menu is up.  The page interior
+  repaints wholesale on every redraw (a `cls`) — switching pages
+  never leaves stale text.
+- The **view column** meanwhile shows a picture when the campaign
+  ships one: the location op's `:image`, or the sheet hero's class
+  portrait (`define-hero-class :image`) — both resolved relative to
+  the current map file (the effect-icon rule: `location-image-path`,
+  `hero-image-path`).  Without a picture the live first-person view
+  stays.  Pictures are opaque ILBMs drawn centered on black,
+  center-cropped when they overhang the viewport
+  (`%amiga-draw-picture`); a file that will not load logs once and
+  the view falls back.  Placeholder art comes from
+  `draw-location-scene` / `draw-portrait` (tools/gen-walls.lisp);
+  Closure ships viewport-sized scenes and 64x64 portraits
+  (worlds/closure/gfx/make-pack.lisp).
+- The **cast/use/sing menus and the save picker keep the overlay
+  page** over the view column (`%amiga-draw-page`) — they can open in
+  combat, where the log must stay readable for the transcript.  The
+  full-page sheet overlay (`%amiga-draw-sheet`) stays available as a
+  drawing primitive but the play flow uses the takeover.
+- The sheet content is the platform-free `hero-sheet-lines` (header,
+  `hero-summary-lines` stat block, key hints); the host UI shows it
+  as its `:sheet` mode under the same keys (`1`-`7` switch, `Esc`
+  back).
+
 ## Full map view (`m`)
 
 - The play view carries no map at all; the **automap lives in a
@@ -296,6 +333,13 @@ The Amiga front-end supports two displays, selected by
   bare keywords, and the full `cast-lines`/`cast-act` key walk — out
   of combat, in combat (one caster casts, the rest attack) and the
   Esc unwind.
+- Takeovers: `hero-sheet-lines` (header, summary block, key hints);
+  `location-image`/`location-image-path` and the class portraits
+  resolve map-relative, absent ones NIL; generated scenes/portraits
+  size to order and keep to the fixed UI pens; Amiga smoke: the
+  takeover page draws cached and uncached, a real picture draws in
+  the view column, a missing file defers to the caller after logging
+  once.
 - Named saves: `slot-path`/`save-slots` (empty without the dir), the
   full `save-menu-lines`/`save-menu-act` key walk — name entry with
   junk-char rejection, Backspace, the live echo, the empty-name and

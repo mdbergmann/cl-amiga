@@ -59,6 +59,7 @@
    #:hero-con #:hero-lck #:hero-ac #:hero-damage #:hero-gold
    #:hero-alive-p #:alive-heroes #:party-alive-p #:front-ranks
    #:hero-class-title #:hero-class-abbrev #:hero-summary-lines
+   #:hero-image #:hero-image-path #:hero-sheet-lines
    #:+party-limit+ #:party-full-p #:join-party
    #:damage-hero #:heal-hero #:stat-bonus #:award-xp #:xp-for-level
    ;; items, inventory and equipment
@@ -73,6 +74,7 @@
    ;; locations and shops
    #:game-location #:enter-location #:leave-location
    #:location-title #:location-kind #:location-arg
+   #:location-image #:location-image-path
    #:shop-stock #:item-price #:item-sell-price #:buy-item #:sell-item
    #:make-shop-view #:shop-view-hero #:shop-view-mode
    #:shop-lines #:shop-act #:location-lines #:location-act

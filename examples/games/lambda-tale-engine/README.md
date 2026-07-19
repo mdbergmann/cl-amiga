@@ -94,6 +94,15 @@ the Amiga) with a slim strip of active-effect icons below it, laid
 out in effect order — an effect granting a compass shows the live
 rose in its slot — and the numbered party roster (`# CHARACTER AC
 HIT PTS SPL PTS CL`, two-letter class codes) at the bottom.
+Locations (shops, taverns) and the character sheet **take over the
+message area**: their menu renders at the top of the log page with
+the trailing log lines still scrolling underneath, while the view
+column shows the location's picture or the hero's portrait when the
+campaign ships one (`(location ... :image FILE)`,
+`define-hero-class ... :image FILE` — resolved relative to the map
+file like effect icons; without one the live first-person view stays).
+The cast/use/sing menus and the save picker draw as an overlay page
+over the view column instead, keeping the log readable during combat.
 The key reference lives on the help page under `h`/`?`; the map view's
 footer shows the zone, position and game clock.  The full automap lives under `m`; maps can be large (30x30
 like Bard's Tale I, up to 128x128).  The key bindings are listed in
@@ -243,6 +252,17 @@ heals a chosen hero or installs a timed effect from the same
 vocabulary spells speak, a `:consumed` item is spent on use, and
 `:image` gives the effect its band icon.  See the "Usable items" test
 section of `tests/run-tests.lisp` for the exact rules.
+
+A location may also name a **picture** — `(location ... :image
+"gfx/shop.iff")` — shown in the view column while its menu is up, and
+a hero class a **portrait** — `(define-hero-class ... :image
+"gfx/hero-warrior.iff")` — shown beside the character sheet; both
+resolve relative to the map file, like effect icons and zone tile
+packs, so a world directory carries its own art.
+`tools/gen-walls.lisp` draws placeholder scenes and portraits
+(`draw-location-scene`, `draw-portrait`); Closure's
+`worlds/closure/gfx/make-pack.lisp` shows how a world generates and
+ships them.
 
 ### Building your own world
 

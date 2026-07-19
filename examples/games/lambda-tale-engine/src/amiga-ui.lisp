@@ -25,6 +25,16 @@
 ;;;
 ;;; The automap lives in a full-screen map mode under the 'm' key.
 ;;;
+;;; Locations (shop, tavern, ...) and the character sheet TAKE OVER
+;;; the message area (%AMIGA-DRAW-TAKEOVER): their menu lines render
+;;; at the top of the log page, the trailing log lines keep scrolling
+;;; below a rule, and the view column shows the location's :image /
+;;; the sheet hero's class portrait when the campaign provides one
+;;; (%AMIGA-DRAW-PICTURE; the live first-person view otherwise).  The
+;;; cast/use/sing menus and the save picker keep their overlay page
+;;; over the view column (%AMIGA-DRAW-PAGE) — the log stays readable
+;;; beside them, which matters in combat.
+;;;
 ;;; Loaded only on AmigaOS (see src/load.lisp); the requires below must run
 ;;; before the rest of this file is read so AMIGA.INTUITION / AMIGA.GFX /
 ;;; AMIGA.GADTOOLS symbols resolve.
@@ -411,16 +421,18 @@ page without a background-color box around every character."
              walls))
   nil)
 
-;;; Effects-band icons (effect :image files): loaded lazily on first
-;;; draw into a per-session cache keyed by the resolved path
-;;; (EFFECT-IMAGE-PATH — map-relative, like zone tile packs), with the
-;;; wall-piece bitmap recipe: window-depth friend bitmap, chunky
-;;; upload, chip-RAM cookie-cut mask when the icon uses pen 0.  A file
-;;; that will not load logs once and the effect keeps its text label.
+;;; The image cache: effects-band icons (effect :image), location
+;;; pictures (the location op's :image) and character portraits (hero
+;;; class :image) — arbitrary ILBMs loaded lazily on first draw into a
+;;; per-session cache keyed by the resolved path (map-relative, like
+;;; zone tile packs), with the wall-piece bitmap recipe: window-depth
+;;; friend bitmap, chunky upload, chip-RAM cookie-cut mask when the
+;;; image uses pen 0.  A file that will not load logs once and its
+;;; user falls back (text label, first-person view).
 
-(defun %load-effect-icon (rp path)
-  "Load the icon at PATH into an offscreen bitmap; returns the cache
-entry (BITMAP WIDTH HEIGHT MASK), MASK NIL for an opaque icon."
+(defun %load-image (rp path)
+  "Load the ILBM at PATH into an offscreen bitmap; returns the cache
+entry (BITMAP WIDTH HEIGHT MASK), MASK NIL for an opaque image."
   (let* ((img (read-ilbm path))
          (w (image-width img))
          (h (image-height img))
@@ -437,35 +449,65 @@ entry (BITMAP WIDTH HEIGHT MASK), MASK NIL for an opaque icon."
       (amiga.gfx:write-chunky brp 0 0 w h (image-pixels img)))
     (list bm w h mask)))
 
-(defun %effect-icon (rp icons game effect log)
-  "EFFECT's cached icon entry (BITMAP WIDTH HEIGHT MASK), loading it
-on first sight, or NIL — no :image, or the file would not load (said
-once in the log; the band falls back to the text label)."
-  (let ((path (effect-image-path game effect)))
-    (when path
-      (let ((entry (gethash path icons)))
-        (cond ((eq entry :missing) nil)
-              (entry entry)
-              (t (handler-case
-                     (setf (gethash path icons) (%load-effect-icon rp path))
-                   (error (e)
-                     (when log
-                       (log-message log (format nil "No effect icon ~A (~A)."
-                                                path e)))
-                     (setf (gethash path icons) :missing)
-                     nil))))))))
+(defun %cached-image (rp images path log)
+  "The cached entry (BITMAP WIDTH HEIGHT MASK) for the ILBM at PATH,
+loading it on first sight, or NIL — PATH is NIL, or the file would
+not load (said once in the log)."
+  (when path
+    (let ((entry (gethash path images)))
+      (cond ((eq entry :missing) nil)
+            (entry entry)
+            (t (handler-case
+                   (setf (gethash path images) (%load-image rp path))
+                 (error (e)
+                   (when log
+                     (log-message log (format nil "No image ~A (~A)."
+                                              path e)))
+                   (setf (gethash path images) :missing)
+                   nil)))))))
 
-(defun %free-effect-icons (icons)
-  "Free the cached icon bitmaps and masks; safe with NIL."
-  (when icons
+(defun %effect-icon (rp images game effect log)
+  "EFFECT's cached icon entry (BITMAP WIDTH HEIGHT MASK), or NIL — no
+:image, or the file would not load (the band falls back to nothing)."
+  (%cached-image rp images (effect-image-path game effect) log))
+
+(defun %free-images (images)
+  "Free the cached image bitmaps and masks; safe with NIL."
+  (when images
     (maphash (lambda (path entry)
                (declare (ignore path))
                (unless (eq entry :missing)
                  (amiga.gfx:free-bitmap (first entry))
                  (when (fourth entry)
                    (amiga:free-chip (fourth entry)))))
-             icons))
+             images))
   nil)
+
+(defun %amiga-draw-picture (rp images path l log)
+  "Draw the ILBM at PATH in the view slot — black backdrop, the image
+centered (center-cropped when it overhangs the viewport).  Returns T,
+or NIL — no PATH, or the file would not load — so the caller can fall
+back to the first-person view.  Pictures blit opaque: over the black
+backdrop a pen-0 pixel and a masked-out pixel look the same."
+  (let ((entry (%cached-image rp images path log)))
+    (when entry
+      (destructuring-bind (bm iw ih mask) entry
+        (declare (ignore mask))
+        (let* ((ox (ui-layout-bx l))
+               (oy (ui-layout-by l))
+               (w (ui-layout-fp-w l))
+               (h (ui-layout-fp-h l))
+               (bw (min iw w))
+               (bh (min ih h))
+               (sx (max 0 (floor (- iw w) 2)))
+               (sy (max 0 (floor (- ih h) 2)))
+               (dx (+ ox (max 0 (floor (- w iw) 2))))
+               (dy (+ oy (max 0 (floor (- h ih) 2)))))
+          (amiga.gfx:set-a-pen rp 0)
+          (amiga.gfx:rect-fill rp ox oy (+ ox w -1) (+ oy h -1))
+          (amiga.gfx:set-a-pen rp 1)
+          (amiga.gfx:blt-bitmap-rastport bm sx sy rp dx dy bw bh)
+          t)))))
 
 ;;; Message-log lines render in the engine's 5x7 microfont
 ;;; (microfont.lisp) — smaller than topaz 8, so the narrow column
@@ -623,13 +665,23 @@ fixed spot.  An effect with neither icon nor :COMPASS shows nothing."
                  (incf x (+ iw 2)))))))))
     (amiga.gfx:set-a-pen rp 1)))
 
+(defun %put-microfont-line (rp lines-cache text x y)
+  "One microfont display line at (X,Y): the cached bitmap blit when
+LINES-CACHE is given, a direct chunky upload otherwise (correct but
+slower — good enough for tests)."
+  (if lines-cache
+      (destructuring-bind (bm . bw) (%log-line-bitmap rp lines-cache text)
+        (amiga.gfx:blt-bitmap-rastport bm 0 0 rp x y
+                                       bw +microfont-line-height+))
+      (multiple-value-bind (pens pw ph) (microfont-line text 0 1)
+        (amiga.gfx:write-chunky rp x y pw ph pens))))
+
 (defun %amiga-draw-log (rp log l &optional lines-cache)
   "Message log: trailing lines, newest at the bottom, black microfont
 text on the white page (the shell — outline and shadow — is
 %CHROME-FRAMES's; the strip below the page belongs to
 %AMIGA-DRAW-BAND).  LINES-CACHE is the session's rendered-line bitmap
-cache (see %LOG-LINE-BITMAP); without one each line's pen buffer is
-uploaded directly — correct but slower, good enough for tests."
+cache (see %LOG-LINE-BITMAP)."
   (let* ((ox (ui-layout-log-x l))
          (oy (ui-layout-by l))
          (w (ui-layout-log-w l))
@@ -648,17 +700,71 @@ uploaded directly — correct but slower, good enough for tests."
     (amiga.gfx:rect-fill rp (- ox 3) oy (+ ox w -1) (+ oy h -1))
     (let ((y (+ oy (- h (* (length lines) lh)) -1)))
       (dolist (m lines)
-        (let ((text (if (> (length m) max-chars)
-                        (subseq m 0 max-chars)
-                        m)))
-          (if lines-cache
-              (destructuring-bind (bm . bw)
-                  (%log-line-bitmap rp lines-cache text)
-                (amiga.gfx:blt-bitmap-rastport bm 0 0 rp ox y bw lh))
-              (multiple-value-bind (pens pw ph)
-                  (microfont-line text 0 1)
-                (amiga.gfx:write-chunky rp ox y pw ph pens))))
+        (%put-microfont-line rp lines-cache
+                             (if (> (length m) max-chars)
+                                 (subseq m 0 max-chars)
+                                 m)
+                             ox y)
         (incf y lh)))
+    (amiga.gfx:set-a-pen rp 1)))
+
+(defun %amiga-draw-takeover (rp lines log l &optional lines-cache)
+  "An interaction taking over the message area — a location's menu or
+the character sheet: LINES (microfont, wrapped) from the top of the
+white page, then a rule, then the trailing log lines at the bottom, so
+game feedback (a purchase, a drink) stays visible while the menu is
+up.  The page interior repaints wholesale — the takeover's 'cls' — so
+switching pages never leaves stale text.  LINES-CACHE as in
+%AMIGA-DRAW-LOG."
+  (let* ((ox (ui-layout-log-x l))
+         (oy (ui-layout-by l))
+         (w (ui-layout-log-w l))
+         (h (- (ui-layout-page-b l) oy))
+         (lh +microfont-line-height+)
+         (rows (max 1 (floor (- h 2) lh)))
+         (max-chars (max 4 (floor (- w 4) +microfont-advance+)))
+         (menu (let ((all (mapcan (lambda (text) (wrap-text text max-chars))
+                                  lines)))
+                 ;; a page that overflows gives up its blank spacer
+                 ;; lines before it truncates content (the lores shop
+                 ;; page is the tight case)
+                 (if (> (length all) rows)
+                     (delete "" all :test #'string=)
+                     all)))
+         (n-menu (min (length menu) rows))
+         ;; the rule and the log tail live in whatever rows the menu
+         ;; leaves free (none is fine — the menu keeps the page)
+         (tail-rows (max 0 (- rows n-menu 1)))
+         (tail (when (plusp tail-rows)
+                 (last (mapcan (lambda (m) (wrap-message m max-chars))
+                               (log-recent log tail-rows))
+                       tail-rows))))
+    ;; page interior: the takeover's cls
+    (amiga.gfx:set-a-pen rp 1)
+    (amiga.gfx:rect-fill rp (- ox 3) oy (+ ox w -1) (+ oy h -1))
+    (let ((y (1+ oy))
+          (n 0))
+      (dolist (text menu)
+        (when (< n n-menu)
+          (%put-microfont-line rp lines-cache
+                               (if (> (length text) max-chars)
+                                   (subseq text 0 max-chars)
+                                   text)
+                               ox y)
+          (incf y lh)
+          (incf n))))
+    ;; log tail, newest at the page bottom, under the rule
+    (when tail
+      (let ((y (+ oy (- h (* (length tail) lh)) -1)))
+        (amiga.gfx:set-a-pen rp 0)
+        (amiga.gfx:draw-line rp (- ox 2) (- y 3) (+ ox w -3) (- y 3))
+        (dolist (m tail)
+          (%put-microfont-line rp lines-cache
+                               (if (> (length m) max-chars)
+                                   (subseq m 0 max-chars)
+                                   m)
+                               ox y)
+          (incf y lh))))
     (amiga.gfx:set-a-pen rp 1)))
 
 (defun %amiga-hero-row (rp game l y hero index)
@@ -765,8 +871,11 @@ sheet."
     (amiga.gfx:set-a-pen rp 1)))
 
 (defun %amiga-draw-sheet (rp game index l)
-  "Character-sheet page ('1'-'7' from play): the INDEXth party member's
-stat block on a white parchment page over the grey chrome."
+  "The INDEXth party member's stat block on a full white parchment
+page over the grey chrome.  The play flow shows the sheet as a
+message-area takeover instead (HERO-SHEET-LINES + the portrait in the
+view column — see REDRAW); this full-page overlay variant stays for
+front-ends that want it."
   (let* ((ox (ui-layout-bx l))
          (oy (ui-layout-by l))
          (lh (ui-layout-lh l))
@@ -804,11 +913,13 @@ stat block on a white parchment page over the grey chrome."
     (amiga.gfx:set-a-pen rp 1)))
 
 (defun %amiga-draw-page (rp menu-lines l)
-  "A menu page (shop, cast, save slots): MENU-LINES on a white page
-over the view column.  The log and roster panes stay live around it —
-hit/spell points and messages update as the party acts.  Lines pack
-at one pixel of leading (tighter than the layout's LH) so a full shop
-page fits above the roster on the lo-res screen."
+  "An overlay menu page (cast, use, sing, save slots): MENU-LINES on
+a white page over the view column.  The log and roster panes stay
+live around it — hit/spell points and messages update as the party
+acts.  Lines pack at one pixel of leading (tighter than the layout's
+LH) so a full page fits above the roster on the lo-res screen.
+Locations and the character sheet use the message-area takeover
+instead (%AMIGA-DRAW-TAKEOVER)."
   (let* ((ox (ui-layout-bx l))
          (oy (ui-layout-by l))
          (lh (1+ (amiga.gfx:rastport-tx-height rp)))
@@ -1017,7 +1128,10 @@ reference — H/Esc leaves), 1-7 open a party member's character sheet
 (1-7 switch heroes there, Esc leaves), C cast a spell (pick
 caster/spell/target by number, Esc backs out), Q/Esc quit; in combat
 A attack, D defend, C cast, F flee; in a location (shop) 1-9 choose,
-S/B switch sell/buy, Esc back/leave.  Shift-S / Shift-L (and the
+S/B switch sell/buy, Esc back/leave — the location menu and the
+character sheet take over the message area, with the location's
+:image / the hero's portrait in the view column when the campaign
+ships one.  Shift-S / Shift-L (and the
 menu strip's Save/Load, right mouse button) open the save-slot
 picker: 1-9 pick a slot, N names a new save (saves/NAME.sav), Esc
 cancels; Quit sits in the menu strip too."
@@ -1087,7 +1201,8 @@ cancels; Quit sits in the menu strip too."
                        (walls nil)      ; loaded piece bitmaps
                        (walls-dir nil)  ; the pack they came from
                        (icons (make-hash-table :test #'equal))
-                                        ; effects-band icon cache
+                                        ; image cache: effect icons,
+                                        ; location pictures, portraits
                        (log-lines (make-hash-table :test #'equal)))
                                         ; rendered log-line bitmap cache
                (labels ((effective-gfx-dir ()
@@ -1140,7 +1255,10 @@ cancels; Quit sits in the menu strip too."
                                   mode :sheet)
                             (redraw)))
                         (leave-sheet ()
-                          (fresh-play))
+                          ;; the sheet lives in the panes (takeover +
+                          ;; portrait) — no chrome to repair
+                          (setf mode :play)
+                          (redraw))
                         (open-help ()
                           ;; 'h'/'?' from play or map mode: remember
                           ;; where to return
@@ -1161,11 +1279,15 @@ cancels; Quit sits in the menu strip too."
                           (cond
                             ((eq mode :map)
                              (%amiga-draw-map-page rp game l full))
-                            ((eq mode :sheet)
-                             (%amiga-draw-sheet rp game sheet-hero l))
                             ((eq mode :help)
                              (%amiga-draw-help rp l))
                             (t
+                             ;; The view column: an overlay menu page
+                             ;; (save picker, cast/use/sing), else the
+                             ;; takeover's picture (the location's
+                             ;; :image, the sheet hero's portrait) with
+                             ;; the live first-person view as the
+                             ;; fallback when there is no picture.
                              (cond (savem
                                     (%amiga-draw-page
                                      rp (save-menu-lines game savem) l))
@@ -1178,23 +1300,44 @@ cancels; Quit sits in the menu strip too."
                                    (singv
                                     (%amiga-draw-page
                                      rp (sing-lines game singv) l))
+                                   (t
+                                    (let ((picture
+                                            (cond ((eq mode :sheet)
+                                                   (let ((hero (nth sheet-hero
+                                                                    (game-party
+                                                                     game))))
+                                                     (when hero
+                                                       (hero-image-path
+                                                        game hero))))
+                                                  ((game-location game)
+                                                   (location-image-path
+                                                    game)))))
+                                      (unless (%amiga-draw-picture
+                                               rp icons picture l log)
+                                        (%amiga-draw-fp rp game
+                                                        (ui-layout-bx l)
+                                                        (ui-layout-by l)
+                                                        (ui-layout-fp-w l)
+                                                        (ui-layout-fp-h l)
+                                                        walls)))
+                                    (%amiga-draw-band rp game l icons log)))
+                             ;; The message area: taken over by the
+                             ;; character sheet or the location's menu
+                             ;; (log tail below the rule), else the log.
+                             (cond ((eq mode :sheet)
+                                    (%amiga-draw-takeover
+                                     rp (hero-sheet-lines game sheet-hero)
+                                     log l log-lines))
                                    ((game-location game)
-                                    (%amiga-draw-page
+                                    (%amiga-draw-takeover
                                      rp
                                      (location-lines
                                       game
                                       (or shopv
                                           (setf shopv (make-shop-view))))
-                                     l))
+                                     log l log-lines))
                                    (t
-                                    (%amiga-draw-fp rp game
-                                                    (ui-layout-bx l)
-                                                    (ui-layout-by l)
-                                                    (ui-layout-fp-w l)
-                                                    (ui-layout-fp-h l)
-                                                    walls)
-                                    (%amiga-draw-band rp game l icons log)))
-                             (%amiga-draw-log rp log l log-lines)
+                                    (%amiga-draw-log rp log l log-lines)))
                              (%amiga-party rp game l))))
                         (%step (relative)
                           ;; Log the notable step results; plain steps
@@ -1357,9 +1500,12 @@ cancels; Quit sits in the menu strip too."
                                                 (setf shopv
                                                       (make-shop-view)))
                                             key))
-                                         (if (game-location game)
-                                             (redraw)
-                                             (fresh-play))
+                                         ;; the location lives in the
+                                         ;; panes too — leaving needs
+                                         ;; only a redraw (a trapdoor
+                                         ;; travel sets zone-dirty and
+                                         ;; redraw repaints the chrome)
+                                         (redraw)
                                          nil)))
                                   ((or (eql lc #\q) (eql c :esc)) :quit)
                                   (over nil) ; game ended: only Q/Esc react
@@ -1423,5 +1569,5 @@ cancels; Quit sits in the menu strip too."
                              (when (eq (act (pop *autoplay*)) :quit)
                                (return))))))
                    (setf walls (%free-wall-assets walls)
-                         icons (%free-effect-icons icons)
+                         icons (%free-images icons)
                          log-lines (%free-log-lines log-lines)))))))))))))))

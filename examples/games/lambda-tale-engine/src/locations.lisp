@@ -26,6 +26,22 @@
 (defun location-arg (location key)
   (getf (location-args location) key))
 
+(defun location-image (location)
+  "LOCATION's picture file name — the :IMAGE arg of the location op —
+or NIL.  The Amiga front-end shows it in the view column while the
+location's menu takes over the message area."
+  (location-arg location :image))
+
+(defun location-image-path (game)
+  "The current location's picture file resolved like an effect icon —
+relative to the current map file's directory, so a self-contained
+world directory carries its own art — or NIL: no location, or it
+names no :IMAGE."
+  (let* ((loc (game-location game))
+         (image (and loc (location-image loc))))
+    (when image
+      (%resolve-map-path (dungeon-map-name (game-map game)) image))))
+
 (defun enter-location (game spec)
   "Enter the location described by SPEC = (TITLE KIND ARG...) — the
 LOCATION special op calls this.  Sets the game's modal location state

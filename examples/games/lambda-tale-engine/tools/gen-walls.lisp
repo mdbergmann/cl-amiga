@@ -308,6 +308,174 @@ teardrop) or :shield (a grey kite with an amber boss)."
              do (setf (pixel-ref img 7 y) 3))))
     img))
 
+;;; ---------------------------------------------------------------------
+;;; Location pictures and character portraits: procedural placeholders
+;;; a world can ship for its location :image and hero-class :image —
+;;; the art the view column shows while the location menu or the
+;;; character sheet takes over the message area.  Pictures blit opaque
+;;; over a black backdrop, so pen 0 is plain black here (no
+;;; transparency contract).  They draw in the fixed UI pens only —
+;;; black, white, grey, amber — so they read correctly on any screen
+;;; whatever tile pack is active (packs may only recolor pens 4+).
+
+(defparameter *picture-palette*
+  #((0 0 0) (255 255 255) (136 136 136) (255 170 51))
+  "CMAP for pictures and portraits: the fixed UI pens.")
+
+(defun %img-ellipse (img cx cy rx ry fill &optional edge)
+  "Filled ellipse at (CX,CY), radii RX/RY, pen FILL; EDGE (when given)
+outlines the rim one pixel thick."
+  (let ((rx2 (* rx rx))
+        (ry2 (* ry ry)))
+    (loop for y from (- cy ry) to (+ cy ry)
+          do (loop for x from (- cx rx) to (+ cx rx)
+                   do (let* ((dx (- x cx))
+                             (dy (- y cy))
+                             (d (+ (* dx dx ry2) (* dy dy rx2))))
+                        (when (and (<= d (* rx2 ry2))
+                                   (<= 0 x (1- (image-width img)))
+                                   (<= 0 y (1- (image-height img))))
+                          (setf (pixel-ref img x y)
+                                (if (and edge
+                                         (> d (* (1- rx) (1- rx)
+                                                 (1- ry) (1- ry))))
+                                    edge
+                                    fill))))))))
+
+(defun %chrome-scene-rect (img x0 y0 x1 y1 pen)
+  "Rectangle outline inside a picture."
+  (%img-fill img x0 y0 x1 y0 pen)
+  (%img-fill img x0 y1 x1 y1 pen)
+  (%img-fill img x0 y0 x0 y1 pen)
+  (%img-fill img x1 y0 x1 y1 pen))
+
+(defun draw-location-scene (kind w h)
+  "A W x H location picture for the view column — :SHOP (stocked
+shelves over a counter), :TAVERN (a table with a foaming mug beside a
+barrel), anything else (a plain doorway)."
+  (let ((img (make-image w h 2 :palette *picture-palette*)))
+    (ecase kind
+      (:shop
+       ;; grey floor, a counter, two stocked shelves
+       (%img-fill img 0 (floor (* 7 h) 8) (1- w) (1- h) 2)
+       (%img-fill img (floor w 8) (floor (* 5 h) 8)
+                  (floor (* 7 w) 8) (floor (* 7 h) 8) 2)
+       (%img-fill img (floor w 8) (floor (* 5 h) 8)
+                  (floor (* 7 w) 8) (floor (* 5 h) 8) 1)
+       (dolist (sy (list (floor h 4) (floor (* 7 h) 16)))
+         (%img-fill img (floor w 8) sy (floor (* 7 w) 8) sy 1)
+         ;; the goods: amber wares spaced along each shelf
+         (loop for x from (floor w 6) below (floor (* 4 w) 5)
+                 by (max 6 (floor w 10))
+               do (%img-fill img x (- sy (max 3 (floor h 16)))
+                             (+ x (max 3 (floor w 40))) (1- sy) 3)))
+       ;; the hanging sign
+       (%img-fill img (floor (* 2 w) 5) (floor h 16)
+                  (floor (* 3 w) 5) (floor h 8) 3)
+       (%chrome-scene-rect img (floor (* 2 w) 5) (floor h 16)
+                           (floor (* 3 w) 5) (floor h 8) 1))
+      (:tavern
+       ;; grey floor, a table with a foaming mug, a barrel to the right
+       (%img-fill img 0 (floor (* 7 h) 8) (1- w) (1- h) 2)
+       (%img-fill img (floor w 8) (floor (* 5 h) 8)
+                  (floor (* 5 w) 8) (floor (* 11 h) 16) 2)
+       (%img-fill img (floor w 8) (floor (* 5 h) 8)
+                  (floor (* 5 w) 8) (floor (* 5 h) 8) 1)
+       (%img-fill img (floor (* 3 w) 16) (floor (* 11 h) 16)
+                  (floor (* 3 w) 16) (floor (* 7 h) 8) 2)
+       (%img-fill img (floor (* 9 w) 16) (floor (* 11 h) 16)
+                  (floor (* 9 w) 16) (floor (* 7 h) 8) 2)
+       ;; the mug: amber body, white foam, a handle
+       (let ((mx (floor (* 3 w) 8))
+             (mt (floor (* 15 h) 32)))
+         (%img-fill img mx mt (+ mx (floor w 16)) (floor (* 5 h) 8) 3)
+         (%img-fill img mx (- mt (max 1 (floor h 32)))
+                    (+ mx (floor w 16)) mt 1)
+         (%img-fill img (+ mx (floor w 16) 1) (+ mt (floor h 32))
+                    (+ mx (floor w 16) 2) (floor (* 9 h) 16) 1))
+       ;; the barrel: grey ellipse with black hoops
+       (let ((bx (floor (* 3 w) 4))
+             (by (floor (* 11 h) 16)))
+         (%img-ellipse img bx by (floor w 10) (floor h 5) 2 1)
+         (%img-fill img (- bx (floor w 11)) (- by (floor h 16))
+                    (+ bx (floor w 11)) (- by (floor h 16)) 0)
+         (%img-fill img (- bx (floor w 11)) (+ by (floor h 16))
+                    (+ bx (floor w 11)) (+ by (floor h 16)) 0)))
+      (t
+       ;; a plain amber doorway
+       (let ((dx0 (floor (* 3 w) 8))
+             (dx1 (floor (* 5 w) 8))
+             (dy0 (floor h 4))
+             (dy1 (floor (* 7 h) 8)))
+         (%img-fill img 0 dy1 (1- w) (1- h) 2)
+         (%img-fill img dx0 dy0 dx1 dy1 3)
+         (%chrome-scene-rect img dx0 dy0 dx1 dy1 1))))
+    img))
+
+(defparameter *portrait-size* 64
+  "Class portraits are square, this many pixels a side.")
+
+(defun draw-portrait (style &optional (w *portrait-size*) (h *portrait-size*))
+  "A W x H bust portrait placeholder for a hero class.  STYLE picks
+the headgear: :HELM (a grey helmet with a nose guard), :CREST (the
+helmet with an amber plume), :HOOD (a grey hood), :CAP (a flat cap
+with an amber feather), :HAT (a tall pointed hat with an amber band)
+or :PLAIN (a bare head)."
+  (let* ((img (make-image w h 2 :palette *picture-palette*))
+         (cx (floor w 2))
+         (cy (floor (* 2 h) 5))
+         (rx (floor w 6))
+         (ry (floor h 5)))
+    ;; shoulders: a trapezoid rising to the neck
+    (loop for y from (floor (* 7 h) 10) below h
+          do (let ((hw (min (floor (* 2 w) 5)
+                            (+ (floor w 6)
+                               (floor (* (- y (floor (* 7 h) 10)) w)
+                                      h)))))
+               (%img-fill img (- cx hw) y (+ cx hw) y 2)))
+    (%img-fill img (- cx (floor rx 2)) (+ cy ry)
+               (+ cx (floor rx 2)) (floor (* 7 h) 10) 2)   ; the neck
+    ;; the head, then the face
+    (%img-ellipse img cx cy rx ry 2 1)
+    (let ((ex (floor rx 2))
+          (ey (floor ry 4)))
+      (%img-fill img (- cx ex) (- cy ey) (1+ (- cx ex)) (- cy ey) 0)
+      (%img-fill img (+ cx ex -1) (- cy ey) (+ cx ex) (- cy ey) 0)
+      (%img-fill img (- cx (floor ex 2)) (+ cy (* 2 ey))
+                 (+ cx (floor ex 2)) (+ cy (* 2 ey)) 0))
+    ;; the headgear
+    (ecase style
+      ((:helm :crest)
+       (%img-fill img (- cx rx) (- cy ry) (+ cx rx)
+                  (- cy (floor ry 3)) 2)
+       (%img-fill img (- cx rx) (- cy (floor ry 3)) (+ cx rx)
+                  (- cy (floor ry 3)) 1)
+       (%img-fill img cx (- cy (floor ry 3)) cx (- cy (floor ry 8)) 2)
+       (when (eq style :crest)
+         (%img-fill img (- cx 1) (- cy ry (floor h 10))
+                    (1+ cx) (- cy ry) 3)))
+      (:hood
+       (%img-ellipse img cx (- cy (floor ry 2)) (+ rx 3)
+                     (+ (floor ry 2) 3) 2 1)
+       (%img-fill img (- cx rx -2) (- cy (floor ry 2))
+                 (+ cx rx -2) (- cy (floor ry 3)) 0))
+      (:cap
+       (%img-fill img (- cx rx 2) (- cy ry 2) (+ cx rx 2) (- cy ry -2) 2)
+       (%img-fill img (- cx rx 2) (- cy ry 2) (+ cx rx 2) (- cy ry 2) 1)
+       (%img-fill img (+ cx rx) (- cy ry (floor h 12))
+                  (+ cx rx 2) (- cy ry) 3))
+      (:hat
+       ;; the point at the top, widening down to the brim
+       (loop for k from 1 to (floor h 5)
+             do (let ((hw (max 1 (round (* rx k) (floor h 5)))))
+                  (%img-fill img (- cx hw) (- (- cy ry) (- (floor h 5) k))
+                             (+ cx hw) (- (- cy ry) (- (floor h 5) k)) 2)))
+       (%img-fill img (- cx rx) (- cy ry) (+ cx rx) (- cy ry -1) 3))
+      (:plain
+       (%img-fill img (- cx rx) (- cy ry) (+ cx rx)
+                  (- cy (floor (* 2 ry) 3)) 2)))
+    img))
+
 (defun generate-wall-assets (&key (profile *display-profile*) dir)
   "Draw all wall pieces plus the demo ceiling/floor backdrops for
 PROFILE's viewport and write them as ILBM files into DIR (default: the
