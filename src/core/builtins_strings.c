@@ -538,15 +538,74 @@ static CL_Obj coerce_to_string_obj(CL_Obj obj, const char *func_name)
     return CL_NIL;
 }
 
+/* Parse the trailing :START/:END keyword args shared by the case-conversion
+ * family (STRING-UPCASE/-DOWNCASE/-CAPITALIZE and NSTRING-* — CLHS 21.2).
+ * args[1..n-1] are alternating keyword/value pairs; first occurrence of a
+ * keyword wins and :ALLOW-OTHER-KEYS T admits unknown keywords, matching
+ * bi_parse_integer.  Validates 0 <= start <= end <= len and signals a
+ * descriptive error otherwise; :END NIL means end of string. */
+static void parse_case_bounds(const char *func_name, CL_Obj *args, int n,
+                              uint32_t len, uint32_t *start_out,
+                              uint32_t *end_out)
+{
+    int32_t start = 0, end = (int32_t)len;
+    int k, seen_start = 0, seen_end = 0, allow_other = 0;
+
+    *start_out = 0;
+    *end_out = len;
+    if (n <= 1)
+        return;
+    if ((n - 1) & 1)
+        cl_error(CL_ERR_ARGS, "%s: odd number of keyword arguments",
+                 func_name);
+    /* First pass: detect :ALLOW-OTHER-KEYS T so unknown keys don't error. */
+    for (k = 1; k + 1 < n; k += 2) {
+        if (!CL_SYMBOL_P(args[k]))
+            cl_error(CL_ERR_ARGS, "%s: keyword arg not a symbol", func_name);
+        if (strcmp(cl_symbol_name(args[k]), "ALLOW-OTHER-KEYS") == 0
+            && !allow_other)
+            allow_other = !CL_NULL_P(args[k + 1]);
+    }
+    for (k = 1; k + 1 < n; k += 2) {
+        const char *kn = cl_symbol_name(args[k]);
+        CL_Obj val = args[k + 1];
+        if (strcmp(kn, "START") == 0) {
+            if (seen_start) continue;
+            seen_start = 1;
+            if (!CL_FIXNUM_P(val))
+                cl_signal_type_error(val, "INTEGER", func_name);
+            start = CL_FIXNUM_VAL(val);
+        } else if (strcmp(kn, "END") == 0) {
+            if (seen_end) continue;
+            seen_end = 1;
+            if (CL_NULL_P(val)) continue;   /* :END NIL = string length */
+            if (!CL_FIXNUM_P(val))
+                cl_signal_type_error(val, "(OR NULL INTEGER)", func_name);
+            end = CL_FIXNUM_VAL(val);
+        } else if (strcmp(kn, "ALLOW-OTHER-KEYS") == 0) {
+            /* consumed in first pass */
+        } else if (!allow_other) {
+            cl_error(CL_ERR_ARGS, "%s: unknown keyword :%s", func_name, kn);
+        }
+    }
+    if (start < 0 || start > end || end > (int32_t)len)
+        cl_error(CL_ERR_ARGS,
+                 "%s: bad bounding indices :START %ld :END %ld for a string "
+                 "of length %lu",
+                 func_name, (long)start, (long)end, (unsigned long)len);
+    *start_out = (uint32_t)start;
+    *end_out = (uint32_t)end;
+}
+
 static CL_Obj bi_string_upcase(CL_Obj *args, int n)
 {
     CL_Obj str, result;
-    uint32_t i, len;
-    CL_UNUSED(n);
+    uint32_t i, start, end;
     str = coerce_to_string_obj(args[0], "STRING-UPCASE");
     result = cl_string_copy(str);
-    len = cl_string_length(result);
-    for (i = 0; i < len; i++) {
+    parse_case_bounds("STRING-UPCASE", args, n,
+                      cl_string_length(result), &start, &end);
+    for (i = start; i < end; i++) {
         int ch = cl_string_char_at(result, i);
         int up = cl_toupper(ch);
         if (up != ch)
@@ -558,12 +617,12 @@ static CL_Obj bi_string_upcase(CL_Obj *args, int n)
 static CL_Obj bi_string_downcase(CL_Obj *args, int n)
 {
     CL_Obj str, result;
-    uint32_t i, len;
-    CL_UNUSED(n);
+    uint32_t i, start, end;
     str = coerce_to_string_obj(args[0], "STRING-DOWNCASE");
     result = cl_string_copy(str);
-    len = cl_string_length(result);
-    for (i = 0; i < len; i++) {
+    parse_case_bounds("STRING-DOWNCASE", args, n,
+                      cl_string_length(result), &start, &end);
+    for (i = start; i < end; i++) {
         int ch = cl_string_char_at(result, i);
         int lo = cl_tolower(ch);
         if (lo != ch)
@@ -1518,13 +1577,13 @@ static CL_Obj bi_princ_to_string_fn(CL_Obj *args, int n)
 static CL_Obj bi_string_capitalize(CL_Obj *args, int n)
 {
     CL_Obj str, result;
-    uint32_t i, len;
+    uint32_t i, start, end;
     int in_word = 0;
-    CL_UNUSED(n);
     str = coerce_to_string_obj(args[0], "STRING-CAPITALIZE");
     result = cl_string_copy(str);
-    len = cl_string_length(result);
-    for (i = 0; i < len; i++) {
+    parse_case_bounds("STRING-CAPITALIZE", args, n,
+                      cl_string_length(result), &start, &end);
+    for (i = start; i < end; i++) {
         int c = cl_string_char_at(result, i);
         int is_alpha_c = cl_isalpha(c);
         int is_alnum = is_alpha_c || (c >= '0' && c <= '9');
@@ -1542,12 +1601,12 @@ static CL_Obj bi_string_capitalize(CL_Obj *args, int n)
 
 static CL_Obj bi_nstring_upcase(CL_Obj *args, int n)
 {
-    uint32_t i, len;
-    CL_UNUSED(n);
+    uint32_t i, start, end;
     if (!CL_ANY_STRING_P(args[0]))
-        cl_error(CL_ERR_TYPE, "NSTRING-UPCASE: not a string");
-    len = cl_string_length(args[0]);
-    for (i = 0; i < len; i++) {
+        cl_signal_type_error(args[0], "STRING", "NSTRING-UPCASE");
+    parse_case_bounds("NSTRING-UPCASE", args, n,
+                      cl_string_length(args[0]), &start, &end);
+    for (i = start; i < end; i++) {
         int ch = cl_string_char_at(args[0], i);
         int up = cl_toupper(ch);
         if (up != ch)
@@ -1558,12 +1617,12 @@ static CL_Obj bi_nstring_upcase(CL_Obj *args, int n)
 
 static CL_Obj bi_nstring_downcase(CL_Obj *args, int n)
 {
-    uint32_t i, len;
-    CL_UNUSED(n);
+    uint32_t i, start, end;
     if (!CL_ANY_STRING_P(args[0]))
-        cl_error(CL_ERR_TYPE, "NSTRING-DOWNCASE: not a string");
-    len = cl_string_length(args[0]);
-    for (i = 0; i < len; i++) {
+        cl_signal_type_error(args[0], "STRING", "NSTRING-DOWNCASE");
+    parse_case_bounds("NSTRING-DOWNCASE", args, n,
+                      cl_string_length(args[0]), &start, &end);
+    for (i = start; i < end; i++) {
         int ch = cl_string_char_at(args[0], i);
         int lo = cl_tolower(ch);
         if (lo != ch)
@@ -1574,13 +1633,13 @@ static CL_Obj bi_nstring_downcase(CL_Obj *args, int n)
 
 static CL_Obj bi_nstring_capitalize(CL_Obj *args, int n)
 {
-    uint32_t i, len;
+    uint32_t i, start, end;
     int in_word = 0;
-    CL_UNUSED(n);
     if (!CL_ANY_STRING_P(args[0]))
-        cl_error(CL_ERR_TYPE, "NSTRING-CAPITALIZE: not a string");
-    len = cl_string_length(args[0]);
-    for (i = 0; i < len; i++) {
+        cl_signal_type_error(args[0], "STRING", "NSTRING-CAPITALIZE");
+    parse_case_bounds("NSTRING-CAPITALIZE", args, n,
+                      cl_string_length(args[0]), &start, &end);
+    for (i = start; i < end; i++) {
         int c = cl_string_char_at(args[0], i);
         int is_alpha_c = cl_isalpha(c);
         int is_alnum = is_alpha_c || (c >= '0' && c <= '9');
@@ -1885,8 +1944,8 @@ void cl_builtins_strings_init(void)
     defun("STRING-GREATERP", bi_string_greaterp, 2, -1);
     defun("STRING-NOT-GREATERP", bi_string_not_greaterp, 2, -1);
     defun("STRING-NOT-LESSP", bi_string_not_lessp, 2, -1);
-    defun("STRING-UPCASE", bi_string_upcase, 1, 1);
-    defun("STRING-DOWNCASE", bi_string_downcase, 1, 1);
+    defun("STRING-UPCASE", bi_string_upcase, 1, -1);
+    defun("STRING-DOWNCASE", bi_string_downcase, 1, -1);
     defun("STRING-TRIM", bi_string_trim, 2, 2);
     defun("STRING-LEFT-TRIM", bi_string_left_trim, 2, 2);
     defun("STRING-RIGHT-TRIM", bi_string_right_trim, 2, 2);
@@ -1916,10 +1975,10 @@ void cl_builtins_strings_init(void)
     defun("PRINC-TO-STRING", bi_princ_to_string_fn, 1, 1);
 
     /* Phase 8 Step 2 */
-    defun("STRING-CAPITALIZE", bi_string_capitalize, 1, 1);
-    defun("NSTRING-UPCASE", bi_nstring_upcase, 1, 1);
-    defun("NSTRING-DOWNCASE", bi_nstring_downcase, 1, 1);
-    defun("NSTRING-CAPITALIZE", bi_nstring_capitalize, 1, 1);
+    defun("STRING-CAPITALIZE", bi_string_capitalize, 1, -1);
+    defun("NSTRING-UPCASE", bi_nstring_upcase, 1, -1);
+    defun("NSTRING-DOWNCASE", bi_nstring_downcase, 1, -1);
+    defun("NSTRING-CAPITALIZE", bi_nstring_capitalize, 1, -1);
     defun("CHAR-NAME", bi_char_name, 1, 1);
     defun("NAME-CHAR", bi_name_char, 1, 1);
     defun("GRAPHIC-CHAR-P", bi_graphic_char_p, 1, 1);

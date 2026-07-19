@@ -1310,6 +1310,25 @@ out=$(run_stress "$WORK/string-vec.lisp")
 check_contains "string fns on fill-pointer string correct under GC stress" "STRVEC:60" "$out"
 check_absent   "no not-a-string-designator from stale string-vector copy"  "not a string designator\|type 0\|corrupted" "$out"
 
+# --- Case: case-conversion family with :START/:END under GC stress -----------
+# string-upcase copies (allocates) BEFORE parsing the keyword args from
+# args[] — exercise the copy + bounded conversion + designator coercion
+# (symbol arg) with compaction on every alloc.
+cat > "$WORK/case-bounds.lisp" <<'EOF'
+(let ((hits 0))
+  (dotimes (i 20)
+    (when (string= (string-upcase "hello world" :start 6) "hello WORLD") (incf hits))
+    (when (string= (string-capitalize "hello world" :start 6 :end 11) "hello World") (incf hits))
+    (when (string= (string-upcase 'foo-bar :start 4) "FOO-BAR") (incf hits))
+    (let ((s (copy-seq "hello world")))
+      (when (eq s (nstring-upcase s :start 6)) (incf hits))
+      (when (string= s "hello WORLD") (incf hits))))
+  (format t "CASEBOUNDS:~a~%" hits))
+EOF
+out=$(run_stress "$WORK/case-bounds.lisp")
+check_contains "case-conversion :start/:end correct under GC stress" "CASEBOUNDS:100" "$out"
+check_absent   "no corruption from case-conversion keyword path"      "not a string\|type 0\|corrupted\|Unbound" "$out"
+
 # --- Case: sequence ops returning a STRING result for string-vector inputs ---
 # REVERSE / SUBSTITUTE / REMOVE-IF / COPY-SEQ on an adjustable character vector
 # allocate a fresh STRING result (make_seq_result_like / copy_array_seq) while the
