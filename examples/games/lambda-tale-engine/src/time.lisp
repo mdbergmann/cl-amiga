@@ -49,9 +49,14 @@ it is night in any other (outdoor) zone — unless a light effect burns."
            (not (daylight-p (game-time game))))))
 
 (defun game-view-depth (game)
-  "How many cells ahead the party can see: +VIEW-DEPTH+, or one cell
-in darkness (see GAME-DARK-P)."
-  (if (game-dark-p game) 1 +view-depth+))
+  "How many cells ahead the party can see: +VIEW-DEPTH+ in light.  In
+darkness (see GAME-DARK-P) the zone's (ZONE :DARK N) cell count when
+it declares one — capped at +VIEW-DEPTH+ — else one cell (a plain
+:DARK T zone, or night outdoors)."
+  (if (game-dark-p game)
+      (let ((dark (dungeon-map-dark (game-map game))))
+        (if (integerp dark) (min dark +view-depth+) 1))
+      +view-depth+))
 
 (defun advance-time (game &optional (minutes *minutes-per-action*))
   "Advance the clock by MINUTES (default *MINUTES-PER-ACTION*): emit

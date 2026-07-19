@@ -165,9 +165,13 @@
        (g (new-game m :party (default-party)))
        (cid (first (game-party g))))
   (check-true "the cellar is dark" (game-dark-p g))
+  (check "the cellar grants three cells of sight (:dark 3)" 3
+         (game-view-depth g))
   (give-item g cid 'torch)
   (check-true "El Cid burns a torch" (use-item g cid 'torch))
   (check-true "the torch defeats the dark" (not (game-dark-p g)))
+  (check "the torch buys the full view depth" +view-depth+
+         (game-view-depth g))
   (check "the torch burns for an hour" (+ (game-time g) 60)
          (effect-expires-at (find-effect g "Torch")))
   (check "the torch shows the flame icon"
@@ -237,8 +241,8 @@
 ;;; window, menu strip, redraws, key dispatch — with no user at the
 ;;; keyboard.  Scripted keys are fed one per INTUITICK, ending in #\q.
 
-;; The cellar is a :DARK zone, so the whole session renders at the
-;; one-cell darkness view depth; the script walks, opens a character
+;; The cellar is a :DARK 3 zone, so the whole session renders at the
+;; three-cell darkness view depth; the script walks, opens a character
 ;; sheet (1), switches hero (2), leaves it (:esc), and toggles map
 ;; mode and its debug view.  This session keeps :DISPLAY :WINDOW —
 ;; the Workbench-window development view — alive as a smoke test; the

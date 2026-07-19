@@ -72,7 +72,8 @@
   (start-y 0)
   (start-facing :north)
   gfx                 ; zone's tile-pack dir from (ZONE :GFX ...), or NIL
-  dark)               ; T = always dark (ZONE :DARK T) — needs a light
+  dark)               ; always dark (ZONE :DARK D) — needs a light;
+                      ; T = one cell of sight, an integer = that many
 
 (defun map-title (map)
   "The map's display name: its ZONE :title, else its file name."
@@ -229,7 +230,11 @@ map itself is smaller."
                (error "~A: zone :gfx ~S must be a directory string ~
 (e.g. \"gfx/\")" path gfx))
              (setf (dungeon-map-gfx map) gfx))
-           (when dark (setf (dungeon-map-dark map) t))))
+           (when dark
+             (unless (or (eq dark t) (and (integerp dark) (plusp dark)))
+               (error "~A: zone :dark ~S must be T (one cell of sight) ~
+or a positive integer (cells of sight in the dark)" path dark))
+             (setf (dungeon-map-dark map) dark))))
         (t (error "~A: unknown map form ~S (expected (zone ...) or ~
                    (special (x y) op...))"
                   path (first form)))))
@@ -252,8 +257,10 @@ the map, read with *READ-EVAL* bound to NIL and never evaluated:
           :dark D)           zone metadata: KIND is :dungeon (default),
                              :city, ... — maps self-describe what they
                              are; PACK names the zone's tile-pack
-                             directory (see ZONE-GFX-DIR); :dark T makes
-                             the zone dark at all hours (see GAME-DARK-P)
+                             directory (see ZONE-GFX-DIR); :dark D makes
+                             the zone dark at all hours (see GAME-DARK-P):
+                             T = one cell of sight, a positive integer =
+                             that many cells (see GAME-VIEW-DEPTH)
     (special (X Y) OP...)    attach a special to cell (X,Y)
 The forms section starts at the first line beginning with '(' or ';'
 \(no valid art line starts with either).  The :wrap and :start-facing

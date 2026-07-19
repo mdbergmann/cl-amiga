@@ -365,12 +365,30 @@ hand, the arrow tip of an arrow.  (VALUES 0 0) for an empty image."
       (when (plusp (pixel-ref image x y))
         (return-from pointer-hotspot (values x y))))))
 
-;;; The built-in pointer: a pointing hand, finger tip up.  Rows of
-;;; characters, `.` transparent, `1`-`3` the sprite pens.  A campaign
-;;; overrides both art and colors by shipping a pointer.iff in its tile
+;;; The built-in pointers: a relaxed open hand while nothing under the
+;;; pointer reacts, and a pointing hand — index finger out — over a
+;;; click target (the hover feedback, see *HOTSPOTS* in amiga-ui.lisp).
+;;; Rows of characters, `.` transparent, `1`-`3` the sprite pens.  A
+;;; campaign overrides art and colors by shipping a pointer.iff (the
+;;; hand) and a pointer-click.iff (the pointing finger) in its tile
 ;;; pack (see %ENSURE-STANDARD-POINTER in amiga-ui.lisp).
 
 (defparameter *hand-pointer-art*
+  '("....2..........."
+    "...2122........."
+    "..221212........"
+    ".21212122......."
+    ".212121212......"
+    ".212121212.22..."
+    ".211111112212..."
+    ".211111111112..."
+    ".211111111112..."
+    "..21111111112..."
+    "..2111111112...."
+    "...222222222....")
+  "The neutral pointer: an open hand, fingers up.")
+
+(defparameter *point-pointer-art*
   '("....22.........."
     "...2112........."
     "...2112........."
@@ -383,19 +401,21 @@ hand, the arrow tip of an arrow.  (VALUES 0 0) for an empty image."
     "21121111111112.."
     ".211111111112..."
     "..21111111112..."
-    "...222222222...."))
+    "...222222222....")
+  "The click-target pointer: a pointing hand, index finger tip up.")
 
 (defparameter *hand-pointer-colors*
   '((238 221 187) (17 17 17) (221 34 34))
   "Default sprite colors (screen colors 17-19), 0-255 components: the
-hand's light skin, its near-black outline, a red accent.")
+hands' light skin, their near-black outline, a red accent.  Both
+built-in pointers share them — the hardware sprite has one palette.")
 
-(defun hand-pointer-image ()
-  "The built-in pointing-hand pointer as an IMAGE, its palette entries
+(defun %pointer-art-image (art)
+  "ART (rows of `.`/pen characters) as an IMAGE, its palette entries
 1-3 filled with *HAND-POINTER-COLORS*."
-  (let* ((h (length *hand-pointer-art*))
+  (let* ((h (length art))
          (img (make-image 16 h 2)))
-    (loop for row in *hand-pointer-art*
+    (loop for row in art
           for y from 0
           do (loop for ch across row
                    for x from 0
@@ -406,3 +426,12 @@ hand's light skin, its near-black outline, a red accent.")
           for i from 1
           do (setf (aref (image-palette img) i) (copy-list rgb)))
     img))
+
+(defun hand-pointer-image ()
+  "The built-in open-hand pointer (the neutral state) as an IMAGE."
+  (%pointer-art-image *hand-pointer-art*))
+
+(defun point-pointer-image ()
+  "The built-in pointing-finger pointer (shown over a click target)
+as an IMAGE."
+  (%pointer-art-image *point-pointer-art*))

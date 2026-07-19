@@ -996,8 +996,53 @@ messages so far (oldest first)."
     (check-true "zone :dark parses" (dungeon-map-dark m))
     (check-true "a :dark zone is dark at noon"
                 (progn (setf (game-time g) 720) (game-dark-p g)))
+    (check "a plain :dark t zone sees one cell" 1 (game-view-depth g))
     (add-effect g "mage flame" :payload '(:light t))
     (check-true "light works underground too" (not (game-dark-p g))))
+  (delete-file path))
+
+;; (zone :dark N) — dark at any hour, but with N cells of sight (the
+;; Closure cellar plays with 3): a light effect still buys the full
+;; view depth, and N is capped at +VIEW-DEPTH+.
+(let* ((m (parse-map "+-+-+-+-+-+-+
+|@          |
++-+-+-+-+-+-+"
+                     :name "dim-test" :start-facing :east))
+       (g (new-game m)))
+  (setf (dungeon-map-dark m) 3)         ; as (zone :dark 3) stores it
+  (setf (game-time g) 720)              ; noon — still dark underground
+  (check-true "a :dark 3 zone is dark" (game-dark-p g))
+  (check ":dark 3 sees three cells" 3 (game-view-depth g))
+  (check ":dark 3 truncates compute-view to three" 3
+         (length (compute-view (game-map g) (game-x g) (game-y g)
+                               (game-facing g) (game-view-depth g))))
+  (add-effect g "torchlight" :payload '(:light t))
+  (check "a light buys the full view depth" +view-depth+
+         (game-view-depth g))
+  (remove-effect g "torchlight")
+  (setf (dungeon-map-dark m) 99)
+  (check ":dark above +view-depth+ is capped" +view-depth+
+         (game-view-depth g)))
+
+;; The :dark integer round-trips through the map file, and a bad value
+;; is rejected with a message naming the map.
+(let ((path "tests/tmp-dim.map"))
+  (with-open-file (s path :direction :output :if-exists :supersede)
+    (write-string "+-+-+
+|@  |
++-+-+
+(zone :kind :dungeon :title \"the cellar\" :dark 3)
+" s))
+  (check "zone :dark 3 parses as the integer" 3
+         (dungeon-map-dark (load-map-file path)))
+  (with-open-file (s path :direction :output :if-exists :supersede)
+    (write-string "+-+-+
+|@  |
++-+-+
+(zone :dark :pitch-black)
+" s))
+  (check-error "zone :dark rejects a non-integer non-T value"
+    (load-map-file path))
   (delete-file path))
 
 ;; at-night / at-day specials: pure clock tests.
@@ -2992,6 +3037,42 @@ messages so far (oldest first)."
                (aref (image-palette hand) 2)
                (aref (image-palette hand) 3))))
 
+(let ((point (point-pointer-image)))
+  (check "point pointer is sprite-wide" 16 (image-width point))
+  (check "point pointer converts row for row"
+         (length *point-pointer-art*)
+         (length (pointer-sprite-rows point)))
+  (check "point hotspot sits on the finger tip" '(4 0)
+         (multiple-value-bind (x y) (pointer-hotspot point) (list x y)))
+  (check "point pointer shares the sprite colors"
+         *hand-pointer-colors*
+         (list (aref (image-palette point) 1)
+               (aref (image-palette point) 2)
+               (aref (image-palette point) 3))))
+
+;; The hover state machine behind the pointer swap: over a hotspot the
+;; finger, elsewhere the hand.  *BUSY-POINTER-ACTIVE* suppresses the
+;; SetPointer call, so the pure state transitions run without a
+;; display; the busy bracket's unwind applies the pending state.
+;; (amiga-ui.lisp only loads on the Amiga — see also the on-screen
+;; hover checks in the game-window test below.)
+#+amigaos
+(let ((*hotspots* '((10 10 20 20 #\w)))
+      (*pointer-hot* nil)
+      (*busy-pointer-active* t))
+  (%track-pointer-hot nil 15 15)
+  (check-true "hover onto a click target arms the pointing finger"
+              *pointer-hot*)
+  (%track-pointer-hot nil 15 15)
+  (check-true "resting on the target keeps the state" *pointer-hot*)
+  (%track-pointer-hot nil 5 5)
+  (check "hover off the target goes back to the hand" nil
+         *pointer-hot*)
+  (let ((*hotspots* '()))
+    (%track-pointer-hot nil 15 15)
+    (check "a redraw that dropped the targets keeps the hand" nil
+           *pointer-hot*)))
+
 ;;; ---------------------------------------------------------------------
 ;;; Wall-art assets (M3): the checked-in tile packs — one per display
 ;;; profile — must match what the generator draws today, pixel for
@@ -3741,13 +3822,25 @@ brick grid" d side)
           ;; restores it, and dropping it clears the state.
           (let ((cm (amiga.gfx:viewport-color-map
                      (amiga.intuition:screen-viewport scr)))
-                (*game-pointer* nil))
+                (*game-pointer* nil)
+                (*point-pointer* nil)
+                (*pointer-hot* nil))
             (%ensure-standard-pointer scr win :screen)
             (check-true "the hand pointer is loaded" *game-pointer*)
+            (check-true "the pointing finger is loaded" *point-pointer*)
             (check "sprite color 17 took the hand's skin tone" #x0EDB
                    (amiga.gfx:get-rgb4 cm 17))
             (check "sprite color 18 took the hand's outline" #x0111
                    (amiga.gfx:get-rgb4 cm 18))
+            ;; hover feedback: crossing onto a click target shows the
+            ;; finger sprite, leaving it goes back to the hand
+            (let ((*hotspots* '((10 10 20 20 #\w))))
+              (%track-pointer-hot win 15 15)
+              (check-true "over a click target the finger is up"
+                          *pointer-hot*)
+              (%track-pointer-hot win 5 5)
+              (check "off the target the hand is back" nil
+                     *pointer-hot*))
             (let ((outer *game-pointer*))
               (check "busy pointer wraps a body and restores" :ok
                      (%call-with-busy-pointer win
@@ -3787,7 +3880,7 @@ brick grid" d side)
             (delete-file "tests/pointer.iff")
             (%free-standard-pointer win)
             (check "dropping the pointer clears the session state" nil
-                   *game-pointer*))
+                   (or *game-pointer* *point-pointer* *pointer-hot*)))
           (let ((rp (amiga.intuition:window-rastport win)))
             (amiga.gfx:set-a-pen rp 3)
             (amiga.gfx:rect-fill rp 0 0 50 3)

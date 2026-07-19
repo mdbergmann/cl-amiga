@@ -12,7 +12,9 @@
 
 ;; Story layer: cell specials (data, never evaluated — see src/specials.lisp).
 
-(zone :kind :dungeon :title "the cellar" :dark t)
+;; :dark 3 — dark at all hours, but with three cells of sight (a torch
+;; still buys the fourth); plain :dark t would clamp sight to one cell.
+(zone :kind :dungeon :title "the cellar" :dark 3)
 
 (special (0 0)
   (once (message "You descend into the cellar.  Rats squeal in the dark."
