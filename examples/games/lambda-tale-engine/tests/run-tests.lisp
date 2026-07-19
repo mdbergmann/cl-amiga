@@ -2965,11 +2965,11 @@ brick grid" d side)
                    (not (image-transparent-p
                          (draw-wall-piece '(:front 0) planes))))))
 
-;; Backdrop distance bands: solid fills split at the perspective-plane
-;; rows (lores planes top at rows 0/22/37, floor bottoms at 111/89/74,
-;; horizon between 55 and 56), darkening toward the horizon.  The wall
-;; blits go on top, so each band lines up with the corridor cell at
-;; its depth.
+;; Backdrops: the ceiling is solid distance bands split at the
+;; perspective-plane rows (lores planes top at rows 0/22/37, horizon
+;; between 55 and 56), darkening toward the horizon — the wall blits
+;; go on top, so each band lines up with the corridor cell at its
+;; depth.  The floor is one flat color, no distance shading.
 (with-display-profile (:lores)
   (let* ((planes (view-planes *fp-view-width* *fp-view-height*))
          (ceiling (draw-backdrop-piece :ceiling planes))
@@ -2979,14 +2979,13 @@ brick grid" d side)
            (list (pixel-ref ceiling 0 0)      ; band 0: rows 0-21
                  (pixel-ref ceiling 0 22)     ; band 1: rows 22-36
                  (pixel-ref ceiling 0 37)))   ; band 2: rows 37-horizon
-    (check "floor bands read far/mid/near down the slot"
-           (list +pen-dim+ +pen-mid+ +pen-brick+)
-           (list (pixel-ref floor 0 0)        ; band 2: horizon-row 74
-                 (pixel-ref floor 0 19)       ; band 1: rows 75-89
-                 (pixel-ref floor 0 34)))     ; band 0: rows 90-111
-    (check "the near floor band reaches the viewport bottom"
-           +pen-brick+
-           (pixel-ref floor 0 (1- (image-height floor))))
+    (check "the floor is one flat color edge to edge"
+           (list +pen-mid+)
+           (let ((pens '()))
+             (dotimes (y (image-height floor))
+               (dotimes (x (image-width floor))
+                 (pushnew (pixel-ref floor x y) pens)))
+             pens))
     (check "the far ceiling band reaches the horizon"
            +pen-bg+
            (pixel-ref ceiling 0 (1- (image-height ceiling))))))
@@ -3287,7 +3286,7 @@ brick grid" d side)
 ;; Read-back probes, dead end at (0,0) facing north: the front wall
 ;; piece's top row is the white edge highlight; above it the ceiling
 ;; backdrop shows its near distance band (dim grey, pen 6); below it
-;; the floor backdrop shows its near band (grey, pen 2).
+;; the floor backdrop shows its flat color (mid grey, pen 5).
 #+amigaos
 (dolist (spec '((:lores (80 22) (43 21) (70 96))
                 (:hires (100 26) (100 25) (90 110))))
@@ -3371,9 +3370,9 @@ full asset-size viewport" pname)
                        (amiga.gfx:read-pixel rp (+ (ui-layout-bx l) cx)
                                              (+ (ui-layout-by l) cy))))
               (destructuring-bind (sx sy) floor-xy
-                (check (format nil "~A: blitted floor near-band pixel"
-                               pname)
-                       +pen-brick+
+                (check (format nil "~A: blitted floor pixel is the ~
+flat floor color" pname)
+                       +pen-mid+
                        (amiga.gfx:read-pixel rp (+ (ui-layout-bx l) sx)
                                              (+ (ui-layout-by l) sy)))))
             (%free-wall-assets walls)))))))))))

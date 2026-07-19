@@ -32,9 +32,7 @@
     ;; transparent key), so a pack must not recolor it.
     (setf (aref pal 4) '(0 0 0))         ; opaque black (wall mortar)
     (setf (aref pal 5) '(0 0 136))       ; night sky
-    (setf (aref pal 6) '(204 153 102))   ; tan street (near band)
-    (setf (aref pal 7) '(153 102 68))    ; street, mid-distance band
-    (setf (aref pal 8) '(102 68 51))     ; street, far band
+    (setf (aref pal 6) '(204 153 102))   ; tan street
     pal))
 
 (defparameter *out* "worlds/closure/gfx/")
@@ -59,11 +57,10 @@
         (dotimes (x w)
           (setf (pixel-ref img x y) 5)))
       (write-ilbm img (concatenate 'string *out* "ceiling.iff")))
-    ;; tan street: solid distance bands darkening toward the horizon
-    ;; (pens 6/7/8), split at the perspective-plane rows like the
-    ;; engine's default floor
+    ;; tan street: one flat color (pen 6), like the engine's default
+    ;; floor — no distance shading
     (write-ilbm (%draw-backdrop (third floor) (fourth floor) planes
-                                (second floor) nil #(6 7 8)
+                                (second floor) nil #(6)
                                 :depth *city-depth*
                                 :palette *city-palette*)
                 (concatenate 'string *out* "floor.iff"))))
