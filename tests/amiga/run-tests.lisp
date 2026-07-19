@@ -4197,6 +4197,34 @@
 ; nstring-capitalize
 (check "nstring-capitalize" "Hello World" (let ((s (copy-seq "hello world"))) (nstring-capitalize s) s))
 
+; :start/:end bounding indices on the case-conversion family (CLHS 21.2)
+(check "string-upcase :start :end" "Dr. LiVINGstone, I presume?"
+       (string-upcase "Dr. Livingstone, I presume?" :start 6 :end 10))
+(check "string-upcase :start" "hello WORLD" (string-upcase "hello world" :start 6))
+(check "string-downcase :end" "hello WORLD" (string-downcase "HELLO WORLD" :end 5))
+(check "string-upcase :end nil" "aBC" (string-upcase "abc" :start 1 :end nil))
+(check "string-upcase empty region" "abc" (string-upcase "abc" :start 1 :end 1))
+(check "string-capitalize :start :end" "hello World"
+       (string-capitalize "hello world" :start 6 :end 11))
+(check "string-upcase designator :start" "FOO-BAR" (string-upcase 'foo-bar :start 4))
+(check "nstring-downcase :start :end" '(t "Dr. Livingstone, I presume?")
+       (let ((s (copy-seq "Dr. LiVINGstone, I presume?")))
+         (list (eq s (nstring-downcase s :start 6 :end 10)) s)))
+(check "nstring-upcase :start" "hello WORLD"
+       (let ((s (copy-seq "hello world"))) (nstring-upcase s :start 6) s))
+(check "nstring-capitalize :end" "Hello world"
+       (let ((s (copy-seq "hello world"))) (nstring-capitalize s :end 5) s))
+(check "string-upcase bad bounds" :bad-bounds
+       (handler-case (string-upcase "abc" :start 2 :end 1) (error () :bad-bounds)))
+(check "string-upcase :end past length" :bad-bounds
+       (handler-case (string-upcase "abc" :end 4) (error () :bad-bounds)))
+(check "string-upcase unknown keyword" :unknown-keyword
+       (handler-case (string-upcase "abc" :frob 1) (error () :unknown-keyword)))
+(check "string-upcase allow-other-keys" "ABC"
+       (string-upcase "abc" :frob 1 :allow-other-keys t))
+(check "string-upcase :start type-error" :start-type
+       (handler-case (string-upcase "abc" :start 'x) (type-error () :start-type)))
+
 ; char-name
 (check "char-name space" "Space" (char-name #\Space))
 (check "char-name newline" "Newline" (char-name #\Newline))

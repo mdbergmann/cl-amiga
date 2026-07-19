@@ -6622,6 +6622,79 @@ TEST(eval_nstring_capitalize)
         "  s)"), "\"Hello World\"");
 }
 
+TEST(eval_string_case_start_end)
+{
+    /* :START/:END bounding indices (CLHS 21.2, string-upcase page):
+       only the bounded subsequence is case-converted; the rest of the
+       fresh copy is unchanged. */
+    ASSERT_STR_EQ(eval_print(
+        "(string-upcase \"Dr. Livingstone, I presume?\" :start 6 :end 10)"),
+        "\"Dr. LiVINGstone, I presume?\"");
+    ASSERT_STR_EQ(eval_print("(string-upcase \"hello world\" :start 6)"),
+                  "\"hello WORLD\"");
+    ASSERT_STR_EQ(eval_print("(string-downcase \"HELLO WORLD\" :end 5)"),
+                  "\"hello WORLD\"");
+    /* :END NIL designates the end of the string. */
+    ASSERT_STR_EQ(eval_print("(string-upcase \"abc\" :start 1 :end nil)"),
+                  "\"aBC\"");
+    /* Empty bounded region — untouched copy. */
+    ASSERT_STR_EQ(eval_print("(string-upcase \"abc\" :start 1 :end 1)"),
+                  "\"abc\"");
+    /* Capitalize: word detection restarts at :START; a word already in
+       progress before :START is treated as starting fresh. */
+    ASSERT_STR_EQ(eval_print(
+        "(string-capitalize \"hello world\" :start 6 :end 11)"),
+        "\"hello World\"");
+    /* String designators combine with :START/:END. */
+    ASSERT_STR_EQ(eval_print("(string-upcase 'foo-bar :start 4)"),
+                  "\"FOO-BAR\"");
+}
+
+TEST(eval_nstring_case_start_end)
+{
+    /* CLHS nstring-upcase example — destructive, returns the same string. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (copy-seq \"Dr. LiVINGstone, I presume?\")))"
+        "  (list (eq s (nstring-downcase s :start 6 :end 10)) s))"),
+        "(T \"Dr. Livingstone, I presume?\")");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (copy-seq \"hello world\")))"
+        "  (nstring-upcase s :start 6) s)"), "\"hello WORLD\"");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (copy-seq \"hello world\")))"
+        "  (nstring-capitalize s :end 5) s)"), "\"Hello world\"");
+}
+
+TEST(eval_string_case_start_end_errors)
+{
+    /* start > end, end > length, negative start — all bounding-index
+       errors; odd/unknown keywords are PROGRAM-ERRORs; non-integer
+       :START is a TYPE-ERROR.  :ALLOW-OTHER-KEYS T admits unknowns. */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (string-upcase \"abc\" :start 2 :end 1)"
+        "  (error () :bad-bounds))"), ":BAD-BOUNDS");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (string-upcase \"abc\" :end 4)"
+        "  (error () :bad-bounds))"), ":BAD-BOUNDS");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (nstring-downcase (copy-seq \"abc\") :start -1)"
+        "  (error () :bad-bounds))"), ":BAD-BOUNDS");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (string-upcase \"abc\" :start)"
+        "  (error () :odd-keywords))"), ":ODD-KEYWORDS");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (string-upcase \"abc\" :frob 1)"
+        "  (error () :unknown-keyword))"), ":UNKNOWN-KEYWORD");
+    ASSERT_STR_EQ(eval_print(
+        "(string-upcase \"abc\" :frob 1 :allow-other-keys t)"), "\"ABC\"");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (string-upcase \"abc\" :start 'x)"
+        "  (type-error () :start-type))"), ":START-TYPE");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (nstring-upcase 42)"
+        "  (type-error () :not-a-string))"), ":NOT-A-STRING");
+}
+
 TEST(eval_char_name)
 {
     ASSERT_STR_EQ(eval_print("(char-name #\\Space)"), "\"Space\"");
@@ -11188,6 +11261,9 @@ int main(void)
     RUN(eval_nstring_upcase);
     RUN(eval_nstring_downcase);
     RUN(eval_nstring_capitalize);
+    RUN(eval_string_case_start_end);
+    RUN(eval_nstring_case_start_end);
+    RUN(eval_string_case_start_end_errors);
     RUN(eval_char_name);
     RUN(eval_name_char);
     RUN(eval_char_ci_compare);
