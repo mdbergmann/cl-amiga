@@ -90,23 +90,30 @@ exactly like a real left click.")
 ;;; which model currently eats the keys.
 
 (defvar *hotspots* '()
-  "Click targets of the current frame: entries (X0 Y0 X1 Y1 KEY),
-newest first — later registrations win, so a mode's whole-page
-catch-all goes in first and the specific targets after it.")
+  "Click targets of the current frame: entries (X0 Y0 X1 Y1 KEY)
+or (X0 Y0 X1 Y1 KEY CURSOR), newest first — later registrations win,
+so a mode's whole-page catch-all goes in first and the specific
+targets after it.  CURSOR names the hover pointer the target wants
+(the move zones' directional arrows); targets without one get the
+pointing finger.")
 
-(defun %hotspot (key x0 y0 x1 y1)
+(defun %hotspot (key x0 y0 x1 y1 &optional cursor)
   "Register the inclusive pixel rectangle as a click target for KEY (a
-character or :ESC).  NIL keys register nothing."
+character or :ESC).  NIL keys register nothing.  CURSOR optionally
+names the hover pointer shown over the target (:FORWARD, :BACK,
+:TURN-LEFT, :TURN-RIGHT — see %APPLY-STANDARD-POINTER); without one
+the pointing finger shows."
   (when key
-    (push (list x0 y0 x1 y1 key) *hotspots*)))
+    (push (list x0 y0 x1 y1 key cursor) *hotspots*)))
 
 (defun %hotspot-at (x y)
-  "The key registered under pixel (X,Y), or NIL — most recently
-registered target first."
+  "The key registered under pixel (X,Y) and that target's hover
+cursor, as (VALUES KEY CURSOR); NIL when nothing is registered there.
+Most recently registered target first."
   (dolist (spot *hotspots*)
-    (destructuring-bind (x0 y0 x1 y1 key) spot
+    (destructuring-bind (x0 y0 x1 y1 key &optional cursor) spot
       (when (and (<= x0 x x1) (<= y0 y y1))
-        (return key)))))
+        (return (values key cursor))))))
 
 (defun %register-line-hotspots (line x y advance line-h row-x0 row-x1)
   "Click targets for one drawn menu line: an option line (a key from
@@ -129,7 +136,9 @@ character cell width, LINE-H the row height."
 (defun %register-move-zones (l)
   "Click-to-walk zones on the first-person view: the left and right
 quarters turn (A/D), the middle walks forward (W) with a back-step
-band (S) along its bottom third."
+band (S) along its bottom third.  Each zone names its directional
+hover cursor, so the pointer over the view is the arrow of the move a
+click would make."
   (let* ((x0 (ui-layout-bx l))
          (y0 (ui-layout-by l))
          (w (ui-layout-fp-w l))
@@ -138,10 +147,10 @@ band (S) along its bottom third."
          (y1 (+ y0 h -1))
          (q (floor w 4))
          (split (+ y0 (floor (* h 2) 3))))
-    (%hotspot #\a x0 y0 (+ x0 q -1) y1)
-    (%hotspot #\d (- x1 q -1) y0 x1 y1)
-    (%hotspot #\w (+ x0 q) y0 (- x1 q) (1- split))
-    (%hotspot #\s (+ x0 q) split (- x1 q) y1)))
+    (%hotspot #\a x0 y0 (+ x0 q -1) y1 :turn-left)
+    (%hotspot #\d (- x1 q -1) y0 x1 y1 :turn-right)
+    (%hotspot #\w (+ x0 q) y0 (- x1 q) (1- split) :forward)
+    (%hotspot #\s (+ x0 q) split (- x1 q) y1 :back)))
 
 ;;; ---------------------------------------------------------------------
 ;;; Layout: computed from the window's actual inner size, so the same
@@ -503,17 +512,23 @@ page without a background-color box around every character."
 ;;; ---------------------------------------------------------------------
 ;;; The mouse pointer.  An own screen starts with unset sprite colors —
 ;;; the pointer would be invisible black on black — so the game always
-;;; shows an explicit SetPointer sprite of its own.  Two states give
-;;; hover feedback: an open hand (the built-in *HAND-POINTER-ART*)
-;;; while nothing under the pointer reacts, and a pointing finger
-;;; (*POINT-POINTER-ART*) whenever the mouse rests on a click target
-;;; (*HOTSPOTS*) — tracked off the IntuiTicks heartbeat (~10/s), which
-;;; also re-checks a resting mouse after a redraw moved the targets;
-;;; no IDCMP_MOUSEMOVE flood on a 14MHz 68020.  Both are overridable
-;;; per campaign by a pointer.iff / pointer-click.iff in the zone's
-;;; tile pack (16 px wide at most, pens 1-3; the hand's CMAP entries
-;;; 1-3 become screen colors 17-19 — one sprite palette serves both —
-;;; the hot spot is the topmost-leftmost inked pixel).  The sprite is
+;;; shows an explicit SetPointer sprite of its own.  The hover states:
+;;; an open hand (the built-in *HAND-POINTER-ART*) while nothing under
+;;; the pointer reacts, a pointing finger (*POINT-POINTER-ART*)
+;;; whenever the mouse rests on a click target (*HOTSPOTS*), and over
+;;; the first-person view's click-to-walk zones the arrow of the move
+;;; a click would make — turn left/right on the side quarters, walk
+;;; forward on the middle, back-step on its bottom band (the zones
+;;; name their cursor at registration, see %REGISTER-MOVE-ZONES) —
+;;; tracked off the IntuiTicks heartbeat (~10/s), which also re-checks
+;;; a resting mouse after a redraw moved the targets; no
+;;; IDCMP_MOUSEMOVE flood on a 14MHz 68020.  All are overridable per
+;;; campaign by a pointer.iff / pointer-click.iff /
+;;; pointer-forward.iff / pointer-back.iff / pointer-turn-left.iff /
+;;; pointer-turn-right.iff in the zone's tile pack (16 px wide at
+;;; most, pens 1-3; the hand's CMAP entries 1-3 become screen colors
+;;; 17-19 — one sprite palette serves them all — the hot spot is the
+;;; topmost-leftmost inked pixel).  The sprite is
 ;;; re-shown after every palette change: Picasso96/RTG latches the
 ;;; pointer image and its colors at SetPointer time, so setting colors
 ;;; 17-19 alone can leave an already-shown pointer black.  During the
@@ -531,10 +546,16 @@ session (the system default pointer then applies).")
   "The click-target pointer (the pointing finger) as (CHIP HEIGHT XOFF
 YOFF), or NIL outside a session.")
 
+(defvar *move-pointers* '()
+  "The directional pointers for the view's click-to-walk zones: a
+plist CURSOR -> (CHIP HEIGHT XOFF YOFF) for :FORWARD, :BACK,
+:TURN-LEFT and :TURN-RIGHT; empty outside a session.")
+
 (defvar *pointer-hot* nil
-  "Non-NIL while the mouse rests on a click target —
-%APPLY-STANDARD-POINTER then shows the pointing finger instead of the
-hand.")
+  "The hover state: NIL while nothing under the mouse reacts (the
+hand shows), :POINT on a plain click target (the pointing finger), or
+a move zone's cursor tag — :FORWARD, :BACK, :TURN-LEFT, :TURN-RIGHT —
+on the view's walk zones (the matching arrow).")
 
 (defvar *pointer-window* nil
   "The game window while a session runs.  Draw code deep below the
@@ -557,11 +578,13 @@ the busy pointer through this.")
       (list chip (length rows) (- hx) (- hy)))))
 
 (defun %apply-standard-pointer (win)
-  "Show the pointer matching the current hover state on WIN — the
-pointing finger over a click target, the hand elsewhere — or the
+  "Show the pointer matching the current hover state on WIN — a
+directional arrow over one of the view's move zones, the pointing
+finger over any other click target, the hand elsewhere — or the
 system default when none is loaded."
-  (let ((ptr (if (and *pointer-hot* *point-pointer*)
-                 *point-pointer*
+  (let ((ptr (or (when *pointer-hot*
+                   (or (getf *move-pointers* *pointer-hot*)
+                       *point-pointer*))
                  *game-pointer*)))
     (if ptr
         (destructuring-bind (chip height xoff yoff) ptr
@@ -569,12 +592,14 @@ system default when none is loaded."
         (amiga.intuition:clear-pointer win))))
 
 (defun %track-pointer-hot (win x y)
-  "Flip between the hand and the pointing finger as the mouse at
-window pixel (X,Y) crosses click-target boundaries.  Called off
-IntuiTicks; only a state change touches SetPointer.  While the busy
-pointer is up only the state updates — the busy bracket's unwind
-re-applies the right sprite."
-  (let ((hot (and (%hotspot-at x y) t)))
+  "Retarget the pointer as the mouse at window pixel (X,Y) crosses
+click-target boundaries: a move zone's directional arrow, the
+pointing finger on any other target, the hand off all of them.
+Called off IntuiTicks; only a state change touches SetPointer.  While
+the busy pointer is up only the state updates — the busy bracket's
+unwind re-applies the right sprite."
+  (let ((hot (multiple-value-bind (key cursor) (%hotspot-at x y)
+               (cond (cursor) (key :point)))))
     (unless (eq hot *pointer-hot*)
       (setf *pointer-hot* hot)
       (unless *busy-pointer-active*
@@ -596,14 +621,30 @@ breaks the sprite constraints logs to the trace and falls back."
               nil)))
         (funcall fallback))))
 
+(defun %move-pointer-list ()
+  "The loaded directional pointers as a plain list, palette keys
+dropped."
+  (loop for entry on *move-pointers* by #'cddr
+        collect (second entry)))
+
 (defun %ensure-standard-pointer (scr win display)
-  "(Re)build both standard pointers for the current tile pack and show
-the one the hover state calls for: art from %POINTER-IMAGE, the hand's
-palette entries 1-3 into the sprite colors (screen colors 17-19; the
-hardware sprite has one palette, so the finger shares it) — on our own
-screen only; a Workbench window keeps the Workbench pointer colors."
+  "(Re)build the standard pointers for the current tile pack — the
+hand, the pointing finger and the four move-zone arrows — and show
+the one the hover state calls for: art from %POINTER-IMAGE, the
+hand's palette entries 1-3 into the sprite colors (screen colors
+17-19; the hardware sprite has one palette, all pointers share it) —
+on our own screen only; a Workbench window keeps the Workbench
+pointer colors."
   (let ((img (%pointer-image "pointer.iff" #'hand-pointer-image))
-        (point (%pointer-image "pointer-click.iff" #'point-pointer-image)))
+        (point (%pointer-image "pointer-click.iff" #'point-pointer-image))
+        (moves (list :forward (%pointer-image "pointer-forward.iff"
+                                              #'forward-pointer-image)
+                     :back (%pointer-image "pointer-back.iff"
+                                           #'back-pointer-image)
+                     :turn-left (%pointer-image "pointer-turn-left.iff"
+                                                #'turn-left-pointer-image)
+                     :turn-right (%pointer-image "pointer-turn-right.iff"
+                                                 #'turn-right-pointer-image))))
     (when (and scr (eq display :screen))
       (let ((vp (amiga.intuition:screen-viewport scr)))
         (loop for i from 1 to 3
@@ -614,28 +655,33 @@ screen only; a Workbench window keeps the Workbench pointer colors."
                                        (floor (first rgb) 17)
                                        (floor (second rgb) 17)
                                        (floor (third rgb) 17)))))
-    (let ((old *game-pointer*)
-          (old-point *point-pointer*))
+    (let ((old (list* *game-pointer* *point-pointer*
+                      (%move-pointer-list))))
       (setf *game-pointer* (%pointer-chip img)
-            *point-pointer* (%pointer-chip point))
+            *point-pointer* (%pointer-chip point)
+            *move-pointers* (loop for entry on moves by #'cddr
+                                  nconc (list (first entry)
+                                              (%pointer-chip
+                                               (second entry)))))
       (%apply-standard-pointer win)
       ;; the old sprite data is off the hardware only after the new
       ;; SetPointer above, so it frees last
-      (when old (amiga:free-chip (first old)))
-      (when old-point (amiga:free-chip (first old-point))))))
+      (dolist (ptr old)
+        (when ptr (amiga:free-chip (first ptr)))))))
 
 (defun %free-standard-pointer (win)
   "Drop the standard pointers at session end: back to the system
 default, sprite data freed."
-  (when (or *game-pointer* *point-pointer*)
-    (amiga.intuition:clear-pointer win))
-  (when *game-pointer*
-    (amiga:free-chip (first *game-pointer*))
-    (setf *game-pointer* nil))
-  (when *point-pointer*
-    (amiga:free-chip (first *point-pointer*))
-    (setf *point-pointer* nil))
-  (setf *pointer-hot* nil))
+  (let ((all (list* *game-pointer* *point-pointer*
+                    (%move-pointer-list))))
+    (when (remove nil all)
+      (amiga.intuition:clear-pointer win))
+    (dolist (ptr all)
+      (when ptr (amiga:free-chip (first ptr)))))
+  (setf *game-pointer* nil
+        *point-pointer* nil
+        *move-pointers* '()
+        *pointer-hot* nil))
 
 (defparameter *busy-pointer-image*
   '((#x0000 #xFFFF)

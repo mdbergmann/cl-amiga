@@ -3050,21 +3050,51 @@ messages so far (oldest first)."
                (aref (image-palette point) 2)
                (aref (image-palette point) 3))))
 
-;; The hover state machine behind the pointer swap: over a hotspot the
-;; finger, elsewhere the hand.  *BUSY-POINTER-ACTIVE* suppresses the
-;; SetPointer call, so the pure state transitions run without a
-;; display; the busy bracket's unwind applies the pending state.
-;; (amiga-ui.lisp only loads on the Amiga — see also the on-screen
-;; hover checks in the game-window test below.)
+;; The four move-zone arrows honor the same sprite contract: 16 wide,
+;; one plane-word pair per art row, the shared sprite palette, and the
+;; hot spot on the topmost row of the arrow.
+(dolist (entry (list (list "forward" (forward-pointer-image)
+                           *forward-pointer-art* '(7 0))
+                     (list "back" (back-pointer-image)
+                           *back-pointer-art* '(5 0))
+                     (list "turn-left" (turn-left-pointer-image)
+                           *turn-left-pointer-art* '(5 0))
+                     (list "turn-right" (turn-right-pointer-image)
+                           *turn-right-pointer-art* '(9 0))))
+  (destructuring-bind (name img art spot) entry
+    (check (format nil "~A arrow is sprite-wide" name) 16
+           (image-width img))
+    (check (format nil "~A arrow converts row for row" name)
+           (length art) (length (pointer-sprite-rows img)))
+    (check (format nil "~A arrow shares the sprite colors" name)
+           *hand-pointer-colors*
+           (list (aref (image-palette img) 1)
+                 (aref (image-palette img) 2)
+                 (aref (image-palette img) 3)))
+    (check (format nil "~A arrow hotspot sits on the art" name) spot
+           (multiple-value-bind (x y) (pointer-hotspot img)
+             (list x y)))))
+
+;; The hover state machine behind the pointer swap: over a move zone
+;; its directional arrow, over any other hotspot the finger, elsewhere
+;; the hand.  *BUSY-POINTER-ACTIVE* suppresses the SetPointer call, so
+;; the pure state transitions run without a display; the busy
+;; bracket's unwind applies the pending state.  (amiga-ui.lisp only
+;; loads on the Amiga — see also the on-screen hover checks in the
+;; game-window test below.)
 #+amigaos
-(let ((*hotspots* '((10 10 20 20 #\w)))
+(let ((*hotspots* '((30 30 40 40 #\w :forward)
+                    (10 10 20 20 #\w)))
       (*pointer-hot* nil)
       (*busy-pointer-active* t))
   (%track-pointer-hot nil 15 15)
-  (check-true "hover onto a click target arms the pointing finger"
-              *pointer-hot*)
+  (check "hover onto a click target arms the pointing finger" :point
+         *pointer-hot*)
   (%track-pointer-hot nil 15 15)
-  (check-true "resting on the target keeps the state" *pointer-hot*)
+  (check "resting on the target keeps the state" :point *pointer-hot*)
+  (%track-pointer-hot nil 35 35)
+  (check "hover onto a move zone arms its directional arrow" :forward
+         *pointer-hot*)
   (%track-pointer-hot nil 5 5)
   (check "hover off the target goes back to the hand" nil
          *pointer-hot*)
@@ -3529,14 +3559,21 @@ brick grid" d side)
                (let* ((bx (ui-layout-bx l)) (by (ui-layout-by l))
                       (w (ui-layout-fp-w l)) (h (ui-layout-fp-h l))
                       (cx (+ bx (floor w 2))))
-                 (check "view: the middle walks forward" #\w
-                        (%hotspot-at cx (+ by 4)))
-                 (check "view: the bottom middle steps back" #\s
-                        (%hotspot-at cx (+ by h -4)))
-                 (check "view: the left quarter turns left" #\a
-                        (%hotspot-at (+ bx 2) (+ by (floor h 2))))
-                 (check "view: the right quarter turns right" #\d
-                        (%hotspot-at (+ bx w -3) (+ by (floor h 2))))
+                 ;; each zone carries the arrow cursor of its move
+                 (check "view: the middle walks forward" '(#\w :forward)
+                        (multiple-value-list
+                         (%hotspot-at cx (+ by 4))))
+                 (check "view: the bottom middle steps back" '(#\s :back)
+                        (multiple-value-list
+                         (%hotspot-at cx (+ by h -4))))
+                 (check "view: the left quarter turns left"
+                        '(#\a :turn-left)
+                        (multiple-value-list
+                         (%hotspot-at (+ bx 2) (+ by (floor h 2)))))
+                 (check "view: the right quarter turns right"
+                        '(#\d :turn-right)
+                        (multiple-value-list
+                         (%hotspot-at (+ bx w -3) (+ by (floor h 2)))))
                  (check "view: outside the view is no target" nil
                         (%hotspot-at (+ bx w 20) (+ by (floor h 2))))))
              ;; the busy pointer brackets a load and restores, and a
@@ -3824,20 +3861,30 @@ brick grid" d side)
                      (amiga.intuition:screen-viewport scr)))
                 (*game-pointer* nil)
                 (*point-pointer* nil)
+                (*move-pointers* '())
                 (*pointer-hot* nil))
             (%ensure-standard-pointer scr win :screen)
             (check-true "the hand pointer is loaded" *game-pointer*)
             (check-true "the pointing finger is loaded" *point-pointer*)
+            (check "the four move arrows are loaded"
+                   '(:forward :back :turn-left :turn-right)
+                   (loop for entry on *move-pointers* by #'cddr
+                         collect (first entry)))
             (check "sprite color 17 took the hand's skin tone" #x0EDB
                    (amiga.gfx:get-rgb4 cm 17))
             (check "sprite color 18 took the hand's outline" #x0111
                    (amiga.gfx:get-rgb4 cm 18))
             ;; hover feedback: crossing onto a click target shows the
-            ;; finger sprite, leaving it goes back to the hand
-            (let ((*hotspots* '((10 10 20 20 #\w))))
+            ;; finger sprite, a move zone its arrow, leaving them goes
+            ;; back to the hand
+            (let ((*hotspots* '((30 30 40 40 #\a :turn-left)
+                                (10 10 20 20 #\w))))
               (%track-pointer-hot win 15 15)
-              (check-true "over a click target the finger is up"
-                          *pointer-hot*)
+              (check "over a click target the finger is up" :point
+                     *pointer-hot*)
+              (%track-pointer-hot win 35 35)
+              (check "over a move zone its arrow is up" :turn-left
+                     *pointer-hot*)
               (%track-pointer-hot win 5 5)
               (check "off the target the hand is back" nil
                      *pointer-hot*))
@@ -3880,7 +3927,8 @@ brick grid" d side)
             (delete-file "tests/pointer.iff")
             (%free-standard-pointer win)
             (check "dropping the pointer clears the session state" nil
-                   (or *game-pointer* *point-pointer* *pointer-hot*)))
+                   (or *game-pointer* *point-pointer* *move-pointers*
+                       *pointer-hot*)))
           (let ((rp (amiga.intuition:window-rastport win)))
             (amiga.gfx:set-a-pen rp 3)
             (amiga.gfx:rect-fill rp 0 0 50 3)

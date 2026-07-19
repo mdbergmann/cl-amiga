@@ -141,8 +141,11 @@ elsewhere.  Menu option rows carry their pick key (`menu-option` /
 `menu-numbered` in `src/events.lisp`), so front-ends map clicks to
 keys without parsing the text.  The pointer is an **open hand** that
 turns into a **pointing finger** whenever it rests on something
-clickable (campaign-replaceable — see `pointer.iff` /
-`pointer-click.iff` under "Custom tile packs"),
+clickable; over the first-person view's walk zones it becomes the
+**arrow of the move a click would make** — left/right turn arrows on
+the side quarters, an up arrow on the middle, a down arrow on its
+back-step band (all campaign-replaceable — see `pointer.iff` and
+friends under "Custom tile packs"),
 and a busy hourglass shows during the loads that take real seconds at
 14MHz: tile packs, save games, first-sight location pictures and
 icons.  See the hotspot tests in `tests/run-tests.lisp` (`amiga-ui
@@ -207,15 +210,18 @@ A pack holds the 40 wall pieces plus optional extras:
   a pack can use the same trick, since the bands sit at fixed screen
   rows.
 - `palette.iff` — any ILBM whose CMAP provides the pack's colors.
-- `pointer.iff` / `pointer-click.iff` — optional mouse-pointer art:
-  the neutral pointer and the one shown over a click target.  At most
-  16 pixels wide (a hardware sprite), pens 0–3 only — pen 0
+- `pointer.iff` / `pointer-click.iff` / `pointer-forward.iff` /
+  `pointer-back.iff` / `pointer-turn-left.iff` /
+  `pointer-turn-right.iff` — optional mouse-pointer art: the neutral
+  pointer, the one shown over a click target, and the four
+  directional cursors shown over the first-person view's walk zones.
+  At most 16 pixels wide (a hardware sprite), pens 0–3 only — pen 0
   transparent, pens 1–3 show as screen colors 17–19, taken from
-  `pointer.iff`'s CMAP entries 1–3 (the sprite has one palette; both
+  `pointer.iff`'s CMAP entries 1–3 (the sprite has one palette; all
   pointers share it).  The hot spot is the topmost-leftmost inked
-  pixel.  Missing files get the engine's built-in art — an open hand
-  and a pointing finger (`*hand-pointer-art*` /
-  `*point-pointer-art*` in `src/ilbm.lisp`).
+  pixel.  Missing files get the engine's built-in art — an open hand,
+  a pointing finger and four arrows (`*hand-pointer-art*` and
+  friends in `src/ilbm.lisp`).
 
 `(tale:print-tile-manifest)` prints the full contract — every
 filename with its exact pixel size for the **active profile** (wrap it

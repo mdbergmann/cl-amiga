@@ -366,12 +366,17 @@ hand, the arrow tip of an arrow.  (VALUES 0 0) for an empty image."
         (return-from pointer-hotspot (values x y))))))
 
 ;;; The built-in pointers: a relaxed open hand while nothing under the
-;;; pointer reacts, and a pointing hand — index finger out — over a
-;;; click target (the hover feedback, see *HOTSPOTS* in amiga-ui.lisp).
-;;; Rows of characters, `.` transparent, `1`-`3` the sprite pens.  A
-;;; campaign overrides art and colors by shipping a pointer.iff (the
-;;; hand) and a pointer-click.iff (the pointing finger) in its tile
-;;; pack (see %ENSURE-STANDARD-POINTER in amiga-ui.lisp).
+;;; pointer reacts, a pointing hand — index finger out — over a click
+;;; target, and four directional arrows over the first-person view's
+;;; click-to-walk zones — turn left/right on the side quarters, walk
+;;; forward on the middle, back-step on its bottom band (the hover
+;;; feedback, see *HOTSPOTS* in amiga-ui.lisp).  Rows of characters,
+;;; `.` transparent, `1`-`3` the sprite pens.  A campaign overrides
+;;; art and colors by shipping a pointer.iff (the hand), a
+;;; pointer-click.iff (the pointing finger) and/or
+;;; pointer-forward.iff / pointer-back.iff / pointer-turn-left.iff /
+;;; pointer-turn-right.iff (the arrows) in its tile pack (see
+;;; %ENSURE-STANDARD-POINTER in amiga-ui.lisp).
 
 (defparameter *hand-pointer-art*
   '("....2..........."
@@ -404,6 +409,66 @@ hand, the arrow tip of an arrow.  (VALUES 0 0) for an empty image."
     "...222222222....")
   "The click-target pointer: a pointing hand, index finger tip up.")
 
+(defparameter *forward-pointer-art*
+  '(".......22......."
+    "......2112......"
+    ".....211112....."
+    "....21111112...."
+    "...2111111112..."
+    "..211111111112.."
+    "..222211112222.."
+    ".....211112....."
+    ".....211112....."
+    ".....211112....."
+    ".....211112....."
+    ".....222222.....")
+  "The walk-forward cursor: an arrow pointing up.")
+
+(defparameter *back-pointer-art*
+  '(".....222222....."
+    ".....211112....."
+    ".....211112....."
+    ".....211112....."
+    ".....211112....."
+    "..222211112222.."
+    "..211111111112.."
+    "...2111111112..."
+    "....21111112...."
+    ".....211112....."
+    "......2112......"
+    ".......22.......")
+  "The back-step cursor: an arrow pointing down.")
+
+(defparameter *turn-left-pointer-art*
+  '(".....22........."
+    "....212........."
+    "...2112........."
+    "..2111222222222."
+    ".21111111111112."
+    "211111111111112."
+    "211111111111112."
+    ".21111111111112."
+    "..2111222222222."
+    "...2112........."
+    "....212........."
+    ".....22.........")
+  "The turn-left cursor: an arrow pointing left.")
+
+(defparameter *turn-right-pointer-art*
+  '(".........22....."
+    ".........212...."
+    ".........2112..."
+    ".2222222221112.."
+    ".21111111111112."
+    ".211111111111112"
+    ".211111111111112"
+    ".21111111111112."
+    ".2222222221112.."
+    ".........2112..."
+    ".........212...."
+    ".........22.....")
+  "The turn-right cursor: an arrow pointing right.")
+
 (defparameter *hand-pointer-colors*
   '((238 221 187) (17 17 17) (221 34 34))
   "Default sprite colors (screen colors 17-19), 0-255 components: the
@@ -435,3 +500,23 @@ built-in pointers share them — the hardware sprite has one palette.")
   "The built-in pointing-finger pointer (shown over a click target)
 as an IMAGE."
   (%pointer-art-image *point-pointer-art*))
+
+(defun forward-pointer-image ()
+  "The built-in walk-forward pointer (an up arrow, shown over the
+view's middle walk zone) as an IMAGE."
+  (%pointer-art-image *forward-pointer-art*))
+
+(defun back-pointer-image ()
+  "The built-in back-step pointer (a down arrow, shown over the walk
+zone's bottom band) as an IMAGE."
+  (%pointer-art-image *back-pointer-art*))
+
+(defun turn-left-pointer-image ()
+  "The built-in turn-left pointer (a left arrow, shown over the view's
+left quarter) as an IMAGE."
+  (%pointer-art-image *turn-left-pointer-art*))
+
+(defun turn-right-pointer-image ()
+  "The built-in turn-right pointer (a right arrow, shown over the
+view's right quarter) as an IMAGE."
+  (%pointer-art-image *turn-right-pointer-art*))
