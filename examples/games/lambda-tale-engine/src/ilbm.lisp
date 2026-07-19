@@ -326,3 +326,83 @@ entries, BODY).  COMPRESSION is 1 (ByteRun1, the default) or 0."
               (when (oddp (length (cdr chunk)))
                 (write-byte 0 s))))))))     ; chunks pad to even
   file)
+
+;;; ---------------------------------------------------------------------
+;;; Pointer sprites.  A mouse pointer is a 2-plane hardware sprite:
+;;; at most 16 pixels wide, pens 0-3, where pen 1/2/3 shows screen
+;;; color 17/18/19 and pen 0 is transparent.  The functions below turn
+;;; an IMAGE — the built-in hand, or a campaign's pointer.iff — into
+;;; the (LOW HIGH) plane words SET-POINTER wants; they are pure so the
+;;; host suite exercises them without a display.
+
+(defun pointer-sprite-rows (image)
+  "IMAGE as a list of (LOW HIGH) 16-bit plane-word pairs, one pair per
+row — the hardware-sprite layout.  Pen 1 sets the low plane (screen
+color 17), pen 2 the high plane (18), pen 3 both (19).  Errors when the
+image is wider than 16 pixels or uses a pen above 3."
+  (let ((w (image-width image))
+        (h (image-height image)))
+    (unless (<= w 16)
+      (error "pointer image is ~D pixels wide; a sprite holds 16" w))
+    (loop for y below h
+          collect (let ((low 0) (high 0))
+                    (dotimes (x w (list low high))
+                      (let ((pen (pixel-ref image x y))
+                            (bit (ash 1 (- 15 x))))
+                        (when (> pen 3)
+                          (error "pointer image uses pen ~D; a sprite ~
+holds pens 0-3" pen))
+                        (when (logtest pen 1) (setf low (logior low bit)))
+                        (when (logtest pen 2)
+                          (setf high (logior high bit)))))))))
+
+(defun pointer-hotspot (image)
+  "The pointer's hot spot as (VALUES X Y): the leftmost non-transparent
+pixel of the topmost row that has one — the finger tip of a pointing
+hand, the arrow tip of an arrow.  (VALUES 0 0) for an empty image."
+  (dotimes (y (image-height image) (values 0 0))
+    (dotimes (x (image-width image))
+      (when (plusp (pixel-ref image x y))
+        (return-from pointer-hotspot (values x y))))))
+
+;;; The built-in pointer: a pointing hand, finger tip up.  Rows of
+;;; characters, `.` transparent, `1`-`3` the sprite pens.  A campaign
+;;; overrides both art and colors by shipping a pointer.iff in its tile
+;;; pack (see %ENSURE-STANDARD-POINTER in amiga-ui.lisp).
+
+(defparameter *hand-pointer-art*
+  '("....22.........."
+    "...2112........."
+    "...2112........."
+    "...2112........."
+    "...211222222...."
+    "...2112112112..."
+    "...21121121122.."
+    ".22211211211212."
+    "21122111111112.."
+    "21121111111112.."
+    ".211111111112..."
+    "..21111111112..."
+    "...222222222...."))
+
+(defparameter *hand-pointer-colors*
+  '((238 221 187) (17 17 17) (221 34 34))
+  "Default sprite colors (screen colors 17-19), 0-255 components: the
+hand's light skin, its near-black outline, a red accent.")
+
+(defun hand-pointer-image ()
+  "The built-in pointing-hand pointer as an IMAGE, its palette entries
+1-3 filled with *HAND-POINTER-COLORS*."
+  (let* ((h (length *hand-pointer-art*))
+         (img (make-image 16 h 2)))
+    (loop for row in *hand-pointer-art*
+          for y from 0
+          do (loop for ch across row
+                   for x from 0
+                   unless (char= ch #\.)
+                     do (setf (pixel-ref img x y)
+                              (- (char-code ch) (char-code #\0)))))
+    (loop for rgb in *hand-pointer-colors*
+          for i from 1
+          do (setf (aref (image-palette img) i) (copy-list rgb)))
+    img))

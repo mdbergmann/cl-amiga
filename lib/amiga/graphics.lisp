@@ -19,7 +19,7 @@
    ;; Fonts
    "OPEN-FONT" "CLOSE-FONT" "SET-FONT"
    ;; Display database / palette
-   "BEST-MODE-ID" "SET-RGB4"
+   "BEST-MODE-ID" "SET-RGB4" "GET-RGB4" "VIEWPORT-COLOR-MAP"
    ;; Bitmaps and blits (RTG-safe: all through OS calls)
    "ALLOC-BITMAP" "FREE-BITMAP" "GET-BITMAP-ATTR" "WITH-BITMAP"
    "INIT-RASTPORT" "WITH-BITMAP-RASTPORT"
@@ -205,6 +205,16 @@ suitable RTG mode, on a chipset Amiga a native one (e.g. PAL hires for
 
 (amiga.ffi:defcfun set-rgb4 *gfx-base* -288
   (:a0 viewport :d0 index :d1 red :d2 green :d3 blue) :void t)
+
+(defun viewport-color-map (viewport)
+  "Pointer to VIEWPORT's ColorMap (vp_ColorMap, offset 4) — what
+GET-RGB4 wants."
+  (ffi:make-foreign-pointer (ffi:peek-u32 viewport 4)))
+
+;; GetRGB4(colormap, entry) — the entry's nibbles packed as #x0RGB,
+;; -1 (as u32: #xFFFFFFFF) for an entry outside the map.
+(amiga.ffi:defcfun get-rgb4 *gfx-base* -582
+  (:a0 colormap :d0 entry))
 
 ;;; ================================================================
 ;;; Bitmaps and blits

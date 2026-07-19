@@ -132,10 +132,12 @@ clicking a menu's numbered rows or its `[s] sell`-style footer hints
 acts as those keys, and the map/help/sheet pages close on a click
 elsewhere.  Menu option rows carry their pick key (`menu-option` /
 `menu-numbered` in `src/events.lisp`), so front-ends map clicks to
-keys without parsing the text; a busy hourglass pointer shows during
-tile-pack and save-game loads.  See the hotspot tests in
-`tests/run-tests.lisp` (`amiga-ui autoplay drives the game by mouse
-clicks`) for the full contract.
+keys without parsing the text.  The pointer is a **pointing hand**
+(campaign-replaceable — see `pointer.iff` under "Custom tile packs"),
+and a busy hourglass shows during the loads that take real seconds at
+14MHz: tile packs, save games, first-sight location pictures and
+icons.  See the hotspot tests in `tests/run-tests.lisp` (`amiga-ui
+autoplay drives the game by mouse clicks`) for the full contract.
 
 The first-person view never looks around corners (Bard's Tale rules):
 `compute-view` walks the cells straight ahead, stopping at walls, doors
@@ -196,6 +198,12 @@ A pack holds the 40 wall pieces plus optional extras:
   a pack can use the same trick, since the bands sit at fixed screen
   rows.
 - `palette.iff` — any ILBM whose CMAP provides the pack's colors.
+- `pointer.iff` — optional mouse-pointer art: at most 16 pixels wide
+  (a hardware sprite), pens 0–3 only — pen 0 transparent, pens 1–3
+  show as screen colors 17–19, taken from this file's CMAP entries
+  1–3.  The hot spot is the topmost-leftmost inked pixel.  Packs
+  without one get the engine's built-in pointing hand
+  (`*hand-pointer-art*` in `src/ilbm.lisp`).
 
 `(tale:print-tile-manifest)` prints the full contract — every
 filename with its exact pixel size for the **active profile** (wrap it
@@ -207,9 +215,12 @@ On the custom screen **pens 0–3 are fixed UI colors** (black, white,
 grey, amber — text and wireframe stay readable in any pack); the
 remaining pens **belong to the pack** — 4–31 on the 32-color `:lores`
 screen, 4–15 on `:hires` — taken from `palette.iff`'s CMAP when
-present, else from `front-0.iff`'s.  Pack colors need
-`:display :screen` — a window on the Workbench screen keeps the
-Workbench palette.
+present, else from `front-0.iff`'s.  Exception: **pens 17–19 are the
+mouse pointer's** (the hardware sprite shares those color registers on
+the 32-color screen) — they are re-asserted from the pointer art's
+CMAP after every pack-palette load, so pack art should avoid pens
+17–19.  Pack colors need `:display :screen` — a window on the
+Workbench screen keeps the Workbench palette.
 
 **Transparency:** in a *wall* piece **pen 0 is transparent** — the
 ceiling/floor backdrop shows through it, so the receding side walls

@@ -214,6 +214,13 @@ AMIGA.GFX:SET-RGB4 wants for setting the screen palette."
 ;;; Window management
 ;;; ================================================================
 
+;;; Intuition keeps the WA_Title/SA_Title pointer for the lifetime of
+;;; the window/screen (title redraws read it on demand) — the string
+;;; must stay allocated until close, not merely until the Open call
+;;; returns.  The table below maps the opened object's address to its
+;;; title string; CLOSE-WINDOW/CLOSE-SCREEN free it.
+(defvar *title-strings* (make-hash-table))
+
 (defun open-window (&key (title "CL-Amiga") (left 0) (top 0)
                          (width 320) (height 200) screen
                          (idcmp +idcmp-closewindow+)
@@ -227,7 +234,8 @@ TITLE NIL opens an untitled window — that matters for borderless
 backdrop windows, where a WA_Title still costs a title bar
 \(window-border-top stays 0 only without one).
 Returns a foreign pointer to the Window struct, or signals an error."
-  (let ((title-ptr (and title (ffi:foreign-string title))))
+  (let ((title-ptr (and title (ffi:foreign-string title)))
+        (opened nil))
     (unwind-protect
         (let ((tag-pairs (list +wa-left+ left
                                +wa-top+ top
@@ -246,15 +254,28 @@ Returns a foreign pointer to the Window struct, or signals an error."
                                              (list :a0 (ffi:make-foreign-pointer 0)
                                                    :a1 tags))))
             (ffi:free-foreign tags)
-            (if (zerop result)
-                (error "INTUITION:OPEN-WINDOW failed")
-              (ffi:make-foreign-pointer result))))
-      (when title-ptr (ffi:free-foreign title-ptr)))))
+            (when (zerop result)
+              (error "INTUITION:OPEN-WINDOW failed"))
+            (setf opened t)
+            (when title-ptr
+              (setf (gethash result *title-strings*) title-ptr))
+            (ffi:make-foreign-pointer result)))
+      (when (and title-ptr (not opened))
+        (ffi:free-foreign title-ptr)))))
+
+(defun %free-title-string (object)
+  "Free the title string held for the window/screen OBJECT, if any."
+  (let* ((addr (ffi:foreign-pointer-address object))
+         (title-ptr (gethash addr *title-strings*)))
+    (when title-ptr
+      (remhash addr *title-strings*)
+      (ffi:free-foreign title-ptr))))
 
 (defun close-window (window)
   "Close an Intuition window."
   (amiga:call-library *intuition-base* +lvo-close-window+
                       (list :a0 window))
+  (%free-title-string window)
   t)
 
 (defmacro with-window ((var &rest args) &body body)
@@ -276,30 +297,37 @@ RTG-safely with AMIGA.GFX:BEST-MODE-ID; NIL leaves the mode to
 Intuition's default.  SHOW-TITLE non-NIL shows the screen title bar
 \(menus work either way).  Returns a foreign pointer to the Screen
 struct, or signals an error."
-  (ffi:with-foreign-string (title-ptr title)
-    (let ((tag-pairs (list +sa-width+ width
-                           +sa-height+ height
-                           +sa-depth+ depth
-                           +sa-title+ title-ptr
-                           +sa-show-title+ (if show-title 1 0))))
-      (when mode-id
-        (setf tag-pairs (append tag-pairs
-                                (list +sa-display-id+ mode-id))))
-      (let* ((tags (amiga.ffi:make-tag-list tag-pairs))
-             (result (amiga:call-library *intuition-base*
-                                         +lvo-open-screen-tag-list+
-                                         (list :a0 (ffi:make-foreign-pointer 0)
-                                               :a1 tags))))
-        (ffi:free-foreign tags)
-        (if (zerop result)
-            (error "INTUITION:OPEN-SCREEN failed (~Dx~Dx~D~@[, mode #x~X~])"
-                   width height depth mode-id)
-            (ffi:make-foreign-pointer result))))))
+  (let ((title-ptr (ffi:foreign-string title))
+        (opened nil))
+    (unwind-protect
+        (let ((tag-pairs (list +sa-width+ width
+                               +sa-height+ height
+                               +sa-depth+ depth
+                               +sa-title+ title-ptr
+                               +sa-show-title+ (if show-title 1 0))))
+          (when mode-id
+            (setf tag-pairs (append tag-pairs
+                                    (list +sa-display-id+ mode-id))))
+          (let* ((tags (amiga.ffi:make-tag-list tag-pairs))
+                 (result (amiga:call-library *intuition-base*
+                                             +lvo-open-screen-tag-list+
+                                             (list :a0 (ffi:make-foreign-pointer 0)
+                                                   :a1 tags))))
+            (ffi:free-foreign tags)
+            (when (zerop result)
+              (error "INTUITION:OPEN-SCREEN failed (~Dx~Dx~D~@[, mode #x~X~])"
+                     width height depth mode-id))
+            (setf opened t)
+            (setf (gethash result *title-strings*) title-ptr)
+            (ffi:make-foreign-pointer result)))
+      (unless opened
+        (ffi:free-foreign title-ptr)))))
 
 (defun close-screen (screen)
   "Close a custom Intuition screen (all its windows must be closed)."
   (amiga:call-library *intuition-base* +lvo-close-screen+
                       (list :a0 screen))
+  (%free-title-string screen)
   t)
 
 (defun show-title (screen show-it)

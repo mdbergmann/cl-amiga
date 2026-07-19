@@ -2934,6 +2934,45 @@ messages so far (oldest first)."
 (delete-file "tests/tmp-img.iff")
 
 ;;; ---------------------------------------------------------------------
+;;; Pointer sprites: an image becomes hardware-sprite plane words, the
+;;; hot spot is the topmost-leftmost inked pixel, and the built-in
+;;; hand pointer honors both.  (The SetPointer glue is Amiga-only —
+;;; see the amiga-ui pointer tests below.)
+
+(let ((img (make-image 8 3 2)))
+  (setf (pixel-ref img 1 0) 1           ; low plane
+        (pixel-ref img 2 0) 2           ; high plane
+        (pixel-ref img 3 0) 3)          ; both planes
+  (check "pointer rows: pens split onto the two sprite planes"
+         '((#x5000 #x3000) (0 0) (0 0))
+         (pointer-sprite-rows img))
+  (check "pointer hotspot: leftmost inked pixel of the topmost row"
+         '(1 0)
+         (multiple-value-bind (x y) (pointer-hotspot img) (list x y))))
+(check "pointer hotspot of an empty image is the corner" '(0 0)
+       (multiple-value-bind (x y) (pointer-hotspot (make-image 4 4 2))
+         (list x y)))
+(check-error "pointer rows reject an image wider than a sprite"
+  (pointer-sprite-rows (make-image 17 2 2)))
+(let ((img (make-image 8 2 3)))
+  (setf (pixel-ref img 0 0) 4)
+  (check-error "pointer rows reject pens above 3"
+    (pointer-sprite-rows img)))
+
+(let ((hand (hand-pointer-image)))
+  (check "hand pointer is sprite-wide" 16 (image-width hand))
+  (check "hand pointer converts row for row"
+         (length *hand-pointer-art*)
+         (length (pointer-sprite-rows hand)))
+  (check "hand hotspot sits on the finger tip" '(4 0)
+         (multiple-value-bind (x y) (pointer-hotspot hand) (list x y)))
+  (check "hand palette holds the three sprite colors"
+         *hand-pointer-colors*
+         (list (aref (image-palette hand) 1)
+               (aref (image-palette hand) 2)
+               (aref (image-palette hand) 3))))
+
+;;; ---------------------------------------------------------------------
 ;;; Wall-art assets (M3): the checked-in tile packs — one per display
 ;;; profile — must match what the generator draws today, pixel for
 ;;; pixel, so art and code can never drift apart.  (Regenerate with
@@ -3211,10 +3250,14 @@ brick grid" d side)
   (check "padded height" 8 h))
 
 ;;; ---------------------------------------------------------------------
-;;; Amiga front-end smoke test (real Intuition window + graphics.library
-;;; calls; only runs when this suite is loaded under AmigaOS clamiga).
+;;; Amiga front-end smoke tests in a window on the Workbench screen.
+;;; DISABLED for now (gated on :LAMBDA-TALE-WINDOW-TESTS — push it
+;;; onto *FEATURES* before loading to re-enable): the Workbench screen
+;;; is not under the suite's control (size, font, depth, RTG promotion
+;;; vary per setup), and the custom screen is the game's presentation
+;;; — see the :SCREEN tests further down, which carry this coverage.
 
-#+amigaos
+#+lambda-tale-window-tests
 (let* ((m (parse-map *art* :name "test"))
        (g (new-game m))
        (log (attach-message-log g)))
@@ -3263,7 +3306,7 @@ brick grid" d side)
 
 ;; The full map view must cope with a map bigger than the window —
 ;; the layout the spec is actually about.
-#+amigaos
+#+lambda-tale-window-tests
 (let* ((m (parse-map (%big-map-art 30 30) :name "big30"))
        (g (new-game m))
        (log (attach-message-log g)))
@@ -3285,7 +3328,7 @@ brick grid" d side)
 
 ;; GadTools menu strip (creation/layout via WITH-VISUAL-INFO/WITH-MENUS)
 ;; and the party roster pane — with a full seven-member roster.
-#+amigaos
+#+lambda-tale-window-tests
 (let* ((m (parse-map *art* :name "test"))
        (g (new-game m :party
                     (with-rng ()
@@ -3312,7 +3355,7 @@ brick grid" d side)
 ;; The location interaction: the overlay page variant, the message-area
 ;; takeover (menu lines + rule + log tail on the white page) and the
 ;; view-column picture with its fall-back contract.
-#+amigaos
+#+lambda-tale-window-tests
 (let* ((m (parse-map *art* :name "test"))
        (g (new-game m :party (with-rng () (list (make-hero "A" :tester)))))
        (log (attach-message-log g))
@@ -3407,7 +3450,7 @@ brick grid" d side)
 ;; topaz 8, and on an RTG Workbench the system font would shrink the
 ;; overlay page below the footer row.  Row positions are recomputed
 ;; exactly the way the renderers wrap.
-#+amigaos
+#+lambda-tale-window-tests
 (let* ((m (parse-map *art* :name "test"))
        (g (new-game m :party (with-rng () (list (make-hero "A" :tester)))))
        (log (attach-message-log g))
@@ -3508,6 +3551,50 @@ brick grid" d side)
                 t)))))
   (leave-location g))
 
+;;; ---------------------------------------------------------------------
+;;; Regression: OPEN-WINDOW/OPEN-SCREEN's WA_Title/SA_Title string must
+;;; stay allocated until CLOSE-WINDOW/CLOSE-SCREEN — Intuition holds
+;;; the pointer live for title-bar redraws, not just for the
+;;; OpenWindowTagList/OpenScreenTagList call that installs it.  Force
+;;; intervening foreign allocations (candidates to reuse a
+;;; prematurely-freed title block) between open and close, confirm the
+;;; title is tracked in AMIGA.INTUITION::*TITLE-STRINGS* while open,
+;;; still readable through the live Window struct after the pressure,
+;;; and untracked again once closed.
+#+amigaos
+(let ((title "Title Survival Test")
+      (before (hash-table-count amiga.intuition::*title-strings*)))
+  (amiga.intuition:with-window
+      (win :title title :left 5 :top 5 :width 160 :height 60)
+    (check "window title is tracked while the window is open"
+           (1+ before)
+           (hash-table-count amiga.intuition::*title-strings*))
+    (dotimes (i 64)
+      (ffi:free-foreign (ffi:alloc-foreign 64)))
+    (check "window title string survives allocation pressure" title
+           (ffi:foreign-to-string
+            (ffi:make-foreign-pointer
+             (amiga.intuition:window-title win)))))
+  (check "window title is untracked after the window closes"
+         before
+         (hash-table-count amiga.intuition::*title-strings*)))
+
+#+amigaos
+(let ((before (hash-table-count amiga.intuition::*title-strings*)))
+  (amiga.intuition:with-screen
+      (scr :width (display-profile-screen-width *display-profile*)
+           :height (display-profile-screen-height *display-profile*)
+           :depth (display-profile-screen-depth *display-profile*)
+           :title "Screen Title Survival Test")
+    (dotimes (i 64)
+      (ffi:free-foreign (ffi:alloc-foreign 64)))
+    (check "screen title is tracked while the screen is open"
+           (1+ before)
+           (hash-table-count amiga.intuition::*title-strings*)))
+  (check "screen title is untracked after the screen closes"
+         before
+         (hash-table-count amiga.intuition::*title-strings*)))
+
 ;; Custom screen support: open an own screen (RTG-aware mode pick),
 ;; set the palette, draw into a backdrop window, close it all again.
 #+amigaos
@@ -3549,6 +3636,23 @@ brick grid" d side)
                (%amiga-draw-band rp g l)
                (%amiga-draw-log rp log l)
                (%amiga-party rp g l)
+               ;; the view-column picture contract, on the game's own
+               ;; screen: a real ILBM draws and centers; a missing
+               ;; file defers to the caller (falls back to the
+               ;; first-person view) after logging once
+               (let ((images (make-hash-table :test #'equal))
+                     (path "tests/tmp-pic.iff"))
+                 (write-ilbm (draw-location-scene :shop 40 30) path)
+                 (check-true "a location picture draws in the view column"
+                             (%amiga-draw-picture rp images path l log))
+                 (check "a missing picture defers to the caller" nil
+                        (%amiga-draw-picture rp images "tests/no-such.iff"
+                                             l log))
+                 (check-true "the missing picture said so in the log"
+                             (find-if (lambda (s) (search "No image" s))
+                                      (log-recent log 5)))
+                 (%free-images images)
+                 (delete-file path))
                ;; The game hides the OS screen bar: ShowTitle NIL plus
                ;; the full-height backdrop window (%CALL-WITH-GAME-WINDOW
                ;; does the same).  Probe the screen's own rastport
@@ -3579,6 +3683,65 @@ brick grid" d side)
        (%call-with-game-window
         :screen
         (lambda (scr win)
+          ;; the backdrop carries no WA_Title — even OPEN-WINDOW's
+          ;; default title would cost a title bar (border-top) that
+          ;; sits in front of the hidden screen bar
+          (check "the game backdrop window has no top border" 0
+                 (amiga.intuition:window-border-top win))
+          ;; The standard pointer: the hand sprite loads, its palette
+          ;; drives the sprite colors (screen colors 17-19 — read back
+          ;; through the viewport's ColorMap, the diagnostic for RTG
+          ;; setups where the pointer rendered black), a busy bracket
+          ;; restores it, and dropping it clears the state.
+          (let ((cm (amiga.gfx:viewport-color-map
+                     (amiga.intuition:screen-viewport scr)))
+                (*game-pointer* nil))
+            (%ensure-standard-pointer scr win :screen)
+            (check-true "the hand pointer is loaded" *game-pointer*)
+            (check "sprite color 17 took the hand's skin tone" #x0EDB
+                   (amiga.gfx:get-rgb4 cm 17))
+            (check "sprite color 18 took the hand's outline" #x0111
+                   (amiga.gfx:get-rgb4 cm 18))
+            (let ((outer *game-pointer*))
+              (check "busy pointer wraps a body and restores" :ok
+                     (%call-with-busy-pointer win
+                      (lambda ()
+                        (check "nested busy pointer runs the body"
+                               :inner
+                               (%call-with-busy-pointer
+                                win (lambda () :inner)))
+                        :ok)))
+              (check "the busy bracket restores the hand pointer"
+                     outer *game-pointer*))
+            ;; a campaign overrides art and colors with a pointer.iff
+            ;; in its tile pack: 8x2, one pen-1 pixel at (2,0) — the
+            ;; hot spot — one pen-2 pixel below, a green/blue CMAP.
+            ;; Every palette entry is set: WRITE-ILBM compacts NIL
+            ;; entries out of the CMAP, which would shift the colors.
+            (let ((img (make-image 8 2 2)))
+              (setf (pixel-ref img 2 0) 1
+                    (pixel-ref img 2 1) 2)
+              (setf (aref (image-palette img) 0) '(0 0 0)
+                    (aref (image-palette img) 1) '(0 255 0)
+                    (aref (image-palette img) 2) '(0 0 255)
+                    (aref (image-palette img) 3) '(255 255 255))
+              (write-ilbm img "tests/pointer.iff"))
+            (let ((*gfx-dir* "tests/"))
+              (%ensure-standard-pointer scr win :screen))
+            (destructuring-bind (chip height xoff yoff) *game-pointer*
+              (check "pointer.iff: sprite height follows the art" 2
+                     height)
+              (check "pointer.iff: hot spot on the inked pixel" '(-2 0)
+                     (list xoff yoff))
+              (check "pointer.iff: plane words in chip RAM"
+                     '(#x2000 #x0000)
+                     (list (ffi:peek-u16 chip 4) (ffi:peek-u16 chip 6))))
+            (check "pointer.iff: its CMAP drives sprite color 17" #x00F0
+                   (amiga.gfx:get-rgb4 cm 17))
+            (delete-file "tests/pointer.iff")
+            (%free-standard-pointer win)
+            (check "dropping the pointer clears the session state" nil
+                   *game-pointer*))
           (let ((rp (amiga.intuition:window-rastport win)))
             (amiga.gfx:set-a-pen rp 3)
             (amiga.gfx:rect-fill rp 0 0 50 3)
@@ -3700,15 +3863,17 @@ flat floor color" pname)
 ;; roster slot (2) and leave it (:esc) — exercising the whole :sheet
 ;; mode through the real event loop.  The fixture crypt is a :DARK
 ;; zone, so the whole session renders at the one-cell darkness view
-;; depth (the :screen sessions below exercise the blit path's wall of
-;; night).
+;; depth.  This session keeps :DISPLAY :WINDOW — the Workbench-window
+;; development view — alive as a smoke test (it only checks the
+;; session reaches :DONE, so it isn't sensitive to the Workbench
+;; geometry variability that gates the detailed layout checks behind
+;; :LAMBDA-TALE-WINDOW-TESTS above); the rest of the suite runs
+;; :DISPLAY :SCREEN, the game's presentation.
 #+amigaos
 (check "amiga-ui autoplay plays a scripted session and quits" :done
        (let ((*autoplay* (list #\w #\d #\1 #\2 :esc #\w #\a
                                #\h :esc
                                #\m #\f #\f #\? #\h #\m #\s #\q)))
-         ;; :window is the development view — :screen (the default)
-         ;; gets its own autoplay below
          (play-amiga "tests/world/crypt.map" :display :window)
          :done))
 
@@ -3743,7 +3908,7 @@ flat floor color" pname)
              ;; scratch save, like every other test's tests/tmp-* state —
              ;; keeps the real saves/ dir untouched by the test suite
              (*save-dir* "tests/tmp-saves/"))
-         (play-amiga "tests/world/keep.map" :display :window)
+         (play-amiga "tests/world/keep.map" :display :screen)
          (when (probe-file "tests/tmp-saves/t1.sav")
            (delete-file "tests/tmp-saves/t1.sav"))
          :done))
@@ -3893,7 +4058,7 @@ flat floor color" pname)
                   (*autoplay* (list #\w #\q)))
               (when (probe-file path) (delete-file path))
               (debug-log-enable path)
-              (play-amiga "tests/world/crypt.map" :display :window)
+              (play-amiga "tests/world/crypt.map" :display :screen)
               (debug-log-disable)
               (let ((text (%slurp-file path)))
                 (prog1 (and (search "play-amiga tests/world/crypt.map" text)
