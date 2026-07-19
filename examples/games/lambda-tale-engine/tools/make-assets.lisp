@@ -15,4 +15,11 @@
           (tale::display-profile-gfx-dir p))
   (format t "~D pieces written.~%"
           (tale::generate-wall-assets :profile p)))
+
+;; The fixture world's effects-band icon (w-compass :image) — checked
+;; in like the packs; the test suite pixel-compares it against
+;; DRAW-EFFECT-ICON so it cannot drift.
+(tale:write-ilbm (tale::draw-effect-icon :compass)
+                 (tale:engine-path "tests/world/fx-needle.iff"))
+(format t "fixture icon written.~%")
 (cl-user::quit 0)

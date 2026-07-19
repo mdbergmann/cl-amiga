@@ -36,7 +36,8 @@
    #:game-party #:game-flags #:game-combat
    #:game-effects #:add-effect #:remove-effect #:find-effect
    #:effect-name #:effect-expires-at #:effect-payload #:effect-label
-   #:effects-ac-bonus #:light-active-p
+   #:effect-image #:effect-image-path #:apply-effect-spec
+   #:effects-ac-bonus #:light-active-p #:compass-active-p
    #:turn-left #:turn-right #:turn-around #:move-party #:observe
    ;; game time, day and night
    #:game-time #:advance-time #:daylight-p #:clock-line
@@ -65,6 +66,10 @@
    #:+inventory-limit+ #:hero-items #:hero-equipped #:hero-carrying-p
    #:give-item #:drop-item #:equip-item #:unequip-item #:equipped-of-kind
    #:hero-attack-dice #:hero-effective-ac
+   ;; using items (torch, potion — the use menu)
+   #:usable-items #:use-item
+   #:make-use-view #:use-view-hero #:use-view-item
+   #:use-lines #:use-act
    ;; locations and shops
    #:game-location #:enter-location #:leave-location
    #:location-title #:location-kind #:location-arg
@@ -76,6 +81,13 @@
    #:spell-known-p #:spell-castable-p #:spells-for-hero #:cast-spell
    #:make-cast-view #:cast-view-hero #:cast-view-spell
    #:cast-lines #:cast-act #:*sp-regen-minutes*
+   ;; bard songs
+   #:define-song #:find-song-type #:song-title #:song-known-p
+   #:songs-for-hero #:sing-song #:current-song
+   #:hero-singer-p #:hero-tunes #:hero-max-tunes
+   #:make-sing-view #:sing-view-hero #:sing-lines #:sing-act
+   ;; taverns (drinks refill a singer's tunes)
+   #:tavern-price #:buy-drink #:tavern-lines #:tavern-act
    ;; combat
    #:define-monster #:find-monster-type #:monster-type-name
    #:monster-type-level #:monster-type-ac #:monster-type-xp

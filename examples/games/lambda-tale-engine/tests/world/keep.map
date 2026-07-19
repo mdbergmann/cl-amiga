@@ -1,6 +1,6 @@
-+-+-+-+-+
-|@D    >|
-+-+-+-+-+
++-+-+-+-+-+
+|@D      >|
++-+-+-+-+-+
 
 (zone :kind :city :title "Testhold")
 
@@ -8,5 +8,8 @@
   (location "The Test Shoppe" :shop :stock (w-sword w-torch)))
 
 (special (3 0)
+  (location "The Resting Rat" :tavern :price 2))
+
+(special (4 0)
   (message "Down you go.")
   (travel "crypt.map"))

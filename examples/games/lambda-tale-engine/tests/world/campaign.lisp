@@ -2,15 +2,16 @@
 ;;;
 ;;; The minimal campaign the engine test suite plays: one melee class,
 ;;; one caster class with a spell of each walkabout-relevant effect
-;;; kind (light against the crypt's darkness, damage, heal), the
-;;; shoppe's stock, one monster, and a two-hero starting party (the
+;;; kind (light against the crypt's darkness, damage, heal, compass),
+;;; the shoppe's stock, one monster, and a two-hero starting party (the
 ;;; caster in slot 2 — the autoplay scripts rely on that).  Game
 ;;; campaigns live elsewhere; this one exists only so the suite can
 ;;; exercise a committed world end-to-end.
 
 (in-package :tale)
 
-(define-hero-class :w-fighter :hp-dice "1d10+4" :damage "1d8" :ac 8)
+(define-hero-class :w-fighter :hp-dice "1d10+4" :damage "1d8" :ac 8
+                              :singer t)  ; the fixture's singing fighter
 (define-hero-class :w-wizard  :hp-dice "1d6+2"  :damage "1d4" :ac 10
                               :caster t)
 
@@ -20,8 +21,12 @@
   :damage "1d4+1")
 (define-spell 'w-mend  :cost 2 :level 1 :classes '(:w-wizard)
   :heal "1d8")
+(define-spell 'w-compass :cost 1 :level 1 :classes '(:w-wizard)
+  :compass t :duration 120 :image "fx-needle.iff")
 
-(define-item 'w-torch :price 2)
+(define-song 'w-march :buff-ac 1 :duration 30)
+
+(define-item 'w-torch :price 2 :use '(:light t :duration 30) :consumed t)
 (define-item 'w-sword :kind :weapon :price 20 :damage "1d6+1")
 
 (define-monster "crypt rat"

@@ -92,7 +92,7 @@ solely in the full map mode under `m`.)
 |                      |   bottom, older lines     |
 |                      |   scroll up)              |
 +----------------------+---------------------------+
-| location plaque      | active effects  | compass |
+| location plaque      | active effects [+ rose] |
 +----------------------+---------------------------+
 | status line                                      |
 | party roster (up to 7 rows)                      |
@@ -110,21 +110,31 @@ the Amiga use the same arrangement.)
   column.  Backed by the engine's `attach-message-log` ring
   (`:message` events); front-ends render as many trailing lines as
   fit.
-- **Effects + compass band** (the foot of the log column): the party's
-  active effects — shield, light and friends, Bard's Tale style — as
-  one line each at the left.  The engine carries them as `game-effects`:
+- **Effects band** (the foot of the log column): the party's active
+  effects — shield, light and friends, Bard's Tale style — as one
+  line each at the left.  The engine carries them as `game-effects`:
   **records** with a display name, an optional expiry on the game clock
   (`add-effect`'s `:duration`; `advance-time` announces and drops the
-  expired) and a payload plist of engine facts — `(:ac N)` feeds the
-  party's effective AC, `(:light t)` defeats darkness.  Re-adding a
-  name refreshes it in place.  Effects live in save games.  The right
-  of the band holds the **compass rose** — N/E/S/W around a diamond,
-  the needle and the faced letter highlighted (`compass-points`
-  provides the geometry); turning is silent (no "You turn left." log
-  noise), the compass and status line carry that information.
-- **Status + party roster** (bottom, full width): position/facing/mode
-  line and one roster row per party member — the layout must reserve
-  room for **7 rows**.
+  expired), a payload plist of engine facts — `(:ac N)` feeds the
+  party's effective AC, `(:light t)` defeats darkness, `(:compass t)`
+  orients the party — and an optional icon image: a file name resolved
+  against the current map's directory (`effect-image-path`, the zone
+  tile-pack rule), which the Amiga band blits before the label — 16x16
+  ILBMs with pen 0 as the transparent key (`draw-effect-icon` in
+  tools/gen-walls.lisp draws placeholder art; a file that will not
+  load logs once and the label stands alone).  The host UI stays text.
+  Re-adding a name refreshes it in place.  Effects live in save games.  While a
+  `:compass` effect burns (`compass-active-p`) the right of the band
+  holds the **compass rose** — N/E/S/W around a diamond, the needle
+  and the faced letter highlighted (`compass-points` provides the
+  geometry) — and the status line shows the facing; without one the
+  party has no facing readout (Bard's Tale's Magic Compass rule) and
+  the effect lines get the whole band.  Turning is silent (no "You
+  turn left." log noise).
+- **Status + party roster** (bottom, full width): position/mode line
+  (the facing appears only while a compass effect burns) and one
+  roster row per party member — the layout must reserve room for
+  **7 rows**.
 
 ## Full map view (`m`)
 

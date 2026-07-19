@@ -8,11 +8,14 @@
 ;;;   |                    |  bottom, older       |
 ;;;   +--------------------+  scrolling up)       |
 ;;;   | location plaque    +----------------------+
-;;;   |                    | effects     | compass|
+;;;   |                    | effects band [+rose] |
 ;;;   +--------------------+----------------------+
 ;;;   | status line                               |
 ;;;   | party roster (7 rows)                     |
 ;;;   +-------------------------------------------+
+;;;
+;;; The compass rose appears in the band — and the facing in the status
+;;; line — only while a :COMPASS effect burns (COMPASS-ACTIVE-P).
 ;;;
 ;;; The automap lives in a full-screen map mode under the 'm' key.
 ;;;
@@ -389,6 +392,62 @@ page without a background-color box around every character."
              walls))
   nil)
 
+;;; Effects-band icons (effect :image files): loaded lazily on first
+;;; draw into a per-session cache keyed by the resolved path
+;;; (EFFECT-IMAGE-PATH — map-relative, like zone tile packs), with the
+;;; wall-piece bitmap recipe: window-depth friend bitmap, chunky
+;;; upload, chip-RAM cookie-cut mask when the icon uses pen 0.  A file
+;;; that will not load logs once and the effect keeps its text label.
+
+(defun %load-effect-icon (rp path)
+  "Load the icon at PATH into an offscreen bitmap; returns the cache
+entry (BITMAP WIDTH HEIGHT MASK), MASK NIL for an opaque icon."
+  (let* ((img (read-ilbm path))
+         (w (image-width img))
+         (h (image-height img))
+         (friend (%window-bitmap rp))
+         (depth (max 2 (amiga.gfx:get-bitmap-attr friend
+                                                  amiga.gfx:+bma-depth+)))
+         (bm (amiga.gfx:alloc-bitmap w h depth :friend friend))
+         (mask (when (image-transparent-p img)
+                 (let* ((bytes (mask-bytes w h (image-pixels img)))
+                        (chip (amiga:alloc-chip (length bytes))))
+                   (dotimes (i (length bytes) chip)
+                     (ffi:poke-u8 chip (aref bytes i) i))))))
+    (amiga.gfx:with-bitmap-rastport (brp bm)
+      (amiga.gfx:write-chunky brp 0 0 w h (image-pixels img)))
+    (list bm w h mask)))
+
+(defun %effect-icon (rp icons game effect log)
+  "EFFECT's cached icon entry (BITMAP WIDTH HEIGHT MASK), loading it
+on first sight, or NIL — no :image, or the file would not load (said
+once in the log; the band falls back to the text label)."
+  (let ((path (effect-image-path game effect)))
+    (when path
+      (let ((entry (gethash path icons)))
+        (cond ((eq entry :missing) nil)
+              (entry entry)
+              (t (handler-case
+                     (setf (gethash path icons) (%load-effect-icon rp path))
+                   (error (e)
+                     (when log
+                       (log-message log (format nil "No effect icon ~A (~A)."
+                                                path e)))
+                     (setf (gethash path icons) :missing)
+                     nil))))))))
+
+(defun %free-effect-icons (icons)
+  "Free the cached icon bitmaps and masks; safe with NIL."
+  (when icons
+    (maphash (lambda (path entry)
+               (declare (ignore path))
+               (unless (eq entry :missing)
+                 (amiga.gfx:free-bitmap (first entry))
+                 (when (fourth entry)
+                   (amiga:free-chip (fourth entry)))))
+             icons))
+  nil)
+
 (defun %amiga-draw-map-region (rp game ox oy cell x0 y0 vw vh full
                                &optional (cw 8))
   "Draw automap cells [X0,X0+VW) x [Y0,Y0+VH) at (OX,OY), CELL pixels
@@ -447,12 +506,16 @@ minimap viewport and the full map mode."
                                         (- (floor cell 2) 1))))
           (amiga.gfx:set-a-pen rp 1))))))
 
-(defun %amiga-draw-band (rp game l)
+(defun %amiga-draw-band (rp game l &optional icons log)
   "The band at the foot of the message-log column: active effects
-(shield, lamp, ...) as lines at the left, the compass rose — the four
-cardinal letters around a diamond, the needle pointing at the party's
-facing — in the BAND-H square at the right.  Black on the white page,
-separated from the log above by a thin rule."
+(shield, lamp, ...) as lines at the left — each with its icon blitted
+before the label when the effect carries an :IMAGE (ICONS is the
+session's icon cache, see %EFFECT-ICON) — and, only while a :COMPASS
+effect burns, the compass rose, the four cardinal letters around a
+diamond with the needle pointing at the party's facing, in the BAND-H
+square at the right.  Without a compass the effect lines get the whole
+band.  Black on the white page, separated from the log above by a thin
+rule."
   (let* ((ox (ui-layout-log-x l))
          (w (ui-layout-log-w l))
          (right (ui-layout-right l))
@@ -461,44 +524,70 @@ separated from the log above by a thin rule."
          (bottom (+ band-y band-h -1))
          (lh (ui-layout-lh l))
          (cw (ui-layout-cw l))
-         (rose-w band-h)                ; the rose's square at the right
-         (cx (- right 1 (floor rose-w 2)))
+         (base (ui-layout-base l))
+         (compass (compass-active-p game))
+         (rose-w (if compass band-h 0)) ; the rose's square at the right
+         (cx (- right 1 (floor band-h 2)))
          (cy (+ band-y (floor band-h 2)))
-         (r (max 6 (- (floor band-h 2) 6)))
-         (max-chars (max 4 (floor (- w rose-w 4) cw))))
+         (r (max 6 (- (floor band-h 2) 6))))
     ;; band interior on the white page, plus the rule under the log
     (amiga.gfx:set-a-pen rp 1)
     (amiga.gfx:rect-fill rp (- ox 3) band-y (- right 1) bottom)
     (amiga.gfx:set-a-pen rp 0)
     (amiga.gfx:draw-line rp (- ox 3) band-y (- right 1) band-y)
-    ;; active effects, one line each
-    (let ((y (+ band-y 2 (ui-layout-base l))))
+    ;; active effects, one line each: [icon] label
+    (let ((y (+ band-y 2 base)))
       (dolist (e (game-effects game))
-        (when (< y bottom)
-          (let ((text (effect-label e)))
-            (amiga.gfx:move-to rp ox y)
-            (amiga.gfx:gfx-text rp (if (> (length text) max-chars)
-                                       (subseq text 0 max-chars)
-                                       text))))
-        (incf y lh)))
-    ;; compass rose
-    (destructuring-bind (needle letters)
-        (compass-points (game-facing game) cx cy r)
-      ;; the rose: a diamond through the needle's reach
-      (let ((ri (max 2 (- r 8))))
-        (amiga.gfx:set-a-pen rp 0)
-        (amiga.gfx:draw-line rp cx (- cy ri) (+ cx ri) cy)
-        (amiga.gfx:draw-line rp (+ cx ri) cy cx (+ cy ri))
-        (amiga.gfx:draw-line rp cx (+ cy ri) (- cx ri) cy)
-        (amiga.gfx:draw-line rp (- cx ri) cy cx (- cy ri)))
-      (destructuring-bind (x0 y0 x1 y1) needle
-        (amiga.gfx:set-a-pen rp 3)
-        (amiga.gfx:draw-line rp x0 y0 x1 y1))
-      (dolist (p letters)
-        (destructuring-bind (ch x y facing-p) p
-          (amiga.gfx:set-a-pen rp (if facing-p 3 0))
-          (amiga.gfx:move-to rp (- x (floor cw 2)) (+ y 3))
-          (amiga.gfx:gfx-text rp (string ch)))))
+        (let ((advance lh))
+          (when (< y bottom)
+            (let* ((entry (and icons (%effect-icon rp icons game e log)))
+                   (ty (- y base))
+                   (iw (if entry (second entry) 0))
+                   (ih (if entry (third entry) 0))
+                   ;; the icon draws only where it fits: above the
+                   ;; band's foot, clear of the rose's square
+                   (fits (and entry
+                              (<= (+ ty ih) bottom)
+                              (<= (+ iw (* 4 cw)) (- w rose-w 4)))))
+              (when fits
+                (let ((bm (first entry))
+                      (mask (fourth entry)))
+                  (if mask
+                      (amiga.gfx:blt-mask-bitmap-rastport
+                       bm 0 0 rp ox ty iw ih mask)
+                      (amiga.gfx:blt-bitmap-rastport
+                       bm 0 0 rp ox ty iw ih))
+                  (amiga.gfx:set-a-pen rp 0)
+                  (setf advance (max lh (+ ih 2)))))
+              (let* ((tx (if fits (+ ox iw 3) ox))
+                     (max-chars (max 4 (floor (- w rose-w 4
+                                                 (if fits (+ iw 3) 0))
+                                              cw)))
+                     (text (effect-label e)))
+                (amiga.gfx:move-to rp tx y)
+                (amiga.gfx:gfx-text rp (if (> (length text) max-chars)
+                                           (subseq text 0 max-chars)
+                                           text)))))
+          (incf y advance))))
+    ;; compass rose, spell-granted
+    (when compass
+      (destructuring-bind (needle letters)
+          (compass-points (game-facing game) cx cy r)
+        ;; the rose: a diamond through the needle's reach
+        (let ((ri (max 2 (- r 8))))
+          (amiga.gfx:set-a-pen rp 0)
+          (amiga.gfx:draw-line rp cx (- cy ri) (+ cx ri) cy)
+          (amiga.gfx:draw-line rp (+ cx ri) cy cx (+ cy ri))
+          (amiga.gfx:draw-line rp cx (+ cy ri) (- cx ri) cy)
+          (amiga.gfx:draw-line rp (- cx ri) cy cx (- cy ri)))
+        (destructuring-bind (x0 y0 x1 y1) needle
+          (amiga.gfx:set-a-pen rp 3)
+          (amiga.gfx:draw-line rp x0 y0 x1 y1))
+        (dolist (p letters)
+          (destructuring-bind (ch x y facing-p) p
+            (amiga.gfx:set-a-pen rp (if facing-p 3 0))
+            (amiga.gfx:move-to rp (- x (floor cw 2)) (+ y 3))
+            (amiga.gfx:gfx-text rp (string ch))))))
     (amiga.gfx:set-a-pen rp 1)))
 
 (defun %amiga-draw-log (rp log l)
@@ -555,8 +644,9 @@ Columns come from the profile's ROSTER-COLS character cells."
     (amiga.gfx:set-a-pen rp 1)))
 
 (defun %amiga-status (rp game l text)
-  "Status pane: position/facing plus contextual key help at the left,
-the game clock at the right, black on the grey chrome."
+  "Status pane: position — plus the facing, compass-granted — and
+contextual key help at the left, the game clock at the right, black on
+the grey chrome."
   (let ((ox (ui-layout-bx l))
         (oy (ui-layout-status-y l))
         (right (ui-layout-right l)))
@@ -565,9 +655,10 @@ the game clock at the right, black on the grey chrome."
     (amiga.gfx:set-a-pen rp 0)
     (let* ((clock (clock-line game))
            (clock-w (* (ui-layout-cw l) (length clock)))
-           (left (format nil "(~D,~D) ~A  ~A"
+           (left (format nil "(~D,~D)~@[ ~A~]  ~A"
                          (game-x game) (game-y game)
-                         (dir-keyword (game-facing game))
+                         (when (compass-active-p game)
+                           (dir-keyword (game-facing game)))
                          text))
            (left-max (max 0 (floor (- right ox clock-w
                                       (ui-layout-cw l))
@@ -850,6 +941,8 @@ the save-slot picker: 1-9 pick a slot, N names a new save
          (sheet-hero 0)     ; party index shown in :sheet mode
          (shopv nil)        ; SHOP-VIEW while inside a location
          (castv nil)        ; CAST-VIEW while the cast menu is open
+         (usev nil)         ; USE-VIEW while the use menu is open
+         (singv nil)        ; SING-VIEW while the sing menu is open
          (savem nil)        ; SAVE-MENU while the save/load picker is open
          (saves-prior-mode :play) ; mode to return to when the picker closes
          (zone-dirty nil)   ; party traveled: the chrome needs a repaint
@@ -858,6 +951,8 @@ the save-slot picker: 1-9 pick a slot, N names a new save
                (setf log (attach-message-log g))
                (setf shopv (when (game-location g) (make-shop-view)))
                (setf castv nil)
+               (setf usev nil)
+               (setf singv nil)
                (setf savem nil)
                (on-event g :enter-location
                          (lambda (gm loc) (declare (ignore gm loc))
@@ -889,7 +984,9 @@ the save-slot picker: 1-9 pick a slot, N names a new save
                 (let* ((rp (%game-rastport win font))
                        (l (%amiga-layout win rp))
                        (walls nil)      ; loaded piece bitmaps
-                       (walls-dir nil)) ; the pack they came from
+                       (walls-dir nil)  ; the pack they came from
+                       (icons (make-hash-table :test #'equal)))
+                                        ; effects-band icon cache
                (labels ((effective-gfx-dir ()
                           ;; precedence: the explicit :GFX-DIR argument,
                           ;; then the zone's (ZONE :GFX ...), then the
@@ -918,6 +1015,8 @@ the save-slot picker: 1-9 pick a slot, N names a new save
                                            "Save: pick a slot or name one"
                                            "Load: pick a slot"))
                                 (castv "Choose: 1-9 pick, Esc back")
+                                (usev "Choose: 1-9 pick, Esc back")
+                                (singv "Choose: 1-9 pick, Esc back")
                                 ((game-combat game)
                                  "COMBAT!  A atk  D def  C cast  F flee")
                                 ((game-location game)
@@ -974,6 +1073,12 @@ the save-slot picker: 1-9 pick a slot, N names a new save
                                    (castv
                                     (%amiga-draw-page
                                      rp (cast-lines game castv) l))
+                                   (usev
+                                    (%amiga-draw-page
+                                     rp (use-lines game usev) l))
+                                   (singv
+                                    (%amiga-draw-page
+                                     rp (sing-lines game singv) l))
                                    ((game-location game)
                                     (%amiga-draw-page
                                      rp
@@ -989,7 +1094,7 @@ the save-slot picker: 1-9 pick a slot, N names a new save
                                                     (ui-layout-fp-w l)
                                                     (ui-layout-fp-h l)
                                                     walls)
-                                    (%amiga-draw-band rp game l)))
+                                    (%amiga-draw-band rp game l icons log)))
                              (%amiga-draw-log rp log l)
                              (%amiga-status rp game l (status-text))
                              (%amiga-party rp game l))))
@@ -1014,6 +1119,38 @@ the save-slot picker: 1-9 pick a slot, N names a new save
                                  (setf castv nil)
                                  (fresh-play)
                                  (return-from cast-menu-act nil)))))
+                          (redraw)
+                          nil)
+                        (open-use ()
+                          (if (some #'usable-items (alive-heroes game))
+                              (setf usev (make-use-view))
+                              (log-message log
+                                           "No one carries anything to use."))
+                          (redraw))
+                        (use-menu-act (c)
+                          (let ((key (if (eq c :esc) #\Escape c)))
+                            (when (characterp key)
+                              (case (use-act game usev key)
+                                ((:done :cancelled)
+                                 (setf usev nil)
+                                 (fresh-play)
+                                 (return-from use-menu-act nil)))))
+                          (redraw)
+                          nil)
+                        (open-sing (in-combat)
+                          (if (some #'hero-singer-p (alive-heroes game))
+                              (setf singv
+                                    (make-sing-view :in-combat in-combat))
+                              (log-message log "No one here can play."))
+                          (redraw))
+                        (sing-menu-act (c)
+                          (let ((key (if (eq c :esc) #\Escape c)))
+                            (when (characterp key)
+                              (case (sing-act game singv key)
+                                ((:done :cancelled)
+                                 (setf singv nil)
+                                 (fresh-play)
+                                 (return-from sing-menu-act nil)))))
                           (redraw)
                           nil)
                         (open-saves (menu-mode)
@@ -1091,6 +1228,12 @@ the save-slot picker: 1-9 pick a slot, N names a new save
                                    ;; every key (digits pick, Esc backs
                                    ;; out) — see spells.lisp
                                    (cast-menu-act c))
+                                  (usev
+                                   ;; use menu: same shape — see items.lisp
+                                   (use-menu-act c))
+                                  (singv
+                                   ;; sing menu: same shape — see songs.lisp
+                                   (sing-menu-act c))
                                   ((game-location game)
                                    ;; inside a shop: the shared model
                                    ;; handles the keys (Esc backs out /
@@ -1124,6 +1267,7 @@ the save-slot picker: 1-9 pick a slot, N names a new save
                                                          (alive-heroes game)))
                                           (redraw))
                                      (#\c (open-cast t))
+                                     (#\p (open-sing t))
                                      (#\f (attempt-flee game) (redraw)))
                                    nil)
                                   ((eql c #\S) (open-saves :save) nil)
@@ -1139,6 +1283,8 @@ the save-slot picker: 1-9 pick a slot, N names a new save
                                      (#\a (turn-left game) (redraw))
                                      (#\d (turn-right game) (redraw))
                                      (#\c (open-cast nil))
+                                     (#\u (open-use))
+                                     (#\p (open-sing nil))
                                      (#\m (setf mode :map)
                                           (redraw)))
                                    nil)))))
@@ -1167,4 +1313,5 @@ the save-slot picker: 1-9 pick a slot, N names a new save
                            (when *autoplay*
                              (when (eq (act (pop *autoplay*)) :quit)
                                (return))))))
-                   (setf walls (%free-wall-assets walls)))))))))))))))
+                   (setf walls (%free-wall-assets walls)
+                         icons (%free-effect-icons icons)))))))))))))))

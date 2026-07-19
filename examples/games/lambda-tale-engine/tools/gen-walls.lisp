@@ -229,6 +229,52 @@ PLANES."
                                          :door (eq kind :side-door))))
                (if (eq side :r) (%img-mirror-x img) img)))))))))
 
+;;; ---------------------------------------------------------------------
+;;; Effects-band icons: small procedural placeholders a world can ship
+;;; for its timed effects (define-spell/define-item :image).  Pen 0 is
+;;; the transparent key (the band's white page shows through), pen 4
+;;; the opaque black outline — the wall-piece color contract.
+
+(defparameter *effect-icon-size* 16
+  "Effects-band icons are square, this many pixels a side.")
+
+(defparameter *effect-icon-palette*
+  #((0 0 0) (255 255 255) (136 136 136) (255 170 51)
+    (0 0 0) (0 0 0) (0 0 0) (0 0 0))
+  "CMAP for the icon files: the UI pens 0-3 plus opaque black at 4.")
+
+(defun draw-effect-icon (kind)
+  "A 16x16 effects-band icon image for KIND — :compass (the rose in
+miniature: black diamond, amber north needle), :flame (an amber
+teardrop) or :shield (a grey kite with an amber boss)."
+  (let ((img (make-image *effect-icon-size* *effect-icon-size* 3
+                         :palette *effect-icon-palette*)))
+    (ecase kind
+      (:compass
+       (dotimes (y 16)
+         (dotimes (x 16)
+           (when (= (+ (abs (- x 7)) (abs (- y 7))) 6)
+             (setf (pixel-ref img x y) 4))))
+       (loop for y from 2 to 7
+             do (setf (pixel-ref img 7 y) 3)))
+      (:flame
+       (loop for y from 2 to 13
+             do (let ((hw (min 4 (floor (- y 1) 3))))
+                  (loop for x from (- 7 hw) to (+ 7 hw)
+                        do (setf (pixel-ref img x y)
+                                 (if (= (abs (- x 7)) hw) 4 3))))))
+      (:shield
+       (loop for y from 2 to 13
+             do (let ((hw (if (<= y 8) 5 (- 13 y))))
+                  (loop for x from (- 7 hw) to (+ 7 hw)
+                        do (setf (pixel-ref img x y)
+                                 (if (or (= (abs (- x 7)) hw)
+                                         (= y 2))
+                                     4 2)))))
+       (loop for y from 5 to 7
+             do (setf (pixel-ref img 7 y) 3))))
+    img))
+
 (defun generate-wall-assets (&key (profile *display-profile*) dir)
   "Draw all wall pieces plus the demo ceiling/floor backdrops for
 PROFILE's viewport and write them as ILBM files into DIR (default: the

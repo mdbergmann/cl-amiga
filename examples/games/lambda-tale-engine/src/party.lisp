@@ -21,17 +21,21 @@
   (damage "1d4")      ; the hero's bare attack dice (no weapon)
   (gold 0)
   (items '())         ; pack contents: item names, at most +inventory-limit+
-  (equipped '()))     ; equipped subset: one :weapon, :armor, :shield each
+  (equipped '())      ; equipped subset: one :weapon, :armor, :shield each
+  (tunes 0))          ; song charges (singers; refilled at a tavern)
 
 (defvar *hero-classes* (make-hash-table :test 'eq))
 
 (defun define-hero-class (name &key (hp-dice "1d8") (damage "1d4") (ac 10)
-                                    caster)
+                                    caster singer)
   "Register hero class NAME (a keyword) with its hit dice, attack dice
 and starting armor class; CASTER T marks a spell-casting class (spell
-points from level and IQ, see %HERO-MAX-SP).  Campaign data calls this."
+points from level and IQ, see %HERO-MAX-SP), SINGER T a song-playing
+class (one tune charge per level, see songs.lisp).  Campaign data
+calls this."
   (setf (gethash name *hero-classes*)
-        (list :hp-dice hp-dice :damage damage :ac ac :caster caster))
+        (list :hp-dice hp-dice :damage damage :ac ac
+              :caster caster :singer singer))
   name)
 
 (defun hero-class-property (class key)
@@ -58,7 +62,8 @@ purse (campaign data decides; dice strings welcome)."
                 :str str :dex dex :iq iq :con con :lck lck
                 :ac (hero-class-property class :ac)
                 :damage (hero-class-property class :damage)
-                :gold (roll-dice gold))))
+                :gold (roll-dice gold)
+                :tunes (if (hero-class-property class :singer) 1 0))))
 
 (defun stat-bonus (stat)
   "Bonus for an ability score: +1 per 2 points above 10, negative below."
@@ -74,6 +79,15 @@ bonus for casters (minimum 1); everyone else has none."
 (defun hero-caster-p (hero)
   "True when HERO can cast spells (a caster class with spell points)."
   (> (hero-max-sp hero) 0))
+
+(defun hero-singer-p (hero)
+  "True when HERO plays songs (a :SINGER class, see songs.lisp)."
+  (and (hero-class-property (hero-class hero) :singer) t))
+
+(defun hero-max-tunes (hero)
+  "Song charges a rested singer holds: one per level (Bard's Tale
+songs-per-day), none for everyone else."
+  (if (hero-singer-p hero) (hero-level hero) 0))
 
 (defun hero-alive-p (hero)
   (> (hero-hp hero) 0))
@@ -93,12 +107,19 @@ Amiga sheet view and the tests render from the same source."
   (list
    (format nil "~A the ~A" (hero-name hero) (hero-class-title hero))
    (format nil "Level ~D    XP ~D" (hero-level hero) (hero-xp hero))
-   (if (hero-caster-p hero)
-       (format nil "HP ~D/~D  SP ~D/~D  AC ~D"
-               (hero-hp hero) (hero-max-hp hero)
-               (hero-sp hero) (hero-max-sp hero) (hero-ac hero))
-       (format nil "HP ~D/~D    AC ~D" (hero-hp hero) (hero-max-hp hero)
-               (hero-ac hero)))
+   (let ((extras (concatenate
+                  'string
+                  (if (hero-caster-p hero)
+                      (format nil "  SP ~D/~D"
+                              (hero-sp hero) (hero-max-sp hero))
+                      "")
+                  (if (hero-singer-p hero)
+                      (format nil "  Tunes ~D/~D"
+                              (hero-tunes hero) (hero-max-tunes hero))
+                      ""))))
+     (format nil "HP ~D/~D~A~:[    ~;  ~]AC ~D"
+             (hero-hp hero) (hero-max-hp hero) extras
+             (plusp (length extras)) (hero-ac hero)))
    (format nil "STR ~D  DEX ~D  IQ ~D"
            (hero-str hero) (hero-dex hero) (hero-iq hero))
    (format nil "CON ~D  LCK ~D" (hero-con hero) (hero-lck hero))

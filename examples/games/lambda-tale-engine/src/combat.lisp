@@ -174,8 +174,9 @@ and damage spells so the log reads the same either way."
 
 (defun combat-round (game &optional actions)
   "Fight one round.  ACTIONS lists an action per living hero in party
-order — :attack (the default), :defend, or (:cast SPELL [TARGET]) to
-cast a spell (see CAST-SPELL; a failed cast wastes the round).  Heroes
+order — :attack (the default), :defend, (:cast SPELL [TARGET]) to
+cast a spell (see CAST-SPELL; a failed cast wastes the round), or
+\(:sing SONG) to strike up a song (see SING-SONG; likewise).  Heroes
 strike the first living monster; then the surviving monsters strike
 back.  The round costs one clock tick.  Returns :victory, :defeat or
 :ongoing."
@@ -197,7 +198,9 @@ back.  The round costs one clock tick.  Returns :victory, :defeat or
                    (when target
                      (%hero-attack game (car p) target))))
                 ((and (consp a) (eq (first a) :cast))
-                 (cast-spell game (car p) (second a) (third a)))))))
+                 (cast-spell game (car p) (second a) (third a)))
+                ((and (consp a) (eq (first a) :sing))
+                 (sing-song game (car p) (second a)))))))
     (%monsters-act game combat)
     (%combat-outcome game combat)))
 

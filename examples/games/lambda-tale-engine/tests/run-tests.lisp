@@ -619,9 +619,9 @@ messages so far (oldest first)."
 ;;; Sample map loads (the committed fixture world, tests/world/)
 
 (let ((m (load-map-file "tests/world/keep.map")))
-  (check "keep width" 4 (dungeon-map-width m))
+  (check "keep width" 5 (dungeon-map-width m))
   (check "keep height" 1 (dungeon-map-height m))
-  (check "keep stairs down" #\> (cell-feature m 3 0)))
+  (check "keep stairs down" #\> (cell-feature m 4 0)))
 (let ((m (load-map-file "tests/world/crypt.map")))
   (check "crypt width" 3 (dungeon-map-width m))
   (check "crypt height" 1 (dungeon-map-height m))
@@ -782,7 +782,42 @@ messages so far (oldest first)."
   (add-effect g "blessing" :payload '(:ac 1))
   (check ":ac payloads sum into the party bonus" 3 (effects-ac-bonus g))
   (check "lamp carries no :ac payload" nil
-         (getf (effect-payload (find-effect g "lamp")) :ac)))
+         (getf (effect-payload (find-effect g "lamp")) :ac))
+  ;; icon images and the :compass payload
+  (check "effects carry no image by default" nil
+         (effect-image (find-effect g "blessing")))
+  (check "without a :compass payload the party is lost" nil
+         (compass-active-p g))
+  (add-effect g "wayfinder" :duration 20 :payload '(:compass t)
+                            :image "fx-rose.iff")
+  (check "add-effect stores the icon image" "fx-rose.iff"
+         (effect-image (find-effect g "wayfinder")))
+  (check-true "a :compass payload orients the party" (compass-active-p g))
+  (add-effect g "wayfinder" :duration 20 :payload '(:compass t)
+                            :image "fx-rose2.iff")
+  (check "re-adding refreshes the image" "fx-rose2.iff"
+         (effect-image (find-effect g "wayfinder")))
+  (remove-effect g "wayfinder")
+  (check "a removed compass leaves the party lost again" nil
+         (compass-active-p g)))
+
+;; apply-effect-spec: the timed-effect vocabulary spells and usable
+;; items speak, funneled into one applier.
+(let* ((m (parse-map *art* :name "test"))
+       (g (new-game m)))
+  (apply-effect-spec g "wolf skin" '(:buff-ac 2 :duration 30))
+  (check "a :buff-ac spec becomes an :ac effect" 2 (effects-ac-bonus g))
+  (check "the spec's duration sets the expiry" (+ (game-time g) 30)
+         (effect-expires-at (find-effect g "wolf skin")))
+  (apply-effect-spec g "lantern" '(:light t :duration 10)
+                     :image "fx-light.iff")
+  (check-true "a :light spec lights the party" (light-active-p g))
+  (check "the applier stores the image" "fx-light.iff"
+         (effect-image (find-effect g "lantern")))
+  (apply-effect-spec g "wayfinder" '(:compass t :duration 10))
+  (check-true "a :compass spec orients the party" (compass-active-p g))
+  (check-error "a spec naming no timed effect is rejected"
+    (apply-effect-spec g "bogus" '(:frobnicate t :duration 5))))
 
 ;;; ---------------------------------------------------------------------
 ;;; Game time: the clock, day and night, darkness
@@ -1324,6 +1359,8 @@ messages so far (oldest first)."
   :light t :duration 60)
 (define-spell 'test-lore  :cost 1 :level 3 :classes '(:t-mage)
   :heal "1d4")
+(define-spell 'test-needle :cost 1 :level 1 :classes '(:t-mage)
+  :compass t :duration 45 :image "fx-needle.iff")
 
 (check "spell-title downcases the name" "test bolt" (spell-title 'test-bolt))
 (check-error "unknown spell rejected" (find-spell-type 'test-nonesuch))
@@ -1333,6 +1370,8 @@ messages so far (oldest first)."
   (define-spell 'test-bogus :cost 1))
 (check-error "a timed spell needs a duration"
   (define-spell 'test-bogus :buff-ac 1))
+(check-error "a compass spell needs a duration too"
+  (define-spell 'test-bogus :compass t))
 (check-error "duration must be a positive integer"
   (define-spell 'test-bogus :light t :duration -5))
 
@@ -1345,7 +1384,7 @@ messages so far (oldest first)."
   (setf (hero-level mage) 3)
   (check-true "level gate opens" (spell-known-p mage 'test-lore))
   (check "known spells in registration order"
-         '(test-bolt test-mend test-shield test-flame test-lore)
+         '(test-bolt test-mend test-shield test-flame test-lore test-needle)
          (spells-for-hero mage)))
 
 ;; Cast refusals: each says why, costs nothing, returns NIL.
@@ -1416,6 +1455,207 @@ messages so far (oldest first)."
   (check "recast refreshed the flame's expiry"
          (+ (game-time g) 60)
          (effect-expires-at (find-effect g "test flame"))))
+
+;; A compass spell: the party knows its facing only while it burns.
+(let* ((m (parse-map *art* :name "test"))
+       (mage (%combat-mage))
+       (g (new-game m :party (list mage))))
+  (check "the party starts without a compass" nil (compass-active-p g))
+  (check-true "needle casts" (cast-spell g mage 'test-needle))
+  (check-true "the party knows its facing" (compass-active-p g))
+  (check "the effect carries the spell's icon" "fx-needle.iff"
+         (effect-image (find-effect g "test needle")))
+  (check "the compass is a timed effect" (+ (game-time g) 45)
+         (effect-expires-at (find-effect g "test needle")))
+  (advance-time g 45)
+  (check "an expired compass leaves the party lost" nil
+         (compass-active-p g)))
+
+;;; ---------------------------------------------------------------------
+;;; Bard songs: singers and tunes, one song at a time, the tavern
+
+(define-hero-class :t-bard :hp-dice "1d8" :damage "1d4" :ac 9 :singer t)
+(define-song 'test-march :buff-ac 2 :duration 20)
+(define-song 'test-gleam :light t :duration 20 :image "fx-gleam.iff")
+(define-song 'test-dirge :level 3 :compass t :duration 20)
+
+(check "song-title downcases the name" "test march" (song-title 'test-march))
+(check-error "unknown song rejected" (find-song-type 'test-nonesuch))
+(check-error "define-song needs exactly one effect"
+  (define-song 'test-bogus :buff-ac 1 :light t :duration 5))
+(check-error "define-song needs an effect"
+  (define-song 'test-bogus :duration 5))
+(check-error "a song needs a duration"
+  (define-song 'test-bogus :light t))
+(check-error "song duration must be a positive integer"
+  (define-song 'test-bogus :light t :duration -5))
+
+;; Singers and tunes: one charge per level, rested singers start full.
+(let ((bard (with-rng () (make-hero "Mel" :t-bard)))
+      (grunt (%combat-hero)))
+  (check-true "the bard is a singer" (hero-singer-p bard))
+  (check "a fresh bard holds one tune" 1 (hero-tunes bard))
+  (check "max tunes follow the level" 1 (hero-max-tunes bard))
+  (setf (hero-level bard) 3)
+  (check "max tunes grow with the level" 3 (hero-max-tunes bard))
+  (setf (hero-level bard) 1)
+  (check-true "the grunt is no singer" (not (hero-singer-p grunt)))
+  (check "non-singers hold no tunes" 0 (hero-max-tunes grunt))
+  (check-true "the bard knows the level-1 songs"
+              (song-known-p bard 'test-march))
+  (check-true "the level gate holds" (not (song-known-p bard 'test-dirge)))
+  (check-true "non-singers know nothing" (not (song-known-p grunt 'test-march)))
+  (check "known songs in registration order" '(test-march test-gleam)
+         (songs-for-hero bard))
+  (check "the singer's sheet shows the tunes" "HP 1/1  Tunes 1/1  AC 9"
+         (third (hero-summary-lines bard))))
+
+;; SING-SONG: refusals say why; a song is a timed :SONG-marked effect
+;; and a new song displaces the old (one tune at a time).
+(let* ((m (parse-map *art* :name "test"))
+       (bard (with-rng () (make-hero "Mel" :t-bard)))
+       (grunt (%combat-hero))
+       (g (new-game m :party (list grunt bard)))
+       (msgs (watch-messages g))
+       (sung '()))
+  (on-event g :song-sung
+            (lambda (game hero name) (declare (ignore game hero))
+              (push name sung)))
+  (check "a non-singer cannot sing" nil (sing-song g grunt 'test-march))
+  (check-true "does-not-know message"
+              (find-if (lambda (s) (search "does not know" s))
+                       (funcall msgs)))
+  (check "no song plays yet" nil (current-song g))
+  (check-true "the bard strikes up the march"
+              (sing-song g bard 'test-march))
+  (check "the tune was spent" 0 (hero-tunes bard))
+  (check "the march is the current song" "test march"
+         (effect-name (current-song g)))
+  (check-true "the song effect carries the :song marker"
+              (getf (effect-payload (current-song g)) :song))
+  (check "the march shields the party" 2 (effects-ac-bonus g))
+  (check "the march is timed" (+ (game-time g) 20)
+         (effect-expires-at (current-song g)))
+  (check ":song-sung emitted" '(test-march) sung)
+  ;; out of tunes: the tavern beckons
+  (check "no tunes, no song" nil (sing-song g bard 'test-gleam))
+  (check-true "no-tunes message names the tavern"
+              (find-if (lambda (s) (search "tavern" s)) (funcall msgs)))
+  (check-true "the march still plays" (current-song g))
+  ;; a new song displaces the old
+  (setf (hero-tunes bard) 1)
+  (check-true "the bard strikes up the gleam"
+              (sing-song g bard 'test-gleam))
+  (check "the gleam displaced the march" "test gleam"
+         (effect-name (current-song g)))
+  (check "only one song plays" 1
+         (count-if (lambda (e) (getf (effect-payload e) :song))
+                   (game-effects g)))
+  (check "the march's shield left with it" 0 (effects-ac-bonus g))
+  (check-true "the gleam lights the party" (light-active-p g))
+  (check "the song carries its icon" "fx-gleam.iff"
+         (effect-image (current-song g)))
+  ;; songs fade on the clock like any timed effect
+  (advance-time g 20)
+  (check "the faded song is gone" nil (current-song g))
+  (check-true "the fade is announced"
+              (find-if (lambda (s) (search "wears off" s))
+                       (funcall msgs))))
+
+;; combat-round accepts (:sing SONG) beside :attack and (:cast ...).
+(let* ((m (parse-map *art* :name "test"))
+       (grunt (%combat-hero))
+       (bard (with-rng () (make-hero "Mel" :t-bard)))
+       (g (new-game m :party (list grunt bard))))
+  (start-combat g '(("test rat" 1)))
+  ;; the grunt slays the rat (d20=11 hits, 1d6=3) while the bard sings
+  (check "a sung round wins" :victory
+         (with-rng (10 2)
+           (combat-round g (list :attack '(:sing test-march)))))
+  (check "the combat tune was spent" 0 (hero-tunes bard))
+  (check-true "the march outlives the fight" (current-song g)))
+
+;; The sing menu: pick the singer, then the song (the CAST-VIEW pattern).
+(let* ((m (parse-map *art* :name "test"))
+       (grunt (%combat-hero))
+       (bard (with-rng () (make-hero "Mel" :t-bard)))
+       (g (new-game m :party (list grunt bard))))
+  (let ((v (make-sing-view)))
+    (check "Esc at the top cancels" :cancelled (sing-act g v #\Escape)))
+  (let ((v (make-sing-view)))
+    (check-true "the menu opens on the singer pick"
+                (member "Who plays?" (sing-lines g v) :test #'equal))
+    (sing-act g v #\1)
+    (check "a non-singer is not picked" nil (sing-view-hero v))
+    (sing-act g v #\2)
+    (check "the bard picked" bard (sing-view-hero v))
+    (check-true "the song page lists the march"
+                (find-if (lambda (s) (search "test march" s))
+                         (sing-lines g v)))
+    (sing-act g v #\Escape)
+    (check "Esc backs out to the singer pick" nil (sing-view-hero v))
+    (sing-act g v #\2)
+    (check "picking the song resolves the menu" :done (sing-act g v #\1))
+    (check "the march plays" "test march"
+           (effect-name (current-song g)))))
+
+;; The tavern: drinks refill a singer's tunes; :down holds the way
+;; below (the Bard's Tale trapdoor).
+(let* ((m (parse-map *art* :name "test"))
+       (bard (with-rng () (make-hero "Mel" :t-bard)))
+       (grunt (%combat-hero))
+       (g (new-game m :party (list grunt bard)))
+       (msgs (watch-messages g)))
+  (setf (hero-gold grunt) 10
+        (hero-gold bard) 2
+        (hero-tunes bard) 0)
+  (enter-location g '("The Rusty Flagon" :tavern :price 5))
+  (check "the price is the location's" 5
+         (tavern-price (game-location g)))
+  (check-true "the menu shows the price"
+              (find-if (lambda (s) (search "5 gold" s)) (tavern-lines g)))
+  (check-true "no trapdoor line without :down"
+              (not (find-if (lambda (s) (search "trapdoor" s))
+                            (tavern-lines g))))
+  (check "a poor hero is refused" nil (buy-drink g bard))
+  (check-true "cannot-afford message"
+              (find-if (lambda (s) (search "cannot afford" s))
+                       (funcall msgs)))
+  (check "refusals keep the gold" 2 (hero-gold bard))
+  (check-true "the grunt drinks" (buy-drink g grunt))
+  (check "the ale cost five gold" 5 (hero-gold grunt))
+  (check "ale grants no tunes to a non-singer" 0 (hero-tunes grunt))
+  (setf (hero-gold bard) 5)
+  (check-true "the bard drinks through the menu"
+              (progn (tavern-act g #\2) (zerop (hero-gold bard))))
+  (check "the tunes came flooding back" 1 (hero-tunes bard))
+  (check-true "the refill is announced"
+              (find-if (lambda (s) (search "flooding back" s))
+                       (funcall msgs)))
+  (check "Esc leaves the tavern" :left (tavern-act g #\Escape))
+  (check "the tavern is left behind" nil (game-location g)))
+
+;; The default drink price, and the trapdoor down.
+(with-open-file (s "tests/tmp-down.map" :direction :output
+                   :if-exists :supersede)
+  (write-string "+-+
+|@|
++-+
+
+(zone :kind :dungeon :title \"the snug\")
+" s))
+(let* ((m (parse-map *art* :name "test"))
+       (g (new-game m :party (list (%combat-hero)))))
+  (enter-location g '("Trapdoor Inn" :tavern :down "tests/tmp-down.map"))
+  (check "a drink is three gold by default" 3
+         (tavern-price (game-location g)))
+  (check-true "the trapdoor is offered"
+              (find-if (lambda (s) (search "down the trapdoor" s))
+                       (tavern-lines g)))
+  (check "the trapdoor drops through" :left (tavern-act g #\d))
+  (check "the trapdoor landed below" "the snug" (map-title (game-map g)))
+  (check "the location is left behind" nil (game-location g)))
+(delete-file "tests/tmp-down.map")
 
 ;; combat-round accepts (:cast SPELL [TARGET]) beside :attack/:defend.
 (let* ((m (parse-map *art* :name "test"))
@@ -1613,6 +1853,120 @@ messages so far (oldest first)."
   (check "item-usable-p for the wrong class" nil (item-usable-p h 't-mail))
   (check-true "item-usable-p unrestricted" (item-usable-p h 't-torch)))
 
+;; Usable items: DEFINE-ITEM :use validation.
+(define-item 't-potion   :price 10 :use '(:heal "1d4+1") :consumed t)
+(define-item 't-lantern  :price 12 :use '(:light t :duration 15))
+(define-item 't-fx-torch :price 2  :use '(:light t :duration 30)
+             :consumed t :image "fx-torch.iff")
+(define-item 't-elixir   :price 5  :use '(:heal "1d4") :consumed t
+             :classes '(:tester))
+(check-error "define-item rejects a malformed :use"
+  (define-item 't-bogus :use '(:frobnicate t)))
+(check-error "a timed :use needs a duration"
+  (define-item 't-bogus :use '(:light t)))
+(check-error ":consumed without a :use is rejected"
+  (define-item 't-bogus :consumed t))
+
+;; USE-ITEM mechanics: refusals say why; a timed :use installs the
+;; effect (title + image), a heal heals, :consumed spends the item.
+(let* ((m (parse-map *art* :name "test"))
+       (h (%combat-hero))
+       (g (new-game m :party (list h)))
+       (msgs (watch-messages g))
+       (used '()))
+  (on-event g :item-used
+            (lambda (game hero name) (declare (ignore game hero))
+              (push name used)))
+  (check "use-item needs the item in the pack" nil (use-item g h 't-potion))
+  (check-true "does-not-carry message"
+              (find-if (lambda (s) (search "does not carry" s))
+                       (funcall msgs)))
+  (give-item g h 't-torch)
+  (check "an item without a :use does nothing" nil (use-item g h 't-torch))
+  (check-true "nothing-happens message"
+              (find-if (lambda (s) (search "Nothing happens" s))
+                       (funcall msgs)))
+  (check "refusals emit nothing" '() used)
+  (give-item g h 't-fx-torch)
+  (check "usable-items sees only the :use item" '(t-fx-torch)
+         (usable-items h))
+  (check-true "a light item lights the party" (use-item g h 't-fx-torch))
+  (check-true "the torch effect burns" (light-active-p g))
+  (check "the effect keeps the item's title" "t fx torch"
+         (effect-label (find-effect g "T Fx Torch")))
+  (check "the effect carries the item's image" "fx-torch.iff"
+         (effect-image (find-effect g "T Fx Torch")))
+  (check "the effect is timed" (+ (game-time g) 30)
+         (effect-expires-at (find-effect g "T Fx Torch")))
+  (check "the consumed torch left the pack" nil
+         (hero-carrying-p h 't-fx-torch))
+  (check ":item-used emitted" '(t-fx-torch) used)
+  ;; a potion heals its user by default
+  (give-item g h 't-potion)
+  (damage-hero g h 5)
+  (let ((before (hero-hp h)))
+    (check-true "a potion heals"
+                (with-rng (2) (use-item g h 't-potion)))  ; 1d4+1 -> 4
+    (check "the heal landed on the user" (+ before 4) (hero-hp h)))
+  (check "the potion is spent" nil (hero-carrying-p h 't-potion))
+  ;; a reusable item stays
+  (give-item g h 't-lantern)
+  (check-true "the lantern lights" (use-item g h 't-lantern))
+  (check-true "a reusable item stays in the pack"
+              (hero-carrying-p h 't-lantern)))
+
+;; Class-gated use: carrying is not using.
+(let* ((m (parse-map *art* :name "test"))
+       (wiz (with-rng () (make-hero "Wiz" :t-wizard)))
+       (g (new-game m :party (list wiz)))
+       (msgs (watch-messages g)))
+  (give-item g wiz 't-elixir)
+  (check "usable-items respects the class gate" '() (usable-items wiz))
+  (check "use-item refuses the wrong class" nil (use-item g wiz 't-elixir))
+  (check-true "cannot-use message on use"
+              (find-if (lambda (s) (search "cannot use" s))
+                       (funcall msgs))))
+
+;; The use menu: pick the user, the item, and — for a heal — the
+;; target (the CAST-VIEW pattern).
+(let* ((m (parse-map *art* :name "test"))
+       (a (%combat-hero))
+       (b (%combat-mage))
+       (g (new-game m :party (list a b))))
+  (give-item g a 't-fx-torch)
+  (give-item g a 't-potion)
+  (let ((v (make-use-view)))
+    (check "Esc at the top cancels" :cancelled (use-act g v #\Escape)))
+  (let ((v (make-use-view)))
+    (check-true "the menu opens on the user pick"
+                (member "Who uses?" (use-lines g v) :test #'equal))
+    (use-act g v #\2)
+    (check "a hero with nothing usable is not picked" nil
+           (use-view-hero v))
+    (use-act g v #\1)
+    (check "hero 1 picked" a (use-view-hero v))
+    (check-true "the item page lists the torch"
+                (find-if (lambda (s) (search "T Fx Torch" s))
+                         (use-lines g v)))
+    (use-act g v #\Escape)
+    (check "Esc backs out to the user pick" nil (use-view-hero v))
+    (use-act g v #\1)
+    ;; a timed item commits at once
+    (check "using the torch resolves the menu" :done (use-act g v #\1))
+    (check-true "the torch burns" (light-active-p g)))
+  ;; a healing item asks for its target
+  (let ((v (make-use-view)))
+    (use-act g v #\1)
+    (check "the potion wants a target first" nil (use-act g v #\1))
+    (check-true "the target page asks on whom"
+                (find-if (lambda (s) (search "on whom?" s))
+                         (use-lines g v)))
+    (damage-hero g b 4)
+    (let ((before (hero-hp b)))
+      (check "picking the target commits" :done
+             (with-rng (0) (use-act g v #\2)))  ; 1d4+1 -> 2
+      (check "the heal landed on hero 2" (+ before 2) (hero-hp b)))))
+
 ;; Combat uses the equipment: weapon dice on the attack, effective AC
 ;; against the monsters.
 (let* ((m (parse-map *art* :name "test"))
@@ -1690,9 +2044,12 @@ messages so far (oldest first)."
   (check-true "keep shoppe location"
               (find-if (lambda (op) (string-equal (first op) "LOCATION"))
                        (cell-special m 1 0)))
+  (check-true "keep tavern location"
+              (find-if (lambda (op) (string-equal (first op) "LOCATION"))
+                       (cell-special m 3 0)))
   (check-true "keep stairs lead to the crypt"
               (find-if (lambda (op) (string-equal (first op) "TRAVEL"))
-                       (cell-special m 3 0))))
+                       (cell-special m 4 0))))
 (let ((m (load-map-file "tests/world/crypt.map")))
   (check "crypt is a dungeon zone" :dungeon (dungeon-map-kind m))
   (check-true "crypt is dark" (dungeon-map-dark m))
@@ -1752,8 +2109,16 @@ messages so far (oldest first)."
   (check "the shoppe is a shop location" :shop
          (location-kind (game-location g)))
   (leave-location g)
-  ;; east along the keep to the stairs
+  ;; east along the keep, stopping at the tavern
   (move-party g)                          ; (2,0)
+  (move-party g)                          ; (3,0) — the tavern
+  (check "the tavern is a tavern location" :tavern
+         (location-kind (game-location g)))
+  (check "the keep's drinks cost two gold" 2
+         (tavern-price (game-location g)))
+  (check "Esc leaves the tavern" :left
+         (location-act g nil #\Escape))
+  ;; on to the stairs
   (check "stairs drop into the crypt" :moved (move-party g))
   (check "stairs travel landed in the crypt" "the crypt"
          (map-title (game-map g)))
@@ -1764,7 +2129,7 @@ messages so far (oldest first)."
   (teleport-party g 2 0)
   (check "ladder returns to the keep" "Testhold"
          (map-title (game-map g)))
-  (check "ladder lands beside the stairs" '(2 0)
+  (check "ladder lands between shoppe and tavern" '(2 0)
          (list (game-x g) (game-y g))))
 
 ;;; ---------------------------------------------------------------------
@@ -1793,9 +2158,11 @@ messages so far (oldest first)."
   (damage-hero g a 3)
   (setf (hero-xp b) 60)
   (incf (hero-gold b) 17)
+  (setf (hero-tunes b) 3)
   (decf (hero-sp c))
   (setf (game-time g) 700)
-  (add-effect g "mage flame" :duration 60 :payload '(:light t))
+  (add-effect g "mage flame" :duration 60 :payload '(:light t)
+                             :image "fx-flame.iff")
   (add-effect g "blessing" :payload '(:ac 1))
   (save-game g "tests/tmp-save.lisp")
   (let ((g2 (load-game "tests/tmp-save.lisp")))
@@ -1808,8 +2175,12 @@ messages so far (oldest first)."
            (effect-expires-at (find-effect g2 "mage flame")))
     (check "loaded effect keeps its payload" '(:light t)
            (effect-payload (find-effect g2 "mage flame")))
+    (check "loaded effect keeps its image" "fx-flame.iff"
+           (effect-image (find-effect g2 "mage flame")))
     (check "loaded undated effect stays undated" nil
            (effect-expires-at (find-effect g2 "blessing")))
+    (check "loaded imageless effect stays imageless" nil
+           (effect-image (find-effect g2 "blessing")))
     (check "loaded :ac payload feeds the party bonus" 1
            (effects-ac-bonus g2))
     (check "loaded flag value" 42 (flag g2 :quest))
@@ -1824,6 +2195,7 @@ messages so far (oldest first)."
       (check "loaded hero max hp" 8 (hero-max-hp a2))
       (check "loaded hero xp" 60 (hero-xp b2))
       (check "loaded hero gold" 17 (hero-gold b2))
+      (check "loaded hero tunes" 3 (hero-tunes b2))
       (check-true "loaded caster hero is still a caster" (hero-caster-p c2))
       (check "loaded caster max-sp" (hero-max-sp c) (hero-max-sp c2))
       (check "loaded caster sp" (hero-sp c) (hero-sp c2)))
@@ -2506,6 +2878,41 @@ messages so far (oldest first)."
                                                '(:front 0)))))
                      'list)))))
 
+;; Effects-band icons: the generator draws 16x16 pen-0-keyed art, and
+;; the fixture world's checked-in fx-needle.iff is pinned to it the
+;; same way as the packs (regenerate with `make assets`).
+(dolist (kind '(:compass :flame :shield))
+  (let ((img (draw-effect-icon kind)))
+    (check (format nil "the ~A icon is 16x16" kind)
+           (list *effect-icon-size* *effect-icon-size*)
+           (list (image-width img) (image-height img)))
+    (check-true (format nil "the ~A icon keeps the transparent key" kind)
+                (image-transparent-p img))))
+(let ((disk (read-ilbm "tests/world/fx-needle.iff"))
+      (drawn (draw-effect-icon :compass)))
+  (check-true "the fixture icon matches its generator"
+              (equalp (image-pixels disk) (image-pixels drawn))))
+
+;; Effect icons resolve map-relative, like zone tile packs.
+(let* ((m (load-map-file "tests/world/keep.map"))
+       (wanda (make-hero "W" :w-wizard))
+       (g (new-game m :party (list wanda))))
+  (check-true "the wizard casts the fixture compass"
+              (cast-spell g wanda 'w-compass))
+  (let ((e (find-effect g "w compass")))
+    (check "the cast effect carries the campaign's image"
+           "fx-needle.iff" (effect-image e))
+    (check "the image resolves next to the map file"
+           "tests/world/fx-needle.iff" (effect-image-path g e))
+    (check-true "the resolved icon file exists"
+                (probe-file (effect-image-path g e))))
+  (add-effect g "plain" :payload '(:light t))
+  (check "an imageless effect has no path" nil
+         (effect-image-path g (find-effect g "plain")))
+  (add-effect g "abs" :payload '(:light t) :image "/elsewhere/x.iff")
+  (check "an absolute image path passes through" "/elsewhere/x.iff"
+         (effect-image-path g (find-effect g "abs"))))
+
 ;; Transparency contract: receding side pieces keep pen-0 corners so the
 ;; backdrop shows through the cookie-cut blit; front/flank pieces fill
 ;; their whole rect (opaque), drawing black as the mortar pen, not pen 0.
@@ -2801,22 +3208,32 @@ full asset-size viewport" pname)
 
 ;; The keep: an unattended session first casts through the real event
 ;; loop — open the cast menu (c), pick Wanda the wizard (2), cast the
-;; flame (1) — then saves and reloads through the slot picker (S, n,
-;; type "t1", Return; L, 1 — the whole name-entry and re-wire path
+;; flame (1), then the compass (4: the band draws the rose and the
+;; status line shows the facing for the rest of the session) — and
+;; Wilhelm strikes up the march through the sing menu (p, 1, 1 — his
+;; one tune).  Then it saves and reloads through the slot picker (S,
+;; n, type "t1", Return; L, 1 — the whole name-entry and re-wire path
 ;; through real vanillakeys), turns to the shoppe door (a LOCATION
-;; special), shops for real — pick a hero (1), buy (1), flip to the
-;; sell page (s), sell it again (1), back out (Esc Esc) — then walks
-;; east to the stairs and drops into the crypt: a :DARK zone — Wanda's
-;; flame is what keeps the view lit — then quits.
+;; special), shops for real — pick a hero (1), buy the sword (1) and
+;; a torch (2), flip to the sell page (s), sell the sword again (1),
+;; back out (Esc Esc) — walks east to the tavern, where Wilhelm's
+;; drink (1) brings his tunes back (Esc leaves), drops down the stairs
+;; into the crypt (a :DARK zone — Wanda's flame is what keeps the view
+;; lit) and burns the bought torch through the use menu (u, hero 1,
+;; item 1) before quitting.
 #+amigaos
 (check "amiga-ui autoplay casts, saves, shops, drops to the dark crypt"
        :done
        (let ((*autoplay* (list #\c #\2 #\1
+                               #\c #\2 #\4
+                               #\p #\1 #\1
                                #\S #\n #\t #\1 #\Return
                                #\L #\1
                                #\d #\w
-                               #\1 #\1 #\s #\1 :esc :esc
-                               #\w #\w #\w #\q))
+                               #\1 #\1 #\2 #\s #\1 :esc :esc
+                               #\w #\w #\1 :esc
+                               #\w #\w
+                               #\u #\1 #\1 #\q))
              ;; scratch save, like every other test's tests/tmp-* state —
              ;; keeps the real saves/ dir untouched by the test suite
              (*save-dir* "tests/tmp-saves/"))

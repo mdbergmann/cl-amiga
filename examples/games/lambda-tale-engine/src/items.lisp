@@ -6,6 +6,15 @@
 ;;; the mechanics: a hero carries up to +INVENTORY-LIMIT+ items and can
 ;;; equip one weapon, one armor and one shield at a time.  Armor class
 ;;; is descending, so an item's :AC bonus *lowers* the effective AC.
+;;;
+;;; An item may also be USABLE (:USE) — a torch, a potion: using it
+;;; applies an effect from the same vocabulary spells speak, either
+;;; instant (:heal DICE) or timed through APPLY-EFFECT-SPEC
+;;; ((:light t :duration MIN), (:buff-ac N :duration MIN),
+;;; (:compass t :duration MIN)); a :CONSUMED item leaves the pack on
+;;; use, and :IMAGE names the effects-band icon of the installed
+;;; effect.  The use interaction (USE-VIEW / USE-LINES / USE-ACT, the
+;;; SHOP-VIEW pattern) lives here too, driven by both front-ends.
 
 (in-package :tale)
 
@@ -19,23 +28,45 @@
   (price 0)           ; shop price in gold
   damage              ; attack dice (weapons), or NIL
   (ac 0)              ; armor bonus: subtracted from descending AC
-  classes)            ; hero classes allowed to use it; NIL = anyone
+  classes             ; hero classes allowed to use it; NIL = anyone
+  use                 ; effect on use: (:heal DICE) or a timed spec
+                      ; (:light t :duration MIN) etc.; NIL = not usable
+  consumed            ; T: one use, the item leaves the pack
+  image)              ; effects-band icon for the timed :use, or NIL
 
 (defvar *item-types* (make-hash-table :test 'eq))
 
 (defun define-item (name &key title (kind :misc) (price 0) damage (ac 0)
-                              classes)
+                              classes use consumed image)
   "Register item type NAME (a symbol).  Campaign data calls this.
-TITLE defaults to the capitalized name (SHORT-SWORD -> \"Short Sword\")."
+TITLE defaults to the capitalized name (SHORT-SWORD -> \"Short Sword\").
+:USE makes the item usable — (:heal DICE) heals a chosen hero, the
+timed kinds ((:light t :duration MIN), (:buff-ac N :duration MIN),
+(:compass t :duration MIN)) install the effect; :CONSUMED spends the
+item on use and :IMAGE names the installed effect's band icon."
   (unless (member kind '(:weapon :armor :shield :misc))
     (error "define-item ~S: kind ~S is not one of :weapon :armor :shield :misc"
            name kind))
+  (when use
+    (unless (and (consp use)
+                 (member (first use) '(:heal :buff-ac :light :compass)))
+      (error "define-item ~S: :use ~S must be (:heal DICE) or a timed ~
+              (:buff-ac ...), (:light ...) or (:compass ...) spec"
+             name use))
+    (unless (eq (first use) :heal)
+      (let ((duration (getf use :duration)))
+        (unless (and (integerp duration) (plusp duration))
+          (error "define-item ~S: a timed :use needs a positive integer ~
+                  :duration (got ~S)" name duration)))))
+  (when (and consumed (not use))
+    (error "define-item ~S: :consumed without a :use" name))
   (setf (gethash name *item-types*)
         (%make-item-type
          :name name
          :title (or title
                     (string-capitalize (substitute #\Space #\- (string name))))
-         :kind kind :price price :damage damage :ac ac :classes classes))
+         :kind kind :price price :damage damage :ac ac :classes classes
+         :use use :consumed consumed :image image))
   name)
 
 (defun find-item-type (name)
@@ -137,3 +168,141 @@ of every equipped item — and, when GAME is given, minus the party-wide
     (when game
       (decf ac (effects-ac-bonus game)))
     ac))
+
+;;; ---------------------------------------------------------------------
+;;; Using items
+
+(defun usable-items (hero)
+  "The :USE-carrying items in HERO's pack the hero's class may use —
+duplicates kept: two torches are two uses."
+  (remove-if-not (lambda (name)
+                   (and (item-type-use (find-item-type name))
+                        (item-usable-p hero name)))
+                 (hero-items hero)))
+
+(defun use-item (game hero name &optional target)
+  "HERO uses item NAME (on TARGET, a hero, when the item heals —
+defaults to the user).  Says why and returns NIL when the hero does
+not carry it, the class cannot use it, or it has no use; otherwise
+applies the :USE effect — instant :HEAL, or a timed effect through
+APPLY-EFFECT-SPEC — spends a :CONSUMED item, emits :ITEM-USED and
+returns T."
+  (let* ((type (find-item-type name))
+         (use (item-type-use type)))
+    (cond
+      ((not (hero-carrying-p hero name))
+       (say game "~A does not carry ~A." (hero-name hero)
+            (item-type-title type))
+       nil)
+      ((not (item-usable-p hero name))
+       (say game "~A cannot use ~A." (hero-name hero)
+            (item-type-title type))
+       nil)
+      ((null use)
+       (say game "Nothing happens.")
+       nil)
+      (t
+       (say game "~A uses ~A." (hero-name hero) (item-type-title type))
+       (if (getf use :heal)
+           (heal-hero game (or target hero)
+                      (max 0 (roll-dice (getf use :heal))))
+           (apply-effect-spec game (item-type-title type) use
+                              :image (item-type-image type)))
+       (when (item-type-consumed type)
+         (drop-item game hero name))
+       (emit game :item-used hero name)
+       t))))
+
+;;; ---------------------------------------------------------------------
+;;; The use interaction model (shared by both front-ends — the
+;;; CAST-VIEW pattern: pick the user, the item, and — for a healing
+;;; item — the target).
+
+(defstruct (use-view (:constructor %make-use-view))
+  hero                ; the chosen user, or NIL while picking
+  item)               ; the chosen item name, or NIL while picking
+
+(defun make-use-view ()
+  (%make-use-view))
+
+(defun %use-commit (game view target)
+  (use-item game (use-view-hero view) (use-view-item view) target)
+  :done)
+
+(defun use-lines (game view)
+  "The current use menu as a list of text lines — the front-ends draw
+these verbatim (the SHOP-LINES pattern)."
+  (let ((hero (use-view-hero view))
+        (item (use-view-item view)))
+    (append
+     (list "*** Use an Item ***" "")
+     (cond
+       ((null hero)
+        (append
+         (list "Who uses?" "")
+         (let ((i 0))
+           (mapcar (lambda (h)
+                     (incf i)
+                     (format nil "~D) ~A  (~D usable)"
+                             i (hero-name h)
+                             (length (usable-items h))))
+                   (game-party game)))
+         (list "" "[1-7] choose  [Esc] cancel")))
+       ((null item)
+        (append
+         (list (format nil "~A uses." (hero-name hero)) "")
+         (let ((i 0))
+           (mapcar (lambda (name)
+                     (incf i)
+                     (format nil "~D) ~A" i (item-title name)))
+                   (usable-items hero)))
+         (list "" "[1-9] use  [Esc] back")))
+       (t                              ; a healing item picks its target
+        (append
+         (list (format nil "~A on whom?" (item-title item)) "")
+         (let ((i 0))
+           (mapcar (lambda (h)
+                     (incf i)
+                     (format nil "~D) ~A  (HP ~D/~D)"
+                             i (hero-name h)
+                             (hero-hp h) (hero-max-hp h)))
+                   (game-party game)))
+         (list "" "[1-7] choose  [Esc] back")))))))
+
+(defun use-act (game view char)
+  "Apply key CHAR to the use menu.  Returns :DONE when a use resolved
+(the front-end drops the view), :CANCELLED on Esc at the top level,
+else NIL."
+  (let ((hero (use-view-hero view))
+        (item (use-view-item view))
+        (digit (digit-char-p char)))
+    (cond
+      ;; picking the user
+      ((null hero)
+       (cond ((and digit (<= 1 digit (length (game-party game))))
+              (let ((h (nth (1- digit) (game-party game))))
+                (when (and (hero-alive-p h) (usable-items h))
+                  (setf (use-view-hero view) h)))
+              nil)
+             ((eql char #\Escape) :cancelled)
+             (t nil)))
+      ;; picking the item
+      ((null item)
+       (cond ((and digit (<= 1 digit (length (usable-items hero))))
+              (let ((name (nth (1- digit) (usable-items hero))))
+                (setf (use-view-item view) name)
+                (if (getf (item-type-use (find-item-type name)) :heal)
+                    nil                 ; a heal picks its target next
+                    (%use-commit game view nil))))
+             ((eql char #\Escape)
+              (setf (use-view-hero view) nil)
+              nil)
+             (t nil)))
+      ;; picking the heal target
+      (t
+       (cond ((and digit (<= 1 digit (length (game-party game))))
+              (%use-commit game view (nth (1- digit) (game-party game))))
+             ((eql char #\Escape)
+              (setf (use-view-item view) nil)
+              nil)
+             (t nil))))))

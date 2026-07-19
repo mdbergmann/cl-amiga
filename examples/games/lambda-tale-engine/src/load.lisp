@@ -32,6 +32,7 @@
     (ld "specials.lisp")
     (ld "locations.lisp")
     (ld "spells.lisp")
+    (ld "songs.lisp")
     (ld "save.lisp")
     (ld "save-menu.lisp")
     (ld "render.lisp")
