@@ -15,6 +15,18 @@
 
 (in-package :tale)
 
+(defparameter *engine-dir* cl-user::*lambda-tale-engine-root*
+  "Absolute path of the engine's own directory (trailing separator
+included), computed by src/load.lisp from *LOAD-TRUENAME*.  Engine
+assets — the profiles' default tile packs under data/ — resolve here;
+everything a GAME owns (maps, campaigns, zone packs, saves) resolves
+against the working directory or the map file instead.")
+
+(defun engine-path (relative)
+  "RELATIVE, an engine-relative path like \"data/gfx/\", as an
+absolute path under *ENGINE-DIR*."
+  (concatenate 'string *engine-dir* relative))
+
 (defstruct (display-profile (:constructor %make-display-profile))
   name                        ; :lores / :hires
   screen-width screen-height  ; custom-screen geometry (:display :screen)
@@ -35,7 +47,7 @@
    :screen-width 640 :screen-height 256 :screen-depth 4
    :win-width 640 :win-height 256
    :fp-width 240 :fp-height 130
-   :gfx-dir "data/gfx-hires/"
+   :gfx-dir (engine-path "data/gfx-hires/")
    :pad-x 12 :pad-y 10 :view-gap 12 :band-height 48
    :roster-cols '(:no 0 :name 2 :lv 18 :hits 25 :gold 38 :down 46)))
 
@@ -48,7 +60,7 @@
    :screen-width 320 :screen-height 256 :screen-depth 5
    :win-width 320 :win-height 256
    :fp-width 160 :fp-height 112
-   :gfx-dir "data/gfx/"
+   :gfx-dir (engine-path "data/gfx/")
    :pad-x 10 :pad-y 10 :view-gap 12 :band-height 48
    :roster-cols '(:no 0 :name 2 :lv 15 :hits 18 :gold 26 :down 33)))
 

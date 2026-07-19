@@ -1,8 +1,8 @@
-;;; Lambda's Tale — demo campaign data.
+;;; Closure — the campaign data.
 ;;;
 ;;; Everything story-specific lives here and in the map files: hero
-;;; classes, monster types, the starting party.  The engine itself
-;;; knows none of these facts.
+;;; classes, monster types, the starting party.  The Lambda's Tale
+;;; engine itself knows none of these facts.
 
 (in-package :tale)
 

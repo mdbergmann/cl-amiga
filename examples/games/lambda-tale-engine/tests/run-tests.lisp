@@ -1,6 +1,9 @@
-;;; Lambda's Tale — test suite: map model, movement, knowledge, renderers
-;;; (M0/M1); dice, events, specials, party, combat, save games (M2).
-;;; Run from the project root (examples/games/lambda-tale):  make test
+;;; Lambda's Tale engine — test suite: map model, movement, knowledge,
+;;; renderers (M0/M1); dice, events, specials, party, combat, save
+;;; games (M2).  Story content lives in games (e.g. the Closure game
+;;; next door, which has its own suite); the world these tests play is
+;;; the minimal fixture under tests/world/.
+;;; Run from the engine root (examples/games/lambda-tale-engine):  make test
 
 (load "src/load.lisp")
 
@@ -432,7 +435,8 @@ messages so far (oldest first)."
       (check "floor starts where the ceiling ends" (+ cy ch) fy)
       (check "backdrops tile the viewport height" 17 (+ ch fh)))))
 
-(check "gfx-dir defaults to the demo pack" "data/gfx/" *gfx-dir*)
+(check "gfx-dir defaults to the engine's lores pack"
+       (engine-path "data/gfx/") *gfx-dir*)
 
 (let ((manifest (with-output-to-string (s) (print-tile-manifest s))))
   (check "manifest lists every pack file"
@@ -612,13 +616,16 @@ messages so far (oldest first)."
     (check "fp door marker centered" #\D (char (nth 8 lines) 16))))
 
 ;;; ---------------------------------------------------------------------
-;;; Sample map loads
+;;; Sample map loads (the committed fixture world, tests/world/)
 
-(let ((m (load-map-file "worlds/closure/cellar.map")))
-  (check "cellar width" 6 (dungeon-map-width m))
-  (check "cellar height" 5 (dungeon-map-height m))
-  (check "cellar stairs down" #\> (cell-feature m 3 2))
-  (check "cellar stairs up" #\< (cell-feature m 5 4)))
+(let ((m (load-map-file "tests/world/keep.map")))
+  (check "keep width" 4 (dungeon-map-width m))
+  (check "keep height" 1 (dungeon-map-height m))
+  (check "keep stairs down" #\> (cell-feature m 3 0)))
+(let ((m (load-map-file "tests/world/crypt.map")))
+  (check "crypt width" 3 (dungeon-map-width m))
+  (check "crypt height" 1 (dungeon-map-height m))
+  (check "crypt ladder up" #\< (cell-feature m 2 0)))
 
 ;;; ---------------------------------------------------------------------
 ;;; Dice
@@ -1674,27 +1681,24 @@ messages so far (oldest first)."
 (check-error "unknown map form rejected" (load-map-file "tests/tmp.map"))
 (delete-file "tests/tmp.map")
 
-;; The shipped cellar map carries its story layer.
-(let ((m (load-map-file "worlds/closure/cellar.map")))
-  (check "cellar is a dungeon zone" :dungeon (dungeon-map-kind m))
-  (check-true "cellar start special" (cell-special m 0 0))
-  (check-true "cellar stairs-down special" (cell-special m 3 2))
-  (check-true "cellar ladder leads back to town"
-              (find-if (lambda (op) (string-equal (first op) "TRAVEL"))
-                       (cell-special m 5 4))))
-
-;; The shipped town: a city zone whose buildings and gates are data.
-(let ((m (load-map-file "worlds/closure/town.map")))
-  (check "town is a city zone" :city (dungeon-map-kind m))
-  (check "town title" "Closure" (map-title m))
-  (check-true "town shoppe location"
+;; The committed fixture world carries its story layer: the keep is a
+;; city whose shoppe and stairs are data, the crypt a dark dungeon
+;; whose ladder travels back up.
+(let ((m (load-map-file "tests/world/keep.map")))
+  (check "keep is a city zone" :city (dungeon-map-kind m))
+  (check "keep title" "Testhold" (map-title m))
+  (check-true "keep shoppe location"
               (find-if (lambda (op) (string-equal (first op) "LOCATION"))
-                       (cell-special m 2 1)))
-  (check-true "town tavern leads to the cellar"
+                       (cell-special m 1 0)))
+  (check-true "keep stairs lead to the crypt"
               (find-if (lambda (op) (string-equal (first op) "TRAVEL"))
-                       (cell-special m 6 1)))
-  (check "town declares the city tile pack" "gfx-city-demo/"
-         (dungeon-map-gfx m)))
+                       (cell-special m 3 0))))
+(let ((m (load-map-file "tests/world/crypt.map")))
+  (check "crypt is a dungeon zone" :dungeon (dungeon-map-kind m))
+  (check-true "crypt is dark" (dungeon-map-dark m))
+  (check-true "crypt ladder leads back to the keep"
+              (find-if (lambda (op) (string-equal (first op) "TRAVEL"))
+                       (cell-special m 2 0))))
 
 ;; Zone tile packs: (zone :gfx DIR) names the zone's pack, and
 ;; ZONE-GFX-DIR resolves it in two steps — relative to the map file's
@@ -1708,11 +1712,11 @@ messages so far (oldest first)."
   (check "zone :gfx parses" "gfx/" (dungeon-map-gfx m))
   (check "zone pack resolves map-relative when it lives there"
          "data/gfx/" (zone-gfx-dir g)))
-(let* ((m (parse-map *art* :name "worlds/closure/x.map"))
+(let* ((m (parse-map *art* :name "worlds/w/x.map"))
        (g (new-game m)))
-  (%apply-map-form m '(zone :gfx "gfx-city-demo/") "x.map")
+  (%apply-map-form m '(zone :gfx "city-pack/") "x.map")
   (check "zone pack falls back to the game directory"
-         "gfx-city-demo/" (zone-gfx-dir g)))
+         "city-pack/" (zone-gfx-dir g)))
 (check "a zone without :gfx has no pack" nil
        (zone-gfx-dir (new-game (parse-map *art*))))
 
@@ -1731,43 +1735,36 @@ messages so far (oldest first)."
 (check "no campaign next to the map" nil
        (load-campaign "data/gfx/anything.map"))
 
-;; Walk the shipped world end-to-end: gate -> shoppe -> tavern -> cellar
-;; and back up — the demo campaign's whole overworld loop on real data.
-;; The shoppe's stock names campaign items, so the campaign loads first
-;; (exactly what PLAY/PLAY-AMIGA do).
-(load-campaign "worlds/closure/town.map")
-(let* ((m (load-map-file "worlds/closure/town.map"))
-       (g (new-game m)))
+;; Walk the fixture world end-to-end: shoppe -> stairs -> crypt and
+;; back up — a committed world's whole loop on real files.  The
+;; shoppe's stock names campaign items, so the campaign loads first
+;; (exactly what PLAY/PLAY-AMIGA do).  The Closure game's own suite
+;; walks its shipped world the same way.
+(load-campaign "tests/world/keep.map")
+(let* ((m (load-map-file "tests/world/keep.map"))
+       (g (new-game m :party (default-party))))
   (trigger-special g)
-  (check "the town's zone pack is the shipped city pack" "gfx-city-demo/"
+  (check "the keep has no zone pack (profile default)" nil
          (zone-gfx-dir g))
-  ;; to the shoppe: N, around the well block, through the door
-  (move-party g)                          ; (4,4)
-  (turn-left g)
-  (move-party g) (move-party g)           ; (2,4)
+  ;; through the shoppe door to the east
   (turn-right g)
-  (move-party g) (move-party g)           ; (2,2)
   (check "shoppe door opens" :door (move-party g))
   (check "the shoppe is a shop location" :shop
          (location-kind (game-location g)))
   (leave-location g)
-  ;; over to the tavern: back out, east along the street, up the door
-  (move-party g :back)                    ; (2,2)
-  (turn-right g)
-  (move-party g) (move-party g) (move-party g) (move-party g) ; (6,2)
-  (turn-left g)
-  (check "tavern trapdoor drops into the cellar" :door (move-party g))
-  (check "tavern travel landed in the cellar" "the cellar"
+  ;; east along the keep to the stairs
+  (move-party g)                          ; (2,0)
+  (check "stairs drop into the crypt" :moved (move-party g))
+  (check "stairs travel landed in the crypt" "the crypt"
          (map-title (game-map g)))
-  (check "the cellar zone has no pack (profile default)" nil
-         (zone-gfx-dir g))
-  (check "cellar arrival at its start" '(0 0)
+  (check-true "the crypt is dark" (game-dark-p g))
+  (check "crypt arrival at its start" '(0 0)
          (list (game-x g) (game-y g)))
-  ;; the ladder back up: teleport to the cellar's < cell and step on it
-  (teleport-party g 5 4)
-  (check "ladder returns to the town" "Closure"
+  ;; the ladder back up: teleport to the crypt's < cell and step on it
+  (teleport-party g 2 0)
+  (check "ladder returns to the keep" "Testhold"
          (map-title (game-map g)))
-  (check "ladder lands on the tavern doorstep" '(6 2)
+  (check "ladder lands beside the stairs" '(2 0)
          (list (game-x g) (game-y g))))
 
 ;;; ---------------------------------------------------------------------
@@ -1855,8 +1852,8 @@ messages so far (oldest first)."
 ;;; form, linked by TRAVEL specials.
 
 ;; Relative map paths resolve against the current map's directory.
-(check "resolve sibling path" "worlds/closure/town.map"
-       (%resolve-map-path "worlds/closure/cellar.map" "town.map"))
+(check "resolve sibling path" "worlds/w/town.map"
+       (%resolve-map-path "worlds/w/cellar.map" "town.map"))
 (check "resolve flat path" "town.map"
        (%resolve-map-path "cellar.map" "town.map"))
 (check "resolve amiga volume base" "dh0:games/b.map"
@@ -2789,43 +2786,41 @@ full asset-size viewport" pname)
 ;; twice and leaves map mode (m) before quitting.
 ;; The scripted keys also open a character sheet (1), switch to another
 ;; roster slot (2) and leave it (:esc) — exercising the whole :sheet
-;; mode through the real event loop.  The cellar is a :DARK zone, so
-;; the whole session renders at the one-cell darkness view depth (the
-;; :screen sessions below exercise the blit path's wall of night).
+;; mode through the real event loop.  The fixture crypt is a :DARK
+;; zone, so the whole session renders at the one-cell darkness view
+;; depth (the :screen sessions below exercise the blit path's wall of
+;; night).
 #+amigaos
 (check "amiga-ui autoplay plays a scripted session and quits" :done
        (let ((*autoplay* (list #\w #\d #\1 #\2 :esc #\w #\a
                                #\m #\f #\f #\m #\s #\q)))
          ;; :window is the development view — :screen (the default)
          ;; gets its own autoplay below
-         (play-amiga "worlds/closure/cellar.map" :display :window)
+         (play-amiga "tests/world/crypt.map" :display :window)
          :done))
 
-;; The town: an unattended session first casts through the real event
-;; loop — open the cast menu (c), pick Zzgo the conjurer (4), cast
-;; mage flame (1) — then saves and reloads through the slot picker
-;; (S, n, type "t1", Return; L, 1 — the whole name-entry and re-wire
-;; path through real vanillakeys), walks from the gate to Wolfgar's
-;; shoppe (a LOCATION special), shops for real — pick a hero (1), buy
-;; a torch (1), flip to the sell page (s), sell it again (1), back
-;; out (Esc Esc) — steps back into the street, walks east to the
-;; tavern and drops through the trapdoor into the cellar: the town's
-;; (ZONE :GFX ...) city pack swaps for the cellar's default pack on
-;; the way (the wall-bitmap reload path), and the cellar is a :DARK
-;; zone — Zzgo's flame is what keeps the view lit — then quits.
+;; The keep: an unattended session first casts through the real event
+;; loop — open the cast menu (c), pick Wanda the wizard (2), cast the
+;; flame (1) — then saves and reloads through the slot picker (S, n,
+;; type "t1", Return; L, 1 — the whole name-entry and re-wire path
+;; through real vanillakeys), turns to the shoppe door (a LOCATION
+;; special), shops for real — pick a hero (1), buy (1), flip to the
+;; sell page (s), sell it again (1), back out (Esc Esc) — then walks
+;; east to the stairs and drops into the crypt: a :DARK zone — Wanda's
+;; flame is what keeps the view lit — then quits.
 #+amigaos
-(check "amiga-ui autoplay casts, saves, shops, drops to the dark cellar"
+(check "amiga-ui autoplay casts, saves, shops, drops to the dark crypt"
        :done
-       (let ((*autoplay* (list #\c #\4 #\1
+       (let ((*autoplay* (list #\c #\2 #\1
                                #\S #\n #\t #\1 #\Return
                                #\L #\1
-                               #\w #\a #\w #\w #\d #\w #\w #\w
+                               #\d #\w
                                #\1 #\1 #\s #\1 :esc :esc
-                               #\s #\d #\w #\w #\w #\w #\a #\w #\q))
+                               #\w #\w #\w #\q))
              ;; scratch save, like every other test's tests/tmp-* state —
              ;; keeps the real saves/ dir untouched by the test suite
              (*save-dir* "tests/tmp-saves/"))
-         (play-amiga "worlds/closure/town.map" :display :window)
+         (play-amiga "tests/world/keep.map" :display :window)
          (when (probe-file "tests/tmp-saves/t1.sav")
            (delete-file "tests/tmp-saves/t1.sav"))
          :done))
@@ -2837,8 +2832,8 @@ full asset-size viewport" pname)
 #+amigaos
 (check "amiga-ui autoplay on an own custom screen" :done
        (let ((*autoplay* (list #\w #\d #\m #\m #\q)))
-         (play-amiga "worlds/closure/cellar.map" :display :screen
-                                       :gfx-dir "data/gfx/")
+         (play-amiga "tests/world/crypt.map" :display :screen
+                                             :gfx-dir (engine-path "data/gfx/"))
          :done))
 
 ;; The hires profile end to end: its 640x256 depth-4 screen, the
@@ -2847,12 +2842,13 @@ full asset-size viewport" pname)
 #+amigaos
 (check "amiga-ui autoplay on the hires profile" :done
        (let ((*autoplay* (list #\w #\d #\m #\m #\q)))
-         (play-amiga "worlds/closure/cellar.map" :display :screen
-                                       :profile :hires)
+         (play-amiga "tests/world/crypt.map" :display :screen
+                                             :profile :hires)
          :done))
 
 ;;; ---------------------------------------------------------------------
 ;;; Summary
 
-(format t "~%Lambda's Tale tests: ~D checks, ~D failures.~%" *checks* *failures*)
+(format t "~%Lambda's Tale engine tests: ~D checks, ~D failures.~%"
+        *checks* *failures*)
 (cl-user::quit (if (zerop *failures*) 0 1))

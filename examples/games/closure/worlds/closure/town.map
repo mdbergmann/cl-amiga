@@ -14,14 +14,15 @@
 |                 |
 +-+-+-+-+-+-+-+-+-+
 
-;; The town of Closure — the demo campaign's city.  Cities are ordinary
+;; The town of Closure — the campaign's city.  Cities are ordinary
 ;; maps: the ZONE form marks the kind, LOCATION specials are the
 ;; buildings, TRAVEL specials are the gates and stairs (see
 ;; src/specials.lisp for the op vocabulary).  :GFX names the zone's
-;; tile pack — the city look (night sky, tan street); the cellar below
+;; tile pack, resolved next to this map file (worlds/closure/gfx/ — the
+;; city look: night sky, tan street); the cellar below
 ;; keeps the profile's default dungeon pack.
 
-(zone :kind :city :title "Closure" :gfx "gfx-city-demo/")
+(zone :kind :city :title "Closure" :gfx "gfx/")
 
 (special (4 5)
   (once (message "Welcome to Closure, last stop before the depths."

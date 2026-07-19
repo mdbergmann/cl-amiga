@@ -1,17 +1,20 @@
-;;; A "city" tile pack (BT2 night street): the demo wall pieces plus a
-;;; tan street, a night sky with stars, and a palette.iff carrying the
-;;; pack colors (pens 4 up to the active profile's depth).  The worked
-;;; example of the tile-pack contract (see PRINT-TILE-MANIFEST and the
-;;; README).  Built for the default display profile — its viewport
-;;; sizes and pen count come from *DISPLAY-PROFILE*.
+;;; The town of Closure's "city" tile pack (BT2 night street): the
+;;; engine's default wall pieces plus a tan street, a night sky with
+;;; stars, and a palette.iff carrying the pack colors (pens 4 up to
+;;; the active profile's depth).  Lives inside the world directory —
+;;; town.map declares it as (zone ... :gfx "gfx/"), resolved next to
+;;; the map file — and doubles as the worked example of the engine's
+;;; tile-pack contract (see PRINT-TILE-MANIFEST and the READMEs).
+;;; Built for the default display profile — its viewport sizes and pen
+;;; count come from *DISPLAY-PROFILE*.
 ;;;
-;;; Regenerate from the game directory:
-;;;   clamiga --heap 16M --non-interactive --load gfx-city-demo/make-pack.lisp
+;;; Regenerate from the game root (examples/games/closure):
+;;;   clamiga --heap 16M --non-interactive --load worlds/closure/gfx/make-pack.lisp
 ;;; Try it:
-;;;   clamiga --heap 8M --load gfx-city-demo/run.lisp
+;;;   clamiga --heap 8M --load worlds/closure/gfx/run.lisp
 
 (load "src/load.lisp")
-(load "tools/gen-walls.lisp")
+(load (tale:engine-path "tools/gen-walls.lisp"))
 
 (in-package :tale)
 
@@ -24,7 +27,7 @@
     ;; the CMAP truthful)
     (setf (aref pal 0) '(0 0 0) (aref pal 1) '(255 255 255)
           (aref pal 2) '(136 136 136) (aref pal 3) '(255 170 51))
-    ;; the pack's colors.  Pen 4 stays black — the demo wall pieces
+    ;; the pack's colors.  Pen 4 stays black — the default wall pieces
     ;; draw their opaque mortar/joints with it (pen 0 is the
     ;; transparent key), so a pack must not recolor it.
     (setf (aref pal 4) '(0 0 0))         ; opaque black (wall mortar)
@@ -32,11 +35,11 @@
     (setf (aref pal 6) '(204 153 102))   ; tan street
     pal))
 
-(defparameter *out* "gfx-city-demo/")
+(defparameter *out* "worlds/closure/gfx/")
 (ensure-directories-exist *out*)
 
-;; the 40 wall pieces: the default profile's demo art as-is (grey
-;; stone reads as city walls)
+;; the 40 wall pieces: the default profile's art as-is (grey stone
+;; reads as city walls)
 (dolist (piece (wall-piece-names))
   (let ((img (read-ilbm (concatenate 'string *gfx-dir*
                                      (wall-piece-file piece)))))

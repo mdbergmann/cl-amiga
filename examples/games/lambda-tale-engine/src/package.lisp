@@ -91,6 +91,8 @@
    ;; rendering
    #:render-dungeon #:render-game #:render-first-person #:beside
    ;; interactive walkabout
-   #:play #:play-amiga #:*gfx-dir*))
+   #:play #:play-amiga #:*gfx-dir*
+   ;; engine home (self-located; default packs live under it)
+   #:*engine-dir* #:engine-path))
 
 (in-package :tale)
