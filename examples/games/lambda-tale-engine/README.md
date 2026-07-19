@@ -117,6 +117,13 @@ profile** (`play-amiga`'s `:profile` argument):
 - **`:hires`** — 640x256 PAL hires, 16 colors, the classic
   presentation with the larger 240x130 viewport.
 
+Both profiles give the first-person view about **2/5** of the screen
+and the message log the other **3/5** — the text carries the game.
+The split is a profile knob, not engine code: the view column is
+exactly the profile's `fp-width` and the log takes the remainder, so
+a custom target with a different balance is a new profile plus a
+matching tile pack (see `print-tile-manifest`).
+
 Both are picked RTG-aware through `graphics.library/BestModeIDA` (so
 Picasso96/CyberGraphX/MorphOS promote them to a suitable RTG mode),
 with the tile pack's palette and a borderless backdrop window;

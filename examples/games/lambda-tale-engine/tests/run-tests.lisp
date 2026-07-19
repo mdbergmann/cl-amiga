@@ -373,22 +373,23 @@ messages so far (oldest first)."
                              (<= (+ x w) 240) (<= (+ y h) 130))))
                     (wall-piece-names))))
 
-;; the same slots at the lores profile's 160x112 viewport
-(let ((planes (view-planes 160 112)))
-  (check "lores view-planes plane 1" '(32 22 127 89) (aref planes 1))
-  (check "lores front slot at depth 0" '(32 22 96 68)
+;; the same slots at the lores profile's 120x112 viewport (2/5 of the
+;; 320px screen's content span goes to the view, 3/5 to the log)
+(let ((planes (view-planes 120 112)))
+  (check "lores view-planes plane 1" '(24 22 95 89) (aref planes 1))
+  (check "lores front slot at depth 0" '(24 22 72 68)
          (wall-piece-rect planes '(:front 0)))
-  (check "lores left side slot spans the full column" '(0 0 33 112)
+  (check "lores left side slot spans the full column" '(0 0 25 112)
          (wall-piece-rect planes '(:side 0 :l)))
   (check "lores left flank slot is the side band at wall height"
-         '(0 22 33 68)
+         '(0 22 25 68)
          (wall-piece-rect planes '(:flank 0 :l)))
   (check "lores piece slots lie inside the viewport" nil
          (remove-if (lambda (piece)
                       (destructuring-bind (x y w h)
                           (wall-piece-rect planes piece)
                         (and (<= 0 x) (<= 0 y) (< 0 w) (< 0 h)
-                             (<= (+ x w) 160) (<= (+ y h) 112))))
+                             (<= (+ x w) 120) (<= (+ y h) 112))))
                     (wall-piece-names))))
 
 ;; The blit list mirrors the display-list wall logic: same map spots as
@@ -420,9 +421,9 @@ messages so far (oldest first)."
   (check "ceiling backdrop slot" '(0 0 240 65) ceiling)
   (check "floor backdrop slot" '(0 65 240 65) floor))
 
-(destructuring-bind (ceiling floor) (backdrop-rects (view-planes 160 112))
-  (check "lores ceiling backdrop slot" '(0 0 160 56) ceiling)
-  (check "lores floor backdrop slot" '(0 56 160 56) floor))
+(destructuring-bind (ceiling floor) (backdrop-rects (view-planes 120 112))
+  (check "lores ceiling backdrop slot" '(0 0 120 56) ceiling)
+  (check "lores floor backdrop slot" '(0 56 120 56) floor))
 
 ;; the two slots tile any viewport exactly, split at the horizon
 (destructuring-bind (ceiling floor) (backdrop-rects (view-planes 33 17))
@@ -434,6 +435,25 @@ messages so far (oldest first)."
              (list cw fw))
       (check "floor starts where the ceiling ends" (+ cy ch) fy)
       (check "backdrops tile the viewport height" 17 (+ ch fh)))))
+
+;; FIT-TITLE: the plaque under the view clips a zone title wider than
+;; the (profile-tunable, since 2026-07-19 narrower) view column instead
+;; of overrunning into the log — regression for the 160->120 lores
+;; shrink.  Measured with a topaz-8-like 8px/char ruler at the lores
+;; plaque width.
+(let ((px8 (lambda (s) (* 8 (length s)))))
+  (check "fit-title passes a fitting name through unchanged"
+         "The Cellar" (fit-title "The Cellar" px8 118))
+  (check "fit-title drops trailing characters until the name fits"
+         "A Very Long Lo"
+         (fit-title "A Very Long Location Name That Overflows" px8 118))
+  (check-true "fit-title results always fit the given width"
+              (<= (funcall px8 (fit-title
+                                "A Very Long Location Name That Overflows"
+                                px8 118))
+                  118))
+  (check "fit-title never shrinks a name below one character"
+         "W" (fit-title "W" px8 4)))
 
 (check "gfx-dir defaults to the engine's lores pack"
        (engine-path "data/gfx/") *gfx-dir*)
@@ -3304,6 +3324,32 @@ brick grid" d side)
              (%amiga-draw-map-page rp g l t)
              t))))
 
+;; A zone title wider than the plaque must lose trailing characters
+;; rather than overrun the border (the bug %PLAQUE-NAME fixes — see
+;; %CHROME-FRAMES).
+#+lambda-tale-window-tests
+(let* ((m (parse-map *art* :name "A Very Long Location Name That Overflows The Plaque"))
+       (g (new-game m)))
+  (check "amiga-ui truncates a plaque title wider than the view column" t
+         (amiga.intuition:with-window
+             (win :title "Lambda's Tale Test"
+                  :left 0 :top 0
+                  :width (display-profile-win-width *display-profile*)
+                  :height (display-profile-win-height *display-profile*)
+                  :idcmp amiga.intuition:+idcmp-closewindow+)
+           (let* ((rp (amiga.intuition:window-rastport win))
+                  (l (%amiga-layout win rp))
+                  (w (ui-layout-fp-w l))
+                  (full (string-capitalize (map-title (game-map g))))
+                  (name (%plaque-name rp full w)))
+             (check-true "the untruncated title overruns the plaque"
+                         (> (amiga.gfx:text-length rp full) (- w 2)))
+             (check-true "the truncated title fits within the plaque"
+                         (<= (amiga.gfx:text-length rp name) (- w 2)))
+             (check-true "the title was actually shortened"
+                         (< (length name) (length full)))
+             t))))
+
 ;; The full map view must cope with a map bigger than the window —
 ;; the layout the spec is actually about.
 #+lambda-tale-window-tests
@@ -3939,7 +3985,7 @@ flat floor color" pname)
 ;; the view's walk zones, a roster row (opens that character sheet)
 ;; and the sheet's click-anywhere-else Esc.  The lores custom screen
 ;; lays out deterministically (borderless backdrop, pads 10/10, the
-;; 160x112 view at 10,10; topaz-8 rows put party row 1 at y=150), so
+;; 120x112 view at 10,10; topaz-8 rows put party row 1 at y=150), so
 ;; the script clicks absolute pixels.
 #+amigaos
 (check "amiga-ui autoplay drives the game by mouse clicks" :done

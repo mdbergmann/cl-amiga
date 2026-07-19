@@ -57,13 +57,17 @@ absolute path under *ENGINE-DIR*."
 
 ;;; The ECS target: 320x256 PAL lores, 5 bitplanes (32 colors) — the
 ;;; Bard's Tale presentation.  Half the chip-RAM/DMA cost of hires and
-;;; near-square pixels for the art.
+;;; near-square pixels for the art.  The 120px viewport gives the view
+;;; column 2/5 of the 300px content span and the message log the other
+;;; 3/5 — the text matters more than the picture, and the log column
+;;; always takes whatever the profile's FP-WIDTH leaves over, so the
+;;; split is a profile knob, not engine code.
 (defparameter *lores-profile*
   (%make-display-profile
    :name :lores
    :screen-width 320 :screen-height 256 :screen-depth 5
    :win-width 320 :win-height 256
-   :fp-width 160 :fp-height 112
+   :fp-width 120 :fp-height 112
    :gfx-dir (engine-path "data/gfx/")
    :pad-x 10 :pad-y 10 :view-gap 12 :band-height 20
    :roster-cols '(:no 0 :name 2 :ac 15 :hit 19 :hpts 23

@@ -247,6 +247,12 @@ double-outline border ring on the full-screen backdrop."
                (amiga.gfx:rect-fill rp (- er 4) y (- er 3) (+ y 2))))
     (amiga.gfx:set-a-pen rp 1)))
 
+(defun %plaque-name (rp name w)
+  "NAME (already display-cased) clipped to the plaque's W-pixel
+interior via FIT-TITLE (src/view.lisp), measured with the rastport's
+real font."
+  (fit-title name (lambda (s) (amiga.gfx:text-length rp s)) (- w 2)))
+
 (defun %chrome-frames (rp game l)
   "The picture frame + drop shadow around the view, the location
 plaque under it, and the white message page shell (the page ends a
@@ -274,11 +280,11 @@ small gap above the effect strip — see %AMIGA-DRAW-BAND)."
     (amiga.gfx:rect-fill rp (1- bx) py (+ bx w) pb)
     (amiga.gfx:set-a-pen rp 1)
     (%chrome-rect rp (1- bx) py (+ bx w) pb)
-    (let* ((name (string-capitalize (map-title (game-map game))))
-           (tw (amiga.gfx:text-length rp name)))
-      (amiga.gfx:move-to rp (+ bx (max 0 (floor (- w tw) 2)))
-                         (+ py 2 (ui-layout-base l)))
-      (amiga.gfx:gfx-text rp name))
+    (let ((name (%plaque-name rp (string-capitalize (map-title (game-map game))) w)))
+      (let ((tw (amiga.gfx:text-length rp name)))
+        (amiga.gfx:move-to rp (+ bx (max 0 (floor (- w tw) 2)))
+                           (+ py 2 (ui-layout-base l)))
+        (amiga.gfx:gfx-text rp name)))
     ;; message page: white sheet with a black outline and shadow
     (amiga.gfx:set-a-pen rp 0)
     (amiga.gfx:rect-fill rp (+ (- lx 4) 2) (+ by 1) (+ r 2) (+ pg 2))
