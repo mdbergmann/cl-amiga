@@ -53,6 +53,9 @@
    ;; structured menu lines (option rows carry their pick key)
    #:menu-option #:menu-numbered #:menu-line-text #:menu-line-key
    #:menu-texts #:wrap-menu-line #:menu-key-spans
+   ;; menu scrolling (long lists window with u/d + marker rows)
+   #:+menu-page-size+ #:menu-window #:menu-window-pick
+   #:menu-scroll #:menu-scrolled-lines
    ;; cell specials
    #:trigger-special #:run-special #:teleport-party
    ;; heroes and the party
@@ -62,7 +65,7 @@
    #:hero-con #:hero-lck #:hero-ac #:hero-damage #:hero-gold
    #:hero-alive-p #:alive-heroes #:party-alive-p #:front-ranks
    #:hero-class-title #:hero-class-abbrev #:hero-summary-lines
-   #:hero-image #:hero-image-path #:hero-sheet-lines
+   #:hero-image #:hero-image-path #:hero-sheet-lines #:hero-sheet-scroll
    #:+party-limit+ #:party-full-p #:join-party
    #:damage-hero #:heal-hero #:stat-bonus #:award-xp #:xp-for-level
    ;; items, inventory and equipment
@@ -72,25 +75,26 @@
    #:hero-attack-dice #:hero-effective-ac
    ;; using items (torch, potion — the use menu)
    #:usable-items #:use-item
-   #:make-use-view #:use-view-hero #:use-view-item
+   #:make-use-view #:use-view-hero #:use-view-item #:use-view-top
    #:use-lines #:use-act
    ;; locations and shops
    #:game-location #:enter-location #:leave-location
    #:location-title #:location-kind #:location-arg
    #:location-image #:location-image-path
    #:shop-stock #:item-price #:item-sell-price #:buy-item #:sell-item
-   #:make-shop-view #:shop-view-hero #:shop-view-mode
+   #:make-shop-view #:shop-view-hero #:shop-view-mode #:shop-view-top
    #:shop-lines #:shop-act #:location-lines #:location-act
    ;; spells
    #:define-spell #:find-spell-type #:spell-title #:spell-target-kind
    #:spell-known-p #:spell-castable-p #:spells-for-hero #:cast-spell
-   #:make-cast-view #:cast-view-hero #:cast-view-spell
+   #:make-cast-view #:cast-view-hero #:cast-view-spell #:cast-view-top
    #:cast-lines #:cast-act #:*sp-regen-minutes*
    ;; bard songs
    #:define-song #:find-song-type #:song-title #:song-known-p
    #:songs-for-hero #:sing-song #:current-song
    #:hero-singer-p #:hero-tunes #:hero-max-tunes
-   #:make-sing-view #:sing-view-hero #:sing-lines #:sing-act
+   #:make-sing-view #:sing-view-hero #:sing-view-top
+   #:sing-lines #:sing-act
    ;; taverns (drinks refill a singer's tunes)
    #:tavern-price #:buy-drink #:tavern-lines #:tavern-act
    ;; combat

@@ -139,7 +139,13 @@ clicking a menu's numbered rows or its `[s] sell`-style footer hints
 acts as those keys, and the map/help/sheet pages close on a click
 elsewhere.  Menu option rows carry their pick key (`menu-option` /
 `menu-numbered` in `src/events.lisp`), so front-ends map clicks to
-keys without parsing the text.  The pointer is an **open hand** that
+keys without parsing the text.  A menu list deeper than a page — a
+big shop stock, a full pack on the sell page or the character sheet,
+a fat spell book — **scrolls**: `u`/`d` (or clicking the `^ more` /
+`v more` marker rows) move the window and digits pick within it, so
+every item stays reachable with single-digit keys (`menu-window` in
+`src/events.lisp`; the scroll walks live in the model tests in
+`tests/run-tests.lisp`).  The pointer is an **open hand** that
 turns into a **pointing finger** whenever it rests on something
 clickable; over the first-person view's walk zones it becomes the
 **arrow of the move a click would make** — left/right turn arrows on

@@ -129,7 +129,8 @@ says why and returns NIL when the hero does not carry it."
 
 (defstruct (shop-view (:constructor %make-shop-view))
   hero                ; the shopping HERO, or NIL while picking one
-  (mode :buy))        ; :buy or :sell page
+  (mode :buy)         ; :buy or :sell page
+  (top 0))            ; scroll offset into the stock/pack list
 
 (defun make-shop-view ()
   (%make-shop-view))
@@ -159,34 +160,32 @@ carry their pick key (see MENU-NUMBERED)."
          (list (format nil "~A buys.  Gold: ~D gp"
                        (hero-name hero) (hero-gold hero))
                "")
-         (let ((i 0))
-           (mapcar (lambda (name)
-                     (incf i)
-                     (menu-numbered i (format nil "~D) ~A  ~D gp"
-                                              i (item-title name)
-                                              (item-price name))))
-                   (shop-stock loc)))
+         (menu-scrolled-lines
+          (shop-stock loc) (shop-view-top view)
+          (lambda (i name)
+            (menu-numbered i (format nil "~D) ~A  ~D gp"
+                                     i (item-title name)
+                                     (item-price name)))))
          (list "" "[1-9] buy  [s] sell  [Esc] back")))
        (t
         (append
          (list (format nil "~A sells.  Gold: ~D gp"
                        (hero-name hero) (hero-gold hero))
                "")
-         (let ((i 0))
-           (mapcar (lambda (name)
-                     (incf i)
-                     (menu-numbered i (format nil "~D) ~A~:[~;*~]  ~D gp"
-                                              i (item-title name)
-                                              (member name
-                                                      (hero-equipped hero))
-                                              (item-sell-price name))))
-                   (hero-items hero)))
+         (menu-scrolled-lines
+          (hero-items hero) (shop-view-top view)
+          (lambda (i name)
+            (menu-numbered i (format nil "~D) ~A~:[~;*~]  ~D gp"
+                                     i (item-title name)
+                                     (member name (hero-equipped hero))
+                                     (item-sell-price name)))))
          (list "" "[1-9] sell  [b] buy  [Esc] back")))))))
 
 (defun shop-act (game view char)
-  "Apply key CHAR to the shop interaction.  Mutates VIEW and the game
-state; returns :LEFT when the party leaves the location (the front-end
-drops its view then), else NIL."
+  "Apply key CHAR to the shop interaction.  Digits pick within the
+visible stock/pack window, u/d scroll it (see MENU-WINDOW).  Mutates
+VIEW and the game state; returns :LEFT when the party leaves the
+location (the front-end drops its view then), else NIL."
   (let ((loc (game-location game))
         (hero (shop-view-hero view))
         (digit (digit-char-p char)))
@@ -202,24 +201,41 @@ drops its view then), else NIL."
              (t nil)))
       ((member char '(#\Escape))
        (setf (shop-view-hero view) nil
-             (shop-view-mode view) :buy)
+             (shop-view-mode view) :buy
+             (shop-view-top view) 0)
        nil)
       ((eq (shop-view-mode view) :buy)
-       (cond ((and digit (<= 1 digit (length (shop-stock loc))))
-              (buy-item game hero (nth (1- digit) (shop-stock loc)))
+       (cond (digit
+              (let ((name (menu-window-pick (shop-stock loc)
+                                            (shop-view-top view) digit)))
+                (when name
+                  (buy-item game hero name)))
               nil)
              ((member char '(#\s #\S))
-              (setf (shop-view-mode view) :sell)
+              (setf (shop-view-mode view) :sell
+                    (shop-view-top view) 0)
               nil)
-             (t nil)))
+             (t
+              (let ((top (menu-scroll (shop-view-top view) char
+                                      (length (shop-stock loc)))))
+                (when top (setf (shop-view-top view) top)))
+              nil)))
       (t
-       (cond ((and digit (<= 1 digit (length (hero-items hero))))
-              (sell-item game hero (nth (1- digit) (hero-items hero)))
+       (cond (digit
+              (let ((name (menu-window-pick (hero-items hero)
+                                            (shop-view-top view) digit)))
+                (when name
+                  (sell-item game hero name)))
               nil)
              ((member char '(#\b #\B))
-              (setf (shop-view-mode view) :buy)
+              (setf (shop-view-mode view) :buy
+                    (shop-view-top view) 0)
               nil)
-             (t nil))))))
+             (t
+              (let ((top (menu-scroll (shop-view-top view) char
+                                      (length (hero-items hero)))))
+                (when top (setf (shop-view-top view) top)))
+              nil))))))
 
 ;;; ---------------------------------------------------------------------
 ;;; Tavern mechanics: the singers' watering hole.  A :TAVERN location

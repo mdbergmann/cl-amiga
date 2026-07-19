@@ -24,6 +24,7 @@
         "Combat: A attack  D defend"
         "        C cast  P play  F flee"
         "Shop/menus: 1-9 pick  Esc back"
+        "            U/D scroll long lists"
         "Map view: F full map (debug)"
         "Mouse: click to walk and pick"
         ""

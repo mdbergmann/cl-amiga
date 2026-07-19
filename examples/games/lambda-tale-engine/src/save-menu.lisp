@@ -19,6 +19,8 @@
 ;;; Slot picks are a single decimal digit, so at most +MAX-SAVE-SLOTS+
 ;;; slots can ever exist: 'n' is refused (with an on-screen message)
 ;;; once that many are already on disk, so every slot stays reachable.
+;;; A slot list longer than a menu page scrolls (u/d, digits pick
+;;; within the visible window — see MENU-WINDOW in events.lisp).
 
 (in-package :tale)
 
@@ -63,7 +65,8 @@ must survive as file names on every platform, AmigaOS included)."
   mode                ; :save or :load
   slots               ; existing slot names, cached when the menu opens
   entry               ; NIL, or the new name being typed (:save mode)
-  error)              ; NIL, or a message line (e.g. slot cap reached)
+  error               ; NIL, or a message line (e.g. slot cap reached)
+  (top 0))            ; scroll offset into the slot list
 
 (defun make-save-menu (mode)
   "Open the picker: MODE is :SAVE or :LOAD."
@@ -89,12 +92,11 @@ pick key (see MENU-NUMBERED)."
        (t
         (append
          (if slots
-             (let ((i 0))
-               (mapcar (lambda (name)
-                         (incf i)
-                         (menu-numbered
-                          i (format nil "~D) ~A" i name)))
-                       slots))
+             (menu-scrolled-lines
+              slots (save-menu-top view)
+              (lambda (i name)
+                (menu-numbered
+                 i (format nil "~D) ~A" i name))))
              (list (if (eq mode :save) "No saved games yet." "No saved games.")))
          (if err (list "" err) nil)
          (list ""
@@ -136,11 +138,16 @@ pick key (see MENU-NUMBERED)."
              (t nil)))
       ;; the slot list
       (t
-       (let ((digit (and (characterp char) (digit-char-p char))))
-         (cond ((and digit (<= 1 digit (length slots)))
+       (let* ((digit (and (characterp char) (digit-char-p char)))
+              (pick (and digit
+                         (menu-window-pick slots (save-menu-top view) digit)))
+              (top (menu-scroll (save-menu-top view) char (length slots))))
+         (cond (pick
                 (setf (save-menu-error view) nil)
-                (list (if (eq mode :save) :save :load)
-                      (slot-path (nth (1- digit) slots))))
+                (list (if (eq mode :save) :save :load) (slot-path pick)))
+               (top
+                (setf (save-menu-top view) top)
+                nil)
                ((and (eq mode :save) (member char '(#\n #\N)))
                 (if (>= (length slots) +max-save-slots+)
                     (setf (save-menu-error view)
