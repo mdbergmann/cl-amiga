@@ -2935,6 +2935,32 @@ messages so far (oldest first)."
                    (not (image-transparent-p
                          (draw-wall-piece '(:front 0) planes))))))
 
+;; Backdrop distance bands: solid fills split at the perspective-plane
+;; rows (lores planes top at rows 0/22/37, floor bottoms at 111/89/74,
+;; horizon between 55 and 56), darkening toward the horizon.  The wall
+;; blits go on top, so each band lines up with the corridor cell at
+;; its depth.
+(with-display-profile (:lores)
+  (let* ((planes (view-planes *fp-view-width* *fp-view-height*))
+         (ceiling (draw-backdrop-piece :ceiling planes))
+         (floor (draw-backdrop-piece :floor planes)))
+    (check "ceiling bands read near/mid/far down the slot"
+           (list +pen-dim+ +pen-dark+ +pen-bg+)
+           (list (pixel-ref ceiling 0 0)      ; band 0: rows 0-21
+                 (pixel-ref ceiling 0 22)     ; band 1: rows 22-36
+                 (pixel-ref ceiling 0 37)))   ; band 2: rows 37-horizon
+    (check "floor bands read far/mid/near down the slot"
+           (list +pen-dim+ +pen-mid+ +pen-brick+)
+           (list (pixel-ref floor 0 0)        ; band 2: horizon-row 74
+                 (pixel-ref floor 0 19)       ; band 1: rows 75-89
+                 (pixel-ref floor 0 34)))     ; band 0: rows 90-111
+    (check "the near floor band reaches the viewport bottom"
+           +pen-brick+
+           (pixel-ref floor 0 (1- (image-height floor))))
+    (check "the far ceiling band reaches the horizon"
+           +pen-bg+
+           (pixel-ref ceiling 0 (1- (image-height ceiling))))))
+
 ;;; ---------------------------------------------------------------------
 ;;; Amiga front-end smoke test (real Intuition window + graphics.library
 ;;; calls; only runs when this suite is loaded under AmigaOS clamiga).
@@ -3093,8 +3119,8 @@ messages so far (oldest first)."
 ;; lines, where the view correctly falls back to the wireframe).
 ;; Read-back probes, dead end at (0,0) facing north: the front wall
 ;; piece's top row is the white edge highlight; above it the ceiling
-;; backdrop shows a speckle ((7x+13y) mod 41 = 0 -> grey); below it
-;; the floor backdrop shows flagstone fill between the joints.
+;; backdrop shows its near distance band (dim grey, pen 6); below it
+;; the floor backdrop shows its near band (grey, pen 2).
 #+amigaos
 (dolist (spec '((:lores (80 22) (43 21) (70 96))
                 (:hires (100 26) (100 25) (90 110))))
@@ -3172,15 +3198,15 @@ full asset-size viewport" pname)
                        (amiga.gfx:read-pixel rp (+ (ui-layout-bx l) fx)
                                              (+ (ui-layout-by l) fy))))
               (destructuring-bind (cx cy) ceiling-xy
-                (check (format nil "~A: blitted ceiling speckle pixel"
+                (check (format nil "~A: blitted ceiling near-band pixel"
                                pname)
-                       2
+                       +pen-dim+
                        (amiga.gfx:read-pixel rp (+ (ui-layout-bx l) cx)
                                              (+ (ui-layout-by l) cy))))
               (destructuring-bind (sx sy) floor-xy
-                (check (format nil "~A: blitted floor stone pixel"
+                (check (format nil "~A: blitted floor near-band pixel"
                                pname)
-                       2
+                       +pen-brick+
                        (amiga.gfx:read-pixel rp (+ (ui-layout-bx l) sx)
                                              (+ (ui-layout-by l) sy)))))
             (%free-wall-assets walls)))))))))))

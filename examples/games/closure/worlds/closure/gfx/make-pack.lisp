@@ -32,7 +32,9 @@
     ;; transparent key), so a pack must not recolor it.
     (setf (aref pal 4) '(0 0 0))         ; opaque black (wall mortar)
     (setf (aref pal 5) '(0 0 136))       ; night sky
-    (setf (aref pal 6) '(204 153 102))   ; tan street
+    (setf (aref pal 6) '(204 153 102))   ; tan street (near band)
+    (setf (aref pal 7) '(153 102 68))    ; street, mid-distance band
+    (setf (aref pal 8) '(102 68 51))     ; street, far band
     pal))
 
 (defparameter *out* "worlds/closure/gfx/")
@@ -45,25 +47,25 @@
                                      (wall-piece-file piece)))))
     (write-ilbm img (concatenate 'string *out* (wall-piece-file piece)))))
 
-(destructuring-bind (ceiling floor)
-    (backdrop-rects (view-planes *fp-view-width* *fp-view-height*))
-  ;; night sky: dark blue with sparse white stars
-  (let* ((w (third ceiling)) (h (fourth ceiling))
-         (img (make-image w h *city-depth* :palette *city-palette*)))
-    (dotimes (y h)
-      (dotimes (x w)
-        (setf (pixel-ref img x y)
-              (if (zerop (mod (+ (* 7 x) (* 13 y)) 89)) 1 5))))
-    (write-ilbm img (concatenate 'string *out* "ceiling.iff")))
-  ;; tan street: the flagstone joints over a tan fill
-  (let* ((w (third floor)) (h (fourth floor))
-         (grey (%draw-floor w h))
-         (img (make-image w h *city-depth* :palette *city-palette*)))
-    (dotimes (y h)
-      (dotimes (x w)
-        (setf (pixel-ref img x y)
-              (if (= (pixel-ref grey x y) +pen-brick+) 6 0))))
-    (write-ilbm img (concatenate 'string *out* "floor.iff"))))
+(let ((planes (view-planes *fp-view-width* *fp-view-height*)))
+  (destructuring-bind (ceiling floor) (backdrop-rects planes)
+    ;; night sky: dark blue with sparse white stars — flat on purpose
+    ;; (the sky is at infinity, so distance bands would be wrong here)
+    (let* ((w (third ceiling)) (h (fourth ceiling))
+           (img (make-image w h *city-depth* :palette *city-palette*)))
+      (dotimes (y h)
+        (dotimes (x w)
+          (setf (pixel-ref img x y)
+                (if (zerop (mod (+ (* 7 x) (* 13 y)) 89)) 1 5))))
+      (write-ilbm img (concatenate 'string *out* "ceiling.iff")))
+    ;; tan street: solid distance bands darkening toward the horizon
+    ;; (pens 6/7/8), split at the perspective-plane rows like the
+    ;; engine's default floor
+    (write-ilbm (%draw-backdrop (third floor) (fourth floor) planes
+                                (second floor) nil #(6 7 8)
+                                :depth *city-depth*
+                                :palette *city-palette*)
+                (concatenate 'string *out* "floor.iff"))))
 
 ;; palette.iff: one pixel per pen, CMAP = the pack colors
 (let* ((pens (ash 1 *city-depth*))
