@@ -38,12 +38,33 @@ static int cl_strcasecmp(const char *a, const char *b)
 /* Reader state now lives in CL_Thread.  Local macros redirect old names. */
 #define reader_stream  (CT->rd_stream)
 #define eof_seen       (CT->rd_eof)
-#define read_suppress  (CT->rd_suppress)
+#define rd_suppress_depth (CT->rd_suppress)
 #define reader_line    (CT->rd_line)
 #define rd_uninterned  (CT->rd_uninterned)
 #define rd_labels      (CT->rd_labels)
 #define rd_label_backrefs (CT->rd_label_backrefs)
 /* cl_current_source_file and cl_current_file_id are macros from thread.h */
+
+/* Reader suppression (CLHS 2.4.8.17, 23.2).  Two independent sources:
+ *
+ *   rd_suppress_depth — internal counter, bumped while skipping the false
+ *                       branch of a #+/#- feature conditional.
+ *   *READ-SUPPRESS*   — the user-visible CL variable.  When true, read and
+ *                       friends still parse their input but construct no
+ *                       object, intern no symbol, and signal no error of
+ *                       type reader-error; the primary value is NIL.
+ *
+ * Suppression is active when either holds.  Every call site is a cold path
+ * (dispatch macros, error branches, end-of-token) — never per character — so
+ * the dynamic lookup costs nothing in the common case.
+ */
+static int read_suppress_active(void)
+{
+    if (CT->rd_suppress) return 1;
+    if (CL_NULL_P(SYM_READ_SUPPRESS)) return 0;  /* before symbol init */
+    return !CL_NULL_P(cl_symbol_value(SYM_READ_SUPPRESS));
+}
+#define read_suppress (read_suppress_active())
 
 /* Source location tracking (shared, not per-thread) */
 CL_SrcLoc cl_srcloc_table[CL_SRCLOC_SIZE];
@@ -242,9 +263,9 @@ static int eval_feature_expr(CL_Obj expr)
 static void skip_form(void)
 {
     CL_Obj r;
-    read_suppress++;
+    rd_suppress_depth++;
     do { r = read_expr(); } while (r == CL_READER_SKIP && !eof_seen);
-    read_suppress--;
+    rd_suppress_depth--;
 }
 
 /* Read a number in the given radix (2, 8, 16, or arbitrary via #nR).
@@ -728,6 +749,12 @@ static CL_Obj read_atom_with_prefix(const char *prefix, int prefix_len)
     }
 
 check_keyword:
+    /* Under suppression the token has been parsed and consumed, but CLHS
+     * 2.4.8.17 is explicit: "no symbol will be constructed or interned".
+     * Bail out before the keyword / package-qualified / plain-symbol paths —
+     * that is also what keeps `no-such-pkg:sym` from signalling. */
+    if (read_suppress) return CL_NIL;
+
     /* Check for keyword */
     if (buf[0] == ':') {
         return cl_intern_keyword(buf + 1, (uint32_t)(len - 1));
@@ -1782,6 +1809,10 @@ CL_Obj cl_read(void)
 {
     CL_Obj result;
     CL_Obj saved_uninterned = rd_uninterned;
+    /* Sampled before the read: a #. form inside the datum may itself assign
+     * *READ-SUPPRESS*, and CLHS ties the NIL primary value to the value in
+     * effect when the read began. */
+    int suppressed = read_suppress;
     reader_stream = cl_stdin_stream;
     reader_line = 1;
     eof_seen = 0;
@@ -1793,6 +1824,7 @@ CL_Obj cl_read(void)
     CT->rd_last_eof = eof_seen;
     rd_uninterned = saved_uninterned;
     CL_GC_UNPROTECT(1);
+    if (suppressed) return CL_NIL;
     return result;
 }
 
@@ -1814,6 +1846,7 @@ CL_Obj cl_read_from_stream(CL_Obj stream)
     int    saved_backrefs    = rd_label_backrefs;
     CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
     CL_Obj result;
+    int    suppressed        = read_suppress;  /* see cl_read() */
 
     reader_stream = stream;
     eof_seen = 0;
@@ -1847,6 +1880,7 @@ CL_Obj cl_read_from_stream(CL_Obj stream)
     rd_labels     = saved_labels;
     rd_label_backrefs = saved_backrefs;
     CL_GC_UNPROTECT(4); /* stream, saved_labels, saved_uninterned, saved_stream */
+    if (suppressed) return CL_NIL;
     return result;
 }
 
@@ -1861,6 +1895,7 @@ CL_Obj cl_read_from_string(CL_ReadStream *stream)
     CL_Obj str, s;
     CL_Stream *st;
     CL_Obj result;
+    int    suppressed        = read_suppress;  /* see cl_read() */
 
     /* Protect saved alists before any allocation — cl_make_string can compact.
      * saved_stream too (audit tier 4, R3): the setup allocs AND read_expr
@@ -1925,6 +1960,7 @@ CL_Obj cl_read_from_string(CL_ReadStream *stream)
     rd_labels     = saved_labels;
     rd_label_backrefs = saved_backrefs;
     CL_GC_UNPROTECT(4); /* s, saved_labels, saved_uninterned, saved_stream */
+    if (suppressed) return CL_NIL;
     return result;
 }
 
