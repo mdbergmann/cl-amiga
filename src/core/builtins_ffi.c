@@ -313,6 +313,204 @@ static CL_Obj bi_ffi_poke8(CL_Obj *args, int nargs)
 }
 
 /* ================================================================
+ * Bulk byte transfer
+ *
+ * POKE-U8 in a Lisp loop costs a VM dispatch, a handle resolve and a
+ * fixnum unbox per byte, which dominates any path that pushes a real
+ * buffer into foreign memory (bitplane rows, chip-RAM masks).  These
+ * move a whole span in one call.
+ *
+ * A CL string holds its bytes contiguously, so it memcpys; a general
+ * vector holds one tagged CL_Obj per element (clamiga upgrades
+ * (UNSIGNED-BYTE 8) to T — see UPGRADED-ARRAY-ELEMENT-TYPE), so it
+ * unpacks in a tight C loop instead.  Both beat per-byte POKE-U8; only
+ * the string form reaches memcpy speed.
+ * ================================================================ */
+
+/* Resolve the (SOURCE, START, END) span of a byte-source argument.
+ * Returns the element count, and sets whichever of SVEC and SSTR matches
+ * SOURCE's representation (exactly one is left non-NULL). */
+static uint32_t ffi_byte_span(CL_Obj source, CL_Obj start_arg, CL_Obj end_arg,
+                              const char *who, CL_Vector **svec, CL_String **sstr,
+                              uint32_t *start_out)
+{
+    uint32_t len, start, end;
+
+    *svec = NULL;
+    *sstr = NULL;
+
+    if (CL_STRING_P(source)) {
+        *sstr = (CL_String *)CL_OBJ_TO_PTR(source);
+        len = (*sstr)->length;
+    } else if (CL_VECTOR_P(source)) {
+        *svec = (CL_Vector *)CL_OBJ_TO_PTR(source);
+        if ((*svec)->rank > 1)
+            cl_error(CL_ERR_TYPE, "%s: source must be a vector, not a rank-%d array",
+                     who, (int)(*svec)->rank);
+        len = cl_vector_active_length(*svec);
+    } else {
+        cl_error(CL_ERR_TYPE, "%s: source must be a vector or a string", who);
+        return 0;
+    }
+
+    start = CL_NULL_P(start_arg) ? 0 : (uint32_t)CL_FIXNUM_VAL(start_arg);
+    end   = CL_NULL_P(end_arg)   ? len : (uint32_t)CL_FIXNUM_VAL(end_arg);
+    if (!CL_NULL_P(start_arg) && !CL_FIXNUM_P(start_arg))
+        cl_error(CL_ERR_TYPE, "%s: START must be a fixnum", who);
+    if (!CL_NULL_P(end_arg) && !CL_FIXNUM_P(end_arg))
+        cl_error(CL_ERR_TYPE, "%s: END must be a fixnum", who);
+    if (end > len)
+        cl_error(CL_ERR_GENERAL, "%s: END %u is past the end of a %u-element source",
+                 who, (unsigned)end, (unsigned)len);
+    if (start > end)
+        cl_error(CL_ERR_GENERAL, "%s: START %u is past END %u",
+                 who, (unsigned)start, (unsigned)end);
+
+    *start_out = start;
+    return end - start;
+}
+
+/* (ffi:poke-bytes fp source &optional offset start end) → count
+ *
+ * Copies SOURCE[START..END) into foreign memory at FP + OFFSET.  SOURCE is
+ * a string (memcpy) or a vector of (INTEGER 0 255).  Returns the number of
+ * bytes written. */
+static CL_Obj bi_ffi_poke_bytes(CL_Obj *args, int nargs)
+{
+    CL_ForeignPtr *fp;
+    CL_Vector *svec;
+    CL_String *sstr;
+    uint8_t *dest;
+    void *base;
+    uint32_t fp_size, fp_addr;
+    uint32_t offset, start, count, i;
+
+    if (!CL_FOREIGN_POINTER_P(args[0]))
+        cl_error(CL_ERR_TYPE, "FFI:POKE-BYTES: first argument must be a foreign pointer");
+    /* Copy the fields out immediately: FP is a raw heap pointer, and no raw
+     * heap pointer may stay live across anything that might allocate. */
+    fp = (CL_ForeignPtr *)CL_OBJ_TO_PTR(args[0]);
+    fp_size = fp->size;
+    fp_addr = fp->address;
+
+    if (nargs > 2 && !CL_NULL_P(args[2])) {
+        if (!CL_FIXNUM_P(args[2]))
+            cl_error(CL_ERR_TYPE, "FFI:POKE-BYTES: OFFSET must be a fixnum");
+        offset = (uint32_t)CL_FIXNUM_VAL(args[2]);
+    } else
+        offset = 0;
+
+    count = ffi_byte_span(args[1],
+                          (nargs > 3) ? args[3] : CL_NIL,
+                          (nargs > 4) ? args[4] : CL_NIL,
+                          "FFI:POKE-BYTES", &svec, &sstr, &start);
+
+    /* A known allocation size lets us reject an overrun here rather than
+     * corrupting whatever sits past the buffer.  size 0 = external memory
+     * of unknown extent, so we have nothing to check against. */
+    if (fp_size > 0 && (offset > fp_size || count > fp_size - offset))
+        cl_error(CL_ERR_GENERAL,
+                 "FFI:POKE-BYTES: writing %u bytes at offset %u overruns a %u-byte buffer",
+                 (unsigned)count, (unsigned)offset, (unsigned)fp_size);
+
+    base = platform_ffi_resolve(fp_addr);
+    if (!base)
+        cl_error(CL_ERR_GENERAL, "FFI:POKE-BYTES: invalid/null foreign pointer");
+    dest = (uint8_t *)base + offset;
+
+    /* Re-derive the source pointer from the (GC-rooted) argument now that
+     * every check is done, rather than trusting the one FFI_BYTE_SPAN
+     * produced earlier.  No allocation happens from here on, so neither
+     * DEST nor the source data can be invalidated by a compaction mid-copy. */
+    if (sstr) {
+        sstr = (CL_String *)CL_OBJ_TO_PTR(args[1]);
+    } else {
+        svec = (CL_Vector *)CL_OBJ_TO_PTR(args[1]);
+    }
+
+    if (sstr) {
+        memcpy(dest, sstr->data + start, count);
+    } else {
+        CL_Obj *elts = cl_vector_data(svec) + start;
+        for (i = 0; i < count; i++) {
+            CL_Obj e = elts[i];
+            int32_t v;
+            if (!CL_FIXNUM_P(e))
+                cl_error(CL_ERR_TYPE,
+                         "FFI:POKE-BYTES: element %u is not an integer",
+                         (unsigned)(start + i));
+            v = CL_FIXNUM_VAL(e);
+            if (v < 0 || v > 255)
+                cl_error(CL_ERR_TYPE,
+                         "FFI:POKE-BYTES: element %u is %d, not in [0,255]",
+                         (unsigned)(start + i), (int)v);
+            dest[i] = (uint8_t)v;
+        }
+    }
+    return CL_MAKE_FIXNUM((int32_t)count);
+}
+
+/* (ffi:peek-bytes fp vector &optional offset start end) → count
+ *
+ * The inverse: fills VECTOR[START..END) from foreign memory at FP + OFFSET
+ * with fixnum byte values.  Returns the number of bytes read. */
+static CL_Obj bi_ffi_peek_bytes(CL_Obj *args, int nargs)
+{
+    CL_ForeignPtr *fp;
+    CL_Vector *svec;
+    CL_String *sstr;
+    const uint8_t *src;
+    void *base;
+    uint32_t fp_size, fp_addr;
+    uint32_t offset, start, count, i;
+
+    if (!CL_FOREIGN_POINTER_P(args[0]))
+        cl_error(CL_ERR_TYPE, "FFI:PEEK-BYTES: first argument must be a foreign pointer");
+    /* See FFI:POKE-BYTES: copy the fields out before anything may allocate. */
+    fp = (CL_ForeignPtr *)CL_OBJ_TO_PTR(args[0]);
+    fp_size = fp->size;
+    fp_addr = fp->address;
+
+    if (nargs > 2 && !CL_NULL_P(args[2])) {
+        if (!CL_FIXNUM_P(args[2]))
+            cl_error(CL_ERR_TYPE, "FFI:PEEK-BYTES: OFFSET must be a fixnum");
+        offset = (uint32_t)CL_FIXNUM_VAL(args[2]);
+    } else
+        offset = 0;
+
+    count = ffi_byte_span(args[1],
+                          (nargs > 3) ? args[3] : CL_NIL,
+                          (nargs > 4) ? args[4] : CL_NIL,
+                          "FFI:PEEK-BYTES", &svec, &sstr, &start);
+
+    if (fp_size > 0 && (offset > fp_size || count > fp_size - offset))
+        cl_error(CL_ERR_GENERAL,
+                 "FFI:PEEK-BYTES: reading %u bytes at offset %u overruns a %u-byte buffer",
+                 (unsigned)count, (unsigned)offset, (unsigned)fp_size);
+
+    base = platform_ffi_resolve(fp_addr);
+    if (!base)
+        cl_error(CL_ERR_GENERAL, "FFI:PEEK-BYTES: invalid/null foreign pointer");
+    src = (const uint8_t *)base + offset;
+
+    /* Re-derive from the GC-rooted argument; no allocation from here on. */
+    if (sstr) {
+        sstr = (CL_String *)CL_OBJ_TO_PTR(args[1]);
+    } else {
+        svec = (CL_Vector *)CL_OBJ_TO_PTR(args[1]);
+    }
+
+    if (sstr) {
+        memcpy(sstr->data + start, src, count);
+    } else {
+        CL_Obj *elts = cl_vector_data(svec) + start;
+        for (i = 0; i < count; i++)
+            elts[i] = CL_MAKE_FIXNUM((int32_t)src[i]);
+    }
+    return CL_MAKE_FIXNUM((int32_t)count);
+}
+
+/* ================================================================
  * String conversion builtins
  * ================================================================ */
 
@@ -913,6 +1111,10 @@ void cl_builtins_ffi_init(void)
     ffi_defun("POKE-U32",               bi_ffi_poke32,          2, 3);
     ffi_defun("POKE-U16",               bi_ffi_poke16,          2, 3);
     ffi_defun("POKE-U8",                bi_ffi_poke8,           2, 3);
+
+    /* Bulk byte transfer */
+    ffi_defun("POKE-BYTES",             bi_ffi_poke_bytes,      2, 5);
+    ffi_defun("PEEK-BYTES",             bi_ffi_peek_bytes,      2, 5);
 
     /* Typed peek/poke: signed, 64-bit, float/double, pointer */
     ffi_defun("PEEK-I8",                bi_ffi_peek_i8,         1, 2);

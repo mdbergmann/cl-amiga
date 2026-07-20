@@ -50,6 +50,27 @@ calls with full marshaling, and Lisp-as-C callbacks) on the **POSIX host**.
 | `peek-single` / `peek-double` | `poke-single` / `poke-double` | IEEE float / double |
 | `peek-pointer` | `poke-pointer` | machine-word pointer |
 
+## Bulk byte transfer
+
+Moving a buffer one `poke-u8` at a time costs a VM dispatch per byte, which
+dominates any path that pushes real data across (bitplane rows, chip-RAM
+masks, packet buffers). These move a whole span in one call:
+
+| Symbol | Description |
+|--------|-------------|
+| `poke-bytes` | `(poke-bytes pointer source &optional offset start end)` — copy `source[start..end)` to `pointer + offset`; returns the byte count |
+| `peek-bytes` | `(peek-bytes pointer vector &optional offset start end)` — fill `vector[start..end)` from `pointer + offset`; returns the byte count |
+
+`source` is a string or a vector of `(integer 0 255)`. A string holds its
+bytes contiguously so it copies with `memcpy`; a vector holds one tagged
+element per byte — CL-Amiga upgrades `(unsigned-byte 8)` to `t`, as
+`upgraded-array-element-type` reports — so it unpacks in a C loop instead.
+Both beat per-byte `poke-u8`; only the string form reaches `memcpy` speed.
+
+Out-of-range elements, spans past the end of the source, and (when the
+pointer's allocation size is known) writes that would overrun the buffer are
+all rejected with a diagnostic rather than silently corrupting memory.
+
 ## Foreign strings
 
 | Symbol | Kind | Description |

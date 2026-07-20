@@ -446,11 +446,17 @@ i.e. cleared) and its rows at least as wide."
             (src (planar-image-plane img p)))
         (when (ffi:null-pointer-p plane)
           (error "%POKE-PLANES: bitmap plane ~D is NULL" p))
-        (dotimes (y h)
-          (let ((from (* y src-row-bytes))
-                (to (* y dst-row-bytes)))
-            (dotimes (i src-row-bytes)
-              (ffi:poke-u8 plane (aref src (+ from i)) (+ to i)))))))))
+        ;; When the strides agree the plane is one contiguous run, so it
+        ;; goes over in a single call; otherwise each row is copied into
+        ;; its slot at the destination stride.  Either way the per-byte
+        ;; FFI:POKE-U8 loop (a VM dispatch per byte, ~40K per pack) is
+        ;; gone — that loop was the bulk of a pack load on a 68020.
+        (if (= src-row-bytes dst-row-bytes)
+            (ffi:poke-bytes plane src 0 0 (* h src-row-bytes))
+            (dotimes (y h)
+              (ffi:poke-bytes plane src (* y dst-row-bytes)
+                              (* y src-row-bytes)
+                              (* (1+ y) src-row-bytes))))))))
 
 (defun %load-wall-assets (rp log)
   "Load the active tile pack (*GFX-DIR*): every wall piece into an
@@ -472,8 +478,8 @@ opaque blit); the backdrops are always opaque."
                ;; a cookie-cut mask plane, copied into chip RAM where
                ;; BltMaskBitMapRastPort can reach it
                (let ((chip (amiga:alloc-chip (length bytes))))
-                 (dotimes (i (length bytes) chip)
-                   (ffi:poke-u8 chip (aref bytes i) i))))
+                 (ffi:poke-bytes chip bytes)
+                 chip))
              (build-mask (img)
                ;; A piece that uses pen 0 (the transparent key) gets a
                ;; cookie-cut mask in chip RAM so the backdrop shows

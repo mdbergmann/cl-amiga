@@ -188,6 +188,177 @@ TEST(lisp_ffi_peek_poke_u8)
         "255");
 }
 
+/* --- Bulk byte transfer: POKE-BYTES / PEEK-BYTES --- */
+
+/* A vector source unpacks tagged fixnums; note clamiga upgrades
+ * (UNSIGNED-BYTE 8) to T, so these really are boxed elements. */
+TEST(lisp_ffi_poke_bytes_vector)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((p (ffi:alloc-foreign 16))"
+        "      (v (make-array 4 :element-type '(unsigned-byte 8)"
+        "                       :initial-contents '(1 2 254 255))))"
+        "  (let ((n (ffi:poke-bytes p v)))"
+        "    (prog1 (list n (ffi:peek-u8 p 0) (ffi:peek-u8 p 1)"
+        "                 (ffi:peek-u8 p 2) (ffi:peek-u8 p 3))"
+        "      (ffi:free-foreign p))))"),
+        "(4 1 2 254 255)");
+}
+
+/* A string source takes the memcpy path. */
+TEST(lisp_ffi_poke_bytes_string)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((p (ffi:alloc-foreign 16)))"
+        "  (let ((n (ffi:poke-bytes p \"AB\" 8)))"
+        "    (prog1 (list n (ffi:peek-u8 p 8) (ffi:peek-u8 p 9))"
+        "      (ffi:free-foreign p))))"),
+        "(2 65 66)");
+}
+
+/* OFFSET applies to the destination, START/END bound the source. */
+TEST(lisp_ffi_poke_bytes_offset_start_end)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((p (ffi:alloc-foreign 16))"
+        "      (v (make-array 4 :element-type '(unsigned-byte 8)"
+        "                       :initial-contents '(1 2 254 255))))"
+        "  (let ((n (ffi:poke-bytes p v 12 1 3)))"
+        "    (prog1 (list n (ffi:peek-u8 p 12) (ffi:peek-u8 p 13))"
+        "      (ffi:free-foreign p))))"),
+        "(2 2 254)");
+}
+
+/* An empty span is legal and writes nothing. */
+TEST(lisp_ffi_poke_bytes_empty)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((p (ffi:alloc-foreign 16))"
+        "      (v (make-array 4 :element-type '(unsigned-byte 8)"
+        "                       :initial-element 7)))"
+        "  (ffi:poke-u8 p 99)"
+        "  (let ((n (ffi:poke-bytes p v 0 2 2)))"
+        "    (prog1 (list n (ffi:peek-u8 p 0))"
+        "      (ffi:free-foreign p))))"),
+        "(0 99)");
+}
+
+TEST(lisp_ffi_peek_bytes_roundtrip)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((p (ffi:alloc-foreign 16))"
+        "      (v (make-array 3 :element-type '(unsigned-byte 8)"
+        "                       :initial-contents '(9 0 200)))"
+        "      (out (make-array 3 :element-type '(unsigned-byte 8)"
+        "                         :initial-element 0)))"
+        "  (ffi:poke-bytes p v)"
+        "  (let ((n (ffi:peek-bytes p out)))"
+        "    (prog1 (list n (coerce out 'list))"
+        "      (ffi:free-foreign p))))"),
+        "(3 (9 0 200))");
+}
+
+/* A known allocation size must reject an overrun rather than corrupt
+ * memory past the buffer. */
+TEST(lisp_ffi_poke_bytes_overrun_rejected)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((p (ffi:alloc-foreign 4))"
+        "      (v (make-array 4 :element-type '(unsigned-byte 8)"
+        "                       :initial-element 1)))"
+        "  (prog1 (handler-case (progn (ffi:poke-bytes p v 2) :no-error)"
+        "           (error () :rejected))"
+        "    (ffi:free-foreign p)))"),
+        ":REJECTED");
+}
+
+/* The read-side mirror of the overrun check above: a known allocation size
+ * must reject an overrun rather than read past the buffer. */
+TEST(lisp_ffi_peek_bytes_overrun_rejected)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((p (ffi:alloc-foreign 4))"
+        "      (out (make-array 4 :element-type '(unsigned-byte 8)"
+        "                         :initial-element 0)))"
+        "  (prog1 (handler-case (progn (ffi:peek-bytes p out 2) :no-error)"
+        "           (error () :rejected))"
+        "    (ffi:free-foreign p)))"),
+        ":REJECTED");
+}
+
+/* A rank > 1 array is rejected rather than silently misread via
+ * CL_VECTOR_ACTIVE_LENGTH/CL_VECTOR_DATA. */
+TEST(lisp_ffi_poke_bytes_rank_rejected)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((p (ffi:alloc-foreign 16))"
+        "      (v (make-array '(2 2) :element-type '(unsigned-byte 8)"
+        "                       :initial-element 1)))"
+        "  (prog1 (handler-case (progn (ffi:poke-bytes p v) :no-error)"
+        "           (error () :rejected))"
+        "    (ffi:free-foreign p)))"),
+        ":REJECTED");
+}
+
+TEST(lisp_ffi_peek_bytes_rank_rejected)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((p (ffi:alloc-foreign 16))"
+        "      (out (make-array '(2 2) :element-type '(unsigned-byte 8)"
+        "                         :initial-element 0)))"
+        "  (prog1 (handler-case (progn (ffi:peek-bytes p out) :no-error)"
+        "           (error () :rejected))"
+        "    (ffi:free-foreign p)))"),
+        ":REJECTED");
+}
+
+TEST(lisp_ffi_poke_bytes_element_range_checked)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((p (ffi:alloc-foreign 16)))"
+        "  (prog1 (list (handler-case (progn (ffi:poke-bytes p (vector 1 300)) :no-error)"
+        "                 (error () :rejected))"
+        "               (handler-case (progn (ffi:poke-bytes p (vector 1 -1)) :no-error)"
+        "                 (error () :rejected))"
+        "               (handler-case (progn (ffi:poke-bytes p (vector 1 'x)) :no-error)"
+        "                 (error () :rejected)))"
+        "    (ffi:free-foreign p)))"),
+        "(:REJECTED :REJECTED :REJECTED)");
+}
+
+TEST(lisp_ffi_poke_bytes_bad_span_and_source)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((p (ffi:alloc-foreign 16))"
+        "      (v (make-array 4 :element-type '(unsigned-byte 8)"
+        "                       :initial-element 1)))"
+        "  (prog1 (list (handler-case (progn (ffi:poke-bytes p v 0 0 99) :no-error)"
+        "                 (error () :rejected))"
+        "               (handler-case (progn (ffi:poke-bytes p v 0 3 1) :no-error)"
+        "                 (error () :rejected))"
+        "               (handler-case (progn (ffi:poke-bytes p (list 1 2)) :no-error)"
+        "                 (error () :rejected))"
+        "               (handler-case (progn (ffi:poke-bytes v v) :no-error)"
+        "                 (error () :rejected)))"
+        "    (ffi:free-foreign p)))"),
+        "(:REJECTED :REJECTED :REJECTED :REJECTED)");
+}
+
+/* A fill pointer bounds the source: only the active elements move. */
+TEST(lisp_ffi_poke_bytes_respects_fill_pointer)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((p (ffi:alloc-foreign 16))"
+        "      (v (make-array 4 :element-type '(unsigned-byte 8)"
+        "                       :initial-contents '(1 2 3 4)"
+        "                       :fill-pointer 2)))"
+        "  (prog1 (list (ffi:poke-bytes p v)"
+        "               (handler-case (progn (ffi:poke-bytes p v 0 0 4) :no-error)"
+        "                 (error () :rejected)))"
+        "    (ffi:free-foreign p)))"),
+        "(2 :REJECTED)");
+}
+
 TEST(lisp_ffi_foreign_string)
 {
     ASSERT_STR_EQ(eval_print(
@@ -390,6 +561,18 @@ int main(void)
     RUN(lisp_ffi_peek_poke_u32_offset);
     RUN(lisp_ffi_peek_poke_u16);
     RUN(lisp_ffi_peek_poke_u8);
+    RUN(lisp_ffi_poke_bytes_vector);
+    RUN(lisp_ffi_poke_bytes_string);
+    RUN(lisp_ffi_poke_bytes_offset_start_end);
+    RUN(lisp_ffi_poke_bytes_empty);
+    RUN(lisp_ffi_peek_bytes_roundtrip);
+    RUN(lisp_ffi_poke_bytes_overrun_rejected);
+    RUN(lisp_ffi_peek_bytes_overrun_rejected);
+    RUN(lisp_ffi_poke_bytes_rank_rejected);
+    RUN(lisp_ffi_peek_bytes_rank_rejected);
+    RUN(lisp_ffi_poke_bytes_element_range_checked);
+    RUN(lisp_ffi_poke_bytes_bad_span_and_source);
+    RUN(lisp_ffi_poke_bytes_respects_fill_pointer);
     RUN(lisp_ffi_foreign_string);
     RUN(lisp_ffi_foreign_string_empty);
     RUN(lisp_ffi_pointer_plus);
