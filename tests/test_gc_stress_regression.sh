@@ -841,7 +841,37 @@ cat > "$WORK/ffi.lisp" <<'EOF'
                           (list arr 5 4 cmp))
         (format t "FFI-SORT:~a~%"
                 (loop for i below 5 collect (ffi:peek-i32 arr (* i 4))))
-        (ffi:free-foreign arr)))))
+        (ffi:free-foreign arr))))
+  ;; Bulk byte transfer.  POKE-BYTES/PEEK-BYTES hold a raw foreign address
+  ;; AND a raw pointer into a Lisp vector's elements across the copy loop,
+  ;; which is exactly the shape a compaction corrupts: the source vectors
+  ;; here are freshly consed (so they sit in the nursery and MOVE), and the
+  ;; interleaved allocation keeps compaction firing between the calls.
+  (let ((p (ffi:alloc-foreign 256))
+        (out (make-array 64 :element-type '(unsigned-byte 8) :initial-element 0))
+        (bad 0))
+    (dotimes (i 40)
+      (let ((v (make-array 64 :element-type '(unsigned-byte 8))))
+        (dotimes (j 64) (setf (aref v j) (mod (+ i j) 256)))
+        (make-list 8)                   ; churn between build and copy
+        (ffi:poke-bytes p v)
+        (make-list 8)                   ; churn between copy and readback
+        (ffi:peek-bytes p out)
+        (dotimes (j 64)
+          (unless (= (aref out j) (mod (+ i j) 256))
+            (setf bad (+ bad 1))))))
+    (format t "FFI-BULK:~a~%" bad)
+    ;; string source (memcpy path) + a bounded sub-span of a moving vector
+    (let ((v (make-array 8 :element-type '(unsigned-byte 8)
+                           :initial-contents '(10 11 12 13 14 15 16 17))))
+      (make-list 8)
+      (ffi:poke-bytes p "wxyz" 100)
+      (make-list 8)
+      (ffi:poke-bytes p v 200 2 5)
+      (format t "FFI-BULK-SPAN:~a ~a~%"
+              (list (ffi:peek-u8 p 100) (ffi:peek-u8 p 103))
+              (list (ffi:peek-u8 p 200) (ffi:peek-u8 p 201) (ffi:peek-u8 p 202))))
+    (ffi:free-foreign p)))
 EOF
 if compile_fasl "$WORK/ffi.lisp" "$WORK/ffi.fasl"; then
     cat > "$WORK/ffi-load.lisp" <<EOF
@@ -853,6 +883,8 @@ EOF
     check_contains "ffi pointer+ registration/finalizer survives"    "FFI-PTRS:200" "$out"
     check_contains "ffi foreign calls return correct values"         "FFI-CALL:99 1024.0" "$out"
     check_contains "ffi callback comparator sorts under stress"      "FFI-SORT:(1 2 5 7 9)" "$out"
+    check_contains "ffi poke-bytes/peek-bytes survive compaction"    "FFI-BULK:0" "$out"
+    check_contains "ffi bulk string source and sub-span correct"     "FFI-BULK-SPAN:(119 122) (12 13 14)" "$out"
     check_absent   "no corruption in FFI alloc/call/callback paths"  "Unbound variable\|type 0\|corrupted\|Undefined function" "$out"
 else
     echo "  SKIP  FFI gc-stress: clean FASL compile failed"
