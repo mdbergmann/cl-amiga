@@ -84,7 +84,17 @@ uint8_t cl_classify_vec_elt_code(CL_Obj type, int depth);
  * must GC-protect live CL_Obj locals across the call. */
 void cl_classify_array_elt_type(CL_Obj type, int depth,
                                 int *is_char, int *is_wide_char, int *is_bit,
-                                int *is_u8, int *is_s8);
+                                int *is_u8, int *is_s8,
+                                int *is_u16, int *is_s16);
+
+/* Range-check a packed-vector element VALUE against the vector's width
+ * (elt_shift: 0 = 8-bit, 1 = 16-bit) and signedness; returns the raw value
+ * for cl_bytevec_set or signals a catchable TYPE-ERROR.  Shared by every
+ * byte-vector store path (arrays, sequences, VM/JIT ASET). */
+int32_t cl_bytevec_check_value(CL_Obj value, int is_signed, int elt_shift,
+                               const char *ctx);
+/* "(UNSIGNED-BYTE 8)" etc. — the exact specifier name for diagnostics. */
+const char *cl_bytevec_type_name(int is_signed, int elt_shift);
 
 /* Non-interactive inspect display: write object and its components to
  * *standard-output*. Used by (inspect …) and exposed for testing. */

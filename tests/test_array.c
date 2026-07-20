@@ -336,8 +336,12 @@ TEST(upgraded_array_element_type_bit_subtypes)
                   "(UNSIGNED-BYTE 8)");
     ASSERT_STR_EQ(eval_print("(upgraded-array-element-type '(integer -1 1))"),
                   "(SIGNED-BYTE 8)");
-    /* outside the byte range → general T */
-    ASSERT_STR_EQ(eval_print("(upgraded-array-element-type '(unsigned-byte 16))"), "T");
+    /* 9-16 bit ranges → the packed 16-bit kinds; wider → general T */
+    ASSERT_STR_EQ(eval_print("(upgraded-array-element-type '(unsigned-byte 16))"),
+                  "(UNSIGNED-BYTE 16)");
+    ASSERT_STR_EQ(eval_print("(upgraded-array-element-type '(integer -1 200))"),
+                  "(SIGNED-BYTE 16)");
+    ASSERT_STR_EQ(eval_print("(upgraded-array-element-type '(unsigned-byte 17))"), "T");
     /* make-array builds a true bit-vector that SBIT accepts */
     ASSERT_STR_EQ(eval_print(
         "(let ((b (make-array 3 :element-type '(integer 0 (1)))))"

@@ -288,16 +288,17 @@ static CL_Obj bi_reverse(CL_Obj *args, int n)
         CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(seq);
         uint32_t blen = cl_bytevec_active_length(bv);
         int is_signed = bv->is_signed;
+        int elt_shift = bv->elt_shift;
         CL_Obj result;
         CL_ByteVector *rv;
         uint32_t i;
         CL_GC_PROTECT(seq);   /* see the vector branch above */
-        result = cl_make_byte_vector(blen, is_signed);
+        result = cl_make_byte_vector(blen, is_signed, elt_shift);
         CL_GC_UNPROTECT(1);
         rv = (CL_ByteVector *)CL_OBJ_TO_PTR(result);
         bv = (CL_ByteVector *)CL_OBJ_TO_PTR(seq);
         for (i = 0; i < blen; i++)
-            rv->data[i] = bv->data[blen - 1 - i];
+            cl_bytevec_set(rv, i, cl_bytevec_get(bv, blen - 1 - i));
         return result;
     }
     cl_signal_type_error(seq, "SEQUENCE", "REVERSE");

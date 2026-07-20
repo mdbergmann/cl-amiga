@@ -4637,6 +4637,88 @@ check_contains "byte-vector remove/delete + alias type walks under compaction" \
 check_absent   "no slice-2 corruption diagnostics" \
   "corrupted\|Guru\|SIGSEGV\|badmark\|use-after" "$out"
 
+# --- Case: packed 16-bit vectors ((unsigned-byte 16)/(signed-byte 16)) -----
+# Slice 3: the same allocating paths as the u8 case but with 2-byte elements
+# (elt_shift=1) — MAKE-ARRAY classify→alloc→initial-contents, the width-
+# dispatching get/set macros, SUBSEQ/COPY-SEQ/REVERSE offset scaling
+# (byte offsets are element<<1 — a missed shift reads garbage that only
+# shows once compaction has moved the source), COERCE across widths,
+# ADJUST-ARRAY's scaled copy, EQUALP hashing across widths, and boundary
+# range checks at ±32768/65535.
+cat > "$WORK/bytevec16.lisp" <<'EOF'
+(let ((ok t))
+  (dotimes (i 15)
+    (let* ((v (make-array 24 :element-type '(unsigned-byte 16)
+                          :initial-contents
+                          (let (acc) (dotimes (j 24 (nreverse acc))
+                                       (push (* j 2731) acc)))))
+           (c (copy-seq v))
+           (s (subseq v 8 16))
+           (r (reverse v)))
+      (unless (and (equalp v c)
+                   (= (aref s 0) (aref v 8))
+                   (= (aref s 7) (aref v 15))
+                   (= (aref r 0) (aref v 23))
+                   (equal (array-element-type s) '(unsigned-byte 16))
+                   (typep v (type-of v))
+                   (equalp (coerce (coerce v 'list) '(vector (unsigned-byte 16))) v))
+        (setf ok nil))))
+  ;; cross-width equalp + hash keys
+  (let ((h (make-hash-table :test 'equalp))
+        (k16 (make-array 8 :element-type '(unsigned-byte 16) :initial-element 7))
+        (k8  (make-array 8 :element-type '(unsigned-byte 8)  :initial-element 7)))
+    (setf (gethash k16 h) :hit)
+    (unless (and (eq :hit (gethash k8 h)) (equalp k16 k8)) (setf ok nil)))
+  ;; adjust-array scaled copy + growth fill
+  (let* ((v (make-array 4 :element-type '(unsigned-byte 16)
+                        :initial-contents '(10000 20000 30000 65535)))
+         (w (adjust-array v 8 :initial-element 40000)))
+    (unless (and (= (aref w 3) 65535) (= (aref w 7) 40000)
+                 (equal (array-element-type w) '(unsigned-byte 16)))
+      (setf ok nil)))
+  ;; signed boundaries survive; one-past range-checks signal cleanly
+  (let ((v (make-array 3 :element-type '(signed-byte 16)
+                       :initial-contents '(-32768 -1 32767))))
+    (unless (string= (prin1-to-string v) "#(-32768 -1 32767)") (setf ok nil))
+    (unless (eq :caught (handler-case (setf (aref v 0) 32768)
+                          (error () :caught)))
+      (setf ok nil))
+    (unless (eq :caught (handler-case (setf (aref v 0) -32769)
+                          (error () :caught)))
+      (setf ok nil)))
+  (format t "BYTEVEC16-STRESS:~a~%" (if ok "OK" "MISMATCH")))
+EOF
+out=$(run_stress "$WORK/bytevec16.lisp")
+check_contains "packed 16-bit vectors under compaction storm" \
+  "BYTEVEC16-STRESS:OK" "$out"
+check_absent   "no 16-bit byte-vector corruption diagnostics" \
+  "corrupted\|Guru\|SIGSEGV\|badmark\|use-after" "$out"
+
+cat > "$WORK/bytevec16-fasl.lisp" <<'EOF'
+(defparameter *bv16-lit*
+  #.(make-array 5 :element-type '(unsigned-byte 16)
+                :initial-contents '(0 255 256 4660 65535)))
+(defparameter *bv16s-lit*
+  #.(make-array 3 :element-type '(signed-byte 16)
+                :initial-contents '(-32768 -1 32767)))
+EOF
+cat > "$WORK/bytevec16-fasl-driver.lisp" <<EOF
+(load "$WORK/bytevec16-fasl.fasl")
+(if (and (typep *bv16-lit* '(vector (unsigned-byte 16)))
+         (equal (coerce *bv16-lit* 'list) '(0 255 256 4660 65535))
+         (equal (coerce *bv16s-lit* 'list) '(-32768 -1 32767)))
+    (format t "BYTEVEC16-FASL:OK~%")
+    (format t "BYTEVEC16-FASL:MISMATCH~%"))
+EOF
+if compile_fasl "$WORK/bytevec16-fasl.lisp" "$WORK/bytevec16-fasl.fasl"; then
+    out=$(run_stress "$WORK/bytevec16-fasl-driver.lisp")
+    check_contains "16-bit byte-vector FASL literal loads under compaction" \
+      "BYTEVEC16-FASL:OK" "$out"
+else
+    total=$((total + 1)); failed=$((failed + 1))
+    echo "  FAIL  16-bit byte-vector FASL case: compile_fasl failed"
+fi
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

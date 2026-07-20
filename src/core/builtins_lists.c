@@ -553,9 +553,9 @@ static CL_Obj bi_nreverse(CL_Obj *args, int n)
         uint32_t blen = cl_bytevec_active_length(bv);  /* honour fill pointer */
         uint32_t i, half = blen / 2;
         for (i = 0; i < half; i++) {
-            uint8_t tmp = bv->data[i];
-            bv->data[i] = bv->data[blen - 1 - i];
-            bv->data[blen - 1 - i] = tmp;
+            int32_t tmp = cl_bytevec_get(bv, i);
+            cl_bytevec_set(bv, i, cl_bytevec_get(bv, blen - 1 - i));
+            cl_bytevec_set(bv, blen - 1 - i, tmp);
         }
         return seq;
     }

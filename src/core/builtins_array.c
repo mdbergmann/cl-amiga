@@ -62,7 +62,8 @@ static CL_Obj make_string_like(CL_Obj src, uint32_t length)
  * type tests agree with what MAKE-ARRAY actually builds. */
 void cl_classify_array_elt_type(CL_Obj type, int depth,
                                 int *is_char, int *is_wide_char, int *is_bit,
-                                int *is_u8, int *is_s8)
+                                int *is_u8, int *is_s8,
+                                int *is_u16, int *is_s16)
 {
     const char *nm;
     CL_Obj ex;
@@ -71,14 +72,20 @@ void cl_classify_array_elt_type(CL_Obj type, int depth,
     /* Compound integer subtypes — e.g. (integer 0 1) / (unsigned-byte 1) /
      * (mod 2) upgrade to a bit-vector; (unsigned-byte 8) / (mod 256) /
      * (integer 0 255) to an unsigned byte vector; (signed-byte 8) /
-     * (integer -128 127) to a signed byte vector. */
+     * (integer -128 127) to a signed byte vector; 9-16-bit ranges to the
+     * 16-bit packed kinds.  Tested narrowest-first so a range that fits a
+     * smaller representation packs tighter (mirrors CLHS upgading). */
     if (CL_CONS_P(type)) {
         extern int cl_type_is_bit_subtype(CL_Obj type);
         extern int cl_type_is_u8_subtype(CL_Obj type);
         extern int cl_type_is_s8_subtype(CL_Obj type);
+        extern int cl_type_is_u16_subtype(CL_Obj type);
+        extern int cl_type_is_s16_subtype(CL_Obj type);
         if (cl_type_is_bit_subtype(type)) *is_bit = 1;
         else if (cl_type_is_u8_subtype(type)) *is_u8 = 1;
         else if (cl_type_is_s8_subtype(type)) *is_s8 = 1;
+        else if (cl_type_is_u16_subtype(type)) *is_u16 = 1;
+        else if (cl_type_is_s16_subtype(type)) *is_s16 = 1;
         return;
     }
     if (!CL_SYMBOL_P(type))
@@ -97,7 +104,8 @@ void cl_classify_array_elt_type(CL_Obj type, int depth,
     ex = cl_get_type_expander(type);
     if (!CL_NULL_P(ex))
         cl_classify_array_elt_type(cl_vm_apply(ex, NULL, 0), depth - 1,
-                                is_char, is_wide_char, is_bit, is_u8, is_s8);
+                                is_char, is_wide_char, is_bit, is_u8, is_s8,
+                                is_u16, is_s16);
 }
 
 /* Classify a general (non-bit, non-char) array element-type into a
@@ -129,12 +137,13 @@ uint8_t cl_classify_vec_elt_code(CL_Obj type, int depth)
     return CL_VEC_ELT_T;
 }
 
-/* Build the (UNSIGNED-BYTE 8) / (SIGNED-BYTE 8) type-specifier list for a
- * byte vector.  Used by ARRAY-ELEMENT-TYPE and UPGRADED-ARRAY-ELEMENT-TYPE.
+/* Build the (UNSIGNED-BYTE 8/16) / (SIGNED-BYTE 8/16) type-specifier list
+ * for a byte vector.  Used by ARRAY-ELEMENT-TYPE and
+ * UPGRADED-ARRAY-ELEMENT-TYPE.
  * GC: the tail cons is protected across the (allocating) intern. */
-static CL_Obj bytevec_element_type_spec(int is_signed)
+static CL_Obj bytevec_element_type_spec(int is_signed, int elt_shift)
 {
-    CL_Obj tail = cl_cons(CL_MAKE_FIXNUM(8), CL_NIL);
+    CL_Obj tail = cl_cons(CL_MAKE_FIXNUM(elt_shift ? 16 : 8), CL_NIL);
     CL_Obj sym;
     CL_GC_PROTECT(tail);
     sym = is_signed ? cl_intern("SIGNED-BYTE", 11)
@@ -151,28 +160,43 @@ static CL_Obj elt_code_to_type(uint8_t code)
     case CL_VEC_ELT_FIXNUM:       return cl_intern("FIXNUM", 6);
     case CL_VEC_ELT_SINGLE_FLOAT: return cl_intern("SINGLE-FLOAT", 12);
     case CL_VEC_ELT_DOUBLE_FLOAT: return cl_intern("DOUBLE-FLOAT", 12);
-    case CL_VEC_ELT_U8:           return bytevec_element_type_spec(0);
-    case CL_VEC_ELT_S8:           return bytevec_element_type_spec(1);
+    case CL_VEC_ELT_U8:           return bytevec_element_type_spec(0, 0);
+    case CL_VEC_ELT_S8:           return bytevec_element_type_spec(1, 0);
+    case CL_VEC_ELT_U16:          return bytevec_element_type_spec(0, 1);
+    case CL_VEC_ELT_S16:          return bytevec_element_type_spec(1, 1);
     default:                      return SYM_T;
     }
 }
 
-/* Range-check a byte-vector element VALUE against the vector's signedness and
- * return the raw byte to store.  Signals a catchable TYPE-ERROR naming the
- * offending value and the exact expected subtype otherwise. */
-static uint8_t bytevec_check_value(CL_Obj value, int is_signed, const char *ctx)
+/* The exact element-type name of a packed vector kind, for diagnostics. */
+const char *cl_bytevec_type_name(int is_signed, int elt_shift)
 {
-    int32_t v = 0;
+    if (elt_shift)
+        return is_signed ? "(SIGNED-BYTE 16)" : "(UNSIGNED-BYTE 16)";
+    return is_signed ? "(SIGNED-BYTE 8)" : "(UNSIGNED-BYTE 8)";
+}
+
+/* Range-check a byte-vector element VALUE against the vector's width and
+ * signedness and return the raw element value to store (pass to
+ * cl_bytevec_set).  Signals a catchable TYPE-ERROR naming the offending
+ * value and the exact expected subtype otherwise.  Every 8/16-bit element
+ * value fits a fixnum, so a non-fixnum is never in range.  Shared with the
+ * sequence/string/VM/JIT store paths (declared in builtins.h). */
+int32_t cl_bytevec_check_value(CL_Obj value, int is_signed, int elt_shift,
+                               const char *ctx)
+{
+    int32_t v = 0, lo, hi;
     int bad = !CL_FIXNUM_P(value);
+    if (elt_shift) { lo = is_signed ? -32768 : 0; hi = is_signed ? 32767 : 65535; }
+    else           { lo = is_signed ? -128   : 0; hi = is_signed ? 127   : 255; }
     if (!bad) {
         v = CL_FIXNUM_VAL(value);
-        bad = is_signed ? (v < -128 || v > 127) : (v < 0 || v > 255);
+        bad = (v < lo || v > hi);
     }
     if (bad)
-        cl_signal_type_error(value,
-                             is_signed ? "(SIGNED-BYTE 8)" : "(UNSIGNED-BYTE 8)",
+        cl_signal_type_error(value, cl_bytevec_type_name(is_signed, elt_shift),
                              ctx);
-    return (uint8_t)v;
+    return v;
 }
 
 /* Helper: get element from any 1D sequence (list, string, vector) */
@@ -284,6 +308,8 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
     int element_type_bit = 0;
     int element_type_u8 = 0;   /* (unsigned-byte 8) subtype → packed byte vector */
     int element_type_s8 = 0;   /* (signed-byte 8) subtype → packed byte vector */
+    int element_type_u16 = 0;  /* (unsigned-byte 16) subtype → packed, 2 bytes/elt */
+    int element_type_s16 = 0;  /* (signed-byte 16) subtype → packed, 2 bytes/elt */
     int element_type_char = 0;
     /* Distinguishes the upgraded character width: an explicit CHARACTER /
      * EXTENDED-CHAR element-type yields a wide string (so chars > 255 are
@@ -353,14 +379,16 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
                  * build a string, not a (vector t). */
                 cl_classify_array_elt_type(element_type, 16, &element_type_char,
                                         &element_type_wide_char, &element_type_bit,
-                                        &element_type_u8, &element_type_s8);
+                                        &element_type_u8, &element_type_s8,
+                                        &element_type_u16, &element_type_s16);
             /* Re-read: cl_classify_array_elt_type may have called cl_vm_apply
              * (deftype expansion) which can compact, making element_type stale. */
             element_type = args[i + 1];
             /* Record a specialized general (non-bit/non-char/non-byte)
              * element type so the array is distinguishable from a (VECTOR T). */
             if (has_element_type_spec && !element_type_char && !element_type_bit &&
-                !element_type_u8 && !element_type_s8)
+                !element_type_u8 && !element_type_s8 &&
+                !element_type_u16 && !element_type_s16)
                 element_type_code = cl_classify_vec_elt_code(element_type, 16);
         } else if (args[i] == KW_DISPLACED_TO) {
             dt_idx = i + 1;
@@ -540,6 +568,7 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
                 CL_ByteVector *src = (CL_ByteVector *)CL_OBJ_TO_PTR(displaced_to);
                 uint32_t src_total = src->length;
                 int src_signed = src->is_signed;
+                int src_shift = src->elt_shift;
                 CL_Obj nbv;
                 CL_ByteVector *dst;
 
@@ -547,14 +576,16 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
                     cl_error(CL_ERR_ARGS, "MAKE-ARRAY: displaced bounds exceed target byte-vector");
 
                 CL_GC_PROTECT(displaced_to);
-                nbv = cl_make_byte_vector(length, src_signed);
+                nbv = cl_make_byte_vector(length, src_signed, src_shift);
                 CL_GC_UNPROTECT(1);
                 /* Re-fetch src after potential GC. */
                 src = (CL_ByteVector *)CL_OBJ_TO_PTR(displaced_to);
                 dst = (CL_ByteVector *)CL_OBJ_TO_PTR(nbv);
                 dst->flags = flags;
                 dst->fill_pointer = fill_ptr;
-                memcpy(dst->data, src->data + displaced_offset, length);
+                memcpy(dst->data,
+                       src->data + ((size_t)displaced_offset << src_shift),
+                       (size_t)length << src_shift);
                 return nbv;
             }
             cl_error(CL_ERR_TYPE, "MAKE-ARRAY: :displaced-to target must be an array");
@@ -601,35 +632,50 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
         /* Adjustable byte arrays cannot use packed storage: ADJUST-ARRAY and
          * VECTOR-PUSH-EXTEND must grow them in place (preserving identity),
          * which only the general CL_Vector displacement machinery supports.
-         * Build a general vector annotated CL_VEC_ELT_U8/S8 instead so
-         * ARRAY-ELEMENT-TYPE / TYPEP still report the byte element type —
+         * Build a general vector annotated CL_VEC_ELT_U8/S8/U16/S16 instead
+         * so ARRAY-ELEMENT-TYPE / TYPEP still report the byte element type —
          * this keeps the drakma/chunga adjustable fill-pointer HTTP-buffer
          * idiom working exactly as before packing existed. */
-        if ((element_type_u8 || element_type_s8) &&
+        if ((element_type_u8 || element_type_s8 ||
+             element_type_u16 || element_type_s16) &&
             (flags & CL_VEC_FLAG_ADJUSTABLE)) {
-            element_type_code = element_type_u8 ? CL_VEC_ELT_U8 : CL_VEC_ELT_S8;
+            element_type_code = element_type_u8  ? CL_VEC_ELT_U8
+                              : element_type_s8  ? CL_VEC_ELT_S8
+                              : element_type_u16 ? CL_VEC_ELT_U16
+                                                 : CL_VEC_ELT_S16;
             element_type_u8 = element_type_s8 = 0;
+            element_type_u16 = element_type_s16 = 0;
         }
 
-        /* Packed byte-vector path — (unsigned-byte 8) / (signed-byte 8).
-         * 1 byte per element instead of a 4-byte tagged CL_Obj, and a GC
-         * leaf object (contents never scanned). */
-        if (element_type_u8 || element_type_s8) {
+        /* Packed byte-vector path — (unsigned-byte 8/16)/(signed-byte 8/16).
+         * 1 or 2 bytes per element instead of a 4-byte tagged CL_Obj, and a
+         * GC leaf object (contents never scanned). */
+        if (element_type_u8 || element_type_s8 ||
+            element_type_u16 || element_type_s16) {
             CL_ByteVector *bv;
-            int is_signed = element_type_s8;
+            int is_signed = element_type_s8 || element_type_s16;
+            int elt_shift = (element_type_u16 || element_type_s16) ? 1 : 0;
             /* Protect initial_contents across the (compacting) allocation so
              * the seq_elt reads below stay valid (mirrors the bit path). */
             CL_GC_PROTECT(initial_contents);
-            result = cl_make_byte_vector(length, is_signed);
+            result = cl_make_byte_vector(length, is_signed, elt_shift);
             CL_GC_UNPROTECT(1);
             bv = (CL_ByteVector *)CL_OBJ_TO_PTR(result);
             bv->flags = flags;
             bv->fill_pointer = fill_ptr;
             if (has_initial_element) {
-                uint8_t b = bytevec_check_value(initial_element, is_signed,
-                                                "MAKE-ARRAY :initial-element");
-                if (b != 0 && length > 0)
-                    memset(bv->data, b, length);
+                int32_t v = cl_bytevec_check_value(initial_element, is_signed,
+                                                   elt_shift,
+                                                   "MAKE-ARRAY :initial-element");
+                if (v != 0) {
+                    if (elt_shift == 0) {
+                        memset(bv->data, (uint8_t)v, length);
+                    } else {
+                        uint32_t j;
+                        for (j = 0; j < length; j++)
+                            cl_bytevec_set(bv, j, v);
+                    }
+                }
             } else if (has_initial_contents) {
                 /* Any sequence works as initial-contents — read it
                  * element-by-element via seq_elt, range-checking each. */
@@ -637,8 +683,9 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
                 if (ilen > length) ilen = length;
                 for (j = 0; j < ilen; j++) {
                     CL_Obj elem = seq_elt(initial_contents, j);
-                    bv->data[j] = bytevec_check_value(
-                        elem, is_signed, "MAKE-ARRAY :initial-contents");
+                    cl_bytevec_set(bv, j, cl_bytevec_check_value(
+                        elem, is_signed, elt_shift,
+                        "MAKE-ARRAY :initial-contents"));
                 }
             }
             return result;
@@ -912,8 +959,9 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
                 if (CL_BYTE_VECTOR_P(displaced_to)) {
                     CL_ByteVector *src =
                         (CL_ByteVector *)CL_OBJ_TO_PTR(displaced_to);
-                    uint8_t src_code = src->is_signed ? CL_VEC_ELT_S8
-                                                      : CL_VEC_ELT_U8;
+                    uint8_t src_code = src->elt_shift
+                        ? (src->is_signed ? CL_VEC_ELT_S16 : CL_VEC_ELT_U16)
+                        : (src->is_signed ? CL_VEC_ELT_S8  : CL_VEC_ELT_U8);
                     uint32_t j;
                     if (displaced_offset + total > src->length)
                         cl_error(CL_ERR_ARGS,
@@ -1162,8 +1210,10 @@ static CL_Obj bi_setf_aref(CL_Obj *args, int n)
         /* (SETF AREF) accesses the underlying array, ignoring fill pointers. */
         if (idx < 0 || (uint32_t)idx >= bv->length)
             cl_error(CL_ERR_ARGS, "%SETF-AREF: index %d out of range", (int)idx);
-        bv->data[idx] = bytevec_check_value(value, bv->is_signed,
-                                            "(SETF AREF) on a byte vector");
+        cl_bytevec_set(bv, idx,
+                       cl_bytevec_check_value(value, bv->is_signed,
+                                              bv->elt_shift,
+                                              "(SETF AREF) on a byte vector"));
         return value;
     }
 
@@ -1441,7 +1491,7 @@ static CL_Obj bi_array_element_type(CL_Obj *args, int n)
         return cl_intern("BIT", 3);
     if (CL_BYTE_VECTOR_P(args[0])) {
         CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(args[0]);
-        return bytevec_element_type_spec(bv->is_signed);
+        return bytevec_element_type_spec(bv->is_signed, bv->elt_shift);
     }
     if (CL_VECTOR_P(args[0])) {
         CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(args[0]);
@@ -1523,12 +1573,13 @@ static CL_Obj bi_upgraded_array_element_type(CL_Obj *args, int n)
 {
     CL_Obj typespec = args[0];
     int is_char = 0, is_wide_char = 0, is_bit = 0, is_u8 = 0, is_s8 = 0;
+    int is_u16 = 0, is_s16 = 0;
     (void)n;
 
     /* Classify CHARACTER / BIT / byte subtypes, expanding user deftypes (so
      * an alias like flexi-streams' CHAR* upgrades to CHARACTER, not T). */
     cl_classify_array_elt_type(typespec, 16, &is_char, &is_wide_char, &is_bit,
-                            &is_u8, &is_s8);
+                            &is_u8, &is_s8, &is_u16, &is_s16);
     /* Re-read: cl_classify_array_elt_type may have called cl_vm_apply (deftype
      * expansion) which can trigger a compacting GC, making typespec stale. */
     typespec = args[0];
@@ -1537,9 +1588,13 @@ static CL_Obj bi_upgraded_array_element_type(CL_Obj *args, int n)
     if (is_bit)
         return cl_intern("BIT", 3);
     if (is_u8)
-        return bytevec_element_type_spec(0);
+        return bytevec_element_type_spec(0, 0);
     if (is_s8)
-        return bytevec_element_type_spec(1);
+        return bytevec_element_type_spec(1, 0);
+    if (is_u16)
+        return bytevec_element_type_spec(0, 1);
+    if (is_s16)
+        return bytevec_element_type_spec(1, 1);
     return elt_code_to_type(cl_classify_vec_elt_code(typespec, 16));
 }
 
@@ -1713,8 +1768,10 @@ static CL_Obj bi_setf_row_major_aref(CL_Obj *args, int n)
         idx = CL_FIXNUM_VAL(args[1]);
         if (idx < 0 || (uint32_t)idx >= bv->length)
             cl_error(CL_ERR_ARGS, "%SETF-ROW-MAJOR-AREF: index out of range");
-        bv->data[idx] = bytevec_check_value(args[2], bv->is_signed,
-                                            "(SETF ROW-MAJOR-AREF) on a byte vector");
+        cl_bytevec_set(bv, idx,
+                       cl_bytevec_check_value(args[2], bv->is_signed,
+                                              bv->elt_shift,
+                                              "(SETF ROW-MAJOR-AREF) on a byte vector"));
         return args[2];
     }
     if (!CL_VECTOR_P(args[0]))
@@ -1847,8 +1904,10 @@ static CL_Obj bi_vector_push(CL_Obj *args, int n)
         fp = bv->fill_pointer;
         if (fp >= bv->length)
             return CL_NIL;  /* full — return NIL */
-        bv->data[fp] = bytevec_check_value(args[0], bv->is_signed,
-                                           "VECTOR-PUSH on a byte vector");
+        cl_bytevec_set(bv, fp,
+                       cl_bytevec_check_value(args[0], bv->is_signed,
+                                              bv->elt_shift,
+                                              "VECTOR-PUSH on a byte vector"));
         bv->fill_pointer = fp + 1;
         return CL_MAKE_FIXNUM((int32_t)fp);
     }
@@ -1892,15 +1951,17 @@ CL_Obj bi_vector_push_extend(CL_Obj *args, int n)
             cl_error(CL_ERR_TYPE, "VECTOR-PUSH-EXTEND: byte vector has no fill pointer");
         fp = bv->fill_pointer;
         if (fp < bv->length) {
-            bv->data[fp] = bytevec_check_value(args[0], bv->is_signed,
-                                               "VECTOR-PUSH-EXTEND on a byte vector");
+            cl_bytevec_set(bv, fp,
+                           cl_bytevec_check_value(args[0], bv->is_signed,
+                                                  bv->elt_shift,
+                                                  "VECTOR-PUSH-EXTEND on a byte vector"));
             bv->fill_pointer = fp + 1;
             return CL_MAKE_FIXNUM((int32_t)fp);
         }
         cl_error(CL_ERR_GENERAL,
-                 "VECTOR-PUSH-EXTEND: cannot extend a packed byte vector "
-                 "(element-type (UNSIGNED-BYTE 8) / (SIGNED-BYTE 8)) — "
-                 "pre-allocate enough capacity with MAKE-ARRAY");
+                 "VECTOR-PUSH-EXTEND: cannot extend a packed %s vector — "
+                 "pre-allocate enough capacity with MAKE-ARRAY",
+                 cl_bytevec_type_name(bv->is_signed, bv->elt_shift));
     }
     if (!CL_VECTOR_P(args[1]))
         cl_error(CL_ERR_TYPE, "VECTOR-PUSH-EXTEND: not a vector");
@@ -2096,8 +2157,9 @@ CL_Obj bi_adjust_array(CL_Obj *args, int n)
     if (is_bytevec) {
         CL_ByteVector *obv = (CL_ByteVector *)CL_OBJ_TO_PTR(args[0]);
         int is_signed = obv->is_signed;
+        int elt_shift = obv->elt_shift;
         uint32_t src_len = obv->length;
-        uint8_t fill_byte = 0;
+        int32_t fill_val = 0;
         CL_Obj nbv;
         CL_ByteVector *nb;
 
@@ -2106,18 +2168,21 @@ CL_Obj bi_adjust_array(CL_Obj *args, int n)
             if (new_fp > new_len) new_fp = new_len;
         }
         if (has_ie)
-            fill_byte = bytevec_check_value(initial_element, is_signed,
-                                            "ADJUST-ARRAY :initial-element");
-        nbv = cl_make_byte_vector(new_len, is_signed);
+            fill_val = cl_bytevec_check_value(initial_element, is_signed,
+                                              elt_shift,
+                                              "ADJUST-ARRAY :initial-element");
+        nbv = cl_make_byte_vector(new_len, is_signed, elt_shift);
         /* Re-fetch the source after the (compacting) allocation — args[0]
          * is an already-rooted VM-stack slot. */
         obv = (CL_ByteVector *)CL_OBJ_TO_PTR(args[0]);
         nb = (CL_ByteVector *)CL_OBJ_TO_PTR(nbv);
         copy_len = src_len < new_len ? src_len : new_len;
         if (copy_len > 0)
-            memcpy(nb->data, obv->data, copy_len);
-        if (has_ie && new_len > src_len && fill_byte != 0)
-            memset(nb->data + src_len, fill_byte, new_len - src_len);
+            memcpy(nb->data, obv->data, (size_t)copy_len << elt_shift);
+        if (has_ie && new_len > src_len && fill_val != 0) {
+            for (i = src_len; i < new_len; i++)
+                cl_bytevec_set(nb, i, fill_val);
+        }
         if (new_fp != CL_NO_FILL_POINTER)
             nb->flags |= CL_VEC_FLAG_FILL_POINTER;
         nb->fill_pointer = new_fp;

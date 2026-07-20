@@ -1275,7 +1275,7 @@ static void array_seq_set(CL_Obj seq, int32_t i, CL_Obj v)
          * the same sequence and is always in range; silently skip non-fixnums
          * to mirror the string/bit branches above. */
         CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(seq);
-        if (CL_FIXNUM_P(v)) bv->data[i] = (uint8_t)CL_FIXNUM_VAL(v);
+        if (CL_FIXNUM_P(v)) cl_bytevec_set(bv, i, CL_FIXNUM_VAL(v));
     } else if (CL_VECTOR_P(seq)) {
         cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(seq))[i] = v;
     }
