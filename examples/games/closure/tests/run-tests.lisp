@@ -135,6 +135,58 @@
     (dotimes (x (image-width img))
       (pushnew (pixel-ref img x y) pens)))
   (check "the town ceiling is a flat starless sky" '(5) pens))
+
+;;; The cellar's pack (regenerate with gfx-cellar/make-pack.lisp): the
+;;; loader demands every wall piece at its exact slot size and falls
+;;; back to wireframe otherwise, so the whole contract is checked here
+;;; rather than discovered on the Amiga.
+(let ((dir "worlds/closure/gfx-cellar/")
+      (planes (view-planes *fp-view-width* *fp-view-height*))
+      (stale '()))
+  (dolist (piece (wall-piece-names))
+    (let ((path (concatenate 'string dir (wall-piece-file piece))))
+      (if (probe-file path)
+          (let ((img (read-ilbm path)))
+            (destructuring-bind (x y w h) (wall-piece-rect planes piece)
+              (declare (ignore x y))
+              (unless (and (= (image-width img) w) (= (image-height img) h))
+                (push (list (wall-piece-file piece) :mis-sized) stale))))
+          (push (list (wall-piece-file piece) :missing) stale))))
+  (check "every cellar wall piece is present at its slot size" nil stale)
+  ;; the backdrops fill their slots (they are blitted opaque, so a
+  ;; short one would leave the previous frame showing)
+  (destructuring-bind (ceiling floor) (backdrop-rects planes)
+    (dolist (entry (list (list "ceiling.iff" ceiling)
+                         (list "floor.iff" floor)))
+      (destructuring-bind (file (x y w h)) entry
+        (declare (ignore x y))
+        (let ((img (read-ilbm (concatenate 'string dir file))))
+          (check (format nil "the cellar ~A fills its slot" file)
+                 (list w h)
+                 (list (image-width img) (image-height img)))))))
+  ;; the floor is flat packed earth (pen 5), and the ceiling darkens
+  ;; through its bands to black — a cellar roof, not the town's sky
+  (let ((floor-pens '()))
+    (let ((img (read-ilbm (concatenate 'string dir "floor.iff"))))
+      (dotimes (y (image-height img))
+        (dotimes (x (image-width img))
+          (pushnew (pixel-ref img x y) floor-pens))))
+    (check "the cellar floor is flat packed earth" '(5) floor-pens))
+  (let ((img (read-ilbm (concatenate 'string dir "ceiling.iff")))
+        (ceiling-pens '()))
+    (dotimes (y (image-height img))
+      (dotimes (x (image-width img))
+        (pushnew (pixel-ref img x y) ceiling-pens)))
+    (check "the cellar ceiling darkens in bands to black"
+           '(0 6 7) (sort ceiling-pens #'<)))
+  ;; pen 4 must stay black: the wall pieces draw mortar and door frames
+  ;; with it, and the loader applies the pack's palette from pen 4 up
+  (let ((pal (image-palette (read-ilbm (concatenate 'string
+                                                    dir "palette.iff")))))
+    (check "the cellar pack leaves the mortar pen black"
+           '(0 0 0) (aref pal 4))
+    (check "the cellar pack paints its own floor pen"
+           '(102 85 68) (aref pal 5))))
 (let* ((m (load-map-file "worlds/closure/town.map"))
        (g (new-game m :party (default-party)))
        (zzgo (fourth (game-party g))))
@@ -250,14 +302,19 @@
   (check "the trapdoor drops into the cellar" :left (tavern-act g #\d))
   (check "the trapdoor landed in the cellar" "the cellar"
          (map-title (game-map g)))
-  (check "the cellar zone has no pack (profile default)" nil
-         (zone-gfx-dir g))
+  ;; the cellar brings its own pack, resolved inside the world — the
+  ;; trapdoor is a pack swap, and the town's pack is not what a cellar
+  ;; should look like
+  (check "the cellar zone declares its own pack"
+         "worlds/closure/gfx-cellar/" (zone-gfx-dir g))
   (check "cellar arrival at its start" '(0 0)
          (list (game-x g) (game-y g)))
   ;; the ladder back up: teleport to the cellar's < cell and step on it
   (teleport-party g 5 4)
   (check "ladder returns to the town" "Closure"
          (map-title (game-map g)))
+  (check "the town's pack comes back with it"
+         "worlds/closure/gfx/" (zone-gfx-dir g))
   (check "ladder lands on the tavern doorstep" '(6 2)
          (list (game-x g) (game-y g))))
 
@@ -309,12 +366,31 @@
          :done))
 
 ;; The same on the game's own custom screen with the city pack named
-;; explicitly — screen, pack palette and backdrop draw for real.
+;; explicitly — screen, pack palette and backdrop draw for real.  The
+;; cellar declares its own (ZONE :GFX "gfx-cellar/"), so this also
+;; pins the precedence: an explicit :GFX-DIR outranks the zone's pack.
 #+amigaos
 (check "autoplay on an own custom screen with the city pack" :done
        (let ((*autoplay* (list #\w #\d #\m #\m #\q)))
          (play-amiga "worlds/closure/cellar.map" :display :screen
                                                  :gfx-dir "worlds/closure/gfx/")
+         :done))
+
+;; A real pack swap on the real machine: the town loads its city pack,
+;; the trapdoor drops into the cellar and swaps in gfx-cellar/ — both
+;; packs load, both palettes apply, and the cellar's backdrops blit.
+;; The route is the player's (w d w w a w w w reaches the tavern door,
+;; d takes the trapdoor down); it stops there because the way back is
+;; through the cellar's maze, where a scripted walk meets the random
+;; encounter at (1,2).  The cache's swap-back is covered by the
+;; engine suite's *GFX-CACHE-PACKS* policy tests.
+#+amigaos
+(check "autoplay drops through the trapdoor into the cellar's pack" :done
+       (let ((*autoplay* (list #\w #\d #\w #\w #\a #\w #\w #\w ; to the tavern
+                               #\d                    ; down the trapdoor
+                               #\m #\m                ; look around below
+                               #\q)))
+         (play-amiga "worlds/closure/town.map" :display :screen)
          :done))
 
 ;;; ---------------------------------------------------------------------

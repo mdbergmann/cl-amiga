@@ -27,6 +27,14 @@ make run-amiga # play in FS-UAE: cross-compile and boot straight into
                # the emulator — HEAP/STACK/CONFIG=lowend overridable)
 ```
 
+`DEBUG=1 ./run-amiga.sh` traces the emulated session to `tale-debug.log`
+in this directory (the engine's `TALE_DEBUG_LOG`, see the engine
+README): image, map and campaign loads with their durations, every
+event with its handler count, every key press and click.  Lines are
+flushed as they are written, so the log survives a crash and can be
+tailed from another shell while the game runs; `DEBUG=ram:t.log` puts
+it elsewhere on the Amiga side instead.
+
 On AmigaOS (the repo is mounted as `CLAmiga:` in the FS-UAE setup) the
 game opens its **own screen** whose geometry comes from a display
 profile (`:lores` 320x256/32-color by default, `:profile :hires` for
@@ -96,22 +104,28 @@ src/main-amiga.lisp  AmigaOS entry point
 worlds/closure/      the world, one self-contained directory:
                      town.map + cellar.map (ASCII art + story forms),
                      campaign.lisp (hero classes, spells, items,
-                     monsters, starting party) and gfx/ — the town's
+                     monsters, starting party), gfx/ — the town's
                      tile pack (night-sky city palette), the worked
                      example of the engine's tile-pack contract, plus
                      the shoppe/tavern pictures and the class
                      portraits shown while those menus take over the
-                     message area;
+                     message area — and gfx-cellar/, the cellar's own
+                     pack (packed-earth floor, ceiling darkening to
+                     black);
                      regenerate: worlds/closure/gfx/make-pack.lisp
+                     and worlds/closure/gfx-cellar/make-pack.lisp
 tests/run-tests.lisp test suite (make test)
 ```
 
-The town of Closure declares its pack in its map file
-(`(zone :kind :city :gfx "gfx/")`, resolved next to the map — the
-self-contained world-directory pattern from the engine README), so
-travel swaps the art as the party moves between the town and the
-cellar — the cellar keeps the engine's default dungeon stone.  Try
-the pack on the cellar too:
+Both zones declare their pack in their map file (`(zone :kind :city
+:gfx "gfx/")`, `(zone :kind :dungeon :gfx "gfx-cellar/")`, each
+resolved next to the map — the self-contained world-directory pattern
+from the engine README), so travel swaps the art as the party moves
+between the town and the cellar.  The swap takes about five
+seconds on an 68020; the engine keeps the pack you left loaded so the
+way back is instant (`tale:*gfx-cache-packs*` — see the engine
+README).  Try
+the town pack on the cellar:
 
 ```
 clamiga --heap 8M --load worlds/closure/gfx/run.lisp

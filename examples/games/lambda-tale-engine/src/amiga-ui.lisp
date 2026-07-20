@@ -393,6 +393,65 @@ pack has none); the walls carve the perspective on top of it."
   "The BitMap a window rastport renders into (rp_BitMap)."
   (ffi:make-foreign-pointer (ffi:peek-u32 rp 4)))
 
+;;; ---------------------------------------------------------------------
+;;; The planar fast path.
+;;;
+;;; This is the one place in the engine that knows a BitMap's layout.
+;;; amiga.gfx is RTG-safe by construction — bitmaps come from
+;;; AllocBitMap with a friend, pixels go in as chunky through
+;;; WriteChunkyPixels, "no planar layout, chip-ram or bytes-per-row
+;;; assumptions anywhere" — and that stays true of the piece bitmaps
+;;; the renderer blits every frame.  What is poked here is a SCRATCH
+;;; bitmap this engine allocated itself with no friend and without
+;;; BMF_DISPLAYABLE, which graphics.library therefore returns as a
+;;; standard planar BitMap in ordinary RAM.  Poking that is legal; the
+;;; blitter then converts it into the friend bitmap's real format, so
+;;; an RTG display never sees a plane poke.
+;;;
+;;; struct BitMap (graphics/gfx.h):
+;;;   UWORD BytesPerRow  0    UWORD Rows   2
+;;;   UBYTE Flags        4    UBYTE Depth  5
+;;;   UWORD pad          6    PLANEPTR Planes[8]  8
+
+(defvar *wall-load-planar* t
+  "Load wall pieces through the planar fast path (%POKE-PLANES) rather
+than decoding to chunky pens and calling WriteChunkyPixels.  Bound to
+NIL to fall back — the chunky path is the portable one, and is what
+the host renderer and the asset tools use regardless.")
+
+(defconstant +bitmap-bytes-per-row+ 0)
+(defconstant +bitmap-depth+ 5)
+(defconstant +bitmap-planes+ 8)
+
+(defun %poke-planes (bitmap img)
+  "Copy PLANAR-IMAGE IMG's bitplane rows into BITMAP's planes.  IMG's
+rows and the BitMap's rows are both MSB-first and word-padded, so this
+is a row-by-row byte copy — the point of the whole path.  BITMAP must
+be at least as deep as IMG (its extra planes are left as allocated,
+i.e. cleared) and its rows at least as wide."
+  (let ((dst-row-bytes (ffi:peek-u16 bitmap +bitmap-bytes-per-row+))
+        (src-row-bytes (planar-image-row-bytes img))
+        (bm-depth (ffi:peek-u8 bitmap +bitmap-depth+))
+        (h (planar-image-height img))
+        (depth (planar-image-depth img)))
+    (when (< bm-depth depth)
+      (error "%POKE-PLANES: bitmap is ~D planes deep, the image needs ~D"
+             bm-depth depth))
+    (when (< dst-row-bytes src-row-bytes)
+      (error "%POKE-PLANES: bitmap rows are ~D bytes, the image needs ~D"
+             dst-row-bytes src-row-bytes))
+    (dotimes (p depth t)
+      (let ((plane (ffi:make-foreign-pointer
+                    (ffi:peek-u32 bitmap (+ +bitmap-planes+ (* 4 p)))))
+            (src (planar-image-plane img p)))
+        (when (ffi:null-pointer-p plane)
+          (error "%POKE-PLANES: bitmap plane ~D is NULL" p))
+        (dotimes (y h)
+          (let ((from (* y src-row-bytes))
+                (to (* y dst-row-bytes)))
+            (dotimes (i src-row-bytes)
+              (ffi:poke-u8 plane (aref src (+ from i)) (+ to i)))))))))
+
 (defun %load-wall-assets (rp log)
   "Load the active tile pack (*GFX-DIR*): every wall piece into an
 offscreen bitmap, plus the optional floor.iff / ceiling.iff backdrops
@@ -409,27 +468,31 @@ opaque blit); the backdrops are always opaque."
         (depth (max 2 (amiga.gfx:get-bitmap-attr (%window-bitmap rp)
                                                  amiga.gfx:+bma-depth+)))
         (planes (view-planes *fp-view-width* *fp-view-height*)))
-    (labels ((build-mask (img)
+    (labels ((chip-mask (bytes)
+               ;; a cookie-cut mask plane, copied into chip RAM where
+               ;; BltMaskBitMapRastPort can reach it
+               (let ((chip (amiga:alloc-chip (length bytes))))
+                 (dotimes (i (length bytes) chip)
+                   (ffi:poke-u8 chip (aref bytes i) i))))
+             (build-mask (img)
                ;; A piece that uses pen 0 (the transparent key) gets a
                ;; cookie-cut mask in chip RAM so the backdrop shows
                ;; through; a fully-painted piece needs none.
                (when (image-transparent-p img)
-                 (let* ((bytes (mask-bytes (image-width img)
-                                           (image-height img)
-                                           (image-pixels img)))
-                        (chip (amiga:alloc-chip (length bytes))))
-                   (dotimes (i (length bytes) chip)
-                     (ffi:poke-u8 chip (aref bytes i) i)))))
-             (load-piece (key file w h &optional maskable)
+                 (chip-mask (mask-bytes (image-width img)
+                                        (image-height img)
+                                        (image-pixels img)))))
+             (check-size (file iw ih w h)
                ;; Blits copy W x H from the bitmap wherever the piece's
                ;; slot sits, so a mis-sized pack file would read past
                ;; the bitmap's edges — reject it here, loudly.
-               (let ((img (read-ilbm file)))
-                 (unless (and (= (image-width img) w)
-                              (= (image-height img) h))
-                   (error "~A is ~Dx~D, its slot needs ~Dx~D (see ~
+               (unless (and (= iw w) (= ih h))
+                 (error "~A is ~Dx~D, its slot needs ~Dx~D (see ~
 PRINT-TILE-MANIFEST)"
-                          file (image-width img) (image-height img) w h))
+                        file iw ih w h)))
+             (load-piece-chunky (key file w h maskable)
+               (let ((img (read-ilbm file)))
+                 (check-size file (image-width img) (image-height img) w h)
                  (let ((bm (amiga.gfx:alloc-bitmap w h depth
                                                    :friend friend))
                        (mask (when maskable (build-mask img))))
@@ -438,7 +501,41 @@ PRINT-TILE-MANIFEST)"
                      (setf palette (image-palette img)))
                    (amiga.gfx:with-bitmap-rastport (brp bm)
                      (amiga.gfx:write-chunky brp 0 0 w h
-                                             (image-pixels img)))))))
+                                             (image-pixels img))))))
+             (load-piece-planar (key file w h maskable)
+               ;; The fast path: an ILBM plane row and a BitMap plane
+               ;; row have the same layout, so the piece never becomes
+               ;; chunky — the rows go straight into a scratch planar
+               ;; BitMap and the blitter moves them into the piece's
+               ;; own (friend, display-format) bitmap.  That skips both
+               ;; the per-pixel fold and WriteChunkyPixels.
+               (let ((img (read-ilbm-planar file)))
+                 (check-size file (planar-image-width img)
+                             (planar-image-height img) w h)
+                 (let ((bm (amiga.gfx:alloc-bitmap w h depth
+                                                   :friend friend))
+                       (mask (when (and maskable
+                                        (planar-image-transparent-p img))
+                               (chip-mask (planar-mask-bytes img)))))
+                   (setf (gethash key walls) (cons bm mask))
+                   (unless palette
+                     (setf palette (planar-image-palette img)))
+                   ;; scratch is plain (no friend, not displayable), so
+                   ;; it is a standard planar BitMap we may poke; it is
+                   ;; allocated at the piece's depth so the blit copies
+                   ;; every plane, the unused high ones cleared
+                   (let ((scratch (amiga.gfx:alloc-bitmap w h depth)))
+                     (unwind-protect
+                          (progn
+                            (%poke-planes scratch img)
+                            (amiga.gfx:with-bitmap-rastport (brp bm)
+                              (amiga.gfx:blt-bitmap-rastport
+                               scratch 0 0 brp 0 0 w h)))
+                       (amiga.gfx:free-bitmap scratch))))))
+             (load-piece (key file w h &optional maskable)
+               (if *wall-load-planar*
+                   (load-piece-planar key file w h maskable)
+                   (load-piece-chunky key file w h maskable))))
       (dlog-timed ("wall pack ~A" *gfx-dir*)
        (handler-case
           (progn
@@ -508,6 +605,31 @@ page without a background-color box around every character."
                  (amiga:free-chip (cdr entry))))
              walls))
   nil)
+
+;;; The tile-pack cache policy lives in view.lisp (it is pure list
+;;; work, and host-testable); exec's free-memory probe is the one part
+;;; that has to be here.
+
+(defvar *exec-base* nil "exec.library, opened on demand for AvailMem.")
+
+(defconstant +lvo-avail-mem+ -216)
+(defconstant +memf-any+ 0)
+
+(defun %free-memory ()
+  "Free system RAM in bytes — AvailMem(MEMF_ANY) — or NIL when exec
+cannot be reached (then the caller must not gate on memory)."
+  (handler-case
+      (progn
+        (unless *exec-base*
+          (setf *exec-base* (amiga:open-library "exec.library" 36)))
+        (and *exec-base*
+             (amiga:call-library *exec-base* +lvo-avail-mem+
+                                 (list :d1 +memf-any+))))
+    (error () nil)))
+
+(defun %pack-cache-free-all (cache)
+  "Free every pack in CACHE; returns NIL (the empty cache)."
+  (%pack-cache-drop cache #'%free-wall-assets))
 
 ;;; ---------------------------------------------------------------------
 ;;; The mouse pointer.  An own screen starts with unset sprite colors —
@@ -1557,6 +1679,8 @@ map/help/sheet pages close on a click outside a target — see
                        (l (%amiga-layout win rp))
                        (walls nil)      ; loaded piece bitmaps
                        (walls-dir nil)  ; the pack they came from
+                       (walls-pal nil)  ; ... and its CMAP palette
+                       (pack-cache '()) ; inactive packs, MRU first
                        (icons (make-hash-table :test #'equal))
                                         ; image cache: effect icons,
                                         ; location pictures, portraits
@@ -1574,26 +1698,47 @@ map/help/sheet pages close on a click outside a target — see
                           ;; on our own screen — a Workbench window has
                           ;; no say over the Workbench palette.  The
                           ;; load reads a directory of ILBMs — seconds
-                          ;; at 14MHz — so the busy pointer is up.
+                          ;; at 14MHz — so the busy pointer is up, and
+                          ;; the pack we are leaving goes to the cache
+                          ;; (*GFX-CACHE-PACKS*) rather than the bin,
+                          ;; which makes coming back free.
                           (let ((want (effective-gfx-dir)))
                             (unless (equal want walls-dir)
                               (%call-with-busy-pointer win
                                (lambda ()
-                                 (setf walls (%free-wall-assets walls)
-                                       walls-dir want)
+                                 ;; *GFX-DIR* is the wanted pack for the
+                                 ;; whole swap: the loader resolves the
+                                 ;; piece files through it, and so does
+                                 ;; the pack's optional pointer.iff.
                                  (let ((*gfx-dir* want))
-                                   (multiple-value-bind (w pal)
-                                       (%load-wall-assets rp log)
-                                     (setf walls w)
-                                     (when (eq display :screen)
-                                       (%apply-pack-palette
-                                        scr pal))
-                                     ;; the pack may carry its own
-                                     ;; pointer.iff; re-showing also
-                                     ;; re-latches the sprite colors
-                                     ;; after the palette change (RTG)
-                                     (%ensure-standard-pointer
-                                      scr win display))))))))
+                                   (when walls-dir
+                                     (setf pack-cache
+                                           (%pack-cache-put pack-cache
+                                                            walls-dir
+                                                            walls walls-pal)))
+                                   (multiple-value-bind (w pal rest)
+                                       (%pack-cache-take pack-cache want)
+                                     (setf pack-cache rest)
+                                     (if w
+                                         (progn
+                                           (dlog "wall pack ~A from cache" want)
+                                           (setf walls w walls-pal pal))
+                                         (multiple-value-setq (walls walls-pal)
+                                           (%load-wall-assets rp log))))
+                                   (setf walls-dir want)
+                                   (setf pack-cache
+                                         (%pack-cache-trim
+                                          pack-cache #'%free-wall-assets
+                                          (when (eq *gfx-cache-packs* :auto)
+                                            (%free-memory))))
+                                   (when (eq display :screen)
+                                     (%apply-pack-palette scr walls-pal))
+                                   ;; the pack may carry its own
+                                   ;; pointer.iff; re-showing also
+                                   ;; re-latches the sprite colors
+                                   ;; after the palette change (RTG)
+                                   (%ensure-standard-pointer
+                                    scr win display)))))))
                         (clear-inner ()
                           ;; Grey-wipe the content area (a bit beyond
                           ;; it, to catch the frames and shadows) when
@@ -2014,5 +2159,6 @@ map/help/sheet pages close on a click outside a target — see
                                  (return)))))))
                    (%free-standard-pointer win)
                    (setf walls (%free-wall-assets walls)
+                         pack-cache (%pack-cache-free-all pack-cache)
                          icons (%free-images icons)
                          log-lines (%free-log-lines log-lines))))))))))))))))

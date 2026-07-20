@@ -532,6 +532,18 @@ messages so far (oldest first)."
 (check "mask honors a non-zero transparent key" #xEF
        (aref (mask-bytes 8 1 #(0 1 2 3 4 5 6 7) 3) 0))
 
+;; A width whose row padding runs past the last pixel group (17 px: 3
+;; groups of pixels, but 4 bytes per word-aligned row) must leave the
+;; padding byte clear — the mask is blitted at full row width.
+(multiple-value-bind (m bpr)
+    (mask-bytes 17 1 (let ((p (make-array 17 :element-type '(unsigned-byte 8)
+                                          :initial-element 0)))
+                       (setf (aref p 16) 1) ; the lone pixel of group 2
+                       p))
+  (check "padded mask row is word-aligned" 4 bpr)
+  (check "mask marks the last pixel before the padding" #x80 (aref m 2))
+  (check "mask leaves the row padding clear" 0 (aref m 3)))
+
 (check-true "image-transparent-p spots the key"
             (image-transparent-p (make-image 2 2 2)))       ; all pen 0
 (check-true "image-transparent-p is nil when fully painted"
@@ -2308,6 +2320,86 @@ messages so far (oldest first)."
 (check "a zone without :gfx has no pack" nil
        (zone-gfx-dir (new-game (parse-map *art*))))
 
+;;; The tile-pack cache (*GFX-CACHE-PACKS*): swapping packs on zone
+;;; travel parks the old pack instead of freeing it, so walking back is
+;;; free.  The policy is pure list work — WALLS stands in for the piece
+;;; bitmaps and FREED records what the front end would have released.
+(let ((freed '()))
+  (flet ((free-fn (walls) (push walls freed) nil)
+         (reset () (setf freed '())))
+    ;; put/take: a round trip returns the very same pack and palette
+    (let ((cache (%pack-cache-put '() "town/" :town-walls :town-pal)))
+      (multiple-value-bind (walls pal rest) (%pack-cache-take cache "town/")
+        (check "cached pack comes back" :town-walls walls)
+        (check "cached palette comes back" :town-pal pal)
+        (check "taking it empties the cache" '() rest))
+      (multiple-value-bind (walls pal rest) (%pack-cache-take cache "cellar/")
+        (check "a miss yields no pack" nil walls)
+        (check "a miss yields no palette" nil pal)
+        (check "a miss leaves the cache alone" cache rest)))
+    ;; a failed load (wireframe fallback) is not worth caching
+    (check "an unloaded pack is not cached" '()
+           (%pack-cache-put '() "broken/" nil nil))
+    ;; re-putting a directory replaces its entry — two would leak the
+    ;; older entry's bitmaps, which nothing would ever free
+    (let ((cache (%pack-cache-put (%pack-cache-put '() "town/" :old :pal)
+                                  "town/" :new :pal)))
+      (check "re-putting a pack does not double it" 1 (length cache))
+      (check "re-putting a pack keeps the newest" :new
+             (second (first cache))))
+    ;; the budget: N inactive packs, least-recently-used evicted
+    (let ((*gfx-cache-packs* 1))
+      (reset)
+      (let* ((cache (%pack-cache-put '() "old/" :old-walls nil))
+             (cache (%pack-cache-put cache "new/" :new-walls nil))
+             (kept (%pack-cache-trim cache #'free-fn)))
+        (check "the budget keeps the most recent" 1 (length kept))
+        (check "... and it is the newest" "new/" (first (first kept)))
+        (check "the evicted pack is freed" '(:old-walls) freed)))
+    (let ((*gfx-cache-packs* 0))
+      (reset)
+      (let ((kept (%pack-cache-trim
+                   (%pack-cache-put '() "town/" :town-walls nil)
+                   #'free-fn)))
+        (check "a 0 budget caches nothing" '() kept)
+        (check "... and frees what it drops" '(:town-walls) freed)))
+    ;; :auto keeps one pack, but not when the machine is tight
+    (let ((*gfx-cache-packs* :auto)
+          (*gfx-cache-min-free* 1000000))
+      (check ":auto keeps one pack" 1 (%pack-cache-limit))
+      (reset)
+      (check ":auto caches when memory is free" 1
+             (length (%pack-cache-trim
+                      (%pack-cache-put '() "town/" :town-walls nil)
+                      #'free-fn 4000000)))
+      (check "... freeing nothing" '() freed)
+      (reset)
+      (check ":auto drops the cache when memory is tight" '()
+             (%pack-cache-trim
+              (%pack-cache-put '() "town/" :town-walls nil)
+              #'free-fn 500000))
+      (check "... and frees the dropped pack" '(:town-walls) freed)
+      (reset)
+      (check ":auto caches when free memory is unknown" 1
+             (length (%pack-cache-trim
+                      (%pack-cache-put '() "town/" :town-walls nil)
+                      #'free-fn nil))))
+    ;; a nonsense setting is a clear error, not a silent no-cache
+    (let ((*gfx-cache-packs* :sometimes))
+      (check-error "*gfx-cache-packs* rejects a bad value"
+        (%pack-cache-limit)))
+    (let ((*gfx-cache-packs* -1))
+      (check-error "*gfx-cache-packs* rejects a negative budget"
+        (%pack-cache-limit)))
+    ;; freeing the whole cache at session end releases every pack
+    (reset)
+    (check "dropping the cache frees everything" nil
+           (%pack-cache-drop (%pack-cache-put
+                              (%pack-cache-put '() "a/" :a nil) "b/" :b nil)
+                             #'free-fn))
+    ;; freed in cache order, most recently used first
+    (check "... both packs" '(:b :a) (reverse freed))))
+
 ;; A world is a directory: the campaign.lisp NEXT TO the map file is
 ;; the one that loads — a designer's own world brings its own classes,
 ;; monsters and items, never the demo's.
@@ -3221,6 +3313,147 @@ messages so far (oldest first)."
                        :if-exists :supersede)
       (write-sequence (subseq bytes 0 (- (length bytes) 10)) s))
     (check-error "read-ilbm rejects a truncated BODY"
+      (read-ilbm "tests/tmp-img.iff"))))
+
+;;; The plane fold decodes a scanline's planes together, writes each pen
+;;; once, and skips groups of eight pixels whose plane bytes are all
+;;; zero.  These pin the paths that skip touches: a pen carried only by
+;;; a high plane (the low planes' bytes for that group are zero, so the
+;;; group must still be folded), a pen in the final partial group of a
+;;; width that is not a multiple of eight, and an image that is almost
+;;; entirely pen 0.
+(dolist (compression '(1 0))
+  (let ((img (make-image 20 3 3))          ; 20 wide: 3 groups, last is 4 px
+        (path "tests/tmp-img.iff"))
+    (setf (pixel-ref img 0 0) 4            ; plane 2 only, planes 0/1 zero
+          (pixel-ref img 8 1) 1            ; plane 0 only, second group
+          (pixel-ref img 19 2) 7           ; last pixel of a partial group
+          (pixel-ref img 15 2) 6)          ; group boundary, planes 1+2
+    (write-ilbm img path :compression compression)
+    (let ((back (read-ilbm path)))
+      (check-true (format nil "sparse image round trips exactly (cmp ~D)"
+                          compression)
+                  (equalp (image-pixels img) (image-pixels back)))
+      (check (format nil "high-plane-only pen survives the zero-group skip ~
+(cmp ~D)" compression)
+             4 (pixel-ref back 0 0))
+      (check (format nil "last pixel of a partial group decodes (cmp ~D)"
+                     compression)
+             7 (pixel-ref back 19 2))
+      (check (format nil "untouched pens stay 0 (cmp ~D)" compression)
+             0 (pixel-ref back 7 0)))))
+
+;;; The planar reader is the same BODY decoded without folding to
+;;; pens: READ-ILBM-PLANAR keeps the bitplane rows so the Amiga can
+;;; poke them straight into a BitMap.  It has to agree with READ-ILBM
+;;; exactly — that equivalence is the only thing making the fast path
+;;; safe — so every pen is cross-checked here, on real pack art and on
+;;; synthetic images whose widths straddle the row padding.
+(flet ((planar-pen (img x y)
+         ;; the pen at (X,Y), reassembled from the plane bits
+         (let ((row-bytes (planar-image-row-bytes img))
+               (pen 0))
+           (dotimes (p (planar-image-depth img) pen)
+             (let ((byte (aref (planar-image-plane img p)
+                               (+ (* y row-bytes) (ash x -3)))))
+               (when (logbitp (- 7 (logand x 7)) byte)
+                 (setf pen (logior pen (ash 1 p)))))))))
+  (dolist (compression '(1 0))
+    (dolist (dims '((7 5 2) (16 4 3) (17 3 4) (20 3 3) (24 2 1) (33 2 8)))
+      (destructuring-bind (w h depth) dims
+        (let ((img (make-image w h depth))
+              (path "tests/tmp-img.iff"))
+          ;; a pattern with both dense and empty regions
+          (dotimes (y h)
+            (dotimes (x w)
+              (setf (pixel-ref img x y)
+                    (if (zerop (mod (+ x y) 3))
+                        0
+                        (mod (+ x (* 3 y)) (ash 1 depth))))))
+          (write-ilbm img path :compression compression)
+          (let ((chunky (read-ilbm path))
+                (planar (read-ilbm-planar path))
+                (bad '()))
+            (check (format nil "planar geometry ~Dx~Dx~D cmp ~D"
+                           w h depth compression)
+                   (list w h depth)
+                   (list (planar-image-width planar)
+                         (planar-image-height planar)
+                         (planar-image-depth planar)))
+            (dotimes (y h)
+              (dotimes (x w)
+                (unless (= (pixel-ref chunky x y) (planar-pen planar x y))
+                  (push (list x y) bad))))
+            (check (format nil "planar pens match chunky ~Dx~Dx~D cmp ~D"
+                           w h depth compression)
+                   nil bad))))))
+  ;; and on the shipped pack art, where the real widths and run
+  ;; patterns live
+  (dolist (file '("front-0.iff" "side-0-l.iff" "flank-3-r.iff"
+                  "ceiling.iff" "floor.iff"))
+    (let* ((path (engine-path (concatenate 'string "data/gfx/" file)))
+           (chunky (read-ilbm path))
+           (planar (read-ilbm-planar path))
+           (bad 0))
+      (dotimes (y (image-height chunky))
+        (dotimes (x (image-width chunky))
+          (unless (= (pixel-ref chunky x y) (planar-pen planar x y))
+            (incf bad))))
+      (check (format nil "planar ~A matches chunky pen for pen" file)
+             0 bad)
+      (check (format nil "planar ~A carries the palette" file)
+             (aref (image-palette chunky) 1)
+             (aref (planar-image-palette planar) 1)))))
+
+;; The mask shortcut: for the usual pen-0 key the cookie-cut mask is
+;; just the OR of the planes, which must equal what MASK-BYTES derives
+;; from chunky pens.
+(dolist (file '("front-0.iff" "side-0-l.iff" "ceiling.iff"))
+  (let* ((path (engine-path (concatenate 'string "data/gfx/" file)))
+         (chunky (read-ilbm path))
+         (planar (read-ilbm-planar path)))
+    (multiple-value-bind (want want-bpr)
+        (mask-bytes (image-width chunky) (image-height chunky)
+                    (image-pixels chunky))
+      (multiple-value-bind (got got-bpr) (planar-mask-bytes planar)
+        (check (format nil "planar mask row width matches for ~A" file)
+               want-bpr got-bpr)
+        (check-true (format nil "planar mask matches MASK-BYTES for ~A" file)
+                    (equalp want got))))
+    (check (format nil "planar transparency agrees for ~A" file)
+           (not (null (image-transparent-p chunky)))
+           (not (null (planar-image-transparent-p planar))))))
+
+;; A non-zero transparent key has no OR shortcut — say so rather than
+;; return a wrong mask.
+(let ((planar (read-ilbm-planar (engine-path "data/gfx/front-0.iff"))))
+  (check "planar mask declines a non-zero key" nil
+         (planar-mask-bytes planar 3)))
+
+;; A second BODY would decode against already-written pens, so it is
+;; rejected rather than blended: duplicate the BODY chunk by surgery.
+(let ((img (make-image 8 2 2)))
+  (setf (pixel-ref img 1 1) 3)
+  (write-ilbm img "tests/tmp-img.iff")
+  (let* ((bytes (with-open-file (s "tests/tmp-img.iff"
+                                   :element-type '(unsigned-byte 8))
+                  (let ((v (make-array (file-length s)
+                                       :element-type '(unsigned-byte 8))))
+                    (read-sequence v s)
+                    v)))
+         (body (search (map 'vector #'char-code "BODY") bytes))
+         (doubled (concatenate '(vector (unsigned-byte 8))
+                               bytes (subseq bytes body))))
+    (let ((len (- (length doubled) 8)))
+      (setf (aref doubled 4) (ldb (byte 8 24) len)
+            (aref doubled 5) (ldb (byte 8 16) len)
+            (aref doubled 6) (ldb (byte 8 8) len)
+            (aref doubled 7) (ldb (byte 8 0) len)))
+    (with-open-file (s "tests/tmp-img.iff" :direction :output
+                       :element-type '(unsigned-byte 8)
+                       :if-exists :supersede)
+      (write-sequence doubled s))
+    (check-error "read-ilbm rejects a second BODY chunk"
       (read-ilbm "tests/tmp-img.iff"))))
 (delete-file "tests/tmp-img.iff")
 
@@ -4261,7 +4494,56 @@ full asset-size viewport" pname)
 flat floor color" pname)
                        +pen-mid+
                        (amiga.gfx:read-pixel rp (+ (ui-layout-bx l) sx)
-                                             (+ (ui-layout-by l) sy)))))
+                                             (+ (ui-layout-by l) sy))))
+              ;; The planar fast path (*WALL-LOAD-PLANAR*, the default)
+              ;; pokes ILBM plane rows into a scratch BitMap and lets
+              ;; the blitter move them into the piece bitmap, never
+              ;; going through chunky pens.  It has to land the SAME
+              ;; pens on screen as WriteChunkyPixels would — so blit a
+              ;; whole opaque piece to a clear patch and read it back
+              ;; against the pens READ-ILBM declares for that file.
+              ;; (Sampled every 7th pixel: READ-PIXEL is a library call
+              ;; per pixel, and a stride catches plane-order, row-pad
+              ;; and stride mistakes alike.)
+              (let* ((key '(:front 0))
+                     (file (concatenate 'string *gfx-dir*
+                                        (wall-piece-file key)))
+                     (want (read-ilbm file))
+                     (bm (car (gethash key walls)))
+                     (pw (image-width want))
+                     (ph (image-height want))
+                     (bad '()))
+                (amiga.gfx:set-a-pen rp 0)
+                (amiga.gfx:rect-fill rp 0 0 (1- pw) (1- ph))
+                (amiga.gfx:blt-bitmap-rastport bm 0 0 rp 0 0 pw ph)
+                (dotimes (y ph)
+                  (dotimes (x pw)
+                    (when (and (zerop (mod (+ x (* 3 y)) 7))
+                               (< (length bad) 8)) ; keep the report short
+                      (let ((got (amiga.gfx:read-pixel rp x y))
+                            (expect (pixel-ref want x y)))
+                        (unless (= got expect)
+                          (push (list x y :got got :want expect) bad))))))
+                (check (format nil "~A: planar-loaded piece blits the ~
+pens its ILBM declares" pname)
+                       nil bad)
+                (amiga.gfx:set-a-pen rp 1))
+              ;; ... and the two loaders agree piece for piece: same
+              ;; bitmap contents, same mask presence.  A pack loaded
+              ;; the slow way is the reference.
+              (let ((chunky-walls (let ((*wall-load-planar* nil))
+                                    (%load-wall-assets rp nil)))
+                    (mismatched '()))
+                (maphash
+                 (lambda (key entry)
+                   (let ((other (gethash key chunky-walls)))
+                     (unless (eq (not (cdr entry)) (not (cdr other)))
+                       (push (list key :mask) mismatched))))
+                 walls)
+                (check (format nil "~A: both loaders agree on which ~
+pieces need a mask" pname)
+                       nil mismatched)
+                (%free-wall-assets chunky-walls)))
             (%free-wall-assets walls)))))))))))
 
 ;; *autoplay* drives a full unattended PLAY-AMIGA session: scripted keys
