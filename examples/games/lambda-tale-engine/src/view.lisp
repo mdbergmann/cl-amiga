@@ -267,6 +267,92 @@ split at the horizon (the vertical center of the innermost plane)."
 the game directory.  Defaults to the active display profile's pack;
 PLAY-AMIGA's :GFX-DIR argument and WITH-DISPLAY-PROFILE rebind it.")
 
+(defparameter *gfx-cache-packs* :auto
+  "How many *inactive* tile packs the Amiga front end keeps loaded.
+
+Loading a pack decodes a directory of ILBMs into offscreen bitmaps —
+seconds on a 68020 — so travelling between zones with different packs
+\(the town and its cellar, say) pays for the swap every time.  Caching
+trades memory for that time: a lores pack is roughly 40K of bitmaps
+plus 8K of chip-RAM masks.
+
+  0      never cache — reload on every swap (the smallest footprint)
+  N      keep up to N inactive packs, least-recently-used evicted first
+  :auto  keep one, but drop the cache whenever free memory falls below
+         *GFX-CACHE-MIN-FREE* (the default: fast on a big machine,
+         self-limiting on a small one)
+
+Bound per session, so a game can set it in its campaign.")
+
+(defparameter *gfx-cache-min-free* (* 1024 1024)
+  "Free-memory floor for (SETF *GFX-CACHE-PACKS* :AUTO), in bytes.
+After a pack load the front end asks exec for free RAM; below this it
+frees the cached packs rather than hold them.  Measured with
+AvailMem(MEMF_ANY), which does not see an RTG board's own memory — on
+an RTG machine the piece bitmaps may live there and this floor is
+merely conservative.")
+
+;;; The cache itself: a list of INACTIVE packs, most recently used
+;;; first, each entry (DIR WALLS . PALETTE).  The active pack is not in
+;;; it — the front end holds that separately.  WALLS is opaque here
+;;; (on the Amiga it is the piece-bitmap hash); freeing is the caller's
+;;; job, passed in as FREE-FN, which keeps this policy platform-free
+;;; and testable on the host.
+
+(defun %pack-cache-limit ()
+  "How many inactive packs *GFX-CACHE-PACKS* allows us to hold."
+  (let ((v *gfx-cache-packs*))
+    (cond ((eq v :auto) 1)
+          ((and (integerp v) (>= v 0)) v)
+          (t (error "*GFX-CACHE-PACKS* is ~S: expected a non-negative ~
+integer or :AUTO" v)))))
+
+(defun %pack-cache-take (cache dir)
+  "Look DIR up in CACHE.  Returns (VALUES WALLS PALETTE REST) with the
+entry removed, or (VALUES NIL NIL CACHE) on a miss."
+  (let ((hit (assoc dir cache :test #'equal)))
+    (if hit
+        (values (second hit) (cddr hit) (remove hit cache))
+        (values nil nil cache))))
+
+(defun %pack-cache-put (cache dir walls palette)
+  "CACHE with DIR's pack at the front (most recently used).  A pack
+that failed to load (WALLS is NIL — the wireframe fallback) is not
+worth caching: re-trying the load is what surfaces a fixed pack.  DIR
+replaces any older entry for the same directory rather than doubling
+it — two entries would leak the older one's bitmaps."
+  (if walls
+      (cons (list* dir walls palette)
+            (remove dir cache :key #'first :test #'equal))
+      cache))
+
+(defun %pack-cache-drop (cache free-fn)
+  "Call FREE-FN on every pack in CACHE; returns NIL."
+  (dolist (entry cache nil)
+    (funcall free-fn (second entry))))
+
+(defun %pack-cache-trim (cache free-fn &optional free-memory)
+  "Drop packs beyond the *GFX-CACHE-PACKS* budget, least-recently-used
+first, freeing each with FREE-FN.  FREE-MEMORY is the machine's free
+RAM in bytes (or NIL when it could not be measured): under :AUTO the
+whole cache goes when that has fallen below *GFX-CACHE-MIN-FREE*, so a
+small machine reloads instead of running itself out of memory."
+  (let* ((limit (%pack-cache-limit))
+         (limit (if (and free-memory (< free-memory *gfx-cache-min-free*))
+                    (progn
+                      (dlog "pack cache: ~D bytes free is under the ~D ~
+floor — dropping the cache" free-memory *gfx-cache-min-free*)
+                      0)
+                    limit)))
+    (if (<= (length cache) limit)
+        cache
+        (let ((keep (subseq cache 0 limit))
+              (drop (nthcdr limit cache)))
+          (dolist (entry drop)
+            (dlog "pack cache: evicting ~A" (first entry)))
+          (%pack-cache-drop drop free-fn)
+          keep))))
+
 (defun print-tile-manifest (&optional (stream *standard-output*))
   "Print the tile-pack contract: every asset file a pack directory may
 hold, with its exact pixel size for the canonical *FP-VIEW-WIDTH* x

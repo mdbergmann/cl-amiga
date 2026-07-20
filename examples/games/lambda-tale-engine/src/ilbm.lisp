@@ -63,12 +63,21 @@ end copies the bytes into a chip-RAM plane."
          (out (make-array (* bpr height)
                           :element-type '(unsigned-byte 8)
                           :initial-element 0)))
+    ;; Built a byte at a time — eight pixels are accumulated in a
+    ;; register and stored once, rather than read-modify-writing OUT
+    ;; per pixel.  Same reasoning as %PARSE-BODY: this runs over every
+    ;; pixel of every masked piece in a pack.
     (dotimes (y height)
-      (dotimes (x width)
-        (unless (= (aref pixels (+ (* y width) x)) transparent)
-          (let ((byte (+ (* y bpr) (ash x -3)))
-                (bit (- 7 (logand x 7))))
-            (setf (aref out byte) (logior (aref out byte) (ash 1 bit)))))))
+      (let ((src (* y width))
+            (dst (* y bpr)))
+        (dotimes (bx (ceiling width 8))
+          (let ((x0 (ash bx 3))
+                (acc 0))
+            (dotimes (k (min 8 (- width x0)))
+              (unless (= (aref pixels (+ src x0 k)) transparent)
+                (setf acc (logior acc (ash 1 (- 7 k))))))
+            (unless (zerop acc)
+              (setf (aref out (+ dst bx)) acc))))))
     (values out bpr)))
 
 ;;; ---------------------------------------------------------------------
@@ -93,12 +102,13 @@ end copies the bytes into a chip-RAM plane."
 ;;; ---------------------------------------------------------------------
 ;;; ByteRun1 (cmpByteRun1) — ILBM.doc appendix C
 
-(defun %unpack-byte-run1 (src pos end dst dst-len file)
+(defun %unpack-byte-run1 (src pos end dst dst-len file &optional (dst-start 0))
   "Decode ByteRun1 data from SRC[POS..END) until DST-LEN bytes are
-produced; returns the new source position.  Signals on truncated or
-overlong data — a corrupt BODY must not silently misalign every
-following row."
-  (let ((out 0))
+produced, writing them to DST from DST-START; returns the new source
+position.  Signals on truncated or overlong data — a corrupt BODY must
+not silently misalign every following row."
+  (let ((out dst-start)
+        (dst-len (+ dst-start dst-len)))
     (loop while (< out dst-len)
           do (when (>= pos end)
                (error "ILBM ~A: truncated ByteRun1 data in BODY" file))
@@ -161,33 +171,179 @@ Repeat runs of 3+ are encoded, everything else goes into literal runs
 ;;; ---------------------------------------------------------------------
 ;;; Reader
 
+(defmacro %spread-plane-byte (byte bit scratch)
+  "OR BIT into SCRATCH[0..7] wherever BYTE has a set bit, MSB first.
+Unrolled: the eight bit positions are constants, so the fold costs no
+shift/mask arithmetic per pixel.  BYTE and BIT are evaluated once."
+  (let ((b (gensym "BYTE")) (m (gensym "BIT")))
+    `(let ((,b ,byte) (,m ,bit))
+       ,@(loop for k below 8
+               collect `(when (logbitp ,(- 7 k) ,b)
+                          (setf (aref ,scratch ,k)
+                                (logior (aref ,scratch ,k) ,m)))))))
+
 (defun %parse-body (image bytes pos len compression masking file)
-  "Decode a BODY chunk at POS/LEN into IMAGE's chunky pixel vector."
+  "Decode a BODY chunk at POS/LEN into IMAGE's chunky pixel vector.
+
+The BODY is planar and interleaved per scanline: all PLANES rows for y
+come before y+1's.  This exploits that — a scanline's plane rows are
+unpacked into ROWS, then folded to chunky pens in a single pass over
+groups of eight pixels, which
+
+  - writes each pixel once instead of read-modify-writing it once per
+    plane, and
+  - skips a group outright when every plane's byte for it is zero.
+
+Both matter at 14MHz: the fold is the whole cost of loading a tile
+pack, and over half the plane bytes in the game's packs are zero (all
+background), so the skip alone removes most of the work."
   (let* ((w (image-width image))
          (h (image-height image))
          (depth (image-depth image))
          (row-bytes (%row-bytes w))
          (planes (+ depth (if (= masking 1) 1 0)))  ; mskHasMask interleaves
-         (row (make-array row-bytes :element-type '(unsigned-byte 8)))
+         (rows (let ((v (make-array planes)))
+                 (dotimes (p planes v)
+                   (setf (svref v p)
+                         (make-array row-bytes
+                                     :element-type '(unsigned-byte 8))))))
+         (scratch (make-array 8 :element-type '(unsigned-byte 8)))
+         ;; plane bytes holding real pixels; the row padding beyond W
+         ;; is decoded (it is in the stream) but never folded
+         (fold-bytes (ceiling w 8))
          (end (+ pos len))
          (pixels (image-pixels image)))
     (dotimes (y h)
+      ;; the scanline: PLANES packed rows, in plane order
       (dotimes (p planes)
-        (ecase compression
-          (0 (when (> (+ pos row-bytes) end)
-               (error "ILBM ~A: BODY too short (row ~D plane ~D)" file y p))
-             (replace row bytes :start2 pos :end2 (+ pos row-bytes))
-             (incf pos row-bytes))
-          (1 (setf pos (%unpack-byte-run1 bytes pos end row row-bytes file))))
-        ;; fold the plane row into the chunky pixels (mask plane: skip)
-        (when (< p depth)
-          (let ((bit (ash 1 p))
-                (base (* y w)))
-            (dotimes (x w)
-              (when (logbitp (- 7 (mod x 8)) (aref row (ash x -3)))
-                (setf (aref pixels (+ base x))
-                      (logior (aref pixels (+ base x)) bit))))))))
+        (let ((row (svref rows p)))
+          (ecase compression
+            (0 (when (> (+ pos row-bytes) end)
+                 (error "ILBM ~A: BODY too short (row ~D plane ~D)" file y p))
+               (replace row bytes :start2 pos :end2 (+ pos row-bytes))
+               (incf pos row-bytes))
+            (1 (setf pos (%unpack-byte-run1 bytes pos end row row-bytes
+                                            file))))))
+      ;; fold the scanline's planes into pens, eight pixels at a time
+      ;; (mask plane: decoded above, never folded)
+      (let ((base (* y w)))
+        (dotimes (bx fold-bytes)
+          (let ((any nil)
+                (bit 1))
+            (dotimes (p depth)
+              (let ((byte (aref (svref rows p) bx)))
+                (unless (zerop byte)
+                  (unless any            ; first plane to touch this group
+                    (fill scratch 0)
+                    (setf any t))
+                  (%spread-plane-byte byte bit scratch)))
+              (setf bit (ash bit 1)))
+            ;; all planes zero: the pens are already 0 from MAKE-IMAGE
+            (when any
+              (let* ((x0 (ash bx 3))
+                     (n (min 8 (- w x0))))
+                (dotimes (k n)
+                  (setf (aref pixels (+ base x0 k))
+                        (aref scratch k)))))))))
     image))
+
+;;; ---------------------------------------------------------------------
+;;; Planar decoding: the BODY's bitplane rows, unfolded.
+;;;
+;;; An ILBM plane row and an Amiga BitMap plane row have the same
+;;; layout — MSB-first, padded to a 16-pixel word — so a piece can go
+;;; to the display without ever becoming chunky: unpack each plane row
+;;; into the plane buffer, poke the buffers into a BitMap's planes,
+;;; and let the blitter do the rest.  That skips the per-pixel fold in
+;;; %PARSE-BODY entirely, which is the whole cost of loading a pack on
+;;; a 68020.  READ-ILBM (chunky) remains the general reader: the host
+;;; renderer, the pointer sprites and the asset generator all work in
+;;; pens.  See %LOAD-WALL-ASSETS for the Amiga path.
+
+(defstruct (planar-image (:constructor %make-planar-image))
+  (width 0)
+  (height 0)
+  (depth 0)
+  palette                ; vector of (r g b) lists, as in IMAGE
+  planes                 ; simple-vector of DEPTH (unsigned-byte 8) vectors,
+                         ; each ROW-BYTES * HEIGHT, row-major
+  (row-bytes 0))
+
+(defun planar-image-plane (img p)
+  "Plane P's rows of IMG (ROW-BYTES per row, HEIGHT rows)."
+  (svref (planar-image-planes img) p))
+
+(defun %parse-body-planar (img bytes pos len compression masking file)
+  "Decode a BODY chunk at POS/LEN into IMG's plane buffers.  No
+per-pixel work: each unpacked plane row lands in its plane at the row
+offset, and the interleaved mask plane is decoded past."
+  (let* ((h (planar-image-height img))
+         (depth (planar-image-depth img))
+         (row-bytes (planar-image-row-bytes img))
+         (planes (+ depth (if (= masking 1) 1 0)))
+         (skip (make-array row-bytes :element-type '(unsigned-byte 8)))
+         (end (+ pos len)))
+    (dotimes (y h img)
+      (dotimes (p planes)
+        (let* ((real (< p depth))
+               (dst (if real (planar-image-plane img p) skip))
+               (start (if real (* y row-bytes) 0)))
+          (ecase compression
+            (0 (when (> (+ pos row-bytes) end)
+                 (error "ILBM ~A: BODY too short (row ~D plane ~D)" file y p))
+               (replace dst bytes :start1 start :end1 (+ start row-bytes)
+                                  :start2 pos :end2 (+ pos row-bytes))
+               (incf pos row-bytes))
+            (1 (setf pos (%unpack-byte-run1 bytes pos end dst row-bytes
+                                            file start)))))))))
+
+(defun planar-mask-bytes (img &optional (transparent 0))
+  "A cookie-cut mask for IMG: one bitplane, the same row layout as its
+planes, with a 1 bit wherever the pen is not TRANSPARENT.  For the
+usual key (pen 0) that is just the bitwise OR of every plane — a pen
+is non-zero exactly when some plane's bit is set — so the mask costs
+one pass over the plane bytes instead of one per pixel.  Returns
+\(VALUES byte-vector bytes-per-row), or NIL when TRANSPARENT is not
+pen 0 (no shortcut then; the caller falls back to MASK-BYTES)."
+  (when (zerop transparent)
+    (let* ((row-bytes (planar-image-row-bytes img))
+           (n (* row-bytes (planar-image-height img)))
+           (out (make-array n :element-type '(unsigned-byte 8)
+                              :initial-element 0)))
+      (dotimes (p (planar-image-depth img))
+        (let ((plane (planar-image-plane img p)))
+          (dotimes (i n)
+            (let ((b (aref plane i)))
+              (unless (zerop b)
+                (setf (aref out i) (logior (aref out i) b)))))))
+      (values out row-bytes))))
+
+(defun planar-image-transparent-p (img &optional (transparent 0))
+  "True when IMG uses the TRANSPARENT pen anywhere — i.e. it needs a
+cookie-cut mask rather than a plain opaque blit.  For pen 0 that means
+some pixel has no plane bit set at all."
+  (if (zerop transparent)
+      (multiple-value-bind (mask row-bytes) (planar-mask-bytes img)
+        (let ((w (planar-image-width img)))
+          ;; a fully-painted piece has every real pixel's bit set; look
+          ;; for a zero bit inside the width (the row padding past W is
+          ;; always zero and must not count)
+          (dotimes (y (planar-image-height img) nil)
+            (dotimes (bx (ceiling w 8))
+              (let* ((x0 (ash bx 3))
+                     (n (min 8 (- w x0)))
+                     ;; the bits that are real pixels in this byte
+                     (full (- #x100 (ash 1 (- 8 n)))))
+                (unless (= (logand (aref mask (+ (* y row-bytes) bx)) full)
+                           full)
+                  (return-from planar-image-transparent-p t)))))))
+      t))                               ; non-zero key: no shortcut
+
+(defun read-ilbm-planar (file)
+  "Read an IFF ILBM FILE as a PLANAR-IMAGE — bitplane rows, undecoded.
+Same validation as READ-ILBM."
+  (dlog-timed ("image ~A (planar)" file)
+    (%read-ilbm file t)))
 
 (defun read-ilbm (file)
   "Read an IFF ILBM FILE; returns an IMAGE (chunky pens + palette).
@@ -196,7 +352,7 @@ Every load leaves a timed line in the debug log when it is enabled."
   (dlog-timed ("image ~A" file)
     (%read-ilbm file)))
 
-(defun %read-ilbm (file)
+(defun %read-ilbm (file &optional planar)
   (let ((bytes
           (with-open-file (s file :element-type '(unsigned-byte 8))
             (let ((v (make-array (file-length s)
@@ -232,21 +388,50 @@ Every load leaves a timed line in the debug log when it is enabled."
                       (unless (member compression '(0 1))
                         (error "ILBM ~A: unsupported compression ~D (only cmpNone/cmpByteRun1)"
                                file compression))
-                      (setf image (make-image w h depth))))
+                      (setf image
+                            (if planar
+                                (%make-planar-image
+                                 :width w :height h :depth depth
+                                 :palette (make-array (ash 1 depth)
+                                                      :initial-element nil)
+                                 :row-bytes (%row-bytes w)
+                                 :planes
+                                 (let ((v (make-array depth)))
+                                   (dotimes (p depth v)
+                                     (setf (svref v p)
+                                           (make-array (* (%row-bytes w) h)
+                                                       :element-type
+                                                       '(unsigned-byte 8)
+                                                       :initial-element 0)))))
+                                (make-image w h depth)))))
                    ((string= id "CMAP")
                     (unless image
                       (error "ILBM ~A: CMAP before BMHD" file))
-                    (let ((n (min (floor len 3)
-                                  (length (image-palette image)))))
+                    (let* ((pal (if planar
+                                    (planar-image-palette image)
+                                    (image-palette image)))
+                           (n (min (floor len 3) (length pal))))
                       (dotimes (i n)
-                        (setf (aref (image-palette image) i)
+                        (setf (aref pal i)
                               (list (aref bytes (+ data (* i 3)))
                                     (aref bytes (+ data (* i 3) 1))
                                     (aref bytes (+ data (* i 3) 2)))))))
                    ((string= id "BODY")
                     (unless image
                       (error "ILBM ~A: BODY before BMHD" file))
-                    (%parse-body image bytes data len compression masking file)
+                    ;; One BODY per FORM ILBM.  %PARSE-BODY decodes into
+                    ;; freshly zeroed pens (it skips all-zero pixel
+                    ;; groups rather than clearing them), so a second
+                    ;; BODY would decode against dirty pixels; reject it
+                    ;; instead of quietly producing a blended image.
+                    (when body-seen
+                      (error "ILBM ~A: a second BODY chunk (only one is ~
+allowed in a FORM ILBM)" file))
+                    (if planar
+                        (%parse-body-planar image bytes data len
+                                            compression masking file)
+                        (%parse-body image bytes data len
+                                     compression masking file))
                     (setf body-seen t))
                    (t nil))                 ; skip unknown chunks
                  (setf pos (+ data len (mod len 2)))))  ; chunks pad to even
