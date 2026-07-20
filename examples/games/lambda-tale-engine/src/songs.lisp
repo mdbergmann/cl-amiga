@@ -122,23 +122,32 @@ displaces any song already playing, installs the song's timed effect
 
 (defstruct (sing-view (:constructor %make-sing-view))
   hero                ; the chosen singer, or NIL while picking
-  in-combat           ; T: committing fights one COMBAT-ROUND
+  in-combat           ; T: committing fights one COMBAT-ROUND;
+                      ; :ORDERS: committing returns the pick as a
+                      ; round action (the combat-orders flow)
   (top 0))            ; scroll offset into the song list
 
-(defun make-sing-view (&key in-combat)
-  (%make-sing-view :in-combat in-combat))
+(defun make-sing-view (&key in-combat hero)
+  "HERO presets the singer (the combat-orders flow asks for one hero's
+pick); NIL starts at the who-plays page."
+  (%make-sing-view :in-combat in-combat :hero hero))
 
 (defun %sing-commit (game view name)
-  "Resolve the completed pick: sing directly, or — in combat — fight
-one round where the singer sings and everyone else attacks."
+  "Resolve the completed pick: sing directly; in combat fight one
+round where the singer sings and everyone else attacks; in :ORDERS
+mode hand the pick back as (:ACTION (:SING NAME))."
   (let ((hero (sing-view-hero view)))
-    (if (sing-view-in-combat view)
-        (combat-round game
-                      (mapcar (lambda (h)
-                                (if (eq h hero) (list :sing name) :attack))
-                              (alive-heroes game)))
-        (sing-song game hero name))
-    :done))
+    (cond
+      ((eq (sing-view-in-combat view) :orders)
+       (list :action (list :sing name)))
+      ((sing-view-in-combat view)
+       (combat-round game
+                     (mapcar (lambda (h)
+                               (if (eq h hero) (list :sing name) :attack))
+                             (alive-heroes game)))
+       :done)
+      (t (sing-song game hero name)
+         :done))))
 
 (defun sing-lines (game view)
   "The current sing menu as a list of menu lines — the front-ends draw
@@ -175,8 +184,9 @@ key (see MENU-NUMBERED)."
 
 (defun sing-act (game view char)
   "Apply key CHAR to the sing menu.  Returns :DONE when a song
-resolved (the front-end drops the view), :CANCELLED on Esc at the top
-level, else NIL."
+resolved (the front-end drops the view) — in :ORDERS mode
+\(:ACTION (:SING ...)) instead — :CANCELLED on Esc at the top level,
+else NIL."
   (let ((hero (sing-view-hero view))
         (digit (digit-char-p char)))
     (cond

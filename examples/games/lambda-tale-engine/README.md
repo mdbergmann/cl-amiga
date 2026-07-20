@@ -446,9 +446,14 @@ Heroes have Bard's Tale-ish stats (str/dex/iq/con/lck, descending AC,
 hit dice per class) and level up on xp thresholds.  The roster holds
 up to 7 members (`join-party`): six regular heroes plus one guest slot
 for a summoned monster or story NPC.  Combat is
-round-based: the party declares actions (attack/defend, cast a spell,
-or try to flee), heroes strike first, then every surviving monster
-swings at a random front-rank hero.  All randomness goes through
+round-based, Bard's Tale style: every living hero picks an action in
+turn on the **round-orders page** (attack, defend, cast a spell, play
+a song; `Esc` undoes the previous pick, `f` flees party-level), then
+the round runs — heroes strike first, then every surviving monster
+swings at a random front-rank hero.  Each round opens with a
+`-- Round N --` line and its transcript plays out one message at a
+time; `+`/`-` set the pace (5 speeds, from a second per line to
+instant).  All randomness goes through
 `*rng*`, so the test suite scripts entire fights deterministically.
 
 ## Spells

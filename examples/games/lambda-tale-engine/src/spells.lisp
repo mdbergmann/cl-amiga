@@ -164,26 +164,37 @@ to strike); otherwise pays the sp, applies the effect, emits
 (defstruct (cast-view (:constructor %make-cast-view))
   hero                ; the chosen caster, or NIL while picking
   spell               ; the chosen spell name, or NIL while picking
-  in-combat           ; T: committing fights one COMBAT-ROUND
+  in-combat           ; T: committing fights one COMBAT-ROUND;
+                      ; :ORDERS: committing returns the pick as a
+                      ; round action (the combat-orders flow)
   (top 0))            ; scroll offset into the spell list
 
-(defun make-cast-view (&key in-combat)
-  (%make-cast-view :in-combat in-combat))
+(defun make-cast-view (&key in-combat hero)
+  "HERO presets the caster (the combat-orders flow asks for one hero's
+pick); NIL starts at the who-casts page."
+  (%make-cast-view :in-combat in-combat :hero hero))
 
 (defun %cast-commit (game view target)
-  "Resolve the completed pick: cast directly, or — in combat — fight
-one round where the caster casts and everyone else attacks."
+  "Resolve the completed pick: cast directly; in combat fight one
+round where the caster casts and everyone else attacks; in :ORDERS
+mode hand the pick back as (:ACTION (:CAST SPELL [TARGET]))."
   (let ((hero (cast-view-hero view))
         (spell (cast-view-spell view)))
-    (if (cast-view-in-combat view)
-        (combat-round game
-                      (mapcar (lambda (h)
-                                (if (eq h hero)
-                                    (list :cast spell target)
-                                    :attack))
-                              (alive-heroes game)))
-        (cast-spell game hero spell target))
-    :done))
+    (cond
+      ((eq (cast-view-in-combat view) :orders)
+       (list :action (if target
+                         (list :cast spell target)
+                         (list :cast spell))))
+      ((cast-view-in-combat view)
+       (combat-round game
+                     (mapcar (lambda (h)
+                               (if (eq h hero)
+                                   (list :cast spell target)
+                                   :attack))
+                             (alive-heroes game)))
+       :done)
+      (t (cast-spell game hero spell target)
+         :done))))
 
 (defun cast-lines (game view)
   "The current cast menu as a list of menu lines — the front-ends draw
@@ -238,8 +249,9 @@ key (see MENU-NUMBERED)."
 
 (defun cast-act (game view char)
   "Apply key CHAR to the cast menu.  Returns :DONE when a cast
-resolved (the front-end drops the view), :CANCELLED on Esc at the top
-level, else NIL."
+resolved (the front-end drops the view) — in :ORDERS mode
+\(:ACTION (:CAST ...)) instead — :CANCELLED on Esc at the top level,
+else NIL."
   (let ((hero (cast-view-hero view))
         (spell (cast-view-spell view))
         (digit (digit-char-p char)))

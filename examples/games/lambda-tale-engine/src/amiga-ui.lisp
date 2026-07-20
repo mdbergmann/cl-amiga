@@ -1579,7 +1579,10 @@ F toggles the debug full view there), H or ? the help page (the key
 reference — H/Esc leaves), 1-7 open a party member's character sheet
 (1-7 switch heroes there, Esc leaves), C cast a spell (pick
 caster/spell/target by number, Esc backs out), Q/Esc quit; in combat
-A attack, D defend, C cast, F flee; in a location (shop) 1-9 choose,
+every living hero picks an action in turn on the round-orders page —
+A attack, D defend, C cast, P play, Esc undo — F flees (party-level)
+and +/- set the transcript speed, each round message lingering
+COMBAT-MESSAGE-DELAY seconds; in a location (shop) 1-9 choose,
 S/B switch sell/buy, Esc back/leave — the location menu and the
 character sheet take over the message area, with the location's
 :image / the hero's portrait in the view column when the campaign
@@ -1615,6 +1618,10 @@ map/help/sheet pages close on a click outside a target — see
          (savem nil)        ; SAVE-MENU while the save/load picker is open
          (saves-prior-mode :play) ; mode to return to when the picker closes
          (zone-dirty nil)   ; party traveled: the chrome needs a repaint
+         (ordersv nil)      ; COMBAT-ORDERS while a round is picked
+         (pacing nil)       ; a combat round is running: pace messages
+         (pace-fn nil)      ; draws one paced transcript beat (set once
+                            ; the window exists)
          (over nil))
     (labels ((wire (g)
                (setf log (attach-message-log g))
@@ -1623,6 +1630,14 @@ map/help/sheet pages close on a click outside a target — see
                (setf usev nil)
                (setf singv nil)
                (setf savem nil)
+               (setf ordersv nil)
+               ;; pace the combat transcript: linger on each message a
+               ;; round says (the log handler above already caught it)
+               (on-event g :message
+                         (lambda (gm text) (declare (ignore gm text))
+                           (when (and pacing pace-fn
+                                      (plusp (combat-message-delay)))
+                             (funcall pace-fn))))
                (on-event g :enter-location
                          (lambda (gm loc) (declare (ignore gm loc))
                            (setf shopv (make-shop-view))))
@@ -1632,13 +1647,14 @@ map/help/sheet pages close on a click outside a target — see
                (on-event g :enter-zone
                          (lambda (gm map) (declare (ignore gm map))
                            (setf zone-dirty t)))
-               ;; the status line is gone, so the prompts it used to
-               ;; carry go to the log instead
                (on-event g :combat-start
                          (lambda (gm monsters)
                            (declare (ignore gm monsters))
-                           (log-message
-                            log "A atk  D def  C cast  P play  F flee")))
+                           (setf ordersv (make-combat-orders))))
+               (on-event g :combat-end
+                         (lambda (gm result)
+                           (declare (ignore gm result))
+                           (setf ordersv nil)))
                (on-event g :game-won
                          (lambda (gm) (declare (ignore gm))
                            (setf over :won)
@@ -1812,6 +1828,11 @@ map/help/sheet pages close on a click outside a target — see
                                    (singv
                                     (%amiga-draw-page
                                      rp (sing-lines game singv) l))
+                                   (ordersv
+                                    ;; combat: the round-orders page
+                                    (%amiga-draw-page
+                                     rp (combat-orders-lines game ordersv)
+                                     l))
                                    (t
                                     (let ((picture
                                             (cond ((eq mode :sheet)
@@ -1871,6 +1892,29 @@ map/help/sheet pages close on a click outside a target — see
                           (case (move-party game relative)
                             (:door (say game "You pass through a door."))
                             (:blocked (say game "You bump into a wall."))))
+                        (pace ()
+                          ;; one combat-transcript beat: show the fresh
+                          ;; log line and the roster (hp/sp move as the
+                          ;; round plays), then linger on it
+                          (%amiga-draw-log rp log l log-lines)
+                          (%amiga-party rp game l nil)
+                          (sleep (combat-message-delay)))
+                        (fight (thunk)
+                          ;; run one round (or a flee attempt) with the
+                          ;; paced transcript, then open fresh orders
+                          ;; when combat goes on
+                          (setf ordersv nil)
+                          (unwind-protect
+                              (progn (setf pacing t) (funcall thunk))
+                            (setf pacing nil))
+                          (if (game-combat game)
+                              (progn
+                                (setf ordersv (make-combat-orders))
+                                (redraw))
+                              ;; combat over: sweep the orders page
+                              ;; (its shadow overhangs the view) with
+                              ;; the chrome repaint
+                              (fresh-play)))
                         (open-cast (in-combat)
                           (if (some #'hero-caster-p (alive-heroes game))
                               (setf castv
@@ -2023,6 +2067,31 @@ map/help/sheet pages close on a click outside a target — see
                                   (singv
                                    ;; sing menu: same shape — see songs.lisp
                                    (sing-menu-act c))
+                                  (ordersv
+                                   ;; combat round orders: every hero
+                                   ;; picks in turn (see combat.lisp);
+                                   ;; Q still quits, everything else
+                                   ;; feeds the model
+                                   (if (eql lc #\q)
+                                       :quit
+                                       (let* ((key (if (eq c :esc)
+                                                       #\Escape
+                                                       c))
+                                              (r (when (characterp key)
+                                                   (combat-orders-act
+                                                    game ordersv key))))
+                                         (cond ((eq r :flee)
+                                                (fight
+                                                 (lambda ()
+                                                   (attempt-flee game))))
+                                               ((and (consp r)
+                                                     (eq (first r) :fight))
+                                                (fight
+                                                 (lambda ()
+                                                   (combat-round
+                                                    game (second r)))))
+                                               (t (redraw)))
+                                         nil)))
                                   ((game-location game)
                                    ;; inside a shop: the shared model
                                    ;; handles the keys (Esc backs out /
@@ -2049,18 +2118,10 @@ map/help/sheet pages close on a click outside a target — see
                                   ((or (eql lc #\q) (eql c :esc)) :quit)
                                   (over nil) ; game ended: only Q/Esc react
                                   ((game-combat game)
-                                   (case lc
-                                     (#\a (combat-round game) (redraw))
-                                     (#\d (combat-round game
-                                                        (mapcar
-                                                         (lambda (h)
-                                                           (declare (ignore h))
-                                                           :defend)
-                                                         (alive-heroes game)))
-                                          (redraw))
-                                     (#\c (open-cast t))
-                                     (#\p (open-sing t))
-                                     (#\f (attempt-flee game) (redraw)))
+                                   ;; combat without an orders page —
+                                   ;; a scripted start: open one
+                                   (setf ordersv (make-combat-orders))
+                                   (redraw)
                                    nil)
                                   ((eql c #\S) (open-saves :save) nil)
                                   ((eql c #\L) (open-saves :load) nil)
@@ -2092,6 +2153,7 @@ map/help/sheet pages close on a click outside a target — see
                        (ensure-walls)
                        (%chrome-bg rp win l)
                        (%chrome-frames rp game l)
+                       (setf pace-fn #'pace)
                        (redraw)
                        (amiga.intuition:event-loop win
                          (amiga.intuition:+idcmp-closewindow+ (msg)

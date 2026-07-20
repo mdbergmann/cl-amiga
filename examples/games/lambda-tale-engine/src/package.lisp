@@ -103,6 +103,13 @@
    #:monster-kind #:monster-hp #:monster-alive-p
    #:start-combat #:combat-round #:attempt-flee
    #:combat-monsters #:alive-monsters #:combat-groups #:combat-banner
+   #:combat-round-no
+   ;; combat round orders (every hero picks, then the round runs)
+   #:make-combat-orders #:combat-orders-hero #:combat-orders-chosen
+   #:combat-orders-lines #:combat-orders-act
+   ;; combat transcript speed (the +/- keys)
+   #:*combat-speed* #:+combat-speed-max+
+   #:combat-message-delay #:adjust-combat-speed
    ;; save games
    #:save-game #:load-game
    ;; named saves (the save/load slot menu)

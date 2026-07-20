@@ -1908,6 +1908,148 @@ messages so far (oldest first)."
            (combat-round g (list :attack '(:cast test-bolt)))))
   (check "the cast in the round paid sp" 4 (hero-sp mage)))
 
+;; Round structure: every round opens with its number.
+(let* ((m (parse-map *art* :name "test"))
+       (g (new-game m :party (list (%combat-hero))))
+       (msgs (watch-messages g)))
+  (start-combat g '(("test rat" 1)))
+  (with-rng (0 13) (combat-round g '(:defend)))
+  (check-true "round 1 header"
+              (find "-- Round 1 --" (funcall msgs) :test #'equal))
+  (check "the combat counts its rounds" 1
+         (combat-round-no (game-combat g)))
+  (with-rng (0 13) (combat-round g '(:defend)))
+  (check-true "round 2 header"
+              (find "-- Round 2 --" (funcall msgs) :test #'equal)))
+
+;; The round-orders model: every living hero picks in turn, the last
+;; pick hands the front-end the round's actions in party order.
+(let* ((m (parse-map *art* :name "test"))
+       (grunt (%combat-hero))
+       (mage (%combat-mage))
+       (g (new-game m :party (list grunt mage)))
+       (view (make-combat-orders)))
+  (start-combat g '(("test rat" 2)))
+  (check "orders ask the first hero" grunt (combat-orders-hero g view))
+  (check-true "orders page shows the coming round"
+              (find-if (lambda (s) (search "Round 1" s))
+                       (menu-texts (combat-orders-lines g view))))
+  (check-true "orders page lists the enemy group"
+              (find-if (lambda (s) (search "2 test rats" s))
+                       (menu-texts (combat-orders-lines g view))))
+  (check-true "orders page marks the hero at hand"
+              (find-if (lambda (s) (and (search "> Alva" s)
+                                        (search "?" s)))
+                       (menu-texts (combat-orders-lines g view))))
+  (check "the first pick advances" nil (combat-orders-act g view #\a))
+  (check "orders ask the second hero" mage (combat-orders-hero g view))
+  (check-true "a picked action shows on its row"
+              (find-if (lambda (s) (and (search "Alva" s)
+                                        (search "attack" s)))
+                       (menu-texts (combat-orders-lines g view))))
+  (check "esc undoes the previous pick" nil
+         (combat-orders-act g view #\Escape))
+  (check "back to the first hero" grunt (combat-orders-hero g view))
+  (combat-orders-act g view #\a)
+  (check "the last pick returns the fight"
+         '(:fight (:attack :defend))
+         (combat-orders-act g view #\d))
+  (check "no round ran while picking" 0
+         (combat-round-no (game-combat g))))
+
+;; C during orders opens the spell pick for the hero at hand; the pick
+;; lands as that hero's round action instead of fighting a round.
+(let* ((m (parse-map *art* :name "test"))
+       (grunt (%combat-hero))
+       (mage (%combat-mage))
+       (g (new-game m :party (list grunt mage)))
+       (view (make-combat-orders)))
+  (start-combat g '(("test rat" 2)))    ; 3 hp each
+  (combat-orders-act g view #\a)        ; the grunt attacks
+  (check "c opens the mage's spell pick" nil (combat-orders-act g view #\c))
+  (check-true "the pick page is the mage's cast menu"
+              (find-if (lambda (s) (search "Zzgo casts" s))
+                       (menu-texts (combat-orders-lines g view))))
+  ;; Esc backs out of the pick to the action keys, hero unchanged
+  (check "esc leaves the spell pick" nil
+         (combat-orders-act g view #\Escape))
+  (check "still asking the mage" mage (combat-orders-hero g view))
+  (combat-orders-act g view #\c)
+  (let ((r (combat-orders-act g view #\1)))     ; test-bolt, no target
+    (check "the spell pick completes the orders"
+           '(:fight (:attack (:cast test-bolt))) r)
+    (check "picking paid no sp yet" 6 (hero-sp mage))
+    (check "picking ran no round" 0 (combat-round-no (game-combat g)))
+    ;; the returned actions fight the round the mixed-action way
+    (check "the ordered round wins" :victory
+           (with-rng (10 2 2) (combat-round g (second r))))
+    (check "the ordered cast paid sp" 4 (hero-sp mage))))
+
+;; A heal pick during orders carries its chosen target along.
+(let* ((m (parse-map *art* :name "test"))
+       (grunt (%combat-hero))
+       (mage (%combat-mage))
+       (g (new-game m :party (list grunt mage)))
+       (view (make-combat-orders)))
+  (start-combat g '(("test rat" 1)))
+  (combat-orders-act g view #\a)
+  (combat-orders-act g view #\c)
+  (combat-orders-act g view #\2)        ; test-mend: heal, pick a target
+  (check "the heal pick completes with its target"
+         (list :fight (list :attack (list :cast 'test-mend grunt)))
+         (combat-orders-act g view #\1)))       ; on the grunt
+
+;; P during orders opens the song pick the same way.
+(let* ((m (parse-map *art* :name "test"))
+       (grunt (%combat-hero))
+       (bard (with-rng () (make-hero "Mel" :t-bard)))
+       (g (new-game m :party (list grunt bard)))
+       (view (make-combat-orders)))
+  (start-combat g '(("test rat" 1)))
+  (combat-orders-act g view #\a)
+  (check "p opens the bard's song pick" nil (combat-orders-act g view #\p))
+  (check "the song pick completes the orders"
+         '(:fight (:attack (:sing test-march)))
+         (combat-orders-act g view #\1))
+  (check "picking spent no tune" 1 (hero-tunes bard)))
+
+;; Refusals stay put; F flees party-level from any hero's turn.
+(let* ((m (parse-map *art* :name "test"))
+       (grunt (%combat-hero))
+       (g (new-game m :party (list grunt)))
+       (msgs (watch-messages g))
+       (view (make-combat-orders)))
+  (start-combat g '(("test rat" 1)))
+  (check "c on a non-caster stays put" nil (combat-orders-act g view #\c))
+  (check-true "and says who cannot cast"
+              (find "Alva cannot cast." (funcall msgs) :test #'equal))
+  (check "p on a non-singer stays put" nil (combat-orders-act g view #\p))
+  (check-true "and says who cannot play"
+              (find "Alva cannot play." (funcall msgs) :test #'equal))
+  (check "still asking the same hero" grunt (combat-orders-hero g view))
+  (check "f flees" :flee (combat-orders-act g view #\f)))
+
+;; Combat transcript speed: +/- during orders, clamped both ways; the
+;; front-ends linger COMBAT-MESSAGE-DELAY seconds on each message.
+(let* ((m (parse-map *art* :name "test"))
+       (g (new-game m :party (list (%combat-hero))))
+       (msgs (watch-messages g))
+       (view (make-combat-orders))
+       (*combat-speed* 3))
+  (start-combat g '(("test rat" 1)))
+  (check "speed 3 lingers half a second" 0.5 (combat-message-delay))
+  (check "+ is no round action" nil (combat-orders-act g view #\+))
+  (check "+ raised the speed" 4 *combat-speed*)
+  (check-true "and said so"
+              (find "Combat speed 4 of 5." (funcall msgs) :test #'equal))
+  (combat-orders-act g view #\+)
+  (combat-orders-act g view #\+)
+  (check "speed caps at the maximum" 5 *combat-speed*)
+  (check "the cap is instant" 0.0 (combat-message-delay))
+  (dotimes (i 6) (combat-orders-act g view #\-))
+  (check "speed floors at 1" 1 *combat-speed*)
+  (check "the floor lingers a second" 1.0 (combat-message-delay)))
+
 ;; SP regen: daylight, outdoors, out of combat — 1 sp per 4 minutes.
 (let* ((m (parse-map *corridor-art* :name "regen" :start-facing :east))
        (mage (%combat-mage))
