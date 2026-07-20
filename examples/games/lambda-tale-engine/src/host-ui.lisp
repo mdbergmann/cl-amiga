@@ -5,7 +5,11 @@
 ;;;       1-7=character sheet  S=save  L=load  q=quit
 ;;; In the map view: m/Esc=back  f=toggle omniscient (debug)  q=quit
 ;;; In the help page: h/Esc=back  q=quit
-;;; In combat: a=attack  d=defend  c=cast  f=flee
+;;; In combat every living hero picks an action in turn (the round
+;;; orders page): a=attack  d=defend  c=cast  p=play  Esc=undo the
+;;; previous pick; f=flee (party-level), +/-=transcript speed.  The
+;;; round runs once the last hero picked, each message lingering
+;;; COMBAT-MESSAGE-DELAY seconds.
 ;;; In a location (shop): 1-9=choose  s/b=sell/buy page  Esc=back/leave
 ;;; In the cast menu: 1-9=choose caster/spell/target  Esc=back/cancel
 ;;; Long menu lists (shop stock, packs, the character sheet) scroll
@@ -85,6 +89,8 @@ engine has no default world; the game names its starting map."
          (use nil)           ; USE-VIEW while the use menu is open
          (sing nil)          ; SING-VIEW while the sing menu is open
          (menu nil)          ; SAVE-MENU while the save/load picker is open
+         (orders nil)        ; COMBAT-ORDERS while a round is picked
+         (pacing nil)        ; a combat round is running: pace messages
          (over nil))
     (labels ((wire (g)
                (setf log (attach-message-log g))
@@ -93,6 +99,24 @@ engine has no default world; the game names its starting map."
                (setf use nil)
                (setf sing nil)
                (setf menu nil)
+               (setf orders nil)
+               ;; pace the combat transcript: linger on each message a
+               ;; round says (the log handler above already caught it)
+               (on-event g :message
+                         (lambda (game text)
+                           (declare (ignore game text))
+                           (when (and pacing
+                                      (plusp (combat-message-delay)))
+                             (draw)
+                             (sleep (combat-message-delay)))))
+               (on-event g :combat-start
+                         (lambda (game monsters)
+                           (declare (ignore game monsters))
+                           (setf orders (make-combat-orders))))
+               (on-event g :combat-end
+                         (lambda (game result)
+                           (declare (ignore game result))
+                           (setf orders nil)))
                (on-event g :enter-location
                          (lambda (game loc)
                            (declare (ignore game loc))
@@ -163,10 +187,13 @@ engine has no default world; the game names its starting map."
                (cond ((or menu cast use sing)
                       (when (game-combat game)
                         (format t "~A~%" (%combat-pane game))))
+                     ((and (game-combat game) orders)
+                      ;; the round orders page: every hero picks
+                      (dolist (line (combat-orders-lines game orders))
+                        (format t "~A~%" (menu-line-text line))))
                      ((game-combat game)
-                      (format t "~A~%[a]ttack [d]efend [c]ast [p]lay ~
-                                 [f]lee~%"
-                              (%combat-pane game)))
+                      ;; a round is playing out (paced transcript)
+                      (format t "~A~%" (%combat-pane game)))
                      ((game-location game))
                      (t
                       (format t "[w]=forward [s]=back [a]=left [d]=right ~
@@ -193,19 +220,29 @@ engine has no default world; the game names its starting map."
              (note (text)
                (when text
                  (log-message log text)))
+             (fight (thunk)
+               ;; run one round (or a flee attempt) with the paced
+               ;; transcript, then open fresh orders when it goes on
+               (setf orders nil)
+               (unwind-protect
+                   (progn (setf pacing t) (funcall thunk))
+                 (setf pacing nil))
+               (when (game-combat game)
+                 (setf orders (make-combat-orders))))
              (combat-act (c)
-               (case (char-downcase c)
-                 (#\a (combat-round game))
-                 (#\d (combat-round game
-                                    (mapcar (lambda (h)
-                                              (declare (ignore h))
-                                              :defend)
-                                            (alive-heroes game))))
-                 (#\c (open-cast t))
-                 (#\p (open-sing t))
-                 (#\f (attempt-flee game))
-                 (#\q :quit)
-                 (t nil)))
+               (if (member c '(#\q #\Q))
+                   :quit
+                   (let ((r (combat-orders-act
+                             game
+                             (or orders
+                                 (setf orders (make-combat-orders)))
+                             c)))
+                     (cond ((eq r :flee)
+                            (fight (lambda () (attempt-flee game))))
+                           ((and (consp r) (eq (first r) :fight))
+                            (fight (lambda ()
+                                     (combat-round game (second r))))))
+                     nil)))
              (open-cast (in-combat)
                (if (some #'hero-caster-p (alive-heroes game))
                    (setf cast (make-cast-view :in-combat in-combat))
