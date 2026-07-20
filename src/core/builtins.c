@@ -157,6 +157,11 @@ static CL_Obj bi_length(CL_Obj *args, int n)
         return CL_MAKE_FIXNUM(cl_bv_active_length(bv));
     }
 
+    if (CL_BYTE_VECTOR_P(obj)) {
+        CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(obj);
+        return CL_MAKE_FIXNUM(cl_bytevec_active_length(bv));
+    }
+
     while (!CL_NULL_P(obj)) {
         len++;
         obj = cl_cdr(obj);
@@ -277,6 +282,22 @@ static CL_Obj bi_reverse(CL_Obj *args, int n)
         bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
         for (i = 0; i < blen; i++)
             cl_bv_set_bit(rv, i, cl_bv_get_bit(bv, blen - 1 - i));
+        return result;
+    }
+    if (CL_BYTE_VECTOR_P(seq)) {
+        CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(seq);
+        uint32_t blen = cl_bytevec_active_length(bv);
+        int is_signed = bv->is_signed;
+        CL_Obj result;
+        CL_ByteVector *rv;
+        uint32_t i;
+        CL_GC_PROTECT(seq);   /* see the vector branch above */
+        result = cl_make_byte_vector(blen, is_signed);
+        CL_GC_UNPROTECT(1);
+        rv = (CL_ByteVector *)CL_OBJ_TO_PTR(result);
+        bv = (CL_ByteVector *)CL_OBJ_TO_PTR(seq);
+        for (i = 0; i < blen; i++)
+            rv->data[i] = bv->data[blen - 1 - i];
         return result;
     }
     cl_signal_type_error(seq, "SEQUENCE", "REVERSE");
@@ -560,7 +581,8 @@ static int cl_equalp_pred(CL_Obj a, CL_Obj b);
  * (vector bit), as required by CLHS (element type is ignored). */
 static int equalp_arr1d_p(CL_Obj x)
 {
-    return CL_ANY_STRING_P(x) || CL_VECTOR_P(x) || CL_BIT_VECTOR_P(x);
+    return CL_ANY_STRING_P(x) || CL_VECTOR_P(x) || CL_BIT_VECTOR_P(x) ||
+           CL_BYTE_VECTOR_P(x);
 }
 
 static int equalp_arr1d_rank(CL_Obj x)
@@ -577,6 +599,8 @@ static uint32_t equalp_arr1d_len(CL_Obj x)
 {
     if (CL_ANY_STRING_P(x)) return cl_string_length(x);
     if (CL_BIT_VECTOR_P(x)) return cl_bv_active_length((CL_BitVector *)CL_OBJ_TO_PTR(x));
+    if (CL_BYTE_VECTOR_P(x))
+        return cl_bytevec_active_length((CL_ByteVector *)CL_OBJ_TO_PTR(x));
     return cl_vector_active_length((CL_Vector *)CL_OBJ_TO_PTR(x));
 }
 
@@ -585,6 +609,8 @@ static CL_Obj equalp_arr1d_elt(CL_Obj x, uint32_t i)
     if (CL_ANY_STRING_P(x)) return CL_MAKE_CHAR(cl_string_char_at(x, i));
     if (CL_BIT_VECTOR_P(x))
         return CL_MAKE_FIXNUM(cl_bv_get_bit((CL_BitVector *)CL_OBJ_TO_PTR(x), i));
+    if (CL_BYTE_VECTOR_P(x))
+        return CL_MAKE_FIXNUM(cl_bytevec_get((CL_ByteVector *)CL_OBJ_TO_PTR(x), i));
     return cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(x))[i];
 }
 

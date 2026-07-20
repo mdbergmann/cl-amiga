@@ -603,6 +603,26 @@ generational machinery needs an MMU and is compiled out there.
 See `tests/test_gengc.c` and `tests/test_gengc_watch.c` for the behavioral
 contract, and `specs/generational-gc.md` for the design.
 
+### Packed byte vectors
+
+`(make-array n :element-type '(unsigned-byte 8))` — and any element type that
+upgrades to `(unsigned-byte 8)` or `(signed-byte 8)`, like `(mod 256)` or
+`(integer -5 5)` — builds a **packed byte vector**: 1 byte per element
+instead of a 4-byte tagged value, and the GC never scans its contents.  On an
+8MB Amiga that makes I/O buffers and graphics plane data 4× smaller and
+essentially free to collect.  `aref`/`elt`, fill pointers with
+`vector-push`/`vector-pop`, `adjust-array`, the common sequence functions
+(`fill`, `subseq`, `copy-seq`, `sort`, `replace`, `map`, `coerce`, …),
+`equalp` (including `:test 'equalp` hash-table keys), `typep`/`type-of`,
+and FASL literals all work; out-of-range stores signal a catchable
+`type-error`.  Arrays made with `:adjustable t` keep the growable
+general-vector representation (so `vector-push-extend`/`adjust-array` grow
+them in place, as e.g. drakma's HTTP buffers require) while still reporting
+the byte element type — only non-adjustable byte arrays are packed.
+
+See `tests/test_byte_vector.c` and the byte-vector section of
+`tests/amiga/run-tests.lisp` for the full behavioral contract.
+
 ## Building for AmigaOS
 
 ### Cross-compile (m68k-amigaos-gcc)

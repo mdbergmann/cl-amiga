@@ -274,6 +274,10 @@ static int32_t seq_length(CL_Obj seq)
         CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
         return (int32_t)cl_bv_active_length(bv);
     }
+    if (CL_BYTE_VECTOR_P(seq)) {
+        CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(seq);
+        return (int32_t)cl_bytevec_active_length(bv);
+    }
     /* Carry :datum/:expected-type so handler code (and the ANSI
      * check-type-error tests) can recover the offending object. */
     cl_signal_type_error(seq, "SEQUENCE", "sequence operation");
@@ -300,6 +304,11 @@ static CL_Obj seq_elt(CL_Obj seq, int32_t idx)
         if ((uint32_t)idx >= cl_bv_active_length(bv)) cl_error(CL_ERR_ARGS, "index out of bounds");
         return CL_MAKE_FIXNUM(cl_bv_get_bit(bv, (uint32_t)idx));
     }
+    if (CL_BYTE_VECTOR_P(seq)) {
+        CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(seq);
+        if ((uint32_t)idx >= cl_bytevec_active_length(bv)) cl_error(CL_ERR_ARGS, "index out of bounds");
+        return CL_MAKE_FIXNUM(cl_bytevec_get(bv, (uint32_t)idx));
+    }
     cl_signal_type_error(seq, "SEQUENCE", "sequence operation");
     return CL_NIL;
 }
@@ -311,7 +320,8 @@ static CL_Obj seq_elt(CL_Obj seq, int32_t idx)
 
 static int seq_is_array(CL_Obj seq)
 {
-    return CL_VECTOR_P(seq) || CL_ANY_STRING_P(seq) || CL_BIT_VECTOR_P(seq);
+    return CL_VECTOR_P(seq) || CL_ANY_STRING_P(seq) || CL_BIT_VECTOR_P(seq) ||
+           CL_BYTE_VECTOR_P(seq);
 }
 
 static CL_Obj arr_seq_get(CL_Obj seq, int32_t i)
@@ -320,6 +330,9 @@ static CL_Obj arr_seq_get(CL_Obj seq, int32_t i)
         return cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(seq))[i];
     if (CL_ANY_STRING_P(seq))
         return CL_MAKE_CHAR(cl_string_char_at(seq, (uint32_t)i));
+    if (CL_BYTE_VECTOR_P(seq))
+        return CL_MAKE_FIXNUM(
+            cl_bytevec_get((CL_ByteVector *)CL_OBJ_TO_PTR(seq), (uint32_t)i));
     /* bit vector */
     return CL_MAKE_FIXNUM(cl_bv_get_bit((CL_BitVector *)CL_OBJ_TO_PTR(seq), (uint32_t)i));
 }
@@ -338,6 +351,22 @@ static void arr_seq_set(CL_Obj seq, int32_t i, CL_Obj val)
         if (!CL_CHAR_P(val))
             cl_signal_type_error(val, "CHARACTER", "storing into a string");
         cl_string_set_char_at(seq, (uint32_t)i, CL_CHAR_VAL(val));
+        return;
+    }
+    if (CL_BYTE_VECTOR_P(seq)) {
+        /* Byte vector: element type is (UNSIGNED-BYTE 8) / (SIGNED-BYTE 8). */
+        CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(seq);
+        int32_t v = 0;
+        int bad = !CL_FIXNUM_P(val);
+        if (!bad) {
+            v = CL_FIXNUM_VAL(val);
+            bad = bv->is_signed ? (v < -128 || v > 127) : (v < 0 || v > 255);
+        }
+        if (bad)
+            cl_signal_type_error(val,
+                                 bv->is_signed ? "(SIGNED-BYTE 8)" : "(UNSIGNED-BYTE 8)",
+                                 "storing into a byte vector");
+        bv->data[i] = (uint8_t)v;
         return;
     }
     /* bit vector: element type is BIT (0 or 1). */
@@ -388,6 +417,9 @@ static CL_Obj make_seq_result_like(CL_Obj seq, uint32_t length)
         return cl_make_string(NULL, length);
     }
     if (CL_BIT_VECTOR_P(seq)) return cl_make_bit_vector(length);
+    if (CL_BYTE_VECTOR_P(seq))
+        return cl_make_byte_vector(length,
+            ((CL_ByteVector *)CL_OBJ_TO_PTR(seq))->is_signed);
     return cl_make_vector(length);
 }
 
@@ -418,6 +450,14 @@ static CL_Obj copy_array_seq(CL_Obj seq)
          * COPY-SEQ.23): a copy of a specialized numeric vector must report the
          * same ARRAY-ELEMENT-TYPE. */
         rv->elt_type = v->elt_type;
+    } else if (CL_BYTE_VECTOR_P(seq)) {
+        CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(seq);
+        uint32_t blen = cl_bytevec_active_length(bv);
+        CL_ByteVector *rv;
+        result = cl_make_byte_vector(blen, bv->is_signed);
+        rv = (CL_ByteVector *)CL_OBJ_TO_PTR(result);
+        bv = (CL_ByteVector *)CL_OBJ_TO_PTR(seq); /* refresh after alloc */
+        memcpy(rv->data, bv->data, blen);
     } else {
         /* bit vector */
         CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
@@ -2193,6 +2233,23 @@ static CL_Obj bi_fill(CL_Obj *args, int n)
             cl_error(CL_ERR_TYPE, "FILL: bit vector requires 0 or 1");
         for (i = start; i < end_val && i < bvlen; i++)
             cl_bv_set_bit(bv, (uint32_t)i, val);
+    } else if (CL_BYTE_VECTOR_P(seq)) {
+        /* Packed bytes: FILL is a single memset over the range. */
+        CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(seq);
+        int32_t bvlen = (int32_t)cl_bytevec_active_length(bv);
+        int32_t hi = (end_val < bvlen) ? end_val : bvlen;
+        int32_t v = 0;
+        int bad = !CL_FIXNUM_P(item);
+        if (!bad) {
+            v = CL_FIXNUM_VAL(item);
+            bad = bv->is_signed ? (v < -128 || v > 127) : (v < 0 || v > 255);
+        }
+        if (bad)
+            cl_signal_type_error(item,
+                                 bv->is_signed ? "(SIGNED-BYTE 8)" : "(UNSIGNED-BYTE 8)",
+                                 "FILL on a byte vector");
+        if (hi > start)
+            memset(bv->data + start, (uint8_t)v, (size_t)(hi - start));
     }
 
     return seq;
@@ -2332,6 +2389,13 @@ static CL_Obj bi_setf_elt(CL_Obj *args, int n)
         cl_bv_set_bit(bv, (uint32_t)idx, v);
         return val;
     }
+    if (CL_BYTE_VECTOR_P(seq)) {
+        CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(seq);
+        if ((uint32_t)idx >= cl_bytevec_active_length(bv))
+            cl_error(CL_ERR_TYPE, "(SETF ELT): index out of bounds for sequence");
+        arr_seq_set(seq, idx, val);  /* range-checks against signedness */
+        return val;
+    }
     cl_error(CL_ERR_TYPE, "(SETF ELT): not a sequence");
     return CL_NIL;
 }
@@ -2399,7 +2463,7 @@ static CL_Obj bi_map_into(CL_Obj *args, int n)
 
     result_is_list = (CL_CONS_P(result_seq) || CL_NULL_P(result_seq));
     result_is_array = (CL_VECTOR_P(result_seq) || CL_ANY_STRING_P(result_seq) ||
-                       CL_BIT_VECTOR_P(result_seq));
+                       CL_BIT_VECTOR_P(result_seq) || CL_BYTE_VECTOR_P(result_seq));
     if (!result_is_list && !result_is_array)
         cl_signal_type_error(result_seq, "SEQUENCE", "MAP-INTO");
 
@@ -2411,6 +2475,8 @@ static CL_Obj bi_map_into(CL_Obj *args, int n)
         result_cap = (int32_t)((CL_Vector *)CL_OBJ_TO_PTR(result_seq))->length;
     else if (CL_BIT_VECTOR_P(result_seq))
         result_cap = (int32_t)((CL_BitVector *)CL_OBJ_TO_PTR(result_seq))->length;
+    else if (CL_BYTE_VECTOR_P(result_seq))
+        result_cap = (int32_t)((CL_ByteVector *)CL_OBJ_TO_PTR(result_seq))->length;
     else
         result_cap = seq_length(result_seq);
 
@@ -2477,6 +2543,10 @@ map_into_done:
             rv->fill_pointer = (uint32_t)idx;
     } else if (CL_BIT_VECTOR_P(result_seq)) {
         CL_BitVector *rbv = (CL_BitVector *)CL_OBJ_TO_PTR(result_seq);
+        if (rbv->fill_pointer != CL_NO_FILL_POINTER)
+            rbv->fill_pointer = (uint32_t)idx;
+    } else if (CL_BYTE_VECTOR_P(result_seq)) {
+        CL_ByteVector *rbv = (CL_ByteVector *)CL_OBJ_TO_PTR(result_seq);
         if (rbv->fill_pointer != CL_NO_FILL_POINTER)
             rbv->fill_pointer = (uint32_t)idx;
     }

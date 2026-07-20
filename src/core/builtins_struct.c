@@ -946,6 +946,10 @@ static CL_Obj class_of_type_name(CL_Obj obj)
             return class_name_sym("RANDOM-STATE", 12);
         case TYPE_BIT_VECTOR:
             return class_name_sym("BIT-VECTOR", 10);
+        case TYPE_BYTE_VECTOR:
+            /* No standard class for specialized byte vectors — they are
+             * instances of the built-in VECTOR class for CLOS dispatch. */
+            return class_name_sym("VECTOR", 6);
         case TYPE_PATHNAME:
             return class_name_sym("PATHNAME", 8);
         default:

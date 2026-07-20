@@ -4522,6 +4522,73 @@ check_contains "format ~D big bignum under compaction"              "FMT-BIG:201
 check_contains "format ~:D big bignum under compaction"             "FMT-BIGC:267" "$out"
 check_contains "format padded ~D big bignum under compaction"       "FMT-BIGPAD:210" "$out"
 
+# --- Case: packed byte vectors ((unsigned-byte 8)/(signed-byte 8)) --------
+# Exercises every allocating byte-vector path with compaction forced at each
+# allocation: MAKE-ARRAY (:initial-element/:initial-contents — the seq_elt
+# reads must survive the cl_make_byte_vector move), SUBSEQ/COPY-SEQ/REVERSE
+# (source re-fetch after result alloc), COERCE both directions, TYPE-OF /
+# ARRAY-ELEMENT-TYPE (cons the (UNSIGNED-BYTE 8) spec), the #(...) printer,
+# EQUALP hash-table keys (content hash vs relocation), and a FASL round trip
+# of a byte-vector literal.
+cat > "$WORK/bytevec.lisp" <<'EOF'
+(let ((ok t))
+  (dotimes (i 20)
+    (let* ((v (make-array 32 :element-type '(unsigned-byte 8)
+                          :initial-contents
+                          (let (acc) (dotimes (j 32 (nreverse acc))
+                                       (push (mod (* j 7) 256) acc)))))
+           (c (copy-seq v))
+           (s (subseq v 8 24))
+           (r (reverse v)))
+      (unless (and (equalp v c)
+                   (= (aref s 0) (aref v 8))
+                   (= (aref r 0) (aref v 31))
+                   (equal (array-element-type s) '(unsigned-byte 8))
+                   (typep v (type-of v))
+                   (equal (coerce (coerce v 'list) 'list)
+                          (coerce v 'list))
+                   (equalp (coerce (coerce v 'list) '(vector (unsigned-byte 8))) v))
+        (setf ok nil))))
+  (let ((h (make-hash-table :test 'equalp))
+        (k1 (make-array 8 :element-type '(unsigned-byte 8) :initial-element 3))
+        (k2 (make-array 8 :element-type '(unsigned-byte 8) :initial-element 3)))
+    (setf (gethash k1 h) :hit)
+    (unless (eq :hit (gethash k2 h)) (setf ok nil)))
+  (let ((v (make-array 4 :element-type '(signed-byte 8)
+                       :initial-contents '(-128 -1 0 127))))
+    (unless (string= (prin1-to-string v) "#(-128 -1 0 127)") (setf ok nil))
+    (unless (eq :caught (handler-case (setf (aref v 0) 128)
+                          (error () :caught)))
+      (setf ok nil)))
+  (format t "BYTEVEC-STRESS:~a~%" (if ok "OK" "MISMATCH")))
+EOF
+out=$(run_stress "$WORK/bytevec.lisp")
+check_contains "packed byte vectors under compaction storm" \
+  "BYTEVEC-STRESS:OK" "$out"
+check_absent   "no byte-vector corruption diagnostics" \
+  "corrupted\|Guru\|SIGSEGV\|badmark\|use-after" "$out"
+
+cat > "$WORK/bytevec-fasl.lisp" <<'EOF'
+(defparameter *bv-lit*
+  #.(make-array 6 :element-type '(unsigned-byte 8)
+                :initial-contents '(0 1 2 253 254 255)))
+EOF
+cat > "$WORK/bytevec-fasl-driver.lisp" <<EOF
+(load "$WORK/bytevec-fasl.fasl")
+(if (and (typep *bv-lit* '(vector (unsigned-byte 8)))
+         (equal (coerce *bv-lit* 'list) '(0 1 2 253 254 255)))
+    (format t "BYTEVEC-FASL:OK~%")
+    (format t "BYTEVEC-FASL:MISMATCH~%"))
+EOF
+if compile_fasl "$WORK/bytevec-fasl.lisp" "$WORK/bytevec-fasl.fasl"; then
+    out=$(run_stress "$WORK/bytevec-fasl-driver.lisp")
+    check_contains "byte-vector FASL literal loads under compaction" \
+      "BYTEVEC-FASL:OK" "$out"
+else
+    total=$((total + 1)); failed=$((failed + 1))
+    echo "  FAIL  byte-vector FASL case: compile_fasl failed"
+fi
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

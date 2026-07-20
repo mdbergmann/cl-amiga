@@ -121,6 +121,8 @@ void *cl_alloc(uint8_t type, uint32_t size);
 #endif
 #define CL_MAX_VECTOR_ELTS \
     ((uint32_t)((CL_HDR_SIZE_MASK - sizeof(CL_Vector)) / sizeof(CL_Obj)))
+#define CL_MAX_BYTEVEC_BYTES \
+    ((uint32_t)(CL_HDR_SIZE_MASK - sizeof(CL_ByteVector)))
 #define CL_MAX_STRUCT_SLOTS \
     ((uint32_t)((CL_HDR_SIZE_MASK - sizeof(CL_Struct)) / sizeof(CL_Obj)))
 #define CL_MAX_BIGNUM_LIMBS \
@@ -158,6 +160,7 @@ CL_Obj cl_make_single_float(float value);
 CL_Obj cl_make_double_float(double value);
 CL_Obj cl_make_random_state(uint32_t seed);
 CL_Obj cl_make_bit_vector(uint32_t nbits);
+CL_Obj cl_make_byte_vector(uint32_t length, int is_signed);
 CL_Obj cl_make_pathname(CL_Obj host, CL_Obj device, CL_Obj directory,
                         CL_Obj name, CL_Obj type, CL_Obj version);
 CL_Obj cl_make_cell(CL_Obj value);

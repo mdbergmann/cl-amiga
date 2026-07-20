@@ -189,7 +189,8 @@ enum CL_ObjType {
     TYPE_LOCK,
     TYPE_CONDVAR,
     TYPE_FOREIGN_POINTER,
-    TYPE_RESTART
+    TYPE_RESTART,
+    TYPE_BYTE_VECTOR
 #ifdef CL_WIDE_STRINGS
     , TYPE_WIDE_STRING
 #endif
@@ -397,6 +398,13 @@ typedef struct {
 #define CL_VEC_ELT_FIXNUM         1
 #define CL_VEC_ELT_SINGLE_FLOAT   2
 #define CL_VEC_ELT_DOUBLE_FLOAT   3
+/* Annotation codes for ADJUSTABLE (unsigned-byte 8)/(signed-byte 8) arrays.
+ * Non-adjustable byte arrays use the packed TYPE_BYTE_VECTOR representation;
+ * adjustable ones must grow in place via the displacement machinery, which
+ * only general CL_Vector storage supports — they store tagged elements but
+ * keep reporting the byte element type through these codes. */
+#define CL_VEC_ELT_U8             4
+#define CL_VEC_ELT_S8             5
 
 typedef struct {
     CL_Header hdr;
@@ -666,6 +674,36 @@ typedef struct {
 
 /* Active length: fill pointer if present, else total length */
 #define cl_bv_active_length(bv) \
+    ((bv)->fill_pointer != CL_NO_FILL_POINTER ? (bv)->fill_pointer : (bv)->length)
+
+/* --- Byte Vector (packed (unsigned-byte 8) / (signed-byte 8) array) ---
+ *
+ * True 1-byte-per-element storage, unlike the general CL_Vector which holds
+ * every element as a 4-byte tagged CL_Obj regardless of declared element
+ * type.  A GC *leaf* object (no CL_Obj children — raw bytes), so the marker
+ * never scans its contents; on an 8MB 68020 that makes large I/O and
+ * graphics plane buffers 4x smaller and free to collect. */
+
+typedef struct {
+    CL_Header hdr;
+    uint32_t length;          /* Number of elements (= bytes) */
+    uint32_t fill_pointer;    /* CL_NO_FILL_POINTER = none */
+    uint8_t  flags;           /* CL_VEC_FLAG_FILL_POINTER | CL_VEC_FLAG_ADJUSTABLE */
+    uint8_t  is_signed;       /* 0 = (unsigned-byte 8), 1 = (signed-byte 8) */
+    uint8_t  _pad[2];
+    uint8_t  data[];          /* length packed bytes */
+} CL_ByteVector;
+
+#define CL_BYTE_VECTOR_P(obj) \
+    (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_BYTE_VECTOR)
+
+/* Element i as a signed 32-bit value honouring the declared signedness
+ * (always fits a fixnum: [-128, 255]). */
+#define cl_bytevec_get(bv, i) \
+    ((bv)->is_signed ? (int32_t)(int8_t)(bv)->data[(i)] : (int32_t)(bv)->data[(i)])
+
+/* Active length: fill pointer if present, else total length */
+#define cl_bytevec_active_length(bv) \
     ((bv)->fill_pointer != CL_NO_FILL_POINTER ? (bv)->fill_pointer : (bv)->length)
 
 /* --- Pathname --- */

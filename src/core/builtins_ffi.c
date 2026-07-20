@@ -328,20 +328,26 @@ static CL_Obj bi_ffi_poke8(CL_Obj *args, int nargs)
  * ================================================================ */
 
 /* Resolve the (SOURCE, START, END) span of a byte-source argument.
- * Returns the element count, and sets whichever of SVEC and SSTR matches
- * SOURCE's representation (exactly one is left non-NULL). */
+ * Returns the element count, and sets whichever of SVEC, SSTR and SBV
+ * matches SOURCE's representation (exactly one is left non-NULL).  A packed
+ * byte vector (SBV) is the ideal representation here — the copy in/out of
+ * foreign memory degenerates to a single memcpy. */
 static uint32_t ffi_byte_span(CL_Obj source, CL_Obj start_arg, CL_Obj end_arg,
                               const char *who, CL_Vector **svec, CL_String **sstr,
-                              uint32_t *start_out)
+                              CL_ByteVector **sbv, uint32_t *start_out)
 {
     uint32_t len, start, end;
 
     *svec = NULL;
     *sstr = NULL;
+    *sbv = NULL;
 
     if (CL_STRING_P(source)) {
         *sstr = (CL_String *)CL_OBJ_TO_PTR(source);
         len = (*sstr)->length;
+    } else if (CL_BYTE_VECTOR_P(source)) {
+        *sbv = (CL_ByteVector *)CL_OBJ_TO_PTR(source);
+        len = cl_bytevec_active_length(*sbv);
     } else if (CL_VECTOR_P(source)) {
         *svec = (CL_Vector *)CL_OBJ_TO_PTR(source);
         if ((*svec)->rank > 1)
@@ -380,6 +386,7 @@ static CL_Obj bi_ffi_poke_bytes(CL_Obj *args, int nargs)
     CL_ForeignPtr *fp;
     CL_Vector *svec;
     CL_String *sstr;
+    CL_ByteVector *sbv;
     uint8_t *dest;
     void *base;
     uint32_t fp_size, fp_addr;
@@ -403,7 +410,7 @@ static CL_Obj bi_ffi_poke_bytes(CL_Obj *args, int nargs)
     count = ffi_byte_span(args[1],
                           (nargs > 3) ? args[3] : CL_NIL,
                           (nargs > 4) ? args[4] : CL_NIL,
-                          "FFI:POKE-BYTES", &svec, &sstr, &start);
+                          "FFI:POKE-BYTES", &svec, &sstr, &sbv, &start);
 
     /* A known allocation size lets us reject an overrun here rather than
      * corrupting whatever sits past the buffer.  size 0 = external memory
@@ -424,12 +431,17 @@ static CL_Obj bi_ffi_poke_bytes(CL_Obj *args, int nargs)
      * DEST nor the source data can be invalidated by a compaction mid-copy. */
     if (sstr) {
         sstr = (CL_String *)CL_OBJ_TO_PTR(args[1]);
+    } else if (sbv) {
+        sbv = (CL_ByteVector *)CL_OBJ_TO_PTR(args[1]);
     } else {
         svec = (CL_Vector *)CL_OBJ_TO_PTR(args[1]);
     }
 
     if (sstr) {
         memcpy(dest, sstr->data + start, count);
+    } else if (sbv) {
+        /* Packed byte vector: raw bytes straight into foreign memory. */
+        memcpy(dest, sbv->data + start, count);
     } else {
         CL_Obj *elts = cl_vector_data(svec) + start;
         for (i = 0; i < count; i++) {
@@ -459,6 +471,7 @@ static CL_Obj bi_ffi_peek_bytes(CL_Obj *args, int nargs)
     CL_ForeignPtr *fp;
     CL_Vector *svec;
     CL_String *sstr;
+    CL_ByteVector *sbv;
     const uint8_t *src;
     void *base;
     uint32_t fp_size, fp_addr;
@@ -481,7 +494,7 @@ static CL_Obj bi_ffi_peek_bytes(CL_Obj *args, int nargs)
     count = ffi_byte_span(args[1],
                           (nargs > 3) ? args[3] : CL_NIL,
                           (nargs > 4) ? args[4] : CL_NIL,
-                          "FFI:PEEK-BYTES", &svec, &sstr, &start);
+                          "FFI:PEEK-BYTES", &svec, &sstr, &sbv, &start);
 
     if (fp_size > 0 && (offset > fp_size || count > fp_size - offset))
         cl_error(CL_ERR_GENERAL,
@@ -496,12 +509,17 @@ static CL_Obj bi_ffi_peek_bytes(CL_Obj *args, int nargs)
     /* Re-derive from the GC-rooted argument; no allocation from here on. */
     if (sstr) {
         sstr = (CL_String *)CL_OBJ_TO_PTR(args[1]);
+    } else if (sbv) {
+        sbv = (CL_ByteVector *)CL_OBJ_TO_PTR(args[1]);
     } else {
         svec = (CL_Vector *)CL_OBJ_TO_PTR(args[1]);
     }
 
     if (sstr) {
         memcpy(sstr->data + start, src, count);
+    } else if (sbv) {
+        /* Packed byte vector: raw bytes straight out of foreign memory. */
+        memcpy(sbv->data + start, src, count);
     } else {
         CL_Obj *elts = cl_vector_data(svec) + start;
         for (i = 0; i < count; i++)

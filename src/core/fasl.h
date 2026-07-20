@@ -26,7 +26,7 @@
 #include "../platform/platform.h"
 
 #define CL_FASL_MAGIC    0x434C4641  /* "CLFA" */
-#define CL_FASL_VERSION  23  /* v23: top-level DECLAIM now emits a runtime (PROCLAIM 'spec) call per specifier so proclamations survive the FASL round trip (CLHS: declaim ~ eval-when (:compile-toplevel :load-toplevel :execute) proclaim — previously only the compile-time leg existed and declaims evaporated from compiled files). Changes the bytecode emitted for every top-level declaim; bumping forces stale cached FASLs (compiled by the old compiler, still silently dropping declaims on load) to be recompiled. v22: (defvar name) with no init-form now emits a runtime (%MARK-SPECIAL 'name) call so the special proclamation works for variables loaded from a precompiled FASL (the compile-time CL_SYM_SPECIAL flag does not survive into a fresh load — bare defvars were non-special on load, breaking dynamic LET binding e.g. serapeum DEFPLACE). v21: defconstant emits a runtime (%MARK-CONSTANT 'name) call so CONSTANTP works for FASL-loaded constants. */
+#define CL_FASL_VERSION  24  /* v24: new FASL_TAG_BYTE_VECTOR (0x20) for the packed (unsigned-byte 8)/(signed-byte 8) TYPE_BYTE_VECTOR heap type — u32 length, u8 signedness, raw bytes.  Old readers would reject the new tag anyway, but the version bump keeps the rule uniform: any wire-format change invalidates cached FASLs.  v23: top-level DECLAIM now emits a runtime (PROCLAIM 'spec) call per specifier so proclamations survive the FASL round trip (CLHS: declaim ~ eval-when (:compile-toplevel :load-toplevel :execute) proclaim — previously only the compile-time leg existed and declaims evaporated from compiled files). Changes the bytecode emitted for every top-level declaim; bumping forces stale cached FASLs (compiled by the old compiler, still silently dropping declaims on load) to be recompiled. v22: (defvar name) with no init-form now emits a runtime (%MARK-SPECIAL 'name) call so the special proclamation works for variables loaded from a precompiled FASL (the compile-time CL_SYM_SPECIAL flag does not survive into a fresh load — bare defvars were non-special on load, breaking dynamic LET binding e.g. serapeum DEFPLACE). v21: defconstant emits a runtime (%MARK-CONSTANT 'name) call so CONSTANTP works for FASL-loaded constants. */
 
 /* Serialized constant type tags */
 #define FASL_TAG_NIL         0x00
@@ -86,6 +86,9 @@
                                      this tag, so the rank/dims are preserved
                                      across compile-file instead of collapsing to
                                      a flat 1-D vector. */
+#define FASL_TAG_BYTE_VECTOR 0x20 /* u32 length, u8 is_signed, then `length`
+                                     raw bytes: packed (unsigned-byte 8) /
+                                     (signed-byte 8) vector (TYPE_BYTE_VECTOR). */
 
 /* Error codes for FASL operations */
 #define FASL_OK              0
