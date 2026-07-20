@@ -56,11 +56,13 @@ static CL_Obj make_string_like(CL_Obj src, uint32_t length)
  * array.  DEPTH bounds the deftype-expansion recursion.
  *
  * GC: cl_get_type_expander/cl_vm_apply may compact.  Callers pass an element
- * type that is already GC-rooted (a builtin arg slot); no unrooted CL_Obj is
- * held across the apply here. */
-static void classify_array_elt_type(CL_Obj type, int depth,
-                                    int *is_char, int *is_wide_char, int *is_bit,
-                                    int *is_u8, int *is_s8)
+ * type that is already GC-rooted (a builtin arg slot) or protect their live
+ * locals around the call; no unrooted CL_Obj is held across the apply here.
+ * Shared with TYPEP/SUBTYPEP in builtins_type.c (declared in builtins.h) so
+ * type tests agree with what MAKE-ARRAY actually builds. */
+void cl_classify_array_elt_type(CL_Obj type, int depth,
+                                int *is_char, int *is_wide_char, int *is_bit,
+                                int *is_u8, int *is_s8)
 {
     const char *nm;
     CL_Obj ex;
@@ -94,7 +96,7 @@ static void classify_array_elt_type(CL_Obj type, int depth,
     /* A user deftype alias — expand once and recurse. */
     ex = cl_get_type_expander(type);
     if (!CL_NULL_P(ex))
-        classify_array_elt_type(cl_vm_apply(ex, NULL, 0), depth - 1,
+        cl_classify_array_elt_type(cl_vm_apply(ex, NULL, 0), depth - 1,
                                 is_char, is_wide_char, is_bit, is_u8, is_s8);
 }
 
@@ -293,7 +295,7 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
     /* Declared element-type code for a general (non-bit/non-char) vector, so
      * (TYPEP a '(VECTOR FIXNUM)) / ARRAY-ELEMENT-TYPE can distinguish a
      * specialized numeric array from a general (VECTOR T).  Captured before
-     * classify_array_elt_type can compact (element_type may then be stale). */
+     * cl_classify_array_elt_type can compact (element_type may then be stale). */
     uint8_t element_type_code = CL_VEC_ELT_T;
     uint32_t fill_ptr = CL_NO_FILL_POINTER;
     uint32_t displaced_offset = 0;
@@ -334,7 +336,7 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
         } else if (args[i] == KW_ELEMENT_TYPE) {
             et_idx = i + 1;
             element_type = args[i + 1];
-            /* Capture nullness BEFORE classify_array_elt_type, which calls
+            /* Capture nullness BEFORE cl_classify_array_elt_type, which calls
              * cl_vm_apply and can trigger a compacting GC.  After compaction,
              * element_type (a C local) may be a stale arena offset; the boolean
              * is safe to use later without re-reading element_type. */
@@ -349,10 +351,10 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
                 /* Classify CHARACTER/BIT/byte element types, expanding
                  * deftypes so aliases like flexi-streams' CHAR* (=> CHARACTER)
                  * build a string, not a (vector t). */
-                classify_array_elt_type(element_type, 16, &element_type_char,
+                cl_classify_array_elt_type(element_type, 16, &element_type_char,
                                         &element_type_wide_char, &element_type_bit,
                                         &element_type_u8, &element_type_s8);
-            /* Re-read: classify_array_elt_type may have called cl_vm_apply
+            /* Re-read: cl_classify_array_elt_type may have called cl_vm_apply
              * (deftype expansion) which can compact, making element_type stale. */
             element_type = args[i + 1];
             /* Record a specialized general (non-bit/non-char/non-byte)
@@ -897,6 +899,40 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
                 CL_Vector *dv;
                 uint32_t n_data, alloc_size, di;
                 uint8_t dflags;
+                /* Displaced to a packed byte vector: like the rank-1
+                 * byte-vector path, copy the window instead of installing a
+                 * live view (the packed heap type has no CL_Obj element
+                 * storage to point into).  The copy is a general multi-dim
+                 * array annotated with the byte element type, matching what
+                 * MAKE-ARRAY builds for multi-dim (unsigned-byte 8) arrays.
+                 * Mutations of the target won't propagate — same documented
+                 * limitation as the other copying displaced paths.
+                 * (serapeum's RESHAPE displaces multi-dim onto RANGE vectors,
+                 * which pack to byte vectors since slice 1.) */
+                if (CL_BYTE_VECTOR_P(displaced_to)) {
+                    CL_ByteVector *src =
+                        (CL_ByteVector *)CL_OBJ_TO_PTR(displaced_to);
+                    uint8_t src_code = src->is_signed ? CL_VEC_ELT_S8
+                                                      : CL_VEC_ELT_U8;
+                    uint32_t j;
+                    if (displaced_offset + total > src->length)
+                        cl_error(CL_ERR_ARGS,
+                                 "MAKE-ARRAY: displaced bounds exceed target "
+                                 "byte-vector");
+                    CL_GC_PROTECT(displaced_to);
+                    result = cl_make_array(total, rank, dims, flags,
+                                           CL_NO_FILL_POINTER);
+                    CL_GC_UNPROTECT(1);
+                    /* Re-fetch src after the (potentially compacting) alloc. */
+                    src = (CL_ByteVector *)CL_OBJ_TO_PTR(displaced_to);
+                    v = (CL_Vector *)CL_OBJ_TO_PTR(result);
+                    v->elt_type = src_code;
+                    for (j = 0; j < total; j++)
+                        cl_vector_data(v)[j] = CL_MAKE_FIXNUM(
+                            cl_bytevec_get(src, displaced_offset + j));
+                    CL_GC_UNPROTECT(2);  /* initial_element, initial_contents */
+                    return result;
+                }
                 if (!CL_VECTOR_P(displaced_to))
                     cl_error(CL_ERR_TYPE,
                              "MAKE-ARRAY: :displaced-to target for a multi-dimensional "
@@ -1491,9 +1527,9 @@ static CL_Obj bi_upgraded_array_element_type(CL_Obj *args, int n)
 
     /* Classify CHARACTER / BIT / byte subtypes, expanding user deftypes (so
      * an alias like flexi-streams' CHAR* upgrades to CHARACTER, not T). */
-    classify_array_elt_type(typespec, 16, &is_char, &is_wide_char, &is_bit,
+    cl_classify_array_elt_type(typespec, 16, &is_char, &is_wide_char, &is_bit,
                             &is_u8, &is_s8);
-    /* Re-read: classify_array_elt_type may have called cl_vm_apply (deftype
+    /* Re-read: cl_classify_array_elt_type may have called cl_vm_apply (deftype
      * expansion) which can trigger a compacting GC, making typespec stale. */
     typespec = args[0];
     if (is_char)

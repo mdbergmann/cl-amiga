@@ -612,13 +612,21 @@ instead of a 4-byte tagged value, and the GC never scans its contents.  On an
 8MB Amiga that makes I/O buffers and graphics plane data 4× smaller and
 essentially free to collect.  `aref`/`elt`, fill pointers with
 `vector-push`/`vector-pop`, `adjust-array`, the common sequence functions
-(`fill`, `subseq`, `copy-seq`, `sort`, `replace`, `map`, `coerce`, …),
+(`fill`, `subseq`, `copy-seq`, `sort`, `remove`/`delete`, `replace`, `map`,
+`coerce`, …),
 `equalp` (including `:test 'equalp` hash-table keys), `typep`/`type-of`,
 and FASL literals all work; out-of-range stores signal a catchable
-`type-error`.  Arrays made with `:adjustable t` keep the growable
-general-vector representation (so `vector-push-extend`/`adjust-array` grow
-them in place, as e.g. drakma's HTTP buffers require) while still reporting
-the byte element type — only non-adjustable byte arrays are packed.
+`type-error`.  `typep` and `subtypep` compare array element types by their
+*upgraded* class and expand user `deftype` aliases, so idioms like
+flexi-streams' `(deftype octet () '(unsigned-byte 8))` followed by
+`(the (array octet *) v)` behave as on other Lisps.  Arrays made with
+`:adjustable t` keep the growable general-vector representation (so
+`vector-push-extend`/`adjust-array` grow them in place, as e.g. drakma's
+HTTP buffers require) while still reporting the byte element type — only
+non-adjustable byte arrays are packed.  One caveat: `:displaced-to` a packed
+byte vector produces a *copy* of the requested window rather than a live
+view (the packed bytes cannot back one), so later writes to the target are
+not visible through the displaced array.
 
 See `tests/test_byte_vector.c` and the byte-vector section of
 `tests/amiga/run-tests.lisp` for the full behavioral contract.

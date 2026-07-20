@@ -1533,17 +1533,19 @@ static CL_Obj remove_from_vector(CL_Obj seq, int32_t start, int32_t end,
                                   CL_Obj item, CL_Obj test_fn, CL_Obj key_fn,
                                   int mode)
 {
-    CL_Vector *v;
     int32_t vlen;
     /* The caller has already ruled out lists, strings, bit-vectors and NIL,
-     * then routed everything else here.  A non-vector (number, multidim array,
-     * hash-table, structure, ...) is not a sequence: dereferencing it as a
-     * CL_Vector would read a wild offset and crash.  Signal a type-error per
-     * CLHS instead (REMOVE et al. require a sequence designator). */
-    if (!CL_VECTOR_P(seq))
+     * then routed everything else here.  Packed byte vectors are handled via
+     * the generic arr_seq_get/arr_seq_set accessors.  Anything else (number,
+     * multidim array, hash-table, structure, ...) is not a sequence:
+     * dereferencing it as a vector would read a wild offset and crash.
+     * Signal a type-error per CLHS instead (REMOVE et al. require a sequence
+     * designator). */
+    if (!CL_VECTOR_P(seq) && !CL_BYTE_VECTOR_P(seq))
         cl_signal_type_error(seq, "SEQUENCE", "REMOVE");
-    v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
-    vlen = (int32_t)cl_vector_active_length(v);
+    vlen = CL_BYTE_VECTOR_P(seq)
+        ? (int32_t)cl_bytevec_active_length((CL_ByteVector *)CL_OBJ_TO_PTR(seq))
+        : (int32_t)cl_vector_active_length((CL_Vector *)CL_OBJ_TO_PTR(seq));
     int32_t i, out = 0, removed = 0;
     CL_Obj keep;
     CL_Obj result;
@@ -1571,8 +1573,7 @@ static CL_Obj remove_from_vector(CL_Obj seq, int32_t start, int32_t end,
             if (i >= start && i < end) {
                 CL_Obj elem, keyed;
                 int match;
-                v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
-                elem = cl_vector_data(v)[i];
+                elem = arr_seq_get(seq, i);
                 keyed = apply_key(key_fn, elem);
                 if (mode == 0)
                     match = !CL_NULL_P(call_test(test_fn, item, keyed));
@@ -1591,8 +1592,7 @@ static CL_Obj remove_from_vector(CL_Obj seq, int32_t start, int32_t end,
             if (i >= start && i < end) {
                 CL_Obj elem, keyed;
                 int match;
-                v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
-                elem = cl_vector_data(v)[i];
+                elem = arr_seq_get(seq, i);
                 keyed = apply_key(key_fn, elem);
                 if (mode == 0)
                     match = !CL_NULL_P(call_test(test_fn, item, keyed));
@@ -1613,8 +1613,7 @@ static CL_Obj remove_from_vector(CL_Obj seq, int32_t start, int32_t end,
             int should_remove = 0;
             if (i >= start && i < end && (count < 0 || removed < count)) {
                 CL_Obj elem, keyed;
-                v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
-                elem = cl_vector_data(v)[i];
+                elem = arr_seq_get(seq, i);
                 keyed = apply_key(key_fn, elem);
                 if (mode == 0)
                     should_remove = !CL_NULL_P(call_test(test_fn, item, keyed));
@@ -1636,18 +1635,17 @@ static CL_Obj remove_from_vector(CL_Obj seq, int32_t start, int32_t end,
         if (KEEP_BV_GET(keep, i)) out++;
 
     /* A string-vector (adjustable/fill-pointer character array) must yield a
-     * STRING, not a general (vector character); make_seq_result_like picks the
-     * class from SEQ.  arr_seq_set performs no allocation, so `elts` (re-derived
-     * once after the result allocation) stays valid across the fill loop.
-     * seq is still protected (function-wide root) so compaction forwards it. */
+     * STRING, not a general (vector character), and a packed byte vector a
+     * packed byte vector; make_seq_result_like picks the class from SEQ.
+     * arr_seq_get/arr_seq_set perform no allocation and re-derive the heap
+     * pointers on every call; seq is still protected (function-wide root) so
+     * compaction forwards it. */
     result = make_seq_result_like(seq, (uint32_t)out);
-    v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
     {
-        CL_Obj *elts = cl_vector_data(v);
         int32_t j = 0;
         for (i = 0; i < vlen; i++) {
             if (KEEP_BV_GET(keep, i))
-                arr_seq_set(result, j++, elts[i]);
+                arr_seq_set(result, j++, arr_seq_get(seq, i));
         }
     }
 
