@@ -662,8 +662,9 @@ cannot be reached (then the caller must not gate on memory)."
 ;;; 17-19 alone can leave an already-shown pointer black.  During the
 ;;; loads that take real seconds at 14MHz (tile packs on zone travel,
 ;;; a game load, first-sight ILBM images) the pointer switches to a
-;;; busy hourglass: plane words (A B) per row, pixel value 1 (A) the
-;;; sand, 2 (B) the frame.
+;;; busy hourglass (*BUSY-POINTER-ART* in ilbm.lisp): the frame in the
+;;; outline pen, the sand — top-bulb remainder, falling stream, heap
+;;; below — in the skin pen.
 
 (defvar *game-pointer* nil
   "The neutral in-game pointer (the hand) as (CHIP HEIGHT XOFF YOFF) —
@@ -811,36 +812,14 @@ default, sprite data freed."
         *move-pointers* '()
         *pointer-hot* nil))
 
-(defparameter *busy-pointer-image*
-  '((#x0000 #xFFFF)
-    (#x3FFC #x4002)
-    (#x1FF8 #x2004)
-    (#x0FF0 #x1008)
-    (#x07E0 #x0810)
-    (#x03C0 #x0420)
-    (#x0180 #x0240)
-    (#x0180 #x0240)
-    (#x03C0 #x0420)
-    (#x07E0 #x0810)
-    (#x0FF0 #x1008)
-    (#x1FF8 #x2004)
-    (#x3FFC #x4002)
-    (#x0000 #xFFFF)))
-
 (defun %make-busy-pointer-chip ()
-  "The busy-pointer image as chip-RAM sprite data ready for
-SET-POINTER: posctl words, (A B) per row, trailing words.  The caller
-frees it (AMIGA:FREE-CHIP) after the pointer moves off it."
-  (let* ((rows (length *busy-pointer-image*))
-         (chip (amiga:alloc-chip (* 2 (+ 2 (* 2 rows) 2))))
-         (off 0))
-    (flet ((word (w) (ffi:poke-u16 chip w off) (incf off 2)))
-      (word 0) (word 0)                 ; position control
-      (dolist (row *busy-pointer-image*)
-        (word (first row))              ; low plane: the sand
-        (word (second row)))            ; high plane: the frame
-      (word 0) (word 0))                ; sprite terminator
-    chip))
+  "The busy hourglass (*BUSY-POINTER-ART*) as chip-RAM sprite data
+ready for SET-POINTER; returns (VALUES CHIP HEIGHT).  The caller frees
+CHIP (AMIGA:FREE-CHIP) after the pointer moves off it."
+  (destructuring-bind (chip height xoff yoff)
+      (%pointer-chip (busy-pointer-image))
+    (declare (ignore xoff yoff))        ; busy centers, no art hot spot
+    (values chip height)))
 
 (defvar *busy-pointer-active* nil
   "Non-NIL while the busy pointer is up — nested loads (a game load
@@ -854,11 +833,10 @@ back after and frees the sprite data.  Reentrant: a nested call runs
 FN directly under the already-shown pointer."
   (if *busy-pointer-active*
       (funcall fn)
-      (let ((chip (%make-busy-pointer-chip)))
+      (multiple-value-bind (chip height) (%make-busy-pointer-chip)
         (unwind-protect
             (let ((*busy-pointer-active* t))
-              (amiga.intuition:set-pointer
-               win chip (length *busy-pointer-image*) 16 -7 -6)
+              (amiga.intuition:set-pointer win chip height 16 -7 -6)
               (funcall fn))
           (%apply-standard-pointer win)
           (amiga:free-chip chip)))))

@@ -564,19 +564,21 @@ hand, the arrow tip of an arrow.  (VALUES 0 0) for an empty image."
 ;;; %ENSURE-STANDARD-POINTER in amiga-ui.lisp).
 
 (defparameter *hand-pointer-art*
-  '("....2..........."
-    "...2122........."
-    "..221212........"
-    ".21212122......."
-    ".212121212......"
-    ".212121212.22..."
-    ".211111112212..."
-    ".211111111112..."
-    ".211111111112..."
-    "..21111111112..."
-    "..2111111112...."
-    "...222222222....")
-  "The neutral pointer: an open hand, fingers up.")
+  '("....22.........."
+    ".22211222......."
+    "2112112112......"
+    "211211211222...."
+    "2112112112112.22"
+    "2112112112112212"
+    "2111111111112112"
+    "211111111111112."
+    ".21111111111112."
+    ".2111111111112.."
+    "..211111111112.."
+    "...2222222222...")
+  "The neutral pointer: an open hand, fingers up — four fingers two
+pixels of skin wide (single-pixel fingers dissolve into a stripe
+pattern at sprite scale), the thumb out to the right.")
 
 (defparameter *point-pointer-art*
   '("....22.........."
@@ -654,6 +656,25 @@ hand, the arrow tip of an arrow.  (VALUES 0 0) for an empty image."
     ".........22.....")
   "The turn-right cursor: an arrow pointing right.")
 
+(defparameter *busy-pointer-art*
+  '(".22222222222222."
+    ".2............2."
+    "..2..........2.."
+    "...2........2..."
+    "....2......2...."
+    ".....211112....."
+    "......2112......"
+    "......2112......"
+    ".....2.11.2....."
+    "....2..11..2...."
+    "...2..1111..2..."
+    "..2.11111111.2.."
+    ".21111111111112."
+    ".22222222222222.")
+  "The busy cursor: an hourglass with the sand in its own pen — the
+remainder in the top bulb, the falling stream, the heap below — so it
+reads as glass and sand, not a solid silhouette.")
+
 (defparameter *hand-pointer-colors*
   '((238 221 187) (17 17 17) (221 34 34))
   "Default sprite colors (screen colors 17-19), 0-255 components: the
@@ -705,3 +726,8 @@ left quarter) as an IMAGE."
   "The built-in turn-right pointer (a right arrow, shown over the
 view's right quarter) as an IMAGE."
   (%pointer-art-image *turn-right-pointer-art*))
+
+(defun busy-pointer-image ()
+  "The built-in busy pointer (an hourglass, shown during loads that
+take real seconds) as an IMAGE."
+  (%pointer-art-image *busy-pointer-art*))
