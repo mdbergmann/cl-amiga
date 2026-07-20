@@ -3022,6 +3022,49 @@ check_contains "tier-3 condition/describe fixes survive GC stress" "T3-CONDS:T" 
 check_absent   "no tier-3 condition corruption under GC stress" \
   "T3D-BAD\|corrupted pointer\|not of type\|Guru" "$out"
 
+# --- Case 3c: condition slots-alist must not become CYCLIC under GC stress ---
+# Bug (HANG): the condition slot builders prepended with a NESTED cons —
+# slots = cl_cons(cl_cons(key, val), slots) — in merge_default_initargs,
+# apply_condition_slot_initforms (make-condition), and the OP_ASSERT_TYPE /
+# JIT `(the ...)` type-error path (:datum / :expected-type).  C leaves the
+# outer call's argument order unspecified (GCC/x86-64 evaluates right-to-left),
+# so the outer `slots` operand is read into an un-rooted temporary BEFORE the
+# inner cl_cons runs; that inner allocation compacts and relocates the list,
+# and the outer cons then stores a STALE `slots` offset as its cdr.  When the
+# reused arena slot is the new cons itself, the cdr points at its own cell — a
+# self-referential (cyclic) alist.  The slot readers (slot_present_p /
+# slot_lookup) then walk it forever: an infinite loop, not a crash, so it
+# manifests as a hang.  CL_GC_PROTECT(slots) cannot help — the stale value is
+# in a compiler temporary, not the protected variable.  Fix: build the pair
+# first, then prepend (re-reads slots live).  This case forces the exact shape:
+# make-condition with an unsupplied :initform slot AND a (the ...) type error,
+# both read back, under forced compaction on every allocation.
+cat > "$WORK/cond_cycle.lisp" <<'EOF'
+(define-condition cyc-cond (error)
+  ((a :initarg :a :reader cyc-a :initform (list 41))
+   (b :initarg :b :reader cyc-b))
+  (:default-initargs :b 7))
+(let ((ok t))
+  (macrolet ((chk (form want)
+               `(let ((got ,form))
+                  (unless (equalp got ,want) (setf ok nil)
+                    (format t "CYC-BAD ~s got ~s~%" ',form got)))))
+    (dotimes (i 4)
+      ;; make-condition: initform (list 41) + default-initarg :b 7, no initargs
+      ;; -> exercises apply_condition_slot_initforms + merge_default_initargs
+      (chk (cyc-a (make-condition 'cyc-cond)) (list 41))
+      (chk (cyc-b (make-condition 'cyc-cond)) 7)
+      ;; (the ...) type error -> OP_ASSERT_TYPE builds :datum/:expected-type slots
+      (chk (handler-case (the integer "not-an-int")
+             (type-error (e) (list (type-error-datum e)
+                                   (type-error-expected-type e))))
+           (list "not-an-int" 'integer))))
+  (format t "CYC-DONE:~a~%" ok))
+EOF
+out=$(run_stress "$WORK/cond_cycle.lisp")
+check_contains "condition slots stay acyclic (no reader hang) under GC stress" "CYC-DONE:T" "$out"
+check_absent   "no cyclic-slots corruption under GC stress" "CYC-BAD" "$out"
+
 # --- Tier-4 audit batch 1: compiler stale-local sites -----------------------
 # (audit 2026-07 tier 4, batch 1) A cluster of compiler GC bugs where a form
 # component (clauses / defaults / cursors) was read before an allocating

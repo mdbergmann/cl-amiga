@@ -3058,11 +3058,20 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                  * again between the two allocating cons lines. */
                 CL_Obj slots = CL_NIL;
                 CL_Obj cond;
+                CL_Obj pair;
                 type_spec = constants[idx];
                 CL_GC_PROTECT(slots);
-                slots = cl_cons(cl_cons(KW_EXPECTED_TYPE, type_spec), slots);
+                /* Build each pair, THEN prepend — never nest as
+                 * cl_cons(cl_cons(k,v), slots).  Once slots is a non-NIL heap
+                 * list, C's unspecified argument evaluation order (right-to-left
+                 * on GCC/x86-64) reads the outer `slots` operand before the inner
+                 * cl_cons compacts, baking a stale offset into the cdr and
+                 * producing a cyclic slots alist.  See apply_condition_slot_initforms. */
+                pair = cl_cons(KW_EXPECTED_TYPE, type_spec);
+                slots = cl_cons(pair, slots);
                 val = cl_vm.stack[cl_vm.sp - 1];
-                slots = cl_cons(cl_cons(KW_DATUM, val), slots);
+                pair = cl_cons(KW_DATUM, val);
+                slots = cl_cons(pair, slots);
                 CL_GC_UNPROTECT(1);
                 cond = cl_make_condition(SYM_TYPE_ERROR, slots, CL_NIL);
                 cl_signal_condition(cond);

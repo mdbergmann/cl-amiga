@@ -544,13 +544,33 @@ void cl_jit_runtime_assert_type(CL_Obj val, CL_Obj type_spec)
 {
     CL_Obj slots = CL_NIL;
     CL_Obj cond;
+    CL_Obj pair;
     char buf[128];
     char tbuf[64];
-    if (cl_typep(val, type_spec)) return;
+    int typep_result;
+    /* val/type_spec are unprotected params, unlike vm.c's OP_ASSERT_TYPE
+     * (which re-reads val/type_spec from the rooted VM stack/constants pool
+     * after any allocating call). cl_typep itself can invoke cl_vm_apply
+     * for SATISFIES/deftype specs and compact, so both must be protected
+     * before calling it, not just before the conses that follow. */
+    CL_GC_PROTECT(val);
+    CL_GC_PROTECT(type_spec);
+    typep_result = cl_typep(val, type_spec);
+    CL_GC_UNPROTECT(2);
+    if (typep_result) return;
+    CL_GC_PROTECT(val);
+    CL_GC_PROTECT(type_spec);
     CL_GC_PROTECT(slots);
-    slots = cl_cons(cl_cons(KW_EXPECTED_TYPE, type_spec), slots);
-    slots = cl_cons(cl_cons(KW_DATUM, val), slots);
-    CL_GC_UNPROTECT(1);
+    /* Build each pair THEN prepend — never nest as cl_cons(cl_cons(k,v), slots):
+     * C's unspecified argument evaluation order (right-to-left on GCC/x86-64)
+     * reads the outer `slots` operand before the inner cl_cons compacts, baking a
+     * stale offset into the cdr and producing a cyclic slots alist that hangs the
+     * slot readers.  Mirrors vm.c OP_ASSERT_TYPE / apply_condition_slot_initforms. */
+    pair = cl_cons(KW_EXPECTED_TYPE, type_spec);
+    slots = cl_cons(pair, slots);
+    pair = cl_cons(KW_DATUM, val);
+    slots = cl_cons(pair, slots);
+    CL_GC_UNPROTECT(3);
     cond = cl_make_condition(SYM_TYPE_ERROR, slots, CL_NIL);
     cl_signal_condition(cond);
     cl_prin1_to_string(val, buf, sizeof(buf));

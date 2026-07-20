@@ -751,7 +751,15 @@ static CL_Obj merge_default_initargs(CL_Obj type_sym, CL_Obj slots,
             if (!slot_present_p(slots, key)) {
                 int is_fmt = (key == KW_FORMAT_CONTROL && CL_STRING_P(val)
                               && CL_NULL_P(*report_string));
-                slots = cl_cons(cl_cons(key, val), slots);
+                /* Build the pair THEN prepend it — never nest as
+                 * cl_cons(cl_cons(key,val), slots): C's unspecified argument
+                 * evaluation order (right-to-left on GCC/x86-64) reads the outer
+                 * `slots` operand before the inner cl_cons compacts, baking a
+                 * stale offset into the new cell's cdr and producing a cyclic
+                 * slots alist that hangs the slot readers.  See the detailed note
+                 * in apply_condition_slot_initforms. */
+                CL_Obj pair = cl_cons(key, val);
+                slots = cl_cons(pair, slots);
                 if (is_fmt)
                     *report_string = cl_cdr(cl_car(slots));  /* post-compaction */
             }
@@ -813,13 +821,27 @@ static CL_Obj apply_condition_slot_initforms(CL_Obj type_sym, CL_Obj slots)
             int supplied   = (!CL_NULL_P(initarg) && slot_present_p(slots, initarg))
                              || slot_present_p(slots, slot_nm);
             if (!supplied) {
+                CL_Obj pair;
                 CL_Obj val = cl_vm_apply(thunk, NULL, 0);
                 CL_GC_PROTECT(val);
                 /* cl_vm_apply may have compacted: re-read slot_nm from the
                  * still-protected `specs` chain rather than trusting the stale
                  * offset captured before the call. */
                 slot_nm = cl_car(cl_car(specs));
-                slots = cl_cons(cl_cons(slot_nm, val), slots);
+                /* Build the pair, THEN prepend it — do NOT nest the two conses
+                 * as cl_cons(cl_cons(slot_nm,val), slots).  C leaves the outer
+                 * call's argument evaluation order unspecified (GCC/x86-64
+                 * evaluates right-to-left), so the outer `slots` operand is read
+                 * into a temporary BEFORE the inner cl_cons runs; that inner
+                 * allocation can compact and relocate the list, leaving the outer
+                 * cons a stale `slots` offset.  The result is a self-referential
+                 * (cyclic) slots alist that hangs the slot readers (slot_present_p)
+                 * in an infinite walk.  CL_GC_PROTECT(slots) cannot help — the
+                 * stale value lives in an un-rooted compiler temporary, not the
+                 * protected variable.  Sequencing re-reads slots after the inner
+                 * cons.  Same fix as bi_set_condition_slot_value. */
+                pair = cl_cons(slot_nm, val);
+                slots = cl_cons(pair, slots);
                 CL_GC_UNPROTECT(1);
             }
             specs = cl_cdr(specs);
