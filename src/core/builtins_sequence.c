@@ -354,19 +354,11 @@ static void arr_seq_set(CL_Obj seq, int32_t i, CL_Obj val)
         return;
     }
     if (CL_BYTE_VECTOR_P(seq)) {
-        /* Byte vector: element type is (UNSIGNED-BYTE 8) / (SIGNED-BYTE 8). */
+        /* Byte vector: element type is (UNSIGNED/SIGNED-BYTE 8/16). */
         CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(seq);
-        int32_t v = 0;
-        int bad = !CL_FIXNUM_P(val);
-        if (!bad) {
-            v = CL_FIXNUM_VAL(val);
-            bad = bv->is_signed ? (v < -128 || v > 127) : (v < 0 || v > 255);
-        }
-        if (bad)
-            cl_signal_type_error(val,
-                                 bv->is_signed ? "(SIGNED-BYTE 8)" : "(UNSIGNED-BYTE 8)",
-                                 "storing into a byte vector");
-        bv->data[i] = (uint8_t)v;
+        cl_bytevec_set(bv, i,
+                       cl_bytevec_check_value(val, bv->is_signed, bv->elt_shift,
+                                              "storing into a byte vector"));
         return;
     }
     /* bit vector: element type is BIT (0 or 1). */
@@ -417,9 +409,10 @@ static CL_Obj make_seq_result_like(CL_Obj seq, uint32_t length)
         return cl_make_string(NULL, length);
     }
     if (CL_BIT_VECTOR_P(seq)) return cl_make_bit_vector(length);
-    if (CL_BYTE_VECTOR_P(seq))
-        return cl_make_byte_vector(length,
-            ((CL_ByteVector *)CL_OBJ_TO_PTR(seq))->is_signed);
+    if (CL_BYTE_VECTOR_P(seq)) {
+        CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(seq);
+        return cl_make_byte_vector(length, bv->is_signed, bv->elt_shift);
+    }
     return cl_make_vector(length);
 }
 
@@ -454,10 +447,10 @@ static CL_Obj copy_array_seq(CL_Obj seq)
         CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(seq);
         uint32_t blen = cl_bytevec_active_length(bv);
         CL_ByteVector *rv;
-        result = cl_make_byte_vector(blen, bv->is_signed);
+        result = cl_make_byte_vector(blen, bv->is_signed, bv->elt_shift);
         rv = (CL_ByteVector *)CL_OBJ_TO_PTR(result);
         bv = (CL_ByteVector *)CL_OBJ_TO_PTR(seq); /* refresh after alloc */
-        memcpy(rv->data, bv->data, blen);
+        memcpy(rv->data, bv->data, (size_t)blen << bv->elt_shift);
     } else {
         /* bit vector */
         CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
@@ -2232,22 +2225,21 @@ static CL_Obj bi_fill(CL_Obj *args, int n)
         for (i = start; i < end_val && i < bvlen; i++)
             cl_bv_set_bit(bv, (uint32_t)i, val);
     } else if (CL_BYTE_VECTOR_P(seq)) {
-        /* Packed bytes: FILL is a single memset over the range. */
+        /* Packed elements: FILL is a memset (8-bit) or a tight store loop
+         * (16-bit) over the range. */
         CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(seq);
         int32_t bvlen = (int32_t)cl_bytevec_active_length(bv);
         int32_t hi = (end_val < bvlen) ? end_val : bvlen;
-        int32_t v = 0;
-        int bad = !CL_FIXNUM_P(item);
-        if (!bad) {
-            v = CL_FIXNUM_VAL(item);
-            bad = bv->is_signed ? (v < -128 || v > 127) : (v < 0 || v > 255);
+        int32_t v = cl_bytevec_check_value(item, bv->is_signed, bv->elt_shift,
+                                           "FILL on a byte vector");
+        if (hi > start) {
+            if (bv->elt_shift) {
+                for (i = start; i < hi; i++)
+                    cl_bytevec_set(bv, (uint32_t)i, v);
+            } else {
+                memset(bv->data + start, (uint8_t)v, (size_t)(hi - start));
+            }
         }
-        if (bad)
-            cl_signal_type_error(item,
-                                 bv->is_signed ? "(SIGNED-BYTE 8)" : "(UNSIGNED-BYTE 8)",
-                                 "FILL on a byte vector");
-        if (hi > start)
-            memset(bv->data + start, (uint8_t)v, (size_t)(hi - start));
     }
 
     return seq;

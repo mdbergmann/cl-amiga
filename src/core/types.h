@@ -17,6 +17,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <string.h>
 
 /*
  * Version — the ONE place to bump.
@@ -398,13 +399,16 @@ typedef struct {
 #define CL_VEC_ELT_FIXNUM         1
 #define CL_VEC_ELT_SINGLE_FLOAT   2
 #define CL_VEC_ELT_DOUBLE_FLOAT   3
-/* Annotation codes for ADJUSTABLE (unsigned-byte 8)/(signed-byte 8) arrays.
- * Non-adjustable byte arrays use the packed TYPE_BYTE_VECTOR representation;
- * adjustable ones must grow in place via the displacement machinery, which
- * only general CL_Vector storage supports — they store tagged elements but
- * keep reporting the byte element type through these codes. */
+/* Annotation codes for ADJUSTABLE (unsigned-byte 8/16)/(signed-byte 8/16)
+ * arrays.  Non-adjustable byte arrays use the packed TYPE_BYTE_VECTOR
+ * representation; adjustable ones must grow in place via the displacement
+ * machinery, which only general CL_Vector storage supports — they store
+ * tagged elements but keep reporting the byte element type through these
+ * codes. */
 #define CL_VEC_ELT_U8             4
 #define CL_VEC_ELT_S8             5
+#define CL_VEC_ELT_U16            6
+#define CL_VEC_ELT_S16            7
 
 typedef struct {
     CL_Header hdr;
@@ -676,31 +680,70 @@ typedef struct {
 #define cl_bv_active_length(bv) \
     ((bv)->fill_pointer != CL_NO_FILL_POINTER ? (bv)->fill_pointer : (bv)->length)
 
-/* --- Byte Vector (packed (unsigned-byte 8) / (signed-byte 8) array) ---
+/* --- Byte Vector (packed (unsigned-byte 8/16) / (signed-byte 8/16) array) ---
  *
- * True 1-byte-per-element storage, unlike the general CL_Vector which holds
- * every element as a 4-byte tagged CL_Obj regardless of declared element
- * type.  A GC *leaf* object (no CL_Obj children — raw bytes), so the marker
- * never scans its contents; on an 8MB 68020 that makes large I/O and
- * graphics plane buffers 4x smaller and free to collect. */
+ * True packed storage — 1 byte per element for the 8-bit kinds, 2 bytes for
+ * the 16-bit kinds — unlike the general CL_Vector which holds every element
+ * as a 4-byte tagged CL_Obj regardless of declared element type.  A GC *leaf*
+ * object (no CL_Obj children — raw numeric data), so the marker never scans
+ * its contents; on an 8MB 68020 that makes large I/O, audio-sample and
+ * graphics plane buffers 4x (or 2x) smaller and free to collect.
+ *
+ * elt_shift is log2 of the element width in bytes (0 = 8-bit, 1 = 16-bit).
+ * The header keeps data[] 4-byte aligned, so 16-bit elements are accessed
+ * as naturally-aligned uint16_t — the fast path on 68020. */
 
 typedef struct {
     CL_Header hdr;
-    uint32_t length;          /* Number of elements (= bytes) */
+    uint32_t length;          /* Number of elements (NOT bytes) */
     uint32_t fill_pointer;    /* CL_NO_FILL_POINTER = none */
     uint8_t  flags;           /* CL_VEC_FLAG_FILL_POINTER | CL_VEC_FLAG_ADJUSTABLE */
-    uint8_t  is_signed;       /* 0 = (unsigned-byte 8), 1 = (signed-byte 8) */
-    uint8_t  _pad[2];
-    uint8_t  data[];          /* length packed bytes */
+    uint8_t  is_signed;       /* 0 = unsigned, 1 = signed element type */
+    uint8_t  elt_shift;       /* log2 element bytes: 0 = 8-bit, 1 = 16-bit */
+    uint8_t  _pad;
+    uint8_t  data[];          /* length << elt_shift packed bytes */
 } CL_ByteVector;
 
 #define CL_BYTE_VECTOR_P(obj) \
     (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_BYTE_VECTOR)
 
-/* Element i as a signed 32-bit value honouring the declared signedness
- * (always fits a fixnum: [-128, 255]). */
+/* Byte size of the element storage. */
+#define cl_bytevec_data_bytes(bv)  ((uint32_t)((bv)->length << (bv)->elt_shift))
+
+/* 16-bit element load/store via memcpy: data[] has effective type
+ * unsigned char, so accessing it through a uint16_t lvalue would violate
+ * C's strict-aliasing rule under -O3 -flto.  memcpy is alias-safe and
+ * GCC/vbcc both fold it into a single aligned move on this 4-byte-aligned
+ * buffer. */
+static inline uint16_t cl_bytevec_load_u16(const uint8_t *p) {
+    uint16_t v;
+    memcpy(&v, p, sizeof(v));
+    return v;
+}
+
+static inline void cl_bytevec_store_u16(uint8_t *p, uint16_t v) {
+    memcpy(p, &v, sizeof(v));
+}
+
+/* Element i as a signed 32-bit value honouring the declared width and
+ * signedness (always fits a fixnum: [-32768, 65535]). */
 #define cl_bytevec_get(bv, i) \
-    ((bv)->is_signed ? (int32_t)(int8_t)(bv)->data[(i)] : (int32_t)(bv)->data[(i)])
+    ((bv)->elt_shift \
+     ? ((bv)->is_signed \
+        ? (int32_t)(int16_t)cl_bytevec_load_u16((bv)->data + ((i) << 1)) \
+        : (int32_t)cl_bytevec_load_u16((bv)->data + ((i) << 1))) \
+     : ((bv)->is_signed ? (int32_t)(int8_t)(bv)->data[(i)] \
+                        : (int32_t)(bv)->data[(i)]))
+
+/* Store element i.  V must already be range-checked for the vector's element
+ * type (see cl_bytevec_check_value); the value is truncated to the width. */
+#define cl_bytevec_set(bv, i, v) \
+    do { \
+        if ((bv)->elt_shift) \
+            cl_bytevec_store_u16((bv)->data + ((i) << 1), (uint16_t)(v)); \
+        else \
+            (bv)->data[(i)] = (uint8_t)(v); \
+    } while (0)
 
 /* Active length: fill pointer if present, else total length */
 #define cl_bytevec_active_length(bv) \

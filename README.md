@@ -606,11 +606,14 @@ contract, and `specs/generational-gc.md` for the design.
 ### Packed byte vectors
 
 `(make-array n :element-type '(unsigned-byte 8))` — and any element type that
-upgrades to `(unsigned-byte 8)` or `(signed-byte 8)`, like `(mod 256)` or
-`(integer -5 5)` — builds a **packed byte vector**: 1 byte per element
-instead of a 4-byte tagged value, and the GC never scans its contents.  On an
-8MB Amiga that makes I/O buffers and graphics plane data 4× smaller and
-essentially free to collect.  `aref`/`elt`, fill pointers with
+upgrades to `(unsigned-byte 8)`, `(signed-byte 8)`, `(unsigned-byte 16)` or
+`(signed-byte 16)`, like `(mod 256)`, `(integer -5 5)` or `(integer 0 1000)`
+— builds a **packed byte vector**: 1 byte (8-bit kinds) or 2 bytes (16-bit
+kinds) per element instead of a 4-byte tagged value, and the GC never scans
+its contents.  Integer ranges upgrade to the narrowest kind that holds them.
+On an 8MB Amiga that makes I/O buffers, graphics plane data and 16-bit audio
+samples or coordinate tables 4× (or 2×) smaller and essentially free to
+collect.  `aref`/`elt`, fill pointers with
 `vector-push`/`vector-pop`, `adjust-array`, the common sequence functions
 (`fill`, `subseq`, `copy-seq`, `sort`, `remove`/`delete`, `replace`, `map`,
 `coerce`, …),

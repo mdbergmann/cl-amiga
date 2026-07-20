@@ -1354,9 +1354,9 @@ static void print_obj(CL_Obj obj)
     }
 
     case TYPE_BYTE_VECTOR: {
-        /* Packed (unsigned-byte 8)/(signed-byte 8) vector: print like a
-         * general vector, #(elt ...).  Elements are immediates (fixnums),
-         * so no GC-protection of obj is needed across the writes beyond
+        /* Packed (unsigned/signed-byte 8/16) vector: print like a general
+         * vector, #(elt ...).  Elements are immediates (fixnums), so no
+         * GC-protection of obj is needed across the writes beyond
          * re-deriving the heap pointer each iteration. */
         CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(obj);
         uint32_t bvi, bvlen;

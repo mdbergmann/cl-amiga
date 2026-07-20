@@ -160,7 +160,8 @@ CL_Obj cl_make_single_float(float value);
 CL_Obj cl_make_double_float(double value);
 CL_Obj cl_make_random_state(uint32_t seed);
 CL_Obj cl_make_bit_vector(uint32_t nbits);
-CL_Obj cl_make_byte_vector(uint32_t length, int is_signed);
+/* elt_shift: log2 element bytes — 0 = (unsigned/signed-byte 8), 1 = 16. */
+CL_Obj cl_make_byte_vector(uint32_t length, int is_signed, int elt_shift);
 CL_Obj cl_make_pathname(CL_Obj host, CL_Obj device, CL_Obj directory,
                         CL_Obj name, CL_Obj type, CL_Obj version);
 CL_Obj cl_make_cell(CL_Obj value);

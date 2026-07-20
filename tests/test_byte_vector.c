@@ -1,6 +1,7 @@
 /*
- * Tests for packed byte vectors — TYPE_BYTE_VECTOR, the true 1-byte-per-
- * element storage behind (unsigned-byte 8) / (signed-byte 8) arrays.
+ * Tests for packed byte vectors — TYPE_BYTE_VECTOR, the true packed storage
+ * behind (unsigned-byte 8/16) / (signed-byte 8/16) arrays: 1 byte per
+ * element for the 8-bit kinds, 2 bytes for the 16-bit kinds (elt_shift).
  *
  * Specified behavior follows the HyperSpec for make-array / aref / elt /
  * fill / subseq / array-element-type / upgraded-array-element-type / typep
@@ -72,14 +73,14 @@ static const char *eval_print(const char *str)
 
 TEST(alloc_zero)
 {
-    CL_Obj bv = cl_make_byte_vector(0, 0);
+    CL_Obj bv = cl_make_byte_vector(0, 0, 0);
     ASSERT(CL_BYTE_VECTOR_P(bv));
     ASSERT_EQ_INT(0, (int)((CL_ByteVector *)CL_OBJ_TO_PTR(bv))->length);
 }
 
 TEST(alloc_len_and_zero_fill)
 {
-    CL_Obj bv = cl_make_byte_vector(100, 0);
+    CL_Obj bv = cl_make_byte_vector(100, 0, 0);
     CL_ByteVector *b = (CL_ByteVector *)CL_OBJ_TO_PTR(bv);
     uint32_t i;
     ASSERT_EQ_INT(100, (int)b->length);
@@ -91,29 +92,29 @@ TEST(packed_size_is_one_byte_per_element)
 {
     /* The whole point: header + N bytes, not header + 4N.  Guard against a
      * regression that silently reverts to CL_Obj storage. */
-    CL_Obj bv = cl_make_byte_vector(64, 0);
+    CL_Obj bv = cl_make_byte_vector(64, 0, 0);
     CL_ByteVector *b = (CL_ByteVector *)CL_OBJ_TO_PTR(bv);
     ASSERT(CL_HDR_SIZE(b) < sizeof(CL_ByteVector) + 64 + CL_ALIGN);
 }
 
 TEST(signedness_flag)
 {
-    CL_Obj u = cl_make_byte_vector(4, 0);
-    CL_Obj s = cl_make_byte_vector(4, 1);
+    CL_Obj u = cl_make_byte_vector(4, 0, 0);
+    CL_Obj s = cl_make_byte_vector(4, 1, 0);
     ASSERT_EQ_INT(0, (int)((CL_ByteVector *)CL_OBJ_TO_PTR(u))->is_signed);
     ASSERT_EQ_INT(1, (int)((CL_ByteVector *)CL_OBJ_TO_PTR(s))->is_signed);
 }
 
 TEST(signed_get_sign_extends)
 {
-    CL_Obj s = cl_make_byte_vector(2, 1);
+    CL_Obj s = cl_make_byte_vector(2, 1, 0);
     CL_ByteVector *b = (CL_ByteVector *)CL_OBJ_TO_PTR(s);
     b->data[0] = 0xFF;   /* -1 as (signed-byte 8) */
     b->data[1] = 0x80;   /* -128 */
     ASSERT_EQ_INT(-1, (int)cl_bytevec_get(b, 0));
     ASSERT_EQ_INT(-128, (int)cl_bytevec_get(b, 1));
     /* Same raw bytes read unsigned */
-    b = (CL_ByteVector *)CL_OBJ_TO_PTR(cl_make_byte_vector(1, 0));
+    b = (CL_ByteVector *)CL_OBJ_TO_PTR(cl_make_byte_vector(1, 0, 0));
     b->data[0] = 0xFF;
     ASSERT_EQ_INT(255, (int)cl_bytevec_get(b, 0));
 }
@@ -124,13 +125,13 @@ TEST(predicate_negative)
     ASSERT(!CL_BYTE_VECTOR_P(CL_MAKE_FIXNUM(42)));
     ASSERT(!CL_BYTE_VECTOR_P(cl_make_vector(3)));
     ASSERT(!CL_BYTE_VECTOR_P(cl_make_bit_vector(3)));
-    ASSERT(!CL_VECTOR_P(cl_make_byte_vector(3, 0)));
-    ASSERT(!CL_BIT_VECTOR_P(cl_make_byte_vector(3, 0)));
+    ASSERT(!CL_VECTOR_P(cl_make_byte_vector(3, 0, 0)));
+    ASSERT(!CL_BIT_VECTOR_P(cl_make_byte_vector(3, 0, 0)));
 }
 
 TEST(gc_survives_with_contents)
 {
-    CL_Obj bv = cl_make_byte_vector(64, 0);
+    CL_Obj bv = cl_make_byte_vector(64, 0, 0);
     CL_ByteVector *b = (CL_ByteVector *)CL_OBJ_TO_PTR(bv);
     b->data[0] = 255;
     b->data[63] = 7;
@@ -175,9 +176,12 @@ TEST(make_array_upgraded_specs)
         "(make-array 4 :element-type '(integer -5 5))")));
     ASSERT(CL_BIT_VECTOR_P(cl_eval_string(
         "(make-array 4 :element-type '(unsigned-byte 1))")));
-    /* (unsigned-byte 16) does NOT fit — stays a general vector */
-    ASSERT(CL_VECTOR_P(cl_eval_string(
+    /* (unsigned-byte 16) packs at 2 bytes/element since slice 3;
+     * (unsigned-byte 17) does NOT fit any packed kind — general vector */
+    ASSERT(CL_BYTE_VECTOR_P(cl_eval_string(
         "(make-array 4 :element-type '(unsigned-byte 16))")));
+    ASSERT(CL_VECTOR_P(cl_eval_string(
+        "(make-array 4 :element-type '(unsigned-byte 17))")));
 }
 
 TEST(make_array_initial_element)
@@ -832,7 +836,7 @@ TEST(fasl_roundtrip)
     static uint8_t buf[256];
     CL_FaslWriter w;
     CL_FaslReader r;
-    CL_Obj bv = cl_make_byte_vector(4, 1);
+    CL_Obj bv = cl_make_byte_vector(4, 1, 0);
     CL_ByteVector *b = (CL_ByteVector *)CL_OBJ_TO_PTR(bv);
     CL_Obj back;
     b->data[0] = 0x00; b->data[1] = 0x7F; b->data[2] = 0x80; b->data[3] = 0xFF;
@@ -853,6 +857,397 @@ TEST(fasl_roundtrip)
     ASSERT_EQ_INT(0x7F, (int)b->data[1]);
     ASSERT_EQ_INT(0x80, (int)b->data[2]);
     ASSERT_EQ_INT(0xFF, (int)b->data[3]);
+}
+
+/* ========================================================
+ * Step 13 (slice 3): packed 16-bit kinds —
+ * (unsigned-byte 16) / (signed-byte 16), 2 bytes per element
+ * ======================================================== */
+
+TEST(w16_alloc_layout_and_accessors)
+{
+    /* 2 bytes per element, elt_shift = 1, zero-filled, get/set round-trip
+     * over the full range including the sign boundary. */
+    CL_Obj u = cl_make_byte_vector(32, 0, 1);
+    CL_ByteVector *b = (CL_ByteVector *)CL_OBJ_TO_PTR(u);
+    uint32_t i;
+    ASSERT(CL_BYTE_VECTOR_P(u));
+    ASSERT_EQ_INT(32, (int)b->length);
+    ASSERT_EQ_INT(1, (int)b->elt_shift);
+    ASSERT(CL_HDR_SIZE(b) < sizeof(CL_ByteVector) + 2 * 32 + CL_ALIGN);
+    for (i = 0; i < 32; i++)
+        ASSERT_EQ_INT(0, (int)cl_bytevec_get(b, i));
+    cl_bytevec_set(b, 0, 65535);
+    cl_bytevec_set(b, 1, 0x1234);
+    ASSERT_EQ_INT(65535, (int)cl_bytevec_get(b, 0));
+    ASSERT_EQ_INT(0x1234, (int)cl_bytevec_get(b, 1));
+    /* signed: same raw bits sign-extend */
+    b = (CL_ByteVector *)CL_OBJ_TO_PTR(cl_make_byte_vector(2, 1, 1));
+    cl_bytevec_set(b, 0, -32768);
+    cl_bytevec_set(b, 1, -1);
+    ASSERT_EQ_INT(-32768, (int)cl_bytevec_get(b, 0));
+    ASSERT_EQ_INT(-1, (int)cl_bytevec_get(b, 1));
+}
+
+TEST(w16_make_array_routing)
+{
+    CL_Obj v = cl_eval_string("(make-array 4 :element-type '(unsigned-byte 16))");
+    ASSERT(CL_BYTE_VECTOR_P(v));
+    ASSERT_EQ_INT(0, (int)((CL_ByteVector *)CL_OBJ_TO_PTR(v))->is_signed);
+    ASSERT_EQ_INT(1, (int)((CL_ByteVector *)CL_OBJ_TO_PTR(v))->elt_shift);
+    v = cl_eval_string("(make-array 4 :element-type '(signed-byte 16))");
+    ASSERT(CL_BYTE_VECTOR_P(v));
+    ASSERT_EQ_INT(1, (int)((CL_ByteVector *)CL_OBJ_TO_PTR(v))->is_signed);
+    ASSERT_EQ_INT(1, (int)((CL_ByteVector *)CL_OBJ_TO_PTR(v))->elt_shift);
+    /* Ranges that need 9-16 bits upgrade to the 16-bit kinds; 8-bit ranges
+     * keep the tighter 1-byte representation. */
+    v = cl_eval_string("(make-array 4 :element-type '(mod 65536))");
+    ASSERT(CL_BYTE_VECTOR_P(v) &&
+           ((CL_ByteVector *)CL_OBJ_TO_PTR(v))->elt_shift == 1);
+    v = cl_eval_string("(make-array 4 :element-type '(integer 0 1000))");
+    ASSERT(CL_BYTE_VECTOR_P(v) &&
+           ((CL_ByteVector *)CL_OBJ_TO_PTR(v))->elt_shift == 1 &&
+           ((CL_ByteVector *)CL_OBJ_TO_PTR(v))->is_signed == 0);
+    v = cl_eval_string("(make-array 4 :element-type '(integer -5 1000))");
+    ASSERT(CL_BYTE_VECTOR_P(v) &&
+           ((CL_ByteVector *)CL_OBJ_TO_PTR(v))->elt_shift == 1 &&
+           ((CL_ByteVector *)CL_OBJ_TO_PTR(v))->is_signed == 1);
+    v = cl_eval_string("(make-array 4 :element-type '(integer 0 255))");
+    ASSERT(CL_BYTE_VECTOR_P(v) &&
+           ((CL_ByteVector *)CL_OBJ_TO_PTR(v))->elt_shift == 0);
+}
+
+TEST(w16_init_and_boundaries)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(make-array 3 :element-type '(unsigned-byte 16) :initial-element 40000)"),
+        "#(40000 40000 40000)");
+    ASSERT_STR_EQ(eval_print(
+        "(make-array 4 :element-type '(unsigned-byte 16)"
+        " :initial-contents '(0 255 256 65535))"),
+        "#(0 255 256 65535)");
+    ASSERT_STR_EQ(eval_print(
+        "(make-array 3 :element-type '(signed-byte 16)"
+        " :initial-contents '(-32768 0 32767))"),
+        "#(-32768 0 32767)");
+    /* aref/setf at the exact boundaries */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((v (make-array 2 :element-type '(signed-byte 16))))"
+        "  (setf (aref v 0) -32768 (aref v 1) 32767)"
+        "  (list (aref v 0) (aref v 1)))"),
+        "(-32768 32767)");
+}
+
+TEST(w16_range_errors)
+{
+    /* One-past-the-boundary stores must signal a catchable TYPE-ERROR on
+     * every store path: setf aref (builtin + OP_ASET), initial-element,
+     * initial-contents, fill, coerce. */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (setf (aref (make-array 1 :element-type"
+        " '(unsigned-byte 16)) 0) 65536) (type-error () :caught))"),
+        ":CAUGHT");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (setf (aref (make-array 1 :element-type"
+        " '(unsigned-byte 16)) 0) -1) (type-error () :caught))"),
+        ":CAUGHT");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (setf (aref (make-array 1 :element-type"
+        " '(signed-byte 16)) 0) 32768) (type-error () :caught))"),
+        ":CAUGHT");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (setf (aref (make-array 1 :element-type"
+        " '(signed-byte 16)) 0) -32769) (type-error () :caught))"),
+        ":CAUGHT");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (make-array 2 :element-type '(unsigned-byte 16)"
+        " :initial-element 100000) (type-error () :caught))"),
+        ":CAUGHT");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (fill (make-array 2 :element-type '(unsigned-byte 16))"
+        " 65536) (type-error () :caught))"),
+        ":CAUGHT");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (coerce '(1 65536) '(vector (unsigned-byte 16)))"
+        " (type-error () :caught))"),
+        ":CAUGHT");
+}
+
+TEST(w16_types_and_upgrading)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(array-element-type (make-array 2 :element-type '(unsigned-byte 16)))"),
+        "(UNSIGNED-BYTE 16)");
+    ASSERT_STR_EQ(eval_print(
+        "(array-element-type (make-array 2 :element-type '(signed-byte 16)))"),
+        "(SIGNED-BYTE 16)");
+    ASSERT_STR_EQ(eval_print("(upgraded-array-element-type '(unsigned-byte 16))"),
+                  "(UNSIGNED-BYTE 16)");
+    ASSERT_STR_EQ(eval_print("(upgraded-array-element-type '(unsigned-byte 9))"),
+                  "(UNSIGNED-BYTE 16)");
+    ASSERT_STR_EQ(eval_print("(upgraded-array-element-type '(integer -5 1000))"),
+                  "(SIGNED-BYTE 16)");
+    ASSERT_STR_EQ(eval_print("(upgraded-array-element-type '(unsigned-byte 17))"),
+                  "T");
+    ASSERT_STR_EQ(eval_print(
+        "(type-of (make-array 3 :element-type '(unsigned-byte 16)))"),
+        "(VECTOR (UNSIGNED-BYTE 16) 3)");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((v (make-array 3 :element-type '(signed-byte 16)))) "
+        "(typep v (type-of v)))"), "T");
+    /* typep discriminates all three packed element classes */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((v (make-array 2 :element-type '(unsigned-byte 16))))"
+        "  (list (typep v '(vector (unsigned-byte 16)))"
+        "        (typep v '(vector (unsigned-byte 8)))"
+        "        (typep v '(vector (signed-byte 16)))"
+        "        (typep v '(vector t)) (typep v 'vector)))"),
+        "(T NIL NIL NIL T)");
+    /* subtypep: distinct upgraded element classes are certainly disjoint */
+    ASSERT_STR_EQ(eval_print(
+        "(list (multiple-value-list (subtypep '(vector (unsigned-byte 16))"
+        "                                     '(vector (unsigned-byte 8))))"
+        "      (multiple-value-list (subtypep '(vector (unsigned-byte 8))"
+        "                                     '(vector (unsigned-byte 16))))"
+        "      (multiple-value-list (subtypep '(vector (unsigned-byte 16))"
+        "                                     '(vector (unsigned-byte 16)))))"),
+        "((NIL T) (NIL T) (T T))");
+    /* deftype aliases expand for the 16-bit kinds too */
+    eval_print("(deftype tbv-u16 () '(unsigned-byte 16))");
+    ASSERT_STR_EQ(eval_print(
+        "(typep (make-array 2 :element-type '(unsigned-byte 16))"
+        " '(vector tbv-u16))"), "T");
+}
+
+TEST(w16_sequences)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(fill (make-array 3 :element-type '(unsigned-byte 16)) 12345)"),
+        "#(12345 12345 12345)");
+    ASSERT_STR_EQ(eval_print(
+        "(fill (make-array 4 :element-type '(unsigned-byte 16)"
+        " :initial-element 1) 999 :start 1 :end 3)"),
+        "#(1 999 999 1)");
+    ASSERT_STR_EQ(eval_print(
+        "(subseq (make-array 5 :element-type '(unsigned-byte 16)"
+        " :initial-contents '(300 1000 40000 1000 500)) 1 4)"),
+        "#(1000 40000 1000)");
+    ASSERT_STR_EQ(eval_print(
+        "(array-element-type (subseq (make-array 2 :element-type"
+        " '(signed-byte 16)) 0))"),
+        "(SIGNED-BYTE 16)");
+    ASSERT_STR_EQ(eval_print(
+        "(let* ((v (make-array 3 :element-type '(unsigned-byte 16)"
+        "            :initial-contents '(256 512 65535)))"
+        "       (c (copy-seq v)))"
+        "  (list (reverse v) (eq c v) (array-element-type c)))"),
+        "(#(65535 512 256) NIL (UNSIGNED-BYTE 16))");
+    ASSERT_STR_EQ(eval_print(
+        "(nreverse (make-array 3 :element-type '(signed-byte 16)"
+        " :initial-contents '(-1 0 -32768)))"),
+        "#(-32768 0 -1)");
+    ASSERT_STR_EQ(eval_print(
+        "(sort (make-array 5 :element-type '(unsigned-byte 16)"
+        " :initial-contents '(3000 100 40000 100 500)) #'<)"),
+        "#(100 100 500 3000 40000)");
+    ASSERT_STR_EQ(eval_print(
+        "(replace (make-array 3 :element-type '(unsigned-byte 16))"
+        " (make-array 3 :element-type '(unsigned-byte 16)"
+        " :initial-contents '(1000 2000 3000)))"),
+        "#(1000 2000 3000)");
+    /* (setf subseq) same-width fast path AND cross-width element-wise path */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((v (make-array 4 :element-type '(unsigned-byte 16))))"
+        "  (setf (subseq v 1 3) (make-array 2 :element-type '(unsigned-byte 16)"
+        "                          :initial-contents '(40000 50000)))"
+        "  v)"),
+        "#(0 40000 50000 0)");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((v (make-array 3 :element-type '(unsigned-byte 16))))"
+        "  (setf (subseq v 0) (make-array 3 :element-type '(unsigned-byte 8)"
+        "                        :initial-contents '(1 2 255)))"
+        "  v)"),
+        "#(1 2 255)");
+    /* cross-width store still range-checks: u16 values into a u8 target */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case"
+        "  (let ((v (make-array 2 :element-type '(unsigned-byte 8))))"
+        "    (setf (subseq v 0) (make-array 2 :element-type '(unsigned-byte 16)"
+        "                          :initial-contents '(1 300))))"
+        "  (type-error () :caught))"),
+        ":CAUGHT");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((v (make-array 5 :element-type '(unsigned-byte 16)"
+        " :initial-contents '(300 100 4000 100 50000))))"
+        "  (list (position 4000 v) (count 100 v) (find 50000 v)"
+        "        (reduce #'+ v)))"),
+        "(2 2 50000 54500)");
+    /* remove keeps the packed 16-bit result type */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((r (remove 1000 (make-array 4 :element-type '(unsigned-byte 16)"
+        "                        :initial-contents '(1000 40000 1000 2)))))"
+        "  (list r (array-element-type r)))"),
+        "(#(40000 2) (UNSIGNED-BYTE 16))");
+}
+
+TEST(w16_fill_pointer_push_pop_adjust)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((v (make-array 3 :element-type '(unsigned-byte 16) :fill-pointer 0)))"
+        "  (list (vector-push 40000 v) (vector-push 65535 v) (fill-pointer v)"
+        "        (vector-pop v) (fill-pointer v)))"),
+        "(0 1 2 65535 1)");
+    ASSERT_STR_EQ(eval_print(
+        "(let* ((v (make-array 2 :element-type '(unsigned-byte 16)"
+        "             :initial-contents '(40000 50000)))"
+        "       (w (adjust-array v 4 :initial-element 60000)))"
+        "  (list (eq v w) w (array-element-type w)))"),
+        "(NIL #(40000 50000 60000 60000) (UNSIGNED-BYTE 16))");
+    /* adjustable 16-bit arrays use the annotated general-vector fallback
+     * and still report their element type */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((v (make-array 2 :element-type '(unsigned-byte 16)"
+        "            :adjustable t :fill-pointer 0)))"
+        "  (dotimes (i 4) (vector-push-extend (* i 10000) v))"
+        "  (list (adjustable-array-p v) (array-element-type v)"
+        "        (typep v '(vector (unsigned-byte 16))) (aref v 3)))"),
+        "(T (UNSIGNED-BYTE 16) T 30000)");
+    {
+        CL_Obj v = cl_eval_string(
+            "(make-array 4 :element-type '(unsigned-byte 16) :adjustable t)");
+        ASSERT(!CL_BYTE_VECTOR_P(v));
+        ASSERT(CL_VECTOR_P(v));
+    }
+}
+
+TEST(w16_coerce_and_equalp)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(array-element-type (coerce '(1000 65535) '(vector (unsigned-byte 16))))"),
+        "(UNSIGNED-BYTE 16)");
+    ASSERT_STR_EQ(eval_print(
+        "(coerce (make-array 3 :element-type '(unsigned-byte 16)"
+        " :initial-contents '(1 40000 65535)) 'list)"),
+        "(1 40000 65535)");
+    /* coercing a u8 vector to u16 widens element-wise */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((w (coerce (make-array 2 :element-type '(unsigned-byte 8)"
+        "                   :initial-contents '(1 255))"
+        "                 '(vector (unsigned-byte 16)))))"
+        "  (list w (array-element-type w)))"),
+        "(#(1 255) (UNSIGNED-BYTE 16))");
+    /* EQUALP is content-based across element widths and concrete types */
+    ASSERT_STR_EQ(eval_print(
+        "(list (equalp (make-array 2 :element-type '(unsigned-byte 16)"
+        "                :initial-contents '(1 2))"
+        "              (make-array 2 :element-type '(unsigned-byte 8)"
+        "                :initial-contents '(1 2)))"
+        "      (equalp (make-array 2 :element-type '(unsigned-byte 16)"
+        "                :initial-contents '(1 2)) (vector 1 2))"
+        "      (equalp (make-array 2 :element-type '(unsigned-byte 16)"
+        "                :initial-contents '(1 2))"
+        "              (make-array 2 :element-type '(unsigned-byte 16)"
+        "                :initial-contents '(1 3))))"),
+        "(T T NIL)");
+    /* equalp hash tables: 16-bit keys findable via equal-content u8 keys */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((h (make-hash-table :test 'equalp)))"
+        "  (setf (gethash (make-array 2 :element-type '(unsigned-byte 16)"
+        "                   :initial-contents '(1 2)) h) :hit16)"
+        "  (gethash (make-array 2 :element-type '(unsigned-byte 8)"
+        "             :initial-contents '(1 2)) h))"),
+        ":HIT16");
+}
+
+TEST(w16_displaced_multidim)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let* ((v (make-array 6 :element-type '(unsigned-byte 16)"
+        "            :initial-contents '(1000 2000 3000 4000 5000 60000)))"
+        "       (a (make-array '(2 3) :displaced-to v)))"
+        "  (list (aref a 0 0) (aref a 1 2) (array-element-type a)))"),
+        "(1000 60000 (UNSIGNED-BYTE 16))");
+    /* 1-D displaced window copy honours the element width */
+    ASSERT_STR_EQ(eval_print(
+        "(make-array 2 :element-type '(unsigned-byte 16) :displaced-to"
+        " (make-array 4 :element-type '(unsigned-byte 16)"
+        "   :initial-contents '(10 20 30000 40000))"
+        " :displaced-index-offset 2)"),
+        "#(30000 40000)");
+}
+
+TEST(w16_fasl_roundtrip_big_endian_wire)
+{
+    /* 16-bit payload must round-trip AND sit big-endian on the wire so a
+     * FASL written on a little-endian host loads unchanged on m68k. */
+    static uint8_t buf[256];
+    CL_FaslWriter w;
+    CL_FaslReader r;
+    CL_Obj bv = cl_make_byte_vector(3, 0, 1);
+    CL_ByteVector *b = (CL_ByteVector *)CL_OBJ_TO_PTR(bv);
+    CL_Obj back;
+    cl_bytevec_set(b, 0, 0x1234);
+    cl_bytevec_set(b, 1, 0x0001);
+    cl_bytevec_set(b, 2, 0xFFFF);
+
+    cl_fasl_writer_init(&w, buf, sizeof(buf));
+    cl_fasl_serialize_obj(&w, bv);
+    ASSERT_EQ_INT(FASL_OK, w.error);
+    cl_fasl_writer_release(&w);
+
+    /* Wire layout: tag, u32 length (BE), u8 is_signed, u8 elt_shift,
+     * then per-element u16 big-endian. */
+    ASSERT_EQ_INT(FASL_TAG_BYTE_VECTOR, (int)buf[0]);
+    ASSERT_EQ_INT(3, (int)buf[4]);       /* length LSB of big-endian u32 */
+    ASSERT_EQ_INT(0, (int)buf[5]);       /* is_signed */
+    ASSERT_EQ_INT(1, (int)buf[6]);       /* elt_shift */
+    ASSERT_EQ_INT(0x12, (int)buf[7]);    /* element 0 high byte first */
+    ASSERT_EQ_INT(0x34, (int)buf[8]);
+    ASSERT_EQ_INT(0x00, (int)buf[9]);
+    ASSERT_EQ_INT(0x01, (int)buf[10]);
+
+    cl_fasl_reader_init(&r, buf, w.pos);
+    back = cl_fasl_deserialize_obj(&r);
+    ASSERT_EQ_INT(FASL_OK, r.error);
+    ASSERT(CL_BYTE_VECTOR_P(back));
+    b = (CL_ByteVector *)CL_OBJ_TO_PTR(back);
+    ASSERT_EQ_INT(3, (int)b->length);
+    ASSERT_EQ_INT(0, (int)b->is_signed);
+    ASSERT_EQ_INT(1, (int)b->elt_shift);
+    ASSERT_EQ_INT(0x1234, (int)cl_bytevec_get(b, 0));
+    ASSERT_EQ_INT(0x0001, (int)cl_bytevec_get(b, 1));
+    ASSERT_EQ_INT(0xFFFF, (int)cl_bytevec_get(b, 2));
+
+    /* Signed variant keeps sign across the round trip */
+    bv = cl_make_byte_vector(2, 1, 1);
+    b = (CL_ByteVector *)CL_OBJ_TO_PTR(bv);
+    cl_bytevec_set(b, 0, -32768);
+    cl_bytevec_set(b, 1, 32767);
+    cl_fasl_writer_init(&w, buf, sizeof(buf));
+    cl_fasl_serialize_obj(&w, bv);
+    ASSERT_EQ_INT(FASL_OK, w.error);
+    cl_fasl_writer_release(&w);
+    cl_fasl_reader_init(&r, buf, w.pos);
+    back = cl_fasl_deserialize_obj(&r);
+    ASSERT_EQ_INT(FASL_OK, r.error);
+    b = (CL_ByteVector *)CL_OBJ_TO_PTR(back);
+    ASSERT_EQ_INT(-32768, (int)cl_bytevec_get(b, 0));
+    ASSERT_EQ_INT(32767, (int)cl_bytevec_get(b, 1));
+}
+
+TEST(w16_io_ffi_reject_non_octet)
+{
+    /* Byte-copy interfaces (FFI poke-bytes, UDP buffers) must reject 16-bit
+     * vectors loudly instead of silently reinterpreting 2-byte elements. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((p (ffi:alloc-foreign 8)))"
+        "  (unwind-protect"
+        "      (handler-case"
+        "          (ffi:poke-bytes p (make-array 2 :element-type"
+        "                              '(unsigned-byte 16)))"
+        "        (error () :caught))"
+        "    (ffi:free-foreign p)))"),
+        ":CAUGHT");
 }
 
 int main(void)
@@ -915,6 +1310,18 @@ int main(void)
     RUN(subtypep_array_element_types);
 
     RUN(fasl_roundtrip);
+
+    RUN(w16_alloc_layout_and_accessors);
+    RUN(w16_make_array_routing);
+    RUN(w16_init_and_boundaries);
+    RUN(w16_range_errors);
+    RUN(w16_types_and_upgrading);
+    RUN(w16_sequences);
+    RUN(w16_fill_pointer_push_pop_adjust);
+    RUN(w16_coerce_and_equalp);
+    RUN(w16_displaced_multidim);
+    RUN(w16_fasl_roundtrip_big_endian_wire);
+    RUN(w16_io_ffi_reject_non_octet);
 
     teardown();
     REPORT();

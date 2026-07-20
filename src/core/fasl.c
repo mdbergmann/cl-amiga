@@ -1332,7 +1332,18 @@ static int fasl_ser_step(CL_FaslWriter *w, FaslSerStack *s)
             cl_fasl_write_u8(w, FASL_TAG_BYTE_VECTOR);
             cl_fasl_write_u32(w, bv->length);
             cl_fasl_write_u8(w, bv->is_signed);
-            cl_fasl_write_bytes(w, bv->data, bv->length);
+            cl_fasl_write_u8(w, bv->elt_shift);
+            if (bv->elt_shift) {
+                /* 16-bit elements: write each element big-endian so the
+                 * FASL is byte-identical across host (LE) and m68k (BE) —
+                 * a raw memory dump would bake in the writer's endianness. */
+                uint32_t i;
+                for (i = 0; i < bv->length; i++)
+                    cl_fasl_write_u16(w,
+                        ((const uint16_t *)(const void *)bv->data)[i]);
+            } else {
+                cl_fasl_write_bytes(w, bv->data, bv->length);
+            }
             return 1;
         }
 
@@ -2639,15 +2650,28 @@ CL_Obj cl_fasl_deserialize_obj(CL_FaslReader *r)
     case FASL_TAG_BYTE_VECTOR: {
         uint32_t blen = cl_fasl_read_u32(r);
         uint8_t is_signed = cl_fasl_read_u8(r);
+        uint8_t elt_shift = cl_fasl_read_u8(r);
         CL_Obj result;
         CL_ByteVector *bv;
         if (r->error) return CL_NIL;
+        if (elt_shift > 1) { r->error = FASL_ERR_BAD_LENGTH; return CL_NIL; }
         /* Cap the raw u32-from-disk length before allocating, and require
-         * the bytes to actually be present in the remaining input. */
-        if (!fasl_check_count(r, blen, 1, CL_MAX_BYTEVEC_BYTES)) return CL_NIL;
-        result = cl_make_byte_vector(blen, is_signed != 0);
+         * the bytes to actually be present in the remaining input.  The
+         * per-element byte width scales both checks. */
+        if (!fasl_check_count(r, blen, 1u << elt_shift,
+                              CL_MAX_BYTEVEC_BYTES >> elt_shift))
+            return CL_NIL;
+        result = cl_make_byte_vector(blen, is_signed != 0, elt_shift);
         bv = (CL_ByteVector *)CL_OBJ_TO_PTR(result);
-        cl_fasl_read_bytes(r, bv->data, blen);
+        if (elt_shift) {
+            /* 16-bit elements are stored big-endian on the wire (see the
+             * writer) — decode via read_u16 so LE hosts byte-swap. */
+            uint32_t i;
+            for (i = 0; i < blen; i++)
+                ((uint16_t *)(void *)bv->data)[i] = cl_fasl_read_u16(r);
+        } else {
+            cl_fasl_read_bytes(r, bv->data, blen);
+        }
         return result;
     }
 

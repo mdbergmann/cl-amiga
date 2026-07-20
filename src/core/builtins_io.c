@@ -3958,6 +3958,11 @@ static void check_octet_vector(CL_Obj obj, const char *who, uint32_t *len_out,
     *bv_out = NULL;
     if (CL_BYTE_VECTOR_P(obj)) {
         CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(obj);
+        if (bv->elt_shift)
+            cl_error(CL_ERR_TYPE,
+                     "%s: buffer must be an octet vector — a packed "
+                     "(UNSIGNED-BYTE 16)/(SIGNED-BYTE 16) vector holds "
+                     "2-byte elements, not octets", who);
         *bv_out = bv;
         *len_out = cl_bytevec_active_length(bv);
         *cap_out = bv->length;

@@ -807,6 +807,7 @@ static CL_Obj bi_subseq(CL_Obj *args, int n)
         CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(args[0]);
         uint32_t len = cl_bytevec_active_length(bv);
         int is_signed = bv->is_signed;
+        int elt_shift = bv->elt_shift;
         CL_Obj result;
         int32_t rlen;
         end = (n > 2 && !CL_NULL_P(args[2]) && CL_FIXNUM_P(args[2]))
@@ -815,10 +816,11 @@ static CL_Obj bi_subseq(CL_Obj *args, int n)
         if (end > (int32_t)len) end = (int32_t)len;
         if (start > end) start = end;
         rlen = end - start;
-        result = cl_make_byte_vector((uint32_t)rlen, is_signed);
+        result = cl_make_byte_vector((uint32_t)rlen, is_signed, elt_shift);
         bv = (CL_ByteVector *)CL_OBJ_TO_PTR(args[0]);  /* re-fetch after alloc */
         memcpy(((CL_ByteVector *)CL_OBJ_TO_PTR(result))->data,
-               bv->data + start, (size_t)rlen);
+               bv->data + ((size_t)start << elt_shift),
+               (size_t)rlen << elt_shift);
         return result;
     }
     /* List subseq */
@@ -958,39 +960,37 @@ static CL_Obj bi_setf_subseq(CL_Obj *args, int n)
         return new_seq;
     }
 
-    /* Byte-vector target: fast raw copy when the source is also a byte
-     * vector, else element-wise with range checks. */
+    /* Byte-vector target: fast raw copy when the source is a byte vector of
+     * the same element width, else element-wise with range checks. */
     if (CL_BYTE_VECTOR_P(seq)) {
         CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(seq);
-        if (CL_BYTE_VECTOR_P(new_seq)) {
+        if (CL_BYTE_VECTOR_P(new_seq) &&
+            ((CL_ByteVector *)CL_OBJ_TO_PTR(new_seq))->elt_shift ==
+                bv->elt_shift) {
             CL_ByteVector *src = (CL_ByteVector *)CL_OBJ_TO_PTR(new_seq);
             if (copy_len > 0)
-                memcpy(bv->data + start, src->data, (size_t)copy_len);
+                memcpy(bv->data + ((size_t)start << bv->elt_shift), src->data,
+                       (size_t)copy_len << bv->elt_shift);
             return new_seq;
         }
         for (i = 0; i < copy_len; i++) {
             CL_Obj elem;
-            int32_t v = 0;
-            int bad;
             if (CL_VECTOR_P(new_seq))
                 elem = cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(new_seq))[i];
+            else if (CL_BYTE_VECTOR_P(new_seq))
+                /* Different element width — go element-wise with checks. */
+                elem = CL_MAKE_FIXNUM(cl_bytevec_get(
+                    (CL_ByteVector *)CL_OBJ_TO_PTR(new_seq), (uint32_t)i));
             else {
                 CL_Obj tmp = new_seq;
                 int32_t j;
                 for (j = 0; j < i && !CL_NULL_P(tmp); j++) tmp = cl_cdr(tmp);
                 elem = CL_NULL_P(tmp) ? CL_NIL : cl_car(tmp);
             }
-            bad = !CL_FIXNUM_P(elem);
-            if (!bad) {
-                v = CL_FIXNUM_VAL(elem);
-                bad = bv->is_signed ? (v < -128 || v > 127) : (v < 0 || v > 255);
-            }
-            if (bad)
-                cl_signal_type_error(elem,
-                                     bv->is_signed ? "(SIGNED-BYTE 8)"
-                                                   : "(UNSIGNED-BYTE 8)",
-                                     "(SETF SUBSEQ) on a byte vector");
-            bv->data[start + i] = (uint8_t)v;
+            cl_bytevec_set(bv, start + i,
+                           cl_bytevec_check_value(elem, bv->is_signed,
+                                                  bv->elt_shift,
+                                                  "(SETF SUBSEQ) on a byte vector"));
         }
         return new_seq;
     }

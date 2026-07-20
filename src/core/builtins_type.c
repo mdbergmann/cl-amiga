@@ -61,6 +61,8 @@ static int typep_check(CL_Obj obj, CL_Obj type_spec);
 int cl_type_is_bit_subtype(CL_Obj type);
 int cl_type_is_u8_subtype(CL_Obj type);
 int cl_type_is_s8_subtype(CL_Obj type);
+int cl_type_is_u16_subtype(CL_Obj type);
+int cl_type_is_s16_subtype(CL_Obj type);
 
 /* --- Upgraded array element classes (shared by TYPEP and SUBTYPEP) ---
  *
@@ -82,6 +84,8 @@ int cl_type_is_s8_subtype(CL_Obj type);
 #define AEC_CHAR   101
 #define AEC_U8     102
 #define AEC_S8     103
+#define AEC_U16    104
+#define AEC_S16    105
 
 /* Map an element-type SPECIFIER to its upgraded class, expanding deftype
  * aliases (specialization order bit > u8 > s8 mirrors
@@ -91,14 +95,17 @@ int cl_type_is_s8_subtype(CL_Obj type);
 static int elt_spec_class(CL_Obj et)
 {
     int is_char = 0, is_wide = 0, is_bit = 0, is_u8 = 0, is_s8 = 0;
+    int is_u16 = 0, is_s16 = 0;
     if (CL_SYMBOL_P(et) && strcmp(cl_symbol_name(et), "*") == 0)
         return AEC_WILD;
     cl_classify_array_elt_type(et, 16, &is_char, &is_wide, &is_bit,
-                               &is_u8, &is_s8);
+                               &is_u8, &is_s8, &is_u16, &is_s16);
     if (is_bit)  return AEC_BIT;
     if (is_char) return AEC_CHAR;
     if (is_u8)   return AEC_U8;
     if (is_s8)   return AEC_S8;
+    if (is_u16)  return AEC_U16;
+    if (is_s16)  return AEC_S16;
     /* General storage: discriminate the annotated numeric codes from T
      * (also expands deftype aliases of FIXNUM / the float types). */
     return (int)cl_classify_vec_elt_code(et, 16);
@@ -110,15 +117,19 @@ static int obj_elt_class(CL_Obj obj)
 {
     if (CL_BIT_VECTOR_P(obj))  return AEC_BIT;
     if (CL_ANY_STRING_P(obj))  return AEC_CHAR;
-    if (CL_BYTE_VECTOR_P(obj))
-        return ((CL_ByteVector *)CL_OBJ_TO_PTR(obj))->is_signed ? AEC_S8
-                                                                : AEC_U8;
+    if (CL_BYTE_VECTOR_P(obj)) {
+        CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(obj);
+        if (bv->elt_shift) return bv->is_signed ? AEC_S16 : AEC_U16;
+        return bv->is_signed ? AEC_S8 : AEC_U8;
+    }
     if (CL_VECTOR_P(obj)) {
         CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
         if (v->flags & CL_VEC_FLAG_STRING) return AEC_CHAR;
         switch (v->elt_type) {
         case CL_VEC_ELT_U8:           return AEC_U8;
         case CL_VEC_ELT_S8:           return AEC_S8;
+        case CL_VEC_ELT_U16:          return AEC_U16;
+        case CL_VEC_ELT_S16:          return AEC_S16;
         case CL_VEC_ELT_FIXNUM:       return AEC_FIXNUM;
         case CL_VEC_ELT_SINGLE_FLOAT: return AEC_SF;
         case CL_VEC_ELT_DOUBLE_FLOAT: return AEC_DF;
@@ -926,16 +937,17 @@ static CL_Obj bi_type_of(CL_Obj *args, int n)
         name = (bv->flags == 0) ? "SIMPLE-BIT-VECTOR" : "BIT-VECTOR";
         return cl_intern(name, (uint32_t)strlen(name));
     }
-    /* For byte vectors: (VECTOR (UNSIGNED-BYTE 8) len) — a specifier the
+    /* For byte vectors: (VECTOR (UNSIGNED-BYTE 8/16) len) — a specifier the
      * typep compound-VECTOR path recognizes, so (typep x (type-of x)) holds. */
     if (CL_BYTE_VECTOR_P(args[0])) {
         CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(args[0]);
         uint32_t blen = bv->length;
         int is_signed = bv->is_signed;
+        int nbits = bv->elt_shift ? 16 : 8;
         CL_Obj tail, et_tail, et, mid, vec_sym;
         tail = cl_cons(CL_MAKE_FIXNUM((int32_t)blen), CL_NIL);
         CL_GC_PROTECT(tail);
-        et_tail = cl_cons(CL_MAKE_FIXNUM(8), CL_NIL);
+        et_tail = cl_cons(CL_MAKE_FIXNUM(nbits), CL_NIL);
         CL_GC_PROTECT(et_tail);
         et = cl_cons(is_signed ? cl_intern("SIGNED-BYTE", 11)
                                : cl_intern("UNSIGNED-BYTE", 13), et_tail);
@@ -1036,7 +1048,8 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
     CL_Obj result_type = args[1];
     const char *tname;
     uint8_t coerce_vec_elt_code = CL_VEC_ELT_T; /* specialized elt type for VECTOR result */
-    int coerce_bytevec_signed = -1; /* >=0: build a packed byte vector (0=u8, 1=s8) */
+    int coerce_bytevec_signed = -1; /* >=0: build a packed byte vector (0=unsigned, 1=signed) */
+    int coerce_bytevec_shift = 0;   /* packed element width: 0 = 8-bit, 1 = 16-bit */
     CL_UNUSED(n);
 
     /* Expand user deftypes in the result-type so e.g. babel's
@@ -1080,11 +1093,21 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
                     result_type = cl_intern_in("BIT-VECTOR", 10, cl_package_cl);
                 else if (!CL_NULL_P(eargs) &&
                          (cl_type_is_u8_subtype(cl_car(eargs)) ||
-                          cl_type_is_s8_subtype(cl_car(eargs)))) {
-                    /* (vector (unsigned-byte 8)) etc. — build a packed byte
-                     * vector.  Bit subtypes were already routed above. */
-                    coerce_bytevec_signed =
-                        cl_type_is_u8_subtype(cl_car(eargs)) ? 0 : 1;
+                          cl_type_is_s8_subtype(cl_car(eargs)) ||
+                          cl_type_is_u16_subtype(cl_car(eargs)) ||
+                          cl_type_is_s16_subtype(cl_car(eargs)))) {
+                    /* (vector (unsigned-byte 8/16)) etc. — build a packed
+                     * byte vector.  Bit subtypes were already routed above;
+                     * test narrowest-first so 8-bit ranges pack 1 byte/elt. */
+                    if (cl_type_is_u8_subtype(cl_car(eargs)))
+                        coerce_bytevec_signed = 0;
+                    else if (cl_type_is_s8_subtype(cl_car(eargs)))
+                        coerce_bytevec_signed = 1;
+                    else if (cl_type_is_u16_subtype(cl_car(eargs))) {
+                        coerce_bytevec_signed = 0; coerce_bytevec_shift = 1;
+                    } else {
+                        coerce_bytevec_signed = 1; coerce_bytevec_shift = 1;
+                    }
                     result_type = cl_intern_in("VECTOR", 6, cl_package_cl);
                 }
                 else {
@@ -1388,11 +1411,14 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
          * Sources: lists, general vectors, byte vectors, bit vectors. */
         if (coerce_bytevec_signed >= 0) {
             int is_signed = coerce_bytevec_signed;
+            int elt_shift = coerce_bytevec_shift;
             uint32_t blen, bi;
             CL_Obj bvec;
             if (CL_BYTE_VECTOR_P(obj) &&
                 ((CL_ByteVector *)CL_OBJ_TO_PTR(obj))->is_signed ==
-                    (uint8_t)is_signed)
+                    (uint8_t)is_signed &&
+                ((CL_ByteVector *)CL_OBJ_TO_PTR(obj))->elt_shift ==
+                    (uint8_t)elt_shift)
                 return obj;
             if (CL_NULL_P(obj) || CL_CONS_P(obj)) {
                 CL_Obj p = obj;
@@ -1409,15 +1435,13 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
                 return CL_NIL;
             }
             CL_GC_PROTECT(obj);
-            bvec = cl_make_byte_vector(blen, is_signed);
+            bvec = cl_make_byte_vector(blen, is_signed, elt_shift);
             CL_GC_UNPROTECT(1);
             {
                 CL_ByteVector *dst = (CL_ByteVector *)CL_OBJ_TO_PTR(bvec);
                 CL_Obj p = obj;  /* list cursor; loop below never allocates */
                 for (bi = 0; bi < blen; bi++) {
                     CL_Obj elem;
-                    int32_t v = 0;
-                    int bad;
                     if (CL_CONS_P(p)) { elem = cl_car(p); p = cl_cdr(p); }
                     else if (CL_VECTOR_P(obj))
                         elem = cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(obj))[bi];
@@ -1427,18 +1451,10 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
                     else
                         elem = CL_MAKE_FIXNUM(cl_bv_get_bit(
                             (CL_BitVector *)CL_OBJ_TO_PTR(obj), bi));
-                    bad = !CL_FIXNUM_P(elem);
-                    if (!bad) {
-                        v = CL_FIXNUM_VAL(elem);
-                        bad = is_signed ? (v < -128 || v > 127)
-                                        : (v < 0 || v > 255);
-                    }
-                    if (bad)
-                        cl_signal_type_error(elem,
-                                             is_signed ? "(SIGNED-BYTE 8)"
-                                                       : "(UNSIGNED-BYTE 8)",
-                                             "COERCE to a byte vector");
-                    dst->data[bi] = (uint8_t)v;
+                    cl_bytevec_set(dst, bi,
+                                   cl_bytevec_check_value(elem, is_signed,
+                                                          elt_shift,
+                                                          "COERCE to a byte vector"));
                 }
             }
             return bvec;
@@ -2266,6 +2282,21 @@ int cl_type_is_s8_subtype(CL_Obj type)
 {
     int_range_t r = parse_integer_spec(type);
     return (r.integer_typed && r.known && r.lo >= -128 && r.hi <= 127) ? 1 : 0;
+}
+
+/* Same for (unsigned-byte 16) = (integer 0 65535).  Callers must test the
+ * 8-bit (and bit) classifiers first so narrower ranges pack tighter. */
+int cl_type_is_u16_subtype(CL_Obj type)
+{
+    int_range_t r = parse_integer_spec(type);
+    return (r.integer_typed && r.known && r.lo >= 0 && r.hi <= 65535) ? 1 : 0;
+}
+
+/* Same for (signed-byte 16) = (integer -32768 32767). */
+int cl_type_is_s16_subtype(CL_Obj type)
+{
+    int_range_t r = parse_integer_spec(type);
+    return (r.integer_typed && r.known && r.lo >= -32768 && r.hi <= 32767) ? 1 : 0;
 }
 
 /* Rewrite a couple of exact two-element compound type identities to their

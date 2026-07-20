@@ -37,6 +37,8 @@
  * the bytecode VM falls through to from its OP_ADD / OP_LT slow paths.
  * Keeping the JIT slow path identical to the VM's keeps behaviour
  * (and error messages) consistent across the two execution modes. */
+extern int32_t cl_bytevec_check_value(CL_Obj value, int is_signed,
+                                      int elt_shift, const char *ctx);
 extern CL_Obj cl_arith_add(CL_Obj a, CL_Obj b);
 extern CL_Obj cl_arith_sub(CL_Obj a, CL_Obj b);
 extern CL_Obj cl_arith_mul(CL_Obj a, CL_Obj b);
@@ -612,16 +614,12 @@ CL_Obj cl_jit_runtime_aset(CL_Obj vec_obj, CL_Obj idx_obj, CL_Obj val)
         cl_string_set_char_at(vec_obj, (uint32_t)idx, CL_CHAR_VAL(val));
     } else if (CL_BYTE_VECTOR_P(vec_obj)) {
         CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(vec_obj);
-        int32_t v;
         if (idx < 0 || (uint32_t)idx >= bv->length)
             cl_error(CL_ERR_ARGS, "ASET: index %d out of range", (int)idx);
-        if (!CL_FIXNUM_P(val))
-            cl_error(CL_ERR_TYPE, "ASET: value must be a fixnum for byte vector");
-        v = CL_FIXNUM_VAL(val);
-        if (bv->is_signed ? (v < -128 || v > 127) : (v < 0 || v > 255))
-            cl_error(CL_ERR_TYPE, "ASET: value %d out of range for %s byte vector",
-                     (int)v, bv->is_signed ? "(SIGNED-BYTE 8)" : "(UNSIGNED-BYTE 8)");
-        bv->data[idx] = (uint8_t)v;
+        cl_bytevec_set(bv, idx,
+                       cl_bytevec_check_value(val, bv->is_signed,
+                                              bv->elt_shift,
+                                              "ASET on a byte vector"));
     } else if (CL_VECTOR_P(vec_obj)) {
         CL_Vector *vec = (CL_Vector *)CL_OBJ_TO_PTR(vec_obj);
         if (idx < 0 || (uint32_t)idx >= vec->length)

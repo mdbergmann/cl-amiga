@@ -1814,25 +1814,29 @@ CL_Obj cl_make_bit_vector(uint32_t nbits)
     return CL_PTR_TO_OBJ(bv);
 }
 
-CL_Obj cl_make_byte_vector(uint32_t length, int is_signed)
+CL_Obj cl_make_byte_vector(uint32_t length, int is_signed, int elt_shift)
 {
     uint32_t alloc_size;
     CL_ByteVector *bv;
     /* Cap BEFORE computing alloc_size — a length near UINT32_MAX would wrap
-     * the `+ sizeof` arithmetic past cl_alloc's byte-size guard (see mem.h).
-     * Reachable with corrupted FASL byte-vector lengths (raw u32 from disk). */
-    if (length > CL_MAX_BYTEVEC_BYTES)
+     * the `<< shift`/`+ sizeof` arithmetic past cl_alloc's byte-size guard
+     * (see mem.h).  Reachable with corrupted FASL byte-vector lengths (raw
+     * u32 from disk).  The cap is in BYTES, so a 16-bit vector holds half as
+     * many elements. */
+    if (length > (CL_MAX_BYTEVEC_BYTES >> elt_shift))
         cl_storage_error("MAKE-BYTE-VECTOR: length %u exceeds the maximum "
-                         "heap object size (max %u bytes)",
-                         (unsigned)length, (unsigned)CL_MAX_BYTEVEC_BYTES);
-    alloc_size = sizeof(CL_ByteVector) + length;
+                         "heap object size (max %u elements)",
+                         (unsigned)length,
+                         (unsigned)(CL_MAX_BYTEVEC_BYTES >> elt_shift));
+    alloc_size = sizeof(CL_ByteVector) + (length << elt_shift);
     bv = (CL_ByteVector *)cl_alloc(TYPE_BYTE_VECTOR, alloc_size);
     if (!bv) return CL_NIL;
     bv->length = length;
     bv->fill_pointer = CL_NO_FILL_POINTER;
     bv->flags = 0;
     bv->is_signed = (uint8_t)(is_signed ? 1 : 0);
-    bv->_pad[0] = bv->_pad[1] = 0;
+    bv->elt_shift = (uint8_t)elt_shift;
+    bv->_pad = 0;
     /* data[] already zeroed by cl_alloc */
     return CL_PTR_TO_OBJ(bv);
 }
