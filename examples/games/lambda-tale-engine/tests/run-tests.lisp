@@ -3534,6 +3534,27 @@ messages so far (oldest first)."
            (multiple-value-bind (x y) (pointer-hotspot img)
              (list x y)))))
 
+;; The busy hourglass draws glass and sand in separate pens — frame on
+;; the high sprite plane, sand on the low one — and leaves part of the
+;; glass empty, rather than a solid one-color silhouette.
+(let* ((busy (busy-pointer-image))
+       (rows (pointer-sprite-rows busy)))
+  (check "busy pointer is sprite-wide" 16 (image-width busy))
+  (check "busy pointer converts row for row"
+         (length *busy-pointer-art*) (length rows))
+  (check "busy pointer shares the sprite colors"
+         *hand-pointer-colors*
+         (list (aref (image-palette busy) 1)
+               (aref (image-palette busy) 2)
+               (aref (image-palette busy) 3)))
+  (check-true "busy pointer inks sand in the sand pen"
+              (some (lambda (row) (plusp (first row))) rows))
+  (check-true "busy pointer inks the frame in the frame pen"
+              (some (lambda (row) (plusp (second row))) rows))
+  (check-true "busy pointer leaves empty glass between frame and sand"
+              (some (lambda (row-art) (search ".1" row-art))
+                    *busy-pointer-art*)))
+
 ;; The hover state machine behind the pointer swap: over a move zone
 ;; its directional arrow, over any other hotspot the finger, elsewhere
 ;; the hand.  *BUSY-POINTER-ACTIVE* suppresses the SetPointer call, so
