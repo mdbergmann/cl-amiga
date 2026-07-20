@@ -352,11 +352,18 @@ uint32_t cl_stream_alloc_outbuf(uint32_t initial_size)
     uint32_t blk, i, nb;
     int gc_ran = 0;
     char *data;
+    /* Capture the multithread decision ONCE: cl_thread_count can drop from 2
+     * to 1 (a peer worker exiting/joining) between the lock below and its
+     * matching unlock.  Re-evaluating CL_MT() at each unlock site would then
+     * skip the unlock of a mutex this thread locked, leaking cl_stream_table_mutex
+     * locked forever — the next FORMAT/string-output-stream deadlocks on it.
+     * Mirrors mem.c's `int multi = (cl_thread_count > 1)` idiom. */
+    int mt = CL_MT();
 
     if (!stream_initialized) cl_stream_init();
     if (initial_size == 0) initial_size = 256;
 
-    if (CL_MT()) platform_mutex_lock(cl_stream_table_mutex);
+    if (mt) platform_mutex_lock(cl_stream_table_mutex);
     for (;;) {
         nb = outbuf_nblocks;
         for (blk = 0; blk < nb; blk++) {
@@ -366,7 +373,7 @@ uint32_t cl_stream_alloc_outbuf(uint32_t initial_size)
                 if (b[i].data == NULL) {
                     data = (char *)platform_alloc(initial_size);
                     if (!data) {
-                        if (CL_MT()) platform_mutex_unlock(cl_stream_table_mutex);
+                        if (mt) platform_mutex_unlock(cl_stream_table_mutex);
                         return 0;
                     }
                     b[i].data = data;
@@ -386,7 +393,7 @@ uint32_t cl_stream_alloc_outbuf(uint32_t initial_size)
                         platform_write_string(dbg);
                     }
 #endif
-                    if (CL_MT()) platform_mutex_unlock(cl_stream_table_mutex);
+                    if (mt) platform_mutex_unlock(cl_stream_table_mutex);
                     return (blk << CL_OUTBUF_BLOCK_SHIFT) | i;
                 }
             }
@@ -430,12 +437,12 @@ uint32_t cl_stream_alloc_outbuf(uint32_t initial_size)
         gc_ran = 1;
         {
             extern void cl_gc(void);
-            if (CL_MT()) platform_mutex_unlock(cl_stream_table_mutex);
+            if (mt) platform_mutex_unlock(cl_stream_table_mutex);
             cl_gc();
-            if (CL_MT()) platform_mutex_lock(cl_stream_table_mutex);
+            if (mt) platform_mutex_lock(cl_stream_table_mutex);
         }
     }
-    if (CL_MT()) platform_mutex_unlock(cl_stream_table_mutex);
+    if (mt) platform_mutex_unlock(cl_stream_table_mutex);
 #ifdef DEBUG_STREAM
     platform_write_string("[STREAM] outbuf table FULL after GC\n");
 #endif
@@ -451,9 +458,13 @@ void cl_stream_free_outbuf(uint32_t handle)
      * buffer). */
     CL_OutBuf *buf = outbuf_at(handle);
     if (buf) {
-        if (CL_MT()) platform_mutex_lock(cl_stream_table_mutex);
+        /* Capture CL_MT() once — see cl_stream_alloc_outbuf: a live re-eval at
+         * the unlock could skip it if a peer thread exits mid-critical-section,
+         * leaking the mutex locked. */
+        int mt = CL_MT();
+        if (mt) platform_mutex_lock(cl_stream_table_mutex);
         if (!buf->data) {
-            if (CL_MT()) platform_mutex_unlock(cl_stream_table_mutex);
+            if (mt) platform_mutex_unlock(cl_stream_table_mutex);
             return;
         }
         platform_free(buf->data);
@@ -471,7 +482,7 @@ void cl_stream_free_outbuf(uint32_t handle)
             platform_write_string(dbg);
         }
 #endif
-        if (CL_MT()) platform_mutex_unlock(cl_stream_table_mutex);
+        if (mt) platform_mutex_unlock(cl_stream_table_mutex);
     }
 }
 
@@ -1454,15 +1465,19 @@ CL_Obj cl_make_cbuf_input_stream(const char *data, uint32_t len)
     CL_Obj s = cl_make_stream(CL_STREAM_INPUT, CL_STREAM_CBUF);
     CL_Stream *st;
     int i;
+    /* Capture CL_MT() once — see cl_stream_alloc_outbuf for why re-evaluating
+     * it at the unlock sites can leak cl_stream_table_mutex locked. */
+    int mt;
     if (CL_NULL_P(s)) return CL_NIL;
+    mt = CL_MT();
 
     /* Find a free slot in the cbuf table */
-    if (CL_MT()) platform_mutex_lock(cl_stream_table_mutex);
+    if (mt) platform_mutex_lock(cl_stream_table_mutex);
     for (i = 1; i < CL_CBUF_TABLE_SIZE; i++) {
         if (cbuf_table[i].data == NULL) {
             cbuf_table[i].data = data;
             cbuf_table[i].len = len;
-            if (CL_MT()) platform_mutex_unlock(cl_stream_table_mutex);
+            if (mt) platform_mutex_unlock(cl_stream_table_mutex);
             st = (CL_Stream *)CL_OBJ_TO_PTR(s);
             st->handle_id = (uint32_t)i;
             st->position = 0;
@@ -1470,7 +1485,7 @@ CL_Obj cl_make_cbuf_input_stream(const char *data, uint32_t len)
             return s;
         }
     }
-    if (CL_MT()) platform_mutex_unlock(cl_stream_table_mutex);
+    if (mt) platform_mutex_unlock(cl_stream_table_mutex);
     return CL_NIL;  /* No free slots */
 }
 
