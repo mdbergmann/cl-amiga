@@ -473,6 +473,90 @@ TEST(feature_suppress_in_list)
     ASSERT_STR_EQ(read_print("(1 #+nonexistent unknown-pkg:sym 3)"), "(1 3)");
 }
 
+/* --- *READ-SUPPRESS* (CLHS 2.4.8.17, 23.2) ---
+ *
+ * Regression: the reader tracked only its internal #+/#- skip counter and
+ * ignored the *READ-SUPPRESS* variable entirely, so a suppressed read still
+ * interned symbols, evaluated #., built #S structures, and signalled parse
+ * errors — e.g. (let ((*read-suppress* t)) (read-from-string
+ * "(a no-such-pkg:sym b)")) errored with "Package NO-SUCH-PKG not found"
+ * instead of returning NIL. */
+
+/* Read STR with *READ-SUPPRESS* bound true; reports the end position in
+ * *end_pos when non-NULL (parsing must still consume the whole datum). */
+static CL_Obj reads_suppressed(const char *str, int *end_pos)
+{
+    CL_ReadStream stream;
+    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_READ_SUPPRESS);
+    CL_Obj saved = s->value;
+    CL_Obj result;
+
+    stream.buf = str;
+    stream.pos = 0;
+    stream.len = (int)strlen(str);
+    stream.line = 1;
+
+    s->value = CL_T;
+    result = cl_read_from_string(&stream);
+    /* Re-derive: the read may have compacted the heap and moved the symbol. */
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_READ_SUPPRESS);
+    s->value = saved;
+
+    if (end_pos) *end_pos = stream.pos;
+    return result;
+}
+
+TEST(read_suppress_unknown_package_returns_nil)
+{
+    /* The reported bug: an unknown package qualifier must not signal. */
+    int end = 0;
+    CL_Obj obj = reads_suppressed("(a no-such-pkg:sym b)", &end);
+    ASSERT(CL_NULL_P(obj));
+    /* "parsing continues": the whole datum is consumed. */
+    ASSERT_EQ_INT(end, 21);
+}
+
+TEST(read_suppress_ordinary_form_returns_nil)
+{
+    /* Not just the error paths — a suppressed read yields NIL for any datum. */
+    ASSERT(CL_NULL_P(reads_suppressed("(a b c)", NULL)));
+    ASSERT(CL_NULL_P(reads_suppressed("42", NULL)));
+    ASSERT(CL_NULL_P(reads_suppressed("\"a string\"", NULL)));
+    ASSERT(CL_NULL_P(reads_suppressed(":a-keyword", NULL)));
+}
+
+TEST(read_suppress_interns_no_symbol)
+{
+    /* "no symbol will be constructed or interned" — CLHS 2.4.8.17. */
+    int status = 0;
+    ASSERT(CL_NULL_P(reads_suppressed("(zzz-suppressed-never-interned)", NULL)));
+    cl_find_symbol_with_status("ZZZ-SUPPRESSED-NEVER-INTERNED", 29,
+                               cl_current_package, &status);
+    ASSERT_EQ_INT(status, 0);  /* 0 = not found */
+}
+
+TEST(read_suppress_no_read_eval)
+{
+    /* #. must not evaluate while suppressed — the side effect would be
+     * observable even though the value is discarded. */
+    int end = 0;
+    ASSERT(CL_NULL_P(reads_suppressed("#.(+ 1 2)", &end)));
+    ASSERT_EQ_INT(end, 9);
+}
+
+TEST(read_suppress_no_struct_construction)
+{
+    /* #S must not look up MAKE-<type>; an undefined type is not an error. */
+    ASSERT(CL_NULL_P(reads_suppressed("#S(no-such-struct :a 1)", NULL)));
+}
+
+TEST(read_suppress_restored_after_read)
+{
+    /* Suppression is scoped to the binding: normal reads still work after. */
+    ASSERT(CL_NULL_P(reads_suppressed("(a b c)", NULL)));
+    ASSERT_STR_EQ(read_print("(a b c)"), "(A B C)");
+}
+
 /* --- Read-time eval (#.) --- */
 
 TEST(read_time_eval_arithmetic)
@@ -1102,6 +1186,12 @@ int main(void)
     RUN(feature_suppress_nested_toplevel_extra);
     RUN(feature_suppress_unknown_dispatch);
     RUN(feature_suppress_in_list);
+    RUN(read_suppress_unknown_package_returns_nil);
+    RUN(read_suppress_ordinary_form_returns_nil);
+    RUN(read_suppress_interns_no_symbol);
+    RUN(read_suppress_no_read_eval);
+    RUN(read_suppress_no_struct_construction);
+    RUN(read_suppress_restored_after_read);
 
     /* Read-time eval */
     RUN(read_time_eval_arithmetic);

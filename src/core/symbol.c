@@ -202,6 +202,7 @@ CL_Obj SYM_PRINT_RIGHT_MARGIN = CL_NIL;
 CL_Obj SYM_PRINT_PPRINT_DISPATCH = CL_NIL;
 CL_Obj SYM_PRINT_OBJECT_HOOK = CL_NIL;
 CL_Obj SYM_READ_DEFAULT_FLOAT_FORMAT = CL_NIL;
+CL_Obj SYM_READ_SUPPRESS = CL_NIL;
 CL_Obj KW_UPCASE = CL_NIL;
 CL_Obj KW_DOWNCASE = CL_NIL;
 CL_Obj KW_CAPITALIZE = CL_NIL;
@@ -780,10 +781,13 @@ void cl_symbol_init(void)
         s->value = cl_intern("SINGLE-FLOAT", 12);
     }
 
-    /* *READ-SUPPRESS* — CL spec, default NIL */
+    /* *READ-SUPPRESS* — CL spec, default NIL.  The reader consults this on
+     * every path that would construct/intern an object or signal a parse
+     * error (see read_suppress_active() in reader.c). */
     {
-        CL_Obj sym = cl_intern_in("*READ-SUPPRESS*", 15, cl_package_cl);
-        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+        CL_Symbol *s;
+        SYM_READ_SUPPRESS = cl_intern_in("*READ-SUPPRESS*", 15, cl_package_cl);
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_READ_SUPPRESS);
         s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
     }
 
@@ -1148,6 +1152,7 @@ void cl_symbol_init(void)
     cl_gc_register_root(&SYM_PRINT_PPRINT_DISPATCH);
     cl_gc_register_root(&SYM_PRINT_OBJECT_HOOK);
     cl_gc_register_root(&SYM_READ_DEFAULT_FLOAT_FORMAT);
+    cl_gc_register_root(&SYM_READ_SUPPRESS);
     cl_gc_register_root(&KW_UPCASE);
     cl_gc_register_root(&KW_DOWNCASE);
     cl_gc_register_root(&KW_CAPITALIZE);
