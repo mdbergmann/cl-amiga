@@ -250,6 +250,13 @@ test-fast: $(TEST_BINS) host
 		echo "FAIL"; \
 		failed=1; \
 	fi; \
+	echo "--- test_mt_stream_mutex_leak ---"; \
+	if sh $(TEST_SRCDIR)/test_mt_stream_mutex_leak.sh $(BUILDDIR)/clamiga; then \
+		echo "PASS"; \
+	else \
+		echo "FAIL"; \
+		failed=1; \
+	fi; \
 	echo "--- test_mt_dispatch_addmethod_race ---"; \
 	if sh $(TEST_SRCDIR)/test_mt_dispatch_addmethod_race.sh $(BUILDDIR)/clamiga; then \
 		echo "PASS"; \

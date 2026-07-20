@@ -1897,17 +1897,22 @@ static void *fasl_registry_mutex = NULL;
 static void fasl_reg_add(FaslRegistry *reg, void *item, const char *what)
 {
     int ok;
+    /* Capture CL_MT() once so the unlock decision matches the lock decision:
+     * cl_thread_count can drop 2->1 (a peer worker exiting) between them, and a
+     * re-evaluated guard would skip the unlock, leaking fasl_registry_mutex. */
+    int mt;
     if (!fasl_registry_mutex)
         platform_mutex_init(&fasl_registry_mutex);
+    mt = CL_MT();
 
-    if (CL_MT()) platform_mutex_lock(fasl_registry_mutex);
+    if (mt) platform_mutex_lock(fasl_registry_mutex);
     ok = reg->count < reg->cap;
     if (ok) {
         reg->items[reg->count] = item;
         reg->owners[reg->count] = CT->id;
         reg->count++;
     }
-    if (CL_MT()) platform_mutex_unlock(fasl_registry_mutex);
+    if (mt) platform_mutex_unlock(fasl_registry_mutex);
 
     if (!ok)
         cl_error(CL_ERR_GENERAL, "FASL: active-%s table full (max %d)",
@@ -1917,11 +1922,12 @@ static void fasl_reg_add(FaslRegistry *reg, void *item, const char *what)
 static void fasl_reg_remove(FaslRegistry *reg, void *item)
 {
     int i;
-    if (CL_MT()) platform_mutex_lock(fasl_registry_mutex);
+    int mt = CL_MT();  /* capture once — see fasl_reg_add */
+    if (mt) platform_mutex_lock(fasl_registry_mutex);
     /* Common case: LIFO pop (registration nests with load recursion). */
     if (reg->count > 0 && reg->items[reg->count - 1] == item) {
         reg->count--;
-        if (CL_MT()) platform_mutex_unlock(fasl_registry_mutex);
+        if (mt) platform_mutex_unlock(fasl_registry_mutex);
         return;
     }
     /* Defensive out-of-order removal. */
@@ -1936,7 +1942,7 @@ static void fasl_reg_remove(FaslRegistry *reg, void *item)
             break;
         }
     }
-    if (CL_MT()) platform_mutex_unlock(fasl_registry_mutex);
+    if (mt) platform_mutex_unlock(fasl_registry_mutex);
 }
 
 /* Error-unwind support: cl_error longjmps out of a FASL load/save without
