@@ -1327,6 +1327,15 @@ static int fasl_ser_step(CL_FaslWriter *w, FaslSerStack *s)
             return 1;
         }
 
+        case TYPE_BYTE_VECTOR: {
+            CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(obj);
+            cl_fasl_write_u8(w, FASL_TAG_BYTE_VECTOR);
+            cl_fasl_write_u32(w, bv->length);
+            cl_fasl_write_u8(w, bv->is_signed);
+            cl_fasl_write_bytes(w, bv->data, bv->length);
+            return 1;
+        }
+
         case TYPE_PACKAGE: {
             CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(obj);
             CL_String  *pname = (CL_String *)CL_OBJ_TO_PTR(pkg->name);
@@ -2624,6 +2633,21 @@ CL_Obj cl_fasl_deserialize_obj(CL_FaslReader *r)
         bv = (CL_BitVector *)CL_OBJ_TO_PTR(result);
         for (i = 0; i < n_words; i++)
             bv->data[i] = cl_fasl_read_u32(r);
+        return result;
+    }
+
+    case FASL_TAG_BYTE_VECTOR: {
+        uint32_t blen = cl_fasl_read_u32(r);
+        uint8_t is_signed = cl_fasl_read_u8(r);
+        CL_Obj result;
+        CL_ByteVector *bv;
+        if (r->error) return CL_NIL;
+        /* Cap the raw u32-from-disk length before allocating, and require
+         * the bytes to actually be present in the remaining input. */
+        if (!fasl_check_count(r, blen, 1, CL_MAX_BYTEVEC_BYTES)) return CL_NIL;
+        result = cl_make_byte_vector(blen, is_signed != 0);
+        bv = (CL_ByteVector *)CL_OBJ_TO_PTR(result);
+        cl_fasl_read_bytes(r, bv->data, blen);
         return result;
     }
 

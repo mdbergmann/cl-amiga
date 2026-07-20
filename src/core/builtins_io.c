@@ -3944,20 +3944,36 @@ static CL_Stream *check_udp_stream(CL_Obj obj, const char *who)
     return st;
 }
 
-/* Validate an octet vector argument and return its usable length (fill
- * pointer if active, else total length).  Displaced/multi-dim vectors are
- * rejected — the send/receive paths index v->data[] directly. */
-static CL_Vector *check_octet_vector(CL_Obj obj, const char *who, uint32_t *len_out)
+/* Validate an octet buffer argument — a simple general vector OR a packed
+ * (unsigned-byte 8)/(signed-byte 8) byte vector — and return its usable
+ * length (fill pointer if active, else total length) plus its total
+ * capacity.  Exactly one of *V_OUT / *BV_OUT is set.  Displaced/multi-dim
+ * general vectors are rejected — the send/receive paths index the element
+ * storage directly. */
+static void check_octet_vector(CL_Obj obj, const char *who, uint32_t *len_out,
+                               uint32_t *cap_out,
+                               CL_Vector **v_out, CL_ByteVector **bv_out)
 {
-    CL_Vector *v;
+    *v_out = NULL;
+    *bv_out = NULL;
+    if (CL_BYTE_VECTOR_P(obj)) {
+        CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(obj);
+        *bv_out = bv;
+        *len_out = cl_bytevec_active_length(bv);
+        *cap_out = bv->length;
+        return;
+    }
     if (!CL_VECTOR_P(obj))
         cl_error(CL_ERR_TYPE, "%s: buffer must be a vector", who);
-    v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
-    if (v->flags & (CL_VEC_FLAG_DISPLACED | CL_VEC_FLAG_MULTIDIM | CL_VEC_FLAG_STRING))
-        cl_error(CL_ERR_TYPE,
-                 "%s: buffer must be a simple (non-displaced) octet vector", who);
-    *len_out = (v->fill_pointer != CL_NO_FILL_POINTER) ? v->fill_pointer : v->length;
-    return v;
+    {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
+        if (v->flags & (CL_VEC_FLAG_DISPLACED | CL_VEC_FLAG_MULTIDIM | CL_VEC_FLAG_STRING))
+            cl_error(CL_ERR_TYPE,
+                     "%s: buffer must be a simple (non-displaced) octet vector", who);
+        *len_out = (v->fill_pointer != CL_NO_FILL_POINTER) ? v->fill_pointer : v->length;
+        *cap_out = v->length;
+        *v_out = v;
+    }
 }
 
 /* (ext:open-udp-stream host port) => stream
@@ -4007,21 +4023,22 @@ static CL_Obj bi_udp_stream_send(CL_Obj *args, int n)
 {
     CL_Stream *st;
     CL_Vector *v;
-    uint32_t len, i;
+    CL_ByteVector *bv;
+    uint32_t len, cap, i;
     uint32_t handle, wtmo;
     uint8_t sbuf[UDP_STACK_BUF];
     uint8_t *buf;
     int rc;
     st = check_udp_stream(args[0], "EXT:UDP-STREAM-SEND");
-    v = check_octet_vector(args[1], "EXT:UDP-STREAM-SEND", &len);
+    check_octet_vector(args[1], "EXT:UDP-STREAM-SEND", &len, &cap, &v, &bv);
     if (n >= 3 && !CL_NULL_P(args[2])) {
         if (!CL_FIXNUM_P(args[2]) || CL_FIXNUM_VAL(args[2]) < 0)
             cl_error(CL_ERR_TYPE,
                      "EXT:UDP-STREAM-SEND: length must be a non-negative integer");
-        if ((uint32_t)CL_FIXNUM_VAL(args[2]) > v->length)
+        if ((uint32_t)CL_FIXNUM_VAL(args[2]) > cap)
             cl_error(CL_ERR_GENERAL,
                      "EXT:UDP-STREAM-SEND: length %ld exceeds buffer size %u",
-                     (long)CL_FIXNUM_VAL(args[2]), (unsigned)v->length);
+                     (long)CL_FIXNUM_VAL(args[2]), (unsigned)cap);
         len = (uint32_t)CL_FIXNUM_VAL(args[2]);
     }
     if (len > 65507)
@@ -4031,15 +4048,20 @@ static CL_Obj bi_udp_stream_send(CL_Obj *args, int n)
     buf = (len <= UDP_STACK_BUF) ? sbuf : (uint8_t *)malloc(len);
     if (!buf)
         cl_error(CL_ERR_GENERAL, "EXT:UDP-STREAM-SEND: out of memory");
-    for (i = 0; i < len; i++) {
-        CL_Obj e = v->data[i];
-        if (!CL_FIXNUM_P(e) || CL_FIXNUM_VAL(e) < 0 || CL_FIXNUM_VAL(e) > 255) {
-            if (buf != sbuf) free(buf);
-            cl_error(CL_ERR_TYPE,
-                     "EXT:UDP-STREAM-SEND: buffer element %u is not an octet (0-255)",
-                     (unsigned)i);
+    if (bv) {
+        /* Packed byte vector: the datagram payload is the raw bytes. */
+        memcpy(buf, bv->data, len);
+    } else {
+        for (i = 0; i < len; i++) {
+            CL_Obj e = v->data[i];
+            if (!CL_FIXNUM_P(e) || CL_FIXNUM_VAL(e) < 0 || CL_FIXNUM_VAL(e) > 255) {
+                if (buf != sbuf) free(buf);
+                cl_error(CL_ERR_TYPE,
+                         "EXT:UDP-STREAM-SEND: buffer element %u is not an octet (0-255)",
+                         (unsigned)i);
+            }
+            buf[i] = (uint8_t)CL_FIXNUM_VAL(e);
         }
-        buf[i] = (uint8_t)CL_FIXNUM_VAL(e);
     }
     /* Capture the handle + timeout before the platform call: the send parks
      * in a GC safe region, and compaction can move the stream object. */
@@ -4064,14 +4086,15 @@ static CL_Obj bi_udp_stream_receive(CL_Obj *args, int n)
 {
     CL_Stream *st;
     CL_Vector *v;
-    uint32_t maxlen, i;
+    CL_ByteVector *bv;
+    uint32_t maxlen, cap, i;
     uint32_t handle, rtmo;
     uint8_t sbuf[UDP_STACK_BUF];
     uint8_t *buf;
     int rc;
     st = check_udp_stream(args[0], "EXT:UDP-STREAM-RECEIVE");
-    v = check_octet_vector(args[1], "EXT:UDP-STREAM-RECEIVE", &maxlen);
-    maxlen = v->length;   /* capacity, not fill pointer, bounds a receive */
+    check_octet_vector(args[1], "EXT:UDP-STREAM-RECEIVE", &maxlen, &cap, &v, &bv);
+    maxlen = cap;   /* capacity, not fill pointer, bounds a receive */
     if (n >= 3 && !CL_NULL_P(args[2])) {
         if (!CL_FIXNUM_P(args[2]) || CL_FIXNUM_VAL(args[2]) < 0)
             cl_error(CL_ERR_TYPE,
@@ -4099,9 +4122,14 @@ static CL_Obj bi_udp_stream_receive(CL_Obj *args, int n)
     }
     /* GC SAFETY: re-derive the vector pointer — the safe region above may
      * have let a compaction move it (args[] itself is GC-rooted). */
-    v = (CL_Vector *)CL_OBJ_TO_PTR(args[1]);
-    for (i = 0; i < (uint32_t)rc; i++)
-        v->data[i] = CL_MAKE_FIXNUM(buf[i]);
+    if (bv) {
+        bv = (CL_ByteVector *)CL_OBJ_TO_PTR(args[1]);
+        memcpy(bv->data, buf, (size_t)rc);
+    } else {
+        v = (CL_Vector *)CL_OBJ_TO_PTR(args[1]);
+        for (i = 0; i < (uint32_t)rc; i++)
+            v->data[i] = CL_MAKE_FIXNUM(buf[i]);
+    }
     if (buf != sbuf) free(buf);
     return CL_MAKE_FIXNUM(rc);
 }

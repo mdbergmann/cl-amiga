@@ -802,6 +802,25 @@ static CL_Obj bi_subseq(CL_Obj *args, int n)
         }
         return result;
     }
+    /* Byte-vector subseq: packed source and result — a single memcpy. */
+    if (CL_BYTE_VECTOR_P(args[0])) {
+        CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(args[0]);
+        uint32_t len = cl_bytevec_active_length(bv);
+        int is_signed = bv->is_signed;
+        CL_Obj result;
+        int32_t rlen;
+        end = (n > 2 && !CL_NULL_P(args[2]) && CL_FIXNUM_P(args[2]))
+            ? CL_FIXNUM_VAL(args[2]) : (int32_t)len;
+        if (start < 0) start = 0;
+        if (end > (int32_t)len) end = (int32_t)len;
+        if (start > end) start = end;
+        rlen = end - start;
+        result = cl_make_byte_vector((uint32_t)rlen, is_signed);
+        bv = (CL_ByteVector *)CL_OBJ_TO_PTR(args[0]);  /* re-fetch after alloc */
+        memcpy(((CL_ByteVector *)CL_OBJ_TO_PTR(result))->data,
+               bv->data + start, (size_t)rlen);
+        return result;
+    }
     /* List subseq */
     {
         CL_Obj list = args[0], result = CL_NIL, tail = CL_NIL;
@@ -852,6 +871,9 @@ static CL_Obj bi_setf_subseq(CL_Obj *args, int n)
     else if (CL_VECTOR_P(seq)) {
         CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
         seq_len = (int32_t)cl_vector_active_length(v);
+    } else if (CL_BYTE_VECTOR_P(seq)) {
+        CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(seq);
+        seq_len = (int32_t)cl_bytevec_active_length(bv);
     } else if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
         int32_t cnt = 0;
         CL_Obj tmp = seq;
@@ -874,6 +896,9 @@ static CL_Obj bi_setf_subseq(CL_Obj *args, int n)
     else if (CL_VECTOR_P(new_seq)) {
         CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(new_seq);
         new_len = (int32_t)cl_vector_active_length(v);
+    } else if (CL_BYTE_VECTOR_P(new_seq)) {
+        CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(new_seq);
+        new_len = (int32_t)cl_bytevec_active_length(bv);
     } else if (CL_CONS_P(new_seq) || CL_NULL_P(new_seq)) {
         int32_t cnt = 0;
         CL_Obj tmp = new_seq;
@@ -919,6 +944,9 @@ static CL_Obj bi_setf_subseq(CL_Obj *args, int n)
                 elem = CL_MAKE_CHAR(cl_string_char_at(new_seq, (uint32_t)i));
             else if (CL_VECTOR_P(new_seq))
                 elem = cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(new_seq))[i];
+            else if (CL_BYTE_VECTOR_P(new_seq))
+                elem = CL_MAKE_FIXNUM(cl_bytevec_get(
+                    (CL_ByteVector *)CL_OBJ_TO_PTR(new_seq), (uint32_t)i));
             else {
                 CL_Obj tmp = new_seq;
                 int32_t j;
@@ -926,6 +954,43 @@ static CL_Obj bi_setf_subseq(CL_Obj *args, int n)
                 elem = CL_NULL_P(tmp) ? CL_NIL : cl_car(tmp);
             }
             data[start + i] = elem;
+        }
+        return new_seq;
+    }
+
+    /* Byte-vector target: fast raw copy when the source is also a byte
+     * vector, else element-wise with range checks. */
+    if (CL_BYTE_VECTOR_P(seq)) {
+        CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(seq);
+        if (CL_BYTE_VECTOR_P(new_seq)) {
+            CL_ByteVector *src = (CL_ByteVector *)CL_OBJ_TO_PTR(new_seq);
+            if (copy_len > 0)
+                memcpy(bv->data + start, src->data, (size_t)copy_len);
+            return new_seq;
+        }
+        for (i = 0; i < copy_len; i++) {
+            CL_Obj elem;
+            int32_t v = 0;
+            int bad;
+            if (CL_VECTOR_P(new_seq))
+                elem = cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(new_seq))[i];
+            else {
+                CL_Obj tmp = new_seq;
+                int32_t j;
+                for (j = 0; j < i && !CL_NULL_P(tmp); j++) tmp = cl_cdr(tmp);
+                elem = CL_NULL_P(tmp) ? CL_NIL : cl_car(tmp);
+            }
+            bad = !CL_FIXNUM_P(elem);
+            if (!bad) {
+                v = CL_FIXNUM_VAL(elem);
+                bad = bv->is_signed ? (v < -128 || v > 127) : (v < 0 || v > 255);
+            }
+            if (bad)
+                cl_signal_type_error(elem,
+                                     bv->is_signed ? "(SIGNED-BYTE 8)"
+                                                   : "(UNSIGNED-BYTE 8)",
+                                     "(SETF SUBSEQ) on a byte vector");
+            bv->data[start + i] = (uint8_t)v;
         }
         return new_seq;
     }
@@ -977,6 +1042,9 @@ static uint32_t concat_total_length(CL_Obj *args, int n)
         } else if (CL_BIT_VECTOR_P(args[i])) {
             CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(args[i]);
             total += cl_bv_active_length(bv);
+        } else if (CL_BYTE_VECTOR_P(args[i])) {
+            CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(args[i]);
+            total += cl_bytevec_active_length(bv);
         } else {
             cl_error(CL_ERR_TYPE, "CONCATENATE: argument is not a sequence");
         }
@@ -1019,6 +1087,13 @@ static void concat_iterate(CL_Obj seq, concat_cb cb, void *ctx)
         for (j = 0; j < alen; j++)
             cb(CL_MAKE_FIXNUM(
                    cl_bv_get_bit((CL_BitVector *)CL_OBJ_TO_PTR(seq), j)), ctx);
+    } else if (CL_BYTE_VECTOR_P(seq)) {
+        uint32_t alen =
+            cl_bytevec_active_length((CL_ByteVector *)CL_OBJ_TO_PTR(seq));
+        uint32_t j;
+        for (j = 0; j < alen; j++)
+            cb(CL_MAKE_FIXNUM(
+                   cl_bytevec_get((CL_ByteVector *)CL_OBJ_TO_PTR(seq), j)), ctx);
     } else {
         CL_GC_UNPROTECT(1);
         cl_error(CL_ERR_TYPE, "CONCATENATE: argument is not a sequence");

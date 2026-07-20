@@ -1353,6 +1353,32 @@ static void print_obj(CL_Obj obj)
         break;
     }
 
+    case TYPE_BYTE_VECTOR: {
+        /* Packed (unsigned-byte 8)/(signed-byte 8) vector: print like a
+         * general vector, #(elt ...).  Elements are immediates (fixnums),
+         * so no GC-protection of obj is needed across the writes beyond
+         * re-deriving the heap pointer each iteration. */
+        CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(obj);
+        uint32_t bvi, bvlen;
+        char numbuf[8];
+        if (!print_array_p()) {
+            out_str("#<BYTE-VECTOR>");
+            break;
+        }
+        bvlen = cl_bytevec_active_length(bv);
+        CL_GC_PROTECT(obj);
+        out_str("#(");
+        for (bvi = 0; bvi < bvlen; bvi++) {
+            if (bvi > 0) out_char(' ');
+            bv = (CL_ByteVector *)CL_OBJ_TO_PTR(obj); /* re-derive: out_* can block/alloc */
+            snprintf(numbuf, sizeof(numbuf), "%d", (int)cl_bytevec_get(bv, bvi));
+            out_str(numbuf);
+        }
+        out_char(')');
+        CL_GC_UNPROTECT(1);
+        break;
+    }
+
     case TYPE_PACKAGE: {
         /* GC SAFETY (MT): the first write can block — root obj so the
          * name read afterwards goes through the forwarded local. */

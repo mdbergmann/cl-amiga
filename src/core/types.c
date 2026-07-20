@@ -123,6 +123,7 @@ const char *cl_type_name(CL_Obj obj)
         case TYPE_STREAM:   return "STREAM";
         case TYPE_RANDOM_STATE: return "RANDOM-STATE";
         case TYPE_BIT_VECTOR: return "BIT-VECTOR";
+        case TYPE_BYTE_VECTOR: return "BYTE-VECTOR";
         case TYPE_PATHNAME: return "PATHNAME";
         case TYPE_CELL:     return "CELL";
         case TYPE_THREAD:   return "THREAD";

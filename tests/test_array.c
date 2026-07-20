@@ -328,10 +328,16 @@ TEST(upgraded_array_element_type_bit_subtypes)
     ASSERT_STR_EQ(eval_print("(upgraded-array-element-type '(integer 0 (1)))"), "BIT");
     ASSERT_STR_EQ(eval_print("(upgraded-array-element-type '(unsigned-byte 1))"), "BIT");
     ASSERT_STR_EQ(eval_print("(upgraded-array-element-type '(mod 2))"), "BIT");
-    /* not subtypes of BIT → general T */
-    ASSERT_STR_EQ(eval_print("(upgraded-array-element-type '(integer 0 2))"), "T");
-    ASSERT_STR_EQ(eval_print("(upgraded-array-element-type '(unsigned-byte 8))"), "T");
-    ASSERT_STR_EQ(eval_print("(upgraded-array-element-type '(integer -1 1))"), "T");
+    /* not subtypes of BIT — but within the byte range they upgrade to the
+     * packed byte-vector element types (specialization order bit > u8 > s8) */
+    ASSERT_STR_EQ(eval_print("(upgraded-array-element-type '(integer 0 2))"),
+                  "(UNSIGNED-BYTE 8)");
+    ASSERT_STR_EQ(eval_print("(upgraded-array-element-type '(unsigned-byte 8))"),
+                  "(UNSIGNED-BYTE 8)");
+    ASSERT_STR_EQ(eval_print("(upgraded-array-element-type '(integer -1 1))"),
+                  "(SIGNED-BYTE 8)");
+    /* outside the byte range → general T */
+    ASSERT_STR_EQ(eval_print("(upgraded-array-element-type '(unsigned-byte 16))"), "T");
     /* make-array builds a true bit-vector that SBIT accepts */
     ASSERT_STR_EQ(eval_print(
         "(let ((b (make-array 3 :element-type '(integer 0 (1)))))"

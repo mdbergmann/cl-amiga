@@ -84,9 +84,12 @@ static uint32_t hash_wide_string(CL_Obj s, int ci)
 }
 #endif
 
-/* Content hash for a bit-vector over its active length — keys_equal compares
- * bit-vectors elementwise under EQUAL/EQUALP (CLHS), so the hash must be
- * content-based too or equal keys land in different buckets. */
+/* Content hash for a bit-vector over its active length, used under EQUAL —
+ * keys_equal compares bit-vectors elementwise under EQUAL (CLHS), so the hash
+ * must be content-based too or equal keys land in different buckets.  Under
+ * EQUALP, hash_obj instead takes the type-blind array-hash path (see
+ * equalp_xarr_len/equalp_xarr_elt) so bit-vectors hash compatibly with
+ * equal-content byte/general vectors. */
 static uint32_t hash_bit_vector_content(CL_Obj obj)
 {
     CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(obj);
@@ -96,6 +99,39 @@ static uint32_t hash_bit_vector_content(CL_Obj obj)
     for (i = 0; i < len; i++)
         hash = ((hash << 5) | (hash >> 27)) ^ (uint32_t)cl_bv_get_bit(bv, i);
     return hash;
+}
+
+/* --- Cross-type EQUALP array length/element accessors ---
+ *
+ * bi_equalp (builtins.c equalp_arr1d_*) treats general vectors, bit-vectors,
+ * and byte-vectors of equal rank-1 content as EQUALP-equal regardless of
+ * concrete type.  hash_obj/keys_equal must honor that same equivalence for
+ * :test 'equalp hash tables, or a key of one concrete array type becomes
+ * unfindable via an EQUALP-equal key of another (e.g. a byte-vector key vs.
+ * an equal-content general-vector lookup). */
+static uint32_t equalp_xarr_len(CL_Obj x)
+{
+    uint8_t type = CL_HDR_TYPE(CL_OBJ_TO_PTR(x));
+    if (type == TYPE_BIT_VECTOR)
+        return cl_bv_active_length((CL_BitVector *)CL_OBJ_TO_PTR(x));
+    if (type == TYPE_BYTE_VECTOR)
+        return cl_bytevec_active_length((CL_ByteVector *)CL_OBJ_TO_PTR(x));
+    return cl_vector_active_length((CL_Vector *)CL_OBJ_TO_PTR(x));
+}
+
+static CL_Obj equalp_xarr_elt(CL_Obj x, uint32_t i)
+{
+    uint8_t type = CL_HDR_TYPE(CL_OBJ_TO_PTR(x));
+    if (type == TYPE_BIT_VECTOR)
+        return CL_MAKE_FIXNUM(cl_bv_get_bit((CL_BitVector *)CL_OBJ_TO_PTR(x), i));
+    if (type == TYPE_BYTE_VECTOR)
+        return CL_MAKE_FIXNUM(cl_bytevec_get((CL_ByteVector *)CL_OBJ_TO_PTR(x), i));
+    return cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(x))[i];
+}
+
+static int is_equalp_xarr(CL_Obj x)
+{
+    return CL_VECTOR_P(x) || CL_BIT_VECTOR_P(x) || CL_BYTE_VECTOR_P(x);
 }
 
 /* --- Bit mixer for identity/fixnum hashing --- */
@@ -194,6 +230,19 @@ static uint32_t hash_obj(CL_Obj obj, uint32_t test)
              * rehash/collision (AH5). */
             return hash_wide_string(obj, test == CL_HT_TEST_EQUALP);
 #endif
+        if ((type == TYPE_VECTOR || type == TYPE_BIT_VECTOR ||
+             type == TYPE_BYTE_VECTOR) && test == CL_HT_TEST_EQUALP) {
+            /* EQUALP descends general/bit/byte vectors alike (keys_equal) —
+             * fold in length and the first element only, mirroring the cons
+             * rule below.  Deliberately type-blind so equal-content arrays of
+             * different concrete types (e.g. a byte-vector and a general
+             * vector) hash identically — see is_equalp_xarr/keys_equal. */
+            uint32_t len = equalp_xarr_len(obj);
+            uint32_t h = len * 31u + 2u;
+            if (len > 0)
+                h = h * 31u + hash_obj(equalp_xarr_elt(obj, 0), test);
+            return h;
+        }
         if (type == TYPE_BIT_VECTOR)
             return hash_bit_vector_content(obj);
         if (type == TYPE_SYMBOL)
@@ -201,16 +250,6 @@ static uint32_t hash_obj(CL_Obj obj, uint32_t test)
         if (type == TYPE_CONS) {
             /* Hash first element only (avoid deep recursion) */
             return hash_obj(cl_car(obj), test) * 31 + 1;
-        }
-        if (type == TYPE_VECTOR && test == CL_HT_TEST_EQUALP) {
-            /* EQUALP descends vectors (keys_equal) — fold in length and the
-             * first element only, mirroring the cons rule above.  Uses the
-             * same raw length/data fields keys_equal reads. */
-            CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
-            uint32_t h = v->length * 31u + 2u;
-            if (v->length > 0)
-                h = h * 31u + hash_obj(v->data[0], test);
-            return h;
         }
     }
 
@@ -330,18 +369,54 @@ static int keys_equal(CL_Obj a, CL_Obj b, uint32_t test)
         return 1;
     }
 
+    /* Byte-vectors: only EQUALP descends them — under EQUAL they are plain
+     * arrays, compared EQ (handled by the identity check at the top). */
+    if (test == CL_HT_TEST_EQUALP &&
+        CL_BYTE_VECTOR_P(a) && CL_BYTE_VECTOR_P(b)) {
+        CL_ByteVector *ba = (CL_ByteVector *)CL_OBJ_TO_PTR(a);
+        CL_ByteVector *bb = (CL_ByteVector *)CL_OBJ_TO_PTR(b);
+        uint32_t la = cl_bytevec_active_length(ba);
+        uint32_t lb = cl_bytevec_active_length(bb);
+        uint32_t i;
+        if (la != lb) return 0;
+        for (i = 0; i < la; i++)
+            if (cl_bytevec_get(ba, i) != cl_bytevec_get(bb, i)) return 0;
+        return 1;
+    }
+
     /* General vectors: only EQUALP descends them — CLHS EQUAL on arrays
      * (other than strings and bit-vectors) is EQ, which the identity check
      * at the top already handled.  The old unconditional descent violated
-     * the contract with hash_obj (content compare + identity hash → misses). */
+     * the contract with hash_obj (content compare + identity hash → misses).
+     * Uses active length/cl_vector_data (fill-pointer aware) to agree with
+     * equalp_xarr_len/elt below and with bi_equalp's equalp_arr1d_* family. */
     if (test == CL_HT_TEST_EQUALP && CL_VECTOR_P(a) && CL_VECTOR_P(b)) {
         CL_Vector *va = (CL_Vector *)CL_OBJ_TO_PTR(a);
         CL_Vector *vb = (CL_Vector *)CL_OBJ_TO_PTR(b);
+        uint32_t la = cl_vector_active_length(va);
+        uint32_t lb = cl_vector_active_length(vb);
         uint32_t i;
-        if (va->length != vb->length) return 0;
-        for (i = 0; i < va->length; i++) {
-            if (!keys_equal(va->data[i], vb->data[i], test)) return 0;
+        if (la != lb) return 0;
+        for (i = 0; i < la; i++) {
+            if (!keys_equal(cl_vector_data(va)[i], cl_vector_data(vb)[i], test)) return 0;
         }
+        return 1;
+    }
+
+    /* Cross-type EQUALP: a general vector, bit-vector, and byte-vector of
+     * equal (active) length and elementwise-EQUALP-equal content are
+     * EQUALP-equal regardless of concrete type (CLHS, mirrored from
+     * bi_equalp's equalp_arr1d_* family in builtins.c).  Only reached when a
+     * and b are DIFFERENT concrete array types — same-type pairs already
+     * matched one of the blocks above.  Must stay in sync with hash_obj's
+     * matching type-blind EQUALP array-hash formula (equalp_xarr_len/elt) or
+     * lookups by test key won't even reach the right bucket. */
+    if (test == CL_HT_TEST_EQUALP && is_equalp_xarr(a) && is_equalp_xarr(b)) {
+        uint32_t la = equalp_xarr_len(a), lb = equalp_xarr_len(b);
+        uint32_t i;
+        if (la != lb) return 0;
+        for (i = 0; i < la; i++)
+            if (!keys_equal(equalp_xarr_elt(a, i), equalp_xarr_elt(b, i), test)) return 0;
         return 1;
     }
 

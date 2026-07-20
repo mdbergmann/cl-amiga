@@ -81,6 +81,10 @@ static int32_t seq_length(CL_Obj seq)
         CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
         return (int32_t)cl_bv_active_length(bv);
     }
+    if (CL_BYTE_VECTOR_P(seq)) {
+        CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(seq);
+        return (int32_t)cl_bytevec_active_length(bv);
+    }
     cl_signal_type_error(seq, "SEQUENCE", "sequence operation");
     return 0;
 }
@@ -105,6 +109,11 @@ static CL_Obj seq_elt(CL_Obj seq, int32_t idx)
         if ((uint32_t)idx >= cl_bv_active_length(bv)) cl_error(CL_ERR_ARGS, "index out of bounds");
         return CL_MAKE_FIXNUM(cl_bv_get_bit(bv, (uint32_t)idx));
     }
+    if (CL_BYTE_VECTOR_P(seq)) {
+        CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(seq);
+        if ((uint32_t)idx >= cl_bytevec_active_length(bv)) cl_error(CL_ERR_ARGS, "index out of bounds");
+        return CL_MAKE_FIXNUM(cl_bytevec_get(bv, (uint32_t)idx));
+    }
     cl_signal_type_error(seq, "SEQUENCE", "sequence operation");
     return CL_NIL;
 }
@@ -127,6 +136,10 @@ static int32_t every_seq_len(CL_Obj seq)
         CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
         return (int32_t)cl_bv_active_length(bv);
     }
+    if (CL_BYTE_VECTOR_P(seq)) {
+        CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(seq);
+        return (int32_t)cl_bytevec_active_length(bv);
+    }
     return -1; /* list — length unknown */
 }
 
@@ -143,6 +156,10 @@ static CL_Obj every_seq_elt(CL_Obj seq, int32_t idx)
     if (CL_BIT_VECTOR_P(seq)) {
         CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
         return CL_MAKE_FIXNUM(cl_bv_get_bit(bv, (uint32_t)idx));
+    }
+    if (CL_BYTE_VECTOR_P(seq)) {
+        CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(seq);
+        return CL_MAKE_FIXNUM(cl_bytevec_get(bv, (uint32_t)idx));
     }
     return CL_NIL;
 }
@@ -1053,6 +1070,13 @@ static CL_Obj seq_to_gc_vector(CL_Obj seq, int32_t *out_len)
             cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(vec))[i] =
                 CL_MAKE_FIXNUM(cl_bv_get_bit((CL_BitVector *)CL_OBJ_TO_PTR(seq),
                                              (uint32_t)i));
+    } else if (CL_BYTE_VECTOR_P(seq)) {
+        len = (int32_t)cl_bytevec_active_length((CL_ByteVector *)CL_OBJ_TO_PTR(seq));
+        vec = cl_make_vector((uint32_t)len);
+        for (i = 0; i < len; i++)
+            cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(vec))[i] =
+                CL_MAKE_FIXNUM(cl_bytevec_get(
+                    (CL_ByteVector *)CL_OBJ_TO_PTR(seq), (uint32_t)i));
     } else {
         *out_len = 0;
         cl_error(CL_ERR_TYPE, "MERGE: not a sequence");
@@ -1246,6 +1270,12 @@ static void array_seq_set(CL_Obj seq, int32_t i, CL_Obj v)
         uint32_t p = (uint32_t)i;  /* cl_bv_set_bit evaluates its index twice */
         cl_bv_set_bit((CL_BitVector *)CL_OBJ_TO_PTR(seq), p,
                       (CL_FIXNUM_P(v) && CL_FIXNUM_VAL(v) != 0));
+    } else if (CL_BYTE_VECTOR_P(seq)) {
+        /* Used by SORT/NREVERSE-style permutations, where v originates from
+         * the same sequence and is always in range; silently skip non-fixnums
+         * to mirror the string/bit branches above. */
+        CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(seq);
+        if (CL_FIXNUM_P(v)) bv->data[i] = (uint8_t)CL_FIXNUM_VAL(v);
     } else if (CL_VECTOR_P(seq)) {
         cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(seq))[i] = v;
     }
@@ -1318,7 +1348,7 @@ static CL_Obj bi_sort(CL_Obj *args, int n)
         return args[0];
     }
 
-    if (CL_ANY_STRING_P(seq) || CL_BIT_VECTOR_P(seq)) {
+    if (CL_ANY_STRING_P(seq) || CL_BIT_VECTOR_P(seq) || CL_BYTE_VECTOR_P(seq)) {
         array_seq_insertion_sort(seq, seq_length(seq), pred, key_fn);
         return args[0];
     }
