@@ -72,6 +72,20 @@ CL_Obj cl_gensym_with_name(const char *prefix);
  * COERCE in builtins_type.c. */
 uint8_t cl_classify_vec_elt_code(CL_Obj type, int depth);
 
+/* Classify an array element-type specifier into the specialized storage
+ * classes make-array uses, expanding user deftypes up to DEPTH levels:
+ * *is_char (CHARACTER subtype → string), *is_wide_char, *is_bit
+ * (→ bit-vector), *is_u8 / *is_s8 (→ packed byte vector; specialization
+ * order bit > u8 > s8).  Flags it cannot determine stay untouched; T, * and
+ * unrecognized specifiers set nothing (general storage).  Defined in
+ * builtins_array.c; shared with TYPEP/SUBTYPEP in builtins_type.c so type
+ * tests agree with what MAKE-ARRAY actually builds.
+ * GC: may apply deftype expanders (cl_vm_apply) → objects can move; callers
+ * must GC-protect live CL_Obj locals across the call. */
+void cl_classify_array_elt_type(CL_Obj type, int depth,
+                                int *is_char, int *is_wide_char, int *is_bit,
+                                int *is_u8, int *is_s8);
+
 /* Non-interactive inspect display: write object and its components to
  * *standard-output*. Used by (inspect …) and exposed for testing. */
 void cl_inspect_show_obj(CL_Obj obj);

@@ -617,6 +617,211 @@ TEST(printer_forms)
 }
 
 /* ========================================================
+ * Step 10: remove/delete family (slice 2)
+ * ======================================================== */
+
+TEST(remove_delete_family)
+{
+    /* REMOVE returns a fresh PACKED vector and leaves the source intact
+     * (CLHS 17.3: result element type = source element type). */
+    ASSERT_STR_EQ(eval_print(
+        "(let* ((v (make-array 5 :element-type '(unsigned-byte 8)"
+        "            :initial-contents '(3 1 4 1 5)))"
+        "       (r (remove 1 v)))"
+        "  (list r (array-element-type r) (equalp v #(3 1 4 1 5))))"),
+        "(#(3 4 5) (UNSIGNED-BYTE 8) T)");
+    /* Signed variant */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((r (remove -1 (make-array 4 :element-type '(signed-byte 8)"
+        "                      :initial-contents '(-1 2 -1 -128)))))"
+        "  (list r (array-element-type r)))"),
+        "(#(2 -128) (SIGNED-BYTE 8))");
+    /* Keyword arguments: :count, :count+:from-end, :start, :end */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((v (make-array 5 :element-type '(unsigned-byte 8)"
+        "           :initial-contents '(3 1 4 1 5))))"
+        "  (list (remove 1 v :count 1)"
+        "        (remove 1 v :count 1 :from-end t)"
+        "        (remove 1 v :start 2)"
+        "        (remove 1 v :end 2)))"),
+        "(#(3 4 1 5) #(3 1 4 5) #(3 1 4 5) #(3 4 1 5))");
+    /* :key and :test run user code against fixnum elements */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((v (make-array 5 :element-type '(unsigned-byte 8)"
+        "           :initial-contents '(3 1 4 1 5))))"
+        "  (list (remove 2 v :key #'1+)"
+        "        (remove 1 v :test #'<)"
+        "        (remove 1 v :test-not #'eql)))"),
+        "(#(3 4 5) #(1 1) #(1 1))");
+    /* remove-if / remove-if-not */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((v (make-array 5 :element-type '(unsigned-byte 8)"
+        "           :initial-contents '(3 1 4 1 5))))"
+        "  (list (remove-if #'oddp v) (remove-if-not #'oddp v)))"),
+        "(#(4) #(3 1 1 5))");
+    /* DELETE family (may destroy the source; result is what matters) */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((r (delete 1 (make-array 5 :element-type '(unsigned-byte 8)"
+        "                     :initial-contents '(3 1 4 1 5)))))"
+        "  (list r (array-element-type r)))"),
+        "(#(3 4 5) (UNSIGNED-BYTE 8))");
+    ASSERT_STR_EQ(eval_print(
+        "(list (delete-if #'oddp (make-array 3 :element-type '(unsigned-byte 8)"
+        "                          :initial-contents '(1 2 3)))"
+        "      (delete-if-not #'oddp (make-array 3 :element-type '(unsigned-byte 8)"
+        "                              :initial-contents '(1 2 3))))"),
+        "(#(2) #(1 3))");
+    /* No match → all elements survive; all match → empty packed vector */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((v (make-array 2 :element-type '(unsigned-byte 8)"
+        "           :initial-contents '(7 7))))"
+        "  (list (remove 200 v) (remove 7 v)"
+        "        (array-element-type (remove 7 v))))"),
+        "(#(7 7) #() (UNSIGNED-BYTE 8))");
+    /* A non-sequence still signals a clean type-error */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (remove 1 (make-hash-table))"
+        "  (type-error () :caught))"),
+        ":CAUGHT");
+}
+
+/* ========================================================
+ * Step 11: deftype aliases as element types (typep / the)
+ *
+ * flexi-streams' (deftype octet () '(unsigned-byte 8)) regression: TYPEP
+ * must expand user deftype aliases when matching array element types, or
+ * (the (array octet *) v) inside string-to-octets signals a spurious
+ * type-error and every hunchentoot response dies.
+ * ======================================================== */
+
+TEST(typep_deftype_alias_element_type)
+{
+    eval_print("(deftype tbv-octet () '(unsigned-byte 8))");
+    eval_print("(deftype tbv-s8 () '(integer -128 127))");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((v (make-array 2 :element-type '(unsigned-byte 8))))"
+        "  (list (typep v '(vector tbv-octet))"
+        "        (typep v '(array tbv-octet *))"
+        "        (typep v '(array tbv-octet))"
+        "        (typep v '(simple-array tbv-octet (*)))"
+        "        (typep v '(vector tbv-s8))))"),
+        "(T T T T NIL)");
+    /* Signed byte vectors match the signed alias, not the unsigned one */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((v (make-array 2 :element-type '(signed-byte 8))))"
+        "  (list (typep v '(vector tbv-s8)) (typep v '(vector tbv-octet))))"),
+        "(T NIL)");
+    /* Non-byte arrays never match the aliases */
+    ASSERT_STR_EQ(eval_print(
+        "(list (typep (make-array 2) '(vector tbv-octet))"
+        "      (typep #*10 '(vector tbv-octet))"
+        "      (typep \"ab\" '(vector tbv-octet)))"),
+        "(NIL NIL NIL)");
+    /* The exact flexi-streams string-to-octets pattern: THE + setf aref
+     * at default safety must not signal */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((v (make-array 3 :element-type 'tbv-octet)))"
+        "  (setf (aref (the (array tbv-octet *) v) 0) 65)"
+        "  (aref v 0))"),
+        "65");
+}
+
+/* ========================================================
+ * Step 11b: multi-dim :displaced-to onto a packed byte vector
+ *
+ * serapeum's RESHAPE displaces a multi-dim array onto RANGE vectors, which
+ * pack to byte vectors since slice 1.  The packed heap type cannot back a
+ * live CL_Obj view, so make-array copies the window (values + byte element
+ * annotation) — same documented limitation as the string/bit-vector
+ * displaced paths: mutations of the target do not propagate.
+ * ======================================================== */
+
+TEST(displaced_multidim_onto_byte_vector)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let* ((v (make-array 6 :element-type '(unsigned-byte 8)"
+        "            :initial-contents '(1 2 3 4 5 6)))"
+        "       (a (make-array '(2 3) :displaced-to v)))"
+        "  (list (array-dimensions a) (aref a 0 0) (aref a 1 2)"
+        "        (array-element-type a)))"),
+        "((2 3) 1 6 (UNSIGNED-BYTE 8))");
+    /* :displaced-index-offset and signed sources */
+    ASSERT_STR_EQ(eval_print(
+        "(let* ((v (make-array 6 :element-type '(signed-byte 8)"
+        "            :initial-contents '(-1 -2 -3 -4 -5 -6)))"
+        "       (a (make-array '(2 2) :displaced-to v"
+        "                      :displaced-index-offset 2)))"
+        "  (list (aref a 0 0) (aref a 1 1) (array-element-type a)))"),
+        "(-3 -6 (SIGNED-BYTE 8))");
+    /* Out-of-bounds window still signals cleanly */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (make-array '(2 4) :displaced-to"
+        "                (make-array 6 :element-type '(unsigned-byte 8)))"
+        "  (error () :caught))"),
+        ":CAUGHT");
+}
+
+/* ========================================================
+ * Step 12: subtypep must respect upgraded element types
+ *
+ * CLHS 15: an array type is a subtype of another only when the UPGRADED
+ * element types agree.  The TID hierarchy used to drop element types,
+ * making ALL specialized array types mutual subtypes — serapeum's
+ * WITH-TYPE-DISPATCH dedups branches via subtypep, so the contradiction
+ * with TYPEP collapsed its dispatch and (serapeum:range -5 0) signalled
+ * a type-error.
+ * ======================================================== */
+
+TEST(subtypep_array_element_types)
+{
+    /* Distinct element classes are certainly NOT subtypes, both ways */
+    ASSERT_STR_EQ(eval_print(
+        "(list (multiple-value-list (subtypep '(simple-array (signed-byte 8) (*))"
+        "                                     '(simple-array integer (*))))"
+        "      (multiple-value-list (subtypep '(simple-array integer (*))"
+        "                                     '(simple-array (signed-byte 8) (*))))"
+        "      (multiple-value-list (subtypep '(simple-array (unsigned-byte 8) (*))"
+        "                                     '(simple-array (signed-byte 8) (*))))"
+        "      (multiple-value-list (subtypep '(simple-array bit (*))"
+        "                                     '(simple-array integer (*)))))"),
+        "((NIL T) (NIL T) (NIL T) (NIL T))");
+    /* Same element class remains a subtype */
+    ASSERT_STR_EQ(eval_print(
+        "(list (multiple-value-list (subtypep '(simple-array (unsigned-byte 8) (*))"
+        "                                     '(simple-array (unsigned-byte 8) (*))))"
+        "      (multiple-value-list (subtypep '(vector (unsigned-byte 8))"
+        "                                     '(array (unsigned-byte 8))))"
+        "      (multiple-value-list (subtypep '(vector tbv-octet)"
+        "                                     '(vector (unsigned-byte 8)))))"),
+        "((T T) (T T) (T T))");
+    /* Wildcard rules: constrained ⊆ wild, wild ⊄ constrained */
+    ASSERT_STR_EQ(eval_print(
+        "(list (multiple-value-list (subtypep '(vector (unsigned-byte 8)) 'vector))"
+        "      (multiple-value-list (subtypep '(vector (unsigned-byte 8)) 'sequence))"
+        "      (multiple-value-list (subtypep 'vector '(vector (unsigned-byte 8))))"
+        "      (multiple-value-list (subtypep 'vector '(vector t))))"),
+        "((T T) (T T) (NIL T) (NIL T))");
+    /* (vector character) ≡ string, (vector bit) ≡ bit-vector in the
+     * hierarchy */
+    ASSERT_STR_EQ(eval_print(
+        "(list (multiple-value-list (subtypep '(vector character) 'string))"
+        "      (multiple-value-list (subtypep '(vector bit) 'bit-vector))"
+        "      (multiple-value-list (subtypep 'string '(vector character)))"
+        "      (multiple-value-list (subtypep 'bit-vector '(array bit))))"),
+        "((T T) (T T) (T T) (T T))");
+    /* TYPEP and SUBTYPEP must agree: a byte vector is a member of every
+     * type it is a subtype of and of no type subtypep certainly excludes
+     * (the serapeum with-type-dispatch contract) */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((v (make-array 2 :element-type '(signed-byte 8)))"
+        "      (this '(simple-array (signed-byte 8) (*))))"
+        "  (list (typep v this)"
+        "        (multiple-value-list (subtypep this '(simple-array integer (*))))"
+        "        (typep v '(simple-array integer (*)))))"),
+        "(T (NIL T) NIL)");
+}
+
+/* ========================================================
  * Step 9: FASL round trip
  * ======================================================== */
 
@@ -703,6 +908,11 @@ int main(void)
     RUN(equalp_hash_table_keys);
 
     RUN(printer_forms);
+
+    RUN(remove_delete_family);
+    RUN(typep_deftype_alias_element_type);
+    RUN(displaced_multidim_onto_byte_vector);
+    RUN(subtypep_array_element_types);
 
     RUN(fasl_roundtrip);
 

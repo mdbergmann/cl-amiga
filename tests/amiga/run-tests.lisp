@@ -1461,6 +1461,53 @@
                         :initial-contents '(1 2 3)))
          (w (adjust-array v 5 :initial-element 9)))
     (list (eq v w) (coerce w 'list))))
+; Slice 2: REMOVE/DELETE keep the packed representation and honor the
+; keyword arguments (was: "not of type SEQUENCE (got BYTE-VECTOR)").
+(check "byte-vector remove/delete family" '((3 4 5) (unsigned-byte 8) (3 1 4 5) (4) (3 4 5) (5 7))
+  (let ((v (make-array 5 :element-type '(unsigned-byte 8)
+                       :initial-contents '(3 1 4 1 5))))
+    (list (coerce (remove 1 v) 'list)
+          (array-element-type (remove 1 v))
+          (coerce (remove 1 v :count 1 :from-end t) 'list)
+          (coerce (remove-if #'oddp v) 'list)
+          (coerce (delete 1 (copy-seq v)) 'list)
+          (coerce (remove -1 (make-array 4 :element-type '(signed-byte 8)
+                                         :initial-contents '(-1 5 -1 7)))
+                  'list))))
+; TYPEP expands deftype aliases in array element types (flexi-streams'
+; (deftype octet () '(unsigned-byte 8)) — the string-to-octets regression),
+; and the THE + setf aref pattern must not signal at default safety.
+(deftype rt-octet () '(unsigned-byte 8))
+(check "byte-vector typep deftype alias" '(t t t nil 65)
+  (let ((v (make-array 2 :element-type '(unsigned-byte 8)))
+        (s (make-array 2 :element-type '(signed-byte 8))))
+    (list (typep v '(vector rt-octet))
+          (typep v '(array rt-octet *))
+          (typep s '(vector (signed-byte 8)))
+          (typep s '(vector rt-octet))
+          (let ((w (make-array 3 :element-type 'rt-octet)))
+            (setf (aref (the (array rt-octet *) w) 0) 65)
+            (aref w 0)))))
+; Multi-dim :displaced-to onto a packed byte vector copies the window
+; (values + byte element annotation) — serapeum's RESHAPE-on-RANGE idiom.
+(check "byte-vector multi-dim displaced copy" '((2 3) 1 6 (unsigned-byte 8))
+  (let* ((v (make-array 6 :element-type '(unsigned-byte 8)
+                        :initial-contents '(1 2 3 4 5 6)))
+         (a (make-array '(2 3) :displaced-to v)))
+    (list (array-dimensions a) (aref a 0 0) (aref a 1 2)
+          (array-element-type a))))
+; SUBTYPEP compares UPGRADED element types (CLHS 15): distinct specialized
+; array types are certainly NOT subtypes; equal ones are.  serapeum's
+; with-type-dispatch relies on subtypep and typep agreeing here.
+(check "byte-vector subtypep element types" '((nil t) (nil t) (t t) (t t) (nil t))
+  (list (multiple-value-list (subtypep '(simple-array (signed-byte 8) (*))
+                                       '(simple-array integer (*))))
+        (multiple-value-list (subtypep '(simple-array bit (*))
+                                       '(simple-array integer (*))))
+        (multiple-value-list (subtypep '(vector rt-octet)
+                                       '(vector (unsigned-byte 8))))
+        (multiple-value-list (subtypep '(vector (unsigned-byte 8)) 'vector))
+        (multiple-value-list (subtypep 'vector '(vector (unsigned-byte 8))))))
 
 ; MAP with an (or ...) result type: branch matching the produced length (MAP.48).
 (check "map or-result-type matching length" t

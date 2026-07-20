@@ -62,24 +62,70 @@ int cl_type_is_bit_subtype(CL_Obj type);
 int cl_type_is_u8_subtype(CL_Obj type);
 int cl_type_is_s8_subtype(CL_Obj type);
 
-/* Map a (VECTOR/ARRAY element-type) specifier to the general-vector element
- * code (CL_VEC_ELT_*) it constrains, or -1 when ET imposes no general-code
- * constraint (BIT, CHARACTER, INTEGER, class names, deftypes, ...).  Only the
- * directly-named specialized numeric types and T are recognized — enough to
- * distinguish a (VECTOR FIXNUM) from a (VECTOR T) without invoking deftype
- * expansion (which could compact while OBJ is held in a C local). */
-static int vec_elt_spec_code(CL_Obj et)
+/* --- Upgraded array element classes (shared by TYPEP and SUBTYPEP) ---
+ *
+ * clamiga specializes array storage on exactly these element classes:
+ * BIT (bit-vectors), CHAR (strings), U8/S8 (packed byte vectors), and the
+ * annotated general-vector codes FIXNUM / SINGLE-FLOAT / DOUBLE-FLOAT; every
+ * other element type upgrades to T.  TYPEP and SUBTYPEP must both map an
+ * element-type SPECIFIER to the same class MAKE-ARRAY would build for it —
+ * including through user deftype aliases (flexi-streams' OCTET broke here:
+ * the old inline checks only expanded aliases on some paths, so
+ * (TYPEP u8-vec '(ARRAY OCTET *)) was NIL while
+ * (TYPEP u8-vec '(ARRAY (UNSIGNED-BYTE 8) *)) was T). */
+#define AEC_WILD   (-1)  /* * — no element-type constraint */
+#define AEC_T      CL_VEC_ELT_T
+#define AEC_FIXNUM CL_VEC_ELT_FIXNUM
+#define AEC_SF     CL_VEC_ELT_SINGLE_FLOAT
+#define AEC_DF     CL_VEC_ELT_DOUBLE_FLOAT
+#define AEC_BIT    100
+#define AEC_CHAR   101
+#define AEC_U8     102
+#define AEC_S8     103
+
+/* Map an element-type SPECIFIER to its upgraded class, expanding deftype
+ * aliases (specialization order bit > u8 > s8 mirrors
+ * cl_classify_array_elt_type / make-array).
+ * GC: expansion may run cl_vm_apply → objects can move; callers must
+ * GC-protect live CL_Obj locals (obj, args, ...) across this call. */
+static int elt_spec_class(CL_Obj et)
 {
-    const char *en;
-    if (!CL_SYMBOL_P(et)) return -1;
-    en = cl_symbol_name(et);
-    if (strcmp(en, "T") == 0) return CL_VEC_ELT_T;
-    if (strcmp(en, "FIXNUM") == 0) return CL_VEC_ELT_FIXNUM;
-    if (strcmp(en, "SINGLE-FLOAT") == 0 || strcmp(en, "SHORT-FLOAT") == 0)
-        return CL_VEC_ELT_SINGLE_FLOAT;
-    if (strcmp(en, "DOUBLE-FLOAT") == 0 || strcmp(en, "LONG-FLOAT") == 0)
-        return CL_VEC_ELT_DOUBLE_FLOAT;
-    return -1;
+    int is_char = 0, is_wide = 0, is_bit = 0, is_u8 = 0, is_s8 = 0;
+    if (CL_SYMBOL_P(et) && strcmp(cl_symbol_name(et), "*") == 0)
+        return AEC_WILD;
+    cl_classify_array_elt_type(et, 16, &is_char, &is_wide, &is_bit,
+                               &is_u8, &is_s8);
+    if (is_bit)  return AEC_BIT;
+    if (is_char) return AEC_CHAR;
+    if (is_u8)   return AEC_U8;
+    if (is_s8)   return AEC_S8;
+    /* General storage: discriminate the annotated numeric codes from T
+     * (also expands deftype aliases of FIXNUM / the float types). */
+    return (int)cl_classify_vec_elt_code(et, 16);
+}
+
+/* The upgraded element class an array OBJECT actually stores.  Pure
+ * inspection — never allocates. */
+static int obj_elt_class(CL_Obj obj)
+{
+    if (CL_BIT_VECTOR_P(obj))  return AEC_BIT;
+    if (CL_ANY_STRING_P(obj))  return AEC_CHAR;
+    if (CL_BYTE_VECTOR_P(obj))
+        return ((CL_ByteVector *)CL_OBJ_TO_PTR(obj))->is_signed ? AEC_S8
+                                                                : AEC_U8;
+    if (CL_VECTOR_P(obj)) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
+        if (v->flags & CL_VEC_FLAG_STRING) return AEC_CHAR;
+        switch (v->elt_type) {
+        case CL_VEC_ELT_U8:           return AEC_U8;
+        case CL_VEC_ELT_S8:           return AEC_S8;
+        case CL_VEC_ELT_FIXNUM:       return AEC_FIXNUM;
+        case CL_VEC_ELT_SINGLE_FLOAT: return AEC_SF;
+        case CL_VEC_ELT_DOUBLE_FLOAT: return AEC_DF;
+        default:                      return AEC_T;
+        }
+    }
+    return AEC_T;
 }
 
 /* --- typep for simple symbol type specifiers --- */
@@ -560,52 +606,24 @@ static int typep_check(CL_Obj obj, CL_Obj type_spec)
         /* (vector element-type size) */
         if (head == TYPE_SYM_VECTOR) {
             if (!typep_symbol(obj, head)) return 0;
-            /* Element-type constraint.  Only the specialized numeric codes
-             * (FIXNUM / SINGLE-FLOAT / DOUBLE-FLOAT) and T are discriminated,
-             * and only for general vectors — strings and bit-vectors keep
-             * their existing behavior.  This is what makes (TYPEP fixnum-arr
-             * '(VECTOR T)) NIL (serapeum's VECT-TYPE) while a general T vector
-             * still matches. */
+            /* Element-type constraint: the vector matches iff its actual
+             * upgraded element class equals the class ET upgrades to —
+             * through deftype aliases (elt_spec_class expands them; the old
+             * inline checks didn't, so flexi-streams' (VECTOR OCTET) never
+             * matched a packed byte vector).  This is also what makes
+             * (TYPEP fixnum-arr '(VECTOR T)) NIL (serapeum's VECT-TYPE)
+             * while a general T vector still matches. */
             if (!CL_NULL_P(args)) {
                 CL_Obj et = cl_car(args);
-                int et_star = (CL_SYMBOL_P(et) &&
-                               strcmp(cl_symbol_name(et), "*") == 0);
-                if (!et_star && CL_BYTE_VECTOR_P(obj)) {
-                    /* A packed byte vector matches only its own upgraded
-                     * element type — (VECTOR (UNSIGNED-BYTE 8)) etc.
-                     * Specialization order bit > u8 > s8 mirrors
-                     * classify_array_elt_type. */
-                    extern int cl_type_is_bit_subtype(CL_Obj type);
-                    extern int cl_type_is_u8_subtype(CL_Obj type);
-                    extern int cl_type_is_s8_subtype(CL_Obj type);
-                    int is_signed =
-                        ((CL_ByteVector *)CL_OBJ_TO_PTR(obj))->is_signed;
-                    int et_u8 = 0, et_s8 = 0;
-                    if (CL_CONS_P(et) && !cl_type_is_bit_subtype(et)) {
-                        if (cl_type_is_u8_subtype(et)) et_u8 = 1;
-                        else if (cl_type_is_s8_subtype(et)) et_s8 = 1;
-                    }
-                    if (!(is_signed ? et_s8 : et_u8)) return 0;
-                } else if (!et_star && CL_VECTOR_P(obj) &&
-                    !(((CL_Vector *)CL_OBJ_TO_PTR(obj))->flags & CL_VEC_FLAG_STRING)) {
-                    uint8_t ot = ((CL_Vector *)CL_OBJ_TO_PTR(obj))->elt_type;
-                    int want = vec_elt_spec_code(et);
-                    if (want >= 0 && (uint8_t)want != ot)
-                        return 0;
-                    /* Compound bit/byte subtype ET: matches only the
-                     * corresponding annotation (CL_VEC_ELT_U8/S8 — the
-                     * adjustable byte-array representation); bit arrays are
-                     * always TYPE_BIT_VECTOR.  A (VECTOR T) conversely never
-                     * matches an annotated byte array (want=T ≠ U8 above). */
-                    if (CL_CONS_P(et)) {
-                        if (cl_type_is_bit_subtype(et)) return 0;
-                        else if (cl_type_is_u8_subtype(et)) {
-                            if (ot != CL_VEC_ELT_U8) return 0;
-                        } else if (cl_type_is_s8_subtype(et)) {
-                            if (ot != CL_VEC_ELT_S8) return 0;
-                        }
-                    }
-                }
+                int want;
+                /* elt_spec_class may run deftype expanders → compaction can
+                 * move obj/args while held in these C locals. */
+                CL_GC_PROTECT(obj);
+                CL_GC_PROTECT(args);
+                want = elt_spec_class(et);
+                CL_GC_UNPROTECT(2);
+                if (want != AEC_WILD && obj_elt_class(obj) != want)
+                    return 0;
             }
             if (!CL_NULL_P(args) && !CL_NULL_P(cl_cdr(args))) {
                 CL_Obj size_spec = cl_car(cl_cdr(args));
@@ -656,77 +674,27 @@ static int typep_check(CL_Obj obj, CL_Obj type_spec)
         /* (array element-type dims), (simple-array element-type dims) */
         if (head == TYPE_SYM_ARRAY || head == TYPE_SYM_SIMPLE_ARRAY) {
             if (!typep_symbol(obj, head)) return 0;
-            /* Element-type constraint.  clamiga has exactly three specialized
-             * element types — BIT (bit-vectors), CHARACTER (strings) and the
-             * general T.  An object matches (simple-array ET (*)) only if its
+            /* Element-type constraint (CLHS: the object matches only if its
              * actual upgraded element type equals (upgraded-array-element-type
-             * ET); without this check a general T vector spuriously satisfied
-             * (simple-array bit (*)), which made serapeum's WITH-TYPE-DISPATCH
-             * pick the BIT branch (whose first listed type is bit) and call
-             * SBIT on a non-bit vector. */
+             * ET)).  elt_spec_class maps ET to the storage class MAKE-ARRAY
+             * would build — through deftype aliases — and obj_elt_class reads
+             * the class the object actually stores.  Without this check a
+             * general T vector spuriously satisfied (simple-array bit (*)),
+             * which made serapeum's WITH-TYPE-DISPATCH pick the BIT branch
+             * and call SBIT on a non-bit vector; without the alias expansion
+             * (ARRAY OCTET *) never matched a packed byte vector, killing
+             * flexi-streams' STRING-TO-OCTETS. */
             if (!CL_NULL_P(args)) {
                 CL_Obj et = cl_car(args);
-                int et_star = (CL_SYMBOL_P(et) &&
-                               strcmp(cl_symbol_name(et), "*") == 0);
-                if (!et_star) {
-                    extern int cl_type_is_bit_subtype(CL_Obj type);
-                    extern int cl_type_is_u8_subtype(CL_Obj type);
-                    extern int cl_type_is_s8_subtype(CL_Obj type);
-                    int et_bit = 0, et_char = 0, et_u8 = 0, et_s8 = 0;
-                    int obj_bit = CL_BIT_VECTOR_P(obj);
-                    int obj_char = CL_ANY_STRING_P(obj);
-                    int obj_u8 = 0, obj_s8 = 0;
-                    if (CL_BYTE_VECTOR_P(obj)) {
-                        if (((CL_ByteVector *)CL_OBJ_TO_PTR(obj))->is_signed)
-                            obj_s8 = 1;
-                        else
-                            obj_u8 = 1;
-                    } else if (CL_VECTOR_P(obj)) {
-                        /* Adjustable byte arrays: general vectors annotated
-                         * CL_VEC_ELT_U8/S8 report the byte element type. */
-                        uint8_t ot = ((CL_Vector *)CL_OBJ_TO_PTR(obj))->elt_type;
-                        if (ot == CL_VEC_ELT_U8) obj_u8 = 1;
-                        else if (ot == CL_VEC_ELT_S8) obj_s8 = 1;
-                    }
-                    if (CL_SYMBOL_P(et)) {
-                        const char *en = cl_symbol_name(et);
-                        if (strcmp(en, "BIT") == 0) et_bit = 1;
-                        else if (strcmp(en, "CHARACTER") == 0 ||
-                                 strcmp(en, "BASE-CHAR") == 0 ||
-                                 strcmp(en, "STANDARD-CHAR") == 0 ||
-                                 strcmp(en, "EXTENDED-CHAR") == 0) et_char = 1;
-                        else if (cl_type_is_bit_subtype(et)) et_bit = 1;
-                        /* every other symbol (T, INTEGER, ...) falls through to
-                         * the numeric-code path below; FIXNUM, SINGLE-FLOAT,
-                         * and DOUBLE-FLOAT are handled by vec_elt_spec_code and
-                         * do NOT upgrade to T. */
-                    } else if (CL_CONS_P(et)) {
-                        /* Specialization order bit > u8 > s8 must mirror
-                         * classify_array_elt_type so typep agrees with what
-                         * MAKE-ARRAY actually builds. */
-                        if (cl_type_is_bit_subtype(et)) et_bit = 1;
-                        else if (cl_type_is_u8_subtype(et)) et_u8 = 1;
-                        else if (cl_type_is_s8_subtype(et)) et_s8 = 1;
-                    }
-                    if (et_bit) { if (!obj_bit) return 0; }
-                    else if (et_char) { if (!obj_char) return 0; }
-                    else if (et_u8) { if (!obj_u8) return 0; }
-                    else if (et_s8) { if (!obj_s8) return 0; }
-                    else {
-                        if (obj_bit || obj_char || obj_u8 || obj_s8)
-                            return 0; /* not a general numeric array */
-                        /* General element type: discriminate the specialized
-                         * numeric codes (FIXNUM / SINGLE/DOUBLE-FLOAT) from T,
-                         * so (ARRAY T) excludes a (ARRAY FIXNUM) and vice versa. */
-                        if (CL_VECTOR_P(obj)) {
-                            int want = vec_elt_spec_code(et);
-                            if (want < 0) want = CL_VEC_ELT_T; /* INTEGER, ... → T */
-                            if ((uint8_t)want !=
-                                ((CL_Vector *)CL_OBJ_TO_PTR(obj))->elt_type)
-                                return 0;
-                        }
-                    }
-                }
+                int want;
+                /* elt_spec_class may run deftype expanders → compaction can
+                 * move obj/args while held in these C locals. */
+                CL_GC_PROTECT(obj);
+                CL_GC_PROTECT(args);
+                want = elt_spec_class(et);
+                CL_GC_UNPROTECT(2);
+                if (want != AEC_WILD && obj_elt_class(obj) != want)
+                    return 0;
                 /* Rank/dimensions, if provided. */
                 if (!CL_NULL_P(cl_cdr(args))) {
                     CL_Obj dims = cl_car(cl_cdr(args));
@@ -1810,7 +1778,19 @@ static int compound_type_to_tid(CL_Obj type)
         return TID_ARRAY;
     }
     if (strcmp(hn, "VECTOR") == 0) {
-        /* (vector [et [size]]) — rank always 1, just ignore element-type/size */
+        /* (vector [et [size]]) — rank always 1.  Map the specialized element
+         * types to their own TIDs — (vector character) ≡ STRING and
+         * (vector bit) ≡ BIT-VECTOR — mirroring the (array et (*)) branch
+         * above so both spellings sit at the same place in the hierarchy. */
+        if (CL_SYMBOL_P(et)) {
+            const char *etn = cl_symbol_name(et);
+            if (strcmp(etn, "CHARACTER") == 0 ||
+                strcmp(etn, "BASE-CHAR") == 0 ||
+                strcmp(etn, "STANDARD-CHAR") == 0)
+                return TID_STRING;
+            if (strcmp(etn, "BIT") == 0)
+                return TID_BIT_VECTOR;
+        }
         return TID_VECTOR;
     }
     if (strcmp(hn, "SIMPLE-VECTOR") == 0) {
@@ -2342,6 +2322,56 @@ static int tspec_is_empty(CL_Obj t)
     return 0;
 }
 
+/* If T is an array-family type specifier (atomic or compound ARRAY /
+ * SIMPLE-ARRAY / VECTOR / SIMPLE-VECTOR / STRING / BIT-VECTOR ...), store the
+ * upgraded element class it constrains in *CLS (AEC_WILD when it admits any
+ * element type) and return 1; return 0 for anything else.
+ * GC: compound ARRAY/VECTOR specs route through elt_spec_class, which may run
+ * deftype expanders → objects can move; callers protect live locals. */
+static int array_family_elt_class(CL_Obj t, int *cls)
+{
+    const char *n;
+    CL_Obj head, tail;
+    if (CL_SYMBOL_P(t)) {
+        n = cl_symbol_name(t);
+        if (strcmp(n, "STRING") == 0 || strcmp(n, "SIMPLE-STRING") == 0 ||
+            strcmp(n, "BASE-STRING") == 0 ||
+            strcmp(n, "SIMPLE-BASE-STRING") == 0) {
+            *cls = AEC_CHAR; return 1;
+        }
+        if (strcmp(n, "BIT-VECTOR") == 0 ||
+            strcmp(n, "SIMPLE-BIT-VECTOR") == 0) {
+            *cls = AEC_BIT; return 1;
+        }
+        if (strcmp(n, "SIMPLE-VECTOR") == 0) { *cls = AEC_T; return 1; }
+        if (strcmp(n, "VECTOR") == 0 || strcmp(n, "ARRAY") == 0 ||
+            strcmp(n, "SIMPLE-ARRAY") == 0) {
+            *cls = AEC_WILD; return 1;
+        }
+        return 0;
+    }
+    if (!CL_CONS_P(t)) return 0;
+    head = cl_car(t);
+    if (!CL_SYMBOL_P(head)) return 0;
+    n = cl_symbol_name(head);
+    if (strcmp(n, "STRING") == 0 || strcmp(n, "SIMPLE-STRING") == 0 ||
+        strcmp(n, "BASE-STRING") == 0 || strcmp(n, "SIMPLE-BASE-STRING") == 0) {
+        *cls = AEC_CHAR; return 1;
+    }
+    if (strcmp(n, "BIT-VECTOR") == 0 || strcmp(n, "SIMPLE-BIT-VECTOR") == 0) {
+        *cls = AEC_BIT; return 1;
+    }
+    if (strcmp(n, "SIMPLE-VECTOR") == 0) { *cls = AEC_T; return 1; }
+    if (strcmp(n, "VECTOR") == 0 || strcmp(n, "ARRAY") == 0 ||
+        strcmp(n, "SIMPLE-ARRAY") == 0) {
+        tail = cl_cdr(t);
+        if (CL_NULL_P(tail)) { *cls = AEC_WILD; return 1; }
+        *cls = elt_spec_class(cl_car(tail));
+        return 1;
+    }
+    return 0;
+}
+
 static CL_Obj bi_subtypep(CL_Obj *args, int n)
 {
     CL_Obj type1 = args[0];
@@ -2770,6 +2800,37 @@ static CL_Obj bi_subtypep(CL_Obj *args, int n)
                 cl_mv_values[1] = CL_NIL;
                 return CL_NIL;
             }
+        }
+    }
+
+    /* Array-family element-type guard (CLHS 15.1.2.2: array types are
+     * subtypes only when their UPGRADED element types agree).  The TID
+     * hierarchy below deliberately drops element types, which used to make
+     * ALL specialized array types mutual subtypes — e.g.
+     *   (subtypep '(simple-array (signed-byte 8) (*))
+     *             '(simple-array integer (*)))          => T,T   (wrong)
+     * contradicting TYPEP.  serapeum's WITH-TYPE-DISPATCH dedups its branches
+     * via subtypep, so the contradiction collapsed all its specialized
+     * branches and its ETYPECASE then rejected the very vector
+     * (serapeum:range -5 0) had just built.  Distinct element classes are a
+     * certain "no"; a wildcard LHS against a constrained RHS likewise (the
+     * LHS admits arrays of every element class).  Compatible classes fall
+     * through to the TID hierarchy for the shape/simplicity dimension. */
+    {
+        int cls1 = AEC_WILD, cls2 = AEC_WILD;
+        int fam1, fam2;
+        /* array_family_elt_class may run deftype expanders → compaction can
+         * move type1/type2 while held in these C locals. */
+        CL_GC_PROTECT(type1);
+        CL_GC_PROTECT(type2);
+        fam1 = array_family_elt_class(type1, &cls1);
+        fam2 = fam1 ? array_family_elt_class(type2, &cls2) : 0;
+        CL_GC_UNPROTECT(2);
+        if (fam1 && fam2 && cls2 != AEC_WILD && cls1 != cls2) {
+            cl_mv_count = 2;
+            cl_mv_values[0] = CL_NIL;
+            cl_mv_values[1] = SYM_T;
+            return CL_NIL;
         }
     }
 

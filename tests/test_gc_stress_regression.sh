@@ -4589,6 +4589,54 @@ else
     echo "  FAIL  byte-vector FASL case: compile_fasl failed"
 fi
 
+# --- Case: byte-vector remove/delete + deftype-alias type walks (slice 2) --
+# REMOVE/DELETE on a packed byte vector allocate a keep-mask bit-vector and
+# the packed result while :test/:key run user code — SEQ must be re-derived
+# after every potentially-compacting call (arr_seq_get re-derives; a cached
+# CL_Vector* went stale here pre-slice-2).  TYPEP/SUBTYPEP on (vector OCTET)
+# aliases run the deftype expander (cl_vm_apply → allocates → compacts) in
+# the middle of the type walk; obj/args are C locals that must be forwarded
+# across it (the flexi-streams string-to-octets regression).
+cat > "$WORK/bytevec-slice2.lisp" <<'EOF'
+(deftype gcs-octet () '(unsigned-byte 8))
+(let ((ok t))
+  (dotimes (i 10)
+    (let* ((v (make-array 8 :element-type '(unsigned-byte 8)
+                          :initial-contents '(3 1 4 1 5 9 2 6)))
+           (r  (remove 1 v))
+           (rc (remove 1 v :count 1 :from-end t))
+           (ri (remove-if #'oddp v))
+           (rk (remove 2 v :key #'1+))
+           (d  (delete 9 (copy-seq v)))
+           (s  (remove -1 (make-array 4 :element-type '(signed-byte 8)
+                                      :initial-contents '(-1 5 -1 7)))))
+      (unless (and (equalp r #(3 4 5 9 2 6))
+                   (equal (array-element-type r) '(unsigned-byte 8))
+                   (equalp rc #(3 1 4 5 9 2 6))
+                   (equalp ri #(4 2 6))
+                   (equalp rk #(3 4 5 9 2 6))
+                   (equalp d #(3 1 4 1 5 2 6))
+                   (equalp s #(5 7))
+                   (equal (array-element-type s) '(signed-byte 8)))
+        (setf ok nil))
+      (unless (and (typep v '(vector gcs-octet))
+                   (typep v '(array gcs-octet *))
+                   (not (typep s '(vector gcs-octet)))
+                   (subtypep '(vector gcs-octet) '(vector (unsigned-byte 8)))
+                   (not (subtypep '(simple-array bit (*))
+                                  '(simple-array integer (*)))))
+        (setf ok nil))
+      (let ((w (make-array 3 :element-type 'gcs-octet)))
+        (setf (aref (the (array gcs-octet *) w) 0 ) 65)
+        (unless (= (aref w 0) 65) (setf ok nil)))))
+  (format t "BYTEVEC-SLICE2:~a~%" (if ok "OK" "MISMATCH")))
+EOF
+out=$(run_stress "$WORK/bytevec-slice2.lisp")
+check_contains "byte-vector remove/delete + alias type walks under compaction" \
+  "BYTEVEC-SLICE2:OK" "$out"
+check_absent   "no slice-2 corruption diagnostics" \
+  "corrupted\|Guru\|SIGSEGV\|badmark\|use-after" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]
