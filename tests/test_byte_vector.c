@@ -1250,6 +1250,193 @@ TEST(w16_io_ffi_reject_non_octet)
         ":CAUGHT");
 }
 
+/* ========================================================
+ * Bulk fast paths: REPLACE memmove, MAP-INTO bitwise folds,
+ * EXT:UNPACK-BYTERUN1 (PackBits RLE decode)
+ * ======================================================== */
+
+TEST(replace_u8_memmove_fast_path)
+{
+    /* Same element type: one memmove.  Verify exact CLHS :start/:end
+     * semantics survive the fast path. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((a (make-array 8 :element-type '(unsigned-byte 8)"
+        "                       :initial-element 7))"
+        "      (b (make-array 8 :element-type '(unsigned-byte 8)"
+        "                       :initial-contents '(1 2 3 4 5 6 7 8))))"
+        "  (replace a b :start1 2 :start2 4 :end2 7))"),
+        "#(7 7 5 6 7 7 7 7)");
+}
+
+TEST(replace_u8_overlap_same_object)
+{
+    /* CLHS: overlapping REPLACE on the same sequence behaves as if the
+     * source were copied out first — memmove gives exactly that. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((a (make-array 5 :element-type '(unsigned-byte 8)"
+        "                       :initial-contents '(1 2 3 4 5))))"
+        "  (replace a a :start1 1 :start2 0 :end2 4))"),
+        "#(1 1 2 3 4)");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((a (make-array 5 :element-type '(unsigned-byte 8)"
+        "                       :initial-contents '(1 2 3 4 5))))"
+        "  (replace a a :start1 0 :start2 1))"),
+        "#(2 3 4 5 5)");
+}
+
+TEST(replace_u16_memmove_fast_path)
+{
+    /* 16-bit elements: offsets scale by elt_shift; values > 255 survive. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((a (make-array 4 :element-type '(unsigned-byte 16)"
+        "                       :initial-element 0))"
+        "      (b (make-array 4 :element-type '(unsigned-byte 16)"
+        "                       :initial-contents '(1000 2000 3000 4000))))"
+        "  (replace a b :start1 1 :end1 3 :start2 2))"),
+        "#(0 3000 4000 0)");
+}
+
+TEST(replace_mixed_signedness_keeps_type_check)
+{
+    /* u8 200 into an s8 vector must stay a type-error (the general path),
+     * NOT a silent bit-pattern reinterpretation to -56. */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case"
+        "    (replace (make-array 2 :element-type '(signed-byte 8))"
+        "             (make-array 2 :element-type '(unsigned-byte 8)"
+        "                           :initial-element 200))"
+        "  (error () :caught))"),
+        ":CAUGHT");
+    /* In-range values still copy correctly through the general path. */
+    ASSERT_STR_EQ(eval_print(
+        "(replace (make-array 2 :element-type '(signed-byte 8))"
+        "         (make-array 2 :element-type '(unsigned-byte 8)"
+        "                       :initial-element 5))"),
+        "#(5 5)");
+}
+
+TEST(replace_string_memmove_fast_path)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((a (copy-seq \"abcdef\")))"
+        "  (replace a \"XYZ\" :start1 2 :end2 2))"),
+        "\"abXYef\"");
+}
+
+TEST(map_into_logior_fast_path)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((a (make-array 4 :element-type '(unsigned-byte 8)"
+        "                       :initial-contents '(1 2 4 8)))"
+        "      (b (make-array 4 :element-type '(unsigned-byte 8)"
+        "                       :initial-contents '(16 32 64 128))))"
+        "  (map-into a #'logior a b))"),
+        "#(17 34 68 136)");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((a (make-array 3 :element-type '(unsigned-byte 8)"
+        "                       :initial-contents '(15 240 255)))"
+        "      (b (make-array 3 :element-type '(unsigned-byte 8)"
+        "                       :initial-contents '(85 85 85))))"
+        "  (list (map-into (make-array 3 :element-type '(unsigned-byte 8))"
+        "                  #'logand a b)"
+        "        (map-into (make-array 3 :element-type '(unsigned-byte 8))"
+        "                  #'logxor a b)))"),
+        "(#(5 80 85) #(90 165 170))");
+}
+
+TEST(map_into_fast_path_min_length_and_fill_pointer)
+{
+    /* Shorter source bounds the fold; a fill-pointered result gets its
+     * fill pointer set to the count stored (CLHS MAP-INTO). */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((a (make-array 5 :element-type '(unsigned-byte 8)"
+        "                       :fill-pointer 1))"
+        "      (b (make-array 3 :element-type '(unsigned-byte 8)"
+        "                       :initial-contents '(1 2 3))))"
+        "  (map-into a #'logior b b)"
+        "  (list (fill-pointer a) (aref a 0) (aref a 2)))"),
+        "(3 1 3)");
+}
+
+TEST(map_into_general_fn_still_works_on_byte_vectors)
+{
+    /* A non-builtin function must keep taking the general VM-apply path. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((a (make-array 3 :element-type '(unsigned-byte 8)"
+        "                       :initial-contents '(1 2 3)))"
+        "      (b (make-array 3 :element-type '(unsigned-byte 8)"
+        "                       :initial-contents '(10 20 30))))"
+        "  (map-into a (lambda (x y) (+ x y)) a b))"),
+        "#(11 22 33)");
+    /* Signed vectors skip the fast path but stay correct via the VM. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((a (make-array 2 :element-type '(signed-byte 8)"
+        "                       :initial-contents '(-1 3))))"
+        "  (map-into a #'logand a a))"),
+        "#(-1 3)");
+}
+
+TEST(unpack_byterun1_literal_repeat_noop)
+{
+    /* Literal run (code 2 => 3 bytes), repeat run (253 => 4x), and the
+     * code-128 no-op, decoded mid-stream with a dst offset. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((src (make-array 7 :element-type '(unsigned-byte 8)"
+        "                         :initial-contents '(128 2 9 8 7 253 5)))"
+        "      (dst (make-array 9 :element-type '(unsigned-byte 8)"
+        "                         :initial-element 99)))"
+        "  (list (ext:unpack-byterun1 src 0 7 dst 7 1) dst))"),
+        "(7 #(99 9 8 7 5 5 5 5 99))");
+}
+
+TEST(unpack_byterun1_stops_at_dst_len)
+{
+    /* Decoding stops exactly at dst-len; trailing source bytes are left
+     * unconsumed and the returned position points at them. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((src (make-array 4 :element-type '(unsigned-byte 8)"
+        "                         :initial-contents '(255 1 0 42)))"
+        "      (dst (make-array 2 :element-type '(unsigned-byte 8))))"
+        "  (list (ext:unpack-byterun1 src 0 4 dst 2) dst))"),
+        "(2 #(1 1))");
+}
+
+TEST(unpack_byterun1_error_cases)
+{
+    /* Truncated input: output still short when the source runs out. */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case"
+        "    (ext:unpack-byterun1"
+        "     (make-array 1 :element-type '(unsigned-byte 8)"
+        "                   :initial-element 2)"
+        "     0 1 (make-array 3 :element-type '(unsigned-byte 8)) 3)"
+        "  (error () :caught))"),
+        ":CAUGHT");
+    /* Repeat run overflowing the requested output length. */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case"
+        "    (ext:unpack-byterun1"
+        "     (make-array 2 :element-type '(unsigned-byte 8)"
+        "                   :initial-contents '(253 7))"
+        "     0 2 (make-array 2 :element-type '(unsigned-byte 8)) 2)"
+        "  (error () :caught))"),
+        ":CAUGHT");
+    /* Bad source range and non-byte-vector arguments. */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case"
+        "    (ext:unpack-byterun1"
+        "     (make-array 2 :element-type '(unsigned-byte 8)) 0 5"
+        "     (make-array 2 :element-type '(unsigned-byte 8)) 2)"
+        "  (error () :caught))"),
+        ":CAUGHT");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case"
+        "    (ext:unpack-byterun1 (vector 1 2) 0 2"
+        "     (make-array 2 :element-type '(unsigned-byte 8)) 2)"
+        "  (error () :caught))"),
+        ":CAUGHT");
+}
+
 int main(void)
 {
     setup();
@@ -1322,6 +1509,18 @@ int main(void)
     RUN(w16_displaced_multidim);
     RUN(w16_fasl_roundtrip_big_endian_wire);
     RUN(w16_io_ffi_reject_non_octet);
+
+    RUN(replace_u8_memmove_fast_path);
+    RUN(replace_u8_overlap_same_object);
+    RUN(replace_u16_memmove_fast_path);
+    RUN(replace_mixed_signedness_keeps_type_check);
+    RUN(replace_string_memmove_fast_path);
+    RUN(map_into_logior_fast_path);
+    RUN(map_into_fast_path_min_length_and_fill_pointer);
+    RUN(map_into_general_fn_still_works_on_byte_vectors);
+    RUN(unpack_byterun1_literal_repeat_noop);
+    RUN(unpack_byterun1_stops_at_dst_len);
+    RUN(unpack_byterun1_error_cases);
 
     teardown();
     REPORT();

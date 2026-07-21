@@ -4719,6 +4719,56 @@ else
     echo "  FAIL  16-bit byte-vector FASL case: compile_fasl failed"
 fi
 
+# --- Case: bulk sequence I/O + codec builtins under compaction storm ------
+# READ-SEQUENCE/WRITE-SEQUENCE chunk arena byte-vector payloads through C
+# buffers, re-deriving the payload pointer after every platform call (which
+# can park in a GC safe region); REPLACE/MAP-INTO/EXT:UNPACK-BYTERUN1 run
+# raw-pointer loops that must only ever follow freshly derived pointers.
+# The surrounding allocations force a compaction before every step.
+cat > "$WORK/seqio.lisp" <<SEOF
+(let ((ok t)
+      (path "$WORK/seqio-data.bin"))
+  ;; write: 9000 bytes with a recognizable pattern — crosses CL_SEQ_IO_CHUNK
+  ;; (4096) twice, forcing the bulk chunked read/write loops in
+  ;; bi_read_sequence/bi_write_sequence to actually iterate (a stale
+  ;; stream/offset reused across iterations would misdirect a later chunk)
+  ;; and also crosses the Amiga IOBuf, exercising multiple GC-stress allocs.
+  (let ((v (make-array 9000 :element-type '(unsigned-byte 8))))
+    (dotimes (i 9000) (setf (aref v i) (mod (* 7 i) 251)))
+    (with-open-file (s path :direction :output
+                            :element-type '(unsigned-byte 8)
+                            :if-exists :supersede)
+      (write-sequence v s))
+    ;; read back into a fresh vector, allocating in between
+    (let ((w (make-array 9000 :element-type '(unsigned-byte 8)))
+          (junk (make-list 50)))
+      (declare (ignorable junk))
+      (with-open-file (s path :element-type '(unsigned-byte 8))
+        (unless (= 9000 (read-sequence w s)) (setf ok nil)))
+      (dotimes (i 9000)
+        (unless (= (aref w i) (mod (* 7 i) 251)) (setf ok nil) (return)))
+      ;; replace fast path (overlap) + map-into fold + byterun1 decode
+      (replace w w :start1 1 :start2 0 :end2 8999)
+      (unless (= (aref w 1) 0) (setf ok nil))
+      (let ((a (make-array 256 :element-type '(unsigned-byte 8)))
+            (b (make-array 256 :element-type '(unsigned-byte 8)
+                               :initial-element 128)))
+        (dotimes (i 256) (setf (aref a i) i))
+        (map-into a #'logior a b)
+        (unless (= (aref a 3) 131) (setf ok nil)))
+      (let ((src (make-array 5 :element-type '(unsigned-byte 8)
+                               :initial-contents '(1 42 43 254 9)))
+            (dst (make-array 5 :element-type '(unsigned-byte 8))))
+        (ext:unpack-byterun1 src 0 5 dst 5)
+        (unless (equal (coerce dst 'list) '(42 43 9 9 9)) (setf ok nil)))))
+  (format t "SEQIO-STRESS:~a~%" (if ok "OK" "MISMATCH")))
+SEOF
+out=$(run_stress "$WORK/seqio.lisp")
+check_contains "bulk sequence I/O + codec builtins under compaction storm" \
+  "SEQIO-STRESS:OK" "$out"
+check_absent   "no corruption diagnostics from bulk sequence I/O" \
+  "corrupted\|Guru\|SIGSEGV\|badmark\|use-after" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

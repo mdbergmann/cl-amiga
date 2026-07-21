@@ -5,6 +5,7 @@
 #include "error.h"
 #include "vm.h"
 #include "string_utils.h"
+#include "stream.h"
 #include "../platform/platform.h"
 #include <string.h>
 #include <stdio.h>
@@ -25,6 +26,14 @@ static CL_Obj KW_START2 = CL_NIL;
 static CL_Obj KW_END2 = CL_NIL;
 static CL_Obj SEQ_KW_AOK = CL_NIL;
 static CL_Obj SYM_EQL_FN = CL_NIL;
+/* Builtin function objects for the MAP-INTO byte-vector fast path (bitwise
+ * folds over packed u8 vectors run as C loops instead of one VM apply per
+ * element — the ILBM mask-fold case).  Identity comparison: a redefined
+ * LOGIOR no longer matches the cached original, so the fast path only fires
+ * for the true builtins. */
+static CL_Obj SYM_LOGIOR_FN = CL_NIL;
+static CL_Obj SYM_LOGAND_FN = CL_NIL;
+static CL_Obj SYM_LOGXOR_FN = CL_NIL;
 
 /* --- Shared infrastructure --- */
 
@@ -2280,6 +2289,44 @@ static CL_Obj bi_replace(CL_Obj *args, int n)
     if (end2 - start2 < count) count = end2 - start2;
     if (count <= 0) return seq1;
 
+    /* Fast path 1: both packed byte vectors of the same element type — the
+     * copy is one memmove over the payloads (overlap-safe, same object
+     * included) instead of a per-element loop that boxes every byte through
+     * a snapshot vector.  The element type must match exactly: the same
+     * width so offsets agree, the same signedness so bit patterns keep
+     * their values (a u8 200 memmoved into an s8 vector would silently
+     * become -56 where the general path signals a type-error). */
+    if (CL_BYTE_VECTOR_P(seq1) && CL_BYTE_VECTOR_P(seq2) &&
+        start1 >= 0 && start2 >= 0 && end1 <= len1 && end2 <= len2) {
+        CL_ByteVector *b1 = (CL_ByteVector *)CL_OBJ_TO_PTR(seq1);
+        CL_ByteVector *b2 = (CL_ByteVector *)CL_OBJ_TO_PTR(seq2);
+        if (b1->elt_shift == b2->elt_shift && b1->is_signed == b2->is_signed) {
+            /* volatile: m68k-amigaos-gcc miscompiles flexible-array
+             * `->data + offset` folded into the copy (the pointer comes
+             * out off by one) — force the base through memory first, as
+             * in cl_stream_write_lisp_string. */
+            uint8_t *volatile d1 = b1->data;
+            const uint8_t *volatile d2 = b2->data;
+            memmove((uint8_t *)d1 + ((uint32_t)start1 << b1->elt_shift),
+                    (const uint8_t *)d2 + ((uint32_t)start2 << b2->elt_shift),
+                    (size_t)((uint32_t)count << b1->elt_shift));
+            return seq1;
+        }
+    }
+
+    /* Fast path 2: both simple base strings — same 1-byte element layout,
+     * one overlap-safe memmove. */
+    if (CL_STRING_P(seq1) && CL_STRING_P(seq2) &&
+        start1 >= 0 && start2 >= 0 && end1 <= len1 && end2 <= len2) {
+        CL_String *s1 = (CL_String *)CL_OBJ_TO_PTR(seq1);
+        CL_String *s2 = (CL_String *)CL_OBJ_TO_PTR(seq2);
+        /* volatile: see the byte-vector path above (m68k workaround). */
+        char *volatile c1 = s1->data;
+        const char *volatile c2 = s2->data;
+        memmove((char *)c1 + start1, (const char *)c2 + start2, (size_t)count);
+        return seq1;
+    }
+
     /* Snapshot the source region first — it makes the copy correct when seq1
      * and seq2 are the same object with overlapping regions (CLHS REPLACE).
      * A GC vector, not platform_alloc: seq_elt/arr_seq_set can signal a
@@ -2312,6 +2359,250 @@ static CL_Obj bi_replace(CL_Obj *args, int n)
     }
 
     return seq1;
+}
+
+/* --- READ-SEQUENCE / WRITE-SEQUENCE (CLHS 21.2) ---------------------------
+ *
+ * C builtins replacing the boot.lisp per-element Lisp loops: on a 68020 a
+ * VM round-trip per byte made reading a 20KB file cost seconds.  Element
+ * kind follows the sequence (matching the previous boot.lisp behavior):
+ * string-like sequences read/write characters, everything else bytes.
+ *
+ * Fast path: an (unsigned-byte 8) byte vector against a file stream moves
+ * whole chunks through cl_stream_read_bytes/cl_stream_write_bytes (one
+ * platform read/write per 4KB instead of one per byte).  Every other
+ * combination uses a per-element C loop over the existing read/write
+ * primitives, preserving their semantics (UTF-8 decode, socket timeouts,
+ * string streams, EOF). */
+
+#define CL_SEQ_IO_CHUNK 4096
+
+/* Parse the :start/:end keyword tail (leftmost duplicate wins, CLHS 3.4.1.4).
+ * *endp stays -1 when :end is missing or NIL. */
+static void seq_io_parse_start_end(CL_Obj *args, int n, int32_t *start,
+                                   int32_t *endp, const char *who)
+{
+    int i;
+    *start = 0;
+    *endp = -1;
+    cl_check_seq_keywords(args, n, 2, SK_START | SK_END);
+    for (i = ((n - 2) & ~1); i >= 2; i -= 2) {
+        if (i + 1 >= n) continue;
+        if (args[i] == KW_START) {
+            if (!CL_FIXNUM_P(args[i + 1]))
+                cl_error(CL_ERR_TYPE, "%s: :start is not a valid bounding index", who);
+            *start = CL_FIXNUM_VAL(args[i + 1]);
+        } else if (args[i] == KW_END) {
+            if (!CL_NULL_P(args[i + 1])) {
+                if (!CL_FIXNUM_P(args[i + 1]))
+                    cl_error(CL_ERR_TYPE, "%s: :end is not a valid bounding index", who);
+                *endp = CL_FIXNUM_VAL(args[i + 1]);
+            }
+        }
+    }
+}
+
+static void seq_io_check_bounds(int32_t start, int32_t end, int32_t len,
+                                const char *who)
+{
+    if (start < 0 || end > len || start > end)
+        cl_error(CL_ERR_ARGS,
+                 "%s: bounding indices %d and %d are bad for a sequence of length %d",
+                 who, (int)start, (int)end, (int)len);
+}
+
+/* (read-sequence sequence stream &key start end) => position (CLHS).
+ * Destructively fills sequence[start,end) with elements read from stream;
+ * returns the index of the first element not updated (EOF before end). */
+static CL_Obj bi_read_sequence(CL_Obj *args, int n)
+{
+    CL_Obj seq = args[0];
+    CL_Obj stream = args[1];
+    int32_t start, end, len, i;
+    int use_char;
+    int seq_is_list;
+
+    if (!CL_STREAM_P(stream))
+        cl_error(CL_ERR_TYPE, "READ-SEQUENCE: second argument is not a stream");
+    {
+        CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+        if (st->direction != CL_STREAM_INPUT && st->direction != CL_STREAM_IO)
+            cl_error(CL_ERR_TYPE, "READ-SEQUENCE: stream is not an input stream");
+    }
+
+    len = seq_length(seq);              /* signals if not a sequence */
+    seq_io_parse_start_end(args, n, &start, &end, "READ-SEQUENCE");
+    if (end < 0) end = len;
+    seq_io_check_bounds(start, end, len, "READ-SEQUENCE");
+
+    use_char = seq_is_string_like(seq);
+    seq_is_list = (CL_CONS_P(seq) || CL_NULL_P(seq));
+    i = start;
+
+    /* Bulk path: unsigned 8-bit byte vector filled from a file stream.
+     * Chunk through a C stack buffer: the platform read may park in a GC
+     * safe region where a peer compaction moves the vector, so the payload
+     * pointer is re-derived from rooted args[0] after every chunk. */
+    if (!seq_is_list && CL_BYTE_VECTOR_P(seq)) {
+        CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(seq);
+        if (bv->elt_shift == 0 && !bv->is_signed) {
+            char chunk[CL_SEQ_IO_CHUNK];
+            while (i < end) {
+                uint32_t want = (uint32_t)(end - i);
+                int32_t got;
+                if (want > sizeof(chunk)) want = (uint32_t)sizeof(chunk);
+                got = cl_stream_read_bytes(args[1], chunk, want);
+                if (got == -2) break;   /* no bulk path — per-element below */
+                if (got > 0) {
+                    /* volatile: m68k flexible-array `->data + offset`
+                     * miscompile workaround (see bi_replace). */
+                    uint8_t *volatile d;
+                    bv = (CL_ByteVector *)CL_OBJ_TO_PTR(args[0]);
+                    d = bv->data;
+                    memcpy((uint8_t *)d + i, chunk, (size_t)got);
+                    i += got;
+                }
+                if (got < (int32_t)want)
+                    return CL_MAKE_FIXNUM(i);   /* EOF */
+            }
+            if (i >= end)
+                return CL_MAKE_FIXNUM(i);
+        }
+    }
+
+    /* Per-element loop.  A blocking read can park in a GC safe region where
+     * a peer compacts, so the list cursor must stay rooted; array stores go
+     * through rooted args[0] each iteration. */
+    {
+        CL_Obj cur = CL_NIL;
+        if (seq_is_list) {
+            int32_t k;
+            cur = seq;
+            for (k = 0; k < i && CL_CONS_P(cur); k++)
+                cur = cl_cdr(cur);
+        }
+        CL_GC_PROTECT(cur);
+        for (; i < end; i++) {
+            int el = use_char ? cl_stream_read_char(args[1])
+                              : cl_stream_read_byte(args[1]);
+            if (el == -1) break;
+            if (seq_is_list) {
+                if (!CL_CONS_P(cur)) break;
+                ((CL_Cons *)CL_OBJ_TO_PTR(cur))->car =
+                    use_char ? CL_MAKE_CHAR(el) : CL_MAKE_FIXNUM(el);
+                cur = cl_cdr(cur);
+            } else {
+                arr_seq_set(args[0], i,
+                            use_char ? CL_MAKE_CHAR(el) : CL_MAKE_FIXNUM(el));
+            }
+        }
+        CL_GC_UNPROTECT(1);
+    }
+    return CL_MAKE_FIXNUM(i);
+}
+
+/* (write-sequence sequence stream &key start end) => sequence (CLHS).
+ * Characters go through the char path (UTF-8/latin-1 encode), integers
+ * through the byte path; a mixed sequence is written element-wise. */
+static CL_Obj bi_write_sequence(CL_Obj *args, int n)
+{
+    CL_Obj seq = args[0];
+    CL_Obj stream = args[1];
+    int32_t start, end, len, i;
+    int seq_is_list;
+
+    if (!CL_STREAM_P(stream))
+        cl_error(CL_ERR_TYPE, "WRITE-SEQUENCE: second argument is not a stream");
+    {
+        CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+        if (st->direction != CL_STREAM_OUTPUT && st->direction != CL_STREAM_IO)
+            cl_error(CL_ERR_TYPE,
+                     "WRITE-SEQUENCE: stream is not an output stream");
+    }
+
+    len = seq_length(seq);
+    seq_io_parse_start_end(args, n, &start, &end, "WRITE-SEQUENCE");
+    if (end < 0) end = len;
+    seq_io_check_bounds(start, end, len, "WRITE-SEQUENCE");
+    if (start == end) return args[0];
+    seq_is_list = (CL_CONS_P(seq) || CL_NULL_P(seq));
+
+    /* Bulk path 1: a simple base string — the stream layer already has an
+     * arena-safe chunked writer for exactly this. */
+    if (CL_STRING_P(seq)) {
+        cl_stream_write_lisp_string(stream, seq, (uint32_t)start, (uint32_t)end);
+        return args[0];
+    }
+
+    /* Bulk path 2: unsigned 8-bit byte vector to a file/socket stream.
+     * Chunked through a C stack buffer (re-derive the payload after each
+     * write — it may park in a safe region where a peer compacts). */
+    if (!seq_is_list && CL_BYTE_VECTOR_P(seq)) {
+        CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(seq);
+        if (bv->elt_shift == 0 && !bv->is_signed) {
+            char chunk[CL_SEQ_IO_CHUNK];
+            int bulk_ok = 1;
+            i = start;
+            while (i < end && bulk_ok) {
+                uint32_t nb = (uint32_t)(end - i);
+                int32_t wr;
+                /* volatile: m68k flexible-array `->data + offset`
+                 * miscompile workaround (see bi_replace). */
+                const uint8_t *volatile d;
+                if (nb > sizeof(chunk)) nb = (uint32_t)sizeof(chunk);
+                bv = (CL_ByteVector *)CL_OBJ_TO_PTR(args[0]);
+                d = bv->data;
+                memcpy(chunk, (const uint8_t *)d + i, (size_t)nb);
+                wr = cl_stream_write_bytes(args[1], chunk, nb);
+                if (wr == -2) { bulk_ok = 0; break; }
+                i += (int32_t)nb;
+            }
+            if (bulk_ok)
+                return args[0];
+            start = i;   /* fall through: write the rest per element */
+        }
+    }
+
+    /* Per-element loop (lists, general vectors, wide strings, non-file
+     * streams).  Root the list cursor across blocking writes. */
+    {
+        CL_Obj cur = CL_NIL;
+        if (seq_is_list) {
+            int32_t k;
+            cur = seq;
+            for (k = 0; k < start && CL_CONS_P(cur); k++)
+                cur = cl_cdr(cur);
+        }
+        CL_GC_PROTECT(cur);
+        for (i = start; i < end; i++) {
+            CL_Obj el;
+            if (seq_is_list) {
+                if (!CL_CONS_P(cur)) break;
+                el = cl_car(cur);
+                cur = cl_cdr(cur);
+            } else {
+                el = arr_seq_get(args[0], i);
+            }
+            if (CL_CHAR_P(el)) {
+                cl_stream_write_char(args[1], CL_CHAR_VAL(el));
+            } else if (CL_FIXNUM_P(el)) {
+                int32_t b = CL_FIXNUM_VAL(el);
+                if (b < 0 || b > 255) {
+                    CL_GC_UNPROTECT(1);
+                    cl_error(CL_ERR_GENERAL,
+                             "WRITE-SEQUENCE: byte value %d out of range 0-255",
+                             (int)b);
+                }
+                cl_stream_write_byte(args[1], b);
+            } else {
+                CL_GC_UNPROTECT(1);
+                cl_signal_type_error(el, "(OR CHARACTER (UNSIGNED-BYTE 8))",
+                                     "WRITE-SEQUENCE element");
+            }
+        }
+        CL_GC_UNPROTECT(1);
+    }
+    return args[0];
 }
 
 /* --- Phase 8 Step 3: elt, (setf elt), copy-seq, map-into --- */
@@ -2470,6 +2761,60 @@ static CL_Obj bi_map_into(CL_Obj *args, int n)
     else
         result_cap = seq_length(result_seq);
 
+    /* Fast path: a bitwise fold (#'logior/#'logand/#'logxor, the true
+     * builtins) over unsigned 8-bit byte vectors into an unsigned 8-bit
+     * byte vector runs as a plain C loop — no per-element VM apply, no
+     * boxing.  Overlap (result == a source, the in-place fold idiom) is
+     * fine: each element is read before it is written.  No allocation
+     * happens, so raw payload pointers stay valid throughout. */
+    if ((func == SYM_LOGIOR_FN || func == SYM_LOGAND_FN ||
+         func == SYM_LOGXOR_FN) &&
+        !CL_NULL_P(func) && n_seqs >= 1 && CL_BYTE_VECTOR_P(result_seq)) {
+        CL_ByteVector *rbv = (CL_ByteVector *)CL_OBJ_TO_PTR(result_seq);
+        int all_u8 = (rbv->elt_shift == 0 && !rbv->is_signed);
+        int32_t m = result_cap;
+        for (j = 0; all_u8 && j < n_seqs; j++) {
+            if (CL_BYTE_VECTOR_P(seqs[j])) {
+                CL_ByteVector *sb = (CL_ByteVector *)CL_OBJ_TO_PTR(seqs[j]);
+                int32_t sl = (int32_t)cl_bytevec_active_length(sb);
+                if (sb->elt_shift != 0 || sb->is_signed) all_u8 = 0;
+                else if (sl < m) m = sl;
+            } else {
+                all_u8 = 0;
+            }
+        }
+        if (all_u8) {
+            /* No allocation below — raw payload pointers may be hoisted.
+             * volatile: m68k flexible-array base-pointer miscompile
+             * workaround (see bi_replace) — route each ->data through a
+             * volatile local before indexing off it. */
+            uint8_t *volatile dstv = rbv->data;
+            uint8_t *dst = (uint8_t *)dstv;
+            uint8_t *srcs[16];
+            int32_t k;
+            int op = (func == SYM_LOGIOR_FN) ? 0
+                   : (func == SYM_LOGAND_FN) ? 1 : 2;
+            for (j = 0; j < n_seqs; j++) {
+                uint8_t *volatile sv =
+                    ((CL_ByteVector *)CL_OBJ_TO_PTR(seqs[j]))->data;
+                srcs[j] = (uint8_t *)sv;
+            }
+            for (k = 0; k < m; k++) {
+                uint8_t acc = srcs[0][k];
+                for (j = 1; j < n_seqs; j++) {
+                    uint8_t v = srcs[j][k];
+                    acc = (op == 0) ? (uint8_t)(acc | v)
+                        : (op == 1) ? (uint8_t)(acc & v)
+                                    : (uint8_t)(acc ^ v);
+                }
+                dst[k] = acc;
+            }
+            if (rbv->fill_pointer != CL_NO_FILL_POINTER)
+                rbv->fill_pointer = (uint32_t)m;
+            return result_seq;
+        }
+    }
+
     res_cur = result_seq;       /* list write cursor */
     CL_GC_PROTECT(result_seq);  /* protect against compaction in cl_vm_apply loop */
     CL_GC_PROTECT(res_cur);
@@ -2572,6 +2917,18 @@ void cl_builtins_sequence_init(void)
         SYM_EQL_FN = s->function;
     }
 
+    /* Cache the bitwise-fold builtins for the MAP-INTO fast path.  The
+     * arithmetic builtins register before the sequence builtins (see
+     * cl_builtins_init), so the function cells are populated here. */
+    {
+        CL_Obj sym = cl_intern_in("LOGIOR", 6, cl_package_cl);
+        SYM_LOGIOR_FN = ((CL_Symbol *)CL_OBJ_TO_PTR(sym))->function;
+        sym = cl_intern_in("LOGAND", 6, cl_package_cl);
+        SYM_LOGAND_FN = ((CL_Symbol *)CL_OBJ_TO_PTR(sym))->function;
+        sym = cl_intern_in("LOGXOR", 6, cl_package_cl);
+        SYM_LOGXOR_FN = ((CL_Symbol *)CL_OBJ_TO_PTR(sym))->function;
+    }
+
     /* Find family */
     defun("FIND", bi_find, 2, -1);
     defun("FIND-IF", bi_find_if, 2, -1);
@@ -2611,6 +2968,10 @@ void cl_builtins_sequence_init(void)
     defun("FILL", bi_fill, 2, -1);
     defun("REPLACE", bi_replace, 2, -1);
 
+    /* Stream <-> sequence bulk I/O (CLHS 21.2) */
+    defun("READ-SEQUENCE", bi_read_sequence, 2, 6);
+    defun("WRITE-SEQUENCE", bi_write_sequence, 2, 6);
+
     /* Phase 8 Step 3 */
     defun("ELT", bi_elt, 2, 2);
     cl_register_builtin("%SETF-ELT", bi_setf_elt, 3, 3, cl_package_clamiga);
@@ -2632,4 +2993,7 @@ void cl_builtins_sequence_init(void)
     cl_gc_register_root(&KW_END2);
     cl_gc_register_root(&SEQ_KW_AOK);
     cl_gc_register_root(&SYM_EQL_FN);
+    cl_gc_register_root(&SYM_LOGIOR_FN);
+    cl_gc_register_root(&SYM_LOGAND_FN);
+    cl_gc_register_root(&SYM_LOGXOR_FN);
 }

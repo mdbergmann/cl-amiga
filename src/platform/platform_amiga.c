@@ -505,6 +505,37 @@ int platform_file_getchar(PlatformFile fh)
     return FGetC(file_table[fh]);
 }
 
+int platform_file_read_buf(PlatformFile fh, char *buf, uint32_t len)
+{
+    /* Bulk read for READ-SEQUENCE.  Drain the IOBuf's buffered bytes first
+     * (they were read ahead by the per-char path), then Read() the remainder
+     * directly into `buf` — one DOS call instead of one per 4KB refill.
+     * `buf` MUST be C memory: the Read blocks on floppy/slow media, so it is
+     * bracketed in a GC safe region where a peer compaction may run. */
+    IOBuf *b;
+    uint32_t got = 0;
+    if (fh == 0 || fh >= PLATFORM_FILE_TABLE_SIZE || !file_table[fh])
+        return -1;
+    b = file_buf[fh];
+    if (b && b->rpos < b->rlen) {
+        uint32_t avail = (uint32_t)(b->rlen - b->rpos);
+        if (avail > len) avail = len;
+        memcpy(buf, b->rbuf + b->rpos, avail);
+        b->rpos += (int)avail;
+        got = avail;
+    }
+    if (got < len) {
+        BPTR h = file_table[fh];
+        LONG n;
+        cl_gc_enter_safe_region();
+        n = Read(h, (APTR)(buf + got), (LONG)(len - got));
+        cl_gc_leave_safe_region();
+        if (n > 0) got += (uint32_t)n;
+        else if (got == 0 && n < 0) return -1;
+    }
+    return (int)got;
+}
+
 int platform_file_write_string(PlatformFile fh, const char *str)
 {
     LONG len;

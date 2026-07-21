@@ -84,6 +84,16 @@ int  cl_stream_read_char(CL_Obj stream);
  * Never decodes UTF-8 — for binary (unsigned-byte 8) streams. */
 int  cl_stream_read_byte(CL_Obj stream);
 
+/* Bulk raw-byte I/O for READ-SEQUENCE / WRITE-SEQUENCE.  `buf` MUST be C
+ * memory (not arena) — the platform call may block inside a GC safe region.
+ * read_bytes returns the byte count actually read (may be short at EOF);
+ * write_bytes returns 0 on success.  Both return -2 when the stream kind has
+ * no bulk path (string/console/broadcast/...) — the caller must fall back to
+ * the per-element read-byte/write-byte loop, which keeps those kinds'
+ * existing semantics. */
+int32_t cl_stream_read_bytes(CL_Obj stream, char *buf, uint32_t len);
+int32_t cl_stream_write_bytes(CL_Obj stream, const char *buf, uint32_t len);
+
 /* Write one character to stream.
  * With CL_WIDE_STRINGS, encodes non-ASCII as UTF-8. */
 void cl_stream_write_char(CL_Obj stream, int ch);

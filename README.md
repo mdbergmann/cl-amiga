@@ -634,6 +634,28 @@ not visible through the displaced array.
 See `tests/test_byte_vector.c` and the byte-vector section of
 `tests/amiga/run-tests.lisp` for the full behavioral contract.
 
+### Bulk sequence I/O and RLE decoding
+
+`read-sequence` and `write-sequence` are C builtins: an `(unsigned-byte 8)`
+vector against a binary file stream moves whole chunks per platform call
+instead of one VM round-trip per byte — on a 14MHz 68020 that turns loading
+a 20KB asset file from seconds into file-I/O speed.  Every other
+sequence/stream combination (strings, lists, string streams, Gray streams)
+keeps its standard element-wise semantics.  `replace` between byte vectors
+of the same element type is a single `memmove`, and `map-into` folding byte
+vectors through `#'logior`/`#'logand`/`#'logxor` runs as a C loop — the
+idiomatic way to OR bitplanes into a mask.
+
+`(ext:unpack-byterun1 src pos end dst dst-len &optional dst-start)` decodes
+ByteRun1/PackBits RLE data — the compression used by IFF ILBM `BODY`
+chunks (and TIFF/MacPaint) — from the byte vector `src` into `dst` at C
+speed, returning the new source position and signalling a clear error on
+truncated or overlong runs.
+
+See the READ-SEQUENCE/WRITE-SEQUENCE tests in `tests/test_stream.c`, the
+fast-path tests in `tests/test_byte_vector.c`, and the corresponding
+sections of `tests/amiga/run-tests.lisp` for usage examples.
+
 ## Building for AmigaOS
 
 ### Cross-compile (m68k-amigaos-gcc)
