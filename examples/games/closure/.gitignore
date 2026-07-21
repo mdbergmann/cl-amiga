@@ -3,3 +3,4 @@ saves/
 tests/tmp-saves/
 tests/results.txt
 tale-debug.log
+*.mapc

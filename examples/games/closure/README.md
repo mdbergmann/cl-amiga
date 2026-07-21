@@ -132,8 +132,9 @@ Both zones declare their pack in their map file (`(zone :kind :city
 :gfx "gfx/")`, `(zone :kind :dungeon :gfx "gfx-cellar/")`, each
 resolved next to the map — the self-contained world-directory pattern
 from the engine README), so travel swaps the art as the party moves
-between the town and the cellar.  The swap takes about five
-seconds on a 68040, far longer on a plain 68020; the engine keeps the
+between the town and the cellar.  The swap takes about two
+seconds on a 68040 and under a minute on a plain 68020 (FS-UAE
+measurements — the decode runs in C builtins); the engine keeps the
 pack you left loaded so the way back is instant
 (`tale:*gfx-cache-packs*` — see the engine README).  Try
 the town pack on the cellar:

@@ -660,6 +660,94 @@ messages so far (oldest first)."
   (check "crypt ladder up" #\< (cell-feature m 2 0)))
 
 ;;; ---------------------------------------------------------------------
+;;; The map cache sidecar (.mapc): written on parse, byte-format
+;;; round-trip, actually consulted when newer than the map, and
+;;; invalidated the moment the map is edited.
+
+(let ((path "tests/tmp-cache.map")
+      (art "+-+-+-+
+|@ D  |
++-+-+ +
+|<|  >|
++-+-+-+
+(zone :kind :city :title \"cachetown\" :gfx \"gfx-town/\")
+(special (1 0) (message \"hi\"))
+"))
+  (with-open-file (s path :direction :output :if-exists :supersede)
+    (write-string art s))
+  ;; the sidecar only wins while strictly newer than the map, so let the
+  ;; clock tick past the map's write second before the parse creates it
+  (sleep 1.1)
+  (let ((m1 (load-map-file path)))
+    (check-true "map parse leaves a .mapc sidecar"
+                (not (null (probe-file (%map-cache-path path)))))
+    ;; decode the sidecar directly — every art-derived field round-trips
+    (let* ((buf (with-open-file (s (%map-cache-path path)
+                                   :element-type '(unsigned-byte 8))
+                  (let ((v (make-array (file-length s)
+                                       :element-type '(unsigned-byte 8))))
+                    (read-sequence v s)
+                    v)))
+           (m2 (%decode-map-cache buf path nil :north)))
+      (check-true "cache round-trips the wall grid"
+                  (equalp (dungeon-map-walls m1) (dungeon-map-walls m2)))
+      (check-true "cache round-trips the features"
+                  (equalp (dungeon-map-features m1)
+                          (dungeon-map-features m2)))
+      (check "cache round-trips the start cell"
+             (list (dungeon-map-start-x m1) (dungeon-map-start-y m1))
+             (list (dungeon-map-start-x m2) (dungeon-map-start-y m2)))
+      (check "cache reload re-reads the zone form" "cachetown"
+             (dungeon-map-title m2))
+      (check "cache reload re-reads the specials" '((message "hi"))
+             (cell-special m2 1 0)))
+    ;; a load with the sidecar newer than the map must actually use it:
+    ;; patch one wall byte in the sidecar (wall -> door) and watch the
+    ;; patched value come back
+    (let* ((cpath (%map-cache-path path))
+           (bytes (with-open-file (s cpath :element-type '(unsigned-byte 8))
+                    (let ((v (make-array (file-length s)
+                                         :element-type '(unsigned-byte 8))))
+                      (read-sequence v s)
+                      v))))
+      (check "cache patch target is the north wall of (0,0)"
+             (%wall-code (cell-wall m1 0 0 :north)) (aref bytes 16))
+      (setf (aref bytes 16) 2)          ; :wall/:open -> :door
+      (with-open-file (s cpath :direction :output
+                              :element-type '(unsigned-byte 8)
+                              :if-exists :supersede)
+        (write-sequence bytes s))
+      (check "a newer sidecar is used" :door
+             (cell-wall (load-map-file path) 0 0 :north)))
+    ;; editing the map invalidates the sidecar (same-second edits
+    ;; included: the cache must be STRICTLY newer than the map)
+    (with-open-file (s path :direction :output :if-exists :supersede)
+      (write-string art s))
+    (check "an edited map beats the sidecar"
+           (cell-wall m1 0 0 :north)
+           (cell-wall (load-map-file path) 0 0 :north))
+    ;; a corrupt sidecar is rejected loudly by the decoder and silently
+    ;; (fall back to parsing) by the loader
+    (check-error "corrupt cache magic is rejected"
+      (%decode-map-cache
+       (make-array 16 :element-type '(unsigned-byte 8) :initial-element 7)
+       path nil :north))
+    (check "a garbage sidecar falls back to the parse"
+           (dungeon-map-width m1)
+           (progn
+             (with-open-file (s (%map-cache-path path)
+                                :direction :output
+                                :element-type '(unsigned-byte 8)
+                                :if-exists :supersede)
+               (write-sequence (make-array 40 :element-type '(unsigned-byte 8)
+                                             :initial-element 7)
+                               s))
+             (dungeon-map-width (load-map-file path)))))
+  (delete-file path)
+  (when (probe-file (%map-cache-path path))
+    (delete-file (%map-cache-path path))))
+
+;;; ---------------------------------------------------------------------
 ;;; Dice
 
 (multiple-value-bind (c s b) (parse-dice "2d6+1")

@@ -275,10 +275,16 @@ plane row and an Amiga BitMap plane row have the same layout, so the
 rows are poked straight into a scratch planar BitMap and the blitter
 moves them into the piece's own display-format bitmap
 (`tale:*wall-load-planar*`, on by default; bind it to `NIL` for the
-portable chunky path through `WriteChunkyPixels`).  Loading the town
-pack on an 68020 takes about 5.5s that way against 12.3s chunky.  The
-cookie-cut mask comes from the same rows — for the usual pen-0
-transparent key it is just the OR of the planes.
+portable chunky path through `WriteChunkyPixels`).  The cookie-cut
+mask comes from the same rows — for the usual pen-0 transparent key it
+is just the OR of the planes, folded once and reused both to decide
+whether a piece needs a mask at all and as the chip-RAM mask plane.
+Location pictures, portraits and effect icons load through the same
+planar recipe.  All the per-byte work runs at C speed on clamiga: the
+file arrives through the bulk `read-sequence` path, the ByteRun1
+decode is `ext:unpack-byterun1` (with the pure-CL loop kept as the
+portable fallback), and the mask fold is a `map-into #'logior` over
+the packed plane bytes.
 
 `read-ilbm` (chunky pens) remains the general reader and is what the
 host renderer, the pointer sprites and the asset generator use;
@@ -290,7 +296,7 @@ ILBM declares.
 ### Keeping packs loaded
 
 Loading a pack decodes a directory of ILBMs into offscreen bitmaps —
-around eleven seconds on an 68020 — so a zone boundary between two
+real seconds on a 14MHz 68020 — so a zone boundary between two
 packs (a town and its cellar) pays for the swap each way.
 `tale:*gfx-cache-packs*` trades memory for that time by keeping the
 pack the party just left, so walking back is instant:
@@ -430,6 +436,16 @@ The op vocabulary — `message`, `set-flag`/`clear-flag`,
 `when-flag`/`unless-flag`, `at-night`/`at-day`, `once`, `teleport`,
 `travel`, `location`, `spin`, `damage`, `heal`, `gold`, `encounter`,
 `event` — is documented in `src/specials.lisp`.
+
+The character-by-character art parse scales with map area (a 30x30
+city costs real seconds at 14MHz), so a successful parse writes a
+binary sidecar next to the map (`town.map` → `town.mapc`) holding the
+art-derived grid; while the sidecar is newer than the map it loads in
+one bulk read, and the story forms are read from the map file itself.
+Editing the map transparently reparses and rewrites the sidecar —
+delete `.mapc` files freely, they are pure cache (and the format is
+big-endian, so a sidecar written on the host works on the Amiga).
+See the map-cache tests in `tests/run-tests.lisp` for the contract.
 
 ## Time, day and night
 
