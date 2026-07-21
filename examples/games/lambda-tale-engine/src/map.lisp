@@ -65,8 +65,10 @@
   (width 0)
   (height 0)
   (wrap nil)          ; T = Bard's Tale-style toroidal map
-  walls               ; (array (height width 4)) of :wall/:door/:open
-  features            ; (array (height width)) of character or NIL
+  walls               ; (unsigned-byte 8) vector, H*W*4 wall codes in
+                      ;   N,E,S,W order per cell (see *WALL-DECODE*) —
+                      ;   packed so the map cache loads it in one read
+  features            ; (unsigned-byte 8) vector, H*W char-codes, 0 = none
   specials            ; hash (x . y) -> special ops list (see specials.lisp)
   (start-x 0)
   (start-y 0)
@@ -75,17 +77,30 @@
   dark)               ; always dark (ZONE :DARK D) — needs a light;
                       ; T = one cell of sight, an integer = that many
 
+(defparameter *wall-decode* #(:open :wall :door)
+  "Wall byte codes, index = code — the packed walls representation and
+the .mapc sidecar share it.")
+
+(defun %wall-code (wall)
+  (ecase wall (:open 0) (:wall 1) (:door 2)))
+
 (defun map-title (map)
   "The map's display name: its ZONE :title, else its file name."
   (or (dungeon-map-title map) (dungeon-map-name map)))
 
 (defun cell-wall (map x y dir)
   "The wall of cell (X,Y) in direction DIR, as seen from inside the cell."
-  (aref (dungeon-map-walls map) y x (dir-index dir)))
+  (svref *wall-decode*
+         (aref (dungeon-map-walls map)
+               (+ (dir-index dir)
+                  (* 4 (+ (* y (dungeon-map-width map)) x))))))
 
 (defun cell-feature (map x y)
   "The feature character of cell (X,Y), or NIL."
-  (aref (dungeon-map-features map) y x))
+  (let ((c (aref (dungeon-map-features map)
+                 (+ (* y (dungeon-map-width map)) x))))
+    (unless (zerop c)
+      (code-char c))))
 
 (defun cell-special (map x y)
   "The special ops attached to cell (X,Y), or NIL.  SETF-able."
@@ -162,8 +177,12 @@ map itself is smaller."
               got ~D lines with a maximum width of ~D" name rows cols))
     (let* ((h (floor (1- rows) 2))
            (w (floor (1- cols) 2))
-           (walls (make-array (list h w 4) :initial-element :wall))
-           (features (make-array (list h w) :initial-element nil))
+           (walls (make-array (* h w 4)
+                              :element-type '(unsigned-byte 8)
+                              :initial-element 1))         ; 1 = :wall
+           (features (make-array (* h w)
+                                 :element-type '(unsigned-byte 8)
+                                 :initial-element 0))
            (start-x nil)
            (start-y nil))
       (setf start-facing (dir-keyword start-facing))
@@ -182,16 +201,25 @@ map itself is smaller."
         (dotimes (y h)
           (dotimes (x w)
             (let ((cx (1+ (* 2 x)))
-                  (cy (1+ (* 2 y))))
-              (setf (aref walls y x +north+) (wall-value cx (1- cy) t))
-              (setf (aref walls y x +south+) (wall-value cx (1+ cy) t))
-              (setf (aref walls y x +west+)  (wall-value (1- cx) cy nil))
-              (setf (aref walls y x +east+)  (wall-value (1+ cx) cy nil))
+                  (cy (1+ (* 2 y)))
+                  (base (* 4 (+ (* y w) x))))
+              (setf (aref walls (+ base +north+))
+                    (%wall-code (wall-value cx (1- cy) t)))
+              (setf (aref walls (+ base +south+))
+                    (%wall-code (wall-value cx (1+ cy) t)))
+              (setf (aref walls (+ base +west+))
+                    (%wall-code (wall-value (1- cx) cy nil)))
+              (setf (aref walls (+ base +east+))
+                    (%wall-code (wall-value (1+ cx) cy nil)))
               (let ((c (art-at cx cy)))
                 (case c
                   (#\Space nil)
                   (#\@ (setf start-x x start-y y))
-                  (t (setf (aref features y x) c)))))))
+                  (t (let ((code (char-code c)))
+                       (unless (<= 1 code 255)
+                         (error "parse-map ~A: feature character ~S at ~
+cell (~D,~D) is not an 8-bit character" name c x y))
+                       (setf (aref features (+ (* y w) x)) code))))))))
         (%make-dungeon-map :name name :width w :height h :wrap wrap
                            :walls walls :features features
                            :specials (make-hash-table :test 'equal)
@@ -239,15 +267,20 @@ or a positive integer (cells of sight in the dark)" path dark))
                    (special (x y) op...))"
                   path (first form)))))
 
+(defun %parse-map-forms-stream (map in path)
+  "Read map data forms from stream IN until EOF and apply them to MAP
+— *READ-EVAL* bound to NIL, forms never evaluated."
+  (let ((*read-eval* nil)
+        (*package* (find-package :tale)))
+    (loop
+      (let ((form (read in nil in)))
+        (when (eq form in)
+          (return))
+        (%apply-map-form map form path)))))
+
 (defun %parse-map-forms (map string path)
   (with-input-from-string (in string)
-    (let ((*read-eval* nil)
-          (*package* (find-package :tale)))
-      (loop
-        (let ((form (read in nil in)))
-          (when (eq form in)
-            (return))
-          (%apply-map-form map form path))))))
+    (%parse-map-forms-stream map in path)))
 
 (defun load-map-file (path &key wrap (start-facing :north))
   "Read the ASCII map file at PATH and parse it into a DUNGEON-MAP.
@@ -264,26 +297,152 @@ the map, read with *READ-EVAL* bound to NIL and never evaluated:
     (special (X Y) OP...)    attach a special to cell (X,Y)
 The forms section starts at the first line beginning with '(' or ';'
 \(no valid art line starts with either).  The :wrap and :start-facing
-keyword arguments below are overridden by a ZONE form in the file."
+keyword arguments below are overridden by a ZONE form in the file.
+
+The character-by-character art parse scales with map area — ~20s for a
+30x30 city on a 14MHz 68020 — so a successful parse leaves a binary
+sidecar (PATH + \"c\", see %WRITE-MAP-CACHE) holding the art-derived
+data; while the sidecar is newer than the map it loads in one
+READ-SEQUENCE instead of a reparse, and the story forms are read from
+the map file itself at the recorded offset.  Editing the .map (or
+deleting the .mapc) transparently reparses and rewrites the sidecar;
+a read-only game directory just never caches."
   (dlog-timed ("map ~A" path)
-    (%load-map-file path wrap start-facing)))
+    (or (%load-map-cache path wrap start-facing)
+        (%load-map-file path wrap start-facing))))
 
 (defun %load-map-file (path wrap start-facing)
   (let ((art (make-string-output-stream))
         (forms (make-string-output-stream))
+        (forms-offset nil)
         (in-forms nil))
     (with-open-file (s path)
-      (loop for line = (read-line s nil nil)
+      (loop for pos = (file-position s)
+            for line = (read-line s nil nil)
             while line
             do (progn
                  (when (and (not in-forms)
                             (> (length line) 0)
                             (member (char line 0) '(#\( #\;)))
-                   (setf in-forms t))
+                   (setf in-forms t
+                         forms-offset pos))
                  (let ((out (if in-forms forms art)))
                    (write-string line out)
                    (write-char #\Newline out)))))
     (let ((map (parse-map (get-output-stream-string art)
                           :name path :wrap wrap :start-facing start-facing)))
       (%parse-map-forms map (get-output-stream-string forms) path)
+      (%write-map-cache map path forms-offset)
       map)))
+
+;;; ---------------------------------------------------------------------
+;;; The map cache: a binary sidecar for the art-derived data.
+;;;
+;;; Layout (big-endian, the Amiga's native order — host-written caches
+;;; work on the Amiga and vice versa):
+;;;   "TMC1"                         magic + version
+;;;   u16 W, u16 H                   grid size
+;;;   u16 START-X, u16 START-Y       the @ cell (or 0,0)
+;;;   u32 FORMS-OFFSET               byte offset of the story forms in
+;;;                                  the .map file, #xFFFFFFFF = none
+;;;   H*W*4 wall bytes               dirs N,E,S,W: 0 open, 1 wall, 2 door
+;;;   H*W feature bytes              char-code, 0 = no feature
+;;;
+;;; Only what the ASCII art produces is cached; everything the ZONE and
+;;; SPECIAL forms contribute (kind, title, wrap, gfx, dark, specials) is
+;;; re-read from the .map file so the cache can never go stale against
+;;; the story layer without also being older than the file.
+
+(defconstant +map-cache-no-forms+ #xFFFFFFFF)
+
+(defun %map-cache-path (path)
+  (concatenate 'string path "c"))
+
+(defun %write-map-cache (map path forms-offset)
+  "Write MAP's art-derived data to the .mapc sidecar; best-effort — a
+failure (read-only media, odd feature characters) is logged and the
+game continues uncached."
+  (handler-case
+      (let* ((w (dungeon-map-width map))
+             (h (dungeon-map-height map))
+             (walls (dungeon-map-walls map))
+             (features (dungeon-map-features map))
+             (buf (make-array (+ 16 (* h w 5))
+                              :element-type '(unsigned-byte 8)))
+             (i 0))
+        (labels ((u8 (v) (setf (aref buf i) v) (incf i))
+                 (u16 (v) (u8 (ldb (byte 8 8) v)) (u8 (ldb (byte 8 0) v)))
+                 (u32 (v) (u16 (ldb (byte 16 16) v)) (u16 (ldb (byte 16 0) v))))
+          (u8 84) (u8 77) (u8 67) (u8 49)          ; "TMC1"
+          (u16 w) (u16 h)
+          (u16 (dungeon-map-start-x map))
+          (u16 (dungeon-map-start-y map))
+          (u32 (or forms-offset +map-cache-no-forms+))
+          ;; walls and features are already packed byte vectors in
+          ;; exactly the sidecar's layout — two bulk copies
+          (replace buf walls :start1 16)
+          (replace buf features :start1 (+ 16 (* h w 4))))
+        (with-open-file (s (%map-cache-path path)
+                           :direction :output
+                           :element-type '(unsigned-byte 8)
+                           :if-exists :supersede)
+          (write-sequence buf s))
+        t)
+    (error (e)
+      (dlog "map cache for ~A not written: ~A" path e)
+      nil)))
+
+(defun %load-map-cache (path wrap start-facing)
+  "The DUNGEON-MAP from PATH's .mapc sidecar, or NIL when there is no
+usable cache (missing, older than the map, wrong magic, mis-sized,
+corrupt) — the caller reparses the source and rewrites it.  The story
+forms still come from the .map file itself, read with the C reader at
+the cached offset."
+  (handler-case
+      (let* ((cache (%map-cache-path path))
+             (map-date (file-write-date path))
+             (cache-date (and (probe-file cache) (file-write-date cache))))
+        (when (and map-date cache-date (> cache-date map-date))
+          (let ((buf (with-open-file (s cache :element-type '(unsigned-byte 8))
+                       (let* ((n (file-length s))
+                              (v (make-array n :element-type '(unsigned-byte 8))))
+                         (unless (and (>= n 16) (= (read-sequence v s) n))
+                           (error "short map cache"))
+                         v))))
+            (%decode-map-cache buf path wrap start-facing))))
+    (error (e)
+      (dlog "map cache for ~A ignored: ~A" path e)
+      nil)))
+
+(defun %decode-map-cache (buf path wrap start-facing)
+  (let ((i 0))
+    (labels ((u8 () (prog1 (aref buf i) (incf i)))
+             (u16 () (logior (ash (u8) 8) (u8)))
+             (u32 () (logior (ash (u16) 16) (u16))))
+      (unless (and (= (u8) 84) (= (u8) 77) (= (u8) 67) (= (u8) 49))
+        (error "bad map cache magic"))
+      (let* ((w (u16)) (h (u16))
+             (sx (u16)) (sy (u16))
+             (forms-offset (u32)))
+        (unless (= (length buf) (+ 16 (* h w 5)))
+          (error "map cache size mismatch"))
+        ;; walls/features are stored exactly as the packed in-memory
+        ;; representation — two bulk copies, no per-cell work (that per-cell
+        ;; fill was most of a 30x30 city's cached load on a 68020)
+        (let ((walls (subseq buf 16 (+ 16 (* h w 4))))
+              (features (subseq buf (+ 16 (* h w 4)))))
+          ;; every wall byte must be a valid code — COUNT is a C pass
+          (unless (= (+ (count 0 walls) (count 1 walls) (count 2 walls))
+                     (length walls))
+            (error "map cache wall codes out of range"))
+          (let ((map (%make-dungeon-map
+                      :name path :width w :height h :wrap wrap
+                      :walls walls :features features
+                      :specials (make-hash-table :test 'equal)
+                      :start-x sx :start-y sy
+                      :start-facing (dir-keyword start-facing))))
+            (unless (= forms-offset +map-cache-no-forms+)
+              (with-open-file (s path)
+                (file-position s forms-offset)
+                (%parse-map-forms-stream map s path)))
+            map))))))

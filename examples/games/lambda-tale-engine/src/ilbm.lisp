@@ -106,7 +106,18 @@ end copies the bytes into a chip-RAM plane."
   "Decode ByteRun1 data from SRC[POS..END) until DST-LEN bytes are
 produced, writing them to DST from DST-START; returns the new source
 position.  Signals on truncated or overlong data — a corrupt BODY must
-not silently misalign every following row."
+not silently misalign every following row.
+
+On clamiga the decode is EXT:UNPACK-BYTERUN1, a C builtin: the Lisp
+loop below costs a VM round-trip per output byte, which made unpacking
+one wall piece take seconds on a 14MHz 68020.  The Lisp loop remains
+as the portable fallback (same contract, pinned by the test suite)."
+  #+cl-amiga
+  (handler-case
+      (ext:unpack-byterun1 src pos end dst dst-len dst-start)
+    (error (e)
+      (error "ILBM ~A: ~A" file e)))
+  #-cl-amiga
   (let ((out dst-start)
         (dst-len (+ dst-start dst-len)))
     (loop while (< out dst-len)
@@ -301,42 +312,62 @@ offset, and the interleaved mask plane is decoded past."
   "A cookie-cut mask for IMG: one bitplane, the same row layout as its
 planes, with a 1 bit wherever the pen is not TRANSPARENT.  For the
 usual key (pen 0) that is just the bitwise OR of every plane — a pen
-is non-zero exactly when some plane's bit is set — so the mask costs
-one pass over the plane bytes instead of one per pixel.  Returns
-\(VALUES byte-vector bytes-per-row), or NIL when TRANSPARENT is not
-pen 0 (no shortcut then; the caller falls back to MASK-BYTES)."
+is non-zero exactly when some plane's bit is set — folded with
+MAP-INTO #'LOGIOR, which runs as a C loop over the packed plane bytes.
+Bits past W (the file's row padding) are cleared afterwards, so the
+result is byte-for-byte what MASK-BYTES produces from chunky pens.
+Returns (VALUES byte-vector bytes-per-row), or NIL when TRANSPARENT is
+not pen 0 (no shortcut then; the caller falls back to MASK-BYTES)."
   (when (zerop transparent)
     (let* ((row-bytes (planar-image-row-bytes img))
-           (n (* row-bytes (planar-image-height img)))
-           (out (make-array n :element-type '(unsigned-byte 8)
-                              :initial-element 0)))
+           (w (planar-image-width img))
+           (h (planar-image-height img))
+           (out (make-array (* row-bytes h)
+                            :element-type '(unsigned-byte 8)
+                            :initial-element 0)))
       (dotimes (p (planar-image-depth img))
-        (let ((plane (planar-image-plane img p)))
-          (dotimes (i n)
-            (let ((b (aref plane i)))
-              (unless (zerop b)
-                (setf (aref out i) (logior (aref out i) b)))))))
+        (map-into out #'logior out (planar-image-plane img p)))
+      ;; canonicalize the edge: padding bits beyond W are not pixels —
+      ;; a foreign ILBM may carry junk there in its plane rows
+      (let* ((full (floor w 8))
+             (rem (mod w 8))
+             (partial (logand #xFF (ash #xFF (- 8 rem)))))
+        (when (or (plusp rem) (> row-bytes (ceiling w 8)))
+          (dotimes (y h)
+            (let ((base (* y row-bytes)))
+              (when (plusp rem)
+                (setf (aref out (+ base full))
+                      (logand (aref out (+ base full)) partial)))
+              (loop for i from (ceiling w 8) below row-bytes
+                    do (setf (aref out (+ base i)) 0))))))
       (values out row-bytes))))
+
+(defun %mask-opaque-p (mask row-bytes w h)
+  "True when MASK (a canonical cookie-cut plane from PLANAR-MASK-BYTES
+or MASK-BYTES: ROW-BYTES per row, no bits past W) has every real
+pixel's bit set — a fully painted piece that needs no cookie-cut blit.
+The full bytes are checked in one COUNT pass (a C loop over the packed
+bytes); only the partial edge column, H bytes, is walked by hand."
+  (let* ((full (floor w 8))
+         (rem (mod w 8))
+         (partial (logand #xFF (ash #xFF (- 8 rem)))))
+    (and (= (count 255 mask) (* h full))
+         (or (zerop rem)
+             (dotimes (y h t)
+               (unless (= (aref mask (+ (* y row-bytes) full)) partial)
+                 (return nil)))))))
 
 (defun planar-image-transparent-p (img &optional (transparent 0))
   "True when IMG uses the TRANSPARENT pen anywhere — i.e. it needs a
 cookie-cut mask rather than a plain opaque blit.  For pen 0 that means
-some pixel has no plane bit set at all."
+some pixel has no plane bit set at all.  Callers that also want the
+mask itself should call PLANAR-MASK-BYTES once and test the result
+with %MASK-OPAQUE-P instead of paying for two mask folds."
   (if (zerop transparent)
       (multiple-value-bind (mask row-bytes) (planar-mask-bytes img)
-        (let ((w (planar-image-width img)))
-          ;; a fully-painted piece has every real pixel's bit set; look
-          ;; for a zero bit inside the width (the row padding past W is
-          ;; always zero and must not count)
-          (dotimes (y (planar-image-height img) nil)
-            (dotimes (bx (ceiling w 8))
-              (let* ((x0 (ash bx 3))
-                     (n (min 8 (- w x0)))
-                     ;; the bits that are real pixels in this byte
-                     (full (- #x100 (ash 1 (- 8 n)))))
-                (unless (= (logand (aref mask (+ (* y row-bytes) bx)) full)
-                           full)
-                  (return-from planar-image-transparent-p t)))))))
+        (not (%mask-opaque-p mask row-bytes
+                             (planar-image-width img)
+                             (planar-image-height img))))
       t))                               ; non-zero key: no shortcut
 
 (defun read-ilbm-planar (file)

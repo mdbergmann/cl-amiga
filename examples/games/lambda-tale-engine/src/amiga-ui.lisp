@@ -458,6 +458,27 @@ i.e. cleared) and its rows at least as wide."
                               (* y src-row-bytes)
                               (* (1+ y) src-row-bytes))))))))
 
+(defun %chip-mask (bytes)
+  "Copy the cookie-cut mask BYTES into chip RAM where
+BltMaskBitMapRastPort can reach them; returns the chip allocation
+(caller frees with AMIGA:FREE-CHIP)."
+  (let ((chip (amiga:alloc-chip (length bytes))))
+    (ffi:poke-bytes chip bytes)
+    chip))
+
+(defun %planar-piece-mask (img)
+  "IMG's cookie-cut mask in chip RAM, or NIL for a fully painted piece
+(a plain opaque blit).  One mask fold: the same bytes answer the
+does-it-need-a-mask question (%MASK-OPAQUE-P) and become the chip
+plane — PLANAR-IMAGE-TRANSPARENT-P followed by PLANAR-MASK-BYTES
+would fold every plane twice."
+  (multiple-value-bind (bytes row-bytes) (planar-mask-bytes img)
+    (when (and bytes
+               (not (%mask-opaque-p bytes row-bytes
+                                    (planar-image-width img)
+                                    (planar-image-height img))))
+      (%chip-mask bytes))))
+
 (defun %load-wall-assets (rp log)
   "Load the active tile pack (*GFX-DIR*): every wall piece into an
 offscreen bitmap, plus the optional floor.iff / ceiling.iff backdrops
@@ -474,20 +495,14 @@ opaque blit); the backdrops are always opaque."
         (depth (max 2 (amiga.gfx:get-bitmap-attr (%window-bitmap rp)
                                                  amiga.gfx:+bma-depth+)))
         (planes (view-planes *fp-view-width* *fp-view-height*)))
-    (labels ((chip-mask (bytes)
-               ;; a cookie-cut mask plane, copied into chip RAM where
-               ;; BltMaskBitMapRastPort can reach it
-               (let ((chip (amiga:alloc-chip (length bytes))))
-                 (ffi:poke-bytes chip bytes)
-                 chip))
-             (build-mask (img)
+    (labels ((build-mask (img)
                ;; A piece that uses pen 0 (the transparent key) gets a
                ;; cookie-cut mask in chip RAM so the backdrop shows
                ;; through; a fully-painted piece needs none.
                (when (image-transparent-p img)
-                 (chip-mask (mask-bytes (image-width img)
-                                        (image-height img)
-                                        (image-pixels img)))))
+                 (%chip-mask (mask-bytes (image-width img)
+                                         (image-height img)
+                                         (image-pixels img)))))
              (check-size (file iw ih w h)
                ;; Blits copy W x H from the bitmap wherever the piece's
                ;; slot sits, so a mis-sized pack file would read past
@@ -520,9 +535,7 @@ PRINT-TILE-MANIFEST)"
                              (planar-image-height img) w h)
                  (let ((bm (amiga.gfx:alloc-bitmap w h depth
                                                    :friend friend))
-                       (mask (when (and maskable
-                                        (planar-image-transparent-p img))
-                               (chip-mask (planar-mask-bytes img)))))
+                       (mask (when maskable (%planar-piece-mask img))))
                    (setf (gethash key walls) (cons bm mask))
                    (unless palette
                      (setf palette (planar-image-palette img)))
@@ -852,21 +865,28 @@ FN directly under the already-shown pointer."
 
 (defun %load-image (rp path)
   "Load the ILBM at PATH into an offscreen bitmap; returns the cache
-entry (BITMAP WIDTH HEIGHT MASK), MASK NIL for an opaque image."
-  (let* ((img (read-ilbm path))
-         (w (image-width img))
-         (h (image-height img))
+entry (BITMAP WIDTH HEIGHT MASK), MASK NIL for an opaque image.  The
+wall-piece planar recipe: the plane rows go into a scratch planar
+BitMap and the blitter moves them into the friend-format bitmap —
+no per-pixel chunky fold, no WriteChunkyPixels, and the mask goes to
+chip RAM in one POKE-BYTES instead of a poke per byte (a location
+picture cost ~30s on a 68020 through the chunky path)."
+  (let* ((img (read-ilbm-planar path))
+         (w (planar-image-width img))
+         (h (planar-image-height img))
          (friend (%window-bitmap rp))
          (depth (max 2 (amiga.gfx:get-bitmap-attr friend
-                                                  amiga.gfx:+bma-depth+)))
+                                                  amiga.gfx:+bma-depth+)
+                     (planar-image-depth img)))
          (bm (amiga.gfx:alloc-bitmap w h depth :friend friend))
-         (mask (when (image-transparent-p img)
-                 (let* ((bytes (mask-bytes w h (image-pixels img)))
-                        (chip (amiga:alloc-chip (length bytes))))
-                   (dotimes (i (length bytes) chip)
-                     (ffi:poke-u8 chip (aref bytes i) i))))))
-    (amiga.gfx:with-bitmap-rastport (brp bm)
-      (amiga.gfx:write-chunky brp 0 0 w h (image-pixels img)))
+         (mask (%planar-piece-mask img))
+         (scratch (amiga.gfx:alloc-bitmap w h depth)))
+    (unwind-protect
+         (progn
+           (%poke-planes scratch img)
+           (amiga.gfx:with-bitmap-rastport (brp bm)
+             (amiga.gfx:blt-bitmap-rastport scratch 0 0 brp 0 0 w h)))
+      (amiga.gfx:free-bitmap scratch))
     (list bm w h mask)))
 
 (defun %cached-image (rp images path log)
