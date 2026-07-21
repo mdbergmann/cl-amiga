@@ -42,6 +42,35 @@ names no :IMAGE."
     (when image
       (%resolve-map-path (dungeon-map-name (game-map game)) image))))
 
+(defun cell-location-op (map x y)
+  "The (TITLE KIND ARG...) tail of the LOCATION op attached to cell
+\(X,Y), or NIL.  Only a top-level op counts — a location hidden behind
+ONCE or a flag test is not knowable map data."
+  (dolist (op (cell-special map x y))
+    (when (and (consp op) (symbolp (first op))
+               (string-equal (symbol-name (first op)) "LOCATION"))
+      (return (rest op)))))
+
+(defun facing-location-image-path (game)
+  "The facade the party stands before: when the wall straight ahead is
+a door and the cell beyond holds a LOCATION with an :IMAGE, that
+image's path resolved like LOCATION-IMAGE-PATH — else NIL.  The Amiga
+front-end shows it in the view column, so a city street reads as
+houses with faces, not one long grey wall (the Bard's Tale
+building-front look).  The wall directly ahead is visible even in the
+dark (GAME-VIEW-DEPTH is never less than one cell)."
+  (let* ((map (game-map game))
+         (x (game-x game))
+         (y (game-y game))
+         (f (game-facing game)))
+    (when (eq (cell-wall map x y f) :door)
+      (multiple-value-bind (nx ny) (neighbor map x y f)
+        (when nx
+          (let* ((loc (cell-location-op map nx ny))
+                 (image (and loc (getf (cddr loc) :image))))
+            (when image
+              (%resolve-map-path (dungeon-map-name map) image))))))))
+
 (defun enter-location (game spec)
   "Enter the location described by SPEC = (TITLE KIND ARG...) — the
 LOCATION special op calls this.  Sets the game's modal location state

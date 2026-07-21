@@ -149,6 +149,15 @@ engine has no default world; the game names its starting map."
                                          :py (game-y game)
                                          :facing (game-facing game)
                                          :x0 x0 :y0 y0 :w w :h h))
+                 (let ((legend (map-legend-entries (game-map game)
+                                                   (game-knowledge game)
+                                                   :full full)))
+                   (when legend
+                     (format t "Found:~%")
+                     (dolist (e legend)
+                       (format t "  ~C ~A~%" (first e)
+                               (string-capitalize (fourth e))))
+                     (terpri)))
                  (format t "Map ~D,~D..~D,~D of ~Dx~D~@[ [full]~]   ~
                             [m]/[Esc] back  [f] full  [q] quit~%"
                          x0 y0 (+ x0 w -1) (+ y0 h -1)

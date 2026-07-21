@@ -5259,6 +5259,113 @@ pieces need a mask" pname)
                   (delete-file path)))))
 
 ;;; ---------------------------------------------------------------------
+;;; Automap wall runs (MAP-EDGE-RUNS — the map page's draw list)
+
+(flet ((runs-equal (label expected actual)
+         (check-true label (null (set-exclusive-or expected actual
+                                                   :test #'equal)))))
+  (let ((m (parse-map *art*)))
+    ;; omniscient: every wall of the 3x2 fixture, merged into runs
+    (multiple-value-bind (walls doors) (map-edge-runs m nil 0 0 3 2)
+      (runs-equal "edge runs: omniscient walls"
+                  '((t 0 0 3) (t 0 2 3)
+                    (nil 0 0 2) (nil 1 1 1) (nil 2 0 1) (nil 3 0 2))
+                  walls)
+      (runs-equal "edge runs: omniscient doors" '((t 1 1 1)) doors))
+    ;; a fresh knowledge shows nothing
+    (let ((k (make-map-knowledge m)))
+      (multiple-value-bind (walls doors) (map-edge-runs m k 0 0 3 2)
+        (check "edge runs: unexplored map is empty" nil walls)
+        (check "edge runs: unexplored map has no doors" nil doors))
+      ;; standing in (0,0) reveals exactly its own walls
+      (know-cell k 0 0)
+      (multiple-value-bind (walls doors) (map-edge-runs m k 0 0 3 2)
+        (runs-equal "edge runs: one explored cell -> its walls"
+                    '((t 0 0 1) (nil 0 0 1)) walls)
+        (check "edge runs: no door seen yet" nil doors)))
+    ;; adjacent known walls merge into a single run
+    (let ((k (make-map-knowledge m)))
+      (know-wall k 0 0 :north)
+      (know-wall k 1 0 :north)
+      (know-wall k 2 0 :north)
+      (multiple-value-bind (walls doors) (map-edge-runs m k 0 0 3 2)
+        (declare (ignore doors))
+        (runs-equal "edge runs: three known walls merge into one run"
+                    '((t 0 0 3)) walls)))
+    ;; a shared edge shows from either side's knowledge
+    (let ((k (make-map-knowledge m)))
+      (know-wall k 1 0 :south)          ; the far (northern) cell only
+      (multiple-value-bind (walls doors) (map-edge-runs m k 0 0 3 2)
+        (declare (ignore walls))
+        (runs-equal "edge runs: door known from the far side"
+                    '((t 1 1 1)) doors)))
+    (let ((k (make-map-knowledge m)))
+      (know-wall k 1 1 :north)          ; the near (southern) cell only
+      (multiple-value-bind (walls doors) (map-edge-runs m k 0 0 3 2)
+        (declare (ignore walls))
+        (runs-equal "edge runs: door known from the near side"
+                    '((t 1 1 1)) doors)))
+    ;; a sub-region stays in region-relative coordinates
+    (multiple-value-bind (walls doors) (map-edge-runs m nil 1 1 2 1)
+      (runs-equal "edge runs: sub-region walls are region-relative"
+                  '((t 0 1 2) (nil 0 0 1) (nil 2 0 1))
+                  walls)
+      (runs-equal "edge runs: sub-region door is region-relative"
+                  '((t 0 0 1)) doors))))
+
+;;; ---------------------------------------------------------------------
+;;; Facades from the street (CELL-LOCATION-OP / FACING-LOCATION-IMAGE-PATH)
+
+(let* ((m (parse-map *art*))
+       (g (new-game m)))
+  (setf (cell-special m 1 1)
+        '((location "The Cooper's" :house :image "gfx/house-1.iff")))
+  (check "cell-location-op finds the location tail"
+         '("The Cooper's" :house :image "gfx/house-1.iff")
+         (cell-location-op m 1 1))
+  (check "cell-location-op is NIL without a location op"
+         nil (cell-location-op m 0 1))
+  ;; stand in the street before the door, facing it
+  (setf (game-x g) 1 (game-y g) 0 (game-facing g) +south+)
+  (check "facing a location's door shows its facade"
+         "gfx/house-1.iff" (facing-location-image-path g))
+  (setf (game-facing g) +north+)
+  (check "facing a plain wall shows no facade"
+         nil (facing-location-image-path g))
+  (setf (game-facing g) +east+)
+  (check "facing open street shows no facade"
+         nil (facing-location-image-path g))
+  ;; a door with nothing behind it stays bare
+  (setf (cell-special m 1 1) nil)
+  (setf (game-facing g) +south+)
+  (check "a door without a location shows no facade"
+         nil (facing-location-image-path g)))
+
+;;; ---------------------------------------------------------------------
+;;; The map legend (MAP-LEGEND-ENTRIES)
+
+(let* ((m (parse-map *art*))
+       (k (make-map-knowledge m)))
+  (setf (cell-special m 1 1)
+        '((location "A Stone Cottage" :house :image "gfx/house-0.iff")))
+  (setf (cell-special m 2 1) '((location "Wolfgar's Arms" :shop)))
+  (setf (cell-special m 0 1) '((message "just a street sign")))
+  (check "legend: nothing found yet" nil (map-legend-entries m k))
+  (know-cell k 1 1)
+  (check "legend: a found house is listed"
+         '((#\1 1 1 "A Stone Cottage"))
+         (map-legend-entries m k))
+  (know-cell k 2 1)
+  (check "legend: important places come first, houses after"
+         '((#\1 2 1 "Wolfgar's Arms") (#\2 1 1 "A Stone Cottage"))
+         (map-legend-entries m k))
+  (check "legend: full mode lists every location, found or not"
+         '((#\1 2 1 "Wolfgar's Arms") (#\2 1 1 "A Stone Cottage"))
+         (map-legend-entries m nil :full t))
+  (check "legend: message-only specials are not locations"
+         nil (find 0 (map-legend-entries m nil :full t) :key #'second)))
+
+;;; ---------------------------------------------------------------------
 ;;; Summary
 
 (format t "~%Lambda's Tale engine tests: ~D checks, ~D failures.~%"

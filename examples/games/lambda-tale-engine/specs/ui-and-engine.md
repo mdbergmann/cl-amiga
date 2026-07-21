@@ -208,7 +208,11 @@ with pictures in the view column.)
   ships one: the location op's `:image`, or the sheet hero's class
   portrait (`define-hero-class :image`) — both resolved relative to
   the current map file (the effect-icon rule: `location-image-path`,
-  `hero-image-path`).  Without a picture the live first-person view
+  `hero-image-path`).  Outside a location the same rule applies to the
+  street: when the party faces a door whose far cell holds a location
+  with an `:image`, the facade shows in the view column
+  (`facing-location-image-path`) — houses have faces before the party
+  steps in.  Without a picture the live first-person view
   stays.  Pictures are opaque ILBMs drawn centered on black,
   center-cropped when they overhang the viewport
   (`%amiga-draw-picture`); a file that will not load logs once and
@@ -233,7 +237,14 @@ with pictures in the view column.)
   full-screen map mode** toggled with the `m` key.
 - Map mode covers the entire window/screen, draws the explored automap
   centered on the party (clamped to what fits at a readable cell size),
-  and returns to the play view on `m` or `Esc`.
+  and returns to the play view on `m` or `Esc`.  It draws black ink on
+  the grey page (doors and the party amber); walls come from
+  `map-edge-runs` — merged straight segments, one OS line call per
+  stretch — so a city-sized map opens fast on a 68020.
+- The space the map leaves to its right carries the **legend of found
+  locations** (`map-legend-entries`): one `MARKER NAME` microfont line
+  per location whose cell the party has explored, shops/taverns before
+  plain houses, each marker also drawn amber on its map cell.
 - The **two-line footer** carries what the play page has no room for:
   the zone title, the party position `(x,y)` — plus the facing while a
   compass effect burns — and the game clock on the first line, the map
