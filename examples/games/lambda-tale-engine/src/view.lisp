@@ -30,7 +30,27 @@
   cx cy               ; center cell coordinates
   front left right    ; wall values of the center cell, facing-relative
   lx ly left-front    ; left side cell + its front wall (when left is :open)
-  rx ry right-front)  ; right side cell + its front wall (when right is :open)
+  rx ry right-front   ; right side cell + its front wall (when right is :open)
+  front-style         ; style of the building behind each wall (or NIL
+  left-style          ; when that surface is no wall) — see %WALL-STYLE;
+  right-style         ; the blitted view picks tile-pack piece variants
+  left-front-style    ; with these, so a street reads as a row of
+  right-front-style)  ; different houses
+
+(defun %wall-style (map x y)
+  "Deterministic style index of the building whose mass fills cell
+\(X,Y): the :STYLE integer of a LOCATION op on the cell when it names
+one (a campaign matching a house's street look to its facade picture),
+else a coordinate hash.  The blitted view picks among a tile pack's
+piece variants with it (see VIEW-BLIT-LIST and the -vN files in
+%LOAD-WALL-ASSETS) so a street reads as a row of different houses; a
+pack without variants renders every style the same.  The hash range 12
+divides evenly by 1-4, so (MOD STYLE VARIANT-COUNT) stays uniform."
+  (let* ((loc (cell-location-op map x y))
+         (style (and loc (getf (cddr loc) :style))))
+    (if (integerp style)
+        style
+        (mod (+ (* 31 x) (* 17 y)) 12))))
 
 (defun compute-view (map x y facing &optional (depth +view-depth+))
   "List of VIEW-SLICEs visible from (X,Y) looking FACING, nearest first.
@@ -42,32 +62,50 @@ Stops at a solid or door front wall, an off-map edge, or DEPTH cells
          (slices '())
          (cx x)
          (cy y))
-    (dotimes (d depth)
-      (let ((front (cell-wall map cx cy f))
-            (left (cell-wall map cx cy ldir))
-            (right (cell-wall map cx cy rdir))
-            (lx nil) (ly nil) (lf nil)
-            (rx nil) (ry nil) (rf nil))
-        (when (eq left :open)
-          (multiple-value-bind (nx ny) (neighbor map cx cy ldir)
-            (when nx
-              (setf lx nx ly ny lf (cell-wall map nx ny f)))))
-        (when (eq right :open)
-          (multiple-value-bind (nx ny) (neighbor map cx cy rdir)
-            (when nx
-              (setf rx nx ry ny rf (cell-wall map nx ny f)))))
-        (push (%make-view-slice :depth d :cx cx :cy cy
-                                :front front :left left :right right
-                                :lx lx :ly ly :left-front lf
-                                :rx rx :ry ry :right-front rf)
-              slices)
-        ;; Advance only through an open front (doors block the view).
-        (unless (eq front :open)
-          (return))
-        (multiple-value-bind (nx ny) (neighbor map cx cy f)
-          (if nx
-              (setf cx nx cy ny)
-              (return)))))
+    (flet ((style-behind (x y dir)
+             ;; the building is the cell on the far side of the wall;
+             ;; a map-edge wall (no far cell) styles from the near one
+             (multiple-value-bind (nx ny) (neighbor map x y dir)
+               (if nx
+                   (%wall-style map nx ny)
+                   (%wall-style map x y)))))
+      (dotimes (d depth)
+        (let ((front (cell-wall map cx cy f))
+              (left (cell-wall map cx cy ldir))
+              (right (cell-wall map cx cy rdir))
+              (lx nil) (ly nil) (lf nil)
+              (rx nil) (ry nil) (rf nil))
+          (when (eq left :open)
+            (multiple-value-bind (nx ny) (neighbor map cx cy ldir)
+              (when nx
+                (setf lx nx ly ny lf (cell-wall map nx ny f)))))
+          (when (eq right :open)
+            (multiple-value-bind (nx ny) (neighbor map cx cy rdir)
+              (when nx
+                (setf rx nx ry ny rf (cell-wall map nx ny f)))))
+          (push (%make-view-slice
+                 :depth d :cx cx :cy cy
+                 :front front :left left :right right
+                 :lx lx :ly ly :left-front lf
+                 :rx rx :ry ry :right-front rf
+                 :front-style (when (member front '(:wall :door))
+                                (style-behind cx cy f))
+                 :left-style (when (member left '(:wall :door))
+                               (style-behind cx cy ldir))
+                 :right-style (when (member right '(:wall :door))
+                                (style-behind cx cy rdir))
+                 :left-front-style (when (member lf '(:wall :door))
+                                     (style-behind lx ly f))
+                 :right-front-style (when (member rf '(:wall :door))
+                                      (style-behind rx ry f)))
+                slices)
+          ;; Advance only through an open front (doors block the view).
+          (unless (eq front :open)
+            (return))
+          (multiple-value-bind (nx ny) (neighbor map cx cy f)
+            (if nx
+                (setf cx nx cy ny)
+                (return))))))
     (nreverse slices)))
 
 ;;; ---------------------------------------------------------------------
@@ -206,16 +244,28 @@ primitives, ordered back to front."
           (mapcar (lambda (part) (string-downcase (princ-to-string part)))
                   piece)))
 
+(defun wall-piece-variant-file (piece n)
+  "File name of PIECE's Nth style variant, e.g. \"front-0-v1.iff\" —
+the optional per-house looks a pack may ship beside the base piece
+(see %WALL-STYLE and the loader contract in the README)."
+  (let ((base (wall-piece-file piece)))
+    (format nil "~A-v~D.iff" (subseq base 0 (- (length base) 4)) n)))
+
 (defun view-blit-list (slices planes)
-  "Flatten SLICES into blit records (PIECE X Y W H), back to front.
-The bitmap twin of VIEW-DISPLAY-LIST — same wall logic, but each wall
-becomes one fixed-slot piece blit instead of wireframe lines."
+  "Flatten SLICES into blit records (PIECE STYLE X Y W H), back to
+front.  The bitmap twin of VIEW-DISPLAY-LIST — same wall logic, but
+each wall becomes one fixed-slot piece blit instead of wireframe
+lines.  STYLE is the wall's building style (see %WALL-STYLE); the
+renderer picks the piece's variant with (MOD STYLE VARIANT-COUNT), so
+it is 0 whenever the pack ships no variants."
   (let ((blits '()))
-    (labels ((blit (kind depth &optional side)
+    (labels ((blit (kind depth style &optional side)
                (let ((piece (if side
                                 (list kind depth side)
                                 (list kind depth))))
-                 (push (cons piece (wall-piece-rect planes piece)) blits)))
+                 (push (list* piece (or style 0)
+                              (wall-piece-rect planes piece))
+                       blits)))
              (draw-slice (s)
                (let ((d (view-slice-depth s)))
                  ;; sides first, then the front wall on top of their seams
@@ -223,19 +273,26 @@ becomes one fixed-slot piece blit instead of wireframe lines."
                    (let ((wall (if (eq side :l)
                                    (view-slice-left s)
                                    (view-slice-right s)))
+                         (wall-style (if (eq side :l)
+                                         (view-slice-left-style s)
+                                         (view-slice-right-style s)))
                          (beyond (if (eq side :l)
                                      (view-slice-left-front s)
-                                     (view-slice-right-front s))))
+                                     (view-slice-right-front s)))
+                         (beyond-style (if (eq side :l)
+                                           (view-slice-left-front-style s)
+                                           (view-slice-right-front-style s))))
                      (case wall
-                       (:wall (blit :side d side))
-                       (:door (blit :side-door d side))
+                       (:wall (blit :side d wall-style side))
+                       (:door (blit :side-door d wall-style side))
                        (:open
                         (case beyond
-                          (:wall (blit :flank d side))
-                          (:door (blit :flank-door d side)))))))
+                          (:wall (blit :flank d beyond-style side))
+                          (:door (blit :flank-door d beyond-style side)))))))
                  (case (view-slice-front s)
-                   (:wall (blit :front d))
-                   (:door (blit :front-door d))))))
+                   (:wall (blit :front d (view-slice-front-style s)))
+                   (:door (blit :front-door d
+                                (view-slice-front-style s)))))))
       (dolist (s (reverse slices))
         (draw-slice s))
       (nreverse blits))))
@@ -385,6 +442,11 @@ Workbench window keeps~%the Workbench palette).~%"
 the ceiling/~%floor backdrop shows through it — so paint solid black ~
 with pen 4, not~%pen 0.  The ceiling/floor backdrops are opaque; pen 0 ~
 there is plain black.~%")
+    (format stream "Variants: any wall piece may ship per-building ~
+style variants beside~%it (front-0-v1.iff, front-0-v2.iff, ... — same ~
+size and transparency~%rules), probed in order until one is missing; ~
+the view deals them out~%per building cell, a location op's :style ~
+pins one.~%")
     n))
 
 ;;; ---------------------------------------------------------------------

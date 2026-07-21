@@ -101,10 +101,12 @@ column shows the location's picture or the hero's portrait when the
 campaign ships one (`(location ... :image FILE)`,
 `define-hero-class ... :image FILE` — resolved relative to the map
 file like effect icons; without one the live first-person view stays).
-The location picture also shows **from the street**: facing a
-location's door puts its facade in the view column before the party
-ever steps in, so a city's houses have faces (the Bard's Tale
-building-front look).
+A location also has a face **from the street**: facing its door puts
+its facade in the view column before the party ever steps in, so a
+city's houses have faces (the Bard's Tale building-front look).  An
+optional `:facade FILE` names that street face; without one the
+`:image` picture shows from the street too — so a location can pair
+an exterior with a distinct interior, or ship one picture for both.
 The cast/use/sing menus and the save picker draw as an overlay page
 over the view column instead, keeping the log readable during combat.
 The key reference lives on the help page under `h`/`?`.  The full
@@ -223,6 +225,18 @@ carry `*house-colors*` in pens 7–9 of its palette; Closure's
 
 A pack holds the 40 wall pieces plus optional extras:
 
+- `front-0-v1.iff`, `side-2-l-v2.iff`, ... — **per-building style
+  variants** of any wall piece, probed in order (`-v1`, `-v2`, ...)
+  until one is missing.  The view deals them out deterministically
+  per building cell, so a street reads as a row of *different*
+  houses instead of one repeated front; a `(location ... :style N)`
+  op pins its building's look explicitly (Closure matches each
+  house's street pieces to its facade picture this way).  A pack
+  ships as many looks — for as many pieces — as it wants to pay
+  load time for: variants are per-piece, so trimming the far
+  depths' files is a valid budget cut.  `draw-city-wall-piece`'s
+  `:style` argument (`:timber`/`:stone`/`:townhouse`) draws the
+  engine's three house looks.
 - `floor.iff` / `ceiling.iff` — the Bard's Tale split backdrop: the
   ceiling fills the view above the horizon, the floor below, and the
   walls blit on top, carving the perspective (a city pack draws sky
@@ -381,11 +395,15 @@ vocabulary spells speak, a `:consumed` item is spent on use, and
 section of `tests/run-tests.lisp` for the exact rules.
 
 A location may also name a **picture** — `(location ... :image
-"gfx/shop.iff")` — shown in the view column while its menu is up, and
-a hero class a **portrait** — `(define-hero-class ... :image
-"gfx/hero-warrior.iff")` — shown beside the character sheet; both
-resolve relative to the map file, like effect icons and zone tile
-packs, so a world directory carries its own art.
+"gfx/shop.iff")` — shown in the view column while its menu is up,
+plus an optional street-facing **facade** — `:facade
+"gfx/house-0.iff"` — shown instead of the `:image` when the party
+faces the location's door from outside (see the "Facades from the
+street" test section); and a hero class a **portrait** —
+`(define-hero-class ... :image "gfx/hero-warrior.iff")` — shown
+beside the character sheet.  All of them resolve relative to the map
+file, like effect icons and zone tile packs, so a world directory
+carries its own art.
 `tools/gen-walls.lisp` draws placeholder scenes and portraits
 (`draw-location-scene`, `draw-portrait`); Closure's
 `worlds/closure/gfx/make-pack.lisp` shows how a world generates and

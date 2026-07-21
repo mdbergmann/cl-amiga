@@ -25,6 +25,7 @@
    ;; first-person view geometry
    #:+view-depth+ #:compute-view #:view-planes #:view-display-list
    #:view-blit-list #:wall-piece-rect #:wall-piece-names #:wall-piece-file
+   #:wall-piece-variant-file
    #:backdrop-rects #:print-tile-manifest
    #:view-slice-depth #:view-slice-cx #:view-slice-cy
    #:view-slice-front #:view-slice-left #:view-slice-right

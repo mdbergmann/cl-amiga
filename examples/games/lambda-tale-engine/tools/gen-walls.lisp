@@ -241,54 +241,86 @@ FOUNDATION-TOP..H-1 stone."
           (- (1- h) (max 1 (floor h 10)))))
 
 (defun %draw-house-front (w h palette &key door (pattern-w w)
-                                           (pattern-x0 0))
-  "A timber-framed house front filling W x H: roof band, plaster with
-timber posts and rails, lit windows, stone foundation.  PATTERN-W and
-PATTERN-X0 place the piece inside the front slot's post rhythm the
-same way the brick bond works — a flank continues the front wall's
-framing across the seam.  DOOR puts the shared amber door in the
-middle; windows keep clear of it."
+                                           (pattern-x0 0) (style :timber))
+  "A house front filling W x H: roof band, wall with lit windows,
+stone foundation.  STYLE picks the look — :TIMBER (default: plaster
+crossed by timber posts and a mid-rail under thatch), :STONE (grey
+courses under thatch, the cottage), :TOWNHOUSE (plaster under a flat
+dark roof with a white parapet, two storeys of windows).  PATTERN-W
+and PATTERN-X0 place the piece inside the front slot's post/window
+rhythm the same way the brick bond works — a flank continues the
+front wall's framing across the seam.  DOOR puts the shared amber
+door in the middle; windows keep clear of it."
   (let ((img (make-image w h 4 :palette palette)))
     (multiple-value-bind (roof found) (%house-bands h)
       (let* ((post (max 8 (round pattern-w 4)))
              (wall-top (1+ roof))
              (mid (+ wall-top (floor (- found wall-top) 2))))
-        ;; plaster body, thatch band, stone foundation
-        (%img-fill img 0 0 (1- w) (1- h) +pen-plaster+)
-        (%img-fill img 0 0 (1- w) roof +pen-roof+)
-        (%img-fill img 0 found (1- w) (1- h) +pen-brick+)
-        ;; eave and sill lines
-        (%img-fill img 0 roof (1- w) roof +pen-mortar+)
-        (%img-fill img 0 found (1- w) found +pen-mortar+)
-        ;; timber posts on the global pattern grid (2px), plus a
-        ;; mid-rail when the wall band has the room
-        (loop for gx from (+ pattern-x0 (mod (- pattern-x0) post))
-                below (+ pattern-x0 w) by post
-              do (%img-fill img (- gx pattern-x0) wall-top
-                            (1+ (- gx pattern-x0)) (1- found)
-                            +pen-timber+))
-        (when (> (- found wall-top) 12)
-          (%img-fill img 0 mid (1- w) mid +pen-timber+))
-        ;; lit windows: one per full post interval, in the band above
-        ;; the mid-rail, skipping any interval the door occupies
-        (multiple-value-bind (dx dy dw dh) (%front-door-rect w h)
-          (declare (ignore dy dh))
-          (when (and (>= post 10) (> (- mid wall-top) 6))
-            (loop for gx from (+ pattern-x0 (mod (- pattern-x0) post))
-                    below (+ pattern-x0 w -1) by post
-                  do (let* ((x0 (+ (- gx pattern-x0) 4))
-                            (x1 (- (+ (- gx pattern-x0) post) 4))
-                            (y0 (+ wall-top 3))
-                            (y1 (- mid 3)))
-                       (when (and (< x1 w) (>= x0 0) (> (- x1 x0) 2)
-                                  (not (and door
-                                            (<= x0 (+ dx dw))
-                                            (<= (1- dx) x1))))
-                         (%img-fill img x0 y0 x1 y1 +pen-door+)
-                         (%img-fill img x0 y0 x1 y0 +pen-mortar+)
-                         (%img-fill img x0 y1 x1 y1 +pen-mortar+)
-                         (%img-fill img x0 y0 x0 y1 +pen-mortar+)
-                         (%img-fill img x1 y0 x1 y1 +pen-mortar+))))))
+        (labels ((windows (y0 y1)
+                   ;; lit windows: one per full post interval between
+                   ;; rows Y0 and Y1, skipping any interval the door
+                   ;; occupies
+                   (multiple-value-bind (dx dy dw dh) (%front-door-rect w h)
+                     (declare (ignore dy dh))
+                     (when (and (>= post 10) (> (- y1 y0) 6))
+                       (loop for gx from (+ pattern-x0
+                                            (mod (- pattern-x0) post))
+                               below (+ pattern-x0 w -1) by post
+                             do (let* ((x0 (+ (- gx pattern-x0) 4))
+                                       (x1 (- (+ (- gx pattern-x0) post) 4))
+                                       (wy0 (+ y0 3))
+                                       (wy1 (- y1 3)))
+                                  (when (and (< x1 w) (>= x0 0)
+                                             (> (- x1 x0) 2)
+                                             (not (and door
+                                                       (<= x0 (+ dx dw))
+                                                       (<= (1- dx) x1))))
+                                    (%img-fill img x0 wy0 x1 wy1 +pen-door+)
+                                    (%img-fill img x0 wy0 x1 wy0 +pen-mortar+)
+                                    (%img-fill img x0 wy1 x1 wy1 +pen-mortar+)
+                                    (%img-fill img x0 wy0 x0 wy1 +pen-mortar+)
+                                    (%img-fill img x1 wy0 x1 wy1
+                                               +pen-mortar+))))))))
+          (ecase style
+            (:timber
+             ;; plaster body, thatch band, stone foundation
+             (%img-fill img 0 0 (1- w) (1- h) +pen-plaster+)
+             (%img-fill img 0 0 (1- w) roof +pen-roof+)
+             (%img-fill img 0 found (1- w) (1- h) +pen-brick+)
+             ;; eave and sill lines
+             (%img-fill img 0 roof (1- w) roof +pen-mortar+)
+             (%img-fill img 0 found (1- w) found +pen-mortar+)
+             ;; timber posts on the global pattern grid (2px), plus a
+             ;; mid-rail when the wall band has the room
+             (loop for gx from (+ pattern-x0 (mod (- pattern-x0) post))
+                     below (+ pattern-x0 w) by post
+                   do (%img-fill img (- gx pattern-x0) wall-top
+                                 (1+ (- gx pattern-x0)) (1- found)
+                                 +pen-timber+))
+             (when (> (- found wall-top) 12)
+               (%img-fill img 0 mid (1- w) mid +pen-timber+))
+             (windows wall-top mid))
+            (:stone
+             ;; the cottage: grey stone with white joint courses under
+             ;; the same thatch
+             (%img-fill img 0 0 (1- w) (1- h) +pen-brick+)
+             (%img-fill img 0 0 (1- w) roof +pen-roof+)
+             (%img-fill img 0 roof (1- w) roof +pen-mortar+)
+             (%img-fill img 0 found (1- w) found +pen-mortar+)
+             (let ((course (max 4 (floor (- found wall-top) 4))))
+               (loop for y from (+ wall-top course) below found by course
+                     do (%img-fill img 0 y (1- w) y +pen-edge+)))
+             (windows wall-top mid))
+            (:townhouse
+             ;; the town front: plaster under a flat dark roof with a
+             ;; white parapet, two storeys of windows
+             (%img-fill img 0 0 (1- w) (1- h) +pen-plaster+)
+             (%img-fill img 0 0 (1- w) roof +pen-timber+)
+             (%img-fill img 0 roof (1- w) roof +pen-edge+)
+             (%img-fill img 0 found (1- w) (1- h) +pen-brick+)
+             (%img-fill img 0 found (1- w) found +pen-mortar+)
+             (windows wall-top mid)
+             (windows mid found))))
         ;; white edge highlight all around (the engine's piece look)
         (%img-fill img 0 0 (1- w) 0 +pen-edge+)
         (%img-fill img 0 (1- h) (1- w) (1- h) +pen-edge+)
@@ -298,12 +330,16 @@ middle; windows keep clear of it."
           (%draw-front-door img w h))))
     img))
 
-(defun %draw-house-side (w h top-far bot-far palette &key door)
+(defun %draw-house-side (w h top-far bot-far palette &key door
+                                                          (style :timber))
   "A left-hand receding house wall in a W x H band — the trapezoid of
-%DRAW-SIDE-WALL styled as a house: thatch and foundation bands follow
-the receding edges, timber posts span between them, a lit window sits
-in each clear post interval.  Ceiling/floor corners stay pen 0
-\(transparent).  Right-hand pieces mirror (see %IMG-MIRROR-X)."
+%DRAW-SIDE-WALL styled as a house: roof and foundation bands follow
+the receding edges, a lit window sits in each clear bay.  STYLE picks
+the look as in %DRAW-HOUSE-FRONT — :TIMBER adds the timber posts,
+:STONE swaps plaster for grey with receding joint courses, :TOWNHOUSE
+a dark flat roof with parapet and a second storey of windows.
+Ceiling/floor corners stay pen 0 (transparent).  Right-hand pieces
+mirror (see %IMG-MIRROR-X)."
   (let ((img (make-image w h 4 :palette palette)))
     (labels ((top-at (x) (round (* top-far x) (max 1 (1- w))))
              (bot-at (x) (- (1- h) (round (* (- (1- h) bot-far) x)
@@ -313,46 +349,75 @@ in each clear post interval.  Ceiling/floor corners stay pen 0
              (found-at (x) (- (bot-at x)
                               (max 1 (floor (- (bot-at x) (top-at x))
                                             10)))))
-      ;; fill: thatch above the eave, stone below the sill, plaster
-      ;; between; eave/sill in the black frame pen
+      ;; fill: roof above the eave, stone below the sill, the wall
+      ;; color between; eave/sill in the black frame pen (the
+      ;; townhouse's flat roof takes the eave row as a white parapet)
       (dotimes (x w)
         (loop for y from (top-at x) to (bot-at x)
               do (setf (pixel-ref img x y)
-                       (cond ((< y (roof-at x)) +pen-roof+)
-                             ((= y (roof-at x)) +pen-mortar+)
+                       (cond ((< y (roof-at x))
+                              (if (eq style :townhouse)
+                                  +pen-timber+
+                                  +pen-roof+))
+                             ((= y (roof-at x))
+                              (if (eq style :townhouse)
+                                  +pen-edge+
+                                  +pen-mortar+))
                              ((> y (found-at x)) +pen-brick+)
                              ((= y (found-at x)) +pen-mortar+)
-                             (t +pen-plaster+)))))
+                             (t (if (eq style :stone)
+                                    +pen-brick+
+                                    +pen-plaster+))))))
+      ;; stone: white joint courses receding with the wall band
+      (when (eq style :stone)
+        (dotimes (x w)
+          (let ((top (roof-at x))
+                (bot (found-at x)))
+            (loop for k from 1 to 3
+                  do (setf (pixel-ref img x
+                                      (+ top (floor (* k (- bot top)) 4)))
+                           +pen-edge+)))))
       ;; timber posts between eave and sill — house-sized bays, not a
       ;; fence (the near side slot is only 24px wide at lores)
       (let ((post (max 10 (round w 2))))
-        (loop for x from (floor post 2) below w by post
-              do (loop for y from (1+ (roof-at x)) below (found-at x)
-                       do (setf (pixel-ref img x y) +pen-timber+))
-                 (when (< (1+ x) w)
-                   (loop for y from (1+ (roof-at (1+ x)))
-                           below (found-at (1+ x))
-                         do (setf (pixel-ref img (1+ x) y)
-                                  +pen-timber+))))
-        ;; a lit window in each bay wide enough, upper wall band
-        (when (and (not door) (>= post 10))
-          (loop for x0 from (+ (floor post 2) 3) below (- w 3) by post
-                do (let ((x1 (min (- w 4) (- (+ x0 post) 4))))
-                     (when (> (- x1 x0) 2)
-                       (loop for x from x0 to x1
-                             do (let* ((top (roof-at x))
-                                       (bot (found-at x))
-                                       (y0 (+ top 2
-                                              (floor (- bot top) 8)))
-                                       (y1 (+ top
-                                              (floor (* 3 (- bot top))
-                                                     7))))
-                                  (loop for y from y0 to y1
-                                        do (setf (pixel-ref img x y)
-                                                 (if (or (= x x0) (= x x1)
-                                                         (= y y0) (= y y1))
-                                                     +pen-mortar+
-                                                     +pen-door+))))))))))
+        (when (eq style :timber)
+          (loop for x from (floor post 2) below w by post
+                do (loop for y from (1+ (roof-at x)) below (found-at x)
+                         do (setf (pixel-ref img x y) +pen-timber+))
+                   (when (< (1+ x) w)
+                     (loop for y from (1+ (roof-at (1+ x)))
+                             below (found-at (1+ x))
+                           do (setf (pixel-ref img (1+ x) y)
+                                    +pen-timber+)))))
+        ;; a lit window in each bay wide enough — the upper wall band,
+        ;; plus a lower storey for the townhouse
+        (labels ((win-column (x x0 x1 y0 y1)
+                   (loop for y from y0 to y1
+                         do (setf (pixel-ref img x y)
+                                  (if (or (= x x0) (= x x1)
+                                          (= y y0) (= y y1))
+                                      +pen-mortar+
+                                      +pen-door+))))
+                 (win-band (y0-of y1-of)
+                   (loop for x0 from (+ (floor post 2) 3) below (- w 3)
+                           by post
+                         do (let ((x1 (min (- w 4) (- (+ x0 post) 4))))
+                              (when (> (- x1 x0) 2)
+                                (loop for x from x0 to x1
+                                      do (let ((top (roof-at x))
+                                               (bot (found-at x)))
+                                           (win-column
+                                            x x0 x1
+                                            (funcall y0-of top bot)
+                                            (funcall y1-of top bot)))))))))
+          (when (and (not door) (>= post 10))
+            (win-band (lambda (top bot) (+ top 2 (floor (- bot top) 8)))
+                      (lambda (top bot) (+ top (floor (* 3 (- bot top)) 7))))
+            (when (eq style :townhouse)
+              (win-band (lambda (top bot)
+                          (+ top (floor (* 4 (- bot top)) 7)))
+                        (lambda (top bot)
+                          (+ top (floor (* 6 (- bot top)) 7))))))))
       ;; door: skewed onto the wall, standing on the floor edge (the
       ;; brick side's geometry)
       (when door
@@ -377,10 +442,14 @@ in each clear post interval.  Ceiling/floor corners stay pen 0
             do (setf (pixel-ref img (1- w) y) +pen-edge+)))
     img))
 
-(defun draw-city-wall-piece (piece planes palette)
+(defun draw-city-wall-piece (piece planes palette &key (style :timber))
   "Draw PIECE at its slot size for PLANES in the city house style —
 the twin of DRAW-WALL-PIECE for city tile packs.  PALETTE must carry
-*HOUSE-COLORS* in pens 7-9 (pens 0-4 fixed as everywhere)."
+*HOUSE-COLORS* in pens 7-9 (pens 0-4 fixed as everywhere).  STYLE
+picks the house look (:TIMBER/:STONE/:TOWNHOUSE, see
+%DRAW-HOUSE-FRONT) — a city pack writes the extra styles as the
+piece's -vN variant files so the engine can deal them out per
+building (see WALL-PIECE-VARIANT-FILE)."
   (destructuring-bind (kind depth &optional side) piece
     (destructuring-bind (px0 py0 px1 py1) (aref planes depth)
       (declare (ignore px0 px1 py1))
@@ -391,7 +460,8 @@ the twin of DRAW-WALL-PIECE for city tile packs.  PALETTE must carry
           (ecase kind
             ((:front :front-door)
              (%draw-house-front w h palette
-                                :door (eq kind :front-door)))
+                                :door (eq kind :front-door)
+                                :style style))
             ((:flank :flank-door)
              (destructuring-bind (fx fy fw fh)
                  (wall-piece-rect planes (list :front depth))
@@ -399,11 +469,13 @@ the twin of DRAW-WALL-PIECE for city tile packs.  PALETTE must carry
                (%draw-house-front w h palette
                                   :door (eq kind :flank-door)
                                   :pattern-w fw
-                                  :pattern-x0 (if (eq side :l) (- w) fw))))
+                                  :pattern-x0 (if (eq side :l) (- w) fw)
+                                  :style style)))
             ((:side :side-door)
              (let ((img (%draw-house-side w h (- qy0 py0) (- qy1 py0)
                                           palette
-                                          :door (eq kind :side-door))))
+                                          :door (eq kind :side-door)
+                                          :style style)))
                (if (eq side :r) (%img-mirror-x img) img)))))))))
 
 ;;; ---------------------------------------------------------------------
