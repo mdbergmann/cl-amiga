@@ -32,7 +32,7 @@
 
 (special (5 4)
   (message "You climb the ladder back up to the tavern.")
-  (travel "town.map" 6 2 :south))
+  (travel "town.map" 17 29 :south))
 
 (special (3 2)
   (message "Stone stairs spiral down into darkness.  Your tale continues...")

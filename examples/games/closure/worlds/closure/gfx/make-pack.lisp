@@ -88,6 +88,89 @@
                                           *fp-view-width* *fp-view-height*)
                      (concatenate 'string *out* file)))
 
+;; the three house facades (gen-town.lisp deals them out over the
+;; town's blocks): same picture contract as the shop/tavern scenes —
+;; viewport-sized, fixed UI pens only.  STYLE 0 is a stone cottage,
+;; 1 a timber-framed house, 2 a tall townhouse.
+(defun draw-house-facade (style w h)
+  (let ((img (make-image w h 2 :palette *picture-palette*)))
+    ;; the street in front, common to all three
+    (%img-fill img 0 (floor (* 7 h) 8) (1- w) (1- h) 2)
+    (ecase style
+      (0 ;; stone cottage: low grey wall under a wide thatch roof
+       (let ((x0 (floor w 8)) (x1 (floor (* 7 w) 8))
+             (y0 (floor (* 3 h) 8)) (y1 (floor (* 7 h) 8)))
+         (%img-fill img (- x0 (floor w 16)) (floor h 4)
+                    (+ x1 (floor w 16)) y0 3)     ; thatch, with eaves
+         (%img-fill img x0 y0 x1 y1 2)            ; the wall
+         ;; stone courses: white joints every eighth
+         (loop for y from (+ y0 (floor h 8)) below y1 by (floor h 8)
+               do (%img-fill img x0 y x1 y 1))
+         ;; the door and a lit window
+         (let ((dx (floor (* 3 w) 8)))
+           (%img-fill img dx (floor (* 9 h) 16)
+                      (+ dx (floor w 10)) y1 0)
+           (%chrome-scene-rect img dx (floor (* 9 h) 16)
+                               (+ dx (floor w 10)) y1 1))
+         (%img-fill img (floor (* 5 w) 8) (floor (* 8 h) 16)
+                    (+ (floor (* 5 w) 8) (floor w 12))
+                    (floor (* 10 h) 16) 3)))
+      (1 ;; timber house: white plaster crossed by black beams under
+         ;; a grey gable
+       (let ((x0 (floor w 8)) (x1 (floor (* 7 w) 8))
+             (y0 (floor (* 3 h) 8)) (y1 (floor (* 7 h) 8))
+             (cx (floor w 2)))
+         ;; the gable: grey triangle over the wall
+         (loop for y from (floor h 8) to y0
+               for half = (floor (* (- x1 x0) (- y (floor h 8)))
+                                 (* 2 (- y0 (floor h 8))))
+               do (%img-fill img (- cx half) y (+ cx half) y 2))
+         (%img-fill img x0 y0 x1 y1 1)            ; plaster
+         ;; the timber frame: posts, sill and mid-rail
+         (dolist (x (list x0 (floor (* 3 w) 8) (floor (* 5 w) 8) x1))
+           (%img-fill img x y0 (1+ x) y1 0))
+         (%img-fill img x0 y0 x1 (1+ y0) 0)
+         (%img-fill img x0 (floor (* 9 h) 16) x1
+                    (1+ (floor (* 9 h) 16)) 0)
+         (%img-fill img x0 y1 x1 y1 0)
+         ;; two lit windows over the door bay
+         (%img-fill img (+ x0 (floor w 24)) (floor (* 7 h) 16)
+                    (- (floor (* 3 w) 8) (floor w 24))
+                    (floor (* 8 h) 16) 3)
+         (%img-fill img (+ (floor (* 5 w) 8) (floor w 24))
+                    (floor (* 7 h) 16)
+                    (- x1 (floor w 24)) (floor (* 8 h) 16) 3)
+         (%img-fill img (+ (floor (* 3 w) 8) (floor w 24))
+                    (floor (* 10 h) 16)
+                    (- (floor (* 5 w) 8) (floor w 24)) y1 0)))
+      (2 ;; tall townhouse: narrow grey front, rows of windows, a
+         ;; white parapet under a flat black roof
+       (let ((x0 (floor w 4)) (x1 (floor (* 3 w) 4))
+             (y0 (floor h 8)) (y1 (floor (* 7 h) 8)))
+         (%img-fill img x0 y0 x1 y1 2)
+         (%img-fill img x0 y0 x1 (+ y0 (floor h 24)) 0)   ; the roof
+         (%img-fill img x0 (+ y0 (floor h 24) 1) x1
+                    (+ y0 (floor h 24) 1) 1)              ; the parapet
+         (%chrome-scene-rect img x0 y0 x1 y1 1)
+         ;; three storeys of lit windows
+         (loop for wy in (list (floor (* 5 h) 16) (floor (* 8 h) 16)
+                               (floor (* 11 h) 16))
+               do (dolist (wx (list (+ x0 (floor w 16))
+                                    (- x1 (floor w 16) (floor w 14))))
+                    (%img-fill img wx wy (+ wx (floor w 14))
+                               (+ wy (floor h 16)) 3)))
+         ;; the amber door
+         (%img-fill img (- (floor w 2) (floor w 20)) (floor (* 12 h) 16)
+                    (+ (floor w 2) (floor w 20)) y1 3)
+         (%chrome-scene-rect img (- (floor w 2) (floor w 20))
+                             (floor (* 12 h) 16)
+                             (+ (floor w 2) (floor w 20)) y1 1))))
+    img))
+
+(dotimes (style 3)
+  (write-ilbm (draw-house-facade style *fp-view-width* *fp-view-height*)
+              (format nil "~Ahouse-~D.iff" *out* style)))
+
 ;; class portraits (define-hero-class :image): shown in the view
 ;; column beside the character-sheet takeover
 (loop for (style file) in '((:helm "hero-warrior.iff")

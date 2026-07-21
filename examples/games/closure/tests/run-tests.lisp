@@ -44,16 +44,43 @@
 (let ((m (load-map-file "worlds/closure/town.map")))
   (check "town is a city zone" :city (dungeon-map-kind m))
   (check "town title" "Closure" (map-title m))
+  (check "town is Skara Brae sized" '(30 30)
+         (list (dungeon-map-width m) (dungeon-map-height m)))
+  (check "the party starts at the south gate" '(15 29)
+         (list (dungeon-map-start-x m) (dungeon-map-start-y m)))
   (check-true "town shoppe location"
               (find-if (lambda (op) (string-equal (first op) "LOCATION"))
-                       (cell-special m 2 1)))
+                       (cell-special m 12 28)))
   (check-true "town tavern is a location with the trapdoor below"
               (let ((op (find-if (lambda (op)
                                    (string-equal (first op) "LOCATION"))
-                                 (cell-special m 6 1))))
+                                 (cell-special m 17 28))))
                 (and op (equal "cellar.map" (getf (cdddr op) :down)))))
   (check "town declares the city tile pack" "gfx/"
-         (dungeon-map-gfx m)))
+         (dungeon-map-gfx m))
+  ;; the town's houses (gen-town.lisp): a real city's worth of doors,
+  ;; every one drawing one of the three facade pictures — and all
+  ;; three styles are actually dealt out
+  (let ((houses 0)
+        (images '())
+        (bad '()))
+    (maphash (lambda (cell ops)
+               (let ((loc (find-if (lambda (op)
+                                     (string-equal (first op) "LOCATION"))
+                                   ops)))
+                 (when (and loc (eq (third loc) :house))
+                   (incf houses)
+                   (let ((image (getf (cdddr loc) :image)))
+                     (if (member image '("gfx/house-0.iff" "gfx/house-1.iff"
+                                         "gfx/house-2.iff")
+                                 :test #'equal)
+                         (pushnew image images :test #'equal)
+                         (push (cons cell image) bad))))))
+             (dungeon-map-specials m))
+    (check-true "the town holds at least thirty houses" (>= houses 30))
+    (check "every house draws one of the three facades" nil bad)
+    (check "all three facade styles appear in the town" 3
+           (length images))))
 
 ;;; ---------------------------------------------------------------------
 ;;; The campaign: classes, spells, items, monsters, the starting party
@@ -107,7 +134,8 @@
 ;; portraits (beside the character sheet) are the generator's standard
 ;; square.  Regenerate with worlds/closure/gfx/make-pack.lisp.
 (let ((stale '()))
-  (dolist (file '("shop.iff" "tavern.iff"))
+  (dolist (file '("shop.iff" "tavern.iff"
+                  "house-0.iff" "house-1.iff" "house-2.iff"))
     (let ((path (concatenate 'string "worlds/closure/gfx/" file)))
       (if (probe-file path)
           (let ((img (read-ilbm path)))
@@ -242,12 +270,10 @@
   (trigger-special g)
   (check "the town's zone pack resolves inside the world directory"
          "worlds/closure/gfx/" (zone-gfx-dir g))
-  ;; to the shoppe: N, around the well block, through the door
-  (move-party g)                          ; (4,4)
+  ;; to the shoppe: west along the wall street, through the door
   (turn-left g)
-  (move-party g) (move-party g)           ; (2,4)
+  (move-party g) (move-party g) (move-party g)   ; (12,29)
   (turn-right g)
-  (move-party g) (move-party g)           ; (2,2)
   (check "shoppe door opens" :door (move-party g))
   (check "the shoppe is a shop location" :shop
          (location-kind (game-location g)))
@@ -282,9 +308,10 @@
     (shop-act g view #\Escape))
   (leave-location g)
   ;; over to the tavern: back out, east along the street, up the door
-  (move-party g :back)                    ; (2,2)
+  (move-party g :back)                    ; (12,29)
   (turn-right g)
-  (move-party g) (move-party g) (move-party g) (move-party g) ; (6,2)
+  (move-party g) (move-party g) (move-party g)
+  (move-party g) (move-party g)           ; (17,29)
   (turn-left g)
   (check "the tavern door opens" :door (move-party g))
   (check "the Adventurer's Rest is a tavern" :tavern
@@ -315,7 +342,7 @@
          (map-title (game-map g)))
   (check "the town's pack comes back with it"
          "worlds/closure/gfx/" (zone-gfx-dir g))
-  (check "ladder lands on the tavern doorstep" '(6 2)
+  (check "ladder lands on the tavern doorstep" '(17 29)
          (list (game-x g) (game-y g))))
 
 ;;; ---------------------------------------------------------------------
@@ -353,9 +380,9 @@
                                #\p #\3 #\1
                                #\S #\n #\t #\1 #\Return
                                #\L #\1
-                               #\w #\a #\w #\w #\d #\w #\w #\w
+                               #\a #\w #\w #\w #\d #\w
                                #\1 #\d #\u #\1 #\1 #\s #\1 :esc :esc
-                               #\s #\d #\w #\w #\w #\w #\a #\w
+                               #\s #\d #\w #\w #\w #\w #\w #\a #\w
                                #\3 #\d
                                #\u #\1 #\1 #\q))
              ;; scratch save dir — keeps the real saves/ untouched
@@ -379,14 +406,14 @@
 ;; A real pack swap on the real machine: the town loads its city pack,
 ;; the trapdoor drops into the cellar and swaps in gfx-cellar/ — both
 ;; packs load, both palettes apply, and the cellar's backdrops blit.
-;; The route is the player's (w d w w a w w w reaches the tavern door,
-;; d takes the trapdoor down); it stops there because the way back is
+;; The route is the player's (d w w a w reaches the tavern door from
+;; the gate, d takes the trapdoor down); it stops there because the way back is
 ;; through the cellar's maze, where a scripted walk meets the random
 ;; encounter at (1,2).  The cache's swap-back is covered by the
 ;; engine suite's *GFX-CACHE-PACKS* policy tests.
 #+amigaos
 (check "autoplay drops through the trapdoor into the cellar's pack" :done
-       (let ((*autoplay* (list #\w #\d #\w #\w #\a #\w #\w #\w ; to the tavern
+       (let ((*autoplay* (list #\d #\w #\w #\a #\w    ; to the tavern
                                #\d                    ; down the trapdoor
                                #\m #\m                ; look around below
                                #\q)))
@@ -397,4 +424,12 @@
 ;;; Summary
 
 (format t "~%Closure tests: ~D checks, ~D failures.~%" *checks* *failures*)
+
+;; The summary also goes to a file: an unattended FS-UAE run loses the
+;; console, so the host checks this after the emulator quits.
+(with-open-file (out "tests/results.txt"
+                     :direction :output :if-exists :supersede)
+  (format out "Closure tests: ~D checks, ~D failures.~%"
+          *checks* *failures*))
+
 (cl-user::quit (if (zerop *failures*) 0 1))

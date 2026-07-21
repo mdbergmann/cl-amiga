@@ -2,10 +2,13 @@
 
 A Bard's Tale-like game for [cl-amiga](../../../README.md), built on
 the [Lambda's Tale engine](../lambda-tale-engine/README.md) in the
-sibling directory.  The party starts at the gate of the town of
-Closure; Wolfgar's equipment shoppe is up the street, and the
-tavern's trapdoor drops into the cellar dungeon below — a dark zone,
-so buy a torch or let Zzgo the conjurer light a mage flame.
+sibling directory.  The party starts at the south gate of the town of
+Closure — a 30x30 walled city on a Skara Brae-style street grid, with
+a plaza at its center and dozens of houses to step into (three facade
+pictures, dealt out over the blocks) — Wolfgar's equipment shoppe and
+the tavern flank the gate, and the tavern's trapdoor drops into the
+cellar dungeon below — a dark zone, so buy a torch or let Zzgo the
+conjurer light a mage flame.
 
 The game is pure data on top of the engine — see
 `worlds/closure/campaign.lisp` (hero classes, spells, items,
@@ -108,7 +111,9 @@ src/load.lisp        loads the engine from ../lambda-tale-engine
 src/main.lisp        host entry point (make run)
 src/main-amiga.lisp  AmigaOS entry point
 worlds/closure/      the world, one self-contained directory:
-                     town.map + cellar.map (ASCII art + story forms),
+                     town.map + cellar.map (ASCII art + story forms;
+                     the 30x30 town is GENERATED — edit and rerun
+                     gen-town.lisp, never town.map itself),
                      campaign.lisp (hero classes, spells, items,
                      monsters, starting party), gfx/ — the town's
                      tile pack (night-sky city palette), the worked
@@ -128,9 +133,9 @@ Both zones declare their pack in their map file (`(zone :kind :city
 resolved next to the map — the self-contained world-directory pattern
 from the engine README), so travel swaps the art as the party moves
 between the town and the cellar.  The swap takes about five
-seconds on an 68020; the engine keeps the pack you left loaded so the
-way back is instant (`tale:*gfx-cache-packs*` — see the engine
-README).  Try
+seconds on a 68040, far longer on a plain 68020; the engine keeps the
+pack you left loaded so the way back is instant
+(`tale:*gfx-cache-packs*` — see the engine README).  Try
 the town pack on the cellar:
 
 ```
