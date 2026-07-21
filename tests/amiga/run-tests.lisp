@@ -1443,6 +1443,72 @@
     (setf (subseq b 1 4) (make-array 3 :element-type '(unsigned-byte 8)
                                      :initial-contents '(9 8 7)))
     (list (coerce a 'list) (coerce b 'list))))
+; REPLACE fast path: same-element-type byte vectors go through one memmove;
+; overlap on the same object must behave as if the source were copied first
+; (CLHS REPLACE), and mixed signedness must keep the per-element type check.
+(check "byte-vector replace overlap same object" '(1 1 2 3 4)
+  (let ((a (make-array 5 :element-type '(unsigned-byte 8)
+                       :initial-contents '(1 2 3 4 5))))
+    (coerce (replace a a :start1 1 :start2 0 :end2 4) 'list)))
+(check "byte-vector replace start/end windows" '(7 7 5 6 7)
+  (let ((a (make-array 5 :element-type '(unsigned-byte 8)
+                       :initial-element 7))
+        (b (make-array 8 :element-type '(unsigned-byte 8)
+                       :initial-contents '(1 2 3 4 5 6 7 8))))
+    (coerce (replace a b :start1 2 :start2 4 :end2 6) 'list)))
+(check "byte-vector replace u8->s8 out-of-range still signals" :caught
+  (handler-case
+      (replace (make-array 2 :element-type '(signed-byte 8))
+               (make-array 2 :element-type '(unsigned-byte 8)
+                             :initial-element 200))
+    (error () :caught)))
+(check "byte-vector replace u16 values survive" '(0 3000 4000 0)
+  (let ((a (make-array 4 :element-type '(unsigned-byte 16)))
+        (b (make-array 4 :element-type '(unsigned-byte 16)
+                       :initial-contents '(1000 2000 3000 4000))))
+    (coerce (replace a b :start1 1 :end1 3 :start2 2) 'list)))
+; MAP-INTO bitwise-fold fast path (the ILBM mask fold) + general fallback.
+(check "byte-vector map-into logior fold" '(17 34 68 136)
+  (let ((a (make-array 4 :element-type '(unsigned-byte 8)
+                       :initial-contents '(1 2 4 8)))
+        (b (make-array 4 :element-type '(unsigned-byte 8)
+                       :initial-contents '(16 32 64 128))))
+    (coerce (map-into a #'logior a b) 'list)))
+(check "byte-vector map-into logand/logxor" '((5 80 85) (90 165 170))
+  (let ((a (make-array 3 :element-type '(unsigned-byte 8)
+                       :initial-contents '(15 240 255)))
+        (b (make-array 3 :element-type '(unsigned-byte 8)
+                       :initial-contents '(85 85 85))))
+    (list (coerce (map-into (make-array 3 :element-type '(unsigned-byte 8))
+                            #'logand a b) 'list)
+          (coerce (map-into (make-array 3 :element-type '(unsigned-byte 8))
+                            #'logxor a b) 'list))))
+(check "byte-vector map-into lambda still general" '(11 22 33)
+  (let ((a (make-array 3 :element-type '(unsigned-byte 8)
+                       :initial-contents '(1 2 3)))
+        (b (make-array 3 :element-type '(unsigned-byte 8)
+                       :initial-contents '(10 20 30))))
+    (coerce (map-into a (lambda (x y) (+ x y)) a b) 'list)))
+; EXT:UNPACK-BYTERUN1 — the PackBits/ILBM ByteRun1 RLE decode builtin.
+(check "unpack-byterun1 literal+repeat+noop" '(7 (99 9 8 7 5 5 5 5 99))
+  (let ((src (make-array 7 :element-type '(unsigned-byte 8)
+                         :initial-contents '(128 2 9 8 7 253 5)))
+        (dst (make-array 9 :element-type '(unsigned-byte 8)
+                         :initial-element 99)))
+    (list (ext:unpack-byterun1 src 0 7 dst 7 1) (coerce dst 'list))))
+(check "unpack-byterun1 truncated input signals" :caught
+  (handler-case
+      (ext:unpack-byterun1
+       (make-array 1 :element-type '(unsigned-byte 8) :initial-element 2)
+       0 1 (make-array 3 :element-type '(unsigned-byte 8)) 3)
+    (error () :caught)))
+(check "unpack-byterun1 overlong repeat signals" :caught
+  (handler-case
+      (ext:unpack-byterun1
+       (make-array 2 :element-type '(unsigned-byte 8)
+                     :initial-contents '(253 7))
+       0 2 (make-array 2 :element-type '(unsigned-byte 8)) 2)
+    (error () :caught)))
 (check "byte-vector vector-push-extend full non-adjustable errors" :caught
   (handler-case
       (let ((v (make-array 1 :element-type '(unsigned-byte 8)
@@ -3947,6 +4013,75 @@
   (handler-case
     (progn (open (concatenate 'string *test-tmp* "_clt_sup.txt") :direction :output :if-exists :error) nil)
     (error (c) t)))
+
+; --- READ-SEQUENCE / WRITE-SEQUENCE builtins on file streams ---
+; The (unsigned-byte 8) <-> binary file combination takes the bulk chunked
+; path (one platform read/write per 4KB, exercised past one chunk on the
+; Amiga IOBuf); strings take the char path; reads past EOF return short.
+(check "write/read-sequence u8 file bulk round-trip" '(300 1 65 2)
+  (let ((path (concatenate 'string *test-tmp* "_clt_rseq.bin")))
+    (let ((v (make-array 300 :element-type '(unsigned-byte 8)
+                             :initial-element 65)))
+      (setf (aref v 0) 1)
+      (setf (aref v 299) 2)
+      (with-open-file (s path :direction :output
+                              :element-type '(unsigned-byte 8)
+                              :if-exists :supersede)
+        (write-sequence v s)))
+    (let ((v (make-array 300 :element-type '(unsigned-byte 8))))
+      (with-open-file (s path :element-type '(unsigned-byte 8))
+        (list (read-sequence v s) (aref v 0) (aref v 1) (aref v 299))))))
+; 9000 bytes spans three CL_SEQ_IO_CHUNK (4096-byte) iterations of the bulk
+; chunked read/write loop; sentinels flank the first chunk boundary so a
+; stale stream/offset reused across iterations would corrupt one of them.
+(check "write/read-sequence u8 file bulk multi-chunk round-trip" '(9000 1 3 4 2)
+  (let ((path (concatenate 'string *test-tmp* "_clt_rseq_mc.bin")))
+    (let ((v (make-array 9000 :element-type '(unsigned-byte 8)
+                             :initial-element 65)))
+      (setf (aref v 0) 1)
+      (setf (aref v 4095) 3)
+      (setf (aref v 4096) 4)
+      (setf (aref v 8999) 2)
+      (with-open-file (s path :direction :output
+                              :element-type '(unsigned-byte 8)
+                              :if-exists :supersede)
+        (write-sequence v s)))
+    (let ((v (make-array 9000 :element-type '(unsigned-byte 8))))
+      (with-open-file (s path :element-type '(unsigned-byte 8))
+        (list (read-sequence v s) (aref v 0) (aref v 4095) (aref v 4096) (aref v 8999))))))
+(check "read-sequence u8 file short read at EOF" '(300 2 9)
+  (let ((v (make-array 400 :element-type '(unsigned-byte 8)
+                           :initial-element 9)))
+    (with-open-file (s (concatenate 'string *test-tmp* "_clt_rseq.bin")
+                       :element-type '(unsigned-byte 8))
+      (list (read-sequence v s) (aref v 299) (aref v 300)))))
+(check "read-sequence u8 file start/end window" '(5 0 1 65 0)
+  (let ((v (make-array 8 :element-type '(unsigned-byte 8)
+                         :initial-element 0)))
+    (with-open-file (s (concatenate 'string *test-tmp* "_clt_rseq.bin")
+                       :element-type '(unsigned-byte 8))
+      (list (read-sequence v s :start 2 :end 5)
+            (aref v 1) (aref v 2) (aref v 4) (aref v 5)))))
+(check "write/read-sequence string char path" '(5 "Test1")
+  (let ((str (make-string 5)))
+    (with-open-file (s (concatenate 'string *test-tmp* "_clt_s8.txt"))
+      (list (read-sequence str s) str))))
+(check "read-sequence consumes unread-char first" "Test"
+  (with-open-file (s (concatenate 'string *test-tmp* "_clt_s8.txt"))
+    (read-char s)
+    (unread-char #\T s)
+    (let ((str (make-string 4)))
+      (read-sequence str s)
+      str)))
+(check "write/read-sequence list of bytes" '(3 (0 10 20))
+  (let ((path (concatenate 'string *test-tmp* "_clt_rseq2.bin")))
+    (with-open-file (s path :direction :output
+                            :element-type '(unsigned-byte 8)
+                            :if-exists :supersede)
+      (write-sequence '(10 20 30 40) s))
+    (let ((l (list 0 0 0)))
+      (with-open-file (s path :element-type '(unsigned-byte 8))
+        (list (read-sequence l s :start 1) l)))))
 
 ; with-open-file with :if-exists :rename-and-delete
 (with-open-file (s (concatenate 'string *test-tmp* "_clt_wrad.txt") :direction :output)

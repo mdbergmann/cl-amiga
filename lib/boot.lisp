@@ -1947,34 +1947,11 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
 ;; read-byte and write-byte are C builtins (builtins_stream.c)
 ;; They use raw byte I/O without UTF-8 encoding/decoding.
 
-(defun write-sequence (sequence stream &key (start 0) end)
-  (let ((e (or end (length sequence))))
-    (do ((i start (1+ i)))
-        ((>= i e) sequence)
-      (let ((elt (elt sequence i)))
-        (if (characterp elt)
-            (write-char elt stream)
-            (write-byte elt stream))))))
-
-(defun read-sequence (sequence stream &key (start 0) end)
-  (let ((e (or end (length sequence)))
-        (i start)
-        (use-char (and (arrayp sequence)
-                       (subtypep (array-element-type sequence) 'character))))
-    ;; Cannot use loop here — loop macro is defined later in boot.lisp
-    (block nil
-      (tagbody
-       loop-top
-       (when (>= i e) (go loop-end))
-       (let ((elem (if use-char
-                       (read-char stream nil nil)
-                       (read-byte stream nil nil))))
-         (if elem
-             (progn (setf (aref sequence i) elem) (setf i (1+ i)))
-             (return i)))
-       (go loop-top)
-       loop-end))
-    i))
+;; read-sequence and write-sequence are C builtins (builtins_sequence.c):
+;; per-element VM loops here made bulk file I/O cost a VM round-trip per
+;; byte.  The builtins fast-path (unsigned-byte 8) vectors on file streams
+;; (chunked platform reads/writes) and fall back to per-element C loops for
+;; every other sequence/stream combination.
 
 ;; with-standard-io-syntax — bind the reader/printer control variables to
 ;; their standard values (CLHS "with-standard-io-syntax").  Binding the full

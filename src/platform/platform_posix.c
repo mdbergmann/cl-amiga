@@ -559,6 +559,26 @@ int platform_file_getchar(PlatformFile fh)
     return -1;
 }
 
+int platform_file_read_buf(PlatformFile fh, char *buf, uint32_t len)
+{
+    /* Bulk read for READ-SEQUENCE.  `buf` MUST be C memory (the stream layer
+     * chunks arena-backed vectors through a C stack buffer): a large read
+     * blocks for real, so it is bracketed in a GC safe region where a peer
+     * compaction may run.  Small reads stay unbracketed like the per-char
+     * path above (stdio buffers them). */
+    size_t got;
+    FILE *f;
+    if (!(fh > 0 && fh < PLATFORM_FILE_TABLE_SIZE && file_table[fh]))
+        return -1;
+    f = file_table[fh];
+    if (len <= 4096)
+        return (int)fread(buf, 1, (size_t)len, f);
+    cl_gc_enter_safe_region();
+    got = fread(buf, 1, (size_t)len, f);
+    cl_gc_leave_safe_region();
+    return (int)got;
+}
+
 int platform_file_write_string(PlatformFile fh, const char *str)
 {
     return platform_file_write_buf(fh, str, (uint32_t)strlen(str));

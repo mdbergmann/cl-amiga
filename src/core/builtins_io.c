@@ -3737,6 +3737,108 @@ static CL_Obj bi_machine_instance(CL_Obj *args, int n)
     return CL_NIL;
 }
 
+/* (ext:unpack-byterun1 src pos end dst dst-len &optional (dst-start 0))
+ *   => new source position
+ *
+ * Decode ByteRun1/PackBits-compressed bytes (the RLE shared by IFF ILBM
+ * BODYs, TIFF and MacPaint: literal runs for codes 0..127, repeat runs for
+ * 129..255, 128 a no-op) from SRC[POS,END) until DST-LEN bytes have been
+ * produced, writing them to DST from DST-START.  SRC and DST must be
+ * (unsigned-byte 8) vectors.  Signals a clear error on truncated input or
+ * a run that overflows the requested output — corrupt data must not
+ * silently misalign everything that follows.
+ *
+ * A C builtin because decoding is per-byte work: one VM round-trip per
+ * output byte made unpacking an ILBM plane row cost seconds on a 68020.
+ * No allocation happens inside, so the raw payload pointers stay valid. */
+static CL_Obj bi_unpack_byterun1(CL_Obj *args, int n)
+{
+    CL_ByteVector *src, *dst;
+    uint32_t pos, end, out, limit;
+    int32_t dst_len, dst_start = 0;
+    const uint8_t *sp;
+    uint8_t *dp;
+
+    if (!CL_BYTE_VECTOR_P(args[0]) ||
+        ((CL_ByteVector *)CL_OBJ_TO_PTR(args[0]))->elt_shift != 0 ||
+        ((CL_ByteVector *)CL_OBJ_TO_PTR(args[0]))->is_signed)
+        cl_error(CL_ERR_TYPE,
+                 "EXT:UNPACK-BYTERUN1: source must be an (UNSIGNED-BYTE 8) vector");
+    if (!CL_BYTE_VECTOR_P(args[3]) ||
+        ((CL_ByteVector *)CL_OBJ_TO_PTR(args[3]))->elt_shift != 0 ||
+        ((CL_ByteVector *)CL_OBJ_TO_PTR(args[3]))->is_signed)
+        cl_error(CL_ERR_TYPE,
+                 "EXT:UNPACK-BYTERUN1: destination must be an (UNSIGNED-BYTE 8) vector");
+    if (!CL_FIXNUM_P(args[1]) || !CL_FIXNUM_P(args[2]) || !CL_FIXNUM_P(args[4]) ||
+        (n >= 6 && !CL_FIXNUM_P(args[5])))
+        cl_error(CL_ERR_TYPE, "EXT:UNPACK-BYTERUN1: indices must be fixnums");
+
+    src = (CL_ByteVector *)CL_OBJ_TO_PTR(args[0]);
+    dst = (CL_ByteVector *)CL_OBJ_TO_PTR(args[3]);
+    dst_len = CL_FIXNUM_VAL(args[4]);
+    if (n >= 6) dst_start = CL_FIXNUM_VAL(args[5]);
+
+    {
+        int32_t p = CL_FIXNUM_VAL(args[1]);
+        int32_t e = CL_FIXNUM_VAL(args[2]);
+        int32_t slen = (int32_t)cl_bytevec_active_length(src);
+        int32_t dlen = (int32_t)cl_bytevec_active_length(dst);
+        if (p < 0 || e > slen || p > e)
+            cl_error(CL_ERR_ARGS,
+                     "EXT:UNPACK-BYTERUN1: source range %d..%d is bad for a vector of length %d",
+                     (int)p, (int)e, (int)slen);
+        if (dst_len < 0 || dst_start < 0 || dst_start + dst_len > dlen)
+            cl_error(CL_ERR_ARGS,
+                     "EXT:UNPACK-BYTERUN1: output range %d..%d is bad for a vector of length %d",
+                     (int)dst_start, (int)(dst_start + dst_len), (int)dlen);
+        pos = (uint32_t)p;
+        end = (uint32_t)e;
+        out = (uint32_t)dst_start;
+        limit = (uint32_t)(dst_start + dst_len);
+    }
+
+    /* volatile: m68k-amigaos-gcc miscompiles flexible-array `->data +
+     * offset` pointer arithmetic (off-by-one pointers) — route the base
+     * pointers through volatile locals so the fold cannot happen (same
+     * workaround as cl_stream_write_lisp_string / bi_replace). */
+    {
+        const uint8_t *volatile spv = src->data;
+        uint8_t *volatile dpv = dst->data;
+        sp = (const uint8_t *)spv;
+        dp = (uint8_t *)dpv;
+    }
+    while (out < limit) {
+        uint32_t code, cnt;
+        if (pos >= end)
+            cl_error(CL_ERR_GENERAL,
+                     "EXT:UNPACK-BYTERUN1: truncated ByteRun1 data (need %u more output bytes)",
+                     (unsigned)(limit - out));
+        code = sp[pos++];
+        if (code < 128) {               /* literal run of code+1 bytes */
+            cnt = code + 1;
+            if (out + cnt > limit || pos + cnt > end)
+                cl_error(CL_ERR_GENERAL,
+                         "EXT:UNPACK-BYTERUN1: literal run of %u overflows its row",
+                         (unsigned)cnt);
+            memcpy(dp + out, sp + pos, cnt);
+            out += cnt;
+            pos += cnt;
+        } else if (code > 128) {        /* repeat next byte 257-code times */
+            cnt = 257 - code;
+            if (out + cnt > limit)
+                cl_error(CL_ERR_GENERAL,
+                         "EXT:UNPACK-BYTERUN1: repeat run of %u overflows its row",
+                         (unsigned)cnt);
+            if (pos >= end)
+                cl_error(CL_ERR_GENERAL,
+                         "EXT:UNPACK-BYTERUN1: truncated ByteRun1 data (repeat byte missing)");
+            memset(dp + out, sp[pos++], cnt);
+            out += cnt;
+        }                               /* 128: no-op */
+    }
+    return CL_MAKE_FIXNUM((int32_t)pos);
+}
+
 static CL_Obj bi_getenv(CL_Obj *args, int n)
 {
     CL_Obj name_obj = args[0];
@@ -4354,6 +4456,7 @@ void cl_builtins_io_init(void)
     extfun("%STREAM-OUTBUF-STATS", bi_ext_stream_outbuf_stats, 0, 0);
     extfun("%GC-AUDIT-ROOTS", bi_ext_gc_audit_roots, 0, 0);
     extfun("GETENV", bi_getenv, 1, 1);
+    extfun("UNPACK-BYTERUN1", bi_unpack_byterun1, 5, 6);
     extfun("GETCWD", bi_getcwd, 0, 0);
     extfun("TTY-P", bi_ext_tty_p, 0, 0);
     extfun("TTY-RAW-MODE", bi_ext_tty_raw_mode, 1, 1);

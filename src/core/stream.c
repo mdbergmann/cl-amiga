@@ -990,6 +990,121 @@ int cl_stream_read_byte(CL_Obj stream)
     return ch;
 }
 
+int32_t cl_stream_read_bytes(CL_Obj stream, char *buf, uint32_t len)
+{
+    CL_Stream *st;
+    uint32_t got = 0;
+    void *iolock;
+
+    stream = resolve_stream(stream, 0);
+    if (CL_NULL_P(stream)) return -2;
+    st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+
+    if (!(st->flags & CL_STREAM_FLAG_OPEN)) return -2;
+    if (!(st->direction & CL_STREAM_INPUT)) return -2;
+
+    /* Only stream kinds with a real bulk path; everything else falls back
+     * to the caller's per-element loop (string/console/socket/concatenated
+     * keep their existing per-byte semantics, incl. socket timeouts). */
+    if (st->stream_type != CL_STREAM_FILE && st->stream_type != CL_STREAM_CBUF)
+        return -2;
+    /* A pushed-back char above 255 cannot become a byte — let the
+     * per-element path handle (and diagnose) it instead of truncating. */
+    if (st->unread_char > 255)
+        return -2;
+    if (len == 0) return 0;
+
+    iolock = stream_lock_for(st, 0);
+    /* See cl_stream_read_char: the contended lock path can enter a GC safe
+     * region and let a peer compact the arena, so protect the offset and
+     * re-derive st before touching any st-> field. */
+    CL_GC_PROTECT(stream);
+    cl_gc_safe_mutex_lock(iolock);
+    st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+
+    /* A pushed-back byte is the first element. */
+    if (st->unread_char != -1) {
+        buf[got++] = (char)(unsigned char)st->unread_char;
+        st->unread_char = -1;
+    }
+
+    if (st->stream_type == CL_STREAM_CBUF) {
+        uint32_t idx = st->handle_id;
+        if (idx != 0 && idx < CL_CBUF_TABLE_SIZE && cbuf_table[idx].data &&
+            st->position < st->out_buf_len) {
+            uint32_t avail = st->out_buf_len - st->position;
+            if (avail > len - got) avail = len - got;
+            memcpy(buf + got, cbuf_table[idx].data + st->position, avail);
+            st->position += avail;
+            got += avail;
+        }
+        if (got < len)
+            st->flags |= CL_STREAM_FLAG_EOF;
+    } else {
+        /* FILE: bulk platform reads.  `buf` is C memory (the builtin's chunk
+         * buffer), so it is safe across the safe region the platform read may
+         * enter — but st can move there; re-derive it before the EOF-flag
+         * write.  Loop until satisfied: a short read below the request means
+         * EOF (regular files), but don't rely on it. */
+        PlatformFile fh = (PlatformFile)st->handle_id;
+        while (got < len) {
+            int n = platform_file_read_buf(fh, buf + got, len - got);
+            if (n <= 0) {
+                st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+                st->flags |= CL_STREAM_FLAG_EOF;
+                break;
+            }
+            got += (uint32_t)n;
+        }
+        st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+    }
+    CL_GC_UNPROTECT(1);
+    if (iolock) platform_mutex_unlock(iolock);
+    return (int32_t)got;
+}
+
+int32_t cl_stream_write_bytes(CL_Obj stream, const char *buf, uint32_t len)
+{
+    CL_Stream *st;
+    void *iolock;
+    int wr = 0;
+
+    stream = resolve_stream(stream, 1);
+    if (CL_NULL_P(stream)) return -2;
+    st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+
+    if (!(st->flags & CL_STREAM_FLAG_OPEN)) return -2;
+    if (!(st->direction & CL_STREAM_OUTPUT)) return -2;
+
+    /* Bulk path for file and socket streams; broadcast/string/console fall
+     * back to the caller's per-element loop. */
+    if (st->stream_type != CL_STREAM_FILE && st->stream_type != CL_STREAM_SOCKET)
+        return -2;
+    if (len == 0) return 0;
+
+    iolock = stream_lock_for(st, 1);
+    CL_GC_PROTECT(stream);
+    cl_gc_safe_mutex_lock(iolock);
+    st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+
+    {
+        uint32_t wto = st->write_timeout_ms;  /* capture before safe region */
+        if (st->stream_type == CL_STREAM_FILE) {
+            /* `buf` is C memory, so the >4KB bracketed path inside
+             * platform_file_write_buf is safe. */
+            platform_file_write_buf((PlatformFile)st->handle_id, buf, len);
+        } else {
+            wr = platform_socket_write_buf((PlatformSocket)st->handle_id,
+                                           buf, len);
+        }
+        CL_GC_UNPROTECT(1);
+        if (iolock) platform_mutex_unlock(iolock);
+        if (wr == PLATFORM_SOCKET_TIMEOUT)
+            stream_raise_timeout(1, wto);
+    }
+    return 0;
+}
+
 void cl_stream_write_char(CL_Obj stream, int ch)
 {
     CL_Stream *st;

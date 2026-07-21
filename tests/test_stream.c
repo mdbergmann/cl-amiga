@@ -3992,6 +3992,249 @@ TEST(eval_file_position_accounts_for_peek)
     ASSERT_STR_EQ(buf, "1");
 }
 
+/* --- READ-SEQUENCE / WRITE-SEQUENCE builtins (CLHS 21.2) ---
+ * The C builtins replaced boot.lisp per-element loops; these pin both the
+ * bulk (unsigned-byte 8 <-> file stream) fast path and the per-element
+ * fallbacks (strings, lists, string streams). */
+
+TEST(eval_write_read_sequence_u8_file_fast_path)
+{
+    char buf[128];
+    CL_Obj r;
+    /* 300 bytes forces no single-chunk shortcut assumptions; sentinel bytes
+     * at both ends prove position 0 and 299 really round-trip. */
+    r = cl_eval_string(
+        "(progn"
+        "  (let ((v (make-array 300 :element-type '(unsigned-byte 8)"
+        "                           :initial-element 65)))"
+        "    (setf (aref v 0) 1)"
+        "    (setf (aref v 299) 2)"
+        "    (let ((s (open \"/tmp/cl_test_rseq.bin\" :direction :output"
+        "                   :element-type '(unsigned-byte 8)"
+        "                   :if-exists :supersede)))"
+        "      (write-sequence v s)"
+        "      (close s)))"
+        "  (let ((v (make-array 300 :element-type '(unsigned-byte 8)))"
+        "        (s (open \"/tmp/cl_test_rseq.bin\""
+        "                 :element-type '(unsigned-byte 8))))"
+        "    (let ((n (read-sequence v s)))"
+        "      (close s)"
+        "      (list n (aref v 0) (aref v 1) (aref v 299)))))");
+    cl_prin1_to_string(r, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(300 1 65 2)");
+
+    /* EOF: a larger buffer reads short and returns the count filled. */
+    r = cl_eval_string(
+        "(let ((v (make-array 400 :element-type '(unsigned-byte 8)"
+        "                         :initial-element 9))"
+        "      (s (open \"/tmp/cl_test_rseq.bin\""
+        "               :element-type '(unsigned-byte 8))))"
+        "  (let ((n (read-sequence v s)))"
+        "    (close s)"
+        "    (list n (aref v 299) (aref v 300))))");
+    cl_prin1_to_string(r, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(300 2 9)");
+}
+
+/* 9000 bytes spans three CL_SEQ_IO_CHUNK (4096) iterations, forcing the
+ * bulk chunked-read/write loops to actually loop; sentinels sit at the
+ * start, on both sides of the first chunk boundary, and at the end so a
+ * stale stream/offset reused across iterations would corrupt one of them. */
+TEST(eval_write_read_sequence_u8_file_multi_chunk)
+{
+    char buf[128];
+    CL_Obj r;
+    r = cl_eval_string(
+        "(progn"
+        "  (let ((v (make-array 9000 :element-type '(unsigned-byte 8)"
+        "                            :initial-element 65)))"
+        "    (setf (aref v 0) 1)"
+        "    (setf (aref v 4095) 3)"
+        "    (setf (aref v 4096) 4)"
+        "    (setf (aref v 8999) 2)"
+        "    (let ((s (open \"/tmp/cl_test_rseq_mc.bin\" :direction :output"
+        "                   :element-type '(unsigned-byte 8)"
+        "                   :if-exists :supersede)))"
+        "      (write-sequence v s)"
+        "      (close s)))"
+        "  (let ((v (make-array 9000 :element-type '(unsigned-byte 8)))"
+        "        (s (open \"/tmp/cl_test_rseq_mc.bin\""
+        "                 :element-type '(unsigned-byte 8))))"
+        "    (let ((n (read-sequence v s)))"
+        "      (close s)"
+        "      (list n (aref v 0) (aref v 4095) (aref v 4096) (aref v 8999)))))");
+    cl_prin1_to_string(r, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(9000 1 3 4 2)");
+}
+
+TEST(eval_read_sequence_start_end)
+{
+    char buf[128];
+    CL_Obj r = cl_eval_string(
+        "(let ((v (make-array 8 :element-type '(unsigned-byte 8)"
+        "                       :initial-element 0))"
+        "      (s (open \"/tmp/cl_test_rseq.bin\""
+        "               :element-type '(unsigned-byte 8))))"
+        "  (let ((n (read-sequence v s :start 2 :end 5)))"
+        "    (close s)"
+        "    (list n (aref v 1) (aref v 2) (aref v 4) (aref v 5))))");
+    cl_prin1_to_string(r, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(5 0 1 65 0)");
+}
+
+TEST(eval_read_sequence_bounds_error)
+{
+    int err;
+    CL_CATCH(err);
+    if (err == CL_ERR_NONE) {
+        cl_eval_string(
+            "(read-sequence (make-array 4 :element-type '(unsigned-byte 8))"
+            "               (make-string-input-stream \"abcd\")"
+            "               :start 3 :end 9)");
+        CL_UNCATCH();
+        ASSERT(0 && "expected bounding-index error");
+    } else {
+        CL_UNCATCH();
+        cl_vm.sp = 0;
+        cl_vm.fp = 0;
+    }
+}
+
+TEST(eval_read_sequence_bad_start_type_error)
+{
+    int err;
+    CL_CATCH(err);
+    if (err == CL_ERR_NONE) {
+        cl_eval_string(
+            "(read-sequence (make-array 4 :element-type '(unsigned-byte 8))"
+            "               (make-string-input-stream \"abcd\")"
+            "               :start \"x\")");
+        CL_UNCATCH();
+        ASSERT(0 && "expected type-error for non-fixnum :start");
+    } else {
+        CL_UNCATCH();
+        cl_vm.sp = 0;
+        cl_vm.fp = 0;
+    }
+}
+
+TEST(eval_write_sequence_bad_end_type_error)
+{
+    int err;
+    CL_CATCH(err);
+    if (err == CL_ERR_NONE) {
+        cl_eval_string(
+            "(write-sequence \"abcd\" (make-string-output-stream) :end \"x\")");
+        CL_UNCATCH();
+        ASSERT(0 && "expected type-error for non-fixnum/non-nil :end");
+    } else {
+        CL_UNCATCH();
+        cl_vm.sp = 0;
+        cl_vm.fp = 0;
+    }
+}
+
+TEST(eval_write_read_sequence_string_chars)
+{
+    char buf[128];
+    CL_Obj r = cl_eval_string(
+        "(progn"
+        "  (let ((s (open \"/tmp/cl_test_rseq.txt\" :direction :output"
+        "                 :if-exists :supersede)))"
+        "    (write-sequence \"hello world\" s :start 0 :end 11)"
+        "    (close s))"
+        "  (let ((str (make-string 5 :initial-element #\\_))"
+        "        (s (open \"/tmp/cl_test_rseq.txt\")))"
+        "    (let ((n (read-sequence str s)))"
+        "      (close s)"
+        "      (list n str))))");
+    cl_prin1_to_string(r, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(5 \"hello\")");
+}
+
+TEST(eval_read_sequence_consumes_unread_char)
+{
+    char buf[128];
+    /* A pushed-back char must be the first element the sequence gets. */
+    CL_Obj r = cl_eval_string(
+        "(let ((s (open \"/tmp/cl_test_rseq.txt\")))"
+        "  (read-char s)"
+        "  (unread-char #\\h s)"
+        "  (let ((str (make-string 4)))"
+        "    (read-sequence str s)"
+        "    (close s)"
+        "    str))");
+    cl_prin1_to_string(r, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "\"hell\"");
+}
+
+TEST(eval_write_read_sequence_list)
+{
+    char buf[128];
+    CL_Obj r = cl_eval_string(
+        "(progn"
+        "  (let ((s (open \"/tmp/cl_test_rseq2.bin\" :direction :output"
+        "                 :element-type '(unsigned-byte 8)"
+        "                 :if-exists :supersede)))"
+        "    (write-sequence '(10 20 30 40) s)"
+        "    (close s))"
+        "  (let ((l (list 0 0 0))"
+        "        (s (open \"/tmp/cl_test_rseq2.bin\""
+        "                 :element-type '(unsigned-byte 8))))"
+        "    (let ((n (read-sequence l s :start 1)))"
+        "      (close s)"
+        "      (list n l))))");
+    cl_prin1_to_string(r, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(3 (0 10 20))");
+}
+
+TEST(eval_read_sequence_string_stream_fallback)
+{
+    char buf[128];
+    /* String input streams have no bulk path — the per-element fallback
+     * must deliver character codes into a byte vector. */
+    CL_Obj r = cl_eval_string(
+        "(let ((v (make-array 3 :element-type '(unsigned-byte 8))))"
+        "  (list (read-sequence v (make-string-input-stream \"ABC\")) v))");
+    cl_prin1_to_string(r, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(3 #(65 66 67))");
+}
+
+TEST(eval_write_sequence_string_output_stream)
+{
+    char buf[128];
+    CL_Obj r = cl_eval_string(
+        "(let ((s (make-string-output-stream)))"
+        "  (write-sequence \"abc\" s)"
+        "  (write-sequence '(#\\d #\\e) s)"
+        "  (get-output-stream-string s))");
+    cl_prin1_to_string(r, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "\"abcde\"");
+}
+
+TEST(eval_write_sequence_returns_sequence_and_checks_direction)
+{
+    char buf[128];
+    int err;
+    CL_Obj r = cl_eval_string(
+        "(let ((s (make-string-output-stream)))"
+        "  (write-sequence \"xy\" s))");
+    cl_prin1_to_string(r, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "\"xy\"");
+
+    CL_CATCH(err);
+    if (err == CL_ERR_NONE) {
+        cl_eval_string(
+            "(write-sequence \"xy\" (make-string-input-stream \"ab\"))");
+        CL_UNCATCH();
+        ASSERT(0 && "expected not-an-output-stream error");
+    } else {
+        CL_UNCATCH();
+        cl_vm.sp = 0;
+        cl_vm.fp = 0;
+    }
+}
+
 int main(void)
 {
     test_init();
@@ -4226,6 +4469,20 @@ int main(void)
     RUN(eval_get_dispatch_macro_character_conformance);
     RUN(eval_with_input_from_string_index_start_end);
     RUN(eval_file_position_accounts_for_peek);
+
+    /* READ-SEQUENCE / WRITE-SEQUENCE builtins */
+    RUN(eval_write_read_sequence_u8_file_fast_path);
+    RUN(eval_write_read_sequence_u8_file_multi_chunk);
+    RUN(eval_read_sequence_start_end);
+    RUN(eval_read_sequence_bounds_error);
+    RUN(eval_read_sequence_bad_start_type_error);
+    RUN(eval_write_sequence_bad_end_type_error);
+    RUN(eval_write_read_sequence_string_chars);
+    RUN(eval_read_sequence_consumes_unread_char);
+    RUN(eval_write_read_sequence_list);
+    RUN(eval_read_sequence_string_stream_fallback);
+    RUN(eval_write_sequence_string_output_stream);
+    RUN(eval_write_sequence_returns_sequence_and_checks_direction);
 
     teardown();
     REPORT();

@@ -95,6 +95,10 @@ typedef uint32_t PlatformFile;
 PlatformFile platform_file_open(const char *path, int mode);
 void         platform_file_close(PlatformFile fh);
 int          platform_file_getchar(PlatformFile fh);
+/* Bulk read up to len bytes into buf (which MUST be C memory, not arena —
+ * the read may block inside a GC safe region).  Returns the byte count
+ * (0 = EOF), or -1 on error/invalid handle. */
+int          platform_file_read_buf(PlatformFile fh, char *buf, uint32_t len);
 int          platform_file_write_string(PlatformFile fh, const char *str);
 int          platform_file_write_char(PlatformFile fh, int ch);
 int          platform_file_write_buf(PlatformFile fh, const char *buf, uint32_t len);
