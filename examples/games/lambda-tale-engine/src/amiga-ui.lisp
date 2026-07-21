@@ -1688,15 +1688,19 @@ map/help/sheet pages close on a click outside a target — see
                            (setf over :lost)
                            (log-message log "Game over.  Press Q.")))
                g))
-      (setf game (wire (new-game map
-                                 :party (when (fboundp 'default-party)
-                                          (funcall 'default-party)))))
-      (trigger-special game)
+      (dlog-timed ("new-game + specials")
+        (setf game (wire (new-game map
+                                   :party (when (fboundp 'default-party)
+                                            (funcall 'default-party)))))
+        (trigger-special game))
       (%with-game-font
        (lambda (font)
          (%call-with-game-window
           display
           (lambda (scr win)
+            ;; (%dlog-elapsed-ms 0) = ms since clamiga launch: the
+            ;; internal-time epoch is anchored at process start.
+            (dlog "display open [launch+~D ms]" (%dlog-elapsed-ms 0))
             (amiga.gadtools:with-visual-info (vi scr)
               (amiga.gadtools:with-menus (menu *menu-entries* vi win)
                 (let* ((rp (%game-rastport win font))
@@ -2205,10 +2209,13 @@ map/help/sheet pages close on a click outside a target — see
                        ;; pointer has something to restore to
                        (%ensure-standard-pointer scr win display)
                        (ensure-walls)
-                       (%chrome-bg rp win l)
-                       (%chrome-frames rp game l)
-                       (setf pace-fn #'pace)
-                       (redraw)
+                       (dlog-timed ("chrome + first frame")
+                         (%chrome-bg rp win l)
+                         (%chrome-frames rp game l)
+                         (setf pace-fn #'pace)
+                         (redraw))
+                       (dlog "first frame up [launch+~D ms]"
+                             (%dlog-elapsed-ms 0))
                        (amiga.intuition:event-loop win
                          (amiga.intuition:+idcmp-closewindow+ (msg)
                            (return))
