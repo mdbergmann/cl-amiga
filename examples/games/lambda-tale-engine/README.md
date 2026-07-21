@@ -300,6 +300,101 @@ black, for the cellar below the tavern.  See also the "Backdrop slots"
 and wall-art sections of `tests/run-tests.lisp` for executable
 examples of the contract.
 
+### Packs from one hand-drawn facade
+
+Drawing 40 pieces to spec by hand is a lot of work, and the procedural
+generators only make the looks they were coded for.  The third route is
+`tools/gen-pack-from-art.lisp`: give it **one flat, front-on picture of
+a wall** and it derives the whole pack.
+
+```
+make pack ART=art/house.iff OUT=data/gfx-town/
+make preview PACK=data/gfx-town/ OUT=street.iff
+```
+
+The source can be an IFF ILBM of any size and any depth — indexed art
+is expanded through its CMAP, 24/32-bit "deep" ILBMs are read directly
+— or a **binary PPM (P6)**, the bridge for art that was never an Amiga
+file:
+
+```
+ffmpeg -i house.png -pix_fmt rgb24 house.ppm
+```
+
+The format is sniffed, not guessed from the name.  `write-deep-ilbm`
+turns any of them back into a 24-bit IFF, so art that arrived as a PNG
+becomes a source you can keep editing in DPaint.
+
+The natural size is the viewport (120×112 at `:lores`, 240×130 at
+`:hires`), which is exactly one wall cell at the nearest plane, so
+every piece comes out of a downscale.  The perspective is pure
+geometry: front and flank slots are rectangles cut at the front slot's
+scale, side slots are the trapezoid between two perspective planes with
+the wall compressed into each column's visible span and the
+ceiling/floor corners left transparent.
+
+**More than one house.**  `:variants` takes further wall pictures, each
+a whole extra look, written as the `-v1`, `-v2`, … files the view deals
+out *per building* — so the street becomes a row of different houses
+rather than one facade repeated.  `:style N` on a location pins a
+building's look, counting the base source as 0:
+
+```lisp
+(generate-pack-from-art "art/house-1.iff"
+  :out "worlds/closure/gfx/"
+  :variants '("art/house-2.ppm" "art/house-3.ppm" "art/house-4.ppm")
+  :pictures '(("art/house-1.iff" . "house-1.iff")))
+```
+
+Because a pack is **one shared CMAP** and pictures blit with the live
+screen palette rather than their own, every source above — base,
+variants and pictures — is quantized *together*, which is what makes a
+shop's takeover art belong to the same street it stands in.  It also
+means the pens are a budget: four looks sharing 22 colors get noticeably
+less each than one look with all of them.
+
+The pen layout follows the contract above — 0 transparent, 1–3 the
+fixed UI colors, 4 opaque black, 5 sky, 6 ground, and the art from 7 up
+— with **pens 17–19 held back** for the mouse pointer's sprite
+registers, which the front end re-latches after every pack-palette
+load.  That leaves 22 art colors at `:lores` and 9 at `:hires`.
+
+Quantization works on the **12-bit grid the screen can actually show**
+(`set-rgb4`, four bits a channel, on RTG as much as on ECS), and no two
+art pens are allowed to land on the same screen color or duplicate a
+fixed one — otherwise pens are spent on colors the machine cannot tell
+apart.
+
+Every pack gets a **`palette.gpl`** beside its `palette.iff`: the same
+colors as a GIMP palette, which GIMP, Aseprite, Krita and Inkscape all
+import, each entry named with its pen number and role.  That closes the
+loop — draw the next house *against* the pack's palette, then pass the
+pack's `palette.iff` back as `:palette-source` and quantization becomes
+a lossless lookup instead of a re-derivation:
+
+```lisp
+(generate-pack-from-art "art/house-5.ppm"
+  :out "worlds/closure/gfx/"
+  :palette-source "worlds/closure/gfx/palette.iff")
+```
+
+Every piece kind has a `-door-` twin.  By default both come from the
+same source, which suits a dense street whose facade already has a door
+in it; pass `:door-source` to give the door pieces their own art as
+soon as the player needs to *see* which walls can be entered.
+
+`tools/preview-view.lisp` composites a pack the way the Amiga front end
+does — same blit list, same order, same cookie-cut rule — and hands
+back an ILBM, so art can be judged on the host without booting an
+emulator.  `make preview` renders a fixture street that shows every
+piece kind at more than one depth.  It is a preview, not a second
+renderer: where it and the Amiga disagree, the Amiga is right.
+
+The art-pack tests in `tests/run-tests.lisp` are the executable spec —
+deep-ILBM reading, the box filter, median cut, the pen contract, and a
+whole pack built, reloaded through the loader's own size checks and
+composited.
+
 ### How a pack loads
 
 Pack art is plain IFF ILBM — planar, ByteRun1-compressed, exactly what

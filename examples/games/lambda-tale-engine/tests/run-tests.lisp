@@ -4464,6 +4464,449 @@ brick grid" d side)
            (pixel-ref ceiling 0 (1- (image-height ceiling))))))
 
 ;;; ---------------------------------------------------------------------
+;;; Art-driven tile packs (tools/gen-pack-from-art.lisp): the same 40
+;;; slots, derived from one hand-drawn facade instead of procedural
+;;; brick.  These tests pin the whole chain — deep-ILBM reading,
+;;; resampling, quantization, the pen contract, and the end-to-end
+;;; pack — against a synthetic source, so nothing here depends on art
+;;; that isn't checked in.
+
+(load "tools/gen-pack-from-art.lisp")
+(load "tools/preview-view.lisp")
+
+;; A 16x16 source with four flat quadrants — enough distinct color for
+;; the quantizer to have something to do, few enough that every mapping
+;; is predictable.  *TEST-ART-2* is a second, disjoint look, so variant
+;; packs can be told apart piece by piece.
+(defun %test-quadrants (a b c d)
+  (let ((img (%make-rgb 16 16)))
+    (dotimes (y 16 img)
+      (dotimes (x 16)
+        (setf (rgb-ref img x y)
+              (cond ((and (< x 8) (< y 8)) a)
+                    ((< y 8) b)
+                    ((< x 8) c)
+                    (t d)))))))
+
+(defparameter *test-art* (%test-quadrants '(200 0 0) '(0 200 0)
+                                          '(0 0 200) '(0 0 0)))
+(defparameter *test-art-2* (%test-quadrants '(200 200 0) '(0 200 200)
+                                            '(200 0 200) '(0 0 0)))
+
+;; Deep-ILBM reading, both compressions — the riskiest code in the tool
+;; (an off-by-one in the plane fold silently shifts every color).
+(dolist (compression '(0 1))
+  (let ((path (format nil "tests/tmp-art-~D.iff" compression)))
+    (write-deep-ilbm *test-art* path :compression compression)
+    (check (format nil "deep ILBM depth is reported without decoding ~
+(compression ~D)" compression)
+           24 (%ilbm-depth path))
+    (let ((back (read-art path)))
+      (check (format nil "deep ILBM round-trips its geometry ~
+(compression ~D)" compression)
+             (list 16 16)
+             (list (rgb-image-width back) (rgb-image-height back)))
+      (check (format nil "deep ILBM round-trips every quadrant ~
+(compression ~D)" compression)
+             '((200 0 0) (0 200 0) (0 0 200) (0 0 0))
+             (mapcar (lambda (p)
+                       (multiple-value-list
+                        (rgb-ref back (first p) (second p))))
+                     '((0 0) (12 0) (0 12) (12 12)))))
+    (delete-file path)))
+
+;; An indexed source goes through the same door, expanded via its CMAP.
+(let ((path "tests/tmp-art-indexed.iff")
+      (img (make-image 4 4 2 :palette #((10 20 30) (40 50 60)
+                                        (70 80 90) (0 0 0)))))
+  (setf (pixel-ref img 0 0) 1
+        (pixel-ref img 3 3) 2)
+  (write-ilbm img path)
+  (let ((back (read-art path)))
+    (check "an indexed source expands through its CMAP"
+           '((40 50 60) (70 80 90) (10 20 30))
+           (list (multiple-value-list (rgb-ref back 0 0))
+                 (multiple-value-list (rgb-ref back 3 3))
+                 (multiple-value-list (rgb-ref back 1 1)))))
+  (delete-file path))
+
+;; PPM (P6) is the bridge for art that never was an IFF; READ-ART
+;; sniffs the magic rather than trusting the file name.
+(let ((path "tests/tmp-art.ppm"))
+  (with-open-file (s path :direction :output
+                          :element-type '(unsigned-byte 8)
+                          :if-exists :supersede)
+    (flet ((str (text) (map nil (lambda (c) (write-byte (char-code c) s))
+                            text)))
+      (str "P6")
+      (str (format nil "~%# written by the test suite~%2 2~%255~%"))
+      (dolist (b '(255 0 0  0 255 0
+                   0 0 255  9 9 9))
+        (write-byte b s))))
+  (let ((img (read-art path)))
+    (check "a PPM reads its geometry past a comment"
+           (list 2 2) (list (rgb-image-width img) (rgb-image-height img)))
+    (check "a PPM reads its pixels in order"
+           '((255 0 0) (0 255 0) (0 0 255) (9 9 9))
+           (list (multiple-value-list (rgb-ref img 0 0))
+                 (multiple-value-list (rgb-ref img 1 0))
+                 (multiple-value-list (rgb-ref img 0 1))
+                 (multiple-value-list (rgb-ref img 1 1)))))
+  (delete-file path))
+
+(check-error "read-ppm rejects a file that is not P6"
+  (let ((path "tests/tmp-not.ppm"))
+    (unwind-protect
+         (progn (write-ilbm (make-image 2 2 2) path) (read-ppm path))
+      (delete-file path))))
+
+;; write-deep-ilbm is the inverse of read-deep-ilbm: art that arrived
+;; in some other format becomes a source you can keep editing.
+(let ((path "tests/tmp-art-deep.iff"))
+  (write-deep-ilbm *test-art* path)
+  (check-true "a written deep ILBM round-trips through read-art"
+              (let ((back (read-art path)))
+                (equalp (rgb-image-pixels back)
+                        (rgb-image-pixels *test-art*))))
+  (check "a written deep ILBM really is 24 planes" 24 (%ilbm-depth path))
+  (delete-file path))
+
+(check-error "read-deep-ilbm rejects an indexed file"
+  (let ((path "tests/tmp-art-shallow.iff"))
+    (unwind-protect
+         (progn (write-ilbm (make-image 2 2 2) path)
+                (read-deep-ilbm path))
+      (delete-file path))))
+
+;; Resampling: a box filter, so shrinking averages the covered source
+;; pixels rather than dropping them (thin timber lines must survive).
+(check "the box filter averages the whole source rect"
+       '(50 50 50)
+       (let ((img (%make-rgb 2 2)))
+         (setf (rgb-ref img 0 0) '(200 200 200)
+               (rgb-ref img 1 0) '(0 0 0)
+               (rgb-ref img 0 1) '(0 0 0)
+               (rgb-ref img 1 1) '(0 0 0))
+         (multiple-value-list (rgb-ref (%rgb-scale img 1 1) 0 0))))
+(check "scaling up keeps the source colors"
+       '((200 0 0) (0 0 0))
+       (let ((up (%rgb-scale *test-art* 32 32)))
+         (list (multiple-value-list (rgb-ref up 0 0))
+               (multiple-value-list (rgb-ref up 31 31)))))
+
+;; The screen is 12-bit (SET-RGB4), so the quantizer works on the grid
+;; the machine can actually show — otherwise pens are spent on colors
+;; that display identically (the first art pack had three pens at $000).
+(check "snapping rounds to the nearest nibble, stored so it floors back"
+       ;; 4/17 rounds to nibble 0, 20/17 to nibble 1 — the grid is
+       ;; coarse and snapping must be honest about it
+       '((0 0 0) (255 255 255) (136 136 136) (17 0 17) (238 68 68))
+       (mapcar #'snap-12-bit
+               '((0 0 0) (255 255 255) (136 136 136) (11 4 20) (238 68 68))))
+(check-true "a snapped color survives the engine's own FLOOR v 17"
+            (let ((c (snap-12-bit '(200 130 99))))
+              (equal c (mapcar (lambda (v) (* 17 (floor v 17))) c))))
+(check "quantized colors are all realizable on screen"
+       nil
+       (remove-if (lambda (c) (equal c (snap-12-bit c)))
+                  (median-cut (list *test-art*) 16)))
+(check "no two art colors collapse to the same screen color"
+       nil
+       (let* ((colors (median-cut (list *test-art-2*) 16))
+              (dupes (remove-if (lambda (c) (= 1 (count c colors
+                                                        :test #'equal)))
+                                colors)))
+         dupes))
+(check "a color the palette already carries is not given a pen of its own"
+       nil
+       (member '(255 255 255)
+               (median-cut (list (%test-quadrants '(255 255 255) '(0 200 0)
+                                                  '(0 0 200) '(17 17 17)))
+                           8 :exclude (art-fixed-colors 5))
+               :test #'equal))
+
+;; A source with plenty of color but one hugely dominant background:
+;; the heavy color used to swallow a whole split, leaving the tail of
+;; the CMAP black — the pack budget must be spent in full.
+(defparameter *test-art-busy*
+  (let ((img (%make-rgb 32 32)))
+    (dotimes (y 32 img)
+      (dotimes (x 32)
+        (setf (rgb-ref img x y) '(255 255 255))))     ; dominant field
+    (dotimes (i 40)
+      (setf (rgb-ref img (mod i 32) (floor i 32))
+            (list (* 6 (mod i 40)) (* 5 (mod i 33)) (* 4 (mod i 51)))))
+    img))
+
+(check "the full pen budget is spent when the sources can fill it"
+       22 (length (median-cut (list *test-art-busy*) 22)))
+(check-true "a dominant background does not starve the split"
+            (> (length (median-cut (list *test-art-busy*) 16)) 8))
+
+;; Quantization
+(check "median-cut stops at the number of distinct colors"
+       4 (length (median-cut (list *test-art*) 16)))
+(check "median-cut finds the four quadrant colors"
+       ;; 200 is not on the 12-bit grid; 204 (nibble 12) is
+       '((0 0 0) (0 0 204) (0 204 0) (204 0 0))
+       ;; sorted on the packed value: three of the four share a red
+       ;; channel, so ordering on one component is not a total order
+       (sort (median-cut (list *test-art*) 4) #'<
+             :key (lambda (c) (+ (ash (first c) 16) (ash (second c) 8)
+                                 (third c)))))
+(check-true "median-cut honours a smaller budget"
+            (<= (length (median-cut (list *test-art*) 2)) 2))
+
+(let ((palette (art-pack-palette '((200 0 0) (0 200 0)) 5)))
+  (check "the pack palette is 2^depth entries" 32 (length palette))
+  (check "pens 0-4 are the fixed contract"
+         '((0 0 0) (255 255 255) (136 136 136) (255 170 51) (0 0 0))
+         (coerce (subseq palette 0 5) 'list))
+  (check "pen 5 is the sky, pen 6 the ground"
+         (list *default-sky* *default-ground*)
+         (list (aref palette +art-pen-sky+) (aref palette +art-pen-ground+)))
+  (check "the art colors start at pen 7"
+         '((200 0 0) (0 200 0))
+         (list (aref palette 7) (aref palette 8)))
+  ;; Pens 17-19 are the mouse pointer's sprite registers, re-latched
+  ;; from the pointer art AFTER a pack's palette loads — art quantized
+  ;; into them renders in the pointer's red instead of its own color.
+  (check "the pointer's pens are held back from the art plan"
+         '(7 8 9 10 11 12 13 14 15 16 20 21 22 23 24 25 26 27 28 29 30 31)
+         (art-pen-plan 5))
+  (check "a 16-color profile has no pointer pens to dodge"
+         '(7 8 9 10 11 12 13 14 15)
+         (art-pen-plan 4))
+  (check "the CMAP records the pointer's own colors at 17-19"
+         '((238 68 68) (51 0 0) (238 238 204))
+         (list (aref palette 17) (aref palette 18) (aref palette 19)))
+  (let ((mapper (%make-pen-mapper palette)))
+    (check "art black lands on the opaque black pen, never the ~
+transparent key"
+           4 (funcall mapper '(0 0 0)))
+    (check "an art color maps to its own pen" 7 (funcall mapper '(200 0 0)))
+    (check "a near color maps to the nearest pen" 8 (funcall mapper '(4 190 6)))
+    (check-true "no pixel is ever mapped to pen 0"
+                (let ((zero nil))
+                  (dolist (rgb '((0 0 0) (1 1 1) (255 255 255) (0 0 137)
+                                 (200 0 0) (128 128 128))
+                               (not zero))
+                    (when (zerop (funcall mapper rgb)) (setf zero t)))))))
+
+;; The pieces: the manifest's geometry and the transparency contract,
+;; exactly as the procedural pack must meet them.
+(with-display-profile (:lores)
+  (let* ((planes (view-planes *fp-view-width* *fp-view-height*))
+         (palette (art-pack-palette (median-cut (list *test-art*) 25) 5))
+         (mapper (%make-pen-mapper palette))
+         (wrong '()))
+    (dolist (piece (wall-piece-names))
+      (let ((img (art-wall-piece piece planes *test-art* palette 5 mapper)))
+        (destructuring-bind (x y w h) (wall-piece-rect planes piece)
+          (declare (ignore x y))
+          (unless (and (= (image-width img) w) (= (image-height img) h))
+            (push (list piece :size) wrong)))
+        (unless (= (image-depth img) 5)
+          (push (list piece :depth) wrong))
+        ;; side pieces keep pen-0 corners (cookie-cut); every other
+        ;; piece fills its rect, so a mask would be wasted chip RAM
+        (if (member (first piece) '(:side :side-door))
+            (unless (image-transparent-p img)
+              (push (list piece :corners-not-transparent) wrong))
+            (when (image-transparent-p img)
+              (push (list piece :unexpected-transparency) wrong)))))
+    (check "all 40 art pieces match their slots and the pen contract"
+           nil wrong)
+    ;; no piece may land on the pointer's registers
+    (check "no art piece uses a pointer pen"
+           nil
+           (let ((hits '()))
+             (dolist (piece (wall-piece-names) (remove-duplicates hits))
+               (let ((px (image-pixels
+                          (art-wall-piece piece planes *test-art*
+                                          palette 5 mapper))))
+                 (dolist (pen '(17 18 19))
+                   (when (find pen px) (push pen hits)))))))
+    (check "a side piece's far top corner is the transparent key"
+           0 (let ((img (art-wall-piece '(:side 0 :l) planes *test-art*
+                                        palette 5 mapper)))
+               (pixel-ref img (1- (image-width img)) 0)))
+    ;; a right piece is the mirror of the left one
+    (check-true "the right side piece mirrors the left"
+                (let* ((l (art-wall-piece '(:side 0 :l) planes *test-art*
+                                          palette 5 mapper))
+                       (r (art-wall-piece '(:side 0 :r) planes *test-art*
+                                          palette 5 mapper))
+                       (w (image-width l)))
+                  (loop for y below (image-height l)
+                        always (loop for x below w
+                                     always (= (pixel-ref l x y)
+                                               (pixel-ref r (- w 1 x) y))))))
+    ;; a left flank shows the wall's RIGHT edge: it stands left of the
+    ;; front slot, so the viewport cuts its left side off
+    (check-true "a flank is cropped from the front slot's scale, not ~
+squeezed into its own"
+                (let* ((front (art-wall-piece '(:front 1) planes *test-art*
+                                              palette 5 mapper))
+                       (flank (art-wall-piece '(:flank 1 :l) planes *test-art*
+                                              palette 5 mapper))
+                       (fw (image-width front))
+                       (kw (image-width flank)))
+                  (and (< kw fw)
+                       (loop for y below (image-height flank)
+                             always (loop for x below kw
+                                          always (= (pixel-ref flank x y)
+                                                    (pixel-ref front
+                                                               (+ (- fw kw) x)
+                                                               y)))))))))
+
+;; End to end: a whole pack on disk, then loaded back through the same
+;; checks the Amiga front end applies, then composited into a view.
+(with-display-profile (:lores)
+  (let ((src "tests/tmp-art-src.iff")
+        (dir "tests/tmp-art-pack/")
+        (pic "picture.iff"))
+    (write-deep-ilbm *test-art* src)
+    (let ((n (generate-pack-from-art src :out dir
+                                         :pictures (list (cons src pic)))))
+      (check "a pack is 40 pieces + 2 backdrops + palette + pictures"
+             45 n))
+    (let ((planes (view-planes *fp-view-width* *fp-view-height*)))
+      ;; %preview-load-pack applies the loader's size contract, so this
+      ;; failing means the Amiga would reject the pack too
+      (let ((walls (%preview-load-pack dir planes)))
+        (check "every piece plus both backdrops loaded" 42
+               (hash-table-count walls))
+        (check-true "a pack without -vN files has exactly one variant ~
+per piece"
+                    (let ((ok t))
+                      (maphash (lambda (k v)
+                                 (declare (ignore k))
+                                 (unless (= 1 (length v)) (setf ok nil)))
+                               walls)
+                      ok)))
+      (check "the backdrops are flat sky and flat ground"
+             (list (list +art-pen-sky+) (list +art-pen-ground+))
+             (mapcar (lambda (name)
+                       (remove-duplicates
+                        (coerce (image-pixels
+                                 (read-ilbm (concatenate 'string dir name)))
+                                'list)))
+                     '("ceiling.iff" "floor.iff")))
+      (check "palette.iff carries one pixel per pen"
+             (list 32 1)
+             (let ((img (read-ilbm (concatenate 'string dir "palette.iff"))))
+               (list (image-width img) (image-height img))))
+      ;; palette.gpl is the same colors for a paint program, so the
+      ;; next house can be DRAWN against the pack instead of requantized
+      (let ((lines '()))
+        (with-open-file (s (concatenate 'string dir "palette.gpl"))
+          (loop for line = (read-line s nil nil)
+                while line do (push line lines)))
+        (setf lines (nreverse lines))
+        (check "palette.gpl is a GIMP palette" "GIMP Palette" (first lines))
+        (check "palette.gpl has one entry per pen"
+               32 (count-if (lambda (l) (find #\Tab l)) lines))
+        (check-true "palette.gpl names the reserved pens"
+                    (and (find-if (lambda (l) (search "transparent key" l))
+                                  lines)
+                         (find-if (lambda (l) (search "mouse pointer" l))
+                                  lines))))
+      ;; and it closes the loop: feeding a pack's own palette back in
+      ;; as :PALETTE-SOURCE reproduces that palette exactly
+      (let ((dir2 "tests/tmp-art-fixedpal/"))
+        (generate-pack-from-art src :out dir2
+                                    :palette-source (concatenate
+                                                     'string dir
+                                                     "palette.iff"))
+        (check "a pack built on a fixed palette keeps it exactly"
+               (coerce (image-palette
+                        (read-ilbm (concatenate 'string dir
+                                                "palette.iff")))
+                       'list)
+               (coerce (image-palette
+                        (read-ilbm (concatenate 'string dir2
+                                                "palette.iff")))
+                       'list))
+        (dolist (piece (wall-piece-names))
+          (delete-file (concatenate 'string dir2 (wall-piece-file piece))))
+        (dolist (name '("ceiling.iff" "floor.iff" "palette.iff"
+                        "palette.gpl"))
+          (delete-file (concatenate 'string dir2 name))))
+      (check-true "a picture is quantized into the pack's own CMAP, ~
+never its own"
+                  (let ((img (read-ilbm (concatenate 'string dir pic)))
+                        (pal (image-palette
+                              (read-ilbm (concatenate 'string dir
+                                                      "palette.iff")))))
+                    (and (= (image-depth img) 5)
+                         (equal (coerce (image-palette img) 'list)
+                                (coerce pal 'list))
+                         ;; the source's four quadrant colors survive
+                         (= 4 (length (remove-duplicates
+                                       (coerce (image-pixels img) 'list)))))))
+      ;; and it composites: the preview is the blit path in pure Lisp
+      (let* ((m (parse-map *art* :name "preview"))
+             (view (preview-view m 0 0 :east :dir dir)))
+        (check "the preview is the profile's viewport"
+               (list *fp-view-width* *fp-view-height*)
+               (list (image-width view) (image-height view)))
+        (check-true "the preview drew walls over the backdrop"
+                    (> (length (remove-duplicates
+                                (coerce (image-pixels view) 'list)))
+                       2))))
+    ;; tidy up
+    (dolist (piece (wall-piece-names))
+      (delete-file (concatenate 'string dir (wall-piece-file piece))))
+    (dolist (name (list "ceiling.iff" "floor.iff" "palette.iff"
+                        "palette.gpl" pic))
+      (delete-file (concatenate 'string dir name)))
+    (delete-file src)))
+
+;; Variants: each extra source is a whole extra look, written as the
+;; -vN files the view deals out per building.  They share the pack's
+;; single CMAP with the base look — that is the whole reason the
+;; quantizer pools every source before choosing pens.
+(with-display-profile (:lores)
+  (let ((src "tests/tmp-art-a.iff")
+        (var "tests/tmp-art-b.iff")
+        (dir "tests/tmp-art-vpack/"))
+    (write-deep-ilbm *test-art* src)
+    (write-deep-ilbm *test-art-2* var)
+    (check "two looks write both the base and the -v1 files"
+           (+ (* 2 40) 4)
+           (generate-pack-from-art src :out dir :variants (list var)))
+    (let* ((planes (view-planes *fp-view-width* *fp-view-height*))
+           (walls (%preview-load-pack dir planes)))
+      (check-true "every piece carries two variants"
+                  (let ((ok t))
+                    (dolist (piece (wall-piece-names) ok)
+                      (unless (= 2 (length (gethash piece walls)))
+                        (setf ok nil)))))
+      (check-true "the two looks actually differ"
+                  (let ((entry (gethash '(:front 0) walls)))
+                    (not (equalp (image-pixels (aref entry 0))
+                                 (image-pixels (aref entry 1))))))
+      (check-true "both looks share the pack's one palette"
+                  (let ((entry (gethash '(:front 0) walls)))
+                    (equalp (image-palette (aref entry 0))
+                            (image-palette (aref entry 1)))))
+      ;; the renderer indexes with (MOD STYLE COUNT), so a building's
+      ;; style picks a look and styles wrap rather than fall over
+      (check "style selection wraps over the looks a pack ships"
+             '(0 1 0 1)
+             (let ((count (length (gethash '(:front 0) walls))))
+               (mapcar (lambda (style) (mod style count)) '(0 1 2 3)))))
+    (dolist (piece (wall-piece-names))
+      (delete-file (concatenate 'string dir (wall-piece-file piece)))
+      (delete-file (concatenate 'string dir
+                                (wall-piece-variant-file piece 1))))
+    (dolist (name '("ceiling.iff" "floor.iff" "palette.iff" "palette.gpl"))
+      (delete-file (concatenate 'string dir name)))
+    (delete-file src)
+    (delete-file var)))
+
+;;; ---------------------------------------------------------------------
 ;;; The help page: pure text both front-ends draw verbatim.
 
 (let ((lines (help-lines)))
