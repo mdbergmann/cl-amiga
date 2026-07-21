@@ -10,6 +10,8 @@
 ;;; previous pick; f=flee (party-level), +/-=transcript speed.  The
 ;;; round runs once the last hero picked, each message lingering
 ;;; COMBAT-MESSAGE-DELAY seconds.
+;;; On the character sheet: e=the gear page (1-9 toggle an item
+;;;   on/off, class-unfit items are marked)  Esc=back
 ;;; In a location (shop): 1-9=choose  s/b=sell/buy page  Esc=back/leave
 ;;; In the cast menu: 1-9=choose caster/spell/target  Esc=back/cancel
 ;;; Long menu lists (shop stock, packs, the character sheet) scroll
@@ -84,6 +86,7 @@ engine has no default world; the game names its starting map."
          (full nil)          ; omniscient automap (debug), map mode only
          (sheet-hero 0)      ; party index shown in :sheet mode
          (sheet-top 0)       ; sheet scroll offset (u/d)
+         (equip nil)         ; EQUIP-VIEW while the gear page is open
          (shop nil)          ; SHOP-VIEW while inside a location
          (cast nil)          ; CAST-VIEW while the cast menu is open
          (use nil)           ; USE-VIEW while the use menu is open
@@ -98,6 +101,7 @@ engine has no default world; the game names its starting map."
                (setf cast nil)
                (setf use nil)
                (setf sing nil)
+               (setf equip nil)
                (setf menu nil)
                (setf orders nil)
                ;; pace the combat transcript: linger on each message a
@@ -203,7 +207,10 @@ engine has no default world; the game names its starting map."
                (dolist (line (help-lines))
                  (format t "~A~%" line)))
              (draw-sheet-page ()
-               (dolist (line (hero-sheet-lines game sheet-hero sheet-top))
+               (dolist (line (if equip
+                                 (equip-lines game equip)
+                                 (hero-sheet-lines game sheet-hero
+                                                   sheet-top)))
                  (format t "~A~%" (menu-line-text line))))
              (draw ()
                (%clear-screen)
@@ -301,18 +308,35 @@ engine has no default world; the game names its starting map."
                (when (nth i (game-party game))
                  (setf sheet-hero i
                        sheet-top 0
+                       equip nil
                        mode :sheet))
                nil)
              (sheet-act (c)
-               (let ((digit (digit-char-p c))
-                     (top (hero-sheet-scroll game sheet-hero
-                                             sheet-top c)))
-                 (cond ((and digit (<= 1 digit +party-limit+))
-                        (open-sheet (1- digit)))
-                       (top (setf sheet-top top) nil)
-                       ((eql c #\Escape) (setf mode :play) nil)
-                       ((member c '(#\q #\Q)) :quit)
-                       (t nil))))
+               (if equip
+                   ;; the gear page: the shared model eats the keys
+                   ;; (digits toggle, u/d scroll, Esc backs out to the
+                   ;; sheet) — Q still quits
+                   (if (member c '(#\q #\Q))
+                       :quit
+                       (progn
+                         (case (equip-act game equip c)
+                           (:cancelled (setf equip nil)))
+                         nil))
+                   (let ((digit (digit-char-p c))
+                         (top (hero-sheet-scroll game sheet-hero
+                                                 sheet-top c)))
+                     (cond ((and digit (<= 1 digit +party-limit+))
+                            (open-sheet (1- digit)))
+                           (top (setf sheet-top top) nil)
+                           ((member c '(#\e #\E))
+                            (let ((hero (nth sheet-hero
+                                             (game-party game))))
+                              (when hero
+                                (setf equip (make-equip-view hero))))
+                            nil)
+                           ((eql c #\Escape) (setf mode :play) nil)
+                           ((member c '(#\q #\Q)) :quit)
+                           (t nil)))))
              (explore-act (c)
                (case c
                  (#\S (setf menu (make-save-menu :save))

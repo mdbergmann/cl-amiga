@@ -40,6 +40,16 @@ Campaign data calls this."
               :caster caster :singer singer :image image))
   name)
 
+(defun hero-classes ()
+  "The registered hero classes as a sorted list of keywords — whatever
+the loaded campaign declared with DEFINE-HERO-CLASS (the engine ships
+none of its own)."
+  (let ((names '()))
+    (maphash (lambda (name plist) (declare (ignore plist))
+               (push name names))
+             *hero-classes*)
+    (sort names #'string< :key #'symbol-name)))
+
 (defun hero-class-property (class key)
   (let ((plist (gethash class *hero-classes*)))
     (unless plist
@@ -145,8 +155,9 @@ Amiga sheet view and the tests render from the same source."
            (unless (hero-alive-p hero) "(down)"))
    (format nil "Pack: ~:[nothing~;~:*~{~A~^, ~}~]"
            (mapcar (lambda (name)
-                     (format nil "~A~:[~;*~]" (item-title name)
-                             (member name (hero-equipped hero))))
+                     (format nil "~A~:[~;*~]~A" (item-title name)
+                             (member name (hero-equipped hero))
+                             (item-fit-marker hero name)))
                    (hero-items hero)))))
 
 (defun hero-image (hero)
@@ -167,16 +178,18 @@ MENU-WINDOW.")
 
 (defun %hero-sheet-body (hero)
   "The sheet page's scrollable body: the HERO-SUMMARY-LINES stat block
-with the pack expanded to one row per item (equipped items starred),
-so a full pack scrolls instead of overflowing the page."
+with the pack expanded to one row per item (equipped items starred,
+class-unfit items marked), so a full pack scrolls instead of
+overflowing the page."
   (append
    (butlast (hero-summary-lines hero))  ; all but the joined pack line
    (let ((items (hero-items hero)))
      (if items
          (cons "Pack:"
                (mapcar (lambda (name)
-                         (format nil "  ~A~:[~;*~]" (item-title name)
-                                 (member name (hero-equipped hero))))
+                         (format nil "  ~A~:[~;*~]~A" (item-title name)
+                                 (member name (hero-equipped hero))
+                                 (item-fit-marker hero name)))
                        items))
          (list "Pack: nothing")))))
 
@@ -200,8 +213,8 @@ pattern) and feed u/d through HERO-SHEET-SCROLL."
                             +sheet-page-size+))
      (list ""
            (if (> (length body) +sheet-page-size+)
-               "[1-7] view another  [u/d] scroll  [Esc] back"
-               "[1-7] view another  [Esc] back")))))
+               "[1-7] view another  [e] equip  [u/d] scroll  [Esc] back"
+               "[1-7] view another  [e] equip  [Esc] back")))))
 
 (defun hero-sheet-scroll (game index top char)
   "The sheet page's scroll offset after key CHAR (u/d — see

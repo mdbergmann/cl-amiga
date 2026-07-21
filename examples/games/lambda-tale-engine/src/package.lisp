@@ -59,7 +59,8 @@
    ;; cell specials
    #:trigger-special #:run-special #:teleport-party
    ;; heroes and the party
-   #:define-hero-class #:make-hero #:hero-name #:hero-class #:hero-level
+   #:define-hero-class #:hero-classes
+   #:make-hero #:hero-name #:hero-class #:hero-level
    #:hero-xp #:hero-max-hp #:hero-hp #:hero-max-sp #:hero-sp
    #:hero-caster-p #:hero-str #:hero-dex #:hero-iq
    #:hero-con #:hero-lck #:hero-ac #:hero-damage #:hero-gold
@@ -70,9 +71,13 @@
    #:damage-hero #:heal-hero #:stat-bonus #:award-xp #:xp-for-level
    ;; items, inventory and equipment
    #:define-item #:find-item-type #:item-title #:item-usable-p
+   #:item-fit-marker
    #:+inventory-limit+ #:hero-items #:hero-equipped #:hero-carrying-p
    #:give-item #:drop-item #:equip-item #:unequip-item #:equipped-of-kind
-   #:hero-attack-dice #:hero-effective-ac
+   #:toggle-equip #:hero-attack-dice #:hero-effective-ac
+   ;; the gear page ('e' on the character sheet)
+   #:make-equip-view #:equip-view-hero #:equip-view-top
+   #:equip-lines #:equip-act
    ;; using items (torch, potion — the use menu)
    #:usable-items #:use-item
    #:make-use-view #:use-view-hero #:use-view-item #:use-view-top

@@ -1320,7 +1320,7 @@ messages so far (oldest first)."
   (check "sheet page embeds the summary block" "B the Tester"
          (third lines))
   (check "sheet page ends with the key hints"
-         "[1-7] view another  [Esc] back"
+         "[1-7] view another  [e] equip  [Esc] back"
          (first (last lines))))
 
 ;; Class portraits: DEFINE-HERO-CLASS :IMAGE resolves map-relative
@@ -2236,7 +2236,107 @@ messages so far (oldest first)."
               (find-if (lambda (s) (search "cannot use" s))
                        (funcall msgs)))
   (check "item-usable-p for the wrong class" nil (item-usable-p h 't-mail))
-  (check-true "item-usable-p unrestricted" (item-usable-p h 't-torch)))
+  (check-true "item-usable-p unrestricted" (item-usable-p h 't-torch))
+  ;; the (unfit) marker: the sheet, gear and shop rows show a class
+  ;; mismatch before the player tries
+  (check "item-fit-marker for the wrong class" " (unfit)"
+         (item-fit-marker h 't-mail))
+  (check "item-fit-marker for a fitting item" ""
+         (item-fit-marker h 't-torch))
+  (check "sheet pack line marks the unfit item"
+         "Pack: T Mail (unfit)"
+         (seventh (hero-summary-lines h))))
+
+;; The class registry lists the campaign's classes.
+(let ((classes (hero-classes)))
+  (check-true "hero-classes lists registered classes"
+              (and (member :tester classes)
+                   (member :t-wizard classes)))
+  (check "hero-classes is sorted"
+         (sort (copy-list classes) #'string< :key #'symbol-name)
+         classes))
+
+;; TOGGLE-EQUIP: the gear page's one-key toggle — on, off, and the
+;; engine's refusals pass through.
+(let* ((m (parse-map *art* :name "test"))
+       (h (%combat-hero))
+       (g (new-game m :party (list h)))
+       (msgs (watch-messages g)))
+  (give-item g h 't-sword)
+  (give-item g h 't-torch)
+  (check-true "toggle equips an unworn item" (toggle-equip g h 't-sword))
+  (check "toggled on" 't-sword (equipped-of-kind h :weapon))
+  (check-true "toggle removes a worn item" (toggle-equip g h 't-sword))
+  (check "toggled off" nil (equipped-of-kind h :weapon))
+  (check-true "removal message"
+              (find-if (lambda (s) (search "removes T Sword" s))
+                       (funcall msgs)))
+  (check "toggle refuses misc items" nil (toggle-equip g h 't-torch)))
+
+;; The gear page model (EQUIP-VIEW): both front-ends feed keys into
+;; EQUIP-ACT and draw EQUIP-LINES — 'e' on the character sheet.
+(let* ((m (parse-map *art* :name "test"))
+       (h (with-rng () (make-hero "Wiz" :t-wizard)))
+       (g (new-game m :party (list h)))
+       (view (make-equip-view h)))
+  (check-true "empty pack says so"
+              (find-if (lambda (s) (search "The pack is empty" s))
+                       (menu-texts (equip-lines g view))))
+  (give-item g h 't-sword)
+  (give-item g h 't-mail)                ; :classes (:tester) — unfit
+  (check-true "gear page names the hero"
+              (search "*** Wiz's Gear ***"
+                      (first (equip-lines g view))))
+  (check-true "gear page shows ac and attack"
+              (find-if (lambda (s) (search "AC 10   Attack 1d3" s))
+                       (menu-texts (equip-lines g view))))
+  (check-true "gear page lists the pack numbered"
+              (find-if (lambda (s) (search "1) T Sword" s))
+                       (menu-texts (equip-lines g view))))
+  (check "the item row carries its pick key" #\1
+         (menu-line-key
+          (find-if (lambda (line)
+                     (search "T Sword" (menu-line-text line)))
+                   (equip-lines g view))))
+  (check-true "gear page marks the unfit item"
+              (find-if (lambda (s) (search "2) T Mail (unfit)" s))
+                       (menu-texts (equip-lines g view))))
+  (check-true "gear page ends with the key hints"
+              (search "[1-9] equip/remove"
+                      (first (last (equip-lines g view)))))
+  (check "a digit equips the item" nil (equip-act g view #\1))
+  (check "equipped through the page" 't-sword (equipped-of-kind h :weapon))
+  (check-true "the worn item is starred"
+              (find-if (lambda (s) (search "1) T Sword*" s))
+                       (menu-texts (equip-lines g view))))
+  (check-true "the attack line follows the weapon"
+              (find-if (lambda (s) (search "Attack 1d6+2" s))
+                       (menu-texts (equip-lines g view))))
+  (check "the same digit removes it again" nil (equip-act g view #\1))
+  (check "removed through the page" nil (equipped-of-kind h :weapon))
+  (check "the unfit item stays refused" nil
+         (progn (equip-act g view #\2)
+                (equipped-of-kind h :armor)))
+  (check "a digit past the pack does nothing" nil (equip-act g view #\9))
+  (check "escape closes the gear page" :cancelled
+         (equip-act g view #\Escape)))
+
+;; A deep pack scrolls on the gear page (the shop-stock pattern).
+(dolist (name '(teq-1 teq-2 teq-3 teq-4 teq-5 teq-6 teq-7 teq-8))
+  (define-item name :price 1))
+(let* ((h (%combat-hero))
+       (g (new-game (parse-map *art* :name "test") :party (list h)))
+       (view (make-equip-view h)))
+  (dolist (name '(teq-1 teq-2 teq-3 teq-4 teq-5 teq-6 teq-7 teq-8))
+    (give-item g h name))
+  (check-true "deep pack: the below marker shows"
+              (member "v more below [d]" (menu-texts (equip-lines g view))
+                      :test #'equal))
+  (check "d scrolls the pack" nil (equip-act g view #\d))
+  (check "the view holds the clamped offset" 3 (equip-view-top view))
+  (check-true "scrolled pack: row 1 is the fourth item"
+              (find-if (lambda (s) (search "1) Teq 4" s))
+                       (menu-texts (equip-lines g view)))))
 
 ;; Usable items: DEFINE-ITEM :use validation.
 (define-item 't-potion   :price 10 :use '(:heal "1d4+1") :consumed t)
@@ -2973,6 +3073,33 @@ messages so far (oldest first)."
          (shop-act g view #\Escape))
   (check "location closed by the model" nil (game-location g)))
 
+;; The shop marks stock (and pack) items the shopper's class cannot
+;; use — buying stays allowed (another hero may carry it), the marker
+;; just warns before the gold is gone.
+(let* ((h (with-rng () (make-hero "Wiz" :t-wizard)))
+       (g (new-game (parse-map *art* :name "test") :party (list h)))
+       (view (make-shop-view)))
+  (setf (hero-gold h) 100)
+  (enter-location g '("The Fitting Room" :shop :stock (t-sword t-mail)))
+  (shop-act g view #\1)                 ; the wizard shops
+  (let ((texts (menu-texts (shop-lines g view))))
+    (check-true "buy page marks unfit stock"
+                (find-if (lambda (s)
+                           (search "2) T Mail (unfit)  20 gp" s))
+                         texts))
+    (check-true "buy page leaves fitting stock unmarked"
+                (find-if (lambda (s) (search "1) T Sword  10 gp" s))
+                         texts)))
+  (shop-act g view #\2)                 ; buy the unfit mail anyway
+  (check "an unfit purchase is still allowed" 80 (hero-gold h))
+  (check "but it does not auto-equip" nil (equipped-of-kind h :armor))
+  (shop-act g view #\s)
+  (check-true "sell page marks the unfit item"
+              (find-if (lambda (s)
+                         (search "1) T Mail (unfit)  10 gp" s))
+                       (menu-texts (shop-lines g view))))
+  (leave-location g))
+
 ;; Kinds the engine has no mechanics for still enter and leave cleanly.
 (let* ((g (new-game (parse-map *art* :name "test")))
        (view (make-shop-view)))
@@ -3115,7 +3242,7 @@ messages so far (oldest first)."
   (check "an empty pack still says so" "Pack: nothing"
          (first (last (butlast (butlast (hero-sheet-lines g 0))))))
   (check "a short sheet keeps the plain hints"
-         "[1-7] view another  [Esc] back"
+         "[1-7] view another  [e] equip  [Esc] back"
          (first (last (hero-sheet-lines g 0))))
   (check "a short sheet does not scroll" nil
          (hero-sheet-scroll g 0 0 #\d))
@@ -3126,8 +3253,9 @@ messages so far (oldest first)."
     (check-true "a full pack scrolls the sheet"
                 (member "v more below [d]" texts :test #'equal))
     (check-true "the sheet hints say so"
-                (member "[1-7] view another  [u/d] scroll  [Esc] back"
-                        texts :test #'equal)))
+                (member
+                 "[1-7] view another  [e] equip  [u/d] scroll  [Esc] back"
+                 texts :test #'equal)))
   (let ((top (hero-sheet-scroll g 0 0 #\d)))
     (check "the sheet scrolls by its window" 6 top)
     (let ((texts (menu-texts (hero-sheet-lines g 0 top))))
@@ -3932,7 +4060,9 @@ brick grid" d side)
                    (find-if (lambda (s) (search "this help" s)) lines)))
   (check-true "help mentions combat and save keys"
               (and (find-if (lambda (s) (search "Combat:" s)) lines)
-                   (find-if (lambda (s) (search "save" s)) lines))))
+                   (find-if (lambda (s) (search "save" s)) lines)))
+  (check-true "help mentions the gear page"
+              (find-if (lambda (s) (search "equip" s)) lines)))
 
 ;;; ---------------------------------------------------------------------
 ;;; The roster's class codes and column plists.

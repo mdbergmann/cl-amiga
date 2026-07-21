@@ -71,7 +71,10 @@ Walkabout: `w` forward, `s` back-step (keeps facing), `a`/`d` turn,
 debug view there; the footer shows the zone, position and game
 clock), `h` or `?` the help page with this key reference (`h`/`Esc`
 back), `1`–`7` open that party member's character sheet
-(`1`–`7` switch heroes there, `Esc` back), `c` cast a spell (pick the
+(`1`–`7` switch heroes there, `e` opens the hero's gear page — the
+digits put a pack item on or take it off again, and items the hero's
+class cannot use are marked `(unfit)` there and in the shops —
+`Esc` back), `c` cast a spell (pick the
 caster, the spell and — for a heal — the target by number, `Esc`
 backs out), `u` use an item — a torch, a potion — the same way (pick
 the user, the item and, for a heal, the target), `p` play a bard song

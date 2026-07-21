@@ -18,6 +18,7 @@
         "U use item"
         "P play a song"
         "1-7 character sheet"
+        "    E there: equip/remove gear"
         "Shift-S save  Shift-L load"
         "Q or Esc quit"
         ""
