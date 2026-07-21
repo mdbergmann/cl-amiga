@@ -3678,6 +3678,41 @@
       (load s))
     (list t cl-user::*lfs-lp*)))
 
+; --- Regression: FASL auto-cache stays fresh after an in-place rewrite ---
+; FS-UAE directory hard drives keep a replaced file's ORIGINAL datestamp
+; (the .uaem sidecar is not refreshed on overwrite), so a recompiled cache
+; FASL still Examine()d as older than the edited source — stale forever,
+; recompiled on EVERY launch (Closure on the 020: ~5.5 min of recompiles
+; per launch).  bi_load now deletes the cache file before rewriting it so
+; the recreated file carries a fresh stamp.  Compiles are counted through
+; a macro whose EXPANSION bumps a counter: a source compile expands it, a
+; cache (FASL) hit evaluates the already-expanded bytecode and does not.
+; Sequence: cold load (compile #1) -> rewrite source, load (compile #2,
+; cache rewritten) -> load again (must hit the cache: still 2).
+(defvar *recache-count* 0)
+(defmacro recache-bump ()
+  (setq *recache-count* (+ *recache-count* 1))
+  nil)
+(check "fasl auto-cache fresh after rewrite (uaem datestamp regression)" 2
+  (let ((path "T:recache-regress.lisp"))
+    (flet ((write-src ()
+             ;; delete-then-create (not :supersede) so the SOURCE also
+             ;; gets a fresh datestamp on FS-UAE directory volumes — the
+             ;; same overwrite quirk the cache fix works around
+             (when (probe-file path) (delete-file path))
+             (with-open-file (s path :direction :output
+                                     :if-does-not-exist :create)
+               (write-line "(cl-user::recache-bump)" s)
+               (write-line "(defvar cl-user::*recache-dummy* t)" s))))
+      (setq *recache-count* 0)
+      (write-src)
+      (load path)     ; cold: compile #1, cache FASL written
+      (sleep 2)       ; datestamp granularity: source must become strictly newer
+      (write-src)     ; source rewritten with a fresh stamp
+      (load path)     ; stale cache: compile #2, cache FASL rewritten
+      (load path)     ; must load from the cache — no further compile
+      *recache-count*)))
+
 ; --- TCP sockets (server side: socket-listen / socket-accept / socket-local-port) ---
 ; FS-UAE provides a TCP stack (bsdsocket.library on Amiga), so these run for
 ; real.  Single-threaded loopback pattern, same as the host tests: a loopback

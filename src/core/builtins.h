@@ -10,6 +10,14 @@
 
 void cl_builtins_init(void);
 
+/* Anchor the GET-INTERNAL-REAL-TIME epoch at the current instant.  main()
+ * calls this right after platform_init() so internal real time counts from
+ * process start — (get-internal-real-time) then measures launch-to-here
+ * directly (boot/load profiling).  Without the call the epoch is set lazily
+ * on first use, which still satisfies CLHS (the epoch is arbitrary) but
+ * makes the boot leg invisible from Lisp. */
+void cl_internal_time_init(void);
+
 /* Register a builtin function in a specific package */
 void cl_register_builtin(const char *name, CL_CFunc func,
                           int min, int max, CL_Obj package);
