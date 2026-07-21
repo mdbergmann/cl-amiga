@@ -210,9 +210,10 @@ with pictures in the view column.)
   the current map file (the effect-icon rule: `location-image-path`,
   `hero-image-path`).  Outside a location the same rule applies to the
   street: when the party faces a door whose far cell holds a location
-  with an `:image`, the facade shows in the view column
-  (`facing-location-image-path`) — houses have faces before the party
-  steps in.  Without a picture the live first-person view
+  with a picture, the facade shows in the view column
+  (`facing-location-image-path`; `:facade` names the street face and
+  wins over `:image`, the picture shown inside) — houses have faces
+  before the party steps in.  Without a picture the live first-person view
   stays.  Pictures are opaque ILBMs drawn centered on black,
   center-cropped when they overhang the viewport
   (`%amiga-draw-picture`); a file that will not load logs once and
@@ -309,7 +310,10 @@ The Amiga front-end supports two displays, selected by
 
 - The Amiga first-person view is composited from **pre-rendered wall
   pieces** in fixed Bard's Tale screen slots; the slot geometry
-  (`wall-piece-rect` / `view-blit-list` in view.lisp) derives from the
+  (`wall-piece-rect` / `view-blit-list` in view.lisp; blit records
+  carry a per-building STYLE that picks among a pack's optional
+  `-vN` piece variants — hash of the building cell, or a location
+  op's `:style` — so a street shows different houses) derives from the
   same perspective planes as the wireframe display list, so both
   renderers agree about where walls are.
 - Piece set per depth (4 depths): front wall, receding left/right side

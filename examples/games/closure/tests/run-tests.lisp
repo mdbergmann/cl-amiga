@@ -59,10 +59,11 @@
   (check "town declares the city tile pack" "gfx/"
          (dungeon-map-gfx m))
   ;; the town's houses (gen-town.lisp): a real city's worth of doors,
-  ;; every one drawing one of the three facade pictures — and all
-  ;; three styles are actually dealt out
+  ;; every one drawing one of the three facade pictures from the
+  ;; street (:facade) and the style-matched interior inside (:image) —
+  ;; and all three styles are actually dealt out
   (let ((houses 0)
-        (images '())
+        (facades '())
         (bad '()))
     (maphash (lambda (cell ops)
                (let ((loc (find-if (lambda (op)
@@ -70,17 +71,30 @@
                                    ops)))
                  (when (and loc (eq (third loc) :house))
                    (incf houses)
-                   (let ((image (getf (cdddr loc) :image)))
-                     (if (member image '("gfx/house-0.iff" "gfx/house-1.iff"
-                                         "gfx/house-2.iff")
-                                 :test #'equal)
-                         (pushnew image images :test #'equal)
-                         (push (cons cell image) bad))))))
+                   (let* ((facade (getf (cdddr loc) :facade))
+                          (image (getf (cdddr loc) :image))
+                          (style (position facade
+                                           '("gfx/house-0.iff"
+                                             "gfx/house-1.iff"
+                                             "gfx/house-2.iff")
+                                           :test #'equal)))
+                     ;; interior and perspective piece variant (:style,
+                     ;; the pack's base timber/v1 stone/v2 townhouse
+                     ;; order) both match the facade's house type
+                     (if (and style
+                              (equal image
+                                     (format nil "gfx/interior-~D.iff"
+                                             style))
+                              (eql (getf (cdddr loc) :style)
+                                   (aref #(1 0 2) style)))
+                         (pushnew facade facades :test #'equal)
+                         (push (list cell facade image) bad))))))
              (dungeon-map-specials m))
     (check-true "the town holds at least thirty houses" (>= houses 30))
-    (check "every house draws one of the three facades" nil bad)
+    (check "every house pairs facade, interior and piece style"
+           nil bad)
     (check "all three facade styles appear in the town" 3
-           (length images)))
+           (length facades)))
   ;; the map legend: the shoppe and the tavern head the list before
   ;; the plain houses (the omniscient debug view lists everything the
   ;; marker alphabet can carry)
@@ -146,7 +160,8 @@
 ;; square.  Regenerate with worlds/closure/gfx/make-pack.lisp.
 (let ((stale '()))
   (dolist (file '("shop.iff" "tavern.iff"
-                  "house-0.iff" "house-1.iff" "house-2.iff"))
+                  "house-0.iff" "house-1.iff" "house-2.iff"
+                  "interior-0.iff" "interior-1.iff" "interior-2.iff"))
     (let ((path (concatenate 'string "worlds/closure/gfx/" file)))
       (if (probe-file path)
           (let ((img (read-ilbm path)))
@@ -184,15 +199,34 @@
       (planes (view-planes *fp-view-width* *fp-view-height*))
       (stale '()))
   (dolist (piece (wall-piece-names))
-    (let ((path (concatenate 'string dir (wall-piece-file piece))))
-      (if (probe-file path)
-          (let ((img (read-ilbm path)))
-            (destructuring-bind (x y w h) (wall-piece-rect planes piece)
-              (declare (ignore x y))
-              (unless (and (= (image-width img) w) (= (image-height img) h))
-                (push (list (wall-piece-file piece) :mis-sized) stale))))
-          (push (list (wall-piece-file piece) :missing) stale))))
-  (check "every town wall piece is present at its slot size" nil stale)
+    (destructuring-bind (x y w h) (wall-piece-rect planes piece)
+      (declare (ignore x y))
+      ;; base piece plus the two style variants (v1 stone cottage,
+      ;; v2 townhouse) the engine deals out per building
+      (dolist (file (list (wall-piece-file piece)
+                          (wall-piece-variant-file piece 1)
+                          (wall-piece-variant-file piece 2)))
+        (let ((path (concatenate 'string dir file)))
+          (if (probe-file path)
+              (let ((img (read-ilbm path)))
+                (unless (and (= (image-width img) w)
+                             (= (image-height img) h))
+                  (push (list file :mis-sized) stale)))
+              (push (list file :missing) stale))))))
+  (check "every town wall piece + style variants at their slot size"
+         nil stale)
+  ;; the three styles actually differ where the pieces are big enough
+  ;; to read (the near front)
+  (let ((imgs (mapcar (lambda (file)
+                        (image-pixels
+                         (read-ilbm (concatenate 'string dir file))))
+                      (list (wall-piece-file '(:front 0))
+                            (wall-piece-variant-file '(:front 0) 1)
+                            (wall-piece-variant-file '(:front 0) 2)))))
+    (check-true "the town front's three house styles are distinct"
+                (and (not (equalp (first imgs) (second imgs)))
+                     (not (equalp (first imgs) (third imgs)))
+                     (not (equalp (second imgs) (third imgs))))))
   ;; the near front is a house: plaster walls, a thatch roof band,
   ;; and lit windows (the amber pen) — not the dungeon's grey brick
   (let ((img (read-ilbm (concatenate 'string dir "front-0.iff")))

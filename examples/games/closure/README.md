@@ -5,10 +5,13 @@ the [Lambda's Tale engine](../lambda-tale-engine/README.md) in the
 sibling directory.  The party starts at the south gate of the town of
 Closure — a 30x30 walled city on a Skara Brae-style street grid, with
 a plaza at its center and dozens of houses to step into.  The streets
-render as rows of timber-framed houses with lit windows (the engine's
-city house wall style), and facing a house's door shows its facade —
-one of three pictures, dealt out over the blocks — in the view
-column.  Wolfgar's equipment shoppe and
+render as rows of houses with lit windows in three looks — timber-
+framed, stone cottage, tall townhouse (the city pack's wall-piece
+style variants, dealt out per building) — so no two neighbors need
+look alike.  Facing a house's door shows its facade in the view
+column, and stepping inside shows the matching interior (hearth room,
+workshop or study); a house's street pieces, facade picture and
+interior all agree on its type.  Wolfgar's equipment shoppe and
 the tavern flank the gate, and the tavern's trapdoor drops into the
 cellar dungeon below — a dark zone, so buy a torch or let Zzgo the
 conjurer light a mage flame.

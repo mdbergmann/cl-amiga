@@ -408,11 +408,44 @@ messages so far (oldest first)."
   (check "blit list: front door blocks the view"
          '((:side 0 :l) (:front-door 0))
          (mapcar #'first (view-blit-list (compute-view m 1 0 :south) planes)))
-  ;; each record carries its slot rect
+  ;; each record carries its wall style and its slot rect
   (check "blit records carry their slot rects" nil
          (remove-if (lambda (rec)
-                      (equal (rest rec) (wall-piece-rect planes (first rec))))
+                      (and (integerp (second rec))
+                           (equal (cddr rec)
+                                  (wall-piece-rect planes (first rec)))))
                     (view-blit-list (compute-view m 0 0 :east) planes))))
+
+;;; ---------------------------------------------------------------------
+;;; Wall styles: the blitted view varies tile-pack piece variants per
+;;; building (%WALL-STYLE / the STYLE field of the blit records)
+
+(let* ((m (parse-map *art* :name "test"))
+       (planes (view-planes 240 130)))
+  ;; deterministic: the same view always deals the same styles
+  (check "wall styles are deterministic"
+         (mapcar #'second (view-blit-list (compute-view m 0 0 :east) planes))
+         (mapcar #'second (view-blit-list (compute-view m 0 0 :east) planes)))
+  ;; the style keys on the BUILDING cell (beyond the wall), so the
+  ;; same wall keeps its style as the party approaches: the front wall
+  ;; seen from afar and from up close carries one style
+  (let ((far (view-blit-list (compute-view m 0 0 :east) planes))
+        (near (view-blit-list (compute-view m 1 0 :east) planes)))
+    (check "a building keeps its style as the party approaches"
+           (second (assoc '(:front 1) far :test #'equal))
+           (second (assoc '(:front 0) near :test #'equal))))
+  ;; a LOCATION op's :style pins the building's variant explicitly
+  (setf (cell-special m 1 1)
+        '((location "The Cooper's" :house :style 7
+           :image "gfx/interior-1.iff")))
+  (let* ((g (new-game m)))
+    (setf (game-x g) 1 (game-y g) 0 (game-facing g) +south+)
+    (let ((blits (view-blit-list
+                  (compute-view m (game-x g) (game-y g) (game-facing g))
+                  planes)))
+      (check "a location's :style styles its door piece"
+             7 (second (assoc '(:front-door 0) blits :test #'equal)))))
+  (setf (cell-special m 1 1) nil))
 
 ;;; ---------------------------------------------------------------------
 ;;; Backdrop slots (ceiling/floor) and the tile-pack manifest
@@ -4956,13 +4989,15 @@ demo CMAP" pname)
               ;; cookie-cut mask; opaque front pieces and backdrops don't
               (check-true (format nil "~A: a side piece got a ~
 cookie-cut mask" pname)
-                          (cdr (gethash '(:side 0 :l) walls)))
+                          (cdr (svref (gethash '(:side 0 :l) walls) 0)))
               (check-true (format nil "~A: a front piece is an opaque ~
 blit (no mask)" pname)
-                          (not (cdr (gethash '(:front 0) walls))))
+                          (not (cdr (svref (gethash '(:front 0) walls)
+                                           0))))
               (check-true (format nil "~A: the ceiling backdrop is ~
 opaque (no mask)" pname)
-                          (not (cdr (gethash '(:ceiling) walls))))
+                          (not (cdr (svref (gethash '(:ceiling) walls)
+                                           0))))
               (check-true (format nil "~A: custom screen leaves the ~
 full asset-size viewport" pname)
                           (= (ui-layout-fp-h l) *fp-view-height*))
@@ -5001,7 +5036,7 @@ flat floor color" pname)
                      (file (concatenate 'string *gfx-dir*
                                         (wall-piece-file key)))
                      (want (read-ilbm file))
-                     (bm (car (gethash key walls)))
+                     (bm (car (svref (gethash key walls) 0)))
                      (pw (image-width want))
                      (ph (image-height want))
                      (bad '()))
@@ -5027,9 +5062,14 @@ pens its ILBM declares" pname)
                                     (%load-wall-assets rp nil)))
                     (mismatched '()))
                 (maphash
-                 (lambda (key entry)
-                   (let ((other (gethash key chunky-walls)))
-                     (unless (eq (not (cdr entry)) (not (cdr other)))
+                 (lambda (key entries)
+                   (let ((others (gethash key chunky-walls)))
+                     (unless (and others
+                                  (= (length entries) (length others))
+                                  (every (lambda (entry other)
+                                           (eq (not (cdr entry))
+                                               (not (cdr other))))
+                                         entries others))
                        (push (list key :mask) mismatched))))
                  walls)
                 (check (format nil "~A: both loaders agree on which ~
@@ -5335,6 +5375,22 @@ pieces need a mask" pname)
   (setf (game-facing g) +east+)
   (check "facing open street shows no facade"
          nil (facing-location-image-path g))
+  ;; a location with both pictures: :facade is the street face,
+  ;; :image the inside picture (the shop/tavern/house-interior split)
+  (setf (cell-special m 1 1)
+        '((location "The Cooper's" :house
+           :image "gfx/interior-1.iff" :facade "gfx/house-1.iff")))
+  (setf (game-facing g) +south+)
+  (check ":facade wins over :image from the street"
+         "gfx/house-1.iff" (facing-location-image-path g))
+  (let ((loc (enter-location g '("The Cooper's" :house
+                                 :image "gfx/interior-1.iff"
+                                 :facade "gfx/house-1.iff"))))
+    (check "inside, :image is the location's picture"
+           "gfx/interior-1.iff" (location-image loc))
+    (check "location-image-path resolves the inside picture"
+           "gfx/interior-1.iff" (location-image-path g))
+    (leave-location g))
   ;; a door with nothing behind it stays bare
   (setf (cell-special m 1 1) nil)
   (setf (game-facing g) +south+)

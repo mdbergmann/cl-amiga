@@ -29,7 +29,9 @@
 (defun location-image (location)
   "LOCATION's picture file name — the :IMAGE arg of the location op —
 or NIL.  The Amiga front-end shows it in the view column while the
-location's menu takes over the message area."
+location's menu takes over the message area.  The street face is the
+:FACADE arg, shown before the party steps in — see
+FACING-LOCATION-IMAGE-PATH."
   (location-arg location :image))
 
 (defun location-image-path (game)
@@ -53,12 +55,15 @@ ONCE or a flag test is not knowable map data."
 
 (defun facing-location-image-path (game)
   "The facade the party stands before: when the wall straight ahead is
-a door and the cell beyond holds a LOCATION with an :IMAGE, that
-image's path resolved like LOCATION-IMAGE-PATH — else NIL.  The Amiga
-front-end shows it in the view column, so a city street reads as
-houses with faces, not one long grey wall (the Bard's Tale
-building-front look).  The wall directly ahead is visible even in the
-dark (GAME-VIEW-DEPTH is never less than one cell)."
+a door and the cell beyond holds a LOCATION with a picture, that
+picture's path resolved like LOCATION-IMAGE-PATH — else NIL.  :FACADE
+names the street face and wins over :IMAGE (the picture shown inside,
+see LOCATION-IMAGE-PATH); a location with only an :IMAGE shows that
+from the street too.  The Amiga front-end shows it in the view
+column, so a city street reads as houses with faces, not one long
+grey wall (the Bard's Tale building-front look).  The wall directly
+ahead is visible even in the dark (GAME-VIEW-DEPTH is never less than
+one cell)."
   (let* ((map (game-map game))
          (x (game-x game))
          (y (game-y game))
@@ -67,7 +72,9 @@ dark (GAME-VIEW-DEPTH is never less than one cell)."
       (multiple-value-bind (nx ny) (neighbor map x y f)
         (when nx
           (let* ((loc (cell-location-op map nx ny))
-                 (image (and loc (getf (cddr loc) :image))))
+                 (args (cddr loc))
+                 (image (and loc (or (getf args :facade)
+                                     (getf args :image)))))
             (when image
               (%resolve-map-path (dungeon-map-name map) image))))))))
 

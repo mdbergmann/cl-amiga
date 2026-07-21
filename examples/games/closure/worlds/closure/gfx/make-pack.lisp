@@ -45,13 +45,24 @@
 (ensure-directories-exist *out*)
 
 ;; the 40 wall pieces: the engine's city house style — the streets
-;; read as rows of timber houses, Skara Brae style, not dungeon stone
+;; read as rows of timber houses, Skara Brae style, not dungeon stone.
+;; Beside each base (timber) piece, two style variants: v1 stone
+;; cottage, v2 townhouse — the engine deals them out per building
+;; cell (%WALL-STYLE), and a house's LOCATION op pins its own via
+;; :style (gen-town.lisp matches it to the facade picture).  Trimming
+;; load time on slow drives = deleting -v files (e.g. the far
+;; depths'); the loader adapts per piece.
 (let ((planes (view-planes *fp-view-width* *fp-view-height*))
       ;; depth-4 pieces: pens 0-9, CMAP = the pack colors' first 16
       (piece-pal (subseq *city-palette* 0 16)))
   (dolist (piece (wall-piece-names))
     (write-ilbm (draw-city-wall-piece piece planes piece-pal)
-                (concatenate 'string *out* (wall-piece-file piece)))))
+                (concatenate 'string *out* (wall-piece-file piece)))
+    (loop for (v style) in '((1 :stone) (2 :townhouse))
+          do (write-ilbm (draw-city-wall-piece piece planes piece-pal
+                                               :style style)
+                         (concatenate 'string *out*
+                                      (wall-piece-variant-file piece v))))))
 
 (let ((planes (view-planes *fp-view-width* *fp-view-height*)))
   (destructuring-bind (ceiling floor) (backdrop-rects planes)
@@ -102,9 +113,11 @@
                      (concatenate 'string *out* file)))
 
 ;; the three house facades (gen-town.lisp deals them out over the
-;; town's blocks): same picture contract as the shop/tavern scenes —
-;; viewport-sized, fixed UI pens only.  STYLE 0 is a stone cottage,
-;; 1 a timber-framed house, 2 a tall townhouse.
+;; town's blocks as the location op's :facade — the street face; the
+;; matching interior below is its :image, shown inside): same picture
+;; contract as the shop/tavern scenes — viewport-sized, fixed UI pens
+;; only.  STYLE 0 is a stone cottage, 1 a timber-framed house, 2 a
+;; tall townhouse.
 (defun draw-house-facade (style w h)
   (let ((img (make-image w h 2 :palette *picture-palette*)))
     ;; the street in front, common to all three
@@ -183,6 +196,103 @@
 (dotimes (style 3)
   (write-ilbm (draw-house-facade style *fp-view-width* *fp-view-height*)
               (format nil "~Ahouse-~D.iff" *out* style)))
+
+;; the matching house interiors (the location op's :image — shown in
+;; the view column while the party stands inside): one room per
+;; facade style.  STYLE 0 is the cottage's hearth room, 1 the timber
+;; house's workshop, 2 the townhouse's study.
+(defun draw-house-interior (style w h)
+  (let ((img (make-image w h 2 :palette *picture-palette*))
+        (fy (floor (* 7 h) 8)))         ; where the floor meets the wall
+    (ecase style
+      (0 ;; the cottage hearth room: stone courses round a lit
+         ;; fireplace, a white-blanketed cot against the left wall
+       (%img-fill img 0 0 (1- w) (1- h) 2)
+       (loop for y from (floor h 8) below fy by (floor h 8)
+             do (%img-fill img 0 y (1- w) y 1))    ; stone joints
+       (%img-fill img 0 fy (1- w) fy 1)            ; the floor edge
+       ;; the hearth: white mantel round a black firebox, amber fire
+       (let ((hx0 (floor (* 9 w) 16)) (hx1 (floor (* 13 w) 16))
+             (hy0 (floor (* 6 h) 16)))
+         (%img-fill img (- hx0 (floor w 32)) (- hy0 (floor h 24))
+                    (+ hx1 (floor w 32)) fy 1)
+         (%img-fill img hx0 hy0 hx1 fy 0)
+         (let ((cx (floor (+ hx0 hx1) 2)))
+           (%img-fill img (- cx (floor w 24)) (floor (* 9 h) 16)
+                      (+ cx (floor w 24)) (1- fy) 3)
+           (%img-fill img (- cx (floor w 48)) (floor (* 7 h) 16)
+                      (+ cx (floor w 48)) (floor (* 9 h) 16) 3)))
+       ;; the cot: white blanket in a black frame, an amber pillow
+       (let ((cx0 (floor w 12)) (cx1 (floor (* 5 w) 12))
+             (cy0 (floor (* 10 h) 16)))
+         (%img-fill img cx0 cy0 cx1 fy 1)
+         (%chrome-scene-rect img cx0 cy0 cx1 fy 0)
+         (%img-fill img (+ cx0 (floor w 48)) (floor (* 9 h) 16)
+                    (+ cx0 (floor w 8)) cy0 3)))
+      (1 ;; the timber workshop: plaster and posts like the facade,
+         ;; amber tools on the wall over a laden workbench
+       (%img-fill img 0 0 (1- w) (1- fy) 1)        ; plaster
+       (dolist (x (list 0 (floor (* 3 w) 8) (floor (* 5 w) 8)
+                        (- w 2)))
+         (%img-fill img x 0 (1+ x) (1- fy) 0))     ; the posts
+       (%img-fill img 0 (floor h 8) (1- w) (1+ (floor h 8)) 0)
+       (%img-fill img 0 fy (1- w) (1- h) 2)        ; the floor
+       ;; the tools: amber hangs spaced between the middle posts
+       (loop for x from (+ (floor (* 3 w) 8) (floor w 24))
+               below (- (floor (* 5 w) 8) (floor w 24))
+               by (max 4 (floor w 20))
+             do (%img-fill img x (floor h 4)
+                           (+ x (max 2 (floor w 48))) (floor (* 3 h) 8)
+                           3))
+       ;; the workbench: grey slab on black legs, wares along the top
+       (let ((bx0 (floor w 10)) (bx1 (floor (* 7 w) 8))
+             (by (floor (* 9 h) 16)))
+         (%img-fill img bx0 by bx1 (+ by (floor h 16)) 2)
+         (%img-fill img bx0 by bx1 by 0)
+         (%img-fill img bx0 (+ by (floor h 16)) bx0 fy 0)
+         (%img-fill img bx1 (+ by (floor h 16)) bx1 fy 0)
+         (loop for x from (+ bx0 (floor w 16)) below (- bx1 (floor w 16))
+                 by (max 6 (floor w 10))
+               do (%img-fill img x (- by (max 3 (floor h 16)))
+                             (+ x (max 3 (floor w 40))) (1- by) 3))))
+      (2 ;; the townhouse study: book-lined wall, a tall night window,
+         ;; a desk with a burning candle
+       (%img-fill img 0 0 (1- w) (1- fy) 2)
+       (%img-fill img 0 fy (1- w) fy 1)            ; the floor edge
+       ;; the bookcase: white shelves, amber book rows
+       (let ((sx0 (floor w 16)) (sx1 (floor (* 7 w) 16)))
+         (%chrome-scene-rect img sx0 (floor h 8) sx1
+                             (floor (* 11 h) 16) 1)
+         (dolist (sy (list (floor (* 4 h) 16) (floor (* 7 h) 16)
+                           (floor (* 10 h) 16)))
+           (%img-fill img sx0 sy sx1 sy 1)
+           (%img-fill img (+ sx0 (floor w 48)) (- sy (max 3 (floor h 16)))
+                      (- sx1 (floor w 48)) (1- sy) 3)))
+       ;; the window: white frame and cross over night-black panes
+       (let ((wx0 (floor (* 9 w) 16)) (wx1 (floor (* 13 w) 16))
+             (wy0 (floor h 8)) (wy1 (floor (* 8 h) 16)))
+         (%img-fill img wx0 wy0 wx1 wy1 0)
+         (%chrome-scene-rect img wx0 wy0 wx1 wy1 1)
+         (%img-fill img (floor (+ wx0 wx1) 2) wy0
+                    (floor (+ wx0 wx1) 2) wy1 1)
+         (%img-fill img wx0 (floor (+ wy0 wy1) 2)
+                    wx1 (floor (+ wy0 wy1) 2) 1))
+       ;; the desk, and the candle burning on it
+       (let ((dx0 (floor (* 8 w) 16)) (dx1 (floor (* 14 w) 16))
+             (dy (floor (* 11 h) 16)))
+         (%img-fill img dx0 dy dx1 (+ dy (floor h 24)) 2)
+         (%img-fill img dx0 dy dx1 dy 1)
+         (%img-fill img dx0 (+ dy (floor h 24)) dx0 fy 0)
+         (%img-fill img dx1 (+ dy (floor h 24)) dx1 fy 0)
+         (let ((cx (floor (+ dx0 dx1) 2)))
+           (%img-fill img cx (- dy (floor h 12)) (1+ cx) (1- dy) 1)
+           (%img-fill img cx (- dy (floor h 8)) (1+ cx)
+                      (- dy (floor h 12)) 3)))))
+    img))
+
+(dotimes (style 3)
+  (write-ilbm (draw-house-interior style *fp-view-width* *fp-view-height*)
+              (format nil "~Ainterior-~D.iff" *out* style)))
 
 ;; class portraits (define-hero-class :image): shown in the view
 ;; column beside the character-sheet takeover

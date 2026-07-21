@@ -340,7 +340,8 @@ pack has none); the walls carve the perspective on top of it."
                 for (x y pw ph) in (backdrop-rects planes)
                 do (let ((entry (gethash key walls)))
                      (if entry
-                         (amiga.gfx:blt-bitmap-rastport (car entry) 0 0 rp
+                         (amiga.gfx:blt-bitmap-rastport (car (svref entry 0))
+                                                        0 0 rp
                                                         (+ ox x) (+ oy y)
                                                         pw ph)
                          (progn
@@ -363,10 +364,13 @@ pack has none); the walls carve the perspective on top of it."
                                      (+ ox qx1) (+ oy qy1)))))
           (amiga.gfx:set-a-pen rp 1)
           (dolist (rec (view-blit-list slices planes))
-            (destructuring-bind (piece x y pw ph) rec
-              (let ((entry (gethash piece walls)))
-                (when entry
-                  (destructuring-bind (bm . mask) entry
+            (destructuring-bind (piece style x y pw ph) rec
+              (let ((variants (gethash piece walls)))
+                (when variants
+                  ;; the wall's building style picks the piece variant;
+                  ;; a base-only pack always lands on index 0
+                  (destructuring-bind (bm . mask)
+                      (svref variants (mod style (length variants)))
                     (if mask
                         (amiga.gfx:blt-mask-bitmap-rastport
                          bm 0 0 rp (+ ox x) (+ oy y) pw ph mask)
@@ -490,19 +494,34 @@ would fold every plane twice."
   "Load the active tile pack (*GFX-DIR*): every wall piece into an
 offscreen bitmap, plus the optional floor.iff / ceiling.iff backdrops
 under the keys (:FLOOR) / (:CEILING).  Returns (VALUES WALLS PALETTE):
-the piece key -> (BITMAP . MASK) hash and the pack's CMAP palette
-(palette.iff's when present, else the first wall piece's), or
-(VALUES NIL NIL) — falling back to the wireframe view — when the pack
-is missing, unreadable, or mis-sized.  MASK is a chip-RAM cookie-cut
-plane for a piece that uses pen 0 (transparent), else NIL (a plain
-opaque blit); the backdrops are always opaque."
+a hash of piece key -> vector of (BITMAP . MASK) entries — index 0 the
+base piece file, further entries the optional -v1.iff/-v2.iff/...
+style variants, probed in order until one is missing (see
+WALL-PIECE-VARIANT-FILE; the renderer picks per wall with
+\(MOD STYLE COUNT)) — and the pack's CMAP palette (palette.iff's when
+present, else the first wall piece's), or (VALUES NIL NIL) — falling
+back to the wireframe view — when the pack is missing, unreadable, or
+mis-sized.  MASK is a chip-RAM cookie-cut plane for a piece that uses
+pen 0 (transparent), else NIL (a plain opaque blit); the backdrops are
+always opaque."
   (let ((walls (make-hash-table :test #'equal))
         (palette nil)
         (friend (%window-bitmap rp))
         (depth (max 2 (amiga.gfx:get-bitmap-attr (%window-bitmap rp)
                                                  amiga.gfx:+bma-depth+)))
         (planes (view-planes *fp-view-width* *fp-view-height*)))
-    (labels ((build-mask (img)
+    (labels ((add-entry (key bm mask)
+               ;; into the hash the moment the bitmap exists, so an
+               ;; error later in the load still frees it via
+               ;; %FREE-WALL-ASSETS
+               (let ((entry (cons bm mask))
+                     (old (gethash key walls)))
+                 (setf (gethash key walls)
+                       (if old
+                           (concatenate 'vector old (vector entry))
+                           (vector entry)))
+                 entry))
+             (build-mask (img)
                ;; A piece that uses pen 0 (the transparent key) gets a
                ;; cookie-cut mask in chip RAM so the backdrop shows
                ;; through; a fully-painted piece needs none.
@@ -522,9 +541,8 @@ PRINT-TILE-MANIFEST)"
                (let ((img (read-ilbm file)))
                  (check-size file (image-width img) (image-height img) w h)
                  (let ((bm (amiga.gfx:alloc-bitmap w h depth
-                                                   :friend friend))
-                       (mask (when maskable (build-mask img))))
-                   (setf (gethash key walls) (cons bm mask))
+                                                   :friend friend)))
+                   (add-entry key bm (when maskable (build-mask img)))
                    (unless palette
                      (setf palette (image-palette img)))
                    (amiga.gfx:with-bitmap-rastport (brp bm)
@@ -541,9 +559,9 @@ PRINT-TILE-MANIFEST)"
                  (check-size file (planar-image-width img)
                              (planar-image-height img) w h)
                  (let ((bm (amiga.gfx:alloc-bitmap w h depth
-                                                   :friend friend))
-                       (mask (when maskable (%planar-piece-mask img))))
-                   (setf (gethash key walls) (cons bm mask))
+                                                   :friend friend)))
+                   (add-entry key bm (when maskable
+                                       (%planar-piece-mask img)))
                    (unless palette
                      (setf palette (planar-image-palette img)))
                    ;; scratch is plain (no friend, not displayable), so
@@ -572,7 +590,17 @@ PRINT-TILE-MANIFEST)"
                   (error "missing wall asset ~A" file))
                 (destructuring-bind (x y w h) (wall-piece-rect planes piece)
                   (declare (ignore x y))
-                  (load-piece piece file w h t))))
+                  (load-piece piece file w h t)
+                  ;; optional per-house style variants beside the base
+                  ;; piece, probed in order until one is missing — the
+                  ;; pack decides how many looks (and at which depths)
+                  ;; it pays the load time for
+                  (loop for v from 1
+                        for vfile = (concatenate
+                                     'string *gfx-dir*
+                                     (wall-piece-variant-file piece v))
+                        while (probe-file vfile)
+                        do (load-piece piece vfile w h t)))))
             ;; The backdrops are optional and always opaque: a pack
             ;; without them keeps the black ceiling/floor.
             (destructuring-bind (ceiling floor) (backdrop-rects planes)
@@ -622,13 +650,15 @@ page without a background-color box around every character."
     rp))
 
 (defun %free-wall-assets (walls)
-  "Free the piece bitmaps and their cookie-cut masks; safe with NIL."
+  "Free every variant's piece bitmap and cookie-cut mask; safe with
+NIL."
   (when walls
-    (maphash (lambda (piece entry)
+    (maphash (lambda (piece entries)
                (declare (ignore piece))
-               (amiga.gfx:free-bitmap (car entry))
-               (when (cdr entry)
-                 (amiga:free-chip (cdr entry))))
+               (loop for entry across entries
+                     do (amiga.gfx:free-bitmap (car entry))
+                        (when (cdr entry)
+                          (amiga:free-chip (cdr entry)))))
              walls))
   nil)
 
