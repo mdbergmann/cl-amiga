@@ -960,9 +960,17 @@ static CL_Obj bi_load(CL_Obj *args, int n)
         /* Ensure directory exists */
         path_directory(auto_cache_path, dir, sizeof(dir));
         if (dir[0]) mkdir_p(dir);
-        /* Write file */
+        /* Write file.  Delete-then-create rather than overwrite: FS-UAE
+         * directory hard drives keep a replaced file's ORIGINAL datestamp
+         * (the .uaem sidecar is not refreshed on overwrite), so a cache
+         * entry rewritten in place still Examine()s as older than the
+         * edited source — stale forever, recompiled on every launch.
+         * Recreating the file gets a fresh stamp; on real filesystems the
+         * delete is redundant but harmless. */
         {
-            PlatformFile fh = platform_file_open(auto_cache_path, PLATFORM_FILE_WRITE);
+            PlatformFile fh;
+            platform_file_delete(auto_cache_path);
+            fh = platform_file_open(auto_cache_path, PLATFORM_FILE_WRITE);
             if (fh != PLATFORM_FILE_INVALID) {
                 platform_file_write_buf(fh, (const char *)fasl_buf, fw->pos);
                 platform_file_close(fh);
@@ -1847,9 +1855,14 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
             if (dir[0]) mkdir_p(dir);
         }
 
-        /* Write FASL file */
+        /* Write FASL file.  Delete-then-create so the output carries a
+         * fresh datestamp even on FS-UAE directory drives, which keep a
+         * replaced file's original .uaem stamp on in-place overwrite
+         * (see the auto-cache write in bi_load). */
         {
-            PlatformFile fh = platform_file_open(out_path, PLATFORM_FILE_WRITE);
+            PlatformFile fh;
+            platform_file_delete(out_path);
+            fh = platform_file_open(out_path, PLATFORM_FILE_WRITE);
             if (fh == PLATFORM_FILE_INVALID) {
                 cl_compiling_to_file = prev_compiling_to_file;
                 platform_free(fasl_buf);
@@ -3034,6 +3047,14 @@ static CL_Obj bi_time_report(CL_Obj *args, int n)
  * fixnum range (CLHS 25.1.4.1 only requires epoch no later than Lisp start). */
 static uint32_t cl_internal_time_epoch_ms = 0;
 static int cl_internal_time_epoch_set = 0;
+
+void cl_internal_time_init(void)
+{
+    if (!cl_internal_time_epoch_set) {
+        cl_internal_time_epoch_ms = platform_time_ms();
+        cl_internal_time_epoch_set = 1;
+    }
+}
 
 static uint32_t cl_internal_time_now_ms(void)
 {

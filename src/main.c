@@ -415,6 +415,9 @@ int main(int argc, char *argv[])
     cl_quiet_boot = !boot_log;
 
     platform_init();
+    /* Anchor GET-INTERNAL-REAL-TIME at process start so Lisp code can
+     * measure launch-to-here directly (boot/load profiling). */
+    cl_internal_time_init();
     cl_thread_init();  /* Must be first — sets up CT for all other init */
 
     /* Initialize C stack base for overflow detection */
