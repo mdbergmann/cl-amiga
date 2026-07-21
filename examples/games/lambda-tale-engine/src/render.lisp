@@ -114,6 +114,114 @@ is larger than the display."
              (char *dir-arrows* (dir-index (or facing +north+)))))
       (%grid->string grid))))
 
+;;; ---------------------------------------------------------------------
+;;; Automap wall runs: the map's wall geometry as merged straight
+;;; segments.  The Amiga map page draws one OS line call per run
+;;; instead of one per cell edge — a 30x30 city's long street walls
+;;; collapse from thousands of per-edge draws into a few hundred runs,
+;;; the difference between seconds and a blink at 14MHz.  Pure map
+;;; math, no OS calls, so the host suite covers it.
+
+(defun map-edge-runs (map knowledge x0 y0 vw vh)
+  "The walls of cells [X0,X0+VW) x [Y0,Y0+VH) of MAP as merged runs,
+filtered to what KNOWLEDGE holds (NIL = omniscient).  Returns
+\(VALUES WALL-RUNS DOOR-RUNS); a run is (HORIZONTAL EX EY LEN) in
+region-relative edge coordinates: a horizontal run spans cell columns
+EX..EX+LEN-1 along edge row EY (the boundary above cell row EY), a
+vertical run spans cell rows EY..EY+LEN-1 along edge column EX (the
+boundary left of cell column EX).  Where the two cells sharing an
+edge disagree (one-way walls), the south/east cell's wall wins — the
+same result as drawing every cell's own four walls in row-major
+order, where the later draw lands on top."
+  (let* ((mw (dungeon-map-width map))
+         (walls (dungeon-map-walls map))
+         (bits (and knowledge (map-knowledge-bits knowledge)))
+         (wall-runs '())
+         (door-runs '()))
+    (labels ((code (x y d)
+               ;; cell (X,Y)'s wall byte toward D — 0 (:open) unless
+               ;; KNOWLEDGE has seen it
+               (if (or (null bits) (logbitp d (aref bits y x)))
+                   (aref walls (+ d (* 4 (+ (* y mw) x))))
+                   0))
+             (edge (near-p x1 y1 d1 far-p x2 y2 d2)
+               ;; the edge's wall byte: the near (south/east) cell's
+               ;; when it shows one, else the far cell's
+               (let ((c (if near-p (code x1 y1 d1) 0)))
+                 (if (and (zerop c) far-p) (code x2 y2 d2) c)))
+             (add (code run)
+               (cond ((zerop code))
+                     ((= code 2) (push run door-runs))
+                     (t (push run wall-runs)))))
+      ;; horizontal edge rows: EY = 0..VH, the boundary above cell row EY
+      (dotimes (ey (1+ vh))
+        (let ((run-code 0)
+              (run-start 0))
+          (dotimes (ex (1+ vw))         ; one past the end flushes the row
+            (let ((c (if (< ex vw)
+                         (edge (< ey vh) (+ x0 ex) (+ y0 ey) +north+
+                               (plusp ey) (+ x0 ex) (+ y0 ey -1) +south+)
+                         0)))
+              (unless (= c run-code)
+                (add run-code (list t run-start ey (- ex run-start)))
+                (setf run-code c run-start ex))))))
+      ;; vertical edge columns: EX = 0..VW, the boundary left of column EX
+      (dotimes (ex (1+ vw))
+        (let ((run-code 0)
+              (run-start 0))
+          (dotimes (ey (1+ vh))
+            (let ((c (if (< ey vh)
+                         (edge (< ex vw) (+ x0 ex) (+ y0 ey) +west+
+                               (plusp ex) (+ x0 ex -1) (+ y0 ey) +east+)
+                         0)))
+              (unless (= c run-code)
+                (add run-code (list nil ex run-start (- ey run-start)))
+                (setf run-code c run-start ey)))))))
+    (values (nreverse wall-runs) (nreverse door-runs))))
+
+;;; ---------------------------------------------------------------------
+;;; The map legend: the locations the party has found, as marker + name.
+
+(defparameter *legend-markers* "123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+  "Marker characters dealt out to legend entries, in order.")
+
+(defun map-legend-entries (map knowledge &key full)
+  "MAP's discovered locations as legend entries (MARKER X Y TITLE),
+MARKER a character from *LEGEND-MARKERS*.  A location counts as found
+once its cell is explored — the party has stepped inside.  FULL
+non-NIL lists every location (the omniscient debug map).  Important
+places first: locations whose kind is not :HOUSE (shops, taverns,
+temples) precede the plain houses; within each group map order (top
+to bottom, left to right).  Entries beyond the marker alphabet are
+dropped."
+  (let ((cells '()))
+    (maphash (lambda (cell ops)
+               (declare (ignore ops))
+               (push cell cells))
+             (dungeon-map-specials map))
+    ;; the specials hash has no stable order — impose map order
+    (setf cells (sort cells (lambda (a b)
+                              (or (< (cdr a) (cdr b))
+                                  (and (= (cdr a) (cdr b))
+                                       (< (car a) (car b)))))))
+    (let ((important '())
+          (houses '()))
+      (dolist (cell cells)
+        (let* ((x (car cell))
+               (y (cdr cell))
+               (loc (cell-location-op map x y)))
+          (when (and loc
+                     (or full
+                         (and knowledge (cell-explored-p knowledge x y))))
+            (if (eq (second loc) :house)
+                (push (list x y (first loc)) houses)
+                (push (list x y (first loc)) important)))))
+      (let ((entries (append (nreverse important) (nreverse houses)))
+            (i -1))
+        (mapcar (lambda (e) (cons (char *legend-markers* (incf i)) e))
+                (subseq entries 0 (min (length entries)
+                                       (length *legend-markers*))))))))
+
 (defun render-game (game &key full)
   "Render GAME's map with the party arrow.  FULL non-NIL shows the whole
 map (debug view); otherwise only what the party has explored."

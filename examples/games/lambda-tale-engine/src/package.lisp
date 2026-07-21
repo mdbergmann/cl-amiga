@@ -86,6 +86,7 @@
    #:game-location #:enter-location #:leave-location
    #:location-title #:location-kind #:location-arg
    #:location-image #:location-image-path
+   #:cell-location-op #:facing-location-image-path
    #:shop-stock #:item-price #:item-sell-price #:buy-item #:sell-item
    #:make-shop-view #:shop-view-hero #:shop-view-mode #:shop-view-top
    #:shop-lines #:shop-act #:location-lines #:location-act
@@ -123,6 +124,7 @@
    #:save-menu-lines #:save-menu-act
    ;; rendering
    #:render-dungeon #:render-game #:render-first-person #:beside
+   #:map-edge-runs #:map-legend-entries #:*legend-markers*
    ;; the help screen
    #:help-lines
    ;; the microfont (the message log's compact 5x7 pixel font)

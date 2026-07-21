@@ -4,8 +4,11 @@ A Bard's Tale-like game for [cl-amiga](../../../README.md), built on
 the [Lambda's Tale engine](../lambda-tale-engine/README.md) in the
 sibling directory.  The party starts at the south gate of the town of
 Closure — a 30x30 walled city on a Skara Brae-style street grid, with
-a plaza at its center and dozens of houses to step into (three facade
-pictures, dealt out over the blocks) — Wolfgar's equipment shoppe and
+a plaza at its center and dozens of houses to step into.  The streets
+render as rows of timber-framed houses with lit windows (the engine's
+city house wall style), and facing a house's door shows its facade —
+one of three pictures, dealt out over the blocks — in the view
+column.  Wolfgar's equipment shoppe and
 the tavern flank the gate, and the tavern's trapdoor drops into the
 cellar dungeon below — a dark zone, so buy a torch or let Zzgo the
 conjurer light a mage flame.

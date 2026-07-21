@@ -101,11 +101,19 @@ column shows the location's picture or the hero's portrait when the
 campaign ships one (`(location ... :image FILE)`,
 `define-hero-class ... :image FILE` — resolved relative to the map
 file like effect icons; without one the live first-person view stays).
+The location picture also shows **from the street**: facing a
+location's door puts its facade in the view column before the party
+ever steps in, so a city's houses have faces (the Bard's Tale
+building-front look).
 The cast/use/sing menus and the save picker draw as an overlay page
 over the view column instead, keeping the log readable during combat.
-The key reference lives on the help page under `h`/`?`; the map view's
-footer shows the zone, position and game clock.  The full automap lives under `m`; maps can be large (30x30
-like Bard's Tale I, up to 128x128).  The key bindings are listed in
+The key reference lives on the help page under `h`/`?`.  The full
+automap lives under `m` — black ink on the grey page, doors and the
+party amber, with a legend beside the map listing the locations the
+party has found (shops and taverns first, then the houses, each
+marker also drawn on its map cell) and a footer showing the zone,
+position and game clock; maps can be large (30x30 like Bard's Tale I,
+up to 128x128).  The key bindings are listed in
 the [Closure README](../closure/README.md).  On the Amiga the window
 uses the same geometry as the custom screen, so both displays lay out
 identically; the custom screen's geometry comes from a **display
@@ -203,6 +211,15 @@ either, the active profile's pack applies (the engine's own
 `data/gfx/` for `:lores`).  A pack is drawn for one profile's
 viewport; a mis-sized pack is rejected at load time and the view
 falls back to the wireframe.
+
+The generator ships two wall styles: the dungeon brick the default
+packs are drawn with (`draw-wall-piece`), and a **city house style**
+(`draw-city-wall-piece` in `tools/gen-walls.lisp`) that renders every
+piece as a timber-framed house — thatch roof band, plaster with dark
+framing, lit amber windows, stone foundation — so a city street reads
+as rows of houses, Bard's Tale style.  A city pack using it must
+carry `*house-colors*` in pens 7–9 of its palette; Closure's
+`worlds/closure/gfx/make-pack.lisp` is the worked example.
 
 A pack holds the 40 wall pieces plus optional extras:
 

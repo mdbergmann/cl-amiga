@@ -23,7 +23,10 @@
 ;;; facing also shows in the map footer while one burns
 ;;; (COMPASS-ACTIVE-P).
 ;;;
-;;; The automap lives in a full-screen map mode under the 'm' key.
+;;; The automap lives in a full-screen map mode under the 'm' key —
+;;; black ink on the grey page, doors and the party amber, walls drawn
+;;; as merged runs (MAP-EDGE-RUNS) so a city-sized map opens fast, and
+;;; the legend of found locations (MAP-LEGEND-ENTRIES) beside the map.
 ;;;
 ;;; Locations (shop, tavern, ...) and the character sheet TAKE OVER
 ;;; the message area (%AMIGA-DRAW-TAKEOVER): their menu lines render
@@ -33,15 +36,19 @@
 ;;; (%AMIGA-DRAW-PICTURE; the live first-person view otherwise).  The
 ;;; cast/use/sing menus and the save picker keep their overlay page
 ;;; over the view column (%AMIGA-DRAW-PAGE) — the log stays readable
-;;; beside them, which matters in combat.
+;;; beside them, which matters in combat.  On the street, facing a
+;;; location's door shows its facade in the view column
+;;; (FACING-LOCATION-IMAGE-PATH) — houses have faces before the party
+;;; ever steps in.
 ;;;
 ;;; Loaded only on AmigaOS (see src/load.lisp); the requires below must run
 ;;; before the rest of this file is read so AMIGA.INTUITION / AMIGA.GFX /
 ;;; AMIGA.GADTOOLS symbols resolve.
 ;;;
-;;; Pens: 0 background, 1 wireframe/text, 3 doors and the party marker;
-;;; on the custom screen pens 4 up to the profile's depth carry the
-;;; tile pack's colors (see %APPLY-PACK-PALETTE).
+;;; Pens: 0 background, 1 wireframe/text, 2 the grey chrome and the
+;;; map page, 3 doors and the party marker; on the custom screen pens
+;;; 4 up to the profile's depth carry the tile pack's colors (see
+;;; %APPLY-PACK-PALETTE).
 ;;;
 ;;; Save/Load/Quit live in an Intuition menu strip (right mouse button),
 ;;; built with gadtools.library — the Amiga-native place for them; both
@@ -994,44 +1001,83 @@ being the session's cache; renders and uploads it on first sight."
              lines))
   nil)
 
+(defun %map-glyph (rp px py cell cw ch pen)
+  "Draw CH with PEN inside the CELL-pixel map cell at (PX,PY): the
+rastport font when the cell can hold it, the 5x7 microfont down to
+6px cells (a 30x30 city at lores draws 7px cells — too small for
+topaz 8), nothing below that.  The microfont path sets only the
+glyph's own pixels — a chunky upload would stamp its background
+rectangle over the wall lines framing the cell."
+  (cond ((>= cell cw)
+         (amiga.gfx:set-a-pen rp pen)
+         (amiga.gfx:move-to rp (+ px 2) (+ py cell -2))
+         (amiga.gfx:gfx-text rp (string ch)))
+        ((>= cell +microfont-advance+)
+         (amiga.gfx:set-a-pen rp pen)
+         (let ((rows (microfont-glyph ch))
+               (gx (+ px (max 1 (floor (- cell +microfont-glyph-width+)
+                                       2))))
+               (gy (+ py (max 1 (floor (- cell +microfont-glyph-height+)
+                                       2)))))
+           (dotimes (row +microfont-glyph-height+)
+             (let ((bits (aref rows row)))
+               (dotimes (col +microfont-glyph-width+)
+                 (when (logbitp (- +microfont-glyph-width+ 1 col) bits)
+                   (amiga.gfx:write-pixel rp (+ gx col)
+                                          (+ gy row))))))))))
+
 (defun %amiga-draw-map-region (rp game ox oy cell x0 y0 vw vh full
-                               &optional (cw 8))
+                               &optional (cw 8) legend)
   "Draw automap cells [X0,X0+VW) x [Y0,Y0+VH) at (OX,OY), CELL pixels
-per cell.  FULL non-NIL draws everything (debug); otherwise only what
-the party's knowledge holds.  CW is the font's character cell width —
-feature glyphs draw only where a character fits.  Used for both the
-minimap viewport and the full map mode."
-  (amiga.gfx:set-a-pen rp 0)
+per cell — black ink on the grey page, doors and the party amber.
+FULL non-NIL draws everything (debug); otherwise only what the
+party's knowledge holds.  CW is the font's character cell width (see
+%MAP-GLYPH).  LEGEND is the MAP-LEGEND-ENTRIES list — each entry's
+marker draws amber on its cell.  Walls come from MAP-EDGE-RUNS: one
+draw-line per straight stretch instead of one per cell edge, which is
+what makes a 30x30 city map open in a blink instead of seconds at
+14MHz."
+  (amiga.gfx:set-a-pen rp 2)
   (amiga.gfx:rect-fill rp ox oy (+ ox (* cell vw)) (+ oy (* cell vh)))
-  (amiga.gfx:set-a-pen rp 1)
   (let ((map (game-map game))
         (k (game-knowledge game)))
-    (dotimes (ry vh)
-      (dotimes (rx vw)
-        (let* ((x (+ rx x0))
-               (y (+ ry y0))
-               (px (+ ox (* rx cell)))
-               (py (+ oy (* ry cell))))
-          ;; walls
-          (dotimes (d 4)
-            (let ((wall (cell-wall map x y d)))
-              (when (and (not (eq wall :open))
-                         (or full (wall-known-p k x y d)))
-                (amiga.gfx:set-a-pen rp (if (eq wall :door) 3 1))
-                (ecase d
-                  (0 (amiga.gfx:draw-line rp px py (+ px cell) py))
-                  (2 (amiga.gfx:draw-line rp px (+ py cell)
-                                          (+ px cell) (+ py cell)))
-                  (3 (amiga.gfx:draw-line rp px py px (+ py cell)))
-                  (1 (amiga.gfx:draw-line rp (+ px cell) py
-                                          (+ px cell) (+ py cell)))))))
-          ;; feature glyph (needs room for a character)
-          (when (>= cell cw)
-            (let ((f (cell-feature map x y)))
-              (when (and f (or full (cell-explored-p k x y)))
-                (amiga.gfx:set-a-pen rp 1)
-                (amiga.gfx:move-to rp (+ px 2) (+ py cell -2))
-                (amiga.gfx:gfx-text rp (string f))))))))
+    ;; walls, then doors — merged runs, one pen switch each
+    (multiple-value-bind (wall-runs door-runs)
+        (map-edge-runs map (unless full k) x0 y0 vw vh)
+      (flet ((draw-runs (runs)
+               (dolist (r runs)
+                 (destructuring-bind (horizontal ex ey len) r
+                   (let ((px (+ ox (* ex cell)))
+                         (py (+ oy (* ey cell))))
+                     (if horizontal
+                         (amiga.gfx:draw-line rp px py
+                                              (+ px (* len cell)) py)
+                         (amiga.gfx:draw-line rp px py
+                                              px (+ py (* len cell)))))))))
+        (amiga.gfx:set-a-pen rp 0)
+        (draw-runs wall-runs)
+        (amiga.gfx:set-a-pen rp 3)
+        (draw-runs door-runs)))
+    ;; feature glyphs, black — direct scan of the packed feature bytes
+    (let ((features (dungeon-map-features map))
+          (mw (dungeon-map-width map)))
+      (when (>= cell +microfont-advance+)
+        (dotimes (ry vh)
+          (let ((row (+ (* (+ y0 ry) mw) x0)))
+            (dotimes (rx vw)
+              (let ((c (aref features (+ row rx))))
+                (unless (zerop c)
+                  (when (or full (cell-explored-p k (+ x0 rx) (+ y0 ry)))
+                    (%map-glyph rp (+ ox (* rx cell)) (+ oy (* ry cell))
+                                cell cw (code-char c) 0)))))))))
+    ;; legend markers, amber on their cells
+    (dolist (e legend)
+      (destructuring-bind (marker x y title) e
+        (declare (ignore title))
+        (when (and (<= x0 x) (< x (+ x0 vw))
+                   (<= y0 y) (< y (+ y0 vh)))
+          (%map-glyph rp (+ ox (* (- x x0) cell)) (+ oy (* (- y y0) cell))
+                      cell cw marker 3))))
     ;; party marker: filled block + facing tick, when inside the region
     (let ((gx (game-x game))
           (gy (game-y game)))
@@ -1416,12 +1462,40 @@ instead (%AMIGA-DRAW-TAKEOVER)."
           (incf n))))
     (amiga.gfx:set-a-pen rp 1)))
 
+(defun %amiga-draw-map-legend (rp entries lx lw top bottom)
+  "The found-locations legend beside the full map: one MARKER NAME
+line per entry in the microfont, black on the grey page, the marker
+amber to match its map cell.  ENTRIES is the MAP-LEGEND-ENTRIES list;
+draws what fits between TOP and BOTTOM in LW pixels."
+  (let ((y top)
+        (marker-w (* 2 +microfont-advance+)))
+    (flet ((line (text fg x max-w)
+             (multiple-value-bind (pens w h)
+                 (microfont-line (fit-title text #'microfont-text-width
+                                            max-w)
+                                 fg 2)
+               (amiga.gfx:write-chunky rp x y w h pens))))
+      (when (<= (+ y +microfont-line-height+) bottom)
+        (line "Found:" 0 lx lw)
+        (incf y (+ +microfont-line-height+ 2)))
+      (dolist (e entries)
+        (when (> (+ y +microfont-line-height+) bottom)
+          (return))
+        (destructuring-bind (marker x0 y0 title) e
+          (declare (ignore x0 y0))
+          (line (string marker) 3 lx marker-w)
+          (line (string-capitalize title) 0 (+ lx marker-w)
+                (- lw marker-w)))
+        (incf y +microfont-line-height+)))))
+
 (defun %amiga-draw-map-page (rp game l full)
-  "Full map mode ('m'): the automap over the whole inner area, party
-centered and clamped to what fits at a readable cell size.  The
-two-line footer carries what the play page has no room for: the zone
-title, the party position — plus the facing while a compass burns —
-and the game clock (keys are on the help page)."
+  "Full map mode ('m'): the automap over the whole inner area — black
+ink on the grey page — party centered and clamped to what fits at a
+readable cell size.  The space right of the map carries the legend of
+found locations; the two-line footer carries what the play page has
+no room for: the zone title, the party position — plus the facing
+while a compass burns — and the game clock (keys are on the help
+page)."
   (let* ((bx (ui-layout-bx l))
          (by (ui-layout-by l))
          (right (ui-layout-right l))
@@ -1436,14 +1510,22 @@ and the game clock (keys are on the help page)."
                            (floor avail-w (max mw 1))
                            (floor avail-h (max mh 1)))))
          (vw (min mw (floor avail-w cell)))
-         (vh (min mh (floor avail-h cell))))
-    ;; clear the whole inner area (the play panes underneath)
-    (amiga.gfx:set-a-pen rp 0)
+         (vh (min mh (floor avail-h cell)))
+         (legend (map-legend-entries map (game-knowledge game)
+                                     :full full)))
+    ;; clear the whole inner area (the play panes underneath) to the
+    ;; grey page the map draws on
+    (amiga.gfx:set-a-pen rp 2)
     (amiga.gfx:rect-fill rp bx by right (ui-layout-bottom l))
     (multiple-value-bind (x0 y0 w h)
         (map-viewport map (game-x game) (game-y game) vw vh)
-      (%amiga-draw-map-region rp game bx by cell x0 y0 w h full cw))
-    (amiga.gfx:set-a-pen rp 1)
+      (%amiga-draw-map-region rp game bx by cell x0 y0 w h full cw legend)
+      ;; the legend, in whatever width the map leaves to its right
+      (let* ((lx (+ bx (* w cell) 8))
+             (lw (- right lx)))
+        (when (and legend (>= lw (* 7 +microfont-advance+)))
+          (%amiga-draw-map-legend rp legend lx lw by (+ by (* h cell))))))
+    (amiga.gfx:set-a-pen rp 0)
     (let* ((base-off (- lh (ui-layout-base l)))
            (y1 (- (ui-layout-bottom l) lh base-off))  ; upper footer line
            (y2 (- (ui-layout-bottom l) base-off))     ; lower footer line
@@ -1463,7 +1545,8 @@ and the game clock (keys are on the help page)."
       (amiga.gfx:gfx-text rp clock)
       (amiga.gfx:move-to rp bx y2)
       (amiga.gfx:gfx-text rp (format nil "~Dx~D map~@[  FULL~]"
-                                     mw mh full)))))
+                                     mw mh full))
+      (amiga.gfx:set-a-pen rp 1))))
 
 ;;; The Game menu.  Item numbers (the bar counts as an item) are decoded
 ;;; from the MENUPICK code below: Save 0, Load 1, Quit 3.
@@ -1874,6 +1957,12 @@ map/help/sheet pages close on a click outside a target — see
                                                         game hero))))
                                                   ((game-location game)
                                                    (location-image-path
+                                                    game))
+                                                  ;; facing a house door
+                                                  ;; on the street: its
+                                                  ;; facade
+                                                  ((not (game-combat game))
+                                                   (facing-location-image-path
                                                     game)))))
                                       (unless (%amiga-draw-picture
                                                rp icons picture l log)

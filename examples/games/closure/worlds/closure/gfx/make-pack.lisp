@@ -1,7 +1,9 @@
-;;; The town of Closure's "city" tile pack (BT2 night street): the
-;;; engine's default wall pieces plus a tan street, a plain night sky,
-;;; and a palette.iff carrying the pack colors (pens 4 up to
-;;; the active profile's depth).  Lives inside the world directory —
+;;; The town of Closure's "city" tile pack (BT2 night street): every
+;;; wall piece a timber-framed house (the engine's city house style —
+;;; DRAW-CITY-WALL-PIECE: thatch roof, plaster and dark framing, lit
+;;; amber windows, stone foundation) over a tan street under a plain
+;;; night sky, plus a palette.iff carrying the pack colors (pens 4 up
+;;; to the active profile's depth).  Lives inside the world directory —
 ;;; town.map declares it as (zone ... :gfx "gfx/"), resolved next to
 ;;; the map file — and doubles as the worked example of the engine's
 ;;; tile-pack contract (see PRINT-TILE-MANIFEST and the READMEs).
@@ -27,30 +29,41 @@
     ;; the CMAP truthful)
     (setf (aref pal 0) '(0 0 0) (aref pal 1) '(255 255 255)
           (aref pal 2) '(136 136 136) (aref pal 3) '(255 170 51))
-    ;; the pack's colors.  Pen 4 stays black — the default wall pieces
-    ;; draw their opaque mortar/joints with it (pen 0 is the
-    ;; transparent key), so a pack must not recolor it.
-    (setf (aref pal 4) '(0 0 0))         ; opaque black (wall mortar)
+    ;; the pack's colors.  Pen 4 stays black — the wall pieces draw
+    ;; their opaque frames/joints with it (pen 0 is the transparent
+    ;; key), so a pack must not recolor it.
+    (setf (aref pal 4) '(0 0 0))         ; opaque black (frames)
     (setf (aref pal 5) '(0 0 136))       ; night sky
     (setf (aref pal 6) '(204 153 102))   ; tan street
+    ;; pens 7-9: the engine's house-piece colors (plaster, timber,
+    ;; thatch — see *HOUSE-COLORS* in tools/gen-walls.lisp)
+    (dolist (entry *house-colors*)
+      (setf (aref pal (first entry)) (second entry)))
     pal))
 
 (defparameter *out* "worlds/closure/gfx/")
 (ensure-directories-exist *out*)
 
-;; the 40 wall pieces: the default profile's art as-is (grey stone
-;; reads as city walls)
-(dolist (piece (wall-piece-names))
-  (let ((img (read-ilbm (concatenate 'string *gfx-dir*
-                                     (wall-piece-file piece)))))
-    (write-ilbm img (concatenate 'string *out* (wall-piece-file piece)))))
+;; the 40 wall pieces: the engine's city house style — the streets
+;; read as rows of timber houses, Skara Brae style, not dungeon stone
+(let ((planes (view-planes *fp-view-width* *fp-view-height*))
+      ;; depth-4 pieces: pens 0-9, CMAP = the pack colors' first 16
+      (piece-pal (subseq *city-palette* 0 16)))
+  (dolist (piece (wall-piece-names))
+    (write-ilbm (draw-city-wall-piece piece planes piece-pal)
+                (concatenate 'string *out* (wall-piece-file piece)))))
 
 (let ((planes (view-planes *fp-view-width* *fp-view-height*)))
   (destructuring-bind (ceiling floor) (backdrop-rects planes)
     ;; night sky: plain dark blue — flat on purpose (the sky is at
     ;; infinity, so distance bands would be wrong here) and starless
     ;; (a town ceiling full of white speckles read as noise over the
-    ;; buildings)
+    ;; buildings).  This is also NOT optional: it must stay a hand-
+    ;; drawn fill rather than DRAW-BACKDROP-PIECE, whose dungeon bands
+    ;; use pens 6-7 (+PEN-DIM+/+PEN-DARK+) — pen 7 aliases
+    ;; +PEN-PLASTER+, the house wall color this pack draws with, and
+    ;; both share one Amiga CMAP (see the WARNING in gen-walls.lisp
+    ;; above DRAW-CITY-WALL-PIECE).
     (let* ((w (third ceiling)) (h (fourth ceiling))
            (img (make-image w h *city-depth* :palette *city-palette*)))
       (dotimes (y h)

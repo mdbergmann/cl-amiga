@@ -80,7 +80,18 @@
     (check-true "the town holds at least thirty houses" (>= houses 30))
     (check "every house draws one of the three facades" nil bad)
     (check "all three facade styles appear in the town" 3
-           (length images))))
+           (length images)))
+  ;; the map legend: the shoppe and the tavern head the list before
+  ;; the plain houses (the omniscient debug view lists everything the
+  ;; marker alphabet can carry)
+  (let ((legend (map-legend-entries m nil :full t)))
+    (check-true "the full legend carries a city's worth of markers"
+                (> (length legend) 30))
+    (check "Wolfgar's heads the legend" "Wolfgar's Arms & Armour"
+           (fourth (first legend)))
+    (check "the Adventurer's Rest follows" "The Adventurer's Rest"
+           (fourth (second legend)))
+    (check "legend markers start at 1" #\1 (first (first legend)))))
 
 ;;; ---------------------------------------------------------------------
 ;;; The campaign: classes, spells, items, monsters, the starting party
@@ -163,6 +174,53 @@
     (dotimes (x (image-width img))
       (pushnew (pixel-ref img x y) pens)))
   (check "the town ceiling is a flat starless sky" '(5) pens))
+
+;;; The city pack's wall pieces are HOUSES (the engine's city house
+;;; style, draw-city-wall-piece) — the street view shows rows of
+;;; timber houses, Bard's Tale style, not dungeon stone.  Same
+;;; loader contract as any pack: every piece at its slot size.
+(load (engine-path "tools/gen-walls.lisp"))   ; *house-colors*
+(let ((dir "worlds/closure/gfx/")
+      (planes (view-planes *fp-view-width* *fp-view-height*))
+      (stale '()))
+  (dolist (piece (wall-piece-names))
+    (let ((path (concatenate 'string dir (wall-piece-file piece))))
+      (if (probe-file path)
+          (let ((img (read-ilbm path)))
+            (destructuring-bind (x y w h) (wall-piece-rect planes piece)
+              (declare (ignore x y))
+              (unless (and (= (image-width img) w) (= (image-height img) h))
+                (push (list (wall-piece-file piece) :mis-sized) stale))))
+          (push (list (wall-piece-file piece) :missing) stale))))
+  (check "every town wall piece is present at its slot size" nil stale)
+  ;; the near front is a house: plaster walls, a thatch roof band,
+  ;; and lit windows (the amber pen) — not the dungeon's grey brick
+  (let ((img (read-ilbm (concatenate 'string dir "front-0.iff")))
+        (pens '()))
+    (dotimes (y (image-height img))
+      (dotimes (x (image-width img))
+        (pushnew (pixel-ref img x y) pens)))
+    (check-true "the town front is plastered (pen 7)" (member 7 pens))
+    (check-true "the town front is thatched (pen 9)" (member 9 pens))
+    (check-true "the town front has lit windows (pen 3)" (member 3 pens)))
+  ;; the receding side keeps the cookie-cut contract: its ceiling and
+  ;; floor corners stay pen 0 so the sky and street show through
+  (let ((img (read-ilbm (concatenate 'string dir "side-0-l.iff"))))
+    (check "the town side keeps its transparent sky corner" 0
+           (pixel-ref img (1- (image-width img)) 0))
+    (check "the town side keeps its transparent street corner" 0
+           (pixel-ref img (1- (image-width img))
+                      (1- (image-height img)))))
+  ;; palette contract: pen 4 stays black, pens 7-9 carry the engine's
+  ;; house colors the pieces are drawn with
+  (let ((pal (image-palette (read-ilbm (concatenate 'string
+                                                    dir "palette.iff")))))
+    (check "the town pack leaves the frame pen black"
+           '(0 0 0) (aref pal 4))
+    (dolist (entry *house-colors*)
+      (check (format nil "the town pack carries house pen ~D"
+                     (first entry))
+             (second entry) (aref pal (first entry))))))
 
 ;;; The cellar's pack (regenerate with gfx-cellar/make-pack.lisp): the
 ;;; loader demands every wall piece at its exact slot size and falls
@@ -274,6 +332,8 @@
   (turn-left g)
   (move-party g) (move-party g) (move-party g)   ; (12,29)
   (turn-right g)
+  (check "facing the shoppe door shows its front from the street"
+         "worlds/closure/gfx/shop.iff" (facing-location-image-path g))
   (check "shoppe door opens" :door (move-party g))
   (check "the shoppe is a shop location" :shop
          (location-kind (game-location g)))
@@ -406,14 +466,20 @@
 ;; A real pack swap on the real machine: the town loads its city pack,
 ;; the trapdoor drops into the cellar and swaps in gfx-cellar/ — both
 ;; packs load, both palettes apply, and the cellar's backdrops blit.
-;; The route is the player's (d w w a w reaches the tavern door from
-;; the gate, d takes the trapdoor down); it stops there because the way back is
-;; through the cellar's maze, where a scripted walk meets the random
-;; encounter at (1,2).  The cache's swap-back is covered by the
-;; engine suite's *GFX-CACHE-PACKS* policy tests.
+;; The opening m/f/f/m draws the CITY map page for real — the 30x30
+;; grid at 7px cells is the merged-runs fast path, and the omniscient
+;; f view fills the legend and stamps every marker through the
+;; small-cell microfont path.  The route is the player's (d w w a w
+;; reaches the tavern door from the gate — facing it blits the
+;; tavern's facade into the view column — d takes the trapdoor down);
+;; it stops there because the way back is through the cellar's maze,
+;; where a scripted walk meets the random encounter at (1,2).  The
+;; cache's swap-back is covered by the engine suite's
+;; *GFX-CACHE-PACKS* policy tests.
 #+amigaos
 (check "autoplay drops through the trapdoor into the cellar's pack" :done
-       (let ((*autoplay* (list #\d #\w #\w #\a #\w    ; to the tavern
+       (let ((*autoplay* (list #\m #\f #\f #\m        ; the city map page
+                               #\d #\w #\w #\a #\w    ; to the tavern
                                #\d                    ; down the trapdoor
                                #\m #\m                ; look around below
                                #\q)))

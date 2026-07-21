@@ -42,7 +42,9 @@
 (defconstant +pen-mortar+ 4)  ; opaque black: mortar, joints, door frames
 (defconstant +pen-mid+ 5)     ; mid grey: the solid floor
 (defconstant +pen-dim+ 6)     ; dim grey: near ceiling band
-(defconstant +pen-dark+ 7)    ; dark grey: mid ceiling band
+(defconstant +pen-dark+ 7)    ; dark grey: mid ceiling band — aliases
+                               ; +pen-plaster+ below; see the WARNING
+                               ; above DRAW-CITY-WALL-PIECE
 
 (defparameter *brick-courses* 6
   "Brick courses over a full wall height.")
@@ -108,20 +110,31 @@ piece.)  DOOR non-NIL puts an amber door in the middle."
     (%img-fill img 0 0 0 (1- h) +pen-edge+)
     (%img-fill img (1- w) 0 (1- w) (1- h) +pen-edge+)
     (when door
-      (let* ((dw (max 3 (floor w 3)))
-             (dh (max 4 (floor (* 3 h) 4)))
-             (dx (floor (- w dw) 2))
-             (dy (- h 1 dh)))
-        (%img-fill img dx dy (+ dx dw -1) (- h 2) +pen-door+)
-        ;; black frame + knob
-        (%img-fill img dx dy (+ dx dw -1) dy +pen-mortar+)
-        (%img-fill img dx dy dx (- h 2) +pen-mortar+)
-        (%img-fill img (+ dx dw -1) dy (+ dx dw -1) (- h 2) +pen-mortar+)
-        (when (> dh 8)
-          (let ((ky (+ dy (floor dh 2))))
-            (%img-fill img (+ dx dw -3) ky (+ dx dw -3) (1+ ky)
-                       +pen-mortar+)))))
+      (%draw-front-door img w h))
     img))
+
+(defun %front-door-rect (w h)
+  "The front-piece door's placement (VALUES DX DY DW DH) — shared so
+window layouts can keep clear of the door."
+  (let* ((dw (max 3 (floor w 3)))
+         (dh (max 4 (floor (* 3 h) 4)))
+         (dx (floor (- w dw) 2))
+         (dy (- h 1 dh)))
+    (values dx dy dw dh)))
+
+(defun %draw-front-door (img w h)
+  "The amber door with black frame and knob in the middle of a front
+piece — shared by the dungeon brick and the city house fronts."
+  (multiple-value-bind (dx dy dw dh) (%front-door-rect w h)
+    (%img-fill img dx dy (+ dx dw -1) (- h 2) +pen-door+)
+    ;; black frame + knob
+    (%img-fill img dx dy (+ dx dw -1) dy +pen-mortar+)
+    (%img-fill img dx dy dx (- h 2) +pen-mortar+)
+    (%img-fill img (+ dx dw -1) dy (+ dx dw -1) (- h 2) +pen-mortar+)
+    (when (> dh 8)
+      (let ((ky (+ dy (floor dh 2))))
+        (%img-fill img (+ dx dw -3) ky (+ dx dw -3) (1+ ky)
+                   +pen-mortar+)))))
 
 ;;; ---------------------------------------------------------------------
 ;;; Receding side walls (:side — trapezoids with baked ceiling/floor)
@@ -186,6 +199,212 @@ mirror image (see %IMG-MIRROR-X)."
       (loop for y from (top-at (1- w)) to (bot-at (1- w))
             do (setf (pixel-ref img (1- w) y) +pen-edge+)))
     img))
+
+;;; ---------------------------------------------------------------------
+;;; City house walls: the Bard's Tale street look — every wall piece a
+;;; timber-framed house (thatch roof band, plaster with dark timber
+;;; framing, lit amber windows, stone foundation) instead of dungeon
+;;; brick.  Same slot geometry, transparency rules and pen contract as
+;;; the brick pieces (pen 0 transparent in side corners, pen 4 the
+;;; opaque black frame); the house's own colors live in pens 7-9 —
+;;; a city pack merges *HOUSE-COLORS* into its palette.
+;;;
+;;; WARNING — pen 7 aliases +PEN-DARK+ (the dungeon ceiling's mid
+;;; band, see above): a pack's palette is one shared Amiga CMAP, so a
+;;; city pack that draws its ceiling/floor with DRAW-BACKDROP-PIECE
+;;; (which paints pens +PEN-DIM+/+PEN-DARK+, i.e. 6/7) while also
+;;; using DRAW-CITY-WALL-PIECE (which paints +PEN-PLASTER+ at the same
+;;; pen 7) will silently render house walls in the ceiling's dark grey
+;;; instead of plaster, or vice versa.  A city pack MUST draw its own
+;;; ceiling/floor backdrop instead of calling DRAW-BACKDROP-PIECE — see
+;;; the hand-drawn flat night-sky/street backdrop in make-pack.lisp
+;;; (Closure's worlds/closure/gfx/), which exists for this reason as
+;;; well as the stylistic ones documented there.
+
+(defconstant +pen-plaster+ 7)   ; cream plaster (city house pieces)
+(defconstant +pen-timber+ 8)    ; dark timber framing
+(defconstant +pen-roof+ 9)      ; thatch roof band
+
+(defparameter *house-colors*
+  '((7 (238 221 187)) (8 (119 85 51)) (9 (187 153 85)))
+  "(PEN (R G B)) entries for the house wall pieces — a city pack
+copies these into pens 7-9 of its palette (see make-pack.lisp in
+Closure's worlds/closure/gfx/).  Pen 7 aliases +PEN-DARK+ (the
+dungeon ceiling band, see the WARNING above DRAW-CITY-WALL-PIECE) —
+a city pack must not also call DRAW-BACKDROP-PIECE.")
+
+(defun %house-bands (h)
+  "The house front's horizontal bands for a piece H tall:
+\(VALUES ROOF-BOTTOM FOUNDATION-TOP) — rows 0..ROOF-BOTTOM are thatch,
+FOUNDATION-TOP..H-1 stone."
+  (values (max 1 (floor h 6))
+          (- (1- h) (max 1 (floor h 10)))))
+
+(defun %draw-house-front (w h palette &key door (pattern-w w)
+                                           (pattern-x0 0))
+  "A timber-framed house front filling W x H: roof band, plaster with
+timber posts and rails, lit windows, stone foundation.  PATTERN-W and
+PATTERN-X0 place the piece inside the front slot's post rhythm the
+same way the brick bond works — a flank continues the front wall's
+framing across the seam.  DOOR puts the shared amber door in the
+middle; windows keep clear of it."
+  (let ((img (make-image w h 4 :palette palette)))
+    (multiple-value-bind (roof found) (%house-bands h)
+      (let* ((post (max 8 (round pattern-w 4)))
+             (wall-top (1+ roof))
+             (mid (+ wall-top (floor (- found wall-top) 2))))
+        ;; plaster body, thatch band, stone foundation
+        (%img-fill img 0 0 (1- w) (1- h) +pen-plaster+)
+        (%img-fill img 0 0 (1- w) roof +pen-roof+)
+        (%img-fill img 0 found (1- w) (1- h) +pen-brick+)
+        ;; eave and sill lines
+        (%img-fill img 0 roof (1- w) roof +pen-mortar+)
+        (%img-fill img 0 found (1- w) found +pen-mortar+)
+        ;; timber posts on the global pattern grid (2px), plus a
+        ;; mid-rail when the wall band has the room
+        (loop for gx from (+ pattern-x0 (mod (- pattern-x0) post))
+                below (+ pattern-x0 w) by post
+              do (%img-fill img (- gx pattern-x0) wall-top
+                            (1+ (- gx pattern-x0)) (1- found)
+                            +pen-timber+))
+        (when (> (- found wall-top) 12)
+          (%img-fill img 0 mid (1- w) mid +pen-timber+))
+        ;; lit windows: one per full post interval, in the band above
+        ;; the mid-rail, skipping any interval the door occupies
+        (multiple-value-bind (dx dy dw dh) (%front-door-rect w h)
+          (declare (ignore dy dh))
+          (when (and (>= post 10) (> (- mid wall-top) 6))
+            (loop for gx from (+ pattern-x0 (mod (- pattern-x0) post))
+                    below (+ pattern-x0 w -1) by post
+                  do (let* ((x0 (+ (- gx pattern-x0) 4))
+                            (x1 (- (+ (- gx pattern-x0) post) 4))
+                            (y0 (+ wall-top 3))
+                            (y1 (- mid 3)))
+                       (when (and (< x1 w) (>= x0 0) (> (- x1 x0) 2)
+                                  (not (and door
+                                            (<= x0 (+ dx dw))
+                                            (<= (1- dx) x1))))
+                         (%img-fill img x0 y0 x1 y1 +pen-door+)
+                         (%img-fill img x0 y0 x1 y0 +pen-mortar+)
+                         (%img-fill img x0 y1 x1 y1 +pen-mortar+)
+                         (%img-fill img x0 y0 x0 y1 +pen-mortar+)
+                         (%img-fill img x1 y0 x1 y1 +pen-mortar+))))))
+        ;; white edge highlight all around (the engine's piece look)
+        (%img-fill img 0 0 (1- w) 0 +pen-edge+)
+        (%img-fill img 0 (1- h) (1- w) (1- h) +pen-edge+)
+        (%img-fill img 0 0 0 (1- h) +pen-edge+)
+        (%img-fill img (1- w) 0 (1- w) (1- h) +pen-edge+)
+        (when door
+          (%draw-front-door img w h))))
+    img))
+
+(defun %draw-house-side (w h top-far bot-far palette &key door)
+  "A left-hand receding house wall in a W x H band — the trapezoid of
+%DRAW-SIDE-WALL styled as a house: thatch and foundation bands follow
+the receding edges, timber posts span between them, a lit window sits
+in each clear post interval.  Ceiling/floor corners stay pen 0
+\(transparent).  Right-hand pieces mirror (see %IMG-MIRROR-X)."
+  (let ((img (make-image w h 4 :palette palette)))
+    (labels ((top-at (x) (round (* top-far x) (max 1 (1- w))))
+             (bot-at (x) (- (1- h) (round (* (- (1- h) bot-far) x)
+                                          (max 1 (1- w)))))
+             (roof-at (x) (+ (top-at x)
+                             (max 1 (floor (- (bot-at x) (top-at x)) 6))))
+             (found-at (x) (- (bot-at x)
+                              (max 1 (floor (- (bot-at x) (top-at x))
+                                            10)))))
+      ;; fill: thatch above the eave, stone below the sill, plaster
+      ;; between; eave/sill in the black frame pen
+      (dotimes (x w)
+        (loop for y from (top-at x) to (bot-at x)
+              do (setf (pixel-ref img x y)
+                       (cond ((< y (roof-at x)) +pen-roof+)
+                             ((= y (roof-at x)) +pen-mortar+)
+                             ((> y (found-at x)) +pen-brick+)
+                             ((= y (found-at x)) +pen-mortar+)
+                             (t +pen-plaster+)))))
+      ;; timber posts between eave and sill — house-sized bays, not a
+      ;; fence (the near side slot is only 24px wide at lores)
+      (let ((post (max 10 (round w 2))))
+        (loop for x from (floor post 2) below w by post
+              do (loop for y from (1+ (roof-at x)) below (found-at x)
+                       do (setf (pixel-ref img x y) +pen-timber+))
+                 (when (< (1+ x) w)
+                   (loop for y from (1+ (roof-at (1+ x)))
+                           below (found-at (1+ x))
+                         do (setf (pixel-ref img (1+ x) y)
+                                  +pen-timber+))))
+        ;; a lit window in each bay wide enough, upper wall band
+        (when (and (not door) (>= post 10))
+          (loop for x0 from (+ (floor post 2) 3) below (- w 3) by post
+                do (let ((x1 (min (- w 4) (- (+ x0 post) 4))))
+                     (when (> (- x1 x0) 2)
+                       (loop for x from x0 to x1
+                             do (let* ((top (roof-at x))
+                                       (bot (found-at x))
+                                       (y0 (+ top 2
+                                              (floor (- bot top) 8)))
+                                       (y1 (+ top
+                                              (floor (* 3 (- bot top))
+                                                     7))))
+                                  (loop for y from y0 to y1
+                                        do (setf (pixel-ref img x y)
+                                                 (if (or (= x x0) (= x x1)
+                                                         (= y y0) (= y y1))
+                                                     +pen-mortar+
+                                                     +pen-door+))))))))))
+      ;; door: skewed onto the wall, standing on the floor edge (the
+      ;; brick side's geometry)
+      (when door
+        (let ((dx0 (floor w 4))
+              (dx1 (floor (* 3 w) 4)))
+          (loop for x from dx0 to dx1
+                do (let* ((top (top-at x))
+                          (bot (bot-at x))
+                          (dtop (- bot (floor (* 3 (- bot top)) 4))))
+                     (loop for y from dtop below bot
+                           do (setf (pixel-ref img x y)
+                                    (if (or (= x dx0) (= x dx1) (= y dtop))
+                                        +pen-mortar+
+                                        +pen-door+)))))))
+      ;; white edge highlights, as on every piece
+      (dotimes (x w)
+        (setf (pixel-ref img x (top-at x)) +pen-edge+)
+        (setf (pixel-ref img x (bot-at x)) +pen-edge+))
+      (loop for y from (top-at 0) to (bot-at 0)
+            do (setf (pixel-ref img 0 y) +pen-edge+))
+      (loop for y from (top-at (1- w)) to (bot-at (1- w))
+            do (setf (pixel-ref img (1- w) y) +pen-edge+)))
+    img))
+
+(defun draw-city-wall-piece (piece planes palette)
+  "Draw PIECE at its slot size for PLANES in the city house style —
+the twin of DRAW-WALL-PIECE for city tile packs.  PALETTE must carry
+*HOUSE-COLORS* in pens 7-9 (pens 0-4 fixed as everywhere)."
+  (destructuring-bind (kind depth &optional side) piece
+    (destructuring-bind (px0 py0 px1 py1) (aref planes depth)
+      (declare (ignore px0 px1 py1))
+      (destructuring-bind (qx0 qy0 qx1 qy1) (aref planes (1+ depth))
+        (declare (ignore qx0 qx1))
+        (destructuring-bind (x y w h) (wall-piece-rect planes piece)
+          (declare (ignore x y))
+          (ecase kind
+            ((:front :front-door)
+             (%draw-house-front w h palette
+                                :door (eq kind :front-door)))
+            ((:flank :flank-door)
+             (destructuring-bind (fx fy fw fh)
+                 (wall-piece-rect planes (list :front depth))
+               (declare (ignore fx fy fh))
+               (%draw-house-front w h palette
+                                  :door (eq kind :flank-door)
+                                  :pattern-w fw
+                                  :pattern-x0 (if (eq side :l) (- w) fw))))
+            ((:side :side-door)
+             (let ((img (%draw-house-side w h (- qy0 py0) (- qy1 py0)
+                                          palette
+                                          :door (eq kind :side-door))))
+               (if (eq side :r) (%img-mirror-x img) img)))))))))
 
 ;;; ---------------------------------------------------------------------
 ;;; Backdrops: the ceiling and floor filling the two BACKDROP-RECTS
