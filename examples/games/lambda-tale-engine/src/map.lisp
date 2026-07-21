@@ -269,14 +269,42 @@ or a positive integer (cells of sight in the dark)" path dark))
 
 (defun %parse-map-forms-stream (map in path)
   "Read map data forms from stream IN until EOF and apply them to MAP
-— *READ-EVAL* bound to NIL, forms never evaluated."
+— *READ-EVAL* bound to NIL, forms never evaluated.  When the debug log
+is enabled, leaves one line splitting the cost between READ and apply
+(the story-forms leg is the bulk of a cached city load on a 68020 —
+the split says where); when disabled this timing bookkeeping is
+skipped entirely, same as DLOG-TIMED."
   (let ((*read-eval* nil)
-        (*package* (find-package :tale)))
-    (loop
-      (let ((form (read in nil in)))
-        (when (eq form in)
-          (return))
-        (%apply-map-form map form path)))))
+        (*package* (find-package :tale))
+        (forms 0))
+    (if (debug-log-enabled-p)
+        (let ((read-ticks 0)
+              (apply-ticks 0)
+              (worst-ticks 0)
+              (gc0 #+cl-amiga (clamiga::%get-gc-count) #-cl-amiga 0))
+          (loop
+            (let* ((t0 (get-internal-real-time))
+                   (form (read in nil in))
+                   (t1 (get-internal-real-time)))
+              (incf read-ticks (- t1 t0))
+              (setf worst-ticks (max worst-ticks (- t1 t0)))
+              (when (eq form in)
+                (return))
+              (%apply-map-form map form path)
+              (incf apply-ticks (- (get-internal-real-time) t1))
+              (incf forms)))
+          (dlog "story forms ~A: ~D forms, read ~Dms (worst ~Dms), apply ~Dms, ~D gcs"
+                path forms
+                (round (* 1000 read-ticks) internal-time-units-per-second)
+                (round (* 1000 worst-ticks) internal-time-units-per-second)
+                (round (* 1000 apply-ticks) internal-time-units-per-second)
+                (- #+cl-amiga (clamiga::%get-gc-count) #-cl-amiga 0 gc0)))
+        (loop
+          (let ((form (read in nil in)))
+            (when (eq form in)
+              (return))
+            (%apply-map-form map form path)
+            (incf forms))))))
 
 (defun %parse-map-forms (map string path)
   (with-input-from-string (in string)
