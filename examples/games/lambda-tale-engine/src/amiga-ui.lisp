@@ -364,18 +364,22 @@ pack has none); the walls carve the perspective on top of it."
                                      (+ ox qx1) (+ oy qy1)))))
           (amiga.gfx:set-a-pen rp 1)
           (dolist (rec (view-blit-list slices planes))
-            (destructuring-bind (piece style x y pw ph) rec
+            (destructuring-bind (piece style x y pw ph sx) rec
               (let ((variants (gethash piece walls)))
                 (when variants
                   ;; the wall's building style picks the piece variant;
-                  ;; a base-only pack always lands on index 0
+                  ;; a base-only pack always lands on index 0.  SX is
+                  ;; the piece's own x offset: a flank the nearer walls
+                  ;; partly hide blits only its visible right-hand part
+                  ;; (BltMaskBitMapRastPort offsets the mask with the
+                  ;; source, so the cookie cut follows).
                   (destructuring-bind (bm . mask)
                       (svref variants (mod style (length variants)))
                     (if mask
                         (amiga.gfx:blt-mask-bitmap-rastport
-                         bm 0 0 rp (+ ox x) (+ oy y) pw ph mask)
+                         bm sx 0 rp (+ ox x) (+ oy y) pw ph mask)
                         (amiga.gfx:blt-bitmap-rastport
-                         bm 0 0 rp (+ ox x) (+ oy y) pw ph))))))))
+                         bm sx 0 rp (+ ox x) (+ oy y) pw ph))))))))
         (progn
           (amiga.gfx:set-a-pen rp 0)
           (amiga.gfx:rect-fill rp ox oy (+ ox w -1) (+ oy h -1))

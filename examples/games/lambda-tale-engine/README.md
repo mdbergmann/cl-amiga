@@ -228,10 +228,12 @@ A pack holds the 40 wall pieces plus optional extras:
 - `front-0-v1.iff`, `side-2-l-v2.iff`, ... — **per-building style
   variants** of any wall piece, probed in order (`-v1`, `-v2`, ...)
   until one is missing.  The view deals them out deterministically
-  per building cell, so a street reads as a row of *different*
-  houses instead of one repeated front; a `(location ... :style N)`
-  op pins its building's look explicitly (Closure matches each
-  house's street pieces to its facade picture this way).  A pack
+  **per building** — one walled-in mass of cells is one house and
+  wears one look all the way along its front — so a street reads as
+  a row of *different* houses instead of one repeated front; a
+  `(location ... :style N)` op anywhere in the mass pins that
+  building's look explicitly (Closure matches each block's street
+  pieces to its houses' facade pictures this way).  A pack
   ships as many looks — for as many pieces — as it wants to pay
   load time for: variants are per-piece, so trimming the far
   depths' files is a valid budget cut.  `draw-city-wall-piece`'s
