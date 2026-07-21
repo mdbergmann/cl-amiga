@@ -821,6 +821,26 @@ static CL_Obj bi_count(CL_Obj *args, int n)
     len = seq_length(seq);
     end = (sa.end < 0) ? len : sa.end;
 
+    /* Packed byte-vector fast path: counting a fixnum under the default
+     * EQL test (no :key, no :test-not) is a pure C loop over the packed
+     * elements.  The general path below costs one VM test call per
+     * element, which made the map cache's wall-code validation (three
+     * COUNTs over a 30x30 city's 3600 wall bytes) take ~4.7 s on a 14MHz
+     * 68020.  :from-end changes nothing for a pure EQL count, so it is
+     * included; out-of-range bounds fall through to the general path's
+     * error behavior. */
+    if (CL_BYTE_VECTOR_P(seq) && CL_FIXNUM_P(args[0]) &&
+        CL_NULL_P(sa.key_fn) && CL_NULL_P(sa.test_not_fn) &&
+        sa.test_fn == SYM_EQL_FN &&
+        sa.start >= 0 && sa.start <= end && end <= len) {
+        CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(seq);
+        int32_t item = CL_FIXNUM_VAL(args[0]);
+        for (i = sa.start; i < end; i++)
+            if (cl_bytevec_get(bv, i) == item)
+                cnt++;
+        return CL_MAKE_FIXNUM(cnt);
+    }
+
     if (sa.from_end) {
         if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
             int32_t range = end - sa.start;

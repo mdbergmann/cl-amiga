@@ -4760,7 +4760,20 @@ cat > "$WORK/seqio.lisp" <<SEOF
                                :initial-contents '(1 42 43 254 9)))
             (dst (make-array 5 :element-type '(unsigned-byte 8))))
         (ext:unpack-byterun1 src 0 5 dst 5)
-        (unless (equal (coerce dst 'list) '(42 43 9 9 9)) (setf ok nil)))))
+        (unless (equal (coerce dst 'list) '(42 43 9 9 9)) (setf ok nil)))
+      ;; copy-rows strided gather (fresh vectors, compaction between)
+      (let ((src (make-array 12 :element-type '(unsigned-byte 8)
+                               :initial-contents '(1 2 9 9 3 4 9 9 5 6 9 9)))
+            (dst (make-array 6 :element-type '(unsigned-byte 8)))
+            (pad (make-list 20)))
+        (declare (ignorable pad))
+        (ext:copy-rows dst src 3 2 0 2 0 4)
+        (unless (equal (coerce dst 'list) '(1 2 3 4 5 6)) (setf ok nil))
+        ;; count fast path (pure C loop, but the surrounding allocs force
+        ;; a compaction right before it — the payload pointer must be
+        ;; freshly derived)
+        (unless (= 6 (count 9 src :start 2 :from-end t))
+          (setf ok nil)))))
   (format t "SEQIO-STRESS:~a~%" (if ok "OK" "MISMATCH")))
 SEOF
 out=$(run_stress "$WORK/seqio.lisp")

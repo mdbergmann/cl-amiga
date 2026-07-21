@@ -1437,6 +1437,122 @@ TEST(unpack_byterun1_error_cases)
         ":CAUGHT");
 }
 
+TEST(count_byte_vector_fast_path)
+{
+    /* Plain count, :start/:end, :from-end — all pure-EQL fast-path shapes;
+     * results must match the CLHS general semantics exactly. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((v (make-array 8 :element-type '(unsigned-byte 8)"
+        "            :initial-contents '(1 0 2 0 0 3 0 1))))"
+        "  (list (count 0 v)"
+        "        (count 0 v :start 2)"
+        "        (count 0 v :start 2 :end 5)"
+        "        (count 0 v :from-end t)"
+        "        (count 9 v)"
+        "        (count 300 v)"        /* outside u8 range: 0, no error */
+        "        (count -1 v)))"),
+        "(4 3 2 4 0 0 0)");
+    /* Signed and 16-bit element types go through the same packed loop. */
+    ASSERT_STR_EQ(eval_print(
+        "(list (count -3 (make-array 4 :element-type '(signed-byte 8)"
+        "                  :initial-contents '(-3 3 -3 0)))"
+        "      (count 700 (make-array 3 :element-type '(unsigned-byte 16)"
+        "                   :initial-contents '(700 7 700)))"
+        "      (count -700 (make-array 2 :element-type '(signed-byte 16)"
+        "                    :initial-contents '(-700 700))))"),
+        "(2 2 1)");
+    /* :key and a non-EQL :test leave the fast path — still correct. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((v (make-array 4 :element-type '(unsigned-byte 8)"
+        "            :initial-contents '(1 2 3 4))))"
+        "  (list (count 3 v :key #'1+)"
+        "        (count 2 v :test #'<)))"),
+        "(1 2)");
+    /* Fill pointer bounds the active length. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((v (make-array 6 :element-type '(unsigned-byte 8)"
+        "            :fill-pointer 3 :initial-contents '(7 7 0 7 7 7))))"
+        "  (count 7 v))"),
+        "2");
+}
+
+TEST(copy_rows_deinterleave)
+{
+    /* Gather every other pair out of an interleaved vector — the ILBM
+     * plane-extraction shape (chunk 2, src stride 4, dst stride 2). */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((src (make-array 12 :element-type '(unsigned-byte 8)"
+        "              :initial-contents '(1 2 9 9 3 4 9 9 5 6 9 9)))"
+        "      (dst (make-array 6 :element-type '(unsigned-byte 8)"
+        "              :initial-element 0)))"
+        "  (ext:copy-rows dst src 3 2 0 2 0 4))"),
+        "#(1 2 3 4 5 6)");
+    /* Scatter back out (dst stride wider than chunk): untouched gap
+     * bytes keep their old value. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((src (make-array 4 :element-type '(unsigned-byte 8)"
+        "              :initial-contents '(1 2 3 4)))"
+        "      (dst (make-array 6 :element-type '(unsigned-byte 8)"
+        "              :initial-element 9)))"
+        "  (ext:copy-rows dst src 2 2 0 3 0 2))"),
+        "#(1 2 9 3 4 9)");
+}
+
+TEST(copy_rows_zero_and_offsets)
+{
+    /* count 0 and chunk 0 are no-ops even with wild strides. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((v (make-array 2 :element-type '(unsigned-byte 8)"
+        "            :initial-contents '(7 8))))"
+        "  (ext:copy-rows v v 0 5 0 1000 0 1000)"
+        "  (ext:copy-rows v v 3 0 0 1000 0 1000)"
+        "  v)"),
+        "#(7 8)");
+    /* Non-zero starts on both sides. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((src (make-array 6 :element-type '(unsigned-byte 8)"
+        "              :initial-contents '(0 0 1 0 2 3)))"
+        "      (dst (make-array 5 :element-type '(unsigned-byte 8)"
+        "              :initial-element 9)))"
+        "  (ext:copy-rows dst src 2 1 1 2 2 2))"),
+        "#(9 1 9 2 9)");
+}
+
+TEST(copy_rows_error_cases)
+{
+    /* Last row runs past the source. */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case"
+        "    (ext:copy-rows (make-array 8 :element-type '(unsigned-byte 8))"
+        "                   (make-array 8 :element-type '(unsigned-byte 8))"
+        "                   3 2 0 2 0 4)"
+        "  (error () :caught))"),
+        ":CAUGHT");
+    /* Last row runs past the destination. */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case"
+        "    (ext:copy-rows (make-array 5 :element-type '(unsigned-byte 8))"
+        "                   (make-array 8 :element-type '(unsigned-byte 8))"
+        "                   3 2 0 2 0 2)"
+        "  (error () :caught))"),
+        ":CAUGHT");
+    /* Negative stride and non-byte-vector arguments. */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case"
+        "    (ext:copy-rows (make-array 4 :element-type '(unsigned-byte 8))"
+        "                   (make-array 4 :element-type '(unsigned-byte 8))"
+        "                   2 1 0 1 3 -1)"
+        "  (error () :caught))"),
+        ":CAUGHT");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case"
+        "    (ext:copy-rows (vector 1 2)"
+        "                   (make-array 2 :element-type '(unsigned-byte 8))"
+        "                   1 1 0 1 0 1)"
+        "  (error () :caught))"),
+        ":CAUGHT");
+}
+
 int main(void)
 {
     setup();
@@ -1518,9 +1634,13 @@ int main(void)
     RUN(map_into_logior_fast_path);
     RUN(map_into_fast_path_min_length_and_fill_pointer);
     RUN(map_into_general_fn_still_works_on_byte_vectors);
+    RUN(count_byte_vector_fast_path);
     RUN(unpack_byterun1_literal_repeat_noop);
     RUN(unpack_byterun1_stops_at_dst_len);
     RUN(unpack_byterun1_error_cases);
+    RUN(copy_rows_deinterleave);
+    RUN(copy_rows_zero_and_offsets);
+    RUN(copy_rows_error_cases);
 
     teardown();
     REPORT();

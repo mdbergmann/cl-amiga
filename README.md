@@ -642,15 +642,22 @@ instead of one VM round-trip per byte — on a 14MHz 68020 that turns loading
 a 20KB asset file from seconds into file-I/O speed.  Every other
 sequence/stream combination (strings, lists, string streams, Gray streams)
 keeps its standard element-wise semantics.  `replace` between byte vectors
-of the same element type is a single `memmove`, and `map-into` folding byte
+of the same element type is a single `memmove`, `map-into` folding byte
 vectors through `#'logior`/`#'logand`/`#'logxor` runs as a C loop — the
-idiomatic way to OR bitplanes into a mask.
+idiomatic way to OR bitplanes into a mask — and `count` of a fixnum under
+the default `eql` test runs as a C loop over the packed elements.
 
 `(ext:unpack-byterun1 src pos end dst dst-len &optional dst-start)` decodes
 ByteRun1/PackBits RLE data — the compression used by IFF ILBM `BODY`
 chunks (and TIFF/MacPaint) — from the byte vector `src` into `dst` at C
 speed, returning the new source position and signalling a clear error on
 truncated or overlong runs.
+
+`(ext:copy-rows dst src count chunk dst-start dst-stride src-start
+src-stride)` copies `count` rows of `chunk` bytes each with independent
+strides on both sides — the gather/scatter step for interleaved binary
+formats, e.g. pulling one bitplane's rows out of an ILBM `BODY` decoded in
+a single piece (see `docs/ext.md`).
 
 See the READ-SEQUENCE/WRITE-SEQUENCE tests in `tests/test_stream.c`, the
 fast-path tests in `tests/test_byte_vector.c`, and the corresponding

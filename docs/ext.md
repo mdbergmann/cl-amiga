@@ -36,6 +36,10 @@ read/write deadlines via `socket-stream-timeout` — a timed-out operation signa
 | `socket-stream-timeout` | function | `setf`-able place: read/write deadline for a socket stream (`:input` / `:output`, seconds) |
 | `%set-socket-stream-timeout` | function | Internal setter behind the `socket-stream-timeout` `setf` expander |
 | `socket-timeout` | condition | Signaled when a socket read/write exceeds its deadline (subtype of `stream-error`) |
+| `open-udp-stream` | function | Create a UDP (datagram) socket aimed at `host` `port` |
+| `udp-stream-send` | function | Send one datagram from a byte vector |
+| `udp-stream-receive` | function | Receive one datagram into a byte vector |
+| `socket-stream-local-endpoint` | function | Local `(address . port)` a socket is bound to |
 
 ## GC, environment, host
 
@@ -46,6 +50,39 @@ read/write deadlines via `socket-stream-timeout` — a timed-out operation signa
 | `getcwd` | function | Current working directory |
 | `system-command` | function | Run a host/AmigaOS shell command |
 | `defglobal` | macro | Define a global (non-dynamic) variable |
+
+## Bulk byte-vector operations
+
+C-speed loops over `(unsigned-byte 8)` vectors for binary file formats —
+per-byte Lisp loops cost a VM round-trip per byte, which is prohibitive on a
+14MHz 68020 (decoding one IFF ILBM image took seconds).  Standard functions
+`read-sequence` / `write-sequence` / `replace` / `map-into` already take C
+fast paths on byte vectors; these two cover the decode and reshuffle steps
+that have no standard equivalent:
+
+```lisp
+;; ByteRun1/PackBits RLE decode (IFF ILBM BODY, TIFF, MacPaint):
+;; decode from SRC[pos..end) until DST-LEN bytes land in DST at DST-START;
+;; returns the new source position.  Signals on truncated/overlong data.
+(ext:unpack-byterun1 src pos end dst dst-len &optional (dst-start 0))
+
+;; Strided row copy — the gather/scatter step for interleaved formats:
+;; row I goes from SRC[src-start + I*src-stride ...) to
+;; DST[dst-start + I*dst-stride ...), CHUNK bytes per row.  Returns DST.
+(ext:copy-rows dst src count chunk dst-start dst-stride src-start src-stride)
+
+;; Together they decode a whole interleaved ILBM BODY in one call and pull
+;; each bitplane out with one call per plane:
+(ext:unpack-byterun1 body 0 (length body) buf (length buf))
+(dotimes (p depth)
+  (ext:copy-rows (aref planes p) buf height row-bytes
+                 0 row-bytes (* p row-bytes) (* n-planes row-bytes)))
+```
+
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `unpack-byterun1` | function | Decode ByteRun1/PackBits RLE data between byte vectors; returns the new source position |
+| `copy-rows` | function | Copy `count` rows of `chunk` bytes with independent source/destination strides; returns `dst` |
 
 ## Terminal control (TUI raw mode)
 
@@ -85,6 +122,10 @@ See `tests/test_tty.c` for a complete usage example.
 
 ## Source of truth
 
+- Bulk byte-vector operations: `tests/test_byte_vector.c` (the
+  `unpack_byterun1_*` and `copy_rows_*` tests) and the matching blocks in
+  `tests/amiga/run-tests.lisp`; the ILBM loader in
+  `examples/games/lambda-tale-engine/src/ilbm.lisp` is the worked example.
 - TCP sockets & timeouts: `tests/test_stream.c`
   (`platform_socket_table_grows_many_connections`, `socket_read_timeout_*`,
   `eval_socket_stream_timeout_*`) and `tests/amiga/run-tests.lisp` (the
