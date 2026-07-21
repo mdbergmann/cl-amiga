@@ -112,12 +112,13 @@
              (dungeon-map-specials m))
     (check "every house's :style is the style of its whole block"
            nil bad))
-  ;; the map legend: the shoppe and the tavern head the list before
-  ;; the plain houses (the omniscient debug view lists everything the
-  ;; marker alphabet can carry)
+  ;; the map legend: only the special places — a town of front doors
+  ;; would otherwise bury the two that matter under three dozen
+  ;; markers (this is the omniscient debug view, so nothing is hidden
+  ;; for want of exploring)
   (let ((legend (map-legend-entries m nil :full t)))
-    (check-true "the full legend carries a city's worth of markers"
-                (> (length legend) 30))
+    (check "the legend holds the shoppe and the tavern, nothing else" 2
+           (length legend))
     (check "Wolfgar's heads the legend" "Wolfgar's Arms & Armour"
            (fourth (first legend)))
     (check "the Adventurer's Rest follows" "The Adventurer's Rest"

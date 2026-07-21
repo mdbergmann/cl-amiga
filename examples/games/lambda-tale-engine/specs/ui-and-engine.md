@@ -224,6 +224,9 @@ with pictures in the view column.)
 - The **cast/use/sing menus and the save picker keep the overlay
   page** over the view column (`%amiga-draw-page`) — they can open in
   combat, where the log must stay readable for the transcript.  The
+  page draws in the same **5x7 microfont** as the log and the
+  takeover, so the whole UI carries one type size and a long slot or
+  spell list fits the lo-res page.  The
   full-page sheet overlay (`%amiga-draw-sheet`) stays available as a
   drawing primitive but the play flow uses the takeover.
 - The sheet content is the platform-free `hero-sheet-lines` (header,
@@ -244,13 +247,17 @@ with pictures in the view column.)
   stretch — so a city-sized map opens fast on a 68020.
 - The space the map leaves to its right carries the **legend of found
   locations** (`map-legend-entries`): one `MARKER NAME` microfont line
-  per location whose cell the party has explored, shops/taverns before
-  plain houses, each marker also drawn amber on its map cell.
+  per location whose cell the party has explored, each marker also
+  drawn amber on its map cell.  Only special places are legended —
+  a location of kind `:house` is scenery and carries no marker, or a
+  city's front doors would bury the shops and taverns.
 - The **two-line footer** carries what the play page has no room for:
   the zone title, the party position `(x,y)` — plus the facing while a
   compass effect burns — and the game clock on the first line, the map
   size (and the `FULL` marker) on the second.  No key hints — those
   live on the help page.
+- The whole map page is drawn in the **5x7 microfont** — cell glyphs,
+  legend and footer alike.
 - `f` inside map mode toggles the omniscient debug view (full map
   regardless of knowledge); it exists for development, not gameplay.
 - `h`/`?` opens the **help page** (the key reference, `help-lines`)

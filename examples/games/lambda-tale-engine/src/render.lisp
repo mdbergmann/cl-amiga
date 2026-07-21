@@ -189,11 +189,13 @@ order, where the later draw lands on top."
   "MAP's discovered locations as legend entries (MARKER X Y TITLE),
 MARKER a character from *LEGEND-MARKERS*.  A location counts as found
 once its cell is explored — the party has stepped inside.  FULL
-non-NIL lists every location (the omniscient debug map).  Important
-places first: locations whose kind is not :HOUSE (shops, taverns,
-temples) precede the plain houses; within each group map order (top
-to bottom, left to right).  Entries beyond the marker alphabet are
-dropped."
+non-NIL lists every location (the omniscient debug map).  Only special
+places are legended: a location of kind :HOUSE is scenery — a city
+block's worth of front doors would bury the shops and taverns under
+markers nobody needs — so houses carry no marker at all.  A campaign
+that wants a place on the map gives it a kind of its own (:SHOP,
+:TAVERN, ...).  Entries come in map order (top to bottom, left to
+right); entries beyond the marker alphabet are dropped."
   (let ((cells '()))
     (maphash (lambda (cell ops)
                (declare (ignore ops))
@@ -204,20 +206,18 @@ dropped."
                               (or (< (cdr a) (cdr b))
                                   (and (= (cdr a) (cdr b))
                                        (< (car a) (car b)))))))
-    (let ((important '())
-          (houses '()))
+    (let ((entries '()))
       (dolist (cell cells)
         (let* ((x (car cell))
                (y (cdr cell))
                (loc (cell-location-op map x y)))
           (when (and loc
+                     (not (eq (second loc) :house))
                      (or full
                          (and knowledge (cell-explored-p knowledge x y))))
-            (if (eq (second loc) :house)
-                (push (list x y (first loc)) houses)
-                (push (list x y (first loc)) important)))))
-      (let ((entries (append (nreverse important) (nreverse houses)))
-            (i -1))
+            (push (list x y (first loc)) entries))))
+      (setf entries (nreverse entries))
+      (let ((i -1))
         (mapcar (lambda (e) (cons (char *legend-markers* (incf i)) e))
                 (subseq entries 0 (min (length entries)
                                        (length *legend-markers*))))))))

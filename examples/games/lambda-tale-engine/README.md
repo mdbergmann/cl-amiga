@@ -111,11 +111,14 @@ The cast/use/sing menus and the save picker draw as an overlay page
 over the view column instead, keeping the log readable during combat.
 The key reference lives on the help page under `h`/`?`.  The full
 automap lives under `m` — black ink on the grey page, doors and the
-party amber, with a legend beside the map listing the locations the
-party has found (shops and taverns first, then the houses, each
-marker also drawn on its map cell) and a footer showing the zone,
-position and game clock; maps can be large (30x30 like Bard's Tale I,
-up to 128x128).  The key bindings are listed in
+party amber, with a legend beside the map listing the special places
+the party has found (shops, taverns and the like, each marker also
+drawn on its map cell — plain houses are scenery and carry no marker,
+or a city's front doors would bury the places that matter) and a
+footer showing the zone, position and game clock; maps can be large
+(30x30 like Bard's Tale I, up to 128x128).  The overlay page and the
+whole map page render in the microfont too, so the Amiga UI carries
+one type size throughout.  The key bindings are listed in
 the [Closure README](../closure/README.md).  On the Amiga the window
 uses the same geometry as the custom screen, so both displays lay out
 identically; the custom screen's geometry comes from a **display
