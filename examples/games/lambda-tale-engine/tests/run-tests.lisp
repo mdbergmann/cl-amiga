@@ -4164,8 +4164,17 @@ height" d)
   (check "hand pointer converts row for row"
          (length *hand-pointer-art*)
          (length (pointer-sprite-rows hand)))
-  (check "hand hotspot sits on the finger tip" '(4 0)
+  (check "hand hotspot sits on the finger tip" '(7 0)
          (multiple-value-bind (x y) (pointer-hotspot hand) (list x y)))
+  ;; The fingers must stand well clear of the palm — the first version
+  ;; drew four four-row stubs and read as a mitten, not a hand.  The
+  ;; palm is the first row of unbroken skin; everything above it is
+  ;; fingers.
+  (check "hand fingers are at least nine rows long" t
+         (>= (or (position-if (lambda (row) (search "11111111" row))
+                              *hand-pointer-art*)
+                 0)
+             9))
   (check "hand palette holds the three sprite colors"
          *hand-pointer-colors*
          (list (aref (image-palette hand) 1)

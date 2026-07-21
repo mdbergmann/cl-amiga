@@ -618,21 +618,32 @@ hand, the arrow tip of an arrow.  (VALUES 0 0) for an empty image."
 ;;; %ENSURE-STANDARD-POINTER in amiga-ui.lisp).
 
 (defparameter *hand-pointer-art*
-  '("....22.........."
-    ".22211222......."
-    "2112112112......"
-    "211211211222...."
-    "2112112112112.22"
-    "2112112112112212"
-    "2111111111112112"
-    "211111111111112."
+  '(".......22......."
+    "....222112......"
+    "...211211222...."
+    "...2112112112..."
+    "...2112112112..."
+    "...211211211222."
+    "...2112112112112"
+    "...2112112112112"
+    "...2112112112112"
+    "...2112112112112"
+    "...2112112112112"
+    ".221111111111112"
+    "2112111111111112"
+    "2111211111111112"
     ".21111111111112."
-    ".2111111111112.."
     "..211111111112.."
+    "...2111111112..."
     "...2222222222...")
   "The neutral pointer: an open hand, fingers up — four fingers two
 pixels of skin wide (single-pixel fingers dissolve into a stripe
-pattern at sprite scale), the thumb out to the right.")
+pattern at sprite scale).  What makes it read as a hand rather than a
+mitten at sprite scale is proportion: the fingers stand nine rows
+clear of the palm with staggered tips (middle longest, then index,
+ring, pinky), the thumb bulges from the palm's left under a two-pixel
+crease, and the palm tapers into a wrist instead of ending on a flat
+edge.")
 
 (defparameter *point-pointer-art*
   '("....22.........."
