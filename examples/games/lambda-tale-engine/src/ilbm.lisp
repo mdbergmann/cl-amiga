@@ -263,8 +263,8 @@ background), so the skip alone removes most of the work."
 ;;;
 ;;; An ILBM plane row and an Amiga BitMap plane row have the same
 ;;; layout — MSB-first, padded to a 16-pixel word — so a piece can go
-;;; to the display without ever becoming chunky: unpack each plane row
-;;; into the plane buffer, poke the buffers into a BitMap's planes,
+;;; to the display without ever becoming chunky: decode the BODY into
+;;; the plane buffers, poke the buffers into a BitMap's planes,
 ;;; and let the blitter do the rest.  That skips the per-pixel fold in
 ;;; %PARSE-BODY entirely, which is the whole cost of loading a pack on
 ;;; a 68020.  READ-ILBM (chunky) remains the general reader: the host
@@ -284,29 +284,52 @@ background), so the skip alone removes most of the work."
   "Plane P's rows of IMG (ROW-BYTES per row, HEIGHT rows)."
   (svref (planar-image-planes img) p))
 
+(defun %copy-rows (dst src count chunk dst-start dst-stride src-start src-stride)
+  "Copy COUNT rows of CHUNK bytes each: row I goes from
+SRC[src-start + I*src-stride ...) to DST[dst-start + I*dst-stride ...).
+On clamiga this is EXT:COPY-ROWS, a C builtin — the gather step that
+pulls one plane's rows out of an interleaved BODY in a single call
+instead of one VM round-trip per row.  The REPLACE loop remains as the
+portable fallback (same contract, pinned by the test suite)."
+  #+cl-amiga
+  (ext:copy-rows dst src count chunk dst-start dst-stride src-start src-stride)
+  #-cl-amiga
+  (dotimes (i count dst)
+    (replace dst src
+             :start1 (+ dst-start (* i dst-stride))
+             :end1 (+ dst-start (* i dst-stride) chunk)
+             :start2 (+ src-start (* i src-stride)))))
+
 (defun %parse-body-planar (img bytes pos len compression masking file)
-  "Decode a BODY chunk at POS/LEN into IMG's plane buffers.  No
-per-pixel work: each unpacked plane row lands in its plane at the row
-offset, and the interleaved mask plane is decoded past."
+  "Decode a BODY chunk at POS/LEN into IMG's plane buffers, with no
+per-row VM work: the BODY *is* the planes' rows interleaved per
+scanline, so the whole chunk is decoded in one ByteRun1 call (or used
+in place when uncompressed) and each plane's rows are then gathered
+out with one strided copy per plane.  The interleaved mask plane
+(masking = mskHasMask) is simply never gathered.  That is a handful of
+builtin calls per image where decoding row by row cost h*planes VM
+round-trips — most of a tile-pack load on a 14MHz 68020."
   (let* ((h (planar-image-height img))
          (depth (planar-image-depth img))
          (row-bytes (planar-image-row-bytes img))
          (planes (+ depth (if (= masking 1) 1 0)))
-         (skip (make-array row-bytes :element-type '(unsigned-byte 8)))
+         (stride (* planes row-bytes))
+         (total (* stride h))
          (end (+ pos len)))
-    (dotimes (y h img)
-      (dotimes (p planes)
-        (let* ((real (< p depth))
-               (dst (if real (planar-image-plane img p) skip))
-               (start (if real (* y row-bytes) 0)))
-          (ecase compression
-            (0 (when (> (+ pos row-bytes) end)
-                 (error "ILBM ~A: BODY too short (row ~D plane ~D)" file y p))
-               (replace dst bytes :start1 start :end1 (+ start row-bytes)
-                                  :start2 pos :end2 (+ pos row-bytes))
-               (incf pos row-bytes))
-            (1 (setf pos (%unpack-byte-run1 bytes pos end dst row-bytes
-                                            file start)))))))))
+    (multiple-value-bind (src start)
+        (ecase compression
+          (0 (when (> (+ pos total) end)
+               (error "ILBM ~A: BODY too short (~D bytes, needs ~D for ~
+~D rows of ~D planes x ~D bytes)" file len total h planes row-bytes))
+             (values bytes pos))
+          (1 (let ((buf (make-array total :element-type '(unsigned-byte 8))))
+               (%unpack-byte-run1 bytes pos end buf total file)
+               (values buf 0))))
+      (dotimes (p depth img)
+        (%copy-rows (planar-image-plane img p) src
+                    h row-bytes
+                    0 row-bytes
+                    (+ start (* p row-bytes)) stride)))))
 
 (defun planar-mask-bytes (img &optional (transparent 0))
   "A cookie-cut mask for IMG: one bitplane, the same row layout as its

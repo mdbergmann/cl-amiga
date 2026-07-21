@@ -3788,6 +3788,117 @@ messages so far (oldest first)."
   (check "planar mask declines a non-zero key" nil
          (planar-mask-bytes planar 3)))
 
+;; Interleaved mask planes (masking = mskHasMask): the BODY carries one
+;; extra plane row per scanline that the chunky reader must decode past
+;; and the planar reader must never gather.  WRITE-ILBM never emits
+;; masks, so build one by surgery: rebuild the BODY with an #xAA mask
+;; row after each scanline's plane rows, patch the BMHD masking and
+;; compression bytes and both lengths, then cross-check both readers
+;; against the original pens — for cmpNone and cmpByteRun1.
+(dolist (compression '(0 1))
+  (let* ((w 20) (h 3) (depth 3)
+         (img (make-image w h depth))
+         (row-bytes (%row-bytes w))
+         (path "tests/tmp-img.iff"))
+    (dotimes (y h)
+      (dotimes (x w)
+        (setf (pixel-ref img x y) (mod (+ x (* 3 y)) (ash 1 depth)))))
+    (write-ilbm img path :compression 0)
+    (let* ((bytes (with-open-file (s path :element-type '(unsigned-byte 8))
+                    (let ((v (make-array (file-length s)
+                                         :element-type '(unsigned-byte 8))))
+                      (read-sequence v s)
+                      v)))
+           (body-id (search (map 'vector #'char-code "BODY") bytes))
+           ;; the new BODY: per scanline DEPTH plane rows + one mask row
+           (body '()))
+      (dotimes (y h)
+        (dolist (row (append (%chunky-row-to-planes img y row-bytes)
+                             (list (make-array row-bytes
+                                               :element-type '(unsigned-byte 8)
+                                               :initial-element #xAA))))
+          (setf body (append body
+                             (if (= compression 1)
+                                 (%pack-byte-run1 row)
+                                 (coerce row 'list))))))
+      (let* ((blen (length body))
+             (head (subseq bytes 0 (+ body-id 4)))
+             (masked (concatenate '(vector (unsigned-byte 8))
+                                  head
+                                  (list (ldb (byte 8 24) blen)
+                                        (ldb (byte 8 16) blen)
+                                        (ldb (byte 8 8) blen)
+                                        (ldb (byte 8 0) blen))
+                                  body
+                                  (if (oddp blen) '(0) '()))))
+        ;; BMHD data starts at 20 (first chunk after the FORM header):
+        ;; masking at +9, compression at +10; FORM length at 4.
+        (setf (aref masked 29) 1
+              (aref masked 30) compression)
+        (let ((flen (- (length masked) 8)))
+          (setf (aref masked 4) (ldb (byte 8 24) flen)
+                (aref masked 5) (ldb (byte 8 16) flen)
+                (aref masked 6) (ldb (byte 8 8) flen)
+                (aref masked 7) (ldb (byte 8 0) flen)))
+        (with-open-file (s path :direction :output
+                           :element-type '(unsigned-byte 8)
+                           :if-exists :supersede)
+          (write-sequence masked s))
+        (let ((chunky (read-ilbm path))
+              (planar (read-ilbm-planar path))
+              (bad 0))
+          (dotimes (y h)
+            (dotimes (x w)
+              (let ((want (pixel-ref img x y)))
+                (unless (= want (pixel-ref chunky x y))
+                  (incf bad))
+                (let ((pen 0))
+                  (dotimes (p depth)
+                    (when (logbitp (- 7 (logand x 7))
+                                   (aref (planar-image-plane planar p)
+                                         (+ (* y (planar-image-row-bytes planar))
+                                            (ash x -3))))
+                      (setf pen (logior pen (ash 1 p)))))
+                  (unless (= want pen)
+                    (incf bad))))))
+          (check (format nil "interleaved mask plane is skipped (cmp ~D)"
+                         compression)
+                 0 bad))))))
+
+;; A short BODY signals cleanly on the planar path too (the whole chunk
+;; is decoded in one piece now — the length checks must still fire).
+;; Shrink the BODY chunk itself (patching its length and the FORM's) so
+;; the failure lands in the decode, not the outer runs-past-EOF check.
+(dolist (compression '(1 0))
+  (let ((img (make-image 32 8 4))
+        (path "tests/tmp-img.iff"))
+    (dotimes (x 32) (setf (pixel-ref img x 3) (mod x 16)))
+    (write-ilbm img path :compression compression)
+    (let* ((bytes (with-open-file (s path :element-type '(unsigned-byte 8))
+                    (let ((v (make-array (file-length s)
+                                         :element-type '(unsigned-byte 8))))
+                      (read-sequence v s)
+                      v)))
+           (body-id (search (map 'vector #'char-code "BODY") bytes))
+           (new-len (- (%u32be bytes (+ body-id 4)) 10))
+           (trimmed (subseq bytes 0 (+ body-id 8 new-len)))
+           (flen (- (length trimmed) 8)))
+      (setf (aref trimmed (+ body-id 4)) (ldb (byte 8 24) new-len)
+            (aref trimmed (+ body-id 5)) (ldb (byte 8 16) new-len)
+            (aref trimmed (+ body-id 6)) (ldb (byte 8 8) new-len)
+            (aref trimmed (+ body-id 7)) (ldb (byte 8 0) new-len)
+            (aref trimmed 4) (ldb (byte 8 24) flen)
+            (aref trimmed 5) (ldb (byte 8 16) flen)
+            (aref trimmed 6) (ldb (byte 8 8) flen)
+            (aref trimmed 7) (ldb (byte 8 0) flen))
+      (with-open-file (s path :direction :output
+                         :element-type '(unsigned-byte 8)
+                         :if-exists :supersede)
+        (write-sequence trimmed s))
+      (check-error (format nil "read-ilbm-planar rejects a short BODY ~
+(cmp ~D)" compression)
+        (read-ilbm-planar path)))))
+
 ;; A second BODY would decode against already-written pens, so it is
 ;; rejected rather than blended: duplicate the BODY chunk by surgery.
 (let ((img (make-image 8 2 2)))
@@ -5087,6 +5198,8 @@ pieces need a mask" pname)
                 (search "#<map log fixture>" text))
     (check-true "a map load leaves a timed line"
                 (search "map tests/world/keep.map done [" text))
+    (check-true "story forms leave a read/apply split line while enabled"
+                (search "story forms tests/world/keep.map" text))
     (check-true "an image load leaves a timed line"
                 (search "ceiling.iff done [" text))
     (check-true "the log closes with the banner"

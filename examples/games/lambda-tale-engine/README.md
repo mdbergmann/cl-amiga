@@ -280,10 +280,12 @@ mask comes from the same rows — for the usual pen-0 transparent key it
 is just the OR of the planes, folded once and reused both to decide
 whether a piece needs a mask at all and as the chip-RAM mask plane.
 Location pictures, portraits and effect icons load through the same
-planar recipe.  All the per-byte work runs at C speed on clamiga: the
-file arrives through the bulk `read-sequence` path, the ByteRun1
-decode is `ext:unpack-byterun1` (with the pure-CL loop kept as the
-portable fallback), and the mask fold is a `map-into #'logior` over
+planar recipe.  All the per-byte and per-row work runs at C speed on
+clamiga: the file arrives through the bulk `read-sequence` path, the
+whole `BODY` is decoded in a single `ext:unpack-byterun1` call, each
+plane's rows are gathered out of that interleaved buffer with one
+`ext:copy-rows` call per plane (the pure-CL loops are kept as the
+portable fallbacks), and the mask fold is a `map-into #'logior` over
 the packed plane bytes.
 
 `read-ilbm` (chunky pens) remains the general reader and is what the
