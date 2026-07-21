@@ -14,6 +14,7 @@ verify/realamiga/*
 !verify/realamiga/call-on-ustartup
 !verify/realamiga/verify.fs-uae
 !verify/realamiga/verify-lowend.fs-uae
+!verify/realamiga/verify-lowend-28.fs-uae
 !verify/realamiga/run-fs-uae.sh
 
 # MorphOS debug trace artifact

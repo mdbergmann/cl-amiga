@@ -1,0 +1,33 @@
+# Accelerated lower-end machine for cl-amiga — verify-lowend.fs-uae at 2x clock.
+# A1200 / 68020 28 MHz (uae_cpu_multiplier = 8: 8 x 3.547 MHz, cycle-exact —
+# note the fs-uae cpu_frequency option is parsed but has no effect in this
+# build) — otherwise identical to the 14 MHz baseline.  Represents a modest
+# accelerator board; useful for load-time comparisons (see the Closure
+# README) and faster iteration on runs that do not need the stock clock.
+# RAM layout as the baseline: 2 MB chip + 8 MB fast (trapdoor) + 16 MB
+# Zorro III (a contiguous block big enough for an 8 MB heap — see the
+# baseline config for the split-pool rationale).
+
+[fs-uae]
+accuracy = 2
+jit_compiler = 0
+amiga_model = A1200
+bsdsocket_library = 1
+chip_memory = 2048
+cpu = 68020
+uae_cpu_multiplier = 8
+fast_memory = 8192
+zorro_iii_memory = 16384
+slow_memory = 0
+graphics_card = uaegfx
+graphics_memory = 2048
+hard_drive_0 = /Users/mbergmann/Development/MySources/amigasources/cl-amiga/verify/realamiga/aos3
+hard_drive_0_label = Workbench
+hard_drive_1 = /Users/mbergmann/Development/MySources/amigasources/cl-amiga
+hard_drive_1_label = CLAmiga
+joystick_port_1_mode = nothing
+keep_aspect = 1
+kickstart_file = /Users/mbergmann/Applications/Emu/Amiga/Kickstarts/amiga-os-310-a4000.rom
+video_sync = off
+window_height = 1024
+window_width = 1248
