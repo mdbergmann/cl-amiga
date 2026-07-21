@@ -14,7 +14,9 @@
 ;;; (:compass t :duration MIN)); a :CONSUMED item leaves the pack on
 ;;; use, and :IMAGE names the effects-band icon of the installed
 ;;; effect.  The use interaction (USE-VIEW / USE-LINES / USE-ACT, the
-;;; SHOP-VIEW pattern) lives here too, driven by both front-ends.
+;;; SHOP-VIEW pattern) lives here too, driven by both front-ends, and
+;;; so does the gear page (EQUIP-VIEW — 'e' on the character sheet):
+;;; a digit toggles a pack item on/off, class-unfit items are marked.
 
 (in-package :tale)
 
@@ -81,6 +83,12 @@ item on use and :IMAGE names the installed effect's band icon."
   (let ((classes (item-type-classes (find-item-type name))))
     (or (null classes)
         (and (member (hero-class hero) classes) t))))
+
+(defun item-fit-marker (hero name)
+  "\" (unfit)\" when HERO's class cannot use item NAME, else \"\" —
+the sheet, gear and shop pages append it to the item's row so a
+class mismatch shows before the player tries (or buys)."
+  (if (item-usable-p hero name) "" " (unfit)"))
 
 ;;; ---------------------------------------------------------------------
 ;;; Inventory
@@ -150,6 +158,17 @@ was not equipped."
     (setf (hero-equipped hero) (remove name (hero-equipped hero) :count 1))
     t))
 
+(defun toggle-equip (game hero name)
+  "Equip pack item NAME, or take it off when it is worn — the gear
+page's one-key toggle.  Returns T on a change; says why and returns
+NIL when the item cannot go on (see EQUIP-ITEM)."
+  (if (member name (hero-equipped hero))
+      (progn
+        (unequip-item game hero name)
+        (say game "~A removes ~A." (hero-name hero) (item-title name))
+        t)
+      (equip-item game hero name)))
+
 (defun hero-attack-dice (hero)
   "The dice HERO attacks with: the equipped weapon's damage, else the
 hero's bare (class) damage."
@@ -168,6 +187,61 @@ of every equipped item — and, when GAME is given, minus the party-wide
     (when game
       (decf ac (effects-ac-bonus game)))
     ac))
+
+;;; ---------------------------------------------------------------------
+;;; The gear page (opened from the character sheet with 'e' — the
+;;; SHOP-VIEW pattern): the hero's pack as a numbered list, a digit
+;;; toggles that item on/off, unfit items carry the (unfit) marker.
+
+(defstruct (equip-view (:constructor %make-equip-view))
+  hero                ; the hero whose gear page this is
+  (top 0))            ; scroll offset into the pack list
+
+(defun make-equip-view (hero)
+  (%make-equip-view :hero hero))
+
+(defun equip-lines (game view)
+  "The gear page as a list of menu lines — the front-ends draw these
+verbatim (the SHOP-LINES pattern).  Equipped items are starred, items
+the hero's class cannot use are marked (unfit); the AC/attack header
+shows the effect of every toggle."
+  (let ((hero (equip-view-hero view)))
+    (append
+     (list (format nil "*** ~A's Gear ***" (hero-name hero))
+           ""
+           (format nil "AC ~D   Attack ~A"
+                   (hero-effective-ac hero game) (hero-attack-dice hero))
+           "")
+     (if (hero-items hero)
+         (menu-scrolled-lines
+          (hero-items hero) (equip-view-top view)
+          (lambda (i name)
+            (menu-numbered
+             i (format nil "~D) ~A~:[~;*~]~A" i (item-title name)
+                       (member name (hero-equipped hero))
+                       (item-fit-marker hero name)))))
+         (list "The pack is empty."))
+     (list "" "[1-9] equip/remove  [Esc] back"))))
+
+(defun equip-act (game view char)
+  "Apply key CHAR to the gear page: a digit toggles that pack item —
+worn comes off, equipment goes on (TOGGLE-EQUIP says why when it
+cannot) — u/d scroll a long pack, Esc closes the page.  Returns
+:CANCELLED on Esc, else NIL."
+  (let ((hero (equip-view-hero view))
+        (digit (digit-char-p char)))
+    (cond (digit
+           (let ((name (menu-window-pick (hero-items hero)
+                                         (equip-view-top view) digit)))
+             (when name
+               (toggle-equip game hero name)))
+           nil)
+          ((eql char #\Escape) :cancelled)
+          (t
+           (let ((top (menu-scroll (equip-view-top view) char
+                                   (length (hero-items hero)))))
+             (when top (setf (equip-view-top view) top)))
+           nil))))
 
 ;;; ---------------------------------------------------------------------
 ;;; Using items

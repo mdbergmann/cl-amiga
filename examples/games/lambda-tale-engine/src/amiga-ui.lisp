@@ -1577,7 +1577,9 @@ Workbench window keeps the Workbench palette.
 Keys: W forward, S back-step, A/D turn, M map mode (M/Esc leaves it,
 F toggles the debug full view there), H or ? the help page (the key
 reference — H/Esc leaves), 1-7 open a party member's character sheet
-(1-7 switch heroes there, Esc leaves), C cast a spell (pick
+(1-7 switch heroes there, E opens the hero's gear page — digits
+toggle an item on/off, class-unfit items are marked (unfit) — and
+Esc leaves), C cast a spell (pick
 caster/spell/target by number, Esc backs out), Q/Esc quit; in combat
 every living hero picks an action in turn on the round-orders page —
 A attack, D defend, C cast, P play, Esc undo — F flees (party-level)
@@ -1610,6 +1612,7 @@ map/help/sheet pages close on a click outside a target — see
          (full nil)         ; omniscient map (debug), map mode only
          (sheet-hero 0)     ; party index shown in :sheet mode
          (sheet-top 0)      ; sheet scroll offset (u/d)
+         (equipv nil)       ; EQUIP-VIEW while the gear page is open
          (help-prior-mode :play) ; mode to return to when help closes
          (shopv nil)        ; SHOP-VIEW while inside a location
          (castv nil)        ; CAST-VIEW while the cast menu is open
@@ -1629,6 +1632,7 @@ map/help/sheet pages close on a click outside a target — see
                (setf castv nil)
                (setf usev nil)
                (setf singv nil)
+               (setf equipv nil)
                (setf savem nil)
                (setf ordersv nil)
                ;; pace the combat transcript: linger on each message a
@@ -1766,11 +1770,13 @@ map/help/sheet pages close on a click outside a target — see
                           (when (nth i (game-party game))
                             (setf sheet-hero i
                                   sheet-top 0
+                                  equipv nil
                                   mode :sheet)
                             (redraw)))
                         (leave-sheet ()
                           ;; the sheet lives in the panes (takeover +
                           ;; portrait) — no chrome to repair
+                          (setf equipv nil)
                           (setf mode :play)
                           (redraw))
                         (open-help ()
@@ -1783,7 +1789,7 @@ map/help/sheet pages close on a click outside a target — see
                           (fresh-play help-prior-mode))
                         (menus-idle-p ()
                           ;; no menu model is eating the keys
-                          (not (or savem castv usev singv
+                          (not (or savem castv usev singv equipv
                                    (game-location game))))
                         (redraw ()
                           ;; travel switched zones: swap in the zone's
@@ -1866,8 +1872,11 @@ map/help/sheet pages close on a click outside a target — see
                              ;; (log tail below the rule), else the log.
                              (cond ((eq mode :sheet)
                                     (%amiga-draw-takeover
-                                     rp (hero-sheet-lines game sheet-hero
-                                                          sheet-top)
+                                     rp (if equipv
+                                            (equip-lines game equipv)
+                                            (hero-sheet-lines game
+                                                              sheet-hero
+                                                              sheet-top))
                                      log l log-lines))
                                    ((game-location game)
                                     (%amiga-draw-takeover
@@ -2034,12 +2043,37 @@ map/help/sheet pages close on a click outside a target — see
                                           nil)))
                                   ((eq mode :sheet)
                                    (cond ((eql lc #\q) :quit)
+                                         (equipv
+                                          ;; the gear page: the shared
+                                          ;; model eats the keys (digits
+                                          ;; toggle, u/d scroll, Esc
+                                          ;; backs out to the sheet)
+                                          (let ((key (if (eq c :esc)
+                                                         #\Escape
+                                                         c)))
+                                            (when (characterp key)
+                                              (case (equip-act game equipv
+                                                               key)
+                                                (:cancelled
+                                                 (setf equipv nil))))
+                                            (redraw))
+                                          nil)
                                          ((eql c :esc) (leave-sheet) nil)
                                          ((and (characterp c)
                                                (digit-char-p c)
                                                (<= 1 (digit-char-p c)
                                                    +party-limit+))
                                           (open-sheet (1- (digit-char-p c)))
+                                          nil)
+                                         ((eql lc #\e)
+                                          ;; open the sheet hero's gear
+                                          (let ((hero (nth sheet-hero
+                                                           (game-party
+                                                            game))))
+                                            (when hero
+                                              (setf equipv
+                                                    (make-equip-view hero))
+                                              (redraw)))
                                           nil)
                                          ((characterp c)
                                           ;; u/d scroll a long stat block

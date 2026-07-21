@@ -343,7 +343,12 @@ shop mechanics: items are campaign data (`define-item` — weapons,
 armor, shields with prices, damage dice, AC bonuses and class
 restrictions), heroes carry up to 8 items and equip one weapon, armor
 and shield, combat uses the equipped gear, and shops sell their
-`:stock` and buy anything back at half price.  An item can also be
+`:stock` and buy anything back at half price.  Gear is managed from
+the character sheet: `e` opens the hero's **gear page**, where a digit
+puts a pack item on or takes it off again; items a hero's class cannot
+use are marked `(unfit)` there, on the sheet and in the shop — the
+shop still sells them (another hero may carry them), the marker just
+warns before the gold is gone.  An item can also be
 **usable** (`:use` — a torch, a potion): using it (`u`, the use menu)
 heals a chosen hero or installs a timed effect from the same
 vocabulary spells speak, a `:consumed` item is spent on use, and
