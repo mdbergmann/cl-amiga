@@ -95,6 +95,23 @@
            nil bad)
     (check "all three facade styles appear in the town" 3
            (length facades)))
+  ;; One block of the city grid is one building mass, and the engine
+  ;; gives a mass one look (%WALL-STYLE) — so a block's two doors must
+  ;; name the same house style, or the facade the party stands before
+  ;; would not be the wall it just walked past.
+  (let ((bad '()))
+    (maphash (lambda (cell ops)
+               (let ((loc (find-if (lambda (op)
+                                     (string-equal (first op) "LOCATION"))
+                                   ops)))
+                 (when (and loc (eq (third loc) :house))
+                   (let ((pinned (getf (cdddr loc) :style))
+                         (wall (%wall-style m (car cell) (cdr cell))))
+                     (unless (eql pinned wall)
+                       (push (list cell pinned wall) bad))))))
+             (dungeon-map-specials m))
+    (check "every house's :style is the style of its whole block"
+           nil bad))
   ;; the map legend: the shoppe and the tavern head the list before
   ;; the plain houses (the omniscient debug view lists everything the
   ;; marker alphabet can carry)
@@ -106,6 +123,23 @@
     (check "the Adventurer's Rest follows" "The Adventurer's Rest"
            (fourth (second legend)))
     (check "legend markers start at 1" #\1 (first (first legend)))))
+
+;; Every string the game shows out of its world files is drawn by the
+;; Amiga's topaz font, which has no em dash: a UTF-8 one arrives as
+;; three box glyphs in the middle of a house's name.  The world files
+;; therefore stay 7-bit ASCII, comments and all — gen-town.lisp writes
+;; town.map that way.
+(dolist (file '("worlds/closure/town.map" "worlds/closure/cellar.map"
+                "worlds/closure/campaign.lisp"))
+  (with-open-file (s file)
+    (let ((bad '())
+          (line-no 0))
+      (loop for line = (read-line s nil nil)
+            while line
+            do (incf line-no)
+               (when (find-if (lambda (c) (> (char-code c) 126)) line)
+                 (push line-no bad)))
+      (check (format nil "~A is plain ASCII" file) nil (nreverse bad)))))
 
 ;;; ---------------------------------------------------------------------
 ;;; The campaign: classes, spells, items, monsters, the starting party

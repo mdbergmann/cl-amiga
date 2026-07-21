@@ -102,11 +102,19 @@ the .mapc sidecar share it.")
     (unless (zerop c)
       (code-char c))))
 
+(defvar *building-styles* nil
+  "One-entry cache (MAP . STYLE-VECTOR) of the per-building wall styles
+the first-person view deals out — filled by %BUILDING-STYLES in
+view.lisp, which cannot own the variable because attaching a special
+(below) has to drop the cache: a LOCATION op's :STYLE is what pins a
+building's look.")
+
 (defun cell-special (map x y)
   "The special ops attached to cell (X,Y), or NIL.  SETF-able."
   (gethash (cons x y) (dungeon-map-specials map)))
 
 (defun (setf cell-special) (ops map x y)
+  (setf *building-styles* nil)          ; a LOCATION op may pin a style
   (setf (gethash (cons x y) (dungeon-map-specials map)) ops))
 
 (defun wall-passable-p (wall)

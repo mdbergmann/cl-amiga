@@ -1,4 +1,4 @@
-;;; Closure — the campaign data.
+;;; Closure - the campaign data.
 ;;;
 ;;; Everything story-specific lives here and in the map files: hero
 ;;; classes, monster types, the starting party.  The Lambda's Tale
@@ -22,7 +22,7 @@
 (define-hero-class :conjurer :hp-dice "1d6+1"  :damage "1d4" :ac 10
                              :caster t :image "gfx/hero-conjurer.iff")
 
-;;; Spells (the conjurer's book — one of each engine effect kind)
+;;; Spells (the conjurer's book - one of each engine effect kind)
 
 (define-spell 'mage-flame :cost 1 :level 1 :classes '(:conjurer)
   :light t :duration 60 :image "gfx/fx-flame.iff")
@@ -35,7 +35,7 @@
 (define-spell 'magic-compass :cost 2 :level 1 :classes '(:conjurer)
   :compass t :duration 120 :image "gfx/fx-compass.iff")
 
-;;; Songs (Melody's repertoire — one tune per bard level, refilled
+;;; Songs (Melody's repertoire - one tune per bard level, refilled
 ;;; with a drink at the Adventurer's Rest)
 
 (define-song 'travellers-tune :level 1 :buff-ac 1 :duration 60
@@ -43,7 +43,7 @@
 (define-song 'seekers-ballad  :level 1 :compass t :duration 60
   :image "gfx/fx-compass.iff")
 
-;;; Items (Wolfgar's stock — see worlds/closure/town.map)
+;;; Items (Wolfgar's stock - see worlds/closure/town.map)
 
 (define-item 'torch         :price 2 :consumed t
              :use '(:light t :duration 60) :image "gfx/fx-flame.iff")

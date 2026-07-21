@@ -408,13 +408,125 @@ messages so far (oldest first)."
   (check "blit list: front door blocks the view"
          '((:side 0 :l) (:front-door 0))
          (mapcar #'first (view-blit-list (compute-view m 1 0 :south) planes)))
-  ;; each record carries its wall style and its slot rect
+  ;; each record carries its wall style, its slot rect and the source
+  ;; offset the blit starts at (0 for every piece drawn whole)
   (check "blit records carry their slot rects" nil
          (remove-if (lambda (rec)
-                      (and (integerp (second rec))
-                           (equal (cddr rec)
-                                  (wall-piece-rect planes (first rec)))))
+                      (destructuring-bind (piece style x y w h sx) rec
+                        (and (integerp style)
+                             (equal (list x y w h)
+                                    (wall-piece-rect planes piece))
+                             (zerop sx))))
                     (view-blit-list (compute-view m 0 0 :east) planes))))
+
+;;; ---------------------------------------------------------------------
+;;; Flank geometry: a flank is the NEIGHBOR cell's front wall seen
+;;; through an open side, so it stands at the same distance as the
+;;; front wall of its depth and gets that wall's full perspective
+;;; width — not the narrow near-to-far strip of the side band, which
+;;; drew a house across an open side about half as wide as it should
+;;; be.  What the party actually sees of it is cropped by the walls in
+;;; front of it (FLANK-VISIBLE-X), and the blit record's SX says where
+;;; in the piece the visible part starts.
+
+(let ((planes (view-planes 120 112)))
+  ;; depth 0: a whole cell is wider than the viewport edge allows, so
+  ;; the slot stays the side band — the old geometry, unchanged
+  (check "lores flank slot at depth 0 fills the side band" '(0 22 25 68)
+         (wall-piece-rect planes '(:flank 0 :l)))
+  ;; deeper in, the slot is one cell wide at the wall's own distance
+  (dotimes (d +view-depth+)
+    (destructuring-bind (qx0 qy0 qx1 qy1) (aref planes (1+ d))
+      (destructuring-bind (lx ly lw lh) (wall-piece-rect planes
+                                                         (list :flank d :l))
+        (destructuring-bind (rx ry rw rh) (wall-piece-rect
+                                           planes (list :flank d :r))
+          (check (format nil "depth-~D flank is a cell wide at its own ~
+plane, clipped to the viewport" d)
+                 (list (max 0 (- qx0 (- qx1 qx0))) qy0 (1+ (- qy1 qy0)))
+                 (list lx ly lh))
+          ;; the flank meets the front wall's own edge column, which
+          ;; the front piece then draws over
+          (check (format nil "depth-~D flank abuts the front wall" d)
+                 (list qx0 qx1)
+                 (list (+ lx lw -1) rx))
+          (check (format nil "depth-~D flanks mirror" d)
+                 (list lw lh) (list rw rh))
+          (check (format nil "depth-~D flank shares the front wall's ~
+height" d)
+                 (list qy0 (1+ (- qy1 qy0))) (list ry rh)))))))
+
+;; 3x2 map, party at (0,0) facing east: the side beside it is open with
+;; nothing beyond, the next cell's side opens on a wall — so the flank
+;; at depth 1 has no near wall in front of it and is seen whole.
+(let* ((m (parse-map
+"+-+-+-+
+|@    |
++ + +-+
+|   | |
++-+-+-+" :name "flank-open"))
+       (planes (view-planes 120 112))
+       (blits (view-blit-list (compute-view m 0 0 :east) planes))
+       (flank (find '(:flank 1 :r) blits :key #'first :test #'equal)))
+  (check "nothing is drawn where the near side opens on open ground"
+         nil (find '(:flank 0 :r) blits :key #'first :test #'equal))
+  (check-true "a flank behind an open side is drawn" flank)
+  (destructuring-bind (piece style x y w h sx) flank
+    (declare (ignore piece style))
+    (check "an unblocked flank keeps its whole cell width"
+           (wall-piece-rect planes '(:flank 1 :r)) (list x y w h))
+    (check "an unblocked flank blits from its own left edge" 0 sx)))
+
+;; The same wall with the near side WALLED: the near wall hides all but
+;; the strip between its planes, and the blit crops to it — the fixed
+;; slot the renderer always used, so a walled street is unchanged.
+(let* ((m (parse-map
+"+-+-+-+
+|@    |
++-+ +-+
+|   | |
++-+-+-+" :name "flank-blocked"))
+       (planes (view-planes 120 112))
+       (blits (view-blit-list (compute-view m 0 0 :east) planes))
+       (flank (find '(:flank 1 :r) blits :key #'first :test #'equal)))
+  (check-true "a flank behind a walled near side is still drawn" flank)
+  (destructuring-bind (piece style x y w h sx) flank
+    (declare (ignore piece style y h))
+    (destructuring-bind (px0 py0 px1 py1) (aref planes 1)
+      (declare (ignore px0 py0 py1))
+      (destructuring-bind (qx0 qy0 qx1 qy1) (aref planes 2)
+        (declare (ignore qx0 qy0 qy1))
+        (check "a blocked flank crops to the strip past the near wall"
+               (list qx1 (1+ (- px1 qx1))) (list x w))))
+    ;; cropped on its right, so the piece still blits from its own x 0
+    (check "a cropped right flank blits from its own left edge" 0 sx)))
+
+;; Mirrored, on the LEFT: the near wall hides the flank's outer part,
+;; so the blit starts further into the piece — the wall the party sees
+;; is the strip beside the corridor, never a squashed whole.
+(let* ((m (parse-map
+"+-+-+-+
+|   | |
++-+ +-+
+|@    |
++-+-+-+" :name "flank-left"))
+       (planes (view-planes 120 112))
+       (blits (view-blit-list (compute-view m 0 1 :east) planes))
+       (flank (find '(:flank 1 :l) blits :key #'first :test #'equal)))
+  (check-true "a left flank behind a near wall is drawn" flank)
+  (destructuring-bind (piece style x y w h sx) flank
+    (declare (ignore piece style y h))
+    (destructuring-bind (px0 py0 px1 py1) (aref planes 1)
+      (declare (ignore py0 px1 py1))
+      (destructuring-bind (qx0 qy0 qx1 qy1) (aref planes 2)
+        (declare (ignore qy0 qx1 qy1))
+        (check "a left flank crops to the strip past the near wall"
+               (list px0 (1+ (- qx0 px0))) (list x w))
+        (destructuring-bind (fx fy fw fh) (wall-piece-rect planes
+                                                           '(:flank 1 :l))
+          (declare (ignore fy fw fh))
+          (check "its source offset skips the hidden part"
+                 (- px0 fx) sx))))))
 
 ;;; ---------------------------------------------------------------------
 ;;; Wall styles: the blitted view varies tile-pack piece variants per
@@ -446,6 +558,68 @@ messages so far (oldest first)."
       (check "a location's :style styles its door piece"
              7 (second (assoc '(:front-door 0) blits :test #'equal)))))
   (setf (cell-special m 1 1) nil))
+
+;;; A building is a MASS, not a cell: every wall of one walled-in
+;;; region answers with the same style, so a block-long house wears one
+;;; look instead of changing from stone to plaster halfway along its
+;;; own front (which is what a per-cell style hash did).
+
+;; A street with a block of houses on each side: rows 0 and 2 are
+;; solid mass, row 1 is the street the party walks.
+(defparameter *street-art*
+"+-+-+-+-+-+
+| | | | | |
++-+-+-+-+-+
+|@        |
++-+-+-+-+-+
+| | | | | |
++-+-+-+-+-+")
+
+(let ((m (parse-map *street-art* :name "street")))
+  (check-true "a walled-in cell is building mass" (%cell-solid-p m 3 0))
+  (check-true "a cell the party can stand in is not"
+              (not (%cell-solid-p m 1 1)))
+  ;; the whole block answers with one style, however far along it the
+  ;; wall is — the house does not change its look mid-front
+  (check "one mass, one style"
+         (list (%wall-style m 0 0) (%wall-style m 0 0))
+         (list (%wall-style m 2 0) (%wall-style m 4 0)))
+  ;; the block across the street is its own building
+  (check-true "separate masses may differ"
+              (/= (%wall-style m 0 0) (%wall-style m 0 2)))
+  ;; a walkable cell keeps the old per-cell hash (dungeon rock behind a
+  ;; map edge, and anything a campaign has not walled in)
+  (check "a walkable cell falls back to its coordinate hash"
+         (%coord-style 3 1) (%wall-style m 3 1)))
+
+;; A LOCATION op anywhere in the mass pins the whole building's style,
+;; so the house's other wall cells wear the look the campaign chose for
+;; its facade picture.
+(let ((m (parse-map *street-art* :name "pinned")))
+  (setf (cell-special m 2 0)
+        '((location "The Weaver's" :house :style 5
+           :facade "gfx/house-1.iff")))
+  (check "a location's :style pins its whole building" '(5 5 5)
+         (list (%wall-style m 0 0) (%wall-style m 2 0) (%wall-style m 4 0)))
+  (check-true "the block across the street is not pinned with it"
+              (/= 5 (%wall-style m 0 2)))
+  ;; attaching an op drops the cache, so the pin goes when the op does
+  (setf (cell-special m 2 0) nil)
+  (check-true "dropping the op drops the pin"
+              (/= 5 (%wall-style m 0 0))))
+
+;; The view sees it: walking the street, both blocks keep their style
+;; at every depth the party looks along.
+(let* ((m (parse-map *street-art* :name "street-view"))
+       (planes (view-planes 120 112))
+       (blits (view-blit-list (compute-view m 0 1 :east) planes))
+       (left (remove-if-not (lambda (r) (eq :l (third (first r)))) blits))
+       (right (remove-if-not (lambda (r) (eq :r (third (first r)))) blits)))
+  (check-true "the street shows both blocks" (and left right))
+  (check "the whole left-hand block wears one style" 1
+         (length (remove-duplicates (mapcar #'second left))))
+  (check "the whole right-hand block wears one style" 1
+         (length (remove-duplicates (mapcar #'second right)))))
 
 ;;; ---------------------------------------------------------------------
 ;;; Backdrop slots (ceiling/floor) and the tile-pack manifest

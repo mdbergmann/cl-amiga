@@ -37,20 +37,93 @@
   left-front-style    ; with these, so a street reads as a row of
   right-front-style)  ; different houses
 
-(defun %wall-style (map x y)
-  "Deterministic style index of the building whose mass fills cell
-\(X,Y): the :STYLE integer of a LOCATION op on the cell when it names
-one (a campaign matching a house's street look to its facade picture),
-else a coordinate hash.  The blitted view picks among a tile pack's
-piece variants with it (see VIEW-BLIT-LIST and the -vN files in
-%LOAD-WALL-ASSETS) so a street reads as a row of different houses; a
-pack without variants renders every style the same.  The hash range 12
-divides evenly by 1-4, so (MOD STYLE VARIANT-COUNT) stays uniform."
+;;; Buildings: the mass behind a wall.
+;;;
+;;; A city block is many cells of solid mass, but it is ONE building —
+;;; its street face must wear one look, not a different piece variant
+;;; per cell (which showed a house whose wall changed from stone to
+;;; plaster halfway along its own front).  A cell belongs to a building
+;;; when the party can never stand in it: every one of its four walls
+;;; is a wall or a door.  The building is the 4-connected region of
+;;; such cells, and its style is the :STYLE a LOCATION op anywhere in
+;;; it pins (the campaign matching a house's street look to its facade
+;;; picture), else a hash of the region's first cell.
+
+(defun %coord-style (x y)
+  "The fallback style of a building with no LOCATION op: a coordinate
+hash.  The range 12 divides evenly by 1-4, so (MOD STYLE
+VARIANT-COUNT) stays uniform over the usual variant counts."
+  (mod (+ (* 31 x) (* 17 y)) 12))
+
+(defun %location-style (map x y)
+  "The :STYLE integer of a LOCATION op on cell (X,Y), or NIL."
   (let* ((loc (cell-location-op map x y))
          (style (and loc (getf (cddr loc) :style))))
-    (if (integerp style)
-        style
-        (mod (+ (* 31 x) (* 17 y)) 12))))
+    (when (integerp style) style)))
+
+(defun %cell-solid-p (map x y)
+  "Is (X,Y) part of a building mass — walled in on all four sides?"
+  (dotimes (d 4 t)
+    (when (eq (cell-wall map x y d) :open)
+      (return nil))))
+
+(defun %building-styles (map)
+  "Vector of W*H style values: for every solid cell the style of the
+building it belongs to, NIL for a cell the party can walk in.  Flood-
+filled once per map and cached in *BUILDING-STYLES* (see
+%WALL-STYLE) — every wall of one mass then answers with the same
+style, so a block-long house wears one look."
+  (if (eq (car *building-styles*) map)
+      (cdr *building-styles*)
+      (let* ((w (dungeon-map-width map))
+             (h (dungeon-map-height map))
+             (styles (make-array (* w h) :initial-element nil)))
+        (dotimes (sy h)
+          (dotimes (sx w)
+            (when (and (null (aref styles (+ sx (* sy w))))
+                       (%cell-solid-p map sx sy))
+              ;; flood this mass, picking up the :STYLE any LOCATION op
+              ;; inside it pins; (SX,SY) — scan order, so deterministic
+              ;; — anchors the fallback hash
+              (let ((stack (list (cons sx sy)))
+                    (cells '())
+                    (pinned nil))
+                (setf (aref styles (+ sx (* sy w))) :seen)
+                (loop while stack
+                      do (let* ((cell (pop stack))
+                                (cx (car cell))
+                                (cy (cdr cell)))
+                           (push cell cells)
+                           (unless pinned
+                             (setf pinned (%location-style map cx cy)))
+                           (dotimes (d 4)
+                             (multiple-value-bind (nx ny)
+                                 (neighbor map cx cy d)
+                               (when (and nx
+                                          (null (aref styles
+                                                      (+ nx (* ny w))))
+                                          (%cell-solid-p map nx ny))
+                                 (setf (aref styles (+ nx (* ny w))) :seen)
+                                 (push (cons nx ny) stack))))))
+                (let ((style (or pinned (%coord-style sx sy))))
+                  (dolist (cell cells)
+                    (setf (aref styles (+ (car cell) (* (cdr cell) w)))
+                          style)))))))
+        (setf *building-styles* (cons map styles))
+        styles)))
+
+(defun %wall-style (map x y)
+  "Deterministic style index of the building whose mass fills cell
+\(X,Y): the style of the whole building the cell belongs to (see
+%BUILDING-STYLES), the :STYLE integer of a LOCATION op on a walkable
+cell, else a coordinate hash.  The blitted view picks among a tile
+pack's piece variants with it (see VIEW-BLIT-LIST and the -vN files in
+%LOAD-WALL-ASSETS) so a street reads as a row of different houses; a
+pack without variants renders every style the same."
+  (or (aref (%building-styles map)
+            (+ x (* y (dungeon-map-width map))))
+      (%location-style map x y)
+      (%coord-style x y)))
 
 (defun compute-view (map x y facing &optional (depth +view-depth+))
   "List of VIEW-SLICEs visible from (X,Y) looking FACING, nearest first.
@@ -149,6 +222,16 @@ primitives, ordered back to front."
                            (max 1 (floor (- x1 x0) 6))
                            (max 1 (floor (- y1 y0) 4)))
                      prims))
+             (flank (s side kind)
+               ;; the neighbor's front wall through an open side, at
+               ;; the perspective width the blitted view gives it
+               (multiple-value-bind (x y w h sx)
+                   (visible-flank-rect slices planes
+                                       (list kind (view-slice-depth s) side))
+                 (declare (ignore sx))
+                 (rect x y (+ x w -1) (+ y h -1))
+                 (when (eq kind :flank-door)
+                   (door-mark x y (+ x w -1) (+ y h -1)))))
              (draw-slice (s)
                (let ((p (aref planes (view-slice-depth s)))
                      (q (aref planes (1+ (view-slice-depth s)))))
@@ -164,10 +247,9 @@ primitives, ordered back to front."
                         (when (eq (view-slice-left s) :door)
                           (door-mark px0 qy0 qx0 qy1)))
                        (:open
-                        (when (view-slice-left-front s)
-                          (rect px0 qy0 qx0 qy1)
-                          (when (eq (view-slice-left-front s) :door)
-                            (door-mark px0 qy0 qx0 qy1)))))
+                        (case (view-slice-left-front s)
+                          (:wall (flank s :l :flank))
+                          (:door (flank s :l :flank-door)))))
                      ;; right side (mirrored)
                      (case (view-slice-right s)
                        ((:wall :door)
@@ -178,10 +260,9 @@ primitives, ordered back to front."
                         (when (eq (view-slice-right s) :door)
                           (door-mark qx1 qy0 px1 qy1)))
                        (:open
-                        (when (view-slice-right-front s)
-                          (rect qx1 qy0 px1 qy1)
-                          (when (eq (view-slice-right-front s) :door)
-                            (door-mark qx1 qy0 px1 qy1)))))
+                        (case (view-slice-right-front s)
+                          (:wall (flank s :r :flank))
+                          (:door (flank s :r :flank-door)))))
                      ;; front wall
                      (when (member (view-slice-front s) '(:wall :door))
                        (rect qx0 qy0 qx1 qy1)
@@ -213,9 +294,19 @@ primitives, ordered back to front."
 ;;; corners painted in the background color make that correct).
 
 (defun wall-piece-rect (planes piece)
-  "Screen slot (X Y W H) of PIECE for the plane set PLANES."
+  "Screen slot (X Y W H) of PIECE for the plane set PLANES.
+
+A flank — the neighbor cell's front wall, seen through an open side —
+stands one cell to the side at the SAME distance as the front wall at
+its depth, so it gets that wall's full perspective width (the corridor
+width at plane DEPTH+1), clipped to the viewport, not the narrow strip
+between the near and far planes.  Drawn narrow, a house across an open
+side came out roughly half as wide as perspective demands.  How much
+of that slot is actually visible depends on the walls in front of it —
+VIEW-BLIT-LIST clips it and blits the visible part."
   (destructuring-bind (kind depth &optional side) piece
     (destructuring-bind (px0 py0 px1 py1) (aref planes depth)
+      (declare (ignorable px0 px1))
       (destructuring-bind (qx0 qy0 qx1 qy1) (aref planes (1+ depth))
         (declare (ignorable qx1))
         (ecase kind
@@ -226,9 +317,53 @@ primitives, ordered back to front."
                (list px0 py0 (1+ (- qx0 px0)) (1+ (- py1 py0)))
                (list qx1 py0 (1+ (- px1 qx1)) (1+ (- py1 py0)))))
           ((:flank :flank-door)
-           (if (eq side :l)
-               (list px0 qy0 (1+ (- qx0 px0)) (1+ (- qy1 qy0)))
-               (list qx1 qy0 (1+ (- px1 qx1)) (1+ (- qy1 qy0))))))))))
+           (destructuring-bind (vx0 vy0 vx1 vy1) (aref planes 0)
+             (declare (ignore vy0 vy1))
+             (let ((cell (- qx1 qx0)))  ; one cell wide at that distance
+               (if (eq side :l)
+                   (let ((x0 (max vx0 (- qx0 cell))))
+                     (list x0 qy0 (1+ (- qx0 x0)) (1+ (- qy1 qy0))))
+                   (let ((x1 (min vx1 (+ qx1 cell))))
+                     (list qx1 qy0 (1+ (- x1 qx1))
+                           (1+ (- qy1 qy0)))))))))))))
+
+(defun %plane-edge (planes k side)
+  "Plane K's left (:L) or right (:R) screen edge."
+  (destructuring-bind (x0 y0 x1 y1) (aref planes k)
+    (declare (ignore y0 y1))
+    (if (eq side :l) x0 x1)))
+
+(defun flank-visible-x (slices planes depth side)
+  "The screen x a flank at DEPTH on SIDE is visible up to: the far edge
+of the nearest wall standing between the party and it, else the
+viewport edge.  A side wall at depth K covers the band from plane K to
+plane K+1, so anything deeper is hidden up to plane K+1's edge; an
+open side whose neighbor shows a front wall (a flank of its own)
+blocks exactly the same band."
+  (loop for k from (1- depth) downto 0
+        for s = (nth k slices)
+        for wall = (if (eq side :l) (view-slice-left s) (view-slice-right s))
+        for beyond = (if (eq side :l)
+                         (view-slice-left-front s)
+                         (view-slice-right-front s))
+        when (or (member wall '(:wall :door))
+                 (member beyond '(:wall :door)))
+          do (return (%plane-edge planes (1+ k) side))
+        finally (return (%plane-edge planes 0 side))))
+
+(defun visible-flank-rect (slices planes piece)
+  "PIECE's slot cropped to what the walls in front of it leave visible:
+\(VALUES X Y W H SX), SX the x offset into the piece bitmap X starts
+at.  Both renderers place a flank with this, so the wireframe and the
+blitted view draw the same wall."
+  (destructuring-bind (kind depth &optional side) piece
+    (declare (ignore kind))
+    (destructuring-bind (x y w h) (wall-piece-rect planes piece)
+      (let ((edge (flank-visible-x slices planes depth side)))
+        (if (eq side :l)
+            (let ((nx (max x (min edge (+ x w -1)))))
+              (values nx y (- (+ x w) nx) h (- nx x)))
+            (values x y (1+ (- (max x (min edge (+ x w -1))) x)) h 0))))))
 
 (defun wall-piece-names ()
   "All piece keys the view can ever ask for (the asset set)."
@@ -252,20 +387,29 @@ the optional per-house looks a pack may ship beside the base piece
     (format nil "~A-v~D.iff" (subseq base 0 (- (length base) 4)) n)))
 
 (defun view-blit-list (slices planes)
-  "Flatten SLICES into blit records (PIECE STYLE X Y W H), back to
+  "Flatten SLICES into blit records (PIECE STYLE X Y W H SX), back to
 front.  The bitmap twin of VIEW-DISPLAY-LIST — same wall logic, but
 each wall becomes one fixed-slot piece blit instead of wireframe
 lines.  STYLE is the wall's building style (see %WALL-STYLE); the
 renderer picks the piece's variant with (MOD STYLE VARIANT-COUNT), so
-it is 0 whenever the pack ships no variants."
+it is 0 whenever the pack ships no variants.  SX is the x offset into
+the piece bitmap the blit starts at: 0 for every piece drawn whole,
+non-zero only for a left flank the walls in front of it hide part of
+(see WALL-PIECE-RECT and FLANK-VISIBLE-X) — X/W are that visible part,
+so the piece is never stretched, only cropped."
   (let ((blits '()))
     (labels ((blit (kind depth style &optional side)
                (let ((piece (if side
                                 (list kind depth side)
                                 (list kind depth))))
-                 (push (list* piece (or style 0)
-                              (wall-piece-rect planes piece))
-                       blits)))
+                 (if (member kind '(:flank :flank-door))
+                     ;; crop to what the walls in front leave visible
+                     (multiple-value-bind (x y w h sx)
+                         (visible-flank-rect slices planes piece)
+                       (push (list piece (or style 0) x y w h sx) blits))
+                     (destructuring-bind (x y w h)
+                         (wall-piece-rect planes piece)
+                       (push (list piece (or style 0) x y w h 0) blits)))))
              (draw-slice (s)
                (let ((d (view-slice-depth s)))
                  ;; sides first, then the front wall on top of their seams

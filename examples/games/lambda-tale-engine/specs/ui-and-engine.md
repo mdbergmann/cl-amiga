@@ -312,8 +312,9 @@ The Amiga front-end supports two displays, selected by
   pieces** in fixed Bard's Tale screen slots; the slot geometry
   (`wall-piece-rect` / `view-blit-list` in view.lisp; blit records
   carry a per-building STYLE that picks among a pack's optional
-  `-vN` piece variants — hash of the building cell, or a location
-  op's `:style` — so a street shows different houses) derives from the
+  `-vN` piece variants — one style per walled-in mass of cells, from
+  a location op's `:style` or a hash of the mass, so one house wears
+  one look and a street still shows different houses) derives from the
   same perspective planes as the wireframe display list, so both
   renderers agree about where walls are.
 - Piece set per depth (4 depths): front wall, receding left/right side
@@ -321,6 +322,15 @@ The Amiga front-end supports two displays, selected by
   are rectangular blits, correctness comes from back-to-front order),
   left/right flank walls (the neighbor's front wall seen through an
   open side), each with a door variant — 40 pieces.
+- A flank stands at the same distance as the front wall of its depth,
+  so its slot is that wall's **full perspective width** (one cell at
+  plane depth+1), clipped to the viewport — not the narrow strip
+  between the near and far planes, which drew a house across an open
+  side about half as wide as it should be.  How much of it the party
+  can see depends on the walls in front of it (`flank-visible-x`):
+  the blit record carries the visible rect plus the source x offset
+  into the piece, so a partly hidden flank is cropped, never
+  squashed.
 - Assets are **IFF ILBM** files, one per piece, named by
   `wall-piece-file` — one pack per display profile (`data/gfx/` for
   `:lores`, `data/gfx-hires/` for `:hires`), since the piece sizes

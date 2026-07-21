@@ -10,11 +10,11 @@
 |   |      <|
 +-+-+-+-+-+-+
 
-;; Story layer: cell specials (data, never evaluated — see src/specials.lisp).
+;; Story layer: cell specials (data, never evaluated - see src/specials.lisp).
 
-;; :dark 3 — dark at all hours, but with three cells of sight (a torch
+;; :dark 3 - dark at all hours, but with three cells of sight (a torch
 ;; still buys the fourth); plain :dark t would clamp sight to one cell.
-;; :gfx — the cellar's own tile pack (stone walls, packed-earth floor),
+;; :gfx - the cellar's own tile pack (stone walls, packed-earth floor),
 ;; resolved next to this map; regenerate with gfx-cellar/make-pack.lisp.
 (zone :kind :dungeon :title "the cellar" :dark 3 :gfx "gfx-cellar/")
 

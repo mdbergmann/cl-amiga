@@ -1,290 +1,306 @@
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 |                                                           |
-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+D+-+ +
++ +-+-+D+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+ +
 | | | | | | | | | | | | | | | | | | | | | | | | | | | | | | |
 + +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+ +
-| | | | | | | | | | | | | | | | | | | | | | | | | | | | | | |
-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+ +
-| D | | | | | | | | | | | | | | | | | | | | | | | D | | | | |
-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+ +
-| | | | | | | | | | | | | | | | | | | | | | | | | | D | | | |
-+ +-+-+-+-+ +D+-+-+-+ +-+-+-+D+ +-+-+D+-+ +-+-+-+-+ +-+-+-+ +
-|                                                           |
-+ +-+D+-+-+ +-+-+-+-+ +-+-+D+D+ +-+-+-+-+ +-+-+D+-+ +-+-+-+ +
 | | | | | | | | | | | | | | | | | | | | D | | | | | | | | | |
++ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+ +
+| | | | | | | | | | D | | | | D | | | | | | | | | | | | | | |
++ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+ +
+| | | | | | | | | | | | | | | | | | | | | D | | | | | | | | |
++ +D+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+D+ +D+-+-+ +
+|                                                           |
++ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+D+-+ +-+-+-+-+ +-+-+-+ +
+| | | | | D | | | | | D | | | D | | | | | | | | | | | | | | |
++ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+ +
+| | | | | | | | | | | | | | | | | | | | | | | | | | | | | | |
 + +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+ +
 | | | | | | D | | | | | | | | | | | | | | | | | | | | | | | |
 + +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+ +
 | | | | | | | | | | | | | | | | | | | | | | | | | | | | | | |
-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+ +
-| | | | | | | | | | | | | | | | | | | | | | | | | | | | | | |
-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+D+ +
++ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+D+-+ +D+-+-+ +
 |                                                           |
-+ +-+-+-+-+ +D+-+-+-+ + + + + + + + + + + +-+D+-+-+ +-+-+-+ +
-| | | | | | | | | | D                     | | | | | | | | | |
++ +-+-+D+-+ +-+-+-+-+ + + + + + + + + + + +-+-+-+-+ +D+-+-+ +
+| | | | | | | | | | |                     | | | | D | | | | |
 + +-+-+-+-+ +-+-+-+-+ + + + + + + + + + + +-+-+-+-+ +-+-+-+ +
-| | | | | | | | | | |                     | | | | | | | | D |
+| | | | | | D | | | |                     | | | | | | | | | |
 + +-+-+-+-+ +-+-+-+-+ + + + + + + + + + + +-+-+-+-+ +-+-+-+ +
-| D | | | | | | | | |                     | | | | | | | | | |
+| | | | | | | | | | |                     | | | | | | | | | |
 + +-+-+-+-+ +-+-+-+-+ + + + + + + + + + + +-+-+-+-+ +-+-+-+ +
 | | | | | D | | | | |                     | | | | | | | | | |
 + +-+-+-+-+ +-+-+-+-+ + + + + + + + + + + +-+-+-+-+ +-+-+-+ +
 |                                                           |
-+ +-+D+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+D+-+ +
-| | | | | | | | | | D | | | | | D | | | | | | | | | | | | | |
++ +-+-+-+-+ +-+-+-+D+ +-+-+-+-+ +-+-+D+-+ +-+-+-+-+ +-+-+-+ +
+| | | | | D | | | | | | | | | | | | | | | | | | | D | | | D |
 + +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+ +
-| | | | | | | | | | | | | | | | | | | | | | | | | | | | | | |
+| | | | | D | | | | | | | | | | | | | | | | | | | | | | | | |
 + +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+ +
-| | | | | | | | | | | | | | | | | | | | | | | | | | | | | | |
+| | | | | | | | | | | | | | | | | | | | D | | | | | | | | | |
 + +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+ +
-| | | | | | | | | | | | | | | D | | | | | | | | | | | | | | |
-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+D+ +-+-+-+ +
+| | | | | | | | | | | D | | | | | | | | | | | | | | | | | | |
++ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +D+-+-+ +
 |                                                           |
-+ +-+-+-+-+ +-+-+D+-+ +-+-+-+-+ +-+D+-+-+ +-+-+D+-+ +-+-+-+ +
++ +-+-+D+D+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+D+-+-+ +-+-+-+ +
+| | | | | | D | | | | D | | | | | | | | D | | | | | | | | | |
++ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+ +
+| | | | | | | | | | | | | | | | | | | | | | | | | | | | | | |
++ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+ +
+| | | | | | | | | | | | | | | | | | | | | | | | | | | | | | |
++ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+ +
+| | | | | | | | | | | | | | | | | | | | | | | | | | | | | | |
++ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+D+-+ +-+-+-+-+ +-+-+D+ +
+|                                                           |
++ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+ +
+| | | | | | | | | | | | | | | | | | | | | | | | | | | | | | |
++ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+ +
 | | | | | | | | | | | | | | | | D | | | | | | | | | | | | | |
 + +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+ +
-| | | | | | | | | | | | | | | | | | | | | | | | | | | | | | |
-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+ +
-| | | | | | | | | | | D | | | | | | | | | | | | | | | | | D |
-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+ +
-| | | | | | | | | | | | | | | | | | | | | | | | | | | | | | |
-+ +-+D+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+D+-+ +-+-+-+ +
-|                                                           |
-+ +-+-+-+-+ +-+D+-+-+ +-+D+-+-+ +-+-+-+-+ +-+-+-+-+ +-+D+-+ +
-| | | | | | | | | | | | | | | | | | | | | | | | | D | | | | |
-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+ +
-| | | | | | | | | | | | | | | | D | | | | | | | | | | | | | |
-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+-+ +-+-+-+ +
-| | | | | | | | | | | | | | | | | | | | | | | | | D | | | | |
-+ +-+D+-+D+ +-+-+-+-+ +-+D+-+-+ +-+D+-+-+ +-+-+-+-+ +-+D+-+ +
+| | | | | | | | | | | | | | | D | | | | | | | | | D | | | | |
++ +-+D+-+D+ +-+D+-+-+ +-+D+-+-+ +-+D+-+-+ +-+D+-+-+ +D+D+-+ +
 |                              @                            |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 
-;; The town of Closure — the campaign's city, Skara Brae
+;; The town of Closure - the campaign's city, Skara Brae
 ;; sized: a 30x30 walled grid of streets and house blocks.
-;; GENERATED by worlds/closure/gen-town.lisp — edit and rerun
+;; GENERATED by worlds/closure/gen-town.lisp - edit and rerun
 ;; that script instead of this file.  Houses draw one of the
 ;; three facade pictures (gfx/house-0..2.iff, :facade) from
 ;; the street and the matching interior (gfx/interior-0..2.iff,
 ;; :image) inside; :style pins the house's perspective wall
-;; pieces to the matching pack variant.  The shoppe and the
-;; tavern (trapdoor to cellar.map below) flank the south gate
-;; where the party starts.
+;; pieces to the matching pack variant.  One block of the
+;; city grid is one building, so its houses share a style.
+;; The shoppe and the tavern (trapdoor to cellar.map below)
+;; flank the south gate where the party starts.
 
 (zone :kind :city :title "Closure" :gfx "gfx/")
 
-(special (1 3)
-  (location "A Stone Cottage — the Weaver's" :house
+(special (1 4)
+  (location "A Stone Cottage - the Weaver's" :house
            :image "gfx/interior-0.iff"
            :facade "gfx/house-0.iff" :style 1))
 
-(special (6 4)
-  (location "A Timber House — the Cooper's" :house
-           :image "gfx/interior-1.iff"
-           :facade "gfx/house-1.iff" :style 0))
-
-(special (14 4)
-  (location "A Timber House — the Chandler's" :house
-           :image "gfx/interior-1.iff"
-           :facade "gfx/house-1.iff" :style 0))
-
-(special (18 4)
-  (location "A Stone Cottage — the Mason's" :house
+(special (3 1)
+  (location "A Stone Cottage - the Cooper's" :house
            :image "gfx/interior-0.iff"
            :facade "gfx/house-0.iff" :style 1))
 
-(special (24 3)
-  (location "A Timber House — the Fletcher's" :house
+(special (9 3)
+  (location "A Stone Cottage - the Chandler's" :house
+           :image "gfx/interior-0.iff"
+           :facade "gfx/house-0.iff" :style 1))
+
+(special (14 3)
+  (location "A Tall Townhouse - the Mason's" :house
+           :image "gfx/interior-2.iff"
+           :facade "gfx/house-2.iff" :style 2))
+
+(special (19 2)
+  (location "A Timber House - the Fletcher's" :house
+           :image "gfx/interior-1.iff"
+           :facade "gfx/house-1.iff" :style 0))
+
+(special (24 4)
+  (location "A Timber House - the Tanner's" :house
+           :image "gfx/interior-1.iff"
+           :facade "gfx/house-1.iff" :style 0))
+
+(special (21 4)
+  (location "A Timber House - the Miller's" :house
            :image "gfx/interior-1.iff"
            :facade "gfx/house-1.iff" :style 0))
 
 (special (26 4)
-  (location "A Tall Townhouse — the Tanner's" :house
-           :image "gfx/interior-2.iff"
-           :facade "gfx/house-2.iff" :style 2))
-
-(special (27 1)
-  (location "A Timber House — the Miller's" :house
-           :image "gfx/interior-1.iff"
-           :facade "gfx/house-1.iff" :style 0))
-
-(special (2 6)
-  (location "A Stone Cottage — the Scribe's" :house
+  (location "A Stone Cottage - the Scribe's" :house
            :image "gfx/interior-0.iff"
            :facade "gfx/house-0.iff" :style 1))
 
-(special (6 7)
-  (location "A Tall Townhouse — the Herbalist's" :house
+(special (4 6)
+  (location "A Stone Cottage - the Herbalist's" :house
+           :image "gfx/interior-0.iff"
+           :facade "gfx/house-0.iff" :style 1))
+
+(special (6 8)
+  (location "A Tall Townhouse - the Cartwright's" :house
            :image "gfx/interior-2.iff"
            :facade "gfx/house-2.iff" :style 2))
-
-(special (13 6)
-  (location "A Timber House — the Cartwright's" :house
-           :image "gfx/interior-1.iff"
-           :facade "gfx/house-1.iff" :style 0))
 
 (special (14 6)
-  (location "A Stone Cottage — the Smith's" :house
+  (location "A Stone Cottage - the Smith's" :house
            :image "gfx/interior-0.iff"
            :facade "gfx/house-0.iff" :style 1))
 
-(special (19 6)
-  (location "A Timber House — the Potter's" :house
-           :image "gfx/interior-1.iff"
-           :facade "gfx/house-1.iff" :style 0))
-
-(special (23 6)
-  (location "A Timber House — the Dyer's" :house
-           :image "gfx/interior-1.iff"
-           :facade "gfx/house-1.iff" :style 0))
-
-(special (28 9)
-  (location "A Stone Cottage — the Brewer's" :house
+(special (11 6)
+  (location "A Stone Cottage - the Potter's" :house
            :image "gfx/interior-0.iff"
            :facade "gfx/house-0.iff" :style 1))
 
-(special (1 13)
-  (location "A Tall Townhouse — the Glazier's" :house
-           :image "gfx/interior-2.iff"
-           :facade "gfx/house-2.iff" :style 2))
+(special (18 6)
+  (location "A Stone Cottage - the Dyer's" :house
+           :image "gfx/interior-0.iff"
+           :facade "gfx/house-0.iff" :style 1))
+
+(special (23 9)
+  (location "A Timber House - the Brewer's" :house
+           :image "gfx/interior-1.iff"
+           :facade "gfx/house-1.iff" :style 0))
+
+(special (26 9)
+  (location "A Timber House - the Glazier's" :house
+           :image "gfx/interior-1.iff"
+           :facade "gfx/house-1.iff" :style 0))
 
 (special (4 14)
-  (location "A Stone Cottage — the Baker's" :house
-           :image "gfx/interior-0.iff"
-           :facade "gfx/house-0.iff" :style 1))
-
-(special (6 11)
-  (location "A Tall Townhouse — the Weaver's" :house
-           :image "gfx/interior-2.iff"
-           :facade "gfx/house-2.iff" :style 2))
-
-(special (9 11)
-  (location "A Stone Cottage — the Cooper's" :house
-           :image "gfx/interior-0.iff"
-           :facade "gfx/house-0.iff" :style 1))
-
-(special (22 11)
-  (location "A Stone Cottage — the Chandler's" :house
-           :image "gfx/interior-0.iff"
-           :facade "gfx/house-0.iff" :style 1))
-
-(special (28 12)
-  (location "A Timber House — the Mason's" :house
+  (location "A Timber House - the Baker's" :house
            :image "gfx/interior-1.iff"
            :facade "gfx/house-1.iff" :style 0))
 
-(special (2 16)
-  (location "A Timber House — the Fletcher's" :house
+(special (3 11)
+  (location "A Timber House - the Weaver's" :house
+           :image "gfx/interior-1.iff"
+           :facade "gfx/house-1.iff" :style 0))
+
+(special (6 12)
+  (location "A Stone Cottage - the Cooper's" :house
+           :image "gfx/interior-0.iff"
+           :facade "gfx/house-0.iff" :style 1))
+
+(special (24 11)
+  (location "A Stone Cottage - the Chandler's" :house
+           :image "gfx/interior-0.iff"
+           :facade "gfx/house-0.iff" :style 1))
+
+(special (26 11)
+  (location "A Timber House - the Mason's" :house
+           :image "gfx/interior-1.iff"
+           :facade "gfx/house-1.iff" :style 0))
+
+(special (4 16)
+  (location "A Timber House - the Fletcher's" :house
+           :image "gfx/interior-1.iff"
+           :facade "gfx/house-1.iff" :style 0))
+
+(special (4 17)
+  (location "A Timber House - the Tanner's" :house
            :image "gfx/interior-1.iff"
            :facade "gfx/house-1.iff" :style 0))
 
 (special (9 16)
-  (location "A Tall Townhouse — the Tanner's" :house
+  (location "A Timber House - the Miller's" :house
+           :image "gfx/interior-1.iff"
+           :facade "gfx/house-1.iff" :style 0))
+
+(special (11 19)
+  (location "A Timber House - the Scribe's" :house
+           :image "gfx/interior-1.iff"
+           :facade "gfx/house-1.iff" :style 0))
+
+(special (18 16)
+  (location "A Timber House - the Herbalist's" :house
+           :image "gfx/interior-1.iff"
+           :facade "gfx/house-1.iff" :style 0))
+
+(special (19 18)
+  (location "A Timber House - the Cartwright's" :house
+           :image "gfx/interior-1.iff"
+           :facade "gfx/house-1.iff" :style 0))
+
+(special (24 16)
+  (location "A Tall Townhouse - the Smith's" :house
            :image "gfx/interior-2.iff"
            :facade "gfx/house-2.iff" :style 2))
 
-(special (14 19)
-  (location "A Tall Townhouse — the Miller's" :house
-           :image "gfx/interior-2.iff"
-           :facade "gfx/house-2.iff" :style 2))
+(special (28 16)
+  (location "A Stone Cottage - the Potter's" :house
+           :image "gfx/interior-0.iff"
+           :facade "gfx/house-0.iff" :style 1))
 
-(special (16 16)
-  (location "A Timber House — the Scribe's" :house
+(special (26 19)
+  (location "A Stone Cottage - the Dyer's" :house
+           :image "gfx/interior-0.iff"
+           :facade "gfx/house-0.iff" :style 1))
+
+(special (3 21)
+  (location "A Timber House - the Brewer's" :house
            :image "gfx/interior-1.iff"
            :facade "gfx/house-1.iff" :style 0))
 
-(special (24 19)
-  (location "A Timber House — the Herbalist's" :house
+(special (4 21)
+  (location "A Timber House - the Glazier's" :house
            :image "gfx/interior-1.iff"
            :facade "gfx/house-1.iff" :style 0))
 
-(special (27 16)
-  (location "A Stone Cottage — the Cartwright's" :house
-           :image "gfx/interior-0.iff"
-           :facade "gfx/house-0.iff" :style 1))
-
-(special (2 24)
-  (location "A Stone Cottage — the Smith's" :house
-           :image "gfx/interior-0.iff"
-           :facade "gfx/house-0.iff" :style 1))
-
-(special (8 21)
-  (location "A Tall Townhouse — the Potter's" :house
-           :image "gfx/interior-2.iff"
-           :facade "gfx/house-2.iff" :style 2))
-
-(special (11 23)
-  (location "A Stone Cottage — the Dyer's" :house
-           :image "gfx/interior-0.iff"
-           :facade "gfx/house-0.iff" :style 1))
-
-(special (17 21)
-  (location "A Stone Cottage — the Brewer's" :house
-           :image "gfx/interior-0.iff"
-           :facade "gfx/house-0.iff" :style 1))
-
-(special (16 21)
-  (location "A Timber House — the Glazier's" :house
+(special (6 21)
+  (location "A Timber House - the Baker's" :house
            :image "gfx/interior-1.iff"
            :facade "gfx/house-1.iff" :style 0))
 
-(special (23 24)
-  (location "A Timber House — the Baker's" :house
+(special (11 21)
+  (location "A Timber House - the Weaver's" :house
            :image "gfx/interior-1.iff"
            :facade "gfx/house-1.iff" :style 0))
 
-(special (23 21)
-  (location "A Stone Cottage — the Weaver's" :house
-           :image "gfx/interior-0.iff"
-           :facade "gfx/house-0.iff" :style 1))
+(special (18 24)
+  (location "A Timber House - the Cooper's" :house
+           :image "gfx/interior-1.iff"
+           :facade "gfx/house-1.iff" :style 0))
 
-(special (28 23)
-  (location "A Stone Cottage — the Cooper's" :house
-           :image "gfx/interior-0.iff"
-           :facade "gfx/house-0.iff" :style 1))
+(special (19 21)
+  (location "A Timber House - the Chandler's" :house
+           :image "gfx/interior-1.iff"
+           :facade "gfx/house-1.iff" :style 0))
 
-(special (2 28)
-  (location "A Timber House — the Chandler's" :house
+(special (22 21)
+  (location "A Timber House - the Mason's" :house
+           :image "gfx/interior-1.iff"
+           :facade "gfx/house-1.iff" :style 0))
+
+(special (28 24)
+  (location "A Timber House - the Fletcher's" :house
            :image "gfx/interior-1.iff"
            :facade "gfx/house-1.iff" :style 0))
 
 (special (4 28)
-  (location "A Tall Townhouse — the Mason's" :house
-           :image "gfx/interior-2.iff"
-           :facade "gfx/house-2.iff" :style 2))
-
-(special (7 26)
-  (location "A Tall Townhouse — the Fletcher's" :house
-           :image "gfx/interior-2.iff"
-           :facade "gfx/house-2.iff" :style 2))
-
-(special (12 26)
-  (location "A Timber House — the Tanner's" :house
+  (location "A Timber House - the Tanner's" :house
            :image "gfx/interior-1.iff"
            :facade "gfx/house-1.iff" :style 0))
 
+(special (2 28)
+  (location "A Timber House - the Miller's" :house
+           :image "gfx/interior-1.iff"
+           :facade "gfx/house-1.iff" :style 0))
+
+(special (7 28)
+  (location "A Stone Cottage - the Scribe's" :house
+           :image "gfx/interior-0.iff"
+           :facade "gfx/house-0.iff" :style 1))
+
+(special (14 28)
+  (location "A Stone Cottage - the Herbalist's" :house
+           :image "gfx/interior-0.iff"
+           :facade "gfx/house-0.iff" :style 1))
+
 (special (16 27)
-  (location "A Tall Townhouse — the Miller's" :house
+  (location "A Tall Townhouse - the Cartwright's" :house
            :image "gfx/interior-2.iff"
            :facade "gfx/house-2.iff" :style 2))
 
 (special (24 28)
-  (location "A Tall Townhouse — the Scribe's" :house
-           :image "gfx/interior-2.iff"
-           :facade "gfx/house-2.iff" :style 2))
+  (location "A Timber House - the Smith's" :house
+           :image "gfx/interior-1.iff"
+           :facade "gfx/house-1.iff" :style 0))
 
-(special (24 26)
-  (location "A Tall Townhouse — the Herbalist's" :house
-           :image "gfx/interior-2.iff"
-           :facade "gfx/house-2.iff" :style 2))
+(special (22 28)
+  (location "A Timber House - the Potter's" :house
+           :image "gfx/interior-1.iff"
+           :facade "gfx/house-1.iff" :style 0))
 
 (special (27 28)
-  (location "A Stone Cottage — the Cartwright's" :house
+  (location "A Stone Cottage - the Dyer's" :house
            :image "gfx/interior-0.iff"
            :facade "gfx/house-0.iff" :style 1))
 
-(special (27 26)
-  (location "A Stone Cottage — the Smith's" :house
+(special (26 28)
+  (location "A Stone Cottage - the Brewer's" :house
            :image "gfx/interior-0.iff"
            :facade "gfx/house-0.iff" :style 1))
 
