@@ -1509,6 +1509,32 @@
                      :initial-contents '(253 7))
        0 2 (make-array 2 :element-type '(unsigned-byte 8)) 2)
     (error () :caught)))
+; COUNT byte-vector fast path — a fixnum under the default EQL test
+; runs as a C loop over the packed elements (the map-cache wall-code
+; validation and the ILBM mask-opacity check are three such COUNTs).
+(check "count over byte vector (fast path + keywords)" '(4 3 2 4 0 1)
+  (let ((v (make-array 8 :element-type '(unsigned-byte 8)
+                       :initial-contents '(1 0 2 0 0 3 0 1))))
+    (list (count 0 v)
+          (count 0 v :start 2)
+          (count 0 v :start 2 :end 5)
+          (count 0 v :from-end t)
+          (count 300 v)
+          (count 3 v :key #'1+ :test #'eql :start 1))))
+; EXT:COPY-ROWS — the strided row gather/scatter builtin (ILBM plane
+; extraction from an interleaved BODY decode).
+(check "copy-rows gathers strided rows" '(1 2 3 4 5 6)
+  (let ((src (make-array 12 :element-type '(unsigned-byte 8)
+                         :initial-contents '(1 2 9 9 3 4 9 9 5 6 9 9)))
+        (dst (make-array 6 :element-type '(unsigned-byte 8)
+                         :initial-element 0)))
+    (coerce (ext:copy-rows dst src 3 2 0 2 0 4) 'list)))
+(check "copy-rows overrun signals" :caught
+  (handler-case
+      (ext:copy-rows (make-array 8 :element-type '(unsigned-byte 8))
+                     (make-array 8 :element-type '(unsigned-byte 8))
+                     3 2 0 2 0 4)
+    (error () :caught)))
 (check "byte-vector vector-push-extend full non-adjustable errors" :caught
   (handler-case
       (let ((v (make-array 1 :element-type '(unsigned-byte 8)

@@ -3839,6 +3839,95 @@ static CL_Obj bi_unpack_byterun1(CL_Obj *args, int n)
     return CL_MAKE_FIXNUM((int32_t)pos);
 }
 
+/* (ext:copy-rows dst src count chunk dst-start dst-stride src-start src-stride)
+ *   => dst
+ *
+ * Copy COUNT rows of CHUNK bytes each between (unsigned-byte 8) vectors:
+ * row I goes from SRC[src-start + I*src-stride ...) to
+ * DST[dst-start + I*dst-stride ...).  This is the gather/scatter step for
+ * interleaved byte formats — an IFF ILBM BODY decoded in one piece holds
+ * each bitplane's rows CHUNK bytes wide every SRC-STRIDE bytes, and one
+ * call here extracts a whole plane where a Lisp loop would cost a VM
+ * round-trip per row (hundreds per image on a 14MHz 68020).
+ *
+ * Rows are copied front to back with memmove, so overlap WITHIN a row is
+ * safe; when SRC and DST are the same vector, rows already written are
+ * not re-read only if the regions don't cross (the REPLACE rule, per
+ * row).  No allocation happens inside, so the raw payload pointers stay
+ * valid. */
+static CL_Obj bi_copy_rows(CL_Obj *args, int n)
+{
+    CL_ByteVector *dst, *src;
+    int32_t count, chunk, dst_start, dst_stride, src_start, src_stride;
+    int32_t dlen, slen, i;
+    const uint8_t *sp;
+    uint8_t *dp;
+    CL_UNUSED(n);
+
+    if (!CL_BYTE_VECTOR_P(args[0]) ||
+        ((CL_ByteVector *)CL_OBJ_TO_PTR(args[0]))->elt_shift != 0 ||
+        ((CL_ByteVector *)CL_OBJ_TO_PTR(args[0]))->is_signed)
+        cl_error(CL_ERR_TYPE,
+                 "EXT:COPY-ROWS: destination must be an (UNSIGNED-BYTE 8) vector");
+    if (!CL_BYTE_VECTOR_P(args[1]) ||
+        ((CL_ByteVector *)CL_OBJ_TO_PTR(args[1]))->elt_shift != 0 ||
+        ((CL_ByteVector *)CL_OBJ_TO_PTR(args[1]))->is_signed)
+        cl_error(CL_ERR_TYPE,
+                 "EXT:COPY-ROWS: source must be an (UNSIGNED-BYTE 8) vector");
+    for (i = 2; i <= 7; i++)
+        if (!CL_FIXNUM_P(args[i]))
+            cl_error(CL_ERR_TYPE, "EXT:COPY-ROWS: counts, starts and strides "
+                     "must be fixnums (argument %d of %d is 0x%08x)",
+                     (int)i, n, (unsigned)args[i]);
+
+    dst = (CL_ByteVector *)CL_OBJ_TO_PTR(args[0]);
+    src = (CL_ByteVector *)CL_OBJ_TO_PTR(args[1]);
+    count      = CL_FIXNUM_VAL(args[2]);
+    chunk      = CL_FIXNUM_VAL(args[3]);
+    dst_start  = CL_FIXNUM_VAL(args[4]);
+    dst_stride = CL_FIXNUM_VAL(args[5]);
+    src_start  = CL_FIXNUM_VAL(args[6]);
+    src_stride = CL_FIXNUM_VAL(args[7]);
+    dlen = (int32_t)cl_bytevec_active_length(dst);
+    slen = (int32_t)cl_bytevec_active_length(src);
+
+    if (count < 0 || chunk < 0 || dst_start < 0 || dst_stride < 0 ||
+        src_start < 0 || src_stride < 0)
+        cl_error(CL_ERR_ARGS,
+                 "EXT:COPY-ROWS: counts, starts and strides must be non-negative");
+    if (count > 0 && chunk > 0) {
+        /* the widest access on each side is the last row's end */
+        int64_t dend = (int64_t)dst_start + (int64_t)(count - 1) * dst_stride + chunk;
+        int64_t send = (int64_t)src_start + (int64_t)(count - 1) * src_stride + chunk;
+        if (dend > (int64_t)dlen)
+            cl_error(CL_ERR_ARGS,
+                     "EXT:COPY-ROWS: %d rows of %d bytes at stride %d from %d "
+                     "run past the destination's %d bytes",
+                     (int)count, (int)chunk, (int)dst_stride, (int)dst_start,
+                     (int)dlen);
+        if (send > (int64_t)slen)
+            cl_error(CL_ERR_ARGS,
+                     "EXT:COPY-ROWS: %d rows of %d bytes at stride %d from %d "
+                     "run past the source's %d bytes",
+                     (int)count, (int)chunk, (int)src_stride, (int)src_start,
+                     (int)slen);
+        /* volatile: m68k-amigaos-gcc miscompiles flexible-array `->data +
+         * offset` pointer arithmetic — same workaround as
+         * bi_unpack_byterun1 / bi_replace above. */
+        {
+            const uint8_t *volatile spv = src->data;
+            uint8_t *volatile dpv = dst->data;
+            sp = (const uint8_t *)spv;
+            dp = (uint8_t *)dpv;
+        }
+        for (i = 0; i < count; i++)
+            memmove(dp + (uint32_t)dst_start + (uint32_t)i * (uint32_t)dst_stride,
+                    sp + (uint32_t)src_start + (uint32_t)i * (uint32_t)src_stride,
+                    (size_t)chunk);
+    }
+    return args[0];
+}
+
 static CL_Obj bi_getenv(CL_Obj *args, int n)
 {
     CL_Obj name_obj = args[0];
@@ -4457,6 +4546,7 @@ void cl_builtins_io_init(void)
     extfun("%GC-AUDIT-ROOTS", bi_ext_gc_audit_roots, 0, 0);
     extfun("GETENV", bi_getenv, 1, 1);
     extfun("UNPACK-BYTERUN1", bi_unpack_byterun1, 5, 6);
+    extfun("COPY-ROWS", bi_copy_rows, 8, 8);
     extfun("GETCWD", bi_getcwd, 0, 0);
     extfun("TTY-P", bi_ext_tty_p, 0, 0);
     extfun("TTY-RAW-MODE", bi_ext_tty_raw_mode, 1, 1);
