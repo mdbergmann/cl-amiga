@@ -1035,42 +1035,34 @@ being the session's cache; renders and uploads it on first sight."
              lines))
   nil)
 
-(defun %map-glyph (rp px py cell cw ch pen)
-  "Draw CH with PEN inside the CELL-pixel map cell at (PX,PY): the
-rastport font when the cell can hold it, the 5x7 microfont down to
-6px cells (a 30x30 city at lores draws 7px cells — too small for
-topaz 8), nothing below that.  The microfont path sets only the
-glyph's own pixels — a chunky upload would stamp its background
-rectangle over the wall lines framing the cell."
-  (cond ((>= cell cw)
-         (amiga.gfx:set-a-pen rp pen)
-         (amiga.gfx:move-to rp (+ px 2) (+ py cell -2))
-         (amiga.gfx:gfx-text rp (string ch)))
-        ((>= cell +microfont-advance+)
-         (amiga.gfx:set-a-pen rp pen)
-         (let ((rows (microfont-glyph ch))
-               (gx (+ px (max 1 (floor (- cell +microfont-glyph-width+)
-                                       2))))
-               (gy (+ py (max 1 (floor (- cell +microfont-glyph-height+)
-                                       2)))))
-           (dotimes (row +microfont-glyph-height+)
-             (let ((bits (aref rows row)))
-               (dotimes (col +microfont-glyph-width+)
-                 (when (logbitp (- +microfont-glyph-width+ 1 col) bits)
-                   (amiga.gfx:write-pixel rp (+ gx col)
-                                          (+ gy row))))))))))
+(defun %map-glyph (rp px py cell ch pen)
+  "Draw CH with PEN centered in the CELL-pixel map cell at (PX,PY),
+always in the 5x7 microfont — the whole map page is microfont, and a
+30x30 city at lores draws 7px cells, too small for topaz 8 anyway.
+Cells under 6px carry no glyph.  Only the glyph's own pixels are set:
+a chunky upload would stamp its background rectangle over the wall
+lines framing the cell."
+  (when (>= cell +microfont-advance+)
+    (amiga.gfx:set-a-pen rp pen)
+    (let ((rows (microfont-glyph ch))
+          (gx (+ px (max 1 (floor (- cell +microfont-glyph-width+) 2))))
+          (gy (+ py (max 1 (floor (- cell +microfont-glyph-height+) 2)))))
+      (dotimes (row +microfont-glyph-height+)
+        (let ((bits (aref rows row)))
+          (dotimes (col +microfont-glyph-width+)
+            (when (logbitp (- +microfont-glyph-width+ 1 col) bits)
+              (amiga.gfx:write-pixel rp (+ gx col) (+ gy row)))))))))
 
 (defun %amiga-draw-map-region (rp game ox oy cell x0 y0 vw vh full
-                               &optional (cw 8) legend)
+                               &optional legend)
   "Draw automap cells [X0,X0+VW) x [Y0,Y0+VH) at (OX,OY), CELL pixels
 per cell — black ink on the grey page, doors and the party amber.
 FULL non-NIL draws everything (debug); otherwise only what the
-party's knowledge holds.  CW is the font's character cell width (see
-%MAP-GLYPH).  LEGEND is the MAP-LEGEND-ENTRIES list — each entry's
-marker draws amber on its cell.  Walls come from MAP-EDGE-RUNS: one
-draw-line per straight stretch instead of one per cell edge, which is
-what makes a 30x30 city map open in a blink instead of seconds at
-14MHz."
+party's knowledge holds.  LEGEND is the MAP-LEGEND-ENTRIES list —
+each entry's marker draws amber on its cell.  Walls come from
+MAP-EDGE-RUNS: one draw-line per straight stretch instead of one per
+cell edge, which is what makes a 30x30 city map open in a blink
+instead of seconds at 14MHz."
   (amiga.gfx:set-a-pen rp 2)
   (amiga.gfx:rect-fill rp ox oy (+ ox (* cell vw)) (+ oy (* cell vh)))
   (let ((map (game-map game))
@@ -1103,7 +1095,7 @@ what makes a 30x30 city map open in a blink instead of seconds at
                 (unless (zerop c)
                   (when (or full (cell-explored-p k (+ x0 rx) (+ y0 ry)))
                     (%map-glyph rp (+ ox (* rx cell)) (+ oy (* ry cell))
-                                cell cw (code-char c) 0)))))))))
+                                cell (code-char c) 0)))))))))
     ;; legend markers, amber on their cells
     (dolist (e legend)
       (destructuring-bind (marker x y title) e
@@ -1111,7 +1103,7 @@ what makes a 30x30 city map open in a blink instead of seconds at
         (when (and (<= x0 x) (< x (+ x0 vw))
                    (<= y0 y) (< y (+ y0 vh)))
           (%map-glyph rp (+ ox (* (- x x0) cell)) (+ oy (* (- y y0) cell))
-                      cell cw marker 3))))
+                      cell marker 3))))
     ;; party marker: filled block + facing tick, when inside the region
     (let ((gx (game-x game))
           (gy (game-y game)))
@@ -1201,6 +1193,15 @@ slower — good enough for tests)."
                                        bw +microfont-line-height+))
       (multiple-value-bind (pens pw ph) (microfont-line text 0 1)
         (amiga.gfx:write-chunky rp x y pw ph pens))))
+
+(defun %put-microfont-text (rp text x y &optional (fg 0) (bg 2))
+  "One microfont line at (X,Y) in arbitrary pens — FG glyphs on a BG
+field, the default being black on the chrome grey (the map page).
+Uncached: the map and its legend redraw only on demand, so the chunky
+upload costs nothing worth a bitmap cache (that is %PUT-MICROFONT-LINE's
+job for the log, which repaints every frame)."
+  (multiple-value-bind (pens w h) (microfont-line text fg bg)
+    (amiga.gfx:write-chunky rp x y w h pens)))
 
 (defun %amiga-draw-log (rp log l &optional lines-cache)
   "Message log: trailing lines, newest at the bottom, black microfont
@@ -1452,18 +1453,19 @@ front-ends that want it."
         (line "1-7 view another   Esc back")))
     (amiga.gfx:set-a-pen rp 1)))
 
-(defun %amiga-draw-page (rp menu-lines l)
+(defun %amiga-draw-page (rp menu-lines l &optional lines-cache)
   "An overlay menu page (cast, use, sing, save slots): MENU-LINES on
-a white page over the view column.  The log and roster panes stay
-live around it — hit/spell points and messages update as the party
-acts.  Lines pack at one pixel of leading (tighter than the layout's
-LH) so a full page fits above the roster on the lo-res screen.
-Locations and the character sheet use the message-area takeover
-instead (%AMIGA-DRAW-TAKEOVER)."
+a white page over the view column, in the engine's 5x7 microfont —
+the same type as the message log and the location takeover, and small
+enough that a long save-slot or spell list fits the lo-res page
+without truncation.  The log and roster panes stay live around it —
+hit/spell points and messages update as the party acts.  LINES-CACHE
+as in %AMIGA-DRAW-LOG.  Locations and the character sheet use the
+message-area takeover instead (%AMIGA-DRAW-TAKEOVER)."
   (let* ((ox (ui-layout-bx l))
          (oy (ui-layout-by l))
-         (lh (1+ (amiga.gfx:rastport-tx-height rp)))
-         (cw (ui-layout-cw l))
+         (lh +microfont-line-height+)
+         (cw +microfont-advance+)
          (px (+ ox 4))
          (py (+ oy 4))
          (pw (ui-layout-fp-w l))
@@ -1479,18 +1481,18 @@ instead (%AMIGA-DRAW-TAKEOVER)."
     (amiga.gfx:rect-fill rp px py (+ px pw) (+ py ph))
     (amiga.gfx:set-a-pen rp 0)
     (%chrome-rect rp px py (+ px pw) (+ py ph))
-    (let ((y (+ py 4 (ui-layout-base l)))
+    (let ((y (+ py 4))
           (n 0))
       (dolist (line lines)
         (when (< n max-lines)
           (let ((text (menu-line-text line)))
-            (amiga.gfx:move-to rp (+ px 8) y)
-            (amiga.gfx:gfx-text rp (if (> (length text) max-chars)
-                                       (subseq text 0 max-chars)
-                                       text))
+            (%put-microfont-line rp lines-cache
+                                 (if (> (length text) max-chars)
+                                     (subseq text 0 max-chars)
+                                     text)
+                                 (+ px 8) y)
             ;; a click on an option row / a footer hint is its key
-            (%register-line-hotspots line (+ px 8)
-                                     (- y (ui-layout-base l)) cw lh
+            (%register-line-hotspots line (+ px 8) y cw lh
                                      (1+ px) (+ px pw -1)))
           (incf y lh)
           (incf n))))
@@ -1504,11 +1506,10 @@ draws what fits between TOP and BOTTOM in LW pixels."
   (let ((y top)
         (marker-w (* 2 +microfont-advance+)))
     (flet ((line (text fg x max-w)
-             (multiple-value-bind (pens w h)
-                 (microfont-line (fit-title text #'microfont-text-width
-                                            max-w)
-                                 fg 2)
-               (amiga.gfx:write-chunky rp x y w h pens))))
+             (%put-microfont-text rp
+                                  (fit-title text #'microfont-text-width
+                                             max-w)
+                                  x y fg)))
       (when (<= (+ y +microfont-line-height+) bottom)
         (line "Found:" 0 lx lw)
         (incf y (+ +microfont-line-height+ 2)))
@@ -1529,12 +1530,13 @@ readable cell size.  The space right of the map carries the legend of
 found locations; the two-line footer carries what the play page has
 no room for: the zone title, the party position — plus the facing
 while a compass burns — and the game clock (keys are on the help
-page)."
+page).  Every glyph on the page — cells, legend and footer — is the
+5x7 microfont, so the map reads as one plate instead of two type
+sizes, and the footer costs half the height topaz 8 did."
   (let* ((bx (ui-layout-bx l))
          (by (ui-layout-by l))
          (right (ui-layout-right l))
-         (lh (ui-layout-lh l))
-         (cw (ui-layout-cw l))
+         (lh +microfont-line-height+)
          (map (game-map game))
          (mw (dungeon-map-width map))
          (mh (dungeon-map-height map))
@@ -1553,33 +1555,32 @@ page)."
     (amiga.gfx:rect-fill rp bx by right (ui-layout-bottom l))
     (multiple-value-bind (x0 y0 w h)
         (map-viewport map (game-x game) (game-y game) vw vh)
-      (%amiga-draw-map-region rp game bx by cell x0 y0 w h full cw legend)
+      (%amiga-draw-map-region rp game bx by cell x0 y0 w h full legend)
       ;; the legend, in whatever width the map leaves to its right
       (let* ((lx (+ bx (* w cell) 8))
              (lw (- right lx)))
         (when (and legend (>= lw (* 7 +microfont-advance+)))
           (%amiga-draw-map-legend rp legend lx lw by (+ by (* h cell))))))
-    (amiga.gfx:set-a-pen rp 0)
-    (let* ((base-off (- lh (ui-layout-base l)))
-           (y1 (- (ui-layout-bottom l) lh base-off))  ; upper footer line
-           (y2 (- (ui-layout-bottom l) base-off))     ; lower footer line
+    (let* ((y1 (- (ui-layout-bottom l) (* 2 lh)))  ; upper footer line
+           (y2 (- (ui-layout-bottom l) lh))        ; lower footer line
            (clock (clock-line game))
-           (clock-w (* cw (length clock)))
+           (clock-w (microfont-text-width clock))
            (place (format nil "~A  (~D,~D)~@[ ~A~]"
                           (string-capitalize (map-title map))
                           (game-x game) (game-y game)
                           (when (compass-active-p game)
                             (dir-keyword (game-facing game)))))
-           (place-max (max 0 (floor (- right bx clock-w cw) cw))))
-      (amiga.gfx:move-to rp bx y1)
-      (amiga.gfx:gfx-text rp (if (> (length place) place-max)
-                                 (subseq place 0 place-max)
-                                 place))
-      (amiga.gfx:move-to rp (- right clock-w) y1)
-      (amiga.gfx:gfx-text rp clock)
-      (amiga.gfx:move-to rp bx y2)
-      (amiga.gfx:gfx-text rp (format nil "~Dx~D map~@[  FULL~]"
-                                     mw mh full))
+           (place-max (max 0 (floor (- right bx clock-w
+                                       +microfont-advance+)
+                                    +microfont-advance+))))
+      (%put-microfont-text rp (if (> (length place) place-max)
+                                  (subseq place 0 place-max)
+                                  place)
+                           bx y1)
+      (%put-microfont-text rp clock (- right clock-w) y1)
+      (%put-microfont-text rp (format nil "~Dx~D map~@[  FULL~]"
+                                      mw mh full)
+                           bx y2)
       (amiga.gfx:set-a-pen rp 1))))
 
 ;;; The Game menu.  Item numbers (the bar counts as an item) are decoded
@@ -1965,21 +1966,25 @@ map/help/sheet pages close on a click outside a target — see
                              ;; fallback when there is no picture.
                              (cond (savem
                                     (%amiga-draw-page
-                                     rp (save-menu-lines game savem) l))
+                                     rp (save-menu-lines game savem) l
+                                     log-lines))
                                    (castv
                                     (%amiga-draw-page
-                                     rp (cast-lines game castv) l))
+                                     rp (cast-lines game castv) l
+                                     log-lines))
                                    (usev
                                     (%amiga-draw-page
-                                     rp (use-lines game usev) l))
+                                     rp (use-lines game usev) l
+                                     log-lines))
                                    (singv
                                     (%amiga-draw-page
-                                     rp (sing-lines game singv) l))
+                                     rp (sing-lines game singv) l
+                                     log-lines))
                                    (ordersv
                                     ;; combat: the round-orders page
                                     (%amiga-draw-page
                                      rp (combat-orders-lines game ordersv)
-                                     l))
+                                     l log-lines))
                                    (t
                                     (let ((picture
                                             (cond ((eq mode :sheet)

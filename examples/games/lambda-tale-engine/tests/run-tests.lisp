@@ -4789,10 +4789,11 @@ brick grid" d side)
                      :idcmp amiga.intuition:+idcmp-closewindow+)
               (let* ((rp (%game-rastport win font))
                      (l (%amiga-layout win rp)))
-                ;; the overlay page (cast/use/sing/save look the same)
+                ;; the overlay page (cast/use/sing/save look the same;
+                ;; microfont geometry, like the takeover below)
                 (let* ((*hotspots* '())
-                       (lh (1+ (amiga.gfx:rastport-tx-height rp)))
-                       (cw (ui-layout-cw l))
+                       (lh +microfont-line-height+)
+                       (cw +microfont-advance+)
                        (px (+ (ui-layout-bx l) 4))
                        (py (+ (ui-layout-by l) 4))
                        (max-chars (floor (- (ui-layout-fp-w l) 16) cw))
@@ -5582,18 +5583,24 @@ pieces need a mask" pname)
   (setf (cell-special m 0 1) '((message "just a street sign")))
   (check "legend: nothing found yet" nil (map-legend-entries m k))
   (know-cell k 1 1)
-  (check "legend: a found house is listed"
-         '((#\1 1 1 "A Stone Cottage"))
-         (map-legend-entries m k))
+  (check "legend: a plain house is scenery, not a legend entry"
+         nil (map-legend-entries m k))
   (know-cell k 2 1)
-  (check "legend: important places come first, houses after"
-         '((#\1 2 1 "Wolfgar's Arms") (#\2 1 1 "A Stone Cottage"))
+  (check "legend: a special place is listed once found"
+         '((#\1 2 1 "Wolfgar's Arms"))
          (map-legend-entries m k))
-  (check "legend: full mode lists every location, found or not"
-         '((#\1 2 1 "Wolfgar's Arms") (#\2 1 1 "A Stone Cottage"))
+  (check "legend: full mode lists every special place, found or not"
+         '((#\1 2 1 "Wolfgar's Arms"))
          (map-legend-entries m nil :full t))
+  (check "legend: full mode leaves houses off too"
+         nil (find 1 (map-legend-entries m nil :full t) :key #'second))
   (check "legend: message-only specials are not locations"
-         nil (find 0 (map-legend-entries m nil :full t) :key #'second)))
+         nil (find 0 (map-legend-entries m nil :full t) :key #'second))
+  ;; any kind but :house is a place, and places come in map order
+  (setf (cell-special m 0 0) '((location "The Temple" :temple)))
+  (check "legend: kinds other than :house are always places"
+         '((#\1 0 0 "The Temple") (#\2 2 1 "Wolfgar's Arms"))
+         (map-legend-entries m nil :full t)))
 
 ;;; ---------------------------------------------------------------------
 ;;; Summary
