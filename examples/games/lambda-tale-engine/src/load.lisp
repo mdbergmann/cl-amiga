@@ -14,8 +14,19 @@
     ;; strip the trailing "src/" component
     (subseq src 0 (- (length src) 4))))
 
-(let ((src (concatenate 'string cl-user::*lambda-tale-engine-root* "src/")))
-  (flet ((ld (file) (load (concatenate 'string src file))))
+;; Each file's load is timed; the breakdown lands in the engine debug
+;; log once loading is over (a no-op unless TALE_DEBUG_LOG enabled it).
+;; With the runtime's internal-time epoch anchored at process start,
+;; the "launch ->" figures are true ms-since-clamiga-launch, so the log
+;; also shows what the boot (C init + lib FASLs) cost before us.
+(let ((src (concatenate 'string cl-user::*lambda-tale-engine-root* "src/"))
+      (t0 (get-internal-real-time))
+      (times '()))
+  (flet ((ms (delta) (round (* 1000 delta) internal-time-units-per-second))
+         (ld (file)
+           (let ((start (get-internal-real-time)))
+             (load (concatenate 'string src file))
+             (push (cons file (- (get-internal-real-time) start)) times))))
     (ld "package.lisp")
     (ld "debug-log.lisp")
     (ld "profiles.lisp")
@@ -41,4 +52,16 @@
     (ld "render.lisp")
     (ld "render-fp.lisp")
     #+amigaos (ld "amiga-ui.lisp")
-    #-amigaos (ld "host-ui.lisp")))
+    #-amigaos (ld "host-ui.lisp")
+    ;; TALE::%DLOG is looked up at runtime: this form is READ before
+    ;; the TALE package exists, so its symbols cannot appear literally.
+    (let ((dlog (let ((s (find-symbol "%DLOG" "TALE")))
+                  (and s (fboundp s) (symbol-function s)))))
+      (when dlog
+        (dolist (entry (reverse times))
+          (funcall dlog "  load ~A [~D ms]" (car entry) (ms (cdr entry))))
+        (funcall dlog "engine sources loaded: ~D files in ~D ms (launch -> loader ~D ms, launch -> loaded ~D ms)"
+                 (length times)
+                 (ms (- (get-internal-real-time) t0))
+                 (ms t0)
+                 (ms (get-internal-real-time)))))))

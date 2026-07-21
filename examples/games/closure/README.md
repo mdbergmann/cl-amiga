@@ -67,6 +67,39 @@ For development there is also a window view on the Workbench screen
 (tale:play-amiga "worlds/closure/town.map" :display :window)
 ```
 
+## Load times and memory
+
+Measured launch-to-first-frame on the FS-UAE low-end baseline (the
+`CONFIG=lowend` A1200: cycle-exact 68020, warm FASL cache; the 28 MHz
+column is the same machine with an accelerator's clock —
+`uae_cpu_multiplier = 8` in the FS-UAE config):
+
+| phase | 14 MHz | 28 MHz |
+|---|---|---|
+| clamiga boot (runtime + CLOS) | 21 s | 10 s |
+| engine sources (25 cached FASLs) | 43 s | 21 s |
+| campaign + town map + new game | 6 s | 3 s |
+| screen open, menus, layout | 7 s | 4 s |
+| town tile pack (43 ILBMs) | 32 s | 16 s |
+| chrome + first frame | 8 s | 4 s |
+| **first frame** | **~2 min** | **~1 min** |
+
+Every phase scales with the CPU clock — the load path is compute-bound,
+so faster storage changes nothing and a faster CPU changes everything.
+The first launch after editing a source file additionally recompiles
+that file into the FASL cache (about 47 s for `map.lisp`, 3.5 min for
+`amiga-ui.lisp` at 14 MHz — paid once per edit, not per launch).
+
+The game runs in a **4 MB heap** (`HEAP=4M ./run-amiga.sh`), including
+the trip through the trapdoor — both zones and the second tile pack —
+with load times identical to the default `--heap 8M`: tile packs and
+other bitmaps live in OS graphics memory, not the Lisp heap, so the
+heap carries only the runtime and the world state.
+
+The numbers come from the engine's debug log (`DEBUG=1`, which stamps
+`first frame up [launch+N ms]` and per-phase durations) together with
+clamiga's `--boot-log`; see the engine README's debug-log section.
+
 ## Keys
 
 Walkabout: `w` forward, `s` back-step (keeps facing), `a`/`d` turn,

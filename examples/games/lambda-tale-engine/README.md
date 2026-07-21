@@ -540,6 +540,16 @@ default and free when off.  Game code can write its own lines with
 `(tale:dlog "..." args...)` and time a block with `tale:dlog-timed`;
 see the debug-log section of `tests/run-tests.lisp` for usage.
 
+The log doubles as a launch profiler: the engine loader logs each
+source file's load time and a `launch -> loaded` summary, and
+`play-amiga` marks `new-game`, `display open` and `first frame up`,
+each with milliseconds since clamiga started (`get-internal-real-time`
+counts from process launch).  Together with clamiga's `--boot-log`
+(the pre-engine runtime/CLOS boot phases) one debug-log trace shows
+where every second between launch and the first rendered frame goes —
+see "Load times and memory" in the Closure README for measured
+results.
+
 ## Roadmap
 
 - **M0 (done)**: map model, movement, automap knowledge, ASCII map view,
