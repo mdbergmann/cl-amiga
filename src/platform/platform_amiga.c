@@ -16,6 +16,7 @@
  * the MP subsystem (e.g. the main thread before any mp:make-thread). */
 extern void cl_gc_enter_safe_region(void);
 extern void cl_gc_leave_safe_region(void);
+extern void cl_write_cstring_to_stdout(const char *s);
 
 void *platform_alloc(unsigned long size)
 {
@@ -1087,6 +1088,7 @@ const char *platform_expand_home(const char *path, char *buf, int bufsize)
 #include <exec/tasks.h>
 #include <dos/dostags.h>
 #include <sys/time.h>   /* struct timeval for WaitSelect zero-timeout poll */
+#include "platform_amiga_ppc.h"   /* NP_Entry gate for the MorphOS PPC build */
 
 /* Address-length type for accept/getsockname/getsockopt.  The MorphOS
  * socket.library API takes LONG* (and does not declare socklen_t), whereas
@@ -1650,6 +1652,15 @@ static void reactor_loop(void)
  * the booting thread, then run the loop until REQ_SHUTDOWN. */
 static void reactor_entry(void)
 {
+    /* Capture the boot task/signal into locals as the very first thing this
+     * process does — reactor_boot_task/reactor_boot_sig are globals that the
+     * booting caller may reset (and FreeSignal) once its bounded wait times
+     * out (see reactor_wait_boot / reactor_ensure).  Reading the globals
+     * again at Signal() time below would race that reset: the shift could
+     * see reactor_boot_sig == -1 (UB), or a bit number already reallocated
+     * to an unrelated AllocSignal() caller by then. */
+    struct Task    *boot_task = reactor_boot_task;
+    BYTE            boot_sig  = reactor_boot_sig;
     struct MsgPort *port = CreateMsgPort();
     int ok = 0;
     int i;
@@ -1672,7 +1683,7 @@ static void reactor_entry(void)
         }
     }
 
-    Signal(reactor_boot_task, 1UL << reactor_boot_sig);  /* boot handshake done */
+    Signal(boot_task, 1UL << boot_sig);  /* boot handshake done */
     if (!ok) return;
 
     reactor_loop();
@@ -1683,25 +1694,74 @@ static void reactor_entry(void)
     reactor_port = NULL;
 }
 
+/* NP_Entry is entered as m68k code; on MorphOS the PPC entry needs a trap
+ * gate or the new process dies in the emulator (see platform_amiga_ppc.h). */
+CL_PROC_ENTRY_GATE(reactor_entry_gate, reactor_entry);
+
+/* Wait for the reactor's boot handshake, but BOUNDED.  A plain Wait() here
+ * deadlocks the whole runtime if the child process dies before it can signal
+ * — which is exactly what happens when the entry point is entered with the
+ * wrong code type (see platform_amiga_ppc.h) or when the process cannot get
+ * its stack.  Polling SetSignal() between Delay() ticks leaves the pending
+ * signal untouched, so the normal path costs at most one tick of latency and
+ * a broken one surfaces as a clean error instead of a frozen console. */
+#define REACTOR_BOOT_TICKS 500   /* 500 * 1/50s = ~10 seconds */
+
+/* Returns 1 if the boot signal arrived, 0 if the wait timed out. */
+static int reactor_wait_boot(void)
+{
+    ULONG mask = 1UL << reactor_boot_sig;
+    LONG ticks = 0;
+    while (!(SetSignal(0, 0) & mask)) {
+        if (ticks++ >= REACTOR_BOOT_TICKS)
+            return 0;                /* gave up: reactor_port stays NULL */
+        Delay(1);
+    }
+    SetSignal(0, mask);             /* consume the boot signal */
+    return 1;
+}
+
+/* Sticky latch: once the reactor process has failed to boot, don't retry —
+ * every socket call would otherwise pay the full CreateNewProcTags() +
+ * REACTOR_BOOT_TICKS poll-and-give-up cost again (up to ~10s), and leak
+ * another reactor_proc handle each time. */
+static int reactor_init_failed = 0;
+
 /* Lazily spin up the reactor.  Guarded by a mutex so concurrent first-uses
  * from different threads race safely.  Returns 1 if the reactor is ready. */
 static int reactor_ensure(void)
 {
     if (reactor_port) return 1;
+    if (reactor_init_failed) return 0;
     platform_mutex_lock(reactor_init_mutex);
-    if (!reactor_port) {
+    if (!reactor_port && !reactor_init_failed) {
         reactor_boot_task = FindTask(NULL);
         reactor_boot_sig = AllocSignal(-1);
         if (reactor_boot_sig >= 0) {
             reactor_proc = CreateNewProcTags(
-                NP_Entry,     (ULONG)reactor_entry,
-                NP_StackSize, (ULONG)32768,
+                NP_Entry,     CL_PROC_ENTRY(reactor_entry_gate, reactor_entry),
+                CL_PROC_STACK_TAGS(32768),
                 NP_Name,      (ULONG)"clamiga_sockets",
                 TAG_DONE);
-            if (reactor_proc)
-                Wait(1UL << reactor_boot_sig);   /* until reactor publishes the port */
-            FreeSignal(reactor_boot_sig);
+            if (reactor_proc) {
+                /* On timeout the reactor process may still be starting up
+                 * and will Signal() this bit later using the copy it
+                 * captured for itself at entry (see reactor_entry) — do
+                 * NOT FreeSignal() it here, or that bit could be handed to
+                 * an unrelated AllocSignal() caller before the reactor
+                 * fires it, corrupting that caller's wait. */
+                if (reactor_wait_boot())
+                    FreeSignal(reactor_boot_sig);
+            } else {
+                FreeSignal(reactor_boot_sig);
+            }
             reactor_boot_sig = -1;
+        }
+        if (!reactor_port) {
+            reactor_init_failed = 1;
+            cl_write_cstring_to_stdout(
+                "clamiga: socket reactor process failed to start - "
+                "sockets are unavailable.\n");
         }
     }
     platform_mutex_unlock(reactor_init_mutex);
