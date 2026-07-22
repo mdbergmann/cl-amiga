@@ -25,6 +25,30 @@
 (defparameter *fp-view-width* (display-profile-fp-width *display-profile*))
 (defparameter *fp-view-height* (display-profile-fp-height *display-profile*))
 
+;;; Draw distance: how many of the +VIEW-DEPTH+ depth levels the
+;;; first-person view actually draws.  A speed knob for slower
+;;; machines — each level dropped is up to three fewer wall blits per
+;;; frame (and ten fewer piece files at load time), at the price of the
+;;; corridor ending sooner, in the backdrop.
+;;;
+;;; This is a RENDERING cap only.  What the party can SEE — the automap
+;;; knowledge OBSERVE records, and the darkness rule in GAME-VIEW-DEPTH
+;;; — is deliberately not affected: a setting the player picks for
+;;; frames must never change the game being played.  RENDER-VIEW-DEPTH
+;;; is where the two meet.
+;;;
+;;; Initialized from the default display profile like the viewport
+;;; above; the profile only supplies a DEFAULT, since draw distance
+;;; tracks the CPU and the profile describes the screen.
+(defparameter *draw-depth* (display-profile-draw-depth *display-profile*))
+
+(defun %draw-depth ()
+  "*DRAW-DEPTH* clamped to the levels the plane set actually has: at
+least one cell, at most +VIEW-DEPTH+.  Every consumer goes through
+this, so an out-of-range setting degrades instead of indexing past the
+planes vector."
+  (max 1 (min *draw-depth* +view-depth+)))
+
 (defstruct (view-slice (:constructor %make-view-slice))
   (depth 0)
   cx cy               ; center cell coordinates
@@ -365,9 +389,15 @@ blitted view draw the same wall."
               (values nx y (- (+ x w) nx) h (- nx x)))
             (values x y (1+ (- (max x (min edge (+ x w -1))) x)) h 0))))))
 
-(defun wall-piece-names ()
-  "All piece keys the view can ever ask for (the asset set)."
-  (loop for d below +view-depth+
+(defun wall-piece-names (&optional (depth +view-depth+))
+  "All piece keys the view can ever ask for (the asset set).
+
+DEPTH defaults to +VIEW-DEPTH+ — the full set, which is the pack
+CONTRACT: a generator or manifest must always speak for every depth,
+whatever draw distance the machine that built the pack happened to
+run.  Only the runtime loader passes a smaller DEPTH, to skip loading
+pieces *DRAW-DEPTH* will never blit."
+  (loop for d below depth
         append (list* (list :front d) (list :front-door d)
                       (loop for kind in '(:side :side-door :flank :flank-door)
                             append (list (list kind d :l)

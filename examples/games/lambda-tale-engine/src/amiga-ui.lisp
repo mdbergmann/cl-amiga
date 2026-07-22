@@ -329,7 +329,7 @@ the viewport has its full asset size, the wireframe otherwise.  The
 blitted view starts from the ceiling/floor backdrop (black where the
 pack has none); the walls carve the perspective on top of it."
   (let ((slices (compute-view (game-map game) (game-x game) (game-y game)
-                              (game-facing game) (game-view-depth game)))
+                              (game-facing game) (render-view-depth game)))
         (planes (view-planes w h)))
     (if (and walls (= w *fp-view-width*) (= h *fp-view-height*))
         (progn
@@ -495,8 +495,11 @@ would fold every plane twice."
       (%chip-mask bytes))))
 
 (defun %load-wall-assets (rp log)
-  "Load the active tile pack (*GFX-DIR*): every wall piece into an
-offscreen bitmap, plus the optional floor.iff / ceiling.iff backdrops
+  "Load the active tile pack (*GFX-DIR*): every wall piece the active
+draw distance can show (*DRAW-DEPTH*) into an offscreen bitmap — the
+pieces at deeper levels must still be PRESENT (the pack contract is
+the full set whatever this machine draws), they are just not decoded —
+plus the optional floor.iff / ceiling.iff backdrops
 under the keys (:FLOOR) / (:CEILING).  Returns (VALUES WALLS PALETTE):
 a hash of piece key -> vector of (BITMAP . MASK) entries — index 0 the
 base piece file, further entries the optional -v1.iff/-v2.iff/...
@@ -513,6 +516,7 @@ always opaque."
         (friend (%window-bitmap rp))
         (depth (max 2 (amiga.gfx:get-bitmap-attr (%window-bitmap rp)
                                                  amiga.gfx:+bma-depth+)))
+        (drawn (%draw-depth))   ; distance levels this machine blits
         (planes (view-planes *fp-view-width* *fp-view-height*)))
     (labels ((add-entry (key bm mask)
                ;; into the hash the moment the bitmap exists, so an
@@ -587,24 +591,32 @@ PRINT-TILE-MANIFEST)"
       (dlog-timed ("wall pack ~A" *gfx-dir*)
        (handler-case
           (progn
+            ;; Every piece of the FULL set is checked for existence —
+            ;; the pack contract does not shrink with the machine's
+            ;; draw distance, or a pack missing a deep piece would pass
+            ;; here and fail only on someone else's faster machine.
+            ;; Only the depths this machine will actually blit are then
+            ;; decoded into bitmaps, which is where the load time and
+            ;; the chip RAM go.
             (dolist (piece (wall-piece-names))
               (let ((file (concatenate 'string *gfx-dir*
                                        (wall-piece-file piece))))
                 (unless (probe-file file)
                   (error "missing wall asset ~A" file))
-                (destructuring-bind (x y w h) (wall-piece-rect planes piece)
-                  (declare (ignore x y))
-                  (load-piece piece file w h t)
-                  ;; optional per-house style variants beside the base
-                  ;; piece, probed in order until one is missing — the
-                  ;; pack decides how many looks (and at which depths)
-                  ;; it pays the load time for
-                  (loop for v from 1
-                        for vfile = (concatenate
-                                     'string *gfx-dir*
-                                     (wall-piece-variant-file piece v))
-                        while (probe-file vfile)
-                        do (load-piece piece vfile w h t)))))
+                (when (< (second piece) drawn)
+                  (destructuring-bind (x y w h) (wall-piece-rect planes piece)
+                    (declare (ignore x y))
+                    (load-piece piece file w h t)
+                    ;; optional per-house style variants beside the base
+                    ;; piece, probed in order until one is missing — the
+                    ;; pack decides how many looks (and at which depths)
+                    ;; it pays the load time for
+                    (loop for v from 1
+                          for vfile = (concatenate
+                                       'string *gfx-dir*
+                                       (wall-piece-variant-file piece v))
+                          while (probe-file vfile)
+                          do (load-piece piece vfile w h t))))))
             ;; The backdrops are optional and always opaque: a pack
             ;; without them keeps the black ceiling/floor.
             (destructuring-bind (ceiling floor) (backdrop-rects planes)
@@ -1709,7 +1721,7 @@ AMIGA.GFX:BEST-MODE-ID) covered by a borderless backdrop window."
 
 (defun play-amiga (map-file
                    &key (display :screen) (profile *display-profile*)
-                     gfx-dir)
+                     gfx-dir draw-depth)
   "Interactive walkabout on MAP-FILE.  Loads the campaign.lisp next to
 the map file (classes, monsters, items, party) when present — a
 designer's own world directory brings its own campaign; the engine has
@@ -1725,6 +1737,13 @@ wall-piece ILBMs plus the optional floor.iff / ceiling.iff /
 palette.iff (see PRINT-TILE-MANIFEST for the contract, which depends
 on the profile); the pack's colors show on the custom screen — a
 Workbench window keeps the Workbench palette.
+DRAW-DEPTH is the speed knob for slower machines: how many of the
++VIEW-DEPTH+ (4) distance levels the first-person view draws, 1-4,
+defaulting to the profile's own.  Each level dropped is up to three
+fewer wall blits per frame and ten fewer piece files at load time; the
+corridor then ends that much nearer, in the backdrop.  It changes only
+what is DRAWN — the automap still records everything the party could
+see, and darkness still overrides it downward.
 Keys: W forward, S back-step, A/D turn, M map mode (M/Esc leaves it,
 F toggles the debug full view there), H or ? the help page (the key
 reference — H/Esc leaves), 1-7 open a party member's character sheet
@@ -1753,9 +1772,11 @@ map/help/sheet pages close on a click outside a target — see
 *HOTSPOTS*."
   (load-campaign map-file)
   (with-display-profile (profile)
-   (dlog "play-amiga ~A display ~S profile ~S"
-         map-file display (display-profile-name *display-profile*))
+   ;; The overrides bind INSIDE the profile binding: WITH-DISPLAY-PROFILE
+   ;; has just set *GFX-DIR* and *DRAW-DEPTH* to the profile's defaults,
+   ;; and these arguments override those defaults.
    (let* ((*gfx-dir* (or gfx-dir *gfx-dir*))
+          (*draw-depth* (or draw-depth *draw-depth*))
          (map (load-map-file map-file))
          (game nil)
          (log nil)
@@ -1777,6 +1798,9 @@ map/help/sheet pages close on a click outside a target — see
          (pace-fn nil)      ; draws one paced transcript beat (set once
                             ; the window exists)
          (over nil))
+    (dlog "play-amiga ~A display ~S profile ~S draw-depth ~D"
+          map-file display (display-profile-name *display-profile*)
+          (%draw-depth))
     (labels ((wire (g)
                (setf log (attach-message-log g))
                (setf shopv (when (game-location g) (make-shop-view)))

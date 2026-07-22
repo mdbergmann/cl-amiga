@@ -34,6 +34,11 @@ absolute path under *ENGINE-DIR*."
   win-width win-height        ; window-mode size (:display :window)
   fp-width fp-height          ; first-person viewport the assets match
   gfx-dir                     ; the profile's default tile pack
+  draw-depth                  ; default *DRAW-DEPTH*: how many depth
+                              ; levels the view draws (see view.lisp).
+                              ; Only a DEFAULT — the profile describes
+                              ; a screen, not a CPU, and PLAY-AMIGA's
+                              ; :DRAW-DEPTH overrides it per machine
   pad-x pad-y                 ; chrome ring pads (full-screen backdrop)
   view-gap                    ; px between the view column and the log
   band-height                 ; effects + compass band at the log's foot
@@ -51,6 +56,13 @@ absolute path under *ENGINE-DIR*."
    :win-width 640 :win-height 256
    :fp-width 240 :fp-height 130
    :gfx-dir (engine-path "data/gfx-hires/")
+   ;; One level short of the full view (+VIEW-DEPTH+ is 4; this file
+   ;; loads before view.lisp, so the constant cannot be named here).
+   ;; Hires blits roughly twice the lores pixel area per frame, and the
+   ;; deepest level is the one that costs a blit to show almost nothing
+   ;; — an 8x8 front wall — so it is the cheapest thing to give up.
+   ;; Raise it with :DRAW-DEPTH 4 on a machine that can afford it.
+   :draw-depth 3
    :pad-x 12 :pad-y 10 :view-gap 12 :band-height 20
    :roster-cols '(:no 0 :name 2 :ac 22 :hit 27 :hpts 32
                   :spl 38 :spts 43 :cl 48)))
@@ -69,6 +81,8 @@ absolute path under *ENGINE-DIR*."
    :win-width 320 :win-height 256
    :fp-width 120 :fp-height 112
    :gfx-dir (engine-path "data/gfx/")
+   :draw-depth 4                        ; the full view — the smaller
+                                        ; viewport can afford it
    :pad-x 10 :pad-y 10 :view-gap 12 :band-height 20
    :roster-cols '(:no 0 :name 2 :ac 15 :hit 19 :hpts 23
                   :spl 27 :spts 31 :cl 35)))
@@ -94,14 +108,19 @@ profile from *DISPLAY-PROFILES*."
                                *display-profiles*))))))
 
 (defmacro with-display-profile ((designator) &body body)
-  "Run BODY with *DISPLAY-PROFILE* and the viewport/pack specials
-(*FP-VIEW-WIDTH*, *FP-VIEW-HEIGHT*, *GFX-DIR*) bound from DESIGNATOR's
-profile, so the layout, the asset loader/generator and the manifest all
-agree on one target."
+  "Run BODY with *DISPLAY-PROFILE* and the viewport/pack/draw-distance
+specials (*FP-VIEW-WIDTH*, *FP-VIEW-HEIGHT*, *GFX-DIR*, *DRAW-DEPTH*)
+bound from DESIGNATOR's profile, so the layout, the asset
+loader/generator and the manifest all agree on one target.
+
+*DRAW-DEPTH* is bound to the profile's DEFAULT, so a caller that wants
+its own draw distance must rebind it INSIDE this macro (PLAY-AMIGA's
+:DRAW-DEPTH does) — an outer binding would be overwritten here."
   (let ((p (gensym "PROFILE")))
     `(let* ((,p (find-display-profile ,designator))
             (*display-profile* ,p)
             (*fp-view-width* (display-profile-fp-width ,p))
             (*fp-view-height* (display-profile-fp-height ,p))
-            (*gfx-dir* (display-profile-gfx-dir ,p)))
+            (*gfx-dir* (display-profile-gfx-dir ,p))
+            (*draw-depth* (display-profile-draw-depth ,p)))
        ,@body)))

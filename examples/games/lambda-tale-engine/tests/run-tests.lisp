@@ -704,19 +704,47 @@ height" d)
              (display-profile-fp-height *display-profile*))
        (list *fp-view-width* *fp-view-height*))
 
+(check "the default profile's draw depth is the default draw depth"
+       (display-profile-draw-depth *display-profile*) *draw-depth*)
+
+;; Every profile must declare a draw distance the plane set can serve.
+(dolist (p *display-profiles*)
+  (check-true (format nil "~S declares a sane draw depth"
+                      (display-profile-name p))
+              (let ((d (display-profile-draw-depth p)))
+                (and (integerp d) (<= 1 d +view-depth+)))))
+
+;; The per-target defaults, pinned: the small viewport affords the full
+;; view, the one that blits twice the area gives up its deepest level.
+(check ":lores draws the full view" +view-depth+
+       (display-profile-draw-depth *lores-profile*))
+(check ":hires gives up its deepest level" 3
+       (display-profile-draw-depth *hires-profile*))
+
 (let ((outer-w *fp-view-width*)
-      (outer-dir *gfx-dir*))
+      (outer-dir *gfx-dir*)
+      (outer-depth *draw-depth*))
   (with-display-profile (:hires)
     (check "with-display-profile binds the profile" :hires
            (display-profile-name *display-profile*))
     (check "with-display-profile binds the viewport" '(240 130)
            (list *fp-view-width* *fp-view-height*))
     (check "with-display-profile binds the pack dir"
-           (display-profile-gfx-dir *hires-profile*) *gfx-dir*))
+           (display-profile-gfx-dir *hires-profile*) *gfx-dir*)
+    (check "with-display-profile binds the draw depth"
+           (display-profile-draw-depth *hires-profile*) *draw-depth*))
   (check "with-display-profile restores the viewport"
          outer-w *fp-view-width*)
   (check "with-display-profile restores the pack dir"
-         outer-dir *gfx-dir*))
+         outer-dir *gfx-dir*)
+  (check "with-display-profile restores the draw depth"
+         outer-depth *draw-depth*))
+
+;; The profile supplies the DEFAULT only: a binding made inside the
+;; macro is what PLAY-AMIGA's :DRAW-DEPTH does, and it wins.
+(with-display-profile (:hires)
+  (let ((*draw-depth* 2))
+    (check "a draw depth bound inside the profile wins" 2 *draw-depth*)))
 
 (with-display-profile (:hires)
   (let ((manifest (with-output-to-string (s) (print-tile-manifest s))))
@@ -1419,6 +1447,67 @@ height" d)
   (setf (dungeon-map-dark m) 99)
   (check ":dark above +view-depth+ is capped" +view-depth+
          (game-view-depth g)))
+
+;;; Draw distance (*DRAW-DEPTH*): the speed knob for slower machines.
+;;; It caps what the view DRAWS; it must never touch what the party
+;;; sees (GAME-VIEW-DEPTH) or maps (OBSERVE).
+
+(let* ((m (parse-map "+-+-+-+-+-+-+
+|@          |
++-+-+-+-+-+-+"
+                     :name "draw-depth" :start-facing :east))
+       (g (new-game m)))
+  (check "by default the view draws everything the party sees"
+         (game-view-depth g) (render-view-depth g))
+  (let ((*draw-depth* 2))
+    (check "a lowered draw depth caps the drawn view" 2
+           (render-view-depth g))
+    (check "the drawn view still sees the full distance" +view-depth+
+           (game-view-depth g))
+    (check "a lowered draw depth truncates compute-view" 2
+           (length (compute-view (game-map g) (game-x g) (game-y g)
+                                 (game-facing g) (render-view-depth g)))))
+  ;; darkness and draw distance: whichever is tighter wins, and neither
+  ;; can talk the other up
+  (setf (dungeon-map-dark m) 3)
+  (setf (game-time g) 720)              ; noon, but underground
+  (let ((*draw-depth* +view-depth+))
+    (check "darkness wins when it is the tighter of the two" 3
+           (render-view-depth g)))
+  (let ((*draw-depth* 2))
+    (check "draw distance wins when it is the tighter of the two" 2
+           (render-view-depth g)))
+  (setf (dungeon-map-dark m) nil)
+  ;; out-of-range settings degrade instead of indexing past the planes
+  (let ((*draw-depth* 0))
+    (check "a draw depth below one still draws one cell" 1
+           (render-view-depth g)))
+  (let ((*draw-depth* 99))
+    (check "a draw depth above +view-depth+ is capped" +view-depth+
+           (render-view-depth g))))
+
+;; The knob is a RENDERING cap: the automap must record everything the
+;; light allows, whatever the machine draws.  NEW-GAME's first OBSERVE
+;; runs under the lowered setting.
+(let* ((g (let ((*draw-depth* 1))
+            (new-game (parse-map *corridor-art*
+                                 :name "draw-depth-map"
+                                 :start-facing :east)))))
+  (check-true "the shortest draw distance still maps two cells ahead"
+              (wall-known-p (game-knowledge g) 2 0 +east+)))
+
+;; The pack contract is the FULL set whatever the machine draws — only
+;; the runtime loader asks for less.
+(check "wall-piece-names defaults to the full asset set"
+       (* +view-depth+ 10) (length (wall-piece-names)))
+(check "wall-piece-names at a lower depth covers only those levels"
+       20 (length (wall-piece-names 2)))
+(check-true "a depth-limited asset set names no deeper piece"
+            (every (lambda (piece) (< (second piece) 2))
+                   (wall-piece-names 2)))
+(let ((*draw-depth* 2))
+  (check "the full set is unchanged by a lowered draw depth"
+         (* +view-depth+ 10) (length (wall-piece-names))))
 
 ;; The :dark integer round-trips through the map file, and a bad value
 ;; is rejected with a message naming the map.

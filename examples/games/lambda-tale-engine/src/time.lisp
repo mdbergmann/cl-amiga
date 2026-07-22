@@ -58,6 +58,16 @@ it declares one — capped at +VIEW-DEPTH+ — else one cell (a plain
         (if (integerp dark) (min dark +view-depth+) 1))
       +view-depth+))
 
+(defun render-view-depth (game)
+  "How many cells ahead the view DRAWS: GAME-VIEW-DEPTH capped by the
+machine's draw distance (*DRAW-DEPTH*, see view.lisp).
+
+The renderers call this; OBSERVE deliberately calls GAME-VIEW-DEPTH
+instead, so lowering the draw distance for frames never shrinks what
+the automap learns.  Darkness still wins when it is the tighter of the
+two — a torchless dungeon shows one cell however fast the machine is."
+  (min (game-view-depth game) (%draw-depth)))
+
 (defun advance-time (game &optional (minutes *minutes-per-action*))
   "Advance the clock by MINUTES (default *MINUTES-PER-ACTION*): emit
 :SUNRISE/:SUNSET on a daylight boundary crossing, expire timed effects

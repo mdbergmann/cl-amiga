@@ -39,7 +39,7 @@
   "Wireframe first-person view of GAME as a multi-line string."
   (let ((grid (%make-grid width height))
         (slices (compute-view (game-map game) (game-x game) (game-y game)
-                              (game-facing game) (game-view-depth game)))
+                              (game-facing game) (render-view-depth game)))
         (planes (view-planes width height)))
     (dolist (prim (view-display-list slices planes))
       (ecase (first prim)
