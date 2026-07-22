@@ -5830,10 +5830,21 @@ line height" pname)
                                 pname)
                         walls)
             (when walls
-              (check (format nil "~A: every pack piece got a bitmap ~
-(walls + backdrops)" pname)
-                     (+ 2 (length (wall-piece-names)))
+              ;; Every piece the profile's draw distance can SHOW gets a
+              ;; bitmap, plus the two backdrops.  The deeper levels are
+              ;; not decoded — but %LOAD-WALL-ASSETS still required them
+              ;; to exist, so reaching here at all proves the full pack
+              ;; is on disk (a missing file errors out and returns NIL
+              ;; walls, which the check above would have caught).
+              (check (format nil "~A: every piece the draw depth shows ~
+got a bitmap (walls + backdrops)" pname)
+                     (+ 2 (length (wall-piece-names (%draw-depth))))
                      (hash-table-count walls))
+              (check-true (format nil "~A: a piece past the draw depth ~
+was not decoded" pname)
+                          (or (= (%draw-depth) +view-depth+)
+                              (null (gethash (list :front (%draw-depth))
+                                             walls))))
               (check-true (format nil "~A: the pack palette is the ~
 demo CMAP" pname)
                           (equalp pack-palette *wall-palette*))
