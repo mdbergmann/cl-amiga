@@ -489,12 +489,12 @@ fewer entries."
 
 ;;; ---------------------------------------------------------------------
 ;;; The pack palette and the RGB -> pen mapping.
-
-(defconstant +art-pen-sky+ 5)
-(defconstant +art-pen-ground+ 6)
-(defconstant +art-pen-base+ 7
-  "First pen the quantizer may fill; 0-6 are the fixed contract (see
-the header).")
+;;;
+;;; The pen contract itself — who owns which pen, and the colors of
+;;; the ones the engine fixes — lives in src/palette.lisp, because the
+;;; front end has to assert exactly what this tool bakes into a CMAP.
+;;; What is here is only the generator's side: the defaults a pack gets
+;;; for the two pens it owns outright, and the quantizer.
 
 (defparameter *default-sky* '(0 0 136)
   "Pen 5 when GENERATE-PACK-FROM-ART is given no :SKY — the night blue
@@ -503,43 +503,23 @@ of Closure's street pack.")
 (defparameter *default-ground* '(204 153 102)
   "Pen 6 when given no :GROUND — the tan street of Closure's pack.")
 
-;;; Pens 17-19 are the mouse pointer's: the hardware sprite shares
-;;; those color registers on the 32-color screen, and the front end
-;;; re-latches them from the pointer art *after* loading a pack's
-;;; palette (%ENSURE-STANDARD-POINTER follows %APPLY-PACK-PALETTE).
-;;; Art quantized into them would come out in the pointer's red, so
-;;; they are held back and the CMAP records the sprite's own colors.
-;;; On a 16-color profile they are out of range and cost nothing.
-
-(defparameter *pointer-pens*
-  '((17 (238 68 68)) (18 (51 0 0)) (19 (238 238 204)))
-  "(PEN (R G B)) of the mouse-pointer sprite's registers — the classic
-red pointer, dark outline, light gleam (%GAME-SCREEN-PALETTE).")
-
-(defun art-pen-plan (depth)
-  "The pens a pack of DEPTH bitplanes may fill with art, in order —
-everything from +ART-PEN-BASE+ up except the pointer's."
-  (loop for p from +art-pen-base+ below (ash 1 depth)
-        unless (assoc p *pointer-pens*)
-          collect p))
-
 (defun art-pack-palette (colors depth &key (sky *default-sky*)
                                            (ground *default-ground*))
-  "The pack CMAP: the fixed pens 0-6, the pointer's own 17-19, and
-COLORS spread over what is left from pen 7 up — a vector of (R G B) of
-length 2^DEPTH.  Surplus pens repeat black, which costs nothing and
-keeps the CMAP truthful."
+  "The pack CMAP: every engine-fixed pen at its contract color (see
+src/palette.lisp), the pack's own sky and ground, and COLORS spread
+over the art pens — a vector of (R G B) of length 2^DEPTH.  Surplus
+pens repeat black, which costs nothing and keeps the CMAP truthful.
+
+The engine ignores the fixed entries when it loads a pack (only
+PACK-PENS are applied), but writing them keeps the CMAP an honest
+picture of what the screen will show — which is what the .gpl beside
+it, and any artist drawing against it, needs."
   (let ((pal (make-array (ash 1 depth) :initial-element '(0 0 0))))
-    (setf (aref pal 0) '(0 0 0)                 ; transparent key
-          (aref pal 1) '(255 255 255)           ; fixed UI white
-          (aref pal 2) '(136 136 136)           ; fixed UI grey
-          (aref pal 3) '(255 170 51)            ; fixed UI amber
-          (aref pal 4) '(0 0 0)                 ; opaque black
-          (aref pal +art-pen-sky+) sky
+    (loop for pen from 0 below (ash 1 depth)
+          for rgb = (fixed-pen-color pen)
+          when rgb do (setf (aref pal pen) rgb))
+    (setf (aref pal +art-pen-sky+) sky
           (aref pal +art-pen-ground+) ground)
-    (loop for (pen rgb) in *pointer-pens*
-          when (< pen (ash 1 depth))
-            do (setf (aref pal pen) rgb))
     (loop for rgb in colors
           for p in (art-pen-plan depth)
           do (setf (aref pal p) rgb))
@@ -547,13 +527,14 @@ keeps the CMAP truthful."
 
 (defun art-fixed-colors (depth &key (sky *default-sky*)
                                     (ground *default-ground*))
-  "The colors a pack already carries before any art is quantized: the
-UI pens, opaque black, sky, ground and the pointer's.  Passed to
-MEDIAN-CUT as :EXCLUDE so no art pen duplicates one of them."
-  (append (list '(0 0 0) '(255 255 255) '(136 136 136) '(255 170 51)
-                (snap-12-bit sky) (snap-12-bit ground))
-          (loop for (pen rgb) in *pointer-pens*
-                when (< pen (ash 1 depth)) collect rgb)))
+  "The colors a pack already carries before any art is quantized: every
+engine-fixed pen that exists at DEPTH — UI, pointer, figure core — plus
+the pack's own sky and ground.  Passed to MEDIAN-CUT as :EXCLUDE so no
+art pen is spent re-deriving a color the screen already shows."
+  (append (list (snap-12-bit sky) (snap-12-bit ground))
+          (loop for pen from 0 below (ash 1 depth)
+                for rgb = (fixed-pen-color pen)
+                when rgb collect rgb)))
 
 ;;; ---------------------------------------------------------------------
 ;;; Palette files.  A pack's palette.iff is what the *engine* reads; a
@@ -566,26 +547,28 @@ MEDIAN-CUT as :EXCLUDE so no art pen duplicates one of them."
 (defun write-palette-gpl (palette file &key (name "Lambda's Tale pack"))
   "Write PALETTE (a CMAP vector of (R G B)) as a GIMP palette (.gpl) —
 the format GIMP, Aseprite, Krita and Inkscape all import.  Each entry
-is named with its pen number and its role, so the fixed and reserved
-pens are obvious while drawing."
+is named with its pen number and its role, and every entry says
+outright whether it is FIXED (engine-owned, the same color in every
+zone) or the pack's to change — which is the whole artist-facing
+contract, carried in the file they open."
   (with-open-file (s file :direction :output :if-exists :supersede)
     (format s "GIMP Palette~%Name: ~A~%Columns: 8~%#~%" name)
-    (format s "# Pens 0-6 and 17-19 are fixed by the engine (see~%~
-# PRINT-TILE-MANIFEST): 0 is the transparent key in wall pieces,~%~
-# 1-3 the UI colors, 4 opaque black, 5 sky, 6 ground, 17-19 the~%~
-# mouse pointer's sprite registers.  Draw walls with the rest.~%~
+    (format s "# FIXED pens are the engine's and are the same color in ~
+every zone:~%~
+# 0 the transparent key in wall pieces, 1-3 the UI colors, 4 opaque~%~
+# black, 17-19 the mouse pointer's sprite registers, 24-31 the shared~%~
+# figure core.  Art that must survive a zone change — monsters,~%~
+# portraits, effect icons — may use ONLY 1-4 and 24-31 (plus 0 for~%~
+# transparency).~%~
+# The rest are this pack's: 5 sky, 6 ground, and the art pens.  They~%~
+# change when the player walks into another zone.~%~
 # All colors are on the Amiga's 12-bit grid.~%")
     (dotimes (p (length palette) file)
       (let ((rgb (or (aref palette p) '(0 0 0))))
-        (format s "~3D ~3D ~3D~C~D ~A~%"
+        (format s "~3D ~3D ~3D~C~D ~A~A~%"
                 (first rgb) (second rgb) (third rgb) #\Tab p
-                (cond ((= p 0) "transparent key")
-                      ((= p 1) "UI white") ((= p 2) "UI grey")
-                      ((= p 3) "UI amber") ((= p 4) "opaque black")
-                      ((= p +art-pen-sky+) "sky")
-                      ((= p +art-pen-ground+) "ground")
-                      ((assoc p *pointer-pens*) "mouse pointer")
-                      (t "art")))))))
+                (fixed-pen-role p)
+                (if (fixed-pen-color p) " [FIXED]" ""))))))
 
 (defun palette-from-source (file depth &key (sky *default-sky*)
                                             (ground *default-ground*))
@@ -600,22 +583,17 @@ hand-edited palette can never break transparency or the pointer."
                                     '(0 0 0))))))
     (art-pack-palette colors depth :sky sky :ground ground)))
 
-(defun %make-pen-mapper (palette &optional (depth nil))
-  "A closure (R G B) -> nearest pen in PALETTE, memoized.  Two pens are
-never returned: 0, the wall pieces' transparent key (so art black lands
-on pen 4), and the pointer's 17-19, which the front end overwrites
-after a pack loads.  DEPTH defaults to PALETTE's own size."
-  (let* ((depth (or depth (round (log (length palette) 2))))
-         (usable (cons 1 (remove 1 (append (loop for p from 1
-                                                   below +art-pen-base+
-                                                 collect p)
-                                          (art-pen-plan depth)))))
-         (cache (make-hash-table :test #'eql)))
+(defun %nearest-pen-mapper (palette usable)
+  "A memoized closure (R G B) -> the pen of USABLE whose PALETTE color
+is nearest.  USABLE must be non-empty; its first pen is the fallback,
+so pens the caller must never emit simply stay off the list."
+  (let ((cache (make-hash-table :test #'eql))
+        (fallback (first usable)))
     (lambda (rgb)
       (let ((key (+ (ash (first rgb) 16) (ash (second rgb) 8) (third rgb))))
         (or (gethash key cache)
             (setf (gethash key cache)
-                  (let ((best 1) (dist most-positive-fixnum))
+                  (let ((best fallback) (dist most-positive-fixnum))
                     (dolist (p usable best)
                       (let ((c (aref palette p)))
                         (let ((d (+ (expt (- (first rgb) (first c)) 2)
@@ -623,6 +601,37 @@ after a pack loads.  DEPTH defaults to PALETTE's own size."
                                     (expt (- (third rgb) (third c)) 2))))
                           (when (< d dist)
                             (setf dist d best p))))))))))))
+
+(defun %make-pen-mapper (palette &optional (depth nil))
+  "A closure (R G B) -> nearest pen in PALETTE for WALL art, memoized.
+Two pens are never returned: 0, the wall pieces' transparent key (so
+art black lands on pen 4), and the pointer's 17-19, which the front end
+overwrites after a pack loads.  DEPTH defaults to PALETTE's own size.
+
+The figure core IS offered here.  A fixed pen is shared, not lost — a
+wall may paint in the guaranteed figure colors, it just cannot re-color
+them — so handing them to the quantizer costs the pack nothing and
+buys it eight more colors to match against."
+  (let* ((depth (or depth (round (log (length palette) 2))))
+         (usable (cons 1 (remove 1 (append (loop for p from 1
+                                                   below +art-pen-base+
+                                                 collect p)
+                                          (art-pen-plan depth)
+                                          (figure-pens depth))))))
+    (%nearest-pen-mapper palette usable)))
+
+(defun %make-figure-pen-mapper (palette &optional (depth nil))
+  "A closure (R G B) -> nearest pen for art that OUTLIVES a pack
+switch — monsters, portraits, effect icons.  Restricted to
+FIGURE-PALETTE-PENS: the opaque UI colors and the figure core, never
+pen 0 (transparency is a source color's job, not the quantizer's),
+never the pointer's, and never a pen whose color a pack may change.
+
+This is the whole reason the core exists.  A monster quantized through
+%MAKE-PEN-MAPPER would look right in the zone it was built against and
+wrong in every other one."
+  (let ((depth (or depth (round (log (length palette) 2)))))
+    (%nearest-pen-mapper palette (figure-palette-pens depth))))
 
 (defun quantize-image (rgb palette depth mapper)
   "RGB-IMAGE RGB as an IMAGE of DEPTH bitplanes with PALETTE, every
@@ -824,3 +833,76 @@ Returns the number of files written."
                            (concatenate 'string dir name))
                (incf n))
       n)))
+
+;;; ---------------------------------------------------------------------
+;;; Figures: art that outlives a pack switch.
+;;;
+;;; A monster, a portrait or an effect icon is not part of any pack —
+;;; it is cached by path (%CACHED-IMAGE) and keeps rendering after the
+;;; player walks into a zone whose CMAP is different.  It therefore
+;;; must be quantized into the pens no pack may change, and the check
+;;; belongs HERE, on the host at build time, where it is free: a
+;;; per-pixel pen audit on a 68020 at load time is not.
+
+(defun figure-palette (depth)
+  "The CMAP a figure is written with: every engine-fixed pen at its
+contract color, pack pens black.  A figure ILBM carries this so it can
+be viewed and re-imported standalone; the engine ignores a figure's
+CMAP entirely and blits it against the live screen palette, which is
+precisely why only fixed pens may appear in the pixels."
+  (let ((pal (make-array (ash 1 depth) :initial-element '(0 0 0))))
+    (loop for pen from 0 below (ash 1 depth)
+          for rgb = (fixed-pen-color pen)
+          when rgb do (setf (aref pal pen) rgb))
+    pal))
+
+(defun %check-figure-pens (img file depth)
+  "Signal an error unless every pixel of IMG is a pen a figure may
+use — the transparent key or one of FIGURE-PALETTE-PENS.  Names the
+file, the offending pen, its role and where it first appears, because
+the whole value of this check is that it says what to fix."
+  (let ((allowed (cons +pen-transparent+ (figure-palette-pens depth))))
+    (dotimes (y (image-height img) img)
+      (dotimes (x (image-width img))
+        (let ((pen (pixel-ref img x y)))
+          (unless (member pen allowed)
+            (error "~A: pen ~D (~A) at (~D,~D) is not a figure pen.~%~
+Art that outlives a zone change may only use pen 0 (transparent), ~
+1-4 and ~{~D~^ ~} — every other pen's color belongs to a tile pack ~
+and changes when the player travels."
+                   file pen (fixed-pen-role pen) x y
+                   (figure-pens depth))))))))
+
+(defun generate-figure (source out &key (profile *display-profile*)
+                                        transparent)
+  "Quantize the picture SOURCE into the shared figure palette and write
+it to OUT as an ILBM — the build step for a monster, a hero portrait or
+an effect icon.
+
+TRANSPARENT, when given, is the source (R G B) that means \"nothing
+here\": those pixels become pen 0, which the front end cookie-cuts away
+(%PLANAR-PIECE-MASK).  Without it the figure is opaque and rectangular.
+
+Every other pixel lands on a pen whose color the engine fixes, so the
+result reads the same in every zone.  That is verified, not assumed:
+the written image is audited pen by pen and a violation is an error
+naming the pixel."
+  (let* ((depth (display-profile-screen-depth profile))
+         (palette (figure-palette depth))
+         (mapper (%make-figure-pen-mapper palette depth))
+         (art (read-art source))
+         (key (and transparent (snap-12-bit transparent)))
+         (w (rgb-image-width art))
+         (h (rgb-image-height art))
+         (img (make-image w h depth :palette palette)))
+    (dotimes (y h)
+      (dotimes (x w)
+        (let ((rgb (multiple-value-bind (r g b) (rgb-ref art x y)
+                     (list r g b))))
+          (setf (pixel-ref img x y)
+                (if (and key (equal (snap-12-bit rgb) key))
+                    +pen-transparent+
+                    (funcall mapper rgb))))))
+    (%check-figure-pens img out depth)
+    (write-ilbm img out)
+    out))

@@ -674,8 +674,14 @@ height" d)
   (check-true "manifest names the backdrops"
               (and (search "ceiling.iff" manifest)
                    (search "floor.iff" manifest)))
-  (check-true "manifest states the palette contract"
-              (search "pens 4-31" manifest)))
+  (check-true "manifest lists the pens this pack owns"
+              (search "5 6 7 8 9 10 11 12 13 14 15 16 20 21 22 23" manifest))
+  (check-true "manifest states what the engine keeps"
+              (and (search "pens 17-19 the mouse pointer" manifest)
+                   (search "pens 24-31 the shared figure core" manifest)))
+  (check-true "manifest tells travelling art which pens it may use"
+              (and (search "Travelling art" manifest)
+                   (search "1 2 3 4 24 25 26 27 28 29 30 31" manifest))))
 
 ;;; ---------------------------------------------------------------------
 ;;; Display profiles (src/profiles.lisp): the per-target bundles of
@@ -717,7 +723,11 @@ height" d)
     (check-true "hires manifest names its viewport"
                 (search "240x130 viewport" manifest))
     (check-true "hires manifest states the 16-color palette contract"
-                (search "pens 4-15" manifest))))
+                (search "5 6 7 8 9 10 11 12 13 14 15" manifest))
+    ;; 16 colors have no room for the core, so hires is a wall-pack
+    ;; target only — its travelling art is limited to the UI pens.
+    (check-true "hires manifest claims no figure core"
+                (not (search "figure core" manifest)))))
 
 ;;; ---------------------------------------------------------------------
 ;;; Cookie-cut mask bytes (the Amiga transparent-blit source): a 1 bit
@@ -4671,12 +4681,22 @@ brick grid" d side)
   ;; Pens 17-19 are the mouse pointer's sprite registers, re-latched
   ;; from the pointer art AFTER a pack's palette loads — art quantized
   ;; into them renders in the pointer's red instead of its own color.
-  (check "the pointer's pens are held back from the art plan"
-         '(7 8 9 10 11 12 13 14 15 16 20 21 22 23 24 25 26 27 28 29 30 31)
+  ;; Pens 24-31 are the shared figure core, whose whole point is that
+  ;; a pack cannot move them (see src/palette.lisp).
+  (check "the pointer's and the figures' pens are held back from the ~
+art plan"
+         '(7 8 9 10 11 12 13 14 15 16 20 21 22 23)
          (art-pen-plan 5))
-  (check "a 16-color profile has no pointer pens to dodge"
+  (check "a 16-color profile has neither to dodge — it is a wall-pack ~
+target only"
          '(7 8 9 10 11 12 13 14 15)
          (art-pen-plan 4))
+  (check "the figure core is 32-color only"
+         '((24 25 26 27 28 29 30 31) ())
+         (list (figure-pens 5) (figure-pens 4)))
+  (check "the CMAP carries the figure core's own colors"
+         (mapcar #'second *figure-pens*)
+         (loop for pen in (figure-pens 5) collect (aref palette pen)))
   (check "the CMAP records the pointer's own colors at 17-19"
          '((238 68 68) (51 0 0) (238 238 204))
          (list (aref palette 17) (aref palette 18) (aref palette 19)))
@@ -4692,6 +4712,122 @@ transparent key"
                                  (200 0 0) (128 128 128))
                                (not zero))
                     (when (zerop (funcall mapper rgb)) (setf zero t)))))))
+
+;; ---------------------------------------------------------------------
+;; The pen contract (src/palette.lisp).  A bitmap is pen indices and
+;; %CACHED-IMAGE keys by path, so an image loaded in one zone is still
+;; on screen in the next: the split between pens a pack owns and pens
+;; the engine fixes is what keeps travelling art the color it was drawn.
+
+(dolist (depth '(4 5))
+  (let* ((all (loop for p from 0 below (ash 1 depth) collect p))
+         (pack (pack-pens depth))
+         (fixed (loop for p in all when (fixed-pen-color p) collect p)))
+    ;; SORT is destructive and APPEND shares its last argument's
+    ;; structure, so this must not be handed FIXED itself.
+    (check (format nil "every pen is owned exactly once (depth ~D)" depth)
+           all (sort (append pack (copy-list fixed)) #'<))
+    (check-true (format nil "no pen is both a pack's and the engine's ~
+(depth ~D)" depth)
+                (null (intersection pack fixed)))
+    (check-true (format nil "a pack owns no pen the engine fixes ~
+(depth ~D)" depth)
+                (every (lambda (p) (null (fixed-pen-color p))) pack))
+    (check (format nil "the pack owns sky and ground, then the art pens ~
+(depth ~D)" depth)
+           (list* +art-pen-sky+ +art-pen-ground+ (art-pen-plan depth))
+           pack)))
+
+;; The figure set is what GENERATE-FIGURE may emit — the opaque UI pens
+;; and the core.  Pen 0 is transparency rather than a color, and 5/6
+;; are the pack's sky and ground, so none of them belong here.
+(check "figures may ink the opaque UI pens and the core"
+       '(1 2 3 4 24 25 26 27 28 29 30 31)
+       (figure-palette-pens 5))
+(check "on a 16-color screen a figure has only the UI pens"
+       '(1 2 3 4) (figure-palette-pens 4))
+(check-true "no figure pen is one a pack can recolor"
+            (null (intersection (figure-palette-pens 5) (pack-pens 5))))
+(check-true "the figure core never collides with the pointer's registers"
+            (null (intersection (figure-pens 5) (pointer-pens 5))))
+
+;; Every fixed color must survive SET-RGB4 unchanged, or the palette
+;; the artist draws against is not the palette the screen shows.
+(check-true "every engine-fixed color is on the Amiga's 12-bit grid"
+            (loop for pen from 0 below 32
+                  for rgb = (fixed-pen-color pen)
+                  always (or (null rgb) (equal rgb (snap-12-bit rgb)))))
+(check-true "no two engine-fixed pens share a screen color"
+            (let ((seen (loop for pen from 0 below 32
+                              for rgb = (fixed-pen-color pen)
+                              when (and rgb (/= pen +pen-transparent+))
+                                collect rgb)))
+              ;; pen 0 excluded: it is a key, and legitimately black
+              (= (length seen) (length (remove-duplicates seen
+                                                          :test #'equal)))))
+
+;; The shipped packs are procedural (gen-walls.lisp) and ink pens 0-9,
+;; which is why the core could be reserved downward from 31 without
+;; regenerating a single existing asset.  If that ever stops holding,
+;; this is the test that says so.
+(check-true "the figure core sits clear of the procedural packs' pens"
+            (every (lambda (p) (> p +pen-roof+)) (figure-pens 5)))
+
+;; The figure mapper: restricted to the fixed pens, whatever it is fed.
+(let ((mapper (%make-figure-pen-mapper (figure-palette 5) 5)))
+  (check-true "a figure pixel never lands on a pack pen"
+              (let ((legal (figure-palette-pens 5)))
+                (loop for rgb in '((0 0 0) (255 255 255) (1 2 3) (0 0 136)
+                                   (204 153 102) (250 200 150) (170 20 20)
+                                   (60 130 70) (100 120 150) (17 17 17))
+                      always (member (funcall mapper rgb) legal))))
+  (check "figure black lands on the opaque black pen, never the key"
+         +pen-opaque-black+ (funcall mapper '(0 0 0)))
+  (check "a skin tone lands on the flesh ramp" 24 (funcall mapper
+                                                   '(250 200 150)))
+  (check "the pack's own night-blue sky is NOT available to a figure"
+         ;; (0 0 136) is pen 5 in Closure's street pack; a figure must
+         ;; be pushed onto a fixed pen instead of following the pack
+         t (and (member (funcall mapper '(0 0 136)) (figure-palette-pens 5))
+                t)))
+
+;; The build-time audit.  This is the check that makes the contract
+;; real: it runs on the host, where a per-pixel pen scan is free.
+(let ((legal (make-image 4 4 5 :palette (figure-palette 5)))
+      (illegal (make-image 4 4 5 :palette (figure-palette 5))))
+  (dotimes (y 4)
+    (dotimes (x 4)
+      (setf (pixel-ref legal x y) (if (evenp (+ x y)) +pen-transparent+ 26))
+      (setf (pixel-ref illegal x y) 26)))
+  (setf (pixel-ref illegal 2 1) +art-pen-sky+)   ; a pack pen sneaks in
+  (check-true "a figure drawn in the core passes the audit"
+              (%check-figure-pens legal "legal.iff" 5))
+  (check-error "a figure using a pack pen is rejected at build time"
+               (%check-figure-pens illegal "illegal.iff" 5)))
+
+;; End to end: a picture in arbitrary colors becomes a figure whose
+;; every pixel is a pen no pack can move.
+(let ((src "tests/tmp-figure-src.iff")
+      (out "tests/tmp-figure.iff"))
+  (write-deep-ilbm (%test-quadrants '(250 200 150) '(170 20 20)
+                                    '(60 130 70) '(255 0 255))
+                   src)
+  (with-display-profile (:lores)
+    (generate-figure src out :transparent '(255 0 255)))
+  (let* ((img (read-ilbm out))
+         (legal (cons +pen-transparent+ (figure-palette-pens 5)))
+         (pens '()))
+    (dotimes (y (image-height img))
+      (dotimes (x (image-width img))
+        (pushnew (pixel-ref img x y) pens)))
+    (check-true "GENERATE-FIGURE emits only pens the engine fixes"
+                (every (lambda (p) (member p legal)) pens))
+    (check-true "the :transparent source color becomes the cookie-cut key"
+                (member +pen-transparent+ pens))
+    (check-true "the figure keeps more than one color"
+                (> (length pens) 2)))
+  (delete-file src)
+  (delete-file out))
 
 ;; The pieces: the manifest's geometry and the transparency contract,
 ;; exactly as the procedural pack must meet them.
