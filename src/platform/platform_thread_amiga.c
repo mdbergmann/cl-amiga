@@ -18,6 +18,8 @@
 #include <dos/dostags.h>
 #include <string.h>
 
+#include "platform_amiga_ppc.h"   /* NP_Entry gate for the MorphOS PPC build */
+
 /* ================================================================
  * Thread
  *
@@ -106,6 +108,10 @@ static void amiga_thread_entry(void)
     }
 }
 
+/* NP_Entry is entered as m68k code; on MorphOS the PPC entry needs a trap
+ * gate or the new process dies in the emulator (see platform_amiga_ppc.h). */
+CL_PROC_ENTRY_GATE(amiga_thread_entry_gate, amiga_thread_entry);
+
 int platform_thread_create(void **handle, void *(*func)(void *), void *arg,
                            uint32_t stack_size)
 {
@@ -131,8 +137,8 @@ int platform_thread_create(void **handle, void *(*func)(void *), void *arg,
     Forbid();
 
     proc = CreateNewProcTags(
-        NP_Entry,     (ULONG)amiga_thread_entry,
-        NP_StackSize, (ULONG)stack_size,
+        NP_Entry,     CL_PROC_ENTRY(amiga_thread_entry_gate, amiga_thread_entry),
+        CL_PROC_STACK_TAGS(stack_size),
         NP_Name,      (ULONG)"CL-Thread",
         TAG_DONE
     );
