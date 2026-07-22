@@ -30,6 +30,7 @@
     (ld "package.lisp")
     (ld "debug-log.lisp")
     (ld "profiles.lisp")
+    (ld "palette.lisp")
     (ld "dice.lisp")
     (ld "ilbm.lisp")
     (ld "map.lisp")

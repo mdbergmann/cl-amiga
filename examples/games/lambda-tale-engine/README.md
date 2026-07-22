@@ -251,7 +251,10 @@ A pack holds the 40 wall pieces plus optional extras:
   perspective-plane rows so each band lines up with a corridor depth —
   a pack can use the same trick, since the bands sit at fixed screen
   rows.
-- `palette.iff` — any ILBM whose CMAP provides the pack's colors.
+- `palette.iff` — any ILBM whose CMAP provides the pack's colors.  Only
+  the pens a pack owns are read from it (see
+  [the pen contract](#the-pen-contract)); entries for the engine's pens
+  are ignored, so a stale palette cannot recolor the UI or the monsters.
 - `pointer.iff` / `pointer-click.iff` / `pointer-forward.iff` /
   `pointer-back.iff` / `pointer-turn-left.iff` /
   `pointer-turn-right.iff` — optional mouse-pointer art: the neutral
@@ -271,16 +274,45 @@ in `tale:with-display-profile` for another one) — so custom art can
 be drawn to spec; mis-sized pieces are rejected at load time with a
 message naming the file and both sizes.
 
-On the custom screen **pens 0–3 are fixed UI colors** (black, white,
-grey, amber — text and wireframe stay readable in any pack); the
-remaining pens **belong to the pack** — 4–31 on the 32-color `:lores`
-screen, 4–15 on `:hires` — taken from `palette.iff`'s CMAP when
-present, else from `front-0.iff`'s.  Exception: **pens 17–19 are the
-mouse pointer's** (the hardware sprite shares those color registers on
-the 32-color screen) — they are re-asserted from the pointer art's
-CMAP after every pack-palette load, so pack art should avoid pens
-17–19.  Pack colors need `:display :screen` — a window on the
-Workbench screen keeps the Workbench palette.
+### The pen contract
+
+The game runs on one screen with **one palette**, and walking into
+another zone swaps the tile pack under it.  A bitmap, though, is
+nothing but pen indices — so an image loaded in one zone and still
+cached in the next re-colors the moment the new pack's CMAP lands.
+The screen's pens are therefore split in two, and
+[`src/palette.lisp`](src/palette.lisp) is where the line is drawn:
+
+| pens | owner | |
+|---|---|---|
+| 0 | engine | transparent key in wall pieces |
+| 1–3 | engine | UI white, grey, amber |
+| 4 | engine | opaque black |
+| 5–6 | **pack** | sky / ceiling, ground / floor |
+| 7–16 | **pack** | art |
+| 17–19 | engine | mouse-pointer sprite registers |
+| 20–23 | **pack** | art |
+| 24–31 | engine | the shared **figure core** |
+
+Engine pens hold the same color in every zone.  Pack pens are the
+pack's own and change under the player's feet on zone travel, which is
+the point: the night street and the cellar are the same pens in
+different colors.  Only pack pens are loaded from a pack's
+`palette.iff` — a stale or hand-edited palette therefore cannot recolor
+the UI text, the mouse pointer, or the monsters standing in front of
+its walls.
+
+**A fixed pen is shared, not lost.**  A wall may paint in the figure
+core freely — the quantizer is offered it — it just cannot *re-color*
+it.  So a pack has 16 pens of its own plus 12 more to draw with.
+
+`:hires` is 16 colors, has no pen 24, and so has no figure core and no
+pointer pens: 0–4 engine, 5–15 pack, exactly as before.  It is a
+**wall-pack target only**.  `:lores` is where the contract lives and
+where new art should be drawn.
+
+Pack colors need `:display :screen` — a window on the Workbench screen
+keeps the Workbench palette.
 
 **Transparency:** in a *wall* piece **pen 0 is transparent** — the
 ceiling/floor backdrop shows through it, so the receding side walls
@@ -353,11 +385,11 @@ shop's takeover art belong to the same street it stands in.  It also
 means the pens are a budget: four looks sharing 22 colors get noticeably
 less each than one look with all of them.
 
-The pen layout follows the contract above — 0 transparent, 1–3 the
-fixed UI colors, 4 opaque black, 5 sky, 6 ground, and the art from 7 up
-— with **pens 17–19 held back** for the mouse pointer's sprite
-registers, which the front end re-latches after every pack-palette
-load.  That leaves 22 art colors at `:lores` and 9 at `:hires`.
+The pen layout follows [the contract above](#the-pen-contract), with
+the pointer's pens and the figure core held back — **14 art colors at
+`:lores`**, 9 at `:hires`.  The core is not a loss on top of that: the
+quantizer matches against those eight guaranteed colors too, it just
+may not redefine them.
 
 Quantization works on the **12-bit grid the screen can actually show**
 (`set-rgb4`, four bits a channel, on RTG as much as on ECS), and no two
@@ -394,6 +426,42 @@ The art-pack tests in `tests/run-tests.lisp` are the executable spec —
 deep-ILBM reading, the box filter, median cut, the pen contract, and a
 whole pack built, reloaded through the loader's own size checks and
 composited.
+
+### Figures: art that travels between zones
+
+A monster sprite, a hero portrait or an effect icon is **not part of
+any pack**.  It is cached by the path it was loaded from and keeps
+rendering after the player walks into a zone with a different palette,
+so it must be drawn in pens no pack can move: **pen 0** for
+transparency, plus **1–4 and 24–31** — twelve solid colors and a
+cookie-cut key, which is a Bard's Tale bestiary's worth.
+
+`generate-figure` is the build step, and it *enforces* that rather
+than trusting it:
+
+```lisp
+(tale::generate-figure "art/skeleton.png" "worlds/closure/gfx/skeleton.iff"
+                       :transparent '(255 0 255))
+```
+
+`:transparent` names the source color meaning "nothing here"; those
+pixels become pen 0.  Every other pixel is quantized into the figure
+palette, and the written image is then audited pen by pen — a pixel on
+a pack pen is an **error** naming the file, the pen, its role and the
+coordinate.  The check runs on the host, where a per-pixel scan is
+free; a 68020 doing it at load time would not be.
+
+The figure core is eight hand-picked constants, deliberately **not**
+derived from the art that uses it: a core computed over the bestiary
+would mean monster #17 changes the core and every pack in every world
+goes stale.  Fixed means a new monster is a new file and nothing else
+moves.  Given white, grey, amber and black come free from the UI pens,
+the core covers what hangs off a figure — a three-step flesh ramp
+(also wood and leather), two steels (armour and cold shadow), a red
+and a green (cloth, blood, scales, slime), and a bone highlight.
+
+Every pack's `palette.gpl` marks each entry `[FIXED]` or as the pack's
+own, so this contract is visible in the file an artist opens.
 
 ### How a pack loads
 

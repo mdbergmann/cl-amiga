@@ -577,11 +577,26 @@ IFF ILBM files):~%"
       (format stream "  ~24A ~3Dx~D  (optional backdrop below the horizon)~%"
               "floor.iff" (third floor) (fourth floor))
       (incf n 2))
-    (format stream "Palette: pens 0-3 are fixed UI colors (black, white, ~
-grey, amber);~%pens 4-~D belong to the pack — taken from palette.iff's ~
-CMAP when present,~%else from front-0.iff's (custom screen only; a ~
-Workbench window keeps~%the Workbench palette).~%"
-            (1- (ash 1 (display-profile-screen-depth *display-profile*))))
+    (let* ((depth (display-profile-screen-depth *display-profile*))
+           (figures (figure-pens depth)))
+      (format stream "Palette: these pens belong to THIS PACK — sky, ~
+ground and art:~%  ~{~D~^ ~}~%They are taken from palette.iff's CMAP ~
+when present, else from~%front-0.iff's (custom screen only; a Workbench ~
+window keeps the~%Workbench palette).~%"
+              (pack-pens depth))
+      (format stream "Every other pen is the engine's and holds the same ~
+color in every~%zone: 0 transparent, 1-3 UI (white, grey, amber), 4 ~
+opaque black~{,~%pens ~D-~D the mouse pointer~}~{, pens ~D-~D the shared ~
+figure core~}.~%A pack's CMAP may carry them but cannot change them.~%"
+              (let ((p (pointer-pens depth)))
+                (when p (list (first p) (car (last p)))))
+              (when figures
+                (list (first figures) (car (last figures)))))
+      (format stream "Travelling art — monster sprites, hero portraits, ~
+effect icons —~%is cached by path across zone changes, so it may use ~
+ONLY pen 0~%(transparent) and these:~%  ~{~D~^ ~}~%Build it with ~
+GENERATE-FIGURE, which enforces exactly that.~%"
+              (figure-palette-pens depth)))
     (format stream "Transparency: in a WALL piece pen 0 is transparent — ~
 the ceiling/~%floor backdrop shows through it — so paint solid black ~
 with pen 4, not~%pen 0.  The ceiling/floor backdrops are opaque; pen 0 ~

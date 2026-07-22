@@ -1602,41 +1602,54 @@ menu bits 0-4, item bits 5-10, sub-item bits 11-15)."
 ;;; ---------------------------------------------------------------------
 ;;; Display: Workbench window or own custom screen
 
+(defun %set-pen-rgb (vp pen rgb)
+  "Load RGB — an (R G B) of 0-255 components, as READ-ILBM's CMAPs
+carry them — into color register PEN, scaled to SET-RGB4 nibbles."
+  (amiga.gfx:set-rgb4 vp pen
+                      (floor (first rgb) 17)
+                      (floor (second rgb) 17)
+                      (floor (third rgb) 17)))
+
 (defun %game-screen-palette (scr)
-  "UI palette for the custom screen: black, white, the chrome grey and
-amber in pens 0-3 — fixed, tile packs may not change them.  Pens 4-15
-start black until %APPLY-PACK-PALETTE fills them with the pack's
-colors.  Colors 17-19 are the mouse pointer's (sprite 0): the classic
-red pointer, dark outline, light gleam — unset they render the pointer
-invisibly black."
-  (let ((vp (amiga.intuition:screen-viewport scr)))
-    (amiga.gfx:set-rgb4 vp 0 0 0 0)
-    (amiga.gfx:set-rgb4 vp 1 15 15 15)
-    (amiga.gfx:set-rgb4 vp 2 10 10 10)
-    (amiga.gfx:set-rgb4 vp 3 15 10 3)
-    (loop for pen from 4 below (ash 1 (display-profile-screen-depth
-                                       *display-profile*))
-          do (amiga.gfx:set-rgb4 vp pen 0 0 0))
-    (amiga.gfx:set-rgb4 vp 17 14 4 4)
-    (amiga.gfx:set-rgb4 vp 18 3 0 0)
-    (amiga.gfx:set-rgb4 vp 19 14 14 12)))
+  "Assert every engine-owned color register on the custom screen: the
+transparent/UI pens 0-4, the mouse pointer's 17-19 (sprite 0 — unset
+they render the pointer invisibly black) and the shared figure core
+24-31.  The pack's own pens start black until %APPLY-PACK-PALETTE
+fills them.
+
+These are the pens no tile pack may move, so travelling art — monster
+sprites, hero portraits, effect icons — reads the same in every zone;
+see src/palette.lisp for the contract and why it is split this way."
+  (let ((vp (amiga.intuition:screen-viewport scr))
+        (depth (display-profile-screen-depth *display-profile*)))
+    (loop for pen from 0 below (ash 1 depth)
+          for fixed = (fixed-pen-color pen)
+          do (%set-pen-rgb vp pen (or fixed '(0 0 0))))
+    ;; The mouse-pointer sprite reads registers 17-19 whatever the
+    ;; screen's depth, so they are set even on the 16-color profile
+    ;; where they are past the end of the loop above — left unset the
+    ;; pointer renders invisibly black.
+    (loop for (pen rgb) in *pointer-pens*
+          do (%set-pen-rgb vp pen rgb))))
 
 (defun %apply-pack-palette (scr palette)
-  "Load the tile pack's colors into pens 4-15 of the custom screen.
-PALETTE is a CMAP vector of (R G B) lists, 0-255 components (see
-READ-ILBM); entries 0-3 are ignored — those pens are the fixed UI
-colors — and the components scale to SET-RGB4 nibbles."
+  "Load the tile pack's own colors from PALETTE, a CMAP vector of
+(R G B) lists (see READ-ILBM).
+
+Only PACK-PENS are taken — the sky, the ground and the art pens.  Every
+other entry in the pack's CMAP is ignored on purpose: those registers
+belong to the engine and were asserted once by %GAME-SCREEN-PALETTE, so
+a pack whose palette.iff is stale, hand-edited or simply wrong cannot
+recolor the UI text, the mouse pointer, or the monsters standing in
+front of its walls.  The generator writes the fixed entries into a
+pack's CMAP anyway (ART-PACK-PALETTE), because an artist opening the
+file should see the true screen — but the file is not what decides."
   (when palette
     (let ((vp (amiga.intuition:screen-viewport scr)))
-      (loop for pen from 4 below (min (ash 1 (display-profile-screen-depth
-                                              *display-profile*))
-                                      (length palette))
-            for rgb = (aref palette pen)
-            when rgb
-              do (amiga.gfx:set-rgb4 vp pen
-                                     (floor (first rgb) 17)
-                                     (floor (second rgb) 17)
-                                     (floor (third rgb) 17))))))
+      (dolist (pen (pack-pens (display-profile-screen-depth
+                               *display-profile*)))
+        (let ((rgb (and (< pen (length palette)) (aref palette pen))))
+          (when rgb (%set-pen-rgb vp pen rgb)))))))
 
 (defun %call-with-game-window (display fn)
   "Open DISPLAY per the active *DISPLAY-PROFILE* and call FN with the
