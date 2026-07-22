@@ -26,7 +26,11 @@
 (defun observe (game)
   "Record what the party can see from its position into the automap:
 the standing cell fully, and for each cell in the view cone its front and
-side walls plus the front walls seen through open sides."
+side walls plus the front walls seen through open sides.
+
+The cone is GAME-VIEW-DEPTH — what the light allows — NOT the drawn
+RENDER-VIEW-DEPTH: the draw-distance knob is a speed setting, and a
+player who lowers it must still map what the party could see."
   (let ((k (game-knowledge game))
         (f (game-facing game)))
     (know-cell k (game-x game) (game-y game))

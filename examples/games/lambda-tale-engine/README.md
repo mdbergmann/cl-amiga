@@ -130,6 +130,44 @@ profile** (`play-amiga`'s `:profile` argument):
 - **`:hires`** — 640x256 PAL hires, 16 colors, the classic
   presentation with the larger 240x130 viewport.
 
+### Draw distance (slower machines)
+
+The first-person view draws up to `+view-depth+` (4) distance levels
+ahead.  `play-amiga`'s **`:draw-depth`** argument (1-4) trades some of
+that distance for frames on a slower machine:
+
+```lisp
+(tale:play-amiga "mygame/village.map" :draw-depth 2)
+```
+
+Each level dropped is up to three fewer wall blits per frame, and ten
+fewer piece images (plus their style variants) decoded into bitmaps at
+load time; the corridor then ends that much nearer, fading into the
+ceiling/floor backdrop.  Note that the far levels are the *small* ones
+— the win is mostly in per-blit overhead, not blitter time, so measure
+on the target rather than assuming.
+
+**A tile pack is unaffected**: it must always ship the full set for
+all four depths (`print-tile-manifest` still lists every piece, and
+the loader still errors on a missing one), because a pack is data that
+has to work on any machine — the draw distance of whoever *built* it
+must not shape it.  Draw depth decides which of those images are
+*loaded*, never which must be *provided*.
+
+It is a **rendering** cap only: the automap still records everything
+the party could see, and darkness (a `(zone :dark N)` or nightfall)
+still shortens the view further when it is the tighter of the two.
+Each display profile carries a default, since a profile describes a
+screen while draw distance tracks the CPU: `:lores` draws the full 4,
+`:hires` draws 3 — it blits roughly twice the pixel area per frame,
+and the deepest level spends a blit on an 8x8 far wall.  `:draw-depth`
+overrides the default either way (`:draw-depth 4` buys the last level
+back on a hires machine that can afford it).
+
+Note that `:draw-depth` is the only way in: binding `tale:*draw-depth*`
+around `play-amiga` has no effect, because `with-display-profile`
+rebinds it from the profile on the way in.
+
 Both profiles give the first-person view about **2/5** of the screen
 and the message log the other **3/5** — the text carries the game.
 The split is a profile knob, not engine code: the view column is

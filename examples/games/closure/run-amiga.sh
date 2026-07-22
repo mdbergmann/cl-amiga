@@ -11,6 +11,10 @@
 #   ./run-amiga.sh                      play (lores custom screen)
 #   HEAP=16M STACK=200000 ./run-amiga.sh   override clamiga heap/stack
 #   CONFIG=lowend ./run-amiga.sh        the 68020 baseline machine
+#   DRAW_DEPTH=2 ./run-amiga.sh         draw 2 of the 4 distance levels
+#                                       (fewer wall blits per frame on a
+#                                       slower machine; unset = the full
+#                                       view)
 #   ENTRY=worlds/closure/gfx/run.lisp ./run-amiga.sh   any entry script
 #   DEBUG=1 ./run-amiga.sh              engine debug log -> tale-debug.log
 #                                       in this directory (tail it from
@@ -27,6 +31,7 @@ STACK="${STACK:-128000}"
 CONFIG="${CONFIG:-default}"     # default (A4000/68040 JIT) | lowend (68020)
 ENTRY="${ENTRY:-src/main-amiga.lisp}"
 DEBUG="${DEBUG:-}"              # engine debug log (TALE_DEBUG_LOG)
+DRAW_DEPTH="${DRAW_DEPTH:-}"    # view distance levels drawn, 1-4 (TALE_DRAW_DEPTH)
 case "$DEBUG" in
 	0|no|off) DEBUG="" ;;   # explicit off reads as off, not as a path
 esac
@@ -59,6 +64,9 @@ mkdir -p build/amiga
 	# flag lives for this boot only.
 	if [ -n "$DEBUG" ]; then
 		echo "SetEnv TALE_DEBUG_LOG $DEBUG"
+	fi
+	if [ -n "$DRAW_DEPTH" ]; then
+		echo "SetEnv TALE_DRAW_DEPTH $DRAW_DEPTH"
 	fi
 	echo "CLAmiga:build/amiga/clamiga --heap $HEAP --load $ENTRY"
 	echo "C:UAEquit"

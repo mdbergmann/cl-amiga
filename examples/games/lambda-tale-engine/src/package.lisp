@@ -23,7 +23,8 @@
    #:make-map-knowledge #:know-cell #:know-wall
    #:cell-explored-p #:wall-known-p
    ;; first-person view geometry
-   #:+view-depth+ #:compute-view #:view-planes #:view-display-list
+   #:+view-depth+ #:*draw-depth* #:compute-view #:view-planes
+   #:view-display-list
    #:view-blit-list #:wall-piece-rect #:wall-piece-names #:wall-piece-file
    #:wall-piece-variant-file
    #:backdrop-rects #:print-tile-manifest
@@ -42,7 +43,7 @@
    #:turn-left #:turn-right #:turn-around #:move-party #:observe
    ;; game time, day and night
    #:game-time #:advance-time #:daylight-p #:clock-line
-   #:game-dark-p #:game-view-depth
+   #:game-dark-p #:game-view-depth #:render-view-depth
    #:*minutes-per-action* #:*new-game-minutes* #:+minutes-per-day+
    ;; the world: zones and travel
    #:game-zones #:travel-party #:load-campaign

@@ -17,6 +17,13 @@
 ;; dungeon lies below the tavern.  For a development view in a window
 ;; on the Workbench screen instead:
 ;;   (play-amiga "worlds/closure/town.map" :display :window)
-(play-amiga "worlds/closure/town.map")
+;;
+;; TALE_DRAW_DEPTH in the environment (1-4) trades view distance for
+;; frames on a slower machine — see the engine README's "Draw distance"
+;; section, and DRAW_DEPTH= in run-amiga.sh.  Unset means the display
+;; profile's own default (the full view).
+(let* ((spec (ext:getenv "TALE_DRAW_DEPTH"))
+       (depth (and spec (parse-integer spec :junk-allowed t))))
+  (play-amiga "worlds/closure/town.map" :draw-depth depth))
 
 (cl-user::quit 0)
