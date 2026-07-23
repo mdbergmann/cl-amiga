@@ -1510,7 +1510,32 @@ height" d)
   (check-true "night falls in the log despite the single big jump"
               (member "Night falls." (funcall msgs) :test #'equal))
   (check-true "the sun rises in the log despite the single big jump"
-              (member "The sun rises." (funcall msgs) :test #'equal)))
+              (member "The sun rises." (funcall msgs) :test #'equal))
+  ;; the quiet turns are announced through the jump too, not only sun-up
+  ;; and sun-down
+  (check-true "noon is announced through the jump"
+              (member "The sun climbs high." (funcall msgs) :test #'equal))
+  (check-true "afternoon is announced through the jump"
+              (member "The afternoon wears on." (funcall msgs) :test #'equal))
+  (check-true "dusk is announced through the jump"
+              (member "Dusk gathers." (funcall msgs) :test #'equal)))
+
+;; Each single band turn announces exactly its own line (see
+;; *TIME-BAND-MESSAGES*) — the newest message after crossing the boundary.
+(dolist (case '((360 . "The sun rises.")
+                (600 . "The sun climbs high.")
+                (840 . "The afternoon wears on.")
+                (1080 . "Dusk gathers.")
+                (1200 . "Night falls.")))
+  (let* ((m (parse-map *art* :name "test"))
+         (g (new-game m))
+         (msgs (watch-messages g)))
+    (setf (game-time g) (1- (car case)))   ; one minute before the turn
+    (advance-time g)
+    (check (format nil "crossing minute ~D announces its band line"
+                   (car case))
+           (cdr case)
+           (car (last (funcall msgs))))))
 
 ;; advance-time: boundary events and effect expiry.
 (let* ((m (parse-map *art* :name "test"))
