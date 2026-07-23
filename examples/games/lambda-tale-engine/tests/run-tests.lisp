@@ -2662,7 +2662,7 @@ height" d)
 ;;; ---------------------------------------------------------------------
 ;;; The extended effect vocabulary: spell metadata, combined effects,
 ;;; the new instant kinds and the new timed payloads (the vocabulary
-;;; the Bard's Tale II canon speaks).
+;;; the Closure canon speaks).
 
 ;; Spell metadata rides along untouched by the mechanics.
 (define-spell 'test-canon :code "TSTC" :range "1 foe (10')"

@@ -54,7 +54,7 @@ Races follow the engine's usual split: the engine knows what a race
 **is** — ability-score modifiers plus the list of hero classes the
 race may take — and a campaign registers the concrete ones with
 `define-race` in its campaign.lisp (the Closure game next door ships
-the Bard's Tale II canon).  `make-hero` rolls the abilities (3d6
+its own canon, specs/canon-data.md there).  `make-hero` rolls the abilities (3d6
 each), then adds the racial modifiers in place — no extra dice — and
 rejects a race/class pairing the race does not allow:
 
