@@ -61,6 +61,16 @@ the canonical band order (see *TIME-BAND-NAMES*).")
     (:evening . "Evening") (:night . "Night"))
   "Display name of each day-band.")
 
+(defparameter *time-band-messages*
+  '((:morning   . "The sun rises.")
+    (:noon      . "The sun climbs high.")
+    (:afternoon . "The afternoon wears on.")
+    (:evening   . "Dusk gathers.")
+    (:night     . "Night falls."))
+  "The line ADVANCE-TIME announces in the message log when the clock
+turns into each day-band, so a party watching the sky cycle reads the
+day passing.  :MORNING and :NIGHT coincide with sunrise and sunset.")
+
 (defun time-of-day (minutes)
   "The day-band keyword for clock MINUTES — :MORNING :NOON :AFTERNOON
 :EVENING or :NIGHT (see *TIME-BAND-STARTS*)."
@@ -196,13 +206,14 @@ day spanned rather than one per game-minute."
     (mapcar #'cdr (sort crossings #'< :key #'car))))
 
 (defun advance-time (game &optional (minutes *minutes-per-action*))
-  "Advance the clock by MINUTES (default *MINUTES-PER-ACTION*): emit
-:SUNRISE/:SUNSET on every daylight boundary crossed and :TIME-BAND on
-every band turn crossed — a large MINUTES (the idle clock after a long
-stall) walks each boundary in between via %TIME-BAND-CROSSINGS rather
-than only comparing the two endpoints, so no sunrise/sunset or band
-turn in the middle of a long jump is silently skipped.  Also expires
-timed effects and regenerates caster spell points."
+  "Advance the clock by MINUTES (default *MINUTES-PER-ACTION*): announce
+each band turn (see *TIME-BAND-MESSAGES*), emit :TIME-BAND on every band
+turn crossed and :SUNRISE/:SUNSET on every daylight boundary — a large
+MINUTES (the idle clock after a long stall) walks each boundary in
+between via %TIME-BAND-CROSSINGS rather than only comparing the two
+endpoints, so no band turn, message or sunrise/sunset in the middle of a
+long jump is silently skipped.  Also expires timed effects and
+regenerates caster spell points."
   (let ((old (game-time game)))
     (incf (game-time game) minutes)
     (let ((new (game-time game)))
@@ -213,9 +224,11 @@ timed effects and regenerates caster spell points."
       ;; which *TIME-BAND-STARTS* also uses as the morning/night starts).
       (dolist (band (%time-band-crossings old new))
         (emit game :time-band band)
+        (let ((line (cdr (assoc band *time-band-messages*))))
+          (when line (say game line)))
         (case band
-          (:morning (say game "The sun rises.") (emit game :sunrise))
-          (:night (say game "Night falls.") (emit game :sunset))))
+          (:morning (emit game :sunrise))
+          (:night (emit game :sunset))))
       (%expire-effects game new)
       (%regen-sp game old new)))
   (game-time game))

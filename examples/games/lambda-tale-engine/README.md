@@ -720,12 +720,15 @@ wear off with a message.  See the "Game time" sections of
 
 The clock also names five **bands** of the day — morning, noon,
 afternoon, evening, night — and the map view prints the current one
-("It's Morning.").  Outdoors, the first-person **sky and ground take a
-different colour in each band**: a bright blue that lifts toward dawn,
-softens through the afternoon, warms at dusk and sinks to near-black at
-night.  It is a palette-only effect — two colour registers reloaded
-when the band turns (`:time-band` event), no new art and no redraw — so
-it is free even on a 14 MHz 020.
+("It's Morning.").  Each band turn is **announced in the message log**
+("The sun rises.", "The sun climbs high.", "The afternoon wears on.",
+"Dusk gathers.", "Night falls." — see `*time-band-messages*`), so the
+day reads as passing whether the party walks or stands.  Outdoors, the
+first-person **sky and ground take a different colour in each band**: a
+bright blue that lifts toward dawn, softens through the afternoon, warms
+at dusk and sinks to near-black at night.  It is a palette-only effect —
+two colour registers reloaded when the band turns (`:time-band` event),
+no new art and no redraw — so it is free even on a 14 MHz 020.
 
 Every zone can declare its own colours:
 
