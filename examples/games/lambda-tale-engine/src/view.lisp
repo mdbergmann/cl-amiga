@@ -654,6 +654,20 @@ keep working); NAME is returned unchanged when it already fits."
         do (setf name (subseq name 0 (1- (length name)))))
   name)
 
+(defun title-case (name)
+  "NAME with the first letter of each space-separated word upcased and
+every other character left alone.  STRING-CAPITALIZE is wrong for
+display titles on both counts: it starts a new word at any
+non-alphanumeric character (\"Wolfgar's Arms\" -> \"Wolfgar'S Arms\")
+and it downcases interior capitals an author wrote deliberately."
+  (let ((s (copy-seq name))
+        (start t))
+    (dotimes (i (length s) s)
+      (let ((c (char s i)))
+        (cond ((char= c #\Space) (setf start t))
+              (start (setf (char s i) (char-upcase c)
+                           start nil)))))))
+
 ;;; ---------------------------------------------------------------------
 ;;; Compass rose: display geometry for the UI's facing indicator.
 

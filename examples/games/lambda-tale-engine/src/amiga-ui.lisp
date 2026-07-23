@@ -297,7 +297,7 @@ small gap above the effect strip — see %AMIGA-DRAW-BAND)."
     (amiga.gfx:rect-fill rp (1- bx) py (+ bx w) pb)
     (amiga.gfx:set-a-pen rp 1)
     (%chrome-rect rp (1- bx) py (+ bx w) pb)
-    (let ((name (%plaque-name rp (string-capitalize (map-title (game-map game))) w)))
+    (let ((name (%plaque-name rp (title-case (map-title (game-map game))) w)))
       (let ((tw (amiga.gfx:text-length rp name)))
         (amiga.gfx:move-to rp (+ bx (max 0 (floor (- w tw) 2)))
                            (+ py 2 (ui-layout-base l)))
@@ -1518,29 +1518,32 @@ message-area takeover instead (%AMIGA-DRAW-TAKEOVER)."
     (amiga.gfx:set-a-pen rp 1)))
 
 (defun %amiga-draw-map-legend (rp entries lx lw top bottom)
-  "The found-locations legend beside the full map: one MARKER NAME
-line per entry in the microfont, black on the grey page, the marker
-amber to match its map cell.  ENTRIES is the MAP-LEGEND-ENTRIES list;
-draws what fits between TOP and BOTTOM in LW pixels."
-  (let ((y top)
-        (marker-w (* 2 +microfont-advance+)))
-    (flet ((line (text fg x max-w)
-             (%put-microfont-text rp
-                                  (fit-title text #'microfont-text-width
-                                             max-w)
-                                  x y fg)))
+  "The found-locations legend beside the full map: MARKER NAME per
+entry in the microfont, black on the grey page, the marker amber to
+match its map cell.  ENTRIES is the MAP-LEGEND-ENTRIES list.  A name
+wider than the column wraps onto continuation lines aligned past the
+marker — the full name always shows instead of losing its tail to the
+column edge.  Draws the entries that fit whole between TOP and BOTTOM
+in LW pixels."
+  (let* ((y top)
+         (marker-w (* 2 +microfont-advance+))
+         (name-chars (max 1 (floor (- lw marker-w) +microfont-advance+))))
+    (flet ((line (text fg x)
+             (%put-microfont-text rp text x y fg)))
       (when (<= (+ y +microfont-line-height+) bottom)
-        (line "Found:" 0 lx lw)
+        (line "Found:" 0 lx)
         (incf y (+ +microfont-line-height+ 2)))
       (dolist (e entries)
-        (when (> (+ y +microfont-line-height+) bottom)
-          (return))
         (destructuring-bind (marker x0 y0 title) e
           (declare (ignore x0 y0))
-          (line (string marker) 3 lx marker-w)
-          (line (string-capitalize title) 0 (+ lx marker-w)
-                (- lw marker-w)))
-        (incf y +microfont-line-height+)))))
+          (let ((rows (wrap-text (title-case title) name-chars)))
+            (when (> (+ y (* (length rows) +microfont-line-height+))
+                     bottom)
+              (return))
+            (line (string marker) 3 lx)
+            (dolist (row rows)
+              (line row 0 (+ lx marker-w))
+              (incf y +microfont-line-height+))))))))
 
 (defun %amiga-draw-map-page (rp game l full)
   "Full map mode ('m'): the automap over the whole inner area — black
@@ -1592,7 +1595,7 @@ sizes, and the footer costs half the height topaz 8 did."
            (clock (clock-line game))
            (clock-w (microfont-text-width clock))
            (place (format nil "~A  (~D,~D)~@[ ~A~]"
-                          (string-capitalize (map-title map))
+                          (title-case (map-title map))
                           (game-x game) (game-y game)
                           (when (compass-active-p game)
                             (dir-keyword (game-facing game)))))
