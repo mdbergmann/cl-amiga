@@ -662,6 +662,21 @@ height" d)
   (check "fit-title never shrinks a name below one character"
          "W" (fit-title "W" px8 4)))
 
+;; TITLE-CASE: display titles keep their authored capitalization.
+;; STRING-CAPITALIZE was wrong for the map legend and plaque on two
+;; counts: it starts a new "word" at any non-alphanumeric character
+;; ("Wolfgar's Arms" -> "Wolfgar'S Arms") and it downcases interior
+;; capitals the author wrote deliberately.
+(check "title-case passes an authored title through unchanged"
+       "Wolfgar's Arms & Armour" (title-case "Wolfgar's Arms & Armour"))
+(check "title-case upcases the first letter of each word"
+       "The Old Cellar" (title-case "the old cellar"))
+(check "title-case does not start a word at an apostrophe"
+       "The Adventurer's Rest" (title-case "the adventurer's rest"))
+(check "title-case keeps interior capitals"
+       "McGuffin's" (title-case "mcGuffin's"))
+(check "title-case survives the empty string" "" (title-case ""))
+
 (check "gfx-dir defaults to the engine's lores pack"
        (engine-path "data/gfx/") *gfx-dir*)
 
@@ -5602,7 +5617,7 @@ never its own"
            (let* ((rp (amiga.intuition:window-rastport win))
                   (l (%amiga-layout win rp))
                   (w (ui-layout-fp-w l))
-                  (full (string-capitalize (map-title (game-map g))))
+                  (full (title-case (map-title (game-map g))))
                   (name (%plaque-name rp full w)))
              (check-true "the untruncated title overruns the plaque"
                          (> (amiga.gfx:text-length rp full) (- w 2)))
@@ -5618,6 +5633,11 @@ never its own"
 (let* ((m (parse-map (%big-map-art 30 30) :name "big30"))
        (g (new-game m))
        (log (attach-message-log g)))
+  ;; a place whose name is wider than the narrow legend column a 30x30
+  ;; map leaves — the legend wraps it onto continuation lines instead
+  ;; of cutting the tail ("Wolfgar'S A" was all that survived)
+  (setf (cell-special m 2 1)
+        '((location "Wolfgar's Arms & Armour" :shop)))
   (setf (game-x g) 15 (game-y g) 15)
   (observe g)
   (check "amiga-ui map page on a 30x30 map" t
@@ -5632,6 +5652,9 @@ never its own"
              (%amiga-draw-band rp g l)
              (%amiga-draw-log rp log l)
              (%amiga-draw-map-page rp g l nil)
+             ;; :full lists the shoppe without walking there — draws
+             ;; the wrapped legend beside the map
+             (%amiga-draw-map-page rp g l t)
              t))))
 
 ;; GadTools menu strip (creation/layout via WITH-VISUAL-INFO/WITH-MENUS)

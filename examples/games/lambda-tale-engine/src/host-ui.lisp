@@ -164,7 +164,7 @@ engine has no default world; the game names its starting map."
                      (format t "Found:~%")
                      (dolist (e legend)
                        (format t "  ~C ~A~%" (first e)
-                               (string-capitalize (fourth e))))
+                               (title-case (fourth e))))
                      (terpri)))
                  (format t "~A  ~A~%" (map-title (game-map game))
                          (time-of-day-line game))
