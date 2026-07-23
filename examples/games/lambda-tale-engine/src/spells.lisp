@@ -111,14 +111,9 @@ along.  TITLE defaults to the downcased name (MAGE-FLAME ->
 
 (defun spell-target-kind (name)
   "What the spell needs aimed at: :HERO when it heals, cures or raises
-one chosen hero; else :NONE (damage strikes the melee target, buffs
-and light cover the party, :heal-party needs no choosing)."
-  (let ((effect (spell-type-effect (find-spell-type name))))
-    (if (and (not (getf effect :heal-party))
-             (or (getf effect :heal) (getf effect :resurrect)
-                 (getf effect :cure)))
-        :hero
-        :none)))
+one chosen hero; else :NONE (see EFFECT-SPEC-TARGET-KIND, the shared
+rule items follow too)."
+  (effect-spec-target-kind (spell-type-effect (find-spell-type name))))
 
 (defun spell-known-p (hero name)
   "Does HERO know spell NAME?  A caster of an allowed class (NIL
@@ -227,6 +222,32 @@ canonical spell already casts."
     (when (getf effect :teleport)
       (say game "Space folds and shimmers, but the way stays shut."))))
 
+(defun %spell-strike-blocked-p (game type)
+  "Say why and return T when spell TYPE carries a battle effect and
+there is no fight — or nothing left alive to strike.  Both casts and
+\(:cast SPELL) item triggers refuse through this check."
+  (let ((effect (spell-type-effect type)))
+    (cond
+      ((not (effect-spec-combat-only-p effect)) nil)
+      ((not (game-combat game))
+       (say game "There is nothing to strike ~A at."
+            (spell-type-title type))
+       t)
+      ((null (alive-monsters (game-combat game)))
+       (say game "There is nothing left to strike.")
+       t))))
+
+(defun %resolve-spell-cast (game hero type target)
+  "The shared tail of a resolving cast — a hero's own (CAST-SPELL) or
+an item's (:cast SPELL) trigger: apply TYPE's instant keys for caster
+HERO and install its timed keys as one effect record."
+  (let ((effect (spell-type-effect type)))
+    (%apply-instant-effects game hero effect target)
+    (when (loop for entry in *timed-effect-keys*
+                thereis (getf effect (first entry)))
+      (apply-effect-spec game (spell-type-title type) effect
+                         :image (spell-type-image type)))))
+
 (defun cast-spell (game hero name &optional target)
   "HERO casts spell NAME (on TARGET, a hero, when the spell mends one
 chosen hero — defaults to the caster).  Says why and returns NIL when
@@ -234,9 +255,7 @@ the hero cannot cast it (unknown, no sp, a battle spell out of
 combat, nothing to strike); otherwise pays the sp, applies the
 instant keys and installs the timed keys as one effect record, emits
 :SPELL-CAST and returns T."
-  (let* ((type (find-spell-type name))
-         (effect (spell-type-effect type))
-         (combat-only (effect-spec-combat-only-p effect)))
+  (let ((type (find-spell-type name)))
     (cond
       ((not (spell-known-p hero name))
        (say game "~A does not know ~A." (hero-name hero)
@@ -246,21 +265,12 @@ instant keys and installs the timed keys as one effect record, emits
        (say game "~A lacks the spell points for ~A." (hero-name hero)
             (spell-type-title type))
        nil)
-      ((and combat-only (not (game-combat game)))
-       (say game "There is nothing to strike ~A at." (spell-type-title type))
-       nil)
-      ((and combat-only
-            (null (alive-monsters (game-combat game))))
-       (say game "There is nothing left to strike.")
+      ((%spell-strike-blocked-p game type)
        nil)
       (t
        (decf (hero-sp hero) (spell-type-cost type))
        (say game "~A casts ~A!" (hero-name hero) (spell-type-title type))
-       (%apply-instant-effects game hero effect target)
-       (when (loop for entry in *timed-effect-keys*
-                   thereis (getf effect (first entry)))
-         (apply-effect-spec game (spell-type-title type) effect
-                            :image (spell-type-image type)))
+       (%resolve-spell-cast game hero type target)
        (emit game :spell-cast hero name)
        t))))
 

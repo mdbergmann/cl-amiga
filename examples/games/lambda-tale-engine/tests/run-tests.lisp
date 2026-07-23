@@ -3042,6 +3042,84 @@ height" d)
   (check "its effect carries the damage bonus" 2
          (effects-damage-bonus g)))
 
+;; Spell-trigger items: :use (:cast SPELL) casts the registered spell
+;; for free -- no spell points, no spellbook, the item is the magic
+;; (Bard's Tale's Wizhelm).  Non-battle instants (:summon ...) may
+;; ride on an item directly.
+(define-item 'test-bomb :use '(:cast test-bolt) :consumed t)
+(define-item 'test-scroll :use '(:cast test-mend))
+(define-item 'test-idol :use '(:summon "stone guardian"))
+(check-error "a casting :use names a registered spell"
+  (define-item 'test-dud :use '(:cast test-nonesuch)))
+(check-error "a casting :use stands alone"
+  (define-item 'test-dud :use '(:cast test-bolt :light t)))
+(check "a battle trigger aims at nobody" :none
+       (item-target-kind 'test-bomb))
+(check "a mending trigger aims like its spell" :hero
+       (item-target-kind 'test-scroll))
+(check "a summon item aims at nobody" :none
+       (item-target-kind 'test-idol))
+(check "a healing item picks a hero" :hero
+       (item-target-kind 'test-elixir))
+(check "a timed-use item aims at nobody" :none
+       (item-target-kind 'test-warstone))
+
+;; A battle trigger out of combat is refused, and the item is kept; a
+;; summon item is no battle item -- it fires anywhere.
+(let* ((m (parse-map *art* :name "test"))
+       (grunt (%combat-hero))
+       (g (new-game m :party (list grunt)))
+       (msgs (watch-messages g)))
+  (give-item g grunt 'test-bomb)
+  (check "the bomb waits for a fight" nil (use-item g grunt 'test-bomb))
+  (check-true "the refusal says why"
+              (find-if (lambda (s) (search "nothing to strike" s))
+                       (funcall msgs)))
+  (check-true "the refused bomb is kept"
+              (hero-carrying-p grunt 'test-bomb))
+  (give-item g grunt 'test-idol)
+  (check-true "the idol summons in the open"
+              (use-item g grunt 'test-idol))
+  (check-true "the summons answers"
+              (find-if (lambda (s) (search "stone guardian" s))
+                       (funcall msgs))))
+
+;; In combat the trigger fires: a plain fighter casts the mage's bolt,
+;; pays no spell points, and the spent bomb leaves the pack.
+(let* ((m (parse-map *art* :name "test"))
+       (grunt (%combat-hero))
+       (g (new-game m :party (list grunt)))
+       (msgs (watch-messages g))
+       (used '()))
+  (on-event g :item-used (lambda (game h name) (declare (ignore game))
+                           (push (list (hero-name h) name) used)))
+  (give-item g grunt 'test-bomb)
+  (start-combat g '(("test rat" 1)))    ; 3 hp
+  (check-true "the bomb fires the bolt"
+              (with-rng (2) (use-item g grunt 'test-bomb)))  ; 1d4 -> 3
+  (check "no spell points change hands" 0 (hero-sp grunt))
+  (check-true "the item speaks the cast"
+              (find-if (lambda (s) (search "Test Bomb casts test bolt" s))
+                       (funcall msgs)))
+  (check ":item-used emitted" '(("Alva" test-bomb)) used)
+  (check "the spent bomb is gone" nil (hero-carrying-p grunt 'test-bomb))
+  (check "the bolt slew the rat" nil
+         (alive-monsters (game-combat g))))
+
+;; A mending trigger heals its chosen target through the spell path.
+(let* ((m (parse-map *art* :name "test"))
+       (grunt (%combat-hero))
+       (mage (%combat-mage))
+       (g (new-game m :party (list grunt mage))))
+  (damage-hero g grunt 5)
+  (give-item g mage 'test-scroll)
+  (check-true "the scroll mends the chosen hero"
+              (with-rng (3) (use-item g mage 'test-scroll grunt)))
+  (check "the mending landed on the target" 7 (hero-hp grunt))
+  (check "the scroll cost the user no sp" 6 (hero-sp mage))
+  (check-true "the unconsumed scroll is kept"
+              (hero-carrying-p mage 'test-scroll)))
+
 ;; combat-round accepts (:cast SPELL [TARGET]) beside :attack/:defend.
 (let* ((m (parse-map *art* :name "test"))
        (grunt (%combat-hero))
@@ -3160,6 +3238,30 @@ height" d)
          (combat-orders-act g view #\1))
   (check "picking spent no tune" 1 (hero-tunes bard)))
 
+;; U during orders opens the use pick: the Wizhelm's moment -- the
+;; pick lands as (:use ITEM) and the round fires the item's spell.
+(let* ((m (parse-map *art* :name "test"))
+       (grunt (%combat-hero))
+       (g (new-game m :party (list grunt)))
+       (view (make-combat-orders)))
+  (give-item g grunt 'test-bomb)
+  (start-combat g '(("test rat" 1)))    ; 3 hp
+  (check "u opens the use pick" nil (combat-orders-act g view #\u))
+  (check-true "the pick page lists the bomb"
+              (find-if (lambda (s) (search "Test Bomb" s))
+                       (menu-texts (combat-orders-lines g view))))
+  (let ((r (combat-orders-act g view #\1)))
+    (check "the use pick completes the orders"
+           '(:fight ((:use test-bomb))) r)
+    (check-true "picking spent nothing"
+                (hero-carrying-p grunt 'test-bomb))
+    ;; d20=10: the rat's strike back never comes -- the bolt (1d4=3)
+    ;; slays it first
+    (check "the ordered round wins by item" :victory
+           (with-rng (2) (combat-round g (second r))))
+    (check "the round spent the bomb" nil
+           (hero-carrying-p grunt 'test-bomb))))
+
 ;; Refusals stay put; F flees party-level from any hero's turn.
 (let* ((m (parse-map *art* :name "test"))
        (grunt (%combat-hero))
@@ -3173,6 +3275,11 @@ height" d)
   (check "p on a non-singer stays put" nil (combat-orders-act g view #\p))
   (check-true "and says who cannot play"
               (find "Alva cannot play." (funcall msgs) :test #'equal))
+  (check "u with an empty pack stays put" nil
+         (combat-orders-act g view #\u))
+  (check-true "and says who has nothing"
+              (find "Alva has nothing to use." (funcall msgs)
+                    :test #'equal))
   (check "still asking the same hero" grunt (combat-orders-hero g view))
   (check "f flees" :flee (combat-orders-act g view #\f)))
 
@@ -3370,6 +3477,42 @@ height" d)
   (check "sheet pack line marks equipped"
          "Pack: T Sword, T Axe*, T Mail, T Buckler*, T Torch"
          (seventh (hero-summary-lines h))))
+
+;; The Bard's Tale categories are all equipment: helmet, gloves, bow,
+;; arrow, instrument, ring, wand, figurine -- one of each kind at a
+;; time, and every worn piece's :AC counts at once.
+(check-error "define-item still rejects a made-up kind"
+  (define-item 't-bogus :kind :cloak))
+(define-item 't-helm   :kind :helmet :price 50  :ac 1)
+(define-item 't-cap    :kind :helmet :price 20  :ac 1)
+(define-item 't-mitts  :kind :gloves :price 40  :ac 1)
+(define-item 't-band   :kind :ring   :price 700 :ac 2)
+(define-item 't-bow    :kind :bow    :price 60)
+(define-item 't-quiver :kind :arrow  :price 130 :damage "2d4")
+(let* ((m (parse-map *art* :name "test"))
+       (h (%combat-hero))
+       (g (new-game m :party (list h))))
+  (dolist (name '(t-helm t-cap t-mitts t-band t-bow t-quiver t-sword))
+    (give-item g h name))
+  (let ((base (hero-effective-ac h)))
+    (check-true "a helmet goes on" (equip-item g h 't-helm))
+    (check-true "gloves go on beside it" (equip-item g h 't-mitts))
+    (check-true "a ring goes on beside both" (equip-item g h 't-band))
+    (check-true "bow and arrows ride along"
+                (and (equip-item g h 't-bow) (equip-item g h 't-quiver)))
+    (check-true "the weapon still fits" (equip-item g h 't-sword))
+    (check "six pieces worn at once" 6 (length (hero-equipped h)))
+    (check "helm, gloves and ring all ward together" (- base 4)
+           (hero-effective-ac h))
+    (check "the sword, not the arrows, feeds the attack" "1d6+2"
+           (hero-attack-dice h))
+    (check-true "a second helmet swaps the first, kind for kind"
+                (equip-item g h 't-cap))
+    (check "still six pieces" 6 (length (hero-equipped h)))
+    (check "the first helmet came off" 't-cap
+           (equipped-of-kind h :helmet))
+    (check "the swap kept the warding" (- base 4)
+           (hero-effective-ac h))))
 
 ;; Class restrictions: a hero whose class the item excludes.
 (define-hero-class :t-wizard :hp-dice "1d4" :damage "1d3" :ac 10)
@@ -3597,7 +3740,18 @@ height" d)
     (let ((before (hero-hp b)))
       (check "picking the target commits" :done
              (with-rng (0) (use-act g v #\2)))  ; 1d4+1 -> 2
-      (check "the heal landed on hero 2" (+ before 2) (hero-hp b)))))
+      (check "the heal landed on hero 2" (+ before 2) (hero-hp b))))
+  ;; a mending (:cast SPELL) trigger asks for its target the same way
+  (let ((v (make-use-view)))
+    (give-item g a 'test-scroll)        ; the spent torch and potion
+    (use-act g v #\1)                   ; left the pack; the scroll is 1
+    (check "the scroll wants a target first" nil (use-act g v #\1))
+    (damage-hero g b 4)
+    (let ((before (hero-hp b)))
+      (check "picking the scroll's target commits" :done
+             (with-rng (2) (use-act g v #\2)))  ; 1d8 -> 3
+      (check "the spell's mending landed on hero 2" (+ before 3)
+             (hero-hp b)))))
 
 ;; Combat uses the equipment: weapon dice on the attack, effective AC
 ;; against the monsters.

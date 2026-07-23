@@ -220,11 +220,12 @@ say where it landed.  Returns the new speed."
 (defun combat-round (game &optional actions)
   "Fight one round.  ACTIONS lists an action per living hero in party
 order — :attack (the default), :defend, (:cast SPELL [TARGET]) to
-cast a spell (see CAST-SPELL; a failed cast wastes the round), or
-\(:sing SONG) to strike up a song (see SING-SONG; likewise).  Heroes
-strike the first living monster; then the surviving monsters strike
-back.  The round costs one clock tick.  Returns :victory, :defeat or
-:ongoing."
+cast a spell (see CAST-SPELL; a failed cast wastes the round),
+\(:sing SONG) to strike up a song (see SING-SONG; likewise), or
+\(:use ITEM [TARGET]) to use an item (see USE-ITEM — how a Wizhelm
+fires its spell in battle; likewise).  Heroes strike the first living
+monster; then the surviving monsters strike back.  The round costs
+one clock tick.  Returns :victory, :defeat or :ongoing."
   (let ((combat (game-combat game)))
     (unless combat
       (error "combat-round: no combat is in progress"))
@@ -251,7 +252,9 @@ back.  The round costs one clock tick.  Returns :victory, :defeat or
                 ((and (consp a) (eq (first a) :cast))
                  (cast-spell game (car p) (second a) (third a)))
                 ((and (consp a) (eq (first a) :sing))
-                 (sing-song game (car p) (second a)))))))
+                 (sing-song game (car p) (second a)))
+                ((and (consp a) (eq (first a) :use))
+                 (use-item game (car p) (second a) (third a)))))))
     (%monsters-act game combat)
     ;; a :COMBAT-HEAL effect (Zanduvar Carack) mends the party each round
     (dolist (dice (effects-combat-heal game))
@@ -263,11 +266,12 @@ back.  The round costs one clock tick.  Returns :victory, :defeat or
 ;;; The round-orders interaction model (shared by both front-ends).
 ;;;
 ;;; Bard's Tale style: every living hero picks an action for the round
-;;; — attack, defend, cast, play — and only then does the round run.
-;;; The model collects (HERO . ACTION) pairs in party order; C and P
-;;; open the cast/sing pickers for the hero at hand in their :ORDERS
-;;; mode, which hands the pick back as a round action instead of
-;;; fighting a round itself (see %CAST-COMMIT / %SING-COMMIT).  F is
+;;; — attack, defend, cast, play, use — and only then does the round
+;;; run.  The model collects (HERO . ACTION) pairs in party order; C,
+;;; P and U open the cast/sing/use pickers for the hero at hand in
+;;; their :ORDERS mode, which hands the pick back as a round action
+;;; instead of fighting a round itself (see %CAST-COMMIT /
+;;; %SING-COMMIT / %USE-COMMIT).  F is
 ;;; party-level flight, Esc undoes the previous hero's pick, +/- set
 ;;; the transcript speed.  When the last hero has picked,
 ;;; COMBAT-ORDERS-ACT returns (:FIGHT ACTIONS) and the front-end
@@ -296,6 +300,11 @@ hero has an action."
                    (and target (hero-name target)))))
         ((and (consp action) (eq (first action) :sing))
          (format nil "play ~A" (song-title (second action))))
+        ((and (consp action) (eq (first action) :use))
+         (format nil "use ~A~@[ on ~A~]"
+                 (item-title (second action))
+                 (let ((target (third action)))
+                   (and target (hero-name target)))))
         (t (string-downcase (princ-to-string action)))))
 
 (defun combat-orders-lines (game view)
@@ -307,6 +316,7 @@ While a cast/sing pick is open, its page shows instead."
     (cond
       ((cast-view-p sub) (cast-lines game sub))
       ((sing-view-p sub) (sing-lines game sub))
+      ((use-view-p sub) (use-lines game sub))
       (t
        (let ((combat (game-combat game))
              (current (combat-orders-hero game view)))
@@ -329,7 +339,7 @@ While a cast/sing pick is open, its page shows instead."
                                     (t "")))))
                   (alive-heroes game))
           (list ""
-                "[a]ttack [d]efend [c]ast [p]lay"
+                "[a]ttack [d]efend [c]ast [p]lay [u]se"
                 (format nil "[f]lee  [Esc] undo  +/- speed ~D"
                         *combat-speed*))))))))
 
@@ -344,20 +354,20 @@ return (:FIGHT ACTIONS), the actions in party order; else NIL."
       (list :fight (mapcar #'cdr (combat-orders-chosen view)))))
 
 (defun %orders-sub-act (game view sub char)
-  "Forward CHAR to the open cast/sing picker.  A completed pick lands
-as the hero-at-hand's action; Esc backs out to the action keys."
-  (let ((result (if (cast-view-p sub)
-                    (cast-act game sub char)
-                    (sing-act game sub char))))
+  "Forward CHAR to the open cast/sing/use picker.  A completed pick
+lands as the hero-at-hand's action; Esc backs out to the action keys."
+  (let ((result (cond ((cast-view-p sub) (cast-act game sub char))
+                      ((sing-view-p sub) (sing-act game sub char))
+                      (t (use-act game sub char)))))
     (cond ((and (consp result) (eq (first result) :action))
            (setf (combat-orders-sub view) nil)
            (%orders-record game view (second result)))
           ((or (eq result :cancelled)
                ;; Esc on the picker's first page clears its preset
                ;; hero — that is the whole picker backing out
-               (null (if (cast-view-p sub)
-                         (cast-view-hero sub)
-                         (sing-view-hero sub))))
+               (null (cond ((cast-view-p sub) (cast-view-hero sub))
+                           ((sing-view-p sub) (sing-view-hero sub))
+                           (t (use-view-hero sub)))))
            (setf (combat-orders-sub view) nil)
            nil)
           (t nil))))
@@ -385,6 +395,11 @@ NIL."
                   (setf (combat-orders-sub view)
                         (make-sing-view :in-combat :orders :hero hero))
                   (say game "~A cannot play." (hero-name hero)))
+              nil)
+         (#\u (if (usable-items hero)
+                  (setf (combat-orders-sub view)
+                        (make-use-view :in-combat :orders :hero hero))
+                  (say game "~A has nothing to use." (hero-name hero)))
               nil)
          (#\f :flee)
          (#\+ (adjust-combat-speed game 1) nil)

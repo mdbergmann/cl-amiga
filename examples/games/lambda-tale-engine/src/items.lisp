@@ -3,36 +3,51 @@
 ;;; Item types are campaign data, not engine facts: the campaign
 ;;; registers them with DEFINE-ITEM in its campaign.lisp and maps
 ;;; refer to them by name in shop stock lists.  The engine only knows
-;;; the mechanics: a hero carries up to +INVENTORY-LIMIT+ items and can
-;;; equip one weapon, one armor and one shield at a time.  Armor class
-;;; is descending, so an item's :AC bonus *lowers* the effective AC.
+;;; the mechanics: a hero carries up to +INVENTORY-LIMIT+ items and
+;;; can equip one item of each equipment kind (*ITEM-KINDS* less
+;;; :MISC — weapon, armor, shield, helmet, gloves, bow, arrow,
+;;; instrument, ring, wand, figurine) at a time.  Armor class is
+;;; descending, so an item's :AC bonus *lowers* the effective AC.
 ;;;
-;;; An item may also be USABLE (:USE) — a torch, a potion: using it
-;;; applies an effect from the same vocabulary spells speak, either
-;;; instant (:heal DICE) or timed through APPLY-EFFECT-SPEC
-;;; ((:light t :duration MIN), (:buff-ac N :duration MIN),
-;;; (:compass t :duration MIN)); a :CONSUMED item leaves the pack on
-;;; use, and :IMAGE names the effects-band icon of the installed
-;;; effect.  The use interaction (USE-VIEW / USE-LINES / USE-ACT, the
-;;; SHOP-VIEW pattern) lives here too, driven by both front-ends, and
-;;; so does the gear page (EQUIP-VIEW — 'e' on the character sheet):
-;;; a digit toggles a pack item on/off, class-unfit items are marked.
+;;; An item may also be USABLE (:USE) — a torch, a potion, a wand:
+;;; using it applies an effect from the same vocabulary spells speak —
+;;; instant keys that need no battle ((:heal DICE), (:summon NAME)),
+;;; or timed keys through APPLY-EFFECT-SPEC ((:light t :duration MIN),
+;;; (:buff-ac N :duration MIN)), but not both at once.  The battle
+;;; instants (the damage family) may not ride on an item directly:
+;;; a spell-triggering item says :USE (:CAST SPELL) instead and casts
+;;; that registered spell for free — no spell points, no spellbook,
+;;; the item is the magic (Bard's Tale's Wizhelm).  A :CONSUMED item
+;;; leaves the pack on use, and :IMAGE names the effects-band icon of
+;;; the installed effect.  The use interaction (USE-VIEW / USE-LINES /
+;;; USE-ACT, the SHOP-VIEW pattern) lives here too, driven by both
+;;; front-ends, and so does the gear page (EQUIP-VIEW — 'e' on the
+;;; character sheet): a digit toggles a pack item on/off, class-unfit
+;;; items are marked.
 
 (in-package :tale)
 
 (defconstant +inventory-limit+ 8
   "Maximum items a hero can carry (Bard's Tale pack size).")
 
+(defparameter *item-kinds*
+  '(:weapon :armor :shield :helmet :gloves :bow :arrow
+    :instrument :ring :wand :figurine :misc)
+  "The item kinds (Bard's Tale's equipment categories).  Every kind
+but :MISC is equipment: a hero wears one item of each kind at a time,
+and every equipped item's :AC bonus counts.")
+
 (defstruct (item-type (:constructor %make-item-type))
   name                ; symbol, e.g. SHORT-SWORD
   title               ; display string, e.g. "Short Sword"
-  (kind :misc)        ; :weapon, :armor, :shield or :misc
+  (kind :misc)        ; one of *ITEM-KINDS*
   (price 0)           ; shop price in gold
   damage              ; attack dice (weapons), or NIL
   (ac 0)              ; armor bonus: subtracted from descending AC
   classes             ; hero classes allowed to use it; NIL = anyone
-  use                 ; effect on use: (:heal DICE) or a timed spec
-                      ; (:light t :duration MIN) etc.; NIL = not usable
+  use                 ; effect on use: a non-battle instant spec
+                      ; (:heal DICE), a timed spec (:light t :duration
+                      ; MIN), or (:cast SPELL); NIL = not usable
   consumed            ; T: one use, the item leaves the pack
   image)              ; effects-band icon for the timed :use, or NIL
 
@@ -42,25 +57,43 @@
                               classes use consumed image)
   "Register item type NAME (a symbol).  Campaign data calls this.
 TITLE defaults to the capitalized name (SHORT-SWORD -> \"Short Sword\").
-:USE makes the item usable — (:heal DICE) heals a chosen hero; a
-timed spec over the shared vocabulary (*TIMED-EFFECT-KEYS* in
-game.lisp, e.g. (:light t :duration 30)) installs the effect;
+:USE makes the item usable, one of three shapes: instant keys of the
+shared vocabulary that need no battle (e.g. (:heal DICE),
+\(:summon NAME) — the damage family is refused); a timed spec
+\(*TIMED-EFFECT-KEYS* in game.lisp, e.g. (:light t :duration 30))
+that installs its effect; or (:cast SPELL) — using the item casts the
+already-registered spell for free, so register the spell first.
 :CONSUMED spends the item on use and :IMAGE names the installed
 effect's band icon."
-  (unless (member kind '(:weapon :armor :shield :misc))
-    (error "define-item ~S: kind ~S is not one of :weapon :armor :shield :misc"
-           name kind))
+  (unless (member kind *item-kinds*)
+    (error "define-item ~S: kind ~S is not one of ~{~S~^ ~}"
+           name kind *item-kinds*))
   (when use
     (unless (consp use)
       (error "define-item ~S: :use ~S must be an effect plist -- ~
-              (:heal DICE) or a timed spec like (:light t :duration 30)"
+              (:heal DICE), a timed spec like (:light t :duration 30), ~
+              or (:cast SPELL)"
              name use))
-    (if (getf use :heal)
-        (unless (and (null (cddr use))
-                     (%effect-value-ok-p 'heal (getf use :heal)))
-          (error "define-item ~S: a healing :use is (:heal DICE) alone ~
-                  (got ~S)" name use))
-        (check-effect-spec "define-item" name use :timed-only t)))
+    (if (eq (first use) :cast)
+        (progn
+          (unless (and (= (length use) 2)
+                       (symbolp (second use)) (second use))
+            (error "define-item ~S: a casting :use is (:cast SPELL) ~
+                    alone (got ~S)" name use))
+          ;; a clear error now beats a broken item later: the spell
+          ;; must already be registered (DEFINE-SPELL comes first)
+          (find-spell-type (second use)))
+        (multiple-value-bind (timed instant)
+            (check-effect-spec "define-item" name use)
+          (when (and timed instant)
+            (error "define-item ~S: :use ~S mixes timed and instant ~
+                    effects -- an item speaks one or the other"
+                   name use))
+          (when (effect-spec-combat-only-p use)
+            (error "define-item ~S: :use ~S is a battle effect -- ~
+                    register a spell and give the item :use ~
+                    (:cast SPELL) instead"
+                   name use)))))
   (when (and consumed (not use))
     (error "define-item ~S: :consumed without a :use" name))
   (setf (gethash name *item-types*)
@@ -255,13 +288,31 @@ duplicates kept: two torches are two uses."
                         (item-usable-p hero name)))
                  (hero-items hero)))
 
+(defun %use-instant-p (use)
+  "True when the validated item :USE spec speaks instant keys (else it
+is a timed spec; a spec never mixes the two — DEFINE-ITEM refuses)."
+  (loop for tail on use by #'cddr
+        thereis (and (assoc (first tail) *instant-effect-keys*) t)))
+
+(defun item-target-kind (name)
+  "What using item NAME needs aimed at: :HERO when its effect — or the
+spell a (:cast SPELL) use triggers — mends one chosen hero; else
+:NONE."
+  (let ((use (item-type-use (find-item-type name))))
+    (cond ((null use) :none)
+          ((eq (first use) :cast) (spell-target-kind (second use)))
+          (t (effect-spec-target-kind use)))))
+
 (defun use-item (game hero name &optional target)
-  "HERO uses item NAME (on TARGET, a hero, when the item heals —
-defaults to the user).  Says why and returns NIL when the hero does
-not carry it, the class cannot use it, or it has no use; otherwise
-applies the :USE effect — instant :HEAL, or a timed effect through
-APPLY-EFFECT-SPEC — spends a :CONSUMED item, emits :ITEM-USED and
-returns T."
+  "HERO uses item NAME (on TARGET, a hero, when the use mends one
+chosen hero — defaults to the user).  Says why and returns NIL when
+the hero does not carry it, the class cannot use it, it has no use,
+or a (:cast SPELL) trigger is a battle spell with nothing to strike —
+the item is not spent.  Otherwise applies the :USE — non-battle
+instant keys through the spell machinery, a timed spec through
+APPLY-EFFECT-SPEC, a (:cast SPELL) trigger as a free cast (no spell
+points, no spellbook: the item is the magic) — spends a :CONSUMED
+item, emits :ITEM-USED and returns T."
   (let* ((type (find-item-type name))
          (use (item-type-use type)))
     (cond
@@ -277,16 +328,29 @@ returns T."
        (say game "Nothing happens.")
        nil)
       (t
-       (say game "~A uses ~A." (hero-name hero) (item-type-title type))
-       (if (getf use :heal)
-           (let ((h (or target hero)))
-             (heal-hero game h (%heal-amount h (getf use :heal))))
-           (apply-effect-spec game (item-type-title type) use
-                              :image (item-type-image type)))
-       (when (item-type-consumed type)
-         (drop-item game hero name))
-       (emit game :item-used hero name)
-       t))))
+       (let ((spell (and (eq (first use) :cast) (second use))))
+         (cond
+           ((and spell
+                 (%spell-strike-blocked-p game (find-spell-type spell)))
+            nil)                        ; it said why; the item keeps
+           (t
+            (say game "~A uses ~A." (hero-name hero)
+                 (item-type-title type))
+            (cond
+              (spell
+               (say game "The ~A casts ~A!"
+                    (item-type-title type) (spell-title spell))
+               (%resolve-spell-cast game hero (find-spell-type spell)
+                                    target))
+              ((%use-instant-p use)
+               (%apply-instant-effects game hero use target))
+              (t
+               (apply-effect-spec game (item-type-title type) use
+                                  :image (item-type-image type))))
+            (when (item-type-consumed type)
+              (drop-item game hero name))
+            (emit game :item-used hero name)
+            t)))))))
 
 ;;; ---------------------------------------------------------------------
 ;;; The use interaction model (shared by both front-ends — the
@@ -296,14 +360,37 @@ returns T."
 (defstruct (use-view (:constructor %make-use-view))
   hero                ; the chosen user, or NIL while picking
   item                ; the chosen item name, or NIL while picking
+  in-combat           ; T: committing fights one COMBAT-ROUND;
+                      ; :ORDERS: committing returns the pick as a
+                      ; round action (the combat-orders flow)
   (top 0))            ; scroll offset into the item list
 
-(defun make-use-view ()
-  (%make-use-view))
+(defun make-use-view (&key in-combat hero)
+  "HERO presets the user (the combat-orders flow asks for one hero's
+pick); NIL starts at the who-uses page."
+  (%make-use-view :in-combat in-combat :hero hero))
 
 (defun %use-commit (game view target)
-  (use-item game (use-view-hero view) (use-view-item view) target)
-  :done)
+  "Resolve the completed pick: use directly; in combat fight one round
+where the user uses the item and everyone else attacks; in :ORDERS
+mode hand the pick back as (:ACTION (:USE ITEM [TARGET]))."
+  (let ((hero (use-view-hero view))
+        (item (use-view-item view)))
+    (cond
+      ((eq (use-view-in-combat view) :orders)
+       (list :action (if target
+                         (list :use item target)
+                         (list :use item))))
+      ((use-view-in-combat view)
+       (combat-round game
+                     (mapcar (lambda (h)
+                               (if (eq h hero)
+                                   (list :use item target)
+                                   :attack))
+                             (alive-heroes game)))
+       :done)
+      (t (use-item game hero item target)
+         :done))))
 
 (defun use-lines (game view)
   "The current use menu as a list of menu lines — the front-ends draw
@@ -335,7 +422,7 @@ key (see MENU-NUMBERED)."
             (menu-numbered
              i (format nil "~D) ~A" i (item-title name)))))
          (list "" "[1-9] use  [Esc] back")))
-       (t                              ; a healing item picks its target
+       (t                              ; a mending item picks its target
         (append
          (list (format nil "~A on whom?" (item-title item)) "")
          (let ((i 0))
@@ -350,7 +437,8 @@ key (see MENU-NUMBERED)."
 
 (defun use-act (game view char)
   "Apply key CHAR to the use menu.  Returns :DONE when a use resolved
-(the front-end drops the view), :CANCELLED on Esc at the top level,
+(the front-end drops the view) — in :ORDERS mode
+\(:ACTION (:USE ...)) instead — :CANCELLED on Esc at the top level,
 else NIL."
   (let ((hero (use-view-hero view))
         (item (use-view-item view))
@@ -372,8 +460,8 @@ else NIL."
                                             (use-view-top view) digit)))
                 (when name
                   (setf (use-view-item view) name)
-                  (if (getf (item-type-use (find-item-type name)) :heal)
-                      nil               ; a heal picks its target next
+                  (if (eq (item-target-kind name) :hero)
+                      nil               ; a mender picks its target next
                       (%use-commit game view nil)))))
              ((eql char #\Escape)
               (setf (use-view-hero view) nil

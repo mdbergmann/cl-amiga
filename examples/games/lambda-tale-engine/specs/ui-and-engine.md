@@ -191,7 +191,7 @@ profile, not a patch.)
   **map footer**, contextual prompts (win/lose) into the message log.
   Combat keys live on the **round-orders page** (`combat-orders-lines`
   / `combat-orders-act` in combat.lisp): every living hero picks an
-  action in turn (attack/defend/cast/play, `Esc` undoes, `f` flees,
+  action in turn (attack/defend/cast/play/use, `Esc` undoes, `f` flees,
   `+`/`-` set the transcript speed), then the round runs with each
   message lingering `combat-message-delay` seconds.
 

@@ -41,6 +41,7 @@
    #:effect-image #:effect-image-path #:apply-effect-spec
    #:*timed-effect-keys* #:*instant-effect-keys*
    #:check-effect-spec #:effect-spec-combat-only-p
+   #:effect-spec-target-kind
    #:effects-ac-bonus #:effects-damage-bonus #:effects-save-bonus
    #:effects-extra-attacks #:effects-foes-ac #:effects-foes-attack
    #:effects-regen-sp #:effects-combat-heal
@@ -90,7 +91,7 @@
    #:pool-gold
    ;; items, inventory and equipment
    #:define-item #:find-item-type #:item-title #:item-usable-p
-   #:item-fit-marker
+   #:item-fit-marker #:item-target-kind #:*item-kinds*
    #:+inventory-limit+ #:hero-items #:hero-equipped #:hero-carrying-p
    #:give-item #:drop-item #:equip-item #:unequip-item #:equipped-of-kind
    #:toggle-equip #:hero-attack-dice #:hero-effective-ac

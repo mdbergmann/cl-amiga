@@ -347,6 +347,17 @@ damage family, :SLAY and the foe-handling keys)."
         thereis (let ((entry (assoc (first tail) *instant-effect-keys*)))
                   (and entry (third entry) t))))
 
+(defun effect-spec-target-kind (spec)
+  "What SPEC needs aimed at: :HERO when it heals, cures or raises one
+chosen hero; else :NONE (damage strikes the melee target, buffs and
+light cover the party, :heal-party needs no choosing).  Spells and
+usable items share this rule."
+  (if (and (not (getf spec :heal-party))
+           (or (getf spec :heal) (getf spec :resurrect)
+               (getf spec :cure)))
+      :hero
+      :none))
+
 (defun %effects-sum (game key)
   (let ((n 0))
     (dolist (e (game-effects game) n)
