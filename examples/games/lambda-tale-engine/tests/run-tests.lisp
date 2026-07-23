@@ -1084,16 +1084,17 @@ height" d)
             (every (lambda (line) (<= (length line) 12))
                    (wrap-text "the quick brown fox jumps over the lazy dog" 12)))
 
-;; wrap-message: "> " marks where a message starts, continuations indent.
-(check "wrap-message: single line gets the marker"
-       '("> short") (wrap-message "short" 10))
-(check "wrap-message: continuation lines indent"
-       '("> one two" "  three") (wrap-message "one two three" 9))
+;; wrap-message: a leading blank line separates each message; content
+;; wraps to the full width with no prefix.
+(check "wrap-message: single line led by a blank"
+       '("" "short") (wrap-message "short" 10))
+(check "wrap-message: continuation lines are full width, no indent"
+       '("" "one two" "three") (wrap-message "one two three" 9))
 (check-true "wrap-message: every line fits the width"
             (every (lambda (line) (<= (length line) 16))
                    (wrap-message "El Cid hits the giant rat for 2 damage." 16)))
 (check "wrap-message: narrow width floor"
-       '("> a" "  b") (wrap-message "ab" 0))
+       '("" "a" "b") (wrap-message "ab" 0))
 
 ;; Structured menu lines: an option line carries the key that picks it
 ;; (MENU-OPTION / MENU-NUMBERED), plain lines stay strings, and the

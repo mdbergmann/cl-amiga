@@ -105,14 +105,10 @@ returns at least one line (\"\" wraps to (\"\"))."
     (nreverse lines)))
 
 (defun wrap-message (text width)
-  "Wrap TEXT like WRAP-TEXT, marking where the message starts: the
-first line is prefixed with \"> \", continuation lines are indented to
-align.  Lines stay at most WIDTH characters long."
-  (let ((first t))
-    (mapcar (lambda (line)
-              (prog1 (concatenate 'string (if first "> " "  ") line)
-                (setf first nil)))
-            (wrap-text text (- (max 3 width) 2)))))
+  "Wrap TEXT like WRAP-TEXT to at most WIDTH characters per line, with a
+leading blank line separating it from the previous message so
+consecutive messages read as distinct paragraphs in the log."
+  (cons "" (wrap-text text (max 1 width))))
 
 ;;; ---------------------------------------------------------------------
 ;;; Structured menu lines.  The menu generators (SHOP-LINES, CAST-LINES,
