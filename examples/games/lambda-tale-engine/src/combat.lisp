@@ -115,12 +115,23 @@ and damage spells so the log reads the same either way."
              attacker-name (monster-type-name type)))))
 
 (defun %hero-attack (game hero monster)
+  "One melee strike.  Active effects weigh in: :FOES-AC makes the
+monster easier to hit, :DAMAGE-BONUS strengthens the blow.  A class
+with :CRIT-CHANCE (the hunter's art) may fell the monster outright on
+a hit — the chance grows one point per hero level."
   (let ((type (monster-kind monster)))
     (if (%attack-hits-p (+ (hero-level hero) (stat-bonus (hero-str hero)))
-                        (monster-type-ac type))
-        (%strike-monster game (hero-name hero) monster
-                         (max 1 (+ (roll-dice (hero-attack-dice hero))
-                                   (stat-bonus (hero-str hero)))))
+                        (+ (monster-type-ac type) (effects-foes-ac game)))
+        (let ((crit (hero-class-property (hero-class hero) :crit-chance)))
+          (if (and crit (< (roll 100) (+ crit (hero-level hero))))
+              (progn
+                (say game "~A strikes a vital spot!" (hero-name hero))
+                (%strike-monster game (hero-name hero) monster
+                                 (monster-hp monster)))
+              (%strike-monster game (hero-name hero) monster
+                               (max 1 (+ (roll-dice (hero-attack-dice hero))
+                                         (stat-bonus (hero-str hero))
+                                         (effects-damage-bonus game))))))
         (say game "~A misses the ~A."
              (hero-name hero) (monster-type-name type)))))
 
@@ -130,7 +141,10 @@ and damage spells so the log reads the same either way."
          (type (monster-kind monster))
          (ac (- (hero-effective-ac hero game)
                 (if (member hero (combat-defenders combat)) 4 0))))
-    (if (%attack-hits-p (monster-type-level type) ac)
+    ;; a :FOES-ATTACK effect (a word of fear) blunts the monster's swing
+    (if (%attack-hits-p (- (monster-type-level type)
+                           (effects-foes-attack game))
+                       ac)
         (let ((dmg (max 1 (roll-dice (monster-type-damage type)))))
           (say game "The ~A hits ~A for ~D damage."
                (monster-type-name type) (hero-name hero) dmg)
@@ -226,14 +240,23 @@ back.  The round costs one clock tick.  Returns :victory, :defeat or
       (dolist (p pairs)
         (let ((a (cdr p)))
           (cond ((eq a :attack)
-                 (let ((target (first (alive-monsters combat))))
-                   (when target
-                     (%hero-attack game (car p) target))))
+                 ;; a warrior's training (:EXTRA-ATTACK-LEVELS) and a
+                 ;; martial effect (:EXTRA-ATTACKS) grant more strikes;
+                 ;; each re-aims at the front survivor
+                 (dotimes (i (+ 1 (hero-extra-attacks (car p))
+                                (effects-extra-attacks game)))
+                   (let ((target (first (alive-monsters combat))))
+                     (when target
+                       (%hero-attack game (car p) target)))))
                 ((and (consp a) (eq (first a) :cast))
                  (cast-spell game (car p) (second a) (third a)))
                 ((and (consp a) (eq (first a) :sing))
                  (sing-song game (car p) (second a)))))))
     (%monsters-act game combat)
+    ;; a :COMBAT-HEAL effect (Zanduvar Carack) mends the party each round
+    (dolist (dice (effects-combat-heal game))
+      (dolist (h (alive-heroes game))
+        (heal-hero game h (max 0 (roll-dice dice)))))
     (%combat-outcome game combat)))
 
 ;;; ---------------------------------------------------------------------

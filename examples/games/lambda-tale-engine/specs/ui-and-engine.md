@@ -410,8 +410,9 @@ The Amiga front-end supports two displays, selected by
   with N cells of sight (capped at `+view-depth+`); a `(:light t)`
   effect restores the full depth; `at-night`/`at-day` specials switch
   on the pure clock.
-- Spells: `define-spell` validation (exactly one effect, timed ones
-  need durations), class/level knowledge gates, refusals that say why
+- Spells: `define-spell` validation (a plist over the shared effect
+  vocabulary — instant and timed keys combine freely; timed ones need
+  durations), class/level knowledge gates, refusals that say why
   and cost nothing, scripted damage/heal/buff/light casts, sp payment
   and daylight-outdoors regen (night, :dark zones and full sp regen
   nothing), `(:cast SPELL [TARGET])` combat-round actions beside the

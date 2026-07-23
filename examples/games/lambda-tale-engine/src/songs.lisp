@@ -7,11 +7,13 @@
 ;;; (Bard's Tale songs-per-day), refilled with a drink at a :TAVERN
 ;;; location (see locations.lisp).
 ;;;
-;;; A song is always a timed effect from the shared vocabulary
-;;; (:buff-ac N / :light t / :compass t, plus :duration — see
-;;; APPLY-EFFECT-SPEC in game.lisp), and only ONE song plays at a
-;;; time: its effect carries a :SONG marker in the payload, and
-;;; striking up a new song displaces the old — the Bard's Tale rule.
+;;; A song is always a timed effect over the shared vocabulary
+;;; (*TIMED-EFFECT-KEYS* in game.lisp — :buff-ac, :light, :compass,
+;;; :buff-damage, :regen-sp, :extra-attacks, :combat-heal ... plus
+;;; :duration; keys combine, so one tune can quicken sp on the road
+;;; AND arms in a fight), and only ONE song plays at a time: its
+;;; effect carries a :SONG marker in the payload, and striking up a
+;;; new song displaces the old — the Bard's Tale rule.
 ;;;
 ;;; The sing interaction is modeled here too, platform-free (the
 ;;; CAST-VIEW pattern): a SING-VIEW holds the menu state, SING-LINES
@@ -25,38 +27,42 @@
   name                ; symbol, e.g. TRAVELLERS-TUNE
   title               ; display string, e.g. "travellers tune"
   (level 1)           ; minimum singer level
-  effect              ; (:buff-ac N :duration MIN), (:light t ...) or
-                      ; (:compass t ...) — always timed
+  effect              ; timed effect plist, e.g. (:buff-ac 2 :duration 60)
+                      ; or (:regen-sp 2 :extra-attacks 1 :duration 60)
   image)              ; effects-band icon file, or NIL
 
 (defvar *song-types* (make-hash-table :test 'eq))
 (defvar *song-names* '()
   "Song names in registration order — the stable order of the menus.")
 
-(defun define-song (name &key title (level 1) buff-ac light compass
-                              duration image)
+(defparameter %song-meta-keys '(:title :level :image)
+  "DEFINE-SONG's non-effect keywords; everything else in the argument
+plist is the effect spec.")
+
+(defun define-song (name &rest args)
   "Register song type NAME (a symbol).  Campaign data calls this.
-Exactly one of :BUFF-AC N, :LIGHT T or :COMPASS T names the effect —
-songs are always timed, so :DURATION (game minutes) is required.
-:IMAGE names the effects-band icon.  TITLE defaults to the downcased
-name (TRAVELLERS-TUNE -> \"travellers tune\")."
-  (let ((kinds (count-if #'identity (list buff-ac light compass))))
-    (unless (= kinds 1)
-      (error "define-song ~S: exactly one of :buff-ac :light :compass ~
-              must be given (got ~D)" name kinds))
-    (unless (and (integerp duration) (plusp duration))
-      (error "define-song ~S: :duration ~S must be a positive integer ~
-              (game minutes)" name duration)))
-  (setf (gethash name *song-types*)
-        (%make-song-type
-         :name name
-         :title (or title
-                    (string-downcase (substitute #\Space #\- (string name))))
-         :level level
-         :effect (cond (buff-ac (list :buff-ac buff-ac :duration duration))
-                       (light (list :light t :duration duration))
-                       (compass (list :compass t :duration duration)))
-         :image image))
+ARGS is a plist: :TITLE, :LEVEL (minimum singer level, default 1),
+:IMAGE (the effects-band icon) — and the effect spec itself, one or
+more keys of the TIMED vocabulary (*TIMED-EFFECT-KEYS* in game.lisp;
+keys combine into one effect record).  Songs are always timed, so
+:DURATION (game minutes, or :INDEFINITE) is required.  TITLE defaults
+to the downcased name (TRAVELLERS-TUNE -> \"travellers tune\")."
+  (loop for tail on args by #'cddr
+        unless (and (keywordp (first tail)) (cdr tail))
+          do (error "define-song ~S: malformed argument plist at ~S"
+                    name tail))
+  (let ((spec (loop for (key value) on args by #'cddr
+                    unless (member key %song-meta-keys)
+                      append (list key value))))
+    (check-effect-spec "define-song" name spec :timed-only t)
+    (setf (gethash name *song-types*)
+          (%make-song-type
+           :name name
+           :title (or (getf args :title)
+                      (string-downcase (substitute #\Space #\- (string name))))
+           :level (or (getf args :level) 1)
+           :effect spec
+           :image (getf args :image))))
   ;; keep the registration order; a re-registration keeps its spot
   (unless (member name *song-names*)
     (setf *song-names* (append *song-names* (list name))))

@@ -225,15 +225,182 @@ carries its own icons — or NIL when the effect has none."
     (when image
       (%resolve-map-path (dungeon-map-name (game-map game)) image))))
 
-(defun effects-ac-bonus (game)
-  "The summed :AC bonuses of the active effects (a party-wide shield)."
+;;; The timed-effect vocabulary — the keys a spell, song or usable
+;;; item may speak to install a timed effect (see APPLY-EFFECT-SPEC).
+;;; Each entry is (SPEC-KEY PAYLOAD-KEY VALUE-KIND): the spec key the
+;;; campaign writes, the payload key the mechanics read, and the value
+;;; shape the validators enforce.  A spec may combine several keys —
+;;; they merge into ONE effect record (Bard's Tale's Batchspell is five
+;;; enchantments in one casting).  :SAVE-BONUS and :LEVITATE are
+;;; stored but nothing reads them yet — saving throws and traps are a
+;;; coming subsystem; the data is already correct.
+
+(defparameter *timed-effect-keys*
+  '((:buff-ac       :ac            integer) ; party AC bonus (descending AC)
+    (:light         :light         flag)    ; the party carries light
+    (:night-vision  :night-vision  flag)    ; sight in darkness (cat eyes)
+    (:reveal        :reveal        flag)    ; magical sight: light and more
+    (:compass       :compass       flag)    ; the party knows its facing
+    (:levitate      :levitate      flag)    ; floating (traps to come)
+    (:buff-damage   :damage-bonus  integer) ; party melee damage bonus
+    (:save-bonus    :save-bonus    integer) ; saving throws (to come)
+    (:regen-sp      :regen-sp      integer) ; sp-regen multiplier
+    (:extra-attacks :extra-attacks integer) ; extra strikes per round
+    (:combat-heal   :combat-heal   dice)    ; heals the party each round
+    (:foes-ac       :foes-ac       integer) ; foes easier to hit
+    (:foes-attack   :foes-attack   integer)) ; foes hit less often
+  "The timed-effect vocabulary: (SPEC-KEY PAYLOAD-KEY VALUE-KIND).")
+
+;;; The instant-effect vocabulary — resolved at cast/use time, no
+;;; effect record.  (SPEC-KEY VALUE-KIND COMBAT-ONLY-P).  The keys
+;;; marked flavor-only await their subsystem (summoned allies, party
+;;; teleports, foe morale); they cast, pay and speak, so campaign data
+;;; can already carry the canonical spell.
+
+(defparameter *instant-effect-keys*
+  '((:damage           dice    t)   ; strikes the first living monster
+    (:damage-per-level dice    t)   ; the roll multiplied by caster level
+    (:damage-group     dice    t)   ; every monster of the front group
+    (:damage-all       dice    t)   ; every living monster
+    (:slay             percent t)   ; chance to fell the front monster
+    (:push-foes        flag    t)   ; flavor: hurls the foes back
+    (:halt-foes        flag    t)   ; flavor: freezes the foes
+    (:calm             flag    t)   ; flavor: soothes the foes
+    (:heal             heal    nil) ; heals one chosen hero (:full = all)
+    (:heal-party       heal    nil) ; heals every living hero
+    (:resurrect        flag    nil) ; raises the fallen to 1 hp
+    (:cure             list    nil) ; flavor: cures ailments (to come)
+    (:scry             flag    nil) ; speaks the party's position
+    (:disarm-traps     flag    nil) ; flavor: springs traps (to come)
+    (:teleport         flag    nil) ; flavor: party teleport (to come)
+    (:summon           string  nil)) ; flavor: a summoned ally (to come)
+  "The instant-effect vocabulary: (SPEC-KEY VALUE-KIND COMBAT-ONLY-P).")
+
+(defun %effect-value-ok-p (kind value)
+  "Does VALUE fit KIND (the vocabulary tables' value shapes)?"
+  (ecase kind
+    (flag    (eq value t))
+    (integer (and (integerp value) (plusp value)))
+    (percent (and (integerp value) (< 0 value 101)))
+    (dice    (and (or (integerp value) (stringp value))
+                  (ignore-errors (parse-dice value) t)))
+    (heal    (or (eq value :full)
+                 (and (or (integerp value) (stringp value))
+                      (ignore-errors (parse-dice value) t))))
+    (list    (and (consp value) (every #'keywordp value)))
+    (string  (stringp value))))
+
+(defun check-effect-spec (context name spec &key timed-only)
+  "Validate SPEC, a plist over the effect vocabulary (*TIMED-EFFECT-
+KEYS* and — unless TIMED-ONLY — *INSTANT-EFFECT-KEYS*, plus :DURATION).
+Signals a clear error naming CONTEXT (\"define-spell\", ...) and NAME
+on the first problem; returns the timed keys and the instant keys
+present, as two values."
+  (let ((timed '()) (instant '()))
+    (loop for tail on spec by #'cddr
+          for key = (first tail)
+          do (let ((value (second tail))
+                   (tentry (assoc key *timed-effect-keys*))
+                   (ientry (assoc key *instant-effect-keys*)))
+               (cond
+                 ((eq key :duration))   ; checked against the keys below
+                 (tentry
+                  (unless (%effect-value-ok-p (third tentry) value)
+                    (error "~A ~S: ~S ~S is no ~(~A~) value"
+                           context name key value (third tentry)))
+                  (push key timed))
+                 ((and ientry timed-only)
+                  (error "~A ~S: ~S is an instant effect -- only the ~
+                          timed vocabulary (~{~S~^ ~}) fits here"
+                         context name key
+                         (mapcar #'first *timed-effect-keys*)))
+                 (ientry
+                  (unless (%effect-value-ok-p (second ientry) value)
+                    (error "~A ~S: ~S ~S is no ~(~A~) value"
+                           context name key value (second ientry)))
+                  (push key instant))
+                 (t
+                  (error "~A ~S: unknown effect key ~S -- the vocabulary: ~
+                          timed ~{~S~^ ~}~:[; instant ~{~S~^ ~}~;~]"
+                         context name key
+                         (mapcar #'first *timed-effect-keys*)
+                         timed-only
+                         (mapcar #'first *instant-effect-keys*))))))
+    (unless (or timed instant)
+      (error "~A ~S: the spec ~S names no effect" context name spec))
+    (let ((duration (getf spec :duration)))
+      (cond (timed
+             (unless (or (eq duration :indefinite)
+                         (and (integerp duration) (plusp duration)))
+               (error "~A ~S: a timed effect needs a :duration -- a ~
+                       positive integer of game minutes, or :indefinite"
+                      context name)))
+            (duration
+             (error "~A ~S: :duration ~S without a timed effect"
+                    context name duration))))
+    (values (nreverse timed) (nreverse instant))))
+
+(defun effect-spec-combat-only-p (spec)
+  "True when SPEC carries an instant effect that needs a fight (the
+damage family, :SLAY and the foe-handling keys)."
+  (loop for tail on spec by #'cddr
+        thereis (let ((entry (assoc (first tail) *instant-effect-keys*)))
+                  (and entry (third entry) t))))
+
+(defun %effects-sum (game key)
   (let ((n 0))
     (dolist (e (game-effects game) n)
-      (incf n (or (getf (effect-payload e) :ac) 0)))))
+      (incf n (or (getf (effect-payload e) key) 0)))))
+
+(defun effects-ac-bonus (game)
+  "The summed :AC bonuses of the active effects (a party-wide shield)."
+  (%effects-sum game :ac))
+
+(defun effects-damage-bonus (game)
+  "The summed melee damage bonuses of the active effects."
+  (%effects-sum game :damage-bonus))
+
+(defun effects-save-bonus (game)
+  "The summed saving-throw bonuses of the active effects.  Stored for
+the coming saves/traps mechanics; nothing rolls against it yet."
+  (%effects-sum game :save-bonus))
+
+(defun effects-extra-attacks (game)
+  "Extra strikes every attacking hero gets per combat round from the
+active effects."
+  (%effects-sum game :extra-attacks))
+
+(defun effects-foes-ac (game)
+  "How much easier the foes are to hit (added to their descending AC)."
+  (%effects-sum game :foes-ac))
+
+(defun effects-foes-attack (game)
+  "How much worse the foes swing (subtracted from their to-hit bonus)."
+  (%effects-sum game :foes-attack))
+
+(defun effects-regen-sp (game)
+  "The spell-point regeneration multiplier: the largest :REGEN-SP among
+the active effects, at least 1."
+  (let ((m 1))
+    (dolist (e (game-effects game) m)
+      (setf m (max m (or (getf (effect-payload e) :regen-sp) 1))))))
+
+(defun effects-combat-heal (game)
+  "The :COMBAT-HEAL dice of the active effects, as a list — each heals
+every living hero at the end of a combat round."
+  (let ((dice '()))
+    (dolist (e (game-effects game) (nreverse dice))
+      (let ((d (getf (effect-payload e) :combat-heal)))
+        (when d (push d dice))))))
 
 (defun light-active-p (game)
-  "True when any active effect carries light (a :LIGHT payload)."
-  (and (some (lambda (e) (getf (effect-payload e) :light))
+  "True when any active effect lets the party see: a :LIGHT payload, or
+its magical kin :REVEAL (revelation light) and :NIGHT-VISION (cat
+eyes) — all three defeat darkness."
+  (and (some (lambda (e)
+               (let ((p (effect-payload e)))
+                 (or (getf p :light) (getf p :reveal)
+                     (getf p :night-vision))))
              (game-effects game))
        t))
 
@@ -245,21 +412,27 @@ only then do the front-ends show the compass rose and the facing."
        t))
 
 (defun apply-effect-spec (game name spec &key image extra-payload)
-  "Install SPEC — (:buff-ac N :duration M), (:light t :duration M) or
-\(:compass t :duration M), the shared timed-effect vocabulary spells,
-usable items and songs speak — as active effect NAME with icon IMAGE.
-EXTRA-PAYLOAD is appended to the payload (a song's :SONG marker).
-Returns the effect list; rejects a spec naming no known effect."
-  (let ((payload
-          (cond ((getf spec :buff-ac) (list :ac (getf spec :buff-ac)))
-                ((getf spec :light) '(:light t))
-                ((getf spec :compass) '(:compass t))
-                (t (error "apply-effect-spec ~S: ~S names no timed ~
-                           effect (:buff-ac, :light or :compass)"
-                          name spec)))))
-    (add-effect game name :duration (getf spec :duration)
-                          :payload (append payload extra-payload)
-                          :image image)))
+  "Install SPEC's timed keys — the shared vocabulary spells, usable
+items and songs speak (*TIMED-EFFECT-KEYS*, e.g. :buff-ac 2 :light t
+:duration 30) — as ONE active effect NAME with icon IMAGE; several
+timed keys merge into a single record.  A :duration of :INDEFINITE
+burns until removed.  EXTRA-PAYLOAD is appended to the payload (a
+song's :SONG marker).  Returns the effect list; rejects a spec naming
+no timed effect."
+  (let ((payload '()))
+    (dolist (entry *timed-effect-keys*)
+      (let ((value (getf spec (first entry))))
+        (when value
+          (setf payload (append payload (list (second entry) value))))))
+    (unless payload
+      (error "apply-effect-spec ~S: ~S names no timed effect (one of ~
+              ~{~S~^ ~})"
+             name spec (mapcar #'first *timed-effect-keys*)))
+    (let ((duration (getf spec :duration)))
+      (add-effect game name
+                  :duration (if (eq duration :indefinite) nil duration)
+                  :payload (append payload extra-payload)
+                  :image image))))
 
 (defun turn-left (game)
   (setf (game-facing game) (turn-dir (game-facing game) -1))

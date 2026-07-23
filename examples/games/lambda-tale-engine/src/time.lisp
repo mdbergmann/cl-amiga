@@ -237,13 +237,15 @@ regenerates caster spell points."
   "Walking under the open daytime sky restores magic: on every clock
 minute in (OLD, NEW] that is daylight, falls in a zone without :DARK,
 is free of combat and hits a *SP-REGEN-MINUTES* boundary, every living
-caster below full regains one spell point."
+caster below full regains one spell point.  A :REGEN-SP effect (the
+Rhyme of Duotime) multiplies the gain."
   (when (and (not (dungeon-map-dark (game-map game)))
              (not (game-combat game)))
     (let ((ticks 0))
       (loop for m from (1+ old) to new
             when (and (daylight-p m) (zerop (mod m *sp-regen-minutes*)))
               do (incf ticks))
+      (setf ticks (* ticks (effects-regen-sp game)))
       (when (plusp ticks)
         (dolist (h (alive-heroes game))
           (when (hero-caster-p h)

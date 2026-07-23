@@ -28,18 +28,45 @@
 (defvar *hero-classes* (make-hash-table :test 'eq))
 
 (defun define-hero-class (name &key (hp-dice "1d8") (damage "1d4") (ac 10)
-                                    caster singer image)
+                                    caster singer image description
+                                    extra-attack-levels crit-chance)
   "Register hero class NAME (a keyword) with its hit dice, attack dice
 and starting armor class; CASTER T marks a spell-casting class (spell
 points from level and IQ, see %HERO-MAX-SP), SINGER T a song-playing
 class (one tune charge per level, see songs.lisp).  IMAGE names the
 class's portrait file (map-relative, like effect icons) — the Amiga
 front-end shows it beside the character sheet; NIL = no portrait.
+DESCRIPTION is the class's lore line (display data).
+EXTRA-ATTACK-LEVELS N grants one extra strike per N levels beyond the
+first (the warrior's art, see HERO-EXTRA-ATTACKS); CRIT-CHANCE N is
+the percent chance a landed blow fells the foe outright, growing one
+point per level (the hunter's art, see combat.lisp).
 Campaign data calls this."
+  (when (and extra-attack-levels
+             (not (and (integerp extra-attack-levels)
+                       (plusp extra-attack-levels))))
+    (error "define-hero-class ~S: :extra-attack-levels ~S must be a ~
+            positive integer" name extra-attack-levels))
+  (when (and crit-chance
+             (not (and (integerp crit-chance) (< 0 crit-chance 101))))
+    (error "define-hero-class ~S: :crit-chance ~S must be a percent ~
+            (1-100)" name crit-chance))
   (setf (gethash name *hero-classes*)
         (list :hp-dice hp-dice :damage damage :ac ac
-              :caster caster :singer singer :image image))
+              :caster caster :singer singer :image image
+              :description description
+              :extra-attack-levels extra-attack-levels
+              :crit-chance crit-chance))
   name)
+
+(defun hero-extra-attacks (hero)
+  "Extra strikes HERO's class training grants per combat round: one
+per :EXTRA-ATTACK-LEVELS levels beyond the first (a level-5 warrior
+with 4 strikes twice), zero for everyone else."
+  (let ((per (hero-class-property (hero-class hero) :extra-attack-levels)))
+    (if per
+        (floor (1- (hero-level hero)) per)
+        0)))
 
 (defun hero-classes ()
   "The registered hero classes as a sorted list of keywords — whatever

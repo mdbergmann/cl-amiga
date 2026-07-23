@@ -42,24 +42,25 @@
                               classes use consumed image)
   "Register item type NAME (a symbol).  Campaign data calls this.
 TITLE defaults to the capitalized name (SHORT-SWORD -> \"Short Sword\").
-:USE makes the item usable — (:heal DICE) heals a chosen hero, the
-timed kinds ((:light t :duration MIN), (:buff-ac N :duration MIN),
-(:compass t :duration MIN)) install the effect; :CONSUMED spends the
-item on use and :IMAGE names the installed effect's band icon."
+:USE makes the item usable — (:heal DICE) heals a chosen hero; a
+timed spec over the shared vocabulary (*TIMED-EFFECT-KEYS* in
+game.lisp, e.g. (:light t :duration 30)) installs the effect;
+:CONSUMED spends the item on use and :IMAGE names the installed
+effect's band icon."
   (unless (member kind '(:weapon :armor :shield :misc))
     (error "define-item ~S: kind ~S is not one of :weapon :armor :shield :misc"
            name kind))
   (when use
-    (unless (and (consp use)
-                 (member (first use) '(:heal :buff-ac :light :compass)))
-      (error "define-item ~S: :use ~S must be (:heal DICE) or a timed ~
-              (:buff-ac ...), (:light ...) or (:compass ...) spec"
+    (unless (consp use)
+      (error "define-item ~S: :use ~S must be an effect plist -- ~
+              (:heal DICE) or a timed spec like (:light t :duration 30)"
              name use))
-    (unless (eq (first use) :heal)
-      (let ((duration (getf use :duration)))
-        (unless (and (integerp duration) (plusp duration))
-          (error "define-item ~S: a timed :use needs a positive integer ~
-                  :duration (got ~S)" name duration)))))
+    (if (getf use :heal)
+        (unless (and (null (cddr use))
+                     (%effect-value-ok-p 'heal (getf use :heal)))
+          (error "define-item ~S: a healing :use is (:heal DICE) alone ~
+                  (got ~S)" name use))
+        (check-effect-spec "define-item" name use :timed-only t)))
   (when (and consumed (not use))
     (error "define-item ~S: :consumed without a :use" name))
   (setf (gethash name *item-types*)
@@ -278,8 +279,8 @@ returns T."
       (t
        (say game "~A uses ~A." (hero-name hero) (item-type-title type))
        (if (getf use :heal)
-           (heal-hero game (or target hero)
-                      (max 0 (roll-dice (getf use :heal))))
+           (let ((h (or target hero)))
+             (heal-hero game h (%heal-amount h (getf use :heal))))
            (apply-effect-spec game (item-type-title type) use
                               :image (item-type-image type)))
        (when (item-type-consumed type)

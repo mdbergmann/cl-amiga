@@ -2355,8 +2355,8 @@ height" d)
 
 (check "spell-title downcases the name" "test bolt" (spell-title 'test-bolt))
 (check-error "unknown spell rejected" (find-spell-type 'test-nonesuch))
-(check-error "define-spell needs exactly one effect"
-  (define-spell 'test-bogus :damage "1d4" :heal "1d4"))
+(check-error "define-spell rejects an unknown effect key"
+  (define-spell 'test-bogus :sparkle t))
 (check-error "define-spell needs an effect"
   (define-spell 'test-bogus :cost 1))
 (check-error "a timed spell needs a duration"
@@ -2472,8 +2472,8 @@ height" d)
 
 (check "song-title downcases the name" "test march" (song-title 'test-march))
 (check-error "unknown song rejected" (find-song-type 'test-nonesuch))
-(check-error "define-song needs exactly one effect"
-  (define-song 'test-bogus :buff-ac 1 :light t :duration 5))
+(check-error "define-song rejects an instant effect"
+  (define-song 'test-bogus :damage "1d4" :duration 5))
 (check-error "define-song needs an effect"
   (define-song 'test-bogus :duration 5))
 (check-error "a song needs a duration"
@@ -2658,6 +2658,389 @@ height" d)
   (check "the trapdoor landed below" "the snug" (map-title (game-map g)))
   (check "the location is left behind" nil (game-location g)))
 (delete-file "tests/tmp-down.map")
+
+;;; ---------------------------------------------------------------------
+;;; The extended effect vocabulary: spell metadata, combined effects,
+;;; the new instant kinds and the new timed payloads (the vocabulary
+;;; the Bard's Tale II canon speaks).
+
+;; Spell metadata rides along untouched by the mechanics.
+(define-spell 'test-canon :code "TSTC" :range "1 foe (10')"
+  :duration-text "short" :cost 2 :level 1 :classes '(:t-mage)
+  :damage "1d4")
+(check "spell-code stored" "TSTC" (spell-code 'test-canon))
+(check "spell-range stored" "1 foe (10')" (spell-range 'test-canon))
+(check "spell-duration-text stored" "short"
+       (spell-duration-text 'test-canon))
+(check "metadata-free spells say NIL" nil (spell-code 'test-bolt))
+
+;; Validation: value shapes, duration rules, malformed plists.
+(check-error "a bad dice value is rejected"
+  (define-spell 'test-bogus :damage "banana"))
+(check-error "a flag key wants T"
+  (define-spell 'test-bogus :light 5 :duration 10))
+(check-error "slay wants a percent"
+  (define-spell 'test-bogus :slay 200))
+(check-error "heal takes dice or :full"
+  (define-spell 'test-bogus :heal :lots))
+(check-error "a duration without a timed key is rejected"
+  (define-spell 'test-bogus :damage "1d4" :duration 10))
+(check-error "a malformed plist is rejected"
+  (define-spell 'test-bogus :damage))
+(check-error "cure wants a list of ailment keywords"
+  (define-spell 'test-bogus :cure :poison))
+(check-error "summon wants a name string"
+  (define-spell 'test-bogus :summon t))
+
+;; Combined timed keys merge into ONE effect record (the batchspell).
+(define-spell 'test-batch :cost 3 :classes '(:t-mage)
+  :buff-ac 2 :light t :compass t :levitate t :duration 60)
+(let* ((m (parse-map *art* :name "test"))
+       (mage (%combat-mage))
+       (g (new-game m :party (list mage))))
+  (check-true "the batch casts" (cast-spell g mage 'test-batch))
+  (check "the combo installs one effect" 1 (length (game-effects g)))
+  (check "the combo shields" 2 (effects-ac-bonus g))
+  (check-true "the combo lights" (light-active-p g))
+  (check-true "the combo orients" (compass-active-p g))
+  (check-true "the combo carries the levitate marker"
+              (getf (effect-payload (find-effect g "test batch"))
+                    :levitate)))
+
+;; :INDEFINITE effects burn until removed.
+(define-spell 'test-ward :cost 1 :classes '(:t-mage)
+  :buff-ac 1 :duration :indefinite)
+(let* ((m (parse-map *art* :name "test"))
+       (mage (%combat-mage))
+       (g (new-game m :party (list mage))))
+  (cast-spell g mage 'test-ward)
+  (check "an :indefinite effect has no expiry" nil
+         (effect-expires-at (find-effect g "test ward")))
+  (advance-time g 600)
+  (check-true "it outlasts the day" (find-effect g "test ward")))
+
+;; :NIGHT-VISION and :REVEAL defeat darkness like :LIGHT.
+(define-spell 'test-eyes :cost 1 :classes '(:t-mage)
+  :night-vision t :duration :indefinite)
+(define-spell 'test-sight :cost 1 :classes '(:t-mage)
+  :reveal t :duration 30)
+(let* ((m (parse-map *art* :name "test"))
+       (mage (%combat-mage))
+       (g (new-game m :party (list mage))))
+  (setf (game-time g) (* 22 60))        ; 22:00 — night outdoors
+  (check-true "night is dark" (game-dark-p g))
+  (cast-spell g mage 'test-eyes)
+  (check-true "cat eyes defeat the dark" (not (game-dark-p g)))
+  (remove-effect g "test eyes")
+  (check-true "without them the night returns" (game-dark-p g))
+  (cast-spell g mage 'test-sight)
+  (check-true "revelation lights the night" (not (game-dark-p g))))
+
+;; The mending family: :HEAL-PARTY, :RESURRECT, :CURE, :FULL — and
+;; their targeting.
+(define-spell 'test-mend-all :cost 2 :classes '(:t-mage)
+  :heal-party "1d4")
+(define-spell 'test-raise :cost 2 :classes '(:t-mage) :resurrect t)
+(define-spell 'test-renew :cost 4 :classes '(:t-mage)
+  :resurrect t :heal-party :full :cure '(:poison :insanity))
+(check "a single-target mend aims at a hero" :hero
+       (spell-target-kind 'test-raise))
+(check "a party-wide mend aims at nobody" :none
+       (spell-target-kind 'test-renew))
+(let* ((m (parse-map *art* :name "test"))
+       (mage (%combat-mage))
+       (grunt (%combat-hero))
+       (g (new-game m :party (list grunt mage)))
+       (msgs (watch-messages g)))
+  (damage-hero g grunt 4)
+  (damage-hero g mage 2)
+  (check-true "the party mend casts"
+              (with-rng (1 1) (cast-spell g mage 'test-mend-all)))
+  (check "it healed the grunt" 6 (hero-hp grunt))
+  (check "it healed the caster too" 7 (hero-hp mage))
+  ;; raising the fallen
+  (damage-hero g grunt 99)
+  (check-true "the grunt fell" (not (hero-alive-p grunt)))
+  (check-true "the raise casts" (cast-spell g mage 'test-raise grunt))
+  (check "the fallen stand at one hp" 1 (hero-hp grunt))
+  (check-true "the raise is announced"
+              (find-if (lambda (s) (search "rises again" s))
+                       (funcall msgs)))
+  (check-true "raising the standing says so"
+              (progn (cast-spell g mage 'test-raise grunt)
+                     (find-if (lambda (s) (search "has not fallen" s))
+                              (funcall msgs))))
+  ;; the full renewal: raise everyone, heal to the brim, cleanse
+  (damage-hero g grunt 99)
+  (setf (hero-sp mage) 9)
+  (check-true "the renewal casts" (cast-spell g mage 'test-renew))
+  (check "the fallen grunt stands at full hp" (hero-max-hp grunt)
+         (hero-hp grunt))
+  (check "the caster is whole again" (hero-max-hp mage) (hero-hp mage))
+  (check-true "the cleansing is announced"
+              (find-if (lambda (s) (search "party is cleansed" s))
+                       (funcall msgs))))
+
+;; :SCRY speaks the party's position.
+(define-spell 'test-eye :cost 1 :classes '(:t-mage) :scry t)
+(let* ((m (parse-map *art* :name "test"))
+       (mage (%combat-mage))
+       (g (new-game m :party (list mage)))
+       (msgs (watch-messages g)))
+  (check-true "the scry casts" (cast-spell g mage 'test-eye))
+  (check-true "it speaks the position"
+              (find-if (lambda (s) (search "You stand at (0,0)" s))
+                       (funcall msgs))))
+
+;; The damage family: per-level, group, all, slay.
+(define-monster "test bat"
+  :level 1 :hp-dice 4 :ac 10 :damage "1d2" :xp 5 :gold 0)
+(define-spell 'test-jab :cost 2 :classes '(:t-mage)
+  :damage-per-level "1d4")
+(define-spell 'test-wave :cost 2 :classes '(:t-mage)
+  :damage-group "2d4+2")
+(define-spell 'test-storm :cost 3 :classes '(:t-mage)
+  :damage-all "1d4+9")
+(define-spell 'test-doom :cost 2 :classes '(:t-mage) :slay 50)
+(let* ((m (parse-map *art* :name "test"))
+       (mage (%combat-mage))
+       (g (new-game m :party (list mage))))
+  (setf (hero-level mage) 2
+        (hero-sp mage) 20)
+  (start-combat g '(("test rat" 1)))    ; 3 hp
+  (check-true "the jab casts"
+              (with-rng (0) (cast-spell g mage 'test-jab)))
+  (check "its roll is multiplied by the caster level" 1
+         (monster-hp (first (alive-monsters (game-combat g))))))
+(let* ((m (parse-map *art* :name "test"))
+       (mage (%combat-mage))
+       (g (new-game m :party (list mage))))
+  (setf (hero-sp mage) 20)
+  (start-combat g '(("test rat" 2) ("test bat" 1)))
+  (check-true "the wave casts"
+              (with-rng (3 3 3 3) (cast-spell g mage 'test-wave)))
+  (check "the wave felled the front group" 1
+         (length (alive-monsters (game-combat g))))
+  (check "the second group stood clear" "test bat"
+         (monster-type-name
+          (monster-kind (first (alive-monsters (game-combat g))))))
+  (check-true "the storm casts"
+              (with-rng () (cast-spell g mage 'test-storm)))
+  (check "the storm felled everything" nil
+         (alive-monsters (game-combat g))))
+(let* ((m (parse-map *art* :name "test"))
+       (mage (%combat-mage))
+       (g (new-game m :party (list mage)))
+       (msgs (watch-messages g)))
+  (setf (hero-sp mage) 20)
+  (start-combat g '(("test rat" 1)))
+  (check-true "a lucky doom casts"
+              (with-rng (10) (cast-spell g mage 'test-doom)))
+  (check-true "it slays outright"
+              (find-if (lambda (s) (search "slays the test rat" s))
+                       (funcall msgs)))
+  (check "nothing is left" nil (alive-monsters (game-combat g))))
+(let* ((m (parse-map *art* :name "test"))
+       (mage (%combat-mage))
+       (g (new-game m :party (list mage)))
+       (msgs (watch-messages g)))
+  (setf (hero-sp mage) 20)
+  (start-combat g '(("test rat" 1)))
+  (check-true "an unlucky doom still casts"
+              (with-rng (60) (cast-spell g mage 'test-doom)))
+  (check-true "the foe resists"
+              (find-if (lambda (s) (search "resists the spell" s))
+                       (funcall msgs)))
+  (check "the rat still stands" 1
+         (length (alive-monsters (game-combat g)))))
+
+;; Foe handling and the marvels speak their line (their subsystem is
+;; still to come); the battle kinds refuse to cast outside combat.
+(define-spell 'test-shove :cost 1 :classes '(:t-mage) :push-foes t)
+(define-spell 'test-brave :cost 1 :classes '(:t-mage)
+  :summon "test wolf")
+(define-spell 'test-blink :cost 1 :classes '(:t-mage) :teleport t)
+(let* ((m (parse-map *art* :name "test"))
+       (mage (%combat-mage))
+       (g (new-game m :party (list mage)))
+       (msgs (watch-messages g)))
+  (check "a foe-handling spell is combat-only" nil
+         (cast-spell g mage 'test-shove))
+  (check-true "the refusal says why"
+              (find-if (lambda (s) (search "nothing to strike" s))
+                       (funcall msgs)))
+  (check-true "the summon casts anywhere"
+              (cast-spell g mage 'test-brave))
+  (check-true "the ally answers -- for now in words"
+              (find-if (lambda (s) (search "test wolf answers the call" s))
+                       (funcall msgs)))
+  (check-true "the teleport casts" (cast-spell g mage 'test-blink))
+  (check-true "space stays shut -- for now"
+              (find-if (lambda (s) (search "the way stays shut" s))
+                       (funcall msgs)))
+  (start-combat g '(("test rat" 1)))
+  (check-true "the shove casts in combat"
+              (cast-spell g mage 'test-shove))
+  (check-true "the foes are hurled -- in words"
+              (find-if (lambda (s) (search "hurled away" s))
+                       (funcall msgs))))
+
+;; :BUFF-DAMAGE strengthens every blow.
+(define-spell 'test-arms :cost 1 :classes '(:t-mage)
+  :buff-damage 2 :duration 30)
+(let* ((m (parse-map *art* :name "test"))
+       (grunt (%combat-hero))
+       (mage (%combat-mage))
+       (g (new-game m :party (list grunt mage))))
+  (cast-spell g mage 'test-arms)
+  (start-combat g '(("test rat" 1)))    ; 3 hp
+  ;; d20=10 hits; 1d6=1 base would leave the rat alive — the +2 slays
+  (check "the armed blow wins the round" :victory
+         (with-rng (10 0) (combat-round g '(:attack :defend)))))
+
+;; :FOES-AC bares the foes to the party's blows.
+(define-spell 'test-frost :cost 1 :classes '(:t-mage)
+  :foes-ac 5 :duration 10)
+(let* ((m (parse-map *art* :name "test"))
+       (grunt (%combat-hero))
+       (mage (%combat-mage))
+       (g (new-game m :party (list grunt mage))))
+  (cast-spell g mage 'test-frost)
+  (start-combat g '(("test rat" 1)))
+  ;; d20=3 misses ac 10 (needs 8+) but hits the frozen rat (needs 3+);
+  ;; 1d6=5 slays
+  (check "the frozen foe is easy prey" :victory
+         (with-rng (3 5) (combat-round g '(:attack :defend)))))
+
+;; :FOES-ATTACK blunts the foes' swings.
+(define-spell 'test-dread :cost 1 :classes '(:t-mage)
+  :foes-attack 3 :duration 10)
+(let* ((m (parse-map *art* :name "test"))
+       (mage (%combat-mage))
+       (g (new-game m :party (list mage)))
+       (msgs (watch-messages g)))
+  (cast-spell g mage 'test-dread)
+  (start-combat g '(("test rat" 1)))
+  ;; the mage defends (ac 10-4=6, threshold 14); the rat's d20=12 with
+  ;; +1 level would land 14 — the -3 dread makes it 10, a miss
+  (with-rng (0 12) (combat-round g '(:defend)))
+  (check-true "the frightened rat misses"
+              (find-if (lambda (s) (search "misses" s)) (funcall msgs)))
+  (check "the mage stands unhurt" (hero-max-hp mage) (hero-hp mage)))
+
+;; :EXTRA-ATTACKS grants more strikes, each re-aimed at the survivor.
+(define-spell 'test-fury :cost 1 :classes '(:t-mage)
+  :extra-attacks 1 :duration 10)
+(let* ((m (parse-map *art* :name "test"))
+       (grunt (%combat-hero))
+       (mage (%combat-mage))
+       (g (new-game m :party (list grunt mage))))
+  (cast-spell g mage 'test-fury)
+  (start-combat g '(("test rat" 2)))    ; 3 hp each
+  ;; two strikes: d20=10 hits, 1d6=2 -> 3 damage slays; twice over
+  (check "two strikes fell two rats" :victory
+         (with-rng (10 2 10 2) (combat-round g '(:attack :defend)))))
+
+;; :COMBAT-HEAL mends the party at the end of every round.
+(define-spell 'test-balm :cost 1 :classes '(:t-mage)
+  :combat-heal "1d2" :duration 20)
+(let* ((m (parse-map *art* :name "test"))
+       (mage (%combat-mage))
+       (g (new-game m :party (list mage))))
+  (damage-hero g mage 4)                ; 3/7 hp
+  (cast-spell g mage 'test-balm)
+  (start-combat g '(("test rat" 1)))
+  ;; the mage defends; the rat's d20=0 misses; the balm rolls 1d2=2
+  (with-rng (0 0 1) (combat-round g '(:defend)))
+  (check "the balm mended two points" 5 (hero-hp mage)))
+
+;; :REGEN-SP quickens the road's magic (the Rhyme of Duotime).
+(define-song 'test-road :regen-sp 2 :extra-attacks 1 :duration 60)
+(let* ((m (parse-map *art* :name "test"))
+       (bard (with-rng () (make-hero "Mel" :t-bard)))
+       (mage (%combat-mage))
+       (g (new-game m :party (list bard mage))))
+  (check-true "a song combines timed keys too"
+              (sing-song g bard 'test-road))
+  (check "the song arms the party" 1 (effects-extra-attacks g))
+  (setf (hero-sp mage) 0)
+  (advance-time g 8)                    ; two regen ticks, doubled
+  (check "the road's magic came back twice as fast" 4 (hero-sp mage)))
+
+;; Class arts: the warrior's extra attacks, the hunter's killing eye.
+(check-error "extra-attack-levels must be a positive integer"
+  (define-hero-class :t-bogus :extra-attack-levels 0))
+(check-error "crit-chance must be a percent"
+  (define-hero-class :t-bogus :crit-chance 150))
+(define-hero-class :t-war :hp-dice "1d10+4" :damage "1d8" :ac 8
+                          :extra-attack-levels 4
+                          :description "A test warrior.")
+(define-hero-class :t-hunter :hp-dice "1d8+2" :damage "1d6" :ac 8
+                             :crit-chance 10)
+(check "the class keeps its lore line" "A test warrior."
+       (hero-class-property :t-war :description))
+(let ((war (with-rng (5) (make-hero "Grim" :t-war))))
+  (setf (hero-str war) 10)
+  (check "a fresh warrior strikes once" 0 (hero-extra-attacks war))
+  (setf (hero-level war) 5)
+  (check "a fifth-level warrior strikes twice" 1 (hero-extra-attacks war))
+  (setf (hero-level war) 9)
+  (check "a ninth-level warrior strikes thrice" 2 (hero-extra-attacks war))
+  (check "other classes never do" 0
+         (hero-extra-attacks (%combat-hero))))
+(let* ((m (parse-map *art* :name "test"))
+       (war (with-rng (5) (make-hero "Grim" :t-war)))
+       (g (progn (setf (hero-str war) 10)
+                 (setf (hero-level war) 5)
+                 (new-game m :party (list war)))))
+  (start-combat g '(("test rat" 2)))
+  ;; the trained warrior strikes twice in one round: d20=10 hits (level
+  ;; 5 adds too), 1d8=2 -> 3 damage slays; twice over
+  (check "the warrior's training fells two rats" :victory
+         (with-rng (10 2 10 2) (combat-round g '(:attack)))))
+(let* ((m (parse-map *art* :name "test"))
+       (hunter (with-rng (5) (make-hero "Fang" :t-hunter)))
+       (g (progn (setf (hero-str hunter) 10)
+                 (new-game m :party (list hunter))))
+       (msgs (watch-messages g)))
+  (start-combat g '(("test bat" 1)))    ; 4 hp
+  ;; d20=10 hits; the crit roll 5 beats chance 10+level 1 -> outright
+  (with-rng (10 5) (combat-round g '(:attack)))
+  (check-true "the hunter strikes a vital spot"
+              (find-if (lambda (s) (search "vital spot" s))
+                       (funcall msgs)))
+  (check-true "the bat fell to one blow" (not (game-combat g))))
+(let* ((m (parse-map *art* :name "test"))
+       (hunter (with-rng (5) (make-hero "Fang" :t-hunter)))
+       (g (progn (setf (hero-str hunter) 10)
+                 (new-game m :party (list hunter))))
+       (msgs (watch-messages g)))
+  (start-combat g '(("test bat" 1)))    ; 4 hp
+  ;; d20=10 hits; the crit roll 50 fails; 1d6=2 -> 3 damage, no kill
+  (with-rng (10 50 2 0 0) (combat-round g '(:attack)))
+  (check-true "an ordinary blow lands without the killing eye"
+              (find-if (lambda (s) (search "hits the test bat for 3" s))
+                       (funcall msgs)))
+  (check-true "the bat fights on" (game-combat g)))
+
+;; Items speak the same vocabulary: :FULL heals, new timed keys.
+(define-item 'test-elixir :use '(:heal :full) :consumed t)
+(define-item 'test-warstone :use '(:buff-damage 2 :duration 10))
+(check-error "an item cannot carry a battle instant"
+  (define-item 'test-dud :use '(:damage "1d4")))
+(check-error "a healing :use stands alone"
+  (define-item 'test-dud :use '(:heal "1d4" :light t :duration 5)))
+(let* ((m (parse-map *art* :name "test"))
+       (grunt (%combat-hero))
+       (g (new-game m :party (list grunt))))
+  (damage-hero g grunt 5)
+  (give-item g grunt 'test-elixir)
+  (check-true "the elixir goes down" (use-item g grunt 'test-elixir))
+  (check "it heals to the brim" (hero-max-hp grunt) (hero-hp grunt))
+  (give-item g grunt 'test-warstone)
+  (check-true "the warstone rubs on" (use-item g grunt 'test-warstone))
+  (check "its effect carries the damage bonus" 2
+         (effects-damage-bonus g)))
 
 ;; combat-round accepts (:cast SPELL [TARGET]) beside :attack/:defend.
 (let* ((m (parse-map *art* :name "test"))
@@ -4088,13 +4471,15 @@ height" d)
   (let ((texts (menu-texts (cast-lines g v))))
     (check-true "a deep book scrolls on the cast menu"
                 (member "v more below [d]" texts :test #'equal)))
-  (cast-act g v #\d)
-  (check "the cast window scrolled" (- (length book) 5)
+  (loop for top = (cast-view-top v)    ; page down to the very bottom
+        do (cast-act g v #\d)
+        until (= top (cast-view-top v)))
+  (check "the cast window scrolled to the end" (- (length book) 5)
          (cast-view-top v))
-  (let ((expected (nth (cast-view-top v) book)))
-    (cast-act g v #\1)
-    (check "a windowed digit picks the right spell" expected
-           (cast-view-spell v))))
+  ;; the last row is tscr-spell-4, a heal — castable out of combat
+  (cast-act g v #\5)
+  (check "a windowed digit picks the right spell"
+         (first (last book)) (cast-view-spell v)))
 
 ;; the save picker windows a slot list past the page
 (let* ((m (parse-map *art* :name "test"))
@@ -6274,9 +6659,11 @@ never its own"
 ;; asset-size viewport (the FS-UAE Workbench can be shorter than 256
 ;; lines, where the view correctly falls back to the wireframe).
 ;; Read-back probes, dead end at (0,0) facing north: the front wall
-;; piece's top row is the white edge highlight; above it the ceiling
-;; backdrop shows its near distance band (dim grey, pen 6); below it
-;; the floor backdrop shows its flat color (mid grey, pen 5).
+;; piece's top row is the white edge highlight.  The probe map has no
+;; zone form, so it is an OUTDOOR zone: since the day-and-night sky the
+;; ceiling and floor draw as flat fills in the sky and ground pens
+;; (+ART-PEN-SKY+/+ART-PEN-GROUND+, re-tinted by the hour) — the packs'
+;; banded backdrop tiles blit only in indoor (:DARK) zones.
 #+amigaos
 (dolist (spec '((:lores (80 22) (43 21) (70 96))
                 (:hires (100 26) (100 25) (90 110))))
@@ -6372,14 +6759,14 @@ full asset-size viewport" pname)
               ;; tints them per hour) — the pack's backdrop bitmaps
               ;; only cover indoor/dark zones
               (destructuring-bind (cx cy) ceiling-xy
-                (check (format nil "~A: outdoor ceiling pixel is the ~
-sky pen" pname)
+                (check (format nil "~A: outdoor ceiling is the flat ~
+sky-pen fill" pname)
                        +art-pen-sky+
                        (amiga.gfx:read-pixel rp (+ (ui-layout-bx l) cx)
                                              (+ (ui-layout-by l) cy))))
               (destructuring-bind (sx sy) floor-xy
-                (check (format nil "~A: outdoor floor pixel is the ~
-ground pen" pname)
+                (check (format nil "~A: outdoor floor is the flat ~
+ground-pen fill" pname)
                        +art-pen-ground+
                        (amiga.gfx:read-pixel rp (+ (ui-layout-bx l) sx)
                                              (+ (ui-layout-by l) sy))))

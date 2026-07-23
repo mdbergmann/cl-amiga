@@ -808,7 +808,12 @@ tested in the "living-world idle clock" section of
 ## Party and combat
 
 Heroes have Bard's Tale-ish stats (str/dex/iq/con/lck, descending AC,
-hit dice per class) and level up on xp thresholds.  The roster holds
+hit dice per class) and level up on xp thresholds.  A class may carry
+a fighting art: `define-hero-class ... :extra-attack-levels 4` grants
+an extra strike per four levels beyond the first (the warrior's way),
+`:crit-chance N` a percent chance — growing one point per level — that
+a landed blow fells the foe outright (the hunter's), and
+`:description` a lore line for the campaign to show.  The roster holds
 up to 7 members (`join-party`): six regular heroes plus one guest slot
 for a summoned monster or story NPC.  Combat is
 round-based, Bard's Tale style: every living hero picks an action in
@@ -825,31 +830,53 @@ instant).  All randomness goes through
 
 Spells are campaign data (`define-spell`); the engine knows the
 mechanics: casters (`define-hero-class ... :caster t`) carry **spell
-points** (2 per level plus the IQ bonus) and pay them per cast, and a
-spell has exactly one engine-interpreted effect — damage (combat only,
-strikes the melee target), heal (one chosen hero), a timed party AC
-buff, timed light (the answer to darkness), or a timed compass:
-Bard's Tale style, the party only sees which way it faces — the rose
-in the effect strip, the facing in the map footer — while a compass
-effect burns.  A timed spell may name an `:image`, the icon the
-effect strip shows for it.  Spell points trickle back Bard's Tale
-style while walking outdoors in daylight.  The "Spells" test section
-of `tests/run-tests.lisp` is the executable specification.
+points** (2 per level plus the IQ bonus) and pay them per cast.  A
+spell's effect is a plist over a shared vocabulary, and the keys
+**combine freely** — a restoration heals *and* cures, a batchspell
+installs five enchantments in one casting:
+
+- **Instant keys** resolve at cast time: `:damage`, `:damage-per-level`
+  (the roll times the caster's level), `:damage-group` (the front
+  group), `:damage-all`, `:slay N` (percent chance to fell the front
+  monster) — all combat-only — plus `:heal` and `:heal-party` (dice or
+  `:full`), `:resurrect` (the fallen rise at 1 hp) and `:scry` (speaks
+  the party's position).  `:cure`, `:summon`, `:teleport`,
+  `:disarm-traps` and the foe-handling keys carry canonical data and
+  speak their line today; their subsystems (ailments, allies, traps)
+  are still to come.
+- **Timed keys** merge into one effect record with a `:duration` in
+  game minutes (or `:indefinite`): `:buff-ac`, `:light`,
+  `:night-vision` and `:reveal` (all three defeat darkness),
+  `:compass` (the party sees its facing only while one burns),
+  `:buff-damage`, `:regen-sp` (multiplies the daylight trickle),
+  `:extra-attacks`, `:combat-heal` (mends the party every round),
+  `:foes-ac` and `:foes-attack` (the enemy fights worse), plus
+  `:save-bonus` and `:levitate` (stored for the coming saves/traps).
+  A timed spell may name an `:image`, the icon the effect strip shows.
+
+Beside the mechanics a spell keeps its lore: `:code` (the four-letter
+incantation), `:range` and `:duration-text` — display metadata the
+engine stores (`spell-code`, `spell-range`, `spell-duration-text`)
+and never interprets.  Spell points trickle back Bard's Tale style
+while walking outdoors in daylight.  The "Spells" and "extended
+effect vocabulary" test sections of `tests/run-tests.lisp` are the
+executable specification.
 
 ## Bard songs and taverns
 
 Songs are campaign data too (`define-song`): a song is always a timed
-effect from the same vocabulary (AC buff, light or compass, with a
-`:duration` and an optional `:image`).  Singers (`define-hero-class
-... :singer t`) pay **tunes** — one charge per song, one charge per
-level when rested — and only **one song plays at a time**: striking up
-a new one displaces the old, the Bard's Tale rule.  `p` opens the sing
-menu, and in combat `(:sing SONG)` is a party action beside attacking
-and casting.  Tunes come back with a drink at a **tavern** — a
-`(location TITLE :tavern :price N)` map special; a tavern may also
-hold the way below (`:down FILE`, the trapdoor to the cellar).  The
-"Bard songs" test section of `tests/run-tests.lisp` is the executable
-specification.
+effect over the same vocabulary — keys combine here as well, so one
+tune can quicken spell points on the road *and* grant extra attacks
+in a fight (`:regen-sp 2 :extra-attacks 1 :duration 60`).  Singers
+(`define-hero-class ... :singer t`) pay **tunes** — one charge per
+song, one charge per level when rested — and only **one song plays at
+a time**: striking up a new one displaces the old, the Bard's Tale
+rule.  `p` opens the sing menu, and in combat `(:sing SONG)` is a
+party action beside attacking and casting.  Tunes come back with a
+drink at a **tavern** — a `(location TITLE :tavern :price N)` map
+special; a tavern may also hold the way below (`:down FILE`, the
+trapdoor to the cellar).  The "Bard songs" test section of
+`tests/run-tests.lisp` is the executable specification.
 
 ## Save games
 

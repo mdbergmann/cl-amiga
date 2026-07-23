@@ -39,7 +39,12 @@
    #:game-effects #:add-effect #:remove-effect #:find-effect
    #:effect-name #:effect-expires-at #:effect-payload #:effect-label
    #:effect-image #:effect-image-path #:apply-effect-spec
-   #:effects-ac-bonus #:light-active-p #:compass-active-p
+   #:*timed-effect-keys* #:*instant-effect-keys*
+   #:check-effect-spec #:effect-spec-combat-only-p
+   #:effects-ac-bonus #:effects-damage-bonus #:effects-save-bonus
+   #:effects-extra-attacks #:effects-foes-ac #:effects-foes-attack
+   #:effects-regen-sp #:effects-combat-heal
+   #:light-active-p #:compass-active-p
    #:turn-left #:turn-right #:turn-around #:move-party #:observe
    ;; game time, day and night
    #:game-time #:advance-time #:daylight-p #:clock-line
@@ -77,6 +82,7 @@
    #:hero-caster-p #:hero-str #:hero-dex #:hero-iq
    #:hero-con #:hero-lck #:hero-ac #:hero-damage #:hero-gold
    #:hero-alive-p #:alive-heroes #:party-alive-p #:front-ranks
+   #:hero-extra-attacks
    #:hero-class-title #:hero-class-abbrev #:hero-summary-lines
    #:hero-image #:hero-image-path #:hero-sheet-lines #:hero-sheet-scroll
    #:+party-limit+ #:party-full-p #:join-party
@@ -104,7 +110,8 @@
    #:make-shop-view #:shop-view-hero #:shop-view-mode #:shop-view-top
    #:shop-lines #:shop-act #:location-lines #:location-act
    ;; spells
-   #:define-spell #:find-spell-type #:spell-title #:spell-target-kind
+   #:define-spell #:find-spell-type #:spell-title
+   #:spell-code #:spell-range #:spell-duration-text #:spell-target-kind
    #:spell-known-p #:spell-castable-p #:spells-for-hero #:cast-spell
    #:make-cast-view #:cast-view-hero #:cast-view-spell #:cast-view-top
    #:cast-lines #:cast-act #:*sp-regen-minutes*
