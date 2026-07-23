@@ -74,8 +74,11 @@
   (start-y 0)
   (start-facing :north)
   gfx                 ; zone's tile-pack dir from (ZONE :GFX ...), or NIL
-  dark)               ; always dark (ZONE :DARK D) — needs a light;
+  dark                ; always dark (ZONE :DARK D) — needs a light;
                       ; T = one cell of sight, an integer = that many
+  sky                 ; (ZONE :SKY (R G B)) noon sky colour, or NIL for
+                      ;   *DEFAULT-SKY* (see SKY-COLOR-FOR)
+  ground)             ; (ZONE :GROUND (R G B)) noon ground colour, or NIL
 
 (defparameter *wall-decode* #(:open :wall :door)
   "Wall byte codes, index = code — the packed walls representation and
@@ -235,6 +238,20 @@ cell (~D,~D) is not an 8-bit character" name c x y))
                            :start-y (or start-y 0)
                            :start-facing start-facing)))))
 
+(defun %zone-color (path key spec)
+  "Validate SPEC, a zone (ZONE KEY ...) colour — a list or vector of
+three 0-255 components — and return it as an (R G B) list.  KEY is :SKY
+or :GROUND, for the error message."
+  (let ((rgb (cond ((and (listp spec) (= (length spec) 3)) spec)
+                   ((and (vectorp spec) (= (length spec) 3))
+                    (coerce spec 'list))
+                   (t (error "~A: zone ~S ~S must be three 0-255 ~
+components, e.g. (102 170 204) or #(102 170 204)" path key spec)))))
+    (dolist (c rgb rgb)
+      (unless (and (integerp c) (<= 0 c 255))
+        (error "~A: zone ~S component ~S must be an integer 0-255"
+               path key c)))))
+
 (defun %apply-map-form (map form path)
   (unless (and (consp form) (symbolp (first form)))
     (error "~A: invalid map form ~S (expected (zone ...) or ~
@@ -249,7 +266,8 @@ cell (~D,~D) is not an 8-bit character" name c x y))
                     (dungeon-map-width map) (dungeon-map-height map)))
            (setf (cell-special map x y) ops)))
         ((string-equal (symbol-name (first form)) "ZONE")
-         (destructuring-bind (&key kind title wrap start-facing gfx dark)
+         (destructuring-bind (&key kind title wrap start-facing gfx dark
+                                   sky ground)
              (rest form)
            (when kind
              (unless (keywordp kind)
@@ -270,7 +288,12 @@ cell (~D,~D) is not an 8-bit character" name c x y))
              (unless (or (eq dark t) (and (integerp dark) (plusp dark)))
                (error "~A: zone :dark ~S must be T (one cell of sight) ~
 or a positive integer (cells of sight in the dark)" path dark))
-             (setf (dungeon-map-dark map) dark))))
+             (setf (dungeon-map-dark map) dark))
+           (when sky
+             (setf (dungeon-map-sky map) (%zone-color path :sky sky)))
+           (when ground
+             (setf (dungeon-map-ground map)
+                   (%zone-color path :ground ground)))))
         (t (error "~A: unknown map form ~S (expected (zone ...) or ~
                    (special (x y) op...))"
                   path (first form)))))
@@ -323,13 +346,18 @@ skipped entirely, same as DLOG-TIMED."
 After the art the file may carry Lisp data forms — the story layer of
 the map, read with *READ-EVAL* bound to NIL and never evaluated:
     (zone :kind KIND :title TITLE :wrap W :start-facing DIR :gfx PACK
-          :dark D)           zone metadata: KIND is :dungeon (default),
+          :dark D :sky C :ground C)
+                             zone metadata: KIND is :dungeon (default),
                              :city, ... — maps self-describe what they
                              are; PACK names the zone's tile-pack
                              directory (see ZONE-GFX-DIR); :dark D makes
                              the zone dark at all hours (see GAME-DARK-P):
                              T = one cell of sight, a positive integer =
-                             that many cells (see GAME-VIEW-DEPTH)
+                             that many cells (see GAME-VIEW-DEPTH); :sky
+                             and :ground are (R G B) colours — the zone's
+                             NOON sky/ground, from which the engine tints
+                             every day-band (see SKY-COLOR-FOR); omitted,
+                             the zone uses *DEFAULT-SKY* / *DEFAULT-GROUND*
     (special (X Y) OP...)    attach a special to cell (X,Y)
 The forms section starts at the first line beginning with '(' or ';'
 \(no valid art line starts with either).  The :wrap and :start-facing

@@ -12,11 +12,12 @@
 
 ;; Story layer: cell specials (data, never evaluated - see src/specials.lisp).
 
-;; :dark 3 - dark at all hours, but with three cells of sight (a torch
-;; still buys the fourth); plain :dark t would clamp sight to one cell.
+;; :dark t - completely dark at all hours: one cell of sight until a
+;; light burns (a torch, a lantern, or the mage-flame spell).  There is
+;; no moonlight underground, so *moonlight-depth* does not apply here.
 ;; :gfx - the cellar's own tile pack (stone walls, packed-earth floor),
 ;; resolved next to this map; regenerate with gfx-cellar/make-pack.lisp.
-(zone :kind :dungeon :title "the cellar" :dark 3 :gfx "gfx-cellar/")
+(zone :kind :dungeon :title "the cellar" :dark t :gfx "gfx-cellar/")
 
 (special (0 0)
   (once (message "You descend into the cellar.  Rats squeal in the dark."

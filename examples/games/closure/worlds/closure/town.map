@@ -72,7 +72,13 @@
 ;; The shoppe and the tavern (trapdoor to cellar.map below)
 ;; flank the south gate where the party starts.
 
-(zone :kind :city :title "Closure" :gfx "gfx/")
+;; :sky / :ground are the NOON colours of the open street; the engine
+;; tints them through the day (bright blue at morning, near-black at
+;; night; see the engine README's "Day and night" section).  The
+;; cellar below is :dark, so it keeps its own stone colours: no sky
+;; underground.
+(zone :kind :city :title "Closure" :gfx "gfx/"
+      :sky (102 170 204) :ground (110 96 74))
 
 (special (1 4)
   (location "A Stone Cottage - the Weaver's" :house

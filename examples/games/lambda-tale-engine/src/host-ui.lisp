@@ -158,6 +158,8 @@ engine has no default world; the game names its starting map."
                        (format t "  ~C ~A~%" (first e)
                                (string-capitalize (fourth e))))
                      (terpri)))
+                 (format t "~A  ~A~%" (map-title (game-map game))
+                         (time-of-day-line game))
                  (format t "Map ~D,~D..~D,~D of ~Dx~D~@[ [full]~]   ~
                             [m]/[Esc] back  [f] full  [q] quit~%"
                          x0 y0 (+ x0 w -1) (+ y0 h -1)
