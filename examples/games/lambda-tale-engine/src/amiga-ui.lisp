@@ -333,22 +333,29 @@ pack has none); the walls carve the perspective on top of it."
         (planes (view-planes w h)))
     (if (and walls (= w *fp-view-width*) (= h *fp-view-height*))
         (progn
-          ;; ceiling above the horizon, floor below (opaque backdrop),
-          ;; then the walls cookie-cut on top so the corners they don't
-          ;; cover let the backdrop show through
-          (loop for key in '((:ceiling) (:floor))
-                for (x y pw ph) in (backdrop-rects planes)
-                do (let ((entry (gethash key walls)))
-                     (if entry
-                         (amiga.gfx:blt-bitmap-rastport (car (svref entry 0))
-                                                        0 0 rp
-                                                        (+ ox x) (+ oy y)
-                                                        pw ph)
-                         (progn
-                           (amiga.gfx:set-a-pen rp 0)
-                           (amiga.gfx:rect-fill rp (+ ox x) (+ oy y)
-                                                (+ ox x pw -1)
-                                                (+ oy y ph -1))))))
+          ;; ceiling above the horizon, floor below, then the walls
+          ;; cookie-cut on top so the corners they don't cover let the
+          ;; backdrop show through.  Outdoors (a non-:DARK zone) the sky
+          ;; and ground are a flat fill in pens +ART-PEN-SKY+/-GROUND+,
+          ;; whose colour %APPLY-DAYTIME-PALETTE has set for the hour —
+          ;; that is the whole day/night effect.  Indoor/dark zones keep
+          ;; their pack's opaque ceiling.iff/floor.iff (black where none):
+          ;; there is no sky underground and no hour to track.
+          (let ((outdoor (not (dungeon-map-dark (game-map game)))))
+            (loop for key in '((:ceiling) (:floor))
+                  for pen in (list +art-pen-sky+ +art-pen-ground+)
+                  for (x y pw ph) in (backdrop-rects planes)
+                  do (let ((entry (and (not outdoor) (gethash key walls))))
+                       (if entry
+                           (amiga.gfx:blt-bitmap-rastport (car (svref entry 0))
+                                                          0 0 rp
+                                                          (+ ox x) (+ oy y)
+                                                          pw ph)
+                           (progn
+                             (amiga.gfx:set-a-pen rp (if outdoor pen 0))
+                             (amiga.gfx:rect-fill rp (+ ox x) (+ oy y)
+                                                  (+ ox x pw -1)
+                                                  (+ oy y ph -1)))))))
           ;; The wall of night: when darkness truncated the view at an
           ;; open front, the backdrop must not show a lit corridor
           ;; receding beyond it — black out the plane past the last
@@ -1593,6 +1600,10 @@ sizes, and the footer costs half the height topaz 8 did."
       (%put-microfont-text rp (format nil "~Dx~D map~@[  FULL~]"
                                       mw mh full)
                            bx y2)
+      ;; the day-band, under the clock: "It's Morning." etc.
+      (let ((band (time-of-day-line game)))
+        (%put-microfont-text rp band
+                             (- right (microfont-text-width band)) y2))
       (amiga.gfx:set-a-pen rp 1))))
 
 ;;; The Game menu.  Item numbers (the bar counts as an item) are decoded
@@ -1662,6 +1673,25 @@ file should see the true screen — but the file is not what decides."
                                *display-profile*)))
         (let ((rgb (and (< pen (length palette)) (aref palette pen))))
           (when rgb (%set-pen-rgb vp pen rgb)))))))
+
+(defun %apply-daytime-palette (scr game)
+  "Tint the sky (+ART-PEN-SKY+) and ground (+ART-PEN-GROUND+) colour
+registers for GAME's current day-band — the outdoor day/night effect
+\(see SKY-COLOR-FOR).  A palette-only change: two SET-RGB4 calls repaint
+the whole sky, no redraw of the view.
+
+Indoor zones (ZONE :DARK ...) are skipped — there is no sky underground,
+so those pens keep the colour %APPLY-PACK-PALETTE loaded from the pack.
+Runs AFTER %APPLY-PACK-PALETTE (which would otherwise reset pens 5/6 to
+the pack's noon colours) and again whenever the band turns."
+  (let ((map (game-map game)))
+    (unless (dungeon-map-dark map)
+      (let ((vp (amiga.intuition:screen-viewport scr))
+            (band (game-time-of-day game)))
+        (%set-pen-rgb vp +art-pen-sky+
+                      (sky-color-for (dungeon-map-sky map) band))
+        (%set-pen-rgb vp +art-pen-ground+
+                      (ground-color-for (dungeon-map-ground map) band))))))
 
 (defun %call-with-game-window (display fn)
   "Open DISPLAY per the active *DISPLAY-PROFILE* and call FN with the
@@ -1797,6 +1827,9 @@ map/help/sheet pages close on a click outside a target — see
          (pacing nil)       ; a combat round is running: pace messages
          (pace-fn nil)      ; draws one paced transcript beat (set once
                             ; the window exists)
+         (idle-base nil)    ; internal-real-time the idle clock last
+                            ; consumed, or NIL when not standing idle
+                            ; (see the INTUITICKS handler's living clock)
          (over nil))
     (dlog "play-amiga ~A display ~S profile ~S draw-depth ~D"
           map-file display (display-profile-name *display-profile*)
@@ -1915,7 +1948,10 @@ map/help/sheet pages close on a click outside a target — see
                                           (when (eq *gfx-cache-packs* :auto)
                                             (%free-memory))))
                                    (when (eq display :screen)
-                                     (%apply-pack-palette scr walls-pal))
+                                     (%apply-pack-palette scr walls-pal)
+                                     ;; ...then override the sky/ground
+                                     ;; pens for the current hour
+                                     (%apply-daytime-palette scr game))
                                    ;; the pack may carry its own
                                    ;; pointer.iff; re-showing also
                                    ;; re-latches the sprite colors
@@ -1970,6 +2006,46 @@ map/help/sheet pages close on a click outside a target — see
                           ;; no menu model is eating the keys
                           (not (or savem castv usev singv equipv
                                    (game-location game))))
+                        (idle-clock ()
+                          ;; one heartbeat of the living-world clock: drip
+                          ;; game time forward while the party stands idle
+                          ;; in free exploration (see time.lisp).  IDLE-BASE
+                          ;; resets whenever we are NOT idling — combat, a
+                          ;; location, a modal picker, the map/help/sheet
+                          ;; pages — so a paused stretch never pours in on
+                          ;; the next tick.
+                          (let ((now (get-internal-real-time)))
+                            (cond
+                              ((not (and *idle-clock-rate*
+                                         (eq mode :play)
+                                         (not (game-combat game))
+                                         (menus-idle-p)))
+                               (setf idle-base nil))
+                              ((null idle-base)
+                               (setf idle-base now))
+                              (t
+                               (let ((mins (idle-minutes-elapsed
+                                            (- now idle-base))))
+                                 (when (plusp mins)
+                                   ;; consume only the whole-minute part;
+                                   ;; the sub-minute remainder carries on
+                                   (incf idle-base (idle-minutes-cost mins))
+                                   (let ((band (game-time-of-day game))
+                                         (effects (length
+                                                   (game-effects game))))
+                                     (advance-time game mins)
+                                     ;; repaint only when the party would
+                                     ;; SEE it: the sky re-tints on a band
+                                     ;; turn, and a worn-off effect (or
+                                     ;; sunrise/sunset) has just logged a
+                                     ;; line
+                                     (when (or (not (eq band
+                                                        (game-time-of-day
+                                                         game)))
+                                               (/= effects
+                                                   (length (game-effects
+                                                            game))))
+                                       (redraw)))))))))
                         (redraw ()
                           ;; travel switched zones: swap in the zone's
                           ;; tile pack and repaint the chrome first
@@ -1979,6 +2055,11 @@ map/help/sheet pages close on a click outside a target — see
                             (ensure-walls)
                             (clear-inner)
                             (%chrome-frames rp game l))
+                          ;; re-tint the sky/ground for the hour: an
+                          ;; action may have turned the day-band without
+                          ;; a zone change, and it costs two SET-RGB4
+                          (when (eq display :screen)
+                            (%apply-daytime-palette scr game))
                           ;; the click targets are rebuilt with the
                           ;; frame: a full-page catch-all (leave) first
                           ;; where the mode has one, the renderers'
@@ -2417,6 +2498,15 @@ map/help/sheet pages close on a click outside a target — see
                             win
                             (amiga.intuition:msg-mouse-x msg)
                             (amiga.intuition:msg-mouse-y msg))
+                           ;; the living-world clock: while the party
+                           ;; stands idle in free exploration, drip game
+                           ;; time forward at *IDLE-CLOCK-RATE* (see
+                           ;; time.lisp) so the sky cycles, magic
+                           ;; regenerates and effects burn down without a
+                           ;; step.  Off in combat, a location or any
+                           ;; modal picker — and the base resets there so
+                           ;; a paused stretch never dumps in at once.
+                           (idle-clock)
                            (when *autoplay*
                              ;; a scripted entry is a key, or a
                              ;; (:click X Y) resolved through the same

@@ -172,6 +172,82 @@ packs."
               (assoc pen *pointer-pens*)
               (assoc pen *figure-pens*))))
 
+;;; ---------------------------------------------------------------------
+;;; Day-time sky and ground colour.
+;;;
+;;; The first-person sky (pen +ART-PEN-SKY+) and ground (pen
+;;; +ART-PEN-GROUND+) take a different colour in each band of the day
+;;; (see TIME.LISP).  It is a palette-only effect — no new art, no
+;;; redraw: when the band turns the front-end reloads just those two
+;;; colour registers (%APPLY-DAYTIME-PALETTE), so a 14MHz 020 pays a
+;;; couple of SET-RGB4 calls for the whole change.
+;;;
+;;; A zone declares its own sky/ground colour with (ZONE :SKY C :GROUND
+;;; C); that colour is the NOON base, and the engine derives the other
+;;; bands by blending the base toward a per-band ANCHOR by a WEIGHT in
+;;; 0..1 (0 = the base untouched, 1 = the anchor).  So noon is exactly
+;;; what the zone declared, morning lifts it a touch brighter, evening
+;;; warms and dims it, and night sinks it to near-black — and a zone
+;;; that paints a red alien sky still goes dark at nightfall.  A zone
+;;; that declares nothing falls back to *DEFAULT-SKY* / *DEFAULT-GROUND*.
+;;;
+;;; Colours are (R G B) lists of 0-255 components, exactly as the rest
+;;; of this file and READ-ILBM's CMAPs carry them.  Weights are rationals
+;;; so the blend is integer-exact and identical on host and Amiga.
+
+(defparameter *default-sky* '(102 170 204)
+  "The noon sky colour of a zone that declares no (ZONE :SKY ...) — a
+bright daylight blue.")
+
+(defparameter *default-ground* '(102 85 68)
+  "The noon ground colour of a zone that declares no (ZONE :GROUND ...)
+— an earthy brown.")
+
+(defparameter *sky-band-tints*
+  '((:morning   (204 221 238) 3/10)    ; toward a pale dawn blue
+    (:noon      (0 0 0)        0)       ; the base, untouched
+    (:afternoon (170 187 204) 3/20)    ; a touch softer than noon
+    (:evening   (170 85 68)   9/20)    ; warm dusk
+    (:night     (0 0 17)      17/20))  ; near-black, a hint of blue
+  "(BAND ANCHOR WEIGHT) — the sky's per-band blend of the zone's noon
+base toward ANCHOR by WEIGHT.  See SKY-COLOR-FOR.")
+
+(defparameter *ground-band-tints*
+  '((:morning   (136 119 102) 1/5)     ; catching the dawn light
+    (:noon      (0 0 0)        0)
+    (:afternoon (85 68 51)     3/20)
+    (:evening   (85 51 34)     2/5)     ; lengthening shadow
+    (:night     (0 0 0)        4/5))    ; all but black
+  "(BAND ANCHOR WEIGHT) — the ground's per-band blend of the zone's
+noon base toward ANCHOR by WEIGHT.  See GROUND-COLOR-FOR.")
+
+(defun %clamp-byte (n)
+  (max 0 (min 255 n)))
+
+(defun %blend-rgb (base anchor weight)
+  "Blend (R G B) BASE toward ANCHOR by WEIGHT (0..1): the channel is
+BASE*(1-WEIGHT) + ANCHOR*WEIGHT, rounded and clamped to 0-255."
+  (mapcar (lambda (a b)
+            (%clamp-byte (round (+ (* a (- 1 weight)) (* b weight)))))
+          base anchor))
+
+(defun %band-color-for (base band table default)
+  (let ((base (or base default))
+        (entry (cdr (assoc band table))))
+    (if entry
+        (%blend-rgb base (first entry) (second entry))
+        (copy-list base))))
+
+(defun sky-color-for (base band)
+  "The sky colour (R G B) of a zone whose NOON base sky is BASE (NIL =
+*DEFAULT-SKY*) at day-band BAND (see *SKY-BAND-TINTS*)."
+  (%band-color-for base band *sky-band-tints* *default-sky*))
+
+(defun ground-color-for (base band)
+  "The ground colour (R G B) of a zone whose NOON base ground is BASE
+\(NIL = *DEFAULT-GROUND*) at day-band BAND (see *GROUND-BAND-TINTS*)."
+  (%band-color-for base band *ground-band-tints* *default-ground*))
+
 (defun fixed-pen-role (pen)
   "A short human-readable role for PEN — what the palette.gpl and the
 tile manifest call it."

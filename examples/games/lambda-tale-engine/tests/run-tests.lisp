@@ -1333,6 +1333,185 @@ height" d)
 (check-true "daylight wraps across days"
             (daylight-p (+ +minutes-per-day+ 360)))
 
+;; The five day-bands tile the clock and align to the daylight window.
+(check "00:00 is night"        :night     (time-of-day 0))
+(check "05:59 is night"        :night     (time-of-day 359))
+(check "06:00 is morning"      :morning   (time-of-day 360))
+(check "09:59 is morning"      :morning   (time-of-day 599))
+(check "10:00 is noon"         :noon      (time-of-day 600))
+(check "13:59 is noon"         :noon      (time-of-day 839))
+(check "14:00 is afternoon"    :afternoon (time-of-day 840))
+(check "17:59 is afternoon"    :afternoon (time-of-day 1079))
+(check "18:00 is evening"      :evening   (time-of-day 1080))
+(check "19:59 is evening"      :evening   (time-of-day 1199))
+(check "20:00 is night"        :night     (time-of-day 1200))
+(check "23:59 is night"        :night     (time-of-day 1439))
+(check "bands wrap across days" :morning  (time-of-day (+ +minutes-per-day+ 360)))
+(check-true "the daylight bands are exactly the daylight window"
+            (loop for m from 0 below +minutes-per-day+
+                  always (eq (daylight-p m)
+                             (not (eq (time-of-day m) :night)))))
+(check "band display name" "Morning" (time-of-day-name :morning))
+(let* ((m (parse-map *art* :name "test")) (g (new-game m)))
+  (setf (game-time g) (+ (* 3 60) 0))   ; 03:00
+  (check "night line" "It's Night." (time-of-day-line g))
+  (setf (game-time g) (+ (* 7 60) 0))   ; 07:00
+  (check "morning line" "It's Morning." (time-of-day-line g))
+  (check "band from the game" :morning (game-time-of-day g)))
+
+;; advance-time emits :time-band when the band turns (not only across
+;; the daylight boundary).
+(let* ((m (parse-map *art* :name "test"))
+       (g (new-game m))
+       (bands '()))
+  (on-event g :time-band (lambda (game band) (declare (ignore game))
+                           (push band bands)))
+  (setf (game-time g) 599)              ; 09:59, morning
+  (advance-time g)                      ; -> 10:00, noon
+  (check "crossing 10:00 emits :time-band noon" '(:noon) bands)
+  (advance-time g)                      ; 10:01, still noon
+  (check "no band turn, no event" '(:noon) bands)
+  (setf (game-time g) 1199)             ; 19:59, evening
+  (advance-time g)                      ; -> 20:00, night
+  (check "crossing 20:00 emits :time-band night" '(:night :noon) bands))
+
+;;; ---------------------------------------------------------------------
+;;; Day-time sky and ground colour (see palette.lisp).
+
+;; Noon is the base untouched; a NIL base uses the engine default.
+(check "noon sky is the zone base" '(102 170 204)
+       (sky-color-for '(102 170 204) :noon))
+(check "noon ground is the zone base" '(80 60 40)
+       (ground-color-for '(80 60 40) :noon))
+(check "a NIL sky base uses *default-sky*" *default-sky*
+       (sky-color-for nil :noon))
+(check "a NIL ground base uses *default-ground*" *default-ground*
+       (ground-color-for nil :noon))
+
+;; The sky brightens toward morning and sinks to near-black at night.
+(flet ((lum (rgb) (reduce #'+ rgb)))
+  (let ((base '(102 170 204)))
+    (check-true "morning sky is brighter than noon"
+                (> (lum (sky-color-for base :morning))
+                   (lum (sky-color-for base :noon))))
+    (check-true "evening sky is dimmer than noon"
+                (< (lum (sky-color-for base :evening))
+                   (lum (sky-color-for base :noon))))
+    (check-true "night sky is the dimmest band"
+                (< (lum (sky-color-for base :night))
+                   (lum (sky-color-for base :evening))))
+    (check-true "night sky is near black"
+                (< (lum (sky-color-for base :night)) 120))
+    ;; the ground darkens the same way and never leaves 0-255
+    (check-true "night ground is darker than noon"
+                (< (lum (ground-color-for base :night))
+                   (lum (ground-color-for base :noon))))
+    (check-true "every band stays in gamut"
+                (loop for band in '(:morning :noon :afternoon :evening :night)
+                      always (every (lambda (c) (<= 0 c 255))
+                                    (append (sky-color-for base band)
+                                            (ground-color-for base band)))))
+    ;; a red alien sky still goes dark at night — the tint is relative
+    (check-true "a declared red sky still darkens at night"
+                (< (lum (sky-color-for '(204 34 34) :night))
+                   (lum (sky-color-for '(204 34 34) :noon))))))
+
+;; A zone declares its sky/ground; a list or a vector both parse, and
+;; the value survives onto the map.  Bad colours are rejected loudly.
+(let ((m (parse-map *art* :name "test")))
+  (check "no ZONE colour leaves sky NIL (engine default applies)"
+         nil (dungeon-map-sky m)))
+(let ((m (parse-map *art* :name "sky-zone")))
+  (%parse-map-forms m "(zone :sky (10 20 30) :ground #(40 50 60))" "sky-zone")
+  (check "zone :sky parses a list" '(10 20 30) (dungeon-map-sky m))
+  (check "zone :ground parses a vector to a list" '(40 50 60)
+         (dungeon-map-ground m)))
+(check-error "a two-component sky is rejected"
+  (%parse-map-forms (parse-map *art* :name "bad") "(zone :sky (10 20))" "bad"))
+(check-error "an out-of-range component is rejected"
+  (%parse-map-forms (parse-map *art* :name "bad") "(zone :sky (10 20 300))"
+                    "bad"))
+
+;;; ---------------------------------------------------------------------
+;;; The living-world idle clock (pure arithmetic; see time.lisp).
+
+(let ((u internal-time-units-per-second))
+  ;; disabled: no idle progression, whatever the elapsed time
+  (let ((*idle-clock-rate* nil))
+    (check "idle off buys no minutes" 0 (idle-minutes-elapsed (* 10 u)))
+    (check "idle off costs nothing" 0 (idle-minutes-cost 10)))
+  ;; brisk: 4 game-minutes per real second
+  (let ((*idle-clock-rate* 4))
+    (check "one real second is four game-minutes" 4 (idle-minutes-elapsed u))
+    (check "two real seconds is eight game-minutes"
+           8 (idle-minutes-elapsed (* 2 u)))
+    (check "just under a minute's worth buys nothing"
+           0 (idle-minutes-elapsed (floor (1- u) 4)))
+    (check "four minutes cost one real second" u (idle-minutes-cost 4))
+    (check "eight minutes cost two real seconds" (* 2 u) (idle-minutes-cost 8))
+    ;; the consumed real time never exceeds the elapsed (the idle base
+    ;; cannot outrun the clock), leaving a sub-minute remainder to carry
+    (let* ((elapsed (+ (* 2 u) 7))
+           (mins (idle-minutes-elapsed elapsed))
+           (cost (idle-minutes-cost mins)))
+      (check "2s+ε at brisk is eight whole minutes" 8 mins)
+      (check-true "consumed time never exceeds elapsed" (<= cost elapsed))
+      (check-true "the carried remainder is under one minute's cost"
+                  (< (- elapsed cost) (idle-minutes-cost 1)))))
+  ;; the rate is a plain special: ambient and demo scale linearly
+  (let ((*idle-clock-rate* 1))
+    (check "ambient: one game-minute per second" 1 (idle-minutes-elapsed u)))
+  (let ((*idle-clock-rate* 20))
+    (check "demo: twenty game-minutes per second"
+           20 (idle-minutes-elapsed u)))
+  ;; a non-positive rate is treated as off
+  (let ((*idle-clock-rate* 0))
+    (check "a zero rate is off" 0 (idle-minutes-elapsed (* 5 u)))))
+
+;; End to end: standing idle turns the day-band without a step.
+(let* ((m (parse-map *art* :name "test"))
+       (g (new-game m))
+       (bands '())
+       (*idle-clock-rate* 4))
+  (on-event g :time-band (lambda (game band) (declare (ignore game))
+                           (push band bands)))
+  (setf (game-time g) 599)                    ; 09:59, morning
+  ;; one real second of standing at 4 game-min/s buys four game-minutes,
+  ;; a single boundary crossing (09:59 -> 10:03, into noon)
+  (advance-time g (idle-minutes-elapsed internal-time-units-per-second))
+  (check "standing four game-minutes reaches 10:03" 603 (game-time g))
+  (check "the band turned to noon while idle" :noon (game-time-of-day g))
+  (check "the idle turn fired :time-band" '(:noon) bands))
+
+;; advance-time: a single large jump (a long idle stall, or a future
+;; rest op) must not skip the boundaries in between — every day-band
+;; turn, and every :SUNRISE/:SUNSET crossed along the way, still fires.
+(let* ((m (parse-map *art* :name "test"))
+       (g (new-game m))
+       (bands '())
+       (events '())
+       (msgs (watch-messages g)))
+  (on-event g :time-band (lambda (game band) (declare (ignore game))
+                           (push band bands)))
+  (on-event g :sunset (lambda (game) (declare (ignore game))
+                        (push :sunset events)))
+  (on-event g :sunrise (lambda (game) (declare (ignore game))
+                         (push :sunrise events)))
+  (setf (game-time g) 599)                    ; day 1, 09:59, morning
+  ;; 1450 minutes crosses six boundaries: noon, afternoon, evening,
+  ;; night (sunset) on day 1, then morning (sunrise), noon on day 2
+  (advance-time g 1450)
+  (check "a multi-day jump lands on the right minute" 2049 (game-time g))
+  (check "the jump ends in day 2's noon band" :noon (game-time-of-day g))
+  (check "every band turn fires, oldest first"
+         '(:noon :morning :night :evening :afternoon :noon) bands)
+  (check "sunset then sunrise both fire, none skipped"
+         '(:sunrise :sunset) events)
+  (check-true "night falls in the log despite the single big jump"
+              (member "Night falls." (funcall msgs) :test #'equal))
+  (check-true "the sun rises in the log despite the single big jump"
+              (member "The sun rises." (funcall msgs) :test #'equal)))
+
 ;; advance-time: boundary events and effect expiry.
 (let* ((m (parse-map *art* :name "test"))
        (g (new-game m))
@@ -1381,31 +1560,51 @@ height" d)
   (check-true "daylight outdoors is not dark" (not (game-dark-p g)))
   (setf (game-time g) 1200)            ; 20:00 — night
   (check-true "night outdoors is dark" (game-dark-p g))
-  (check "night: view depth one" 1 (game-view-depth g))
-  (check "darkness truncates compute-view" 1
+  ;; outdoors at night there is moonlight: a few cells, not the blind
+  ;; one of a lightless dungeon, and never more than the daytime depth
+  (check "night outdoors: moonlight, not blind" *moonlight-depth*
+         (game-view-depth g))
+  (check "moonlight truncates compute-view to its depth"
+         (min *moonlight-depth* +view-depth+)
          (length (compute-view (game-map g) (game-x g) (game-y g)
                                (game-facing g) (game-view-depth g))))
+  (let ((*moonlight-depth* 1))
+    (check "moonlight 1 is a pitch-black night" 1 (game-view-depth g)))
+  (let ((*moonlight-depth* 99))
+    (check "moonlight is capped at +view-depth+" +view-depth+
+           (game-view-depth g)))
   (add-effect g "torchlight" :payload '(:light t))
   (check-true "a light effect defeats the night" (not (game-dark-p g)))
   (check "lit night: full view depth" +view-depth+ (game-view-depth g))
   (remove-effect g "torchlight")
-  (check "light gone: dark again" 1 (game-view-depth g)))
+  (check "light gone: moonlit again" *moonlight-depth* (game-view-depth g)))
 
-;; The automap honors darkness: what the party cannot see it cannot map.
-;; The game must be born at night — NEW-GAME's first OBSERVE already maps.
-(let* ((m (parse-map *corridor-art* :name "dark-map" :start-facing :east))
-       (g (let ((*new-game-minutes* 1200))
-            (new-game m))))
-  ;; the corridor runs east from (0,0); at night the party sees only its
-  ;; own cell — the far wall of (2,0) stays unknown
-  (check-true "night automap: standing cell is known"
-              (cell-explored-p (game-knowledge g) 0 0))
-  (check-true "night automap: two cells ahead is unknown"
-              (not (wall-known-p (game-knowledge g) 2 0 +east+)))
-  (add-effect g "torchlight" :payload '(:light t))
-  (observe g)
-  (check-true "lit automap: two cells ahead is known"
-              (wall-known-p (game-knowledge g) 2 0 +east+)))
+;; The automap honors darkness, and moonlight widens it.  A long corridor
+;; runs east from (0,0); the party is born at night (NEW-GAME's first
+;; OBSERVE already maps).  Knowing cell C's far (east) wall needs depth
+;; C+1, so cell 1 tells moonlight from a pitch-black night and cell 3
+;; tells moonlight (depth 3) from a light (the full +view-depth+ 4).
+(flet ((born-at-night (moon)
+         (let ((*new-game-minutes* 1200)     ; 20:00
+               (*moonlight-depth* moon))
+           (new-game (parse-map "+-+-+-+-+-+-+-+
+|@            |
++-+-+-+-+-+-+-+"
+                                :name "dark-map" :start-facing :east)))))
+  (let ((blind (born-at-night 1))
+        (moonlit (born-at-night 3)))
+    (check-true "night automap: the standing cell is always known"
+                (cell-explored-p (game-knowledge blind) 0 0))
+    (check-true "a pitch-black night maps nothing one cell ahead"
+                (not (wall-known-p (game-knowledge blind) 1 0 +east+)))
+    (check-true "moonlight maps the cell one ahead"
+                (wall-known-p (game-knowledge moonlit) 1 0 +east+))
+    (check-true "moonlight does not reach three cells ahead"
+                (not (wall-known-p (game-knowledge moonlit) 3 0 +east+)))
+    (add-effect moonlit "torchlight" :payload '(:light t))
+    (observe moonlit)
+    (check-true "a light reaches three cells ahead, past the moonlight"
+                (wall-known-p (game-knowledge moonlit) 3 0 +east+))))
 
 ;; A (zone :dark t) zone is dark at any hour.
 (let ((path "tests/tmp-dark.map"))

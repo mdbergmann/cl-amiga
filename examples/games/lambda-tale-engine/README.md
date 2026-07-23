@@ -668,12 +668,17 @@ After the art a map file may carry its story layer as Lisp data forms
 (read with `*read-eval*` bound to `NIL`, never evaluated):
 
 ```lisp
-(zone :kind :dungeon :title "the cellar")
+(zone :kind :dungeon :title "the cellar" :dark 3)
 
 (special (1 2)
   (once (message "Something stirs in the darkness...")
         (encounter ("giant rat" "1d3+1"))))
 ```
+
+The `zone` form's keywords are `:kind`, `:title`, `:wrap`,
+`:start-facing`, `:gfx` (the tile pack), `:dark` (see above), and
+`:sky` / `:ground` — the outdoor noon colours the day-band tint works
+from (see "The day-bands and the sky").
 
 The op vocabulary — `message`, `set-flag`/`clear-flag`,
 `when-flag`/`unless-flag`, `at-night`/`at-day`, `once`, `teleport`,
@@ -696,13 +701,79 @@ The game has a clock (shown in the map view's footer): every step, turn and
 combat round costs a minute, a fresh game starts at day 1, 08:00, and
 daylight runs 06:00–20:00 — `:sunrise`/`:sunset` events fire at the
 boundaries and the `at-night`/`at-day` special ops make map encounters
-time-dependent.  At night outdoors — and at any hour in a zone
-declared `(zone ... :dark t)` — the party sees (and maps) only one
-cell ahead unless a light effect burns; `:dark N` (a positive integer)
-keeps the zone dark but grants N cells of sight, with a light still
-buying the full view depth.  Active effects can carry
-durations on the clock and wear off with a message.  See the "Game
-time" sections of `tests/run-tests.lisp` for the exact rules.
+time-dependent.
+
+**Darkness and light.**  A zone declared `(zone ... :dark t)` — a
+dungeon or cellar — is **completely dark**: the party sees (and maps)
+one cell ahead until a light effect burns.  `:dark N` (a positive
+integer) keeps it dark but grants N cells of sight there.  **Outdoors at
+night** there is no sun but there is a moon: sight falls to
+**`*moonlight-depth*`** cells (a few — dimmer than the daytime
+`+view-depth+`, but not the blind one of the underground).  A light
+effect always restores the full depth.  `*moonlight-depth*` is a plain
+special (default 3, capped at `+view-depth+`); set it to 1 for
+pitch-black nights.  Active effects can carry durations on the clock and
+wear off with a message.  See the "Game time" sections of
+`tests/run-tests.lisp` for the exact rules.
+
+### The day-bands and the sky
+
+The clock also names five **bands** of the day — morning, noon,
+afternoon, evening, night — and the map view prints the current one
+("It's Morning.").  Outdoors, the first-person **sky and ground take a
+different colour in each band**: a bright blue that lifts toward dawn,
+softens through the afternoon, warms at dusk and sinks to near-black at
+night.  It is a palette-only effect — two colour registers reloaded
+when the band turns (`:time-band` event), no new art and no redraw — so
+it is free even on a 14 MHz 020.
+
+Every zone can declare its own colours:
+
+```lisp
+(zone :kind :city :title "Closure" :gfx "gfx/"
+      :sky (102 170 204) :ground (110 96 74))
+```
+
+`:sky` and `:ground` are `(R G B)` triples (a `#(...)` vector works
+too) giving the zone's **noon** colour; the engine derives the other
+bands by tinting that base, so a zone that paints a red alien sky still
+goes dark at nightfall.  A zone that declares neither uses the engine
+defaults (`*default-sky*` / `*default-ground*`).  Indoor zones — any
+`(zone ... :dark ...)` — are left alone: there is no sky underground,
+so the cellar keeps its own stone colours whatever the hour.  The tint
+tables (`*sky-band-tints*` / `*ground-band-tints*`) and the pure
+`sky-color-for` / `ground-color-for` functions live in
+`src/palette.lisp`; the "Day-time sky and ground colour" section of
+`tests/run-tests.lisp` is the spec.
+
+### The living-world clock (time passes while you stand)
+
+Classic Bard's Tale moves the clock only on an action, so standing
+still freezes the sky.  The Amiga front-end instead **drips time forward
+while the party stands idle** in free exploration (not in combat, a
+location, a menu, or the map/help pages), on the window's idle
+heartbeat: the sky cycles, casters slowly regain magic outdoors, and
+timed effects burn down whether or not you walk.  It is the same
+`advance-time`, so every consequence — spell-point regen, effect
+expiry, `:sunrise`/`:sunset`, `:time-band` — fires exactly as a step's
+would.
+
+The pace is the special variable **`*idle-clock-rate*`** — game-minutes
+per real second — read on every tick, so a campaign, a display profile
+or the REPL can rebind or disable it live:
+
+```lisp
+(setf tale:*idle-clock-rate* 4)    ; brisk (default): a day in ~6 real min
+(setf tale:*idle-clock-rate* 1)    ; ambient: a day in ~24 real min
+(setf tale:*idle-clock-rate* 20)   ; demo: a day in ~72 real sec
+(setf tale:*idle-clock-rate* nil)  ; off: classic, time only moves on an action
+```
+
+The whole-minute/remainder arithmetic (`idle-minutes-elapsed` /
+`idle-minutes-cost`, driven off `get-internal-real-time` so the pace is
+independent of tick jitter and no sub-minute time is lost) is host
+tested in the "living-world idle clock" section of
+`tests/run-tests.lisp`.
 
 ## Party and combat
 
