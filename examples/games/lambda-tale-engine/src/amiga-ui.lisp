@@ -2352,6 +2352,16 @@ map/help/sheet pages close on a click outside a target — see
                                                     (make-equip-view hero))
                                               (redraw)))
                                           nil)
+                                         ((eql lc #\g)
+                                          ;; pool the party's gold onto
+                                          ;; the sheet hero
+                                          (let ((hero (nth sheet-hero
+                                                           (game-party
+                                                            game))))
+                                            (when hero
+                                              (pool-gold game hero)
+                                              (redraw)))
+                                          nil)
                                          ((characterp c)
                                           ;; u/d scroll a long stat block
                                           (let ((top (hero-sheet-scroll

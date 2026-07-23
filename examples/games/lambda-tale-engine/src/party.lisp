@@ -213,8 +213,8 @@ pattern) and feed u/d through HERO-SHEET-SCROLL."
                             +sheet-page-size+))
      (list ""
            (if (> (length body) +sheet-page-size+)
-               "[1-7] view another  [e] equip  [u/d] scroll  [Esc] back"
-               "[1-7] view another  [e] equip  [Esc] back")))))
+               "[1-7] view another  [e] equip  [g] pool gold  [u/d] scroll  [Esc] back"
+               "[1-7] view another  [e] equip  [g] pool gold  [Esc] back")))))
 
 (defun hero-sheet-scroll (game index top char)
   "The sheet page's scroll offset after key CHAR (u/d — see
@@ -242,6 +242,24 @@ game situation, not a bug)."
         (say game "~A joins the party!" (hero-name hero))
         (emit game :party-joined hero)
         t)))
+
+(defun pool-gold (game hero)
+  "Pool the party's gold onto HERO, Bard's Tale style: every other
+member (standing or down) hands their purse over.  Says the result and
+returns the amount HERO gained — 0 when nobody had anything to give.
+The shop pages and the character sheet offer it on 'g'."
+  (let ((gained 0))
+    (dolist (h (game-party game))
+      (unless (eq h hero)
+        (incf gained (hero-gold h))
+        (setf (hero-gold h) 0)))
+    (if (plusp gained)
+        (progn
+          (incf (hero-gold hero) gained)
+          (say game "The party pools its gold: ~A holds ~D gp."
+               (hero-name hero) (hero-gold hero)))
+        (say game "Nobody else has gold to pool."))
+    gained))
 
 (defun alive-heroes (game)
   "The living party members, in party order."

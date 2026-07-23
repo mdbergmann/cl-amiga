@@ -869,6 +869,27 @@ height" d)
     (check-true "door visible after passing it" (search "D" view))
     (check "hidden feature not rendered" nil (search "<" view))))
 
+;; Found locations draw their legend marker on their cell — the map
+;; shows WHERE the "1" of the legend is, not just that it exists.  The
+;; marker covers the cell's feature glyph; full mode marks every place.
+(let* ((m (parse-map *art* :name "test"))
+       (g (new-game m)))
+  (setf (cell-special m 2 1) '((location "Wolfgar's Arms" :shop)))
+  (check "full render draws the legend marker on its cell"
+         "+-+-+-+
+|^  | |
++ +D+ +
+| |  1|
++-+-+-+"
+         (render-game g :full t))
+  (check "an unfound location draws no marker" nil
+         (search "1" (render-game g)))
+  (know-cell (game-knowledge g) 2 1)
+  (check-true "a found location draws its marker"
+              (search "1" (render-game g)))
+  (check "the marker covers the cell's feature glyph" nil
+         (search "<" (render-game g))))
+
 ;;; ---------------------------------------------------------------------
 ;;; First-person ASCII renderer
 
@@ -1939,7 +1960,7 @@ height" d)
   (check "sheet page embeds the summary block" "B the Tester"
          (third lines))
   (check "sheet page ends with the key hints"
-         "[1-7] view another  [e] equip  [Esc] back"
+         "[1-7] view another  [e] equip  [g] pool gold  [Esc] back"
          (first (last lines))))
 
 ;; Class portraits: DEFINE-HERO-CLASS :IMAGE resolves map-relative
@@ -2029,6 +2050,50 @@ height" d)
   (damage-hero g h 2)
   (check "heal-hero returns hp gained" 1 (with-rng (0) (heal-hero g h 1)))
   (check "heal-hero caps at max" 3 (progn (heal-hero g h 99) (hero-hp h))))
+
+;; Pool gold: the party's purses land on one hero (the Bard's Tale
+;; command — the shop pages and the character sheet offer it on 'g').
+(let* ((m (parse-map *art* :name "test"))
+       (heroes (with-rng () (list (make-hero "A" :tester)
+                                  (make-hero "B" :tester)
+                                  (make-hero "C" :tester))))
+       (g (new-game m :party heroes))
+       (msgs (watch-messages g)))
+  (setf (hero-gold (first heroes)) 10
+        (hero-gold (second heroes)) 25
+        (hero-gold (third heroes)) 7)
+  (check "pool-gold returns the amount gained" 35
+         (pool-gold g (third heroes)))
+  (check "the pooling hero holds everything" 42
+         (hero-gold (third heroes)))
+  (check "the other purses are emptied" '(0 0)
+         (list (hero-gold (first heroes)) (hero-gold (second heroes))))
+  (check-true "pooling is announced"
+              (find-if (lambda (s) (search "pools its gold" s))
+                       (funcall msgs)))
+  (check "pooling again gains nothing" 0 (pool-gold g (third heroes)))
+  (check "and leaves the gold in place" 42 (hero-gold (third heroes)))
+  (check-true "the empty pool says so"
+              (find-if (lambda (s) (search "Nobody else has gold" s))
+                       (funcall msgs)))
+  ;; a downed hero's purse pools too — gold is no use to the fallen
+  (setf (hero-gold (first heroes)) 5)
+  (damage-hero g (first heroes) 999)
+  (check "a downed hero's purse pools too" 5
+         (pool-gold g (third heroes))))
+
+;; The host roster pane carries the Bard's Tale columns the Amiga
+;; table shows: effective armor class and spell points beside HP and
+;; gold.  (Host front-end only — amiga-ui draws its own table.)
+#-amigaos
+(let* ((m (parse-map *art* :name "test"))
+       (h (with-rng () (make-hero "Ann" :tester)))
+       (g (new-game m :party (list h))))
+  (setf (hero-gold h) 42)
+  (let ((pane (%party-pane g)))
+    (check-true "roster shows armor class" (search "AC  8" pane))
+    (check-true "roster shows spell points" (search "SP   0/  0" pane))
+    (check-true "roster shows gold" (search "42 gp" pane))))
 
 ;; Leveling: crossing a threshold rolls the class hit dice again.
 (let* ((m (parse-map *art* :name "test"))
@@ -3719,6 +3784,30 @@ height" d)
                        (menu-texts (shop-lines g view))))
   (leave-location g))
 
+;; 'g' pools the party's gold onto the shopper — offered on both shop
+;; pages, so a hero short of a purchase can draw on the party purse.
+(let* ((a (with-rng () (make-hero "A" :tester)))
+       (b (with-rng () (make-hero "B" :tester)))
+       (g (new-game (parse-map *art* :name "test") :party (list a b)))
+       (view (make-shop-view)))
+  (setf (hero-gold a) 5 (hero-gold b) 40)
+  (enter-location g '("The Vault" :shop :stock (t-sword)))
+  (shop-act g view #\1)                 ; A shops
+  (check-true "the buy footer offers pooling"
+              (find-if (lambda (s) (search "[g] pool gold" s))
+                       (menu-texts (shop-lines g view))))
+  (check "g pools onto the shopper" nil (shop-act g view #\g))
+  (check "the shopper holds the party's gold" 45 (hero-gold a))
+  (check "the partner's purse is empty" 0 (hero-gold b))
+  (shop-act g view #\s)
+  (check-true "the sell footer offers pooling too"
+              (find-if (lambda (s) (search "[g] pool gold" s))
+                       (menu-texts (shop-lines g view))))
+  (setf (hero-gold b) 7)
+  (check "G pools from the sell page too" nil (shop-act g view #\G))
+  (check "the sell-page pool lands" 52 (hero-gold a))
+  (leave-location g))
+
 ;; Kinds the engine has no mechanics for still enter and leave cleanly.
 (let* ((g (new-game (parse-map *art* :name "test")))
        (view (make-shop-view)))
@@ -3861,7 +3950,7 @@ height" d)
   (check "an empty pack still says so" "Pack: nothing"
          (first (last (butlast (butlast (hero-sheet-lines g 0))))))
   (check "a short sheet keeps the plain hints"
-         "[1-7] view another  [e] equip  [Esc] back"
+         "[1-7] view another  [e] equip  [g] pool gold  [Esc] back"
          (first (last (hero-sheet-lines g 0))))
   (check "a short sheet does not scroll" nil
          (hero-sheet-scroll g 0 0 #\d))
@@ -3873,7 +3962,7 @@ height" d)
                 (member "v more below [d]" texts :test #'equal))
     (check-true "the sheet hints say so"
                 (member
-                 "[1-7] view another  [e] equip  [u/d] scroll  [Esc] back"
+                 "[1-7] view another  [e] equip  [g] pool gold  [u/d] scroll  [Esc] back"
                  texts :test #'equal)))
   (let ((top (hero-sheet-scroll g 0 0 #\d)))
     (check "the sheet scrolls by its window" 6 top)
@@ -5369,6 +5458,8 @@ never its own"
   (check-true "help mentions combat and save keys"
               (and (find-if (lambda (s) (search "Combat:" s)) lines)
                    (find-if (lambda (s) (search "save" s)) lines)))
+  (check-true "help mentions pooling gold"
+              (find-if (lambda (s) (search "pool gold" s)) lines))
   (check-true "help mentions the gear page"
               (find-if (lambda (s) (search "equip" s)) lines)))
 
