@@ -832,8 +832,8 @@ Save games (`save-game`/`load-game`) are a single readable Lisp form:
 the current zone's map file, position, the game clock, active effects,
 every visited zone's automap knowledge, story flags and the party with
 packs and equipment.  Up to 9 **named saves** live side by side as
-`saves/NAME.sav`: both front-ends share the same slot picker (`S`/`L`,
-and the Save/Load menu items on the Amiga) — pick a slot by number or
+`saves/NAME.sav`: both front-ends share the same slot picker
+(`Shift-S`/`Shift-L`, and the Save/Load menu items on the Amiga) — pick a slot by number or
 type a new name (refused once 9 slots exist, so every slot stays
 reachable by its digit) — and saving is refused during combat.
 

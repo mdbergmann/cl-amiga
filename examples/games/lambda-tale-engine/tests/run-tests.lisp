@@ -6212,16 +6212,21 @@ full asset-size viewport" pname)
                        1
                        (amiga.gfx:read-pixel rp (+ (ui-layout-bx l) fx)
                                              (+ (ui-layout-by l) fy))))
+              ;; the fixture map has no :DARK, so it is an outdoor
+              ;; zone: since day/night the ceiling and floor are flat
+              ;; fills in the sky/ground pens (%APPLY-DAYTIME-PALETTE
+              ;; tints them per hour) — the pack's backdrop bitmaps
+              ;; only cover indoor/dark zones
               (destructuring-bind (cx cy) ceiling-xy
-                (check (format nil "~A: blitted ceiling near-band pixel"
-                               pname)
-                       +pen-dim+
+                (check (format nil "~A: outdoor ceiling pixel is the ~
+sky pen" pname)
+                       +art-pen-sky+
                        (amiga.gfx:read-pixel rp (+ (ui-layout-bx l) cx)
                                              (+ (ui-layout-by l) cy))))
               (destructuring-bind (sx sy) floor-xy
-                (check (format nil "~A: blitted floor pixel is the ~
-flat floor color" pname)
-                       +pen-mid+
+                (check (format nil "~A: outdoor floor pixel is the ~
+ground pen" pname)
+                       +art-pen-ground+
                        (amiga.gfx:read-pixel rp (+ (ui-layout-bx l) sx)
                                              (+ (ui-layout-by l) sy))))
               ;; The planar fast path (*WALL-LOAD-PLANAR*, the default)
@@ -6628,6 +6633,34 @@ pieces need a mask" pname)
   (check "legend: kinds other than :house are always places"
          '((#\1 0 0 "The Temple") (#\2 2 1 "Wolfgar's Arms"))
          (map-legend-entries m nil :full t)))
+
+;;; ---------------------------------------------------------------------
+;;; Keyboard input normalization (src/keys.lisp): VANILLA-KEY-CHAR maps
+;;; an IDCMP_VANILLAKEY Code+Qualifier to the key ACT dispatches on.
+;;; Letter case must come from the Shift qualifier alone — with Caps
+;;; Lock active (or desynced under emulation) the keymap delivers 'S'
+;;; for a plain 's', which used to open the save picker instead of
+;;; stepping back.  Qualifier bits: LSHIFT #x0001, RSHIFT #x0002,
+;;; CAPSLOCK #x0004 (devices/inputevent.h).
+
+(check "keys: plain s stays lowercase (step back, not the save picker)"
+       #\s (vanilla-key-char (char-code #\s) 0))
+(check "keys: Shift-S is uppercase (opens the save picker)"
+       #\S (vanilla-key-char (char-code #\S) #x0001))
+(check "keys: right Shift counts too"
+       #\S (vanilla-key-char (char-code #\S) #x0002))
+(check "keys: Caps Lock without Shift is downcased — the bug this guards"
+       #\s (vanilla-key-char (char-code #\S) #x0004))
+(check "keys: Caps Lock with Shift held still yields uppercase"
+       #\S (vanilla-key-char (char-code #\S) #x0005))
+(check "keys: a lowercase char with Shift held is upcased"
+       #\L (vanilla-key-char (char-code #\l) #x0001))
+(check "keys: Escape maps to :ESC whatever the qualifier"
+       :esc (vanilla-key-char 27 #x0004))
+(check "keys: caseless chars pass through untouched (? needs Shift)"
+       #\? (vanilla-key-char (char-code #\?) #x0001))
+(check "keys: digits pass through untouched under Caps Lock"
+       #\1 (vanilla-key-char (char-code #\1) #x0004))
 
 ;;; ---------------------------------------------------------------------
 ;;; Summary

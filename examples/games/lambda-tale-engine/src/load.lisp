@@ -48,6 +48,7 @@
     (ld "songs.lisp")
     (ld "save.lisp")
     (ld "save-menu.lisp")
+    (ld "keys.lisp")
     (ld "help.lisp")
     (ld "microfont.lisp")
     (ld "render.lisp")

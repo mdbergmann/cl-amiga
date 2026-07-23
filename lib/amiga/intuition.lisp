@@ -23,8 +23,10 @@
    "SCREEN-WIDTH" "SCREEN-HEIGHT" "SCREEN-BAR-HEIGHT" "SCREEN-VIEWPORT"
    ;; IDCMP
    "GET-MSG" "REPLY-MSG" "WAIT-PORT"
-   "MSG-CLASS" "MSG-CODE" "MSG-MOUSE-X" "MSG-MOUSE-Y"
+   "MSG-CLASS" "MSG-CODE" "MSG-QUALIFIER" "MSG-MOUSE-X" "MSG-MOUSE-Y"
    "EVENT-LOOP" "*EVENT-LOOP-MAX-WAITS*"
+   ;; Input event qualifier bits (IntuiMessage->Qualifier)
+   "+IEQUALIFIER-LSHIFT+" "+IEQUALIFIER-RSHIFT+" "+IEQUALIFIER-CAPSLOCK+"
    ;; Mouse button codes (IDCMP_MOUSEBUTTONS msg-code values)
    "+SELECTDOWN+" "+SELECTUP+" "+MENUDOWN+" "+MENUUP+"
    ;; Mouse pointer
@@ -193,8 +195,18 @@
 (ffi:defcstruct intui-message
   (class       :u32  20)   ; im->Class (IDCMP flags)
   (code        :u16  24)   ; im->Code
+  (qualifier   :u16  26)   ; im->Qualifier (IEQUALIFIER_* bits)
   (mouse-x     :u16  32)   ; im->MouseX
   (mouse-y     :u16  34))  ; im->MouseY
+
+;;; Input event qualifier bits (devices/inputevent.h) as they appear in
+;;; IntuiMessage->Qualifier.  With IDCMP_VANILLAKEY the keymap has
+;;; already been applied to Code, so these tell you HOW the character
+;;; was produced — e.g. whether an uppercase letter came from a held
+;;; Shift or merely from Caps Lock.
+(defconstant +iequalifier-lshift+   #x0001)
+(defconstant +iequalifier-rshift+   #x0002)
+(defconstant +iequalifier-capslock+ #x0004)
 
 ;;; struct Screen (partial — from intuition/screens.h):
 ;;;   0: NextScreen*  4: FirstWindow*  8: LeftEdge(W)  10: TopEdge(W)
@@ -442,6 +454,10 @@ exhausted with no message received."
 (defun msg-code (msg)
   "Get the Code field from an IntuiMessage."
   (intui-message-code msg))
+
+(defun msg-qualifier (msg)
+  "Get the Qualifier field from an IntuiMessage (IEQUALIFIER-* bits)."
+  (intui-message-qualifier msg))
 
 (defun msg-mouse-x (msg)
   "Get MouseX from an IntuiMessage."

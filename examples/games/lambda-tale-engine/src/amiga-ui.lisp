@@ -2493,8 +2493,12 @@ map/help/sheet pages close on a click outside a target — see
                                  (1 (open-saves :load))
                                  (3 (return))))))
                          (amiga.intuition:+idcmp-vanillakey+ (msg)
-                           (let* ((code (amiga.intuition:msg-code msg))
-                                  (c (if (= code 27) :esc (code-char code))))
+                           ;; letter case from the Shift qualifier, not
+                           ;; Caps Lock — 's' must step back, never open
+                           ;; the save picker (see src/keys.lisp)
+                           (let ((c (vanilla-key-char
+                                     (amiga.intuition:msg-code msg)
+                                     (amiga.intuition:msg-qualifier msg))))
                              (when (eq (act c) :quit)
                                (return))))
                          (amiga.intuition:+idcmp-mousebuttons+ (msg)
