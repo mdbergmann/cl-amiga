@@ -1569,9 +1569,16 @@ sizes, and the footer costs half the height topaz 8 did."
          (legend (map-legend-entries map (game-knowledge game)
                                      :full full)))
     ;; clear the whole inner area (the play panes underneath) to the
-    ;; grey page the map draws on
+    ;; grey page the map draws on.  The play chrome's white view frame
+    ;; sits one pixel left of BX and above BY, and the message page's
+    ;; black outline/drop shadow bleed to BY-1 and RIGHT+2 (see
+    ;; %CHROME-FRAMES); reach those edge pixels too, or they survive as
+    ;; a stray white L at the top-left and black lines along the top and
+    ;; right.  The extra margin stays well inside the ornate ring (pad
+    ;; >= 10 when it is drawn).
     (amiga.gfx:set-a-pen rp 2)
-    (amiga.gfx:rect-fill rp bx by right (ui-layout-bottom l))
+    (amiga.gfx:rect-fill rp (1- bx) (1- by) (+ right 2)
+                         (ui-layout-bottom l))
     (multiple-value-bind (x0 y0 w h)
         (map-viewport map (game-x game) (game-y game) vw vh)
       (%amiga-draw-map-region rp game bx by cell x0 y0 w h full legend)
