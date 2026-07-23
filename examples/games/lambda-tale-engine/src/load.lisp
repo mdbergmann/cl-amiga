@@ -38,6 +38,7 @@
     (ld "view.lisp")
     (ld "game.lisp")
     (ld "events.lisp")
+    (ld "races.lisp")
     (ld "party.lisp")
     (ld "time.lisp")
     (ld "items.lisp")

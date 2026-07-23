@@ -11,7 +11,8 @@
 
 (in-package :tale)
 
-(defconstant +save-version+ 4)
+(defconstant +save-version+ 5)
+;; v5: hero race (:race in the hero plists; NIL for a raceless hero).
 ;; v4: effect icon images (:image in the effect plists) and hero song
 ;; tunes (:tunes in the hero plists).
 ;; v3: game time (:time), timed active effects (:effects) and hero
@@ -45,7 +46,7 @@
     (nreverse alist)))
 
 (defun %hero->plist (h)
-  (list :name (hero-name h) :class (hero-class h)
+  (list :name (hero-name h) :class (hero-class h) :race (hero-race h)
         :level (hero-level h) :xp (hero-xp h)
         :max-hp (hero-max-hp h) :hp (hero-hp h)
         :max-sp (hero-max-sp h) :sp (hero-sp h)

@@ -64,9 +64,15 @@
    #:menu-scroll #:menu-scrolled-lines
    ;; cell specials
    #:trigger-special #:run-special #:teleport-party
+   ;; races (ability-score modifiers + which classes a race may take)
+   #:define-race #:find-race #:races #:race-name #:race-title
+   #:race-classes #:race-description #:race-image #:race-allows-class-p
+   #:race-str #:race-dex #:race-iq #:race-con #:race-lck
+   #:clamp-stat #:+stat-min+ #:+stat-max+
    ;; heroes and the party
    #:define-hero-class #:hero-classes
-   #:make-hero #:hero-name #:hero-class #:hero-level
+   #:make-hero #:hero-name #:hero-class #:hero-race #:hero-race-title
+   #:hero-level
    #:hero-xp #:hero-max-hp #:hero-hp #:hero-max-sp #:hero-sp
    #:hero-caster-p #:hero-str #:hero-dex #:hero-iq
    #:hero-con #:hero-lck #:hero-ac #:hero-damage #:hero-gold

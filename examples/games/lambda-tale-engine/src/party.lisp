@@ -10,6 +10,7 @@
 (defstruct (hero (:constructor %make-hero))
   name
   class               ; keyword registered via DEFINE-HERO-CLASS
+  race                ; keyword registered via DEFINE-RACE, or NIL
   (level 1)
   (xp 0)
   (max-hp 1)
@@ -57,25 +58,43 @@ none of its own)."
              class))
     (getf plist key)))
 
-(defun make-hero (name class &key (gold 0))
+(defun make-hero (name class &key race (gold 0))
   "Create a level-1 hero of CLASS: hp from the class hit dice, abilities
-rolled 3d6 in the order str, dex, iq, con, lck.  GOLD is the starting
-purse (campaign data decides; dice strings welcome)."
+rolled 3d6 in the order str, dex, iq, con, lck, then adjusted by RACE's
+ability modifiers when a race is given (see DEFINE-RACE).  A RACE that
+does not permit CLASS is an error.  GOLD is the starting purse (campaign
+data decides; dice strings welcome)."
+  ;; A race that cannot take this class is a design error caught early,
+  ;; before any dice roll, with a message that lists the legal classes.
+  (when (and race (not (race-allows-class-p race class)))
+    (error "A ~A cannot be a ~A — the race may be: ~{~A~^, ~}"
+           (race-title race)
+           (string-capitalize (substitute #\Space #\- (string class)))
+           (mapcar #'race-title (race-classes (find-race race)))))
   ;; Keep the roll order (hp, str, dex, iq, con, lck, gold) — the test
-  ;; suite scripts heroes through *RNG* and depends on it.
+  ;; suite scripts heroes through *RNG* and depends on it.  Racial
+  ;; modifiers adjust the rolled scores in place (they draw no dice), so
+  ;; the roll order stays intact and spell points read the modified IQ.
   (let* ((hp (max 1 (roll-dice (hero-class-property class :hp-dice))))
          (str (roll-dice "3d6")) (dex (roll-dice "3d6"))
          (iq (roll-dice "3d6")) (con (roll-dice "3d6"))
          (lck (roll-dice "3d6"))
-         (sp (%hero-max-sp class 1 iq)))
-    (%make-hero :name name :class class
-                :max-hp hp :hp hp
-                :max-sp sp :sp sp
-                :str str :dex dex :iq iq :con con :lck lck
-                :ac (hero-class-property class :ac)
-                :damage (hero-class-property class :damage)
-                :gold (roll-dice gold)
-                :tunes (if (hero-class-property class :singer) 1 0))))
+         (r (and race (find-race race))))
+    (when r
+      (setf str (clamp-stat (+ str (race-str r)))
+            dex (clamp-stat (+ dex (race-dex r)))
+            iq  (clamp-stat (+ iq  (race-iq r)))
+            con (clamp-stat (+ con (race-con r)))
+            lck (clamp-stat (+ lck (race-lck r)))))
+    (let ((sp (%hero-max-sp class 1 iq)))
+      (%make-hero :name name :class class :race race
+                  :max-hp hp :hp hp
+                  :max-sp sp :sp sp
+                  :str str :dex dex :iq iq :con con :lck lck
+                  :ac (hero-class-property class :ac)
+                  :damage (hero-class-property class :damage)
+                  :gold (roll-dice gold)
+                  :tunes (if (hero-class-property class :singer) 1 0)))))
 
 (defun stat-bonus (stat)
   "Bonus for an ability score: +1 per 2 points above 10, negative below."
@@ -112,6 +131,11 @@ summoned/charmed monster or story NPC, Bard's Tale tradition).")
   "The hero's class as a display string: :war-mage -> \"War Mage\"."
   (string-capitalize (substitute #\Space #\- (string (hero-class hero)))))
 
+(defun hero-race-title (hero)
+  "The hero's race as a display string (\"Dwarf\", \"Half-Elf\"), or NIL
+when the hero has no race."
+  (and (hero-race hero) (race-title (hero-race hero))))
+
 (defun hero-class-abbrev (hero)
   "The hero's class as the roster's CL column code, always two
 characters so the name column keeps the room: the initials of the
@@ -133,7 +157,10 @@ first two words of a multi-word class, else the first two letters —
 player sees when they open a roster slot.  Pure (no I/O), so both the
 Amiga sheet view and the tests render from the same source."
   (list
-   (format nil "~A the ~A" (hero-name hero) (hero-class-title hero))
+   ;; "Name the [Race] Class" — the race sits before the class when the
+   ;; hero has one, "Name the Class" when raceless.
+   (format nil "~A the ~@[~A ~]~A" (hero-name hero)
+           (hero-race-title hero) (hero-class-title hero))
    (format nil "Level ~D    XP ~D" (hero-level hero) (hero-xp hero))
    (let ((extras (concatenate
                   'string

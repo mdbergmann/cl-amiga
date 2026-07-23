@@ -48,6 +48,29 @@ On AmigaOS the suite additionally runs GUI smoke tests (both display
 profiles) and three unattended `*autoplay*` sessions through the
 fixture world.
 
+## Races
+
+Races follow the engine's usual split: the engine knows what a race
+**is** — ability-score modifiers plus the list of hero classes the
+race may take — and a campaign registers the concrete ones with
+`define-race` in its campaign.lisp (the Closure game next door ships
+the Bard's Tale II canon).  `make-hero` rolls the abilities (3d6
+each), then adds the racial modifiers in place — no extra dice — and
+rejects a race/class pairing the race does not allow:
+
+```lisp
+(define-race :dwarf :str 2 :con 2 :iq -2
+  :classes '(:warrior :paladin :rogue :bard :hunter :monk)
+  :description "Amazingly strong and healthy, but not always bright.")
+
+(make-hero "Grod" :warrior :race :dwarf)   ; a stout dwarf warrior
+(make-hero "Grod" :conjurer :race :dwarf)  ; error: dwarves cast no spells
+(make-hero "Nym"  :rogue)                  ; raceless is still fine
+```
+
+The race rules are exercised end to end in `tests/run-tests.lisp`
+(search "Races") — the executable reference.
+
 ## Layout
 
 ```
@@ -64,7 +87,9 @@ src/view.lisp        first-person view geometry (view cone, perspective
 src/time.lisp        the game clock: day/night, darkness, timed effects
 src/game.lisp        game state, movement, automap observation
 src/events.lisp      engine event bus + story flags
-src/party.lisp       heroes, classes, xp/levels, party queries
+src/races.lisp       races: ability-score modifiers + which classes each
+                     race may take (mechanics; DEFINE-RACE)
+src/party.lisp       heroes, classes, races, xp/levels, party queries
 src/items.lisp       item types, packs and equipment
 src/spells.lisp      spell types, spell points, casting + the cast menu
 src/combat.lisp      monster types, round-based combat

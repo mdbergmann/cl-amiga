@@ -1992,6 +1992,71 @@ height" d)
   (check "a class without :image has no portrait" nil
          (hero-image-path g (second (game-party g)))))
 
+;;; ---------------------------------------------------------------------
+;;; Races (ability-score modifiers + which classes a race may take)
+
+;; A test race and two test classes exercise the mechanics
+;; deterministically, independent of the shipped ruleset.
+(define-hero-class :r-fighter :hp-dice "1d10" :damage "1d8" :ac 8)
+(define-hero-class :r-mage    :hp-dice "1d6"  :damage "1d4" :ac 10 :caster t)
+(define-race :r-orc :str 3 :iq -2 :con 1 :classes '(:r-fighter)
+  :description "test race")
+
+;; DEFINE-RACE registers the race and its data.
+(check "find-race returns the race" :r-orc (race-name (find-race :r-orc)))
+(check-error "find-race errors on an unknown race" (find-race :r-nobody))
+(check-true "races lists the registered race" (member :r-orc (races)))
+
+;; MAKE-HERO applies the racial ability modifiers to the 3d6 rolls
+;; without drawing extra dice.  Scripted rolls: the first draw feeds the
+;; hp die (1d10 -> 6), then each 3d6 sees three 2s -> die faces of 3 ->
+;; 9 per stat.  r-orc lands +3 str, -2 iq, +1 con on those 9s.
+(let ((h (with-rng (5  2 2 2  2 2 2  2 2 2  2 2 2  2 2 2)
+           (make-hero "Orc" :r-fighter :race :r-orc))))
+  (check "race recorded on the hero" :r-orc (hero-race h))
+  (check "hp rolled before the abilities (roll order intact)" 6
+         (hero-max-hp h))
+  (check "race adds to strength"      12 (hero-str h))   ; 9 + 3
+  (check "race leaves dexterity alone"  9 (hero-dex h))
+  (check "race lowers intelligence"     7 (hero-iq h))   ; 9 - 2
+  (check "race raises constitution"    10 (hero-con h))  ; 9 + 1
+  (check "race leaves luck alone"       9 (hero-lck h)))
+
+;; A modifier cannot push a rolled score outside 1..18.
+(let ((h (with-rng (5  5 5 5  0 0 0  0 0 0  0 0 0  0 0 0)  ; str 18, rest 3
+           (make-hero "Brute" :r-fighter :race :r-orc))))
+  (check "racial bonus is clamped at 18" 18 (hero-str h))  ; 18 + 3 -> 18
+  (check "racial penalty is clamped at 1" 1 (hero-iq h)))  ; 3 - 2 -> 1
+
+;; MAKE-HERO rejects a race that does not permit the class; an allowed
+;; pairing (or a raceless hero) works and records the race.
+(check-error "race forbids an off-list class"
+  (make-hero "Bad" :r-mage :race :r-orc))
+(check "race permits an on-list class" :r-orc
+       (hero-race (make-hero "Good" :r-fighter :race :r-orc)))
+(check-true "a raceless hero still works" (make-hero "Free" :r-mage))
+
+;; A race that restricts nothing (NIL :classes) takes any class.
+(define-race :r-human :classes nil :description "unrestricted test race")
+(check "an unrestricted race lists no classes" nil
+       (race-classes (find-race :r-human)))
+(check-true "an unrestricted race takes any class"
+            (race-allows-class-p :r-human :r-mage))
+
+;; RACE-TITLE is pure formatting (no registry lookup needed).
+(check "race-title hyphenates half-elf" "Half-Elf" (race-title :half-elf))
+(check "race-title capitalizes dwarf"   "Dwarf"    (race-title :dwarf))
+
+;; The character sheet names the race before the class when present, and
+;; stays "Name the Class" for a raceless hero.  (:tester is a registered
+;; class, so HERO-SUMMARY-LINES can read its caster/singer flags.)
+(check "sheet names race before class" "Grod the Dwarf Tester"
+       (first (hero-summary-lines
+               (%make-hero :name "Grod" :race :dwarf :class :tester))))
+(check "sheet omits the race when there is none" "Nym the Tester"
+       (first (hero-summary-lines
+               (%make-hero :name "Nym" :class :tester))))
+
 (check "stat-bonus 10" 0 (stat-bonus 10))
 (check "stat-bonus 12" 1 (stat-bonus 12))
 (check "stat-bonus 15" 2 (stat-bonus 15))
