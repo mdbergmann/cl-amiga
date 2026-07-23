@@ -59,11 +59,14 @@
 ;;; ---------------------------------------------------------------------
 ;;; Automap
 
-(defun render-dungeon (map &key knowledge px py facing
+(defun render-dungeon (map &key knowledge px py facing legend
                                 (x0 0) (y0 0) w h)
   "Render MAP as a multi-line string.
 KNOWLEDGE non-NIL filters to explored cells and seen walls.
 PX/PY/FACING draw the party arrow.
+LEGEND is a MAP-LEGEND-ENTRIES list: each entry's marker draws on its
+cell (over the feature glyph — the marker is what the legend below
+the map explains), the same as the Amiga map page's amber markers.
 X0/Y0/W/H render only that cell region (default: the whole map) —
 the full map view uses this with MAP-VIEWPORT's result when the map
 is larger than the display."
@@ -107,6 +110,13 @@ is larger than the display."
               (let ((f (cell-feature map x y)))
                 (when f
                   (put (1+ (* 2 rx)) (1+ (* 2 ry)) f)))))))
+      ;; legend markers on their cells (the party arrow still wins)
+      (dolist (e legend)
+        (destructuring-bind (marker ex ey title) e
+          (declare (ignore title))
+          (when (and (<= x0 ex) (< ex (+ x0 w))
+                     (<= y0 ey) (< ey (+ y0 h)))
+            (put (1+ (* 2 (- ex x0))) (1+ (* 2 (- ey y0))) marker))))
       (when (and px py
                  (<= x0 px) (< px (+ x0 w))
                  (<= y0 py) (< py (+ y0 h)))
@@ -223,10 +233,14 @@ right); entries beyond the marker alphabet are dropped."
                                        (length *legend-markers*))))))))
 
 (defun render-game (game &key full)
-  "Render GAME's map with the party arrow.  FULL non-NIL shows the whole
-map (debug view); otherwise only what the party has explored."
+  "Render GAME's map with the party arrow and the markers of the
+locations the party has found.  FULL non-NIL shows the whole map
+(debug view); otherwise only what the party has explored."
   (render-dungeon (game-map game)
                   :knowledge (if full nil (game-knowledge game))
+                  :legend (map-legend-entries (game-map game)
+                                              (game-knowledge game)
+                                              :full full)
                   :px (game-x game)
                   :py (game-y game)
                   :facing (game-facing game)))

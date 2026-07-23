@@ -11,8 +11,10 @@
 ;;; round runs once the last hero picked, each message lingering
 ;;; COMBAT-MESSAGE-DELAY seconds.
 ;;; On the character sheet: e=the gear page (1-9 toggle an item
-;;;   on/off, class-unfit items are marked)  Esc=back
-;;; In a location (shop): 1-9=choose  s/b=sell/buy page  Esc=back/leave
+;;;   on/off, class-unfit items are marked)  g=pool the party's gold
+;;;   onto the hero  Esc=back
+;;; In a location (shop): 1-9=choose  s/b=sell/buy page  g=pool gold
+;;;   onto the shopper  Esc=back/leave
 ;;; In the cast menu: 1-9=choose caster/spell/target  Esc=back/cancel
 ;;; Long menu lists (shop stock, packs, the character sheet) scroll
 ;;; with u/d — digits pick within the visible window (see MENU-WINDOW)
@@ -39,14 +41,19 @@
     (:blocked "You bump into a wall.")))
 
 (defun %party-pane (game)
+  "The party roster, Bard's Tale columns like the Amiga table: armor
+class (with equipment and spell effects), hit and spell points, gold."
   (with-output-to-string (s)
     (let ((i 0))
       (dolist (h (game-party game))
         (incf i)
-        (format s "~D ~12A ~10A Lv~2D  HP ~3D/~3D  ~5D gp~A~%"
+        (format s "~D ~12A ~10A Lv~2D  AC ~2D  HP ~3D/~3D  SP ~3D/~3D  ~
+                   ~5D gp~A~%"
                 i (hero-name h)
                 (string-downcase (symbol-name (hero-class h)))
-                (hero-level h) (hero-hp h) (hero-max-hp h) (hero-gold h)
+                (hero-level h) (hero-effective-ac h game)
+                (hero-hp h) (hero-max-hp h)
+                (hero-sp h) (hero-max-sp h) (hero-gold h)
                 (if (hero-alive-p h) "" "  (down)"))))))
 
 (defun %effects-pane (game)
@@ -140,18 +147,19 @@ engine has no default world; the game names its starting map."
                g)
              (draw-map-page ()
                (multiple-value-bind (x0 y0 w h) (%map-page-viewport game)
-                 (format t "~A~%~%"
-                         (render-dungeon (game-map game)
-                                         :knowledge (if full
-                                                        nil
-                                                        (game-knowledge game))
-                                         :px (game-x game)
-                                         :py (game-y game)
-                                         :facing (game-facing game)
-                                         :x0 x0 :y0 y0 :w w :h h))
                  (let ((legend (map-legend-entries (game-map game)
                                                    (game-knowledge game)
                                                    :full full)))
+                   (format t "~A~%~%"
+                           (render-dungeon (game-map game)
+                                           :knowledge (if full
+                                                          nil
+                                                          (game-knowledge game))
+                                           :legend legend
+                                           :px (game-x game)
+                                           :py (game-y game)
+                                           :facing (game-facing game)
+                                           :x0 x0 :y0 y0 :w w :h h))
                    (when legend
                      (format t "Found:~%")
                      (dolist (e legend)
@@ -344,6 +352,12 @@ engine has no default world; the game names its starting map."
                                              (game-party game))))
                               (when hero
                                 (setf equip (make-equip-view hero))))
+                            nil)
+                           ((member c '(#\g #\G))
+                            (let ((hero (nth sheet-hero
+                                             (game-party game))))
+                              (when hero
+                                (pool-gold game hero)))
                             nil)
                            ((eql c #\Escape) (setf mode :play) nil)
                            ((member c '(#\q #\Q)) :quit)

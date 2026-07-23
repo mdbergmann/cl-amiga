@@ -19,6 +19,7 @@
         "P play a song"
         "1-7 character sheet"
         "    E there: equip/remove gear"
+        "    G there: pool gold on hero"
         "Shift-S save  Shift-L load"
         "Q or Esc quit"
         ""

@@ -116,7 +116,8 @@ back), `1`–`7` open that party member's character sheet
 (`1`–`7` switch heroes there, `e` opens the hero's gear page — the
 digits put a pack item on or take it off again, and items the hero's
 class cannot use are marked `(unfit)` there and in the shops —
-`Esc` back), `c` cast a spell (pick the
+`g` pools the party's gold onto the hero, `Esc` back), `c` cast a
+spell (pick the
 caster, the spell and — for a heal — the target by number, `Esc`
 backs out), `u` use an item — a torch, a potion — the same way (pick
 the user, the item and, for a heal, the target), `p` play a bard song
@@ -129,7 +130,8 @@ action in turn on the round-orders page — `a` attack, `d` defend,
 (party-level) and `+`/`-` set the speed of the round transcript,
 which plays out one message at a time.  Inside a shop:
 `1`–`7` pick the shopping hero, `1`–`9` buy or sell, `s`/`b`
-flip between the buy and sell pages, `Esc` back/leave.  Inside the
+flip between the buy and sell pages, `g` pools the party's gold onto
+the shopper, `Esc` back/leave.  Inside the
 tavern: `1`–`7` buy that hero a drink (a singer's tunes come back),
 `d` down the trapdoor, `Esc` leave.  A menu list deeper than a page —
 Wolfgar's full stock, a packed sell page, a long character sheet —

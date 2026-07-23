@@ -203,7 +203,7 @@ carry their pick key (see MENU-NUMBERED)."
                                      i (item-title name)
                                      (item-fit-marker hero name)
                                      (item-price name)))))
-         (list "" "[1-9] buy  [s] sell  [Esc] back")))
+         (list "" "[1-9] buy  [s] sell  [g] pool gold  [Esc] back")))
        (t
         (append
          (list (format nil "~A sells.  Gold: ~D gp"
@@ -217,13 +217,14 @@ carry their pick key (see MENU-NUMBERED)."
                                      (member name (hero-equipped hero))
                                      (item-fit-marker hero name)
                                      (item-sell-price name)))))
-         (list "" "[1-9] sell  [b] buy  [Esc] back")))))))
+         (list "" "[1-9] sell  [b] buy  [g] pool gold  [Esc] back")))))))
 
 (defun shop-act (game view char)
   "Apply key CHAR to the shop interaction.  Digits pick within the
-visible stock/pack window, u/d scroll it (see MENU-WINDOW).  Mutates
-VIEW and the game state; returns :LEFT when the party leaves the
-location (the front-end drops its view then), else NIL."
+visible stock/pack window, u/d scroll it (see MENU-WINDOW), g pools
+the party's gold onto the shopper (see POOL-GOLD).  Mutates VIEW and
+the game state; returns :LEFT when the party leaves the location (the
+front-end drops its view then), else NIL."
   (let ((loc (game-location game))
         (hero (shop-view-hero view))
         (digit (digit-char-p char)))
@@ -253,6 +254,9 @@ location (the front-end drops its view then), else NIL."
               (setf (shop-view-mode view) :sell
                     (shop-view-top view) 0)
               nil)
+             ((member char '(#\g #\G))
+              (pool-gold game hero)
+              nil)
              (t
               (let ((top (menu-scroll (shop-view-top view) char
                                       (length (shop-stock loc)))))
@@ -268,6 +272,9 @@ location (the front-end drops its view then), else NIL."
              ((member char '(#\b #\B))
               (setf (shop-view-mode view) :buy
                     (shop-view-top view) 0)
+              nil)
+             ((member char '(#\g #\G))
+              (pool-gold game hero)
               nil)
              (t
               (let ((top (menu-scroll (shop-view-top view) char

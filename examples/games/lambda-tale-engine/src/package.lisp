@@ -75,6 +75,7 @@
    #:hero-image #:hero-image-path #:hero-sheet-lines #:hero-sheet-scroll
    #:+party-limit+ #:party-full-p #:join-party
    #:damage-hero #:heal-hero #:stat-bonus #:award-xp #:xp-for-level
+   #:pool-gold
    ;; items, inventory and equipment
    #:define-item #:find-item-type #:item-title #:item-usable-p
    #:item-fit-marker
