@@ -198,7 +198,7 @@ engine has no default world; the game names its starting map."
                          (dir-keyword (game-facing game)))
                        (clock-line game))
                (dolist (m (log-recent log *log-lines*))
-                 (format t "> ~A~%" m))
+                 (format t "~%~A~%" m))
                (cond ((or menu cast use sing)
                       (when (game-combat game)
                         (format t "~A~%" (%combat-pane game))))

@@ -1235,9 +1235,9 @@ cache (see %LOG-LINE-BITMAP)."
          (lh +microfont-line-height+)
          (n (max 1 (floor (- h 2) lh)))
          (max-chars (max 4 (floor (- w 4) +microfont-advance+)))
-         ;; Each message starts with "> "; long ones wrap onto indented
-         ;; continuation lines.  Keep the trailing N display lines so
-         ;; the newest stays at the bottom.
+         ;; Each message is a paragraph led by one blank line; long ones
+         ;; wrap onto full-width continuation lines.  Keep the trailing N
+         ;; display lines so the newest stays at the bottom.
          (wrapped (mapcan (lambda (m) (wrap-message m max-chars))
                           (log-recent log n)))
          (lines (last wrapped n)))
