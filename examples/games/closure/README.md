@@ -121,8 +121,8 @@ spell (pick the
 caster, the spell and — for a heal — the target by number, `Esc`
 backs out), `u` use an item — a torch, a potion — the same way (pick
 the user, the item and, for a heal, the target), `p` play a bard song
-(pick the singer and the song; one song plays at a time), `S`/`L`
-open the save/load slot picker (`1`–`9` pick a
+(pick the singer and the song; one song plays at a time),
+`Shift-S`/`Shift-L` open the save/load slot picker (`1`–`9` pick a
 slot, `n` types a new save name, `Esc` cancels; saves live as
 `saves/NAME.sav`), `q` quit.  In combat every living hero picks an
 action in turn on the round-orders page — `a` attack, `d` defend,

@@ -134,6 +134,8 @@
    #:map-edge-runs #:map-legend-entries #:*legend-markers*
    ;; the help screen
    #:help-lines
+   ;; keyboard input normalization (see src/keys.lisp)
+   #:vanilla-key-char
    ;; the microfont (the message log's compact 5x7 pixel font)
    #:+microfont-advance+ #:+microfont-line-height+
    #:microfont-glyph #:microfont-text-width #:microfont-line
