@@ -75,6 +75,8 @@ The race rules are exercised end to end in `tests/run-tests.lisp`
 
 ```
 src/package.lisp     package TALE
+src/version.lisp     the engine's version + the slots a game fills in
+                     with its own (see "Version" below)
 src/profiles.lisp    display profiles (:lores / :hires — screen geometry,
                      viewport, tile pack, layout tuning per target) and
                      the self-located *ENGINE-DIR* / ENGINE-PATH
@@ -907,6 +909,33 @@ The test suite (`tests/run-tests.lisp`) doubles as the executable
 specification for the map model, movement, knowledge tracking,
 renderers, events, specials, zones and travel, party, items, shops,
 combat and save games.
+
+## Version
+
+`src/version.lisp` holds the engine's version — `MAJOR.MINOR.PATCH`
+plus a `DD.MM.YYYY` date, the same shape the clamiga runtime uses:
+
+```lisp
+(tale:engine-version-string)   ; => "0.1.0"
+(tale:engine-version)          ; => 0, 1, 0   (three values)
+tale:*engine-name*             ; => "Lambda's Tale"
+tale:*engine-version-date*     ; => "24.07.2026"
+```
+
+A game built on the engine has its **own** version, which moves
+independently of the engine's.  The engine only declares the slots —
+`tale:*game-name*`, `tale:*game-version*`, `tale:*game-version-date*`,
+all `NIL` until a game sets them — and the game fills them in from a
+`src/version.lisp` of its own, loaded after the engine:
+
+```lisp
+(in-package :tale)
+(setf *game-name* "Closure" *game-version* "0.1"
+      *game-version-date* "24.07.2026")
+```
+
+See `../closure/src/version.lisp` for the worked example, and the
+version sections of both test suites for the contract.
 
 ## Debug log
 

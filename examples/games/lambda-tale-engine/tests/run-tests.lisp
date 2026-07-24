@@ -7418,6 +7418,43 @@ pieces need a mask" pname)
        #\1 (vanilla-key-char (char-code #\1) #x0004))
 
 ;;; ---------------------------------------------------------------------
+;;; Version (src/version.lisp)
+
+(check "version: ENGINE-VERSION-STRING is built from the constants"
+       (format nil "~D.~D.~D" +engine-version-major+
+               +engine-version-minor+ +engine-version-patch+)
+       (engine-version-string))
+(check "version: ENGINE-VERSION yields major, minor, patch"
+       (list +engine-version-major+ +engine-version-minor+ +engine-version-patch+)
+       (multiple-value-list (engine-version)))
+(check-true "version: the components are non-negative integers"
+            (every (lambda (n) (and (integerp n) (>= n 0)))
+                   (multiple-value-list (engine-version))))
+(check-true "version: the engine names itself"
+            (and (stringp *engine-name*) (plusp (length *engine-name*))))
+;; DD.MM.YYYY, the repo's date convention (CL_VERSION_DATE).
+(check "version: the date is DD.MM.YYYY" 10 (length *engine-version-date*))
+(check-true "version: the date's separators are dots"
+            (and (char= #\. (char *engine-version-date* 2))
+                 (char= #\. (char *engine-version-date* 5))))
+(check-true "version: the date is otherwise all digits"
+            (every #'digit-char-p
+                   (remove #\. *engine-version-date*)))
+;; The game slots stay empty in an engine-only session — this suite
+;; loads no game.  A game's version.lisp fills them in (see the Closure
+;; suite next door, which checks the other side of this contract).
+(check "version: no game name until a game sets one" nil *game-name*)
+(check "version: no game version until a game sets one" nil *game-version*)
+(check "version: no game date until a game sets one" nil *game-version-date*)
+;; The version symbols are engine API, not internals.
+(dolist (name '("ENGINE-VERSION" "ENGINE-VERSION-STRING" "*ENGINE-NAME*"
+                "*ENGINE-VERSION-DATE*" "+ENGINE-VERSION-MAJOR+"
+                "*GAME-NAME*" "*GAME-VERSION*" "*GAME-VERSION-DATE*"))
+  (multiple-value-bind (sym status) (find-symbol name "TALE")
+    (declare (ignore sym))
+    (check (format nil "version: TALE exports ~A" name) :external status)))
+
+;;; ---------------------------------------------------------------------
 ;;; Summary
 
 (format t "~%Lambda's Tale engine tests: ~D checks, ~D failures.~%"

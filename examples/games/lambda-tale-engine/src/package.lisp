@@ -156,6 +156,12 @@
    ;; debug log (timestamped trace file, see src/debug-log.lisp)
    #:*debug-log-path* #:debug-log-enable #:debug-log-disable
    #:debug-log-enabled-p #:dlog #:dlog-timed
+   ;; version (see src/version.lisp): the engine's own, and the slots
+   ;; a game built on it fills in with its own, independent version
+   #:+engine-version-major+ #:+engine-version-minor+ #:+engine-version-patch+
+   #:*engine-name* #:*engine-version-date*
+   #:engine-version #:engine-version-string
+   #:*game-name* #:*game-version* #:*game-version-date*
    ;; interactive walkabout
    #:play #:play-amiga #:*gfx-dir*
    ;; engine home (self-located; default packs live under it)

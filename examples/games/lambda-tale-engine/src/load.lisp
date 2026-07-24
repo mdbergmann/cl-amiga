@@ -28,6 +28,7 @@
              (load (concatenate 'string src file))
              (push (cons file (- (get-internal-real-time) start)) times))))
     (ld "package.lisp")
+    (ld "version.lisp")
     (ld "debug-log.lisp")
     (ld "profiles.lisp")
     (ld "palette.lisp")
