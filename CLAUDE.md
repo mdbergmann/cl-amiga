@@ -28,6 +28,19 @@ make -f Makefile.cross clean        # Remove cross-build artifacts
 - `test-amiga` places the binary in `build/amiga/`, boots FS-UAE, runs the Amiga test suite, and verifies results
 - Runs fully unattended: FS-UAE auto-quits (`C:UAEquit`) when the suite finishes, and a host-side watchdog (`verify/realamiga/run-fs-uae.sh`) kills it if clamiga hangs; results are checked automatically
 
+## Release Process
+
+Releases are tag-only (no GitHub release artifacts). Follow the `v0.4`/`v0.5` precedent:
+
+1. **Gates green first**: `make test-plus`, `make test-gc-stress`, `make test-extra`, and `make -f Makefile.cross test-amiga` must all pass (`pkill fs-uae` first if an emulator is lingering). Record the Amiga-suite and test-extra pass counts — they go in the tag message.
+2. **Bump the version** — exactly two files:
+   - `src/core/types.h`: the `CL_VERSION_MAJOR/MINOR/PATCH` block + `CL_VERSION_DATE` (DD.MM.YYYY). Everything derives from this block (banner, `LISP-IMPLEMENTATION-VERSION`, `$VER:` cookie, FASL cache key — stale caches invalidate themselves; `tests/test_version.c` enforces the contract).
+   - `README.md`: the two hardcoded examples in the "Version" section (`lisp-implementation-version` and `Version clamiga` output).
+   - `CL_FASL_VERSION` is independent — bump it only if serialization actually changed (see FASL Versioning below).
+3. **Commit** as `chore(release): bump version to X.Y` touching only those two files, with a headline paragraph summarizing the cycle (see `git show v0.4` for the format). Re-run `make test` on the bumped tree.
+4. **Annotated tag**: `git tag -a vX.Y -m "CL-Amiga X.Y — <headlines>; Amiga suite N/N, test-extra N/0"` with the real numbers from step 1.
+5. **Push**: `git push origin master vX.Y`.
+
 ## Architecture
 
 - `CL_Obj` = `uint32_t` tagged value; heap pointers are **arena-relative byte offsets** (not raw pointers)
