@@ -548,6 +548,57 @@ TEST(coerce_roundtrip)
         ":CAUGHT");
 }
 
+/* Regression: CONCATENATE/COERCE with a byte element-type in the result-type
+ * spec must build the packed byte-vector kind — and must expand deftype
+ * aliases (e.g. OCTET) exactly like MAKE-ARRAY/TYPEP do.  Previously
+ * CONCATENATE always built a general vector (and COERCE missed aliases), so
+ * (typep (concatenate '(vector octet) ...) '(vector octet)) was NIL — the
+ * knx-conn ack--to-bytes failure. */
+TEST(concatenate_coerce_packed_result_types)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(array-element-type (concatenate '(vector (unsigned-byte 8))"
+        " '(1 2) (make-array 2 :element-type '(unsigned-byte 8)"
+        " :initial-contents '(3 4)) (vector 5)))"),
+        "(UNSIGNED-BYTE 8)");
+    ASSERT_STR_EQ(eval_print(
+        "(concatenate '(vector (unsigned-byte 8)) '(1 2) #(3 4))"),
+        "#(1 2 3 4)");
+    /* Deftype alias element type — the knx-conn shape. */
+    ASSERT_STR_EQ(eval_print(
+        "(progn (deftype cc-octet () '(unsigned-byte 8))"
+        " (typep (concatenate '(vector cc-octet) #(6 16 4 33) '(0 10))"
+        "        '(vector cc-octet)))"),
+        "T");
+    ASSERT_STR_EQ(eval_print(
+        "(array-element-type (coerce #(6 16 4 33) '(vector cc-octet)))"),
+        "(UNSIGNED-BYTE 8)");
+    /* (simple-array (unsigned-byte 8) (*)) spelling (ironclad-style). */
+    ASSERT_STR_EQ(eval_print(
+        "(array-element-type (concatenate"
+        " '(simple-array (unsigned-byte 8) (*)) '(1 2 3)))"),
+        "(UNSIGNED-BYTE 8)");
+    /* Signed and 16-bit result types. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((v (concatenate '(vector (signed-byte 8)) '(-128 -1) '(127))))"
+        "  (list (array-element-type v) v))"),
+        "((SIGNED-BYTE 8) #(-128 -1 127))");
+    ASSERT_STR_EQ(eval_print(
+        "(array-element-type (concatenate '(vector (unsigned-byte 16))"
+        " '(1000 65535)))"),
+        "(UNSIGNED-BYTE 16)");
+    /* Elements outside the packed range signal a catchable TYPE-ERROR. */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (concatenate '(vector (unsigned-byte 8)) '(1 300))"
+        " (type-error () :caught))"),
+        ":CAUGHT");
+    /* A declared length constraint is still enforced on the packed path. */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (concatenate '(vector (unsigned-byte 8) 5) '(1 2))"
+        " (error () :caught))"),
+        ":CAUGHT");
+}
+
 /* ========================================================
  * Step 7: equality + hashing
  * ======================================================== */
@@ -1601,6 +1652,7 @@ int main(void)
     RUN(seq_sort_replace_concatenate);
     RUN(seq_map_and_map_into);
     RUN(coerce_roundtrip);
+    RUN(concatenate_coerce_packed_result_types);
 
     RUN(equalp_content);
     RUN(equalp_hash_table_keys);

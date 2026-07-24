@@ -1690,10 +1690,28 @@ cat > "$WORK/cat.lisp" <<'EOF'
 (format t "CATS:~a~%"
   (handler-case (concatenate '(vector character) "ab" "cd")
     (error (e) (declare (ignore e)) -1)))
+;; Regression (0.5): the byte element-type result is the PACKED kind, and a
+;; deftype alias (knx-conn's OCTET) expands during classification — the
+;; expander applies under forced compaction, so the rooted result-type and the
+;; packed result must both survive.
+(deftype cat-octet () '(unsigned-byte 8))
+(format t "CATP:~a~%"
+  (handler-case
+      (let ((v (concatenate '(vector cat-octet) #(6 16) '(4 33))))
+        (format nil "~a:~a" (array-element-type v)
+                (typep v '(vector cat-octet))))
+    (error (e) (declare (ignore e)) -1)))
+(format t "CATW:~a~%"
+  (handler-case
+      (array-element-type (concatenate '(vector (unsigned-byte 16)) '(70000)))
+    (type-error (e) (declare (ignore e)) :caught)
+    (error (e) (declare (ignore e)) -1)))
 EOF
 out=$(run_stress "$WORK/cat.lisp")
 check_contains "concatenate compound byte-array result survives GC stress" "CAT:65:66:0:2" "$out"
 check_contains "concatenate compound char-array result survives GC stress" "CATS:abcd" "$out"
+check_contains "concatenate packed alias result survives GC stress" "CATP:(UNSIGNED-BYTE 8):T" "$out"
+check_contains "concatenate packed range check under GC stress" "CATW:CAUGHT" "$out"
 
 # --- Case: continuable CCASE STORE-VALUE retry under GC stress ---------------
 # Bug: scan_body_for_boxing did not descend RESTART-CASE clause bodies at

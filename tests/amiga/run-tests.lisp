@@ -1346,6 +1346,25 @@
   (concatenate '(vector character) "ab" "cd"))
 (check "concatenate compound simple-array char" "xyz"
   (concatenate '(simple-array character (*)) "xy" "z"))
+; Regression (0.5): a byte element-type in the result-type spec builds the
+; packed byte-vector kind — alias-aware, like MAKE-ARRAY/TYPEP.  CONCATENATE
+; used to return a general vector, so knx-conn's
+; (typep (concatenate '(vector octet) ...) '(vector octet)) was NIL.
+(check "concatenate packed result elt-type" '(unsigned-byte 8)
+  (array-element-type
+   (concatenate '(vector (unsigned-byte 8)) '(1 2) (vector 3))))
+(check "concatenate packed via deftype alias" t
+  (progn (deftype rt-octet () '(unsigned-byte 8))
+         (typep (concatenate '(vector rt-octet) #(6 16) '(4 33))
+                '(vector rt-octet))))
+(check "coerce packed via deftype alias" '(unsigned-byte 8)
+  (array-element-type (coerce #(1 2 3) '(vector rt-octet))))
+(check "concatenate packed 16-bit" '((unsigned-byte 16) t)
+  (let ((v (concatenate '(vector (unsigned-byte 16)) '(1000) #(65535))))
+    (list (array-element-type v) (equalp v #(1000 65535)))))
+(check "concatenate packed range check" :caught
+  (handler-case (concatenate '(vector (unsigned-byte 8)) '(1 300))
+    (type-error () :caught)))
 ; --- ANSI sequences conformance: the last 10 SEQUENCES-chapter fixes ---
 ; FILL: duplicate :start/:end keywords — leftmost wins (CLHS 3.4.1.4), all
 ; value forms evaluated (FILL.ORDER.4).

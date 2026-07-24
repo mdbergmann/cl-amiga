@@ -1157,45 +1157,20 @@ static void concat_list_cb(CL_Obj elem, void *ctx_)
     }
 }
 
-/* Is element-type ET the BIT type?  Expands deftypes up to DEPTH levels.
- * Used to decide BIT-VECTOR vs VECTOR for a compound (vector ELT ...) type. */
-static int concat_elt_type_is_bit(CL_Obj type, int depth)
+/* Callback context for a packed byte-vector result. */
+typedef struct { CL_Obj bv; uint32_t pos; int is_signed; int elt_shift; } concat_bytevec_ctx;
+static void concat_bytevec_cb(CL_Obj elem, void *ctx_)
 {
-    extern CL_Obj cl_get_type_expander(CL_Obj name);
-    if (depth <= 0) return 0;
-    if (CL_SYMBOL_P(type)) {
-        const char *nm = cl_symbol_name(type);
-        if (strcmp(nm, "BIT") == 0) return 1;
-        if (strcmp(nm, "*") == 0) return 0;
-        {
-            CL_Obj ex = cl_get_type_expander(type);
-            if (!CL_NULL_P(ex))
-                return concat_elt_type_is_bit(cl_vm_apply(ex, NULL, 0), depth - 1);
-        }
+    concat_bytevec_ctx *ctx = (concat_bytevec_ctx *)ctx_;
+    CL_ByteVector *bv;
+    int32_t v = cl_bytevec_check_value(elem, ctx->is_signed, ctx->elt_shift,
+                                       "CONCATENATE");
+    /* Re-derive after the check — its error path can allocate/compact. */
+    bv = (CL_ByteVector *)CL_OBJ_TO_PTR(ctx->bv);
+    if (ctx->pos < cl_bytevec_active_length(bv)) {
+        cl_bytevec_set(bv, ctx->pos, v);
+        ctx->pos++;
     }
-    return 0;
-}
-
-/* Is element-type ET (a CL_Obj type specifier) a character type?  Expands
- * deftypes up to DEPTH levels.  Used to decide STRING vs VECTOR for a
- * compound (vector ELT ...) result type.  Mirrors coerce_elt_type_is_char. */
-static int concat_elt_type_is_char(CL_Obj type, int depth)
-{
-    extern CL_Obj cl_get_type_expander(CL_Obj name);
-    if (depth <= 0) return 0;
-    if (CL_SYMBOL_P(type)) {
-        const char *nm = cl_symbol_name(type);
-        if (strcmp(nm, "CHARACTER") == 0 || strcmp(nm, "BASE-CHAR") == 0 ||
-            strcmp(nm, "STANDARD-CHAR") == 0 || strcmp(nm, "EXTENDED-CHAR") == 0)
-            return 1;
-        if (strcmp(nm, "*") == 0) return 0;
-        {
-            CL_Obj ex = cl_get_type_expander(type);
-            if (!CL_NULL_P(ex))
-                return concat_elt_type_is_char(cl_vm_apply(ex, NULL, 0), depth - 1);
-        }
-    }
-    return 0;
 }
 
 static CL_Obj bi_concatenate(CL_Obj *args, int n)
@@ -1204,6 +1179,8 @@ static CL_Obj bi_concatenate(CL_Obj *args, int n)
     const char *tname;
     int i;
     int32_t len_con = -1;  /* declared length constraint, or -1 if none */
+    int bv_signed = -1;    /* >=0: build a packed byte vector (0=unsigned, 1=signed) */
+    int bv_shift = 0;      /* packed element width: 0 = 8-bit, 1 = 16-bit */
 
     if (CL_NULL_P(result_type))
         cl_error(CL_ERR_TYPE, "CONCATENATE: result type must not be NIL");
@@ -1235,25 +1212,33 @@ static CL_Obj bi_concatenate(CL_Obj *args, int n)
                 /* (vector elt-type [length]) — capture the length constraint. */
                 CL_Obj lenarg = (CL_NULL_P(rest) || CL_NULL_P(cl_cdr(rest)))
                                     ? CL_NIL : cl_car(cl_cdr(rest));
-                int is_char, is_bit;
+                int is_char = 0, is_wide = 0, is_bit = 0;
+                int is_u8 = 0, is_s8 = 0, is_u16 = 0, is_s16 = 0;
                 if (CL_FIXNUM_P(lenarg)) len_con = CL_FIXNUM_VAL(lenarg);
-                /* GC SAFETY (audit tier 4, FS11): the elt-type checks can run
-                 * a deftype expander (cl_vm_apply — compacts), e.g.
+                /* GC SAFETY (audit tier 4, FS11): the elt-type classifier can
+                 * run a deftype expander (cl_vm_apply — compacts), e.g.
                  * (concatenate '(vector octet) …).  Keep the compound type
-                 * rooted and re-derive rest after each check. */
+                 * rooted across it; rest is not reused afterwards. */
                 CL_GC_PROTECT(result_type);
-                is_char = !CL_NULL_P(rest) &&
-                          concat_elt_type_is_char(cl_car(rest), 8);
-                rest = cl_cdr(result_type);
-                is_bit = !is_char && !CL_NULL_P(rest) &&
-                         concat_elt_type_is_bit(cl_car(rest), 8);
+                /* Shared with MAKE-ARRAY/TYPEP so the result's element type
+                 * agrees with what those report — a (vector (unsigned-byte 8))
+                 * result must actually be the packed byte-vector kind. */
+                if (!CL_NULL_P(rest))
+                    cl_classify_array_elt_type(cl_car(rest), 16,
+                                               &is_char, &is_wide, &is_bit,
+                                               &is_u8, &is_s8, &is_u16, &is_s16);
                 CL_GC_UNPROTECT(1);
                 if (is_char)
                     result_type = cl_intern_in("STRING", 6, cl_package_cl);
                 else if (is_bit)
                     result_type = cl_intern_in("BIT-VECTOR", 10, cl_package_cl);
-                else
+                else {
+                    if (is_u8 || is_s8 || is_u16 || is_s16) {
+                        bv_signed = (is_s8 || is_s16) ? 1 : 0;
+                        bv_shift  = (is_u16 || is_s16) ? 1 : 0;
+                    }
                     result_type = cl_intern_in("VECTOR", 6, cl_package_cl);
+                }
             } else {
                 /* (string [length]) / (bit-vector [length]) etc. — the length,
                  * if any, is the first compound argument. */
@@ -1314,6 +1299,19 @@ static CL_Obj bi_concatenate(CL_Obj *args, int n)
     if (strcmp(tname, "VECTOR") == 0 || strcmp(tname, "SIMPLE-VECTOR") == 0) {
         uint32_t total = concat_total_length(args, n);
         concat_vec_ctx ctx;
+        if (bv_signed >= 0) {
+            /* Packed byte-vector result — (vector (unsigned-byte 8)) etc. */
+            concat_bytevec_ctx bctx;
+            bctx.bv = cl_make_byte_vector(total, bv_signed, bv_shift);
+            bctx.pos = 0;
+            bctx.is_signed = bv_signed;
+            bctx.elt_shift = bv_shift;
+            CL_GC_PROTECT(bctx.bv);
+            for (i = 1; i < n; i++)
+                concat_iterate(args[i], concat_bytevec_cb, &bctx);
+            CL_GC_UNPROTECT(1);
+            return bctx.bv;
+        }
         ctx.vec = cl_make_vector(total);
         ctx.pos = 0;
         CL_GC_PROTECT(ctx.vec);

@@ -1004,44 +1004,6 @@ static CL_Obj bi_upgraded_complex_part_type(CL_Obj *args, int n)
     return TYPE_SYM_REAL;
 }
 
-/* True if TYPE denotes a character subtype (possibly via a deftype), so a
- * (vector ...) coercion target should produce a string rather than a
- * general vector.  DEPTH bounds deftype-expansion recursion. */
-static int coerce_elt_type_is_char(CL_Obj type, int depth)
-{
-    if (depth <= 0) return 0;
-    if (CL_SYMBOL_P(type)) {
-        const char *nm = cl_symbol_name(type);
-        if (strcmp(nm, "CHARACTER") == 0 || strcmp(nm, "BASE-CHAR") == 0 ||
-            strcmp(nm, "STANDARD-CHAR") == 0 || strcmp(nm, "EXTENDED-CHAR") == 0)
-            return 1;
-        if (strcmp(nm, "*") == 0) return 0;
-        {
-            CL_Obj ex = cl_get_type_expander(type);
-            if (!CL_NULL_P(ex))
-                return coerce_elt_type_is_char(cl_vm_apply(ex, NULL, 0), depth - 1);
-        }
-    }
-    return 0;
-}
-
-/* A BIT element type means the (vector/array bit ...) result is a bit-vector. */
-static int coerce_elt_type_is_bit(CL_Obj type, int depth)
-{
-    if (depth <= 0) return 0;
-    if (CL_SYMBOL_P(type)) {
-        const char *nm = cl_symbol_name(type);
-        if (strcmp(nm, "BIT") == 0) return 1;
-        if (strcmp(nm, "*") == 0) return 0;
-        {
-            CL_Obj ex = cl_get_type_expander(type);
-            if (!CL_NULL_P(ex))
-                return coerce_elt_type_is_bit(cl_vm_apply(ex, NULL, 0), depth - 1);
-        }
-    }
-    return 0;
-}
-
 static CL_Obj bi_coerce(CL_Obj *args, int n)
 {
     CL_Obj obj = args[0];
@@ -1078,36 +1040,29 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
             if (strcmp(hname, "SIMPLE-ARRAY") == 0 || strcmp(hname, "ARRAY") == 0 ||
                 strcmp(hname, "VECTOR") == 0 || strcmp(hname, "SIMPLE-VECTOR") == 0) {
                 /* A character element type means a string, a BIT element
-                 * type means a bit-vector; otherwise a general vector (we
-                 * don't otherwise specialize). */
-                /* eargs is re-read after coerce_elt_type_is_char/bit and
-                 * cl_classify_vec_elt_code, all of which can run an
+                 * type means a bit-vector, a byte-range element type means a
+                 * packed byte vector; otherwise a general vector.  Classified
+                 * by the shared MAKE-ARRAY/TYPEP classifier so the result's
+                 * element type agrees with what those report — and so deftype
+                 * aliases like OCTET expand here too. */
+                /* eargs is re-read after cl_classify_array_elt_type and
+                 * cl_classify_vec_elt_code, both of which can run an
                  * elt-type deftype expander via cl_vm_apply — root it. */
                 CL_Obj eargs = cl_cdr(result_type);
+                int is_char = 0, is_wide = 0, is_bit = 0;
+                int is_u8 = 0, is_s8 = 0, is_u16 = 0, is_s16 = 0;
                 CL_GC_PROTECT(eargs);
-                if (!CL_NULL_P(eargs) &&
-                    coerce_elt_type_is_char(cl_car(eargs), 8))
+                if (!CL_NULL_P(eargs))
+                    cl_classify_array_elt_type(cl_car(eargs), 16,
+                                               &is_char, &is_wide, &is_bit,
+                                               &is_u8, &is_s8, &is_u16, &is_s16);
+                if (is_char)
                     result_type = cl_intern_in("STRING", 6, cl_package_cl);
-                else if (!CL_NULL_P(eargs) &&
-                         coerce_elt_type_is_bit(cl_car(eargs), 8))
+                else if (is_bit)
                     result_type = cl_intern_in("BIT-VECTOR", 10, cl_package_cl);
-                else if (!CL_NULL_P(eargs) &&
-                         (cl_type_is_u8_subtype(cl_car(eargs)) ||
-                          cl_type_is_s8_subtype(cl_car(eargs)) ||
-                          cl_type_is_u16_subtype(cl_car(eargs)) ||
-                          cl_type_is_s16_subtype(cl_car(eargs)))) {
-                    /* (vector (unsigned-byte 8/16)) etc. — build a packed
-                     * byte vector.  Bit subtypes were already routed above;
-                     * test narrowest-first so 8-bit ranges pack 1 byte/elt. */
-                    if (cl_type_is_u8_subtype(cl_car(eargs)))
-                        coerce_bytevec_signed = 0;
-                    else if (cl_type_is_s8_subtype(cl_car(eargs)))
-                        coerce_bytevec_signed = 1;
-                    else if (cl_type_is_u16_subtype(cl_car(eargs))) {
-                        coerce_bytevec_signed = 0; coerce_bytevec_shift = 1;
-                    } else {
-                        coerce_bytevec_signed = 1; coerce_bytevec_shift = 1;
-                    }
+                else if (is_u8 || is_s8 || is_u16 || is_s16) {
+                    coerce_bytevec_signed = (is_s8 || is_s16) ? 1 : 0;
+                    coerce_bytevec_shift  = (is_u16 || is_s16) ? 1 : 0;
                     result_type = cl_intern_in("VECTOR", 6, cl_package_cl);
                 }
                 else {
