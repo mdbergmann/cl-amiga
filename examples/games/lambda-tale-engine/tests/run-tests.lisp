@@ -3478,6 +3478,45 @@ height" d)
          "Pack: T Sword, T Axe*, T Mail, T Buckler*, T Torch"
          (seventh (hero-summary-lines h))))
 
+;; Two-handed weapons: both hands or a shield hand, never both (the
+;; D&D rule).  The flag is a weapon trait — other kinds refuse it.
+(check-error "define-item rejects :two-handed off a weapon"
+  (define-item 't-big-shield :kind :shield :two-handed t))
+(define-item 't-greatsword :kind :weapon :price 30 :damage "2d6"
+             :two-handed t)
+(check "two-handed items carry the (2H) marker" " (2H)"
+       (item-hand-marker 't-greatsword))
+(check "one-handed items carry no marker" ""
+       (item-hand-marker 't-sword))
+(let* ((m (parse-map *art* :name "test"))
+       (h (%combat-hero))
+       (g (new-game m :party (list h)))
+       (msgs (watch-messages g)))
+  (give-item g h 't-greatsword)
+  (give-item g h 't-buckler)
+  (give-item g h 't-sword)
+  (check-true "a two-handed weapon equips bare-handed"
+              (equip-item g h 't-greatsword))
+  (check "no shield beside a two-handed weapon" nil
+         (equip-item g h 't-buckler))
+  (check-true "the refusal says the hands are full"
+              (find-if (lambda (s) (search "hands are full" s))
+                       (funcall msgs)))
+  (check-true "a one-handed weapon swaps in" (equip-item g h 't-sword))
+  (check-true "now the shield goes on" (equip-item g h 't-buckler))
+  (check "no two-handed weapon beside a shield" nil
+         (equip-item g h 't-greatsword))
+  (check-true "the refusal says both hands are needed"
+              (find-if (lambda (s) (search "needs both hands" s))
+                       (funcall msgs)))
+  (check-true "shield off, the greatsword returns"
+              (and (unequip-item g h 't-buckler)
+                   (equip-item g h 't-greatsword)))
+  (let ((view (make-equip-view h)))
+    (check-true "the gear page marks the worn greatsword (2H)"
+                (find-if (lambda (s) (search "T Greatsword* (2H)" s))
+                         (menu-texts (equip-lines g view))))))
+
 ;; The Bard's Tale categories are all equipment: helmet, gloves, bow,
 ;; arrow, instrument, ring, wand, figurine -- one of each kind at a
 ;; time, and every worn piece's :AC counts at once.

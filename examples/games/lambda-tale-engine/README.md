@@ -617,22 +617,25 @@ to 8 items and equip one item of each equipment kind — every worn
 piece's AC counts — combat uses the equipped gear, and shops sell
 their `:stock` and buy anything back at half price; `g` **pools the
 party's gold** onto the shopper, Bard's Tale style (the character
-sheet offers the same key, pooling onto the viewed hero).  Gear is
-managed from the character sheet: `e` opens the hero's **gear page**,
-where a digit puts a pack item on or takes it off again; items a
-hero's class cannot use are marked `(unfit)` there, on the sheet and
-in the shop — the shop still sells them (another hero may carry
-them), the marker just warns before the gold is gone.  An item can
-also be **usable** (`:use` — a torch, a potion, a wand): using it
-(`u`, the use menu, in the open or as a combat-round order) heals a
-chosen hero, fires another non-battle instant (a figurine's
-`:summon`), installs a timed effect from the same vocabulary spells
-speak — or casts a registered spell outright: `:use '(:cast SPELL)`
-is the spell-trigger item (Bard's Tale's Wizhelm), casting for free
-with no spell points and no spellbook; a battle spell politely waits
-for a fight.  A `:consumed` item is spent on use, and `:image` gives
-the effect its band icon.  See the "Usable items" and "Spell-trigger
-items" test sections of `tests/run-tests.lisp` for the exact rules.
+sheet offers the same key, pooling onto the viewed hero).  A weapon
+defined `:two-handed` fills both hands, D&D-style: it will not go on
+beside a shield, nor a shield beside it, and the gear and shop pages
+mark it `(2H)`.  Gear is managed
+from the character sheet: `e` opens the hero's **gear page**, where a
+digit puts a pack item on or takes it off again; items a hero's class
+cannot use are marked `(unfit)` there, on the sheet and in the shop —
+the shop still sells them (another hero may carry them), the marker
+just warns before the gold is gone.  An item can also be
+**usable** (`:use` — a torch, a potion, a wand): using it (`u`, the
+use menu, in the open or as a combat-round order) heals a chosen hero,
+fires another non-battle instant (a figurine's `:summon`), installs a
+timed effect from the same vocabulary spells speak — or casts a
+registered spell outright: `:use '(:cast SPELL)` is the spell-trigger
+item (Bard's Tale's Wizhelm), casting for free with no spell points
+and no spellbook; a battle spell politely waits for a fight.  A
+`:consumed` item is spent on use, and `:image` gives the effect its
+band icon.  See the "Usable items" and "Spell-trigger items" test
+sections of `tests/run-tests.lisp` for the exact rules.
 
 A location may also name a **picture** — `(location ... :image
 "gfx/shop.iff")` — shown in the view column while its menu is up,

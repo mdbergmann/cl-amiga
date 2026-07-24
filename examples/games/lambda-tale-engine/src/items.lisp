@@ -6,8 +6,10 @@
 ;;; the mechanics: a hero carries up to +INVENTORY-LIMIT+ items and
 ;;; can equip one item of each equipment kind (*ITEM-KINDS* less
 ;;; :MISC — weapon, armor, shield, helmet, gloves, bow, arrow,
-;;; instrument, ring, wand, figurine) at a time.  Armor class is
-;;; descending, so an item's :AC bonus *lowers* the effective AC.
+;;; instrument, ring, wand, figurine) at a time.  A :TWO-HANDED
+;;; weapon and a shield exclude each other — the weapon fills both
+;;; hands (the D&D rule).  Armor class is descending, so an item's
+;;; :AC bonus *lowers* the effective AC.
 ;;;
 ;;; An item may also be USABLE (:USE) — a torch, a potion, a wand:
 ;;; using it applies an effect from the same vocabulary spells speak —
@@ -45,6 +47,7 @@ and every equipped item's :AC bonus counts.")
   damage              ; attack dice (weapons), or NIL
   (ac 0)              ; armor bonus: subtracted from descending AC
   classes             ; hero classes allowed to use it; NIL = anyone
+  two-handed          ; T: the weapon fills both hands — no shield beside it
   use                 ; effect on use: a non-battle instant spec
                       ; (:heal DICE), a timed spec (:light t :duration
                       ; MIN), or (:cast SPELL); NIL = not usable
@@ -54,9 +57,11 @@ and every equipped item's :AC bonus counts.")
 (defvar *item-types* (make-hash-table :test 'eq))
 
 (defun define-item (name &key title (kind :misc) (price 0) damage (ac 0)
-                              classes use consumed image)
+                              classes two-handed use consumed image)
   "Register item type NAME (a symbol).  Campaign data calls this.
 TITLE defaults to the capitalized name (SHORT-SWORD -> \"Short Sword\").
+:TWO-HANDED (weapons only) makes the weapon fill both hands: it will
+not go on beside a shield, nor a shield beside it.
 :USE makes the item usable, one of three shapes: instant keys of the
 shared vocabulary that need no battle (e.g. (:heal DICE),
 \(:summon NAME) — the damage family is refused); a timed spec
@@ -68,6 +73,9 @@ effect's band icon."
   (unless (member kind *item-kinds*)
     (error "define-item ~S: kind ~S is not one of ~{~S~^ ~}"
            name kind *item-kinds*))
+  (when (and two-handed (not (eq kind :weapon)))
+    (error "define-item ~S: :two-handed is a weapon trait (kind is ~S)"
+           name kind))
   (when use
     (unless (consp use)
       (error "define-item ~S: :use ~S must be an effect plist -- ~
@@ -102,7 +110,7 @@ effect's band icon."
          :title (or title
                     (string-capitalize (substitute #\Space #\- (string name))))
          :kind kind :price price :damage damage :ac ac :classes classes
-         :use use :consumed consumed :image image))
+         :two-handed two-handed :use use :consumed consumed :image image))
   name)
 
 (defun find-item-type (name)
@@ -123,6 +131,12 @@ effect's band icon."
 the sheet, gear and shop pages append it to the item's row so a
 class mismatch shows before the player tries (or buys)."
   (if (item-usable-p hero name) "" " (unfit)"))
+
+(defun item-hand-marker (name)
+  "\" (2H)\" when item NAME fills both hands, else \"\" — the gear and
+shop pages append it so the shield trade-off shows before the player
+equips (or buys)."
+  (if (item-type-two-handed (find-item-type name)) " (2H)" ""))
 
 ;;; ---------------------------------------------------------------------
 ;;; Inventory
@@ -163,7 +177,8 @@ Returns T, or NIL when the hero does not carry it."
 (defun equip-item (game hero name)
   "Equip item NAME from HERO's pack, replacing any equipped item of the
 same kind.  Returns T; says why and returns NIL when the hero does not
-carry it, the item is not equipment, or the class cannot use it."
+carry it, the item is not equipment, the class cannot use it, or a
+two-handed weapon and a shield would share the same pair of hands."
   (cond ((not (hero-carrying-p hero name))
          (say game "~A does not carry ~A." (hero-name hero) (item-title name))
          nil)
@@ -172,6 +187,20 @@ carry it, the item is not equipment, or the class cannot use it."
          nil)
         ((not (item-usable-p hero name))
          (say game "~A cannot use ~A." (hero-name hero) (item-title name))
+         nil)
+        ((and (item-type-two-handed (find-item-type name))
+              (equipped-of-kind hero :shield))
+         (say game "~A needs both hands -- ~A must put ~A away first."
+              (item-title name) (hero-name hero)
+              (item-title (equipped-of-kind hero :shield)))
+         nil)
+        ((and (eq (item-type-kind (find-item-type name)) :shield)
+              (let ((weapon (equipped-of-kind hero :weapon)))
+                (and weapon
+                     (item-type-two-handed (find-item-type weapon)))))
+         (say game "~A's hands are full with ~A."
+              (hero-name hero)
+              (item-title (equipped-of-kind hero :weapon)))
          nil)
         (t
          (let ((old (equipped-of-kind
@@ -251,8 +280,9 @@ shows the effect of every toggle."
           (hero-items hero) (equip-view-top view)
           (lambda (i name)
             (menu-numbered
-             i (format nil "~D) ~A~:[~;*~]~A" i (item-title name)
+             i (format nil "~D) ~A~:[~;*~]~A~A" i (item-title name)
                        (member name (hero-equipped hero))
+                       (item-hand-marker name)
                        (item-fit-marker hero name)))))
          (list "The pack is empty."))
      (list "" "[1-9] equip/remove  [Esc] back"))))

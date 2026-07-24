@@ -225,8 +225,9 @@ carry their pick key (see MENU-NUMBERED)."
          (menu-scrolled-lines
           (shop-stock loc) (shop-view-top view)
           (lambda (i name)
-            (menu-numbered i (format nil "~D) ~A~A  ~D gp"
+            (menu-numbered i (format nil "~D) ~A~A~A  ~D gp"
                                      i (item-title name)
+                                     (item-hand-marker name)
                                      (item-fit-marker hero name)
                                      (item-price name)))))
          (list "" "[1-9] buy  [s] sell  [g] pool gold  [Esc] back")))
@@ -238,9 +239,10 @@ carry their pick key (see MENU-NUMBERED)."
          (menu-scrolled-lines
           (hero-items hero) (shop-view-top view)
           (lambda (i name)
-            (menu-numbered i (format nil "~D) ~A~:[~;*~]~A  ~D gp"
+            (menu-numbered i (format nil "~D) ~A~:[~;*~]~A~A  ~D gp"
                                      i (item-title name)
                                      (member name (hero-equipped hero))
+                                     (item-hand-marker name)
                                      (item-fit-marker hero name)
                                      (item-sell-price name)))))
          (list "" "[1-9] sell  [b] buy  [g] pool gold  [Esc] back")))))))
