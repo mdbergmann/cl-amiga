@@ -21,7 +21,9 @@
 (defstruct (location (:constructor %make-location))
   title               ; display string, e.g. "Garth's Equipment Shoppe"
   kind                ; keyword: :shop, ...
-  args)               ; remaining plist, e.g. (:stock (short-sword ...))
+  args                ; remaining plist, e.g. (:stock (short-sword ...))
+  entry-dir)          ; direction index the party stepped in by, or NIL
+                      ; (entered without a step) — see LEAVE-LOCATION
 
 (defun location-arg (location key)
   (getf (location-args location) key))
@@ -91,7 +93,8 @@ and emits :ENTER-LOCATION."
     (when (game-location game)
       (error "enter-location: already inside ~A"
              (location-title (game-location game))))
-    (let ((loc (%make-location :title title :kind kind :args args)))
+    (let ((loc (%make-location :title title :kind kind :args args
+                               :entry-dir *step-dir*)))
       (when (eq kind :shop)
         (dolist (name (location-arg loc :stock))
           (find-item-type name)))   ; catch bad stock at entry, loudly
@@ -101,11 +104,34 @@ and emits :ENTER-LOCATION."
       loc)))
 
 (defun leave-location (game)
-  "Leave the current location.  Emits :LEAVE-LOCATION."
+  "Leave the current location.  When the party stepped in through a
+door (the location's ENTRY-DIR), it steps back out onto the cell it
+came from, facing away from the door — the Bard's Tale exit: leaving
+a house puts you on the street before its front, not standing in the
+doorway looking at the hearth.  The exit step costs time and maps
+like any step, but does NOT re-trigger the street cell's special —
+the party just came from there.  A location entered without a step
+(TRAVEL, a script) leaves the party where it stands.  Emits
+:LEAVE-LOCATION."
   (let ((loc (game-location game)))
     (when loc
       (setf (game-location game) nil)
       (say game "You leave ~A." (location-title loc))
+      (let ((entry (location-entry-dir loc)))
+        (when entry
+          (let ((out (dir-opposite entry)))
+            (when (wall-passable-p (cell-wall (game-map game)
+                                              (game-x game) (game-y game)
+                                              out))
+              (multiple-value-bind (nx ny)
+                  (neighbor (game-map game) (game-x game) (game-y game) out)
+                (when nx
+                  (setf (game-x game) nx
+                        (game-y game) ny
+                        (game-facing game) out)
+                  (advance-time game)
+                  (observe game)
+                  (emit game :enter-cell nx ny)))))))
       (emit game :leave-location loc))
     loc))
 
@@ -358,15 +384,16 @@ Returns :LEFT when the party leaves the location, else NIL."
 
 (defun location-lines (game view)
   "Menu lines for the current location: the shop model for :SHOP, the
-tavern menu for :TAVERN, a plain notice for kinds the engine has no
-mechanics for."
+tavern menu for :TAVERN, and for kinds the engine has no mechanics
+for (a :HOUSE and friends) the Bard's Tale interior notice — the
+title over a lone clickable EXIT."
   (let ((loc (game-location game)))
     (case (location-kind loc)
       (:shop (shop-lines game view))
       (:tavern (tavern-lines game))
       (t (list (format nil "*** ~A ***" (location-title loc)) ""
                "There is nothing to do here."
-               "" "[Esc] leave")))))
+               "" (menu-option #\Escape "EXIT"))))))
 
 (defun location-act (game view char)
   "Apply key CHAR inside the current location (see SHOP-ACT and
@@ -375,6 +402,6 @@ TAVERN-ACT)."
     (case (location-kind loc)
       (:shop (shop-act game view char))
       (:tavern (tavern-act game char))
-      (t (when (member char '(#\Escape #\l #\L #\q #\Q))
+      (t (when (member char '(#\Escape #\e #\E #\l #\L #\q #\Q))
            (leave-location game)
            :left)))))

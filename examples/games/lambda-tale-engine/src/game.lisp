@@ -109,6 +109,14 @@ wall loader's loud wireframe fallback."
             local
             gfx)))))
 
+(defvar *step-dir* nil
+  "Direction index of the step being taken while MOVE-PARTY triggers
+the target cell's special, NIL outside a step.  ENTER-LOCATION records
+it as the location's entry direction, so LEAVE-LOCATION can step the
+party back out through the door it came in (the Bard's Tale exit).
+Declared here, ahead of TRAVEL-PARTY, so the compiler already knows
+the symbol is special when TRAVEL-PARTY rebinds it to NIL below.")
+
 (defun travel-party (game file &optional x y facing)
   "Move the party to another zone: the map at FILE, resolved relative
 to the current map's directory.  The party arrives at cell (X,Y) facing
@@ -149,7 +157,13 @@ cell's special."
       (emit game :enter-zone map)
       (say game "You enter ~A." (map-title map))
       (emit game :enter-cell tx ty)
-      (trigger-special game))))
+      ;; Arriving here is never a step (see *STEP-DIR*'s docstring): a
+      ;; location special on the target cell must record no entry
+      ;; direction, even when TRAVEL-PARTY itself was called from a
+      ;; MOVE-PARTY step (a cell's special triggering another zone's
+      ;; special) — else the stale outer *STEP-DIR* leaks in.
+      (let ((*step-dir* nil))
+        (trigger-special game)))))
 
 ;;; Active effects — the UI's spell strip (shield, light, ...).
 ;;; An effect is a record: a display name, an optional expiry on the
@@ -301,5 +315,6 @@ away from a fight (see ATTEMPT-FLEE)."
                 (advance-time game)
                 (observe game)
                 (emit game :enter-cell nx ny)
-                (trigger-special game)
+                (let ((*step-dir* dir))
+                  (trigger-special game))
                 (if (eq wall :door) :door :moved)))))))

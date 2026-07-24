@@ -3373,8 +3373,12 @@ height" d)
   (check "the shoppe is a shop location" :shop
          (location-kind (game-location g)))
   (leave-location g)
-  ;; east along the keep, stopping at the tavern
-  (move-party g)                          ; (2,0)
+  ;; the Bard's Tale exit put the party back before the shoppe door,
+  ;; about-faced — hop over the shoppe cell and on to the tavern
+  (check "leaving the shoppe steps back onto the street" '(0 0)
+         (list (game-x g) (game-y g)))
+  (teleport-party g 2 0)
+  (turn-around g)                         ; face east again
   (move-party g)                          ; (3,0) — the tavern
   (check "the tavern is a tavern location" :tavern
          (location-kind (game-location g)))
@@ -3382,8 +3386,10 @@ height" d)
          (tavern-price (game-location g)))
   (check "Esc leaves the tavern" :left
          (location-act g nil #\Escape))
+  (check "the tavern exit lands back on the street" '(2 0)
+         (list (game-x g) (game-y g)))
   ;; on to the stairs
-  (check "stairs drop into the crypt" :moved (move-party g))
+  (teleport-party g 4 0)
   (check "stairs travel landed in the crypt" "the crypt"
          (map-title (game-map g)))
   (check-true "the crypt is dark" (game-dark-p g))
@@ -3633,6 +3639,39 @@ height" d)
 (delete-file "tests/tmp-loop-a.map")
 (delete-file "tests/tmp-loop-b.map")
 
+;; A step that lands on a TRAVEL cell, whose destination cell is itself
+;; a LOCATION, must not carry the step's direction into the location:
+;; TRAVEL-PARTY's own arrival is never a step (see LEAVE-LOCATION's
+;; docstring), even when TRAVEL-PARTY was reached via MOVE-PARTY's step.
+(with-open-file (s "tests/tmp-travel-loc-a.map" :direction :output
+                   :if-exists :supersede)
+  (write-string "+-+-+
+|@  |
++-+-+
+(zone :start-facing :east)
+(special (1 0) (travel \"tmp-travel-loc-b.map\" 0 0))
+" s))
+(with-open-file (s "tests/tmp-travel-loc-b.map" :direction :output
+                   :if-exists :supersede)
+  (write-string "+-+
+|@|
++-+
+(special (0 0) (location \"Way Station\" :shrine))
+" s))
+(let* ((m (load-map-file "tests/tmp-travel-loc-a.map"))
+       (g (new-game m)))
+  (check "step lands on the travel cell, arriving in the other map"
+         "tests/tmp-travel-loc-b.map"
+         (progn (move-party g) (dungeon-map-name (game-map g))))
+  (check-true "the arrival cell's location was entered" (game-location g))
+  (check "a location entered via TRAVEL (not a step) has no entry-dir" nil
+         (location-entry-dir (game-location g)))
+  (leave-location g)
+  (check "leaving it leaves the party where it stands (no Bard's-Tale exit)"
+         '(0 0) (list (game-x g) (game-y g))))
+(delete-file "tests/tmp-travel-loc-a.map")
+(delete-file "tests/tmp-travel-loc-b.map")
+
 ;;; ---------------------------------------------------------------------
 ;;; Locations and shops (M4)
 
@@ -3669,8 +3708,58 @@ height" d)
   (check-true "leave-location returns the location" (leave-location g))
   (check "location cleared" nil (game-location g))
   (check ":leave-location emitted" '("The Test Shoppe") left)
+  ;; the Bard's Tale exit: leaving stepped the party back out the
+  ;; door onto the cell it came from, facing away from the shoppe
+  (check "the exit lands before the door" '(0 0)
+         (list (game-x g) (game-y g)))
+  (check "the exit faces away from the door" :west
+         (dir-keyword (game-facing g)))
   (check "leave-location when outside" nil (leave-location g))
-  (check "movement works again" :moved (move-party g :forward)))
+  (check "a back-step re-enters the shoppe" :door (move-party g :back))
+  (check "re-entry is modal again" "The Test Shoppe"
+         (location-title (game-location g))))
+
+;; A :house location: the generic location menu is the Bard's Tale
+;; interior — the title over a lone clickable EXIT — and exiting steps
+;; the party back out the front door, about-faced to the street.
+(with-open-file (s "tests/tmp-house.map" :direction :output
+                   :if-exists :supersede)
+  (write-string "+-+-+
+|@D |
++-+-+
+
+(zone :kind :city :title \"Hausen\")
+(special (1 0)
+  (location \"A Stone Cottage\" :house))
+" s))
+(let* ((m (load-map-file "tests/tmp-house.map"))
+       (g (new-game m :party (list (%combat-hero)))))
+  (turn-right g)
+  (check "the cottage door opens" :door (move-party g))
+  (check "the cottage is a house location" :house
+         (location-kind (game-location g)))
+  (check "the house menu shows EXIT" "EXIT"
+         (menu-line-text (find "EXIT" (location-lines g nil)
+                               :key #'menu-line-text :test #'equal)))
+  (check "EXIT clicks as the leave key" #\Escape
+         (menu-line-key (find "EXIT" (location-lines g nil)
+                              :key #'menu-line-text :test #'equal)))
+  (check "e exits the house" :left (location-act g nil #\e))
+  (check "the house is left behind" nil (game-location g))
+  (check "the exit lands on the street" '(0 0)
+         (list (game-x g) (game-y g)))
+  (check "the exit faces away from the house" :west
+         (dir-keyword (game-facing g)))
+  ;; a back-step entry records the true entry direction — the exit
+  ;; still lands on the street, facing away from the door
+  (check "a back-step enters the cottage again" :door
+         (move-party g :back))
+  (check "Esc exits after a back-step entry" :left
+         (location-act g nil #\Escape))
+  (check "back on the street again" '(0 0)
+         (list (game-x g) (game-y g)))
+  (check "still facing away from the door" :west
+         (dir-keyword (game-facing g))))
 
 ;; Location specs are validated loudly.
 (let ((g (new-game (parse-map *art* :name "test"))))

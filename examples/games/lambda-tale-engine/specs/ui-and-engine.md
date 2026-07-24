@@ -46,6 +46,12 @@ campaign data, never as code that knows about "the" town.
   `(location TITLE KIND ARG...)`.  Stepping onto the cell enters it;
   the game gains a modal location state (like combat: no walking until
   `leave-location`), `:enter-location`/`:leave-location` frame it.
+  Leaving is the Bard's Tale exit: a location entered through a door
+  steps the party back out onto the cell it came from, facing away
+  from the building (a location entered without a step — travel, a
+  script — leaves the party where it stands).  Kinds without engine
+  mechanics (`:house` and friends) show the interior notice with a
+  lone clickable **EXIT**.
   KIND is an open set; the engine ships `:shop` mechanics, campaigns
   script other kinds via events.
 - **Items are campaign data** (`define-item`): kind (`:weapon` /
