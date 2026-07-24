@@ -757,9 +757,8 @@ backdrop window for input and menus:
       (#.amiga.intuition:+idcmp-vanillakey+ (msg) (return)))))
 ```
 
-The Lambda's Tale engine (`examples/games/lambda-tale-engine`, run
-with `:display :screen`) exercises this path end-to-end; its Amiga
-test suite covers it.
+The Lambda's Tale engine (its own repo, run with `:display :screen`)
+exercises this path end-to-end; its Amiga test suite covers it.
 
 ### Offscreen Bitmaps and Blits
 
@@ -784,8 +783,8 @@ chip-ram assumptions anywhere:
 
 `get-bitmap-attr` (`+bma-width+`/`+bma-height+`/`+bma-depth+`) inspects
 what was really allocated.  See `tests/amiga/test-gui.lisp` for
-runnable examples; Lambda's Tale's blitted wall graphics
-(`examples/games/lambda-tale-engine`, M3) are the end-to-end user.
+runnable examples; the Lambda's Tale engine's blitted wall graphics
+(its own repo, M3) are the end-to-end user.
 
 ### GadTools Gadgets
 

@@ -17,6 +17,17 @@ make test-extra    # Heavyweight trunk integration scripts (quicklisp/ansi-tests
 make clean         # Remove build artifacts
 ```
 
+**These gates cover the clamiga runtime — the C code and the Lisp
+library it ships.** The Lambda's Tale engine and the Closure game,
+formerly subprojects under `examples/games/`, are **their own repos**
+since 2026-07-24 (`../../lambda-tale` and `../../closure-tale` in
+development; Closure vendors this repo and the engine as submodules)
+with their own suites and their own `CLAUDE.md`.  Work over there
+never gates on this repo — and work that leads back into the runtime
+(a compiler bug, a missing CL function, an FFI gap found by playing
+the game) is a commit *here*, with every gate above applying to it in
+full.  Keep the two changes, and their gates, apart.
+
 Cross-compile for Amiga and test via FS-UAE:
 ```
 make -f Makefile.cross amiga        # Cross-compile to build/cross/clamiga (m68k-amigaos-gcc)

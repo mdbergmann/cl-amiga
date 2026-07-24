@@ -124,8 +124,8 @@ See `tests/test_tty.c` for a complete usage example.
 
 - Bulk byte-vector operations: `tests/test_byte_vector.c` (the
   `unpack_byterun1_*` and `copy_rows_*` tests) and the matching blocks in
-  `tests/amiga/run-tests.lisp`; the ILBM loader in
-  `examples/games/lambda-tale-engine/src/ilbm.lisp` is the worked example.
+  `tests/amiga/run-tests.lisp`; the ILBM loader in the Lambda's Tale
+  engine repo (`src/ilbm.lisp`) is the worked example.
 - TCP sockets & timeouts: `tests/test_stream.c`
   (`platform_socket_table_grows_many_connections`, `socket_read_timeout_*`,
   `eval_socket_stream_timeout_*`) and `tests/amiga/run-tests.lisp` (the
