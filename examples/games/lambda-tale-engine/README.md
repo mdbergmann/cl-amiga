@@ -610,7 +610,8 @@ whole session; save games carry the whole world.
 A **location** — a shop, or any enterable building — is the
 `(location TITLE KIND ARG...)` special op on a cell.  The engine ships
 shop mechanics: items are campaign data (`define-item` — with prices,
-damage dice, AC bonuses and class restrictions, in the Bard's Tale
+damage dice, AC bonuses, class restrictions and designer `:notes`
+carried as data for generated catalogues, in the Bard's Tale
 equipment kinds: weapon, armor, shield, helmet, gloves, bow, arrow,
 instrument, ring, wand, figurine, plus plain `:misc`), heroes carry up
 to 8 items and equip one item of each equipment kind — every worn

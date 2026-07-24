@@ -3417,6 +3417,13 @@ height" d)
 (check-error "unknown item rejected" (find-item-type 't-nonesuch))
 (check-error "define-item rejects a bad kind"
   (define-item 't-bogus :kind :hat))
+(check ":notes rides along as data" "glows near orcs (to come)"
+       (item-type-notes
+        (find-item-type (define-item 't-relic :price 9
+                          :notes "glows near orcs (to come)"))))
+(check "no :notes reads NIL" nil (item-type-notes (find-item-type 't-sword)))
+(check-error "define-item rejects non-string :notes"
+  (define-item 't-scribble :price 1 :notes '(:very :magic)))
 
 (check "inventory limit is eight" 8 +inventory-limit+)
 

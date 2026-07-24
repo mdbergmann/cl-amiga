@@ -52,16 +52,22 @@ and every equipped item's :AC bonus counts.")
                       ; (:heal DICE), a timed spec (:light t :duration
                       ; MIN), or (:cast SPELL); NIL = not usable
   consumed            ; T: one use, the item leaves the pack
-  image)              ; effects-band icon for the timed :use, or NIL
+  image               ; effects-band icon for the timed :use, or NIL
+  notes)              ; designer notes (canon powers awaiting their
+                      ; subsystem, story roles) — carried as data so
+                      ; generated catalogues show them; no mechanics
 
 (defvar *item-types* (make-hash-table :test 'eq))
 
 (defun define-item (name &key title (kind :misc) (price 0) damage (ac 0)
-                              classes two-handed use consumed image)
+                              classes two-handed use consumed image notes)
   "Register item type NAME (a symbol).  Campaign data calls this.
 TITLE defaults to the capitalized name (SHORT-SWORD -> \"Short Sword\").
 :TWO-HANDED (weapons only) makes the weapon fill both hands: it will
 not go on beside a shield, nor a shield beside it.
+:NOTES is a designer-facing string (canon powers awaiting their
+subsystem, story roles) — data, not mechanics, so generated
+catalogues can surface it.
 :USE makes the item usable, one of three shapes: instant keys of the
 shared vocabulary that need no battle (e.g. (:heal DICE),
 \(:summon NAME) — the damage family is refused); a timed spec
@@ -76,6 +82,8 @@ effect's band icon."
   (when (and two-handed (not (eq kind :weapon)))
     (error "define-item ~S: :two-handed is a weapon trait (kind is ~S)"
            name kind))
+  (when (and notes (not (stringp notes)))
+    (error "define-item ~S: :notes must be a string (got ~S)" name notes))
   (when use
     (unless (consp use)
       (error "define-item ~S: :use ~S must be an effect plist -- ~
@@ -110,7 +118,8 @@ effect's band icon."
          :title (or title
                     (string-capitalize (substitute #\Space #\- (string name))))
          :kind kind :price price :damage damage :ac ac :classes classes
-         :two-handed two-handed :use use :consumed consumed :image image))
+         :two-handed two-handed :use use :consumed consumed :image image
+         :notes notes))
   name)
 
 (defun find-item-type (name)
