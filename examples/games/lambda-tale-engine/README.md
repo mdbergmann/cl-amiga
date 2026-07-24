@@ -869,7 +869,9 @@ installs five enchantments in one casting:
 Beside the mechanics a spell keeps its lore: `:code` (the four-letter
 incantation), `:range` and `:duration-text` — display metadata the
 engine stores (`spell-code`, `spell-range`, `spell-duration-text`)
-and never interprets.  Spell points trickle back Bard's Tale style
+and never interprets — plus designer `:notes` carried as data for
+generated spellbooks (`define-song` takes `:notes` too).  Spell
+points trickle back Bard's Tale style
 while walking outdoors in daylight.  The "Spells" and "extended
 effect vocabulary" test sections of `tests/run-tests.lisp` are the
 executable specification.

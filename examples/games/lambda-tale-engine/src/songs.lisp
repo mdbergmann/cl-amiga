@@ -29,21 +29,26 @@
   (level 1)           ; minimum singer level
   effect              ; timed effect plist, e.g. (:buff-ac 2 :duration 60)
                       ; or (:regen-sp 2 :extra-attacks 1 :duration 60)
-  image)              ; effects-band icon file, or NIL
+  image               ; effects-band icon file, or NIL
+  notes)              ; designer notes (canon effect text, stand-in
+                      ; remarks) — carried as data so generated
+                      ; songbooks show them; no mechanics
 
 (defvar *song-types* (make-hash-table :test 'eq))
 (defvar *song-names* '()
   "Song names in registration order — the stable order of the menus.")
 
-(defparameter %song-meta-keys '(:title :level :image)
+(defparameter %song-meta-keys '(:title :level :image :notes)
   "DEFINE-SONG's non-effect keywords; everything else in the argument
 plist is the effect spec.")
 
 (defun define-song (name &rest args)
   "Register song type NAME (a symbol).  Campaign data calls this.
 ARGS is a plist: :TITLE, :LEVEL (minimum singer level, default 1),
-:IMAGE (the effects-band icon) — and the effect spec itself, one or
-more keys of the TIMED vocabulary (*TIMED-EFFECT-KEYS* in game.lisp;
+:IMAGE (the effects-band icon), :NOTES (a designer-facing string —
+canon effect text, stand-in remarks — data, not mechanics, so
+generated songbooks can surface it) — and the effect spec itself, one
+or more keys of the TIMED vocabulary (*TIMED-EFFECT-KEYS* in game.lisp;
 keys combine into one effect record).  Songs are always timed, so
 :DURATION (game minutes, or :INDEFINITE) is required.  TITLE defaults
 to the downcased name (TRAVELLERS-TUNE -> \"travellers tune\")."
@@ -51,6 +56,10 @@ to the downcased name (TRAVELLERS-TUNE -> \"travellers tune\")."
         unless (and (keywordp (first tail)) (cdr tail))
           do (error "define-song ~S: malformed argument plist at ~S"
                     name tail))
+  (let ((notes (getf args :notes)))
+    (when (and notes (not (stringp notes)))
+      (error "define-song ~S: :notes must be a string (got ~S)"
+             name notes)))
   (let ((spec (loop for (key value) on args by #'cddr
                     unless (member key %song-meta-keys)
                       append (list key value))))
@@ -62,7 +71,8 @@ to the downcased name (TRAVELLERS-TUNE -> \"travellers tune\")."
                       (string-downcase (substitute #\Space #\- (string name))))
            :level (or (getf args :level) 1)
            :effect spec
-           :image (getf args :image))))
+           :image (getf args :image)
+           :notes (getf args :notes))))
   ;; keep the registration order; a re-registration keeps its spot
   (unless (member name *song-names*)
     (setf *song-names* (append *song-names* (list name))))

@@ -2468,9 +2468,16 @@ height" d)
 (define-hero-class :t-bard :hp-dice "1d8" :damage "1d4" :ac 9 :singer t)
 (define-song 'test-march :buff-ac 2 :duration 20)
 (define-song 'test-gleam :light t :duration 20 :image "fx-gleam.iff")
-(define-song 'test-dirge :level 3 :compass t :duration 20)
+(define-song 'test-dirge :level 3 :compass t :duration 20
+  :notes "canon: a marching dirge (to come)")
 
 (check "song-title downcases the name" "test march" (song-title 'test-march))
+(check "song :notes rides along as data" "canon: a marching dirge (to come)"
+       (song-type-notes (find-song-type 'test-dirge)))
+(check "no song :notes reads NIL" nil
+       (song-type-notes (find-song-type 'test-march)))
+(check-error "define-song rejects non-string :notes"
+  (define-song 'test-bogus :light t :duration 5 :notes '(:very :loud)))
 (check-error "unknown song rejected" (find-song-type 'test-nonesuch))
 (check-error "define-song rejects an instant effect"
   (define-song 'test-bogus :damage "1d4" :duration 5))
@@ -2667,12 +2674,19 @@ height" d)
 ;; Spell metadata rides along untouched by the mechanics.
 (define-spell 'test-canon :code "TSTC" :range "1 foe (10')"
   :duration-text "short" :cost 2 :level 1 :classes '(:t-mage)
+  :notes "canon: a needle of flame (to come)"
   :damage "1d4")
 (check "spell-code stored" "TSTC" (spell-code 'test-canon))
 (check "spell-range stored" "1 foe (10')" (spell-range 'test-canon))
 (check "spell-duration-text stored" "short"
        (spell-duration-text 'test-canon))
+(check "spell :notes rides along as data" "canon: a needle of flame (to come)"
+       (spell-type-notes (find-spell-type 'test-canon)))
 (check "metadata-free spells say NIL" nil (spell-code 'test-bolt))
+(check "no spell :notes reads NIL" nil
+       (spell-type-notes (find-spell-type 'test-bolt)))
+(check-error "define-spell rejects non-string :notes"
+  (define-spell 'test-bogus :damage "1d4" :notes '(:very :magic)))
 
 ;; Validation: value shapes, duration rules, malformed plists.
 (check-error "a bad dice value is rejected"

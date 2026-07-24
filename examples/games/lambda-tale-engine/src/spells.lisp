@@ -42,14 +42,18 @@
   effect              ; effect plist over the shared vocabulary, e.g.
                       ; (:damage "1d4"), (:heal "10d4" :cure (:poison)),
                       ; (:buff-ac 2 :light t :duration 30)
-  image)              ; effects-band icon file for the timed kinds, or NIL
+  image               ; effects-band icon file for the timed kinds, or NIL
+  notes)              ; designer notes (canon effect text, stand-in
+                      ; remarks) — carried as data so generated
+                      ; spellbooks show them; no mechanics
 
 (defvar *spell-types* (make-hash-table :test 'eq))
 (defvar *spell-names* '()
   "Spell names in registration order — the stable order of the menus.")
 
 (defparameter %spell-meta-keys
-  '(:title :code :range :duration-text :cost :level :classes :image)
+  '(:title :code :range :duration-text :cost :level :classes :image
+    :notes)
   "DEFINE-SPELL's non-effect keywords; everything else in the argument
 plist is the effect spec.")
 
@@ -58,8 +62,10 @@ plist is the effect spec.")
 ARGS is a plist: :TITLE, :CODE, :RANGE, :DURATION-TEXT (display
 metadata), :COST (sp, default 1), :LEVEL (minimum caster level,
 default 1), :CLASSES (allowed caster classes; NIL = any caster),
-:IMAGE (the effects-band icon for the timed kinds) — and the effect
-spec itself, one or more keys of the shared vocabulary (see
+:IMAGE (the effects-band icon for the timed kinds), :NOTES (a
+designer-facing string — canon effect text, stand-in remarks — data,
+not mechanics, so generated spellbooks can surface it) — and the
+effect spec itself, one or more keys of the shared vocabulary (see
 *INSTANT-EFFECT-KEYS* / *TIMED-EFFECT-KEYS* in game.lisp) plus
 :DURATION (game minutes, or :INDEFINITE) when any timed key rides
 along.  TITLE defaults to the downcased name (MAGE-FLAME ->
@@ -68,6 +74,10 @@ along.  TITLE defaults to the downcased name (MAGE-FLAME ->
         unless (and (keywordp (first tail)) (cdr tail))
           do (error "define-spell ~S: malformed argument plist at ~S"
                     name tail))
+  (let ((notes (getf args :notes)))
+    (when (and notes (not (stringp notes)))
+      (error "define-spell ~S: :notes must be a string (got ~S)"
+             name notes)))
   (let ((spec (loop for (key value) on args by #'cddr
                     unless (member key %spell-meta-keys)
                       append (list key value))))
@@ -84,7 +94,8 @@ along.  TITLE defaults to the downcased name (MAGE-FLAME ->
            :level (or (getf args :level) 1)
            :classes (getf args :classes)
            :effect spec
-           :image (getf args :image))))
+           :image (getf args :image)
+           :notes (getf args :notes))))
   ;; keep the registration order; a re-registration keeps its spot
   (unless (member name *spell-names*)
     (setf *spell-names* (append *spell-names* (list name))))
