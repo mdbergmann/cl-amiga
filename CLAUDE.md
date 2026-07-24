@@ -41,6 +41,15 @@ Releases are tag-only (no GitHub release artifacts). Follow the `v0.4`/`v0.5` pr
 4. **Annotated tag**: `git tag -a vX.Y -m "CL-Amiga X.Y — <headlines>; Amiga suite N/N, test-extra N/0"` with the real numbers from step 1.
 5. **Push**: `git push origin master vX.Y`.
 
+**Deriving the headlines — do not use `vPREV..HEAD`.** Master's history was rewritten (`git filter-repo`, 2026-07-24), so tags created before that point are no longer ancestors of master: `git log v0.4..HEAD` returns the *entire* rewritten history (786 commits), not the release delta, and silently yields headlines from cycles long past. Check with `git merge-base --is-ancestor vPREV HEAD`; when it fails, find the previous release's *rewritten* bump commit instead and diff from that:
+
+```
+git log --oneline --all --grep="bump version to X.Y"   # find the rewritten bump commit
+git log <that-commit>..HEAD --oneline                  # the true delta
+```
+
+For 0.5 the correct base was `95bda65` (89 commits), not the `v0.4` tag.
+
 ## Architecture
 
 - `CL_Obj` = `uint32_t` tagged value; heap pointers are **arena-relative byte offsets** (not raw pointers)
