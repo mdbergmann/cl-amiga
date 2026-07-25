@@ -26,13 +26,17 @@
    "WRITE-CHUNKY" "WRITE-PIXEL" "READ-PIXEL" "BLT-BITMAP-RASTPORT"
    "BLT-MASK-BITMAP-RASTPORT"
    "GFX-VERSION" "*WRITE-CHUNKY-FORCE-FALLBACK*"
+   ;; struct BitMap accessors + planar upload (standard planar bitmaps
+   ;; only — see the section comment)
+   "BITMAP-BYTES-PER-ROW" "BITMAP-ROWS" "BITMAP-FLAGS" "BITMAP-DEPTH"
+   "BITMAP-PLANE" "WRITE-PLANES"
    "+BMF-CLEAR+" "+BMF-DISPLAYABLE+" "+BMF-INTERLEAVED+"
    "+BMF-STANDARD+" "+BMF-MINPLANES+"
    "+BMA-HEIGHT+" "+BMA-DEPTH+" "+BMA-WIDTH+" "+BMA-FLAGS+"
    "+MINTERM-COPY+" "+MINTERM-COOKIE+"
    ;; RastPort accessors
    "RASTPORT-FGPEN" "RASTPORT-BGPEN" "RASTPORT-CP-X" "RASTPORT-CP-Y"
-   "RASTPORT-TX-HEIGHT" "RASTPORT-TX-BASELINE"
+   "RASTPORT-TX-HEIGHT" "RASTPORT-TX-BASELINE" "RASTPORT-BITMAP"
    ;; Draw modes
    "+JAM1+" "+JAM2+" "+COMPLEMENT+" "+INVERSVID+"))
 
@@ -296,6 +300,12 @@ can target one."
                    +rp-bitmap-offset+)
      ,@body))
 
+(defun rastport-bitmap (rastport)
+  "Pointer to the BitMap RASTPORT renders into (rp_BitMap).  A window
+rastport's bitmap is the natural ALLOC-BITMAP :FRIEND — offscreen
+bitmaps allocated with it land in the display's native format."
+  (ffi:make-foreign-pointer (ffi:peek-u32 rastport +rp-bitmap-offset+)))
+
 (amiga.ffi:defcfun write-pixel *gfx-base* -324
   (:a1 rastport :d0 x :d1 y))
 
@@ -362,6 +372,75 @@ shows through.  RTG-safe: an OS call, no chipset assumptions."
                             :d4 width :d5 height :d6 minterm
                             :a2 mask))
   t)
+
+;;; ================================================================
+;;; struct BitMap (graphics/gfx.h) — layout accessors and the planar
+;;; upload path.
+;;;
+;;; These see planes and strides, which the RTG-safe rule above says
+;;; never to assume — so they are legal ONLY on a standard planar
+;;; BitMap: one from ALLOC-BITMAP with no :FRIEND and without
+;;; +BMF-DISPLAYABLE+, which graphics.library returns as planar in
+;;; ordinary RAM.  The pattern for anything bound for the display:
+;;; pour the plane rows into such a scratch bitmap with WRITE-PLANES,
+;;; then BLT-BITMAP-RASTPORT it into the friend-format destination —
+;;; the blitter converts, and an RTG display never sees a plane poke.
+;;;
+;;;   UWORD BytesPerRow  0    UWORD Rows   2
+;;;   UBYTE Flags        4    UBYTE Depth  5
+;;;   UWORD pad          6    PLANEPTR Planes[8]  8
+;;; ================================================================
+
+(ffi:defcstruct bitmap
+  (bytes-per-row :u16 0)
+  (rows          :u16 2)
+  (flags         :u8  4)
+  (depth         :u8  5))
+
+(defconstant +bitmap-planes-offset+ 8)
+
+(defun bitmap-plane (bitmap n)
+  "Pointer to BITMAP's Nth bitplane (bm_Planes[N]); a null pointer for
+a plane past the depth (or one BMF_MINPLANES left unallocated)."
+  (ffi:make-foreign-pointer
+   (ffi:peek-u32 bitmap (+ +bitmap-planes-offset+ (* 4 n)))))
+
+(defun write-planes (bitmap planes src-row-bytes height)
+  "Copy planar pixel data into BITMAP: PLANES is a list of
+\(unsigned-byte 8) vectors, one per bitplane, each holding HEIGHT rows
+of SRC-ROW-BYTES bytes — MSB-first within a byte, word-padded rows,
+exactly the layout of an ILBM BODY plane or a hardware bitplane, so
+loading planar art needs no per-pixel chunky conversion.  BITMAP must
+be a standard planar BitMap (see the section comment) at least as deep
+as (LENGTH PLANES) — extra planes are left as allocated — with rows at
+least SRC-ROW-BYTES wide.  When the strides agree each plane goes over
+as one contiguous copy; otherwise row by row at the destination
+stride.  Returns T."
+  (let ((dst-row-bytes (bitmap-bytes-per-row bitmap))
+        (bm-depth (bitmap-depth bitmap))
+        (bm-rows (bitmap-rows bitmap))
+        (depth (length planes)))
+    (when (< bm-depth depth)
+      (error "GFX:WRITE-PLANES: bitmap is ~D planes deep, the data has ~D"
+             bm-depth depth))
+    (when (< dst-row-bytes src-row-bytes)
+      (error "GFX:WRITE-PLANES: bitmap rows are ~D bytes, the data needs ~D"
+             dst-row-bytes src-row-bytes))
+    (when (> height bm-rows)
+      (error "GFX:WRITE-PLANES: bitmap has ~D rows, the data needs ~D"
+             bm-rows height))
+    (loop for src in planes
+          for p from 0
+          do (let ((plane (bitmap-plane bitmap p)))
+               (when (ffi:null-pointer-p plane)
+                 (error "GFX:WRITE-PLANES: bitmap plane ~D is NULL" p))
+               (if (= src-row-bytes dst-row-bytes)
+                   (ffi:poke-bytes plane src 0 0 (* height src-row-bytes))
+                   (dotimes (y height)
+                     (ffi:poke-bytes plane src (* y dst-row-bytes)
+                                     (* y src-row-bytes)
+                                     (* (1+ y) src-row-bytes))))))
+    t))
 
 ;;; ================================================================
 ;;; Provide module

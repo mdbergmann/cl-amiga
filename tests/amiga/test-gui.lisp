@@ -281,3 +281,124 @@
           (prog1 (not (null btn))
             (amiga.gadtools:free-gadgets
               (ffi:make-foreign-pointer (ffi:peek-u32 glist)))))))))
+
+; --- struct BitMap / planar upload tests (offscreen, no window) ---
+
+;; rastport-bitmap: the rp_BitMap a scratch rastport was pointed at
+;; comes back out.
+(check "graphics-rastport-bitmap" t
+  (amiga.gfx:with-bitmap (bm 32 8 2)
+    (amiga.gfx:with-bitmap-rastport (rp bm)
+      (= (ffi:foreign-pointer-address (amiga.gfx:rastport-bitmap rp))
+         (ffi:foreign-pointer-address bm)))))
+
+;; struct BitMap accessors on a standard planar bitmap (no friend, not
+;; displayable): exact depth and rows, word-padded stride, real plane
+;; pointers up to the depth.
+(check "graphics-bitmap-accessors" t
+  (amiga.gfx:with-bitmap (bm 16 4 2)
+    (and (= (amiga.gfx:bitmap-depth bm) 2)
+         (= (amiga.gfx:bitmap-rows bm) 4)
+         (>= (amiga.gfx:bitmap-bytes-per-row bm) 2)
+         (not (ffi:null-pointer-p (amiga.gfx:bitmap-plane bm 0)))
+         (not (ffi:null-pointer-p (amiga.gfx:bitmap-plane bm 1))))))
+
+;; write-planes: planar rows in, pens back out.  Plane bytes are
+;; MSB-first: row 0 sets pixel 0 in both planes (pen 3) and pixel 1 in
+;; plane 1 only (pen 2); row 1 sets pixel 1 in plane 0 (pen 1).  The
+;; copy honors the destination stride, so a padded bitmap still lands
+;; its second row right.
+(check "graphics-write-planes-read-pixel" '(3 2 0 1)
+  (amiga.gfx:with-bitmap (bm 16 2 2)
+    (amiga.gfx:write-planes bm
+                            (list #(#x80 #x00 #x40 #x00)   ; plane 0
+                                  #(#xC0 #x00 #x00 #x00))  ; plane 1
+                            2 2)
+    (amiga.gfx:with-bitmap-rastport (rp bm)
+      (list (amiga.gfx:read-pixel rp 0 0)
+            (amiga.gfx:read-pixel rp 1 0)
+            (amiga.gfx:read-pixel rp 2 0)
+            (amiga.gfx:read-pixel rp 1 1)))))
+
+;; A plane list deeper than the bitmap, rows wider than the bitmap's,
+;; and a height taller than the bitmap's rows are all rejected loudly,
+;; before any poke — the last guards against writing past the
+;; bitplane allocation into adjacent chip/fast memory.
+(check "graphics-write-planes-rejects" '(t t t)
+  (amiga.gfx:with-bitmap (bm 16 2 2)
+    (list (handler-case
+              (progn (amiga.gfx:write-planes
+                      bm (list #(0 0) #(0 0) #(0 0)) 2 1)
+                     nil)
+            (error () t))
+          (handler-case
+              (progn (amiga.gfx:write-planes
+                      bm (list (make-array 64 :initial-element 0)) 64 1)
+                     nil)
+            (error () t))
+          (handler-case
+              (progn (amiga.gfx:write-planes
+                      bm (list #(0 0 0 0) #(0 0 0 0)) 2 3)
+                     nil)
+            (error () t)))))
+
+; --- Pointer sprite tests ---
+
+;; make-pointer-sprite: the hardware framing around the rows — two
+;; position-control words, two data words per row, two terminator
+;; words — and the height for SET-POINTER.
+(check "intuition-make-pointer-sprite"
+       '(0 0 #x8000 #x4000 #x2000 #x1000 0 0 2)
+  (multiple-value-bind (chip height)
+      (amiga.intuition:make-pointer-sprite '((#x8000 #x4000)
+                                             (#x2000 #x1000)))
+    (unwind-protect
+         (append (loop for off from 0 by 2 repeat 8
+                       collect (ffi:peek-u16 chip off))
+                 (list height))
+      (amiga:free-chip chip))))
+
+;; The built sprite drives a real SetPointer/ClearPointer round trip.
+(check "intuition-set-clear-pointer" t
+  (multiple-value-bind (chip height)
+      (amiga.intuition:make-pointer-sprite '((#x8000 #x0000)))
+    (unwind-protect
+         (amiga.intuition:with-window (win :title "Ptr Test"
+                                           :width 100 :height 50)
+           (amiga.intuition:set-pointer win chip height 16 0 0)
+           (amiga.intuition:clear-pointer win))
+      (amiga:free-chip chip))))
+
+; --- Exec tests ---
+(require "amiga/exec")
+
+(check "exec-library-base" t
+  (not (ffi:null-pointer-p amiga.exec:*exec-base*)))
+
+;; AvailMem: positive byte counts for the whole pool, the chip pool,
+;; and the largest single block.  Snapshots, so no cross-call
+;; comparisons — other tasks allocate concurrently.
+(check "exec-avail-mem" '(t t t)
+  (flet ((pos-int-p (n) (and (integerp n) (> n 0))))
+    (list (pos-int-p (amiga.exec:avail-mem))
+          (pos-int-p (amiga.exec:avail-mem amiga.exec:+memf-chip+))
+          (pos-int-p (amiga.exec:avail-mem
+                      (logior amiga.exec:+memf-any+
+                              amiga.exec:+memf-largest+))))))
+
+;; MEMF_TOTAL (bit 19, #x00080000) must report the pool's total size,
+;; which is always >= the largest single free block in that pool —
+;; regression check for the MEMF_REVERSE (#x00040000) mixup.
+(check "exec-avail-mem-total-chip" t
+  (>= (amiga.exec:avail-mem
+       (logior amiga.exec:+memf-chip+ amiga.exec:+memf-total+))
+      (amiga.exec:avail-mem
+       (logior amiga.exec:+memf-chip+ amiga.exec:+memf-largest+))))
+
+;; alloc-chip-bytes: the vector lands in chip RAM byte for byte.
+(check "exec-alloc-chip-bytes-roundtrip" '(1 2 250 255)
+  (let ((chip (amiga.exec:alloc-chip-bytes #(1 2 250 255))))
+    (unwind-protect
+         (list (ffi:peek-u8 chip 0) (ffi:peek-u8 chip 1)
+               (ffi:peek-u8 chip 2) (ffi:peek-u8 chip 3))
+      (amiga:free-chip chip))))

@@ -30,7 +30,7 @@
    ;; Mouse button codes (IDCMP_MOUSEBUTTONS msg-code values)
    "+SELECTDOWN+" "+SELECTUP+" "+MENUDOWN+" "+MENUUP+"
    ;; Mouse pointer
-   "SET-POINTER" "CLEAR-POINTER"
+   "SET-POINTER" "CLEAR-POINTER" "MAKE-POINTER-SPRITE"
    ;; IDCMP class constants
    "+IDCMP-CLOSEWINDOW+" "+IDCMP-GADGETUP+" "+IDCMP-GADGETDOWN+"
    "+IDCMP-MOUSEBUTTONS+" "+IDCMP-MOUSEMOVE+" "+IDCMP-RAWKEY+"
@@ -369,6 +369,26 @@ pointer stays until CLEAR-POINTER; SPRITE-DATA must outlive it."
   (amiga:call-library *intuition-base* +lvo-clear-pointer+
                       (list :a0 window))
   t)
+
+(defun make-pointer-sprite (rows)
+  "Build the chip-RAM sprite data SET-POINTER wants from ROWS, a list
+of (WORD-A WORD-B) pairs — one pair per pointer line, WORD-A the low
+bitplane and WORD-B the high (pixel value 1/2/3 shows screen color
+17/18/19).  Frames them with the two position-control words and the
+two trailing terminator words the hardware sprite format requires.
+Returns (VALUES CHIP HEIGHT), ready for
+\(SET-POINTER WINDOW CHIP HEIGHT 16 X-OFFSET Y-OFFSET); the data must
+outlive the pointer, and the caller frees it with AMIGA:FREE-CHIP
+after the pointer moves off it."
+  (let ((chip (amiga:alloc-chip (* 2 (+ 2 (* 2 (length rows)) 2))))
+        (off 0))
+    (flet ((word (w) (ffi:poke-u16 chip w off) (incf off 2)))
+      (word 0) (word 0)                 ; position control
+      (dolist (row rows)
+        (word (first row))
+        (word (second row)))
+      (word 0) (word 0))                ; sprite terminator
+    (values chip (length rows))))
 
 (defmacro with-screen ((var &rest args) &body body)
   "Open a custom screen, bind to VAR, close on exit."
