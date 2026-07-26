@@ -8503,7 +8503,13 @@
   ; to exist before it can read amiga.intuition:* qualified symbols.
   (handler-case
     (load "tests/amiga/test-gui.lisp")
-    (error (e) (format t "ERROR loading GUI tests: ~A~%" e))))
+    (error (e) (format t "ERROR loading GUI tests: ~A~%" e)))
+
+  ; --- audio.device tests ---
+  ; Separate file for the same reader-needs-the-package reason.
+  (handler-case
+    (load "tests/amiga/test-audio.lisp")
+    (error (e) (format t "ERROR loading audio tests: ~A~%" e))))
 
 ; --- Gray streams: (typep gray-stream 'stream) regression ---
 ; Load gray-streams.lisp and verify that a CLOS-based Gray stream instance

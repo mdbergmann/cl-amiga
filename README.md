@@ -837,10 +837,18 @@ When the abstractions aren't enough, drop to raw library calls:
 | `(require "amiga/intuition")` | `AMIGA.INTUITION` | Windows, screens, IDCMP events, public screens, pointer sprites |
 | `(require "amiga/graphics")` | `AMIGA.GFX` | Drawing, text, fonts, offscreen bitmaps and blits, planar upload |
 | `(require "amiga/gadtools")` | `AMIGA.GADTOOLS` | Gadgets, menus, bevel boxes, VisualInfo |
+| `(require "amiga/audio")` | `AMIGA.AUDIO` | audio.device channel allocation, non-blocking 8-bit sample playback from chip RAM |
 
 The GUI modules are exercised end-to-end by `tests/amiga/test-gui.lisp`
 (run by the Amiga test suite) — use it as the reference for working
-examples of every export.
+examples of every export.  `AMIGA.AUDIO` is exercised the same way by
+`tests/amiga/test-audio.lisp`: open a channel with `open-audio` (or
+`with-audio`), upload a signed 8-bit sample with
+`amiga.exec:alloc-chip-bytes`, start it with `play-sample`
+(`period-for-rate` converts a Hz sample rate to a Paula period), poll
+with `playing-p`, cut it off with `stop-sample`.  Playback never
+blocks: requests go out via `SendIO` and are reclaimed with
+`CheckIO`/`AbortIO`.
 
 ## JIT (m68k)
 
