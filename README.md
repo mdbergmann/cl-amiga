@@ -117,15 +117,16 @@ See `tests/test_version.c` for the full contract.
 
 ### Heap and stack sizing
 
-The default heap is **4 MB**. Larger workloads need more:
+The default heap is **4 MB**. On the Amiga, plain clamiga — without Quicklisp and ASDF — gets by with as little as **`--heap 1M`** for writing simple programs. Larger workloads need more:
 
-| Use case                        | Heap             | Amiga stack       |
-|---------------------------------|------------------|-------------------|
-| REPL / small programs           | 4M (default)     | 64K (default)     |
-| Loading ASDF                    | `--heap 11M`     | 64K (default)     |
-| Quicklisp + quickload libraries | `--heap 24M`     | `stack 128000`    |
-| FSet (functional collections)   | `--heap 24M`     | `stack 128000`    |
-| Fiveam (load + self-tests)      | `--heap 24M`     | `stack 128000`    |
+| Use case                                  | Heap             | Amiga stack       |
+|-------------------------------------------|------------------|-------------------|
+| Simple programs (Amiga, no Quicklisp/ASDF)| `--heap 1M`      | 64K (default)     |
+| REPL / small programs                     | 4M (default)     | 64K (default)     |
+| Loading ASDF                              | `--heap 11M`     | 64K (default)     |
+| Quicklisp + quickload libraries           | `--heap 24M`     | `stack 128000`    |
+| FSet (functional collections)             | `--heap 24M`     | `stack 128000`    |
+| Fiveam (load + self-tests)                | `--heap 24M`     | `stack 128000`    |
 
 On AmigaOS, the default 64K stack is sufficient for basic use. For Quicklisp/ASDF workloads with deep CLOS dispatch chains, or when source-compiling GUI code (deeply nested macro towers), increase the stack:
 
