@@ -460,7 +460,10 @@ diffs the real package exports against a committed snapshot; run
   On multi-threaded hosts, each thread allocates from a private chunk (TLAB) refilled from the shared heap, so concurrent allocation doesn't serialize on a global lock (`CLAMIGA_TLAB_CHUNK=<bytes>` tunes the chunk size, `0` disables; compiled out on the Amiga target). See `tests/test_gc_threaded.c` for the concurrency/GC-interaction tests.
   Setting `CLAMIGA_GC_DIAG=1` in the environment prints one stderr line per
   collection (kind, pause, heap occupancy) — useful for telling a GC storm
-  from a hang elsewhere; see `tests/test_break_diag.sh`.
+  from a hang elsewhere; see `tests/test_break_diag.sh`. `CLAMIGA_IO_DIAG=1`
+  similarly traces every platform file operation (op, path, handle) as it is
+  entered, so a process stuck inside an OS file call names the operation in
+  its last trace line; see `tests/test_io_diag.sh`.
 - **Ctrl-C interrupts running code** — pressing Ctrl-C (SIGINT on the host,
   the shell break signal on AmigaOS/MorphOS) while Lisp code is running
   enters the interactive debugger with a backtrace of the interrupted

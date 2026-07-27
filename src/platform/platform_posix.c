@@ -475,6 +475,37 @@ static void iobuf_free(IOBuf *b)
     }
 }
 
+/* ---- Platform file-I/O trace (CLAMIGA_IO_DIAG) ----
+ * One stderr line as each file operation is ENTERED (before the blocking
+ * call), so a hang inside the OS still shows which op/path/handle entered
+ * it.  Mirrors the AmigaOS implementation (platform_amiga.c), where this
+ * exists to catch stale-handle/garbage-path DOS waits; kept in lockstep
+ * here so the diagnostic (and its test) runs on the host too.  Zero cost
+ * when the env var is unset. */
+#include <stdarg.h>
+static volatile int32_t io_diag_cached = -2;  /* -2 unread; 0 off; 1 on */
+
+static int io_diag_on(void)
+{
+    if (io_diag_cached == -2)
+        io_diag_cached = (getenv("CLAMIGA_IO_DIAG") &&
+                          *getenv("CLAMIGA_IO_DIAG")) ? 1 : 0;
+    return io_diag_cached;
+}
+
+static void io_diag(const char *fmt, ...)
+{
+    va_list ap;
+    if (!io_diag_on())
+        return;
+    fprintf(stderr, "[IO] %lums ", (unsigned long)platform_time_ms());
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fputc('\n', stderr);
+    fflush(stderr);
+}
+
 PlatformFile platform_file_open(const char *path, int mode)
 {
     FILE *f;
@@ -482,6 +513,7 @@ PlatformFile platform_file_open(const char *path, int mode)
     int i;
 
     file_table_ensure_init();
+    io_diag("open \"%s\" mode=%d", path, mode);
 
     switch (mode) {
     case PLATFORM_FILE_READ:   fmode = "r";  break;
@@ -518,6 +550,7 @@ PlatformFile platform_file_open(const char *path, int mode)
         if (file_table[i] == NULL) {
             file_table[i] = f;
             file_table_unlock();
+            io_diag("open -> fh=%d", i);
             return (PlatformFile)i;
         }
     }
@@ -541,7 +574,10 @@ void platform_file_close(PlatformFile fh)
         file_table[fh] = NULL;
         file_table_unlock();
     }
-    if (f) fclose(f);
+    if (f) {
+        io_diag("close fh=%d", (int)fh);
+        fclose(f);
+    }
 }
 
 /* Per-character read/write and small buffered writes are deliberately NOT
@@ -571,6 +607,7 @@ int platform_file_read_buf(PlatformFile fh, char *buf, uint32_t len)
     if (!(fh > 0 && fh < PLATFORM_FILE_TABLE_SIZE && file_table[fh]))
         return -1;
     f = file_table[fh];
+    io_diag("read fh=%d len=%lu", (int)fh, (unsigned long)len);
     if (len <= 4096)
         return (int)fread(buf, 1, (size_t)len, f);
     cl_gc_enter_safe_region();
@@ -604,6 +641,7 @@ int platform_file_write_buf(PlatformFile fh, const char *buf, uint32_t len)
     if (!(fh > 0 && fh < PLATFORM_FILE_TABLE_SIZE && file_table[fh]))
         return -1;
     f = file_table[fh];
+    io_diag("write fh=%d len=%lu", (int)fh, (unsigned long)len);
     if (len <= sizeof(chunk))
         return (fwrite(buf, 1, (size_t)len, f) == (size_t)len) ? 0 : -1;
     while (pos < len) {

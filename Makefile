@@ -320,6 +320,13 @@ test-fast: $(TEST_BINS) host
 		echo "FAIL"; \
 		failed=1; \
 	fi; \
+	echo "--- test_io_diag ---"; \
+	if sh $(TEST_SRCDIR)/test_io_diag.sh $(BUILDDIR)/clamiga; then \
+		echo "PASS"; \
+	else \
+		echo "FAIL"; \
+		failed=1; \
+	fi; \
 	echo "--- test_stream_outbuf_leak ---"; \
 	if sh $(TEST_SRCDIR)/test_stream_outbuf_leak.sh $(BUILDDIR)/clamiga; then \
 		echo "PASS"; \

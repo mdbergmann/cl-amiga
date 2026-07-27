@@ -6,7 +6,8 @@
 #include <dos/dosextens.h>  /* struct FileHandle (drain of RunCommand's arg-line stuffing) */
 #include <string.h>
 #include <stdlib.h>   /* malloc/realloc (platform_directory) */
-#include <stdio.h>    /* CLAMIGA_SOCK_DIAG reactor trace (fprintf/stderr) */
+#include <stdio.h>    /* CLAMIGA_SOCK_DIAG / CLAMIGA_IO_DIAG traces (fprintf/stderr) */
+#include <stdarg.h>   /* io_diag varargs */
 
 /* GC stop-the-world cooperation (defined in core/thread.c).  Forward-declared
  * here rather than #including core/thread.h so the platform layer stays free of
@@ -269,8 +270,47 @@ int platform_stdin_is_interactive(void)
     return IsInteractive(in) ? 1 : 0;
 }
 
+/* ---- Platform file-I/O trace (CLAMIGA_IO_DIAG) ----
+ *
+ * Setting the CLAMIGA_IO_DIAG environment variable (any non-empty value)
+ * prints one stderr line as each potentially-blocking DOS file call
+ * (Open/Read/Write/Close/Lock/Delete/Rename) is ENTERED — deliberately
+ * before the call, so a process found hanging in WAIT state inside
+ * dos.library still shows which operation, path, and handle it entered
+ * with.  A corrupted path or handle (e.g. a stale object reference after
+ * a compacting GC) is then visible in the last trace line — a garbage
+ * path in Open/Lock also explains a silent "please insert volume"
+ * requester wait.  Runtime diagnostic, zero cost when unset (same
+ * pattern as CLAMIGA_SOCK_DIAG / CLAMIGA_GC_DIAG). */
+static int32_t io_diag_cached = -2;   /* -2 = env not read; 0 = off; 1 = on */
+
+static int io_diag_on(void)
+{
+    if (io_diag_cached == -2) {
+        char envbuf[16];
+        const char *s = platform_getenv("CLAMIGA_IO_DIAG", envbuf,
+                                        (int)sizeof(envbuf));
+        io_diag_cached = (s && *s) ? 1 : 0;
+    }
+    return io_diag_cached;
+}
+
+static void io_diag(const char *fmt, ...)
+{
+    va_list ap;
+    if (!io_diag_on())
+        return;
+    fprintf(stderr, "[IO] %lums ", (unsigned long)platform_time_ms());
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fputc('\n', stderr);
+    fflush(stderr);
+}
+
 char *platform_file_read(const char *path, unsigned long *size_out)
 {
+    io_diag("read-file \"%s\"", path);
     BPTR fh;
     LONG fsize, nread;
     char *buf;
@@ -395,6 +435,8 @@ PlatformFile platform_file_open(const char *path, int mode)
     default: return PLATFORM_FILE_INVALID;
     }
 
+    io_diag("open \"%s\" mode=%d", path, mode);
+
     /* Copy the path to C memory, then bracket the Open in a GC safe
      * region: Open on floppy/slow media blocks for real, and a peer's
      * stop-the-world GC would stall for its whole duration.  The copy is
@@ -427,6 +469,7 @@ PlatformFile platform_file_open(const char *path, int mode)
             file_table[i] = fh;
             file_buf[i] = iobuf_alloc();
             file_table_unlock();
+            io_diag("open -> fh=%d bptr=0x%lx", i, (unsigned long)fh);
             return (PlatformFile)i;
         }
     }
@@ -446,6 +489,8 @@ static int file_flush_wbuf(PlatformFile fh)
     b = file_buf[fh];
     if (!b || b->wlen == 0) return 0;
     h = file_table[fh];
+    io_diag("write-flush fh=%d len=%d bptr=0x%lx", (int)fh, b->wlen,
+            (unsigned long)h);
     /* The 4KB Write to floppy/slow media blocks; wbuf is C memory, so
      * bracketing is safe (a peer compaction cannot move it). */
     cl_gc_enter_safe_region();
@@ -473,6 +518,8 @@ void platform_file_close(PlatformFile fh)
         file_table_unlock();
     }
     if (h) {
+        io_diag("close fh=%d bptr=0x%lx wpend=%d", (int)fh,
+                (unsigned long)h, b ? b->wlen : 0);
         if (b && b->wlen > 0)
             Write(h, (APTR)b->wbuf, (LONG)b->wlen);
         Close(h);
@@ -495,6 +542,8 @@ int platform_file_getchar(PlatformFile fh)
         {
             BPTR h = file_table[fh];
             LONG n;
+            io_diag("read-refill fh=%d bptr=0x%lx", (int)fh,
+                    (unsigned long)h);
             cl_gc_enter_safe_region();
             n = Read(h, (APTR)b->rbuf, PLATFORM_IOBUF_SIZE);
             cl_gc_leave_safe_region();
@@ -529,6 +578,8 @@ int platform_file_read_buf(PlatformFile fh, char *buf, uint32_t len)
     if (got < len) {
         BPTR h = file_table[fh];
         LONG n;
+        io_diag("read fh=%d len=%lu bptr=0x%lx", (int)fh,
+                (unsigned long)(len - got), (unsigned long)h);
         cl_gc_enter_safe_region();
         n = Read(h, (APTR)(buf + got), (LONG)(len - got));
         cl_gc_leave_safe_region();
@@ -595,6 +646,8 @@ int platform_file_write_buf(PlatformFile fh, const char *buf, uint32_t len)
         char chunk[512];
         uint32_t pos = 0;
         BPTR h = file_table[fh];
+        io_diag("write fh=%d len=%lu bptr=0x%lx", (int)fh,
+                (unsigned long)len, (unsigned long)h);
         while (pos < len) {
             uint32_t nb = len - pos;
             LONG written;
@@ -728,7 +781,9 @@ uint32_t platform_universal_time(void)
 
 int platform_file_exists(const char *path)
 {
-    BPTR lock = Lock((STRPTR)path, ACCESS_READ);
+    BPTR lock;
+    io_diag("probe \"%s\"", path);
+    lock = Lock((STRPTR)path, ACCESS_READ);
     if (lock) {
         UnLock(lock);
         return 1;
@@ -738,7 +793,9 @@ int platform_file_exists(const char *path)
 
 int platform_file_is_directory(const char *path)
 {
-    BPTR lock = Lock((STRPTR)path, ACCESS_READ);
+    BPTR lock;
+    io_diag("probe-dir \"%s\"", path);
+    lock = Lock((STRPTR)path, ACCESS_READ);
     if (lock) {
         struct FileInfoBlock *fib = (struct FileInfoBlock *)AllocVec(sizeof(struct FileInfoBlock), MEMF_CLEAR);
         int result = 0;
@@ -756,6 +813,7 @@ int platform_file_is_directory(const char *path)
 
 int platform_file_delete(const char *path)
 {
+    io_diag("delete \"%s\"", path);
     return DeleteFile((STRPTR)path) ? 0 : -1;
 }
 
@@ -763,7 +821,9 @@ int platform_file_rename(const char *oldpath, const char *newpath)
 {
     /* AmigaOS Rename() fails if target exists; delete target first to match
        POSIX rename() semantics (atomic overwrite) */
-    BPTR lock = Lock((STRPTR)newpath, ACCESS_READ);
+    BPTR lock;
+    io_diag("rename \"%s\" -> \"%s\"", oldpath, newpath);
+    lock = Lock((STRPTR)newpath, ACCESS_READ);
     if (lock) {
         UnLock(lock);
         DeleteFile((STRPTR)newpath);
@@ -773,7 +833,9 @@ int platform_file_rename(const char *oldpath, const char *newpath)
 
 uint32_t platform_file_mtime(const char *path)
 {
-    BPTR lock = Lock((STRPTR)path, ACCESS_READ);
+    BPTR lock;
+    io_diag("probe-mtime \"%s\"", path);
+    lock = Lock((STRPTR)path, ACCESS_READ);
     if (lock) {
         struct FileInfoBlock *fib = (struct FileInfoBlock *)AllocVec(sizeof(struct FileInfoBlock), MEMF_CLEAR);
         uint32_t result = 0;
@@ -1991,7 +2053,25 @@ static void sock_call_impl(SockReq *req, int use_safe_region)
      * thread owns the collection); the reactor is a plain exec Task, not a
      * stopped Lisp thread, so the Wait completes under STW regardless. */
     if (use_safe_region) cl_gc_enter_safe_region();
-    WaitPort(&rp);
+    /* Wait for the reply, but also listen for Ctrl-C: a task blocked here
+     * is in WAIT state where the VM's break poll can never run, so without
+     * this a wedged reactor makes Ctrl-C appear dead.  On break, REPORT
+     * what we are blocked on (op/slot) and keep waiting — the reply may
+     * still arrive, and repeated presses re-report. */
+    {
+        ULONG rpsig = 1UL << sig;
+        for (;;) {
+            ULONG got = Wait(rpsig | SIGBREAKF_CTRL_C);
+            if (got & SIGBREAKF_CTRL_C) {
+                fprintf(stderr, "[SOCK] Ctrl-C while blocked awaiting reactor "
+                        "reply: op=%s slot=%d — reactor stuck or reply lost\n",
+                        sock_op_name(req->op), (int)req->slot);
+                fflush(stderr);
+            }
+            if (got & rpsig)
+                break;
+        }
+    }
     if (use_safe_region) cl_gc_leave_safe_region();
     GetMsg(&rp);
     FreeSignal(sig);
