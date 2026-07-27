@@ -719,6 +719,24 @@ and MorphOS are byte-compatible. The one thing the MorphOS build omits is
 the native JIT, which is m68k-only — it runs the portable bytecode VM,
 like the host build.
 
+### Binary release (AmigaOS + MorphOS)
+
+`scripts/make-binary-release.sh` packages a ready-to-run release for both
+Amiga targets under `build/release/`:
+
+```
+MOS_BIN=./clamiga-mos scripts/make-binary-release.sh
+```
+
+It cross-compiles the AmigaOS 3 binary, takes a natively built MorphOS
+binary (`MOS_BIN`, default `./clamiga-mos`), and assembles
+`clamiga-<version>/` with `bin/aos3/`, `bin/mos/`, `lib/` (precompiled
+FASLs where portable, Lisp sources where compilation must happen on the
+target), the package API reference under `docs/`, and `examples/` — then
+smoke-tests the deployed layout and produces `.zip` and `.lha` archives.
+The binaries find `lib/` relative to themselves, so the extracted tree
+runs from any directory without assigns or environment variables.
+
 ## AmigaOS Native GUI
 
 CL-Amiga provides Lisp bindings for Intuition, Graphics, and GadTools — loaded on demand via `require` with zero binary size impact. A generic FFI layer (`FFI` package) provides foreign memory access on all platforms; the `AMIGA` package adds register-based library call dispatch via a 68k assembly trampoline.

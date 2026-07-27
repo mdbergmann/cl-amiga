@@ -43,14 +43,14 @@ Subclass these to define a stream. `fundamental-stream` is the root.
 
 | Input | Output | Query / control |
 |-------|--------|-----------------|
-| `stream-read-char` | `stream-write-char` | `stream-line-column` |
-| `stream-unread-char` | `stream-write-string` | `stream-start-line-p` |
-| `stream-read-char-no-hang` | `stream-write-byte` | `stream-listen` |
-| `stream-peek-char` | `stream-terpri` | `stream-clear-input` |
-| `stream-read-line` | `stream-fresh-line` | `stream-clear-output` |
-| `stream-read-byte` | `stream-finish-output` | `stream-advance-to-column` |
-| `stream-read-sequence` | `stream-force-output` | |
-| | `stream-write-sequence` | |
+| `(stream-read-char stream)` | `(stream-write-char stream character)` | `(stream-line-column stream)` |
+| `(stream-unread-char stream character)` | `(stream-write-string stream string &optional start end)` | `(stream-start-line-p stream)` |
+| `(stream-read-char-no-hang stream)` | `(stream-write-byte stream byte)` | `(stream-listen stream)` |
+| `(stream-peek-char stream)` | `(stream-terpri stream)` | `(stream-clear-input stream)` |
+| `(stream-read-line stream)` | `(stream-fresh-line stream)` | `(stream-clear-output stream)` |
+| `(stream-read-byte stream)` | `(stream-finish-output stream)` | `(stream-advance-to-column stream column)` |
+| `(stream-read-sequence stream sequence start end &key &allow-other-keys)` | `(stream-force-output stream)` | |
+| | `(stream-write-sequence stream sequence start end &key &allow-other-keys)` | |
 
 ## Source of truth
 

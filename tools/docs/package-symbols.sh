@@ -82,6 +82,8 @@ generate() {
         amiga_lib_exports "AMIGA.INTUITION" "$ROOT/lib/amiga/intuition.lisp"
         amiga_lib_exports "AMIGA.GFX"       "$ROOT/lib/amiga/graphics.lisp"
         amiga_lib_exports "AMIGA.GADTOOLS"  "$ROOT/lib/amiga/gadtools.lisp"
+        amiga_lib_exports "AMIGA.EXEC"      "$ROOT/lib/amiga/exec.lisp"
+        amiga_lib_exports "AMIGA.AUDIO"     "$ROOT/lib/amiga/audio.lisp"
     } | LC_ALL=C sort -u
 }
 

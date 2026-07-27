@@ -27,29 +27,29 @@ read/write deadlines via `socket-stream-timeout` — a timed-out operation signa
 (setf (ext:socket-stream-timeout s :input) 5)
 ```
 
-| Symbol | Kind | Description |
-|--------|------|-------------|
-| `open-tcp-stream` | function | Connect to `host` `port`, return a bidirectional character stream |
-| `socket-listen` | function | Open a listening server socket on a port |
-| `socket-accept` | function | Accept one incoming connection, returning its stream |
-| `socket-local-port` | function | The local port a listening/connected socket is bound to |
-| `socket-stream-timeout` | function | `setf`-able place: read/write deadline for a socket stream (`:input` / `:output`, seconds) |
-| `%set-socket-stream-timeout` | function | Internal setter behind the `socket-stream-timeout` `setf` expander |
+| Signature | Kind | Description |
+|-----------|------|-------------|
+| `(open-tcp-stream host port &optional connect-timeout)` | function | Connect to `host` `port`, return a bidirectional character stream |
+| `(socket-listen port &optional loopback)` | function | Open a listening server socket on a port (port `0` picks a free one; `loopback` non-`nil` binds 127.0.0.1 only) |
+| `(socket-accept listener)` | function | Accept one incoming connection, returning its stream |
+| `(socket-local-port listener)` | function | The local port a listening/connected socket is bound to |
+| `(socket-stream-timeout stream direction)` | function | `setf`-able place: read/write deadline for a socket stream (`direction` is `:input` / `:output`, value in seconds): `(setf (socket-stream-timeout stream direction) seconds)` |
+| `(%set-socket-stream-timeout stream direction seconds)` | function | Internal setter behind the `socket-stream-timeout` `setf` expander |
 | `socket-timeout` | condition | Signaled when a socket read/write exceeds its deadline (subtype of `stream-error`) |
-| `open-udp-stream` | function | Create a UDP (datagram) socket aimed at `host` `port` |
-| `udp-stream-send` | function | Send one datagram from a byte vector |
-| `udp-stream-receive` | function | Receive one datagram into a byte vector |
-| `socket-stream-local-endpoint` | function | Local `(address . port)` a socket is bound to |
+| `(open-udp-stream host port)` | function | Create a UDP (datagram) socket aimed at `host` `port` |
+| `(udp-stream-send stream buffer &optional length)` | function | Send one datagram from byte vector `buffer` (`length` defaults to its full length) |
+| `(udp-stream-receive stream buffer &optional max-length)` | function | Receive one datagram into byte vector `buffer`; returns the received length |
+| `(socket-stream-local-endpoint stream)` | function | Local `(address . port)` a socket is bound to |
 
 ## GC, environment, host
 
-| Symbol | Kind | Description |
-|--------|------|-------------|
-| `gc` | function | Force a garbage collection (and compaction when fragmented) |
-| `getenv` | function | Read an environment variable |
-| `getcwd` | function | Current working directory |
-| `system-command` | function | Run a host/AmigaOS shell command |
-| `defglobal` | macro | Define a global (non-dynamic) variable |
+| Signature | Kind | Description |
+|-----------|------|-------------|
+| `(gc)` | function | Force a garbage collection (and compaction when fragmented) |
+| `(getenv name)` | function | Read an environment variable |
+| `(getcwd)` | function | Current working directory |
+| `(system-command command)` | function | Run a host/AmigaOS shell command |
+| `(defglobal name value &optional doc)` | macro | Define a global (non-dynamic) variable |
 
 ## Bulk byte-vector operations
 
@@ -79,10 +79,10 @@ that have no standard equivalent:
                  0 row-bytes (* p row-bytes) (* n-planes row-bytes)))
 ```
 
-| Symbol | Kind | Description |
-|--------|------|-------------|
-| `unpack-byterun1` | function | Decode ByteRun1/PackBits RLE data between byte vectors; returns the new source position |
-| `copy-rows` | function | Copy `count` rows of `chunk` bytes with independent source/destination strides; returns `dst` |
+| Signature | Kind | Description |
+|-----------|------|-------------|
+| `(unpack-byterun1 src pos end dst dst-len &optional dst-start)` | function | Decode ByteRun1/PackBits RLE data between byte vectors; returns the new source position |
+| `(copy-rows dst src count chunk dst-start dst-stride src-start src-stride)` | function | Copy `count` rows of `chunk` bytes with independent source/destination strides; returns `dst` |
 
 ## Terminal control (TUI raw mode)
 
@@ -105,20 +105,20 @@ See `tests/test_tty.c` for a complete usage example.
 (ext:tty-size)                            ; => (cols . rows), or NIL
 ```
 
-| Symbol | Kind | Description |
-|--------|------|-------------|
-| `tty-p` | function | `T` iff stdin is an interactive terminal/console |
-| `tty-raw-mode` | function | Enable (`t`) / disable (`nil`) raw mode; returns `T` on success |
-| `tty-size` | function | Terminal size as `(cols . rows)`, or `NIL` when unknown |
+| Signature | Kind | Description |
+|-----------|------|-------------|
+| `(tty-p)` | function | `T` iff stdin is an interactive terminal/console |
+| `(tty-raw-mode enable)` | function | Enable (`t`) / disable (`nil`) raw mode; returns `T` on success |
+| `(tty-size)` | function | Terminal size as `(cols . rows)`, or `NIL` when unknown |
 
 ## Introspection / debugging (SLY backend)
 
-| Symbol | Kind | Description |
-|--------|------|-------------|
-| `backtrace` | function | Capture the current call stack (used by the debugger / SLDB) |
-| `frame-locals` | function | Local variable bindings of a stack frame |
-| `function-arglist` | function | Lambda list of a function, for completion/arglist display |
-| `function-source-location` | function | Source file/position of a definition (`M-.`) |
+| Signature | Kind | Description |
+|-----------|------|-------------|
+| `(backtrace &optional max-frames)` | function | Capture the current call stack (used by the debugger / SLDB); `max-frames` limits the depth |
+| `(frame-locals frame-index)` | function | Local variable bindings of a stack frame |
+| `(function-arglist fn)` | function | Lambda list of a function, for completion/arglist display |
+| `(function-source-location fn)` | function | Source file/position of a definition (`M-.`) |
 
 ## Source of truth
 

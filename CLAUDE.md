@@ -43,6 +43,8 @@ make -f Makefile.cross clean        # Remove cross-build artifacts
 
 Releases are tag-only (no GitHub release artifacts). Follow the `v0.4`/`v0.5` precedent:
 
+For a downloadable **binary release** (AmigaOS 3 + MorphOS), run `scripts/make-binary-release.sh` after tagging — it cross-builds the aos3 binary, packages a natively built MorphOS binary (`MOS_BIN=...`, built with `Makefile.mos` on MorphOS), assembles `bin/aos3` + `bin/mos` + `lib/` (FASLs where portable — the header comment documents which files must ship as source and why) + `docs/` + `examples/` under `build/release/`, smoke-tests the layout, and emits `.zip`/`.lha`.
+
 1. **Gates green first**: `make test-plus`, `make test-gc-stress`, `make test-extra`, and `make -f Makefile.cross test-amiga` must all pass (`pkill fs-uae` first if an emulator is lingering). Record the Amiga-suite and test-extra pass counts — they go in the tag message.
 2. **Bump the version** — exactly two files:
    - `src/core/types.h`: the `CL_VERSION_MAJOR/MINOR/PATCH` block + `CL_VERSION_DATE` (DD.MM.YYYY). Everything derives from this block (banner, `LISP-IMPLEMENTATION-VERSION`, `$VER:` cookie, FASL cache key — stale caches invalidate themselves; `tests/test_version.c` enforces the contract).

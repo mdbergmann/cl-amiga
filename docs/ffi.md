@@ -25,30 +25,31 @@ calls with full marshaling, and Lisp-as-C callbacks) on the **POSIX host**.
 
 ## Foreign pointers & allocation
 
-| Symbol | Kind | Description |
-|--------|------|-------------|
-| `make-foreign-pointer` | function | Wrap a raw address as a foreign pointer; `&optional` |
-| `foreign-pointer-address` | function | The integer address of a foreign pointer |
-| `foreign-pointer-p` | function | Type predicate |
-| `null-pointer-p` | function | Whether a pointer is null |
-| `pointer-eq` | function | Address equality of two pointers |
-| `pointer+` | function | Pointer plus a byte offset |
-| `alloc-foreign` | function | Allocate `n` bytes of foreign memory |
-| `free-foreign` | function | Free foreign memory from `alloc-foreign` |
+| Signature | Kind | Description |
+|-----------|------|-------------|
+| `(make-foreign-pointer address &optional size)` | function | Wrap a raw address as a foreign pointer; `size` (bytes) enables bounds checks |
+| `(foreign-pointer-address pointer)` | function | The integer address of a foreign pointer |
+| `(foreign-pointer-p object)` | function | Type predicate |
+| `(null-pointer-p pointer)` | function | Whether a pointer is null |
+| `(pointer-eq pointer1 pointer2)` | function | Address equality of two pointers |
+| `(pointer+ pointer offset)` | function | Pointer plus a byte offset |
+| `(alloc-foreign size)` | function | Allocate `size` bytes of foreign memory |
+| `(free-foreign pointer)` | function | Free foreign memory from `alloc-foreign` |
 
 ## Typed peek / poke
 
-`peek-*` reads from `pointer` `&optional offset`; `poke-*` writes `value` at
-`pointer` `&optional offset`.
+Every reader is `(peek-TYPE pointer &optional offset)`; every writer is
+`(poke-TYPE pointer value &optional offset)` and returns `value`. `offset`
+is in bytes and defaults to 0.
 
 | Read | Write | Type |
 |------|-------|------|
-| `peek-i8` / `peek-u8` | `poke-i8` / `poke-u8` | 8-bit signed / unsigned |
-| `peek-i16` / `peek-u16` | `poke-i16` / `poke-u16` | 16-bit signed / unsigned |
-| `peek-i32` / `peek-u32` | `poke-i32` / `poke-u32` | 32-bit signed / unsigned |
-| `peek-i64` / `peek-u64` | `poke-i64` / `poke-u64` | 64-bit signed / unsigned |
-| `peek-single` / `peek-double` | `poke-single` / `poke-double` | IEEE float / double |
-| `peek-pointer` | `poke-pointer` | machine-word pointer |
+| `(peek-i8 pointer &optional offset)` / `(peek-u8 pointer &optional offset)` | `(poke-i8 pointer value &optional offset)` / `(poke-u8 pointer value &optional offset)` | 8-bit signed / unsigned |
+| `(peek-i16 pointer &optional offset)` / `(peek-u16 pointer &optional offset)` | `(poke-i16 pointer value &optional offset)` / `(poke-u16 pointer value &optional offset)` | 16-bit signed / unsigned |
+| `(peek-i32 pointer &optional offset)` / `(peek-u32 pointer &optional offset)` | `(poke-i32 pointer value &optional offset)` / `(poke-u32 pointer value &optional offset)` | 32-bit signed / unsigned |
+| `(peek-i64 pointer &optional offset)` / `(peek-u64 pointer &optional offset)` | `(poke-i64 pointer value &optional offset)` / `(poke-u64 pointer value &optional offset)` | 64-bit signed / unsigned |
+| `(peek-single pointer &optional offset)` / `(peek-double pointer &optional offset)` | `(poke-single pointer value &optional offset)` / `(poke-double pointer value &optional offset)` | IEEE float / double |
+| `(peek-pointer pointer &optional offset)` | `(poke-pointer pointer value &optional offset)` | machine-word pointer |
 
 ## Bulk byte transfer
 
@@ -56,10 +57,10 @@ Moving a buffer one `poke-u8` at a time costs a VM dispatch per byte, which
 dominates any path that pushes real data across (bitplane rows, chip-RAM
 masks, packet buffers). These move a whole span in one call:
 
-| Symbol | Description |
-|--------|-------------|
-| `poke-bytes` | `(poke-bytes pointer source &optional offset start end)` — copy `source[start..end)` to `pointer + offset`; returns the byte count |
-| `peek-bytes` | `(peek-bytes pointer vector &optional offset start end)` — fill `vector[start..end)` from `pointer + offset`; returns the byte count |
+| Signature | Description |
+|-----------|-------------|
+| `(poke-bytes pointer source &optional offset start end)` | Copy `source[start..end)` to `pointer + offset`; returns the byte count |
+| `(peek-bytes pointer vector &optional offset start end)` | Fill `vector[start..end)` from `pointer + offset`; returns the byte count |
 
 `source` is a string or a vector of `(integer 0 255)`. A string holds its
 bytes contiguously so it copies with `memcpy`; a vector holds one tagged
@@ -73,21 +74,21 @@ all rejected with a diagnostic rather than silently corrupting memory.
 
 ## Foreign strings
 
-| Symbol | Kind | Description |
-|--------|------|-------------|
-| `foreign-string` | function | Copy a Lisp string into a freshly allocated C string |
-| `foreign-to-string` | function | Read a NUL-terminated C string into a Lisp string; `&optional` |
+| Signature | Kind | Description |
+|-----------|------|-------------|
+| `(foreign-string string)` | function | Copy a Lisp string into a freshly allocated C string |
+| `(foreign-to-string pointer &optional max-len)` | function | Read a NUL-terminated C string into a Lisp string, up to `max-len` bytes |
 
 ## Calls, callbacks, libraries (host)
 
-| Symbol | Kind | Description |
-|--------|------|-------------|
-| `load-library` | function | `dlopen` a shared library |
-| `close-library` | function | `dlclose` it |
-| `symbol-pointer` | function | `dlsym` — resolve a symbol to a foreign pointer; `&optional` |
-| `call-foreign` | function | Call a C function: `(call-foreign ptr ret-type arg-types args &optional)` (libffi, incl. variadics) |
-| `make-callback` | function | Create a C-callable callback from a Lisp function (libffi closure) |
-| `free-callback` | function | Release a callback |
+| Signature | Kind | Description |
+|-----------|------|-------------|
+| `(load-library name)` | function | `dlopen` a shared library; returns a library handle or `nil` |
+| `(close-library library)` | function | `dlclose` it |
+| `(symbol-pointer name &optional library)` | function | `dlsym` — resolve a symbol to a foreign pointer; `library` defaults to the default namespace |
+| `(call-foreign fn-ptr ret-type arg-types arg-values &optional n-fixed)` | function | Call a C function (libffi); `n-fixed` = count of fixed args for variadic calls |
+| `(make-callback ret-type arg-types lisp-fn)` | function | Create a C-callable callback from a Lisp function (libffi closure) |
+| `(free-callback callback)` | function | Release a callback |
 
 ## Source of truth
 

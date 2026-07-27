@@ -1,0 +1,225 @@
+#!/bin/bash
+# make-binary-release.sh — assemble the AmigaOS/MorphOS binary release.
+#
+# Produces build/release/clamiga-<version>/ and .zip/.lha archives:
+#
+#   clamiga-<version>/
+#     bin/aos3/clamiga      AmigaOS 3+ (68020+) binary, cross-compiled here
+#     bin/mos/clamiga       MorphOS (PPC) binary, built natively on MorphOS
+#     lib/                  runtime library — FASLs where portable, sources
+#                           where compilation must happen on the target
+#     docs/                 package API reference (signatures + descriptions)
+#     examples/             example programs, as Lisp source
+#     README.md LICENSE README-BINARY.txt
+#
+# lib/ packaging policy (correctness, not preference):
+#   FASL   boot clos ffi gray-streams
+#          — self-contained, no reader conditionals / compile-time feature
+#          detection, so a host-compiled FASL is portable (FASLs are
+#          arch/endian-neutral; boot.fasl + clos.fasl have shipped this way
+#          all along).
+#   SOURCE asdf.lisp      — uiop's (detect-os) runs at compile time and bakes
+#                           :os-unix branches of the *compiling* host in.
+#          quicklisp.lisp — contains #+amigaos reader conditionals.
+#          quicklisp-compat.lisp, quicklisp-install.lisp — reference
+#                           quicklisp packages that don't exist at host
+#                           compile time (macros would compile wrong).
+#          amiga/*.lisp   — reference the AMIGA package, which only exists on
+#                           the AmigaOS build; unreadable by the host compiler.
+#   Source-shipped files compile on the target on first (require ...) and are
+#   cached under S:cl-amiga/faslcache/, so the cost is paid once.
+#
+# The binaries sit two directory levels below the release root on purpose:
+# both the boot search (repl.c) and REQUIRE resolve lib/ via the
+# executable-ancestor fallback (PROGDIR: two levels up), so the release runs
+# from any current directory without assigns or environment variables.
+#
+# Usage:
+#   scripts/make-binary-release.sh [--no-smoke]
+#
+#   MOS_BIN=path   MorphOS binary to package (default: ./clamiga-mos).
+#                  There is no MorphOS cross toolchain here — build it
+#                  natively with Makefile.mos and copy it over.
+
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+ROOT=$(pwd)
+
+SMOKE=1
+[ "${1:-}" = "--no-smoke" ] && SMOKE=0
+
+# macOS ships no `timeout`; prefer coreutils' if present, else run unguarded.
+if command -v timeout > /dev/null 2>&1; then TIMEOUT="timeout 300"
+elif command -v gtimeout > /dev/null 2>&1; then TIMEOUT="gtimeout 300"
+else TIMEOUT=""; fi
+
+MOS_BIN=${MOS_BIN:-$ROOT/clamiga-mos}
+
+# --- version from the single source of truth ------------------------------
+ver_field() { sed -n "s/^#define CL_VERSION_$1 \([0-9][0-9]*\)$/\1/p" src/core/types.h; }
+VMAJOR=$(ver_field MAJOR); VMINOR=$(ver_field MINOR); VPATCH=$(ver_field PATCH)
+VERSION="$VMAJOR.$VMINOR.$VPATCH"
+[ -n "$VMAJOR" ] && [ -n "$VMINOR" ] && [ -n "$VPATCH" ] || {
+    echo "ERROR: could not parse version from src/core/types.h" >&2; exit 1; }
+
+REL="clamiga-$VERSION"
+OUT="$ROOT/build/release"
+STAGE="$OUT/$REL"
+
+echo "=== CL-Amiga binary release $VERSION ==="
+
+# --- inputs ---------------------------------------------------------------
+if [ ! -f "$MOS_BIN" ]; then
+    echo "ERROR: MorphOS binary not found: $MOS_BIN" >&2
+    echo "       Build it natively on MorphOS (make -f Makefile.mos) and copy it" >&2
+    echo "       here, or point MOS_BIN=... at it." >&2
+    exit 1
+fi
+
+# --- build ----------------------------------------------------------------
+echo "--- Building host binary (FASL compiler) ---"
+make host
+
+echo "--- Cross-compiling AmigaOS 3 binary ---"
+make -f Makefile.cross amiga
+
+HOST_BIN="$ROOT/build/host/clamiga"
+AOS3_BIN="$ROOT/build/cross/clamiga"
+[ -x "$HOST_BIN" ] || { echo "ERROR: $HOST_BIN missing" >&2; exit 1; }
+[ -f "$AOS3_BIN" ] || { echo "ERROR: $AOS3_BIN missing" >&2; exit 1; }
+
+# --- stage ----------------------------------------------------------------
+echo "--- Staging $STAGE ---"
+rm -rf "$STAGE"
+mkdir -p "$STAGE/bin/aos3" "$STAGE/bin/mos" "$STAGE/lib/amiga" "$STAGE/docs"
+
+cp "$AOS3_BIN" "$STAGE/bin/aos3/clamiga"
+cp "$MOS_BIN"  "$STAGE/bin/mos/clamiga"
+chmod +x "$STAGE/bin/aos3/clamiga" "$STAGE/bin/mos/clamiga"
+
+# lib: FASL-portable modules, compiled by the just-built host binary so
+# CL_FASL_VERSION matches the packaged binaries exactly.
+FASL_LIBS="boot clos ffi gray-streams"
+for m in $FASL_LIBS; do
+    echo "--- compile-file lib/$m.lisp -> $REL/lib/$m.fasl ---"
+    CLAMIGA_NO_USERINIT=1 "$HOST_BIN" --non-interactive --heap 48M \
+        --eval "(compile-file \"lib/$m.lisp\" :output-file \"$STAGE/lib/$m.fasl\")" \
+        --eval '(quit)' > /dev/null
+    [ -s "$STAGE/lib/$m.fasl" ] || { echo "ERROR: lib/$m.fasl not produced" >&2; exit 1; }
+done
+
+# lib: source-shipped modules (see policy above)
+cp lib/asdf.lisp lib/quicklisp.lisp lib/quicklisp-compat.lisp \
+   lib/quicklisp-install.lisp "$STAGE/lib/"
+cp lib/amiga/*.lisp "$STAGE/lib/amiga/"
+
+# docs: package API reference only (no benchmarks/screenshots)
+cp docs/README.md docs/amiga.md docs/clamiga.md docs/ext.md docs/ffi.md \
+   docs/gray.md docs/mop.md docs/mp.md docs/package-symbols.txt \
+   docs/clamiga-documented-symbols.txt "$STAGE/docs/"
+
+# examples, as-is
+cp -R examples "$STAGE/examples"
+
+cp README.md LICENSE "$STAGE/"
+
+cat > "$STAGE/README-BINARY.txt" <<EOF
+CL-Amiga $VERSION — binary release
+==================================
+
+Common Lisp for AmigaOS 3+ and MorphOS.
+
+  bin/aos3/clamiga   AmigaOS 3.x, 68020 or better
+  bin/mos/clamiga    MorphOS (PowerPC, native)
+  lib/               runtime library (precompiled FASLs + Lisp sources)
+  docs/              package API reference (call signatures included)
+  examples/          example programs (Lisp source)
+
+Quick start (AmigaOS shell)
+---------------------------
+  stack 131072
+  cd clamiga-$VERSION
+  bin/aos3/clamiga
+
+(on MorphOS use bin/mos/clamiga instead)
+
+The binary finds lib/ on its own: it looks in the current directory, in
+PROGDIR:lib, and two directory levels above the executable — which is
+exactly where lib/ sits in this layout.  No assigns or environment
+variables are needed; you can run it from any current directory.
+
+A stack of 128K (stack 131072) is recommended.  The AmigaOS default of
+64K is enough for the core, but deeply nested source (the GUI libraries,
+Quicklisp systems) needs more — with too little stack you get a clean
+"C stack nearly exhausted" error instead of a crash.
+
+For bigger programs raise the heap, e.g.:
+  bin/aos3/clamiga --heap 16M
+
+Libraries
+---------
+  (require "asdf")             ; ASDF system loader
+  (require "quicklisp")        ; Quicklisp client
+  (require "amiga/intuition")  ; windows, screens, IDCMP events
+  (require "amiga/graphics")   ; drawing primitives
+  (require "amiga/gadtools")   ; GadTools gadgets and menus
+  (require "amiga/exec")       ; memory introspection, chip RAM
+  (require "amiga/audio")      ; audio.device sample playback
+
+Some modules ship precompiled (*.fasl); the rest are Lisp sources that
+compile on your machine the first time they are required and are cached
+under S:cl-amiga/faslcache/, so later loads are fast.
+
+Documentation
+-------------
+docs/README.md is the index of the package reference: EXT (sockets, GC,
+introspection), MP (threads), FFI, GRAY (Gray streams), MOP, CLAMIGA,
+and the AMIGA.* GUI bindings — every function documented with its call
+signature.
+
+Examples
+--------
+  bin/aos3/clamiga --load examples/gfx/bouncing-lines.lisp
+
+Project: https://github.com/mdbergmann/cl-amiga
+EOF
+
+# keep emulator/host metadata out of the archive
+find "$STAGE" -name '*.uaem' -delete
+find "$STAGE" -name '.DS_Store' -delete
+
+# --- smoke test -----------------------------------------------------------
+# Prove the deployed layout resolves lib/ executable-relatively: run a copy
+# of the tree with the HOST binary substituted at bin/aos3/clamiga (same C
+# search code as the Amiga builds), from an unrelated working directory.
+if [ "$SMOKE" = 1 ]; then
+    echo "--- Smoke test: lib resolution in deployed layout ---"
+    SMOKEDIR=$(mktemp -d)
+    trap 'rm -rf "$SMOKEDIR"' EXIT
+    cp -R "$STAGE" "$SMOKEDIR/rel"
+    cp "$HOST_BIN" "$SMOKEDIR/rel/bin/aos3/clamiga"
+    ( cd "$SMOKEDIR" && \
+      CLAMIGA_NO_USERINIT=1 CLAMIGA_HOME= $TIMEOUT \
+        "$SMOKEDIR/rel/bin/aos3/clamiga" --non-interactive --heap 48M \
+        --eval '(require "gray-streams")' \
+        --eval '(require "asdf")' \
+        --eval '(format t "SMOKE-OK ~a~%" (lisp-implementation-version))' \
+        --eval '(quit)' ) | tee "$OUT/smoke.log" | grep -q "SMOKE-OK $VERSION" || {
+        echo "ERROR: smoke test failed — see $OUT/smoke.log" >&2; exit 1; }
+    echo "smoke test passed"
+fi
+
+# --- archives -------------------------------------------------------------
+echo "--- Archiving ---"
+rm -f "$OUT/$REL-bin.zip" "$OUT/$REL-bin.lha"
+( cd "$OUT" && zip -rq "$REL-bin.zip" "$REL" )
+if command -v lha > /dev/null 2>&1; then
+    ( cd "$OUT" && lha aq "$REL-bin.lha" "$REL" ) \
+        || echo "warning: lha archiving failed — the .zip is still valid"
+else
+    echo "note: lha not found — only the .zip was created"
+fi
+
+echo "=== Done ==="
+ls -lh "$OUT" | grep -E "$REL" || true
