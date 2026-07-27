@@ -16,9 +16,12 @@
 #     MorphOS provides the AmigaOS API (proto/exec, proto/dos,
 #     SignalSemaphore, CreateNewProc, FindTask tc_UserData, ...).
 #   * -DPLATFORM_MORPHOS is an extra marker on top of -DPLATFORM_AMIGA so
-#     MorphOS-specific divergences can be #ifdef'd.  Today it only selects
-#     the C stub for platform_amiga_call() (the m68k FFI trampoline has no
-#     PPC equivalent yet — see platform_amiga.c).
+#     MorphOS-specific divergences can be #ifdef'd: the PPC library-call
+#     dispatcher for platform_amiga_call() (EmulCallDirectOS through the
+#     ABox per-task register frame — the AMIGA FFI/GUI/audio stack works
+#     on MorphOS), the PPC-stack platform_stack_headroom() (ETask
+#     PPCSPLower, not the 68k tc_SPLower), and the NP_Entry trap gates in
+#     platform_amiga_ppc.h.
 #   * PPC is big-endian and 32-bit like m68k, so the FASL wire format and
 #     all 32-bit heap-struct assumptions hold unchanged — Amiga FASLs and
 #     MorphOS FASLs are byte-compatible.

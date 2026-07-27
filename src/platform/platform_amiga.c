@@ -842,12 +842,26 @@ const char *platform_executable_prefix(char *buf, int bufsize)
 
 long platform_stack_headroom(void)
 {
+#ifdef PLATFORM_MORPHOS
+    /* MorphOS: native PPC code runs on the task's *PPC* stack, which is
+     * separate from the 68k stack that tc_SPLower/tc_SPUpper describe —
+     * measuring &probe (a PPC-stack address) against tc_SPLower yields
+     * garbage.  The PPC stack bounds live in the ETask (exec/tasks.h:
+     * PPCSPLower/PPCSPUpper), present for every MorphOS task. */
+    struct Task *t = FindTask(NULL);
+    char probe;
+    if (!t || !t->tc_ETask || !t->tc_ETask->PPCSPLower)
+        return -1;
+    /* PPC stacks grow down too: headroom = SP - lower bound. */
+    return (long)(&probe - (char *)t->tc_ETask->PPCSPLower);
+#else
     struct Task *t = FindTask(NULL);
     char probe;
     if (!t || !t->tc_SPLower)
         return -1;
     /* m68k stacks grow down: headroom = SP - lower bound. */
     return (long)(&probe - (char *)t->tc_SPLower);
+#endif
 }
 
 int platform_executable_ancestor_prefix(int levels, char *buf, int bufsize)
@@ -2196,21 +2210,60 @@ void platform_amiga_close_library(uint32_t lib_base)
 /* platform_amiga_call() is implemented in ffi_dispatch_m68k.s
  * (68k assembly trampoline for register-based library calls).
  *
- * On MorphOS (PPC) there is no m68k register-based trampoline: MorphOS
- * shared libraries are PPC-native and use a completely different ABI, so
- * the d0-d7/a0-a5 register convention does not apply.  We provide a stub
- * here purely so the binary links; the AMIGA package's register-based
- * library-call FFI (defcfun / %ffi-call -> OP_AMIGA_CALL) is NOT yet
- * supported on MorphOS and needs a real PPC dispatch.  Until then the
- * stub behaves like the POSIX one (returns 0).  Everything else in the
- * runtime — the bytecode VM, reader, compiler, GC, threading, generic
- * FFI memory access — works normally. */
+ * On MorphOS (PPC) the same call is dispatched through the ABox
+ * emulator's per-task 68k register frame — the identical mechanism the
+ * SDK's ppcinline LP macros use for every OS call: write the argument
+ * values into the frame's Dn[]/An[] images (REG_D0..REG_A5), put the
+ * library base in REG_A6, and jump through the library vector at
+ * base+offset via EmulCallDirectOS.  Native MorphOS libraries hit their
+ * PPC emulgate directly (no 68k emulation on the hot path); real 68k
+ * libraries run under emulation — both honour the d0-d7/a0-a5 register
+ * convention, so callers can't tell the ports apart.
+ *
+ * MyEmulHandle lives in r2 and is per-task, so this is MT-safe (every
+ * clamiga thread is its own MorphOS process).
+ *
+ * Like the m68k trampoline, all 13 argument registers are loaded
+ * unconditionally from the pre-zeroed regs[] array; reg_mask is accepted
+ * for API compatibility but not checked.  Unlike the LP macros — which
+ * only ever write scratch registers (d0/d1/a0/a1) plus a6 — this loads
+ * the callee-saved images Dn[2..7]/An[2..6] as well, and those slots can
+ * hold live state of a 68k frame further up (our thread entries are
+ * TRAP_LIB gates called *from* the emulator, whose saved context is this
+ * very frame).  The called function preserves them per the 68k ABI, so
+ * restoring our snapshot afterwards makes the whole call as ABI-clean as
+ * an LP macro invocation. */
 #ifdef PLATFORM_MORPHOS
+#include <emul/emulregs.h>
+
 uint32_t platform_amiga_call(uint32_t lib_base, int16_t offset,
                              uint32_t *regs, uint16_t reg_mask)
 {
-    (void)lib_base; (void)offset; (void)regs; (void)reg_mask;
-    return 0;  /* TODO: PPC-native MorphOS library-call dispatch */
+    ULONG save_d[6], save_a[5];
+    ULONG result;
+    int i;
+    (void)reg_mask;
+
+    for (i = 0; i < 6; i++) save_d[i] = MyEmulHandle->Dn[2 + i];
+    for (i = 0; i < 5; i++) save_a[i] = MyEmulHandle->An[2 + i];
+
+    REG_D0 = regs[0];  REG_D1 = regs[1];
+    REG_D2 = regs[2];  REG_D3 = regs[3];
+    REG_D4 = regs[4];  REG_D5 = regs[5];
+    REG_D6 = regs[6];  REG_D7 = regs[7];
+    REG_A0 = regs[8];  REG_A1 = regs[9];
+    REG_A2 = regs[10]; REG_A3 = regs[11];
+    REG_A4 = regs[12]; REG_A5 = regs[13];
+    REG_A6 = (ULONG)lib_base;
+
+    /* offset is the (negative) LVO, exactly what EmulCallDirectOS takes
+     * (the LP macros pass -offs for their positive offs). */
+    result = (*MyEmulHandle->EmulCallDirectOS)((LONG)offset);
+
+    for (i = 0; i < 6; i++) MyEmulHandle->Dn[2 + i] = save_d[i];
+    for (i = 0; i < 5; i++) MyEmulHandle->An[2 + i] = save_a[i];
+
+    return (uint32_t)result;
 }
 #endif
 

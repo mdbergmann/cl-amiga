@@ -44,8 +44,16 @@
 (defparameter *audio-test-max-chip*
   (amiga.exec:alloc-chip-bytes *audio-test-max-wave*))
 
+; MorphOS machines have no Paula and may lack audio.device entirely;
+; OPEN-AUDIO then returns NIL cleanly.  Skip the device tests there
+; instead of failing them — on m68k a NIL open is a real regression.
+(defparameter *audio-available* nil)
+
 (let ((audio (amiga.audio:open-audio)))
-  (check "audio-open" t (not (null audio)))
+  (setq *audio-available* (not (null audio)))
+  (cond (audio (check "audio-open" t t))
+        (t #+m68k (check "audio-open" t nil)
+           #-m68k (format t "SKIP: audio.device unavailable on this port~%")))
   (when audio
     (check "audio-channel-mask-is-one-channel" t
       (not (null (member (amiga.audio:audio-channel-mask audio) '(1 2 4 8)))))
@@ -112,9 +120,10 @@
     (check "audio-close" nil (amiga.audio:close-audio audio))))
 
 ; Channel freed on close: reopening still finds one, WITH-AUDIO cleans up.
-(check "audio-with-audio-reopens" t
-  (amiga.audio:with-audio (a)
-    (not (null (member (amiga.audio:audio-channel-mask a) '(1 2 4 8))))))
+(when *audio-available*
+  (check "audio-with-audio-reopens" t
+    (amiga.audio:with-audio (a)
+      (not (null (member (amiga.audio:audio-channel-mask a) '(1 2 4 8)))))))
 
 (amiga:free-chip *audio-test-chip*)
 (amiga:free-chip *audio-test-max-chip*)

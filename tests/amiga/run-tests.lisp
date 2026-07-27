@@ -8412,25 +8412,24 @@
   (ffi:pointer-eq (ffi:make-foreign-pointer 16) (ffi:make-foreign-pointer 32)))
 
 ; --- FFI (Amiga-specific) ---
-; Gated on :M68K, not :AMIGAOS: everything below ultimately dispatches
-; through the m68k register-based library-call trampoline (and the m68k
-; template JIT).  On MorphOS platform_amiga_call() is a stub returning 0,
-; which reads as *success* for zero-is-ok Amiga APIs and as NULL from
-; allocators — the GUI/audio tests then poke through near-NULL pointers
-; and freeze the machine.  Re-enable per-capability once the PPC
-; dispatcher exists.
+; Runs on BOTH ports: the register-based library-call FFI dispatches
+; through the m68k asm trampoline (ffi_dispatch_m68k.s) on classic
+; AmigaOS and through the ABox emulator's per-task register frame
+; (EmulCallDirectOS) on MorphOS — both honour the d0-d7/a0-a5
+; convention, so the AMIGA FFI/GUI/audio sections are port-neutral.
+; Only the m68k template JIT stays gated on :M68K below.
 #+(and amigaos (not m68k))
-(format t "SKIP: m68k JIT + AMIGA FFI/GUI/audio tests (no native dispatcher on this port)~%")
-#+m68k (require "amiga/ffi")
+(format t "SKIP: m68k template JIT tests (native codegen is m68k-only)~%")
+#+amigaos (require "amiga/ffi")
 #+m68k
+; --- m68k template JIT (encoders + native dispatch + behavior).
+; Lives in a sibling file so JIT coverage can grow without bloating
+; this file, and so it can be loaded in isolation while iterating. ---
+(handler-case
+  (load "tests/amiga/test-jit.lisp")
+  (error (e) (format t "ERROR loading JIT tests: ~A~%" e)))
+#+amigaos
 (progn
-  ; --- m68k template JIT (encoders + native dispatch + behavior).
-  ; Lives in a sibling file so JIT coverage can grow without bloating
-  ; this file, and so it can be loaded in isolation while iterating. ---
-  (handler-case
-    (load "tests/amiga/test-jit.lisp")
-    (error (e) (format t "ERROR loading JIT tests: ~A~%" e)))
-
   (check "amiga-package-exists" "AMIGA" (package-name (find-package "AMIGA")))
   (check "amiga-open-close-library" t
     (let ((lib (amiga:open-library "dos.library" 36)))
