@@ -480,6 +480,11 @@ diffs the real package exports against a committed snapshot; run
   returns the current setting. See `tests/test_stream.c`
   (`platform_socket_table_grows_many_connections`, `socket_read_timeout_*`,
   `eval_socket_stream_timeout_*`) and `tests/amiga/run-tests.lisp` for usage.
+  On AmigaOS/MorphOS all socket I/O runs through a dedicated reactor process;
+  setting `CLAMIGA_SOCK_DIAG=1` in the environment (`SetEnv CLAMIGA_SOCK_DIAG 1`)
+  traces every request through the client↔reactor handshake on stderr — posted,
+  received, parked, resumed, replied, reply received, plus DNS lookups — so a
+  hanging socket operation's last trace line names the handoff that was lost.
 - **UDP networking** — connected datagram sockets:
   `(ext:open-udp-stream host port)` returns a UDP socket stream;
   `(ext:udp-stream-send stream buffer &optional length)` sends one datagram,

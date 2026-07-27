@@ -6,6 +6,7 @@
 #include <dos/dosextens.h>  /* struct FileHandle (drain of RunCommand's arg-line stuffing) */
 #include <string.h>
 #include <stdlib.h>   /* malloc/realloc (platform_directory) */
+#include <stdio.h>    /* CLAMIGA_SOCK_DIAG reactor trace (fprintf/stderr) */
 
 /* GC stop-the-world cooperation (defined in core/thread.c).  Forward-declared
  * here rather than #including core/thread.h so the platform layer stays free of
@@ -1195,7 +1196,78 @@ typedef struct SockReq {
     volatile int            result;    /* readfill: bytes (0=EOF, -2=timeout); else 0=ok/-1=err/-2=timeout */
     volatile PlatformSocket out_slot;  /* connect/listen/accept: new slot */
     volatile int            out_port;  /* listen: bound port */
+    uint32_t       seq;          /* trace id (CLAMIGA_SOCK_DIAG); 0 when tracing is off */
 } SockReq;
+
+/* ---- Reactor request trace (CLAMIGA_SOCK_DIAG) ----
+ *
+ * Setting the CLAMIGA_SOCK_DIAG environment variable (any non-empty value)
+ * traces every request through the client<->reactor handshake on stderr,
+ * one line per handoff:
+ *
+ *   [SOCK] 12345ms #17 > CONNECT slot=0 len=0 to=30000 task=0x...   client PutMsg
+ *   [SOCK] 12345ms #17 rx CONNECT slot=0                            reactor received
+ *   [SOCK] 12345ms #17 dns "beta.quicklisp.org"                     blocking DNS start
+ *   [SOCK] 12395ms #17 dns ok                                       DNS returned
+ *   [SOCK] 12395ms #17 park-w slot=3                                parked, awaiting fd
+ *   [SOCK] 12400ms #17 resume-w slot=3                              WaitSelect readiness
+ *   [SOCK] 12400ms #17 tx CONNECT result=0 out=3                    reactor replied
+ *   [SOCK] 12400ms #17 < CONNECT result=0 out=3                     client woke
+ *
+ * A hang's LAST trace line names the lost handoff:
+ *   ">" without "rx"          — request posted, reactor never received it
+ *                               (reactor dead, or WaitSelect missed the port signal)
+ *   "dns" without "dns ok"    — reactor stalled inside gethostbyname (blocks
+ *                               ALL socket traffic behind it)
+ *   "park" without "resume"/"expire" — reactor waiting in WaitSelect for
+ *                               readiness that never signalled
+ *   "tx" without "<"          — reply posted, client never woke (lost reply signal)
+ *
+ * Runtime diagnostic, not DEBUG-flag instrumentation: always compiled, zero
+ * cost when the env var is unset (same pattern as CLAMIGA_STW_DIAG /
+ * CLAMIGA_LOCK_DIAG).  Reactor- and client-side lines can interleave; each
+ * line is a single fprintf so it stays whole. */
+static int32_t sock_diag_cached = -2;   /* -2 = env not read; 0 = off; 1 = on */
+static volatile uint32_t sock_diag_seq = 0;
+
+static int sock_diag_on(void)
+{
+    if (sock_diag_cached == -2) {
+        char envbuf[16];
+        const char *s = platform_getenv("CLAMIGA_SOCK_DIAG", envbuf,
+                                        (int)sizeof(envbuf));
+        sock_diag_cached = (s && *s) ? 1 : 0;
+    }
+    return sock_diag_cached;
+}
+
+static const char *sock_op_name(int op)
+{
+    switch (op) {
+    case REQ_CONNECT:     return "CONNECT";
+    case REQ_LISTEN:      return "LISTEN";
+    case REQ_ACCEPT:      return "ACCEPT";
+    case REQ_READFILL:    return "READFILL";
+    case REQ_WRITE:       return "WRITE";
+    case REQ_CLOSE:       return "CLOSE";
+    case REQ_SHUTDOWN:    return "SHUTDOWN";
+    case REQ_POLL:        return "POLL";
+    case REQ_UDP_CONNECT: return "UDP-CONNECT";
+    case REQ_ENDPOINT:    return "ENDPOINT";
+    default:              return "?";
+    }
+}
+
+/* One trace line: "[SOCK] <time>ms #<seq> <event>" + optional detail. */
+static void sock_diag_line(const SockReq *req, const char *event,
+                           const char *detail)
+{
+    fprintf(stderr, "[SOCK] %lums #%lu %s%s%s\n",
+            (unsigned long)platform_time_ms(),
+            (unsigned long)req->seq, event,
+            detail ? " " : "", detail ? detail : "");
+    fflush(stderr);
+}
 
 /* ---- Reactor state (all touched only by the reactor task) ---- */
 static struct Process *reactor_proc = NULL;
@@ -1265,7 +1337,16 @@ static void reactor_free_slot(int slot)
     socket_wtimeout[slot] = 0;
 }
 
-static void reactor_reply(SockReq *req) { ReplyMsg(&req->msg); }
+static void reactor_reply(SockReq *req)
+{
+    if (sock_diag_on()) {
+        char detail[96];
+        sprintf(detail, "%s result=%d out=%d", sock_op_name(req->op),
+                (int)req->result, (int)req->out_slot);
+        sock_diag_line(req, "tx", detail);
+    }
+    ReplyMsg(&req->msg);
+}
 
 /* recv into the caller's read buffer; complete or park.  result>0 = bytes,
  * 0 = EOF, -1 = error. */
@@ -1279,7 +1360,12 @@ static void reactor_try_read(SockReq *req)
     if (n > 0)                       { req->result = (int)n; reactor_reply(req); }
     else if (n == 0)                 { req->result = 0;      reactor_reply(req); } /* EOF */
     else if (Errno() == EWOULDBLOCK) { pend_read[slot] = req;                      /* park */
-                                       reactor_arm_deadline(slot, req->timeout_ms, 0); }
+                                       reactor_arm_deadline(slot, req->timeout_ms, 0);
+                                       if (sock_diag_on()) {
+                                           char d[32];
+                                           sprintf(d, "slot=%d", slot);
+                                           sock_diag_line(req, "park-r", d);
+                                       } }
     else                             { req->result = -1;     reactor_reply(req); }
 }
 
@@ -1330,10 +1416,21 @@ static void reactor_try_write(SockReq *req)
         pend_wpos[slot] = off;
         if (off >= req->len) { pend_wpos[slot] = 0; req->result = 0; reactor_reply(req); }
         else                 { pend_write[slot] = req;     /* more to send — park */
-                               reactor_arm_deadline(slot, req->timeout_ms, 1); }
+                               reactor_arm_deadline(slot, req->timeout_ms, 1);
+                               if (sock_diag_on()) {
+                                   char d[48];
+                                   sprintf(d, "slot=%d sent=%lu/%lu", slot,
+                                           (unsigned long)off, (unsigned long)req->len);
+                                   sock_diag_line(req, "park-w", d);
+                               } }
     } else if (Errno() == EWOULDBLOCK) {
         pend_write[slot] = req;                            /* park */
         reactor_arm_deadline(slot, req->timeout_ms, 1);
+        if (sock_diag_on()) {
+            char d[32];
+            sprintf(d, "slot=%d", slot);
+            sock_diag_line(req, "park-w", d);
+        }
     } else {
         pend_wpos[slot] = 0; req->result = -1; reactor_reply(req);
     }
@@ -1357,6 +1454,11 @@ static void reactor_try_accept(SockReq *req)
         reactor_reply(req);
     } else if (Errno() == EWOULDBLOCK) {
         pend_read[slot] = req;                              /* park on listener readable */
+        if (sock_diag_on()) {
+            char d[32];
+            sprintf(d, "slot=%d", slot);
+            sock_diag_line(req, "park-r", d);
+        }
     } else {
         req->result = -1; req->out_slot = PLATFORM_SOCKET_INVALID; reactor_reply(req);
     }
@@ -1387,7 +1489,13 @@ static void reactor_start_connect(SockReq *req)
 
     /* DNS: dotted-quad (e.g. loopback) resolves locally and does not block;
      * a real hostname lookup can briefly stall the reactor — acceptable. */
+    if (sock_diag_on()) {
+        char d[80];
+        sprintf(d, "\"%.64s\"", req->host);
+        sock_diag_line(req, "dns", d);
+    }
     he = gethostbyname((STRPTR)req->host);
+    if (sock_diag_on()) sock_diag_line(req, he ? "dns ok" : "dns FAIL", NULL);
     if (!he) { req->result = -1; req->out_slot = PLATFORM_SOCKET_INVALID; reactor_reply(req); return; }
 
     fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -1413,6 +1521,11 @@ static void reactor_start_connect(SockReq *req)
         /* Bound the handshake when a connect timeout was requested; the reactor
          * reaps it in reactor_expire_deadlines if the peer never replies. */
         reactor_arm_deadline(slot, req->timeout_ms, 1);
+        if (sock_diag_on()) {
+            char d[32];
+            sprintf(d, "slot=%d", slot);
+            sock_diag_line(req, "park-w", d);
+        }
     } else {
         CloseSocket(fd); req->result = -1; req->out_slot = PLATFORM_SOCKET_INVALID; reactor_reply(req);
     }
@@ -1460,7 +1573,13 @@ static void reactor_udp_connect(SockReq *req)
     LONG fd;
     int slot;
 
+    if (sock_diag_on()) {
+        char d[80];
+        sprintf(d, "\"%.64s\"", req->host);
+        sock_diag_line(req, "dns", d);
+    }
     he = gethostbyname((STRPTR)req->host);
+    if (sock_diag_on()) sock_diag_line(req, he ? "dns ok" : "dns FAIL", NULL);
     if (!he) { req->result = -1; req->out_slot = PLATFORM_SOCKET_INVALID; reactor_reply(req); return; }
 
     fd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -1532,6 +1651,11 @@ static void reactor_close_all(void)
 
 static void reactor_handle(SockReq *req)
 {
+    if (sock_diag_on()) {
+        char d[64];
+        sprintf(d, "%s slot=%d", sock_op_name(req->op), (int)req->slot);
+        sock_diag_line(req, "rx", d);
+    }
     switch (req->op) {
     case REQ_CONNECT:  reactor_start_connect(req); break;
     case REQ_LISTEN:   reactor_do_listen(req);     break;
@@ -1551,6 +1675,11 @@ static void reactor_resume_read(int slot)
     SockReq *req = pend_read[slot];
     pend_read[slot] = NULL;
     pend_read_has_deadline[slot] = 0;
+    if (sock_diag_on()) {
+        char d[32];
+        sprintf(d, "slot=%d", slot);
+        sock_diag_line(req, "resume-r", d);
+    }
     if (req->op == REQ_ACCEPT) reactor_try_accept(req);
     else                       reactor_try_read(req);
 }
@@ -1560,6 +1689,11 @@ static void reactor_resume_write(int slot)
     SockReq *req = pend_write[slot];
     pend_write[slot] = NULL;
     pend_write_has_deadline[slot] = 0;
+    if (sock_diag_on()) {
+        char d[32];
+        sprintf(d, "slot=%d", slot);
+        sock_diag_line(req, "resume-w", d);
+    }
     if (req->op == REQ_CONNECT) reactor_finish_connect(req);
     else                        reactor_try_write(req);
 }
@@ -1574,6 +1708,11 @@ static void reactor_expire_deadlines(uint32_t now)
             (int32_t)(pend_read_deadline[i] - now) <= 0) {
             SockReq *req = pend_read[i];
             pend_read[i] = NULL; pend_read_has_deadline[i] = 0;
+            if (sock_diag_on()) {
+                char d[32];
+                sprintf(d, "slot=%d", i);
+                sock_diag_line(req, "expire-r", d);
+            }
             req->result = PLATFORM_SOCKET_TIMEOUT;
             req->out_slot = PLATFORM_SOCKET_INVALID;   /* in case it was an accept */
             reactor_reply(req);
@@ -1583,6 +1722,11 @@ static void reactor_expire_deadlines(uint32_t now)
             SockReq *req = pend_write[i];
             pend_write[i] = NULL; pend_write_has_deadline[i] = 0;
             pend_wpos[i] = 0;
+            if (sock_diag_on()) {
+                char d[32];
+                sprintf(d, "slot=%d", i);
+                sock_diag_line(req, "expire-w", d);
+            }
             if (req->op == REQ_CONNECT) {
                 /* Handshake never completed: tear down the reserved socket and
                  * report failure (out_slot INVALID), matching the error path of
@@ -1825,6 +1969,15 @@ static void sock_call_impl(SockReq *req, int use_safe_region)
     req->msg.mn_Length       = sizeof(*req);
     req->msg.mn_ReplyPort    = &rp;
 
+    if (sock_diag_on()) {
+        char d[96];
+        req->seq = platform_atomic_inc(&sock_diag_seq);
+        sprintf(d, "%s slot=%d len=%lu to=%d task=%p",
+                sock_op_name(req->op), (int)req->slot,
+                (unsigned long)req->len, req->timeout_ms,
+                (void *)rp.mp_SigTask);
+        sock_diag_line(req, ">", d);
+    }
     PutMsg(reactor_port, &req->msg);
     /* The GC-sweep close path must not enter a safe region (the sweeping
      * thread owns the collection); the reactor is a plain exec Task, not a
@@ -1834,6 +1987,12 @@ static void sock_call_impl(SockReq *req, int use_safe_region)
     if (use_safe_region) cl_gc_leave_safe_region();
     GetMsg(&rp);
     FreeSignal(sig);
+    if (sock_diag_on()) {
+        char d[64];
+        sprintf(d, "%s result=%d out=%d", sock_op_name(req->op),
+                (int)req->result, (int)req->out_slot);
+        sock_diag_line(req, "<", d);
+    }
 }
 
 static void sock_call(SockReq *req)
