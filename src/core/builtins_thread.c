@@ -840,17 +840,15 @@ static const char *wait_kind_name(int wk)
     }
 }
 
-/* (mp:dump-thread-waits) -> nil
- * Diagnostic: print, for every live thread, what synchronization primitive it
+/* Diagnostic: print, for every live thread, what synchronization primitive it
  * is currently blocked on.  Distinguishes a lost-wakeup (a worker still parked
  * in condwait on its queue condvar after the producer already notified) from a
- * lock-ordering deadlock (a thread blocked acquiring a held lock).  Intended to
- * be called from a watchdog when a hang is detected. */
-static CL_Obj bi_dump_thread_waits(CL_Obj *args, int n)
+ * lock-ordering deadlock (a thread blocked acquiring a held lock).  Callable
+ * from C (the GC-STW straggler diagnostic in thread.c) as well as from Lisp
+ * via MP:DUMP-THREAD-WAITS. */
+void cl_dump_thread_waits(void)
 {
     int i;
-    CL_UNUSED(args);
-    CL_UNUSED(n);
     fprintf(stderr, "==== MP:DUMP-THREAD-WAITS (%u live threads) ====\n",
             cl_thread_count);
     /* Walk the table under the list lock: the zombie reaper / a completing
@@ -889,6 +887,14 @@ static CL_Obj bi_dump_thread_waits(CL_Obj *args, int n)
     if (cl_thread_list_lock) platform_mutex_unlock(cl_thread_list_lock);
     fprintf(stderr, "==== end ====\n");
     fflush(stderr);
+}
+
+/* (mp:dump-thread-waits) -> nil */
+static CL_Obj bi_dump_thread_waits(CL_Obj *args, int n)
+{
+    CL_UNUSED(args);
+    CL_UNUSED(n);
+    cl_dump_thread_waits();
     return CL_NIL;
 }
 

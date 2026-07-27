@@ -433,7 +433,19 @@ void cl_thread_restore_main_tls(void);
 #define CL_WORKER_VM_FRAME_SIZE  256    /* 256 frames        (pre-fix value) */
 #define CL_WORKER_NLX_FRAMES     256    /* 256 NLX frames    (pre-fix value) */
 #define CL_WORKER_SAVED_PENDING   64    /* 64 saved-pending  (pre-fix value) */
+#ifdef PLATFORM_MORPHOS
+/* MorphOS: 64K is a 68k-era stack budget.  PPC frames are several times
+ * larger (register-save areas, minimum-frame overhead), the MAIN thread
+ * already needs a 1MB __stack on MorphOS, and worker C-stack overflow is
+ * UNGUARDED outside the reader/compiler recursion guards -- it corrupts
+ * memory or kills the task (a Frozen CL-Thread under the Grim Reaper)
+ * instead of signalling.  RAM is plentiful on MorphOS machines, so give
+ * workers a real stack.  CL_PROC_STACK_TAGS sizes both the 68k and PPC
+ * stacks from this one value. */
+#define CL_WORKER_C_STACK_SIZE   (256u * 1024u)
+#else
 #define CL_WORKER_C_STACK_SIZE     0    /* OS default (~64KB, pre-fix value) */
+#endif
 #else
 #define CL_WORKER_VM_STACK_SIZE  CL_VM_STACK_SIZE      /* 16K entries = 64KB */
 #define CL_WORKER_VM_FRAME_SIZE  CL_VM_FRAME_SIZE      /* 1024 frames */
@@ -582,6 +594,11 @@ void cl_thread_unregister(CL_Thread *t);
 
 void cl_gc_safepoint(void);           /* slow path: stop until GC completes */
 void cl_thread_handle_interrupt(CL_Thread *t);  /* slow path: handle pending interrupt */
+
+/* Hang-triage dump (builtins_thread.c): per-thread wait states to stderr.
+ * The C entry point behind MP:DUMP-THREAD-WAITS; also called by the
+ * CLAMIGA_STW_DIAG straggler watchdog in cl_gc_stop_the_world. */
+void cl_dump_thread_waits(void);
 
 /* Bring a freshly-created worker online: the first thing its OS thread must do
  * (before touching the heap) is transition from newborn to `gc_live` under

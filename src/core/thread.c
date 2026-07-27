@@ -16,10 +16,8 @@
 #include "../platform/platform.h"
 #include "../platform/platform_thread.h"
 #include <string.h>
-#ifdef DEBUG_THREAD_RACE_HOOKS
-#include <stdio.h>
-#include <stdlib.h>
-#endif
+#include <stdio.h>   /* CLAMIGA_STW_DIAG straggler reports (and race selftest) */
+#include <stdlib.h>  /* atoi for the env threshold */
 
 static CL_Thread cl_main_thread;
 CL_Thread *cl_main_thread_ptr = NULL;
@@ -283,6 +281,51 @@ void cl_gc_thread_online(CL_Thread *self)
 
 /* ---- Stop-the-world GC coordination ---- */
 
+/* ---- STW straggler diagnostic (CLAMIGA_STW_DIAG) ----
+ *
+ * When the CLAMIGA_STW_DIAG environment variable is set, the STW initiator's
+ * wait loop uses a TIMED condvar wait; every time the timeout elapses without
+ * the world having stopped it reports the straggler thread (the one the scan
+ * found neither stopped nor in a safe region) and dumps every thread's wait
+ * state — so a hung stop-the-world names its culprit in clamiga's own output
+ * instead of requiring an external debugger.  The env value is the report
+ * cadence in milliseconds; "1" or a non-numeric value selects 5000ms.
+ *
+ * The timed wait also RESCANS after each timeout, so if the hang was a lost
+ * condvar wakeup (the straggler actually stopped but the initiator missed the
+ * broadcast) the rescan unsticks the world — the report says so, because that
+ * outcome is itself the diagnosis.  Runtime diagnostic, not DEBUG-flag
+ * instrumentation: always compiled, zero cost when the env var is unset
+ * (same pattern as CLAMIGA_LOCK_DIAG in builtins_thread.c). */
+
+/* Pure parsing rule, factored out of stw_diag_threshold_ms so the
+ * DEBUG_THREAD_RACE_HOOKS self-test below can exercise every branch
+ * (unset/"1"/non-numeric/>=2) directly without touching the cache below. */
+static int32_t stw_diag_parse_ms(const char *s)
+{
+    if (!s || !*s)
+        return -1;
+    {
+        int v = atoi(s);
+        return (v >= 2) ? v : 5000;
+    }
+}
+
+/* -2 = env not read yet; -1 = disabled; >=2 = cadence in ms.  Benign
+ * lazy-init race: every thread computes the same value. */
+static int32_t stw_diag_cached_ms = -2;
+
+static int32_t stw_diag_threshold_ms(void)
+{
+    if (stw_diag_cached_ms == -2) {
+        char envbuf[32];
+        const char *s = platform_getenv("CLAMIGA_STW_DIAG", envbuf,
+                                        (int)sizeof(envbuf));
+        stw_diag_cached_ms = stw_diag_parse_ms(s);
+    }
+    return stw_diag_cached_ms;
+}
+
 /* Called by the GC initiator (from cl_gc) to stop all other threads.
  * The caller must NOT hold alloc_mutex when calling this.
  *
@@ -323,6 +366,9 @@ void cl_gc_stop_the_world(void)
     /* Wait until all other threads have reached a safepoint or are inside
      * a safe region (blocking syscall not touching the heap). */
     if (self) self->wait_kind = 4;  /* GC-STW-WAIT (diagnostic) */
+    {
+    int32_t  diag_ms   = stw_diag_threshold_ms();
+    uint32_t waited_ms = 0;   /* cumulative timed-out wait (diag only) */
     for (;;) {
         int all_stopped = 1;
         platform_mutex_lock(cl_thread_list_lock);
@@ -356,11 +402,30 @@ void cl_gc_stop_the_world(void)
         }
         platform_mutex_unlock(cl_thread_list_lock);
 
-        if (all_stopped) break;
+        if (all_stopped) {
+            if (waited_ms > 0)
+                fprintf(stderr, "GC-STW diag: world stopped after %u ms of "
+                        "timed-out waits — a timeout RESCAN unstuck it, which "
+                        "points at a lost gc_condvar wakeup, or at a straggler "
+                        "that stopped without a broadcast reaching us\n",
+                        (unsigned)waited_ms);
+            break;
+        }
 #ifdef DEBUG_THREAD_RACE_HOOKS
         dbg_race_stw_parked = 1;
 #endif
-        platform_condvar_wait(gc_condvar, gc_mutex);
+        if (diag_ms < 0) {
+            platform_condvar_wait(gc_condvar, gc_mutex);
+        } else if (platform_condvar_wait_timeout(gc_condvar, gc_mutex,
+                                                 (uint32_t)diag_ms) != 0) {
+            waited_ms += (uint32_t)diag_ms;
+            fprintf(stderr, "GC-STW diag: world NOT stopped after %u ms — "
+                    "straggler tid=%d (running, neither at a safepoint nor in "
+                    "a safe region); all-thread dump follows\n",
+                    (unsigned)waited_ms, self ? self->wait_lock_id : -1);
+            cl_dump_thread_waits();
+        }
+    }
     }
     if (self) self->wait_kind = 0;
     /* gc_mutex remains held — caller runs GC then calls resume */
@@ -409,6 +474,62 @@ static void *dbg_race_worker_fn(void *arg)
     return NULL;
 }
 
+/* ---- STW straggler-diagnostic self-test (CLAMIGA_STW_DIAG) ----
+ *
+ * Exercises stw_diag_parse_ms's branches directly (a pure function, no
+ * process state to race on) and then drives one real timed-wait/rescan
+ * cycle: a worker registers live and sleeps well past the configured
+ * threshold without ever reaching a safepoint, forcing
+ * cl_gc_stop_the_world's timed wait to expire at least once, print a
+ * straggler report, and rescan once the worker unregisters. A hang here
+ * means the timed-wait/rescan path regressed; the shell test's `timeout`
+ * wrapper turns that into a deterministic FAIL like the race test below.
+ *
+ * Must run before dbg_race_selftest below touches cl_gc_stop_the_world:
+ * stw_diag_cached_ms is a process-wide lazy cache, and this is the only
+ * chance to have it observe CLAMIGA_STW_DIAG being set. */
+static void *dbg_stw_diag_worker_fn(void *arg)
+{
+    CL_Thread *t = (CL_Thread *)arg;
+    cl_thread_register(t);     /* live=1: the STW below will target it */
+    platform_sleep_ms(60);     /* outlasts the 20ms threshold set below */
+    cl_thread_unregister(t);   /* exits WITHOUT ever hitting a safepoint */
+    return NULL;
+}
+
+static int dbg_stw_diag_selftest(void)
+{
+    CL_Thread *worker;
+    void *handle;
+    int spins;
+
+    if (stw_diag_parse_ms(NULL)  != -1)   return 0;
+    if (stw_diag_parse_ms("")    != -1)   return 0;
+    if (stw_diag_parse_ms("1")   != 5000) return 0;
+    if (stw_diag_parse_ms("abc") != 5000) return 0;
+    if (stw_diag_parse_ms("20")  != 20)   return 0;
+
+    setenv("CLAMIGA_STW_DIAG", "20", 1);
+
+    worker = cl_thread_alloc_worker();
+    if (!worker) return 0;
+    if (platform_thread_create(&handle, dbg_stw_diag_worker_fn, worker,
+                               CL_WORKER_C_STACK_SIZE) != 0) {
+        cl_thread_free_worker(worker);
+        return 0;
+    }
+
+    for (spins = 0; cl_thread_count < 2 && spins < 1000000; spins++)
+        platform_thread_yield();
+    if (cl_thread_count < 2) return 0;
+
+    cl_gc_stop_the_world();   /* hangs here if the diag path regresses */
+    cl_gc_resume_the_world();
+
+    printf("STW-DIAG-SELFTEST-OK\n");
+    return 1;
+}
+
 /* Runs the race deterministically and reports the outcome on stdout/exit
  * code; invoked automatically at process start when this build is compiled
  * with -DDEBUG_THREAD_RACE_HOOKS (see tests/test_mt_thread_exit_gc.sh and
@@ -420,6 +541,12 @@ static void dbg_race_selftest_and_exit(void)
     int spins;
 
     cl_thread_init();
+
+    if (!dbg_stw_diag_selftest()) {
+        fprintf(stderr, "RACE-SELFTEST: STW-diag self-test failed\n");
+        exit(2);
+    }
+
     worker = cl_thread_alloc_worker();
     if (!worker) {
         fprintf(stderr, "RACE-SELFTEST: worker alloc failed\n");
