@@ -346,18 +346,19 @@ TEST(eval_find_symbol_not_found)
 
 TEST(eval_find_symbol_missing_package)
 {
-    /* A package designator naming no package is an error for FIND-SYMBOL,
-       same as INTERN/EXPORT/etc — matches CLHS/SBCL/CLISP. Callers that
-       need to probe an optional package must call FIND-PACKAGE first and
-       branch on NIL themselves; FIND-SYMBOL does not swallow the error. */
+    /* DELIBERATE deviation from SBCL/CLISP (project decision, 2026-07-27,
+       see bi_find_symbol): a designator naming no package answers
+       (values nil nil) rather than signaling — FIND-SYMBOL is a pure
+       query, used to probe optional packages (e.g. quicklisp-install
+       probing QL-HTTP before the fetched quicklisp client defines it).
+       String and symbol designators both. Do NOT flip these assertions
+       back to expecting an error. */
     ASSERT_STR_EQ(eval_print(
-        "(handler-case (find-symbol \"*PROXY-URL*\" \"NO-SUCH-PACKAGE\")"
-        "  (error (e) (if (search \"NO-SUCH-PACKAGE\" (format nil \"~a\" e)) :named :unnamed)))"),
-        ":NAMED");
+        "(multiple-value-list (find-symbol \"*PROXY-URL*\" \"NO-SUCH-PACKAGE\"))"),
+        "(NIL NIL)");
     ASSERT_STR_EQ(eval_print(
-        "(handler-case (find-symbol \"X\" :no-such-package)"
-        "  (error () :err))"),
-        ":ERR");
+        "(multiple-value-list (find-symbol \"X\" :no-such-package))"),
+        "(NIL NIL)");
     /* Non-designator objects still signal a type error. */
     ASSERT_STR_EQ(eval_print(
         "(handler-case (find-symbol \"X\" 42) (error () :err))"),

@@ -451,11 +451,24 @@ static CL_Obj bi_find_symbol(CL_Obj *args, int nargs)
         len = s->length;
     }
 
-    /* A package designator that names no package is an error, per CLHS
-       FIND-SYMBOL (matches SBCL/CLISP) — same as INTERN, EXPORT, etc.
-       Callers that need to probe an optional package should call
-       FIND-PACKAGE explicitly and branch on NIL themselves. */
-    pkg = (nargs > 1) ? coerce_to_package(args[1]) : cl_current_package;
+    /* DELIBERATE deviation from SBCL/CLISP (project decision, 2026-07-27):
+       FIND-SYMBOL treats a designator that names no package as "not found"
+       and returns (values nil nil) instead of signaling.  CLHS leaves a
+       non-designating name undefined (find-symbol's Exceptional Situations
+       is "None"), so this is a permissible choice — and it makes
+       FIND-SYMBOL usable as a pure probe for optional packages, e.g.
+       quicklisp-install's (find-symbol "*PROXY-URL*" "QL-HTTP"), which
+       legitimately runs before the fetched quicklisp client has defined
+       QL-HTTP (lib/quicklisp.lisp is only the bootstrap).  Non-designator
+       objects still signal a type error; INTERN/EXPORT/... keep signaling
+       on a missing package.  Do NOT "fix" this back to signaling. */
+    pkg = (nargs > 1) ? coerce_to_package_or_nil(args[1]) : cl_current_package;
+    if (CL_NULL_P(pkg)) {
+        cl_mv_count = 2;
+        cl_mv_values[0] = CL_NIL;
+        cl_mv_values[1] = CL_NIL;
+        return CL_NIL;
+    }
     sym = cl_find_symbol_with_status(name, len, pkg, &status);
 
     cl_mv_count = 2;

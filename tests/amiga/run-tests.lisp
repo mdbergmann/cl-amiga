@@ -2870,7 +2870,9 @@
 (check "find-symbol CAR external" :external (multiple-value-bind (sym status) (find-symbol "CAR" (find-package "CL")) status))
 (check "find-symbol CAR inherited" :inherited (multiple-value-bind (sym status) (find-symbol "CAR" (find-package "CL-USER")) status))
 (check "find-symbol not found" nil (multiple-value-bind (sym status) (find-symbol "ZZZZZ" (find-package "CL")) status))
-(check "find-symbol missing package" :named (handler-case (find-symbol "*PROXY-URL*" "NO-SUCH-PACKAGE") (error (e) (if (search "NO-SUCH-PACKAGE" (format nil "~a" e)) :named :unnamed))))
+; DELIBERATE deviation from SBCL/CLISP (see bi_find_symbol): missing package
+; answers (values nil nil), FIND-SYMBOL is a pure probe for optional packages.
+(check "find-symbol missing package" '(nil nil) (multiple-value-list (find-symbol "*PROXY-URL*" "NO-SUCH-PACKAGE")))
 (check "find-symbol bad designator errors" :err (handler-case (find-symbol "X" 42) (error () :err)))
 (check "intern new" nil (let ((name (symbol-name (gensym "INTERN-TEST-")))) (multiple-value-bind (sym status) (intern name) status)))
 (check "intern existing" :inherited (multiple-value-bind (sym status) (intern "CAR") status))
