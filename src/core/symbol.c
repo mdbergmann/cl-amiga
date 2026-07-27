@@ -812,7 +812,17 @@ void cl_symbol_init(void)
         CL_Obj features = CL_NIL;
         s->flags |= CL_SYM_SPECIAL;
 #ifdef PLATFORM_AMIGA
+#ifdef PLATFORM_MORPHOS
+        /* MorphOS is the AmigaOS API on PPC: keep :AMIGAOS (the OS-API
+         * feature the library code keys on) but NOT :M68K — the CPU
+         * feature gates m68k-only machinery (the template JIT, the
+         * register-based library-call FFI dispatcher) that this build
+         * does not have.  :MORPHOS lets code target this port. */
+        features = cl_cons(cl_intern_keyword("PPC", 3), features);
+        features = cl_cons(cl_intern_keyword("MORPHOS", 7), features);
+#else
         features = cl_cons(KW_M68K, features);
+#endif
         features = cl_cons(KW_AMIGAOS, features);
 #else
         features = cl_cons(KW_POSIX, features);

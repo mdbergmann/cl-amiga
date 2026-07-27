@@ -4234,9 +4234,14 @@
 (check "feature-not" 42 #+(not nonexistent) 42)
 (check "feature-not-fail" 99 #+(not cl-amiga) 42 99)
 
-; Platform-specific features on Amiga
+; Platform-specific features on Amiga.  :AMIGAOS = the OS API (m68k AmigaOS
+; AND MorphOS); :M68K vs :MORPHOS/:PPC = the CPU/port, which gates the
+; m68k-only machinery (template JIT, register-based FFI dispatcher).
 (check "features-has-amigaos" t (if (member :amigaos *features*) t nil))
-(check "features-has-m68k" t (if (member :m68k *features*) t nil))
+#-morphos (check "features-has-m68k" t (if (member :m68k *features*) t nil))
+#+morphos (check "features-has-morphos-not-m68k" '(t nil)
+  (list (if (member :morphos *features*) t nil)
+        (if (member :m68k *features*) t nil)))
 #+amigaos (check "feature-plus-amigaos" 42 42)
 
 ; sleep with zero duration
@@ -8407,8 +8412,17 @@
   (ffi:pointer-eq (ffi:make-foreign-pointer 16) (ffi:make-foreign-pointer 32)))
 
 ; --- FFI (Amiga-specific) ---
-#+amigaos (require "amiga/ffi")
-#+amigaos
+; Gated on :M68K, not :AMIGAOS: everything below ultimately dispatches
+; through the m68k register-based library-call trampoline (and the m68k
+; template JIT).  On MorphOS platform_amiga_call() is a stub returning 0,
+; which reads as *success* for zero-is-ok Amiga APIs and as NULL from
+; allocators — the GUI/audio tests then poke through near-NULL pointers
+; and freeze the machine.  Re-enable per-capability once the PPC
+; dispatcher exists.
+#+(and amigaos (not m68k))
+(format t "SKIP: m68k JIT + AMIGA FFI/GUI/audio tests (no native dispatcher on this port)~%")
+#+m68k (require "amiga/ffi")
+#+m68k
 (progn
   ; --- m68k template JIT (encoders + native dispatch + behavior).
   ; Lives in a sibling file so JIT coverage can grow without bloating
@@ -9790,11 +9804,11 @@
 (format t "Total:  ~A~%" (+ *pass-count* *fail-count*))
 (if (= *fail-count* 0) (format t "~%ALL TESTS PASSED~%") (format t "~%SOME TESTS FAILED~%"))
 
-; --- JIT benchmark (Amiga only; host has no native codegen) ---
+; --- JIT benchmark (m68k Amiga only; no native codegen elsewhere) ---
 ; Runs after the test summary so its timings land in the same log the
 ; harness consumes.  Kept in trunk/ so the benchmark can iterate on
 ; its own cadence without touching the test file.
-#+amigaos
+#+m68k
 (handler-case
   (load "trunk/bench-jit-loop.lisp")
   (error (e) (format t "ERROR running JIT bench: ~A~%" e)))

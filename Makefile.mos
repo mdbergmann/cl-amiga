@@ -33,7 +33,13 @@ CC      = gcc
 # PPC has none of the m68k -O2 miscompiles documented in Makefile.cross,
 # so -O2 is safe here.
 CFLAGS  ?= -std=c99 -noixemul -Wall -O2 -DPLATFORM_AMIGA -DPLATFORM_MORPHOS $(DEBUG_FLAGS)
-LDFLAGS ?=
+# -noixemul is a LINK-time flag as well: it selects the libnix startup code
+# and libc.  Without it here the link silently falls back to the ixemul
+# startup/libc even though every object was compiled -noixemul — the binary
+# then runs on ixemul.library's Unix-emulation layer, whose internal state
+# has been observed to park the main task in a permanent exec/Wait() (empty
+# tc_SigWait) deep into long runs.  Keep compile and link flags in agreement.
+LDFLAGS ?= -noixemul
 LDLIBS  ?= -lm
 
 SRCDIR   = src
@@ -105,7 +111,39 @@ MAIN_SRC     = $(SRCDIR)/main.c
 ALL_SRCS = $(MAIN_SRC) $(PLATFORM_SRC) $(CORE_SRC) $(JIT_SRC)
 ALL_OBJS = $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(ALL_SRCS))
 
-.PHONY: morphos clean
+# --- Native C unit tests (the C tier of the host `make test`) ---------------
+# Builds tests/test_*.c against the MorphOS objects and runs them in sequence.
+# This is the same C tier the host fast gate runs; the shell-script tier
+# (tests/*.sh) is NOT covered here — those need a POSIX sh/timeout
+# environment.  A handful of test sources are POSIX-host-only (pipe(),
+# dup2(), <sys/socket.h>, <sys/wait.h> — unavailable under the -noixemul
+# MorphOS SDK libnix/libc used by this Makefile, per the notes in
+# platform_amiga.c above the PLATFORM_MORPHOS socket block) and would fail to
+# *compile* here, not just fail at runtime; they are excluded outright.
+# First-run caveat: a few of the remaining tests are still host-oriented
+# (e.g. the generational-GC ones — CL_GENGC is host-only) and may fail or be
+# vacuous on MorphOS; treat unexpected failures there as signal, not noise.
+TEST_SRCDIR = tests
+TEST_EXCLUDE = $(TEST_SRCDIR)/test_tty.c $(TEST_SRCDIR)/test_debugger.c \
+               $(TEST_SRCDIR)/test_stream.c $(TEST_SRCDIR)/test_gc_threaded.c
+TEST_SRCS   = $(filter-out $(TEST_EXCLUDE),$(wildcard $(TEST_SRCDIR)/test_*.c))
+TEST_BINS   = $(patsubst $(TEST_SRCDIR)/%.c,$(BUILDDIR)/tests/%,$(TEST_SRCS))
+LIB_OBJS    = $(filter-out $(BUILDDIR)/main.o,$(ALL_OBJS))
+
+$(BUILDDIR)/tests/%: $(TEST_SRCDIR)/%.c $(TEST_SRCDIR)/test.h $(LIB_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(LDFLAGS) $(CFLAGS) -I$(SRCDIR) -I$(TEST_SRCDIR) -o $@ $< $(LIB_OBJS) $(LDLIBS)
+
+test: $(TEST_BINS)
+	@failed=0; \
+	for t in $(TEST_BINS); do \
+		echo "--- $$t ---"; \
+		if $$t; then echo "PASS"; else echo "FAIL"; failed=1; fi; \
+	done; \
+	if [ $$failed -eq 0 ]; then echo "=== MorphOS C unit tests passed ==="; \
+	else echo "=== SOME MORPHOS C UNIT TESTS FAILED ==="; exit 1; fi
+
+.PHONY: morphos clean test
 
 morphos: $(BUILDDIR)/clamiga
 
