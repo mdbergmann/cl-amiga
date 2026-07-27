@@ -1858,6 +1858,14 @@ static CL_Obj invoke_restart_at_binding(int i, CL_Obj *call_args, int n_call)
     return invoke_restart_with_list(i, args_list);
 }
 
+/* Debugger entry (numeric restart selection): same dispatch protocol as
+ * INVOKE-RESTART, so the handler runs at the catch landing after the
+ * unwind.  See error.h. */
+void cl_invoke_restart_by_stack_index(int stack_idx)
+{
+    (void)invoke_restart_at_binding(stack_idx, NULL, 0);
+}
+
 /* (invoke-restart restart-designator &rest args) */
 static CL_Obj bi_invoke_restart(CL_Obj *args, int n)
 {

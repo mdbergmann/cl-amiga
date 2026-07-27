@@ -243,6 +243,13 @@ CL_NORETURN void cl_signal_arith_error(CL_Obj type_sym, CL_Obj operation,
 CL_NORETURN void cl_signal_unbound_variable(CL_Obj name);
 CL_NORETURN void cl_signal_undefined_function(CL_Obj name);
 
+/* Invoke the restart at absolute restart-stack index (no arguments) via the
+ * INVOKE-RESTART dispatch protocol: a (handler . args) cons is thrown to the
+ * restart's catch tag and the handler runs at the catch landing, AFTER the
+ * unwind (builtins_condition.c).  Longjmps; does not return.  Debugger entry
+ * point for numeric restart selection. */
+void cl_invoke_restart_by_stack_index(int stack_idx);
+
 /* Print the current error message */
 void cl_error_print(void);
 

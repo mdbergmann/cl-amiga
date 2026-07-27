@@ -174,12 +174,13 @@ static void invoke_restart_at(int idx)
         return;
     }
 
-    {
-        CL_Obj result = cl_vm_apply(cl_restart_stack[stack_idx].handler,
-                                     NULL, 0);
-        cl_throw_to_tag(cl_restart_stack[stack_idx].tag, result);
-        /* Does not return (longjmp) */
-    }
+    /* Route through the INVOKE-RESTART dispatch protocol: the handler must
+     * be applied at the restart-case catch landing AFTER the unwind.
+     * Applying it here and throwing its return value handed the landing a
+     * non-dispatch value that it then tried to APPLY — "not a callable
+     * function" on every numeric restart selection. */
+    cl_invoke_restart_by_stack_index(stack_idx);
+    /* Does not return (longjmp) */
 }
 
 /* (invoke-debugger condition) — Lisp builtin */

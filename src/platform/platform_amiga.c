@@ -831,6 +831,14 @@ const char *platform_getenv(const char *name, char *buf, int bufsize)
     return buf;
 }
 
+int platform_break_pending(void)
+{
+    /* The console/shell delivers Ctrl-C as SIGBREAKF_CTRL_C on the running
+     * task; SetSignal(0, mask) reads-and-clears it atomically.  Each thread
+     * (AmigaOS process) polls its own task signal. */
+    return (SetSignal(0, SIGBREAKF_CTRL_C) & SIGBREAKF_CTRL_C) != 0;
+}
+
 const char *platform_executable_prefix(char *buf, int bufsize)
 {
     /* PROGDIR: is the executable's directory; as a device-style prefix it

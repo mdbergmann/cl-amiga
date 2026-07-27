@@ -9,6 +9,7 @@
 #include "../platform/platform.h"
 #include "../platform/platform_thread.h"
 #include <stdarg.h>
+#include <stdio.h>    /* CLAMIGA_GC_DIAG per-collection trace (fprintf/stderr) */
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -97,6 +98,38 @@ static uint64_t gc_time_stw_max_us = 0;  /* worst single stop */
 static uint32_t gc_stw_stops = 0;        /* stop-the-world events */
 static uint32_t gc_epoch_skips = 0;      /* redundant GCs deduped (see
                                           * cl_gc_if_stale) */
+
+/* ---- Per-collection trace (CLAMIGA_GC_DIAG) ----
+ * One stderr line per collection when the CLAMIGA_GC_DIAG environment
+ * variable is set: wall clock, cycle number, collection kind, pause, and
+ * heap occupancy.  Lets a hang be classified from clamiga's own output —
+ * an endless stream of lines is a GC storm, silence means the time is
+ * going somewhere else.  Runtime diagnostic, not DEBUG-flag
+ * instrumentation: always compiled, zero cost when the env var is unset
+ * (same pattern as CLAMIGA_STW_DIAG / CLAMIGA_SOCK_DIAG). */
+static int32_t gc_diag_cached = -2;   /* -2 = env not read; 0 = off; 1 = on */
+
+static int gc_diag_on(void)
+{
+    if (gc_diag_cached == -2) {
+        char envbuf[16];
+        const char *s = platform_getenv("CLAMIGA_GC_DIAG", envbuf,
+                                        (int)sizeof(envbuf));
+        gc_diag_cached = (s && *s) ? 1 : 0;
+    }
+    return gc_diag_cached;
+}
+
+static void gc_diag_report(const char *kind, uint64_t pause_us)
+{
+    fprintf(stderr, "[GC] %lums #%lu %s pause=%luus used=%luK/%luK\n",
+            (unsigned long)platform_time_ms(),
+            (unsigned long)cl_heap.gc_count, kind,
+            (unsigned long)pause_us,
+            (unsigned long)(cl_heap.total_allocated >> 10),
+            (unsigned long)(cl_heap.arena_size >> 10));
+    fflush(stderr);
+}
 
 /* Forward declarations */
 static void gc_mark(void);
@@ -4559,6 +4592,8 @@ void cl_gc_compact(void)
          * doomed compaction on every following allocation. */
         gc_sweeps_since_compact = 0;
         gc_time_compact_us += platform_time_us() - t0;
+        if (gc_diag_on())
+            gc_diag_report("compact-fallback", platform_time_us() - t0);
         if (multithread) cl_gc_resume_the_world();
         return;
     }
@@ -4591,6 +4626,8 @@ void cl_gc_compact(void)
         gc_sweeps_since_compact = 0;
         gc_fwd_fail_bump = cl_heap.bump;
         gc_time_compact_us += platform_time_us() - t0;
+        if (gc_diag_on())
+            gc_diag_report("compact-fallback", platform_time_us() - t0);
         if (multithread) cl_gc_resume_the_world();
         return;
     }
@@ -4716,6 +4753,8 @@ void cl_gc_compact(void)
 #endif
 
     gc_time_compact_us += platform_time_us() - t0;
+    if (gc_diag_on())
+        gc_diag_report("compact", platform_time_us() - t0);
 
     if (multithread)
         cl_gc_resume_the_world();
@@ -4914,6 +4953,8 @@ int cl_gc_minor(uint32_t seen_gc_count)
     cl_heap.gc_count++;
     gen_minor_count++;
     gc_time_minor_us += platform_time_us() - t0;
+    if (gc_diag_on())
+        gc_diag_report("minor", platform_time_us() - t0);
 
     if (multithread)
         cl_gc_resume_the_world();
@@ -5298,6 +5339,7 @@ static void gc_verify_after_sweep(void)
 static void cl_gc_stopped(uint64_t t0)
 {
     uint64_t t1;
+    uint64_t diag_t_begin = t0;   /* CLAMIGA_GC_DIAG: pause = whole collection */
 
     /* Drop every thread's TLAB before any pass runs: gc_sweep rebuilds the
      * free list from unmarked regions, so an active chunk tail (already a
@@ -5385,6 +5427,8 @@ static void cl_gc_stopped(uint64_t t0)
     gc_verify_after_sweep();
 #endif
     cl_heap.gc_count++;
+    if (gc_diag_on())
+        gc_diag_report("sweep", platform_time_us() - diag_t_begin);
 #ifdef DEBUG_GC
     {
         char buf[128];

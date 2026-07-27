@@ -31,6 +31,60 @@ extern int32_t cl_bytevec_check_value(CL_Obj value, int is_signed,
 #define vm_eval_max_depth   (CT->vm_max_eval_depth)
 #define VM_TRACE_SIZE       CL_VM_TRACE_SIZE
 
+/* ---- Ctrl-C break-in ----
+ *
+ * The interpreter polls platform_break_pending() at loop back-edges
+ * (backward OP_JMP) and at OP_CALL/OP_TAILCALL, counter-gated so the
+ * platform check (an exec call on Amiga, a flag read on POSIX) runs only
+ * every 1024th visit.  Together those sites cover every way Lisp code can
+ * loop, so a wedged computation — including one spinning on a corrupted
+ * data structure — can be interrupted and made to name its location.
+ *
+ * On a pending break: capture the backtrace AT THE INTERRUPTED OPCODE,
+ * then funcall CL:BREAK ("Interrupted by Ctrl-C"), whose debugger shows
+ * that backtrace and offers CONTINUE to resume the interrupted
+ * computation exactly where it was.  Non-interactive runs (debugger
+ * disabled/no tty) print the interrupt notice and continue; a second
+ * Ctrl-C before the first is consumed force-exits (POSIX).  Before
+ * boot.lisp has defined BREAK, fall back to printing the backtrace and
+ * continuing.
+ *
+ * Safe between opcodes: bytecode code arrays live outside the arena
+ * (platform_alloc), so the nested VM run inside BREAK — including any GC
+ * it triggers — cannot move the interpreter's code pointer, and the
+ * caller's frame/stack discipline is exactly that of OP_CALL. */
+static uint32_t vm_break_poll_ctr = 0;
+
+static void vm_handle_break(void)
+{
+    CL_Obj sym;
+    CL_Symbol *s;
+    if (!platform_break_pending())
+        return;
+    cl_capture_backtrace();
+    cl_write_cstring_to_error("\n;; Interrupt (Ctrl-C)\n");
+    sym = cl_find_symbol("BREAK", 5, cl_package_cl);
+    s = CL_SYMBOL_P(sym) ? (CL_Symbol *)CL_OBJ_TO_PTR(sym) : NULL;
+    if (s && !CL_NULL_P(s->function)) {
+        CL_Obj msg = cl_make_string("Interrupted by Ctrl-C", 21);
+        CL_GC_PROTECT(msg);
+        cl_vm_apply(s->function, &msg, 1);
+        CL_GC_UNPROTECT(1);
+    } else {
+        /* Break arrived before boot defined BREAK — report and continue. */
+        cl_write_cstring_to_error(cl_backtrace_buf);
+    }
+}
+
+/* Counter-gated poll, cheap enough for the OP_JMP/OP_CALL hot path. */
+#define VM_POLL_BREAK() \
+    do { \
+        if (((++vm_break_poll_ctr) & 1023) == 0) { \
+            frame->ip = ip; \
+            vm_handle_break(); \
+        } \
+    } while (0)
+
 /* Debug: UWP stack watchpoint.  Activate with -DCL_DEBUG_UWP */
 #ifdef CL_DEBUG_UWP
 static int dbg_watch_idx = -1;
@@ -2101,7 +2155,10 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
 
         VM_CASE(OP_JMP): {
             int32_t offset = read_i32(code, &ip);
-            if (offset < 0) CL_SAFEPOINT();  /* backward jump = loop body */
+            if (offset < 0) {                /* backward jump = loop body */
+                CL_SAFEPOINT();
+                VM_POLL_BREAK();
+            }
             ip += offset;
             VM_BREAK;
         }
@@ -2138,6 +2195,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             uint8_t nargs = code[ip++];
             int is_tail = (op == OP_TAILCALL);
             CL_SAFEPOINT();
+            VM_POLL_BREAK();
             CL_Obj *arg_base;
             CL_Obj func_obj;
 

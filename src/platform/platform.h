@@ -230,6 +230,15 @@ const char *platform_expand_home(const char *path, char *buf, int bufsize);
 /* Environment */
 const char *platform_getenv(const char *name, char *buf, int bufsize);
 
+/* Break-request poll (Ctrl-C).  Returns nonzero — and consumes the request —
+ * when the user asked to interrupt the running program: SIGINT on POSIX
+ * (a second SIGINT while one is still pending force-exits the process),
+ * SIGBREAKF_CTRL_C on the calling task on AmigaOS/MorphOS.  Polled by the
+ * VM at loop back-edges and calls (counter-gated), so it may be called
+ * often: it must stay cheap and must have no side effect beyond consuming
+ * the pending request. */
+int platform_break_pending(void);
+
 /* Directory of the running executable as a prefix ready for direct
  * concatenation with a relative path: "<dir>/" (trailing slash included) on
  * POSIX, "PROGDIR:" on AmigaOS.  Symlinks to the executable are resolved.

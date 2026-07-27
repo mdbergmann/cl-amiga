@@ -1652,9 +1652,41 @@ int platform_socket_local_endpoint(PlatformSocket sh, char *ip_out, int *port_ou
     return 0;
 }
 
+/* ---- Ctrl-C break-in (see platform_break_pending in platform.h) ----
+ * The handler only sets a flag; the VM polls it at safepoints and enters
+ * the debugger (CL:BREAK) from well-defined interpreter state.  A second
+ * SIGINT while the first is still unconsumed force-exits — the escape
+ * hatch when the runtime is wedged somewhere the poll can't reach (a hung
+ * C loop or blocking syscall). */
+static volatile sig_atomic_t break_requested = 0;
+
+static void sigint_handler(int sig)
+{
+    (void)sig;
+    if (break_requested)
+        _exit(130);
+    break_requested = 1;
+}
+
+int platform_break_pending(void)
+{
+    if (!break_requested)
+        return 0;
+    break_requested = 0;
+    return 1;
+}
+
 void platform_init(void)
 {
-    /* Nothing needed on POSIX */
+    /* SA_RESTART: blocking reads (REPL stdin) resume after the handler so
+     * Ctrl-C never turns into a spurious EOF; the break is delivered by the
+     * VM poll instead. */
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = sigint_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART;
+    sigaction(SIGINT, &sa, NULL);
 }
 
 void platform_shutdown(void)
