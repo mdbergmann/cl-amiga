@@ -3992,6 +3992,130 @@ TEST(eval_file_position_accounts_for_peek)
     ASSERT_STR_EQ(buf, "1");
 }
 
+/* Regression: CLHS position-spec for (FILE-POSITION stream spec) is :START,
+ * :END, or a non-negative integer.  The :START/:END designators were
+ * rejected with a type error ("got SYMBOL"), which broke quicklisp's CDB
+ * writer ((file-position stream :start) in cdb.lisp).  Covers file streams
+ * and string streams, plus the type error for an invalid spec — which the
+ * string-stream branch used to swallow silently. */
+TEST(eval_file_position_start_end_designators)
+{
+    char buf[128];
+    CL_Obj r;
+
+    /* Output file stream — the exact cdb.lisp pattern: write the body,
+     * seek :start, overwrite the header, seek :end; verify the end
+     * position and the overwritten content. */
+    r = cl_eval_string(
+        "(let (endpos)"
+        "  (with-open-file (s \"/tmp/cl_test_fpos.txt\" :direction :output"
+        "                     :if-exists :supersede)"
+        "    (write-string \"hello\" s)"
+        "    (file-position s :start)"
+        "    (write-string \"HE\" s)"
+        "    (file-position s :end)"
+        "    (setq endpos (file-position s)))"
+        "  (with-open-file (s \"/tmp/cl_test_fpos.txt\")"
+        "    (list endpos (read-line s))))");
+    cl_prin1_to_string(r, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(5 \"HEllo\")");
+
+    /* Input file stream: :end jumps to EOF, :start rewinds to char 0. */
+    r = cl_eval_string(
+        "(with-open-file (s \"/tmp/cl_test_fpos.txt\")"
+        "  (read-char s)"
+        "  (file-position s :end)"
+        "  (let ((at-end (read-char s nil :eof)))"
+        "    (file-position s :start)"
+        "    (list at-end (read-char s))))");
+    cl_prin1_to_string(r, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(:EOF #\\H)");
+
+    /* String input stream: :end jumps to the end bound (read returns EOF),
+     * :start rewinds to the first character. */
+    r = cl_eval_string(
+        "(let ((s (make-string-input-stream \"abc\")))"
+        "  (read-char s)"
+        "  (file-position s :end)"
+        "  (let ((at-end (read-char s nil :eof)))"
+        "    (file-position s :start)"
+        "    (list at-end (read-char s))))");
+    cl_prin1_to_string(r, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(:EOF #\\a)");
+
+    /* Invalid position-specs signal TYPE-ERROR — on file streams and, the
+     * formerly silent case, on string streams; negative integers too. */
+    r = cl_eval_string(
+        "(let ((s (make-string-input-stream \"abc\")))"
+        "  (list (handler-case (file-position s :foo)"
+        "          (type-error () :te))"
+        "        (handler-case (file-position s -1)"
+        "          (type-error () :te))))");
+    cl_prin1_to_string(r, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(:TE :TE)");
+}
+
+/* Regression: for a string input stream created with a non-zero :START
+ * (directly via MAKE-STRING-INPUT-STREAM, or via WITH-INPUT-FROM-STRING
+ * which expands to it), (FILE-POSITION s :START) must rewind to the
+ * stream's own beginning — the :START offset it was created with — not
+ * absolute index 0 of the underlying string.  Verified against CLHS
+ * position-spec: :START means "the beginning of the stream". */
+TEST(eval_file_position_start_honors_stream_start_offset)
+{
+    char buf[128];
+    CL_Obj r;
+
+    r = cl_eval_string(
+        "(let ((s (make-string-input-stream \"helloworld\" 5 10)))"
+        "  (file-position s :start)"
+        "  (read-char s))");
+    cl_prin1_to_string(r, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "#\\w");
+
+    /* No explicit :START (defaults to 0) still rewinds to absolute 0. */
+    r = cl_eval_string(
+        "(let ((s (make-string-input-stream \"abc\")))"
+        "  (read-char s)"
+        "  (file-position s :start)"
+        "  (read-char s))");
+    cl_prin1_to_string(r, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "#\\a");
+
+    /* WITH-INPUT-FROM-STRING :START goes through the same path. */
+    r = cl_eval_string(
+        "(with-input-from-string (s \"helloworld\" :start 5 :end 10)"
+        "  (read-char s)"
+        "  (file-position s :start)"
+        "  (read-char s))");
+    cl_prin1_to_string(r, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "#\\w");
+}
+
+/* Regression: FILE-POSITION :END on an output file stream must reflect
+ * bytes still sitting in the write-behind buffer, not just what has
+ * already been flushed to the OS.  A test that only overwrites bytes of
+ * equal length never grows the file and can't catch stale-length bugs;
+ * this appends past the initial write so the file genuinely grows. */
+TEST(eval_file_position_end_reflects_unflushed_growth)
+{
+    char buf[128];
+    CL_Obj r;
+
+    r = cl_eval_string(
+        "(let (endpos)"
+        "  (with-open-file (s \"/tmp/cl_test_fpos_grow.txt\" :direction :output"
+        "                     :if-exists :supersede)"
+        "    (write-string \"hello\" s)"
+        "    (write-string \"world\" s)"
+        "    (file-position s :end)"
+        "    (setq endpos (file-position s)))"
+        "  (with-open-file (s \"/tmp/cl_test_fpos_grow.txt\")"
+        "    (list endpos (read-line s))))");
+    cl_prin1_to_string(r, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(10 \"helloworld\")");
+}
+
 /* --- READ-SEQUENCE / WRITE-SEQUENCE builtins (CLHS 21.2) ---
  * The C builtins replaced boot.lisp per-element loops; these pin both the
  * bulk (unsigned-byte 8 <-> file stream) fast path and the per-element
@@ -4469,6 +4593,9 @@ int main(void)
     RUN(eval_get_dispatch_macro_character_conformance);
     RUN(eval_with_input_from_string_index_start_end);
     RUN(eval_file_position_accounts_for_peek);
+    RUN(eval_file_position_start_end_designators);
+    RUN(eval_file_position_start_honors_stream_start_offset);
+    RUN(eval_file_position_end_reflects_unflushed_growth);
 
     /* READ-SEQUENCE / WRITE-SEQUENCE builtins */
     RUN(eval_write_read_sequence_u8_file_fast_path);

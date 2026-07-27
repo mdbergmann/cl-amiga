@@ -588,7 +588,20 @@ static CL_Obj bi_make_string_input_stream(CL_Obj *args, int n)
     if (start > str->length) start = str->length;
     if (end > str->length) end = str->length;
 
-    return cl_make_string_input_stream(args[0], start, end);
+    {
+        CL_Obj s = cl_make_string_input_stream(args[0], start, end);
+        if (!CL_NULL_P(s)) {
+            /* handle_id is otherwise unused for CL_STREAM_STRING input
+             * streams; repurpose it to remember the original :START so
+             * FILE-POSITION :START can rewind to the stream's actual
+             * beginning (CLHS position-spec :START = "the beginning of
+             * the stream"), not absolute index 0 of the underlying
+             * string when :START was non-zero. */
+            CL_Stream *s_st = (CL_Stream *)CL_OBJ_TO_PTR(s);
+            s_st->handle_id = start;
+        }
+        return s;
+    }
 }
 
 /* (make-string-output-stream &key :element-type) */
@@ -1084,11 +1097,28 @@ static CL_Obj bi_file_position(CL_Obj *args, int n)
     if (st->stream_type == CL_STREAM_STRING) {
         if (n > 1 && !CL_NULL_P(args[1])) {
             /* Set position; discard any pushed-back char so the next read
-             * starts cleanly at the requested index. */
-            if (CL_FIXNUM_P(args[1])) {
-                st->position = (uint32_t)CL_FIXNUM_VAL(args[1]);
-                st->unread_char = -1;
-            }
+             * starts cleanly at the requested index.  CLHS position-spec is
+             * :START, :END, or a non-negative integer.  For input streams
+             * out_buf_len is the end bound in code points; for output
+             * streams it is the bytes written so far — either way it is
+             * the stream's end. */
+            uint32_t newpos;
+            if (args[1] == KW_START)
+                /* handle_id holds the stream's original :START offset for
+                 * an input string stream (see bi_make_string_input_stream);
+                 * 0 for output string streams and for input streams created
+                 * with no explicit :START, so this is a no-op for those. */
+                newpos = st->handle_id;
+            else if (args[1] == KW_END)
+                newpos = st->out_buf_len;
+            else if (CL_FIXNUM_P(args[1]) && CL_FIXNUM_VAL(args[1]) >= 0)
+                newpos = (uint32_t)CL_FIXNUM_VAL(args[1]);
+            else
+                cl_signal_type_error(args[1],
+                                     "(OR (INTEGER 0 *) (MEMBER :START :END))",
+                                     "FILE-POSITION");
+            st->position = newpos;
+            st->unread_char = -1;
             return CL_T;
         }
         /* A pushed-back char (from PEEK-CHAR/UNREAD-CHAR) has already advanced
@@ -1105,11 +1135,26 @@ static CL_Obj bi_file_position(CL_Obj *args, int n)
     if (st->stream_type != CL_STREAM_FILE)
         return CL_NIL;
     if (n > 1 && !CL_NULL_P(args[1])) {
-        /* Set position — accept a bignum too: positions past CL_FIXNUM_MAX
-         * (~1GB) are bignums on 32-bit, and the getter below returns them. */
+        /* Set position — CLHS position-spec is :START, :END, or a
+         * non-negative integer; accept a bignum too: positions past
+         * CL_FIXNUM_MAX (~1GB) are bignums on 32-bit, and the getter
+         * below returns them. */
         long pos = 0;
-        if (CL_FIXNUM_P(args[1])) {
+        if (args[1] == KW_START) {
+            pos = 0;
+        } else if (args[1] == KW_END) {
+            /* Bytes may still be sitting in the write-behind buffer (Amiga's
+             * IOBuf); flush before asking the OS for the length, else :END
+             * seeks to a stale, too-small position. */
+            platform_file_flush((PlatformFile)st->handle_id);
+            pos = platform_file_length((PlatformFile)st->handle_id);
+            if (pos < 0) return CL_NIL;
+        } else if (CL_FIXNUM_P(args[1])) {
             pos = (long)CL_FIXNUM_VAL(args[1]);
+            if (pos < 0)
+                cl_signal_type_error(args[1],
+                                     "(OR (INTEGER 0 *) (MEMBER :START :END))",
+                                     "FILE-POSITION");
         } else if (CL_BIGNUM_P(args[1])) {
             CL_Bignum *b = (CL_Bignum *)CL_OBJ_TO_PTR(args[1]);
             uint32_t v = 0;
@@ -1122,8 +1167,10 @@ static CL_Obj bi_file_position(CL_Obj *args, int n)
                 cl_error(CL_ERR_ARGS,
                          "FILE-POSITION: position out of range");
             pos = (long)v;
-        } else if (!CL_NULL_P(args[1])) {
-            cl_signal_type_error(args[1], "INTEGER", "FILE-POSITION");
+        } else {
+            cl_signal_type_error(args[1],
+                                 "(OR (INTEGER 0 *) (MEMBER :START :END))",
+                                 "FILE-POSITION");
         }
         return platform_file_set_position((PlatformFile)st->handle_id, pos) == 0
             ? CL_T : CL_NIL;

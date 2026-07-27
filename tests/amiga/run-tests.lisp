@@ -3551,6 +3551,45 @@
 (check "file-position after unread" 1
   (let ((s (make-string-input-stream "ab"))) (read-char s) (read-char s) (unread-char #\b s) (file-position s)))
 
+; file-position :start/:end designators (CLHS position-spec).
+; Regression: quicklisp's cdb.lisp does (file-position stream :start), which
+; signaled "argument is not of type INTEGER (got SYMBOL)".
+(check "file-position :start/:end string stream" '(:eof #\a)
+  (let ((s (make-string-input-stream "abc")))
+    (read-char s)
+    (file-position s :end)
+    (let ((at-end (read-char s nil :eof)))
+      (file-position s :start)
+      (list at-end (read-char s)))))
+(check "file-position :start/:end file stream" '(5 "HEllo")
+  (let (endpos)
+    (with-open-file (s "T:cl_test_fpos.tmp" :direction :output :if-exists :supersede)
+      (write-string "hello" s)
+      (file-position s :start)
+      (write-string "HE" s)
+      (file-position s :end)
+      (setq endpos (file-position s)))
+    (with-open-file (s "T:cl_test_fpos.tmp")
+      (list endpos (read-line s)))))
+(check "file-position bad spec signals type-error" '(:te :te)
+  (let ((s (make-string-input-stream "abc")))
+    (list (handler-case (file-position s :foo) (type-error () :te))
+          (handler-case (file-position s -1) (type-error () :te)))))
+
+; Regression: :end must reflect bytes still sitting in the write-behind
+; buffer, not just what's already flushed to disk.  A test that only
+; overwrites bytes of equal length never grows the file and can't catch
+; this; append past the initial write so the file genuinely grows.
+(check "file-position :end after append reflects unflushed growth" '(10 "helloworld")
+  (let (endpos)
+    (with-open-file (s "T:cl_test_fpos_grow.tmp" :direction :output :if-exists :supersede)
+      (write-string "hello" s)
+      (write-string "world" s)
+      (file-position s :end)
+      (setq endpos (file-position s)))
+    (with-open-file (s "T:cl_test_fpos_grow.tmp")
+      (list endpos (read-line s)))))
+
 ; write-string :start :end
 (check "write-string start end" "llo" (let ((s (make-string-output-stream))) (write-string "Hello" s :start 2 :end 5) (get-output-stream-string s)))
 
