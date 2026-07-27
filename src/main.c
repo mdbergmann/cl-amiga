@@ -28,6 +28,19 @@
 #endif
 #endif
 
+#ifdef PLATFORM_MORPHOS
+/* Native PPC stack for the MAIN process.  The MorphOS shell `stack` command
+ * sizes only the emulated 68k stack; the PPC stack a native binary actually
+ * runs on defaults to ~48K, which the reader/compiler recursion of a boot
+ * from source exceeds (the platform_stack_headroom guard fires mid-boot and
+ * the boot load dies).  libnix's -noixemul startup reads this well-known
+ * global and switches to a stack of this size before entering main() —
+ * the standard MorphOS idiom for requesting a native stack.  1 MB matches
+ * the comfort margin the m68k builds get from `stack` + headroom guard
+ * (128K verified there; PPC frames are ~5x larger — 608-byte NLX frames). */
+unsigned long __stack = 1024 * 1024;
+#endif
+
 #ifdef PLATFORM_POSIX
 /* Crash handler on alternate stack for stack overflow debugging */
 /* Use fixed size — SIGSTKSZ is not a compile-time constant on glibc 2.34+ */

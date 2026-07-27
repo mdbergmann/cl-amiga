@@ -205,6 +205,17 @@ CL_NORETURN void cl_error_frame_longjmp(int code)
         cl_fasl_writer_restore_count(cl_error_frames[cl_error_frame_top - 1].saved_fasl_writers);
         /* Free any compilers stranded by the unwound compile (see field doc). */
         cl_compiler_force_restore_to(cl_error_frames[cl_error_frame_top - 1].saved_active_compiler);
+        /* Restore the catch site's GC-root snapshot, exactly like the nested
+         * branch above and the CL_ERR_EXIT path — cl_gc_reset_roots() above
+         * zeroed the count, which is one too FEW when the outermost catch
+         * site itself holds live CL_GC_PROTECT entries.  That is the case
+         * during REPL init: try_load_boot_pair's CL_CATCH sits above the
+         * protected saved_pkg, and wiping it made the boot-failure path
+         * (e.g. a reader error in lib/boot.lisp) abort later with
+         * "pop_roots(1): gc_root_count went negative" at the final
+         * CL_GC_UNPROTECT.  At the REPL toplevel the snapshot is 0, so this
+         * is identical to the old reset there. */
+        gc_root_count = cl_error_frames[cl_error_frame_top - 1].saved_gc_roots;
         CL_LONGJMP(cl_error_frames[cl_error_frame_top - 1].buf, code);
     }
 

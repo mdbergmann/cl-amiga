@@ -87,6 +87,24 @@ check_contains "lost_boot_names_problem"   "cannot locate its runtime library" "
 check_contains "lost_boot_names_fix"       "CLAMIGA_HOME" "$result"
 check_contains "lost_require_names_module" 'cannot find module "gray-streams"' "$result"
 
+# --- Boot candidate exists but fails to LOAD (e.g. reader error) ---
+# Regression for two bugs found via the first MorphOS run (where the C-stack
+# guard aborted the boot load): (1) the swallowed load error must be
+# reported, not misdiagnosed as "cannot locate"; (2) the error unwind to the
+# outermost CL_CATCH must restore the catch site's GC-root snapshot —
+# it used to zero it, wiping repl-init's protected saved_pkg root and
+# aborting with "pop_roots(1): gc_root_count went negative".
+
+mkdir -p "$WORKDIR/poison/lib"
+printf '(defmacro dummy () nil)\n((((( \n' > "$WORKDIR/poison/lib/boot.lisp"
+cp "$ABS_CLAMIGA" "$WORKDIR/poison/clamiga-poison"
+result=$(cd "$WORKDIR/poison" && env -u CLAMIGA_HOME ./clamiga-poison --no-userinit \
+    --non-interactive --eval '(list 1 2)' </dev/null 2>&1)
+check_contains     "poisoned_boot_names_load_failure" "but loading it FAILED" "$result"
+check_contains     "poisoned_boot_still_reports_no_runtime" "cannot locate its runtime library" "$result"
+check_not_contains "poisoned_boot_no_gc_root_abort"   "GC-ROOT-BUG" "$result"
+check_not_contains "poisoned_boot_no_crash"           "FATAL" "$result"
+
 # --- Summary ---
 
 echo ""

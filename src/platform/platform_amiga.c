@@ -847,13 +847,26 @@ long platform_stack_headroom(void)
      * separate from the 68k stack that tc_SPLower/tc_SPUpper describe —
      * measuring &probe (a PPC-stack address) against tc_SPLower yields
      * garbage.  The PPC stack bounds live in the ETask (exec/tasks.h:
-     * PPCSPLower/PPCSPUpper), present for every MorphOS task. */
+     * PPCSPLower/PPCSPUpper), present for every MorphOS task.
+     *
+     * Sanity-gate on &probe actually lying INSIDE those bounds: code can
+     * run on a stack the ETask does not describe (a libnix __stack swap,
+     * StackSwap, or a foreign callback context), and measuring against
+     * the wrong stack's bounds yields a garbage difference — a bogus
+     * small-positive reading here made the C-stack guard kill the boot
+     * load on the first MorphOS run.  Out of bounds → -1 (unknown), which
+     * disables the guard rather than misfiring it. */
     struct Task *t = FindTask(NULL);
     char probe;
-    if (!t || !t->tc_ETask || !t->tc_ETask->PPCSPLower)
+    char *lower, *upper;
+    if (!t || !t->tc_ETask)
+        return -1;
+    lower = (char *)t->tc_ETask->PPCSPLower;
+    upper = (char *)t->tc_ETask->PPCSPUpper;
+    if (!lower || !upper || &probe < lower || &probe >= upper)
         return -1;
     /* PPC stacks grow down too: headroom = SP - lower bound. */
-    return (long)(&probe - (char *)t->tc_ETask->PPCSPLower);
+    return (long)(&probe - lower);
 #else
     struct Task *t = FindTask(NULL);
     char probe;

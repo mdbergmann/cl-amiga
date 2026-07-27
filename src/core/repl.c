@@ -728,6 +728,22 @@ static void boot_timing_log(const char *phase, uint32_t t_start, uint32_t *t_pre
 }
 #define BOOT_TIME(phase) boot_timing_log((phase), t_start, &t_prev)
 
+/* A boot candidate EXISTED but its load errored (the CL_CATCH in
+   try_load_boot_pair swallowed the longjmp).  Without this report the
+   failure is indistinguishable from "file not found" and the closing
+   "cannot locate its runtime library" message sends the user chasing the
+   wrong problem (as happened on MorphOS when the C-stack guard fired
+   mid-boot). */
+static void report_boot_load_failure(const char *path)
+{
+    char msg[900];
+    snprintf(msg, sizeof(msg),
+             "; Error: found \"%s\" but loading it FAILED:\n"
+             ";        %s\n",
+             path, cl_error_msg);
+    cl_write_cstring_to_stdout(msg);
+}
+
 /* Load boot from one (fasl, src) path pair.  Returns 1 if boot was loaded
    (from the FASL or, failing that, the source), 0 if neither file was present
    or loadable.  Factored out so the cwd-relative, Amiga PROGDIR:, and host
@@ -784,6 +800,7 @@ static int try_load_boot_pair(const char *fasl_path, const char *src_path)
                    VM stack. */
                 cl_vm.sp = 0;
                 cl_vm.fp = 0;
+                report_boot_load_failure(fasl_path);
             }
             CL_UNCATCH();
         }
@@ -800,6 +817,7 @@ static int try_load_boot_pair(const char *fasl_path, const char *src_path)
         } else {
             cl_vm.sp = 0;
             cl_vm.fp = 0;
+            report_boot_load_failure(src_path);
         }
         CL_UNCATCH();
     }
