@@ -580,13 +580,19 @@ int main(int argc, char *argv[])
         platform_write_string(")))         ");
         cl_color_set(CL_COLOR_RED);
         platform_write_string("\\\\\n");
-        /* Line 4: )))         /\\        Common Lisp for AmigaOS 3+ */
+        /* Line 4: )))         /\\        Common Lisp for <platform> */
         cl_color_set(CL_COLOR_LIGHT_BLUE);
         platform_write_string(")))         ");
         cl_color_set(CL_COLOR_RED);
         platform_write_string("//\\\\        ");
         cl_color_set(CL_COLOR_DIM_CYAN);
+#if defined(PLATFORM_MORPHOS)
+        platform_write_string("Common Lisp for MorphOS\n");
+#elif defined(PLATFORM_AMIGA)
+        platform_write_string("Common Lisp for AmigaOS\n");
+#else
         platform_write_string("Common Lisp for AmigaOS 3+\n");
+#endif
         /* Line 5:  )))       //  \\ */
         cl_color_set(CL_COLOR_LIGHT_BLUE);
         platform_write_string(" )))       ");

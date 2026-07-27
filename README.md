@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/mdbergmann/cl-amiga/actions/workflows/ci.yml/badge.svg)](https://github.com/mdbergmann/cl-amiga/actions/workflows/ci.yml)
 
-A Common Lisp implementation for AmigaOS 3+, targeting 68020+ processors, Amiga NG systems (MorphOS, Amiga OS4), but also macOS and Linux.
+A Common Lisp implementation for AmigaOS 3+ (68020+) and, as a fully native PPC build, MorphOS — with AmigaOS 4 in reach on the same path — but also macOS and Linux.
 
 > **Alpha software** — CL-Amiga is under active development. The core language is functional and can run real-world CL libraries, but ANSI CL compliance is incomplete and APIs may change. See [Known Limitations](#known-limitations-and-future-work) for details.
 
@@ -16,7 +16,7 @@ There are already excellent Common Lisp implementations — SBCL, CCL, ECL, Clas
 
 CL-Amiga is built for the constraint the others ignore: **a 68020 at 14 MHz with 8 MB of RAM.** It's a self-contained bytecode VM in portable C89/C99 with no external runtime dependencies — no libffi (there's a hand-written 68k trampoline), no LLVM, no C compiler needed at runtime. Values are 32-bit tagged words and heap pointers are arena-relative offsets, keeping the whole object model 32-bit-clean; a compacting GC keeps a small heap from fragmenting, and on real 68k hardware there's an optional native JIT. Yet it's ambitious enough on the language side to load ASDF, run Quicklisp, and pass the self-tests of real libraries (Alexandria, FSet, fiveam, Sento) — and it runs identically on a modern macOS/Linux host, where most development actually happens.
 
-Because execution is bytecode, the object model is **architecture-agnostic**: the same compiled Lisp runs unchanged on 68k and PowerPC. The primary, fully-working target is classic **AmigaOS 3+** on 68020+; a **native MorphOS (PPC)** build is in progress, and **AmigaOS 4** — the other PPC-based next-gen system — is a natural target on the same path. So while the design's tightest constraint is the classic Amiga, the aim is the whole Amiga family, not just the 68k machines.
+Because execution is bytecode, the object model is **architecture-agnostic**: the same compiled Lisp runs unchanged on 68k and PowerPC. Two targets are fully working today: classic **AmigaOS 3+** on 68020+ and a **fully native MorphOS (PPC)** build — including threading, FFI, GUI, and audio; even the compiled FASL files are byte-compatible between the two. **AmigaOS 4** — the other PPC-based next-gen system — is a natural target on the same path. So while the design's tightest constraint is the classic Amiga, the aim is the whole Amiga family, not just the 68k machines.
 
 In short: it exists to bring a modern, ANSI-aiming, library-capable Common Lisp to hardware every other implementation left behind — without giving up comfortable development on a fast host.
 
@@ -28,7 +28,7 @@ In short: it exists to bring a modern, ANSI-aiming, library-capable Common Lisp 
 
 | Implementation | Approach | Amiga family (68k / PPC)? | Footprint | Notes |
 |---|---|---|---|---|
-| **CL-Amiga** | Bytecode VM in C, optional m68k JIT | **Yes** — its whole reason to exist (68k now; MorphOS/OS4 PPC in progress) | Tiny (runs in 8 MB) | Alpha; ANSI coverage incomplete |
+| **CL-Amiga** | Bytecode VM in C, optional m68k JIT | **Yes** — its whole reason to exist (68k + native MorphOS/PPC now; OS4 next) | Tiny (core runs in a 1 MB heap) | Alpha; ANSI coverage incomplete |
 | **ECL** | Lisp → C, bytecode fallback | No | Medium | Very portable/embeddable on modern hosts |
 | **CCL** | Native compiler | No (x86-64/ARM/PPC only) | Large | Fast and mature; no 68k backend |
 | **Clasp** | LLVM-based, C++ interop | No | Very large (needs LLVM) | Best for C++/scientific interop |
@@ -81,7 +81,7 @@ Bypass a single commit with `git commit --no-verify`. See
 [`scripts/review/README.md`](scripts/review/README.md) for the full flow,
 toggles, and safety guarantees.
 
-(For building the AmigaOS binary, see [Building for AmigaOS](#building-for-amigaos) below.)
+(For building the AmigaOS or MorphOS binary, see [Building for AmigaOS and MorphOS](#building-for-amigaos-and-morphos) below.)
 
 ## Usage
 
@@ -117,7 +117,7 @@ See `tests/test_version.c` for the full contract.
 
 ### Heap and stack sizing
 
-The default heap is **4 MB**. On the Amiga, plain clamiga — without Quicklisp and ASDF — gets by with as little as **`--heap 1M`** for writing simple programs. Larger workloads need more:
+The default heap is **4 MB**. On the Amiga, plain clamiga — without Quicklisp and ASDF — gets by with as little as **`--heap 1M`** for writing simple programs: the full Common Lisp core boots in about **0.5 MB** (`(room)` on a fresh 1 MB-heap session reports ~51% used). Larger workloads need more:
 
 | Use case                                  | Heap             | Amiga stack       |
 |-------------------------------------------|------------------|-------------------|
@@ -664,7 +664,7 @@ See the READ-SEQUENCE/WRITE-SEQUENCE tests in `tests/test_stream.c`, the
 fast-path tests in `tests/test_byte_vector.c`, and the corresponding
 sections of `tests/amiga/run-tests.lisp` for usage examples.
 
-## Building for AmigaOS
+## Building for AmigaOS and MorphOS
 
 ### Cross-compile (m68k-amigaos-gcc)
 
@@ -700,6 +700,24 @@ make -f Makefile.cross clean        # Remove cross-build artifacts
 cd CLAmiga:
 make -f Makefile.amiga
 ```
+
+### Native MorphOS build (PPC)
+
+The MorphOS binary is built natively *under* MorphOS with the MorphOS SDK's GCC:
+
+```
+make -f Makefile.mos                # build build/morphos/clamiga
+make -f Makefile.mos clean
+```
+
+This is a fully native PowerPC build, not a 68k binary running under
+emulation. Threading, sockets, and the whole `AMIGA` FFI/GUI/audio stack
+work as on classic AmigaOS — Amiga library calls are dispatched from PPC
+code to the (68k-ABI) library bases through MorphOS's ABox emulation layer.
+PPC is 32-bit and big-endian like m68k, so FASL files compiled on AmigaOS
+and MorphOS are byte-compatible. The one thing the MorphOS build omits is
+the native JIT, which is m68k-only — it runs the portable bytecode VM,
+like the host build.
 
 ## AmigaOS Native GUI
 
@@ -890,7 +908,7 @@ Point-in-time benchmark results (sento actor throughput on host, Amiga JIT call 
 
 - **CAS (compare-and-swap)** — atomic CAS primitive for lock-free data structures; on Amiga can possibly stay with lock-based implementation
 - **Upstream `bordeaux-threads` and Quicklisp patches** — close the remaining `MP`/BT v2 API gaps (semaphores, atomic integers + place macros, `with-timeout`, `:timeout` on `acquire-lock`, `native-lock-p` / `native-recursive-lock-p` / `recursive-lock-p`) so the local-projects shim becomes an `impl-cl-amiga.lisp` mergeable upstream; same for the Quicklisp network/HTTP adaptations currently in `lib/quicklisp-compat.lisp`
-- **Native MorphOS version** — PowerPC native build targeting MorphOS
+- **Native AmigaOS 4 version** — the other PPC-based next-gen system; a natural next step on the MorphOS build's path
 - **Bignum performance** — optional GMP backend for faster arbitrary-precision arithmetic
 
 ## Project Structure

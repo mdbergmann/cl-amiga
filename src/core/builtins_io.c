@@ -3717,7 +3717,9 @@ static CL_Obj bi_lisp_implementation_version(CL_Obj *args, int n)
 static CL_Obj bi_software_type(CL_Obj *args, int n)
 {
     CL_UNUSED(args); CL_UNUSED(n);
-#ifdef PLATFORM_AMIGA
+#if defined(PLATFORM_MORPHOS)
+    return cl_make_string("MorphOS", 7);
+#elif defined(PLATFORM_AMIGA)
     return cl_make_string("AmigaOS", 7);
 #elif defined(__APPLE__)
     return cl_make_string("Darwin", 6);
@@ -3735,7 +3737,9 @@ static CL_Obj bi_software_version(CL_Obj *args, int n)
 static CL_Obj bi_machine_type(CL_Obj *args, int n)
 {
     CL_UNUSED(args); CL_UNUSED(n);
-#ifdef PLATFORM_AMIGA
+#if defined(PLATFORM_MORPHOS)
+    return cl_make_string("ppc", 3);
+#elif defined(PLATFORM_AMIGA)
     return cl_make_string("m68k", 4);
 #elif defined(__aarch64__)
     return cl_make_string("aarch64", 7);
