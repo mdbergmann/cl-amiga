@@ -37,11 +37,11 @@
  * component reaches two digits (e.g. "0.10.0" is 6 chars, not 5).
  */
 #define CL_VERSION_MAJOR 0
-#define CL_VERSION_MINOR 5
+#define CL_VERSION_MINOR 6
 #define CL_VERSION_PATCH 0
 
 /* Release date, DD.MM.YYYY — the format AmigaOS's Version command expects. */
-#define CL_VERSION_DATE "24.07.2026"
+#define CL_VERSION_DATE "27.07.2026"
 
 /* Two levels: the inner macro must see the expanded number, not the name. */
 #define CL_VERSION_STR_(x) #x
