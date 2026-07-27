@@ -18,8 +18,11 @@ static CL_Obj KW_LOCAL_NICKNAMES = CL_NIL;
 
 /* ---- Helpers ---- */
 
-/* Coerce argument to package: if string, find-package; if package, return it */
-static CL_Obj coerce_to_package(CL_Obj arg)
+/* Coerce argument to package leniently: NIL -> current package, package ->
+ * itself, string/symbol -> cl_find_package (CL_NIL when no such package
+ * exists — the caller decides whether that's an error).  Non-designator
+ * objects always signal a type error. */
+static CL_Obj coerce_to_package_or_nil(CL_Obj arg)
 {
     if (CL_NULL_P(arg)) return cl_current_package;
 
@@ -27,24 +30,38 @@ static CL_Obj coerce_to_package(CL_Obj arg)
 
     if (CL_STRING_P(arg)) {
         CL_String *s = (CL_String *)CL_OBJ_TO_PTR(arg);
-        CL_Obj pkg = cl_find_package(s->data, s->length);
-        if (CL_NULL_P(pkg)) {
-            cl_error(CL_ERR_GENERAL, "Package not found");
-        }
-        return pkg;
+        return cl_find_package(s->data, s->length);
     }
 
     if (CL_SYMBOL_P(arg)) {
         CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(arg);
         CL_String *name = (CL_String *)CL_OBJ_TO_PTR(sym->name);
-        CL_Obj pkg = cl_find_package(name->data, name->length);
-        if (CL_NULL_P(pkg)) {
-            cl_error(CL_ERR_GENERAL, "Package not found");
-        }
-        return pkg;
+        return cl_find_package(name->data, name->length);
     }
 
     cl_error(CL_ERR_TYPE, "Not a package designator");
+    return CL_NIL;
+}
+
+/* Coerce argument to package: as above, but a name that designates no
+ * package is an error (the behavior of INTERN, EXPORT, IN-PACKAGE, ...). */
+static CL_Obj coerce_to_package(CL_Obj arg)
+{
+    CL_Obj pkg = coerce_to_package_or_nil(arg);
+    if (!CL_NULL_P(pkg)) return pkg;
+
+    if (CL_STRING_P(arg)) {
+        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(arg);
+        cl_error(CL_ERR_GENERAL, "Package \"%.*s\" not found",
+                 (int)s->length, s->data);
+    }
+    if (CL_SYMBOL_P(arg)) {
+        CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(arg);
+        CL_String *name = (CL_String *)CL_OBJ_TO_PTR(sym->name);
+        cl_error(CL_ERR_GENERAL, "Package \"%.*s\" not found",
+                 (int)name->length, name->data);
+    }
+    cl_error(CL_ERR_GENERAL, "Package not found");
     return CL_NIL;
 }
 
@@ -434,6 +451,10 @@ static CL_Obj bi_find_symbol(CL_Obj *args, int nargs)
         len = s->length;
     }
 
+    /* A package designator that names no package is an error, per CLHS
+       FIND-SYMBOL (matches SBCL/CLISP) — same as INTERN, EXPORT, etc.
+       Callers that need to probe an optional package should call
+       FIND-PACKAGE explicitly and branch on NIL themselves. */
     pkg = (nargs > 1) ? coerce_to_package(args[1]) : cl_current_package;
     sym = cl_find_symbol_with_status(name, len, pkg, &status);
 

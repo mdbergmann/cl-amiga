@@ -344,6 +344,32 @@ TEST(eval_find_symbol_not_found)
         "NIL");
 }
 
+TEST(eval_find_symbol_missing_package)
+{
+    /* A package designator naming no package is an error for FIND-SYMBOL,
+       same as INTERN/EXPORT/etc — matches CLHS/SBCL/CLISP. Callers that
+       need to probe an optional package must call FIND-PACKAGE first and
+       branch on NIL themselves; FIND-SYMBOL does not swallow the error. */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (find-symbol \"*PROXY-URL*\" \"NO-SUCH-PACKAGE\")"
+        "  (error (e) (if (search \"NO-SUCH-PACKAGE\" (format nil \"~a\" e)) :named :unnamed)))"),
+        ":NAMED");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (find-symbol \"X\" :no-such-package)"
+        "  (error () :err))"),
+        ":ERR");
+    /* Non-designator objects still signal a type error. */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (find-symbol \"X\" 42) (error () :err))"),
+        ":ERR");
+    /* INTERN and friends keep signaling on a missing package, now naming
+       the package in the message. */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (intern \"X\" \"NO-SUCH-PACKAGE\")"
+        "  (error (e) (if (search \"NO-SUCH-PACKAGE\" (format nil \"~a\" e)) :named :unnamed)))"),
+        ":NAMED");
+}
+
 TEST(eval_intern_new)
 {
     ASSERT_STR_EQ(eval_print(
@@ -1106,6 +1132,7 @@ int main(void)
     RUN(eval_find_symbol_external);
     RUN(eval_find_symbol_inherited);
     RUN(eval_find_symbol_not_found);
+    RUN(eval_find_symbol_missing_package);
     RUN(eval_intern_new);
     RUN(eval_intern_existing);
     RUN(eval_intern_respects_let_bound_package);
