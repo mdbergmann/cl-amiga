@@ -2021,13 +2021,14 @@ void cl_gc_reset_roots(void)
 /* --- Mark Phase --- */
 
 #if defined(DEBUG_GC) || defined(DEBUG_GC_STRESS)
-/* Highest valid type tag — keep in sync with enum CL_ObjType (TYPE_WIDE_STRING
- * sits AFTER TYPE_RESTART when wide strings are compiled in). */
-#ifdef CL_WIDE_STRINGS
-#define GC_DBG_MAX_TYPE TYPE_WIDE_STRING
-#else
-#define GC_DBG_MAX_TYPE TYPE_RESTART
-#endif
+/* Highest valid type tag — CL_TYPE_MAX is maintained next to enum CL_ObjType
+ * in types.h.  A local copy here drifted once (TYPE_BYTE_VECTOR was added
+ * after TYPE_RESTART without bumping it), making the plausibility guards
+ * below abort on every byte-vector mark in non-wide stress builds; the
+ * compile-time check keeps at least that known-latest tag covered. */
+#define GC_DBG_MAX_TYPE CL_TYPE_MAX
+typedef char gc_dbg_max_type_covers_byte_vector[
+    (TYPE_BYTE_VECTOR <= GC_DBG_MAX_TYPE) ? 1 : -1];
 /* Object whose children are currently being pushed — provenance for the
  * gc_mark_push plausibility guard.  NULL while pushing from the root set. */
 static void *gc_dbg_mark_parent;

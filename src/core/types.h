@@ -197,6 +197,19 @@ enum CL_ObjType {
 #endif
 };
 
+/* Highest valid heap type tag.  Kept HERE, directly under the enum, so that
+ * adding a member forces this definition into the same diff.  The GC debug
+ * guards (GC_DBG_MAX_TYPE in mem.c) abort on any tag above it as heap
+ * corruption — a stale max turns every valid object of a newly added type
+ * into a false [GC-BADMARK] abort on DEBUG_GC/DEBUG_GC_STRESS builds
+ * (regression: TYPE_BYTE_VECTOR was added without bumping the old copy in
+ * mem.c; every byte-vector mark aborted the non-wide MorphOS stress build). */
+#ifdef CL_WIDE_STRINGS
+#define CL_TYPE_MAX TYPE_WIDE_STRING
+#else
+#define CL_TYPE_MAX TYPE_BYTE_VECTOR
+#endif
+
 /* Header access macros */
 #define CL_HDR(ptr)         (((CL_Header *)(ptr))->header)
 #define CL_HDR_TYPE(ptr)    ((CL_HDR(ptr) >> CL_HDR_TYPE_SHIFT) & 0xFF)

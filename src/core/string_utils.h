@@ -78,16 +78,12 @@ CL_Obj cl_string_copy(CL_Obj str);
  * Allocates — may trigger GC. Caller must GC-protect inputs. */
 CL_Obj cl_string_substring(CL_Obj str, uint32_t start, uint32_t end);
 
-#ifdef CL_WIDE_STRINGS
-/* Widen a base string to a wide string (allocates — may trigger GC).
- * Returns a new TYPE_WIDE_STRING. Caller must GC-protect inputs. */
-CL_Obj cl_string_widen(CL_Obj base_str);
-
-/* Narrow a wide string to a base string if all chars <= 255.
- * Returns TYPE_STRING if possible, or the original wide string if not. */
-CL_Obj cl_string_narrow(CL_Obj wide_str);
-
 /* --- UTF-8 codec --- */
+/* Pure codecs with no wide-string dependency — compiled (and used, e.g. the
+ * reader and PROVIDE/REQUIRE's character string designator) in ALL builds,
+ * so they are declared OUTSIDE the CL_WIDE_STRINGS guard.  They were once
+ * inside it, which left non-wide builds on C89 implicit declarations —
+ * a link fluke on Amiga and a hard compile error under -std=c99. */
 
 /* Encode a Unicode code point as UTF-8 into buf (must have room for 4 bytes).
  * Returns the number of bytes written (1–4), or 0 on invalid code point. */
@@ -97,6 +93,15 @@ int cl_utf8_encode(int codepoint, char *buf);
  * Sets *codepoint to the decoded value.
  * Returns the number of bytes consumed (1–4), or 0 on invalid/truncated. */
 int cl_utf8_decode(const unsigned char *buf, uint32_t buflen, int *codepoint);
+
+#ifdef CL_WIDE_STRINGS
+/* Widen a base string to a wide string (allocates — may trigger GC).
+ * Returns a new TYPE_WIDE_STRING. Caller must GC-protect inputs. */
+CL_Obj cl_string_widen(CL_Obj base_str);
+
+/* Narrow a wide string to a base string if all chars <= 255.
+ * Returns TYPE_STRING if possible, or the original wide string if not. */
+CL_Obj cl_string_narrow(CL_Obj wide_str);
 
 /* Convert a wide string to a NUL-terminated UTF-8 C string.
  * Writes at most buf_size-1 bytes plus NUL.

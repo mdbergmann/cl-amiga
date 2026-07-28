@@ -4798,7 +4798,38 @@ out=$(run_stress "$WORK/seqio.lisp")
 check_contains "bulk sequence I/O + codec builtins under compaction storm" \
   "SEQIO-STRESS:OK" "$out"
 check_absent   "no corruption diagnostics from bulk sequence I/O" \
-  "corrupted\|Guru\|SIGSEGV\|badmark\|use-after" "$out"
+  "corrupted\|Guru\|SIGSEGV\|BADMARK\|badmark\|use-after" "$out"
+
+# --- Case: byte vectors through mv_values under the mark-phase guard -------
+# Bug: GC_DBG_MAX_TYPE (mem.c) was not bumped when TYPE_BYTE_VECTOR was
+# added, so the mark-phase plausibility guard treated every VALID byte
+# vector as a stale offset and abort()ed with [GC-BADMARK].  Host builds
+# define CL_WIDE_STRINGS (whose tag sits one past TYPE_BYTE_VECTOR), so
+# GC_DBG_MAX_TYPE is already TYPE_WIDE_STRING here and this case CANNOT
+# reproduce the historical abort in this (host) tier -- it only exercises
+# byte vectors flowing through the multiple-values buffer across forced
+# compactions as general robustness coverage.  The actual regression only
+# ever manifested in non-wide builds (Amiga/MorphOS) and is caught there by
+# the Amiga/MorphOS test suite at runtime; on every tier (including this
+# one) it is also caught at *compile time* by the
+# gc_dbg_max_type_covers_byte_vector assertion in mem.c, which derives
+# GC_DBG_MAX_TYPE from CL_TYPE_MAX (types.h, co-located with the enum) and
+# fails the build if TYPE_BYTE_VECTOR ever again exceeds it.
+cat > "$WORK/bvmv.lisp" <<'EOF'
+(defun bvmv-make (n)
+  (values (make-array n :element-type '(unsigned-byte 8) :initial-element 7)
+          n))
+(multiple-value-bind (v n) (bvmv-make 2048)
+  (declare (ignorable n))
+  (dotimes (i 64)
+    (multiple-value-setq (v n) (bvmv-make (+ 128 i))))
+  (format t "BVMV:~a ~a~%" (length v) (aref v 0)))
+EOF
+out=$(run_stress "$WORK/bvmv.lisp")
+check_contains "byte vectors in mv_values survive stress mark/compact" \
+  "BVMV:191 7" "$out"
+check_absent   "no GC-BADMARK abort on valid byte-vector mark" \
+  "BADMARK\|badmark\|Abort" "$out"
 
 echo ""
 echo "$passed passed, $failed failed, $total total"
