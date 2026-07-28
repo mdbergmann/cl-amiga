@@ -1141,6 +1141,23 @@
              (format s "kaputt: ~a!" (string (code-char 252))))))
 (check "condition wide-string report honored" 0
   (search "kaputt: " (princ-to-string (make-condition 'wide-po-cond))))
+;; The same report path, non-ASCII text at every entry point.  On the
+;; host these strings go wide (and once lost their message or errored
+;; outright); here (code-char 252) fits a narrow string, so the checks
+;; pin the shared behavior in both builds.
+(check "error accepts a non-ascii message string" 0
+  (search "defekt: "
+          (handler-case
+              (error (concatenate 'string "defekt: " (string (code-char 252))))
+            (error (c) (princ-to-string c)))))
+(check "a formatted error report keeps its non-ascii text" 0
+  (search "wert: "
+          (handler-case (error "wert: ~a" (string (code-char 252)))
+            (error (c) (princ-to-string c)))))
+(check "make-condition captures a non-ascii format-control" 0
+  (search "gr" (princ-to-string
+                (make-condition 'simple-error :format-control
+                  (concatenate 'string "gr" (string (code-char 246)) "sse")))))
 
 ;; CLHS 3.4.5: dotted lambda list == trailing &rest (eta-hab regression)
 (check "d-bind dotted pair" '(1 2) (destructuring-bind (a . b) '(1 . 2) (list a b)))

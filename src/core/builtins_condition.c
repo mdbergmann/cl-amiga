@@ -17,6 +17,7 @@
 #include "printer.h"
 #include "color.h"
 #include "stream.h"
+#include "string_utils.h"
 #include "../platform/platform.h"
 #include "../platform/platform_thread.h"
 #include <string.h>
@@ -540,7 +541,7 @@ static CL_Obj bi_make_condition(CL_Obj *args, int n)
          * against KW_FORMAT_CONTROL would miss under GC stress and the report
          * string would be dropped (condition then prints as "#<CONDITION ...>"
          * with no message). args[] is rooted, so its slots are forwarded. */
-        if (args[i] == KW_FORMAT_CONTROL && CL_STRING_P(args[i + 1]))
+        if (args[i] == KW_FORMAT_CONTROL && CL_ANY_STRING_P(args[i + 1]))
             report_string = args[i + 1];
     }
 
@@ -749,7 +750,7 @@ static CL_Obj merge_default_initargs(CL_Obj type_sym, CL_Obj slots,
             CL_Obj key = cl_car(plist);
             CL_Obj val = cl_car(cl_cdr(plist));
             if (!slot_present_p(slots, key)) {
-                int is_fmt = (key == KW_FORMAT_CONTROL && CL_STRING_P(val)
+                int is_fmt = (key == KW_FORMAT_CONTROL && CL_ANY_STRING_P(val)
                               && CL_NULL_P(*report_string));
                 /* Build the pair THEN prepend it — never nest as
                  * cl_cons(cl_cons(key,val), slots): C's unspecified argument
@@ -1499,7 +1500,7 @@ static CL_Obj coerce_to_condition(CL_Obj *args, int n, CL_Obj default_type)
             CL_Obj val = args[i + 1];
             CL_Obj pair = cl_cons(key, val);
             slots = cl_cons(pair, slots);
-            if (key == KW_FORMAT_CONTROL && CL_STRING_P(val))
+            if (key == KW_FORMAT_CONTROL && CL_ANY_STRING_P(val))
                 report = val;
         }
 
@@ -1518,8 +1519,12 @@ static CL_Obj coerce_to_condition(CL_Obj *args, int n, CL_Obj default_type)
         }
     }
 
-    if (CL_STRING_P(arg)) {
-        /* (error "msg" a b) → simple-condition with :format-control + :format-arguments */
+    if (CL_ANY_STRING_P(arg)) {
+        /* (error "msg" a b) → simple-condition with :format-control +
+         * :format-arguments.  A wide control (any non-ASCII character in
+         * the message) is a string too — rejecting it here turned
+         * (error "Fehler: ü") into "Expected condition, symbol, or
+         * string". */
         CL_Obj pair, slots, fmt_args;
         int i;
         /* default_type is a boot symbol (SIMPLE-ERROR/-WARNING/-CONDITION)
@@ -1680,9 +1685,13 @@ static CL_Obj bi_warn(CL_Obj *args, int n)
             c = (CL_Condition *)CL_OBJ_TO_PTR(cond);
             cl_color_set(CL_COLOR_YELLOW);
             cl_write_cstring_to_error("WARNING: ");
-            if (!CL_NULL_P(report) && CL_STRING_P(report)) {
-                CL_String *s = (CL_String *)CL_OBJ_TO_PTR(report);
-                cl_write_cstring_to_error(s->data);
+            if (!CL_NULL_P(report) && CL_ANY_STRING_P(report)) {
+                /* The report is wide whenever the formatted message holds
+                 * any non-ASCII character — bounded UTF-8 conversion
+                 * instead of reading CL_String bytes. */
+                char rbuf[512];
+                cl_string_to_utf8(report, rbuf, sizeof(rbuf));
+                cl_write_cstring_to_error(rbuf);
             } else {
                 char buf[128];
                 cl_prin1_to_string(c->type_name, buf, sizeof(buf));
@@ -1732,7 +1741,7 @@ static CL_Obj bi_error(CL_Obj *args, int n)
         CL_GC_PROTECT(cond);
         c = (CL_Condition *)CL_OBJ_TO_PTR(cond);
         rpt = format_condition_report(c);
-        if (!CL_NULL_P(rpt) && CL_STRING_P(rpt)) {
+        if (!CL_NULL_P(rpt) && CL_ANY_STRING_P(rpt)) {
             c = (CL_Condition *)CL_OBJ_TO_PTR(cond);  /* GC may have moved it */
             c->report_string = rpt;
         }

@@ -74,6 +74,15 @@ static inline const char *cl_string_base_data(CL_Obj str)
  * Allocates — may trigger GC. Caller must GC-protect inputs. */
 CL_Obj cl_string_copy(CL_Obj str);
 
+/* Copy STR (base or wide) into BUF as a NUL-terminated UTF-8 C string,
+ * truncating at BUF_SIZE-1 bytes (on a code-point boundary for wide
+ * strings).  Returns the number of bytes written (excluding the NUL).
+ * The error/debugger report paths use this: a report formatted with any
+ * non-ASCII character arrives as a TYPE_WIDE_STRING, and reading it
+ * through CL_String->data emits UTF-32 code units as bytes.  Compiled
+ * in all builds — without CL_WIDE_STRINGS it is a bounded copy. */
+uint32_t cl_string_to_utf8(CL_Obj str, char *buf, uint32_t buf_size);
+
 /* Extract substring [start, end).
  * Allocates — may trigger GC. Caller must GC-protect inputs. */
 CL_Obj cl_string_substring(CL_Obj str, uint32_t start, uint32_t end);

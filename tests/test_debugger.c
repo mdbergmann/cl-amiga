@@ -175,6 +175,78 @@ TEST(debugger_disabled_produces_no_output)
     ASSERT(strcmp(out, "\"\"") == 0);
 }
 
+#ifdef CL_WIDE_STRINGS
+/*
+ * Test: display_condition must survive — and render — a wide report
+ * string.  It used to cast the report to CL_String* and emit ->data
+ * raw: UTF-32 code units read as bytes, and a zero-length wide string
+ * (no data at all, cl_make_wide_string does not NUL-terminate) read
+ * past the object into the next arena cell.  Both shapes are driven
+ * here; the wide report must arrive UTF-8-encoded on *error-output*.
+ */
+TEST(debugger_wide_report_rendered_and_bounded)
+{
+    CL_Obj cond = CL_NIL;
+    int saved_fd;
+    const char *err_out;
+
+    eval("(setq *error-output* (make-string-output-stream))");
+    eval("(setq *debug-io* (make-string-output-stream))");
+
+    CL_GC_PROTECT(cond);
+    /* A condition whose report holds a code point no base string can
+     * carry — the report is wide by construction. */
+    cond = eval(
+        "(make-condition 'simple-error :format-control"
+        "  (concatenate 'string \"schaden: \" (string (code-char 8364))))");
+
+    saved_fd = dup(fileno(stdin));
+    freopen("/dev/null", "r", stdin);
+
+    cl_debugger_enabled = 1;
+    {
+        int err;
+        CL_CATCH(err);
+        if (err == CL_ERR_NONE) {
+            cl_invoke_debugger(cond);
+            CL_UNCATCH();
+        } else {
+            CL_UNCATCH();
+        }
+    }
+
+    /* The zero-length wide report: the old code read past the object. */
+    cond = eval(
+        "(make-condition 'simple-error :format-control"
+        "  (subseq (string (code-char 8364)) 0 0))");
+    {
+        int err;
+        CL_CATCH(err);
+        if (err == CL_ERR_NONE) {
+            cl_invoke_debugger(cond);
+            CL_UNCATCH();
+        } else {
+            CL_UNCATCH();
+        }
+    }
+    cl_debugger_enabled = 0;
+
+    dup2(saved_fd, fileno(stdin));
+    close(saved_fd);
+    CL_GC_UNPROTECT(1);
+
+    err_out = eval_str(
+        "(prog1 (get-output-stream-string *error-output*)"
+        "       (setq *error-output* (make-synonym-stream '*terminal-io*)))");
+    ASSERT(strstr(err_out, "Debugger entered:") != NULL);
+    ASSERT(strstr(err_out, "schaden: ") != NULL);
+    ASSERT(strstr(err_out, "\xE2\x82\xAC") != NULL); /* the euro sign, UTF-8 */
+    eval_str(
+        "(prog1 (get-output-stream-string *debug-io*)"
+        "       (setq *debug-io* (make-synonym-stream '*terminal-io*)))");
+}
+#endif /* CL_WIDE_STRINGS */
+
 int main(void)
 {
     test_init();
@@ -182,6 +254,9 @@ int main(void)
 
     RUN(debugger_noninteractive_reports_to_error_output);
     RUN(debugger_disabled_produces_no_output);
+#ifdef CL_WIDE_STRINGS
+    RUN(debugger_wide_report_rendered_and_bounded);
+#endif
 
     teardown();
     REPORT();

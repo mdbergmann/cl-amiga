@@ -53,6 +53,23 @@ CL_Obj cl_string_copy(CL_Obj str)
     }
 }
 
+uint32_t cl_string_to_utf8(CL_Obj str, char *buf, uint32_t buf_size)
+{
+#ifdef CL_WIDE_STRINGS
+    if (CL_WIDE_STRING_P(str))
+        return cl_wide_string_to_utf8(str, buf, buf_size);
+#endif
+    {
+        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(str);
+        uint32_t n = s->length;
+        uint32_t limit = (buf_size > 0) ? buf_size - 1 : 0;
+        if (n > limit) n = limit;
+        memcpy(buf, s->data, n);
+        if (buf_size > 0) buf[n] = '\0';
+        return n;
+    }
+}
+
 CL_Obj cl_string_substring(CL_Obj str, uint32_t start, uint32_t end)
 {
 #ifdef CL_WIDE_STRINGS

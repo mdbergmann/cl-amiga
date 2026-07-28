@@ -384,6 +384,130 @@ TEST(lisp_printer_aesthetic_uses_report)
         "\"#<CONDITION TYPE-ERROR>\"");
 }
 
+#ifdef CL_WIDE_STRINGS
+/* --- Wide-string condition reports ---
+ *
+ * A report holding any non-ASCII character travels as a
+ * TYPE_WIDE_STRING (cl_get_output_stream_string widens on the first
+ * byte > 0x7F), and the whole report path once handled only
+ * TYPE_STRING: the designator was rejected, the formatted report
+ * discarded, the :format-control never captured, and the printer
+ * emitted an empty message.  Wide data is built with (code-char N) —
+ * never a UTF-8 source literal, which --eval/stdin would
+ * double-encode (a separate, pre-existing reader-input bug).  The
+ * direct (unformatted) paths use (code-char 8364), a code point no
+ * base string can hold, so the string is wide by construction; the
+ * formatted paths widen on any non-ASCII output byte either way. */
+
+TEST(lisp_wide_string_error_designator)
+{
+    /* coerce_to_condition: (error "…€") signaled "Expected condition,
+     * symbol, or string" instead of the condition itself. */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (error (concatenate 'string \"kaputt: \""
+        "                                  (string (code-char 8364))))"
+        "  (error (c) (search \"kaputt: \" (princ-to-string c))))"),
+        "0");
+}
+
+TEST(lisp_wide_formatted_report)
+{
+    /* bi_error: the formatted report came back wide and was dropped —
+     * the condition reported the raw control \"value: ~A\".  The report
+     * must carry the interpolated text AND the actual code point. */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (error \"value: ~A\" (string (code-char 252)))"
+        "  (error (c) (let ((r (princ-to-string c)))"
+        "               (list (search \"value: \" r)"
+        "                     (char-code (char r 7))))))"),
+        "(0 252)");
+}
+
+TEST(lisp_wide_format_control_captured)
+{
+    /* make-condition / coerce_to_condition (symbol form): a wide
+     * :format-control never reached report_string — the condition
+     * printed as #<CONDITION SIMPLE-ERROR> with no message. */
+    ASSERT_STR_EQ(eval_print(
+        "(search \"gr\" (princ-to-string"
+        "  (make-condition 'simple-error :format-control"
+        "    (concatenate 'string \"gr\" (string (code-char 8364)) \"sse\"))))"),
+        "0");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (error 'simple-error :format-control"
+        "                     (concatenate 'string \"weit\" (string (code-char 8364))))"
+        "  (error (c) (search \"weit\" (princ-to-string c))))"),
+        "0");
+}
+
+TEST(lisp_wide_default_initarg_control)
+{
+    /* merge_default_initargs: a wide :format-control from
+     * :default-initargs was skipped the same way.  #. builds the wide
+     * literal at read time — the default-initargs table stores values
+     * verbatim, not evaluated forms. */
+    eval_print(
+        "(define-condition wide-di-err (error) ()"
+        "  (:default-initargs :format-control"
+        "    #.(concatenate 'string \"vorgabe: \" (string (code-char 8364)))))");
+    ASSERT_STR_EQ(eval_print(
+        "(search \"vorgabe: \" (princ-to-string (make-condition 'wide-di-err)))"),
+        "0");
+}
+
+TEST(lisp_wide_report_prin1_wrapper)
+{
+    /* printer.c: out_str_lisp returned silently on a wide report — the
+     * ~S wrapper printed #<CONDITION SIMPLE-ERROR: \"\"> with the
+     * message gone. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((r (format nil \"~s\" (make-condition 'simple-error"
+        "            :format-control (concatenate 'string \"bad \""
+        "                              (string (code-char 8364)))))))"
+        "  (list (and (search \"#<CONDITION SIMPLE-ERROR\" r) t)"
+        "        (and (search \"bad \" r) t)))"),
+        "(T T)");
+}
+
+TEST(lisp_wide_warn_report)
+{
+    /* bi_warn's no-handler printout degraded a wide report to the bare
+     * type name. */
+    const char *out;
+    eval_print("(defparameter *test-saved-eo* *error-output*)");
+    eval_print("(setf *error-output* (make-string-output-stream))");
+    eval_print("(warn \"achtung: ~A\" (string (code-char 252)))");
+    out = eval_print("(get-output-stream-string *error-output*)");
+    ASSERT(strstr(out, "achtung: ") != NULL);
+    ASSERT(strstr(out, "SIMPLE-WARNING") == NULL);
+    eval_print("(setf *error-output* *test-saved-eo*)");
+}
+
+TEST(c_wide_report_reaches_error_msg)
+{
+    /* error.c cl_error_from_condition: a wide report degraded
+     * cl_error_msg to the bare type name (and %s on CL_String->data
+     * would read UTF-32 units as bytes).  Signal uncaught with the
+     * debugger disabled and inspect the captured message. */
+    int err;
+    cl_debugger_enabled = 0;
+    CL_CATCH(err);
+    if (err == CL_ERR_NONE) {
+        cl_eval_string(
+            "(error \"gross: ~A\" (string (code-char 252)))");
+        CL_UNCATCH();
+        ASSERT(0 && "error did not unwind");
+    } else {
+        CL_UNCATCH();
+        cl_vm.sp = 0;
+        cl_vm.fp = 0;
+        ASSERT(strstr(cl_error_msg, "gross: ") != NULL);
+        /* the code point arrives UTF-8 encoded, not as a raw byte */
+        ASSERT(strstr(cl_error_msg, "\xC3\xBC") != NULL);
+    }
+}
+#endif /* CL_WIDE_STRINGS */
+
 TEST(lisp_define_condition_report_symbol)
 {
     /* Regression: define-condition with a :report FUNCTION-NAME SYMBOL (CLHS
@@ -1851,6 +1975,17 @@ int main(void)
     RUN(lisp_warn_symbol_goes_to_error_output);
     RUN(lisp_error_still_caught);
     RUN(lisp_error_with_symbol);
+
+    /* Wide-string condition reports */
+#ifdef CL_WIDE_STRINGS
+    RUN(lisp_wide_string_error_designator);
+    RUN(lisp_wide_formatted_report);
+    RUN(lisp_wide_format_control_captured);
+    RUN(lisp_wide_default_initarg_control);
+    RUN(lisp_wide_report_prin1_wrapper);
+    RUN(lisp_wide_warn_report);
+    RUN(c_wide_report_reaches_error_msg);
+#endif
 
     /* handler-bind tests */
     RUN(lisp_handler_bind_basic);

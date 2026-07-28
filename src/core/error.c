@@ -1,5 +1,6 @@
 #include "error.h"
 #include "mem.h"
+#include "string_utils.h"
 #include "vm.h"
 #include "symbol.h"
 #include "debugger.h"
@@ -395,8 +396,11 @@ void cl_error_from_condition(CL_Obj condition)
             CL_Obj result;
             hook_args[0] = condition;
             result = cl_vm_apply(hook_val, hook_args, 1);
-            if (!CL_NULL_P(result) && CL_HEAP_P(result) &&
-                CL_HDR_TYPE(CL_OBJ_TO_PTR(result)) == TYPE_STRING) {
+            /* The hook prints via WITH-OUTPUT-TO-STRING, which returns a
+             * TYPE_WIDE_STRING whenever the report holds any non-ASCII
+             * character — rejecting it dropped the message and left only
+             * the type name. */
+            if (!CL_NULL_P(result) && CL_ANY_STRING_P(result)) {
                 report = result;
             }
         }
@@ -407,13 +411,16 @@ void cl_error_from_condition(CL_Obj condition)
         report = c->report_string;
     }
 
-    if (!CL_NULL_P(report) && CL_HEAP_P(report) &&
-        CL_HDR_TYPE(CL_OBJ_TO_PTR(report)) == TYPE_STRING) {
-        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(report);
+    if (!CL_NULL_P(report) && CL_ANY_STRING_P(report)) {
+        /* Bounded UTF-8 conversion — the report is wide for any
+         * non-ASCII message, and CL_String->data on a wide object reads
+         * UTF-32 code units as bytes. */
+        char rbuf[512];                 /* cl_error_msg's own capacity */
         char typebuf[96];
+        cl_string_to_utf8(report, rbuf, sizeof(rbuf));
         cl_prin1_to_string(c->type_name, typebuf, sizeof(typebuf));
         snprintf(cl_error_msg, sizeof(cl_error_msg), "%s: %s",
-                 typebuf, s->data);
+                 typebuf, rbuf);
     } else {
         cl_prin1_to_string(c->type_name, cl_error_msg, sizeof(cl_error_msg));
     }

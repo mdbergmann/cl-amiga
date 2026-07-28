@@ -451,6 +451,21 @@ static void out_wide_str_lisp(CL_Obj wobj)
 }
 #endif
 
+/* Emit STROBJ whichever string type it is.  The condition/restart
+ * report paths use this: a report formatted with any non-ASCII
+ * character is a TYPE_WIDE_STRING, and out_str_lisp alone returned
+ * silently on it — (princ condition) printed an empty message. */
+static void out_any_str_lisp(CL_Obj strobj)
+{
+#ifdef CL_WIDE_STRINGS
+    if (CL_WIDE_STRING_P(strobj)) {
+        out_wide_str_lisp(strobj);
+        return;
+    }
+#endif
+    out_str_lisp(strobj);
+}
+
 /* Emit a *print-object-hook* result if it is a non-empty string and
  * return 1; return 0 to let the caller fall through to default printing.
  * Must accept wide strings: with-output-to-string in the hook returns a
@@ -1557,7 +1572,7 @@ static void print_obj(CL_Obj obj)
                 }
             }
             if (!CL_NULL_P(cond->report_string)) {
-                out_str_lisp(cond->report_string);
+                out_any_str_lisp(cond->report_string);
                 break;
             }
         }
@@ -1576,7 +1591,7 @@ static void print_obj(CL_Obj obj)
         cond = (CL_Condition *)CL_OBJ_TO_PTR(obj);
         if (!CL_NULL_P(cond->report_string)) {
             out_str(": \"");
-            out_str_lisp(((CL_Condition *)CL_OBJ_TO_PTR(obj))->report_string);
+            out_any_str_lisp(((CL_Condition *)CL_OBJ_TO_PTR(obj))->report_string);
             out_char('"');
         }
         out_char('>');
@@ -1591,8 +1606,10 @@ static void print_obj(CL_Obj obj)
          * function on the stream (CLHS 9.1.4.2.2). */
         if (!print_escape_p() && !print_readably_p() &&
             !CL_NULL_P(r->report)) {
-            if (CL_STRING_P(r->report)) {
-                out_str_lisp(r->report);
+            if (CL_ANY_STRING_P(r->report)) {
+                /* A wide :report string is still a string — falling
+                 * through would apply it as a report FUNCTION. */
+                out_any_str_lisp(r->report);
                 break;
             }
             /* Report function: call it with a fresh string output stream,

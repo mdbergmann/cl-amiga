@@ -17,6 +17,7 @@
 #include "repl.h"
 #include "color.h"
 #include "stream.h"
+#include "string_utils.h"
 #include "../platform/platform.h"
 #include <stdio.h>
 #include <string.h>
@@ -81,8 +82,10 @@ static void display_condition(CL_Obj condition, void (*emit)(const char *),
             CL_CATCH(err);
             if (err == CL_ERR_NONE) {
                 CL_Obj result = cl_vm_apply(hook_val, hook_args, 1);
-                if (!CL_NULL_P(result) && CL_HEAP_P(result) &&
-                    CL_HDR_TYPE(CL_OBJ_TO_PTR(result)) == TYPE_STRING) {
+                /* Wide results count: the hook's WITH-OUTPUT-TO-STRING
+                 * returns a TYPE_WIDE_STRING whenever the report holds
+                 * any non-ASCII character. */
+                if (!CL_NULL_P(result) && CL_ANY_STRING_P(result)) {
                     report_str = result;
                 }
                 CL_UNCATCH();
@@ -106,11 +109,17 @@ static void display_condition(CL_Obj condition, void (*emit)(const char *),
         cond = (CL_Condition *)CL_OBJ_TO_PTR(condition);
         report_str = cond->report_string;
     }
-    if (!CL_NULL_P(report_str)) {
-        CL_String *s;
+    if (!CL_NULL_P(report_str) && CL_ANY_STRING_P(report_str)) {
+        /* Bounded UTF-8 conversion: a wide report cast to CL_String*
+         * emitted UTF-32 code units as bytes — and a zero-length wide
+         * string has no data at all, so the old emit(s->data) read past
+         * the object into the next arena cell.  The narrow path gains a
+         * bound it never had (the report is capped at cl_error_msg size
+         * everywhere else anyway). */
+        char rbuf[512];
+        cl_string_to_utf8(report_str, rbuf, sizeof(rbuf));
         emit(": ");
-        s = (CL_String *)CL_OBJ_TO_PTR(report_str);
-        emit(s->data);
+        emit(rbuf);
     }
     if (use_color) cl_color_reset();
     emit("\n");
