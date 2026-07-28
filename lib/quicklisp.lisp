@@ -481,7 +481,17 @@
                                    :output t
                                    :buffering :full)))
   (:implementation cl-amiga
-    (ext:open-tcp-stream host port)))
+    ;; Arm timeouts: an unreachable host fails the connect within 30s, and a
+    ;; transfer that stalls mid-download raises EXT:SOCKET-TIMEOUT after 60s
+    ;; of silence (per buffer refill, not whole transfer) instead of parking
+    ;; the whole image forever in the socket reactor — field hang: quicklisp
+    ;; install wedged half-way through the client tar on MorphOS, task in
+    ;; WAIT on a READFILL reply with no deadline armed.
+    (let ((stream (ext:open-tcp-stream host port 30)))
+      (when stream
+        (setf (ext:socket-stream-timeout stream :input) 60)
+        (setf (ext:socket-stream-timeout stream :output) 60))
+      stream)))
 
 (definterface read-octets (buffer connection)
   (:implementation t

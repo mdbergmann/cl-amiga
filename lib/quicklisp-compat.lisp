@@ -36,8 +36,16 @@
 (in-package #:ql-network)
 
 ;; Override open-connection to use CL-Amiga's ext:open-tcp-stream.
+;; Timeouts (30s connect, 60s read/write silence) make a stalled dist
+;; download raise EXT:SOCKET-TIMEOUT instead of blocking the image forever
+;; in the socket reactor — same field hang as the quickstart bootstrap
+;; (see the cl-amiga implementation of open-connection in lib/quicklisp.lisp).
 (defun open-connection (host port)
-  (ext:open-tcp-stream host port))
+  (let ((stream (ext:open-tcp-stream host port 30)))
+    (when stream
+      (setf (ext:socket-stream-timeout stream :input) 60)
+      (setf (ext:socket-stream-timeout stream :output) 60))
+    stream))
 
 ;; Direct implementations of definterface functions.
 ;; The definterface GF dispatch via *implementation* has issues in CL-Amiga,
