@@ -50,7 +50,10 @@
    "SET-MENU-STRIP" "CLEAR-MENU-STRIP"
    "ADD-GADGET-LIST" "REFRESH-GADGET-LIST"
    ;; Public screens
-   "LOCK-PUB-SCREEN" "UNLOCK-PUB-SCREEN" "WITH-PUB-SCREEN"))
+   "LOCK-PUB-SCREEN" "UNLOCK-PUB-SCREEN" "WITH-PUB-SCREEN"
+   ;; Display dimensions
+   "QUERY-OVERSCAN" "DISPLAY-MODE-HEIGHT"
+   "+OSCAN-TEXT+" "+OSCAN-STANDARD+" "+OSCAN-MAX+" "+OSCAN-VIDEO+"))
 
 (in-package "AMIGA.INTUITION")
 
@@ -76,6 +79,7 @@
 (defconstant +lvo-clear-menu-strip+     -54)
 (defconstant +lvo-add-g-list+          -438)
 (defconstant +lvo-refresh-g-list+      -432)
+(defconstant +lvo-query-overscan+      -474)
 (defconstant +lvo-lock-pub-screen+     -510)
 (defconstant +lvo-unlock-pub-screen+   -516)
 (defconstant +lvo-show-title+          -282)
@@ -334,6 +338,53 @@ struct, or signals an error."
             (ffi:make-foreign-pointer result)))
       (unless opened
         (ffi:free-foreign title-ptr)))))
+
+;;; ----------------------------------------------------------------
+;;; How large is the display, really?
+;;;
+;;; A screen's nominal size is what you ASK for; what the monitor can
+;;; actually show is a property of the display mode, and the display
+;;; database is the only honest source for it — PAL and NTSC differ by
+;;; 56 rows, and an RTG mode is whatever its driver says.  Asking
+;;; means a program can open a screen the size of the display it
+;;; landed on instead of a size it guessed, which is what keeps a
+;;; fixed-layout program from being letterboxed or rescaled.
+
+;;; oScanType values (intuition/screens.h)
+(defconstant +oscan-text+     1)  ; guaranteed visible on any monitor
+(defconstant +oscan-standard+ 2)  ; the mode's nominal display clip
+(defconstant +oscan-max+      3)  ; as much as the mode can show
+(defconstant +oscan-video+    4)  ; beyond the visible edges
+
+(defun query-overscan (mode-id &optional (oscan-type +oscan-text+))
+  "QueryOverscan: the standard overscan rectangle of display mode
+MODE-ID, as (VALUES MIN-X MIN-Y MAX-X MAX-Y).  NIL when the display
+database does not know the mode.
+
+OSCAN-TYPE picks the region — +OSCAN-TEXT+ (the default: the area
+every monitor of that mode is guaranteed to show), +OSCAN-STANDARD+,
++OSCAN-MAX+ or +OSCAN-VIDEO+.  Get MODE-ID RTG-safely from
+AMIGA.GFX:BEST-MODE-ID.  See DISPLAY-MODE-HEIGHT for the common case."
+  (let ((rect (ffi:alloc-foreign 8)))   ; struct Rectangle: four WORDs
+    (unwind-protect
+         (let ((ok (amiga:call-library *intuition-base* +lvo-query-overscan+
+                                       (list :d0 mode-id
+                                             :a0 rect
+                                             :d1 oscan-type))))
+           (unless (zerop ok)
+             (values (ffi:peek-i16 rect 0) (ffi:peek-i16 rect 2)
+                     (ffi:peek-i16 rect 4) (ffi:peek-i16 rect 6))))
+      (ffi:free-foreign rect))))
+
+(defun display-mode-height (mode-id &optional (oscan-type +oscan-text+))
+  "Rows display mode MODE-ID can show — 256 on a PAL chipset mode, 200
+on NTSC, whatever the driver reports on RTG.  NIL when the display
+database does not know the mode.  A thin reading of QUERY-OVERSCAN:
+the rectangle is inclusive at both ends, so the height counts both."
+  (multiple-value-bind (min-x min-y max-x max-y)
+      (query-overscan mode-id oscan-type)
+    (declare (ignore min-x max-x))
+    (when min-y (1+ (- max-y min-y)))))
 
 (defun close-screen (screen)
   "Close a custom Intuition screen (all its windows must be closed)."

@@ -135,6 +135,33 @@ Conveniences over `AMIGA`/`FFI` for the AmigaOS calling conventions.
 | `(unlock-pub-screen screen &optional name)` | function | Unlock a previously locked public screen |
 | `(with-pub-screen (var &optional name) &body body)` | macro | Lock a public screen, bind to `var`, unlock on exit |
 
+### Display dimensions
+
+How large a display actually is belongs to the display *mode*, not to
+the screen you ask for: PAL and NTSC differ by 56 rows, and an RTG mode
+is whatever its driver says.  Ask, and a program can open a screen the
+size of the machine it landed on instead of a size it guessed — which
+is what keeps a fixed-layout program from being letterboxed or
+rescaled.  Pair these with `amiga.gfx:best-mode-id`.
+
+| Signature | Kind | Description |
+|-----------|------|-------------|
+| `(query-overscan mode-id &optional oscan-type)` | function | `QueryOverscan`: the overscan rectangle of display mode `mode-id` as `(values min-x min-y max-x max-y)`; `NIL` if the display database does not know the mode |
+| `(display-mode-height mode-id &optional oscan-type)` | function | Rows that mode can show — 256 on PAL, 200 on NTSC, the driver's own on RTG; `NIL` for an unknown mode |
+| `+oscan-text+` | constant | Region every monitor of that mode is guaranteed to show (the default) |
+| `+oscan-standard+` | constant | The mode's nominal display clip |
+| `+oscan-max+` | constant | As much as the mode can show |
+| `+oscan-video+` | constant | Beyond the visible edges |
+
+```lisp
+(let* ((mode (amiga.gfx:best-mode-id :width 320 :height 200 :depth 5))
+       (rows (and mode (amiga.intuition:display-mode-height mode))))
+  ;; rows is 256 on a PAL machine, 200 on NTSC
+  (amiga.intuition:with-screen (scr :width 320 :height (or rows 200)
+                                    :depth 5 :mode-id mode)
+    ...))
+```
+
 ### IDCMP events
 
 | Signature | Kind | Description |

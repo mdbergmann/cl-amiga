@@ -89,6 +89,39 @@
 ; --- Graphics tests ---
 (require "amiga/graphics")
 
+;; QueryOverscan: how tall the display of a mode really is.  The
+;; lores mode the database picks for 320x200 is PAL (256 rows) or
+;; NTSC (200) depending on the machine, or an RTG mode of its own
+;; size — the point is that the answer comes from the database rather
+;; than from a guess, so assert the shape, not one machine's number.
+(check "intuition-query-overscan-rect" t
+  (let ((mode (amiga.gfx:best-mode-id :width 320 :height 200 :depth 4)))
+    (if (null mode)
+        t                               ; no database entry: nothing to check
+        (multiple-value-bind (min-x min-y max-x max-y)
+            (amiga.intuition:query-overscan mode)
+          (and min-x
+               (<= min-x max-x) (<= min-y max-y)
+               (>= (- max-x min-x) 100)   ; a lores display is ~320 wide
+               (>= (- max-y min-y) 100))))))
+
+;; DISPLAY-MODE-HEIGHT reads the same rectangle: inclusive at both
+;; ends, so a 0..255 rectangle is 256 rows, not 255.
+(check "intuition-display-mode-height-agrees" t
+  (let ((mode (amiga.gfx:best-mode-id :width 320 :height 200 :depth 4)))
+    (if (null mode)
+        t
+        (multiple-value-bind (min-x min-y max-x max-y)
+            (amiga.intuition:query-overscan mode)
+          (declare (ignore min-x max-x))
+          (eql (amiga.intuition:display-mode-height mode)
+               (1+ (- max-y min-y)))))))
+
+;; An invalid mode id is a clean NIL, not a crash or a garbage number.
+(check "intuition-query-overscan-unknown-mode" '(nil nil)
+  (list (amiga.intuition:query-overscan #x7FFFFFFF)
+        (amiga.intuition:display-mode-height #x7FFFFFFF)))
+
 (check "graphics-library-open" t
   (not (null amiga.gfx:*gfx-base*)))
 
