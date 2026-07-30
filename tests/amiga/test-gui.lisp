@@ -122,6 +122,25 @@
   (list (amiga.intuition:query-overscan #x7FFFFFFF)
         (amiga.intuition:display-mode-height #x7FFFFFFF)))
 
+;; ...and the two checks above must not be able to pass by DOING
+;; NOTHING.  Both excuse themselves when the database has no mode to
+;; offer, which no AmigaOS machine running Intuition v39 actually does
+;; — so that escape hatch only ever hides a real failure, and it did:
+;; QueryOverscan was called with the wrong registers (d0/a0/d1 for the
+;; fd's a0/a1/d0), which is not a crash but a plain "no" for every mode
+;; on earth.  DISPLAY-MODE-HEIGHT then answered NIL always, silently
+;; costing every caller that sizes a screen from it.  Pin both halves
+;; separately: the database answers, and the answer is a real height.
+(check "intuition-best-mode-id-database-answers" t
+  (not (null (amiga.gfx:best-mode-id :width 320 :height 200 :depth 4))))
+
+(check "intuition-display-mode-height-is-a-real-height" t
+  (let* ((mode (amiga.gfx:best-mode-id :width 320 :height 200 :depth 4))
+         (h (and mode (amiga.intuition:display-mode-height mode))))
+    ;; PAL says 256, NTSC 200, an RTG mode its own size — assert only
+    ;; that a display was measured at all, and plausibly.
+    (and (integerp h) (>= h 100) (<= h 4096))))
+
 (check "graphics-library-open" t
   (not (null amiga.gfx:*gfx-base*)))
 

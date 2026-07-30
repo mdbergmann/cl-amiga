@@ -367,10 +367,16 @@ every monitor of that mode is guaranteed to show), +OSCAN-STANDARD+,
 AMIGA.GFX:BEST-MODE-ID.  See DISPLAY-MODE-HEIGHT for the common case."
   (let ((rect (ffi:alloc-foreign 8)))   ; struct Rectangle: four WORDs
     (unwind-protect
+         ;; QueryOverscan(displayID,rect,oScanType)(a0/a1,d0) — the
+         ;; display ID travels in an ADDRESS register even though it is
+         ;; a number, the rectangle in A1, the region in D0.  Getting
+         ;; this wrong does not crash: the call just reports failure for
+         ;; every mode, so DISPLAY-MODE-HEIGHT answers NIL always and a
+         ;; caller sizing a screen from it silently keeps its fallback.
          (let ((ok (amiga:call-library *intuition-base* +lvo-query-overscan+
-                                       (list :d0 mode-id
-                                             :a0 rect
-                                             :d1 oscan-type))))
+                                       (list :a0 mode-id
+                                             :a1 rect
+                                             :d0 oscan-type))))
            (unless (zerop ok)
              (values (ffi:peek-i16 rect 0) (ffi:peek-i16 rect 2)
                      (ffi:peek-i16 rect 4) (ffi:peek-i16 rect 6))))
