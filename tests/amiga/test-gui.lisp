@@ -86,6 +86,40 @@
           (when (plusp (amiga.intuition:msg-class msg))
             (return :looped)))))))
 
+;; msg-raw-key: the raw (position) keycode off the InputEvent a V36+
+;; keyboard IntuiMessage hangs from IAddress — synthesized here in
+;; plain memory, no window or keypress needed.  The guards must answer
+;; NIL for a key-up code, a non-RAWKEY event, a null IAddress, and —
+;; the IAddress-is-overloaded-per-class regression — a non-keyboard
+;; msg-class even when IAddress happens to point at an InputEvent that
+;; reads as a well-formed key-down; only a genuinely keyboard-class
+;; (VANILLAKEY/RAWKEY) message with a well-formed InputEvent yields
+;; its raw code.
+(check "intuition-msg-raw-key" '(#x01 #x01 nil nil nil nil)
+  (ffi:with-foreign-alloc (msg 40)
+    (ffi:with-foreign-alloc (ev 16)
+      (dotimes (i 40) (ffi:poke-u8 msg 0 i))
+      (dotimes (i 16) (ffi:poke-u8 ev 0 i))
+      (ffi:poke-u32 msg amiga.intuition:+idcmp-rawkey+ 20)    ; im->Class
+      (ffi:poke-u8 ev #x01 4)                  ; ie_Class = IECLASS_RAWKEY
+      (ffi:poke-u16 ev #x01 6)                 ; ie_Code: the '1' key, down
+      (ffi:poke-u32 msg (ffi:foreign-pointer-address ev) 28) ; im->IAddress
+      (list (amiga.intuition:msg-raw-key msg)
+            (progn (ffi:poke-u32 msg amiga.intuition:+idcmp-vanillakey+ 20)
+                   (amiga.intuition:msg-raw-key msg))          ; VANILLAKEY class also trusted
+            (progn (ffi:poke-u32 msg amiga.intuition:+idcmp-rawkey+ 20)
+                   (ffi:poke-u16 ev #x81 6)    ; the same key released
+                   (amiga.intuition:msg-raw-key msg))
+            (progn (ffi:poke-u16 ev #x01 6)
+                   (ffi:poke-u8 ev #x02 4)     ; not an IECLASS_RAWKEY event
+                   (amiga.intuition:msg-raw-key msg))
+            (progn (ffi:poke-u8 ev #x01 4)
+                   (ffi:poke-u32 msg 0 28)     ; no InputEvent hung off it
+                   (amiga.intuition:msg-raw-key msg))
+            (progn (ffi:poke-u32 msg (ffi:foreign-pointer-address ev) 28)
+                   (ffi:poke-u32 msg amiga.intuition:+idcmp-gadgetup+ 20) ; non-keyboard class
+                   (amiga.intuition:msg-raw-key msg))))))       ; IAddress coincidentally well-formed: still NIL
+
 ; --- Graphics tests ---
 (require "amiga/graphics")
 

@@ -24,6 +24,7 @@
    ;; IDCMP
    "GET-MSG" "REPLY-MSG" "WAIT-PORT"
    "MSG-CLASS" "MSG-CODE" "MSG-QUALIFIER" "MSG-MOUSE-X" "MSG-MOUSE-Y"
+   "MSG-RAW-KEY"
    "EVENT-LOOP" "*EVENT-LOOP-MAX-WAITS*"
    ;; Input event qualifier bits (IntuiMessage->Qualifier)
    "+IEQUALIFIER-LSHIFT+" "+IEQUALIFIER-RSHIFT+" "+IEQUALIFIER-CAPSLOCK+"
@@ -200,8 +201,20 @@
   (class       :u32  20)   ; im->Class (IDCMP flags)
   (code        :u16  24)   ; im->Code
   (qualifier   :u16  26)   ; im->Qualifier (IEQUALIFIER_* bits)
+  (iaddress    :u32  28)   ; im->IAddress (for key events V36+: the
+                           ; originating struct InputEvent — see
+                           ; MSG-RAW-KEY)
   (mouse-x     :u16  32)   ; im->MouseX
   (mouse-y     :u16  34))  ; im->MouseY
+
+;;; struct InputEvent (devices/inputevent.h), the fields MSG-RAW-KEY
+;;; reads: 0 ie_NextEvent*, 4 ie_Class(UBYTE), 5 ie_SubClass(UBYTE),
+;;; 6 ie_Code(UWORD), 8 ie_Qualifier(UWORD).
+(ffi:defcstruct input-event
+  (ie-class :u8  4)
+  (ie-code  :u16 6))
+
+(defconstant +ieclass-rawkey+ #x01)
 
 ;;; Input event qualifier bits (devices/inputevent.h) as they appear in
 ;;; IntuiMessage->Qualifier.  With IDCMP_VANILLAKEY the keymap has
@@ -535,6 +548,30 @@ exhausted with no message received."
 (defun msg-qualifier (msg)
   "Get the Qualifier field from an IntuiMessage (IEQUALIFIER-* bits)."
   (intui-message-qualifier msg))
+
+(defun msg-raw-key (msg)
+  "The raw (position) keycode behind a keyboard IntuiMessage, or NIL
+when it cannot be told.  With IDCMP_VANILLAKEY the keymap has already
+been applied to Code under the qualifiers of the MOMENT — so a shift
+wedged down on the host (the emulator classic: a screenshot chord
+steals the key-up) turns the whole digit row into punctuation.  V36+
+Intuition hangs the originating struct InputEvent off IAddress; its
+ie_Code is the raw key, position-coded and qualifier-blind, valid
+until the message is replied (EVENT-LOOP bodies run before the
+reply).  IAddress is overloaded per IDCMP class (e.g. it holds a
+Gadget* for GADGETUP/DOWN) and is only meaningful for keyboard
+messages, so this first checks msg-class is IDCMP_VANILLAKEY or
+IDCMP_RAWKEY before trusting it at all.  Guarded further: only a
+non-null IAddress whose event reads IECLASS_RAWKEY with a key-down
+code is trusted — anything else answers NIL and the caller falls
+back to Code."
+  (when (member (msg-class msg) (list +idcmp-vanillakey+ +idcmp-rawkey+))
+    (let ((addr (intui-message-iaddress msg)))
+      (when (and (integerp addr) (/= addr 0))
+        (let ((ev (ffi:make-foreign-pointer addr)))
+          (when (= (input-event-ie-class ev) +ieclass-rawkey+)
+            (let ((code (input-event-ie-code ev)))
+              (when (< code #x80) code))))))))
 
 (defun msg-mouse-x (msg)
   "Get MouseX from an IntuiMessage."
