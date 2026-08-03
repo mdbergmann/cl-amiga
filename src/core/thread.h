@@ -533,6 +533,17 @@ void cl_thread_reset_lisp_state(CL_Thread *t);
 /* Allocate and initialize a new CL_Thread for a worker */
 CL_Thread *cl_thread_alloc_worker(void);
 
+/* Sized variant backing MP:MAKE-THREAD's :vm-stack-size/:vm-frames/:nlx-frames
+ * keywords.  Each size is a MINIMUM: 0 or anything below the platform's
+ * CL_WORKER_* default is raised to that default, so a worker can only be
+ * grown, never shrunk below the historically safe floors.  The enlarged
+ * arrays come from platform_alloc (malloc/AllocVec), NOT the GC arena, so an
+ * opt-in size changes nothing about compile-time heap layout — the Amiga
+ * defaults stay byte-for-byte historical (see the CL_WORKER_* rationale). */
+CL_Thread *cl_thread_alloc_worker_sized(uint32_t vm_stack_size,
+                                        uint32_t vm_frames,
+                                        uint32_t nlx_frames);
+
 /* Free a worker CL_Thread's resources */
 void cl_thread_free_worker(CL_Thread *t);
 

@@ -474,6 +474,22 @@ diffs the real package exports against a committed snapshot; run
 - **Platform abstraction** — all OS calls go through `platform.h` (POSIX and AmigaOS implementations)
 - **FFI** — generic foreign pointer type + peek/poke (all platforms); 68k assembly trampoline for AmigaOS register-based library calls
 - **Threading** (MP package) — kernel threads, per-thread dynamic bindings (TLV), locks, named condition variables, thread interruption/destruction, type predicates; stop-the-world GC with safepoints; POSIX pthreads (with `__thread`-backed TLS) and AmigaOS processes/SignalSemaphores.
+  `mp:make-thread` accepts per-thread size keywords — `:stack-size` (C stack,
+  bytes), `:vm-stack-size` (operand-stack entries), `:vm-frames` (call-frame
+  budget), `:nlx-frames` (catch/unwind budget). Each is a *minimum*: values
+  below the platform default are raised to it, so a worker can only be grown.
+  This matters on AmigaOS, where the compact worker defaults (64 KB C stack,
+  256 call frames) are far below the main task's — a worker that runs deep
+  call chains, nested `catch`es, or `load`s from source should request larger
+  budgets, e.g. `(mp:make-thread #'game-loop :stack-size 200000 :vm-frames
+  1024)`. With the m68k JIT enabled each active call level also crosses a
+  C-stack trampoline and books a backtrace shadow frame — roughly 1 KB of
+  `:stack-size` and two `:vm-frames` per level — so budget both for the
+  deepest call chain the thread will run. On
+  AmigaOS a worker also inherits the creator's console, so
+  `*standard-output*` reaches the shell window (or a worker can open its own
+  `CON:` window via `open`). See the size-keyword tests in
+  `tests/test_threads.c` / `tests/amiga/run-tests.lisp` for usage.
   Two built-in hang-triage diagnostics: `(mp:dump-thread-waits)` prints every
   live thread's current wait state (which lock/condvar it is blocked on), and
   setting `CLAMIGA_LOCK_DIAG=<ms>` in the environment makes any blocking

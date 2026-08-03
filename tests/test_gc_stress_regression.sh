@@ -4409,6 +4409,28 @@ check_contains "diag names relocated lock and holder after compactions" \
 check_absent   "no corruption in lock_wait_report heap re-derive" \
   "corrupted\|not of type\|Guru\|SIGSEGV\|badmark\|Unbound" "$out"
 
+# --- Case: MP:MAKE-THREAD per-thread size keywords under GC stress ---------
+# Path (src/core/builtins_thread.c bi_make_thread/mt_size_arg +
+# thread.c cl_thread_alloc_worker_sized): the enlarged worker arrays come
+# from platform_alloc (not the arena), but the creation sequence still holds
+# func/name across cl_gc_reclaim_young/cl_gc/cl_alloc(TYPE_THREAD), and under
+# stress every one of those compacts.  Assert a sized worker created
+# mid-churn computes a recursion deeper than any default budget (1500 > 1024
+# host frames) and returns a fresh heap result intact.
+cat > "$WORK/mtsized.lisp" <<'EOF'
+(let ((th (mp:make-thread
+           (lambda ()
+             (labels ((r (n) (if (<= n 0) 0 (1+ (funcall #'r (1- n))))))
+               (list :depth (r 1500) (make-string 8 :initial-element #\x))))
+           :name "sized-worker"
+           :stack-size 1000000 :vm-stack-size 32768
+           :vm-frames 4096 :nlx-frames 512)))
+  (format t "MTSIZED:~s~%" (mp:join-thread th)))
+EOF
+out=$(run_stress "$WORK/mtsized.lisp")
+check_contains "sized worker (vm-frames 4096) computes depth-1500 under stress" \
+  'MTSIZED:(:DEPTH 1500 "xxxxxxxx")' "$out"
+
 # --- Case: condition/deftype hash index under forced compaction ------------
 # Bug-shaped path (compiler.c CL_AlistIndex, builtins_condition.c cond_index,
 # compiler.c type_index): TYPEP resolves symbol type specs through hash

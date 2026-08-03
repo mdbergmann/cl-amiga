@@ -167,6 +167,98 @@ TEST(worker_handler_case_runs_after_deep_work)
     ASSERT_STR_EQ(w, ":CAUGHT");
 }
 
+/* MP:MAKE-THREAD per-thread size keywords (:stack-size :vm-stack-size
+ * :vm-frames :nlx-frames).  Each is a MINIMUM the worker's budget is raised
+ * to.  Motivated by the AmigaOS worker walls: the compile-time CL_WORKER_*
+ * defaults there must stay at their historical values (layout-fragile
+ * moving-GC bug, see thread.h), so growing a worker is a per-thread runtime
+ * opt-in that touches only that worker's malloc'd arrays and OS stack. */
+TEST(make_thread_size_keywords_grow_worker)
+{
+    /* Depth 1500 exceeds even the host default (1024 frames): without the
+     * keyword the worker dies silently and join returns NIL... */
+    const char *dflt = eval_print(
+        "(mp:join-thread"
+        "  (mp:make-thread"
+        "    (lambda ()"
+        "      (labels ((r (n) (if (<= n 0) 0 (1+ (funcall #'r (1- n))))))"
+        "        (r 1500)))))");
+    ASSERT_STR_EQ(dflt, "NIL");
+
+    /* ...with :vm-frames raised past it, the same work completes. */
+    const char *big = eval_print(
+        "(mp:join-thread"
+        "  (mp:make-thread"
+        "    (lambda ()"
+        "      (labels ((r (n) (if (<= n 0) 0 (1+ (funcall #'r (1- n))))))"
+        "        (r 1500)))"
+        "    :vm-frames 4096))");
+    ASSERT_STR_EQ(big, "1500");
+
+    /* All four keywords together are accepted alongside :name. */
+    const char *all = eval_print(
+        "(mp:join-thread"
+        "  (mp:make-thread (lambda () 42) :name \"sized\""
+        "    :stack-size 1000000 :vm-stack-size 32768"
+        "    :vm-frames 2048 :nlx-frames 4096))");
+    ASSERT_STR_EQ(all, "42");
+}
+
+TEST(make_thread_size_keywords_are_minimums)
+{
+    /* Tiny requests are floored at the platform defaults — a worker can only
+     * be grown, so depth 500 (needs > 256 frames) must still succeed. */
+    const char *w = eval_print(
+        "(mp:join-thread"
+        "  (mp:make-thread"
+        "    (lambda ()"
+        "      (labels ((r (n) (if (<= n 0) 0 (1+ (funcall #'r (1- n))))))"
+        "        (r 500)))"
+        "    :stack-size 4096 :vm-stack-size 16 :vm-frames 16 :nlx-frames 16))");
+    ASSERT_STR_EQ(w, "500");
+
+    /* C-level: the sized allocator itself applies the floors. */
+    {
+        CL_Thread *t = cl_thread_alloc_worker_sized(16, 16, 16);
+        ASSERT(t != NULL);
+        ASSERT_EQ(t->vm.stack_size, (uint32_t)CL_WORKER_VM_STACK_SIZE);
+        ASSERT_EQ(t->vm.frame_size, CL_WORKER_VM_FRAME_SIZE);
+        ASSERT_EQ(t->nlx_max, CL_WORKER_NLX_FRAMES);
+        cl_thread_free_worker(t);
+
+        t = cl_thread_alloc_worker_sized(CL_WORKER_VM_STACK_SIZE * 2,
+                                         CL_WORKER_VM_FRAME_SIZE * 2,
+                                         CL_WORKER_NLX_FRAMES * 2);
+        ASSERT(t != NULL);
+        ASSERT_EQ(t->vm.stack_size, (uint32_t)(CL_WORKER_VM_STACK_SIZE * 2));
+        ASSERT_EQ(t->vm.frame_size, CL_WORKER_VM_FRAME_SIZE * 2);
+        ASSERT_EQ(t->nlx_max, CL_WORKER_NLX_FRAMES * 2);
+        cl_thread_free_worker(t);
+    }
+}
+
+TEST(make_thread_size_keyword_rejects_bad_values)
+{
+    /* Non-fixnum, non-positive, and absurd values all signal a clean
+     * type error instead of creating a misconfigured worker. */
+    const char *r = eval_print(
+        "(list"
+        " (handler-case (progn (mp:make-thread (lambda () 1) :vm-frames :foo)"
+        "                      :no-error)"
+        "   (error () :caught))"
+        " (handler-case (progn (mp:make-thread (lambda () 1) :stack-size 0)"
+        "                      :no-error)"
+        "   (error () :caught))"
+        " (handler-case (progn (mp:make-thread (lambda () 1) :nlx-frames -5)"
+        "                      :no-error)"
+        "   (error () :caught))"
+        " (handler-case (progn (mp:make-thread (lambda () 1)"
+        "                                      :vm-stack-size 999999999)"
+        "                      :no-error)"
+        "   (error () :caught)))");
+    ASSERT_STR_EQ(r, "(:CAUGHT :CAUGHT :CAUGHT :CAUGHT)");
+}
+
 /* ================================================================
  * Thread predicates
  * ================================================================ */
@@ -939,6 +1031,11 @@ int main(void)
     RUN(worker_deep_recursion_survives_like_main);
     RUN(worker_deep_nlx_nesting_no_corruption);
     RUN(worker_handler_case_runs_after_deep_work);
+
+    /* Per-thread size keywords */
+    RUN(make_thread_size_keywords_grow_worker);
+    RUN(make_thread_size_keywords_are_minimums);
+    RUN(make_thread_size_keyword_rejects_bad_values);
 
     /* Thread predicates */
     RUN(thread_alive_p_before_join);

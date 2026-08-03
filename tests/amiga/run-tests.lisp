@@ -7657,23 +7657,108 @@
 (check "thread make with name" "worker"
   (mp:thread-name (mp:make-thread (lambda () nil) :name "worker")))
 
-; NOTE: the worker deep-recursion / deep-NLX-nesting regression tests live in
-; the HOST suite only (tests/test_threads.c).  Two AmigaOS-specific reasons, both
-; empirically confirmed against the FS-UAE suite:
-;   1. The worker VM frame-budget increase (256 -> 1024) that lets a worker run
-;      the same call depth as the main thread is host-only: bumping it on Amiga
-;      shifts heap layout and tips a pre-existing moving-GC bug (see the
-;      CL_WORKER_* rationale in src/core/thread.h).  So Amiga workers keep the
-;      256-frame budget and cannot assert deep-CALL-nesting.
-;   2. NLX-nesting can't be probed on an Amiga worker at all: executing nested
-;      CATCH/BLOCK/UNWIND-PROTECT recurses the native C stack (the VM runs each
-;      catch body one level deeper), and an Amiga worker's OS-default ~64KB
-;      process stack Gurus at ~150-200 frames — far below the 256-slot nlx_stack
-;      capacity the guard protects.  A recursive OR a macro-expanded nested-CATCH
-;      test therefore crashes the worker before it can exercise the guard.
-; The per-thread NLX guard (cl_nlx_max == CT->nlx_max, which bounds a worker at
-; its real 256-slot allocation) IS active on Amiga; it is exercised on host,
-; where workers get the full budget and can nest deeply.
+; NOTE: an Amiga worker's DEFAULT budgets stay at the historical compact sizes
+; (64KB C stack, 256 VM frames, 256 NLX frames — see the CL_WORKER_* rationale
+; in src/core/thread.h): raising the compile-time defaults shifts heap layout
+; and tips a pre-existing moving-GC bug, so default workers still cannot run
+; deep CALL nesting (silent death at 256 frames) or deep NLX nesting (the
+; ~64KB stack Gurus at ~150-200 CATCH frames, since each catch body runs one
+; C level deeper).  What changed: MP:MAKE-THREAD's per-thread size keywords
+; (:stack-size :vm-stack-size :vm-frames :nlx-frames) grow ONE worker's
+; malloc'd arrays and OS stack at runtime without touching the compile-time
+; defaults — so the deep-nesting assertions below run on Amiga via opt-in
+; sized workers, byte-identical defaults for everything else.
+
+; --- Per-thread size keywords (Wall 1: "game in a worker") ---
+
+(check "worker size keywords accepted with name" 42
+  (mp:join-thread (mp:make-thread (lambda () 42)
+                                  :name "sized"
+                                  :stack-size 200000 :vm-stack-size 8192
+                                  :vm-frames 1024 :nlx-frames 512)))
+
+; Regression pair: depth 500 exceeds the default 256-frame budget, where the
+; worker dies SILENTLY (frame overflow is unrecoverable — running the Lisp
+; handler needs frames — so join returns NIL, no condition, no Guru)...
+(check "default worker dies silently past 256 frames" nil
+  (mp:join-thread (mp:make-thread
+                    (lambda ()
+                      (labels ((r (n) (if (<= n 0) 0 (1+ (funcall #'r (1- n))))))
+                        (r 500))))))
+
+; ...and growing that budget lets the same work complete.  Under the JIT
+; (this suite's config) every call level is EXPENSIVE on both axes: the
+; funcall-recursion shape crosses cl_jit_runtime_call's 1KB C-stack arg
+; buffer + cl_vm_apply TWICE per level (~2.5KB of :stack-size each), and
+; books a backtrace shadow frame + apply frames (~3 VM frames each).  A
+; NIL here means silent frame-exhaustion death; a condition text means
+; the C-stack guard fired; the DIAG line shows how deep the worker got.
+(defvar *depth-reached* 0)
+(check ":vm-frames + :stack-size worker runs depth 500 like main" 500
+  (let ((res (mp:join-thread
+               (mp:make-thread
+                 (lambda ()
+                   (handler-case
+                       (labels ((r (n)
+                                  (setq *depth-reached* (max *depth-reached*
+                                                             (- 500 n)))
+                                  (if (<= n 0) 0 (1+ (funcall #'r (1- n))))))
+                         (r 500))
+                     (error (e) (format nil "~a" e))))
+                 :stack-size 2000000 :vm-frames 4096 :vm-stack-size 16384))))
+    (unless (eql res 500)
+      (format t ";; DIAG worker depth-reached=~a of 500~%" *depth-reached*))
+    res))
+
+; Deep NLX nesting needs BOTH a bigger C stack (each catch level runs one C
+; level deeper — and several KB deeper under the JIT) and a bigger nlx_stack
+; (300 > the 256-slot default).  Historically impossible on an Amiga worker
+; in any configuration — see the NOTE above.
+(check ":stack-size + :nlx-frames worker nests 300 catches" 42
+  (mp:join-thread (mp:make-thread
+                    (lambda ()
+                      (handler-case
+                          (labels ((c (n) (if (<= n 0)
+                                              (throw 'done 42)
+                                              (catch 'done (c (1- n))))))
+                            (catch 'done (c 300)))
+                        (error (e) (format nil "~a" e))))
+                    :stack-size 1000000 :vm-frames 1024 :nlx-frames 1024)))
+
+(check "size keyword rejects non-fixnum" :caught
+  (handler-case (progn (mp:make-thread (lambda () 1) :vm-frames :foo)
+                       :no-error)
+    (error () :caught)))
+
+; --- Worker console (Wall 2: "REPL in a worker") ---
+
+; The worker inherits the creator's console via NP_Input/NP_Output
+; (platform_thread_amiga.c), so *standard-output* actually reaches the
+; console instead of NIL:.  The line below lands in the suite log; the
+; check asserts the write path completes and the thread returns.
+(check "worker writes to shared console" :ok
+  (mp:join-thread (mp:make-thread
+                    (lambda ()
+                      (format t "~&;; WORKER-CONSOLE-WRITE-OK~%")
+                      (finish-output)
+                      :ok))))
+
+; Zero-C-change REPL route: a worker opens its OWN console window via the
+; CON: handler and writes to it — no sharing with the main task's console
+; at all.  The CLOSE flag gives the window a close gadget; the window
+; appears briefly during the suite run and closes with the stream.
+; On failure the check's "got" value is the condition text, so the log
+; shows exactly what blocks the CON: route.
+(check "worker opens its own CON: window" :ok
+  (mp:join-thread (mp:make-thread
+                    (lambda ()
+                      (handler-case
+                          (with-open-file (s "CON:0/0/400/120/clamiga-test/CLOSE"
+                                             :direction :output
+                                             :if-exists :append)
+                            (write-line ";; hello from worker CON:" s)
+                            :ok)
+                        (error (e) (format nil "~a" e)))))))
 
 ; --- Thread predicates ---
 (check "thread alive-p after join" nil

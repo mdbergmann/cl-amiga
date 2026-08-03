@@ -129,19 +129,44 @@ int platform_thread_create(void **handle, void *(*func)(void *), void *arg,
     at->joiner = NULL;
     at->join_sig = -1;
 
-    if (stack_size == 0) stack_size = 65536;
+    /* 65536 is both the 0-means-OS-default value and the FLOOR for explicit
+     * requests: MP:MAKE-THREAD's :STACK-SIZE may only grow a worker, never
+     * hand it less than the historical budget. */
+    if (stack_size < 65536) stack_size = 65536;
 
-    /* Forbid() prevents task switching so the child process won't
-     * start running before we set tc_UserData.  This is the standard
-     * AmigaOS pattern for passing data to a newly created process. */
-    Forbid();
+    /* Share the creator's console with the worker.  Without NP_Input/
+     * NP_Output a CreateNewProc child gets NIL: handles, so a worker's
+     * Input()/Output() — which every console path in platform_amiga.c goes
+     * through — read nothing and print nowhere (host workers, by contrast,
+     * naturally share the process's stdin/stdout).  Passing the parent's
+     * handles with NP_CloseInput/NP_CloseOutput FALSE is the standard DOS
+     * idiom: the child uses them but never closes them at exit.  Concurrent
+     * WRITES from several processes are safe — console output goes through
+     * unbuffered Write() packets the console handler serializes.  READS keep
+     * the pre-existing single-reader assumption (see platform_amiga.c): the
+     * buffered FGets/FGetC console reads must only ever run in one process
+     * at a time.  TAG_IGNORE keeps the historical NIL: behavior when the
+     * creator itself has no console handle (e.g. Workbench launch). */
+    {
+        BPTR par_in  = Input();
+        BPTR par_out = Output();
 
-    proc = CreateNewProcTags(
-        NP_Entry,     CL_PROC_ENTRY(amiga_thread_entry_gate, amiga_thread_entry),
-        CL_PROC_STACK_TAGS(stack_size),
-        NP_Name,      (ULONG)"CL-Thread",
-        TAG_DONE
-    );
+        /* Forbid() prevents task switching so the child process won't
+         * start running before we set tc_UserData.  This is the standard
+         * AmigaOS pattern for passing data to a newly created process. */
+        Forbid();
+
+        proc = CreateNewProcTags(
+            NP_Entry,     CL_PROC_ENTRY(amiga_thread_entry_gate, amiga_thread_entry),
+            CL_PROC_STACK_TAGS(stack_size),
+            NP_Name,      (ULONG)"CL-Thread",
+            par_in  ? NP_Input      : TAG_IGNORE, (ULONG)par_in,
+            par_in  ? NP_CloseInput : TAG_IGNORE, FALSE,
+            par_out ? NP_Output      : TAG_IGNORE, (ULONG)par_out,
+            par_out ? NP_CloseOutput : TAG_IGNORE, FALSE,
+            TAG_DONE
+        );
+    }
 
     if (!proc) {
         Permit();

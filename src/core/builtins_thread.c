@@ -28,6 +28,16 @@
  * ================================================================ */
 
 static CL_Obj KW_NAME_THR = 0;  /* :NAME keyword for make-thread */
+/* Per-thread size keywords for make-thread.  Each is a MINIMUM the worker's
+ * budget is raised to (never lowered below the platform defaults) — see
+ * cl_thread_alloc_worker_sized.  Motivated by the AmigaOS worker walls: the
+ * compile-time CL_WORKER_* defaults must stay at their historical values
+ * (layout-fragile moving-GC bug, see thread.h), but a runtime opt-in only
+ * changes the requesting worker's malloc'd arrays and OS stack. */
+static CL_Obj KW_STACK_SIZE_THR    = 0;  /* :STACK-SIZE (C stack, bytes) */
+static CL_Obj KW_VM_STACK_SIZE_THR = 0;  /* :VM-STACK-SIZE (entries) */
+static CL_Obj KW_VM_FRAMES_THR     = 0;  /* :VM-FRAMES (call frames) */
+static CL_Obj KW_NLX_FRAMES_THR    = 0;  /* :NLX-FRAMES (NLX frames) */
 
 /* ================================================================
  * Main thread's Lisp-visible thread object
@@ -396,6 +406,21 @@ static void *thread_entry(void *arg)
  * ================================================================ */
 
 /* (mp:make-thread function &key name) -> thread */
+/* Parse one of make-thread's size keywords: a positive fixnum <= `cap`.
+ * The caps are typo-catchers (e.g. entries-vs-bytes confusion), far above
+ * any realistic budget; the platform-default FLOORS are applied later by
+ * cl_thread_alloc_worker_sized / the platform thread layer. */
+static uint32_t mt_size_arg(CL_Obj val, const char *kw, uint32_t cap)
+{
+    int32_t v;
+    if (!CL_FIXNUM_P(val) || (v = CL_FIXNUM_VAL(val)) <= 0 ||
+        (uint32_t)v > cap)
+        cl_error(CL_ERR_TYPE,
+                 "MP:MAKE-THREAD: %s must be a positive fixnum <= %u",
+                 kw, (unsigned)cap);
+    return (uint32_t)v;
+}
+
 static CL_Obj bi_make_thread(CL_Obj *args, int n)
 {
     CL_Obj func = args[0];
@@ -404,19 +429,33 @@ static CL_Obj bi_make_thread(CL_Obj *args, int n)
     int thread_id;
     CL_ThreadObj *tobj;
     CL_Obj thread_obj;
+    uint32_t c_stack = 0, vm_stack = 0, vm_frames = 0, nlx_frames = 0;
     int i;
 
-    /* Parse &key name */
+    /* Parse &key name stack-size vm-stack-size vm-frames nlx-frames.
+     * Unknown keywords are ignored (bordeaux-threads passes extras).
+     * The size keywords are MINIMUMS — values below the platform defaults
+     * are raised to them, so a worker can only be grown. */
     for (i = 1; i + 1 < n; i += 2) {
         if (args[i] == KW_NAME_THR)
             name = args[i + 1];
+        else if (args[i] == KW_STACK_SIZE_THR)
+            c_stack = mt_size_arg(args[i + 1], ":STACK-SIZE",
+                                  64u * 1024u * 1024u);
+        else if (args[i] == KW_VM_STACK_SIZE_THR)
+            vm_stack = mt_size_arg(args[i + 1], ":VM-STACK-SIZE",
+                                   1u << 20);
+        else if (args[i] == KW_VM_FRAMES_THR)
+            vm_frames = mt_size_arg(args[i + 1], ":VM-FRAMES", 65536u);
+        else if (args[i] == KW_NLX_FRAMES_THR)
+            nlx_frames = mt_size_arg(args[i + 1], ":NLX-FRAMES", 65536u);
     }
 
     /* Validate function argument */
     func = cl_coerce_funcdesig(func, "MP:MAKE-THREAD");
 
-    /* Allocate worker CL_Thread */
-    child = cl_thread_alloc_worker();
+    /* Allocate worker CL_Thread (0 = platform default for each size) */
+    child = cl_thread_alloc_worker_sized(vm_stack, vm_frames, nlx_frames);
     if (!child)
         cl_error(CL_ERR_STORAGE, "MP:MAKE-THREAD: cannot allocate thread");
 
@@ -558,10 +597,18 @@ static CL_Obj bi_make_thread(CL_Obj *args, int n)
     /* Create OS thread.  Pass an explicit C stack size (CL_WORKER_C_STACK_SIZE)
      * rather than 0/OS-default: the default is far smaller than the main
      * thread's stack (512KB vs 8MB on macOS, 64KB on AmigaOS), which would make
-     * a worker crash/corrupt at a call depth main handles.  See the define. */
+     * a worker crash/corrupt at a call depth main handles.  See the define.
+     * :STACK-SIZE can only raise the platform value, never lower it; the
+     * platform layer additionally floors nonzero requests at its own default
+     * (65536 on AmigaOS, where CL_WORKER_C_STACK_SIZE is 0 = OS default). */
+    {
+        uint32_t stack_floor = CL_WORKER_C_STACK_SIZE;
+        if (c_stack < stack_floor)
+            c_stack = stack_floor;
+    }
     if (platform_thread_create(&child->platform_handle,
                                thread_entry, child,
-                               CL_WORKER_C_STACK_SIZE) != 0) {
+                               c_stack) != 0) {
         cl_thread_unregister(child);
         cl_thread_table_free(thread_id);
         cl_thread_free_worker(child);
@@ -1832,7 +1879,11 @@ void cl_builtins_thread_init(void)
     CL_Obj main_name;
 
     /* Pre-intern keywords */
-    KW_NAME_THR = cl_intern_keyword("NAME", 4);
+    KW_NAME_THR          = cl_intern_keyword("NAME", 4);
+    KW_STACK_SIZE_THR    = cl_intern_keyword("STACK-SIZE", 10);
+    KW_VM_STACK_SIZE_THR = cl_intern_keyword("VM-STACK-SIZE", 13);
+    KW_VM_FRAMES_THR     = cl_intern_keyword("VM-FRAMES", 9);
+    KW_NLX_FRAMES_THR    = cl_intern_keyword("NLX-FRAMES", 10);
 
     /* Register the lazily-built abort handler/report caches as GC roots
      * exactly once, here at (single-threaded) boot.  Doing it inside the
@@ -1900,4 +1951,8 @@ void cl_builtins_thread_init(void)
 
     /* Register cached symbols for GC compaction forwarding */
     cl_gc_register_root(&KW_NAME_THR);
+    cl_gc_register_root(&KW_STACK_SIZE_THR);
+    cl_gc_register_root(&KW_VM_STACK_SIZE_THR);
+    cl_gc_register_root(&KW_VM_FRAMES_THR);
+    cl_gc_register_root(&KW_NLX_FRAMES_THR);
 }

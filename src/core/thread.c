@@ -916,7 +916,25 @@ void cl_condvar_table_free(int id)
 
 CL_Thread *cl_thread_alloc_worker(void)
 {
-    CL_Thread *t = (CL_Thread *)platform_alloc(sizeof(CL_Thread));
+    return cl_thread_alloc_worker_sized(0, 0, 0);
+}
+
+CL_Thread *cl_thread_alloc_worker_sized(uint32_t vm_stack_size,
+                                        uint32_t vm_frames,
+                                        uint32_t nlx_frames)
+{
+    CL_Thread *t;
+
+    /* Each requested size is a MINIMUM (see thread.h): raise anything below
+     * the platform default to the default, so workers only ever grow. */
+    if (vm_stack_size < CL_WORKER_VM_STACK_SIZE)
+        vm_stack_size = CL_WORKER_VM_STACK_SIZE;
+    if (vm_frames < CL_WORKER_VM_FRAME_SIZE)
+        vm_frames = CL_WORKER_VM_FRAME_SIZE;
+    if (nlx_frames < CL_WORKER_NLX_FRAMES)
+        nlx_frames = CL_WORKER_NLX_FRAMES;
+
+    t = (CL_Thread *)platform_alloc(sizeof(CL_Thread));
     if (!t) return NULL;
     memset(t, 0, sizeof(CL_Thread));
 
@@ -925,28 +943,28 @@ CL_Thread *cl_thread_alloc_worker(void)
      * smaller budget silently kills the worker — see thread.h).  On AmigaOS they
      * stay at the historical compact sizes; see the CL_WORKER_* rationale. */
     t->vm.stack = (CL_Obj *)platform_alloc(
-        CL_WORKER_VM_STACK_SIZE * sizeof(CL_Obj));
+        vm_stack_size * sizeof(CL_Obj));
     if (!t->vm.stack) { platform_free(t); return NULL; }
-    t->vm.stack_size = CL_WORKER_VM_STACK_SIZE;
+    t->vm.stack_size = vm_stack_size;
     t->vm.frames = (CL_Frame *)platform_alloc(
-        CL_WORKER_VM_FRAME_SIZE * sizeof(CL_Frame));
+        vm_frames * sizeof(CL_Frame));
     if (!t->vm.frames) {
         platform_free(t->vm.stack);
         platform_free(t);
         return NULL;
     }
-    t->vm.frame_size = CL_WORKER_VM_FRAME_SIZE;
+    t->vm.frame_size = (int)vm_frames;
 
     /* Allocate NLX stack */
     t->nlx_stack = (CL_NLXFrame *)platform_alloc(
-        CL_WORKER_NLX_FRAMES * sizeof(CL_NLXFrame));
+        nlx_frames * sizeof(CL_NLXFrame));
     if (!t->nlx_stack) {
         platform_free(t->vm.frames);
         platform_free(t->vm.stack);
         platform_free(t);
         return NULL;
     }
-    t->nlx_max = CL_WORKER_NLX_FRAMES;
+    t->nlx_max = (int)nlx_frames;
 
     /* Allocate saved pending-throw stack */
     t->saved_pending_stack = (CL_SavedPending *)platform_alloc(
