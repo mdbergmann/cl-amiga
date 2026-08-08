@@ -627,6 +627,75 @@ require identical output. The design rationale and rewrite-soundness
 arguments live in the `src/core/peephole.c` header comment and
 `specs/performance.md` §1.8.
 
+### Disassembly
+
+Two disassemblers, one per execution tier: `disassemble` for the bytecode the
+compiler emits, and `%jit-disassemble` for the native m68k code the Amiga JIT
+emits from it.
+
+**Bytecode — `(disassemble fn)`** (host and Amiga). Takes a symbol, a function,
+or a closure, and prints the lambda-list shape, local/upvalue/size counts, the
+instruction listing, and the constant pool:
+
+```lisp
+CL-USER> (defun add1 (x) (+ x 1))
+CL-USER> (disassemble 'add1)
+Disassembly of ADD1:
+  1 required, 0 optional, 0 key
+  2 locals, 0 upvalues
+  12 bytes, 1 constants
+
+  0000: LOAD         0
+  0002: CONST        0    ; 1
+  0005: ADD
+  0006: STORE        1
+  0008: POP
+  0009: LOAD         1
+  0011: RET
+
+Constants:
+  0: 1
+```
+
+Jump and non-local-exit operands are resolved to their target offsets,
+constant-pool references are annotated with the printed constant (the `; 1`
+above), and `OP_CLOSURE` lists one line per captured variable. Built-in
+functions have no bytecode, so they report `Built-in function: CAR` instead.
+The listing goes to `*standard-output*` like any other output, so
+`(with-output-to-string (*standard-output*) (disassemble 'add1))` captures it —
+including over a SLY connection.
+
+Because bytecode is what the optimizer rewrites, `disassemble` is also how you
+check whether a `declaim`/`declare` actually took effect: compile the same
+function at `speed 1` and `speed 3` and compare the listings (see [the peephole
+post-pass](#the-peephole-post-pass-in-practice) for why a warm FASL cache can
+make that comparison lie).
+
+**Native m68k — `(jitexpand form)`** (AmigaOS only). Prints one line of m68k
+assembly per instruction, with the raw bytes alongside. The macro takes a
+`defun`, a `lambda`, or any expression — an expression is wrapped in a thunk
+that is never called, so free variables need not be bound:
+
+```lisp
+(jitexpand (defun add1 (x) (+ x 1)))   ; defines, then disassembles
+(jitexpand (lambda (x) (car x)))
+(jitexpand (+ x 1))
+```
+
+`clamiga::%jit-disassemble` is the underlying function if you already have the
+function object. A function the JIT declined to translate prints `(no native
+code — function runs through the bytecode interpreter)`, which makes this the
+quickest way to find out whether the JIT took a given definition (see
+[JIT (m68k)](#jit-m68k) for what it covers). This is a targeted disassembler,
+not a general m68k one: it decodes the instruction forms the JIT emits and
+falls back to `.word $xxxx` for anything else, so the raw word is still
+visible. On host builds it compiles to a no-op.
+
+For runnable examples of the bytecode `disassemble` builtin, see
+`tests/test_disassemble_stream.c` and the "Disassemble" sections of
+`tests/amiga/run-tests.lisp` — `jitexpand`/`%jit-disassemble` have no
+automated test coverage yet; the examples above have only been run by hand.
+
 ### Garbage collection
 
 On macOS/Linux hosts CL-Amiga runs a **generational collector**: all
@@ -935,6 +1004,8 @@ blocks: requests go out via `SendIO` and are reclaimed with
 On the AmigaOS build (68020+), CL-Amiga translates bytecode functions to native m68k machine code at definition time. The VM dispatcher jumps straight into the native body instead of interpreting bytecode. The translator (a single-pass bytecode walker) covers a broad core of the instruction set: integer arithmetic and comparisons (with fixnum fast paths), branches, `cons`/`car`/`cdr`/`rplaca`/`rplacd`/list building, struct slot access, function calls and self-recursive tail calls, closures, multiple-value flow, non-local exits (`block`/`return-from`, `catch`/`throw`, `unwind-protect`, `tagbody`/`go`, handlers/restarts), dynamic binding, `&key` parameters, and AmigaOS FFI (`amiga-call`). Opcodes it doesn't handle yet — and functions with `&optional`/`&rest` lambda lists or frames too large for a 16-bit displacement — fall back to the interpreter transparently.
 
 The JIT is on by default. Pass `--no-jit` to keep functions bytecode-only (useful for A/B benchmarks or isolating a bug); at runtime `(clamiga::%jit-set-active nil|t)` toggles the flag around individual `defun`s. On host builds the JIT is compiled out entirely — its entry points become inline no-ops.
+
+To see the machine code for a definition — or to find out whether the JIT translated it at all — use `(jitexpand ...)`; see [Disassembly](#disassembly).
 
 ### Performance
 
