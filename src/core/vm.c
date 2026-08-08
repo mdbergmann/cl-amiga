@@ -1023,12 +1023,7 @@ static void bt_render(int base, int max_show)
                 pos = bt_format_frame(pos, depth, nm, file, line);
             }
             /* This loop prints frames [0, j] raw (no frame_is_stub filter,
-             * unlike the normal path below) -- so the "more frames" count
-             * must stay on the same raw basis, not bt_count_real's filtered
-             * one, or the two numbers in this message describe different
-             * populations. */
-            /* This loop prints frames [0, j] raw (no frame_is_stub filter,
-             * unlike the normal path below) -- so the "more frames" count
+             * unlike the normal path below) — so the "more frames" count
              * must stay on the same raw basis, not bt_count_real's filtered
              * one, or the two numbers in this message describe different
              * populations. */
