@@ -9038,6 +9038,46 @@
 (check "backtrace-buf overflow: c_stack_base intact, no spurious stack-overflow" 3
   (+ 1 2))
 
+; --- Deep backtrace: the frame window, not the buffer size, decides what
+;     is shown ---
+; The 25-frame chain above is deeper than the renderer's default 20-frame
+; window, and its long source path makes the formatted text several times the
+; 2048-byte inline buffer — so the buffer has to grow onto the C heap for the
+; whole window to survive.  Captured from a HANDLER-BIND handler, which runs
+; BEFORE any unwinding, so these are the error-time frames still live: exactly
+; the state the interactive debugger renders `:bt [n|all]` from.
+; JIT shadow frames are opt-in (they cost a few % on call-heavy code), so —
+; as in the EXT:BACKTRACE section above — turn them on for these captures or
+; the JIT'd chain has no frames to report; restore after.  No-op on host.
+(clamiga::%jit-set-frames t)
+(defparameter *amiga-deep-bt* nil)
+(defparameter *amiga-deep-bt5* nil)
+(handler-case
+    (handler-bind ((error (lambda (c) (declare (ignore c))
+                            (setf *amiga-deep-bt* (ext:backtrace)))))
+      (bt-overflow-f1))
+  (error () nil))
+(handler-case
+    (handler-bind ((error (lambda (c) (declare (ignore c))
+                            (setf *amiga-deep-bt5* (ext:backtrace 5)))))
+      (bt-overflow-f1))
+  (error () nil))
+(defparameter *amiga-deep-names*
+  (mapcar (lambda (f) (and (second f) (symbol-name (second f))))
+          *amiga-deep-bt*))
+(check "deep backtrace reaches past the default 20-frame window" t
+  (>= (length *amiga-deep-bt*) 25))
+(check "deep backtrace has the innermost chain frame" t
+  (and (member "BT-OVERFLOW-F25" *amiga-deep-names* :test #'equal) t))
+(check "deep backtrace has the outermost chain frame" t
+  (and (member "BT-OVERFLOW-F1" *amiga-deep-names* :test #'equal) t))
+(check "backtrace max-frames caps the window" 5 (length *amiga-deep-bt5*))
+(check "deep backtrace jit shadow frames toggle off" nil
+  (clamiga::%jit-set-frames nil))
+; A deep capture must leave the runtime healthy — a buffer grown and then
+; reused across captures is the path that would corrupt state if mismanaged.
+(check "evaluation still sane after deep backtrace captures" 3 (+ 1 2))
+
 ; --- cl-spark regressions: FORMAT justification, wide-string output,
 ;     LOOP parallel stepping, and FLOOR float consistency ---
 

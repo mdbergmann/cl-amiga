@@ -136,6 +136,40 @@ static void display_backtrace(void (*emit)(const char *))
     }
 }
 
+/* Handle ":bt [n|all]".  ARG is whatever followed the command word; FRAMES is
+ * the session's current frame limit, updated in place when a count is given.
+ *
+ * With no argument this re-displays the text as already rendered.  With a count
+ * it re-renders the SAME error-time frames at a different depth, which is the
+ * only way past the "... N more frames" tail: those frames were never
+ * formatted, so there was nothing for a plain :bt to show. */
+static void handle_bt_command(const char *arg, int *frames)
+{
+    while (*arg == ' ' || *arg == '\t') arg++;
+
+    if (*arg != '\0') {
+        int want;
+        if (strcmp(arg, "all") == 0 || strcmp(arg, "ALL") == 0) {
+            want = 0;                       /* 0 = no limit */
+        } else {
+            char *endp;
+            long n = strtol(arg, &endp, 10);
+            /* frame_size is this VM's hard frame ceiling, so a larger count
+             * could not show more — reject it rather than silently ignore. */
+            if (endp == arg || *endp != '\0' || n < 0 || n > cl_vm.frame_size) {
+                cl_write_cstring_to_debug_io(
+                    "Usage: :bt [<n>|all] — show at most <n> frames "
+                    "(0 or \"all\" for every frame)\n");
+                return;
+            }
+            want = (int)n;
+        }
+        *frames = want;
+        cl_render_backtrace(want);
+    }
+    display_backtrace(cl_write_cstring_to_debug_io);
+}
+
 /* Display available restarts and return count (including "top level") */
 static int display_restarts(void)
 {
@@ -167,7 +201,8 @@ static void display_help(void)
 {
     cl_write_cstring_to_debug_io("Debugger commands:\n");
     cl_write_cstring_to_debug_io("  <number>  — invoke restart by number\n");
-    cl_write_cstring_to_debug_io("  :bt       — show backtrace\n");
+    cl_write_cstring_to_debug_io(
+        "  :bt [n]   — show backtrace (n frames, or \"all\")\n");
     cl_write_cstring_to_debug_io("  :q        — return to top level\n");
     cl_write_cstring_to_debug_io("  :help     — show this help\n");
     cl_write_cstring_to_debug_io("  <expr>    — evaluate a Lisp expression\n");
@@ -240,6 +275,9 @@ void cl_invoke_debugger(CL_Obj condition)
 {
     int num_restarts;
     char line[1024];
+    /* Frame limit :bt renders at — tracks the last explicit `:bt N`, so a
+     * re-render after an eval keeps the depth the user asked for. */
+    int bt_frames = CL_BACKTRACE_DEFAULT_FRAMES;
 
     /* Recursion guard: if the interactive C debugger loop is already active
      * on this thread, don't re-enter it. */
@@ -361,8 +399,9 @@ void cl_invoke_debugger(CL_Obj condition)
         }
 
         /* Check for commands */
-        if (strcmp(line, ":bt") == 0) {
-            display_backtrace(cl_write_cstring_to_debug_io);
+        if (strncmp(line, ":bt", 3) == 0 &&
+            (line[3] == '\0' || line[3] == ' ' || line[3] == '\t')) {
+            handle_bt_command(line + 3, &bt_frames);
             cl_color_set(CL_COLOR_DIM_MAGENTA);
             cl_write_cstring_to_debug_io("Debug> ");
             cl_color_reset();
@@ -410,10 +449,21 @@ void cl_invoke_debugger(CL_Obj condition)
         /* Otherwise, eval as Lisp expression */
         {
             int err;
-
-            /* Reset VM state before eval */
-            cl_vm.sp = 0;
-            cl_vm.fp = 0;
+            /* Evaluate ON TOP of the error-time frames rather than discarding
+             * them.  Zeroing sp/fp here erased the very stack the user entered
+             * the debugger to inspect: (ext:backtrace) and (ext:frame-locals)
+             * at this prompt saw only their own call, and :bt N had no frames
+             * left to re-render.  Nesting a cl_vm_apply on a live frame stack
+             * is exactly what the *debugger-hook* path above already does, so
+             * this is the well-trodden case, not a new one.
+             *
+             * Restore the snapshot afterwards — on the error path too, where
+             * the nested unwind leaves sp/fp wherever it stopped — so every
+             * later command, and any restart we longjmp into, still sees the
+             * error-time window. */
+            int saved_sp = cl_vm.sp;
+            int saved_fp = cl_vm.fp;
+            int saved_debug_fp = cl_debug_base_fp;
 
             CL_CATCH(err);
             if (err == CL_ERR_NONE) {
@@ -430,10 +480,17 @@ void cl_invoke_debugger(CL_Obj condition)
                 cl_write_cstring_to_debug_io(cl_error_msg);
                 cl_color_reset();
                 cl_write_cstring_to_debug_io("\n");
-                /* Reset VM state after error */
-                cl_vm.sp = 0;
-                cl_vm.fp = 0;
             }
+
+            cl_vm.sp = saved_sp;
+            cl_vm.fp = saved_fp;
+
+            /* An error inside the eval ran cl_capture_backtrace again, which
+             * overwrote both the snapshot and the formatted text with the
+             * typo's stack.  Put the error we are actually debugging back, so
+             * a following :bt does not silently describe a different one. */
+            cl_debug_base_fp = saved_debug_fp;
+            cl_render_backtrace(bt_frames);
         }
 
         cl_color_set(CL_COLOR_DIM_MAGENTA);

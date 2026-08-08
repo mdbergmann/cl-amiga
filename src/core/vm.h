@@ -170,11 +170,36 @@ void cl_throw_to_tag(CL_Obj tag, CL_Obj value);
 /* Create a condition from an error code and message */
 CL_Obj cl_create_condition_from_error(int code, const char *msg);
 
-/* --- Backtrace --- */
-#define CL_BACKTRACE_BUF_SIZE 2048
+/* --- Backtrace ---
+ *
+ * The formatted backtrace text lives in a per-thread buffer that starts as a
+ * fixed inline block inside CL_Thread — so the common, shallow case costs no
+ * allocation on the error path — and grows onto the C heap when a deep or
+ * long-pathed backtrace needs more room.  Before it could grow, the 2048-byte
+ * ceiling cut the text off mid-frame, which put a second, invisible limit on
+ * top of the frame limit: `:bt 100` would have had nowhere to put the frames.
+ */
+#define CL_BACKTRACE_BUF_SIZE 2048          /* inline block; no malloc needed */
+#define CL_BACKTRACE_BUF_MAX  (128 * 1024)  /* hard ceiling on heap growth */
+
+/* Frames cl_capture_backtrace renders by default.  The debugger's `:bt N`
+ * re-renders the same error-time window with a different limit. */
+#define CL_BACKTRACE_DEFAULT_FRAMES 20
+
+/* Ceiling on backtrace-buffer growth, in bytes (never below
+ * CL_BACKTRACE_BUF_SIZE).  Defaults to CL_BACKTRACE_BUF_MAX so a runaway
+ * backtrace cannot eat the 8MB an Amiga has; tests lower it to drive the
+ * truncation path deterministically. */
+extern int cl_backtrace_cap_limit;
 
 /* Capture current VM call stack into cl_backtrace_buf */
 void cl_capture_backtrace(void);
+
+/* Re-render the error-time backtrace window that cl_capture_backtrace
+ * snapshotted, with a different frame limit; MAX_FRAMES <= 0 means "every
+ * frame".  Backs the debugger's `:bt [n|all]`.  Outside an error this renders
+ * the live call stack, like (ext:backtrace). */
+void cl_render_backtrace(int max_frames);
 
 /* --- Structured backtrace introspection (Sly/SLYNK SLDB backend) ---
  *

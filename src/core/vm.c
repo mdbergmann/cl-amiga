@@ -824,65 +824,107 @@ static int frame_is_stub(CL_Frame *f)
     return f->code == f->stub_code;
 }
 
-/* Advance pos by snprintf's return value, clamping to the buffer end.
- * snprintf returns the number of characters it WOULD have written had the
- * buffer been large enough — which can exceed the space actually available.
- * Adding that raw value to pos would push pos past CL_BACKTRACE_BUF_SIZE, and
- * a later (CL_BACKTRACE_BUF_SIZE - pos) would then underflow to a huge size_t,
- * making the next snprintf write unbounded past the buffer (corrupting the
- * adjacent c_stack_base field — a real heap-struct smash, not just truncation).
- * Clamping keeps pos in [0, CL_BACKTRACE_BUF_SIZE-1] so the size arg stays
- * positive. Returns the (clamped) new pos. */
-static int bt_advance(int pos, int n)
+/* Count the user-visible (non-stub) frames in [0, base). */
+static int bt_count_real(int base)
 {
-    if (n < 0) return pos;  /* snprintf encoding error: leave pos unchanged */
-    pos += n;
-    if (pos > CL_BACKTRACE_BUF_SIZE - 1) pos = CL_BACKTRACE_BUF_SIZE - 1;
-    return pos;
+    int i, n = 0;
+    for (i = 0; i < base; i++)
+        if (!frame_is_stub(&cl_vm.frames[i]))
+            n++;
+    return n;
+}
+
+int cl_backtrace_cap_limit = CL_BACKTRACE_BUF_MAX;
+
+/* Every CL_Thread gets cl_thread_backtrace_init, so the buffer is already
+ * valid here.  Re-establishing it is a cheap belt-and-braces guard: a NULL
+ * buffer would turn the error path — the one place we most need a diagnostic
+ * — into a second crash. */
+static void bt_ensure_buf(void)
+{
+    if (!cl_backtrace_buf || cl_backtrace_cap <= 0)
+        cl_thread_backtrace_init(CT);
+}
+
+/* Grow the current thread's backtrace buffer to hold at least NEED bytes
+ * (terminating NUL included), moving it from the inline block to the C heap on
+ * first growth.  Returns 1 when the capacity is available, 0 when it is not —
+ * at the cl_backtrace_cap_limit ceiling or out of memory.  A 0 return leaves
+ * the existing text intact and callers simply stop appending, so the worst
+ * case is a truncated backtrace, never an overrun. */
+static int bt_reserve(int need)
+{
+    int cap = cl_backtrace_cap;
+    int limit = cl_backtrace_cap_limit;
+    char *nb;
+
+    if (need <= cap) return 1;
+    if (limit < CL_BACKTRACE_BUF_SIZE) limit = CL_BACKTRACE_BUF_SIZE;
+    if (need > limit) return 0;
+
+    if (cap < CL_BACKTRACE_BUF_SIZE) cap = CL_BACKTRACE_BUF_SIZE;
+    while (cap < need) cap *= 2;      /* bounded by limit, cannot overflow */
+    if (cap > limit) cap = limit;
+
+    nb = (char *)platform_alloc((unsigned long)cap);
+    if (!nb) return 0;
+    memcpy(nb, cl_backtrace_buf, (size_t)cl_backtrace_cap);
+    if (cl_backtrace_buf != CT->backtrace_inline)
+        platform_free(cl_backtrace_buf);
+    cl_backtrace_buf = nb;
+    cl_backtrace_cap = cap;
+    return 1;
+}
+
+/* Append printf-formatted text at POS, growing the buffer to fit, and return
+ * the new position (always the index of the terminating NUL).
+ *
+ * vsnprintf reports the length it WOULD have written, which is both the grow
+ * signal and the historical hazard here: a plain `pos += vsnprintf(...)` walks
+ * pos past the end, the next call computes a NEGATIVE remaining size that
+ * wraps to a huge size_t, and the write runs unbounded past the buffer.
+ * Deriving pos from what actually fits — never from the requested length —
+ * keeps pos inside [0, cap-1] on every path, including the one where growth
+ * is refused. */
+static int bt_appendf(int pos, const char *fmt, ...)
+{
+    va_list ap;
+    int n, avail;
+
+    if (pos < 0) return 0;
+    if (pos > cl_backtrace_cap - 1) pos = cl_backtrace_cap - 1;
+
+    avail = cl_backtrace_cap - pos;      /* >= 1: room for at least the NUL */
+    va_start(ap, fmt);
+    n = vsnprintf(cl_backtrace_buf + pos, (size_t)avail, fmt, ap);
+    va_end(ap);
+    if (n < 0) return pos;               /* encoding error: leave pos put */
+    if (n < avail) return pos + n;       /* fit whole */
+
+    /* Did not fit.  Grow to exactly what this append needs and re-render. */
+    if (!bt_reserve(pos + n + 1))
+        return pos + avail - 1;          /* capped: keep the truncated text */
+
+    avail = cl_backtrace_cap - pos;
+    va_start(ap, fmt);
+    n = vsnprintf(cl_backtrace_buf + pos, (size_t)avail, fmt, ap);
+    va_end(ap);
+    if (n < 0) return pos;
+    if (n >= avail) n = avail - 1;
+    return pos + n;
 }
 
 /* Format a single backtrace frame into buf+pos, return new pos */
 static int bt_format_frame(int pos, int depth, CL_Obj name,
                            const char *file, int line)
 {
-    int n;
-    if (pos >= CL_BACKTRACE_BUF_SIZE - 1) return pos;
-    n = snprintf(cl_backtrace_buf + pos,
-                 CL_BACKTRACE_BUF_SIZE - pos, "  %d: ", depth);
-    pos = bt_advance(pos, n);
-    if (pos >= CL_BACKTRACE_BUF_SIZE - 1) return pos;
-
-    if (!CL_NULL_P(name) && CL_SYMBOL_P(name)) {
-        if (file && line > 0) {
-            n = snprintf(cl_backtrace_buf + pos,
-                         CL_BACKTRACE_BUF_SIZE - pos,
-                         "%s (%s:%d)\n", cl_symbol_name(name), file, line);
-        } else if (line > 0) {
-            n = snprintf(cl_backtrace_buf + pos,
-                         CL_BACKTRACE_BUF_SIZE - pos,
-                         "%s (line %d)\n", cl_symbol_name(name), line);
-        } else {
-            n = snprintf(cl_backtrace_buf + pos,
-                         CL_BACKTRACE_BUF_SIZE - pos,
-                         "%s\n", cl_symbol_name(name));
-        }
-    } else {
-        if (file && line > 0) {
-            n = snprintf(cl_backtrace_buf + pos,
-                         CL_BACKTRACE_BUF_SIZE - pos,
-                         "<anonymous> (%s:%d)\n", file, line);
-        } else if (line > 0) {
-            n = snprintf(cl_backtrace_buf + pos,
-                         CL_BACKTRACE_BUF_SIZE - pos,
-                         "<anonymous> (line %d)\n", line);
-        } else {
-            n = snprintf(cl_backtrace_buf + pos,
-                         CL_BACKTRACE_BUF_SIZE - pos,
-                         "<anonymous>\n");
-        }
-    }
-    pos = bt_advance(pos, n);
-    return pos;
+    const char *nm = (!CL_NULL_P(name) && CL_SYMBOL_P(name))
+                     ? cl_symbol_name(name) : "<anonymous>";
+    if (file && line > 0)
+        return bt_appendf(pos, "  %d: %s (%s:%d)\n", depth, nm, file, line);
+    if (line > 0)
+        return bt_appendf(pos, "  %d: %s (line %d)\n", depth, nm, line);
+    return bt_appendf(pos, "  %d: %s\n", depth, nm);
 }
 
 /* Detect repeating frame pattern starting at frame index i (descending).
@@ -921,12 +963,110 @@ static int bt_detect_cycle(int start, int *repeat_count)
     return 0;
 }
 
-void cl_capture_backtrace(void)
+/* Render frames [0, BASE) into the backtrace buffer, innermost first, showing
+ * at most MAX_SHOW of them; MAX_SHOW <= 0 means every frame.  The buffer grows
+ * to fit whatever this produces (see bt_appendf), so the frame limit is the
+ * only thing that decides how much the user sees. */
+static void bt_render(int base, int max_show)
 {
     int i, pos = 0;
-    int max_show = 20;
     int depth = 0;
+    int limit;
 
+    bt_ensure_buf();
+    cl_backtrace_buf[0] = '\0';
+    if (base <= 0) return;
+
+    /* BASE frames is the most that can ever be shown, so it doubles as the
+     * "no limit" sentinel — and keeps limit+5 below from overflowing. */
+    limit = (max_show > 0 && max_show < base) ? max_show : base;
+
+    /* Check for repeating patterns (likely infinite recursion).
+     * Try starting from each of the first few frames to find the cycle. */
+    for (i = base - 1; i >= base - 5 && i >= 0; i--) {
+        int repeat_count = 0;
+        int cycle_len = bt_detect_cycle(i, &repeat_count);
+        if (cycle_len > 0 && repeat_count >= 5) {
+            int j;
+            int prefix_frames = base - 1 - i;
+            int skip_to;
+            /* Show prefix frames (before the cycle starts) */
+            for (j = 0; j < prefix_frames; j++) {
+                CL_Frame *f = &cl_vm.frames[base - 1 - j];
+                CL_Obj nm = get_func_name(f->bytecode);
+                CL_Bytecode *bc = get_frame_bytecode(f);
+                int line = bc ? lookup_source_line(bc, f->ip) : 0;
+                const char *file = bc ? bc->source_file : NULL;
+                pos = bt_format_frame(pos, j, nm, file, line);
+            }
+            depth = prefix_frames;
+            /* Show one cycle */
+            for (j = 0; j < cycle_len; j++, depth++) {
+                CL_Frame *f = &cl_vm.frames[i - j];
+                CL_Obj nm = get_func_name(f->bytecode);
+                CL_Bytecode *bc = get_frame_bytecode(f);
+                int line = bc ? lookup_source_line(bc, f->ip) : 0;
+                const char *file = bc ? bc->source_file : NULL;
+                pos = bt_format_frame(pos, depth, nm, file, line);
+            }
+            pos = bt_appendf(pos,
+                             "  --- above %d frames repeat %d times (%d frames total) ---\n",
+                             cycle_len, repeat_count, cycle_len * repeat_count);
+            /* Skip past the repeated frames, show remaining */
+            skip_to = i - cycle_len * repeat_count;
+            for (j = skip_to; j >= 0 && depth < limit + 5; j--, depth++) {
+                CL_Frame *f = &cl_vm.frames[j];
+                CL_Obj nm = get_func_name(f->bytecode);
+                CL_Bytecode *bc = get_frame_bytecode(f);
+                int line = bc ? lookup_source_line(bc, f->ip) : 0;
+                const char *file = bc ? bc->source_file : NULL;
+                pos = bt_format_frame(pos, depth, nm, file, line);
+            }
+            /* This loop prints frames [0, j] raw (no frame_is_stub filter,
+             * unlike the normal path below) -- so the "more frames" count
+             * must stay on the same raw basis, not bt_count_real's filtered
+             * one, or the two numbers in this message describe different
+             * populations. */
+            /* This loop prints frames [0, j] raw (no frame_is_stub filter,
+             * unlike the normal path below) -- so the "more frames" count
+             * must stay on the same raw basis, not bt_count_real's filtered
+             * one, or the two numbers in this message describe different
+             * populations. */
+            if (j >= 0)
+                bt_appendf(pos, "  ... %d more frames\n", j + 1);
+            return;
+        }
+    }
+
+    /* Normal backtrace (no detected cycle) */
+    for (i = base - 1; i >= 0 && depth < limit; i--) {
+        CL_Frame *f = &cl_vm.frames[i];
+        CL_Obj name;
+        CL_Bytecode *bc;
+        int line;
+        const char *file;
+        if (frame_is_stub(f)) continue;
+        name = get_func_name(f->bytecode);
+        bc = get_frame_bytecode(f);
+        line = bc ? lookup_source_line(bc, f->ip) : 0;
+        file = bc ? bc->source_file : NULL;
+        pos = bt_format_frame(pos, depth, name, file, line);
+        depth++;
+    }
+
+    /* Report what was left out, counting only frames the loop would actually
+     * have printed.  The old `cl_vm.fp - max_show` counted raw frames, which
+     * over-reported on the JIT path where cl_vm_apply stub frames are
+     * interleaved but never shown. */
+    if (i >= 0) {
+        int remaining = bt_count_real(i + 1);
+        if (remaining > 0)
+            bt_appendf(pos, "  ... %d more frames\n", remaining);
+    }
+}
+
+void cl_capture_backtrace(void)
+{
     /* Snapshot the macroexpansion error context AT RAISE TIME: this is the
      * bottleneck every raise path funnels through (cl_error,
      * cl_raise_condition, the VM/builtin type-error helpers).  Both cells
@@ -943,91 +1083,12 @@ void cl_capture_backtrace(void)
                cl_expansion_ctx_get(cl_expanding_form_sym));
     cl_tlv_set(CT, cl_expanding_form_sym, CL_NIL);
 
-    cl_backtrace_buf[0] = '\0';
     /* Snapshot the frame depth so a debugger-hook (SLDB) can introspect the
      * error-time backtrace via cl_vm_backtrace_list / cl_vm_frame_locals even
      * after the hook has pushed its own frames on top. */
     cl_debug_base_fp = cl_vm.fp;
-    if (cl_vm.fp <= 0) return;
 
-    /* Check for repeating patterns (likely infinite recursion).
-     * Try starting from each of the first few frames to find the cycle. */
-    for (i = cl_vm.fp - 1; i >= cl_vm.fp - 5 && i >= 0; i--) {
-        int repeat_count = 0;
-        int cycle_len = bt_detect_cycle(i, &repeat_count);
-        if (cycle_len > 0 && repeat_count >= 5) {
-            int j, n;
-            int prefix_frames = cl_vm.fp - 1 - i;
-            /* Show prefix frames (before the cycle starts) */
-            for (j = 0; j < prefix_frames && pos < CL_BACKTRACE_BUF_SIZE - 64; j++) {
-                CL_Frame *f = &cl_vm.frames[cl_vm.fp - 1 - j];
-                CL_Obj nm = get_func_name(f->bytecode);
-                CL_Bytecode *bc = get_frame_bytecode(f);
-                int line = bc ? lookup_source_line(bc, f->ip) : 0;
-                const char *file = bc ? bc->source_file : NULL;
-                pos = bt_format_frame(pos, j, nm, file, line);
-            }
-            depth = prefix_frames;
-            /* Show one cycle */
-            for (j = 0; j < cycle_len && pos < CL_BACKTRACE_BUF_SIZE - 64; j++, depth++) {
-                CL_Frame *f = &cl_vm.frames[i - j];
-                CL_Obj nm = get_func_name(f->bytecode);
-                CL_Bytecode *bc = get_frame_bytecode(f);
-                int line = bc ? lookup_source_line(bc, f->ip) : 0;
-                const char *file = bc ? bc->source_file : NULL;
-                pos = bt_format_frame(pos, depth, nm, file, line);
-            }
-            if (pos < CL_BACKTRACE_BUF_SIZE - 1) {
-                n = snprintf(cl_backtrace_buf + pos,
-                             CL_BACKTRACE_BUF_SIZE - pos,
-                             "  --- above %d frames repeat %d times (%d frames total) ---\n",
-                             cycle_len, repeat_count, cycle_len * repeat_count);
-                pos = bt_advance(pos, n);
-            }
-            /* Skip past the repeated frames, show remaining */
-            {
-                int skip_to = i - cycle_len * repeat_count;
-                for (j = skip_to; j >= 0 && depth < max_show + 5; j--, depth++) {
-                    CL_Frame *f = &cl_vm.frames[j];
-                    CL_Obj nm = get_func_name(f->bytecode);
-                    CL_Bytecode *bc = get_frame_bytecode(f);
-                    int line = bc ? lookup_source_line(bc, f->ip) : 0;
-                    const char *file = bc ? bc->source_file : NULL;
-                    pos = bt_format_frame(pos, depth, nm, file, line);
-                    if (pos >= CL_BACKTRACE_BUF_SIZE - 1) break;
-                }
-                if (j >= 0 && pos < CL_BACKTRACE_BUF_SIZE - 1) {
-                    snprintf(cl_backtrace_buf + pos,
-                             CL_BACKTRACE_BUF_SIZE - pos,
-                             "  ... %d more frames\n", j + 1);
-                }
-            }
-            return;
-        }
-    }
-
-    /* Normal backtrace (no detected cycle) */
-    for (i = cl_vm.fp - 1; i >= 0 && depth < max_show; i--) {
-        CL_Frame *f = &cl_vm.frames[i];
-        CL_Obj name;
-        CL_Bytecode *bc;
-        int line;
-        const char *file;
-        if (frame_is_stub(f)) continue;
-        name = get_func_name(f->bytecode);
-        bc = get_frame_bytecode(f);
-        line = bc ? lookup_source_line(bc, f->ip) : 0;
-        file = bc ? bc->source_file : NULL;
-        pos = bt_format_frame(pos, depth, name, file, line);
-        depth++;
-        if (pos >= CL_BACKTRACE_BUF_SIZE - 1) break;
-    }
-
-    if (cl_vm.fp > max_show && pos < CL_BACKTRACE_BUF_SIZE - 1) {
-        snprintf(cl_backtrace_buf + pos,
-                 CL_BACKTRACE_BUF_SIZE - pos,
-                 "  ... %d more frames\n", cl_vm.fp - max_show);
-    }
+    bt_render(cl_vm.fp, CL_BACKTRACE_DEFAULT_FRAMES);
 }
 
 /* --- Structured backtrace introspection (Sly/SLYNK SLDB backend) --- */
@@ -1045,14 +1106,9 @@ static int bt_resolve_base(void)
     return base;
 }
 
-/* Count the user-visible (non-stub) frames in [0, base). */
-static int bt_count_real(int base)
+void cl_render_backtrace(int max_frames)
 {
-    int i, n = 0;
-    for (i = 0; i < base; i++)
-        if (!frame_is_stub(&cl_vm.frames[i]))
-            n++;
-    return n;
+    bt_render(bt_resolve_base(), max_frames);
 }
 
 /* Map a logical backtrace index (0 = innermost non-stub frame) to a physical

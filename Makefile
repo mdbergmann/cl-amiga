@@ -320,6 +320,13 @@ test-fast: $(TEST_BINS) host
 		echo "FAIL"; \
 		failed=1; \
 	fi; \
+	echo "--- test_debugger_backtrace ---"; \
+	if sh $(TEST_SRCDIR)/test_debugger_backtrace.sh $(BUILDDIR)/clamiga; then \
+		echo "PASS"; \
+	else \
+		echo "FAIL"; \
+		failed=1; \
+	fi; \
 	echo "--- test_io_diag ---"; \
 	if sh $(TEST_SRCDIR)/test_io_diag.sh $(BUILDDIR)/clamiga; then \
 		echo "PASS"; \

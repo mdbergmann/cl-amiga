@@ -201,7 +201,17 @@ typedef struct CL_Thread_s {
     /* ---- Trace & debug ---- */
     int    trace_depth;
     int    trace_count;
-    char   backtrace_buf[CL_BACKTRACE_BUF_SIZE];
+    /* Formatted backtrace text.  backtrace_buf points at backtrace_inline
+     * until a deep backtrace outgrows it, then at a platform_alloc'd block of
+     * backtrace_cap bytes (see bt_reserve in vm.c).  cl_thread_backtrace_init
+     * runs for every thread, so backtrace_buf is never NULL — the ~50
+     * `fprintf(stderr, "%s", cl_backtrace_buf)` diagnostics can print it
+     * unconditionally.  backtrace_inline stays immediately before
+     * c_stack_base: that adjacency is what the overflow regression test in
+     * tests/test_backtrace.c detects a runaway append with. */
+    char  *backtrace_buf;
+    int    backtrace_cap;
+    char   backtrace_inline[CL_BACKTRACE_BUF_SIZE];
     char  *c_stack_base;
     int    debug_base_fp;   /* VM frame depth snapshot at error time, so the
                              * debugger-hook (SLDB) sees the error-time
@@ -547,6 +557,15 @@ CL_Thread *cl_thread_alloc_worker_sized(uint32_t vm_stack_size,
 /* Free a worker CL_Thread's resources */
 void cl_thread_free_worker(CL_Thread *t);
 
+/* Point T's backtrace buffer at its inline block.  Must run for every
+ * CL_Thread before anything reads cl_backtrace_buf. */
+void cl_thread_backtrace_init(CL_Thread *t);
+
+/* Drop any heap block bt_reserve grew for T and fall back to the inline
+ * block, leaving the buffer valid (and empty) rather than dangling — the
+ * crash handler still prints it after cl_thread_shutdown. */
+void cl_thread_backtrace_release(CL_Thread *t);
+
 /* Allocate a side table slot for a thread, returns id or -1 */
 int cl_thread_table_alloc(CL_Thread *t);
 void cl_thread_table_free(int id);
@@ -731,6 +750,7 @@ int    cl_symbol_boundp(CL_Obj sym);
 #define cl_trace_depth      (CT->trace_depth)
 #define cl_trace_count      (CT->trace_count)
 #define cl_backtrace_buf    (CT->backtrace_buf)
+#define cl_backtrace_cap    (CT->backtrace_cap)
 #define cl_c_stack_base     (CT->c_stack_base)
 #define cl_debug_base_fp    (CT->debug_base_fp)
 

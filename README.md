@@ -471,6 +471,15 @@ diffs the real package exports against a committed snapshot; run
   non-interactive runs the interrupt aborts to top level, printing the
   backtrace; a second Ctrl-C before the first is handled force-exits.
   See `tests/test_break_diag.sh`.
+- **Interactive debugger** — an unhandled error in the REPL opens a `Debug>`
+  prompt offering the available restarts by number, `:q` to return to top
+  level, and any Lisp expression for inspection. The backtrace shown on entry
+  is capped at 20 frames; `:bt <n>` re-renders it at whatever depth you ask
+  for and `:bt all` shows every frame, so the `... N more frames` tail is never
+  the end of the story. Expressions you evaluate at the prompt run *on top of*
+  the error-time stack, so `(ext:backtrace)` and `(ext:frame-locals <n>)` there
+  report the frames of the error you are debugging.
+  See `tests/test_debugger_backtrace.sh` and `tests/test_backtrace.c`.
 - **Platform abstraction** — all OS calls go through `platform.h` (POSIX and AmigaOS implementations)
 - **FFI** — generic foreign pointer type + peek/poke (all platforms); 68k assembly trampoline for AmigaOS register-based library calls
 - **Threading** (MP package) — kernel threads, per-thread dynamic bindings (TLV), locks, named condition variables, thread interruption/destruction, type predicates; stop-the-world GC with safepoints; POSIX pthreads (with `__thread`-backed TLS) and AmigaOS processes/SignalSemaphores.

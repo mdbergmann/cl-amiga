@@ -937,6 +937,10 @@ CL_Thread *cl_thread_alloc_worker_sized(uint32_t vm_stack_size,
     t = (CL_Thread *)platform_alloc(sizeof(CL_Thread));
     if (!t) return NULL;
     memset(t, 0, sizeof(CL_Thread));
+    /* Before the allocations below, so the buffer is valid for the whole
+     * lifetime — including the failure paths, which free t without ever
+     * reaching the end of this function. */
+    cl_thread_backtrace_init(t);
 
     /* Allocate VM stack and frames.  On host the CL_WORKER_ sizes equal the
      * main thread's, so a worker can run the same call/NLX depth main can (a
@@ -983,6 +987,40 @@ CL_Thread *cl_thread_alloc_worker_sized(uint32_t vm_stack_size,
     t->status = 0; /* created */
 
     return t;
+}
+
+void cl_thread_backtrace_init(CL_Thread *t)
+{
+    t->backtrace_buf = t->backtrace_inline;
+    t->backtrace_cap = CL_BACKTRACE_BUF_SIZE;
+    t->backtrace_inline[0] = '\0';
+}
+
+void cl_thread_backtrace_release(CL_Thread *t)
+{
+    char *heap = t->backtrace_buf;
+    size_t n;
+
+    if (heap == NULL) {              /* never initialized */
+        cl_thread_backtrace_init(t);
+        return;
+    }
+    if (heap == t->backtrace_inline)  /* never grown: nothing to release */
+        return;
+
+    /* Keep as much of the text as the inline block holds rather than clearing
+     * it: cl_thread_shutdown releases the main thread's buffer but deliberately
+     * leaves the thread readable, because the crash handler still prints this
+     * backtrace. */
+    n = strlen(heap);
+    if (n > (size_t)CL_BACKTRACE_BUF_SIZE - 1)
+        n = (size_t)CL_BACKTRACE_BUF_SIZE - 1;
+    memcpy(t->backtrace_inline, heap, n);
+    t->backtrace_inline[n] = '\0';
+
+    platform_free(heap);
+    t->backtrace_buf = t->backtrace_inline;
+    t->backtrace_cap = CL_BACKTRACE_BUF_SIZE;
 }
 
 /* Reset every Lisp-heap reference gc_mark_thread_roots walks for this
@@ -1042,6 +1080,7 @@ void cl_thread_reset_lisp_state(CL_Thread *t)
 void cl_thread_free_worker(CL_Thread *t)
 {
     if (!t) return;
+    cl_thread_backtrace_release(t);
     if (t->saved_pending_stack) platform_free(t->saved_pending_stack);
     if (t->nlx_stack)  platform_free(t->nlx_stack);
     if (t->vm.frames)  platform_free(t->vm.frames);
@@ -1054,6 +1093,7 @@ void cl_thread_free_worker(CL_Thread *t)
 void cl_thread_init(void)
 {
     memset(&cl_main_thread, 0, sizeof(CL_Thread));
+    cl_thread_backtrace_init(&cl_main_thread);
 
     /* Initialize TLS and set main thread as current.
      *
@@ -1145,6 +1185,9 @@ void cl_thread_shutdown(void)
         platform_free(cl_main_thread.nlx_stack);
         cl_main_thread.nlx_stack = NULL;
     }
+    /* Release any grown backtrace block, but leave the buffer pointing at the
+     * inline one — the crash handler below still prints cl_backtrace_buf. */
+    cl_thread_backtrace_release(&cl_main_thread);
     /* Keep cl_main_thread_ptr valid — the crash handler accesses
      * thread state (cl_vm.sp, etc.) via the CT macro.  Setting it
      * to NULL would cause a SIGSEGV in the handler itself. */
