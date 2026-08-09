@@ -8291,6 +8291,42 @@
       (and (member 77 (mapcar #'cdr *amiga-locals*)) t)))
 (check "frame-locals out-of-range index" :not-available
   (ext:frame-locals 9999))
+
+; Regression: a nested LAMBDA must not steal its enclosing function's name.
+; DEFUN hands the name to the lambda compiler through a single per-thread slot
+; that used to be read only after the body had been compiled — so the first
+; nested lambda, which always finishes before its parent, claimed the name and
+; left the function itself NIL, i.e. "<anonymous>" in every backtrace through
+; it.  That is most functions using HANDLER-BIND, RESTART-CASE or MAPCAR.
+; Both halves are checked: the outer function keeps its own name, and the
+; inner lambda stays anonymous instead of wearing the stolen one.
+(defun bt-lam-inner () (ext:backtrace))
+(defun bt-lam-outer () (funcall (lambda () 1)) (let ((r (bt-lam-inner))) r))
+(defparameter *amiga-bt-lam* (bt-lam-outer))
+(check "backtrace: inner lambda does not steal the defun name" "BT-LAM-OUTER"
+  (symbol-name (second (second *amiga-bt-lam*))))
+
+(defun bt-lam-host () (let ((r (funcall (lambda () (ext:backtrace))))) r))
+(defparameter *amiga-bt-anon* (bt-lam-host))
+(check "backtrace: nested lambda frame stays anonymous" nil
+  (second (first *amiga-bt-anon*)))
+(check "backtrace: the lambda's host function keeps its name" "BT-LAM-HOST"
+  (symbol-name (second (second *amiga-bt-anon*))))
+
+; The shape the bug was reported as: RESTART-CASE expands its restart bodies
+; into closures and HANDLER-BIND its handlers into lambdas, so both frames of
+; a signal/handle pair used to come out "<anonymous>".
+(defun bt-low () (restart-case (let ((r (ext:backtrace))) r)
+                   (bt-r1 () 1)
+                   (bt-r2 () 2)))
+(defun bt-high () (handler-bind ((warning (lambda (c) (declare (ignore c)) nil)))
+                    (let ((r (bt-low))) r)))
+(defparameter *amiga-bt-rc* (bt-high))
+(check "backtrace: restart-case body keeps its defun name" "BT-LOW"
+  (symbol-name (second (first *amiga-bt-rc*))))
+(check "backtrace: handler-bind body keeps its defun name" "BT-HIGH"
+  (symbol-name (second (second *amiga-bt-rc*))))
+
 (check "jit shadow frames toggle off" nil (clamiga::%jit-set-frames nil))
 
 ; --- documentation is a generic function ---

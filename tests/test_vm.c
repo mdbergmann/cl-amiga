@@ -6051,6 +6051,84 @@ TEST(eval_backtrace_uwprot)
     cl_vm.fp = 0;
 }
 
+/* Regression: a nested LAMBDA in the body must not steal the enclosing
+ * function's name.
+ *
+ * DEFUN hands the name to COMPILE-LAMBDA through the single per-thread slot
+ * pending_lambda_name.  compile_lambda used to read that slot only after
+ * compile_body had run, so the FIRST nested lambda — which always finishes
+ * before its parent — claimed the name and cleared the slot, leaving the
+ * function itself NIL.  Every backtrace through such a function then showed
+ * "<anonymous>", which is most functions that use HANDLER-BIND, RESTART-CASE,
+ * MAPCAR, or any other lambda-taking form. */
+TEST(eval_backtrace_name_survives_inner_lambda)
+{
+    int err;
+    eval_print("(defun bt-lam-inner () (error \"oops\"))");
+    /* The funcall'd lambda is what used to steal BT-LAM-OUTER's name.  The
+     * (+ 1 ...) keeps the inner call out of tail position so the frame is
+     * really on the stack to be named. */
+    eval_print("(defun bt-lam-outer () (funcall (lambda () 1)) (+ 1 (bt-lam-inner)))");
+    CL_CATCH(err);
+    if (err == CL_ERR_NONE) {
+        cl_eval_string("(bt-lam-outer)");
+        CL_UNCATCH();
+    } else {
+        CL_UNCATCH();
+    }
+    ASSERT(strstr(cl_backtrace_buf, "  0: BT-LAM-INNER") != NULL);
+    ASSERT(strstr(cl_backtrace_buf, "  1: BT-LAM-OUTER") != NULL);
+    cl_vm.sp = 0;
+    cl_vm.fp = 0;
+}
+
+/* The other half of the same bug: the inner lambda must stay anonymous rather
+ * than wear the name it stole.  Pre-fix these two frames were swapped —
+ * "0: BT-LAM-HOST" over "1: <anonymous>". */
+TEST(eval_backtrace_inner_lambda_stays_anonymous)
+{
+    int err;
+    /* Trailing NIL keeps the funcall out of tail position, so both the lambda
+     * frame and its host frame are live when the error is signalled. */
+    eval_print("(defun bt-lam-host () (funcall (lambda () (error \"boom\"))) nil)");
+    CL_CATCH(err);
+    if (err == CL_ERR_NONE) {
+        cl_eval_string("(bt-lam-host)");
+        CL_UNCATCH();
+    } else {
+        CL_UNCATCH();
+    }
+    ASSERT(strstr(cl_backtrace_buf, "  0: <anonymous>") != NULL);
+    ASSERT(strstr(cl_backtrace_buf, "  1: BT-LAM-HOST") != NULL);
+    cl_vm.sp = 0;
+    cl_vm.fp = 0;
+}
+
+/* The shape the bug was reported as: RESTART-CASE expands its restart bodies
+ * into closures and HANDLER-BIND its handlers into lambdas, so both functions
+ * lost their names and the debugger backtrace was all "<anonymous>". */
+TEST(eval_backtrace_restart_case_handler_bind_named)
+{
+    int err;
+    eval_print("(define-condition bt-cond () ())");
+    eval_print("(defun bt-low () (restart-case (error 'bt-cond) "
+               "(bt-r1 () 1) (bt-r2 () 2)))");
+    eval_print("(defun bt-high () (handler-bind "
+               "((warning (lambda (c) (declare (ignore c)) nil))) "
+               "(+ 1 (bt-low))))");
+    CL_CATCH(err);
+    if (err == CL_ERR_NONE) {
+        cl_eval_string("(bt-high)");
+        CL_UNCATCH();
+    } else {
+        CL_UNCATCH();
+    }
+    ASSERT(strstr(cl_backtrace_buf, "  0: BT-LOW") != NULL);
+    ASSERT(strstr(cl_backtrace_buf, "  1: BT-HIGH") != NULL);
+    cl_vm.sp = 0;
+    cl_vm.fp = 0;
+}
+
 TEST(eval_backtrace_empty)
 {
     /* No backtrace when error occurs outside VM (e.g., parse error) */
@@ -11216,6 +11294,9 @@ int main(void)
     RUN(eval_backtrace_anonymous);
     RUN(eval_backtrace_recursive);
     RUN(eval_backtrace_uwprot);
+    RUN(eval_backtrace_name_survives_inner_lambda);
+    RUN(eval_backtrace_inner_lambda_stays_anonymous);
+    RUN(eval_backtrace_restart_case_handler_bind_named);
     RUN(eval_backtrace_empty);
     RUN(eval_time_basic);
     RUN(eval_time_nested);

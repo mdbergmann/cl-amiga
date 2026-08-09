@@ -1071,6 +1071,7 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
 {
     CL_Obj params = cl_car(cl_cdr(form));
     CL_Obj body = cl_cdr(cl_cdr(form));
+    CL_Obj my_name;
     CL_Compiler *inner;
     CL_CompEnv *env;
     CL_Bytecode *bc;
@@ -1092,6 +1093,20 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
     }
     memset(inner, 0, sizeof(*inner));
 
+    /* Claim the name the caller handed over (compile_defun / compile_named_lambda
+     * set pending_lambda_name just before compiling this form) BEFORE the body is
+     * compiled, and clear the slot right away.
+     *
+     * The hand-off is a single per-thread slot, so reading it late — after
+     * compile_body — hands the name to whichever lambda finishes first, and the
+     * nested ones always finish before their parent.  `(defun higher () ...
+     * (handler-bind ((foo (lambda (c) ...))) ...))` then names the *handler*
+     * HIGHER and leaves HIGHER itself NIL, which is what the backtrace renders
+     * as "<anonymous>".  Claiming at entry gives each lambda exactly the name
+     * its own caller set, and leaves nested lambdas correctly anonymous. */
+    my_name = pending_lambda_name;
+    pending_lambda_name = CL_NIL;
+
     /* GC-protect the form and its sub-structures.  `params` and `body` are
      * arena-relative offsets into `form`; everything below (parse_lambda_list,
      * compile_expr for &optional/&key/&aux defaults, determine_boxed_vars,
@@ -1107,6 +1122,11 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
     CL_GC_PROTECT(form);
     CL_GC_PROTECT(params);
     CL_GC_PROTECT(body);
+    /* my_name is now a plain C local held across compile_body's allocations.
+     * The GC's thread walker roots only the pending_lambda_name slot (mem.c),
+     * which we just cleared, so without this the symbol goes stale on the first
+     * compaction and bc->name ends up a dangling offset. */
+    CL_GC_PROTECT(my_name);
 
     /* Register inner compiler for GC root marking.  The anchor records this
      * frame as the owner: an NLX landing in a VM run nested below this frame
@@ -1422,7 +1442,7 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
         cl_active_compiler = inner->parent;
         cl_env_destroy(env);
         cl_compiler_pool_release(inner);
-        CL_GC_UNPROTECT(3);  /* form, params, body */
+        CL_GC_UNPROTECT(4);  /* my_name, form, params, body */
         return;
     }
 
@@ -1446,8 +1466,7 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
     bc->arity = inner->ll.has_rest ? (inner->ll.n_required | 0x8000) : inner->ll.n_required;
     bc->n_locals = env->max_locals;
     bc->n_upvalues = env->upvalue_count;
-    bc->name = pending_lambda_name;
-    pending_lambda_name = CL_NIL;
+    bc->name = my_name;   /* claimed at entry, before the body was compiled */
     /* Retain the original lambda-list for arglist introspection.  `params`
      * is a sub-form of `form`, which the caller keeps live throughout
      * compilation (body is read from it after many allocations below). */
@@ -1509,7 +1528,7 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
     cl_env_destroy(env);
     cl_compiler_pool_release(inner);
 
-    CL_GC_UNPROTECT(3);  /* form, params, body */
+    CL_GC_UNPROTECT(4);  /* my_name, form, params, body */
 }
 
 /* --- Boxing analysis (pre-scan for mutable closure bindings) --- */

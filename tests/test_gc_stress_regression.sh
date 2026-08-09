@@ -4853,6 +4853,31 @@ check_contains "byte vectors in mv_values survive stress mark/compact" \
 check_absent   "no GC-BADMARK abort on valid byte-vector mark" \
   "BADMARK\|badmark\|Abort" "$out"
 
+# --- Case: the DEFUN -> lambda name hand-off survives compaction -----------
+# compile_lambda claims pending_lambda_name at entry (so a nested lambda in the
+# body cannot steal the enclosing function's name) and then holds it as a plain
+# C local across compile_body, which allocates on nearly every form.  The GC's
+# thread walker roots only the pending_lambda_name slot, which is cleared by
+# then, so the local needs its own CL_GC_PROTECT: without it a compaction
+# mid-body leaves bc->name a stale arena offset — a wrong or garbage name in
+# every backtrace through the function, or a crash printing one.  Nested
+# lambdas (handler-bind, restart-case) are what force the claim-at-entry path.
+cat > "$WORK/btname.lisp" <<'EOF'
+(defun btname-inner () (ext:backtrace))
+(defun btname-outer ()
+  (handler-bind ((warning (lambda (c) (declare (ignore c)) nil)))
+    (restart-case (let ((r (btname-inner))) r)
+      (btname-r1 () 1)
+      (btname-r2 () 2))))
+(let ((bt (btname-outer)))
+  (format t "BTNAME:~a/~a~%" (second (first bt)) (second (second bt))))
+EOF
+out=$(run_stress "$WORK/btname.lisp")
+check_contains "defun name reaches bc->name intact under compaction storm" \
+  "BTNAME:BTNAME-INNER/BTNAME-OUTER" "$out"
+check_absent   "no corruption diagnostics from the lambda name hand-off" \
+  "corrupted\|type 0\|BADMARK\|badmark\|SIGSEGV\|Undefined\|Unbound" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]
