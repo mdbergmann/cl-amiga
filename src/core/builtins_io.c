@@ -407,21 +407,25 @@ static CL_Obj bi_load(CL_Obj *args, int n)
     uint16_t prev_file_id;
     int prev_line;
 
-    /* Per CL spec, LOAD binds *package* so in-package in loaded file
-       doesn't affect the caller */
-    CL_Obj saved_package = cl_current_package;
     CL_Obj load_pathname_obj, load_truename_obj;
-    /* GC SAFETY: saved_package (and the saved *LOAD-* values below) are
-     * restored AFTER the load evaluates arbitrary code — without roots the
-     * restore would write stale pre-compaction offsets into the globals
-     * (the *PACKAGE*-clobber class of corruption). */
-    CL_Symbol *lp_sym, *lt_sym;
-    CL_Obj saved_load_pathname, saved_load_truename;
     int verbose_explicit = 0, verbose = 0;
     CL_Obj if_dne = CL_UNBOUND;
     int i;
-
-    CL_GC_PROTECT(saved_package);
+    /* CLHS 23.2.7: LOAD binds *PACKAGE* and *READTABLE* (and *LOAD-PATHNAME*
+     * / *LOAD-TRUENAME*) around the load.  These are REAL dynamic bindings on
+     * the dyn-bind stack — not C-local save/restore — because a condition
+     * signaled mid-load and handled by the CALLER (handler-case around the
+     * (load ...) call) unwinds via NLX straight past this C frame: no code
+     * here runs.  Only the dyn stack is restored on that path (NLX landings
+     * and the C error frames both pop it to their creation-time mark), so
+     * only dyn bindings give LOAD the CLHS abort semantics.  The old locals
+     * missed exactly that path: a file that did IN-PACKAGE and then errored
+     * left *PACKAGE* switched in the caller (real-Amiga suite: one failed
+     * load cascaded into 156 "Undefined function" errors because the test
+     * package never came back).  The dyn stack is GC-marked and forwarded,
+     * so the bound values need no manual rooting; every normal return pops
+     * back to dyn_mark. */
+    int dyn_mark;
 
     /* Reap a leaked MAKE-LOAD-FORM cache: if a prior COMPILE-FILE unwound
      * between its prepass and cleanup, g_mlf stayed active and the
@@ -451,6 +455,13 @@ static CL_Obj bi_load(CL_Obj *args, int n)
             cl_current_package = pkg_val;
     }
 
+    /* Establish the LOAD bindings (see the dyn_mark note above).  Both are
+     * bound to their current values: IN-PACKAGE / readtable mutation in the
+     * loaded file writes through the binding and is undone when it pops. */
+    dyn_mark = cl_dyn_top;
+    cl_dynbind_c(SYM_STAR_PACKAGE, cl_current_package);
+    cl_dynbind_c(SYM_STAR_READTABLE, cl_symbol_value(SYM_STAR_READTABLE));
+
     /* CLHS: LOAD's filespec may be an (already open) stream — read and
      * evaluate forms from it until end of file, with *load-pathname* and
      * *load-truename* bound to NIL.  This is how SLYNK and ICL inject code:
@@ -461,12 +472,9 @@ static CL_Obj bi_load(CL_Obj *args, int n)
         stream = args[0];
         CL_GC_PROTECT(stream);
 
-        saved_load_pathname = cl_symbol_value(SYM_STAR_LOAD_PATHNAME);
-        saved_load_truename = cl_symbol_value(SYM_STAR_LOAD_TRUENAME);
-        CL_GC_PROTECT(saved_load_pathname);
-        CL_GC_PROTECT(saved_load_truename);
-        cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, CL_NIL);
-        cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, CL_NIL);
+        /* Forms from a stream have no backing file (CLHS). */
+        cl_dynbind_c(SYM_STAR_LOAD_PATHNAME, CL_NIL);
+        cl_dynbind_c(SYM_STAR_LOAD_TRUENAME, CL_NIL);
 
         /* Source-file context: forms from a stream have no backing file. */
         prev_file = cl_current_source_file;
@@ -511,16 +519,13 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                 cl_nlx_top = saved_nlx;
                 gc_root_count = saved_gc_roots;
                 CL_UNCATCH();
-                /* Propagate exit request — don't swallow (quit) */
+                /* Propagate exit request — don't swallow (quit).
+                 * cl_error(CL_ERR_EXIT) restores ALL dynamic bindings and
+                 * the GC-root stack wholesale, so no manual pops here. */
                 if (err == CL_ERR_EXIT) {
-                    cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, saved_load_pathname);
-                    cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, saved_load_truename);
                     cl_current_source_file = prev_file;
                     cl_current_file_id = prev_file_id;
                     cl_reader_set_line(prev_line);
-                    cl_current_package = saved_package;
-                    cl_set_symbol_value(SYM_STAR_PACKAGE, saved_package);
-                    CL_GC_UNPROTECT(4); /* saved_lt, saved_lp, stream, saved_package */
                     cl_error(CL_ERR_EXIT, "");
                 }
                 cl_error_print();
@@ -528,18 +533,15 @@ static CL_Obj bi_load(CL_Obj *args, int n)
             }
         }
 
-        cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, saved_load_pathname);
-        cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, saved_load_truename);
-        CL_GC_UNPROTECT(3); /* saved_lt, saved_lp, stream */
-
         cl_current_source_file = prev_file;
         cl_current_file_id = prev_file_id;
         cl_reader_set_line(prev_line);
 
-        cl_current_package = saved_package;
-        cl_set_symbol_value(SYM_STAR_PACKAGE, saved_package);
+        /* Pop *load-truename*, *load-pathname*, *readtable*, *package* —
+         * restoring the caller's values (and re-syncing cl_current_package). */
+        cl_dynbind_restore_to(dyn_mark);
 
-        CL_GC_UNPROTECT(1); /* saved_package */
+        CL_GC_UNPROTECT(1); /* stream */
         return SYM_T;
     }
 
@@ -553,8 +555,7 @@ static CL_Obj bi_load(CL_Obj *args, int n)
        Check before the FASL cache block so we never substitute a stale cached
        FASL for a source file the caller explicitly said is OK to be missing. */
     if (if_dne == CL_NIL && !platform_file_exists(path_buf)) {
-        cl_current_package = saved_package;
-        CL_GC_UNPROTECT(1);  /* saved_package */
+        cl_dynbind_restore_to(dyn_mark);
         return CL_NIL;
     }
 
@@ -603,6 +604,7 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                         } else if (magic == CL_FASL_MAGIC) {
                             /* Try loading from FASL; fall back to source on error */
                             int fasl_err;
+                            int lplt_mark;
                             /* Bind load-pathname and load-truename.
                              * GC SAFETY (audit tier 4, IO1): protect
                              * load_pathname_obj BEFORE the second
@@ -627,14 +629,13 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                                 }
                             }
                             CL_GC_PROTECT(load_truename_obj);
-                            lp_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_PATHNAME);
-                            lt_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_TRUENAME);
-                            saved_load_pathname = cl_symbol_value(SYM_STAR_LOAD_PATHNAME);
-                            saved_load_truename = cl_symbol_value(SYM_STAR_LOAD_TRUENAME);
-                            CL_GC_PROTECT(saved_load_pathname);
-                            CL_GC_PROTECT(saved_load_truename);
-                            cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, load_pathname_obj);
-                            cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, load_truename_obj);
+                            /* Dynamic binds (see dyn_mark note at the top);
+                             * the dyn stack roots the values, so the two C
+                             * protects above can drop once both are in. */
+                            lplt_mark = cl_dyn_top;
+                            cl_dynbind_c(SYM_STAR_LOAD_PATHNAME, load_pathname_obj);
+                            cl_dynbind_c(SYM_STAR_LOAD_TRUENAME, load_truename_obj);
+                            CL_GC_UNPROTECT(2); /* lt_obj, lp_obj */
 
                             {
                                 int do_verbose = verbose_explicit ? verbose
@@ -655,15 +656,8 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                                     platform_free(buf);
                                     CL_UNCATCH();
 
-                                    cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, saved_load_pathname);
-                                    cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, saved_load_truename);
-                                    CL_GC_UNPROTECT(4);  /* saved_lt, saved_lp, lt_obj, lp_obj */
-                                    cl_current_package = saved_package;
-                                    {
-                                        CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);
-                                        cl_set_symbol_value(SYM_STAR_PACKAGE, saved_package);
-                                    }
-                                    CL_GC_UNPROTECT(1);  /* saved_package */
+                                    /* Pop lt, lp, readtable, package binds. */
+                                    cl_dynbind_restore_to(dyn_mark);
                                     return SYM_T;
                                 } else {
                                     /* Restore VM state leaked by aborted cl_vm_eval */
@@ -672,27 +666,20 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                                     cl_nlx_top = sn;
                                     gc_root_count = saved_gc_roots_fasl;  /* Restore leaked GC roots */
                                     CL_UNCATCH();
-                                    /* Propagate exit request — don't swallow (quit) */
+                                    /* Propagate exit request — don't swallow (quit).
+                                     * cl_error(CL_ERR_EXIT) restores all dyn
+                                     * bindings + GC roots wholesale. */
                                     if (fasl_err == CL_ERR_EXIT) {
                                         platform_free(buf);
-                                        cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, saved_load_pathname);
-                                        cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, saved_load_truename);
-                                        CL_GC_UNPROTECT(4);  /* saved_lt, saved_lp, lt_obj, lp_obj */
-                                        cl_current_package = saved_package;
-                                        cl_set_symbol_value(SYM_STAR_PACKAGE, saved_package);
                                         cl_error(CL_ERR_EXIT, "");
                                     }
-                                    /* FASL load failed — restore state, fall through to source */
+                                    /* FASL load failed — pop the lp/lt binds
+                                     * (the package/readtable binds stay for
+                                     * the source-load fallthrough, which
+                                     * re-binds lp/lt itself) */
                                 platform_free(buf);
                                 buf = NULL;
-                                cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, saved_load_pathname);
-                                cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, saved_load_truename);
-                                CL_GC_UNPROTECT(4);  /* saved_lt, saved_lp, lt_obj, lp_obj */
-                                cl_current_package = saved_package;
-                                {
-                                    CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);
-                                    cl_set_symbol_value(SYM_STAR_PACKAGE, saved_package);
-                                }
+                                cl_dynbind_restore_to(lplt_mark);
                                 /* Delete broken FASL so we don't retry it */
                                 platform_file_delete(cache_path);
                             }
@@ -711,8 +698,7 @@ static CL_Obj bi_load(CL_Obj *args, int n)
             /* File disappeared between the earlier existence check and now (TOCTOU),
                or was never there.  Honour :if-does-not-exist nil. */
             if (if_dne == CL_NIL) {
-                cl_current_package = saved_package;
-                CL_GC_UNPROTECT(1);  /* saved_package */
+                cl_dynbind_restore_to(dyn_mark);
                 return CL_NIL;
             }
             cl_error(CL_ERR_GENERAL, "LOAD: file does not exist: %s", path_buf);
@@ -743,14 +729,11 @@ static CL_Obj bi_load(CL_Obj *args, int n)
         }
     }
     CL_GC_PROTECT(load_truename_obj);
-    lp_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_PATHNAME);
-    lt_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_TRUENAME);
-    saved_load_pathname = cl_symbol_value(SYM_STAR_LOAD_PATHNAME);
-    saved_load_truename = cl_symbol_value(SYM_STAR_LOAD_TRUENAME);
-    CL_GC_PROTECT(saved_load_pathname);
-    CL_GC_PROTECT(saved_load_truename);
-    cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, load_pathname_obj);
-    cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, load_truename_obj);
+    /* Dynamic binds (see dyn_mark note at the top); the dyn stack roots the
+     * values, so the two C protects above can drop once both are in. */
+    cl_dynbind_c(SYM_STAR_LOAD_PATHNAME, load_pathname_obj);
+    cl_dynbind_c(SYM_STAR_LOAD_TRUENAME, load_truename_obj);
+    CL_GC_UNPROTECT(2); /* lt_obj, lp_obj */
 
     /* Print loading message respecting :verbose kwarg then *load-verbose* */
     {
@@ -782,16 +765,8 @@ static CL_Obj bi_load(CL_Obj *args, int n)
             cl_fasl_load((const uint8_t *)buf, (uint32_t)size);
             platform_free(buf);
 
-            /* Restore *load-pathname*, *load-truename*, *package* */
-            cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, saved_load_pathname);
-            cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, saved_load_truename);
-            CL_GC_UNPROTECT(4);  /* saved_lt, saved_lp, lt_obj, lp_obj */
-            cl_current_package = saved_package;
-            {
-                CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);
-                cl_set_symbol_value(SYM_STAR_PACKAGE, saved_package);
-            }
-            CL_GC_UNPROTECT(1);  /* saved_package */
+            /* Pop lt, lp, readtable, package binds. */
+            cl_dynbind_restore_to(dyn_mark);
             return SYM_T;
         }
     }
@@ -922,7 +897,9 @@ static CL_Obj bi_load(CL_Obj *args, int n)
             cl_nlx_top = saved_nlx;
             gc_root_count = saved_gc_roots;  /* Restore leaked GC roots */
             CL_UNCATCH();
-            /* Propagate exit request — don't swallow (quit) */
+            /* Propagate exit request — don't swallow (quit).
+             * cl_error(CL_ERR_EXIT) restores all dyn bindings + GC roots
+             * wholesale, so no manual pops here. */
             if (err == CL_ERR_EXIT) {
                 CL_GC_UNPROTECT(1); /* stream */
                 cl_stream_close(stream);
@@ -933,10 +910,6 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                     cl_fasl_writer_unregister(fw);
                     platform_free(fw);
                 }
-                cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, saved_load_pathname);
-                cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, saved_load_truename);
-                cl_current_package = saved_package;
-                cl_set_symbol_value(SYM_STAR_PACKAGE, saved_package);
                 cl_error(CL_ERR_EXIT, "");
             }
             cl_error_print();
@@ -986,24 +959,15 @@ static CL_Obj bi_load(CL_Obj *args, int n)
     }
     } /* end auto-cache scope */
 
-    /* Restore *load-pathname* and *load-truename* */
-    cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, saved_load_pathname);
-    cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, saved_load_truename);
-    CL_GC_UNPROTECT(4); /* saved_lt, saved_lp, load_truename_obj, load_pathname_obj */
+    /* Pop *load-truename*, *load-pathname*, *readtable*, *package* —
+     * restoring the caller's values (and re-syncing cl_current_package). */
+    cl_dynbind_restore_to(dyn_mark);
 
     /* Restore source file context */
     cl_current_source_file = prev_file;
     cl_current_file_id = prev_file_id;
     cl_reader_set_line(prev_line);
 
-    /* Restore *package* — in-package in loaded file must not leak */
-    cl_current_package = saved_package;
-    {
-        CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);
-        cl_set_symbol_value(SYM_STAR_PACKAGE, saved_package);
-    }
-
-    CL_GC_UNPROTECT(1);  /* saved_package */
     return SYM_T;
 }
 
@@ -1495,20 +1459,18 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
     const char *prev_file;
     uint16_t prev_file_id;
     int prev_line;
-    CL_Obj saved_package = cl_current_package;
-    CL_Symbol *cfp_sym, *cft_sym;
-    CL_Obj saved_cfp, saved_cft;
-    /* GC SAFETY: saved_package/saved_cfp/saved_cft are restored after the
-     * whole file has been compiled+evaluated — they must be forwarded roots
-     * (see the matching note in bi_load).  The early return CL_NIL sites sit
-     * after cl_error longjmps and never execute; the error unwind restores
-     * gc_root_count, so only the final return pops these. */
     CL_Obj output_pathname;
     int verbose = 0;
     int i;
     int prev_compiling_to_file;
-
-    CL_GC_PROTECT(saved_package);
+    /* CLHS 24.2.2: COMPILE-FILE binds *PACKAGE* and *READTABLE* (and
+     * *COMPILE-FILE-PATHNAME* / *COMPILE-FILE-TRUENAME*) around the compile.
+     * Dynamic bindings, not C-local save/restore, for the same reason as
+     * bi_load (see the dyn_mark note there): a condition handled by the
+     * caller's handler-case NLXes past this C frame, and only the dyn stack
+     * is restored on that path.  The dyn stack is GC-marked, so the bound
+     * values need no manual rooting. */
+    int dyn_mark;
 #ifdef DEBUG_COMPILER
     int cf_form_count = 0;
 #endif
@@ -1545,6 +1507,11 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
         if (!CL_NULL_P(pkg_val2))
             cl_current_package = pkg_val2;
     }
+
+    /* Establish the COMPILE-FILE bindings (see the dyn_mark note above). */
+    dyn_mark = cl_dyn_top;
+    cl_dynbind_c(SYM_STAR_PACKAGE, cl_current_package);
+    cl_dynbind_c(SYM_STAR_READTABLE, cl_symbol_value(SYM_STAR_READTABLE));
 
     /* Resolve input path into in_path: parse → merge with
        *default-pathname-defaults* (CL spec) → coerce → expand ~. */
@@ -1590,7 +1557,9 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
         cl_write_cstring_to_stdout("\n");
     }
 
-    /* Bind *compile-file-pathname* and *compile-file-truename* */
+    /* Bind *compile-file-pathname* and *compile-file-truename* — dynamic
+     * binds (see dyn_mark note above); the dyn stack roots the values, so
+     * the C protects drop once both binds are in. */
     {
         CL_Obj cfp_path = cl_parse_namestring(in_path, (uint32_t)strlen(in_path));
         CL_GC_PROTECT(cfp_path);
@@ -1602,15 +1571,9 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
             cft_path = cfp_path;
         CL_GC_PROTECT(cft_path);
 
-        cfp_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_COMPILE_FILE_PATHNAME);
-        cft_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_COMPILE_FILE_TRUENAME);
-        saved_cfp = cl_symbol_value(SYM_STAR_COMPILE_FILE_PATHNAME);
-        saved_cft = cl_symbol_value(SYM_STAR_COMPILE_FILE_TRUENAME);
-        cl_set_symbol_value(SYM_STAR_COMPILE_FILE_PATHNAME, cfp_path);
-        cl_set_symbol_value(SYM_STAR_COMPILE_FILE_TRUENAME, cft_path);
+        cl_dynbind_c(SYM_STAR_COMPILE_FILE_PATHNAME, cfp_path);
+        cl_dynbind_c(SYM_STAR_COMPILE_FILE_TRUENAME, cft_path);
         CL_GC_UNPROTECT(2);  /* cft_path, cfp_path */
-        CL_GC_PROTECT(saved_cfp);
-        CL_GC_PROTECT(saved_cft);
     }
 
     /* Save source file context.  in_path is a stack-local buffer; intern
@@ -1884,22 +1847,16 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
     platform_free(w);
     CL_GC_UNPROTECT(1); /* bc_vec */
     cl_compiling_to_file = prev_compiling_to_file;
-    /* Restore *compile-file-pathname* and *compile-file-truename* */
-    cl_set_symbol_value(SYM_STAR_COMPILE_FILE_PATHNAME, saved_cfp);
-    cl_set_symbol_value(SYM_STAR_COMPILE_FILE_TRUENAME, saved_cft);
+
+    /* Pop *compile-file-truename*, *compile-file-pathname*, *readtable*,
+     * *package* — restoring the caller's values (and re-syncing
+     * cl_current_package). */
+    cl_dynbind_restore_to(dyn_mark);
 
     /* Restore source file context */
     cl_current_source_file = prev_file;
     cl_current_file_id = prev_file_id;
     cl_reader_set_line(prev_line);
-
-    /* Restore *package* */
-    cl_current_package = saved_package;
-    {
-        CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);
-        cl_set_symbol_value(SYM_STAR_PACKAGE, saved_package);
-    }
-    CL_GC_UNPROTECT(3);  /* saved_cft, saved_cfp, saved_package */
 
     /* Return (values output-truename nil nil) per CL spec */
     fprintf(stderr, "; Done compiling %s\n", in_path);

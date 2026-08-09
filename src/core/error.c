@@ -52,6 +52,7 @@ int cl_error_frame_push(void)
     cl_error_frames[cl_error_frame_top].saved_handler_top = cl_handler_top;
     cl_error_frames[cl_error_frame_top].saved_handler_active_mask = cl_handler_active_mask;
     cl_error_frames[cl_error_frame_top].saved_restart_top = cl_restart_top;
+    cl_error_frames[cl_error_frame_top].saved_dyn_top = cl_dyn_top;
     cl_error_frames[cl_error_frame_top].saved_printer = cl_printer_state_save();
     return cl_error_frame_top++;
 }
@@ -172,6 +173,12 @@ CL_NORETURN void cl_error_frame_longjmp(int code)
         cl_handler_active_mask = cl_error_frames[cl_error_frame_top - 1].saved_handler_active_mask;
         if (cl_restart_top > cl_error_frames[cl_error_frame_top - 1].saved_restart_top)
             cl_restart_top = cl_error_frames[cl_error_frame_top - 1].saved_restart_top;
+        /* Pop dynamic bindings established inside the frame — their
+         * OP_DYNUNBIND / cl_dynbind_restore_to call is abandoned by the
+         * longjmp.  Writes each saved value back into its TLV (and re-syncs
+         * cl_current_package for *PACKAGE*), exactly like the NLX landings
+         * (see CL_ErrorFrame.saved_dyn_top). */
+        cl_dynbind_restore_to(cl_error_frames[cl_error_frame_top - 1].saved_dyn_top);
         /* Repair printer state abandoned by prints we are unwinding out of
          * (aborted pprint-dispatch fn / print hook / stream error) — see
          * CL_ErrorFrame.saved_printer. */

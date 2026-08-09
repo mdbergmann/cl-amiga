@@ -3757,6 +3757,55 @@
       (load s))
     (list t cl-user::*lfs-lp*)))
 
+; --- Regression: LOAD bindings restored on ABORT (real-Amiga finding) ---
+; CLHS 23.2.7: LOAD binds *PACKAGE* and *READTABLE* around the load.  These
+; must be true dynamic bindings: a condition signaled mid-load and handled by
+; the CALLER's handler-case unwinds past LOAD's C frame, so a C-local
+; save/restore never runs.  The old code leaked the dead file's package that
+; way — on this suite one failed library load left *PACKAGE* switched and
+; every later top-level form re-interned CHECK fresh: 156 cascading
+; "Undefined function" failures from a single bad load.
+(check "load abort restores *package* (handler-case around load)" t
+  (let ((path "T:load-abort-pkg.lisp")
+        (before (package-name *package*)))
+    (when (probe-file path) (delete-file path))
+    (with-open-file (s path :direction :output :if-does-not-exist :create)
+      (write-line "(defpackage :load-abort-pkg (:use :cl))" s)
+      (write-line "(in-package :load-abort-pkg)" s)
+      (write-line "(cl:error \"boom\")" s))
+    (handler-case (load path) (error () nil))
+    (string= before (package-name *package*))))
+(check "load abort restores *readtable*" t
+  (let ((path "T:load-abort-rt.lisp")
+        (before *readtable*))
+    (when (probe-file path) (delete-file path))
+    (with-open-file (s path :direction :output :if-does-not-exist :create)
+      (write-line "(setq *readtable* (copy-readtable nil))" s)
+      (write-line "(error \"rt-boom\")" s))
+    (handler-case (load path) (error () nil))
+    (eq before *readtable*)))
+(check "load abort restores *load-pathname*" t
+  (let ((path "T:load-abort-lp.lisp")
+        (outer *load-pathname*))  ; this suite is itself being LOADed
+    (when (probe-file path) (delete-file path))
+    (with-open-file (s path :direction :output :if-does-not-exist :create)
+      (write-line "(error \"lp-boom\")" s))
+    (handler-case (load path) (error () nil))
+    (eq outer *load-pathname*)))
+; Sibling fix: a form aborted mid-LET-of-a-special must not leak its dynamic
+; bindings — the NLX landing pops the LET binding when the error is handled
+; outside the load.  (The other flavor — error UNHANDLED in Lisp, popped at
+; LOAD's per-form C catch via CL_ErrorFrame.saved_dyn_top — cannot be staged
+; inside this suite: CHECK's own handler-case always takes the condition
+; first.  tests/test_load_rebind.sh covers it on the host.)
+(check "aborted let-of-special does not leak binding (NLX)" 10
+  (progn
+    (handler-case (with-input-from-string
+                      (s "(let ((*print-base* 16)) (error \"in-let\"))")
+                    (load s))
+      (error () nil))
+    *print-base*))
+
 ; --- Regression: FASL auto-cache stays fresh after an in-place rewrite ---
 ; FS-UAE directory hard drives keep a replaced file's ORIGINAL datestamp
 ; (the .uaem sidecar is not refreshed on overwrite), so a recompiled cache

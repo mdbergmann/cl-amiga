@@ -106,6 +106,16 @@ typedef struct {
      * exists ("No catch for tag").  Mirrors saved_gc_roots. */
     int saved_handler_top;
     int saved_restart_top;
+    /* cl_dyn_top snapshot at push time.  Restored (via cl_dynbind_restore_to,
+     * which writes each binding's saved value back into its TLV and re-syncs
+     * cl_current_package when a *PACKAGE* binding unwinds) on the unwind path,
+     * so dynamic bindings established inside the frame — a form's LET of a
+     * special aborted mid-execution, or a C builtin's cl_dynbind_c set — are
+     * popped when a cl_error longjmp abandons the OP_DYNUNBIND / restore call
+     * that would have popped them.  The NLX (throw/handler-case) landings have
+     * always restored dyn_mark; this brings the C error frames in line.
+     * Mirrors saved_handler_top. */
+    int saved_dyn_top;
     /* cl_handler_active_mask snapshot at push time.  Restored on the unwind
      * path (cl_error_unwind) alongside saved_handler_top, so a CLHS 9.1.4
      * disabled-handler band is re-enabled when a C-level cl_error longjmp
