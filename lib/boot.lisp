@@ -1,5 +1,15 @@
 ;;; boot.lisp — Bootstrap functions for CL-Amiga
 ;;; Loaded at startup to provide common CL conveniences.
+;;;
+;;; PACKAGE DISCIPLINE: this file is read in COMMON-LISP when source-loaded
+;;; at boot, but in COMMON-LISP-USER when `make fasl` compiles it.  Any
+;;; %-helper defined here that another file (clos.lisp, a compiled FASL of
+;;; either) or C code refers to MUST be listed in clos_internal_names[]
+;;; (src/core/package.c) so both read paths resolve it to the same exported
+;;; CLAMIGA symbol.  A name missing from that list interns fresh in whichever
+;;; package is current — two symbols with one name, and cross-file references
+;;; silently land on the unbound one (real-Amiga finding 2026-08-09; see
+;;; tests/test_boot_source_compile.sh).
 
 ;; Standard CL variables (set early, before any macro expansion)
 (setq *macroexpand-hook* #'funcall)

@@ -208,6 +208,13 @@ test-fast: $(TEST_BINS) host
 		echo "FAIL"; \
 		failed=1; \
 	fi; \
+	echo "--- test_boot_source_compile ---"; \
+	if sh $(TEST_SRCDIR)/test_boot_source_compile.sh $(BUILDDIR)/clamiga; then \
+		echo "PASS"; \
+	else \
+		echo "FAIL"; \
+		failed=1; \
+	fi; \
 	echo "--- test_load_exit ---"; \
 	if sh $(TEST_SRCDIR)/test_load_exit.sh $(BUILDDIR)/clamiga; then \
 		echo "PASS"; \

@@ -2,6 +2,11 @@
 ;;;; Practical subset: defclass, defgeneric, defmethod, make-instance,
 ;;;; slot-value, class-of, with-slots, standard method combination.
 ;;;; Loaded on demand via (require "clos").
+;;;;
+;;;; PACKAGE DISCIPLINE: read in COMMON-LISP when source-loaded at boot but
+;;;; in COMMON-LISP-USER under `make fasl` — every %-helper referenced across
+;;;; files must be listed in clos_internal_names[] (src/core/package.c).
+;;;; See the matching note at the top of lib/boot.lisp.
 
 ;;; ---- Boot-phase profiling ----
 ;;; Info messages so future regressions in CLOS load time show up
