@@ -1714,6 +1714,12 @@ int platform_break_pending(void)
     return 1;
 }
 
+void platform_fpu_setup(void)
+{
+    /* IEEE double semantics are the hardware default on POSIX targets;
+     * only the hard-float m68k build needs FPU control setup. */
+}
+
 void platform_init(void)
 {
     /* SA_RESTART: blocking reads (REPL stdin) resume after the handler so

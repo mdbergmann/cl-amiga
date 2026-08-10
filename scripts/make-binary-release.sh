@@ -4,7 +4,11 @@
 # Produces build/release/clamiga-<version>/ and .zip/.lha archives:
 #
 #   clamiga-<version>/
-#     bin/aos3/clamiga      AmigaOS 3+ (68020+) binary, cross-compiled here
+#     bin/aos3/clamiga      AmigaOS 3+ (68020+) soft-float binary, runs on
+#                           any CPU — cross-compiled here
+#     bin/aos3-fpu/clamiga  AmigaOS 3+ hard-float binary (Makefile.cross
+#                           FPU=1, -m68881) — REQUIRES an FPU (68881/68882,
+#                           68040/68060, Vampire/PiStorm)
 #     bin/mos/clamiga       MorphOS (PPC) binary, built natively on MorphOS
 #     lib/                  runtime library — FASLs where portable, sources
 #                           where compilation must happen on the target
@@ -81,22 +85,30 @@ fi
 echo "--- Building host binary (FASL compiler) ---"
 make host
 
-echo "--- Cross-compiling AmigaOS 3 binary ---"
+echo "--- Cross-compiling AmigaOS 3 binary (soft-float) ---"
 make -f Makefile.cross amiga
+
+echo "--- Cross-compiling AmigaOS 3 binary (hard-float, FPU=1) ---"
+make -f Makefile.cross amiga FPU=1
 
 HOST_BIN="$ROOT/build/host/clamiga"
 AOS3_BIN="$ROOT/build/cross/clamiga"
+AOS3FPU_BIN="$ROOT/build/cross-fpu/clamiga"
 [ -x "$HOST_BIN" ] || { echo "ERROR: $HOST_BIN missing" >&2; exit 1; }
 [ -f "$AOS3_BIN" ] || { echo "ERROR: $AOS3_BIN missing" >&2; exit 1; }
+[ -f "$AOS3FPU_BIN" ] || { echo "ERROR: $AOS3FPU_BIN missing" >&2; exit 1; }
 
 # --- stage ----------------------------------------------------------------
 echo "--- Staging $STAGE ---"
 rm -rf "$STAGE"
-mkdir -p "$STAGE/bin/aos3" "$STAGE/bin/mos" "$STAGE/lib/amiga" "$STAGE/docs"
+mkdir -p "$STAGE/bin/aos3" "$STAGE/bin/aos3-fpu" "$STAGE/bin/mos" \
+         "$STAGE/lib/amiga" "$STAGE/docs"
 
-cp "$AOS3_BIN" "$STAGE/bin/aos3/clamiga"
-cp "$MOS_BIN"  "$STAGE/bin/mos/clamiga"
-chmod +x "$STAGE/bin/aos3/clamiga" "$STAGE/bin/mos/clamiga"
+cp "$AOS3_BIN"    "$STAGE/bin/aos3/clamiga"
+cp "$AOS3FPU_BIN" "$STAGE/bin/aos3-fpu/clamiga"
+cp "$MOS_BIN"     "$STAGE/bin/mos/clamiga"
+chmod +x "$STAGE/bin/aos3/clamiga" "$STAGE/bin/aos3-fpu/clamiga" \
+         "$STAGE/bin/mos/clamiga"
 
 # lib: FASL-portable modules, compiled by the just-built host binary so
 # CL_FASL_VERSION matches the packaged binaries exactly.
@@ -130,11 +142,26 @@ CL-Amiga $VERSION — binary release
 
 Common Lisp for AmigaOS 3+ and MorphOS.
 
-  bin/aos3/clamiga   AmigaOS 3.x, 68020 or better
-  bin/mos/clamiga    MorphOS (PowerPC, native)
-  lib/               runtime library (precompiled FASLs + Lisp sources)
-  docs/              package API reference (call signatures included)
-  examples/          example programs (Lisp source)
+  bin/aos3/clamiga      AmigaOS 3.x, 68020 or better — runs on any CPU
+  bin/aos3-fpu/clamiga  AmigaOS 3.x, hard-float build — REQUIRES an FPU
+  bin/mos/clamiga       MorphOS (PowerPC, native)
+  lib/                  runtime library (precompiled FASLs + Lisp sources)
+  docs/                 package API reference (call signatures included)
+  examples/             example programs (Lisp source)
+
+Which AmigaOS binary?
+---------------------
+bin/aos3 does float math in software (mathieeedoubbas.library) and runs
+on every 68020+ machine, FPU or not.  bin/aos3-fpu is compiled for the
+68881/68882 FPU: float arithmetic runs directly on the FPU and is much
+faster.  Use it if your machine has one — 68881/68882 boards, 68040/68060
+(with the standard 68040/68060.library installed), Vampire/Apollo,
+PiStorm.  On a machine without an FPU it will crash; when in doubt,
+start with bin/aos3.
+
+Both binaries print and read floats identically (conversion is exact
+integer arithmetic, independent of the FPU), so FASLs and float-heavy
+source files are fully interchangeable between them.
 
 Quick start (AmigaOS shell)
 ---------------------------
@@ -142,7 +169,7 @@ Quick start (AmigaOS shell)
   cd clamiga-$VERSION
   bin/aos3/clamiga
 
-(on MorphOS use bin/mos/clamiga instead)
+(on MorphOS use bin/mos/clamiga, on FPU machines bin/aos3-fpu/clamiga)
 
 The binary finds lib/ on its own: it looks in the current directory, in
 PROGDIR:lib, and two directory levels above the executable — which is

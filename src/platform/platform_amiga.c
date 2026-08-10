@@ -2315,9 +2315,25 @@ PlatformSocket platform_socket_accept(PlatformSocket listener)
     return req.out_slot;
 }
 
+void platform_fpu_setup(void)
+{
+#ifdef __HAVE_68881__
+    /* Hard-float build only.  The 68881/68882 defaults to extended-precision
+     * rounding: every C double operation carries 64 mantissa bits until the
+     * value is stored, so chained arithmetic sees double-rounded results
+     * that differ from strict IEEE doubles — e.g. (floor x (/ x 7)) reads a
+     * quotient a hair under 7 and answers 6 where the host answers 7.  Set
+     * FPCR to round-to-nearest / double precision (0x80) so arithmetic
+     * matches the host bit for bit on real Motorola FPUs.  Per-task FPU
+     * context: amiga_thread_entry() repeats this for every worker thread. */
+    __asm__ volatile ("fmove.l %0,fpcr" : : "d" (0x00000080UL));
+#endif
+}
+
 void platform_init(void)
 {
-    /* Nothing needed — dos.library is auto-opened by startup */
+    /* dos.library is auto-opened by startup */
+    platform_fpu_setup();
     platform_mutex_init(&reactor_init_mutex);
 }
 

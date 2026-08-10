@@ -240,10 +240,25 @@ static CL_Obj do_rounding(CL_Obj *args, int n, int mode,
          * 6.9999998 where the single-float quotient rounds to 7.0f, which
          * would make (floor a b) disagree with (floor (/ a b)) and round
          * the wrong way at exact-integer boundaries (CLHS 12.1.4.4). */
-        if (is_dbl)
-            quot = a / b;
-        else
-            quot = (double)((float)a / (float)b);
+        if (is_dbl) {
+            /* Round the quotient through a genuine 64-bit store (volatile)
+             * before rounding it to an integer.  On excess-precision FPUs
+             * (68881 extended arithmetic, FPU emulators and FPGA FPUs that
+             * ignore the FPCR precision field) a register-resident a/b can
+             * sit a hair below an exact integer while the stored double
+             * rounds up to it — apply_round must see exactly the double
+             * that (/ a b) boxes, or (floor a b) answers 6 where
+             * (floor (/ a b)) answers 7. */
+            volatile double vq = a / b;
+            quot = vq;
+        } else {
+            /* Same store-rounding for the single-precision quotient: the
+             * (float) cast alone is not a reliable rounding point under
+             * excess precision (gcc keeps the value in an extended FP
+             * register), but a volatile float store is. */
+            volatile float vqs = (float)a / (float)b;
+            quot = (double)vqs;
+        }
         dq = apply_round(quot, mode);
         /* Compute the remainder with the product rounded to a double in its
          * own statement (the `volatile` defeats FMA contraction of a-dq*b).

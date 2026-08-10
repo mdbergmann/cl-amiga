@@ -1,6 +1,7 @@
 # CL-Amiga Cross-compilation Makefile
 # Uses m68k-amigaos-gcc from tools/m68k-amigaos-gcc/prefix
 # Run: make -f Makefile.cross [amiga|test-amiga|clean]
+#      make -f Makefile.cross amiga FPU=1   (hard-float variant, see below)
 
 TOOLCHAIN = $(CURDIR)/tools/m68k-amigaos-gcc/prefix
 CC        = $(TOOLCHAIN)/bin/m68k-amigaos-gcc
@@ -17,11 +18,27 @@ CC        = $(TOOLCHAIN)/bin/m68k-amigaos-gcc
 # NET LOSS on the AmigaOS hunk format: the linker does remove dead sections, but
 # per-function alignment padding + per-section hunk-table overhead (hundreds of
 # tiny sections) outweighs it — binary grew +35 KB / +6 %. See specs/modularize.md.
-CFLAGS    = -noixemul -mcpu=68020 -msoft-float -std=c99 -Wall -Os -fno-tree-switch-conversion -DPLATFORM_AMIGA -DJIT_M68K $(DEBUG_FLAGS)
-LDFLAGS   = -noixemul -mcpu=68020 -msoft-float -fno-tree-switch-conversion
+# FPU=1 builds the hard-float variant: -m68881 compiles double arithmetic to
+# inline FPU instructions (libm from the toolchain's libm020/libm881 multilib)
+# instead of soft-float calls through mathieeedoubbas.library.  Runs on any
+# machine with an FPU — 68881/68882 cards, 68040/68060 (the 68040/68060.library
+# math emulation covers the transcendental instructions), Vampire/PiStorm.
+# The binary REQUIRES an FPU: on a plain 68020/68030 it dies with a line-F
+# exception, so never point test-amiga-lowend (FPU-less 68020 config) at it.
+# Each variant gets its own object dir so the two never mix.
+FPU ?= 0
+ifeq ($(FPU),1)
+FLOATFLAGS = -m68881
+BUILDDIR   = build/cross-fpu
+else
+FLOATFLAGS = -msoft-float
+BUILDDIR   = build/cross
+endif
+
+CFLAGS    = -noixemul -mcpu=68020 $(FLOATFLAGS) -std=c99 -Wall -Os -fno-tree-switch-conversion -DPLATFORM_AMIGA -DJIT_M68K $(DEBUG_FLAGS)
+LDFLAGS   = -noixemul -mcpu=68020 $(FLOATFLAGS) -fno-tree-switch-conversion
 
 SRCDIR   = src
-BUILDDIR = build/cross
 
 # Source files
 PLATFORM_SRC = $(SRCDIR)/platform/platform_amiga.c \
@@ -138,12 +155,23 @@ $(BUILDDIR)/%.o: $(SRCDIR)/%.s
 # `C:UAEquit` (appended to call-on-ustartup) quits FS-UAE when the suite
 # finishes, and the script's watchdog kills it if clamiga hangs.  No manual
 # window-closing required.
+# The explicit cp (also done on relink) matters when switching FPU= variants:
+# without it an up-to-date $(BUILDDIR)/clamiga skips the link rule and FS-UAE
+# would silently test whichever variant was deployed last.
 test-amiga: $(BUILDDIR)/clamiga
+	@mkdir -p build/amiga
+	cp $(BUILDDIR)/clamiga build/amiga/clamiga
 	@echo "=== Launching FS-UAE (high-end JIT config) — auto-quits when tests finish ==="
 	verify/realamiga/run-fs-uae.sh verify/realamiga/verify.fs-uae
 	@$(MAKE) --no-print-directory -f Makefile.cross verify-amiga
 
 test-amiga-lowend: $(BUILDDIR)/clamiga
+	@if [ "$(FPU)" = "1" ]; then \
+		echo "ERROR: test-amiga-lowend runs an FPU-less 68020 config — the FPU=1 binary cannot run there."; \
+		exit 1; \
+	fi
+	@mkdir -p build/amiga
+	cp $(BUILDDIR)/clamiga build/amiga/clamiga
 	@echo "=== Launching FS-UAE (lower-end 68020 baseline) — auto-quits when tests finish ==="
 	verify/realamiga/run-fs-uae.sh verify/realamiga/verify-lowend.fs-uae
 	@$(MAKE) --no-print-directory -f Makefile.cross verify-amiga
@@ -171,4 +199,4 @@ verify-amiga:
 	@echo "=== Amiga verification PASSED ==="
 
 clean:
-	rm -rf $(BUILDDIR)
+	rm -rf build/cross build/cross-fpu

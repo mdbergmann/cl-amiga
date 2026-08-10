@@ -75,6 +75,11 @@ static void amiga_thread_entry(void)
     int free_self;
     LONG spins = 0;
 
+    /* FPU control registers are per-task context — a fresh process starts
+     * with the hardware default (extended-precision rounding), not the
+     * mode platform_init() set for the main task. */
+    platform_fpu_setup();
+
     /* The parent stores tc_UserData under Forbid() — but CreateNewProc
      * can Wait() internally (DOS packet round-trip), and Wait() BREAKS a
      * Forbid(), so this child may start running before the parent's

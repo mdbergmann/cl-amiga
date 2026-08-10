@@ -272,6 +272,14 @@ int platform_getcwd(char *buf, int bufsize);
 void  platform_init(void);
 void  platform_shutdown(void);
 
+/* Put the FPU control state into the mode the runtime expects.  Real work
+ * only on the hard-float m68k build (FPU=1: sets the 68881/68882 FPCR to
+ * double-precision rounding so C doubles behave as strict IEEE doubles);
+ * a no-op everywhere else.  FPU control registers are per-task context on
+ * AmigaOS, so this must run once in EVERY OS thread that executes Lisp —
+ * platform_init() covers the main task, the thread entry point the rest. */
+void  platform_fpu_setup(void);
+
 /* =============================================================
  * Generic FFI: foreign memory access
  * ============================================================= */

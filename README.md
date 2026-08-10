@@ -826,6 +826,13 @@ make -f Makefile.cross test-amiga   # Build, deploy to FS-UAE, run Amiga tests
 make -f Makefile.cross clean        # Remove cross-build artifacts
 ```
 
+Adding `FPU=1` to any of these builds the hard-float variant (to
+`build/cross-fpu/`): double arithmetic compiles to native 68881/68882
+instructions instead of soft-float library calls — much faster on machines
+that have an FPU (68881/68882 boards, 68040/68060, Vampire/PiStorm), but the
+binary requires one.  `make -f Makefile.cross test-amiga FPU=1` runs the
+Amiga test suite against the hard-float binary in FS-UAE's 68040 config.
+
 ### Build inside AmigaOS (vbcc)
 
 ```
@@ -860,9 +867,10 @@ Amiga targets under `build/release/`:
 MOS_BIN=./clamiga-mos scripts/make-binary-release.sh
 ```
 
-It cross-compiles the AmigaOS 3 binary, takes a natively built MorphOS
-binary (`MOS_BIN`, default `./clamiga-mos`), and assembles
-`clamiga-<version>/` with `bin/aos3/`, `bin/mos/`, `lib/` (precompiled
+It cross-compiles both AmigaOS 3 binaries — soft-float (`bin/aos3/`, runs
+on any 68020+) and hard-float (`bin/aos3-fpu/`, requires an FPU) — takes a
+natively built MorphOS binary (`MOS_BIN`, default `./clamiga-mos`), and
+assembles `clamiga-<version>/` with `bin/aos3/`, `bin/aos3-fpu/`, `bin/mos/`, `lib/` (precompiled
 FASLs where portable, Lisp sources where compilation must happen on the
 target), the package API reference under `docs/`, and `examples/` — then
 smoke-tests the deployed layout and produces `.zip` and `.lha` archives.

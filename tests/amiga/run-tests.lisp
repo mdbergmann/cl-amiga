@@ -9255,8 +9255,28 @@
 
 ; Two-arg FLOOR of floats: quotient agrees with (/ a b); remainder shares the
 ; divisor's sign (never a tiny negative against a positive divisor).
-(check "floor float quotient matches /" 7
-  (floor (log 6) (/ (log 6) 7)))
+; (log 6) differs between libms (host polynomial vs 68881 FLOGN), and whether
+; x/(x/7) rounds up to exactly 7.0 depends on those last bits — so assert the
+; AGREEMENT invariant, not a literal quotient.
+(check "floor float quotient matches /" t
+  (let* ((a (log 6)) (b (/ a 7)))
+    (= (floor a b) (floor (/ a b)))))
+; Deterministic, libm-free pin of the same invariant: these literals read
+; bit-exactly on every platform, their exact quotient sits ~4e-16 BELOW 7,
+; and IEEE double division rounds it up to exactly 7.0 — so FLOOR must answer
+; 7.  An excess-precision FPU path that never rounds the quotient to a true
+; 64-bit double (68881 extended arithmetic without the store in the FLOOR
+; float path) answers 6 here.
+(check "floor double quotient rounds like /" 7
+  (floor 1.791759469228055d0 0.2559656384611507d0))
+; Same, inside a worker thread: a fresh AmigaOS process starts with the FPU's
+; default control state, not the FPCR mode platform_init() set for the main
+; task — the thread entry must arm the FPU context itself (hard-float build,
+; Makefile.cross FPU=1).
+(check "floor double quotient rounds like / in worker thread" 7
+  (mp:join-thread (mp:make-thread
+                    (lambda ()
+                      (floor 1.791759469228055d0 0.2559656384611507d0)))))
 (check "floor float remainder non-negative" 0.0d0
   (nth-value 1 (floor 1.0d0 (* (/ 2.0d0 350) 7))))
 (check "floor float remainder sign invariant" t
