@@ -53,16 +53,11 @@ float cl_to_float(CL_Obj obj)
     return (float)cl_to_double(obj);
 }
 
-int cl_float_shortest_g(char *buf, int bufsz, double value, int is_double)
+/* Legacy libc rendering: kept for non-finite values (inf/nan keep their
+   platform spelling) and as a fallback should the exact converter ever
+   report overflow (mathematically unreachable). */
+static int float_shortest_libc(char *buf, int bufsz, double value, int is_double)
 {
-    /* Find the minimal number of significant digits whose "%g" rendering reads
-       back to exactly the original float (round-trip).  binary32 needs at most
-       9 significant digits, binary64 at most 17.  We then render with at least
-       a floor precision (6 for single, 15 for double — the historical "%g" /
-       "%.15g" widths) so that round magnitudes such as 100.0 stay in fixed
-       notation instead of collapsing to "1e+02"; the floor only ever adds
-       digits that "%g" immediately strips as trailing zeros, so the result is
-       still the shortest *faithful* representation. */
     int maxprec = is_double ? 17 : 9;
     int floorp  = is_double ? 15 : 6;
     int prec, p = maxprec, len;
@@ -79,6 +74,100 @@ int cl_float_shortest_g(char *buf, int bufsz, double value, int is_double)
     len = snprintf(buf, (size_t)bufsz, "%.*g", p, value);
     if (len < 0) { buf[0] = '\0'; return 0; }
     if (len > bufsz - 1) len = bufsz - 1;
+    return len;
+}
+
+int cl_float_shortest_g(char *buf, int bufsz, double value, int is_double)
+{
+    /* Exact shortest round-trip digits from the integer-only converter
+       (float_dtoa.c), then "%g"-compatible layout: with P = max(digits, 15)
+       for doubles (6 for singles), scientific notation is used only when
+       the decimal exponent X is < -4 or >= P.  The floor keeps round
+       magnitudes such as 100.0 in fixed notation instead of "1e+02" while
+       never adding digits — exactly the shape the old snprintf("%.*g")
+       path produced, but independent of libc/FPU quality (a Vampire-class
+       FPU misparses every strtod round-trip; see float_dtoa.c). */
+    char digits[20];
+    char tmp[40];
+    int32_t k;
+    int n, neg, X, P, len, i, o, is_zero;
+    int floorp = is_double ? 15 : 6;
+
+    /* Classify via bit patterns — no float compares (those would run
+       through the platform float machinery this path must not trust). */
+    if (is_double) {
+        uint64_t bits;
+        memcpy(&bits, &value, sizeof bits);
+        neg = (int)(bits >> 63);
+        if (((bits >> 52) & 0x7FF) == 0x7FF)          /* inf/nan */
+            return float_shortest_libc(buf, bufsz, value, is_double);
+        is_zero = ((bits & 0x7FFFFFFFFFFFFFFFULL) == 0);
+    } else {
+        float sf = (float)value;
+        uint32_t bits;
+        memcpy(&bits, &sf, sizeof bits);
+        neg = (int)(bits >> 31);
+        if (((bits >> 23) & 0xFF) == 0xFF)
+            return float_shortest_libc(buf, bufsz, value, is_double);
+        is_zero = ((bits & 0x7FFFFFFFu) == 0);
+    }
+
+    n = 0;
+    if (!is_zero) {
+        n = cl_dtoa_shortest(value, is_double, digits, &k);
+        if (n == 0)                    /* poisoned (unreachable): fall back */
+            return float_shortest_libc(buf, bufsz, value, is_double);
+    }
+
+    o = 0;
+    if (is_zero) {
+        /* Zero prints as "0" / "-0" ("%g" behavior; printer adds ".0"). */
+        if (neg) tmp[o++] = '-';
+        tmp[o++] = '0';
+        tmp[o] = '\0';
+    } else {
+        X = (int)k - 1;                /* value = d.ddd * 10^X */
+        P = (n > floorp) ? n : floorp;
+        if (neg) tmp[o++] = '-';
+        if (X < -4 || X >= P) {
+            /* Scientific: d[.ddd]e[+-]XX (exponent at least two digits). */
+            int e = X, ed;
+            tmp[o++] = digits[0];
+            if (n > 1) {
+                tmp[o++] = '.';
+                for (i = 1; i < n; i++) tmp[o++] = digits[i];
+            }
+            tmp[o++] = 'e';
+            tmp[o++] = (e < 0) ? '-' : '+';
+            if (e < 0) e = -e;
+            ed = (e >= 100) ? 3 : 2;
+            for (i = ed - 1; i >= 0; i--) {
+                tmp[o + i] = (char)('0' + e % 10);
+                e /= 10;
+            }
+            o += ed;
+            tmp[o] = '\0';
+        } else if (X >= 0) {
+            /* Fixed, point inside or right of the digits. */
+            for (i = 0; i < n || i <= X; i++) {
+                if (i == X + 1) tmp[o++] = '.';
+                tmp[o++] = (i < n) ? digits[i] : '0';
+            }
+            tmp[o] = '\0';
+        } else {
+            /* Fixed, 0.00ddd form. */
+            tmp[o++] = '0';
+            tmp[o++] = '.';
+            for (i = 0; i < -X - 1; i++) tmp[o++] = '0';
+            for (i = 0; i < n; i++) tmp[o++] = digits[i];
+            tmp[o] = '\0';
+        }
+    }
+
+    len = o;
+    if (len > bufsz - 1) len = bufsz - 1;
+    memcpy(buf, tmp, (size_t)len);
+    buf[len] = '\0';
     return len;
 }
 

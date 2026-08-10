@@ -4136,6 +4136,42 @@
 (check "float printer double pi roundtrip" t (= 3.141592653589793d0 (read-from-string (prin1-to-string 3.141592653589793d0))))
 (check "format ~f full precision" "1234.567" (format nil "~f" 1234.567))
 
+; --- Exact FPU-independent float reading/printing (float_dtoa.c) ---
+; The reader and printer convert via integer arithmetic only, so literals
+; produce identical bits on every platform — including FPGA-accelerated
+; Amigas (Vampire/Apollo) whose FPU divides with ~42 mantissa bits and made
+; the old strtod-based path misparse pi by 9 ulps.  These check exact bits.
+(check "read 0.1d0 exact bits" 4591870180066957722
+  (clamiga:double-float-bits (read-from-string "0.1d0")))
+(check "read pi exact bits" 4614256656552045848
+  (clamiga:double-float-bits (read-from-string "3.141592653589793d0")))
+(check "read 17-digit pi same bits" 4614256656552045848
+  (clamiga:double-float-bits (read-from-string "3.1415926535897931d0")))
+; The infamous halfway literal: rounds DOWN to the largest subnormal.
+(check "read subnormal halfway exact bits" 4503599627370495
+  (clamiga:double-float-bits (read-from-string "2.2250738585072011d-308")))
+(check "read single pi exact bits" 1078530011
+  (clamiga:single-float-bits (read-from-string "3.14159274")))
+; Singles round decimal -> binary32 directly (no double-rounding through a
+; double): this literal is the double halfway point just below the single
+; halfway point, so it must read as exactly 1.0f0.
+(check "read single no double-rounding" 1065353216
+  (clamiga:single-float-bits (read-from-string "1.000000059604644775390625")))
+; Min subnormal prints in truly shortest form and reads back bit-exactly.
+(check "print min subnormal shortest" "5d-324"
+  (prin1-to-string (clamiga:bits-double-float 1)))
+(check "read min subnormal exact bits" 1
+  (clamiga:double-float-bits (read-from-string "5d-324")))
+; Bit-exact print/read round-trip over boundary patterns: min/max subnormal,
+; min/max normal, 1.0-eps, 0.1, and a mid-range irrational-looking value.
+(check "float print/read bit round-trip battery" t
+  (loop for b in '(1 4503599627370495 4503599627370496
+                   4607182418800017407 4591870180066957722
+                   9218868437227405311 4614256656552045848)
+        always (= b (clamiga:double-float-bits
+                     (read-from-string
+                      (prin1-to-string (clamiga:bits-double-float b)))))))
+
 ; --- File streams / open / with-open-file (Step 8) ---
 ; Use /tmp/ on POSIX, T: on Amiga — both are writable temp directories
 ; Detect by trying /tmp/ first (fails on Amiga), fall back to T:

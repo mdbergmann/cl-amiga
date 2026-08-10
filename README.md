@@ -716,6 +716,26 @@ generational machinery needs an MMU and is compiled out there.
 See `tests/test_gengc.c` and `tests/test_gengc_watch.c` for the behavioral
 contract, and `specs/generational-gc.md` for the design.
 
+### Exact float printing and reading
+
+Float literals and printed floats convert between decimal text and IEEE
+bits using CL-Amiga's own integer-only conversion (`src/core/float_dtoa.c`)
+— never the platform's `printf`/`strtod`.  The printer emits the shortest
+digit string that reads back to exactly the same float (Steele-White),
+and the reader rounds every literal correctly to its target format,
+singles included.  Results are bit-identical on every platform and immune
+to FPU quality — FPGA-accelerated Amigas (Vampire/Apollo) divide with only
+~42 mantissa bits, which used to make `strtod` misparse literals by
+several ulps.  `(prin1 pi)` → `3.141592653589793d0` reads back to the
+same 64 bits everywhere, so FASLs and source files with float constants
+compile identically on host and Amiga.
+
+See `tests/test_float_dtoa.c` for the contract (shortest-form vectors,
+correctly rounded halfway/tie cases, fuzz round-trips against libc) and
+the "Exact FPU-independent float reading/printing" block in
+`tests/amiga/run-tests.lisp` for the bit-exact checks that run on real
+hardware.
+
 ### Packed byte vectors
 
 `(make-array n :element-type '(unsigned-byte 8))` — and any element type that

@@ -519,13 +519,35 @@ static CL_Obj try_parse_float(const char *buf, int len)
     if (!has_digit || (!has_dot && !has_exp))
         return CL_NIL;
 
-    /* Build parse buffer: replace CL exponent marker with 'E' for strtod */
+    /* Build parse buffer: replace the CL exponent marker with 'E' */
     if (len >= 256) return CL_NIL;
     memcpy(parse_buf, buf, (uint32_t)len);
     parse_buf[len] = '\0';
     if (exp_pos >= 0 && parse_buf[exp_pos] != 'E')
         parse_buf[exp_pos] = 'E';
 
+    /* Exact, FPU-independent conversion (float_dtoa.c): correctly rounded
+     * directly to the target format, bit-identical on every platform.
+     * strtod is unusable here — on Amiga it runs through mathieee/FPU,
+     * and Vampire-class FPUs misparse literals by several ulps; the old
+     * (float)strtod(...) double also double-rounded singles. */
+    {
+        uint64_t fb;
+        if (cl_parse_float_exact(parse_buf, is_double, &fb)) {
+            if (is_double) {
+                double d;
+                memcpy(&d, &fb, sizeof d);
+                return cl_make_double_float(d);
+            } else {
+                uint32_t b32 = (uint32_t)fb;
+                float f;
+                memcpy(&f, &b32, sizeof f);
+                return cl_make_single_float(f);
+            }
+        }
+    }
+
+    /* Fallback (unreachable for reader-validated tokens): legacy strtod. */
     val = strtod(parse_buf, &endp);
     if (endp != parse_buf + len)
         return CL_NIL;  /* strtod didn't consume entire token */

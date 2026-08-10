@@ -53,6 +53,7 @@ OBJS = $(BUILDDIR)/main.o \
        $(BUILDDIR)/bignum.o \
        $(BUILDDIR)/ratio.o \
        $(BUILDDIR)/float.o \
+       $(BUILDDIR)/float_dtoa.o \
        $(BUILDDIR)/float_math.o \
        $(BUILDDIR)/debugger.o \
        $(BUILDDIR)/repl.o \
@@ -175,6 +176,9 @@ $(BUILDDIR)/ratio.o: src/core/ratio.c
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 $(BUILDDIR)/float.o: src/core/float.c
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(BUILDDIR)/float_dtoa.o: src/core/float_dtoa.c
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 $(BUILDDIR)/float_math.o: src/core/float_math.c
