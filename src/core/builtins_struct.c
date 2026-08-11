@@ -864,20 +864,20 @@ static CL_Obj bi_struct_slot_count(CL_Obj *args, int n)
  * clos.lisp) is keyed by those exact CL-package symbols.  They MUST be
  * resolved in the COMMON-LISP package — NOT via *PACKAGE*-relative cl_intern.
  *
- * cl_intern interns relative to cl_current_package, a *shared C global* synced
- * from the per-thread *PACKAGE* dynamic binding.  If *PACKAGE* is (or is
- * transiently clobbered to) a package that does not resolve the name to its
- * CL-package symbol — e.g. KEYWORD during a #. / #+ reader excursion, or
- * another thread's *PACKAGE* leaking through the global in a multi-threaded
- * session (Sly/slynk workers, sento, log4cl's watcher) — cl_intern would
+ * cl_intern interns relative to cl_current_package (historically a shared C
+ * global that other threads' *PACKAGE* binds leaked through; per-thread since
+ * the SLYNK-IO-PACKAGE FASL-poisoning fix, but still *PACKAGE*-relative).  If
+ * this thread's *PACKAGE* is a package that does not resolve the name to its
+ * CL-package symbol — e.g. KEYWORD during a #. / #+ reader excursion —
+ * cl_intern would
  * return a *different* symbol.  (gethash that-symbol *class-table*) then misses
  * and class-of silently falls back to the T class, which makes CLOS dispatch
  * compute an empty applicable-method set even though a method plainly applies
  * ("No applicable method for ... (X SYMBOL)").  Struct/condition objects are
  * unaffected (they return their stored type_desc/type_name), which is exactly
  * why the field failures only ever mis-classified the built-in-typed argument.
- * Interning in cl_package_cl makes class-of independent of *PACKAGE* and of
- * the thread-shared cl_current_package. */
+ * Interning in cl_package_cl makes class-of independent of *PACKAGE*
+ * entirely. */
 static CL_Obj class_name_sym(const char *name, uint32_t len)
 {
     return cl_intern_in(name, len, cl_package_cl);

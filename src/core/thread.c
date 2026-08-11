@@ -762,6 +762,22 @@ void cl_tlv_rehash(CL_Thread *t)
  * on this thread, so skip the TLV hash probe entirely.  This turns a
  * 30-50 cycle probe into a single compare + direct field read. */
 
+/* Per-thread slot behind the cl_current_package macro (package.h).
+ * Mirrors cl_symbol_value's CT resolution below.  The pre-thread-init
+ * fallback slot exists only for code paths that touch package machinery
+ * before cl_thread_init has installed cl_main_thread_ptr; the real
+ * binary (and every test harness) runs cl_thread_init first, so it is
+ * never live while the heap is — it needs no GC rooting. */
+CL_Obj *cl_current_package_ref(void)
+{
+    static CL_Obj pre_thread_init_slot = CL_NIL;
+    CL_Thread *t = (cl_thread_count <= 1)
+                   ? cl_main_thread_ptr
+                   : (CL_Thread *)platform_tls_get();
+    if (!t) return &pre_thread_init_slot;
+    return &t->current_package;
+}
+
 CL_Obj cl_symbol_value(CL_Obj sym)
 {
     CL_Thread *t = (cl_thread_count <= 1)
@@ -1059,6 +1075,7 @@ void cl_thread_reset_lisp_state(CL_Thread *t)
     t->interrupt_func = CL_NIL;
     t->thread_obj = CL_NIL;
     t->current_lex_env = CL_NIL;
+    t->current_package = CL_NIL;   /* re-set by cl_package_init on re-init */
     t->rd_stream = CL_NIL;
     t->rd_uninterned = CL_NIL;
     t->rd_labels = CL_NIL;

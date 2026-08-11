@@ -2977,6 +2977,14 @@ static void gc_mark_thread_roots(CL_Thread *t)
     GC_DBG_SRC("current_lex_env", 0);
     gc_mark_obj(t->current_lex_env);
 
+    /* Per-thread current package (the cl_current_package slot).  Packages
+     * are also reachable via the package registry, so this mark is mostly
+     * redundant — but the slot must be in the thread walk so the UPDATE
+     * counterpart forwards it after a compaction (a stale offset here
+     * makes this thread's reader intern into garbage). */
+    GC_DBG_SRC("current_package", 0);
+    gc_mark_obj(t->current_package);
+
     /* Reader state — in-flight reader stream plus per-read uninterned
      * symbol alist (so #:foo identity survives a GC during a long READ). */
     GC_DBG_SRC("reader-state", 0);
@@ -3725,6 +3733,8 @@ static void gc_update_thread_roots(CL_Thread *t)
     gc_update_slot(&t->result);
     gc_update_slot(&t->interrupt_func);
     gc_update_slot(&t->current_lex_env);
+    gc_update_slot(&t->current_package);  /* per-thread *PACKAGE* mirror —
+                                           * see gc_mark counterpart */
     gc_update_slot(&t->thread_obj);
 
     /* Reader state — must mirror gc_mark_thread_roots.  These were marked

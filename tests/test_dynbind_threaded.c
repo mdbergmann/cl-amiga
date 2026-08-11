@@ -431,6 +431,102 @@ TEST(dynbind_fixnum_minus1_labels)
 }
 
 /* ================================================================
+ * Per-thread current package (SLYNK-IO-PACKAGE FASL-poisoning regression)
+ *
+ * cl_current_package used to be one shared C global re-synced from the
+ * calling thread's *PACKAGE* view on every bind/unbind.  Under Sly, the
+ * slynk control thread binds *PACKAGE* to SLYNK-IO-PACKAGE around every
+ * wire message while a worker runs COMPILE-FILE — so the worker's reader
+ * interned random tokens into SLYNK-IO-PACKAGE, splitting one source name
+ * into two symbols and baking "Unbound variable" macro expanders into
+ * cached FASLs.  These tests drive TWO CL_Thread identities from one OS
+ * thread via platform_tls_set, which makes the old clobber DETERMINISTIC
+ * instead of a scheduler race.
+ * ================================================================ */
+
+TEST(package_bind_isolated_between_threads)
+{
+    CL_Thread *main_t = cl_get_current_thread();
+    CL_Thread *fake;
+    CL_Obj sym;
+    int mark;
+
+    /* A bare package (uses nothing) for the fake thread to bind — the
+     * SLYNK-IO-PACKAGE stand-in. */
+    eval_print("(defpackage \"PKG-ISO-B\" (:use))");
+
+    fake = cl_thread_alloc_worker();
+    ASSERT(fake != NULL);
+    /* Mirror thread_entry's slot init: the GLOBAL value of *PACKAGE*. */
+    fake->current_package =
+        ((CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE))->value;
+    fake->status = 1;
+    /* Newborn registration: GC marks/forwards its roots, but a stop-the-
+     * world initiator does NOT wait for it to park — it has no OS thread
+     * of its own, so live registration would deadlock any cl_gc() here. */
+    cl_thread_register_newborn(fake);  /* cl_thread_count -> 2: CT via TLS */
+
+    /* Act as the fake thread: bind *PACKAGE* the way slynk's control
+     * thread does around every wire message. */
+    platform_tls_set(fake);
+    mark = fake->dyn_top;
+    cl_dynbind_c(SYM_STAR_PACKAGE, cl_find_package("PKG-ISO-B", 9));
+    ASSERT_EQ(cl_current_package, cl_find_package("PKG-ISO-B", 9));
+
+    /* Back on the main thread: cl_intern must use MAIN's current package.
+     * Pre-fix, the bind above had clobbered the shared global and this
+     * interned into PKG-ISO-B — deterministically. */
+    platform_tls_set(main_t);
+    ASSERT_EQ(cl_current_package, cl_find_package("COMMON-LISP-USER", 16));
+    sym = cl_intern("PKG-ISO-FRESH-1", 15);
+    {
+        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+        ASSERT_EQ(s->package, cl_find_package("COMMON-LISP-USER", 16));
+    }
+    /* And nothing may have leaked into the bare package. */
+    ASSERT_EQ(cl_find_symbol("PKG-ISO-FRESH-1", 15,
+                             cl_find_package("PKG-ISO-B", 9)), CL_NIL);
+
+    /* The fake thread's own view still honors its binding... */
+    platform_tls_set(fake);
+    ASSERT_EQ(cl_current_package, cl_find_package("PKG-ISO-B", 9));
+
+    /* ...and its UNBIND must not touch main's slot either (the unbind leg
+     * of the old clobber re-synced the global from the unbinding thread). */
+    cl_dynbind_restore_to(mark);
+    platform_tls_set(main_t);
+    ASSERT_EQ(cl_current_package, cl_find_package("COMMON-LISP-USER", 16));
+
+    cl_thread_unregister(fake);
+    cl_thread_free_worker(fake);
+}
+
+TEST(worker_package_slot_forwarded_on_compaction)
+{
+    /* The per-thread slot must be in the GC thread walk (mark AND update):
+     * an unregistered slot survives a compaction as a stale offset and the
+     * thread's reader then interns through garbage.  Meaningful teeth under
+     * make test-gc-stress, where cl_gc() always compacts. */
+    CL_Thread *fake;
+
+    eval_print("(defpackage \"PKG-ISO-GC\" (:use))");
+    fake = cl_thread_alloc_worker();
+    ASSERT(fake != NULL);
+    fake->status = 1;
+    cl_thread_register_newborn(fake);  /* see the note in the test above */
+    fake->current_package = cl_find_package("PKG-ISO-GC", 10);
+    ASSERT(CL_PACKAGE_P(fake->current_package));
+
+    cl_gc();   /* moving collection under CL_GENGC / gc-stress */
+
+    ASSERT_EQ(fake->current_package, cl_find_package("PKG-ISO-GC", 10));
+    ASSERT(CL_PACKAGE_P(fake->current_package));
+
+    cl_thread_unregister(fake);
+    cl_thread_free_worker(fake);
+}
+
+/* ================================================================
  * main
  * ================================================================ */
 
@@ -459,6 +555,10 @@ int main(void)
 
     /* Snapshot */
     RUN(tlv_child_does_not_inherit_parent);
+
+    /* Per-thread current package (SLYNK-IO-PACKAGE poisoning regression) */
+    RUN(package_bind_isolated_between_threads);
+    RUN(worker_package_slot_forwarded_on_compaction);
 
     /* GC */
     RUN(gc_with_tlv_entries);

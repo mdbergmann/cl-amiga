@@ -155,6 +155,21 @@ static void *thread_entry(void *arg)
     /* 3. Mark as running */
     t->status = 1;
 
+    /* 3a. Initialize this thread's current-package slot from the GLOBAL
+     *     value of *PACKAGE* — a new thread starts with a fresh dynamic
+     *     environment (see the make-thread note in bi_make_thread), so it
+     *     sees the global value, never the parent's dynamic binding.
+     *     Reading AFTER the online barrier (step 1a) is deliberate: any
+     *     compaction during the parent's create window has already
+     *     forwarded the symbol's value slot.  Without this the slot is
+     *     CL_NIL and the thread's reader would intern package-less. */
+    {
+        CL_Obj gpkg = CL_NIL;
+        if (CL_SYMBOL_P(SYM_STAR_PACKAGE))
+            gpkg = ((CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE))->value;
+        t->current_package = CL_PACKAGE_P(gpkg) ? gpkg : cl_package_cl_user;
+    }
+
     /* 4. Retrieve stashed function (stored in result field by parent).
      *
      *    DO NOT clear t->result here.  t->result is a GC root: it is marked by

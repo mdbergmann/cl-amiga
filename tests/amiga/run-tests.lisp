@@ -7742,6 +7742,38 @@
 (check "thread make with name" "worker"
   (mp:thread-name (mp:make-thread (lambda () nil) :name "worker")))
 
+; --- Per-thread *PACKAGE* (SLYNK-IO-PACKAGE fasl-poisoning regression) ---
+; cl_current_package used to be one shared C global: a *PACKAGE* bind on any
+; thread redirected every other thread's reader/INTERN, so a Sly-session
+; COMPILE-FILE interned random tokens into SLYNK-IO-PACKAGE and baked broken
+; macro expanders into cached FASLs.  The worker below binds *PACKAGE* to a
+; bare package and HOLDS it while the main thread reads a fresh symbol —
+; pre-fix the symbol landed in the worker's package deterministically.
+(defpackage :pkg-poison-probe (:use))
+(defvar *pkg-poison-bound* nil)
+(defvar *pkg-poison-release* nil)
+(defvar *pkg-poison-thread*
+  (mp:make-thread
+   (lambda ()
+     (let ((*package* (find-package :pkg-poison-probe)))
+       (setf *pkg-poison-bound* t)
+       (loop for i from 0 below 2000 until *pkg-poison-release*
+             do (sleep 0.01))))
+   :name "pkg-binder"))
+
+(check "peer *PACKAGE* bind does not redirect reader" "COMMON-LISP-USER"
+  (progn
+    (loop for i from 0 below 2000 until *pkg-poison-bound* do (sleep 0.01))
+    (package-name (symbol-package (read-from-string "pkg-poison-fresh-sym")))))
+
+(check "no symbol leaked into peer-bound package" nil
+  (find-symbol "PKG-POISON-FRESH-SYM" :pkg-poison-probe))
+
+(check "pkg binder thread joins after release" t
+  (progn (setf *pkg-poison-release* t)
+         (mp:join-thread *pkg-poison-thread*)
+         t))
+
 ; NOTE: an Amiga worker's DEFAULT budgets stay at the historical compact sizes
 ; (64KB C stack, 256 VM frames, 256 NLX frames — see the CL_WORKER_* rationale
 ; in src/core/thread.h): raising the compile-time defaults shifts heap layout

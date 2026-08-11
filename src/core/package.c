@@ -21,7 +21,6 @@ CL_Obj cl_package_mop = CL_NIL;
 CL_Obj cl_package_mp = CL_NIL;
 CL_Obj cl_package_ffi = CL_NIL;
 CL_Obj cl_package_amiga = CL_NIL;
-CL_Obj cl_current_package = CL_NIL;
 CL_Obj cl_package_registry = CL_NIL;
 
 void *cl_package_rwlock = NULL;
@@ -43,7 +42,11 @@ static inline void pkg_unlock(void)
     if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
 }
 
-/* Refresh cl_current_package from the dynamic *PACKAGE* binding.
+/* Refresh the CALLING thread's cl_current_package slot from its dynamic
+ * *PACKAGE* binding.  Both the cl_symbol_value read and the
+ * cl_current_package write resolve through the calling thread (TLV view /
+ * per-thread slot), so a *PACKAGE* bind on one thread can never redirect
+ * another thread's reader — the SLYNK-IO-PACKAGE FASL-poisoning class.
  * Safe to call before SYM_STAR_PACKAGE is interned (SYM_STAR_PACKAGE
  * starts at CL_NIL during early init) or before a package object is
  * installed — in both cases we leave cl_current_package unchanged. */
@@ -1306,5 +1309,9 @@ void cl_package_init(void)
 #ifdef PLATFORM_AMIGA
     cl_gc_register_root(&cl_package_amiga);
 #endif
-    cl_gc_register_root(&cl_current_package);
+    /* cl_current_package is NOT registered here: it is a per-thread slot
+     * (CL_Thread.current_package) marked and forwarded by the thread walk
+     * in gc_mark_thread_roots / gc_update_thread_roots.  Registering the
+     * main thread's slot as a global root as well would forward it TWICE
+     * on compaction — the double-forward corruption documented above. */
 }

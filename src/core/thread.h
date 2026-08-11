@@ -198,6 +198,25 @@ typedef struct CL_Thread_s {
      * CL_NIL = empty env. */
     CL_Obj current_lex_env;
 
+    /* ---- Per-thread current package ----
+     * The C-side mirror of *PACKAGE* consumed by the reader, printer,
+     * INTERN and the package-function defaults (via the cl_current_package
+     * macro in package.h).  One slot PER THREAD: a *PACKAGE* bind/unbind/
+     * setq on one thread must never redirect another thread's reader.
+     * When this was a single shared global, Sly's control thread — which
+     * binds *PACKAGE* to SLYNK-IO-PACKAGE around every wire message —
+     * clobbered it while a worker thread ran COMPILE-FILE, so the worker's
+     * reader interned random tokens into SLYNK-IO-PACKAGE: the lambda-list
+     * and body occurrences of a defmacro parameter became two distinct
+     * symbols, the body reference compiled to a global lookup, and the
+     * poisoned FASL failed forever after with "Unbound variable" at
+     * macroexpansion time.  Kept in sync with THIS thread's dynamic
+     * *PACKAGE* view by cl_sync_current_package_from_dynamic; initialized
+     * for workers from the GLOBAL value of *PACKAGE* in thread_entry
+     * (fresh dynamic environment, like every other special).  Marked and
+     * forwarded in gc_mark_thread_roots / gc_update_thread_roots. */
+    CL_Obj current_package;
+
     /* ---- Trace & debug ---- */
     int    trace_depth;
     int    trace_count;

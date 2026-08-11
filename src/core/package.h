@@ -16,7 +16,16 @@ extern CL_Obj cl_package_mop;      /* MOP (CLOS Metaobject Protocol) package */
 extern CL_Obj cl_package_mp;      /* MP (multiprocessing) package */
 extern CL_Obj cl_package_ffi;    /* FFI (foreign function interface) package */
 extern CL_Obj cl_package_amiga;  /* AMIGA (AmigaOS-specific) package */
-extern CL_Obj cl_current_package;  /* *PACKAGE* */
+/* C-side mirror of *PACKAGE* — a PER-THREAD slot (CL_Thread.current_package),
+ * accessed through a function-backed macro so every existing consumer
+ * (reader, printer, INTERN, package-function defaults) resolves to the
+ * CALLING thread's slot without package.h needing the CL_Thread layout.
+ * It must be per-thread: with a shared global, any thread's *PACKAGE*
+ * bind redirected every OTHER thread's reader — under Sly this interned
+ * a compiling worker's symbols into SLYNK-IO-PACKAGE, baking poisoned
+ * FASLs into the cache (see CL_Thread.current_package in thread.h). */
+CL_Obj *cl_current_package_ref(void);
+#define cl_current_package (*cl_current_package_ref())
 
 /* Package registry — alist ((name-str . pkg) ...) */
 extern CL_Obj cl_package_registry;
@@ -100,12 +109,14 @@ void cl_package_export_defined_cl_symbols(void);
    boot.lisp loads — see comment at the call site in repl.c. */
 void cl_intern_clos_internals_in_clamiga(void);
 
-/* Refresh cl_current_package from the dynamic *PACKAGE* binding
-   (TLV if set, else the symbol's global value).  Must be called
-   whenever the dynamic binding of *PACKAGE* changes at runtime —
-   currently from OP_DYNBIND / OP_DYNUNBIND / OP_GSTORE on *PACKAGE*,
-   so `let`-bindings propagate to every consumer of cl_current_package
-   (reader, printer, INTERN, etc.). */
+/* Refresh the CALLING thread's cl_current_package slot from its dynamic
+   *PACKAGE* binding (TLV if set, else the symbol's global value).  Must be
+   called whenever the dynamic binding of *PACKAGE* changes at runtime —
+   currently from OP_DYNBIND / OP_DYNUNBIND / OP_GSTORE on *PACKAGE* —
+   so `let`-bindings propagate to this thread's consumers of
+   cl_current_package (reader, printer, INTERN, etc.).  Strictly
+   thread-local on both the read and the write side: it never touches
+   another thread's slot. */
 void cl_sync_current_package_from_dynamic(void);
 
 #endif /* CL_PACKAGE_H */
