@@ -1750,7 +1750,12 @@ void compile_named_lambda(CL_Compiler *c, CL_Obj form)
     name = cl_car(cl_cdr(form));
     CL_GC_UNPROTECT(1);
     CL_GC_PROTECT(lambda_form);
-    pending_lambda_name = name;
+    /* Only a symbol becomes a name: bc->name is read back as a CL_Symbol by
+     * the printer's closure-printing cases, so a name of any other shape
+     * (a raw (setf foo) cons, a fixnum, a string) would type-confuse that
+     * read.  Anything else compiles anonymous, the same fallback
+     * compile_flet / compile_labels use for their local function names. */
+    pending_lambda_name = CL_SYMBOL_P(name) ? name : CL_NIL;
     compile_expr(c, lambda_form);
     CL_GC_UNPROTECT(1);
 }

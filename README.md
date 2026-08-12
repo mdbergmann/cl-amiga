@@ -478,7 +478,10 @@ diffs the real package exports against a committed snapshot; run
   for and `:bt all` shows every frame, so the `... N more frames` tail is never
   the end of the story. Expressions you evaluate at the prompt run *on top of*
   the error-time stack, so `(ext:backtrace)` and `(ext:frame-locals <n>)` there
-  report the frames of the error you are debugging.
+  report the frames of the error you are debugging. Frames are named after the
+  function they run: `defun`s, `defmethod` bodies (shown under the generic
+  function's name), and `flet`/`labels` locals under the name they were
+  declared with. `<anonymous>` means a genuinely unnamed `lambda`.
   See `tests/test_debugger_backtrace.sh` and `tests/test_backtrace.c`.
 - **Platform abstraction** — all OS calls go through `platform.h` (POSIX and AmigaOS implementations)
 - **FFI** — generic foreign pointer type + peek/poke (all platforms); 68k assembly trampoline for AmigaOS register-based library calls

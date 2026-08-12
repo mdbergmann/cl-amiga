@@ -8444,6 +8444,48 @@
 (check "backtrace: handler-bind body keeps its defun name" "BT-HIGH"
   (symbol-name (second (second *amiga-bt-rc*))))
 
+; The remaining anonymous frame kinds, named as of FASL 29: FLET and LABELS
+; locals get the name they were declared with, and a method body gets its
+; generic function's name (DEFMETHOD expands to NAMED-LAMBDA).  A method frame
+; sits directly under %GF-DISPATCH-*, so while it was anonymous every CLOS
+; backtrace had a hole exactly where the user's code was.  Only safe now that
+; compile_lambda claims the name at entry: the LABELS case checks the other
+; half, that a lambda nested in the local's body does not wear the local's
+; name.  The LETs keep each call off the tail path so the frame really exists.
+(defun bt-flet-host ()
+  (flet ((bt-flet-local () (ext:backtrace)))
+    (let ((r (bt-flet-local))) r)))
+(defparameter *amiga-bt-flet* (bt-flet-host))
+(check "backtrace: flet local carries its own name" "BT-FLET-LOCAL"
+  (symbol-name (second (first *amiga-bt-flet*))))
+(check "backtrace: the flet's host function keeps its name" "BT-FLET-HOST"
+  (symbol-name (second (second *amiga-bt-flet*))))
+
+(defun bt-lab-host ()
+  (labels ((bt-lab-local () (let ((v (funcall (lambda () (ext:backtrace))))) v)))
+    (let ((r (bt-lab-local))) r)))
+(defparameter *amiga-bt-lab* (bt-lab-host))
+(check "backtrace: lambda nested in a labels local stays anonymous" nil
+  (second (first *amiga-bt-lab*)))
+(check "backtrace: labels local carries its own name" "BT-LAB-LOCAL"
+  (symbol-name (second (second *amiga-bt-lab*))))
+
+(defgeneric bt-meth-gf (x))
+(defmethod bt-meth-gf ((x integer)) (ext:backtrace))
+(defparameter *amiga-bt-meth* (bt-meth-gf 1))
+(check "backtrace: method body carries its generic function name" "BT-METH-GF"
+  (symbol-name (second (first *amiga-bt-meth*))))
+
+; CLHS 5.3 allows (SETF f) as an FLET name.  bc->name is read as a symbol by
+; the printer and the backtrace formatter, so a cons must never land there —
+; that local stays anonymous while its symbol-named sibling is still named.
+(defun bt-sf-host ()
+  (flet (((setf bt-sf-x) (v o) (list v o))
+         (bt-sf-ok () 7))
+    (list (bt-sf-ok) (princ-to-string #'bt-sf-ok))))
+(check "backtrace: (setf f) flet local does not corrupt sibling names"
+  '(7 "#<CLOSURE BT-SF-OK>") (bt-sf-host))
+
 (check "jit shadow frames toggle off" nil (clamiga::%jit-set-frames nil))
 
 ; --- documentation is a generic function ---

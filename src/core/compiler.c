@@ -1904,8 +1904,12 @@ top:
         return;
     }
 
-    /* (defun name params . body) — body is at increased closure depth */
-    if (head == SYM_DEFUN) {
+    /* (defun name params . body) — body is at increased closure depth.
+     * (named-lambda name params . body) has the same shape and is a closure
+     * just like LAMBDA: scanning it as a generic call would walk the body at
+     * the *enclosing* depth, so a variable it mutates would read as a plain
+     * local write rather than a capture and never get boxed. */
+    if (head == SYM_DEFUN || head == SYM_NAMED_LAMBDA) {
         CL_Obj body;
         if (!CL_CONS_P(rest) || !CL_CONS_P(cl_cdr(rest))) return;
         body = cl_cdr(cl_cdr(rest)); /* skip name and param list */

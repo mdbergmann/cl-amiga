@@ -3053,9 +3053,15 @@ already-existing GF the installed combination is preserved."
                               (append unspec-ll '(&allow-other-keys))
                               unspec-ll))
             (simple-p (and (null qualifiers) (%body-simple-primary-p body))))
+        ;; NAMED-LAMBDA, not LAMBDA: the method function carries BLOCK-NAME so
+        ;; a backtrace through a method shows the generic function's name
+        ;; instead of "<anonymous>".  BLOCK-NAME is already the symbol form of
+        ;; NAME ((setf foo) -> foo), which is what every consumer of a function
+        ;; name expects.  Qualifiers and specializers are deliberately not
+        ;; encoded: they would need a fresh interned symbol per method.
         `(%add-method-to-gf
            ',name ',qualifiers ',spec-names
-           (lambda ,effective-ll (block ,block-name ,@body))
+           (named-lambda ,block-name ,effective-ll (block ,block-name ,@body))
            ',unspec-ll
            ,simple-p)))))
 

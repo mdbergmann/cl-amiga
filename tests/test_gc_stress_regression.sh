@@ -4878,6 +4878,35 @@ check_contains "defun name reaches bc->name intact under compaction storm" \
 check_absent   "no corruption diagnostics from the lambda name hand-off" \
   "corrupted\|type 0\|BADMARK\|badmark\|SIGSEGV\|Undefined\|Unbound" "$out"
 
+# --- Case: FLET/LABELS/method names survive compaction ---------------------
+# compile_flet and compile_labels build (lambda ll (block name . body)) with a
+# chain of conses before handing the local's name to compile_lambda, so the
+# `fname` read taken before that chain is stale by the time the name is used —
+# it has to be re-derived from the GC-protected binding cursor.  A stale offset
+# there is a garbage symbol in bc->name: a wrong name in every backtrace, or a
+# crash printing one.  The method half goes through DEFMETHOD's NAMED-LAMBDA
+# expansion, which is compiled and named on the same path.
+cat > "$WORK/localname.lisp" <<'EOF'
+(defun ln-flet ()
+  (flet ((ln-flet-local () (ext:backtrace)))
+    (let ((r (ln-flet-local))) r)))
+(defun ln-labels ()
+  (labels ((ln-labels-local () (let ((r (funcall (lambda () (ext:backtrace))))) r)))
+    (let ((r (ln-labels-local))) r)))
+(defgeneric ln-gf (x))
+(defmethod ln-gf ((x integer)) (ext:backtrace))
+(format t "LN:~a/~a/~a/~a~%"
+        (second (first (ln-flet)))
+        (second (second (ln-labels)))
+        (second (first (ln-labels)))
+        (second (first (ln-gf 1))))
+EOF
+out=$(run_stress "$WORK/localname.lisp")
+check_contains "flet/labels/method names reach bc->name intact under compaction storm" \
+  "LN:LN-FLET-LOCAL/LN-LABELS-LOCAL/NIL/LN-GF" "$out"
+check_absent   "no corruption diagnostics from the local-function name hand-off" \
+  "corrupted\|type 0\|BADMARK\|badmark\|SIGSEGV\|Undefined\|Unbound" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

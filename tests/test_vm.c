@@ -6129,6 +6129,112 @@ TEST(eval_backtrace_restart_case_handler_bind_named)
     cl_vm.fp = 0;
 }
 
+/* The remaining anonymous frame kinds, named as of FASL 29: a FLET local, a
+ * LABELS local, and a method body.  All three build their lambda in the
+ * compiler (compile_flet / compile_labels) or in DEFMETHOD's expansion without
+ * ever setting the name hand-off slot, so they compiled with NAME = NIL.  Only
+ * safe to set now that compile_lambda claims the slot at entry: before that
+ * fix the name would have been stolen by the first lambda nested in the local
+ * function's own body. */
+TEST(eval_backtrace_flet_local_named)
+{
+    int err;
+    /* (+ 1 ...) keeps the local's frame off the tail path so it is really on
+     * the stack when the error is signalled. */
+    eval_print("(defun bt-flet-host () "
+               "(flet ((bt-flet-local () (error \"boom\"))) (+ 1 (bt-flet-local))))");
+    CL_CATCH(err);
+    if (err == CL_ERR_NONE) {
+        cl_eval_string("(bt-flet-host)");
+        CL_UNCATCH();
+    } else {
+        CL_UNCATCH();
+    }
+    ASSERT(strstr(cl_backtrace_buf, "  0: BT-FLET-LOCAL") != NULL);
+    ASSERT(strstr(cl_backtrace_buf, "  1: BT-FLET-HOST") != NULL);
+    cl_vm.sp = 0;
+    cl_vm.fp = 0;
+}
+
+/* LABELS twin, plus the other half of the hand-off contract: a lambda nested
+ * in the local function's body must stay anonymous rather than wear the
+ * local's name.  Pre-claim-at-entry semantics these two frames would swap. */
+TEST(eval_backtrace_labels_local_named)
+{
+    int err;
+    /* Both (+ 1 ...) wrappers matter: a funcall in tail position replaces the
+     * local's frame instead of stacking on it, so the frame under test would
+     * not exist at all. */
+    eval_print("(defun bt-lab-host () "
+               "(labels ((bt-lab-local () (+ 1 (funcall (lambda () (error \"boom\")))))) "
+               "(+ 1 (bt-lab-local))))");
+    CL_CATCH(err);
+    if (err == CL_ERR_NONE) {
+        cl_eval_string("(bt-lab-host)");
+        CL_UNCATCH();
+    } else {
+        CL_UNCATCH();
+    }
+    ASSERT(strstr(cl_backtrace_buf, "  0: <anonymous>") != NULL);
+    ASSERT(strstr(cl_backtrace_buf, "  1: BT-LAB-LOCAL") != NULL);
+    ASSERT(strstr(cl_backtrace_buf, "  2: BT-LAB-HOST") != NULL);
+    cl_vm.sp = 0;
+    cl_vm.fp = 0;
+}
+
+/* A method body carries its generic function's name.  This frame sits directly
+ * under the %GF-DISPATCH-* dispatcher, so while it was anonymous every CLOS
+ * backtrace had a hole exactly where the user's code was. */
+TEST(eval_backtrace_method_named)
+{
+    int err;
+    eval_print("(defgeneric bt-meth-gf (x))");
+    eval_print("(defmethod bt-meth-gf ((x integer)) (error \"boom\"))");
+    eval_print("(defun bt-meth-host () (+ 1 (bt-meth-gf 1)))");
+    CL_CATCH(err);
+    if (err == CL_ERR_NONE) {
+        cl_eval_string("(bt-meth-host)");
+        CL_UNCATCH();
+    } else {
+        CL_UNCATCH();
+    }
+    ASSERT(strstr(cl_backtrace_buf, "  0: BT-METH-GF") != NULL);
+    ASSERT(strstr(cl_backtrace_buf, "BT-METH-HOST") != NULL);
+    cl_vm.sp = 0;
+    cl_vm.fp = 0;
+}
+
+/* CLHS 5.3: an FLET/LABELS name may be (SETF f), i.e. a cons.  bc->name is
+ * read as a symbol by the printer and the backtrace formatter, so a cons must
+ * never reach it — the local stays anonymous instead.  Checks the guard from
+ * both sides: the form still compiles and runs, and its symbol-named sibling
+ * in the same FLET still gets named. */
+TEST(eval_backtrace_setf_named_flet_local_stays_anonymous)
+{
+    eval_print("(defun bt-sf-host () "
+               "(flet (((setf bt-sf-x) (v o) (list v o)) (bt-sf-ok () 7)) "
+               "(list (bt-sf-ok) (princ-to-string #'bt-sf-ok))))");
+    ASSERT_STR_EQ(eval_print("(bt-sf-host)"), "(7 \"#<CLOSURE BT-SF-OK>\")");
+}
+
+/* Same guard, the NAMED-LAMBDA path: unlike compile_flet/compile_labels
+ * above, compile_named_lambda used to hand its name argument straight to
+ * pending_lambda_name with no CL_SYMBOL_P check at all, so a (SETF f) cons
+ * name would reach bc->name and type-confuse the printer's closure-printing
+ * cases, which read it back as a CL_Symbol. Checks both sides: a cons name
+ * stays anonymous, and a plain-symbol sibling is still named normally. */
+TEST(eval_named_lambda_setf_name_stays_anonymous)
+{
+    ASSERT_STR_EQ(eval_print("(named-lambda (setf bt-nl-x) (v o) (list v o))"),
+                  "#<CLOSURE anonymous>");
+    /* The guard is CL_SYMBOL_P, not "not a cons" — every other shape a name
+     * could take falls back the same way. */
+    ASSERT_STR_EQ(eval_print("(named-lambda 42 (x) x)"), "#<CLOSURE anonymous>");
+    ASSERT_STR_EQ(eval_print("(named-lambda \"nm\" (x) x)"), "#<CLOSURE anonymous>");
+    ASSERT_STR_EQ(eval_print("(named-lambda bt-nl-ok () 7)"),
+                  "#<CLOSURE BT-NL-OK>");
+}
+
 TEST(eval_backtrace_empty)
 {
     /* No backtrace when error occurs outside VM (e.g., parse error) */
@@ -11297,6 +11403,11 @@ int main(void)
     RUN(eval_backtrace_name_survives_inner_lambda);
     RUN(eval_backtrace_inner_lambda_stays_anonymous);
     RUN(eval_backtrace_restart_case_handler_bind_named);
+    RUN(eval_backtrace_flet_local_named);
+    RUN(eval_backtrace_labels_local_named);
+    RUN(eval_backtrace_method_named);
+    RUN(eval_backtrace_setf_named_flet_local_stays_anonymous);
+    RUN(eval_named_lambda_setf_name_stays_anonymous);
     RUN(eval_backtrace_empty);
     RUN(eval_time_basic);
     RUN(eval_time_nested);

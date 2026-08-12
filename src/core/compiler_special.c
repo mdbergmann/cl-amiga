@@ -772,7 +772,8 @@ static int nlx_scan(CL_Obj form, int mode, CL_Obj tag, int anon)
 
     /* Closure-creating forms.  Must appear as (OP ...) — a bare symbol
      * LAMBDA used as a variable does not create a closure. */
-    if (head == SYM_LAMBDA || head == SYM_LABELS || head == SYM_FLET
+    if (head == SYM_LAMBDA || head == SYM_NAMED_LAMBDA
+        || head == SYM_LABELS || head == SYM_FLET
         || head == SYM_RESTART_CASE) {
         if (mode == NLX_ANY_CLOSURE)
             return 1;
@@ -838,8 +839,9 @@ static int nlx_scan(CL_Obj form, int mode, CL_Obj tag, int anon)
         if (CL_CONS_P(rest)) r = nlx_scan_body(cl_cdr(rest), mode, tag, anon);
         goto done;
     }
-    /* (defun name params body...) — skip name + params. */
-    if (head == SYM_DEFUN) {
+    /* (defun name params body...) — skip name + params.
+     * (named-lambda name params body...) has the same shape. */
+    if (head == SYM_DEFUN || head == SYM_NAMED_LAMBDA) {
         if (CL_CONS_P(rest) && CL_CONS_P(cl_cdr(rest)))
             r = nlx_scan_body(cl_cdr(cl_cdr(rest)), mode, tag, anon);
         goto done;
@@ -1765,6 +1767,17 @@ CL_Obj compile_flet(CL_Compiler *c, CL_Obj form)
             }
             CL_GC_PROTECT(lambda_form);
 
+            /* Hand the local function's own name to compile_lambda, which
+             * claims pending_lambda_name at entry — so it lands on this lambda
+             * and not on the first one nested inside its body.  Re-derive from
+             * the protected cursor: the conses above may have compacted the
+             * pre-build snapshot.  A (setf foo) local stays anonymous, since
+             * every consumer of bc->name (printer, backtrace) reads it as a
+             * symbol. */
+            fname = cl_car(cl_car(b));
+            if (CL_SYMBOL_P(fname))
+                pending_lambda_name = fname;
+
             c->in_tail = 0;
             compile_expr(c, lambda_form);
             CL_GC_UNPROTECT(1);
@@ -1905,6 +1918,11 @@ CL_Obj compile_labels(CL_Compiler *c, CL_Obj form)
                 lambda_form = cl_cons(SYM_LAMBDA, lambda_form);
             }
             CL_GC_PROTECT(lambda_form);
+
+            /* Name the local function — see the matching note in compile_flet. */
+            fname = cl_car(cl_car(b));
+            if (CL_SYMBOL_P(fname))
+                pending_lambda_name = fname;
 
             c->in_tail = 0;
             compile_expr(c, lambda_form);
