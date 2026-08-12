@@ -116,6 +116,19 @@ typedef struct {
      * always restored dyn_mark; this brings the C error frames in line.
      * Mirrors saved_handler_top. */
     int saved_dyn_top;
+    /* cl_nlx_top snapshot at push time — the floor for cl_error_unwind's
+     * interposing-UNWIND-PROTECT scan.  Only UWPROT frames pushed INSIDE this
+     * frame's dynamic extent (index >= saved_nlx_top) lie between the error
+     * and this catch site; frames below the watermark belong to an enclosing
+     * scope that this catch site is not unwinding past, and their cleanups
+     * must not run yet.  Without the floor the scan walked the whole NLX
+     * stack and longjmp'd to an OUTER unwind-protect, jumping clean over the
+     * innermost C error frame: (unwind-protect (load "f") ...) lost LOAD's
+     * per-top-level-form error recovery, so the first bad form aborted the
+     * whole file — and any C caller that wraps recoverable work in CL_CATCH
+     * was silently bypassed the same way whenever an unwind-protect (e.g. the
+     * one WITH-OUTPUT-TO-STRING expands to) enclosed the call. */
+    int saved_nlx_top;
     /* cl_handler_active_mask snapshot at push time.  Restored on the unwind
      * path (cl_error_unwind) alongside saved_handler_top, so a CLHS 9.1.4
      * disabled-handler band is re-enabled when a C-level cl_error longjmp

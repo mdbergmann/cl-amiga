@@ -53,6 +53,7 @@ int cl_error_frame_push(void)
     cl_error_frames[cl_error_frame_top].saved_handler_active_mask = cl_handler_active_mask;
     cl_error_frames[cl_error_frame_top].saved_restart_top = cl_restart_top;
     cl_error_frames[cl_error_frame_top].saved_dyn_top = cl_dyn_top;
+    cl_error_frames[cl_error_frame_top].saved_nlx_top = cl_nlx_top;
     cl_error_frames[cl_error_frame_top].saved_printer = cl_printer_state_save();
     return cl_error_frame_top++;
 }
@@ -255,10 +256,21 @@ CL_NORETURN static void cl_error_unwind(int code)
 {
     /* Check for interposing unwind-protect frames in NLX stack.
      * Skip stale frames whose VM frame was reused by a tail call —
-     * longjmping to a stale UWPROT restores wrong code/constants. */
+     * longjmping to a stale UWPROT restores wrong code/constants.
+     *
+     * Bounded below by the innermost active C error frame's NLX watermark:
+     * only UWPROT frames pushed inside that frame's dynamic extent sit
+     * BETWEEN the error and the catch site we are about to longjmp to.  A
+     * UWPROT below the watermark belongs to an enclosing scope the catch
+     * site is not unwinding past — running its cleanup would skip the catch
+     * entirely (see CL_ErrorFrame.saved_nlx_top).  With no error frame at
+     * all the whole stack is in play, exactly as before. */
     {
         int i;
-        for (i = cl_nlx_top - 1; i >= 0; i--) {
+        int nlx_floor = (cl_error_frame_top > 0)
+                        ? cl_error_frames[cl_error_frame_top - 1].saved_nlx_top
+                        : 0;
+        for (i = cl_nlx_top - 1; i >= nlx_floor; i--) {
             if (cl_nlx_stack[i].type == CL_NLX_UWPROT) {
                 CL_Frame *tf = &cl_vm.frames[cl_nlx_stack[i].vm_fp - 1];
                 if (tf->code != cl_nlx_stack[i].code)

@@ -3270,6 +3270,8 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 cl_compiler_unwind_to(nlx->compiler_mark, CL_CAPTURE_SP());
                 cl_printer_state_restore(nlx->printer_mark);
                 cl_saved_pending_top = nlx->saved_pending_mark;
+                /* Target of a completed transfer — see the OP_CATCH landing. */
+                cl_pending_throw = 0;
                 {
                     CL_Obj block_result = nlx->result;
                     cl_vm.sp = nlx->vm_sp;
@@ -3436,6 +3438,8 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 cl_compiler_unwind_to(nlx->compiler_mark, CL_CAPTURE_SP());
                 cl_printer_state_restore(nlx->printer_mark);
                 cl_saved_pending_top = nlx->saved_pending_mark;
+                /* Target of a completed transfer — see the OP_CATCH landing. */
+                cl_pending_throw = 0;
                 {
                     CL_Obj tag_index = nlx->result;
                     cl_vm.sp = nlx->vm_sp;
@@ -3983,6 +3987,18 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 cl_compiler_unwind_to(nlx->compiler_mark, CL_CAPTURE_SP());
                 cl_printer_state_restore(nlx->printer_mark);
                 cl_saved_pending_top = nlx->saved_pending_mark;
+                /* This landing IS the target of a non-local transfer, so that
+                 * transfer is complete: drop any pending NLX state.  The
+                 * pending state can be a FOREIGN one — an error unwind
+                 * (cl_pending_throw == 2) that longjmp'd into an
+                 * UNWIND-PROTECT cleanup, where the cleanup then threw out to
+                 * this catch.  CLHS 5.2 says the original transfer is
+                 * abandoned when a cleanup initiates its own; leaving the flag
+                 * set instead let the next enclosing OP_UWRETHROW resurrect
+                 * that abandoned error, so the throw appeared to succeed and
+                 * the error resurfaced moments later.  The UWPROT landing does
+                 * NOT do this — it is a pass-through, not a target. */
+                cl_pending_throw = 0;
                 {
                     CL_Obj throw_result = nlx->result;
                     cl_vm.sp = nlx->vm_sp;
