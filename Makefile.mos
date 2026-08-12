@@ -53,6 +53,7 @@ BUILDDIR = build/morphos
 # codegen/asm and the m68k FFI trampoline.
 
 PLATFORM_SRC = $(SRCDIR)/platform/platform_amiga.c \
+               $(SRCDIR)/platform/platform_amiga_rexx.c \
                $(SRCDIR)/platform/platform_thread_amiga.c
 
 CORE_SRC     = $(SRCDIR)/core/types.c \

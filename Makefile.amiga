@@ -16,6 +16,7 @@ BUILDDIR = build/amiga
 
 OBJS = $(BUILDDIR)/main.o \
        $(BUILDDIR)/platform_amiga.o \
+       $(BUILDDIR)/platform_amiga_rexx.o \
        $(BUILDDIR)/types.o \
        $(BUILDDIR)/mem.o \
        $(BUILDDIR)/error.o \
@@ -74,6 +75,9 @@ $(BUILDDIR)/main.o: src/main.c
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 $(BUILDDIR)/platform_amiga.o: src/platform/platform_amiga.c
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(BUILDDIR)/platform_amiga_rexx.o: src/platform/platform_amiga_rexx.c
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 $(BUILDDIR)/types.o: src/core/types.c

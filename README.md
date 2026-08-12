@@ -429,6 +429,64 @@ Register clamiga in `~/.iclrc`:
 
 Then run `icl --lisp clamiga`. ICL spawns clamiga, loads SLYNK via ASDF, and connects; evaluation, completion, `,doc`, the inspector, and the browser UI all run against the clamiga image. If something goes wrong at startup, `icl --verbose --lisp clamiga --eval '(+ 1 2)'` shows the spawn command and wire traffic.
 
+## ARexx port (AmigaOS / MorphOS)
+
+Native Amiga editors talk to a running clamiga over an ARexx port: trigger a load from CygnusEd or GoldED, get the compile diagnostics back, evaluate a form in the live image. This is the on-Amiga counterpart to the SLY setup above — no Emacs, no TCP, no host machine involved.
+
+Start it from inside clamiga (put these two lines in `S:.clamigarc` to have every session offer the port):
+
+```lisp
+(require "amiga/arexx")
+(amiga.arexx:start)          ; => "CLAMIGA"
+```
+
+The port is served by its own thread, so it answers even while the REPL is busy. A second clamiga claims `CLAMIGA.1`, `CLAMIGA.2`, and so on; `(amiga.arexx:port-name)` reports the name, `(amiga.arexx:stop)` shuts it down.
+
+From an editor macro:
+
+```rexx
+OPTIONS RESULTS
+OPTIONS FAILAT 21                          /* see the note below */
+ADDRESS CLAMIGA 'LOAD Work:src/foo.lisp'
+IF RC = 0 THEN SAY RESULT
+ELSE DO
+    ADDRESS CLAMIGA 'LASTRESULT'
+    SAY RESULT
+END
+```
+
+A failing load answers with every diagnostic in the file, not just the first:
+
+```
+; loading Work:src/foo.lisp
+Work:src/foo.lisp:12: ERROR: Undefined function: RENDER-TILE
+Work:src/foo.lisp:40: ERROR: Too many arguments to DRAW: expected 2, got 3
+2 error(s), 0 warning(s)
+```
+
+| Command | Does |
+|---------|------|
+| `PING` | Liveness check; answers `PONG` |
+| `VERSION` | Implementation, version, OS and CPU |
+| `LOAD <file>` | Load a file, answer with its diagnostics |
+| `COMPILE-FILE <file>` | Compile a file to a FASL, answer with its diagnostics |
+| `EVAL <form>` | Evaluate one or more forms, answer with the printed values |
+| `IN-PACKAGE <pkg>` | Set the package used by `EVAL` and `LOAD` |
+| `LASTRESULT` | Re-fetch the previous reply (see below) |
+
+A command string starting with `(` is evaluated directly, so `ADDRESS CLAMIGA '(room)'` works too.
+
+**Return codes** follow the ARexx severity ladder: `0` success, `5` warnings, `10` errors, `20` unusable command. Two consequences worth knowing, both forced by the ARexx protocol rather than chosen:
+
+- ARexx only transmits `RESULT` when the return code is **0**, so a failing command's diagnostics arrive via **`LASTRESULT`** — which is exactly why that command exists.
+- ARexx aborts a macro once a return code reaches `FAILAT`, which **defaults to 10** — the code for "your file has errors". Editor macros want `OPTIONS FAILAT 21` so they survive to report the problem. (Warnings are `5` precisely so they never trip the default.)
+
+Replies are capped at `ext.dev:*max-result-length*` (8 KB) and truncated on a line boundary.
+
+Runnable macros are in [`examples/arexx/`](examples/arexx/): `clamiga.rexx` (a shell client — `rx clamiga.rexx LOAD Work:src/foo.lisp`) and `load-current-file.ced` (save-and-load bound to a CygnusEd key). `AMIGA.AREXX:SEND` drives *other* applications' ARexx ports from Lisp with the same protocol.
+
+The command layer is portable Lisp (`lib/dev-commands.lisp`, package `EXT.DEV`) and runs on the host too, so `(ext.dev:handle-command "LOAD foo.lisp")` is testable without an Amiga; see `tests/test_dev_commands.sh` for the executable specification and `tests/amiga/arexx-tests.lisp` for the end-to-end port test.
+
 ## Package Reference
 
 Beyond `COMMON-LISP` / `COMMON-LISP-USER`, CL-Amiga ships several packages for

@@ -1,0 +1,65 @@
+/* clamiga.rexx -- editor-independent ARexx client for the CL-Amiga port
+ *
+ * Usage from a Shell:
+ *
+ *     rx clamiga.rexx PING
+ *     rx clamiga.rexx LOAD Work:src/foo.lisp
+ *     rx clamiga.rexx "EVAL (room)"
+ *
+ * Prints the reply and exits with the command's return code, so it also
+ * works as a build step:
+ *
+ *     rx clamiga.rexx LOAD Work:src/foo.lisp
+ *     IF WARN THEN ...
+ *
+ * Start the port on the clamiga side first:
+ *     (require "amiga/arexx")
+ *     (amiga.arexx:start)
+ */
+
+OPTIONS RESULTS
+
+/* See the note in load-current-file.ced: rc 10 means `the file has errors',
+ * and the default FAILAT of 10 would abort this macro before it could print
+ * them. */
+OPTIONS FAILAT 21
+
+PARSE ARG COMMAND
+
+IF STRIP(COMMAND) = '' THEN DO
+    SAY 'usage: rx clamiga.rexx <command>'
+    SAY '       PING | VERSION | LOAD <file> | COMPILE-FILE <file>'
+    SAY '       EVAL <form> | IN-PACKAGE <pkg> | LASTRESULT'
+    EXIT 20
+END
+
+PORT = FindPort()
+IF PORT = '' THEN DO
+    SAY 'No CL-Amiga ARexx port found.'
+    SAY 'In clamiga:  (require "amiga/arexx")  (amiga.arexx:start)'
+    EXIT 20
+END
+
+ADDRESS VALUE PORT
+COMMAND
+CODE = RC
+
+IF CODE = 0 THEN
+    SAY RESULT
+ELSE DO
+    /* A non-zero rc means ARexx dropped RESULT; LASTRESULT hands the same
+     * text back under a zero rc. */
+    'LASTRESULT'
+    SAY RESULT
+END
+
+EXIT CODE
+
+/* Returns the name of the first live clamiga port: CLAMIGA, else the
+ * CLAMIGA.<n> a second instance claimed. */
+FindPort:
+    IF SHOW('P', 'CLAMIGA') THEN RETURN 'CLAMIGA'
+    DO i = 1 TO 9
+        IF SHOW('P', 'CLAMIGA.'i) THEN RETURN 'CLAMIGA.'i
+    END
+    RETURN ''

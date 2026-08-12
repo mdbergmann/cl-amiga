@@ -398,6 +398,13 @@ test-fast: $(TEST_BINS) host
 		echo "FAIL"; \
 		failed=1; \
 	fi; \
+	echo "--- test_dev_commands ---"; \
+	if sh $(TEST_SRCDIR)/test_dev_commands.sh $(BUILDDIR)/clamiga; then \
+		echo "PASS"; \
+	else \
+		echo "FAIL"; \
+		failed=1; \
+	fi; \
 	echo "--- test_userinit ---"; \
 	if sh $(TEST_SRCDIR)/test_userinit.sh $(BUILDDIR)/clamiga; then \
 		echo "PASS"; \

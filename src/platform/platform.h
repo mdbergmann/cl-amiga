@@ -420,6 +420,73 @@ uint32_t platform_amiga_call(uint32_t lib_base, int16_t offset,
 uint32_t platform_amiga_alloc_chip(uint32_t size);
 void     platform_amiga_free_chip(uint32_t addr, uint32_t size);
 
+/* =============================================================
+ * Amiga-specific: ARexx host port  (platform_amiga_rexx.c)
+ * =============================================================
+ *
+ * Transport for the development ARexx port — an editor macro sends a
+ * command string, clamiga replies with a return code and (when the code is
+ * 0) a result string.  Amiga/MorphOS builds only: platform_amiga_rexx.c is
+ * not in the host source list, so these have no definition on POSIX and
+ * every caller sits behind #ifdef PLATFORM_AMIGA.
+ */
+
+/* Status codes.  0 = success, negative = failure; run through
+ * platform_arexx_strerror() for a message fit to show a user. */
+#define PLATFORM_AREXX_OK          0
+#define PLATFORM_AREXX_ALREADY   (-1)   /* a port is already open here */
+#define PLATFORM_AREXX_NOLIB     (-2)   /* rexxsyslib.library missing */
+#define PLATFORM_AREXX_NOMEM     (-3)
+#define PLATFORM_AREXX_NONAME    (-4)   /* every candidate port name taken */
+#define PLATFORM_AREXX_NOTOWNER  (-5)   /* wait() called from the wrong task */
+#define PLATFORM_AREXX_NOTOPEN   (-6)
+#define PLATFORM_AREXX_NOPORT    (-7)   /* send(): no such public port */
+
+/* ARexx severity ladder used for rm_Result1 (see rexx/storage.h and the
+ * protocol note in platform_amiga_rexx.c).  Kept below/above ARexx's default
+ * FAILAT of 10 deliberately: warnings must not abort a macro, errors must. */
+#define PLATFORM_AREXX_RC_OK       0
+#define PLATFORM_AREXX_RC_WARN     5
+#define PLATFORM_AREXX_RC_ERROR   10
+#define PLATFORM_AREXX_RC_FATAL   20
+
+const char *platform_arexx_strerror(int code);
+
+/* Create the public port, claiming BASENAME (upcased) or the first free
+ * BASENAME.<n>.  MUST be called from the task that will wait on it — exec
+ * binds the port's signal to its creator.  The chosen name is copied to
+ * name_out.  Returns PLATFORM_AREXX_OK or a negative code. */
+int  platform_arexx_open(const char *basename, char *name_out, int name_size);
+
+/* Remove the port, replying to anything still queued, and release the
+ * message port, wake signal and library.  Call from the owning task. */
+void platform_arexx_close(void);
+
+int  platform_arexx_is_open(void);
+int  platform_arexx_port_name(char *buf, int bufsize);
+
+/* Ask the owning task to leave platform_arexx_wait().  Safe from any task —
+ * this is how another thread shuts the handler down. */
+void platform_arexx_request_stop(void);
+int  platform_arexx_stop_requested(void);
+
+/* Block until a command arrives.  Returns 1 with *cmd_out pointing at the
+ * command string (owned by the sender, valid until the matching reply), 0
+ * when woken by platform_arexx_request_stop(), or a negative status code.
+ * The Wait is GC-safe-region bracketed. */
+int  platform_arexx_wait(const char **cmd_out);
+
+/* Answer the message returned by the last wait().  A result string is only
+ * transmitted when rc is 0 and the sender asked for one (ARexx protocol). */
+void platform_arexx_reply(int32_t rc, const char *result, uint32_t result_len);
+
+/* Post a command to a public ARexx host port and wait for its reply — the
+ * sending half of the protocol, used by the test suite to exercise the port
+ * in-process and available to Lisp for driving other Amiga applications. */
+int  platform_arexx_send(const char *portname, const char *cmd,
+                         int32_t *rc_out, char *result, int result_size,
+                         int32_t *rc2_out);
+
 /* Flush I/D caches for a freshly written code buffer.
  * Required on AmigaOS 68040/060 after emitting JIT code — calls
  * CacheClearU() so the CPU doesn't execute stale instruction-cache

@@ -1,4 +1,4 @@
-# AmigaOS Packages — `AMIGA`, `AMIGA.FFI`, `AMIGA.EXEC`, `AMIGA.INTUITION`, `AMIGA.GFX`, `AMIGA.GADTOOLS`, `AMIGA.AUDIO`
+# AmigaOS Packages — `AMIGA`, `AMIGA.FFI`, `AMIGA.EXEC`, `AMIGA.INTUITION`, `AMIGA.GFX`, `AMIGA.GADTOOLS`, `AMIGA.AUDIO`, `AMIGA.AREXX`
 
 The AmigaOS-native bindings. These exist **only on the AmigaOS build** — on the
 POSIX host the packages are not present. `AMIGA` is a C-level package (raw
@@ -42,6 +42,19 @@ register spec. This is the lowest level; higher-level packages are built on it.
 | `(call-library-fast base offset regspec &rest values)` | function | Fast path: `regspec` is a fixnum of nibbles (low to high), one register index per value (`d0`..`d7` = 0..7, `a0`..`a5` = 8..13); up to 7 register args |
 | `(alloc-chip size)` | function | Allocate `size` bytes of Chip RAM; returns a foreign pointer |
 | `(free-chip pointer)` | function | Free Chip RAM from `alloc-chip` |
+
+ARexx host-port transport. These are the raw primitives; ordinary use goes
+through `AMIGA.AREXX` below, which builds the handler thread on top of them.
+
+| Signature | Kind | Description |
+|-----------|------|-------------|
+| `(arexx-open &optional basename)` | function | Create the public port, claiming `basename` (upcased, default `"CLAMIGA"`) or the first free `BASENAME.<n>`; returns the name claimed. Must be called from the thread that will wait on it |
+| `(arexx-close)` | function | Remove the port, replying to anything still queued |
+| `(arexx-port-name)` | function | Name the port is registered under, or `NIL` |
+| `(arexx-wait)` | function | Block until a command arrives; returns the command string, or `NIL` when woken by `arexx-request-stop` |
+| `(arexx-reply rc &optional result)` | function | Answer the message returned by the last `arexx-wait` |
+| `(arexx-request-stop)` | function | Wake the waiting thread so it can shut down; safe from any thread |
+| `(arexx-send port command &optional result-size)` | function | Send `command` to a public ARexx port and wait for the reply; returns `(values rc result-string)` |
 
 ---
 
@@ -406,10 +419,44 @@ usage end-to-end.
 
 ---
 
+## `AMIGA.AREXX` — ARexx development port
+
+An ARexx host port that lets a native Amiga editor drive the running Lisp:
+load the file you are editing, get its compile diagnostics back, evaluate a
+form in the live image. Served by its own thread, so it answers while the
+REPL is busy.
+
+```lisp
+(require "amiga/arexx")
+(amiga.arexx:start)          ; => "CLAMIGA"
+```
+
+| Signature | Kind | Description |
+|-----------|------|-------------|
+| `(start &key name stack-size vm-frames)` | function | Open the port and start its handler thread; returns the port name claimed. `stack-size`/`vm-frames` size the thread that compiles your code |
+| `(stop)` | function | Remove the port and stop the handler thread |
+| `(running-p)` | function | Whether the port is open and its thread alive |
+| `(port-name)` | function | Name the port is registered under, or `NIL` |
+| `(send port command &key result-size)` | function | Drive another application's ARexx port (or our own) — returns `(values rc result-string)` |
+| `*default-port-name*` | variable | Base name `START` claims (`"CLAMIGA"`) |
+| `*handler-thread*` | variable | The `MP` thread serving the port |
+
+The commands themselves (`PING`, `VERSION`, `LOAD`, `COMPILE-FILE`, `EVAL`,
+`IN-PACKAGE`, `LASTRESULT`), the return-code ladder, and the `RESULT`/`FAILAT`
+protocol notes are documented in the
+[ARexx port](../README.md#arexx-port-amigaos--morphos) section of the main
+README. They are implemented by the portable `EXT.DEV` package
+(`lib/dev-commands.lisp`), which loads and runs on the host as well —
+`(ext.dev:handle-command "LOAD foo.lisp")` returns `(values rc text)` with no
+Amiga in sight, which is how the command layer is tested.
+
 ## Source of truth
 
 `tests/amiga/test-gui.lisp` exercises the Intuition/Graphics/GadTools path on
-AmigaOS via FS-UAE; `tests/amiga/test-audio.lisp` covers `AMIGA.AUDIO`;
+AmigaOS via FS-UAE; `tests/amiga/test-audio.lisp` covers `AMIGA.AUDIO`; the
+`tests/amiga/arexx-tests.lisp` drives `AMIGA.AREXX` end to end
+over the real host protocol, and `tests/test_dev_commands.sh` is the
+host-side specification for the command layer;
 `examples/gfx/bouncing-lines.lisp` is a runnable graphics demo. See the
 [AmigaOS Native GUI](../README.md#amigaos-native-gui) and
 [Raw FFI Access](../README.md#raw-ffi-access) sections of the main README.

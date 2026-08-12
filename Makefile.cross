@@ -42,6 +42,7 @@ SRCDIR   = src
 
 # Source files
 PLATFORM_SRC = $(SRCDIR)/platform/platform_amiga.c \
+               $(SRCDIR)/platform/platform_amiga_rexx.c \
                $(SRCDIR)/platform/platform_thread_amiga.c
 PLATFORM_ASM = $(SRCDIR)/platform/ffi_dispatch_m68k.s
 CORE_SRC     = $(SRCDIR)/core/types.c \

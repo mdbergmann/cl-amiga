@@ -4907,6 +4907,58 @@ check_contains "flet/labels/method names reach bc->name intact under compaction 
 check_absent   "no corruption diagnostics from the local-function name hand-off" \
   "corrupted\|type 0\|BADMARK\|badmark\|SIGSEGV\|Undefined\|Unbound" "$out"
 
+# --- Case: the ARexx dev-command layer under a compaction storm ------------
+# EXT.DEV:HANDLE-COMMAND is the command layer behind the ARexx development
+# port (lib/dev-commands.lisp), and it allocates on every interesting path:
+# condition report strings, DIAG structs, EXT:BACKTRACE frame lists, a
+# WITH-OUTPUT-TO-STRING capture stream, and the assembled reply.  It also
+# leans on two non-local-exit mechanisms that a moving GC can disturb --
+# LOAD's per-top-level-form recovery running INSIDE an unwind-protect, and a
+# THROW out of an unwind-protect cleanup that is unwinding an error (see
+# tests/test_unwind_load.c).  Exercising it here is what keeps a stale
+# arena offset in that machinery from surfacing only on a user's Amiga.
+cat > "$WORK/devcmd-bad.lisp" <<'EOF'
+(defvar *gcs-dev-one* t)
+(error "gcs dev error one")
+(defvar *gcs-dev-two* t)
+(gcs-dev-undefined-function 1 2 3)
+(defvar *gcs-dev-end* t)
+EOF
+cat > "$WORK/devcmd.lisp" <<EOF
+(require "dev-commands")
+;; A file with two bad forms: two diagnostics, each with file:line, and the
+;; forms after them still evaluated -- all while every allocation compacts.
+(multiple-value-bind (rc text) (ext.dev:handle-command "LOAD $WORK/devcmd-bad.lisp")
+  (format t "DEVCMD-LOAD:~a:~a:~a~%"
+          rc
+          (if (search "2 error(s)" text) "2ERR" "BADCOUNT")
+          (if (search "devcmd-bad.lisp:2" text) "LOC" "NOLOC")))
+(format t "DEVCMD-REACHED-END:~a~%" (and (boundp (quote cl-user::*gcs-dev-end*)) t))
+;; Escape paths: a reader error and a missing file both unwind out of LOAD
+;; through the guard's throw-from-cleanup.
+(format t "DEVCMD-MISSING:~a~%"
+        (nth-value 0 (ext.dev:handle-command "LOAD $WORK/no-such-gcs-file.lisp")))
+;; EVAL allocates the value strings and the reply; the port must still answer.
+(multiple-value-bind (rc text) (ext.dev:handle-command "EVAL (values (make-string 300 :initial-element (code-char 120)) 42)")
+  (format t "DEVCMD-EVAL:~a:~a~%" rc (if (search "42" text) "42" "NO42")))
+(multiple-value-bind (rc text) (ext.dev:handle-command "PING")
+  (format t "DEVCMD-ALIVE:~a:~a~%" rc text))
+EOF
+out=$(run_stress "$WORK/devcmd.lisp")
+check_contains "dev-command LOAD reports both diagnostics under compaction storm" \
+  "DEVCMD-LOAD:10:2ERR:LOC" "$out"
+check_contains "dev-command LOAD kept per-form recovery under compaction storm" \
+  "DEVCMD-REACHED-END:T" "$out"
+check_contains "dev-command escape guard survives a missing file under stress" \
+  "DEVCMD-MISSING:10" "$out"
+check_contains "dev-command EVAL replies under compaction storm" \
+  "DEVCMD-EVAL:0:42" "$out"
+check_contains "dev-command handler still answers after the storm" \
+  "DEVCMD-ALIVE:0:PONG" "$out"
+check_absent   "no corruption diagnostics from the dev-command layer" \
+  "corrupted\|type 0\|BADMARK\|badmark\|SIGSEGV\|Unbound" "$out"
+
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

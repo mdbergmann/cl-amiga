@@ -84,6 +84,11 @@ generate() {
         amiga_lib_exports "AMIGA.GADTOOLS"  "$ROOT/lib/amiga/gadtools.lisp"
         amiga_lib_exports "AMIGA.EXEC"      "$ROOT/lib/amiga/exec.lisp"
         amiga_lib_exports "AMIGA.AUDIO"     "$ROOT/lib/amiga/audio.lisp"
+        amiga_lib_exports "AMIGA.AREXX"     "$ROOT/lib/amiga/arexx.lisp"
+        # EXT.DEV is portable (it loads on the host too) but, like the AMIGA.*
+        # packages, it only exists after a REQUIRE — so it is parsed from the
+        # defpackage rather than dumped from a bare image.
+        amiga_lib_exports "EXT.DEV"         "$ROOT/lib/dev-commands.lisp"
     } | LC_ALL=C sort -u
 }
 

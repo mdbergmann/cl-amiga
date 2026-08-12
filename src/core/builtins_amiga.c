@@ -13,6 +13,8 @@
 #include "symbol.h"
 #include "package.h"
 #include "compiler.h"
+#include "string_utils.h"
+#include "thread.h"
 #include "../platform/platform.h"
 #include <string.h>
 #include <stdio.h>
@@ -345,6 +347,167 @@ static CL_Obj bi_amiga_free_chip(CL_Obj *args, int nargs)
     return CL_T;
 }
 
+/* ================================================================
+ * ARexx host port
+ *
+ * Thin Lisp bindings over platform_amiga_rexx.c.  The handler loop that
+ * uses them lives in lib/amiga/arexx.lisp; the command semantics live in
+ * lib/dev-commands.lisp.  Nothing here interprets a command.
+ * ================================================================ */
+
+/* Convert a Lisp string argument to a freshly allocated UTF-8 C string.
+ * Caller platform_free()s it.  Returns NULL for NIL. */
+static char *arexx_string_arg(CL_Obj obj, const char *fn, const char *what,
+                              uint32_t *len_out)
+{
+    uint32_t nchars, cap, n;
+    char *buf;
+    if (len_out) *len_out = 0;
+    if (CL_NULL_P(obj))
+        return NULL;
+    if (!CL_ANY_STRING_P(obj))
+        cl_error(CL_ERR_TYPE, "%s: %s must be a string", fn, what);
+    nchars = cl_string_length(obj);
+    /* Worst case 4 UTF-8 bytes per code point, plus the NUL. */
+    cap = nchars * 4u + 1u;
+    buf = (char *)platform_alloc(cap);
+    if (!buf)
+        cl_error(CL_ERR_STORAGE, "%s: out of memory converting %s", fn, what);
+    n = cl_string_to_utf8(obj, buf, cap);
+    if (len_out) *len_out = n;
+    return buf;
+}
+
+/* (amiga:arexx-open &optional basename) → port-name string.
+ * Must be called from the thread that will run AREXX-WAIT. */
+static CL_Obj bi_amiga_arexx_open(CL_Obj *args, int nargs)
+{
+    char name[64];
+    char *base = NULL;
+    int rc;
+    if (nargs >= 1 && !CL_NULL_P(args[0]))
+        base = arexx_string_arg(args[0], "AMIGA:AREXX-OPEN", "the port basename", NULL);
+    rc = platform_arexx_open(base ? base : "CLAMIGA", name, (int)sizeof(name));
+    if (base) platform_free(base);
+    if (rc != PLATFORM_AREXX_OK)
+        cl_error(CL_ERR_GENERAL, "AMIGA:AREXX-OPEN: %s", platform_arexx_strerror(rc));
+    return cl_make_string(name, (uint32_t)strlen(name));
+}
+
+/* (amiga:arexx-close) → T.  Call from the owning thread. */
+static CL_Obj bi_amiga_arexx_close(CL_Obj *args, int nargs)
+{
+    CL_UNUSED(args); CL_UNUSED(nargs);
+    platform_arexx_close();
+    return CL_T;
+}
+
+/* (amiga:arexx-port-name) → string, or NIL when no port is open */
+static CL_Obj bi_amiga_arexx_port_name(CL_Obj *args, int nargs)
+{
+    char name[64];
+    CL_UNUSED(args); CL_UNUSED(nargs);
+    if (!platform_arexx_port_name(name, (int)sizeof(name)))
+        return CL_NIL;
+    return cl_make_string(name, (uint32_t)strlen(name));
+}
+
+/* (amiga:arexx-request-stop) → T.  Safe from any thread. */
+static CL_Obj bi_amiga_arexx_request_stop(CL_Obj *args, int nargs)
+{
+    CL_UNUSED(args); CL_UNUSED(nargs);
+    platform_arexx_request_stop();
+    return CL_T;
+}
+
+/* (amiga:arexx-wait) → command string, or NIL when the port was stopped.
+ * Blocks in exec Wait() inside a GC safe region. */
+static CL_Obj bi_amiga_arexx_wait(CL_Obj *args, int nargs)
+{
+    const char *cmd = NULL;
+    int rc;
+    CL_UNUSED(args); CL_UNUSED(nargs);
+    rc = platform_arexx_wait(&cmd);
+    if (rc < 0)
+        cl_error(CL_ERR_GENERAL, "AMIGA:AREXX-WAIT: %s", platform_arexx_strerror(rc));
+    if (rc == 0)
+        return CL_NIL;   /* stopped */
+    if (!cmd)
+        return cl_make_string("", 0);
+    return cl_make_string(cmd, (uint32_t)strlen(cmd));
+}
+
+/* (amiga:arexx-reply rc &optional result) → T */
+static CL_Obj bi_amiga_arexx_reply(CL_Obj *args, int nargs)
+{
+    char *res = NULL;
+    uint32_t res_len = 0;
+    int32_t rc;
+    if (!CL_FIXNUM_P(args[0]))
+        cl_error(CL_ERR_TYPE, "AMIGA:AREXX-REPLY: return code must be an integer");
+    rc = CL_FIXNUM_VAL(args[0]);
+    if (nargs >= 2)
+        res = arexx_string_arg(args[1], "AMIGA:AREXX-REPLY", "the result", &res_len);
+    platform_arexx_reply(rc, res, res_len);
+    if (res) platform_free(res);
+    return CL_T;
+}
+
+/* (amiga:arexx-send port command &optional (result-size 8192))
+ *   → (values rc result-string)
+ * Drives another application's ARexx port — and, in the test suite, our own. */
+static CL_Obj bi_amiga_arexx_send(CL_Obj *args, int nargs)
+{
+    char *port = NULL, *cmd = NULL, *res = NULL;
+    int32_t rc = PLATFORM_AREXX_RC_FATAL, rc2 = 0;
+    int res_size = 8192;
+    int status;
+    CL_Obj result_obj;
+
+    if (nargs >= 3) {
+        if (!CL_FIXNUM_P(args[2]) || CL_FIXNUM_VAL(args[2]) <= 0)
+            cl_error(CL_ERR_ARGS, "AMIGA:AREXX-SEND: result-size must be a positive integer");
+        res_size = (int)CL_FIXNUM_VAL(args[2]);
+    }
+    /* Type-check the command before converting the port name: arexx_string_arg()
+     * itself cl_error()s (a noreturn longjmp) on a bad type, which would
+     * otherwise unwind straight past the platform_free(port) below and leak
+     * port's platform_alloc()'d buffer. */
+    if (!CL_NULL_P(args[1]) && !CL_ANY_STRING_P(args[1]))
+        cl_error(CL_ERR_TYPE, "AMIGA:AREXX-SEND: the command must be a string");
+
+    port = arexx_string_arg(args[0], "AMIGA:AREXX-SEND", "the port name", NULL);
+    if (!port)
+        cl_error(CL_ERR_ARGS, "AMIGA:AREXX-SEND: port name must not be NIL");
+    cmd = arexx_string_arg(args[1], "AMIGA:AREXX-SEND", "the command", NULL);
+    if (!cmd) {
+        platform_free(port);
+        cl_error(CL_ERR_ARGS, "AMIGA:AREXX-SEND: command must not be NIL");
+    }
+    res = (char *)platform_alloc((uint32_t)res_size);
+    if (!res) {
+        platform_free(port); platform_free(cmd);
+        cl_error(CL_ERR_STORAGE, "AMIGA:AREXX-SEND: out of memory");
+    }
+
+    status = platform_arexx_send(port, cmd, &rc, res, res_size, &rc2);
+    platform_free(port);
+    platform_free(cmd);
+    if (status != PLATFORM_AREXX_OK) {
+        platform_free(res);
+        cl_error(CL_ERR_GENERAL, "AMIGA:AREXX-SEND: %s", platform_arexx_strerror(status));
+    }
+
+    /* Amiga/MorphOS builds have no wide strings — an ARexx argstring is a
+     * byte string, so a base string is the exact representation. */
+    result_obj = cl_make_string(res, (uint32_t)strlen(res));
+    platform_free(res);
+    cl_mv_count = 2;
+    cl_mv_values[0] = CL_MAKE_FIXNUM(rc);
+    cl_mv_values[1] = result_obj;
+    return cl_mv_values[0];
+}
+
 #else /* !PLATFORM_AMIGA — host stub so vm.c links cleanly */
 
 CL_Obj cl_amiga_ffi_call_dispatch(uint32_t base_addr, int16_t offset,
@@ -393,6 +556,16 @@ void cl_builtins_amiga_init(void)
     amiga_defun("CALL-LIBRARY-FAST", bi_amiga_call_library_fast,  3, -1);
     amiga_defun("ALLOC-CHIP",        bi_amiga_alloc_chip,         1,  1);
     amiga_defun("FREE-CHIP",         bi_amiga_free_chip,          1,  1);
+
+    /* ARexx host port — transport primitives.  lib/amiga/arexx.lisp builds
+     * the handler thread and the command protocol on top of these. */
+    amiga_defun("AREXX-OPEN",         bi_amiga_arexx_open,         0,  1);
+    amiga_defun("AREXX-CLOSE",        bi_amiga_arexx_close,        0,  0);
+    amiga_defun("AREXX-PORT-NAME",    bi_amiga_arexx_port_name,    0,  0);
+    amiga_defun("AREXX-REQUEST-STOP", bi_amiga_arexx_request_stop, 0,  0);
+    amiga_defun("AREXX-WAIT",         bi_amiga_arexx_wait,         0,  0);
+    amiga_defun("AREXX-REPLY",        bi_amiga_arexx_reply,        1,  2);
+    amiga_defun("AREXX-SEND",         bi_amiga_arexx_send,         2,  3);
 
     /* Intern AMIGA::%FFI-CALL — compile_call matches against this exact
      * symbol object to emit OP_AMIGA_CALL.  Exported so defcfun (which

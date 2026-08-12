@@ -10196,6 +10196,19 @@
 (check "boot trace no-ops when quiet" nil
   (clamiga::%boot-trace-clos 1 1 "must-not-appear-in-results-log"))
 
+; --- ARexx development port (AmigaOS / MorphOS) ---
+; Loaded as a separate file on purpose: the tests name symbols in the
+; AMIGA.AREXX package, and the READER has to resolve those when it reads the
+; form -- which is before any (require "amiga/arexx") in the SAME file could
+; have created the package.  A nested LOAD gets its own read/eval cycle, so
+; the require completes before the test forms are read; and a failure in
+; there costs us this file, not the rest of the suite.
+#+amigaos
+(handler-case (load "tests/amiga/arexx-tests.lisp")
+  (error (e)
+    (setq *fail-count* (+ *fail-count* 1))
+    (format t "FAIL: ARexx port tests could not run: ~A~%" e)))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)
