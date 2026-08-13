@@ -35,7 +35,8 @@ BUILDDIR = build/host
 
 # Source files
 PLATFORM_SRC = $(SRCDIR)/platform/platform_posix.c \
-               $(SRCDIR)/platform/platform_thread_posix.c
+               $(SRCDIR)/platform/platform_thread_posix.c \
+               $(SRCDIR)/platform/tls_openssl.c
 CORE_SRC     = $(SRCDIR)/core/types.c \
                $(SRCDIR)/core/mem.c \
                $(SRCDIR)/core/error.c \
@@ -230,6 +231,13 @@ test-fast: $(TEST_BINS) host
 		echo "FAIL"; \
 		failed=1; \
 	fi; \
+	echo "--- test_gray_file_position ---"; \
+	if sh $(TEST_SRCDIR)/test_gray_file_position.sh $(BUILDDIR)/clamiga; then \
+		echo "PASS"; \
+	else \
+		echo "FAIL"; \
+		failed=1; \
+	fi; \
 	echo "--- test_gc_stream_finalize ---"; \
 	if sh $(TEST_SRCDIR)/test_gc_stream_finalize.sh $(BUILDDIR)/clamiga; then \
 		echo "PASS"; \
@@ -358,6 +366,13 @@ test-fast: $(TEST_BINS) host
 	fi; \
 	echo "--- test_stream_outbuf_leak ---"; \
 	if sh $(TEST_SRCDIR)/test_stream_outbuf_leak.sh $(BUILDDIR)/clamiga; then \
+		echo "PASS"; \
+	else \
+		echo "FAIL"; \
+		failed=1; \
+	fi; \
+	echo "--- test_tls_loopback ---"; \
+	if sh $(TEST_SRCDIR)/test_tls_loopback.sh $(BUILDDIR)/clamiga; then \
 		echo "PASS"; \
 	else \
 		echo "FAIL"; \
@@ -497,6 +512,8 @@ test-gc-stress:
 	@CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_mt_intern_stw.sh $(GC_STRESS_BUILDDIR)/clamiga
 	@echo "--- test_peephole_diff (CLAMIGA_GC_STRESS=1, forced compaction) ---"
 	@CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_peephole_diff.sh $(GC_STRESS_BUILDDIR)/clamiga
+	@echo "--- test_tls_loopback (CLAMIGA_GC_STRESS=1, forced compaction) ---"
+	@CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_tls_loopback.sh $(GC_STRESS_BUILDDIR)/clamiga
 
 # `make test-mt-thread-exit-race` builds a dedicated DEBUG_THREAD_RACE_HOOKS
 # binary whose sole purpose (see the constructor in src/core/thread.c) is to
@@ -668,15 +685,18 @@ fasl: $(BUILDDIR)/clamiga
 
 QL_LOCAL_PROJECTS ?= $(HOME)/quicklisp/local-projects
 
-# Install CL-Amiga's `swank` stub system into quicklisp's local-projects
+# Install CL-Amiga's stub/facade systems into quicklisp's local-projects
 # tree via symlink.  Needed on dev hosts where quicklisp is installed —
-# this stub is NOT required on Amiga when quicklisp isn't in use.
+# these are NOT required on Amiga when quicklisp isn't in use.
 #
 # The closer-mop / trivial-cltl2 / introspect-environment / trivial-garbage
 # systems are NO LONGER shims: they are maintained CL-Amiga library forks
 # that carry #+cl-amiga / #+clamiga support directly, installed by cloning
-# them into local-projects (see the Quicklisp section of README.md).  Only
-# the `swank` stub — which has no upstream to fork — is symlinked here.
+# them into local-projects (see the Quicklisp section of README.md).  Two
+# systems are symlinked here: the `swank` stub (no upstream to fork) and
+# the `cl+ssl` facade (the real cl+ssl's CFFI/callback stack cannot work on
+# Amiga — the facade reimplements the drakma/hunchentoot-facing API over
+# the runtime's native EXT:SOCKET-START-TLS and must shadow the dist).
 #
 # Symlink handling rules:
 #   - Broken symlink (dangling target):     re-create pointing at $$src
@@ -692,7 +712,7 @@ QL_LOCAL_PROJECTS ?= $(HOME)/quicklisp/local-projects
 # packages and reject cl-amiga as an "unsupported Lisp".
 install-shims:
 	@mkdir -p $(QL_LOCAL_PROJECTS)
-	@for shim in swank; do \
+	@for shim in swank cl+ssl; do \
 	  src="$(CURDIR)/contrib/shims/$$shim"; \
 	  dst="$(QL_LOCAL_PROJECTS)/$$shim"; \
 	  if [ -L "$$dst" ]; then \

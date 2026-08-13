@@ -38,6 +38,17 @@ endif
 CFLAGS    = -noixemul -mcpu=68020 $(FLOATFLAGS) -std=c99 -Wall -Os -fno-tree-switch-conversion -DPLATFORM_AMIGA -DJIT_M68K $(DEBUG_FLAGS)
 LDFLAGS   = -noixemul -mcpu=68020 $(FLOATFLAGS) -fno-tree-switch-conversion
 
+# AmiSSL SDK (optional — install with tools/setup-amissl-sdk.sh): when the
+# headers are present the build gains TLS (EXT:SOCKET-START-TLS) through
+# amisslmaster.library, opened lazily at runtime by the socket reactor.  The
+# gcc path calls AmiSSL through the SDK's inline headers (register-mapped
+# calls via AmiSSLBase), so no link library is needed.  Builds without the
+# SDK still work — TLS just reports unavailable.
+AMISSL_SDK ?= $(CURDIR)/tools/amissl-sdk/AmiSSL/Developer
+ifneq ($(wildcard $(AMISSL_SDK)/include/proto/amissl.h),)
+CFLAGS += -DCL_HAVE_AMISSL -I$(AMISSL_SDK)/include
+endif
+
 SRCDIR   = src
 
 # Source files

@@ -3385,6 +3385,20 @@ group reduces to the ordinary sequential init-then-step."
 ;; The setter receives (stream direction new-value) per the defsetf short form.
 (defsetf socket-stream-timeout %set-socket-stream-timeout)
 
+;; TLS: keyword front-end over the positional %SOCKET-START-TLS builtin.
+;; Upgrades a connected TCP socket stream to TLS IN PLACE and returns the
+;; same stream — wrappers already holding it keep working.  Client side by
+;; default; :SERVER T accepts instead (then :CERTIFICATE is required).
+;; Provider availability: (ext:tls-available-p) / (ext:tls-version).
+;; See tests/tls-loopback.lisp for an end-to-end client/server example.
+(defun socket-start-tls (stream &key server hostname (verify t)
+                                     certificate key key-password
+                                     ca-file ca-path (timeout 30))
+  (%socket-start-tls stream server hostname verify certificate key
+                     key-password ca-file ca-path timeout))
+
+(export '(socket-start-tls))
+
 ;;; ============================================================
 ;;; MP package: threading macros and stubs
 ;;; ============================================================

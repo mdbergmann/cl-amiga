@@ -1,5 +1,6 @@
 #include "platform.h"
 #include "platform_thread.h"
+#include "tls_openssl.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -984,6 +985,9 @@ typedef struct {
     int    rtimeout;    /* read timeout in ms; 0 = block indefinitely */
     int    wtimeout;    /* write timeout in ms; 0 = block indefinitely */
     int    next_free;   /* free-list link; valid only while fd < 0, 0 = end */
+    TLSConn *tls;       /* non-NULL once platform_tls_start upgraded the
+                         * connection: refill/drain/probe route through the
+                         * TLS record layer instead of raw read()/send() */
 } SockSlot;
 
 #define SOCK_BLOCK_SHIFT 6
@@ -1078,6 +1082,7 @@ static PlatformSocket socket_claim_locked(int fd, int want_buf)
     s->rtimeout = 0;
     s->wtimeout = 0;
     s->next_free = 0;
+    s->tls = NULL;
     return (PlatformSocket)idx;
 }
 
@@ -1193,6 +1198,19 @@ static int socket_flush_wbuf(PlatformSocket sh)
     if (!b || b->wlen == 0) return 0;
     fd = s->fd;
     wtimeout = s->wtimeout;
+    if (s->tls) {
+        /* TLS drain: tls_conn_write handles its own poll()-based waits and
+         * deadline; it parks, so bracket it as a GC safe region like the
+         * plain send() loop below. */
+        int wr;
+        TLSConn *t = s->tls;
+        cl_gc_enter_safe_region();
+        wr = tls_conn_write(t, b->wbuf, (uint32_t)b->wlen, wtimeout);
+        cl_gc_leave_safe_region();
+        if (wr != 0) return wr;         /* -1 error / -2 timeout */
+        b->wlen = 0;
+        return 0;
+    }
     /* write() can block when the peer's receive window is full — bracket the
      * whole drain loop so a slow reader cannot stall a stop-the-world GC. */
     cl_gc_enter_safe_region();
@@ -1238,19 +1256,25 @@ void platform_socket_close(PlatformSocket sh)
     if (sh > 0 && s && s->fd >= 0) {
         int fd;
         IOBuf *buf;
+        TLSConn *tls;
         socket_flush_wbuf(sh);
         /* Detach the slot and return it to the free-list under the lock, then
          * do the blocking close() and free() outside it. */
         socket_table_lock();
         fd = s->fd;
         buf = s->buf;
+        tls = s->tls;
         s->fd = -1;
         s->buf = NULL;
+        s->tls = NULL;
         s->rtimeout = 0;
         s->wtimeout = 0;
         s->next_free = socket_free_head;
         socket_free_head = (int)sh;
         socket_table_unlock();
+        /* close_notify before close(fd) — the shutdown record still needs
+         * the fd; the attempt is non-blocking and best-effort. */
+        if (tls) tls_conn_close(tls, 1);
         if (fd >= 0) close(fd);
         iobuf_free(buf);
     }
@@ -1260,21 +1284,26 @@ void platform_socket_close_gc(PlatformSocket sh)
 {
     /* As platform_socket_close, but no socket_flush_wbuf — its drain loop
      * brackets a GC safe region, which must not run during the sweep.  A
-     * plain close() is fast and safe-region-free. */
+     * plain close() is fast and safe-region-free.  The TLS teardown skips
+     * the close_notify for the same reason (no I/O during the sweep). */
     SockSlot *s = sock_slot(sh);
     if (sh > 0 && s && s->fd >= 0) {
         int fd;
         IOBuf *buf;
+        TLSConn *tls;
         socket_table_lock();
         fd = s->fd;
         buf = s->buf;
+        tls = s->tls;
         s->fd = -1;
         s->buf = NULL;
+        s->tls = NULL;
         s->rtimeout = 0;
         s->wtimeout = 0;
         s->next_free = socket_free_head;
         socket_free_head = (int)sh;
         socket_table_unlock();
+        if (tls) tls_conn_close(tls, 0);
         if (fd >= 0) close(fd);
         iobuf_free(buf);
     }
@@ -1337,6 +1366,21 @@ int platform_socket_read(PlatformSocket sh)
     if (b) {
         if (b->rpos < b->rlen)
             return (unsigned char)b->rbuf[b->rpos++];
+        /* TLS refill: tls_conn_read waits, decrypts, and honors the read
+         * timeout itself (-2).  It parks in poll(), so bracket it as a GC
+         * safe region like the plain read() below. */
+        if (s->tls) {
+            TLSConn *t = s->tls;
+            int n;
+            cl_gc_enter_safe_region();
+            n = tls_conn_read(t, b->rbuf, PLATFORM_IOBUF_SIZE, rtimeout);
+            cl_gc_leave_safe_region();
+            if (n == -2) return PLATFORM_SOCKET_TIMEOUT;
+            if (n <= 0) return -1;      /* clean close_notify or error: EOF */
+            b->rpos = 1;
+            b->rlen = n;
+            return (unsigned char)b->rbuf[0];
+        }
         /* Refill read buffer.  The read() blocks until data arrives, so bracket
          * it as a GC safe region; capture the fd first since a concurrent close
          * could clear the slot while we are parked. */
@@ -1364,6 +1408,16 @@ int platform_socket_read(PlatformSocket sh)
         int fd = s->fd;
         unsigned char byte;
         ssize_t n;
+        if (s->tls) {
+            TLSConn *t = s->tls;
+            int tn;
+            cl_gc_enter_safe_region();
+            tn = tls_conn_read(t, (char *)&byte, 1, rtimeout);
+            cl_gc_leave_safe_region();
+            if (tn == -2) return PLATFORM_SOCKET_TIMEOUT;
+            if (tn <= 0) return -1;
+            return (int)byte;
+        }
         cl_gc_enter_safe_region();
         if (rtimeout > 0) {
             int rr = socket_wait_ready(fd, rtimeout, 0);
@@ -1403,6 +1457,25 @@ int platform_socket_data_available(PlatformSocket sh)
     b = s->buf;
     if (b && b->rpos < b->rlen)
         return 1;                       /* already-buffered bytes */
+    /* TLS: decrypted bytes may already sit inside the record layer with the
+     * fd itself idle — check before polling.  A readable fd is then only a
+     * hint (the bytes could be handshake traffic or a partial record), so
+     * a non-blocking SSL_peek gives the real LISTEN answer. */
+    if (s->tls) {
+        TLSConn *t = s->tls;
+        if (tls_conn_pending(t) > 0)
+            return 1;
+        fd = s->fd;
+        if (fd < 0) return -1;
+        pfd.fd = fd;
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+        r = poll(&pfd, 1, 0);
+        if (r < 0) return (errno == EINTR) ? 0 : -1;
+        if (r == 0 || !(pfd.revents & (POLLIN | POLLHUP | POLLERR)))
+            return 0;
+        return tls_conn_probe(t);       /* 1 data / 0 not yet / 2 EOF */
+    }
     fd = s->fd;
     if (fd < 0)
         return -1;
@@ -1448,6 +1521,14 @@ int platform_socket_write(PlatformSocket sh, int byte)
         int fd = s->fd;
         unsigned char bb = (unsigned char)byte;
         ssize_t n;
+        if (s->tls) {
+            TLSConn *t = s->tls;
+            int wr;
+            cl_gc_enter_safe_region();
+            wr = tls_conn_write(t, (const char *)&bb, 1, s->wtimeout);
+            cl_gc_leave_safe_region();
+            return wr;
+        }
         cl_gc_enter_safe_region();
         n = write(fd, &bb, 1);
         cl_gc_leave_safe_region();
@@ -1482,6 +1563,14 @@ int platform_socket_write_buf(PlatformSocket sh, const char *buf, uint32_t len)
     {
         ssize_t total = 0;
         int fd = s->fd;
+        if (s->tls) {
+            TLSConn *t = s->tls;
+            int wr;
+            cl_gc_enter_safe_region();
+            wr = tls_conn_write(t, buf, len, s->wtimeout);
+            cl_gc_leave_safe_region();
+            return wr;
+        }
         cl_gc_enter_safe_region();
         while ((uint32_t)total < len) {
             ssize_t n = write(fd, buf + total, (size_t)(len - (uint32_t)total));
@@ -1688,6 +1777,75 @@ int platform_socket_local_endpoint(PlatformSocket sh, char *ip_out, int *port_ou
     snprintf(ip_out, 16, "%u.%u.%u.%u", b[0], b[1], b[2], b[3]);
     if (port_out) *port_out = (int)ntohs(addr.sin_port);
     return 0;
+}
+
+/* --- TLS public entry points (contract in platform.h; OpenSSL backend in
+ * tls_openssl.c).  A successful start stores the connection on the slot,
+ * after which the ordinary read/flush/probe/close paths above route through
+ * the record layer transparently. --- */
+
+int platform_tls_available(void)
+{
+    return tls_openssl_available(NULL, 0) == 0 ? 1 : 0;
+}
+
+const char *platform_tls_version(void)
+{
+    return tls_openssl_version();
+}
+
+int platform_tls_start(PlatformSocket sh, const PlatformTLSParams *params,
+                       char *err, uint32_t errlen)
+{
+    SockSlot *s = sock_slot(sh);
+    TLSConn *t;
+    if (err && errlen > 0) err[0] = '\0';
+    if (sh == 0 || !s || s->fd < 0) {
+        if (err && errlen > 0)
+            snprintf(err, errlen, "invalid or closed socket");
+        return -1;
+    }
+    if (!s->buf) {
+        /* Listener and UDP slots have no IOBuf; neither can carry TLS. */
+        if (err && errlen > 0)
+            snprintf(err, errlen, "TLS requires a connected TCP stream socket");
+        return -1;
+    }
+    if (s->tls) {
+        if (err && errlen > 0)
+            snprintf(err, errlen, "socket is already TLS-upgraded");
+        return -1;
+    }
+    /* Buffered plaintext output must reach the wire before handshake bytes
+     * (relevant for STARTTLS-style flows). */
+    if (socket_flush_wbuf(sh) != 0) {
+        if (err && errlen > 0)
+            snprintf(err, errlen, "flushing pending output before the "
+                     "TLS handshake failed");
+        return -1;
+    }
+    /* The handshake parks in poll(); params strings are the caller's C
+     * buffers (never Lisp-arena pointers), so a safe region is fine. */
+    cl_gc_enter_safe_region();
+    t = tls_conn_start(s->fd, params, err, errlen);
+    cl_gc_leave_safe_region();
+    if (!t) return -1;
+    s->tls = t;
+    return 0;
+}
+
+int platform_tls_active(PlatformSocket sh)
+{
+    SockSlot *s = sock_slot(sh);
+    return (sh > 0 && s && s->fd >= 0 && s->tls) ? 1 : 0;
+}
+
+int platform_tls_peer_cert_field(PlatformSocket sh, int field,
+                                 char *out, uint32_t outlen)
+{
+    SockSlot *s = sock_slot(sh);
+    if (sh == 0 || !s || s->fd < 0 || !s->tls) return -1;
+    return tls_conn_peer_cert_field(s->tls, field, out, outlen);
 }
 
 /* ---- Ctrl-C break-in (see platform_break_pending in platform.h) ----

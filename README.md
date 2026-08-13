@@ -151,7 +151,7 @@ Quicklisp runs on CL-Amiga, but the stock client doesn't recognise this implemen
 (cl-amiga-ql:install)                 ; downloads + installs the QL client, patches networking
 ```
 
-`cl-amiga-ql:install` runs the standard `quicklisp-quickstart:install`, catches the network error it raises (CL-Amiga isn't a registered `ql-impl` yet), loads the compat shim so networking works, and retries the dist install. Two more things need to be on disk in `~/quicklisp/local-projects` (Amiga: `S:quicklisp/local-projects`): the `swank` stub — run `make install-shims` once from the repo root to symlink it in — and the CL-Amiga **library forks** (listed below), which you install by cloning them into that directory. Quicklisp's local-projects searcher then resolves both ahead of the stock dist releases.
+`cl-amiga-ql:install` runs the standard `quicklisp-quickstart:install`, catches the network error it raises (CL-Amiga isn't a registered `ql-impl` yet), loads the compat shim so networking works, and retries the dist install. Two more things need to be on disk in `~/quicklisp/local-projects` (Amiga: `S:quicklisp/local-projects`): the bundled shim systems — run `make install-shims` once from the repo root to symlink in the `swank` stub and the `cl+ssl` facade (which routes drakma/Hunchentoot TLS through CL-Amiga's native `ext:socket-start-tls` instead of the CFFI-based original) — and the CL-Amiga **library forks** (listed below), which you install by cloning them into that directory. Quicklisp's local-projects searcher then resolves both ahead of the stock dist releases.
 
 **Using Quicklisp** in any later session, once it is installed:
 
@@ -268,15 +268,17 @@ Reusable Lisp loaders in `trunk/` that load and exercise third-party libraries o
 ./build/host/clamiga --heap 256M --load trunk/load-and-test-cffi.lisp           # CFFI backend
 ./build/host/clamiga --heap 256M --load trunk/load-and-test-drakma.lisp         # drakma HTTP/HTTPS (host only)
 ./build/host/clamiga --heap 256M --load trunk/load-and-test-hunchentoot.lisp    # Hunchentoot server (host only)
+./build/host/clamiga --heap 256M --load trunk/load-and-test-hunchentoot-ssl.lisp # Hunchentoot HTTPS server (host only)
 ./build/host/clamiga --heap 256M --load trunk/load-and-test-chipi-api.lisp      # chipi web API tests (host only)
 ./build/host/clamiga --heap 256M --load trunk/load-and-test-chipi-ui.lisp       # chipi-ui CLOG UI tests (host only)
 ```
 
 `load-and-test-drakma.lisp` drives **drakma** as an HTTP/HTTPS **client** and
 runs drakma's own test suite: plain HTTP and HTTPS, GET and POST, streamed and
-gzip-decoded responses, and cl+ssl certificate verification. It loads over the
-**usocket** cl-amiga backend, with **cl+ssl** against the host's OpenSSL and the
-**chipz** fork for decompression.
+gzip-decoded responses, and certificate verification. It loads over the
+**usocket** cl-amiga backend, with HTTPS through the bundled **cl+ssl facade**
+over the native TLS layer (see [TLS](docs/ext.md#tls)) and the **chipz** fork
+for decompression.
 
 `load-and-test-hunchentoot.lisp` runs cl-amiga itself as a web **server**: it
 starts a Hunchentoot `easy-acceptor` and runs Hunchentoot's built-in confidence
@@ -284,8 +286,14 @@ suite against it (driving drakma over loopback through cookies, sessions,
 multipart parameters, redirection and basic auth), rendering HTML with
 **cl-who**.
 
-Both scripts are **host-only** — they need a TCP/IP stack and network access,
-which the Amiga/FS-UAE test harness lacks.
+`load-and-test-hunchentoot-ssl.lisp` is the HTTPS variant: a Hunchentoot
+`easy-ssl-acceptor` serves the same confidence suite over TLS on loopback,
+with drakma as the HTTPS client — CL-Amiga is both ends of every encrypted
+connection.
+
+These scripts are **host-only** — they need a TCP/IP stack and network access;
+the same TLS stack on Amiga is covered by `tests/amiga/tls-tests.lisp` in the
+FS-UAE suite (with AmiSSL installed in the emulated Workbench).
 
 ### Loading source and FASL files
 
@@ -584,6 +592,16 @@ diffs the real package exports against a committed snapshot; run
   traces every request through the client↔reactor handshake on stderr — posted,
   received, parked, resumed, replied, reply received, plus DNS lookups — so a
   hanging socket operation's last trace line names the handoff that was lost.
+- **TLS** — `(ext:socket-start-tls stream ...)` upgrades a connected TCP socket
+  stream to TLS **in place** (client or server, with SNI, certificate and
+  hostname verification, and peer-certificate introspection). The provider is
+  loaded at runtime and optional — OpenSSL 1.1.1/3.x on the host, AmiSSL v5 on
+  AmigaOS — with `(ext:tls-available-p)` as the capability gate. drakma and
+  Hunchentoot get HTTPS through the bundled cl+ssl facade
+  (`contrib/shims/cl+ssl`, installed by `make install-shims`). See
+  [docs/ext.md](docs/ext.md#tls) and the runnable examples in
+  `tests/tls-loopback.lisp` / `tests/amiga/tls-tests.lisp` /
+  `trunk/load-and-test-hunchentoot-ssl.lisp`.
 - **UDP networking** — connected datagram sockets:
   `(ext:open-udp-stream host port)` returns a UDP socket stream;
   `(ext:udp-stream-send stream buffer &optional length)` sends one datagram,

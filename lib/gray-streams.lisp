@@ -359,7 +359,8 @@ the position where end-of-file was reached."))
       (orig-write   (symbol-function 'write))
       (orig-format  (symbol-function 'format))
       (orig-pprint  (symbol-function 'pprint))
-      (orig-listen  (symbol-function 'listen)))
+      (orig-listen  (symbol-function 'listen))
+      (orig-file-position (symbol-function 'file-position)))
 
   (defun %gray-stream-p (x)
     "Return T if X is a Gray stream (CLOS instance of fundamental-stream)."
@@ -694,6 +695,29 @@ the position where end-of-file was reached."))
           (gray:stream-listen s)
           (funcall orig-listen s))))
   (export 'listen)
+
+  ;; FILE-POSITION — a Gray instance is not a builtin CL_Stream, so the C
+  ;; builtin used to signal "not a stream" on it, crashing e.g.
+  ;; flexi-streams' MAYBE-REWIND probe (drakma reading a chunked text body
+  ;; calls it on the underlying chunga stream).  For Gray streams consult
+  ;; the trivial-gray-streams STREAM-FILE-POSITION protocol when that
+  ;; system is loaded (its default method on T answers NIL); without it, or
+  ;; when the setter fails, answer NIL — CLHS' "position cannot be
+  ;; determined / repositioning not performed", which is exactly what
+  ;; MAYBE-REWIND expects from a non-positionable stream.
+  (defun file-position (stream &optional (position nil position-p))
+    (if (%gray-stream-p stream)
+        (let* ((pkg (find-package "TRIVIAL-GRAY-STREAMS"))
+               (sym (and pkg (find-symbol "STREAM-FILE-POSITION" pkg))))
+          (cond ((not (and sym (fboundp sym))) nil)
+                (position-p
+                 (let ((setter (ignore-errors (fdefinition (list 'setf sym)))))
+                   (and setter (funcall setter position stream))))
+                (t (funcall sym stream))))
+        (if position-p
+            (funcall orig-file-position stream position)
+            (funcall orig-file-position stream))))
+  (export 'file-position)
 
 ) ;; end let
 (setf (get 'gray::%cl-io-integration-installed 'done) t)

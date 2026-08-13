@@ -41,6 +41,42 @@ read/write deadlines via `socket-stream-timeout` — a timed-out operation signa
 | `(udp-stream-receive stream buffer &optional max-length)` | function | Receive one datagram into byte vector `buffer`; returns the received length |
 | `(socket-stream-local-endpoint stream)` | function | Local `(address . port)` a socket is bound to |
 
+## TLS
+
+A connected TCP socket stream can be upgraded to TLS **in place**: after
+`socket-start-tls` the very same stream object carries the encrypted
+connection, so any wrapper already holding it (flexi-streams, chunga,
+usocket) keeps working.  The provider is loaded lazily at runtime and is
+optional — OpenSSL 1.1.1/3.x via dlopen on the host, AmiSSL v5 on
+AmigaOS (also the MorphOS route for now), so `tls-available-p` is the
+honest capability gate.  drakma and Hunchentoot consume this layer through
+the bundled cl+ssl facade (`contrib/shims/cl+ssl`, installed by
+`make install-shims`).  End-to-end examples: `tests/tls-loopback.lisp`
+(host), `tests/amiga/tls-tests.lisp` (Amiga), `tests/test_tls.c`
+(platform layer).
+
+```lisp
+;; HTTPS-style client with certificate + hostname verification
+(let ((s (ext:open-tcp-stream "example.com" 443 10)))
+  (ext:socket-start-tls s :hostname "example.com")   ; :verify t is the default
+  (write-string "GET / HTTP/1.0 ..." s)
+  ...)
+
+;; Server side (certificate required; key defaults to the same file)
+(ext:socket-start-tls conn :server t
+                           :certificate "certs/server.pem"
+                           :key "certs/server-key.pem")
+```
+
+| Signature | Kind | Description |
+|-----------|------|-------------|
+| `(tls-available-p)` | function | True when a TLS provider is present (loads it on first call) |
+| `(tls-version)` | function | Provider identification string (`"OpenSSL 3.x ..."`, `"AmiSSL 5.27"`), or `nil` |
+| `(socket-start-tls stream &key server hostname (verify t) certificate key key-password ca-file ca-path (timeout 30))` | function | Upgrade a connected TCP socket stream to TLS in place and return it. Client by default (`hostname` sets SNI and, with `verify`, hostname checking; `ca-file`/`ca-path` name trust anchors, defaulting to the provider's store). `:server t` accepts instead — then `certificate` is required. Handshake failure (including certificate rejection) signals an error with the provider's diagnostic |
+| `(socket-tls-p stream)` | function | True when `stream` is already TLS-upgraded |
+| `(tls-peer-certificate stream)` | function | Peer certificate as a plist `(:subject :issuer :not-before :not-after)`, or `nil` |
+| `(%socket-start-tls stream server hostname verify cert key password ca-file ca-path timeout)` | function | Positional core behind `socket-start-tls` |
+
 ## GC, environment, host
 
 | Signature | Kind | Description |

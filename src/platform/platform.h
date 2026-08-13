@@ -169,6 +169,59 @@ int platform_udp_recv(PlatformSocket sh, uint8_t *buf, uint32_t maxlen);
  * 0=ok, -1=error. */
 int platform_socket_local_endpoint(PlatformSocket sh, char *ip_out, int *port_out);
 
+/* --- TLS (optional, provider loaded at runtime) ---
+ *
+ * TLS upgrades an existing connected TCP socket in place: after a successful
+ * platform_tls_start the ordinary platform_socket_read/_write_buf/_flush/
+ * _data_available/_close entry points transparently move ciphertext — the
+ * stream layer above needs no TLS awareness at all.
+ *
+ * The provider is loaded lazily on first use and is optional:
+ *   POSIX host    — OpenSSL 1.1.1/3.x via dlopen (libssl/libcrypto)
+ *   AmigaOS       — AmiSSL v5 (amisslmaster.library), owned by the reactor
+ *   MorphOS       — openssl3.library
+ * When no provider is present, platform_tls_available() returns 0 and
+ * platform_tls_start fails with a clear message; plain sockets are
+ * unaffected. */
+typedef struct {
+    int         server;        /* 0 = client (connect), 1 = server (accept) */
+    int         verify;        /* client: 0 = accept any cert, 1 = verify the
+                                * peer chain (+ hostname when set) */
+    const char *hostname;      /* client: SNI + hostname verification; NULL to omit */
+    const char *ca_file;       /* PEM CA bundle for verification, or NULL */
+    const char *ca_path;       /* hashed CA cert directory, or NULL;
+                                * neither set => provider default store */
+    const char *cert_file;     /* own PEM cert (chain); required for server */
+    const char *key_file;      /* PEM private key; NULL = cert_file */
+    const char *key_password;  /* passphrase for an encrypted key, or NULL */
+    int         timeout_ms;    /* handshake deadline; 0 = block indefinitely */
+} PlatformTLSParams;
+
+/* Field selectors for platform_tls_peer_cert_field. */
+#define PLATFORM_TLS_CERT_SUBJECT    0
+#define PLATFORM_TLS_CERT_ISSUER     1
+#define PLATFORM_TLS_CERT_NOT_BEFORE 2
+#define PLATFORM_TLS_CERT_NOT_AFTER  3
+
+/* 1 when a TLS provider is present (loading it on first call), else 0. */
+int platform_tls_available(void);
+/* Human-readable provider/version string ("OpenSSL 3.2.1", "AmiSSL 5.21"),
+ * or NULL when unavailable.  The string is static — do not free. */
+const char *platform_tls_version(void);
+/* Upgrade connected socket `sh` to TLS.  All strings in `params` must point
+ * outside the Lisp arena (the handshake parks in a GC safe region).  Returns
+ * 0 on success; -1 on failure with a diagnostic in err (always NUL-terminated
+ * when errlen > 0).  On failure the socket is left in an undefined half-
+ * handshaken state and should be closed. */
+int platform_tls_start(PlatformSocket sh, const PlatformTLSParams *params,
+                       char *err, uint32_t errlen);
+/* 1 if `sh` is TLS-upgraded, 0 if plain/invalid. */
+int platform_tls_active(PlatformSocket sh);
+/* Copy a peer-certificate field (PLATFORM_TLS_CERT_*) into out as a
+ * NUL-terminated string.  0=ok, -1 = no TLS/no peer cert/bad field. */
+int platform_tls_peer_cert_field(PlatformSocket sh, int field,
+                                 char *out, uint32_t outlen);
+
 /* --- Page write-watch (generational GC dirty tracking; POSIX only) ---
  * The generational collector (CL_GENGC, see core/mem.h) tracks old→young
  * stores by hardware page protection instead of a source-level write

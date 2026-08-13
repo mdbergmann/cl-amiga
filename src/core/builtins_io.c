@@ -4409,6 +4409,174 @@ static CL_Obj bi_set_socket_stream_timeout(CL_Obj *args, int n)
     return val;
 }
 
+/* --- TLS-upgraded socket streams ---
+ *
+ * TLS upgrades an existing TCP socket stream IN PLACE: platform_tls_start
+ * hangs the TLS connection off the platform socket slot, after which the
+ * ordinary byte/char stream paths (and CL:LISTEN) transparently carry
+ * ciphertext.  The same stream object is returned, so wrappers holding it
+ * (chunga, flexi-streams, usocket) keep working untouched.  The keyword
+ * front-end is EXT:SOCKET-START-TLS (boot.lisp); the cl+ssl-compatible
+ * facade for drakma/hunchentoot lives in contrib/shims/cl+ssl. */
+
+/* Validate a connected TCP socket stream argument. */
+static CL_Stream *check_tls_stream(CL_Obj obj, const char *who)
+{
+    CL_Stream *st;
+    if (!CL_STREAM_P(obj))
+        cl_error(CL_ERR_TYPE, "%s: argument must be a socket stream", who);
+    st = (CL_Stream *)CL_OBJ_TO_PTR(obj);
+    if (st->stream_type != CL_STREAM_SOCKET || (st->flags & CL_STREAM_FLAG_DGRAM))
+        cl_error(CL_ERR_TYPE, "%s: argument must be a TCP socket stream "
+                 "(see EXT:OPEN-TCP-STREAM / EXT:SOCKET-ACCEPT)", who);
+    if (!(st->flags & CL_STREAM_FLAG_OPEN))
+        cl_error(CL_ERR_GENERAL, "%s: stream is closed", who);
+    return st;
+}
+
+/* Copy a string argument into a fixed C buffer, or return NULL for NIL.
+ * TLS parameter strings must not point into the movable Lisp arena: the
+ * handshake below parks in a GC safe region, and a peer thread's compaction
+ * would leave arena pointers stale (same discipline as bi_open_tcp_stream's
+ * hostname copy). */
+static const char *tls_string_arg(CL_Obj obj, char *buf, uint32_t bufsize,
+                                  const char *who, const char *what)
+{
+    CL_String *s;
+    if (CL_NULL_P(obj)) return NULL;
+    if (!CL_STRING_P(obj))
+        cl_error(CL_ERR_TYPE, "%s: %s must be a string or NIL", who, what);
+    s = (CL_String *)CL_OBJ_TO_PTR(obj);
+    if (s->length >= bufsize)
+        cl_error(CL_ERR_GENERAL, "%s: %s too long (%u bytes, max %u)",
+                 who, what, (unsigned)s->length, (unsigned)(bufsize - 1));
+    memcpy(buf, s->data, s->length);
+    buf[s->length] = '\0';
+    return buf;
+}
+
+/* (ext:tls-available-p) => generalized boolean
+ * True when a TLS provider is present (OpenSSL on the host, AmiSSL on
+ * AmigaOS, openssl3.library on MorphOS).  The provider is loaded lazily on
+ * the first call; a NIL answer means EXT:SOCKET-START-TLS cannot work. */
+static CL_Obj bi_tls_available_p(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    return platform_tls_available() ? CL_T : CL_NIL;
+}
+
+/* (ext:tls-version) => string or NIL
+ * Provider identification ("OpenSSL 3.2.1 ...", "AmiSSL 5.21"), or NIL when
+ * no TLS provider is available. */
+static CL_Obj bi_tls_version(CL_Obj *args, int n)
+{
+    const char *v = platform_tls_version();
+    CL_UNUSED(args); CL_UNUSED(n);
+    if (!v) return CL_NIL;
+    return cl_make_string(v, (uint32_t)strlen(v));
+}
+
+/* (ext:socket-tls-p stream) => generalized boolean
+ * True when `stream` is a socket stream already upgraded to TLS. */
+static CL_Obj bi_socket_tls_p(CL_Obj *args, int n)
+{
+    CL_Stream *st;
+    CL_UNUSED(n);
+    if (!CL_STREAM_P(args[0]))
+        return CL_NIL;
+    st = (CL_Stream *)CL_OBJ_TO_PTR(args[0]);
+    if (st->stream_type != CL_STREAM_SOCKET)
+        return CL_NIL;
+    return platform_tls_active((PlatformSocket)st->handle_id) ? CL_T : CL_NIL;
+}
+
+/* (ext:%socket-start-tls stream server-p hostname verify certificate key
+ *                        key-password ca-file ca-path timeout-seconds)
+ * => stream
+ * Positional core behind the EXT:SOCKET-START-TLS keyword wrapper
+ * (boot.lisp).  Upgrades the connected TCP socket stream to TLS in place
+ * and returns it; signals an error with the provider's diagnostic when the
+ * handshake (or certificate verification) fails. */
+static CL_Obj bi_socket_start_tls(CL_Obj *args, int n)
+{
+    static const char *who = "EXT:SOCKET-START-TLS";
+    CL_Stream *st = check_tls_stream(args[0], "EXT:SOCKET-START-TLS");
+    PlatformSocket sh = (PlatformSocket)st->handle_id;
+    PlatformTLSParams p;
+    char host_buf[256], cert_buf[1024], key_buf[1024], pw_buf[256];
+    char ca_file_buf[1024], ca_path_buf[1024];
+    char err[512];
+#define TLS_ARG(i) ((i) < n ? args[(i)] : CL_NIL)
+    memset(&p, 0, sizeof(p));
+    p.server       = CL_NULL_P(TLS_ARG(1)) ? 0 : 1;
+    p.hostname     = tls_string_arg(TLS_ARG(2), host_buf, sizeof(host_buf),
+                                    who, "hostname");
+    p.verify       = CL_NULL_P(TLS_ARG(3)) ? 0 : 1;
+    p.cert_file    = tls_string_arg(TLS_ARG(4), cert_buf, sizeof(cert_buf),
+                                    who, "certificate path");
+    p.key_file     = tls_string_arg(TLS_ARG(5), key_buf, sizeof(key_buf),
+                                    who, "key path");
+    p.key_password = tls_string_arg(TLS_ARG(6), pw_buf, sizeof(pw_buf),
+                                    who, "key password");
+    p.ca_file      = tls_string_arg(TLS_ARG(7), ca_file_buf, sizeof(ca_file_buf),
+                                    who, "ca-file path");
+    p.ca_path      = tls_string_arg(TLS_ARG(8), ca_path_buf, sizeof(ca_path_buf),
+                                    who, "ca-path");
+    if (!CL_NULL_P(TLS_ARG(9))) {
+        double secs;
+        if (!CL_REALP(args[9]))
+            cl_error(CL_ERR_TYPE,
+                     "%s: timeout must be a non-negative real or NIL", who);
+        secs = cl_to_double(args[9]);
+        if (secs < 0.0)
+            cl_error(CL_ERR_GENERAL, "%s: timeout must be non-negative", who);
+        p.timeout_ms = (secs * 1000.0 >= (double)INT_MAX)
+                       ? INT_MAX : (int)(secs * 1000.0 + 0.5);
+    }
+#undef TLS_ARG
+    if (platform_tls_start(sh, &p, err, sizeof(err)) != 0)
+        cl_error(CL_ERR_GENERAL, "%s: %s", who, err);
+    return args[0];
+}
+
+/* (ext:tls-peer-certificate stream) => plist or NIL
+ * Peer certificate of a TLS-upgraded socket stream as a plist
+ * (:subject "..." :issuer "..." :not-before "..." :not-after "..."), with
+ * absent fields omitted.  NIL when the stream is not TLS or the peer
+ * presented no certificate (e.g. a server looking at a plain client). */
+static CL_Obj bi_tls_peer_certificate(CL_Obj *args, int n)
+{
+    /* Reverse order: consing prepends, so the result reads
+     * subject, issuer, not-before, not-after. */
+    static const struct { int field; const char *kw; uint32_t kwlen; } fields[4] = {
+        { PLATFORM_TLS_CERT_NOT_AFTER,  "NOT-AFTER",  9  },
+        { PLATFORM_TLS_CERT_NOT_BEFORE, "NOT-BEFORE", 10 },
+        { PLATFORM_TLS_CERT_ISSUER,     "ISSUER",     6  },
+        { PLATFORM_TLS_CERT_SUBJECT,    "SUBJECT",    7  },
+    };
+    CL_Stream *st = check_tls_stream(args[0], "EXT:TLS-PEER-CERTIFICATE");
+    PlatformSocket sh = (PlatformSocket)st->handle_id;
+    CL_Obj result = CL_NIL;
+    char buf[512];
+    int i;
+    CL_UNUSED(n);
+    if (!platform_tls_active(sh))
+        return CL_NIL;
+    /* GC SAFETY: each cl_cons can compact — the accumulating list must stay
+     * forwarded across iterations. */
+    CL_GC_PROTECT(result);
+    for (i = 0; i < 4; i++) {
+        if (platform_tls_peer_cert_field(sh, fields[i].field,
+                                         buf, sizeof(buf)) == 0) {
+            result = cl_cons(cl_make_string(buf, (uint32_t)strlen(buf)), result);
+            result = cl_cons(cl_intern_keyword(fields[i].kw, fields[i].kwlen),
+                             result);
+        }
+    }
+    CL_GC_UNPROTECT(1);
+    return result;
+}
+
 /* --- Registration --- */
 
 void cl_builtins_io_init(void)
@@ -4544,6 +4712,11 @@ void cl_builtins_io_init(void)
     extfun("SOCKET-STREAM-LOCAL-ENDPOINT", bi_socket_stream_local_endpoint, 1, 1);
     extfun("SOCKET-STREAM-TIMEOUT", bi_socket_stream_timeout, 2, 2);
     extfun("%SET-SOCKET-STREAM-TIMEOUT", bi_set_socket_stream_timeout, 3, 3);
+    extfun("TLS-AVAILABLE-P", bi_tls_available_p, 0, 0);
+    extfun("TLS-VERSION", bi_tls_version, 0, 0);
+    extfun("SOCKET-TLS-P", bi_socket_tls_p, 1, 1);
+    extfun("%SOCKET-START-TLS", bi_socket_start_tls, 1, 10);
+    extfun("TLS-PEER-CERTIFICATE", bi_tls_peer_certificate, 1, 1);
 
     /* Pretty-printing keywords */
     KW_LINEAR    = cl_intern_keyword("LINEAR", 6);

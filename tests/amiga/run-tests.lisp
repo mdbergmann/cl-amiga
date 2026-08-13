@@ -10209,6 +10209,17 @@
     (setq *fail-count* (+ *fail-count* 1))
     (format t "FAIL: ARexx port tests could not run: ~A~%" e)))
 
+; --- TLS over AmiSSL (AmigaOS / MorphOS) ---
+; Loopback client/server through the reactor-owned TLS provider.  The file
+; itself skips (with a note, not a failure) when no provider is installed —
+; e.g. the lowend FS-UAE config without AmiSSL — so the suite stays green
+; on TLS-less setups while exercising the full handshake where it can.
+#+amigaos
+(handler-case (load "tests/amiga/tls-tests.lisp")
+  (error (e)
+    (setq *fail-count* (+ *fail-count* 1))
+    (format t "FAIL: TLS tests could not run: ~A~%" e)))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

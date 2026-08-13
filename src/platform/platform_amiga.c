@@ -1217,6 +1217,29 @@ typedef socklen_t cl_socklen_t;
 struct Library *SocketBase = NULL;   /* opened by, and only used from, the reactor */
 static LONG socket_errno = 0;
 
+/* ---- TLS provider (AmiSSL v5 = the OpenSSL 3.x API as an Amiga shared
+ * library).  Compiled in when the AmiSSL SDK headers are installed
+ * (tools/setup-amissl-sdk.sh -> Makefile.cross -DCL_HAVE_AMISSL); the
+ * library itself is opened lazily at runtime, so a machine without AmiSSL
+ * still runs — TLS just reports unavailable.
+ *
+ * AmiSSL is task-bound exactly like bsdsocket (per-task InitAmiSSL, needs
+ * the owning task's SocketBase for SSL_set_fd I/O), so the reactor owns it
+ * outright: every TLS call below runs in the reactor task, and client
+ * threads reach TLS through REQ_TLS_* messages like any other socket op.
+ * The gcc build calls AmiSSL through the SDK's inline headers (register-
+ * mapped calls via AmiSSLBase) — no link library involved. */
+#ifdef CL_HAVE_AMISSL
+#define CL_REACTOR_TLS 1
+#include <amissl/amissl.h>
+#include <libraries/amisslmaster.h>
+#include <proto/amisslmaster.h>
+#include <proto/amissl.h>
+struct Library *AmiSSLMasterBase = NULL;  /* reactor-owned */
+struct Library *AmiSSLBase = NULL;        /* referenced by the inline headers */
+struct Library *AmiSSLExtBase = NULL;     /* referenced by <proto/amissl.h> */
+#endif
+
 /* Fixed cap: bounded by bsdsocket.library's per-task descriptor table (Roadshow
  * default ~64).  Going higher would require SocketBaseTags(SBTC_DTABLESIZE).
  * The host (platform_posix.c) has no such ceiling and grows its table on demand. */
@@ -1250,7 +1273,14 @@ enum {
      * REQ_READFILL (one recv = one datagram into the caller's buffer) and
      * REQ_WRITE (UDP send never partial-sends, so pend_wpos stays 0). */
     REQ_UDP_CONNECT,
-    REQ_ENDPOINT     /* getsockname: dotted-quad into req->buf, port into out_port */
+    REQ_ENDPOINT,    /* getsockname: dotted-quad into req->buf, port into out_port */
+    /* TLS (CL_REACTOR_TLS builds; otherwise answered with -1):
+     * TLS_START runs the handshake on an established connection (params in
+     * tls_params, diagnostic into buf/len); once it succeeds the slot's
+     * READFILL/WRITE/POLL ops transparently move ciphertext.  TLS_PEERCERT
+     * copies one certificate field (selector in `port`) into buf. */
+    REQ_TLS_START,
+    REQ_TLS_PEERCERT
 };
 
 typedef struct SockReq {
@@ -1267,6 +1297,9 @@ typedef struct SockReq {
     volatile PlatformSocket out_slot;  /* connect/listen/accept: new slot */
     volatile int            out_port;  /* listen: bound port */
     uint32_t       seq;          /* trace id (CLAMIGA_SOCK_DIAG); 0 when tracing is off */
+    const PlatformTLSParams *tls_params; /* TLS_START: handshake parameters
+                                          * (caller-stack struct; valid for the
+                                          * whole call since the caller blocks) */
 } SockReq;
 
 /* ---- Reactor request trace (CLAMIGA_SOCK_DIAG) ----
@@ -1324,6 +1357,8 @@ static const char *sock_op_name(int op)
     case REQ_POLL:        return "POLL";
     case REQ_UDP_CONNECT: return "UDP-CONNECT";
     case REQ_ENDPOINT:    return "ENDPOINT";
+    case REQ_TLS_START:   return "TLS-START";
+    case REQ_TLS_PEERCERT: return "TLS-PEERCERT";
     default:              return "?";
     }
 }
@@ -1352,6 +1387,18 @@ static void           *reactor_init_mutex = NULL;
 static SockReq *pend_read[PLATFORM_SOCKET_TABLE_SIZE];
 static SockReq *pend_write[PLATFORM_SOCKET_TABLE_SIZE];
 static uint32_t pend_wpos[PLATFORM_SOCKET_TABLE_SIZE];
+/* TLS can invert a parked op's fd interest: the record layer may need the fd
+ * WRITABLE to finish a read (renegotiation) or READABLE to finish a write /
+ * handshake step.  These flags pick the WaitSelect set the parked op waits
+ * in; plain sockets never set them, so behavior there is unchanged. */
+static uint8_t  pend_read_wants_write[PLATFORM_SOCKET_TABLE_SIZE];
+static uint8_t  pend_write_wants_read[PLATFORM_SOCKET_TABLE_SIZE];
+#ifdef CL_REACTOR_TLS
+/* Per-slot TLS connection state (reactor-owned; clients only ever READ the
+ * socket_ssl pointer, an aligned 32-bit load, for platform_tls_active). */
+static void *socket_ssl[PLATFORM_SOCKET_TABLE_SIZE];      /* SSL* */
+static void *socket_ssl_ctx[PLATFORM_SOCKET_TABLE_SIZE];  /* SSL_CTX* */
+#endif
 /* Absolute deadline (platform_time_ms) for a parked read/write; valid only
  * when the matching pend_*_has_deadline flag is set.  Lets the reactor time a
  * parked op out instead of waiting on it forever. */
@@ -1396,13 +1443,22 @@ static int reactor_alloc_slot(LONG fd, int with_buf)
     return -1;
 }
 
+#ifdef CL_REACTOR_TLS
+static void reactor_tls_drop(int slot, int notify);
+#endif
+
 static void reactor_free_slot(int slot)
 {
+#ifdef CL_REACTOR_TLS
+    reactor_tls_drop(slot, 0);
+#endif
     if (socket_buf[slot]) { iobuf_free(socket_buf[slot]); socket_buf[slot] = NULL; }
     socket_table[slot] = -1;
     pend_wpos[slot] = 0;
     pend_read_has_deadline[slot] = 0;
     pend_write_has_deadline[slot] = 0;
+    pend_read_wants_write[slot] = 0;
+    pend_write_wants_read[slot] = 0;
     socket_rtimeout[slot] = 0;
     socket_wtimeout[slot] = 0;
 }
@@ -1418,6 +1474,393 @@ static void reactor_reply(SockReq *req)
     ReplyMsg(&req->msg);
 }
 
+#ifdef CL_REACTOR_TLS
+/* ===== TLS via AmiSSL (reactor task only) =====
+ *
+ * AmiSSL v5 exposes the OpenSSL 3.x API, so this mirrors the host backend
+ * (tls_openssl.c) with the poll loop replaced by the reactor's park/resume
+ * machinery: an SSL_* call answering WANT_READ/WANT_WRITE parks the request
+ * on the slot with the fd interest recorded in pend_*_wants_* and is retried
+ * when WaitSelect signals readiness — so a slow TLS handshake never stalls
+ * the other sockets. */
+
+static int amissl_state = 0;   /* 0 = untried, 1 = ready, -1 = failed */
+
+/* Bounded copy of a diagnostic into the request's error buffer. */
+static void reactor_tls_err(SockReq *req, const char *msg)
+{
+    uint32_t n;
+    if (!req->buf || req->len == 0) return;
+    n = (uint32_t)strlen(msg);
+    if (n >= req->len) n = req->len - 1;
+    memcpy(req->buf, msg, n);
+    req->buf[n] = '\0';
+}
+
+/* Compose "<what>: <openssl detail> (certificate verification: ...)". */
+static void reactor_tls_err_ssl(SockReq *req, void *ssl, const char *what)
+{
+    char tmp[320];
+    char detail[160];
+    unsigned long e;
+    long vr = X509_V_OK;
+    detail[0] = '\0';
+    e = ERR_get_error();
+    if (e) ERR_error_string_n(e, detail, sizeof(detail));
+    else strcpy(detail, "TLS protocol error");
+    if (ssl) vr = SSL_get_verify_result((SSL *)ssl);
+    if (vr != X509_V_OK)
+        sprintf(tmp, "%s: %.140s (certificate verification: %.80s)",
+                what, detail, X509_verify_cert_error_string(vr));
+    else
+        sprintf(tmp, "%s: %.140s", what, detail);
+    reactor_tls_err(req, tmp);
+}
+
+/* Lazy provider bring-up, once per reactor lifetime.  All of AmiSSL is
+ * owned by this task: InitAmiSSL is per-task and binds our SocketBase so
+ * SSL_set_fd I/O uses the reactor's descriptor table. */
+static int reactor_tls_provider_init(SockReq *req)
+{
+    if (amissl_state == 1) return 0;
+    if (amissl_state == -1) {
+        reactor_tls_err(req, "AmiSSL initialisation failed earlier "
+                        "(see the first TLS error this session)");
+        return -1;
+    }
+    amissl_state = -1;
+    AmiSSLMasterBase = OpenLibrary("amisslmaster.library",
+                                   AMISSLMASTER_MIN_VERSION);
+    if (!AmiSSLMasterBase) {
+        reactor_tls_err(req, "amisslmaster.library v5 not found - "
+                        "install AmiSSL 5 (aminet.net/util/libs)");
+        return -1;
+    }
+    if (!InitAmiSSLMaster(AMISSL_CURRENT_VERSION, TRUE)) {
+        reactor_tls_err(req, "installed AmiSSL is too old for this build - "
+                        "update to AmiSSL 5.27 or newer");
+        return -1;
+    }
+    AmiSSLBase = OpenAmiSSL();
+    if (!AmiSSLBase) {
+        reactor_tls_err(req, "OpenAmiSSL() failed - AmiSSL installation "
+                        "is incomplete");
+        return -1;
+    }
+    if (InitAmiSSL(AmiSSL_ErrNoPtr, (ULONG)&socket_errno,
+                   AmiSSL_SocketBase, (ULONG)SocketBase,
+                   TAG_DONE) != 0) {
+        reactor_tls_err(req, "InitAmiSSL() failed");
+        return -1;
+    }
+    amissl_state = 1;
+    return 0;
+}
+
+/* Reactor-exit teardown (after reactor_loop; sockets are already closed). */
+static void reactor_tls_provider_cleanup(void)
+{
+    if (amissl_state == 1)
+        CleanupAmiSSLA(NULL);
+    if (AmiSSLBase) { CloseAmiSSL(); AmiSSLBase = NULL; }
+    if (AmiSSLMasterBase) { CloseLibrary(AmiSSLMasterBase); AmiSSLMasterBase = NULL; }
+    amissl_state = 0;
+}
+
+/* Free a slot's TLS state.  notify sends one non-blocking close_notify
+ * (the fd is non-blocking, so SSL_shutdown can never park). */
+static void reactor_tls_drop(int slot, int notify)
+{
+    if (socket_ssl[slot]) {
+        if (notify) SSL_shutdown((SSL *)socket_ssl[slot]);
+        SSL_free((SSL *)socket_ssl[slot]);
+        socket_ssl[slot] = NULL;
+    }
+    if (socket_ssl_ctx[slot]) {
+        SSL_CTX_free((SSL_CTX *)socket_ssl_ctx[slot]);
+        socket_ssl_ctx[slot] = NULL;
+    }
+}
+
+/* Passphrase callback for encrypted PEM keys (userdata = passphrase). */
+static int reactor_tls_passwd_cb(char *buf, int size, int rwflag, void *userdata)
+{
+    const char *pw = (const char *)userdata;
+    int len;
+    (void)rwflag;
+    if (!pw) return 0;
+    len = (int)strlen(pw);
+    if (len > size) len = size;
+    memcpy(buf, pw, (size_t)len);
+    return len;
+}
+
+/* Park a TLS op on its slot with the fd interest the record layer asked
+ * for.  is_write selects the pend slot (and deadline bank), matching how
+ * the op re-enters via reactor_resume_read/_write. */
+static void reactor_tls_park(SockReq *req, int slot, int sslerr, int is_write)
+{
+    if (is_write) {
+        pend_write[slot] = req;
+        pend_write_wants_read[slot] = (sslerr == SSL_ERROR_WANT_READ);
+        reactor_arm_deadline(slot, req->timeout_ms, 1);
+    } else {
+        pend_read[slot] = req;
+        pend_read_wants_write[slot] = (sslerr == SSL_ERROR_WANT_WRITE);
+        reactor_arm_deadline(slot, req->timeout_ms, 0);
+    }
+    if (sock_diag_on()) {
+        char d[48];
+        sprintf(d, "slot=%d want=%s", slot,
+                sslerr == SSL_ERROR_WANT_WRITE ? "w" : "r");
+        sock_diag_line(req, is_write ? "park-w" : "park-r", d);
+    }
+}
+
+/* REQ_TLS_START — build the context on first entry, then drive the
+ * handshake; parks (in pend_read) and is re-entered on fd readiness. */
+static void reactor_try_tls_start(SockReq *req)
+{
+    int slot = (int)req->slot;
+    LONG fd = socket_table[slot];
+    const PlatformTLSParams *p = req->tls_params;
+    SSL *ssl;
+    int n, sslerr;
+
+    if (fd < 0) {
+        reactor_tls_err(req, "socket is closed");
+        req->result = -1; reactor_reply(req); return;
+    }
+
+    if (!socket_ssl[slot]) {
+        SSL_CTX *ctx;
+        if (reactor_tls_provider_init(req) != 0) {
+            req->result = -1; reactor_reply(req); return;
+        }
+        ctx = SSL_CTX_new(p->server ? TLS_server_method() : TLS_client_method());
+        if (!ctx) {
+            reactor_tls_err_ssl(req, NULL, "TLS context creation");
+            req->result = -1; reactor_reply(req); return;
+        }
+        /* Trust anchors: explicit locations win; else AmiSSL's default
+         * store (AmiSSL:Certs) when verifying. */
+        if (p->ca_file || p->ca_path) {
+            if (SSL_CTX_load_verify_locations(ctx, p->ca_file, p->ca_path) != 1) {
+                reactor_tls_err_ssl(req, NULL, "loading CA locations");
+                SSL_CTX_free(ctx);
+                req->result = -1; reactor_reply(req); return;
+            }
+        } else if (!p->server && p->verify) {
+            SSL_CTX_set_default_verify_paths(ctx);
+        }
+        /* Own certificate/key (server: required). */
+        if (p->cert_file) {
+            const char *key = p->key_file ? p->key_file : p->cert_file;
+            if (p->key_password) {
+#if PLATFORM_MORPHOS
+                /* The passphrase callback is a C function pointer the 68k
+                 * AmiSSL library calls back into — from native PPC code
+                 * that needs an EmulLibEntry gate with manual argument
+                 * extraction, which is not implemented yet.  Encrypted
+                 * keys fail cleanly instead of jumping into PPC code. */
+                reactor_tls_err(req, "encrypted private keys are not "
+                                "supported on MorphOS yet - decrypt the "
+                                "key file (openssl rsa -in enc.pem -out "
+                                "plain.pem)");
+                SSL_CTX_free(ctx);
+                req->result = -1; reactor_reply(req); return;
+#else
+                SSL_CTX_set_default_passwd_cb(ctx, reactor_tls_passwd_cb);
+                SSL_CTX_set_default_passwd_cb_userdata(ctx, (void *)p->key_password);
+#endif
+            }
+            if (SSL_CTX_use_certificate_chain_file(ctx, p->cert_file) != 1 ||
+                SSL_CTX_use_PrivateKey_file(ctx, key, SSL_FILETYPE_PEM) != 1 ||
+                SSL_CTX_check_private_key(ctx) != 1) {
+                reactor_tls_err_ssl(req, NULL, "loading certificate/key");
+                SSL_CTX_free(ctx);
+                req->result = -1; reactor_reply(req); return;
+            }
+            SSL_CTX_set_default_passwd_cb(ctx, NULL);
+            SSL_CTX_set_default_passwd_cb_userdata(ctx, NULL);
+        } else if (p->server) {
+            reactor_tls_err(req, "server-side TLS requires a certificate file");
+            SSL_CTX_free(ctx);
+            req->result = -1; reactor_reply(req); return;
+        }
+        ssl = SSL_new(ctx);
+        if (!ssl || SSL_set_fd(ssl, fd) != 1) {
+            reactor_tls_err_ssl(req, NULL, "TLS connection creation");
+            if (ssl) SSL_free(ssl);
+            SSL_CTX_free(ctx);
+            req->result = -1; reactor_reply(req); return;
+        }
+        if (!p->server && p->verify)
+            SSL_set_verify(ssl, SSL_VERIFY_PEER, NULL);
+        if (!p->server && p->hostname && p->hostname[0]) {
+            SSL_set_tlsext_host_name(ssl, (char *)p->hostname);   /* SNI */
+            if (p->verify && SSL_set1_host(ssl, p->hostname) != 1) {
+                reactor_tls_err_ssl(req, NULL, "setting verification hostname");
+                SSL_free(ssl);
+                SSL_CTX_free(ctx);
+                req->result = -1; reactor_reply(req); return;
+            }
+        }
+        socket_ssl_ctx[slot] = ctx;
+        socket_ssl[slot] = ssl;
+    }
+
+    ssl = (SSL *)socket_ssl[slot];
+    ERR_clear_error();
+    n = p->server ? SSL_accept(ssl) : SSL_connect(ssl);
+    if (n > 0) {
+        req->result = 0; reactor_reply(req); return;
+    }
+    sslerr = SSL_get_error(ssl, n);
+    if (sslerr == SSL_ERROR_WANT_READ || sslerr == SSL_ERROR_WANT_WRITE) {
+        reactor_tls_park(req, slot, sslerr, 0);
+        return;
+    }
+    reactor_tls_err_ssl(req, ssl,
+                        p->server ? "TLS handshake (accept)"
+                                  : "TLS handshake (connect)");
+    /* A failed handshake leaves the connection unusable; drop the TLS
+     * state so the close path doesn't try to close_notify over garbage. */
+    reactor_tls_drop(slot, 0);
+    req->result = -1; reactor_reply(req);
+}
+
+/* TLS leg of reactor_try_read: decrypt into the caller's buffer. */
+static void reactor_try_tls_read(SockReq *req)
+{
+    int slot = (int)req->slot;
+    SSL *ssl = (SSL *)socket_ssl[slot];
+    int n, sslerr;
+    ERR_clear_error();
+    n = SSL_read(ssl, req->buf, (int)req->len);
+    if (n > 0)  { req->result = n; reactor_reply(req); return; }
+    sslerr = SSL_get_error(ssl, n);
+    if (sslerr == SSL_ERROR_ZERO_RETURN) {         /* clean close_notify */
+        req->result = 0; reactor_reply(req); return;
+    }
+    if (sslerr == SSL_ERROR_WANT_READ || sslerr == SSL_ERROR_WANT_WRITE) {
+        reactor_tls_park(req, slot, sslerr, 0);
+        return;
+    }
+    req->result = -1; reactor_reply(req);
+}
+
+/* TLS leg of reactor_try_write.  Without partial-write mode SSL_write
+ * answers all-or-WANT, but a short success is still handled by advancing
+ * pend_wpos and re-entering (a fresh SSL_write call, which is legal). */
+static void reactor_try_tls_write(SockReq *req)
+{
+    int slot = (int)req->slot;
+    SSL *ssl = (SSL *)socket_ssl[slot];
+    uint32_t off = pend_wpos[slot];
+    int n, sslerr;
+    ERR_clear_error();
+    n = SSL_write(ssl, req->buf + off, (int)(req->len - off));
+    if (n > 0) {
+        off += (uint32_t)n;
+        pend_wpos[slot] = off;
+        if (off >= req->len) {
+            pend_wpos[slot] = 0;
+            req->result = 0; reactor_reply(req);
+        } else {
+            reactor_tls_park(req, slot, SSL_ERROR_WANT_WRITE, 1);
+        }
+        return;
+    }
+    sslerr = SSL_get_error(ssl, n);
+    if (sslerr == SSL_ERROR_WANT_READ || sslerr == SSL_ERROR_WANT_WRITE) {
+        reactor_tls_park(req, slot, sslerr, 1);
+        return;
+    }
+    pend_wpos[slot] = 0;
+    req->result = -1; reactor_reply(req);
+}
+
+/* TLS leg of reactor_try_poll: buffered plaintext counts as ready; a
+ * readable fd is only a hint (could be a partial record), so SSL_peek
+ * gives the real LISTEN answer.  result: 1 data, 0 not yet, 2 EOF. */
+static void reactor_try_tls_poll(SockReq *req)
+{
+    int slot = (int)req->slot;
+    LONG fd = socket_table[slot];
+    SSL *ssl = (SSL *)socket_ssl[slot];
+    CL_fdset rset;
+    struct timeval tv;
+    LONG r;
+    char peek;
+    int n, sslerr;
+    if (SSL_pending(ssl) > 0) { req->result = 1; reactor_reply(req); return; }
+    CL_FD_ZERO(&rset);
+    CL_FD_SET(fd, &rset);
+    tv.tv_sec = 0;
+    tv.tv_usec = 0;
+    r = WaitSelect(fd + 1, &rset, NULL, NULL, &tv, NULL);
+    if (r <= 0 || !CL_FD_ISSET(fd, &rset)) { req->result = 0; reactor_reply(req); return; }
+    ERR_clear_error();
+    n = SSL_peek(ssl, &peek, 1);
+    if (n > 0) { req->result = 1; reactor_reply(req); return; }
+    sslerr = SSL_get_error(ssl, n);
+    if (sslerr == SSL_ERROR_WANT_READ || sslerr == SSL_ERROR_WANT_WRITE)
+        req->result = 0;               /* nothing decodable yet */
+    else
+        req->result = 2;               /* close_notify / hard EOF / error */
+    reactor_reply(req);
+}
+
+/* REQ_TLS_PEERCERT — copy one certificate field (selector in req->port,
+ * PLATFORM_TLS_CERT_*) into the caller's buffer. */
+static void reactor_tls_peercert(SockReq *req)
+{
+    int slot = (int)req->slot;
+    SSL *ssl = (SSL *)socket_ssl[slot];
+    X509 *x;
+    int ok = -1;
+    if (!ssl || !req->buf || req->len == 0) {
+        req->result = -1; reactor_reply(req); return;
+    }
+    req->buf[0] = '\0';
+    x = SSL_get1_peer_certificate(ssl);
+    if (x) {
+        switch (req->port) {
+        case PLATFORM_TLS_CERT_SUBJECT:
+        case PLATFORM_TLS_CERT_ISSUER: {
+            X509_NAME *name = (req->port == PLATFORM_TLS_CERT_SUBJECT)
+                              ? X509_get_subject_name(x)
+                              : X509_get_issuer_name(x);
+            if (name && X509_NAME_oneline(name, req->buf, (int)req->len))
+                ok = 0;
+            break;
+        }
+        case PLATFORM_TLS_CERT_NOT_BEFORE:
+        case PLATFORM_TLS_CERT_NOT_AFTER: {
+            const ASN1_TIME *t = (req->port == PLATFORM_TLS_CERT_NOT_BEFORE)
+                                 ? X509_get0_notBefore(x)
+                                 : X509_get0_notAfter(x);
+            struct tm tm;
+            memset(&tm, 0, sizeof(tm));
+            if (t && req->len >= 24 && ASN1_TIME_to_tm(t, &tm) == 1) {
+                sprintf(req->buf, "%04d-%02d-%02dT%02d:%02d:%02dZ",
+                        tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                        tm.tm_hour, tm.tm_min, tm.tm_sec);
+                ok = 0;
+            }
+            break;
+        }
+        default:
+            break;
+        }
+        X509_free(x);
+    }
+    req->result = ok;
+    reactor_reply(req);
+}
+#endif /* CL_REACTOR_TLS */
+
 /* recv into the caller's read buffer; complete or park.  result>0 = bytes,
  * 0 = EOF, -1 = error. */
 static void reactor_try_read(SockReq *req)
@@ -1426,6 +1869,9 @@ static void reactor_try_read(SockReq *req)
     LONG fd = socket_table[slot];
     LONG n;
     if (fd < 0) { req->result = -1; reactor_reply(req); return; }
+#ifdef CL_REACTOR_TLS
+    if (socket_ssl[slot]) { reactor_try_tls_read(req); return; }
+#endif
     n = recv(fd, req->buf, (LONG)req->len, 0);
     if (n > 0)                       { req->result = (int)n; reactor_reply(req); }
     else if (n == 0)                 { req->result = 0;      reactor_reply(req); } /* EOF */
@@ -1453,6 +1899,9 @@ static void reactor_try_poll(SockReq *req)
     struct timeval tv;
     LONG r;
     if (fd < 0) { req->result = -1; reactor_reply(req); return; }
+#ifdef CL_REACTOR_TLS
+    if (socket_ssl[slot]) { reactor_try_tls_poll(req); return; }
+#endif
     CL_FD_ZERO(&rset);
     CL_FD_SET(fd, &rset);
     tv.tv_sec = 0;
@@ -1479,6 +1928,9 @@ static void reactor_try_write(SockReq *req)
     LONG n;
     uint32_t off;
     if (fd < 0) { req->result = -1; pend_wpos[slot] = 0; reactor_reply(req); return; }
+#ifdef CL_REACTOR_TLS
+    if (socket_ssl[slot]) { reactor_try_tls_write(req); return; }
+#endif
     off = pend_wpos[slot];
     n = send(fd, req->buf + off, (LONG)(req->len - off), 0);
     if (n >= 0) {
@@ -1702,6 +2154,11 @@ static void reactor_do_close(SockReq *req)
     if (pend_read[slot])  { pend_read[slot]->result  = -1; reactor_reply(pend_read[slot]);  pend_read[slot]  = NULL; }
     if (pend_write[slot]) { pend_write[slot]->result = -1; reactor_reply(pend_write[slot]); pend_write[slot] = NULL; }
     if (socket_table[slot] >= 0) {
+#ifdef CL_REACTOR_TLS
+        /* close_notify before CloseSocket — the shutdown record still
+         * needs the fd; non-blocking, best-effort. */
+        reactor_tls_drop(slot, 1);
+#endif
         CloseSocket(socket_table[slot]);
         reactor_free_slot(slot);
     }
@@ -1736,6 +2193,10 @@ static void reactor_handle(SockReq *req)
     case REQ_UDP_CONNECT: reactor_udp_connect(req); break;
     case REQ_ENDPOINT: reactor_do_endpoint(req);   break;
     case REQ_CLOSE:    reactor_do_close(req);      break;
+#ifdef CL_REACTOR_TLS
+    case REQ_TLS_START:    reactor_try_tls_start(req); break;
+    case REQ_TLS_PEERCERT: reactor_tls_peercert(req);  break;
+#endif
     default:           req->result = -1; reactor_reply(req); break;
     }
 }
@@ -1745,13 +2206,17 @@ static void reactor_resume_read(int slot)
     SockReq *req = pend_read[slot];
     pend_read[slot] = NULL;
     pend_read_has_deadline[slot] = 0;
+    pend_read_wants_write[slot] = 0;
     if (sock_diag_on()) {
         char d[32];
         sprintf(d, "slot=%d", slot);
         sock_diag_line(req, "resume-r", d);
     }
-    if (req->op == REQ_ACCEPT) reactor_try_accept(req);
-    else                       reactor_try_read(req);
+    if (req->op == REQ_ACCEPT) { reactor_try_accept(req); return; }
+#ifdef CL_REACTOR_TLS
+    if (req->op == REQ_TLS_START) { reactor_try_tls_start(req); return; }
+#endif
+    reactor_try_read(req);
 }
 
 static void reactor_resume_write(int slot)
@@ -1759,6 +2224,7 @@ static void reactor_resume_write(int slot)
     SockReq *req = pend_write[slot];
     pend_write[slot] = NULL;
     pend_write_has_deadline[slot] = 0;
+    pend_write_wants_read[slot] = 0;
     if (sock_diag_on()) {
         char d[32];
         sprintf(d, "slot=%d", slot);
@@ -1778,10 +2244,19 @@ static void reactor_expire_deadlines(uint32_t now)
             (int32_t)(pend_read_deadline[i] - now) <= 0) {
             SockReq *req = pend_read[i];
             pend_read[i] = NULL; pend_read_has_deadline[i] = 0;
+            pend_read_wants_write[i] = 0;
             if (sock_diag_on()) {
                 char d[32];
                 sprintf(d, "slot=%d", i);
                 sock_diag_line(req, "expire-r", d);
+            }
+            if (req->op == REQ_TLS_START) {
+                /* Handshake never completed: drop the half-established SSL
+                 * state so the slot doesn't look TLS-upgraded afterward
+                 * (platform_tls_active) and a retried EXT:SOCKET-START-TLS
+                 * can proceed on the still-plain socket, matching the
+                 * REQ_CONNECT cleanup in the pend_write branch below. */
+                reactor_tls_drop(i, 0);
             }
             req->result = PLATFORM_SOCKET_TIMEOUT;
             req->out_slot = PLATFORM_SOCKET_INVALID;   /* in case it was an accept */
@@ -1791,6 +2266,7 @@ static void reactor_expire_deadlines(uint32_t now)
             (int32_t)(pend_write_deadline[i] - now) <= 0) {
             SockReq *req = pend_write[i];
             pend_write[i] = NULL; pend_write_has_deadline[i] = 0;
+            pend_write_wants_read[i] = 0;
             pend_wpos[i] = 0;
             if (sock_diag_on()) {
                 char d[32];
@@ -1829,8 +2305,16 @@ static void reactor_loop(void)
         for (i = 1; i < PLATFORM_SOCKET_TABLE_SIZE; i++) {
             LONG fd = socket_table[i];
             if (fd < 0) continue;
-            if (pend_read[i])  { CL_FD_SET(fd, &rset); if (fd > maxfd) maxfd = fd; }
-            if (pend_write[i]) { CL_FD_SET(fd, &wset); if (fd > maxfd) maxfd = fd; }
+            /* A parked op normally waits for its own direction; TLS can
+             * invert that (pend_*_wants_* — see the flag declarations). */
+            if (pend_read[i]) {
+                CL_FD_SET(fd, pend_read_wants_write[i] ? &wset : &rset);
+                if (fd > maxfd) maxfd = fd;
+            }
+            if (pend_write[i]) {
+                CL_FD_SET(fd, pend_write_wants_read[i] ? &rset : &wset);
+                if (fd > maxfd) maxfd = fd;
+            }
             /* Track the soonest deadline so WaitSelect wakes to expire it. */
             if (pend_read[i] && pend_read_has_deadline[i]) {
                 if (!have_deadline || (int32_t)(pend_read_deadline[i] - earliest) < 0)
@@ -1857,8 +2341,12 @@ static void reactor_loop(void)
             for (i = 1; i < PLATFORM_SOCKET_TABLE_SIZE; i++) {
                 LONG fd = socket_table[i];
                 if (fd < 0) continue;
-                if (pend_read[i]  && CL_FD_ISSET(fd, &rset)) reactor_resume_read(i);
-                if (pend_write[i] && CL_FD_ISSET(fd, &wset)) reactor_resume_write(i);
+                if (pend_read[i] &&
+                    CL_FD_ISSET(fd, pend_read_wants_write[i] ? &wset : &rset))
+                    reactor_resume_read(i);
+                if (pend_write[i] &&
+                    CL_FD_ISSET(fd, pend_write_wants_read[i] ? &rset : &wset))
+                    reactor_resume_write(i);
             }
             reactor_expire_deadlines(platform_time_ms());
         } else {
@@ -1866,8 +2354,12 @@ static void reactor_loop(void)
             for (i = 1; i < PLATFORM_SOCKET_TABLE_SIZE; i++) {
                 LONG fd = socket_table[i];
                 if (fd < 0) continue;
-                if (pend_read[i]  && CL_FD_ISSET(fd, &rset)) reactor_resume_read(i);
-                if (pend_write[i] && CL_FD_ISSET(fd, &wset)) reactor_resume_write(i);
+                if (pend_read[i] &&
+                    CL_FD_ISSET(fd, pend_read_wants_write[i] ? &wset : &rset))
+                    reactor_resume_read(i);
+                if (pend_write[i] &&
+                    CL_FD_ISSET(fd, pend_write_wants_read[i] ? &rset : &wset))
+                    reactor_resume_write(i);
             }
         }
 
@@ -1910,7 +2402,11 @@ static void reactor_entry(void)
         socket_table[i] = -1; socket_buf[i] = NULL;
         pend_read[i] = NULL; pend_write[i] = NULL; pend_wpos[i] = 0;
         pend_read_has_deadline[i] = 0; pend_write_has_deadline[i] = 0;
+        pend_read_wants_write[i] = 0; pend_write_wants_read[i] = 0;
         socket_rtimeout[i] = 0; socket_wtimeout[i] = 0;
+#ifdef CL_REACTOR_TLS
+        socket_ssl[i] = NULL; socket_ssl_ctx[i] = NULL;
+#endif
     }
 
     if (port) {
@@ -1929,6 +2425,9 @@ static void reactor_entry(void)
 
     reactor_loop();
 
+#ifdef CL_REACTOR_TLS
+    reactor_tls_provider_cleanup();   /* before SocketBase goes away */
+#endif
     CloseLibrary(SocketBase);
     SocketBase = NULL;
     DeleteMsgPort(reactor_port);
@@ -1981,7 +2480,13 @@ static int reactor_ensure(void)
         if (reactor_boot_sig >= 0) {
             reactor_proc = CreateNewProcTags(
                 NP_Entry,     CL_PROC_ENTRY(reactor_entry_gate, reactor_entry),
+#ifdef CL_REACTOR_TLS
+                /* TLS handshakes run on this stack (AmiSSL is reactor-
+                 * owned); give the crypto code real headroom. */
+                CL_PROC_STACK_TAGS(65536),
+#else
                 CL_PROC_STACK_TAGS(32768),
+#endif
                 NP_Name,      (ULONG)"clamiga_sockets",
                 TAG_DONE);
             if (reactor_proc) {
@@ -2201,6 +2706,157 @@ int platform_socket_local_endpoint(PlatformSocket sh, char *ip_out, int *port_ou
     if (port_out) *port_out = req.out_port;
     return 0;
 }
+
+/* --- TLS (platform.h contract) ---
+ * CL_REACTOR_TLS builds (AmiSSL SDK installed at compile time) marshal the
+ * TLS ops to the reactor, which owns AmiSSL exactly as it owns SocketBase.
+ * Builds without the SDK report TLS unavailable; plain sockets are
+ * unaffected either way. */
+
+#ifdef CL_REACTOR_TLS
+
+/* Availability probe from any task: amisslmaster.library presence is
+ * Exec-safe to test here; the actual InitAmiSSL happens in the reactor on
+ * first use.  Cached — AmiSSL doesn't come and go at runtime. */
+static int  amissl_probe_state = 0;      /* 0 untried, 1 present, -1 absent */
+static char amissl_version_str[32];
+
+int platform_tls_available(void)
+{
+    if (amissl_probe_state == 0) {
+        struct Library *l = OpenLibrary("amisslmaster.library",
+                                        AMISSLMASTER_MIN_VERSION);
+        if (l) {
+            sprintf(amissl_version_str, "AmiSSL %d.%d",
+                    (int)l->lib_Version, (int)l->lib_Revision);
+            CloseLibrary(l);
+            amissl_probe_state = 1;
+        } else {
+            amissl_probe_state = -1;
+        }
+    }
+    return amissl_probe_state == 1;
+}
+
+const char *platform_tls_version(void)
+{
+    return platform_tls_available() ? amissl_version_str : NULL;
+}
+
+int platform_tls_start(PlatformSocket sh, const PlatformTLSParams *params,
+                       char *err, uint32_t errlen)
+{
+    SockReq req;
+    if (err && errlen > 0) err[0] = '\0';
+    if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE || socket_table[sh] < 0) {
+        if (err && errlen > 0) {
+            strncpy(err, "invalid or closed socket", errlen - 1);
+            err[errlen - 1] = '\0';
+        }
+        return -1;
+    }
+    if (!socket_buf[sh]) {
+        /* Listener and UDP slots have no IOBuf; neither can carry TLS. */
+        if (err && errlen > 0) {
+            strncpy(err, "TLS requires a connected TCP stream socket", errlen - 1);
+            err[errlen - 1] = '\0';
+        }
+        return -1;
+    }
+    if (socket_ssl[sh]) {
+        if (err && errlen > 0) {
+            strncpy(err, "socket is already TLS-upgraded", errlen - 1);
+            err[errlen - 1] = '\0';
+        }
+        return -1;
+    }
+    /* Buffered plaintext output must reach the wire before handshake bytes. */
+    if (sock_flush(sh) != 0) {
+        if (err && errlen > 0) {
+            strncpy(err, "flushing pending output before the TLS handshake "
+                    "failed", errlen - 1);
+            err[errlen - 1] = '\0';
+        }
+        return -1;
+    }
+    memset(&req, 0, sizeof(req));
+    req.op = REQ_TLS_START;
+    req.slot = sh;
+    req.tls_params = params;      /* caller-stack struct; we block below */
+    req.buf = err;                /* diagnostic buffer (may be NULL) */
+    req.len = err ? errlen : 0;
+    req.timeout_ms = params->timeout_ms;
+    sock_call(&req);
+    if (req.result == 0) return 0;
+    if (err && errlen > 0 && err[0] == '\0') {
+        strncpy(err, req.result == PLATFORM_SOCKET_TIMEOUT
+                ? "TLS handshake timed out" : "TLS handshake failed",
+                errlen - 1);
+        err[errlen - 1] = '\0';
+    }
+    return -1;
+}
+
+int platform_tls_active(PlatformSocket sh)
+{
+    if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE) return 0;
+    return socket_ssl[sh] != NULL;   /* aligned pointer read — benign race */
+}
+
+int platform_tls_peer_cert_field(PlatformSocket sh, int field,
+                                 char *out, uint32_t outlen)
+{
+    SockReq req;
+    if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE || !socket_ssl[sh])
+        return -1;
+    memset(&req, 0, sizeof(req));
+    req.op = REQ_TLS_PEERCERT;
+    req.slot = sh;
+    req.port = field;
+    req.buf = out;
+    req.len = outlen;
+    sock_call(&req);
+    return req.result;
+}
+
+#else /* !CL_REACTOR_TLS — built without the AmiSSL SDK */
+
+int platform_tls_available(void)
+{
+    return 0;
+}
+
+const char *platform_tls_version(void)
+{
+    return NULL;
+}
+
+int platform_tls_start(PlatformSocket sh, const PlatformTLSParams *params,
+                       char *err, uint32_t errlen)
+{
+    (void)sh; (void)params;
+    if (err && errlen > 0) {
+        strncpy(err, "this build has no TLS support (compiled without the "
+                "AmiSSL SDK - see tools/setup-amissl-sdk.sh)", errlen - 1);
+        err[errlen - 1] = '\0';
+    }
+    return -1;
+}
+
+int platform_tls_active(PlatformSocket sh)
+{
+    (void)sh;
+    return 0;
+}
+
+int platform_tls_peer_cert_field(PlatformSocket sh, int field,
+                                 char *out, uint32_t outlen)
+{
+    (void)sh; (void)field; (void)out; (void)outlen;
+    return -1;
+}
+
+#endif /* CL_REACTOR_TLS */
 
 void platform_socket_close_gc(PlatformSocket sh)
 {
