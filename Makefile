@@ -434,6 +434,13 @@ test-fast: $(TEST_BINS) host
 		echo "FAIL"; \
 		failed=1; \
 	fi; \
+	echo "--- test_compile_file_stderr ---"; \
+	if sh $(TEST_SRCDIR)/test_compile_file_stderr.sh $(BUILDDIR)/clamiga; then \
+		echo "PASS"; \
+	else \
+		echo "FAIL"; \
+		failed=1; \
+	fi; \
 	echo "--- test_fasl_cache_dir ---"; \
 	if sh $(TEST_SRCDIR)/test_fasl_cache_dir.sh $(BUILDDIR)/clamiga; then \
 		echo "PASS"; \

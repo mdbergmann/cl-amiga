@@ -1588,8 +1588,6 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
     cl_current_file_id++;
     cl_reader_reset_line();
 
-    fprintf(stderr, "; Compiling %s\n", in_path);
-
     /* Allocate FASL and unit buffers + FASL writers (heap-allocated to
      * keep bi_compile_file's stack frame small — CL_FaslWriter is ~4KB
      * due to gensym_objs[1024], and two on the stack would interact
@@ -1859,7 +1857,6 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
     cl_reader_set_line(prev_line);
 
     /* Return (values output-truename nil nil) per CL spec */
-    fprintf(stderr, "; Done compiling %s\n", in_path);
     if (fasl_incomplete) {
         /* FASL was not written — return NIL so caller falls back to source */
         output_pathname = CL_NIL;
