@@ -1218,8 +1218,8 @@ struct Library *SocketBase = NULL;   /* opened by, and only used from, the react
 static LONG socket_errno = 0;
 
 /* ---- TLS provider (AmiSSL v5 = the OpenSSL 3.x API as an Amiga shared
- * library).  Compiled in when the AmiSSL SDK headers are installed
- * (tools/setup-amissl-sdk.sh -> Makefile.cross -DCL_HAVE_AMISSL); the
+ * library).  Compiled in when the vendored AmiSSL SDK headers are present
+ * (include/amissl-sdk -> Makefile.cross/-mos -DCL_HAVE_AMISSL); the
  * library itself is opened lazily at runtime, so a machine without AmiSSL
  * still runs — TLS just reports unavailable.
  *
@@ -2837,7 +2837,7 @@ int platform_tls_start(PlatformSocket sh, const PlatformTLSParams *params,
     (void)sh; (void)params;
     if (err && errlen > 0) {
         strncpy(err, "this build has no TLS support (compiled without the "
-                "AmiSSL SDK - see tools/setup-amissl-sdk.sh)", errlen - 1);
+                "AmiSSL SDK headers - see include/amissl-sdk)", errlen - 1);
         err[errlen - 1] = '\0';
     }
     return -1;

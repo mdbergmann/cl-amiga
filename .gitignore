@@ -25,4 +25,3 @@ mosdebug.log
 
 # MorphOS-built binary dropped in for scripts/make-binary-release.sh
 /clamiga-mos
-tools/amissl-sdk/

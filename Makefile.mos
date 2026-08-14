@@ -44,17 +44,17 @@ CFLAGS  ?= -std=c99 -noixemul -Wall -O2 -DPLATFORM_AMIGA -DPLATFORM_MORPHOS $(DE
 # tc_SigWait) deep into long runs.  Keep compile and link flags in agreement.
 LDFLAGS ?= -noixemul
 
-# AmiSSL SDK (optional — tools/setup-amissl-sdk.sh): MorphOS uses the very
-# same SDK; <proto/amissl.h> selects the ppcinline headers under __PPC__,
-# which call the 68k amissl libraries through the ABox emulation.  The
-# resulting TLS support is COMPILE-UNTESTED on MorphOS so far — enable by
-# installing the SDK here, build natively, and run tests/amiga/tls-tests.lisp.
+# AmiSSL SDK headers (vendored in include/amissl-sdk — see its README.md):
+# MorphOS uses the very same SDK; <proto/amissl.h> selects the ppcinline
+# headers under __PPC__, which call the 68k amissl libraries through the
+# ABox emulation.  The resulting TLS support is COMPILE-UNTESTED on MorphOS
+# so far — build natively and run tests/amiga/tls-tests.lisp to verify.
 # The long-term plan is MorphOS's native openssl3.library instead; the
 # reactor TLS code is provider-agnostic OpenSSL 3.x API either way.
-# Without the SDK this build is exactly as before (TLS reports unavailable).
-AMISSL_SDK ?= tools/amissl-sdk/AmiSSL/Developer
-ifneq ($(wildcard $(AMISSL_SDK)/include/proto/amissl.h),)
-CFLAGS += -DCL_HAVE_AMISSL -I$(AMISSL_SDK)/include
+# Deleting the headers (wildcard guard) restores the previous TLS-less build.
+AMISSL_INC ?= include/amissl-sdk
+ifneq ($(wildcard $(AMISSL_INC)/proto/amissl.h),)
+CFLAGS += -DCL_HAVE_AMISSL -I$(AMISSL_INC)
 endif
 LDLIBS  ?= -lm
 
