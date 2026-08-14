@@ -23,11 +23,17 @@
 #     PPCSPLower, not the 68k tc_SPLower), and the NP_Entry trap gates in
 #     platform_amiga_ppc.h.
 #   * PPC is big-endian and 32-bit like m68k, so the FASL wire format and
-#     all 32-bit heap-struct assumptions hold unchanged — Amiga FASLs and
-#     MorphOS FASLs are byte-compatible.
-#   * CL_WIDE_STRINGS is intentionally NOT defined (matches the Amiga
-#     builds, not the host build) so string/FASL layout matches the Amiga
-#     target.
+#     all 32-bit heap-struct assumptions hold unchanged.
+#   * CL_WIDE_STRINGS IS defined (matches the host build, not the m68k
+#     Amiga builds): MorphOS machines have the RAM for full Unicode, and
+#     libraries like flexi-streams/drakma hard-require CHAR-CODE-LIMIT
+#     >= 65533.  The representation is adaptive — 8-bit TYPE_STRING stays
+#     the default, TYPE_WIDE_STRING (UTF-32) is used only for strings that
+#     actually contain chars > 255.  FASL compatibility with the m68k
+#     builds: the writer downgrades all-ASCII strings to the narrow tag,
+#     so MorphOS reads every m68k FASL, and m68k reads MorphOS FASLs
+#     unless they contain non-ASCII string literals (those use
+#     FASL_TAG_WIDE_STRING, which byte-only builds reject cleanly).
 
 # MorphOS SDK GCC.  Override on the command line if your toolchain uses a
 # different name, e.g.  make -f Makefile.mos CC=ppc-morphos-gcc
@@ -35,7 +41,7 @@ CC      = gcc
 
 # PPC has none of the m68k -O2 miscompiles documented in Makefile.cross,
 # so -O2 is safe here.
-CFLAGS  ?= -std=c99 -noixemul -Wall -O2 -DPLATFORM_AMIGA -DPLATFORM_MORPHOS $(DEBUG_FLAGS)
+CFLAGS  ?= -std=c99 -noixemul -Wall -O2 -DPLATFORM_AMIGA -DPLATFORM_MORPHOS -DCL_WIDE_STRINGS $(DEBUG_FLAGS)
 # -noixemul is a LINK-time flag as well: it selects the libnix startup code
 # and libc.  Without it here the link silently falls back to the ixemul
 # startup/libc even though every object was compiled -noixemul — the binary
