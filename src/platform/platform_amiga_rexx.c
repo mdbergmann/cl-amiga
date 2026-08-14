@@ -49,10 +49,16 @@
 #include <string.h>
 #include <stdio.h>
 
-/* Library base for the CreateArgstring/CreateRexxMsg inline macros.
- * proto/rexxsyslib.h declares this as `extern struct RxsLib *RexxSysBase`
- * on both the m68k NDK and the MorphOS SDK; the definition must match. */
-struct RxsLib *RexxSysBase = NULL;
+/* Library base for the CreateArgstring/CreateRexxMsg inline macros.  The
+ * definition must match the extern in proto/rexxsyslib.h, and the two SDKs
+ * disagree: the m68k NDK declares `struct RxsLib *`, the MorphOS SDK
+ * `struct Library *`. */
+#ifdef PLATFORM_MORPHOS
+typedef struct Library RexxSysBase_t;
+#else
+typedef struct RxsLib RexxSysBase_t;
+#endif
+RexxSysBase_t *RexxSysBase = NULL;
 
 /* GC stop-the-world cooperation (core/thread.c).  Forward-declared rather
  * than #included so the platform layer stays free of core/VM types — same
@@ -83,7 +89,7 @@ static int rexx_need_lib(void)
      * down. */
     Forbid();
     if (!RexxSysBase)
-        RexxSysBase = (struct RxsLib *)OpenLibrary((STRPTR)RXSNAME, 0);
+        RexxSysBase = (RexxSysBase_t *)OpenLibrary((STRPTR)RXSNAME, 0);
     have = RexxSysBase != NULL;
     Permit();
     return have;
@@ -386,7 +392,9 @@ int platform_arexx_send(const char *portname, const char *cmd,
     Permit();
 
     if (!dest) {
-        DeleteArgstring(arg);
+        /* (APTR): the argstring parameter is UBYTE* on the m68k NDK but
+         * STRPTR (char*) on MorphOS; void* converts to both silently. */
+        DeleteArgstring((APTR)arg);
         ARG0(rm) = NULL;
         DeleteRexxMsg(rm);
         DeleteMsgPort(reply_port);
@@ -414,14 +422,14 @@ int platform_arexx_send(const char *portname, const char *cmd,
             const char *s = (const char *)rm->rm_Result2;
             if (result && result_size > 0)
                 snprintf(result, (size_t)result_size, "%s", s);
-            DeleteArgstring((UBYTE *)rm->rm_Result2);
+            DeleteArgstring((APTR)rm->rm_Result2);
             rm->rm_Result2 = 0;
         }
     } else if (rc2_out) {
         *rc2_out = (int32_t)rm->rm_Result2;
     }
 
-    DeleteArgstring(arg);
+    DeleteArgstring((APTR)arg);
     ARG0(rm) = NULL;
     DeleteRexxMsg(rm);
     DeleteMsgPort(reply_port);
