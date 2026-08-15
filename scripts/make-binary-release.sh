@@ -30,6 +30,11 @@
 #                           compile time (macros would compile wrong).
 #          amiga/*.lisp   — reference the AMIGA package, which only exists on
 #                           the AmigaOS build; unreadable by the host compiler.
+#          shims/         — the cl+ssl facade and swank stub ASDF systems.
+#                           lib/asdf.lisp auto-registers them on
+#                           ASDF:*CENTRAL-REGISTRY* (searched before the
+#                           Quicklisp/ocicl searchers), so they shadow any
+#                           package-manager copy with no installation step.
 #   Source-shipped files compile on the target on first (require ...) and are
 #   cached under S:cl-amiga/faslcache/, so the cost is paid once.
 #
@@ -125,6 +130,7 @@ done
 cp lib/asdf.lisp lib/quicklisp.lisp lib/quicklisp-compat.lisp \
    lib/quicklisp-install.lisp "$STAGE/lib/"
 cp lib/amiga/*.lisp "$STAGE/lib/amiga/"
+cp -R lib/shims "$STAGE/lib/shims"
 
 # docs: package API reference only (no benchmarks/screenshots)
 cp docs/README.md docs/amiga.md docs/clamiga.md docs/ext.md docs/ffi.md \
@@ -231,9 +237,16 @@ if [ "$SMOKE" = 1 ]; then
         "$SMOKEDIR/rel/bin/aos3/clamiga" --non-interactive --heap 48M \
         --eval '(require "gray-streams")' \
         --eval '(require "asdf")' \
+        --eval '(format t "SHIM-AT ~a~%" (asdf:system-source-directory (asdf:find-system "cl+ssl")))' \
         --eval '(format t "SMOKE-OK ~a~%" (lisp-implementation-version))' \
         --eval '(quit)' ) | tee "$OUT/smoke.log" | grep -q "SMOKE-OK $VERSION" || {
         echo "ERROR: smoke test failed — see $OUT/smoke.log" >&2; exit 1; }
+    # The cl+ssl shim must resolve out of the release's own lib/shims/ —
+    # this is what makes drakma/hunchentoot TLS work from a binary install
+    # regardless of what Quicklisp/ocicl have on disk.
+    grep -q "SHIM-AT .*rel/lib/shims/cl+ssl" "$OUT/smoke.log" || {
+        echo "ERROR: cl+ssl shim did not resolve from the release lib/shims/ — see $OUT/smoke.log" >&2
+        exit 1; }
     echo "smoke test passed"
 fi
 

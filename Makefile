@@ -196,6 +196,13 @@ test-fast: $(TEST_BINS) host
 		echo "FAIL"; \
 		failed=1; \
 	fi; \
+	echo "--- test_shim_registry ---"; \
+	if sh $(TEST_SRCDIR)/test_shim_registry.sh $(BUILDDIR)/clamiga; then \
+		echo "PASS"; \
+	else \
+		echo "FAIL"; \
+		failed=1; \
+	fi; \
 	echo "--- test_fasl_compat ---"; \
 	if sh $(TEST_SRCDIR)/test_fasl_compat.sh $(BUILDDIR)/clamiga; then \
 		echo "PASS"; \
@@ -692,50 +699,25 @@ fasl: $(BUILDDIR)/clamiga
 
 QL_LOCAL_PROJECTS ?= $(HOME)/quicklisp/local-projects
 
-# Install CL-Amiga's stub/facade systems into quicklisp's local-projects
-# tree via symlink.  Needed on dev hosts where quicklisp is installed —
-# these are NOT required on Amiga when quicklisp isn't in use.
+# RETIRED: the `swank` stub and `cl+ssl` facade now live in lib/shims/ and
+# are registered on ASDF:*CENTRAL-REGISTRY* automatically when lib/asdf.lisp
+# loads — searched before the Quicklisp and ocicl searchers, so they shadow
+# any package-manager copy without touching the filesystem, work from the
+# binary release, and stay invisible to other implementations sharing the
+# same quicklisp tree.  Opt out with CLAMIGA_NO_SHIMS=1.
 #
-# The closer-mop / trivial-cltl2 / introspect-environment / trivial-garbage
-# systems are NO LONGER shims: they are maintained CL-Amiga library forks
-# that carry #+cl-amiga / #+clamiga support directly, installed by cloning
-# them into local-projects (see the Quicklisp section of README.md).  Two
-# systems are symlinked here: the `swank` stub (no upstream to fork) and
-# the `cl+ssl` facade (the real cl+ssl's CFFI/callback stack cannot work on
-# Amiga — the facade reimplements the drakma/hunchentoot-facing API over
-# the runtime's native EXT:SOCKET-START-TLS and must shadow the dist).
-#
-# Symlink handling rules:
-#   - Broken symlink (dangling target):     re-create pointing at $$src
-#   - Correct symlink (already points at $$src): leave alone
-#   - Symlink to somewhere else / real dir:      warn and skip
-#   - Missing:                                    create
-#
-# The "broken symlink" case used to be handled wrong: an existence check
-# (`[ -e "$$dst" ]`) returns false for a dangling symlink, but a
-# `[ -L "$$dst" ]` (or just an unguarded `ln -s`) ran into the existing
-# symlink anyway.  This silently left broken links pointing to old paths
-# after the project was moved, causing quicklisp to fall back to upstream
-# packages and reject cl-amiga as an "unsupported Lisp".
+# This target remains only to clean up symlinks created by the old scheme
+# (they dangle now that contrib/shims/ moved to lib/shims/).
 install-shims:
-	@mkdir -p $(QL_LOCAL_PROJECTS)
+	@echo "=> shims are auto-registered by lib/asdf.lisp (from lib/shims/);"
+	@echo "   no local-projects installation is needed anymore."
 	@for shim in swank cl+ssl; do \
-	  src="$(CURDIR)/contrib/shims/$$shim"; \
 	  dst="$(QL_LOCAL_PROJECTS)/$$shim"; \
-	  if [ -L "$$dst" ]; then \
-	    target=$$(readlink "$$dst"); \
-	    if [ "$$target" = "$$src" ]; then \
-	      echo "=> $$dst already correct"; \
-	    elif [ -e "$$dst" ]; then \
-	      echo "=> WARNING: $$dst is a symlink to $$target (not $$src) — leaving alone"; \
-	    else \
-	      rm "$$dst" && ln -s "$$src" "$$dst" && \
-	        echo "=> repaired broken symlink $$dst -> $$src (was -> $$target)"; \
-	    fi; \
-	  elif [ -e "$$dst" ]; then \
-	    echo "=> WARNING: $$dst exists as a regular file/dir — leaving alone"; \
-	  else \
-	    ln -s "$$src" "$$dst" && echo "=> linked $$dst -> $$src"; \
+	  if [ -L "$$dst" ] && ! [ -e "$$dst" ]; then \
+	    case "$$(readlink "$$dst")" in \
+	      */contrib/shims/$$shim) \
+	        rm "$$dst" && echo "=> removed stale symlink $$dst";; \
+	    esac; \
 	  fi; \
 	done
 

@@ -14251,3 +14251,37 @@ If the FASL file doesn't exist (compile-file skipped caching), load from source.
 
 #+cl-amiga
 (in-package #:cl-user)
+
+;;; --- Bundled shim systems (lib/shims/) ---
+;;; Two systems must shadow whatever a package manager has installed:
+;;;   cl+ssl — facade over the runtime's native TLS (EXT:SOCKET-START-TLS);
+;;;            the real cl+ssl's CFFI/callback stack cannot work on
+;;;            AmigaOS/MorphOS.
+;;;   swank  — stub package some systems (clack, mgl-pax, ...) depend on
+;;;            only for symbols they never call.
+;;; Registered on ASDF:*CENTRAL-REGISTRY*, which
+;;; SEARCH-FOR-SYSTEM-DEFINITION consults before the searchers Quicklisp
+;;; and ocicl append to *SYSTEM-DEFINITION-SEARCH-FUNCTIONS* — so
+;;; (asdf:find-system "cl+ssl") resolves to the shim no matter what a
+;;; package manager has installed, in the source tree and the binary
+;;; release alike, and only inside this image (other implementations
+;;; sharing the same Quicklisp tree never see it).
+;;;
+;;; *LOAD-TRUENAME* points into lib/ in every load mode — source load,
+;;; faslcache hit (LOAD binds it to the SOURCE path, not the cache path),
+;;; and a shipped lib/asdf.fasl — and is read at load time, so nothing is
+;;; baked in when this file is compiled.
+;;;
+;;; Opt out with CLAMIGA_NO_SHIMS=1 (e.g. to run the real cl+ssl on the
+;;; host, where the native FFI can support it).
+#+cl-amiga
+(unless (equal (ext:getenv "CLAMIGA_NO_SHIMS") "1")
+  (let ((here (or *load-truename* *load-pathname*)))
+    (when here
+      (dolist (shim '("cl+ssl" "swank"))
+        (let ((dir (merge-pathnames
+                    (concatenate 'string "shims/" shim "/")
+                    (make-pathname :name nil :type nil :defaults here))))
+          (when (probe-file (merge-pathnames
+                             (concatenate 'string shim ".asd") dir))
+            (pushnew dir asdf:*central-registry* :test #'equal)))))))

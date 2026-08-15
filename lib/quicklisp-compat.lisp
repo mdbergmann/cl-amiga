@@ -17,12 +17,12 @@
 ;; NOTE: a handful of systems (closer-mop, trivial-cltl2,
 ;; introspect-environment, trivial-garbage) carry first-class CL-Amiga
 ;; support in maintained forks that live in quicklisp's own
-;; local-projects tree (cloned in; see README's Quicklisp section).
-;; The `swank` stub under `contrib/shims/` is symlinked in by
-;; `make install-shims`.  Quicklisp picks all of them up through its
-;; normal local-projects search — no extra registration here.  Long-term
-;; the fork branches should merge upstream so stock quicklisp just works
-;; on CL-Amiga.
+;; local-projects tree (cloned in; see README's Quicklisp section) and
+;; are picked up through its normal local-projects search.  The `swank`
+;; stub and `cl+ssl` facade under `lib/shims/` need nothing here either:
+;; lib/asdf.lisp registers them on ASDF:*CENTRAL-REGISTRY*, which is
+;; searched before the quicklisp searchers.  Long-term the fork branches
+;; should merge upstream so stock quicklisp just works on CL-Amiga.
 
 (in-package #:ql-impl)
 

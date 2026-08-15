@@ -50,8 +50,10 @@ usocket) keeps working.  The provider is loaded lazily at runtime and is
 optional — OpenSSL 1.1.1/3.x via dlopen on the host, AmiSSL v5 on
 AmigaOS (also the MorphOS route for now), so `tls-available-p` is the
 honest capability gate.  drakma and Hunchentoot consume this layer through
-the bundled cl+ssl facade (`contrib/shims/cl+ssl`, installed by
-`make install-shims`).  End-to-end examples: `tests/tls-loopback.lisp`
+the bundled cl+ssl facade (`lib/shims/cl+ssl`, auto-registered on
+`asdf:*central-registry*` when ASDF loads so it shadows any
+Quicklisp/ocicl-installed cl+ssl; `CLAMIGA_NO_SHIMS=1` disables the
+registration).  End-to-end examples: `tests/tls-loopback.lisp`
 (host), `tests/amiga/tls-tests.lisp` (Amiga), `tests/test_tls.c`
 (platform layer).
 

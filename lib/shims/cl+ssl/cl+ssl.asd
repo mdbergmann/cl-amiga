@@ -13,8 +13,12 @@
 ;;; +SSL-VERIFY-NONE+, SSL-STREAM-X509-CERTIFICATE — on top of it.  Both
 ;;; load unmodified against this system.
 ;;;
-;;; Installed into quicklisp's local-projects via `make install-shims`
-;;; (symlink), where it shadows the quicklisp-dist cl+ssl.
+;;; Registered automatically: loading ASDF (lib/asdf.lisp) pushes this
+;;; directory onto ASDF:*CENTRAL-REGISTRY*, which is searched before the
+;;; searchers Quicklisp and ocicl append — so this facade shadows any
+;;; package-manager-installed cl+ssl without filesystem installation.
+;;; Opt out (e.g. to run the real cl+ssl on the host) with
+;;; CLAMIGA_NO_SHIMS=1.
 
 #-cl-amiga
 (error "The cl-amiga cl+ssl shim is only intended for cl-amiga.")

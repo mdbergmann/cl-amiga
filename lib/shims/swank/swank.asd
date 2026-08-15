@@ -12,6 +12,10 @@
 ;;; shim provides just enough of the SWANK package for those libraries to
 ;;; compile and load.  The stubs SIGNAL a clear error if actually invoked,
 ;;; so the missing functionality surfaces honestly rather than silently.
+;;;
+;;; Registered automatically: loading ASDF (lib/asdf.lisp) pushes this
+;;; directory onto ASDF:*CENTRAL-REGISTRY*, ahead of any package manager's
+;;; searcher.  Opt out with CLAMIGA_NO_SHIMS=1.
 
 #-cl-amiga
 (error "The cl-amiga swank shim is only intended for cl-amiga.")

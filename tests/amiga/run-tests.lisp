@@ -4790,6 +4790,16 @@
 ; set-macro-character: define ! then test it
 (set-macro-character #\! (lambda (stream char) (list 'quote (read stream t nil t))))
 (check "set-macro-char" t (equal !hello 'hello))
+; Restore ! to a constituent character (CLHS 2.1.4) IMMEDIATELY — this
+; mutates the global readtable object, and LOAD's *readtable* rebinding
+; does not undo mutation.  Left in place, every later source read in the
+; image breaks on symbols containing "!": lib/asdf.lisp's
+; (define-package :uiop/stream ... :export ... #:format! #:safe-format!)
+; read as FORMAT + (QUOTE SAFE-FORMAT) + ..., making ENSURE-PACKAGE fail
+; with "STRING: cannot coerce CONS to string" (see the shim-registry
+; tests, which load ASDF later in this suite and caught this).
+(set-syntax-from-char #\! #\a)
+(check "set-macro-char restored" nil (get-macro-character #\!))
 
 ; --- Phase 8 Step 2: Missing string operations ---
 
@@ -10219,6 +10229,16 @@
   (error (e)
     (setq *fail-count* (+ *fail-count* 1))
     (format t "FAIL: TLS tests could not run: ~A~%" e)))
+
+; --- Bundled ASDF shims (lib/shims/) ---
+; Loading ASDF must auto-register the cl+ssl facade and swank stub on
+; ASDF:*CENTRAL-REGISTRY* (Amiga device-path leg of the resolution; the
+; host leg is tests/test_shim_registry.sh).  Nested LOAD: the file
+; requires ASDF, whose package cannot exist when THIS file is read.
+(handler-case (load "tests/amiga/shim-registry-tests.lisp")
+  (error (e)
+    (setq *fail-count* (+ *fail-count* 1))
+    (format t "FAIL: shim registry tests could not run: ~A~%" e)))
 
 ; --- Summary ---
 (format t "~%=== Results ===~%")

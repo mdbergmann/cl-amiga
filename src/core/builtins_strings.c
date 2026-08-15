@@ -1410,7 +1410,8 @@ static CL_Obj bi_string_coerce(CL_Obj *args, int n)
             return cl_make_string(&c, 1);
         }
     }
-    cl_error(CL_ERR_TYPE, "STRING: cannot coerce to string");
+    cl_error(CL_ERR_TYPE, "STRING: cannot coerce %s to string",
+             cl_type_name(args[0]));
     return CL_NIL;
 }
 

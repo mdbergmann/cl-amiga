@@ -4414,7 +4414,7 @@ static CL_Obj bi_set_socket_stream_timeout(CL_Obj *args, int n)
  * ciphertext.  The same stream object is returned, so wrappers holding it
  * (chunga, flexi-streams, usocket) keep working untouched.  The keyword
  * front-end is EXT:SOCKET-START-TLS (boot.lisp); the cl+ssl-compatible
- * facade for drakma/hunchentoot lives in contrib/shims/cl+ssl. */
+ * facade for drakma/hunchentoot lives in lib/shims/cl+ssl. */
 
 /* Validate a connected TCP socket stream argument. */
 static CL_Stream *check_tls_stream(CL_Obj obj, const char *who)

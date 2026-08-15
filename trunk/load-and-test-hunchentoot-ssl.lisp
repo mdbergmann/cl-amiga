@@ -4,7 +4,7 @@
 ;; cl-amiga is BOTH ends of every connection here: a Hunchentoot
 ;; EASY-SSL-ACCEPTOR serves https://localhost over the native TLS layer
 ;; (EXT:SOCKET-START-TLS — OpenSSL on the host, AmiSSL on AmigaOS), reached
-;; through the cl+ssl facade (contrib/shims/cl+ssl) that hunchentoot's
+;; through the cl+ssl facade (lib/shims/cl+ssl) that hunchentoot's
 ;; ssl.lisp and drakma's HTTPS path both consume.  Hunchentoot's own
 ;; confidence suite then drives drakma as the in-process HTTPS client, so a
 ;; single run exercises the server handshake, the client handshake, and
@@ -55,7 +55,9 @@
 ;; original would "work" on the host and hide facade regressions.  The
 ;; facade is recognisable by its internal %START-TLS helper.
 (unless (find-symbol "%START-TLS" "CL+SSL")
-  (error "the loaded cl+ssl is not the cl-amiga facade — run `make install-shims`"))
+  (error "the loaded cl+ssl is not the cl-amiga facade: lib/shims/cl+ssl ~
+          should have been auto-registered on ASDF:*CENTRAL-REGISTRY* when ~
+          ASDF loaded (is CLAMIGA_NO_SHIMS set?)"))
 
 (format t "~%--- Loading :hunchentoot/test ---~%")
 (asdf:load-system :hunchentoot/test)

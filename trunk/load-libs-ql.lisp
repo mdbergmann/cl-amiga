@@ -34,8 +34,9 @@
 ;;; introspect-environment, trivial-garbage) need no ENSURE-QL-LIB call —
 ;;; they are cloned into quicklisp's local-projects tree, so quicklisp's
 ;;; local-projects searcher resolves them ahead of the dist releases once
-;;; setup runs.  The `swank` stub (symlinked by `make install-shims`)
-;;; resolves the same way.
+;;; setup runs.  The `swank` stub and `cl+ssl` facade (lib/shims/) need
+;;; nothing either — lib/asdf.lisp auto-registers them on
+;;; ASDF:*CENTRAL-REGISTRY*, searched ahead of the quicklisp searchers.
 
 (require "asdf")
 
