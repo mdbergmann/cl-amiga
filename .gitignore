@@ -25,3 +25,8 @@ mosdebug.log
 
 # MorphOS-built binary dropped in for scripts/make-binary-release.sh
 /clamiga-mos
+
+# Amiga temp-device paths ("T:...") become literal host files when the
+# Amiga test suite runs on the host (a supported repro technique — see
+# tests/amiga/run-tests.lisp)
+T:*

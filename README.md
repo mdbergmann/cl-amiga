@@ -151,7 +151,7 @@ Quicklisp runs on CL-Amiga, but the stock client doesn't recognise this implemen
 (cl-amiga-ql:install)                 ; downloads + installs the QL client, patches networking
 ```
 
-`cl-amiga-ql:install` runs the standard `quicklisp-quickstart:install`, catches the network error it raises (CL-Amiga isn't a registered `ql-impl` yet), loads the compat shim so networking works, and retries the dist install. The bundled shim systems in `lib/shims/` — the `swank` stub and the `cl+ssl` facade (which routes drakma/Hunchentoot TLS through CL-Amiga's native `ext:socket-start-tls` instead of the CFFI-based original) — need no installation: loading ASDF registers them on `asdf:*central-registry*`, which is searched ahead of the Quicklisp and ocicl searchers, so they shadow the stock dist copies automatically (set `CLAMIGA_NO_SHIMS=1` to disable). One thing still needs to be on disk in `~/quicklisp/local-projects` (Amiga: `S:quicklisp/local-projects`): the CL-Amiga **library forks** (listed below), which you install by cloning them into that directory — Quicklisp's local-projects searcher then resolves them ahead of the stock dist releases.
+`cl-amiga-ql:install` runs the standard `quicklisp-quickstart:install`, catches the network error it raises (CL-Amiga isn't a registered `ql-impl` yet), loads the compat shim so networking works, and retries the dist install. The bundled shim systems in `lib/shims/` — the `swank` stub and the `cl+ssl` facade (which routes drakma/Hunchentoot TLS through CL-Amiga's native `ext:socket-start-tls` instead of the CFFI-based original) — need no installation: loading ASDF registers them on `asdf:*central-registry*`, which is searched ahead of the Quicklisp and ocicl searchers, so they shadow the stock dist copies automatically. To opt out of the auto-registration, set `CLAMIGA_NO_SHIMS` to `1` in the environment before starting clamiga — host: `CLAMIGA_NO_SHIMS=1 clamiga`, Amiga shell: `SetEnv CLAMIGA_NO_SHIMS 1` (any other value, or unsetting it, re-enables the shims). One thing still needs to be on disk in `~/quicklisp/local-projects` (Amiga: `S:quicklisp/local-projects`): the CL-Amiga **library forks** (listed below), which you install by cloning them into that directory — Quicklisp's local-projects searcher then resolves them ahead of the stock dist releases.
 
 **Using Quicklisp** in any later session, once it is installed:
 
@@ -600,8 +600,9 @@ diffs the real package exports against a committed snapshot; run
   AmigaOS — with `(ext:tls-available-p)` as the capability gate. drakma and
   Hunchentoot get HTTPS through the bundled cl+ssl facade
   (`lib/shims/cl+ssl`, auto-registered on `asdf:*central-registry*` when
-  ASDF loads, shadowing any Quicklisp/ocicl-installed cl+ssl; set
-  `CLAMIGA_NO_SHIMS=1` to use the real one on the host). See
+  ASDF loads, shadowing any Quicklisp/ocicl-installed cl+ssl; opt out with
+  `CLAMIGA_NO_SHIMS=1` — Amiga: `SetEnv CLAMIGA_NO_SHIMS 1` — e.g. to run
+  the real cl+ssl on the host, where its CFFI stack works). See
   [docs/ext.md](docs/ext.md#tls) and the runnable examples in
   `tests/tls-loopback.lisp` / `tests/amiga/tls-tests.lisp` /
   `trunk/load-and-test-hunchentoot-ssl.lisp`.

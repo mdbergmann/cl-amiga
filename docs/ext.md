@@ -52,8 +52,11 @@ AmigaOS (also the MorphOS route for now), so `tls-available-p` is the
 honest capability gate.  drakma and Hunchentoot consume this layer through
 the bundled cl+ssl facade (`lib/shims/cl+ssl`, auto-registered on
 `asdf:*central-registry*` when ASDF loads so it shadows any
-Quicklisp/ocicl-installed cl+ssl; `CLAMIGA_NO_SHIMS=1` disables the
-registration).  End-to-end examples: `tests/tls-loopback.lisp`
+Quicklisp/ocicl-installed cl+ssl).  Setting `CLAMIGA_NO_SHIMS` to `1` in
+the environment before starting clamiga disables the registration — host:
+`CLAMIGA_NO_SHIMS=1 clamiga`, Amiga shell: `SetEnv CLAMIGA_NO_SHIMS 1` —
+e.g. to run the real cl+ssl on the host, where its CFFI stack works.
+End-to-end examples: `tests/tls-loopback.lisp`
 (host), `tests/amiga/tls-tests.lisp` (Amiga), `tests/test_tls.c`
 (platform layer).
 
