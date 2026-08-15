@@ -2,6 +2,7 @@
 # Uses m68k-amigaos-gcc from tools/m68k-amigaos-gcc/prefix
 # Run: make -f Makefile.cross [amiga|test-amiga|clean]
 #      make -f Makefile.cross amiga FPU=1   (hard-float variant, see below)
+#      make -f Makefile.cross amiga WIDE=1  (wide-string variant, see below)
 
 TOOLCHAIN = $(CURDIR)/tools/m68k-amigaos-gcc/prefix
 CC        = $(TOOLCHAIN)/bin/m68k-amigaos-gcc
@@ -35,7 +36,33 @@ FLOATFLAGS = -msoft-float
 BUILDDIR   = build/cross
 endif
 
-CFLAGS    = -noixemul -mcpu=68020 $(FLOATFLAGS) -std=c99 -Wall -Os -fno-tree-switch-conversion -DPLATFORM_AMIGA -DJIT_M68K $(DEBUG_FLAGS)
+# WIDE=1 builds the wide-string variant: CL_WIDE_STRINGS raises
+# CHAR-CODE-LIMIT above 65533 (full Unicode in the Lisp heap; the
+# representation stays adaptive — 8-bit TYPE_STRING remains the default and
+# UTF-32 TYPE_WIDE_STRING is used only for strings actually containing
+# chars > 255, so pure-ASCII workloads cost the same as the narrow build).
+# The OS never sees wide chars — everything crossing the OS boundary is
+# encoded to bytes — but libraries like flexi-streams/drakma hard-require
+# the raised CHAR-CODE-LIMIT (their external-format tables call
+# (code-char >255) at load time), so this is the knob for running them on
+# big-RAM 68k machines (Vampire/PiStorm).  Default is narrow (8-bit): the
+# release binaries stay narrow to keep the 68020/8MB primary target lean.
+# Composes with FPU=1 (verified on a Vampire V4, 2026-08-15: WIDE=1 FPU=1
+# runs drakma with HTTP and AmiSSL HTTPS green); every FPU/WIDE combination
+# gets its own object dir so variants never mix.  FASL note: wide-build
+# FASLs stay readable by narrow builds unless a literal actually contains
+# non-ASCII text (the writer downgrades all-ASCII strings to the narrow
+# tag; genuinely wide literals use FASL_TAG_WIDE_STRING, which narrow
+# builds reject cleanly).
+WIDE ?= 0
+ifeq ($(WIDE),1)
+WIDEFLAGS = -DCL_WIDE_STRINGS
+BUILDDIR := $(BUILDDIR)-wide
+else
+WIDEFLAGS =
+endif
+
+CFLAGS    = -noixemul -mcpu=68020 $(FLOATFLAGS) $(WIDEFLAGS) -std=c99 -Wall -Os -fno-tree-switch-conversion -DPLATFORM_AMIGA -DJIT_M68K $(DEBUG_FLAGS)
 LDFLAGS   = -noixemul -mcpu=68020 $(FLOATFLAGS) -fno-tree-switch-conversion
 
 # AmiSSL SDK headers (vendored in include/amissl-sdk — see its README.md):
@@ -212,4 +239,4 @@ verify-amiga:
 	@echo "=== Amiga verification PASSED ==="
 
 clean:
-	rm -rf build/cross build/cross-fpu
+	rm -rf build/cross build/cross-fpu build/cross-wide build/cross-fpu-wide

@@ -916,6 +916,16 @@ that have an FPU (68881/68882 boards, 68040/68060, Vampire/PiStorm), but the
 binary requires one.  `make -f Makefile.cross test-amiga FPU=1` runs the
 Amiga test suite against the hard-float binary in FS-UAE's 68040 config.
 
+Adding `WIDE=1` builds the wide-string variant (to `build/cross-wide/`, or
+`build/cross-fpu-wide/` combined with `FPU=1`): `CHAR-CODE-LIMIT` rises
+above 65533, matching the host and MorphOS builds, which is what libraries
+like flexi-streams and drakma require to load.  String representation stays
+adaptive (8-bit for Latin-1 text, UTF-32 only for strings that actually
+contain wider characters), so ASCII workloads cost the same as the default
+build.  The released binaries stay narrow (8-bit) to keep the 68020/8MB
+baseline lean — build with `WIDE=1` on big-RAM machines (Vampire, PiStorm)
+if you want the Quicklisp HTTP stack.
+
 ### Build inside AmigaOS (vbcc)
 
 ```
