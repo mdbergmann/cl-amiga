@@ -171,6 +171,80 @@ int cl_float_shortest_g(char *buf, int bufsz, double value, int is_double)
     return len;
 }
 
+int cl_float_fixed_shortest(char *buf, int bufsz, double value, int is_double)
+{
+    /* Exact shortest round-trip digits laid out in fixed-point notation,
+       never scientific — the ~F contract (CLHS 22.3.3.1): free-format
+       output with the point always present and at least one digit on each
+       side of it ("87.0", "150000000.0", "0.00001").  cl_float_shortest_g
+       is "%g"-shaped and prints integral values without the point ("87")
+       and extreme magnitudes with an exponent, both of which ~F must not.
+       A double expands to at most ~345 chars (0. + 323 zeros + 17 digits);
+       callers must size BUF accordingly or accept truncation. */
+    char digits[20];
+    char tmp[352];
+    int32_t k;
+    int n, neg, len, i, o, is_zero;
+
+    if (is_double) {
+        uint64_t bits;
+        memcpy(&bits, &value, sizeof bits);
+        neg = (int)(bits >> 63);
+        if (((bits >> 52) & 0x7FF) == 0x7FF)          /* inf/nan */
+            return float_shortest_libc(buf, bufsz, value, is_double);
+        is_zero = ((bits & 0x7FFFFFFFFFFFFFFFULL) == 0);
+    } else {
+        float sf = (float)value;
+        uint32_t bits;
+        memcpy(&bits, &sf, sizeof bits);
+        neg = (int)(bits >> 31);
+        if (((bits >> 23) & 0xFF) == 0xFF)
+            return float_shortest_libc(buf, bufsz, value, is_double);
+        is_zero = ((bits & 0x7FFFFFFFu) == 0);
+    }
+
+    n = 0;
+    k = 0;
+    if (!is_zero) {
+        n = cl_dtoa_shortest(value, is_double, digits, &k);
+        if (n == 0)                    /* poisoned (unreachable): fall back */
+            return float_shortest_libc(buf, bufsz, value, is_double);
+    }
+
+    o = 0;
+    if (neg) tmp[o++] = '-';
+    if (is_zero) {
+        tmp[o++] = '0';
+        tmp[o++] = '.';
+        tmp[o++] = '0';
+    } else if (k <= 0) {
+        /* value = 0.digits * 10^k, k <= 0: 0.00..digits */
+        tmp[o++] = '0';
+        tmp[o++] = '.';
+        for (i = 0; i < (int)-k; i++) tmp[o++] = '0';
+        for (i = 0; i < n; i++) tmp[o++] = digits[i];
+    } else if ((int)k >= n) {
+        /* Point right of all digits: digits, zero fill, ".0". */
+        for (i = 0; i < n; i++) tmp[o++] = digits[i];
+        for (i = n; i < (int)k; i++) tmp[o++] = '0';
+        tmp[o++] = '.';
+        tmp[o++] = '0';
+    } else {
+        /* Point inside the digits. */
+        for (i = 0; i < n; i++) {
+            if (i == (int)k) tmp[o++] = '.';
+            tmp[o++] = digits[i];
+        }
+    }
+    tmp[o] = '\0';
+
+    len = o;
+    if (len > bufsz - 1) len = bufsz - 1;
+    memcpy(buf, tmp, (size_t)len);
+    buf[len] = '\0';
+    return len;
+}
+
 /* ================================================================
  * Contagion: determine result type from two operands
  * Returns 1 if result should be double-float, 0 for single-float.

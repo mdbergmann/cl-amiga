@@ -1747,7 +1747,7 @@ static void fmt_dispatch(FmtCtx *ctx, FmtDirective *d)
                                                : fmt_param(d, 0, 0);
         int32_t digs = (d->directive == '$') ? fmt_param(d, 0, 2)
                                              : fmt_param(d, 1, -1);
-        char buf[64];
+        char buf[400];
         int len;
         int is_num = CL_FIXNUM_P(arg) ||
                      (CL_HEAP_P(arg) &&
@@ -1758,12 +1758,14 @@ static void fmt_dispatch(FmtCtx *ctx, FmtDirective *d)
         if (is_num) {
             double val = cl_to_double(arg);
             if (digs < 0) {
-                /* No d parameter: print the shortest faithful (round-tripping)
-                   representation rather than "%g"'s 6-significant-digit default,
-                   which silently truncates (e.g. 1234.567f0 -> "1234.57"). */
+                /* No d parameter: CLHS 22.3.3.1 free-format — shortest
+                   faithful (round-tripping) digits, fixed-point only, the
+                   decimal point always present ("87.0", never "87" and
+                   never an exponent, which JS-generation callers and the
+                   spec both reject). */
                 int as_double = !(CL_HEAP_P(arg) &&
                                   CL_HDR_TYPE(CL_OBJ_TO_PTR(arg)) == TYPE_SINGLE_FLOAT);
-                len = cl_float_shortest_g(buf, (int)sizeof(buf), val, as_double);
+                len = cl_float_fixed_shortest(buf, (int)sizeof(buf), val, as_double);
             } else
                 len = snprintf(buf, sizeof(buf), "%.*f", (int)digs, val);
             if (len < 0) len = 0;

@@ -360,6 +360,60 @@ TEST(recursive_format_string_control)
                   "\"<1 2> 3\"");
 }
 
+/* ================================================================
+ * ~F free-format (no d parameter) — CLHS 22.3.3.1
+ *
+ * With w and d omitted, ~F prints ordinary free-format output: fixed-point
+ * only, decimal point always present with at least one digit on each side.
+ * The old path reused the "%g"-shaped shortest printer, which drops the
+ * ".0" from integral values ("87") and switches large magnitudes to
+ * scientific notation — chipi-ui's %JS-NUMBER emitted "87" / "1.5e+08"
+ * into JS where "87.0" / "150000000.0" were required.
+ * ================================================================ */
+
+TEST(fixed_float_integral_keeps_point)
+{
+    ASSERT_STR_EQ(eval_print("(format nil \"~f\" 87.0)"), "\"87.0\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~f\" -3.0)"), "\"-3.0\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~f\" 0.0)"), "\"0.0\"");
+}
+
+TEST(fixed_float_large_magnitude_no_exponent)
+{
+    /* 1.5d8 sits past the %g exponent threshold; ~F must expand it. */
+    ASSERT_STR_EQ(eval_print("(format nil \"~f\" 1.5d8)"), "\"150000000.0\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~f\" 1.0d20)"),
+                  "\"100000000000000000000.0\"");
+}
+
+TEST(fixed_float_small_magnitude_no_exponent)
+{
+    /* Below the %g -4 threshold; ~F must expand with leading zeros. */
+    ASSERT_STR_EQ(eval_print("(format nil \"~f\" 1.0e-5)"), "\"0.00001\"");
+}
+
+TEST(fixed_float_fractional_unchanged)
+{
+    /* Values %g already printed fixed keep their exact shape. */
+    ASSERT_STR_EQ(eval_print("(format nil \"~f\" 23.5)"), "\"23.5\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~f\" 0.5)"), "\"0.5\"");
+    /* Shortest round-trip digits are preserved, not %g's 6-digit default. */
+    ASSERT_STR_EQ(eval_print("(format nil \"~f\" 1234.567)"), "\"1234.567\"");
+}
+
+TEST(fixed_float_rational_coerced)
+{
+    /* CLHS 22.3.3.1: a rational is coerced to float and printed. */
+    ASSERT_STR_EQ(eval_print("(format nil \"~f\" 42)"), "\"42.0\"");
+}
+
+TEST(fixed_float_d_parameter_unchanged)
+{
+    /* An explicit d keeps the rounded fixed behavior. */
+    ASSERT_STR_EQ(eval_print("(format nil \"~,2f\" 3.14159)"), "\"3.14\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~,2f\" 87.0)"), "\"87.00\"");
+}
+
 /* --- tier-4 batch 7a: 64-arg format caps removed (FS5) --- */
 
 TEST(recursive_format_over_64_args)
@@ -490,6 +544,13 @@ int main(void)
     RUN(padded_integer_big_bignum_no_truncation);
     RUN(goto_negative_and_overshoot_clamp);
     RUN(recursive_format_string_control);
+
+    RUN(fixed_float_integral_keeps_point);
+    RUN(fixed_float_large_magnitude_no_exponent);
+    RUN(fixed_float_small_magnitude_no_exponent);
+    RUN(fixed_float_fractional_unchanged);
+    RUN(fixed_float_rational_coerced);
+    RUN(fixed_float_d_parameter_unchanged);
 
     RUN(recursive_format_over_64_args);
     RUN(formatter_inner_over_64_args);

@@ -56,6 +56,14 @@ float  cl_to_float(CL_Obj obj);
    a *different* float).  Returns the string length. */
 int cl_float_shortest_g(char *buf, int bufsz, double value, int is_double);
 
+/* Same shortest round-trip digits, but laid out fixed-point only — never an
+   exponent, the decimal point always present with at least one digit on each
+   side ("87.0", "150000000.0", "0.00001").  This is ~F's free-format contract
+   (CLHS 22.3.3.1), which "%g" layout violates for integral and extreme
+   values.  A double can expand to ~345 chars; size BUF for that or accept
+   truncation.  Returns the string length. */
+int cl_float_fixed_shortest(char *buf, int bufsz, double value, int is_double);
+
 /* --- Exact, FPU-independent decimal conversion (float_dtoa.c) ---
  *
  * Pure integer arithmetic — bit-identical results on every platform,

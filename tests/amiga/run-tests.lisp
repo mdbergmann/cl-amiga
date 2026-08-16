@@ -4135,6 +4135,17 @@
 (check "float printer double pi full precision" "3.141592653589793d0" (prin1-to-string (coerce pi 'double-float)))
 (check "float printer double pi roundtrip" t (= 3.141592653589793d0 (read-from-string (prin1-to-string 3.141592653589793d0))))
 (check "format ~f full precision" "1234.567" (format nil "~f" 1234.567))
+; ~F free-format (CLHS 22.3.3.1): fixed-point only, decimal point always
+; present — "87", "1.5e+08" and "1e-05" are all wrong here (chipi-ui's
+; %JS-NUMBER regression: JS rejects CL exponent markers and bare ints
+; where a float literal is expected).
+(check "format ~f integral keeps point" "87.0" (format nil "~f" 87.0))
+(check "format ~f negative integral" "-3.0" (format nil "~f" -3.0))
+(check "format ~f zero" "0.0" (format nil "~f" 0.0))
+(check "format ~f large no exponent" "150000000.0" (format nil "~f" 1.5d8))
+(check "format ~f small no exponent" "0.00001" (format nil "~f" 1.0e-5))
+(check "format ~f rational coerced" "42.0" (format nil "~f" 42))
+(check "format ~f d parameter rounds" "87.00" (format nil "~,2f" 87.0))
 
 ; --- Exact FPU-independent float reading/printing (float_dtoa.c) ---
 ; The reader and printer convert via integer arithmetic only, so literals
