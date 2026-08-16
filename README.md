@@ -38,6 +38,12 @@ In short: it exists to bring a modern, ANSI-aiming, library-capable Common Lisp 
 **Pros:** runs where nothing else does; tiny and dependency-free; identical behavior on host and Amiga; small, readable C you can actually hack on.
 **Cons:** alpha-quality ANSI coverage; a bytecode VM with a light JIT won't match a native compiler's raw speed; the object model is 32-bit throughout, so even on a 64-bit host the heap is capped at 4 GB (a deliberate trade for a compact, Amiga-faithful representation); the ecosystem is (so far) an ecosystem of one.
 
+## Useful information on Common Lisp
+
+[My post about Clamiga](https://nnamgreb.de/blog/Clamiga+-+Common+Lisp+for+the+Amiga)
+[Common Lisp Cookbook](https://lispcookbook.github.io/cl-cookbook)
+[Peter Seibel's Practical Common Lisp book](https://gigamonkeys.com/book/)
+
 ## Status
 
 CL-Amiga can load **ASDF**, install and run **Quicklisp**, and successfully quickload libraries including **Alexandria**, **fiveam**, **FSet**, and **Sento** — their `asdf:test-system` suites pass end-to-end. Sento pulls in **lparallel**, **serapeum**, **bordeaux-threads**, **log4cl** and friends along the way.
