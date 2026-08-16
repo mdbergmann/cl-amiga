@@ -41,7 +41,9 @@ In short: it exists to bring a modern, ANSI-aiming, library-capable Common Lisp 
 ## Useful information on Common Lisp
 
 [My post about Clamiga](https://nnamgreb.de/blog/Clamiga+-+Common+Lisp+for+the+Amiga)
+
 [Common Lisp Cookbook](https://lispcookbook.github.io/cl-cookbook)
+
 [Peter Seibel's Practical Common Lisp book](https://gigamonkeys.com/book/)
 
 ## Status
