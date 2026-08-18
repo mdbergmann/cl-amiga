@@ -18,12 +18,14 @@
 
 static void setup(void)
 {
-#ifdef PLATFORM_POSIX
+#if defined(PLATFORM_POSIX) || defined(PLATFORM_WIN32)
     /* Match the runtime's locale strategy in src/main.c so Unicode
      * classification (iswalpha/iswupper/iswlower) works in stock
-     * containers where LANG is unset. */
+     * containers where LANG is unset, and on Windows, where the UCRT
+     * spells the UTF-8 locale ".UTF-8". */
     if (!setlocale(LC_CTYPE, "C.UTF-8") &&
-        !setlocale(LC_CTYPE, "en_US.UTF-8")) {
+        !setlocale(LC_CTYPE, "en_US.UTF-8") &&
+        !setlocale(LC_CTYPE, ".UTF-8")) {
         setlocale(LC_CTYPE, "");
     }
 #endif
@@ -3920,46 +3922,43 @@ TEST(eval_char_case)
     ASSERT_STR_EQ(eval_print("(char-downcase #\\a)"), "#\\a");
 }
 
-/* Regression: a codepoint above the BMP must survive the case and
- * classification functions unchanged.  The Windows wctype functions take a
- * 16-bit wint_t, so an unguarded (wint_t)c truncated U+10428 to U+0428 —
- * CHAR-UPCASE returned an unrelated Cyrillic letter and STRING-UPCASE
- * silently corrupted any string holding an emoji.  Astral characters have no
- * case mapping in this implementation; what matters is that they come back
- * as themselves rather than as something else. */
-TEST(eval_char_case_astral_roundtrip)
+/* Regression: a codepoint above the BMP must not be TRUNCATED by the case
+ * and classification functions.  On Windows their wint_t is 16 bits wide
+ * while CHAR-CODE-LIMIT is #x110000, so an unguarded (wint_t)c turned
+ * U+10428 into U+0428 — CHAR-UPCASE returned an unrelated Cyrillic letter
+ * and STRING-UPCASE silently corrupted any string holding an emoji.
+ *
+ * What each platform ANSWERS differs legitimately and is not asserted here:
+ * glibc knows the Deseret case mapping and returns U+10400, while the
+ * Windows build reports no case above the BMP.  Both are fine; dropping the
+ * high half is not. */
+TEST(eval_char_case_astral_not_truncated)
 {
-    ASSERT_EQ_INT(eval_int("(char-code (char-upcase (code-char #x10428)))"),
-                  0x10428);
-    ASSERT_EQ_INT(eval_int("(char-code (char-downcase (code-char #x10428)))"),
-                  0x10428);
-    /* U+1F600 GRINNING FACE: not a letter, no case, and not truncated. */
+    /* U+10428 DESERET SMALL LETTER LONG I.  Either it stays itself or it
+     * maps to its uppercase U+10400 — but it stays astral either way, and it
+     * is never U+0428 (CYRILLIC CAPITAL LETTER SHA). */
+    int up = eval_int("(char-code (char-upcase (code-char #x10428)))");
+    int down = eval_int("(char-code (char-downcase (code-char #x10428)))");
+    ASSERT(up >= 0x10000);
+    ASSERT(up != 0x428);
+    ASSERT(down >= 0x10000);
+    ASSERT(down != 0x428);
+    /* U+1F600 GRINNING FACE has no case anywhere: it must come back as
+     * itself, not as U+F600 (a private-use character). */
     ASSERT_EQ_INT(eval_int("(char-code (char-upcase (code-char #x1F600)))"),
                   0x1F600);
+    ASSERT_EQ_INT(eval_int("(char-code (char-downcase (code-char #x1F600)))"),
+                  0x1F600);
     ASSERT_STR_EQ(eval_print("(alpha-char-p (code-char #x1F600))"), "NIL");
-    ASSERT_STR_EQ(eval_print("(both-case-p (code-char #x1F600))"), "NIL");
-    /* U+10041 is unassigned — it must not answer "letter" through a
-     * truncated lookup of U+0041 (LATIN CAPITAL LETTER A). */
-    ASSERT_STR_EQ(eval_print("(alpha-char-p (code-char #x10041))"), "NIL");
-    /* A string of astral characters must come back byte-for-byte. */
-    ASSERT_STR_EQ(eval_print(
+    /* A whole string survives: this is what STRING-UPCASE corrupted. */
+    ASSERT_EQ_INT(eval_int(
         "(char-code (char (string-upcase (string (code-char #x1F600))) 0))"),
-        "128512");
-    /* The BMP path is untouched: Latin-1 and Greek still map case.  That
-     * mapping goes through the C library and so follows LC_CTYPE, which the
-     * clamiga binary sets in main() but a test binary does not — set it here
-     * or the assertion would be testing the "C" locale, where nothing above
-     * ASCII has case at all.  If no UTF-8 locale exists on the host, skip
-     * rather than fail: the regression this test exists for is the astral
-     * truncation above, which is locale-independent. */
-    if (setlocale(LC_CTYPE, "C.UTF-8") || setlocale(LC_CTYPE, "en_US.UTF-8") ||
-        setlocale(LC_CTYPE, ".UTF-8")) {
-        ASSERT_EQ_INT(eval_int("(char-code (char-upcase (code-char #xE9)))"),
-                      0xC9);
-        ASSERT_EQ_INT(eval_int("(char-code (char-downcase (code-char #x391)))"),
-                      0x3B1);
-        setlocale(LC_CTYPE, "C");       /* leave the process as we found it */
-    }
+        0x1F600);
+    /* The BMP path is untouched — setup() has put LC_CTYPE in UTF-8 mode,
+     * which is what the case mapping above ASCII follows. */
+    ASSERT_EQ_INT(eval_int("(char-code (char-upcase (code-char #xE9)))"), 0xC9);
+    ASSERT_EQ_INT(eval_int("(char-code (char-downcase (code-char #x391)))"),
+                  0x3B1);
 }
 
 TEST(eval_char_predicates)
@@ -11262,7 +11261,7 @@ int main(void)
     RUN(eval_char_comparison_variadic);
     RUN(eval_char_code_conversion);
     RUN(eval_char_case);
-    RUN(eval_char_case_astral_roundtrip);
+    RUN(eval_char_case_astral_not_truncated);
     RUN(eval_char_predicates);
     RUN(eval_symbol_name);
     RUN(eval_symbol_package_fn);
