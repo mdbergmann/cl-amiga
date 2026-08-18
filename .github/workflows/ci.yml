@@ -33,3 +33,50 @@ jobs:
 
       - name: Run tests
         run: make test
+
+  windows-test:
+    name: host-test (windows-11-arm, CLANGARM64)
+    runs-on: windows-11-arm
+
+    # Every step runs in the MSYS2 CLANGARM64 shell: that is what makes
+    # `uname -s` report CLANGARM64_NT, which is how the Makefile picks the
+    # Windows platform layer.  The binary it builds is native ARM64 and does
+    # not depend on the msys2 runtime — only the build does.
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Set up MSYS2 (CLANGARM64)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          # openssl is not linked against — the TLS backend dlopens it at run
+          # time — but its presence is what lets the TLS tests actually run
+          # instead of reporting "no provider".
+          install: >-
+            make
+            diffutils
+            mingw-w64-clang-aarch64-clang
+            mingw-w64-clang-aarch64-libffi
+            mingw-w64-clang-aarch64-pkgconf
+            mingw-w64-clang-aarch64-openssl
+
+      - name: Show toolchain
+        run: |
+          uname -a
+          clang --version | head -n 1
+          make --version | head -n 1
+          command -v timeout || echo "WARNING: no timeout(1) — the shell tests will skip"
+
+      - name: Build host
+        run: make host CC_HOST=clang
+
+      - name: Run tests
+        run: make test CC_HOST=clang
