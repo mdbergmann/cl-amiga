@@ -28,6 +28,23 @@ never gates on this repo — and work that leads back into the runtime
 the game) is a commit *here*, with every gate above applying to it in
 full.  Keep the two changes, and their gates, apart.
 
+`make host` builds a **native Windows .exe** from an MSYS2 mingw shell
+(CLANGARM64/UCRT64/MINGW64) — `make host CC_HOST=clang`, `make test
+CC_HOST=clang`.  The Makefile detects the environment from `uname -s` and
+swaps in `src/platform/platform_win32.c` (Winsock, the console API,
+VirtualAlloc, LoadLibrary) plus `win32_compat.c`; `platform_thread_posix.c`
+is shared, since mingw ships winpthreads.  Two things to keep in mind when
+touching Windows-facing code:
+
+- **Paths**: everything the platform layer hands back is normalised to `/`,
+  and a drive letter is the pathname's device.  A Windows path embedded in a
+  Lisp string must not carry backslashes — the reader eats them as escapes.
+- **Tests**: the shell tests get `TMPDIR` in Windows spelling from the
+  Makefile, because only command-line arguments are path-converted on the way
+  from the MSYS shell to a native process — env vars and paths written into
+  generated `.lisp` files are not.  `tests/shpath.sh` has `native_path` for
+  paths compared against clamiga's own output.
+
 Cross-compile for Amiga and test via FS-UAE:
 ```
 make -f Makefile.cross amiga        # Cross-compile to build/cross/clamiga (m68k-amigaos-gcc)

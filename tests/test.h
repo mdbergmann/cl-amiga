@@ -13,6 +13,9 @@
 #include <stdlib.h>
 #include <signal.h>
 #include <unistd.h>
+#ifdef PLATFORM_WIN32
+#include "../src/platform/win32_compat.h"
+#endif
 
 static int test_pass = 0;
 static int test_fail = 0;
@@ -32,11 +35,10 @@ static volatile unsigned int test_current_name_len = 0;
 
 static volatile unsigned int test_watchdog_secs = TEST_WATCHDOG_DEFAULT_SECS;
 
-static void test_watchdog_handler(int sig)
+static void test_watchdog_fire(void)
 {
     /* async-signal-safe: write() + the literal test name only */
     static const char msg[] = "\n*** TEST WATCHDOG: timed out (likely deadlock) in test: ";
-    (void)sig;
     write(2, msg, sizeof(msg) - 1);
     if (test_current_name)
         write(2, (const char *)test_current_name, test_current_name_len);
@@ -45,6 +47,42 @@ static void test_watchdog_handler(int sig)
      * -safe but acceptable for a fatal watchdog in a test harness. */
     abort();
 }
+
+#ifdef PLATFORM_WIN32
+/* Windows has no alarm(2).  A timer-queue timer is the closest equivalent:
+ * the callback runs on a pool thread once the deadline passes, which is
+ * fine — it only writes a fixed string and aborts, and aborting from any
+ * thread kills the process just as SIGALRM does. */
+static HANDLE test_wd_timer = NULL;
+
+static void CALLBACK test_watchdog_cb(PVOID arg, BOOLEAN fired)
+{
+    (void)arg; (void)fired;
+    test_watchdog_fire();
+}
+
+static void test_watchdog_arm(unsigned int secs)
+{
+    if (test_wd_timer) {
+        DeleteTimerQueueTimer(NULL, test_wd_timer, NULL);
+        test_wd_timer = NULL;
+    }
+    if (secs)
+        CreateTimerQueueTimer(&test_wd_timer, NULL, test_watchdog_cb, NULL,
+                              secs * 1000u, 0, WT_EXECUTEONLYONCE);
+}
+#else
+static void test_watchdog_handler(int sig)
+{
+    (void)sig;
+    test_watchdog_fire();
+}
+
+static void test_watchdog_arm(unsigned int secs)
+{
+    alarm(secs);
+}
+#endif
 
 /* One-time harness setup: unbuffered stdout (so per-test progress survives a
  * hang on CI, where stdout is a pipe) + the SIGALRM watchdog.  Called lazily
@@ -59,8 +97,10 @@ static void test_setup_once(void)
     env = getenv("TEST_WATCHDOG_SECS");
     if (env)
         test_watchdog_secs = (unsigned int)strtoul(env, NULL, 10);
+#ifndef PLATFORM_WIN32
     if (test_watchdog_secs)
         signal(SIGALRM, test_watchdog_handler);
+#endif
 }
 
 #define TEST(name) static void test_##name(void)
@@ -70,9 +110,9 @@ static void test_setup_once(void)
     test_current_name = #name; \
     test_current_name_len = (unsigned int)(sizeof(#name) - 1); \
     test_current_failed = 0; \
-    if (test_watchdog_secs) alarm(test_watchdog_secs); \
+    if (test_watchdog_secs) test_watchdog_arm(test_watchdog_secs); \
     test_##name(); \
-    if (test_watchdog_secs) alarm(0); \
+    if (test_watchdog_secs) test_watchdog_arm(0); \
     if (test_current_failed) { \
         printf("FAIL  %s\n", #name); \
         test_fail++; \
@@ -134,7 +174,7 @@ static void test_init(void)
     (void)test_current_failed;
     (void)test_current_name;
     (void)test_current_name_len;
-    (void)test_watchdog_handler;
+    (void)test_watchdog_arm;
 }
 
 #endif /* TEST_H */

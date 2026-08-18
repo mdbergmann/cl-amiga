@@ -1090,11 +1090,32 @@ static int make_fasl_cache_path(const char *input, char *output, uint32_t outsiz
                      override, CL_VERSION_STRING, CL_FASL_VERSION);
         } else {
             const char *home = platform_getenv("HOME", envbuf, sizeof(envbuf));
+#ifdef PLATFORM_WIN32
+            /* A cmd.exe or PowerShell session has no $HOME; USERPROFILE is
+               where Windows keeps the same thing. */
+            if (!home || !home[0])
+                home = platform_getenv("USERPROFILE", envbuf, sizeof(envbuf));
+#endif
             if (!home) return 0;
             snprintf(root, sizeof(root), "%s/.cache/common-lisp/cl-amiga-%s-fasl%d/",
                      home, CL_VERSION_STRING, CL_FASL_VERSION);
         }
     }
+#ifdef PLATFORM_WIN32
+    /* The cache path mirrors the source path underneath the cache root, so
+       the source's drive letter has to stop being a drive letter:
+       "C:/tmp/x.lisp" becomes "C/tmp/x.fasl".  Left as "C:" it would name an
+       alternate data stream on the cache directory and the create fails.
+       The Amiga branch above does the same thing to a volume name.  The root
+       itself is normalised to '/' so the whole path has one separator. */
+    {
+        char *p, *colon;
+        for (p = root; *p; p++)
+            if (*p == '\\') *p = '/';
+        colon = strchr(resolved, ':');
+        if (colon) memmove(colon, colon + 1, strlen(colon + 1) + 1);
+    }
+#endif
     /* Strip leading '/' */
     src = resolved;
     if (src[0] == '/') src++;

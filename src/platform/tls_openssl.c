@@ -21,15 +21,20 @@
  *    host-name verification via SSL_set1_host.  The loader refuses older
  *    libraries rather than misbehave.
  */
-#ifdef PLATFORM_POSIX
+#if defined(PLATFORM_POSIX) || defined(PLATFORM_WIN32)
 
 #include "platform.h"
 #include "tls_openssl.h"
 
+#ifdef PLATFORM_WIN32
+/* Supplies dlopen/poll over LoadLibrary/WSAPoll — see win32_compat.h. */
+#include "win32_compat.h"
+#else
 #include <dlfcn.h>
+#include <poll.h>
+#endif
 #include <errno.h>
 #include <fcntl.h>
-#include <poll.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -135,7 +140,16 @@ static void tls_load(void)
      * call.  Only versioned Homebrew/MacPorts paths and versioned SONAMEs
      * are probed. */
     static const char *const crypto_names[] = {
-#ifdef __APPLE__
+#if defined(PLATFORM_WIN32)
+        /* MSYS2/mingw and the official OpenSSL installers use these names;
+         * the plain "libcrypto.dll" in System32 is Windows' own private copy
+         * and is deliberately not probed. */
+        "libcrypto-3-arm64.dll",
+        "libcrypto-3-x64.dll",
+        "libcrypto-3.dll",
+        "libcrypto-1_1-x64.dll",
+        "libcrypto-1_1.dll",
+#elif defined(__APPLE__)
         "libcrypto.3.dylib",
         "/opt/homebrew/opt/openssl@3/lib/libcrypto.3.dylib",
         "/usr/local/opt/openssl@3/lib/libcrypto.3.dylib",
@@ -151,7 +165,13 @@ static void tls_load(void)
         NULL
     };
     static const char *const ssl_names[] = {
-#ifdef __APPLE__
+#if defined(PLATFORM_WIN32)
+        "libssl-3-arm64.dll",
+        "libssl-3-x64.dll",
+        "libssl-3.dll",
+        "libssl-1_1-x64.dll",
+        "libssl-1_1.dll",
+#elif defined(__APPLE__)
         "libssl.3.dylib",
         "/opt/homebrew/opt/openssl@3/lib/libssl.3.dylib",
         "/usr/local/opt/openssl@3/lib/libssl.3.dylib",
@@ -306,7 +326,11 @@ static int tlso_poll_fd(int fd, int want_write, int timeout_ms)
         pfd.revents = 0;
         r = poll(&pfd, 1, rem);
         if (r < 0) {
+#ifdef PLATFORM_WIN32
+            if (WSAGetLastError() == WSAEINTR) continue;
+#else
             if (errno == EINTR) continue;
+#endif
             return -1;
         }
         if (r == 0) return 0;
@@ -477,10 +501,17 @@ TLSConn *tls_conn_start(int fd, const PlatformTLSParams *p,
 
     /* Permanently non-blocking: from here every fd interaction is an SSL_*
      * call retried around poll(). */
+#ifdef PLATFORM_WIN32
+    {
+        u_long nb = 1;
+        ioctlsocket((SOCKET)fd, FIONBIO, &nb);
+    }
+#else
     {
         int flags = fcntl(fd, F_GETFL, 0);
         if (flags >= 0) fcntl(fd, F_SETFL, flags | O_NONBLOCK);
     }
+#endif
     if (p_SSL_set_fd(ssl, fd) != 1) {
         tlso_fmt_err(NULL, err, errlen, "binding TLS to socket", 0, 0);
         goto fail;
@@ -643,4 +674,4 @@ void tls_conn_close(TLSConn *c, int send_close_notify)
     free(c);
 }
 
-#endif /* PLATFORM_POSIX */
+#endif /* PLATFORM_POSIX || PLATFORM_WIN32 */

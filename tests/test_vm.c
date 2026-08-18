@@ -9507,15 +9507,29 @@ TEST(eval_system_command_false)
 
 TEST(eval_system_command_echo)
 {
-    ASSERT_STR_EQ(eval_print("(ext:system-command \"echo hello > /dev/null\")"), "0");
+    /* The null device is spelled differently by cmd.exe, which is the shell
+     * system() hands the command to on Windows. */
+#ifdef PLATFORM_WIN32
+    const char *cmd = "(ext:system-command \"echo hello > NUL\")";
+#else
+    const char *cmd = "(ext:system-command \"echo hello > /dev/null\")";
+#endif
+    ASSERT_STR_EQ(eval_print(cmd), "0");
 }
 
 TEST(eval_getcwd)
 {
-    /* ext:getcwd should return a non-empty string starting with / */
+    /* ext:getcwd should return a non-empty string holding an absolute path */
     const char *result = eval_print("(ext:getcwd)");
     ASSERT(result[0] == '"');  /* printed as a string */
+#ifdef PLATFORM_WIN32
+    /* "C:/Users/..." — a drive letter, then the separator clamiga
+     * normalises every Windows path to. */
+    ASSERT(result[2] == ':');
+    ASSERT(result[3] == '/');
+#else
     ASSERT(result[1] == '/');  /* absolute path */
+#endif
 }
 
 /* --- mp: threading primitives (real implementations + stubs) --- */

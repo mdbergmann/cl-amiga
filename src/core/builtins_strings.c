@@ -11,7 +11,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
-#ifdef PLATFORM_POSIX
+#if defined(PLATFORM_POSIX) || defined(PLATFORM_WIN32)
 #include <wctype.h>
 #endif
 
@@ -21,7 +21,7 @@
 static int cl_isalpha(int c)
 {
     if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) return 1;
-#ifdef PLATFORM_POSIX
+#if defined(PLATFORM_POSIX) || defined(PLATFORM_WIN32)
     if (c > 127) return iswalpha((wint_t)c);
 #else
     /* Latin-1 Supplement letters */
@@ -35,7 +35,7 @@ static int cl_isalpha(int c)
 static int cl_isupper(int c)
 {
     if (c >= 'A' && c <= 'Z') return 1;
-#ifdef PLATFORM_POSIX
+#if defined(PLATFORM_POSIX) || defined(PLATFORM_WIN32)
     if (c > 127) return iswupper((wint_t)c);
 #else
     if (c >= 0xC0 && c <= 0xD6) return 1;  /* À-Ö */
@@ -47,7 +47,7 @@ static int cl_isupper(int c)
 static int cl_islower(int c)
 {
     if (c >= 'a' && c <= 'z') return 1;
-#ifdef PLATFORM_POSIX
+#if defined(PLATFORM_POSIX) || defined(PLATFORM_WIN32)
     if (c > 127) return iswlower((wint_t)c);
 #else
     if (c >= 0xE0 && c <= 0xF6) return 1;  /* à-ö */
@@ -59,7 +59,7 @@ static int cl_islower(int c)
 static int cl_toupper(int c)
 {
     if (c >= 'a' && c <= 'z') return c - 32;
-#ifdef PLATFORM_POSIX
+#if defined(PLATFORM_POSIX) || defined(PLATFORM_WIN32)
     if (c > 127) return (int)towupper((wint_t)c);
 #else
     if (c >= 0xE0 && c <= 0xF6) return c - 32;  /* à-ö → À-Ö */
@@ -71,7 +71,7 @@ static int cl_toupper(int c)
 static int cl_tolower(int c)
 {
     if (c >= 'A' && c <= 'Z') return c + 32;
-#ifdef PLATFORM_POSIX
+#if defined(PLATFORM_POSIX) || defined(PLATFORM_WIN32)
     if (c > 127) return (int)towlower((wint_t)c);
 #else
     if (c >= 0xC0 && c <= 0xD6) return c + 32;  /* À-Ö → à-ö */

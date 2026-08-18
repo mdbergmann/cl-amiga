@@ -74,6 +74,33 @@ make test-extra    # Heavyweight trunk integration scripts
 make clean         # Remove build artifacts
 ```
 
+### Host (Windows)
+
+`make host` also builds a **native Windows executable** — a real `.exe` with no
+msys2 runtime DLL behind it — from an [MSYS2](https://www.msys2.org/) mingw
+shell (CLANGARM64, UCRT64 or MINGW64):
+
+```
+pacman -S mingw-w64-clang-aarch64-{clang,libffi,make}   # CLANGARM64; adjust prefix
+make host CC_HOST=clang       # -> build/host/clamiga.exe
+make test CC_HOST=clang
+```
+
+The Makefile detects the mingw environment from `uname -s` and switches the
+platform layer to `src/platform/platform_win32.c` (Winsock, the console API,
+`VirtualAlloc`, `LoadLibrary`), so the same targets work as on macOS/Linux.
+Everything the runtime offers on a POSIX host is available: threads (MP),
+sockets and TLS, the FFI, the generational GC, the debugger and the REPL.
+
+Two Windows-specific notes:
+
+- **Paths.** Namestrings use `/`; a drive letter appears as the pathname's
+  device, so `(truename "Makefile")` prints as `#P"C:/Users/you/cl-amiga/Makefile"`.
+- **OpenSSL** is loaded at runtime, as on every other host. It is found by DLL
+  name (`libssl-3-arm64.dll`, `libssl-3-x64.dll`, …) on `PATH`; point
+  `CLAMIGA_LIBSSL` / `CLAMIGA_LIBCRYPTO` at specific files to override.
+  `(ext:tls-available-p)` reports what was found.
+
 ### Pre-commit hook (auto-review + tests)
 
 Optional. A `pre-commit` hook reviews staged changes with a headless `claude`

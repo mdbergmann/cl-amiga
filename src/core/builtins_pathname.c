@@ -224,6 +224,21 @@ CL_Obj cl_parse_namestring(const char *str, uint32_t len)
  * Namestring construction
  * ================================================================ */
 
+#ifdef PLATFORM_WIN32
+/* A one-letter device is a Windows drive ("C:").  Windows-only on purpose:
+ * AmigaOS has one-letter ASSIGNs of its own ("S:startup-sequence",
+ * "C:list"), and those are volume-style — absolute with no slash. */
+static int device_is_drive_letter(CL_Obj device)
+{
+    CL_String *d;
+    if (!CL_STRING_P(device)) return 0;
+    d = (CL_String *)CL_OBJ_TO_PTR(device);
+    if (d->length != 1) return 0;
+    return (d->data[0] >= 'A' && d->data[0] <= 'Z') ||
+           (d->data[0] >= 'a' && d->data[0] <= 'z');
+}
+#endif
+
 /*
  * Build a namestring from pathname components into a buffer.
  * Returns the length written (not including NUL).
@@ -241,6 +256,7 @@ uint32_t cl_pathname_to_namestring(CL_Pathname *pn, char *buf, uint32_t bufsz)
 /* Check if a component is "empty" (NIL or :UNSPECIFIC) */
 #define COMP_EMPTY(c) (CL_NULL_P(c) || (c) == KW_UNSPECIFIC)
 
+
     /* Device (Amiga: "DH0:") */
     if (!COMP_EMPTY(pn->device) && CL_STRING_P(pn->device)) {
         CL_String *dev = (CL_String *)CL_OBJ_TO_PTR(pn->device);
@@ -254,7 +270,19 @@ uint32_t cl_pathname_to_namestring(CL_Pathname *pn, char *buf, uint32_t bufsz)
         CL_Obj kind = cl_car(dir);
         CL_Obj rest = cl_cdr(dir);
 
-        if (kind == KW_ABSOLUTE && CL_NULL_P(pn->device)) {
+        /* Volume syntax puts NO slash after the device: "DH0:foo" is
+         * already absolute.  A Windows DRIVE LETTER is the opposite —
+         * "C:foo" names a file relative to the current directory on drive
+         * C:, a different file from "C:/foo" — so on Windows a one-character
+         * device keeps its slash.  Longer device names stay volume-style
+         * even there, so an Amiga namestring still round-trips unchanged
+         * through a Windows build. */
+        if (kind == KW_ABSOLUTE &&
+#ifdef PLATFORM_WIN32
+            (CL_NULL_P(pn->device) || device_is_drive_letter(pn->device))) {
+#else
+            CL_NULL_P(pn->device)) {
+#endif
             EMIT_CHAR('/');
         }
 

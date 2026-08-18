@@ -235,8 +235,11 @@ TEST(tls_start_argument_errors)
 int main(void)
 {
     /* SSL_write/send on a peer-closed socket must not kill the test binary
-     * (the clamiga binary installs this in main.c; tests link without it). */
+     * (the clamiga binary installs this in main.c; tests link without it).
+     * Windows has no SIGPIPE — a send to a closed peer just fails the call. */
+#ifndef PLATFORM_WIN32
     signal(SIGPIPE, SIG_IGN);
+#endif
 
     RUN(tls_available_reports_consistently);
     RUN(tls_loopback_verified_handshake_and_echo);

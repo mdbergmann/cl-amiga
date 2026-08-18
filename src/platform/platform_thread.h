@@ -73,7 +73,7 @@ void     platform_memory_barrier(void);
 void  platform_tls_init(void);
 void  platform_tls_set(void *value);
 
-#ifdef PLATFORM_POSIX
+#if defined(PLATFORM_POSIX) || defined(PLATFORM_WIN32)
 extern __thread void *cl_tls_thread_ptr;
 static inline void *platform_tls_get(void) { return cl_tls_thread_ptr; }
 #else

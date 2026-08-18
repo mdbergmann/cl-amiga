@@ -19,13 +19,18 @@
 #include <stdlib.h>
 #include <signal.h>
 #include <unistd.h>
-#ifdef PLATFORM_POSIX
+#if defined(PLATFORM_POSIX) || defined(PLATFORM_WIN32)
 #include <locale.h>
 #include <pthread.h>
+#endif
+#ifdef PLATFORM_POSIX
 #include <execinfo.h>
 #ifdef __linux__
 #include <sys/syscall.h>
 #endif
+#endif
+#ifdef PLATFORM_WIN32
+#include "platform/win32_compat.h"
 #endif
 
 #ifdef PLATFORM_MORPHOS
@@ -41,21 +46,27 @@
 unsigned long __stack = 1024 * 1024;
 #endif
 
+#if defined(PLATFORM_POSIX) || defined(PLATFORM_WIN32)
 #ifdef PLATFORM_POSIX
 /* Crash handler on alternate stack for stack overflow debugging */
 /* Use fixed size — SIGSTKSZ is not a compile-time constant on glibc 2.34+ */
 #define CRASH_ALT_STACK_SIZE 16384
 static char crash_alt_stack[CRASH_ALT_STACK_SIZE];
+#endif
 
 /* Defined in vm.c — dump last N VM opcodes for crash diagnostics */
 extern void vm_trace_dump(void);
 /* dbg_last_op/ip/fp/code are now macros from thread.h (CL_Thread fields) */
 
-static void crash_handler(int sig, siginfo_t *info, void *ctx)
+/* The dump itself, shared by both platforms' entry points: `sig` is the
+ * signal number on POSIX and the SEH exception code on Windows, `fault_addr`
+ * the faulting address when the OS reports one.  Everything here writes with
+ * write(2) and touches no allocator, so it is equally safe from a signal
+ * handler and from an exception filter. */
+static void crash_dump(int sig, void *fault_addr)
 {
     char buf[512];
     int len;
-    (void)ctx;
     /* Canary: first thing in handler, before any pointer dereference */
     {
         const char canary[] = "\n[CRASH] handler entered, sig=";
@@ -68,7 +79,7 @@ static void crash_handler(int sig, siginfo_t *info, void *ctx)
     }
     len = snprintf(buf, sizeof(buf),
                    "\n[FATAL] Signal %d at addr=%p, vm.fp=%d/%d, vm.sp=%d/%u\n",
-                   sig, info ? info->si_addr : NULL,
+                   sig, fault_addr,
                    cl_vm.fp, cl_vm.frame_size, cl_vm.sp, cl_vm.stack_size);
     (void)write(2, buf, len);
     {
@@ -77,6 +88,8 @@ static void crash_handler(int sig, siginfo_t *info, void *ctx)
         pthread_threadid_np(NULL, &tid);
 #elif defined(__linux__)
         tid = (unsigned long long)syscall(SYS_gettid);
+#elif defined(PLATFORM_WIN32)
+        tid = (unsigned long long)GetCurrentThreadId();
 #endif
         len = snprintf(buf, sizeof(buf),
                        "[FATAL] thread tid=%llu CT=%p\n",
@@ -182,7 +195,32 @@ static void crash_handler(int sig, siginfo_t *info, void *ctx)
         backtrace_symbols_fd(frames, nframes, 2);
     }
 #endif
+#ifdef PLATFORM_WIN32
+    /* Windows has no backtrace_symbols_fd; raw return addresses still let
+     * `addr2line -e clamiga.exe` name the frames, and asking dbghelp to
+     * symbolise from inside an exception filter is exactly the kind of
+     * allocation this dump exists to avoid. */
+    {
+        void *frames[40];
+        USHORT nframes = RtlCaptureStackBackTrace(0, 40, frames, NULL);
+        USHORT fi;
+        const char hdr[] = "=== Native C backtrace (addresses) ===\n";
+        (void)write(2, hdr, sizeof(hdr) - 1);
+        for (fi = 0; fi < nframes; fi++) {
+            len = snprintf(buf, sizeof(buf), "  [%2u] %p\n",
+                           (unsigned)fi, frames[fi]);
+            (void)write(2, buf, len);
+        }
+    }
+#endif
     _exit(128 + sig);
+}
+
+#ifdef PLATFORM_POSIX
+static void crash_handler(int sig, siginfo_t *info, void *ctx)
+{
+    (void)ctx;
+    crash_dump(sig, info ? info->si_addr : NULL);
 }
 
 static void install_crash_handler(void)
@@ -205,7 +243,33 @@ static void install_crash_handler(void)
      * server closes a keep-alive connection mid-exchange. */
     signal(SIGPIPE, SIG_IGN);
 }
-#endif
+#endif /* PLATFORM_POSIX */
+
+#ifdef PLATFORM_WIN32
+/* Last-resort handler for a fault nothing else claimed.  The GC's write-watch
+ * handler is a VECTORED handler and runs first, so its benign
+ * write-protection faults never reach this filter — what arrives here is a
+ * real crash. */
+static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep)
+{
+    void *addr = NULL;
+    if (ep && ep->ExceptionRecord &&
+        ep->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION &&
+        ep->ExceptionRecord->NumberParameters >= 2)
+        addr = (void *)ep->ExceptionRecord->ExceptionInformation[1];
+    crash_dump(ep && ep->ExceptionRecord
+                   ? (int)ep->ExceptionRecord->ExceptionCode : 0, addr);
+    return EXCEPTION_EXECUTE_HANDLER;   /* not reached: crash_dump _exit()s */
+}
+
+static void install_crash_handler(void)
+{
+    SetUnhandledExceptionFilter(crash_filter);
+    /* No SIGPIPE equivalent: a send() to a closed peer returns
+     * WSAECONNRESET/WSAECONNABORTED rather than raising a signal. */
+}
+#endif /* PLATFORM_WIN32 */
+#endif /* PLATFORM_POSIX || PLATFORM_WIN32 — crash reporting */
 
 static void print_usage(void)
 {
@@ -295,14 +359,17 @@ int main(int argc, char *argv[])
     uint32_t stack_entries = 0;
     int frame_count = 0;
 
-#ifdef PLATFORM_POSIX
+#if defined(PLATFORM_POSIX) || defined(PLATFORM_WIN32)
     /* Enable Unicode character classification.  Try a UTF-8 locale explicitly
      * before falling back to LC_CTYPE from the environment — stock containers
      * (e.g. ubuntu:24.04) leave LANG unset, where setlocale("") yields the
      * POSIX `C` locale and iswalpha/iswupper return 0 for non-ASCII chars.
-     * `C.UTF-8` is universally available on glibc and modern macOS. */
+     * `C.UTF-8` is universally available on glibc and modern macOS, and the
+     * bare `.UTF-8` is how the Windows UCRT spells it (10 1803+); the ones
+     * that do not exist on a given host simply return NULL and fall through. */
     if (!setlocale(LC_CTYPE, "C.UTF-8") &&
-        !setlocale(LC_CTYPE, "en_US.UTF-8")) {
+        !setlocale(LC_CTYPE, "en_US.UTF-8") &&
+        !setlocale(LC_CTYPE, ".UTF-8")) {
         setlocale(LC_CTYPE, "");
     }
 #ifndef __SANITIZE_ADDRESS__

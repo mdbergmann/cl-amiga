@@ -67,10 +67,17 @@ check_not_contains "exedir_no_boot_error"     "cannot locate its runtime library
 
 # --- Executable-relative fallback through a $PATH-style symlink ---
 
-ln -s "$ABS_CLAMIGA" "$WORKDIR/clamiga-link"
-result=$(cd "$WORKDIR" && env -u CLAMIGA_HOME ./clamiga-link --no-userinit \
-    --non-interactive --eval "$EVAL_REQUIRE" </dev/null 2>&1)
-check_contains "symlink_boot_and_require" "GS-OK R=3" "$result"
+ln -s "$ABS_CLAMIGA" "$WORKDIR/clamiga-link" 2>/dev/null
+if [ -L "$WORKDIR/clamiga-link" ]; then
+    result=$(cd "$WORKDIR" && env -u CLAMIGA_HOME ./clamiga-link --no-userinit \
+        --non-interactive --eval "$EVAL_REQUIRE" </dev/null 2>&1)
+    check_contains "symlink_boot_and_require" "GS-OK R=3" "$result"
+else
+    # MSYS2 without Developer Mode copies instead of linking, and a copy
+    # would re-test the $CLAMIGA_HOME leg below rather than symlink
+    # resolution.
+    echo "  skip  symlink_boot_and_require (no symlink support on this host)"
+fi
 
 # --- $CLAMIGA_HOME fallback: bare copied binary, lib/ nowhere nearby ---
 

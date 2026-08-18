@@ -517,11 +517,34 @@ TEST(file_write_date_accepts_pathname)
 
 /* --- Tilde expansion --- */
 
+/* $HOME as clamiga will have spelled it.  On Windows the environment may
+ * hand back either separator (a cmd.exe session has USERPROFILE-style
+ * backslashes, an MSYS shell forward ones) while every namestring leaving
+ * the runtime uses '/', so normalise before comparing. */
+static const char *test_home_dir(void)
+{
+    static char home[512];
+    const char *env = getenv("HOME");
+#ifdef PLATFORM_WIN32
+    if (!env || !*env) env = getenv("USERPROFILE");
+#endif
+    if (!env) return NULL;
+    snprintf(home, sizeof(home), "%s", env);
+#ifdef PLATFORM_WIN32
+    {
+        char *p;
+        for (p = home; *p; p++)
+            if (*p == '\\') *p = '/';
+    }
+#endif
+    return home;
+}
+
 TEST(tilde_bare_expands_to_home)
 {
     /* ~ should expand to $HOME */
     const char *result = eval_print("(namestring (pathname \"~\"))");
-    const char *home = getenv("HOME");
+    const char *home = test_home_dir();
     /* Result must start with home dir */
     ASSERT(home != NULL);
     ASSERT(strncmp(result + 1, home, strlen(home)) == 0);  /* skip leading " */
@@ -531,7 +554,7 @@ TEST(tilde_slash_expands_to_home)
 {
     /* ~/foo should expand to $HOME/foo */
     const char *result = eval_print("(namestring (pathname \"~/foo\"))");
-    const char *home = getenv("HOME");
+    const char *home = test_home_dir();
     char expected[512];
     snprintf(expected, sizeof(expected), "\"%s/foo\"", home);
     ASSERT_STR_EQ(result, expected);

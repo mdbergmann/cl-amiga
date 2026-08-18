@@ -18,7 +18,9 @@ case "$CLAMIGA" in
     /*) ABS_CLAMIGA="$CLAMIGA" ;;
     *)  ABS_CLAMIGA="$(pwd)/$CLAMIGA" ;;
 esac
-ROOT="$(pwd)"
+. "$(dirname "$0")/shpath.sh"
+# Compared against paths clamiga PRINTS, so use clamiga's spelling.
+ROOT="$(native_path "$(pwd)")"
 
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT

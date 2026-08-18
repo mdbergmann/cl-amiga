@@ -2306,7 +2306,15 @@ TEST(compile_file_source_file_outlives_compile_file)
             bc = (CL_Bytecode *)CL_OBJ_TO_PTR(fn_obj);
         }
         ASSERT(bc->source_file != NULL);
-        ASSERT_STR_EQ(bc->source_file, "/tmp/cf-test-srcfile-A.lisp");
+        /* The recorded path is absolutised, which on Windows prefixes the
+         * drive ("C:/tmp/..."); what must hold on every platform is that it
+         * still names A and not B. */
+        {
+            const char *want = "/tmp/cf-test-srcfile-A.lisp";
+            size_t have_len = strlen(bc->source_file), want_len = strlen(want);
+            ASSERT(have_len >= want_len);
+            ASSERT_STR_EQ(bc->source_file + (have_len - want_len), want);
+        }
     }
 
     platform_file_delete("/tmp/cf-test-srcfile-A.lisp");

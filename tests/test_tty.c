@@ -12,6 +12,12 @@
  * (The test runner starts us with stdin at /dev/null, so the pty is also
  * what makes raw mode *possible* here.)  POSIX host only — the Amiga leg
  * lives in tests/amiga/run-tests.lisp.
+ *
+ * Windows has no pty to dup2 over stdin (ConPTY is a pipe protocol, not a
+ * terminal file descriptor), so the Windows leg below tests the other half
+ * of the contract instead: what the console primitives must do when stdin
+ * is NOT a console — which is exactly the situation the test runner, and
+ * every `clamiga < file` invocation, creates.
  */
 
 #include "test.h"
@@ -33,9 +39,13 @@
 #include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#ifndef PLATFORM_WIN32
 #include <termios.h>
 #include <sys/ioctl.h>
-#include <unistd.h>
+#endif
+
+#ifndef PLATFORM_WIN32
 
 static int pty_master = -1;
 static int pty_slave = -1;
@@ -293,3 +303,82 @@ int main(void)
     teardown();
     REPORT();
 }
+
+#else  /* PLATFORM_WIN32 */
+
+static void setup(void)
+{
+    platform_init();
+    cl_thread_init();
+    cl_error_init();
+    cl_mem_init(CL_DEFAULT_HEAP_SIZE);
+    cl_package_init();
+    cl_symbol_init();
+    cl_reader_init();
+    cl_printer_init();
+    cl_compiler_init();
+    cl_vm_init(0, 0);
+    cl_stream_init();
+    cl_builtins_init();
+    cl_repl_init();
+}
+
+/* Redirected stdin (how the test runner and `clamiga < file` both run):
+ * raw mode is impossible and must SAY so rather than half-succeed, and the
+ * REPL must not be told it is talking to a person. */
+TEST(non_console_stdin_reports_honestly)
+{
+    ASSERT_EQ_INT(platform_stdin_is_interactive(), 0);
+    ASSERT_EQ_INT(platform_tty_raw(1), -1);
+    ASSERT_EQ_INT(platform_tty_raw_active(), 0);
+    /* Leaving raw mode reports -1 too when there is no terminal at all —
+     * same answer the POSIX implementation gives for a non-tty stdin, and
+     * harmless: platform_shutdown() only calls it while raw mode is on. */
+    ASSERT_EQ_INT(platform_tty_raw(0), -1);
+}
+
+/* Redirected stdin still has to answer the availability probe, and answer it
+ * without blocking: a file always has bytes ready, which is what makes
+ * READ-CHAR-NO-HANG terminate on piped input. */
+TEST(char_avail_on_redirected_stdin_never_blocks)
+{
+    int avail = platform_tty_char_avail();
+    ASSERT(avail == 0 || avail == 1);
+}
+
+/* EXT:TTY-SIZE must degrade to NIL rather than invent a size when there is
+ * no console to measure (the runner's stdout is a pipe under `make test`). */
+TEST(lisp_tty_builtins_degrade_without_console)
+{
+    int cols = 0, rows = 0;
+    int rc = platform_tty_size(&cols, &rows);
+    ASSERT(rc == 0 || rc == -1);
+    if (rc == 0) {
+        ASSERT(cols > 0);
+        ASSERT(rows > 0);
+    }
+    /* EXT:TTY-SIZE must agree with the primitive: NIL exactly when the
+     * primitive could not measure, a (cols . rows) cons otherwise. */
+    {
+        CL_Obj size = cl_eval_string("(ext:tty-size)");
+        if (rc == 0) {
+            ASSERT(CL_CONS_P(size));
+        } else {
+            ASSERT(CL_NULL_P(size));
+        }
+    }
+    /* Leaving raw mode is always safe to call, console or not. */
+    ASSERT(CL_NULL_P(cl_eval_string("(ext:tty-raw-mode nil)")) ||
+           cl_eval_string("(ext:tty-raw-mode nil)") == CL_T);
+}
+
+int main(void)
+{
+    setup();
+    RUN(non_console_stdin_reports_honestly);
+    RUN(char_avail_on_redirected_stdin_never_blocks);
+    RUN(lisp_tty_builtins_degrade_without_console);
+    REPORT();
+}
+
+#endif  /* PLATFORM_WIN32 */
