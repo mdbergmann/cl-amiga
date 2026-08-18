@@ -15,6 +15,7 @@
 #include <unistd.h>
 #ifdef PLATFORM_WIN32
 #include "../src/platform/win32_compat.h"
+#include <errno.h>
 #endif
 
 static int test_pass = 0;
@@ -97,6 +98,26 @@ static void test_setup_once(void)
     env = getenv("TEST_WATCHDOG_SECS");
     if (env)
         test_watchdog_secs = (unsigned int)strtoul(env, NULL, 10);
+#ifdef PLATFORM_WIN32
+    /* The unit tests write scratch files to POSIX-style absolute paths
+     * ("/tmp/cf-test1.lisp") — 239 literals across eleven files.  A native
+     * Windows binary resolves that to \tmp on the current drive, which is
+     * not a directory Windows ships: on a fresh checkout every one of those
+     * tests fails with "cannot open file" instead of the assertion it meant
+     * to make, and COMPILE-FILE-PATHNAME cannot even build a cache path
+     * (make_fasl_cache_path realpath()s the source's DIRECTORY, which has to
+     * exist).  Create it once, here, so a Windows checkout behaves like a
+     * POSIX one where /tmp is simply always there.
+     *
+     * The shell tests take the other route — the Makefile hands them TMPDIR
+     * in Windows spelling.  Teaching the C tests to honour TMPDIR as well
+     * would be the tidier end state; it is a mechanical but large change to
+     * those 239 literals, most of which sit inside Lisp forms. */
+    if (mkdir("/tmp", 0777) != 0 && errno != EEXIST)
+        fprintf(stderr, "WARNING: cannot create the scratch directory \\tmp "
+                        "on this drive (%s) — tests that write scratch files "
+                        "will fail\n", strerror(errno));
+#endif
 #ifndef PLATFORM_WIN32
     if (test_watchdog_secs)
         signal(SIGALRM, test_watchdog_handler);
