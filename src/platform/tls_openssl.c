@@ -353,7 +353,28 @@ static void tlso_fmt_err(TLSConn *c, char *err, uint32_t errlen,
     if (e)
         p_ERR_error_string_n(e, detail, sizeof(detail));
     else if (sslerr == TLSO_ERROR_SYSCALL && syserr)
+#ifdef PLATFORM_WIN32
+        /* syserr is a Winsock code (see below), which strerror does not
+         * know; FormatMessage does.  Failing that, the bare number still
+         * beats "unexpected EOF from peer" for a connection that was reset. */
+        {
+            char msg[128];
+            DWORD n = FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM |
+                                     FORMAT_MESSAGE_IGNORE_INSERTS,
+                                     NULL, (DWORD)syserr,
+                                     MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+                                     msg, (DWORD)sizeof(msg), NULL);
+            while (n > 0 && (msg[n - 1] == '\r' ||
+                             msg[n - 1] == '\n'))
+                msg[--n] = '\0';
+            if (n > 0)
+                snprintf(detail, sizeof(detail), "%s", msg);
+            else
+                snprintf(detail, sizeof(detail), "Winsock error %d", syserr);
+        }
+#else
         snprintf(detail, sizeof(detail), "%s", strerror(syserr));
+#endif
     else if (sslerr == TLSO_ERROR_SYSCALL)
         snprintf(detail, sizeof(detail), "unexpected EOF from peer");
     else
@@ -407,7 +428,15 @@ static int tlso_run(TLSConn *c, int op, char *buf, int len, int timeout_ms,
             return n;
         }
         sslerr = p_SSL_get_error(c->ssl, n);
+#ifdef PLATFORM_WIN32
+        /* OpenSSL on Windows reports socket-level failures through Winsock,
+         * not the CRT errno — which stays 0, so every SSL_ERROR_SYSCALL was
+         * being described as "unexpected EOF from peer" no matter what
+         * actually happened (a reset mid-handshake, a refused connection). */
+        syserr = WSAGetLastError();
+#else
         syserr = errno;
+#endif
         pthread_mutex_unlock(&c->lock);
         if (sslerr == TLSO_ERROR_WANT_READ || sslerr == TLSO_ERROR_WANT_WRITE) {
             int rr, rem_ms = -1;

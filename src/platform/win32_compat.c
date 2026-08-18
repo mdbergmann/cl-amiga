@@ -156,3 +156,19 @@ int cl_win_pipe(int fds[2])
 {
     return _pipe(fds, 65536, _O_BINARY);
 }
+
+int cl_win_utf8_to_wide(const char *utf8, wchar_t *out, int out_chars)
+{
+    int n;
+    if (!utf8 || !out || out_chars <= 0) return 0;
+    n = MultiByteToWideChar(CP_UTF8, 0, utf8, -1, out, out_chars);
+    return (n > 0) ? n : 0;
+}
+
+int cl_win_wide_to_utf8(const wchar_t *wide, char *out, int out_bytes)
+{
+    int n;
+    if (!wide || !out || out_bytes <= 0) return 0;
+    n = WideCharToMultiByte(CP_UTF8, 0, wide, -1, out, out_bytes, NULL, NULL);
+    return (n > 0) ? n : 0;
+}

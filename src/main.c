@@ -31,6 +31,7 @@
 #endif
 #ifdef PLATFORM_WIN32
 #include "platform/win32_compat.h"
+#include <shellapi.h>     /* CommandLineToArgvW — see win32_utf8_argv */
 #endif
 
 #ifdef PLATFORM_MORPHOS
@@ -250,15 +251,51 @@ static void install_crash_handler(void)
  * handler is a VECTORED handler and runs first, so its benign
  * write-protection faults never reach this filter — what arrives here is a
  * real crash. */
+/* Map a Win32 exception to the signal number the POSIX side would report,
+ * so the dump reads the same on both and the exit status stays in the small
+ * conventional range.  crash_dump ends in _exit(128 + sig), and Windows does
+ * NOT truncate an exit status to 8 bits: handing it 0xC0000005 straight
+ * through printed "[FATAL] Signal -1073741819" and exited with a number no
+ * shell could interpret.  The raw code is printed alongside, since that is
+ * the one a Windows user will look up. */
+static int crash_signal_for(DWORD code)
+{
+    switch (code) {
+    case EXCEPTION_ACCESS_VIOLATION:
+    case EXCEPTION_IN_PAGE_ERROR:
+    case EXCEPTION_STACK_OVERFLOW:      return SIGSEGV;
+    /* No SIGBUS in the Windows CRT; a misaligned access is the same class
+     * of fault to a reader of the dump. */
+    case EXCEPTION_DATATYPE_MISALIGNMENT: return SIGSEGV;
+    case EXCEPTION_ILLEGAL_INSTRUCTION:
+    case EXCEPTION_PRIV_INSTRUCTION:    return SIGILL;
+    case EXCEPTION_FLT_DIVIDE_BY_ZERO:
+    case EXCEPTION_FLT_OVERFLOW:
+    case EXCEPTION_FLT_INVALID_OPERATION:
+    case EXCEPTION_INT_DIVIDE_BY_ZERO:
+    case EXCEPTION_INT_OVERFLOW:        return SIGFPE;
+    default:                            return SIGABRT;
+    }
+}
+
 static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep)
 {
+    const EXCEPTION_RECORD *er = (ep != NULL) ? ep->ExceptionRecord : NULL;
     void *addr = NULL;
-    if (ep && ep->ExceptionRecord &&
-        ep->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION &&
-        ep->ExceptionRecord->NumberParameters >= 2)
-        addr = (void *)ep->ExceptionRecord->ExceptionInformation[1];
-    crash_dump(ep && ep->ExceptionRecord
-                   ? (int)ep->ExceptionRecord->ExceptionCode : 0, addr);
+    char buf[128];
+    int len;
+
+    if (er && er->ExceptionCode == EXCEPTION_ACCESS_VIOLATION &&
+        er->NumberParameters >= 2)
+        addr = (void *)er->ExceptionInformation[1];
+    if (er) {
+        len = snprintf(buf, sizeof(buf),
+                       "\n[FATAL] Win32 exception 0x%08lX at %p\n",
+                       (unsigned long)er->ExceptionCode,
+                       (void *)er->ExceptionAddress);
+        (void)write(2, buf, len);
+    }
+    crash_dump(er ? crash_signal_for(er->ExceptionCode) : SIGABRT, addr);
     return EXCEPTION_EXECUTE_HANDLER;   /* not reached: crash_dump _exit()s */
 }
 
@@ -270,6 +307,57 @@ static void install_crash_handler(void)
 }
 #endif /* PLATFORM_WIN32 */
 #endif /* PLATFORM_POSIX || PLATFORM_WIN32 — crash reporting */
+
+#ifdef PLATFORM_WIN32
+/* Windows hands main() its arguments in the process's ANSI code page.  The
+ * real command line is UTF-16, and the CRT converts it down with the ACP, so
+ * every character the ACP cannot represent arrives as a literal '?' — the
+ * argument is destroyed before the reader ever sees it:
+ *
+ *     clamiga --eval '(print (map (quote list) (function char-code) "AB"))'
+ *
+ * with two Japanese characters printed (63 63).  Everything downstream —
+ * --eval forms, --load paths, script arguments — reads argv as UTF-8, which
+ * is what it is on POSIX and AmigaOS, so the fix is to rebuild argv from the
+ * UTF-16 command line rather than to teach each consumer a second encoding.
+ *
+ * On any failure the original argv is left alone: a partial conversion would
+ * be worse than the ANSI one. */
+static void win32_utf8_argv(int *argc_out, char ***argv_out)
+{
+    LPWSTR *wargv;
+    char **out;
+    int wargc = 0, i;
+
+    wargv = CommandLineToArgvW(GetCommandLineW(), &wargc);
+    if (!wargv)
+        return;
+    out = (char **)calloc((size_t)wargc + 1, sizeof(char *));
+    if (!out) {
+        LocalFree(wargv);
+        return;
+    }
+    for (i = 0; i < wargc; i++) {
+        int n = WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, NULL, 0, NULL, NULL);
+        if (n <= 0 || (out[i] = (char *)malloc((size_t)n)) == NULL)
+            break;
+        if (WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, out[i], n,
+                                NULL, NULL) != n)
+            break;
+    }
+    LocalFree(wargv);
+    if (i < wargc) {                    /* incomplete — discard the lot */
+        int j;
+        for (j = 0; j < i; j++)
+            free(out[j]);
+        free(out);
+        return;
+    }
+    out[wargc] = NULL;
+    *argc_out = wargc;
+    *argv_out = out;                    /* lives for the process */
+}
+#endif
 
 static void print_usage(void)
 {
@@ -358,6 +446,11 @@ int main(int argc, char *argv[])
     uint32_t heap_size = 0;
     uint32_t stack_entries = 0;
     int frame_count = 0;
+
+#ifdef PLATFORM_WIN32
+    /* Before anything reads argv: it arrives ANSI-mangled otherwise. */
+    win32_utf8_argv(&argc, &argv);
+#endif
 
 #if defined(PLATFORM_POSIX) || defined(PLATFORM_WIN32)
     /* Enable Unicode character classification.  Try a UTF-8 locale explicitly

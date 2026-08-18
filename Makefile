@@ -24,7 +24,9 @@ ifdef WINDOWS
 PLATFORM_DEF   = -DPLATFORM_WIN32
 PLATFORM_IMPL  = $(SRCDIR)/platform/platform_win32.c \
                  $(SRCDIR)/platform/win32_compat.c
-PLATFORM_LIBS  = -lws2_32
+# shell32: CommandLineToArgvW, which main.c uses to recover the UTF-16
+# command line (argv arrives ANSI-mangled otherwise).
+PLATFORM_LIBS  = -lws2_32 -lshell32
 PTHREAD_FLAGS  = -pthread
 else
 PLATFORM_DEF   = -DPLATFORM_POSIX
@@ -204,7 +206,8 @@ test_batch test_boot_log test_mx_error_context \
                 test_dev_commands test_userinit test_compile_file_package \
                 test_compile_file_stderr test_fasl_cache_dir test_make_load_form \
                 test_struct_slot_access test_defconstant_fasl test_peephole_diff \
-                test_defvar_special_fasl test_stack_depth
+                test_defvar_special_fasl test_stack_depth test_argv_utf8 \
+                test_utf8_filenames
 
 # The two that drive make itself and take no clamiga binary.
 SHELL_TESTS_NOARG = test_cross_wide_knob test_test_extra

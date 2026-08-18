@@ -75,6 +75,20 @@ int cl_win_unsetenv(const char *name);
 #define setenv(n, v, o) cl_win_setenv((n), (v), (o))
 #define unsetenv(n)     cl_win_unsetenv(n)
 
+/* ---- UTF-8 <-> UTF-16 path conversion --------------------------------
+ * clamiga carries paths as UTF-8 on every platform.  The CRT's narrow file
+ * calls (fopen, stat, _mkdir) honour that here because main() puts the C
+ * locale in UTF-8 mode, but the Win32 "A" entry points do NOT: they use the
+ * process ANSI code page whatever the CRT locale says, so a path they cannot
+ * represent comes back with '?' substituted — a directory listing of a
+ * Japanese filename produced "???".  Anything calling Win32 directly goes
+ * through these and the "W" entry point instead.
+ *
+ * Both return 0 on failure (including "would not fit"), so a caller can
+ * treat it as "this path is not usable" without a second error path. */
+int cl_win_utf8_to_wide(const char *utf8, wchar_t *out, int out_chars);
+int cl_win_wide_to_utf8(const wchar_t *wide, char *out, int out_bytes);
+
 /* ---- mkdir -----------------------------------------------------------
  * POSIX mkdir takes a permission mode; the CRT's takes only the path
  * (Windows uses ACLs, not permission bits), so the mode is dropped.

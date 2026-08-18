@@ -12,7 +12,7 @@
 #include "core/repl.h"
 #include "core/compiler_internal.h" /* determine_boxed_vars (deep-scan regression) */
 #include "platform/platform.h"
-#ifdef PLATFORM_POSIX
+#if defined(PLATFORM_POSIX) || defined(PLATFORM_WIN32)
 #include <locale.h>
 #endif
 
@@ -3918,6 +3918,48 @@ TEST(eval_char_case)
     ASSERT_STR_EQ(eval_print("(char-upcase #\\A)"), "#\\A");
     ASSERT_STR_EQ(eval_print("(char-downcase #\\A)"), "#\\a");
     ASSERT_STR_EQ(eval_print("(char-downcase #\\a)"), "#\\a");
+}
+
+/* Regression: a codepoint above the BMP must survive the case and
+ * classification functions unchanged.  The Windows wctype functions take a
+ * 16-bit wint_t, so an unguarded (wint_t)c truncated U+10428 to U+0428 —
+ * CHAR-UPCASE returned an unrelated Cyrillic letter and STRING-UPCASE
+ * silently corrupted any string holding an emoji.  Astral characters have no
+ * case mapping in this implementation; what matters is that they come back
+ * as themselves rather than as something else. */
+TEST(eval_char_case_astral_roundtrip)
+{
+    ASSERT_EQ_INT(eval_int("(char-code (char-upcase (code-char #x10428)))"),
+                  0x10428);
+    ASSERT_EQ_INT(eval_int("(char-code (char-downcase (code-char #x10428)))"),
+                  0x10428);
+    /* U+1F600 GRINNING FACE: not a letter, no case, and not truncated. */
+    ASSERT_EQ_INT(eval_int("(char-code (char-upcase (code-char #x1F600)))"),
+                  0x1F600);
+    ASSERT_STR_EQ(eval_print("(alpha-char-p (code-char #x1F600))"), "NIL");
+    ASSERT_STR_EQ(eval_print("(both-case-p (code-char #x1F600))"), "NIL");
+    /* U+10041 is unassigned — it must not answer "letter" through a
+     * truncated lookup of U+0041 (LATIN CAPITAL LETTER A). */
+    ASSERT_STR_EQ(eval_print("(alpha-char-p (code-char #x10041))"), "NIL");
+    /* A string of astral characters must come back byte-for-byte. */
+    ASSERT_STR_EQ(eval_print(
+        "(char-code (char (string-upcase (string (code-char #x1F600))) 0))"),
+        "128512");
+    /* The BMP path is untouched: Latin-1 and Greek still map case.  That
+     * mapping goes through the C library and so follows LC_CTYPE, which the
+     * clamiga binary sets in main() but a test binary does not — set it here
+     * or the assertion would be testing the "C" locale, where nothing above
+     * ASCII has case at all.  If no UTF-8 locale exists on the host, skip
+     * rather than fail: the regression this test exists for is the astral
+     * truncation above, which is locale-independent. */
+    if (setlocale(LC_CTYPE, "C.UTF-8") || setlocale(LC_CTYPE, "en_US.UTF-8") ||
+        setlocale(LC_CTYPE, ".UTF-8")) {
+        ASSERT_EQ_INT(eval_int("(char-code (char-upcase (code-char #xE9)))"),
+                      0xC9);
+        ASSERT_EQ_INT(eval_int("(char-code (char-downcase (code-char #x391)))"),
+                      0x3B1);
+        setlocale(LC_CTYPE, "C");       /* leave the process as we found it */
+    }
 }
 
 TEST(eval_char_predicates)
@@ -11220,6 +11262,7 @@ int main(void)
     RUN(eval_char_comparison_variadic);
     RUN(eval_char_code_conversion);
     RUN(eval_char_case);
+    RUN(eval_char_case_astral_roundtrip);
     RUN(eval_char_predicates);
     RUN(eval_symbol_name);
     RUN(eval_symbol_package_fn);

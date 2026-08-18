@@ -1483,6 +1483,43 @@ TEST(platform_file_rename_test)
     remove(new_path);
 }
 
+/* Regression: renaming ONTO an existing file must replace it, the way POSIX
+ * rename(2) and the Amiga back end do.  The Windows CRT's rename() fails
+ * instead, and OPEN :if-exists :rename ignores the result — so a second
+ * write to the same file left the stale .bak in place and then truncated the
+ * original it was supposed to preserve. */
+TEST(platform_file_rename_replaces_existing)
+{
+    const char *old_path = "/tmp/cl_test_rename_src.tmp";
+    const char *new_path = "/tmp/cl_test_rename_dst.tmp";
+    PlatformFile f;
+    char *content;
+    unsigned long size = 0;
+
+    f = platform_file_open(old_path, PLATFORM_FILE_WRITE);
+    ASSERT(f != PLATFORM_FILE_INVALID);
+    platform_file_write_string(f, "NEW");
+    platform_file_close(f);
+
+    f = platform_file_open(new_path, PLATFORM_FILE_WRITE);
+    ASSERT(f != PLATFORM_FILE_INVALID);
+    platform_file_write_string(f, "OLD");
+    platform_file_close(f);
+
+    ASSERT_EQ_INT(platform_file_rename(old_path, new_path), 0);
+    ASSERT(!platform_file_exists(old_path));
+    ASSERT(platform_file_exists(new_path));
+
+    /* The destination must now hold the SOURCE's contents. */
+    content = platform_file_read(new_path, &size);
+    ASSERT(content != NULL);
+    if (content) {
+        ASSERT_STR_EQ(content, "NEW");
+        free(content);
+    }
+    remove(new_path);
+}
+
 TEST(platform_file_mtime_test)
 {
     const char *path = "/tmp/cl_test_mtime.tmp";
@@ -2028,6 +2065,35 @@ TEST(socket_listen_reports_readiness)
 
     cl_stream_close(conn);
     cl_stream_close(listener);
+}
+
+/* Regression: closing a socket handle twice must not corrupt the slot table.
+ * The second close has to see the slot as free and do nothing; if the guard
+ * lets it through, the slot is pushed onto the free list a second time and
+ * two later sockets are handed the SAME index — closing one then kills the
+ * other's connection.  (On Windows the guard was written as `fd >= 0`, which
+ * is vacuously true for the unsigned SOCKET type, so it never fired.) */
+TEST(socket_double_close_keeps_slot_table_sane)
+{
+    int port_a = 0, port_b = 0;
+    PlatformSocket a, b, c;
+
+    a = platform_socket_listen(0, 1, &port_a);
+    ASSERT(a != PLATFORM_SOCKET_INVALID);
+    platform_socket_close(a);
+    platform_socket_close(a);              /* must be a no-op, not a re-free */
+
+    /* Two fresh handles must be distinct: a duplicated free-list entry shows
+     * up here as the same index handed out twice. */
+    b = platform_socket_listen(0, 1, &port_b);
+    ASSERT(b != PLATFORM_SOCKET_INVALID);
+    c = platform_socket_listen(0, 1, NULL);
+    ASSERT(c != PLATFORM_SOCKET_INVALID);
+    ASSERT(b != c);
+    ASSERT(port_b > 0);
+
+    platform_socket_close(b);
+    platform_socket_close(c);
 }
 
 TEST(socket_stream_connect_failure)
@@ -4500,6 +4566,7 @@ int main(void)
     RUN(platform_file_exists_negative);
     RUN(platform_file_delete_test);
     RUN(platform_file_rename_test);
+    RUN(platform_file_rename_replaces_existing);
     RUN(platform_file_mtime_test);
     RUN(platform_file_mtime_nonexistent);
     RUN(platform_mkdir_test);
@@ -4533,6 +4600,7 @@ int main(void)
     RUN(star_readtable_is_special);
 
     /* TCP Socket Stream tests */
+    RUN(socket_double_close_keeps_slot_table_sane);
     RUN(socket_stream_connect_failure);
     RUN(socket_connect_timeout_unreachable);
     RUN(socket_stream_connect_write_read);

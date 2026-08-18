@@ -243,6 +243,7 @@ static DWORD tty_saved_mode = 0;
 static int tty_saved_valid = 0;
 static int tty_raw_active = 0;
 static int tty_pushback = -1;
+static int tty_vt_input = 0;    /* raw mode got ENABLE_VIRTUAL_TERMINAL_INPUT */
 
 static HANDLE tty_in(void)
 {
@@ -291,10 +292,14 @@ int platform_tty_raw(int enable)
         mode = tty_saved_mode & ~(DWORD)(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT |
                                          ENABLE_PROCESSED_INPUT);
         mode |= ENABLE_VIRTUAL_TERMINAL_INPUT;
+        tty_vt_input = 1;
         if (!SetConsoleMode(h, mode)) {
             /* Legacy consoles reject VT input — fall back to raw-without-VT
-             * rather than leaving the TUI stuck in cooked mode. */
+             * rather than leaving the TUI stuck in cooked mode.  The
+             * availability probe has to know which mode won: see
+             * platform_tty_char_avail. */
             mode &= ~(DWORD)ENABLE_VIRTUAL_TERMINAL_INPUT;
+            tty_vt_input = 0;
             if (!SetConsoleMode(h, mode))
                 return -1;
         }
@@ -311,6 +316,7 @@ int platform_tty_raw(int enable)
     if (tty_saved_valid && !SetConsoleMode(h, tty_saved_mode))
         return -1;
     tty_raw_active = 0;
+    tty_vt_input = 0;
     return 0;
 }
 
@@ -327,6 +333,24 @@ static int tty_vk_is_modifier(WORD vk)
     return vk == VK_SHIFT || vk == VK_CONTROL || vk == VK_MENU ||
            vk == VK_CAPITAL || vk == VK_NUMLOCK || vk == VK_SCROLL ||
            vk == VK_LWIN || vk == VK_RWIN;
+}
+
+/* Will this key-down record make ReadFile produce at least one byte?
+ *
+ * With ENABLE_VIRTUAL_TERMINAL_INPUT the console synthesises an escape
+ * sequence for the navigation keys, so an arrow counts even though its
+ * INPUT_RECORD carries no character.  On a legacy console that fell back to
+ * raw-without-VT it does not: only records with a character yield bytes, and
+ * answering "ready" for an arrow there would park the next read on a
+ * keypress the user has already made — exactly the guarantee LISTEN and
+ * READ-CHAR-NO-HANG must not break. */
+static int tty_key_yields_byte(const KEY_EVENT_RECORD *k)
+{
+    if (!k->bKeyDown)
+        return 0;
+    if (k->uChar.UnicodeChar != 0)
+        return 1;
+    return tty_vt_input && !tty_vk_is_modifier(k->wVirtualKeyCode);
 }
 
 int platform_tty_char_avail(void)
@@ -356,8 +380,8 @@ int platform_tty_char_avail(void)
         DWORD n = 0;
         if (!PeekConsoleInputA(h, &rec, 1, &n) || n == 0)
             return 0;
-        if (rec.EventType == KEY_EVENT && rec.Event.KeyEvent.bKeyDown &&
-            !tty_vk_is_modifier(rec.Event.KeyEvent.wVirtualKeyCode))
+        if (rec.EventType == KEY_EVENT &&
+            tty_key_yields_byte(&rec.Event.KeyEvent))
             return 1;
         if (!ReadConsoleInputA(h, &rec, 1, &n) || n == 0)
             return 0;               /* could not consume it; report not ready */
@@ -876,7 +900,23 @@ int platform_file_delete(const char *path)
 
 int platform_file_rename(const char *oldpath, const char *newpath)
 {
-    return (rename(oldpath, newpath) == 0) ? 0 : -1;
+    /* NOT rename(3): the Windows CRT's fails when the destination exists,
+     * while POSIX rename(2) and the Amiga back end both replace it.  Callers
+     * rely on replacing — OPEN :if-exists :rename renames the original out of
+     * the way, ignoring the result (builtins_stream.c), so a failure there
+     * left the stale backup in place and then truncated the file the backup
+     * was supposed to preserve.  MOVEFILE_COPY_ALLOWED additionally lets the
+     * rename cross volumes, which POSIX rename cannot do but callers of a
+     * "rename this file" primitive reasonably expect. */
+    {
+        wchar_t wold[PATH_MAX], wnew[PATH_MAX];
+        if (!cl_win_utf8_to_wide(oldpath, wold, PATH_MAX) ||
+            !cl_win_utf8_to_wide(newpath, wnew, PATH_MAX))
+            return -1;
+        return MoveFileExW(wold, wnew,
+                           MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED)
+               ? 0 : -1;
+    }
 }
 
 uint32_t platform_file_mtime(const char *path)
@@ -901,9 +941,15 @@ const char *platform_getenv(const char *name, char *buf, int bufsize)
 const char *platform_executable_prefix(char *buf, int bufsize)
 {
     char resolved[PATH_MAX];
-    DWORD n = GetModuleFileNameA(NULL, resolved, (DWORD)sizeof(resolved));
-    if (n == 0 || n >= (DWORD)sizeof(resolved))
+    wchar_t wresolved[PATH_MAX];
+    DWORD n = GetModuleFileNameW(NULL, wresolved, (DWORD)PATH_MAX);
+    if (n == 0 || n >= (DWORD)PATH_MAX)
         return NULL;            /* failed, or the path was truncated */
+    /* Not GetModuleFileNameA: an installation under a user profile whose
+     * name the ANSI code page cannot spell would come back with '?' in it,
+     * and lib/ would then never be found. */
+    if (!cl_win_wide_to_utf8(wresolved, resolved, (int)sizeof(resolved)))
+        return NULL;
     win_normalize_seps(resolved);
     /* Strip the executable name, keep the trailing slash */
     {
@@ -1086,7 +1132,11 @@ static void win_glob_walk(const char *prefix, const char *rest, StrVec *out)
         if (snprintf(path, sizeof(path), "%.*s%.*s", (int)strlen(prefix), prefix,
                      (int)complen, rest) >= (int)sizeof(path))
             return;
-        attr = GetFileAttributesA(path);
+        {
+            wchar_t wpath[PATH_MAX];
+            if (!cl_win_utf8_to_wide(path, wpath, PATH_MAX)) return;
+            attr = GetFileAttributesW(wpath);
+        }
         if (attr == INVALID_FILE_ATTRIBUTES) return;
         if (is_last) {
             if (attr & FILE_ATTRIBUTE_DIRECTORY) {
@@ -1115,30 +1165,39 @@ static void win_glob_walk(const char *prefix, const char *rest, StrVec *out)
      * carries DOS 8.3 short-name quirks (a "*.lisp" mask also matches
      * "foo.lispx" through its short name), which win_wildmatch does not. */
     {
-        WIN32_FIND_DATAA fd;
+        /* The WIDE enumeration, not FindFirstFileA: the ANSI one reports any
+         * name the process code page cannot spell with '?' substituted, so a
+         * directory holding a Japanese filename listed as "???.lisp" — a name
+         * that matches nothing and opens nothing. */
+        WIN32_FIND_DATAW fd;
         HANDLE h;
         char pat[PATH_MAX];
         char search[PATH_MAX];
+        char name[PATH_MAX];
+        wchar_t wsearch[PATH_MAX];
         if (complen >= sizeof(pat)) return;
         memcpy(pat, rest, complen);
         pat[complen] = '\0';
         if (snprintf(search, sizeof(search), "%s*", prefix) >= (int)sizeof(search))
             return;
-        h = FindFirstFileA(search, &fd);
+        if (!cl_win_utf8_to_wide(search, wsearch, PATH_MAX)) return;
+        h = FindFirstFileW(wsearch, &fd);
         if (h == INVALID_HANDLE_VALUE) return;
         do {
             int isdir = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-            if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0)
+            if (!cl_win_wide_to_utf8(fd.cFileName, name, (int)sizeof(name)))
+                continue;
+            if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0)
                 continue;
             /* A leading dot is not special on Windows, but glob() hides
              * dotfiles unless the pattern itself starts with one — keep that,
              * so DIRECTORY "*.lisp" does not surface editor backups in a
              * .git/ style directory. */
-            if (fd.cFileName[0] == '.' && pat[0] != '.')
+            if (name[0] == '.' && pat[0] != '.')
                 continue;
-            if (!win_wildmatch(pat, fd.cFileName))
+            if (!win_wildmatch(pat, name))
                 continue;
-            if (snprintf(path, sizeof(path), "%s%s", prefix, fd.cFileName) >=
+            if (snprintf(path, sizeof(path), "%s%s", prefix, name) >=
                 (int)sizeof(path))
                 continue;
             if (is_last) {
@@ -1156,7 +1215,7 @@ static void win_glob_walk(const char *prefix, const char *rest, StrVec *out)
                     (int)sizeof(nextpref))
                     win_glob_walk(nextpref, slash + 1, out);
             }
-        } while (FindNextFileA(h, &fd));
+        } while (FindNextFileW(h, &fd));
         FindClose(h);
     }
 }
@@ -1213,11 +1272,18 @@ const char *platform_realpath(const char *path, char *buf, int bufsize)
      * arithmetic and would happily canonicalise a missing file — so check
      * existence first.  GetFullPathName does not resolve symlinks or
      * junctions; on Windows that is the documented limit of this call. */
-    if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES)
-        return NULL;
-    n = GetFullPathNameA(path, (DWORD)sizeof(resolved), resolved, NULL);
-    if (n == 0 || n >= (DWORD)sizeof(resolved))
-        return NULL;
+    {
+        wchar_t wpath[PATH_MAX], wfull[PATH_MAX];
+        if (!cl_win_utf8_to_wide(path, wpath, PATH_MAX))
+            return NULL;
+        if (GetFileAttributesW(wpath) == INVALID_FILE_ATTRIBUTES)
+            return NULL;
+        n = GetFullPathNameW(wpath, (DWORD)PATH_MAX, wfull, NULL);
+        if (n == 0 || n >= (DWORD)PATH_MAX)
+            return NULL;
+        if (!cl_win_wide_to_utf8(wfull, resolved, (int)sizeof(resolved)))
+            return NULL;
+    }
     win_normalize_seps(resolved);
     strncpy(buf, resolved, (size_t)bufsize - 1);
     buf[bufsize - 1] = '\0';
@@ -1575,7 +1641,7 @@ static int socket_flush_wbuf(PlatformSocket sh)
 void platform_socket_close(PlatformSocket sh)
 {
     SockSlot *s = sock_slot(sh);
-    if (sh > 0 && s && s->fd >= 0) {
+    if (sh > 0 && s && s->fd != INVALID_SOCKET) {
         SOCKET fd;
         IOBuf *buf;
         TLSConn *tls;
@@ -1609,7 +1675,7 @@ void platform_socket_close_gc(PlatformSocket sh)
      * plain close() is fast and safe-region-free.  The TLS teardown skips
      * the close_notify for the same reason (no I/O during the sweep). */
     SockSlot *s = sock_slot(sh);
-    if (sh > 0 && s && s->fd >= 0) {
+    if (sh > 0 && s && s->fd != INVALID_SOCKET) {
         SOCKET fd;
         IOBuf *buf;
         TLSConn *tls;
@@ -2163,7 +2229,7 @@ int platform_tls_start(PlatformSocket sh, const PlatformTLSParams *params,
 int platform_tls_active(PlatformSocket sh)
 {
     SockSlot *s = sock_slot(sh);
-    return (sh > 0 && s && s->fd >= 0 && s->tls) ? 1 : 0;
+    return (sh > 0 && s && s->fd != INVALID_SOCKET && s->tls) ? 1 : 0;
 }
 
 int platform_tls_peer_cert_field(PlatformSocket sh, int field,
@@ -2231,13 +2297,23 @@ void platform_init(void)
      * operation failing rather than by a crash. */
     WSAStartup(MAKEWORD(2, 2), &wsa);
 
-    /* Binary standard streams: no CRLF translation on the way out.  A
-     * newline is one LF byte here exactly as it is on POSIX and AmigaOS —
-     * which is what every other Common Lisp on Windows does, what the
-     * Windows console itself renders correctly, and what keeps a redirected
-     * `clamiga --batch` byte-identical across platforms.  File streams are
-     * already binary (platform_file_open opens "rb"/"wb"/"ab"). */
-    _setmode(_fileno(stdin), _O_BINARY);
+    /* Binary OUTPUT streams: no CRLF translation on the way out.  A newline
+     * is one LF byte here exactly as it is on POSIX and AmigaOS — which is
+     * what every other Common Lisp on Windows does, what the Windows console
+     * itself renders correctly, and what keeps a redirected `clamiga --batch`
+     * byte-identical across platforms.  File streams are already binary
+     * (platform_file_open opens "rb"/"wb"/"ab").
+     *
+     * stdin deliberately stays in TEXT mode, and the asymmetry is the point.
+     * A Windows console delivers CR LF for Enter, as does every CRLF file or
+     * pipe; in binary mode that CR reaches the reader.  platform_read_line
+     * strips only '\n', so every exact-match command in the debugger and
+     * the inspector (":q", ":c", ":bt", "q", "h" — strcmp, not a parse)
+     * silently stopped matching, and READ-LINE returned strings ending in #\Return.
+     * Text mode is what makes a typed line look the same as it does on
+     * POSIX.  The cost is that raw binary piped into stdin gets CRLF-folded;
+     * a TUI does not pay it, because raw mode reads the console handle
+     * directly and never goes through stdio at all. */
     _setmode(_fileno(stdout), _O_BINARY);
     _setmode(_fileno(stderr), _O_BINARY);
 

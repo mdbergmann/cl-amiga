@@ -24,6 +24,40 @@
  * Namestring parsing
  * ================================================================ */
 
+/* Is this character a directory separator in a namestring being PARSED?
+ *
+ * Windows accepts both, and both turn up in practice: the platform layer
+ * normalises what it hands out to '/', but a string that reaches PATHNAME
+ * from elsewhere does not go through it — $HOME is "C:\\Users\\you", and a
+ * user typing a Windows path types backslashes.  Parsing those as ordinary
+ * name characters silently produced one run-together component
+ * ("C:\\Users\\x/.cache" -> (:RELATIVE "Usersx" ".cache")), which then failed
+ * ASDF's absolute-pathname check.  Namestrings are still WRITTEN with '/'
+ * only — this is about what we accept, not what we produce.
+ *
+ * Elsewhere (AmigaOS, POSIX) a backslash is an ordinary character in a file
+ * name and must stay one. */
+#ifdef PLATFORM_WIN32
+#define CL_PATH_SEP_P(c) ((c) == '/' || (c) == '\\')
+#else
+#define CL_PATH_SEP_P(c) ((c) == '/')
+#endif
+
+#ifdef PLATFORM_WIN32
+/* A one-letter device is a Windows drive ("C:").  Windows-only on purpose:
+ * AmigaOS has one-letter ASSIGNs of its own ("S:startup-sequence",
+ * "C:list"), and those are volume-style — absolute with no slash. */
+static int device_is_drive_letter(CL_Obj device)
+{
+    CL_String *d;
+    if (!CL_STRING_P(device)) return 0;
+    d = (CL_String *)CL_OBJ_TO_PTR(device);
+    if (d->length != 1) return 0;
+    return (d->data[0] >= 'A' && d->data[0] <= 'Z') ||
+           (d->data[0] >= 'a' && d->data[0] <= 'z');
+}
+#endif
+
 /*
  * Parse a namestring into pathname components.
  * Returns a pathname object.
@@ -99,7 +133,7 @@ CL_Obj cl_parse_namestring(const char *str, uint32_t len)
         const char *scan;
         for (scan = p; scan < end; scan++) {
             if (*scan == ':') { colon = scan; break; }
-            if (*scan == '/') break;  /* slash before colon = no device */
+            if (CL_PATH_SEP_P(*scan)) break;  /* separator first = no device */
         }
         if (colon && colon > p) {
             device = cl_make_string(p, (uint32_t)(colon - p));
@@ -114,12 +148,12 @@ CL_Obj cl_parse_namestring(const char *str, uint32_t len)
     {
         const char *scan;
         for (scan = p; scan < end; scan++) {
-            if (*scan == '/') last_slash = scan;
+            if (CL_PATH_SEP_P(*scan)) last_slash = scan;
         }
     }
 
     /* Parse directory components */
-    if (last_slash != NULL || (p < end && *p == '/')) {
+    if (last_slash != NULL || (p < end && CL_PATH_SEP_P(*p))) {
         /* There is directory info */
         const char *dir_end = last_slash ? last_slash : p;
         const char *dp = p;
@@ -131,12 +165,22 @@ CL_Obj cl_parse_namestring(const char *str, uint32_t len)
         CL_GC_PROTECT(dir_tail);
 
         /* Determine absolute vs relative */
-        if (dp < end && *dp == '/') {
+        if (dp < end && CL_PATH_SEP_P(*dp)) {
             dir_kind = KW_ABSOLUTE;
             dp++;
         } else if (!CL_NULL_P(device)) {
+#ifdef PLATFORM_WIN32
+            /* A Windows drive letter with no slash after it is drive-RELATIVE:
+             * "C:foo" names foo in the current directory of drive C:, a
+             * different file from "C:/foo".  Recording that here is what lets
+             * the namestring builder round-trip both spellings; treating it as
+             * absolute (the Amiga rule below) silently rewrote one into the
+             * other.  A longer device is an Amiga-style volume even here. */
+            dir_kind = device_is_drive_letter(device) ? KW_RELATIVE : KW_ABSOLUTE;
+#else
             /* Amiga: device present implies absolute (DH0:foo = absolute) */
             dir_kind = KW_ABSOLUTE;
+#endif
         } else {
             dir_kind = KW_RELATIVE;
         }
@@ -148,7 +192,7 @@ CL_Obj cl_parse_namestring(const char *str, uint32_t len)
         /* Parse directory components between slashes */
         while (dp <= dir_end && dp < end) {
             const char *comp_start = dp;
-            while (dp < end && dp <= dir_end && *dp != '/') dp++;
+            while (dp < end && dp <= dir_end && !CL_PATH_SEP_P(*dp)) dp++;
             if (dp > comp_start) {
                 CL_Obj comp;
                 uint32_t clen = (uint32_t)(dp - comp_start);
@@ -162,7 +206,7 @@ CL_Obj cl_parse_namestring(const char *str, uint32_t len)
                     dir_tail = cell;
                 }
             }
-            if (dp < end && *dp == '/') dp++;
+            if (dp < end && CL_PATH_SEP_P(*dp)) dp++;
         }
 
         directory = dir_list;
@@ -223,21 +267,6 @@ CL_Obj cl_parse_namestring(const char *str, uint32_t len)
 /* ================================================================
  * Namestring construction
  * ================================================================ */
-
-#ifdef PLATFORM_WIN32
-/* A one-letter device is a Windows drive ("C:").  Windows-only on purpose:
- * AmigaOS has one-letter ASSIGNs of its own ("S:startup-sequence",
- * "C:list"), and those are volume-style — absolute with no slash. */
-static int device_is_drive_letter(CL_Obj device)
-{
-    CL_String *d;
-    if (!CL_STRING_P(device)) return 0;
-    d = (CL_String *)CL_OBJ_TO_PTR(device);
-    if (d->length != 1) return 0;
-    return (d->data[0] >= 'A' && d->data[0] <= 'Z') ||
-           (d->data[0] >= 'a' && d->data[0] <= 'z');
-}
-#endif
 
 /*
  * Build a namestring from pathname components into a buffer.
@@ -334,6 +363,7 @@ uint32_t cl_pathname_to_namestring(CL_Pathname *pn, char *buf, uint32_t bufsz)
  * TYPE_STRING; without this, (pathname <fill-pointer-string>) and friends
  * wrongly signalled a type-error (hunchentoot's HTTP Range handler builds
  * such strings and passes them to PATHNAME). */
+
 static int string_desig_to_cbuf(CL_Obj arg, char *buf, uint32_t bufsz)
 {
     uint32_t len, i, pos = 0;
