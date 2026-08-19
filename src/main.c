@@ -637,6 +637,13 @@ shutdown:
 #define SHUTDOWN_TRACE(s) ((void)0)
 #endif
     SHUTDOWN_TRACE("enter shutdown");
+    /* User-level cleanup first, while the VM, the streams and the heap are all
+     * still alive — a hook may print, close files or stop threads.  Nothing
+     * below this point can run Lisp code.  (QUIT) unwinds via CL_ERR_EXIT,
+     * which skips UNWIND-PROTECT cleanups by design, so EXT:*EXIT-HOOKS* is
+     * the only place user code gets to observe process exit. */
+    cl_run_exit_hooks();
+    SHUTDOWN_TRACE("exit hooks done");
     cl_stream_shutdown();
     SHUTDOWN_TRACE("stream done");
     cl_vm_shutdown();

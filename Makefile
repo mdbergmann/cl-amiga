@@ -231,6 +231,13 @@ test-fast: $(TEST_BINS) host
 		echo "FAIL"; \
 		failed=1; \
 	fi; \
+	echo "--- test_exit_hooks ---"; \
+	if sh $(TEST_SRCDIR)/test_exit_hooks.sh $(BUILDDIR)/clamiga; then \
+		echo "PASS"; \
+	else \
+		echo "FAIL"; \
+		failed=1; \
+	fi; \
 	echo "--- test_gray_streams_reload ---"; \
 	if sh $(TEST_SRCDIR)/test_gray_streams_reload.sh $(BUILDDIR)/clamiga; then \
 		echo "PASS"; \

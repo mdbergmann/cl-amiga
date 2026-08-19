@@ -4958,6 +4958,30 @@ check_contains "dev-command handler still answers after the storm" \
 check_absent   "no corruption diagnostics from the dev-command layer" \
   "corrupted\|type 0\|BADMARK\|badmark\|SIGSEGV\|Unbound" "$out"
 
+# --- Case: EXT:*EXIT-HOOKS* walked at real process exit --------------------
+# cl_run_exit_hooks() walks the hook list with a C-local cursor while each hook
+# allocates (and here forces a compaction per allocation), so an unprotected
+# cursor would go stale mid-sequence: hooks silently skipped, or a walk into
+# relocated memory.  The run below exits for real -- the hooks fire from
+# main.c's shutdown funnel, not from a Lisp-level call.
+cat > "$WORK/exithooks.lisp" <<'EOF'
+(defparameter *ehsum* 0)
+;; Registered first => runs LAST, so it reports the total the others built.
+(ext:add-exit-hook (lambda () (format t "EXITHOOK-SUM:~a~%" *ehsum*)))
+(dotimes (i 30)
+  (let ((k i))                      ; distinct closures (EQL dedup must not fold them)
+    (ext:add-exit-hook
+      (lambda ()
+        (setq *ehsum* (+ *ehsum* k 1))
+        (make-string 200 :initial-element #\x)))))
+(format t "EXITHOOK-REGISTERED:~a~%" (length ext:*exit-hooks*))
+EOF
+out=$(run_stress "$WORK/exithooks.lisp")
+check_contains "exit hooks all registered"                     "EXITHOOK-REGISTERED:31" "$out"
+check_contains "every exit hook ran once under compaction storm" "EXITHOOK-SUM:465" "$out"
+check_absent   "no corruption diagnostics from the exit-hook walk" \
+  "corrupted\|type 0\|SIGSEGV\|Unbound\|error in exit hook" "$out"
+
 
 echo ""
 echo "$passed passed, $failed failed, $total total"

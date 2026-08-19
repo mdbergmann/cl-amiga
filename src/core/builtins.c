@@ -1595,6 +1595,159 @@ static CL_Obj bi_quit(CL_Obj *args, int n)
     return CL_NIL; /* unreachable */
 }
 
+/* --- Exit hooks (EXT:*EXIT-HOOKS*) ---------------------------------------
+ *
+ * EXT:*EXIT-HOOKS* holds a list of function designators that clamiga funcalls
+ * with no arguments when it shuts down normally: (QUIT)/(EXIT), the end of a
+ * --load/--eval/script run, or EOF at the REPL.  cl_run_exit_hooks() is called
+ * from the single shutdown funnel in main.c, before ANY subsystem teardown —
+ * the VM, the streams and the heap are all still fully alive, so a hook may
+ * print, close files, flush caches and stop threads.
+ *
+ * Why a hook list rather than UNWIND-PROTECT: (QUIT) unwinds via CL_ERR_EXIT,
+ * which deliberately drops the whole NLX stack WITHOUT running cleanups (see
+ * cl_error in error.c), so no UNWIND-PROTECT cleanup ever observes process
+ * exit.  Exit hooks are the supported way to run code on the way out.
+ *
+ * Hooks run most-recently-added first (ADD-EXIT-HOOK pushes), matching the
+ * LIFO teardown order of C's atexit() and of nested UNWIND-PROTECTs. */
+static CL_Obj SYM_EXIT_HOOKS = CL_NIL;   /* EXT:*EXIT-HOOKS* */
+
+/* A hook must be callable at shutdown: a function object, or a symbol naming
+ * one.  Symbols are resolved when the hook RUNS, so (ext:add-exit-hook 'foo)
+ * works before FOO is defined and picks up a later redefinition. */
+static int exit_hook_designator_p(CL_Obj obj)
+{
+    return CL_SYMBOL_P(obj) || CL_FUNCTION_P(obj) || CL_CLOSURE_P(obj) ||
+           CL_BYTECODE_P(obj) || cl_funcallable_instance_p(obj);
+}
+
+/* Current *EXIT-HOOKS* value, normalized: an unbound or non-list value reads
+ * as the empty list rather than erroring at shutdown. */
+static CL_Obj exit_hooks_value(void)
+{
+    CL_Obj hooks;
+    if (CL_NULL_P(SYM_EXIT_HOOKS)) return CL_NIL;  /* not interned yet */
+    hooks = cl_symbol_value(SYM_EXIT_HOOKS);
+    if (hooks == CL_UNBOUND || !CL_CONS_P(hooks)) return CL_NIL;
+    return hooks;
+}
+
+static CL_Obj bi_add_exit_hook(CL_Obj *args, int n)
+{
+    CL_Obj fn = args[0];
+    CL_Obj hooks, cur;
+    CL_UNUSED(n);
+
+    if (!exit_hook_designator_p(fn)) {
+        char buf[128];
+        cl_prin1_to_string(fn, buf, (int)sizeof(buf));
+        cl_error(CL_ERR_TYPE,
+                 "ADD-EXIT-HOOK: %s is not a function designator "
+                 "(expected a function or a symbol naming one)", buf);
+    }
+
+    /* Idempotent under EQL: re-LOADing a file that registers its cleanup must
+     * not queue the same hook twice.  EQL on a function designator is plain
+     * identity — no number or character can reach here. */
+    hooks = exit_hooks_value();
+    for (cur = hooks; CL_CONS_P(cur); cur = cl_cdr(cur)) {
+        if (cl_car(cur) == fn) return fn;
+    }
+
+    /* fn is an argument slot (VM-stack rooted); hooks is a C local that must
+     * survive the cons below, which can compact. */
+    CL_GC_PROTECT(hooks);
+    hooks = cl_cons(args[0], hooks);
+    cl_set_symbol_value(SYM_EXIT_HOOKS, hooks);
+    CL_GC_UNPROTECT(1);
+    return args[0];
+}
+
+static CL_Obj bi_remove_exit_hook(CL_Obj *args, int n)
+{
+    CL_Obj fn = args[0];
+    CL_Obj hooks, cur, prev;
+    CL_UNUSED(n);
+
+    hooks = exit_hooks_value();
+    prev = CL_NIL;
+    for (cur = hooks; CL_CONS_P(cur); cur = cl_cdr(cur)) {
+        if (cl_car(cur) == fn) {   /* EQL on a designator == identity */
+            /* Destructive splice (DELETE-like) — allocation-free, so nothing
+             * can move underneath us here. */
+            if (CL_NULL_P(prev)) {
+                cl_set_symbol_value(SYM_EXIT_HOOKS, cl_cdr(cur));
+            } else {
+                CL_Cons *cell = (CL_Cons *)CL_OBJ_TO_PTR(prev);
+                cell->cdr = cl_cdr(cur);
+            }
+            return SYM_T;
+        }
+        prev = cur;
+    }
+    return CL_NIL;
+}
+
+/* Run and clear EXT:*EXIT-HOOKS*.  Called once from main.c's shutdown funnel;
+ * safe to call again (the list is taken before the first hook runs).
+ *
+ * An erroring hook must not take the process down with it or skip the hooks
+ * behind it, so every call gets its own CL_CATCH: an error is reported and the
+ * next hook runs.  A hook that itself calls (QUIT) simply stops the sequence —
+ * re-entering shutdown from inside shutdown is never what the user wants. */
+void cl_run_exit_hooks(void)
+{
+    CL_Obj hooks = exit_hooks_value();
+    CL_Obj fn = CL_NIL;
+
+    if (CL_NULL_P(hooks)) return;
+    cl_set_symbol_value(SYM_EXIT_HOOKS, CL_NIL);
+
+    /* (QUIT) longjmps out of arbitrarily deep VM frames; main.c's error
+     * branches reset the VM the same way before continuing. */
+    cl_vm.sp = 0;
+    cl_vm.fp = 0;
+
+    /* hooks is the list cursor and fn the callee across cl_vm_apply, which
+     * allocates and can compact — both are C locals invisible to the GC
+     * otherwise.  Protecting BEFORE the CL_CATCH below matters: an unwind
+     * restores gc_root_count to the catch-site snapshot, which then still
+     * includes these two roots. */
+    CL_GC_PROTECT(hooks);
+    CL_GC_PROTECT(fn);
+    while (CL_CONS_P(hooks)) {
+        int err;
+        CL_CATCH(err);
+        if (err == CL_ERR_NONE) {
+            /* Resolve inside the catch: a symbol hook whose function was never
+             * defined (or was FMAKUNBOUND'd) reports through the same path as
+             * a hook that errors while running. */
+            fn = cl_coerce_funcdesig(cl_car(hooks), "exit hook");
+            cl_vm_apply(fn, NULL, 0);
+            CL_UNCATCH();
+        } else if (err == CL_ERR_EXIT) {
+            /* A hook called (QUIT): stop here rather than re-entering the
+             * shutdown sequence we are already in. */
+            CL_UNCATCH();
+            break;
+        } else {
+            char buf[128];
+            cl_prin1_to_string(cl_car(hooks), buf, (int)sizeof(buf));
+            cl_write_cstring_to_error("; Warning: error in exit hook ");
+            cl_write_cstring_to_error(buf);
+            cl_write_cstring_to_error(": ");
+            cl_write_cstring_to_error(cl_error_msg);
+            cl_write_cstring_to_error("\n");
+            cl_vm.sp = 0;
+            cl_vm.fp = 0;
+            CL_UNCATCH();
+        }
+        hooks = cl_cdr(hooks);
+    }
+    CL_GC_UNPROTECT(2);
+}
+
 /* Single shared stub for CL functions not yet implemented in clamiga.
  * Any call signals an error; registering the stub satisfies FBOUNDP and
  * SYMBOL-FUNCTION checks in the ANSI test suite without a full implementation. */
@@ -1826,6 +1979,25 @@ void cl_builtins_init(void)
     /* Process control — in CL-USER, not CL (quit/exit are non-standard) */
     cl_register_builtin("QUIT", bi_quit, 0, 1, cl_package_cl_user);
     cl_register_builtin("EXIT", bi_quit, 0, 1, cl_package_cl_user);
+
+    /* Exit hooks — run from main.c's shutdown funnel (see cl_run_exit_hooks) */
+    SYM_EXIT_HOOKS = cl_intern_in("*EXIT-HOOKS*", 12, cl_package_ext);
+    /* Rooted immediately: the registrations below allocate, and a compaction
+     * there would leave this cached handle stale. */
+    cl_gc_register_root(&SYM_EXIT_HOOKS);
+    {
+        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_EXIT_HOOKS);
+        s->flags |= CL_SYM_SPECIAL;
+        s->value = CL_NIL;
+    }
+    cl_export_symbol(SYM_EXIT_HOOKS, cl_package_ext);
+    cl_register_builtin("ADD-EXIT-HOOK", bi_add_exit_hook, 1, 1, cl_package_ext);
+    cl_export_symbol(cl_intern_in("ADD-EXIT-HOOK", 13, cl_package_ext),
+                     cl_package_ext);
+    cl_register_builtin("REMOVE-EXIT-HOOK", bi_remove_exit_hook, 1, 1,
+                        cl_package_ext);
+    cl_export_symbol(cl_intern_in("REMOVE-EXIT-HOOK", 16, cl_package_ext),
+                     cl_package_ext);
 
     /* Register cached symbols for GC compaction forwarding */
     cl_gc_register_root(&trace_list);

@@ -92,6 +92,42 @@ End-to-end examples: `tests/tls-loopback.lisp`
 | `(system-command command)` | function | Run a host/AmigaOS shell command |
 | `(defglobal name value &optional doc)` | macro | Define a global (non-dynamic) variable |
 
+## Exit hooks
+
+`ext:*exit-hooks*` is a list of function designators clamiga funcalls with no
+arguments on its way out — after `(quit)` / `(exit)`, at the end of a
+`--script` or `--non-interactive` run, and when the REPL reaches end of input.
+They run *before* any runtime teardown, so a hook can still print, write files,
+flush caches and stop threads.
+
+This is the only place user code observes process exit: `(quit)` unwinds
+without running `unwind-protect` cleanups, so a cleanup form never sees it.
+
+```lisp
+(ext:add-exit-hook (lambda () (save-state "work.dat")))
+
+;; A symbol is resolved when the hook RUNS, so it may be registered before the
+;; function exists and always picks up the latest definition.
+(ext:add-exit-hook 'shutdown-server)
+(ext:remove-exit-hook 'shutdown-server)   ; => T if it was registered
+```
+
+- Hooks run **most recently added first**, like `atexit` and nested
+  `unwind-protect` cleanups.
+- `add-exit-hook` is idempotent under `eql`, so re-loading a file that
+  registers its cleanup does not queue the hook twice.
+- A hook that signals an error is reported on `*error-output*` and skipped —
+  the remaining hooks still run and the process still exits with its intended
+  code. A hook that calls `(quit n)` ends the sequence, and its exit code wins.
+- The list is taken and cleared before the first hook runs, so a hook
+  registered from inside a hook is not run.
+
+| Signature | Kind | Description |
+|-----------|------|-------------|
+| `*exit-hooks*` | variable | List of function designators run at shutdown, most recently added first |
+| `(add-exit-hook function)` | function | Push a function or symbol onto `*exit-hooks*` (no-op if already there); returns its argument |
+| `(remove-exit-hook function)` | function | Remove it from `*exit-hooks*`; `T` if it was there, `NIL` otherwise |
+
 ## Bulk byte-vector operations
 
 C-speed loops over `(unsigned-byte 8)` vectors for binary file formats —
@@ -171,6 +207,11 @@ See `tests/test_tty.c` for a complete usage example.
   (`platform_socket_table_grows_many_connections`, `socket_read_timeout_*`,
   `eval_socket_stream_timeout_*`) and `tests/amiga/run-tests.lisp` (the
   `socket-listen` / `socket-accept` / `socket-local-port` block).
+- Exit hooks: `tests/test_exit_hooks.c` (list semantics and the hook runner)
+  and `tests/test_exit_hooks.sh` (real process exits through `(quit)`,
+  `--script`, `--non-interactive` and REPL EOF); the Amiga leg is the exit-hook
+  block in `tests/amiga/run-tests.lisp` plus the `EXIT-HOOK-RAN` marker
+  `Makefile.cross`'s `verify-amiga` requires in the results log.
 - Introspection: `tests/test_backtrace.c`, `tests/test_arglist.c`,
   `tests/test_srcloc.c`, and the `ext:backtrace` probes in
   `tests/amiga/run-tests.lisp`.

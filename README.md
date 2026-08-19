@@ -332,6 +332,25 @@ Pre-built `lib/boot.fasl` and `lib/clos.fasl` ship with the binary; on the lower
 
 Note: string literals in `lib/*.lisp` must stay ASCII-only — the m68k Amiga build is compiled without `CL_WIDE_STRINGS` to save RAM and cannot read FASLs that contain `FASL_TAG_WIDE_STRING`. The host and MorphOS builds have `CL_WIDE_STRINGS` (full Unicode, `CHAR-CODE-LIMIT` 1114112 — required by e.g. flexi-streams/drakma); their writers auto-downgrade all-ASCII wide strings to byte strings, so the shared `lib/` FASLs stay readable everywhere. Non-ASCII chars in source string literals will fail m68k Amiga boot with a `BAD_TAG` deserialize error. Comments are unaffected.
 
+### Exit hooks
+
+`ext:*exit-hooks*` holds functions clamiga calls on its way out — after
+`(quit)`, at the end of a `--script` / `--non-interactive` run, and when the
+REPL reaches end of input. They run before any runtime teardown, so a hook can
+still print, write files and stop threads. `(quit)` unwinds without running
+`unwind-protect` cleanups, so this is the only place user code sees process
+exit.
+
+```lisp
+(ext:add-exit-hook (lambda () (save-state "work.dat")))
+(ext:add-exit-hook 'shutdown-server)      ; symbol resolved when the hook runs
+(ext:remove-exit-hook 'shutdown-server)   ; => T if it was registered
+```
+
+Hooks run most recently added first; one that signals an error is reported and
+skipped, and the rest still run. See [docs/ext.md](docs/ext.md#exit-hooks) and
+the runnable examples in `tests/test_exit_hooks.c` / `tests/test_exit_hooks.sh`.
+
 ## Host FFI (dlopen + libffi + CFFI)
 
 The `FFI` package provides foreign pointers and typed peek/poke on **all**
@@ -514,7 +533,7 @@ its own reference page under [`docs/`](docs/README.md):
 
 | Package | What it provides | Doc |
 |---------|------------------|-----|
-| `EXT` | TCP sockets, GC control, environment access, terminal raw mode (TUIs), debug/introspection | [docs/ext.md](docs/ext.md) |
+| `EXT` | TCP sockets, GC control, environment access, exit hooks, terminal raw mode (TUIs), debug/introspection | [docs/ext.md](docs/ext.md) |
 | `MP` | Threads, locks, condition variables, memory barriers | [docs/mp.md](docs/mp.md) |
 | `FFI` | Foreign pointers, typed peek/poke, libffi calls & callbacks | [docs/ffi.md](docs/ffi.md) |
 | `GRAY` | Gray-streams protocol (define stream classes in Lisp) | [docs/gray.md](docs/gray.md) |

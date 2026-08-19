@@ -236,6 +236,14 @@ verify-amiga:
 		echo "=== Amiga verification FAILED (clamiga did not exit cleanly — shutdown hang?) ==="; \
 		exit 1; \
 	fi
+	@# run-tests.lisp registers an EXT:*EXIT-HOOKS* hook that can only run from
+	@# main.c's shutdown funnel.  Its marker is the end-to-end proof that exit
+	@# hooks fire on AmigaOS; absence means the hooks were skipped on the way
+	@# out (the in-suite checks only cover the list API).
+	@if ! grep -q "EXIT-HOOK-RAN" build/amiga/test-results.log; then \
+		echo "=== Amiga verification FAILED (exit hooks did not run at shutdown) ==="; \
+		exit 1; \
+	fi
 	@echo "=== Amiga verification PASSED ==="
 
 clean:

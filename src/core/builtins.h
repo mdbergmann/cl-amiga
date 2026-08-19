@@ -18,6 +18,14 @@ void cl_builtins_init(void);
  * makes the boot leg invisible from Lisp. */
 void cl_internal_time_init(void);
 
+/* Funcall every function designator on EXT:*EXIT-HOOKS* (most recently added
+ * first), then clear the list.  main() calls this at the head of its shutdown
+ * funnel, while the VM, streams and heap are all still live, so hooks can
+ * print, close files and stop threads.  Each hook runs in its own CL_CATCH: an
+ * error is reported and the remaining hooks still run; a hook calling (QUIT)
+ * ends the sequence.  Idempotent — the list is taken before the first call. */
+void cl_run_exit_hooks(void);
+
 /* Register a builtin function in a specific package */
 void cl_register_builtin(const char *name, CL_CFunc func,
                           int min, int max, CL_Obj package);

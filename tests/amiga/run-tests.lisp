@@ -10251,6 +10251,28 @@
     (setq *fail-count* (+ *fail-count* 1))
     (format t "FAIL: shim registry tests could not run: ~A~%" e)))
 
+; --- Exit hooks (EXT:*EXIT-HOOKS*) ---
+; The list API here, plus one real hook registered at the bottom: it can only
+; run from main.c's shutdown funnel, so its marker in the results log is the
+; end-to-end proof that shutdown hooks fire on AmigaOS.  Makefile.cross's
+; verify-amiga fails the run if the marker is missing.
+(setq ext:*exit-hooks* nil)
+(defun eh-a () nil)
+(check "add-exit-hook returns its argument" 'eh-a (ext:add-exit-hook 'eh-a))
+(check "add-exit-hook pushes onto *exit-hooks*" '(eh-a) ext:*exit-hooks*)
+(check "add-exit-hook is idempotent under eql" '(eh-a)
+  (progn (ext:add-exit-hook 'eh-a) ext:*exit-hooks*))
+(check "add-exit-hook puts the newest hook first" '(eh-b eh-a)
+  (progn (ext:add-exit-hook 'eh-b) ext:*exit-hooks*))
+(check "remove-exit-hook reports what it removed" t (ext:remove-exit-hook 'eh-b))
+(check "remove-exit-hook removed only that hook" '(eh-a) ext:*exit-hooks*)
+(check "remove-exit-hook on an absent hook" nil (ext:remove-exit-hook 'eh-b))
+(check "add-exit-hook rejects a non-designator" :error
+  (handler-case (ext:add-exit-hook 42) (error () :error)))
+(setq ext:*exit-hooks* nil)
+(ext:add-exit-hook
+  (lambda () (format t "~%EXIT-HOOK-RAN: shutdown hook fired at exit~%")))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)
