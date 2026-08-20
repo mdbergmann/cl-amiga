@@ -37,6 +37,22 @@ stack 128000
 echo "=== run start ===" >>build/amiga/test-results.log
 date >>build/amiga/test-results.log
 build/amiga/clamiga --no-userinit --heap 8M --non-interactive --load tests/amiga/run-tests.lisp >>build/amiga/test-results.log
+; Heap images (specs/image-save-load.md): save state in one process,
+; restore it in a second, verify (IMAGE-VERIFY-PASSED marker).  Images go
+; to the host-mounted build/amiga/ dir, not RAM:, so they cost no Amiga
+; memory; stale ones are cleared host-side by Makefile.cross before launch.
+echo "=== image save/restore ===" >>build/amiga/test-results.log
+build/amiga/clamiga --no-userinit --no-image --heap 8M --non-interactive --load tests/amiga/image-save.lisp >>build/amiga/test-results.log
+build/amiga/clamiga --no-userinit --image build/amiga/clamiga-test.img --heap 8M --non-interactive --load tests/amiga/image-verify.lisp >>build/amiga/test-results.log
+; Restored-boot suite gate: snapshot a bare boot, then run the ENTIRE
+; suite from the restored image — verify-amiga requires a second
+; "ALL TESTS PASSED" in the log.  Appends to the same log so the host
+; watchdog's stall detector keeps seeing progress.
+echo "=== restored-boot suite ===" >>build/amiga/test-results.log
+build/amiga/clamiga --no-userinit --no-image --heap 8M --non-interactive --load tests/amiga/image-boot-save.lisp >>build/amiga/test-results.log
+build/amiga/clamiga --no-userinit --image build/amiga/boot.img --heap 8M --non-interactive --load tests/amiga/run-tests.lisp >>build/amiga/test-results.log
+delete >NIL: CLAmiga:build/amiga/clamiga-test.img
+delete >NIL: CLAmiga:build/amiga/boot.img
 echo "=== run end ===" >>build/amiga/test-results.log
 date >>build/amiga/test-results.log
 ; Quit FS-UAE so `make test-amiga` returns without manual intervention.

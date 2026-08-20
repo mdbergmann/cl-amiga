@@ -23,10 +23,134 @@
 CL_Obj cl_dbind_too_few_sym = CL_NIL;
 CL_Obj cl_dbind_too_many_sym = CL_NIL;
 
+/* --- Image-relink builtin registry (builtins.h) ---
+ *
+ * Open-addressed hash keyed by (package-name, symbol-name).  Both key
+ * strings live outside the GC arena: symbol names are the static string
+ * literals every registration site passes; package names are deduped
+ * copies (a handful of packages) taken at registration time, because the
+ * package OBJECT can move under GC while the registry must stay valid
+ * after the arena has been wholesale replaced by an image restore. */
+#define BUILTIN_REG_SIZE 2048   /* power of two; ~600 builtins → <30% load */
+
+typedef struct {
+    const char *pkg;    /* deduped C copy of the package name */
+    const char *sym;    /* static-lifetime symbol name */
+    CL_CFunc    fn;
+} CL_BuiltinRegEntry;
+
+static CL_BuiltinRegEntry builtin_reg[BUILTIN_REG_SIZE];
+static uint32_t builtin_reg_count = 0;
+
+/* Package-name dedup pool: tiny, boot-only. */
+#define BUILTIN_REG_MAX_PKGS 16
+static const char *builtin_reg_pkgs[BUILTIN_REG_MAX_PKGS];
+static uint32_t builtin_reg_pkg_count = 0;
+
+static const char *builtin_reg_intern_pkg(const char *name, uint32_t len)
+{
+    uint32_t i;
+    char *copy;
+    for (i = 0; i < builtin_reg_pkg_count; i++) {
+        if (strlen(builtin_reg_pkgs[i]) == len &&
+            memcmp(builtin_reg_pkgs[i], name, len) == 0)
+            return builtin_reg_pkgs[i];
+    }
+    if (builtin_reg_pkg_count >= BUILTIN_REG_MAX_PKGS)
+        return NULL;  /* registry degraded; lookup falls back to stale stub */
+    copy = (char *)platform_alloc(len + 1);
+    if (!copy) return NULL;
+    memcpy(copy, name, len);
+    copy[len] = '\0';
+    builtin_reg_pkgs[builtin_reg_pkg_count++] = copy;
+    return copy;
+}
+
+static uint32_t builtin_reg_hash(const char *pkg, uint32_t pkg_len,
+                                 const char *sym, uint32_t sym_len)
+{
+    uint32_t h = 2166136261u, i;
+    for (i = 0; i < pkg_len; i++) { h ^= (uint8_t)pkg[i]; h *= 16777619u; }
+    h ^= 0xFF; h *= 16777619u;
+    for (i = 0; i < sym_len; i++) { h ^= (uint8_t)sym[i]; h *= 16777619u; }
+    return h;
+}
+
+static void builtin_reg_insert(const char *sym, CL_CFunc fn, CL_Obj package)
+{
+    CL_Package *p;
+    CL_String *pn;
+    const char *pkg;
+    uint32_t slot, sym_len;
+
+    if (!CL_HEAP_P(package)) return;
+    p = (CL_Package *)CL_OBJ_TO_PTR(package);
+    pn = (CL_String *)CL_OBJ_TO_PTR(p->name);
+    pkg = builtin_reg_intern_pkg(pn->data, pn->length);
+    if (!pkg) return;
+
+    sym_len = (uint32_t)strlen(sym);
+    slot = builtin_reg_hash(pkg, (uint32_t)strlen(pkg), sym, sym_len)
+           & (BUILTIN_REG_SIZE - 1);
+    for (;;) {
+        CL_BuiltinRegEntry *e = &builtin_reg[slot];
+        if (!e->sym) {
+            if (builtin_reg_count >= BUILTIN_REG_SIZE - 1)
+                return;  /* never fills at ~600 entries; guard anyway */
+            e->pkg = pkg;
+            e->sym = sym;
+            e->fn = fn;
+            builtin_reg_count++;
+            return;
+        }
+        if (e->pkg == pkg && strcmp(e->sym, sym) == 0) {
+            e->fn = fn;   /* re-registration (heap re-init) refreshes */
+            return;
+        }
+        slot = (slot + 1) & (BUILTIN_REG_SIZE - 1);
+    }
+}
+
+CL_CFunc cl_builtin_registry_lookup(const char *pkg_name, uint32_t pkg_len,
+                                    const char *sym_name, uint32_t sym_len)
+{
+    uint32_t slot = builtin_reg_hash(pkg_name, pkg_len, sym_name, sym_len)
+                    & (BUILTIN_REG_SIZE - 1);
+    uint32_t probes;
+    for (probes = 0; probes < BUILTIN_REG_SIZE; probes++) {
+        CL_BuiltinRegEntry *e = &builtin_reg[slot];
+        if (!e->sym) return NULL;
+        if (strlen(e->pkg) == pkg_len &&
+            memcmp(e->pkg, pkg_name, pkg_len) == 0 &&
+            strlen(e->sym) == sym_len &&
+            memcmp(e->sym, sym_name, sym_len) == 0)
+            return e->fn;
+        slot = (slot + 1) & (BUILTIN_REG_SIZE - 1);
+    }
+    return NULL;
+}
+
+/* Stub installed by the image restore for a TYPE_FUNCTION whose name has
+ * no registration in this build.  Loud runtime error, never corruption:
+ * the function names itself as far as it can (the restore walk already
+ * printed a warning listing the affected names). */
+CL_Obj bi_stale_builtin(CL_Obj *args, int nargs)
+{
+    CL_UNUSED(args);
+    CL_UNUSED(nargs);
+    cl_error(CL_ERR_UNDEFINED,
+             "This builtin function came from a restored image and has no "
+             "implementation in this build of clamiga (see the warnings "
+             "printed at --image restore time).  Rebuild the image with "
+             "EXT:SAVE-IMAGE.");
+    return CL_NIL;
+}
+
 /* Shared: register a builtin in a specific package */
 void cl_register_builtin(const char *name, CL_CFunc func,
                           int min, int max, CL_Obj package)
 {
+    builtin_reg_insert(name, func, package);
     /* sym is protected across the function alloc — cl_make_function can
      * compact and leave sym/s stale (latent at boot where the heap is
      * dense, but wrong by contract and fatal if ever run post-boot). */
@@ -42,6 +166,26 @@ void cl_register_builtin(const char *name, CL_CFunc func,
      * disjoint: (boundp 'car) must return NIL even though CAR is fbound.
      * Setting value = fn silently broke BOUNDP / SYMBOL-VALUE for every
      * builtin name. */
+}
+
+/* Register + export in one step.  The per-package `*_defun` helpers across
+ * the builtins_*.c files used to carry their own byte-identical copies of
+ * cl_register_builtin's body plus an export; funneling them through here
+ * matters beyond dedup: EVERY builtin registration must flow through
+ * cl_register_builtin so the image-relink registry above sees it — a
+ * bypassed registration is a function a restored image cannot relink. */
+void cl_register_builtin_exported(const char *name, CL_CFunc func,
+                                  int min, int max, CL_Obj package)
+{
+    CL_Obj sym;
+    /* package is a C local copy of the caller's package handle — protect it
+     * across the allocating registration or a compaction leaves it stale. */
+    CL_GC_PROTECT(package);
+    cl_register_builtin(name, func, min, max, package);
+    sym = cl_intern_in(name, (uint32_t)strlen(name), package);
+    CL_GC_PROTECT(sym);
+    cl_export_symbol(sym, package);
+    CL_GC_UNPROTECT(2);
 }
 
 /* Table-driven mass registration: collapses hundreds of per-call code
@@ -1998,6 +2142,13 @@ void cl_builtins_init(void)
                         cl_package_ext);
     cl_export_symbol(cl_intern_in("REMOVE-EXIT-HOOK", 16, cl_package_ext),
                      cl_package_ext);
+
+    /* Heap images: EXT:SAVE-IMAGE, EXT:*SAVE-HOOKS* / *RESTORE-HOOKS* /
+     * *IMAGE-RESTORED-P* (image.c) */
+    {
+        extern void cl_image_builtins_init(void);
+        cl_image_builtins_init();
+    }
 
     /* Register cached symbols for GC compaction forwarding */
     cl_gc_register_root(&trace_list);

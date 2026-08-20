@@ -378,6 +378,36 @@ Hooks run most recently added first; one that signals an error is reported and
 skipped, and the rest still run. See [docs/ext.md](docs/ext.md#exit-hooks) and
 the runnable examples in `tests/test_exit_hooks.c` / `tests/test_exit_hooks.sh`.
 
+### Heap images
+
+`(ext:save-image "mysession.img")` snapshots the entire session — everything
+loaded, defined and computed — to one file, and `clamiga --image mysession.img`
+is back at that exact state in a single read, skipping boot and all loads.  On
+a 14MHz Amiga that turns a minutes-long quicklisp warm-up into a near-instant
+start; a game or app can ship as `clamiga` + `app.img`.
+
+```lisp
+(load "my-big-system.lisp")
+(ext:save-image "mysession.img" :quit t)   ; write the image and exit
+```
+
+```
+clamiga --image mysession.img              ; next day: instantly back
+```
+
+A file named `clamiga.img` in the current directory (or next to the binary) is
+restored automatically at startup; `--no-image` skips that.  Images are strictly
+per-build — a fingerprint makes any other clamiga build (or platform/variant)
+refuse them cleanly — and can be restored into a larger `--heap` than they were
+saved with.  Worker threads and open file/socket streams must be closed before
+saving; `ext:*save-hooks*` / `ext:*restore-hooks*` exist to tear down and
+rebuild such OS state around the snapshot, and `ext:*image-restored-p*` lets
+`~/.clamigarc` skip loads the image already contains.
+
+See [docs/ext.md](docs/ext.md#heap-images) and the runnable examples in
+`tests/test_image.sh` / `tests/test_image.c` (host) and
+`tests/amiga/image-save.lisp` / `image-verify.lisp` (Amiga).
+
 ## Host FFI (dlopen + libffi + CFFI)
 
 The `FFI` package provides foreign pointers and typed peek/poke on **all**

@@ -449,6 +449,48 @@ uint32_t cl_stream_alloc_outbuf(uint32_t initial_size)
     return 0;  /* No free slots even after growth + GC */
 }
 
+/* Re-materialize an outbuf slot at a FIXED handle with the given contents —
+ * the image-restore path (image.c): a restored string-output-stream's
+ * out_buf_handle must resolve to the exact byte state it had at save time.
+ * Runs single-threaded before any Lisp executes, so no table mutex.  Grows
+ * the block directory as needed (any handle the saving process allocated is
+ * reachable — same directory geometry, same build).  Returns 0 on success,
+ * -1 on an out-of-range handle, allocation failure, or occupied slot. */
+int cl_stream_outbuf_install_at(uint32_t handle, const char *data, uint32_t len)
+{
+    uint32_t blk = handle >> CL_OUTBUF_BLOCK_SHIFT;
+    CL_OutBuf *slot;
+    uint32_t cap;
+
+    if (handle == 0 || blk >= CL_OUTBUF_MAX_BLOCKS) return -1;
+    while (outbuf_nblocks <= blk) {
+        CL_OutBuf *b = (CL_OutBuf *)platform_alloc(
+            (uint32_t)(CL_OUTBUF_BLOCK_SIZE * sizeof(CL_OutBuf)));
+        uint32_t i;
+        if (!b) return -1;
+        for (i = 0; i < CL_OUTBUF_BLOCK_SIZE; i++) {
+            b[i].data = NULL;
+            b[i].capacity = 0;
+            b[i].length = 0;
+            b[i].inuse = 0;
+            b[i].pinned = 0;
+        }
+        outbuf_dir[outbuf_nblocks] = b;
+        outbuf_nblocks = outbuf_nblocks + 1;
+    }
+    slot = outbuf_at(handle);
+    if (!slot || slot->data) return -1;
+    cap = len < 256 ? 256 : len;   /* same floor as cl_stream_alloc_outbuf */
+    slot->data = (char *)platform_alloc(cap);
+    if (!slot->data) return -1;
+    if (len) memcpy(slot->data, data, len);
+    slot->capacity = cap;
+    slot->length = len;
+    slot->inuse = 0;
+    slot->pinned = 0;
+    return 0;
+}
+
 void cl_stream_free_outbuf(uint32_t handle)
 {
     /* The .data occupancy check must run INSIDE the table mutex: with the
@@ -545,6 +587,22 @@ uint32_t cl_stream_outbuf_len(uint32_t handle)
 {
     CL_OutBuf *buf = outbuf_at(handle);
     return buf ? buf->length : 0;
+}
+
+/* Enumerate allocated outbuf slots for the image writer (image.c): the
+ * smallest in-use handle greater than AFTER, or 0 when exhausted.  The
+ * writer runs single-threaded at a safe point right after a compaction,
+ * whose mark-driven reclaim has already freed every slot no live stream
+ * references — so "allocated" here means "referenced by a live stream". */
+uint32_t cl_stream_outbuf_next_used(uint32_t after)
+{
+    uint32_t h;
+    uint32_t cap = outbuf_nblocks * CL_OUTBUF_BLOCK_SIZE;
+    for (h = after + 1; h < cap; h++) {
+        CL_OutBuf *b = outbuf_at(h);
+        if (b && b->data) return h;
+    }
+    return 0;
 }
 
 /* Diagnostics hook for ext:%stream-outbuf-stats (builtins_io.c). */

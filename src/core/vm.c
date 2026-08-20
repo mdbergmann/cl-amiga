@@ -504,21 +504,36 @@ static int cl_gf_roots_registered = 0;
  * not idempotent — a double-registered root is silently corrupted by the
  * next compaction (tier-4 audit V10).  The remaining lazy part (interning
  * slot 0) is benign to race: cl_intern is MT-safe and both racers store
- * the same symbol. */
+ * the same symbol.
+ *
+ * This must run on EVERY cl_vm_init, including a heap re-initialization
+ * (each C unit test, embedded restarts): the old one-shot guard skipped
+ * the second run entirely, leaving all 16 slots holding PREVIOUS-arena
+ * offsets while unregistered — the documented stale-static-table
+ * corruption class — and desynchronizing the boot-root count the heap
+ * image format relies on (specs/image-save-load.md).  cl_gc_register_root
+ * itself is idempotent by address, so re-running is safe; the reset of
+ * the count/inited latches makes the lazy re-derivation start over
+ * against the fresh heap. */
 void cl_gf_types_boot_init(void)
 {
     int i;
-    if (cl_gf_roots_registered) return;
     for (i = 0; i < CL_MAX_GF_TYPES; i++) {
         cl_gf_type_syms[i] = CL_NIL;
         cl_gc_register_root(&cl_gf_type_syms[i]);
     }
     cl_gf_roots_registered = 1;
+    cl_gf_type_count = 0;
+    cl_gf_types_inited = 0;
 }
 
 static void cl_gf_types_init(void)
 {
-    cl_gf_types_boot_init();   /* idempotent; normally already done at boot */
+    /* Fallback for harnesses that bypass cl_vm_init — must NOT re-run the
+     * full boot init here once roots are registered, or a lazy call
+     * mid-session would wipe the registered GF-type set. */
+    if (!cl_gf_roots_registered)
+        cl_gf_types_boot_init();
     cl_gf_type_syms[0] = cl_intern("STANDARD-GENERIC-FUNCTION", 25);
     cl_gf_type_count = 1;
     cl_gf_types_inited = 1;

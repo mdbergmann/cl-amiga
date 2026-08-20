@@ -39,6 +39,16 @@ CL_Obj cl_make_stream(uint32_t direction, uint32_t stream_type);
 /* Allocate an output buffer, return handle (0 = invalid) */
 uint32_t cl_stream_alloc_outbuf(uint32_t initial_size);
 
+/* Re-materialize an outbuf slot at a FIXED handle with the given contents
+ * (image restore; see image.c).  Single-threaded use only.  Returns 0 on
+ * success, -1 on bad handle / OOM / occupied slot. */
+int cl_stream_outbuf_install_at(uint32_t handle, const char *data,
+                                uint32_t len);
+
+/* Enumerate allocated outbuf slots (image writer): smallest in-use handle
+ * greater than AFTER, or 0 when exhausted.  Single-threaded use only. */
+uint32_t cl_stream_outbuf_next_used(uint32_t after);
+
 /* Free an output buffer by handle */
 void cl_stream_free_outbuf(uint32_t handle);
 

@@ -224,6 +224,15 @@ volatile int cl_jit_active_threads = 0;
  * Used for cached interned keyword symbols, type symbols, etc. */
 static CL_Obj *global_roots[CL_MAX_GLOBAL_ROOTS];
 static int n_global_roots = 0;
+#ifdef DEBUG_GC
+/* Registration sites, recorded by the cl_gc_register_root macro so the
+ * image writer can name late-registered roots (mem.h). */
+static const char *global_root_files[CL_MAX_GLOBAL_ROOTS];
+static int         global_root_lines[CL_MAX_GLOBAL_ROOTS];
+/* The macro in mem.h redirects call sites to cl_gc_register_root_at;
+ * drop it here so the base function below can be defined (and called). */
+#undef cl_gc_register_root
+#endif
 
 void cl_gc_register_root(CL_Obj *root_ptr)
 {
@@ -250,6 +259,49 @@ void cl_gc_register_root(CL_Obj *root_ptr)
         exit(1);
     }
     global_roots[n_global_roots++] = root_ptr;
+}
+
+#ifdef DEBUG_GC
+void cl_gc_register_root_at(CL_Obj *root_ptr, const char *file, int line)
+{
+    int before = n_global_roots;
+    cl_gc_register_root(root_ptr);
+    if (n_global_roots > before) {
+        global_root_files[before] = file;
+        global_root_lines[before] = line;
+    }
+}
+
+const char *cl_gc_global_root_file(int i)
+{
+    if (i < 0 || i >= n_global_roots) return NULL;
+    return global_root_files[i];
+}
+
+int cl_gc_global_root_line(int i)
+{
+    if (i < 0 || i >= n_global_roots) return 0;
+    return global_root_lines[i];
+}
+#endif /* DEBUG_GC */
+
+/* --- Heap-image root enumeration (image.c) --- */
+
+int cl_gc_global_root_count(void)
+{
+    return n_global_roots;
+}
+
+CL_Obj cl_gc_global_root_get(int i)
+{
+    if (i < 0 || i >= n_global_roots) return CL_NIL;
+    return *global_roots[i];
+}
+
+void cl_gc_global_root_set(int i, CL_Obj value)
+{
+    if (i < 0 || i >= n_global_roots) return;
+    *global_roots[i] = value;
 }
 
 /* Align size up to CL_ALIGN boundary */
@@ -878,6 +930,63 @@ void cl_mem_init(uint32_t heap_size)
 
     /* Initialize allocation mutex */
     platform_mutex_init(&alloc_mutex);
+}
+
+/* --- Heap-image adoption (image.c; see specs/image-save-load.md) --- */
+
+void cl_mem_adopt_image_begin(uint32_t bump)
+{
+    cl_heap.bump = bump;
+    cl_heap.free_list = 0;
+    /* The restored payload is dense (the writer compacts before dumping):
+     * everything in [CL_ALIGN, bump) is live allocation. */
+    cl_heap.total_allocated = bump - CL_ALIGN;
+    cl_heap.total_consed = bump - CL_ALIGN;
+    gc_reset_transient_state();
+    gc_last_compact_cycle = 0xFFFFFFFF;
+    gc_sweeps_since_compact = 0;
+}
+
+void cl_mem_adopt_image_finish(void)
+{
+    uint8_t *ptr = cl_heap.arena + CL_ALIGN;
+    uint8_t *end = cl_heap.arena + cl_heap.bump;
+
+#ifdef CL_GENGC
+    if (gen_enabled) {
+        /* The whole payload becomes OLD space: sticky marks set (a minor
+         * trace terminates at marked old objects), crossing map rebuilt
+         * (page -> first object start), watermark moved to bump, dirty
+         * bits cleared, old-space protection re-armed.  The survivor/
+         * finalizable/rehash side lists are empty by construction (fresh
+         * init, no nursery allocation has happened yet). */
+        while (ptr < end) {
+            uint32_t size = CL_HDR_SIZE(ptr);
+            if (size == 0) break;
+            CL_HDR_SET_MARK(ptr);
+            gen_cross_note((uint32_t)(ptr - cl_heap.arena));
+            ptr += size;
+        }
+        gen_old_top = cl_heap.bump;
+        gen_live_count = 0;
+        gen_fin_count = 0;
+        gen_ht_count = 0;
+        if (gen_dirty)
+            memset((void *)gen_dirty, 0, (gen_npages + 7) / 8);
+        gen_protect_old();
+        return;
+    }
+#endif
+    /* Classic collector: the saving process may have run generational
+     * (sticky marks SET on every old object) — normalize to the all-clear
+     * state gc_mark assumes at cycle start.  Also covers a classic-mode
+     * save, where the pre-dump compaction already left marks clear. */
+    while (ptr < end) {
+        uint32_t size = CL_HDR_SIZE(ptr);
+        if (size == 0) break;
+        CL_HDR_CLR_MARK(ptr);
+        ptr += size;
+    }
 }
 
 /* Persistent JIT-stack scan candidate buffer — defined here so

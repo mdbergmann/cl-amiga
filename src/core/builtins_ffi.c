@@ -85,17 +85,11 @@ static CL_Obj ffi_i64_to_obj(int64_t v)
  * Helper: register function in FFI package and export
  * ================================================================ */
 
+/* Routed through cl_register_builtin_exported so the image-relink registry
+ * sees the registration (builtins.h). */
 static void ffi_defun(const char *name, CL_CFunc func, int min, int max)
 {
-    CL_Obj sym = cl_intern_in(name, (uint32_t)strlen(name), cl_package_ffi);
-    CL_Obj fn;
-    CL_Symbol *s;
-    CL_GC_PROTECT(sym);
-    fn = cl_make_function(func, sym, min, max);
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
-    s->function = fn;
-    cl_export_symbol(sym, cl_package_ffi);
-    CL_GC_UNPROTECT(1);
+    cl_register_builtin_exported(name, func, min, max, cl_package_ffi);
 }
 
 /* ================================================================

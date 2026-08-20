@@ -131,6 +131,7 @@ CORE_SRC     = $(SRCDIR)/core/types.c \
                $(SRCDIR)/core/debugger.c \
                $(SRCDIR)/core/repl.c \
                $(SRCDIR)/core/fasl.c \
+               $(SRCDIR)/core/image.c \
                $(SRCDIR)/core/color.c \
                $(SRCDIR)/core/thread.c \
                $(SRCDIR)/core/string_utils.c
@@ -201,6 +202,7 @@ $(BUILDDIR)/%.o: $(SRCDIR)/%.s
 test-amiga: $(BUILDDIR)/clamiga
 	@mkdir -p build/amiga
 	cp $(BUILDDIR)/clamiga build/amiga/clamiga
+	@rm -f build/amiga/clamiga-test.img build/amiga/boot.img
 	@echo "=== Launching FS-UAE (high-end JIT config) — auto-quits when tests finish ==="
 	verify/realamiga/run-fs-uae.sh verify/realamiga/verify.fs-uae
 	@$(MAKE) --no-print-directory -f Makefile.cross verify-amiga
@@ -212,6 +214,7 @@ test-amiga-lowend: $(BUILDDIR)/clamiga
 	fi
 	@mkdir -p build/amiga
 	cp $(BUILDDIR)/clamiga build/amiga/clamiga
+	@rm -f build/amiga/clamiga-test.img build/amiga/boot.img
 	@echo "=== Launching FS-UAE (lower-end 68020 baseline) — auto-quits when tests finish ==="
 	verify/realamiga/run-fs-uae.sh verify/realamiga/verify-lowend.fs-uae
 	@$(MAKE) --no-print-directory -f Makefile.cross verify-amiga
@@ -225,6 +228,28 @@ verify-amiga:
 	@cat build/amiga/test-results.log
 	@if ! grep -q "ALL TESTS PASSED" build/amiga/test-results.log; then \
 		echo "=== Amiga verification FAILED (tests) ==="; \
+		exit 1; \
+	fi
+	@# The suite runs TWICE: once from a fresh boot, once from a restored
+	@# heap image (the restored-boot gate in call-on-ustartup).  Both runs
+	@# must pass, and neither may report failures.
+	@if [ "$$(grep -c 'ALL TESTS PASSED' build/amiga/test-results.log)" -lt 2 ]; then \
+		echo "=== Amiga verification FAILED (restored-boot suite did not pass) ==="; \
+		exit 1; \
+	fi
+	@if grep -q "SOME TESTS FAILED" build/amiga/test-results.log; then \
+		echo "=== Amiga verification FAILED (a suite run reported failures) ==="; \
+		exit 1; \
+	fi
+	@# Heap-image save/restore leg (tests/amiga/image-save.lisp +
+	@# image-verify.lisp): state saved by one clamiga process must verify
+	@# in a second one restored from the image.
+	@if ! grep -q "IMAGE-VERIFY-PASSED" build/amiga/test-results.log; then \
+		echo "=== Amiga verification FAILED (heap-image save/restore) ==="; \
+		exit 1; \
+	fi
+	@if ! grep -q "IMAGE-RESTORE-HOOK-RAN" build/amiga/test-results.log; then \
+		echo "=== Amiga verification FAILED (EXT:*RESTORE-HOOKS* did not run) ==="; \
 		exit 1; \
 	fi
 	@# The driver (call-on-ustartup) writes "=== run end ===" only after

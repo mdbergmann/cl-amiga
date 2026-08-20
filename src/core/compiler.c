@@ -4631,28 +4631,33 @@ CL_Obj cl_lookup_global_symbol_macro(CL_Obj sym)
     return CL_NIL;
 }
 
+/* Cached %SYMBOL-MACRO-EXPANSION indicator symbol.  Interned and rooted
+ * during cl_compiler_init (not lazily): the interned symbol lives in the
+ * arena and is relocated by the compacting GC, so the cache must be a
+ * registered root — and registering at INIT (rather than on first use)
+ * keeps it inside the image restore set's boot-root window, so a saved
+ * heap image restores it instead of warning about a late-registered root
+ * (specs/image-save-load.md).  A warm-FASL boot never compiles, which is
+ * why the old first-use registration happened post-boot. */
+static CL_Obj symbol_macro_indicator = 0;
+
 int cl_lookup_global_symbol_macro_p(CL_Obj sym, CL_Obj *out)
 {
-    static CL_Obj indicator = 0;
     CL_Symbol *s;
     CL_Obj plist;
 
     if (!CL_SYMBOL_P(sym)) return 0;
-    if (indicator == 0) {
-        indicator = cl_intern_in("%SYMBOL-MACRO-EXPANSION", 23, cl_package_clamiga);
-        /* The interned indicator symbol lives in the arena and is relocated by
-         * the compacting GC.  Register this cache so the compactor forwards it;
-         * otherwise, after a compaction the stale offset never matches the
-         * (forwarded) indicator stored on a symbol's plist and every global
-         * symbol-macro lookup spuriously misses — e.g. a DEFINE-SYMBOL-MACRO
-         * compiled just before a use stops expanding ("Unbound variable"). */
-        cl_gc_register_root(&indicator);
+    if (symbol_macro_indicator == 0) {
+        /* Fallback for harnesses that bypass cl_compiler_init. */
+        symbol_macro_indicator =
+            cl_intern_in("%SYMBOL-MACRO-EXPANSION", 23, cl_package_clamiga);
+        cl_gc_register_root(&symbol_macro_indicator);
     }
 
     s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     plist = s->plist;
     while (!CL_NULL_P(plist) && !CL_NULL_P(cl_cdr(plist))) {
-        if (cl_car(plist) == indicator) {
+        if (cl_car(plist) == symbol_macro_indicator) {
             *out = cl_car(cl_cdr(plist));
             return 1;
         }
@@ -5922,7 +5927,21 @@ static void register_inlined_macro_stubs(void)
     CL_GC_PROTECT(stub_fn);
     CL_GC_PROTECT(sym);
 
-    stub_fn = cl_make_function(bi_inlined_macro_stub, CL_NIL, 2, 2);
+    /* The stub is registered as a NAMED CLAMIGA builtin (not an anonymous
+     * cl_make_function) so the image-relink registry can resolve it after a
+     * restore — an image's macro_table references this function object, and
+     * a nameless function cannot be relinked to its C pointer (builtins.h). */
+    {
+        extern void cl_register_builtin(const char *, CL_CFunc, int, int,
+                                        CL_Obj);
+        extern CL_Obj cl_package_clamiga;
+        cl_register_builtin("%INLINED-MACRO-STUB", bi_inlined_macro_stub,
+                            2, 2, cl_package_clamiga);
+        sym = cl_intern_in("%INLINED-MACRO-STUB",
+                           (uint32_t)strlen("%INLINED-MACRO-STUB"),
+                           cl_package_clamiga);
+        stub_fn = ((CL_Symbol *)CL_OBJ_TO_PTR(sym))->function;
+    }
 
     cl_register_macro(SYM_AND,                stub_fn);
     cl_register_macro(SYM_OR,                 stub_fn);
@@ -6023,8 +6042,11 @@ void cl_compiler_init(void)
     SETF_SYM_GETF            = cl_intern_in("GETF", 4, cl_package_cl);
     SETF_HELPER_GETF         = cl_intern_in("%SETF-GETF", 10, cl_package_clamiga);
     SYM_LEX_LOCAL_MACRO      = cl_intern_in("%LEX-LOCAL-MACRO", 16, cl_package_clamiga);
+    symbol_macro_indicator   = cl_intern_in("%SYMBOL-MACRO-EXPANSION", 23,
+                                            cl_package_clamiga);
 
     /* Register cached symbols for GC compaction forwarding */
+    cl_gc_register_root(&symbol_macro_indicator);
     cl_gc_register_root(&SETF_SYM_CAR);
     cl_gc_register_root(&SETF_SYM_CDR);
     cl_gc_register_root(&SETF_SYM_FIRST);

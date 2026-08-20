@@ -13,6 +13,7 @@
 #include "core/debugger.h"
 #include "core/repl.h"
 #include "core/color.h"
+#include "core/image.h"
 #include "jit/jit.h"
 #include <string.h>
 #include <stdio.h>
@@ -373,6 +374,8 @@ static void print_usage(void)
         "  --script <file>  Load file and exit (no REPL)\n"
         "  --non-interactive Process options and exit (no REPL)\n"
         "  --no-userinit    Skip user init file (~/.clamigarc)\n"
+        "  --image <file>   Restore a heap image saved with EXT:SAVE-IMAGE\n"
+        "  --no-image       Skip auto-discovery of clamiga.img\n"
         "  --color          Force color output\n"
         "  --no-color       Disable color output\n"
         "  --no-jit         Disable the m68k JIT (functions stay bytecode-only)\n"
@@ -419,6 +422,60 @@ typedef struct {
     const char *arg;
 } CLAction;
 
+/* Auto-discover a clamiga.img heap image, mirroring the lib/boot.fasl
+ * search in repl.c: cwd, then $CLAMIGA_HOME (host) / PROGDIR: (Amiga),
+ * then executable-relative locations.  Returns 1 when an image was found
+ * AND staged successfully.  A candidate that exists but fails
+ * verification prints why and aborts discovery (falling back to a normal
+ * boot) rather than silently trying weaker candidates. */
+static int discover_image(void)
+{
+    char path[768];
+
+    if (platform_file_exists("clamiga.img"))
+        return cl_image_stage("clamiga.img", 0) == 0;
+
+#ifdef PLATFORM_AMIGA
+    if (platform_file_exists("PROGDIR:clamiga.img"))
+        return cl_image_stage("PROGDIR:clamiga.img", 0) == 0;
+    {
+        char prefix[512];
+        if (platform_executable_ancestor_prefix(2, prefix,
+                                                (int)sizeof(prefix))) {
+            snprintf(path, sizeof(path), "%sclamiga.img", prefix);
+            if (platform_file_exists(path))
+                return cl_image_stage(path, 0) == 0;
+        }
+    }
+#else
+    {
+        const char *home = getenv("CLAMIGA_HOME");
+        if (home && home[0]) {
+            size_t hlen = strlen(home);
+            int hcut = (hlen > 0 && home[hlen - 1] == '/') ? (int)(hlen - 1)
+                                                           : (int)hlen;
+            snprintf(path, sizeof(path), "%.*s/clamiga.img", hcut, home);
+            if (platform_file_exists(path))
+                return cl_image_stage(path, 0) == 0;
+        }
+    }
+    {
+        char prefix[512];
+        if (platform_executable_prefix(prefix, (int)sizeof(prefix))) {
+            static const char *rels[] = { "", "../../" };
+            int ri;
+            for (ri = 0; ri < 2; ri++) {
+                snprintf(path, sizeof(path), "%s%sclamiga.img",
+                         prefix, rels[ri]);
+                if (platform_file_exists(path))
+                    return cl_image_stage(path, 0) == 0;
+            }
+        }
+    }
+#endif
+    return 0;
+}
+
 /* Evaluate --eval in CL-USER context (not whatever *package* was left by --load) */
 static CL_Obj eval_string_in_cl_user(const char *str)
 {
@@ -439,6 +496,8 @@ int main(int argc, char *argv[])
     int script = 0;
     int no_jit = 0;
     int boot_log = 0;
+    int no_image = 0;
+    const char *image_file = NULL;
     const char *script_file = NULL;
     CLAction actions[MAX_ACTIONS];
     int action_count = 0;
@@ -489,6 +548,15 @@ int main(int argc, char *argv[])
             boot_log = 1;
         } else if (strcmp(argv[i], "--no-userinit") == 0) {
             no_userinit = 1;
+        } else if (strcmp(argv[i], "--image") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "Error: --image requires a file argument\n");
+                print_usage();
+                exit(1);
+            }
+            image_file = argv[++i];
+        } else if (strcmp(argv[i], "--no-image") == 0) {
+            no_image = 1;
         } else if (strcmp(argv[i], "--help") == 0) {
             print_usage();
             exit(0);
@@ -591,6 +659,26 @@ int main(int argc, char *argv[])
     /* Anchor GET-INTERNAL-REAL-TIME at process start so Lisp code can
      * measure launch-to-here directly (boot/load profiling). */
     cl_internal_time_init();
+
+    /* Heap image: stage (read + verify) BEFORE cl_mem_init so the arena
+     * can be sized to the image's payload.  An explicit --image that
+     * fails to stage is fatal; a discovered clamiga.img that fails falls
+     * back to a normal boot (cl_image_stage already said why). */
+    if (image_file) {
+        if (cl_image_stage(image_file, 0) != 0)
+            exit(1);
+    } else if (!no_image) {
+        discover_image();
+    }
+    if (cl_image_staged_p()) {
+        /* arena must hold the payload plus working headroom; an explicit
+         * --heap wins when it is already big enough. */
+        uint32_t bump = cl_image_staged_bump();
+        uint32_t need = bump + bump / 4u + (2u << 20);
+        uint32_t want = heap_size ? heap_size : CL_DEFAULT_HEAP_SIZE;
+        heap_size = want > need ? want : need;
+    }
+
     cl_thread_init();  /* Must be first — sets up CT for all other init */
 
     /* Initialize C stack base for overflow detection */
@@ -626,7 +714,25 @@ int main(int argc, char *argv[])
     cl_stream_init();
     cl_builtins_init();
     cl_debugger_init();
-    cl_repl_init_no_userinit(no_userinit);
+
+    /* End of the full C init: every global root is registered, every
+     * builtin's name→CFunc is in the relink registry.  This exact point is
+     * where an image's boot_roots count must match (image.c). */
+    cl_image_note_boot_roots();
+
+    if (cl_image_staged_p()) {
+        if (cl_image_restore_staged() == 0) {
+            cl_repl_init_from_image(no_userinit);
+        } else {
+            /* Pre-arena verification failed (reason already printed). */
+            cl_image_discard_staged();
+            if (image_file)
+                exit(1);   /* explicit --image: never boot something else */
+            cl_repl_init_no_userinit(no_userinit);
+        }
+    } else {
+        cl_repl_init_no_userinit(no_userinit);
+    }
 
 #ifdef DEBUG_GC_STRESS
     /* Enable per-allocation forced compaction only after boot, so the FASL/
@@ -658,6 +764,9 @@ int main(int argc, char *argv[])
                 cl_vm.fp = 0;
                 CL_UNCATCH();
             }
+            /* Deferred EXT:SAVE-IMAGE dump (top-level safe point; 1 = :quit) */
+            if (cl_image_save_run_if_pending())
+                goto shutdown;
         }
 
         /* Script mode: load file and exit */
@@ -675,6 +784,9 @@ int main(int argc, char *argv[])
                 cl_vm.fp = 0;
                 CL_UNCATCH();
             }
+            /* Deferred EXT:SAVE-IMAGE dump (top-level safe point; 1 = :quit) */
+            if (cl_image_save_run_if_pending())
+                goto shutdown;
         }
     } else if (non_interactive) {
         /* Non-interactive: execute --load/--eval actions and exit */
@@ -696,6 +808,9 @@ int main(int argc, char *argv[])
                 cl_vm.fp = 0;
                 CL_UNCATCH();
             }
+            /* Deferred EXT:SAVE-IMAGE dump (top-level safe point; 1 = :quit) */
+            if (cl_image_save_run_if_pending())
+                goto shutdown;
         }
     } else if (batch) {
         /* Batch: execute --load/--eval actions before batch REPL */
@@ -717,6 +832,9 @@ int main(int argc, char *argv[])
                 cl_vm.fp = 0;
                 CL_UNCATCH();
             }
+            /* Deferred EXT:SAVE-IMAGE dump (top-level safe point; 1 = :quit) */
+            if (cl_image_save_run_if_pending())
+                goto shutdown;
         }
         cl_repl_batch();
     } else {
@@ -785,6 +903,9 @@ int main(int argc, char *argv[])
                 cl_vm.fp = 0;
                 CL_UNCATCH();
             }
+            /* Deferred EXT:SAVE-IMAGE dump (top-level safe point; 1 = :quit) */
+            if (cl_image_save_run_if_pending())
+                goto shutdown;
         }
 
         cl_repl();

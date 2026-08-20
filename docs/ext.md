@@ -128,6 +128,56 @@ without running `unwind-protect` cleanups, so a cleanup form never sees it.
 | `(add-exit-hook function)` | function | Push a function or symbol onto `*exit-hooks*` (no-op if already there); returns its argument |
 | `(remove-exit-hook function)` | function | Remove it from `*exit-hooks*`; `T` if it was there, `NIL` otherwise |
 
+## Heap images
+
+`ext:save-image` snapshots the whole session — every function, macro, class,
+instance, hash table, package and variable — to a single file that
+`clamiga --image FILE` restores in one read, skipping the entire boot and
+load sequence.  On a slow Amiga this turns a minutes-long quicklisp warm-up
+into a near-instant start.
+
+```lisp
+(ext:save-image "work:devel/mysession.img")            ; keep working after
+(ext:save-image "work:devel/mysession.img" :quit t)    ; write and exit
+```
+
+The image is written at the next top-level prompt (after the enclosing
+form finishes), not from inside the call.  With `:quit t` clamiga exits
+after writing, running `ext:*exit-hooks*` as usual — the recommended mode
+for build scripts.
+
+Restore explicitly with `clamiga --image mysession.img`, or implicitly: a
+file named `clamiga.img` in the current directory (or next to the binary /
+under `$CLAMIGA_HOME`) is auto-discovered at startup; `--no-image` skips
+that.  An image saved with a small `--heap` restores fine into a larger
+one.
+
+Rules and limits:
+
+- **Images are per-build.**  A fingerprint ties each image to the exact
+  clamiga build that wrote it; any other build refuses it cleanly.  Host
+  images for the host, Amiga images for the Amiga, FPU/WIDE variants each
+  their own.
+- **OS resources cannot survive a process.**  Saving refuses while worker
+  threads are running or file/socket streams are open, and restored
+  foreign pointers are invalidated.  `ext:*save-hooks*` (run before the
+  dump) and `ext:*restore-hooks*` (run after a restore, most recent
+  first) are the supported way to tear such state down and rebuild it.
+- `ext:*image-restored-p*` is `T` in a restored session — it is already
+  set when `~/.clamigarc` runs, so an rc file can skip loads the image
+  already contains.
+
+| Signature | Kind | Description |
+|-----------|------|-------------|
+| `(save-image pathname &key quit)` | function | Arm a heap-image dump; it executes at the next top-level safe point.  With `:quit t` the process exits after writing |
+| `*save-hooks*` | variable | Functions funcalled (most recent first) right before the dump — close streams / tear down FFI state here |
+| `*restore-hooks*` | variable | Functions funcalled (most recent first) after a `--image` restore, following `~/.clamigarc` |
+| `*image-restored-p*` | variable | `T` when this session came from `--image` |
+
+Runnable end-to-end examples: `tests/test_image.sh` and
+`tests/test_image.c` (host), `tests/amiga/image-save.lisp` /
+`image-verify.lisp` (Amiga).
+
 ## Bulk byte-vector operations
 
 C-speed loops over `(unsigned-byte 8)` vectors for binary file formats —
