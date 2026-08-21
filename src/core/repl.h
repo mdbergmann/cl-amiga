@@ -23,6 +23,13 @@ void cl_load_file(const char *path);
 void cl_repl_init(void);
 void cl_repl_init_no_userinit(int no_userinit);
 
+/* Restored-boot init (--image): the heap already holds everything the
+ * saving session had loaded, so boot.lisp/CLOS loading and the symbol
+ * export passes are skipped entirely.  Runs the user init file (unless
+ * suppressed) with EXT:*IMAGE-RESTORED-P* already T, then
+ * EXT:*RESTORE-HOOKS*. */
+void cl_repl_init_from_image(int no_userinit);
+
 /* When non-zero (the default), cl_repl_init suppresses "; [boot] ..."
  * progress lines.  main.c clears it only when --boot-log is given, so
  * normal output and piped tests that match output exactly stay clean. */

@@ -603,6 +603,12 @@ CL_Obj cl_lock_alloc_obj(int recursive, CL_Obj name, const char *err_prefix);
 int cl_condvar_table_alloc(void *handle);
 void cl_condvar_table_free(int id);
 
+/* Image restore (image.c): recreate a lock/condvar's OS primitive at the
+ * FIXED table id recorded in a restored heap object.  Returns 0 on
+ * success, -1 on bad id / occupied slot / init failure. */
+int cl_lock_table_install_at(uint32_t id, int recursive);
+int cl_condvar_table_install_at(uint32_t id);
+
 /* ---- Thread registry ---- */
 extern CL_Thread  *cl_thread_list;      /* linked list of all threads */
 extern void       *cl_thread_list_lock; /* mutex protecting the list */

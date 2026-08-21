@@ -1874,18 +1874,12 @@ static CL_Obj bi_condition_variable_p(CL_Obj *args, int n)
  * Registration
  * ================================================================ */
 
-/* Helper: register a builtin in the MP package and export it */
+/* Helper: register a builtin in the MP package and export it.  Must go
+ * through cl_register_builtin_exported so the image-relink registry sees
+ * the registration (builtins.h). */
 static void mp_defun(const char *name, CL_CFunc func, int min, int max)
 {
-    CL_Obj sym = cl_intern_in(name, (uint32_t)strlen(name), cl_package_mp);
-    CL_Obj fn;
-    CL_Symbol *s;
-    CL_GC_PROTECT(sym);
-    fn = cl_make_function(func, sym, min, max);
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
-    s->function = fn;
-    cl_export_symbol(sym, cl_package_mp);
-    CL_GC_UNPROTECT(1);
+    cl_register_builtin_exported(name, func, min, max, cl_package_mp);
 }
 
 void cl_builtins_thread_init(void)

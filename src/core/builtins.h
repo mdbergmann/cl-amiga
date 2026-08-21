@@ -26,9 +26,31 @@ void cl_internal_time_init(void);
  * ends the sequence.  Idempotent — the list is taken before the first call. */
 void cl_run_exit_hooks(void);
 
-/* Register a builtin function in a specific package */
+/* Register a builtin function in a specific package.
+ * NAME must have static lifetime (every caller passes a string literal);
+ * the image-relink registry below keeps the pointer for the life of the
+ * process. */
 void cl_register_builtin(const char *name, CL_CFunc func,
                           int min, int max, CL_Obj package);
+
+/* --- Image-relink builtin registry (see specs/image-save-load.md) ---
+ * cl_register_builtin is the single choke point through which every
+ * builtin registration flows; it records (package-name, symbol-name) ->
+ * CL_CFunc in an off-arena side table.  A restored image's TYPE_FUNCTION
+ * objects carry the SAVING process's C function pointers (meaningless
+ * under ASLR / AmigaOS LoadSeg relocation), so the restore walk resolves
+ * each function's name through this registry to the current process's
+ * pointer.  Unknown names get bi_stale_builtin, which signals a
+ * descriptive error instead of jumping to a garbage address. */
+CL_CFunc cl_builtin_registry_lookup(const char *pkg_name, uint32_t pkg_len,
+                                    const char *sym_name, uint32_t sym_len);
+CL_Obj bi_stale_builtin(CL_Obj *args, int nargs);
+
+/* Register a builtin in PACKAGE and export it from that package.  The
+ * shared body behind the per-package `*_defun` helpers; also guarantees
+ * the registration reaches the image-relink registry above. */
+void cl_register_builtin_exported(const char *name, CL_CFunc func,
+                                  int min, int max, CL_Obj package);
 
 /* COMMON-LISP package handle (defined in package.c); declared here so the
  * shared defun() helper below can register into it without pulling in

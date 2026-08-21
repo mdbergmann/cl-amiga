@@ -930,6 +930,52 @@ void cl_condvar_table_free(int id)
     platform_mutex_unlock(cl_thread_list_lock);
 }
 
+/* Install a fresh platform mutex/condvar at a FIXED table id — the image
+ * restore (image.c) recreates each restored CL_Lock/CL_CondVar's OS
+ * primitive at the id recorded in the object, preserving identity within
+ * the image (same doctrine as FASL_TAG_LOCK: fresh at load, identity
+ * preserved).  Single-threaded use only (restore runs before any Lisp);
+ * still locked for uniformity.  Returns 0 on success, -1 on a bad id,
+ * an occupied slot, or primitive-init failure. */
+int cl_lock_table_install_at(uint32_t id, int recursive)
+{
+    void *m = NULL;
+    int rc = -1;
+    if (id >= CL_MAX_LOCKS) return -1;
+    platform_mutex_lock(cl_thread_list_lock);
+    if (!cl_lock_table[id]) {
+        if (recursive)
+            platform_mutex_init_recursive(&m);
+        else
+            platform_mutex_init(&m);
+        if (m) {
+            cl_lock_table[id] = m;
+            cl_lock_held[id] = NULL;
+            cl_lock_depth[id] = 0;
+            rc = 0;
+        }
+    }
+    platform_mutex_unlock(cl_thread_list_lock);
+    return rc;
+}
+
+int cl_condvar_table_install_at(uint32_t id)
+{
+    void *cv = NULL;
+    int rc = -1;
+    if (id >= CL_MAX_CONDVARS) return -1;
+    platform_mutex_lock(cl_thread_list_lock);
+    if (!cl_condvar_table[id]) {
+        platform_condvar_init(&cv);
+        if (cv) {
+            cl_condvar_table[id] = cv;
+            rc = 0;
+        }
+    }
+    platform_mutex_unlock(cl_thread_list_lock);
+    return rc;
+}
+
 CL_Thread *cl_thread_alloc_worker(void)
 {
     return cl_thread_alloc_worker_sized(0, 0, 0);

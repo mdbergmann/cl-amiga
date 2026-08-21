@@ -11,6 +11,7 @@
 #include "stream.h"
 #include "color.h"
 #include "fasl.h"
+#include "image.h"
 #include "../platform/platform.h"
 #include <string.h>
 #include <stdio.h>
@@ -584,6 +585,12 @@ void cl_repl(void)
             }
         }
 
+        /* Deferred EXT:SAVE-IMAGE dump: executes here, between top-level
+         * forms, where the main thread is at rest (empty VM/dyn/NLX/
+         * handler/restart/gc-root stacks).  Returns 1 for :quit t. */
+        if (cl_image_save_run_if_pending())
+            break;
+
         /* Reset accumulation buffer */
         accum_len = 0;
         depth = 0;
@@ -694,6 +701,10 @@ void cl_repl_batch(void)
             }
             if (quit) break;
         }
+
+        /* Deferred EXT:SAVE-IMAGE dump (see cl_repl). */
+        if (cl_image_save_run_if_pending())
+            break;
 
         /* Reset accumulation buffer */
         accum_len = 0;
@@ -1042,6 +1053,29 @@ void cl_repl_init_no_userinit(int no_userinit)
 void cl_repl_init(void)
 {
     cl_repl_init_no_userinit(0);
+}
+
+/* Restored-boot init (--image; see repl.h).  Everything cl_repl_init
+ * builds — boot.lisp, CLOS, the export passes, the history symbols — is
+ * already present in the restored heap; only the per-process pieces run:
+ * the user init file and the restore hooks.  EXT:*IMAGE-RESTORED-P* was
+ * set to T by cl_image_restore_staged BEFORE this, so ~/.clamigarc can
+ * skip redundant loads. */
+void cl_repl_init_from_image(int no_userinit)
+{
+    uint32_t t_start = platform_time_ms();
+    uint32_t t_prev  = t_start;
+    extern void cl_image_run_restore_hooks(void);
+
+    BOOT_TIME("image restored");
+
+    if (!no_userinit) {
+        load_user_init();
+        BOOT_TIME("user init");
+    }
+
+    cl_image_run_restore_hooks();
+    BOOT_TIME("ready");
 }
 
 void cl_repl_init_minimal(void)

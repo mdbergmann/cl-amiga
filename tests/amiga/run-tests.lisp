@@ -10251,6 +10251,28 @@
     (setq *fail-count* (+ *fail-count* 1))
     (format t "FAIL: shim registry tests could not run: ~A~%" e)))
 
+; --- Heap images (EXT:SAVE-IMAGE API surface) ---
+; The actual save->restore cycle needs two processes and is driven by
+; call-on-ustartup (tests/amiga/image-save.lisp + image-verify.lisp);
+; here: argument validation and the synchronous precondition refusals.
+(check "save-image rejects a non-pathname" :error
+  (handler-case (ext:save-image 42) (error () :error)))
+(check "save-image rejects unknown keywords" :error
+  (handler-case (ext:save-image "T:img-x.img" :bogus t) (error () :error)))
+(check "save-image refuses with an open file stream" :error
+  (let ((s (open "T:img-open.tmp" :direction :output
+                 :if-exists :supersede)))
+    (prog1 (handler-case (progn (ext:save-image "T:img-x.img") :no-error)
+             (error () :error))
+      (close s))))
+(check "*save-hooks* is a special var" nil ext:*save-hooks*)
+(check "*restore-hooks* is a special var" nil ext:*restore-hooks*)
+; NIL on the fresh-boot pass of the suite; the restored-boot re-run
+; (call-on-ustartup) sees T — accept either, and let image-verify.lisp
+; pin the exact value per mode.
+(check "*image-restored-p* is bound" t
+  (if (member ext:*image-restored-p* '(nil t)) t nil))
+
 ; --- Exit hooks (EXT:*EXIT-HOOKS*) ---
 ; The list API here, plus one real hook registered at the bottom: it can only
 ; run from main.c's shutdown funnel, so its marker in the results log is the

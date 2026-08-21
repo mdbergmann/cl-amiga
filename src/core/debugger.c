@@ -31,18 +31,12 @@ static CL_Obj SYM_DEBUGGER_HOOK;
 
 /* Helper to register a builtin AND export it from the CL package (plain defun()
  * from builtins.h only registers; cl_debugger_init runs after the bulk
- * cl_package_export_all_cl_symbols call, so these need an explicit export). */
+ * cl_package_export_all_cl_symbols call, so these need an explicit export).
+ * Routed through cl_register_builtin_exported so the image-relink registry
+ * sees the registration (builtins.h). */
 static void defun_exported(const char *name, CL_CFunc func, int min, int max)
 {
-    CL_Obj sym = cl_intern_in(name, (uint32_t)strlen(name), cl_package_cl);
-    CL_Obj fn;
-    CL_Symbol *s;
-    CL_GC_PROTECT(sym);
-    fn = cl_make_function(func, sym, min, max);
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
-    s->function = fn;
-    CL_GC_UNPROTECT(1);
-    cl_export_symbol(sym, cl_package_cl);
+    cl_register_builtin_exported(name, func, min, max, cl_package_cl);
 }
 
 /* Display condition info.

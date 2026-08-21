@@ -2140,18 +2140,18 @@ void cl_builtins_stream_init(void)
     /* Step 12: Readtable */
     defun("READTABLEP", bi_readtablep, 1, 1);
     defun("GET-MACRO-CHARACTER", bi_get_macro_character, 1, 2);
-    /* Callable backing GET-MACRO-CHARACTER's result for the built-in #\". */
+    /* Callable backing GET-MACRO-CHARACTER's result for the built-in #\".
+     * Registered through cl_register_builtin (not a bare cl_make_function)
+     * so the image-relink registry can resolve it by name after a restore. */
     {
-        CL_Obj ssr_sym = cl_intern_in("%READ-STANDARD-STRING",
-                                      (uint32_t)strlen("%READ-STANDARD-STRING"),
-                                      cl_package_clamiga);
-        CL_Symbol *ssr;
-        CL_GC_PROTECT(ssr_sym);
+        CL_Obj ssr_sym;
+        cl_register_builtin("%READ-STANDARD-STRING", bi_read_standard_string,
+                            2, 2, cl_package_clamiga);
+        ssr_sym = cl_intern_in("%READ-STANDARD-STRING",
+                               (uint32_t)strlen("%READ-STANDARD-STRING"),
+                               cl_package_clamiga);
         standard_string_reader_fn =
-            cl_make_function(bi_read_standard_string, ssr_sym, 2, 2);
-        ssr = (CL_Symbol *)CL_OBJ_TO_PTR(ssr_sym);
-        ssr->function = standard_string_reader_fn;
-        CL_GC_UNPROTECT(1);
+            ((CL_Symbol *)CL_OBJ_TO_PTR(ssr_sym))->function;
     }
     defun("SET-MACRO-CHARACTER", bi_set_macro_character, 2, 4);
     defun("MAKE-DISPATCH-MACRO-CHARACTER", bi_make_dispatch_macro_character, 1, 3);

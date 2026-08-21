@@ -191,6 +191,38 @@ void cl_gc_reset_roots(void);
  * builtins with headroom. */
 #define CL_MAX_GLOBAL_ROOTS 1024
 void cl_gc_register_root(CL_Obj *root_ptr);
+#ifdef DEBUG_GC
+/* Debug builds record the registration site of every global root so the
+ * image writer can NAME late-registered (post-boot) roots — the spec-level
+ * warning that catches a stateful root registered too late to be part of
+ * the image restore set (see specs/image-save-load.md "Late-registered
+ * roots").  The macro upgrades every existing call site untouched. */
+void cl_gc_register_root_at(CL_Obj *root_ptr, const char *file, int line);
+#define cl_gc_register_root(p) cl_gc_register_root_at((p), __FILE__, __LINE__)
+#endif
+
+/* --- Heap-image support (image.c; see specs/image-save-load.md) ---
+ * The image writer/loader enumerate and overwrite the registered global
+ * roots by index: boot is single-threaded and deterministic, so index i
+ * names the same C variable in the saving and the restoring process of
+ * the same build. */
+int     cl_gc_global_root_count(void);
+CL_Obj  cl_gc_global_root_get(int i);
+void    cl_gc_global_root_set(int i, CL_Obj value);
+#ifdef DEBUG_GC
+const char *cl_gc_global_root_file(int i);
+int         cl_gc_global_root_line(int i);
+#endif
+
+/* Adopt a restored image's arena payload.  begin() installs the payload's
+ * bump/free-list/accounting immediately after the raw bytes were copied
+ * over the arena; finish() runs after the relink walk and normalizes GC
+ * state for the active collector in one linear pass (classic: clear all
+ * mark bits; generational: set sticky marks, rebuild the crossing map,
+ * set the old-space watermark to bump, clear dirty bits and re-arm
+ * old-space protection). */
+void cl_mem_adopt_image_begin(uint32_t bump);
+void cl_mem_adopt_image_finish(void);
 
 /* Audit for double-registered roots (global vs. global, global vs. any
  * thread root stack).  gc_forward is not idempotent, so a slot reachable

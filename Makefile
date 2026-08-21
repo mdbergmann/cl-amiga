@@ -112,6 +112,7 @@ CORE_SRC     = $(SRCDIR)/core/types.c \
                $(SRCDIR)/core/debugger.c \
                $(SRCDIR)/core/repl.c \
                $(SRCDIR)/core/fasl.c \
+               $(SRCDIR)/core/image.c \
                $(SRCDIR)/core/color.c \
                $(SRCDIR)/core/thread.c \
                $(SRCDIR)/core/string_utils.c
@@ -207,7 +208,7 @@ test_batch test_boot_log test_mx_error_context \
                 test_compile_file_stderr test_fasl_cache_dir test_make_load_form \
                 test_struct_slot_access test_defconstant_fasl test_peephole_diff \
                 test_defvar_special_fasl test_stack_depth test_argv_utf8 \
-                test_utf8_filenames
+                test_utf8_filenames test_image
 
 # The two that drive make itself and take no clamiga binary.
 SHELL_TESTS_NOARG = test_cross_wide_knob test_test_extra
@@ -278,6 +279,8 @@ test-gc-stress:
 	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_peephole_diff.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
 	@echo "--- test_tls_loopback (CLAMIGA_GC_STRESS=1, forced compaction) ---"
 	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_tls_loopback.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
+	@echo "--- test_image (CLAMIGA_GC_STRESS=1, forced compaction) ---"
+	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_image.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
 
 # `make test-mt-thread-exit-race` builds a dedicated DEBUG_THREAD_RACE_HOOKS
 # binary whose sole purpose (see the constructor in src/core/thread.c) is to

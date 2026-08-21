@@ -40,20 +40,12 @@ static void path_directory(const char *path, char *dir, uint32_t dirsz);
 static void mkdir_p(const char *path);
 
 
-/* Helper to register an extension builtin in the EXT package (exported) */
+/* Helper to register an extension builtin in the EXT package (exported).
+ * Routed through cl_register_builtin_exported so the image-relink registry
+ * sees the registration (builtins.h). */
 static void extfun(const char *name, CL_CFunc func, int min, int max)
 {
-    CL_Obj sym = cl_intern_in(name, (uint32_t)strlen(name), cl_package_ext);
-    CL_Obj fn;
-    CL_Symbol *s;
-    /* GC SAFETY (audit tier 4, IO11): cl_make_function allocates — sym must
-     * stay forwarded and s re-derived after it (mirror defun above). */
-    CL_GC_PROTECT(sym);
-    fn = cl_make_function(func, sym, min, max);
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
-    s->function = fn;
-    cl_export_symbol(sym, cl_package_ext);
-    CL_GC_UNPROTECT(1);
+    cl_register_builtin_exported(name, func, min, max, cl_package_ext);
 }
 
 /* Output-stream resolution is shared with builtins_stream.c
