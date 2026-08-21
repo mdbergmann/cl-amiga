@@ -22,8 +22,10 @@
  * through these macros so they stay matched.
  *
  * AmigaOS keeps plain setjmp — m68k toolchain libc may not expose
- * _setjmp, and Amiga setjmp is already mask-free. */
-#if defined(PLATFORM_POSIX)
+ * _setjmp, and Amiga setjmp is already mask-free.  Windows likewise: there
+ * is no signal mask to save, so the CRT's setjmp is already the fast one
+ * (and mingw exposes no _setjmp). */
+#if defined(PLATFORM_POSIX) && !defined(PLATFORM_WIN32)
 #  define CL_SETJMP(buf)        _setjmp(buf)
 #  define CL_LONGJMP(buf, val)  _longjmp((buf), (val))
 #else

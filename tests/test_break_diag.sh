@@ -65,6 +65,23 @@ if ! grep -q '^\[GC\] [0-9]*ms #[0-9]* \(sweep\|compact\|compact-fallback\) paus
 fi
 
 # ---- 2. SIGINT break, non-interactive ----
+#
+# Windows: skipped, and not because the feature is missing.  clamiga installs
+# a console control handler there, but nothing in this harness can deliver a
+# Ctrl-C to it: a native process is not in the MSYS shell's signal world, so
+# `kill -INT` on it terminates rather than interrupts.  The break-in itself is
+# exercised by hand at the REPL.
+case "$(uname -s)" in
+    MINGW*|MSYS*|CLANGARM64*|CLANG64*|UCRT64*)
+        echo "skip: SIGINT break leg (no signal delivery to a native process"
+        echo "      from the MSYS shell — the console-control handler is"
+        echo "      interactive-only here)"
+        skip_sigint=1
+        ;;
+    *) skip_sigint=0 ;;
+esac
+
+if [ "$skip_sigint" = "0" ]; then
 cat > "$tmp" <<'EOF'
 (format t "SPIN-START~%")
 (finish-output)
@@ -107,6 +124,7 @@ if ! grep -q "Backtrace:" "$out"; then
     cat "$out"
     fail=1
 fi
+fi  # skip_sigint
 
 # ---- 3. Interactive continue (needs a PTY -> expect) ----
 EXPECT=$(command -v expect 2>/dev/null || true)

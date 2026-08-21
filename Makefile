@@ -1,13 +1,37 @@
 # CL-Amiga Makefile
+
+UNAME_S := $(shell uname -s)
 # Targets: host (Linux), amiga-m68k, amiga-ppc
 
 CC_HOST     = gcc
 
+# Windows (mingw-w64 under MSYS2: CLANGARM64 / UCRT64 / MINGW64, or Git Bash
+# with a mingw compiler on PATH).  `make host` there builds a NATIVE .exe —
+# platform_win32.c + Winsock, no msys-2.0.dll — and everything else in this
+# Makefile is shared with the POSIX hosts.
+ifneq (,$(filter MINGW% MSYS% CLANGARM64% CLANG64% UCRT64%,$(UNAME_S)))
+WINDOWS := 1
+EXE     := .exe
+endif
+
 # libffi + dlopen: the host FFI engine (foreign-funcall / dlsym / callbacks).
-# pkg-config locates libffi on both macOS (SDK) and Linux; fall back to -lffi.
-UNAME_S    := $(shell uname -s)
+# pkg-config locates libffi on macOS, Linux and MSYS2 alike; fall back to -lffi.
 FFI_CFLAGS := $(shell pkg-config --cflags libffi 2>/dev/null)
 FFI_LIBS   := $(shell pkg-config --libs libffi 2>/dev/null || echo -lffi)
+ifdef WINDOWS
+# Winsock, plus winpthreads for the pthreads API platform_thread_posix.c uses.
+# No -ldl: LoadLibrary lives in kernel32, which links implicitly.
+PLATFORM_DEF   = -DPLATFORM_WIN32
+PLATFORM_IMPL  = $(SRCDIR)/platform/platform_win32.c \
+                 $(SRCDIR)/platform/win32_compat.c
+# shell32: CommandLineToArgvW, which main.c uses to recover the UTF-16
+# command line (argv arrives ANSI-mangled otherwise).
+PLATFORM_LIBS  = -lws2_32 -lshell32
+PTHREAD_FLAGS  = -pthread
+else
+PLATFORM_DEF   = -DPLATFORM_POSIX
+PLATFORM_IMPL  = $(SRCDIR)/platform/platform_posix.c
+PLATFORM_LIBS  =
 ifneq ($(UNAME_S),Darwin)
 FFI_LIBS   += -ldl
 # glibc < 2.34 (e.g. Debian 11 / older Raspberry Pi OS) ships libpthread as a
@@ -16,9 +40,10 @@ FFI_LIBS   += -ldl
 # libc/libSystem, which is why the omission only surfaced there).
 PTHREAD_FLAGS = -pthread
 endif
+endif
 
-CFLAGS_HOST = -std=c99 -D_GNU_SOURCE -Wall -Wextra -Wpedantic -g -O3 -flto -DPLATFORM_POSIX -DCL_WIDE_STRINGS $(PTHREAD_FLAGS) $(FFI_CFLAGS) $(DEBUG_FLAGS)
-HOST_LIBS   = -lm $(PTHREAD_FLAGS) $(FFI_LIBS)
+CFLAGS_HOST = -std=c99 -D_GNU_SOURCE -Wall -Wextra -Wpedantic -g -O3 -flto $(PLATFORM_DEF) -DCL_WIDE_STRINGS $(PTHREAD_FLAGS) $(FFI_CFLAGS) $(DEBUG_FLAGS)
+HOST_LIBS   = -lm $(PTHREAD_FLAGS) $(FFI_LIBS) $(PLATFORM_LIBS)
 
 # Test builds deliberately drop -flto and use -O1 instead of -O3.  The shipped
 # clamiga binary is built once at -O3 -flto, but the ~50 unit-test binaries each
@@ -28,13 +53,16 @@ HOST_LIBS   = -lm $(PTHREAD_FLAGS) $(FFI_LIBS)
 # fast enough for the suite (gc-stress, which needs the optimized binary, builds
 # its own -O3 clamiga separately and is unaffected).  Test objects live in their
 # own tree so they never clash with the -O3 -flto objects linked into clamiga.
-CFLAGS_TEST = -std=c99 -D_GNU_SOURCE -Wall -Wextra -Wpedantic -g -O1 -DPLATFORM_POSIX -DCL_WIDE_STRINGS $(PTHREAD_FLAGS) $(FFI_CFLAGS) $(DEBUG_FLAGS)
+CFLAGS_TEST = -std=c99 -D_GNU_SOURCE -Wall -Wextra -Wpedantic -g -O1 $(PLATFORM_DEF) -DCL_WIDE_STRINGS $(PTHREAD_FLAGS) $(FFI_CFLAGS) $(DEBUG_FLAGS)
 
 SRCDIR   = src
 BUILDDIR = build/host
+# The linker appends .exe on Windows; name the target the same way so make
+# sees that it was built (and so the shell test scripts find it).
+HOST_BIN = $(BUILDDIR)/clamiga$(EXE)
 
 # Source files
-PLATFORM_SRC = $(SRCDIR)/platform/platform_posix.c \
+PLATFORM_SRC = $(PLATFORM_IMPL) \
                $(SRCDIR)/platform/platform_thread_posix.c \
                $(SRCDIR)/platform/tls_openssl.c
 CORE_SRC     = $(SRCDIR)/core/types.c \
@@ -111,7 +139,7 @@ LIB_TEST_OBJS = $(patsubst $(SRCDIR)/%.c,$(TESTOBJDIR)/%.o,$(LIB_SRCS))
 
 .PHONY: host test test-fast test-plus test-extra linux-test clean verify-amiga install-hooks docs-check docs-update test-gc-stress test-mt-thread-exit-race
 
-host: $(BUILDDIR)/clamiga
+host: $(HOST_BIN)
 
 # Keep the docs/*.md package symbol lists in sync with the real exports.
 # docs-check (CI/pre-commit) fails if any documented extension package's export
@@ -119,13 +147,13 @@ host: $(BUILDDIR)/clamiga
 # CLAMIGA symbol that is no longer exported.  docs-update regenerates the
 # snapshot after you have updated the prose.  See tools/docs/package-symbols.sh.
 docs-check: host
-	@sh tools/docs/package-symbols.sh check $(BUILDDIR)/clamiga
+	@sh tools/docs/package-symbols.sh check $(HOST_BIN)
 
 docs-update: host
-	@sh tools/docs/package-symbols.sh generate $(BUILDDIR)/clamiga > docs/package-symbols.txt
+	@sh tools/docs/package-symbols.sh generate $(HOST_BIN) > docs/package-symbols.txt
 	@echo "docs-update: regenerated docs/package-symbols.txt"
 
-$(BUILDDIR)/clamiga: $(HOST_OBJS)
+$(HOST_BIN): $(HOST_OBJS)
 	@mkdir -p $(dir $@)
 	$(CC_HOST) $(CFLAGS_HOST) -o $@ $^ $(HOST_LIBS)
 
@@ -143,10 +171,50 @@ $(BUILDDIR)/%.o: $(SRCDIR)/%.c
 # timeout/gtimeout binary is on PATH.
 TEST_BIN_TIMEOUT ?= 300
 
+# Temp directory for the shell tests.  On Windows the shell and the binary
+# under test disagree about what "/tmp" is: MSYS2 maps it to a mount a native
+# clamiga.exe knows nothing about, and while command-line arguments are
+# path-converted on the way to a native process, a temp path that travels
+# through an environment variable or inside a generated .lisp file is not.
+# Handing every script the Windows spelling up front makes both sides agree.
+# Empty (and therefore inert) everywhere else.
+ifdef WINDOWS
+TEST_TMPDIR_ENV := TMPDIR=$(shell cygpath -m /tmp 2>/dev/null)
+endif
+
 # Tests
+# Shell-driven tests, run by test-fast after the C unit tests.  A list plus
+# one loop, rather than an inlined block per script, for a concrete reason:
+# make hands a recipe to the shell as a SINGLE command line, and thirty
+# inlined blocks pushed it past the 32K command-line limit on Windows (the
+# symptom is `syntax error: unexpected end of file` from a truncated
+# script).  Add a new shell test by adding its name here.
+SHELL_TESTS = \
+test_batch test_boot_log test_mx_error_context \
+                test_lib_search_cwd test_shim_registry test_fasl_compat \
+                test_boot_fasl_recovery test_boot_source_compile test_load_exit \
+                test_exit_hooks \
+                test_gray_streams_reload test_gray_file_position test_gc_stream_finalize \
+                test_mt_print_controls test_mt_package_isolation test_mt_gc_regression \
+                test_mt_gc_compact_hang test_mt_stream_mutex_leak test_mt_dispatch_addmethod_race \
+                test_mt_dispatch_cache_race test_mt_thread_exit_gc test_mt_thread_identity \
+                test_mt_intern_stw test_mt_stream_close_race test_mt_interrupt_parked \
+                test_lock_diag test_break_diag test_debugger_backtrace \
+                test_io_diag test_ql_socket_timeouts test_stream_outbuf_leak \
+                test_tls_loopback test_compiler_chain_unwind test_mt_lock_contention_throughput \
+                test_mt_print_stress test_load_keywords test_load_rebind \
+                test_dev_commands test_userinit test_compile_file_package \
+                test_compile_file_stderr test_fasl_cache_dir test_make_load_form \
+                test_struct_slot_access test_defconstant_fasl test_peephole_diff \
+                test_defvar_special_fasl test_stack_depth test_argv_utf8 \
+                test_utf8_filenames
+
+# The two that drive make itself and take no clamiga binary.
+SHELL_TESTS_NOARG = test_cross_wide_knob test_test_extra
+
 test-fast: $(TEST_BINS) host
 	@echo "=== Running tests (fast tier: skips sento/host-cold-test) ==="
-	@export CLAMIGA_NO_USERINIT=1; \
+	@export CLAMIGA_NO_USERINIT=1 $(TEST_TMPDIR_ENV); \
 	failed=0; \
 	tmo=$$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true); \
 	for t in $(TEST_BINS); do \
@@ -168,356 +236,24 @@ test-fast: $(TEST_BINS) host
 			failed=1; \
 		fi; \
 	done; \
-	echo "--- test_batch ---"; \
-	if sh $(TEST_SRCDIR)/test_batch.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_boot_log ---"; \
-	if sh $(TEST_SRCDIR)/test_boot_log.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_mx_error_context ---"; \
-	if sh $(TEST_SRCDIR)/test_mx_error_context.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_lib_search_cwd ---"; \
-	if sh $(TEST_SRCDIR)/test_lib_search_cwd.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_shim_registry ---"; \
-	if sh $(TEST_SRCDIR)/test_shim_registry.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_fasl_compat ---"; \
-	if sh $(TEST_SRCDIR)/test_fasl_compat.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_boot_fasl_recovery ---"; \
-	if sh $(TEST_SRCDIR)/test_boot_fasl_recovery.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_boot_source_compile ---"; \
-	if sh $(TEST_SRCDIR)/test_boot_source_compile.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_load_exit ---"; \
-	if sh $(TEST_SRCDIR)/test_load_exit.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_exit_hooks ---"; \
-	if sh $(TEST_SRCDIR)/test_exit_hooks.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_gray_streams_reload ---"; \
-	if sh $(TEST_SRCDIR)/test_gray_streams_reload.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_cross_wide_knob ---"; \
-	if sh $(TEST_SRCDIR)/test_cross_wide_knob.sh; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_gray_file_position ---"; \
-	if sh $(TEST_SRCDIR)/test_gray_file_position.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_gc_stream_finalize ---"; \
-	if sh $(TEST_SRCDIR)/test_gc_stream_finalize.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_mt_print_controls ---"; \
-	if sh $(TEST_SRCDIR)/test_mt_print_controls.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_mt_package_isolation ---"; \
-	if sh $(TEST_SRCDIR)/test_mt_package_isolation.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_mt_gc_regression ---"; \
-	if sh $(TEST_SRCDIR)/test_mt_gc_regression.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_mt_gc_compact_hang ---"; \
-	if sh $(TEST_SRCDIR)/test_mt_gc_compact_hang.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_mt_stream_mutex_leak ---"; \
-	if sh $(TEST_SRCDIR)/test_mt_stream_mutex_leak.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_mt_dispatch_addmethod_race ---"; \
-	if sh $(TEST_SRCDIR)/test_mt_dispatch_addmethod_race.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_mt_dispatch_cache_race ---"; \
-	if sh $(TEST_SRCDIR)/test_mt_dispatch_cache_race.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_mt_thread_exit_gc ---"; \
-	if sh $(TEST_SRCDIR)/test_mt_thread_exit_gc.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_mt_thread_identity ---"; \
-	if sh $(TEST_SRCDIR)/test_mt_thread_identity.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_mt_intern_stw ---"; \
-	if sh $(TEST_SRCDIR)/test_mt_intern_stw.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_mt_stream_close_race ---"; \
-	if sh $(TEST_SRCDIR)/test_mt_stream_close_race.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_mt_interrupt_parked ---"; \
-	if sh $(TEST_SRCDIR)/test_mt_interrupt_parked.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_lock_diag ---"; \
-	if sh $(TEST_SRCDIR)/test_lock_diag.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_break_diag ---"; \
-	if sh $(TEST_SRCDIR)/test_break_diag.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_debugger_backtrace ---"; \
-	if sh $(TEST_SRCDIR)/test_debugger_backtrace.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_io_diag ---"; \
-	if sh $(TEST_SRCDIR)/test_io_diag.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_ql_socket_timeouts ---"; \
-	if sh $(TEST_SRCDIR)/test_ql_socket_timeouts.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_stream_outbuf_leak ---"; \
-	if sh $(TEST_SRCDIR)/test_stream_outbuf_leak.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_tls_loopback ---"; \
-	if sh $(TEST_SRCDIR)/test_tls_loopback.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_compiler_chain_unwind ---"; \
-	if sh $(TEST_SRCDIR)/test_compiler_chain_unwind.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_mt_lock_contention_throughput ---"; \
-	if sh $(TEST_SRCDIR)/test_mt_lock_contention_throughput.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_mt_print_stress ---"; \
-	if sh $(TEST_SRCDIR)/test_mt_print_stress.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_load_keywords ---"; \
-	if sh $(TEST_SRCDIR)/test_load_keywords.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_load_rebind ---"; \
-	if sh $(TEST_SRCDIR)/test_load_rebind.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_dev_commands ---"; \
-	if sh $(TEST_SRCDIR)/test_dev_commands.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_userinit ---"; \
-	if sh $(TEST_SRCDIR)/test_userinit.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_compile_file_package ---"; \
-	if sh $(TEST_SRCDIR)/test_compile_file_package.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_compile_file_stderr ---"; \
-	if sh $(TEST_SRCDIR)/test_compile_file_stderr.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_fasl_cache_dir ---"; \
-	if sh $(TEST_SRCDIR)/test_fasl_cache_dir.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_make_load_form ---"; \
-	if sh $(TEST_SRCDIR)/test_make_load_form.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_struct_slot_access ---"; \
-	if sh $(TEST_SRCDIR)/test_struct_slot_access.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_defconstant_fasl ---"; \
-	if sh $(TEST_SRCDIR)/test_defconstant_fasl.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_peephole_diff ---"; \
-	if sh $(TEST_SRCDIR)/test_peephole_diff.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_defvar_special_fasl ---"; \
-	if sh $(TEST_SRCDIR)/test_defvar_special_fasl.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_stack_depth ---"; \
-	if sh $(TEST_SRCDIR)/test_stack_depth.sh $(BUILDDIR)/clamiga; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
-	echo "--- test_test_extra ---"; \
-	if sh $(TEST_SRCDIR)/test_test_extra.sh; then \
-		echo "PASS"; \
-	else \
-		echo "FAIL"; \
-		failed=1; \
-	fi; \
+	for s in $(SHELL_TESTS); do \
+		echo "--- $$s ---"; \
+		if sh $(TEST_SRCDIR)/$$s.sh $(HOST_BIN); then \
+			echo "PASS"; \
+		else \
+			echo "FAIL"; \
+			failed=1; \
+		fi; \
+	done; \
+	for s in $(SHELL_TESTS_NOARG); do \
+		echo "--- $$s ---"; \
+		if sh $(TEST_SRCDIR)/$$s.sh; then \
+			echo "PASS"; \
+		else \
+			echo "FAIL"; \
+			failed=1; \
+		fi; \
+	done; \
 	if [ $$failed -ne 0 ]; then echo "=== Some tests failed ==="; exit 1; fi; \
 	echo "=== Fast tests passed ==="
 
@@ -535,13 +271,13 @@ test-gc-stress:
 		BUILDDIR=$(GC_STRESS_BUILDDIR) \
 		DEBUG_FLAGS="-DDEBUG_GC_STRESS"
 	@echo "--- test_gc_stress_regression ---"
-	@sh $(TEST_SRCDIR)/test_gc_stress_regression.sh $(GC_STRESS_BUILDDIR)/clamiga
+	@$(TEST_TMPDIR_ENV) sh $(TEST_SRCDIR)/test_gc_stress_regression.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
 	@echo "--- test_mt_intern_stw (CLAMIGA_GC_STRESS=1) ---"
-	@CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_mt_intern_stw.sh $(GC_STRESS_BUILDDIR)/clamiga
+	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_mt_intern_stw.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
 	@echo "--- test_peephole_diff (CLAMIGA_GC_STRESS=1, forced compaction) ---"
-	@CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_peephole_diff.sh $(GC_STRESS_BUILDDIR)/clamiga
+	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_peephole_diff.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
 	@echo "--- test_tls_loopback (CLAMIGA_GC_STRESS=1, forced compaction) ---"
-	@CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_tls_loopback.sh $(GC_STRESS_BUILDDIR)/clamiga
+	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_tls_loopback.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
 
 # `make test-mt-thread-exit-race` builds a dedicated DEBUG_THREAD_RACE_HOOKS
 # binary whose sole purpose (see the constructor in src/core/thread.c) is to
@@ -556,12 +292,12 @@ test-mt-thread-exit-race: host
 		BUILDDIR=$(RACE_BUILDDIR) \
 		DEBUG_FLAGS="-DDEBUG_THREAD_RACE_HOOKS"
 	@echo "--- test_mt_thread_exit_gc (deterministic race) ---"
-	@sh $(TEST_SRCDIR)/test_mt_thread_exit_gc.sh $(BUILDDIR)/clamiga $(RACE_BUILDDIR)/clamiga
+	@$(TEST_TMPDIR_ENV) sh $(TEST_SRCDIR)/test_mt_thread_exit_gc.sh $(HOST_BIN) $(RACE_BUILDDIR)/clamiga$(EXE)
 
 # `make test-plus` adds the host-cold-test (sento cold-load smoke test) on top
 # of the fast tier.
 test-plus: test-fast
-	@export CLAMIGA_NO_USERINIT=1; \
+	@export CLAMIGA_NO_USERINIT=1 $(TEST_TMPDIR_ENV); \
 	echo "--- host-cold-test ---"; \
 	if $(MAKE) --no-print-directory host-cold-test; then \
 		echo "PASS"; \
@@ -630,7 +366,7 @@ host-cold-test: host
 	  echo "=== host-cold-test: no timeout/gtimeout on PATH — running without watchdog ==="; \
 	fi; \
 	rc=0; \
-	$$runner $(BUILDDIR)/clamiga --no-userinit --heap 384M --non-interactive --load $(HOST_COLD_TEST_SCRIPT) \
+	$$runner $(HOST_BIN) --no-userinit --heap 384M --non-interactive --load $(HOST_COLD_TEST_SCRIPT) \
 	  </dev/null > $(HOST_COLD_TEST_LOG) 2>&1 || rc=$$?; \
 	if [ $$rc -eq 124 ]; then \
 	  echo "=== FAIL: host-cold-test timed out after $(HOST_COLD_TEST_TIMEOUT)s (see $(HOST_COLD_TEST_LOG)) ==="; \
@@ -662,7 +398,7 @@ host-cold-test: host
 # NOT wired into 'make test' — heavyweight, needs quicklisp/ansi-tests.
 # Set COLD=1 to clear the FASL cache before each script (cold-boot mode).
 test-extra: host
-	@export CLAMIGA_NO_USERINIT=1; \
+	@export CLAMIGA_NO_USERINIT=1 $(TEST_TMPDIR_ENV); \
 	sh trunk/run-load-and-test-all.sh $(if $(filter 1,$(COLD)),--cold)
 
 # Run host build + tests inside an Ubuntu container (matches GitHub Actions
@@ -701,13 +437,13 @@ verify-amiga:
 	fi
 
 # Pre-compile boot files to FASL for faster startup
-fasl: $(BUILDDIR)/clamiga
+fasl: $(HOST_BIN)
 	@echo "=== Compiling boot.lisp → lib/boot.fasl ==="
-	$(BUILDDIR)/clamiga --no-userinit --heap 24M \
+	$(HOST_BIN) --no-userinit --heap 24M \
 		--eval '(compile-file "lib/boot.lisp" :output-file "lib/boot.fasl")' \
 		--eval '(quit)'
 	@echo "=== Compiling clos.lisp → lib/clos.fasl ==="
-	$(BUILDDIR)/clamiga --no-userinit --heap 24M \
+	$(HOST_BIN) --no-userinit --heap 24M \
 		--eval '(compile-file "lib/clos.lisp" :output-file "lib/clos.fasl")' \
 		--eval '(quit)'
 

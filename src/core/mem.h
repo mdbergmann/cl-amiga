@@ -27,7 +27,7 @@
  * and keeps the classic mark-sweep-compact collector.  CL_NO_GENGC
  * disables it at build time on hosts; CLAMIGA_GENGC=0 disables at runtime
  * (classic mode, for A/B benchmarking and as a field escape hatch). */
-#if defined(PLATFORM_POSIX) && !defined(CL_NO_GENGC)
+#if (defined(PLATFORM_POSIX) || defined(PLATFORM_WIN32)) && !defined(CL_NO_GENGC)
 #define CL_GENGC 1
 #endif
 

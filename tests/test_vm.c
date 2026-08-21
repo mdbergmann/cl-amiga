@@ -12,18 +12,20 @@
 #include "core/repl.h"
 #include "core/compiler_internal.h" /* determine_boxed_vars (deep-scan regression) */
 #include "platform/platform.h"
-#ifdef PLATFORM_POSIX
+#if defined(PLATFORM_POSIX) || defined(PLATFORM_WIN32)
 #include <locale.h>
 #endif
 
 static void setup(void)
 {
-#ifdef PLATFORM_POSIX
+#if defined(PLATFORM_POSIX) || defined(PLATFORM_WIN32)
     /* Match the runtime's locale strategy in src/main.c so Unicode
      * classification (iswalpha/iswupper/iswlower) works in stock
-     * containers where LANG is unset. */
+     * containers where LANG is unset, and on Windows, where the UCRT
+     * spells the UTF-8 locale ".UTF-8". */
     if (!setlocale(LC_CTYPE, "C.UTF-8") &&
-        !setlocale(LC_CTYPE, "en_US.UTF-8")) {
+        !setlocale(LC_CTYPE, "en_US.UTF-8") &&
+        !setlocale(LC_CTYPE, ".UTF-8")) {
         setlocale(LC_CTYPE, "");
     }
 #endif
@@ -3918,6 +3920,45 @@ TEST(eval_char_case)
     ASSERT_STR_EQ(eval_print("(char-upcase #\\A)"), "#\\A");
     ASSERT_STR_EQ(eval_print("(char-downcase #\\A)"), "#\\a");
     ASSERT_STR_EQ(eval_print("(char-downcase #\\a)"), "#\\a");
+}
+
+/* Regression: a codepoint above the BMP must not be TRUNCATED by the case
+ * and classification functions.  On Windows their wint_t is 16 bits wide
+ * while CHAR-CODE-LIMIT is #x110000, so an unguarded (wint_t)c turned
+ * U+10428 into U+0428 — CHAR-UPCASE returned an unrelated Cyrillic letter
+ * and STRING-UPCASE silently corrupted any string holding an emoji.
+ *
+ * What each platform ANSWERS differs legitimately and is not asserted here:
+ * glibc knows the Deseret case mapping and returns U+10400, while the
+ * Windows build reports no case above the BMP.  Both are fine; dropping the
+ * high half is not. */
+TEST(eval_char_case_astral_not_truncated)
+{
+    /* U+10428 DESERET SMALL LETTER LONG I.  Either it stays itself or it
+     * maps to its uppercase U+10400 — but it stays astral either way, and it
+     * is never U+0428 (CYRILLIC CAPITAL LETTER SHA). */
+    int up = eval_int("(char-code (char-upcase (code-char #x10428)))");
+    int down = eval_int("(char-code (char-downcase (code-char #x10428)))");
+    ASSERT(up >= 0x10000);
+    ASSERT(up != 0x428);
+    ASSERT(down >= 0x10000);
+    ASSERT(down != 0x428);
+    /* U+1F600 GRINNING FACE has no case anywhere: it must come back as
+     * itself, not as U+F600 (a private-use character). */
+    ASSERT_EQ_INT(eval_int("(char-code (char-upcase (code-char #x1F600)))"),
+                  0x1F600);
+    ASSERT_EQ_INT(eval_int("(char-code (char-downcase (code-char #x1F600)))"),
+                  0x1F600);
+    ASSERT_STR_EQ(eval_print("(alpha-char-p (code-char #x1F600))"), "NIL");
+    /* A whole string survives: this is what STRING-UPCASE corrupted. */
+    ASSERT_EQ_INT(eval_int(
+        "(char-code (char (string-upcase (string (code-char #x1F600))) 0))"),
+        0x1F600);
+    /* The BMP path is untouched — setup() has put LC_CTYPE in UTF-8 mode,
+     * which is what the case mapping above ASCII follows. */
+    ASSERT_EQ_INT(eval_int("(char-code (char-upcase (code-char #xE9)))"), 0xC9);
+    ASSERT_EQ_INT(eval_int("(char-code (char-downcase (code-char #x391)))"),
+                  0x3B1);
 }
 
 TEST(eval_char_predicates)
@@ -9507,15 +9548,29 @@ TEST(eval_system_command_false)
 
 TEST(eval_system_command_echo)
 {
-    ASSERT_STR_EQ(eval_print("(ext:system-command \"echo hello > /dev/null\")"), "0");
+    /* The null device is spelled differently by cmd.exe, which is the shell
+     * system() hands the command to on Windows. */
+#ifdef PLATFORM_WIN32
+    const char *cmd = "(ext:system-command \"echo hello > NUL\")";
+#else
+    const char *cmd = "(ext:system-command \"echo hello > /dev/null\")";
+#endif
+    ASSERT_STR_EQ(eval_print(cmd), "0");
 }
 
 TEST(eval_getcwd)
 {
-    /* ext:getcwd should return a non-empty string starting with / */
+    /* ext:getcwd should return a non-empty string holding an absolute path */
     const char *result = eval_print("(ext:getcwd)");
     ASSERT(result[0] == '"');  /* printed as a string */
+#ifdef PLATFORM_WIN32
+    /* "C:/Users/..." — a drive letter, then the separator clamiga
+     * normalises every Windows path to. */
+    ASSERT(result[2] == ':');
+    ASSERT(result[3] == '/');
+#else
     ASSERT(result[1] == '/');  /* absolute path */
+#endif
 }
 
 /* --- mp: threading primitives (real implementations + stubs) --- */
@@ -11206,6 +11261,7 @@ int main(void)
     RUN(eval_char_comparison_variadic);
     RUN(eval_char_code_conversion);
     RUN(eval_char_case);
+    RUN(eval_char_case_astral_not_truncated);
     RUN(eval_char_predicates);
     RUN(eval_symbol_name);
     RUN(eval_symbol_package_fn);

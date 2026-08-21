@@ -23,10 +23,36 @@
 #include <string.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <signal.h>
+#include <pthread.h>
+#ifdef PLATFORM_WIN32
+#include "platform/win32_compat.h"     /* winsock2 + the POSIX shims */
+#else
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <netinet/in.h>
-#include <signal.h>
+#endif
+
+/* Raw BSD sockets, spelled portably.  The socket-stream tests drive the peer
+ * side by hand, and Winsock differs from POSIX in exactly three places: the
+ * descriptor type, its close, and read/write (which must be recv/send on a
+ * socket).  Everything else — socket/bind/listen/accept/connect/sendto —
+ * is the same call on both. */
+#ifdef PLATFORM_WIN32
+typedef SOCKET raw_sock_t;
+#define RAW_SOCK_INVALID     INVALID_SOCKET
+#define RAW_SOCK_VALID(fd)   ((fd) != INVALID_SOCKET)
+#define raw_close(fd)        closesocket(fd)
+#define raw_send(fd, b, n)   send((fd), (const char *)(b), (int)(n), 0)
+#define raw_recv(fd, b, n)   recv((fd), (char *)(b), (int)(n), 0)
+#else
+typedef int raw_sock_t;
+#define RAW_SOCK_INVALID     (-1)
+#define RAW_SOCK_VALID(fd)   ((fd) >= 0)
+#define raw_close(fd)        close(fd)
+#define raw_send(fd, b, n)   write((fd), (b), (size_t)(n))
+#define raw_recv(fd, b, n)   read((fd), (b), (size_t)(n))
+#endif
 
 static void setup(void)
 {
@@ -1457,6 +1483,43 @@ TEST(platform_file_rename_test)
     remove(new_path);
 }
 
+/* Regression: renaming ONTO an existing file must replace it, the way POSIX
+ * rename(2) and the Amiga back end do.  The Windows CRT's rename() fails
+ * instead, and OPEN :if-exists :rename ignores the result — so a second
+ * write to the same file left the stale .bak in place and then truncated the
+ * original it was supposed to preserve. */
+TEST(platform_file_rename_replaces_existing)
+{
+    const char *old_path = "/tmp/cl_test_rename_src.tmp";
+    const char *new_path = "/tmp/cl_test_rename_dst.tmp";
+    PlatformFile f;
+    char *content;
+    unsigned long size = 0;
+
+    f = platform_file_open(old_path, PLATFORM_FILE_WRITE);
+    ASSERT(f != PLATFORM_FILE_INVALID);
+    platform_file_write_string(f, "NEW");
+    platform_file_close(f);
+
+    f = platform_file_open(new_path, PLATFORM_FILE_WRITE);
+    ASSERT(f != PLATFORM_FILE_INVALID);
+    platform_file_write_string(f, "OLD");
+    platform_file_close(f);
+
+    ASSERT_EQ_INT(platform_file_rename(old_path, new_path), 0);
+    ASSERT(!platform_file_exists(old_path));
+    ASSERT(platform_file_exists(new_path));
+
+    /* The destination must now hold the SOURCE's contents. */
+    content = platform_file_read(new_path, &size);
+    ASSERT(content != NULL);
+    if (content) {
+        ASSERT_STR_EQ(content, "NEW");
+        free(content);
+    }
+    remove(new_path);
+}
+
 TEST(platform_file_mtime_test)
 {
     const char *path = "/tmp/cl_test_mtime.tmp";
@@ -1759,15 +1822,78 @@ TEST(star_readtable_is_special)
 
 /* --- TCP Socket Stream tests --- */
 
+/* The peer side of the socket-stream tests.
+ *
+ * It runs in a THREAD, not a forked child: Windows has no fork(), and a
+ * thread is a faithful stand-in here because the peer only ever touches its
+ * own socket (which it owns and closes) — no Lisp heap, no VM state.  What
+ * the peer received is handed back in the struct instead of through a pipe,
+ * which is also why the pipe(2) plumbing the forked version needed is gone. */
+typedef struct {
+    raw_sock_t  fd;            /* listening (TCP) or bound (UDP) socket; owned */
+    const char *send_data;     /* bytes to send once connected, or NULL */
+    int         send_len;
+    int         want;          /* bytes to read from the client (0 = none) */
+    int         echo;          /* send back whatever was read */
+    int         udp_reverse;   /* UDP: reflect one datagram, byte-reversed */
+    char        got[64];       /* what the peer received */
+    int         got_len;       /* how much (valid once joined) */
+} TestPeer;
+
+static void *test_peer_thread(void *arg)
+{
+    TestPeer *p = (TestPeer *)arg;
+    struct sockaddr_in caddr;
+    socklen_t clen = sizeof(caddr);
+
+    if (p->udp_reverse) {
+        unsigned char buf[64];
+        int n = (int)recvfrom(p->fd, (char *)buf, (int)sizeof(buf), 0,
+                              (struct sockaddr *)&caddr, &clen);
+        if (n > 0) {
+            unsigned char rev[64];
+            int i;
+            for (i = 0; i < n; i++) rev[i] = buf[n - 1 - i];
+            sendto(p->fd, (const char *)rev, n, 0,
+                   (struct sockaddr *)&caddr, clen);
+            if (n > (int)sizeof(p->got)) n = (int)sizeof(p->got);
+            memcpy(p->got, buf, (size_t)n);
+            p->got_len = n;
+        }
+        raw_close(p->fd);
+        return NULL;
+    }
+
+    {
+        raw_sock_t cfd = accept(p->fd, (struct sockaddr *)&caddr, &clen);
+        raw_close(p->fd);
+        if (!RAW_SOCK_VALID(cfd))
+            return NULL;
+        if (p->send_data && p->send_len > 0)
+            (void)raw_send(cfd, p->send_data, p->send_len);
+        if (p->want > 0) {
+            int cap = p->want < (int)sizeof(p->got) ? p->want : (int)sizeof(p->got);
+            int n = (int)raw_recv(cfd, p->got, cap);
+            if (n > 0) {
+                p->got_len = n;
+                if (p->echo)
+                    (void)raw_send(cfd, p->got, n);
+            }
+        }
+        raw_close(cfd);
+    }
+    return NULL;
+}
+
 /* Start a local TCP server on a random port that echoes data back.
  * Returns the port number, sets *server_fd. The caller must accept(). */
-static int start_echo_server(int *server_fd)
+static int start_echo_server(raw_sock_t *server_fd)
 {
     struct sockaddr_in addr;
     socklen_t addrlen = sizeof(addr);
 
     *server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (*server_fd < 0) return -1;
+    if (!RAW_SOCK_VALID(*server_fd)) return -1;
 
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
@@ -1775,16 +1901,16 @@ static int start_echo_server(int *server_fd)
     addr.sin_port = 0;  /* Let OS pick a port */
 
     if (bind(*server_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        close(*server_fd);
+        raw_close(*server_fd);
         return -1;
     }
     if (listen(*server_fd, 1) < 0) {
-        close(*server_fd);
+        raw_close(*server_fd);
         return -1;
     }
     /* Get assigned port */
     if (getsockname(*server_fd, (struct sockaddr *)&addr, &addrlen) < 0) {
-        close(*server_fd);
+        raw_close(*server_fd);
         return -1;
     }
     return ntohs(addr.sin_port);
@@ -1792,29 +1918,21 @@ static int start_echo_server(int *server_fd)
 
 TEST(socket_stream_connect_write_read)
 {
-    int server_fd;
+    raw_sock_t server_fd;
     int port;
-    pid_t pid;
+    TestPeer peer;
+    pthread_t th;
     CL_Obj stream;
 
     port = start_echo_server(&server_fd);
     ASSERT(port > 0);
 
-    /* Fork a server that sends "OK" then closes */
-    pid = fork();
-    if (pid == 0) {
-        struct sockaddr_in caddr;
-        socklen_t clen = sizeof(caddr);
-        int cfd = accept(server_fd, (struct sockaddr *)&caddr, &clen);
-        close(server_fd);
-        if (cfd >= 0) {
-            write(cfd, "OK", 2);
-            close(cfd);
-        }
-        _exit(0);
-    }
-
-    close(server_fd);
+    /* A peer that sends "OK" then closes */
+    memset(&peer, 0, sizeof(peer));
+    peer.fd = server_fd;
+    peer.send_data = "OK";
+    peer.send_len = 2;
+    ASSERT(pthread_create(&th, NULL, test_peer_thread, &peer) == 0);
 
     /* Connect via our socket stream */
     stream = cl_make_socket_stream("127.0.0.1", port, 0);
@@ -1840,28 +1958,23 @@ TEST(socket_stream_connect_write_read)
 
     cl_stream_close(stream);
 
-    { int status; waitpid(pid, &status, 0); }
+    pthread_join(th, NULL);
 }
 
 TEST(socket_stream_close)
 {
-    int server_fd, port;
-    pid_t pid;
+    raw_sock_t server_fd;
+    int port;
+    TestPeer peer;
+    pthread_t th;
     CL_Obj stream;
 
     port = start_echo_server(&server_fd);
     ASSERT(port > 0);
 
-    pid = fork();
-    if (pid == 0) {
-        struct sockaddr_in caddr;
-        socklen_t clen = sizeof(caddr);
-        int cfd = accept(server_fd, (struct sockaddr *)&caddr, &clen);
-        close(server_fd);
-        if (cfd >= 0) close(cfd);
-        _exit(0);
-    }
-    close(server_fd);
+    memset(&peer, 0, sizeof(peer));
+    peer.fd = server_fd;
+    ASSERT(pthread_create(&th, NULL, test_peer_thread, &peer) == 0);
 
     stream = cl_make_socket_stream("127.0.0.1", port, 0);
     ASSERT(!CL_NULL_P(stream));
@@ -1880,7 +1993,7 @@ TEST(socket_stream_close)
         ASSERT(!(st->flags & CL_STREAM_FLAG_OPEN));
     }
 
-    { int status; waitpid(pid, &status, 0); }
+    pthread_join(th, NULL);
 }
 
 /* Regression: CL:LISTEN on a socket stream must report real readiness, which
@@ -1895,7 +2008,8 @@ TEST(socket_listen_reports_readiness)
     CL_Stream *lst, *cst;
     struct sockaddr_in addr;
     CL_Obj conn;
-    int cfd, i, avail;
+    raw_sock_t cfd;
+    int i, avail;
 
     ASSERT(!CL_NULL_P(listener));
     ASSERT(bound_port > 0);
@@ -1906,7 +2020,7 @@ TEST(socket_listen_reports_readiness)
 
     /* Connect a raw client. */
     cfd = socket(AF_INET, SOCK_STREAM, 0);
-    ASSERT(cfd >= 0);
+    ASSERT(RAW_SOCK_VALID(cfd));
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
@@ -1931,7 +2045,7 @@ TEST(socket_listen_reports_readiness)
     ASSERT_EQ_INT(platform_socket_data_available((PlatformSocket)cst->handle_id), 0);
 
     /* Client writes a byte: connection becomes ready, then we read it. */
-    ASSERT(write(cfd, "X", 1) == 1);
+    ASSERT(raw_send(cfd, "X", 1) == 1);
     for (i = 0, avail = 0; i < 100; i++) {
         avail = platform_socket_data_available((PlatformSocket)cst->handle_id);
         if (avail == 1) break;
@@ -1941,7 +2055,7 @@ TEST(socket_listen_reports_readiness)
     ASSERT_EQ_INT(cl_stream_read_byte(conn), 'X');
 
     /* Client closes: a subsequent probe reports EOF (code 2, => CL:LISTEN NIL). */
-    close(cfd);
+    raw_close(cfd);
     for (i = 0, avail = 0; i < 100; i++) {
         avail = platform_socket_data_available((PlatformSocket)cst->handle_id);
         if (avail == 2) break;
@@ -1951,6 +2065,35 @@ TEST(socket_listen_reports_readiness)
 
     cl_stream_close(conn);
     cl_stream_close(listener);
+}
+
+/* Regression: closing a socket handle twice must not corrupt the slot table.
+ * The second close has to see the slot as free and do nothing; if the guard
+ * lets it through, the slot is pushed onto the free list a second time and
+ * two later sockets are handed the SAME index — closing one then kills the
+ * other's connection.  (On Windows the guard was written as `fd >= 0`, which
+ * is vacuously true for the unsigned SOCKET type, so it never fired.) */
+TEST(socket_double_close_keeps_slot_table_sane)
+{
+    int port_a = 0, port_b = 0;
+    PlatformSocket a, b, c;
+
+    a = platform_socket_listen(0, 1, &port_a);
+    ASSERT(a != PLATFORM_SOCKET_INVALID);
+    platform_socket_close(a);
+    platform_socket_close(a);              /* must be a no-op, not a re-free */
+
+    /* Two fresh handles must be distinct: a duplicated free-list entry shows
+     * up here as the same index handed out twice. */
+    b = platform_socket_listen(0, 1, &port_b);
+    ASSERT(b != PLATFORM_SOCKET_INVALID);
+    c = platform_socket_listen(0, 1, NULL);
+    ASSERT(c != PLATFORM_SOCKET_INVALID);
+    ASSERT(b != c);
+    ASSERT(port_b > 0);
+
+    platform_socket_close(b);
+    platform_socket_close(c);
 }
 
 TEST(socket_stream_connect_failure)
@@ -1979,29 +2122,20 @@ TEST(socket_connect_timeout_unreachable)
 
 TEST(socket_stream_write_string)
 {
-    int server_fd, port;
-    pid_t pid;
+    raw_sock_t server_fd;
+    int port;
+    TestPeer peer;
+    pthread_t th;
     CL_Obj stream;
 
     port = start_echo_server(&server_fd);
     ASSERT(port > 0);
 
-    pid = fork();
-    if (pid == 0) {
-        struct sockaddr_in caddr;
-        socklen_t clen = sizeof(caddr);
-        unsigned char buf[256];
-        ssize_t n;
-        int cfd = accept(server_fd, (struct sockaddr *)&caddr, &clen);
-        close(server_fd);
-        if (cfd >= 0) {
-            n = read(cfd, buf, sizeof(buf));
-            if (n > 0) write(cfd, buf, (size_t)n);
-            close(cfd);
-        }
-        _exit(0);
-    }
-    close(server_fd);
+    memset(&peer, 0, sizeof(peer));
+    peer.fd = server_fd;
+    peer.want = 64;
+    peer.echo = 1;
+    ASSERT(pthread_create(&th, NULL, test_peer_thread, &peer) == 0);
 
     stream = cl_make_socket_stream("127.0.0.1", port, 0);
     ASSERT(!CL_NULL_P(stream));
@@ -2013,7 +2147,7 @@ TEST(socket_stream_write_string)
      * Actually we need a half-close. Let's just close and verify we wrote. */
     cl_stream_close(stream);
 
-    { int status; waitpid(pid, &status, 0); }
+    pthread_join(th, NULL);
 }
 
 TEST(eval_open_tcp_stream_connect_failure)
@@ -2028,29 +2162,22 @@ TEST(eval_open_tcp_stream_connect_failure)
 
 TEST(eval_open_tcp_stream_read_byte)
 {
-    int server_fd, port;
-    pid_t pid;
+    raw_sock_t server_fd;
+    int port;
+    TestPeer peer;
+    pthread_t th;
     char expr[256];
     CL_Obj result;
 
     port = start_echo_server(&server_fd);
     ASSERT(port > 0);
 
-    /* Server sends byte 65 ('A') then closes */
-    pid = fork();
-    if (pid == 0) {
-        struct sockaddr_in caddr;
-        socklen_t clen = sizeof(caddr);
-        unsigned char byte = 65;
-        int cfd = accept(server_fd, (struct sockaddr *)&caddr, &clen);
-        close(server_fd);
-        if (cfd >= 0) {
-            write(cfd, &byte, 1);
-            close(cfd);
-        }
-        _exit(0);
-    }
-    close(server_fd);
+    /* Peer sends byte 65 ('A') then closes */
+    memset(&peer, 0, sizeof(peer));
+    peer.fd = server_fd;
+    peer.send_data = "A";
+    peer.send_len = 1;
+    ASSERT(pthread_create(&th, NULL, test_peer_thread, &peer) == 0);
 
     /* Eval: open stream, read one byte, close */
     snprintf(expr, sizeof(expr),
@@ -2064,42 +2191,26 @@ TEST(eval_open_tcp_stream_read_byte)
     ASSERT(CL_FIXNUM_P(result));
     ASSERT_EQ_INT(CL_FIXNUM_VAL(result), 65);
 
-    { int status; waitpid(pid, &status, 0); }
+    pthread_join(th, NULL);
 }
 
 TEST(eval_open_tcp_stream_write_byte)
 {
-    int server_fd, port;
-    pid_t pid;
+    raw_sock_t server_fd;
+    int port;
+    TestPeer peer;
+    pthread_t th;
     char expr[256];
     CL_Obj result;
-    int pipefd[2];
-
-    ASSERT(pipe(pipefd) == 0);
 
     port = start_echo_server(&server_fd);
     ASSERT(port > 0);
 
-    /* Server reads one byte and reports it via pipe */
-    pid = fork();
-    if (pid == 0) {
-        struct sockaddr_in caddr;
-        socklen_t clen = sizeof(caddr);
-        unsigned char byte = 0;
-        ssize_t n;
-        int cfd = accept(server_fd, (struct sockaddr *)&caddr, &clen);
-        close(server_fd);
-        close(pipefd[0]);  /* Close read end */
-        if (cfd >= 0) {
-            n = read(cfd, &byte, 1);
-            if (n == 1) write(pipefd[1], &byte, 1);
-            close(cfd);
-        }
-        close(pipefd[1]);
-        _exit(0);
-    }
-    close(server_fd);
-    close(pipefd[1]);  /* Close write end */
+    /* Peer reads one byte and reports it back through the struct */
+    memset(&peer, 0, sizeof(peer));
+    peer.fd = server_fd;
+    peer.want = 1;
+    ASSERT(pthread_create(&th, NULL, test_peer_thread, &peer) == 0);
 
     /* Eval: open stream, write byte 42, close */
     snprintf(expr, sizeof(expr),
@@ -2111,28 +2222,23 @@ TEST(eval_open_tcp_stream_write_byte)
     result = cl_eval_string(expr);
     ASSERT(result == CL_T);
 
-    /* Verify server received byte 42 */
-    {
-        unsigned char received = 0;
-        ssize_t n = read(pipefd[0], &received, 1);
-        ASSERT_EQ_INT((int)n, 1);
-        ASSERT_EQ_INT((int)received, 42);
-    }
-    close(pipefd[0]);
-
-    { int status; waitpid(pid, &status, 0); }
+    /* Verify the peer received byte 42 (join first: the field is only
+     * settled once the peer thread has finished). */
+    pthread_join(th, NULL);
+    ASSERT_EQ_INT(peer.got_len, 1);
+    ASSERT_EQ_INT((int)(unsigned char)peer.got[0], 42);
 }
 
 /* --- UDP datagram socket streams (EXT:OPEN-UDP-STREAM & co.) --- */
 
 /* Bind a UDP socket on 127.0.0.1 with an OS-assigned port; returns the port
  * and stores the fd.  The UDP analogue of start_echo_server. */
-static int start_udp_peer(int *peer_fd)
+static int start_udp_peer(raw_sock_t *peer_fd)
 {
     struct sockaddr_in addr;
     socklen_t addrlen = sizeof(addr);
     *peer_fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (*peer_fd < 0) return -1;
+    if (!RAW_SOCK_VALID(*peer_fd)) return -1;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
@@ -2150,32 +2256,21 @@ static int start_udp_peer(int *peer_fd)
 
 TEST(eval_udp_stream_roundtrip)
 {
-    int peer_fd, port;
-    pid_t pid;
+    raw_sock_t peer_fd;
+    int port;
+    TestPeer peer;
+    pthread_t th;
     char expr[512];
     CL_Obj result;
 
     port = start_udp_peer(&peer_fd);
     ASSERT(port > 0);
 
-    /* Child: receive one datagram, echo it back reversed. */
-    pid = fork();
-    if (pid == 0) {
-        unsigned char buf[64];
-        struct sockaddr_in from;
-        socklen_t flen = sizeof(from);
-        ssize_t n = recvfrom(peer_fd, buf, sizeof(buf), 0,
-                             (struct sockaddr *)&from, &flen);
-        if (n > 0) {
-            ssize_t i;
-            unsigned char rev[64];
-            for (i = 0; i < n; i++) rev[i] = buf[n - 1 - i];
-            sendto(peer_fd, rev, (size_t)n, 0, (struct sockaddr *)&from, flen);
-        }
-        close(peer_fd);
-        _exit(0);
-    }
-    close(peer_fd);
+    /* Peer: receive one datagram, echo it back reversed. */
+    memset(&peer, 0, sizeof(peer));
+    peer.fd = peer_fd;
+    peer.udp_reverse = 1;
+    ASSERT(pthread_create(&th, NULL, test_peer_thread, &peer) == 0);
 
     /* Send #(1 2 3 4 5), expect (5 4 3 2 1) back. */
     snprintf(expr, sizeof(expr),
@@ -2192,12 +2287,13 @@ TEST(eval_udp_stream_roundtrip)
     result = cl_eval_string(expr);
     ASSERT(result == CL_T);
 
-    { int status; waitpid(pid, &status, 0); }
+    pthread_join(th, NULL);
 }
 
 TEST(eval_udp_stream_receive_timeout)
 {
-    int peer_fd, port;
+    raw_sock_t peer_fd;
+    int port;
     char expr[384];
     CL_Obj result;
 
@@ -2219,12 +2315,13 @@ TEST(eval_udp_stream_receive_timeout)
         CL_Obj expected = cl_eval_string(":timed-out");
         ASSERT(result == expected);
     }
-    close(peer_fd);
+    raw_close(peer_fd);
 }
 
 TEST(eval_udp_stream_local_endpoint)
 {
-    int peer_fd, port;
+    raw_sock_t peer_fd;
+    int port;
     char expr[384];
     CL_Obj result;
 
@@ -2242,7 +2339,7 @@ TEST(eval_udp_stream_local_endpoint)
         port);
     result = cl_eval_string(expr);
     ASSERT(result == CL_T);
-    close(peer_fd);
+    raw_close(peer_fd);
 }
 
 TEST(eval_udp_stream_type_errors)
@@ -3827,35 +3924,21 @@ TEST(eval_socket_read_timeout_signals_condition)
  * spuriously signal. */
 TEST(eval_socket_write_timeout_does_not_break_normal_write)
 {
-    int server_fd, port;
-    pid_t pid;
-    int pipefd[2];
+    raw_sock_t server_fd;
+    int port;
+    TestPeer peer;
+    pthread_t th;
     char expr[512];
     CL_Obj result;
 
-    ASSERT(pipe(pipefd) == 0);
     port = start_echo_server(&server_fd);
     ASSERT(port > 0);
 
-    /* Server: accept, drain 4 bytes, relay them to the parent via a pipe. */
-    pid = fork();
-    if (pid == 0) {
-        struct sockaddr_in caddr;
-        socklen_t clen = sizeof(caddr);
-        char rb[16];
-        ssize_t n;
-        int cfd = accept(server_fd, (struct sockaddr *)&caddr, &clen);
-        close(server_fd);
-        close(pipefd[0]);
-        if (cfd >= 0) {
-            n = read(cfd, rb, sizeof(rb));
-            if (n > 0) { ssize_t w = write(pipefd[1], rb, (size_t)n); (void)w; }
-            close(cfd);
-        }
-        _exit(0);
-    }
-    close(server_fd);
-    close(pipefd[1]);
+    /* Peer: accept and drain what the timed flush pushes. */
+    memset(&peer, 0, sizeof(peer));
+    peer.fd = server_fd;
+    peer.want = 16;
+    ASSERT(pthread_create(&th, NULL, test_peer_thread, &peer) == 0);
 
     snprintf(expr, sizeof(expr),
         "(let ((c (ext:open-tcp-stream \"127.0.0.1\" %d)))"
@@ -3869,15 +3952,10 @@ TEST(eval_socket_write_timeout_does_not_break_normal_write)
     ASSERT(result == cl_intern_keyword("OK", 2));
 
     /* The peer must have actually received the bytes through the timed flush. */
-    {
-        char rb[8];
-        ssize_t n = read(pipefd[0], rb, sizeof(rb));
-        ASSERT(n == 4);
-        ASSERT(rb[0] == 'P' && rb[1] == 'I' && rb[2] == 'N' && rb[3] == 'G');
-    }
-    close(pipefd[0]);
-    kill(pid, SIGKILL);
-    { int status; waitpid(pid, &status, 0); }
+    pthread_join(th, NULL);
+    ASSERT_EQ_INT(peer.got_len, 4);
+    ASSERT(peer.got[0] == 'P' && peer.got[1] == 'I' &&
+           peer.got[2] == 'N' && peer.got[3] == 'G');
 }
 
 /* Direction keyword validation: a bogus direction is a type error. */
@@ -4488,6 +4566,7 @@ int main(void)
     RUN(platform_file_exists_negative);
     RUN(platform_file_delete_test);
     RUN(platform_file_rename_test);
+    RUN(platform_file_rename_replaces_existing);
     RUN(platform_file_mtime_test);
     RUN(platform_file_mtime_nonexistent);
     RUN(platform_mkdir_test);
@@ -4521,6 +4600,7 @@ int main(void)
     RUN(star_readtable_is_special);
 
     /* TCP Socket Stream tests */
+    RUN(socket_double_close_keeps_slot_table_sane);
     RUN(socket_stream_connect_failure);
     RUN(socket_connect_timeout_unreachable);
     RUN(socket_stream_connect_write_read);

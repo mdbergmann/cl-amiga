@@ -277,12 +277,22 @@ TEST(declaim_is_global_and_persists)
  * with a warm fasl cache a library's declaims silently stopped applying.) */
 TEST(declaim_proclamations_survive_fasl_round_trip)
 {
-    char src[512], fasl[512], form[1200];
+    char src[512], fasl[512], form[1200], tmpdir[400];
     const char *tmp = getenv("TMPDIR");
     FILE *f;
     if (!tmp || !tmp[0]) tmp = "/tmp";
-    snprintf(src, sizeof(src), "%s/cl_declaim_rt.lisp", tmp);
-    snprintf(fasl, sizeof(fasl), "%s/cl_declaim_rt.fasl", tmp);
+    snprintf(tmpdir, sizeof(tmpdir), "%s", tmp);
+    {
+        /* These paths are embedded in the COMPILE-FILE form below, and
+         * the Lisp reader eats a backslash as an escape — a Windows
+         * $TMPDIR would arrive as "C:UsersyouTemp".  clamiga accepts
+         * '/' on Windows, so normalise rather than escape. */
+        char *p;
+        for (p = tmpdir; *p; p++)
+            if (*p == '\\') *p = '/';
+    }
+    snprintf(src, sizeof(src), "%s/cl_declaim_rt.lisp", tmpdir);
+    snprintf(fasl, sizeof(fasl), "%s/cl_declaim_rt.fasl", tmpdir);
     f = fopen(src, "w");
     ASSERT(f != NULL);
     if (!f) return;

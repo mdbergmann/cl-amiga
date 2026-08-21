@@ -122,7 +122,7 @@ static uint32_t bignum_mul_mag(const uint16_t *a, uint32_t a_len,
     return r_len;
 }
 
-#ifdef PLATFORM_POSIX
+#if defined(PLATFORM_POSIX) || defined(PLATFORM_WIN32)
 /* ================================================================
  * 32-bit limb operations for 64-bit hosts.
  * On 64-bit hosts, uint64_t intermediates are native — using 32-bit
@@ -817,7 +817,7 @@ bignum_mul:
 
         r_sign = a_sign ^ b_sign;
 
-#ifdef PLATFORM_POSIX
+#if defined(PLATFORM_POSIX) || defined(PLATFORM_WIN32)
         /* 32-bit limb fast path: pack 16→32, multiply with uint64_t, unpack */
         {
             uint32_t a32_len = (a_len + 1) / 2;

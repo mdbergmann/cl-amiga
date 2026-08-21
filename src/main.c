@@ -19,13 +19,19 @@
 #include <stdlib.h>
 #include <signal.h>
 #include <unistd.h>
-#ifdef PLATFORM_POSIX
+#if defined(PLATFORM_POSIX) || defined(PLATFORM_WIN32)
 #include <locale.h>
 #include <pthread.h>
+#endif
+#ifdef PLATFORM_POSIX
 #include <execinfo.h>
 #ifdef __linux__
 #include <sys/syscall.h>
 #endif
+#endif
+#ifdef PLATFORM_WIN32
+#include "platform/win32_compat.h"
+#include <shellapi.h>     /* CommandLineToArgvW — see win32_utf8_argv */
 #endif
 
 #ifdef PLATFORM_MORPHOS
@@ -41,21 +47,27 @@
 unsigned long __stack = 1024 * 1024;
 #endif
 
+#if defined(PLATFORM_POSIX) || defined(PLATFORM_WIN32)
 #ifdef PLATFORM_POSIX
 /* Crash handler on alternate stack for stack overflow debugging */
 /* Use fixed size — SIGSTKSZ is not a compile-time constant on glibc 2.34+ */
 #define CRASH_ALT_STACK_SIZE 16384
 static char crash_alt_stack[CRASH_ALT_STACK_SIZE];
+#endif
 
 /* Defined in vm.c — dump last N VM opcodes for crash diagnostics */
 extern void vm_trace_dump(void);
 /* dbg_last_op/ip/fp/code are now macros from thread.h (CL_Thread fields) */
 
-static void crash_handler(int sig, siginfo_t *info, void *ctx)
+/* The dump itself, shared by both platforms' entry points: `sig` is the
+ * signal number on POSIX and the SEH exception code on Windows, `fault_addr`
+ * the faulting address when the OS reports one.  Everything here writes with
+ * write(2) and touches no allocator, so it is equally safe from a signal
+ * handler and from an exception filter. */
+static void crash_dump(int sig, void *fault_addr)
 {
     char buf[512];
     int len;
-    (void)ctx;
     /* Canary: first thing in handler, before any pointer dereference */
     {
         const char canary[] = "\n[CRASH] handler entered, sig=";
@@ -68,7 +80,7 @@ static void crash_handler(int sig, siginfo_t *info, void *ctx)
     }
     len = snprintf(buf, sizeof(buf),
                    "\n[FATAL] Signal %d at addr=%p, vm.fp=%d/%d, vm.sp=%d/%u\n",
-                   sig, info ? info->si_addr : NULL,
+                   sig, fault_addr,
                    cl_vm.fp, cl_vm.frame_size, cl_vm.sp, cl_vm.stack_size);
     (void)write(2, buf, len);
     {
@@ -77,6 +89,8 @@ static void crash_handler(int sig, siginfo_t *info, void *ctx)
         pthread_threadid_np(NULL, &tid);
 #elif defined(__linux__)
         tid = (unsigned long long)syscall(SYS_gettid);
+#elif defined(PLATFORM_WIN32)
+        tid = (unsigned long long)GetCurrentThreadId();
 #endif
         len = snprintf(buf, sizeof(buf),
                        "[FATAL] thread tid=%llu CT=%p\n",
@@ -182,7 +196,32 @@ static void crash_handler(int sig, siginfo_t *info, void *ctx)
         backtrace_symbols_fd(frames, nframes, 2);
     }
 #endif
+#ifdef PLATFORM_WIN32
+    /* Windows has no backtrace_symbols_fd; raw return addresses still let
+     * `addr2line -e clamiga.exe` name the frames, and asking dbghelp to
+     * symbolise from inside an exception filter is exactly the kind of
+     * allocation this dump exists to avoid. */
+    {
+        void *frames[40];
+        USHORT nframes = RtlCaptureStackBackTrace(0, 40, frames, NULL);
+        USHORT fi;
+        const char hdr[] = "=== Native C backtrace (addresses) ===\n";
+        (void)write(2, hdr, sizeof(hdr) - 1);
+        for (fi = 0; fi < nframes; fi++) {
+            len = snprintf(buf, sizeof(buf), "  [%2u] %p\n",
+                           (unsigned)fi, frames[fi]);
+            (void)write(2, buf, len);
+        }
+    }
+#endif
     _exit(128 + sig);
+}
+
+#ifdef PLATFORM_POSIX
+static void crash_handler(int sig, siginfo_t *info, void *ctx)
+{
+    (void)ctx;
+    crash_dump(sig, info ? info->si_addr : NULL);
 }
 
 static void install_crash_handler(void)
@@ -204,6 +243,119 @@ static void install_crash_handler(void)
      * Network clients (e.g. drakma over usocket) routinely hit this when a
      * server closes a keep-alive connection mid-exchange. */
     signal(SIGPIPE, SIG_IGN);
+}
+#endif /* PLATFORM_POSIX */
+
+#ifdef PLATFORM_WIN32
+/* Last-resort handler for a fault nothing else claimed.  The GC's write-watch
+ * handler is a VECTORED handler and runs first, so its benign
+ * write-protection faults never reach this filter — what arrives here is a
+ * real crash. */
+/* Map a Win32 exception to the signal number the POSIX side would report,
+ * so the dump reads the same on both and the exit status stays in the small
+ * conventional range.  crash_dump ends in _exit(128 + sig), and Windows does
+ * NOT truncate an exit status to 8 bits: handing it 0xC0000005 straight
+ * through printed "[FATAL] Signal -1073741819" and exited with a number no
+ * shell could interpret.  The raw code is printed alongside, since that is
+ * the one a Windows user will look up. */
+static int crash_signal_for(DWORD code)
+{
+    switch (code) {
+    case EXCEPTION_ACCESS_VIOLATION:
+    case EXCEPTION_IN_PAGE_ERROR:
+    case EXCEPTION_STACK_OVERFLOW:      return SIGSEGV;
+    /* No SIGBUS in the Windows CRT; a misaligned access is the same class
+     * of fault to a reader of the dump. */
+    case EXCEPTION_DATATYPE_MISALIGNMENT: return SIGSEGV;
+    case EXCEPTION_ILLEGAL_INSTRUCTION:
+    case EXCEPTION_PRIV_INSTRUCTION:    return SIGILL;
+    case EXCEPTION_FLT_DIVIDE_BY_ZERO:
+    case EXCEPTION_FLT_OVERFLOW:
+    case EXCEPTION_FLT_INVALID_OPERATION:
+    case EXCEPTION_INT_DIVIDE_BY_ZERO:
+    case EXCEPTION_INT_OVERFLOW:        return SIGFPE;
+    default:                            return SIGABRT;
+    }
+}
+
+static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep)
+{
+    const EXCEPTION_RECORD *er = (ep != NULL) ? ep->ExceptionRecord : NULL;
+    void *addr = NULL;
+    char buf[128];
+    int len;
+
+    if (er && er->ExceptionCode == EXCEPTION_ACCESS_VIOLATION &&
+        er->NumberParameters >= 2)
+        addr = (void *)er->ExceptionInformation[1];
+    if (er) {
+        len = snprintf(buf, sizeof(buf),
+                       "\n[FATAL] Win32 exception 0x%08lX at %p\n",
+                       (unsigned long)er->ExceptionCode,
+                       (void *)er->ExceptionAddress);
+        (void)write(2, buf, len);
+    }
+    crash_dump(er ? crash_signal_for(er->ExceptionCode) : SIGABRT, addr);
+    return EXCEPTION_EXECUTE_HANDLER;   /* not reached: crash_dump _exit()s */
+}
+
+static void install_crash_handler(void)
+{
+    SetUnhandledExceptionFilter(crash_filter);
+    /* No SIGPIPE equivalent: a send() to a closed peer returns
+     * WSAECONNRESET/WSAECONNABORTED rather than raising a signal. */
+}
+#endif /* PLATFORM_WIN32 */
+#endif /* PLATFORM_POSIX || PLATFORM_WIN32 — crash reporting */
+
+#ifdef PLATFORM_WIN32
+/* Windows hands main() its arguments in the process's ANSI code page.  The
+ * real command line is UTF-16, and the CRT converts it down with the ACP, so
+ * every character the ACP cannot represent arrives as a literal '?' — the
+ * argument is destroyed before the reader ever sees it:
+ *
+ *     clamiga --eval '(print (map (quote list) (function char-code) "AB"))'
+ *
+ * with two Japanese characters printed (63 63).  Everything downstream —
+ * --eval forms, --load paths, script arguments — reads argv as UTF-8, which
+ * is what it is on POSIX and AmigaOS, so the fix is to rebuild argv from the
+ * UTF-16 command line rather than to teach each consumer a second encoding.
+ *
+ * On any failure the original argv is left alone: a partial conversion would
+ * be worse than the ANSI one. */
+static void win32_utf8_argv(int *argc_out, char ***argv_out)
+{
+    LPWSTR *wargv;
+    char **out;
+    int wargc = 0, i;
+
+    wargv = CommandLineToArgvW(GetCommandLineW(), &wargc);
+    if (!wargv)
+        return;
+    out = (char **)calloc((size_t)wargc + 1, sizeof(char *));
+    if (!out) {
+        LocalFree(wargv);
+        return;
+    }
+    for (i = 0; i < wargc; i++) {
+        int n = WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, NULL, 0, NULL, NULL);
+        if (n <= 0 || (out[i] = (char *)malloc((size_t)n)) == NULL)
+            break;
+        if (WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, out[i], n,
+                                NULL, NULL) != n)
+            break;
+    }
+    LocalFree(wargv);
+    if (i < wargc) {                    /* incomplete — discard the lot */
+        int j;
+        for (j = 0; j < i; j++)
+            free(out[j]);
+        free(out);
+        return;
+    }
+    out[wargc] = NULL;
+    *argc_out = wargc;
+    *argv_out = out;                    /* lives for the process */
 }
 #endif
 
@@ -295,14 +447,22 @@ int main(int argc, char *argv[])
     uint32_t stack_entries = 0;
     int frame_count = 0;
 
-#ifdef PLATFORM_POSIX
+#ifdef PLATFORM_WIN32
+    /* Before anything reads argv: it arrives ANSI-mangled otherwise. */
+    win32_utf8_argv(&argc, &argv);
+#endif
+
+#if defined(PLATFORM_POSIX) || defined(PLATFORM_WIN32)
     /* Enable Unicode character classification.  Try a UTF-8 locale explicitly
      * before falling back to LC_CTYPE from the environment — stock containers
      * (e.g. ubuntu:24.04) leave LANG unset, where setlocale("") yields the
      * POSIX `C` locale and iswalpha/iswupper return 0 for non-ASCII chars.
-     * `C.UTF-8` is universally available on glibc and modern macOS. */
+     * `C.UTF-8` is universally available on glibc and modern macOS, and the
+     * bare `.UTF-8` is how the Windows UCRT spells it (10 1803+); the ones
+     * that do not exist on a given host simply return NULL and fall through. */
     if (!setlocale(LC_CTYPE, "C.UTF-8") &&
-        !setlocale(LC_CTYPE, "en_US.UTF-8")) {
+        !setlocale(LC_CTYPE, "en_US.UTF-8") &&
+        !setlocale(LC_CTYPE, ".UTF-8")) {
         setlocale(LC_CTYPE, "");
     }
 #ifndef __SANITIZE_ADDRESS__

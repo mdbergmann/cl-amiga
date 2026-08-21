@@ -11,18 +11,37 @@
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
-#ifdef PLATFORM_POSIX
+#if defined(PLATFORM_POSIX) || defined(PLATFORM_WIN32)
 #include <wctype.h>
 #endif
 
 /* Unicode character classification helpers.
  * POSIX: use wctype.h functions for full Unicode support.
- * AmigaOS: Latin-1 range checks (sufficient for most CL code). */
+ * Windows: the same, but only up to U+FFFF — see CL_WCTYPE_RANGE below.
+ * AmigaOS: Latin-1 range checks (sufficient for most CL code).
+ *
+ * wint_t is 32-bit on POSIX and every codepoint fits, but on Windows
+ * (mingw-w64/UCRT) it is 16 bits wide — WEOF is 0xFFFF — while
+ * CHAR-CODE-LIMIT is #x110000 under CL_WIDE_STRINGS.  Handing an astral
+ * codepoint to one of the isw/tow functions there silently truncates it to
+ * its low half, so CHAR-UPCASE of U+10428 (DESERET SMALL LETTER LONG I)
+ * came back as U+0428
+ * (CYRILLIC CAPITAL LETTER SHA), and (STRING-UPCASE "<emoji>") corrupted its
+ * argument.  Above the BMP on Windows the answer is "not a letter, no case"
+ * — wrong for the handful of cased astral scripts (Deseret, Adlam, Warang
+ * Citi, Osage, Vithkuqi), right for everything else including every emoji,
+ * and never destructive. */
+#if defined(PLATFORM_WIN32)
+#define CL_WCTYPE_RANGE(c) ((c) > 127 && (c) <= 0xFFFF)
+#else
+#define CL_WCTYPE_RANGE(c) ((c) > 127)
+#endif
+
 static int cl_isalpha(int c)
 {
     if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) return 1;
-#ifdef PLATFORM_POSIX
-    if (c > 127) return iswalpha((wint_t)c);
+#if defined(PLATFORM_POSIX) || defined(PLATFORM_WIN32)
+    if (CL_WCTYPE_RANGE(c)) return iswalpha((wint_t)c);
 #else
     /* Latin-1 Supplement letters */
     if (c >= 0xC0 && c <= 0xD6) return 1;  /* À-Ö */
@@ -35,8 +54,8 @@ static int cl_isalpha(int c)
 static int cl_isupper(int c)
 {
     if (c >= 'A' && c <= 'Z') return 1;
-#ifdef PLATFORM_POSIX
-    if (c > 127) return iswupper((wint_t)c);
+#if defined(PLATFORM_POSIX) || defined(PLATFORM_WIN32)
+    if (CL_WCTYPE_RANGE(c)) return iswupper((wint_t)c);
 #else
     if (c >= 0xC0 && c <= 0xD6) return 1;  /* À-Ö */
     if (c >= 0xD8 && c <= 0xDE) return 1;  /* Ø-Þ */
@@ -47,8 +66,8 @@ static int cl_isupper(int c)
 static int cl_islower(int c)
 {
     if (c >= 'a' && c <= 'z') return 1;
-#ifdef PLATFORM_POSIX
-    if (c > 127) return iswlower((wint_t)c);
+#if defined(PLATFORM_POSIX) || defined(PLATFORM_WIN32)
+    if (CL_WCTYPE_RANGE(c)) return iswlower((wint_t)c);
 #else
     if (c >= 0xE0 && c <= 0xF6) return 1;  /* à-ö */
     if (c >= 0xF8 && c <= 0xFF) return 1;  /* ø-ÿ */
@@ -59,8 +78,8 @@ static int cl_islower(int c)
 static int cl_toupper(int c)
 {
     if (c >= 'a' && c <= 'z') return c - 32;
-#ifdef PLATFORM_POSIX
-    if (c > 127) return (int)towupper((wint_t)c);
+#if defined(PLATFORM_POSIX) || defined(PLATFORM_WIN32)
+    if (CL_WCTYPE_RANGE(c)) return (int)towupper((wint_t)c);
 #else
     if (c >= 0xE0 && c <= 0xF6) return c - 32;  /* à-ö → À-Ö */
     if (c >= 0xF8 && c <= 0xFE) return c - 32;  /* ø-þ → Ø-Þ */
@@ -71,8 +90,8 @@ static int cl_toupper(int c)
 static int cl_tolower(int c)
 {
     if (c >= 'A' && c <= 'Z') return c + 32;
-#ifdef PLATFORM_POSIX
-    if (c > 127) return (int)towlower((wint_t)c);
+#if defined(PLATFORM_POSIX) || defined(PLATFORM_WIN32)
+    if (CL_WCTYPE_RANGE(c)) return (int)towlower((wint_t)c);
 #else
     if (c >= 0xC0 && c <= 0xD6) return c + 32;  /* À-Ö → à-ö */
     if (c >= 0xD8 && c <= 0xDE) return c + 32;  /* Ø-Þ → ø-þ */
