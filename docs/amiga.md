@@ -457,7 +457,7 @@ AmigaOS via FS-UAE; `tests/amiga/test-audio.lisp` covers `AMIGA.AUDIO`; the
 `tests/amiga/arexx-tests.lisp` drives `AMIGA.AREXX` end to end
 over the real host protocol, and `tests/test_dev_commands.sh` is the
 host-side specification for the command layer;
-`examples/gfx/bouncing-lines.lisp` is a runnable graphics demo. See the
+`examples/amiga/gfx/bouncing-lines.lisp` is a runnable graphics demo. See the
 [AmigaOS Native GUI](../README.md#amigaos-native-gui) and
 [Raw FFI Access](../README.md#raw-ffi-access) sections of the main README.
 

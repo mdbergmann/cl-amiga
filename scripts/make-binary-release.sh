@@ -213,7 +213,7 @@ signature.
 
 Examples
 --------
-  bin/aos3/clamiga --load examples/gfx/bouncing-lines.lisp
+  bin/aos3/clamiga --load examples/amiga/gfx/bouncing-lines.lisp
 
 Project: https://github.com/mdbergmann/cl-amiga
 EOF

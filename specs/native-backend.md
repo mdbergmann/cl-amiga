@@ -22,7 +22,7 @@ Future exploration: replacing or supplementing the bytecode VM with native m68k 
 ## Empirical baseline (bouncing-lines)
 
 Measured 2026-05-12 on the high-end FS-UAE config (A4000/68040/Picasso96
-JIT, `verify.fs-uae`) using `examples/gfx/bouncing-lines.lisp` — five
+JIT, `verify.fs-uae`) using `examples/amiga/gfx/bouncing-lines.lisp` — five
 2-point lines bouncing in a 592×382 GIMMEZEROZERO window, drawn via
 `graphics.library` move/draw. Reference points:
 
@@ -876,7 +876,7 @@ OP_TAILCALL).
 Two changes targeted the FFI hot path identified in the
 empirical-baseline section.  Both landed in the same session; bench
 numbers below verify on the high-end FS-UAE config running
-`examples/gfx/bouncing-lines.lisp`.
+`examples/amiga/gfx/bouncing-lines.lisp`.
 
 **`OP_AMIGA_CALL` in the walker (commit 25336f5).**  Was the last
 defcfun-emitted opcode that bailed the walker, forcing every FFI

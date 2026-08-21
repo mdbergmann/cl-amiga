@@ -15,7 +15,7 @@
 ;;;       SAY RESULT                        /* RESULT -- fetch it back */
 ;;;   END
 ;;;
-;;; See examples/arexx/ for complete, runnable editor macros.
+;;; See examples/amiga/arexx/ for complete, runnable editor macros.
 ;;;
 ;;; This file is the TRANSPORT half only: a handler thread that owns the
 ;;; public message port, hands each command string to EXT.DEV:HANDLE-COMMAND

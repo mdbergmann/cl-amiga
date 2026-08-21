@@ -576,7 +576,7 @@ A command string starting with `(` is evaluated directly, so `ADDRESS CLAMIGA '(
 
 Replies are capped at `ext.dev:*max-result-length*` (8 KB) and truncated on a line boundary.
 
-Runnable macros are in [`examples/arexx/`](examples/arexx/): `clamiga.rexx` (a shell client — `rx clamiga.rexx LOAD Work:src/foo.lisp`) and `load-current-file.ced` (save-and-load bound to a CygnusEd key). `AMIGA.AREXX:SEND` drives *other* applications' ARexx ports from Lisp with the same protocol.
+Runnable macros are in [`examples/amiga/arexx/`](examples/amiga/arexx/): `clamiga.rexx` (a shell client — `rx clamiga.rexx LOAD Work:src/foo.lisp`) and `load-current-file.ced` (save-and-load bound to a CygnusEd key). `AMIGA.AREXX:SEND` drives *other* applications' ARexx ports from Lisp with the same protocol.
 
 The command layer is portable Lisp (`lib/dev-commands.lisp`, package `EXT.DEV`) and runs on the host too, so `(ext.dev:handle-command "LOAD foo.lisp")` is testable without an Amiga; see `tests/test_dev_commands.sh` for the executable specification and `tests/amiga/arexx-tests.lisp` for the end-to-end port test.
 
@@ -1223,7 +1223,7 @@ Measured on the high-end FS-UAE config (A4000 / 68040 / Picasso96). The A/B micr
 | `arith-chain` | chained binary ops             |   300 ms |  40 ms |   7.5×  |
 | `call-loop`   | `OP_CALL` inside the loop body |   340 ms | 240 ms |  1.42×  |
 
-Compute-bound code sees the largest wins; call-heavy code is bounded by the same per-call helper round-trip the interpreter pays. On the real-world `examples/gfx/bouncing-lines.lisp` demo (FFI-dominated — five lines drawn through `graphics.library` each frame), the JIT now reaches **~615 FPS** versus **~500 FPS** on the bytecode VM. That lead only materialised once native `amiga-call` dispatch and `defcfun` compiler-macro inlining landed (467 → 525 → 615 FPS as those merged), since the frame time is mostly FFI calls rather than arithmetic. The remaining gap to compiled ACE BASIC (~1900 FPS through the same ROM graphics calls) is the structural cost of a dynamic, GC'd, tagged-value language — per-argument unboxing, dispatch and symbol lookup per call, GC safepoints — not codegen.
+Compute-bound code sees the largest wins; call-heavy code is bounded by the same per-call helper round-trip the interpreter pays. On the real-world `examples/amiga/gfx/bouncing-lines.lisp` demo (FFI-dominated — five lines drawn through `graphics.library` each frame), the JIT now reaches **~615 FPS** versus **~500 FPS** on the bytecode VM. That lead only materialised once native `amiga-call` dispatch and `defcfun` compiler-macro inlining landed (467 → 525 → 615 FPS as those merged), since the frame time is mostly FFI calls rather than arithmetic. The remaining gap to compiled ACE BASIC (~1900 FPS through the same ROM graphics calls) is the structural cost of a dynamic, GC'd, tagged-value language — per-argument unboxing, dispatch and symbol lookup per call, GC safepoints — not codegen.
 
 The Amiga test suite passes on the JIT config; per-opcode JIT coverage (counter-bump, value-correctness, and unwind-recovery assertions) lives in `tests/amiga/test-jit.lisp`.
 
@@ -1289,7 +1289,9 @@ contrib/
                   introspect-environment / trivial-garbage now live as
                   CL-Amiga library forks in ~/quicklisp/local-projects)
 examples/
-  gfx/            Graphics demos (bouncing-lines.lisp)
+  amiga/          AmigaOS examples
+    arexx/          ARexx client + CygnusEd macro (clamiga.rexx, load-current-file.ced)
+    gfx/            Graphics demos (bouncing-lines.lisp)
 tests/
   test_*.c        Host test suites (C)
   amiga/          Amiga test suite (Lisp)
