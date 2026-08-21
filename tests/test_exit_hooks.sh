@@ -33,8 +33,13 @@ passed=0
 failed=0
 total=0
 
+# A path embedded in a generated Lisp form (below) must be spelled the way
+# clamiga reads it: on Windows $TMPDIR is "C:\Users\..." and the reader would
+# eat the backslashes as escapes.  Shell-side uses of $WORK are fine either way.
+. "$(dirname "$0")/shpath.sh"
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/clamiga_exit_hooks_XXXXXX") || exit 1
 trap 'rm -rf "$WORK"' EXIT INT TERM
+WORK_LISP=$(native_path "$WORK")
 
 CLI="--no-userinit --heap 8M"
 
@@ -117,7 +122,7 @@ rm -f "$WORK/hook-out.txt"
 out=$("$TIMEOUT" 20 "$CLAMIGA" $CLI --non-interactive \
     --eval "(ext:add-exit-hook
               (lambda ()
-                (with-open-file (s \"$WORK/hook-out.txt\"
+                (with-open-file (s \"$WORK_LISP/hook-out.txt\"
                                    :direction :output :if-exists :supersede)
                   (format s \"written-at-exit~%\"))))" \
     --eval '(quit 0)' </dev/null 2>&1)
