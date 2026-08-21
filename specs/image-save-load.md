@@ -1,6 +1,10 @@
 # Heap images: EXT:SAVE-IMAGE / --image
 
-Status: DESIGN
+Status: IMPLEMENTED (802f5c1, 2026-08-21 — all M1-M4 gates green:
+host fast tier + test-plus + gc-stress, both FS-UAE legs incl. the
+restored-boot full-suite gate; open questions resolved as leaned:
+rc runs guarded by EXT:*IMAGE-RESTORED-P*, warn-at-save late roots,
+hooks-only MP restart, compression deferred)
 Date: 2026-08-20
 
 ## Problem
