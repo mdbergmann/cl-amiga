@@ -3,7 +3,10 @@
 ;;; Loaded via (require "amiga/intuition").
 ;;; Provides high-level window/screen/IDCMP management.
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; these packages at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.INTUITION"
   (:use "CL" "FFI" "AMIGA.FFI")
@@ -59,11 +62,15 @@
 (in-package "AMIGA.INTUITION")
 
 ;;; ================================================================
-;;; Intuition library base (opened on load)
+;;; Intuition library base (opened on load).  NIL on the host build, where
+;;; this module is loaded for COMPILE-FILE (the host builds the lib/amiga
+;;; FASLs) -- same convention as the generated amiga/raw modules.
 ;;; ================================================================
 
-(defvar *intuition-base* (amiga:open-library "intuition.library" 39))
-(unless *intuition-base*
+(defvar *intuition-base*
+  (when (member :amigaos *features*)
+    (amiga:open-library "intuition.library" 39)))
+(when (and (member :amigaos *features*) (null *intuition-base*))
   (error "Cannot open intuition.library v39"))
 
 ;;; ================================================================
@@ -235,7 +242,7 @@
   (bar-height :u8  30))
 
 (defun screen-viewport (screen)
-  "Pointer to SCREEN's embedded ViewPort (offset 44) — what
+  "Pointer to SCREEN's embedded ViewPort (offset 44) -- what
 AMIGA.GFX:SET-RGB4 wants for setting the screen palette."
   (ffi:make-foreign-pointer (+ (ffi:foreign-pointer-address screen) 44)))
 
@@ -259,7 +266,7 @@ AMIGA.GFX:SET-RGB4 wants for setting the screen palette."
                                         +wflg-sizegadget+
                                         +wflg-activate+)))
   "Open an Intuition window via OpenWindowTagList.
-TITLE NIL opens an untitled window — that matters for borderless
+TITLE NIL opens an untitled window -- that matters for borderless
 backdrop windows, where a WA_Title still costs a title bar
 \(window-border-top stays 0 only without one).
 Returns a foreign pointer to the Window struct, or signals an error."
@@ -321,7 +328,7 @@ Returns a foreign pointer to the Window struct, or signals an error."
 (defun open-screen (&key (width 640) (height 256) (depth 2)
                          (title "CL-Amiga") mode-id show-title)
   "Open a custom Intuition screen via OpenScreenTagList.
-MODE-ID non-NIL requests that display mode (SA_DisplayID) — obtain one
+MODE-ID non-NIL requests that display mode (SA_DisplayID) -- obtain one
 RTG-safely with AMIGA.GFX:BEST-MODE-ID; NIL leaves the mode to
 Intuition's default.  SHOW-TITLE non-NIL shows the screen title bar
 \(menus work either way).  Returns a foreign pointer to the Screen
@@ -374,7 +381,7 @@ struct, or signals an error."
 MODE-ID, as (VALUES MIN-X MIN-Y MAX-X MAX-Y).  NIL when the display
 database does not know the mode.
 
-OSCAN-TYPE picks the region — +OSCAN-TEXT+ (the default: the area
+OSCAN-TYPE picks the region -- +OSCAN-TEXT+ (the default: the area
 every monitor of that mode is guaranteed to show), +OSCAN-STANDARD+,
 +OSCAN-MAX+ or +OSCAN-VIDEO+.  Get MODE-ID RTG-safely from
 AMIGA.GFX:BEST-MODE-ID.  See DISPLAY-MODE-HEIGHT for the common case."
@@ -396,7 +403,7 @@ AMIGA.GFX:BEST-MODE-ID.  See DISPLAY-MODE-HEIGHT for the common case."
       (ffi:free-foreign rect))))
 
 (defun display-mode-height (mode-id &optional (oscan-type +oscan-text+))
-  "Rows display mode MODE-ID can show — 256 on a PAL chipset mode, 200
+  "Rows display mode MODE-ID can show -- 256 on a PAL chipset mode, 200
 on NTSC, whatever the driver reports on RTG.  NIL when the display
 database does not know the mode.  A thin reading of QUERY-OVERSCAN:
 the rectangle is inclusive at both ends, so the height counts both."
@@ -415,7 +422,7 @@ the rectangle is inclusive at both ends, so the height counts both."
 (defun show-title (screen show-it)
   "ShowTitle: SHOW-IT non-NIL puts the screen's title bar in front of
 backdrop windows, NIL behind them (a full-screen backdrop window then
-covers it completely — how a game hides the OS bar)."
+covers it completely -- how a game hides the OS bar)."
   (amiga:call-library *intuition-base* +lvo-show-title+
                       (list :a0 screen :d0 (if show-it 1 0)))
   t)
@@ -424,7 +431,7 @@ covers it completely — how a game hides the OS bar)."
   "SetPointer: show a custom mouse pointer on WINDOW while it is
 active.  SPRITE-DATA is chip RAM in hardware sprite layout: two
 position-control words (0), then two data words per line (low plane
-first — pixel value 1/2/3 shows screen color 17/18/19), then two
+first -- pixel value 1/2/3 shows screen color 17/18/19), then two
 trailing words (0).  HEIGHT is the line count, WIDTH at most 16;
 X-OFFSET/Y-OFFSET place the hot spot (generally negative).  The
 pointer stays until CLEAR-POINTER; SPRITE-DATA must outlive it."
@@ -442,7 +449,7 @@ pointer stays until CLEAR-POINTER; SPRITE-DATA must outlive it."
 
 (defun make-pointer-sprite (rows)
   "Build the chip-RAM sprite data SET-POINTER wants from ROWS, a list
-of (WORD-A WORD-B) pairs — one pair per pointer line, WORD-A the low
+of (WORD-A WORD-B) pairs -- one pair per pointer line, WORD-A the low
 bitplane and WORD-B the high (pixel value 1/2/3 shows screen color
 17/18/19).  Frames them with the two position-control words and the
 two trailing terminator words the hardware sprite format requires.
@@ -552,7 +559,7 @@ exhausted with no message received."
 (defun msg-raw-key (msg)
   "The raw (position) keycode behind a keyboard IntuiMessage, or NIL
 when it cannot be told.  With IDCMP_VANILLAKEY the keymap has already
-been applied to Code under the qualifiers of the MOMENT — so a shift
+been applied to Code under the qualifiers of the MOMENT -- so a shift
 wedged down on the host (the emulator classic: a screenshot chord
 steals the key-up) turns the whole digit row into punctuation.  V36+
 Intuition hangs the originating struct InputEvent off IAddress; its
@@ -563,7 +570,7 @@ Gadget* for GADGETUP/DOWN) and is only meaningful for keyboard
 messages, so this first checks msg-class is IDCMP_VANILLAKEY or
 IDCMP_RAWKEY before trusting it at all.  Guarded further: only a
 non-null IAddress whose event reads IECLASS_RAWKEY with a key-down
-code is trusted — anything else answers NIL and the caller falls
+code is trusted -- anything else answers NIL and the caller falls
 back to Code."
   (when (member (msg-class msg) (list +idcmp-vanillakey+ +idcmp-rawkey+))
     (let ((addr (intui-message-iaddress msg)))

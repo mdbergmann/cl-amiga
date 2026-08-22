@@ -3,7 +3,10 @@
 ;;; Loaded via (require "amiga/ffi").
 ;;; Builds on the generic FFI package and the AMIGA package builtins.
 
-(require "ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; these packages at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "ffi"))
 
 (defpackage "AMIGA.FFI"
   (:use "CL" "FFI")
@@ -33,13 +36,13 @@ load time, so a missing library fails at REQUIRE with a clear message
 instead of at the first call."
   (let ((base (amiga:open-library name version)))
     (when (or (null base) (ffi:null-pointer-p base))
-      (error "Cannot open ~A~@[ (version ~D or newer)~] — is it installed on this system?"
+      (error "Cannot open ~A~@[ (version ~D or newer)~] -- is it installed on this system?"
              name (and (plusp version) version)))
     base))
 
 (defun library-version (base)
   "The lib_Version field (struct Library, offset 20) of an open library
-base — the OS revision that the running system actually provides.
+base -- the OS revision that the running system actually provides.
 Bindings generated from the OS 3.2 NDK guard functions newer than V39
 with this at load time."
   (ffi:peek-u16 base 20))
@@ -162,7 +165,7 @@ copied to foreign memory and freed."
     (:a5 (error "DEFCFUN: register :A5 is reserved by the call dispatcher and cannot carry an argument (use d0-d7/a0-a4)"))
     (otherwise (error "DEFCFUN: unknown register keyword: ~S" kw))))
 
-(defconstant +defcfun-void-bit+ #x10000000)  ; bit 28 — kind 1 = void
+(defconstant +defcfun-void-bit+ #x10000000)  ; bit 28 -- kind 1 = void
 
 (defconstant +result-kind-unsigned+ 0)
 (defconstant +result-kind-void+     1)
@@ -200,7 +203,7 @@ LIBRARY-BASE.  REG-SPEC is a plist of (:register param-name ...) pairs.
 legacy spelling of :RESULT :VOID.  DOC becomes the function's docstring.
 
 In addition to the named function, registers a compiler macro on NAME
-so direct call sites — `(move-to rp x y)` etc. — compile down to a
+so direct call sites -- `(move-to rp x y)` etc. -- compile down to a
 bare AMIGA:%FFI-CALL (= OP_AMIGA_CALL) in the caller, skipping the
 wrapper's LINK frame and the cl_vm_apply dispatch trip.  Indirect
 callers (funcall / sharp-quote) still hit the real wrapper function."

@@ -102,6 +102,26 @@
 #define FASL_ERR_BAD_TAG     -5   /* Unknown constant type tag */
 #define FASL_ERR_TOO_DEEP   -6   /* Object graph too deep for C stack */
 #define FASL_ERR_BAD_LENGTH -7   /* Implausible element count (corrupt file) */
+#define FASL_ERR_NONPORTABLE -8  /* Writer refused a non-ASCII string literal
+                                    in portable mode (CLAMIGA_FASL_PORTABLE=1):
+                                    it would need FASL_TAG_WIDE_STRING, which
+                                    byte-string builds (the AmigaOS release
+                                    binaries) cannot decode. */
+
+/* --- Portable-FASL mode (host -> Amiga lib FASLs) ---
+ *
+ * CLAMIGA_FASL_PORTABLE=1 (environment, read once) makes the writer refuse any
+ * string that would be written as FASL_TAG_WIDE_STRING, i.e. a string literal
+ * containing a character above U+007F, with FASL_ERR_NONPORTABLE.  The
+ * compile-file diagnostic then names the source line and the offending code
+ * point instead of the Amiga failing the whole unit with BAD_TAG at load time.
+ * `make fasl`, `make fasl-amiga` and scripts/make-binary-release.sh set it;
+ * see tests/test_lib_fasl_portable.sh.  Docstrings never reach the writer
+ * (the compiler drops them) and comments never reach the reader, so only
+ * strings that survive into the FASL count. */
+int  cl_fasl_portable_mode(void);
+void cl_fasl_set_portable_mode(int on);          /* explicit override (tests) */
+/* cl_fasl_nonportable_detail() is declared below, after CL_FaslWriter. */
 
 /* Max uninterned symbols tracked per FASL file (for gensym dedup) */
 #define FASL_MAX_GENSYMS 1024
@@ -135,7 +155,13 @@ typedef struct {
     uint16_t pad_;             /* explicit pad: keep 32-bit struct layout stable */
     uint16_t *shared_hash;     /* hash slots; size shared_hash_cap (power of two) */
     uint32_t shared_hash_cap;  /* 0 until allocated; always a power of two when set */
+    /* Per-writer, not global: two writers (e.g. two MP threads each running
+     * compile-file under CLAMIGA_FASL_PORTABLE=1) must not race on a shared
+     * detail buffer and risk one thread's diagnostic naming the other's file. */
+    char     nonportable_detail[200];
 } CL_FaslWriter;
+
+const char *cl_fasl_nonportable_detail(const CL_FaslWriter *w);  /* detail of w's last refusal */
 
 /* --- Deserialization buffer --- */
 

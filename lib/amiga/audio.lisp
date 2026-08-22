@@ -10,8 +10,11 @@
 ;;;
 ;;; See tests/amiga/test-audio.lisp for usage end-to-end.
 
-(require "amiga/ffi")
-(require "amiga/exec")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; these packages at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi")
+  (require "amiga/exec"))
 
 (defpackage "AMIGA.AUDIO"
   (:use "CL" "FFI" "AMIGA.FFI")
@@ -56,7 +59,7 @@
   (flags     :u8     30)
   (error     :i8     31)
   (alloc-key :u16    32)
-  (data      :u32    34)   ; sample/channel-map address — poke the integer address
+  (data      :u32    34)   ; sample/channel-map address -- poke the integer address
   (length    :u32    38)
   (period    :u16    42)
   (volume    :u16    44)

@@ -298,6 +298,11 @@ static int cf_emit_fasl_unit(CL_FaslWriter *fw,
 
     if (uw.error != FASL_OK) {
         if (err_out) *err_out = uw.error;
+        /* uw is a stack-local scratch writer; the caller diagnoses the
+         * failure via fw (cl_fasl_nonportable_detail(fw)), so the refusal
+         * detail set on uw must be copied onto fw before uw goes away. */
+        memcpy(fw->nonportable_detail, uw.nonportable_detail,
+               sizeof(fw->nonportable_detail));
         cl_fasl_writer_release(&uw);
         return -1;
     }
@@ -1786,6 +1791,8 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
                                        ? "graph too deep"
                                    : (unit_err == FASL_ERR_OVERFLOW)
                                        ? "buffer overflow > unit cap"
+                                   : (unit_err == FASL_ERR_NONPORTABLE)
+                                       ? cl_fasl_nonportable_detail(w)
                                        : "serialize failed";
                 char msg[1024];
                 snprintf(msg, sizeof(msg),

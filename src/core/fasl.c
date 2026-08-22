@@ -37,6 +37,7 @@ void cl_fasl_writer_init(CL_FaslWriter *w, uint8_t *buf, uint32_t capacity)
     w->shared_objs = NULL;       /* lazily allocated on first use */
     w->shared_hash = NULL;       /* lazily allocated alongside shared_objs */
     w->shared_hash_cap = 0;
+    w->nonportable_detail[0] = '\0';
 }
 
 void cl_fasl_writer_release(CL_FaslWriter *w)
@@ -1004,6 +1005,35 @@ static int fasl_ser_stack_push(CL_FaslWriter *w, FaslSerStack *s,
 
 /* Step the topmost frame.  Returns 1 if the frame is done (caller pops),
  * 0 if it pushed children (frame stays on stack, children processed first). */
+/* --- Portable-FASL mode (see fasl.h) ---
+ * CLAMIGA_FASL_PORTABLE=1 makes the writer refuse strings that need
+ * FASL_TAG_WIDE_STRING; the refusal detail lives on the writer itself
+ * (CL_FaslWriter.nonportable_detail) for bi_compile_file's "FASL unit
+ * failed" diagnostic — not a global, so concurrent writers (e.g. two MP
+ * threads each running compile-file) can't race on the same buffer. */
+static int  fasl_portable_mode = -1;   /* -1 = environment not read yet */
+
+int cl_fasl_portable_mode(void)
+{
+    if (fasl_portable_mode < 0) {
+        char envbuf[16];
+        const char *s = platform_getenv("CLAMIGA_FASL_PORTABLE", envbuf,
+                                        (int)sizeof(envbuf));
+        fasl_portable_mode = (s && s[0] && s[0] != '0') ? 1 : 0;
+    }
+    return fasl_portable_mode;
+}
+
+void cl_fasl_set_portable_mode(int on)
+{
+    fasl_portable_mode = on ? 1 : 0;
+}
+
+const char *cl_fasl_nonportable_detail(const CL_FaslWriter *w)
+{
+    return w->nonportable_detail;
+}
+
 static int fasl_ser_step(CL_FaslWriter *w, FaslSerStack *s)
 {
     /* Cache frame fields locally — push() may reallocate s->frames. */
@@ -1179,6 +1209,29 @@ static int fasl_ser_step(CL_FaslWriter *w, FaslSerStack *s)
                 cl_fasl_write_u32(w, ws->length);
                 for (i = 0; i < ws->length; i++)
                     cl_fasl_write_u8(w, (uint8_t)ws->data[i]);
+            } else if (cl_fasl_portable_mode()) {
+                /* CLAMIGA_FASL_PORTABLE=1: this FASL is meant for a
+                 * byte-string build, which has no decoder for
+                 * TAG_WIDE_STRING — refuse now, on the host, and describe
+                 * the string (ASCII prefix + first offending code point)
+                 * for the compile-file diagnostic instead of letting the
+                 * Amiga fail the unit with BAD_TAG at load time. */
+                uint32_t cp = 0, n = 0;
+                char head[48];
+                for (i = 0; i < ws->length; i++)
+                    if (ws->data[i] > 0x7F) { cp = ws->data[i]; break; }
+                for (i = 0; i < ws->length && n < sizeof(head) - 1; i++) {
+                    uint32_t c = ws->data[i];
+                    head[n++] = (c >= 0x20 && c < 0x7F) ? (char)c : '?';
+                }
+                head[n] = '\0';
+                snprintf(w->nonportable_detail, sizeof(w->nonportable_detail),
+                         "non-ASCII string literal (U+%04X in \"%s%s\") cannot "
+                         "be loaded by byte-string builds -- use ASCII "
+                         "(CLAMIGA_FASL_PORTABLE=1)",
+                         (unsigned)cp, head, ws->length > n ? "..." : "");
+                w->error = FASL_ERR_NONPORTABLE;
+                return 0;
             } else {
                 cl_fasl_write_u8(w, FASL_TAG_WIDE_STRING);
                 cl_fasl_write_u32(w, ws->length);

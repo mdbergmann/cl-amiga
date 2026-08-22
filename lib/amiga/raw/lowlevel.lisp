@@ -8,7 +8,10 @@
 ;;; 15 functions, 151 constants, 1 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.LOWLEVEL"
   (:use "CL" "FFI" "AMIGA.FFI")

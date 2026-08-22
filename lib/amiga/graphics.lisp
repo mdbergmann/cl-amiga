@@ -3,7 +3,10 @@
 ;;; Loaded via (require "amiga/graphics").
 ;;; Provides drawing primitives on RastPort.
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; these packages at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.GFX"
   (:use "CL" "FFI" "AMIGA.FFI")
@@ -43,11 +46,15 @@
 (in-package "AMIGA.GFX")
 
 ;;; ================================================================
-;;; Graphics library base (opened on load)
+;;; Graphics library base (opened on load).  NIL on the host build, where
+;;; this module is loaded for COMPILE-FILE (the host builds the lib/amiga
+;;; FASLs) -- same convention as the generated amiga/raw modules.
 ;;; ================================================================
 
-(defvar *gfx-base* (amiga:open-library "graphics.library" 39))
-(unless *gfx-base*
+(defvar *gfx-base*
+  (when (member :amigaos *features*)
+    (amiga:open-library "graphics.library" 39)))
+(when (and (member :amigaos *features*) (null *gfx-base*))
   (error "Cannot open graphics.library v39"))
 
 ;;; ================================================================
@@ -189,7 +196,7 @@ rastport using it is done."
 (defun best-mode-id (&key (width 640) (height 256) (depth 2))
   "Ask the display database (graphics.library/BestModeIDA) for the mode
 that best fits WIDTH x HEIGHT at DEPTH.  This is the RTG-safe way to
-pick a screen mode — on Picasso96/CyberGraphX/MorphOS it returns a
+pick a screen mode -- on Picasso96/CyberGraphX/MorphOS it returns a
 suitable RTG mode, on a chipset Amiga a native one (e.g. PAL hires for
 640x256).  Returns the mode ID, or NIL when the database has no match
 \(caller falls back to opening the screen without SA_DisplayID)."
@@ -211,7 +218,7 @@ suitable RTG mode, on a chipset Amiga a native one (e.g. PAL hires for
   (:a0 viewport :d0 index :d1 red :d2 green :d3 blue) :void t)
 
 (defun viewport-color-map (viewport)
-  "Pointer to VIEWPORT's ColorMap (vp_ColorMap, offset 4) — what
+  "Pointer to VIEWPORT's ColorMap (vp_ColorMap, offset 4) -- what
 GET-RGB4 wants."
   (ffi:make-foreign-pointer (ffi:peek-u32 viewport 4)))
 
@@ -302,7 +309,7 @@ can target one."
 
 (defun rastport-bitmap (rastport)
   "Pointer to the BitMap RASTPORT renders into (rp_BitMap).  A window
-rastport's bitmap is the natural ALLOC-BITMAP :FRIEND — offscreen
+rastport's bitmap is the natural ALLOC-BITMAP :FRIEND -- offscreen
 bitmaps allocated with it land in the display's native format."
   (ffi:make-foreign-pointer (ffi:peek-u32 rastport +rp-bitmap-offset+)))
 
@@ -361,7 +368,7 @@ DEST-RASTPORT at (DEST-X,DEST-Y)."
                                  dest-x dest-y width height mask
                                  &optional (minterm +minterm-cookie+))
   "BltMaskBitMapRastPort: copy a WIDTH x HEIGHT region of SRC-BITMAP into
-DEST-RASTPORT at (DEST-X,DEST-Y), cookie-cut through MASK — a single
+DEST-RASTPORT at (DEST-X,DEST-Y), cookie-cut through MASK -- a single
 interleaved bitplane (chip RAM, word-padded rows; see the game's
 MASK-BYTES) with a 1 bit for every pixel to copy.  Pixels whose mask
 bit is 0 leave the destination untouched, so a backdrop drawn earlier
@@ -408,11 +415,11 @@ a plane past the depth (or one BMF_MINPLANES left unallocated)."
 (defun write-planes (bitmap planes src-row-bytes height)
   "Copy planar pixel data into BITMAP: PLANES is a list of
 \(unsigned-byte 8) vectors, one per bitplane, each holding HEIGHT rows
-of SRC-ROW-BYTES bytes — MSB-first within a byte, word-padded rows,
+of SRC-ROW-BYTES bytes -- MSB-first within a byte, word-padded rows,
 exactly the layout of an ILBM BODY plane or a hardware bitplane, so
 loading planar art needs no per-pixel chunky conversion.  BITMAP must
 be a standard planar BitMap (see the section comment) at least as deep
-as (LENGTH PLANES) — extra planes are left as allocated — with rows at
+as (LENGTH PLANES) -- extra planes are left as allocated -- with rows at
 least SRC-ROW-BYTES wide.  When the strides agree each plane goes over
 as one contiguous copy; otherwise row by row at the destination
 stride.  Returns T."

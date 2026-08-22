@@ -1853,7 +1853,7 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
           (format out ";;; ~D C macro~:P skipped: not an integer constant (string, call, float).~%"
                   n-macros-skipped))
         (format out ";;; Regenerate with `make gen-amiga-bindings` — see README \"Raw OS bindings\".~%~%")
-        (format out "(require \"amiga/ffi\")~%~%")
+        (format out ";; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see~%;; AMIGA.FFI at read time, not only LOAD.~%(eval-when (:compile-toplevel :load-toplevel :execute)~%  (require \"amiga/ffi\"))~%~%")
         (setf exports (nreverse exports))
         (let ((shadows (remove-if-not #'inherited-name-p exports)))
           (format out "(defpackage ~S~%  (:use \"CL\" \"FFI\" \"AMIGA.FFI\")~%" pkg)

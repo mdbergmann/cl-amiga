@@ -353,15 +353,11 @@ When a literal object reachable from compiled code is an instance of a class tha
 - POSIX: `~/.cache/common-lisp/cl-amiga-<version>-fasl<n>/<source-path>.fasl`
 - AmigaOS: `S:cl-amiga/faslcache/<version>-fasl<n>/<source-path>.fasl`
 
-Pre-built `lib/boot.fasl` and `lib/clos.fasl` ship with the binary; on the lower-end 020 baseline this cuts cold boot from ~92 s to ~9 s. To regenerate them after editing `lib/*.lisp`:
+Pre-built `lib/boot.fasl` and `lib/clos.fasl` ship with the binary; on the lower-end 020 baseline this cuts cold boot from ~92 s to ~9 s. `make fasl` regenerates them after editing `lib/boot.lisp`/`lib/clos.lisp`.
 
-```
-./build/host/clamiga --non-interactive \
-    --eval '(compile-file "lib/boot.lisp" :output-file "lib/boot.fasl")' \
-    --eval '(compile-file "lib/clos.lisp" :output-file "lib/clos.fasl")'
-```
+`make fasl-amiga` does the same for everything under `lib/amiga/` (the curated modules, `AMIGA.REACTION` and the generated raw OS bindings), writing `lib/amiga/**/*.fasl` next to the sources: an Amiga run of the tree — the FS-UAE suite, or a real machine with the repo on it — then loads e.g. `lib/amiga/raw/intuition.fasl` instead of compiling ~4k forms on a 68020 at the first `(require "amiga/raw/intuition")`. This is optional for development (the Amiga's faslcache does the same lazily on first use), the files are gitignored, and `REQUIRE` ignores a FASL that is older than its source or was written by another FASL format version. The binary release ships these FASLs (see below). The host-compiled FASLs are portable because the FASL format is arch/endian-neutral and the `lib/amiga` sources have no reader conditionals — all platform variance is decided at load time. See `tests/test_lib_fasl_portable.sh`.
 
-Note: string literals in `lib/*.lisp` must stay ASCII-only — the m68k Amiga build is compiled without `CL_WIDE_STRINGS` to save RAM and cannot read FASLs that contain `FASL_TAG_WIDE_STRING`. The host and MorphOS builds have `CL_WIDE_STRINGS` (full Unicode, `CHAR-CODE-LIMIT` 1114112 — required by e.g. flexi-streams/drakma); their writers auto-downgrade all-ASCII wide strings to byte strings, so the shared `lib/` FASLs stay readable everywhere. Non-ASCII chars in source string literals will fail m68k Amiga boot with a `BAD_TAG` deserialize error. Comments are unaffected.
+Note: string literals in the `lib/` modules that ship as FASLs must stay ASCII-only — the m68k Amiga build is compiled without `CL_WIDE_STRINGS` to save RAM and cannot read FASLs that contain `FASL_TAG_WIDE_STRING`. The host and MorphOS builds have `CL_WIDE_STRINGS` (full Unicode, `CHAR-CODE-LIMIT` 1114112 — required by e.g. flexi-streams/drakma); their writers auto-downgrade all-ASCII wide strings to byte strings, so the shared `lib/` FASLs stay readable everywhere. `make fasl`, `make fasl-amiga` and the release script compile with `CLAMIGA_FASL_PORTABLE=1`, which makes the writer refuse such a literal on the host — the diagnostic names the file, source line and code point (`U+2014` for the usual em dash) — instead of the Amiga failing the whole module with a `BAD_TAG` deserialize error at load time. Comments and docstrings are unaffected (neither reaches the FASL).
 
 ### Exit hooks
 
@@ -1053,8 +1049,10 @@ It cross-compiles both AmigaOS 3 binaries — soft-float (`bin/aos3/`, runs
 on any 68020+) and hard-float (`bin/aos3-fpu/`, requires an FPU) — takes a
 natively built MorphOS binary (`MOS_BIN`, default `./clamiga-mos`), and
 assembles `clamiga-<version>/` with `bin/aos3/`, `bin/aos3-fpu/`, `bin/mos/`, `lib/` (precompiled
-FASLs where portable, Lisp sources where compilation must happen on the
-target), the package API reference under `docs/`, and `examples/` — then
+FASLs where portable — the core library and all of `lib/amiga/` including
+the raw OS bindings, with the `lib/amiga` sources alongside for reference —
+and Lisp sources where compilation must happen on the target, i.e. asdf and
+quicklisp), the package API reference under `docs/`, and `examples/` — then
 smoke-tests the deployed layout and produces `.zip` and `.lha` archives.
 The binaries find `lib/` relative to themselves, so the extracted tree
 runs from any directory without assigns or environment variables.
@@ -1340,6 +1338,16 @@ cross-checks every LVO against the NDK's own `lvo/*.i` before writing
 anything.  Its executable specification is `tests/test_amiga_bindgen.sh`
 (fixture SDK + checks of the committed output); the Amiga-side calls are
 exercised by `tests/amiga/test-raw-bindings.lisp`.
+
+The modules are also the reference for the hand-written ones: every
+constant, `+lvo-…+` offset and `defcfun` register assignment in
+`AMIGA.INTUITION`, `AMIGA.GFX`, `AMIGA.GADTOOLS`, `AMIGA.EXEC` and
+`AMIGA.AUDIO` is checked against the generated bindings by
+`tests/test_amiga_curated_vs_raw.sh` in `make test`.
+
+A first `(require "amiga/raw/intuition")` compiles ~4k forms, which a 68020
+feels; `make fasl-amiga` precompiles all of `lib/amiga/` on the host (see
+*Loading source and FASL files*), and the binary release ships those FASLs.
 
 ### Raw FFI Access
 
