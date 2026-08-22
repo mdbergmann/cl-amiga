@@ -286,10 +286,10 @@
 
 ;;; --- ReAction class libraries: gadgets/ images/ classes/ modules --------
 ;;; Their module opens the class at REQUIRE time, so they are loaded only
-;;; where the classes exist (OS 3.2, MorphOS) — FS-UAE boots Kickstart 3.1
-;;; without ReAction, and there the checks assert that nothing was loaded.
-;;; The symbols are looked up at run time: the packages do not exist at
-;;; read time on a 3.1 system.
+;;; where the classes exist (OS 3.5+/3.2, MorphOS — and the FS-UAE test
+;;; setup, whose Workbench is OS 3.9 on the 3.1 ROM); on a bare 3.1 the
+;;; checks assert that nothing was loaded.  The symbols are looked up at
+;;; run time: the packages do not exist at read time on such a system.
 
 (defvar *raw-reaction-p*
   (let ((b (amiga:open-library "gadgets/button.gadget" 0)))

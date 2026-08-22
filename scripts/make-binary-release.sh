@@ -201,6 +201,8 @@ Libraries
   (require "amiga/intuition")  ; windows, screens, IDCMP events
   (require "amiga/graphics")   ; drawing primitives
   (require "amiga/gadtools")   ; GadTools gadgets and menus
+  (require "amiga/reaction")   ; ReAction helpers (OS 3.5+/3.2, MorphOS)
+  (require "amiga/raw/<lib>")  ; generated 1:1 OS bindings, every library/class
   (require "amiga/exec")       ; memory introspection, chip RAM
   (require "amiga/audio")      ; audio.device sample playback
 
@@ -218,6 +220,7 @@ signature.
 Examples
 --------
   bin/aos3/clamiga --load examples/amiga/gfx/bouncing-lines.lisp
+  bin/aos3/clamiga --load examples/amiga/reaction/listbrowser.lisp   (ReAction GUIs, see examples/amiga/README.md)
 
 Project: https://github.com/mdbergmann/cl-amiga
 EOF

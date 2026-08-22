@@ -8889,7 +8889,14 @@
   ; Separate file for the same reader-needs-the-package reason.
   (handler-case
     (load "tests/amiga/test-raw-bindings.lisp")
-    (error (e) (format t "ERROR loading raw-bindings tests: ~A~%" e))))
+    (error (e) (format t "ERROR loading raw-bindings tests: ~A~%" e)))
+
+  ; --- ReAction helpers (lib/amiga/reaction.lisp) over the raw classes ---
+  ; Separate file for the same reader-needs-the-package reason; skips the
+  ; class half where the ReAction classes are absent.
+  (handler-case
+    (load "tests/amiga/test-reaction.lisp")
+    (error (e) (format t "ERROR loading reaction tests: ~A~%" e))))
 
 ; --- Gray streams: (typep gray-stream 'stream) regression ---
 ; Load gray-streams.lisp and verify that a CLOS-based Gray stream instance

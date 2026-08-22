@@ -146,7 +146,7 @@ ALL_SRCS = $(MAIN_SRC) $(PLATFORM_SRC) $(CORE_SRC) $(JIT_SRC)
 ALL_OBJS = $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(ALL_SRCS)) \
            $(patsubst $(SRCDIR)/%.s,$(BUILDDIR)/%.o,$(PLATFORM_ASM))
 
-.PHONY: amiga test-amiga test-amiga-lowend clean check-toolchain
+.PHONY: amiga test-amiga test-amiga-lowend examples-amiga clean check-toolchain
 
 amiga: check-toolchain $(BUILDDIR)/clamiga
 
@@ -206,6 +206,12 @@ test-amiga: $(BUILDDIR)/clamiga
 	@echo "=== Launching FS-UAE (high-end JIT config) — auto-quits when tests finish ==="
 	verify/realamiga/run-fs-uae.sh verify/realamiga/verify.fs-uae
 	@$(MAKE) --no-print-directory -f Makefile.cross verify-amiga
+
+# Run the ReAction example programs (examples/amiga/reaction/) unattended in
+# FS-UAE and photograph every window into build/amiga/shots/*.png — see
+# verify/realamiga/run-reaction-examples.sh.
+examples-amiga: $(BUILDDIR)/clamiga
+	verify/realamiga/run-reaction-examples.sh $(BUILDDIR)/clamiga
 
 test-amiga-lowend: $(BUILDDIR)/clamiga
 	@if [ "$(FPU)" = "1" ]; then \

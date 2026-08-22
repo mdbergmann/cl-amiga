@@ -62,6 +62,10 @@ A broad test suite covers the implementation, including threading, CLOS, conditi
 |---|---|
 | ![CL-Amiga booting and running the bouncing-lines GFX example on AmigaOS 3](docs/scrshts/clamiga-bounce.jpg) | ![CL-Amiga booting and running Hello World on MorphOS](docs/scrshts/clamiga-mos.png) |
 
+ReAction GUIs from Lisp — four of the [`examples/amiga/reaction/`](examples/amiga/reaction/) ports of the NDK examples, running on AmigaOS 3.9:
+
+![The checkbox, fuelgauge, listbrowser and clicktab ReAction examples](docs/scrshts/clamiga-reaction.png)
+
 ## Building
 
 ### Host (macOS / Linux)
@@ -990,6 +994,7 @@ Then build CL-Amiga:
 ```
 make -f Makefile.cross amiga        # Cross-compile with m68k-amigaos-gcc
 make -f Makefile.cross test-amiga   # Build, deploy to FS-UAE, run Amiga tests
+make -f Makefile.cross examples-amiga # Run + photograph the ReAction examples in FS-UAE (build/amiga/shots/)
 make -f Makefile.cross clean        # Remove cross-build artifacts
 ```
 
@@ -1165,6 +1170,78 @@ runnable examples; the Lambda's Tale engine's blitted wall graphics
             (format t "Button clicked!~%")))))))
 ```
 
+### ReAction (AmigaOS 3.5+/3.2, MorphOS)
+
+The ReAction classes — `window.class`, `gadgets/layout.gadget`,
+`gadgets/button.gadget`, `listbrowser`, `chooser`, `requester.class` … —
+are BOOPSI class libraries driven through `NewObjectA` / `SetAttrsA` /
+`GetAttr` and object methods.  Their tags, method IDs and functions come
+from the generated raw modules (`amiga/raw/classes/window`,
+`amiga/raw/gadgets/button`, …, see below); what a C program gets from
+amiga.lib / reaction.lib on top — `DoMethod()`, the `RA_OpenWindow` /
+`RA_HandleInput` macros, `NewList()`, string literals that outlive the
+objects using them — is `(require "amiga/reaction")`, package
+`AMIGA.REACTION`:
+
+```lisp
+(require "amiga/reaction")
+(require "amiga/raw/intuition")
+(require "amiga/raw/classes/window")
+(require "amiga/raw/gadgets/layout")
+(require "amiga/raw/gadgets/button")
+
+(defpackage "HELLO-REACTION"
+  (:use "CL")
+  (:local-nicknames ("RA" "AMIGA.REACTION") ("INTUI" "AMIGA.RAW.INTUITION")
+                    ("WIN" "AMIGA.RAW.CLASSES.WINDOW")
+                    ("LAYOUT" "AMIGA.RAW.GADGETS.LAYOUT")
+                    ("BUTTON" "AMIGA.RAW.GADGETS.BUTTON")))
+(in-package "HELLO-REACTION")
+
+(ra:with-foreign-pool ()                      ; strings live as long as the objects
+  (let ((win (ra:new-object (win:window-get-class)
+               intui:+wa-title+ "Hello ReAction"
+               intui:+wa-close-gadget+ t
+               intui:+wa-drag-bar+ t
+               win:+window-parent-group+
+               (ra:new-object (layout:layout-get-class)        ; VGroupObject
+                 layout:+layout-orientation+ layout:+layout-vertical+
+                 layout:+layout-add-child+
+                 (ra:new-object (button:button-get-class)      ; ButtonObject
+                   intui:+ga-id+ 1
+                   intui:+ga-rel-verify+ t
+                   intui:+ga-text+ "_Quit")))))
+    (unwind-protect
+         (progn
+           (ra:open-window win)                                ; RA_OpenWindow
+           (ra:do-window-events ((result code) win)            ; Wait + RA_HandleInput
+             (let ((class (logand result win:+wmhi-classmask+)))
+               (when (or (= class win:+wmhi-closewindow+)
+                         (= class win:+wmhi-gadgetup+))       ; gadget id: (logand result win:+wmhi-gadgetmask+)
+                 (return)))))
+      (ra:dispose-object win))))
+```
+
+`new-object` takes tag/value pairs with integers, foreign pointers,
+`T`/`NIL` and strings; `get-attr`, `set-attrs`, `set-gadget-attrs`,
+`do-method` (any method — `CallHookPkt` on the object's class
+dispatcher, which is what amiga.lib's `DoMethodA` is), `open-requester`
+(requester.class), `iconify`, `new-list` / `free-list-nodes` for the
+label lists of chooser / clicktab / listbrowser, and `with-tags` for the
+class functions that take a tag list themselves.  Setting
+`amiga.reaction:*event-loop-timeout*` makes `do-window-events` return
+after that many seconds — how the examples run unattended.
+`available-p` tells whether the classes can be opened (OS 3.5+/3.2,
+MorphOS); the module itself loads everywhere.
+
+[`examples/amiga/reaction/`](examples/amiga/reaction/) ports the NDK 3.2
+ReAction examples — `buttons`, `checkbox`, `chooser`, `clicktab`,
+`fuelgauge`, `integer`, `listbrowser`, `requester` — and is the
+reference for the classes' use; `tests/amiga/test-reaction.lisp` /
+`tests/test_amiga_reaction.sh` are the module's executable
+specification, and `verify/realamiga/run-reaction-examples.sh` runs and
+photographs every example in FS-UAE.
+
 ### Raw OS bindings (generated)
 
 Every public function, constant and structure of the AmigaOS 3.2 API is
@@ -1303,6 +1380,7 @@ spec plus an LVO, compiled to a dedicated bytecode op — and
 | `(require "amiga/intuition")` | `AMIGA.INTUITION` | Windows, screens, IDCMP events, public screens, pointer sprites |
 | `(require "amiga/graphics")` | `AMIGA.GFX` | Drawing, text, fonts, offscreen bitmaps and blits, planar upload |
 | `(require "amiga/gadtools")` | `AMIGA.GADTOOLS` | Gadgets, menus, bevel boxes, VisualInfo |
+| `(require "amiga/reaction")` | `AMIGA.REACTION` | ReAction / BOOPSI helpers over the raw class modules: `do-method`, `new-object`, `get-attr`, `set-gadget-attrs`, `open-window` / `do-window-events`, `open-requester`, foreign pool and label lists (AmigaOS 3.5+/3.2, MorphOS) |
 | `(require "amiga/audio")` | `AMIGA.AUDIO` | audio.device channel allocation, non-blocking 8-bit sample playback from chip RAM |
 
 The GUI modules are exercised end-to-end by `tests/amiga/test-gui.lisp`
@@ -1406,6 +1484,7 @@ examples/
   amiga/          AmigaOS examples
     arexx/          ARexx client + CygnusEd macro (clamiga.rexx, load-current-file.ced)
     gfx/            Graphics demos (bouncing-lines.lisp)
+    reaction/       ReAction GUI examples ported from the NDK 3.2 (buttons, checkbox, chooser, ...)
 tests/
   test_*.c        Host test suites (C)
   amiga/          Amiga test suite (Lisp)

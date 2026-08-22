@@ -9,7 +9,7 @@
 # "PACKAGE|SYMBOL" lines, the external symbols of every documented extension
 # package EXCEPT CLAMIGA:
 #   - EXT, MP, FFI, GRAY, MOP   -> queried live from the running image
-#   - AMIGA, AMIGA.FFI/INTUITION/GFX/GADTOOLS -> parsed from source
+#   - AMIGA, AMIGA.FFI/INTUITION/GFX/GADTOOLS/REACTION/... -> parsed from source
 #       (these packages don't exist in the host build)
 #
 # CLAMIGA is handled separately: it exports ~224 internal %/*-prefixed helpers
@@ -82,6 +82,7 @@ generate() {
         amiga_lib_exports "AMIGA.INTUITION" "$ROOT/lib/amiga/intuition.lisp"
         amiga_lib_exports "AMIGA.GFX"       "$ROOT/lib/amiga/graphics.lisp"
         amiga_lib_exports "AMIGA.GADTOOLS"  "$ROOT/lib/amiga/gadtools.lisp"
+        amiga_lib_exports "AMIGA.REACTION"  "$ROOT/lib/amiga/reaction.lisp"
         amiga_lib_exports "AMIGA.EXEC"      "$ROOT/lib/amiga/exec.lisp"
         amiga_lib_exports "AMIGA.AUDIO"     "$ROOT/lib/amiga/audio.lisp"
         amiga_lib_exports "AMIGA.AREXX"     "$ROOT/lib/amiga/arexx.lisp"

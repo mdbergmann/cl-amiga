@@ -51,6 +51,7 @@ make -f Makefile.cross amiga        # Cross-compile to build/cross/clamiga (m68k
 make -f Makefile.cross amiga FPU=1  # Hard-float variant to build/cross-fpu/clamiga (requires FPU)
 make -f Makefile.cross amiga WIDE=1 # Wide-string variant (CHAR-CODE-LIMIT > 65533, for flexi-streams/drakma); composes with FPU=1; releases stay narrow
 make -f Makefile.cross test-amiga   # Cross-compile, copy binary, launch FS-UAE, verify results
+make -f Makefile.cross examples-amiga # Run the ReAction examples unattended in FS-UAE, screenshots to build/amiga/shots/
 make -f Makefile.cross clean        # Remove cross-build artifacts
 ```
 - Uses `m68k-amigaos-gcc` toolchain from `tools/m68k-amigaos-gcc/prefix`
