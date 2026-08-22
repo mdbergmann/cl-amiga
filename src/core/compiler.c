@@ -4377,7 +4377,8 @@ static void compile_call(CL_Compiler *c, CL_Obj form)
     /* AmigaOS FFI fast-path: (amiga:%ffi-call base-sym offset regspec args...)
      * Form invariant (defcfun is the only emitter): arg 0 is a symbol literal
      * naming the library-base var, arg 1 is the LVO offset (fixnum), arg 2 is
-     * the packed regspec (fixnum, bit 31 = void-p).  The rest are regular
+     * the packed regspec (fixnum; 7 register nibbles in bits 0-27, result
+     * kind in bits 28-29 — CL_AMIGA_RES_* in builtins.h).  The rest are regular
      * expressions, evaluated and pushed in order, then OP_AMIGA_CALL pops
      * them and trampolines.  Skips the OP_FLOAD + OP_CALL dispatch and the
      * call_builtin marshalling for every library call. */

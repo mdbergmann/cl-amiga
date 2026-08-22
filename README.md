@@ -1165,14 +1165,112 @@ runnable examples; the Lambda's Tale engine's blitted wall graphics
             (format t "Button clicked!~%")))))))
 ```
 
-### Raw FFI Access
+### Raw OS bindings (generated)
 
-When the abstractions aren't enough, drop to raw library calls:
+Every public function, constant and structure of the AmigaOS 3.2 API is
+available as a **generated** binding module under `lib/amiga/raw/` — one
+module per library / NDK include subsystem, loaded on demand:
 
 ```lisp
-(require "ffi")
+(require "amiga/raw/intuition")
+(require "amiga/raw/graphics")
 
-;; Call any AmigaOS library function by offset and register spec
+;; C: OpenWindowTagList(newWindow, tagList) -> struct Window *
+(amiga.ffi:with-tag-list (tags amiga.raw.intuition:+wa-width+ 320
+                               amiga.raw.intuition:+wa-height+ 200
+                               amiga.raw.intuition:+wa-idcmp+
+                               amiga.raw.intuition:+idcmp-closewindow+)
+  (let* ((win (amiga.raw.intuition:open-window-tag-list nil tags))  ; foreign pointer, NIL on failure
+         (rp  (amiga.raw.intuition:window-rport win)))               ; struct Window field
+    (amiga.raw.graphics:set-a-pen rp 1)
+    (amiga.raw.graphics:move rp 10 20)
+    (ffi:with-foreign-string (s "Hello from the raw API")
+      (amiga.raw.graphics:text rp s 22))
+    (amiga.raw.intuition:close-window win)))
+```
+
+What a module contains, all derived mechanically from the SDK files:
+
+- **Functions** — `amiga.ffi:defcfun` wrappers for every public library
+  function (LVO, registers and arity from the NDK's `*_lib.sfd`), with the
+  d0 result converted from the C return type: `struct X *`/`APTR`/`STRPTR`
+  come back as a foreign pointer (`NIL` for NULL), `LONG` is signed,
+  `BOOL` is `T`/`NIL`, `VOID` returns `NIL`, `ULONG`/`BPTR`/`Tag` stay
+  integers.  Arguments are integers or foreign pointers (`NIL` = NULL);
+  strings go through `ffi:with-foreign-string`.  The C prototype is the
+  docstring.  A dozen functions with more than seven register arguments
+  (`BltBitMap`, `ClipBlit`, …) go through `amiga:call-library`; the few
+  that return a `DOUBLE`, pass register pairs or use A5 are listed as
+  `;; skipped` comments in the module.
+- **Constants** — every `EQU`, `ENUM`/`EITEM` and `BITDEF` of the matching
+  assembler includes as `+name+`: `+idcmp-closewindow+`, `+wa-left+`,
+  `+memf-chip+`, `+mode-newfile+`, `+adcmd-allocate+` …
+- **Structures** — `ffi:defcstruct` layouts for every `STRUCTURE`, with
+  the NDK's own offsets and sizes: `(amiga.raw.intuition:window-width w)`,
+  `(setf (amiga.raw.gadtools:new-gadget-left-edge ng) 10)`,
+  `amiga.raw.exec:*io-std-req-size*`.  Pointer fields (`APTR`) read as
+  foreign pointers, embedded structs as a pointer to the field.
+- **The library base** — `*intuition-base*` etc., opened at `require` time
+  (a missing library fails there, with its name); `*intuition-version*`
+  is the running `lib_Version`.  Device and resource tables
+  (`timer`, `cia`, …) have no `OpenLibrary`; their base variable starts
+  `NIL` for you to set.
+
+Naming is mechanical: CamelCase splits into words, `_` becomes `-`,
+everything is lowercased — `OpenWindowTagList` → `open-window-tag-list`,
+`ModifyIDCMP` → `modify-idcmp`, `SetAPen` → `set-a-pen`, `GA_Left` →
+`+ga-left+`, `wd_RPort` → `window-rport` (only `RastPort`, `RPort` and
+`BitMap` stay one word: `rastport`, `bitmap`).  Names that collide with
+`CL` (`dos.library`'s `Open`, `Close`, `Read`, `Write`, `Format`;
+`exec.library`'s `Signal`, `Remove`) are shadowed, so
+`amiga.raw.dos:open` is its own symbol and `cl:open` is untouched.
+
+**Platforms.** The same modules load on AmigaOS 3.x and MorphOS.  The
+generator merges the MorphOS SDK's function tables with the NDK's: the
+1100+ functions both provide at the same vector are unconditional; the
+OS 3.2 additions MorphOS lacks (or places something else at — `ShowWindow`,
+`ErrorOutput`, `NewMinList`, the diskfont outline API …) exist only when
+`:morphos` is absent, MorphOS' own extensions (`AllocVecPooled`,
+`GetMonitorList`, plus the MorphOS-only libraries on the generator's
+allowlist — `muimaster`, `ahi`, `cybergraphics` by default, function
+tables only) only when it is present, and functions newer than OS 3.0
+are also gated on the running library's version — so a call that would
+jump into a wrong or missing vector is an "undefined function" error
+instead.  On the host (macOS/Linux/Windows) the modules load too — the
+base stays `NIL` and any call reports that — which is how they are
+unit-tested.
+
+The modules are committed; regenerate them after updating the NDK
+submodule with `make gen-amiga-bindings` (add
+`MOS_SDK=/path/to/morphos/os-include` — the copy with `fd/` and `clib/` —
+to merge MorphOS; without it the output is AmigaOS-only).  The
+generator is `scripts/gen-amiga-bindings.lisp` (runs on the host build of
+clamiga) and cross-checks every LVO against the NDK's own `lvo/*.i` before
+writing anything.  Its executable specification is
+`tests/test_amiga_bindgen.sh` (fixture SDK + checks of the committed
+output); the Amiga-side calls are exercised by
+`tests/amiga/test-raw-bindings.lisp`.
+
+### Raw FFI Access
+
+Underneath the generated modules sits `amiga.ffi:defcfun` — a register
+spec plus an LVO, compiled to a dedicated bytecode op — and
+`ffi:defcstruct`; both are available for hand-written bindings:
+
+```lisp
+(require "amiga/ffi")
+
+;; WritePixel(rp, x, y) -> LONG, graphics.library LVO -324
+(defvar *gfx* (amiga.ffi:open-library-or-die "graphics.library" 39))
+(amiga.ffi:defcfun write-pixel *gfx* -324 (:a1 rp :d0 x :d1 y)
+  :result :signed)          ; :unsigned (default) :void :pointer :bool :u16 :i16 :u8 :i8
+
+;; struct layout with explicit offsets; :fptr = foreign pointer (NIL for NULL),
+;; (:struct n) = embedded struct, (:array type n) = inline array
+(ffi:defcstruct (rect :size 8)
+  (min-x :i16 0) (min-y :i16 2) (max-x :i16 4) (max-y :i16 6))
+
+;; or call by offset and register plist without any definition
 (let ((dos (amiga:open-library "dos.library" 36)))
   ;; Delay(ticks) — dos.library offset -198, d1 = ticks
   (amiga:call-library dos -198 (list :d1 50))
@@ -1186,7 +1284,8 @@ When the abstractions aren't enough, drop to raw library calls:
 | Module | Package | Description |
 |--------|---------|-------------|
 | `(require "ffi")` | `FFI` | Foreign pointers, typed peek/poke, defcstruct (all platforms); dlopen/libffi calls + callbacks (host) |
-| `(require "amiga/ffi")` | `AMIGA.FFI` | Tag lists, defcfun, with-library (AmigaOS) |
+| `(require "amiga/ffi")` | `AMIGA.FFI` | Tag lists, defcfun, with-library, open-library-or-die, library-version (AmigaOS) |
+| `(require "amiga/raw/<lib>")` | `AMIGA.RAW.<LIB>` | Generated 1:1 bindings for every OS library (`exec`, `dos`, `intuition`, `graphics`, `utility`, `asl`, `locale`, `iffparse`, `datatypes`, `rexxsyslib`, …), device/resource tables (`timer`, `cia`, …) and header-only constant/struct modules (`devices/audio`, `hardware/custom`, …) — see above |
 | `(require "amiga/exec")` | `AMIGA.EXEC` | AvailMem/MEMF_* memory introspection, chip-RAM upload helper |
 | `(require "amiga/intuition")` | `AMIGA.INTUITION` | Windows, screens, IDCMP events, public screens, pointer sprites |
 | `(require "amiga/graphics")` | `AMIGA.GFX` | Drawing, text, fonts, offscreen bitmaps and blits, planar upload |
@@ -1284,6 +1383,8 @@ lib/
     intuition.lisp  Windows, screens, IDCMP events
     graphics.lisp   Drawing, text rendering
     gadtools.lisp   GadTools gadgets, menus
+    raw/            GENERATED 1:1 OS bindings, one module per library /
+                    include subsystem (scripts/gen-amiga-bindings.lisp)
 contrib/
   shims/          swank stub for Quicklisp (closer-mop / trivial-cltl2 /
                   introspect-environment / trivial-garbage now live as

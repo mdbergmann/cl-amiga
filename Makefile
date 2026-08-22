@@ -208,7 +208,7 @@ test_batch test_boot_log test_mx_error_context \
                 test_compile_file_stderr test_fasl_cache_dir test_make_load_form \
                 test_struct_slot_access test_defconstant_fasl test_peephole_diff \
                 test_defvar_special_fasl test_stack_depth test_argv_utf8 \
-                test_utf8_filenames test_image
+                test_utf8_filenames test_image test_amiga_bindgen
 
 # The two that drive make itself and take no clamiga binary.
 SHELL_TESTS_NOARG = test_cross_wide_knob test_test_extra
@@ -440,6 +440,14 @@ verify-amiga:
 	fi
 
 # Pre-compile boot files to FASL for faster startup
+# Regenerate the raw AmigaOS/MorphOS API bindings (lib/amiga/raw/) from the
+# NDK inside the cross toolchain and, when MOS_SDK points at a copy of the
+# MorphOS SDK's os-include (fd/ + clib/), the MorphOS tables.  The output is
+# committed; CI checks it (tests/test_amiga_bindgen.sh) but never needs the
+# SDKs.  See README "Raw OS bindings".
+gen-amiga-bindings: $(HOST_BIN)
+	MOS_SDK="$(MOS_SDK)" sh scripts/gen-amiga-bindings.sh
+
 fasl: $(HOST_BIN)
 	@echo "=== Compiling boot.lisp → lib/boot.fasl ==="
 	$(HOST_BIN) --no-userinit --heap 24M \

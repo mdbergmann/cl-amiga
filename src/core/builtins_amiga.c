@@ -20,11 +20,62 @@
 #include <stdio.h>
 
 /* Symbol AMIGA::%FFI-CALL — sentinel that the compiler matches to emit
- * OP_AMIGA_CALL.  Initialized to CL_NIL on non-Amiga builds (where the
- * AMIGA package doesn't exist), to the actual symbol on Amiga.  Declared
- * in compiler.h so compile_call can reference it without a hard dep on
- * Amiga-only headers. */
+ * OP_AMIGA_CALL.  Interned on every platform so binding modules compile
+ * identically everywhere (the host VM's dispatch stub then signals a clear
+ * "not available on this platform" error if such a call is ever executed).
+ * Declared in compiler.h so compile_call can reference it without a hard
+ * dep on Amiga-only headers. */
 CL_Obj cl_amiga_ffi_call_sym = CL_NIL;
+
+/* Box a raw 32-bit d0 result per CL_AMIGA_RES_* (builtins.h).  Shared by
+ * the VM/JIT dispatch and the CALL-LIBRARY* builtins; platform-neutral so
+ * tests/test_amiga_ffi.c can pin the encoding on the host.
+ *
+ * Pointers: NULL becomes NIL so callers can write (or (open-x) (error ..))
+ * instead of testing FFI:NULL-POINTER-P; the foreign pointer is unsized
+ * and unowned (the OS owns the object).  Signed: a LONG result of -1 used
+ * to come back as 4294967295 — the d0 pattern is sign-extended here
+ * instead.  Anything that does not fit a fixnum is a 2-limb bignum. */
+CL_Obj cl_amiga_box_result(uint32_t result, int kind)
+{
+    uint32_t mag;
+    uint32_t sign = 0;
+    CL_Obj bn;
+    CL_Bignum *b;
+
+    switch (kind) {
+    case CL_AMIGA_RES_VOID:
+        return CL_NIL;
+    case CL_AMIGA_RES_POINTER:
+        if (result == 0)
+            return CL_NIL;
+        return cl_make_foreign_pointer(result, 0, 0);
+    case CL_AMIGA_RES_SIGNED: {
+        int32_t sv = (int32_t)result;
+        if (sv >= CL_FIXNUM_MIN && sv <= CL_FIXNUM_MAX)
+            return CL_MAKE_FIXNUM(sv);
+        if (sv < 0) {
+            sign = 1;
+            mag = (uint32_t)(-(int64_t)sv);
+        } else {
+            mag = (uint32_t)sv;
+        }
+        break;
+    }
+    default: /* CL_AMIGA_RES_UNSIGNED */
+        if (result <= (uint32_t)CL_FIXNUM_MAX)
+            return CL_MAKE_FIXNUM((int32_t)result);
+        mag = result;
+        break;
+    }
+    /* |value| >= 2^30 here, so the high limb is never zero — the bignum
+     * is already normalized. */
+    bn = cl_make_bignum(2, sign);
+    b = (CL_Bignum *)CL_OBJ_TO_PTR(bn);
+    b->limbs[0] = (uint16_t)(mag & 0xFFFF);
+    b->limbs[1] = (uint16_t)(mag >> 16);
+    return bn;
+}
 
 #ifdef PLATFORM_AMIGA
 
@@ -133,12 +184,15 @@ static CL_Obj bi_amiga_close_library(CL_Obj *args, int nargs)
     return CL_T;
 }
 
-/* (amiga:call-library base offset reg-spec) → integer
+/* (amiga:call-library base offset reg-spec &optional result-kind) → object
  *
  * reg-spec is a plist: (:D0 val :A0 ptr :D1 42 ...)
  * Each keyword names a 68k register, each value is the argument.
  * Values can be fixnums, bignums, or foreign pointers.
- * Returns d0 result as integer. */
+ * RESULT-KIND is one of the CL_AMIGA_RES_* fixnums (default 0 = d0 as an
+ * unsigned integer) — the plist path has no regspec to carry it, and the
+ * generated bindings use this entry for the handful of OS functions with
+ * more than seven register arguments. */
 static CL_Obj bi_amiga_call_library(CL_Obj *args, int nargs)
 {
     CL_ForeignPtr *fp;
@@ -147,8 +201,7 @@ static CL_Obj bi_amiga_call_library(CL_Obj *args, int nargs)
     uint16_t reg_mask = 0;
     CL_Obj spec;
     uint32_t result;
-
-    (void)nargs;
+    int kind = CL_AMIGA_RES_UNSIGNED;
 
     if (!CL_FOREIGN_POINTER_P(args[0]))
         cl_error(CL_ERR_TYPE, "AMIGA:CALL-LIBRARY: base must be a foreign pointer");
@@ -157,6 +210,15 @@ static CL_Obj bi_amiga_call_library(CL_Obj *args, int nargs)
     if (!CL_FIXNUM_P(args[1]))
         cl_error(CL_ERR_TYPE, "AMIGA:CALL-LIBRARY: offset must be a fixnum");
     offset = (int16_t)CL_FIXNUM_VAL(args[1]);
+
+    if (nargs > 3 && !CL_NULL_P(args[3])) {
+        if (!CL_FIXNUM_P(args[3]) || CL_FIXNUM_VAL(args[3]) < 0 ||
+            CL_FIXNUM_VAL(args[3]) > 3)
+            cl_error(CL_ERR_ARGS,
+                     "AMIGA:CALL-LIBRARY: result-kind must be 0 (unsigned), "
+                     "1 (void), 2 (pointer) or 3 (signed)");
+        kind = (int)CL_FIXNUM_VAL(args[3]);
+    }
 
     /* Clear register array */
     memset(regs, 0, sizeof(regs));
@@ -183,19 +245,10 @@ static CL_Obj bi_amiga_call_library(CL_Obj *args, int nargs)
     }
 
     result = platform_amiga_call(fp->address, offset, regs, reg_mask);
-
-    if (result <= (uint32_t)CL_FIXNUM_MAX)
-        return CL_MAKE_FIXNUM((int32_t)result);
-    else {
-        CL_Obj bn = cl_make_bignum(2, 0);
-        CL_Bignum *b = (CL_Bignum *)CL_OBJ_TO_PTR(bn);
-        b->limbs[0] = (uint16_t)(result & 0xFFFF);
-        b->limbs[1] = (uint16_t)(result >> 16);
-        return bn;
-    }
+    return cl_amiga_box_result(result, kind);
 }
 
-/* (amiga:call-library-fast base offset regspec &rest values) → integer
+/* (amiga:call-library-fast base offset regspec &rest values) → object
  *
  * Fast path: register layout is encoded in REGSPEC as a fixnum of nibbles
  * (low to high), one per value argument:
@@ -204,10 +257,12 @@ static CL_Obj bi_amiga_call_library(CL_Obj *args, int nargs)
  *   ...
  *   bits 24-27 -> register index for value 6
  * Indices match decode_register_keyword (D0..D7=0..7, A0..A5=8..13).
+ * Bits 28-29 select the result kind (CL_AMIGA_RES_*, builtins.h).
  *
  * This avoids the per-call list allocation and keyword walk that
  * CALL-LIBRARY does, at the cost of capping at 7 register args
- * (sufficient for all standard Amiga library calls). */
+ * (sufficient for all but a dozen Amiga library calls — those go through
+ * CALL-LIBRARY). */
 static CL_Obj bi_amiga_call_library_fast(CL_Obj *args, int nargs)
 {
     CL_ForeignPtr *fp;
@@ -249,26 +304,17 @@ static CL_Obj bi_amiga_call_library_fast(CL_Obj *args, int nargs)
     }
 
     result = platform_amiga_call(fp->address, offset, regs, reg_mask);
-
-    if (result <= (uint32_t)CL_FIXNUM_MAX)
-        return CL_MAKE_FIXNUM((int32_t)result);
-    else {
-        CL_Obj bn = cl_make_bignum(2, 0);
-        CL_Bignum *b = (CL_Bignum *)CL_OBJ_TO_PTR(bn);
-        b->limbs[0] = (uint16_t)(result & 0xFFFF);
-        b->limbs[1] = (uint16_t)(result >> 16);
-        return bn;
-    }
+    return cl_amiga_box_result(result, CL_AMIGA_RES_KIND(regspec));
 }
 
 /* OP_AMIGA_CALL dispatch helper — called from vm.c when the dedicated
  * bytecode op fires.  Decodes regspec into the trampoline registers,
- * invokes the library, and returns the boxed result (or CL_NIL if
- * void_p is set).  The caller has already validated base_addr.
+ * invokes the library, and returns the boxed result.  The caller has
+ * already validated base_addr.
  *
  * regspec layout: low 28 bits = 7 nibbles (one register index per arg),
- * bit 28 = void-p (skip result boxing).  Kept inside the 30-bit fixnum
- * range so defcfun can emit it as a literal fixnum. */
+ * bits 28-29 = result kind (CL_AMIGA_RES_*).  Kept inside the positive
+ * fixnum range so defcfun can emit it as a literal fixnum. */
 CL_Obj cl_amiga_ffi_call_dispatch(uint32_t base_addr, int16_t offset,
                                   uint32_t regspec, int n_args,
                                   CL_Obj *arg_base)
@@ -277,7 +323,6 @@ CL_Obj cl_amiga_ffi_call_dispatch(uint32_t base_addr, int16_t offset,
     uint16_t reg_mask = 0;
     int i;
     uint32_t result;
-    int void_p = (int)((regspec >> 28) & 1);
 
     if (n_args < 0 || n_args > 7)
         cl_error(CL_ERR_ARGS,
@@ -295,18 +340,7 @@ CL_Obj cl_amiga_ffi_call_dispatch(uint32_t base_addr, int16_t offset,
     }
 
     result = platform_amiga_call(base_addr, offset, regs, reg_mask);
-
-    if (void_p)
-        return CL_NIL;
-    if (result <= (uint32_t)CL_FIXNUM_MAX)
-        return CL_MAKE_FIXNUM((int32_t)result);
-    else {
-        CL_Obj bn = cl_make_bignum(2, 0);
-        CL_Bignum *b = (CL_Bignum *)CL_OBJ_TO_PTR(bn);
-        b->limbs[0] = (uint16_t)(result & 0xFFFF);
-        b->limbs[1] = (uint16_t)(result >> 16);
-        return bn;
-    }
+    return cl_amiga_box_result(result, CL_AMIGA_RES_KIND(regspec));
 }
 
 /* (amiga:alloc-chip size) → foreign-pointer */
@@ -502,7 +536,13 @@ static CL_Obj bi_amiga_arexx_send(CL_Obj *args, int nargs)
     return cl_mv_values[0];
 }
 
-#else /* !PLATFORM_AMIGA — host stub so vm.c links cleanly */
+#else /* !PLATFORM_AMIGA — host stubs.
+ *
+ * The AMIGA package and every builtin name exist on the host too, so that
+ * the lib/amiga/ tree (including the generated lib/amiga/raw/ bindings) can
+ * be read, compiled, FASL'd and unit-tested here.  Each stub signals a clear
+ * error naming the function; the VM dispatch stub below covers the
+ * OP_AMIGA_CALL path that defcfun compiles to. */
 
 CL_Obj cl_amiga_ffi_call_dispatch(uint32_t base_addr, int16_t offset,
                                   uint32_t regspec, int n_args,
@@ -511,8 +551,37 @@ CL_Obj cl_amiga_ffi_call_dispatch(uint32_t base_addr, int16_t offset,
     (void)base_addr; (void)offset; (void)regspec;
     (void)n_args; (void)arg_base;
     cl_error(CL_ERR_GENERAL,
-             "OP_AMIGA_CALL emitted on non-Amiga build — defcfun expansion bug");
+             "AMIGA:%%FFI-CALL: AmigaOS library calls are only available on "
+             "AmigaOS/MorphOS builds (this is the host build)");
     return CL_NIL;
+}
+
+#define AMIGA_HOST_STUB(cname, lispname)                                    \
+    static CL_Obj cname(CL_Obj *args, int nargs)                            \
+    {                                                                       \
+        (void)args; (void)nargs;                                            \
+        cl_error(CL_ERR_GENERAL, "AMIGA:" lispname " is only available on " \
+                 "AmigaOS/MorphOS builds (this is the host build)");        \
+        return CL_NIL;                                                      \
+    }
+
+AMIGA_HOST_STUB(bi_amiga_open_library,       "OPEN-LIBRARY")
+AMIGA_HOST_STUB(bi_amiga_close_library,      "CLOSE-LIBRARY")
+AMIGA_HOST_STUB(bi_amiga_call_library,       "CALL-LIBRARY")
+AMIGA_HOST_STUB(bi_amiga_call_library_fast,  "CALL-LIBRARY-FAST")
+AMIGA_HOST_STUB(bi_amiga_alloc_chip,         "ALLOC-CHIP")
+AMIGA_HOST_STUB(bi_amiga_free_chip,          "FREE-CHIP")
+AMIGA_HOST_STUB(bi_amiga_arexx_open,         "AREXX-OPEN")
+AMIGA_HOST_STUB(bi_amiga_arexx_close,        "AREXX-CLOSE")
+AMIGA_HOST_STUB(bi_amiga_arexx_port_name,    "AREXX-PORT-NAME")
+AMIGA_HOST_STUB(bi_amiga_arexx_request_stop, "AREXX-REQUEST-STOP")
+AMIGA_HOST_STUB(bi_amiga_arexx_wait,         "AREXX-WAIT")
+AMIGA_HOST_STUB(bi_amiga_arexx_reply,        "AREXX-REPLY")
+AMIGA_HOST_STUB(bi_amiga_arexx_send,         "AREXX-SEND")
+
+static void amiga_defun(const char *name, CL_CFunc func, int min, int max)
+{
+    cl_register_builtin_exported(name, func, min, max, cl_package_amiga);
 }
 
 #endif /* PLATFORM_AMIGA */
@@ -523,10 +592,7 @@ CL_Obj cl_amiga_ffi_call_dispatch(uint32_t base_addr, int16_t offset,
 
 void cl_builtins_amiga_init(void)
 {
-#ifndef PLATFORM_AMIGA
-    /* AMIGA package only exists on AmigaOS */
-    return;
-#else
+#ifdef PLATFORM_AMIGA
     /* Pre-intern register keywords */
     kw_d0 = cl_intern_in("D0", 2, cl_package_keyword);
     kw_d1 = cl_intern_in("D1", 2, cl_package_keyword);
@@ -543,10 +609,29 @@ void cl_builtins_amiga_init(void)
     kw_a4 = cl_intern_in("A4", 2, cl_package_keyword);
     kw_a5 = cl_intern_in("A5", 2, cl_package_keyword);
 
-    /* Register builtins in AMIGA package */
+    /* Register cached keyword symbols for GC compaction forwarding */
+    cl_gc_register_root(&kw_d0);
+    cl_gc_register_root(&kw_d1);
+    cl_gc_register_root(&kw_d2);
+    cl_gc_register_root(&kw_d3);
+    cl_gc_register_root(&kw_d4);
+    cl_gc_register_root(&kw_d5);
+    cl_gc_register_root(&kw_d6);
+    cl_gc_register_root(&kw_d7);
+    cl_gc_register_root(&kw_a0);
+    cl_gc_register_root(&kw_a1);
+    cl_gc_register_root(&kw_a2);
+    cl_gc_register_root(&kw_a3);
+    cl_gc_register_root(&kw_a4);
+    cl_gc_register_root(&kw_a5);
+#endif /* PLATFORM_AMIGA */
+
+    /* Register builtins in AMIGA package — the real implementations on
+     * AmigaOS/MorphOS, the AMIGA_HOST_STUB errors elsewhere (same names
+     * and arities, so the package surface is identical on every build). */
     amiga_defun("OPEN-LIBRARY",      bi_amiga_open_library,       1,  2);
     amiga_defun("CLOSE-LIBRARY",     bi_amiga_close_library,      1,  1);
-    amiga_defun("CALL-LIBRARY",      bi_amiga_call_library,       3,  3);
+    amiga_defun("CALL-LIBRARY",      bi_amiga_call_library,       3,  4);
     amiga_defun("CALL-LIBRARY-FAST", bi_amiga_call_library_fast,  3, -1);
     amiga_defun("ALLOC-CHIP",        bi_amiga_alloc_chip,         1,  1);
     amiga_defun("FREE-CHIP",         bi_amiga_free_chip,          1,  1);
@@ -567,22 +652,5 @@ void cl_builtins_amiga_init(void)
      * package gymnastics; user code shouldn't write it directly. */
     cl_amiga_ffi_call_sym = cl_intern_in("%FFI-CALL", 9, cl_package_amiga);
     cl_export_symbol(cl_amiga_ffi_call_sym, cl_package_amiga);
-
-    /* Register cached symbols for GC compaction forwarding */
     cl_gc_register_root(&cl_amiga_ffi_call_sym);
-    cl_gc_register_root(&kw_d0);
-    cl_gc_register_root(&kw_d1);
-    cl_gc_register_root(&kw_d2);
-    cl_gc_register_root(&kw_d3);
-    cl_gc_register_root(&kw_d4);
-    cl_gc_register_root(&kw_d5);
-    cl_gc_register_root(&kw_d6);
-    cl_gc_register_root(&kw_d7);
-    cl_gc_register_root(&kw_a0);
-    cl_gc_register_root(&kw_a1);
-    cl_gc_register_root(&kw_a2);
-    cl_gc_register_root(&kw_a3);
-    cl_gc_register_root(&kw_a4);
-    cl_gc_register_root(&kw_a5);
-#endif /* PLATFORM_AMIGA */
 }

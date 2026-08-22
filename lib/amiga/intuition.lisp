@@ -136,7 +136,7 @@
 (defconstant +wflg-borderless+      #x0800)
 (defconstant +wflg-activate+        #x1000)
 (defconstant +wflg-gimmezerozero+   #x0400)
-(defconstant +wflg-reportmouse+     #x0004)
+(defconstant +wflg-reportmouse+     #x0200)  ; WFLG_REPORTMOUSE (was wrongly 4 = DEPTHGADGET)
 (defconstant +wflg-rmbtrap+         #x00010000)
 
 ;;; ================================================================

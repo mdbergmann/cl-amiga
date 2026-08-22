@@ -4540,6 +4540,11 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 cl_error(CL_ERR_UNBOUND,
                          "OP_AMIGA_CALL: unbound library base %s",
                          cl_symbol_name(base_sym));
+            if (CL_NULL_P(base_val))
+                cl_error(CL_ERR_GENERAL,
+                         "OP_AMIGA_CALL: library base %s is NIL — the library "
+                         "is not open (bindings only open it on AmigaOS/MorphOS)",
+                         cl_symbol_name(base_sym));
             if (!CL_FOREIGN_POINTER_P(base_val))
                 cl_error(CL_ERR_TYPE,
                          "OP_AMIGA_CALL: %s is not a foreign pointer",

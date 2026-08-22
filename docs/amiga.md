@@ -67,7 +67,14 @@ Conveniences over `AMIGA`/`FFI` for the AmigaOS calling conventions.
 | `(make-tag-list pairs)` | function | Build an AmigaOS TagItem array from `pairs`, a flat list of tag/value pairs; caller frees with `ffi:free-foreign` |
 | `(with-tag-list (var &rest pairs) &body body)` | macro | Build a tag list from `pairs`, bind it to `var`, run `body`, free it after |
 | `(with-library (var name &optional (version 0)) &body body)` | macro | Open library `name`, bind the base to `var`, run `body`, close it after |
-| `(defcfun name library-base offset (&rest reg-spec) &key void)` | macro | Define a Lisp wrapper `name` for the library function at `offset` in `library-base`; `reg-spec` alternates register keywords and parameter names (`(:a1 rastport :d0 x …)`); `:void t` skips boxing the d0 result |
+| `(open-library-or-die name &optional (version 0))` | function | `OpenLibrary` that signals a descriptive error (naming the library) instead of returning NIL |
+| `(library-version base)` | function | The `lib_Version` of an open library base (the OS revision actually running) |
+| `(defcfun name library-base offset (&rest reg-spec) &key void result doc)` | macro | Define a Lisp wrapper `name` for the library function at `offset` in `library-base`; `reg-spec` alternates register keywords and parameter names (`(:a1 rastport :d0 x …)`); `:result` chooses how d0 comes back — `:unsigned` (default), `:void`, `:pointer` (foreign pointer, NIL for NULL), `:signed`, `:bool`, `:u16`/`:i16`/`:u8`/`:i8` (`:void t` is the legacy spelling of `:result :void`); more than seven registers fall back to `amiga:call-library`; `:doc` is the docstring |
+
+The generated modules under `lib/amiga/raw/` (`(require "amiga/raw/<lib>")`,
+packages `AMIGA.RAW.<LIB>`) are built on these: one `defcfun` per OS
+function, `defconstant`s and `ffi:defcstruct`s from the NDK includes — see
+*Raw OS bindings* in the main README.
 
 ---
 

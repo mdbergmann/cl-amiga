@@ -130,6 +130,10 @@ done
 cp lib/asdf.lisp lib/quicklisp.lisp lib/quicklisp-compat.lisp \
    lib/quicklisp-install.lisp "$STAGE/lib/"
 cp lib/amiga/*.lisp "$STAGE/lib/amiga/"
+# the generated raw OS bindings (lib/amiga/raw/**, source-shipped like the
+# rest of lib/amiga: compiled into the faslcache on first require)
+mkdir -p "$STAGE/lib/amiga/raw"
+cp -R lib/amiga/raw/. "$STAGE/lib/amiga/raw/"
 cp -R lib/shims "$STAGE/lib/shims"
 
 # docs: package API reference only (no benchmarks/screenshots)

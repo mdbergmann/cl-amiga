@@ -1187,10 +1187,13 @@ void cl_package_init(void)
     cl_package_ffi = cl_make_package("FFI");
     CL_GC_PROTECT(cl_package_ffi);
 
-#ifdef PLATFORM_AMIGA
+    /* The AMIGA package exists on every platform so that AmigaOS binding
+     * modules (the lib/amiga/ tree) can be READ, compiled and unit-tested
+     * on the host — only the library-call builtins are platform-specific
+     * (builtins_amiga.c installs stubs that signal a clear error on
+     * non-Amiga builds). */
     cl_package_amiga = cl_make_package("AMIGA");
     CL_GC_PROTECT(cl_package_amiga);
-#endif
 
     /* Register in global registry */
     cl_register_package(cl_package_cl);
@@ -1201,9 +1204,7 @@ void cl_package_init(void)
     cl_register_package(cl_package_mop);
     cl_register_package(cl_package_mp);
     cl_register_package(cl_package_ffi);
-#ifdef PLATFORM_AMIGA
     cl_register_package(cl_package_amiga);
-#endif
 
     /* Add nicknames.  Derive the package pointer only AFTER the string
      * and cons allocations — cl_package_cl/_cl_user are registered roots,
@@ -1231,9 +1232,7 @@ void cl_package_init(void)
     cl_use_package(cl_package_mop, cl_package_cl_user);
     cl_use_package(cl_package_mp, cl_package_cl_user);
     cl_use_package(cl_package_ffi, cl_package_cl_user);
-#ifdef PLATFORM_AMIGA
     cl_use_package(cl_package_amiga, cl_package_cl_user);
-#endif
 
     /* EXT uses CL */
     cl_use_package(cl_package_cl, cl_package_ext);
@@ -1244,11 +1243,9 @@ void cl_package_init(void)
     /* FFI uses CL */
     cl_use_package(cl_package_cl, cl_package_ffi);
 
-    /* AMIGA uses CL and FFI (Amiga only) */
-#ifdef PLATFORM_AMIGA
+    /* AMIGA uses CL and FFI */
     cl_use_package(cl_package_cl, cl_package_amiga);
     cl_use_package(cl_package_ffi, cl_package_amiga);
-#endif
 
     /* CLAMIGA uses CL; CL uses CLAMIGA so boot.lisp/clos.lisp can
        access internal builtins without package qualification.  Same
@@ -1291,11 +1288,7 @@ void cl_package_init(void)
      * through an unrelated object's old offset, corrupting the global.
      * cl_gc_register_root does not allocate, so no GC can run in the
      * unprotected window before registration. */
-#ifdef PLATFORM_AMIGA
-    CL_GC_UNPROTECT(9);
-#else
-    CL_GC_UNPROTECT(8);
-#endif
+    CL_GC_UNPROTECT(9);   /* CL KEYWORD CL-USER EXT CLAMIGA MOP MP FFI AMIGA */
 
     /* Register package globals for GC compaction forwarding */
     cl_gc_register_root(&cl_package_cl);
@@ -1306,9 +1299,7 @@ void cl_package_init(void)
     cl_gc_register_root(&cl_package_mop);
     cl_gc_register_root(&cl_package_mp);
     cl_gc_register_root(&cl_package_ffi);
-#ifdef PLATFORM_AMIGA
     cl_gc_register_root(&cl_package_amiga);
-#endif
     /* cl_current_package is NOT registered here: it is a per-thread slot
      * (CL_Thread.current_package) marked and forwarded by the thread walk
      * in gc_mark_thread_roots / gc_update_thread_roots.  Registering the

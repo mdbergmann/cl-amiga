@@ -52,6 +52,23 @@ CL_Obj bi_stale_builtin(CL_Obj *args, int nargs);
 void cl_register_builtin_exported(const char *name, CL_CFunc func,
                                   int min, int max, CL_Obj package);
 
+/* AmigaOS library-call result kinds (builtins_amiga.c).  Encoded in bits
+ * 28-29 of the OP_AMIGA_CALL / CALL-LIBRARY-FAST regspec (bits 0-27 hold
+ * the seven register nibbles), so a regspec always stays a positive
+ * 31-bit fixnum.  Kind 1 (void) is the former "bit 28 = void-p" flag —
+ * the encoding is backward compatible with regspecs baked into existing
+ * FASLs. */
+#define CL_AMIGA_RES_UNSIGNED 0   /* d0 as an unsigned 32-bit integer   */
+#define CL_AMIGA_RES_VOID     1   /* discard d0, return NIL              */
+#define CL_AMIGA_RES_POINTER  2   /* d0 as a foreign pointer, NULL -> NIL */
+#define CL_AMIGA_RES_SIGNED   3   /* d0 as a signed 32-bit integer       */
+#define CL_AMIGA_RES_KIND(regspec) ((int)(((regspec) >> 28) & 3))
+
+/* Box a raw d0 result according to KIND.  Compiled on every platform
+ * (unit-tested on the host); the Amiga dispatch paths and the
+ * CALL-LIBRARY* builtins all route their results through it. */
+CL_Obj cl_amiga_box_result(uint32_t result, int kind);
+
 /* COMMON-LISP package handle (defined in package.c); declared here so the
  * shared defun() helper below can register into it without pulling in
  * package.h. */

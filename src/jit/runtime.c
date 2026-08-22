@@ -1302,7 +1302,8 @@ void cl_jit_runtime_kw_prologue(CL_Bytecode *bc, uint32_t nargs,
  *   offset     — LVO offset from the library base (i16 widened to i32
  *                by the caller; passed as int32_t for a clean 4-byte
  *                push slot).
- *   regspec    — packed register spec, bit 28 = void-p.
+ *   regspec    — packed register spec, bits 28-29 = result kind
+ *                (CL_AMIGA_RES_*, builtins.h).
  *   n_args     — number of register args (0..7, validated by dispatch).
  *   operand_top — points at the most-recently-pushed arg on the m68k
  *                 operand stack.  Args lie at operand_top[0..n_args-1]
@@ -1329,6 +1330,11 @@ CL_Obj cl_jit_runtime_amiga_call(CL_Obj base_sym, int32_t offset,
     if (base_val == CL_UNBOUND)
         cl_error(CL_ERR_UNBOUND,
                  "OP_AMIGA_CALL: unbound library base %s",
+                 cl_symbol_name(base_sym));
+    if (CL_NULL_P(base_val))
+        cl_error(CL_ERR_GENERAL,
+                 "OP_AMIGA_CALL: library base %s is NIL — the library "
+                 "is not open (bindings only open it on AmigaOS/MorphOS)",
                  cl_symbol_name(base_sym));
     if (!CL_FOREIGN_POINTER_P(base_val))
         cl_error(CL_ERR_TYPE,

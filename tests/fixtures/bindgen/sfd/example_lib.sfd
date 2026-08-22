@@ -1,0 +1,40 @@
+==id $VER: example_lib.sfd 47.1 (01.01.2026) fixture for tests/test_amiga_bindgen.sh
+==base _ExampleBase
+==basetype struct Library *
+==libname example.library
+==include <libraries/example.h>
+==bias 30
+==public
+* A void call whose register list sits on the next line.
+VOID ExFlush( struct ExThing *thing )
+	(A0)
+struct ExThing *ExCreate( CONST_STRPTR name, ULONG flags ) (A0,D0)
+BOOL ExCheck( struct ExThing *thing, WORD value ) (A0,D0)
+LONG ExCompare( CONST_STRPTR a, CONST_STRPTR b ) (A0,A1)
+UWORD ExCount( struct ExThing *thing ) (A0)
+ULONG ExFlags( struct ExThing *thing ) (A0)
+* function-pointer parameter: the "()" must not be mistaken for the regs
+BOOL ExCallback( struct ExThing *thing,
+	VOID (*hook)() ) (A0,A1)
+==varargs
+struct ExThing *ExCreateTags( CONST_STRPTR name, Tag tag1, ... ) (A0,D0)
+==private
+ULONG ExPrivate() ()
+==public
+==reserve 2
+* name clash with CL:OPEN -> must be shadowed
+APTR Open( CONST_STRPTR name, LONG mode ) (D1,D2)
+* eight registers -> CALL-LIBRARY plist path
+LONG ExBigBlit( struct ExThing *a, WORD x, WORD y, struct ExThing *b,
+	WORD w, WORD h, UBYTE minterm, UBYTE mask ) (A0,D0,D1,A1,D2,D3,D4,D5)
+DOUBLE ExDouble( struct ExThing *thing ) (A0)
+VOID ExSupervisor( APTR code ) (A5)
+LONG ExPair( DOUBLE value ) (D0-D1)
+==version 45
+VOID ExNewV45( struct ExThing *thing ) (A0)
+==version 47
+ULONG ExNewV47( struct ExThing *thing, ULONG mode ) (A0,D0)
+VOID ExMoved( struct ExThing *thing ) (A0)
+==alias
+VOID ExMovedAlias( struct ExThing *thing ) (A0)
+==end

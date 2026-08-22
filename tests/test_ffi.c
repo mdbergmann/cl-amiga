@@ -527,13 +527,19 @@ TEST(lisp_ffi_free_callback)
 #endif
 
 /* ================================================================
- * AMIGA package tests (POSIX: package should not exist)
+ * AMIGA package tests (POSIX: the package exists so lib/amiga/** can be
+ * compiled and tested on the host; its builtins are error stubs — the
+ * full contract is in tests/test_amiga_ffi.c)
  * ================================================================ */
 
 #ifndef PLATFORM_AMIGA
-TEST(lisp_amiga_package_not_on_posix)
+TEST(lisp_amiga_package_present_on_posix_with_stubs)
 {
-    ASSERT_STR_EQ(eval_print("(find-package \"AMIGA\")"), "NIL");
+    ASSERT_STR_EQ(eval_print("(package-name (find-package \"AMIGA\"))"), "\"AMIGA\"");
+    ASSERT_STR_EQ(eval_print("(fboundp 'amiga:open-library)"), "T");
+    /* the stub signals instead of returning a bogus base */
+    ASSERT_STR_EQ(eval_print("(handler-case (amiga:open-library \"dos.library\" 0) "
+                             "  (error () :platform-error))"), ":PLATFORM-ERROR");
 }
 #endif
 
@@ -587,7 +593,7 @@ int main(void)
 
     /* AMIGA package tests */
 #ifndef PLATFORM_AMIGA
-    RUN(lisp_amiga_package_not_on_posix);
+    RUN(lisp_amiga_package_present_on_posix_with_stubs);
 
     /* Host-only: dlopen / libffi calls + callbacks */
     RUN(lisp_ffi_symbol_pointer_found);

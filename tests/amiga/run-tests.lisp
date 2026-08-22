@@ -8883,7 +8883,13 @@
   ; Separate file for the same reader-needs-the-package reason.
   (handler-case
     (load "tests/amiga/test-audio.lisp")
-    (error (e) (format t "ERROR loading audio tests: ~A~%" e))))
+    (error (e) (format t "ERROR loading audio tests: ~A~%" e)))
+
+  ; --- generated raw OS bindings (lib/amiga/raw/) ---
+  ; Separate file for the same reader-needs-the-package reason.
+  (handler-case
+    (load "tests/amiga/test-raw-bindings.lisp")
+    (error (e) (format t "ERROR loading raw-bindings tests: ~A~%" e))))
 
 ; --- Gray streams: (typep gray-stream 'stream) regression ---
 ; Load gray-streams.lisp and verify that a CLOS-based Gray stream instance

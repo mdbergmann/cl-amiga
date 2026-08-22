@@ -1,0 +1,9 @@
+* fixture: a library that exists only in the MorphOS SDK
+==base _MosOnlyBase
+==basetype struct Library *
+==libname mosonly.library
+==bias 30
+==public
+ULONG MO_Version() ()
+APTR MO_Create(ULONG size) (d0)
+==end
