@@ -23,8 +23,10 @@
 ;;;   graphics/text.i
 ;;;   graphics/videocontrol.i
 ;;;   graphics/view.i
+;;;   graphics/collide.h
+;;;   graphics/graphint.h
 ;;;
-;;; 161 functions, 706 constants, 53 structs, 3 skipped (see comments).
+;;; 161 functions, 711 constants, 53 structs, 3 skipped (see comments).
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
 (require "amiga/ffi")
@@ -500,7 +502,8 @@
    "D-BUF-INFO-LINK2" "D-BUF-INFO-COUNT2" "D-BUF-INFO-DISP-MESSAGE" 
    "D-BUF-INFO-USER-DATA2" "D-BUF-INFO-MATCH-LONG" "D-BUF-INFO-COP-PTR1" 
    "D-BUF-INFO-COP-PTR2" "D-BUF-INFO-COP-PTR3" "D-BUF-INFO-BEAM-POS1" 
-   "D-BUF-INFO-BEAM-POS2" "BLT-BITMAP" "BLT-TEMPLATE" "CLEAR-EOL" 
+   "D-BUF-INFO-BEAM-POS2" "+BORDERHIT+" "+TOPHIT+" "+BOTTOMHIT+" 
+   "+LEFTHIT+" "+RIGHTHIT+" "BLT-BITMAP" "BLT-TEMPLATE" "CLEAR-EOL" 
    "CLEAR-SCREEN" "TEXT-LENGTH" "TEXT" "SET-FONT" "OPEN-FONT" "CLOSE-FONT" 
    "ASK-SOFT-STYLE" "SET-SOFT-STYLE" "ADD-BOB" "ADD-V-SPRITE" 
    "DO-COLLISION" "DRAW-G-LIST" "INIT-GELS" "INIT-MASKS" "REM-I-BOB" 
@@ -2013,6 +2016,13 @@
   (beam-pos1 :u16 80)
   (beam-pos2 :u16 82)
 )
+
+;;; --- constants from graphics/collide.h ---
+(defconstant +borderhit+ 0)
+(defconstant +tophit+ 1)
+(defconstant +bottomhit+ 2)
+(defconstant +lefthit+ 4)
+(defconstant +righthit+ 8)
 
 ;;; --- functions (graphics_lib.sfd + MorphOS SDK) ---
 (amiga.ffi:defcfun blt-bitmap *graphics-base* -30 (:a0 src-bitmap :d0 x-src :d1 y-src :a1 dest-bitmap :d2 x-dest :d3 y-dest :d4 x-size :d5 y-size :d6 minterm :d7 mask :a2 temp-a)

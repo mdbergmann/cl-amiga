@@ -3,8 +3,10 @@
 ;;; Sources:
 ;;;   mathieeesingtrans_lib.sfd ($VER: mathieeesingtrans_lib.sfd 47.1 (30.11.2021))
 ;;;   MorphOS SDK mathieeesingtrans_lib.fd + clib/mathieeesingtrans_protos.h (via fd2sfd)
+;;;   libraries/mathieeesp.h
 ;;;
 ;;; 17 functions, 0 constants, 0 structs.
+;;; 24 C macros skipped: not an integer constant (string, call, float).
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
 (require "amiga/ffi")

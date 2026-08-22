@@ -223,7 +223,105 @@
            (and (fbound p "mo-version") (fbound p "mo-create")
                 (file-contains "mosonly" "(amiga.ffi:defcfun mo-create *mosonly-base* -36 (:d0 size)")))
       (chk "mosonly: header names MorphOS SDK as the source"
-           (file-contains "mosonly" "MorphOS SDK mosonly_lib.fd")))))
+           (file-contains "mosonly" "MorphOS SDK mosonly_lib.fd"))))
+  ;; --- class libraries: module path by kind, tags from the C header ---
+  (chk "class libs: no top-level fixgad / fixreq modules"
+       (and (not (probe-file (raw-file "fixgad"))) (not (probe-file (raw-file "fixreq")))))
+  (chk ".h with a .i twin yields no module" (not (probe-file (raw-file "libraries/example"))))
+  (load-raw "gadgets/fixgad")
+  (load-raw "classes/fixreq")
+  (load-raw "reaction/reaction")
+  (let ((p "AMIGA.RAW.GADGETS.FIXGAD"))
+    (chk "gadgets/fixgad: package AMIGA.RAW.GADGETS.FIXGAD" (find-package p))
+    (chk "gadgets/fixgad: base var named after the library, opened as gadgets/fixgad.gadget"
+         (and (boundp (sym p "*fixgad-base*")) (null (sym-value p "*fixgad-base*"))
+              (file-contains "gadgets/fixgad" "(amiga.ffi:open-library-or-die \"gadgets/fixgad.gadget\" 0)")))
+    (chk "gadgets/fixgad: functions (FIXGAD_GetClass pointer, FIXGAD_Refresh void)"
+         (and (fbound p "fixgad-get-class") (external-p p "fixgad-get-class")
+              (file-contains "gadgets/fixgad" "defcfun fixgad-get-class *fixgad-base* -30 ()
+    :result :pointer")
+              (file-contains "gadgets/fixgad" "defcfun fixgad-refresh *fixgad-base* -36 (:a0 gadget)
+    :result :void")))
+    (chk "gadgets/fixgad: header lists gadgets/fixgad.h as a source"
+         (file-contains "gadgets/fixgad" ";;;   gadgets/fixgad.h"))
+    ;; #define expressions
+    (chk "C: (EXF_BASE + 0x400) — asm constant + hex" (eql (sym-value p "+fixgad-dummy+") #x1400))
+    (chk "C: (FIXGAD_Dummy + 1) macro reference" (eql (sym-value p "+fixgad-text-pen+") #x1401))
+    (chk "C: 2L suffix" (eql (sym-value p "+fixgad-long+") #x1402))
+    (chk "C: (1<<16)" (eql (sym-value p "+fixgad-shift+") #x10000))
+    (chk "C: (0xffff0000)" (eql (sym-value p "+fixgad-mask+") #xFFFF0000))
+    (chk "C: (~0L) -> -1" (eql (sym-value p "+fixgad-ignore+") -1))
+    (chk "C: 'A' / 'FORM' / '\\n' char literals"
+         (and (eql (sym-value p "+fixgad-char+") 65)
+              (eql (sym-value p "+fixgad-packed+") #x464F524D)
+              (eql (sym-value p "+fixgad-escaped+") 10)))
+    (chk "C: casts narrow — (UWORD)~0, (ULONG)(-1), (BYTE)0xFF"
+         (and (eql (sym-value p "+fixgad-word+") #xFFFF)
+              (eql (sym-value p "+fixgad-ulong+") #xFFFFFFFF)
+              (eql (sym-value p "+fixgad-byte+") -1)))
+    (chk "C: alias of an asm constant (EXF_FIRST)" (eql (sym-value p "+fixgad-alias+") #x1001))
+    (chk "C: macro from the #included twin-less header (REACTION_Dummy + 3)"
+         (eql (sym-value p "+fixgad-reaction+") #x6003))
+    (chk "C: ?: / octal / relational" (and (eql (sym-value p "+fixgad-ternary+") 5)
+                                          (eql (sym-value p "+fixgad-oct+") 8)
+                                          (eql (sym-value p "+fixgad-rel+") 1)))
+    (chk "C: backslash continuation" (eql (sym-value p "+fixgad-multi+") #x10041))
+    (chk "C: forward reference resolved at emit" (and (eql (sym-value p "+fixgad-forward+") 41)
+                                                    (eql (sym-value p "+fixgad-later+") 40)))
+    (chk "C: block comment spanning lines / line comment"
+         (and (eql (sym-value p "+fixgad-comment+") 8) (eql (sym-value p "+fixgad-slash+") 9)))
+    (chk "C: empty-body macro and include guard are not constants"
+         (and (not (sym p "+fixgad-flag+")) (not (sym p "+gadgets-fixgad-h+"))))
+    ;; what is skipped
+    (chk "C: string / float / NewObject / sizeof / statement / function-like macros not emitted"
+         (and (not (sym p "+fixgad-name+")) (not (sym p "+fixgad-float+"))
+              (not (sym p "+fix-gad-object+")) (not (sym p "+fixgad-size+"))
+              (not (sym p "+fixgad-stmt+")) (not (sym p "+fix-gad-set+"))))
+    (chk "C: skipped macros counted in the header (5)"
+         (file-contains "gadgets/fixgad" ";;; 5 C macros skipped: not an integer constant"))
+    ;; conditionals
+    (chk "C: #ifdef __cplusplus block skipped, #ifndef taken, #else of it skipped"
+         (and (not (sym p "+fixgad-cpp+")) (eql (sym-value p "+fixgad-not-cpp+") 2)
+              (not (sym p "+fixgad-cpp-else+"))))
+    (chk "C: #if 0 / #elif defined(__VBCC__) skipped, #else taken"
+         (and (not (sym p "+fixgad-if-zero+")) (not (sym p "+fixgad-vbcc+"))
+              (eql (sym-value p "+fixgad-if-else+") 6)))
+    (chk "C: #if defined(X) && !defined(Y) over the header's own macros"
+         (eql (sym-value p "+fixgad-if-defined+") 8))
+    ;; #undef + redefinition
+    (chk "C: #undef/redefine — first value kept, later refs use the new one, no duplicate"
+         (and (eql (sym-value p "+fixgad-dummy+") #x1400)
+              (eql (sym-value p "+fixgad-after+") #x3001)
+              (= 1 (count-matches "(defconstant +fixgad-dummy+ " (file-text "gadgets/fixgad")))))
+    ;; enums
+    (chk "C: anonymous enum — implicit, explicit, expression, trailing comma"
+         (and (eql (sym-value p "+fixgad-img-default+") 0) (eql (sym-value p "+fixgad-img-info+") 1)
+              (eql (sym-value p "+fixgad-img-skip+") 5) (eql (sym-value p "+fixgad-img-next+") 6)
+              (eql (sym-value p "+fixgad-img-expr+") 10) (eql (sym-value p "+fixgad-img-last+") 11)))
+    (chk "C: named enum and typedef enum" (and (eql (sym-value p "+fixgad-save+") 0)
+                                               (eql (sym-value p "+fixgad-use+") 1)
+                                               (eql (sym-value p "+fixgad-td-a+") 100)
+                                               (eql (sym-value p "+fixgad-td-b+") 101)))
+    (chk "C: enum inside a struct body is not read" (not (sym p "+fixgad-inner+")))
+    (chk "C: constants exported" (and (external-p p "+fixgad-dummy+") (external-p p "+fixgad-td-b+"))))
+  (let ((p "AMIGA.RAW.CLASSES.FIXREQ"))
+    (chk "classes/fixreq: package, .class opened by bare name, tags from classes/fixreq.h"
+         (and (find-package p) (fbound p "fixreq-get-class")
+              (file-contains "classes/fixreq" "(amiga.ffi:open-library-or-die \"fixreq.class\" 0)")
+              (eql (sym-value p "+fixreq-dummy+") #x1500)
+              (eql (sym-value p "+fixreq-title+") #x1501))))
+  (let ((p "AMIGA.RAW.REACTION.REACTION"))
+    (chk "reaction/reaction: header-only module from an unclaimed twin-less .h"
+         (and (find-package p) (not (sym p "*reaction-base*"))
+              (eql (sym-value p "+reaction-dummy+") #x6000)
+              (eql (sym-value p "+reaction-text-attr+") #x6005)
+              (not (sym p "+make-id+")) (not (sym p "+reaction-reaction-h+"))))))
+
+(defun count-matches (needle text)
+  (let ((n 0) (start 0))
+    (loop for p = (search needle text :start2 start)
+          while p do (incf n) (setf start (1+ p)))
+    n))
 
 ;;; ----------------------------------------------------------------
 (defun committed-checks ()
@@ -321,7 +419,47 @@
          (and (file-contains "timer" "timer.device is a device/resource")
               (null (sym-value "AMIGA.RAW.TIMER" "*timer-base*"))))
     (chk "muimaster: MorphOS-only module present"
-         (and (probe-file (raw-file "muimaster")) (fbound "AMIGA.RAW.MUIMASTER" "mui-new-object-a")))))
+         (and (probe-file (raw-file "muimaster")) (fbound "AMIGA.RAW.MUIMASTER" "mui-new-object-a")))
+    ;; ReAction class libraries: under gadgets/ images/ classes/, with the
+    ;; tags that exist only in the NDK's C headers
+    (chk "class libs: no top-level button / bevel / window modules"
+         (and (not (probe-file (raw-file "button"))) (not (probe-file (raw-file "bevel")))
+              (not (probe-file (raw-file "window"))) (not (probe-file (raw-file "layout")))))
+    ;; (the class functions are V40+ guarded, so they are unbound on the host)
+    (chk "gadgets/button: BUTTON_GetClass + tags (BUTTON_Dummy TAG_USER+0x04000000)"
+         (and (file-contains "gadgets/button" "(amiga.ffi:defcfun button-get-class *button-base* -30 ()
+    :result :pointer")
+              (file-contains "gadgets/button" "(amiga.ffi:open-library-or-die \"gadgets/button.gadget\" 0)")
+              (eql (sym-value "AMIGA.RAW.GADGETS.BUTTON" "+button-dummy+") #x84000000)
+              (eql (sym-value "AMIGA.RAW.GADGETS.BUTTON" "+button-justification+") #x84000010)
+              ;; BUTTON_RenderImage is an alias of GA_Image
+              (eql (sym-value "AMIGA.RAW.GADGETS.BUTTON" "+button-render-image+")
+                   (sym-value "AMIGA.RAW.INTUITION" "+ga-image+"))))
+    (chk "gadgets/layout: LAYOUT_AddChild, RethinkLayout"
+         (and (eql (sym-value "AMIGA.RAW.GADGETS.LAYOUT" "+layout-add-child+") #x85007014)
+              (file-contains "gadgets/layout" "defcfun rethink-layout *layout-base* -48 (:a0 gadget :a1 window :a2 requester :d0 refresh)")))
+    (chk "images/bevel: opened as images/bevel.image, BEVEL_Dummy"
+         (and (file-contains "images/bevel" "(amiga.ffi:open-library-or-die \"images/bevel.image\" 0)")
+              (eql (sym-value "AMIGA.RAW.IMAGES.BEVEL" "+bevel-dummy+") #x85016000)))
+    (chk "classes/window: window.class, WINDOW_Position, WMHI_CLOSEWINDOW (1<<16), WMHI_IGNORE (~0L)"
+         (and (file-contains "classes/window" "(amiga.ffi:open-library-or-die \"window.class\" 0)")
+              (file-contains "classes/window" "(amiga.ffi:defcfun window-get-class *window-base* -30 ()")
+              (eql (sym-value "AMIGA.RAW.CLASSES.WINDOW" "+window-position+") #x8502500E)
+              (eql (sym-value "AMIGA.RAW.CLASSES.WINDOW" "+wmhi-closewindow+") #x10000)
+              (eql (sym-value "AMIGA.RAW.CLASSES.WINDOW" "+wmhi-ignore+") -1)
+              (eql (sym-value "AMIGA.RAW.CLASSES.WINDOW" "+wpos-centerscreen+") 1)))
+    (chk "classes/requester: enum REQIMAGE_WARNING 2"
+         (eql (sym-value "AMIGA.RAW.CLASSES.REQUESTER" "+reqimage-warning+") 2))
+    (chk "gadgets/texteditor: TEXTEDITOR_Dummy keeps its first value across #undef"
+         (and (eql (sym-value "AMIGA.RAW.GADGETS.TEXTEDITOR" "+texteditor-dummy+") #x85026000)
+              (eql (sym-value "AMIGA.RAW.GADGETS.TEXTEDITOR" "+gm-texteditor-handle-error+") #x4501F)))
+    (chk "reaction/reaction: REACTION_Dummy TAG_USER+0x5000000"
+         (eql (sym-value "AMIGA.RAW.REACTION.REACTION" "+reaction-dummy+") #x85000000))
+    (chk "keymap: RAWKEY_* from libraries/keymap.h next to devices/keymap.i"
+         (and (eql (sym-value "AMIGA.RAW.KEYMAP" "+rawkey-space+") #x40)
+              (eql (sym-value "AMIGA.RAW.KEYMAP" "+kcf-shift+") 1)))
+    (chk "trackfile: TFERROR_UnitBusy from devices/trackfile.h"
+         (eql (sym-value "AMIGA.RAW.TRACKFILE" "+tferror-unit-busy+") -202041))))
 
 ;;; ----------------------------------------------------------------
 (cond ((string= *mode* "fixture") (fixture-checks))

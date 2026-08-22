@@ -2,8 +2,10 @@
 ;;;
 ;;; Sources:
 ;;;   trackfile_lib.sfd ($VER: trackfile_lib.sfd 2.3 (10.8.2020))
+;;;   devices/trackfile.h
 ;;;
-;;; 8 functions, 0 constants, 0 structs.
+;;; 8 functions, 34 constants, 0 structs.
+;;; 1 C macro skipped: not an integer constant (string, call, float).
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
 (require "amiga/ffi")
@@ -12,9 +14,24 @@
   (:use "CL" "FFI" "AMIGA.FFI")
   (:export
    "*TRACKFILE-BASE*" "*TRACKFILE-VERSION*"
-   "TF-START-UNIT-TAG-LIST" "TF-STOP-UNIT-TAG-LIST" 
-   "TF-INSERT-MEDIA-TAG-LIST" "TF-EJECT-MEDIA-TAG-LIST" "TF-GET-UNIT-DATA" 
-   "TF-FREE-UNIT-DATA" "TF-CHANGE-UNIT-TAG-LIST" "TF-EXAMINE-FILE-SIZE" ))
+   "+TFUNIT-CONTROL+" "+TFSU-NEXT-AVAILABLE-UNIT+" "+TFERROR-UNIT-BUSY+" 
+   "+TFERROR-OUT-OF-MEMORY+" "+TFERROR-UNIT-NOT-FOUND+" 
+   "+TFERROR-ALREADY-IN-USE+" "+TFERROR-UNIT-NOT-ACTIVE+" 
+   "+TFERROR-INVALID-FILE+" "+TFERROR-INVALID-FILE-SIZE+" 
+   "+TFERROR-NO-FILE-GIVEN+" "+TFERROR-ABORTED+" 
+   "+TFERROR-INVALID-DRIVE-TYPE+" "+TFERROR-PROCESS-FAILED+" 
+   "+TFERROR-NO-MEDIUM-PRESENT+" "+TFERROR-READ-ONLY-VOLUME+" 
+   "+TFERROR-READ-ONLY-FILE+" "+TFERROR-DUPLICATE-DISK+" 
+   "+TFERROR-DUPLICATE-VOLUME+" "+TFERROR-DENIED+" 
+   "+TFERROR-NOT-SUPPORTED+" "+TF-DUMMY+" "+TF-IMAGE-FILE-NAME+" 
+   "+TF-IMAGE-FILE-HANDLE+" "+TF-WRITE-PROTECTED+" "+TF-DRIVE-TYPE+" 
+   "+TF-TIMEOUT+" "+TF-ENABLE-CHECKSUMS+" "+TF-TAG-ITEM-FAILED+" 
+   "+TF-MAX-CACHE-MEMORY+" "+TF-ENABLE-UNIT-CACHE+" 
+   "+TF-PREFILL-UNIT-CACHE+" "+TFGUD-ALL-UNITS+" "+TFEFS-UNSUPPORTED+" 
+   "+TF-MINIMUM-CACHE-SIZE+" "TF-START-UNIT-TAG-LIST" 
+   "TF-STOP-UNIT-TAG-LIST" "TF-INSERT-MEDIA-TAG-LIST" 
+   "TF-EJECT-MEDIA-TAG-LIST" "TF-GET-UNIT-DATA" "TF-FREE-UNIT-DATA" 
+   "TF-CHANGE-UNIT-TAG-LIST" "TF-EXAMINE-FILE-SIZE" ))
 
 (in-package "AMIGA.RAW.TRACKFILE")
 
@@ -27,6 +44,42 @@
   (and *trackfile-base* (amiga.ffi:library-version *trackfile-base*)))
 (defun %version>= (n)
   (and *trackfile-version* (>= *trackfile-version* n)))
+
+;;; --- constants from devices/trackfile.h ---
+(defconstant +tfunit-control+ -1)
+(defconstant +tfsu-next-available-unit+ -1)
+(defconstant +tferror-unit-busy+ -202041)
+(defconstant +tferror-out-of-memory+ -202042)
+(defconstant +tferror-unit-not-found+ -202043)
+(defconstant +tferror-already-in-use+ -202044)
+(defconstant +tferror-unit-not-active+ -202045)
+(defconstant +tferror-invalid-file+ -202046)
+(defconstant +tferror-invalid-file-size+ -202047)
+(defconstant +tferror-no-file-given+ -202048)
+(defconstant +tferror-aborted+ -202049)
+(defconstant +tferror-invalid-drive-type+ -202050)
+(defconstant +tferror-process-failed+ -202051)
+(defconstant +tferror-no-medium-present+ -202052)
+(defconstant +tferror-read-only-volume+ -202053)
+(defconstant +tferror-read-only-file+ -202054)
+(defconstant +tferror-duplicate-disk+ -202055)
+(defconstant +tferror-duplicate-volume+ -202056)
+(defconstant +tferror-denied+ -202057)
+(defconstant +tferror-not-supported+ -202058)
+(defconstant +tf-dummy+ #xA0200400)
+(defconstant +tf-image-file-name+ #xA0200401)
+(defconstant +tf-image-file-handle+ #xA0200402)
+(defconstant +tf-write-protected+ #xA0200403)
+(defconstant +tf-drive-type+ #xA0200404)
+(defconstant +tf-timeout+ #xA0200405)
+(defconstant +tf-enable-checksums+ #xA0200406)
+(defconstant +tf-tag-item-failed+ #xA0200407)
+(defconstant +tf-max-cache-memory+ #xA0200408)
+(defconstant +tf-enable-unit-cache+ #xA0200409)
+(defconstant +tf-prefill-unit-cache+ #xA020040A)
+(defconstant +tfgud-all-units+ -1)
+(defconstant +tfefs-unsupported+ -1)
+(defconstant +tf-minimum-cache-size+ #xB3B0)
 
 ;;; --- functions (trackfile_lib.sfd) ---
 (amiga.ffi:defcfun tf-start-unit-tag-list *trackfile-base* -42 (:d0 which-unit :a0 tags)

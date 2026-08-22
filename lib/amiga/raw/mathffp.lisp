@@ -3,8 +3,10 @@
 ;;; Sources:
 ;;;   mathffp_lib.sfd ($VER: mathffp_lib.sfd 47.1 (30.11.2021))
 ;;;   MorphOS SDK mathffp_lib.fd + clib/mathffp_protos.h (via fd2sfd)
+;;;   libraries/mathffp.h
 ;;;
 ;;; 12 functions, 0 constants, 0 structs.
+;;; 26 C macros skipped: not an integer constant (string, call, float).
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
 (require "amiga/ffi")

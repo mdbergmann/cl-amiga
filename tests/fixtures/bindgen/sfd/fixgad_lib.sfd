@@ -1,0 +1,13 @@
+==id $VER: fixgad_lib.sfd 47.1 (01.01.2026) fixture for tests/test_amiga_bindgen.sh
+* A ReAction-style class library: lives in gadgets/, its tags exist only
+* in a C header (include_h/gadgets/fixgad.h) -> module amiga/raw/gadgets/fixgad
+==base _FixGadBase
+==basetype struct Library *
+==libname fixgad.gadget
+==include <intuition/classes.h>
+==include <gadgets/fixgad.h>
+==bias 30
+==public
+Class *FIXGAD_GetClass()()
+VOID FIXGAD_Refresh( struct Gadget *gadget ) (A0)
+==end

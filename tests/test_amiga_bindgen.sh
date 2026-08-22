@@ -5,12 +5,17 @@
 # Part 1 runs the generator on the small SDK fixture under
 # tests/fixtures/bindgen/ (an NDK-style SFD, a MorphOS-style SFD with
 # private slots, a moved function, a sysv entry and a MorphOS-only library,
-# plus two assembler includes) and checks the output with
+# two assembler includes, a .gadget and a .class library whose tags live
+# in C headers, a twin-less header other headers include, and a C twin
+# of a .i that must be ignored) and checks the output with
 # tests/test_amiga_bindgen.lisp: LVO assignment (==bias/==reserve/varargs/
 # alias), register and result-kind encoding, the >7-register plist path,
 # skips (DOUBLE, A5, register pairs, sysv), version and platform guards,
 # CL-name shadowing, constant evaluation (expressions, BITDEF, ENUM,
-# DEVCMD, LIBDEF, forward and cross-file references) and struct layouts.
+# DEVCMD, LIBDEF, forward and cross-file references), struct layouts, the
+# class-library module paths (gadgets/ images/ classes/) and the C header
+# reader (#define expressions, casts, suffixes, conditionals, #undef,
+# enums, what is skipped).
 #
 # Part 2 loads every COMMITTED module in lib/amiga/raw/ on the host and
 # checks well-known OS values, so a stale or hand-edited generated file
@@ -58,21 +63,28 @@ run_checks() {
 echo "=== test_amiga_bindgen: generator on fixtures ==="
 GEN_OUT="$TMPD/out"
 gen_log=$(BINDGEN_NDK_SFD="$FIX/sfd" BINDGEN_NDK_INCLUDE="$FIX/include" \
+          BINDGEN_NDK_INCLUDE_H="$FIX/include_h" \
           BINDGEN_MOS_SFD="$FIX/mos-sfd" BINDGEN_MOS_ONLY=mosonly \
           BINDGEN_OUT="$GEN_OUT" \
           "$CLAMIGA" --no-userinit --non-interactive --heap 64M \
           --load "$ROOT/scripts/gen-amiga-bindings.lisp" </dev/null 2>&1 | grep -v '^; Loading')
 echo "$gen_log" | sed 's/^/  /'
-if ! echo "$gen_log" | grep -q '^3 modules:'; then
-    echo "  FAIL: expected 3 modules (example, mosonly, exec/exbase)"
+if ! echo "$gen_log" | grep -q '^6 modules:'; then
+    echo "  FAIL: expected 6 modules (example, mosonly, exec/exbase, gadgets/fixgad, classes/fixreq, reaction/reaction)"
     fail=1
 fi
 if echo "$gen_log" | grep -q 'warnings:'; then
     echo "  FAIL: generator reported warnings on the fixture (must be clean)"
     fail=1
 fi
-for f in example.lisp mosonly.lisp exec/exbase.lisp; do
+for f in example.lisp mosonly.lisp exec/exbase.lisp gadgets/fixgad.lisp \
+         classes/fixreq.lisp reaction/reaction.lisp; do
     [ -f "$GEN_OUT/$f" ] || { echo "  FAIL: $f not generated"; fail=1; }
+done
+# class libraries are NOT top-level modules, and a header with a .i twin
+# yields no module of its own
+for f in fixgad.lisp fixreq.lisp libraries/example.lisp; do
+    [ -f "$GEN_OUT/$f" ] && { echo "  FAIL: $f must not be generated"; fail=1; }
 done
 run_checks fixture "$GEN_OUT" ""
 run_checks fixture "$GEN_OUT" morphos

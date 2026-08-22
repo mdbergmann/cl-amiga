@@ -26,9 +26,11 @@ mosdebug.log
 # MorphOS-built binary dropped in for scripts/make-binary-release.sh
 /clamiga-mos
 
-# Local copy of the MorphOS SDK's os-include (fd/ + clib/) used by
-# `make gen-amiga-bindings MOS_SDK=tools/mos-sdk` — not redistributed;
+# Local copies of the SDKs that `make gen-amiga-bindings` reads — the
+# unpacked AmigaOS 3.2 NDK (tools/aos32-ndk) and the MorphOS SDK's
+# os-include (fd/ + clib/, MOS_SDK=tools/mos-sdk) — not redistributed;
 # only the generated lib/amiga/raw/ output is committed.
+/tools/aos32-ndk/
 /tools/mos-sdk/
 
 # Amiga temp-device paths ("T:...") become literal host files when the

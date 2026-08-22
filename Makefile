@@ -441,12 +441,13 @@ verify-amiga:
 
 # Pre-compile boot files to FASL for faster startup
 # Regenerate the raw AmigaOS/MorphOS API bindings (lib/amiga/raw/) from the
-# NDK inside the cross toolchain and, when MOS_SDK points at a copy of the
-# MorphOS SDK's os-include (fd/ + clib/), the MorphOS tables.  The output is
-# committed; CI checks it (tests/test_amiga_bindgen.sh) but never needs the
-# SDKs.  See README "Raw OS bindings".
+# AmigaOS 3.2 NDK (NDK=<unpacked NDK 3.2>, default tools/aos32-ndk; falls
+# back to the copy inside the cross toolchain) and, when MOS_SDK points at a
+# copy of the MorphOS SDK's os-include (fd/ + clib/), the MorphOS tables.
+# The output is committed; CI checks it (tests/test_amiga_bindgen.sh) but
+# never needs the SDKs.  See README "Raw OS bindings".
 gen-amiga-bindings: $(HOST_BIN)
-	MOS_SDK="$(MOS_SDK)" sh scripts/gen-amiga-bindings.sh
+	NDK="$(NDK)" MOS_SDK="$(MOS_SDK)" sh scripts/gen-amiga-bindings.sh
 
 fasl: $(HOST_BIN)
 	@echo "=== Compiling boot.lisp → lib/boot.fasl ==="

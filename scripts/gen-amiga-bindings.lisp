@@ -10,6 +10,8 @@
 ;;;
 ;;;   BINDGEN_NDK_SFD      dir with the OS 3.2 NDK *_lib.sfd files (primary)
 ;;;   BINDGEN_NDK_INCLUDE  dir with the NDK assembler includes (exec/*.i ...)
+;;;   BINDGEN_NDK_INCLUDE_H dir with the NDK C headers (gadgets/*.h ...);
+;;;                        default: the same directory as the .i files
 ;;;   BINDGEN_MOS_SFD      dir with MorphOS SDK *_lib.sfd files (optional;
 ;;;                        produced from the SDK's fd/ + clib/ by fd2sfd —
 ;;;                        the .sh wrapper does that)
@@ -21,7 +23,10 @@
 ;;;   BINDGEN_DOCSTRINGS   "0" to omit the C-prototype docstrings
 ;;;
 ;;; What it produces — one module per library / NDK include subsystem,
-;;; `(require "amiga/raw/<name>")`, package AMIGA.RAW.<NAME>:
+;;; `(require "amiga/raw/<name>")`, package AMIGA.RAW.<NAME>.  Class
+;;; libraries live under their kind directory, the way the OS stores them:
+;;; gadgets/button.gadget -> amiga/raw/gadgets/button, images/bevel.image ->
+;;; amiga/raw/images/bevel, window.class -> amiga/raw/classes/window.
 ;;;
 ;;;   * AMIGA.FFI:DEFCFUN wrappers for every public library function:
 ;;;     LVO from ==bias, registers and arity from the SFD, :result kind
@@ -29,6 +34,10 @@
 ;;;     C prototype as docstring.
 ;;;   * DEFCONSTANTs for every EQU / ENUM / BITDEF in the matching .i files
 ;;;     (+NAME+ spelling), FFI:DEFCSTRUCT layouts for every STRUCTURE.
+;;;   * DEFCONSTANTs for the object-like #defines and enumerators of the
+;;;     C headers that have NO assembler twin (the ReAction tags in
+;;;     gadgets/*.h, images/*.h, classes/*.h, reaction/*.h ...) — see
+;;;     "C header parsing" below.
 ;;;   * Platform tagging: functions the MorphOS SDK does not have at the
 ;;;     same LVO are wrapped in (unless (member :morphos *features*) ...),
 ;;;     MorphOS-only ones in (when ...); functions newer than OS 3.0 are
@@ -493,6 +502,17 @@ and PARSE-SFD-ENTRY accepts it."
               (v (eval-asm-expr (second entry))))
          (setf (gethash name *asm-symbols*) (list :value v))
          v))
+      ;; a C #define / enumerator whose body could not be evaluated when it
+      ;; was read (forward reference): try again now, with the C evaluator
+      ((eq (first entry) :cexpr)
+       (when (member name *asm-eval-stack* :test #'string=)
+         (error "circular definition of ~A" name))
+       (let ((*asm-eval-stack* (cons name *asm-eval-stack*)))
+         (multiple-value-bind (v status) (c-eval-expr (second entry))
+           (unless (eq status :ok)
+             (error "C macro ~A is not an integer constant: ~A" name (second entry)))
+           (setf (gethash name *asm-symbols*) (list :value v))
+           v)))
       (t (error "symbol ~A is not a value" name)))))
 
 (defun asm-symbol-value (name)
@@ -609,12 +629,14 @@ whitespace-delimited token (see OPERAND-FIELD)."
   file)
 
 (defstruct i-const
-  name value file)
+  name value file
+  quiet)         ; t for C-header constants: unresolvable -> dropped silently
 
 (defstruct i-file
   path           ; relative include path, e.g. "intuition/intuition.i"
   structs        ; list of i-struct
-  constants)     ; list of i-const (in definition order)
+  constants      ; list of i-const (in definition order)
+  (skipped 0))   ; .h only: object-like macros that are not integer constants
 
 (defvar *i-files* (make-hash-table :test 'equal)) ; rel path -> i-file
 (defvar *i-include-root* nil)
@@ -799,7 +821,547 @@ whitespace-delimited token (see OPERAND-FIELD)."
     (dolist (p relpaths) (parse-i-file p))))
 
 ;;; ================================================================
-;;; Module layout: which SFD + which .i files form a module
+;;; C header (.h) parsing — object-like #defines and enumerators
+;;; ================================================================
+;;;
+;;; The NDK ships an assembler include next to nearly every C header.
+;;; Where it does not — the ReAction classes (gadgets/*.h, images/*.h,
+;;; classes/*.h, reaction/*.h), devices/trackfile.h, libraries/keymap.h
+;;; — the tags, method IDs and flags exist only as C #defines and enums.
+;;; A .h WITHOUT a .i twin is therefore read too, and takes part in the
+;;; module layout exactly like a .i file.  What is taken from it:
+;;;
+;;;   * every object-like #define whose body is an integer constant
+;;;     expression — C operators, casts to the integer types, number
+;;;     suffixes (0x45L), char literals, references to other macros and
+;;;     to assembler constants (TAG_USER, GA_Image ...);
+;;;   * every enumerator of every top-level enum.
+;;;
+;;; seen through the preprocessor: comments, backslash continuations,
+;;; #ifdef / #ifndef / #if 0 / #elif / #else / #endif (only macros defined
+;;; by the headers themselves count as defined, so __cplusplus / __GNUC__
+;;; blocks are skipped), #undef, and #include of another twin-less header
+;;; (read first, so its macros are known).  Function-like macros, strings,
+;;; floats and anything that is not an integer expression (the
+;;; NewObject(...) convenience macros) are skipped — counted in the module
+;;; header, not warned about.  C struct definitions are not read.
+
+(defvar *h-include-root* nil)                       ; dir of the .h files
+(defvar *c-macros* (make-hash-table :test 'equal))  ; name -> t, for #ifdef
+
+(define-condition c-unknown-symbol (error)
+  ((name :initarg :name :reader c-unknown-symbol-name))
+  (:report (lambda (c s) (format s "unknown symbol ~A" (c-unknown-symbol-name c)))))
+
+;;; --- C constant-expression tokenizer / evaluator ---
+
+(defun c-number-token (s i)
+  "Parse the number starting at index I of S: decimal, 0x hex, 0 octal,
+with any of the u/l suffixes.  Returns (values value next-index).  A
+floating-point literal signals an error."
+  (let* ((n (length s))
+         (j i)
+         (radix 10)
+         (start i))
+    (cond
+      ((and (char= (char s i) #\0) (< (1+ i) n) (char-equal (char s (1+ i)) #\x))
+       (setf radix 16 start (+ i 2) j (+ i 2))
+       (loop while (and (< j n) (digit-char-p (char s j) 16)) do (incf j)))
+      (t
+       (loop while (and (< j n) (digit-char-p (char s j))) do (incf j))
+       (when (and (< j n) (or (char= (char s j) #\.) (char-equal (char s j) #\e)))
+         (error "floating-point literal in ~S" s))
+       (when (and (> (- j i) 1) (char= (char s i) #\0))
+         (setf radix 8 start (1+ i)))))
+    (when (= j start) (error "bad number in ~S" s))
+    (let ((v (parse-integer s :start start :end j :radix radix)))
+      ;; suffixes: u U l L in any combination
+      (loop while (and (< j n) (member (char s j) '(#\u #\U #\l #\L))) do (incf j))
+      (values v j))))
+
+(defun c-char-token (s i)
+  "Parse the char literal starting at the quote at index I.  Multi-char
+literals ('FORM') pack big-endian, like the assembler's.  Returns
+(values value next-index)."
+  (let ((n (length s)) (j (1+ i)) (v 0))
+    (loop
+      (when (>= j n) (error "unterminated char literal in ~S" s))
+      (let ((c (char s j)))
+        (cond
+          ((char= c #\') (return (values v (1+ j))))
+          ((char= c #\\)
+           (when (>= (1+ j) n) (error "bad escape in ~S" s))
+           (let ((e (char s (1+ j))))
+             (setf v (+ (* v 256)
+                        (case e
+                          (#\n 10) (#\t 9) (#\r 13) (#\0 0) (#\a 7) (#\b 8)
+                          (#\f 12) (#\v 11) (#\\ 92) (#\' 39) (#\" 34)
+                          (t (char-code e)))))
+             (incf j 2)))
+          (t (setf v (+ (* v 256) (char-code c))) (incf j)))))))
+
+(defun tokenize-c-expr (s)
+  "Tokens: (:num v) (:sym name) (:op str).  Anything that cannot occur in
+an integer constant expression (strings, floats, assignment, member
+access, braces ...) signals an error."
+  (let ((toks nil) (i 0) (n (length s)))
+    (loop while (< i n)
+          do (let ((c (char s i)))
+               (cond
+                 ((member c '(#\Space #\Tab #\Newline #\Return)) (incf i))
+                 ((digit-char-p c)
+                  (multiple-value-bind (v j) (c-number-token s i)
+                    (push (list :num v) toks) (setf i j)))
+                 ((char= c #\')
+                  (multiple-value-bind (v j) (c-char-token s i)
+                    (push (list :num v) toks) (setf i j)))
+                 ((or (alpha-char-p c) (char= c #\_))
+                  (let ((j i))
+                    (loop while (and (< j n) (ident-char-p (char s j))) do (incf j))
+                    (push (list :sym (subseq s i j)) toks)
+                    (setf i j)))
+                 ((and (< (1+ i) n)
+                       (member (subseq s i (+ i 2)) '("<<" ">>" "<=" ">=" "==" "!=" "&&" "||")
+                               :test #'string=))
+                  (push (list :op (subseq s i (+ i 2))) toks) (incf i 2))
+                 ((member c '(#\+ #\- #\* #\/ #\% #\& #\| #\^ #\~ #\! #\( #\) #\< #\> #\? #\:))
+                  (push (list :op (string c)) toks) (incf i))
+                 (t (error "not a constant expression: ~S" s)))))
+    (nreverse toks)))
+
+(defparameter *c-type-words*
+  '("ULONG" "LONG" "UWORD" "WORD" "UBYTE" "BYTE" "BOOL" "APTR" "STRPTR"
+    "CONST_STRPTR" "CONST_APTR" "IPTR" "SIPTR" "UQUAD" "QUAD" "Tag" "TEXT"
+    "USHORT" "SHORT" "UCOUNT" "COUNT" "BPTR" "BSTR" "CPTR" "uint8" "uint16"
+    "uint32" "int8" "int16" "int32" "int" "long" "short" "char" "unsigned"
+    "signed" "void" "float" "double" "const" "volatile" "struct" "union" "enum"))
+
+(defun c-cast-apply (words pointer v)
+  "Narrow V the way a C cast to the type spelled by WORDS would."
+  (flet ((has (w) (member w words :test #'string=))
+         (u (bits) (logand v (1- (ash 1 bits))))
+         (s (bits) (let ((m (logand v (1- (ash 1 bits)))))
+                     (if (logbitp (1- bits) m) (- m (ash 1 bits)) m))))
+    (cond
+      (pointer (u 32))
+      ((or (has "float") (has "double")) (error "floating-point cast"))
+      ((or (has "UBYTE") (has "uint8") (and (has "unsigned") (has "char"))) (u 8))
+      ((or (has "BYTE") (has "int8") (has "char")) (s 8))
+      ((or (has "UWORD") (has "USHORT") (has "uint16") (and (has "unsigned") (has "short"))) (u 16))
+      ((or (has "WORD") (has "SHORT") (has "int16") (has "short")) (s 16))
+      ((or (has "ULONG") (has "uint32") (has "IPTR") (has "Tag") (has "UCOUNT")
+           (has "BPTR") (has "BSTR") (has "unsigned"))
+       (u 32))
+      ((or (has "UQUAD")) (u 64))
+      ((or (has "QUAD")) (s 64))
+      ((or (has "LONG") (has "int32") (has "SIPTR") (has "BOOL") (has "COUNT")
+           (has "long") (has "int") (has "signed"))
+       (s 32))
+      (t v))))
+
+(defun c-binop-prec (op)
+  (cond ((string= op "||") 1)
+        ((string= op "&&") 2)
+        ((string= op "|") 3)
+        ((string= op "^") 4)
+        ((string= op "&") 5)
+        ((member op '("==" "!=") :test #'string=) 6)
+        ((member op '("<" "<=" ">" ">=") :test #'string=) 7)
+        ((member op '("<<" ">>") :test #'string=) 8)
+        ((member op '("+" "-") :test #'string=) 9)
+        ((member op '("*" "/" "%") :test #'string=) 10)
+        (t nil)))
+
+(defun c-apply (op a b)
+  (flet ((bool (x) (if x 1 0)))
+    (cond ((string= op "||") (bool (or (/= a 0) (/= b 0))))
+          ((string= op "&&") (bool (and (/= a 0) (/= b 0))))
+          ((string= op "|") (logior a b))
+          ((string= op "^") (logxor a b))
+          ((string= op "&") (logand a b))
+          ((string= op "==") (bool (= a b)))
+          ((string= op "!=") (bool (/= a b)))
+          ((string= op "<") (bool (< a b)))
+          ((string= op "<=") (bool (<= a b)))
+          ((string= op ">") (bool (> a b)))
+          ((string= op ">=") (bool (>= a b)))
+          ((string= op "<<") (ash a b))
+          ((string= op ">>") (ash a (- b)))
+          ((string= op "+") (+ a b))
+          ((string= op "-") (- a b))
+          ((string= op "*") (* a b))
+          ((string= op "/") (if (zerop b) (error "division by zero") (truncate a b)))
+          (t (if (zerop b) (error "division by zero") (rem a b))))))
+
+(defun c-resolve-symbol (name)
+  (cond ((string= name "NULL") 0)
+        ((string= name "TRUE") 1)
+        ((string= name "FALSE") 0)
+        ((gethash name *asm-symbols*) (resolve-asm-symbol name))
+        (t (error 'c-unknown-symbol :name name))))
+
+(defun eval-c-tokens (toks)
+  "Precedence-climbing evaluator over TOKENIZE-C-EXPR's tokens, with
+casts, unary - + ~ !, the binary operators and ?:.  Returns
+(values value remaining-tokens)."
+  (labels ((peek () (car toks))
+           (next () (pop toks))
+           (op-p (tk s) (and tk (eq (first tk) :op) (string= (second tk) s)))
+           (type-word-p (tk) (and tk (eq (first tk) :sym)
+                                  (member (second tk) *c-type-words* :test #'string=)))
+           (cast-p ()
+             ;; "(" type-words [*]* ")" — look ahead without consuming
+             (and (op-p (peek) "(") (type-word-p (second toks))
+                  (let ((rest (cddr toks)) (ok t))
+                    (loop while (and rest (not (op-p (car rest) ")")))
+                          do (unless (or (type-word-p (car rest)) (op-p (car rest) "*")
+                                         ;; struct/enum/union NAME
+                                         (eq (first (car rest)) :sym))
+                               (setf ok nil) (return))
+                             (pop rest))
+                    (and ok rest))))
+           (unary ()
+             (let ((tk (peek)))
+               (cond
+                 ((null tk) (error "unexpected end of expression"))
+                 ((cast-p)
+                  (next)                ; (
+                  (let ((words nil) (pointer nil))
+                    (loop for tk2 = (next)
+                          until (op-p tk2 ")")
+                          do (if (op-p tk2 "*") (setf pointer t)
+                                 (push (second tk2) words)))
+                    (c-cast-apply words pointer (unary))))
+                 ((op-p tk "-") (next) (- (unary)))
+                 ((op-p tk "+") (next) (unary))
+                 ((op-p tk "~") (next) (lognot (unary)))
+                 ((op-p tk "!") (next) (if (zerop (unary)) 1 0))
+                 (t (primary)))))
+           (primary ()
+             (let ((tk (next)))
+               (cond
+                 ((eq (first tk) :num) (second tk))
+                 ((eq (first tk) :sym)
+                  (when (string= (second tk) "sizeof") (error "sizeof"))
+                  (when (op-p (peek) "(")   ; a function-like macro call
+                    (error "call of ~A" (second tk)))
+                  (c-resolve-symbol (second tk)))
+                 ((op-p tk "(")
+                  (let ((v (cond-expr)))
+                    (unless (op-p (next) ")") (error "expected )"))
+                    v))
+                 (t (error "unexpected token ~S" tk)))))
+           (expr (min-prec)
+             (let ((lhs (unary)))
+               (loop
+                 (let ((tk (peek)))
+                   (unless (and tk (eq (first tk) :op) (c-binop-prec (second tk))
+                                (>= (c-binop-prec (second tk)) min-prec))
+                     (return lhs))
+                   (next)
+                   (let ((rhs (expr (1+ (c-binop-prec (second tk))))))
+                     (setf lhs (c-apply (second tk) lhs rhs)))))))
+           (cond-expr ()
+             (let ((c (expr 0)))
+               (if (op-p (peek) "?")
+                   (progn (next)
+                          (let ((a (cond-expr)))
+                            (unless (op-p (next) ":") (error "expected :"))
+                            (let ((b (cond-expr)))
+                              (if (/= c 0) a b))))
+                   c))))
+    (let ((v (cond-expr)))
+      (values v toks))))
+
+(defun c-eval-expr (s)
+  "Evaluate the C constant expression S.  Returns (values value status):
+status :ok, :unknown (a referenced macro is not defined — yet), or :bad
+(not an integer constant expression at all)."
+  (handler-case
+      (multiple-value-bind (v rest) (eval-c-tokens (tokenize-c-expr s))
+        (when rest (error "trailing tokens"))
+        (unless (integerp v) (error "not an integer"))
+        (values v :ok))
+    (c-unknown-symbol () (values nil :unknown))
+    (error () (values nil :bad))))
+
+;;; --- preprocessor view of a header ---
+
+(defun read-h-text (full)
+  "The file's text with backslash-newline continuations joined and every
+comment replaced by one space.  String and char literals are kept."
+  (let* ((raw (with-open-file (in full :direction :input :external-format :latin-1)
+                (with-output-to-string (out)
+                  (loop for line = (read-line in nil nil)
+                        while line
+                        do (write-string (string-right-trim '(#\Return) line) out)
+                           (write-char #\Newline out)))))
+         (n (length raw))
+         (out (make-string-output-stream))
+         (i 0))
+    (loop while (< i n)
+          do (let ((c (char raw i))
+                   (nx (if (< (1+ i) n) (char raw (1+ i)) nil)))
+               (cond
+                 ;; continuation
+                 ((and (char= c #\\) nx (char= nx #\Newline)) (incf i 2))
+                 ;; block comment
+                 ((and (char= c #\/) nx (char= nx #\*))
+                  (let ((e (search "*/" raw :start2 (+ i 2))))
+                    (write-char #\Space out)
+                    (setf i (if e (+ e 2) n))))
+                 ;; line comment
+                 ((and (char= c #\/) nx (char= nx #\/))
+                  (let ((e (position #\Newline raw :start i)))
+                    (write-char #\Space out)
+                    (setf i (or e n))))
+                 ;; string literal: copy through (escapes included)
+                 ((char= c #\")
+                  (write-char c out) (incf i)
+                  (loop while (and (< i n) (char/= (char raw i) #\"))
+                        do (when (and (char= (char raw i) #\\) (< (1+ i) n))
+                             (write-char (char raw i) out) (incf i))
+                           (write-char (char raw i) out) (incf i))
+                  (when (< i n) (write-char #\" out) (incf i)))
+                 ;; char literal: copy through
+                 ((char= c #\')
+                  (write-char c out) (incf i)
+                  (loop while (and (< i n) (char/= (char raw i) #\') (char/= (char raw i) #\Newline))
+                        do (when (and (char= (char raw i) #\\) (< (1+ i) n))
+                             (write-char (char raw i) out) (incf i))
+                           (write-char (char raw i) out) (incf i))
+                  (when (and (< i n) (char= (char raw i) #\')) (write-char #\' out) (incf i)))
+                 (t (write-char c out) (incf i)))))
+    (get-output-stream-string out)))
+
+(defun split-lines (text)
+  (let ((out nil) (start 0))
+    (loop for i from 0 below (length text)
+          do (when (char= (char text i) #\Newline)
+               (push (subseq text start i) out)
+               (setf start (1+ i))))
+    (when (< start (length text)) (push (subseq text start) out))
+    (nreverse out)))
+
+(defun c-directive (line)
+  "If LINE is a preprocessor directive, (values name rest), else NIL."
+  (let ((s (trim line)))
+    (when (and (> (length s) 0) (char= (char s 0) #\#))
+      (let* ((body (trim (subseq s 1)))
+             (e (or (position-if-not #'ident-char-p body) (length body))))
+        (values (subseq body 0 e) (trim (subseq body e)))))))
+
+(defun c-if-value (expr)
+  "#if EXPR as the header reader sees it: defined(X) / defined X over the
+macros read so far, numbers and the usual operators; anything that
+cannot be evaluated counts as false."
+  (let ((s (collapse-whitespace expr)))
+    ;; rewrite defined(X) and defined X into 1 / 0
+    (loop for p = (search "defined" s)
+          while p
+          do (let* ((j (+ p 7))
+                    (paren (and (< j (length s)) (char= (char s j) #\()))
+                    (start (if paren (1+ j) j))
+                    (start (or (position-if-not (lambda (c) (char= c #\Space)) s :start start) start))
+                    (end (or (position-if-not #'ident-char-p s :start start) (length s)))
+                    (name (subseq s start end))
+                    (after (if (and paren (< end (length s)) (char= (char s end) #\))) (1+ end) end)))
+               (setf s (concatenate 'string (subseq s 0 p)
+                                    (if (gethash name *c-macros*) "1" "0")
+                                    (subseq s after)))))
+    (multiple-value-bind (v status) (c-eval-expr s)
+      (and (eq status :ok) (/= v 0)))))
+
+(defun h-twinless-p (rel)
+  "True when the header REL (\"gadgets/button.h\") has no .i twin."
+  (not (probe-file (concatenate 'string *i-include-root*
+                                (subseq rel 0 (- (length rel) 2)) ".i"))))
+
+(defun scan-c-enums (text)
+  "Every top-level enum definition in TEXT (a header's active C text), as
+a list of lists of (enumerator . value-expression-or-nil) in order.
+Struct bodies are skipped by brace depth; string literals are ignored."
+  (let ((out nil) (i 0) (n (length text)) (depth 0))
+    (flet ((word-at (pos w)
+             (and (string= w text :start2 pos :end2 (min n (+ pos (length w))))
+                  (or (= pos 0) (not (ident-char-p (char text (1- pos)))))
+                  (or (>= (+ pos (length w)) n) (not (ident-char-p (char text (+ pos (length w)))))))))
+      (loop while (< i n)
+            do (let ((c (char text i)))
+                 (cond
+                   ((char= c #\") ; skip string
+                    (incf i)
+                    (loop while (and (< i n) (char/= (char text i) #\"))
+                          do (when (char= (char text i) #\\) (incf i)) (incf i))
+                    (incf i))
+                   ((char= c #\') ; skip char literal
+                    (incf i)
+                    (loop while (and (< i n) (char/= (char text i) #\'))
+                          do (when (char= (char text i) #\\) (incf i)) (incf i))
+                    (incf i))
+                   ((char= c #\{) (incf depth) (incf i))
+                   ((char= c #\}) (decf depth) (incf i))
+                   ((and (zerop depth) (word-at i "enum"))
+                    (let ((j (+ i 4)))
+                      (loop while (and (< j n) (member (char text j) '(#\Space #\Tab #\Newline))) do (incf j))
+                      ;; optional tag
+                      (loop while (and (< j n) (ident-char-p (char text j))) do (incf j))
+                      (loop while (and (< j n) (member (char text j) '(#\Space #\Tab #\Newline))) do (incf j))
+                      (cond
+                        ((and (< j n) (char= (char text j) #\{))
+                         (let ((close (let ((d 0))
+                                        (loop for k from j below n
+                                              do (cond ((char= (char text k) #\{) (incf d))
+                                                       ((char= (char text k) #\})
+                                                        (decf d)
+                                                        (when (zerop d) (return k))))))))
+                           (unless close (return))
+                           (let ((items (mapcar (lambda (item)
+                                                  (let ((eq (position #\= item)))
+                                                    (if eq
+                                                        (cons (trim (subseq item 0 eq)) (trim (subseq item (1+ eq))))
+                                                        (cons (trim item) nil))))
+                                                (remove-if #'blank-string-p
+                                                           (split-top-level-commas
+                                                            (subseq text (1+ j) close))))))
+                             (push items out))
+                           (setf i (1+ close))))
+                        (t (setf i j)))))
+                   (t (incf i))))))
+    (nreverse out)))
+
+(defun parse-h-file (relpath)
+  "Read one twin-less C header into *i-files* (constants only)."
+  (when (gethash relpath *i-files*)
+    (return-from parse-h-file (gethash relpath *i-files*)))
+  (let ((full (concatenate 'string *h-include-root* relpath)))
+    (unless (probe-file full)
+      (asm-warn "include not found: ~A" relpath)
+      (return-from parse-h-file nil))
+    (let ((hfile (make-i-file :path relpath))
+          (consts nil)
+          (skipped 0)
+          (undefined nil)           ; names #undef'd in this file
+          (guard nil)               ; the include guard (first #ifndef)
+          (first-directive t)
+          (cond-stack nil)          ; frames (active taken parent-active)
+          (c-text (make-string-output-stream)))
+      (setf (gethash relpath *i-files*) hfile)
+      (labels ((active-p () (or (null cond-stack) (first (car cond-stack))))
+               (push-cond (c)
+                 (let ((parent (active-p)))
+                   (push (list (and parent c) c parent) cond-stack)))
+               (register (name entry)
+                 ;; C: the last definition wins only after #undef; a plain
+                 ;; redefinition (include guards, a duplicate in a second
+                 ;; header) keeps the first value, like the .i reader
+                 (unless (gethash name *asm-symbols*)
+                   (setf (gethash name *asm-symbols*) entry)))
+               (emit-p (name)
+                 ;; not the include guard, and not a redefinition after #undef
+                 (and (not (equal name guard))
+                      (not (member name undefined :test #'string=))))
+               (define-constant (name body)
+                 (multiple-value-bind (v status) (c-eval-expr body)
+                   (case status
+                     (:ok (register name (list :value v))
+                      (when (emit-p name)
+                        (push (make-i-const :name name :value v :file relpath :quiet t) consts)))
+                     (:unknown (register name (list :cexpr body))
+                      (when (emit-p name)
+                        (push (make-i-const :name name :value nil :file relpath :quiet t) consts)))
+                     (t (incf skipped)))))
+               (do-define (rest)
+                 (let* ((e (or (position-if-not #'ident-char-p rest) (length rest)))
+                        (name (subseq rest 0 e)))
+                   (when (> (length name) 0)
+                     (setf (gethash name *c-macros*) t)
+                     (cond
+                       ((and (< e (length rest)) (char= (char rest e) #\())
+                        nil)            ; function-like macro
+                       (t
+                        (let ((body (trim (subseq rest e))))
+                          (unless (blank-string-p body)
+                            (define-constant name body))))))))
+               (do-include (rest)
+                 (let* ((s (trim rest))
+                        (open (and (> (length s) 0) (char s 0)))
+                        (close (cond ((eql open #\<) #\>) ((eql open #\") #\") (t nil)))
+                        (end (and close (position close s :start 1)))
+                        (inc (and end (subseq s 1 end))))
+                   (when (and inc (ends-with ".h" inc)
+                              (probe-file (concatenate 'string *h-include-root* inc))
+                              (h-twinless-p inc)
+                              (not (member inc *skip-includes* :test #'string=)))
+                     (parse-h-file inc)))))
+        (dolist (line (split-lines (read-h-text full)))
+          (multiple-value-bind (dname rest) (c-directive line)
+            (when (and dname first-directive)
+              ;; the classic guard: the file's first directive is #ifndef X
+              (setf first-directive nil)
+              (when (string= dname "ifndef") (setf guard (trim rest))))
+            (cond
+              ((null dname)
+               (when (active-p)
+                 (write-string line c-text) (write-char #\Newline c-text)))
+              ((string= dname "ifdef") (push-cond (and (gethash (trim rest) *c-macros*) t)))
+              ((string= dname "ifndef") (push-cond (not (gethash (trim rest) *c-macros*))))
+              ((string= dname "if") (push-cond (and (active-p) (c-if-value rest))))
+              ((string= dname "elif")
+               (when cond-stack
+                 (destructuring-bind (a taken parent) (car cond-stack)
+                   (declare (ignore a))
+                   (let ((c (and parent (not taken) (c-if-value rest))))
+                     (setf (car cond-stack) (list c (or taken c) parent))))))
+              ((string= dname "else")
+               (when cond-stack
+                 (destructuring-bind (a taken parent) (car cond-stack)
+                   (declare (ignore a))
+                   (setf (car cond-stack) (list (and parent (not taken)) t parent)))))
+              ((string= dname "endif") (pop cond-stack))
+              ((not (active-p)) nil)
+              ((string= dname "define") (do-define rest))
+              ((string= dname "undef")
+               (let ((name (trim rest)))
+                 (remhash name *c-macros*)
+                 (remhash name *asm-symbols*)
+                 (push name undefined)))
+              ((string= dname "include") (do-include rest))
+              (t nil))))
+        ;; enumerators
+        (dolist (items (scan-c-enums (get-output-stream-string c-text)))
+          (let ((next 0) (prev nil))
+            (dolist (item items)
+              (destructuring-bind (name . expr) item
+                (when (and (> (length name) 0) (every #'ident-char-p name))
+                  (cond
+                    (expr
+                     (multiple-value-bind (v status) (c-eval-expr expr)
+                       (case status
+                         (:ok (register name (list :value v))
+                          (push (make-i-const :name name :value v :file relpath :quiet t) consts)
+                          (setf next (1+ v)))
+                         (:unknown (register name (list :cexpr expr))
+                          (push (make-i-const :name name :value nil :file relpath :quiet t) consts)
+                          (setf next nil))
+                         (t (incf skipped) (setf next nil)))))
+                    (next
+                     (register name (list :value next))
+                     (push (make-i-const :name name :value next :file relpath :quiet t) consts)
+                     (incf next))
+                    (prev
+                     (register name (list :cexpr (format nil "(~A + 1)" prev)))
+                     (push (make-i-const :name name :value nil :file relpath :quiet t) consts)))
+                  (setf prev name)))))))
+      (setf (i-file-constants hfile) (nreverse consts)
+            (i-file-skipped hfile) skipped)
+      hfile)))
+
+(defun parse-h-files (relpaths)
+  (dolist (p relpaths) (parse-h-file p)))
+
+;;; ================================================================
+;;; Module layout: which SFD + which .i / .h files form a module
 ;;; ================================================================
 
 ;;; Assembler struct names for exec's abbreviated STRUCTUREs -> C names.
@@ -816,11 +1378,14 @@ whitespace-delimited token (see OPERAND-FIELD)."
 (defun struct-c-name (asm-name)
   (or (cdr (assoc asm-name *struct-aliases* :test #'string=)) asm-name))
 
-;;; Libraries whose .i files do not follow the <lib>/ or libraries/<lib>.i
-;;; convention.  Everything not listed here is resolved by convention.
+;;; Libraries whose include files do not follow the <lib>/ or
+;;; libraries/<lib>.i convention.  Everything not listed here is resolved
+;;; by convention (DEFAULT-INCLUDES-FOR).  A .h entry is a C header
+;;; without a .i twin (see "C header parsing").
 (defparameter *module-includes*
   '(("layers"      "graphics/layers.i" "graphics/clip.i")
-    ("keymap"      "devices/keymap.i")
+    ("keymap"      "devices/keymap.i" "libraries/keymap.h")
+    ("trackfile"   "devices/trackfile.h")
     ("timer"       "devices/timer.i")
     ("console"     "devices/console.i" "devices/conunit.i")
     ("input"       "devices/input.i")
@@ -837,52 +1402,84 @@ whitespace-delimited token (see OPERAND-FIELD)."
     ("potgo"       "resources/potgo.i")
     ("expansion"   "libraries/expansion.i" "libraries/expansionbase.i"
                    "libraries/configvars.i" "libraries/configregs.i")
-    ("mathffp"     "libraries/mathffp.i")
-    ("mathieeedoubbas" "libraries/mathieeedp.i")
-    ("mathieeedoubtrans" "libraries/mathieeedp.i")
-    ("mathieeesingbas" "libraries/mathieeesp.i")
-    ("mathieeesingtrans" "libraries/mathieeesp.i")
-    ("bullet"      "diskfont/glyph.i" "diskfont/oterrors.i" "diskfont/diskfonttag.i")
-    ("arexx"       "classes/arexx.i")
-    ("requester"   "classes/requester.i")
-    ("window"      "classes/window.i")))
+    ("mathffp"     "libraries/mathffp.h")
+    ("mathieeedoubbas" "libraries/mathieeedp.h")
+    ("mathieeedoubtrans" "libraries/mathieeedp.h")
+    ("mathieeesingbas" "libraries/mathieeesp.h")
+    ("mathieeesingtrans" "libraries/mathieeesp.h")
+    ("bullet"      "diskfont/glyph.i" "diskfont/oterrors.i" "diskfont/diskfonttag.i")))
+
+(defun include-path (rel)
+  "Absolute path of the include REL: .h files live under the C header
+root, everything else under the assembler include root."
+  (concatenate 'string (if (ends-with ".h" rel) *h-include-root* *i-include-root*) rel))
+
+(defun twinless-h-files (dir)
+  "Relative paths of the C headers in DIR that have no .i twin — the
+ones that take part in the module layout."
+  (when *h-include-root*
+    (remove-if-not #'h-twinless-p
+                   (mapcar (lambda (p) (concatenate 'string dir "/" (pathname-name p) ".h"))
+                           (directory (concatenate 'string *h-include-root* dir "/*.h"))))))
 
 (defun default-includes-for (libname)
-  "Convention: <lib>/*.i if that NDK directory exists, else libraries/<lib>.i,
-else gadgets/<lib>.i, images/<lib>.i."
+  "Convention: <lib>/*.i (plus the twin-less <lib>/*.h) if that NDK
+directory exists; else the first of libraries/<lib>, gadgets/<lib>,
+images/<lib>, classes/<lib> that exists — its .i, and its .h when that
+has no .i twin."
   (let ((dir (concatenate 'string *i-include-root* libname "/")))
     (cond
       ((probe-file (concatenate 'string dir "."))
-       (mapcar (lambda (p) (concatenate 'string libname "/" (pathname-name p) ".i"))
-               (directory (concatenate 'string dir "*.i"))))
-      ((probe-file (concatenate 'string *i-include-root* "libraries/" libname ".i"))
-       (list (concatenate 'string "libraries/" libname ".i")))
-      ((probe-file (concatenate 'string *i-include-root* "gadgets/" libname ".i"))
-       (list (concatenate 'string "gadgets/" libname ".i")))
-      ((probe-file (concatenate 'string *i-include-root* "images/" libname ".i"))
-       (list (concatenate 'string "images/" libname ".i")))
-      (t nil))))
+       (append (mapcar (lambda (p) (concatenate 'string libname "/" (pathname-name p) ".i"))
+                       (directory (concatenate 'string dir "*.i")))
+               (twinless-h-files libname)))
+      (t
+       (loop for sub in '("libraries/" "gadgets/" "images/" "classes/")
+             for i-rel = (concatenate 'string sub libname ".i")
+             for h-rel = (concatenate 'string sub libname ".h")
+             for hits = (append (and (probe-file (include-path i-rel)) (list i-rel))
+                                (and *h-include-root*
+                                     (probe-file (include-path h-rel))
+                                     (h-twinless-p h-rel)
+                                     (list h-rel)))
+             when hits return hits)))))
 
 (defun includes-for (libname)
   (let ((explicit (cdr (assoc libname *module-includes* :test #'string=))))
     (remove-if-not (lambda (rel)
                      (and (not (member rel *skip-includes* :test #'string=))
-                          (probe-file (concatenate 'string *i-include-root* rel))))
+                          (probe-file (include-path rel))))
                    (or explicit (default-includes-for libname)))))
 
-;;; Header-only modules: .i files that no library claims get a module named
-;;; after their path, e.g. devices/audio.i -> amiga/raw/devices/audio.
+;;; Header-only modules: .i files (and twin-less .h files) that no library
+;;; claims get a module named after their path, e.g. devices/audio.i ->
+;;; amiga/raw/devices/audio, gadgets/tabs.h -> amiga/raw/gadgets/tabs.
 (defparameter *header-only-dirs* '("devices" "hardware" "prefs" "resources"
                                    "libraries" "graphics" "exec" "dos" "intuition"
                                    "utility" "workbench" "datatypes" "diskfont"
-                                   "rexx" "classes" "gadgets" "images"))
+                                   "rexx" "classes" "gadgets" "images" "reaction"))
 
-;;; Skipped includes: obsolete-name compatibility files.
+;;; Skipped includes: obsolete-name compatibility files, and C headers
+;;; that hold no bindable constants (statement macros, stdio aliases) or
+;;; duplicate another header (reaction_author.h is a subset of reaction.h).
 (defparameter *skip-includes* '("intuition/iobsolete.i" "libraries/dos.i"
                                 "libraries/dosextens.i" "exec/types.i"
                                 "exec/macros.i" "exec/strings.i" "exec/ables.i"
                                 "exec/initializers.i" "graphics/gfxmacros.i"
-                                "hardware/cia.i"))
+                                "hardware/cia.i"
+                                "graphics/gfxmacros.h" "dos/ansiio.h"
+                                "reaction/reaction_author.h"))
+
+(defun lib-module-stem (name libname)
+  "Module path of a library: class libraries live under their kind
+directory, the way the OS stores them — gadgets/button.gadget ->
+gadgets/button, images/bevel.image -> images/bevel, window.class ->
+classes/window.  Everything else is the bare library name."
+  (cond ((null libname) name)
+        ((ends-with ".gadget" libname) (concatenate 'string "gadgets/" name))
+        ((ends-with ".image" libname) (concatenate 'string "images/" name))
+        ((ends-with ".class" libname) (concatenate 'string "classes/" name))
+        (t name)))
 
 ;;; ================================================================
 ;;; Type classification for function results
@@ -1143,6 +1740,20 @@ searches through the kind subdirectory."
         ((ends-with ".image" libname) (concatenate 'string "images/" libname))
         (t libname)))
 
+(defun const-value (c)
+  "Value of the constant C, or NIL.  A value read at definition time wins
+(a C macro #undef'd and redefined later keeps its first value, like
+TEXTEDITOR_Dummy); otherwise the name is resolved through the symbol
+table.  Assembler constants that cannot be resolved are a warning (the
+.i grammar is fully understood, so it is a parser gap); C macros that
+cannot be resolved are simply not integer constants (NewObject(...)
+aliases and the like) and stay quiet."
+  (cond ((i-const-value c))
+        ((i-const-quiet c)
+         (handler-case (resolve-asm-symbol (i-const-name c))
+           (error () nil)))
+        (t (asm-symbol-value (i-const-name c)))))
+
 (defun emit-module (out-path module-name lib-short-name ndk-lib mos-lib includes
                     &key header-only)
   "Generate one module file.  LIB-SHORT-NAME is e.g. \"intuition\";
@@ -1156,7 +1767,8 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
          (body (make-string-output-stream))
          (exports nil)
          (lisp-names (make-hash-table :test 'equal))
-         (n-fns 0) (n-consts 0) (n-structs 0) (n-skipped 0))
+         (n-fns 0) (n-consts 0) (n-structs 0) (n-skipped 0)
+         (n-macros-skipped 0))      ; C macros that are not integer constants
     (flet ((claim (name what &optional value)
              ;; WHAT is a kind keyword.  VALUE disambiguates: for constants
              ;; two C spellings of the same value (GA_Left / GA_LEFT)
@@ -1175,16 +1787,20 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
                                 module-name name (car prev) what)
                       nil)
                      (t (setf (gethash name lisp-names) (cons what value)) t)))))
-      ;; --- constants + structs from the .i files (NDK only) ---
+      ;; --- constants + structs from the .i / .h files (NDK only) ---
       (dolist (rel includes)
         (let ((ifile (gethash rel *i-files*)))
           (when ifile
-            (let ((consts (remove-if (lambda (c) (null (asm-symbol-value (i-const-name c))))
+            (incf n-macros-skipped (i-file-skipped ifile))
+            (let ((consts (remove-if (lambda (c)
+                                       (when (null (const-value c))
+                                         (when (i-const-quiet c) (incf n-macros-skipped))
+                                         t))
                                      (i-file-constants ifile))))
               (when consts
                 (format body "~&~%;;; --- constants from ~A ---~%" rel)
                 (dolist (c consts)
-                  (let ((val (asm-symbol-value (i-const-name c)))
+                  (let ((val (const-value c))
                         (cn (constant-name (i-const-name c))))
                     (when (and val (claim cn :constant val))
                       (incf n-consts)
@@ -1233,6 +1849,9 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
         (dolist (rel includes) (format out ";;;   ~A~%" rel))
         (format out ";;;~%;;; ~D functions, ~D constants, ~D structs~@[, ~D skipped (see comments)~].~%"
                 n-fns n-consts n-structs (and (> n-skipped 0) n-skipped))
+        (when (> n-macros-skipped 0)
+          (format out ";;; ~D C macro~:P skipped: not an integer constant (string, call, float).~%"
+                  n-macros-skipped))
         (format out ";;; Regenerate with `make gen-amiga-bindings` — see README \"Raw OS bindings\".~%~%")
         (format out "(require \"amiga/ffi\")~%~%")
         (setf exports (nreverse exports))
@@ -1318,13 +1937,16 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
                              "tools/m68k-amigaos-gcc/prefix/m68k-amigaos/ndk/lib/sfd"))
          (ndk-inc (getenv-or "BINDGEN_NDK_INCLUDE"
                              "tools/m68k-amigaos-gcc/prefix/m68k-amigaos/ndk-include"))
+         (ndk-inc-h (getenv-or "BINDGEN_NDK_INCLUDE_H" ndk-inc))
          (mos-sfd (getenv-or "BINDGEN_MOS_SFD" nil))
          (mos-only (comma-list (getenv-or "BINDGEN_MOS_ONLY" "muimaster,ahi,cybergraphics")))
          (out-dir (dir-path (getenv-or "BINDGEN_OUT" "lib/amiga/raw")))
          (only (comma-list (getenv-or "BINDGEN_LIBS" nil)))
          (*docstrings* (not (string= (getenv-or "BINDGEN_DOCSTRINGS" "1") "0")))
          (*i-include-root* (dir-path ndk-inc))
+         (*h-include-root* (dir-path ndk-inc-h))
          (*asm-symbols* (make-hash-table :test 'equal))
+         (*c-macros* (make-hash-table :test 'equal))
          (*i-files* (make-hash-table :test 'equal))
          (*asm-warnings* nil)
          (ndk-libs (load-sfd-dir ndk-sfd :ndk))
@@ -1334,6 +1956,7 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
          (modules 0))
     (format t "NDK sfd: ~A (~D libraries)~%" ndk-sfd (hash-table-count ndk-libs))
     (format t "NDK include: ~A~%" ndk-inc)
+    (format t "NDK C headers: ~A~%" ndk-inc-h)
     (format t "MorphOS sfd: ~A (~D libraries)~%" (or mos-sfd "none") (hash-table-count mos-libs))
     (format t "Output: ~A~%" out-dir)
     ;; LVO self-check against the NDK's lvo/*.i — a mismatch means the SFD
@@ -1349,16 +1972,21 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
       (when (> bad 0)
         (dolist (w (reverse *asm-warnings*)) (format t "  ~A~%" w))
         (error "gen-amiga-bindings: ~D LVO mismatches against the NDK's lvo/*.i — refusing to write bindings" bad)))
-    ;; Parse every .i under the subsystem dirs first: the symbol table is
-    ;; global (STRUCTURE bases and EQUs reference other files).
-    (let ((all-i nil))
+    ;; Parse every .i under the subsystem dirs first (the symbol table is
+    ;; global: STRUCTURE bases and EQUs reference other files), then the
+    ;; twin-less .h files (their macros reference the .i constants).
+    (let ((all-inc nil))
       (dolist (d *header-only-dirs*)
         (dolist (p (directory (concatenate 'string *i-include-root* d "/*.i")))
           (let ((rel (concatenate 'string d "/" (pathname-name p) ".i")))
             (unless (member rel *skip-includes* :test #'string=)
-              (push rel all-i)))))
-      (setf all-i (sort all-i #'string<))
-      (parse-i-files ndk-inc all-i)
+              (push rel all-inc))))
+        (dolist (rel (twinless-h-files d))
+          (unless (member rel *skip-includes* :test #'string=)
+            (push rel all-inc))))
+      (setf all-inc (sort all-inc #'string<))
+      (parse-i-files ndk-inc (remove-if-not (lambda (r) (ends-with ".i" r)) all-inc))
+      (parse-h-files (remove-if-not (lambda (r) (ends-with ".h" r)) all-inc))
       ;; --- library modules ---
       (let ((names nil))
         (maphash (lambda (k v) (declare (ignore v)) (push k names)) ndk-libs)
@@ -1371,8 +1999,10 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
             (let* ((ndk (gethash name ndk-libs))
                    (mos (gethash name mos-libs))
                    (includes (if ndk (includes-for name) nil))
-                   (module (concatenate 'string "amiga/raw/" name))
-                   (path (concatenate 'string out-dir name ".lisp")))
+                   (stem (lib-module-stem name (or (and ndk (sfd-lib-libname ndk))
+                                                   (and mos (sfd-lib-libname mos)))))
+                   (module (concatenate 'string "amiga/raw/" stem))
+                   (path (concatenate 'string out-dir stem ".lisp")))
               (dolist (i includes) (setf (gethash i claimed-includes) t))
               (let ((counts (emit-module path module name ndk mos includes)))
                 (incf modules)
@@ -1380,15 +2010,20 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
                 (format t "  ~A: ~D fns, ~D consts, ~D structs~@[, ~D skipped~]~%"
                         module (first counts) (second counts) (third counts)
                         (and (> (fourth counts) 0) (fourth counts))))))))
-      ;; --- header-only modules for unclaimed .i files ---
-      (dolist (rel all-i)
+      ;; --- header-only modules for unclaimed .i / .h files ---
+      (dolist (rel all-inc)
         (unless (gethash rel claimed-includes)
           (let* ((ifile (gethash rel *i-files*))
-                 (stem (subseq rel 0 (- (length rel) 2)))       ; drop ".i"
+                 ;; drop ".i" / ".h"; reaction_macros -> reaction-macros
+                 (stem (substitute #\- #\_ (subseq rel 0 (- (length rel) 2))))
                  (module (concatenate 'string "amiga/raw/" stem))
                  (path (concatenate 'string out-dir stem ".lisp")))
             (when (and ifile
-                       (or (i-file-structs ifile) (i-file-constants ifile))
+                       (or (i-file-structs ifile)
+                           ;; a header whose macros are all non-constant
+                           ;; (reaction_macros.h) yields no module
+                           (some (lambda (c) (if (i-const-quiet c) (const-value c) t))
+                                 (i-file-constants ifile)))
                        (or (null only) (member stem only :test #'string=)))
               (let ((counts (emit-module path module (substitute #\- #\/ stem) nil nil
                                          (list rel) :header-only t)))

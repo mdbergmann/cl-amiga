@@ -1169,7 +1169,12 @@ runnable examples; the Lambda's Tale engine's blitted wall graphics
 
 Every public function, constant and structure of the AmigaOS 3.2 API is
 available as a **generated** binding module under `lib/amiga/raw/` — one
-module per library / NDK include subsystem, loaded on demand:
+module per library / NDK include subsystem, loaded on demand.  The
+ReAction class libraries sit under their kind directory, the way the OS
+stores them: `(require "amiga/raw/gadgets/button")` →
+`AMIGA.RAW.GADGETS.BUTTON` (`button-get-class`, `+button-text-pen+` …),
+`images/bevel`, `classes/window` (`+wmhi-closewindow+`, `+wa-…+` tags),
+`gadgets/layout`, `gadgets/listbrowser` …
 
 ```lisp
 (require "amiga/raw/intuition")
@@ -1204,7 +1209,14 @@ What a module contains, all derived mechanically from the SDK files:
   `;; skipped` comments in the module.
 - **Constants** — every `EQU`, `ENUM`/`EITEM` and `BITDEF` of the matching
   assembler includes as `+name+`: `+idcmp-closewindow+`, `+wa-left+`,
-  `+memf-chip+`, `+mode-newfile+`, `+adcmd-allocate+` …
+  `+memf-chip+`, `+mode-newfile+`, `+adcmd-allocate+` … Where the NDK has
+  no assembler include for a C header (the ReAction tags in
+  `gadgets/*.h`, `images/*.h`, `classes/*.h`, `reaction/*.h`, the
+  `RAWKEY_*` codes of `libraries/keymap.h`, `devices/trackfile.h`), its
+  integer `#define`s and enumerators are read instead:
+  `+button-justification+`, `+layout-add-child+`, `+wmhi-closewindow+`,
+  `+reqimage-warning+`, `+rawkey-f1+` … (C structs defined only in a `.h`
+  are not generated — write those with `ffi:defcstruct`).
 - **Structures** — `ffi:defcstruct` layouts for every `STRUCTURE`, with
   the NDK's own offsets and sizes: `(amiga.raw.intuition:window-width w)`,
   `(setf (amiga.raw.gadtools:new-gadget-left-edge ng) 10)`,
@@ -1240,16 +1252,17 @@ instead.  On the host (macOS/Linux/Windows) the modules load too — the
 base stays `NIL` and any call reports that — which is how they are
 unit-tested.
 
-The modules are committed; regenerate them after updating the NDK
-submodule with `make gen-amiga-bindings` (add
-`MOS_SDK=/path/to/morphos/os-include` — the copy with `fd/` and `clib/` —
-to merge MorphOS; without it the output is AmigaOS-only).  The
-generator is `scripts/gen-amiga-bindings.lisp` (runs on the host build of
-clamiga) and cross-checks every LVO against the NDK's own `lvo/*.i` before
-writing anything.  Its executable specification is
-`tests/test_amiga_bindgen.sh` (fixture SDK + checks of the committed
-output); the Amiga-side calls are exercised by
-`tests/amiga/test-raw-bindings.lisp`.
+The modules are committed; regenerate them with `make gen-amiga-bindings`
+from an unpacked AmigaOS 3.2 NDK (`NDK=<dir>`, default `tools/aos32-ndk`;
+the copy inside the cross toolchain is the fallback) — add
+`MOS_SDK=/path/to/morphos/os-include` (the copy with `fd/` and `clib/`)
+to merge MorphOS; without it the output is AmigaOS-only.  Neither SDK is
+redistributed; only the output is.  The generator is
+`scripts/gen-amiga-bindings.lisp` (runs on the host build of clamiga) and
+cross-checks every LVO against the NDK's own `lvo/*.i` before writing
+anything.  Its executable specification is `tests/test_amiga_bindgen.sh`
+(fixture SDK + checks of the committed output); the Amiga-side calls are
+exercised by `tests/amiga/test-raw-bindings.lisp`.
 
 ### Raw FFI Access
 
@@ -1285,7 +1298,7 @@ spec plus an LVO, compiled to a dedicated bytecode op — and
 |--------|---------|-------------|
 | `(require "ffi")` | `FFI` | Foreign pointers, typed peek/poke, defcstruct (all platforms); dlopen/libffi calls + callbacks (host) |
 | `(require "amiga/ffi")` | `AMIGA.FFI` | Tag lists, defcfun, with-library, open-library-or-die, library-version (AmigaOS) |
-| `(require "amiga/raw/<lib>")` | `AMIGA.RAW.<LIB>` | Generated 1:1 bindings for every OS library (`exec`, `dos`, `intuition`, `graphics`, `utility`, `asl`, `locale`, `iffparse`, `datatypes`, `rexxsyslib`, …), device/resource tables (`timer`, `cia`, …) and header-only constant/struct modules (`devices/audio`, `hardware/custom`, …) — see above |
+| `(require "amiga/raw/<lib>")` | `AMIGA.RAW.<LIB>` | Generated 1:1 bindings for every OS library (`exec`, `dos`, `intuition`, `graphics`, `utility`, `asl`, `locale`, `iffparse`, `datatypes`, `rexxsyslib`, …), the ReAction classes (`gadgets/button`, `gadgets/layout`, `images/bevel`, `classes/window`, …), device/resource tables (`timer`, `cia`, …) and header-only constant/struct modules (`devices/audio`, `hardware/custom`, `reaction/reaction`, …) — see above |
 | `(require "amiga/exec")` | `AMIGA.EXEC` | AvailMem/MEMF_* memory introspection, chip-RAM upload helper |
 | `(require "amiga/intuition")` | `AMIGA.INTUITION` | Windows, screens, IDCMP events, public screens, pointer sprites |
 | `(require "amiga/graphics")` | `AMIGA.GFX` | Drawing, text, fonts, offscreen bitmaps and blits, planar upload |

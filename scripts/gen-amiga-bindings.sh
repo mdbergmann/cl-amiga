@@ -2,10 +2,16 @@
 # gen-amiga-bindings.sh — regenerate lib/amiga/raw/*.lisp (the raw OS bindings)
 #
 # Inputs:
-#   * the AmigaOS 3.2 NDK shipped inside the cross toolchain
-#     (tools/m68k-amigaos-gcc/prefix — build it with tools/setup-toolchain.sh):
-#     ndk/lib/sfd/*_lib.sfd for the function tables, ndk-include/**/*.i for
-#     struct layouts and constants;
+#   * the AmigaOS 3.2 NDK — SFD/*_lib.sfd for the function tables,
+#     Include_I/**/*.i for struct layouts and constants, Include_H/**/*.h
+#     for the constants that exist only as C macros (the ReAction tags).
+#     Taken from NDK=<dir> (default tools/aos32-ndk, an unpacked copy of
+#     the original NDK 3.2 — not redistributed, gitignored); when that is
+#     absent, from the copy inside the cross toolchain
+#     (tools/m68k-amigaos-gcc/prefix, built by tools/setup-toolchain.sh:
+#     ndk/lib/sfd + ndk-include holding .i and .h side by side).  The two
+#     are the same NDK release; the toolchain copy only adds the Roadshow
+#     bsdsocket interfaces and ==basetype lines.
 #   * optionally the MorphOS SDK: MOS_SDK=<dir> pointing at a copy of
 #     GG:os-include (needs its fd/ and clib/ subdirectories).  Its fd+clib
 #     pairs are converted to sfd with the toolchain's fd2sfd and merged —
@@ -19,25 +25,36 @@
 #   MOS_SDK=~/sdk/morphos/os-include scripts/gen-amiga-bindings.sh
 #   OUT=/tmp/raw scripts/gen-amiga-bindings.sh         # elsewhere
 #
-# Environment knobs (all optional): PREFIX (toolchain prefix), HOST_BIN,
-# NDK_SFD, NDK_INCLUDE, OUT, MOS_SDK, BINDGEN_LIBS (comma list),
-# BINDGEN_MOS_ONLY (comma list of MorphOS-only libraries to emit),
-# BINDGEN_DOCSTRINGS=0.
+# Environment knobs (all optional): NDK (unpacked NDK 3.2), PREFIX
+# (toolchain prefix), HOST_BIN, NDK_SFD, NDK_INCLUDE, NDK_INCLUDE_H, OUT,
+# MOS_SDK, BINDGEN_LIBS (comma list), BINDGEN_MOS_ONLY (comma list of
+# MorphOS-only libraries to emit), BINDGEN_DOCSTRINGS=0.
 set -e
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 PREFIX=${PREFIX:-$ROOT/tools/m68k-amigaos-gcc/prefix}
 HOST_BIN=${HOST_BIN:-$ROOT/build/host/clamiga}
-NDK_SFD=${NDK_SFD:-$PREFIX/m68k-amigaos/ndk/lib/sfd}
-NDK_INCLUDE=${NDK_INCLUDE:-$PREFIX/m68k-amigaos/ndk-include}
+NDK=${NDK:-$ROOT/tools/aos32-ndk}
 OUT=${OUT:-$ROOT/lib/amiga/raw}
+
+if [ -d "$NDK/SFD" ] && [ -d "$NDK/Include_I" ] && [ -d "$NDK/Include_H" ]; then
+    NDK_SFD=${NDK_SFD:-$NDK/SFD}
+    NDK_INCLUDE=${NDK_INCLUDE:-$NDK/Include_I}
+    NDK_INCLUDE_H=${NDK_INCLUDE_H:-$NDK/Include_H}
+    echo "NDK: $NDK (original NDK 3.2 layout)"
+else
+    NDK_SFD=${NDK_SFD:-$PREFIX/m68k-amigaos/ndk/lib/sfd}
+    NDK_INCLUDE=${NDK_INCLUDE:-$PREFIX/m68k-amigaos/ndk-include}
+    NDK_INCLUDE_H=${NDK_INCLUDE_H:-$NDK_INCLUDE}
+    echo "NDK: $PREFIX (toolchain copy; set NDK=<unpacked NDK 3.2> to use the original)"
+fi
 
 if [ ! -x "$HOST_BIN" ]; then
     echo "gen-amiga-bindings: $HOST_BIN not found — run 'make host' first" >&2
     exit 1
 fi
-if [ ! -d "$NDK_SFD" ] || [ ! -d "$NDK_INCLUDE" ]; then
-    echo "gen-amiga-bindings: NDK not found under $PREFIX (tools/setup-toolchain.sh builds it)" >&2
+if [ ! -d "$NDK_SFD" ] || [ ! -d "$NDK_INCLUDE" ] || [ ! -d "$NDK_INCLUDE_H" ]; then
+    echo "gen-amiga-bindings: NDK not found — unpack NDK 3.2 to $NDK or build the toolchain (tools/setup-toolchain.sh)" >&2
     exit 1
 fi
 
@@ -73,7 +90,8 @@ fi
 mkdir -p "$OUT"
 find "$OUT" -name '*.lisp' -type f -exec rm -f {} +
 
-export BINDGEN_NDK_SFD="$NDK_SFD" BINDGEN_NDK_INCLUDE="$NDK_INCLUDE" BINDGEN_OUT="$OUT"
+export BINDGEN_NDK_SFD="$NDK_SFD" BINDGEN_NDK_INCLUDE="$NDK_INCLUDE" \
+       BINDGEN_NDK_INCLUDE_H="$NDK_INCLUDE_H" BINDGEN_OUT="$OUT"
 "$HOST_BIN" --non-interactive --no-userinit --heap 64M \
     --load "$ROOT/scripts/gen-amiga-bindings.lisp" </dev/null
 status=$?

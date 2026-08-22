@@ -1,0 +1,12 @@
+==id $VER: fixreq_lib.sfd 47.1 (01.01.2026) fixture for tests/test_amiga_bindgen.sh
+* A ReAction-style .class library: opened by its bare name (SYS:Classes/
+* is on the LIBS: path), module amiga/raw/classes/fixreq, tags from
+* include_h/classes/fixreq.h
+==base _FixReqBase
+==basetype struct Library *
+==libname fixreq.class
+==include <classes/fixreq.h>
+==bias 30
+==public
+Class *FIXREQ_GetClass()()
+==end

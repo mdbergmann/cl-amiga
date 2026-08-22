@@ -3,8 +3,10 @@
 ;;; Sources:
 ;;;   mathieeesingbas_lib.sfd ($VER: mathieeesingbas_lib.sfd 47.1 (30.11.2021))
 ;;;   MorphOS SDK mathieeesingbas_lib.fd + clib/mathieeesingbas_protos.h (via fd2sfd)
+;;;   libraries/mathieeesp.h
 ;;;
 ;;; 12 functions, 0 constants, 0 structs.
+;;; 24 C macros skipped: not an integer constant (string, call, float).
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
 (require "amiga/ffi")

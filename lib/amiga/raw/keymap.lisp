@@ -4,8 +4,9 @@
 ;;;   keymap_lib.sfd ($VER: keymap_lib.sfd 47.1 (30.11.2021))
 ;;;   MorphOS SDK keymap_lib.fd + clib/keymap_protos.h (via fd2sfd)
 ;;;   devices/keymap.i
+;;;   libraries/keymap.h
 ;;;
-;;; 9 functions, 22 constants, 3 structs.
+;;; 9 functions, 72 constants, 3 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
 (require "amiga/ffi")
@@ -23,7 +24,21 @@
    "KEY-MAP-LO-REPEATABLE" "KEY-MAP-HI-KEY-MAP-TYPES" "KEY-MAP-HI-KEY-MAP" 
    "KEY-MAP-HI-CAPSABLE" "KEY-MAP-HI-REPEATABLE" "*KEY-MAP-NODE-SIZE*" 
    "KEY-MAP-NODE-NODE" "KEY-MAP-NODE-KEY-MAP" "*KEY-MAP-RESOURCE-SIZE*" 
-   "KEY-MAP-RESOURCE-NODE" "KEY-MAP-RESOURCE-LIST" "SET-KEY-MAP-DEFAULT" 
+   "KEY-MAP-RESOURCE-NODE" "KEY-MAP-RESOURCE-LIST" "+RAWKEY-SPACE+" 
+   "+RAWKEY-BACKSPACE+" "+RAWKEY-TAB+" "+RAWKEY-ENTER+" "+RAWKEY-RETURN+" 
+   "+RAWKEY-ESC+" "+RAWKEY-DEL+" "+RAWKEY-INSERT+" "+RAWKEY-PAGEUP+" 
+   "+RAWKEY-PAGEDOWN+" "+RAWKEY-F11+" "+RAWKEY-CRSRUP+" "+RAWKEY-CRSRDOWN+" 
+   "+RAWKEY-CRSRRIGHT+" "+RAWKEY-CRSRLEFT+" "+RAWKEY-F1+" "+RAWKEY-F2+" 
+   "+RAWKEY-F3+" "+RAWKEY-F4+" "+RAWKEY-F5+" "+RAWKEY-F6+" "+RAWKEY-F7+" 
+   "+RAWKEY-F8+" "+RAWKEY-F9+" "+RAWKEY-F10+" "+RAWKEY-HELP+" 
+   "+RAWKEY-LSHIFT+" "+RAWKEY-RSHIFT+" "+RAWKEY-CAPSLOCK+" "+RAWKEY-LCTRL+" 
+   "+RAWKEY-LALT+" "+RAWKEY-RALT+" "+RAWKEY-LCOMMAND+" "+RAWKEY-RCOMMAND+" 
+   "+RAWKEY-MENU+" "+RAWKEY-PRINTSCR+" "+RAWKEY-BREAK+" "+RAWKEY-F12+" 
+   "+RAWKEY-HOME+" "+RAWKEY-END+" "+RAWKEY-MEDIA-STOP+" 
+   "+RAWKEY-MEDIA-PLAY-PAUSE+" "+RAWKEY-MEDIA-PREV-TRACK+" 
+   "+RAWKEY-MEDIA-NEXT-TRACK+" "+RAWKEY-MEDIA-SHUFFLE+" 
+   "+RAWKEY-MEDIA-REPEAT+" "+RAWKEY-WHEEL-UP+" "+RAWKEY-WHEEL-DOWN+" 
+   "+RAWKEY-WHEEL-LEFT+" "+RAWKEY-WHEEL-RIGHT+" "SET-KEY-MAP-DEFAULT" 
    "ASK-KEY-MAP-DEFAULT" "MAP-RAW-KEY" "MAP-ANSI" "MAP-RAW-KEY-UCS4" 
    "MAP-UCS4" "TO-ANSI" "TO-UCS4" "GET-KEY-MAP-CODEPAGE" ))
 
@@ -82,6 +97,58 @@
   (node (:struct 14) 0)
   (list (:struct 14) 14)
 )
+
+;;; --- constants from libraries/keymap.h ---
+(defconstant +rawkey-space+ #x40)
+(defconstant +rawkey-backspace+ #x41)
+(defconstant +rawkey-tab+ #x42)
+(defconstant +rawkey-enter+ #x43)
+(defconstant +rawkey-return+ #x44)
+(defconstant +rawkey-esc+ #x45)
+(defconstant +rawkey-del+ #x46)
+(defconstant +rawkey-insert+ #x47)
+(defconstant +rawkey-pageup+ #x48)
+(defconstant +rawkey-pagedown+ #x49)
+(defconstant +rawkey-f11+ #x4B)
+(defconstant +rawkey-crsrup+ #x4C)
+(defconstant +rawkey-crsrdown+ #x4D)
+(defconstant +rawkey-crsrright+ #x4E)
+(defconstant +rawkey-crsrleft+ #x4F)
+(defconstant +rawkey-f1+ #x50)
+(defconstant +rawkey-f2+ #x51)
+(defconstant +rawkey-f3+ #x52)
+(defconstant +rawkey-f4+ #x53)
+(defconstant +rawkey-f5+ #x54)
+(defconstant +rawkey-f6+ #x55)
+(defconstant +rawkey-f7+ #x56)
+(defconstant +rawkey-f8+ #x57)
+(defconstant +rawkey-f9+ #x58)
+(defconstant +rawkey-f10+ #x59)
+(defconstant +rawkey-help+ #x5F)
+(defconstant +rawkey-lshift+ #x60)
+(defconstant +rawkey-rshift+ #x61)
+(defconstant +rawkey-capslock+ #x62)
+(defconstant +rawkey-lctrl+ #x63)
+(defconstant +rawkey-lalt+ #x64)
+(defconstant +rawkey-ralt+ #x65)
+(defconstant +rawkey-lcommand+ #x66)
+(defconstant +rawkey-rcommand+ #x67)
+(defconstant +rawkey-menu+ #x6B)
+(defconstant +rawkey-printscr+ #x6D)
+(defconstant +rawkey-break+ #x6E)
+(defconstant +rawkey-f12+ #x6F)
+(defconstant +rawkey-home+ #x70)
+(defconstant +rawkey-end+ #x71)
+(defconstant +rawkey-media-stop+ #x72)
+(defconstant +rawkey-media-play-pause+ #x73)
+(defconstant +rawkey-media-prev-track+ #x74)
+(defconstant +rawkey-media-next-track+ #x75)
+(defconstant +rawkey-media-shuffle+ #x76)
+(defconstant +rawkey-media-repeat+ #x77)
+(defconstant +rawkey-wheel-up+ #x7A)
+(defconstant +rawkey-wheel-down+ #x7B)
+(defconstant +rawkey-wheel-left+ #x7C)
+(defconstant +rawkey-wheel-right+ #x7D)
 
 ;;; --- functions (keymap_lib.sfd + MorphOS SDK) ---
 (amiga.ffi:defcfun set-key-map-default *keymap-base* -30 (:a0 key-map)

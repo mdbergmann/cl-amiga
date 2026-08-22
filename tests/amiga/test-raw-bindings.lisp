@@ -283,3 +283,56 @@
   (and (fboundp 'amiga.raw.timer:add-time) (fboundp 'amiga.raw.timer:cmp-time) t))
 (check "raw-devices-audio-ioaudio-size" 68 amiga.raw.devices.audio:*io-audio-size*)
 (check "raw-devices-audio-adcmd-allocate" 32 amiga.raw.devices.audio:+adcmd-allocate+)
+
+;;; --- ReAction class libraries: gadgets/ images/ classes/ modules --------
+;;; Their module opens the class at REQUIRE time, so they are loaded only
+;;; where the classes exist (OS 3.2, MorphOS) — FS-UAE boots Kickstart 3.1
+;;; without ReAction, and there the checks assert that nothing was loaded.
+;;; The symbols are looked up at run time: the packages do not exist at
+;;; read time on a 3.1 system.
+
+(defvar *raw-reaction-p*
+  (let ((b (amiga:open-library "gadgets/button.gadget" 0)))
+    (when b (amiga:close-library b) t)))
+
+(format t "; raw-bindings: ReAction classes ~:[absent — skipping~;present~]~%" *raw-reaction-p*)
+(when *raw-reaction-p*
+  (%raw-require "amiga/raw/gadgets/button")
+  (%raw-require "amiga/raw/classes/window"))
+
+(defun %raw-sym (pkg name)
+  (or (find-symbol name pkg) (error "~A::~A not found" pkg name)))
+
+;; BUTTON_GetClass() -> Class *, a foreign pointer
+(check "raw-reaction-button-get-class" t
+  (if *raw-reaction-p*
+      (let ((cls (funcall (%raw-sym "AMIGA.RAW.GADGETS.BUTTON" "BUTTON-GET-CLASS"))))
+        (and cls (ffi:foreign-pointer-p cls) (not (ffi:null-pointer-p cls)) t))
+      (null (find-package "AMIGA.RAW.GADGETS.BUTTON"))))
+
+;; the tags come from gadgets/button.h (no .i in the NDK): a button object
+;; built with them through intuition's NewObjectA, then disposed
+(check "raw-reaction-button-object-from-header-tags" t
+  (if *raw-reaction-p*
+      (let ((cls (funcall (%raw-sym "AMIGA.RAW.GADGETS.BUTTON" "BUTTON-GET-CLASS")))
+            (ga-text (symbol-value (%raw-sym "AMIGA.RAW.INTUITION" "+GA-TEXT+")))
+            (ga-id (symbol-value (%raw-sym "AMIGA.RAW.INTUITION" "+GA-ID+")))
+            (justify (symbol-value (%raw-sym "AMIGA.RAW.GADGETS.BUTTON" "+BUTTON-JUSTIFICATION+")))
+            (bcj-center (symbol-value (%raw-sym "AMIGA.RAW.GADGETS.BUTTON" "+BCJ-CENTER+"))))
+        (and (= justify #x84000010)
+             (ffi:with-foreign-string (label "OK")
+               (amiga.ffi:with-tag-list (tags ga-text label ga-id 1 justify bcj-center)
+                 (let ((obj (amiga.raw.intuition:new-object-a cls nil tags)))
+                   (prog1 (and obj (ffi:foreign-pointer-p obj) t)
+                     (when obj (amiga.raw.intuition:dispose-object obj))))))))
+      (null (find-package "AMIGA.RAW.GADGETS.BUTTON"))))
+
+;; window.class: opened by its bare name, WMHI_* from classes/window.h
+(check "raw-reaction-window-class" t
+  (if *raw-reaction-p*
+      (let ((cls (funcall (%raw-sym "AMIGA.RAW.CLASSES.WINDOW" "WINDOW-GET-CLASS"))))
+        (and cls (ffi:foreign-pointer-p cls)
+             (= (symbol-value (%raw-sym "AMIGA.RAW.CLASSES.WINDOW" "+WMHI-CLOSEWINDOW+")) #x10000)
+             (= (symbol-value (%raw-sym "AMIGA.RAW.CLASSES.WINDOW" "+WMHI-IGNORE+")) -1)
+             t))
+      (null (find-package "AMIGA.RAW.CLASSES.WINDOW"))))
