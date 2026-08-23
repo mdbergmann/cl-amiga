@@ -8,18 +8,14 @@
 ;;; 7 functions, 8 constants, 2 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.NONVOLATILE"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*NONVOLATILE-BASE*" "*NONVOLATILE-VERSION*"
-   "+NVEB-DELETE+" "+NVEF-DELETE+" "+NVEB-APPNAME+" "+NVEF-APPNAME+" 
-   "+NVERR-BADNAME+" "+NVERR-WRITEPROT+" "+NVERR-FAIL+" "+NVERR-FATAL+" 
-   "*NV-INFO-SIZE*" "NV-INFO-MAX-STORAGE" "NV-INFO-FREE-STORAGE" 
-   "*NV-ENTRY-SIZE*" "NV-ENTRY-NODE" "NV-ENTRY-NAME" "NV-ENTRY-SIZE" 
-   "NV-ENTRY-PROTECTION" "GET-COPY-NV" "FREE-NV-DATA" "STORE-NV" 
-   "DELETE-NV" "GET-NV-INFO" "GET-NV-LIST" "SET-NV-PROTECTION" ))
+  (:export "*NONVOLATILE-BASE*" "*NONVOLATILE-VERSION*"))
 
 (in-package "AMIGA.RAW.NONVOLATILE")
 
@@ -33,56 +29,42 @@
 (defun %version>= (n)
   (and *nonvolatile-version* (>= *nonvolatile-version* n)))
 
-;;; --- constants from libraries/nonvolatile.i ---
-(defconstant +nveb-delete+ 0)
-(defconstant +nvef-delete+ 1)
-(defconstant +nveb-appname+ #x1F)
-(defconstant +nvef-appname+ #x80000000)
-(defconstant +nverr-badname+ 1)
-(defconstant +nverr-writeprot+ 2)
-(defconstant +nverr-fail+ 3)
-(defconstant +nverr-fatal+ 4)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.NONVOLATILE"
+    (:base *nonvolatile-base* :version *nonvolatile-version*)
 
-;;; --- structures from libraries/nonvolatile.i ---
-(ffi:defcstruct (nv-info :size 8)   ; NVInfo (libraries/nonvolatile.i)
-  (max-storage :u32 0)
-  (free-storage :u32 4)
-)
-(ffi:defcstruct (nv-entry :size 20)   ; NVEntry (libraries/nonvolatile.i)
-  (node (:struct 8) 0)
-  (name :fptr 8)
-  (size :u32 12)
-  (protection :u32 16)
-)
+  ;; --- constants from libraries/nonvolatile.i ---
+  (:const "+NVEB-DELETE+" 0)
+  (:const "+NVEF-DELETE+" 1)
+  (:const "+NVEB-APPNAME+" #x1F)
+  (:const "+NVEF-APPNAME+" #x80000000)
+  (:const "+NVERR-BADNAME+" 1)
+  (:const "+NVERR-WRITEPROT+" 2)
+  (:const "+NVERR-FAIL+" 3)
+  (:const "+NVERR-FATAL+" 4)
 
-;;; --- functions (nonvolatile_lib.sfd + MorphOS SDK) ---
-(when (%version>= 40)
-  (amiga.ffi:defcfun get-copy-nv *nonvolatile-base* -30 (:a0 app-name :a1 item-name :d1 kill-requesters)
-    :result :pointer
-    :doc "APTR GetCopyNV(CONST_STRPTR appName, CONST_STRPTR itemName, BOOL killRequesters) (A0,A1,D1) LVO -30"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun free-nv-data *nonvolatile-base* -36 (:a0 data)
-    :result :void
-    :doc "VOID FreeNVData(APTR data) (A0) LVO -36"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun store-nv *nonvolatile-base* -42 (:a0 app-name :a1 item-name :a2 data :d0 length :d1 kill-requesters)
-    :result :u16
-    :doc "UWORD StoreNV(CONST_STRPTR appName, CONST_STRPTR itemName, CONST_APTR data, ULONG length, BOOL killRequesters) (A0,A1,A2,D0,D1) LVO -42"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun delete-nv *nonvolatile-base* -48 (:a0 app-name :a1 item-name :d1 kill-requesters)
-    :result :bool
-    :doc "BOOL DeleteNV(CONST_STRPTR appName, CONST_STRPTR itemName, BOOL killRequesters) (A0,A1,D1) LVO -48"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun get-nv-info *nonvolatile-base* -54 (:d1 kill-requesters)
-    :result :pointer
-    :doc "struct NVInfo * GetNVInfo(BOOL killRequesters) (D1) LVO -54"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun get-nv-list *nonvolatile-base* -60 (:a0 app-name :d1 kill-requesters)
-    :result :pointer
-    :doc "struct MinList * GetNVList(CONST_STRPTR appName, BOOL killRequesters) (A0,D1) LVO -60"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun set-nv-protection *nonvolatile-base* -66 (:a0 app-name :a1 item-name :d2 mask :d1 kill-requesters)
-    :result :bool
-    :doc "BOOL SetNVProtection(CONST_STRPTR appName, CONST_STRPTR itemName, LONG mask, BOOL killRequesters) (A0,A1,D2,D1) LVO -66"))
+  ;; --- structures from libraries/nonvolatile.i ---
+  (:struct "NV-INFO" 8   ; NVInfo (libraries/nonvolatile.i)
+    ("MAX-STORAGE" :u32 0)
+    ("FREE-STORAGE" :u32 4)
+    )
+  (:struct "NV-ENTRY" 20   ; NVEntry (libraries/nonvolatile.i)
+    ("NODE" (:struct 8) 0)
+    ("NAME" :fptr 8)
+    ("SIZE" :u32 12)
+    ("PROTECTION" :u32 16)
+    )
+
+  ;; --- functions (nonvolatile_lib.sfd + MorphOS SDK) ---
+  (:fn "GET-COPY-NV" -30 (:a0 :a1 :d1) :pointer 40)   ; APTR GetCopyNV(CONST_STRPTR appName, CONST_STRPTR itemName, BOOL killRequesters) (A0,A1,D1) LVO -30
+  (:fn "FREE-NV-DATA" -36 (:a0) :void 40)   ; VOID FreeNVData(APTR data) (A0) LVO -36
+  (:fn "STORE-NV" -42 (:a0 :a1 :a2 :d0 :d1) :u16 40)   ; UWORD StoreNV(CONST_STRPTR appName, CONST_STRPTR itemName, CONST_APTR data, ULONG length, BOOL killRequesters) (A0,A1,A2,D0,D1) LVO -42
+  (:fn "DELETE-NV" -48 (:a0 :a1 :d1) :bool 40)   ; BOOL DeleteNV(CONST_STRPTR appName, CONST_STRPTR itemName, BOOL killRequesters) (A0,A1,D1) LVO -48
+  (:fn "GET-NV-INFO" -54 (:d1) :pointer 40)   ; struct NVInfo * GetNVInfo(BOOL killRequesters) (D1) LVO -54
+  (:fn "GET-NV-LIST" -60 (:a0 :d1) :pointer 40)   ; struct MinList * GetNVList(CONST_STRPTR appName, BOOL killRequesters) (A0,D1) LVO -60
+  (:fn "SET-NV-PROTECTION" -66 (:a0 :a1 :d2 :d1) :bool 40)   ; BOOL SetNVProtection(CONST_STRPTR appName, CONST_STRPTR itemName, LONG mask, BOOL killRequesters) (A0,A1,D2,D1) LVO -66
+  )
 
 (provide "amiga/raw/nonvolatile")

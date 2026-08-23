@@ -9,31 +9,14 @@
 ;;; 1 C macro skipped: not an integer constant (string, call, float).
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.CLASSES.REQUESTER"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*REQUESTER-BASE*" "*REQUESTER-VERSION*"
-   "+REQ-DUMMY+" "+REQS-DUMMY+" "+REQI-DUMMY+" "+REQP-DUMMY+" "+REQ-TYPE+" 
-   "+REQ-TITLE-TEXT+" "+REQ-BODY-TEXT+" "+REQ-GADGET-TEXT+" 
-   "+REQ-RETURN-CODE+" "+REQ-TAB-SIZE+" "+REQ-IMAGE+" "+REQ-VAR-ARGS+" 
-   "+REQ-EVEN-BUTTONS+" "+REQ-WRAP-BORDER+" "+REQ-TIME-OUT-SECS+" 
-   "+REQ-IDCMP-PTR+" "+REQ-INACTIVE+" "+REQ-CHAR-SET+" "+REQ-STAY-ON-TOP+" 
-   "+REQ-FORCE-FOCUS+" "+REQI-MINIMUM+" "+REQI-MAXIMUM+" "+REQI-INVISIBLE+" 
-   "+REQI-NUMBER+" "+REQI-ARROWS+" "+REQI-MAX-CHARS+" "+REQI-MIN-TEXT+" 
-   "+REQI-MAX-TEXT+" "+REQI-MARK+" "+REQI-RETURN-ENDS+" 
-   "+REQS-ALLOW-EMPTY+" "+REQS-INVISIBLE+" "+REQS-BUFFER+" 
-   "+REQS-SHOW-DEFAULT+" "+REQS-MAX-CHARS+" "+REQS-CHOOSER-ARRAY+" 
-   "+REQS-CHOOSER-ACTIVE+" "+REQS-MARK+" "+REQS-RETURN-ENDS+" 
-   "+REQP-TOTAL+" "+REQP-CURRENT+" "+REQP-ABORT-TEXT+" 
-   "+REQP-PROGRESS-TEXT+" "+REQP-OPEN-INACTIVE+" "+REQP-NO-TEXT+" 
-   "+REQP-DYNAMIC+" "+REQP-CENTER-WINDOW+" "+REQP-LAST-POSITION+" 
-   "+REQP-PERCENT+" "+REQP-TICKS+" "+REQP-SHORT-TICKS+" "+RM-OPENREQ+" 
-   "+REQTYPE-INFO+" "+REQTYPE-INTEGER+" "+REQTYPE-STRING+" 
-   "+REQTYPE-PROGRESS+" "+REQIMAGE-DEFAULT+" "+REQIMAGE-INFO+" 
-   "+REQIMAGE-WARNING+" "+REQIMAGE-ERROR+" "+REQIMAGE-QUESTION+" 
-   "+REQIMAGE-INSERTDISK+" "REQUESTER-GET-CLASS" ))
+  (:export "*REQUESTER-BASE*" "*REQUESTER-VERSION*"))
 
 (in-package "AMIGA.RAW.CLASSES.REQUESTER")
 
@@ -47,74 +30,78 @@
 (defun %version>= (n)
   (and *requester-version* (>= *requester-version* n)))
 
-;;; --- constants from classes/requester.h ---
-(defconstant +req-dummy+ #x85045000)
-(defconstant +reqs-dummy+ #x85045100)
-(defconstant +reqi-dummy+ #x85045200)
-(defconstant +reqp-dummy+ #x85045300)
-(defconstant +req-type+ #x85045001)
-(defconstant +req-title-text+ #x85045002)
-(defconstant +req-body-text+ #x85045003)
-(defconstant +req-gadget-text+ #x85045004)
-(defconstant +req-return-code+ #x85045005)
-(defconstant +req-tab-size+ #x85045006)
-(defconstant +req-image+ #x85045007)
-(defconstant +req-var-args+ #x85045008)
-(defconstant +req-even-buttons+ #x85045009)
-(defconstant +req-wrap-border+ #x8504500A)
-(defconstant +req-time-out-secs+ #x8504500B)
-(defconstant +req-idcmp-ptr+ #x8504500C)
-(defconstant +req-inactive+ #x8504500D)
-(defconstant +req-char-set+ #x8504500E)
-(defconstant +req-stay-on-top+ #x8504500F)
-(defconstant +req-force-focus+ #x85045010)
-(defconstant +reqi-minimum+ #x85045201)
-(defconstant +reqi-maximum+ #x85045202)
-(defconstant +reqi-invisible+ #x85045203)
-(defconstant +reqi-number+ #x85045204)
-(defconstant +reqi-arrows+ #x85045205)
-(defconstant +reqi-max-chars+ #x85045206)
-(defconstant +reqi-min-text+ #x85045207)
-(defconstant +reqi-max-text+ #x85045208)
-(defconstant +reqi-mark+ #x85045209)
-(defconstant +reqi-return-ends+ #x8504520A)
-(defconstant +reqs-allow-empty+ #x85045101)
-(defconstant +reqs-invisible+ #x85045203)
-(defconstant +reqs-buffer+ #x85045102)
-(defconstant +reqs-show-default+ #x85045103)
-(defconstant +reqs-max-chars+ #x85045104)
-(defconstant +reqs-chooser-array+ #x85045105)
-(defconstant +reqs-chooser-active+ #x85045106)
-(defconstant +reqs-mark+ #x85045107)
-(defconstant +reqs-return-ends+ #x85045108)
-(defconstant +reqp-total+ #x85045301)
-(defconstant +reqp-current+ #x85045302)
-(defconstant +reqp-abort-text+ #x85045004)
-(defconstant +reqp-progress-text+ #x85045003)
-(defconstant +reqp-open-inactive+ #x85045303)
-(defconstant +reqp-no-text+ #x85045304)
-(defconstant +reqp-dynamic+ #x85045305)
-(defconstant +reqp-center-window+ #x85045306)
-(defconstant +reqp-last-position+ #x85045307)
-(defconstant +reqp-percent+ #x85045308)
-(defconstant +reqp-ticks+ #x85045309)
-(defconstant +reqp-short-ticks+ #x8504530A)
-(defconstant +rm-openreq+ #x650001)
-(defconstant +reqtype-info+ 0)
-(defconstant +reqtype-integer+ 1)
-(defconstant +reqtype-string+ 2)
-(defconstant +reqtype-progress+ 3)
-(defconstant +reqimage-default+ 0)
-(defconstant +reqimage-info+ 1)
-(defconstant +reqimage-warning+ 2)
-(defconstant +reqimage-error+ 3)
-(defconstant +reqimage-question+ 4)
-(defconstant +reqimage-insertdisk+ 5)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.CLASSES.REQUESTER"
+    (:base *requester-base* :version *requester-version*)
 
-;;; --- functions (requester_lib.sfd + MorphOS SDK) ---
-(when (%version>= 40)
-  (amiga.ffi:defcfun requester-get-class *requester-base* -30 ()
-    :result :pointer
-    :doc "Class * REQUESTER_GetClass() () LVO -30"))
+  ;; --- constants from classes/requester.h ---
+  (:const "+REQ-DUMMY+" #x85045000)
+  (:const "+REQS-DUMMY+" #x85045100)
+  (:const "+REQI-DUMMY+" #x85045200)
+  (:const "+REQP-DUMMY+" #x85045300)
+  (:const "+REQ-TYPE+" #x85045001)
+  (:const "+REQ-TITLE-TEXT+" #x85045002)
+  (:const "+REQ-BODY-TEXT+" #x85045003)
+  (:const "+REQ-GADGET-TEXT+" #x85045004)
+  (:const "+REQ-RETURN-CODE+" #x85045005)
+  (:const "+REQ-TAB-SIZE+" #x85045006)
+  (:const "+REQ-IMAGE+" #x85045007)
+  (:const "+REQ-VAR-ARGS+" #x85045008)
+  (:const "+REQ-EVEN-BUTTONS+" #x85045009)
+  (:const "+REQ-WRAP-BORDER+" #x8504500A)
+  (:const "+REQ-TIME-OUT-SECS+" #x8504500B)
+  (:const "+REQ-IDCMP-PTR+" #x8504500C)
+  (:const "+REQ-INACTIVE+" #x8504500D)
+  (:const "+REQ-CHAR-SET+" #x8504500E)
+  (:const "+REQ-STAY-ON-TOP+" #x8504500F)
+  (:const "+REQ-FORCE-FOCUS+" #x85045010)
+  (:const "+REQI-MINIMUM+" #x85045201)
+  (:const "+REQI-MAXIMUM+" #x85045202)
+  (:const "+REQI-INVISIBLE+" #x85045203)
+  (:const "+REQI-NUMBER+" #x85045204)
+  (:const "+REQI-ARROWS+" #x85045205)
+  (:const "+REQI-MAX-CHARS+" #x85045206)
+  (:const "+REQI-MIN-TEXT+" #x85045207)
+  (:const "+REQI-MAX-TEXT+" #x85045208)
+  (:const "+REQI-MARK+" #x85045209)
+  (:const "+REQI-RETURN-ENDS+" #x8504520A)
+  (:const "+REQS-ALLOW-EMPTY+" #x85045101)
+  (:const "+REQS-INVISIBLE+" #x85045203)
+  (:const "+REQS-BUFFER+" #x85045102)
+  (:const "+REQS-SHOW-DEFAULT+" #x85045103)
+  (:const "+REQS-MAX-CHARS+" #x85045104)
+  (:const "+REQS-CHOOSER-ARRAY+" #x85045105)
+  (:const "+REQS-CHOOSER-ACTIVE+" #x85045106)
+  (:const "+REQS-MARK+" #x85045107)
+  (:const "+REQS-RETURN-ENDS+" #x85045108)
+  (:const "+REQP-TOTAL+" #x85045301)
+  (:const "+REQP-CURRENT+" #x85045302)
+  (:const "+REQP-ABORT-TEXT+" #x85045004)
+  (:const "+REQP-PROGRESS-TEXT+" #x85045003)
+  (:const "+REQP-OPEN-INACTIVE+" #x85045303)
+  (:const "+REQP-NO-TEXT+" #x85045304)
+  (:const "+REQP-DYNAMIC+" #x85045305)
+  (:const "+REQP-CENTER-WINDOW+" #x85045306)
+  (:const "+REQP-LAST-POSITION+" #x85045307)
+  (:const "+REQP-PERCENT+" #x85045308)
+  (:const "+REQP-TICKS+" #x85045309)
+  (:const "+REQP-SHORT-TICKS+" #x8504530A)
+  (:const "+RM-OPENREQ+" #x650001)
+  (:const "+REQTYPE-INFO+" 0)
+  (:const "+REQTYPE-INTEGER+" 1)
+  (:const "+REQTYPE-STRING+" 2)
+  (:const "+REQTYPE-PROGRESS+" 3)
+  (:const "+REQIMAGE-DEFAULT+" 0)
+  (:const "+REQIMAGE-INFO+" 1)
+  (:const "+REQIMAGE-WARNING+" 2)
+  (:const "+REQIMAGE-ERROR+" 3)
+  (:const "+REQIMAGE-QUESTION+" 4)
+  (:const "+REQIMAGE-INSERTDISK+" 5)
+
+  ;; --- functions (requester_lib.sfd + MorphOS SDK) ---
+  (:fn "REQUESTER-GET-CLASS" -30 () :pointer 40)   ; Class * REQUESTER_GetClass() () LVO -30
+  )
 
 (provide "amiga/raw/classes/requester")

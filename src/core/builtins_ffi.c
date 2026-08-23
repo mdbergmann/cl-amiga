@@ -15,6 +15,7 @@
 #include "float.h"
 #include "string_utils.h"
 #include "vm.h"
+#include "compiler.h"   /* cl_register_setf_updater (DEFCSTRUCT setters) */
 #include "../platform/platform.h"
 #include "../platform/platform_thread.h"
 #include <string.h>
@@ -29,7 +30,7 @@
  * ================================================================ */
 
 /* CL integer (fixnum or bignum) -> uint64_t (low 64 bits, two's complement). */
-static uint64_t ffi_obj_to_u64(CL_Obj o)
+uint64_t cl_ffi_obj_to_u64(CL_Obj o)
 {
     if (CL_FIXNUM_P(o))
         return (uint64_t)(int64_t)CL_FIXNUM_VAL(o);
@@ -48,7 +49,7 @@ static uint64_t ffi_obj_to_u64(CL_Obj o)
 }
 
 /* uint64_t -> CL integer (fixnum if it fits, else normalized bignum). */
-static CL_Obj ffi_u64_to_obj(uint64_t v)
+CL_Obj cl_ffi_u64_to_obj(uint64_t v)
 {
     CL_Obj bn;
     CL_Bignum *b;
@@ -64,7 +65,7 @@ static CL_Obj ffi_u64_to_obj(uint64_t v)
 }
 
 /* int64_t -> CL integer (signed). */
-static CL_Obj ffi_i64_to_obj(int64_t v)
+CL_Obj cl_ffi_i64_to_obj(int64_t v)
 {
     uint64_t mag;
     CL_Obj bn;
@@ -110,7 +111,7 @@ static CL_Obj bi_ffi_make_fp(CL_Obj *args, int nargs)
     (void)size;
     if (!CL_FIXNUM_P(args[0]) && !CL_BIGNUM_P(args[0]))
         cl_error(CL_ERR_TYPE, "FFI:MAKE-FOREIGN-POINTER: address must be an integer");
-    addr = ffi_obj_to_u64(args[0]);
+    addr = cl_ffi_obj_to_u64(args[0]);
     size = (nargs > 1 && !CL_NULL_P(args[1])) ? (uint32_t)CL_FIXNUM_VAL(args[1]) : 0;
     handle = platform_ffi_register((void *)(uintptr_t)addr);
     return cl_make_foreign_pointer(handle, size, 0);
@@ -127,7 +128,7 @@ static CL_Obj bi_ffi_fp_address(CL_Obj *args, int nargs)
         cl_error(CL_ERR_TYPE, "FFI:FOREIGN-POINTER-ADDRESS: argument must be a foreign pointer");
     fp = (CL_ForeignPtr *)CL_OBJ_TO_PTR(args[0]);
     real = platform_ffi_resolve(fp->address);
-    return ffi_u64_to_obj((uint64_t)(uintptr_t)real);
+    return cl_ffi_u64_to_obj((uint64_t)(uintptr_t)real);
 }
 
 /* (ffi:foreign-pointer-p obj) → T or NIL */
@@ -634,7 +635,7 @@ static CL_Obj bi_ffi_peek_u64(CL_Obj *args, int nargs)
 {
     uint64_t v;
     memcpy(&v, ffi_resolve_at(args, nargs, 1), sizeof(v));
-    return ffi_u64_to_obj(v);
+    return cl_ffi_u64_to_obj(v);
 }
 
 /* (ffi:peek-i64 fp &optional offset) → signed integer */
@@ -642,7 +643,7 @@ static CL_Obj bi_ffi_peek_i64(CL_Obj *args, int nargs)
 {
     int64_t v;
     memcpy(&v, ffi_resolve_at(args, nargs, 1), sizeof(v));
-    return ffi_i64_to_obj(v);
+    return cl_ffi_i64_to_obj(v);
 }
 
 /* (ffi:peek-single fp &optional offset) → single-float */
@@ -673,7 +674,7 @@ static CL_Obj bi_ffi_peek_pointer(CL_Obj *args, int nargs)
 /* (ffi:poke-i8 fp value &optional offset) → value */
 static CL_Obj bi_ffi_poke_i8(CL_Obj *args, int nargs)
 {
-    int8_t v = (int8_t)ffi_obj_to_u64(args[1]);
+    int8_t v = (int8_t)cl_ffi_obj_to_u64(args[1]);
     *(int8_t *)ffi_resolve_at(args, nargs, 2) = v;
     return args[1];
 }
@@ -681,7 +682,7 @@ static CL_Obj bi_ffi_poke_i8(CL_Obj *args, int nargs)
 /* (ffi:poke-i16 fp value &optional offset) → value */
 static CL_Obj bi_ffi_poke_i16(CL_Obj *args, int nargs)
 {
-    int16_t v = (int16_t)ffi_obj_to_u64(args[1]);
+    int16_t v = (int16_t)cl_ffi_obj_to_u64(args[1]);
     memcpy(ffi_resolve_at(args, nargs, 2), &v, sizeof(v));
     return args[1];
 }
@@ -689,7 +690,7 @@ static CL_Obj bi_ffi_poke_i16(CL_Obj *args, int nargs)
 /* (ffi:poke-i32 fp value &optional offset) → value */
 static CL_Obj bi_ffi_poke_i32(CL_Obj *args, int nargs)
 {
-    int32_t v = (int32_t)ffi_obj_to_u64(args[1]);
+    int32_t v = (int32_t)cl_ffi_obj_to_u64(args[1]);
     memcpy(ffi_resolve_at(args, nargs, 2), &v, sizeof(v));
     return args[1];
 }
@@ -697,7 +698,7 @@ static CL_Obj bi_ffi_poke_i32(CL_Obj *args, int nargs)
 /* (ffi:poke-u64 fp value &optional offset) → value */
 static CL_Obj bi_ffi_poke_u64(CL_Obj *args, int nargs)
 {
-    uint64_t v = ffi_obj_to_u64(args[1]);
+    uint64_t v = cl_ffi_obj_to_u64(args[1]);
     memcpy(ffi_resolve_at(args, nargs, 2), &v, sizeof(v));
     return args[1];
 }
@@ -705,7 +706,7 @@ static CL_Obj bi_ffi_poke_u64(CL_Obj *args, int nargs)
 /* (ffi:poke-i64 fp value &optional offset) → value (alias of poke-u64 bits) */
 static CL_Obj bi_ffi_poke_i64(CL_Obj *args, int nargs)
 {
-    uint64_t v = ffi_obj_to_u64(args[1]);
+    uint64_t v = cl_ffi_obj_to_u64(args[1]);
     memcpy(ffi_resolve_at(args, nargs, 2), &v, sizeof(v));
     return args[1];
 }
@@ -742,6 +743,636 @@ static CL_Obj bi_ffi_poke_pointer(CL_Obj *args, int nargs)
     v = platform_ffi_resolve(((CL_ForeignPtr *)CL_OBJ_TO_PTR(args[1]))->address);
     memcpy(ffi_resolve_at(args, nargs, 2), &v, sizeof(v));
     return args[1];
+}
+
+/* ================================================================
+ * FFI stubs — binding descriptors that are functions (types.h CL_FfiStub)
+ *
+ * cl_ffi_stub_call is the runtime entry every call path lands on when the
+ * callee is a stub (cl_vm_apply, OP_CALL/OP_TAILCALL, OP_APPLY, FUNCALL,
+ * APPLY): arity check, then either the AmigaOS library call through the
+ * stub's base variable (CL_STUB_LIBCALL — cl_amiga_call_via_base_sym,
+ * the same helper OP_AMIGA_CALL uses) or a typed peek/poke at
+ * ptr + offset (the field kinds FFI:DEFCSTRUCT installs).  The field
+ * accessors reproduce the peek/poke builtins' conversions exactly (the
+ * old DEFCSTRUCT expansion called those builtins), see stub_peek /
+ * stub_poke.
+ *
+ * GC: a stub's fields are copied into C locals on entry; nothing below
+ * touches the stub object after an allocation.  ARGS are the caller's
+ * GC-rooted VM stack slots.
+ * ================================================================ */
+
+/* FFI::%DEFINE-CSTRUCT-ACCESSORS — the symbol compile_call matches to
+ * run the compile-time DEFSETF registration (see compiler.h). */
+CL_Obj cl_ffi_define_cstruct_accessors_sym = CL_NIL;
+
+static const char *stub_display_name(CL_Obj name)
+{
+    return CL_SYMBOL_P(name) ? cl_symbol_name(name) : "anonymous FFI stub";
+}
+
+int cl_ffi_stub_arity(CL_Obj stub)
+{
+    CL_FfiStub *fs = (CL_FfiStub *)CL_OBJ_TO_PTR(stub);
+    switch (fs->kind) {
+    case CL_STUB_LIBCALL:   return (int)fs->ctype;
+    case CL_STUB_PEEK:      return 1;
+    case CL_STUB_POKE:      return 2;
+    case CL_STUB_PEEK_IDX:  return 2;
+    case CL_STUB_POKE_IDX:  return 3;
+    case CL_STUB_FIELD_PTR: return 1;
+    default:                return 0;
+    }
+}
+
+/* Resolve the foreign-pointer argument of a field accessor to a real
+ * address, + OFFSET.  Same two checks as ffi_resolve_at (type, then a
+ * live non-null pointer), naming the accessor in the message. */
+static uint8_t *stub_field_addr(CL_Obj fp_obj, uint32_t offset, CL_Obj name)
+{
+    void *base;
+    if (!CL_FOREIGN_POINTER_P(fp_obj))
+        cl_error(CL_ERR_TYPE,
+                 "%s: argument must be a foreign pointer, got %s",
+                 stub_display_name(name), cl_type_name(fp_obj));
+    base = platform_ffi_resolve(((CL_ForeignPtr *)CL_OBJ_TO_PTR(fp_obj))->address);
+    if (!base)
+        cl_error(CL_ERR_GENERAL,
+                 "%s: dereference of an invalid/null foreign pointer",
+                 stub_display_name(name));
+    return (uint8_t *)base + offset;
+}
+
+/* Index argument of an (:array T N) accessor: a fixnum in [0, count)
+ * when the struct declared a count (count 0 = unchecked, the C way). */
+static uint32_t stub_index_arg(CL_Obj idx, uint32_t count, CL_Obj name)
+{
+    if (!CL_FIXNUM_P(idx) || CL_FIXNUM_VAL(idx) < 0)
+        cl_error(CL_ERR_TYPE,
+                 "%s: index must be a non-negative fixnum, got %s",
+                 stub_display_name(name), cl_type_name(idx));
+    if (count != 0 && (uint32_t)CL_FIXNUM_VAL(idx) >= count)
+        cl_error(CL_ERR_ARGS,
+                 "%s: index %d is out of range for a %u-element array field",
+                 stub_display_name(name), (int)CL_FIXNUM_VAL(idx),
+                 (unsigned)count);
+    return (uint32_t)CL_FIXNUM_VAL(idx);
+}
+
+/* Read a field of C type CTYPE at P and box it — the peek-* builtins'
+ * conversions: u32/:pointer as an unsigned integer (bignum above the
+ * fixnum range), i32 sign-extended, :fptr as a foreign pointer (NIL for
+ * NULL), floats boxed. */
+static CL_Obj stub_peek(uint8_t *p, int ctype)
+{
+    switch (ctype) {
+    case CL_STUB_CT_U8:
+        return CL_MAKE_FIXNUM((int32_t)*p);
+    case CL_STUB_CT_I8:
+        return CL_MAKE_FIXNUM((int32_t)*(int8_t *)p);
+    case CL_STUB_CT_U16: {
+        uint16_t v; memcpy(&v, p, sizeof(v));
+        return CL_MAKE_FIXNUM((int32_t)v);
+    }
+    case CL_STUB_CT_I16: {
+        int16_t v; memcpy(&v, p, sizeof(v));
+        return CL_MAKE_FIXNUM((int32_t)v);
+    }
+    case CL_STUB_CT_U32:
+    case CL_STUB_CT_POINTER: {
+        uint32_t v; memcpy(&v, p, sizeof(v));
+        return cl_amiga_box_result(v, CL_AMIGA_RES_UNSIGNED);
+    }
+    case CL_STUB_CT_I32: {
+        uint32_t v; memcpy(&v, p, sizeof(v));
+        return cl_amiga_box_result(v, CL_AMIGA_RES_SIGNED);
+    }
+    case CL_STUB_CT_FPTR: {
+        /* 32-bit address in the struct (AmigaOS layout); NULL -> NIL.
+         * Registered like FFI:MAKE-FOREIGN-POINTER does so the host's
+         * handle table knows it. */
+        uint32_t v; memcpy(&v, p, sizeof(v));
+        if (v == 0) return CL_NIL;
+        return cl_make_foreign_pointer(
+            platform_ffi_register((void *)(uintptr_t)v), 0, 0);
+    }
+    case CL_STUB_CT_SINGLE: {
+        float f; memcpy(&f, p, sizeof(f));
+        return cl_make_single_float(f);
+    }
+    case CL_STUB_CT_DOUBLE: {
+        double d; memcpy(&d, p, sizeof(d));
+        return cl_make_double_float(d);
+    }
+    default:
+        cl_error(CL_ERR_GENERAL, "FFI stub: corrupt field type code %d", ctype);
+        return CL_NIL;
+    }
+}
+
+/* Integer field value -> low 32 bits (fixnum or bignum, truncated to the
+ * field width by the caller — the poke-* builtins truncate the same way). */
+static uint32_t stub_int_arg(CL_Obj val, CL_Obj name)
+{
+    if (!CL_FIXNUM_P(val) && !CL_BIGNUM_P(val))
+        cl_error(CL_ERR_TYPE, "%s: value must be an integer, got %s",
+                 stub_display_name(name), cl_type_name(val));
+    return (uint32_t)cl_ffi_obj_to_u64(val);
+}
+
+/* Store VAL into the CTYPE field at P (FFI:DEFCSTRUCT setter semantics:
+ * :fptr takes a foreign pointer, an integer address or NIL). */
+static void stub_poke(uint8_t *p, int ctype, CL_Obj val, CL_Obj name)
+{
+    switch (ctype) {
+    case CL_STUB_CT_U8:
+    case CL_STUB_CT_I8: {
+        uint8_t v = (uint8_t)stub_int_arg(val, name);
+        *p = v;
+        break;
+    }
+    case CL_STUB_CT_U16:
+    case CL_STUB_CT_I16: {
+        uint16_t v = (uint16_t)stub_int_arg(val, name);
+        memcpy(p, &v, sizeof(v));
+        break;
+    }
+    case CL_STUB_CT_U32:
+    case CL_STUB_CT_I32:
+    case CL_STUB_CT_POINTER: {
+        uint32_t v = stub_int_arg(val, name);
+        memcpy(p, &v, sizeof(v));
+        break;
+    }
+    case CL_STUB_CT_FPTR: {
+        uint32_t v;
+        if (CL_NULL_P(val))
+            v = 0;
+        else if (CL_FOREIGN_POINTER_P(val))
+            /* the REAL address, as FFI:FOREIGN-POINTER-ADDRESS reports it */
+            v = (uint32_t)(uintptr_t)platform_ffi_resolve(
+                    ((CL_ForeignPtr *)CL_OBJ_TO_PTR(val))->address);
+        else if (CL_FIXNUM_P(val) || CL_BIGNUM_P(val))
+            v = (uint32_t)cl_ffi_obj_to_u64(val);
+        else
+            cl_error(CL_ERR_TYPE,
+                     "%s: pointer field value must be a foreign pointer, "
+                     "an integer address or NIL, got %s",
+                     stub_display_name(name), cl_type_name(val));
+        memcpy(p, &v, sizeof(v));
+        break;
+    }
+    case CL_STUB_CT_SINGLE: {
+        float f;
+        if (!CL_REALP(val))
+            cl_error(CL_ERR_TYPE, "%s: value must be a real number, got %s",
+                     stub_display_name(name), cl_type_name(val));
+        f = cl_to_float(val);
+        memcpy(p, &f, sizeof(f));
+        break;
+    }
+    case CL_STUB_CT_DOUBLE: {
+        double d;
+        if (!CL_REALP(val))
+            cl_error(CL_ERR_TYPE, "%s: value must be a real number, got %s",
+                     stub_display_name(name), cl_type_name(val));
+        d = cl_to_double(val);
+        memcpy(p, &d, sizeof(d));
+        break;
+    }
+    default:
+        cl_error(CL_ERR_GENERAL, "FFI stub: corrupt field type code %d", ctype);
+    }
+}
+
+CL_Obj cl_ffi_stub_call(CL_Obj stub, CL_Obj *args, int nargs)
+{
+    CL_FfiStub *fs = (CL_FfiStub *)CL_OBJ_TO_PTR(stub);
+    CL_Obj name = fs->name, aux = fs->aux;
+    uint32_t a = fs->a;
+    int16_t b = fs->b;
+    uint8_t kind = fs->kind, ctype = fs->ctype;
+    int expected = cl_ffi_stub_arity(stub);
+
+    if (nargs != expected)
+        cl_error(CL_ERR_ARGS, "Too %s arguments to %s: expected %d, got %d",
+                 nargs < expected ? "few" : "many",
+                 stub_display_name(name), expected, nargs);
+
+    switch (kind) {
+    case CL_STUB_LIBCALL:
+        return cl_amiga_call_via_base_sym(aux, b, a, nargs, args);
+
+    case CL_STUB_PEEK:
+        return stub_peek(stub_field_addr(args[0], a, name), ctype);
+
+    case CL_STUB_POKE:
+        stub_poke(stub_field_addr(args[0], a, name), ctype, args[1], name);
+        return args[1];
+
+    case CL_STUB_PEEK_IDX: {
+        /* a = offset (low 16) | element count (high 16), b = element size */
+        uint32_t i = stub_index_arg(args[1], a >> 16, name);
+        return stub_peek(stub_field_addr(args[0], (a & 0xFFFFu) + i * (uint32_t)b, name),
+                         ctype);
+    }
+    case CL_STUB_POKE_IDX: {
+        uint32_t i = stub_index_arg(args[1], a >> 16, name);
+        stub_poke(stub_field_addr(args[0], (a & 0xFFFFu) + i * (uint32_t)b, name),
+                  ctype, args[2], name);
+        return args[2];
+    }
+    case CL_STUB_FIELD_PTR: {
+        /* Embedded struct: a foreign pointer to ptr + offset (unowned),
+         * registered like FFI:POINTER+ does. */
+        uint8_t *p = stub_field_addr(args[0], a, name);
+        return cl_make_foreign_pointer(platform_ffi_register(p), 0, 0);
+    }
+    default:
+        cl_error(CL_ERR_GENERAL, "%s: corrupt FFI stub kind %d",
+                 stub_display_name(name), (int)kind);
+        return CL_NIL;
+    }
+}
+
+/* --- Constructors and introspection (the Lisp-visible surface) --- */
+
+static const char *const stub_kind_names[CL_STUB_KIND_MAX + 1] = {
+    "LIBCALL", "PEEK", "POKE", "PEEK-IDX", "POKE-IDX", "FIELD-PTR" };
+static const char *const stub_ct_names[CL_STUB_CT_MAX + 1] = {
+    "U8", "I8", "U16", "I16", "U32", "I32", "POINTER", "FPTR", "SINGLE", "DOUBLE" };
+static const char *const stub_res_names[CL_AMIGA_RES_KIND_MAX + 1] = {
+    "UNSIGNED", "VOID", "POINTER", "SIGNED", "BOOL", "U16", "I16", "U8", "I8" };
+
+/* Match a keyword argument against a name table; -1 if not a keyword or
+ * not in the table. */
+static int stub_keyword_index(CL_Obj kw, const char *const *names, int n)
+{
+    int i;
+    if (!CL_SYMBOL_P(kw) ||
+        ((CL_Symbol *)CL_OBJ_TO_PTR(kw))->package != cl_package_keyword)
+        return -1;
+    for (i = 0; i < n; i++)
+        if (strcmp(cl_symbol_name(kw), names[i]) == 0)
+            return i;
+    return -1;
+}
+
+/* Byte size of a field element C type (the *-IDX kinds' stride). */
+static int32_t stub_ct_size(int ctype)
+{
+    switch (ctype) {
+    case CL_STUB_CT_U8: case CL_STUB_CT_I8:   return 1;
+    case CL_STUB_CT_U16: case CL_STUB_CT_I16: return 2;
+    case CL_STUB_CT_DOUBLE:                   return 8;
+    default:                                  return 4;
+    }
+}
+
+/* The keyword <-> code tables, shared with the binding-table packer
+ * (bindtab.c) so DEFINE-BINDING-TABLE rows spell field types and result
+ * kinds exactly as DEFCSTRUCT / DEFCFUN do. */
+int cl_ffi_ctype_from_keyword(CL_Obj kw)
+{
+    return stub_keyword_index(kw, stub_ct_names, CL_STUB_CT_MAX + 1);
+}
+int cl_ffi_res_kind_from_keyword(CL_Obj kw)
+{
+    return stub_keyword_index(kw, stub_res_names, CL_AMIGA_RES_KIND_MAX + 1);
+}
+const char *cl_ffi_ctype_name(int ctype)
+{
+    return (ctype >= 0 && ctype <= CL_STUB_CT_MAX) ? stub_ct_names[ctype] : "?";
+}
+const char *cl_ffi_res_kind_name(int kind)
+{
+    return (kind >= 0 && kind <= CL_AMIGA_RES_KIND_MAX) ? stub_res_names[kind] : "?";
+}
+int32_t cl_ffi_ctype_size(int ctype)
+{
+    return stub_ct_size(ctype);
+}
+
+/* Validate and build one field stub.  WHO names the caller in errors;
+ * KIND/CTYPE are decoded codes, COUNT the declared element count of an
+ * array field (0 = unchecked). */
+static CL_Obj make_field_stub_checked(const char *who, CL_Obj name, int kind,
+                                      int ctype, int32_t offset,
+                                      int32_t elt_size, int32_t count)
+{
+    const char *nm = cl_symbol_name(name);
+    uint32_t a;
+
+    if (offset < 0)
+        cl_error(CL_ERR_ARGS, "%s: %s: offset must be a non-negative fixnum",
+                 who, nm);
+    a = (uint32_t)offset;
+    if (kind == CL_STUB_PEEK_IDX || kind == CL_STUB_POKE_IDX) {
+        if (elt_size != 1 && elt_size != 2 && elt_size != 4 && elt_size != 8)
+            cl_error(CL_ERR_ARGS,
+                     "%s: %s: array element size must be 1, 2, 4 or 8", who, nm);
+        if (count < 0 || count > 0xFFFF)
+            cl_error(CL_ERR_ARGS, "%s: %s: element count must be 0..65535",
+                     who, nm);
+        if (offset > 0xFFFF)
+            cl_error(CL_ERR_ARGS,
+                     "%s: %s: array field offset must be <= 65535", who, nm);
+        a = (uint32_t)offset | ((uint32_t)count << 16);
+    } else {
+        elt_size = 0;
+    }
+    return cl_make_ffi_stub((uint8_t)kind, name, CL_NIL, a,
+                            (int16_t)elt_size, (uint8_t)ctype);
+}
+
+/* (ffi::%make-field-stub name kind ctype offset &optional elt-size count)
+ *   → FFI stub
+ *
+ * A field accessor descriptor (what FFI:DEFCSTRUCT installs, see
+ * %DEFINE-CSTRUCT-ACCESSORS below for the bulk form it actually uses).
+ * KIND is :peek / :poke / :peek-idx / :poke-idx / :field-ptr; CTYPE one of
+ * :u8 :i8 :u16 :i16 :u32 :i32 :pointer :fptr :single :double (NIL for
+ * :field-ptr); OFFSET the field's byte offset.  The *-idx kinds take the
+ * element size (1/2/4/8) and, optionally, the declared element COUNT,
+ * which the accessor then bounds-checks (0 = unchecked). */
+static CL_Obj bi_ffi_make_field_stub(CL_Obj *args, int nargs)
+{
+    CL_Obj name = args[0];
+    int kind, ctype = 0;
+    int32_t elt_size = 0, count = 0;
+    const char *nm;
+
+    if (!CL_SYMBOL_P(name))
+        cl_error(CL_ERR_TYPE, "%%MAKE-FIELD-STUB: NAME must be a symbol");
+    nm = cl_symbol_name(name);
+    kind = stub_keyword_index(args[1], stub_kind_names, CL_STUB_KIND_MAX + 1);
+    if (kind < 0 || kind == CL_STUB_LIBCALL)
+        cl_error(CL_ERR_ARGS,
+                 "%%MAKE-FIELD-STUB: %s: kind must be :PEEK, :POKE, "
+                 ":PEEK-IDX, :POKE-IDX or :FIELD-PTR", nm);
+    if (kind != CL_STUB_FIELD_PTR) {
+        ctype = stub_keyword_index(args[2], stub_ct_names, CL_STUB_CT_MAX + 1);
+        if (ctype < 0)
+            cl_error(CL_ERR_ARGS,
+                     "%%MAKE-FIELD-STUB: %s: unknown field type %s (expected "
+                     ":U8 :I8 :U16 :I16 :U32 :I32 :POINTER :FPTR :SINGLE :DOUBLE)",
+                     nm, CL_SYMBOL_P(args[2]) ? cl_symbol_name(args[2]) : "?");
+    }
+    if (!CL_FIXNUM_P(args[3]))
+        cl_error(CL_ERR_ARGS,
+                 "%%MAKE-FIELD-STUB: %s: offset must be a non-negative fixnum", nm);
+    if (kind == CL_STUB_PEEK_IDX || kind == CL_STUB_POKE_IDX) {
+        if (nargs < 5 || !CL_FIXNUM_P(args[4]))
+            cl_error(CL_ERR_ARGS,
+                     "%%MAKE-FIELD-STUB: %s: array element size must be 1, 2, 4 or 8",
+                     nm);
+        elt_size = CL_FIXNUM_VAL(args[4]);
+        if (nargs > 5 && !CL_NULL_P(args[5])) {
+            if (!CL_FIXNUM_P(args[5]))
+                cl_error(CL_ERR_ARGS,
+                         "%%MAKE-FIELD-STUB: %s: element count must be 0..65535", nm);
+            count = CL_FIXNUM_VAL(args[5]);
+        }
+    }
+    return make_field_stub_checked("%MAKE-FIELD-STUB", name, kind, ctype,
+                                   CL_FIXNUM_VAL(args[3]), elt_size, count);
+}
+
+/* The writer symbol of an accessor: %SET-<ACCESSOR>, interned in the
+ * accessor's package (the current package for an uninterned accessor).
+ * Allocates (intern) — callers keep ACC rooted. */
+static CL_Obj cstruct_setter_symbol(CL_Obj acc)
+{
+    CL_String *an = (CL_String *)CL_OBJ_TO_PTR(((CL_Symbol *)CL_OBJ_TO_PTR(acc))->name);
+    CL_Obj pkg = ((CL_Symbol *)CL_OBJ_TO_PTR(acc))->package;
+    char sname[160];
+    if (an->length + 5 >= sizeof(sname))
+        cl_error(CL_ERR_ARGS, "DEFCSTRUCT: %s: accessor name too long",
+                 cl_symbol_name(acc));
+    memcpy(sname, "%SET-", 5);
+    memcpy(sname + 5, an->data, an->length);
+    if (CL_NULL_P(pkg)) pkg = cl_current_package;
+    return cl_intern_in(sname, an->length + 5, pkg);
+}
+
+/* Compile-time half of %DEFINE-CSTRUCT-ACCESSORS (called by compile_call
+ * when it compiles a call whose argument is a quoted entry list): register
+ * every ACCESSOR -> %SET-ACCESSOR DEFSETF pair now, without installing
+ * anything.  The per-field DEFSETF forms this installer replaced had
+ * exactly this immediate side effect wherever they were compiled — top
+ * level or inside a PROGN/LET/DEFUN body — and code relies on it:
+ * (progn (defcstruct pt (x :u16 0)) (setf (pt-x p) 1)) in ONE form must
+ * find PT-X's updater while the SETF is compiled, before the installer
+ * has run.  Lenient: a malformed entry is skipped here and reported by
+ * the runtime call.  Allocates (intern, cons) — rooted cursor. */
+void cl_ffi_cstruct_register_setfs(CL_Obj entries)
+{
+    CL_Obj list = entries, acc = CL_NIL, setter = CL_NIL, kw_struct;
+    kw_struct = cl_intern_keyword("STRUCT", 6);
+    CL_GC_PROTECT(list);
+    CL_GC_PROTECT(acc);
+    CL_GC_PROTECT(setter);
+    CL_GC_PROTECT(kw_struct);
+    while (CL_CONS_P(list)) {
+        CL_Obj entry = cl_car(list);
+        CL_Obj type;
+        list = cl_cdr(list);
+        if (!CL_CONS_P(entry) || !CL_CONS_P(cl_cdr(entry))) continue;
+        acc = cl_car(entry);
+        type = cl_car(cl_cdr(entry));
+        if (!CL_SYMBOL_P(acc)) continue;
+        if (CL_CONS_P(type) && cl_car(type) == kw_struct) continue;  /* no setter */
+        setter = cstruct_setter_symbol(acc);
+        cl_register_setf_updater(acc, setter);
+    }
+    CL_GC_UNPROTECT(4);
+}
+
+/* (ffi::%define-cstruct-accessors entries) → T
+ *
+ * The bulk installer behind FFI:DEFCSTRUCT: ENTRIES is a list of
+ * (ACCESSOR TYPE OFFSET) with TYPE a field type keyword, (:struct N) or
+ * (:array ELT-TYPE COUNT).  For each entry the accessor's function cell
+ * gets a reader stub; unless the field is an embedded struct, the setter
+ * %SET-<ACCESSOR> is interned in the accessor's package, gets a writer
+ * stub, and is registered as the accessor's DEFSETF updater — exactly
+ * what one (setf symbol-function) + DEFSETF pair per field did before.
+ *
+ * Why one call per struct instead of a form per accessor: a COMPILE-FILE
+ * top-level form is a FASL unit of ~200 bytes of fixed overhead plus
+ * every symbol it names in full, so three forms per field made a 480
+ * field module (intuition) cost ~270 KB of FASL and ~1400 units to
+ * deserialize on a 68020.  The entry list is ONE constant (symbols and
+ * keywords shared inside it), ~50 bytes per field.
+ *
+ * GC: the list is walked with a rooted cursor; every CL_Obj that lives
+ * across the allocations (stub, intern) is rooted. */
+static CL_Obj bi_ffi_define_cstruct_accessors(CL_Obj *args, int nargs)
+{
+    static const char who[] = "DEFCSTRUCT";
+    CL_Obj list = args[0];
+    CL_Obj acc = CL_NIL, type = CL_NIL, setter = CL_NIL, stub = CL_NIL;
+    CL_Obj kw_struct, kw_array;
+    (void)nargs;
+
+    kw_struct = cl_intern_keyword("STRUCT", 6);
+    kw_array = cl_intern_keyword("ARRAY", 5);
+    CL_GC_PROTECT(list);
+    CL_GC_PROTECT(acc);
+    CL_GC_PROTECT(type);
+    CL_GC_PROTECT(setter);
+    CL_GC_PROTECT(stub);
+    CL_GC_PROTECT(kw_struct);
+    CL_GC_PROTECT(kw_array);
+
+    while (!CL_NULL_P(list)) {
+        CL_Obj entry = cl_car(list);
+        CL_Obj offset_obj;
+        int32_t offset;
+        int ctype = 0;
+        const char *nm;
+
+        if (!CL_CONS_P(entry) || !CL_CONS_P(cl_cdr(entry)) ||
+            !CL_CONS_P(cl_cdr(cl_cdr(entry))))
+            cl_error(CL_ERR_ARGS,
+                     "%s: malformed field entry (expected (ACCESSOR TYPE OFFSET))",
+                     who);
+        acc = cl_car(entry);
+        type = cl_car(cl_cdr(entry));
+        offset_obj = cl_car(cl_cdr(cl_cdr(entry)));
+        if (!CL_SYMBOL_P(acc))
+            cl_error(CL_ERR_TYPE, "%s: accessor name must be a symbol", who);
+        nm = cl_symbol_name(acc);
+        if (!CL_FIXNUM_P(offset_obj))
+            cl_error(CL_ERR_ARGS, "%s: %s: offset must be a fixnum", who, nm);
+        offset = CL_FIXNUM_VAL(offset_obj);
+
+        if (CL_CONS_P(type) && cl_car(type) == kw_struct) {
+            /* Embedded struct: reader only, returns ptr + offset. */
+            stub = make_field_stub_checked(who, acc, CL_STUB_FIELD_PTR, 0,
+                                           offset, 0, 0);
+            ((CL_Symbol *)CL_OBJ_TO_PTR(acc))->function = stub;
+        } else {
+            int is_array = CL_CONS_P(type) && cl_car(type) == kw_array;
+            CL_Obj elt_kw = is_array ? cl_car(cl_cdr(type)) : type;
+            int32_t count = 0, elt_size;
+
+            ctype = stub_keyword_index(elt_kw, stub_ct_names, CL_STUB_CT_MAX + 1);
+            if (ctype < 0)
+                cl_error(CL_ERR_ARGS,
+                         "%s: %s: unknown field type %s (expected :U8 :I8 :U16 "
+                         ":I16 :U32 :I32 :POINTER :FPTR :SINGLE :DOUBLE, "
+                         "(:STRUCT n) or (:ARRAY type n))",
+                         who, nm, CL_SYMBOL_P(elt_kw) ? cl_symbol_name(elt_kw) : "?");
+            elt_size = stub_ct_size(ctype);
+            if (is_array) {
+                CL_Obj cnt = cl_car(cl_cdr(cl_cdr(type)));
+                if (!CL_FIXNUM_P(cnt) || CL_FIXNUM_VAL(cnt) <= 0)
+                    cl_error(CL_ERR_ARGS,
+                             "%s: %s: array field needs a positive element count",
+                             who, nm);
+                count = CL_FIXNUM_VAL(cnt);
+            }
+
+            /* Reader */
+            stub = make_field_stub_checked(who, acc,
+                                           is_array ? CL_STUB_PEEK_IDX : CL_STUB_PEEK,
+                                           ctype, offset, elt_size, count);
+            ((CL_Symbol *)CL_OBJ_TO_PTR(acc))->function = stub;
+
+            /* Writer: %SET-<accessor>, in the accessor's package (ACC is
+             * rooted, so deriving the name after the reader stub's
+             * allocation is safe). */
+            setter = cstruct_setter_symbol(acc);
+            stub = make_field_stub_checked(who, setter,
+                                           is_array ? CL_STUB_POKE_IDX : CL_STUB_POKE,
+                                           ctype, offset, elt_size, count);
+            ((CL_Symbol *)CL_OBJ_TO_PTR(setter))->function = stub;
+            cl_register_setf_updater(acc, setter);
+        }
+        list = cl_cdr(list);
+    }
+    CL_GC_UNPROTECT(7);
+    return CL_T;
+}
+
+/* (ffi::%ffi-stub-info fn) → plist describing an FFI stub, or NIL when
+ * FN is not one (a symbol is resolved through its function cell).
+ *   (:kind :libcall :name N :base BASE-SYM :lvo -204 :regspec nibbles
+ *    :result :pointer :nparams 1)
+ *   (:kind :peek :name N :ctype :i16 :offset 8)      [+ :elt-size :count]
+ * Used by DESCRIBE and the test suites; the fields are also what
+ * EXT:FUNCTION-ARGLIST / DISASSEMBLE report. */
+static CL_Obj stub_info_push(CL_Obj plist, const char *key, CL_Obj val)
+{
+    /* (key val . plist) built back to front; caller keeps plist rooted */
+    CL_Obj k;
+    CL_GC_PROTECT(val);
+    plist = cl_cons(val, plist);
+    CL_GC_UNPROTECT(1);
+    CL_GC_PROTECT(plist);
+    k = cl_intern_keyword(key, (uint32_t)strlen(key));
+    CL_GC_UNPROTECT(1);
+    return cl_cons(k, plist);
+}
+
+static CL_Obj stub_info_keyword(const char *name)
+{
+    return cl_intern_keyword(name, (uint32_t)strlen(name));
+}
+
+static CL_Obj bi_ffi_stub_info(CL_Obj *args, int nargs)
+{
+    CL_Obj fn = args[0];
+    CL_Obj name, aux, plist = CL_NIL;
+    uint32_t a;
+    int16_t b;
+    uint8_t kind, ctype;
+    (void)nargs;
+
+    if (CL_SYMBOL_P(fn))
+        fn = ((CL_Symbol *)CL_OBJ_TO_PTR(fn))->function;
+    if (!CL_FFI_STUB_P(fn))
+        return CL_NIL;
+    {
+        CL_FfiStub *fs = (CL_FfiStub *)CL_OBJ_TO_PTR(fn);
+        name = fs->name; aux = fs->aux; a = fs->a; b = fs->b;
+        kind = fs->kind; ctype = fs->ctype;
+    }
+    if (kind > CL_STUB_KIND_MAX) return CL_NIL;
+
+    CL_GC_PROTECT(name);
+    CL_GC_PROTECT(aux);
+    CL_GC_PROTECT(plist);
+    /* built back to front so the plist reads (:kind ... :name ... ...) */
+    if (kind == CL_STUB_LIBCALL) {
+        int rk = CL_AMIGA_RES_KIND(a);
+        plist = stub_info_push(plist, "NPARAMS", CL_MAKE_FIXNUM((int32_t)ctype));
+        plist = stub_info_push(plist, "RESULT",
+                               rk <= CL_AMIGA_RES_KIND_MAX
+                               ? stub_info_keyword(stub_res_names[rk]) : CL_NIL);
+        plist = stub_info_push(plist, "REGSPEC",
+                               CL_MAKE_FIXNUM((int32_t)CL_AMIGA_REGSPEC_NIBBLES(a)));
+        plist = stub_info_push(plist, "LVO", CL_MAKE_FIXNUM((int32_t)b));
+        plist = stub_info_push(plist, "BASE", aux);
+    } else {
+        if (kind == CL_STUB_PEEK_IDX || kind == CL_STUB_POKE_IDX) {
+            plist = stub_info_push(plist, "COUNT", CL_MAKE_FIXNUM((int32_t)(a >> 16)));
+            plist = stub_info_push(plist, "ELT-SIZE", CL_MAKE_FIXNUM((int32_t)b));
+            plist = stub_info_push(plist, "OFFSET", CL_MAKE_FIXNUM((int32_t)(a & 0xFFFFu)));
+        } else {
+            plist = stub_info_push(plist, "OFFSET", CL_MAKE_FIXNUM((int32_t)a));
+        }
+        if (kind != CL_STUB_FIELD_PTR)
+            plist = stub_info_push(plist, "CTYPE",
+                                   ctype <= CL_STUB_CT_MAX
+                                   ? stub_info_keyword(stub_ct_names[ctype]) : CL_NIL);
+    }
+    plist = stub_info_push(plist, "NAME", name);
+    plist = stub_info_push(plist, "KIND", stub_info_keyword(stub_kind_names[kind]));
+    CL_GC_UNPROTECT(3);
+    return plist;
 }
 
 /* ================================================================
@@ -787,14 +1418,14 @@ static CLFFIType ffi_kw_to_type(CL_Obj kw)
 static void ffi_marshal_arg(CLFFIType t, CL_Obj v, CLFFIValue *out)
 {
     switch (t) {
-    case CL_FFI_I8:   out->i8  = (int8_t)ffi_obj_to_u64(v); break;
-    case CL_FFI_U8:   out->u8  = (uint8_t)ffi_obj_to_u64(v); break;
-    case CL_FFI_I16:  out->i16 = (int16_t)ffi_obj_to_u64(v); break;
-    case CL_FFI_U16:  out->u16 = (uint16_t)ffi_obj_to_u64(v); break;
-    case CL_FFI_I32:  out->i32 = (int32_t)ffi_obj_to_u64(v); break;
-    case CL_FFI_U32:  out->u32 = (uint32_t)ffi_obj_to_u64(v); break;
-    case CL_FFI_I64:  out->i64 = (int64_t)ffi_obj_to_u64(v); break;
-    case CL_FFI_U64:  out->u64 = ffi_obj_to_u64(v); break;
+    case CL_FFI_I8:   out->i8  = (int8_t)cl_ffi_obj_to_u64(v); break;
+    case CL_FFI_U8:   out->u8  = (uint8_t)cl_ffi_obj_to_u64(v); break;
+    case CL_FFI_I16:  out->i16 = (int16_t)cl_ffi_obj_to_u64(v); break;
+    case CL_FFI_U16:  out->u16 = (uint16_t)cl_ffi_obj_to_u64(v); break;
+    case CL_FFI_I32:  out->i32 = (int32_t)cl_ffi_obj_to_u64(v); break;
+    case CL_FFI_U32:  out->u32 = (uint32_t)cl_ffi_obj_to_u64(v); break;
+    case CL_FFI_I64:  out->i64 = (int64_t)cl_ffi_obj_to_u64(v); break;
+    case CL_FFI_U64:  out->u64 = cl_ffi_obj_to_u64(v); break;
     case CL_FFI_FLOAT:
         if (!CL_REALP(v))
             cl_error(CL_ERR_TYPE, "FFI:CALL-FOREIGN: :FLOAT argument must be a real number");
@@ -809,7 +1440,7 @@ static void ffi_marshal_arg(CLFFIType t, CL_Obj v, CLFFIValue *out)
         else if (CL_FOREIGN_POINTER_P(v))
             out->p = platform_ffi_resolve(((CL_ForeignPtr *)CL_OBJ_TO_PTR(v))->address);
         else if (CL_INTEGER_P(v))
-            out->p = (void *)(uintptr_t)ffi_obj_to_u64(v);
+            out->p = (void *)(uintptr_t)cl_ffi_obj_to_u64(v);
         else
             cl_error(CL_ERR_TYPE, "FFI:CALL-FOREIGN: :POINTER argument must be a foreign pointer, integer, or NIL");
         break;
@@ -828,10 +1459,10 @@ static CL_Obj ffi_box_result(CLFFIType t, CLFFIValue *r)
     case CL_FFI_U8:      return CL_MAKE_FIXNUM((int32_t)r->u8);
     case CL_FFI_I16:     return CL_MAKE_FIXNUM((int32_t)r->i16);
     case CL_FFI_U16:     return CL_MAKE_FIXNUM((int32_t)r->u16);
-    case CL_FFI_I32:     return ffi_i64_to_obj((int64_t)r->i32);
-    case CL_FFI_U32:     return ffi_u64_to_obj((uint64_t)r->u32);
-    case CL_FFI_I64:     return ffi_i64_to_obj(r->i64);
-    case CL_FFI_U64:     return ffi_u64_to_obj(r->u64);
+    case CL_FFI_I32:     return cl_ffi_i64_to_obj((int64_t)r->i32);
+    case CL_FFI_U32:     return cl_ffi_u64_to_obj((uint64_t)r->u32);
+    case CL_FFI_I64:     return cl_ffi_i64_to_obj(r->i64);
+    case CL_FFI_U64:     return cl_ffi_u64_to_obj(r->u64);
     case CL_FFI_FLOAT:   return cl_make_single_float(r->f);
     case CL_FFI_DOUBLE:  return cl_make_double_float(r->d);
     case CL_FFI_POINTER: return cl_make_foreign_pointer(platform_ffi_register(r->p), 0, 0);
@@ -1109,6 +1740,19 @@ void cl_builtins_ffi_init(void)
     ffi_type_keywords[CL_FFI_FLOAT]   = cl_intern_keyword("FLOAT", 5);
     ffi_type_keywords[CL_FFI_DOUBLE]  = cl_intern_keyword("DOUBLE", 6);
     ffi_type_keywords[CL_FFI_POINTER] = cl_intern_keyword("POINTER", 7);
+
+    /* FFI stubs — DEFCSTRUCT's accessor constructor and the introspection
+     * hook (internal: %-prefixed, not exported; DEFCSTRUCT spells it
+     * ffi::%make-field-stub). */
+    cl_register_builtin("%MAKE-FIELD-STUB", bi_ffi_make_field_stub, 4, 6, cl_package_ffi);
+    cl_register_builtin("%DEFINE-CSTRUCT-ACCESSORS", bi_ffi_define_cstruct_accessors,
+                        1, 1, cl_package_ffi);
+    cl_register_builtin("%FFI-STUB-INFO",   bi_ffi_stub_info,       1, 1, cl_package_ffi);
+    /* compile_call matches this exact symbol to register the DEFSETF pairs
+     * at compile time (cl_ffi_cstruct_register_setfs) */
+    cl_ffi_define_cstruct_accessors_sym =
+        cl_intern_in("%DEFINE-CSTRUCT-ACCESSORS", 25, cl_package_ffi);
+    cl_gc_register_root(&cl_ffi_define_cstruct_accessors_sym);
 
     /* Foreign pointer management */
     ffi_defun("MAKE-FOREIGN-POINTER",    bi_ffi_make_fp,        1, 2);

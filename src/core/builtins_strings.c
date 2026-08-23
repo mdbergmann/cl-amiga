@@ -292,6 +292,17 @@ static CL_Obj bi_make_symbol(CL_Obj *args, int n)
 {
     CL_Obj name = args[0];
     CL_UNUSED(n);
+    /* cl_make_uninterned_symbol, not bare cl_make_symbol: it also fills
+     * the symbol's cached name hash.  The package tables bucket by that
+     * hash, so an uninterned symbol that is later IMPORTed / EXPORTed /
+     * SHADOWING-IMPORTed into a package (CLHS 11.1.1.2.4 — a legal and
+     * common thing to do with a MAKE-SYMBOL result) used to land in bucket
+     * 0 and be invisible to FIND-SYMBOL forever.  A wide-string name has
+     * no byte-based hash (package names are byte strings); it keeps the
+     * old behaviour. */
+    if (CL_STRING_P(name)) {
+        return cl_make_uninterned_symbol(name);
+    }
     if (CL_ANY_STRING_P(name)) {
         return cl_make_symbol(name);
     }
@@ -314,7 +325,7 @@ static CL_Obj bi_make_symbol(CL_Obj *args, int n)
             CL_Obj ch = data[i];
             cl_string_set_char_at(str, i, CL_CHAR_P(ch) ? CL_CHAR_VAL(ch) : 0);
         }
-        return cl_make_symbol(str);
+        return CL_STRING_P(str) ? cl_make_uninterned_symbol(str) : cl_make_symbol(str);
     }
     cl_signal_type_error(args[0], "STRING", "MAKE-SYMBOL");
     return CL_NIL;

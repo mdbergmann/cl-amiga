@@ -6,87 +6,84 @@
 ;;; 0 functions, 50 constants, 1 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.HARDWARE.BLIT"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+CLEANM-EN+" "+CLEANME+" "+HSIZEBITS+" "+VSIZEBITS+" "+HSIZEMASK+" 
-   "+VSIZEMASK+" "+MAXBYTESPERROW+" "+MINBYTESPERROW+" "+ABC+" "+ABNC+" 
-   "+ANBC+" "+ANBNC+" "+NABC+" "+NABNC+" "+NANBC+" "+NANBNC+" 
-   "+BC0-B-DEST+" "+BC0-B-SRCC+" "+BC0-B-SRCB+" "+BC0-B-SRCA+" 
-   "+BC0-F-DEST+" "+BC0-F-SRCC+" "+BC0-F-SRCB+" "+BC0-F-SRCA+" 
-   "+BC1-F-DESC+" "+DEST+" "+SRCC+" "+SRCB+" "+SRCA+" "+ASHIFTSHIFT+" 
-   "+BSHIFTSHIFT+" "+LINEMODE+" "+FILL-OR+" "+FILL-XOR+" "+FILL-CARRYIN+" 
-   "+ONEDOT+" "+OVFLAG+" "+SIGNFLAG+" "+BLITREVERSE+" "+SUD+" "+SUL+" 
-   "+AUL+" "+OCTANT8+" "+OCTANT7+" "+OCTANT6+" "+OCTANT5+" "+OCTANT4+" 
-   "+OCTANT3+" "+OCTANT2+" "+OCTANT1+" "*BLTNODE-SIZE*" "BLTNODE-N" 
-   "BLTNODE-FUNCTION" "BLTNODE-STAT" "BLTNODE-DUMMY" "BLTNODE-BLITSIZE" 
-   "BLTNODE-BEAMSYNC" "BLTNODE-CLEANUP" ))
+  (:export))
 
 (in-package "AMIGA.RAW.HARDWARE.BLIT")
 
-;;; --- constants from hardware/blit.i ---
-(defconstant +cleanm-en+ 6)
-(defconstant +cleanme+ #x40)
-(defconstant +hsizebits+ 6)
-(defconstant +vsizebits+ 10)
-(defconstant +hsizemask+ #x3F)
-(defconstant +vsizemask+ #x3FF)
-(defconstant +maxbytesperrow+ #x80)
-(defconstant +minbytesperrow+ #x80)
-(defconstant +abc+ #x80)
-(defconstant +abnc+ #x40)
-(defconstant +anbc+ #x20)
-(defconstant +anbnc+ #x10)
-(defconstant +nabc+ 8)
-(defconstant +nabnc+ 4)
-(defconstant +nanbc+ 2)
-(defconstant +nanbnc+ 1)
-(defconstant +bc0-b-dest+ 8)
-(defconstant +bc0-b-srcc+ 9)
-(defconstant +bc0-b-srcb+ 10)
-(defconstant +bc0-b-srca+ 11)
-(defconstant +bc0-f-dest+ #x100)
-(defconstant +bc0-f-srcc+ #x200)
-(defconstant +bc0-f-srcb+ #x400)
-(defconstant +bc0-f-srca+ #x800)
-(defconstant +bc1-f-desc+ 2)
-(defconstant +dest+ #x100)
-(defconstant +srcc+ #x200)
-(defconstant +srcb+ #x400)
-(defconstant +srca+ #x800)
-(defconstant +ashiftshift+ 12)
-(defconstant +bshiftshift+ 12)
-(defconstant +linemode+ 1)
-(defconstant +fill-or+ 8)
-(defconstant +fill-xor+ #x10)
-(defconstant +fill-carryin+ 4)
-(defconstant +onedot+ 2)
-(defconstant +ovflag+ #x20)
-(defconstant +signflag+ #x40)
-(defconstant +blitreverse+ 2)
-(defconstant +sud+ #x10)
-(defconstant +sul+ 8)
-(defconstant +aul+ 4)
-(defconstant +octant8+ #x18)
-(defconstant +octant7+ 4)
-(defconstant +octant6+ 12)
-(defconstant +octant5+ #x1C)
-(defconstant +octant4+ #x14)
-(defconstant +octant3+ 8)
-(defconstant +octant2+ 0)
-(defconstant +octant1+ #x10)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.HARDWARE.BLIT" ()
 
-;;; --- structures from hardware/blit.i ---
-(ffi:defcstruct (bltnode :size 18)   ; bltnode (hardware/blit.i)
-  (n :i32 0)
-  (function :i32 4)
-  (stat :i8 8)
-  (dummy :i8 9)
-  (blitsize :i16 10)
-  (beamsync :i16 12)
-  (cleanup :i32 14)
-)
+  ;; --- constants from hardware/blit.i ---
+  (:const "+CLEANM-EN+" 6)
+  (:const "+CLEANME+" #x40)
+  (:const "+HSIZEBITS+" 6)
+  (:const "+VSIZEBITS+" 10)
+  (:const "+HSIZEMASK+" #x3F)
+  (:const "+VSIZEMASK+" #x3FF)
+  (:const "+MAXBYTESPERROW+" #x80)
+  (:const "+MINBYTESPERROW+" #x80)
+  (:const "+ABC+" #x80)
+  (:const "+ABNC+" #x40)
+  (:const "+ANBC+" #x20)
+  (:const "+ANBNC+" #x10)
+  (:const "+NABC+" 8)
+  (:const "+NABNC+" 4)
+  (:const "+NANBC+" 2)
+  (:const "+NANBNC+" 1)
+  (:const "+BC0-B-DEST+" 8)
+  (:const "+BC0-B-SRCC+" 9)
+  (:const "+BC0-B-SRCB+" 10)
+  (:const "+BC0-B-SRCA+" 11)
+  (:const "+BC0-F-DEST+" #x100)
+  (:const "+BC0-F-SRCC+" #x200)
+  (:const "+BC0-F-SRCB+" #x400)
+  (:const "+BC0-F-SRCA+" #x800)
+  (:const "+BC1-F-DESC+" 2)
+  (:const "+DEST+" #x100)
+  (:const "+SRCC+" #x200)
+  (:const "+SRCB+" #x400)
+  (:const "+SRCA+" #x800)
+  (:const "+ASHIFTSHIFT+" 12)
+  (:const "+BSHIFTSHIFT+" 12)
+  (:const "+LINEMODE+" 1)
+  (:const "+FILL-OR+" 8)
+  (:const "+FILL-XOR+" #x10)
+  (:const "+FILL-CARRYIN+" 4)
+  (:const "+ONEDOT+" 2)
+  (:const "+OVFLAG+" #x20)
+  (:const "+SIGNFLAG+" #x40)
+  (:const "+BLITREVERSE+" 2)
+  (:const "+SUD+" #x10)
+  (:const "+SUL+" 8)
+  (:const "+AUL+" 4)
+  (:const "+OCTANT8+" #x18)
+  (:const "+OCTANT7+" 4)
+  (:const "+OCTANT6+" 12)
+  (:const "+OCTANT5+" #x1C)
+  (:const "+OCTANT4+" #x14)
+  (:const "+OCTANT3+" 8)
+  (:const "+OCTANT2+" 0)
+  (:const "+OCTANT1+" #x10)
+
+  ;; --- structures from hardware/blit.i ---
+  (:struct "BLTNODE" 18   ; bltnode (hardware/blit.i)
+    ("N" :i32 0)
+    ("FUNCTION" :i32 4)
+    ("STAT" :i8 8)
+    ("DUMMY" :i8 9)
+    ("BLITSIZE" :i16 10)
+    ("BEAMSYNC" :i16 12)
+    ("CLEANUP" :i32 14)
+    )
+  )
 
 (provide "amiga/raw/hardware/blit")

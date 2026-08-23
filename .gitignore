@@ -29,6 +29,12 @@ mosdebug.log
 # MorphOS-built binary dropped in for scripts/make-binary-release.sh
 /clamiga-mos
 
+# `make fasl-amiga` precompiles lib/amiga/** next to the sources (host-built,
+# loaded by the Amiga binaries instead of compiling at first REQUIRE); the
+# binary release builds its own copy.  lib/boot.fasl and lib/clos.fasl stay
+# tracked -- they are what a fresh checkout boots from.
+/lib/amiga/**/*.fasl
+
 # Local copies of the SDKs that `make gen-amiga-bindings` reads — the
 # unpacked AmigaOS 3.2 NDK (tools/aos32-ndk) and the MorphOS SDK's
 # os-include (fd/ + clib/, MOS_SDK=tools/mos-sdk) — not redistributed;

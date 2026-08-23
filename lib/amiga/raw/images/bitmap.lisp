@@ -8,26 +8,14 @@
 ;;; 1 functions, 30 constants, 0 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.IMAGES.BITMAP"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*BITMAP-BASE*" "*BITMAP-VERSION*"
-   "+BITMAP-DUMMY+" "+BITMAP-SOURCE-FILE+" "+BITMAP-SCREEN+" 
-   "+BITMAP-PRECISION+" "+BITMAP-MASKING+" "+BITMAP-BITMAP+" 
-   "+BITMAP-WIDTH+" "+BITMAP-HEIGHT+" "+BITMAP-MASK-PLANE+" 
-   "+BITMAP-SELECT-SOURCE-FILE+" "+BITMAP-SELECT-BITMAP+" 
-   "+BITMAP-SELECT-WIDTH+" "+BITMAP-SELECT-HEIGHT+" 
-   "+BITMAP-SELECT-MASK-PLANE+" "+BITMAP-OFFSET-X+" "+BITMAP-OFFSET-Y+" 
-   "+BITMAP-SELECT-OFFSET-X+" "+BITMAP-SELECT-OFFSET-Y+" 
-   "+BITMAP-TRANSPARENT+" "+BITMAP-DISABLED-SOURCE-FILE+" 
-   "+BITMAP-DISABLED-BITMAP+" "+BITMAP-DISABLED-WIDTH+" 
-   "+BITMAP-DISABLED-HEIGHT+" "+BITMAP-DISABLED-MASK-PLANE+" 
-   "+BITMAP-DISABLED-OFFSET-X+" "+BITMAP-DISABLED-OFFSET-Y+" 
-   "+BITMAP-HAS-ALPHA+" "+BITMAP-ALPHA-BITMAP+" 
-   "+BITMAP-SELECT-ALPHA-BITMAP+" "+BITMAP-DISABLED-ALPHA-BITMAP+" 
-   "BITMAP-GET-CLASS" ))
+  (:export "*BITMAP-BASE*" "*BITMAP-VERSION*"))
 
 (in-package "AMIGA.RAW.IMAGES.BITMAP")
 
@@ -41,42 +29,46 @@
 (defun %version>= (n)
   (and *bitmap-version* (>= *bitmap-version* n)))
 
-;;; --- constants from images/bitmap.h ---
-(defconstant +bitmap-dummy+ #x85019000)
-(defconstant +bitmap-source-file+ #x85019001)
-(defconstant +bitmap-screen+ #x85019002)
-(defconstant +bitmap-precision+ #x85019003)
-(defconstant +bitmap-masking+ #x85019004)
-(defconstant +bitmap-bitmap+ #x85019005)
-(defconstant +bitmap-width+ #x85019006)
-(defconstant +bitmap-height+ #x85019007)
-(defconstant +bitmap-mask-plane+ #x85019008)
-(defconstant +bitmap-select-source-file+ #x85019009)
-(defconstant +bitmap-select-bitmap+ #x8501900A)
-(defconstant +bitmap-select-width+ #x8501900B)
-(defconstant +bitmap-select-height+ #x8501900C)
-(defconstant +bitmap-select-mask-plane+ #x8501900D)
-(defconstant +bitmap-offset-x+ #x8501900E)
-(defconstant +bitmap-offset-y+ #x8501900F)
-(defconstant +bitmap-select-offset-x+ #x85019010)
-(defconstant +bitmap-select-offset-y+ #x85019011)
-(defconstant +bitmap-transparent+ #x85019012)
-(defconstant +bitmap-disabled-source-file+ #x85019013)
-(defconstant +bitmap-disabled-bitmap+ #x85019014)
-(defconstant +bitmap-disabled-width+ #x85019015)
-(defconstant +bitmap-disabled-height+ #x85019016)
-(defconstant +bitmap-disabled-mask-plane+ #x85019017)
-(defconstant +bitmap-disabled-offset-x+ #x85019018)
-(defconstant +bitmap-disabled-offset-y+ #x85019019)
-(defconstant +bitmap-has-alpha+ #x8501901A)
-(defconstant +bitmap-alpha-bitmap+ #x8501901B)
-(defconstant +bitmap-select-alpha-bitmap+ #x8501901C)
-(defconstant +bitmap-disabled-alpha-bitmap+ #x8501901D)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.IMAGES.BITMAP"
+    (:base *bitmap-base* :version *bitmap-version*)
 
-;;; --- functions (bitmap_lib.sfd + MorphOS SDK) ---
-(when (%version>= 40)
-  (amiga.ffi:defcfun bitmap-get-class *bitmap-base* -30 ()
-    :result :pointer
-    :doc "Class * BITMAP_GetClass() () LVO -30"))
+  ;; --- constants from images/bitmap.h ---
+  (:const "+BITMAP-DUMMY+" #x85019000)
+  (:const "+BITMAP-SOURCE-FILE+" #x85019001)
+  (:const "+BITMAP-SCREEN+" #x85019002)
+  (:const "+BITMAP-PRECISION+" #x85019003)
+  (:const "+BITMAP-MASKING+" #x85019004)
+  (:const "+BITMAP-BITMAP+" #x85019005)
+  (:const "+BITMAP-WIDTH+" #x85019006)
+  (:const "+BITMAP-HEIGHT+" #x85019007)
+  (:const "+BITMAP-MASK-PLANE+" #x85019008)
+  (:const "+BITMAP-SELECT-SOURCE-FILE+" #x85019009)
+  (:const "+BITMAP-SELECT-BITMAP+" #x8501900A)
+  (:const "+BITMAP-SELECT-WIDTH+" #x8501900B)
+  (:const "+BITMAP-SELECT-HEIGHT+" #x8501900C)
+  (:const "+BITMAP-SELECT-MASK-PLANE+" #x8501900D)
+  (:const "+BITMAP-OFFSET-X+" #x8501900E)
+  (:const "+BITMAP-OFFSET-Y+" #x8501900F)
+  (:const "+BITMAP-SELECT-OFFSET-X+" #x85019010)
+  (:const "+BITMAP-SELECT-OFFSET-Y+" #x85019011)
+  (:const "+BITMAP-TRANSPARENT+" #x85019012)
+  (:const "+BITMAP-DISABLED-SOURCE-FILE+" #x85019013)
+  (:const "+BITMAP-DISABLED-BITMAP+" #x85019014)
+  (:const "+BITMAP-DISABLED-WIDTH+" #x85019015)
+  (:const "+BITMAP-DISABLED-HEIGHT+" #x85019016)
+  (:const "+BITMAP-DISABLED-MASK-PLANE+" #x85019017)
+  (:const "+BITMAP-DISABLED-OFFSET-X+" #x85019018)
+  (:const "+BITMAP-DISABLED-OFFSET-Y+" #x85019019)
+  (:const "+BITMAP-HAS-ALPHA+" #x8501901A)
+  (:const "+BITMAP-ALPHA-BITMAP+" #x8501901B)
+  (:const "+BITMAP-SELECT-ALPHA-BITMAP+" #x8501901C)
+  (:const "+BITMAP-DISABLED-ALPHA-BITMAP+" #x8501901D)
+
+  ;; --- functions (bitmap_lib.sfd + MorphOS SDK) ---
+  (:fn "BITMAP-GET-CLASS" -30 () :pointer 40)   ; Class * BITMAP_GetClass() () LVO -30
+  )
 
 (provide "amiga/raw/images/bitmap")

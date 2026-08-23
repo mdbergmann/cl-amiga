@@ -8,15 +8,14 @@
 ;;; 2 functions, 6 constants, 0 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.MISC"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*MISC-BASE*" "*MISC-VERSION*"
-   "+MR-SERIALPORT+" "+MR-SERIALBITS+" "+MR-PARALLELPORT+" 
-   "+MR-PARALLELBITS+" "+MR-ALLOCMISCRESOURCE+" "+MR-FREEMISCRESOURCE+" 
-   "ALLOC-MISC-RESOURCE" "FREE-MISC-RESOURCE" ))
+  (:export "*MISC-BASE*" "*MISC-VERSION*"))
 
 (in-package "AMIGA.RAW.MISC")
 
@@ -30,20 +29,23 @@
 (defun %version>= (n)
   (and *misc-version* (>= *misc-version* n)))
 
-;;; --- constants from resources/misc.i ---
-(defconstant +mr-serialport+ 0)
-(defconstant +mr-serialbits+ 1)
-(defconstant +mr-parallelport+ 2)
-(defconstant +mr-parallelbits+ 3)
-(defconstant +mr-allocmiscresource+ -6)
-(defconstant +mr-freemiscresource+ -12)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.MISC"
+    (:base *misc-base* :version *misc-version*)
 
-;;; --- functions (misc_lib.sfd + MorphOS SDK) ---
-(amiga.ffi:defcfun alloc-misc-resource *misc-base* -6 (:d0 unit-num :a1 name)
-    :result :pointer
-    :doc "UBYTE * AllocMiscResource(ULONG unitNum, CONST_STRPTR name) (D0,A1) LVO -6")
-(amiga.ffi:defcfun free-misc-resource *misc-base* -12 (:d0 unit-num)
-    :result :void
-    :doc "VOID FreeMiscResource(ULONG unitNum) (D0) LVO -12")
+  ;; --- constants from resources/misc.i ---
+  (:const "+MR-SERIALPORT+" 0)
+  (:const "+MR-SERIALBITS+" 1)
+  (:const "+MR-PARALLELPORT+" 2)
+  (:const "+MR-PARALLELBITS+" 3)
+  (:const "+MR-ALLOCMISCRESOURCE+" -6)
+  (:const "+MR-FREEMISCRESOURCE+" -12)
+
+  ;; --- functions (misc_lib.sfd + MorphOS SDK) ---
+  (:fn "ALLOC-MISC-RESOURCE" -6 (:d0 :a1) :pointer)   ; UBYTE * AllocMiscResource(ULONG unitNum, CONST_STRPTR name) (D0,A1) LVO -6
+  (:fn "FREE-MISC-RESOURCE" -12 (:d0) :void)   ; VOID FreeMiscResource(ULONG unitNum) (D0) LVO -12
+  )
 
 (provide "amiga/raw/misc")

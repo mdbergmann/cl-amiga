@@ -8,45 +8,14 @@
 ;;; 42 functions, 47 constants, 7 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.IFFPARSE"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*IFFPARSE-BASE*" "*IFFPARSE-VERSION*"
-   "+IFFF-READ+" "+IFFF-WRITE+" "+IFFF-RWBITS+" "+IFFF-FSEEK+" 
-   "+IFFF-RSEEK+" "+IFFF-RESERVED+" "+IFFERR-EOF+" "+IFFERR-EOC+" 
-   "+IFFERR-NOSCOPE+" "+IFFERR-NOMEM+" "+IFFERR-READ+" "+IFFERR-WRITE+" 
-   "+IFFERR-SEEK+" "+IFFERR-MANGLED+" "+IFFERR-SYNTAX+" "+IFFERR-NOTIFF+" 
-   "+IFFERR-NOHOOK+" "+IFF-RETURN2-CLIENT+" "+ID-FORM+" "+ID-LIST+" 
-   "+ID-CAT+" "+ID-PROP+" "+ID-NULL+" "+IFFLCI-PROP+" "+IFFLCI-COLLECTION+" 
-   "+IFFLCI-ENTRYHANDLER+" "+IFFLCI-EXITHANDLER+" "+IFFPARSE-SCAN+" 
-   "+IFFPARSE-STEP+" "+IFFPARSE-RAWSTEP+" "+IFFSLI-ROOT+" "+IFFSLI-TOP+" 
-   "+IFFSLI-PROP+" "+IFFSIZE-UNKNOWN+" "+IFFCMD-INIT+" "+IFFCMD-CLEANUP+" 
-   "+IFFCMD-READ+" "+IFFCMD-WRITE+" "+IFFCMD-SEEK+" "+IFFCMD-ENTRY+" 
-   "+IFFCMD-EXIT+" "+IFFCMD-PURGELCI+" "+IFFSCC-INIT+" "+IFFSCC-CLEANUP+" 
-   "+IFFSCC-READ+" "+IFFSCC-WRITE+" "+IFFSCC-SEEK+" "*IFF-HANDLE-SIZE*" 
-   "IFF-HANDLE-STREAM" "IFF-HANDLE-FLAGS" "IFF-HANDLE-DEPTH" 
-   "*IFF-STREAM-CMD-SIZE*" "IFF-STREAM-CMD-COMMAND" "IFF-STREAM-CMD-BUF" 
-   "IFF-STREAM-CMD-N-BYTES" "*CONTEXT-NODE-SIZE*" "CONTEXT-NODE-ID" 
-   "CONTEXT-NODE-TYPE" "CONTEXT-NODE-SIZE" "CONTEXT-NODE-SCAN" 
-   "*LOCAL-CONTEXT-ITEM-SIZE*" "LOCAL-CONTEXT-ITEM-ID" 
-   "LOCAL-CONTEXT-ITEM-TYPE" "LOCAL-CONTEXT-ITEM-IDENT" 
-   "*STORED-PROPERTY-SIZE*" "STORED-PROPERTY-SIZE" "STORED-PROPERTY-DATA" 
-   "*COLLECTION-ITEM-SIZE*" "COLLECTION-ITEM-NEXT" "COLLECTION-ITEM-SIZE" 
-   "COLLECTION-ITEM-DATA" "*CLIPBOARD-HANDLE-SIZE*" 
-   "CLIPBOARD-HANDLE-C-BPORT" "CLIPBOARD-HANDLE-SATISFY-PORT" "ALLOC-IFF" 
-   "OPEN-IFF" "PARSE-IFF" "CLOSE-IFF" "FREE-IFF" "READ-CHUNK-BYTES" 
-   "WRITE-CHUNK-BYTES" "READ-CHUNK-RECORDS" "WRITE-CHUNK-RECORDS" 
-   "PUSH-CHUNK" "POP-CHUNK" "ENTRY-HANDLER" "EXIT-HANDLER" "PROP-CHUNK" 
-   "PROP-CHUNKS" "STOP-CHUNK" "STOP-CHUNKS" "COLLECTION-CHUNK" 
-   "COLLECTION-CHUNKS" "STOP-ON-EXIT" "FIND-PROP" "FIND-COLLECTION" 
-   "FIND-PROP-CONTEXT" "CURRENT-CHUNK" "PARENT-CHUNK" "ALLOC-LOCAL-ITEM" 
-   "LOCAL-ITEM-DATA" "SET-LOCAL-ITEM-PURGE" "FREE-LOCAL-ITEM" 
-   "FIND-LOCAL-ITEM" "STORE-LOCAL-ITEM" "STORE-ITEM-IN-CONTEXT" "INIT-IFF" 
-   "INIT-IF-FAS-DOS" "INIT-IF-FAS-CLIP" "OPEN-CLIPBOARD" "CLOSE-CLIPBOARD" 
-   "GOOD-ID" "GOOD-TYPE" "I-DTO-STR" "SEEK-CHUNK-BYTES" 
-   "SEEK-CHUNK-RECORDS" ))
+  (:export "*IFFPARSE-BASE*" "*IFFPARSE-VERSION*"))
 
 (in-package "AMIGA.RAW.IFFPARSE")
 
@@ -60,219 +29,140 @@
 (defun %version>= (n)
   (and *iffparse-version* (>= *iffparse-version* n)))
 
-;;; --- constants from libraries/iffparse.i ---
-(defconstant +ifff-read+ 0)
-(defconstant +ifff-write+ 1)
-(defconstant +ifff-rwbits+ 1)
-(defconstant +ifff-fseek+ 2)
-(defconstant +ifff-rseek+ 4)
-(defconstant +ifff-reserved+ #xFFFF0000)
-(defconstant +ifferr-eof+ -1)
-(defconstant +ifferr-eoc+ -2)
-(defconstant +ifferr-noscope+ -3)
-(defconstant +ifferr-nomem+ -4)
-(defconstant +ifferr-read+ -5)
-(defconstant +ifferr-write+ -6)
-(defconstant +ifferr-seek+ -7)
-(defconstant +ifferr-mangled+ -8)
-(defconstant +ifferr-syntax+ -9)
-(defconstant +ifferr-notiff+ -10)
-(defconstant +ifferr-nohook+ -11)
-(defconstant +iff-return2-client+ -12)
-(defconstant +id-form+ #x464F524D)
-(defconstant +id-list+ #x4C495354)
-(defconstant +id-cat+ #x43415420)
-(defconstant +id-prop+ #x50524F50)
-(defconstant +id-null+ #x20202020)
-(defconstant +ifflci-prop+ #x70726F70)
-(defconstant +ifflci-collection+ #x636F6C6C)
-(defconstant +ifflci-entryhandler+ #x656E6864)
-(defconstant +ifflci-exithandler+ #x65786864)
-(defconstant +iffparse-scan+ 0)
-(defconstant +iffparse-step+ 1)
-(defconstant +iffparse-rawstep+ 2)
-(defconstant +iffsli-root+ 1)
-(defconstant +iffsli-top+ 2)
-(defconstant +iffsli-prop+ 3)
-(defconstant +iffsize-unknown+ -1)
-(defconstant +iffcmd-init+ 0)
-(defconstant +iffcmd-cleanup+ 1)
-(defconstant +iffcmd-read+ 2)
-(defconstant +iffcmd-write+ 3)
-(defconstant +iffcmd-seek+ 4)
-(defconstant +iffcmd-entry+ 5)
-(defconstant +iffcmd-exit+ 6)
-(defconstant +iffcmd-purgelci+ 7)
-(defconstant +iffscc-init+ 0)
-(defconstant +iffscc-cleanup+ 1)
-(defconstant +iffscc-read+ 2)
-(defconstant +iffscc-write+ 3)
-(defconstant +iffscc-seek+ 4)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.IFFPARSE"
+    (:base *iffparse-base* :version *iffparse-version*)
 
-;;; --- structures from libraries/iffparse.i ---
-(ffi:defcstruct (iff-handle :size 12)   ; IFFHandle (libraries/iffparse.i)
-  (stream :u32 0)
-  (flags :u32 4)
-  (depth :i32 8)
-)
-(ffi:defcstruct (iff-stream-cmd :size 12)   ; IFFStreamCmd (libraries/iffparse.i)
-  (command :i32 0)
-  (buf :fptr 4)
-  (n-bytes :i32 8)
-)
-(ffi:defcstruct (context-node :size 24)   ; ContextNode (libraries/iffparse.i)
-  (id :i32 8)
-  (type :i32 12)
-  (size :i32 16)
-  (scan :i32 20)
-)
-(ffi:defcstruct (local-context-item :size 20)   ; LocalContextItem (libraries/iffparse.i)
-  (id :u32 8)
-  (type :u32 12)
-  (ident :u32 16)
-)
-(ffi:defcstruct (stored-property :size 8)   ; StoredProperty (libraries/iffparse.i)
-  (size :i32 0)
-  (data :fptr 4)
-)
-(ffi:defcstruct (collection-item :size 12)   ; CollectionItem (libraries/iffparse.i)
-  (next :fptr 0)
-  (size :i32 4)
-  (data :fptr 8)
-)
-(ffi:defcstruct (clipboard-handle :size 120)   ; ClipboardHandle (libraries/iffparse.i)
-  (c-bport (:struct 34) 52)
-  (satisfy-port (:struct 34) 86)
-)
+  ;; --- constants from libraries/iffparse.i ---
+  (:const "+IFFF-READ+" 0)
+  (:const "+IFFF-WRITE+" 1)
+  (:const "+IFFF-RWBITS+" 1)
+  (:const "+IFFF-FSEEK+" 2)
+  (:const "+IFFF-RSEEK+" 4)
+  (:const "+IFFF-RESERVED+" #xFFFF0000)
+  (:const "+IFFERR-EOF+" -1)
+  (:const "+IFFERR-EOC+" -2)
+  (:const "+IFFERR-NOSCOPE+" -3)
+  (:const "+IFFERR-NOMEM+" -4)
+  (:const "+IFFERR-READ+" -5)
+  (:const "+IFFERR-WRITE+" -6)
+  (:const "+IFFERR-SEEK+" -7)
+  (:const "+IFFERR-MANGLED+" -8)
+  (:const "+IFFERR-SYNTAX+" -9)
+  (:const "+IFFERR-NOTIFF+" -10)
+  (:const "+IFFERR-NOHOOK+" -11)
+  (:const "+IFF-RETURN2-CLIENT+" -12)
+  (:const "+ID-FORM+" #x464F524D)
+  (:const "+ID-LIST+" #x4C495354)
+  (:const "+ID-CAT+" #x43415420)
+  (:const "+ID-PROP+" #x50524F50)
+  (:const "+ID-NULL+" #x20202020)
+  (:const "+IFFLCI-PROP+" #x70726F70)
+  (:const "+IFFLCI-COLLECTION+" #x636F6C6C)
+  (:const "+IFFLCI-ENTRYHANDLER+" #x656E6864)
+  (:const "+IFFLCI-EXITHANDLER+" #x65786864)
+  (:const "+IFFPARSE-SCAN+" 0)
+  (:const "+IFFPARSE-STEP+" 1)
+  (:const "+IFFPARSE-RAWSTEP+" 2)
+  (:const "+IFFSLI-ROOT+" 1)
+  (:const "+IFFSLI-TOP+" 2)
+  (:const "+IFFSLI-PROP+" 3)
+  (:const "+IFFSIZE-UNKNOWN+" -1)
+  (:const "+IFFCMD-INIT+" 0)
+  (:const "+IFFCMD-CLEANUP+" 1)
+  (:const "+IFFCMD-READ+" 2)
+  (:const "+IFFCMD-WRITE+" 3)
+  (:const "+IFFCMD-SEEK+" 4)
+  (:const "+IFFCMD-ENTRY+" 5)
+  (:const "+IFFCMD-EXIT+" 6)
+  (:const "+IFFCMD-PURGELCI+" 7)
+  (:const "+IFFSCC-INIT+" 0)
+  (:const "+IFFSCC-CLEANUP+" 1)
+  (:const "+IFFSCC-READ+" 2)
+  (:const "+IFFSCC-WRITE+" 3)
+  (:const "+IFFSCC-SEEK+" 4)
 
-;;; --- functions (iffparse_lib.sfd + MorphOS SDK) ---
-(amiga.ffi:defcfun alloc-iff *iffparse-base* -30 ()
-    :result :pointer
-    :doc "struct IFFHandle * AllocIFF() () LVO -30")
-(amiga.ffi:defcfun open-iff *iffparse-base* -36 (:a0 iff :d0 rw-mode)
-    :result :signed
-    :doc "LONG OpenIFF(struct IFFHandle * iff, LONG rwMode) (A0,D0) LVO -36")
-(amiga.ffi:defcfun parse-iff *iffparse-base* -42 (:a0 iff :d0 control)
-    :result :signed
-    :doc "LONG ParseIFF(struct IFFHandle * iff, LONG control) (A0,D0) LVO -42")
-(amiga.ffi:defcfun close-iff *iffparse-base* -48 (:a0 iff)
-    :result :void
-    :doc "VOID CloseIFF(struct IFFHandle * iff) (A0) LVO -48")
-(amiga.ffi:defcfun free-iff *iffparse-base* -54 (:a0 iff)
-    :result :void
-    :doc "VOID FreeIFF(struct IFFHandle * iff) (A0) LVO -54")
-(amiga.ffi:defcfun read-chunk-bytes *iffparse-base* -60 (:a0 iff :a1 buf :d0 num-bytes)
-    :result :signed
-    :doc "LONG ReadChunkBytes(struct IFFHandle * iff, APTR buf, LONG numBytes) (A0,A1,D0) LVO -60")
-(amiga.ffi:defcfun write-chunk-bytes *iffparse-base* -66 (:a0 iff :a1 buf :d0 num-bytes)
-    :result :signed
-    :doc "LONG WriteChunkBytes(struct IFFHandle * iff, CONST_APTR buf, LONG numBytes) (A0,A1,D0) LVO -66")
-(amiga.ffi:defcfun read-chunk-records *iffparse-base* -72 (:a0 iff :a1 buf :d0 bytes-per-record :d1 num-records)
-    :result :signed
-    :doc "LONG ReadChunkRecords(struct IFFHandle * iff, APTR buf, LONG bytesPerRecord, LONG numRecords) (A0,A1,D0,D1) LVO -72")
-(amiga.ffi:defcfun write-chunk-records *iffparse-base* -78 (:a0 iff :a1 buf :d0 bytes-per-record :d1 num-records)
-    :result :signed
-    :doc "LONG WriteChunkRecords(struct IFFHandle * iff, CONST_APTR buf, LONG bytesPerRecord, LONG numRecords) (A0,A1,D0,D1) LVO -78")
-(amiga.ffi:defcfun push-chunk *iffparse-base* -84 (:a0 iff :d0 type :d1 id :d2 size)
-    :result :signed
-    :doc "LONG PushChunk(struct IFFHandle * iff, LONG type, LONG id, LONG size) (A0,D0,D1,D2) LVO -84")
-(amiga.ffi:defcfun pop-chunk *iffparse-base* -90 (:a0 iff)
-    :result :signed
-    :doc "LONG PopChunk(struct IFFHandle * iff) (A0) LVO -90")
-(amiga.ffi:defcfun entry-handler *iffparse-base* -102 (:a0 iff :d0 type :d1 id :d2 position :a1 handler :a2 object)
-    :result :signed
-    :doc "LONG EntryHandler(struct IFFHandle * iff, LONG type, LONG id, LONG position, struct Hook * handler, APTR object) (A0,D0,D1,D2,A1,A2) LVO -102")
-(amiga.ffi:defcfun exit-handler *iffparse-base* -108 (:a0 iff :d0 type :d1 id :d2 position :a1 handler :a2 object)
-    :result :signed
-    :doc "LONG ExitHandler(struct IFFHandle * iff, LONG type, LONG id, LONG position, struct Hook * handler, APTR object) (A0,D0,D1,D2,A1,A2) LVO -108")
-(amiga.ffi:defcfun prop-chunk *iffparse-base* -114 (:a0 iff :d0 type :d1 id)
-    :result :signed
-    :doc "LONG PropChunk(struct IFFHandle * iff, LONG type, LONG id) (A0,D0,D1) LVO -114")
-(amiga.ffi:defcfun prop-chunks *iffparse-base* -120 (:a0 iff :a1 prop-array :d0 num-pairs)
-    :result :signed
-    :doc "LONG PropChunks(struct IFFHandle * iff, CONST LONG * propArray, LONG numPairs) (A0,A1,D0) LVO -120")
-(amiga.ffi:defcfun stop-chunk *iffparse-base* -126 (:a0 iff :d0 type :d1 id)
-    :result :signed
-    :doc "LONG StopChunk(struct IFFHandle * iff, LONG type, LONG id) (A0,D0,D1) LVO -126")
-(amiga.ffi:defcfun stop-chunks *iffparse-base* -132 (:a0 iff :a1 prop-array :d0 num-pairs)
-    :result :signed
-    :doc "LONG StopChunks(struct IFFHandle * iff, CONST LONG * propArray, LONG numPairs) (A0,A1,D0) LVO -132")
-(amiga.ffi:defcfun collection-chunk *iffparse-base* -138 (:a0 iff :d0 type :d1 id)
-    :result :signed
-    :doc "LONG CollectionChunk(struct IFFHandle * iff, LONG type, LONG id) (A0,D0,D1) LVO -138")
-(amiga.ffi:defcfun collection-chunks *iffparse-base* -144 (:a0 iff :a1 prop-array :d0 num-pairs)
-    :result :signed
-    :doc "LONG CollectionChunks(struct IFFHandle * iff, CONST LONG * propArray, LONG numPairs) (A0,A1,D0) LVO -144")
-(amiga.ffi:defcfun stop-on-exit *iffparse-base* -150 (:a0 iff :d0 type :d1 id)
-    :result :signed
-    :doc "LONG StopOnExit(struct IFFHandle * iff, LONG type, LONG id) (A0,D0,D1) LVO -150")
-(amiga.ffi:defcfun find-prop *iffparse-base* -156 (:a0 iff :d0 type :d1 id)
-    :result :pointer
-    :doc "struct StoredProperty * FindProp(struct IFFHandle * iff, LONG type, LONG id) (A0,D0,D1) LVO -156")
-(amiga.ffi:defcfun find-collection *iffparse-base* -162 (:a0 iff :d0 type :d1 id)
-    :result :pointer
-    :doc "struct CollectionItem * FindCollection(struct IFFHandle * iff, LONG type, LONG id) (A0,D0,D1) LVO -162")
-(amiga.ffi:defcfun find-prop-context *iffparse-base* -168 (:a0 iff)
-    :result :pointer
-    :doc "struct ContextNode * FindPropContext(struct IFFHandle * iff) (A0) LVO -168")
-(amiga.ffi:defcfun current-chunk *iffparse-base* -174 (:a0 iff)
-    :result :pointer
-    :doc "struct ContextNode * CurrentChunk(struct IFFHandle * iff) (A0) LVO -174")
-(amiga.ffi:defcfun parent-chunk *iffparse-base* -180 (:a0 context-node)
-    :result :pointer
-    :doc "struct ContextNode * ParentChunk(struct ContextNode * contextNode) (A0) LVO -180")
-(amiga.ffi:defcfun alloc-local-item *iffparse-base* -186 (:d0 type :d1 id :d2 ident :d3 data-size)
-    :result :pointer
-    :doc "struct LocalContextItem * AllocLocalItem(LONG type, LONG id, LONG ident, LONG dataSize) (D0,D1,D2,D3) LVO -186")
-(amiga.ffi:defcfun local-item-data *iffparse-base* -192 (:a0 local-item)
-    :result :pointer
-    :doc "APTR LocalItemData(struct LocalContextItem * localItem) (A0) LVO -192")
-(amiga.ffi:defcfun set-local-item-purge *iffparse-base* -198 (:a0 local-item :a1 purge-hook)
-    :result :void
-    :doc "VOID SetLocalItemPurge(struct LocalContextItem * localItem, struct Hook * purgeHook) (A0,A1) LVO -198")
-(amiga.ffi:defcfun free-local-item *iffparse-base* -204 (:a0 local-item)
-    :result :void
-    :doc "VOID FreeLocalItem(struct LocalContextItem * localItem) (A0) LVO -204")
-(amiga.ffi:defcfun find-local-item *iffparse-base* -210 (:a0 iff :d0 type :d1 id :d2 ident)
-    :result :pointer
-    :doc "struct LocalContextItem * FindLocalItem(struct IFFHandle * iff, LONG type, LONG id, LONG ident) (A0,D0,D1,D2) LVO -210")
-(amiga.ffi:defcfun store-local-item *iffparse-base* -216 (:a0 iff :a1 local-item :d0 position)
-    :result :signed
-    :doc "LONG StoreLocalItem(struct IFFHandle * iff, struct LocalContextItem * localItem, LONG position) (A0,A1,D0) LVO -216")
-(amiga.ffi:defcfun store-item-in-context *iffparse-base* -222 (:a0 iff :a1 local-item :a2 context-node)
-    :result :void
-    :doc "VOID StoreItemInContext(struct IFFHandle * iff, struct LocalContextItem * localItem, struct ContextNode * contextNode) (A0,A1,A2) LVO -222")
-(amiga.ffi:defcfun init-iff *iffparse-base* -228 (:a0 iff :d0 flags :a1 stream-hook)
-    :result :void
-    :doc "VOID InitIFF(struct IFFHandle * iff, LONG flags, struct Hook * streamHook) (A0,D0,A1) LVO -228")
-(amiga.ffi:defcfun init-if-fas-dos *iffparse-base* -234 (:a0 iff)
-    :result :void
-    :doc "VOID InitIFFasDOS(struct IFFHandle * iff) (A0) LVO -234")
-(amiga.ffi:defcfun init-if-fas-clip *iffparse-base* -240 (:a0 iff)
-    :result :void
-    :doc "VOID InitIFFasClip(struct IFFHandle * iff) (A0) LVO -240")
-(amiga.ffi:defcfun open-clipboard *iffparse-base* -246 (:d0 unit-number)
-    :result :pointer
-    :doc "struct ClipboardHandle * OpenClipboard(LONG unitNumber) (D0) LVO -246")
-(amiga.ffi:defcfun close-clipboard *iffparse-base* -252 (:a0 clip-handle)
-    :result :void
-    :doc "VOID CloseClipboard(struct ClipboardHandle * clipHandle) (A0) LVO -252")
-(amiga.ffi:defcfun good-id *iffparse-base* -258 (:d0 id)
-    :result :signed
-    :doc "LONG GoodID(LONG id) (D0) LVO -258")
-(amiga.ffi:defcfun good-type *iffparse-base* -264 (:d0 type)
-    :result :signed
-    :doc "LONG GoodType(LONG type) (D0) LVO -264")
-(amiga.ffi:defcfun i-dto-str *iffparse-base* -270 (:d0 id :a0 buf)
-    :result :pointer
-    :doc "STRPTR IDtoStr(LONG id, STRPTR buf) (D0,A0) LVO -270")
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun seek-chunk-bytes *iffparse-base* -276 (:a0 iff :d0 num-bytes :d1 mode)
-    :result :signed
-    :doc "LONG SeekChunkBytes(struct IFFHandle * iff, LONG numBytes, LONG mode) (A0,D0,D1) LVO -276"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun seek-chunk-records *iffparse-base* -282 (:a0 iff :d0 bytes-per-record :d1 num-records :d2 mode)
-    :result :signed
-    :doc "LONG SeekChunkRecords(struct IFFHandle * iff, LONG bytesPerRecord, LONG numRecords, LONG mode) (A0,D0,D1,D2) LVO -282"))
+  ;; --- structures from libraries/iffparse.i ---
+  (:struct "IFF-HANDLE" 12   ; IFFHandle (libraries/iffparse.i)
+    ("STREAM" :u32 0)
+    ("FLAGS" :u32 4)
+    ("DEPTH" :i32 8)
+    )
+  (:struct "IFF-STREAM-CMD" 12   ; IFFStreamCmd (libraries/iffparse.i)
+    ("COMMAND" :i32 0)
+    ("BUF" :fptr 4)
+    ("N-BYTES" :i32 8)
+    )
+  (:struct "CONTEXT-NODE" 24   ; ContextNode (libraries/iffparse.i)
+    ("ID" :i32 8)
+    ("TYPE" :i32 12)
+    ("SIZE" :i32 16)
+    ("SCAN" :i32 20)
+    )
+  (:struct "LOCAL-CONTEXT-ITEM" 20   ; LocalContextItem (libraries/iffparse.i)
+    ("ID" :u32 8)
+    ("TYPE" :u32 12)
+    ("IDENT" :u32 16)
+    )
+  (:struct "STORED-PROPERTY" 8   ; StoredProperty (libraries/iffparse.i)
+    ("SIZE" :i32 0)
+    ("DATA" :fptr 4)
+    )
+  (:struct "COLLECTION-ITEM" 12   ; CollectionItem (libraries/iffparse.i)
+    ("NEXT" :fptr 0)
+    ("SIZE" :i32 4)
+    ("DATA" :fptr 8)
+    )
+  (:struct "CLIPBOARD-HANDLE" 120   ; ClipboardHandle (libraries/iffparse.i)
+    ("C-BPORT" (:struct 34) 52)
+    ("SATISFY-PORT" (:struct 34) 86)
+    )
+
+  ;; --- functions (iffparse_lib.sfd + MorphOS SDK) ---
+  (:fn "ALLOC-IFF" -30 () :pointer)   ; struct IFFHandle * AllocIFF() () LVO -30
+  (:fn "OPEN-IFF" -36 (:a0 :d0) :signed)   ; LONG OpenIFF(struct IFFHandle * iff, LONG rwMode) (A0,D0) LVO -36
+  (:fn "PARSE-IFF" -42 (:a0 :d0) :signed)   ; LONG ParseIFF(struct IFFHandle * iff, LONG control) (A0,D0) LVO -42
+  (:fn "CLOSE-IFF" -48 (:a0) :void)   ; VOID CloseIFF(struct IFFHandle * iff) (A0) LVO -48
+  (:fn "FREE-IFF" -54 (:a0) :void)   ; VOID FreeIFF(struct IFFHandle * iff) (A0) LVO -54
+  (:fn "READ-CHUNK-BYTES" -60 (:a0 :a1 :d0) :signed)   ; LONG ReadChunkBytes(struct IFFHandle * iff, APTR buf, LONG numBytes) (A0,A1,D0) LVO -60
+  (:fn "WRITE-CHUNK-BYTES" -66 (:a0 :a1 :d0) :signed)   ; LONG WriteChunkBytes(struct IFFHandle * iff, CONST_APTR buf, LONG numBytes) (A0,A1,D0) LVO -66
+  (:fn "READ-CHUNK-RECORDS" -72 (:a0 :a1 :d0 :d1) :signed)   ; LONG ReadChunkRecords(struct IFFHandle * iff, APTR buf, LONG bytesPerRecord, LONG numRecords) (A0,A1,D0,D1) LVO -72
+  (:fn "WRITE-CHUNK-RECORDS" -78 (:a0 :a1 :d0 :d1) :signed)   ; LONG WriteChunkRecords(struct IFFHandle * iff, CONST_APTR buf, LONG bytesPerRecord, LONG numRecords) (A0,A1,D0,D1) LVO -78
+  (:fn "PUSH-CHUNK" -84 (:a0 :d0 :d1 :d2) :signed)   ; LONG PushChunk(struct IFFHandle * iff, LONG type, LONG id, LONG size) (A0,D0,D1,D2) LVO -84
+  (:fn "POP-CHUNK" -90 (:a0) :signed)   ; LONG PopChunk(struct IFFHandle * iff) (A0) LVO -90
+  (:fn "ENTRY-HANDLER" -102 (:a0 :d0 :d1 :d2 :a1 :a2) :signed)   ; LONG EntryHandler(struct IFFHandle * iff, LONG type, LONG id, LONG position, struct Hook * handler, APTR object) (A0,D0,D1,D2,A1,A2) LVO -102
+  (:fn "EXIT-HANDLER" -108 (:a0 :d0 :d1 :d2 :a1 :a2) :signed)   ; LONG ExitHandler(struct IFFHandle * iff, LONG type, LONG id, LONG position, struct Hook * handler, APTR object) (A0,D0,D1,D2,A1,A2) LVO -108
+  (:fn "PROP-CHUNK" -114 (:a0 :d0 :d1) :signed)   ; LONG PropChunk(struct IFFHandle * iff, LONG type, LONG id) (A0,D0,D1) LVO -114
+  (:fn "PROP-CHUNKS" -120 (:a0 :a1 :d0) :signed)   ; LONG PropChunks(struct IFFHandle * iff, CONST LONG * propArray, LONG numPairs) (A0,A1,D0) LVO -120
+  (:fn "STOP-CHUNK" -126 (:a0 :d0 :d1) :signed)   ; LONG StopChunk(struct IFFHandle * iff, LONG type, LONG id) (A0,D0,D1) LVO -126
+  (:fn "STOP-CHUNKS" -132 (:a0 :a1 :d0) :signed)   ; LONG StopChunks(struct IFFHandle * iff, CONST LONG * propArray, LONG numPairs) (A0,A1,D0) LVO -132
+  (:fn "COLLECTION-CHUNK" -138 (:a0 :d0 :d1) :signed)   ; LONG CollectionChunk(struct IFFHandle * iff, LONG type, LONG id) (A0,D0,D1) LVO -138
+  (:fn "COLLECTION-CHUNKS" -144 (:a0 :a1 :d0) :signed)   ; LONG CollectionChunks(struct IFFHandle * iff, CONST LONG * propArray, LONG numPairs) (A0,A1,D0) LVO -144
+  (:fn "STOP-ON-EXIT" -150 (:a0 :d0 :d1) :signed)   ; LONG StopOnExit(struct IFFHandle * iff, LONG type, LONG id) (A0,D0,D1) LVO -150
+  (:fn "FIND-PROP" -156 (:a0 :d0 :d1) :pointer)   ; struct StoredProperty * FindProp(struct IFFHandle * iff, LONG type, LONG id) (A0,D0,D1) LVO -156
+  (:fn "FIND-COLLECTION" -162 (:a0 :d0 :d1) :pointer)   ; struct CollectionItem * FindCollection(struct IFFHandle * iff, LONG type, LONG id) (A0,D0,D1) LVO -162
+  (:fn "FIND-PROP-CONTEXT" -168 (:a0) :pointer)   ; struct ContextNode * FindPropContext(struct IFFHandle * iff) (A0) LVO -168
+  (:fn "CURRENT-CHUNK" -174 (:a0) :pointer)   ; struct ContextNode * CurrentChunk(struct IFFHandle * iff) (A0) LVO -174
+  (:fn "PARENT-CHUNK" -180 (:a0) :pointer)   ; struct ContextNode * ParentChunk(struct ContextNode * contextNode) (A0) LVO -180
+  (:fn "ALLOC-LOCAL-ITEM" -186 (:d0 :d1 :d2 :d3) :pointer)   ; struct LocalContextItem * AllocLocalItem(LONG type, LONG id, LONG ident, LONG dataSize) (D0,D1,D2,D3) LVO -186
+  (:fn "LOCAL-ITEM-DATA" -192 (:a0) :pointer)   ; APTR LocalItemData(struct LocalContextItem * localItem) (A0) LVO -192
+  (:fn "SET-LOCAL-ITEM-PURGE" -198 (:a0 :a1) :void)   ; VOID SetLocalItemPurge(struct LocalContextItem * localItem, struct Hook * purgeHook) (A0,A1) LVO -198
+  (:fn "FREE-LOCAL-ITEM" -204 (:a0) :void)   ; VOID FreeLocalItem(struct LocalContextItem * localItem) (A0) LVO -204
+  (:fn "FIND-LOCAL-ITEM" -210 (:a0 :d0 :d1 :d2) :pointer)   ; struct LocalContextItem * FindLocalItem(struct IFFHandle * iff, LONG type, LONG id, LONG ident) (A0,D0,D1,D2) LVO -210
+  (:fn "STORE-LOCAL-ITEM" -216 (:a0 :a1 :d0) :signed)   ; LONG StoreLocalItem(struct IFFHandle * iff, struct LocalContextItem * localItem, LONG position) (A0,A1,D0) LVO -216
+  (:fn "STORE-ITEM-IN-CONTEXT" -222 (:a0 :a1 :a2) :void)   ; VOID StoreItemInContext(struct IFFHandle * iff, struct LocalContextItem * localItem, struct ContextNode * contextNode) (A0,A1,A2) LVO -222
+  (:fn "INIT-IFF" -228 (:a0 :d0 :a1) :void)   ; VOID InitIFF(struct IFFHandle * iff, LONG flags, struct Hook * streamHook) (A0,D0,A1) LVO -228
+  (:fn "INIT-IF-FAS-DOS" -234 (:a0) :void)   ; VOID InitIFFasDOS(struct IFFHandle * iff) (A0) LVO -234
+  (:fn "INIT-IF-FAS-CLIP" -240 (:a0) :void)   ; VOID InitIFFasClip(struct IFFHandle * iff) (A0) LVO -240
+  (:fn "OPEN-CLIPBOARD" -246 (:d0) :pointer)   ; struct ClipboardHandle * OpenClipboard(LONG unitNumber) (D0) LVO -246
+  (:fn "CLOSE-CLIPBOARD" -252 (:a0) :void)   ; VOID CloseClipboard(struct ClipboardHandle * clipHandle) (A0) LVO -252
+  (:fn "GOOD-ID" -258 (:d0) :signed)   ; LONG GoodID(LONG id) (D0) LVO -258
+  (:fn "GOOD-TYPE" -264 (:d0) :signed)   ; LONG GoodType(LONG type) (D0) LVO -264
+  (:fn "I-DTO-STR" -270 (:d0 :a0) :pointer)   ; STRPTR IDtoStr(LONG id, STRPTR buf) (D0,A0) LVO -270
+  (:fn "SEEK-CHUNK-BYTES" -276 (:a0 :d0 :d1) :signed :morphos)   ; LONG SeekChunkBytes(struct IFFHandle * iff, LONG numBytes, LONG mode) (A0,D0,D1) LVO -276
+  (:fn "SEEK-CHUNK-RECORDS" -282 (:a0 :d0 :d1 :d2) :signed :morphos)   ; LONG SeekChunkRecords(struct IFFHandle * iff, LONG bytesPerRecord, LONG numRecords, LONG mode) (A0,D0,D1,D2) LVO -282
+  )
 
 (provide "amiga/raw/iffparse")

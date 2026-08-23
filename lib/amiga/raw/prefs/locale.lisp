@@ -6,85 +6,71 @@
 ;;; 0 functions, 2 constants, 2 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.PREFS.LOCALE"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+ID-LCLE+" "+ID-CTRY+" "*COUNTRY-PREFS-SIZE*" "COUNTRY-PREFS-RESERVED" 
-   "COUNTRY-PREFS-COUNTRY-CODE" "COUNTRY-PREFS-TELEPHONE-CODE" 
-   "COUNTRY-PREFS-MEASURING-SYSTEM" "COUNTRY-PREFS-DATE-TIME-FORMAT" 
-   "COUNTRY-PREFS-DATE-FORMAT" "COUNTRY-PREFS-TIME-FORMAT" 
-   "COUNTRY-PREFS-SHORT-DATE-TIME-FORMAT" "COUNTRY-PREFS-SHORT-DATE-FORMAT" 
-   "COUNTRY-PREFS-SHORT-TIME-FORMAT" "COUNTRY-PREFS-DECIMAL-POINT" 
-   "COUNTRY-PREFS-GROUP-SEPARATOR" "COUNTRY-PREFS-FRAC-GROUP-SEPARATOR" 
-   "COUNTRY-PREFS-GROUPING" "COUNTRY-PREFS-FRAC-GROUPING" 
-   "COUNTRY-PREFS-MON-DECIMAL-POINT" "COUNTRY-PREFS-MON-GROUP-SEPARATOR" 
-   "COUNTRY-PREFS-MON-FRAC-GROUP-SEPARATOR" "COUNTRY-PREFS-MON-GROUPING" 
-   "COUNTRY-PREFS-MON-FRAC-GROUPING" "COUNTRY-PREFS-MON-FRAC-DIGITS" 
-   "COUNTRY-PREFS-MON-INT-FRAC-DIGITS" "COUNTRY-PREFS-MON-CS" 
-   "COUNTRY-PREFS-MON-SMALL-CS" "COUNTRY-PREFS-MON-INT-CS" 
-   "COUNTRY-PREFS-MON-POSITIVE-SIGN" "COUNTRY-PREFS-MON-POSITIVE-SPACE-SEP" 
-   "COUNTRY-PREFS-MON-POSITIVE-SIGN-POS" 
-   "COUNTRY-PREFS-MON-POSITIVE-CS-POS" "COUNTRY-PREFS-MON-NEGATIVE-SIGN" 
-   "COUNTRY-PREFS-MON-NEGATIVE-SPACE-SEP" 
-   "COUNTRY-PREFS-MON-NEGATIVE-SIGN-POS" 
-   "COUNTRY-PREFS-MON-NEGATIVE-CS-POS" "COUNTRY-PREFS-CALENDAR-TYPE" 
-   "*LOCALE-PREFS-SIZE*" "LOCALE-PREFS-RESERVED" 
-   "LOCALE-PREFS-COUNTRY-NAME" "LOCALE-PREFS-PREFERRED-LANGUAGES" 
-   "LOCALE-PREFS-GMT-OFFSET" "LOCALE-PREFS-FLAGS" 
-   "LOCALE-PREFS-COUNTRY-DATA" ))
+  (:export))
 
 (in-package "AMIGA.RAW.PREFS.LOCALE")
 
-;;; --- constants from prefs/locale.i ---
-(defconstant +id-lcle+ #x4C434C45)
-(defconstant +id-ctry+ #x43545259)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.PREFS.LOCALE" ()
 
-;;; --- structures from prefs/locale.i ---
-(ffi:defcstruct (country-prefs :size 504)   ; CountryPrefs (prefs/locale.i)
-  (reserved (:struct 16) 0)
-  (country-code :u32 16)
-  (telephone-code :u32 20)
-  (measuring-system :u8 24)
-  (date-time-format (:struct 80) 25)
-  (date-format (:struct 40) 105)
-  (time-format (:struct 40) 145)
-  (short-date-time-format (:struct 80) 185)
-  (short-date-format (:struct 40) 265)
-  (short-time-format (:struct 40) 305)
-  (decimal-point (:struct 10) 345)
-  (group-separator (:struct 10) 355)
-  (frac-group-separator (:struct 10) 365)
-  (grouping (:struct 10) 375)
-  (frac-grouping (:struct 10) 385)
-  (mon-decimal-point (:struct 10) 395)
-  (mon-group-separator (:struct 10) 405)
-  (mon-frac-group-separator (:struct 10) 415)
-  (mon-grouping (:struct 10) 425)
-  (mon-frac-grouping (:struct 10) 435)
-  (mon-frac-digits :u8 445)
-  (mon-int-frac-digits :u8 446)
-  (mon-cs (:struct 10) 447)
-  (mon-small-cs (:struct 10) 457)
-  (mon-int-cs (:struct 10) 467)
-  (mon-positive-sign (:struct 10) 477)
-  (mon-positive-space-sep :u8 487)
-  (mon-positive-sign-pos :u8 488)
-  (mon-positive-cs-pos :u8 489)
-  (mon-negative-sign (:struct 10) 490)
-  (mon-negative-space-sep :u8 500)
-  (mon-negative-sign-pos :u8 501)
-  (mon-negative-cs-pos :u8 502)
-  (calendar-type :u8 503)
-)
-(ffi:defcstruct (locale-prefs :size 860)   ; LocalePrefs (prefs/locale.i)
-  (reserved (:struct 16) 0)
-  (country-name (:struct 32) 16)
-  (preferred-languages (:struct 300) 48)
-  (gmt-offset :i32 348)
-  (flags :u32 352)
-  (country-data (:struct 504) 356)
-)
+  ;; --- constants from prefs/locale.i ---
+  (:const "+ID-LCLE+" #x4C434C45)
+  (:const "+ID-CTRY+" #x43545259)
+
+  ;; --- structures from prefs/locale.i ---
+  (:struct "COUNTRY-PREFS" 504   ; CountryPrefs (prefs/locale.i)
+    ("RESERVED" (:struct 16) 0)
+    ("COUNTRY-CODE" :u32 16)
+    ("TELEPHONE-CODE" :u32 20)
+    ("MEASURING-SYSTEM" :u8 24)
+    ("DATE-TIME-FORMAT" (:struct 80) 25)
+    ("DATE-FORMAT" (:struct 40) 105)
+    ("TIME-FORMAT" (:struct 40) 145)
+    ("SHORT-DATE-TIME-FORMAT" (:struct 80) 185)
+    ("SHORT-DATE-FORMAT" (:struct 40) 265)
+    ("SHORT-TIME-FORMAT" (:struct 40) 305)
+    ("DECIMAL-POINT" (:struct 10) 345)
+    ("GROUP-SEPARATOR" (:struct 10) 355)
+    ("FRAC-GROUP-SEPARATOR" (:struct 10) 365)
+    ("GROUPING" (:struct 10) 375)
+    ("FRAC-GROUPING" (:struct 10) 385)
+    ("MON-DECIMAL-POINT" (:struct 10) 395)
+    ("MON-GROUP-SEPARATOR" (:struct 10) 405)
+    ("MON-FRAC-GROUP-SEPARATOR" (:struct 10) 415)
+    ("MON-GROUPING" (:struct 10) 425)
+    ("MON-FRAC-GROUPING" (:struct 10) 435)
+    ("MON-FRAC-DIGITS" :u8 445)
+    ("MON-INT-FRAC-DIGITS" :u8 446)
+    ("MON-CS" (:struct 10) 447)
+    ("MON-SMALL-CS" (:struct 10) 457)
+    ("MON-INT-CS" (:struct 10) 467)
+    ("MON-POSITIVE-SIGN" (:struct 10) 477)
+    ("MON-POSITIVE-SPACE-SEP" :u8 487)
+    ("MON-POSITIVE-SIGN-POS" :u8 488)
+    ("MON-POSITIVE-CS-POS" :u8 489)
+    ("MON-NEGATIVE-SIGN" (:struct 10) 490)
+    ("MON-NEGATIVE-SPACE-SEP" :u8 500)
+    ("MON-NEGATIVE-SIGN-POS" :u8 501)
+    ("MON-NEGATIVE-CS-POS" :u8 502)
+    ("CALENDAR-TYPE" :u8 503)
+    )
+  (:struct "LOCALE-PREFS" 860   ; LocalePrefs (prefs/locale.i)
+    ("RESERVED" (:struct 16) 0)
+    ("COUNTRY-NAME" (:struct 32) 16)
+    ("PREFERRED-LANGUAGES" (:struct 300) 48)
+    ("GMT-OFFSET" :i32 348)
+    ("FLAGS" :u32 352)
+    ("COUNTRY-DATA" (:struct 504) 356)
+    )
+  )
 
 (provide "amiga/raw/prefs/locale")

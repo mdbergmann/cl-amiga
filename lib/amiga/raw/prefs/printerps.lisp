@@ -6,131 +6,110 @@
 ;;; 0 functions, 49 constants, 1 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.PREFS.PRINTERPS"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+ID-POST+" "+DM-POSTSCRIPT+" "+DM-PASSTHROUGH+" "+PF-USLETTER+" 
-   "+PF-USLEGAL+" "+PF-A4+" "+PF-CUSTOM+" "+FONT-COURIER+" "+FONT-TIMES+" 
-   "+FONT-HELVETICA+" "+FONT-HELV-NARROW+" "+FONT-AVANTGARDE+" 
-   "+FONT-BOOKMAN+" "+FONT-NEWCENT+" "+FONT-PALATINO+" 
-   "+FONT-ZAPFCHANCERY+" "+PITCH-NORMAL+" "+PITCH-COMPRESSED+" 
-   "+PITCH-EXPANDED+" "+ORIENT-PORTRAIT+" "+ORIENT-LANDSCAPE+" "+TAB-4+" 
-   "+TAB-8+" "+TAB-QUART+" "+TAB-HALF+" "+TAB-INCH+" "+IM-POSITIVE+" 
-   "+IM-NEGATIVE+" "+SHAD-BW+" "+SHAD-GREYSCALE+" "+SHAD-COLOR+" 
-   "+DITH-DEFAULT+" "+DITH-DOTTY+" "+DITH-VERT+" "+DITH-HORIZ+" 
-   "+DITH-DIAG+" "+ASP-HORIZ+" "+ASP-VERT+" "+ST-ASPECT-ASIS+" 
-   "+ST-ASPECT-WIDE+" "+ST-ASPECT-TALL+" "+ST-ASPECT-BOTH+" 
-   "+ST-FITS-WIDE+" "+ST-FITS-TALL+" "+ST-FITS-BOTH+" "+CENT-NONE+" 
-   "+CENT-HORIZ+" "+CENT-VERT+" "+CENT-BOTH+" "*PRINTER-PS-PREFS-SIZE*" 
-   "PRINTER-PS-PREFS-RESERVED" "PRINTER-PS-PREFS-DRIVER-MODE" 
-   "PRINTER-PS-PREFS-PAPER-FORMAT" "PRINTER-PS-PREFS-RESERVED1" 
-   "PRINTER-PS-PREFS-COPIES" "PRINTER-PS-PREFS-PAPER-WIDTH" 
-   "PRINTER-PS-PREFS-PAPER-HEIGHT" "PRINTER-PS-PREFS-HORIZONTAL-DPI" 
-   "PRINTER-PS-PREFS-VERTICAL-DPI" "PRINTER-PS-PREFS-FONT" 
-   "PRINTER-PS-PREFS-PITCH" "PRINTER-PS-PREFS-ORIENTATION" 
-   "PRINTER-PS-PREFS-TAB" "PRINTER-PS-PREFS-RESERVED2" 
-   "PRINTER-PS-PREFS-LEFT-MARGIN" "PRINTER-PS-PREFS-RIGHT-MARGIN" 
-   "PRINTER-PS-PREFS-TOP-MARGIN" "PRINTER-PS-PREFS-BOTTOM-MARGIN" 
-   "PRINTER-PS-PREFS-FONT-POINT-SIZE" "PRINTER-PS-PREFS-LEADING" 
-   "PRINTER-PS-PREFS-RESERVED3" "PRINTER-PS-PREFS-LEFT-EDGE" 
-   "PRINTER-PS-PREFS-TOP-EDGE" "PRINTER-PS-PREFS-WIDTH" 
-   "PRINTER-PS-PREFS-HEIGHT" "PRINTER-PS-PREFS-IMAGE" 
-   "PRINTER-PS-PREFS-SHADING" "PRINTER-PS-PREFS-DITHERING" 
-   "PRINTER-PS-PREFS-RESERVED4" "PRINTER-PS-PREFS-ASPECT" 
-   "PRINTER-PS-PREFS-SCALING-TYPE" "PRINTER-PS-PREFS-REVERSED5" 
-   "PRINTER-PS-PREFS-CENTERING" "PRINTER-PS-PREFS-RESERVED6" ))
+  (:export))
 
 (in-package "AMIGA.RAW.PREFS.PRINTERPS")
 
-;;; --- constants from prefs/printerps.i ---
-(defconstant +id-post+ #x50535044)
-(defconstant +dm-postscript+ 0)
-(defconstant +dm-passthrough+ 1)
-(defconstant +pf-usletter+ 0)
-(defconstant +pf-uslegal+ 1)
-(defconstant +pf-a4+ 2)
-(defconstant +pf-custom+ 3)
-(defconstant +font-courier+ 0)
-(defconstant +font-times+ 1)
-(defconstant +font-helvetica+ 2)
-(defconstant +font-helv-narrow+ 3)
-(defconstant +font-avantgarde+ 4)
-(defconstant +font-bookman+ 5)
-(defconstant +font-newcent+ 6)
-(defconstant +font-palatino+ 7)
-(defconstant +font-zapfchancery+ 8)
-(defconstant +pitch-normal+ 0)
-(defconstant +pitch-compressed+ 1)
-(defconstant +pitch-expanded+ 2)
-(defconstant +orient-portrait+ 0)
-(defconstant +orient-landscape+ 1)
-(defconstant +tab-4+ 0)
-(defconstant +tab-8+ 1)
-(defconstant +tab-quart+ 2)
-(defconstant +tab-half+ 3)
-(defconstant +tab-inch+ 4)
-(defconstant +im-positive+ 0)
-(defconstant +im-negative+ 1)
-(defconstant +shad-bw+ 0)
-(defconstant +shad-greyscale+ 1)
-(defconstant +shad-color+ 2)
-(defconstant +dith-default+ 0)
-(defconstant +dith-dotty+ 1)
-(defconstant +dith-vert+ 2)
-(defconstant +dith-horiz+ 3)
-(defconstant +dith-diag+ 4)
-(defconstant +asp-horiz+ 0)
-(defconstant +asp-vert+ 1)
-(defconstant +st-aspect-asis+ 0)
-(defconstant +st-aspect-wide+ 1)
-(defconstant +st-aspect-tall+ 2)
-(defconstant +st-aspect-both+ 3)
-(defconstant +st-fits-wide+ 4)
-(defconstant +st-fits-tall+ 5)
-(defconstant +st-fits-both+ 6)
-(defconstant +cent-none+ 0)
-(defconstant +cent-horiz+ 1)
-(defconstant +cent-vert+ 2)
-(defconstant +cent-both+ 3)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.PREFS.PRINTERPS" ()
 
-;;; --- structures from prefs/printerps.i ---
-(ffi:defcstruct (printer-ps-prefs :size 124)   ; PrinterPSPrefs (prefs/printerps.i)
-  (reserved (:struct 16) 0)
-  (driver-mode :u8 16)
-  (paper-format :u8 17)
-  (reserved1 (:struct 2) 18)
-  (copies :i32 20)
-  (paper-width :i32 24)
-  (paper-height :i32 28)
-  (horizontal-dpi :i32 32)
-  (vertical-dpi :i32 36)
-  (font :u8 40)
-  (pitch :u8 41)
-  (orientation :u8 42)
-  (tab :u8 43)
-  (reserved2 (:struct 8) 44)
-  (left-margin :i32 52)
-  (right-margin :i32 56)
-  (top-margin :i32 60)
-  (bottom-margin :i32 64)
-  (font-point-size :i32 68)
-  (leading :i32 72)
-  (reserved3 (:struct 8) 76)
-  (left-edge :i32 84)
-  (top-edge :i32 88)
-  (width :i32 92)
-  (height :i32 96)
-  (image :u8 100)
-  (shading :u8 101)
-  (dithering :u8 102)
-  (reserved4 (:struct 9) 103)
-  (aspect :u8 112)
-  (scaling-type :u8 113)
-  (reversed5 :u8 114)
-  (centering :u8 115)
-  (reserved6 (:struct 8) 116)
-)
+  ;; --- constants from prefs/printerps.i ---
+  (:const "+ID-POST+" #x50535044)
+  (:const "+DM-POSTSCRIPT+" 0)
+  (:const "+DM-PASSTHROUGH+" 1)
+  (:const "+PF-USLETTER+" 0)
+  (:const "+PF-USLEGAL+" 1)
+  (:const "+PF-A4+" 2)
+  (:const "+PF-CUSTOM+" 3)
+  (:const "+FONT-COURIER+" 0)
+  (:const "+FONT-TIMES+" 1)
+  (:const "+FONT-HELVETICA+" 2)
+  (:const "+FONT-HELV-NARROW+" 3)
+  (:const "+FONT-AVANTGARDE+" 4)
+  (:const "+FONT-BOOKMAN+" 5)
+  (:const "+FONT-NEWCENT+" 6)
+  (:const "+FONT-PALATINO+" 7)
+  (:const "+FONT-ZAPFCHANCERY+" 8)
+  (:const "+PITCH-NORMAL+" 0)
+  (:const "+PITCH-COMPRESSED+" 1)
+  (:const "+PITCH-EXPANDED+" 2)
+  (:const "+ORIENT-PORTRAIT+" 0)
+  (:const "+ORIENT-LANDSCAPE+" 1)
+  (:const "+TAB-4+" 0)
+  (:const "+TAB-8+" 1)
+  (:const "+TAB-QUART+" 2)
+  (:const "+TAB-HALF+" 3)
+  (:const "+TAB-INCH+" 4)
+  (:const "+IM-POSITIVE+" 0)
+  (:const "+IM-NEGATIVE+" 1)
+  (:const "+SHAD-BW+" 0)
+  (:const "+SHAD-GREYSCALE+" 1)
+  (:const "+SHAD-COLOR+" 2)
+  (:const "+DITH-DEFAULT+" 0)
+  (:const "+DITH-DOTTY+" 1)
+  (:const "+DITH-VERT+" 2)
+  (:const "+DITH-HORIZ+" 3)
+  (:const "+DITH-DIAG+" 4)
+  (:const "+ASP-HORIZ+" 0)
+  (:const "+ASP-VERT+" 1)
+  (:const "+ST-ASPECT-ASIS+" 0)
+  (:const "+ST-ASPECT-WIDE+" 1)
+  (:const "+ST-ASPECT-TALL+" 2)
+  (:const "+ST-ASPECT-BOTH+" 3)
+  (:const "+ST-FITS-WIDE+" 4)
+  (:const "+ST-FITS-TALL+" 5)
+  (:const "+ST-FITS-BOTH+" 6)
+  (:const "+CENT-NONE+" 0)
+  (:const "+CENT-HORIZ+" 1)
+  (:const "+CENT-VERT+" 2)
+  (:const "+CENT-BOTH+" 3)
+
+  ;; --- structures from prefs/printerps.i ---
+  (:struct "PRINTER-PS-PREFS" 124   ; PrinterPSPrefs (prefs/printerps.i)
+    ("RESERVED" (:struct 16) 0)
+    ("DRIVER-MODE" :u8 16)
+    ("PAPER-FORMAT" :u8 17)
+    ("RESERVED1" (:struct 2) 18)
+    ("COPIES" :i32 20)
+    ("PAPER-WIDTH" :i32 24)
+    ("PAPER-HEIGHT" :i32 28)
+    ("HORIZONTAL-DPI" :i32 32)
+    ("VERTICAL-DPI" :i32 36)
+    ("FONT" :u8 40)
+    ("PITCH" :u8 41)
+    ("ORIENTATION" :u8 42)
+    ("TAB" :u8 43)
+    ("RESERVED2" (:struct 8) 44)
+    ("LEFT-MARGIN" :i32 52)
+    ("RIGHT-MARGIN" :i32 56)
+    ("TOP-MARGIN" :i32 60)
+    ("BOTTOM-MARGIN" :i32 64)
+    ("FONT-POINT-SIZE" :i32 68)
+    ("LEADING" :i32 72)
+    ("RESERVED3" (:struct 8) 76)
+    ("LEFT-EDGE" :i32 84)
+    ("TOP-EDGE" :i32 88)
+    ("WIDTH" :i32 92)
+    ("HEIGHT" :i32 96)
+    ("IMAGE" :u8 100)
+    ("SHADING" :u8 101)
+    ("DITHERING" :u8 102)
+    ("RESERVED4" (:struct 9) 103)
+    ("ASPECT" :u8 112)
+    ("SCALING-TYPE" :u8 113)
+    ("REVERSED5" :u8 114)
+    ("CENTERING" :u8 115)
+    ("RESERVED6" (:struct 8) 116)
+    )
+  )
 
 (provide "amiga/raw/prefs/printerps")

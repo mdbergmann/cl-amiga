@@ -6,20 +6,14 @@
 ;;; 26 functions, 0 constants, 0 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.MUIMASTER"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*MUIMASTER-BASE*" "*MUIMASTER-VERSION*"
-   "MUI-NEW-OBJECT-A" "MUI-DISPOSE-OBJECT" "MUI-REQUEST-A" 
-   "MUI-ALLOC-ASL-REQUEST" "MUI-ASL-REQUEST" "MUI-FREE-ASL-REQUEST" 
-   "MUI-ERROR" "MUI-SET-ERROR" "MUI-GET-CLASS" "MUI-FREE-CLASS" 
-   "MUI-REQUEST-IDCMP" "MUI-REJECT-IDCMP" "MUI-REDRAW" 
-   "MUI-CREATE-CUSTOM-CLASS" "MUI-DELETE-CUSTOM-CLASS" "MUI-MAKE-OBJECT-A" 
-   "MUI-LAYOUT" "MUI-OBTAIN-PEN" "MUI-RELEASE-PEN" "MUI-ADD-CLIPPING" 
-   "MUI-REMOVE-CLIPPING" "MUI-ADD-CLIP-REGION" "MUI-REMOVE-CLIP-REGION" 
-   "MUI-BEGIN-REFRESH" "MUI-END-REFRESH" "MUI-GET-RGB-COLOR" ))
+  (:export "*MUIMASTER-BASE*" "*MUIMASTER-VERSION*"))
 
 (in-package "AMIGA.RAW.MUIMASTER")
 
@@ -33,84 +27,39 @@
 (defun %version>= (n)
   (and *muimaster-version* (>= *muimaster-version* n)))
 
-;;; --- functions (MorphOS SDK) ---
-(amiga.ffi:defcfun mui-new-object-a *muimaster-base* -30 (:a0 class :a1 tags)
-    :result :pointer
-    :doc "Boopsiobject * MUI_NewObjectA(char * class, struct TagItem * tags) (A0,A1) LVO -30")
-(amiga.ffi:defcfun mui-dispose-object *muimaster-base* -36 (:a0 obj)
-    :result :void
-    :doc "VOID MUI_DisposeObject(Boopsiobject * obj) (A0) LVO -36")
-(amiga.ffi:defcfun mui-request-a *muimaster-base* -42 (:d0 app :d1 win :d2 flags :a0 title :a1 gadgets :a2 format :a3 params)
-    :result :signed
-    :doc "LONG MUI_RequestA(APTR app, APTR win, LONGBITS flags, char * title, char * gadgets, char * format, APTR params) (D0,D1,D2,A0,A1,A2,A3) LVO -42")
-(amiga.ffi:defcfun mui-alloc-asl-request *muimaster-base* -48 (:d0 type :a0 tags)
-    :result :pointer
-    :doc "APTR MUI_AllocAslRequest(unsigned long type, struct TagItem * tags) (D0,A0) LVO -48")
-(amiga.ffi:defcfun mui-asl-request *muimaster-base* -54 (:a0 req :a1 tags)
-    :result :bool
-    :doc "BOOL MUI_AslRequest(APTR req, struct TagItem * tags) (A0,A1) LVO -54")
-(amiga.ffi:defcfun mui-free-asl-request *muimaster-base* -60 (:a0 req)
-    :result :void
-    :doc "VOID MUI_FreeAslRequest(APTR req) (A0) LVO -60")
-(amiga.ffi:defcfun mui-error *muimaster-base* -66 ()
-    :result :signed
-    :doc "LONG MUI_Error() () LVO -66")
-(amiga.ffi:defcfun mui-set-error *muimaster-base* -72 (:d0 errnum)
-    :result :signed
-    :doc "LONG MUI_SetError(LONG errnum) (D0) LVO -72")
-(amiga.ffi:defcfun mui-get-class *muimaster-base* -78 (:a0 name)
-    :result :pointer
-    :doc "struct IClass * MUI_GetClass(char * name) (A0) LVO -78")
-(amiga.ffi:defcfun mui-free-class *muimaster-base* -84 (:a0 cl)
-    :result :void
-    :doc "VOID MUI_FreeClass(struct IClass * cl) (A0) LVO -84")
-(amiga.ffi:defcfun mui-request-idcmp *muimaster-base* -90 (:a0 obj :d0 flags)
-    :result :void
-    :doc "VOID MUI_RequestIDCMP(Boopsiobject * obj, ULONG flags) (A0,D0) LVO -90")
-(amiga.ffi:defcfun mui-reject-idcmp *muimaster-base* -96 (:a0 obj :d0 flags)
-    :result :void
-    :doc "VOID MUI_RejectIDCMP(Boopsiobject * obj, ULONG flags) (A0,D0) LVO -96")
-(amiga.ffi:defcfun mui-redraw *muimaster-base* -102 (:a0 obj :d0 flags)
-    :result :void
-    :doc "VOID MUI_Redraw(Boopsiobject * obj, ULONG flags) (A0,D0) LVO -102")
-(amiga.ffi:defcfun mui-create-custom-class *muimaster-base* -108 (:a0 base :a1 supername :a2 supermcc :d0 datasize :a3 dispatcher)
-    :result :pointer
-    :doc "struct MUI_CustomClass * MUI_CreateCustomClass(struct Library * base, char * supername, struct MUI_CustomClass * supermcc, int datasize, APTR dispatcher) (A0,A1,A2,D0,A3) LVO -108")
-(amiga.ffi:defcfun mui-delete-custom-class *muimaster-base* -114 (:a0 mcc)
-    :result :bool
-    :doc "BOOL MUI_DeleteCustomClass(struct MUI_CustomClass * mcc) (A0) LVO -114")
-(amiga.ffi:defcfun mui-make-object-a *muimaster-base* -120 (:d0 type :a0 params)
-    :result :pointer
-    :doc "Boopsiobject * MUI_MakeObjectA(LONG type, ULONG * params) (D0,A0) LVO -120")
-(amiga.ffi:defcfun mui-layout *muimaster-base* -126 (:a0 obj :d0 l :d1 t-arg :d2 w :d3 h :d4 flags)
-    :result :bool
-    :doc "BOOL MUI_Layout(Boopsiobject * obj, LONG l, LONG t, LONG w, LONG h, ULONG flags) (A0,D0,D1,D2,D3,D4) LVO -126")
-(amiga.ffi:defcfun mui-obtain-pen *muimaster-base* -156 (:a0 mri :a1 spec :d0 flags)
-    :result :signed
-    :doc "LONG MUI_ObtainPen(struct MUI_RenderInfo * mri, struct MUI_PenSpec * spec, ULONG flags) (A0,A1,D0) LVO -156")
-(amiga.ffi:defcfun mui-release-pen *muimaster-base* -162 (:a0 mri :d0 pen)
-    :result :void
-    :doc "VOID MUI_ReleasePen(struct MUI_RenderInfo * mri, LONG pen) (A0,D0) LVO -162")
-(amiga.ffi:defcfun mui-add-clipping *muimaster-base* -168 (:a0 mri :d0 l :d1 t-arg :d2 w :d3 h)
-    :result :pointer
-    :doc "APTR MUI_AddClipping(struct MUI_RenderInfo * mri, WORD l, WORD t, WORD w, WORD h) (A0,D0,D1,D2,D3) LVO -168")
-(amiga.ffi:defcfun mui-remove-clipping *muimaster-base* -174 (:a0 mri :a1 h)
-    :result :void
-    :doc "VOID MUI_RemoveClipping(struct MUI_RenderInfo * mri, APTR h) (A0,A1) LVO -174")
-(amiga.ffi:defcfun mui-add-clip-region *muimaster-base* -180 (:a0 mri :a1 region)
-    :result :pointer
-    :doc "APTR MUI_AddClipRegion(struct MUI_RenderInfo * mri, struct Region * region) (A0,A1) LVO -180")
-(amiga.ffi:defcfun mui-remove-clip-region *muimaster-base* -186 (:a0 mri :a1 region)
-    :result :void
-    :doc "VOID MUI_RemoveClipRegion(struct MUI_RenderInfo * mri, APTR region) (A0,A1) LVO -186")
-(amiga.ffi:defcfun mui-begin-refresh *muimaster-base* -192 (:a0 mri :d0 flags)
-    :result :bool
-    :doc "BOOL MUI_BeginRefresh(struct MUI_RenderInfo * mri, ULONG flags) (A0,D0) LVO -192")
-(amiga.ffi:defcfun mui-end-refresh *muimaster-base* -198 (:a0 mri :d0 flags)
-    :result :void
-    :doc "VOID MUI_EndRefresh(struct MUI_RenderInfo * mri, ULONG flags) (A0,D0) LVO -198")
-(amiga.ffi:defcfun mui-get-rgb-color *muimaster-base* -690 (:a0 mri :a1 spec :a2 rgb)
-    :result :signed
-    :doc "LONG MUI_GetRGBColor(const struct MUI_RenderInfo * mri, const struct MUI_PenSpec * spec, ULONG * rgb) (A0,A1,A2) LVO -690")
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.MUIMASTER"
+    (:base *muimaster-base* :version *muimaster-version*)
+
+  ;; --- functions (MorphOS SDK) ---
+  (:fn "MUI-NEW-OBJECT-A" -30 (:a0 :a1) :pointer)   ; Boopsiobject * MUI_NewObjectA(char * class, struct TagItem * tags) (A0,A1) LVO -30
+  (:fn "MUI-DISPOSE-OBJECT" -36 (:a0) :void)   ; VOID MUI_DisposeObject(Boopsiobject * obj) (A0) LVO -36
+  (:fn "MUI-REQUEST-A" -42 (:d0 :d1 :d2 :a0 :a1 :a2 :a3) :signed)   ; LONG MUI_RequestA(APTR app, APTR win, LONGBITS flags, char * title, char * gadgets, char * format, APTR params) (D0,D1,D2,A0,A1,A2,A3) LVO -42
+  (:fn "MUI-ALLOC-ASL-REQUEST" -48 (:d0 :a0) :pointer)   ; APTR MUI_AllocAslRequest(unsigned long type, struct TagItem * tags) (D0,A0) LVO -48
+  (:fn "MUI-ASL-REQUEST" -54 (:a0 :a1) :bool)   ; BOOL MUI_AslRequest(APTR req, struct TagItem * tags) (A0,A1) LVO -54
+  (:fn "MUI-FREE-ASL-REQUEST" -60 (:a0) :void)   ; VOID MUI_FreeAslRequest(APTR req) (A0) LVO -60
+  (:fn "MUI-ERROR" -66 () :signed)   ; LONG MUI_Error() () LVO -66
+  (:fn "MUI-SET-ERROR" -72 (:d0) :signed)   ; LONG MUI_SetError(LONG errnum) (D0) LVO -72
+  (:fn "MUI-GET-CLASS" -78 (:a0) :pointer)   ; struct IClass * MUI_GetClass(char * name) (A0) LVO -78
+  (:fn "MUI-FREE-CLASS" -84 (:a0) :void)   ; VOID MUI_FreeClass(struct IClass * cl) (A0) LVO -84
+  (:fn "MUI-REQUEST-IDCMP" -90 (:a0 :d0) :void)   ; VOID MUI_RequestIDCMP(Boopsiobject * obj, ULONG flags) (A0,D0) LVO -90
+  (:fn "MUI-REJECT-IDCMP" -96 (:a0 :d0) :void)   ; VOID MUI_RejectIDCMP(Boopsiobject * obj, ULONG flags) (A0,D0) LVO -96
+  (:fn "MUI-REDRAW" -102 (:a0 :d0) :void)   ; VOID MUI_Redraw(Boopsiobject * obj, ULONG flags) (A0,D0) LVO -102
+  (:fn "MUI-CREATE-CUSTOM-CLASS" -108 (:a0 :a1 :a2 :d0 :a3) :pointer)   ; struct MUI_CustomClass * MUI_CreateCustomClass(struct Library * base, char * supername, struct MUI_CustomClass * supermcc, int datasize, APTR dispatcher) (A0,A1,A2,D0,A3) LVO -108
+  (:fn "MUI-DELETE-CUSTOM-CLASS" -114 (:a0) :bool)   ; BOOL MUI_DeleteCustomClass(struct MUI_CustomClass * mcc) (A0) LVO -114
+  (:fn "MUI-MAKE-OBJECT-A" -120 (:d0 :a0) :pointer)   ; Boopsiobject * MUI_MakeObjectA(LONG type, ULONG * params) (D0,A0) LVO -120
+  (:fn "MUI-LAYOUT" -126 (:a0 :d0 :d1 :d2 :d3 :d4) :bool)   ; BOOL MUI_Layout(Boopsiobject * obj, LONG l, LONG t, LONG w, LONG h, ULONG flags) (A0,D0,D1,D2,D3,D4) LVO -126
+  (:fn "MUI-OBTAIN-PEN" -156 (:a0 :a1 :d0) :signed)   ; LONG MUI_ObtainPen(struct MUI_RenderInfo * mri, struct MUI_PenSpec * spec, ULONG flags) (A0,A1,D0) LVO -156
+  (:fn "MUI-RELEASE-PEN" -162 (:a0 :d0) :void)   ; VOID MUI_ReleasePen(struct MUI_RenderInfo * mri, LONG pen) (A0,D0) LVO -162
+  (:fn "MUI-ADD-CLIPPING" -168 (:a0 :d0 :d1 :d2 :d3) :pointer)   ; APTR MUI_AddClipping(struct MUI_RenderInfo * mri, WORD l, WORD t, WORD w, WORD h) (A0,D0,D1,D2,D3) LVO -168
+  (:fn "MUI-REMOVE-CLIPPING" -174 (:a0 :a1) :void)   ; VOID MUI_RemoveClipping(struct MUI_RenderInfo * mri, APTR h) (A0,A1) LVO -174
+  (:fn "MUI-ADD-CLIP-REGION" -180 (:a0 :a1) :pointer)   ; APTR MUI_AddClipRegion(struct MUI_RenderInfo * mri, struct Region * region) (A0,A1) LVO -180
+  (:fn "MUI-REMOVE-CLIP-REGION" -186 (:a0 :a1) :void)   ; VOID MUI_RemoveClipRegion(struct MUI_RenderInfo * mri, APTR region) (A0,A1) LVO -186
+  (:fn "MUI-BEGIN-REFRESH" -192 (:a0 :d0) :bool)   ; BOOL MUI_BeginRefresh(struct MUI_RenderInfo * mri, ULONG flags) (A0,D0) LVO -192
+  (:fn "MUI-END-REFRESH" -198 (:a0 :d0) :void)   ; VOID MUI_EndRefresh(struct MUI_RenderInfo * mri, ULONG flags) (A0,D0) LVO -198
+  (:fn "MUI-GET-RGB-COLOR" -690 (:a0 :a1 :a2) :signed)   ; LONG MUI_GetRGBColor(const struct MUI_RenderInfo * mri, const struct MUI_PenSpec * spec, ULONG * rgb) (A0,A1,A2) LVO -690
+  )
 
 (provide "amiga/raw/muimaster")

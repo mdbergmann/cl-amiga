@@ -9,84 +9,14 @@
 ;;; 1 C macro skipped: not an integer constant (string, call, float).
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.GADGETS.LISTBROWSER"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*LISTBROWSER-BASE*" "*LISTBROWSER-VERSION*"
-   "+LBM-ADDNODE+" "+LBM-REMNODE+" "+LBM-EDITNODE+" "+LBM-SORT+" 
-   "+LBMSORT-FORWARD+" "+LBMSORT-REVERSE+" "+LBM-SHOWCHILDREN+" 
-   "+LBM-HIDECHILDREN+" "+LBNA-DUMMY+" "+LBNA-SELECTED+" "+LBNA-FLAGS+" 
-   "+LBNA-USER-DATA+" "+LBNA-COLUMN+" "+LBNCA-TEXT+" "+LBNCA-INTEGER+" 
-   "+LBNCA-FG-PEN+" "+LBNCA-BG-PEN+" "+LBNCA-IMAGE+" "+LBNCA-SEL-IMAGE+" 
-   "+LBNCA-HORIZ-JUSTIFY+" "+LBNCA-JUSTIFICATION+" "+LBNA-GENERATION+" 
-   "+LBNCA-EDITABLE+" "+LBNCA-MAX-CHARS+" "+LBNCA-COPY-TEXT+" 
-   "+LBNA-CHECK-BOX+" "+LBNA-CHECKED+" "+LBNA-NODE-SIZE+" 
-   "+LBNCA-EDIT-TAGS+" "+LBNCA-RENDER-HOOK+" "+LBNCA-HOOK-HEIGHT+" 
-   "+LBNA-MEM-POOL+" "+LBNA-NUM-COLUMNS+" "+LBNA-PRIORITY+" 
-   "+LBNCA-COPY-INTEGER+" "+LBNCA-WORD-WRAP+" "+LBNCA-VERT-JUSTIFY+" 
-   "+LBNCA-FILL-PEN+" "+LBCIA-MEM-POOL+" "+LBCIA-COLUMN+" "+LBCIA-TITLE+" 
-   "+LBCIA-WEIGHT+" "+LBCIA-WIDTH+" "+LBCIA-FLAGS+" "+LBNCA-SOFT-STYLE+" 
-   "+LBCIA-USER-DATA+" "+LBCIA-AUTO-SORT+" "+LBCIA-SORT-DIRECTION+" 
-   "+LBCIA-COMPARE-HOOK+" "+LBCIA-SORTABLE+" "+LBCIA-DRAGGABLE-SEPARATOR+" 
-   "+LBCIA-SEPARATOR+" "+LBCIA-SORT-ARROW+" "+LBCIA-COPY-TITLE+" 
-   "+LBCIA-SOFT-STYLE+" "+LBCIA-HORIZ-JUSTIFY+" "+LBFLG-READONLY+" 
-   "+LBFLG-CUSTOMPENS+" "+LBFLG-HASCHILDREN+" "+LBFLG-SHOWCHILDREN+" 
-   "+LBFLG-HIDDEN+" "+LCJ-LEFT+" "+LCJ-CENTER+" "+LCJ-RIGHT+" 
-   "+LCJ-CENTRE+" "+LRJ-BOTTOM+" "+LRJ-CENTER+" "+LRJ-TOP+" "+LRJ-CENTRE+" 
-   "+LB-DRAW+" "+LBCB-OK+" "+LBCB-UNKNOWN+" "+LBR-NORMAL+" "+LBR-SELECTED+" 
-   "+CIF-WEIGHTED+" "+CIF-FIXED+" "+CIF-DRAGGABLE+" "+CIF-NOSEPARATORS+" 
-   "+CIF-SORTABLE+" "+CIF-CENTER+" "+CIF-RIGHT+" "+CIF-CENTRE+" 
-   "+LISTBROWSER-DUMMY+" "+LISTBROWSER-TOP+" "+LISTBROWSER-RESERVED1+" 
-   "+LISTBROWSER-LABELS+" "+LISTBROWSER-SELECTED+" 
-   "+LISTBROWSER-SELECTED-NODE+" "+LISTBROWSER-MULTI-SELECT+" 
-   "+LISTBROWSER-VERT-SEPARATORS+" "+LISTBROWSER-SEPARATORS+" 
-   "+LISTBROWSER-COLUMN-INFO+" "+LISTBROWSER-MAKE-VISIBLE+" 
-   "+LISTBROWSER-VIRTUAL-WIDTH+" "+LISTBROWSER-BORDERLESS+" 
-   "+LISTBROWSER-VERTICAL-PROP+" "+LISTBROWSER-HORIZONTAL-PROP+" 
-   "+LISTBROWSER-LEFT+" "+LISTBROWSER-RESERVED2+" "+LISTBROWSER-AUTO-FIT+" 
-   "+LISTBROWSER-COLUMN-TITLES+" "+LISTBROWSER-SHOW-SELECTED+" 
-   "+LISTBROWSER-V-PROP-TOTAL+" "+LISTBROWSER-V-PROP-TOP+" 
-   "+LISTBROWSER-V-PROP-VISIBLE+" "+LISTBROWSER-H-PROP-TOTAL+" 
-   "+LISTBROWSER-H-PROP-TOP+" "+LISTBROWSER-H-PROP-VISIBLE+" 
-   "+LISTBROWSER-MOUSE-X+" "+LISTBROWSER-MOUSE-Y+" 
-   "+LISTBROWSER-HIERARCHICAL+" "+LISTBROWSER-SHOW-IMAGE+" 
-   "+LISTBROWSER-HIDE-IMAGE+" "+LISTBROWSER-LEAF-IMAGE+" 
-   "+LISTBROWSER-SCROLL-RASTER+" "+LISTBROWSER-SPACING+" 
-   "+LISTBROWSER-EDITABLE+" "+LISTBROWSER-EDIT-NODE+" 
-   "+LISTBROWSER-EDIT-COLUMN+" "+LISTBROWSER-EDIT-TAGS+" 
-   "+LISTBROWSER-POSITION+" "+LISTBROWSER-REL-EVENT+" 
-   "+LISTBROWSER-NUM-SELECTED+" "+LISTBROWSER-REL-COLUMN+" 
-   "+LISTBROWSER-HORIZ-SEPARATORS+" "+LISTBROWSER-CHECK-IMAGE+" 
-   "+LISTBROWSER-UNCHECKED-IMAGE+" "+LISTBROWSER-TOTAL-NODES+" 
-   "+LISTBROWSER-MIN-NODE-SIZE+" "+LISTBROWSER-TITLE-CLICKABLE+" 
-   "+LISTBROWSER-MIN-VISIBLE+" "+LISTBROWSER-RESERVED6+" 
-   "+LISTBROWSER-RESERVED7+" "+LISTBROWSER-PERSIST-SELECT+" 
-   "+LISTBROWSER-CURSOR-SELECT+" "+LISTBROWSER-CURSOR-NODE+" 
-   "+LISTBROWSER-FAST-RENDER+" "+LISTBROWSER-TOTAL-VISIBLE-NODES+" 
-   "+LISTBROWSER-WRAP-TEXT+" "+LISTBROWSER-MEM-POOL+" 
-   "+LISTBROWSER-BOTTOM+" "+LISTBROWSER-MAKE-NODE-VISIBLE+" 
-   "+LISTBROWSER-AUTO-VIRTUAL-WIDTH+" "+LISTBROWSER-HINT-INFO-HOOK+" 
-   "+LISTBROWSER-SORT-COLUMN+" "+LISTBROWSER-STRIPING+" 
-   "+LISTBROWSER-ALLOW-NO-SELECTION+" "+LISTBROWSER-AUTO-WHEEL+" 
-   "+LISTBROWSER-STAY-ACTIVE+" "+LISTBROWSER-EDIT-TRIGGER+" "+LBP-LINEUP+" 
-   "+LBP-LINEDOWN+" "+LBP-PAGEUP+" "+LBP-PAGEDOWN+" "+LBP-TOP+" 
-   "+LBP-BOTTOM+" "+LBP-SHIFTLEFT+" "+LBP-SHIFTRIGHT+" "+LBP-LEFTEDGE+" 
-   "+LBP-RIGHTEDGE+" "+LBP-PAGELEFT+" "+LBP-PAGERIGHT+" "+LBRE-NORMAL+" 
-   "+LBRE-HIDECHILDREN+" "+LBRE-SHOWCHILDREN+" "+LBRE-EDIT+" 
-   "+LBRE-DOUBLECLICK+" "+LBRE-CHECKED+" "+LBRE-UNCHECKED+" 
-   "+LBRE-TITLECLICK+" "+LBRE-COLUMNADJUST+" "+LBRE-EDITTABNEXT+" 
-   "+LBRE-EDITTABPREV+" "+LBS-NONE+" "+LBS-ROWS+" "+LBS-COLUMNS+" 
-   "+LBS-BOTH+" "+LBET-DOUBLECLICK+" "+LBET-DELAYEDSECOND+" 
-   "LISTBROWSER-GET-CLASS" "ALLOC-LIST-BROWSER-NODE-A" 
-   "FREE-LIST-BROWSER-NODE" "SET-LIST-BROWSER-NODE-ATTRS-A" 
-   "GET-LIST-BROWSER-NODE-ATTRS-A" "LIST-BROWSER-SELECT-ALL" 
-   "SHOW-LIST-BROWSER-NODE-CHILDREN" "HIDE-LIST-BROWSER-NODE-CHILDREN" 
-   "SHOW-ALL-LIST-BROWSER-CHILDREN" "HIDE-ALL-LIST-BROWSER-CHILDREN" 
-   "FREE-LIST-BROWSER-LIST" "ALLOC-LB-COLUMN-INFO-A" 
-   "SET-LB-COLUMN-INFO-ATTRS-A" "GET-LB-COLUMN-INFO-ATTRS-A" 
-   "FREE-LB-COLUMN-INFO" "LIST-BROWSER-CLEAR-ALL" ))
+  (:export "*LISTBROWSER-BASE*" "*LISTBROWSER-VERSION*"))
 
 (in-package "AMIGA.RAW.GADGETS.LISTBROWSER")
 
@@ -100,251 +30,210 @@
 (defun %version>= (n)
   (and *listbrowser-version* (>= *listbrowser-version* n)))
 
-;;; --- constants from gadgets/listbrowser.h ---
-(defconstant +lbm-addnode+ #x580001)
-(defconstant +lbm-remnode+ #x580002)
-(defconstant +lbm-editnode+ #x580003)
-(defconstant +lbm-sort+ #x580004)
-(defconstant +lbmsort-forward+ 0)
-(defconstant +lbmsort-reverse+ 1)
-(defconstant +lbm-showchildren+ #x580005)
-(defconstant +lbm-hidechildren+ #x580006)
-(defconstant +lbna-dummy+ #x85003500)
-(defconstant +lbna-selected+ #x85003501)
-(defconstant +lbna-flags+ #x85003502)
-(defconstant +lbna-user-data+ #x85003503)
-(defconstant +lbna-column+ #x85003504)
-(defconstant +lbnca-text+ #x85003505)
-(defconstant +lbnca-integer+ #x85003506)
-(defconstant +lbnca-fg-pen+ #x85003507)
-(defconstant +lbnca-bg-pen+ #x85003508)
-(defconstant +lbnca-image+ #x85003509)
-(defconstant +lbnca-sel-image+ #x8500350A)
-(defconstant +lbnca-horiz-justify+ #x8500350B)
-(defconstant +lbnca-justification+ #x8500350B)
-(defconstant +lbna-generation+ #x8500350C)
-(defconstant +lbnca-editable+ #x8500350D)
-(defconstant +lbnca-max-chars+ #x8500350E)
-(defconstant +lbnca-copy-text+ #x8500350F)
-(defconstant +lbna-check-box+ #x85003510)
-(defconstant +lbna-checked+ #x85003511)
-(defconstant +lbna-node-size+ #x85003512)
-(defconstant +lbnca-edit-tags+ #x85003513)
-(defconstant +lbnca-render-hook+ #x85003514)
-(defconstant +lbnca-hook-height+ #x85003516)
-(defconstant +lbna-mem-pool+ #x85003517)
-(defconstant +lbna-num-columns+ #x85003518)
-(defconstant +lbna-priority+ #x85003519)
-(defconstant +lbnca-copy-integer+ #x8500351A)
-(defconstant +lbnca-word-wrap+ #x8500351B)
-(defconstant +lbnca-vert-justify+ #x8500351C)
-(defconstant +lbnca-fill-pen+ #x8500351D)
-(defconstant +lbcia-mem-pool+ #x85003532)
-(defconstant +lbcia-column+ #x85003533)
-(defconstant +lbcia-title+ #x85003534)
-(defconstant +lbcia-weight+ #x85003535)
-(defconstant +lbcia-width+ #x85003536)
-(defconstant +lbcia-flags+ #x85003537)
-(defconstant +lbnca-soft-style+ #x85003538)
-(defconstant +lbcia-user-data+ #x85003539)
-(defconstant +lbcia-auto-sort+ #x8500353A)
-(defconstant +lbcia-sort-direction+ #x8500353B)
-(defconstant +lbcia-compare-hook+ #x8500353C)
-(defconstant +lbcia-sortable+ #x8500353D)
-(defconstant +lbcia-draggable-separator+ #x8500353E)
-(defconstant +lbcia-separator+ #x8500353F)
-(defconstant +lbcia-sort-arrow+ #x85003540)
-(defconstant +lbcia-copy-title+ #x85003541)
-(defconstant +lbcia-soft-style+ #x85003542)
-(defconstant +lbcia-horiz-justify+ #x85003543)
-(defconstant +lbflg-readonly+ 1)
-(defconstant +lbflg-custompens+ 2)
-(defconstant +lbflg-haschildren+ 4)
-(defconstant +lbflg-showchildren+ 8)
-(defconstant +lbflg-hidden+ #x10)
-(defconstant +lcj-left+ 0)
-(defconstant +lcj-center+ 1)
-(defconstant +lcj-right+ 2)
-(defconstant +lcj-centre+ 1)
-(defconstant +lrj-bottom+ 0)
-(defconstant +lrj-center+ 1)
-(defconstant +lrj-top+ 2)
-(defconstant +lrj-centre+ 1)
-(defconstant +lb-draw+ #x202)
-(defconstant +lbcb-ok+ 0)
-(defconstant +lbcb-unknown+ 1)
-(defconstant +lbr-normal+ 0)
-(defconstant +lbr-selected+ 1)
-(defconstant +cif-weighted+ 0)
-(defconstant +cif-fixed+ 1)
-(defconstant +cif-draggable+ 2)
-(defconstant +cif-noseparators+ 4)
-(defconstant +cif-sortable+ 8)
-(defconstant +cif-center+ #x10)
-(defconstant +cif-right+ #x20)
-(defconstant +cif-centre+ #x10)
-(defconstant +listbrowser-dummy+ #x85003000)
-(defconstant +listbrowser-top+ #x85003001)
-(defconstant +listbrowser-reserved1+ #x85003002)
-(defconstant +listbrowser-labels+ #x85003003)
-(defconstant +listbrowser-selected+ #x85003004)
-(defconstant +listbrowser-selected-node+ #x85003005)
-(defconstant +listbrowser-multi-select+ #x85003006)
-(defconstant +listbrowser-vert-separators+ #x85003007)
-(defconstant +listbrowser-separators+ #x85003007)
-(defconstant +listbrowser-column-info+ #x85003008)
-(defconstant +listbrowser-make-visible+ #x85003009)
-(defconstant +listbrowser-virtual-width+ #x8500300A)
-(defconstant +listbrowser-borderless+ #x8500300B)
-(defconstant +listbrowser-vertical-prop+ #x8500300C)
-(defconstant +listbrowser-horizontal-prop+ #x8500300D)
-(defconstant +listbrowser-left+ #x8500300E)
-(defconstant +listbrowser-reserved2+ #x8500300F)
-(defconstant +listbrowser-auto-fit+ #x85003010)
-(defconstant +listbrowser-column-titles+ #x85003011)
-(defconstant +listbrowser-show-selected+ #x85003012)
-(defconstant +listbrowser-v-prop-total+ #x85003013)
-(defconstant +listbrowser-v-prop-top+ #x85003014)
-(defconstant +listbrowser-v-prop-visible+ #x85003015)
-(defconstant +listbrowser-h-prop-total+ #x85003016)
-(defconstant +listbrowser-h-prop-top+ #x85003017)
-(defconstant +listbrowser-h-prop-visible+ #x85003018)
-(defconstant +listbrowser-mouse-x+ #x85003019)
-(defconstant +listbrowser-mouse-y+ #x8500301A)
-(defconstant +listbrowser-hierarchical+ #x8500301B)
-(defconstant +listbrowser-show-image+ #x8500301C)
-(defconstant +listbrowser-hide-image+ #x8500301D)
-(defconstant +listbrowser-leaf-image+ #x8500301E)
-(defconstant +listbrowser-scroll-raster+ #x8500301F)
-(defconstant +listbrowser-spacing+ #x85003020)
-(defconstant +listbrowser-editable+ #x85003021)
-(defconstant +listbrowser-edit-node+ #x85003023)
-(defconstant +listbrowser-edit-column+ #x85003024)
-(defconstant +listbrowser-edit-tags+ #x85003027)
-(defconstant +listbrowser-position+ #x85003022)
-(defconstant +listbrowser-rel-event+ #x85003025)
-(defconstant +listbrowser-num-selected+ #x85003026)
-(defconstant +listbrowser-rel-column+ #x85003028)
-(defconstant +listbrowser-horiz-separators+ #x85003029)
-(defconstant +listbrowser-check-image+ #x8500302A)
-(defconstant +listbrowser-unchecked-image+ #x8500302B)
-(defconstant +listbrowser-total-nodes+ #x8500302C)
-(defconstant +listbrowser-min-node-size+ #x8500302D)
-(defconstant +listbrowser-title-clickable+ #x8500302E)
-(defconstant +listbrowser-min-visible+ #x8500302F)
-(defconstant +listbrowser-reserved6+ #x85003030)
-(defconstant +listbrowser-reserved7+ #x85003031)
-(defconstant +listbrowser-persist-select+ #x85003032)
-(defconstant +listbrowser-cursor-select+ #x85003033)
-(defconstant +listbrowser-cursor-node+ #x85003034)
-(defconstant +listbrowser-fast-render+ #x85003035)
-(defconstant +listbrowser-total-visible-nodes+ #x85003036)
-(defconstant +listbrowser-wrap-text+ #x85003037)
-(defconstant +listbrowser-mem-pool+ #x85003038)
-(defconstant +listbrowser-bottom+ #x85003039)
-(defconstant +listbrowser-make-node-visible+ #x8500303A)
-(defconstant +listbrowser-auto-virtual-width+ #x8500303B)
-(defconstant +listbrowser-hint-info-hook+ #x8500303C)
-(defconstant +listbrowser-sort-column+ #x8500303D)
-(defconstant +listbrowser-striping+ #x8500303E)
-(defconstant +listbrowser-allow-no-selection+ #x8500303F)
-(defconstant +listbrowser-auto-wheel+ #x85003040)
-(defconstant +listbrowser-stay-active+ #x85003041)
-(defconstant +listbrowser-edit-trigger+ #x85003042)
-(defconstant +lbp-lineup+ 1)
-(defconstant +lbp-linedown+ 2)
-(defconstant +lbp-pageup+ 3)
-(defconstant +lbp-pagedown+ 4)
-(defconstant +lbp-top+ 5)
-(defconstant +lbp-bottom+ 6)
-(defconstant +lbp-shiftleft+ 10)
-(defconstant +lbp-shiftright+ 11)
-(defconstant +lbp-leftedge+ 12)
-(defconstant +lbp-rightedge+ 13)
-(defconstant +lbp-pageleft+ 14)
-(defconstant +lbp-pageright+ 15)
-(defconstant +lbre-normal+ 1)
-(defconstant +lbre-hidechildren+ 2)
-(defconstant +lbre-showchildren+ 4)
-(defconstant +lbre-edit+ 8)
-(defconstant +lbre-doubleclick+ #x10)
-(defconstant +lbre-checked+ #x20)
-(defconstant +lbre-unchecked+ #x40)
-(defconstant +lbre-titleclick+ #x80)
-(defconstant +lbre-columnadjust+ #x100)
-(defconstant +lbre-edittabnext+ #x200)
-(defconstant +lbre-edittabprev+ #x400)
-(defconstant +lbs-none+ 0)
-(defconstant +lbs-rows+ 1)
-(defconstant +lbs-columns+ 2)
-(defconstant +lbs-both+ 3)
-(defconstant +lbet-doubleclick+ 0)
-(defconstant +lbet-delayedsecond+ 1)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.GADGETS.LISTBROWSER"
+    (:base *listbrowser-base* :version *listbrowser-version*)
 
-;;; --- functions (listbrowser_lib.sfd + MorphOS SDK) ---
-(when (%version>= 40)
-  (amiga.ffi:defcfun listbrowser-get-class *listbrowser-base* -30 ()
-    :result :pointer
-    :doc "Class * LISTBROWSER_GetClass() () LVO -30"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun alloc-list-browser-node-a *listbrowser-base* -36 (:d0 columns :a0 tags)
-    :result :pointer
-    :doc "struct Node * AllocListBrowserNodeA(ULONG columns, struct TagItem * tags) (D0,A0) LVO -36"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun free-list-browser-node *listbrowser-base* -42 (:a0 node)
-    :result :void
-    :doc "VOID FreeListBrowserNode(struct Node * node) (A0) LVO -42"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun set-list-browser-node-attrs-a *listbrowser-base* -48 (:a0 node :a1 tags)
-    :result :void
-    :doc "VOID SetListBrowserNodeAttrsA(struct Node * node, struct TagItem * tags) (A0,A1) LVO -48"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun get-list-browser-node-attrs-a *listbrowser-base* -54 (:a0 node :a1 tags)
-    :result :void
-    :doc "VOID GetListBrowserNodeAttrsA(struct Node * node, struct TagItem * tags) (A0,A1) LVO -54"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun list-browser-select-all *listbrowser-base* -60 (:a0 list)
-    :result :void
-    :doc "VOID ListBrowserSelectAll(struct List * list) (A0) LVO -60"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun show-list-browser-node-children *listbrowser-base* -66 (:a0 node :d0 depth)
-    :result :void
-    :doc "VOID ShowListBrowserNodeChildren(struct Node * node, LONG depth) (A0,D0) LVO -66"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun hide-list-browser-node-children *listbrowser-base* -72 (:a0 node)
-    :result :void
-    :doc "VOID HideListBrowserNodeChildren(struct Node * node) (A0) LVO -72"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun show-all-list-browser-children *listbrowser-base* -78 (:a0 list)
-    :result :void
-    :doc "VOID ShowAllListBrowserChildren(struct List * list) (A0) LVO -78"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun hide-all-list-browser-children *listbrowser-base* -84 (:a0 list)
-    :result :void
-    :doc "VOID HideAllListBrowserChildren(struct List * list) (A0) LVO -84"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun free-list-browser-list *listbrowser-base* -90 (:a0 list)
-    :result :void
-    :doc "VOID FreeListBrowserList(struct List * list) (A0) LVO -90"))
-(when (%version>= 45)
-  (amiga.ffi:defcfun alloc-lb-column-info-a *listbrowser-base* -96 (:d0 columns :a0 tags)
-    :result :pointer
-    :doc "struct ColumnInfo * AllocLBColumnInfoA(ULONG columns, struct TagItem * tags) (D0,A0) LVO -96"))
-(when (%version>= 45)
-  (amiga.ffi:defcfun set-lb-column-info-attrs-a *listbrowser-base* -102 (:a1 columninfo :a0 tags)
-    :result :signed
-    :doc "LONG SetLBColumnInfoAttrsA(struct ColumnInfo * columninfo, struct TagItem * tags) (A1,A0) LVO -102"))
-(when (%version>= 45)
-  (amiga.ffi:defcfun get-lb-column-info-attrs-a *listbrowser-base* -108 (:a1 columninfo :a0 tags)
-    :result :signed
-    :doc "LONG GetLBColumnInfoAttrsA(struct ColumnInfo * columninfo, struct TagItem * tags) (A1,A0) LVO -108"))
-(when (%version>= 45)
-  (amiga.ffi:defcfun free-lb-column-info *listbrowser-base* -114 (:a0 columninfo)
-    :result :void
-    :doc "VOID FreeLBColumnInfo(struct ColumnInfo * columninfo) (A0) LVO -114"))
-(when (%version>= 45)
-  (amiga.ffi:defcfun list-browser-clear-all *listbrowser-base* -120 (:a0 list)
-    :result :void
-    :doc "VOID ListBrowserClearAll(struct List * list) (A0) LVO -120"))
+  ;; --- constants from gadgets/listbrowser.h ---
+  (:const "+LBM-ADDNODE+" #x580001)
+  (:const "+LBM-REMNODE+" #x580002)
+  (:const "+LBM-EDITNODE+" #x580003)
+  (:const "+LBM-SORT+" #x580004)
+  (:const "+LBMSORT-FORWARD+" 0)
+  (:const "+LBMSORT-REVERSE+" 1)
+  (:const "+LBM-SHOWCHILDREN+" #x580005)
+  (:const "+LBM-HIDECHILDREN+" #x580006)
+  (:const "+LBNA-DUMMY+" #x85003500)
+  (:const "+LBNA-SELECTED+" #x85003501)
+  (:const "+LBNA-FLAGS+" #x85003502)
+  (:const "+LBNA-USER-DATA+" #x85003503)
+  (:const "+LBNA-COLUMN+" #x85003504)
+  (:const "+LBNCA-TEXT+" #x85003505)
+  (:const "+LBNCA-INTEGER+" #x85003506)
+  (:const "+LBNCA-FG-PEN+" #x85003507)
+  (:const "+LBNCA-BG-PEN+" #x85003508)
+  (:const "+LBNCA-IMAGE+" #x85003509)
+  (:const "+LBNCA-SEL-IMAGE+" #x8500350A)
+  (:const "+LBNCA-HORIZ-JUSTIFY+" #x8500350B)
+  (:const "+LBNCA-JUSTIFICATION+" #x8500350B)
+  (:const "+LBNA-GENERATION+" #x8500350C)
+  (:const "+LBNCA-EDITABLE+" #x8500350D)
+  (:const "+LBNCA-MAX-CHARS+" #x8500350E)
+  (:const "+LBNCA-COPY-TEXT+" #x8500350F)
+  (:const "+LBNA-CHECK-BOX+" #x85003510)
+  (:const "+LBNA-CHECKED+" #x85003511)
+  (:const "+LBNA-NODE-SIZE+" #x85003512)
+  (:const "+LBNCA-EDIT-TAGS+" #x85003513)
+  (:const "+LBNCA-RENDER-HOOK+" #x85003514)
+  (:const "+LBNCA-HOOK-HEIGHT+" #x85003516)
+  (:const "+LBNA-MEM-POOL+" #x85003517)
+  (:const "+LBNA-NUM-COLUMNS+" #x85003518)
+  (:const "+LBNA-PRIORITY+" #x85003519)
+  (:const "+LBNCA-COPY-INTEGER+" #x8500351A)
+  (:const "+LBNCA-WORD-WRAP+" #x8500351B)
+  (:const "+LBNCA-VERT-JUSTIFY+" #x8500351C)
+  (:const "+LBNCA-FILL-PEN+" #x8500351D)
+  (:const "+LBCIA-MEM-POOL+" #x85003532)
+  (:const "+LBCIA-COLUMN+" #x85003533)
+  (:const "+LBCIA-TITLE+" #x85003534)
+  (:const "+LBCIA-WEIGHT+" #x85003535)
+  (:const "+LBCIA-WIDTH+" #x85003536)
+  (:const "+LBCIA-FLAGS+" #x85003537)
+  (:const "+LBNCA-SOFT-STYLE+" #x85003538)
+  (:const "+LBCIA-USER-DATA+" #x85003539)
+  (:const "+LBCIA-AUTO-SORT+" #x8500353A)
+  (:const "+LBCIA-SORT-DIRECTION+" #x8500353B)
+  (:const "+LBCIA-COMPARE-HOOK+" #x8500353C)
+  (:const "+LBCIA-SORTABLE+" #x8500353D)
+  (:const "+LBCIA-DRAGGABLE-SEPARATOR+" #x8500353E)
+  (:const "+LBCIA-SEPARATOR+" #x8500353F)
+  (:const "+LBCIA-SORT-ARROW+" #x85003540)
+  (:const "+LBCIA-COPY-TITLE+" #x85003541)
+  (:const "+LBCIA-SOFT-STYLE+" #x85003542)
+  (:const "+LBCIA-HORIZ-JUSTIFY+" #x85003543)
+  (:const "+LBFLG-READONLY+" 1)
+  (:const "+LBFLG-CUSTOMPENS+" 2)
+  (:const "+LBFLG-HASCHILDREN+" 4)
+  (:const "+LBFLG-SHOWCHILDREN+" 8)
+  (:const "+LBFLG-HIDDEN+" #x10)
+  (:const "+LCJ-LEFT+" 0)
+  (:const "+LCJ-CENTER+" 1)
+  (:const "+LCJ-RIGHT+" 2)
+  (:const "+LCJ-CENTRE+" 1)
+  (:const "+LRJ-BOTTOM+" 0)
+  (:const "+LRJ-CENTER+" 1)
+  (:const "+LRJ-TOP+" 2)
+  (:const "+LRJ-CENTRE+" 1)
+  (:const "+LB-DRAW+" #x202)
+  (:const "+LBCB-OK+" 0)
+  (:const "+LBCB-UNKNOWN+" 1)
+  (:const "+LBR-NORMAL+" 0)
+  (:const "+LBR-SELECTED+" 1)
+  (:const "+CIF-WEIGHTED+" 0)
+  (:const "+CIF-FIXED+" 1)
+  (:const "+CIF-DRAGGABLE+" 2)
+  (:const "+CIF-NOSEPARATORS+" 4)
+  (:const "+CIF-SORTABLE+" 8)
+  (:const "+CIF-CENTER+" #x10)
+  (:const "+CIF-RIGHT+" #x20)
+  (:const "+CIF-CENTRE+" #x10)
+  (:const "+LISTBROWSER-DUMMY+" #x85003000)
+  (:const "+LISTBROWSER-TOP+" #x85003001)
+  (:const "+LISTBROWSER-RESERVED1+" #x85003002)
+  (:const "+LISTBROWSER-LABELS+" #x85003003)
+  (:const "+LISTBROWSER-SELECTED+" #x85003004)
+  (:const "+LISTBROWSER-SELECTED-NODE+" #x85003005)
+  (:const "+LISTBROWSER-MULTI-SELECT+" #x85003006)
+  (:const "+LISTBROWSER-VERT-SEPARATORS+" #x85003007)
+  (:const "+LISTBROWSER-SEPARATORS+" #x85003007)
+  (:const "+LISTBROWSER-COLUMN-INFO+" #x85003008)
+  (:const "+LISTBROWSER-MAKE-VISIBLE+" #x85003009)
+  (:const "+LISTBROWSER-VIRTUAL-WIDTH+" #x8500300A)
+  (:const "+LISTBROWSER-BORDERLESS+" #x8500300B)
+  (:const "+LISTBROWSER-VERTICAL-PROP+" #x8500300C)
+  (:const "+LISTBROWSER-HORIZONTAL-PROP+" #x8500300D)
+  (:const "+LISTBROWSER-LEFT+" #x8500300E)
+  (:const "+LISTBROWSER-RESERVED2+" #x8500300F)
+  (:const "+LISTBROWSER-AUTO-FIT+" #x85003010)
+  (:const "+LISTBROWSER-COLUMN-TITLES+" #x85003011)
+  (:const "+LISTBROWSER-SHOW-SELECTED+" #x85003012)
+  (:const "+LISTBROWSER-V-PROP-TOTAL+" #x85003013)
+  (:const "+LISTBROWSER-V-PROP-TOP+" #x85003014)
+  (:const "+LISTBROWSER-V-PROP-VISIBLE+" #x85003015)
+  (:const "+LISTBROWSER-H-PROP-TOTAL+" #x85003016)
+  (:const "+LISTBROWSER-H-PROP-TOP+" #x85003017)
+  (:const "+LISTBROWSER-H-PROP-VISIBLE+" #x85003018)
+  (:const "+LISTBROWSER-MOUSE-X+" #x85003019)
+  (:const "+LISTBROWSER-MOUSE-Y+" #x8500301A)
+  (:const "+LISTBROWSER-HIERARCHICAL+" #x8500301B)
+  (:const "+LISTBROWSER-SHOW-IMAGE+" #x8500301C)
+  (:const "+LISTBROWSER-HIDE-IMAGE+" #x8500301D)
+  (:const "+LISTBROWSER-LEAF-IMAGE+" #x8500301E)
+  (:const "+LISTBROWSER-SCROLL-RASTER+" #x8500301F)
+  (:const "+LISTBROWSER-SPACING+" #x85003020)
+  (:const "+LISTBROWSER-EDITABLE+" #x85003021)
+  (:const "+LISTBROWSER-EDIT-NODE+" #x85003023)
+  (:const "+LISTBROWSER-EDIT-COLUMN+" #x85003024)
+  (:const "+LISTBROWSER-EDIT-TAGS+" #x85003027)
+  (:const "+LISTBROWSER-POSITION+" #x85003022)
+  (:const "+LISTBROWSER-REL-EVENT+" #x85003025)
+  (:const "+LISTBROWSER-NUM-SELECTED+" #x85003026)
+  (:const "+LISTBROWSER-REL-COLUMN+" #x85003028)
+  (:const "+LISTBROWSER-HORIZ-SEPARATORS+" #x85003029)
+  (:const "+LISTBROWSER-CHECK-IMAGE+" #x8500302A)
+  (:const "+LISTBROWSER-UNCHECKED-IMAGE+" #x8500302B)
+  (:const "+LISTBROWSER-TOTAL-NODES+" #x8500302C)
+  (:const "+LISTBROWSER-MIN-NODE-SIZE+" #x8500302D)
+  (:const "+LISTBROWSER-TITLE-CLICKABLE+" #x8500302E)
+  (:const "+LISTBROWSER-MIN-VISIBLE+" #x8500302F)
+  (:const "+LISTBROWSER-RESERVED6+" #x85003030)
+  (:const "+LISTBROWSER-RESERVED7+" #x85003031)
+  (:const "+LISTBROWSER-PERSIST-SELECT+" #x85003032)
+  (:const "+LISTBROWSER-CURSOR-SELECT+" #x85003033)
+  (:const "+LISTBROWSER-CURSOR-NODE+" #x85003034)
+  (:const "+LISTBROWSER-FAST-RENDER+" #x85003035)
+  (:const "+LISTBROWSER-TOTAL-VISIBLE-NODES+" #x85003036)
+  (:const "+LISTBROWSER-WRAP-TEXT+" #x85003037)
+  (:const "+LISTBROWSER-MEM-POOL+" #x85003038)
+  (:const "+LISTBROWSER-BOTTOM+" #x85003039)
+  (:const "+LISTBROWSER-MAKE-NODE-VISIBLE+" #x8500303A)
+  (:const "+LISTBROWSER-AUTO-VIRTUAL-WIDTH+" #x8500303B)
+  (:const "+LISTBROWSER-HINT-INFO-HOOK+" #x8500303C)
+  (:const "+LISTBROWSER-SORT-COLUMN+" #x8500303D)
+  (:const "+LISTBROWSER-STRIPING+" #x8500303E)
+  (:const "+LISTBROWSER-ALLOW-NO-SELECTION+" #x8500303F)
+  (:const "+LISTBROWSER-AUTO-WHEEL+" #x85003040)
+  (:const "+LISTBROWSER-STAY-ACTIVE+" #x85003041)
+  (:const "+LISTBROWSER-EDIT-TRIGGER+" #x85003042)
+  (:const "+LBP-LINEUP+" 1)
+  (:const "+LBP-LINEDOWN+" 2)
+  (:const "+LBP-PAGEUP+" 3)
+  (:const "+LBP-PAGEDOWN+" 4)
+  (:const "+LBP-TOP+" 5)
+  (:const "+LBP-BOTTOM+" 6)
+  (:const "+LBP-SHIFTLEFT+" 10)
+  (:const "+LBP-SHIFTRIGHT+" 11)
+  (:const "+LBP-LEFTEDGE+" 12)
+  (:const "+LBP-RIGHTEDGE+" 13)
+  (:const "+LBP-PAGELEFT+" 14)
+  (:const "+LBP-PAGERIGHT+" 15)
+  (:const "+LBRE-NORMAL+" 1)
+  (:const "+LBRE-HIDECHILDREN+" 2)
+  (:const "+LBRE-SHOWCHILDREN+" 4)
+  (:const "+LBRE-EDIT+" 8)
+  (:const "+LBRE-DOUBLECLICK+" #x10)
+  (:const "+LBRE-CHECKED+" #x20)
+  (:const "+LBRE-UNCHECKED+" #x40)
+  (:const "+LBRE-TITLECLICK+" #x80)
+  (:const "+LBRE-COLUMNADJUST+" #x100)
+  (:const "+LBRE-EDITTABNEXT+" #x200)
+  (:const "+LBRE-EDITTABPREV+" #x400)
+  (:const "+LBS-NONE+" 0)
+  (:const "+LBS-ROWS+" 1)
+  (:const "+LBS-COLUMNS+" 2)
+  (:const "+LBS-BOTH+" 3)
+  (:const "+LBET-DOUBLECLICK+" 0)
+  (:const "+LBET-DELAYEDSECOND+" 1)
+
+  ;; --- functions (listbrowser_lib.sfd + MorphOS SDK) ---
+  (:fn "LISTBROWSER-GET-CLASS" -30 () :pointer 40)   ; Class * LISTBROWSER_GetClass() () LVO -30
+  (:fn "ALLOC-LIST-BROWSER-NODE-A" -36 (:d0 :a0) :pointer 40)   ; struct Node * AllocListBrowserNodeA(ULONG columns, struct TagItem * tags) (D0,A0) LVO -36
+  (:fn "FREE-LIST-BROWSER-NODE" -42 (:a0) :void 40)   ; VOID FreeListBrowserNode(struct Node * node) (A0) LVO -42
+  (:fn "SET-LIST-BROWSER-NODE-ATTRS-A" -48 (:a0 :a1) :void 40)   ; VOID SetListBrowserNodeAttrsA(struct Node * node, struct TagItem * tags) (A0,A1) LVO -48
+  (:fn "GET-LIST-BROWSER-NODE-ATTRS-A" -54 (:a0 :a1) :void 40)   ; VOID GetListBrowserNodeAttrsA(struct Node * node, struct TagItem * tags) (A0,A1) LVO -54
+  (:fn "LIST-BROWSER-SELECT-ALL" -60 (:a0) :void 40)   ; VOID ListBrowserSelectAll(struct List * list) (A0) LVO -60
+  (:fn "SHOW-LIST-BROWSER-NODE-CHILDREN" -66 (:a0 :d0) :void 40)   ; VOID ShowListBrowserNodeChildren(struct Node * node, LONG depth) (A0,D0) LVO -66
+  (:fn "HIDE-LIST-BROWSER-NODE-CHILDREN" -72 (:a0) :void 40)   ; VOID HideListBrowserNodeChildren(struct Node * node) (A0) LVO -72
+  (:fn "SHOW-ALL-LIST-BROWSER-CHILDREN" -78 (:a0) :void 40)   ; VOID ShowAllListBrowserChildren(struct List * list) (A0) LVO -78
+  (:fn "HIDE-ALL-LIST-BROWSER-CHILDREN" -84 (:a0) :void 40)   ; VOID HideAllListBrowserChildren(struct List * list) (A0) LVO -84
+  (:fn "FREE-LIST-BROWSER-LIST" -90 (:a0) :void 40)   ; VOID FreeListBrowserList(struct List * list) (A0) LVO -90
+  (:fn "ALLOC-LB-COLUMN-INFO-A" -96 (:d0 :a0) :pointer 45)   ; struct ColumnInfo * AllocLBColumnInfoA(ULONG columns, struct TagItem * tags) (D0,A0) LVO -96
+  (:fn "SET-LB-COLUMN-INFO-ATTRS-A" -102 (:a1 :a0) :signed 45)   ; LONG SetLBColumnInfoAttrsA(struct ColumnInfo * columninfo, struct TagItem * tags) (A1,A0) LVO -102
+  (:fn "GET-LB-COLUMN-INFO-ATTRS-A" -108 (:a1 :a0) :signed 45)   ; LONG GetLBColumnInfoAttrsA(struct ColumnInfo * columninfo, struct TagItem * tags) (A1,A0) LVO -108
+  (:fn "FREE-LB-COLUMN-INFO" -114 (:a0) :void 45)   ; VOID FreeLBColumnInfo(struct ColumnInfo * columninfo) (A0) LVO -114
+  (:fn "LIST-BROWSER-CLEAR-ALL" -120 (:a0) :void 45)   ; VOID ListBrowserClearAll(struct List * list) (A0) LVO -120
+  )
 
 (provide "amiga/raw/gadgets/listbrowser")

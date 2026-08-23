@@ -9,126 +9,14 @@
 ;;; 16 functions, 164 constants, 22 structs, 5 skipped (see comments).
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.WB"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*WB-BASE*" "*WB-VERSION*"
-   "+WORKBENCH-WORKBENCH-I+" "+WBDISK+" "+WBDRAWER+" "+WBTOOL+" 
-   "+WBPROJECT+" "+WBGARBAGE+" "+WBDEVICE+" "+WBKICK+" "+WBAPPICON+" 
-   "+OLDDRAWERDATAFILESIZE+" "+DRAWERDATAFILESIZE+" "+DDVM-BYDEFAULT+" 
-   "+DDVM-BYICON+" "+DDVM-BYNAME+" "+DDVM-BYDATE+" "+DDVM-BYSIZE+" 
-   "+DDVM-BYTYPE+" "+DDFLAGS-SHOWMASK+" "+DDFLAGS-SHOWDEFAULT+" 
-   "+DDFLAGS-SHOWICONS+" "+DDFLAGS-SHOWALL+" "+DDFLAGS-SORTMASK+" 
-   "+DDFLAGS-SORTDEFAULT+" "+DDFLAGS-SORTASC+" "+DDFLAGS-SORTDESC+" 
-   "+WB-DISKMAGIC+" "+WB-DISKVERSION+" "+WB-DISKREVISION+" 
-   "+WB-DISKREVISIONMASK+" "+GFLG-GADGBACKFILL+" "+GADGBACKFILL+" 
-   "+NO-ICON-POSITION+" "+AM-VERSION+" "+AMTYPE-APPWINDOW+" 
-   "+AMTYPE-APPICON+" "+AMTYPE-APPMENUITEM+" "+AMTYPE-APPWINDOWZONE+" 
-   "+AMCLASSICON-OPEN+" "+AMCLASSICON-COPY+" "+AMCLASSICON-RENAME+" 
-   "+AMCLASSICON-INFORMATION+" "+AMCLASSICON-SNAPSHOT+" 
-   "+AMCLASSICON-UN-SNAPSHOT+" "+AMCLASSICON-LEAVE-OUT+" 
-   "+AMCLASSICON-PUT-AWAY+" "+AMCLASSICON-DELETE+" 
-   "+AMCLASSICON-FORMAT-DISK+" "+AMCLASSICON-EJECT-DISK+" 
-   "+AMCLASSICON-EMPTY-TRASH+" "+AMCLASSICON-SELECTED+" 
-   "+AMCLASSICON-UNSELECTED+" "+WBA-DUMMY+" "+WBAPPICONA-SUPPORTS-OPEN+" 
-   "+WBAPPICONA-SUPPORTS-COPY+" "+WBAPPICONA-SUPPORTS-RENAME+" 
-   "+WBAPPICONA-SUPPORTS-INFORMATION+" "+WBAPPICONA-SUPPORTS-SNAPSHOT+" 
-   "+WBAPPICONA-SUPPORTS-UN-SNAPSHOT+" "+WBAPPICONA-SUPPORTS-LEAVE-OUT+" 
-   "+WBAPPICONA-SUPPORTS-PUT-AWAY+" "+WBAPPICONA-SUPPORTS-DELETE+" 
-   "+WBAPPICONA-SUPPORTS-FORMAT-DISK+" "+WBAPPICONA-SUPPORTS-EJECT-DISK+" 
-   "+WBAPPICONA-SUPPORTS-EMPTY-TRASH+" "+WBAPPICONA-PROPAGATE-POSITION+" 
-   "+WBAPPICONA-RENDER-HOOK+" "+WBAPPICONA-NOTIFY-SELECT-STATE+" 
-   "+WBAPPMENUA-COMMAND-KEY-STRING+" "+WBAPPMENUA-GET-KEY+" 
-   "+WBAPPMENUA-USE-KEY+" "+WBAPPMENUA-GET-TITLE-KEY+" "+WBOPENA-ARG-LOCK+" 
-   "+WBOPENA-ARG-NAME+" "+WBOPENA-SHOW+" "+WBOPENA-VIEW-BY+" 
-   "+WBCTRLA-IS-OPEN+" "+WBCTRLA-DUPLICATE-SEARCH-PATH+" 
-   "+WBCTRLA-FREE-SEARCH-PATH+" "+WBCTRLA-GET-DEFAULT-STACK-SIZE+" 
-   "+WBCTRLA-SET-DEFAULT-STACK-SIZE+" "+WBCTRLA-REDRAW-APP-ICON+" 
-   "+WBCTRLA-GET-PROGRAM-LIST+" "+WBCTRLA-FREE-PROGRAM-LIST+" 
-   "+WBCTRLA-GET-SELECTED-ICON-LIST+" "+WBCTRLA-FREE-SELECTED-ICON-LIST+" 
-   "+WBCTRLA-GET-OPEN-DRAWER-LIST+" "+WBCTRLA-FREE-OPEN-DRAWER-LIST+" 
-   "+WBCTRLA-GET-HIDDEN-DEVICE-LIST+" "+WBCTRLA-FREE-HIDDEN-DEVICE-LIST+" 
-   "+WBCTRLA-ADD-HIDDEN-DEVICE-NAME+" "+WBCTRLA-REMOVE-HIDDEN-DEVICE-NAME+" 
-   "+WBCTRLA-GET-TYPE-RESTART-TIME+" "+WBCTRLA-SET-TYPE-RESTART-TIME+" 
-   "+WBCTRLA-GET-COPY-HOOK+" "+WBCTRLA-SET-COPY-HOOK+" 
-   "+WBCTRLA-GET-DELETE-HOOK+" "+WBCTRLA-SET-DELETE-HOOK+" 
-   "+WBCTRLA-GET-TEXT-INPUT-HOOK+" "+WBCTRLA-SET-TEXT-INPUT-HOOK+" 
-   "+WBCTRLA-ADD-SETUP-CLEANUP-HOOK+" "+WBCTRLA-REM-SETUP-CLEANUP-HOOK+" 
-   "+WBCTRLA-SET-GLOBAL-FLAGS+" "+WBCTRLA-GET-GLOBAL-FLAGS+" 
-   "+WBCTRLA-GET-DISK-INFO-HOOK+" "+WBCTRLA-SET-DISK-INFO-HOOK+" 
-   "+SCHMSTATE-TRY-CLEANUP+" "+SCHMSTATE-CLEANUP+" "+SCHMSTATE-SETUP+" 
-   "+WBF-DRAWERPOSMASK+" "+WBF-DRAWERPOSFREE+" "+WBF-DRAWERPOSHEAD+" 
-   "+WBF-DRAWERPOSTAIL+" "+WBF-BOUNDTEXTVIEW+" "+WBF-OLDDATESFIRST+" 
-   "+WBDZA-LEFT+" "+WBDZA-REL-RIGHT+" "+WBDZA-TOP+" "+WBDZA-REL-BOTTOM+" 
-   "+WBDZA-WIDTH+" "+WBDZA-REL-WIDTH+" "+WBDZA-HEIGHT+" 
-   "+WBDZA-REL-HEIGHT+" "+WBDZA-BOX+" "+WBDZA-HOOK+" "+WBOBJA-TYPE+" 
-   "+WBOBJA-LEFT+" "+WBOBJA-TOP+" "+WBOBJA-WIDTH+" "+WBOBJA-HEIGHT+" 
-   "+WBOBJA-STATE+" "+WBOBJA-IS-FAKE+" "+WBOBJA-NAME+" "+WBOBJA-NAME-SIZE+" 
-   "+WBOBJA-FULL-PATH+" "+WBOBJA-FULL-PATH-SIZE+" "+WBOBJA-IS-LINK+" 
-   "+WBOBJA-DRAWER-PATH+" "+WBOBJA-DRAWER-PATH-SIZE+" 
-   "+WBOBJA-DRAWER-FLAGS+" "+WBOBJA-DRAWER-MODES+" "+WBO-NONE+" 
-   "+WBO-DRAWER+" "+WBO-ICON+" "+ADZMACTION-ENTER+" "+ADZMACTION-LEAVE+" 
-   "+ISMACTION-UNSELECT+" "+ISMACTION-SELECT+" "+ISMACTION-IGNORE+" 
-   "+ISMACTION-STOP+" "+CPACTION-BEGIN+" "+CPACTION-COPY+" "+CPACTION-END+" 
-   "+DLACTION-BEGIN-DISCARD+" "+DLACTION-BEGIN-EMPTY-TRASH+" 
-   "+DLACTION-DELETE-CONTENTS+" "+DLACTION-DELETE-OBJECT+" "+DLACTION-END+" 
-   "+TIACTION-RENAME+" "+TIACTION-RELABEL-VOLUME+" "+TIACTION-NEW-DRAWER+" 
-   "+TIACTION-EXECUTE+" "+UPDATEWB-OBJECT-REMOVED+" 
-   "+UPDATEWB-OBJECT-ADDED+" "*DRAWER-DATA-SIZE*" "DRAWER-DATA-NEW-WINDOW" 
-   "DRAWER-DATA-CURRENT-X" "DRAWER-DATA-CURRENT-Y" "DRAWER-DATA-FLAGS" 
-   "DRAWER-DATA-VIEW-MODES" "*DISK-OBJECT-SIZE*" "DISK-OBJECT-MAGIC" 
-   "DISK-OBJECT-VERSION" "DISK-OBJECT-GADGET" "DISK-OBJECT-TYPE" 
-   "DISK-OBJECT-PAD-BYTE" "DISK-OBJECT-DEFAULT-TOOL" 
-   "DISK-OBJECT-TOOL-TYPES" "DISK-OBJECT-CURRENT-X" "DISK-OBJECT-CURRENT-Y" 
-   "DISK-OBJECT-DRAWER-DATA" "DISK-OBJECT-TOOL-WINDOW" 
-   "DISK-OBJECT-STACK-SIZE" "*FREE-LIST-SIZE*" "FREE-LIST-NUM-FREE" 
-   "FREE-LIST-MEM-LIST" "*APP-MESSAGE-SIZE*" "APP-MESSAGE-MESSAGE" 
-   "APP-MESSAGE-TYPE" "APP-MESSAGE-USER-DATA" "APP-MESSAGE-ID" 
-   "APP-MESSAGE-NUM-ARGS" "APP-MESSAGE-ARG-LIST" "APP-MESSAGE-VERSION" 
-   "APP-MESSAGE-CLASS" "APP-MESSAGE-MOUSE-X" "APP-MESSAGE-MOUSE-Y" 
-   "APP-MESSAGE-SECONDS" "APP-MESSAGE-MICROS" "APP-MESSAGE-RESERVED" 
-   "*APP-WINDOW-SIZE*" "*APP-WINDOW-DROP-ZONE-SIZE*" "*APP-ICON-SIZE*" 
-   "*APP-MENU-ITEM-SIZE*" "*APP-MENU-SIZE*" "*SETUP-CLEANUP-HOOK-MSG-SIZE*" 
-   "SETUP-CLEANUP-HOOK-MSG-LENGTH" "SETUP-CLEANUP-HOOK-MSG-STATE" 
-   "*APP-ICON-RENDER-MSG-SIZE*" "APP-ICON-RENDER-MSG-RASTPORT" 
-   "APP-ICON-RENDER-MSG-ICON" "APP-ICON-RENDER-MSG-LABEL" 
-   "APP-ICON-RENDER-MSG-TAGS" "APP-ICON-RENDER-MSG-LEFT" 
-   "APP-ICON-RENDER-MSG-TOP" "APP-ICON-RENDER-MSG-WIDTH" 
-   "APP-ICON-RENDER-MSG-HEIGHT" "APP-ICON-RENDER-MSG-STATE" 
-   "*APP-WINDOW-DROP-ZONE-MSG-SIZE*" "APP-WINDOW-DROP-ZONE-MSG-RASTPORT" 
-   "APP-WINDOW-DROP-ZONE-MSG-DROP-ZONE-BOX" "APP-WINDOW-DROP-ZONE-MSG-ID" 
-   "APP-WINDOW-DROP-ZONE-MSG-USER-DATA" "APP-WINDOW-DROP-ZONE-MSG-ACTION" 
-   "*ICON-SELECT-MSG-SIZE*" "ICON-SELECT-MSG-LENGTH" 
-   "ICON-SELECT-MSG-DRAWER" "ICON-SELECT-MSG-NAME" "ICON-SELECT-MSG-TYPE" 
-   "ICON-SELECT-MSG-SELECTED" "ICON-SELECT-MSG-TAGS" 
-   "ICON-SELECT-MSG-DRAWER-WINDOW" "ICON-SELECT-MSG-PARENT-WINDOW" 
-   "ICON-SELECT-MSG-LEFT" "ICON-SELECT-MSG-TOP" "ICON-SELECT-MSG-WIDTH" 
-   "ICON-SELECT-MSG-HEIGHT" "*COPY-BEGIN-MSG-SIZE*" "COPY-BEGIN-MSG-LENGTH" 
-   "COPY-BEGIN-MSG-ACTION" "COPY-BEGIN-MSG-SOURCE-DRAWER" 
-   "COPY-BEGIN-MSG-DESTINATION-DRAWER" "*COPY-DATA-MSG-SIZE*" 
-   "COPY-DATA-MSG-LENGTH" "COPY-DATA-MSG-ACTION" 
-   "COPY-DATA-MSG-SOURCE-LOCK" "COPY-DATA-MSG-SOURCE-NAME" 
-   "COPY-DATA-MSG-DESTINATION-LOCK" "COPY-DATA-MSG-DESTINATION-NAME" 
-   "COPY-DATA-MSG-DESTINATION-X" "COPY-DATA-MSG-DESTINATION-Y" 
-   "*COPY-END-MSG-SIZE*" "COPY-END-MSG-LENGTH" "COPY-END-MSG-ACTION" 
-   "*DELETE-BEGIN-MSG-SIZE*" "DELETE-BEGIN-MSG-LENGTH" 
-   "DELETE-BEGIN-MSG-ACTION" "*DELETE-DATA-MSG-SIZE*" 
-   "DELETE-DATA-MSG-LENGTH" "DELETE-DATA-MSG-ACTION" "DELETE-DATA-MSG-LOCK" 
-   "DELETE-DATA-MSG-NAME" "*DELETE-END-MSG-SIZE*" "DELETE-END-MSG-LENGTH" 
-   "DELETE-END-MSG-ACTION" "*TEXT-INPUT-MSG-SIZE*" "TEXT-INPUT-MSG-LENGTH" 
-   "TEXT-INPUT-MSG-ACTION" "TEXT-INPUT-MSG-PROMPT" "+WORKBENCH-STARTUP-I+" 
-   "*WB-STARTUP-SIZE*" "WB-STARTUP-MESSAGE" "WB-STARTUP-PROCESS" 
-   "WB-STARTUP-SEGMENT" "WB-STARTUP-NUM-ARGS" "WB-STARTUP-TOOL-WINDOW" 
-   "WB-STARTUP-ARG-LIST" "*WB-ARG-SIZE*" "WB-ARG-LOCK" "WB-ARG-NAME" 
-   "UPDATE-WORKBENCH" "ADD-APP-WINDOW-A" "REMOVE-APP-WINDOW" 
-   "ADD-APP-ICON-A" "REMOVE-APP-ICON" "ADD-APP-MENU-ITEM-A" 
-   "REMOVE-APP-MENU-ITEM" "WB-INFO" "OPEN-WORKBENCH-OBJECT-A" 
-   "CLOSE-WORKBENCH-OBJECT-A" "WORKBENCH-CONTROL-A" 
-   "ADD-APP-WINDOW-DROP-ZONE-A" "REMOVE-APP-WINDOW-DROP-ZONE" 
-   "CHANGE-WORKBENCH-SELECTION-A" "MAKE-WORKBENCH-OBJECT-VISIBLE-A" 
-   "WHICH-WORKBENCH-OBJECT-A" ))
+  (:export "*WB-BASE*" "*WB-VERSION*"))
 
 (in-package "AMIGA.RAW.WB")
 
@@ -142,377 +30,343 @@
 (defun %version>= (n)
   (and *wb-version* (>= *wb-version* n)))
 
-;;; --- constants from workbench/workbench.i ---
-(defconstant +workbench-workbench-i+ 1)
-(defconstant +wbdisk+ 1)
-(defconstant +wbdrawer+ 2)
-(defconstant +wbtool+ 3)
-(defconstant +wbproject+ 4)
-(defconstant +wbgarbage+ 5)
-(defconstant +wbdevice+ 6)
-(defconstant +wbkick+ 7)
-(defconstant +wbappicon+ 8)
-(defconstant +olddrawerdatafilesize+ #x38)
-(defconstant +drawerdatafilesize+ #x3E)
-(defconstant +ddvm-bydefault+ 0)
-(defconstant +ddvm-byicon+ 1)
-(defconstant +ddvm-byname+ 2)
-(defconstant +ddvm-bydate+ 3)
-(defconstant +ddvm-bysize+ 4)
-(defconstant +ddvm-bytype+ 5)
-(defconstant +ddflags-showmask+ 3)
-(defconstant +ddflags-showdefault+ 0)
-(defconstant +ddflags-showicons+ 1)
-(defconstant +ddflags-showall+ 2)
-(defconstant +ddflags-sortmask+ #x300)
-(defconstant +ddflags-sortdefault+ 0)
-(defconstant +ddflags-sortasc+ #x100)
-(defconstant +ddflags-sortdesc+ #x200)
-(defconstant +wb-diskmagic+ #xE310)
-(defconstant +wb-diskversion+ 1)
-(defconstant +wb-diskrevision+ 1)
-(defconstant +wb-diskrevisionmask+ #xFF)
-(defconstant +gflg-gadgbackfill+ 1)
-(defconstant +gadgbackfill+ 1)
-(defconstant +no-icon-position+ #x80000000)
-(defconstant +am-version+ 1)
-(defconstant +amtype-appwindow+ 7)
-(defconstant +amtype-appicon+ 8)
-(defconstant +amtype-appmenuitem+ 9)
-(defconstant +amtype-appwindowzone+ 10)
-(defconstant +amclassicon-open+ 0)
-(defconstant +amclassicon-copy+ 1)
-(defconstant +amclassicon-rename+ 2)
-(defconstant +amclassicon-information+ 3)
-(defconstant +amclassicon-snapshot+ 4)
-(defconstant +amclassicon-un-snapshot+ 5)
-(defconstant +amclassicon-leave-out+ 6)
-(defconstant +amclassicon-put-away+ 7)
-(defconstant +amclassicon-delete+ 8)
-(defconstant +amclassicon-format-disk+ 9)
-(defconstant +amclassicon-eject-disk+ 13)
-(defconstant +amclassicon-empty-trash+ 10)
-(defconstant +amclassicon-selected+ 11)
-(defconstant +amclassicon-unselected+ 12)
-(defconstant +wba-dummy+ #x8000A000)
-(defconstant +wbappicona-supports-open+ #x8000A001)
-(defconstant +wbappicona-supports-copy+ #x8000A002)
-(defconstant +wbappicona-supports-rename+ #x8000A003)
-(defconstant +wbappicona-supports-information+ #x8000A004)
-(defconstant +wbappicona-supports-snapshot+ #x8000A005)
-(defconstant +wbappicona-supports-un-snapshot+ #x8000A006)
-(defconstant +wbappicona-supports-leave-out+ #x8000A007)
-(defconstant +wbappicona-supports-put-away+ #x8000A008)
-(defconstant +wbappicona-supports-delete+ #x8000A009)
-(defconstant +wbappicona-supports-format-disk+ #x8000A00A)
-(defconstant +wbappicona-supports-eject-disk+ #x8000A09E)
-(defconstant +wbappicona-supports-empty-trash+ #x8000A00B)
-(defconstant +wbappicona-propagate-position+ #x8000A00C)
-(defconstant +wbappicona-render-hook+ #x8000A00D)
-(defconstant +wbappicona-notify-select-state+ #x8000A00E)
-(defconstant +wbappmenua-command-key-string+ #x8000A00F)
-(defconstant +wbappmenua-get-key+ #x8000A041)
-(defconstant +wbappmenua-use-key+ #x8000A042)
-(defconstant +wbappmenua-get-title-key+ #x8000A04D)
-(defconstant +wbopena-arg-lock+ #x8000A010)
-(defconstant +wbopena-arg-name+ #x8000A011)
-(defconstant +wbopena-show+ #x8000A04B)
-(defconstant +wbopena-view-by+ #x8000A04C)
-(defconstant +wbctrla-is-open+ #x8000A012)
-(defconstant +wbctrla-duplicate-search-path+ #x8000A013)
-(defconstant +wbctrla-free-search-path+ #x8000A014)
-(defconstant +wbctrla-get-default-stack-size+ #x8000A015)
-(defconstant +wbctrla-set-default-stack-size+ #x8000A016)
-(defconstant +wbctrla-redraw-app-icon+ #x8000A017)
-(defconstant +wbctrla-get-program-list+ #x8000A018)
-(defconstant +wbctrla-free-program-list+ #x8000A019)
-(defconstant +wbctrla-get-selected-icon-list+ #x8000A024)
-(defconstant +wbctrla-free-selected-icon-list+ #x8000A025)
-(defconstant +wbctrla-get-open-drawer-list+ #x8000A026)
-(defconstant +wbctrla-free-open-drawer-list+ #x8000A027)
-(defconstant +wbctrla-get-hidden-device-list+ #x8000A02A)
-(defconstant +wbctrla-free-hidden-device-list+ #x8000A02B)
-(defconstant +wbctrla-add-hidden-device-name+ #x8000A02C)
-(defconstant +wbctrla-remove-hidden-device-name+ #x8000A02D)
-(defconstant +wbctrla-get-type-restart-time+ #x8000A02F)
-(defconstant +wbctrla-set-type-restart-time+ #x8000A030)
-(defconstant +wbctrla-get-copy-hook+ #x8000A045)
-(defconstant +wbctrla-set-copy-hook+ #x8000A046)
-(defconstant +wbctrla-get-delete-hook+ #x8000A047)
-(defconstant +wbctrla-set-delete-hook+ #x8000A048)
-(defconstant +wbctrla-get-text-input-hook+ #x8000A049)
-(defconstant +wbctrla-set-text-input-hook+ #x8000A04A)
-(defconstant +wbctrla-add-setup-cleanup-hook+ #x8000A04E)
-(defconstant +wbctrla-rem-setup-cleanup-hook+ #x8000A04F)
-(defconstant +wbctrla-set-global-flags+ #x8000A082)
-(defconstant +wbctrla-get-global-flags+ #x8000A083)
-(defconstant +wbctrla-get-disk-info-hook+ #x8000A09F)
-(defconstant +wbctrla-set-disk-info-hook+ #x8000A0A0)
-(defconstant +schmstate-try-cleanup+ 0)
-(defconstant +schmstate-cleanup+ 1)
-(defconstant +schmstate-setup+ 2)
-(defconstant +wbf-drawerposmask+ 3)
-(defconstant +wbf-drawerposfree+ 0)
-(defconstant +wbf-drawerposhead+ 1)
-(defconstant +wbf-drawerpostail+ 2)
-(defconstant +wbf-boundtextview+ #x80)
-(defconstant +wbf-olddatesfirst+ #x10000)
-(defconstant +wbdza-left+ #x8000A01A)
-(defconstant +wbdza-rel-right+ #x8000A01B)
-(defconstant +wbdza-top+ #x8000A01C)
-(defconstant +wbdza-rel-bottom+ #x8000A01D)
-(defconstant +wbdza-width+ #x8000A01E)
-(defconstant +wbdza-rel-width+ #x8000A01F)
-(defconstant +wbdza-height+ #x8000A020)
-(defconstant +wbdza-rel-height+ #x8000A021)
-(defconstant +wbdza-box+ #x8000A022)
-(defconstant +wbdza-hook+ #x8000A023)
-(defconstant +wbobja-type+ #x8000A056)
-(defconstant +wbobja-left+ #x8000A057)
-(defconstant +wbobja-top+ #x8000A058)
-(defconstant +wbobja-width+ #x8000A059)
-(defconstant +wbobja-height+ #x8000A05A)
-(defconstant +wbobja-state+ #x8000A05B)
-(defconstant +wbobja-is-fake+ #x8000A05C)
-(defconstant +wbobja-name+ #x8000A05D)
-(defconstant +wbobja-name-size+ #x8000A05E)
-(defconstant +wbobja-full-path+ #x8000A05F)
-(defconstant +wbobja-full-path-size+ #x8000A060)
-(defconstant +wbobja-is-link+ #x8000A061)
-(defconstant +wbobja-drawer-path+ #x8000A062)
-(defconstant +wbobja-drawer-path-size+ #x8000A063)
-(defconstant +wbobja-drawer-flags+ #x8000A074)
-(defconstant +wbobja-drawer-modes+ #x8000A075)
-(defconstant +wbo-none+ 0)
-(defconstant +wbo-drawer+ 1)
-(defconstant +wbo-icon+ 2)
-(defconstant +adzmaction-enter+ 0)
-(defconstant +adzmaction-leave+ 1)
-(defconstant +ismaction-unselect+ 0)
-(defconstant +ismaction-select+ 1)
-(defconstant +ismaction-ignore+ 2)
-(defconstant +ismaction-stop+ 3)
-(defconstant +cpaction-begin+ 0)
-(defconstant +cpaction-copy+ 1)
-(defconstant +cpaction-end+ 2)
-(defconstant +dlaction-begin-discard+ 0)
-(defconstant +dlaction-begin-empty-trash+ 1)
-(defconstant +dlaction-delete-contents+ 3)
-(defconstant +dlaction-delete-object+ 4)
-(defconstant +dlaction-end+ 5)
-(defconstant +tiaction-rename+ 0)
-(defconstant +tiaction-relabel-volume+ 1)
-(defconstant +tiaction-new-drawer+ 2)
-(defconstant +tiaction-execute+ 3)
-(defconstant +updatewb-object-removed+ 0)
-(defconstant +updatewb-object-added+ 1)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.WB"
+    (:base *wb-base* :version *wb-version*)
 
-;;; --- structures from workbench/workbench.i ---
-(ffi:defcstruct (drawer-data :size 62)   ; DrawerData (workbench/workbench.i)
-  (new-window (:struct 48) 0)
-  (current-x :i32 48)
-  (current-y :i32 52)
-  (flags :u32 56)
-  (view-modes :u16 60)
-)
-(ffi:defcstruct (disk-object :size 78)   ; DiskObject (workbench/workbench.i)
-  (magic :u16 0)
-  (version :u16 2)
-  (gadget (:struct 44) 4)
-  (type :u8 48)
-  (pad-byte :u8 49)
-  (default-tool :fptr 50)
-  (tool-types :fptr 54)
-  (current-x :i32 58)
-  (current-y :i32 62)
-  (drawer-data :fptr 66)
-  (tool-window :fptr 70)
-  (stack-size :i32 74)
-)
-(ffi:defcstruct (free-list :size 16)   ; FreeList (workbench/workbench.i)
-  (num-free :i16 0)
-  (mem-list (:struct 14) 2)
-)
-(ffi:defcstruct (app-message :size 62)   ; AppMessage (workbench/workbench.i)
-  (message (:struct 20) 0)
-  (type :u16 20)
-  (user-data :u32 22)
-  (id :u32 26)
-  (num-args :i32 30)
-  (arg-list :fptr 34)
-  (version :u16 38)
-  (class :u16 40)
-  (mouse-x :i16 42)
-  (mouse-y :i16 44)
-  (seconds :u32 46)
-  (micros :u32 50)
-  (reserved (:struct 8) 54)
-)
-(ffi:defcstruct (app-window :size 0)   ; AppWindow (workbench/workbench.i)
-)
-(ffi:defcstruct (app-window-drop-zone :size 0)   ; AppWindowDropZone (workbench/workbench.i)
-)
-(ffi:defcstruct (app-icon :size 0)   ; AppIcon (workbench/workbench.i)
-)
-(ffi:defcstruct (app-menu-item :size 0)   ; AppMenuItem (workbench/workbench.i)
-)
-(ffi:defcstruct (app-menu :size 0)   ; AppMenu (workbench/workbench.i)
-)
-(ffi:defcstruct (setup-cleanup-hook-msg :size 8)   ; SetupCleanupHookMsg (workbench/workbench.i)
-  (length :u32 0)
-  (state :i32 4)
-)
-(ffi:defcstruct (app-icon-render-msg :size 28)   ; AppIconRenderMsg (workbench/workbench.i)
-  (rastport :fptr 0)
-  (icon :fptr 4)
-  (label :fptr 8)
-  (tags :fptr 12)
-  (left :i16 16)
-  (top :i16 18)
-  (width :i16 20)
-  (height :i16 22)
-  (state :u32 24)
-)
-(ffi:defcstruct (app-window-drop-zone-msg :size 24)   ; AppWindowDropZoneMsg (workbench/workbench.i)
-  (rastport :fptr 0)
-  (drop-zone-box (:struct 8) 4)
-  (id :u32 12)
-  (user-data :u32 16)
-  (action :i32 20)
-)
-(ffi:defcstruct (icon-select-msg :size 36)   ; IconSelectMsg (workbench/workbench.i)
-  (length :u32 0)
-  (drawer :u32 4)
-  (name :fptr 8)
-  (type :u16 12)
-  (selected :i16 14)
-  (tags :fptr 16)
-  (drawer-window :fptr 20)
-  (parent-window :fptr 24)
-  (left :i16 28)
-  (top :i16 30)
-  (width :i16 32)
-  (height :i16 34)
-)
-(ffi:defcstruct (copy-begin-msg :size 16)   ; CopyBeginMsg (workbench/workbench.i)
-  (length :u32 0)
-  (action :i32 4)
-  (source-drawer :u32 8)
-  (destination-drawer :u32 12)
-)
-(ffi:defcstruct (copy-data-msg :size 32)   ; CopyDataMsg (workbench/workbench.i)
-  (length :u32 0)
-  (action :i32 4)
-  (source-lock :u32 8)
-  (source-name :fptr 12)
-  (destination-lock :u32 16)
-  (destination-name :fptr 20)
-  (destination-x :i32 24)
-  (destination-y :i32 28)
-)
-(ffi:defcstruct (copy-end-msg :size 8)   ; CopyEndMsg (workbench/workbench.i)
-  (length :u32 0)
-  (action :i32 4)
-)
-(ffi:defcstruct (delete-begin-msg :size 8)   ; DeleteBeginMsg (workbench/workbench.i)
-  (length :u32 0)
-  (action :i32 4)
-)
-(ffi:defcstruct (delete-data-msg :size 16)   ; DeleteDataMsg (workbench/workbench.i)
-  (length :u32 0)
-  (action :i32 4)
-  (lock :u32 8)
-  (name :fptr 12)
-)
-(ffi:defcstruct (delete-end-msg :size 8)   ; DeleteEndMsg (workbench/workbench.i)
-  (length :u32 0)
-  (action :i32 4)
-)
-(ffi:defcstruct (text-input-msg :size 12)   ; TextInputMsg (workbench/workbench.i)
-  (length :u32 0)
-  (action :i32 4)
-  (prompt :fptr 8)
-)
+  ;; --- constants from workbench/workbench.i ---
+  (:const "+WORKBENCH-WORKBENCH-I+" 1)
+  (:const "+WBDISK+" 1)
+  (:const "+WBDRAWER+" 2)
+  (:const "+WBTOOL+" 3)
+  (:const "+WBPROJECT+" 4)
+  (:const "+WBGARBAGE+" 5)
+  (:const "+WBDEVICE+" 6)
+  (:const "+WBKICK+" 7)
+  (:const "+WBAPPICON+" 8)
+  (:const "+OLDDRAWERDATAFILESIZE+" #x38)
+  (:const "+DRAWERDATAFILESIZE+" #x3E)
+  (:const "+DDVM-BYDEFAULT+" 0)
+  (:const "+DDVM-BYICON+" 1)
+  (:const "+DDVM-BYNAME+" 2)
+  (:const "+DDVM-BYDATE+" 3)
+  (:const "+DDVM-BYSIZE+" 4)
+  (:const "+DDVM-BYTYPE+" 5)
+  (:const "+DDFLAGS-SHOWMASK+" 3)
+  (:const "+DDFLAGS-SHOWDEFAULT+" 0)
+  (:const "+DDFLAGS-SHOWICONS+" 1)
+  (:const "+DDFLAGS-SHOWALL+" 2)
+  (:const "+DDFLAGS-SORTMASK+" #x300)
+  (:const "+DDFLAGS-SORTDEFAULT+" 0)
+  (:const "+DDFLAGS-SORTASC+" #x100)
+  (:const "+DDFLAGS-SORTDESC+" #x200)
+  (:const "+WB-DISKMAGIC+" #xE310)
+  (:const "+WB-DISKVERSION+" 1)
+  (:const "+WB-DISKREVISION+" 1)
+  (:const "+WB-DISKREVISIONMASK+" #xFF)
+  (:const "+GFLG-GADGBACKFILL+" 1)
+  (:const "+GADGBACKFILL+" 1)
+  (:const "+NO-ICON-POSITION+" #x80000000)
+  (:const "+AM-VERSION+" 1)
+  (:const "+AMTYPE-APPWINDOW+" 7)
+  (:const "+AMTYPE-APPICON+" 8)
+  (:const "+AMTYPE-APPMENUITEM+" 9)
+  (:const "+AMTYPE-APPWINDOWZONE+" 10)
+  (:const "+AMCLASSICON-OPEN+" 0)
+  (:const "+AMCLASSICON-COPY+" 1)
+  (:const "+AMCLASSICON-RENAME+" 2)
+  (:const "+AMCLASSICON-INFORMATION+" 3)
+  (:const "+AMCLASSICON-SNAPSHOT+" 4)
+  (:const "+AMCLASSICON-UN-SNAPSHOT+" 5)
+  (:const "+AMCLASSICON-LEAVE-OUT+" 6)
+  (:const "+AMCLASSICON-PUT-AWAY+" 7)
+  (:const "+AMCLASSICON-DELETE+" 8)
+  (:const "+AMCLASSICON-FORMAT-DISK+" 9)
+  (:const "+AMCLASSICON-EJECT-DISK+" 13)
+  (:const "+AMCLASSICON-EMPTY-TRASH+" 10)
+  (:const "+AMCLASSICON-SELECTED+" 11)
+  (:const "+AMCLASSICON-UNSELECTED+" 12)
+  (:const "+WBA-DUMMY+" #x8000A000)
+  (:const "+WBAPPICONA-SUPPORTS-OPEN+" #x8000A001)
+  (:const "+WBAPPICONA-SUPPORTS-COPY+" #x8000A002)
+  (:const "+WBAPPICONA-SUPPORTS-RENAME+" #x8000A003)
+  (:const "+WBAPPICONA-SUPPORTS-INFORMATION+" #x8000A004)
+  (:const "+WBAPPICONA-SUPPORTS-SNAPSHOT+" #x8000A005)
+  (:const "+WBAPPICONA-SUPPORTS-UN-SNAPSHOT+" #x8000A006)
+  (:const "+WBAPPICONA-SUPPORTS-LEAVE-OUT+" #x8000A007)
+  (:const "+WBAPPICONA-SUPPORTS-PUT-AWAY+" #x8000A008)
+  (:const "+WBAPPICONA-SUPPORTS-DELETE+" #x8000A009)
+  (:const "+WBAPPICONA-SUPPORTS-FORMAT-DISK+" #x8000A00A)
+  (:const "+WBAPPICONA-SUPPORTS-EJECT-DISK+" #x8000A09E)
+  (:const "+WBAPPICONA-SUPPORTS-EMPTY-TRASH+" #x8000A00B)
+  (:const "+WBAPPICONA-PROPAGATE-POSITION+" #x8000A00C)
+  (:const "+WBAPPICONA-RENDER-HOOK+" #x8000A00D)
+  (:const "+WBAPPICONA-NOTIFY-SELECT-STATE+" #x8000A00E)
+  (:const "+WBAPPMENUA-COMMAND-KEY-STRING+" #x8000A00F)
+  (:const "+WBAPPMENUA-GET-KEY+" #x8000A041)
+  (:const "+WBAPPMENUA-USE-KEY+" #x8000A042)
+  (:const "+WBAPPMENUA-GET-TITLE-KEY+" #x8000A04D)
+  (:const "+WBOPENA-ARG-LOCK+" #x8000A010)
+  (:const "+WBOPENA-ARG-NAME+" #x8000A011)
+  (:const "+WBOPENA-SHOW+" #x8000A04B)
+  (:const "+WBOPENA-VIEW-BY+" #x8000A04C)
+  (:const "+WBCTRLA-IS-OPEN+" #x8000A012)
+  (:const "+WBCTRLA-DUPLICATE-SEARCH-PATH+" #x8000A013)
+  (:const "+WBCTRLA-FREE-SEARCH-PATH+" #x8000A014)
+  (:const "+WBCTRLA-GET-DEFAULT-STACK-SIZE+" #x8000A015)
+  (:const "+WBCTRLA-SET-DEFAULT-STACK-SIZE+" #x8000A016)
+  (:const "+WBCTRLA-REDRAW-APP-ICON+" #x8000A017)
+  (:const "+WBCTRLA-GET-PROGRAM-LIST+" #x8000A018)
+  (:const "+WBCTRLA-FREE-PROGRAM-LIST+" #x8000A019)
+  (:const "+WBCTRLA-GET-SELECTED-ICON-LIST+" #x8000A024)
+  (:const "+WBCTRLA-FREE-SELECTED-ICON-LIST+" #x8000A025)
+  (:const "+WBCTRLA-GET-OPEN-DRAWER-LIST+" #x8000A026)
+  (:const "+WBCTRLA-FREE-OPEN-DRAWER-LIST+" #x8000A027)
+  (:const "+WBCTRLA-GET-HIDDEN-DEVICE-LIST+" #x8000A02A)
+  (:const "+WBCTRLA-FREE-HIDDEN-DEVICE-LIST+" #x8000A02B)
+  (:const "+WBCTRLA-ADD-HIDDEN-DEVICE-NAME+" #x8000A02C)
+  (:const "+WBCTRLA-REMOVE-HIDDEN-DEVICE-NAME+" #x8000A02D)
+  (:const "+WBCTRLA-GET-TYPE-RESTART-TIME+" #x8000A02F)
+  (:const "+WBCTRLA-SET-TYPE-RESTART-TIME+" #x8000A030)
+  (:const "+WBCTRLA-GET-COPY-HOOK+" #x8000A045)
+  (:const "+WBCTRLA-SET-COPY-HOOK+" #x8000A046)
+  (:const "+WBCTRLA-GET-DELETE-HOOK+" #x8000A047)
+  (:const "+WBCTRLA-SET-DELETE-HOOK+" #x8000A048)
+  (:const "+WBCTRLA-GET-TEXT-INPUT-HOOK+" #x8000A049)
+  (:const "+WBCTRLA-SET-TEXT-INPUT-HOOK+" #x8000A04A)
+  (:const "+WBCTRLA-ADD-SETUP-CLEANUP-HOOK+" #x8000A04E)
+  (:const "+WBCTRLA-REM-SETUP-CLEANUP-HOOK+" #x8000A04F)
+  (:const "+WBCTRLA-SET-GLOBAL-FLAGS+" #x8000A082)
+  (:const "+WBCTRLA-GET-GLOBAL-FLAGS+" #x8000A083)
+  (:const "+WBCTRLA-GET-DISK-INFO-HOOK+" #x8000A09F)
+  (:const "+WBCTRLA-SET-DISK-INFO-HOOK+" #x8000A0A0)
+  (:const "+SCHMSTATE-TRY-CLEANUP+" 0)
+  (:const "+SCHMSTATE-CLEANUP+" 1)
+  (:const "+SCHMSTATE-SETUP+" 2)
+  (:const "+WBF-DRAWERPOSMASK+" 3)
+  (:const "+WBF-DRAWERPOSFREE+" 0)
+  (:const "+WBF-DRAWERPOSHEAD+" 1)
+  (:const "+WBF-DRAWERPOSTAIL+" 2)
+  (:const "+WBF-BOUNDTEXTVIEW+" #x80)
+  (:const "+WBF-OLDDATESFIRST+" #x10000)
+  (:const "+WBDZA-LEFT+" #x8000A01A)
+  (:const "+WBDZA-REL-RIGHT+" #x8000A01B)
+  (:const "+WBDZA-TOP+" #x8000A01C)
+  (:const "+WBDZA-REL-BOTTOM+" #x8000A01D)
+  (:const "+WBDZA-WIDTH+" #x8000A01E)
+  (:const "+WBDZA-REL-WIDTH+" #x8000A01F)
+  (:const "+WBDZA-HEIGHT+" #x8000A020)
+  (:const "+WBDZA-REL-HEIGHT+" #x8000A021)
+  (:const "+WBDZA-BOX+" #x8000A022)
+  (:const "+WBDZA-HOOK+" #x8000A023)
+  (:const "+WBOBJA-TYPE+" #x8000A056)
+  (:const "+WBOBJA-LEFT+" #x8000A057)
+  (:const "+WBOBJA-TOP+" #x8000A058)
+  (:const "+WBOBJA-WIDTH+" #x8000A059)
+  (:const "+WBOBJA-HEIGHT+" #x8000A05A)
+  (:const "+WBOBJA-STATE+" #x8000A05B)
+  (:const "+WBOBJA-IS-FAKE+" #x8000A05C)
+  (:const "+WBOBJA-NAME+" #x8000A05D)
+  (:const "+WBOBJA-NAME-SIZE+" #x8000A05E)
+  (:const "+WBOBJA-FULL-PATH+" #x8000A05F)
+  (:const "+WBOBJA-FULL-PATH-SIZE+" #x8000A060)
+  (:const "+WBOBJA-IS-LINK+" #x8000A061)
+  (:const "+WBOBJA-DRAWER-PATH+" #x8000A062)
+  (:const "+WBOBJA-DRAWER-PATH-SIZE+" #x8000A063)
+  (:const "+WBOBJA-DRAWER-FLAGS+" #x8000A074)
+  (:const "+WBOBJA-DRAWER-MODES+" #x8000A075)
+  (:const "+WBO-NONE+" 0)
+  (:const "+WBO-DRAWER+" 1)
+  (:const "+WBO-ICON+" 2)
+  (:const "+ADZMACTION-ENTER+" 0)
+  (:const "+ADZMACTION-LEAVE+" 1)
+  (:const "+ISMACTION-UNSELECT+" 0)
+  (:const "+ISMACTION-SELECT+" 1)
+  (:const "+ISMACTION-IGNORE+" 2)
+  (:const "+ISMACTION-STOP+" 3)
+  (:const "+CPACTION-BEGIN+" 0)
+  (:const "+CPACTION-COPY+" 1)
+  (:const "+CPACTION-END+" 2)
+  (:const "+DLACTION-BEGIN-DISCARD+" 0)
+  (:const "+DLACTION-BEGIN-EMPTY-TRASH+" 1)
+  (:const "+DLACTION-DELETE-CONTENTS+" 3)
+  (:const "+DLACTION-DELETE-OBJECT+" 4)
+  (:const "+DLACTION-END+" 5)
+  (:const "+TIACTION-RENAME+" 0)
+  (:const "+TIACTION-RELABEL-VOLUME+" 1)
+  (:const "+TIACTION-NEW-DRAWER+" 2)
+  (:const "+TIACTION-EXECUTE+" 3)
+  (:const "+UPDATEWB-OBJECT-REMOVED+" 0)
+  (:const "+UPDATEWB-OBJECT-ADDED+" 1)
 
-;;; --- constants from workbench/startup.i ---
-(defconstant +workbench-startup-i+ 1)
+  ;; --- structures from workbench/workbench.i ---
+  (:struct "DRAWER-DATA" 62   ; DrawerData (workbench/workbench.i)
+    ("NEW-WINDOW" (:struct 48) 0)
+    ("CURRENT-X" :i32 48)
+    ("CURRENT-Y" :i32 52)
+    ("FLAGS" :u32 56)
+    ("VIEW-MODES" :u16 60)
+    )
+  (:struct "DISK-OBJECT" 78   ; DiskObject (workbench/workbench.i)
+    ("MAGIC" :u16 0)
+    ("VERSION" :u16 2)
+    ("GADGET" (:struct 44) 4)
+    ("TYPE" :u8 48)
+    ("PAD-BYTE" :u8 49)
+    ("DEFAULT-TOOL" :fptr 50)
+    ("TOOL-TYPES" :fptr 54)
+    ("CURRENT-X" :i32 58)
+    ("CURRENT-Y" :i32 62)
+    ("DRAWER-DATA" :fptr 66)
+    ("TOOL-WINDOW" :fptr 70)
+    ("STACK-SIZE" :i32 74)
+    )
+  (:struct "FREE-LIST" 16   ; FreeList (workbench/workbench.i)
+    ("NUM-FREE" :i16 0)
+    ("MEM-LIST" (:struct 14) 2)
+    )
+  (:struct "APP-MESSAGE" 62   ; AppMessage (workbench/workbench.i)
+    ("MESSAGE" (:struct 20) 0)
+    ("TYPE" :u16 20)
+    ("USER-DATA" :u32 22)
+    ("ID" :u32 26)
+    ("NUM-ARGS" :i32 30)
+    ("ARG-LIST" :fptr 34)
+    ("VERSION" :u16 38)
+    ("CLASS" :u16 40)
+    ("MOUSE-X" :i16 42)
+    ("MOUSE-Y" :i16 44)
+    ("SECONDS" :u32 46)
+    ("MICROS" :u32 50)
+    ("RESERVED" (:struct 8) 54)
+    )
+  (:struct "APP-WINDOW" 0   ; AppWindow (workbench/workbench.i)
+    )
+  (:struct "APP-WINDOW-DROP-ZONE" 0   ; AppWindowDropZone (workbench/workbench.i)
+    )
+  (:struct "APP-ICON" 0   ; AppIcon (workbench/workbench.i)
+    )
+  (:struct "APP-MENU-ITEM" 0   ; AppMenuItem (workbench/workbench.i)
+    )
+  (:struct "APP-MENU" 0   ; AppMenu (workbench/workbench.i)
+    )
+  (:struct "SETUP-CLEANUP-HOOK-MSG" 8   ; SetupCleanupHookMsg (workbench/workbench.i)
+    ("LENGTH" :u32 0)
+    ("STATE" :i32 4)
+    )
+  (:struct "APP-ICON-RENDER-MSG" 28   ; AppIconRenderMsg (workbench/workbench.i)
+    ("RASTPORT" :fptr 0)
+    ("ICON" :fptr 4)
+    ("LABEL" :fptr 8)
+    ("TAGS" :fptr 12)
+    ("LEFT" :i16 16)
+    ("TOP" :i16 18)
+    ("WIDTH" :i16 20)
+    ("HEIGHT" :i16 22)
+    ("STATE" :u32 24)
+    )
+  (:struct "APP-WINDOW-DROP-ZONE-MSG" 24   ; AppWindowDropZoneMsg (workbench/workbench.i)
+    ("RASTPORT" :fptr 0)
+    ("DROP-ZONE-BOX" (:struct 8) 4)
+    ("ID" :u32 12)
+    ("USER-DATA" :u32 16)
+    ("ACTION" :i32 20)
+    )
+  (:struct "ICON-SELECT-MSG" 36   ; IconSelectMsg (workbench/workbench.i)
+    ("LENGTH" :u32 0)
+    ("DRAWER" :u32 4)
+    ("NAME" :fptr 8)
+    ("TYPE" :u16 12)
+    ("SELECTED" :i16 14)
+    ("TAGS" :fptr 16)
+    ("DRAWER-WINDOW" :fptr 20)
+    ("PARENT-WINDOW" :fptr 24)
+    ("LEFT" :i16 28)
+    ("TOP" :i16 30)
+    ("WIDTH" :i16 32)
+    ("HEIGHT" :i16 34)
+    )
+  (:struct "COPY-BEGIN-MSG" 16   ; CopyBeginMsg (workbench/workbench.i)
+    ("LENGTH" :u32 0)
+    ("ACTION" :i32 4)
+    ("SOURCE-DRAWER" :u32 8)
+    ("DESTINATION-DRAWER" :u32 12)
+    )
+  (:struct "COPY-DATA-MSG" 32   ; CopyDataMsg (workbench/workbench.i)
+    ("LENGTH" :u32 0)
+    ("ACTION" :i32 4)
+    ("SOURCE-LOCK" :u32 8)
+    ("SOURCE-NAME" :fptr 12)
+    ("DESTINATION-LOCK" :u32 16)
+    ("DESTINATION-NAME" :fptr 20)
+    ("DESTINATION-X" :i32 24)
+    ("DESTINATION-Y" :i32 28)
+    )
+  (:struct "COPY-END-MSG" 8   ; CopyEndMsg (workbench/workbench.i)
+    ("LENGTH" :u32 0)
+    ("ACTION" :i32 4)
+    )
+  (:struct "DELETE-BEGIN-MSG" 8   ; DeleteBeginMsg (workbench/workbench.i)
+    ("LENGTH" :u32 0)
+    ("ACTION" :i32 4)
+    )
+  (:struct "DELETE-DATA-MSG" 16   ; DeleteDataMsg (workbench/workbench.i)
+    ("LENGTH" :u32 0)
+    ("ACTION" :i32 4)
+    ("LOCK" :u32 8)
+    ("NAME" :fptr 12)
+    )
+  (:struct "DELETE-END-MSG" 8   ; DeleteEndMsg (workbench/workbench.i)
+    ("LENGTH" :u32 0)
+    ("ACTION" :i32 4)
+    )
+  (:struct "TEXT-INPUT-MSG" 12   ; TextInputMsg (workbench/workbench.i)
+    ("LENGTH" :u32 0)
+    ("ACTION" :i32 4)
+    ("PROMPT" :fptr 8)
+    )
 
-;;; --- structures from workbench/startup.i ---
-(ffi:defcstruct (wb-startup :size 40)   ; WBStartup (workbench/startup.i)
-  (message (:struct 20) 0)
-  (process :fptr 20)
-  (segment :u32 24)
-  (num-args :i32 28)
-  (tool-window :fptr 32)
-  (arg-list :fptr 36)
-)
-(ffi:defcstruct (wb-arg :size 8)   ; WBArg (workbench/startup.i)
-  (lock :u32 0)
-  (name :fptr 4)
-)
+  ;; --- constants from workbench/startup.i ---
+  (:const "+WORKBENCH-STARTUP-I+" 1)
 
-;;; --- functions (wb_lib.sfd + MorphOS SDK) ---
-(when (not (member :morphos *features*))
-  (amiga.ffi:defcfun update-workbench *wb-base* -30 (:a0 name :a1 lock :d0 action)
-    :result :void
-    :doc "VOID UpdateWorkbench(CONST_STRPTR name, BPTR lock, LONG action) (A0,A1,D0) LVO -30"))
-(amiga.ffi:defcfun add-app-window-a *wb-base* -48 (:d0 id :d1 userdata :a0 window :a1 msgport :a2 taglist)
-    :result :pointer
-    :doc "struct AppWindow * AddAppWindowA(ULONG id, ULONG userdata, struct Window * window, struct MsgPort * msgport, CONST struct TagItem * taglist) (D0,D1,A0,A1,A2) LVO -48")
-(amiga.ffi:defcfun remove-app-window *wb-base* -54 (:a0 app-window)
-    :result :bool
-    :doc "BOOL RemoveAppWindow(struct AppWindow * appWindow) (A0) LVO -54")
-(amiga.ffi:defcfun add-app-icon-a *wb-base* -60 (:d0 id :d1 userdata :a0 text :a1 msgport :a2 lock :a3 diskobj :a4 taglist)
-    :result :pointer
-    :doc "struct AppIcon * AddAppIconA(ULONG id, ULONG userdata, CONST_STRPTR text, struct MsgPort * msgport, BPTR lock, struct DiskObject * diskobj, CONST struct TagItem * taglist) (D0,D1,A0,A1,A2,A3,A4) LVO -60")
-(amiga.ffi:defcfun remove-app-icon *wb-base* -66 (:a0 app-icon)
-    :result :bool
-    :doc "BOOL RemoveAppIcon(struct AppIcon * appIcon) (A0) LVO -66")
-(amiga.ffi:defcfun add-app-menu-item-a *wb-base* -72 (:d0 id :d1 userdata :a0 text :a1 msgport :a2 taglist)
-    :result :pointer
-    :doc "struct AppMenuItem * AddAppMenuItemA(ULONG id, ULONG userdata, CONST_STRPTR text, struct MsgPort * msgport, CONST struct TagItem * taglist) (D0,D1,A0,A1,A2) LVO -72")
-(amiga.ffi:defcfun remove-app-menu-item *wb-base* -78 (:a0 app-menu-item)
-    :result :bool
-    :doc "BOOL RemoveAppMenuItem(struct AppMenuItem * appMenuItem) (A0) LVO -78")
-(amiga.ffi:defcfun wb-info *wb-base* -90 (:a0 lock :a1 name :a2 screen)
-    :result :unsigned
-    :doc "ULONG WBInfo(BPTR lock, CONST_STRPTR name, struct Screen * screen) (A0,A1,A2) LVO -90")
-(when (%version>= 44)
-  (amiga.ffi:defcfun open-workbench-object-a *wb-base* -96 (:a0 name :a1 tags)
-    :result :bool
-    :doc "BOOL OpenWorkbenchObjectA(CONST_STRPTR name, CONST struct TagItem * tags) (A0,A1) LVO -96"))
-(when (%version>= 44)
-  (amiga.ffi:defcfun close-workbench-object-a *wb-base* -102 (:a0 name :a1 tags)
-    :result :bool
-    :doc "BOOL CloseWorkbenchObjectA(CONST_STRPTR name, CONST struct TagItem * tags) (A0,A1) LVO -102"))
-(when (%version>= 44)
-  (amiga.ffi:defcfun workbench-control-a *wb-base* -108 (:a0 name :a1 tags)
-    :result :bool
-    :doc "BOOL WorkbenchControlA(CONST_STRPTR name, CONST struct TagItem * tags) (A0,A1) LVO -108"))
-(when (%version>= 44)
-  (amiga.ffi:defcfun add-app-window-drop-zone-a *wb-base* -114 (:a0 aw :d0 id :d1 userdata :a1 tags)
-    :result :pointer
-    :doc "struct AppWindowDropZone * AddAppWindowDropZoneA(struct AppWindow * aw, ULONG id, ULONG userdata, CONST struct TagItem * tags) (A0,D0,D1,A1) LVO -114"))
-(when (%version>= 44)
-  (amiga.ffi:defcfun remove-app-window-drop-zone *wb-base* -120 (:a0 aw :a1 drop-zone)
-    :result :bool
-    :doc "BOOL RemoveAppWindowDropZone(struct AppWindow * aw, struct AppWindowDropZone * dropZone) (A0,A1) LVO -120"))
-(when (%version>= 44)
-  (amiga.ffi:defcfun change-workbench-selection-a *wb-base* -126 (:a0 name :a1 hook :a2 tags)
-    :result :bool
-    :doc "BOOL ChangeWorkbenchSelectionA(CONST_STRPTR name, struct Hook * hook, CONST struct TagItem * tags) (A0,A1,A2) LVO -126"))
-(when (%version>= 44)
-  (amiga.ffi:defcfun make-workbench-object-visible-a *wb-base* -132 (:a0 name :a1 tags)
-    :result :bool
-    :doc "BOOL MakeWorkbenchObjectVisibleA(CONST_STRPTR name, CONST struct TagItem * tags) (A0,A1) LVO -132"))
-(when (and (not (member :morphos *features*)) (%version>= 47))
-  (amiga.ffi:defcfun which-workbench-object-a *wb-base* -138 (:a0 window :d0 x :d1 y :a1 tags)
-    :result :unsigned
-    :doc "ULONG WhichWorkbenchObjectA(struct Window * window, LONG x, LONG y, CONST struct TagItem * tags) (A0,D0,D1,A1) LVO -138"))
-;; skipped AppWindowObtain: not a 68k register call (base,sysv)
-;; skipped AppWindowRelease: not a 68k register call (base,sysv)
-;; skipped ManageDesktopObjectA: not a 68k register call (base,sysv)
-;; skipped CreateDrawerA: not a 68k register call (base,sysv)
-;; skipped CreateIconA: not a 68k register call (base,sysv)
+  ;; --- structures from workbench/startup.i ---
+  (:struct "WB-STARTUP" 40   ; WBStartup (workbench/startup.i)
+    ("MESSAGE" (:struct 20) 0)
+    ("PROCESS" :fptr 20)
+    ("SEGMENT" :u32 24)
+    ("NUM-ARGS" :i32 28)
+    ("TOOL-WINDOW" :fptr 32)
+    ("ARG-LIST" :fptr 36)
+    )
+  (:struct "WB-ARG" 8   ; WBArg (workbench/startup.i)
+    ("LOCK" :u32 0)
+    ("NAME" :fptr 4)
+    )
+
+  ;; --- functions (wb_lib.sfd + MorphOS SDK) ---
+  (:fn "UPDATE-WORKBENCH" -30 (:a0 :a1 :d0) :void :not-morphos)   ; VOID UpdateWorkbench(CONST_STRPTR name, BPTR lock, LONG action) (A0,A1,D0) LVO -30
+  (:fn "ADD-APP-WINDOW-A" -48 (:d0 :d1 :a0 :a1 :a2) :pointer)   ; struct AppWindow * AddAppWindowA(ULONG id, ULONG userdata, struct Window * window, struct MsgPort * msgport, CONST struct TagItem * taglist) (D0,D1,A0,A1,A2) LVO -48
+  (:fn "REMOVE-APP-WINDOW" -54 (:a0) :bool)   ; BOOL RemoveAppWindow(struct AppWindow * appWindow) (A0) LVO -54
+  (:fn "ADD-APP-ICON-A" -60 (:d0 :d1 :a0 :a1 :a2 :a3 :a4) :pointer)   ; struct AppIcon * AddAppIconA(ULONG id, ULONG userdata, CONST_STRPTR text, struct MsgPort * msgport, BPTR lock, struct DiskObject * diskobj, CONST struct TagItem * taglist) (D0,D1,A0,A1,A2,A3,A4) LVO -60
+  (:fn "REMOVE-APP-ICON" -66 (:a0) :bool)   ; BOOL RemoveAppIcon(struct AppIcon * appIcon) (A0) LVO -66
+  (:fn "ADD-APP-MENU-ITEM-A" -72 (:d0 :d1 :a0 :a1 :a2) :pointer)   ; struct AppMenuItem * AddAppMenuItemA(ULONG id, ULONG userdata, CONST_STRPTR text, struct MsgPort * msgport, CONST struct TagItem * taglist) (D0,D1,A0,A1,A2) LVO -72
+  (:fn "REMOVE-APP-MENU-ITEM" -78 (:a0) :bool)   ; BOOL RemoveAppMenuItem(struct AppMenuItem * appMenuItem) (A0) LVO -78
+  (:fn "WB-INFO" -90 (:a0 :a1 :a2) :unsigned)   ; ULONG WBInfo(BPTR lock, CONST_STRPTR name, struct Screen * screen) (A0,A1,A2) LVO -90
+  (:fn "OPEN-WORKBENCH-OBJECT-A" -96 (:a0 :a1) :bool 44)   ; BOOL OpenWorkbenchObjectA(CONST_STRPTR name, CONST struct TagItem * tags) (A0,A1) LVO -96
+  (:fn "CLOSE-WORKBENCH-OBJECT-A" -102 (:a0 :a1) :bool 44)   ; BOOL CloseWorkbenchObjectA(CONST_STRPTR name, CONST struct TagItem * tags) (A0,A1) LVO -102
+  (:fn "WORKBENCH-CONTROL-A" -108 (:a0 :a1) :bool 44)   ; BOOL WorkbenchControlA(CONST_STRPTR name, CONST struct TagItem * tags) (A0,A1) LVO -108
+  (:fn "ADD-APP-WINDOW-DROP-ZONE-A" -114 (:a0 :d0 :d1 :a1) :pointer 44)   ; struct AppWindowDropZone * AddAppWindowDropZoneA(struct AppWindow * aw, ULONG id, ULONG userdata, CONST struct TagItem * tags) (A0,D0,D1,A1) LVO -114
+  (:fn "REMOVE-APP-WINDOW-DROP-ZONE" -120 (:a0 :a1) :bool 44)   ; BOOL RemoveAppWindowDropZone(struct AppWindow * aw, struct AppWindowDropZone * dropZone) (A0,A1) LVO -120
+  (:fn "CHANGE-WORKBENCH-SELECTION-A" -126 (:a0 :a1 :a2) :bool 44)   ; BOOL ChangeWorkbenchSelectionA(CONST_STRPTR name, struct Hook * hook, CONST struct TagItem * tags) (A0,A1,A2) LVO -126
+  (:fn "MAKE-WORKBENCH-OBJECT-VISIBLE-A" -132 (:a0 :a1) :bool 44)   ; BOOL MakeWorkbenchObjectVisibleA(CONST_STRPTR name, CONST struct TagItem * tags) (A0,A1) LVO -132
+  (:fn "WHICH-WORKBENCH-OBJECT-A" -138 (:a0 :d0 :d1 :a1) :unsigned :not-morphos 47)   ; ULONG WhichWorkbenchObjectA(struct Window * window, LONG x, LONG y, CONST struct TagItem * tags) (A0,D0,D1,A1) LVO -138
+  ;; skipped AppWindowObtain: not a 68k register call (base,sysv)
+  ;; skipped AppWindowRelease: not a 68k register call (base,sysv)
+  ;; skipped ManageDesktopObjectA: not a 68k register call (base,sysv)
+  ;; skipped CreateDrawerA: not a 68k register call (base,sysv)
+  ;; skipped CreateIconA: not a 68k register call (base,sysv)
+  )
 
 (provide "amiga/raw/wb")

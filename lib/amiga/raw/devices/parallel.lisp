@@ -6,75 +6,71 @@
 ;;; 0 functions, 36 constants, 2 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.DEVICES.PARALLEL"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+PAR-ERR-DEV-BUSY+" "+PAR-ERR-BUF-TOO-BIG+" "+PAR-ERR-INV-PARAM+" 
-   "+PAR-ERR-LINE-ERR+" "+PAR-ERR-NOT-OPEN+" "+PAR-ERR-PORT-RESET+" 
-   "+PAR-ERR-INIT-ERR+" "+PDCMD-QUERY+" "+PDCMD-SETPARAMS+" 
-   "+PAR-DEVFINISH+" "+PARB-SHARED+" "+PARF-SHARED+" "+PARB-SLOWMODE+" 
-   "+PARF-SLOWMODE+" "+PARB-FASTMODE+" "+PARF-FASTMODE+" 
-   "+PARB-RAD-BOOGIE+" "+PARF-RAD-BOOGIE+" "+PARB-ACKMODE+" 
-   "+PARF-ACKMODE+" "+PARB-EOFMODE+" "+PARF-EOFMODE+" "+IOPARB-QUEUED+" 
-   "+IOPARF-QUEUED+" "+IOPARB-ABORT+" "+IOPARF-ABORT+" "+IOPARB-ACTIVE+" 
-   "+IOPARF-ACTIVE+" "+IOPTB-RWDIR+" "+IOPTF-RWDIR+" "+IOPTB-PARSEL+" 
-   "+IOPTF-PARSEL+" "+IOPTB-PAPEROUT+" "+IOPTF-PAPEROUT+" "+IOPTB-PARBUSY+" 
-   "+IOPTF-PARBUSY+" "*PTERMARRAY-SIZE*" "PTERMARRAY-PTERMARRAY-0" 
-   "PTERMARRAY-PTERMARRAY-1" "*IOEXTPAR-SIZE*" "IOEXTPAR-PEXTFLAGS" 
-   "IOEXTPAR-PARSTATUS" "IOEXTPAR-PARFLAGS" "IOEXTPAR-PTERMARRAY" ))
+  (:export))
 
 (in-package "AMIGA.RAW.DEVICES.PARALLEL")
 
-;;; --- constants from devices/parallel.i ---
-(defconstant +par-err-dev-busy+ 1)
-(defconstant +par-err-buf-too-big+ 2)
-(defconstant +par-err-inv-param+ 3)
-(defconstant +par-err-line-err+ 4)
-(defconstant +par-err-not-open+ 5)
-(defconstant +par-err-port-reset+ 6)
-(defconstant +par-err-init-err+ 7)
-(defconstant +pdcmd-query+ 9)
-(defconstant +pdcmd-setparams+ 10)
-(defconstant +par-devfinish+ 10)
-(defconstant +parb-shared+ 5)
-(defconstant +parf-shared+ #x20)
-(defconstant +parb-slowmode+ 4)
-(defconstant +parf-slowmode+ #x10)
-(defconstant +parb-fastmode+ 3)
-(defconstant +parf-fastmode+ 8)
-(defconstant +parb-rad-boogie+ 3)
-(defconstant +parf-rad-boogie+ 8)
-(defconstant +parb-ackmode+ 2)
-(defconstant +parf-ackmode+ 4)
-(defconstant +parb-eofmode+ 1)
-(defconstant +parf-eofmode+ 2)
-(defconstant +ioparb-queued+ 6)
-(defconstant +ioparf-queued+ #x40)
-(defconstant +ioparb-abort+ 5)
-(defconstant +ioparf-abort+ #x20)
-(defconstant +ioparb-active+ 4)
-(defconstant +ioparf-active+ #x10)
-(defconstant +ioptb-rwdir+ 3)
-(defconstant +ioptf-rwdir+ 8)
-(defconstant +ioptb-parsel+ 2)
-(defconstant +ioptf-parsel+ 4)
-(defconstant +ioptb-paperout+ 1)
-(defconstant +ioptf-paperout+ 2)
-(defconstant +ioptb-parbusy+ 0)
-(defconstant +ioptf-parbusy+ 1)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.DEVICES.PARALLEL" ()
 
-;;; --- structures from devices/parallel.i ---
-(ffi:defcstruct (ptermarray :size 8)   ; PTERMARRAY (devices/parallel.i)
-  (ptermarray-0 :u32 0)
-  (ptermarray-1 :u32 4)
-)
-(ffi:defcstruct (ioextpar :size 62)   ; IOEXTPAR (devices/parallel.i)
-  (pextflags :u32 48)
-  (parstatus :u8 52)
-  (parflags :u8 53)
-  (ptermarray (:struct 8) 54)
-)
+  ;; --- constants from devices/parallel.i ---
+  (:const "+PAR-ERR-DEV-BUSY+" 1)
+  (:const "+PAR-ERR-BUF-TOO-BIG+" 2)
+  (:const "+PAR-ERR-INV-PARAM+" 3)
+  (:const "+PAR-ERR-LINE-ERR+" 4)
+  (:const "+PAR-ERR-NOT-OPEN+" 5)
+  (:const "+PAR-ERR-PORT-RESET+" 6)
+  (:const "+PAR-ERR-INIT-ERR+" 7)
+  (:const "+PDCMD-QUERY+" 9)
+  (:const "+PDCMD-SETPARAMS+" 10)
+  (:const "+PAR-DEVFINISH+" 10)
+  (:const "+PARB-SHARED+" 5)
+  (:const "+PARF-SHARED+" #x20)
+  (:const "+PARB-SLOWMODE+" 4)
+  (:const "+PARF-SLOWMODE+" #x10)
+  (:const "+PARB-FASTMODE+" 3)
+  (:const "+PARF-FASTMODE+" 8)
+  (:const "+PARB-RAD-BOOGIE+" 3)
+  (:const "+PARF-RAD-BOOGIE+" 8)
+  (:const "+PARB-ACKMODE+" 2)
+  (:const "+PARF-ACKMODE+" 4)
+  (:const "+PARB-EOFMODE+" 1)
+  (:const "+PARF-EOFMODE+" 2)
+  (:const "+IOPARB-QUEUED+" 6)
+  (:const "+IOPARF-QUEUED+" #x40)
+  (:const "+IOPARB-ABORT+" 5)
+  (:const "+IOPARF-ABORT+" #x20)
+  (:const "+IOPARB-ACTIVE+" 4)
+  (:const "+IOPARF-ACTIVE+" #x10)
+  (:const "+IOPTB-RWDIR+" 3)
+  (:const "+IOPTF-RWDIR+" 8)
+  (:const "+IOPTB-PARSEL+" 2)
+  (:const "+IOPTF-PARSEL+" 4)
+  (:const "+IOPTB-PAPEROUT+" 1)
+  (:const "+IOPTF-PAPEROUT+" 2)
+  (:const "+IOPTB-PARBUSY+" 0)
+  (:const "+IOPTF-PARBUSY+" 1)
+
+  ;; --- structures from devices/parallel.i ---
+  (:struct "PTERMARRAY" 8   ; PTERMARRAY (devices/parallel.i)
+    ("PTERMARRAY-0" :u32 0)
+    ("PTERMARRAY-1" :u32 4)
+    )
+  (:struct "IOEXTPAR" 62   ; IOEXTPAR (devices/parallel.i)
+    ("PEXTFLAGS" :u32 48)
+    ("PARSTATUS" :u8 52)
+    ("PARFLAGS" :u8 53)
+    ("PTERMARRAY" (:struct 8) 54)
+    )
+  )
 
 (provide "amiga/raw/devices/parallel")

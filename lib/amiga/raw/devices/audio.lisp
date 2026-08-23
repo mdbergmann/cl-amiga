@@ -6,55 +6,55 @@
 ;;; 0 functions, 21 constants, 1 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.DEVICES.AUDIO"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+ADHARD-CHANNELS+" "+ADALLOC-MINPREC+" "+ADALLOC-MAXPREC+" 
-   "+ADCMD-FREE+" "+ADCMD-SETPREC+" "+ADCMD-FINISH+" "+ADCMD-PERVOL+" 
-   "+ADCMD-LOCK+" "+ADCMD-WAITCYCLE+" "+ADCMD-ALLOCATE+" "+ADIOB-PERVOL+" 
-   "+ADIOF-PERVOL+" "+ADIOB-SYNCCYCLE+" "+ADIOF-SYNCCYCLE+" 
-   "+ADIOB-NOWAIT+" "+ADIOF-NOWAIT+" "+ADIOB-WRITEMESSAGE+" 
-   "+ADIOF-WRITEMESSAGE+" "+ADIOERR-NOALLOCATION+" "+ADIOERR-ALLOCFAILED+" 
-   "+ADIOERR-CHANNELSTOLEN+" "*IO-AUDIO-SIZE*" "IO-AUDIO-ALLOC-KEY" 
-   "IO-AUDIO-DATA" "IO-AUDIO-LENGTH" "IO-AUDIO-PERIOD" "IO-AUDIO-VOLUME" 
-   "IO-AUDIO-CYCLES" "IO-AUDIO-WRITE-MSG" ))
+  (:export))
 
 (in-package "AMIGA.RAW.DEVICES.AUDIO")
 
-;;; --- constants from devices/audio.i ---
-(defconstant +adhard-channels+ 4)
-(defconstant +adalloc-minprec+ -128)
-(defconstant +adalloc-maxprec+ #x7F)
-(defconstant +adcmd-free+ 9)
-(defconstant +adcmd-setprec+ 10)
-(defconstant +adcmd-finish+ 11)
-(defconstant +adcmd-pervol+ 12)
-(defconstant +adcmd-lock+ 13)
-(defconstant +adcmd-waitcycle+ 14)
-(defconstant +adcmd-allocate+ #x20)
-(defconstant +adiob-pervol+ 4)
-(defconstant +adiof-pervol+ #x10)
-(defconstant +adiob-synccycle+ 5)
-(defconstant +adiof-synccycle+ #x20)
-(defconstant +adiob-nowait+ 6)
-(defconstant +adiof-nowait+ #x40)
-(defconstant +adiob-writemessage+ 7)
-(defconstant +adiof-writemessage+ #x80)
-(defconstant +adioerr-noallocation+ -10)
-(defconstant +adioerr-allocfailed+ -11)
-(defconstant +adioerr-channelstolen+ -12)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.DEVICES.AUDIO" ()
 
-;;; --- structures from devices/audio.i ---
-(ffi:defcstruct (io-audio :size 68)   ; IOAudio (devices/audio.i)
-  (alloc-key :i16 32)
-  (data :fptr 34)
-  (length :u32 38)
-  (period :u16 42)
-  (volume :u16 44)
-  (cycles :u16 46)
-  (write-msg (:struct 20) 48)
-)
+  ;; --- constants from devices/audio.i ---
+  (:const "+ADHARD-CHANNELS+" 4)
+  (:const "+ADALLOC-MINPREC+" -128)
+  (:const "+ADALLOC-MAXPREC+" #x7F)
+  (:const "+ADCMD-FREE+" 9)
+  (:const "+ADCMD-SETPREC+" 10)
+  (:const "+ADCMD-FINISH+" 11)
+  (:const "+ADCMD-PERVOL+" 12)
+  (:const "+ADCMD-LOCK+" 13)
+  (:const "+ADCMD-WAITCYCLE+" 14)
+  (:const "+ADCMD-ALLOCATE+" #x20)
+  (:const "+ADIOB-PERVOL+" 4)
+  (:const "+ADIOF-PERVOL+" #x10)
+  (:const "+ADIOB-SYNCCYCLE+" 5)
+  (:const "+ADIOF-SYNCCYCLE+" #x20)
+  (:const "+ADIOB-NOWAIT+" 6)
+  (:const "+ADIOF-NOWAIT+" #x40)
+  (:const "+ADIOB-WRITEMESSAGE+" 7)
+  (:const "+ADIOF-WRITEMESSAGE+" #x80)
+  (:const "+ADIOERR-NOALLOCATION+" -10)
+  (:const "+ADIOERR-ALLOCFAILED+" -11)
+  (:const "+ADIOERR-CHANNELSTOLEN+" -12)
+
+  ;; --- structures from devices/audio.i ---
+  (:struct "IO-AUDIO" 68   ; IOAudio (devices/audio.i)
+    ("ALLOC-KEY" :i16 32)
+    ("DATA" :fptr 34)
+    ("LENGTH" :u32 38)
+    ("PERIOD" :u16 42)
+    ("VOLUME" :u16 44)
+    ("CYCLES" :u16 46)
+    ("WRITE-MSG" (:struct 20) 48)
+    )
+  )
 
 (provide "amiga/raw/devices/audio")

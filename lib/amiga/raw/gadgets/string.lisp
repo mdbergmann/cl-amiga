@@ -8,20 +8,14 @@
 ;;; 1 functions, 23 constants, 0 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.GADGETS.STRING"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*STRING-BASE*" "*STRING-VERSION*"
-   "+STRINGA-MIN-VISIBLE+" "+STRINGA-HOOK-TYPE+" 
-   "+STRINGA-REL-VERIFY-SPECIAL+" "+STRINGA-GET-BLOCK-POS+" 
-   "+STRINGA-MARK+" "+STRINGA-ALLOW-MARKING+" "+STRINGA-INTERIM-UPDATES+" 
-   "+STRINGA-ASL-TAGS+" "+STRINGA-MARK-ACTIVE+" "+STRINGA-DISABLE-POPUP+" 
-   "+STRINGA-MIN-VAL+" "+STRINGA-MAX-VAL+" "+SHK-CUSTOM+" "+SHK-PASSWORD+" 
-   "+SHK-IPADDRESS+" "+SHK-FLOAT+" "+SHK-HEXIDECIMAL+" "+SHK-TELEPHONE+" 
-   "+SHK-POSTALCODE+" "+SHK-AMOUNT+" "+SHK-UPPERCASE+" "+SHK-HOTKEY+" 
-   "+SHK-HEXADECIMAL+" "STRING-GET-CLASS" ))
+  (:export "*STRING-BASE*" "*STRING-VERSION*"))
 
 (in-package "AMIGA.RAW.GADGETS.STRING")
 
@@ -35,35 +29,39 @@
 (defun %version>= (n)
   (and *string-version* (>= *string-version* n)))
 
-;;; --- constants from gadgets/string.h ---
-(defconstant +stringa-min-visible+ #x85055000)
-(defconstant +stringa-hook-type+ #x85055001)
-(defconstant +stringa-rel-verify-special+ #x8505500A)
-(defconstant +stringa-get-block-pos+ #x85055010)
-(defconstant +stringa-mark+ #x85055011)
-(defconstant +stringa-allow-marking+ #x85055012)
-(defconstant +stringa-interim-updates+ #x85055013)
-(defconstant +stringa-asl-tags+ #x85055013)
-(defconstant +stringa-mark-active+ #x85055014)
-(defconstant +stringa-disable-popup+ #x85055015)
-(defconstant +stringa-min-val+ #x85055016)
-(defconstant +stringa-max-val+ #x85055017)
-(defconstant +shk-custom+ 0)
-(defconstant +shk-password+ 1)
-(defconstant +shk-ipaddress+ 2)
-(defconstant +shk-float+ 3)
-(defconstant +shk-hexidecimal+ 4)
-(defconstant +shk-telephone+ 5)
-(defconstant +shk-postalcode+ 6)
-(defconstant +shk-amount+ 7)
-(defconstant +shk-uppercase+ 8)
-(defconstant +shk-hotkey+ 9)
-(defconstant +shk-hexadecimal+ 4)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.GADGETS.STRING"
+    (:base *string-base* :version *string-version*)
 
-;;; --- functions (string_lib.sfd + MorphOS SDK) ---
-(when (%version>= 40)
-  (amiga.ffi:defcfun string-get-class *string-base* -30 ()
-    :result :pointer
-    :doc "Class * STRING_GetClass() () LVO -30"))
+  ;; --- constants from gadgets/string.h ---
+  (:const "+STRINGA-MIN-VISIBLE+" #x85055000)
+  (:const "+STRINGA-HOOK-TYPE+" #x85055001)
+  (:const "+STRINGA-REL-VERIFY-SPECIAL+" #x8505500A)
+  (:const "+STRINGA-GET-BLOCK-POS+" #x85055010)
+  (:const "+STRINGA-MARK+" #x85055011)
+  (:const "+STRINGA-ALLOW-MARKING+" #x85055012)
+  (:const "+STRINGA-INTERIM-UPDATES+" #x85055013)
+  (:const "+STRINGA-ASL-TAGS+" #x85055013)
+  (:const "+STRINGA-MARK-ACTIVE+" #x85055014)
+  (:const "+STRINGA-DISABLE-POPUP+" #x85055015)
+  (:const "+STRINGA-MIN-VAL+" #x85055016)
+  (:const "+STRINGA-MAX-VAL+" #x85055017)
+  (:const "+SHK-CUSTOM+" 0)
+  (:const "+SHK-PASSWORD+" 1)
+  (:const "+SHK-IPADDRESS+" 2)
+  (:const "+SHK-FLOAT+" 3)
+  (:const "+SHK-HEXIDECIMAL+" 4)
+  (:const "+SHK-TELEPHONE+" 5)
+  (:const "+SHK-POSTALCODE+" 6)
+  (:const "+SHK-AMOUNT+" 7)
+  (:const "+SHK-UPPERCASE+" 8)
+  (:const "+SHK-HOTKEY+" 9)
+  (:const "+SHK-HEXADECIMAL+" 4)
+
+  ;; --- functions (string_lib.sfd + MorphOS SDK) ---
+  (:fn "STRING-GET-CLASS" -30 () :pointer 40)   ; Class * STRING_GetClass() () LVO -30
+  )
 
 (provide "amiga/raw/gadgets/string")

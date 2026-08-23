@@ -9,24 +9,14 @@
 ;;; 1 C macro skipped: not an integer constant (string, call, float).
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.GADGETS.GETFILE"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*GETFILE-BASE*" "*GETFILE-VERSION*"
-   "+GETFILE-DUMMY+" "+GETFILE-TITLE-TEXT+" "+GETFILE-LEFT-EDGE+" 
-   "+GETFILE-TOP-EDGE+" "+GETFILE-WIDTH+" "+GETFILE-HEIGHT+" 
-   "+GETFILE-FILE+" "+GETFILE-DRAWER+" "+GETFILE-FULL-FILE+" 
-   "+GETFILE-FULL-FILE-EXPAND+" "+GETFILE-PATTERN+" 
-   "+GETFILE-DO-SAVE-MODE+" "+GETFILE-DO-MULTI-SELECT+" 
-   "+GETFILE-DO-PATTERNS+" "+GETFILE-DRAWERS-ONLY+" "+GETFILE-FILTER-FUNC+" 
-   "+GETFILE-REJECT-ICONS+" "+GETFILE-REJECT-PATTERN+" 
-   "+GETFILE-ACCEPT-PATTERN+" "+GETFILE-FILTER-DRAWERS+" 
-   "+GETFILE-FILELIST+" "+GETFILE-LB-NODE-STRUCTS+" "+GETFILE-READ-ONLY+" 
-   "+GETFILE-FILE-PART-ONLY+" "+GETFILE-ALLOW-EMPTY-FILE-SELECTION+" 
-   "+GETFILE-FILTER-HOOK+" "+GETFILE-INITIAL-SHOW-VOLUMES+" 
-   "+GFILE-REQUEST+" "+GFILE-FREELIST+" "GETFILE-GET-CLASS" ))
+  (:export "*GETFILE-BASE*" "*GETFILE-VERSION*"))
 
 (in-package "AMIGA.RAW.GADGETS.GETFILE")
 
@@ -40,41 +30,45 @@
 (defun %version>= (n)
   (and *getfile-version* (>= *getfile-version* n)))
 
-;;; --- constants from gadgets/getfile.h ---
-(defconstant +getfile-dummy+ #x85060000)
-(defconstant +getfile-title-text+ #x85060001)
-(defconstant +getfile-left-edge+ #x85060002)
-(defconstant +getfile-top-edge+ #x85060003)
-(defconstant +getfile-width+ #x85060004)
-(defconstant +getfile-height+ #x85060005)
-(defconstant +getfile-file+ #x85060006)
-(defconstant +getfile-drawer+ #x85060007)
-(defconstant +getfile-full-file+ #x85060008)
-(defconstant +getfile-full-file-expand+ #x85060009)
-(defconstant +getfile-pattern+ #x8506000A)
-(defconstant +getfile-do-save-mode+ #x8506000B)
-(defconstant +getfile-do-multi-select+ #x8506000C)
-(defconstant +getfile-do-patterns+ #x8506000D)
-(defconstant +getfile-drawers-only+ #x8506000E)
-(defconstant +getfile-filter-func+ #x8506000F)
-(defconstant +getfile-reject-icons+ #x85060010)
-(defconstant +getfile-reject-pattern+ #x85060011)
-(defconstant +getfile-accept-pattern+ #x85060012)
-(defconstant +getfile-filter-drawers+ #x85060013)
-(defconstant +getfile-filelist+ #x85060014)
-(defconstant +getfile-lb-node-structs+ #x85060015)
-(defconstant +getfile-read-only+ #x85060016)
-(defconstant +getfile-file-part-only+ #x85060017)
-(defconstant +getfile-allow-empty-file-selection+ #x85060018)
-(defconstant +getfile-filter-hook+ #x85060019)
-(defconstant +getfile-initial-show-volumes+ #x8506001A)
-(defconstant +gfile-request+ #x620001)
-(defconstant +gfile-freelist+ #x620002)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.GADGETS.GETFILE"
+    (:base *getfile-base* :version *getfile-version*)
 
-;;; --- functions (getfile_lib.sfd + MorphOS SDK) ---
-(when (%version>= 40)
-  (amiga.ffi:defcfun getfile-get-class *getfile-base* -30 ()
-    :result :pointer
-    :doc "Class * GETFILE_GetClass() () LVO -30"))
+  ;; --- constants from gadgets/getfile.h ---
+  (:const "+GETFILE-DUMMY+" #x85060000)
+  (:const "+GETFILE-TITLE-TEXT+" #x85060001)
+  (:const "+GETFILE-LEFT-EDGE+" #x85060002)
+  (:const "+GETFILE-TOP-EDGE+" #x85060003)
+  (:const "+GETFILE-WIDTH+" #x85060004)
+  (:const "+GETFILE-HEIGHT+" #x85060005)
+  (:const "+GETFILE-FILE+" #x85060006)
+  (:const "+GETFILE-DRAWER+" #x85060007)
+  (:const "+GETFILE-FULL-FILE+" #x85060008)
+  (:const "+GETFILE-FULL-FILE-EXPAND+" #x85060009)
+  (:const "+GETFILE-PATTERN+" #x8506000A)
+  (:const "+GETFILE-DO-SAVE-MODE+" #x8506000B)
+  (:const "+GETFILE-DO-MULTI-SELECT+" #x8506000C)
+  (:const "+GETFILE-DO-PATTERNS+" #x8506000D)
+  (:const "+GETFILE-DRAWERS-ONLY+" #x8506000E)
+  (:const "+GETFILE-FILTER-FUNC+" #x8506000F)
+  (:const "+GETFILE-REJECT-ICONS+" #x85060010)
+  (:const "+GETFILE-REJECT-PATTERN+" #x85060011)
+  (:const "+GETFILE-ACCEPT-PATTERN+" #x85060012)
+  (:const "+GETFILE-FILTER-DRAWERS+" #x85060013)
+  (:const "+GETFILE-FILELIST+" #x85060014)
+  (:const "+GETFILE-LB-NODE-STRUCTS+" #x85060015)
+  (:const "+GETFILE-READ-ONLY+" #x85060016)
+  (:const "+GETFILE-FILE-PART-ONLY+" #x85060017)
+  (:const "+GETFILE-ALLOW-EMPTY-FILE-SELECTION+" #x85060018)
+  (:const "+GETFILE-FILTER-HOOK+" #x85060019)
+  (:const "+GETFILE-INITIAL-SHOW-VOLUMES+" #x8506001A)
+  (:const "+GFILE-REQUEST+" #x620001)
+  (:const "+GFILE-FREELIST+" #x620002)
+
+  ;; --- functions (getfile_lib.sfd + MorphOS SDK) ---
+  (:fn "GETFILE-GET-CLASS" -30 () :pointer 40)   ; Class * GETFILE_GetClass() () LVO -30
+  )
 
 (provide "amiga/raw/gadgets/getfile")

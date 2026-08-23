@@ -7,16 +7,24 @@
 ;;; 1 C macro skipped: not an integer constant (string, call, float).
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.PREFS.REACTION"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+FONTNAMESIZE+" ))
+  (:export))
 
 (in-package "AMIGA.RAW.PREFS.REACTION")
 
-;;; --- constants from prefs/reaction.h ---
-(defconstant +fontnamesize+ #x80)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.PREFS.REACTION" ()
+
+  ;; --- constants from prefs/reaction.h ---
+  (:const "+FONTNAMESIZE+" #x80)
+  )
 
 (provide "amiga/raw/prefs/reaction")

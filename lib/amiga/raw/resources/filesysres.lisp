@@ -6,40 +6,41 @@
 ;;; 0 functions, 0 constants, 2 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.RESOURCES.FILESYSRES"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*FILE-SYS-RESOURCE-SIZE*" "FILE-SYS-RESOURCE-CREATOR" 
-   "FILE-SYS-RESOURCE-FILE-SYS-ENTRIES" "*FILE-SYS-ENTRY-SIZE*" 
-   "FILE-SYS-ENTRY-DOS-TYPE" "FILE-SYS-ENTRY-VERSION" 
-   "FILE-SYS-ENTRY-PATCH-FLAGS" "FILE-SYS-ENTRY-TYPE" "FILE-SYS-ENTRY-TASK" 
-   "FILE-SYS-ENTRY-LOCK" "FILE-SYS-ENTRY-HANDLER" 
-   "FILE-SYS-ENTRY-STACK-SIZE" "FILE-SYS-ENTRY-PRIORITY" 
-   "FILE-SYS-ENTRY-STARTUP" "FILE-SYS-ENTRY-SEG-LIST" 
-   "FILE-SYS-ENTRY-GLOBAL-VEC" ))
+  (:export))
 
 (in-package "AMIGA.RAW.RESOURCES.FILESYSRES")
 
-;;; --- structures from resources/filesysres.i ---
-(ffi:defcstruct (file-sys-resource :size 32)   ; FileSysResource (resources/filesysres.i)
-  (creator :fptr 14)
-  (file-sys-entries (:struct 14) 18)
-)
-(ffi:defcstruct (file-sys-entry :size 62)   ; FileSysEntry (resources/filesysres.i)
-  (dos-type :u32 14)
-  (version :u32 18)
-  (patch-flags :u32 22)
-  (type :u32 26)
-  (task :fptr 30)
-  (lock :u32 34)
-  (handler :u32 38)
-  (stack-size :u32 42)
-  (priority :i32 46)
-  (startup :u32 50)
-  (seg-list :u32 54)
-  (global-vec :u32 58)
-)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.RESOURCES.FILESYSRES" ()
+
+  ;; --- structures from resources/filesysres.i ---
+  (:struct "FILE-SYS-RESOURCE" 32   ; FileSysResource (resources/filesysres.i)
+    ("CREATOR" :fptr 14)
+    ("FILE-SYS-ENTRIES" (:struct 14) 18)
+    )
+  (:struct "FILE-SYS-ENTRY" 62   ; FileSysEntry (resources/filesysres.i)
+    ("DOS-TYPE" :u32 14)
+    ("VERSION" :u32 18)
+    ("PATCH-FLAGS" :u32 22)
+    ("TYPE" :u32 26)
+    ("TASK" :fptr 30)
+    ("LOCK" :u32 34)
+    ("HANDLER" :u32 38)
+    ("STACK-SIZE" :u32 42)
+    ("PRIORITY" :i32 46)
+    ("STARTUP" :u32 50)
+    ("SEG-LIST" :u32 54)
+    ("GLOBAL-VEC" :u32 58)
+    )
+  )
 
 (provide "amiga/raw/resources/filesysres")

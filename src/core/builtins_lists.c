@@ -42,7 +42,7 @@ static CL_Obj call_test(CL_Obj test_fn, CL_Obj a, CL_Obj b)
     CL_Obj targs[2];
     targs[0] = a;
     targs[1] = b;
-    if (CL_FUNCTION_P(test_fn) || CL_BYTECODE_P(test_fn) || CL_CLOSURE_P(test_fn))
+    if (CL_FUNCTION_OBJ_P(test_fn))
         /* cl_vm_apply GC-roots targs across the call. */
         return cl_vm_apply(test_fn, targs, 2);
     cl_error(CL_ERR_TYPE, "not a function (test)");

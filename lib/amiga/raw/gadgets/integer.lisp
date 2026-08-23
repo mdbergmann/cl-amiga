@@ -8,15 +8,14 @@
 ;;; 1 functions, 8 constants, 0 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.GADGETS.INTEGER"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*INTEGER-BASE*" "*INTEGER-VERSION*"
-   "+INTEGER-DUMMY+" "+INTEGER-NUMBER+" "+INTEGER-MAX-CHARS+" 
-   "+INTEGER-MINIMUM+" "+INTEGER-MAXIMUM+" "+INTEGER-ARROWS+" 
-   "+INTEGER-MIN-VISIBLE+" "+INTEGER-SKIP-VAL+" "INTEGER-GET-CLASS" ))
+  (:export "*INTEGER-BASE*" "*INTEGER-VERSION*"))
 
 (in-package "AMIGA.RAW.GADGETS.INTEGER")
 
@@ -30,20 +29,24 @@
 (defun %version>= (n)
   (and *integer-version* (>= *integer-version* n)))
 
-;;; --- constants from gadgets/integer.h ---
-(defconstant +integer-dummy+ #x85002000)
-(defconstant +integer-number+ #x85002001)
-(defconstant +integer-max-chars+ #x85002002)
-(defconstant +integer-minimum+ #x85002003)
-(defconstant +integer-maximum+ #x85002004)
-(defconstant +integer-arrows+ #x85002005)
-(defconstant +integer-min-visible+ #x85002006)
-(defconstant +integer-skip-val+ #x85002007)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.GADGETS.INTEGER"
+    (:base *integer-base* :version *integer-version*)
 
-;;; --- functions (integer_lib.sfd + MorphOS SDK) ---
-(when (%version>= 40)
-  (amiga.ffi:defcfun integer-get-class *integer-base* -30 ()
-    :result :pointer
-    :doc "Class * INTEGER_GetClass() () LVO -30"))
+  ;; --- constants from gadgets/integer.h ---
+  (:const "+INTEGER-DUMMY+" #x85002000)
+  (:const "+INTEGER-NUMBER+" #x85002001)
+  (:const "+INTEGER-MAX-CHARS+" #x85002002)
+  (:const "+INTEGER-MINIMUM+" #x85002003)
+  (:const "+INTEGER-MAXIMUM+" #x85002004)
+  (:const "+INTEGER-ARROWS+" #x85002005)
+  (:const "+INTEGER-MIN-VISIBLE+" #x85002006)
+  (:const "+INTEGER-SKIP-VAL+" #x85002007)
+
+  ;; --- functions (integer_lib.sfd + MorphOS SDK) ---
+  (:fn "INTEGER-GET-CLASS" -30 () :pointer 40)   ; Class * INTEGER_GetClass() () LVO -30
+  )
 
 (provide "amiga/raw/gadgets/integer")

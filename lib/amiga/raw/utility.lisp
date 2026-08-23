@@ -13,38 +13,16 @@
 ;;; 43 functions, 28 constants, 5 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.UTILITY"
   (:use "CL" "FFI" "AMIGA.FFI")
   ;; distinct symbols  these names also exist in CL / FFI / AMIGA.FFI
   (:shadow "+TAG-DONE+" "+TAG-IGNORE+" "+TAG-MORE+" "+TAG-SKIP+")
-  (:export
-   "*UTILITY-BASE*" "*UTILITY-VERSION*"
-   "*CLOCKDATA-SIZE*" "CLOCKDATA-SEC" "CLOCKDATA-MIN" "CLOCKDATA-HOUR" 
-   "CLOCKDATA-MDAY" "CLOCKDATA-MONTH" "CLOCKDATA-YEAR" "CLOCKDATA-WDAY" 
-   "*HOOK-SIZE*" "HOOK-ENTRY" "HOOK-SUB-ENTRY" "HOOK-DATA" 
-   "+UTILITY-NAME-I+" "+ANO-NAME-SPACE+" "+ANO-USER-SPACE+" 
-   "+ANO-PRIORITY+" "+ANO-FLAGS+" "+NSB-NODUPS+" "+NSF-NODUPS+" 
-   "+NSB-CASE+" "+NSF-CASE+" "*NAMED-OBJECT-SIZE*" "NAMED-OBJECT-OBJECT" 
-   "NAMED-OBJECT-NAMED-OBJECT-END" "+UTILITY-PACK-I+" "+PSTB-SIGNED+" 
-   "+PSTF-SIGNED+" "+PSTB-UNPACK+" "+PSTF-UNPACK+" "+PSTB-PACK+" 
-   "+PSTF-PACK+" "+PSTB-EXISTS+" "+PSTF-EXISTS+" "+TAG-DONE+" "+TAG-END+" 
-   "+TAG-IGNORE+" "+TAG-MORE+" "+TAG-SKIP+" "+TAG-USER+" "+TAGFILTER-AND+" 
-   "+TAGFILTER-NOT+" "+MAP-REMOVE-NOT-FOUND+" "+MAP-KEEP-NOT-FOUND+" 
-   "*TAG-ITEM-SIZE*" "TAG-ITEM-TAG" "TAG-ITEM-DATA" "*UTILITY-BASE-SIZE*" 
-   "UTILITY-BASE-LANGUAGE" "UTILITY-BASE-RESERVED" "FIND-TAG-ITEM" 
-   "GET-TAG-DATA" "PACK-BOOL-TAGS" "NEXT-TAG-ITEM" "FILTER-TAG-CHANGES" 
-   "MAP-TAGS" "ALLOCATE-TAG-ITEMS" "CLONE-TAG-ITEMS" "FREE-TAG-ITEMS" 
-   "REFRESH-TAG-ITEM-CLONES" "TAG-IN-ARRAY" "FILTER-TAG-ITEMS" 
-   "CALL-HOOK-PKT" "AMIGA2-DATE" "DATE2-AMIGA" "CHECK-DATE" "S-MULT32" 
-   "U-MULT32" "S-DIV-MOD32" "U-DIV-MOD32" "STRICMP" "STRNICMP" "TO-UPPER" 
-   "TO-LOWER" "APPLY-TAG-CHANGES" "S-MULT64" "U-MULT64" 
-   "PACK-STRUCTURE-TAGS" "UNPACK-STRUCTURE-TAGS" "ADD-NAMED-OBJECT" 
-   "ALLOC-NAMED-OBJECT-A" "ATTEMPT-REM-NAMED-OBJECT" "FIND-NAMED-OBJECT" 
-   "FREE-NAMED-OBJECT" "NAMED-OBJECT-NAME" "RELEASE-NAMED-OBJECT" 
-   "REM-NAMED-OBJECT" "GET-UNIQUE-ID" "VSN-PRINTF" "STRNCPY" "STRNCAT" 
-   "S-DIV-MOD64" "U-DIV-MOD64" ))
+  (:export "*UTILITY-BASE*" "*UTILITY-VERSION*"))
 
 (in-package "AMIGA.RAW.UTILITY")
 
@@ -58,210 +36,126 @@
 (defun %version>= (n)
   (and *utility-version* (>= *utility-version* n)))
 
-;;; --- structures from utility/date.i ---
-(ffi:defcstruct (clockdata :size 14)   ; CLOCKDATA (utility/date.i)
-  (sec :u16 0)
-  (min :u16 2)
-  (hour :u16 4)
-  (mday :u16 6)
-  (month :u16 8)
-  (year :u16 10)
-  (wday :u16 12)
-)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.UTILITY"
+    (:base *utility-base* :version *utility-version*)
 
-;;; --- structures from utility/hooks.i ---
-(ffi:defcstruct (hook :size 20)   ; HOOK (utility/hooks.i)
-  (entry :fptr 8)
-  (sub-entry :fptr 12)
-  (data :fptr 16)
-)
+  ;; --- structures from utility/date.i ---
+  (:struct "CLOCKDATA" 14   ; CLOCKDATA (utility/date.i)
+    ("SEC" :u16 0)
+    ("MIN" :u16 2)
+    ("HOUR" :u16 4)
+    ("MDAY" :u16 6)
+    ("MONTH" :u16 8)
+    ("YEAR" :u16 10)
+    ("WDAY" :u16 12)
+    )
 
-;;; --- constants from utility/name.i ---
-(defconstant +utility-name-i+ 1)
-(defconstant +ano-name-space+ #xFA0)
-(defconstant +ano-user-space+ #xFA1)
-(defconstant +ano-priority+ #xFA2)
-(defconstant +ano-flags+ #xFA3)
-(defconstant +nsb-nodups+ 0)
-(defconstant +nsf-nodups+ 1)
-(defconstant +nsb-case+ 1)
-(defconstant +nsf-case+ 2)
+  ;; --- structures from utility/hooks.i ---
+  (:struct "HOOK" 20   ; HOOK (utility/hooks.i)
+    ("ENTRY" :fptr 8)
+    ("SUB-ENTRY" :fptr 12)
+    ("DATA" :fptr 16)
+    )
 
-;;; --- structures from utility/name.i ---
-(ffi:defcstruct (named-object :size 4)   ; NamedObject (utility/name.i)
-  (object :fptr 0)
-  (named-object-end (:struct 0) 4)
-)
+  ;; --- constants from utility/name.i ---
+  (:const "+UTILITY-NAME-I+" 1)
+  (:const "+ANO-NAME-SPACE+" #xFA0)
+  (:const "+ANO-USER-SPACE+" #xFA1)
+  (:const "+ANO-PRIORITY+" #xFA2)
+  (:const "+ANO-FLAGS+" #xFA3)
+  (:const "+NSB-NODUPS+" 0)
+  (:const "+NSF-NODUPS+" 1)
+  (:const "+NSB-CASE+" 1)
+  (:const "+NSF-CASE+" 2)
 
-;;; --- constants from utility/pack.i ---
-(defconstant +utility-pack-i+ 1)
-(defconstant +pstb-signed+ #x1F)
-(defconstant +pstf-signed+ #x80000000)
-(defconstant +pstb-unpack+ #x1E)
-(defconstant +pstf-unpack+ #x40000000)
-(defconstant +pstb-pack+ #x1D)
-(defconstant +pstf-pack+ #x20000000)
-(defconstant +pstb-exists+ #x1A)
-(defconstant +pstf-exists+ #x4000000)
+  ;; --- structures from utility/name.i ---
+  (:struct "NAMED-OBJECT" 4   ; NamedObject (utility/name.i)
+    ("OBJECT" :fptr 0)
+    ("NAMED-OBJECT-END" (:struct 0) 4)
+    )
 
-;;; --- constants from utility/tagitem.i ---
-(defconstant +tag-done+ 0)
-(defconstant +tag-end+ 0)
-(defconstant +tag-ignore+ 1)
-(defconstant +tag-more+ 2)
-(defconstant +tag-skip+ 3)
-(defconstant +tag-user+ #x80000000)
-(defconstant +tagfilter-and+ 0)
-(defconstant +tagfilter-not+ 1)
-(defconstant +map-remove-not-found+ 0)
-(defconstant +map-keep-not-found+ 1)
+  ;; --- constants from utility/pack.i ---
+  (:const "+UTILITY-PACK-I+" 1)
+  (:const "+PSTB-SIGNED+" #x1F)
+  (:const "+PSTF-SIGNED+" #x80000000)
+  (:const "+PSTB-UNPACK+" #x1E)
+  (:const "+PSTF-UNPACK+" #x40000000)
+  (:const "+PSTB-PACK+" #x1D)
+  (:const "+PSTF-PACK+" #x20000000)
+  (:const "+PSTB-EXISTS+" #x1A)
+  (:const "+PSTF-EXISTS+" #x4000000)
 
-;;; --- structures from utility/tagitem.i ---
-(ffi:defcstruct (tag-item :size 8)   ; TagItem (utility/tagitem.i)
-  (tag :u32 0)
-  (data :u32 4)
-)
+  ;; --- constants from utility/tagitem.i ---
+  (:const "+TAG-DONE+" 0)
+  (:const "+TAG-END+" 0)
+  (:const "+TAG-IGNORE+" 1)
+  (:const "+TAG-MORE+" 2)
+  (:const "+TAG-SKIP+" 3)
+  (:const "+TAG-USER+" #x80000000)
+  (:const "+TAGFILTER-AND+" 0)
+  (:const "+TAGFILTER-NOT+" 1)
+  (:const "+MAP-REMOVE-NOT-FOUND+" 0)
+  (:const "+MAP-KEEP-NOT-FOUND+" 1)
 
-;;; --- structures from utility/utility.i ---
-(ffi:defcstruct (utility-base :size 36)   ; UtilityBase (utility/utility.i)
-  (language :u8 34)
-  (reserved :u8 35)
-)
+  ;; --- structures from utility/tagitem.i ---
+  (:struct "TAG-ITEM" 8   ; TagItem (utility/tagitem.i)
+    ("TAG" :u32 0)
+    ("DATA" :u32 4)
+    )
 
-;;; --- functions (utility_lib.sfd + MorphOS SDK) ---
-(amiga.ffi:defcfun find-tag-item *utility-base* -30 (:d0 tag-val :a0 tag-list)
-    :result :pointer
-    :doc "struct TagItem * FindTagItem(Tag tagVal, CONST struct TagItem * tagList) (D0,A0) LVO -30")
-(amiga.ffi:defcfun get-tag-data *utility-base* -36 (:d0 tag-value :d1 default-val :a0 tag-list)
-    :result :unsigned
-    :doc "ULONG GetTagData(Tag tagValue, ULONG defaultVal, CONST struct TagItem * tagList) (D0,D1,A0) LVO -36")
-(amiga.ffi:defcfun pack-bool-tags *utility-base* -42 (:d0 initial-flags :a0 tag-list :a1 bool-map)
-    :result :unsigned
-    :doc "ULONG PackBoolTags(ULONG initialFlags, CONST struct TagItem * tagList, CONST struct TagItem * boolMap) (D0,A0,A1) LVO -42")
-(amiga.ffi:defcfun next-tag-item *utility-base* -48 (:a0 tag-list-ptr)
-    :result :pointer
-    :doc "struct TagItem * NextTagItem(struct TagItem ** tagListPtr) (A0) LVO -48")
-(amiga.ffi:defcfun filter-tag-changes *utility-base* -54 (:a0 change-list :a1 original-list :d0 apply)
-    :result :void
-    :doc "VOID FilterTagChanges(struct TagItem * changeList, struct TagItem * originalList, ULONG apply) (A0,A1,D0) LVO -54")
-(amiga.ffi:defcfun map-tags *utility-base* -60 (:a0 tag-list :a1 map-list :d0 map-type)
-    :result :void
-    :doc "VOID MapTags(struct TagItem * tagList, CONST struct TagItem * mapList, ULONG mapType) (A0,A1,D0) LVO -60")
-(amiga.ffi:defcfun allocate-tag-items *utility-base* -66 (:d0 num-tags)
-    :result :pointer
-    :doc "struct TagItem * AllocateTagItems(ULONG numTags) (D0) LVO -66")
-(amiga.ffi:defcfun clone-tag-items *utility-base* -72 (:a0 tag-list)
-    :result :pointer
-    :doc "struct TagItem * CloneTagItems(CONST struct TagItem * tagList) (A0) LVO -72")
-(amiga.ffi:defcfun free-tag-items *utility-base* -78 (:a0 tag-list)
-    :result :void
-    :doc "VOID FreeTagItems(struct TagItem * tagList) (A0) LVO -78")
-(amiga.ffi:defcfun refresh-tag-item-clones *utility-base* -84 (:a0 clone :a1 original)
-    :result :void
-    :doc "VOID RefreshTagItemClones(struct TagItem * clone, CONST struct TagItem * original) (A0,A1) LVO -84")
-(amiga.ffi:defcfun tag-in-array *utility-base* -90 (:d0 tag-value :a0 tag-array)
-    :result :bool
-    :doc "BOOL TagInArray(Tag tagValue, CONST Tag * tagArray) (D0,A0) LVO -90")
-(amiga.ffi:defcfun filter-tag-items *utility-base* -96 (:a0 tag-list :a1 filter-array :d0 logic)
-    :result :unsigned
-    :doc "ULONG FilterTagItems(struct TagItem * tagList, CONST Tag * filterArray, ULONG logic) (A0,A1,D0) LVO -96")
-(amiga.ffi:defcfun call-hook-pkt *utility-base* -102 (:a0 hook :a2 object :a1 param-packet)
-    :result :unsigned
-    :doc "ULONG CallHookPkt(struct Hook * hook, APTR object, APTR paramPacket) (A0,A2,A1) LVO -102")
-(amiga.ffi:defcfun amiga2-date *utility-base* -120 (:d0 seconds :a0 result)
-    :result :void
-    :doc "VOID Amiga2Date(ULONG seconds, struct ClockData * result) (D0,A0) LVO -120")
-(amiga.ffi:defcfun date2-amiga *utility-base* -126 (:a0 date)
-    :result :unsigned
-    :doc "ULONG Date2Amiga(CONST struct ClockData * date) (A0) LVO -126")
-(amiga.ffi:defcfun check-date *utility-base* -132 (:a0 date)
-    :result :unsigned
-    :doc "ULONG CheckDate(CONST struct ClockData * date) (A0) LVO -132")
-(amiga.ffi:defcfun s-mult32 *utility-base* -138 (:d0 arg1 :d1 arg2)
-    :result :signed
-    :doc "LONG SMult32(LONG arg1, LONG arg2) (D0,D1) LVO -138")
-(amiga.ffi:defcfun u-mult32 *utility-base* -144 (:d0 arg1 :d1 arg2)
-    :result :unsigned
-    :doc "ULONG UMult32(ULONG arg1, ULONG arg2) (D0,D1) LVO -144")
-(amiga.ffi:defcfun s-div-mod32 *utility-base* -150 (:d0 dividend :d1 divisor)
-    :result :signed
-    :doc "LONG SDivMod32(LONG dividend, LONG divisor) (D0,D1) LVO -150")
-(amiga.ffi:defcfun u-div-mod32 *utility-base* -156 (:d0 dividend :d1 divisor)
-    :result :unsigned
-    :doc "ULONG UDivMod32(ULONG dividend, ULONG divisor) (D0,D1) LVO -156")
-(amiga.ffi:defcfun stricmp *utility-base* -162 (:a0 string1 :a1 string2)
-    :result :signed
-    :doc "LONG Stricmp(CONST_STRPTR string1, CONST_STRPTR string2) (A0,A1) LVO -162")
-(amiga.ffi:defcfun strnicmp *utility-base* -168 (:a0 string1 :a1 string2 :d0 length)
-    :result :signed
-    :doc "LONG Strnicmp(CONST_STRPTR string1, CONST_STRPTR string2, LONG length) (A0,A1,D0) LVO -168")
-(amiga.ffi:defcfun to-upper *utility-base* -174 (:d0 character)
-    :result :u8
-    :doc "UBYTE ToUpper(UBYTE character) (D0) LVO -174")
-(amiga.ffi:defcfun to-lower *utility-base* -180 (:d0 character)
-    :result :u8
-    :doc "UBYTE ToLower(UBYTE character) (D0) LVO -180")
-(amiga.ffi:defcfun apply-tag-changes *utility-base* -186 (:a0 list :a1 change-list)
-    :result :void
-    :doc "VOID ApplyTagChanges(struct TagItem * list, CONST struct TagItem * changeList) (A0,A1) LVO -186")
-(amiga.ffi:defcfun s-mult64 *utility-base* -198 (:d0 arg1 :d1 arg2)
-    :result :signed
-    :doc "LONG SMult64(LONG arg1, LONG arg2) (D0,D1) LVO -198")
-(amiga.ffi:defcfun u-mult64 *utility-base* -204 (:d0 arg1 :d1 arg2)
-    :result :unsigned
-    :doc "ULONG UMult64(ULONG arg1, ULONG arg2) (D0,D1) LVO -204")
-(amiga.ffi:defcfun pack-structure-tags *utility-base* -210 (:a0 pack :a1 pack-table :a2 tag-list)
-    :result :unsigned
-    :doc "ULONG PackStructureTags(APTR pack, CONST ULONG * packTable, CONST struct TagItem * tagList) (A0,A1,A2) LVO -210")
-(amiga.ffi:defcfun unpack-structure-tags *utility-base* -216 (:a0 pack :a1 pack-table :a2 tag-list)
-    :result :unsigned
-    :doc "ULONG UnpackStructureTags(CONST_APTR pack, CONST ULONG * packTable, struct TagItem * tagList) (A0,A1,A2) LVO -216")
-(amiga.ffi:defcfun add-named-object *utility-base* -222 (:a0 name-space :a1 object)
-    :result :bool
-    :doc "BOOL AddNamedObject(struct NamedObject * nameSpace, struct NamedObject * object) (A0,A1) LVO -222")
-(amiga.ffi:defcfun alloc-named-object-a *utility-base* -228 (:a0 name :a1 tag-list)
-    :result :pointer
-    :doc "struct NamedObject * AllocNamedObjectA(CONST_STRPTR name, CONST struct TagItem * tagList) (A0,A1) LVO -228")
-(amiga.ffi:defcfun attempt-rem-named-object *utility-base* -234 (:a0 object)
-    :result :signed
-    :doc "LONG AttemptRemNamedObject(struct NamedObject * object) (A0) LVO -234")
-(amiga.ffi:defcfun find-named-object *utility-base* -240 (:a0 name-space :a1 name :a2 last-object)
-    :result :pointer
-    :doc "struct NamedObject * FindNamedObject(struct NamedObject * nameSpace, CONST_STRPTR name, CONST struct NamedObject * lastObject) (A0,A1,A2) LVO -240")
-(amiga.ffi:defcfun free-named-object *utility-base* -246 (:a0 object)
-    :result :void
-    :doc "VOID FreeNamedObject(struct NamedObject * object) (A0) LVO -246")
-(amiga.ffi:defcfun named-object-name *utility-base* -252 (:a0 object)
-    :result :pointer
-    :doc "STRPTR NamedObjectName(struct NamedObject * object) (A0) LVO -252")
-(amiga.ffi:defcfun release-named-object *utility-base* -258 (:a0 object)
-    :result :void
-    :doc "VOID ReleaseNamedObject(struct NamedObject * object) (A0) LVO -258")
-(amiga.ffi:defcfun rem-named-object *utility-base* -264 (:a0 object :a1 message)
-    :result :void
-    :doc "VOID RemNamedObject(struct NamedObject * object, struct Message * message) (A0,A1) LVO -264")
-(amiga.ffi:defcfun get-unique-id *utility-base* -270 ()
-    :result :unsigned
-    :doc "ULONG GetUniqueID() () LVO -270")
-(when (and (not (member :morphos *features*)) (%version>= 47))
-  (amiga.ffi:defcfun vsn-printf *utility-base* -312 (:a0 buffer :d0 bufsize :a1 fmt :a2 data)
-    :result :signed
-    :doc "LONG VSNPrintf(STRPTR buffer, ULONG bufsize, CONST_STRPTR fmt, CONST_APTR data) (A0,D0,A1,A2) LVO -312"))
-(when (and (not (member :morphos *features*)) (%version>= 47))
-  (amiga.ffi:defcfun strncpy *utility-base* -438 (:a1 dst :a0 src :d0 size)
-    :result :pointer
-    :doc "STRPTR Strncpy(STRPTR dst, CONST_STRPTR src, ULONG size) (A1,A0,D0) LVO -438"))
-(when (and (not (member :morphos *features*)) (%version>= 47))
-  (amiga.ffi:defcfun strncat *utility-base* -444 (:a1 dst :a0 src :d0 size)
-    :result :pointer
-    :doc "STRPTR Strncat(STRPTR dst, CONST_STRPTR src, ULONG size) (A1,A0,D0) LVO -444"))
-(when (and (not (member :morphos *features*)) (%version>= 47))
-  (amiga.ffi:defcfun s-div-mod64 *utility-base* -450 (:d1 hi :d0 lo :d2 divisor)
-    :result :signed
-    :doc "LONG SDivMod64(LONG hi, LONG lo, LONG divisor) (D1,D0,D2) LVO -450"))
-(when (and (not (member :morphos *features*)) (%version>= 47))
-  (amiga.ffi:defcfun u-div-mod64 *utility-base* -456 (:d1 hi :d0 lo :d2 divisor)
-    :result :unsigned
-    :doc "ULONG UDivMod64(ULONG hi, ULONG lo, ULONG divisor) (D1,D0,D2) LVO -456"))
+  ;; --- structures from utility/utility.i ---
+  (:struct "UTILITY-BASE" 36   ; UtilityBase (utility/utility.i)
+    ("LANGUAGE" :u8 34)
+    ("RESERVED" :u8 35)
+    )
+
+  ;; --- functions (utility_lib.sfd + MorphOS SDK) ---
+  (:fn "FIND-TAG-ITEM" -30 (:d0 :a0) :pointer)   ; struct TagItem * FindTagItem(Tag tagVal, CONST struct TagItem * tagList) (D0,A0) LVO -30
+  (:fn "GET-TAG-DATA" -36 (:d0 :d1 :a0) :unsigned)   ; ULONG GetTagData(Tag tagValue, ULONG defaultVal, CONST struct TagItem * tagList) (D0,D1,A0) LVO -36
+  (:fn "PACK-BOOL-TAGS" -42 (:d0 :a0 :a1) :unsigned)   ; ULONG PackBoolTags(ULONG initialFlags, CONST struct TagItem * tagList, CONST struct TagItem * boolMap) (D0,A0,A1) LVO -42
+  (:fn "NEXT-TAG-ITEM" -48 (:a0) :pointer)   ; struct TagItem * NextTagItem(struct TagItem ** tagListPtr) (A0) LVO -48
+  (:fn "FILTER-TAG-CHANGES" -54 (:a0 :a1 :d0) :void)   ; VOID FilterTagChanges(struct TagItem * changeList, struct TagItem * originalList, ULONG apply) (A0,A1,D0) LVO -54
+  (:fn "MAP-TAGS" -60 (:a0 :a1 :d0) :void)   ; VOID MapTags(struct TagItem * tagList, CONST struct TagItem * mapList, ULONG mapType) (A0,A1,D0) LVO -60
+  (:fn "ALLOCATE-TAG-ITEMS" -66 (:d0) :pointer)   ; struct TagItem * AllocateTagItems(ULONG numTags) (D0) LVO -66
+  (:fn "CLONE-TAG-ITEMS" -72 (:a0) :pointer)   ; struct TagItem * CloneTagItems(CONST struct TagItem * tagList) (A0) LVO -72
+  (:fn "FREE-TAG-ITEMS" -78 (:a0) :void)   ; VOID FreeTagItems(struct TagItem * tagList) (A0) LVO -78
+  (:fn "REFRESH-TAG-ITEM-CLONES" -84 (:a0 :a1) :void)   ; VOID RefreshTagItemClones(struct TagItem * clone, CONST struct TagItem * original) (A0,A1) LVO -84
+  (:fn "TAG-IN-ARRAY" -90 (:d0 :a0) :bool)   ; BOOL TagInArray(Tag tagValue, CONST Tag * tagArray) (D0,A0) LVO -90
+  (:fn "FILTER-TAG-ITEMS" -96 (:a0 :a1 :d0) :unsigned)   ; ULONG FilterTagItems(struct TagItem * tagList, CONST Tag * filterArray, ULONG logic) (A0,A1,D0) LVO -96
+  (:fn "CALL-HOOK-PKT" -102 (:a0 :a2 :a1) :unsigned)   ; ULONG CallHookPkt(struct Hook * hook, APTR object, APTR paramPacket) (A0,A2,A1) LVO -102
+  (:fn "AMIGA2-DATE" -120 (:d0 :a0) :void)   ; VOID Amiga2Date(ULONG seconds, struct ClockData * result) (D0,A0) LVO -120
+  (:fn "DATE2-AMIGA" -126 (:a0) :unsigned)   ; ULONG Date2Amiga(CONST struct ClockData * date) (A0) LVO -126
+  (:fn "CHECK-DATE" -132 (:a0) :unsigned)   ; ULONG CheckDate(CONST struct ClockData * date) (A0) LVO -132
+  (:fn "S-MULT32" -138 (:d0 :d1) :signed)   ; LONG SMult32(LONG arg1, LONG arg2) (D0,D1) LVO -138
+  (:fn "U-MULT32" -144 (:d0 :d1) :unsigned)   ; ULONG UMult32(ULONG arg1, ULONG arg2) (D0,D1) LVO -144
+  (:fn "S-DIV-MOD32" -150 (:d0 :d1) :signed)   ; LONG SDivMod32(LONG dividend, LONG divisor) (D0,D1) LVO -150
+  (:fn "U-DIV-MOD32" -156 (:d0 :d1) :unsigned)   ; ULONG UDivMod32(ULONG dividend, ULONG divisor) (D0,D1) LVO -156
+  (:fn "STRICMP" -162 (:a0 :a1) :signed)   ; LONG Stricmp(CONST_STRPTR string1, CONST_STRPTR string2) (A0,A1) LVO -162
+  (:fn "STRNICMP" -168 (:a0 :a1 :d0) :signed)   ; LONG Strnicmp(CONST_STRPTR string1, CONST_STRPTR string2, LONG length) (A0,A1,D0) LVO -168
+  (:fn "TO-UPPER" -174 (:d0) :u8)   ; UBYTE ToUpper(UBYTE character) (D0) LVO -174
+  (:fn "TO-LOWER" -180 (:d0) :u8)   ; UBYTE ToLower(UBYTE character) (D0) LVO -180
+  (:fn "APPLY-TAG-CHANGES" -186 (:a0 :a1) :void)   ; VOID ApplyTagChanges(struct TagItem * list, CONST struct TagItem * changeList) (A0,A1) LVO -186
+  (:fn "S-MULT64" -198 (:d0 :d1) :signed)   ; LONG SMult64(LONG arg1, LONG arg2) (D0,D1) LVO -198
+  (:fn "U-MULT64" -204 (:d0 :d1) :unsigned)   ; ULONG UMult64(ULONG arg1, ULONG arg2) (D0,D1) LVO -204
+  (:fn "PACK-STRUCTURE-TAGS" -210 (:a0 :a1 :a2) :unsigned)   ; ULONG PackStructureTags(APTR pack, CONST ULONG * packTable, CONST struct TagItem * tagList) (A0,A1,A2) LVO -210
+  (:fn "UNPACK-STRUCTURE-TAGS" -216 (:a0 :a1 :a2) :unsigned)   ; ULONG UnpackStructureTags(CONST_APTR pack, CONST ULONG * packTable, struct TagItem * tagList) (A0,A1,A2) LVO -216
+  (:fn "ADD-NAMED-OBJECT" -222 (:a0 :a1) :bool)   ; BOOL AddNamedObject(struct NamedObject * nameSpace, struct NamedObject * object) (A0,A1) LVO -222
+  (:fn "ALLOC-NAMED-OBJECT-A" -228 (:a0 :a1) :pointer)   ; struct NamedObject * AllocNamedObjectA(CONST_STRPTR name, CONST struct TagItem * tagList) (A0,A1) LVO -228
+  (:fn "ATTEMPT-REM-NAMED-OBJECT" -234 (:a0) :signed)   ; LONG AttemptRemNamedObject(struct NamedObject * object) (A0) LVO -234
+  (:fn "FIND-NAMED-OBJECT" -240 (:a0 :a1 :a2) :pointer)   ; struct NamedObject * FindNamedObject(struct NamedObject * nameSpace, CONST_STRPTR name, CONST struct NamedObject * lastObject) (A0,A1,A2) LVO -240
+  (:fn "FREE-NAMED-OBJECT" -246 (:a0) :void)   ; VOID FreeNamedObject(struct NamedObject * object) (A0) LVO -246
+  (:fn "NAMED-OBJECT-NAME" -252 (:a0) :pointer)   ; STRPTR NamedObjectName(struct NamedObject * object) (A0) LVO -252
+  (:fn "RELEASE-NAMED-OBJECT" -258 (:a0) :void)   ; VOID ReleaseNamedObject(struct NamedObject * object) (A0) LVO -258
+  (:fn "REM-NAMED-OBJECT" -264 (:a0 :a1) :void)   ; VOID RemNamedObject(struct NamedObject * object, struct Message * message) (A0,A1) LVO -264
+  (:fn "GET-UNIQUE-ID" -270 () :unsigned)   ; ULONG GetUniqueID() () LVO -270
+  (:fn "VSN-PRINTF" -312 (:a0 :d0 :a1 :a2) :signed :not-morphos 47)   ; LONG VSNPrintf(STRPTR buffer, ULONG bufsize, CONST_STRPTR fmt, CONST_APTR data) (A0,D0,A1,A2) LVO -312
+  (:fn "STRNCPY" -438 (:a1 :a0 :d0) :pointer :not-morphos 47)   ; STRPTR Strncpy(STRPTR dst, CONST_STRPTR src, ULONG size) (A1,A0,D0) LVO -438
+  (:fn "STRNCAT" -444 (:a1 :a0 :d0) :pointer :not-morphos 47)   ; STRPTR Strncat(STRPTR dst, CONST_STRPTR src, ULONG size) (A1,A0,D0) LVO -444
+  (:fn "S-DIV-MOD64" -450 (:d1 :d0 :d2) :signed :not-morphos 47)   ; LONG SDivMod64(LONG hi, LONG lo, LONG divisor) (D1,D0,D2) LVO -450
+  (:fn "U-DIV-MOD64" -456 (:d1 :d0 :d2) :unsigned :not-morphos 47)   ; ULONG UDivMod64(ULONG hi, ULONG lo, ULONG divisor) (D1,D0,D2) LVO -456
+  )
 
 (provide "amiga/raw/utility")

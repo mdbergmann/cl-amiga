@@ -6,26 +6,32 @@
 ;;; 0 functions, 9 constants, 0 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.IMAGES.LED"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+LED-DUMMY+" "+LED-PAIRS+" "+LED-VALUES+" "+LED-COLON+" 
-   "+LED-NEGATIVE+" "+LED-SIGNED+" "+LED-TIME+" "+LED-HEXADECIMAL+" 
-   "+LED-RAW+" ))
+  (:export))
 
 (in-package "AMIGA.RAW.IMAGES.LED")
 
-;;; --- constants from images/led.i ---
-(defconstant +led-dummy+ #x84000000)
-(defconstant +led-pairs+ #x84000001)
-(defconstant +led-values+ #x84000002)
-(defconstant +led-colon+ #x84000003)
-(defconstant +led-negative+ #x84000004)
-(defconstant +led-signed+ #x84000005)
-(defconstant +led-time+ #x84000006)
-(defconstant +led-hexadecimal+ #x84000007)
-(defconstant +led-raw+ #x84000008)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.IMAGES.LED" ()
+
+  ;; --- constants from images/led.i ---
+  (:const "+LED-DUMMY+" #x84000000)
+  (:const "+LED-PAIRS+" #x84000001)
+  (:const "+LED-VALUES+" #x84000002)
+  (:const "+LED-COLON+" #x84000003)
+  (:const "+LED-NEGATIVE+" #x84000004)
+  (:const "+LED-SIGNED+" #x84000005)
+  (:const "+LED-TIME+" #x84000006)
+  (:const "+LED-HEXADECIMAL+" #x84000007)
+  (:const "+LED-RAW+" #x84000008)
+  )
 
 (provide "amiga/raw/images/led")

@@ -9,20 +9,14 @@
 ;;; 2 C macros skipped: not an integer constant (string, call, float).
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.GADGETS.DATEBROWSER"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*DATEBROWSER-BASE*" "*DATEBROWSER-VERSION*"
-   "+DATEBROWSER-DUMMY+" "+DATEBROWSER-DAY+" "+DATEBROWSER-MONTH+" 
-   "+DATEBROWSER-YEAR+" "+DATEBROWSER-SELECTED-DAYS+" 
-   "+DATEBROWSER-WEEK-DAY+" "+DATEBROWSER-FIRST-W-DAY+" 
-   "+DATEBROWSER-NUM-DAYS+" "+DATEBROWSER-SHOW-TITLE+" 
-   "+DATEBROWSER-MULTI-SELECT+" "+DATEBROWSER-DAY-TITLES+" 
-   "+DATEBROWSER-WEEK-TITLE+" "+DATEBROWSER-CALENDAR-TYPE+" 
-   "DATEBROWSER-GET-CLASS" "JULIAN-WEEK-DAY" "JULIAN-MONTH-DAYS" 
-   "JULIAN-LEAP-YEAR" ))
+  (:export "*DATEBROWSER-BASE*" "*DATEBROWSER-VERSION*"))
 
 (in-package "AMIGA.RAW.GADGETS.DATEBROWSER")
 
@@ -36,37 +30,32 @@
 (defun %version>= (n)
   (and *datebrowser-version* (>= *datebrowser-version* n)))
 
-;;; --- constants from gadgets/datebrowser.h ---
-(defconstant +datebrowser-dummy+ #x85061000)
-(defconstant +datebrowser-day+ #x85061000)
-(defconstant +datebrowser-month+ #x85061001)
-(defconstant +datebrowser-year+ #x85061002)
-(defconstant +datebrowser-selected-days+ #x85061003)
-(defconstant +datebrowser-week-day+ #x85061004)
-(defconstant +datebrowser-first-w-day+ #x85061005)
-(defconstant +datebrowser-num-days+ #x85061006)
-(defconstant +datebrowser-show-title+ #x85061007)
-(defconstant +datebrowser-multi-select+ #x85061008)
-(defconstant +datebrowser-day-titles+ #x85061009)
-(defconstant +datebrowser-week-title+ #x8506100B)
-(defconstant +datebrowser-calendar-type+ #x8506100C)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.GADGETS.DATEBROWSER"
+    (:base *datebrowser-base* :version *datebrowser-version*)
 
-;;; --- functions (datebrowser_lib.sfd + MorphOS SDK) ---
-(when (%version>= 40)
-  (amiga.ffi:defcfun datebrowser-get-class *datebrowser-base* -30 ()
-    :result :pointer
-    :doc "Class * DATEBROWSER_GetClass() () LVO -30"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun julian-week-day *datebrowser-base* -36 (:d0 day :d1 month :d2 year)
-    :result :u16
-    :doc "UWORD JulianWeekDay(ULONG day, ULONG month, LONG year) (D0,D1,D2) LVO -36"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun julian-month-days *datebrowser-base* -42 (:d0 month :d1 year)
-    :result :u16
-    :doc "UWORD JulianMonthDays(ULONG month, LONG year) (D0,D1) LVO -42"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun julian-leap-year *datebrowser-base* -48 (:d0 year)
-    :result :bool
-    :doc "BOOL JulianLeapYear(LONG year) (D0) LVO -48"))
+  ;; --- constants from gadgets/datebrowser.h ---
+  (:const "+DATEBROWSER-DUMMY+" #x85061000)
+  (:const "+DATEBROWSER-DAY+" #x85061000)
+  (:const "+DATEBROWSER-MONTH+" #x85061001)
+  (:const "+DATEBROWSER-YEAR+" #x85061002)
+  (:const "+DATEBROWSER-SELECTED-DAYS+" #x85061003)
+  (:const "+DATEBROWSER-WEEK-DAY+" #x85061004)
+  (:const "+DATEBROWSER-FIRST-W-DAY+" #x85061005)
+  (:const "+DATEBROWSER-NUM-DAYS+" #x85061006)
+  (:const "+DATEBROWSER-SHOW-TITLE+" #x85061007)
+  (:const "+DATEBROWSER-MULTI-SELECT+" #x85061008)
+  (:const "+DATEBROWSER-DAY-TITLES+" #x85061009)
+  (:const "+DATEBROWSER-WEEK-TITLE+" #x8506100B)
+  (:const "+DATEBROWSER-CALENDAR-TYPE+" #x8506100C)
+
+  ;; --- functions (datebrowser_lib.sfd + MorphOS SDK) ---
+  (:fn "DATEBROWSER-GET-CLASS" -30 () :pointer 40)   ; Class * DATEBROWSER_GetClass() () LVO -30
+  (:fn "JULIAN-WEEK-DAY" -36 (:d0 :d1 :d2) :u16 40)   ; UWORD JulianWeekDay(ULONG day, ULONG month, LONG year) (D0,D1,D2) LVO -36
+  (:fn "JULIAN-MONTH-DAYS" -42 (:d0 :d1) :u16 40)   ; UWORD JulianMonthDays(ULONG month, LONG year) (D0,D1) LVO -42
+  (:fn "JULIAN-LEAP-YEAR" -48 (:d0) :bool 40)   ; BOOL JulianLeapYear(LONG year) (D0) LVO -48
+  )
 
 (provide "amiga/raw/gadgets/datebrowser")

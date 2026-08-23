@@ -77,9 +77,61 @@
       (let ((msg (format nil "~A" e)))
         (and (search "not open" msg) t)))))
 
-(defun compiler-macro-p (pkg name)
+;; A DEFCFUN binding with <= 7 register args is an FFI stub (a binding
+;; descriptor in the function cell, see lib/amiga/ffi.lisp); the >7
+;; plist path is an ordinary DEFUN.  STUB-INFO is the descriptor's plist
+;; or NIL.
+(defun stub-info (pkg name)
   (let ((s (sym pkg name)))
-    (and s (compiler-macro-function s) t)))
+    (and s (fboundp s) (ffi::%ffi-stub-info s))))
+
+(defun libcall-stub-p (pkg name &key lvo result nparams)
+  (let ((info (stub-info pkg name)))
+    (and info
+         (eq (getf info :kind) :libcall)
+         (or (null lvo) (eql (getf info :lvo) lvo))
+         (or (null result) (eq (getf info :result) result))
+         (or (null nparams) (eql (getf info :nparams) nparams)))))
+
+;;; A module is one AMIGA.FFI:DEFINE-BINDING-TABLE form; its rows come back
+;;; from the registered table through CLAMIGA::%BINDING-TABLE-ENTRIES —
+;;; format-agnostic checks of what the generator emitted (LVOs, registers,
+;;; result kinds, guards, field layouts) without grepping source text.
+;;; Cached per package: an enumeration (DO-SYMBOLS) drops a table.
+(defvar *rows-cache* (make-hash-table :test 'equal))
+
+(defun table-rows (pkg)
+  (or (gethash pkg *rows-cache*)
+      (setf (gethash pkg *rows-cache*) (clamiga::%binding-table-entries pkg))))
+
+(defun rows-named (pkg kind name)
+  (remove-if-not (lambda (r) (and (eq (first r) kind)
+                                  (string= (second r) (string-upcase name))))
+                 (table-rows pkg)))
+
+(defun fn-row-p (pkg name &key lvo regs result guard min-version)
+  "Some (:fn NAME lvo regs result opts...) row matches every given property."
+  (some (lambda (r)
+          (let ((r-lvo (third r)) (r-regs (fourth r)) (r-result (fifth r))
+                (opts (nthcdr 5 r)))
+            (and (or (null lvo) (eql lvo r-lvo))
+                 (or (null regs) (equal regs r-regs))
+                 (or (null result) (eq result r-result))
+                 (or (null guard) (and (member guard opts) t))
+                 (or (null min-version) (and (member min-version opts) t)))))
+        (rows-named pkg :fn name)))
+
+(defun fn-row-count (pkg name) (length (rows-named pkg :fn name)))
+
+(defun field-row-p (pkg name type offset)
+  "Some (:field NAME type offset) row; TYPE :struct for an embedded struct."
+  (some (lambda (r) (and (equal (third r) type) (eql (fourth r) offset)))
+        (rows-named pkg :field name)))
+
+(defun const-row-p (pkg name value)
+  (some (lambda (r) (eql (third r) value)) (rows-named pkg :const name)))
+
+(defun name-row-p (pkg name) (and (rows-named pkg :name name) t))
 
 ;;; ----------------------------------------------------------------
 (defun fixture-checks ()
@@ -93,41 +145,58 @@
     (chk "version var NIL on host" (null (sym-value p "*example-version*")))
     (chk "base is opened via open-library-or-die on amigaos"
          (file-contains "example" "(amiga.ffi:open-library-or-die \"example.library\" 0)"))
+    ;; the module is one binding table (plus the base/version defvars)
+    (chk "module carries a binding table with :base/:version"
+         (let ((info (clamiga::%binding-table-info p)))
+           (and info (> (getf info :entries) 40)
+                (eq (getf info :base) (sym p "*example-base*"))
+                (eq (getf info :version) (sym p "*example-version*")))))
+    (chk "define-binding-table form in the source"
+         (file-contains "example" "(amiga.ffi:define-binding-table \"AMIGA.RAW.EXAMPLE\"
+    (:base *example-base* :version *example-version*)"))
+    (chk "names are materialised on first reference, not at load"
+         (let ((before (getf (clamiga::%binding-table-info p) :symbols)))
+           (sym p "ex-flags")            ; first reference
+           (= (getf (clamiga::%binding-table-info p) :symbols) (1+ before))))
     ;; plain functions: names, LVOs, registers, result kinds
     (chk "ex-flush defined + exported" (and (fbound p "ex-flush") (external-p p "ex-flush")))
     (chk "ex-flush: regs on the next line parsed, LVO -30, void"
-         (file-contains "example" "(amiga.ffi:defcfun ex-flush *example-base* -30 (:a0 thing)"))
-    (chk "ex-flush :result :void" (file-contains "example" "(:a0 thing)
-    :result :void"))
-    (chk "ex-create: pointer result, LVO -36, (:a0 name :d0 flags)"
-         (and (file-contains "example" "defcfun ex-create *example-base* -36 (:a0 name :d0 flags)")
+         (fn-row-p p "ex-flush" :lvo -30 :regs '(:a0) :result :void))
+    (chk "ex-create: pointer result, LVO -36, (:a0 name :d0 flags) with the prototype comment"
+         (and (fn-row-p p "ex-create" :lvo -36 :regs '(:a0 :d0) :result :pointer)
               (file-contains "example" "ExCreate(CONST_STRPTR name, ULONG flags) (A0,D0) LVO -36")))
-    (chk "ex-check :result :bool" (file-contains "example" "ex-check *example-base* -42 (:a0 thing :d0 value)
-    :result :bool"))
-    (chk "ex-compare :result :signed" (file-contains "example" "ex-compare *example-base* -48 (:a0 a :a1 b)
-    :result :signed"))
-    (chk "ex-count :result :u16" (file-contains "example" "ex-count *example-base* -54 (:a0 thing)
-    :result :u16"))
-    (chk "ex-flags :result :unsigned" (file-contains "example" "ex-flags *example-base* -60 (:a0 thing)
-    :result :unsigned"))
+    (chk "ex-check :result :bool" (fn-row-p p "ex-check" :lvo -42 :regs '(:a0 :d0) :result :bool))
+    (chk "ex-compare :result :signed" (fn-row-p p "ex-compare" :lvo -48 :regs '(:a0 :a1) :result :signed))
+    (chk "ex-count :result :u16" (fn-row-p p "ex-count" :lvo -54 :regs '(:a0) :result :u16))
+    (chk "ex-flags :result :unsigned" (fn-row-p p "ex-flags" :lvo -60 :regs '(:a0) :result :unsigned))
     (chk "ex-callback: function-pointer param named hook, LVO -66"
-         (file-contains "example" "ex-callback *example-base* -66 (:a0 thing :a1 hook)"))
+         (and (fn-row-p p "ex-callback" :lvo -66 :regs '(:a0 :a1) :result :bool)
+              (file-contains "example" "ExCallback(struct ExThing * thing, APTR hook) (A0,A1) LVO -66")))
     (chk "ex-callback arity 2" (arity-ok-p (symbol-function (sym p "ex-callback")) 2))
-    (chk "compiler macro registered on ex-create" (compiler-macro-p p "ex-create"))
+    (chk "ex-create is an FFI stub: LVO -36, :pointer result, 2 args"
+         (libcall-stub-p p "ex-create" :lvo -36 :result :pointer :nparams 2))
+    (chk "ex-check stub carries the :bool result kind"
+         (libcall-stub-p p "ex-check" :lvo -42 :result :bool :nparams 2))
+    (chk "ex-count stub carries the :u16 result kind"
+         (libcall-stub-p p "ex-count" :result :u16))
     ;; varargs / alias / private are not bound
     (chk "varargs ExCreateTags not emitted" (not (sym p "ex-create-tags")))
     (chk "private ExPrivate not emitted" (not (sym p "ex-private")))
     (chk "alias ExMovedAlias not emitted" (not (sym p "ex-moved-alias")))
     ;; ==reserve 2 skipped two LVOs: Open is at -90
-    (chk "==reserve: Open at LVO -90" (file-contains "example" "defcfun open *example-base* -90 (:d1 name :d2 mode)"))
+    (chk "==reserve: Open at LVO -90" (fn-row-p p "open" :lvo -90 :regs '(:d1 :d2)))
     (chk "Open shadows CL:OPEN" (and (sym p "open") (not (eq (sym p "open") 'cl:open))
                                      (fbound p "open") (external-p p "open")))
+    (chk "Open: the :shadow symbol got the table's definition"
+         (libcall-stub-p p "open" :lvo -90 :nparams 2))
     (chk "CL:OPEN still CL's" (eq (symbol-package 'cl:open) (find-package "COMMON-LISP")))
-    ;; >7 registers -> call-library, no compiler macro
+    ;; >7 registers -> a DEFUN over call-library, not an FFI stub
     (chk "ex-big-blit defined (8 regs, plist path)" (fbound p "ex-big-blit"))
-    (chk "ex-big-blit has no compiler macro" (not (compiler-macro-p p "ex-big-blit")))
-    (chk "ex-big-blit uses call-library with kind 3 (signed)"
-         (file-contains "example" "(:a0 a :d0 x :d1 y :a1 b :d2 w :d3 h :d4 minterm :d5 mask)"))
+    (chk "ex-big-blit (>7 registers) is a plain function, not a stub"
+         (and (fbound p "ex-big-blit") (not (stub-info p "ex-big-blit"))))
+    (chk "ex-big-blit exported by a (:name) row, defined after the table"
+         (and (name-row-p p "ex-big-blit") (external-p p "ex-big-blit")
+              (file-contains "example" "(amiga.ffi:defcfun ex-big-blit *example-base* -96 (:a0 a :d0 x :d1 y :a1 b :d2 w :d3 h :d4 minterm :d5 mask)")))
     ;; skips
     (chk "DOUBLE result skipped" (and (not (sym p "ex-double"))
                                       (file-contains "example" ";; skipped ExDouble: DOUBLE result")))
@@ -137,24 +206,24 @@
                                                (file-contains "example" ";; skipped ExPair: 64-bit register-pair")))
     (chk "sysv entry skipped" (and (not (sym p "ex-ppc-only"))
                                    (file-contains "example" ";; skipped ExPpcOnly: not a 68k register call (base,sysv)")))
-    ;; version guards (version NIL on host -> not defined either way)
-    (chk "ExNewV45 guarded by (%version>= 45), not defined on host"
-         (and (not (fbound p "ex-new-v45"))
-              (file-contains "example" "(when (and (not (member :morphos *features*)) (%version>= 45))")))
-    (chk "ExNewV47 guarded by (%version>= 47)"
-         (file-contains "example" "(when (and (not (member :morphos *features*)) (%version>= 47))"))
+    ;; version guards (version NIL on host -> present, exported, unbound)
+    (chk "ExNewV45 guarded by min-version 45 (:not-morphos), not defined on host"
+         (and (not (fbound p "ex-new-v45")) (external-p p "ex-new-v45")
+              (fn-row-p p "ex-new-v45" :lvo -120 :guard :not-morphos :min-version 45)))
+    (chk "ExNewV47 guarded by min-version 47"
+         (fn-row-p p "ex-new-v47" :lvo -126 :guard :not-morphos :min-version 47))
     ;; platform guards
     (chk "MorphOS-only ExMosOwn defined iff :morphos"
          (eq *mos* (fbound p "ex-mos-own")))
-    (chk "ExMosOwn guard text" (file-contains "example" "(when (member :morphos *features*)
-  (amiga.ffi:defcfun ex-mos-own *example-base* -126 (:a0 thing)"))
+    (chk "ExMosOwn row carries :morphos" (fn-row-p p "ex-mos-own" :lvo -126 :regs '(:a0) :guard :morphos))
     (chk "ExMoved: NDK variant at -132 only without :morphos"
-         (file-contains "example" "(when (and (not (member :morphos *features*)) (%version>= 47))
-  (amiga.ffi:defcfun ex-moved *example-base* -132 (:a0 thing)"))
+         (fn-row-p p "ex-moved" :lvo -132 :guard :not-morphos :min-version 47))
     (chk "ExMoved: MorphOS variant at -138 under :morphos"
-         (file-contains "example" "(when (member :morphos *features*)
-  (amiga.ffi:defcfun ex-moved *example-base* -138 (:a0 thing)"))
+         (and (fn-row-p p "ex-moved" :lvo -138 :guard :morphos)
+              (= 2 (fn-row-count p "ex-moved"))))
     (chk "ExMoved defined iff :morphos (host has no version)" (eq *mos* (fbound p "ex-moved")))
+    (chk "ExMoved under :morphos resolves to the -138 variant"
+         (or (not *mos*) (libcall-stub-p p "ex-moved" :lvo -138)))
     ;; constants
     (chk "+exf-base+ #x1000" (eql (sym-value p "+exf-base+") #x1000))
     (chk "+exf-first+ = base+1" (eql (sym-value p "+exf-first+") #x1001))
@@ -180,15 +249,24 @@
     (chk "constants exported" (external-p p "+exf-base+"))
     ;; structures
     (chk "*ex-thing-size* 36 (base from included file + ALIGNWORD)"
-         (eql (sym-value p "*ex-thing-size*") 36))
-    (chk "ex-thing-name :fptr at 6" (file-contains "example" "  (name :fptr 6)"))
-    (chk "ex-thing-x :i16 at 10" (file-contains "example" "  (x :i16 10)"))
+         (and (eql (sym-value p "*ex-thing-size*") 36)
+              (file-contains "example" "(:struct \"EX-THING\" 36   ; ExThing (libraries/example.i)")))
+    (chk "ex-thing-name :fptr at 6" (field-row-p p "ex-thing-name" :fptr 6))
+    (chk "ex-thing-x :i16 at 10" (field-row-p p "ex-thing-x" :i16 10))
     (chk "ex-thing-flag :u8 at 14, count :u32 at 16 after ALIGNWORD"
-         (and (file-contains "example" "  (flag :u8 14)") (file-contains "example" "  (count :u32 16)")))
-    (chk "ex-thing-inner (:struct 8) at 20 via <...>" (file-contains "example" "  (inner (:struct 8) 20)"))
-    (chk "ex-thing-marker LABEL -> (:struct 0) at 28" (file-contains "example" "  (marker (:struct 0) 28)"))
+         (and (field-row-p p "ex-thing-flag" :u8 14) (field-row-p p "ex-thing-count" :u32 16)))
+    (chk "ex-thing-inner (:struct 8) at 20 via <...>"
+         (and (field-row-p p "ex-thing-inner" :struct 20)
+              (file-contains "example" "(\"INNER\" (:struct 8) 20)")))
+    (chk "ex-thing-marker LABEL -> (:struct 0) at 28"
+         (and (field-row-p p "ex-thing-marker" :struct 28)
+              (file-contains "example" "(\"MARKER\" (:struct 0) 28)")))
     (chk "ex-thing-lock BPTR :u32, scale FLOAT :single"
-         (and (file-contains "example" "  (lock :u32 28)") (file-contains "example" "  (scale :single 32)")))
+         (and (field-row-p p "ex-thing-lock" :u32 28) (field-row-p p "ex-thing-scale" :single 32)))
+    (chk "field setter %SET-EX-THING-X is internal, its DEFSETF registered"
+         (multiple-value-bind (s status) (find-symbol "%SET-EX-THING-X" p)
+           (and s (eq status :internal) (fboundp s)
+                (eq (getf (ffi::%ffi-stub-info s) :kind) :poke))))
     (chk "accessors work: x/y/flag on foreign memory"
          (let ((m (ffi:alloc-foreign 36)))
            (unwind-protect
@@ -206,7 +284,16 @@
               (eql (sym-value p "*io-std-req-size*") 8)
               (fbound p "io-request-device") (fbound p "io-std-req-actual")
               (not (fbound p "io-request-actual"))))
-    (chk "struct accessors exported" (and (external-p p "ex-thing-x") (external-p p "*ex-thing-size*"))))
+    (chk "struct accessors exported" (and (external-p p "ex-thing-x") (external-p p "*ex-thing-size*")))
+    ;; laziness is invisible to CL: enumeration builds everything, then the
+    ;; package is ordinary (same symbols, EQ to the ones touched before)
+    (let ((before (sym p "ex-flush")) (n 0))
+      (do-symbols (s p) (when (eq (symbol-package s) (find-package p)) (incf n)))
+      (chk "do-symbols flips the package eager (table dropped), symbols stay EQ"
+           (and (null (clamiga::%binding-table-info p))
+                (eq before (sym p "ex-flush"))
+                (> n 40)
+                (fbound p "ex-flush") (eql (sym-value p "+exf-base+") #x1000)))))
   ;; header-only module from the included file
   (let ((p "AMIGA.RAW.EXEC.EXBASE"))
     (chk "header-only module package" (find-package p))
@@ -336,6 +423,22 @@
           (incf failed)
           (format t "FAIL load ~A: ~A~%" (file-namestring f) e))))
     (chk (format nil "all ~D committed modules load on host" (length files)) (zerop failed))
+    ;; every module is a binding table: the package carries one after load,
+    ;; and loading materialised nothing beyond the eager defvars/defuns
+    (let ((pkgs (remove-if-not (lambda (pk)
+                                 (let ((n (package-name pk)))
+                                   (and (> (length n) 10) (string= "AMIGA.RAW." n :end2 10))))
+                               (list-all-packages))))
+      (chk (format nil "all ~D AMIGA.RAW.* packages carry a binding table" (length pkgs))
+           (and (>= (length pkgs) 100)
+                (every #'clamiga::%binding-table-info pkgs)))
+      ;; (the base/version vars, %VERSION>=, and the >7-register DEFCFUNs'
+      ;; parameter names — cybergraphics has the most, 46)
+      (chk "loading a module materialises only its eager symbols (< 60)"
+           (every (lambda (pk) (< (getf (clamiga::%binding-table-info pk) :symbols) 60)) pkgs))
+      (chk "intuition: ~1500 table entries in ~47 KB of table"
+           (let ((info (clamiga::%binding-table-info "AMIGA.RAW.INTUITION")))
+             (and (> (getf info :entries) 1400) (< (getf info :bytes) 60000)))))
     ;; generated headers
     (chk "modules carry the DO NOT EDIT banner"
          (every (lambda (f)
@@ -349,18 +452,17 @@
     (chk "intuition: window-rport / window-user-port accessors"
          (and (fbound "AMIGA.RAW.INTUITION" "window-rport") (fbound "AMIGA.RAW.INTUITION" "window-user-port")))
     (chk "intuition: open-window-tag-list -606 pointer result"
-         (file-contains "intuition" "defcfun open-window-tag-list *intuition-base* -606 (:a0 new-window :a1 tag-list)
-    :result :pointer"))
+         (fn-row-p "AMIGA.RAW.INTUITION" "open-window-tag-list" :lvo -606 :regs '(:a0 :a1) :result :pointer))
     (chk "intuition: show-window (V46, private on MorphOS) guarded"
-         (file-contains "intuition" "(when (and (not (member :morphos *features*)) (%version>= 46))
-  (amiga.ffi:defcfun show-window"))
+         (fn-row-p "AMIGA.RAW.INTUITION" "show-window" :lvo -834 :guard :not-morphos :min-version 46))
     (chk "intuition: MorphOS-only get-monitor-list iff :morphos"
          (eq *mos* (fbound "AMIGA.RAW.INTUITION" "get-monitor-list")))
     (chk "exec: +memf-chip+ 2, +memf-clear+ #x10000"
          (and (eql (sym-value "AMIGA.RAW.EXEC" "+memf-chip+") 2)
               (eql (sym-value "AMIGA.RAW.EXEC" "+memf-clear+") #x10000)))
     (chk "exec: avail-mem at LVO -216 (:d1 requirements)"
-         (file-contains "exec" "defcfun avail-mem *exec-base* -216 (:d1 requirements)"))
+         (and (fn-row-p "AMIGA.RAW.EXEC" "avail-mem" :lvo -216 :regs '(:d1) :result :unsigned)
+              (file-contains "exec" "AvailMem(ULONG requirements) (D1) LVO -216")))
     (chk "exec: node 14 / msg-port 34 / io-request 32 / io-std-req 48 / library 34"
          (and (eql (sym-value "AMIGA.RAW.EXEC" "*node-size*") 14)
               (eql (sym-value "AMIGA.RAW.EXEC" "*msg-port-size*") 34)
@@ -370,8 +472,7 @@
     (chk "exec: library-version shadowed (struct accessor != amiga.ffi's)"
          (not (eq (sym "AMIGA.RAW.EXEC" "library-version") 'amiga.ffi:library-version)))
     (chk "exec: NewMinList (V45, clashes on MorphOS) is AmigaOS-only"
-         (file-contains "exec" "(when (and (not (member :morphos *features*)) (%version>= 45))
-  (amiga.ffi:defcfun new-min-list"))
+         (fn-row-p "AMIGA.RAW.EXEC" "new-min-list" :guard :not-morphos :min-version 45))
     (chk "exec: MorphOS-only alloc-vec-pooled iff :morphos"
          (eq *mos* (fbound "AMIGA.RAW.EXEC" "alloc-vec-pooled")))
     (chk "exec: +cmd-nonstd+ 9 (DEVCMD macro)" (eql (sym-value "AMIGA.RAW.EXEC" "+cmd-nonstd+") 9))
@@ -386,20 +487,16 @@
               (eql (sym-value "AMIGA.RAW.DOS" "+mode-newfile+") 1006)))
     (chk "dos: *file-info-block-size* 260" (eql (sym-value "AMIGA.RAW.DOS" "*file-info-block-size*") 260))
     (chk "dos: ErrorOutput (OS 3.2, clashes on MorphOS) AmigaOS-only"
-         (file-contains "dos" "(when (not (member :morphos *features*))
-  (amiga.ffi:defcfun error-output"))
+         (fn-row-p "AMIGA.RAW.DOS" "error-output" :guard :not-morphos))
     (chk "graphics: rastport spelling, *rastport-size* 100"
          (eql (sym-value "AMIGA.RAW.GRAPHICS" "*rastport-size*") 100))
     (chk "graphics: blt-bitmap (11 registers) via call-library"
          (and (fbound "AMIGA.RAW.GRAPHICS" "blt-bitmap")
-              (not (compiler-macro-p "AMIGA.RAW.GRAPHICS" "blt-bitmap"))))
+              (not (stub-info "AMIGA.RAW.GRAPHICS" "blt-bitmap"))))
     (chk "graphics: read-pixel ULONG -> :unsigned, write-pixel LONG -> :signed, set-a-pen :void"
-         (and (file-contains "graphics" "defcfun read-pixel *graphics-base* -318 (:a1 rp :d0 x :d1 y)
-    :result :unsigned")
-              (file-contains "graphics" "defcfun write-pixel *graphics-base* -324 (:a1 rp :d0 x :d1 y)
-    :result :signed")
-              (file-contains "graphics" "defcfun set-a-pen *graphics-base* -342 (:a1 rp :d0 pen)
-    :result :void")))
+         (and (fn-row-p "AMIGA.RAW.GRAPHICS" "read-pixel" :lvo -318 :regs '(:a1 :d0 :d1) :result :unsigned)
+              (fn-row-p "AMIGA.RAW.GRAPHICS" "write-pixel" :lvo -324 :regs '(:a1 :d0 :d1) :result :signed)
+              (fn-row-p "AMIGA.RAW.GRAPHICS" "set-a-pen" :lvo -342 :regs '(:a1 :d0) :result :void)))
     (chk "naming: SetAPen/AddGList/ModifyIDCMP/BltBitMap/RPort"
          (and (fbound "AMIGA.RAW.GRAPHICS" "set-a-pen")
               (fbound "AMIGA.RAW.INTUITION" "add-g-list")
@@ -427,8 +524,7 @@
               (not (probe-file (raw-file "window"))) (not (probe-file (raw-file "layout")))))
     ;; (the class functions are V40+ guarded, so they are unbound on the host)
     (chk "gadgets/button: BUTTON_GetClass + tags (BUTTON_Dummy TAG_USER+0x04000000)"
-         (and (file-contains "gadgets/button" "(amiga.ffi:defcfun button-get-class *button-base* -30 ()
-    :result :pointer")
+         (and (fn-row-p "AMIGA.RAW.GADGETS.BUTTON" "button-get-class" :lvo -30 :regs '() :result :pointer)
               (file-contains "gadgets/button" "(amiga.ffi:open-library-or-die \"gadgets/button.gadget\" 0)")
               (eql (sym-value "AMIGA.RAW.GADGETS.BUTTON" "+button-dummy+") #x84000000)
               (eql (sym-value "AMIGA.RAW.GADGETS.BUTTON" "+button-justification+") #x84000010)
@@ -437,13 +533,13 @@
                    (sym-value "AMIGA.RAW.INTUITION" "+ga-image+"))))
     (chk "gadgets/layout: LAYOUT_AddChild, RethinkLayout"
          (and (eql (sym-value "AMIGA.RAW.GADGETS.LAYOUT" "+layout-add-child+") #x85007014)
-              (file-contains "gadgets/layout" "defcfun rethink-layout *layout-base* -48 (:a0 gadget :a1 window :a2 requester :d0 refresh)")))
+              (fn-row-p "AMIGA.RAW.GADGETS.LAYOUT" "rethink-layout" :lvo -48 :regs '(:a0 :a1 :a2 :d0))))
     (chk "images/bevel: opened as images/bevel.image, BEVEL_Dummy"
          (and (file-contains "images/bevel" "(amiga.ffi:open-library-or-die \"images/bevel.image\" 0)")
               (eql (sym-value "AMIGA.RAW.IMAGES.BEVEL" "+bevel-dummy+") #x85016000)))
     (chk "classes/window: window.class, WINDOW_Position, WMHI_CLOSEWINDOW (1<<16), WMHI_IGNORE (~0L)"
          (and (file-contains "classes/window" "(amiga.ffi:open-library-or-die \"window.class\" 0)")
-              (file-contains "classes/window" "(amiga.ffi:defcfun window-get-class *window-base* -30 ()")
+              (fn-row-p "AMIGA.RAW.CLASSES.WINDOW" "window-get-class" :lvo -30 :regs '() :result :pointer)
               (eql (sym-value "AMIGA.RAW.CLASSES.WINDOW" "+window-position+") #x8502500E)
               (eql (sym-value "AMIGA.RAW.CLASSES.WINDOW" "+wmhi-closewindow+") #x10000)
               (eql (sym-value "AMIGA.RAW.CLASSES.WINDOW" "+wmhi-ignore+") -1)

@@ -9,28 +9,14 @@
 ;;; 1 C macro skipped: not an integer constant (string, call, float).
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.GADGETS.GETSCREENMODE"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*GETSCREENMODE-BASE*" "*GETSCREENMODE-VERSION*"
-   "+GETSCREENMODE-DUMMY+" "+GETSCREENMODE-TITLE-TEXT+" 
-   "+GETSCREENMODE-HEIGHT+" "+GETSCREENMODE-WIDTH+" 
-   "+GETSCREENMODE-LEFT-EDGE+" "+GETSCREENMODE-TOP-EDGE+" 
-   "+GETSCREENMODE-DISPLAY-ID+" "+GETSCREENMODE-DISPLAY-WIDTH+" 
-   "+GETSCREENMODE-DISPLAY-HEIGHT+" "+GETSCREENMODE-DISPLAY-DEPTH+" 
-   "+GETSCREENMODE-OVERSCAN-TYPE+" "+GETSCREENMODE-AUTO-SCROLL+" 
-   "+GETSCREENMODE-INFO-OPENED+" "+GETSCREENMODE-INFO-LEFT-EDGE+" 
-   "+GETSCREENMODE-INFO-TOP-EDGE+" "+GETSCREENMODE-DO-WIDTH+" 
-   "+GETSCREENMODE-DO-HEIGHT+" "+GETSCREENMODE-DO-DEPTH+" 
-   "+GETSCREENMODE-DO-OVERSCAN-TYPE+" "+GETSCREENMODE-DO-AUTO-SCROLL+" 
-   "+GETSCREENMODE-PROPERTY-FLAGS+" "+GETSCREENMODE-PROPERTY-MASK+" 
-   "+GETSCREENMODE-MIN-WIDTH+" "+GETSCREENMODE-MAX-WIDTH+" 
-   "+GETSCREENMODE-MIN-HEIGHT+" "+GETSCREENMODE-MAX-HEIGHT+" 
-   "+GETSCREENMODE-MIN-DEPTH+" "+GETSCREENMODE-MAX-DEPTH+" 
-   "+GETSCREENMODE-FILTER-FUNC+" "+GETSCREENMODE-CUSTOM-SM-LIST+" 
-   "+GSM-REQUEST+" "GETSCREENMODE-GET-CLASS" ))
+  (:export "*GETSCREENMODE-BASE*" "*GETSCREENMODE-VERSION*"))
 
 (in-package "AMIGA.RAW.GADGETS.GETSCREENMODE")
 
@@ -44,43 +30,47 @@
 (defun %version>= (n)
   (and *getscreenmode-version* (>= *getscreenmode-version* n)))
 
-;;; --- constants from gadgets/getscreenmode.h ---
-(defconstant +getscreenmode-dummy+ #x85041000)
-(defconstant +getscreenmode-title-text+ #x85041001)
-(defconstant +getscreenmode-height+ #x85041002)
-(defconstant +getscreenmode-width+ #x85041003)
-(defconstant +getscreenmode-left-edge+ #x85041004)
-(defconstant +getscreenmode-top-edge+ #x85041005)
-(defconstant +getscreenmode-display-id+ #x85041006)
-(defconstant +getscreenmode-display-width+ #x85041007)
-(defconstant +getscreenmode-display-height+ #x85041008)
-(defconstant +getscreenmode-display-depth+ #x85041009)
-(defconstant +getscreenmode-overscan-type+ #x8504100A)
-(defconstant +getscreenmode-auto-scroll+ #x8504100B)
-(defconstant +getscreenmode-info-opened+ #x8504100C)
-(defconstant +getscreenmode-info-left-edge+ #x8504100D)
-(defconstant +getscreenmode-info-top-edge+ #x8504100E)
-(defconstant +getscreenmode-do-width+ #x8504100F)
-(defconstant +getscreenmode-do-height+ #x85041010)
-(defconstant +getscreenmode-do-depth+ #x85041011)
-(defconstant +getscreenmode-do-overscan-type+ #x85041012)
-(defconstant +getscreenmode-do-auto-scroll+ #x85041013)
-(defconstant +getscreenmode-property-flags+ #x85041014)
-(defconstant +getscreenmode-property-mask+ #x85041015)
-(defconstant +getscreenmode-min-width+ #x85041016)
-(defconstant +getscreenmode-max-width+ #x85041017)
-(defconstant +getscreenmode-min-height+ #x85041018)
-(defconstant +getscreenmode-max-height+ #x85041019)
-(defconstant +getscreenmode-min-depth+ #x8504101A)
-(defconstant +getscreenmode-max-depth+ #x8504101B)
-(defconstant +getscreenmode-filter-func+ #x8504101C)
-(defconstant +getscreenmode-custom-sm-list+ #x8504101D)
-(defconstant +gsm-request+ #x610001)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.GADGETS.GETSCREENMODE"
+    (:base *getscreenmode-base* :version *getscreenmode-version*)
 
-;;; --- functions (getscreenmode_lib.sfd + MorphOS SDK) ---
-(when (%version>= 40)
-  (amiga.ffi:defcfun getscreenmode-get-class *getscreenmode-base* -30 ()
-    :result :pointer
-    :doc "Class * GETSCREENMODE_GetClass() () LVO -30"))
+  ;; --- constants from gadgets/getscreenmode.h ---
+  (:const "+GETSCREENMODE-DUMMY+" #x85041000)
+  (:const "+GETSCREENMODE-TITLE-TEXT+" #x85041001)
+  (:const "+GETSCREENMODE-HEIGHT+" #x85041002)
+  (:const "+GETSCREENMODE-WIDTH+" #x85041003)
+  (:const "+GETSCREENMODE-LEFT-EDGE+" #x85041004)
+  (:const "+GETSCREENMODE-TOP-EDGE+" #x85041005)
+  (:const "+GETSCREENMODE-DISPLAY-ID+" #x85041006)
+  (:const "+GETSCREENMODE-DISPLAY-WIDTH+" #x85041007)
+  (:const "+GETSCREENMODE-DISPLAY-HEIGHT+" #x85041008)
+  (:const "+GETSCREENMODE-DISPLAY-DEPTH+" #x85041009)
+  (:const "+GETSCREENMODE-OVERSCAN-TYPE+" #x8504100A)
+  (:const "+GETSCREENMODE-AUTO-SCROLL+" #x8504100B)
+  (:const "+GETSCREENMODE-INFO-OPENED+" #x8504100C)
+  (:const "+GETSCREENMODE-INFO-LEFT-EDGE+" #x8504100D)
+  (:const "+GETSCREENMODE-INFO-TOP-EDGE+" #x8504100E)
+  (:const "+GETSCREENMODE-DO-WIDTH+" #x8504100F)
+  (:const "+GETSCREENMODE-DO-HEIGHT+" #x85041010)
+  (:const "+GETSCREENMODE-DO-DEPTH+" #x85041011)
+  (:const "+GETSCREENMODE-DO-OVERSCAN-TYPE+" #x85041012)
+  (:const "+GETSCREENMODE-DO-AUTO-SCROLL+" #x85041013)
+  (:const "+GETSCREENMODE-PROPERTY-FLAGS+" #x85041014)
+  (:const "+GETSCREENMODE-PROPERTY-MASK+" #x85041015)
+  (:const "+GETSCREENMODE-MIN-WIDTH+" #x85041016)
+  (:const "+GETSCREENMODE-MAX-WIDTH+" #x85041017)
+  (:const "+GETSCREENMODE-MIN-HEIGHT+" #x85041018)
+  (:const "+GETSCREENMODE-MAX-HEIGHT+" #x85041019)
+  (:const "+GETSCREENMODE-MIN-DEPTH+" #x8504101A)
+  (:const "+GETSCREENMODE-MAX-DEPTH+" #x8504101B)
+  (:const "+GETSCREENMODE-FILTER-FUNC+" #x8504101C)
+  (:const "+GETSCREENMODE-CUSTOM-SM-LIST+" #x8504101D)
+  (:const "+GSM-REQUEST+" #x610001)
+
+  ;; --- functions (getscreenmode_lib.sfd + MorphOS SDK) ---
+  (:fn "GETSCREENMODE-GET-CLASS" -30 () :pointer 40)   ; Class * GETSCREENMODE_GetClass() () LVO -30
+  )
 
 (provide "amiga/raw/gadgets/getscreenmode")

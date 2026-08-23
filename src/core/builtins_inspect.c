@@ -114,7 +114,7 @@ int cl_inspect_component_count(CL_Obj obj)
     }
     if (CL_PACKAGE_P(obj))
         return 3;
-    if (CL_FUNCTION_P(obj))
+    if (CL_FUNCTION_P(obj) || CL_FFI_STUB_P(obj))
         return 1;
     return 0;
 }
@@ -285,6 +285,12 @@ CL_Obj cl_inspect_get_component(CL_Obj obj, int idx, const char **label)
     if (CL_FUNCTION_P(obj)) {
         CL_Function *fn = (CL_Function *)CL_OBJ_TO_PTR(obj);
         if (idx == 0) { *label = "Name"; return fn->name; }
+        return CL_NIL;
+    }
+
+    if (CL_FFI_STUB_P(obj)) {
+        CL_FfiStub *fs = (CL_FfiStub *)CL_OBJ_TO_PTR(obj);
+        if (idx == 0) { *label = "Name"; return fs->name; }
         return CL_NIL;
     }
 

@@ -2008,6 +2008,24 @@ CL_Obj cl_make_foreign_pointer(uint32_t address, uint32_t size, uint8_t flags)
     return CL_PTR_TO_OBJ(fp);
 }
 
+CL_Obj cl_make_ffi_stub(uint8_t kind, CL_Obj name, CL_Obj aux,
+                        uint32_t a, int16_t b, uint8_t ctype)
+{
+    CL_FfiStub *st;
+    CL_GC_PROTECT(name);
+    CL_GC_PROTECT(aux);
+    st = (CL_FfiStub *)cl_alloc(TYPE_FFI_STUB, sizeof(CL_FfiStub));
+    CL_GC_UNPROTECT(2);
+    if (!st) return CL_NIL;
+    st->name = name;
+    st->aux = aux;
+    st->a = a;
+    st->b = b;
+    st->kind = kind;
+    st->ctype = ctype;
+    return CL_PTR_TO_OBJ(st);
+}
+
 CL_Obj cl_make_pathname(CL_Obj host, CL_Obj device, CL_Obj directory,
                         CL_Obj name, CL_Obj type, CL_Obj version)
 {
@@ -2136,8 +2154,8 @@ void cl_gc_reset_roots(void)
  * below abort on every byte-vector mark in non-wide stress builds; the
  * compile-time check keeps at least that known-latest tag covered. */
 #define GC_DBG_MAX_TYPE CL_TYPE_MAX
-typedef char gc_dbg_max_type_covers_byte_vector[
-    (TYPE_BYTE_VECTOR <= GC_DBG_MAX_TYPE) ? 1 : -1];
+typedef char gc_dbg_max_type_covers_ffi_stub[
+    (TYPE_FFI_STUB <= GC_DBG_MAX_TYPE) ? 1 : -1];
 /* Object whose children are currently being pushed — provenance for the
  * gc_mark_push plausibility guard.  NULL while pushing from the root set. */
 static void *gc_dbg_mark_parent;
@@ -2388,6 +2406,7 @@ static void gc_mark_push(CL_Obj obj)
         GC_VISIT(p->local_nicknames);                                         \
         GC_VISIT(p->shadowing_symbols);                                       \
         GC_VISIT(p->exported_symbols);                                        \
+        GC_VISIT(p->bindings);                                                \
         break;                                                               \
     }                                                                        \
     case TYPE_HASHTABLE: {                                                    \
@@ -2417,6 +2436,12 @@ static void gc_mark_push(CL_Obj obj)
         GC_VISIT(r->interactive);                                             \
         GC_VISIT(r->test);                                                    \
         GC_VISIT(r->tag);                                                     \
+        break;                                                               \
+    }                                                                        \
+    case TYPE_FFI_STUB: {                                                     \
+        CL_FfiStub *fs = (CL_FfiStub *)(ptr);                                 \
+        GC_VISIT(fs->name);                                                   \
+        GC_VISIT(fs->aux);                                                    \
         break;                                                               \
     }                                                                        \
     case TYPE_STRUCT: {                                                       \
@@ -4171,14 +4196,15 @@ static void gc_update_shared_roots(void)
     /* Struct registry hash index — its keys (name symbols) and cached
      * entry values just moved; mark it stale so it rebuilds lazily
      * before the next lookup (builtins_struct.c).  Ditto the condition
-     * hierarchy and deftype table indexes (CL_AlistIndex, compiler.h). */
+     * hierarchy index and the compiler's deftype / compiler-macro /
+     * defsetf table indexes (CL_AlistIndex, compiler.h). */
     {
         extern void cl_struct_index_gc_invalidate(void);
         extern void cl_condition_index_gc_invalidate(void);
-        extern void cl_type_index_gc_invalidate(void);
+        extern void cl_compiler_indexes_gc_invalidate(void);
         cl_struct_index_gc_invalidate();
         cl_condition_index_gc_invalidate();
-        cl_type_index_gc_invalidate();
+        cl_compiler_indexes_gc_invalidate();
     }
 }
 
@@ -5252,6 +5278,12 @@ static void gc_verify_marked(void)
                 gc_verify_check_ref(parent_off, "tag", r->tag);
                 break;
             }
+            case TYPE_FFI_STUB: {
+                CL_FfiStub *fs = (CL_FfiStub *)ptr;
+                gc_verify_check_ref(parent_off, "name", fs->name);
+                gc_verify_check_ref(parent_off, "aux", fs->aux);
+                break;
+            }
             case TYPE_STREAM: {
                 CL_Stream *st = (CL_Stream *)ptr;
                 gc_verify_check_ref(parent_off, "string_buf", st->string_buf);
@@ -5299,6 +5331,7 @@ static void gc_verify_marked(void)
                 gc_verify_check_ref(parent_off, "local_nicknames", p->local_nicknames);
                 gc_verify_check_ref(parent_off, "shadowing", p->shadowing_symbols);
                 gc_verify_check_ref(parent_off, "exported", p->exported_symbols);
+                gc_verify_check_ref(parent_off, "bindings", p->bindings);
                 break;
             }
             default:

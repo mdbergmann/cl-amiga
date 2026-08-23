@@ -3,6 +3,7 @@
 #include "mem.h"
 #include "error.h"
 #include "compiler.h"
+#include "bindtab.h"
 #include "../platform/platform.h"
 #include "../platform/platform_thread.h"
 #include "thread.h"
@@ -117,7 +118,19 @@ static CL_Obj find_own_symbol(const char *name, uint32_t len, CL_Obj package)
 static int exported_p_nolock(CL_Obj sym, CL_Obj package)
 {
     CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
-    CL_Obj list = pkg->exported_symbols;
+    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    CL_Obj list;
+    /* O(1) answers for the two dominant cases — see CL_SYM_EXPORTED_HOME
+     * in types.h.  (1) PACKAGE is the symbol's home: the exact per-home
+     * flag IS the list membership.  (2) No package at all exports the
+     * symbol (the hint flag is clear): the list cannot contain it.  Only
+     * "exported from a non-home package" (import + export, or exporting
+     * an inherited symbol) still walks the list. */
+    if (s->package == package)
+        return (s->flags & CL_SYM_EXPORTED_HOME) != 0;
+    if (!(s->flags & CL_SYM_EXPORTED))
+        return 0;
+    list = pkg->exported_symbols;
     while (!CL_NULL_P(list)) {
         if (cl_car(list) == sym) return 1;
         list = cl_cdr(list);
@@ -134,6 +147,11 @@ static CL_Obj find_external_nolock(const char *name, uint32_t len, CL_Obj packag
     if (sym != CL_UNBOUND && exported_p_nolock(sym, package))
         return sym;
     return CL_UNBOUND;
+}
+
+int cl_package_exported_p_nolock(CL_Obj sym, CL_Obj package)
+{
+    return exported_p_nolock(sym, package);
 }
 
 int cl_symbol_external_p(CL_Obj sym, CL_Obj package)
@@ -246,6 +264,7 @@ CL_Obj cl_make_package(const char *name)
     pkg->local_nicknames = CL_NIL;
     pkg->shadowing_symbols = CL_NIL;
     pkg->exported_symbols = CL_NIL;
+    pkg->bindings = CL_NIL;
     pkg->sym_count = 0;
     return CL_PTR_TO_OBJ(pkg);
 }
@@ -255,8 +274,12 @@ CL_Obj cl_make_package(const char *name)
  * call while holding cl_package_rwlock — see package_link_symbol_cell. */
 void cl_package_add_symbol_cell(CL_Obj package, CL_Obj symbol, CL_Obj cell)
 {
+    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(symbol);
     package_link_symbol_cell(package, symbol, cell);
-    ((CL_Symbol *)CL_OBJ_TO_PTR(symbol))->package = package;
+    s->package = package;
+    /* A new home: the symbol is not on THIS package's export list yet
+     * (the per-home flag must track the list exactly, see types.h). */
+    s->flags &= ~CL_SYM_EXPORTED_HOME;
 }
 
 /* Allocating convenience wrapper — must NOT be called while holding
@@ -273,26 +296,144 @@ void cl_package_add_symbol(CL_Obj package, CL_Obj symbol)
     cl_package_add_symbol_cell(package, symbol, cell);
 }
 
+/* Raw-symbol view of find_own_symbol for bindtab.c's locked re-check
+ * (CL_UNBOUND when absent; SYM_NIL not normalized).  Holders must own
+ * cl_package_rwlock. */
+CL_Obj cl_package_find_own_symbol_nolock(const char *name, uint32_t len,
+                                         CL_Obj package)
+{
+    return find_own_symbol(name, len, package);
+}
+
+/* Push SYM onto PACKAGE's export list through the pre-consed CELL and set
+ * the export flags — plain stores only, for use under the write lock by a
+ * caller that has already verified SYM is present in PACKAGE and not yet
+ * exported (bindtab.c's materialiser).  Mirrors the tail of
+ * cl_export_symbol. */
+void cl_package_push_export_cell_nolock(CL_Obj package, CL_Obj symbol,
+                                        CL_Obj cell)
+{
+    CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
+    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(symbol);
+    ((CL_Cons *)CL_OBJ_TO_PTR(cell))->cdr = pkg->exported_symbols;
+    pkg->exported_symbols = cell;
+    s->flags |= CL_SYM_EXPORTED;
+    if (s->package == package)
+        s->flags |= CL_SYM_EXPORTED_HOME;
+}
+
+/* The one lookup behind FIND-SYMBOL, INTERN, the reader and use-list
+ * inheritance, extended with the demand-interned binding tables
+ * (bindtab.c): a name that is not PRESENT in a package but is in the
+ * package's table is reported as a lazy hit, and the caller materialises
+ * it after dropping the lock.
+ *
+ * Order (CLHS 11.1.1.2 — present symbols shadow inherited ones):
+ *   1. PACKAGE's own table; then PACKAGE's binding table (a table entry
+ *      IS a present symbol of the package that has not been built yet,
+ *      so it wins over anything inherited);
+ *   2. each used package in use-list order: its present EXTERNAL
+ *      symbols, then its binding table — the two are one external set.
+ *
+ * Returns the symbol (raw, CL_UNBOUND when absent) and *status
+ * (0 absent, 1 :INTERNAL, 2 :EXTERNAL, 3 :INHERITED).  On a lazy hit the
+ * return is CL_UNBOUND, *status is the status the materialised symbol
+ * will have, and *lazy_pkg / *name_idx / *def_idx / *want_setter are
+ * what cl_bindtab_materialize needs.  Non-allocating; holders must own
+ * cl_package_rwlock (read is enough). */
+static CL_Obj lookup_nolock(const char *name, uint32_t len, CL_Obj package,
+                            int *status, CL_Obj *lazy_pkg,
+                            int *name_idx, int *def_idx, int *want_setter)
+{
+    CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
+    CL_Obj sym, uses;
+
+    *lazy_pkg = CL_NIL;
+    sym = find_own_symbol(name, len, package);
+    if (sym != CL_UNBOUND) {
+        *status = exported_p_nolock(sym, package) ? 2 : 1;
+        return sym;
+    }
+    if (!CL_NULL_P(pkg->bindings) &&
+        cl_bindtab_probe_nolock(package, name, len, 1,
+                                name_idx, def_idx, want_setter)) {
+        *lazy_pkg = package;
+        *status = *want_setter ? 1 : 2;
+        return CL_UNBOUND;
+    }
+    uses = pkg->use_list;
+    while (!CL_NULL_P(uses)) {
+        CL_Obj used = cl_car(uses);
+        CL_Obj found = find_external_nolock(name, len, used);
+        if (found != CL_UNBOUND) {
+            *status = 3;
+            return found;
+        }
+        if (!CL_NULL_P(((CL_Package *)CL_OBJ_TO_PTR(used))->bindings) &&
+            cl_bindtab_probe_nolock(used, name, len, 0,
+                                    name_idx, def_idx, want_setter)) {
+            *lazy_pkg = used;
+            *status = 3;
+            return CL_UNBOUND;
+        }
+        uses = cl_cdr(uses);
+    }
+    *status = 0;
+    return CL_UNBOUND;
+}
+
+/* Locked lookup + (outside the lock) materialisation of a lazy hit.
+ * EXTERNAL_ONLY restricts the search to PACKAGE's own externals (no
+ * use-list, no internal setters) — cl_package_find_external's contract. */
+static CL_Obj lookup_and_materialize(const char *name, uint32_t len,
+                                     CL_Obj package, int external_only,
+                                     int *status)
+{
+    CL_Obj sym, lazy_pkg = CL_NIL;
+    int name_idx = 0, def_idx = -1, want_setter = 0;
+
+    pkg_lock_read();
+    if (external_only) {
+        sym = find_external_nolock(name, len, package);
+        if (sym != CL_UNBOUND) {
+            *status = 2;
+        } else if (!CL_NULL_P(((CL_Package *)CL_OBJ_TO_PTR(package))->bindings) &&
+                   cl_bindtab_probe_nolock(package, name, len, 0,
+                                           &name_idx, &def_idx, &want_setter)) {
+            lazy_pkg = package;
+            *status = 2;
+        } else {
+            *status = 0;
+        }
+    } else {
+        sym = lookup_nolock(name, len, package, status, &lazy_pkg,
+                            &name_idx, &def_idx, &want_setter);
+    }
+    pkg_unlock();
+
+    if (sym != CL_UNBOUND) return sym;
+    if (!CL_NULL_P(lazy_pkg))
+        return cl_bindtab_materialize(lazy_pkg, name, len, name_idx, def_idx,
+                                      want_setter, 0);
+    return CL_UNBOUND;
+}
+
 /* Public API: returns CL_NIL when not found (preserved historical contract
  * for C callers that use CL_NULL_P-as-not-found).  Callers that need to
  * distinguish "found NIL" from "missing" should use
  * cl_find_symbol_with_status. */
 CL_Obj cl_package_find_external(const char *name, uint32_t len, CL_Obj package)
 {
-    CL_Obj result;
-    pkg_lock_read();
-    result = find_external_nolock(name, len, package);
-    pkg_unlock();
+    int status;
+    CL_Obj result = lookup_and_materialize(name, len, package, 1, &status);
     if (result == CL_UNBOUND) return CL_NIL;
     return normalize_nil(result);
 }
 
 CL_Obj cl_package_find_symbol(const char *name, uint32_t len, CL_Obj package)
 {
-    CL_Obj result;
-    pkg_lock_read();
-    result = cl_package_find_symbol_nolock(name, len, package);
-    pkg_unlock();
+    int status;
+    CL_Obj result = lookup_and_materialize(name, len, package, 0, &status);
     if (result == CL_UNBOUND) return CL_NIL;
     return normalize_nil(result);
 }
@@ -300,40 +441,25 @@ CL_Obj cl_package_find_symbol(const char *name, uint32_t len, CL_Obj package)
 CL_Obj cl_find_symbol_with_status(const char *name, uint32_t len,
                                    CL_Obj package, int *status)
 {
-    CL_Obj sym;
-
-    pkg_lock_read();
-
-    /* Search own symbol table first */
-    sym = find_own_symbol(name, len, package);
-    if (sym != CL_UNBOUND) {
-        if (exported_p_nolock(sym, package)) {
-            *status = 2; /* :EXTERNAL */
-        } else {
-            *status = 1; /* :INTERNAL */
-        }
-        pkg_unlock();
-        return normalize_nil(sym);
+    CL_Obj sym = lookup_and_materialize(name, len, package, 0, status);
+    if (sym == CL_UNBOUND) {
+        *status = 0;
+        return CL_NIL;
     }
+    return normalize_nil(sym);
+}
 
-    /* Search use-list — only exported symbols */
-    {
-        CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
-        CL_Obj uses = pkg->use_list;
-        while (!CL_NULL_P(uses)) {
-            CL_Obj found = find_external_nolock(name, len, cl_car(uses));
-            if (found != CL_UNBOUND) {
-                *status = 3; /* :INHERITED */
-                pkg_unlock();
-                return normalize_nil(found);
-            }
-            uses = cl_cdr(uses);
-        }
-    }
-
-    *status = 0; /* not found */
-    pkg_unlock();
-    return CL_NIL;
+/* cl_intern_in's write-locked re-check: what is there NOW, plus a lazy
+ * probe — a binding table registered between the fast path and the
+ * write lock must still win over a fresh unbound symbol (otherwise that
+ * symbol would shadow its own definition forever).  Returns the symbol,
+ * or CL_UNBOUND; *lazy_pkg etc. as lookup_nolock. */
+CL_Obj cl_package_lookup_nolock(const char *name, uint32_t len, CL_Obj package,
+                                int *status, CL_Obj *lazy_pkg,
+                                int *name_idx, int *def_idx, int *want_setter)
+{
+    return lookup_nolock(name, len, package, status, lazy_pkg,
+                         name_idx, def_idx, want_setter);
 }
 
 CL_Obj cl_find_package(const char *name, uint32_t len)
@@ -414,13 +540,31 @@ void cl_export_symbol(CL_Obj sym, CL_Obj package)
     CL_Obj cell_import, cell_export;
     int conflict;
     if (CL_NULL_P(sym)) return;
+    /* A lazy package (binding table attached) about to IMPORT a symbol
+     * that is not present: the import could silently shadow a table name
+     * of the same spelling, so flip the package eager first (materialise
+     * every table entry, drop the table) and let the ordinary conflict
+     * check see the real symbol set.  Rare — exporting a foreign symbol
+     * from a generated binding package.
+     * GC SAFETY: sym/package must be rooted before cl_bindtab_materialize_all
+     * — materialising a whole table allocates heavily and can compact. */
+    CL_GC_PROTECT(sym);
+    CL_GC_PROTECT(package);
+    if (!CL_NULL_P(((CL_Package *)CL_OBJ_TO_PTR(package))->bindings)) {
+        CL_Symbol *s0 = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+        CL_String *n0 = (CL_String *)CL_OBJ_TO_PTR(s0->name);
+        CL_Obj present;
+        pkg_lock_read();
+        present = find_own_symbol(n0->data, n0->length, package);
+        pkg_unlock();
+        if (present == CL_UNBOUND)
+            cl_bindtab_materialize_all(package);
+    }
     /* Pre-cons both cells the locked section might need OUTSIDE the lock
      * (allocating under cl_package_rwlock risks an STW-vs-rwlock deadlock
      * — see package_link_symbol_cell).  An unused cell simply becomes
      * garbage.  All raw pointers are derived after the conses; they stay
      * valid through the lock because no allocation happens under it. */
-    CL_GC_PROTECT(sym);
-    CL_GC_PROTECT(package);
     cell_import = cl_cons(sym, CL_NIL);
     CL_GC_PROTECT(cell_import);
     cell_export = cl_cons(sym, CL_NIL);
@@ -447,9 +591,14 @@ void cl_export_symbol(CL_Obj sym, CL_Obj package)
     /* Keep the legacy global flag in sync (used by printer / describe
      * fast paths and by FASL loader as a "any package exports this"
      * heuristic).  Source of truth for find-symbol is the per-package
-     * list above. */
-    if (!conflict)
+     * list above — mirrored EXACTLY into CL_SYM_EXPORTED_HOME when
+     * PACKAGE is the symbol's home, so exported_p_nolock can answer the
+     * home case without walking the list. */
+    if (!conflict) {
         s->flags |= CL_SYM_EXPORTED;
+        if (s->package == package)
+            s->flags |= CL_SYM_EXPORTED_HOME;
+    }
     pkg_unlock();
     if (conflict)
         cl_error(CL_ERR_GENERAL,
@@ -492,7 +641,7 @@ void cl_unexport_symbol(CL_Obj sym, CL_Obj package)
     pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
     pkg_list_remove_eq(&pkg->exported_symbols, sym);
     if (s->package == package)
-        s->flags &= ~CL_SYM_EXPORTED;
+        s->flags &= ~(CL_SYM_EXPORTED | CL_SYM_EXPORTED_HOME);
     pkg_unlock();
 }
 
@@ -501,11 +650,18 @@ void cl_import_symbol(CL_Obj sym, CL_Obj package)
     CL_Obj cell;
     int conflict;
     if (CL_NULL_P(sym)) return;
+    /* Importing into a lazy package: the imported symbol could shadow a
+     * not-yet-built table name — flip eager so the conflict check below
+     * sees the complete symbol set (see cl_export_symbol).
+     * GC SAFETY: sym/package must be rooted before cl_bindtab_materialize_all
+     * — materialising a whole table allocates heavily and can compact. */
+    CL_GC_PROTECT(sym);
+    CL_GC_PROTECT(package);
+    if (!CL_NULL_P(((CL_Package *)CL_OBJ_TO_PTR(package))->bindings))
+        cl_bindtab_materialize_all(package);
     /* Pre-cons the bucket cell outside the lock; report a conflict only
      * AFTER unlocking (a longjmp from under the write lock would leak it
      * and deadlock every later intern). */
-    CL_GC_PROTECT(sym);
-    CL_GC_PROTECT(package);
     cell = cl_cons(sym, CL_NIL);
     CL_GC_UNPROTECT(2);
     pkg_lock_write();
@@ -539,13 +695,28 @@ void cl_shadow_symbol(const char *name, uint32_t len, CL_Obj package)
     }
     h = cl_hash_string(name, len);
 
-    /* Fast path: already directly present. */
-    pkg_lock_read();
-    existing = find_own_symbol(name, len, package);
-    pkg_unlock();
-    if (existing != CL_UNBOUND) {
-        if (heapname) platform_free(heapname);
-        return;
+    /* Fast path: already directly present — or present in the package's
+     * binding table, which CLHS-wise is the same thing ("a symbol with
+     * that name is already present: no new symbol is created"): build it. */
+    {
+        int name_idx = 0, def_idx = -1, want_setter = 0, lazy = 0;
+        pkg_lock_read();
+        existing = find_own_symbol(name, len, package);
+        if (existing == CL_UNBOUND &&
+            !CL_NULL_P(((CL_Package *)CL_OBJ_TO_PTR(package))->bindings))
+            lazy = cl_bindtab_probe_nolock(package, name, len, 1,
+                                           &name_idx, &def_idx, &want_setter);
+        pkg_unlock();
+        if (existing != CL_UNBOUND) {
+            if (heapname) platform_free(heapname);
+            return;
+        }
+        if (lazy) {
+            (void)cl_bindtab_materialize(package, name, len, name_idx, def_idx,
+                                         want_setter, 0);
+            if (heapname) platform_free(heapname);
+            return;
+        }
     }
 
     /* Create the symbol AND its bucket cell OUTSIDE the lock (allocating
@@ -759,8 +930,12 @@ static void export_symbols_where(CL_Obj package, int (*pred)(CL_Obj sym))
             sym = cl_car(list);
             s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
             if (pred == NULL || pred(sym)) {
-                if (!(s->flags & CL_SYM_EXPORTED))
-                    s->flags |= CL_SYM_EXPORTED;
+                s->flags |= CL_SYM_EXPORTED;
+                /* Every symbol in PACKAGE's own table that passes PRED
+                 * ends up on the export list (already there, or pushed
+                 * below) — so the per-home flag is exact here too. */
+                if (s->package == package)
+                    s->flags |= CL_SYM_EXPORTED_HOME;
                 if (!(s->flags & CL_SYM_LISTED)) {
                     CL_Obj cell;
                     CL_GC_PROTECT(sym);

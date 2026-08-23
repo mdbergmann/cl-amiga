@@ -260,8 +260,7 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
         return 0;
     }
     if (strcmp(tname, "FUNCTION") == 0)
-        return CL_FUNCTION_P(obj) || CL_CLOSURE_P(obj) || CL_BYTECODE_P(obj)
-            || cl_funcallable_instance_p(obj);
+        return CL_FUNCTION_OBJ_P(obj) || cl_funcallable_instance_p(obj);
     if (strcmp(tname, "GENERIC-FUNCTION") == 0)
         return cl_funcallable_instance_p(obj);
     if (strcmp(tname, "STANDARD-GENERIC-FUNCTION") == 0)
@@ -1478,7 +1477,7 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
      * fdefinition for symbols, compile for lambda exprs */
     if (strcmp(tname, "FUNCTION") == 0 ||
         strcmp(tname, "COMPILED-FUNCTION") == 0) {
-        if (CL_FUNCTION_P(obj) || CL_BYTECODE_P(obj) || CL_CLOSURE_P(obj))
+        if (CL_FUNCTION_OBJ_P(obj))
             return obj;
         if (CL_SYMBOL_P(obj))
             return cl_coerce_funcdesig(obj, "COERCE");

@@ -8,20 +8,14 @@
 ;;; 1 functions, 22 constants, 0 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.GADGETS.FUELGAUGE"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*FUELGAUGE-BASE*" "*FUELGAUGE-VERSION*"
-   "+FUELGAUGE-DUMMY+" "+FUELGAUGE-MIN+" "+FUELGAUGE-MAX+" 
-   "+FUELGAUGE-LEVEL+" "+FUELGAUGE-ORIENTATION+" "+FUELGAUGE-PERCENT+" 
-   "+FUELGAUGE-TICKS+" "+FUELGAUGE-SHORT-TICKS+" "+FUELGAUGE-TICK-SIZE+" 
-   "+FUELGAUGE-TICK-PEN+" "+FUELGAUGE-PERCENT-PEN+" "+FUELGAUGE-FILL-PEN+" 
-   "+FUELGAUGE-EMPTY-PEN+" "+FUELGAUGE-VAR-ARGS+" 
-   "+FUELGAUGE-JUSTIFICATION+" "+FGORIENT-HORIZ+" "+FGORIENT-VERT+" 
-   "+FGJ-LEFT+" "+FGJ-CENTER+" "+FGJ-CENTRE+" "+FUELGAUGE-HORIZONTAL+" 
-   "+FUELGAUGE-VERTICAL+" "FUELGAUGE-GET-CLASS" ))
+  (:export "*FUELGAUGE-BASE*" "*FUELGAUGE-VERSION*"))
 
 (in-package "AMIGA.RAW.GADGETS.FUELGAUGE")
 
@@ -35,34 +29,38 @@
 (defun %version>= (n)
   (and *fuelgauge-version* (>= *fuelgauge-version* n)))
 
-;;; --- constants from gadgets/fuelgauge.h ---
-(defconstant +fuelgauge-dummy+ #x85012000)
-(defconstant +fuelgauge-min+ #x85012001)
-(defconstant +fuelgauge-max+ #x85012002)
-(defconstant +fuelgauge-level+ #x85012003)
-(defconstant +fuelgauge-orientation+ #x85012004)
-(defconstant +fuelgauge-percent+ #x85012005)
-(defconstant +fuelgauge-ticks+ #x85012006)
-(defconstant +fuelgauge-short-ticks+ #x85012007)
-(defconstant +fuelgauge-tick-size+ #x85012008)
-(defconstant +fuelgauge-tick-pen+ #x85012009)
-(defconstant +fuelgauge-percent-pen+ #x8501200A)
-(defconstant +fuelgauge-fill-pen+ #x8501200B)
-(defconstant +fuelgauge-empty-pen+ #x8501200C)
-(defconstant +fuelgauge-var-args+ #x8501200D)
-(defconstant +fuelgauge-justification+ #x8501200E)
-(defconstant +fgorient-horiz+ 0)
-(defconstant +fgorient-vert+ 1)
-(defconstant +fgj-left+ 0)
-(defconstant +fgj-center+ 1)
-(defconstant +fgj-centre+ 1)
-(defconstant +fuelgauge-horizontal+ 0)
-(defconstant +fuelgauge-vertical+ 1)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.GADGETS.FUELGAUGE"
+    (:base *fuelgauge-base* :version *fuelgauge-version*)
 
-;;; --- functions (fuelgauge_lib.sfd + MorphOS SDK) ---
-(when (%version>= 40)
-  (amiga.ffi:defcfun fuelgauge-get-class *fuelgauge-base* -30 ()
-    :result :pointer
-    :doc "Class * FUELGAUGE_GetClass() () LVO -30"))
+  ;; --- constants from gadgets/fuelgauge.h ---
+  (:const "+FUELGAUGE-DUMMY+" #x85012000)
+  (:const "+FUELGAUGE-MIN+" #x85012001)
+  (:const "+FUELGAUGE-MAX+" #x85012002)
+  (:const "+FUELGAUGE-LEVEL+" #x85012003)
+  (:const "+FUELGAUGE-ORIENTATION+" #x85012004)
+  (:const "+FUELGAUGE-PERCENT+" #x85012005)
+  (:const "+FUELGAUGE-TICKS+" #x85012006)
+  (:const "+FUELGAUGE-SHORT-TICKS+" #x85012007)
+  (:const "+FUELGAUGE-TICK-SIZE+" #x85012008)
+  (:const "+FUELGAUGE-TICK-PEN+" #x85012009)
+  (:const "+FUELGAUGE-PERCENT-PEN+" #x8501200A)
+  (:const "+FUELGAUGE-FILL-PEN+" #x8501200B)
+  (:const "+FUELGAUGE-EMPTY-PEN+" #x8501200C)
+  (:const "+FUELGAUGE-VAR-ARGS+" #x8501200D)
+  (:const "+FUELGAUGE-JUSTIFICATION+" #x8501200E)
+  (:const "+FGORIENT-HORIZ+" 0)
+  (:const "+FGORIENT-VERT+" 1)
+  (:const "+FGJ-LEFT+" 0)
+  (:const "+FGJ-CENTER+" 1)
+  (:const "+FGJ-CENTRE+" 1)
+  (:const "+FUELGAUGE-HORIZONTAL+" 0)
+  (:const "+FUELGAUGE-VERTICAL+" 1)
+
+  ;; --- functions (fuelgauge_lib.sfd + MorphOS SDK) ---
+  (:fn "FUELGAUGE-GET-CLASS" -30 () :pointer 40)   ; Class * FUELGAUGE_GetClass() () LVO -30
+  )
 
 (provide "amiga/raw/gadgets/fuelgauge")

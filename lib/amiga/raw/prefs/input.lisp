@@ -6,29 +6,34 @@
 ;;; 0 functions, 1 constants, 1 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.PREFS.INPUT"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+ID-INPT+" "*INPUT-PREFS-SIZE*" "INPUT-PREFS-KEYMAP" 
-   "INPUT-PREFS-POINTER-TICKS" "INPUT-PREFS-DOUBLE-CLICK" 
-   "INPUT-PREFS-KEY-RPT-DELAY" "INPUT-PREFS-KEY-RPT-SPEED" 
-   "INPUT-PREFS-MOUSE-ACCEL" ))
+  (:export))
 
 (in-package "AMIGA.RAW.PREFS.INPUT")
 
-;;; --- constants from prefs/input.i ---
-(defconstant +id-inpt+ #x494E5054)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.PREFS.INPUT" ()
 
-;;; --- structures from prefs/input.i ---
-(ffi:defcstruct (input-prefs :size 44)   ; InputPrefs (prefs/input.i)
-  (keymap (:struct 16) 0)
-  (pointer-ticks :u16 16)
-  (double-click (:struct 8) 18)
-  (key-rpt-delay (:struct 8) 26)
-  (key-rpt-speed (:struct 8) 34)
-  (mouse-accel :i16 42)
-)
+  ;; --- constants from prefs/input.i ---
+  (:const "+ID-INPT+" #x494E5054)
+
+  ;; --- structures from prefs/input.i ---
+  (:struct "INPUT-PREFS" 44   ; InputPrefs (prefs/input.i)
+    ("KEYMAP" (:struct 16) 0)
+    ("POINTER-TICKS" :u16 16)
+    ("DOUBLE-CLICK" (:struct 8) 18)
+    ("KEY-RPT-DELAY" (:struct 8) 26)
+    ("KEY-RPT-SPEED" (:struct 8) 34)
+    ("MOUSE-ACCEL" :i16 42)
+    )
+  )
 
 (provide "amiga/raw/prefs/input")

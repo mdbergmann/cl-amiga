@@ -22,14 +22,28 @@
 #          detection, so a host-compiled FASL is portable (FASLs are
 #          arch/endian-neutral; boot.fasl + clos.fasl have shipped this way
 #          all along).
+#   FASL + SOURCE
+#          amiga/**       — the curated modules, AMIGA.REACTION and the
+#                           generated raw OS bindings (lib/amiga/raw/**): no
+#                           reader conditionals, all platform variance is
+#                           load-time ((member :morphos *features*),
+#                           (%version>= n)) and every struct layout is an
+#                           explicit 32-bit offset, so ONE host-compiled FASL
+#                           serves aos3, aos3-fpu and MorphOS.  Precompiled
+#                           because the alternative is compiling ~1 MB of
+#                           generated source on a 68020 at first REQUIRE
+#                           (minutes, plus compile heap).  The sources ship
+#                           too, as the readable API reference and as the
+#                           fallback REQUIRE takes if a FASL is ever rejected;
+#                           the FASLs are written AFTER the sources are
+#                           copied, so REQUIRE's "FASL at least as new as the
+#                           source" rule picks the FASL.
 #   SOURCE asdf.lisp      — uiop's (detect-os) runs at compile time and bakes
 #                           :os-unix branches of the *compiling* host in.
 #          quicklisp.lisp — contains #+amigaos reader conditionals.
 #          quicklisp-compat.lisp, quicklisp-install.lisp — reference
 #                           quicklisp packages that don't exist at host
 #                           compile time (macros would compile wrong).
-#          amiga/*.lisp   — reference the AMIGA package, which only exists on
-#                           the AmigaOS build; unreadable by the host compiler.
 #          shims/         — the cl+ssl facade and swank stub ASDF systems.
 #                           lib/asdf.lisp auto-registers them on
 #                           ASDF:*CENTRAL-REGISTRY* (searched before the
@@ -37,6 +51,13 @@
 #                           package-manager copy with no installation step.
 #   Source-shipped files compile on the target on first (require ...) and are
 #   cached under S:cl-amiga/faslcache/, so the cost is paid once.
+#
+#   Every FASL is compiled with CLAMIGA_FASL_PORTABLE=1: the m68k AmigaOS
+#   binaries are byte-string builds with no decoder for FASL_TAG_WIDE_STRING
+#   (MorphOS is a wide build but loads the same FASLs), so a
+#   non-ASCII string literal in a shipped module fails the build HERE with
+#   the source line, not on the Amiga with BAD_TAG at REQUIRE time
+#   (tests/test_lib_fasl_portable.sh runs the same compile in `make test`).
 #
 # The binaries sit two directory levels below the release root on purpose:
 # both the boot search (repl.c) and REQUIRE resolve lib/ via the
@@ -116,25 +137,33 @@ chmod +x "$STAGE/bin/aos3/clamiga" "$STAGE/bin/aos3-fpu/clamiga" \
          "$STAGE/bin/mos/clamiga"
 
 # lib: FASL-portable modules, compiled by the just-built host binary so
-# CL_FASL_VERSION matches the packaged binaries exactly.
+# CL_FASL_VERSION matches the packaged binaries exactly.  The script compiles
+# with CLAMIGA_FASL_PORTABLE=1 and refuses a module whose compile printed an
+# error or produced no FASL (see its header).
 FASL_LIBS="boot clos ffi gray-streams"
-for m in $FASL_LIBS; do
-    echo "--- compile-file lib/$m.lisp -> $REL/lib/$m.fasl ---"
-    CLAMIGA_NO_USERINIT=1 "$HOST_BIN" --non-interactive --heap 48M \
-        --eval "(compile-file \"lib/$m.lisp\" :output-file \"$STAGE/lib/$m.fasl\")" \
-        --eval '(quit)' > /dev/null
-    [ -s "$STAGE/lib/$m.fasl" ] || { echo "ERROR: lib/$m.fasl not produced" >&2; exit 1; }
-done
+echo "--- compile-file $FASL_LIBS -> $REL/lib/*.fasl ---"
+sh scripts/compile-lib-fasls.sh -o "$STAGE" -b "$HOST_BIN" \
+    $(for m in $FASL_LIBS; do printf 'lib/%s.lisp ' "$m"; done) \
+    || { echo "ERROR: lib FASLs not produced" >&2; exit 1; }
 
 # lib: source-shipped modules (see policy above)
 cp lib/asdf.lisp lib/quicklisp.lisp lib/quicklisp-compat.lisp \
    lib/quicklisp-install.lisp "$STAGE/lib/"
-cp lib/amiga/*.lisp "$STAGE/lib/amiga/"
-# the generated raw OS bindings (lib/amiga/raw/**, source-shipped like the
-# rest of lib/amiga: compiled into the faslcache on first require)
-mkdir -p "$STAGE/lib/amiga/raw"
-cp -R lib/amiga/raw/. "$STAGE/lib/amiga/raw/"
 cp -R lib/shims "$STAGE/lib/shims"
+
+# lib/amiga/**: sources first (only .lisp -- an in-repo `make fasl-amiga`
+# output must not leak in), then the FASLs compiled on top of them so they
+# are the newer of the pair and REQUIRE picks them (see policy above).
+find lib/amiga -name '*.lisp' | while read -r f; do
+    mkdir -p "$STAGE/$(dirname "$f")"
+    cp "$f" "$STAGE/$f"
+done
+echo "--- compile-file lib/amiga/** -> $REL/lib/amiga/**/*.fasl ---"
+# --no-docstrings: the DEFCFUN bindings ship without their C-prototype
+# docstrings (~16 KB of heap per raw OS module on the target; the .lisp
+# sources next to them keep the prototypes).
+sh scripts/compile-lib-fasls.sh -o "$STAGE" -b "$HOST_BIN" --no-docstrings \
+    || { echo "ERROR: lib/amiga FASLs not produced" >&2; exit 1; }
 
 # docs: package API reference only (no benchmarks/screenshots)
 cp docs/README.md docs/amiga.md docs/clamiga.md docs/ext.md docs/ffi.md \
@@ -206,9 +235,11 @@ Libraries
   (require "amiga/exec")       ; memory introspection, chip RAM
   (require "amiga/audio")      ; audio.device sample playback
 
-Some modules ship precompiled (*.fasl); the rest are Lisp sources that
-compile on your machine the first time they are required and are cached
-under S:cl-amiga/faslcache/, so later loads are fast.
+The core library and everything under lib/amiga/ (including the generated
+raw OS bindings) ship precompiled (*.fasl, loaded directly -- the sources sit
+next to them for reference); the remaining modules (asdf, quicklisp) are
+Lisp sources that compile on your machine the first time they are required
+and are cached under S:cl-amiga/faslcache/, so later loads are fast.
 
 Documentation
 -------------
@@ -237,7 +268,9 @@ if [ "$SMOKE" = 1 ]; then
     echo "--- Smoke test: lib resolution in deployed layout ---"
     SMOKEDIR=$(mktemp -d)
     trap 'rm -rf "$SMOKEDIR"' EXIT
-    cp -R "$STAGE" "$SMOKEDIR/rel"
+    # -p: keep the staged mtimes, i.e. the FASL-newer-than-source ordering
+    # that the archives preserve too and that REQUIRE decides on.
+    cp -Rp "$STAGE" "$SMOKEDIR/rel"
     cp "$HOST_BIN" "$SMOKEDIR/rel/bin/aos3/clamiga"
     ( cd "$SMOKEDIR" && \
       CLAMIGA_NO_USERINIT=1 CLAMIGA_HOME= $TIMEOUT \
@@ -245,6 +278,9 @@ if [ "$SMOKE" = 1 ]; then
         --eval '(require "gray-streams")' \
         --eval '(require "asdf")' \
         --eval '(format t "SHIM-AT ~a~%" (asdf:system-source-directory (asdf:find-system "cl+ssl")))' \
+        --eval '(require "amiga/raw/exec")' \
+        --eval '(require "amiga/reaction")' \
+        --eval '(format t "MEMF-CHIP ~a~%" (symbol-value (find-symbol "+MEMF-CHIP+" "AMIGA.RAW.EXEC")))' \
         --eval '(format t "SMOKE-OK ~a~%" (lisp-implementation-version))' \
         --eval '(quit)' ) | tee "$OUT/smoke.log" | grep -q "SMOKE-OK $VERSION" || {
         echo "ERROR: smoke test failed — see $OUT/smoke.log" >&2; exit 1; }
@@ -253,6 +289,13 @@ if [ "$SMOKE" = 1 ]; then
     # regardless of what Quicklisp/ocicl have on disk.
     grep -q "SHIM-AT .*rel/lib/shims/cl+ssl" "$OUT/smoke.log" || {
         echo "ERROR: cl+ssl shim did not resolve from the release lib/shims/ — see $OUT/smoke.log" >&2
+        exit 1; }
+    # lib/amiga must come up from the shipped FASLs (not the sources next to
+    # them) and work: REQUIRE prints the file it loads.
+    grep -q "; Loading .*rel/lib/amiga/raw/exec\.fasl" "$OUT/smoke.log" &&
+    grep -q "; Loading .*rel/lib/amiga/reaction\.fasl" "$OUT/smoke.log" &&
+    grep -q "^MEMF-CHIP 2" "$OUT/smoke.log" || {
+        echo "ERROR: lib/amiga did not load from the release FASLs — see $OUT/smoke.log" >&2
         exit 1; }
     echo "smoke test passed"
 fi

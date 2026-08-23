@@ -39,11 +39,14 @@
 ;;; examples, and tests/amiga/test-reaction.lisp for the executable
 ;;; specification of this module.
 
-(require "amiga/ffi")
-(require "amiga/raw/exec")
-(require "amiga/raw/dos")
-(require "amiga/raw/utility")
-(require "amiga/raw/intuition")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; these packages at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi")
+  (require "amiga/raw/exec")
+  (require "amiga/raw/dos")
+  (require "amiga/raw/utility")
+  (require "amiga/raw/intuition"))
 
 (defpackage "AMIGA.REACTION"
   (:use "CL" "FFI" "AMIGA.FFI")
@@ -114,7 +117,7 @@ address), T/NIL (TRUE/FALSE or a NULL pointer)."
         ((eq value t) 1)
         ((integerp value) (logand value #xFFFFFFFF))
         ((ffi:foreign-pointer-p value) (ffi:foreign-pointer-address value))
-        (t (error "AMIGA.REACTION: ~S cannot be passed as a ULONG — expected an integer, a foreign pointer, a string (tag values only), T or NIL"
+        (t (error "AMIGA.REACTION: ~S cannot be passed as a ULONG -- expected an integer, a foreign pointer, a string (tag values only), T or NIL"
                   value))))
 
 ;;; ================================================================
@@ -144,7 +147,7 @@ BODY exits, normally or not.  Wrap the whole life of a GUI in one."
 
 (defun %pool-register (pointer)
   (unless *foreign-pool*
-    (error "AMIGA.REACTION: a foreign allocation with the GUI's lifetime was requested outside WITH-FOREIGN-POOL — wrap the code that builds and runs the GUI in (AMIGA.REACTION:WITH-FOREIGN-POOL () ...)"))
+    (error "AMIGA.REACTION: a foreign allocation with the GUI's lifetime was requested outside WITH-FOREIGN-POOL -- wrap the code that builds and runs the GUI in (AMIGA.REACTION:WITH-FOREIGN-POOL () ...)"))
   (push pointer (car *foreign-pool*))
   pointer)
 
@@ -173,7 +176,7 @@ list with AMIGA.RAW.EXEC:ADD-TAIL."
 
 (defun free-list-nodes (list free-node)
   "Remove every node from the exec LIST (RemHead until empty) and call
-FREE-NODE on each — e.g. AMIGA.RAW.GADGETS.CHOOSER:FREE-CHOOSER-NODE.
+FREE-NODE on each -- e.g. AMIGA.RAW.GADGETS.CHOOSER:FREE-CHOOSER-NODE.
 Returns the number of nodes freed."
   (loop for node = (amiga.raw.exec:rem-head list)
         while node
@@ -189,7 +192,7 @@ through %ULONG; strings are copied into the foreign pool, because the
 object the list is handed to keeps the pointer.  Returns the array; the
 caller frees it (the ARRAY is not retained by NewObjectA / SetAttrsA)."
   (unless (evenp (length tags))
-    (error "AMIGA.REACTION: odd-length tag list ~S — expected (tag value ...) pairs" tags))
+    (error "AMIGA.REACTION: odd-length tag list ~S -- expected (tag value ...) pairs" tags))
   (let* ((n (floor (length tags) 2))
          (array (ffi:alloc-foreign (* 8 (1+ n))))
          (ok nil))
@@ -198,7 +201,7 @@ caller frees it (the ARRAY is not retained by NewObjectA / SetAttrsA)."
            (loop for (tag value) on tags by #'cddr
                  for offset from 0 by 8
                  do (unless (integerp tag)
-                      (error "AMIGA.REACTION: tag ~S is not an integer (value ~S) — the tag constants come from the amiga/raw/... modules" tag value))
+                      (error "AMIGA.REACTION: tag ~S is not an integer (value ~S) -- the tag constants come from the amiga/raw/... modules" tag value))
                     (ffi:poke-u32 array (logand tag #xFFFFFFFF) offset)
                     (ffi:poke-u32 array
                                   (if (stringp value)
@@ -218,7 +221,7 @@ caller frees it (the ARRAY is not retained by NewObjectA / SetAttrsA)."
 
 (defmacro with-tags ((var &rest tags) &body body)
   "Bind VAR to a TagItem array built from the TAGS plist (tag value
-...) for the extent of BODY — for the class-library functions that take
+...) for the extent of BODY -- for the class-library functions that take
 a tag list themselves: AllocListBrowserNodeA, AllocChooserNodeA,
 AllocClickTabNodeA, GetListBrowserNodeAttrsA...  Same value rules as
 NEW-OBJECT (string values are copied into the enclosing
@@ -239,10 +242,10 @@ o_Class."
 (defun do-method (object method-id &rest args)
   "IDoMethodA: invoke METHOD-ID on the BOOPSI OBJECT.  ARGS become the
 longwords following the MethodID in the message (integers, foreign
-pointers, T/NIL).  Returns the dispatcher's d0 as an unsigned integer —
+pointers, T/NIL).  Returns the dispatcher's d0 as an unsigned integer --
 wrap it with FFI:MAKE-FOREIGN-POINTER when the method returns a pointer
 \(OPEN-WINDOW does).  A class's dispatcher is the Hook at the start of
-its IClass, so this is CallHookPkt(OCLASS(obj), obj, msg) — exactly what
+its IClass, so this is CallHookPkt(OCLASS(obj), obj, msg) -- exactly what
 amiga.lib's DoMethodA does."
   (let* ((n (length args))
          (msg (ffi:alloc-foreign (* 4 (1+ n)))))
@@ -267,18 +270,18 @@ and value; integer, foreign-pointer, T/NIL and string values are
 accepted, strings being copied into the enclosing WITH-FOREIGN-POOL
 \(the object keeps the pointer).  Returns the object as a foreign
 pointer; signals an error when the class returns NULL (out of memory, a
-missing required attribute) — a NULL child silently handed on to a
+missing required attribute) -- a NULL child silently handed on to a
 layout is worse than an error here."
   (unless (and class (ffi:foreign-pointer-p class) (not (ffi:null-pointer-p class)))
-    (error "AMIGA.REACTION:NEW-OBJECT: ~S is not a class pointer — pass what the class module's xxx-GET-CLASS returns (is that module loaded on an AmigaOS/MorphOS with ReAction?)"
+    (error "AMIGA.REACTION:NEW-OBJECT: ~S is not a class pointer -- pass what the class module's xxx-GET-CLASS returns (is that module loaded on an AmigaOS/MorphOS with ReAction?)"
            class))
   (or (%with-tags (array tags)
         (amiga.raw.intuition:new-object-a class nil array))
-      (error "AMIGA.REACTION:NEW-OBJECT: NewObjectA returned NULL for class #x~X with ~D tags — out of memory, or a required attribute is missing/invalid"
+      (error "AMIGA.REACTION:NEW-OBJECT: NewObjectA returned NULL for class #x~X with ~D tags -- out of memory, or a required attribute is missing/invalid"
              (ffi:foreign-pointer-address class) (floor (length tags) 2))))
 
 (defun dispose-object (object)
-  "DisposeObject(OBJECT) — disposes the object and, for a window or
+  "DisposeObject(OBJECT) -- disposes the object and, for a window or
 layout object, everything attached to it.  NIL is ignored."
   (when object
     (amiga.raw.intuition:dispose-object object))
@@ -303,7 +306,7 @@ foreign pointer, or NIL for NULL / unknown."
         (ffi:make-foreign-pointer value))))
 
 (defun set-attrs (object &rest tags)
-  "SetAttrsA(OBJECT, TAGS) — same value rules as NEW-OBJECT.  Returns
+  "SetAttrsA(OBJECT, TAGS) -- same value rules as NEW-OBJECT.  Returns
 the class's result (non-zero usually means a visual refresh is due)."
   (%with-tags (array tags)
     (amiga.raw.intuition:set-attrs-a object array)))
@@ -359,7 +362,7 @@ a raw key, ...)."
 (defvar *event-loop-timeout* nil
   "Default :TIMEOUT of DO-WINDOW-EVENTS, in seconds; NIL = interactive
 \(block until the user closes the window).  Set it before loading a GUI
-program to run it unattended — the examples' harness and the test suite
+program to run it unattended -- the examples' harness and the test suite
 do:  --eval '(require \"amiga/reaction\")'
      --eval '(setf amiga.reaction:*event-loop-timeout* 5)' --load ...")
 
@@ -369,11 +372,11 @@ do:  --eval '(require \"amiga/reaction\")'
   "The ReAction event loop.  Waits on WINDOW-OBJECT's WINDOW_SigMask
 \(plus SIGBREAKF_CTRL_C and the extra SIGNALS mask, e.g. the signal of a
 WINDOW_AppPort) and runs BODY once per input message with RESULT bound to
-the WMHI_* result and CODE to the message Code — see HANDLE-INPUT.  BODY
+the WMHI_* result and CODE to the message Code -- see HANDLE-INPUT.  BODY
 calls (RETURN) to leave the loop; Ctrl-C leaves it too.
 
 With TIMEOUT (seconds; defaults to *EVENT-LOOP-TIMEOUT*) the loop polls
-instead of blocking and returns when the time is up — for unattended
+instead of blocking and returns when the time is up -- for unattended
 runs (test suites, screenshots), where nobody will click the close
 gadget."
   (let ((win (gensym "WIN")) (deadline (gensym "DEADLINE"))

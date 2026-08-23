@@ -4982,6 +4982,183 @@ check_contains "every exit hook ran once under compaction storm" "EXITHOOK-SUM:4
 check_absent   "no corruption diagnostics from the exit-hook walk" \
   "corrupted\|type 0\|SIGSEGV\|Unbound\|error in exit hook" "$out"
 
+# --- Case: FFI stubs (DEFCFUN / DEFCSTRUCT binding descriptors) ------------
+# The stub installers allocate a descriptor per binding (DEFCSTRUCT's bulk
+# installer also interns the %SET- setter symbols and conses defsetf
+# entries), the FASL reader rebuilds stubs from FASL_TAG_FFI_STUB with the
+# name rooted across the aux deserialize, and cl_ffi_stub_call's field
+# accessors allocate (:fptr readers, embedded-struct pointers).  Compile a
+# module clean, then load and exercise every stub kind under the storm.
+cat > "$WORK/stub.lisp" <<'EOF'
+(eval-when (:compile-toplevel :load-toplevel :execute) (require "amiga/ffi"))
+(defpackage :gcstress-stub (:use :cl :ffi :amiga.ffi)
+  (:export #:lc #:pt-x #:pt-p #:pt-sub #:pt-arr #:*pt-size* #:touch))
+(in-package :gcstress-stub)
+(defvar *base* nil)
+(defcfun lc *base* -30 (:a0 x :d0 y) :result :i16 :doc "WORD LC(APTR x, LONG y)")
+(defcstruct (pt :size 24) (x :i16 0) (p :fptr 4) (sub (:struct 4) 8) (arr (:array :u16 4) 12) (f :single 20))
+(defun touch (m)
+  (setf (pt-x m) -3 (pt-p m) m (pt-arr m 2) 777 (pt-f m) 0.5)
+  (list (pt-x m) (ffi:foreign-pointer-p (pt-p m)) (ffi:foreign-pointer-p (pt-sub m))
+        (pt-arr m 2) (pt-f m) (funcall #'pt-x m) (apply #'pt-arr (list m 2))))
+EOF
+if compile_fasl "$WORK/stub.lisp" "$WORK/stub.fasl"; then
+    cat > "$WORK/stub-load.lisp" <<EOF
+(load "$WORK/stub.fasl")
+(format t "STUB-INFO:~a~%" (getf (ffi::%ffi-stub-info #'gcstress-stub:lc) :result))
+(format t "STUB-ARGLIST:~a~%" (length (ext:function-arglist #'gcstress-stub:lc)))
+(let ((m (ffi:alloc-foreign gcstress-stub:*pt-size*)))
+  (format t "STUB-TOUCH:~a~%" (gcstress-stub:touch m))
+  (ffi:free-foreign m))
+(format t "STUB-CALL:~a~%"
+  (handler-case (gcstress-stub:lc 1 2) (error (e) (if (search "not open" (format nil "~a" e)) "NOT-OPEN" e))))
+(format t "STUB-PRINT:~a~%" (prin1-to-string #'gcstress-stub:pt-x))
+;; fresh definitions under the storm too (installers + interning); the
+;; accessors are interned in the CURRENT package (CL-USER here)
+(ffi:defcstruct (q :size 8) (a :u8 0) (b (:array :i8 4) 4))
+(let ((m (ffi:alloc-foreign 8)))
+  (setf (q-b m 3) -9)
+  (format t "STUB-FRESH:~a~%" (list (q-b m 3) (ext:function-arglist #'q-b)))
+  (ffi:free-foreign m))
+EOF
+    out=$(run_stress "$WORK/stub-load.lisp")
+    check_contains "FASL-loaded DEFCFUN stub keeps its result kind"     "STUB-INFO:I16" "$out"
+    check_contains "stub arglist synthesized under stress"              "STUB-ARGLIST:2" "$out"
+    check_contains "every DEFCSTRUCT stub kind works under compaction"  "STUB-TOUCH:(-3 T T 777 0.5 -3 777)" "$out"
+    check_contains "stub library call reaches the base-variable check"  "STUB-CALL:NOT-OPEN" "$out"
+    check_contains "stub printer survives compaction"                   "STUB-PRINT:#<FFI-STUB PT-X PEEK :I16 @0>" "$out"
+    check_contains "fresh DEFCSTRUCT under stress installs and runs"    "STUB-FRESH:(-9 (" "$out"
+    check_absent   "no corruption diagnostics from the stub paths" \
+      "corrupted\|type 0\|BADMARK\|badmark\|SIGSEGV\|Unbound" "$out"
+else
+    echo "  SKIP  FFI stub FASL compile failed"
+fi
+
+# --- Case: demand-interned binding tables (bindtab.c) ---------------------
+# Materialisation allocates a symbol, its name, value/stub, the %SET- writer
+# and two conses OUTSIDE the package lock and links them under it with a
+# re-check; the packer walks a Lisp row list while building C buffers; the
+# decoder rebuilds rows; the flip (DO-SYMBOLS) materialises everything in a
+# loop that re-derives the blob after every allocation.  All of it under the
+# every-allocation compaction storm, from a clean-compiled FASL and from
+# source.
+cat > "$WORK/bt.lisp" <<'EOF'
+(eval-when (:compile-toplevel :load-toplevel :execute) (require "amiga/ffi"))
+(defpackage :gcstress-bt (:use :cl) (:shadow #:open) (:export #:open #:*bt-base*))
+(in-package :gcstress-bt)
+(defvar *bt-base* nil)
+(amiga.ffi:define-binding-table "GCSTRESS-BT" (:base *bt-base*)
+  (:const "+K+" #x80000064) (:const "+BIG+" #x746578742E6461746174797065) (:const "+NEG+" -7)
+  (:var "*V*" 3)
+  (:fn "OPEN" -30 (:d1 :d2) :unsigned) (:fn "LC" -36 (:a0 :d0) :i16)
+  (:struct "PT" 24 ("X" :i16 0) ("P" :fptr 4) ("SUB" (:struct 4) 8) ("ARR" (:array :u16 4) 12))
+  (:name "LATE"))
+(defun late (x) (list :late x))
+EOF
+if compile_fasl "$WORK/bt.lisp" "$WORK/bt.fasl"; then
+    cat > "$WORK/bt-load.lisp" <<EOF
+(load "$WORK/bt.fasl")
+(format t "BT-INFO:~a~%" (getf (clamiga::%binding-table-info "GCSTRESS-BT") :entries))
+(format t "BT-VALUES:~a~%" (list gcstress-bt:+k+ gcstress-bt:+big+ gcstress-bt:+neg+ gcstress-bt:*v* gcstress-bt:*pt-size*))
+(format t "BT-OPEN:~a~%" (list (eq 'gcstress-bt:open 'cl:open) (getf (ffi::%ffi-stub-info #'gcstress-bt:open) :lvo)))
+(let ((m (ffi:alloc-foreign 24)))
+  (setf (gcstress-bt:pt-x m) -3 (gcstress-bt:pt-p m) m (gcstress-bt:pt-arr m 2) 777)
+  (format t "BT-FIELDS:~a~%" (list (gcstress-bt:pt-x m) (ffi:foreign-pointer-p (gcstress-bt:pt-p m))
+                                   (ffi:foreign-pointer-p (gcstress-bt:pt-sub m)) (gcstress-bt:pt-arr m 2)))
+  (ffi:free-foreign m))
+(format t "BT-SETTER:~a~%" (nth-value 1 (find-symbol "%SET-PT-X" "GCSTRESS-BT")))
+(format t "BT-LATE:~a~%" (gcstress-bt:late 1))
+(format t "BT-ROWS:~a~%" (length (clamiga::%binding-table-entries "GCSTRESS-BT")))
+(let ((n 0)) (do-symbols (s "GCSTRESS-BT") (when (eq (symbol-package s) (find-package "GCSTRESS-BT")) (incf n)))
+  (format t "BT-FLIP:~a~%" (list (> n 12) (clamiga::%binding-table-info "GCSTRESS-BT") gcstress-bt:+k+)))
+;; fresh table + materialisation under the storm, from source
+(defpackage :gcstress-bt2 (:use :cl))
+(amiga.ffi:define-binding-table "GCSTRESS-BT2" () (:const "+A+" 1) (:struct "Q" 8 ("A" :u8 0) ("B" (:array :i8 4) 4)))
+(let ((m (ffi:alloc-foreign 8)))
+  (setf (gcstress-bt2:q-b m 3) -9)
+  (format t "BT-FRESH:~a~%" (list gcstress-bt2:+a+ (gcstress-bt2:q-b m 3) gcstress-bt2:*q-size*))
+  (ffi:free-foreign m))
+;; UNINTERN / UNEXPORT / IMPORT / SHADOWING-IMPORT / EXPORT of a symbol on a
+;; package whose table is STILL LAZY (untouched) each flip it eager via
+;; cl_bindtab_materialize_all with the package/symbol held live across that
+;; call — package.c cl_export_symbol/cl_import_symbol and
+;; builtins_package.c bi_unexport/bi_unintern/bi_shadowing_import. Every one
+;; of these must survive the storm without reading a stale, pre-compaction
+;; package/symbol pointer afterward.
+(defpackage :gcstress-bt3 (:use :cl))
+(amiga.ffi:define-binding-table "GCSTRESS-BT3" (:base gcstress-bt:*bt-base*) (:const "+A+" 1) (:fn "FOO" -30 (:a0) :pointer))
+(defpackage :gcstress-bt4 (:use :cl))
+(amiga.ffi:define-binding-table "GCSTRESS-BT4" (:base gcstress-bt:*bt-base*) (:const "+A+" 1) (:fn "FOO" -30 (:a0) :pointer))
+(defpackage :gcstress-bt5 (:use :cl))
+(amiga.ffi:define-binding-table "GCSTRESS-BT5" (:base gcstress-bt:*bt-base*) (:const "+A+" 1) (:fn "FOO" -30 (:a0) :pointer))
+(defpackage :gcstress-bt6 (:use :cl))
+(amiga.ffi:define-binding-table "GCSTRESS-BT6" (:base gcstress-bt:*bt-base*) (:const "+A+" 1) (:fn "FOO" -30 (:a0) :pointer))
+(defpackage :gcstress-bt7 (:use :cl))
+(amiga.ffi:define-binding-table "GCSTRESS-BT7" (:base gcstress-bt:*bt-base*) (:const "+A+" 1) (:fn "FOO" -30 (:a0) :pointer))
+
+(format t "BT-UNINTERN-BEFORE:~a~%" (not (null (clamiga::%binding-table-info "GCSTRESS-BT3"))))
+(unintern 'gcstress-bt3:foo "GCSTRESS-BT3")
+(format t "BT-UNINTERN-AFTER:~a~%"
+  (list (clamiga::%binding-table-info "GCSTRESS-BT3")
+        (multiple-value-list (find-symbol "FOO" "GCSTRESS-BT3"))))
+
+(format t "BT-UNEXPORT-BEFORE:~a~%" (not (null (clamiga::%binding-table-info "GCSTRESS-BT4"))))
+(unexport 'gcstress-bt4:foo "GCSTRESS-BT4")
+(format t "BT-UNEXPORT-AFTER:~a~%"
+  (list (clamiga::%binding-table-info "GCSTRESS-BT4")
+        (nth-value 1 (find-symbol "FOO" "GCSTRESS-BT4"))
+        (fboundp 'gcstress-bt4::foo)))
+
+(defvar *bt5-foreign* (make-symbol "FOREIGN"))
+(format t "BT-IMPORT-BEFORE:~a~%" (not (null (clamiga::%binding-table-info "GCSTRESS-BT5"))))
+(import *bt5-foreign* "GCSTRESS-BT5")
+(format t "BT-IMPORT-AFTER:~a~%"
+  (list (clamiga::%binding-table-info "GCSTRESS-BT5")
+        (eq (find-symbol "FOREIGN" "GCSTRESS-BT5") *bt5-foreign*)
+        (fboundp 'gcstress-bt5::foo)))
+
+(defvar *bt6-foreign* (make-symbol "FOO"))
+(format t "BT-SHADOW-BEFORE:~a~%" (not (null (clamiga::%binding-table-info "GCSTRESS-BT6"))))
+(shadowing-import *bt6-foreign* "GCSTRESS-BT6")
+(format t "BT-SHADOW-AFTER:~a~%"
+  (list (clamiga::%binding-table-info "GCSTRESS-BT6")
+        (eq (find-symbol "FOO" "GCSTRESS-BT6") *bt6-foreign*)
+        (and (member *bt6-foreign* (package-shadowing-symbols "GCSTRESS-BT6")) t)))
+
+(defvar *bt7-foreign* (make-symbol "FOREIGN"))
+(format t "BT-EXPORT-BEFORE:~a~%" (not (null (clamiga::%binding-table-info "GCSTRESS-BT7"))))
+(export *bt7-foreign* "GCSTRESS-BT7")
+(format t "BT-EXPORT-AFTER:~a~%"
+  (list (clamiga::%binding-table-info "GCSTRESS-BT7")
+        (eq (find-symbol "FOREIGN" "GCSTRESS-BT7") *bt7-foreign*)
+        (fboundp 'gcstress-bt7::foo)))
+EOF
+    out=$(run_stress "$WORK/bt-load.lisp")
+    check_contains "FASL-loaded binding table registers (entry count)"     "BT-INFO:12" "$out"
+    check_contains "constants/variables materialise under compaction"       "BT-VALUES:(2147483748 9221870457395268199001198522469 -7 3 24)" "$out"
+    check_contains "shadowed name filled at registration"                   "BT-OPEN:(NIL -30)" "$out"
+    check_contains "field stubs + %SET- writers work under the storm"       "BT-FIELDS:(-3 T T 777)" "$out"
+    check_contains "writer probe yields the internal setter"                "BT-SETTER:INTERNAL" "$out"
+    check_contains "(:name) row exported, defined after the table"          "BT-LATE:(LATE 1)" "$out"
+    check_contains "decoder rebuilds every row"                             "BT-ROWS:12" "$out"
+    check_contains "DO-SYMBOLS flips eager and keeps the values"            "BT-FLIP:(T NIL 2147483748)" "$out"
+    check_contains "fresh table from source under stress"                   "BT-FRESH:(1 -9 8)" "$out"
+    check_contains "UNINTERN on a still-lazy package flips first (before)"  "BT-UNINTERN-BEFORE:T" "$out"
+    check_contains "UNINTERN on a still-lazy package flips and drops FOO"   "BT-UNINTERN-AFTER:(NIL (NIL NIL))" "$out"
+    check_contains "UNEXPORT on a still-lazy package flips first (before)"  "BT-UNEXPORT-BEFORE:T" "$out"
+    check_contains "UNEXPORT on a still-lazy package flips and demotes FOO" "BT-UNEXPORT-AFTER:(NIL INTERNAL T)" "$out"
+    check_contains "IMPORT of a foreign symbol into a lazy package (before)" "BT-IMPORT-BEFORE:T" "$out"
+    check_contains "IMPORT of a foreign symbol into a lazy package flips"   "BT-IMPORT-AFTER:(NIL T T)" "$out"
+    check_contains "SHADOWING-IMPORT into a lazy package (before)"          "BT-SHADOW-BEFORE:T" "$out"
+    check_contains "SHADOWING-IMPORT into a lazy package flips and shadows" "BT-SHADOW-AFTER:(NIL T T)" "$out"
+    check_contains "EXPORT of a foreign symbol into a lazy package (before)" "BT-EXPORT-BEFORE:T" "$out"
+    check_contains "EXPORT of a foreign symbol into a lazy package flips"   "BT-EXPORT-AFTER:(NIL T T)" "$out"
+    check_absent   "no corruption diagnostics from the binding-table paths" \
+      "corrupted\|type 0\|BADMARK\|badmark\|SIGSEGV\|Unbound" "$out"
+else
+    echo "  SKIP  binding table FASL compile failed"
+fi
+
 
 echo ""
 echo "$passed passed, $failed failed, $total total"

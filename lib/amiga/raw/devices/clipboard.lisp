@@ -6,61 +6,59 @@
 ;;; 0 functions, 7 constants, 4 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.DEVICES.CLIPBOARD"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+DEVICES-CLIPBOARD-I+" "+CBD-POST+" "+CBD-CURRENTREADID+" 
-   "+CBD-CURRENTWRITEID+" "+CBD-CHANGEHOOK+" "+CBERR-OBSOLETEID+" 
-   "+PRIMARY-CLIP+" "*CLIPBOARD-UNIT-PARTIAL-SIZE*" 
-   "CLIPBOARD-UNIT-PARTIAL-NODE" "CLIPBOARD-UNIT-PARTIAL-UNIT-NUM" 
-   "*IO-CLIP-REQ-SIZE*" "IO-CLIP-REQ-MESSAGE" "IO-CLIP-REQ-DEVICE" 
-   "IO-CLIP-REQ-UNIT" "IO-CLIP-REQ-COMMAND" "IO-CLIP-REQ-FLAGS" 
-   "IO-CLIP-REQ-ERROR" "IO-CLIP-REQ-ACTUAL" "IO-CLIP-REQ-LENGTH" 
-   "IO-CLIP-REQ-DATA" "IO-CLIP-REQ-OFFSET" "IO-CLIP-REQ-CLIP-ID" 
-   "*SATISFY-MSG-SIZE*" "SATISFY-MSG-MSG" "SATISFY-MSG-UNIT" 
-   "SATISFY-MSG-CLIP-ID" "*CLIP-HOOK-MSG-SIZE*" "CLIP-HOOK-MSG-TYPE" 
-   "CLIP-HOOK-MSG-CHANGE-CMD" "CLIP-HOOK-MSG-CLIP-ID" ))
+  (:export))
 
 (in-package "AMIGA.RAW.DEVICES.CLIPBOARD")
 
-;;; --- constants from devices/clipboard.i ---
-(defconstant +devices-clipboard-i+ 1)
-(defconstant +cbd-post+ 9)
-(defconstant +cbd-currentreadid+ 10)
-(defconstant +cbd-currentwriteid+ 11)
-(defconstant +cbd-changehook+ 12)
-(defconstant +cberr-obsoleteid+ 1)
-(defconstant +primary-clip+ 0)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.DEVICES.CLIPBOARD" ()
 
-;;; --- structures from devices/clipboard.i ---
-(ffi:defcstruct (clipboard-unit-partial :size 18)   ; ClipboardUnitPartial (devices/clipboard.i)
-  (node (:struct 14) 0)
-  (unit-num :u32 14)
-)
-(ffi:defcstruct (io-clip-req :size 52)   ; IOClipReq (devices/clipboard.i)
-  (message (:struct 20) 0)
-  (device :fptr 20)
-  (unit :fptr 24)
-  (command :u16 28)
-  (flags :u8 30)
-  (error :i8 31)
-  (actual :u32 32)
-  (length :u32 36)
-  (data :fptr 40)
-  (offset :u32 44)
-  (clip-id :i32 48)
-)
-(ffi:defcstruct (satisfy-msg :size 26)   ; SatisfyMsg (devices/clipboard.i)
-  (msg (:struct 20) 0)
-  (unit :u16 20)
-  (clip-id :i32 22)
-)
-(ffi:defcstruct (clip-hook-msg :size 12)   ; ClipHookMsg (devices/clipboard.i)
-  (type :u32 0)
-  (change-cmd :i32 4)
-  (clip-id :i32 8)
-)
+  ;; --- constants from devices/clipboard.i ---
+  (:const "+DEVICES-CLIPBOARD-I+" 1)
+  (:const "+CBD-POST+" 9)
+  (:const "+CBD-CURRENTREADID+" 10)
+  (:const "+CBD-CURRENTWRITEID+" 11)
+  (:const "+CBD-CHANGEHOOK+" 12)
+  (:const "+CBERR-OBSOLETEID+" 1)
+  (:const "+PRIMARY-CLIP+" 0)
+
+  ;; --- structures from devices/clipboard.i ---
+  (:struct "CLIPBOARD-UNIT-PARTIAL" 18   ; ClipboardUnitPartial (devices/clipboard.i)
+    ("NODE" (:struct 14) 0)
+    ("UNIT-NUM" :u32 14)
+    )
+  (:struct "IO-CLIP-REQ" 52   ; IOClipReq (devices/clipboard.i)
+    ("MESSAGE" (:struct 20) 0)
+    ("DEVICE" :fptr 20)
+    ("UNIT" :fptr 24)
+    ("COMMAND" :u16 28)
+    ("FLAGS" :u8 30)
+    ("ERROR" :i8 31)
+    ("ACTUAL" :u32 32)
+    ("LENGTH" :u32 36)
+    ("DATA" :fptr 40)
+    ("OFFSET" :u32 44)
+    ("CLIP-ID" :i32 48)
+    )
+  (:struct "SATISFY-MSG" 26   ; SatisfyMsg (devices/clipboard.i)
+    ("MSG" (:struct 20) 0)
+    ("UNIT" :u16 20)
+    ("CLIP-ID" :i32 22)
+    )
+  (:struct "CLIP-HOOK-MSG" 12   ; ClipHookMsg (devices/clipboard.i)
+    ("TYPE" :u32 0)
+    ("CHANGE-CMD" :i32 4)
+    ("CLIP-ID" :i32 8)
+    )
+  )
 
 (provide "amiga/raw/devices/clipboard")

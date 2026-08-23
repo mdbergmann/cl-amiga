@@ -6,24 +6,31 @@
 ;;; 0 functions, 8 constants, 0 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.GADGETS.TABS"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+TL-TEXTPEN+" "+TL-BACKGROUNDPEN+" "+TL-FILLTEXTPEN+" "+TL-FILLPEN+" 
-   "+MAX-TL-PENS+" "+TABS-DUMMY+" "+TABS-LABELS+" "+TABS-CURRENT+" ))
+  (:export))
 
 (in-package "AMIGA.RAW.GADGETS.TABS")
 
-;;; --- constants from gadgets/tabs.h ---
-(defconstant +tl-textpen+ 0)
-(defconstant +tl-backgroundpen+ 1)
-(defconstant +tl-filltextpen+ 2)
-(defconstant +tl-fillpen+ 3)
-(defconstant +max-tl-pens+ 4)
-(defconstant +tabs-dummy+ #x84000000)
-(defconstant +tabs-labels+ #x84000001)
-(defconstant +tabs-current+ #x84000002)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.GADGETS.TABS" ()
+
+  ;; --- constants from gadgets/tabs.h ---
+  (:const "+TL-TEXTPEN+" 0)
+  (:const "+TL-BACKGROUNDPEN+" 1)
+  (:const "+TL-FILLTEXTPEN+" 2)
+  (:const "+TL-FILLPEN+" 3)
+  (:const "+MAX-TL-PENS+" 4)
+  (:const "+TABS-DUMMY+" #x84000000)
+  (:const "+TABS-LABELS+" #x84000001)
+  (:const "+TABS-CURRENT+" #x84000002)
+  )
 
 (provide "amiga/raw/gadgets/tabs")

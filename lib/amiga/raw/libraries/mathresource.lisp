@@ -6,55 +6,48 @@
 ;;; 0 functions, 12 constants, 1 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.LIBRARIES.MATHRESOURCE"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+MATHIEEERESOURCEB-DBLBAS+" "+MATHIEEERESOURCEF-DBLBAS+" 
-   "+MATHIEEERESOURCEB-DBLTRANS+" "+MATHIEEERESOURCEF-DBLTRANS+" 
-   "+MATHIEEERESOURCEB-SGLBAS+" "+MATHIEEERESOURCEF-SGLBAS+" 
-   "+MATHIEEERESOURCEB-SGLTRANS+" "+MATHIEEERESOURCEF-SGLTRANS+" 
-   "+MATHIEEERESOURCEB-EXTBAS+" "+MATHIEEERESOURCEF-EXTBAS+" 
-   "+MATHIEEERESOURCEB-EXTTRANS+" "+MATHIEEERESOURCEF-EXTTRANS+" 
-   "*MATH-IEEE-RESOURCE-RESOURCE-SIZE*" 
-   "MATH-IEEE-RESOURCE-RESOURCE-MATH-IEEE-RESOURCE-NODE" 
-   "MATH-IEEE-RESOURCE-RESOURCE-MATH-IEEE-RESOURCE-FLAGS" 
-   "MATH-IEEE-RESOURCE-RESOURCE-MATH-IEEE-RESOURCE-BASE-ADDR" 
-   "MATH-IEEE-RESOURCE-RESOURCE-MATH-IEEE-RESOURCE-DBL-BAS-INIT" 
-   "MATH-IEEE-RESOURCE-RESOURCE-MATH-IEEE-RESOURCE-DBL-TRANS-INIT" 
-   "MATH-IEEE-RESOURCE-RESOURCE-MATH-IEEE-RESOURCE-SGL-BAS-INIT" 
-   "MATH-IEEE-RESOURCE-RESOURCE-MATH-IEEE-RESOURCE-SGL-TRANS-INIT" 
-   "MATH-IEEE-RESOURCE-RESOURCE-MATH-IEEE-RESOURCE-EXT-BAS-INIT" 
-   "MATH-IEEE-RESOURCE-RESOURCE-MATH-IEEE-RESOURCE-EXT-TRANS-INIT" ))
+  (:export))
 
 (in-package "AMIGA.RAW.LIBRARIES.MATHRESOURCE")
 
-;;; --- constants from libraries/mathresource.i ---
-(defconstant +mathieeeresourceb-dblbas+ 0)
-(defconstant +mathieeeresourcef-dblbas+ 1)
-(defconstant +mathieeeresourceb-dbltrans+ 1)
-(defconstant +mathieeeresourcef-dbltrans+ 2)
-(defconstant +mathieeeresourceb-sglbas+ 2)
-(defconstant +mathieeeresourcef-sglbas+ 4)
-(defconstant +mathieeeresourceb-sgltrans+ 3)
-(defconstant +mathieeeresourcef-sgltrans+ 8)
-(defconstant +mathieeeresourceb-extbas+ 4)
-(defconstant +mathieeeresourcef-extbas+ #x10)
-(defconstant +mathieeeresourceb-exttrans+ 5)
-(defconstant +mathieeeresourcef-exttrans+ #x20)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.LIBRARIES.MATHRESOURCE" ()
 
-;;; --- structures from libraries/mathresource.i ---
-(ffi:defcstruct (math-ieee-resource-resource :size 44)   ; MathIEEEResourceResource (libraries/mathresource.i)
-  (math-ieee-resource-node (:struct 14) 0)
-  (math-ieee-resource-flags :u16 14)
-  (math-ieee-resource-base-addr :fptr 16)
-  (math-ieee-resource-dbl-bas-init :fptr 20)
-  (math-ieee-resource-dbl-trans-init :fptr 24)
-  (math-ieee-resource-sgl-bas-init :fptr 28)
-  (math-ieee-resource-sgl-trans-init :fptr 32)
-  (math-ieee-resource-ext-bas-init :fptr 36)
-  (math-ieee-resource-ext-trans-init :fptr 40)
-)
+  ;; --- constants from libraries/mathresource.i ---
+  (:const "+MATHIEEERESOURCEB-DBLBAS+" 0)
+  (:const "+MATHIEEERESOURCEF-DBLBAS+" 1)
+  (:const "+MATHIEEERESOURCEB-DBLTRANS+" 1)
+  (:const "+MATHIEEERESOURCEF-DBLTRANS+" 2)
+  (:const "+MATHIEEERESOURCEB-SGLBAS+" 2)
+  (:const "+MATHIEEERESOURCEF-SGLBAS+" 4)
+  (:const "+MATHIEEERESOURCEB-SGLTRANS+" 3)
+  (:const "+MATHIEEERESOURCEF-SGLTRANS+" 8)
+  (:const "+MATHIEEERESOURCEB-EXTBAS+" 4)
+  (:const "+MATHIEEERESOURCEF-EXTBAS+" #x10)
+  (:const "+MATHIEEERESOURCEB-EXTTRANS+" 5)
+  (:const "+MATHIEEERESOURCEF-EXTTRANS+" #x20)
+
+  ;; --- structures from libraries/mathresource.i ---
+  (:struct "MATH-IEEE-RESOURCE-RESOURCE" 44   ; MathIEEEResourceResource (libraries/mathresource.i)
+    ("MATH-IEEE-RESOURCE-NODE" (:struct 14) 0)
+    ("MATH-IEEE-RESOURCE-FLAGS" :u16 14)
+    ("MATH-IEEE-RESOURCE-BASE-ADDR" :fptr 16)
+    ("MATH-IEEE-RESOURCE-DBL-BAS-INIT" :fptr 20)
+    ("MATH-IEEE-RESOURCE-DBL-TRANS-INIT" :fptr 24)
+    ("MATH-IEEE-RESOURCE-SGL-BAS-INIT" :fptr 28)
+    ("MATH-IEEE-RESOURCE-SGL-TRANS-INIT" :fptr 32)
+    ("MATH-IEEE-RESOURCE-EXT-BAS-INIT" :fptr 36)
+    ("MATH-IEEE-RESOURCE-EXT-TRANS-INIT" :fptr 40)
+    )
+  )
 
 (provide "amiga/raw/libraries/mathresource")

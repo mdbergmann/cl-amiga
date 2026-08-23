@@ -1312,8 +1312,7 @@ static void fmt_recursive(FmtCtx *ctx, FmtDirective *d)
      * CLHS 22.3.5.3.  Apply it to the stream and the args; it performs its own
      * formatting.  ~? takes the args as a list; ~@? takes the remaining parent
      * args inline. */
-    if (CL_FUNCTION_P(fmt_str_obj) || CL_BYTECODE_P(fmt_str_obj) ||
-        CL_CLOSURE_P(fmt_str_obj) || cl_funcallable_instance_p(fmt_str_obj)) {
+    if (CL_FUNCTION_OBJ_P(fmt_str_obj) || cl_funcallable_instance_p(fmt_str_obj)) {
         /* cl_vm_apply pushes its frame over the VM-stack region that ctx->args
          * points into, clobbering the parent's not-yet-consumed args (so a
          * directive after ~? would read garbage).  Snapshot the parent args

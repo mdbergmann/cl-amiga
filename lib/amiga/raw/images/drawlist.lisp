@@ -8,18 +8,14 @@
 ;;; 1 functions, 21 constants, 0 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.IMAGES.DRAWLIST"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*DRAWLIST-BASE*" "*DRAWLIST-VERSION*"
-   "+DRAWLIST-DUMMY+" "+DRAWLIST-DIRECTIVES+" "+DRAWLIST-REF-HEIGHT+" 
-   "+DRAWLIST-REF-WIDTH+" "+DRAWLIST-DRAW-INFO+" "+DLST-END+" "+DLST-LINE+" 
-   "+DLST-RECT+" "+DLST-FILL+" "+DLST-ELLIPSE+" "+DLST-CIRCLE+" 
-   "+DLST-LINEPAT+" "+DLST-FILLPAT+" "+DLST-AMOVE+" "+DLST-ADRAW+" 
-   "+DLST-AFILL+" "+DLST-BEVELBOX+" "+DLST-ARC+" "+DLST-START+" 
-   "+DLST-BOUNDS+" "+DLST-LINESIZE+" "DRAWLIST-GET-CLASS" ))
+  (:export "*DRAWLIST-BASE*" "*DRAWLIST-VERSION*"))
 
 (in-package "AMIGA.RAW.IMAGES.DRAWLIST")
 
@@ -33,33 +29,37 @@
 (defun %version>= (n)
   (and *drawlist-version* (>= *drawlist-version* n)))
 
-;;; --- constants from images/drawlist.h ---
-(defconstant +drawlist-dummy+ #x85017000)
-(defconstant +drawlist-directives+ #x85017001)
-(defconstant +drawlist-ref-height+ #x85017002)
-(defconstant +drawlist-ref-width+ #x85017003)
-(defconstant +drawlist-draw-info+ #x85017004)
-(defconstant +dlst-end+ 0)
-(defconstant +dlst-line+ 1)
-(defconstant +dlst-rect+ 2)
-(defconstant +dlst-fill+ 3)
-(defconstant +dlst-ellipse+ 4)
-(defconstant +dlst-circle+ 5)
-(defconstant +dlst-linepat+ 6)
-(defconstant +dlst-fillpat+ 7)
-(defconstant +dlst-amove+ 8)
-(defconstant +dlst-adraw+ 9)
-(defconstant +dlst-afill+ 10)
-(defconstant +dlst-bevelbox+ 11)
-(defconstant +dlst-arc+ 12)
-(defconstant +dlst-start+ 13)
-(defconstant +dlst-bounds+ 13)
-(defconstant +dlst-linesize+ 14)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.IMAGES.DRAWLIST"
+    (:base *drawlist-base* :version *drawlist-version*)
 
-;;; --- functions (drawlist_lib.sfd + MorphOS SDK) ---
-(when (%version>= 40)
-  (amiga.ffi:defcfun drawlist-get-class *drawlist-base* -30 ()
-    :result :pointer
-    :doc "Class * DRAWLIST_GetClass() () LVO -30"))
+  ;; --- constants from images/drawlist.h ---
+  (:const "+DRAWLIST-DUMMY+" #x85017000)
+  (:const "+DRAWLIST-DIRECTIVES+" #x85017001)
+  (:const "+DRAWLIST-REF-HEIGHT+" #x85017002)
+  (:const "+DRAWLIST-REF-WIDTH+" #x85017003)
+  (:const "+DRAWLIST-DRAW-INFO+" #x85017004)
+  (:const "+DLST-END+" 0)
+  (:const "+DLST-LINE+" 1)
+  (:const "+DLST-RECT+" 2)
+  (:const "+DLST-FILL+" 3)
+  (:const "+DLST-ELLIPSE+" 4)
+  (:const "+DLST-CIRCLE+" 5)
+  (:const "+DLST-LINEPAT+" 6)
+  (:const "+DLST-FILLPAT+" 7)
+  (:const "+DLST-AMOVE+" 8)
+  (:const "+DLST-ADRAW+" 9)
+  (:const "+DLST-AFILL+" 10)
+  (:const "+DLST-BEVELBOX+" 11)
+  (:const "+DLST-ARC+" 12)
+  (:const "+DLST-START+" 13)
+  (:const "+DLST-BOUNDS+" 13)
+  (:const "+DLST-LINESIZE+" 14)
+
+  ;; --- functions (drawlist_lib.sfd + MorphOS SDK) ---
+  (:fn "DRAWLIST-GET-CLASS" -30 () :pointer 40)   ; Class * DRAWLIST_GetClass() () LVO -30
+  )
 
 (provide "amiga/raw/images/drawlist")

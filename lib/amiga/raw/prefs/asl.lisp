@@ -6,33 +6,37 @@
 ;;; 0 functions, 1 constants, 1 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.PREFS.ASL"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+ID-ASL+" "*ASL-PREFS-SIZE*" "ASL-PREFS-RESERVED" "ASL-PREFS-SORT-BY" 
-   "ASL-PREFS-SORT-DRAWERS" "ASL-PREFS-SORT-ORDER" 
-   "ASL-PREFS-SIZE-POSITION" "ASL-PREFS-RELATIVE-LEFT" 
-   "ASL-PREFS-RELATIVE-TOP" "ASL-PREFS-RELATIVE-WIDTH" 
-   "ASL-PREFS-RELATIVE-HEIGHT" ))
+  (:export))
 
 (in-package "AMIGA.RAW.PREFS.ASL")
 
-;;; --- constants from prefs/asl.i ---
-(defconstant +id-asl+ #x41534C20)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.PREFS.ASL" ()
 
-;;; --- structures from prefs/asl.i ---
-(ffi:defcstruct (asl-prefs :size 26)   ; AslPrefs (prefs/asl.i)
-  (reserved (:struct 16) 0)
-  (sort-by :u8 16)
-  (sort-drawers :u8 17)
-  (sort-order :u8 18)
-  (size-position :u8 19)
-  (relative-left :i16 20)
-  (relative-top :i16 22)
-  (relative-width :u8 24)
-  (relative-height :u8 25)
-)
+  ;; --- constants from prefs/asl.i ---
+  (:const "+ID-ASL+" #x41534C20)
+
+  ;; --- structures from prefs/asl.i ---
+  (:struct "ASL-PREFS" 26   ; AslPrefs (prefs/asl.i)
+    ("RESERVED" (:struct 16) 0)
+    ("SORT-BY" :u8 16)
+    ("SORT-DRAWERS" :u8 17)
+    ("SORT-ORDER" :u8 18)
+    ("SIZE-POSITION" :u8 19)
+    ("RELATIVE-LEFT" :i16 20)
+    ("RELATIVE-TOP" :i16 22)
+    ("RELATIVE-WIDTH" :u8 24)
+    ("RELATIVE-HEIGHT" :u8 25)
+    )
+  )
 
 (provide "amiga/raw/prefs/asl")

@@ -8,20 +8,14 @@
 ;;; 1 C macro skipped: not an integer constant (string, call, float).
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.GADGETS.GETCOLOR"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*GETCOLOR-BASE*" "*GETCOLOR-VERSION*"
-   "+GETCOLOR-DUMMY+" "+GETCOLOR-TITLE-TEXT+" "+GETCOLOR-SCREEN+" 
-   "+GETCOLOR-COLOR+" "+GETCOLOR-RED+" "+GETCOLOR-GREEN+" "+GETCOLOR-BLUE+" 
-   "+GETCOLOR-HUE+" "+GETCOLOR-SATURATION+" "+GETCOLOR-BRIGHTNESS+" 
-   "+GETCOLOR-RGB+" "+GETCOLOR-HSB+" "+GETCOLOR-COLOR-WHEEL+" 
-   "+GETCOLOR-RGB-SLIDERS+" "+GETCOLOR-HSB-SLIDERS+" 
-   "+GETCOLOR-SWITCH-MODE+" "+GETCOLOR-INITIAL+" "+GETCOLOR-SHOW-RGB+" 
-   "+GETCOLOR-SHOW-HSB+" "+GETCOLOR-SMALL-TEXT-ATTR+" "+GCOLOR-REQUEST+" 
-   "GETCOLOR-GET-CLASS" ))
+  (:export "*GETCOLOR-BASE*" "*GETCOLOR-VERSION*"))
 
 (in-package "AMIGA.RAW.GADGETS.GETCOLOR")
 
@@ -35,33 +29,37 @@
 (defun %version>= (n)
   (and *getcolor-version* (>= *getcolor-version* n)))
 
-;;; --- constants from gadgets/getcolor.h ---
-(defconstant +getcolor-dummy+ #x85043000)
-(defconstant +getcolor-title-text+ #x85043001)
-(defconstant +getcolor-screen+ #x85043002)
-(defconstant +getcolor-color+ #x85043003)
-(defconstant +getcolor-red+ #x85043004)
-(defconstant +getcolor-green+ #x85043005)
-(defconstant +getcolor-blue+ #x85043006)
-(defconstant +getcolor-hue+ #x85043007)
-(defconstant +getcolor-saturation+ #x85043008)
-(defconstant +getcolor-brightness+ #x85043009)
-(defconstant +getcolor-rgb+ #x8504300A)
-(defconstant +getcolor-hsb+ #x8504300B)
-(defconstant +getcolor-color-wheel+ #x8504300C)
-(defconstant +getcolor-rgb-sliders+ #x8504300D)
-(defconstant +getcolor-hsb-sliders+ #x8504300E)
-(defconstant +getcolor-switch-mode+ #x8504300F)
-(defconstant +getcolor-initial+ #x85043010)
-(defconstant +getcolor-show-rgb+ #x85043011)
-(defconstant +getcolor-show-hsb+ #x85043012)
-(defconstant +getcolor-small-text-attr+ #x85043013)
-(defconstant +gcolor-request+ #x630001)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.GADGETS.GETCOLOR"
+    (:base *getcolor-base* :version *getcolor-version*)
 
-;;; --- functions (getcolor_lib.sfd) ---
-(when (%version>= 40)
-  (amiga.ffi:defcfun getcolor-get-class *getcolor-base* -30 ()
-    :result :pointer
-    :doc "Class * GETCOLOR_GetClass() () LVO -30"))
+  ;; --- constants from gadgets/getcolor.h ---
+  (:const "+GETCOLOR-DUMMY+" #x85043000)
+  (:const "+GETCOLOR-TITLE-TEXT+" #x85043001)
+  (:const "+GETCOLOR-SCREEN+" #x85043002)
+  (:const "+GETCOLOR-COLOR+" #x85043003)
+  (:const "+GETCOLOR-RED+" #x85043004)
+  (:const "+GETCOLOR-GREEN+" #x85043005)
+  (:const "+GETCOLOR-BLUE+" #x85043006)
+  (:const "+GETCOLOR-HUE+" #x85043007)
+  (:const "+GETCOLOR-SATURATION+" #x85043008)
+  (:const "+GETCOLOR-BRIGHTNESS+" #x85043009)
+  (:const "+GETCOLOR-RGB+" #x8504300A)
+  (:const "+GETCOLOR-HSB+" #x8504300B)
+  (:const "+GETCOLOR-COLOR-WHEEL+" #x8504300C)
+  (:const "+GETCOLOR-RGB-SLIDERS+" #x8504300D)
+  (:const "+GETCOLOR-HSB-SLIDERS+" #x8504300E)
+  (:const "+GETCOLOR-SWITCH-MODE+" #x8504300F)
+  (:const "+GETCOLOR-INITIAL+" #x85043010)
+  (:const "+GETCOLOR-SHOW-RGB+" #x85043011)
+  (:const "+GETCOLOR-SHOW-HSB+" #x85043012)
+  (:const "+GETCOLOR-SMALL-TEXT-ATTR+" #x85043013)
+  (:const "+GCOLOR-REQUEST+" #x630001)
+
+  ;; --- functions (getcolor_lib.sfd) ---
+  (:fn "GETCOLOR-GET-CLASS" -30 () :pointer 40)   ; Class * GETCOLOR_GetClass() () LVO -30
+  )
 
 (provide "amiga/raw/gadgets/getcolor")

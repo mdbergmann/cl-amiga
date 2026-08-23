@@ -6,48 +6,48 @@
 ;;; 0 functions, 13 constants, 1 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.PREFS.ICONTROL"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+ID-ICTL+" "+ICB-COERCE-COLORS+" "+ICF-COERCE-COLORS+" 
-   "+ICB-COERCE-LACE+" "+ICF-COERCE-LACE+" "+ICB-STRGAD-FILTER+" 
-   "+ICF-STRGAD-FILTER+" "+ICB-MENUSNAP+" "+ICF-MENUSNAP+" 
-   "+ICB-MODEPROMOTE+" "+ICF-MODEPROMOTE+" "+ICB-OFFSCRNWIN+" 
-   "+ICF-OFFSCRNWIN+" "*I-CONTROL-PREFS-SIZE*" "I-CONTROL-PREFS-RESERVED" 
-   "I-CONTROL-PREFS-TIME-OUT" "I-CONTROL-PREFS-META-DRAG" 
-   "I-CONTROL-PREFS-FLAGS" "I-CONTROL-PREFS-W-BTO-FRONT" 
-   "I-CONTROL-PREFS-FRONT-TO-BACK" "I-CONTROL-PREFS-REQ-TRUE" 
-   "I-CONTROL-PREFS-REQ-FALSE" ))
+  (:export))
 
 (in-package "AMIGA.RAW.PREFS.ICONTROL")
 
-;;; --- constants from prefs/icontrol.i ---
-(defconstant +id-ictl+ #x4943544C)
-(defconstant +icb-coerce-colors+ 0)
-(defconstant +icf-coerce-colors+ 1)
-(defconstant +icb-coerce-lace+ 1)
-(defconstant +icf-coerce-lace+ 2)
-(defconstant +icb-strgad-filter+ 2)
-(defconstant +icf-strgad-filter+ 4)
-(defconstant +icb-menusnap+ 3)
-(defconstant +icf-menusnap+ 8)
-(defconstant +icb-modepromote+ 4)
-(defconstant +icf-modepromote+ #x10)
-(defconstant +icb-offscrnwin+ 15)
-(defconstant +icf-offscrnwin+ #x8000)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.PREFS.ICONTROL" ()
 
-;;; --- structures from prefs/icontrol.i ---
-(ffi:defcstruct (i-control-prefs :size 28)   ; IControlPrefs (prefs/icontrol.i)
-  (reserved (:struct 16) 0)
-  (time-out :u16 16)
-  (meta-drag :i16 18)
-  (flags :u32 20)
-  (w-bto-front :u8 24)
-  (front-to-back :u8 25)
-  (req-true :u8 26)
-  (req-false :u8 27)
-)
+  ;; --- constants from prefs/icontrol.i ---
+  (:const "+ID-ICTL+" #x4943544C)
+  (:const "+ICB-COERCE-COLORS+" 0)
+  (:const "+ICF-COERCE-COLORS+" 1)
+  (:const "+ICB-COERCE-LACE+" 1)
+  (:const "+ICF-COERCE-LACE+" 2)
+  (:const "+ICB-STRGAD-FILTER+" 2)
+  (:const "+ICF-STRGAD-FILTER+" 4)
+  (:const "+ICB-MENUSNAP+" 3)
+  (:const "+ICF-MENUSNAP+" 8)
+  (:const "+ICB-MODEPROMOTE+" 4)
+  (:const "+ICF-MODEPROMOTE+" #x10)
+  (:const "+ICB-OFFSCRNWIN+" 15)
+  (:const "+ICF-OFFSCRNWIN+" #x8000)
+
+  ;; --- structures from prefs/icontrol.i ---
+  (:struct "I-CONTROL-PREFS" 28   ; IControlPrefs (prefs/icontrol.i)
+    ("RESERVED" (:struct 16) 0)
+    ("TIME-OUT" :u16 16)
+    ("META-DRAG" :i16 18)
+    ("FLAGS" :u32 20)
+    ("W-BTO-FRONT" :u8 24)
+    ("FRONT-TO-BACK" :u8 25)
+    ("REQ-TRUE" :u8 26)
+    ("REQ-FALSE" :u8 27)
+    )
+  )
 
 (provide "amiga/raw/prefs/icontrol")

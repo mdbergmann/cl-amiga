@@ -11,79 +11,14 @@
 ;;; 17 functions, 150 constants, 13 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.DISKFONT"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*DISKFONT-BASE*" "*DISKFONT-VERSION*"
-   "+TA-CHAR-SET+" "+MAXFONTPATH+" "+FCH-ID+" "+TFCH-ID+" "+OFCH-ID+" 
-   "+DFH-ID+" "+MAXFONTNAME+" "+DFH-TAG-LIST+" "+AFB-MEMORY+" 
-   "+AFF-MEMORY+" "+AFB-DISK+" "+AFF-DISK+" "+AFB-SCALED+" "+AFF-SCALED+" 
-   "+AFB-BITMAP+" "+AFF-BITMAP+" "+AFB-OTAG+" "+AFF-OTAG+" "+AFB-CHARSET+" 
-   "+AFF-CHARSET+" "+AFB-TYPE+" "+AFF-TYPE+" "+AFB-TTATTR+" "+AFF-TTATTR+" 
-   "+AFB-TAGGED+" "+AFF-TAGGED+" "+OFB-OPEN+" "+OFF-OPEN+" "*FC-SIZE*" 
-   "FC-FILE-NAME" "FC-Y-SIZE" "FC-STYLE" "FC-FLAGS" "*TFC-SIZE*" 
-   "TFC-FILE-NAME" "TFC-TAG-COUNT" "TFC-Y-SIZE" "TFC-STYLE" "TFC-FLAGS" 
-   "*FCH-SIZE*" "FCH-FILE-ID" "FCH-NUM-ENTRIES" "FCH-FC" 
-   "*DISK-FONT-HEADER-SIZE*" "DISK-FONT-HEADER-DF" 
-   "DISK-FONT-HEADER-FILE-ID" "DISK-FONT-HEADER-REVISION" 
-   "DISK-FONT-HEADER-SEGMENT" "DISK-FONT-HEADER-NAME" "DISK-FONT-HEADER-TF" 
-   "*AF-SIZE*" "AF-TYPE" "AF-ATTR" "*TAF-SIZE*" "TAF-TYPE" "TAF-ATTR" 
-   "*AFH-SIZE*" "AFH-NUM-ENTRIES" "AFH-AF" "*EGE-SIZE*" "EGE-RESERVED" 
-   "EGE-BULLET-BASE" "EGE-GLYPH-ENGINE" "*OLF-SIZE*" "OLF-O-TAG-PATH" 
-   "OLF-O-TAG-LIST" "OLF-ENGINE-NAME" "OLF-LIBRARY-NAME" "OLF-E-ENGINE" 
-   "OLF-RESERVED" "OLF-USER-DATA" "+OT-LEVEL0+" "+OT-LEVEL1+" "+OT-LEVEL2+" 
-   "+OT-LEVEL3+" "+OT-INDIRECT+" "+OT-DEVICE-DPI+" "+OT-DOT-SIZE+" 
-   "+OT-POINT-HEIGHT+" "+OT-SET-FACTOR+" "+OT-SHEAR-SIN+" "+OT-SHEAR-COS+" 
-   "+OT-ROTATE-SIN+" "+OT-ROTATE-COS+" "+OT-EMBOLDEN-X+" "+OT-EMBOLDEN-Y+" 
-   "+OT-POINT-SIZE+" "+OT-GLYPH-CODE+" "+OT-GLYPH-CODE2+" 
-   "+OT-GLYPH-CODE-32+" "+OT-GLYPH-CODE2-32+" "+OT-GLYPH-WIDTH+" 
-   "+OT-O-TAG-PATH+" "+OT-O-TAG-LIST+" "+OT-MEM-PTR+" "+OT-MEM-SIZE+" 
-   "+OT-GLYPH-MAP+" "+OT-GLYPH-MAP8-BIT+" "+OT-WIDTH-LIST+" 
-   "+OT-WIDTH-LIST32+" "+OT-TEXT-KERN-PAIR+" "+OT-DESIGN-KERN-PAIR+" 
-   "+OT-UNDER-LINED+" "+OTUL-NONE+" "+OTUL-SOLID+" "+OTUL-BROKEN+" 
-   "+OTUL-DOUBLE-SOLID+" "+OTUL-DOUBLE-BROKEN+" "+OUTL-DOUBLE-BROKEN+" 
-   "+OT-STRIKE-THROUGH+" "+OT-BASE-LINE+" "+OT-NUM-GLYPHS+" 
-   "+OT-NUM-KERN-PAIRS+" "+OT-HAS-GLYPHS+" "+OT-GLYPH-NAME+" 
-   "+OT-FILE-IDENT+" "+OT-ENGINE+" "+OT-FAMILY+" "+OT-B-NAME+" 
-   "+OT-I-NAME+" "+OT-BI-NAME+" "+OT-R-NAME+" "+OT-SYMBOL-SET+" 
-   "+OT-Y-SIZE-FACTOR+" "+OT-SPACE-WIDTH+" "+OT-IS-FIXED+" 
-   "+OT-IS-UNDERLINED+" "+OT-SERIF-FLAG+" "+OT-STEM-WEIGHT+" 
-   "+OTS-ULTRA-THIN+" "+OTS-EXTRA-THIN+" "+OTS-THIN+" "+OTS-EXTRA-LIGHT+" 
-   "+OTS-LIGHT+" "+OTS-DEMI-LIGHT+" "+OTS-SEMI-LIGHT+" "+OTS-BOOK+" 
-   "+OTS-MEDIUM+" "+OTS-SEMI-BOLD+" "+OTS-DEMI-BOLD+" "+OTS-BOLD+" 
-   "+OTS-EXTRA-BOLD+" "+OTS-BLACK+" "+OTS-EXTRA-BLACK+" "+OTS-ULTRA-BLACK+" 
-   "+OT-SLANT-STYLE+" "+OTS-UPRIGHT+" "+OTS-ITALIC+" "+OTS-LEFT-ITALIC+" 
-   "+OT-HORIZ-STYLE+" "+OTH-ULTRA-COMPRESSED+" "+OTH-EXTRA-COMPRESSED+" 
-   "+OTH-COMPRESSED+" "+OTH-CONDENSED+" "+OTH-NORMAL+" 
-   "+OTH-SEMI-EXPANDED+" "+OTH-EXPANDED+" "+OTH-EXTRA-EXPANDED+" 
-   "+OT-SPACE-FACTOR+" "+OT-INHIBIT-ALGO-STYLE+" "+OT-AVAIL-SIZES+" 
-   "+OT-MAXAVAILSIZES+" "+OT-BM-SIZE+" "+OT-SPEC-COUNT+" "+OT-SPEC+" 
-   "+OT-SPEC1+" "+DFCTRL-BASE+" "+DFCTRL-XDPI+" "+DFCTRL-YDPI+" 
-   "+DFCTRL-XDOTP+" "+DFCTRL-YDOTP+" "+DFCTRL-SYMSET+" "+DFCTRL-CACHE+" 
-   "+DFCTRL-SORTMODE+" "+DFCTRL-SORT-OFF+" "+DFCTRL-SORT-ASC+" 
-   "+DFCTRL-SORT-DES+" "+DFCTRL-CACHEFLUSH+" "+DISKFONT-GLYPH-I+" 
-   "*GLYPH-ENGINE-SIZE*" "GLYPH-ENGINE-LIBRARY" "GLYPH-ENGINE-NAME" 
-   "*GLYPH-MAP-SIZE*" "GLYPH-MAP-BM-MODULO" "GLYPH-MAP-BM-ROWS" 
-   "GLYPH-MAP-BLACK-LEFT" "GLYPH-MAP-BLACK-TOP" "GLYPH-MAP-BLACK-WIDTH" 
-   "GLYPH-MAP-BLACK-HEIGHT" "GLYPH-MAP-X-ORIGIN" "GLYPH-MAP-Y-ORIGIN" 
-   "GLYPH-MAP-X0" "GLYPH-MAP-Y0" "GLYPH-MAP-X1" "GLYPH-MAP-Y1" 
-   "GLYPH-MAP-WIDTH" "GLYPH-MAP-BITMAP" "*GLYPH-WIDTH-ENTRY-SIZE*" 
-   "GLYPH-WIDTH-ENTRY-NODE" "GLYPH-WIDTH-ENTRY-CODE" 
-   "GLYPH-WIDTH-ENTRY-WIDTH" "*GLYPH-WIDTH-ENTRY32-SIZE*" 
-   "GLYPH-WIDTH-ENTRY32-NODE" "GLYPH-WIDTH-ENTRY32-RESERVED" 
-   "GLYPH-WIDTH-ENTRY32-WIDTH" "GLYPH-WIDTH-ENTRY32-CODE" "+OTERR-FAILURE+" 
-   "+OTERR-SUCCESS+" "+OTERR-BAD-TAG+" "+OTERR-UNKNOWN-TAG+" 
-   "+OTERR-BAD-DATA+" "+OTERR-NO-MEMORY+" "+OTERR-NO-FACE+" 
-   "+OTERR-BAD-FACE+" "+OTERR-NO-GLYPH+" "+OTERR-BAD-GLYPH+" 
-   "+OTERR-NO-SHEAR+" "+OTERR-NO-ROTATE+" "+OTERR-TOO-SMALL+" 
-   "+OTERR-UNKNOWN-GLYPH+" "OPEN-DISK-FONT" "AVAIL-FONTS" 
-   "NEW-FONT-CONTENTS" "DISPOSE-FONT-CONTENTS" "NEW-SCALED-DISK-FONT" 
-   "GET-DISK-FONT-CTRL" "SET-DISK-FONT-CTRL-A" "E-OPEN-ENGINE" 
-   "E-CLOSE-ENGINE" "E-SET-INFO-A" "E-OBTAIN-INFO-A" "E-RELEASE-INFO-A" 
-   "OPEN-OUTLINE-FONT" "CLOSE-OUTLINE-FONT" "WRITE-FONT-CONTENTS" 
-   "WRITE-DISK-FONT-HEADER-A" "OBTAIN-CHARSET-INFO" ))
+  (:export "*DISKFONT-BASE*" "*DISKFONT-VERSION*"))
 
 (in-package "AMIGA.RAW.DISKFONT")
 
@@ -97,314 +32,275 @@
 (defun %version>= (n)
   (and *diskfont-version* (>= *diskfont-version* n)))
 
-;;; --- constants from diskfont/diskfont.i ---
-(defconstant +ta-char-set+ #x80000003)
-(defconstant +maxfontpath+ #x100)
-(defconstant +fch-id+ #xF00)
-(defconstant +tfch-id+ #xF02)
-(defconstant +ofch-id+ #xF03)
-(defconstant +dfh-id+ #xF80)
-(defconstant +maxfontname+ #x20)
-(defconstant +dfh-tag-list+ #x12)
-(defconstant +afb-memory+ 0)
-(defconstant +aff-memory+ 1)
-(defconstant +afb-disk+ 1)
-(defconstant +aff-disk+ 2)
-(defconstant +afb-scaled+ 2)
-(defconstant +aff-scaled+ 4)
-(defconstant +afb-bitmap+ 3)
-(defconstant +aff-bitmap+ 8)
-(defconstant +afb-otag+ 4)
-(defconstant +aff-otag+ #x10)
-(defconstant +afb-charset+ 5)
-(defconstant +aff-charset+ #x20)
-(defconstant +afb-type+ 6)
-(defconstant +aff-type+ #x40)
-(defconstant +afb-ttattr+ #x10)
-(defconstant +aff-ttattr+ #x10000)
-(defconstant +afb-tagged+ #x10)
-(defconstant +aff-tagged+ #x10000)
-(defconstant +ofb-open+ 0)
-(defconstant +off-open+ 1)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.DISKFONT"
+    (:base *diskfont-base* :version *diskfont-version*)
 
-;;; --- structures from diskfont/diskfont.i ---
-(ffi:defcstruct (fc :size 260)   ; FC (diskfont/diskfont.i)
-  (file-name (:struct 256) 0)
-  (y-size :u16 256)
-  (style :u8 258)
-  (flags :u8 259)
-)
-(ffi:defcstruct (tfc :size 260)   ; TFC (diskfont/diskfont.i)
-  (file-name (:struct 254) 0)
-  (tag-count :u16 254)
-  (y-size :u16 256)
-  (style :u8 258)
-  (flags :u8 259)
-)
-(ffi:defcstruct (fch :size 4)   ; FCH (diskfont/diskfont.i)
-  (file-id :u16 0)
-  (num-entries :u16 2)
-  (fc (:struct 0) 4)
-)
-(ffi:defcstruct (disk-font-header :size 106)   ; DiskFontHeader (diskfont/diskfont.i)
-  (df (:struct 14) 0)
-  (file-id :u16 14)
-  (revision :u16 16)
-  (segment :i32 18)
-  (name (:struct 32) 22)
-  (tf (:struct 52) 54)
-)
-(ffi:defcstruct (af :size 10)   ; AF (diskfont/diskfont.i)
-  (type :u16 0)
-  (attr (:struct 8) 2)
-)
-(ffi:defcstruct (taf :size 14)   ; TAF (diskfont/diskfont.i)
-  (type :u16 0)
-  (attr (:struct 12) 2)
-)
-(ffi:defcstruct (afh :size 2)   ; AFH (diskfont/diskfont.i)
-  (num-entries :u16 0)
-  (af (:struct 0) 2)
-)
-(ffi:defcstruct (ege :size 12)   ; EGE (diskfont/diskfont.i)
-  (reserved :fptr 0)
-  (bullet-base :fptr 4)
-  (glyph-engine :fptr 8)
-)
-(ffi:defcstruct (olf :size 36)   ; OLF (diskfont/diskfont.i)
-  (o-tag-path :fptr 0)
-  (o-tag-list :fptr 4)
-  (engine-name :fptr 8)
-  (library-name :fptr 12)
-  (e-engine (:struct 12) 16)
-  (reserved :fptr 28)
-  (user-data :fptr 32)
-)
+  ;; --- constants from diskfont/diskfont.i ---
+  (:const "+TA-CHAR-SET+" #x80000003)
+  (:const "+MAXFONTPATH+" #x100)
+  (:const "+FCH-ID+" #xF00)
+  (:const "+TFCH-ID+" #xF02)
+  (:const "+OFCH-ID+" #xF03)
+  (:const "+DFH-ID+" #xF80)
+  (:const "+MAXFONTNAME+" #x20)
+  (:const "+DFH-TAG-LIST+" #x12)
+  (:const "+AFB-MEMORY+" 0)
+  (:const "+AFF-MEMORY+" 1)
+  (:const "+AFB-DISK+" 1)
+  (:const "+AFF-DISK+" 2)
+  (:const "+AFB-SCALED+" 2)
+  (:const "+AFF-SCALED+" 4)
+  (:const "+AFB-BITMAP+" 3)
+  (:const "+AFF-BITMAP+" 8)
+  (:const "+AFB-OTAG+" 4)
+  (:const "+AFF-OTAG+" #x10)
+  (:const "+AFB-CHARSET+" 5)
+  (:const "+AFF-CHARSET+" #x20)
+  (:const "+AFB-TYPE+" 6)
+  (:const "+AFF-TYPE+" #x40)
+  (:const "+AFB-TTATTR+" #x10)
+  (:const "+AFF-TTATTR+" #x10000)
+  (:const "+AFB-TAGGED+" #x10)
+  (:const "+AFF-TAGGED+" #x10000)
+  (:const "+OFB-OPEN+" 0)
+  (:const "+OFF-OPEN+" 1)
 
-;;; --- constants from diskfont/diskfonttag.i ---
-(defconstant +ot-level0+ #x80000000)
-(defconstant +ot-level1+ #x80001000)
-(defconstant +ot-level2+ #x80002000)
-(defconstant +ot-level3+ #x80003000)
-(defconstant +ot-indirect+ #x8000)
-(defconstant +ot-device-dpi+ #x80000001)
-(defconstant +ot-dot-size+ #x80000002)
-(defconstant +ot-point-height+ #x80000008)
-(defconstant +ot-set-factor+ #x80000009)
-(defconstant +ot-shear-sin+ #x8000000A)
-(defconstant +ot-shear-cos+ #x8000000B)
-(defconstant +ot-rotate-sin+ #x8000000C)
-(defconstant +ot-rotate-cos+ #x8000000D)
-(defconstant +ot-embolden-x+ #x8000000E)
-(defconstant +ot-embolden-y+ #x8000000F)
-(defconstant +ot-point-size+ #x80000010)
-(defconstant +ot-glyph-code+ #x80000011)
-(defconstant +ot-glyph-code2+ #x80000012)
-(defconstant +ot-glyph-code-32+ #x80000018)
-(defconstant +ot-glyph-code2-32+ #x80000019)
-(defconstant +ot-glyph-width+ #x80000013)
-(defconstant +ot-o-tag-path+ #x80008014)
-(defconstant +ot-o-tag-list+ #x80008015)
-(defconstant +ot-mem-ptr+ #x80008016)
-(defconstant +ot-mem-size+ #x80000017)
-(defconstant +ot-glyph-map+ #x80008020)
-(defconstant +ot-glyph-map8-bit+ #x8000801A)
-(defconstant +ot-width-list+ #x80008021)
-(defconstant +ot-width-list32+ #x8000801B)
-(defconstant +ot-text-kern-pair+ #x80008022)
-(defconstant +ot-design-kern-pair+ #x80008023)
-(defconstant +ot-under-lined+ #x80000024)
-(defconstant +otul-none+ 0)
-(defconstant +otul-solid+ 1)
-(defconstant +otul-broken+ 2)
-(defconstant +otul-double-solid+ 3)
-(defconstant +otul-double-broken+ 4)
-(defconstant +outl-double-broken+ 4)
-(defconstant +ot-strike-through+ #x80000025)
-(defconstant +ot-base-line+ #x8000801C)
-(defconstant +ot-num-glyphs+ #x8000801D)
-(defconstant +ot-num-kern-pairs+ #x8000801E)
-(defconstant +ot-has-glyphs+ #x8000801F)
-(defconstant +ot-glyph-name+ #x80008026)
-(defconstant +ot-file-ident+ #x80001001)
-(defconstant +ot-engine+ #x80009002)
-(defconstant +ot-family+ #x80009003)
-(defconstant +ot-b-name+ #x8000A005)
-(defconstant +ot-i-name+ #x8000A006)
-(defconstant +ot-bi-name+ #x8000A007)
-(defconstant +ot-r-name+ #x8000A009)
-(defconstant +ot-symbol-set+ #x80001010)
-(defconstant +ot-y-size-factor+ #x80001011)
-(defconstant +ot-space-width+ #x80002012)
-(defconstant +ot-is-fixed+ #x80002013)
-(defconstant +ot-is-underlined+ #x80002023)
-(defconstant +ot-serif-flag+ #x80001014)
-(defconstant +ot-stem-weight+ #x80001015)
-(defconstant +ots-ultra-thin+ 8)
-(defconstant +ots-extra-thin+ #x18)
-(defconstant +ots-thin+ #x28)
-(defconstant +ots-extra-light+ #x38)
-(defconstant +ots-light+ #x48)
-(defconstant +ots-demi-light+ #x58)
-(defconstant +ots-semi-light+ #x68)
-(defconstant +ots-book+ #x78)
-(defconstant +ots-medium+ #x88)
-(defconstant +ots-semi-bold+ #x98)
-(defconstant +ots-demi-bold+ #xA8)
-(defconstant +ots-bold+ #xB8)
-(defconstant +ots-extra-bold+ #xC8)
-(defconstant +ots-black+ #xD8)
-(defconstant +ots-extra-black+ #xE8)
-(defconstant +ots-ultra-black+ #xF8)
-(defconstant +ot-slant-style+ #x80001016)
-(defconstant +ots-upright+ 0)
-(defconstant +ots-italic+ 1)
-(defconstant +ots-left-italic+ 2)
-(defconstant +ot-horiz-style+ #x80001017)
-(defconstant +oth-ultra-compressed+ #x10)
-(defconstant +oth-extra-compressed+ #x30)
-(defconstant +oth-compressed+ #x50)
-(defconstant +oth-condensed+ #x70)
-(defconstant +oth-normal+ #x90)
-(defconstant +oth-semi-expanded+ #xB0)
-(defconstant +oth-expanded+ #xD0)
-(defconstant +oth-extra-expanded+ #xF0)
-(defconstant +ot-space-factor+ #x80002018)
-(defconstant +ot-inhibit-algo-style+ #x80002019)
-(defconstant +ot-avail-sizes+ #x80009020)
-(defconstant +ot-maxavailsizes+ #x14)
-(defconstant +ot-bm-size+ #x80002021)
-(defconstant +ot-spec-count+ #x80001100)
-(defconstant +ot-spec+ #x80001100)
-(defconstant +ot-spec1+ #x80001101)
-(defconstant +dfctrl-base+ #x8B000000)
-(defconstant +dfctrl-xdpi+ #x8B000001)
-(defconstant +dfctrl-ydpi+ #x8B000002)
-(defconstant +dfctrl-xdotp+ #x8B000003)
-(defconstant +dfctrl-ydotp+ #x8B000004)
-(defconstant +dfctrl-symset+ #x8B000004)
-(defconstant +dfctrl-cache+ #x8B000005)
-(defconstant +dfctrl-sortmode+ #x8B000006)
-(defconstant +dfctrl-sort-off+ 0)
-(defconstant +dfctrl-sort-asc+ 1)
-(defconstant +dfctrl-sort-des+ -1)
-(defconstant +dfctrl-cacheflush+ #x8B000007)
+  ;; --- structures from diskfont/diskfont.i ---
+  (:struct "FC" 260   ; FC (diskfont/diskfont.i)
+    ("FILE-NAME" (:struct 256) 0)
+    ("Y-SIZE" :u16 256)
+    ("STYLE" :u8 258)
+    ("FLAGS" :u8 259)
+    )
+  (:struct "TFC" 260   ; TFC (diskfont/diskfont.i)
+    ("FILE-NAME" (:struct 254) 0)
+    ("TAG-COUNT" :u16 254)
+    ("Y-SIZE" :u16 256)
+    ("STYLE" :u8 258)
+    ("FLAGS" :u8 259)
+    )
+  (:struct "FCH" 4   ; FCH (diskfont/diskfont.i)
+    ("FILE-ID" :u16 0)
+    ("NUM-ENTRIES" :u16 2)
+    ("FC" (:struct 0) 4)
+    )
+  (:struct "DISK-FONT-HEADER" 106   ; DiskFontHeader (diskfont/diskfont.i)
+    ("DF" (:struct 14) 0)
+    ("FILE-ID" :u16 14)
+    ("REVISION" :u16 16)
+    ("SEGMENT" :i32 18)
+    ("NAME" (:struct 32) 22)
+    ("TF" (:struct 52) 54)
+    )
+  (:struct "AF" 10   ; AF (diskfont/diskfont.i)
+    ("TYPE" :u16 0)
+    ("ATTR" (:struct 8) 2)
+    )
+  (:struct "TAF" 14   ; TAF (diskfont/diskfont.i)
+    ("TYPE" :u16 0)
+    ("ATTR" (:struct 12) 2)
+    )
+  (:struct "AFH" 2   ; AFH (diskfont/diskfont.i)
+    ("NUM-ENTRIES" :u16 0)
+    ("AF" (:struct 0) 2)
+    )
+  (:struct "EGE" 12   ; EGE (diskfont/diskfont.i)
+    ("RESERVED" :fptr 0)
+    ("BULLET-BASE" :fptr 4)
+    ("GLYPH-ENGINE" :fptr 8)
+    )
+  (:struct "OLF" 36   ; OLF (diskfont/diskfont.i)
+    ("O-TAG-PATH" :fptr 0)
+    ("O-TAG-LIST" :fptr 4)
+    ("ENGINE-NAME" :fptr 8)
+    ("LIBRARY-NAME" :fptr 12)
+    ("E-ENGINE" (:struct 12) 16)
+    ("RESERVED" :fptr 28)
+    ("USER-DATA" :fptr 32)
+    )
 
-;;; --- constants from diskfont/glyph.i ---
-(defconstant +diskfont-glyph-i+ 1)
+  ;; --- constants from diskfont/diskfonttag.i ---
+  (:const "+OT-LEVEL0+" #x80000000)
+  (:const "+OT-LEVEL1+" #x80001000)
+  (:const "+OT-LEVEL2+" #x80002000)
+  (:const "+OT-LEVEL3+" #x80003000)
+  (:const "+OT-INDIRECT+" #x8000)
+  (:const "+OT-DEVICE-DPI+" #x80000001)
+  (:const "+OT-DOT-SIZE+" #x80000002)
+  (:const "+OT-POINT-HEIGHT+" #x80000008)
+  (:const "+OT-SET-FACTOR+" #x80000009)
+  (:const "+OT-SHEAR-SIN+" #x8000000A)
+  (:const "+OT-SHEAR-COS+" #x8000000B)
+  (:const "+OT-ROTATE-SIN+" #x8000000C)
+  (:const "+OT-ROTATE-COS+" #x8000000D)
+  (:const "+OT-EMBOLDEN-X+" #x8000000E)
+  (:const "+OT-EMBOLDEN-Y+" #x8000000F)
+  (:const "+OT-POINT-SIZE+" #x80000010)
+  (:const "+OT-GLYPH-CODE+" #x80000011)
+  (:const "+OT-GLYPH-CODE2+" #x80000012)
+  (:const "+OT-GLYPH-CODE-32+" #x80000018)
+  (:const "+OT-GLYPH-CODE2-32+" #x80000019)
+  (:const "+OT-GLYPH-WIDTH+" #x80000013)
+  (:const "+OT-O-TAG-PATH+" #x80008014)
+  (:const "+OT-O-TAG-LIST+" #x80008015)
+  (:const "+OT-MEM-PTR+" #x80008016)
+  (:const "+OT-MEM-SIZE+" #x80000017)
+  (:const "+OT-GLYPH-MAP+" #x80008020)
+  (:const "+OT-GLYPH-MAP8-BIT+" #x8000801A)
+  (:const "+OT-WIDTH-LIST+" #x80008021)
+  (:const "+OT-WIDTH-LIST32+" #x8000801B)
+  (:const "+OT-TEXT-KERN-PAIR+" #x80008022)
+  (:const "+OT-DESIGN-KERN-PAIR+" #x80008023)
+  (:const "+OT-UNDER-LINED+" #x80000024)
+  (:const "+OTUL-NONE+" 0)
+  (:const "+OTUL-SOLID+" 1)
+  (:const "+OTUL-BROKEN+" 2)
+  (:const "+OTUL-DOUBLE-SOLID+" 3)
+  (:const "+OTUL-DOUBLE-BROKEN+" 4)
+  (:const "+OUTL-DOUBLE-BROKEN+" 4)
+  (:const "+OT-STRIKE-THROUGH+" #x80000025)
+  (:const "+OT-BASE-LINE+" #x8000801C)
+  (:const "+OT-NUM-GLYPHS+" #x8000801D)
+  (:const "+OT-NUM-KERN-PAIRS+" #x8000801E)
+  (:const "+OT-HAS-GLYPHS+" #x8000801F)
+  (:const "+OT-GLYPH-NAME+" #x80008026)
+  (:const "+OT-FILE-IDENT+" #x80001001)
+  (:const "+OT-ENGINE+" #x80009002)
+  (:const "+OT-FAMILY+" #x80009003)
+  (:const "+OT-B-NAME+" #x8000A005)
+  (:const "+OT-I-NAME+" #x8000A006)
+  (:const "+OT-BI-NAME+" #x8000A007)
+  (:const "+OT-R-NAME+" #x8000A009)
+  (:const "+OT-SYMBOL-SET+" #x80001010)
+  (:const "+OT-Y-SIZE-FACTOR+" #x80001011)
+  (:const "+OT-SPACE-WIDTH+" #x80002012)
+  (:const "+OT-IS-FIXED+" #x80002013)
+  (:const "+OT-IS-UNDERLINED+" #x80002023)
+  (:const "+OT-SERIF-FLAG+" #x80001014)
+  (:const "+OT-STEM-WEIGHT+" #x80001015)
+  (:const "+OTS-ULTRA-THIN+" 8)
+  (:const "+OTS-EXTRA-THIN+" #x18)
+  (:const "+OTS-THIN+" #x28)
+  (:const "+OTS-EXTRA-LIGHT+" #x38)
+  (:const "+OTS-LIGHT+" #x48)
+  (:const "+OTS-DEMI-LIGHT+" #x58)
+  (:const "+OTS-SEMI-LIGHT+" #x68)
+  (:const "+OTS-BOOK+" #x78)
+  (:const "+OTS-MEDIUM+" #x88)
+  (:const "+OTS-SEMI-BOLD+" #x98)
+  (:const "+OTS-DEMI-BOLD+" #xA8)
+  (:const "+OTS-BOLD+" #xB8)
+  (:const "+OTS-EXTRA-BOLD+" #xC8)
+  (:const "+OTS-BLACK+" #xD8)
+  (:const "+OTS-EXTRA-BLACK+" #xE8)
+  (:const "+OTS-ULTRA-BLACK+" #xF8)
+  (:const "+OT-SLANT-STYLE+" #x80001016)
+  (:const "+OTS-UPRIGHT+" 0)
+  (:const "+OTS-ITALIC+" 1)
+  (:const "+OTS-LEFT-ITALIC+" 2)
+  (:const "+OT-HORIZ-STYLE+" #x80001017)
+  (:const "+OTH-ULTRA-COMPRESSED+" #x10)
+  (:const "+OTH-EXTRA-COMPRESSED+" #x30)
+  (:const "+OTH-COMPRESSED+" #x50)
+  (:const "+OTH-CONDENSED+" #x70)
+  (:const "+OTH-NORMAL+" #x90)
+  (:const "+OTH-SEMI-EXPANDED+" #xB0)
+  (:const "+OTH-EXPANDED+" #xD0)
+  (:const "+OTH-EXTRA-EXPANDED+" #xF0)
+  (:const "+OT-SPACE-FACTOR+" #x80002018)
+  (:const "+OT-INHIBIT-ALGO-STYLE+" #x80002019)
+  (:const "+OT-AVAIL-SIZES+" #x80009020)
+  (:const "+OT-MAXAVAILSIZES+" #x14)
+  (:const "+OT-BM-SIZE+" #x80002021)
+  (:const "+OT-SPEC-COUNT+" #x80001100)
+  (:const "+OT-SPEC+" #x80001100)
+  (:const "+OT-SPEC1+" #x80001101)
+  (:const "+DFCTRL-BASE+" #x8B000000)
+  (:const "+DFCTRL-XDPI+" #x8B000001)
+  (:const "+DFCTRL-YDPI+" #x8B000002)
+  (:const "+DFCTRL-XDOTP+" #x8B000003)
+  (:const "+DFCTRL-YDOTP+" #x8B000004)
+  (:const "+DFCTRL-SYMSET+" #x8B000004)
+  (:const "+DFCTRL-CACHE+" #x8B000005)
+  (:const "+DFCTRL-SORTMODE+" #x8B000006)
+  (:const "+DFCTRL-SORT-OFF+" 0)
+  (:const "+DFCTRL-SORT-ASC+" 1)
+  (:const "+DFCTRL-SORT-DES+" -1)
+  (:const "+DFCTRL-CACHEFLUSH+" #x8B000007)
 
-;;; --- structures from diskfont/glyph.i ---
-(ffi:defcstruct (glyph-engine :size 8)   ; GlyphEngine (diskfont/glyph.i)
-  (library :fptr 0)
-  (name :fptr 4)
-)
-(ffi:defcstruct (glyph-map :size 36)   ; GlyphMap (diskfont/glyph.i)
-  (bm-modulo :u16 0)
-  (bm-rows :u16 2)
-  (black-left :u16 4)
-  (black-top :u16 6)
-  (black-width :u16 8)
-  (black-height :u16 10)
-  (x-origin :u32 12)
-  (y-origin :u32 16)
-  (x0 :i16 20)
-  (y0 :i16 22)
-  (x1 :i16 24)
-  (y1 :i16 26)
-  (width :u32 28)
-  (bitmap :fptr 32)
-)
-(ffi:defcstruct (glyph-width-entry :size 14)   ; GlyphWidthEntry (diskfont/glyph.i)
-  (node (:struct 8) 0)
-  (code :u16 8)
-  (width :u32 10)
-)
-(ffi:defcstruct (glyph-width-entry32 :size 18)   ; GlyphWidthEntry32 (diskfont/glyph.i)
-  (node (:struct 8) 0)
-  (reserved :u16 8)
-  (width :u32 10)
-  (code :u32 14)
-)
+  ;; --- constants from diskfont/glyph.i ---
+  (:const "+DISKFONT-GLYPH-I+" 1)
 
-;;; --- constants from diskfont/oterrors.i ---
-(defconstant +oterr-failure+ -1)
-(defconstant +oterr-success+ 0)
-(defconstant +oterr-bad-tag+ 1)
-(defconstant +oterr-unknown-tag+ 2)
-(defconstant +oterr-bad-data+ 3)
-(defconstant +oterr-no-memory+ 4)
-(defconstant +oterr-no-face+ 5)
-(defconstant +oterr-bad-face+ 6)
-(defconstant +oterr-no-glyph+ 7)
-(defconstant +oterr-bad-glyph+ 8)
-(defconstant +oterr-no-shear+ 9)
-(defconstant +oterr-no-rotate+ 10)
-(defconstant +oterr-too-small+ 11)
-(defconstant +oterr-unknown-glyph+ 12)
+  ;; --- structures from diskfont/glyph.i ---
+  (:struct "GLYPH-ENGINE" 8   ; GlyphEngine (diskfont/glyph.i)
+    ("LIBRARY" :fptr 0)
+    ("NAME" :fptr 4)
+    )
+  (:struct "GLYPH-MAP" 36   ; GlyphMap (diskfont/glyph.i)
+    ("BM-MODULO" :u16 0)
+    ("BM-ROWS" :u16 2)
+    ("BLACK-LEFT" :u16 4)
+    ("BLACK-TOP" :u16 6)
+    ("BLACK-WIDTH" :u16 8)
+    ("BLACK-HEIGHT" :u16 10)
+    ("X-ORIGIN" :u32 12)
+    ("Y-ORIGIN" :u32 16)
+    ("X0" :i16 20)
+    ("Y0" :i16 22)
+    ("X1" :i16 24)
+    ("Y1" :i16 26)
+    ("WIDTH" :u32 28)
+    ("BITMAP" :fptr 32)
+    )
+  (:struct "GLYPH-WIDTH-ENTRY" 14   ; GlyphWidthEntry (diskfont/glyph.i)
+    ("NODE" (:struct 8) 0)
+    ("CODE" :u16 8)
+    ("WIDTH" :u32 10)
+    )
+  (:struct "GLYPH-WIDTH-ENTRY32" 18   ; GlyphWidthEntry32 (diskfont/glyph.i)
+    ("NODE" (:struct 8) 0)
+    ("RESERVED" :u16 8)
+    ("WIDTH" :u32 10)
+    ("CODE" :u32 14)
+    )
 
-;;; --- functions (diskfont_lib.sfd + MorphOS SDK) ---
-(amiga.ffi:defcfun open-disk-font *diskfont-base* -30 (:a0 text-attr)
-    :result :pointer
-    :doc "struct TextFont * OpenDiskFont(struct TextAttr * textAttr) (A0) LVO -30")
-(amiga.ffi:defcfun avail-fonts *diskfont-base* -36 (:a0 buffer :d0 buf-bytes :d1 flags)
-    :result :signed
-    :doc "LONG AvailFonts(struct AvailFontsHeader * buffer, LONG bufBytes, ULONG flags) (A0,D0,D1) LVO -36")
-(amiga.ffi:defcfun new-font-contents *diskfont-base* -42 (:a0 fonts-lock :a1 font-name)
-    :result :pointer
-    :doc "struct FontContentsHeader * NewFontContents(BPTR fontsLock, CONST_STRPTR fontName) (A0,A1) LVO -42")
-(amiga.ffi:defcfun dispose-font-contents *diskfont-base* -48 (:a1 font-contents-header)
-    :result :void
-    :doc "VOID DisposeFontContents(struct FontContentsHeader * fontContentsHeader) (A1) LVO -48")
-(amiga.ffi:defcfun new-scaled-disk-font *diskfont-base* -54 (:a0 source-font :a1 dest-text-attr)
-    :result :pointer
-    :doc "struct DiskFont * NewScaledDiskFont(struct TextFont * sourceFont, struct TextAttr * destTextAttr) (A0,A1) LVO -54")
-(when (%version>= 45)
-  (amiga.ffi:defcfun get-disk-font-ctrl *diskfont-base* -60 (:d0 tagid)
-    :result :signed
-    :doc "LONG GetDiskFontCtrl(LONG tagid) (D0) LVO -60"))
-(when (%version>= 45)
-  (amiga.ffi:defcfun set-disk-font-ctrl-a *diskfont-base* -66 (:a0 taglist)
-    :result :void
-    :doc "VOID SetDiskFontCtrlA(CONST struct TagItem * taglist) (A0) LVO -66"))
-(when (and (not (member :morphos *features*)) (%version>= 47))
-  (amiga.ffi:defcfun e-open-engine *diskfont-base* -72 (:a0 e-engine)
-    :result :signed
-    :doc "LONG EOpenEngine(struct EGlyphEngine * EEngine) (A0) LVO -72"))
-(when (and (not (member :morphos *features*)) (%version>= 47))
-  (amiga.ffi:defcfun e-close-engine *diskfont-base* -78 (:a0 e-engine)
-    :result :void
-    :doc "VOID ECloseEngine(struct EGlyphEngine * EEngine) (A0) LVO -78"))
-(when (and (not (member :morphos *features*)) (%version>= 47))
-  (amiga.ffi:defcfun e-set-info-a *diskfont-base* -84 (:a0 e-engine :a1 taglist)
-    :result :unsigned
-    :doc "ULONG ESetInfoA(struct EGlyphEngine * EEngine, CONST struct TagItem * taglist) (A0,A1) LVO -84"))
-(when (and (not (member :morphos *features*)) (%version>= 47))
-  (amiga.ffi:defcfun e-obtain-info-a *diskfont-base* -90 (:a0 e-engine :a1 taglist)
-    :result :unsigned
-    :doc "ULONG EObtainInfoA(struct EGlyphEngine * EEngine, CONST struct TagItem * taglist) (A0,A1) LVO -90"))
-(when (and (not (member :morphos *features*)) (%version>= 47))
-  (amiga.ffi:defcfun e-release-info-a *diskfont-base* -96 (:a0 e-engine :a1 taglist)
-    :result :unsigned
-    :doc "ULONG EReleaseInfoA(struct EGlyphEngine * EEngine, CONST struct TagItem * taglist) (A0,A1) LVO -96"))
-(when (and (not (member :morphos *features*)) (%version>= 47))
-  (amiga.ffi:defcfun open-outline-font *diskfont-base* -102 (:a0 name :a1 list :d0 flags)
-    :result :pointer
-    :doc "struct OutlineFont * OpenOutlineFont(CONST_STRPTR name, struct List * list, ULONG flags) (A0,A1,D0) LVO -102"))
-(when (and (not (member :morphos *features*)) (%version>= 47))
-  (amiga.ffi:defcfun close-outline-font *diskfont-base* -108 (:a0 olf :a1 list)
-    :result :void
-    :doc "VOID CloseOutlineFont(struct OutlineFont * olf, struct List * list) (A0,A1) LVO -108"))
-(when (and (not (member :morphos *features*)) (%version>= 47))
-  (amiga.ffi:defcfun write-font-contents *diskfont-base* -114 (:a0 fonts-lock :a1 font-name :a2 font-contents-header)
-    :result :signed
-    :doc "LONG WriteFontContents(BPTR fontsLock, CONST_STRPTR fontName, CONST struct FontContentsHeader * fontContentsHeader) (A0,A1,A2) LVO -114"))
-(when (and (not (member :morphos *features*)) (%version>= 47))
-  (amiga.ffi:defcfun write-disk-font-header-a *diskfont-base* -120 (:a0 font :a1 file-name :a2 tag-list)
-    :result :signed
-    :doc "LONG WriteDiskFontHeaderA(CONST struct TextFont * font, CONST_STRPTR fileName, CONST struct TagItem * tagList) (A0,A1,A2) LVO -120"))
-(when (and (not (member :morphos *features*)) (%version>= 47))
-  (amiga.ffi:defcfun obtain-charset-info *diskfont-base* -126 (:d0 known-tag :d1 known-value :d2 wanted-tag)
-    :result :unsigned
-    :doc "ULONG ObtainCharsetInfo(ULONG knownTag, ULONG knownValue, ULONG wantedTag) (D0,D1,D2) LVO -126"))
+  ;; --- constants from diskfont/oterrors.i ---
+  (:const "+OTERR-FAILURE+" -1)
+  (:const "+OTERR-SUCCESS+" 0)
+  (:const "+OTERR-BAD-TAG+" 1)
+  (:const "+OTERR-UNKNOWN-TAG+" 2)
+  (:const "+OTERR-BAD-DATA+" 3)
+  (:const "+OTERR-NO-MEMORY+" 4)
+  (:const "+OTERR-NO-FACE+" 5)
+  (:const "+OTERR-BAD-FACE+" 6)
+  (:const "+OTERR-NO-GLYPH+" 7)
+  (:const "+OTERR-BAD-GLYPH+" 8)
+  (:const "+OTERR-NO-SHEAR+" 9)
+  (:const "+OTERR-NO-ROTATE+" 10)
+  (:const "+OTERR-TOO-SMALL+" 11)
+  (:const "+OTERR-UNKNOWN-GLYPH+" 12)
+
+  ;; --- functions (diskfont_lib.sfd + MorphOS SDK) ---
+  (:fn "OPEN-DISK-FONT" -30 (:a0) :pointer)   ; struct TextFont * OpenDiskFont(struct TextAttr * textAttr) (A0) LVO -30
+  (:fn "AVAIL-FONTS" -36 (:a0 :d0 :d1) :signed)   ; LONG AvailFonts(struct AvailFontsHeader * buffer, LONG bufBytes, ULONG flags) (A0,D0,D1) LVO -36
+  (:fn "NEW-FONT-CONTENTS" -42 (:a0 :a1) :pointer)   ; struct FontContentsHeader * NewFontContents(BPTR fontsLock, CONST_STRPTR fontName) (A0,A1) LVO -42
+  (:fn "DISPOSE-FONT-CONTENTS" -48 (:a1) :void)   ; VOID DisposeFontContents(struct FontContentsHeader * fontContentsHeader) (A1) LVO -48
+  (:fn "NEW-SCALED-DISK-FONT" -54 (:a0 :a1) :pointer)   ; struct DiskFont * NewScaledDiskFont(struct TextFont * sourceFont, struct TextAttr * destTextAttr) (A0,A1) LVO -54
+  (:fn "GET-DISK-FONT-CTRL" -60 (:d0) :signed 45)   ; LONG GetDiskFontCtrl(LONG tagid) (D0) LVO -60
+  (:fn "SET-DISK-FONT-CTRL-A" -66 (:a0) :void 45)   ; VOID SetDiskFontCtrlA(CONST struct TagItem * taglist) (A0) LVO -66
+  (:fn "E-OPEN-ENGINE" -72 (:a0) :signed :not-morphos 47)   ; LONG EOpenEngine(struct EGlyphEngine * EEngine) (A0) LVO -72
+  (:fn "E-CLOSE-ENGINE" -78 (:a0) :void :not-morphos 47)   ; VOID ECloseEngine(struct EGlyphEngine * EEngine) (A0) LVO -78
+  (:fn "E-SET-INFO-A" -84 (:a0 :a1) :unsigned :not-morphos 47)   ; ULONG ESetInfoA(struct EGlyphEngine * EEngine, CONST struct TagItem * taglist) (A0,A1) LVO -84
+  (:fn "E-OBTAIN-INFO-A" -90 (:a0 :a1) :unsigned :not-morphos 47)   ; ULONG EObtainInfoA(struct EGlyphEngine * EEngine, CONST struct TagItem * taglist) (A0,A1) LVO -90
+  (:fn "E-RELEASE-INFO-A" -96 (:a0 :a1) :unsigned :not-morphos 47)   ; ULONG EReleaseInfoA(struct EGlyphEngine * EEngine, CONST struct TagItem * taglist) (A0,A1) LVO -96
+  (:fn "OPEN-OUTLINE-FONT" -102 (:a0 :a1 :d0) :pointer :not-morphos 47)   ; struct OutlineFont * OpenOutlineFont(CONST_STRPTR name, struct List * list, ULONG flags) (A0,A1,D0) LVO -102
+  (:fn "CLOSE-OUTLINE-FONT" -108 (:a0 :a1) :void :not-morphos 47)   ; VOID CloseOutlineFont(struct OutlineFont * olf, struct List * list) (A0,A1) LVO -108
+  (:fn "WRITE-FONT-CONTENTS" -114 (:a0 :a1 :a2) :signed :not-morphos 47)   ; LONG WriteFontContents(BPTR fontsLock, CONST_STRPTR fontName, CONST struct FontContentsHeader * fontContentsHeader) (A0,A1,A2) LVO -114
+  (:fn "WRITE-DISK-FONT-HEADER-A" -120 (:a0 :a1 :a2) :signed :not-morphos 47)   ; LONG WriteDiskFontHeaderA(CONST struct TextFont * font, CONST_STRPTR fileName, CONST struct TagItem * tagList) (A0,A1,A2) LVO -120
+  (:fn "OBTAIN-CHARSET-INFO" -126 (:d0 :d1 :d2) :unsigned :not-morphos 47)   ; ULONG ObtainCharsetInfo(ULONG knownTag, ULONG knownValue, ULONG wantedTag) (D0,D1,D2) LVO -126
+  )
 
 (provide "amiga/raw/diskfont")

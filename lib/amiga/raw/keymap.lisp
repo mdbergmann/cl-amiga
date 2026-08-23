@@ -9,38 +9,14 @@
 ;;; 9 functions, 72 constants, 3 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.KEYMAP"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*KEYMAP-BASE*" "*KEYMAP-VERSION*"
-   "+KCB-NOP+" "+KCF-NOP+" "+KC-NOQUAL+" "+KC-VANILLA+" "+KCB-SHIFT+" 
-   "+KCF-SHIFT+" "+KCB-ALT+" "+KCF-ALT+" "+KCB-CONTROL+" "+KCF-CONTROL+" 
-   "+KCB-DOWNUP+" "+KCF-DOWNUP+" "+KCB-DEAD+" "+KCF-DEAD+" "+KCB-STRING+" 
-   "+KCF-STRING+" "+DPB-MOD+" "+DPF-MOD+" "+DPB-DEAD+" "+DPF-DEAD+" 
-   "+DP-2-DINDEXMASK+" "+DP-2-DFACSHIFT+" "*KEY-MAP-SIZE*" 
-   "KEY-MAP-LO-KEY-MAP-TYPES" "KEY-MAP-LO-KEY-MAP" "KEY-MAP-LO-CAPSABLE" 
-   "KEY-MAP-LO-REPEATABLE" "KEY-MAP-HI-KEY-MAP-TYPES" "KEY-MAP-HI-KEY-MAP" 
-   "KEY-MAP-HI-CAPSABLE" "KEY-MAP-HI-REPEATABLE" "*KEY-MAP-NODE-SIZE*" 
-   "KEY-MAP-NODE-NODE" "KEY-MAP-NODE-KEY-MAP" "*KEY-MAP-RESOURCE-SIZE*" 
-   "KEY-MAP-RESOURCE-NODE" "KEY-MAP-RESOURCE-LIST" "+RAWKEY-SPACE+" 
-   "+RAWKEY-BACKSPACE+" "+RAWKEY-TAB+" "+RAWKEY-ENTER+" "+RAWKEY-RETURN+" 
-   "+RAWKEY-ESC+" "+RAWKEY-DEL+" "+RAWKEY-INSERT+" "+RAWKEY-PAGEUP+" 
-   "+RAWKEY-PAGEDOWN+" "+RAWKEY-F11+" "+RAWKEY-CRSRUP+" "+RAWKEY-CRSRDOWN+" 
-   "+RAWKEY-CRSRRIGHT+" "+RAWKEY-CRSRLEFT+" "+RAWKEY-F1+" "+RAWKEY-F2+" 
-   "+RAWKEY-F3+" "+RAWKEY-F4+" "+RAWKEY-F5+" "+RAWKEY-F6+" "+RAWKEY-F7+" 
-   "+RAWKEY-F8+" "+RAWKEY-F9+" "+RAWKEY-F10+" "+RAWKEY-HELP+" 
-   "+RAWKEY-LSHIFT+" "+RAWKEY-RSHIFT+" "+RAWKEY-CAPSLOCK+" "+RAWKEY-LCTRL+" 
-   "+RAWKEY-LALT+" "+RAWKEY-RALT+" "+RAWKEY-LCOMMAND+" "+RAWKEY-RCOMMAND+" 
-   "+RAWKEY-MENU+" "+RAWKEY-PRINTSCR+" "+RAWKEY-BREAK+" "+RAWKEY-F12+" 
-   "+RAWKEY-HOME+" "+RAWKEY-END+" "+RAWKEY-MEDIA-STOP+" 
-   "+RAWKEY-MEDIA-PLAY-PAUSE+" "+RAWKEY-MEDIA-PREV-TRACK+" 
-   "+RAWKEY-MEDIA-NEXT-TRACK+" "+RAWKEY-MEDIA-SHUFFLE+" 
-   "+RAWKEY-MEDIA-REPEAT+" "+RAWKEY-WHEEL-UP+" "+RAWKEY-WHEEL-DOWN+" 
-   "+RAWKEY-WHEEL-LEFT+" "+RAWKEY-WHEEL-RIGHT+" "SET-KEY-MAP-DEFAULT" 
-   "ASK-KEY-MAP-DEFAULT" "MAP-RAW-KEY" "MAP-ANSI" "MAP-RAW-KEY-UCS4" 
-   "MAP-UCS4" "TO-ANSI" "TO-UCS4" "GET-KEY-MAP-CODEPAGE" ))
+  (:export "*KEYMAP-BASE*" "*KEYMAP-VERSION*"))
 
 (in-package "AMIGA.RAW.KEYMAP")
 
@@ -54,134 +30,118 @@
 (defun %version>= (n)
   (and *keymap-version* (>= *keymap-version* n)))
 
-;;; --- constants from devices/keymap.i ---
-(defconstant +kcb-nop+ 7)
-(defconstant +kcf-nop+ #x80)
-(defconstant +kc-noqual+ 0)
-(defconstant +kc-vanilla+ 7)
-(defconstant +kcb-shift+ 0)
-(defconstant +kcf-shift+ 1)
-(defconstant +kcb-alt+ 1)
-(defconstant +kcf-alt+ 2)
-(defconstant +kcb-control+ 2)
-(defconstant +kcf-control+ 4)
-(defconstant +kcb-downup+ 3)
-(defconstant +kcf-downup+ 8)
-(defconstant +kcb-dead+ 5)
-(defconstant +kcf-dead+ #x20)
-(defconstant +kcb-string+ 6)
-(defconstant +kcf-string+ #x40)
-(defconstant +dpb-mod+ 0)
-(defconstant +dpf-mod+ 1)
-(defconstant +dpb-dead+ 3)
-(defconstant +dpf-dead+ 8)
-(defconstant +dp-2-dindexmask+ 15)
-(defconstant +dp-2-dfacshift+ 4)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.KEYMAP"
+    (:base *keymap-base* :version *keymap-version*)
 
-;;; --- structures from devices/keymap.i ---
-(ffi:defcstruct (key-map :size 32)   ; KeyMap (devices/keymap.i)
-  (lo-key-map-types :fptr 0)
-  (lo-key-map :fptr 4)
-  (lo-capsable :fptr 8)
-  (lo-repeatable :fptr 12)
-  (hi-key-map-types :fptr 16)
-  (hi-key-map :fptr 20)
-  (hi-capsable :fptr 24)
-  (hi-repeatable :fptr 28)
-)
-(ffi:defcstruct (key-map-node :size 46)   ; KeyMapNode (devices/keymap.i)
-  (node (:struct 14) 0)
-  (key-map (:struct 32) 14)
-)
-(ffi:defcstruct (key-map-resource :size 28)   ; KeyMapResource (devices/keymap.i)
-  (node (:struct 14) 0)
-  (list (:struct 14) 14)
-)
+  ;; --- constants from devices/keymap.i ---
+  (:const "+KCB-NOP+" 7)
+  (:const "+KCF-NOP+" #x80)
+  (:const "+KC-NOQUAL+" 0)
+  (:const "+KC-VANILLA+" 7)
+  (:const "+KCB-SHIFT+" 0)
+  (:const "+KCF-SHIFT+" 1)
+  (:const "+KCB-ALT+" 1)
+  (:const "+KCF-ALT+" 2)
+  (:const "+KCB-CONTROL+" 2)
+  (:const "+KCF-CONTROL+" 4)
+  (:const "+KCB-DOWNUP+" 3)
+  (:const "+KCF-DOWNUP+" 8)
+  (:const "+KCB-DEAD+" 5)
+  (:const "+KCF-DEAD+" #x20)
+  (:const "+KCB-STRING+" 6)
+  (:const "+KCF-STRING+" #x40)
+  (:const "+DPB-MOD+" 0)
+  (:const "+DPF-MOD+" 1)
+  (:const "+DPB-DEAD+" 3)
+  (:const "+DPF-DEAD+" 8)
+  (:const "+DP-2-DINDEXMASK+" 15)
+  (:const "+DP-2-DFACSHIFT+" 4)
 
-;;; --- constants from libraries/keymap.h ---
-(defconstant +rawkey-space+ #x40)
-(defconstant +rawkey-backspace+ #x41)
-(defconstant +rawkey-tab+ #x42)
-(defconstant +rawkey-enter+ #x43)
-(defconstant +rawkey-return+ #x44)
-(defconstant +rawkey-esc+ #x45)
-(defconstant +rawkey-del+ #x46)
-(defconstant +rawkey-insert+ #x47)
-(defconstant +rawkey-pageup+ #x48)
-(defconstant +rawkey-pagedown+ #x49)
-(defconstant +rawkey-f11+ #x4B)
-(defconstant +rawkey-crsrup+ #x4C)
-(defconstant +rawkey-crsrdown+ #x4D)
-(defconstant +rawkey-crsrright+ #x4E)
-(defconstant +rawkey-crsrleft+ #x4F)
-(defconstant +rawkey-f1+ #x50)
-(defconstant +rawkey-f2+ #x51)
-(defconstant +rawkey-f3+ #x52)
-(defconstant +rawkey-f4+ #x53)
-(defconstant +rawkey-f5+ #x54)
-(defconstant +rawkey-f6+ #x55)
-(defconstant +rawkey-f7+ #x56)
-(defconstant +rawkey-f8+ #x57)
-(defconstant +rawkey-f9+ #x58)
-(defconstant +rawkey-f10+ #x59)
-(defconstant +rawkey-help+ #x5F)
-(defconstant +rawkey-lshift+ #x60)
-(defconstant +rawkey-rshift+ #x61)
-(defconstant +rawkey-capslock+ #x62)
-(defconstant +rawkey-lctrl+ #x63)
-(defconstant +rawkey-lalt+ #x64)
-(defconstant +rawkey-ralt+ #x65)
-(defconstant +rawkey-lcommand+ #x66)
-(defconstant +rawkey-rcommand+ #x67)
-(defconstant +rawkey-menu+ #x6B)
-(defconstant +rawkey-printscr+ #x6D)
-(defconstant +rawkey-break+ #x6E)
-(defconstant +rawkey-f12+ #x6F)
-(defconstant +rawkey-home+ #x70)
-(defconstant +rawkey-end+ #x71)
-(defconstant +rawkey-media-stop+ #x72)
-(defconstant +rawkey-media-play-pause+ #x73)
-(defconstant +rawkey-media-prev-track+ #x74)
-(defconstant +rawkey-media-next-track+ #x75)
-(defconstant +rawkey-media-shuffle+ #x76)
-(defconstant +rawkey-media-repeat+ #x77)
-(defconstant +rawkey-wheel-up+ #x7A)
-(defconstant +rawkey-wheel-down+ #x7B)
-(defconstant +rawkey-wheel-left+ #x7C)
-(defconstant +rawkey-wheel-right+ #x7D)
+  ;; --- structures from devices/keymap.i ---
+  (:struct "KEY-MAP" 32   ; KeyMap (devices/keymap.i)
+    ("LO-KEY-MAP-TYPES" :fptr 0)
+    ("LO-KEY-MAP" :fptr 4)
+    ("LO-CAPSABLE" :fptr 8)
+    ("LO-REPEATABLE" :fptr 12)
+    ("HI-KEY-MAP-TYPES" :fptr 16)
+    ("HI-KEY-MAP" :fptr 20)
+    ("HI-CAPSABLE" :fptr 24)
+    ("HI-REPEATABLE" :fptr 28)
+    )
+  (:struct "KEY-MAP-NODE" 46   ; KeyMapNode (devices/keymap.i)
+    ("NODE" (:struct 14) 0)
+    ("KEY-MAP" (:struct 32) 14)
+    )
+  (:struct "KEY-MAP-RESOURCE" 28   ; KeyMapResource (devices/keymap.i)
+    ("NODE" (:struct 14) 0)
+    ("LIST" (:struct 14) 14)
+    )
 
-;;; --- functions (keymap_lib.sfd + MorphOS SDK) ---
-(amiga.ffi:defcfun set-key-map-default *keymap-base* -30 (:a0 key-map)
-    :result :void
-    :doc "VOID SetKeyMapDefault(struct KeyMap * keyMap) (A0) LVO -30")
-(amiga.ffi:defcfun ask-key-map-default *keymap-base* -36 ()
-    :result :pointer
-    :doc "struct KeyMap * AskKeyMapDefault() () LVO -36")
-(amiga.ffi:defcfun map-raw-key *keymap-base* -42 (:a0 event :a1 buffer :d1 length :a2 key-map)
-    :result :i16
-    :doc "WORD MapRawKey(CONST struct InputEvent * event, STRPTR buffer, WORD length, CONST struct KeyMap * keyMap) (A0,A1,D1,A2) LVO -42")
-(amiga.ffi:defcfun map-ansi *keymap-base* -48 (:a0 string :d0 count :a1 buffer :d1 length :a2 key-map)
-    :result :signed
-    :doc "LONG MapANSI(CONST_STRPTR string, LONG count, STRPTR buffer, LONG length, CONST struct KeyMap * keyMap) (A0,D0,A1,D1,A2) LVO -48")
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun map-raw-key-ucs4 *keymap-base* -54 (:a0 event :a1 buffer :d1 length :a2 key-map)
-    :result :i16
-    :doc "WORD MapRawKeyUCS4(CONST struct InputEvent * event, WSTRPTR buffer, LONG length, CONST struct KeyMap * keyMap) (A0,A1,D1,A2) LVO -54"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun map-ucs4 *keymap-base* -60 (:a0 string :d0 count :a1 buffer :d1 length :a2 key-map)
-    :result :signed
-    :doc "LONG MapUCS4(CONST_WSTRPTR string, LONG count, STRPTR buffer, LONG length, CONST struct KeyMap * keyMap) (A0,D0,A1,D1,A2) LVO -60"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun to-ansi *keymap-base* -66 (:a0 ucs4char :a1 key-map)
-    :result :unsigned
-    :doc "char ToANSI(WCHAR ucs4char, CONST struct KeyMap * keyMap) (A0,A1) LVO -66"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun to-ucs4 *keymap-base* -72 (:a0 asciichar :a1 key-map)
-    :result :unsigned
-    :doc "WCHAR ToUCS4(char asciichar, CONST struct KeyMap * keyMap) (A0,A1) LVO -72"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun get-key-map-codepage *keymap-base* -78 (:a0 key-map)
-    :result :pointer
-    :doc "CONST_STRPTR GetKeyMapCodepage(CONST struct KeyMap * keyMap) (A0) LVO -78"))
+  ;; --- constants from libraries/keymap.h ---
+  (:const "+RAWKEY-SPACE+" #x40)
+  (:const "+RAWKEY-BACKSPACE+" #x41)
+  (:const "+RAWKEY-TAB+" #x42)
+  (:const "+RAWKEY-ENTER+" #x43)
+  (:const "+RAWKEY-RETURN+" #x44)
+  (:const "+RAWKEY-ESC+" #x45)
+  (:const "+RAWKEY-DEL+" #x46)
+  (:const "+RAWKEY-INSERT+" #x47)
+  (:const "+RAWKEY-PAGEUP+" #x48)
+  (:const "+RAWKEY-PAGEDOWN+" #x49)
+  (:const "+RAWKEY-F11+" #x4B)
+  (:const "+RAWKEY-CRSRUP+" #x4C)
+  (:const "+RAWKEY-CRSRDOWN+" #x4D)
+  (:const "+RAWKEY-CRSRRIGHT+" #x4E)
+  (:const "+RAWKEY-CRSRLEFT+" #x4F)
+  (:const "+RAWKEY-F1+" #x50)
+  (:const "+RAWKEY-F2+" #x51)
+  (:const "+RAWKEY-F3+" #x52)
+  (:const "+RAWKEY-F4+" #x53)
+  (:const "+RAWKEY-F5+" #x54)
+  (:const "+RAWKEY-F6+" #x55)
+  (:const "+RAWKEY-F7+" #x56)
+  (:const "+RAWKEY-F8+" #x57)
+  (:const "+RAWKEY-F9+" #x58)
+  (:const "+RAWKEY-F10+" #x59)
+  (:const "+RAWKEY-HELP+" #x5F)
+  (:const "+RAWKEY-LSHIFT+" #x60)
+  (:const "+RAWKEY-RSHIFT+" #x61)
+  (:const "+RAWKEY-CAPSLOCK+" #x62)
+  (:const "+RAWKEY-LCTRL+" #x63)
+  (:const "+RAWKEY-LALT+" #x64)
+  (:const "+RAWKEY-RALT+" #x65)
+  (:const "+RAWKEY-LCOMMAND+" #x66)
+  (:const "+RAWKEY-RCOMMAND+" #x67)
+  (:const "+RAWKEY-MENU+" #x6B)
+  (:const "+RAWKEY-PRINTSCR+" #x6D)
+  (:const "+RAWKEY-BREAK+" #x6E)
+  (:const "+RAWKEY-F12+" #x6F)
+  (:const "+RAWKEY-HOME+" #x70)
+  (:const "+RAWKEY-END+" #x71)
+  (:const "+RAWKEY-MEDIA-STOP+" #x72)
+  (:const "+RAWKEY-MEDIA-PLAY-PAUSE+" #x73)
+  (:const "+RAWKEY-MEDIA-PREV-TRACK+" #x74)
+  (:const "+RAWKEY-MEDIA-NEXT-TRACK+" #x75)
+  (:const "+RAWKEY-MEDIA-SHUFFLE+" #x76)
+  (:const "+RAWKEY-MEDIA-REPEAT+" #x77)
+  (:const "+RAWKEY-WHEEL-UP+" #x7A)
+  (:const "+RAWKEY-WHEEL-DOWN+" #x7B)
+  (:const "+RAWKEY-WHEEL-LEFT+" #x7C)
+  (:const "+RAWKEY-WHEEL-RIGHT+" #x7D)
+
+  ;; --- functions (keymap_lib.sfd + MorphOS SDK) ---
+  (:fn "SET-KEY-MAP-DEFAULT" -30 (:a0) :void)   ; VOID SetKeyMapDefault(struct KeyMap * keyMap) (A0) LVO -30
+  (:fn "ASK-KEY-MAP-DEFAULT" -36 () :pointer)   ; struct KeyMap * AskKeyMapDefault() () LVO -36
+  (:fn "MAP-RAW-KEY" -42 (:a0 :a1 :d1 :a2) :i16)   ; WORD MapRawKey(CONST struct InputEvent * event, STRPTR buffer, WORD length, CONST struct KeyMap * keyMap) (A0,A1,D1,A2) LVO -42
+  (:fn "MAP-ANSI" -48 (:a0 :d0 :a1 :d1 :a2) :signed)   ; LONG MapANSI(CONST_STRPTR string, LONG count, STRPTR buffer, LONG length, CONST struct KeyMap * keyMap) (A0,D0,A1,D1,A2) LVO -48
+  (:fn "MAP-RAW-KEY-UCS4" -54 (:a0 :a1 :d1 :a2) :i16 :morphos)   ; WORD MapRawKeyUCS4(CONST struct InputEvent * event, WSTRPTR buffer, LONG length, CONST struct KeyMap * keyMap) (A0,A1,D1,A2) LVO -54
+  (:fn "MAP-UCS4" -60 (:a0 :d0 :a1 :d1 :a2) :signed :morphos)   ; LONG MapUCS4(CONST_WSTRPTR string, LONG count, STRPTR buffer, LONG length, CONST struct KeyMap * keyMap) (A0,D0,A1,D1,A2) LVO -60
+  (:fn "TO-ANSI" -66 (:a0 :a1) :unsigned :morphos)   ; char ToANSI(WCHAR ucs4char, CONST struct KeyMap * keyMap) (A0,A1) LVO -66
+  (:fn "TO-UCS4" -72 (:a0 :a1) :unsigned :morphos)   ; WCHAR ToUCS4(char asciichar, CONST struct KeyMap * keyMap) (A0,A1) LVO -72
+  (:fn "GET-KEY-MAP-CODEPAGE" -78 (:a0) :pointer :morphos)   ; CONST_STRPTR GetKeyMapCodepage(CONST struct KeyMap * keyMap) (A0) LVO -78
+  )
 
 (provide "amiga/raw/keymap")

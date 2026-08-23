@@ -6,54 +6,51 @@
 ;;; 0 functions, 19 constants, 1 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.DEVICES.NEWSTYLE"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+NSCMD-DEVICEQUERY+" "+NSDEVTYPE-UNKNOWN+" "+NSDEVTYPE-GAMEPORT+" 
-   "+NSDEVTYPE-TIMER+" "+NSDEVTYPE-KEYBOARD+" "+NSDEVTYPE-INPUT+" 
-   "+NSDEVTYPE-TRACKDISK+" "+NSDEVTYPE-CONSOLE+" "+NSDEVTYPE-SANA2+" 
-   "+NSDEVTYPE-AUDIOARD+" "+NSDEVTYPE-CLIPBOARD+" "+NSDEVTYPE-PRINTER+" 
-   "+NSDEVTYPE-SERIAL+" "+NSDEVTYPE-PARALLEL+" "+NSCMD-TD-READ64+" 
-   "+NSCMD-TD-WRITE64+" "+NSCMD-TD-SEEK64+" "+NSCMD-TD-FORMAT64+" 
-   "+IO-HIGHOFFSET+" "*NS-DEVICE-QUERY-RESULT-SIZE*" 
-   "NS-DEVICE-QUERY-RESULT-DEV-QUERY-FORMAT" 
-   "NS-DEVICE-QUERY-RESULT-SIZE-AVAILABLE" 
-   "NS-DEVICE-QUERY-RESULT-DEVICE-TYPE" 
-   "NS-DEVICE-QUERY-RESULT-DEVICE-SUB-TYPE" 
-   "NS-DEVICE-QUERY-RESULT-SUPPORTED-COMMANDS" ))
+  (:export))
 
 (in-package "AMIGA.RAW.DEVICES.NEWSTYLE")
 
-;;; --- constants from devices/newstyle.i ---
-(defconstant +nscmd-devicequery+ #x4000)
-(defconstant +nsdevtype-unknown+ 0)
-(defconstant +nsdevtype-gameport+ 1)
-(defconstant +nsdevtype-timer+ 2)
-(defconstant +nsdevtype-keyboard+ 3)
-(defconstant +nsdevtype-input+ 4)
-(defconstant +nsdevtype-trackdisk+ 5)
-(defconstant +nsdevtype-console+ 6)
-(defconstant +nsdevtype-sana2+ 7)
-(defconstant +nsdevtype-audioard+ 8)
-(defconstant +nsdevtype-clipboard+ 9)
-(defconstant +nsdevtype-printer+ 10)
-(defconstant +nsdevtype-serial+ 11)
-(defconstant +nsdevtype-parallel+ 12)
-(defconstant +nscmd-td-read64+ #xC000)
-(defconstant +nscmd-td-write64+ #xC001)
-(defconstant +nscmd-td-seek64+ #xC002)
-(defconstant +nscmd-td-format64+ #xC003)
-(defconstant +io-highoffset+ #x20)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.DEVICES.NEWSTYLE" ()
 
-;;; --- structures from devices/newstyle.i ---
-(ffi:defcstruct (ns-device-query-result :size 16)   ; NSDeviceQueryResult (devices/newstyle.i)
-  (dev-query-format :u32 0)
-  (size-available :u32 4)
-  (device-type :u16 8)
-  (device-sub-type :u16 10)
-  (supported-commands :fptr 12)
-)
+  ;; --- constants from devices/newstyle.i ---
+  (:const "+NSCMD-DEVICEQUERY+" #x4000)
+  (:const "+NSDEVTYPE-UNKNOWN+" 0)
+  (:const "+NSDEVTYPE-GAMEPORT+" 1)
+  (:const "+NSDEVTYPE-TIMER+" 2)
+  (:const "+NSDEVTYPE-KEYBOARD+" 3)
+  (:const "+NSDEVTYPE-INPUT+" 4)
+  (:const "+NSDEVTYPE-TRACKDISK+" 5)
+  (:const "+NSDEVTYPE-CONSOLE+" 6)
+  (:const "+NSDEVTYPE-SANA2+" 7)
+  (:const "+NSDEVTYPE-AUDIOARD+" 8)
+  (:const "+NSDEVTYPE-CLIPBOARD+" 9)
+  (:const "+NSDEVTYPE-PRINTER+" 10)
+  (:const "+NSDEVTYPE-SERIAL+" 11)
+  (:const "+NSDEVTYPE-PARALLEL+" 12)
+  (:const "+NSCMD-TD-READ64+" #xC000)
+  (:const "+NSCMD-TD-WRITE64+" #xC001)
+  (:const "+NSCMD-TD-SEEK64+" #xC002)
+  (:const "+NSCMD-TD-FORMAT64+" #xC003)
+  (:const "+IO-HIGHOFFSET+" #x20)
+
+  ;; --- structures from devices/newstyle.i ---
+  (:struct "NS-DEVICE-QUERY-RESULT" 16   ; NSDeviceQueryResult (devices/newstyle.i)
+    ("DEV-QUERY-FORMAT" :u32 0)
+    ("SIZE-AVAILABLE" :u32 4)
+    ("DEVICE-TYPE" :u16 8)
+    ("DEVICE-SUB-TYPE" :u16 10)
+    ("SUPPORTED-COMMANDS" :fptr 12)
+    )
+  )
 
 (provide "amiga/raw/devices/newstyle")

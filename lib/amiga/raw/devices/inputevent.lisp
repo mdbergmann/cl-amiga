@@ -6,189 +6,149 @@
 ;;; 0 functions, 82 constants, 4 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.DEVICES.INPUTEVENT"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+IECLASS-NULL+" "+IECLASS-RAWKEY+" "+IECLASS-RAWMOUSE+" 
-   "+IECLASS-EVENT+" "+IECLASS-POINTERPOS+" "+IECLASS-TIMER+" 
-   "+IECLASS-GADGETDOWN+" "+IECLASS-GADGETUP+" "+IECLASS-REQUESTER+" 
-   "+IECLASS-MENULIST+" "+IECLASS-CLOSEWINDOW+" "+IECLASS-SIZEWINDOW+" 
-   "+IECLASS-REFRESHWINDOW+" "+IECLASS-NEWPREFS+" "+IECLASS-DISKREMOVED+" 
-   "+IECLASS-DISKINSERTED+" "+IECLASS-ACTIVEWINDOW+" 
-   "+IECLASS-INACTIVEWINDOW+" "+IECLASS-NEWPOINTERPOS+" 
-   "+IECLASS-MENUHELP+" "+IECLASS-CHANGEWINDOW+" "+IECLASS-MAX+" 
-   "+IESUBCLASS-COMPATIBLE+" "+IESUBCLASS-PIXEL+" "+IESUBCLASS-TABLET+" 
-   "+IESUBCLASS-NEWTABLET+" "+IECODE-UP-PREFIX+" "+IECODEB-UP-PREFIX+" 
-   "+IECODE-KEY-CODE-FIRST+" "+IECODE-KEY-CODE-LAST+" 
-   "+IECODE-COMM-CODE-FIRST+" "+IECODE-COMM-CODE-LAST+" "+IECODE-C0-FIRST+" 
-   "+IECODE-C0-LAST+" "+IECODE-ASCII-FIRST+" "+IECODE-ASCII-LAST+" 
-   "+IECODE-ASCII-DEL+" "+IECODE-C1-FIRST+" "+IECODE-C1-LAST+" 
-   "+IECODE-LATIN1-FIRST+" "+IECODE-LATIN1-LAST+" "+IECODE-LBUTTON+" 
-   "+IECODE-RBUTTON+" "+IECODE-MBUTTON+" "+IECODE-NOBUTTON+" 
-   "+IECODE-NEWACTIVE+" "+IECODE-NEWSIZE+" "+IECODE-REFRESH+" 
-   "+IECODE-REQSET+" "+IECODE-REQCLEAR+" "+IEQUALIFIER-LSHIFT+" 
-   "+IEQUALIFIER-RSHIFT+" "+IEQUALIFIER-CAPSLOCK+" "+IEQUALIFIER-CONTROL+" 
-   "+IEQUALIFIER-LALT+" "+IEQUALIFIER-RALT+" "+IEQUALIFIER-LCOMMAND+" 
-   "+IEQUALIFIER-RCOMMAND+" "+IEQUALIFIER-NUMERICPAD+" 
-   "+IEQUALIFIER-REPEAT+" "+IEQUALIFIER-INTERRUPT+" 
-   "+IEQUALIFIER-MULTIBROADCAST+" "+IEQUALIFIER-MIDBUTTON+" 
-   "+IEQUALIFIER-RBUTTON+" "+IEQUALIFIER-LEFTBUTTON+" 
-   "+IEQUALIFIER-RELATIVEMOUSE+" "+IEQUALIFIERB-LSHIFT+" 
-   "+IEQUALIFIERB-RSHIFT+" "+IEQUALIFIERB-CAPSLOCK+" 
-   "+IEQUALIFIERB-CONTROL+" "+IEQUALIFIERB-LALT+" "+IEQUALIFIERB-RALT+" 
-   "+IEQUALIFIERB-LCOMMAND+" "+IEQUALIFIERB-RCOMMAND+" 
-   "+IEQUALIFIERB-NUMERICPAD+" "+IEQUALIFIERB-REPEAT+" 
-   "+IEQUALIFIERB-INTERRUPT+" "+IEQUALIFIERB-MULTIBROADCAST+" 
-   "+IEQUALIFIERB-MIDBUTTON+" "+IEQUALIFIERB-RBUTTON+" 
-   "+IEQUALIFIERB-LEFTBUTTON+" "+IEQUALIFIERB-RELATIVEMOUSE+" 
-   "*IE-POINTER-PIXEL-SIZE*" "IE-POINTER-PIXEL-SCREEN" 
-   "IE-POINTER-PIXEL-POSITION" "IE-POINTER-PIXEL-POSITION-X" 
-   "IE-POINTER-PIXEL-POSITION-Y" "*IE-POINTER-TABLET-SIZE*" 
-   "IE-POINTER-TABLET-RANGE" "IE-POINTER-TABLET-RANGE-X" 
-   "IE-POINTER-TABLET-RANGE-Y" "IE-POINTER-TABLET-VALUE" 
-   "IE-POINTER-TABLET-VALUE-X" "IE-POINTER-TABLET-VALUE-Y" 
-   "IE-POINTER-TABLET-PRESSURE" "*IE-NEW-TABLET-SIZE*" 
-   "IE-NEW-TABLET-CALL-BACK" "IE-NEW-TABLET-SCALED-X" 
-   "IE-NEW-TABLET-SCALED-Y" "IE-NEW-TABLET-SCALED-X-FRACTION" 
-   "IE-NEW-TABLET-SCALED-Y-FRACTION" "IE-NEW-TABLET-TABLET-X" 
-   "IE-NEW-TABLET-TABLET-Y" "IE-NEW-TABLET-RANGE-X" "IE-NEW-TABLET-RANGE-Y" 
-   "IE-NEW-TABLET-TAG-LIST" "*INPUT-EVENT-SIZE*" "INPUT-EVENT-NEXT-EVENT" 
-   "INPUT-EVENT-CLASS" "INPUT-EVENT-SUB-CLASS" "INPUT-EVENT-CODE" 
-   "INPUT-EVENT-QUALIFIER" "INPUT-EVENT-EVENT-ADDRESS" "INPUT-EVENT-X" 
-   "INPUT-EVENT-PREV1-DOWN-CODE" "INPUT-EVENT-PREV1-DOWN-QUAL" 
-   "INPUT-EVENT-Y" "INPUT-EVENT-PREV2-DOWN-CODE" 
-   "INPUT-EVENT-PREV2-DOWN-QUAL" "INPUT-EVENT-TIME-STAMP" ))
+  (:export))
 
 (in-package "AMIGA.RAW.DEVICES.INPUTEVENT")
 
-;;; --- constants from devices/inputevent.i ---
-(defconstant +ieclass-null+ 0)
-(defconstant +ieclass-rawkey+ 1)
-(defconstant +ieclass-rawmouse+ 2)
-(defconstant +ieclass-event+ 3)
-(defconstant +ieclass-pointerpos+ 4)
-(defconstant +ieclass-timer+ 6)
-(defconstant +ieclass-gadgetdown+ 7)
-(defconstant +ieclass-gadgetup+ 8)
-(defconstant +ieclass-requester+ 9)
-(defconstant +ieclass-menulist+ 10)
-(defconstant +ieclass-closewindow+ 11)
-(defconstant +ieclass-sizewindow+ 12)
-(defconstant +ieclass-refreshwindow+ 13)
-(defconstant +ieclass-newprefs+ 14)
-(defconstant +ieclass-diskremoved+ 15)
-(defconstant +ieclass-diskinserted+ #x10)
-(defconstant +ieclass-activewindow+ #x11)
-(defconstant +ieclass-inactivewindow+ #x12)
-(defconstant +ieclass-newpointerpos+ #x13)
-(defconstant +ieclass-menuhelp+ #x14)
-(defconstant +ieclass-changewindow+ #x15)
-(defconstant +ieclass-max+ #x15)
-(defconstant +iesubclass-compatible+ 0)
-(defconstant +iesubclass-pixel+ 1)
-(defconstant +iesubclass-tablet+ 2)
-(defconstant +iesubclass-newtablet+ 3)
-(defconstant +iecode-up-prefix+ #x80)
-(defconstant +iecodeb-up-prefix+ 7)
-(defconstant +iecode-key-code-first+ 0)
-(defconstant +iecode-key-code-last+ #x77)
-(defconstant +iecode-comm-code-first+ #x78)
-(defconstant +iecode-comm-code-last+ #x7F)
-(defconstant +iecode-c0-first+ 0)
-(defconstant +iecode-c0-last+ #x1F)
-(defconstant +iecode-ascii-first+ #x20)
-(defconstant +iecode-ascii-last+ #x7E)
-(defconstant +iecode-ascii-del+ #x7F)
-(defconstant +iecode-c1-first+ #x80)
-(defconstant +iecode-c1-last+ #x9F)
-(defconstant +iecode-latin1-first+ #xA0)
-(defconstant +iecode-latin1-last+ #xFF)
-(defconstant +iecode-lbutton+ #x68)
-(defconstant +iecode-rbutton+ #x69)
-(defconstant +iecode-mbutton+ #x6A)
-(defconstant +iecode-nobutton+ #xFF)
-(defconstant +iecode-newactive+ 1)
-(defconstant +iecode-newsize+ 2)
-(defconstant +iecode-refresh+ 3)
-(defconstant +iecode-reqset+ 1)
-(defconstant +iecode-reqclear+ 0)
-(defconstant +iequalifier-lshift+ 1)
-(defconstant +iequalifier-rshift+ 2)
-(defconstant +iequalifier-capslock+ 4)
-(defconstant +iequalifier-control+ 8)
-(defconstant +iequalifier-lalt+ #x10)
-(defconstant +iequalifier-ralt+ #x20)
-(defconstant +iequalifier-lcommand+ #x40)
-(defconstant +iequalifier-rcommand+ #x80)
-(defconstant +iequalifier-numericpad+ #x100)
-(defconstant +iequalifier-repeat+ #x200)
-(defconstant +iequalifier-interrupt+ #x400)
-(defconstant +iequalifier-multibroadcast+ #x800)
-(defconstant +iequalifier-midbutton+ #x1000)
-(defconstant +iequalifier-rbutton+ #x2000)
-(defconstant +iequalifier-leftbutton+ #x4000)
-(defconstant +iequalifier-relativemouse+ #x8000)
-(defconstant +iequalifierb-lshift+ 0)
-(defconstant +iequalifierb-rshift+ 1)
-(defconstant +iequalifierb-capslock+ 2)
-(defconstant +iequalifierb-control+ 3)
-(defconstant +iequalifierb-lalt+ 4)
-(defconstant +iequalifierb-ralt+ 5)
-(defconstant +iequalifierb-lcommand+ 6)
-(defconstant +iequalifierb-rcommand+ 7)
-(defconstant +iequalifierb-numericpad+ 8)
-(defconstant +iequalifierb-repeat+ 9)
-(defconstant +iequalifierb-interrupt+ 10)
-(defconstant +iequalifierb-multibroadcast+ 11)
-(defconstant +iequalifierb-midbutton+ 12)
-(defconstant +iequalifierb-rbutton+ 13)
-(defconstant +iequalifierb-leftbutton+ 14)
-(defconstant +iequalifierb-relativemouse+ 15)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.DEVICES.INPUTEVENT" ()
 
-;;; --- structures from devices/inputevent.i ---
-(ffi:defcstruct (ie-pointer-pixel :size 8)   ; IEPointerPixel (devices/inputevent.i)
-  (screen :fptr 0)
-  (position (:struct 0) 4)
-  (position-x :i16 4)
-  (position-y :i16 6)
-)
-(ffi:defcstruct (ie-pointer-tablet :size 10)   ; IEPointerTablet (devices/inputevent.i)
-  (range (:struct 0) 0)
-  (range-x :u16 0)
-  (range-y :u16 2)
-  (value (:struct 0) 4)
-  (value-x :u16 4)
-  (value-y :u16 6)
-  (pressure :i16 8)
-)
-(ffi:defcstruct (ie-new-tablet :size 32)   ; IENewTablet (devices/inputevent.i)
-  (call-back :fptr 0)
-  (scaled-x :u16 4)
-  (scaled-y :u16 6)
-  (scaled-x-fraction :u16 8)
-  (scaled-y-fraction :u16 10)
-  (tablet-x :u32 12)
-  (tablet-y :u32 16)
-  (range-x :u32 20)
-  (range-y :u32 24)
-  (tag-list :fptr 28)
-)
-(ffi:defcstruct (input-event :size 22)   ; InputEvent (devices/inputevent.i)
-  (next-event :fptr 0)
-  (class :u8 4)
-  (sub-class :u8 5)
-  (code :u16 6)
-  (qualifier :u16 8)
-  (event-address (:struct 0) 10)
-  (x (:struct 0) 10)
-  (prev1-down-code :u8 10)
-  (prev1-down-qual :u8 11)
-  (y (:struct 0) 12)
-  (prev2-down-code :u8 12)
-  (prev2-down-qual :u8 13)
-  (time-stamp (:struct 8) 14)
-)
+  ;; --- constants from devices/inputevent.i ---
+  (:const "+IECLASS-NULL+" 0)
+  (:const "+IECLASS-RAWKEY+" 1)
+  (:const "+IECLASS-RAWMOUSE+" 2)
+  (:const "+IECLASS-EVENT+" 3)
+  (:const "+IECLASS-POINTERPOS+" 4)
+  (:const "+IECLASS-TIMER+" 6)
+  (:const "+IECLASS-GADGETDOWN+" 7)
+  (:const "+IECLASS-GADGETUP+" 8)
+  (:const "+IECLASS-REQUESTER+" 9)
+  (:const "+IECLASS-MENULIST+" 10)
+  (:const "+IECLASS-CLOSEWINDOW+" 11)
+  (:const "+IECLASS-SIZEWINDOW+" 12)
+  (:const "+IECLASS-REFRESHWINDOW+" 13)
+  (:const "+IECLASS-NEWPREFS+" 14)
+  (:const "+IECLASS-DISKREMOVED+" 15)
+  (:const "+IECLASS-DISKINSERTED+" #x10)
+  (:const "+IECLASS-ACTIVEWINDOW+" #x11)
+  (:const "+IECLASS-INACTIVEWINDOW+" #x12)
+  (:const "+IECLASS-NEWPOINTERPOS+" #x13)
+  (:const "+IECLASS-MENUHELP+" #x14)
+  (:const "+IECLASS-CHANGEWINDOW+" #x15)
+  (:const "+IECLASS-MAX+" #x15)
+  (:const "+IESUBCLASS-COMPATIBLE+" 0)
+  (:const "+IESUBCLASS-PIXEL+" 1)
+  (:const "+IESUBCLASS-TABLET+" 2)
+  (:const "+IESUBCLASS-NEWTABLET+" 3)
+  (:const "+IECODE-UP-PREFIX+" #x80)
+  (:const "+IECODEB-UP-PREFIX+" 7)
+  (:const "+IECODE-KEY-CODE-FIRST+" 0)
+  (:const "+IECODE-KEY-CODE-LAST+" #x77)
+  (:const "+IECODE-COMM-CODE-FIRST+" #x78)
+  (:const "+IECODE-COMM-CODE-LAST+" #x7F)
+  (:const "+IECODE-C0-FIRST+" 0)
+  (:const "+IECODE-C0-LAST+" #x1F)
+  (:const "+IECODE-ASCII-FIRST+" #x20)
+  (:const "+IECODE-ASCII-LAST+" #x7E)
+  (:const "+IECODE-ASCII-DEL+" #x7F)
+  (:const "+IECODE-C1-FIRST+" #x80)
+  (:const "+IECODE-C1-LAST+" #x9F)
+  (:const "+IECODE-LATIN1-FIRST+" #xA0)
+  (:const "+IECODE-LATIN1-LAST+" #xFF)
+  (:const "+IECODE-LBUTTON+" #x68)
+  (:const "+IECODE-RBUTTON+" #x69)
+  (:const "+IECODE-MBUTTON+" #x6A)
+  (:const "+IECODE-NOBUTTON+" #xFF)
+  (:const "+IECODE-NEWACTIVE+" 1)
+  (:const "+IECODE-NEWSIZE+" 2)
+  (:const "+IECODE-REFRESH+" 3)
+  (:const "+IECODE-REQSET+" 1)
+  (:const "+IECODE-REQCLEAR+" 0)
+  (:const "+IEQUALIFIER-LSHIFT+" 1)
+  (:const "+IEQUALIFIER-RSHIFT+" 2)
+  (:const "+IEQUALIFIER-CAPSLOCK+" 4)
+  (:const "+IEQUALIFIER-CONTROL+" 8)
+  (:const "+IEQUALIFIER-LALT+" #x10)
+  (:const "+IEQUALIFIER-RALT+" #x20)
+  (:const "+IEQUALIFIER-LCOMMAND+" #x40)
+  (:const "+IEQUALIFIER-RCOMMAND+" #x80)
+  (:const "+IEQUALIFIER-NUMERICPAD+" #x100)
+  (:const "+IEQUALIFIER-REPEAT+" #x200)
+  (:const "+IEQUALIFIER-INTERRUPT+" #x400)
+  (:const "+IEQUALIFIER-MULTIBROADCAST+" #x800)
+  (:const "+IEQUALIFIER-MIDBUTTON+" #x1000)
+  (:const "+IEQUALIFIER-RBUTTON+" #x2000)
+  (:const "+IEQUALIFIER-LEFTBUTTON+" #x4000)
+  (:const "+IEQUALIFIER-RELATIVEMOUSE+" #x8000)
+  (:const "+IEQUALIFIERB-LSHIFT+" 0)
+  (:const "+IEQUALIFIERB-RSHIFT+" 1)
+  (:const "+IEQUALIFIERB-CAPSLOCK+" 2)
+  (:const "+IEQUALIFIERB-CONTROL+" 3)
+  (:const "+IEQUALIFIERB-LALT+" 4)
+  (:const "+IEQUALIFIERB-RALT+" 5)
+  (:const "+IEQUALIFIERB-LCOMMAND+" 6)
+  (:const "+IEQUALIFIERB-RCOMMAND+" 7)
+  (:const "+IEQUALIFIERB-NUMERICPAD+" 8)
+  (:const "+IEQUALIFIERB-REPEAT+" 9)
+  (:const "+IEQUALIFIERB-INTERRUPT+" 10)
+  (:const "+IEQUALIFIERB-MULTIBROADCAST+" 11)
+  (:const "+IEQUALIFIERB-MIDBUTTON+" 12)
+  (:const "+IEQUALIFIERB-RBUTTON+" 13)
+  (:const "+IEQUALIFIERB-LEFTBUTTON+" 14)
+  (:const "+IEQUALIFIERB-RELATIVEMOUSE+" 15)
+
+  ;; --- structures from devices/inputevent.i ---
+  (:struct "IE-POINTER-PIXEL" 8   ; IEPointerPixel (devices/inputevent.i)
+    ("SCREEN" :fptr 0)
+    ("POSITION" (:struct 0) 4)
+    ("POSITION-X" :i16 4)
+    ("POSITION-Y" :i16 6)
+    )
+  (:struct "IE-POINTER-TABLET" 10   ; IEPointerTablet (devices/inputevent.i)
+    ("RANGE" (:struct 0) 0)
+    ("RANGE-X" :u16 0)
+    ("RANGE-Y" :u16 2)
+    ("VALUE" (:struct 0) 4)
+    ("VALUE-X" :u16 4)
+    ("VALUE-Y" :u16 6)
+    ("PRESSURE" :i16 8)
+    )
+  (:struct "IE-NEW-TABLET" 32   ; IENewTablet (devices/inputevent.i)
+    ("CALL-BACK" :fptr 0)
+    ("SCALED-X" :u16 4)
+    ("SCALED-Y" :u16 6)
+    ("SCALED-X-FRACTION" :u16 8)
+    ("SCALED-Y-FRACTION" :u16 10)
+    ("TABLET-X" :u32 12)
+    ("TABLET-Y" :u32 16)
+    ("RANGE-X" :u32 20)
+    ("RANGE-Y" :u32 24)
+    ("TAG-LIST" :fptr 28)
+    )
+  (:struct "INPUT-EVENT" 22   ; InputEvent (devices/inputevent.i)
+    ("NEXT-EVENT" :fptr 0)
+    ("CLASS" :u8 4)
+    ("SUB-CLASS" :u8 5)
+    ("CODE" :u16 6)
+    ("QUALIFIER" :u16 8)
+    ("EVENT-ADDRESS" (:struct 0) 10)
+    ("X" (:struct 0) 10)
+    ("PREV1-DOWN-CODE" :u8 10)
+    ("PREV1-DOWN-QUAL" :u8 11)
+    ("Y" (:struct 0) 12)
+    ("PREV2-DOWN-CODE" :u8 12)
+    ("PREV2-DOWN-QUAL" :u8 13)
+    ("TIME-STAMP" (:struct 8) 14)
+    )
+  )
 
 (provide "amiga/raw/devices/inputevent")

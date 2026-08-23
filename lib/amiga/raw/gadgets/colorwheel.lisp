@@ -8,20 +8,14 @@
 ;;; 2 functions, 15 constants, 2 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.GADGETS.COLORWHEEL"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*COLORWHEEL-BASE*" "*COLORWHEEL-VERSION*"
-   "+WHEEL-DUMMY+" "+WHEEL-HUE+" "+WHEEL-SATURATION+" "+WHEEL-BRIGHTNESS+" 
-   "+WHEEL-HSB+" "+WHEEL-RED+" "+WHEEL-GREEN+" "+WHEEL-BLUE+" "+WHEEL-RGB+" 
-   "+WHEEL-SCREEN+" "+WHEEL-ABBRV+" "+WHEEL-DONATION+" "+WHEEL-BEVEL-BOX+" 
-   "+WHEEL-GRADIENT-SLIDER+" "+WHEEL-MAX-PENS+" "*COLOR-WHEEL-HSB-SIZE*" 
-   "COLOR-WHEEL-HSB-HUE" "COLOR-WHEEL-HSB-SATURATION" 
-   "COLOR-WHEEL-HSB-BRIGHTNESS" "*COLOR-WHEEL-RGB-SIZE*" 
-   "COLOR-WHEEL-RGB-RED" "COLOR-WHEEL-RGB-GREEN" "COLOR-WHEEL-RGB-BLUE" 
-   "CONVERT-HSB-TO-RGB" "CONVERT-RGB-TO-HSB" ))
+  (:export "*COLORWHEEL-BASE*" "*COLORWHEEL-VERSION*"))
 
 (in-package "AMIGA.RAW.GADGETS.COLORWHEEL")
 
@@ -35,41 +29,44 @@
 (defun %version>= (n)
   (and *colorwheel-version* (>= *colorwheel-version* n)))
 
-;;; --- constants from gadgets/colorwheel.i ---
-(defconstant +wheel-dummy+ #x84000000)
-(defconstant +wheel-hue+ #x84000001)
-(defconstant +wheel-saturation+ #x84000002)
-(defconstant +wheel-brightness+ #x84000003)
-(defconstant +wheel-hsb+ #x84000004)
-(defconstant +wheel-red+ #x84000005)
-(defconstant +wheel-green+ #x84000006)
-(defconstant +wheel-blue+ #x84000007)
-(defconstant +wheel-rgb+ #x84000008)
-(defconstant +wheel-screen+ #x84000009)
-(defconstant +wheel-abbrv+ #x8400000A)
-(defconstant +wheel-donation+ #x8400000B)
-(defconstant +wheel-bevel-box+ #x8400000C)
-(defconstant +wheel-gradient-slider+ #x8400000D)
-(defconstant +wheel-max-pens+ #x8400000E)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.GADGETS.COLORWHEEL"
+    (:base *colorwheel-base* :version *colorwheel-version*)
 
-;;; --- structures from gadgets/colorwheel.i ---
-(ffi:defcstruct (color-wheel-hsb :size 12)   ; ColorWheelHSB (gadgets/colorwheel.i)
-  (hue :u32 0)
-  (saturation :u32 4)
-  (brightness :u32 8)
-)
-(ffi:defcstruct (color-wheel-rgb :size 12)   ; ColorWheelRGB (gadgets/colorwheel.i)
-  (red :u32 0)
-  (green :u32 4)
-  (blue :u32 8)
-)
+  ;; --- constants from gadgets/colorwheel.i ---
+  (:const "+WHEEL-DUMMY+" #x84000000)
+  (:const "+WHEEL-HUE+" #x84000001)
+  (:const "+WHEEL-SATURATION+" #x84000002)
+  (:const "+WHEEL-BRIGHTNESS+" #x84000003)
+  (:const "+WHEEL-HSB+" #x84000004)
+  (:const "+WHEEL-RED+" #x84000005)
+  (:const "+WHEEL-GREEN+" #x84000006)
+  (:const "+WHEEL-BLUE+" #x84000007)
+  (:const "+WHEEL-RGB+" #x84000008)
+  (:const "+WHEEL-SCREEN+" #x84000009)
+  (:const "+WHEEL-ABBRV+" #x8400000A)
+  (:const "+WHEEL-DONATION+" #x8400000B)
+  (:const "+WHEEL-BEVEL-BOX+" #x8400000C)
+  (:const "+WHEEL-GRADIENT-SLIDER+" #x8400000D)
+  (:const "+WHEEL-MAX-PENS+" #x8400000E)
 
-;;; --- functions (colorwheel_lib.sfd + MorphOS SDK) ---
-(amiga.ffi:defcfun convert-hsb-to-rgb *colorwheel-base* -30 (:a0 hsb :a1 rgb)
-    :result :void
-    :doc "VOID ConvertHSBToRGB(CONST struct ColorWheelHSB * hsb, struct ColorWheelRGB * rgb) (A0,A1) LVO -30")
-(amiga.ffi:defcfun convert-rgb-to-hsb *colorwheel-base* -36 (:a0 rgb :a1 hsb)
-    :result :void
-    :doc "VOID ConvertRGBToHSB(CONST struct ColorWheelRGB * rgb, struct ColorWheelHSB * hsb) (A0,A1) LVO -36")
+  ;; --- structures from gadgets/colorwheel.i ---
+  (:struct "COLOR-WHEEL-HSB" 12   ; ColorWheelHSB (gadgets/colorwheel.i)
+    ("HUE" :u32 0)
+    ("SATURATION" :u32 4)
+    ("BRIGHTNESS" :u32 8)
+    )
+  (:struct "COLOR-WHEEL-RGB" 12   ; ColorWheelRGB (gadgets/colorwheel.i)
+    ("RED" :u32 0)
+    ("GREEN" :u32 4)
+    ("BLUE" :u32 8)
+    )
+
+  ;; --- functions (colorwheel_lib.sfd + MorphOS SDK) ---
+  (:fn "CONVERT-HSB-TO-RGB" -30 (:a0 :a1) :void)   ; VOID ConvertHSBToRGB(CONST struct ColorWheelHSB * hsb, struct ColorWheelRGB * rgb) (A0,A1) LVO -30
+  (:fn "CONVERT-RGB-TO-HSB" -36 (:a0 :a1) :void)   ; VOID ConvertRGBToHSB(CONST struct ColorWheelRGB * rgb, struct ColorWheelHSB * hsb) (A0,A1) LVO -36
+  )
 
 (provide "amiga/raw/gadgets/colorwheel")

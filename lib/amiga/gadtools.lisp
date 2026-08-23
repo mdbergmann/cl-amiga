@@ -3,8 +3,11 @@
 ;;; Loaded via (require "amiga/gadtools").
 ;;; Provides gadget creation, menu construction, and GadTools message handling.
 
-(require "amiga/ffi")
-(require "amiga/intuition")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; these packages at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi")
+  (require "amiga/intuition"))
 
 (defpackage "AMIGA.GADTOOLS"
   (:use "CL" "FFI" "AMIGA.FFI")
@@ -63,11 +66,15 @@
 (in-package "AMIGA.GADTOOLS")
 
 ;;; ================================================================
-;;; GadTools library base
+;;; GadTools library base.  NIL on the host build, where this module is
+;;; loaded for COMPILE-FILE (the host builds the lib/amiga FASLs) -- same
+;;; convention as the generated amiga/raw modules.
 ;;; ================================================================
 
-(defvar *gadtools-base* (amiga:open-library "gadtools.library" 39))
-(unless *gadtools-base*
+(defvar *gadtools-base*
+  (when (member :amigaos *features*)
+    (amiga:open-library "gadtools.library" 39)))
+(when (and (member :amigaos *features*) (null *gadtools-base*))
   (error "Cannot open gadtools.library v39"))
 
 ;;; ================================================================
@@ -191,9 +198,15 @@
 (defconstant +stringidcmp+   amiga.intuition:+idcmp-gadgetup+)
 (defconstant +cycleidcmp+    amiga.intuition:+idcmp-gadgetup+)
 (defconstant +mxidcmp+       amiga.intuition:+idcmp-gadgetdown+)
+;; LISTVIEWIDCMP = GADGETUP|GADGETDOWN|MOUSEMOVE|ARROWIDCMP, and ARROWIDCMP
+;; adds INTUITICKS|MOUSEBUTTONS (gadtools.h) -- the ticks drive the arrow
+;; auto-repeat.  (Was #x70 without those two; tests/test_amiga_curated_vs_raw.sh
+;; checks every hand-typed value here against lib/amiga/raw.)
 (defconstant +listviewidcmp+ (logior amiga.intuition:+idcmp-gadgetup+
                                       amiga.intuition:+idcmp-gadgetdown+
-                                      amiga.intuition:+idcmp-mousemove+))
+                                      amiga.intuition:+idcmp-mousemove+
+                                      amiga.intuition:+idcmp-intuiticks+
+                                      amiga.intuition:+idcmp-mousebuttons+))
 (defconstant +scrolleridcmp+ (logior amiga.intuition:+idcmp-gadgetup+
                                       amiga.intuition:+idcmp-gadgetdown+
                                       amiga.intuition:+idcmp-mousemove+))

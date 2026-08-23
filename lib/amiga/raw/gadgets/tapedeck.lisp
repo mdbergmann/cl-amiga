@@ -6,32 +6,37 @@
 ;;; 0 functions, 14 constants, 0 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.GADGETS.TAPEDECK"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+TDECK-DUMMY+" "+TDECK-MODE+" "+TDECK-PAUSED+" "+TDECK-TAPE+" 
-   "+TDECK-FRAMES+" "+TDECK-CURRENT-FRAME+" "+BUT-REWIND+" "+BUT-PLAY+" 
-   "+BUT-FORWARD+" "+BUT-STOP+" "+BUT-PAUSE+" "+BUT-BEGIN+" "+BUT-FRAME+" 
-   "+BUT-END+" ))
+  (:export))
 
 (in-package "AMIGA.RAW.GADGETS.TAPEDECK")
 
-;;; --- constants from gadgets/tapedeck.i ---
-(defconstant +tdeck-dummy+ #x85000000)
-(defconstant +tdeck-mode+ #x85000001)
-(defconstant +tdeck-paused+ #x85000002)
-(defconstant +tdeck-tape+ #x85000003)
-(defconstant +tdeck-frames+ #x8500000B)
-(defconstant +tdeck-current-frame+ #x8500000C)
-(defconstant +but-rewind+ 0)
-(defconstant +but-play+ 1)
-(defconstant +but-forward+ 2)
-(defconstant +but-stop+ 3)
-(defconstant +but-pause+ 4)
-(defconstant +but-begin+ 5)
-(defconstant +but-frame+ 6)
-(defconstant +but-end+ 7)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.GADGETS.TAPEDECK" ()
+
+  ;; --- constants from gadgets/tapedeck.i ---
+  (:const "+TDECK-DUMMY+" #x85000000)
+  (:const "+TDECK-MODE+" #x85000001)
+  (:const "+TDECK-PAUSED+" #x85000002)
+  (:const "+TDECK-TAPE+" #x85000003)
+  (:const "+TDECK-FRAMES+" #x8500000B)
+  (:const "+TDECK-CURRENT-FRAME+" #x8500000C)
+  (:const "+BUT-REWIND+" 0)
+  (:const "+BUT-PLAY+" 1)
+  (:const "+BUT-FORWARD+" 2)
+  (:const "+BUT-STOP+" 3)
+  (:const "+BUT-PAUSE+" 4)
+  (:const "+BUT-BEGIN+" 5)
+  (:const "+BUT-FRAME+" 6)
+  (:const "+BUT-END+" 7)
+  )
 
 (provide "amiga/raw/gadgets/tapedeck")

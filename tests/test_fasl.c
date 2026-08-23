@@ -611,6 +611,46 @@ TEST(serialize_wide_string_nonascii_stays_wide)
     /* Non-ASCII codepoint forces WIDE_STRING. */
     ASSERT_EQ_INT(buf[0], FASL_TAG_WIDE_STRING);
 }
+
+/* CLAMIGA_FASL_PORTABLE=1 (cl_fasl_set_portable_mode): a string that would
+ * need TAG_WIDE_STRING is REFUSED with FASL_ERR_NONPORTABLE, and the detail
+ * names the offending code point and the ASCII prefix, so the compile-file
+ * diagnostic on the host points at the literal instead of the Amiga dying
+ * with BAD_TAG when it loads the lib FASL.  ASCII-only wide strings still
+ * downgrade; with the mode off the writer behaves as before. */
+TEST(serialize_wide_string_nonascii_portable_refused)
+{
+    uint8_t buf[128];
+    CL_FaslWriter w;
+    uint32_t chars[4] = { 'a', 'b', 0x2014 /* em dash */, 'c' };
+    uint32_t ascii[2] = { 'o', 'k' };
+    CL_Obj ws;
+
+    cl_fasl_set_portable_mode(1);
+
+    ws = cl_make_wide_string(chars, 4);
+    cl_fasl_writer_init(&w, buf, sizeof(buf));
+    cl_fasl_serialize_obj(&w, ws);
+    ASSERT_EQ_INT(w.error, FASL_ERR_NONPORTABLE);
+    ASSERT(strstr(cl_fasl_nonportable_detail(&w), "U+2014") != NULL);
+    ASSERT(strstr(cl_fasl_nonportable_detail(&w), "\"ab?c\"") != NULL);
+    ASSERT(strstr(cl_fasl_nonportable_detail(&w), "CLAMIGA_FASL_PORTABLE") != NULL);
+
+    /* ASCII-only wide strings are unaffected (downgraded to TAG_STRING). */
+    ws = cl_make_wide_string(ascii, 2);
+    cl_fasl_writer_init(&w, buf, sizeof(buf));
+    cl_fasl_serialize_obj(&w, ws);
+    ASSERT_EQ_INT(w.error, FASL_OK);
+    ASSERT_EQ_INT(buf[0], FASL_TAG_STRING);
+
+    /* Mode off: the non-ASCII string is written as WIDE_STRING as before. */
+    cl_fasl_set_portable_mode(0);
+    ws = cl_make_wide_string(chars, 4);
+    cl_fasl_writer_init(&w, buf, sizeof(buf));
+    cl_fasl_serialize_obj(&w, ws);
+    ASSERT_EQ_INT(w.error, FASL_OK);
+    ASSERT_EQ_INT(buf[0], FASL_TAG_WIDE_STRING);
+}
 #endif
 
 TEST(serialize_symbol_cl)
@@ -2651,6 +2691,7 @@ int main(void)
 #ifdef CL_WIDE_STRINGS
     RUN(serialize_wide_string_ascii_downgrades);
     RUN(serialize_wide_string_nonascii_stays_wide);
+    RUN(serialize_wide_string_nonascii_portable_refused);
 #endif
     RUN(serialize_symbol_cl);
     RUN(serialize_symbol_keyword);

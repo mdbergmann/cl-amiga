@@ -6,19 +6,27 @@
 ;;; 0 functions, 4 constants, 0 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.REACTION.REACTION-CLASS"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+GM-CLIPRECT+" "+GMC-VISIBLE+" "+GMC-PARTIAL+" "+GMC-INVISIBLE+" ))
+  (:export))
 
 (in-package "AMIGA.RAW.REACTION.REACTION-CLASS")
 
-;;; --- constants from reaction/reaction_class.h ---
-(defconstant +gm-cliprect+ #x550001)
-(defconstant +gmc-visible+ 2)
-(defconstant +gmc-partial+ 1)
-(defconstant +gmc-invisible+ 0)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.REACTION.REACTION-CLASS" ()
+
+  ;; --- constants from reaction/reaction_class.h ---
+  (:const "+GM-CLIPRECT+" #x550001)
+  (:const "+GMC-VISIBLE+" 2)
+  (:const "+GMC-PARTIAL+" 1)
+  (:const "+GMC-INVISIBLE+" 0)
+  )
 
 (provide "amiga/raw/reaction/reaction-class")

@@ -218,7 +218,7 @@ CL_Obj cl_coerce_funcdesig(CL_Obj obj, const char *context)
 {
     if (cl_funcallable_instance_p(obj))
         obj = cl_unwrap_funcallable(obj);
-    if (CL_FUNCTION_P(obj) || CL_BYTECODE_P(obj) || CL_CLOSURE_P(obj))
+    if (CL_FUNCTION_OBJ_P(obj))
         return obj;
     if (CL_SYMBOL_P(obj)) {
         CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(obj);
@@ -515,8 +515,7 @@ static CL_Obj bi_functionp(CL_Obj *args, int n)
 {
     CL_Obj obj = args[0];
     CL_UNUSED(n);
-    return (CL_FUNCTION_P(obj) || CL_CLOSURE_P(obj) ||
-            CL_BYTECODE_P(obj) || cl_funcallable_instance_p(obj))
+    return (CL_FUNCTION_OBJ_P(obj) || cl_funcallable_instance_p(obj))
         ? SYM_T : CL_NIL;
 }
 
@@ -544,13 +543,13 @@ static CL_Obj bi_dbind_too_many(CL_Obj *args, int n)
 }
 
 /* (compiled-function-p object) => boolean
- * In clamiga, all functions (C builtins, bytecode, closures) are compiled. */
+ * In clamiga, all functions (C builtins, bytecode, closures, FFI stubs)
+ * are compiled. */
 static CL_Obj bi_compiled_function_p(CL_Obj *args, int n)
 {
     CL_Obj obj = args[0];
     CL_UNUSED(n);
-    return (CL_FUNCTION_P(obj) || CL_BYTECODE_P(obj) || CL_CLOSURE_P(obj)
-            || cl_funcallable_instance_p(obj))
+    return (CL_FUNCTION_OBJ_P(obj) || cl_funcallable_instance_p(obj))
         ? SYM_T : CL_NIL;
 }
 
@@ -571,6 +570,8 @@ static CL_Obj bi_function_lambda_expression(CL_Obj *args, int n)
     } else if (CL_CLOSURE_P(obj)) {
         CL_Closure *cl = (CL_Closure *)CL_OBJ_TO_PTR(obj);
         name = ((CL_Bytecode *)CL_OBJ_TO_PTR(cl->bytecode))->name;
+    } else if (CL_FFI_STUB_P(obj)) {
+        name = ((CL_FfiStub *)CL_OBJ_TO_PTR(obj))->name;
     } else {
         cl_error(CL_ERR_TYPE, "FUNCTION-LAMBDA-EXPRESSION: not a function");
     }
@@ -1093,7 +1094,7 @@ static CL_Obj bi_apply(CL_Obj *args, int n)
         cl_vm.sp = saved_sp;
         return result;
     }
-    if (CL_BYTECODE_P(func) || CL_CLOSURE_P(func)) {
+    if (CL_BYTECODE_P(func) || CL_CLOSURE_P(func) || CL_FFI_STUB_P(func)) {
         result = cl_vm_apply(func, &cl_vm.stack[base], nflat);
         cl_vm.sp = saved_sp;
         return result;
@@ -1136,7 +1137,7 @@ static CL_Obj bi_funcall(CL_Obj *args, int n)
         }
         return f->func(args + 1, n - 1);
     }
-    if (CL_BYTECODE_P(func) || CL_CLOSURE_P(func)) {
+    if (CL_BYTECODE_P(func) || CL_CLOSURE_P(func) || CL_FFI_STUB_P(func)) {
         return cl_vm_apply(func, args + 1, n - 1);
     }
     cl_error(CL_ERR_TYPE, "FUNCALL: not a function");
@@ -1549,6 +1550,7 @@ void cl_builtins_inspect_init(void);
 void cl_builtins_thread_init(void);
 void cl_builtins_ffi_init(void);
 void cl_builtins_amiga_init(void);
+void cl_builtins_bindtab_init(void);
 
 /* --- Function arglist introspection (EXT:FUNCTION-ARGLIST) ----------------
  *
@@ -1637,6 +1639,12 @@ static CL_Obj bi_function_arglist(CL_Obj *args, int n)
             int has_rest = (f->max_args < 0);
             int n_opt = has_rest ? 0 : (f->max_args - f->min_args);
             return build_arglist(f->min_args, n_opt, has_rest, 0, NULL);
+        } else if (t == TYPE_FFI_STUB) {
+            /* FFI stub: fixed arity from its kind (DEFCFUN's register
+             * count, 1 for a field reader, 2 for a writer, ...).  The C
+             * prototype with the real parameter names is in the
+             * docstring when the binding module kept it. */
+            return build_arglist(cl_ffi_stub_arity(fn), 0, 0, 0, NULL);
         }
     }
 
@@ -1762,8 +1770,8 @@ static CL_Obj SYM_EXIT_HOOKS = CL_NIL;   /* EXT:*EXIT-HOOKS* */
  * works before FOO is defined and picks up a later redefinition. */
 static int exit_hook_designator_p(CL_Obj obj)
 {
-    return CL_SYMBOL_P(obj) || CL_FUNCTION_P(obj) || CL_CLOSURE_P(obj) ||
-           CL_BYTECODE_P(obj) || cl_funcallable_instance_p(obj);
+    return CL_SYMBOL_P(obj) || CL_FUNCTION_OBJ_P(obj) ||
+           cl_funcallable_instance_p(obj);
 }
 
 /* Current *EXIT-HOOKS* value, normalized: an unbound or non-list value reads
@@ -2093,6 +2101,7 @@ void cl_builtins_init(void)
     cl_builtins_thread_init();
     cl_builtins_ffi_init();
     cl_builtins_amiga_init();
+    cl_builtins_bindtab_init();
 
     /* CL functions not yet implemented — register stubs so FBOUNDP /
      * SYMBOL-FUNCTION return non-NIL; any call signals an error. */

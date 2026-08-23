@@ -8,31 +8,14 @@
 ;;; 5 functions, 57 constants, 0 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.GADGETS.SPEEDBAR"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*SPEEDBAR-BASE*" "*SPEEDBAR-VERSION*"
-   "+SBNA-DUMMY+" "+SBNA-LEFT+" "+SBNA-TOP+" "+SBNA-WIDTH+" "+SBNA-HEIGHT+" 
-   "+SBNA-USER-DATA+" "+SBNA-ENABLED+" "+SBNA-SPACING+" "+SBNA-HIGHLIGHT+" 
-   "+SBNA-IMAGE+" "+SBNA-SEL-IMAGE+" "+SBNA-HELP+" "+SBNA-TOGGLE+" 
-   "+SBNA-SELECTED+" "+SBNA-MX-GROUP+" "+SBNA-DISABLED+" "+SBNA-TEXT+" 
-   "+SBNA-SPACER+" "+SBNA-SEPARATOR+" "+SBNA-HINT-INFO+" "+SBNA-BUTTON-ID+" 
-   "+SBH-NONE+" "+SBH-BACKFILL+" "+SBH-RECESS+" "+SBH-IMAGE+" 
-   "+SPEEDBAR-DUMMY+" "+SPEEDBAR-BUTTONS+" "+SPEEDBAR-ORIENTATION+" 
-   "+SPEEDBAR-BACKGROUND+" "+SPEEDBAR-WINDOW+" "+SPEEDBAR-STRUM-BAR+" 
-   "+SPEEDBAR-ON-BUTTON+" "+SPEEDBAR-OFF-BUTTON+" "+SPEEDBAR-SCROLL-LEFT+" 
-   "+SPEEDBAR-SCROLL-RIGHT+" "+SPEEDBAR-TOP+" "+SPEEDBAR-VISIBLE+" 
-   "+SPEEDBAR-TOTAL+" "+SPEEDBAR-HELP+" "+SPEEDBAR-BEVEL-STYLE+" 
-   "+SPEEDBAR-SELECTED+" "+SPEEDBAR-SELECTED-NODE+" "+SPEEDBAR-EVEN-SIZE+" 
-   "+SPEEDBAR-FONT+" "+SPEEDBAR-TOP-NODE+" "+SPEEDBAR-BUTTON-TYPE+" 
-   "+SPEEDBAR-HORIZ-PADDING+" "+SPEEDBAR-VERT-PADDING+" 
-   "+SPEEDBAR-BUTTON-BEVEL-STYLE+" "+SBM-SETNODEATTRS+" "+SBORIENT-HORIZ+" 
-   "+SBORIENT-VERT+" "+SPEEDBAR-HORIZONTAL+" "+SPEEDBAR-VERTICAL+" 
-   "+SBTYPE-BOTH+" "+SBTYPE-TEXT+" "+SBTYPE-IMAGE+" "SPEEDBAR-GET-CLASS" 
-   "ALLOC-SPEED-BUTTON-NODE-A" "FREE-SPEED-BUTTON-NODE" 
-   "SET-SPEED-BUTTON-NODE-ATTRS-A" "GET-SPEED-BUTTON-NODE-ATTRS-A" ))
+  (:export "*SPEEDBAR-BASE*" "*SPEEDBAR-VERSION*"))
 
 (in-package "AMIGA.RAW.GADGETS.SPEEDBAR")
 
@@ -46,85 +29,77 @@
 (defun %version>= (n)
   (and *speedbar-version* (>= *speedbar-version* n)))
 
-;;; --- constants from gadgets/speedbar.h ---
-(defconstant +sbna-dummy+ #x80010000)
-(defconstant +sbna-left+ #x80010001)
-(defconstant +sbna-top+ #x80010002)
-(defconstant +sbna-width+ #x80010003)
-(defconstant +sbna-height+ #x80010004)
-(defconstant +sbna-user-data+ #x80010005)
-(defconstant +sbna-enabled+ #x80010006)
-(defconstant +sbna-spacing+ #x80010007)
-(defconstant +sbna-highlight+ #x80010008)
-(defconstant +sbna-image+ #x80010009)
-(defconstant +sbna-sel-image+ #x8001000A)
-(defconstant +sbna-help+ #x8001000B)
-(defconstant +sbna-toggle+ #x8001000C)
-(defconstant +sbna-selected+ #x8001000D)
-(defconstant +sbna-mx-group+ #x8001000E)
-(defconstant +sbna-disabled+ #x8001000F)
-(defconstant +sbna-text+ #x80010010)
-(defconstant +sbna-spacer+ #x80010011)
-(defconstant +sbna-separator+ #x80010012)
-(defconstant +sbna-hint-info+ #x80010013)
-(defconstant +sbna-button-id+ #x80010014)
-(defconstant +sbh-none+ 0)
-(defconstant +sbh-backfill+ 1)
-(defconstant +sbh-recess+ 2)
-(defconstant +sbh-image+ 3)
-(defconstant +speedbar-dummy+ #x85013000)
-(defconstant +speedbar-buttons+ #x85013001)
-(defconstant +speedbar-orientation+ #x85013002)
-(defconstant +speedbar-background+ #x85013003)
-(defconstant +speedbar-window+ #x85013004)
-(defconstant +speedbar-strum-bar+ #x85013005)
-(defconstant +speedbar-on-button+ #x85013006)
-(defconstant +speedbar-off-button+ #x85013007)
-(defconstant +speedbar-scroll-left+ #x85013008)
-(defconstant +speedbar-scroll-right+ #x85013009)
-(defconstant +speedbar-top+ #x8501300A)
-(defconstant +speedbar-visible+ #x8501300B)
-(defconstant +speedbar-total+ #x8501300C)
-(defconstant +speedbar-help+ #x8501300D)
-(defconstant +speedbar-bevel-style+ #x8501300E)
-(defconstant +speedbar-selected+ #x8501300F)
-(defconstant +speedbar-selected-node+ #x85013010)
-(defconstant +speedbar-even-size+ #x85013011)
-(defconstant +speedbar-font+ #x85013012)
-(defconstant +speedbar-top-node+ #x85013013)
-(defconstant +speedbar-button-type+ #x85013014)
-(defconstant +speedbar-horiz-padding+ #x85013015)
-(defconstant +speedbar-vert-padding+ #x85013016)
-(defconstant +speedbar-button-bevel-style+ #x85013801)
-(defconstant +sbm-setnodeattrs+ #x58000A)
-(defconstant +sborient-horiz+ 0)
-(defconstant +sborient-vert+ 1)
-(defconstant +speedbar-horizontal+ 0)
-(defconstant +speedbar-vertical+ 1)
-(defconstant +sbtype-both+ 0)
-(defconstant +sbtype-text+ 1)
-(defconstant +sbtype-image+ 2)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.GADGETS.SPEEDBAR"
+    (:base *speedbar-base* :version *speedbar-version*)
 
-;;; --- functions (speedbar_lib.sfd + MorphOS SDK) ---
-(when (%version>= 40)
-  (amiga.ffi:defcfun speedbar-get-class *speedbar-base* -30 ()
-    :result :pointer
-    :doc "Class * SPEEDBAR_GetClass() () LVO -30"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun alloc-speed-button-node-a *speedbar-base* -36 (:d0 number :a0 tags)
-    :result :pointer
-    :doc "struct Node * AllocSpeedButtonNodeA(ULONG number, struct TagItem * tags) (D0,A0) LVO -36"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun free-speed-button-node *speedbar-base* -42 (:a0 node)
-    :result :void
-    :doc "VOID FreeSpeedButtonNode(struct Node * node) (A0) LVO -42"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun set-speed-button-node-attrs-a *speedbar-base* -48 (:a0 node :a1 tags)
-    :result :void
-    :doc "VOID SetSpeedButtonNodeAttrsA(struct Node * node, struct TagItem * tags) (A0,A1) LVO -48"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun get-speed-button-node-attrs-a *speedbar-base* -54 (:a0 node :a1 tags)
-    :result :void
-    :doc "VOID GetSpeedButtonNodeAttrsA(struct Node * node, struct TagItem * tags) (A0,A1) LVO -54"))
+  ;; --- constants from gadgets/speedbar.h ---
+  (:const "+SBNA-DUMMY+" #x80010000)
+  (:const "+SBNA-LEFT+" #x80010001)
+  (:const "+SBNA-TOP+" #x80010002)
+  (:const "+SBNA-WIDTH+" #x80010003)
+  (:const "+SBNA-HEIGHT+" #x80010004)
+  (:const "+SBNA-USER-DATA+" #x80010005)
+  (:const "+SBNA-ENABLED+" #x80010006)
+  (:const "+SBNA-SPACING+" #x80010007)
+  (:const "+SBNA-HIGHLIGHT+" #x80010008)
+  (:const "+SBNA-IMAGE+" #x80010009)
+  (:const "+SBNA-SEL-IMAGE+" #x8001000A)
+  (:const "+SBNA-HELP+" #x8001000B)
+  (:const "+SBNA-TOGGLE+" #x8001000C)
+  (:const "+SBNA-SELECTED+" #x8001000D)
+  (:const "+SBNA-MX-GROUP+" #x8001000E)
+  (:const "+SBNA-DISABLED+" #x8001000F)
+  (:const "+SBNA-TEXT+" #x80010010)
+  (:const "+SBNA-SPACER+" #x80010011)
+  (:const "+SBNA-SEPARATOR+" #x80010012)
+  (:const "+SBNA-HINT-INFO+" #x80010013)
+  (:const "+SBNA-BUTTON-ID+" #x80010014)
+  (:const "+SBH-NONE+" 0)
+  (:const "+SBH-BACKFILL+" 1)
+  (:const "+SBH-RECESS+" 2)
+  (:const "+SBH-IMAGE+" 3)
+  (:const "+SPEEDBAR-DUMMY+" #x85013000)
+  (:const "+SPEEDBAR-BUTTONS+" #x85013001)
+  (:const "+SPEEDBAR-ORIENTATION+" #x85013002)
+  (:const "+SPEEDBAR-BACKGROUND+" #x85013003)
+  (:const "+SPEEDBAR-WINDOW+" #x85013004)
+  (:const "+SPEEDBAR-STRUM-BAR+" #x85013005)
+  (:const "+SPEEDBAR-ON-BUTTON+" #x85013006)
+  (:const "+SPEEDBAR-OFF-BUTTON+" #x85013007)
+  (:const "+SPEEDBAR-SCROLL-LEFT+" #x85013008)
+  (:const "+SPEEDBAR-SCROLL-RIGHT+" #x85013009)
+  (:const "+SPEEDBAR-TOP+" #x8501300A)
+  (:const "+SPEEDBAR-VISIBLE+" #x8501300B)
+  (:const "+SPEEDBAR-TOTAL+" #x8501300C)
+  (:const "+SPEEDBAR-HELP+" #x8501300D)
+  (:const "+SPEEDBAR-BEVEL-STYLE+" #x8501300E)
+  (:const "+SPEEDBAR-SELECTED+" #x8501300F)
+  (:const "+SPEEDBAR-SELECTED-NODE+" #x85013010)
+  (:const "+SPEEDBAR-EVEN-SIZE+" #x85013011)
+  (:const "+SPEEDBAR-FONT+" #x85013012)
+  (:const "+SPEEDBAR-TOP-NODE+" #x85013013)
+  (:const "+SPEEDBAR-BUTTON-TYPE+" #x85013014)
+  (:const "+SPEEDBAR-HORIZ-PADDING+" #x85013015)
+  (:const "+SPEEDBAR-VERT-PADDING+" #x85013016)
+  (:const "+SPEEDBAR-BUTTON-BEVEL-STYLE+" #x85013801)
+  (:const "+SBM-SETNODEATTRS+" #x58000A)
+  (:const "+SBORIENT-HORIZ+" 0)
+  (:const "+SBORIENT-VERT+" 1)
+  (:const "+SPEEDBAR-HORIZONTAL+" 0)
+  (:const "+SPEEDBAR-VERTICAL+" 1)
+  (:const "+SBTYPE-BOTH+" 0)
+  (:const "+SBTYPE-TEXT+" 1)
+  (:const "+SBTYPE-IMAGE+" 2)
+
+  ;; --- functions (speedbar_lib.sfd + MorphOS SDK) ---
+  (:fn "SPEEDBAR-GET-CLASS" -30 () :pointer 40)   ; Class * SPEEDBAR_GetClass() () LVO -30
+  (:fn "ALLOC-SPEED-BUTTON-NODE-A" -36 (:d0 :a0) :pointer 40)   ; struct Node * AllocSpeedButtonNodeA(ULONG number, struct TagItem * tags) (D0,A0) LVO -36
+  (:fn "FREE-SPEED-BUTTON-NODE" -42 (:a0) :void 40)   ; VOID FreeSpeedButtonNode(struct Node * node) (A0) LVO -42
+  (:fn "SET-SPEED-BUTTON-NODE-ATTRS-A" -48 (:a0 :a1) :void 40)   ; VOID SetSpeedButtonNodeAttrsA(struct Node * node, struct TagItem * tags) (A0,A1) LVO -48
+  (:fn "GET-SPEED-BUTTON-NODE-ATTRS-A" -54 (:a0 :a1) :void 40)   ; VOID GetSpeedButtonNodeAttrsA(struct Node * node, struct TagItem * tags) (A0,A1) LVO -54
+  )
 
 (provide "amiga/raw/gadgets/speedbar")

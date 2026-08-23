@@ -6,26 +6,32 @@
 ;;; 0 functions, 1 constants, 1 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.PREFS.PALETTE"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+ID-PALT+" "*PALETTE-PREFS-SIZE*" "PALETTE-PREFS-RESERVED" 
-   "PALETTE-PREFS-4-COLOR-PENS" "PALETTE-PREFS-8-COLOR-PENS" 
-   "PALETTE-PREFS-COLORS" ))
+  (:export))
 
 (in-package "AMIGA.RAW.PREFS.PALETTE")
 
-;;; --- constants from prefs/palette.i ---
-(defconstant +id-palt+ #x50414C54)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.PREFS.PALETTE" ()
 
-;;; --- structures from prefs/palette.i ---
-(ffi:defcstruct (palette-prefs :size 400)   ; PalettePrefs (prefs/palette.i)
-  (reserved (:struct 16) 0)
-  (4-color-pens (:struct 64) 16)
-  (8-color-pens (:struct 64) 80)
-  (colors (:struct 256) 144)
-)
+  ;; --- constants from prefs/palette.i ---
+  (:const "+ID-PALT+" #x50414C54)
+
+  ;; --- structures from prefs/palette.i ---
+  (:struct "PALETTE-PREFS" 400   ; PalettePrefs (prefs/palette.i)
+    ("RESERVED" (:struct 16) 0)
+    ("4-COLOR-PENS" (:struct 64) 16)
+    ("8-COLOR-PENS" (:struct 64) 80)
+    ("COLORS" (:struct 256) 144)
+    )
+  )
 
 (provide "amiga/raw/prefs/palette")

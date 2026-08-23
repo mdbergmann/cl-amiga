@@ -6,39 +6,43 @@
 ;;; 0 functions, 3 constants, 2 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.PREFS.POINTER"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+ID-PNTR+" "+WBP-NORMAL+" "+WBP-BUSY+" "*POINTER-PREFS-SIZE*" 
-   "POINTER-PREFS-RESERVED" "POINTER-PREFS-WHICH" "POINTER-PREFS-SIZE" 
-   "POINTER-PREFS-WIDTH" "POINTER-PREFS-HEIGHT" "POINTER-PREFS-DEPTH" 
-   "POINTER-PREFS-Y-SIZE" "POINTER-PREFS-X" "*RGB-TABLE-SIZE*" 
-   "RGB-TABLE-RED" "RGB-TABLE-GREEN" "RGB-TABLE-BLUE" ))
+  (:export))
 
 (in-package "AMIGA.RAW.PREFS.POINTER")
 
-;;; --- constants from prefs/pointer.i ---
-(defconstant +id-pntr+ #x504E5452)
-(defconstant +wbp-normal+ 0)
-(defconstant +wbp-busy+ 1)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.PREFS.POINTER" ()
 
-;;; --- structures from prefs/pointer.i ---
-(ffi:defcstruct (pointer-prefs :size 30)   ; PointerPrefs (prefs/pointer.i)
-  (reserved (:struct 16) 0)
-  (which :u16 16)
-  (size :u16 18)
-  (width :u16 20)
-  (height :u16 22)
-  (depth :u16 24)
-  (y-size :u16 26)
-  (x :i16 28)
-)
-(ffi:defcstruct (rgb-table :size 3)   ; RGBTable (prefs/pointer.i)
-  (red :u8 0)
-  (green :u8 1)
-  (blue :u8 2)
-)
+  ;; --- constants from prefs/pointer.i ---
+  (:const "+ID-PNTR+" #x504E5452)
+  (:const "+WBP-NORMAL+" 0)
+  (:const "+WBP-BUSY+" 1)
+
+  ;; --- structures from prefs/pointer.i ---
+  (:struct "POINTER-PREFS" 30   ; PointerPrefs (prefs/pointer.i)
+    ("RESERVED" (:struct 16) 0)
+    ("WHICH" :u16 16)
+    ("SIZE" :u16 18)
+    ("WIDTH" :u16 20)
+    ("HEIGHT" :u16 22)
+    ("DEPTH" :u16 24)
+    ("Y-SIZE" :u16 26)
+    ("X" :i16 28)
+    )
+  (:struct "RGB-TABLE" 3   ; RGBTable (prefs/pointer.i)
+    ("RED" :u8 0)
+    ("GREEN" :u8 1)
+    ("BLUE" :u8 2)
+    )
+  )
 
 (provide "amiga/raw/prefs/pointer")

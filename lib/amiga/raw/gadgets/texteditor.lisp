@@ -8,87 +8,14 @@
 ;;; 2 functions, 151 constants, 0 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.GADGETS.TEXTEDITOR"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*TEXTEDITOR-BASE*" "*TEXTEDITOR-VERSION*"
-   "+TEXTEDITOR-DUMMY+" "+GA-TEXTEDITOR-CONTENTS+" 
-   "+GA-TEXTEDITOR-CURSOR-X+" "+GA-TEXTEDITOR-CURSOR-Y+" 
-   "+GA-TEXTEDITOR-DOUBLE-CLICK-HOOK+" "+GA-TEXTEDITOR-EXPORT-HOOK+" 
-   "+GA-TEXTEDITOR-EXPORT-WRAP+" "+GA-TEXTEDITOR-FIXED-FONT+" 
-   "+GA-TEXTEDITOR-FLOW+" "+GA-TEXTEDITOR-HAS-CHANGED+" 
-   "+GA-TEXTEDITOR-IMPORT-HOOK+" "+GA-TEXTEDITOR-IMPORT-WRAP+" 
-   "+GA-TEXTEDITOR-INSERT-MODE+" "+GA-TEXTEDITOR-KEY-BINDINGS+" 
-   "+GA-TEXTEDITOR-NUM-LOCK+" "+GA-TEXTEDITOR-POP-WINDOW-OPEN+" 
-   "+GA-TEXTEDITOR-AREA-MARKED+" "+GA-TEXTEDITOR-PROP-DELTA-FACTOR+" 
-   "+GA-TEXTEDITOR-PROP-ENTRIES+" "+GA-TEXTEDITOR-PROP-FIRST+" 
-   "+GA-TEXTEDITOR-PROP-RELEASE+" "+GA-TEXTEDITOR-PROP-VISIBLE+" 
-   "+GA-TEXTEDITOR-QUIET+" "+GA-TEXTEDITOR-READ-ONLY+" 
-   "+GA-TEXTEDITOR-REDO-AVAILABLE+" "+GA-TEXTEDITOR-SEPARATOR+" 
-   "+GA-TEXTEDITOR-HORIZONTAL-SCROLL+" "+GA-TEXTEDITOR-PEN+" 
-   "+GA-TEXTEDITOR-COLOR-MAP+" "+GA-TEXTEDITOR-STYLE-BOLD+" 
-   "+GA-TEXTEDITOR-STYLE-ITALIC+" "+GA-TEXTEDITOR-STYLE-UNDERLINE+" 
-   "+GA-TEXTEDITOR-TYPE-AND-SPELL+" "+GA-TEXTEDITOR-UNDO-AVAILABLE+" 
-   "+GA-TEXTEDITOR-WRAP-BORDER+" "+GA-TEXTEDITOR-H-PROP-DELTA-FACTOR+" 
-   "+GA-TEXTEDITOR-H-PROP-ENTRIES+" "+GA-TEXTEDITOR-H-PROP-FIRST+" 
-   "+GA-TEXTEDITOR-H-PROP-VISIBLE+" "+GA-TEXTEDITOR-EXIT-HELP+" 
-   "+GA-TEXTEDITOR-TAB-SIZE+" "+GA-TEXTEDITOR-SPACES-PER-TAB+" 
-   "+GA-TEXTEDITOR-INDENT-WIDTH+" "+GA-TEXTEDITOR-HIGHLIGHTER-HOOK+" 
-   "+GA-TEXTEDITOR-SHOW-LINE-NUMBERS+" "+GA-TEXTEDITOR-LEFT-BAR-HOOK+" 
-   "+GA-TEXTEDITOR-RECTANGULAR-SELECTIONS+" "+GA-TEXTEDITOR-ERROR-CODE+" 
-   "+GA-TEXTEDITOR-KEYMAP+" "+GA-TEXTEDITOR-CURSOR-BLINK-SPEED+" 
-   "+GA-TEXTEDITOR-LENGTH+" "+GA-TEXTEDITOR-AUTO-INDENT+" 
-   "+GA-TEXTEDITOR-CUT-COPY-LINE-WHEN-NO-SELECTION+" 
-   "+GA-TEXTEDITOR-LINE-ENDING-IMPORTED+" 
-   "+GA-TEXTEDITOR-LINE-ENDING-EXPORT+" "+GA-TEXTEDITOR-TAB-KEY-POLICY+" 
-   "+GA-TEXTEDITOR-HORIZ-SCROLLER+" "+GA-TEXTEDITOR-VERT-SCROLLER+" 
-   "+GA-TEXTEDITOR-TEXT-ATTR+" "+GA-TEXTEDITOR-TAB-TO-SPACES+" 
-   "+GA-TEXTEDITOR-DRAGGING+" "+GA-TEXTEDITOR-EOL-MARKER+" 
-   "+GA-TEXTEDITOR-LOOK-AHEAD+" "+GA-TEXTEDITOR-BEVEL-STYLE+" 
-   "+GA-TEXTEDITOR-TRANSPARENT+" "+GA-TEXTEDITOR-MAX-UNDO-LEVELS+" 
-   "+GA-TEXTEDITOR-MAX-UNDO-SIZE+" "+GM-TEXTEDITOR-HANDLE-ERROR+" 
-   "+GM-TEXTEDITOR-ADD-KEY-BINDINGS+" "+GM-TEXTEDITOR-A-REXX-CMD+" 
-   "+GM-TEXTEDITOR-CLEAR-TEXT+" "+GM-TEXTEDITOR-EXPORT-TEXT+" 
-   "+GM-TEXTEDITOR-INSERT-TEXT+" "+GM-TEXTEDITOR-MACRO-BEGIN+" 
-   "+GM-TEXTEDITOR-MACRO-END+" "+GM-TEXTEDITOR-MACRO-EXECUTE+" 
-   "+GM-TEXTEDITOR-REPLACE+" "+GM-TEXTEDITOR-SEARCH+" 
-   "+GM-TEXTEDITOR-MARK-TEXT+" "+GM-TEXTEDITOR-BLOCK-INFO+" 
-   "+GM-TEXTEDITOR-ADD-CHANGE-LISTENER+" "+GM-TEXTEDITOR-EXPORT-BLOCK+" 
-   "+GM-TEXTEDITOR-REPLACE-ALL+" "+GV-TEXTEDITOR-EXPORT-HOOK-PLAIN+" 
-   "+GV-TEXTEDITOR-EXPORT-HOOK-E-MAIL+" "+GV-TEXTEDITOR-FLOW-LEFT+" 
-   "+GV-TEXTEDITOR-FLOW-CENTER+" "+GV-TEXTEDITOR-FLOW-RIGHT+" 
-   "+GV-TEXTEDITOR-FLOW-JUSTIFIED+" "+GV-TEXTEDITOR-IMPORT-HOOK-PLAIN+" 
-   "+GV-TEXTEDITOR-IMPORT-HOOK-E-MAIL+" "+GV-TEXTEDITOR-IMPORT-HOOK-MIME+" 
-   "+GV-TEXTEDITOR-IMPORT-HOOK-MIME-QUOTED+" 
-   "+GV-TEXTEDITOR-INSERT-TEXT-CURSOR+" "+GV-TEXTEDITOR-INSERT-TEXT-TOP+" 
-   "+GV-TEXTEDITOR-INSERT-TEXT-BOTTOM+" "+GV-TEXTEDITOR-LENGTH-HOOK-PLAIN+" 
-   "+GV-TEXTEDITOR-LENGTH-HOOK-ANSI+" "+GV-TEXTEDITOR-LENGTH-HOOK-HTML+" 
-   "+GV-TEXTEDITOR-LENGTH-HOOK-MAIL+" 
-   "+GV-TEXTEDITOR-TAB-KEY-INDENTS-LINE+" 
-   "+GV-TEXTEDITOR-TAB-KEY-INDENTS-AFTER+" 
-   "+GF-TEXTEDITOR-SEARCH-FROM-TOP+" "+GF-TEXTEDITOR-SEARCH-NEXT+" 
-   "+GF-TEXTEDITOR-SEARCH-INCREMENTAL+" "+GF-TEXTEDITOR-SEARCH-BACKWARDS+" 
-   "+GF-TEXTEDITOR-HIGHLIGHT-ALL+" "+GF-TEXTEDITOR-SEARCH-TYPE-MASK+" 
-   "+GF-TEXTEDITOR-SEARCH-CASE-SENSITIVE+" 
-   "+GF-TEXTEDITOR-SEARCH-DOS-PATTERN+" "+GF-TEXTEDITOR-SEARCH-WILDSTAR+" 
-   "+GF-TEXTEDITOR-SEARCH-WORD+" "+GF-TEXTEDITOR-SEARCH-WHOLE-WORD+" 
-   "+GF-TEXTEDITOR-SEARCH-CYCLIC+" "+GF-TEXTEDITOR-REPLACE-ALL+" 
-   "+ERROR-CLIPBOARD-IS-EMPTY+" "+ERROR-CLIPBOARD-IS-NOT-FTXT+" 
-   "+ERROR-MACRO-BUFFER-IS-FULL+" "+ERROR-MEMORY-ALLOCATION-FAILED+" 
-   "+ERROR-NO-AREA-MARKED+" "+ERROR-NO-MACRO-DEFINED+" 
-   "+ERROR-NOTHING-TO-REDO+" "+ERROR-NOTHING-TO-UNDO+" 
-   "+ERROR-NOT-ENOUGH-UNDO-MEM+" "+ERROR-STRING-NOT-FOUND+" 
-   "+ERROR-NO-BOOKMARK-INSTALLED+" "+ERROR-BOOKMARK-HAS-BEEN-LOST+" 
-   "+TBSTYLE-UNDERLINE+" "+TBSTYLE-BOLD+" "+TBSTYLE-ITALIC+" 
-   "+TBSTYLE-SETCOLOR+" "+TBSTYLE-SPELLERROR+" "+TBSTYLE-COLORMASK+" 
-   "+TBSTYLE-STYLEMASK+" "+TBSTYLE-NOTSET+" "+LEFTBAR-RENDERCOMMAND+" 
-   "+LEFTBAR-MOUSECOMMAND+" "+LNSB-TOP+" "+LNSB-MIDDLE+" "+LNSB-BOTTOM+" 
-   "+LNSB-STRIKE-THRU+" "+LNSB-THICK+" "+LNSF-TOP+" "+LNSF-MIDDLE+" 
-   "+LNSF-BOTTOM+" "+LNSF-STRIKE-THRU+" "+LNSF-THICK+" "+LINEENDING-LF+" 
-   "+LINEENDING-CR+" "+LINEENDING-CRLF+" "+LINEENDING-ASIMPORT+" 
-   "TEXTEDITOR-GET-CLASS" "HIGHLIGHT-SET-FORMAT" ))
+  (:export "*TEXTEDITOR-BASE*" "*TEXTEDITOR-VERSION*"))
 
 (in-package "AMIGA.RAW.GADGETS.TEXTEDITOR")
 
@@ -102,167 +29,168 @@
 (defun %version>= (n)
   (and *texteditor-version* (>= *texteditor-version* n)))
 
-;;; --- constants from gadgets/texteditor.h ---
-(defconstant +texteditor-dummy+ #x85026000)
-(defconstant +ga-texteditor-contents+ #x85026002)
-(defconstant +ga-texteditor-cursor-x+ #x85026004)
-(defconstant +ga-texteditor-cursor-y+ #x85026005)
-(defconstant +ga-texteditor-double-click-hook+ #x85026006)
-(defconstant +ga-texteditor-export-hook+ #x85026008)
-(defconstant +ga-texteditor-export-wrap+ #x85026009)
-(defconstant +ga-texteditor-fixed-font+ #x8502600A)
-(defconstant +ga-texteditor-flow+ #x8502600B)
-(defconstant +ga-texteditor-has-changed+ #x8502600C)
-(defconstant +ga-texteditor-import-hook+ #x8502600E)
-(defconstant +ga-texteditor-import-wrap+ #x85026010)
-(defconstant +ga-texteditor-insert-mode+ #x8502600F)
-(defconstant +ga-texteditor-key-bindings+ #x85026011)
-(defconstant +ga-texteditor-num-lock+ #x85026018)
-(defconstant +ga-texteditor-pop-window-open+ #x85026003)
-(defconstant +ga-texteditor-area-marked+ #x85026014)
-(defconstant +ga-texteditor-prop-delta-factor+ #x8502600D)
-(defconstant +ga-texteditor-prop-entries+ #x85026015)
-(defconstant +ga-texteditor-prop-first+ #x85026020)
-(defconstant +ga-texteditor-prop-release+ #x85026001)
-(defconstant +ga-texteditor-prop-visible+ #x85026016)
-(defconstant +ga-texteditor-quiet+ #x85026017)
-(defconstant +ga-texteditor-read-only+ #x85026019)
-(defconstant +ga-texteditor-redo-available+ #x85026013)
-(defconstant +ga-texteditor-separator+ #x8502602C)
-(defconstant +ga-texteditor-horizontal-scroll+ #x8502602D)
-(defconstant +ga-texteditor-pen+ #x8502602E)
-(defconstant +ga-texteditor-color-map+ #x8502602F)
-(defconstant +ga-texteditor-style-bold+ #x8502601C)
-(defconstant +ga-texteditor-style-italic+ #x8502601D)
-(defconstant +ga-texteditor-style-underline+ #x8502601E)
-(defconstant +ga-texteditor-type-and-spell+ #x85026007)
-(defconstant +ga-texteditor-undo-available+ #x85026012)
-(defconstant +ga-texteditor-wrap-border+ #x85026021)
-(defconstant +ga-texteditor-h-prop-delta-factor+ #x85026030)
-(defconstant +ga-texteditor-h-prop-entries+ #x85026031)
-(defconstant +ga-texteditor-h-prop-first+ #x85026032)
-(defconstant +ga-texteditor-h-prop-visible+ #x85026033)
-(defconstant +ga-texteditor-exit-help+ #x85026034)
-(defconstant +ga-texteditor-tab-size+ #x85026035)
-(defconstant +ga-texteditor-spaces-per-tab+ #x85026035)
-(defconstant +ga-texteditor-indent-width+ #x85026036)
-(defconstant +ga-texteditor-highlighter-hook+ #x85026037)
-(defconstant +ga-texteditor-show-line-numbers+ #x85026038)
-(defconstant +ga-texteditor-left-bar-hook+ #x85026039)
-(defconstant +ga-texteditor-rectangular-selections+ #x8502603A)
-(defconstant +ga-texteditor-error-code+ #x85026036)
-(defconstant +ga-texteditor-keymap+ #x85026037)
-(defconstant +ga-texteditor-cursor-blink-speed+ #x85026038)
-(defconstant +ga-texteditor-length+ #x8502603A)
-(defconstant +ga-texteditor-auto-indent+ #x8502603B)
-(defconstant +ga-texteditor-cut-copy-line-when-no-selection+ #x8502603C)
-(defconstant +ga-texteditor-line-ending-imported+ #x8502603D)
-(defconstant +ga-texteditor-line-ending-export+ #x8502603E)
-(defconstant +ga-texteditor-tab-key-policy+ #x8502603F)
-(defconstant +ga-texteditor-horiz-scroller+ #x85026040)
-(defconstant +ga-texteditor-vert-scroller+ #x85026041)
-(defconstant +ga-texteditor-text-attr+ #x85026042)
-(defconstant +ga-texteditor-tab-to-spaces+ #x85026043)
-(defconstant +ga-texteditor-dragging+ #x85026044)
-(defconstant +ga-texteditor-eol-marker+ #x85026045)
-(defconstant +ga-texteditor-look-ahead+ #x85026046)
-(defconstant +ga-texteditor-bevel-style+ #x85026047)
-(defconstant +ga-texteditor-transparent+ #x85026048)
-(defconstant +ga-texteditor-max-undo-levels+ #x85026049)
-(defconstant +ga-texteditor-max-undo-size+ #x8502604A)
-(defconstant +gm-texteditor-handle-error+ #x4501F)
-(defconstant +gm-texteditor-add-key-bindings+ #x45022)
-(defconstant +gm-texteditor-a-rexx-cmd+ #x45023)
-(defconstant +gm-texteditor-clear-text+ #x45024)
-(defconstant +gm-texteditor-export-text+ #x45025)
-(defconstant +gm-texteditor-insert-text+ #x45026)
-(defconstant +gm-texteditor-macro-begin+ #x45027)
-(defconstant +gm-texteditor-macro-end+ #x45028)
-(defconstant +gm-texteditor-macro-execute+ #x45029)
-(defconstant +gm-texteditor-replace+ #x4502A)
-(defconstant +gm-texteditor-search+ #x4502B)
-(defconstant +gm-texteditor-mark-text+ #x4502C)
-(defconstant +gm-texteditor-block-info+ #x45030)
-(defconstant +gm-texteditor-add-change-listener+ #x45031)
-(defconstant +gm-texteditor-export-block+ #x45044)
-(defconstant +gm-texteditor-replace-all+ #x4504B)
-(defconstant +gv-texteditor-export-hook-plain+ 0)
-(defconstant +gv-texteditor-export-hook-e-mail+ 1)
-(defconstant +gv-texteditor-flow-left+ 0)
-(defconstant +gv-texteditor-flow-center+ 1)
-(defconstant +gv-texteditor-flow-right+ 2)
-(defconstant +gv-texteditor-flow-justified+ 3)
-(defconstant +gv-texteditor-import-hook-plain+ 0)
-(defconstant +gv-texteditor-import-hook-e-mail+ 2)
-(defconstant +gv-texteditor-import-hook-mime+ 3)
-(defconstant +gv-texteditor-import-hook-mime-quoted+ 4)
-(defconstant +gv-texteditor-insert-text-cursor+ 0)
-(defconstant +gv-texteditor-insert-text-top+ 1)
-(defconstant +gv-texteditor-insert-text-bottom+ 2)
-(defconstant +gv-texteditor-length-hook-plain+ 0)
-(defconstant +gv-texteditor-length-hook-ansi+ 1)
-(defconstant +gv-texteditor-length-hook-html+ 2)
-(defconstant +gv-texteditor-length-hook-mail+ 3)
-(defconstant +gv-texteditor-tab-key-indents-line+ 0)
-(defconstant +gv-texteditor-tab-key-indents-after+ 1)
-(defconstant +gf-texteditor-search-from-top+ 1)
-(defconstant +gf-texteditor-search-next+ 2)
-(defconstant +gf-texteditor-search-incremental+ 3)
-(defconstant +gf-texteditor-search-backwards+ #x10)
-(defconstant +gf-texteditor-highlight-all+ #x13)
-(defconstant +gf-texteditor-search-type-mask+ #x13)
-(defconstant +gf-texteditor-search-case-sensitive+ 4)
-(defconstant +gf-texteditor-search-dos-pattern+ 8)
-(defconstant +gf-texteditor-search-wildstar+ #x20)
-(defconstant +gf-texteditor-search-word+ #x40)
-(defconstant +gf-texteditor-search-whole-word+ #x40)
-(defconstant +gf-texteditor-search-cyclic+ #x80)
-(defconstant +gf-texteditor-replace-all+ 1)
-(defconstant +error-clipboard-is-empty+ 1)
-(defconstant +error-clipboard-is-not-ftxt+ 2)
-(defconstant +error-macro-buffer-is-full+ 3)
-(defconstant +error-memory-allocation-failed+ 4)
-(defconstant +error-no-area-marked+ 5)
-(defconstant +error-no-macro-defined+ 6)
-(defconstant +error-nothing-to-redo+ 7)
-(defconstant +error-nothing-to-undo+ 8)
-(defconstant +error-not-enough-undo-mem+ 9)
-(defconstant +error-string-not-found+ 10)
-(defconstant +error-no-bookmark-installed+ 11)
-(defconstant +error-bookmark-has-been-lost+ 12)
-(defconstant +tbstyle-underline+ 1)
-(defconstant +tbstyle-bold+ 2)
-(defconstant +tbstyle-italic+ 4)
-(defconstant +tbstyle-setcolor+ 8)
-(defconstant +tbstyle-spellerror+ #x40)
-(defconstant +tbstyle-colormask+ #xFF00)
-(defconstant +tbstyle-stylemask+ #xFF)
-(defconstant +tbstyle-notset+ #xFF00)
-(defconstant +leftbar-rendercommand+ 0)
-(defconstant +leftbar-mousecommand+ 1)
-(defconstant +lnsb-top+ 0)
-(defconstant +lnsb-middle+ 1)
-(defconstant +lnsb-bottom+ 2)
-(defconstant +lnsb-strike-thru+ 3)
-(defconstant +lnsb-thick+ 4)
-(defconstant +lnsf-top+ 1)
-(defconstant +lnsf-middle+ 2)
-(defconstant +lnsf-bottom+ 4)
-(defconstant +lnsf-strike-thru+ 8)
-(defconstant +lnsf-thick+ #x10)
-(defconstant +lineending-lf+ 0)
-(defconstant +lineending-cr+ 1)
-(defconstant +lineending-crlf+ 2)
-(defconstant +lineending-asimport+ 3)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.GADGETS.TEXTEDITOR"
+    (:base *texteditor-base* :version *texteditor-version*)
 
-;;; --- functions (texteditor_lib.sfd + MorphOS SDK) ---
-(when (%version>= 40)
-  (amiga.ffi:defcfun texteditor-get-class *texteditor-base* -30 ()
-    :result :pointer
-    :doc "Class * TEXTEDITOR_GetClass() () LVO -30"))
-(when (and (not (member :morphos *features*)) (%version>= 47))
-  (amiga.ffi:defcfun highlight-set-format *texteditor-base* -36 (:a0 object :d0 pos :d1 end :d2 style)
-    :result :void
-    :doc "VOID HighlightSetFormat(APTR object, ULONG pos, ULONG end, UWORD style) (A0,D0,D1,D2) LVO -36"))
+  ;; --- constants from gadgets/texteditor.h ---
+  (:const "+TEXTEDITOR-DUMMY+" #x85026000)
+  (:const "+GA-TEXTEDITOR-CONTENTS+" #x85026002)
+  (:const "+GA-TEXTEDITOR-CURSOR-X+" #x85026004)
+  (:const "+GA-TEXTEDITOR-CURSOR-Y+" #x85026005)
+  (:const "+GA-TEXTEDITOR-DOUBLE-CLICK-HOOK+" #x85026006)
+  (:const "+GA-TEXTEDITOR-EXPORT-HOOK+" #x85026008)
+  (:const "+GA-TEXTEDITOR-EXPORT-WRAP+" #x85026009)
+  (:const "+GA-TEXTEDITOR-FIXED-FONT+" #x8502600A)
+  (:const "+GA-TEXTEDITOR-FLOW+" #x8502600B)
+  (:const "+GA-TEXTEDITOR-HAS-CHANGED+" #x8502600C)
+  (:const "+GA-TEXTEDITOR-IMPORT-HOOK+" #x8502600E)
+  (:const "+GA-TEXTEDITOR-IMPORT-WRAP+" #x85026010)
+  (:const "+GA-TEXTEDITOR-INSERT-MODE+" #x8502600F)
+  (:const "+GA-TEXTEDITOR-KEY-BINDINGS+" #x85026011)
+  (:const "+GA-TEXTEDITOR-NUM-LOCK+" #x85026018)
+  (:const "+GA-TEXTEDITOR-POP-WINDOW-OPEN+" #x85026003)
+  (:const "+GA-TEXTEDITOR-AREA-MARKED+" #x85026014)
+  (:const "+GA-TEXTEDITOR-PROP-DELTA-FACTOR+" #x8502600D)
+  (:const "+GA-TEXTEDITOR-PROP-ENTRIES+" #x85026015)
+  (:const "+GA-TEXTEDITOR-PROP-FIRST+" #x85026020)
+  (:const "+GA-TEXTEDITOR-PROP-RELEASE+" #x85026001)
+  (:const "+GA-TEXTEDITOR-PROP-VISIBLE+" #x85026016)
+  (:const "+GA-TEXTEDITOR-QUIET+" #x85026017)
+  (:const "+GA-TEXTEDITOR-READ-ONLY+" #x85026019)
+  (:const "+GA-TEXTEDITOR-REDO-AVAILABLE+" #x85026013)
+  (:const "+GA-TEXTEDITOR-SEPARATOR+" #x8502602C)
+  (:const "+GA-TEXTEDITOR-HORIZONTAL-SCROLL+" #x8502602D)
+  (:const "+GA-TEXTEDITOR-PEN+" #x8502602E)
+  (:const "+GA-TEXTEDITOR-COLOR-MAP+" #x8502602F)
+  (:const "+GA-TEXTEDITOR-STYLE-BOLD+" #x8502601C)
+  (:const "+GA-TEXTEDITOR-STYLE-ITALIC+" #x8502601D)
+  (:const "+GA-TEXTEDITOR-STYLE-UNDERLINE+" #x8502601E)
+  (:const "+GA-TEXTEDITOR-TYPE-AND-SPELL+" #x85026007)
+  (:const "+GA-TEXTEDITOR-UNDO-AVAILABLE+" #x85026012)
+  (:const "+GA-TEXTEDITOR-WRAP-BORDER+" #x85026021)
+  (:const "+GA-TEXTEDITOR-H-PROP-DELTA-FACTOR+" #x85026030)
+  (:const "+GA-TEXTEDITOR-H-PROP-ENTRIES+" #x85026031)
+  (:const "+GA-TEXTEDITOR-H-PROP-FIRST+" #x85026032)
+  (:const "+GA-TEXTEDITOR-H-PROP-VISIBLE+" #x85026033)
+  (:const "+GA-TEXTEDITOR-EXIT-HELP+" #x85026034)
+  (:const "+GA-TEXTEDITOR-TAB-SIZE+" #x85026035)
+  (:const "+GA-TEXTEDITOR-SPACES-PER-TAB+" #x85026035)
+  (:const "+GA-TEXTEDITOR-INDENT-WIDTH+" #x85026036)
+  (:const "+GA-TEXTEDITOR-HIGHLIGHTER-HOOK+" #x85026037)
+  (:const "+GA-TEXTEDITOR-SHOW-LINE-NUMBERS+" #x85026038)
+  (:const "+GA-TEXTEDITOR-LEFT-BAR-HOOK+" #x85026039)
+  (:const "+GA-TEXTEDITOR-RECTANGULAR-SELECTIONS+" #x8502603A)
+  (:const "+GA-TEXTEDITOR-ERROR-CODE+" #x85026036)
+  (:const "+GA-TEXTEDITOR-KEYMAP+" #x85026037)
+  (:const "+GA-TEXTEDITOR-CURSOR-BLINK-SPEED+" #x85026038)
+  (:const "+GA-TEXTEDITOR-LENGTH+" #x8502603A)
+  (:const "+GA-TEXTEDITOR-AUTO-INDENT+" #x8502603B)
+  (:const "+GA-TEXTEDITOR-CUT-COPY-LINE-WHEN-NO-SELECTION+" #x8502603C)
+  (:const "+GA-TEXTEDITOR-LINE-ENDING-IMPORTED+" #x8502603D)
+  (:const "+GA-TEXTEDITOR-LINE-ENDING-EXPORT+" #x8502603E)
+  (:const "+GA-TEXTEDITOR-TAB-KEY-POLICY+" #x8502603F)
+  (:const "+GA-TEXTEDITOR-HORIZ-SCROLLER+" #x85026040)
+  (:const "+GA-TEXTEDITOR-VERT-SCROLLER+" #x85026041)
+  (:const "+GA-TEXTEDITOR-TEXT-ATTR+" #x85026042)
+  (:const "+GA-TEXTEDITOR-TAB-TO-SPACES+" #x85026043)
+  (:const "+GA-TEXTEDITOR-DRAGGING+" #x85026044)
+  (:const "+GA-TEXTEDITOR-EOL-MARKER+" #x85026045)
+  (:const "+GA-TEXTEDITOR-LOOK-AHEAD+" #x85026046)
+  (:const "+GA-TEXTEDITOR-BEVEL-STYLE+" #x85026047)
+  (:const "+GA-TEXTEDITOR-TRANSPARENT+" #x85026048)
+  (:const "+GA-TEXTEDITOR-MAX-UNDO-LEVELS+" #x85026049)
+  (:const "+GA-TEXTEDITOR-MAX-UNDO-SIZE+" #x8502604A)
+  (:const "+GM-TEXTEDITOR-HANDLE-ERROR+" #x4501F)
+  (:const "+GM-TEXTEDITOR-ADD-KEY-BINDINGS+" #x45022)
+  (:const "+GM-TEXTEDITOR-A-REXX-CMD+" #x45023)
+  (:const "+GM-TEXTEDITOR-CLEAR-TEXT+" #x45024)
+  (:const "+GM-TEXTEDITOR-EXPORT-TEXT+" #x45025)
+  (:const "+GM-TEXTEDITOR-INSERT-TEXT+" #x45026)
+  (:const "+GM-TEXTEDITOR-MACRO-BEGIN+" #x45027)
+  (:const "+GM-TEXTEDITOR-MACRO-END+" #x45028)
+  (:const "+GM-TEXTEDITOR-MACRO-EXECUTE+" #x45029)
+  (:const "+GM-TEXTEDITOR-REPLACE+" #x4502A)
+  (:const "+GM-TEXTEDITOR-SEARCH+" #x4502B)
+  (:const "+GM-TEXTEDITOR-MARK-TEXT+" #x4502C)
+  (:const "+GM-TEXTEDITOR-BLOCK-INFO+" #x45030)
+  (:const "+GM-TEXTEDITOR-ADD-CHANGE-LISTENER+" #x45031)
+  (:const "+GM-TEXTEDITOR-EXPORT-BLOCK+" #x45044)
+  (:const "+GM-TEXTEDITOR-REPLACE-ALL+" #x4504B)
+  (:const "+GV-TEXTEDITOR-EXPORT-HOOK-PLAIN+" 0)
+  (:const "+GV-TEXTEDITOR-EXPORT-HOOK-E-MAIL+" 1)
+  (:const "+GV-TEXTEDITOR-FLOW-LEFT+" 0)
+  (:const "+GV-TEXTEDITOR-FLOW-CENTER+" 1)
+  (:const "+GV-TEXTEDITOR-FLOW-RIGHT+" 2)
+  (:const "+GV-TEXTEDITOR-FLOW-JUSTIFIED+" 3)
+  (:const "+GV-TEXTEDITOR-IMPORT-HOOK-PLAIN+" 0)
+  (:const "+GV-TEXTEDITOR-IMPORT-HOOK-E-MAIL+" 2)
+  (:const "+GV-TEXTEDITOR-IMPORT-HOOK-MIME+" 3)
+  (:const "+GV-TEXTEDITOR-IMPORT-HOOK-MIME-QUOTED+" 4)
+  (:const "+GV-TEXTEDITOR-INSERT-TEXT-CURSOR+" 0)
+  (:const "+GV-TEXTEDITOR-INSERT-TEXT-TOP+" 1)
+  (:const "+GV-TEXTEDITOR-INSERT-TEXT-BOTTOM+" 2)
+  (:const "+GV-TEXTEDITOR-LENGTH-HOOK-PLAIN+" 0)
+  (:const "+GV-TEXTEDITOR-LENGTH-HOOK-ANSI+" 1)
+  (:const "+GV-TEXTEDITOR-LENGTH-HOOK-HTML+" 2)
+  (:const "+GV-TEXTEDITOR-LENGTH-HOOK-MAIL+" 3)
+  (:const "+GV-TEXTEDITOR-TAB-KEY-INDENTS-LINE+" 0)
+  (:const "+GV-TEXTEDITOR-TAB-KEY-INDENTS-AFTER+" 1)
+  (:const "+GF-TEXTEDITOR-SEARCH-FROM-TOP+" 1)
+  (:const "+GF-TEXTEDITOR-SEARCH-NEXT+" 2)
+  (:const "+GF-TEXTEDITOR-SEARCH-INCREMENTAL+" 3)
+  (:const "+GF-TEXTEDITOR-SEARCH-BACKWARDS+" #x10)
+  (:const "+GF-TEXTEDITOR-HIGHLIGHT-ALL+" #x13)
+  (:const "+GF-TEXTEDITOR-SEARCH-TYPE-MASK+" #x13)
+  (:const "+GF-TEXTEDITOR-SEARCH-CASE-SENSITIVE+" 4)
+  (:const "+GF-TEXTEDITOR-SEARCH-DOS-PATTERN+" 8)
+  (:const "+GF-TEXTEDITOR-SEARCH-WILDSTAR+" #x20)
+  (:const "+GF-TEXTEDITOR-SEARCH-WORD+" #x40)
+  (:const "+GF-TEXTEDITOR-SEARCH-WHOLE-WORD+" #x40)
+  (:const "+GF-TEXTEDITOR-SEARCH-CYCLIC+" #x80)
+  (:const "+GF-TEXTEDITOR-REPLACE-ALL+" 1)
+  (:const "+ERROR-CLIPBOARD-IS-EMPTY+" 1)
+  (:const "+ERROR-CLIPBOARD-IS-NOT-FTXT+" 2)
+  (:const "+ERROR-MACRO-BUFFER-IS-FULL+" 3)
+  (:const "+ERROR-MEMORY-ALLOCATION-FAILED+" 4)
+  (:const "+ERROR-NO-AREA-MARKED+" 5)
+  (:const "+ERROR-NO-MACRO-DEFINED+" 6)
+  (:const "+ERROR-NOTHING-TO-REDO+" 7)
+  (:const "+ERROR-NOTHING-TO-UNDO+" 8)
+  (:const "+ERROR-NOT-ENOUGH-UNDO-MEM+" 9)
+  (:const "+ERROR-STRING-NOT-FOUND+" 10)
+  (:const "+ERROR-NO-BOOKMARK-INSTALLED+" 11)
+  (:const "+ERROR-BOOKMARK-HAS-BEEN-LOST+" 12)
+  (:const "+TBSTYLE-UNDERLINE+" 1)
+  (:const "+TBSTYLE-BOLD+" 2)
+  (:const "+TBSTYLE-ITALIC+" 4)
+  (:const "+TBSTYLE-SETCOLOR+" 8)
+  (:const "+TBSTYLE-SPELLERROR+" #x40)
+  (:const "+TBSTYLE-COLORMASK+" #xFF00)
+  (:const "+TBSTYLE-STYLEMASK+" #xFF)
+  (:const "+TBSTYLE-NOTSET+" #xFF00)
+  (:const "+LEFTBAR-RENDERCOMMAND+" 0)
+  (:const "+LEFTBAR-MOUSECOMMAND+" 1)
+  (:const "+LNSB-TOP+" 0)
+  (:const "+LNSB-MIDDLE+" 1)
+  (:const "+LNSB-BOTTOM+" 2)
+  (:const "+LNSB-STRIKE-THRU+" 3)
+  (:const "+LNSB-THICK+" 4)
+  (:const "+LNSF-TOP+" 1)
+  (:const "+LNSF-MIDDLE+" 2)
+  (:const "+LNSF-BOTTOM+" 4)
+  (:const "+LNSF-STRIKE-THRU+" 8)
+  (:const "+LNSF-THICK+" #x10)
+  (:const "+LINEENDING-LF+" 0)
+  (:const "+LINEENDING-CR+" 1)
+  (:const "+LINEENDING-CRLF+" 2)
+  (:const "+LINEENDING-ASIMPORT+" 3)
+
+  ;; --- functions (texteditor_lib.sfd + MorphOS SDK) ---
+  (:fn "TEXTEDITOR-GET-CLASS" -30 () :pointer 40)   ; Class * TEXTEDITOR_GetClass() () LVO -30
+  (:fn "HIGHLIGHT-SET-FORMAT" -36 (:a0 :d0 :d1 :d2) :void :not-morphos 47)   ; VOID HighlightSetFormat(APTR object, ULONG pos, ULONG end, UWORD style) (A0,D0,D1,D2) LVO -36
+  )
 
 (provide "amiga/raw/gadgets/texteditor")

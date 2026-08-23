@@ -6,60 +6,53 @@
 ;;; 0 functions, 3 constants, 4 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.PREFS.WORKBENCH"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+ID-WBNC+" "+ID-WBHD+" "+ID-WBTF+" "*WORKBENCH-PREFS-SIZE*" 
-   "WORKBENCH-PREFS-DEFAULT-STACK-SIZE" "WORKBENCH-PREFS-TYPE-RESTART-TIME" 
-   "WORKBENCH-PREFS-ICON-PRECISION" "WORKBENCH-PREFS-EMBOSS-RECT" 
-   "WORKBENCH-PREFS-BORDERLESS" "WORKBENCH-PREFS-MAX-NAME-LENGTH" 
-   "WORKBENCH-PREFS-NEW-ICONS-SUPPORT" "WORKBENCH-PREFS-COLOR-ICON-SUPPORT" 
-   "*WORKBENCH-EXTENDED-PREFS-SIZE*" 
-   "WORKBENCH-EXTENDED-PREFS-ICON-MEMORY-TYPE" 
-   "WORKBENCH-EXTENDED-PREFS-LOCK-PENS" 
-   "WORKBENCH-EXTENDED-PREFS-DISABLE-TITLE-BAR" 
-   "WORKBENCH-EXTENDED-PREFS-DISABLE-VOLUME-GAUGE" 
-   "WORKBENCH-EXTENDED-PREFS-TITLE-UPDATE-DELAY" 
-   "WORKBENCH-EXTENDED-PREFS-COPY-BUFFER-SIZE" 
-   "WORKBENCH-EXTENDED-PREFS-FLAGS" "*WORKBENCH-HIDDEN-DEVICE-PREFS-SIZE*" 
-   "WORKBENCH-HIDDEN-DEVICE-PREFS-NAME" 
-   "*WORKBENCH-TITLE-FORMAT-PREFS-SIZE*" 
-   "WORKBENCH-TITLE-FORMAT-PREFS-FORMAT" ))
+  (:export))
 
 (in-package "AMIGA.RAW.PREFS.WORKBENCH")
 
-;;; --- constants from prefs/workbench.i ---
-(defconstant +id-wbnc+ #x57424E43)
-(defconstant +id-wbhd+ #x57424844)
-(defconstant +id-wbtf+ #x57425446)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.PREFS.WORKBENCH" ()
 
-;;; --- structures from prefs/workbench.i ---
-(ffi:defcstruct (workbench-prefs :size 30)   ; WorkbenchPrefs (prefs/workbench.i)
-  (default-stack-size :u32 0)
-  (type-restart-time :u32 4)
-  (icon-precision :u32 8)
-  (emboss-rect (:struct 8) 12)
-  (borderless :i16 20)
-  (max-name-length :i32 22)
-  (new-icons-support :i16 26)
-  (color-icon-support :i16 28)
-)
-(ffi:defcstruct (workbench-extended-prefs :size 50)   ; WorkbenchExtendedPrefs (prefs/workbench.i)
-  (icon-memory-type :u32 30)
-  (lock-pens :i16 34)
-  (disable-title-bar :i16 36)
-  (disable-volume-gauge :i16 38)
-  (title-update-delay :u16 40)
-  (copy-buffer-size :u32 42)
-  (flags :u32 46)
-)
-(ffi:defcstruct (workbench-hidden-device-prefs :size 1)   ; WorkbenchHiddenDevicePrefs (prefs/workbench.i)
-  (name :u8 0)
-)
-(ffi:defcstruct (workbench-title-format-prefs :size 1)   ; WorkbenchTitleFormatPrefs (prefs/workbench.i)
-  (format :u8 0)
-)
+  ;; --- constants from prefs/workbench.i ---
+  (:const "+ID-WBNC+" #x57424E43)
+  (:const "+ID-WBHD+" #x57424844)
+  (:const "+ID-WBTF+" #x57425446)
+
+  ;; --- structures from prefs/workbench.i ---
+  (:struct "WORKBENCH-PREFS" 30   ; WorkbenchPrefs (prefs/workbench.i)
+    ("DEFAULT-STACK-SIZE" :u32 0)
+    ("TYPE-RESTART-TIME" :u32 4)
+    ("ICON-PRECISION" :u32 8)
+    ("EMBOSS-RECT" (:struct 8) 12)
+    ("BORDERLESS" :i16 20)
+    ("MAX-NAME-LENGTH" :i32 22)
+    ("NEW-ICONS-SUPPORT" :i16 26)
+    ("COLOR-ICON-SUPPORT" :i16 28)
+    )
+  (:struct "WORKBENCH-EXTENDED-PREFS" 50   ; WorkbenchExtendedPrefs (prefs/workbench.i)
+    ("ICON-MEMORY-TYPE" :u32 30)
+    ("LOCK-PENS" :i16 34)
+    ("DISABLE-TITLE-BAR" :i16 36)
+    ("DISABLE-VOLUME-GAUGE" :i16 38)
+    ("TITLE-UPDATE-DELAY" :u16 40)
+    ("COPY-BUFFER-SIZE" :u32 42)
+    ("FLAGS" :u32 46)
+    )
+  (:struct "WORKBENCH-HIDDEN-DEVICE-PREFS" 1   ; WorkbenchHiddenDevicePrefs (prefs/workbench.i)
+    ("NAME" :u8 0)
+    )
+  (:struct "WORKBENCH-TITLE-FORMAT-PREFS" 1   ; WorkbenchTitleFormatPrefs (prefs/workbench.i)
+    ("FORMAT" :u8 0)
+    )
+  )
 
 (provide "amiga/raw/prefs/workbench")

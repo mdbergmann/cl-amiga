@@ -775,3 +775,32 @@ matrix as in [sento-bench-results-0.3.md](sento-bench-results-0.3.md)
 **Reproduce**: run the 6-cell matrix via
 `sento.bench::run-benchmark` after `(load "trunk/load-sento-bench.lisp")`;
 A/B by setting `CLAMIGA_TLAB_CHUNK=0` (disables TLABs at runtime).
+
+## 2026-08-23 — Raw OS binding modules: heap per `require` (host + FS-UAE)
+
+`specs/raw-bindings-footprint.md`: a generated binding module
+(`lib/amiga/raw/*`) used to materialise every function, constant and
+struct field at load; Phase 1 replaced the wrappers with 20-byte FFI
+stubs, Phase 2 ships the module as one packed binding table and builds a
+name on first reference.  Heap delta of `(require m)` after `(ext:gc)`
+(`ROOM`), FASL-loaded, no docstrings:
+
+| module           | eager   | Phase 1 (stubs) | **Phase 2 (table)** | FS-UAE P1 | **FS-UAE P2** | FASL P1 → P2 |
+|------------------|--------:|----------------:|--------------------:|----------:|--------------:|-------------:|
+| raw/exec         | 216 KB  |   106 KB        |   **37 KB**         |  90 KB    |   **24 KB**   | 151 → 25 KB  |
+| raw/dos          | 306 KB  |   140 KB        |   **34 KB**         | 135 KB    |   **34 KB**   | 197 → 35 KB  |
+| raw/intuition    | 424 KB  |   218 KB        |   **50 KB**         | 210 KB    |   **50 KB**   | 301 → 53 KB  |
+| raw/graphics     | 477 KB  |   232 KB        |   **55 KB**         | 223 KB    |   **55 KB**   | 294 → 58 KB  |
+| the four         | 1.42 MB |   0.71 MB       |   **0.18 MB**       |           |               |              |
+
+FS-UAE (68040/JIT config, `make -f Makefile.cross test-amiga`, the
+`; raw-bindings:` lines of the suite log): 140–160 ms per module from
+FASL; smaller modules (utility 5 KB, layers 8, gadtools 8, timer 2,
+gadgets/button 4, classes/window 6).  Touching 150 intuition names on
+the host adds 14 KB (~95 B per name).  `(clamiga::%binding-table-info
+"AMIGA.RAW.INTUITION")` → 1485 entries in 47 KB, 23 symbols right after
+load.
+
+**Reproduce**: the appendix script of the spec on the host; on the
+target the suite prints the per-module line itself
+(`tests/amiga/test-raw-bindings.lisp`, `%raw-require`).

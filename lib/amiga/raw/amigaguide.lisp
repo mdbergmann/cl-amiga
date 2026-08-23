@@ -8,62 +8,14 @@
 ;;; 18 functions, 77 constants, 7 structs, 3 skipped (see comments).
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.AMIGAGUIDE"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*AMIGAGUIDE-BASE*" "*AMIGAGUIDE-VERSION*"
-   "+APSH-TOOL-ID+" "+STARTUP-MSG-ID+" "+LOGIN-TOOL-ID+" "+LOGOUT-TOOL-ID+" 
-   "+SHUTDOWN-MSG-ID+" "+ACTIVATE-TOOL-ID+" "+DEACTIVATE-TOOL-ID+" 
-   "+ACTIVE-TOOL-ID+" "+INACTIVE-TOOL-ID+" "+TOOL-STATUS-ID+" 
-   "+TOOL-CMD-ID+" "+TOOL-CMD-REPLY-ID+" "+SHUTDOWN-TOOL-ID+" "+AGA-DUMMY+" 
-   "+AGA-PATH+" "+AGA-X-REF-LIST+" "+AGA-ACTIVATE+" "+AGA-CONTEXT+" 
-   "+AGA-HELP-GROUP+" "+AGA-A-REXX-PORT+" "+AGA-A-REXX-PORT-NAME+" 
-   "+AGA-SECURE+" "+HTB-LOAD-INDEX+" "+HTF-LOAD-INDEX+" "+HTB-LOAD-ALL+" 
-   "+HTF-LOAD-ALL+" "+HTB-CACHE-NODE+" "+HTF-CACHE-NODE+" "+HTB-CACHE-DB+" 
-   "+HTF-CACHE-DB+" "+HTB-UNIQUE+" "+HTF-UNIQUE+" "+HTB-NOACTIVATE+" 
-   "+HTF-NOACTIVATE+" "+HTFC-SYSGADS+" "+HTH-OPEN+" "+HTH-CLOSE+" 
-   "+HTERR-NOT-ENOUGH-MEMORY+" "+HTERR-CANT-OPEN-DATABASE+" 
-   "+HTERR-CANT-FIND-NODE+" "+HTERR-CANT-OPEN-NODE+" 
-   "+HTERR-CANT-OPEN-WINDOW+" "+HTERR-INVALID-COMMAND+" 
-   "+HTERR-CANT-COMPLETE+" "+HTERR-PORT-CLOSED+" "+HTERR-CANT-CREATE-PORT+" 
-   "+HTERR-KEYWORD-NOT-FOUND+" "+XR-GENERIC+" "+XR-FUNCTION+" 
-   "+XR-COMMAND+" "+XR-INCLUDE+" "+XR-MACRO+" "+XR-STRUCT+" "+XR-FIELD+" 
-   "+XR-TYPEDEF+" "+XR-DEFINE+" "+HM-FINDNODE+" "+HM-OPENNODE+" 
-   "+HM-CLOSENODE+" "+HM-EXPUNGE+" "+HTNB-KEEP+" "+HTNF-KEEP+" 
-   "+HTNB-RESERVED1+" "+HTNF-RESERVED1+" "+HTNB-RESERVED2+" 
-   "+HTNF-RESERVED2+" "+HTNB-ASCII+" "+HTNF-ASCII+" "+HTNB-RESERVED3+" 
-   "+HTNF-RESERVED3+" "+HTNB-CLEAN+" "+HTNF-CLEAN+" "+HTNB-DONE+" 
-   "+HTNF-DONE+" "+HTNA-SCREEN+" "+HTNA-PENS+" "+HTNA-RECTANGLE+" 
-   "*AMIGA-GUIDE-MSG-SIZE*" "AMIGA-GUIDE-MSG-MSG" "AMIGA-GUIDE-MSG-TYPE" 
-   "AMIGA-GUIDE-MSG-DATA" "AMIGA-GUIDE-MSG-D-SIZE" "AMIGA-GUIDE-MSG-D-TYPE" 
-   "AMIGA-GUIDE-MSG-PRI-RET" "AMIGA-GUIDE-MSG-SEC-RET" 
-   "AMIGA-GUIDE-MSG-SYSTEM1" "AMIGA-GUIDE-MSG-SYSTEM2" 
-   "*NEW-AMIGA-GUIDE-SIZE*" "NEW-AMIGA-GUIDE-LOCK" "NEW-AMIGA-GUIDE-NAME" 
-   "NEW-AMIGA-GUIDE-SCREEN" "NEW-AMIGA-GUIDE-PUB-SCREEN" 
-   "NEW-AMIGA-GUIDE-HOST-PORT" "NEW-AMIGA-GUIDE-CLIENT-PORT" 
-   "NEW-AMIGA-GUIDE-BASE-NAME" "NEW-AMIGA-GUIDE-FLAGS" 
-   "NEW-AMIGA-GUIDE-CONTEXT" "NEW-AMIGA-GUIDE-NODE" "NEW-AMIGA-GUIDE-LINE" 
-   "NEW-AMIGA-GUIDE-EXTENS" "NEW-AMIGA-GUIDE-CLIENT" "*X-REF-SIZE*" 
-   "X-REF-NODE" "X-REF-PAD" "X-REF-DF" "X-REF-FILE" "X-REF-NAME" 
-   "X-REF-LINE" "*AMIGA-GUIDE-HOST-SIZE*" "AMIGA-GUIDE-HOST-DISPATCHER" 
-   "AMIGA-GUIDE-HOST-RESERVED" "AMIGA-GUIDE-HOST-FLAGS" 
-   "AMIGA-GUIDE-HOST-USE-CNT" "AMIGA-GUIDE-HOST-SYSTEM-DATA" 
-   "AMIGA-GUIDE-HOST-USER-DATA" "*OP-FIND-HOST-SIZE*" "OP-FIND-HOST-ATTRS" 
-   "OP-FIND-HOST-NODE" "OP-FIND-HOST-TOC" "OP-FIND-HOST-TITLE" 
-   "OP-FIND-HOST-NEXT" "OP-FIND-HOST-PREV" "*OP-NODE-IO-SIZE*" 
-   "OP-NODE-IO-ATTRS" "OP-NODE-IO-NODE" "OP-NODE-IO-FILE-NAME" 
-   "OP-NODE-IO-DOC-BUFFER" "OP-NODE-IO-BUFF-LEN" "OP-NODE-IO-FLAGS" 
-   "*OP-EXPUNGE-NODE-SIZE*" "OP-EXPUNGE-NODE-ATTRS" "LOCK-AMIGA-GUIDE-BASE" 
-   "UNLOCK-AMIGA-GUIDE-BASE" "OPEN-AMIGA-GUIDE-A" 
-   "OPEN-AMIGA-GUIDE-ASYNC-A" "CLOSE-AMIGA-GUIDE" "AMIGA-GUIDE-SIGNAL" 
-   "GET-AMIGA-GUIDE-MSG" "REPLY-AMIGA-GUIDE-MSG" 
-   "SET-AMIGA-GUIDE-CONTEXT-A" "SEND-AMIGA-GUIDE-CONTEXT-A" 
-   "SEND-AMIGA-GUIDE-CMD-A" "SET-AMIGA-GUIDE-ATTRS-A" 
-   "GET-AMIGA-GUIDE-ATTR" "LOAD-X-REF" "EXPUNGE-X-REF" 
-   "ADD-AMIGA-GUIDE-HOST-A" "REMOVE-AMIGA-GUIDE-HOST-A" 
-   "GET-AMIGA-GUIDE-STRING" ))
+  (:export "*AMIGAGUIDE-BASE*" "*AMIGAGUIDE-VERSION*"))
 
 (in-package "AMIGA.RAW.AMIGAGUIDE")
 
@@ -77,223 +29,176 @@
 (defun %version>= (n)
   (and *amigaguide-version* (>= *amigaguide-version* n)))
 
-;;; --- constants from libraries/amigaguide.i ---
-(defconstant +apsh-tool-id+ #x2AF8)
-(defconstant +startup-msg-id+ #x2AF9)
-(defconstant +login-tool-id+ #x2AFA)
-(defconstant +logout-tool-id+ #x2AFB)
-(defconstant +shutdown-msg-id+ #x2AFC)
-(defconstant +activate-tool-id+ #x2AFD)
-(defconstant +deactivate-tool-id+ #x2AFE)
-(defconstant +active-tool-id+ #x2AFF)
-(defconstant +inactive-tool-id+ #x2B00)
-(defconstant +tool-status-id+ #x2B01)
-(defconstant +tool-cmd-id+ #x2B02)
-(defconstant +tool-cmd-reply-id+ #x2B03)
-(defconstant +shutdown-tool-id+ #x2B04)
-(defconstant +aga-dummy+ #x80000000)
-(defconstant +aga-path+ #x80000001)
-(defconstant +aga-x-ref-list+ #x80000002)
-(defconstant +aga-activate+ #x80000003)
-(defconstant +aga-context+ #x80000004)
-(defconstant +aga-help-group+ #x80000005)
-(defconstant +aga-a-rexx-port+ #x80000009)
-(defconstant +aga-a-rexx-port-name+ #x8000000A)
-(defconstant +aga-secure+ #x8000000B)
-(defconstant +htb-load-index+ 0)
-(defconstant +htf-load-index+ 1)
-(defconstant +htb-load-all+ 1)
-(defconstant +htf-load-all+ 2)
-(defconstant +htb-cache-node+ 2)
-(defconstant +htf-cache-node+ 4)
-(defconstant +htb-cache-db+ 3)
-(defconstant +htf-cache-db+ 8)
-(defconstant +htb-unique+ 4)
-(defconstant +htf-unique+ #x10)
-(defconstant +htb-noactivate+ 5)
-(defconstant +htf-noactivate+ #x20)
-(defconstant +htfc-sysgads+ #x80000000)
-(defconstant +hth-open+ 0)
-(defconstant +hth-close+ 1)
-(defconstant +hterr-not-enough-memory+ #x64)
-(defconstant +hterr-cant-open-database+ #x65)
-(defconstant +hterr-cant-find-node+ #x66)
-(defconstant +hterr-cant-open-node+ #x67)
-(defconstant +hterr-cant-open-window+ #x68)
-(defconstant +hterr-invalid-command+ #x69)
-(defconstant +hterr-cant-complete+ #x6A)
-(defconstant +hterr-port-closed+ #x6B)
-(defconstant +hterr-cant-create-port+ #x6C)
-(defconstant +hterr-keyword-not-found+ #x71)
-(defconstant +xr-generic+ 0)
-(defconstant +xr-function+ 1)
-(defconstant +xr-command+ 2)
-(defconstant +xr-include+ 3)
-(defconstant +xr-macro+ 4)
-(defconstant +xr-struct+ 5)
-(defconstant +xr-field+ 6)
-(defconstant +xr-typedef+ 7)
-(defconstant +xr-define+ 8)
-(defconstant +hm-findnode+ 1)
-(defconstant +hm-opennode+ 2)
-(defconstant +hm-closenode+ 3)
-(defconstant +hm-expunge+ 10)
-(defconstant +htnb-keep+ 0)
-(defconstant +htnf-keep+ 1)
-(defconstant +htnb-reserved1+ 1)
-(defconstant +htnf-reserved1+ 2)
-(defconstant +htnb-reserved2+ 2)
-(defconstant +htnf-reserved2+ 4)
-(defconstant +htnb-ascii+ 3)
-(defconstant +htnf-ascii+ 8)
-(defconstant +htnb-reserved3+ 4)
-(defconstant +htnf-reserved3+ #x10)
-(defconstant +htnb-clean+ 5)
-(defconstant +htnf-clean+ #x20)
-(defconstant +htnb-done+ 6)
-(defconstant +htnf-done+ #x40)
-(defconstant +htna-screen+ #x80000001)
-(defconstant +htna-pens+ #x80000002)
-(defconstant +htna-rectangle+ #x80000003)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.AMIGAGUIDE"
+    (:base *amigaguide-base* :version *amigaguide-version*)
 
-;;; --- structures from libraries/amigaguide.i ---
-(ffi:defcstruct (amiga-guide-msg :size 52)   ; AmigaGuideMsg (libraries/amigaguide.i)
-  (msg (:struct 20) 0)
-  (type :u32 20)
-  (data :fptr 24)
-  (d-size :u32 28)
-  (d-type :u32 32)
-  (pri-ret :u32 36)
-  (sec-ret :u32 40)
-  (system1 :fptr 44)
-  (system2 :fptr 48)
-)
-(ffi:defcstruct (new-amiga-guide :size 52)   ; NewAmigaGuide (libraries/amigaguide.i)
-  (lock :u32 0)
-  (name :fptr 4)
-  (screen :fptr 8)
-  (pub-screen :fptr 12)
-  (host-port :fptr 16)
-  (client-port :fptr 20)
-  (base-name :fptr 24)
-  (flags :u32 28)
-  (context :fptr 32)
-  (node :fptr 36)
-  (line :i32 40)
-  (extens :fptr 44)
-  (client :fptr 48)
-)
-(ffi:defcstruct (x-ref :size 32)   ; XRef (libraries/amigaguide.i)
-  (node (:struct 14) 0)
-  (pad :u16 14)
-  (df :fptr 16)
-  (file :fptr 20)
-  (name :fptr 24)
-  (line :i32 28)
-)
-(ffi:defcstruct (amiga-guide-host :size 40)   ; AmigaGuideHost (libraries/amigaguide.i)
-  (dispatcher (:struct 20) 0)
-  (reserved :u32 20)
-  (flags :u32 24)
-  (use-cnt :u32 28)
-  (system-data :fptr 32)
-  (user-data :fptr 36)
-)
-(ffi:defcstruct (op-find-host :size 24)   ; opFindHost (libraries/amigaguide.i)
-  (attrs :fptr 0)
-  (node :fptr 4)
-  (toc :fptr 8)
-  (title :fptr 12)
-  (next :fptr 16)
-  (prev :fptr 20)
-)
-(ffi:defcstruct (op-node-io :size 24)   ; opNodeIO (libraries/amigaguide.i)
-  (attrs :fptr 0)
-  (node :fptr 4)
-  (file-name :fptr 8)
-  (doc-buffer :fptr 12)
-  (buff-len :u32 16)
-  (flags :u32 20)
-)
-(ffi:defcstruct (op-expunge-node :size 4)   ; opExpungeNode (libraries/amigaguide.i)
-  (attrs :fptr 0)
-)
+  ;; --- constants from libraries/amigaguide.i ---
+  (:const "+APSH-TOOL-ID+" #x2AF8)
+  (:const "+STARTUP-MSG-ID+" #x2AF9)
+  (:const "+LOGIN-TOOL-ID+" #x2AFA)
+  (:const "+LOGOUT-TOOL-ID+" #x2AFB)
+  (:const "+SHUTDOWN-MSG-ID+" #x2AFC)
+  (:const "+ACTIVATE-TOOL-ID+" #x2AFD)
+  (:const "+DEACTIVATE-TOOL-ID+" #x2AFE)
+  (:const "+ACTIVE-TOOL-ID+" #x2AFF)
+  (:const "+INACTIVE-TOOL-ID+" #x2B00)
+  (:const "+TOOL-STATUS-ID+" #x2B01)
+  (:const "+TOOL-CMD-ID+" #x2B02)
+  (:const "+TOOL-CMD-REPLY-ID+" #x2B03)
+  (:const "+SHUTDOWN-TOOL-ID+" #x2B04)
+  (:const "+AGA-DUMMY+" #x80000000)
+  (:const "+AGA-PATH+" #x80000001)
+  (:const "+AGA-X-REF-LIST+" #x80000002)
+  (:const "+AGA-ACTIVATE+" #x80000003)
+  (:const "+AGA-CONTEXT+" #x80000004)
+  (:const "+AGA-HELP-GROUP+" #x80000005)
+  (:const "+AGA-A-REXX-PORT+" #x80000009)
+  (:const "+AGA-A-REXX-PORT-NAME+" #x8000000A)
+  (:const "+AGA-SECURE+" #x8000000B)
+  (:const "+HTB-LOAD-INDEX+" 0)
+  (:const "+HTF-LOAD-INDEX+" 1)
+  (:const "+HTB-LOAD-ALL+" 1)
+  (:const "+HTF-LOAD-ALL+" 2)
+  (:const "+HTB-CACHE-NODE+" 2)
+  (:const "+HTF-CACHE-NODE+" 4)
+  (:const "+HTB-CACHE-DB+" 3)
+  (:const "+HTF-CACHE-DB+" 8)
+  (:const "+HTB-UNIQUE+" 4)
+  (:const "+HTF-UNIQUE+" #x10)
+  (:const "+HTB-NOACTIVATE+" 5)
+  (:const "+HTF-NOACTIVATE+" #x20)
+  (:const "+HTFC-SYSGADS+" #x80000000)
+  (:const "+HTH-OPEN+" 0)
+  (:const "+HTH-CLOSE+" 1)
+  (:const "+HTERR-NOT-ENOUGH-MEMORY+" #x64)
+  (:const "+HTERR-CANT-OPEN-DATABASE+" #x65)
+  (:const "+HTERR-CANT-FIND-NODE+" #x66)
+  (:const "+HTERR-CANT-OPEN-NODE+" #x67)
+  (:const "+HTERR-CANT-OPEN-WINDOW+" #x68)
+  (:const "+HTERR-INVALID-COMMAND+" #x69)
+  (:const "+HTERR-CANT-COMPLETE+" #x6A)
+  (:const "+HTERR-PORT-CLOSED+" #x6B)
+  (:const "+HTERR-CANT-CREATE-PORT+" #x6C)
+  (:const "+HTERR-KEYWORD-NOT-FOUND+" #x71)
+  (:const "+XR-GENERIC+" 0)
+  (:const "+XR-FUNCTION+" 1)
+  (:const "+XR-COMMAND+" 2)
+  (:const "+XR-INCLUDE+" 3)
+  (:const "+XR-MACRO+" 4)
+  (:const "+XR-STRUCT+" 5)
+  (:const "+XR-FIELD+" 6)
+  (:const "+XR-TYPEDEF+" 7)
+  (:const "+XR-DEFINE+" 8)
+  (:const "+HM-FINDNODE+" 1)
+  (:const "+HM-OPENNODE+" 2)
+  (:const "+HM-CLOSENODE+" 3)
+  (:const "+HM-EXPUNGE+" 10)
+  (:const "+HTNB-KEEP+" 0)
+  (:const "+HTNF-KEEP+" 1)
+  (:const "+HTNB-RESERVED1+" 1)
+  (:const "+HTNF-RESERVED1+" 2)
+  (:const "+HTNB-RESERVED2+" 2)
+  (:const "+HTNF-RESERVED2+" 4)
+  (:const "+HTNB-ASCII+" 3)
+  (:const "+HTNF-ASCII+" 8)
+  (:const "+HTNB-RESERVED3+" 4)
+  (:const "+HTNF-RESERVED3+" #x10)
+  (:const "+HTNB-CLEAN+" 5)
+  (:const "+HTNF-CLEAN+" #x20)
+  (:const "+HTNB-DONE+" 6)
+  (:const "+HTNF-DONE+" #x40)
+  (:const "+HTNA-SCREEN+" #x80000001)
+  (:const "+HTNA-PENS+" #x80000002)
+  (:const "+HTNA-RECTANGLE+" #x80000003)
 
-;;; --- functions (amigaguide_lib.sfd + MorphOS SDK) ---
-(when (%version>= 40)
-  (amiga.ffi:defcfun lock-amiga-guide-base *amigaguide-base* -36 (:a0 handle)
-    :result :signed
-    :doc "LONG LockAmigaGuideBase(APTR handle) (A0) LVO -36"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun unlock-amiga-guide-base *amigaguide-base* -42 (:d0 key)
-    :result :void
-    :doc "VOID UnlockAmigaGuideBase(LONG key) (D0) LVO -42"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun open-amiga-guide-a *amigaguide-base* -54 (:a0 nag :a1 attrs)
-    :result :pointer
-    :doc "APTR OpenAmigaGuideA(struct NewAmigaGuide * nag, CONST struct TagItem * attrs) (A0,A1) LVO -54"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun open-amiga-guide-async-a *amigaguide-base* -60 (:a0 nag :d0 attrs)
-    :result :pointer
-    :doc "APTR OpenAmigaGuideAsyncA(struct NewAmigaGuide * nag, CONST struct TagItem * attrs) (A0,D0) LVO -60"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun close-amiga-guide *amigaguide-base* -66 (:a0 cl)
-    :result :void
-    :doc "VOID CloseAmigaGuide(APTR cl) (A0) LVO -66"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun amiga-guide-signal *amigaguide-base* -72 (:a0 cl)
-    :result :unsigned
-    :doc "ULONG AmigaGuideSignal(APTR cl) (A0) LVO -72"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun get-amiga-guide-msg *amigaguide-base* -78 (:a0 cl)
-    :result :pointer
-    :doc "struct AmigaGuideMsg * GetAmigaGuideMsg(APTR cl) (A0) LVO -78"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun reply-amiga-guide-msg *amigaguide-base* -84 (:a0 amsg)
-    :result :void
-    :doc "VOID ReplyAmigaGuideMsg(struct AmigaGuideMsg * amsg) (A0) LVO -84"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun set-amiga-guide-context-a *amigaguide-base* -90 (:a0 cl :d0 id :d1 attrs)
-    :result :signed
-    :doc "LONG SetAmigaGuideContextA(APTR cl, ULONG id, CONST struct TagItem * attrs) (A0,D0,D1) LVO -90"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun send-amiga-guide-context-a *amigaguide-base* -96 (:a0 cl :d0 attrs)
-    :result :signed
-    :doc "LONG SendAmigaGuideContextA(APTR cl, CONST struct TagItem * attrs) (A0,D0) LVO -96"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun send-amiga-guide-cmd-a *amigaguide-base* -102 (:a0 cl :d0 cmd :d1 attrs)
-    :result :signed
-    :doc "LONG SendAmigaGuideCmdA(APTR cl, STRPTR cmd, CONST struct TagItem * attrs) (A0,D0,D1) LVO -102"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun set-amiga-guide-attrs-a *amigaguide-base* -108 (:a0 cl :a1 attrs)
-    :result :signed
-    :doc "LONG SetAmigaGuideAttrsA(APTR cl, CONST struct TagItem * attrs) (A0,A1) LVO -108"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun get-amiga-guide-attr *amigaguide-base* -114 (:d0 tag1 :a0 cl :a1 storage)
-    :result :signed
-    :doc "LONG GetAmigaGuideAttr(Tag tag1, APTR cl, ULONG * storage) (D0,A0,A1) LVO -114"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun load-x-ref *amigaguide-base* -126 (:a0 lock :a1 name)
-    :result :signed
-    :doc "LONG LoadXRef(BPTR lock, STRPTR name) (A0,A1) LVO -126"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun expunge-x-ref *amigaguide-base* -132 ()
-    :result :void
-    :doc "VOID ExpungeXRef() () LVO -132"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun add-amiga-guide-host-a *amigaguide-base* -138 (:a0 h :d0 name :a1 attrs)
-    :result :pointer
-    :doc "APTR AddAmigaGuideHostA(struct Hook * h, CONST_STRPTR name, CONST struct TagItem * attrs) (A0,D0,A1) LVO -138"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun remove-amiga-guide-host-a *amigaguide-base* -144 (:a0 hh :a1 attrs)
-    :result :signed
-    :doc "LONG RemoveAmigaGuideHostA(APTR hh, CONST struct TagItem * attrs) (A0,A1) LVO -144"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun get-amiga-guide-string *amigaguide-base* -210 (:d0 id)
-    :result :pointer
-    :doc "STRPTR GetAmigaGuideString(LONG id) (D0) LVO -210"))
-;; skipped FindGuide: not a 68k register call (base,sysv)
-;; skipped AG_UpdateLink: not a 68k register call (base,sysv)
-;; skipped AG_LinkExists: not a 68k register call (base,sysv)
+  ;; --- structures from libraries/amigaguide.i ---
+  (:struct "AMIGA-GUIDE-MSG" 52   ; AmigaGuideMsg (libraries/amigaguide.i)
+    ("MSG" (:struct 20) 0)
+    ("TYPE" :u32 20)
+    ("DATA" :fptr 24)
+    ("D-SIZE" :u32 28)
+    ("D-TYPE" :u32 32)
+    ("PRI-RET" :u32 36)
+    ("SEC-RET" :u32 40)
+    ("SYSTEM1" :fptr 44)
+    ("SYSTEM2" :fptr 48)
+    )
+  (:struct "NEW-AMIGA-GUIDE" 52   ; NewAmigaGuide (libraries/amigaguide.i)
+    ("LOCK" :u32 0)
+    ("NAME" :fptr 4)
+    ("SCREEN" :fptr 8)
+    ("PUB-SCREEN" :fptr 12)
+    ("HOST-PORT" :fptr 16)
+    ("CLIENT-PORT" :fptr 20)
+    ("BASE-NAME" :fptr 24)
+    ("FLAGS" :u32 28)
+    ("CONTEXT" :fptr 32)
+    ("NODE" :fptr 36)
+    ("LINE" :i32 40)
+    ("EXTENS" :fptr 44)
+    ("CLIENT" :fptr 48)
+    )
+  (:struct "X-REF" 32   ; XRef (libraries/amigaguide.i)
+    ("NODE" (:struct 14) 0)
+    ("PAD" :u16 14)
+    ("DF" :fptr 16)
+    ("FILE" :fptr 20)
+    ("NAME" :fptr 24)
+    ("LINE" :i32 28)
+    )
+  (:struct "AMIGA-GUIDE-HOST" 40   ; AmigaGuideHost (libraries/amigaguide.i)
+    ("DISPATCHER" (:struct 20) 0)
+    ("RESERVED" :u32 20)
+    ("FLAGS" :u32 24)
+    ("USE-CNT" :u32 28)
+    ("SYSTEM-DATA" :fptr 32)
+    ("USER-DATA" :fptr 36)
+    )
+  (:struct "OP-FIND-HOST" 24   ; opFindHost (libraries/amigaguide.i)
+    ("ATTRS" :fptr 0)
+    ("NODE" :fptr 4)
+    ("TOC" :fptr 8)
+    ("TITLE" :fptr 12)
+    ("NEXT" :fptr 16)
+    ("PREV" :fptr 20)
+    )
+  (:struct "OP-NODE-IO" 24   ; opNodeIO (libraries/amigaguide.i)
+    ("ATTRS" :fptr 0)
+    ("NODE" :fptr 4)
+    ("FILE-NAME" :fptr 8)
+    ("DOC-BUFFER" :fptr 12)
+    ("BUFF-LEN" :u32 16)
+    ("FLAGS" :u32 20)
+    )
+  (:struct "OP-EXPUNGE-NODE" 4   ; opExpungeNode (libraries/amigaguide.i)
+    ("ATTRS" :fptr 0)
+    )
+
+  ;; --- functions (amigaguide_lib.sfd + MorphOS SDK) ---
+  (:fn "LOCK-AMIGA-GUIDE-BASE" -36 (:a0) :signed 40)   ; LONG LockAmigaGuideBase(APTR handle) (A0) LVO -36
+  (:fn "UNLOCK-AMIGA-GUIDE-BASE" -42 (:d0) :void 40)   ; VOID UnlockAmigaGuideBase(LONG key) (D0) LVO -42
+  (:fn "OPEN-AMIGA-GUIDE-A" -54 (:a0 :a1) :pointer 40)   ; APTR OpenAmigaGuideA(struct NewAmigaGuide * nag, CONST struct TagItem * attrs) (A0,A1) LVO -54
+  (:fn "OPEN-AMIGA-GUIDE-ASYNC-A" -60 (:a0 :d0) :pointer 40)   ; APTR OpenAmigaGuideAsyncA(struct NewAmigaGuide * nag, CONST struct TagItem * attrs) (A0,D0) LVO -60
+  (:fn "CLOSE-AMIGA-GUIDE" -66 (:a0) :void 40)   ; VOID CloseAmigaGuide(APTR cl) (A0) LVO -66
+  (:fn "AMIGA-GUIDE-SIGNAL" -72 (:a0) :unsigned 40)   ; ULONG AmigaGuideSignal(APTR cl) (A0) LVO -72
+  (:fn "GET-AMIGA-GUIDE-MSG" -78 (:a0) :pointer 40)   ; struct AmigaGuideMsg * GetAmigaGuideMsg(APTR cl) (A0) LVO -78
+  (:fn "REPLY-AMIGA-GUIDE-MSG" -84 (:a0) :void 40)   ; VOID ReplyAmigaGuideMsg(struct AmigaGuideMsg * amsg) (A0) LVO -84
+  (:fn "SET-AMIGA-GUIDE-CONTEXT-A" -90 (:a0 :d0 :d1) :signed 40)   ; LONG SetAmigaGuideContextA(APTR cl, ULONG id, CONST struct TagItem * attrs) (A0,D0,D1) LVO -90
+  (:fn "SEND-AMIGA-GUIDE-CONTEXT-A" -96 (:a0 :d0) :signed 40)   ; LONG SendAmigaGuideContextA(APTR cl, CONST struct TagItem * attrs) (A0,D0) LVO -96
+  (:fn "SEND-AMIGA-GUIDE-CMD-A" -102 (:a0 :d0 :d1) :signed 40)   ; LONG SendAmigaGuideCmdA(APTR cl, STRPTR cmd, CONST struct TagItem * attrs) (A0,D0,D1) LVO -102
+  (:fn "SET-AMIGA-GUIDE-ATTRS-A" -108 (:a0 :a1) :signed 40)   ; LONG SetAmigaGuideAttrsA(APTR cl, CONST struct TagItem * attrs) (A0,A1) LVO -108
+  (:fn "GET-AMIGA-GUIDE-ATTR" -114 (:d0 :a0 :a1) :signed 40)   ; LONG GetAmigaGuideAttr(Tag tag1, APTR cl, ULONG * storage) (D0,A0,A1) LVO -114
+  (:fn "LOAD-X-REF" -126 (:a0 :a1) :signed 40)   ; LONG LoadXRef(BPTR lock, STRPTR name) (A0,A1) LVO -126
+  (:fn "EXPUNGE-X-REF" -132 () :void 40)   ; VOID ExpungeXRef() () LVO -132
+  (:fn "ADD-AMIGA-GUIDE-HOST-A" -138 (:a0 :d0 :a1) :pointer 40)   ; APTR AddAmigaGuideHostA(struct Hook * h, CONST_STRPTR name, CONST struct TagItem * attrs) (A0,D0,A1) LVO -138
+  (:fn "REMOVE-AMIGA-GUIDE-HOST-A" -144 (:a0 :a1) :signed 40)   ; LONG RemoveAmigaGuideHostA(APTR hh, CONST struct TagItem * attrs) (A0,A1) LVO -144
+  (:fn "GET-AMIGA-GUIDE-STRING" -210 (:d0) :pointer 40)   ; STRPTR GetAmigaGuideString(LONG id) (D0) LVO -210
+  ;; skipped FindGuide: not a 68k register call (base,sysv)
+  ;; skipped AG_UpdateLink: not a 68k register call (base,sysv)
+  ;; skipped AG_LinkExists: not a 68k register call (base,sysv)
+  )
 
 (provide "amiga/raw/amigaguide")

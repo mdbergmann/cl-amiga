@@ -20,7 +20,7 @@
 ;;;   BINDGEN_OUT          output directory (default lib/amiga/raw/)
 ;;;   BINDGEN_LIBS         comma list restricting the libraries generated
 ;;;                        (default: all)
-;;;   BINDGEN_DOCSTRINGS   "0" to omit the C-prototype docstrings
+;;;   BINDGEN_DOCSTRINGS   "0" to omit the C-prototype comments/docstrings
 ;;;
 ;;; What it produces — one module per library / NDK include subsystem,
 ;;; `(require "amiga/raw/<name>")`, package AMIGA.RAW.<NAME>.  Class
@@ -28,20 +28,28 @@
 ;;; gadgets/button.gadget -> amiga/raw/gadgets/button, images/bevel.image ->
 ;;; amiga/raw/images/bevel, window.class -> amiga/raw/classes/window.
 ;;;
-;;;   * AMIGA.FFI:DEFCFUN wrappers for every public library function:
-;;;     LVO from ==bias, registers and arity from the SFD, :result kind
-;;;     from the C return type (pointer / signed / bool / void ...), the
-;;;     C prototype as docstring.
-;;;   * DEFCONSTANTs for every EQU / ENUM / BITDEF in the matching .i files
-;;;     (+NAME+ spelling), FFI:DEFCSTRUCT layouts for every STRUCTURE.
-;;;   * DEFCONSTANTs for the object-like #defines and enumerators of the
-;;;     C headers that have NO assembler twin (the ReAction tags in
+;;; A module is ONE AMIGA.FFI:DEFINE-BINDING-TABLE form (plus the library
+;;; base / version DEFVARs in front of it and the rare >7-register DEFCFUNs
+;;; after it): every binding is a row of the table, packed at compile time
+;;; and materialised on first reference — specs/raw-bindings-footprint.md.
+;;;
+;;;   * (:fn ...) rows — the DEFCFUN equivalent — for every public library
+;;;     function: LVO from ==bias, registers and arity from the SFD,
+;;;     :result kind from the C return type (pointer / signed / bool /
+;;;     void ...), the C prototype as a trailing comment.
+;;;   * (:const ...) rows for every EQU / ENUM / BITDEF in the matching .i
+;;;     files (+NAME+ spelling), (:struct ...) rows (the DEFCSTRUCT
+;;;     equivalent: *NAME-SIZE* + accessors) for every STRUCTURE.
+;;;   * (:const ...) rows for the object-like #defines and enumerators of
+;;;     the C headers that have NO assembler twin (the ReAction tags in
 ;;;     gadgets/*.h, images/*.h, classes/*.h, reaction/*.h ...) — see
 ;;;     "C header parsing" below.
 ;;;   * Platform tagging: functions the MorphOS SDK does not have at the
-;;;     same LVO are wrapped in (unless (member :morphos *features*) ...),
-;;;     MorphOS-only ones in (when ...); functions newer than OS 3.0 are
-;;;     guarded by the running library's lib_Version.
+;;;     same LVO carry :not-morphos, MorphOS-only ones :morphos; functions
+;;;     newer than OS 3.0 carry the minimum lib_Version.  All three are
+;;;     checked when the name is looked up, against *FEATURES* and the
+;;;     running library's version; a guarded-out name exists but is
+;;;     unbound.
 ;;;
 ;;; The SFD grammar: see the NDK's sfd/README or sfdc.  The .i grammar is
 ;;; the exec/types.i macro set (STRUCTURE/APTR/WORD/.../LABEL/STRUCT,
@@ -1599,8 +1607,14 @@ exists in the NDK (ndk-lib) and maybe in the MorphOS SDK (mos-lib)."
               (and p (find-symbol sym-name p))))
           *used-packages*)))
 
-(defun emit-function (out efn base-var)
-  "Write one DEFCFUN (or a skip comment).  Returns the Lisp name or NIL."
+(defun emit-function (body tail efn base-var name-rows)
+  "Write one function binding.  The normal case is one :fn ROW of the
+module's DEFINE-BINDING-TABLE into BODY; a function with more than seven
+register arguments (no stub can carry it) gets a (:name ...) row so the
+symbol is exported by the table, plus a DEFCFUN over CALL-LIBRARY written
+after the table into TAIL — guarded like before.  NAME-ROWS (hash) keeps a
+(:name) row from repeating for platform variants.  A skip is a comment.
+Returns the Lisp name or NIL."
   (let* ((fn (emit-fn-fn efn))
          (lname (lispify (sfd-fn-name fn)))
          (kind (result-kind-for (sfd-fn-ret-type fn)))
@@ -1629,9 +1643,10 @@ exists in the NDK (ndk-lib) and maybe in the MorphOS SDK (mos-lib)."
        (setf skip "varargs")))
     (cond
       (skip
-       (format out "~&;; skipped ~A: ~A~%" (sfd-fn-name fn) skip)
+       (format body "~&  ;; skipped ~A: ~A~%" (sfd-fn-name fn) skip)
        nil)
-      (t
+      ((> (length regs) 7)
+       ;; the plist path: exported by the table, defined after it
        (let* ((used nil)
               (pnames (mapcar (lambda (p)
                                 (let ((n (param-name (or (cdr p) "arg") used)))
@@ -1640,6 +1655,10 @@ exists in the NDK (ndk-lib) and maybe in the MorphOS SDK (mos-lib)."
               (regspec (format nil "~{:~(~A~) ~A~^ ~}"
                                (mapcan #'list regs pnames)))
               (guard-open "") (guard-close ""))
+         (unless (gethash lname name-rows)
+           (setf (gethash lname name-rows) t)
+           (format body "~&  (:name ~S)   ; ~D registers: defined after the table via CALL-LIBRARY~%"
+                   (string-upcase lname) (length regs)))
          (when (or (emit-fn-guard efn) (emit-fn-min-version efn))
            (let ((conds nil))
              (case (emit-fn-guard efn)
@@ -1652,11 +1671,18 @@ exists in the NDK (ndk-lib) and maybe in the MorphOS SDK (mos-lib)."
                                           (format nil "(and ~{~A~^ ~})" (nreverse conds))
                                           (first conds)))
                    guard-close ")")))
-         (format out "~&~A(amiga.ffi:defcfun ~A ~A ~D (~A)~%    :result ~(~S~)~@[~%    :doc ~A~])~A~%"
+         (format tail "~&~A(amiga.ffi:defcfun ~A ~A ~D (~A)~%    :result ~(~S~)~@[~%    :doc ~A~])~A~%"
                  guard-open lname base-var (sfd-fn-lvo fn) regspec kind
                  (and *docstrings* (lisp-string (c-prototype fn)))
                  guard-close)
-         lname)))))
+         lname))
+      (t
+       ;; (:fn "NAME" lvo (:reg ...) :result [:not-morphos|:morphos] [min-version])
+       (format body "~&  (:fn ~S ~D (~{:~(~A~)~^ ~}) ~(~S~)~@[ ~(~S~)~]~@[ ~D~])~@[   ; ~A~]~%"
+               (string-upcase lname) (sfd-fn-lvo fn) regs kind
+               (emit-fn-guard efn) (emit-fn-min-version efn)
+               (and *docstrings* (c-prototype fn)))
+       lname))))
 
 (defun strip-field-prefix (name)
   "wd_RPort -> RPort, LN_SUCC -> SUCC; names without a short prefix are
@@ -1666,23 +1692,32 @@ returned as-is."
         (subseq name (1+ p))
         name)))
 
-(defun emit-struct (out st cname size fields)
-  "Write one DEFCSTRUCT.  Returns the list of exported names."
+(defun emit-struct (out st cname size fields claim)
+  "Write one :struct row of the binding table (the DEFCSTRUCT equivalent:
+*NAME-SIZE* plus one accessor per field).  CLAIM is the module's name
+registry (name kind -> boolean); a field whose accessor name is already
+taken is dropped with a comment instead of clashing.  Returns the list of
+names defined."
   (let* ((lname (lispify cname))
-         (exports (list (format nil "*~A-SIZE*" lname)))
+         (names (list (format nil "*~A-SIZE*" lname)))
          (seen nil))
-    (format out "~&(ffi:defcstruct (~A :size ~D)   ; ~A (~A)~%"
-            lname size (i-struct-name st) (i-struct-file st))
+    (format out "~&  (:struct ~S ~D   ; ~A (~A)~%"
+            (string-upcase lname) size (i-struct-name st) (i-struct-file st))
     (dolist (f fields)
       (destructuring-bind (c-name type offset) f
         (let ((fname (lispify (strip-field-prefix c-name))))
           (loop while (member fname seen :test #'string=)
                 do (setf fname (concatenate 'string fname "*")))
           (push fname seen)
-          (format out "  (~A ~(~S~) ~D)~%" fname type offset)
-          (push (format nil "~A-~A" lname fname) exports))))
-    (format out ")~%")
-    (nreverse exports)))
+          (let ((acc (format nil "~A-~A" lname fname)))
+            (cond ((funcall claim acc :accessor)
+                   (format out "    (~S ~(~S~) ~D)~%" (string-upcase fname) type offset)
+                   (push acc names))
+                  (t
+                   (format out "    ;; dropped ~A: accessor name ~A already defined~%"
+                           c-name acc)))))))
+    (format out "    )~%")
+    (nreverse names)))
 
 (defun field-type-size (ty)
   (cond ((consp ty) (second ty))
@@ -1764,8 +1799,10 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
          (version-var (var-name (concatenate 'string lib-short-name "-version")))
          (libname (or (and ndk-lib (sfd-lib-libname ndk-lib))
                       (and mos-lib (sfd-lib-libname mos-lib))))
-         (body (make-string-output-stream))
-         (exports nil)
+         (body (make-string-output-stream))   ; rows of the binding table
+         (tail (make-string-output-stream))   ; forms after the table (>7-register DEFCFUNs)
+         (name-rows (make-hash-table :test 'equal))
+         (exports nil)                        ; every name the table defines (for :shadow)
          (lisp-names (make-hash-table :test 'equal))
          (n-fns 0) (n-consts 0) (n-structs 0) (n-skipped 0)
          (n-macros-skipped 0))      ; C macros that are not integer constants
@@ -1798,39 +1835,37 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
                                          t))
                                      (i-file-constants ifile))))
               (when consts
-                (format body "~&~%;;; --- constants from ~A ---~%" rel)
+                (format body "~&~%  ;; --- constants from ~A ---~%" rel)
                 (dolist (c consts)
                   (let ((val (const-value c))
                         (cn (constant-name (i-const-name c))))
                     (when (and val (claim cn :constant val))
                       (incf n-consts)
                       (push cn exports)
-                      (format body "(defconstant ~A ~A)~@[   ; ~A~]~%"
-                              cn (format-hex val)
+                      (format body "  (:const ~S ~A)~@[   ; ~A~]~%"
+                              (string-upcase cn) (format-hex val)
                               (and (or (> val #xFFFFFFFF) (< val (- #x80000000)))
                                    "value exceeds 32 bits")))))))
             (when (i-file-structs ifile)
-              (format body "~&~%;;; --- structures from ~A ---~%" rel)
+              (format body "~&~%  ;; --- structures from ~A ---~%" rel)
               (dolist (st (i-file-structs ifile))
                 (dolist (variant (struct-variants st))
                   (destructuring-bind (cname size fields) variant
                     (let ((lname (lispify cname)))
                       (when (claim (format nil "*~A-SIZE*" lname) :struct)
                         (incf n-structs)
-                        (let ((ex (emit-struct body st cname size fields)))
-                          (dolist (e ex)
-                            (when (or (starts-with "*" e) (claim e :accessor))
-                              (push e exports)))))))))))))
+                        (dolist (e (emit-struct body st cname size fields #'claim))
+                          (push e exports)))))))))))
       ;; --- functions ---
       (unless header-only
-        (format body "~&~%;;; --- functions (~A~@[ + ~A~]) ---~%"
+        (format body "~&~%  ;; --- functions (~A~@[ + ~A~]) ---~%"
                 (if ndk-lib (format nil "~A_lib.sfd" lib-short-name) "MorphOS SDK")
                 (and ndk-lib mos-lib "MorphOS SDK"))
         (dolist (efn (merge-library-functions ndk-lib mos-lib))
           (let* ((fn (emit-fn-fn efn))
                  (lname (lispify (sfd-fn-name fn))))
             (if (claim lname :function (sfd-fn-name fn))
-                (let ((r (emit-function body efn base-var)))
+                (let ((r (emit-function body tail efn base-var name-rows)))
                   (cond ((null r) (incf n-skipped))
                         ((member r exports :test #'string=) (incf n-fns))  ; 2nd variant
                         (t (incf n-fns) (push r exports))))
@@ -1853,25 +1888,21 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
           (format out ";;; ~D C macro~:P skipped: not an integer constant (string, call, float).~%"
                   n-macros-skipped))
         (format out ";;; Regenerate with `make gen-amiga-bindings` — see README \"Raw OS bindings\".~%~%")
-        (format out "(require \"amiga/ffi\")~%~%")
+        (format out ";; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see~%;; AMIGA.FFI at read time, not only LOAD.~%(eval-when (:compile-toplevel :load-toplevel :execute)~%  (require \"amiga/ffi\"))~%~%")
         (setf exports (nreverse exports))
         (let ((shadows (remove-if-not #'inherited-name-p exports)))
           (format out "(defpackage ~S~%  (:use \"CL\" \"FFI\" \"AMIGA.FFI\")~%" pkg)
           (when shadows
             (format out "  ;; distinct symbols — these names also exist in CL / FFI / AMIGA.FFI~%")
             (format out "  (:shadow~{ ~S~})~%" (mapcar #'string-upcase shadows)))
-          (format out "  (:export~%"))
-        (unless header-only
-          (format out "   ~S ~S~%" (string-upcase base-var) (string-upcase version-var)))
-        (let ((col 0))
-          (format out "   ")
-          (dolist (e exports)
-            (let ((s (format nil "~S" (string-upcase e))))
-              (when (> (+ col (length s)) 72)
-                (format out "~%   ") (setf col 0))
-              (format out "~A " s)
-              (incf col (1+ (length s))))))
-        (format out "))~%~%(in-package ~S)~%" pkg)
+          ;; Only the names defined by ordinary forms are exported here; every
+          ;; binding in the table below is exported by the table itself.
+          (cond (header-only
+                 (format out "  (:export))~%"))
+                (t
+                 (format out "  (:export ~S ~S))~%"
+                         (string-upcase base-var) (string-upcase version-var)))))
+        (format out "~%(in-package ~S)~%" pkg)
         (unless header-only
           (format out "~%;;; Library base — opened at load time on AmigaOS/MorphOS; NIL on other~%")
           (format out ";;; hosts (the module still loads there for testing and compilation).~%")
@@ -1885,7 +1916,23 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
              (format out "(defvar ~A nil)~%" base-var)))
           (format out "(defvar ~A~%  (and ~A (amiga.ffi:library-version ~A)))~%" version-var base-var base-var)
           (format out "(defun %version>= (n)~%  (and ~A (>= ~A n)))~%" version-var version-var))
-        (write-string (get-output-stream-string body) out)
+        ;; The binding table: every constant, struct accessor and library
+        ;; function of the module in one form, materialised on first use.
+        (let ((rows (get-output-stream-string body)))
+          (format out "~%;;; Binding table — every name below is built the first time anything~%")
+          (format out ";;; refers to it (specs/raw-bindings-footprint.md); until then the module~%")
+          (format out ";;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.~%")
+          (if header-only
+              (format out "(amiga.ffi:define-binding-table ~S ()~%" pkg)
+              (format out "(amiga.ffi:define-binding-table ~S~%    (:base ~A :version ~A)~%"
+                      pkg base-var version-var))
+          (write-string rows out)
+          (format out "  )~%"))
+        (let ((after (get-output-stream-string tail)))
+          (when (plusp (length after))
+            (format out "~%;;; Functions with more than seven register arguments: DEFUNs over~%")
+            (format out ";;; AMIGA:CALL-LIBRARY (exported by the (:name ...) rows above).~%")
+            (write-string after out)))
         (format out "~%(provide ~S)~%" module-name)))
     (list n-fns n-consts n-structs n-skipped)))
 

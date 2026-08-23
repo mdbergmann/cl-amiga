@@ -229,6 +229,9 @@ CL_Obj cl_vm_eval(CL_Obj bytecode);
 
 /* Apply a function to arguments (builds temp bytecode, calls cl_vm_eval) */
 CL_Obj cl_vm_apply(CL_Obj func, CL_Obj *args, int nargs);
+/* (apply FUNC ARGLIST) for any count up to CALL-ARGUMENTS-LIMIT — runs the
+ * inline OP_APPLY; cl_vm_apply's one-byte OP_CALL stub stops at 255. */
+CL_Obj cl_vm_apply_list(CL_Obj func, CL_Obj arglist);
 
 /* Unwrap a funcallable instance (standard-generic-function struct) to its
  * discriminating function. Returns the input unchanged for other types. */

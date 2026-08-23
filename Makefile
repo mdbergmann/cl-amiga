@@ -103,6 +103,7 @@ CORE_SRC     = $(SRCDIR)/core/types.c \
                $(SRCDIR)/core/builtins_thread.c \
                $(SRCDIR)/core/builtins_ffi.c \
                $(SRCDIR)/core/builtins_amiga.c \
+               $(SRCDIR)/core/bindtab.c \
                $(SRCDIR)/core/stream.c \
                $(SRCDIR)/core/bignum.c \
                $(SRCDIR)/core/ratio.c \
@@ -138,7 +139,7 @@ LIB_OBJS = $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(LIB_SRCS))
 TESTOBJDIR    = $(BUILDDIR)/test-obj
 LIB_TEST_OBJS = $(patsubst $(SRCDIR)/%.c,$(TESTOBJDIR)/%.o,$(LIB_SRCS))
 
-.PHONY: host test test-fast test-plus test-extra linux-test clean verify-amiga install-hooks docs-check docs-update test-gc-stress test-mt-thread-exit-race
+.PHONY: host test test-fast test-plus test-extra linux-test clean verify-amiga install-hooks docs-check docs-update test-gc-stress test-mt-thread-exit-race fasl fasl-amiga clean-fasl-amiga
 
 host: $(HOST_BIN)
 
@@ -209,7 +210,8 @@ test_batch test_boot_log test_mx_error_context \
                 test_struct_slot_access test_defconstant_fasl test_peephole_diff \
                 test_defvar_special_fasl test_stack_depth test_argv_utf8 \
                 test_utf8_filenames test_image test_amiga_bindgen \
-                test_amiga_reaction
+                test_amiga_reaction test_amiga_curated_vs_raw \
+                test_lib_fasl_portable
 
 # The two that drive make itself and take no clamiga binary.
 SHELL_TESTS_NOARG = test_cross_wide_knob test_test_extra
@@ -450,15 +452,33 @@ verify-amiga:
 gen-amiga-bindings: $(HOST_BIN)
 	NDK="$(NDK)" MOS_SDK="$(MOS_SDK)" sh scripts/gen-amiga-bindings.sh
 
+# Both FASL targets compile with CLAMIGA_FASL_PORTABLE=1: the output is loaded
+# by the byte-string m68k AmigaOS binaries (and MorphOS), so a non-ASCII
+# string literal in lib/ fails here with the source line instead of on the
+# Amiga (tests/test_lib_fasl_portable.sh).
 fasl: $(HOST_BIN)
 	@echo "=== Compiling boot.lisp → lib/boot.fasl ==="
-	$(HOST_BIN) --no-userinit --heap 24M \
+	CLAMIGA_FASL_PORTABLE=1 $(HOST_BIN) --no-userinit --heap 24M \
 		--eval '(compile-file "lib/boot.lisp" :output-file "lib/boot.fasl")' \
 		--eval '(quit)'
 	@echo "=== Compiling clos.lisp → lib/clos.fasl ==="
-	$(HOST_BIN) --no-userinit --heap 24M \
+	CLAMIGA_FASL_PORTABLE=1 $(HOST_BIN) --no-userinit --heap 24M \
 		--eval '(compile-file "lib/clos.lisp" :output-file "lib/clos.fasl")' \
 		--eval '(quit)'
+
+# Precompile lib/amiga/** (the curated modules, AMIGA.REACTION and the
+# generated raw OS bindings) next to their sources, so an Amiga run -- the
+# FS-UAE suite mounts this tree, and so does a real machine with the repo on
+# it -- loads lib/amiga/raw/intuition.fasl instead of compiling ~4k forms on a
+# 68020 at first REQUIRE.  Optional for development (the Amiga's faslcache
+# does the same lazily) and gitignored; REQUIRE ignores a FASL that is older
+# than its source or was written by another CL_FASL_VERSION.  The binary
+# release runs the same script into its staging tree.
+fasl-amiga: $(HOST_BIN)
+	sh scripts/compile-lib-fasls.sh -o . -b $(HOST_BIN) --no-docstrings
+
+clean-fasl-amiga:
+	find lib/amiga -name '*.fasl' -delete
 
 QL_LOCAL_PROJECTS ?= $(HOME)/quicklisp/local-projects
 
@@ -495,3 +515,4 @@ install-hooks:
 
 clean:
 	rm -rf build
+	find lib/amiga -name '*.fasl' -delete

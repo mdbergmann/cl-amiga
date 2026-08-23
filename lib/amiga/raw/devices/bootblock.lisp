@@ -6,26 +6,33 @@
 ;;; 0 functions, 3 constants, 1 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.DEVICES.BOOTBLOCK"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+BOOTSECTS+" "+BBNAME-DOS+" "+BBNAME-KICK+" "*BB-SIZE*" "BB-ID" 
-   "BB-CHKSUM" "BB-DOSBLOCK" ))
+  (:export))
 
 (in-package "AMIGA.RAW.DEVICES.BOOTBLOCK")
 
-;;; --- constants from devices/bootblock.i ---
-(defconstant +bootsects+ 2)
-(defconstant +bbname-dos+ #x444F5300)
-(defconstant +bbname-kick+ #x4B49434B)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.DEVICES.BOOTBLOCK" ()
 
-;;; --- structures from devices/bootblock.i ---
-(ffi:defcstruct (bb :size 12)   ; BB (devices/bootblock.i)
-  (id (:struct 4) 0)
-  (chksum :i32 4)
-  (dosblock :i32 8)
-)
+  ;; --- constants from devices/bootblock.i ---
+  (:const "+BOOTSECTS+" 2)
+  (:const "+BBNAME-DOS+" #x444F5300)
+  (:const "+BBNAME-KICK+" #x4B49434B)
+
+  ;; --- structures from devices/bootblock.i ---
+  (:struct "BB" 12   ; BB (devices/bootblock.i)
+    ("ID" (:struct 4) 0)
+    ("CHKSUM" :i32 4)
+    ("DOSBLOCK" :i32 8)
+    )
+  )
 
 (provide "amiga/raw/devices/bootblock")

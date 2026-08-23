@@ -6,21 +6,28 @@
 ;;; 0 functions, 5 constants, 0 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.REACTION.REACTION"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+REACTION-DUMMY+" "+REACTION-TEXT-ATTR+" "+REACTION-CHANGE-PREFS+" 
-   "+REACTION-SPECIAL-PENS+" "+REACTION-JUSTIFICATION+" ))
+  (:export))
 
 (in-package "AMIGA.RAW.REACTION.REACTION")
 
-;;; --- constants from reaction/reaction.h ---
-(defconstant +reaction-dummy+ #x85000000)
-(defconstant +reaction-text-attr+ #x85000005)
-(defconstant +reaction-change-prefs+ #x85000006)
-(defconstant +reaction-special-pens+ #x85000007)
-(defconstant +reaction-justification+ #x85000008)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.REACTION.REACTION" ()
+
+  ;; --- constants from reaction/reaction.h ---
+  (:const "+REACTION-DUMMY+" #x85000000)
+  (:const "+REACTION-TEXT-ATTR+" #x85000005)
+  (:const "+REACTION-CHANGE-PREFS+" #x85000006)
+  (:const "+REACTION-SPECIAL-PENS+" #x85000007)
+  (:const "+REACTION-JUSTIFICATION+" #x85000008)
+  )
 
 (provide "amiga/raw/reaction/reaction")

@@ -6,36 +6,39 @@
 ;;; 0 functions, 2 constants, 1 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.PREFS.OVERSCAN"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+ID-OSCN+" "+OSCAN-MAGIC+" "*OVERSCAN-PREFS-SIZE*" 
-   "OVERSCAN-PREFS-RESERVED" "OVERSCAN-PREFS-MAGIC" 
-   "OVERSCAN-PREFS-H-START" "OVERSCAN-PREFS-H-STOP" 
-   "OVERSCAN-PREFS-V-START" "OVERSCAN-PREFS-V-STOP" 
-   "OVERSCAN-PREFS-DISPLAY-ID" "OVERSCAN-PREFS-VIEW-POS" 
-   "OVERSCAN-PREFS-TEXT" "OVERSCAN-PREFS-STANDARD" ))
+  (:export))
 
 (in-package "AMIGA.RAW.PREFS.OVERSCAN")
 
-;;; --- constants from prefs/overscan.i ---
-(defconstant +id-oscn+ #x4F53434E)
-(defconstant +oscan-magic+ #xFEDCBA89)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.PREFS.OVERSCAN" ()
 
-;;; --- structures from prefs/overscan.i ---
-(ffi:defcstruct (overscan-prefs :size 36)   ; OverscanPrefs (prefs/overscan.i)
-  (reserved :u32 0)
-  (magic :u32 4)
-  (h-start :u16 8)
-  (h-stop :u16 10)
-  (v-start :u16 12)
-  (v-stop :u16 14)
-  (display-id :u32 16)
-  (view-pos (:struct 4) 20)
-  (text (:struct 4) 24)
-  (standard (:struct 8) 28)
-)
+  ;; --- constants from prefs/overscan.i ---
+  (:const "+ID-OSCN+" #x4F53434E)
+  (:const "+OSCAN-MAGIC+" #xFEDCBA89)
+
+  ;; --- structures from prefs/overscan.i ---
+  (:struct "OVERSCAN-PREFS" 36   ; OverscanPrefs (prefs/overscan.i)
+    ("RESERVED" :u32 0)
+    ("MAGIC" :u32 4)
+    ("H-START" :u16 8)
+    ("H-STOP" :u16 10)
+    ("V-START" :u16 12)
+    ("V-STOP" :u16 14)
+    ("DISPLAY-ID" :u32 16)
+    ("VIEW-POS" (:struct 4) 20)
+    ("TEXT" (:struct 4) 24)
+    ("STANDARD" (:struct 8) 28)
+    )
+  )
 
 (provide "amiga/raw/prefs/overscan")

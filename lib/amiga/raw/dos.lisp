@@ -22,325 +22,16 @@
 ;;; 163 functions, 507 constants, 35 structs, 22 skipped (see comments).
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.DOS"
   (:use "CL" "FFI" "AMIGA.FFI")
   ;; distinct symbols  these names also exist in CL / FFI / AMIGA.FFI
   (:shadow "OPEN" "CLOSE" "READ" "WRITE" "DELETE-FILE" "FORMAT")
-  (:export
-   "*DOS-BASE*" "*DOS-VERSION*"
-   "+LEN-DATSTRING+" "+DTB-SUBST+" "+DTF-SUBST+" "+DTB-FUTURE+" 
-   "+DTF-FUTURE+" "+FORMAT-DOS+" "+FORMAT-INT+" "+FORMAT-USA+" 
-   "+FORMAT-CDN+" "+FORMAT-DEF+" "+FORMAT-MAX+" "*DATE-TIME-SIZE*" 
-   "DATE-TIME-STAMP" "DATE-TIME-FORMAT" "DATE-TIME-FLAGS" 
-   "DATE-TIME-STR-DAY" "DATE-TIME-STR-DATE" "DATE-TIME-STR-TIME" 
-   "+DOSTRUE+" "+DOSFALSE+" "+MODE-OLDFILE+" "+MODE-NEWFILE+" 
-   "+MODE-READWRITE+" "+OFFSET-BEGINNING+" "+OFFSET-CURRENT+" 
-   "+OFFSET-END+" "+OFFSET-BEGINING+" "+BITSPERBYTE+" "+BYTESPERLONG+" 
-   "+BITSPERLONG+" "+MAXINT+" "+MININT+" "+SHARED-LOCK+" "+ACCESS-READ+" 
-   "+EXCLUSIVE-LOCK+" "+ACCESS-WRITE+" "+TICKS-PER-SECOND+" 
-   "+FIBB-OTR-READ+" "+FIBF-OTR-READ+" "+FIBB-OTR-WRITE+" 
-   "+FIBF-OTR-WRITE+" "+FIBB-OTR-EXECUTE+" "+FIBF-OTR-EXECUTE+" 
-   "+FIBB-OTR-DELETE+" "+FIBF-OTR-DELETE+" "+FIBB-GRP-READ+" 
-   "+FIBF-GRP-READ+" "+FIBB-GRP-WRITE+" "+FIBF-GRP-WRITE+" 
-   "+FIBB-GRP-EXECUTE+" "+FIBF-GRP-EXECUTE+" "+FIBB-GRP-DELETE+" 
-   "+FIBF-GRP-DELETE+" "+FIBB-HOLD+" "+FIBF-HOLD+" "+FIBB-SCRIPT+" 
-   "+FIBF-SCRIPT+" "+FIBB-PURE+" "+FIBF-PURE+" "+FIBB-ARCHIVE+" 
-   "+FIBF-ARCHIVE+" "+FIBB-READ+" "+FIBF-READ+" "+FIBB-WRITE+" 
-   "+FIBF-WRITE+" "+FIBB-EXECUTE+" "+FIBF-EXECUTE+" "+FIBB-DELETE+" 
-   "+FIBF-DELETE+" "+FAULT-MAX+" "+ID-WRITE-PROTECTED+" "+ID-VALIDATING+" 
-   "+ID-VALIDATED+" "+ID-NO-DISK-PRESENT+" "+ID-UNREADABLE-DISK+" 
-   "+ID-NOT-REALLY-DOS+" "+ID-DOS-DISK+" "+ID-FFS-DISK+" 
-   "+ID-INTER-DOS-DISK+" "+ID-INTER-FFS-DISK+" "+ID-FASTDIR-DOS-DISK+" 
-   "+ID-FASTDIR-FFS-DISK+" "+ID-LONG-DOS-DISK+" "+ID-LONG-FFS-DISK+" 
-   "+ID-COMPLONG-FFS-DISK+" "+ID-KICKSTART-DISK+" "+ID-MSDOS-DISK+" 
-   "+ERROR-NO-FREE-STORE+" "+ERROR-TASK-TABLE-FULL+" "+ERROR-BAD-TEMPLATE+" 
-   "+ERROR-BAD-NUMBER+" "+ERROR-REQUIRED-ARG-MISSING+" 
-   "+ERROR-KEY-NEEDS-ARG+" "+ERROR-TOO-MANY-ARGS+" 
-   "+ERROR-UNMATCHED-QUOTES+" "+ERROR-LINE-TOO-LONG+" 
-   "+ERROR-FILE-NOT-OBJECT+" "+ERROR-INVALID-RESIDENT-LIBRARY+" 
-   "+ERROR-NO-DEFAULT-DIR+" "+ERROR-OBJECT-IN-USE+" "+ERROR-OBJECT-EXISTS+" 
-   "+ERROR-DIR-NOT-FOUND+" "+ERROR-OBJECT-NOT-FOUND+" 
-   "+ERROR-BAD-STREAM-NAME+" "+ERROR-OBJECT-TOO-LARGE+" 
-   "+ERROR-ACTION-NOT-KNOWN+" "+ERROR-INVALID-COMPONENT-NAME+" 
-   "+ERROR-INVALID-LOCK+" "+ERROR-OBJECT-WRONG-TYPE+" 
-   "+ERROR-DISK-NOT-VALIDATED+" "+ERROR-DISK-WRITE-PROTECTED+" 
-   "+ERROR-RENAME-ACROSS-DEVICES+" "+ERROR-DIRECTORY-NOT-EMPTY+" 
-   "+ERROR-TOO-MANY-LEVELS+" "+ERROR-DEVICE-NOT-MOUNTED+" 
-   "+ERROR-SEEK-ERROR+" "+ERROR-COMMENT-TOO-BIG+" "+ERROR-DISK-FULL+" 
-   "+ERROR-DELETE-PROTECTED+" "+ERROR-WRITE-PROTECTED+" 
-   "+ERROR-READ-PROTECTED+" "+ERROR-NOT-A-DOS-DISK+" "+ERROR-NO-DISK+" 
-   "+ERROR-NO-MORE-ENTRIES+" "+ERROR-IS-SOFT-LINK+" "+ERROR-OBJECT-LINKED+" 
-   "+ERROR-BAD-HUNK+" "+ERROR-NOT-IMPLEMENTED+" "+ERROR-RECORD-NOT-LOCKED+" 
-   "+ERROR-LOCK-COLLISION+" "+ERROR-LOCK-TIMEOUT+" "+ERROR-UNLOCK-ERROR+" 
-   "+RETURN-OK+" "+RETURN-WARN+" "+RETURN-ERROR+" "+RETURN-FAIL+" 
-   "+SIGBREAKB-CTRL-C+" "+SIGBREAKF-CTRL-C+" "+SIGBREAKB-CTRL-D+" 
-   "+SIGBREAKF-CTRL-D+" "+SIGBREAKB-CTRL-E+" "+SIGBREAKF-CTRL-E+" 
-   "+SIGBREAKB-CTRL-F+" "+SIGBREAKF-CTRL-F+" "+LOCK-DIFFERENT+" 
-   "+LOCK-SAME+" "+LOCK-SAME-VOLUME+" "+LOCK-SAME-HANDLER+" "+CHANGE-LOCK+" 
-   "+CHANGE-FH+" "+LINK-HARD+" "+LINK-SOFT+" "+ITEM-EQUAL+" "+ITEM-ERROR+" 
-   "+ITEM-NOTHING+" "+ITEM-UNQUOTED+" "+ITEM-QUOTED+" "+DOS-FILEHANDLE+" 
-   "+DOS-EXALLCONTROL+" "+DOS-FIB+" "+DOS-STDPKT+" "+DOS-CLI+" 
-   "+DOS-RDARGS+" "*DATE-STAMP-SIZE*" "DATE-STAMP-DAYS" "DATE-STAMP-MINUTE" 
-   "DATE-STAMP-TICK" "*FILE-INFO-BLOCK-SIZE*" "FILE-INFO-BLOCK-DISK-KEY" 
-   "FILE-INFO-BLOCK-DIR-ENTRY-TYPE" "FILE-INFO-BLOCK-FILE-NAME" 
-   "FILE-INFO-BLOCK-PROTECTION" "FILE-INFO-BLOCK-ENTRY-TYPE" 
-   "FILE-INFO-BLOCK-SIZE" "FILE-INFO-BLOCK-NUM-BLOCKS" 
-   "FILE-INFO-BLOCK-DATE-STAMP" "FILE-INFO-BLOCK-COMMENT" 
-   "FILE-INFO-BLOCK-OWNER-UID" "FILE-INFO-BLOCK-OWNER-GID" 
-   "FILE-INFO-BLOCK-RESERVED" "*INFO-DATA-SIZE*" 
-   "INFO-DATA-NUM-SOFT-ERRORS" "INFO-DATA-UNIT-NUMBER" 
-   "INFO-DATA-DISK-STATE" "INFO-DATA-NUM-BLOCKS" 
-   "INFO-DATA-NUM-BLOCKS-USED" "INFO-DATA-BYTES-PER-BLOCK" 
-   "INFO-DATA-DISK-TYPE" "INFO-DATA-VOLUME-NODE" "INFO-DATA-IN-USE" 
-   "+RESERVE+" "+VSIZE+" "+APB-DOWILD+" "+APF-DOWILD+" "+APB-ITSWILD+" 
-   "+APF-ITSWILD+" "+APB-DODIR+" "+APF-DODIR+" "+APB-DIDDIR+" 
-   "+APF-DIDDIR+" "+APB-NOMEMERR+" "+APF-NOMEMERR+" "+APB-DODOT+" 
-   "+APF-DODOT+" "+APB-DIR-CHANGED+" "+APF-DIR-CHANGED+" 
-   "+APB-FOLLOW-H-LINKS+" "+APF-FOLLOW-H-LINKS+" "+DDB-PATTERN-BIT+" 
-   "+DDF-PATTERN-BIT+" "+DDB-EXAMINED-BIT+" "+DDF-EXAMINED-BIT+" 
-   "+DDB-COMPLETED+" "+DDF-COMPLETED+" "+DDB-ALL-BIT+" "+DDF-ALL-BIT+" 
-   "+DDB-SINGLE+" "+DDF-SINGLE+" "+P-ANY+" "+P-SINGLE+" "+P-ORSTART+" 
-   "+P-ORNEXT+" "+P-OREND+" "+P-NOT+" "+P-NOTEND+" "+P-NOTCLASS+" 
-   "+P-CLASS+" "+P-REPBEG+" "+P-REPEND+" "+P-STOP+" "+COMPLEX-BIT+" 
-   "+EXAMINE-BIT+" "+ERROR-BUFFER-OVERFLOW+" "+ERROR-BREAK+" 
-   "+ERROR-NOT-EXECUTABLE+" "*ANCHOR-PATH-SIZE*" "ANCHOR-PATH-FIRST" 
-   "ANCHOR-PATH-BASE" "ANCHOR-PATH-CURRENT" "ANCHOR-PATH-LAST" 
-   "ANCHOR-PATH-BREAK-BITS" "ANCHOR-PATH-FOUND-BREAK" "ANCHOR-PATH-LENGTH" 
-   "ANCHOR-PATH-FLAGS" "ANCHOR-PATH-RESERVED" "ANCHOR-PATH-STRLEN" 
-   "ANCHOR-PATH-INFO" "*A-CHAIN-SIZE*" "A-CHAIN-CHILD" "A-CHAIN-PARENT" 
-   "A-CHAIN-LOCK" "A-CHAIN-INFO" "A-CHAIN-FLAGS" "+PRB-FREESEGLIST+" 
-   "+PRF-FREESEGLIST+" "+PRB-FREECURRDIR+" "+PRF-FREECURRDIR+" 
-   "+PRB-FREECLI+" "+PRF-FREECLI+" "+PRB-CLOSEINPUT+" "+PRF-CLOSEINPUT+" 
-   "+PRB-CLOSEOUTPUT+" "+PRF-CLOSEOUTPUT+" "+PRB-FREEARGS+" 
-   "+PRF-FREEARGS+" "+PRB-CLOSEERROR+" "+PRF-CLOSEERROR+" "+FH-FUNC1+" 
-   "+FH-ARG1+" "+DP-ACTION+" "+DP-STATUS+" "+DP-STATUS2+" "+DP-BUF-ADDR+" 
-   "+ACTION-NIL+" "+ACTION-STARTUP+" "+ACTION-GET-BLOCK+" 
-   "+ACTION-SET-MAP+" "+ACTION-DIE+" "+ACTION-EVENT+" 
-   "+ACTION-CURRENT-VOLUME+" "+ACTION-LOCATE-OBJECT+" 
-   "+ACTION-RENAME-DISK+" "+ACTION-WRITE+" "+ACTION-READ+" 
-   "+ACTION-FREE-LOCK+" "+ACTION-DELETE-OBJECT+" "+ACTION-RENAME-OBJECT+" 
-   "+ACTION-MORE-CACHE+" "+ACTION-COPY-DIR+" "+ACTION-WAIT-CHAR+" 
-   "+ACTION-SET-PROTECT+" "+ACTION-CREATE-DIR+" "+ACTION-EXAMINE-OBJECT+" 
-   "+ACTION-EXAMINE-NEXT+" "+ACTION-DISK-INFO+" "+ACTION-INFO+" 
-   "+ACTION-FLUSH+" "+ACTION-SET-COMMENT+" "+ACTION-PARENT+" 
-   "+ACTION-TIMER+" "+ACTION-INHIBIT+" "+ACTION-DISK-TYPE+" 
-   "+ACTION-DISK-CHANGE+" "+ACTION-SET-DATE+" "+ACTION-UNDISK-INFO+" 
-   "+ACTION-SCREEN-MODE+" "+ACTION-READ-RETURN+" "+ACTION-WRITE-RETURN+" 
-   "+ACTION-SEEK+" "+ACTION-FINDUPDATE+" "+ACTION-FINDINPUT+" 
-   "+ACTION-FINDOUTPUT+" "+ACTION-END+" "+ACTION-SET-FILE-SIZE+" 
-   "+ACTION-WRITE-PROTECT+" "+ACTION-SAME-LOCK+" "+ACTION-CHANGE-SIGNAL+" 
-   "+ACTION-FORMAT+" "+ACTION-MAKE-LINK+" "+ACTION-READ-LINK+" 
-   "+ACTION-FH-FROM-LOCK+" "+ACTION-IS-FILESYSTEM+" "+ACTION-CHANGE-MODE+" 
-   "+ACTION-COPY-DIR-FH+" "+ACTION-PARENT-FH+" "+ACTION-EXAMINE-ALL+" 
-   "+ACTION-EXAMINE-FH+" "+ACTION-LOCK-RECORD+" "+ACTION-FREE-RECORD+" 
-   "+ACTION-ADD-NOTIFY+" "+ACTION-REMOVE-NOTIFY+" 
-   "+ACTION-EXAMINE-ALL-END+" "+ACTION-SET-OWNER+" 
-   "+ACTION-SERIALIZE-DISK+" "+RNB-WILDSTAR+" "+RNF-WILDSTAR+" 
-   "+RNB-PRIVATE1+" "+RNF-PRIVATE1+" "+DI-RES-LIST+" "+CMD-SYSTEM+" 
-   "+CMD-INTERNAL+" "+CMD-DISABLED+" "+DLT-DEVICE+" "+DLT-DIRECTORY+" 
-   "+DLT-VOLUME+" "+DLT-LATE+" "+DLT-NONBINDING+" "+DLT-PRIVATE+" 
-   "+DVPB-UNLOCK+" "+DVPF-UNLOCK+" "+DVPB-ASSIGN+" "+DVPF-ASSIGN+" 
-   "+LDB-DEVICES+" "+LDF-DEVICES+" "+LDB-VOLUMES+" "+LDF-VOLUMES+" 
-   "+LDB-ASSIGNS+" "+LDF-ASSIGNS+" "+LDB-ENTRY+" "+LDF-ENTRY+" 
-   "+LDB-DELETE+" "+LDF-DELETE+" "+LDB-READ+" "+LDF-READ+" "+LDB-WRITE+" 
-   "+LDF-WRITE+" "+LDF-ALL+" "+REPORT-STREAM+" "+REPORT-TASK+" 
-   "+REPORT-LOCK+" "+REPORT-VOLUME+" "+REPORT-INSERT+" "+ABORT-DISK-ERROR+" 
-   "+ABORT-BUSY+" "+RUN-EXECUTE+" "+RUN-SYSTEM+" "+RUN-SYSTEM-ASYNCH+" 
-   "+ST-ROOT+" "+ST-USERDIR+" "+ST-SOFTLINK+" "+ST-LINKDIR+" "+ST-FILE+" 
-   "+ST-LINKFILE+" "+ST-PIPEFILE+" "*PROCESS-SIZE*" "PROCESS-TASK" 
-   "PROCESS-MSG-PORT" "PROCESS-PAD" "PROCESS-SEG-LIST" "PROCESS-STACK-SIZE" 
-   "PROCESS-GLOB-VEC" "PROCESS-TASK-NUM" "PROCESS-STACK-BASE" 
-   "PROCESS-RESULT2" "PROCESS-CURRENT-DIR" "PROCESS-CIS" "PROCESS-COS" 
-   "PROCESS-CONSOLE-TASK" "PROCESS-FILE-SYSTEM-TASK" "PROCESS-CLI" 
-   "PROCESS-RETURN-ADDR" "PROCESS-PKT-WAIT" "PROCESS-WINDOW-PTR" 
-   "PROCESS-HOME-DIR" "PROCESS-FLAGS" "PROCESS-EXIT-CODE" 
-   "PROCESS-EXIT-DATA" "PROCESS-ARGUMENTS" "PROCESS-LOCAL-VARS" 
-   "PROCESS-SHELL-PRIVATE" "PROCESS-CES" "*FILE-HANDLE-SIZE*" 
-   "FILE-HANDLE-LINK" "FILE-HANDLE-INTERACTIVE" "FILE-HANDLE-TYPE" 
-   "FILE-HANDLE-BUF" "FILE-HANDLE-POS" "FILE-HANDLE-END" 
-   "FILE-HANDLE-FUNCS" "FILE-HANDLE-FUNC2" "FILE-HANDLE-FUNC3" 
-   "FILE-HANDLE-ARGS" "FILE-HANDLE-ARG2" "*DOS-PACKET-SIZE*" 
-   "DOS-PACKET-LINK" "DOS-PACKET-PORT" "DOS-PACKET-TYPE" "DOS-PACKET-RES1" 
-   "DOS-PACKET-RES2" "DOS-PACKET-ARG1" "DOS-PACKET-ARG2" "DOS-PACKET-ARG3" 
-   "DOS-PACKET-ARG4" "DOS-PACKET-ARG5" "DOS-PACKET-ARG6" "DOS-PACKET-ARG7" 
-   "*STANDARD-PACKET-SIZE*" "STANDARD-PACKET-MSG" "STANDARD-PACKET-PKT" 
-   "*ERROR-STRING-SIZE*" "ERROR-STRING-NUMS" "ERROR-STRING-STRINGS" 
-   "*DOS-LIBRARY-SIZE*" "DOS-LIBRARY-LIB" "DOS-LIBRARY-ROOT" 
-   "DOS-LIBRARY-GV" "DOS-LIBRARY-A2" "DOS-LIBRARY-A5" "DOS-LIBRARY-A6" 
-   "DOS-LIBRARY-ERRORS" "DOS-LIBRARY-TIME-REQ" "DOS-LIBRARY-UTILITY-BASE" 
-   "DOS-LIBRARY-INTUITION-BASE" "*ROOT-NODE-SIZE*" "ROOT-NODE-TASK-ARRAY" 
-   "ROOT-NODE-CONSOLE-SEGMENT" "ROOT-NODE-TIME" "ROOT-NODE-RESTART-SEG" 
-   "ROOT-NODE-INFO" "ROOT-NODE-FILE-HANDLER-SEGMENT" "ROOT-NODE-CLI-LIST" 
-   "ROOT-NODE-BOOT-PROC" "ROOT-NODE-SHELL-SEGMENT" "ROOT-NODE-FLAGS" 
-   "*CLI-PROC-LIST-SIZE*" "CLI-PROC-LIST-NODE" "CLI-PROC-LIST-FIRST" 
-   "CLI-PROC-LIST-ARRAY" "*DOS-INFO-SIZE*" "DOS-INFO-MC-NAME" 
-   "DOS-INFO-DEV-INFO" "DOS-INFO-DEVICES" "DOS-INFO-HANDLERS" 
-   "DOS-INFO-NET-HAND" "DOS-INFO-DEV-LOCK" "DOS-INFO-ENTRY-LOCK" 
-   "DOS-INFO-DELETE-LOCK" "*SEGMENT-SIZE*" "SEGMENT-NEXT" "SEGMENT-UC" 
-   "SEGMENT-SEG" "SEGMENT-NAME" "*COMMAND-LINE-INTERFACE-SIZE*" 
-   "COMMAND-LINE-INTERFACE-RESULT2" "COMMAND-LINE-INTERFACE-SET-NAME" 
-   "COMMAND-LINE-INTERFACE-COMMAND-DIR" 
-   "COMMAND-LINE-INTERFACE-RETURN-CODE" 
-   "COMMAND-LINE-INTERFACE-COMMAND-NAME" 
-   "COMMAND-LINE-INTERFACE-FAIL-LEVEL" "COMMAND-LINE-INTERFACE-PROMPT" 
-   "COMMAND-LINE-INTERFACE-STANDARD-INPUT" 
-   "COMMAND-LINE-INTERFACE-CURRENT-INPUT" 
-   "COMMAND-LINE-INTERFACE-COMMAND-FILE" 
-   "COMMAND-LINE-INTERFACE-INTERACTIVE" "COMMAND-LINE-INTERFACE-BACKGROUND" 
-   "COMMAND-LINE-INTERFACE-CURRENT-OUTPUT" 
-   "COMMAND-LINE-INTERFACE-DEFAULT-STACK" 
-   "COMMAND-LINE-INTERFACE-STANDARD-OUTPUT" "COMMAND-LINE-INTERFACE-MODULE" 
-   "*DEV-LIST-SIZE*" "DEV-LIST-NEXT" "DEV-LIST-TYPE" "DEV-LIST-TASK" 
-   "DEV-LIST-LOCK" "DEV-LIST-VOLUME-DATE" "DEV-LIST-LOCK-LIST" 
-   "DEV-LIST-DISK-TYPE" "DEV-LIST-UNUSED" "DEV-LIST-NAME" "*DEV-INFO-SIZE*" 
-   "DEV-INFO-NEXT" "DEV-INFO-TYPE" "DEV-INFO-TASK" "DEV-INFO-LOCK" 
-   "DEV-INFO-HANDLER" "DEV-INFO-STACKSIZE" "DEV-INFO-PRIORITY" 
-   "DEV-INFO-STARTUP" "DEV-INFO-SEG-LIST" "DEV-INFO-GLOB-VEC" 
-   "DEV-INFO-NAME" "*DOS-LIST-SIZE*" "DOS-LIST-NEXT" "DOS-LIST-TYPE" 
-   "DOS-LIST-TASK" "DOS-LIST-LOCK" "DOS-LIST-VOLUME-DATE" 
-   "DOS-LIST-ASSIGN-NAME" "DOS-LIST-HANDLER" "DOS-LIST-LIST" 
-   "DOS-LIST-STACK-SIZE" "DOS-LIST-PRIORITY" "DOS-LIST-LOCK-LIST" 
-   "DOS-LIST-STARTUP" "DOS-LIST-DISK-TYPE" "DOS-LIST-SEG-LIST" 
-   "DOS-LIST-GLOB-VEC" "DOS-LIST-NAME" "*DEV-PROC-SIZE*" "DEV-PROC-PORT" 
-   "DEV-PROC-LOCK" "DEV-PROC-FLAGS" "DEV-PROC-DEV-NODE" "*FILE-LOCK-SIZE*" 
-   "FILE-LOCK-LINK" "FILE-LOCK-KEY" "FILE-LOCK-ACCESS" "FILE-LOCK-TASK" 
-   "FILE-LOCK-VOLUME" "+HUNK-UNIT+" "+HUNK-NAME+" "+HUNK-CODE+" 
-   "+HUNK-DATA+" "+HUNK-BSS+" "+HUNK-RELOC32+" "+HUNK-ABSRELOC32+" 
-   "+HUNK-RELOC16+" "+HUNK-RELRELOC16+" "+HUNK-RELOC8+" "+HUNK-RELRELOC8+" 
-   "+HUNK-EXT+" "+HUNK-SYMBOL+" "+HUNK-DEBUG+" "+HUNK-END+" "+HUNK-HEADER+" 
-   "+HUNK-OVERLAY+" "+HUNK-BREAK+" "+HUNK-DREL32+" "+HUNK-DREL16+" 
-   "+HUNK-DREL8+" "+HUNK-LIB+" "+HUNK-INDEX+" "+HUNK-RELOC32-SHORT+" 
-   "+HUNK-RELRELOC32+" "+HUNK-ABSRELOC16+" "+HUNKB-ADVISORY+" 
-   "+HUNKF-ADVISORY+" "+HUNKB-CHIP+" "+HUNKF-CHIP+" "+HUNKB-FAST+" 
-   "+HUNKF-FAST+" "+EXT-SYMB+" "+EXT-DEF+" "+EXT-ABS+" "+EXT-RES+" 
-   "+EXT-COMMONDEF+" "+EXT-REF32+" "+EXT-ABSREF32+" "+EXT-COMMON+" 
-   "+EXT-ABSCOMMON+" "+EXT-REF16+" "+EXT-RELREF16+" "+EXT-REF8+" 
-   "+EXT-RELREF8+" "+EXT-DEXT32+" "+EXT-DEXT16+" "+EXT-DEXT8+" 
-   "+EXT-RELREF32+" "+EXT-RELCOMMON+" "+EXT-ABSREF16+" "+EXT-ABSREF8+" 
-   "+SYS-DUMMY+" "+SYS-INPUT+" "+SYS-OUTPUT+" "+SYS-ASYNCH+" 
-   "+SYS-USER-SHELL+" "+SYS-CUSTOM-SHELL+" "+SYS-ERROR+" 
-   "+SYS-EXECUTE-INPUT-STREAM+" "+SYS-CMD-STREAM+" "+NP-DUMMY+" 
-   "+NP-SEGLIST+" "+NP-FREE-SEGLIST+" "+NP-ENTRY+" "+NP-INPUT+" 
-   "+NP-OUTPUT+" "+NP-CLOSE-INPUT+" "+NP-CLOSE-OUTPUT+" "+NP-ERROR+" 
-   "+NP-CLOSE-ERROR+" "+NP-CURRENT-DIR+" "+NP-STACK-SIZE+" "+NP-NAME+" 
-   "+NP-PRIORITY+" "+NP-CONSOLE-TASK+" "+NP-WINDOW-PTR+" "+NP-HOME-DIR+" 
-   "+NP-COPY-VARS+" "+NP-CLI+" "+NP-PATH+" "+NP-COMMAND-NAME+" 
-   "+NP-ARGUMENTS+" "+NP-NOTIFY-ON-DEATH+" "+NP-SYNCHRONOUS+" 
-   "+NP-EXIT-CODE+" "+NP-EXIT-DATA+" "+ADO-DUMMY+" "+ADO-FH-MODE+" 
-   "+ADO-DIR-LEN+" "+ADO-COMM-NAME-LEN+" "+ADO-COMM-FILE-LEN+" 
-   "+ADO-PROMPT-LEN+" "+ED-NAME+" "+ED-TYPE+" "+ED-SIZE+" "+ED-PROTECTION+" 
-   "+ED-DATE+" "+ED-COMMENT+" "+ED-OWNER+" "*EX-ALL-DATA-SIZE*" 
-   "EX-ALL-DATA-NEXT" "EX-ALL-DATA-NAME" "EX-ALL-DATA-TYPE" 
-   "EX-ALL-DATA-SIZE" "EX-ALL-DATA-PROT" "EX-ALL-DATA-DAYS" 
-   "EX-ALL-DATA-MINS" "EX-ALL-DATA-TICKS" "EX-ALL-DATA-COMMENT" 
-   "EX-ALL-DATA-OWNER-UID" "EX-ALL-DATA-OWNER-GID" "*EX-ALL-CONTROL-SIZE*" 
-   "EX-ALL-CONTROL-ENTRIES" "EX-ALL-CONTROL-LAST-KEY" 
-   "EX-ALL-CONTROL-MATCH-STRING" "EX-ALL-CONTROL-MATCH-FUNC" 
-   "+DE-TABLESIZE+" "+DE-SIZEBLOCK+" "+DE-SECORG+" "+DE-NUMHEADS+" 
-   "+DE-SECSPERBLK+" "+DE-BLKSPERTRACK+" "+DE-RESERVEDBLKS+" "+DE-PREFAC+" 
-   "+DE-INTERLEAVE+" "+DE-LOWCYL+" "+DE-UPPERCYL+" "+DE-NUMBUFFERS+" 
-   "+DE-MEMBUFTYPE+" "+DE-BUFMEMTYPE+" "+DE-MAXTRANSFER+" "+DE-MASK+" 
-   "+DE-BOOTPRI+" "+DE-DOSTYPE+" "+DE-BAUD+" "+DE-CONTROL+" 
-   "+DE-BOOTBLOCKS+" "+ENVB-SCSIDIRECT+" "+ENVF-SCSIDIRECT+" 
-   "+ENVB-SUPERFLOPPY+" "+ENVF-SUPERFLOPPY+" "+ENVB-DISABLENSD+" 
-   "+ENVF-DISABLENSD+" "*DOS-ENVEC-SIZE*" "DOS-ENVEC-TABLE-SIZE" 
-   "DOS-ENVEC-SIZE-BLOCK" "DOS-ENVEC-SEC-ORG" "DOS-ENVEC-SURFACES" 
-   "DOS-ENVEC-SECTOR-PER-BLOCK" "DOS-ENVEC-BLOCKS-PER-TRACK" 
-   "DOS-ENVEC-RESERVED" "DOS-ENVEC-PRE-ALLOC" "DOS-ENVEC-INTERLEAVE" 
-   "DOS-ENVEC-LOW-CYL" "DOS-ENVEC-HIGH-CYL" "DOS-ENVEC-NUM-BUFFERS" 
-   "DOS-ENVEC-BUF-MEM-TYPE" "DOS-ENVEC-MAX-TRANSFER" "DOS-ENVEC-MASK" 
-   "DOS-ENVEC-BOOT-PRI" "DOS-ENVEC-DOS-TYPE" "DOS-ENVEC-BAUD" 
-   "DOS-ENVEC-CONTROL" "DOS-ENVEC-BOOT-BLOCKS" 
-   "*FILE-SYS-STARTUP-MSG-SIZE*" "FILE-SYS-STARTUP-MSG-UNIT" 
-   "FILE-SYS-STARTUP-MSG-DEVICE" "FILE-SYS-STARTUP-MSG-ENVIRON" 
-   "FILE-SYS-STARTUP-MSG-FLAGS" "*DEVICE-NODE-SIZE*" "DEVICE-NODE-NEXT" 
-   "DEVICE-NODE-TYPE" "DEVICE-NODE-TASK" "DEVICE-NODE-LOCK" 
-   "DEVICE-NODE-HANDLER" "DEVICE-NODE-STACK-SIZE" "DEVICE-NODE-PRIORITY" 
-   "DEVICE-NODE-STARTUP" "DEVICE-NODE-SEG-LIST" "DEVICE-NODE-GLOBAL-VEC" 
-   "DEVICE-NODE-NAME" "+NOTIFY-CLASS+" "+NOTIFY-CODE+" "+NR-TASK+" 
-   "+NRB-SEND-MESSAGE+" "+NRF-SEND-MESSAGE+" "+NRB-SEND-SIGNAL+" 
-   "+NRF-SEND-SIGNAL+" "+NRB-WAIT-REPLY+" "+NRF-WAIT-REPLY+" 
-   "+NRB-NOTIFY-INITIAL+" "+NRF-NOTIFY-INITIAL+" "+NRB-MAGIC+" 
-   "+NRF-MAGIC+" "+NR-HANDLER-FLAGS+" "*NOTIFY-MESSAGE-SIZE*" 
-   "NOTIFY-MESSAGE-EXEC-MESSAGE" "NOTIFY-MESSAGE-CLASS" 
-   "NOTIFY-MESSAGE-CODE" "NOTIFY-MESSAGE-N-REQ" 
-   "NOTIFY-MESSAGE-DO-NOT-TOUCH" "NOTIFY-MESSAGE-DO-NOT-TOUCH2" 
-   "*NOTIFY-REQUEST-SIZE*" "NOTIFY-REQUEST-NAME" "NOTIFY-REQUEST-FULL-NAME" 
-   "NOTIFY-REQUEST-USER-DATA" "NOTIFY-REQUEST-FLAGS" "NOTIFY-REQUEST-PORT" 
-   "NOTIFY-REQUEST-SIGNAL-NUM" "NOTIFY-REQUEST-PAD" 
-   "NOTIFY-REQUEST-RESERVED" "NOTIFY-REQUEST-MSG-COUNT" 
-   "NOTIFY-REQUEST-HANDLER" "+RDAB-STDIN+" "+RDAF-STDIN+" "+RDAB-NOALLOC+" 
-   "+RDAF-NOALLOC+" "+RDAB-NOPROMPT+" "+RDAF-NOPROMPT+" 
-   "+MAX-TEMPLATE-ITEMS+" "+MAX-MULTIARGS+" "*C-SOURCE-SIZE*" 
-   "C-SOURCE-BUFFER" "C-SOURCE-LENGTH" "C-SOURCE-CUR-CHR" "*RD-ARGS-SIZE*" 
-   "RD-ARGS-SOURCE" "RD-ARGS-DA-LIST" "RD-ARGS-BUFFER" "RD-ARGS-BUF-SIZ" 
-   "RD-ARGS-EXT-HELP" "RD-ARGS-FLAGS" "+REC-EXCLUSIVE+" 
-   "+REC-EXCLUSIVE-IMMED+" "+REC-SHARED+" "+REC-SHARED-IMMED+" 
-   "*RECORD-LOCK-SIZE*" "RECORD-LOCK-FH" "RECORD-LOCK-OFFSET" 
-   "RECORD-LOCK-LENGTH" "RECORD-LOCK-MODE" "+SHELL-DUMMY+" 
-   "+SHELL-FGETS-FULL+" "+SHELL-ADDH-LINE+" 
-   "*EXTENDED-COMMAND-LINE-INTERFACE-SIZE*" 
-   "EXTENDED-COMMAND-LINE-INTERFACE-RESULT2" 
-   "EXTENDED-COMMAND-LINE-INTERFACE-SET-NAME" 
-   "EXTENDED-COMMAND-LINE-INTERFACE-COMMAND-DIR" 
-   "EXTENDED-COMMAND-LINE-INTERFACE-RETURN-CODE" 
-   "EXTENDED-COMMAND-LINE-INTERFACE-COMMAND-NAME" 
-   "EXTENDED-COMMAND-LINE-INTERFACE-FAIL-LEVEL" 
-   "EXTENDED-COMMAND-LINE-INTERFACE-PROMPT" 
-   "EXTENDED-COMMAND-LINE-INTERFACE-STANDARD-INPUT" 
-   "EXTENDED-COMMAND-LINE-INTERFACE-CURRENT-INPUT" 
-   "EXTENDED-COMMAND-LINE-INTERFACE-COMMAND-FILE" 
-   "EXTENDED-COMMAND-LINE-INTERFACE-INTERACTIVE" 
-   "EXTENDED-COMMAND-LINE-INTERFACE-BACKGROUND" 
-   "EXTENDED-COMMAND-LINE-INTERFACE-CURRENT-OUTPUT" 
-   "EXTENDED-COMMAND-LINE-INTERFACE-DEFAULT-STACK" 
-   "EXTENDED-COMMAND-LINE-INTERFACE-STANDARD-OUTPUT" 
-   "EXTENDED-COMMAND-LINE-INTERFACE-MODULE" 
-   "EXTENDED-COMMAND-LINE-INTERFACE-HOOK" 
-   "EXTENDED-COMMAND-LINE-INTERFACE-THIS" "*HISTORY-NODE-SIZE*" 
-   "HISTORY-NODE-NODE" "HISTORY-NODE-LINE" "+DOS-STDIO-I+" "+BUF-LINE+" 
-   "+BUF-FULL+" "+BUF-NONE+" "+ENDSTREAMCH+" "+LV-VAR+" "+LV-ALIAS+" 
-   "+LVB-IGNORE+" "+LVF-IGNORE+" "+GVB-GLOBAL-ONLY+" "+GVF-GLOBAL-ONLY+" 
-   "+GVB-LOCAL-ONLY+" "+GVF-LOCAL-ONLY+" "+GVB-BINARY-VAR+" 
-   "+GVF-BINARY-VAR+" "+GVB-DONT-NULL-TERM+" "+GVF-DONT-NULL-TERM+" 
-   "+GVB-SAVE-VAR+" "+GVF-SAVE-VAR+" "*LOCAL-VAR-SIZE*" "LOCAL-VAR-NODE" 
-   "LOCAL-VAR-FLAGS" "LOCAL-VAR-VALUE" "LOCAL-VAR-LEN" "OPEN" "CLOSE" 
-   "READ" "WRITE" "INPUT" "OUTPUT" "SEEK" "DELETE-FILE" "RENAME" "LOCK" 
-   "UN-LOCK" "DUP-LOCK" "EXAMINE" "EX-NEXT" "INFO" "CREATE-DIR" 
-   "CURRENT-DIR" "IO-ERR" "CREATE-PROC" "EXIT" "LOAD-SEG" "UN-LOAD-SEG" 
-   "DEVICE-PROC" "SET-COMMENT" "SET-PROTECTION" "DATE-STAMP" "DELAY" 
-   "WAIT-FOR-CHAR" "PARENT-DIR" "IS-INTERACTIVE" "EXECUTE" 
-   "ALLOC-DOS-OBJECT" "FREE-DOS-OBJECT" "DO-PKT" "SEND-PKT" "WAIT-PKT" 
-   "REPLY-PKT" "ABORT-PKT" "LOCK-RECORD" "LOCK-RECORDS" "UN-LOCK-RECORD" 
-   "UN-LOCK-RECORDS" "SELECT-INPUT" "SELECT-OUTPUT" "F-GET-C" "F-PUT-C" 
-   "UN-GET-C" "F-READ" "F-WRITE" "F-GETS" "F-PUTS" "VF-WRITEF" "VF-PRINTF" 
-   "FLUSH" "SET-V-BUF" "DUP-LOCK-FROM-FH" "OPEN-FROM-LOCK" "PARENT-OF-FH" 
-   "EXAMINE-FH" "SET-FILE-DATE" "NAME-FROM-LOCK" "NAME-FROM-FH" 
-   "SPLIT-NAME" "SAME-LOCK" "SET-MODE" "EX-ALL" "READ-LINK" "MAKE-LINK" 
-   "CHANGE-MODE" "SET-FILE-SIZE" "SET-IO-ERR" "FAULT" "PRINT-FAULT" 
-   "ERROR-REPORT" "CLI" "CREATE-NEW-PROC" "RUN-COMMAND" "GET-CONSOLE-TASK" 
-   "SET-CONSOLE-TASK" "GET-FILE-SYS-TASK" "SET-FILE-SYS-TASK" "GET-ARG-STR" 
-   "SET-ARG-STR" "FIND-CLI-PROC" "MAX-CLI" "SET-CURRENT-DIR-NAME" 
-   "GET-CURRENT-DIR-NAME" "SET-PROGRAM-NAME" "GET-PROGRAM-NAME" 
-   "SET-PROMPT" "GET-PROMPT" "SET-PROGRAM-DIR" "GET-PROGRAM-DIR" 
-   "SYSTEM-TAG-LIST" "ASSIGN-LOCK" "ASSIGN-LATE" "ASSIGN-PATH" "ASSIGN-ADD" 
-   "REM-ASSIGN-LIST" "GET-DEVICE-PROC" "FREE-DEVICE-PROC" "LOCK-DOS-LIST" 
-   "UN-LOCK-DOS-LIST" "ATTEMPT-LOCK-DOS-LIST" "REM-DOS-ENTRY" 
-   "ADD-DOS-ENTRY" "FIND-DOS-ENTRY" "NEXT-DOS-ENTRY" "MAKE-DOS-ENTRY" 
-   "FREE-DOS-ENTRY" "IS-FILE-SYSTEM" "FORMAT" "RELABEL" "INHIBIT" 
-   "ADD-BUFFERS" "COMPARE-DATES" "DATE-TO-STR" "STR-TO-DATE" 
-   "INTERNAL-LOAD-SEG" "INTERNAL-UN-LOAD-SEG" "NEW-LOAD-SEG" "ADD-SEGMENT" 
-   "FIND-SEGMENT" "REM-SEGMENT" "CHECK-SIGNAL" "READ-ARGS" "FIND-ARG" 
-   "READ-ITEM" "STR-TO-LONG" "MATCH-FIRST" "MATCH-NEXT" "MATCH-END" 
-   "PARSE-PATTERN" "MATCH-PATTERN" "FREE-ARGS" "FILE-PART" "PATH-PART" 
-   "ADD-PART" "START-NOTIFY" "END-NOTIFY" "SET-VAR" "GET-VAR" "DELETE-VAR" 
-   "FIND-VAR" "CLI-INIT-NEWCLI" "CLI-INIT-RUN" "WRITE-CHARS" "PUT-STR" 
-   "V-PRINTF" "PARSE-PATTERN-NO-CASE" "MATCH-PATTERN-NO-CASE" "SAME-DEVICE" 
-   "EX-ALL-END" "SET-OWNER" "VOLUME-REQUEST-HOOK" "GET-CURRENT-DIR" 
-   "PUT-ERR-STR" "ERROR-OUTPUT" "SELECT-ERROR" "DO-SHELL-METHOD-TAG-LIST" 
-   "SCAN-STACK-TOKEN" "ADD-SEGMENT-TAG-LIST" "FIND-SEGMENT-TAG-LIST" ))
+  (:export "*DOS-BASE*" "*DOS-VERSION*"))
 
 (in-package "AMIGA.RAW.DOS")
 
@@ -354,1453 +45,1125 @@
 (defun %version>= (n)
   (and *dos-version* (>= *dos-version* n)))
 
-;;; --- constants from dos/datetime.i ---
-(defconstant +len-datstring+ #x10)
-(defconstant +dtb-subst+ 0)
-(defconstant +dtf-subst+ 1)
-(defconstant +dtb-future+ 1)
-(defconstant +dtf-future+ 2)
-(defconstant +format-dos+ 0)
-(defconstant +format-int+ 1)
-(defconstant +format-usa+ 2)
-(defconstant +format-cdn+ 3)
-(defconstant +format-def+ 4)
-(defconstant +format-max+ 3)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.DOS"
+    (:base *dos-base* :version *dos-version*)
 
-;;; --- structures from dos/datetime.i ---
-(ffi:defcstruct (date-time :size 26)   ; DateTime (dos/datetime.i)
-  (stamp (:struct 12) 0)
-  (format :u8 12)
-  (flags :u8 13)
-  (str-day :fptr 14)
-  (str-date :fptr 18)
-  (str-time :fptr 22)
-)
+  ;; --- constants from dos/datetime.i ---
+  (:const "+LEN-DATSTRING+" #x10)
+  (:const "+DTB-SUBST+" 0)
+  (:const "+DTF-SUBST+" 1)
+  (:const "+DTB-FUTURE+" 1)
+  (:const "+DTF-FUTURE+" 2)
+  (:const "+FORMAT-DOS+" 0)
+  (:const "+FORMAT-INT+" 1)
+  (:const "+FORMAT-USA+" 2)
+  (:const "+FORMAT-CDN+" 3)
+  (:const "+FORMAT-DEF+" 4)
+  (:const "+FORMAT-MAX+" 3)
 
-;;; --- constants from dos/dos.i ---
-(defconstant +dostrue+ -1)
-(defconstant +dosfalse+ 0)
-(defconstant +mode-oldfile+ #x3ED)
-(defconstant +mode-newfile+ #x3EE)
-(defconstant +mode-readwrite+ #x3EC)
-(defconstant +offset-beginning+ -1)
-(defconstant +offset-current+ 0)
-(defconstant +offset-end+ 1)
-(defconstant +offset-begining+ -1)
-(defconstant +bitsperbyte+ 8)
-(defconstant +bytesperlong+ 4)
-(defconstant +bitsperlong+ #x20)
-(defconstant +maxint+ #x7FFFFFFF)
-(defconstant +minint+ #x80000000)
-(defconstant +shared-lock+ -2)
-(defconstant +access-read+ -2)
-(defconstant +exclusive-lock+ -1)
-(defconstant +access-write+ -1)
-(defconstant +ticks-per-second+ #x32)
-(defconstant +fibb-otr-read+ 15)
-(defconstant +fibf-otr-read+ #x8000)
-(defconstant +fibb-otr-write+ 14)
-(defconstant +fibf-otr-write+ #x4000)
-(defconstant +fibb-otr-execute+ 13)
-(defconstant +fibf-otr-execute+ #x2000)
-(defconstant +fibb-otr-delete+ 12)
-(defconstant +fibf-otr-delete+ #x1000)
-(defconstant +fibb-grp-read+ 11)
-(defconstant +fibf-grp-read+ #x800)
-(defconstant +fibb-grp-write+ 10)
-(defconstant +fibf-grp-write+ #x400)
-(defconstant +fibb-grp-execute+ 9)
-(defconstant +fibf-grp-execute+ #x200)
-(defconstant +fibb-grp-delete+ 8)
-(defconstant +fibf-grp-delete+ #x100)
-(defconstant +fibb-hold+ 7)
-(defconstant +fibf-hold+ #x80)
-(defconstant +fibb-script+ 6)
-(defconstant +fibf-script+ #x40)
-(defconstant +fibb-pure+ 5)
-(defconstant +fibf-pure+ #x20)
-(defconstant +fibb-archive+ 4)
-(defconstant +fibf-archive+ #x10)
-(defconstant +fibb-read+ 3)
-(defconstant +fibf-read+ 8)
-(defconstant +fibb-write+ 2)
-(defconstant +fibf-write+ 4)
-(defconstant +fibb-execute+ 1)
-(defconstant +fibf-execute+ 2)
-(defconstant +fibb-delete+ 0)
-(defconstant +fibf-delete+ 1)
-(defconstant +fault-max+ #x52)
-(defconstant +id-write-protected+ #x50)
-(defconstant +id-validating+ #x51)
-(defconstant +id-validated+ #x52)
-(defconstant +id-no-disk-present+ -1)
-(defconstant +id-unreadable-disk+ #x42414400)
-(defconstant +id-not-really-dos+ #x4E444F53)
-(defconstant +id-dos-disk+ #x444F5300)
-(defconstant +id-ffs-disk+ #x444F5301)
-(defconstant +id-inter-dos-disk+ #x444F5302)
-(defconstant +id-inter-ffs-disk+ #x444F5303)
-(defconstant +id-fastdir-dos-disk+ #x444F5304)
-(defconstant +id-fastdir-ffs-disk+ #x444F5305)
-(defconstant +id-long-dos-disk+ #x444F5306)
-(defconstant +id-long-ffs-disk+ #x444F5307)
-(defconstant +id-complong-ffs-disk+ #x444F5308)
-(defconstant +id-kickstart-disk+ #x4B49434B)
-(defconstant +id-msdos-disk+ #x4D534400)
-(defconstant +error-no-free-store+ #x67)
-(defconstant +error-task-table-full+ #x69)
-(defconstant +error-bad-template+ #x72)
-(defconstant +error-bad-number+ #x73)
-(defconstant +error-required-arg-missing+ #x74)
-(defconstant +error-key-needs-arg+ #x75)
-(defconstant +error-too-many-args+ #x76)
-(defconstant +error-unmatched-quotes+ #x77)
-(defconstant +error-line-too-long+ #x78)
-(defconstant +error-file-not-object+ #x79)
-(defconstant +error-invalid-resident-library+ #x7A)
-(defconstant +error-no-default-dir+ #xC9)
-(defconstant +error-object-in-use+ #xCA)
-(defconstant +error-object-exists+ #xCB)
-(defconstant +error-dir-not-found+ #xCC)
-(defconstant +error-object-not-found+ #xCD)
-(defconstant +error-bad-stream-name+ #xCE)
-(defconstant +error-object-too-large+ #xCF)
-(defconstant +error-action-not-known+ #xD1)
-(defconstant +error-invalid-component-name+ #xD2)
-(defconstant +error-invalid-lock+ #xD3)
-(defconstant +error-object-wrong-type+ #xD4)
-(defconstant +error-disk-not-validated+ #xD5)
-(defconstant +error-disk-write-protected+ #xD6)
-(defconstant +error-rename-across-devices+ #xD7)
-(defconstant +error-directory-not-empty+ #xD8)
-(defconstant +error-too-many-levels+ #xD9)
-(defconstant +error-device-not-mounted+ #xDA)
-(defconstant +error-seek-error+ #xDB)
-(defconstant +error-comment-too-big+ #xDC)
-(defconstant +error-disk-full+ #xDD)
-(defconstant +error-delete-protected+ #xDE)
-(defconstant +error-write-protected+ #xDF)
-(defconstant +error-read-protected+ #xE0)
-(defconstant +error-not-a-dos-disk+ #xE1)
-(defconstant +error-no-disk+ #xE2)
-(defconstant +error-no-more-entries+ #xE8)
-(defconstant +error-is-soft-link+ #xE9)
-(defconstant +error-object-linked+ #xEA)
-(defconstant +error-bad-hunk+ #xEB)
-(defconstant +error-not-implemented+ #xEC)
-(defconstant +error-record-not-locked+ #xF0)
-(defconstant +error-lock-collision+ #xF1)
-(defconstant +error-lock-timeout+ #xF2)
-(defconstant +error-unlock-error+ #xF3)
-(defconstant +return-ok+ 0)
-(defconstant +return-warn+ 5)
-(defconstant +return-error+ 10)
-(defconstant +return-fail+ #x14)
-(defconstant +sigbreakb-ctrl-c+ 12)
-(defconstant +sigbreakf-ctrl-c+ #x1000)
-(defconstant +sigbreakb-ctrl-d+ 13)
-(defconstant +sigbreakf-ctrl-d+ #x2000)
-(defconstant +sigbreakb-ctrl-e+ 14)
-(defconstant +sigbreakf-ctrl-e+ #x4000)
-(defconstant +sigbreakb-ctrl-f+ 15)
-(defconstant +sigbreakf-ctrl-f+ #x8000)
-(defconstant +lock-different+ -1)
-(defconstant +lock-same+ 0)
-(defconstant +lock-same-volume+ 1)
-(defconstant +lock-same-handler+ 1)
-(defconstant +change-lock+ 0)
-(defconstant +change-fh+ 1)
-(defconstant +link-hard+ 0)
-(defconstant +link-soft+ 1)
-(defconstant +item-equal+ -2)
-(defconstant +item-error+ -1)
-(defconstant +item-nothing+ 0)
-(defconstant +item-unquoted+ 1)
-(defconstant +item-quoted+ 2)
-(defconstant +dos-filehandle+ 0)
-(defconstant +dos-exallcontrol+ 1)
-(defconstant +dos-fib+ 2)
-(defconstant +dos-stdpkt+ 3)
-(defconstant +dos-cli+ 4)
-(defconstant +dos-rdargs+ 5)
+  ;; --- structures from dos/datetime.i ---
+  (:struct "DATE-TIME" 26   ; DateTime (dos/datetime.i)
+    ("STAMP" (:struct 12) 0)
+    ("FORMAT" :u8 12)
+    ("FLAGS" :u8 13)
+    ("STR-DAY" :fptr 14)
+    ("STR-DATE" :fptr 18)
+    ("STR-TIME" :fptr 22)
+    )
 
-;;; --- structures from dos/dos.i ---
-(ffi:defcstruct (date-stamp :size 12)   ; DateStamp (dos/dos.i)
-  (days :i32 0)
-  (minute :i32 4)
-  (tick :i32 8)
-)
-(ffi:defcstruct (file-info-block :size 260)   ; FileInfoBlock (dos/dos.i)
-  (disk-key :i32 0)
-  (dir-entry-type :i32 4)
-  (file-name (:struct 108) 8)
-  (protection :i32 116)
-  (entry-type :i32 120)
-  (size :i32 124)
-  (num-blocks :i32 128)
-  (date-stamp (:struct 12) 132)
-  (comment (:struct 80) 144)
-  (owner-uid :u16 224)
-  (owner-gid :u16 226)
-  (reserved (:struct 32) 228)
-)
-(ffi:defcstruct (info-data :size 36)   ; InfoData (dos/dos.i)
-  (num-soft-errors :i32 0)
-  (unit-number :i32 4)
-  (disk-state :i32 8)
-  (num-blocks :i32 12)
-  (num-blocks-used :i32 16)
-  (bytes-per-block :i32 20)
-  (disk-type :i32 24)
-  (volume-node :u32 28)
-  (in-use :i32 32)
-)
+  ;; --- constants from dos/dos.i ---
+  (:const "+DOSTRUE+" -1)
+  (:const "+DOSFALSE+" 0)
+  (:const "+MODE-OLDFILE+" #x3ED)
+  (:const "+MODE-NEWFILE+" #x3EE)
+  (:const "+MODE-READWRITE+" #x3EC)
+  (:const "+OFFSET-BEGINNING+" -1)
+  (:const "+OFFSET-CURRENT+" 0)
+  (:const "+OFFSET-END+" 1)
+  (:const "+OFFSET-BEGINING+" -1)
+  (:const "+BITSPERBYTE+" 8)
+  (:const "+BYTESPERLONG+" 4)
+  (:const "+BITSPERLONG+" #x20)
+  (:const "+MAXINT+" #x7FFFFFFF)
+  (:const "+MININT+" #x80000000)
+  (:const "+SHARED-LOCK+" -2)
+  (:const "+ACCESS-READ+" -2)
+  (:const "+EXCLUSIVE-LOCK+" -1)
+  (:const "+ACCESS-WRITE+" -1)
+  (:const "+TICKS-PER-SECOND+" #x32)
+  (:const "+FIBB-OTR-READ+" 15)
+  (:const "+FIBF-OTR-READ+" #x8000)
+  (:const "+FIBB-OTR-WRITE+" 14)
+  (:const "+FIBF-OTR-WRITE+" #x4000)
+  (:const "+FIBB-OTR-EXECUTE+" 13)
+  (:const "+FIBF-OTR-EXECUTE+" #x2000)
+  (:const "+FIBB-OTR-DELETE+" 12)
+  (:const "+FIBF-OTR-DELETE+" #x1000)
+  (:const "+FIBB-GRP-READ+" 11)
+  (:const "+FIBF-GRP-READ+" #x800)
+  (:const "+FIBB-GRP-WRITE+" 10)
+  (:const "+FIBF-GRP-WRITE+" #x400)
+  (:const "+FIBB-GRP-EXECUTE+" 9)
+  (:const "+FIBF-GRP-EXECUTE+" #x200)
+  (:const "+FIBB-GRP-DELETE+" 8)
+  (:const "+FIBF-GRP-DELETE+" #x100)
+  (:const "+FIBB-HOLD+" 7)
+  (:const "+FIBF-HOLD+" #x80)
+  (:const "+FIBB-SCRIPT+" 6)
+  (:const "+FIBF-SCRIPT+" #x40)
+  (:const "+FIBB-PURE+" 5)
+  (:const "+FIBF-PURE+" #x20)
+  (:const "+FIBB-ARCHIVE+" 4)
+  (:const "+FIBF-ARCHIVE+" #x10)
+  (:const "+FIBB-READ+" 3)
+  (:const "+FIBF-READ+" 8)
+  (:const "+FIBB-WRITE+" 2)
+  (:const "+FIBF-WRITE+" 4)
+  (:const "+FIBB-EXECUTE+" 1)
+  (:const "+FIBF-EXECUTE+" 2)
+  (:const "+FIBB-DELETE+" 0)
+  (:const "+FIBF-DELETE+" 1)
+  (:const "+FAULT-MAX+" #x52)
+  (:const "+ID-WRITE-PROTECTED+" #x50)
+  (:const "+ID-VALIDATING+" #x51)
+  (:const "+ID-VALIDATED+" #x52)
+  (:const "+ID-NO-DISK-PRESENT+" -1)
+  (:const "+ID-UNREADABLE-DISK+" #x42414400)
+  (:const "+ID-NOT-REALLY-DOS+" #x4E444F53)
+  (:const "+ID-DOS-DISK+" #x444F5300)
+  (:const "+ID-FFS-DISK+" #x444F5301)
+  (:const "+ID-INTER-DOS-DISK+" #x444F5302)
+  (:const "+ID-INTER-FFS-DISK+" #x444F5303)
+  (:const "+ID-FASTDIR-DOS-DISK+" #x444F5304)
+  (:const "+ID-FASTDIR-FFS-DISK+" #x444F5305)
+  (:const "+ID-LONG-DOS-DISK+" #x444F5306)
+  (:const "+ID-LONG-FFS-DISK+" #x444F5307)
+  (:const "+ID-COMPLONG-FFS-DISK+" #x444F5308)
+  (:const "+ID-KICKSTART-DISK+" #x4B49434B)
+  (:const "+ID-MSDOS-DISK+" #x4D534400)
+  (:const "+ERROR-NO-FREE-STORE+" #x67)
+  (:const "+ERROR-TASK-TABLE-FULL+" #x69)
+  (:const "+ERROR-BAD-TEMPLATE+" #x72)
+  (:const "+ERROR-BAD-NUMBER+" #x73)
+  (:const "+ERROR-REQUIRED-ARG-MISSING+" #x74)
+  (:const "+ERROR-KEY-NEEDS-ARG+" #x75)
+  (:const "+ERROR-TOO-MANY-ARGS+" #x76)
+  (:const "+ERROR-UNMATCHED-QUOTES+" #x77)
+  (:const "+ERROR-LINE-TOO-LONG+" #x78)
+  (:const "+ERROR-FILE-NOT-OBJECT+" #x79)
+  (:const "+ERROR-INVALID-RESIDENT-LIBRARY+" #x7A)
+  (:const "+ERROR-NO-DEFAULT-DIR+" #xC9)
+  (:const "+ERROR-OBJECT-IN-USE+" #xCA)
+  (:const "+ERROR-OBJECT-EXISTS+" #xCB)
+  (:const "+ERROR-DIR-NOT-FOUND+" #xCC)
+  (:const "+ERROR-OBJECT-NOT-FOUND+" #xCD)
+  (:const "+ERROR-BAD-STREAM-NAME+" #xCE)
+  (:const "+ERROR-OBJECT-TOO-LARGE+" #xCF)
+  (:const "+ERROR-ACTION-NOT-KNOWN+" #xD1)
+  (:const "+ERROR-INVALID-COMPONENT-NAME+" #xD2)
+  (:const "+ERROR-INVALID-LOCK+" #xD3)
+  (:const "+ERROR-OBJECT-WRONG-TYPE+" #xD4)
+  (:const "+ERROR-DISK-NOT-VALIDATED+" #xD5)
+  (:const "+ERROR-DISK-WRITE-PROTECTED+" #xD6)
+  (:const "+ERROR-RENAME-ACROSS-DEVICES+" #xD7)
+  (:const "+ERROR-DIRECTORY-NOT-EMPTY+" #xD8)
+  (:const "+ERROR-TOO-MANY-LEVELS+" #xD9)
+  (:const "+ERROR-DEVICE-NOT-MOUNTED+" #xDA)
+  (:const "+ERROR-SEEK-ERROR+" #xDB)
+  (:const "+ERROR-COMMENT-TOO-BIG+" #xDC)
+  (:const "+ERROR-DISK-FULL+" #xDD)
+  (:const "+ERROR-DELETE-PROTECTED+" #xDE)
+  (:const "+ERROR-WRITE-PROTECTED+" #xDF)
+  (:const "+ERROR-READ-PROTECTED+" #xE0)
+  (:const "+ERROR-NOT-A-DOS-DISK+" #xE1)
+  (:const "+ERROR-NO-DISK+" #xE2)
+  (:const "+ERROR-NO-MORE-ENTRIES+" #xE8)
+  (:const "+ERROR-IS-SOFT-LINK+" #xE9)
+  (:const "+ERROR-OBJECT-LINKED+" #xEA)
+  (:const "+ERROR-BAD-HUNK+" #xEB)
+  (:const "+ERROR-NOT-IMPLEMENTED+" #xEC)
+  (:const "+ERROR-RECORD-NOT-LOCKED+" #xF0)
+  (:const "+ERROR-LOCK-COLLISION+" #xF1)
+  (:const "+ERROR-LOCK-TIMEOUT+" #xF2)
+  (:const "+ERROR-UNLOCK-ERROR+" #xF3)
+  (:const "+RETURN-OK+" 0)
+  (:const "+RETURN-WARN+" 5)
+  (:const "+RETURN-ERROR+" 10)
+  (:const "+RETURN-FAIL+" #x14)
+  (:const "+SIGBREAKB-CTRL-C+" 12)
+  (:const "+SIGBREAKF-CTRL-C+" #x1000)
+  (:const "+SIGBREAKB-CTRL-D+" 13)
+  (:const "+SIGBREAKF-CTRL-D+" #x2000)
+  (:const "+SIGBREAKB-CTRL-E+" 14)
+  (:const "+SIGBREAKF-CTRL-E+" #x4000)
+  (:const "+SIGBREAKB-CTRL-F+" 15)
+  (:const "+SIGBREAKF-CTRL-F+" #x8000)
+  (:const "+LOCK-DIFFERENT+" -1)
+  (:const "+LOCK-SAME+" 0)
+  (:const "+LOCK-SAME-VOLUME+" 1)
+  (:const "+LOCK-SAME-HANDLER+" 1)
+  (:const "+CHANGE-LOCK+" 0)
+  (:const "+CHANGE-FH+" 1)
+  (:const "+LINK-HARD+" 0)
+  (:const "+LINK-SOFT+" 1)
+  (:const "+ITEM-EQUAL+" -2)
+  (:const "+ITEM-ERROR+" -1)
+  (:const "+ITEM-NOTHING+" 0)
+  (:const "+ITEM-UNQUOTED+" 1)
+  (:const "+ITEM-QUOTED+" 2)
+  (:const "+DOS-FILEHANDLE+" 0)
+  (:const "+DOS-EXALLCONTROL+" 1)
+  (:const "+DOS-FIB+" 2)
+  (:const "+DOS-STDPKT+" 3)
+  (:const "+DOS-CLI+" 4)
+  (:const "+DOS-RDARGS+" 5)
 
-;;; --- constants from dos/dos_lib.i ---
-(defconstant +reserve+ 4)
-(defconstant +vsize+ 6)
+  ;; --- structures from dos/dos.i ---
+  (:struct "DATE-STAMP" 12   ; DateStamp (dos/dos.i)
+    ("DAYS" :i32 0)
+    ("MINUTE" :i32 4)
+    ("TICK" :i32 8)
+    )
+  (:struct "FILE-INFO-BLOCK" 260   ; FileInfoBlock (dos/dos.i)
+    ("DISK-KEY" :i32 0)
+    ("DIR-ENTRY-TYPE" :i32 4)
+    ("FILE-NAME" (:struct 108) 8)
+    ("PROTECTION" :i32 116)
+    ("ENTRY-TYPE" :i32 120)
+    ("SIZE" :i32 124)
+    ("NUM-BLOCKS" :i32 128)
+    ("DATE-STAMP" (:struct 12) 132)
+    ("COMMENT" (:struct 80) 144)
+    ("OWNER-UID" :u16 224)
+    ("OWNER-GID" :u16 226)
+    ("RESERVED" (:struct 32) 228)
+    )
+  (:struct "INFO-DATA" 36   ; InfoData (dos/dos.i)
+    ("NUM-SOFT-ERRORS" :i32 0)
+    ("UNIT-NUMBER" :i32 4)
+    ("DISK-STATE" :i32 8)
+    ("NUM-BLOCKS" :i32 12)
+    ("NUM-BLOCKS-USED" :i32 16)
+    ("BYTES-PER-BLOCK" :i32 20)
+    ("DISK-TYPE" :i32 24)
+    ("VOLUME-NODE" :u32 28)
+    ("IN-USE" :i32 32)
+    )
 
-;;; --- constants from dos/dosasl.i ---
-(defconstant +apb-dowild+ 0)
-(defconstant +apf-dowild+ 1)
-(defconstant +apb-itswild+ 1)
-(defconstant +apf-itswild+ 2)
-(defconstant +apb-dodir+ 2)
-(defconstant +apf-dodir+ 4)
-(defconstant +apb-diddir+ 3)
-(defconstant +apf-diddir+ 8)
-(defconstant +apb-nomemerr+ 4)
-(defconstant +apf-nomemerr+ #x10)
-(defconstant +apb-dodot+ 5)
-(defconstant +apf-dodot+ #x20)
-(defconstant +apb-dir-changed+ 6)
-(defconstant +apf-dir-changed+ #x40)
-(defconstant +apb-follow-h-links+ 7)
-(defconstant +apf-follow-h-links+ #x80)
-(defconstant +ddb-pattern-bit+ 0)
-(defconstant +ddf-pattern-bit+ 1)
-(defconstant +ddb-examined-bit+ 1)
-(defconstant +ddf-examined-bit+ 2)
-(defconstant +ddb-completed+ 2)
-(defconstant +ddf-completed+ 4)
-(defconstant +ddb-all-bit+ 3)
-(defconstant +ddf-all-bit+ 8)
-(defconstant +ddb-single+ 4)
-(defconstant +ddf-single+ #x10)
-(defconstant +p-any+ #x80)
-(defconstant +p-single+ #x81)
-(defconstant +p-orstart+ #x82)
-(defconstant +p-ornext+ #x83)
-(defconstant +p-orend+ #x84)
-(defconstant +p-not+ #x85)
-(defconstant +p-notend+ #x86)
-(defconstant +p-notclass+ #x87)
-(defconstant +p-class+ #x88)
-(defconstant +p-repbeg+ #x89)
-(defconstant +p-repend+ #x8A)
-(defconstant +p-stop+ #x8B)
-(defconstant +complex-bit+ 1)
-(defconstant +examine-bit+ 2)
-(defconstant +error-buffer-overflow+ #x12F)
-(defconstant +error-break+ #x130)
-(defconstant +error-not-executable+ #x131)
+  ;; --- constants from dos/dos_lib.i ---
+  (:const "+RESERVE+" 4)
+  (:const "+VSIZE+" 6)
 
-;;; --- structures from dos/dosasl.i ---
-(ffi:defcstruct (anchor-path :size 280)   ; AnchorPath (dos/dosasl.i)
-  (first (:struct 0) 0)
-  (base :fptr 0)
-  (current (:struct 0) 4)
-  (last :fptr 4)
-  (break-bits :i32 8)
-  (found-break :i32 12)
-  (length (:struct 0) 16)
-  (flags :i8 16)
-  (reserved :i8 17)
-  (strlen :i16 18)
-  (info (:struct 260) 20)
-)
-(ffi:defcstruct (a-chain :size 273)   ; AChain (dos/dosasl.i)
-  (child :fptr 0)
-  (parent :fptr 4)
-  (lock :i32 8)
-  (info (:struct 260) 12)
-  (flags :i8 272)
-)
+  ;; --- constants from dos/dosasl.i ---
+  (:const "+APB-DOWILD+" 0)
+  (:const "+APF-DOWILD+" 1)
+  (:const "+APB-ITSWILD+" 1)
+  (:const "+APF-ITSWILD+" 2)
+  (:const "+APB-DODIR+" 2)
+  (:const "+APF-DODIR+" 4)
+  (:const "+APB-DIDDIR+" 3)
+  (:const "+APF-DIDDIR+" 8)
+  (:const "+APB-NOMEMERR+" 4)
+  (:const "+APF-NOMEMERR+" #x10)
+  (:const "+APB-DODOT+" 5)
+  (:const "+APF-DODOT+" #x20)
+  (:const "+APB-DIR-CHANGED+" 6)
+  (:const "+APF-DIR-CHANGED+" #x40)
+  (:const "+APB-FOLLOW-H-LINKS+" 7)
+  (:const "+APF-FOLLOW-H-LINKS+" #x80)
+  (:const "+DDB-PATTERN-BIT+" 0)
+  (:const "+DDF-PATTERN-BIT+" 1)
+  (:const "+DDB-EXAMINED-BIT+" 1)
+  (:const "+DDF-EXAMINED-BIT+" 2)
+  (:const "+DDB-COMPLETED+" 2)
+  (:const "+DDF-COMPLETED+" 4)
+  (:const "+DDB-ALL-BIT+" 3)
+  (:const "+DDF-ALL-BIT+" 8)
+  (:const "+DDB-SINGLE+" 4)
+  (:const "+DDF-SINGLE+" #x10)
+  (:const "+P-ANY+" #x80)
+  (:const "+P-SINGLE+" #x81)
+  (:const "+P-ORSTART+" #x82)
+  (:const "+P-ORNEXT+" #x83)
+  (:const "+P-OREND+" #x84)
+  (:const "+P-NOT+" #x85)
+  (:const "+P-NOTEND+" #x86)
+  (:const "+P-NOTCLASS+" #x87)
+  (:const "+P-CLASS+" #x88)
+  (:const "+P-REPBEG+" #x89)
+  (:const "+P-REPEND+" #x8A)
+  (:const "+P-STOP+" #x8B)
+  (:const "+COMPLEX-BIT+" 1)
+  (:const "+EXAMINE-BIT+" 2)
+  (:const "+ERROR-BUFFER-OVERFLOW+" #x12F)
+  (:const "+ERROR-BREAK+" #x130)
+  (:const "+ERROR-NOT-EXECUTABLE+" #x131)
 
-;;; --- constants from dos/dosextens.i ---
-(defconstant +prb-freeseglist+ 0)
-(defconstant +prf-freeseglist+ 1)
-(defconstant +prb-freecurrdir+ 1)
-(defconstant +prf-freecurrdir+ 2)
-(defconstant +prb-freecli+ 2)
-(defconstant +prf-freecli+ 4)
-(defconstant +prb-closeinput+ 3)
-(defconstant +prf-closeinput+ 8)
-(defconstant +prb-closeoutput+ 4)
-(defconstant +prf-closeoutput+ #x10)
-(defconstant +prb-freeargs+ 5)
-(defconstant +prf-freeargs+ #x20)
-(defconstant +prb-closeerror+ 6)
-(defconstant +prf-closeerror+ #x40)
-(defconstant +fh-func1+ #x18)
-(defconstant +fh-arg1+ #x24)
-(defconstant +dp-action+ 8)
-(defconstant +dp-status+ 12)
-(defconstant +dp-status2+ #x10)
-(defconstant +dp-buf-addr+ #x14)
-(defconstant +action-nil+ 0)
-(defconstant +action-startup+ 0)
-(defconstant +action-get-block+ 2)
-(defconstant +action-set-map+ 4)
-(defconstant +action-die+ 5)
-(defconstant +action-event+ 6)
-(defconstant +action-current-volume+ 7)
-(defconstant +action-locate-object+ 8)
-(defconstant +action-rename-disk+ 9)
-(defconstant +action-write+ #x57)
-(defconstant +action-read+ #x52)
-(defconstant +action-free-lock+ 15)
-(defconstant +action-delete-object+ #x10)
-(defconstant +action-rename-object+ #x11)
-(defconstant +action-more-cache+ #x12)
-(defconstant +action-copy-dir+ #x13)
-(defconstant +action-wait-char+ #x14)
-(defconstant +action-set-protect+ #x15)
-(defconstant +action-create-dir+ #x16)
-(defconstant +action-examine-object+ #x17)
-(defconstant +action-examine-next+ #x18)
-(defconstant +action-disk-info+ #x19)
-(defconstant +action-info+ #x1A)
-(defconstant +action-flush+ #x1B)
-(defconstant +action-set-comment+ #x1C)
-(defconstant +action-parent+ #x1D)
-(defconstant +action-timer+ #x1E)
-(defconstant +action-inhibit+ #x1F)
-(defconstant +action-disk-type+ #x20)
-(defconstant +action-disk-change+ #x21)
-(defconstant +action-set-date+ #x22)
-(defconstant +action-undisk-info+ #x201)
-(defconstant +action-screen-mode+ #x3E2)
-(defconstant +action-read-return+ #x3E9)
-(defconstant +action-write-return+ #x3EA)
-(defconstant +action-seek+ #x3F0)
-(defconstant +action-findupdate+ #x3EC)
-(defconstant +action-findinput+ #x3ED)
-(defconstant +action-findoutput+ #x3EE)
-(defconstant +action-end+ #x3EF)
-(defconstant +action-set-file-size+ #x3FE)
-(defconstant +action-write-protect+ #x3FF)
-(defconstant +action-same-lock+ #x28)
-(defconstant +action-change-signal+ #x3E3)
-(defconstant +action-format+ #x3FC)
-(defconstant +action-make-link+ #x3FD)
-(defconstant +action-read-link+ #x400)
-(defconstant +action-fh-from-lock+ #x402)
-(defconstant +action-is-filesystem+ #x403)
-(defconstant +action-change-mode+ #x404)
-(defconstant +action-copy-dir-fh+ #x406)
-(defconstant +action-parent-fh+ #x407)
-(defconstant +action-examine-all+ #x409)
-(defconstant +action-examine-fh+ #x40A)
-(defconstant +action-lock-record+ #x7D8)
-(defconstant +action-free-record+ #x7D9)
-(defconstant +action-add-notify+ #x1001)
-(defconstant +action-remove-notify+ #x1002)
-(defconstant +action-examine-all-end+ #x40B)
-(defconstant +action-set-owner+ #x40C)
-(defconstant +action-serialize-disk+ #x1068)
-(defconstant +rnb-wildstar+ #x18)
-(defconstant +rnf-wildstar+ #x1000000)
-(defconstant +rnb-private1+ 1)
-(defconstant +rnf-private1+ 2)
-(defconstant +di-res-list+ 0)
-(defconstant +cmd-system+ -1)
-(defconstant +cmd-internal+ -2)
-(defconstant +cmd-disabled+ -999)
-(defconstant +dlt-device+ 0)
-(defconstant +dlt-directory+ 1)
-(defconstant +dlt-volume+ 2)
-(defconstant +dlt-late+ 3)
-(defconstant +dlt-nonbinding+ 4)
-(defconstant +dlt-private+ -1)
-(defconstant +dvpb-unlock+ 0)
-(defconstant +dvpf-unlock+ 1)
-(defconstant +dvpb-assign+ 1)
-(defconstant +dvpf-assign+ 2)
-(defconstant +ldb-devices+ 2)
-(defconstant +ldf-devices+ 4)
-(defconstant +ldb-volumes+ 3)
-(defconstant +ldf-volumes+ 8)
-(defconstant +ldb-assigns+ 4)
-(defconstant +ldf-assigns+ #x10)
-(defconstant +ldb-entry+ 5)
-(defconstant +ldf-entry+ #x20)
-(defconstant +ldb-delete+ 6)
-(defconstant +ldf-delete+ #x40)
-(defconstant +ldb-read+ 0)
-(defconstant +ldf-read+ 1)
-(defconstant +ldb-write+ 1)
-(defconstant +ldf-write+ 2)
-(defconstant +ldf-all+ #x1C)
-(defconstant +report-stream+ 0)
-(defconstant +report-task+ 1)
-(defconstant +report-lock+ 2)
-(defconstant +report-volume+ 3)
-(defconstant +report-insert+ 4)
-(defconstant +abort-disk-error+ #x128)
-(defconstant +abort-busy+ #x120)
-(defconstant +run-execute+ -1)
-(defconstant +run-system+ -2)
-(defconstant +run-system-asynch+ -3)
-(defconstant +st-root+ 1)
-(defconstant +st-userdir+ 2)
-(defconstant +st-softlink+ 3)
-(defconstant +st-linkdir+ 4)
-(defconstant +st-file+ -3)
-(defconstant +st-linkfile+ -4)
-(defconstant +st-pipefile+ -5)
+  ;; --- structures from dos/dosasl.i ---
+  (:struct "ANCHOR-PATH" 280   ; AnchorPath (dos/dosasl.i)
+    ("FIRST" (:struct 0) 0)
+    ("BASE" :fptr 0)
+    ("CURRENT" (:struct 0) 4)
+    ("LAST" :fptr 4)
+    ("BREAK-BITS" :i32 8)
+    ("FOUND-BREAK" :i32 12)
+    ("LENGTH" (:struct 0) 16)
+    ("FLAGS" :i8 16)
+    ("RESERVED" :i8 17)
+    ("STRLEN" :i16 18)
+    ("INFO" (:struct 260) 20)
+    )
+  (:struct "A-CHAIN" 273   ; AChain (dos/dosasl.i)
+    ("CHILD" :fptr 0)
+    ("PARENT" :fptr 4)
+    ("LOCK" :i32 8)
+    ("INFO" (:struct 260) 12)
+    ("FLAGS" :i8 272)
+    )
 
-;;; --- structures from dos/dosextens.i ---
-(ffi:defcstruct (process :size 228)   ; Process (dos/dosextens.i)
-  (task (:struct 92) 0)
-  (msg-port (:struct 34) 92)
-  (pad :i16 126)
-  (seg-list :u32 128)
-  (stack-size :i32 132)
-  (glob-vec :fptr 136)
-  (task-num :i32 140)
-  (stack-base :u32 144)
-  (result2 :i32 148)
-  (current-dir :u32 152)
-  (cis :u32 156)
-  (cos :u32 160)
-  (console-task :fptr 164)
-  (file-system-task :fptr 168)
-  (cli :u32 172)
-  (return-addr :fptr 176)
-  (pkt-wait :fptr 180)
-  (window-ptr :fptr 184)
-  (home-dir :u32 188)
-  (flags :i32 192)
-  (exit-code :fptr 196)
-  (exit-data :i32 200)
-  (arguments :fptr 204)
-  (local-vars (:struct 12) 208)
-  (shell-private :fptr 220)
-  (ces :u32 224)
-)
-(ffi:defcstruct (file-handle :size 44)   ; FileHandle (dos/dosextens.i)
-  (link :fptr 0)
-  (interactive :fptr 4)
-  (type :fptr 8)
-  (buf :i32 12)
-  (pos :i32 16)
-  (end :i32 20)
-  (funcs :i32 24)
-  (func2 :i32 28)
-  (func3 :i32 32)
-  (args :i32 36)
-  (arg2 :i32 40)
-)
-(ffi:defcstruct (dos-packet :size 48)   ; DosPacket (dos/dosextens.i)
-  (link :fptr 0)
-  (port :fptr 4)
-  (type :i32 8)
-  (res1 :i32 12)
-  (res2 :i32 16)
-  (arg1 :i32 20)
-  (arg2 :i32 24)
-  (arg3 :i32 28)
-  (arg4 :i32 32)
-  (arg5 :i32 36)
-  (arg6 :i32 40)
-  (arg7 :i32 44)
-)
-(ffi:defcstruct (standard-packet :size 68)   ; StandardPacket (dos/dosextens.i)
-  (msg (:struct 20) 0)
-  (pkt (:struct 48) 20)
-)
-(ffi:defcstruct (error-string :size 8)   ; ErrorString (dos/dosextens.i)
-  (nums :fptr 0)
-  (strings :fptr 4)
-)
-(ffi:defcstruct (dos-library :size 70)   ; DosLibrary (dos/dosextens.i)
-  (lib (:struct 34) 0)
-  (root :fptr 34)
-  (gv :fptr 38)
-  (a2 :i32 42)
-  (a5 :i32 46)
-  (a6 :i32 50)
-  (errors :fptr 54)
-  (time-req :fptr 58)
-  (utility-base :fptr 62)
-  (intuition-base :fptr 66)
-)
-(ffi:defcstruct (root-node :size 56)   ; RootNode (dos/dosextens.i)
-  (task-array :u32 0)
-  (console-segment :u32 4)
-  (time (:struct 12) 8)
-  (restart-seg :i32 20)
-  (info :u32 24)
-  (file-handler-segment :u32 28)
-  (cli-list (:struct 12) 32)
-  (boot-proc :fptr 44)
-  (shell-segment :u32 48)
-  (flags :i32 52)
-)
-(ffi:defcstruct (cli-proc-list :size 16)   ; CliProcList (dos/dosextens.i)
-  (node (:struct 8) 0)
-  (first :i32 8)
-  (array :fptr 12)
-)
-(ffi:defcstruct (dos-info :size 158)   ; DosInfo (dos/dosextens.i)
-  (mc-name :u32 0)
-  (dev-info :u32 4)
-  (devices :u32 8)
-  (handlers :u32 12)
-  (net-hand :fptr 16)
-  (dev-lock (:struct 46) 20)
-  (entry-lock (:struct 46) 66)
-  (delete-lock (:struct 46) 112)
-)
-(ffi:defcstruct (segment :size 16)   ; Segment (dos/dosextens.i)
-  (next :u32 0)
-  (uc :i32 4)
-  (seg :u32 8)
-  (name (:struct 4) 12)
-)
-(ffi:defcstruct (command-line-interface :size 64)   ; CommandLineInterface (dos/dosextens.i)
-  (result2 :i32 0)
-  (set-name :u32 4)
-  (command-dir :u32 8)
-  (return-code :i32 12)
-  (command-name :u32 16)
-  (fail-level :i32 20)
-  (prompt :u32 24)
-  (standard-input :u32 28)
-  (current-input :u32 32)
-  (command-file :u32 36)
-  (interactive :i32 40)
-  (background :i32 44)
-  (current-output :u32 48)
-  (default-stack :i32 52)
-  (standard-output :u32 56)
-  (module :u32 60)
-)
-(ffi:defcstruct (dev-list :size 44)   ; DevList (dos/dosextens.i)
-  (next :u32 0)
-  (type :i32 4)
-  (task :fptr 8)
-  (lock :u32 12)
-  (volume-date (:struct 12) 16)
-  (lock-list :u32 28)
-  (disk-type :i32 32)
-  (unused :i32 36)
-  (name :u32 40)
-)
-(ffi:defcstruct (dev-info :size 44)   ; DevInfo (dos/dosextens.i)
-  (next :u32 0)
-  (type :i32 4)
-  (task :fptr 8)
-  (lock :u32 12)
-  (handler :u32 16)
-  (stacksize :i32 20)
-  (priority :i32 24)
-  (startup :i32 28)
-  (seg-list :u32 32)
-  (glob-vec :u32 36)
-  (name :u32 40)
-)
-(ffi:defcstruct (dos-list :size 44)   ; DosList (dos/dosextens.i)
-  (next :u32 0)
-  (type :i32 4)
-  (task :fptr 8)
-  (lock :u32 12)
-  (volume-date (:struct 0) 16)
-  (assign-name (:struct 0) 16)
-  (handler :u32 16)
-  (list (:struct 0) 20)
-  (stack-size :i32 20)
-  (priority :i32 24)
-  (lock-list (:struct 0) 28)
-  (startup :u32 28)
-  (disk-type (:struct 0) 32)
-  (seg-list :u32 32)
-  (glob-vec :u32 36)
-  (name :u32 40)
-)
-(ffi:defcstruct (dev-proc :size 16)   ; DevProc (dos/dosextens.i)
-  (port :fptr 0)
-  (lock :u32 4)
-  (flags :u32 8)
-  (dev-node :fptr 12)
-)
-(ffi:defcstruct (file-lock :size 20)   ; FileLock (dos/dosextens.i)
-  (link :u32 0)
-  (key :i32 4)
-  (access :i32 8)
-  (task :fptr 12)
-  (volume :u32 16)
-)
+  ;; --- constants from dos/dosextens.i ---
+  (:const "+PRB-FREESEGLIST+" 0)
+  (:const "+PRF-FREESEGLIST+" 1)
+  (:const "+PRB-FREECURRDIR+" 1)
+  (:const "+PRF-FREECURRDIR+" 2)
+  (:const "+PRB-FREECLI+" 2)
+  (:const "+PRF-FREECLI+" 4)
+  (:const "+PRB-CLOSEINPUT+" 3)
+  (:const "+PRF-CLOSEINPUT+" 8)
+  (:const "+PRB-CLOSEOUTPUT+" 4)
+  (:const "+PRF-CLOSEOUTPUT+" #x10)
+  (:const "+PRB-FREEARGS+" 5)
+  (:const "+PRF-FREEARGS+" #x20)
+  (:const "+PRB-CLOSEERROR+" 6)
+  (:const "+PRF-CLOSEERROR+" #x40)
+  (:const "+FH-FUNC1+" #x18)
+  (:const "+FH-ARG1+" #x24)
+  (:const "+DP-ACTION+" 8)
+  (:const "+DP-STATUS+" 12)
+  (:const "+DP-STATUS2+" #x10)
+  (:const "+DP-BUF-ADDR+" #x14)
+  (:const "+ACTION-NIL+" 0)
+  (:const "+ACTION-STARTUP+" 0)
+  (:const "+ACTION-GET-BLOCK+" 2)
+  (:const "+ACTION-SET-MAP+" 4)
+  (:const "+ACTION-DIE+" 5)
+  (:const "+ACTION-EVENT+" 6)
+  (:const "+ACTION-CURRENT-VOLUME+" 7)
+  (:const "+ACTION-LOCATE-OBJECT+" 8)
+  (:const "+ACTION-RENAME-DISK+" 9)
+  (:const "+ACTION-WRITE+" #x57)
+  (:const "+ACTION-READ+" #x52)
+  (:const "+ACTION-FREE-LOCK+" 15)
+  (:const "+ACTION-DELETE-OBJECT+" #x10)
+  (:const "+ACTION-RENAME-OBJECT+" #x11)
+  (:const "+ACTION-MORE-CACHE+" #x12)
+  (:const "+ACTION-COPY-DIR+" #x13)
+  (:const "+ACTION-WAIT-CHAR+" #x14)
+  (:const "+ACTION-SET-PROTECT+" #x15)
+  (:const "+ACTION-CREATE-DIR+" #x16)
+  (:const "+ACTION-EXAMINE-OBJECT+" #x17)
+  (:const "+ACTION-EXAMINE-NEXT+" #x18)
+  (:const "+ACTION-DISK-INFO+" #x19)
+  (:const "+ACTION-INFO+" #x1A)
+  (:const "+ACTION-FLUSH+" #x1B)
+  (:const "+ACTION-SET-COMMENT+" #x1C)
+  (:const "+ACTION-PARENT+" #x1D)
+  (:const "+ACTION-TIMER+" #x1E)
+  (:const "+ACTION-INHIBIT+" #x1F)
+  (:const "+ACTION-DISK-TYPE+" #x20)
+  (:const "+ACTION-DISK-CHANGE+" #x21)
+  (:const "+ACTION-SET-DATE+" #x22)
+  (:const "+ACTION-UNDISK-INFO+" #x201)
+  (:const "+ACTION-SCREEN-MODE+" #x3E2)
+  (:const "+ACTION-READ-RETURN+" #x3E9)
+  (:const "+ACTION-WRITE-RETURN+" #x3EA)
+  (:const "+ACTION-SEEK+" #x3F0)
+  (:const "+ACTION-FINDUPDATE+" #x3EC)
+  (:const "+ACTION-FINDINPUT+" #x3ED)
+  (:const "+ACTION-FINDOUTPUT+" #x3EE)
+  (:const "+ACTION-END+" #x3EF)
+  (:const "+ACTION-SET-FILE-SIZE+" #x3FE)
+  (:const "+ACTION-WRITE-PROTECT+" #x3FF)
+  (:const "+ACTION-SAME-LOCK+" #x28)
+  (:const "+ACTION-CHANGE-SIGNAL+" #x3E3)
+  (:const "+ACTION-FORMAT+" #x3FC)
+  (:const "+ACTION-MAKE-LINK+" #x3FD)
+  (:const "+ACTION-READ-LINK+" #x400)
+  (:const "+ACTION-FH-FROM-LOCK+" #x402)
+  (:const "+ACTION-IS-FILESYSTEM+" #x403)
+  (:const "+ACTION-CHANGE-MODE+" #x404)
+  (:const "+ACTION-COPY-DIR-FH+" #x406)
+  (:const "+ACTION-PARENT-FH+" #x407)
+  (:const "+ACTION-EXAMINE-ALL+" #x409)
+  (:const "+ACTION-EXAMINE-FH+" #x40A)
+  (:const "+ACTION-LOCK-RECORD+" #x7D8)
+  (:const "+ACTION-FREE-RECORD+" #x7D9)
+  (:const "+ACTION-ADD-NOTIFY+" #x1001)
+  (:const "+ACTION-REMOVE-NOTIFY+" #x1002)
+  (:const "+ACTION-EXAMINE-ALL-END+" #x40B)
+  (:const "+ACTION-SET-OWNER+" #x40C)
+  (:const "+ACTION-SERIALIZE-DISK+" #x1068)
+  (:const "+RNB-WILDSTAR+" #x18)
+  (:const "+RNF-WILDSTAR+" #x1000000)
+  (:const "+RNB-PRIVATE1+" 1)
+  (:const "+RNF-PRIVATE1+" 2)
+  (:const "+DI-RES-LIST+" 0)
+  (:const "+CMD-SYSTEM+" -1)
+  (:const "+CMD-INTERNAL+" -2)
+  (:const "+CMD-DISABLED+" -999)
+  (:const "+DLT-DEVICE+" 0)
+  (:const "+DLT-DIRECTORY+" 1)
+  (:const "+DLT-VOLUME+" 2)
+  (:const "+DLT-LATE+" 3)
+  (:const "+DLT-NONBINDING+" 4)
+  (:const "+DLT-PRIVATE+" -1)
+  (:const "+DVPB-UNLOCK+" 0)
+  (:const "+DVPF-UNLOCK+" 1)
+  (:const "+DVPB-ASSIGN+" 1)
+  (:const "+DVPF-ASSIGN+" 2)
+  (:const "+LDB-DEVICES+" 2)
+  (:const "+LDF-DEVICES+" 4)
+  (:const "+LDB-VOLUMES+" 3)
+  (:const "+LDF-VOLUMES+" 8)
+  (:const "+LDB-ASSIGNS+" 4)
+  (:const "+LDF-ASSIGNS+" #x10)
+  (:const "+LDB-ENTRY+" 5)
+  (:const "+LDF-ENTRY+" #x20)
+  (:const "+LDB-DELETE+" 6)
+  (:const "+LDF-DELETE+" #x40)
+  (:const "+LDB-READ+" 0)
+  (:const "+LDF-READ+" 1)
+  (:const "+LDB-WRITE+" 1)
+  (:const "+LDF-WRITE+" 2)
+  (:const "+LDF-ALL+" #x1C)
+  (:const "+REPORT-STREAM+" 0)
+  (:const "+REPORT-TASK+" 1)
+  (:const "+REPORT-LOCK+" 2)
+  (:const "+REPORT-VOLUME+" 3)
+  (:const "+REPORT-INSERT+" 4)
+  (:const "+ABORT-DISK-ERROR+" #x128)
+  (:const "+ABORT-BUSY+" #x120)
+  (:const "+RUN-EXECUTE+" -1)
+  (:const "+RUN-SYSTEM+" -2)
+  (:const "+RUN-SYSTEM-ASYNCH+" -3)
+  (:const "+ST-ROOT+" 1)
+  (:const "+ST-USERDIR+" 2)
+  (:const "+ST-SOFTLINK+" 3)
+  (:const "+ST-LINKDIR+" 4)
+  (:const "+ST-FILE+" -3)
+  (:const "+ST-LINKFILE+" -4)
+  (:const "+ST-PIPEFILE+" -5)
 
-;;; --- constants from dos/doshunks.i ---
-(defconstant +hunk-unit+ #x3E7)
-(defconstant +hunk-name+ #x3E8)
-(defconstant +hunk-code+ #x3E9)
-(defconstant +hunk-data+ #x3EA)
-(defconstant +hunk-bss+ #x3EB)
-(defconstant +hunk-reloc32+ #x3EC)
-(defconstant +hunk-absreloc32+ #x3EC)
-(defconstant +hunk-reloc16+ #x3ED)
-(defconstant +hunk-relreloc16+ #x3ED)
-(defconstant +hunk-reloc8+ #x3EE)
-(defconstant +hunk-relreloc8+ #x3EE)
-(defconstant +hunk-ext+ #x3EF)
-(defconstant +hunk-symbol+ #x3F0)
-(defconstant +hunk-debug+ #x3F1)
-(defconstant +hunk-end+ #x3F2)
-(defconstant +hunk-header+ #x3F3)
-(defconstant +hunk-overlay+ #x3F5)
-(defconstant +hunk-break+ #x3F6)
-(defconstant +hunk-drel32+ #x3F7)
-(defconstant +hunk-drel16+ #x3F8)
-(defconstant +hunk-drel8+ #x3F9)
-(defconstant +hunk-lib+ #x3FA)
-(defconstant +hunk-index+ #x3FB)
-(defconstant +hunk-reloc32-short+ #x3FC)
-(defconstant +hunk-relreloc32+ #x3FD)
-(defconstant +hunk-absreloc16+ #x3FE)
-(defconstant +hunkb-advisory+ #x1D)
-(defconstant +hunkf-advisory+ #x20000000)
-(defconstant +hunkb-chip+ #x1E)
-(defconstant +hunkf-chip+ #x40000000)
-(defconstant +hunkb-fast+ #x1F)
-(defconstant +hunkf-fast+ #x80000000)
-(defconstant +ext-symb+ 0)
-(defconstant +ext-def+ 1)
-(defconstant +ext-abs+ 2)
-(defconstant +ext-res+ 3)
-(defconstant +ext-commondef+ 4)
-(defconstant +ext-ref32+ #x81)
-(defconstant +ext-absref32+ #x81)
-(defconstant +ext-common+ #x82)
-(defconstant +ext-abscommon+ #x82)
-(defconstant +ext-ref16+ #x83)
-(defconstant +ext-relref16+ #x83)
-(defconstant +ext-ref8+ #x84)
-(defconstant +ext-relref8+ #x84)
-(defconstant +ext-dext32+ #x85)
-(defconstant +ext-dext16+ #x86)
-(defconstant +ext-dext8+ #x87)
-(defconstant +ext-relref32+ #x88)
-(defconstant +ext-relcommon+ #x89)
-(defconstant +ext-absref16+ #x8A)
-(defconstant +ext-absref8+ #x8B)
+  ;; --- structures from dos/dosextens.i ---
+  (:struct "PROCESS" 228   ; Process (dos/dosextens.i)
+    ("TASK" (:struct 92) 0)
+    ("MSG-PORT" (:struct 34) 92)
+    ("PAD" :i16 126)
+    ("SEG-LIST" :u32 128)
+    ("STACK-SIZE" :i32 132)
+    ("GLOB-VEC" :fptr 136)
+    ("TASK-NUM" :i32 140)
+    ("STACK-BASE" :u32 144)
+    ("RESULT2" :i32 148)
+    ("CURRENT-DIR" :u32 152)
+    ("CIS" :u32 156)
+    ("COS" :u32 160)
+    ("CONSOLE-TASK" :fptr 164)
+    ("FILE-SYSTEM-TASK" :fptr 168)
+    ("CLI" :u32 172)
+    ("RETURN-ADDR" :fptr 176)
+    ("PKT-WAIT" :fptr 180)
+    ("WINDOW-PTR" :fptr 184)
+    ("HOME-DIR" :u32 188)
+    ("FLAGS" :i32 192)
+    ("EXIT-CODE" :fptr 196)
+    ("EXIT-DATA" :i32 200)
+    ("ARGUMENTS" :fptr 204)
+    ("LOCAL-VARS" (:struct 12) 208)
+    ("SHELL-PRIVATE" :fptr 220)
+    ("CES" :u32 224)
+    )
+  (:struct "FILE-HANDLE" 44   ; FileHandle (dos/dosextens.i)
+    ("LINK" :fptr 0)
+    ("INTERACTIVE" :fptr 4)
+    ("TYPE" :fptr 8)
+    ("BUF" :i32 12)
+    ("POS" :i32 16)
+    ("END" :i32 20)
+    ("FUNCS" :i32 24)
+    ("FUNC2" :i32 28)
+    ("FUNC3" :i32 32)
+    ("ARGS" :i32 36)
+    ("ARG2" :i32 40)
+    )
+  (:struct "DOS-PACKET" 48   ; DosPacket (dos/dosextens.i)
+    ("LINK" :fptr 0)
+    ("PORT" :fptr 4)
+    ("TYPE" :i32 8)
+    ("RES1" :i32 12)
+    ("RES2" :i32 16)
+    ("ARG1" :i32 20)
+    ("ARG2" :i32 24)
+    ("ARG3" :i32 28)
+    ("ARG4" :i32 32)
+    ("ARG5" :i32 36)
+    ("ARG6" :i32 40)
+    ("ARG7" :i32 44)
+    )
+  (:struct "STANDARD-PACKET" 68   ; StandardPacket (dos/dosextens.i)
+    ("MSG" (:struct 20) 0)
+    ("PKT" (:struct 48) 20)
+    )
+  (:struct "ERROR-STRING" 8   ; ErrorString (dos/dosextens.i)
+    ("NUMS" :fptr 0)
+    ("STRINGS" :fptr 4)
+    )
+  (:struct "DOS-LIBRARY" 70   ; DosLibrary (dos/dosextens.i)
+    ("LIB" (:struct 34) 0)
+    ("ROOT" :fptr 34)
+    ("GV" :fptr 38)
+    ("A2" :i32 42)
+    ("A5" :i32 46)
+    ("A6" :i32 50)
+    ("ERRORS" :fptr 54)
+    ("TIME-REQ" :fptr 58)
+    ("UTILITY-BASE" :fptr 62)
+    ("INTUITION-BASE" :fptr 66)
+    )
+  (:struct "ROOT-NODE" 56   ; RootNode (dos/dosextens.i)
+    ("TASK-ARRAY" :u32 0)
+    ("CONSOLE-SEGMENT" :u32 4)
+    ("TIME" (:struct 12) 8)
+    ("RESTART-SEG" :i32 20)
+    ("INFO" :u32 24)
+    ("FILE-HANDLER-SEGMENT" :u32 28)
+    ("CLI-LIST" (:struct 12) 32)
+    ("BOOT-PROC" :fptr 44)
+    ("SHELL-SEGMENT" :u32 48)
+    ("FLAGS" :i32 52)
+    )
+  (:struct "CLI-PROC-LIST" 16   ; CliProcList (dos/dosextens.i)
+    ("NODE" (:struct 8) 0)
+    ("FIRST" :i32 8)
+    ("ARRAY" :fptr 12)
+    )
+  (:struct "DOS-INFO" 158   ; DosInfo (dos/dosextens.i)
+    ("MC-NAME" :u32 0)
+    ("DEV-INFO" :u32 4)
+    ("DEVICES" :u32 8)
+    ("HANDLERS" :u32 12)
+    ("NET-HAND" :fptr 16)
+    ("DEV-LOCK" (:struct 46) 20)
+    ("ENTRY-LOCK" (:struct 46) 66)
+    ("DELETE-LOCK" (:struct 46) 112)
+    )
+  (:struct "SEGMENT" 16   ; Segment (dos/dosextens.i)
+    ("NEXT" :u32 0)
+    ("UC" :i32 4)
+    ("SEG" :u32 8)
+    ("NAME" (:struct 4) 12)
+    )
+  (:struct "COMMAND-LINE-INTERFACE" 64   ; CommandLineInterface (dos/dosextens.i)
+    ("RESULT2" :i32 0)
+    ("SET-NAME" :u32 4)
+    ("COMMAND-DIR" :u32 8)
+    ("RETURN-CODE" :i32 12)
+    ("COMMAND-NAME" :u32 16)
+    ("FAIL-LEVEL" :i32 20)
+    ("PROMPT" :u32 24)
+    ("STANDARD-INPUT" :u32 28)
+    ("CURRENT-INPUT" :u32 32)
+    ("COMMAND-FILE" :u32 36)
+    ("INTERACTIVE" :i32 40)
+    ("BACKGROUND" :i32 44)
+    ("CURRENT-OUTPUT" :u32 48)
+    ("DEFAULT-STACK" :i32 52)
+    ("STANDARD-OUTPUT" :u32 56)
+    ("MODULE" :u32 60)
+    )
+  (:struct "DEV-LIST" 44   ; DevList (dos/dosextens.i)
+    ("NEXT" :u32 0)
+    ("TYPE" :i32 4)
+    ("TASK" :fptr 8)
+    ("LOCK" :u32 12)
+    ("VOLUME-DATE" (:struct 12) 16)
+    ("LOCK-LIST" :u32 28)
+    ("DISK-TYPE" :i32 32)
+    ("UNUSED" :i32 36)
+    ("NAME" :u32 40)
+    )
+  (:struct "DEV-INFO" 44   ; DevInfo (dos/dosextens.i)
+    ("NEXT" :u32 0)
+    ("TYPE" :i32 4)
+    ("TASK" :fptr 8)
+    ("LOCK" :u32 12)
+    ("HANDLER" :u32 16)
+    ("STACKSIZE" :i32 20)
+    ("PRIORITY" :i32 24)
+    ("STARTUP" :i32 28)
+    ("SEG-LIST" :u32 32)
+    ("GLOB-VEC" :u32 36)
+    ("NAME" :u32 40)
+    )
+  (:struct "DOS-LIST" 44   ; DosList (dos/dosextens.i)
+    ("NEXT" :u32 0)
+    ("TYPE" :i32 4)
+    ("TASK" :fptr 8)
+    ("LOCK" :u32 12)
+    ("VOLUME-DATE" (:struct 0) 16)
+    ("ASSIGN-NAME" (:struct 0) 16)
+    ("HANDLER" :u32 16)
+    ("LIST" (:struct 0) 20)
+    ("STACK-SIZE" :i32 20)
+    ("PRIORITY" :i32 24)
+    ("LOCK-LIST" (:struct 0) 28)
+    ("STARTUP" :u32 28)
+    ("DISK-TYPE" (:struct 0) 32)
+    ("SEG-LIST" :u32 32)
+    ("GLOB-VEC" :u32 36)
+    ("NAME" :u32 40)
+    )
+  (:struct "DEV-PROC" 16   ; DevProc (dos/dosextens.i)
+    ("PORT" :fptr 0)
+    ("LOCK" :u32 4)
+    ("FLAGS" :u32 8)
+    ("DEV-NODE" :fptr 12)
+    )
+  (:struct "FILE-LOCK" 20   ; FileLock (dos/dosextens.i)
+    ("LINK" :u32 0)
+    ("KEY" :i32 4)
+    ("ACCESS" :i32 8)
+    ("TASK" :fptr 12)
+    ("VOLUME" :u32 16)
+    )
 
-;;; --- constants from dos/dostags.i ---
-(defconstant +sys-dummy+ #x80000020)
-(defconstant +sys-input+ #x80000021)
-(defconstant +sys-output+ #x80000022)
-(defconstant +sys-asynch+ #x80000023)
-(defconstant +sys-user-shell+ #x80000024)
-(defconstant +sys-custom-shell+ #x80000025)
-(defconstant +sys-error+ #x80000026)
-(defconstant +sys-execute-input-stream+ #x80000027)
-(defconstant +sys-cmd-stream+ #x80000028)
-(defconstant +np-dummy+ #x800003E8)
-(defconstant +np-seglist+ #x800003E9)
-(defconstant +np-free-seglist+ #x800003EA)
-(defconstant +np-entry+ #x800003EB)
-(defconstant +np-input+ #x800003EC)
-(defconstant +np-output+ #x800003ED)
-(defconstant +np-close-input+ #x800003EE)
-(defconstant +np-close-output+ #x800003EF)
-(defconstant +np-error+ #x800003F0)
-(defconstant +np-close-error+ #x800003F1)
-(defconstant +np-current-dir+ #x800003F2)
-(defconstant +np-stack-size+ #x800003F3)
-(defconstant +np-name+ #x800003F4)
-(defconstant +np-priority+ #x800003F5)
-(defconstant +np-console-task+ #x800003F6)
-(defconstant +np-window-ptr+ #x800003F7)
-(defconstant +np-home-dir+ #x800003F8)
-(defconstant +np-copy-vars+ #x800003F9)
-(defconstant +np-cli+ #x800003FA)
-(defconstant +np-path+ #x800003FB)
-(defconstant +np-command-name+ #x800003FC)
-(defconstant +np-arguments+ #x800003FD)
-(defconstant +np-notify-on-death+ #x800003FE)
-(defconstant +np-synchronous+ #x800003FF)
-(defconstant +np-exit-code+ #x80000400)
-(defconstant +np-exit-data+ #x80000401)
-(defconstant +ado-dummy+ #x800007D0)
-(defconstant +ado-fh-mode+ #x800007D1)
-(defconstant +ado-dir-len+ #x800007D2)
-(defconstant +ado-comm-name-len+ #x800007D3)
-(defconstant +ado-comm-file-len+ #x800007D4)
-(defconstant +ado-prompt-len+ #x800007D5)
+  ;; --- constants from dos/doshunks.i ---
+  (:const "+HUNK-UNIT+" #x3E7)
+  (:const "+HUNK-NAME+" #x3E8)
+  (:const "+HUNK-CODE+" #x3E9)
+  (:const "+HUNK-DATA+" #x3EA)
+  (:const "+HUNK-BSS+" #x3EB)
+  (:const "+HUNK-RELOC32+" #x3EC)
+  (:const "+HUNK-ABSRELOC32+" #x3EC)
+  (:const "+HUNK-RELOC16+" #x3ED)
+  (:const "+HUNK-RELRELOC16+" #x3ED)
+  (:const "+HUNK-RELOC8+" #x3EE)
+  (:const "+HUNK-RELRELOC8+" #x3EE)
+  (:const "+HUNK-EXT+" #x3EF)
+  (:const "+HUNK-SYMBOL+" #x3F0)
+  (:const "+HUNK-DEBUG+" #x3F1)
+  (:const "+HUNK-END+" #x3F2)
+  (:const "+HUNK-HEADER+" #x3F3)
+  (:const "+HUNK-OVERLAY+" #x3F5)
+  (:const "+HUNK-BREAK+" #x3F6)
+  (:const "+HUNK-DREL32+" #x3F7)
+  (:const "+HUNK-DREL16+" #x3F8)
+  (:const "+HUNK-DREL8+" #x3F9)
+  (:const "+HUNK-LIB+" #x3FA)
+  (:const "+HUNK-INDEX+" #x3FB)
+  (:const "+HUNK-RELOC32-SHORT+" #x3FC)
+  (:const "+HUNK-RELRELOC32+" #x3FD)
+  (:const "+HUNK-ABSRELOC16+" #x3FE)
+  (:const "+HUNKB-ADVISORY+" #x1D)
+  (:const "+HUNKF-ADVISORY+" #x20000000)
+  (:const "+HUNKB-CHIP+" #x1E)
+  (:const "+HUNKF-CHIP+" #x40000000)
+  (:const "+HUNKB-FAST+" #x1F)
+  (:const "+HUNKF-FAST+" #x80000000)
+  (:const "+EXT-SYMB+" 0)
+  (:const "+EXT-DEF+" 1)
+  (:const "+EXT-ABS+" 2)
+  (:const "+EXT-RES+" 3)
+  (:const "+EXT-COMMONDEF+" 4)
+  (:const "+EXT-REF32+" #x81)
+  (:const "+EXT-ABSREF32+" #x81)
+  (:const "+EXT-COMMON+" #x82)
+  (:const "+EXT-ABSCOMMON+" #x82)
+  (:const "+EXT-REF16+" #x83)
+  (:const "+EXT-RELREF16+" #x83)
+  (:const "+EXT-REF8+" #x84)
+  (:const "+EXT-RELREF8+" #x84)
+  (:const "+EXT-DEXT32+" #x85)
+  (:const "+EXT-DEXT16+" #x86)
+  (:const "+EXT-DEXT8+" #x87)
+  (:const "+EXT-RELREF32+" #x88)
+  (:const "+EXT-RELCOMMON+" #x89)
+  (:const "+EXT-ABSREF16+" #x8A)
+  (:const "+EXT-ABSREF8+" #x8B)
 
-;;; --- constants from dos/exall.i ---
-(defconstant +ed-name+ 1)
-(defconstant +ed-type+ 2)
-(defconstant +ed-size+ 3)
-(defconstant +ed-protection+ 4)
-(defconstant +ed-date+ 5)
-(defconstant +ed-comment+ 6)
-(defconstant +ed-owner+ 7)
+  ;; --- constants from dos/dostags.i ---
+  (:const "+SYS-DUMMY+" #x80000020)
+  (:const "+SYS-INPUT+" #x80000021)
+  (:const "+SYS-OUTPUT+" #x80000022)
+  (:const "+SYS-ASYNCH+" #x80000023)
+  (:const "+SYS-USER-SHELL+" #x80000024)
+  (:const "+SYS-CUSTOM-SHELL+" #x80000025)
+  (:const "+SYS-ERROR+" #x80000026)
+  (:const "+SYS-EXECUTE-INPUT-STREAM+" #x80000027)
+  (:const "+SYS-CMD-STREAM+" #x80000028)
+  (:const "+NP-DUMMY+" #x800003E8)
+  (:const "+NP-SEGLIST+" #x800003E9)
+  (:const "+NP-FREE-SEGLIST+" #x800003EA)
+  (:const "+NP-ENTRY+" #x800003EB)
+  (:const "+NP-INPUT+" #x800003EC)
+  (:const "+NP-OUTPUT+" #x800003ED)
+  (:const "+NP-CLOSE-INPUT+" #x800003EE)
+  (:const "+NP-CLOSE-OUTPUT+" #x800003EF)
+  (:const "+NP-ERROR+" #x800003F0)
+  (:const "+NP-CLOSE-ERROR+" #x800003F1)
+  (:const "+NP-CURRENT-DIR+" #x800003F2)
+  (:const "+NP-STACK-SIZE+" #x800003F3)
+  (:const "+NP-NAME+" #x800003F4)
+  (:const "+NP-PRIORITY+" #x800003F5)
+  (:const "+NP-CONSOLE-TASK+" #x800003F6)
+  (:const "+NP-WINDOW-PTR+" #x800003F7)
+  (:const "+NP-HOME-DIR+" #x800003F8)
+  (:const "+NP-COPY-VARS+" #x800003F9)
+  (:const "+NP-CLI+" #x800003FA)
+  (:const "+NP-PATH+" #x800003FB)
+  (:const "+NP-COMMAND-NAME+" #x800003FC)
+  (:const "+NP-ARGUMENTS+" #x800003FD)
+  (:const "+NP-NOTIFY-ON-DEATH+" #x800003FE)
+  (:const "+NP-SYNCHRONOUS+" #x800003FF)
+  (:const "+NP-EXIT-CODE+" #x80000400)
+  (:const "+NP-EXIT-DATA+" #x80000401)
+  (:const "+ADO-DUMMY+" #x800007D0)
+  (:const "+ADO-FH-MODE+" #x800007D1)
+  (:const "+ADO-DIR-LEN+" #x800007D2)
+  (:const "+ADO-COMM-NAME-LEN+" #x800007D3)
+  (:const "+ADO-COMM-FILE-LEN+" #x800007D4)
+  (:const "+ADO-PROMPT-LEN+" #x800007D5)
 
-;;; --- structures from dos/exall.i ---
-(ffi:defcstruct (ex-all-data :size 40)   ; ExAllData (dos/exall.i)
-  (next :fptr 0)
-  (name :fptr 4)
-  (type :i32 8)
-  (size :u32 12)
-  (prot :u32 16)
-  (days :u32 20)
-  (mins :u32 24)
-  (ticks :u32 28)
-  (comment :fptr 32)
-  (owner-uid :u16 36)
-  (owner-gid :u16 38)
-)
-(ffi:defcstruct (ex-all-control :size 16)   ; ExAllControl (dos/exall.i)
-  (entries :u32 0)
-  (last-key :u32 4)
-  (match-string :fptr 8)
-  (match-func :fptr 12)
-)
+  ;; --- constants from dos/exall.i ---
+  (:const "+ED-NAME+" 1)
+  (:const "+ED-TYPE+" 2)
+  (:const "+ED-SIZE+" 3)
+  (:const "+ED-PROTECTION+" 4)
+  (:const "+ED-DATE+" 5)
+  (:const "+ED-COMMENT+" 6)
+  (:const "+ED-OWNER+" 7)
 
-;;; --- constants from dos/filehandler.i ---
-(defconstant +de-tablesize+ 0)
-(defconstant +de-sizeblock+ 1)
-(defconstant +de-secorg+ 2)
-(defconstant +de-numheads+ 3)
-(defconstant +de-secsperblk+ 4)
-(defconstant +de-blkspertrack+ 5)
-(defconstant +de-reservedblks+ 6)
-(defconstant +de-prefac+ 7)
-(defconstant +de-interleave+ 8)
-(defconstant +de-lowcyl+ 9)
-(defconstant +de-uppercyl+ 10)
-(defconstant +de-numbuffers+ 11)
-(defconstant +de-membuftype+ 12)
-(defconstant +de-bufmemtype+ 12)
-(defconstant +de-maxtransfer+ 13)
-(defconstant +de-mask+ 14)
-(defconstant +de-bootpri+ 15)
-(defconstant +de-dostype+ #x10)
-(defconstant +de-baud+ #x11)
-(defconstant +de-control+ #x12)
-(defconstant +de-bootblocks+ #x13)
-(defconstant +envb-scsidirect+ #x10)
-(defconstant +envf-scsidirect+ #x10000)
-(defconstant +envb-superfloppy+ #x11)
-(defconstant +envf-superfloppy+ #x20000)
-(defconstant +envb-disablensd+ #x12)
-(defconstant +envf-disablensd+ #x40000)
+  ;; --- structures from dos/exall.i ---
+  (:struct "EX-ALL-DATA" 40   ; ExAllData (dos/exall.i)
+    ("NEXT" :fptr 0)
+    ("NAME" :fptr 4)
+    ("TYPE" :i32 8)
+    ("SIZE" :u32 12)
+    ("PROT" :u32 16)
+    ("DAYS" :u32 20)
+    ("MINS" :u32 24)
+    ("TICKS" :u32 28)
+    ("COMMENT" :fptr 32)
+    ("OWNER-UID" :u16 36)
+    ("OWNER-GID" :u16 38)
+    )
+  (:struct "EX-ALL-CONTROL" 16   ; ExAllControl (dos/exall.i)
+    ("ENTRIES" :u32 0)
+    ("LAST-KEY" :u32 4)
+    ("MATCH-STRING" :fptr 8)
+    ("MATCH-FUNC" :fptr 12)
+    )
 
-;;; --- structures from dos/filehandler.i ---
-(ffi:defcstruct (dos-envec :size 80)   ; DosEnvec (dos/filehandler.i)
-  (table-size :u32 0)
-  (size-block :u32 4)
-  (sec-org :u32 8)
-  (surfaces :u32 12)
-  (sector-per-block :u32 16)
-  (blocks-per-track :u32 20)
-  (reserved :u32 24)
-  (pre-alloc :u32 28)
-  (interleave :u32 32)
-  (low-cyl :u32 36)
-  (high-cyl :u32 40)
-  (num-buffers :u32 44)
-  (buf-mem-type :u32 48)
-  (max-transfer :u32 52)
-  (mask :u32 56)
-  (boot-pri :i32 60)
-  (dos-type :u32 64)
-  (baud :u32 68)
-  (control :u32 72)
-  (boot-blocks :u32 76)
-)
-(ffi:defcstruct (file-sys-startup-msg :size 16)   ; FileSysStartupMsg (dos/filehandler.i)
-  (unit :u32 0)
-  (device :u32 4)
-  (environ :u32 8)
-  (flags :u32 12)
-)
-(ffi:defcstruct (device-node :size 44)   ; DeviceNode (dos/filehandler.i)
-  (next :u32 0)
-  (type :u32 4)
-  (task :fptr 8)
-  (lock :u32 12)
-  (handler :u32 16)
-  (stack-size :u32 20)
-  (priority :i32 24)
-  (startup :u32 28)
-  (seg-list :u32 32)
-  (global-vec :u32 36)
-  (name :u32 40)
-)
+  ;; --- constants from dos/filehandler.i ---
+  (:const "+DE-TABLESIZE+" 0)
+  (:const "+DE-SIZEBLOCK+" 1)
+  (:const "+DE-SECORG+" 2)
+  (:const "+DE-NUMHEADS+" 3)
+  (:const "+DE-SECSPERBLK+" 4)
+  (:const "+DE-BLKSPERTRACK+" 5)
+  (:const "+DE-RESERVEDBLKS+" 6)
+  (:const "+DE-PREFAC+" 7)
+  (:const "+DE-INTERLEAVE+" 8)
+  (:const "+DE-LOWCYL+" 9)
+  (:const "+DE-UPPERCYL+" 10)
+  (:const "+DE-NUMBUFFERS+" 11)
+  (:const "+DE-MEMBUFTYPE+" 12)
+  (:const "+DE-BUFMEMTYPE+" 12)
+  (:const "+DE-MAXTRANSFER+" 13)
+  (:const "+DE-MASK+" 14)
+  (:const "+DE-BOOTPRI+" 15)
+  (:const "+DE-DOSTYPE+" #x10)
+  (:const "+DE-BAUD+" #x11)
+  (:const "+DE-CONTROL+" #x12)
+  (:const "+DE-BOOTBLOCKS+" #x13)
+  (:const "+ENVB-SCSIDIRECT+" #x10)
+  (:const "+ENVF-SCSIDIRECT+" #x10000)
+  (:const "+ENVB-SUPERFLOPPY+" #x11)
+  (:const "+ENVF-SUPERFLOPPY+" #x20000)
+  (:const "+ENVB-DISABLENSD+" #x12)
+  (:const "+ENVF-DISABLENSD+" #x40000)
 
-;;; --- constants from dos/notify.i ---
-(defconstant +notify-class+ #x40000000)
-(defconstant +notify-code+ #x1234)
-(defconstant +nr-task+ #x10)
-(defconstant +nrb-send-message+ 0)
-(defconstant +nrf-send-message+ 1)
-(defconstant +nrb-send-signal+ 1)
-(defconstant +nrf-send-signal+ 2)
-(defconstant +nrb-wait-reply+ 3)
-(defconstant +nrf-wait-reply+ 8)
-(defconstant +nrb-notify-initial+ 4)
-(defconstant +nrf-notify-initial+ #x10)
-(defconstant +nrb-magic+ #x1F)
-(defconstant +nrf-magic+ #x80000000)
-(defconstant +nr-handler-flags+ #xFFFF0000)
+  ;; --- structures from dos/filehandler.i ---
+  (:struct "DOS-ENVEC" 80   ; DosEnvec (dos/filehandler.i)
+    ("TABLE-SIZE" :u32 0)
+    ("SIZE-BLOCK" :u32 4)
+    ("SEC-ORG" :u32 8)
+    ("SURFACES" :u32 12)
+    ("SECTOR-PER-BLOCK" :u32 16)
+    ("BLOCKS-PER-TRACK" :u32 20)
+    ("RESERVED" :u32 24)
+    ("PRE-ALLOC" :u32 28)
+    ("INTERLEAVE" :u32 32)
+    ("LOW-CYL" :u32 36)
+    ("HIGH-CYL" :u32 40)
+    ("NUM-BUFFERS" :u32 44)
+    ("BUF-MEM-TYPE" :u32 48)
+    ("MAX-TRANSFER" :u32 52)
+    ("MASK" :u32 56)
+    ("BOOT-PRI" :i32 60)
+    ("DOS-TYPE" :u32 64)
+    ("BAUD" :u32 68)
+    ("CONTROL" :u32 72)
+    ("BOOT-BLOCKS" :u32 76)
+    )
+  (:struct "FILE-SYS-STARTUP-MSG" 16   ; FileSysStartupMsg (dos/filehandler.i)
+    ("UNIT" :u32 0)
+    ("DEVICE" :u32 4)
+    ("ENVIRON" :u32 8)
+    ("FLAGS" :u32 12)
+    )
+  (:struct "DEVICE-NODE" 44   ; DeviceNode (dos/filehandler.i)
+    ("NEXT" :u32 0)
+    ("TYPE" :u32 4)
+    ("TASK" :fptr 8)
+    ("LOCK" :u32 12)
+    ("HANDLER" :u32 16)
+    ("STACK-SIZE" :u32 20)
+    ("PRIORITY" :i32 24)
+    ("STARTUP" :u32 28)
+    ("SEG-LIST" :u32 32)
+    ("GLOBAL-VEC" :u32 36)
+    ("NAME" :u32 40)
+    )
 
-;;; --- structures from dos/notify.i ---
-(ffi:defcstruct (notify-message :size 38)   ; NotifyMessage (dos/notify.i)
-  (exec-message (:struct 20) 0)
-  (class :u32 20)
-  (code :u16 24)
-  (n-req :fptr 26)
-  (do-not-touch :u32 30)
-  (do-not-touch2 :u32 34)
-)
-(ffi:defcstruct (notify-request :size 48)   ; NotifyRequest (dos/notify.i)
-  (name :fptr 0)
-  (full-name :fptr 4)
-  (user-data :u32 8)
-  (flags :u32 12)
-  (port :fptr 16)
-  (signal-num :u8 20)
-  (pad (:struct 3) 21)
-  (reserved (:struct 16) 24)
-  (msg-count :u32 40)
-  (handler :fptr 44)
-)
+  ;; --- constants from dos/notify.i ---
+  (:const "+NOTIFY-CLASS+" #x40000000)
+  (:const "+NOTIFY-CODE+" #x1234)
+  (:const "+NR-TASK+" #x10)
+  (:const "+NRB-SEND-MESSAGE+" 0)
+  (:const "+NRF-SEND-MESSAGE+" 1)
+  (:const "+NRB-SEND-SIGNAL+" 1)
+  (:const "+NRF-SEND-SIGNAL+" 2)
+  (:const "+NRB-WAIT-REPLY+" 3)
+  (:const "+NRF-WAIT-REPLY+" 8)
+  (:const "+NRB-NOTIFY-INITIAL+" 4)
+  (:const "+NRF-NOTIFY-INITIAL+" #x10)
+  (:const "+NRB-MAGIC+" #x1F)
+  (:const "+NRF-MAGIC+" #x80000000)
+  (:const "+NR-HANDLER-FLAGS+" #xFFFF0000)
 
-;;; --- constants from dos/rdargs.i ---
-(defconstant +rdab-stdin+ 0)
-(defconstant +rdaf-stdin+ 1)
-(defconstant +rdab-noalloc+ 1)
-(defconstant +rdaf-noalloc+ 2)
-(defconstant +rdab-noprompt+ 2)
-(defconstant +rdaf-noprompt+ 4)
-(defconstant +max-template-items+ #x64)
-(defconstant +max-multiargs+ #x80)
+  ;; --- structures from dos/notify.i ---
+  (:struct "NOTIFY-MESSAGE" 38   ; NotifyMessage (dos/notify.i)
+    ("EXEC-MESSAGE" (:struct 20) 0)
+    ("CLASS" :u32 20)
+    ("CODE" :u16 24)
+    ("N-REQ" :fptr 26)
+    ("DO-NOT-TOUCH" :u32 30)
+    ("DO-NOT-TOUCH2" :u32 34)
+    )
+  (:struct "NOTIFY-REQUEST" 48   ; NotifyRequest (dos/notify.i)
+    ("NAME" :fptr 0)
+    ("FULL-NAME" :fptr 4)
+    ("USER-DATA" :u32 8)
+    ("FLAGS" :u32 12)
+    ("PORT" :fptr 16)
+    ("SIGNAL-NUM" :u8 20)
+    ("PAD" (:struct 3) 21)
+    ("RESERVED" (:struct 16) 24)
+    ("MSG-COUNT" :u32 40)
+    ("HANDLER" :fptr 44)
+    )
 
-;;; --- structures from dos/rdargs.i ---
-(ffi:defcstruct (c-source :size 12)   ; CSource (dos/rdargs.i)
-  (buffer :fptr 0)
-  (length :i32 4)
-  (cur-chr :i32 8)
-)
-(ffi:defcstruct (rd-args :size 32)   ; RDArgs (dos/rdargs.i)
-  (source (:struct 12) 0)
-  (da-list :fptr 12)
-  (buffer :i32 16)
-  (buf-siz :i32 20)
-  (ext-help :fptr 24)
-  (flags :i32 28)
-)
+  ;; --- constants from dos/rdargs.i ---
+  (:const "+RDAB-STDIN+" 0)
+  (:const "+RDAF-STDIN+" 1)
+  (:const "+RDAB-NOALLOC+" 1)
+  (:const "+RDAF-NOALLOC+" 2)
+  (:const "+RDAB-NOPROMPT+" 2)
+  (:const "+RDAF-NOPROMPT+" 4)
+  (:const "+MAX-TEMPLATE-ITEMS+" #x64)
+  (:const "+MAX-MULTIARGS+" #x80)
 
-;;; --- constants from dos/record.i ---
-(defconstant +rec-exclusive+ 0)
-(defconstant +rec-exclusive-immed+ 1)
-(defconstant +rec-shared+ 2)
-(defconstant +rec-shared-immed+ 3)
+  ;; --- structures from dos/rdargs.i ---
+  (:struct "C-SOURCE" 12   ; CSource (dos/rdargs.i)
+    ("BUFFER" :fptr 0)
+    ("LENGTH" :i32 4)
+    ("CUR-CHR" :i32 8)
+    )
+  (:struct "RD-ARGS" 32   ; RDArgs (dos/rdargs.i)
+    ("SOURCE" (:struct 12) 0)
+    ("DA-LIST" :fptr 12)
+    ("BUFFER" :i32 16)
+    ("BUF-SIZ" :i32 20)
+    ("EXT-HELP" :fptr 24)
+    ("FLAGS" :i32 28)
+    )
 
-;;; --- structures from dos/record.i ---
-(ffi:defcstruct (record-lock :size 16)   ; RecordLock (dos/record.i)
-  (fh :u32 0)
-  (offset :u32 4)
-  (length :u32 8)
-  (mode :u32 12)
-)
+  ;; --- constants from dos/record.i ---
+  (:const "+REC-EXCLUSIVE+" 0)
+  (:const "+REC-EXCLUSIVE-IMMED+" 1)
+  (:const "+REC-SHARED+" 2)
+  (:const "+REC-SHARED-IMMED+" 3)
 
-;;; --- constants from dos/shell.i ---
-(defconstant +shell-dummy+ #x80000BB8)
-(defconstant +shell-fgets-full+ #x80000BB9)
-(defconstant +shell-addh-line+ #x80000BBA)
+  ;; --- structures from dos/record.i ---
+  (:struct "RECORD-LOCK" 16   ; RecordLock (dos/record.i)
+    ("FH" :u32 0)
+    ("OFFSET" :u32 4)
+    ("LENGTH" :u32 8)
+    ("MODE" :u32 12)
+    )
 
-;;; --- structures from dos/shell.i ---
-(ffi:defcstruct (extended-command-line-interface :size 88)   ; ExtendedCommandLineInterface (dos/shell.i)
-  (result2 :i32 0)
-  (set-name :u32 4)
-  (command-dir :u32 8)
-  (return-code :i32 12)
-  (command-name :u32 16)
-  (fail-level :i32 20)
-  (prompt :u32 24)
-  (standard-input :u32 28)
-  (current-input :u32 32)
-  (command-file :u32 36)
-  (interactive :i32 40)
-  (background :i32 44)
-  (current-output :u32 48)
-  (default-stack :i32 52)
-  (standard-output :u32 56)
-  (module :u32 60)
-  (hook (:struct 20) 64)
-  (this :fptr 84)
-)
-(ffi:defcstruct (history-node :size 12)   ; HistoryNode (dos/shell.i)
-  (node (:struct 8) 0)
-  (line :fptr 8)
-)
+  ;; --- constants from dos/shell.i ---
+  (:const "+SHELL-DUMMY+" #x80000BB8)
+  (:const "+SHELL-FGETS-FULL+" #x80000BB9)
+  (:const "+SHELL-ADDH-LINE+" #x80000BBA)
 
-;;; --- constants from dos/stdio.i ---
-(defconstant +dos-stdio-i+ 1)
-(defconstant +buf-line+ 0)
-(defconstant +buf-full+ 1)
-(defconstant +buf-none+ 2)
-(defconstant +endstreamch+ -1)
+  ;; --- structures from dos/shell.i ---
+  (:struct "EXTENDED-COMMAND-LINE-INTERFACE" 88   ; ExtendedCommandLineInterface (dos/shell.i)
+    ("RESULT2" :i32 0)
+    ("SET-NAME" :u32 4)
+    ("COMMAND-DIR" :u32 8)
+    ("RETURN-CODE" :i32 12)
+    ("COMMAND-NAME" :u32 16)
+    ("FAIL-LEVEL" :i32 20)
+    ("PROMPT" :u32 24)
+    ("STANDARD-INPUT" :u32 28)
+    ("CURRENT-INPUT" :u32 32)
+    ("COMMAND-FILE" :u32 36)
+    ("INTERACTIVE" :i32 40)
+    ("BACKGROUND" :i32 44)
+    ("CURRENT-OUTPUT" :u32 48)
+    ("DEFAULT-STACK" :i32 52)
+    ("STANDARD-OUTPUT" :u32 56)
+    ("MODULE" :u32 60)
+    ("HOOK" (:struct 20) 64)
+    ("THIS" :fptr 84)
+    )
+  (:struct "HISTORY-NODE" 12   ; HistoryNode (dos/shell.i)
+    ("NODE" (:struct 8) 0)
+    ("LINE" :fptr 8)
+    )
 
-;;; --- constants from dos/var.i ---
-(defconstant +lv-var+ 0)
-(defconstant +lv-alias+ 1)
-(defconstant +lvb-ignore+ 7)
-(defconstant +lvf-ignore+ #x80)
-(defconstant +gvb-global-only+ 8)
-(defconstant +gvf-global-only+ #x100)
-(defconstant +gvb-local-only+ 9)
-(defconstant +gvf-local-only+ #x200)
-(defconstant +gvb-binary-var+ 10)
-(defconstant +gvf-binary-var+ #x400)
-(defconstant +gvb-dont-null-term+ 11)
-(defconstant +gvf-dont-null-term+ #x800)
-(defconstant +gvb-save-var+ 12)
-(defconstant +gvf-save-var+ #x1000)
+  ;; --- constants from dos/stdio.i ---
+  (:const "+DOS-STDIO-I+" 1)
+  (:const "+BUF-LINE+" 0)
+  (:const "+BUF-FULL+" 1)
+  (:const "+BUF-NONE+" 2)
+  (:const "+ENDSTREAMCH+" -1)
 
-;;; --- structures from dos/var.i ---
-(ffi:defcstruct (local-var :size 24)   ; LocalVar (dos/var.i)
-  (node (:struct 14) 0)
-  (flags :u16 14)
-  (value :fptr 16)
-  (len :u32 20)
-)
+  ;; --- constants from dos/var.i ---
+  (:const "+LV-VAR+" 0)
+  (:const "+LV-ALIAS+" 1)
+  (:const "+LVB-IGNORE+" 7)
+  (:const "+LVF-IGNORE+" #x80)
+  (:const "+GVB-GLOBAL-ONLY+" 8)
+  (:const "+GVF-GLOBAL-ONLY+" #x100)
+  (:const "+GVB-LOCAL-ONLY+" 9)
+  (:const "+GVF-LOCAL-ONLY+" #x200)
+  (:const "+GVB-BINARY-VAR+" 10)
+  (:const "+GVF-BINARY-VAR+" #x400)
+  (:const "+GVB-DONT-NULL-TERM+" 11)
+  (:const "+GVF-DONT-NULL-TERM+" #x800)
+  (:const "+GVB-SAVE-VAR+" 12)
+  (:const "+GVF-SAVE-VAR+" #x1000)
 
-;;; --- functions (dos_lib.sfd + MorphOS SDK) ---
-(amiga.ffi:defcfun open *dos-base* -30 (:d1 name :d2 access-mode)
-    :result :unsigned
-    :doc "BPTR Open(CONST_STRPTR name, LONG accessMode) (D1,D2) LVO -30")
-(amiga.ffi:defcfun close *dos-base* -36 (:d1 file)
-    :result :signed
-    :doc "LONG Close(BPTR file) (D1) LVO -36")
-(amiga.ffi:defcfun read *dos-base* -42 (:d1 file :d2 buffer :d3 length)
-    :result :signed
-    :doc "LONG Read(BPTR file, APTR buffer, LONG length) (D1,D2,D3) LVO -42")
-(amiga.ffi:defcfun write *dos-base* -48 (:d1 file :d2 buffer :d3 length)
-    :result :signed
-    :doc "LONG Write(BPTR file, CONST_APTR buffer, LONG length) (D1,D2,D3) LVO -48")
-(amiga.ffi:defcfun input *dos-base* -54 ()
-    :result :unsigned
-    :doc "BPTR Input() () LVO -54")
-(amiga.ffi:defcfun output *dos-base* -60 ()
-    :result :unsigned
-    :doc "BPTR Output() () LVO -60")
-(amiga.ffi:defcfun seek *dos-base* -66 (:d1 file :d2 position :d3 offset)
-    :result :signed
-    :doc "LONG Seek(BPTR file, LONG position, LONG offset) (D1,D2,D3) LVO -66")
-(amiga.ffi:defcfun delete-file *dos-base* -72 (:d1 name)
-    :result :signed
-    :doc "LONG DeleteFile(CONST_STRPTR name) (D1) LVO -72")
-(amiga.ffi:defcfun rename *dos-base* -78 (:d1 old-name :d2 new-name)
-    :result :signed
-    :doc "LONG Rename(CONST_STRPTR oldName, CONST_STRPTR newName) (D1,D2) LVO -78")
-(amiga.ffi:defcfun lock *dos-base* -84 (:d1 name :d2 type)
-    :result :unsigned
-    :doc "BPTR Lock(CONST_STRPTR name, LONG type) (D1,D2) LVO -84")
-(amiga.ffi:defcfun un-lock *dos-base* -90 (:d1 lock)
-    :result :void
-    :doc "VOID UnLock(BPTR lock) (D1) LVO -90")
-(amiga.ffi:defcfun dup-lock *dos-base* -96 (:d1 lock)
-    :result :unsigned
-    :doc "BPTR DupLock(BPTR lock) (D1) LVO -96")
-(amiga.ffi:defcfun examine *dos-base* -102 (:d1 lock :d2 file-info-block)
-    :result :signed
-    :doc "LONG Examine(BPTR lock, struct FileInfoBlock * fileInfoBlock) (D1,D2) LVO -102")
-(amiga.ffi:defcfun ex-next *dos-base* -108 (:d1 lock :d2 file-info-block)
-    :result :signed
-    :doc "LONG ExNext(BPTR lock, struct FileInfoBlock * fileInfoBlock) (D1,D2) LVO -108")
-(amiga.ffi:defcfun info *dos-base* -114 (:d1 lock :d2 parameter-block)
-    :result :signed
-    :doc "LONG Info(BPTR lock, struct InfoData * parameterBlock) (D1,D2) LVO -114")
-(amiga.ffi:defcfun create-dir *dos-base* -120 (:d1 name)
-    :result :unsigned
-    :doc "BPTR CreateDir(CONST_STRPTR name) (D1) LVO -120")
-(amiga.ffi:defcfun current-dir *dos-base* -126 (:d1 lock)
-    :result :unsigned
-    :doc "BPTR CurrentDir(BPTR lock) (D1) LVO -126")
-(amiga.ffi:defcfun io-err *dos-base* -132 ()
-    :result :signed
-    :doc "LONG IoErr() () LVO -132")
-(amiga.ffi:defcfun create-proc *dos-base* -138 (:d1 name :d2 pri :d3 seg-list :d4 stack-size)
-    :result :pointer
-    :doc "struct MsgPort * CreateProc(CONST_STRPTR name, LONG pri, BPTR segList, LONG stackSize) (D1,D2,D3,D4) LVO -138")
-(amiga.ffi:defcfun exit *dos-base* -144 (:d1 return-code)
-    :result :void
-    :doc "VOID Exit(LONG returnCode) (D1) LVO -144")
-(amiga.ffi:defcfun load-seg *dos-base* -150 (:d1 name)
-    :result :unsigned
-    :doc "BPTR LoadSeg(CONST_STRPTR name) (D1) LVO -150")
-(amiga.ffi:defcfun un-load-seg *dos-base* -156 (:d1 seglist)
-    :result :void
-    :doc "VOID UnLoadSeg(BPTR seglist) (D1) LVO -156")
-(amiga.ffi:defcfun device-proc *dos-base* -174 (:d1 name)
-    :result :pointer
-    :doc "struct MsgPort * DeviceProc(CONST_STRPTR name) (D1) LVO -174")
-(amiga.ffi:defcfun set-comment *dos-base* -180 (:d1 name :d2 comment)
-    :result :signed
-    :doc "LONG SetComment(CONST_STRPTR name, CONST_STRPTR comment) (D1,D2) LVO -180")
-(amiga.ffi:defcfun set-protection *dos-base* -186 (:d1 name :d2 protect)
-    :result :signed
-    :doc "LONG SetProtection(CONST_STRPTR name, LONG protect) (D1,D2) LVO -186")
-(amiga.ffi:defcfun date-stamp *dos-base* -192 (:d1 date)
-    :result :pointer
-    :doc "struct DateStamp * DateStamp(struct DateStamp * date) (D1) LVO -192")
-(amiga.ffi:defcfun delay *dos-base* -198 (:d1 timeout)
-    :result :void
-    :doc "VOID Delay(LONG timeout) (D1) LVO -198")
-(amiga.ffi:defcfun wait-for-char *dos-base* -204 (:d1 file :d2 timeout)
-    :result :signed
-    :doc "LONG WaitForChar(BPTR file, LONG timeout) (D1,D2) LVO -204")
-(amiga.ffi:defcfun parent-dir *dos-base* -210 (:d1 lock)
-    :result :unsigned
-    :doc "BPTR ParentDir(BPTR lock) (D1) LVO -210")
-(amiga.ffi:defcfun is-interactive *dos-base* -216 (:d1 file)
-    :result :signed
-    :doc "LONG IsInteractive(BPTR file) (D1) LVO -216")
-(amiga.ffi:defcfun execute *dos-base* -222 (:d1 string :d2 file :d3 file2)
-    :result :signed
-    :doc "LONG Execute(CONST_STRPTR string, BPTR file, BPTR file2) (D1,D2,D3) LVO -222")
-(amiga.ffi:defcfun alloc-dos-object *dos-base* -228 (:d1 type :d2 tags)
-    :result :pointer
-    :doc "APTR AllocDosObject(ULONG type, CONST struct TagItem * tags) (D1,D2) LVO -228")
-(amiga.ffi:defcfun free-dos-object *dos-base* -234 (:d1 type :d2 ptr)
-    :result :void
-    :doc "VOID FreeDosObject(ULONG type, APTR ptr) (D1,D2) LVO -234")
-(amiga.ffi:defcfun do-pkt *dos-base* -240 (:d1 port :d2 action :d3 arg1 :d4 arg2 :d5 arg3 :d6 arg4 :d7 arg5)
-    :result :signed
-    :doc "LONG DoPkt(struct MsgPort * port, LONG action, LONG arg1, LONG arg2, LONG arg3, LONG arg4, LONG arg5) (D1,D2,D3,D4,D5,D6,D7) LVO -240")
-(amiga.ffi:defcfun send-pkt *dos-base* -246 (:d1 dp :d2 port :d3 replyport)
-    :result :void
-    :doc "VOID SendPkt(struct DosPacket * dp, struct MsgPort * port, struct MsgPort * replyport) (D1,D2,D3) LVO -246")
-(amiga.ffi:defcfun wait-pkt *dos-base* -252 ()
-    :result :pointer
-    :doc "struct DosPacket * WaitPkt() () LVO -252")
-(amiga.ffi:defcfun reply-pkt *dos-base* -258 (:d1 dp :d2 res1 :d3 res2)
-    :result :void
-    :doc "VOID ReplyPkt(struct DosPacket * dp, LONG res1, LONG res2) (D1,D2,D3) LVO -258")
-(amiga.ffi:defcfun abort-pkt *dos-base* -264 (:d1 port :d2 pkt)
-    :result :void
-    :doc "VOID AbortPkt(struct MsgPort * port, struct DosPacket * pkt) (D1,D2) LVO -264")
-(amiga.ffi:defcfun lock-record *dos-base* -270 (:d1 fh :d2 offset :d3 length :d4 mode :d5 timeout)
-    :result :bool
-    :doc "BOOL LockRecord(BPTR fh, ULONG offset, ULONG length, ULONG mode, ULONG timeout) (D1,D2,D3,D4,D5) LVO -270")
-(amiga.ffi:defcfun lock-records *dos-base* -276 (:d1 rec-array :d2 timeout)
-    :result :bool
-    :doc "BOOL LockRecords(CONST struct RecordLock * recArray, ULONG timeout) (D1,D2) LVO -276")
-(amiga.ffi:defcfun un-lock-record *dos-base* -282 (:d1 fh :d2 offset :d3 length)
-    :result :bool
-    :doc "BOOL UnLockRecord(BPTR fh, ULONG offset, ULONG length) (D1,D2,D3) LVO -282")
-(amiga.ffi:defcfun un-lock-records *dos-base* -288 (:d1 rec-array)
-    :result :bool
-    :doc "BOOL UnLockRecords(CONST struct RecordLock * recArray) (D1) LVO -288")
-(amiga.ffi:defcfun select-input *dos-base* -294 (:d1 fh)
-    :result :unsigned
-    :doc "BPTR SelectInput(BPTR fh) (D1) LVO -294")
-(amiga.ffi:defcfun select-output *dos-base* -300 (:d1 fh)
-    :result :unsigned
-    :doc "BPTR SelectOutput(BPTR fh) (D1) LVO -300")
-(amiga.ffi:defcfun f-get-c *dos-base* -306 (:d1 fh)
-    :result :signed
-    :doc "LONG FGetC(BPTR fh) (D1) LVO -306")
-(amiga.ffi:defcfun f-put-c *dos-base* -312 (:d1 fh :d2 ch)
-    :result :signed
-    :doc "LONG FPutC(BPTR fh, LONG ch) (D1,D2) LVO -312")
-(amiga.ffi:defcfun un-get-c *dos-base* -318 (:d1 fh :d2 character)
-    :result :signed
-    :doc "LONG UnGetC(BPTR fh, LONG character) (D1,D2) LVO -318")
-(amiga.ffi:defcfun f-read *dos-base* -324 (:d1 fh :d2 block :d3 blocklen :d4 number)
-    :result :signed
-    :doc "LONG FRead(BPTR fh, APTR block, ULONG blocklen, ULONG number) (D1,D2,D3,D4) LVO -324")
-(amiga.ffi:defcfun f-write *dos-base* -330 (:d1 fh :d2 block :d3 blocklen :d4 number)
-    :result :signed
-    :doc "LONG FWrite(BPTR fh, CONST_APTR block, ULONG blocklen, ULONG number) (D1,D2,D3,D4) LVO -330")
-(amiga.ffi:defcfun f-gets *dos-base* -336 (:d1 fh :d2 buf :d3 buflen)
-    :result :pointer
-    :doc "STRPTR FGets(BPTR fh, STRPTR buf, ULONG buflen) (D1,D2,D3) LVO -336")
-(amiga.ffi:defcfun f-puts *dos-base* -342 (:d1 fh :d2 str)
-    :result :signed
-    :doc "LONG FPuts(BPTR fh, CONST_STRPTR str) (D1,D2) LVO -342")
-(amiga.ffi:defcfun vf-writef *dos-base* -348 (:d1 fh :d2 format :d3 argarray)
-    :result :void
-    :doc "VOID VFWritef(BPTR fh, CONST_STRPTR format, CONST LONG * argarray) (D1,D2,D3) LVO -348")
-(amiga.ffi:defcfun vf-printf *dos-base* -354 (:d1 fh :d2 format :d3 argarray)
-    :result :signed
-    :doc "LONG VFPrintf(BPTR fh, CONST_STRPTR format, CONST_APTR argarray) (D1,D2,D3) LVO -354")
-(amiga.ffi:defcfun flush *dos-base* -360 (:d1 fh)
-    :result :signed
-    :doc "LONG Flush(BPTR fh) (D1) LVO -360")
-(amiga.ffi:defcfun set-v-buf *dos-base* -366 (:d1 fh :d2 buff :d3 type :d4 size)
-    :result :signed
-    :doc "LONG SetVBuf(BPTR fh, STRPTR buff, LONG type, LONG size) (D1,D2,D3,D4) LVO -366")
-(amiga.ffi:defcfun dup-lock-from-fh *dos-base* -372 (:d1 fh)
-    :result :unsigned
-    :doc "BPTR DupLockFromFH(BPTR fh) (D1) LVO -372")
-(amiga.ffi:defcfun open-from-lock *dos-base* -378 (:d1 lock)
-    :result :unsigned
-    :doc "BPTR OpenFromLock(BPTR lock) (D1) LVO -378")
-(amiga.ffi:defcfun parent-of-fh *dos-base* -384 (:d1 fh)
-    :result :unsigned
-    :doc "BPTR ParentOfFH(BPTR fh) (D1) LVO -384")
-(amiga.ffi:defcfun examine-fh *dos-base* -390 (:d1 fh :d2 fib)
-    :result :bool
-    :doc "BOOL ExamineFH(BPTR fh, struct FileInfoBlock * fib) (D1,D2) LVO -390")
-(amiga.ffi:defcfun set-file-date *dos-base* -396 (:d1 name :d2 date)
-    :result :signed
-    :doc "LONG SetFileDate(CONST_STRPTR name, CONST struct DateStamp * date) (D1,D2) LVO -396")
-(amiga.ffi:defcfun name-from-lock *dos-base* -402 (:d1 lock :d2 buffer :d3 len)
-    :result :signed
-    :doc "LONG NameFromLock(BPTR lock, STRPTR buffer, LONG len) (D1,D2,D3) LVO -402")
-(amiga.ffi:defcfun name-from-fh *dos-base* -408 (:d1 fh :d2 buffer :d3 len)
-    :result :signed
-    :doc "LONG NameFromFH(BPTR fh, STRPTR buffer, LONG len) (D1,D2,D3) LVO -408")
-(amiga.ffi:defcfun split-name *dos-base* -414 (:d1 name :d2 separator :d3 buf :d4 oldpos :d5 size)
-    :result :i16
-    :doc "WORD SplitName(CONST_STRPTR name, UBYTE separator, STRPTR buf, WORD oldpos, LONG size) (D1,D2,D3,D4,D5) LVO -414")
-(amiga.ffi:defcfun same-lock *dos-base* -420 (:d1 lock1 :d2 lock2)
-    :result :signed
-    :doc "LONG SameLock(BPTR lock1, BPTR lock2) (D1,D2) LVO -420")
-(amiga.ffi:defcfun set-mode *dos-base* -426 (:d1 fh :d2 mode)
-    :result :signed
-    :doc "LONG SetMode(BPTR fh, LONG mode) (D1,D2) LVO -426")
-(amiga.ffi:defcfun ex-all *dos-base* -432 (:d1 lock :d2 buffer :d3 size :d4 data :d5 control)
-    :result :signed
-    :doc "LONG ExAll(BPTR lock, struct ExAllData * buffer, LONG size, LONG data, struct ExAllControl * control) (D1,D2,D3,D4,D5) LVO -432")
-(amiga.ffi:defcfun read-link *dos-base* -438 (:d1 port :d2 lock :d3 path :d4 buffer :d5 size)
-    :result :signed
-    :doc "LONG ReadLink(struct MsgPort * port, BPTR lock, CONST_STRPTR path, STRPTR buffer, ULONG size) (D1,D2,D3,D4,D5) LVO -438")
-(amiga.ffi:defcfun make-link *dos-base* -444 (:d1 name :d2 dest :d3 soft)
-    :result :signed
-    :doc "LONG MakeLink(CONST_STRPTR name, LONG dest, LONG soft) (D1,D2,D3) LVO -444")
-(amiga.ffi:defcfun change-mode *dos-base* -450 (:d1 type :d2 fh :d3 newmode)
-    :result :signed
-    :doc "LONG ChangeMode(LONG type, BPTR fh, LONG newmode) (D1,D2,D3) LVO -450")
-(amiga.ffi:defcfun set-file-size *dos-base* -456 (:d1 fh :d2 pos :d3 mode)
-    :result :signed
-    :doc "LONG SetFileSize(BPTR fh, LONG pos, LONG mode) (D1,D2,D3) LVO -456")
-(amiga.ffi:defcfun set-io-err *dos-base* -462 (:d1 result)
-    :result :signed
-    :doc "LONG SetIoErr(LONG result) (D1) LVO -462")
-(amiga.ffi:defcfun fault *dos-base* -468 (:d1 code :d2 header :d3 buffer :d4 len)
-    :result :bool
-    :doc "BOOL Fault(LONG code, CONST_STRPTR header, STRPTR buffer, LONG len) (D1,D2,D3,D4) LVO -468")
-(amiga.ffi:defcfun print-fault *dos-base* -474 (:d1 code :d2 header)
-    :result :bool
-    :doc "BOOL PrintFault(LONG code, CONST_STRPTR header) (D1,D2) LVO -474")
-(amiga.ffi:defcfun error-report *dos-base* -480 (:d1 code :d2 type :d3 arg1 :d4 device)
-    :result :signed
-    :doc "LONG ErrorReport(LONG code, LONG type, ULONG arg1, struct MsgPort * device) (D1,D2,D3,D4) LVO -480")
-(amiga.ffi:defcfun cli *dos-base* -492 ()
-    :result :pointer
-    :doc "struct CommandLineInterface * Cli() () LVO -492")
-(amiga.ffi:defcfun create-new-proc *dos-base* -498 (:d1 tags)
-    :result :pointer
-    :doc "struct Process * CreateNewProc(CONST struct TagItem * tags) (D1) LVO -498")
-(amiga.ffi:defcfun run-command *dos-base* -504 (:d1 seg :d2 stack :d3 paramptr :d4 paramlen)
-    :result :signed
-    :doc "LONG RunCommand(BPTR seg, LONG stack, CONST_STRPTR paramptr, LONG paramlen) (D1,D2,D3,D4) LVO -504")
-(amiga.ffi:defcfun get-console-task *dos-base* -510 ()
-    :result :pointer
-    :doc "struct MsgPort * GetConsoleTask() () LVO -510")
-(amiga.ffi:defcfun set-console-task *dos-base* -516 (:d1 task)
-    :result :pointer
-    :doc "struct MsgPort * SetConsoleTask(struct MsgPort * task) (D1) LVO -516")
-(amiga.ffi:defcfun get-file-sys-task *dos-base* -522 ()
-    :result :pointer
-    :doc "struct MsgPort * GetFileSysTask() () LVO -522")
-(amiga.ffi:defcfun set-file-sys-task *dos-base* -528 (:d1 task)
-    :result :pointer
-    :doc "struct MsgPort * SetFileSysTask(struct MsgPort * task) (D1) LVO -528")
-(amiga.ffi:defcfun get-arg-str *dos-base* -534 ()
-    :result :pointer
-    :doc "STRPTR GetArgStr() () LVO -534")
-(amiga.ffi:defcfun set-arg-str *dos-base* -540 (:d1 string)
-    :result :pointer
-    :doc "STRPTR SetArgStr(STRPTR string) (D1) LVO -540")
-(amiga.ffi:defcfun find-cli-proc *dos-base* -546 (:d1 num)
-    :result :pointer
-    :doc "struct Process * FindCliProc(ULONG num) (D1) LVO -546")
-(amiga.ffi:defcfun max-cli *dos-base* -552 ()
-    :result :unsigned
-    :doc "ULONG MaxCli() () LVO -552")
-(amiga.ffi:defcfun set-current-dir-name *dos-base* -558 (:d1 name)
-    :result :bool
-    :doc "BOOL SetCurrentDirName(CONST_STRPTR name) (D1) LVO -558")
-(amiga.ffi:defcfun get-current-dir-name *dos-base* -564 (:d1 buf :d2 len)
-    :result :bool
-    :doc "BOOL GetCurrentDirName(STRPTR buf, LONG len) (D1,D2) LVO -564")
-(amiga.ffi:defcfun set-program-name *dos-base* -570 (:d1 name)
-    :result :bool
-    :doc "BOOL SetProgramName(CONST_STRPTR name) (D1) LVO -570")
-(amiga.ffi:defcfun get-program-name *dos-base* -576 (:d1 buf :d2 len)
-    :result :bool
-    :doc "BOOL GetProgramName(STRPTR buf, LONG len) (D1,D2) LVO -576")
-(amiga.ffi:defcfun set-prompt *dos-base* -582 (:d1 name)
-    :result :bool
-    :doc "BOOL SetPrompt(CONST_STRPTR name) (D1) LVO -582")
-(amiga.ffi:defcfun get-prompt *dos-base* -588 (:d1 buf :d2 len)
-    :result :bool
-    :doc "BOOL GetPrompt(STRPTR buf, LONG len) (D1,D2) LVO -588")
-(amiga.ffi:defcfun set-program-dir *dos-base* -594 (:d1 lock)
-    :result :unsigned
-    :doc "BPTR SetProgramDir(BPTR lock) (D1) LVO -594")
-(amiga.ffi:defcfun get-program-dir *dos-base* -600 ()
-    :result :unsigned
-    :doc "BPTR GetProgramDir() () LVO -600")
-(amiga.ffi:defcfun system-tag-list *dos-base* -606 (:d1 command :d2 tags)
-    :result :signed
-    :doc "LONG SystemTagList(CONST_STRPTR command, CONST struct TagItem * tags) (D1,D2) LVO -606")
-(amiga.ffi:defcfun assign-lock *dos-base* -612 (:d1 name :d2 lock)
-    :result :signed
-    :doc "LONG AssignLock(CONST_STRPTR name, BPTR lock) (D1,D2) LVO -612")
-(amiga.ffi:defcfun assign-late *dos-base* -618 (:d1 name :d2 path)
-    :result :bool
-    :doc "BOOL AssignLate(CONST_STRPTR name, CONST_STRPTR path) (D1,D2) LVO -618")
-(amiga.ffi:defcfun assign-path *dos-base* -624 (:d1 name :d2 path)
-    :result :bool
-    :doc "BOOL AssignPath(CONST_STRPTR name, CONST_STRPTR path) (D1,D2) LVO -624")
-(amiga.ffi:defcfun assign-add *dos-base* -630 (:d1 name :d2 lock)
-    :result :bool
-    :doc "BOOL AssignAdd(CONST_STRPTR name, BPTR lock) (D1,D2) LVO -630")
-(amiga.ffi:defcfun rem-assign-list *dos-base* -636 (:d1 name :d2 lock)
-    :result :signed
-    :doc "LONG RemAssignList(CONST_STRPTR name, BPTR lock) (D1,D2) LVO -636")
-(amiga.ffi:defcfun get-device-proc *dos-base* -642 (:d1 name :d2 dp)
-    :result :pointer
-    :doc "struct DevProc * GetDeviceProc(CONST_STRPTR name, struct DevProc * dp) (D1,D2) LVO -642")
-(amiga.ffi:defcfun free-device-proc *dos-base* -648 (:d1 dp)
-    :result :void
-    :doc "VOID FreeDeviceProc(struct DevProc * dp) (D1) LVO -648")
-(amiga.ffi:defcfun lock-dos-list *dos-base* -654 (:d1 flags)
-    :result :pointer
-    :doc "struct DosList * LockDosList(ULONG flags) (D1) LVO -654")
-(amiga.ffi:defcfun un-lock-dos-list *dos-base* -660 (:d1 flags)
-    :result :void
-    :doc "VOID UnLockDosList(ULONG flags) (D1) LVO -660")
-(amiga.ffi:defcfun attempt-lock-dos-list *dos-base* -666 (:d1 flags)
-    :result :pointer
-    :doc "struct DosList * AttemptLockDosList(ULONG flags) (D1) LVO -666")
-(amiga.ffi:defcfun rem-dos-entry *dos-base* -672 (:d1 dlist)
-    :result :bool
-    :doc "BOOL RemDosEntry(struct DosList * dlist) (D1) LVO -672")
-(amiga.ffi:defcfun add-dos-entry *dos-base* -678 (:d1 dlist)
-    :result :signed
-    :doc "LONG AddDosEntry(struct DosList * dlist) (D1) LVO -678")
-(amiga.ffi:defcfun find-dos-entry *dos-base* -684 (:d1 dlist :d2 name :d3 flags)
-    :result :pointer
-    :doc "struct DosList * FindDosEntry(CONST struct DosList * dlist, CONST_STRPTR name, ULONG flags) (D1,D2,D3) LVO -684")
-(amiga.ffi:defcfun next-dos-entry *dos-base* -690 (:d1 dlist :d2 flags)
-    :result :pointer
-    :doc "struct DosList * NextDosEntry(CONST struct DosList * dlist, ULONG flags) (D1,D2) LVO -690")
-(amiga.ffi:defcfun make-dos-entry *dos-base* -696 (:d1 name :d2 type)
-    :result :pointer
-    :doc "struct DosList * MakeDosEntry(CONST_STRPTR name, LONG type) (D1,D2) LVO -696")
-(amiga.ffi:defcfun free-dos-entry *dos-base* -702 (:d1 dlist)
-    :result :void
-    :doc "VOID FreeDosEntry(struct DosList * dlist) (D1) LVO -702")
-(amiga.ffi:defcfun is-file-system *dos-base* -708 (:d1 name)
-    :result :bool
-    :doc "BOOL IsFileSystem(CONST_STRPTR name) (D1) LVO -708")
-(amiga.ffi:defcfun format *dos-base* -714 (:d1 filesystem :d2 volumename :d3 dostype)
-    :result :bool
-    :doc "BOOL Format(CONST_STRPTR filesystem, CONST_STRPTR volumename, ULONG dostype) (D1,D2,D3) LVO -714")
-(amiga.ffi:defcfun relabel *dos-base* -720 (:d1 drive :d2 newname)
-    :result :signed
-    :doc "LONG Relabel(CONST_STRPTR drive, CONST_STRPTR newname) (D1,D2) LVO -720")
-(amiga.ffi:defcfun inhibit *dos-base* -726 (:d1 name :d2 onoff)
-    :result :signed
-    :doc "LONG Inhibit(CONST_STRPTR name, LONG onoff) (D1,D2) LVO -726")
-(amiga.ffi:defcfun add-buffers *dos-base* -732 (:d1 name :d2 number)
-    :result :signed
-    :doc "LONG AddBuffers(CONST_STRPTR name, LONG number) (D1,D2) LVO -732")
-(amiga.ffi:defcfun compare-dates *dos-base* -738 (:d1 date1 :d2 date2)
-    :result :signed
-    :doc "LONG CompareDates(CONST struct DateStamp * date1, CONST struct DateStamp * date2) (D1,D2) LVO -738")
-(amiga.ffi:defcfun date-to-str *dos-base* -744 (:d1 datetime)
-    :result :signed
-    :doc "LONG DateToStr(struct DateTime * datetime) (D1) LVO -744")
-(amiga.ffi:defcfun str-to-date *dos-base* -750 (:d1 datetime)
-    :result :signed
-    :doc "LONG StrToDate(struct DateTime * datetime) (D1) LVO -750")
-(amiga.ffi:defcfun internal-load-seg *dos-base* -756 (:d0 fh :a0 table :a1 funcarray :a2 stack)
-    :result :unsigned
-    :doc "BPTR InternalLoadSeg(BPTR fh, BPTR table, CONST LONG * funcarray, LONG * stack) (D0,A0,A1,A2) LVO -756")
-(amiga.ffi:defcfun internal-un-load-seg *dos-base* -762 (:d1 seglist :a1 freefunc)
-    :result :bool
-    :doc "BOOL InternalUnLoadSeg(BPTR seglist, APTR freefunc) (D1,A1) LVO -762")
-(amiga.ffi:defcfun new-load-seg *dos-base* -768 (:d1 file :d2 tags)
-    :result :unsigned
-    :doc "BPTR NewLoadSeg(CONST_STRPTR file, CONST struct TagItem * tags) (D1,D2) LVO -768")
-(amiga.ffi:defcfun add-segment *dos-base* -774 (:d1 name :d2 seg :d3 system)
-    :result :signed
-    :doc "LONG AddSegment(CONST_STRPTR name, BPTR seg, LONG system) (D1,D2,D3) LVO -774")
-(amiga.ffi:defcfun find-segment *dos-base* -780 (:d1 name :d2 seg :d3 system)
-    :result :pointer
-    :doc "struct Segment * FindSegment(CONST_STRPTR name, CONST struct Segment * seg, LONG system) (D1,D2,D3) LVO -780")
-(amiga.ffi:defcfun rem-segment *dos-base* -786 (:d1 seg)
-    :result :signed
-    :doc "LONG RemSegment(struct Segment * seg) (D1) LVO -786")
-(amiga.ffi:defcfun check-signal *dos-base* -792 (:d1 mask)
-    :result :signed
-    :doc "LONG CheckSignal(LONG mask) (D1) LVO -792")
-(amiga.ffi:defcfun read-args *dos-base* -798 (:d1 arg-template :d2 array :d3 args)
-    :result :pointer
-    :doc "struct RDArgs * ReadArgs(CONST_STRPTR arg_template, LONG * array, struct RDArgs * args) (D1,D2,D3) LVO -798")
-(amiga.ffi:defcfun find-arg *dos-base* -804 (:d1 keyword :d2 arg-template)
-    :result :signed
-    :doc "LONG FindArg(CONST_STRPTR keyword, CONST_STRPTR arg_template) (D1,D2) LVO -804")
-(amiga.ffi:defcfun read-item *dos-base* -810 (:d1 name :d2 maxchars :d3 c-source)
-    :result :signed
-    :doc "LONG ReadItem(CONST_STRPTR name, LONG maxchars, struct CSource * cSource) (D1,D2,D3) LVO -810")
-(amiga.ffi:defcfun str-to-long *dos-base* -816 (:d1 string :d2 value)
-    :result :signed
-    :doc "LONG StrToLong(CONST_STRPTR string, LONG * value) (D1,D2) LVO -816")
-(amiga.ffi:defcfun match-first *dos-base* -822 (:d1 pat :d2 anchor)
-    :result :signed
-    :doc "LONG MatchFirst(CONST_STRPTR pat, struct AnchorPath * anchor) (D1,D2) LVO -822")
-(amiga.ffi:defcfun match-next *dos-base* -828 (:d1 anchor)
-    :result :signed
-    :doc "LONG MatchNext(struct AnchorPath * anchor) (D1) LVO -828")
-(amiga.ffi:defcfun match-end *dos-base* -834 (:d1 anchor)
-    :result :void
-    :doc "VOID MatchEnd(struct AnchorPath * anchor) (D1) LVO -834")
-(amiga.ffi:defcfun parse-pattern *dos-base* -840 (:d1 pat :d2 patbuf :d3 patbuflen)
-    :result :signed
-    :doc "LONG ParsePattern(CONST_STRPTR pat, UBYTE * patbuf, LONG patbuflen) (D1,D2,D3) LVO -840")
-(amiga.ffi:defcfun match-pattern *dos-base* -846 (:d1 patbuf :d2 str)
-    :result :bool
-    :doc "BOOL MatchPattern(CONST UBYTE * patbuf, CONST_STRPTR str) (D1,D2) LVO -846")
-(amiga.ffi:defcfun free-args *dos-base* -858 (:d1 args)
-    :result :void
-    :doc "VOID FreeArgs(struct RDArgs * args) (D1) LVO -858")
-(amiga.ffi:defcfun file-part *dos-base* -870 (:d1 path)
-    :result :pointer
-    :doc "STRPTR FilePart(CONST_STRPTR path) (D1) LVO -870")
-(amiga.ffi:defcfun path-part *dos-base* -876 (:d1 path)
-    :result :pointer
-    :doc "STRPTR PathPart(CONST_STRPTR path) (D1) LVO -876")
-(amiga.ffi:defcfun add-part *dos-base* -882 (:d1 dirname :d2 filename :d3 size)
-    :result :bool
-    :doc "BOOL AddPart(STRPTR dirname, CONST_STRPTR filename, ULONG size) (D1,D2,D3) LVO -882")
-(amiga.ffi:defcfun start-notify *dos-base* -888 (:d1 notify)
-    :result :bool
-    :doc "BOOL StartNotify(struct NotifyRequest * notify) (D1) LVO -888")
-(amiga.ffi:defcfun end-notify *dos-base* -894 (:d1 notify)
-    :result :void
-    :doc "VOID EndNotify(struct NotifyRequest * notify) (D1) LVO -894")
-(amiga.ffi:defcfun set-var *dos-base* -900 (:d1 name :d2 buffer :d3 size :d4 flags)
-    :result :bool
-    :doc "BOOL SetVar(CONST_STRPTR name, CONST_STRPTR buffer, LONG size, LONG flags) (D1,D2,D3,D4) LVO -900")
-(amiga.ffi:defcfun get-var *dos-base* -906 (:d1 name :d2 buffer :d3 size :d4 flags)
-    :result :signed
-    :doc "LONG GetVar(CONST_STRPTR name, STRPTR buffer, LONG size, LONG flags) (D1,D2,D3,D4) LVO -906")
-(amiga.ffi:defcfun delete-var *dos-base* -912 (:d1 name :d2 flags)
-    :result :signed
-    :doc "LONG DeleteVar(CONST_STRPTR name, ULONG flags) (D1,D2) LVO -912")
-(amiga.ffi:defcfun find-var *dos-base* -918 (:d1 name :d2 type)
-    :result :pointer
-    :doc "struct LocalVar * FindVar(CONST_STRPTR name, ULONG type) (D1,D2) LVO -918")
-(amiga.ffi:defcfun cli-init-newcli *dos-base* -930 (:a0 dp)
-    :result :signed
-    :doc "LONG CliInitNewcli(struct DosPacket * dp) (A0) LVO -930")
-(amiga.ffi:defcfun cli-init-run *dos-base* -936 (:a0 dp)
-    :result :signed
-    :doc "LONG CliInitRun(struct DosPacket * dp) (A0) LVO -936")
-(amiga.ffi:defcfun write-chars *dos-base* -942 (:d1 buf :d2 buflen)
-    :result :signed
-    :doc "LONG WriteChars(CONST_STRPTR buf, ULONG buflen) (D1,D2) LVO -942")
-(amiga.ffi:defcfun put-str *dos-base* -948 (:d1 str)
-    :result :signed
-    :doc "LONG PutStr(CONST_STRPTR str) (D1) LVO -948")
-(amiga.ffi:defcfun v-printf *dos-base* -954 (:d1 format :d2 argarray)
-    :result :signed
-    :doc "LONG VPrintf(CONST_STRPTR format, CONST_APTR argarray) (D1,D2) LVO -954")
-(amiga.ffi:defcfun parse-pattern-no-case *dos-base* -966 (:d1 pat :d2 patbuf :d3 patbuflen)
-    :result :signed
-    :doc "LONG ParsePatternNoCase(CONST_STRPTR pat, UBYTE * patbuf, LONG patbuflen) (D1,D2,D3) LVO -966")
-(amiga.ffi:defcfun match-pattern-no-case *dos-base* -972 (:d1 patbuf :d2 str)
-    :result :bool
-    :doc "BOOL MatchPatternNoCase(CONST UBYTE * patbuf, CONST_STRPTR str) (D1,D2) LVO -972")
-(amiga.ffi:defcfun same-device *dos-base* -984 (:d1 lock1 :d2 lock2)
-    :result :bool
-    :doc "BOOL SameDevice(BPTR lock1, BPTR lock2) (D1,D2) LVO -984")
-(amiga.ffi:defcfun ex-all-end *dos-base* -990 (:d1 lock :d2 buffer :d3 size :d4 data :d5 control)
-    :result :void
-    :doc "VOID ExAllEnd(BPTR lock, struct ExAllData * buffer, LONG size, LONG data, struct ExAllControl * control) (D1,D2,D3,D4,D5) LVO -990")
-(amiga.ffi:defcfun set-owner *dos-base* -996 (:d1 name :d2 owner-info)
-    :result :bool
-    :doc "BOOL SetOwner(CONST_STRPTR name, LONG owner_info) (D1,D2) LVO -996")
-(when (not (member :morphos *features*))
-  (amiga.ffi:defcfun volume-request-hook *dos-base* -1014 (:d1 vol)
-    :result :signed
-    :doc "LONG VolumeRequestHook(CONST_STRPTR vol) (D1) LVO -1014"))
-(when (not (member :morphos *features*))
-  (amiga.ffi:defcfun get-current-dir *dos-base* -1026 ()
-    :result :unsigned
-    :doc "BPTR GetCurrentDir() () LVO -1026"))
-(when (not (member :morphos *features*))
-  (amiga.ffi:defcfun put-err-str *dos-base* -1128 (:d1 str)
-    :result :signed
-    :doc "LONG PutErrStr(CONST_STRPTR str) (D1) LVO -1128"))
-(when (not (member :morphos *features*))
-  (amiga.ffi:defcfun error-output *dos-base* -1134 ()
-    :result :signed
-    :doc "LONG ErrorOutput() () LVO -1134"))
-(when (not (member :morphos *features*))
-  (amiga.ffi:defcfun select-error *dos-base* -1140 (:d1 fh)
-    :result :signed
-    :doc "LONG SelectError(BPTR fh) (D1) LVO -1140"))
-(when (not (member :morphos *features*))
-  (amiga.ffi:defcfun do-shell-method-tag-list *dos-base* -1152 (:d0 method :a0 tags)
-    :result :pointer
-    :doc "APTR DoShellMethodTagList(ULONG method, CONST struct TagItem * tags) (D0,A0) LVO -1152"))
-(when (not (member :morphos *features*))
-  (amiga.ffi:defcfun scan-stack-token *dos-base* -1158 (:d1 seg :d2 defaultstack)
-    :result :signed
-    :doc "LONG ScanStackToken(BPTR seg, LONG defaultstack) (D1,D2) LVO -1158"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun add-segment-tag-list *dos-base* -1002 (:a0 tags)
-    :result :signed
-    :doc "LONG AddSegmentTagList(struct TagItem * tags) (A0) LVO -1002"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun find-segment-tag-list *dos-base* -1008 (:a0 tags)
-    :result :pointer
-    :doc "struct Segment * FindSegmentTagList(struct TagItem * tags) (A0) LVO -1008"))
-;; skipped Seek64: not a 68k register call (base,sysv)
-;; skipped SetFileSize64: not a 68k register call (base,sysv)
-;; skipped LockRecord64: not a 68k register call (base,sysv)
-;; skipped LockRecords64: not a 68k register call (base,sysv)
-;; skipped UnLockRecord64: not a 68k register call (base,sysv)
-;; skipped UnLockRecords64: not a 68k register call (base,sysv)
-;; skipped NewReadLink: not a 68k register call (base,sysv)
-;; skipped GetFileSysAttr: not a 68k register call (base,sysv)
-;; skipped GetSegListAttr: not a 68k register call (base,sysv)
-;; skipped SetDosObjectAttr: not a 68k register call (base,sysv)
-;; skipped GetDosObjectAttr: not a 68k register call (base,sysv)
-;; skipped Examine64: not a 68k register call (base,sysv)
-;; skipped ExNext64: not a 68k register call (base,sysv)
-;; skipped ExamineFH64: not a 68k register call (base,sysv)
-;; skipped ReleaseCLINumber: not a 68k register call (base,sysv)
-;; skipped QueryCLIDataTagList: not a 68k register call (base,sysv)
-;; skipped FreeCLIData: not a 68k register call (base,sysv)
-;; skipped GetSegListAttrTagList: not a 68k register call (base,sysv)
-;; skipped SetFilePosixDateTagList: not a 68k register call (base,sysv)
-;; skipped PosixDateStamp: not a 68k register call (base,sysv)
-;; skipped PosixDateStampToDateStamp: not a 68k register call (base,sysv)
-;; skipped DateStampToPosixDateStamp: not a 68k register call (base,sysv)
+  ;; --- structures from dos/var.i ---
+  (:struct "LOCAL-VAR" 24   ; LocalVar (dos/var.i)
+    ("NODE" (:struct 14) 0)
+    ("FLAGS" :u16 14)
+    ("VALUE" :fptr 16)
+    ("LEN" :u32 20)
+    )
+
+  ;; --- functions (dos_lib.sfd + MorphOS SDK) ---
+  (:fn "OPEN" -30 (:d1 :d2) :unsigned)   ; BPTR Open(CONST_STRPTR name, LONG accessMode) (D1,D2) LVO -30
+  (:fn "CLOSE" -36 (:d1) :signed)   ; LONG Close(BPTR file) (D1) LVO -36
+  (:fn "READ" -42 (:d1 :d2 :d3) :signed)   ; LONG Read(BPTR file, APTR buffer, LONG length) (D1,D2,D3) LVO -42
+  (:fn "WRITE" -48 (:d1 :d2 :d3) :signed)   ; LONG Write(BPTR file, CONST_APTR buffer, LONG length) (D1,D2,D3) LVO -48
+  (:fn "INPUT" -54 () :unsigned)   ; BPTR Input() () LVO -54
+  (:fn "OUTPUT" -60 () :unsigned)   ; BPTR Output() () LVO -60
+  (:fn "SEEK" -66 (:d1 :d2 :d3) :signed)   ; LONG Seek(BPTR file, LONG position, LONG offset) (D1,D2,D3) LVO -66
+  (:fn "DELETE-FILE" -72 (:d1) :signed)   ; LONG DeleteFile(CONST_STRPTR name) (D1) LVO -72
+  (:fn "RENAME" -78 (:d1 :d2) :signed)   ; LONG Rename(CONST_STRPTR oldName, CONST_STRPTR newName) (D1,D2) LVO -78
+  (:fn "LOCK" -84 (:d1 :d2) :unsigned)   ; BPTR Lock(CONST_STRPTR name, LONG type) (D1,D2) LVO -84
+  (:fn "UN-LOCK" -90 (:d1) :void)   ; VOID UnLock(BPTR lock) (D1) LVO -90
+  (:fn "DUP-LOCK" -96 (:d1) :unsigned)   ; BPTR DupLock(BPTR lock) (D1) LVO -96
+  (:fn "EXAMINE" -102 (:d1 :d2) :signed)   ; LONG Examine(BPTR lock, struct FileInfoBlock * fileInfoBlock) (D1,D2) LVO -102
+  (:fn "EX-NEXT" -108 (:d1 :d2) :signed)   ; LONG ExNext(BPTR lock, struct FileInfoBlock * fileInfoBlock) (D1,D2) LVO -108
+  (:fn "INFO" -114 (:d1 :d2) :signed)   ; LONG Info(BPTR lock, struct InfoData * parameterBlock) (D1,D2) LVO -114
+  (:fn "CREATE-DIR" -120 (:d1) :unsigned)   ; BPTR CreateDir(CONST_STRPTR name) (D1) LVO -120
+  (:fn "CURRENT-DIR" -126 (:d1) :unsigned)   ; BPTR CurrentDir(BPTR lock) (D1) LVO -126
+  (:fn "IO-ERR" -132 () :signed)   ; LONG IoErr() () LVO -132
+  (:fn "CREATE-PROC" -138 (:d1 :d2 :d3 :d4) :pointer)   ; struct MsgPort * CreateProc(CONST_STRPTR name, LONG pri, BPTR segList, LONG stackSize) (D1,D2,D3,D4) LVO -138
+  (:fn "EXIT" -144 (:d1) :void)   ; VOID Exit(LONG returnCode) (D1) LVO -144
+  (:fn "LOAD-SEG" -150 (:d1) :unsigned)   ; BPTR LoadSeg(CONST_STRPTR name) (D1) LVO -150
+  (:fn "UN-LOAD-SEG" -156 (:d1) :void)   ; VOID UnLoadSeg(BPTR seglist) (D1) LVO -156
+  (:fn "DEVICE-PROC" -174 (:d1) :pointer)   ; struct MsgPort * DeviceProc(CONST_STRPTR name) (D1) LVO -174
+  (:fn "SET-COMMENT" -180 (:d1 :d2) :signed)   ; LONG SetComment(CONST_STRPTR name, CONST_STRPTR comment) (D1,D2) LVO -180
+  (:fn "SET-PROTECTION" -186 (:d1 :d2) :signed)   ; LONG SetProtection(CONST_STRPTR name, LONG protect) (D1,D2) LVO -186
+  (:fn "DATE-STAMP" -192 (:d1) :pointer)   ; struct DateStamp * DateStamp(struct DateStamp * date) (D1) LVO -192
+  (:fn "DELAY" -198 (:d1) :void)   ; VOID Delay(LONG timeout) (D1) LVO -198
+  (:fn "WAIT-FOR-CHAR" -204 (:d1 :d2) :signed)   ; LONG WaitForChar(BPTR file, LONG timeout) (D1,D2) LVO -204
+  (:fn "PARENT-DIR" -210 (:d1) :unsigned)   ; BPTR ParentDir(BPTR lock) (D1) LVO -210
+  (:fn "IS-INTERACTIVE" -216 (:d1) :signed)   ; LONG IsInteractive(BPTR file) (D1) LVO -216
+  (:fn "EXECUTE" -222 (:d1 :d2 :d3) :signed)   ; LONG Execute(CONST_STRPTR string, BPTR file, BPTR file2) (D1,D2,D3) LVO -222
+  (:fn "ALLOC-DOS-OBJECT" -228 (:d1 :d2) :pointer)   ; APTR AllocDosObject(ULONG type, CONST struct TagItem * tags) (D1,D2) LVO -228
+  (:fn "FREE-DOS-OBJECT" -234 (:d1 :d2) :void)   ; VOID FreeDosObject(ULONG type, APTR ptr) (D1,D2) LVO -234
+  (:fn "DO-PKT" -240 (:d1 :d2 :d3 :d4 :d5 :d6 :d7) :signed)   ; LONG DoPkt(struct MsgPort * port, LONG action, LONG arg1, LONG arg2, LONG arg3, LONG arg4, LONG arg5) (D1,D2,D3,D4,D5,D6,D7) LVO -240
+  (:fn "SEND-PKT" -246 (:d1 :d2 :d3) :void)   ; VOID SendPkt(struct DosPacket * dp, struct MsgPort * port, struct MsgPort * replyport) (D1,D2,D3) LVO -246
+  (:fn "WAIT-PKT" -252 () :pointer)   ; struct DosPacket * WaitPkt() () LVO -252
+  (:fn "REPLY-PKT" -258 (:d1 :d2 :d3) :void)   ; VOID ReplyPkt(struct DosPacket * dp, LONG res1, LONG res2) (D1,D2,D3) LVO -258
+  (:fn "ABORT-PKT" -264 (:d1 :d2) :void)   ; VOID AbortPkt(struct MsgPort * port, struct DosPacket * pkt) (D1,D2) LVO -264
+  (:fn "LOCK-RECORD" -270 (:d1 :d2 :d3 :d4 :d5) :bool)   ; BOOL LockRecord(BPTR fh, ULONG offset, ULONG length, ULONG mode, ULONG timeout) (D1,D2,D3,D4,D5) LVO -270
+  (:fn "LOCK-RECORDS" -276 (:d1 :d2) :bool)   ; BOOL LockRecords(CONST struct RecordLock * recArray, ULONG timeout) (D1,D2) LVO -276
+  (:fn "UN-LOCK-RECORD" -282 (:d1 :d2 :d3) :bool)   ; BOOL UnLockRecord(BPTR fh, ULONG offset, ULONG length) (D1,D2,D3) LVO -282
+  (:fn "UN-LOCK-RECORDS" -288 (:d1) :bool)   ; BOOL UnLockRecords(CONST struct RecordLock * recArray) (D1) LVO -288
+  (:fn "SELECT-INPUT" -294 (:d1) :unsigned)   ; BPTR SelectInput(BPTR fh) (D1) LVO -294
+  (:fn "SELECT-OUTPUT" -300 (:d1) :unsigned)   ; BPTR SelectOutput(BPTR fh) (D1) LVO -300
+  (:fn "F-GET-C" -306 (:d1) :signed)   ; LONG FGetC(BPTR fh) (D1) LVO -306
+  (:fn "F-PUT-C" -312 (:d1 :d2) :signed)   ; LONG FPutC(BPTR fh, LONG ch) (D1,D2) LVO -312
+  (:fn "UN-GET-C" -318 (:d1 :d2) :signed)   ; LONG UnGetC(BPTR fh, LONG character) (D1,D2) LVO -318
+  (:fn "F-READ" -324 (:d1 :d2 :d3 :d4) :signed)   ; LONG FRead(BPTR fh, APTR block, ULONG blocklen, ULONG number) (D1,D2,D3,D4) LVO -324
+  (:fn "F-WRITE" -330 (:d1 :d2 :d3 :d4) :signed)   ; LONG FWrite(BPTR fh, CONST_APTR block, ULONG blocklen, ULONG number) (D1,D2,D3,D4) LVO -330
+  (:fn "F-GETS" -336 (:d1 :d2 :d3) :pointer)   ; STRPTR FGets(BPTR fh, STRPTR buf, ULONG buflen) (D1,D2,D3) LVO -336
+  (:fn "F-PUTS" -342 (:d1 :d2) :signed)   ; LONG FPuts(BPTR fh, CONST_STRPTR str) (D1,D2) LVO -342
+  (:fn "VF-WRITEF" -348 (:d1 :d2 :d3) :void)   ; VOID VFWritef(BPTR fh, CONST_STRPTR format, CONST LONG * argarray) (D1,D2,D3) LVO -348
+  (:fn "VF-PRINTF" -354 (:d1 :d2 :d3) :signed)   ; LONG VFPrintf(BPTR fh, CONST_STRPTR format, CONST_APTR argarray) (D1,D2,D3) LVO -354
+  (:fn "FLUSH" -360 (:d1) :signed)   ; LONG Flush(BPTR fh) (D1) LVO -360
+  (:fn "SET-V-BUF" -366 (:d1 :d2 :d3 :d4) :signed)   ; LONG SetVBuf(BPTR fh, STRPTR buff, LONG type, LONG size) (D1,D2,D3,D4) LVO -366
+  (:fn "DUP-LOCK-FROM-FH" -372 (:d1) :unsigned)   ; BPTR DupLockFromFH(BPTR fh) (D1) LVO -372
+  (:fn "OPEN-FROM-LOCK" -378 (:d1) :unsigned)   ; BPTR OpenFromLock(BPTR lock) (D1) LVO -378
+  (:fn "PARENT-OF-FH" -384 (:d1) :unsigned)   ; BPTR ParentOfFH(BPTR fh) (D1) LVO -384
+  (:fn "EXAMINE-FH" -390 (:d1 :d2) :bool)   ; BOOL ExamineFH(BPTR fh, struct FileInfoBlock * fib) (D1,D2) LVO -390
+  (:fn "SET-FILE-DATE" -396 (:d1 :d2) :signed)   ; LONG SetFileDate(CONST_STRPTR name, CONST struct DateStamp * date) (D1,D2) LVO -396
+  (:fn "NAME-FROM-LOCK" -402 (:d1 :d2 :d3) :signed)   ; LONG NameFromLock(BPTR lock, STRPTR buffer, LONG len) (D1,D2,D3) LVO -402
+  (:fn "NAME-FROM-FH" -408 (:d1 :d2 :d3) :signed)   ; LONG NameFromFH(BPTR fh, STRPTR buffer, LONG len) (D1,D2,D3) LVO -408
+  (:fn "SPLIT-NAME" -414 (:d1 :d2 :d3 :d4 :d5) :i16)   ; WORD SplitName(CONST_STRPTR name, UBYTE separator, STRPTR buf, WORD oldpos, LONG size) (D1,D2,D3,D4,D5) LVO -414
+  (:fn "SAME-LOCK" -420 (:d1 :d2) :signed)   ; LONG SameLock(BPTR lock1, BPTR lock2) (D1,D2) LVO -420
+  (:fn "SET-MODE" -426 (:d1 :d2) :signed)   ; LONG SetMode(BPTR fh, LONG mode) (D1,D2) LVO -426
+  (:fn "EX-ALL" -432 (:d1 :d2 :d3 :d4 :d5) :signed)   ; LONG ExAll(BPTR lock, struct ExAllData * buffer, LONG size, LONG data, struct ExAllControl * control) (D1,D2,D3,D4,D5) LVO -432
+  (:fn "READ-LINK" -438 (:d1 :d2 :d3 :d4 :d5) :signed)   ; LONG ReadLink(struct MsgPort * port, BPTR lock, CONST_STRPTR path, STRPTR buffer, ULONG size) (D1,D2,D3,D4,D5) LVO -438
+  (:fn "MAKE-LINK" -444 (:d1 :d2 :d3) :signed)   ; LONG MakeLink(CONST_STRPTR name, LONG dest, LONG soft) (D1,D2,D3) LVO -444
+  (:fn "CHANGE-MODE" -450 (:d1 :d2 :d3) :signed)   ; LONG ChangeMode(LONG type, BPTR fh, LONG newmode) (D1,D2,D3) LVO -450
+  (:fn "SET-FILE-SIZE" -456 (:d1 :d2 :d3) :signed)   ; LONG SetFileSize(BPTR fh, LONG pos, LONG mode) (D1,D2,D3) LVO -456
+  (:fn "SET-IO-ERR" -462 (:d1) :signed)   ; LONG SetIoErr(LONG result) (D1) LVO -462
+  (:fn "FAULT" -468 (:d1 :d2 :d3 :d4) :bool)   ; BOOL Fault(LONG code, CONST_STRPTR header, STRPTR buffer, LONG len) (D1,D2,D3,D4) LVO -468
+  (:fn "PRINT-FAULT" -474 (:d1 :d2) :bool)   ; BOOL PrintFault(LONG code, CONST_STRPTR header) (D1,D2) LVO -474
+  (:fn "ERROR-REPORT" -480 (:d1 :d2 :d3 :d4) :signed)   ; LONG ErrorReport(LONG code, LONG type, ULONG arg1, struct MsgPort * device) (D1,D2,D3,D4) LVO -480
+  (:fn "CLI" -492 () :pointer)   ; struct CommandLineInterface * Cli() () LVO -492
+  (:fn "CREATE-NEW-PROC" -498 (:d1) :pointer)   ; struct Process * CreateNewProc(CONST struct TagItem * tags) (D1) LVO -498
+  (:fn "RUN-COMMAND" -504 (:d1 :d2 :d3 :d4) :signed)   ; LONG RunCommand(BPTR seg, LONG stack, CONST_STRPTR paramptr, LONG paramlen) (D1,D2,D3,D4) LVO -504
+  (:fn "GET-CONSOLE-TASK" -510 () :pointer)   ; struct MsgPort * GetConsoleTask() () LVO -510
+  (:fn "SET-CONSOLE-TASK" -516 (:d1) :pointer)   ; struct MsgPort * SetConsoleTask(struct MsgPort * task) (D1) LVO -516
+  (:fn "GET-FILE-SYS-TASK" -522 () :pointer)   ; struct MsgPort * GetFileSysTask() () LVO -522
+  (:fn "SET-FILE-SYS-TASK" -528 (:d1) :pointer)   ; struct MsgPort * SetFileSysTask(struct MsgPort * task) (D1) LVO -528
+  (:fn "GET-ARG-STR" -534 () :pointer)   ; STRPTR GetArgStr() () LVO -534
+  (:fn "SET-ARG-STR" -540 (:d1) :pointer)   ; STRPTR SetArgStr(STRPTR string) (D1) LVO -540
+  (:fn "FIND-CLI-PROC" -546 (:d1) :pointer)   ; struct Process * FindCliProc(ULONG num) (D1) LVO -546
+  (:fn "MAX-CLI" -552 () :unsigned)   ; ULONG MaxCli() () LVO -552
+  (:fn "SET-CURRENT-DIR-NAME" -558 (:d1) :bool)   ; BOOL SetCurrentDirName(CONST_STRPTR name) (D1) LVO -558
+  (:fn "GET-CURRENT-DIR-NAME" -564 (:d1 :d2) :bool)   ; BOOL GetCurrentDirName(STRPTR buf, LONG len) (D1,D2) LVO -564
+  (:fn "SET-PROGRAM-NAME" -570 (:d1) :bool)   ; BOOL SetProgramName(CONST_STRPTR name) (D1) LVO -570
+  (:fn "GET-PROGRAM-NAME" -576 (:d1 :d2) :bool)   ; BOOL GetProgramName(STRPTR buf, LONG len) (D1,D2) LVO -576
+  (:fn "SET-PROMPT" -582 (:d1) :bool)   ; BOOL SetPrompt(CONST_STRPTR name) (D1) LVO -582
+  (:fn "GET-PROMPT" -588 (:d1 :d2) :bool)   ; BOOL GetPrompt(STRPTR buf, LONG len) (D1,D2) LVO -588
+  (:fn "SET-PROGRAM-DIR" -594 (:d1) :unsigned)   ; BPTR SetProgramDir(BPTR lock) (D1) LVO -594
+  (:fn "GET-PROGRAM-DIR" -600 () :unsigned)   ; BPTR GetProgramDir() () LVO -600
+  (:fn "SYSTEM-TAG-LIST" -606 (:d1 :d2) :signed)   ; LONG SystemTagList(CONST_STRPTR command, CONST struct TagItem * tags) (D1,D2) LVO -606
+  (:fn "ASSIGN-LOCK" -612 (:d1 :d2) :signed)   ; LONG AssignLock(CONST_STRPTR name, BPTR lock) (D1,D2) LVO -612
+  (:fn "ASSIGN-LATE" -618 (:d1 :d2) :bool)   ; BOOL AssignLate(CONST_STRPTR name, CONST_STRPTR path) (D1,D2) LVO -618
+  (:fn "ASSIGN-PATH" -624 (:d1 :d2) :bool)   ; BOOL AssignPath(CONST_STRPTR name, CONST_STRPTR path) (D1,D2) LVO -624
+  (:fn "ASSIGN-ADD" -630 (:d1 :d2) :bool)   ; BOOL AssignAdd(CONST_STRPTR name, BPTR lock) (D1,D2) LVO -630
+  (:fn "REM-ASSIGN-LIST" -636 (:d1 :d2) :signed)   ; LONG RemAssignList(CONST_STRPTR name, BPTR lock) (D1,D2) LVO -636
+  (:fn "GET-DEVICE-PROC" -642 (:d1 :d2) :pointer)   ; struct DevProc * GetDeviceProc(CONST_STRPTR name, struct DevProc * dp) (D1,D2) LVO -642
+  (:fn "FREE-DEVICE-PROC" -648 (:d1) :void)   ; VOID FreeDeviceProc(struct DevProc * dp) (D1) LVO -648
+  (:fn "LOCK-DOS-LIST" -654 (:d1) :pointer)   ; struct DosList * LockDosList(ULONG flags) (D1) LVO -654
+  (:fn "UN-LOCK-DOS-LIST" -660 (:d1) :void)   ; VOID UnLockDosList(ULONG flags) (D1) LVO -660
+  (:fn "ATTEMPT-LOCK-DOS-LIST" -666 (:d1) :pointer)   ; struct DosList * AttemptLockDosList(ULONG flags) (D1) LVO -666
+  (:fn "REM-DOS-ENTRY" -672 (:d1) :bool)   ; BOOL RemDosEntry(struct DosList * dlist) (D1) LVO -672
+  (:fn "ADD-DOS-ENTRY" -678 (:d1) :signed)   ; LONG AddDosEntry(struct DosList * dlist) (D1) LVO -678
+  (:fn "FIND-DOS-ENTRY" -684 (:d1 :d2 :d3) :pointer)   ; struct DosList * FindDosEntry(CONST struct DosList * dlist, CONST_STRPTR name, ULONG flags) (D1,D2,D3) LVO -684
+  (:fn "NEXT-DOS-ENTRY" -690 (:d1 :d2) :pointer)   ; struct DosList * NextDosEntry(CONST struct DosList * dlist, ULONG flags) (D1,D2) LVO -690
+  (:fn "MAKE-DOS-ENTRY" -696 (:d1 :d2) :pointer)   ; struct DosList * MakeDosEntry(CONST_STRPTR name, LONG type) (D1,D2) LVO -696
+  (:fn "FREE-DOS-ENTRY" -702 (:d1) :void)   ; VOID FreeDosEntry(struct DosList * dlist) (D1) LVO -702
+  (:fn "IS-FILE-SYSTEM" -708 (:d1) :bool)   ; BOOL IsFileSystem(CONST_STRPTR name) (D1) LVO -708
+  (:fn "FORMAT" -714 (:d1 :d2 :d3) :bool)   ; BOOL Format(CONST_STRPTR filesystem, CONST_STRPTR volumename, ULONG dostype) (D1,D2,D3) LVO -714
+  (:fn "RELABEL" -720 (:d1 :d2) :signed)   ; LONG Relabel(CONST_STRPTR drive, CONST_STRPTR newname) (D1,D2) LVO -720
+  (:fn "INHIBIT" -726 (:d1 :d2) :signed)   ; LONG Inhibit(CONST_STRPTR name, LONG onoff) (D1,D2) LVO -726
+  (:fn "ADD-BUFFERS" -732 (:d1 :d2) :signed)   ; LONG AddBuffers(CONST_STRPTR name, LONG number) (D1,D2) LVO -732
+  (:fn "COMPARE-DATES" -738 (:d1 :d2) :signed)   ; LONG CompareDates(CONST struct DateStamp * date1, CONST struct DateStamp * date2) (D1,D2) LVO -738
+  (:fn "DATE-TO-STR" -744 (:d1) :signed)   ; LONG DateToStr(struct DateTime * datetime) (D1) LVO -744
+  (:fn "STR-TO-DATE" -750 (:d1) :signed)   ; LONG StrToDate(struct DateTime * datetime) (D1) LVO -750
+  (:fn "INTERNAL-LOAD-SEG" -756 (:d0 :a0 :a1 :a2) :unsigned)   ; BPTR InternalLoadSeg(BPTR fh, BPTR table, CONST LONG * funcarray, LONG * stack) (D0,A0,A1,A2) LVO -756
+  (:fn "INTERNAL-UN-LOAD-SEG" -762 (:d1 :a1) :bool)   ; BOOL InternalUnLoadSeg(BPTR seglist, APTR freefunc) (D1,A1) LVO -762
+  (:fn "NEW-LOAD-SEG" -768 (:d1 :d2) :unsigned)   ; BPTR NewLoadSeg(CONST_STRPTR file, CONST struct TagItem * tags) (D1,D2) LVO -768
+  (:fn "ADD-SEGMENT" -774 (:d1 :d2 :d3) :signed)   ; LONG AddSegment(CONST_STRPTR name, BPTR seg, LONG system) (D1,D2,D3) LVO -774
+  (:fn "FIND-SEGMENT" -780 (:d1 :d2 :d3) :pointer)   ; struct Segment * FindSegment(CONST_STRPTR name, CONST struct Segment * seg, LONG system) (D1,D2,D3) LVO -780
+  (:fn "REM-SEGMENT" -786 (:d1) :signed)   ; LONG RemSegment(struct Segment * seg) (D1) LVO -786
+  (:fn "CHECK-SIGNAL" -792 (:d1) :signed)   ; LONG CheckSignal(LONG mask) (D1) LVO -792
+  (:fn "READ-ARGS" -798 (:d1 :d2 :d3) :pointer)   ; struct RDArgs * ReadArgs(CONST_STRPTR arg_template, LONG * array, struct RDArgs * args) (D1,D2,D3) LVO -798
+  (:fn "FIND-ARG" -804 (:d1 :d2) :signed)   ; LONG FindArg(CONST_STRPTR keyword, CONST_STRPTR arg_template) (D1,D2) LVO -804
+  (:fn "READ-ITEM" -810 (:d1 :d2 :d3) :signed)   ; LONG ReadItem(CONST_STRPTR name, LONG maxchars, struct CSource * cSource) (D1,D2,D3) LVO -810
+  (:fn "STR-TO-LONG" -816 (:d1 :d2) :signed)   ; LONG StrToLong(CONST_STRPTR string, LONG * value) (D1,D2) LVO -816
+  (:fn "MATCH-FIRST" -822 (:d1 :d2) :signed)   ; LONG MatchFirst(CONST_STRPTR pat, struct AnchorPath * anchor) (D1,D2) LVO -822
+  (:fn "MATCH-NEXT" -828 (:d1) :signed)   ; LONG MatchNext(struct AnchorPath * anchor) (D1) LVO -828
+  (:fn "MATCH-END" -834 (:d1) :void)   ; VOID MatchEnd(struct AnchorPath * anchor) (D1) LVO -834
+  (:fn "PARSE-PATTERN" -840 (:d1 :d2 :d3) :signed)   ; LONG ParsePattern(CONST_STRPTR pat, UBYTE * patbuf, LONG patbuflen) (D1,D2,D3) LVO -840
+  (:fn "MATCH-PATTERN" -846 (:d1 :d2) :bool)   ; BOOL MatchPattern(CONST UBYTE * patbuf, CONST_STRPTR str) (D1,D2) LVO -846
+  (:fn "FREE-ARGS" -858 (:d1) :void)   ; VOID FreeArgs(struct RDArgs * args) (D1) LVO -858
+  (:fn "FILE-PART" -870 (:d1) :pointer)   ; STRPTR FilePart(CONST_STRPTR path) (D1) LVO -870
+  (:fn "PATH-PART" -876 (:d1) :pointer)   ; STRPTR PathPart(CONST_STRPTR path) (D1) LVO -876
+  (:fn "ADD-PART" -882 (:d1 :d2 :d3) :bool)   ; BOOL AddPart(STRPTR dirname, CONST_STRPTR filename, ULONG size) (D1,D2,D3) LVO -882
+  (:fn "START-NOTIFY" -888 (:d1) :bool)   ; BOOL StartNotify(struct NotifyRequest * notify) (D1) LVO -888
+  (:fn "END-NOTIFY" -894 (:d1) :void)   ; VOID EndNotify(struct NotifyRequest * notify) (D1) LVO -894
+  (:fn "SET-VAR" -900 (:d1 :d2 :d3 :d4) :bool)   ; BOOL SetVar(CONST_STRPTR name, CONST_STRPTR buffer, LONG size, LONG flags) (D1,D2,D3,D4) LVO -900
+  (:fn "GET-VAR" -906 (:d1 :d2 :d3 :d4) :signed)   ; LONG GetVar(CONST_STRPTR name, STRPTR buffer, LONG size, LONG flags) (D1,D2,D3,D4) LVO -906
+  (:fn "DELETE-VAR" -912 (:d1 :d2) :signed)   ; LONG DeleteVar(CONST_STRPTR name, ULONG flags) (D1,D2) LVO -912
+  (:fn "FIND-VAR" -918 (:d1 :d2) :pointer)   ; struct LocalVar * FindVar(CONST_STRPTR name, ULONG type) (D1,D2) LVO -918
+  (:fn "CLI-INIT-NEWCLI" -930 (:a0) :signed)   ; LONG CliInitNewcli(struct DosPacket * dp) (A0) LVO -930
+  (:fn "CLI-INIT-RUN" -936 (:a0) :signed)   ; LONG CliInitRun(struct DosPacket * dp) (A0) LVO -936
+  (:fn "WRITE-CHARS" -942 (:d1 :d2) :signed)   ; LONG WriteChars(CONST_STRPTR buf, ULONG buflen) (D1,D2) LVO -942
+  (:fn "PUT-STR" -948 (:d1) :signed)   ; LONG PutStr(CONST_STRPTR str) (D1) LVO -948
+  (:fn "V-PRINTF" -954 (:d1 :d2) :signed)   ; LONG VPrintf(CONST_STRPTR format, CONST_APTR argarray) (D1,D2) LVO -954
+  (:fn "PARSE-PATTERN-NO-CASE" -966 (:d1 :d2 :d3) :signed)   ; LONG ParsePatternNoCase(CONST_STRPTR pat, UBYTE * patbuf, LONG patbuflen) (D1,D2,D3) LVO -966
+  (:fn "MATCH-PATTERN-NO-CASE" -972 (:d1 :d2) :bool)   ; BOOL MatchPatternNoCase(CONST UBYTE * patbuf, CONST_STRPTR str) (D1,D2) LVO -972
+  (:fn "SAME-DEVICE" -984 (:d1 :d2) :bool)   ; BOOL SameDevice(BPTR lock1, BPTR lock2) (D1,D2) LVO -984
+  (:fn "EX-ALL-END" -990 (:d1 :d2 :d3 :d4 :d5) :void)   ; VOID ExAllEnd(BPTR lock, struct ExAllData * buffer, LONG size, LONG data, struct ExAllControl * control) (D1,D2,D3,D4,D5) LVO -990
+  (:fn "SET-OWNER" -996 (:d1 :d2) :bool)   ; BOOL SetOwner(CONST_STRPTR name, LONG owner_info) (D1,D2) LVO -996
+  (:fn "VOLUME-REQUEST-HOOK" -1014 (:d1) :signed :not-morphos)   ; LONG VolumeRequestHook(CONST_STRPTR vol) (D1) LVO -1014
+  (:fn "GET-CURRENT-DIR" -1026 () :unsigned :not-morphos)   ; BPTR GetCurrentDir() () LVO -1026
+  (:fn "PUT-ERR-STR" -1128 (:d1) :signed :not-morphos)   ; LONG PutErrStr(CONST_STRPTR str) (D1) LVO -1128
+  (:fn "ERROR-OUTPUT" -1134 () :signed :not-morphos)   ; LONG ErrorOutput() () LVO -1134
+  (:fn "SELECT-ERROR" -1140 (:d1) :signed :not-morphos)   ; LONG SelectError(BPTR fh) (D1) LVO -1140
+  (:fn "DO-SHELL-METHOD-TAG-LIST" -1152 (:d0 :a0) :pointer :not-morphos)   ; APTR DoShellMethodTagList(ULONG method, CONST struct TagItem * tags) (D0,A0) LVO -1152
+  (:fn "SCAN-STACK-TOKEN" -1158 (:d1 :d2) :signed :not-morphos)   ; LONG ScanStackToken(BPTR seg, LONG defaultstack) (D1,D2) LVO -1158
+  (:fn "ADD-SEGMENT-TAG-LIST" -1002 (:a0) :signed :morphos)   ; LONG AddSegmentTagList(struct TagItem * tags) (A0) LVO -1002
+  (:fn "FIND-SEGMENT-TAG-LIST" -1008 (:a0) :pointer :morphos)   ; struct Segment * FindSegmentTagList(struct TagItem * tags) (A0) LVO -1008
+  ;; skipped Seek64: not a 68k register call (base,sysv)
+  ;; skipped SetFileSize64: not a 68k register call (base,sysv)
+  ;; skipped LockRecord64: not a 68k register call (base,sysv)
+  ;; skipped LockRecords64: not a 68k register call (base,sysv)
+  ;; skipped UnLockRecord64: not a 68k register call (base,sysv)
+  ;; skipped UnLockRecords64: not a 68k register call (base,sysv)
+  ;; skipped NewReadLink: not a 68k register call (base,sysv)
+  ;; skipped GetFileSysAttr: not a 68k register call (base,sysv)
+  ;; skipped GetSegListAttr: not a 68k register call (base,sysv)
+  ;; skipped SetDosObjectAttr: not a 68k register call (base,sysv)
+  ;; skipped GetDosObjectAttr: not a 68k register call (base,sysv)
+  ;; skipped Examine64: not a 68k register call (base,sysv)
+  ;; skipped ExNext64: not a 68k register call (base,sysv)
+  ;; skipped ExamineFH64: not a 68k register call (base,sysv)
+  ;; skipped ReleaseCLINumber: not a 68k register call (base,sysv)
+  ;; skipped QueryCLIDataTagList: not a 68k register call (base,sysv)
+  ;; skipped FreeCLIData: not a 68k register call (base,sysv)
+  ;; skipped GetSegListAttrTagList: not a 68k register call (base,sysv)
+  ;; skipped SetFilePosixDateTagList: not a 68k register call (base,sysv)
+  ;; skipped PosixDateStamp: not a 68k register call (base,sysv)
+  ;; skipped PosixDateStampToDateStamp: not a 68k register call (base,sysv)
+  ;; skipped DateStampToPosixDateStamp: not a 68k register call (base,sysv)
+  )
 
 (provide "amiga/raw/dos")

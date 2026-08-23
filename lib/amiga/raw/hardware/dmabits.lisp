@@ -6,51 +6,53 @@
 ;;; 0 functions, 30 constants, 0 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.HARDWARE.DMABITS"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+DMAF-SETCLR+" "+DMAF-AUDIO+" "+DMAF-AUD0+" "+DMAF-AUD1+" "+DMAF-AUD2+" 
-   "+DMAF-AUD3+" "+DMAF-DISK+" "+DMAF-SPRITE+" "+DMAF-BLITTER+" 
-   "+DMAF-COPPER+" "+DMAF-RASTER+" "+DMAF-MASTER+" "+DMAF-BLITHOG+" 
-   "+DMAF-ALL+" "+DMAF-BLTDONE+" "+DMAF-BLTNZERO+" "+DMAB-SETCLR+" 
-   "+DMAB-AUD0+" "+DMAB-AUD1+" "+DMAB-AUD2+" "+DMAB-AUD3+" "+DMAB-DISK+" 
-   "+DMAB-SPRITE+" "+DMAB-BLITTER+" "+DMAB-COPPER+" "+DMAB-RASTER+" 
-   "+DMAB-MASTER+" "+DMAB-BLITHOG+" "+DMAB-BLTDONE+" "+DMAB-BLTNZERO+" ))
+  (:export))
 
 (in-package "AMIGA.RAW.HARDWARE.DMABITS")
 
-;;; --- constants from hardware/dmabits.i ---
-(defconstant +dmaf-setclr+ #x8000)
-(defconstant +dmaf-audio+ 15)
-(defconstant +dmaf-aud0+ 1)
-(defconstant +dmaf-aud1+ 2)
-(defconstant +dmaf-aud2+ 4)
-(defconstant +dmaf-aud3+ 8)
-(defconstant +dmaf-disk+ #x10)
-(defconstant +dmaf-sprite+ #x20)
-(defconstant +dmaf-blitter+ #x40)
-(defconstant +dmaf-copper+ #x80)
-(defconstant +dmaf-raster+ #x100)
-(defconstant +dmaf-master+ #x200)
-(defconstant +dmaf-blithog+ #x400)
-(defconstant +dmaf-all+ #x1FF)
-(defconstant +dmaf-bltdone+ #x4000)
-(defconstant +dmaf-bltnzero+ #x2000)
-(defconstant +dmab-setclr+ 15)
-(defconstant +dmab-aud0+ 0)
-(defconstant +dmab-aud1+ 1)
-(defconstant +dmab-aud2+ 2)
-(defconstant +dmab-aud3+ 3)
-(defconstant +dmab-disk+ 4)
-(defconstant +dmab-sprite+ 5)
-(defconstant +dmab-blitter+ 6)
-(defconstant +dmab-copper+ 7)
-(defconstant +dmab-raster+ 8)
-(defconstant +dmab-master+ 9)
-(defconstant +dmab-blithog+ 10)
-(defconstant +dmab-bltdone+ 14)
-(defconstant +dmab-bltnzero+ 13)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.HARDWARE.DMABITS" ()
+
+  ;; --- constants from hardware/dmabits.i ---
+  (:const "+DMAF-SETCLR+" #x8000)
+  (:const "+DMAF-AUDIO+" 15)
+  (:const "+DMAF-AUD0+" 1)
+  (:const "+DMAF-AUD1+" 2)
+  (:const "+DMAF-AUD2+" 4)
+  (:const "+DMAF-AUD3+" 8)
+  (:const "+DMAF-DISK+" #x10)
+  (:const "+DMAF-SPRITE+" #x20)
+  (:const "+DMAF-BLITTER+" #x40)
+  (:const "+DMAF-COPPER+" #x80)
+  (:const "+DMAF-RASTER+" #x100)
+  (:const "+DMAF-MASTER+" #x200)
+  (:const "+DMAF-BLITHOG+" #x400)
+  (:const "+DMAF-ALL+" #x1FF)
+  (:const "+DMAF-BLTDONE+" #x4000)
+  (:const "+DMAF-BLTNZERO+" #x2000)
+  (:const "+DMAB-SETCLR+" 15)
+  (:const "+DMAB-AUD0+" 0)
+  (:const "+DMAB-AUD1+" 1)
+  (:const "+DMAB-AUD2+" 2)
+  (:const "+DMAB-AUD3+" 3)
+  (:const "+DMAB-DISK+" 4)
+  (:const "+DMAB-SPRITE+" 5)
+  (:const "+DMAB-BLITTER+" 6)
+  (:const "+DMAB-COPPER+" 7)
+  (:const "+DMAB-RASTER+" 8)
+  (:const "+DMAB-MASTER+" 9)
+  (:const "+DMAB-BLITHOG+" 10)
+  (:const "+DMAB-BLTDONE+" 14)
+  (:const "+DMAB-BLTNZERO+" 13)
+  )
 
 (provide "amiga/raw/hardware/dmabits")

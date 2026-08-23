@@ -6,22 +6,14 @@
 ;;; 28 functions, 0 constants, 0 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.CYBERGRAPHICS"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*CYBERGRAPHICS-BASE*" "*CYBERGRAPHICS-VERSION*"
-   "IS-CYBER-MODE-ID" "BEST-C-MODE-ID-TAG-LIST" "C-MODE-REQUEST-TAG-LIST" 
-   "ALLOC-C-MODE-LIST-TAG-LIST" "FREE-C-MODE-LIST" "SCALE-PIXEL-ARRAY" 
-   "GET-CYBER-MAP-ATTR" "GET-CYBER-ID-ATTR" "READ-RGB-PIXEL" 
-   "WRITE-RGB-PIXEL" "READ-PIXEL-ARRAY" "WRITE-PIXEL-ARRAY" 
-   "MOVE-PIXEL-ARRAY" "INVERT-PIXEL-ARRAY" "FILL-PIXEL-ARRAY" 
-   "DO-C-DRAW-METHOD-TAG-LIST" "C-VIDEO-CTRL-TAG-LIST" 
-   "LOCK-BITMAP-TAG-LIST" "UN-LOCK-BITMAP" "UN-LOCK-BITMAP-TAG-LIST" 
-   "EXTRACT-COLOR" "WRITE-LUT-PIXEL-ARRAY" "WRITE-PIXEL-ARRAY-ALPHA" 
-   "BLT-TEMPLATE-ALPHA" "PROCESS-PIXEL-ARRAY" "BLT-BITMAP-ALPHA" 
-   "BLT-BITMAP-RASTPORT-ALPHA" "SCALE-PIXEL-ARRAY-ALPHA" ))
+  (:export "*CYBERGRAPHICS-BASE*" "*CYBERGRAPHICS-VERSION*"))
 
 (in-package "AMIGA.RAW.CYBERGRAPHICS")
 
@@ -35,70 +27,54 @@
 (defun %version>= (n)
   (and *cybergraphics-version* (>= *cybergraphics-version* n)))
 
-;;; --- functions (MorphOS SDK) ---
-(amiga.ffi:defcfun is-cyber-mode-id *cybergraphics-base* -54 (:d0 display-id)
-    :result :bool
-    :doc "BOOL IsCyberModeID(ULONG displayID) (D0) LVO -54")
-(amiga.ffi:defcfun best-c-mode-id-tag-list *cybergraphics-base* -60 (:a0 best-mode-id-tags)
-    :result :unsigned
-    :doc "ULONG BestCModeIDTagList(struct TagItem * BestModeIDTags) (A0) LVO -60")
-(amiga.ffi:defcfun c-mode-request-tag-list *cybergraphics-base* -66 (:a0 mode-request :a1 mode-request-tags)
-    :result :unsigned
-    :doc "ULONG CModeRequestTagList(APTR ModeRequest, struct TagItem * ModeRequestTags) (A0,A1) LVO -66")
-(amiga.ffi:defcfun alloc-c-mode-list-tag-list *cybergraphics-base* -72 (:a1 mode-list-tags)
-    :result :pointer
-    :doc "struct List * AllocCModeListTagList(struct TagItem * ModeListTags) (A1) LVO -72")
-(amiga.ffi:defcfun free-c-mode-list *cybergraphics-base* -78 (:a0 mode-list)
-    :result :void
-    :doc "void FreeCModeList(struct List * ModeList) (A0) LVO -78")
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.CYBERGRAPHICS"
+    (:base *cybergraphics-base* :version *cybergraphics-version*)
+
+  ;; --- functions (MorphOS SDK) ---
+  (:fn "IS-CYBER-MODE-ID" -54 (:d0) :bool)   ; BOOL IsCyberModeID(ULONG displayID) (D0) LVO -54
+  (:fn "BEST-C-MODE-ID-TAG-LIST" -60 (:a0) :unsigned)   ; ULONG BestCModeIDTagList(struct TagItem * BestModeIDTags) (A0) LVO -60
+  (:fn "C-MODE-REQUEST-TAG-LIST" -66 (:a0 :a1) :unsigned)   ; ULONG CModeRequestTagList(APTR ModeRequest, struct TagItem * ModeRequestTags) (A0,A1) LVO -66
+  (:fn "ALLOC-C-MODE-LIST-TAG-LIST" -72 (:a1) :pointer)   ; struct List * AllocCModeListTagList(struct TagItem * ModeListTags) (A1) LVO -72
+  (:fn "FREE-C-MODE-LIST" -78 (:a0) :void)   ; void FreeCModeList(struct List * ModeList) (A0) LVO -78
+  (:name "SCALE-PIXEL-ARRAY")   ; 10 registers: defined after the table via CALL-LIBRARY
+  (:fn "GET-CYBER-MAP-ATTR" -96 (:a0 :d0) :unsigned)   ; ULONG GetCyberMapAttr(struct BitMap * CyberGfxBitmap, ULONG CyberAttrTag) (A0,D0) LVO -96
+  (:fn "GET-CYBER-ID-ATTR" -102 (:d0 :d1) :unsigned)   ; ULONG GetCyberIDAttr(ULONG CyberIDAttr, ULONG CyberDisplayModeID) (D0,D1) LVO -102
+  (:fn "READ-RGB-PIXEL" -108 (:a1 :d0 :d1) :unsigned)   ; ULONG ReadRGBPixel(struct RastPort * srcRP, UWORD x, UWORD y) (A1,D0,D1) LVO -108
+  (:fn "WRITE-RGB-PIXEL" -114 (:a1 :d0 :d1 :d2) :signed)   ; LONG WriteRGBPixel(struct RastPort * destRP, UWORD x, UWORD y, ULONG argb) (A1,D0,D1,D2) LVO -114
+  (:name "READ-PIXEL-ARRAY")   ; 10 registers: defined after the table via CALL-LIBRARY
+  (:name "WRITE-PIXEL-ARRAY")   ; 10 registers: defined after the table via CALL-LIBRARY
+  (:fn "MOVE-PIXEL-ARRAY" -132 (:d0 :d1 :a1 :d2 :d3 :d4 :d5) :unsigned)   ; ULONG MovePixelArray(UWORD SrcX, UWORD SrcY, struct RastPort * destRP, UWORD DestX, UWORD DestY, UWORD SizeX, UWORD SizeY) (D0,D1,A1,D2,D3,D4,D5) LVO -132
+  (:fn "INVERT-PIXEL-ARRAY" -144 (:a1 :d0 :d1 :d2 :d3) :unsigned)   ; ULONG InvertPixelArray(struct RastPort * destRP, UWORD DestX, UWORD DestY, UWORD SizeX, UWORD SizeY) (A1,D0,D1,D2,D3) LVO -144
+  (:fn "FILL-PIXEL-ARRAY" -150 (:a1 :d0 :d1 :d2 :d3 :d4) :unsigned)   ; ULONG FillPixelArray(struct RastPort * destRP, UWORD DestX, UWORD DestY, UWORD SizeX, UWORD SizeY, ULONG ARGB) (A1,D0,D1,D2,D3,D4) LVO -150
+  (:fn "DO-C-DRAW-METHOD-TAG-LIST" -156 (:a0 :a1 :a2) :void)   ; void DoCDrawMethodTagList(struct Hook * hook, struct RastPort * destRP, struct TagItem * tagList) (A0,A1,A2) LVO -156
+  (:fn "C-VIDEO-CTRL-TAG-LIST" -162 (:a0 :a1) :void)   ; void CVideoCtrlTagList(struct ViewPort * viewPort, struct TagItem * tagList) (A0,A1) LVO -162
+  (:fn "LOCK-BITMAP-TAG-LIST" -168 (:a0 :a1) :pointer)   ; APTR LockBitMapTagList(APTR bitMap, struct TagItem * tagList) (A0,A1) LVO -168
+  (:fn "UN-LOCK-BITMAP" -174 (:a0) :void)   ; void UnLockBitMap(APTR Handle) (A0) LVO -174
+  (:fn "UN-LOCK-BITMAP-TAG-LIST" -180 (:a0 :a1) :void)   ; void UnLockBitMapTagList(APTR Handle, struct TagItem * tagList) (A0,A1) LVO -180
+  (:fn "EXTRACT-COLOR" -186 (:a0 :a1 :d0 :d1 :d2 :d3 :d4) :unsigned)   ; ULONG ExtractColor(struct RastPort * srcRP, struct BitMap * bitMap, ULONG Colour, ULONG SrcX, ULONG SrcY, ULONG Width, ULONG Height) (A0,A1,D0,D1,D2,D3,D4) LVO -186
+  (:name "WRITE-LUT-PIXEL-ARRAY")   ; 11 registers: defined after the table via CALL-LIBRARY
+  (:name "WRITE-PIXEL-ARRAY-ALPHA")   ; 10 registers: defined after the table via CALL-LIBRARY
+  (:name "BLT-TEMPLATE-ALPHA")   ; 8 registers: defined after the table via CALL-LIBRARY
+  (:name "PROCESS-PIXEL-ARRAY")   ; 8 registers: defined after the table via CALL-LIBRARY
+  (:name "BLT-BITMAP-ALPHA")   ; 9 registers: defined after the table via CALL-LIBRARY
+  (:name "BLT-BITMAP-RASTPORT-ALPHA")   ; 9 registers: defined after the table via CALL-LIBRARY
+  (:name "SCALE-PIXEL-ARRAY-ALPHA")   ; 10 registers: defined after the table via CALL-LIBRARY
+  )
+
+;;; Functions with more than seven register arguments: DEFUNs over
+;;; AMIGA:CALL-LIBRARY (exported by the (:name ...) rows above).
 (amiga.ffi:defcfun scale-pixel-array *cybergraphics-base* -90 (:a0 src-rect :d0 src-w :d1 src-h :d2 src-mod :a1 dest-rp :d3 dest-x :d4 dest-y :d5 dest-w :d6 dest-h :d7 src-format)
     :result :signed
     :doc "LONG ScalePixelArray(APTR srcRect, UWORD SrcW, UWORD SrcH, UWORD SrcMod, struct RastPort * destRP, UWORD DestX, UWORD DestY, UWORD DestW, UWORD DestH, UBYTE SrcFormat) (A0,D0,D1,D2,A1,D3,D4,D5,D6,D7) LVO -90")
-(amiga.ffi:defcfun get-cyber-map-attr *cybergraphics-base* -96 (:a0 cyber-gfx-bitmap :d0 cyber-attr-tag)
-    :result :unsigned
-    :doc "ULONG GetCyberMapAttr(struct BitMap * CyberGfxBitmap, ULONG CyberAttrTag) (A0,D0) LVO -96")
-(amiga.ffi:defcfun get-cyber-id-attr *cybergraphics-base* -102 (:d0 cyber-id-attr :d1 cyber-display-mode-id)
-    :result :unsigned
-    :doc "ULONG GetCyberIDAttr(ULONG CyberIDAttr, ULONG CyberDisplayModeID) (D0,D1) LVO -102")
-(amiga.ffi:defcfun read-rgb-pixel *cybergraphics-base* -108 (:a1 src-rp :d0 x :d1 y)
-    :result :unsigned
-    :doc "ULONG ReadRGBPixel(struct RastPort * srcRP, UWORD x, UWORD y) (A1,D0,D1) LVO -108")
-(amiga.ffi:defcfun write-rgb-pixel *cybergraphics-base* -114 (:a1 dest-rp :d0 x :d1 y :d2 argb)
-    :result :signed
-    :doc "LONG WriteRGBPixel(struct RastPort * destRP, UWORD x, UWORD y, ULONG argb) (A1,D0,D1,D2) LVO -114")
 (amiga.ffi:defcfun read-pixel-array *cybergraphics-base* -120 (:a0 dest-rect :d0 dest-x :d1 dest-y :d2 dest-mod :a1 src-rp :d3 src-x :d4 src-y :d5 size-x :d6 size-y :d7 dest-format)
     :result :unsigned
     :doc "ULONG ReadPixelArray(APTR destRect, UWORD destX, UWORD destY, UWORD destMod, struct RastPort * srcRP, UWORD SrcX, UWORD SrcY, UWORD SizeX, UWORD SizeY, UBYTE DestFormat) (A0,D0,D1,D2,A1,D3,D4,D5,D6,D7) LVO -120")
 (amiga.ffi:defcfun write-pixel-array *cybergraphics-base* -126 (:a0 src-rect :d0 src-x :d1 src-y :d2 src-mod :a1 dest-rp :d3 dest-x :d4 dest-y :d5 size-x :d6 size-y :d7 src-format)
     :result :unsigned
     :doc "ULONG WritePixelArray(APTR srcRect, UWORD SrcX, UWORD SrcY, UWORD SrcMod, struct RastPort * destRP, UWORD DestX, UWORD DestY, UWORD SizeX, UWORD SizeY, UBYTE SrcFormat) (A0,D0,D1,D2,A1,D3,D4,D5,D6,D7) LVO -126")
-(amiga.ffi:defcfun move-pixel-array *cybergraphics-base* -132 (:d0 src-x :d1 src-y :a1 dest-rp :d2 dest-x :d3 dest-y :d4 size-x :d5 size-y)
-    :result :unsigned
-    :doc "ULONG MovePixelArray(UWORD SrcX, UWORD SrcY, struct RastPort * destRP, UWORD DestX, UWORD DestY, UWORD SizeX, UWORD SizeY) (D0,D1,A1,D2,D3,D4,D5) LVO -132")
-(amiga.ffi:defcfun invert-pixel-array *cybergraphics-base* -144 (:a1 dest-rp :d0 dest-x :d1 dest-y :d2 size-x :d3 size-y)
-    :result :unsigned
-    :doc "ULONG InvertPixelArray(struct RastPort * destRP, UWORD DestX, UWORD DestY, UWORD SizeX, UWORD SizeY) (A1,D0,D1,D2,D3) LVO -144")
-(amiga.ffi:defcfun fill-pixel-array *cybergraphics-base* -150 (:a1 dest-rp :d0 dest-x :d1 dest-y :d2 size-x :d3 size-y :d4 argb)
-    :result :unsigned
-    :doc "ULONG FillPixelArray(struct RastPort * destRP, UWORD DestX, UWORD DestY, UWORD SizeX, UWORD SizeY, ULONG ARGB) (A1,D0,D1,D2,D3,D4) LVO -150")
-(amiga.ffi:defcfun do-c-draw-method-tag-list *cybergraphics-base* -156 (:a0 hook :a1 dest-rp :a2 tag-list)
-    :result :void
-    :doc "void DoCDrawMethodTagList(struct Hook * hook, struct RastPort * destRP, struct TagItem * tagList) (A0,A1,A2) LVO -156")
-(amiga.ffi:defcfun c-video-ctrl-tag-list *cybergraphics-base* -162 (:a0 view-port :a1 tag-list)
-    :result :void
-    :doc "void CVideoCtrlTagList(struct ViewPort * viewPort, struct TagItem * tagList) (A0,A1) LVO -162")
-(amiga.ffi:defcfun lock-bitmap-tag-list *cybergraphics-base* -168 (:a0 bit-map :a1 tag-list)
-    :result :pointer
-    :doc "APTR LockBitMapTagList(APTR bitMap, struct TagItem * tagList) (A0,A1) LVO -168")
-(amiga.ffi:defcfun un-lock-bitmap *cybergraphics-base* -174 (:a0 handle)
-    :result :void
-    :doc "void UnLockBitMap(APTR Handle) (A0) LVO -174")
-(amiga.ffi:defcfun un-lock-bitmap-tag-list *cybergraphics-base* -180 (:a0 handle :a1 tag-list)
-    :result :void
-    :doc "void UnLockBitMapTagList(APTR Handle, struct TagItem * tagList) (A0,A1) LVO -180")
-(amiga.ffi:defcfun extract-color *cybergraphics-base* -186 (:a0 src-rp :a1 bit-map :d0 colour :d1 src-x :d2 src-y :d3 width :d4 height)
-    :result :unsigned
-    :doc "ULONG ExtractColor(struct RastPort * srcRP, struct BitMap * bitMap, ULONG Colour, ULONG SrcX, ULONG SrcY, ULONG Width, ULONG Height) (A0,A1,D0,D1,D2,D3,D4) LVO -186")
 (amiga.ffi:defcfun write-lut-pixel-array *cybergraphics-base* -198 (:a0 src-rect :d0 src-x :d1 src-y :d2 src-mod :a1 dest-rp :a2 color-tab :d3 dest-x :d4 dest-y :d5 size-x :d6 size-y :d7 ct-format)
     :result :unsigned
     :doc "ULONG WriteLUTPixelArray(APTR srcRect, UWORD SrcX, UWORD SrcY, UWORD SrcMod, struct RastPort * destRP, APTR ColorTab, UWORD DestX, UWORD DestY, UWORD SizeX, UWORD SizeY, UBYTE CTFormat) (A0,D0,D1,D2,A1,A2,D3,D4,D5,D6,D7) LVO -198")

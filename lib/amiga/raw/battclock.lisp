@@ -8,13 +8,14 @@
 ;;; 3 functions, 0 constants, 0 structs, 2 skipped (see comments).
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.BATTCLOCK"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*BATTCLOCK-BASE*" "*BATTCLOCK-VERSION*"
-   "RESET-BATT-CLOCK" "READ-BATT-CLOCK" "WRITE-BATT-CLOCK" ))
+  (:export "*BATTCLOCK-BASE*" "*BATTCLOCK-VERSION*"))
 
 (in-package "AMIGA.RAW.BATTCLOCK")
 
@@ -28,17 +29,18 @@
 (defun %version>= (n)
   (and *battclock-version* (>= *battclock-version* n)))
 
-;;; --- functions (battclock_lib.sfd + MorphOS SDK) ---
-(amiga.ffi:defcfun reset-batt-clock *battclock-base* -6 ()
-    :result :void
-    :doc "VOID ResetBattClock() () LVO -6")
-(amiga.ffi:defcfun read-batt-clock *battclock-base* -12 ()
-    :result :unsigned
-    :doc "ULONG ReadBattClock() () LVO -12")
-(amiga.ffi:defcfun write-batt-clock *battclock-base* -18 (:d0 time)
-    :result :void
-    :doc "VOID WriteBattClock(ULONG time) (D0) LVO -18")
-;; skipped ReadUTCBattClock: not a 68k register call (base,sysv)
-;; skipped WriteUTCBattClock: not a 68k register call (base,sysv)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.BATTCLOCK"
+    (:base *battclock-base* :version *battclock-version*)
+
+  ;; --- functions (battclock_lib.sfd + MorphOS SDK) ---
+  (:fn "RESET-BATT-CLOCK" -6 () :void)   ; VOID ResetBattClock() () LVO -6
+  (:fn "READ-BATT-CLOCK" -12 () :unsigned)   ; ULONG ReadBattClock() () LVO -12
+  (:fn "WRITE-BATT-CLOCK" -18 (:d0) :void)   ; VOID WriteBattClock(ULONG time) (D0) LVO -18
+  ;; skipped ReadUTCBattClock: not a 68k register call (base,sysv)
+  ;; skipped WriteUTCBattClock: not a 68k register call (base,sysv)
+  )
 
 (provide "amiga/raw/battclock")

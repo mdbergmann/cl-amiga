@@ -9,15 +9,14 @@
 ;;; 24 C macros skipped: not an integer constant (string, call, float).
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.MATHIEEESINGBAS"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*MATHIEEESINGBAS-BASE*" "*MATHIEEESINGBAS-VERSION*"
-   "IEEESP-FIX" "IEEESP-FLT" "IEEESP-CMP" "IEEESP-TST" "IEEESP-ABS" 
-   "IEEESP-NEG" "IEEESP-ADD" "IEEESP-SUB" "IEEESP-MUL" "IEEESP-DIV" 
-   "IEEESP-FLOOR" "IEEESP-CEIL" ))
+  (:export "*MATHIEEESINGBAS-BASE*" "*MATHIEEESINGBAS-VERSION*"))
 
 (in-package "AMIGA.RAW.MATHIEEESINGBAS")
 
@@ -31,42 +30,25 @@
 (defun %version>= (n)
   (and *mathieeesingbas-version* (>= *mathieeesingbas-version* n)))
 
-;;; --- functions (mathieeesingbas_lib.sfd + MorphOS SDK) ---
-(amiga.ffi:defcfun ieeesp-fix *mathieeesingbas-base* -30 (:d0 parm)
-    :result :signed
-    :doc "LONG IEEESPFix(FLOAT parm) (D0) LVO -30")
-(amiga.ffi:defcfun ieeesp-flt *mathieeesingbas-base* -36 (:d0 integer)
-    :result :unsigned
-    :doc "FLOAT IEEESPFlt(LONG integer) (D0) LVO -36")
-(amiga.ffi:defcfun ieeesp-cmp *mathieeesingbas-base* -42 (:d0 left-parm :d1 right-parm)
-    :result :signed
-    :doc "LONG IEEESPCmp(FLOAT leftParm, FLOAT rightParm) (D0,D1) LVO -42")
-(amiga.ffi:defcfun ieeesp-tst *mathieeesingbas-base* -48 (:d0 parm)
-    :result :signed
-    :doc "LONG IEEESPTst(FLOAT parm) (D0) LVO -48")
-(amiga.ffi:defcfun ieeesp-abs *mathieeesingbas-base* -54 (:d0 parm)
-    :result :unsigned
-    :doc "FLOAT IEEESPAbs(FLOAT parm) (D0) LVO -54")
-(amiga.ffi:defcfun ieeesp-neg *mathieeesingbas-base* -60 (:d0 parm)
-    :result :unsigned
-    :doc "FLOAT IEEESPNeg(FLOAT parm) (D0) LVO -60")
-(amiga.ffi:defcfun ieeesp-add *mathieeesingbas-base* -66 (:d0 left-parm :d1 right-parm)
-    :result :unsigned
-    :doc "FLOAT IEEESPAdd(FLOAT leftParm, FLOAT rightParm) (D0,D1) LVO -66")
-(amiga.ffi:defcfun ieeesp-sub *mathieeesingbas-base* -72 (:d0 left-parm :d1 right-parm)
-    :result :unsigned
-    :doc "FLOAT IEEESPSub(FLOAT leftParm, FLOAT rightParm) (D0,D1) LVO -72")
-(amiga.ffi:defcfun ieeesp-mul *mathieeesingbas-base* -78 (:d0 left-parm :d1 right-parm)
-    :result :unsigned
-    :doc "FLOAT IEEESPMul(FLOAT leftParm, FLOAT rightParm) (D0,D1) LVO -78")
-(amiga.ffi:defcfun ieeesp-div *mathieeesingbas-base* -84 (:d0 dividend :d1 divisor)
-    :result :unsigned
-    :doc "FLOAT IEEESPDiv(FLOAT dividend, FLOAT divisor) (D0,D1) LVO -84")
-(amiga.ffi:defcfun ieeesp-floor *mathieeesingbas-base* -90 (:d0 parm)
-    :result :unsigned
-    :doc "FLOAT IEEESPFloor(FLOAT parm) (D0) LVO -90")
-(amiga.ffi:defcfun ieeesp-ceil *mathieeesingbas-base* -96 (:d0 parm)
-    :result :unsigned
-    :doc "FLOAT IEEESPCeil(FLOAT parm) (D0) LVO -96")
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.MATHIEEESINGBAS"
+    (:base *mathieeesingbas-base* :version *mathieeesingbas-version*)
+
+  ;; --- functions (mathieeesingbas_lib.sfd + MorphOS SDK) ---
+  (:fn "IEEESP-FIX" -30 (:d0) :signed)   ; LONG IEEESPFix(FLOAT parm) (D0) LVO -30
+  (:fn "IEEESP-FLT" -36 (:d0) :unsigned)   ; FLOAT IEEESPFlt(LONG integer) (D0) LVO -36
+  (:fn "IEEESP-CMP" -42 (:d0 :d1) :signed)   ; LONG IEEESPCmp(FLOAT leftParm, FLOAT rightParm) (D0,D1) LVO -42
+  (:fn "IEEESP-TST" -48 (:d0) :signed)   ; LONG IEEESPTst(FLOAT parm) (D0) LVO -48
+  (:fn "IEEESP-ABS" -54 (:d0) :unsigned)   ; FLOAT IEEESPAbs(FLOAT parm) (D0) LVO -54
+  (:fn "IEEESP-NEG" -60 (:d0) :unsigned)   ; FLOAT IEEESPNeg(FLOAT parm) (D0) LVO -60
+  (:fn "IEEESP-ADD" -66 (:d0 :d1) :unsigned)   ; FLOAT IEEESPAdd(FLOAT leftParm, FLOAT rightParm) (D0,D1) LVO -66
+  (:fn "IEEESP-SUB" -72 (:d0 :d1) :unsigned)   ; FLOAT IEEESPSub(FLOAT leftParm, FLOAT rightParm) (D0,D1) LVO -72
+  (:fn "IEEESP-MUL" -78 (:d0 :d1) :unsigned)   ; FLOAT IEEESPMul(FLOAT leftParm, FLOAT rightParm) (D0,D1) LVO -78
+  (:fn "IEEESP-DIV" -84 (:d0 :d1) :unsigned)   ; FLOAT IEEESPDiv(FLOAT dividend, FLOAT divisor) (D0,D1) LVO -84
+  (:fn "IEEESP-FLOOR" -90 (:d0) :unsigned)   ; FLOAT IEEESPFloor(FLOAT parm) (D0) LVO -90
+  (:fn "IEEESP-CEIL" -96 (:d0) :unsigned)   ; FLOAT IEEESPCeil(FLOAT parm) (D0) LVO -96
+  )
 
 (provide "amiga/raw/mathieeesingbas")

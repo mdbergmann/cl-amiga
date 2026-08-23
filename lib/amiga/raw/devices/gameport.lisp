@@ -6,44 +6,46 @@
 ;;; 0 functions, 15 constants, 1 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.DEVICES.GAMEPORT"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+GPD-READEVENT+" "+GPD-ASKCTYPE+" "+GPD-SETCTYPE+" "+GPD-ASKTRIGGER+" 
-   "+GPD-SETTRIGGER+" "+GPTB-DOWNKEYS+" "+GPTF-DOWNKEYS+" "+GPTB-UPKEYS+" 
-   "+GPTF-UPKEYS+" "+GPCT-ALLOCATED+" "+GPCT-NOCONTROLLER+" "+GPCT-MOUSE+" 
-   "+GPCT-RELJOYSTICK+" "+GPCT-ABSJOYSTICK+" "+GPDERR-SETCTYPE+" 
-   "*GAME-PORT-TRIGGER-SIZE*" "GAME-PORT-TRIGGER-KEYS" 
-   "GAME-PORT-TRIGGER-TIMEOUT" "GAME-PORT-TRIGGER-X-DELTA" 
-   "GAME-PORT-TRIGGER-Y-DELTA" ))
+  (:export))
 
 (in-package "AMIGA.RAW.DEVICES.GAMEPORT")
 
-;;; --- constants from devices/gameport.i ---
-(defconstant +gpd-readevent+ 9)
-(defconstant +gpd-askctype+ 10)
-(defconstant +gpd-setctype+ 11)
-(defconstant +gpd-asktrigger+ 12)
-(defconstant +gpd-settrigger+ 13)
-(defconstant +gptb-downkeys+ 0)
-(defconstant +gptf-downkeys+ 1)
-(defconstant +gptb-upkeys+ 1)
-(defconstant +gptf-upkeys+ 2)
-(defconstant +gpct-allocated+ -1)
-(defconstant +gpct-nocontroller+ 0)
-(defconstant +gpct-mouse+ 1)
-(defconstant +gpct-reljoystick+ 2)
-(defconstant +gpct-absjoystick+ 3)
-(defconstant +gpderr-setctype+ 1)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.DEVICES.GAMEPORT" ()
 
-;;; --- structures from devices/gameport.i ---
-(ffi:defcstruct (game-port-trigger :size 8)   ; GamePortTrigger (devices/gameport.i)
-  (keys :u16 0)
-  (timeout :u16 2)
-  (x-delta :u16 4)
-  (y-delta :u16 6)
-)
+  ;; --- constants from devices/gameport.i ---
+  (:const "+GPD-READEVENT+" 9)
+  (:const "+GPD-ASKCTYPE+" 10)
+  (:const "+GPD-SETCTYPE+" 11)
+  (:const "+GPD-ASKTRIGGER+" 12)
+  (:const "+GPD-SETTRIGGER+" 13)
+  (:const "+GPTB-DOWNKEYS+" 0)
+  (:const "+GPTF-DOWNKEYS+" 1)
+  (:const "+GPTB-UPKEYS+" 1)
+  (:const "+GPTF-UPKEYS+" 2)
+  (:const "+GPCT-ALLOCATED+" -1)
+  (:const "+GPCT-NOCONTROLLER+" 0)
+  (:const "+GPCT-MOUSE+" 1)
+  (:const "+GPCT-RELJOYSTICK+" 2)
+  (:const "+GPCT-ABSJOYSTICK+" 3)
+  (:const "+GPDERR-SETCTYPE+" 1)
+
+  ;; --- structures from devices/gameport.i ---
+  (:struct "GAME-PORT-TRIGGER" 8   ; GamePortTrigger (devices/gameport.i)
+    ("KEYS" :u16 0)
+    ("TIMEOUT" :u16 2)
+    ("X-DELTA" :u16 4)
+    ("Y-DELTA" :u16 6)
+    )
+  )
 
 (provide "amiga/raw/devices/gameport")

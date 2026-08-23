@@ -6,92 +6,83 @@
 ;;; 0 functions, 8 constants, 2 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.DEVICES.PRTGFX"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+PCMYELLOW+" "+PCMMAGENTA+" "+PCMCYAN+" "+PCMBLACK+" "+PCMBLUE+" 
-   "+PCMGREEN+" "+PCMRED+" "+PCMWHITE+" "*COLOR-ENTRY-SIZE*" 
-   "COLOR-ENTRY-COLOR-LONG" "COLOR-ENTRY-COLOR-S-BYTE" 
-   "COLOR-ENTRY-COLOR-BYTE" "*PRT-INFO-SIZE*" "PRT-INFO-RENDER" 
-   "PRT-INFO-RP" "PRT-INFO-TEMPRP" "PRT-INFO-ROW-BUF" "PRT-INFO-HAM-BUF" 
-   "PRT-INFO-COLOR-MAP" "PRT-INFO-COLOR-INT" "PRT-INFO-HAM-INT" 
-   "PRT-INFO-DEST1-INT" "PRT-INFO-DEST2-INT" "PRT-INFO-SCALE-X" 
-   "PRT-INFO-SCALE-X-ALT" "PRT-INFO-DMATRIX" "PRT-INFO-TOP-BUF" 
-   "PRT-INFO-BOT-BUF" "PRT-INFO-ROW-BUF-SIZE" "PRT-INFO-HAM-BUF-SIZE" 
-   "PRT-INFO-COLOR-MAP-SIZE" "PRT-INFO-COLOR-INT-SIZE" 
-   "PRT-INFO-HAM-INT-SIZE" "PRT-INFO-DEST1-INT-SIZE" 
-   "PRT-INFO-DEST2-INT-SIZE" "PRT-INFO-SCALE-X-SIZE" 
-   "PRT-INFO-SCALE-X-ALT-SIZE" "PRT-INFO-PREFS-FLAGS" "PRT-INFO-SPECIAL" 
-   "PRT-INFO-XSTART" "PRT-INFO-YSTART" "PRT-INFO-WIDTH" "PRT-INFO-HEIGHT" 
-   "PRT-INFO-PC" "PRT-INFO-PR" "PRT-INFO-YMULT" "PRT-INFO-YMOD" 
-   "PRT-INFO-ETY" "PRT-INFO-XPOS" "PRT-INFO-THRESHOLD" "PRT-INFO-TEMPWIDTH" 
-   "PRT-INFO-FLAGS" "PRT-INFO-REDUCE-BUF" "PRT-INFO-REDUCE-BUF-SIZE" 
-   "PRT-INFO-SOURCE-HOOK" "PRT-INFO-INVERT-HOOK-BUF" ))
+  (:export))
 
 (in-package "AMIGA.RAW.DEVICES.PRTGFX")
 
-;;; --- constants from devices/prtgfx.i ---
-(defconstant +pcmyellow+ 0)
-(defconstant +pcmmagenta+ 1)
-(defconstant +pcmcyan+ 2)
-(defconstant +pcmblack+ 3)
-(defconstant +pcmblue+ 0)
-(defconstant +pcmgreen+ 1)
-(defconstant +pcmred+ 2)
-(defconstant +pcmwhite+ 3)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.DEVICES.PRTGFX" ()
 
-;;; --- structures from devices/prtgfx.i ---
-(ffi:defcstruct (color-entry :size 4)   ; colorEntry (devices/prtgfx.i)
-  (color-long (:struct 0) 0)
-  (color-s-byte (:struct 0) 0)
-  (color-byte (:struct 4) 0)
-)
-(ffi:defcstruct (prt-info :size 128)   ; PrtInfo (devices/prtgfx.i)
-  (render :fptr 0)
-  (rp :fptr 4)
-  (temprp :fptr 8)
-  (row-buf :fptr 12)
-  (ham-buf :fptr 16)
-  (color-map :fptr 20)
-  (color-int :fptr 24)
-  (ham-int :fptr 28)
-  (dest1-int :fptr 32)
-  (dest2-int :fptr 36)
-  (scale-x :fptr 40)
-  (scale-x-alt :fptr 44)
-  (dmatrix :fptr 48)
-  (top-buf :fptr 52)
-  (bot-buf :fptr 56)
-  (row-buf-size :u16 60)
-  (ham-buf-size :u16 62)
-  (color-map-size :u16 64)
-  (color-int-size :u16 66)
-  (ham-int-size :u16 68)
-  (dest1-int-size :u16 70)
-  (dest2-int-size :u16 72)
-  (scale-x-size :u16 74)
-  (scale-x-alt-size :u16 76)
-  (prefs-flags :u16 78)
-  (special :u32 80)
-  (xstart :u16 84)
-  (ystart :u16 86)
-  (width :u16 88)
-  (height :u16 90)
-  (pc :u32 92)
-  (pr :u32 96)
-  (ymult :u16 100)
-  (ymod :u16 102)
-  (ety :u16 104)
-  (xpos :u16 106)
-  (threshold :u16 108)
-  (tempwidth :u16 110)
-  (flags :u16 112)
-  (reduce-buf :fptr 114)
-  (reduce-buf-size :u16 118)
-  (source-hook :fptr 120)
-  (invert-hook-buf :fptr 124)
-)
+  ;; --- constants from devices/prtgfx.i ---
+  (:const "+PCMYELLOW+" 0)
+  (:const "+PCMMAGENTA+" 1)
+  (:const "+PCMCYAN+" 2)
+  (:const "+PCMBLACK+" 3)
+  (:const "+PCMBLUE+" 0)
+  (:const "+PCMGREEN+" 1)
+  (:const "+PCMRED+" 2)
+  (:const "+PCMWHITE+" 3)
+
+  ;; --- structures from devices/prtgfx.i ---
+  (:struct "COLOR-ENTRY" 4   ; colorEntry (devices/prtgfx.i)
+    ("COLOR-LONG" (:struct 0) 0)
+    ("COLOR-S-BYTE" (:struct 0) 0)
+    ("COLOR-BYTE" (:struct 4) 0)
+    )
+  (:struct "PRT-INFO" 128   ; PrtInfo (devices/prtgfx.i)
+    ("RENDER" :fptr 0)
+    ("RP" :fptr 4)
+    ("TEMPRP" :fptr 8)
+    ("ROW-BUF" :fptr 12)
+    ("HAM-BUF" :fptr 16)
+    ("COLOR-MAP" :fptr 20)
+    ("COLOR-INT" :fptr 24)
+    ("HAM-INT" :fptr 28)
+    ("DEST1-INT" :fptr 32)
+    ("DEST2-INT" :fptr 36)
+    ("SCALE-X" :fptr 40)
+    ("SCALE-X-ALT" :fptr 44)
+    ("DMATRIX" :fptr 48)
+    ("TOP-BUF" :fptr 52)
+    ("BOT-BUF" :fptr 56)
+    ("ROW-BUF-SIZE" :u16 60)
+    ("HAM-BUF-SIZE" :u16 62)
+    ("COLOR-MAP-SIZE" :u16 64)
+    ("COLOR-INT-SIZE" :u16 66)
+    ("HAM-INT-SIZE" :u16 68)
+    ("DEST1-INT-SIZE" :u16 70)
+    ("DEST2-INT-SIZE" :u16 72)
+    ("SCALE-X-SIZE" :u16 74)
+    ("SCALE-X-ALT-SIZE" :u16 76)
+    ("PREFS-FLAGS" :u16 78)
+    ("SPECIAL" :u32 80)
+    ("XSTART" :u16 84)
+    ("YSTART" :u16 86)
+    ("WIDTH" :u16 88)
+    ("HEIGHT" :u16 90)
+    ("PC" :u32 92)
+    ("PR" :u32 96)
+    ("YMULT" :u16 100)
+    ("YMOD" :u16 102)
+    ("ETY" :u16 104)
+    ("XPOS" :u16 106)
+    ("THRESHOLD" :u16 108)
+    ("TEMPWIDTH" :u16 110)
+    ("FLAGS" :u16 112)
+    ("REDUCE-BUF" :fptr 114)
+    ("REDUCE-BUF-SIZE" :u16 118)
+    ("SOURCE-HOOK" :fptr 120)
+    ("INVERT-HOOK-BUF" :fptr 124)
+    )
+  )
 
 (provide "amiga/raw/devices/prtgfx")

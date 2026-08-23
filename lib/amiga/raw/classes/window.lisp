@@ -9,49 +9,14 @@
 ;;; 1 C macro skipped: not an integer constant (string, call, float).
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.CLASSES.WINDOW"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*WINDOW-BASE*" "*WINDOW-VERSION*"
-   "+WINDOW-DUMMY+" "+WINDOW-WINDOW+" "+WINDOW-SIG-MASK+" 
-   "+WINDOW-MENU-STRIP+" "+WINDOW-LAYOUT+" "+WINDOW-PARENT-LAYOUT+" 
-   "+WINDOW-PARENT-GROUP+" "+WINDOW-USER-DATA+" "+WINDOW-SHARED-PORT+" 
-   "+WINDOW-ZOOM+" "+WINDOW-FRONT-BACK+" "+WINDOW-ACTIVATE+" 
-   "+WINDOW-LOCK-WIDTH+" "+WINDOW-LOCK-HEIGHT+" "+WINDOW-APP-PORT+" 
-   "+WINDOW-POSITION+" "+WINDOW-IDCMP-HOOK+" "+WINDOW-IDCMP-HOOK-BITS+" 
-   "+WINDOW-GADGET-USER-DATA+" "+WINDOW-INTERPRET-USER-DATA+" 
-   "+WINDOW-MENU-USER-DATA+" "+WGUD-HOOK+" "+WGUD-FUNC+" "+WGUD-IGNORE+" 
-   "+WINDOW-ICON-TITLE+" "+WINDOW-APP-MSG-HOOK+" "+WINDOW-ICON+" 
-   "+WINDOW-APP-WINDOW+" "+WINDOW-GADGET-HELP+" "+WINDOW-ICONIFY-GADGET+" 
-   "+WINDOW-TEXT-ATTR+" "+WINDOW-BACK-FILL-NAME+" "+WINDOW-REF-WINDOW+" 
-   "+WINDOW-INPUT-EVENT+" "+WINDOW-HINT-INFO+" "+WINDOW-KILL-WINDOW+" 
-   "+WINDOW-APPLICATION+" "+WINDOW-INTERPRET-IDCMP-HOOK+" "+WINDOW-PARENT+" 
-   "+WINDOW-PRE-REFRESH-HOOK+" "+WINDOW-POST-REFRESH-HOOK+" 
-   "+WINDOW-APP-WINDOW-PTR+" "+WINDOW-ICON-NO-DISPOSE+" "+WINDOW-NEW-MENU+" 
-   "+WINDOW-QUALIFIER+" "+WINDOW-CHAR-SET+" "+WINDOW-BUILT-IN-SCROLL+" 
-   "+WINDOW-IDCMP-SNOOP-HOOK+" "+WINDOW-SHOWING-HINT+" 
-   "+WINDOW-NEW-PREFS-HOOK+" "+WINDOW-ICONIFIABLE+" "+WINDOW-POPUP-GADGET+" 
-   "+WINDOW-POPUP-HOOK+" "+WINDOW-POPUP-ITEM+" "+WINDOW-JUMP-SCREENS-MENU+" 
-   "+WINDOW-UNIQUE-ID+" "+WINDOW-MENU-ADDRESS+" "+WINDOW-MENU-TYPE+" 
-   "+WINDOW-MENU-CONTEXT+" "+WINDOW-VERT-PROP+" "+WINDOW-VERT-OBJECT+" 
-   "+WINDOW-HORIZ-PROP+" "+WINDOW-HORIZ-OBJECT+" "+WMHI-LASTMSG+" 
-   "+WMHI-IGNORE+" "+WMHI-GADGETMASK+" "+WMHI-MENUMASK+" "+WMHI-KEYMASK+" 
-   "+WMHI-CLASSMASK+" "+WMHI-CLOSEWINDOW+" "+WMHI-GADGETUP+" 
-   "+WMHI-INACTIVE+" "+WMHI-ACTIVE+" "+WMHI-NEWSIZE+" "+WMHI-MENUPICK+" 
-   "+WMHI-MENUHELP+" "+WMHI-GADGETHELP+" "+WMHI-ICONIFY+" 
-   "+WMHI-UNICONIFY+" "+WMHI-RAWKEY+" "+WMHI-VANILLAKEY+" 
-   "+WMHI-CHANGEWINDOW+" "+WMHI-INTUITICK+" "+WMHI-MOUSEMOVE+" 
-   "+WMHI-MOUSEBUTTONS+" "+WMHI-DISPOSEDWINDOW+" "+WMHI-JUMPSCREEN+" 
-   "+WMHI-POPUPMENU+" "+WMHI-GADGETDOWN+" "+WHOOKRSLT-IGNORE+" 
-   "+WHOOKRSLT-CLOSEWINDOW+" "+WHOOKRSLT-DISPOSEWINDOW+" "+WMF-ZOOMED+" 
-   "+WMF-ZIPWINDOW+" "+WT-FRONT+" "+WT-BACK+" "+WPOS-CENTERSCREEN+" 
-   "+WPOS-CENTERMOUSE+" "+WPOS-TOPLEFT+" "+WPOS-CENTERWINDOW+" 
-   "+WPOS-FULLSCREEN+" "+WPOS-ENTIRESCREEN+" "+WM-HANDLEINPUT+" "+WM-OPEN+" 
-   "+WM-CLOSE+" "+WM-NEWPREFS+" "+WM-ICONIFY+" "+WM-RETHINK+" 
-   "+WM-ACTIVATEGADGET+" "+WM-SNAPSHOT+" "+WM-UNSNAPSHOT+" "+WM-RESTORE+" 
-   "+SAVE+" "+USE+" "WINDOW-GET-CLASS" ))
+  (:export "*WINDOW-BASE*" "*WINDOW-VERSION*"))
 
 (in-package "AMIGA.RAW.CLASSES.WINDOW")
 
@@ -65,126 +30,130 @@
 (defun %version>= (n)
   (and *window-version* (>= *window-version* n)))
 
-;;; --- constants from classes/window.h ---
-(defconstant +window-dummy+ #x85025000)
-(defconstant +window-window+ #x85025001)
-(defconstant +window-sig-mask+ #x85025002)
-(defconstant +window-menu-strip+ #x85025004)
-(defconstant +window-layout+ #x85025005)
-(defconstant +window-parent-layout+ #x85025005)
-(defconstant +window-parent-group+ #x85025005)
-(defconstant +window-user-data+ #x85025006)
-(defconstant +window-shared-port+ #x85025007)
-(defconstant +window-zoom+ #x85025008)
-(defconstant +window-front-back+ #x85025009)
-(defconstant +window-activate+ #x8502500A)
-(defconstant +window-lock-width+ #x8502500B)
-(defconstant +window-lock-height+ #x8502500C)
-(defconstant +window-app-port+ #x8502500D)
-(defconstant +window-position+ #x8502500E)
-(defconstant +window-idcmp-hook+ #x8502500F)
-(defconstant +window-idcmp-hook-bits+ #x85025010)
-(defconstant +window-gadget-user-data+ #x85025011)
-(defconstant +window-interpret-user-data+ #x85025011)
-(defconstant +window-menu-user-data+ #x85025019)
-(defconstant +wgud-hook+ 0)
-(defconstant +wgud-func+ 1)
-(defconstant +wgud-ignore+ 2)
-(defconstant +window-icon-title+ #x85025012)
-(defconstant +window-app-msg-hook+ #x85025013)
-(defconstant +window-icon+ #x85025014)
-(defconstant +window-app-window+ #x85025015)
-(defconstant +window-gadget-help+ #x85025016)
-(defconstant +window-iconify-gadget+ #x85025017)
-(defconstant +window-text-attr+ #x85025018)
-(defconstant +window-back-fill-name+ #x8502501A)
-(defconstant +window-ref-window+ #x85025029)
-(defconstant +window-input-event+ #x8502502A)
-(defconstant +window-hint-info+ #x8502502B)
-(defconstant +window-kill-window+ #x8502502C)
-(defconstant +window-application+ #x8502502D)
-(defconstant +window-interpret-idcmp-hook+ #x8502502E)
-(defconstant +window-parent+ #x8502502F)
-(defconstant +window-pre-refresh-hook+ #x85025030)
-(defconstant +window-post-refresh-hook+ #x85025031)
-(defconstant +window-app-window-ptr+ #x85025032)
-(defconstant +window-icon-no-dispose+ #x85025033)
-(defconstant +window-new-menu+ #x85025034)
-(defconstant +window-qualifier+ #x85025035)
-(defconstant +window-char-set+ #x85025036)
-(defconstant +window-built-in-scroll+ #x85025037)
-(defconstant +window-idcmp-snoop-hook+ #x85025038)
-(defconstant +window-showing-hint+ #x85025039)
-(defconstant +window-new-prefs-hook+ #x8502503A)
-(defconstant +window-iconifiable+ #x8502503B)
-(defconstant +window-popup-gadget+ #x8502503C)
-(defconstant +window-popup-hook+ #x8502503D)
-(defconstant +window-popup-item+ #x8502503E)
-(defconstant +window-jump-screens-menu+ #x8502503F)
-(defconstant +window-unique-id+ #x85025040)
-(defconstant +window-menu-address+ #x85025041)
-(defconstant +window-menu-type+ #x85025042)
-(defconstant +window-menu-context+ #x85025043)
-(defconstant +window-vert-prop+ #x8502501B)
-(defconstant +window-vert-object+ #x8502501C)
-(defconstant +window-horiz-prop+ #x8502501D)
-(defconstant +window-horiz-object+ #x8502501E)
-(defconstant +wmhi-lastmsg+ 0)
-(defconstant +wmhi-ignore+ -1)
-(defconstant +wmhi-gadgetmask+ #xFFFF)
-(defconstant +wmhi-menumask+ #xFFFF)
-(defconstant +wmhi-keymask+ #xFF)
-(defconstant +wmhi-classmask+ #xFFFF0000)
-(defconstant +wmhi-closewindow+ #x10000)
-(defconstant +wmhi-gadgetup+ #x20000)
-(defconstant +wmhi-inactive+ #x30000)
-(defconstant +wmhi-active+ #x40000)
-(defconstant +wmhi-newsize+ #x50000)
-(defconstant +wmhi-menupick+ #x60000)
-(defconstant +wmhi-menuhelp+ #x70000)
-(defconstant +wmhi-gadgethelp+ #x80000)
-(defconstant +wmhi-iconify+ #x90000)
-(defconstant +wmhi-uniconify+ #xA0000)
-(defconstant +wmhi-rawkey+ #xB0000)
-(defconstant +wmhi-vanillakey+ #xC0000)
-(defconstant +wmhi-changewindow+ #xD0000)
-(defconstant +wmhi-intuitick+ #xE0000)
-(defconstant +wmhi-mousemove+ #xF0000)
-(defconstant +wmhi-mousebuttons+ #x100000)
-(defconstant +wmhi-disposedwindow+ #x110000)
-(defconstant +wmhi-jumpscreen+ #x120000)
-(defconstant +wmhi-popupmenu+ #x130000)
-(defconstant +wmhi-gadgetdown+ #x140000)
-(defconstant +whookrslt-ignore+ 0)
-(defconstant +whookrslt-closewindow+ 1)
-(defconstant +whookrslt-disposewindow+ 2)
-(defconstant +wmf-zoomed+ 1)
-(defconstant +wmf-zipwindow+ 2)
-(defconstant +wt-front+ 1)
-(defconstant +wt-back+ 0)
-(defconstant +wpos-centerscreen+ 1)
-(defconstant +wpos-centermouse+ 2)
-(defconstant +wpos-topleft+ 3)
-(defconstant +wpos-centerwindow+ 4)
-(defconstant +wpos-fullscreen+ 5)
-(defconstant +wpos-entirescreen+ 6)
-(defconstant +wm-handleinput+ #x570001)
-(defconstant +wm-open+ #x570002)
-(defconstant +wm-close+ #x570003)
-(defconstant +wm-newprefs+ #x570004)
-(defconstant +wm-iconify+ #x570005)
-(defconstant +wm-rethink+ #x570006)
-(defconstant +wm-activategadget+ #x570007)
-(defconstant +wm-snapshot+ #x570008)
-(defconstant +wm-unsnapshot+ #x570009)
-(defconstant +wm-restore+ #x570010)
-(defconstant +save+ 0)
-(defconstant +use+ 1)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.CLASSES.WINDOW"
+    (:base *window-base* :version *window-version*)
 
-;;; --- functions (window_lib.sfd + MorphOS SDK) ---
-(when (%version>= 40)
-  (amiga.ffi:defcfun window-get-class *window-base* -30 ()
-    :result :pointer
-    :doc "Class * WINDOW_GetClass() () LVO -30"))
+  ;; --- constants from classes/window.h ---
+  (:const "+WINDOW-DUMMY+" #x85025000)
+  (:const "+WINDOW-WINDOW+" #x85025001)
+  (:const "+WINDOW-SIG-MASK+" #x85025002)
+  (:const "+WINDOW-MENU-STRIP+" #x85025004)
+  (:const "+WINDOW-LAYOUT+" #x85025005)
+  (:const "+WINDOW-PARENT-LAYOUT+" #x85025005)
+  (:const "+WINDOW-PARENT-GROUP+" #x85025005)
+  (:const "+WINDOW-USER-DATA+" #x85025006)
+  (:const "+WINDOW-SHARED-PORT+" #x85025007)
+  (:const "+WINDOW-ZOOM+" #x85025008)
+  (:const "+WINDOW-FRONT-BACK+" #x85025009)
+  (:const "+WINDOW-ACTIVATE+" #x8502500A)
+  (:const "+WINDOW-LOCK-WIDTH+" #x8502500B)
+  (:const "+WINDOW-LOCK-HEIGHT+" #x8502500C)
+  (:const "+WINDOW-APP-PORT+" #x8502500D)
+  (:const "+WINDOW-POSITION+" #x8502500E)
+  (:const "+WINDOW-IDCMP-HOOK+" #x8502500F)
+  (:const "+WINDOW-IDCMP-HOOK-BITS+" #x85025010)
+  (:const "+WINDOW-GADGET-USER-DATA+" #x85025011)
+  (:const "+WINDOW-INTERPRET-USER-DATA+" #x85025011)
+  (:const "+WINDOW-MENU-USER-DATA+" #x85025019)
+  (:const "+WGUD-HOOK+" 0)
+  (:const "+WGUD-FUNC+" 1)
+  (:const "+WGUD-IGNORE+" 2)
+  (:const "+WINDOW-ICON-TITLE+" #x85025012)
+  (:const "+WINDOW-APP-MSG-HOOK+" #x85025013)
+  (:const "+WINDOW-ICON+" #x85025014)
+  (:const "+WINDOW-APP-WINDOW+" #x85025015)
+  (:const "+WINDOW-GADGET-HELP+" #x85025016)
+  (:const "+WINDOW-ICONIFY-GADGET+" #x85025017)
+  (:const "+WINDOW-TEXT-ATTR+" #x85025018)
+  (:const "+WINDOW-BACK-FILL-NAME+" #x8502501A)
+  (:const "+WINDOW-REF-WINDOW+" #x85025029)
+  (:const "+WINDOW-INPUT-EVENT+" #x8502502A)
+  (:const "+WINDOW-HINT-INFO+" #x8502502B)
+  (:const "+WINDOW-KILL-WINDOW+" #x8502502C)
+  (:const "+WINDOW-APPLICATION+" #x8502502D)
+  (:const "+WINDOW-INTERPRET-IDCMP-HOOK+" #x8502502E)
+  (:const "+WINDOW-PARENT+" #x8502502F)
+  (:const "+WINDOW-PRE-REFRESH-HOOK+" #x85025030)
+  (:const "+WINDOW-POST-REFRESH-HOOK+" #x85025031)
+  (:const "+WINDOW-APP-WINDOW-PTR+" #x85025032)
+  (:const "+WINDOW-ICON-NO-DISPOSE+" #x85025033)
+  (:const "+WINDOW-NEW-MENU+" #x85025034)
+  (:const "+WINDOW-QUALIFIER+" #x85025035)
+  (:const "+WINDOW-CHAR-SET+" #x85025036)
+  (:const "+WINDOW-BUILT-IN-SCROLL+" #x85025037)
+  (:const "+WINDOW-IDCMP-SNOOP-HOOK+" #x85025038)
+  (:const "+WINDOW-SHOWING-HINT+" #x85025039)
+  (:const "+WINDOW-NEW-PREFS-HOOK+" #x8502503A)
+  (:const "+WINDOW-ICONIFIABLE+" #x8502503B)
+  (:const "+WINDOW-POPUP-GADGET+" #x8502503C)
+  (:const "+WINDOW-POPUP-HOOK+" #x8502503D)
+  (:const "+WINDOW-POPUP-ITEM+" #x8502503E)
+  (:const "+WINDOW-JUMP-SCREENS-MENU+" #x8502503F)
+  (:const "+WINDOW-UNIQUE-ID+" #x85025040)
+  (:const "+WINDOW-MENU-ADDRESS+" #x85025041)
+  (:const "+WINDOW-MENU-TYPE+" #x85025042)
+  (:const "+WINDOW-MENU-CONTEXT+" #x85025043)
+  (:const "+WINDOW-VERT-PROP+" #x8502501B)
+  (:const "+WINDOW-VERT-OBJECT+" #x8502501C)
+  (:const "+WINDOW-HORIZ-PROP+" #x8502501D)
+  (:const "+WINDOW-HORIZ-OBJECT+" #x8502501E)
+  (:const "+WMHI-LASTMSG+" 0)
+  (:const "+WMHI-IGNORE+" -1)
+  (:const "+WMHI-GADGETMASK+" #xFFFF)
+  (:const "+WMHI-MENUMASK+" #xFFFF)
+  (:const "+WMHI-KEYMASK+" #xFF)
+  (:const "+WMHI-CLASSMASK+" #xFFFF0000)
+  (:const "+WMHI-CLOSEWINDOW+" #x10000)
+  (:const "+WMHI-GADGETUP+" #x20000)
+  (:const "+WMHI-INACTIVE+" #x30000)
+  (:const "+WMHI-ACTIVE+" #x40000)
+  (:const "+WMHI-NEWSIZE+" #x50000)
+  (:const "+WMHI-MENUPICK+" #x60000)
+  (:const "+WMHI-MENUHELP+" #x70000)
+  (:const "+WMHI-GADGETHELP+" #x80000)
+  (:const "+WMHI-ICONIFY+" #x90000)
+  (:const "+WMHI-UNICONIFY+" #xA0000)
+  (:const "+WMHI-RAWKEY+" #xB0000)
+  (:const "+WMHI-VANILLAKEY+" #xC0000)
+  (:const "+WMHI-CHANGEWINDOW+" #xD0000)
+  (:const "+WMHI-INTUITICK+" #xE0000)
+  (:const "+WMHI-MOUSEMOVE+" #xF0000)
+  (:const "+WMHI-MOUSEBUTTONS+" #x100000)
+  (:const "+WMHI-DISPOSEDWINDOW+" #x110000)
+  (:const "+WMHI-JUMPSCREEN+" #x120000)
+  (:const "+WMHI-POPUPMENU+" #x130000)
+  (:const "+WMHI-GADGETDOWN+" #x140000)
+  (:const "+WHOOKRSLT-IGNORE+" 0)
+  (:const "+WHOOKRSLT-CLOSEWINDOW+" 1)
+  (:const "+WHOOKRSLT-DISPOSEWINDOW+" 2)
+  (:const "+WMF-ZOOMED+" 1)
+  (:const "+WMF-ZIPWINDOW+" 2)
+  (:const "+WT-FRONT+" 1)
+  (:const "+WT-BACK+" 0)
+  (:const "+WPOS-CENTERSCREEN+" 1)
+  (:const "+WPOS-CENTERMOUSE+" 2)
+  (:const "+WPOS-TOPLEFT+" 3)
+  (:const "+WPOS-CENTERWINDOW+" 4)
+  (:const "+WPOS-FULLSCREEN+" 5)
+  (:const "+WPOS-ENTIRESCREEN+" 6)
+  (:const "+WM-HANDLEINPUT+" #x570001)
+  (:const "+WM-OPEN+" #x570002)
+  (:const "+WM-CLOSE+" #x570003)
+  (:const "+WM-NEWPREFS+" #x570004)
+  (:const "+WM-ICONIFY+" #x570005)
+  (:const "+WM-RETHINK+" #x570006)
+  (:const "+WM-ACTIVATEGADGET+" #x570007)
+  (:const "+WM-SNAPSHOT+" #x570008)
+  (:const "+WM-UNSNAPSHOT+" #x570009)
+  (:const "+WM-RESTORE+" #x570010)
+  (:const "+SAVE+" 0)
+  (:const "+USE+" 1)
+
+  ;; --- functions (window_lib.sfd + MorphOS SDK) ---
+  (:fn "WINDOW-GET-CLASS" -30 () :pointer 40)   ; Class * WINDOW_GetClass() () LVO -30
+  )
 
 (provide "amiga/raw/classes/window")

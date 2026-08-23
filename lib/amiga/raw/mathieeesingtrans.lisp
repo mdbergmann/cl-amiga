@@ -9,16 +9,14 @@
 ;;; 24 C macros skipped: not an integer constant (string, call, float).
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.MATHIEEESINGTRANS"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*MATHIEEESINGTRANS-BASE*" "*MATHIEEESINGTRANS-VERSION*"
-   "IEEESP-ATAN" "IEEESP-SIN" "IEEESP-COS" "IEEESP-TAN" "IEEESP-SINCOS" 
-   "IEEESP-SINH" "IEEESP-COSH" "IEEESP-TANH" "IEEESP-EXP" "IEEESP-LOG" 
-   "IEEESP-POW" "IEEESP-SQRT" "IEEESP-TIEEE" "IEEESP-FIEEE" "IEEESP-ASIN" 
-   "IEEESP-ACOS" "IEEESP-LOG10" ))
+  (:export "*MATHIEEESINGTRANS-BASE*" "*MATHIEEESINGTRANS-VERSION*"))
 
 (in-package "AMIGA.RAW.MATHIEEESINGTRANS")
 
@@ -32,57 +30,30 @@
 (defun %version>= (n)
   (and *mathieeesingtrans-version* (>= *mathieeesingtrans-version* n)))
 
-;;; --- functions (mathieeesingtrans_lib.sfd + MorphOS SDK) ---
-(amiga.ffi:defcfun ieeesp-atan *mathieeesingtrans-base* -30 (:d0 parm)
-    :result :unsigned
-    :doc "FLOAT IEEESPAtan(FLOAT parm) (D0) LVO -30")
-(amiga.ffi:defcfun ieeesp-sin *mathieeesingtrans-base* -36 (:d0 parm)
-    :result :unsigned
-    :doc "FLOAT IEEESPSin(FLOAT parm) (D0) LVO -36")
-(amiga.ffi:defcfun ieeesp-cos *mathieeesingtrans-base* -42 (:d0 parm)
-    :result :unsigned
-    :doc "FLOAT IEEESPCos(FLOAT parm) (D0) LVO -42")
-(amiga.ffi:defcfun ieeesp-tan *mathieeesingtrans-base* -48 (:d0 parm)
-    :result :unsigned
-    :doc "FLOAT IEEESPTan(FLOAT parm) (D0) LVO -48")
-(amiga.ffi:defcfun ieeesp-sincos *mathieeesingtrans-base* -54 (:a0 cosptr :d0 parm)
-    :result :unsigned
-    :doc "FLOAT IEEESPSincos(FLOAT * cosptr, FLOAT parm) (A0,D0) LVO -54")
-(amiga.ffi:defcfun ieeesp-sinh *mathieeesingtrans-base* -60 (:d0 parm)
-    :result :unsigned
-    :doc "FLOAT IEEESPSinh(FLOAT parm) (D0) LVO -60")
-(amiga.ffi:defcfun ieeesp-cosh *mathieeesingtrans-base* -66 (:d0 parm)
-    :result :unsigned
-    :doc "FLOAT IEEESPCosh(FLOAT parm) (D0) LVO -66")
-(amiga.ffi:defcfun ieeesp-tanh *mathieeesingtrans-base* -72 (:d0 parm)
-    :result :unsigned
-    :doc "FLOAT IEEESPTanh(FLOAT parm) (D0) LVO -72")
-(amiga.ffi:defcfun ieeesp-exp *mathieeesingtrans-base* -78 (:d0 parm)
-    :result :unsigned
-    :doc "FLOAT IEEESPExp(FLOAT parm) (D0) LVO -78")
-(amiga.ffi:defcfun ieeesp-log *mathieeesingtrans-base* -84 (:d0 parm)
-    :result :unsigned
-    :doc "FLOAT IEEESPLog(FLOAT parm) (D0) LVO -84")
-(amiga.ffi:defcfun ieeesp-pow *mathieeesingtrans-base* -90 (:d1 exp :d0 arg)
-    :result :unsigned
-    :doc "FLOAT IEEESPPow(FLOAT exp, FLOAT arg) (D1,D0) LVO -90")
-(amiga.ffi:defcfun ieeesp-sqrt *mathieeesingtrans-base* -96 (:d0 parm)
-    :result :unsigned
-    :doc "FLOAT IEEESPSqrt(FLOAT parm) (D0) LVO -96")
-(amiga.ffi:defcfun ieeesp-tieee *mathieeesingtrans-base* -102 (:d0 parm)
-    :result :unsigned
-    :doc "FLOAT IEEESPTieee(FLOAT parm) (D0) LVO -102")
-(amiga.ffi:defcfun ieeesp-fieee *mathieeesingtrans-base* -108 (:d0 parm)
-    :result :unsigned
-    :doc "FLOAT IEEESPFieee(FLOAT parm) (D0) LVO -108")
-(amiga.ffi:defcfun ieeesp-asin *mathieeesingtrans-base* -114 (:d0 parm)
-    :result :unsigned
-    :doc "FLOAT IEEESPAsin(FLOAT parm) (D0) LVO -114")
-(amiga.ffi:defcfun ieeesp-acos *mathieeesingtrans-base* -120 (:d0 parm)
-    :result :unsigned
-    :doc "FLOAT IEEESPAcos(FLOAT parm) (D0) LVO -120")
-(amiga.ffi:defcfun ieeesp-log10 *mathieeesingtrans-base* -126 (:d0 parm)
-    :result :unsigned
-    :doc "FLOAT IEEESPLog10(FLOAT parm) (D0) LVO -126")
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.MATHIEEESINGTRANS"
+    (:base *mathieeesingtrans-base* :version *mathieeesingtrans-version*)
+
+  ;; --- functions (mathieeesingtrans_lib.sfd + MorphOS SDK) ---
+  (:fn "IEEESP-ATAN" -30 (:d0) :unsigned)   ; FLOAT IEEESPAtan(FLOAT parm) (D0) LVO -30
+  (:fn "IEEESP-SIN" -36 (:d0) :unsigned)   ; FLOAT IEEESPSin(FLOAT parm) (D0) LVO -36
+  (:fn "IEEESP-COS" -42 (:d0) :unsigned)   ; FLOAT IEEESPCos(FLOAT parm) (D0) LVO -42
+  (:fn "IEEESP-TAN" -48 (:d0) :unsigned)   ; FLOAT IEEESPTan(FLOAT parm) (D0) LVO -48
+  (:fn "IEEESP-SINCOS" -54 (:a0 :d0) :unsigned)   ; FLOAT IEEESPSincos(FLOAT * cosptr, FLOAT parm) (A0,D0) LVO -54
+  (:fn "IEEESP-SINH" -60 (:d0) :unsigned)   ; FLOAT IEEESPSinh(FLOAT parm) (D0) LVO -60
+  (:fn "IEEESP-COSH" -66 (:d0) :unsigned)   ; FLOAT IEEESPCosh(FLOAT parm) (D0) LVO -66
+  (:fn "IEEESP-TANH" -72 (:d0) :unsigned)   ; FLOAT IEEESPTanh(FLOAT parm) (D0) LVO -72
+  (:fn "IEEESP-EXP" -78 (:d0) :unsigned)   ; FLOAT IEEESPExp(FLOAT parm) (D0) LVO -78
+  (:fn "IEEESP-LOG" -84 (:d0) :unsigned)   ; FLOAT IEEESPLog(FLOAT parm) (D0) LVO -84
+  (:fn "IEEESP-POW" -90 (:d1 :d0) :unsigned)   ; FLOAT IEEESPPow(FLOAT exp, FLOAT arg) (D1,D0) LVO -90
+  (:fn "IEEESP-SQRT" -96 (:d0) :unsigned)   ; FLOAT IEEESPSqrt(FLOAT parm) (D0) LVO -96
+  (:fn "IEEESP-TIEEE" -102 (:d0) :unsigned)   ; FLOAT IEEESPTieee(FLOAT parm) (D0) LVO -102
+  (:fn "IEEESP-FIEEE" -108 (:d0) :unsigned)   ; FLOAT IEEESPFieee(FLOAT parm) (D0) LVO -108
+  (:fn "IEEESP-ASIN" -114 (:d0) :unsigned)   ; FLOAT IEEESPAsin(FLOAT parm) (D0) LVO -114
+  (:fn "IEEESP-ACOS" -120 (:d0) :unsigned)   ; FLOAT IEEESPAcos(FLOAT parm) (D0) LVO -120
+  (:fn "IEEESP-LOG10" -126 (:d0) :unsigned)   ; FLOAT IEEESPLog10(FLOAT parm) (D0) LVO -126
+  )
 
 (provide "amiga/raw/mathieeesingtrans")

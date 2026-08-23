@@ -27,7 +27,10 @@
 ;;; the main thread is busy -- and it means an editor-triggered LOAD and a
 ;;; REPL-triggered one can compile at the same time.  Drive one at a time.
 
-(require "dev-commands")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; these packages at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "dev-commands"))
 
 (defpackage "AMIGA.AREXX"
   (:use "CL")

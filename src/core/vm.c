@@ -8,6 +8,7 @@
 #include "float.h"
 #include "error.h"
 #include "compiler.h"
+#include "builtins.h"   /* cl_ffi_stub_call, cl_amiga_call_via_base_sym */
 #include "printer.h"
 #include "string_utils.h"
 #include "stream.h"
@@ -645,6 +646,26 @@ CL_Obj cl_vm_apply(CL_Obj func, CL_Obj *args, int nargs)
         return result;
     }
 
+    /* FFI stub (DEFCFUN / DEFCSTRUCT binding descriptor): same shape as
+     * the builtin path — copy the args onto the VM stack so they are
+     * rooted across the call (a peek of an :fptr field or a library call
+     * boxing a pointer allocates), then dispatch on the stub's kind.  No
+     * frame, no VM entry. */
+    if (CL_FFI_STUB_P(func)) {
+        int saved_sp = cl_vm.sp;
+        int base = cl_vm.sp;
+        CL_Obj result;
+        if (base + nargs >= (int)cl_vm.stack_size - 16)
+            cl_error(CL_ERR_OVERFLOW, "APPLY: VM stack overflow");
+        for (i = 0; i < nargs; i++)
+            cl_vm_push(args[i]);
+        result = cl_ffi_stub_call(func, &cl_vm.stack[base], nargs);
+        cl_vm.sp = saved_sp;
+        cl_mv_count = 1;
+        cl_mv_values[0] = result;
+        return result;
+    }
+
     /* Bytecode / closure callees go through a stub OP_CALL whose nargs operand
      * is a single byte; that path cannot represent more than 255 actual args.
      * (The inline OP_APPLY in cl_vm_run handles up to CALL-ARGUMENTS-LIMIT for
@@ -707,6 +728,50 @@ CL_Obj cl_vm_apply(CL_Obj func, CL_Obj *args, int nargs)
     }
 }
 
+/* (apply FUNC ARGLIST) from C, for any argument count up to
+ * CALL-ARGUMENTS-LIMIT.  cl_vm_apply's stub frame is an OP_CALL whose
+ * nargs operand is one byte, so it refuses more than 255 arguments; this
+ * variant runs the inline OP_APPLY instead, which spreads the list onto
+ * the GC-rooted VM stack with a 16-bit count and handles &rest callees,
+ * builtins and FFI stubs alike.  Used by the DEFMACRO expander trampoline
+ * (%CALL-MACRO-EXPANDER) for macro forms with hundreds of arguments — a
+ * generated binding module is one such form. */
+CL_Obj cl_vm_apply_list(CL_Obj func, CL_Obj arglist)
+{
+    CL_Frame *frame;
+    int base_fp, base_nlx, saved_sp;
+    CL_Obj result;
+
+    cl_check_c_stack("cl_vm_apply_list");
+    base_fp = cl_vm.fp;
+    saved_sp = cl_vm.sp;
+    base_nlx = cl_nlx_top;
+    if (cl_vm.fp >= cl_vm.frame_size)
+        cl_error(CL_ERR_OVERFLOW, "VM frame stack overflow");
+    if (cl_vm.sp + 2 >= (int)cl_vm.stack_size - 16)
+        cl_error(CL_ERR_OVERFLOW, "APPLY: VM stack overflow");
+
+    frame = &cl_vm.frames[cl_vm.fp++];
+    frame->stub_code[0] = OP_APPLY;
+    frame->stub_code[1] = OP_HALT;
+    frame->stub_code[2] = OP_HALT;
+    frame->bytecode = CL_NIL;
+    frame->code = frame->stub_code;
+    frame->constants = NULL;
+    frame->ip = 0;
+    frame->bp = cl_vm.sp;
+    frame->n_locals = 0;
+    frame->nargs = 0;
+    frame->nlx_level = cl_nlx_top;
+
+    cl_vm_push(func);
+    cl_vm_push(arglist);
+    result = cl_vm_run(base_fp, base_nlx);
+    cl_vm.fp = base_fp;
+    cl_vm.sp = saved_sp;
+    return result;
+}
+
 static uint16_t read_u16(uint8_t *code, uint32_t *ip)
 {
     uint16_t val = (code[*ip] << 8) | code[*ip + 1];
@@ -740,6 +805,8 @@ static CL_Obj get_func_name(CL_Obj func_obj)
         return ((CL_Bytecode *)CL_OBJ_TO_PTR(cl->bytecode))->name;
     } else if (CL_BYTECODE_P(func_obj)) {
         return ((CL_Bytecode *)CL_OBJ_TO_PTR(func_obj))->name;
+    } else if (CL_FFI_STUB_P(func_obj)) {
+        return ((CL_FfiStub *)CL_OBJ_TO_PTR(func_obj))->name;
     }
     return CL_NIL;
 }
@@ -2366,6 +2433,32 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 }
                 cl_vm.sp -= (nargs + 1);
                 cl_vm_push(result);
+            } else if (CL_FFI_STUB_P(func_obj)) {
+                /* FFI stub (DEFCFUN / DEFCSTRUCT descriptor): dispatch like
+                 * a builtin — args are already rooted on the stack, no
+                 * frame is pushed, the result replaces func+args.  Under
+                 * OP_TAILCALL the following OP_RET returns it, exactly as
+                 * for a builtin callee. */
+                CL_Obj result;
+                int traced = is_func_traced(func_obj);
+                if (traced) {
+                    trace_print_entry(get_func_name(func_obj), arg_base, nargs);
+                    /* the trace print can compact — re-derive from the
+                     * rooted function slot */
+                    func_obj = cl_vm.stack[cl_vm.sp - nargs - 1];
+                    cl_trace_depth++;
+                }
+                result = cl_ffi_stub_call(func_obj, arg_base, nargs);
+                if (traced) {
+                    cl_trace_depth--;
+                    func_obj = cl_vm.stack[cl_vm.sp - nargs - 1];
+                    CL_GC_PROTECT(result);
+                    trace_print_exit(get_func_name(func_obj), result);
+                    CL_GC_UNPROTECT(1);
+                }
+                cl_vm.sp -= (nargs + 1);
+                cl_vm_push(result);
+                cl_mv_count = 1;
             } else if (CL_BYTECODE_P(func_obj) || CL_CLOSURE_P(func_obj)) {
                 CL_Bytecode *callee_bc;
                 CL_Frame *new_frame;
@@ -3070,15 +3163,14 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
         }
 
         VM_CASE(OP_DEFSETF): {
-            extern CL_Obj setf_table;
-            extern void *cl_tables_rwlock;
             uint16_t acc_idx = read_u16(code, &ip);
             uint16_t upd_idx = read_u16(code, &ip);
             CL_Obj accessor = constants[acc_idx];
             CL_Obj updater  = constants[upd_idx];
-            /* Cons outside the write lock (STW-vs-rwlock deadlock — see
-             * cl_table_prepend_locked). */
-            cl_table_prepend_locked(&setf_table, cl_cons(accessor, updater));
+            /* Hash-indexed defsetf table; the registrar conses outside
+             * the write lock (STW-vs-rwlock deadlock — see
+             * cl_alist_index_prepend). */
+            cl_register_setf_updater(accessor, updater);
             /* Re-read after the allocating conses (see OP_DEFMACRO). */
             cl_vm_push(constants[acc_idx]);
             VM_BREAK;
@@ -3742,6 +3834,14 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 }
 #endif
                 cl_vm_push(result);
+            } else if (CL_FFI_STUB_P(apply_func)) {
+                /* FFI stub: spread args are rooted at args_base; apply_func
+                 * is rooted above.  Same shape as the builtin branch. */
+                CL_Obj result = cl_ffi_stub_call(apply_func,
+                                                 &cl_vm.stack[args_base], nflat);
+                cl_vm.sp = args_base;  /* drop the spread args */
+                cl_vm_push(result);
+                cl_mv_count = 1;
             } else if (CL_BYTECODE_P(apply_func) || CL_CLOSURE_P(apply_func)) {
                 /* The spread args already sit on the VM stack at args_base
                  * (no func slot beneath them).  Dispatch inline like OP_CALL —
@@ -4527,33 +4627,19 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             int16_t  off     = read_i16(code, &ip);
             uint32_t regspec = (uint32_t)read_i32(code, &ip);
             uint8_t  n_args  = code[ip++];
-            CL_Obj base_sym, base_val, result;
-            CL_ForeignPtr *bfp;
+            CL_Obj base_sym, result;
 
             CL_SAFEPOINT();
             if (!constants)
                 cl_error(CL_ERR_GENERAL,
                          "OP_AMIGA_CALL with NULL constants ptr");
             base_sym = constants[sym_idx];
-            base_val = cl_symbol_value(base_sym);
-            if (base_val == CL_UNBOUND)
-                cl_error(CL_ERR_UNBOUND,
-                         "OP_AMIGA_CALL: unbound library base %s",
-                         cl_symbol_name(base_sym));
-            if (CL_NULL_P(base_val))
-                cl_error(CL_ERR_GENERAL,
-                         "OP_AMIGA_CALL: library base %s is NIL — the library "
-                         "is not open (bindings only open it on AmigaOS/MorphOS)",
-                         cl_symbol_name(base_sym));
-            if (!CL_FOREIGN_POINTER_P(base_val))
-                cl_error(CL_ERR_TYPE,
-                         "OP_AMIGA_CALL: %s is not a foreign pointer",
-                         cl_symbol_name(base_sym));
-            bfp = (CL_ForeignPtr *)CL_OBJ_TO_PTR(base_val);
 
-            /* Args sit at [sp-n_args .. sp-1]; pop after dispatch. */
-            result = cl_amiga_ffi_call_dispatch(
-                bfp->address, off, regspec, (int)n_args,
+            /* Args sit at [sp-n_args .. sp-1]; pop after dispatch.  The
+             * base-variable checks and the trampoline are shared with the
+             * CL_STUB_LIBCALL path (cl_amiga_call_via_base_sym). */
+            result = cl_amiga_call_via_base_sym(
+                base_sym, off, regspec, (int)n_args,
                 &cl_vm.stack[cl_vm.sp - n_args]);
             cl_vm.sp -= n_args;
             cl_vm_push(result);

@@ -8,18 +8,14 @@
 ;;; 5 functions, 8 constants, 3 structs, 3 skipped (see comments).
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.TIMER"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*TIMER-BASE*" "*TIMER-VERSION*"
-   "+UNIT-MICROHZ+" "+UNIT-VBLANK+" "+UNIT-ECLOCK+" "+UNIT-WAITUNTIL+" 
-   "+UNIT-WAITECLOCK+" "+TR-ADDREQUEST+" "+TR-GETSYSTIME+" 
-   "+TR-SETSYSTIME+" "*TIMEVAL-SIZE*" "TIMEVAL-SECS" "TIMEVAL-MICRO" 
-   "*ECLOCKVAL-SIZE*" "ECLOCKVAL-HI" "ECLOCKVAL-LO" "*TIMEREQUEST-SIZE*" 
-   "TIMEREQUEST-TIME" "ADD-TIME" "SUB-TIME" "CMP-TIME" "READ-E-CLOCK" 
-   "GET-SYS-TIME" ))
+  (:export "*TIMER-BASE*" "*TIMER-VERSION*"))
 
 (in-package "AMIGA.RAW.TIMER")
 
@@ -33,47 +29,44 @@
 (defun %version>= (n)
   (and *timer-version* (>= *timer-version* n)))
 
-;;; --- constants from devices/timer.i ---
-(defconstant +unit-microhz+ 0)
-(defconstant +unit-vblank+ 1)
-(defconstant +unit-eclock+ 2)
-(defconstant +unit-waituntil+ 3)
-(defconstant +unit-waiteclock+ 4)
-(defconstant +tr-addrequest+ 9)
-(defconstant +tr-getsystime+ 10)
-(defconstant +tr-setsystime+ 11)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.TIMER"
+    (:base *timer-base* :version *timer-version*)
 
-;;; --- structures from devices/timer.i ---
-(ffi:defcstruct (timeval :size 8)   ; TIMEVAL (devices/timer.i)
-  (secs :u32 0)
-  (micro :u32 4)
-)
-(ffi:defcstruct (eclockval :size 8)   ; ECLOCKVAL (devices/timer.i)
-  (hi :u32 0)
-  (lo :u32 4)
-)
-(ffi:defcstruct (timerequest :size 40)   ; TIMEREQUEST (devices/timer.i)
-  (time (:struct 8) 32)
-)
+  ;; --- constants from devices/timer.i ---
+  (:const "+UNIT-MICROHZ+" 0)
+  (:const "+UNIT-VBLANK+" 1)
+  (:const "+UNIT-ECLOCK+" 2)
+  (:const "+UNIT-WAITUNTIL+" 3)
+  (:const "+UNIT-WAITECLOCK+" 4)
+  (:const "+TR-ADDREQUEST+" 9)
+  (:const "+TR-GETSYSTIME+" 10)
+  (:const "+TR-SETSYSTIME+" 11)
 
-;;; --- functions (timer_lib.sfd + MorphOS SDK) ---
-(amiga.ffi:defcfun add-time *timer-base* -42 (:a0 dest :a1 src)
-    :result :void
-    :doc "VOID AddTime(TimeVal_Type * dest, CONST TimeVal_Type * src) (A0,A1) LVO -42")
-(amiga.ffi:defcfun sub-time *timer-base* -48 (:a0 dest :a1 src)
-    :result :void
-    :doc "VOID SubTime(TimeVal_Type * dest, CONST TimeVal_Type * src) (A0,A1) LVO -48")
-(amiga.ffi:defcfun cmp-time *timer-base* -54 (:a0 dest :a1 src)
-    :result :signed
-    :doc "LONG CmpTime(CONST TimeVal_Type * dest, CONST TimeVal_Type * src) (A0,A1) LVO -54")
-(amiga.ffi:defcfun read-e-clock *timer-base* -60 (:a0 dest)
-    :result :unsigned
-    :doc "ULONG ReadEClock(struct EClockVal * dest) (A0) LVO -60")
-(amiga.ffi:defcfun get-sys-time *timer-base* -66 (:a0 dest)
-    :result :void
-    :doc "VOID GetSysTime(TimeVal_Type * dest) (A0) LVO -66")
-;; skipped ReadCPUClock: not a 68k register call (base,sysv)
-;; skipped GetUpTime: not a 68k register call (base,sysv)
-;; skipped GetUTCSysTime: not a 68k register call (base,sysv)
+  ;; --- structures from devices/timer.i ---
+  (:struct "TIMEVAL" 8   ; TIMEVAL (devices/timer.i)
+    ("SECS" :u32 0)
+    ("MICRO" :u32 4)
+    )
+  (:struct "ECLOCKVAL" 8   ; ECLOCKVAL (devices/timer.i)
+    ("HI" :u32 0)
+    ("LO" :u32 4)
+    )
+  (:struct "TIMEREQUEST" 40   ; TIMEREQUEST (devices/timer.i)
+    ("TIME" (:struct 8) 32)
+    )
+
+  ;; --- functions (timer_lib.sfd + MorphOS SDK) ---
+  (:fn "ADD-TIME" -42 (:a0 :a1) :void)   ; VOID AddTime(TimeVal_Type * dest, CONST TimeVal_Type * src) (A0,A1) LVO -42
+  (:fn "SUB-TIME" -48 (:a0 :a1) :void)   ; VOID SubTime(TimeVal_Type * dest, CONST TimeVal_Type * src) (A0,A1) LVO -48
+  (:fn "CMP-TIME" -54 (:a0 :a1) :signed)   ; LONG CmpTime(CONST TimeVal_Type * dest, CONST TimeVal_Type * src) (A0,A1) LVO -54
+  (:fn "READ-E-CLOCK" -60 (:a0) :unsigned)   ; ULONG ReadEClock(struct EClockVal * dest) (A0) LVO -60
+  (:fn "GET-SYS-TIME" -66 (:a0) :void)   ; VOID GetSysTime(TimeVal_Type * dest) (A0) LVO -66
+  ;; skipped ReadCPUClock: not a 68k register call (base,sysv)
+  ;; skipped GetUpTime: not a 68k register call (base,sysv)
+  ;; skipped GetUTCSysTime: not a 68k register call (base,sysv)
+  )
 
 (provide "amiga/raw/timer")

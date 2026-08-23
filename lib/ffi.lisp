@@ -15,9 +15,17 @@
 ;;;   (y :u16 2))
 ;;;
 ;;; Defines accessor functions:
-;;;   (point-x ptr)           → (ffi:peek-u16 ptr 0)
-;;;   (setf (point-x ptr) v) → (ffi:poke-u16 ptr v 0)
+;;;   (point-x ptr)           → the :u16 at ptr + 0
+;;;   (setf (point-x ptr) v) → stores v there (via %SET-POINT-X)
 ;;;   *point-size*            → 4 (computed from last field + size)
+;;;
+;;; Each accessor is an FFI STUB: a 20-byte descriptor (kind, C type,
+;;; offset) installed in the function cell and executed directly by the
+;;; runtime — no wrapper closure or bytecode per field, which is what
+;;; makes the generated OS binding modules (hundreds of fields each)
+;;; affordable on an 8 MB machine.  A stub is a function for every CL
+;;; purpose (#', FUNCALL, APPLY, DESCRIBE, EXT:FUNCTION-ARGLIST); see
+;;; (ffi::%ffi-stub-info #'point-x) and specs/raw-bindings-footprint.md.
 ;;;
 ;;; Field types:
 ;;;   :u8 :i8 :u16 :i16 :u32 :i32   integers (peek/poke of that width;
@@ -64,28 +72,6 @@
          (* (%cstruct-scalar-size (second type)) (third type)))
         (t (error "FFI:DEFCSTRUCT: unknown type ~S" type))))
 
-(defun %cstruct-peek-fn (type)
-  "Return the peek function name for a scalar C type."
-  (case type
-    (:u8 'ffi:peek-u8)   (:i8 'ffi:peek-i8)
-    (:u16 'ffi:peek-u16) (:i16 'ffi:peek-i16)
-    (:u32 'ffi:peek-u32) (:i32 'ffi:peek-i32)
-    (:pointer 'ffi:peek-u32)
-    (:fptr 'ffi::%peek-fptr)
-    (:single 'ffi:peek-single) (:double 'ffi:peek-double)
-    (otherwise (error "FFI:DEFCSTRUCT: unknown type ~S" type))))
-
-(defun %cstruct-poke-fn (type)
-  "Return the poke function name for a scalar C type."
-  (case type
-    (:u8 'ffi:poke-u8)   (:i8 'ffi:poke-i8)
-    (:u16 'ffi:poke-u16) (:i16 'ffi:poke-i16)
-    (:u32 'ffi:poke-u32) (:i32 'ffi:poke-i32)
-    (:pointer 'ffi:poke-u32)
-    (:fptr 'ffi::%poke-fptr)
-    (:single 'ffi:poke-single) (:double 'ffi:poke-double)
-    (otherwise (error "FFI:DEFCSTRUCT: unknown type ~S" type))))
-
 (defun %peek-fptr (ptr offset)
   "Read a 32-bit address at PTR+OFFSET as a foreign pointer; NIL for NULL."
   (let ((addr (ffi:peek-u32 ptr offset)))
@@ -109,50 +95,26 @@ NAME-SPEC is a symbol or (NAME :size BYTES).  Each field is
   (let* ((name (if (consp name-spec) (first name-spec) name-spec))
          (explicit-size (and (consp name-spec) (getf (rest name-spec) :size)))
          (size-var (intern (format nil "*~A-SIZE*" name)))
-         (forms nil)
+         (entries nil)
          (max-end 0))
     (dolist (field fields)
       (destructuring-bind (field-name field-type field-offset) field
-        (let* ((end (+ field-offset (%cstruct-type-size field-type)))
-               (accessor (intern (format nil "~A-~A" name field-name)))
-               (setter-name (intern (format nil "%SET-~A-~A" name field-name))))
+        (let ((end (+ field-offset (%cstruct-type-size field-type)))   ; validates TYPE
+              (accessor (intern (format nil "~A-~A" name field-name))))
           (when (> end max-end) (setf max-end end))
-          (cond
-            ;; Embedded struct: pointer to the field, no setter.
-            ((and (consp field-type) (eq (first field-type) :struct))
-             (push `(defun ,accessor (ptr)
-                      (ffi:make-foreign-pointer
-                       (+ (ffi:foreign-pointer-address ptr) ,field-offset)))
-                   forms))
-            ;; Inline array of scalars: indexed getter/setter.
-            ((and (consp field-type) (eq (first field-type) :array))
-             (let* ((elt-type (second field-type))
-                    (elt-size (%cstruct-scalar-size elt-type))
-                    (peek-fn (%cstruct-peek-fn elt-type))
-                    (poke-fn (%cstruct-poke-fn elt-type)))
-               (push `(defun ,accessor (ptr index)
-                        (,peek-fn ptr (+ ,field-offset (* index ,elt-size))))
-                     forms)
-               (push `(defun ,setter-name (ptr index val)
-                        (,poke-fn ptr val (+ ,field-offset (* index ,elt-size)))
-                        val)
-                     forms)
-               (push `(defsetf ,accessor ,setter-name) forms)))
-            ;; Scalar field.
-            (t
-             (let ((peek-fn (%cstruct-peek-fn field-type))
-                   (poke-fn (%cstruct-poke-fn field-type)))
-               (push `(defun ,accessor (ptr)
-                        (,peek-fn ptr ,field-offset))
-                     forms)
-               (push `(defun ,setter-name (ptr val)
-                        (,poke-fn ptr val ,field-offset)
-                        val)
-                     forms)
-               (push `(defsetf ,accessor ,setter-name) forms)))))))
+          (push (list accessor field-type field-offset) entries))))
+    ;; One installer call per struct (ffi::%define-cstruct-accessors, a C
+    ;; builtin): each entry yields a reader stub on ACCESSOR and — except
+    ;; for embedded structs — a writer stub on %SET-<ACCESSOR> registered
+    ;; as its DEFSETF updater.  At compile time too, so that (setf
+    ;; (acc ptr) v) forms later in the same COMPILE-FILE find the
+    ;; updater, as the per-field DEFSETF forms used to provide.  One form
+    ;; instead of three per field keeps the FASL small: a top-level unit
+    ;; costs ~200 bytes before its first symbol.
     `(progn
        (defvar ,size-var ,(or explicit-size max-end))
-       ,@(nreverse forms)
+       (eval-when (:compile-toplevel :load-toplevel :execute)
+         (ffi::%define-cstruct-accessors ',(nreverse entries)))
        ',name)))
 
 (export '(defcstruct))

@@ -331,27 +331,13 @@ static CL_Obj bi_setf_store_symbol(CL_Obj *args, int n)
 }
 
 extern CL_Obj setf_expander_table;
-extern CL_Obj setf_table;
 
-/* (%get-defsetf-setter accessor-sym) — look up defsetf setter for accessor */
+/* (%get-defsetf-setter accessor-sym) — look up defsetf setter for accessor
+ * (hash-indexed table, see cl_get_setf_updater) */
 static CL_Obj bi_get_defsetf_setter(CL_Obj *args, int n)
 {
-    CL_Obj name = args[0];
-    CL_Obj result = CL_NIL;
-    CL_Obj entry;
     CL_UNUSED(n);
-    cl_tables_rdlock();
-    entry = setf_table;
-    while (!CL_NULL_P(entry)) {
-        CL_Obj pair = cl_car(entry);
-        if (cl_car(pair) == name) {
-            result = cl_cdr(pair);
-            break;
-        }
-        entry = cl_cdr(entry);
-    }
-    cl_tables_rwunlock();
-    return result;
+    return cl_get_setf_updater(args[0]);
 }
 
 static CL_Obj bi_register_setf_expander(CL_Obj *args, int n)

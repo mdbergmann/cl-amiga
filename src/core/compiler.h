@@ -45,6 +45,17 @@ CL_Obj cl_get_macro(CL_Obj name);
 void cl_register_compiler_macro(CL_Obj name, CL_Obj expander);
 CL_Obj cl_get_compiler_macro(CL_Obj name);
 
+/* DEFSETF registry: ACCESSOR -> UPDATER function name (setf_table).
+ * cl_get_setf_updater returns CL_NIL when ACCESSOR has no defsetf.
+ * Both hash-indexed (CL_AlistIndex below); the registrar conses outside
+ * the tables write lock. */
+void cl_register_setf_updater(CL_Obj accessor, CL_Obj updater);
+CL_Obj cl_get_setf_updater(CL_Obj accessor);
+
+/* Compaction moved the keys/entries of the deftype, compiler-macro and
+ * defsetf table indexes — mark all three stale (mem.c, world stopped). */
+void cl_compiler_indexes_gc_invalidate(void);
+
 void cl_compiler_init(void);
 
 /* Expand one level of macro (returns form unchanged if not a macro call) */
@@ -83,6 +94,15 @@ CL_Obj cl_amiga_ffi_call_dispatch(uint32_t base_addr, int16_t offset,
  * Initialized by cl_builtins_struct_init. */
 extern CL_Obj cl_struct_ref_sym;
 extern CL_Obj cl_struct_set_sym;
+
+/* FFI::%DEFINE-CSTRUCT-ACCESSORS — FFI:DEFCSTRUCT's bulk accessor
+ * installer (builtins_ffi.c).  compile_call matches the symbol and, when
+ * the argument is a quoted entry list, registers the ACCESSOR ->
+ * %SET-ACCESSOR DEFSETF pairs at COMPILE time (cl_ffi_cstruct_register_setfs)
+ * — the immediate side effect the per-field DEFSETF forms used to have —
+ * then compiles the call as usual.  Initialized by cl_builtins_ffi_init. */
+extern CL_Obj cl_ffi_define_cstruct_accessors_sym;
+void cl_ffi_cstruct_register_setfs(CL_Obj entries);
 
 /* Look up a global symbol-macro expansion (from DEFINE-SYMBOL-MACRO).
    Returns CL_NIL when the symbol has no global symbol-macro binding —

@@ -6,32 +6,36 @@
 ;;; 0 functions, 3 constants, 1 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.PREFS.SCREENMODE"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+ID-SCRM+" "+SMB-AUTOSCROLL+" "+SMF-AUTOSCROLL+" 
-   "*SCREEN-MODE-PREFS-SIZE*" "SCREEN-MODE-PREFS-RESERVED" 
-   "SCREEN-MODE-PREFS-DISPLAY-ID" "SCREEN-MODE-PREFS-WIDTH" 
-   "SCREEN-MODE-PREFS-HEIGHT" "SCREEN-MODE-PREFS-DEPTH" 
-   "SCREEN-MODE-PREFS-CONTROL" ))
+  (:export))
 
 (in-package "AMIGA.RAW.PREFS.SCREENMODE")
 
-;;; --- constants from prefs/screenmode.i ---
-(defconstant +id-scrm+ #x5343524D)
-(defconstant +smb-autoscroll+ 0)
-(defconstant +smf-autoscroll+ 1)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.PREFS.SCREENMODE" ()
 
-;;; --- structures from prefs/screenmode.i ---
-(ffi:defcstruct (screen-mode-prefs :size 28)   ; ScreenModePrefs (prefs/screenmode.i)
-  (reserved (:struct 16) 0)
-  (display-id :u32 16)
-  (width :u16 20)
-  (height :u16 22)
-  (depth :u16 24)
-  (control :u16 26)
-)
+  ;; --- constants from prefs/screenmode.i ---
+  (:const "+ID-SCRM+" #x5343524D)
+  (:const "+SMB-AUTOSCROLL+" 0)
+  (:const "+SMF-AUTOSCROLL+" 1)
+
+  ;; --- structures from prefs/screenmode.i ---
+  (:struct "SCREEN-MODE-PREFS" 28   ; ScreenModePrefs (prefs/screenmode.i)
+    ("RESERVED" (:struct 16) 0)
+    ("DISPLAY-ID" :u32 16)
+    ("WIDTH" :u16 20)
+    ("HEIGHT" :u16 22)
+    ("DEPTH" :u16 24)
+    ("CONTROL" :u16 26)
+    )
+  )
 
 (provide "amiga/raw/prefs/screenmode")

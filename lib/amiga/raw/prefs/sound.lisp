@@ -6,34 +6,38 @@
 ;;; 0 functions, 3 constants, 1 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.PREFS.SOUND"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+ID-SOND+" "+SPTYPE-BEEP+" "+SPTYPE-SAMPLE+" "*SOUND-PREFS-SIZE*" 
-   "SOUND-PREFS-RESERVED" "SOUND-PREFS-DISPLAY-QUEUE" 
-   "SOUND-PREFS-AUDIO-QUEUE" "SOUND-PREFS-AUDIO-TYPE" 
-   "SOUND-PREFS-AUDIO-VOLUME" "SOUND-PREFS-AUDIO-PERIOD" 
-   "SOUND-PREFS-AUDIO-DURATION" "SOUND-PREFS-AUDIO-FILE-NAME" ))
+  (:export))
 
 (in-package "AMIGA.RAW.PREFS.SOUND")
 
-;;; --- constants from prefs/sound.i ---
-(defconstant +id-sond+ #x534F4E44)
-(defconstant +sptype-beep+ 0)
-(defconstant +sptype-sample+ 1)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.PREFS.SOUND" ()
 
-;;; --- structures from prefs/sound.i ---
-(ffi:defcstruct (sound-prefs :size 284)   ; SoundPrefs (prefs/sound.i)
-  (reserved (:struct 16) 0)
-  (display-queue :i16 16)
-  (audio-queue :i16 18)
-  (audio-type :u16 20)
-  (audio-volume :u16 22)
-  (audio-period :u16 24)
-  (audio-duration :u16 26)
-  (audio-file-name (:struct 256) 28)
-)
+  ;; --- constants from prefs/sound.i ---
+  (:const "+ID-SOND+" #x534F4E44)
+  (:const "+SPTYPE-BEEP+" 0)
+  (:const "+SPTYPE-SAMPLE+" 1)
+
+  ;; --- structures from prefs/sound.i ---
+  (:struct "SOUND-PREFS" 284   ; SoundPrefs (prefs/sound.i)
+    ("RESERVED" (:struct 16) 0)
+    ("DISPLAY-QUEUE" :i16 16)
+    ("AUDIO-QUEUE" :i16 18)
+    ("AUDIO-TYPE" :u16 20)
+    ("AUDIO-VOLUME" :u16 22)
+    ("AUDIO-PERIOD" :u16 24)
+    ("AUDIO-DURATION" :u16 26)
+    ("AUDIO-FILE-NAME" (:struct 256) 28)
+    )
+  )
 
 (provide "amiga/raw/prefs/sound")

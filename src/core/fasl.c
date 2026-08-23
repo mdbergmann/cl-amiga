@@ -37,6 +37,7 @@ void cl_fasl_writer_init(CL_FaslWriter *w, uint8_t *buf, uint32_t capacity)
     w->shared_objs = NULL;       /* lazily allocated on first use */
     w->shared_hash = NULL;       /* lazily allocated alongside shared_objs */
     w->shared_hash_cap = 0;
+    w->nonportable_detail[0] = '\0';
 }
 
 void cl_fasl_writer_release(CL_FaslWriter *w)
@@ -1004,6 +1005,35 @@ static int fasl_ser_stack_push(CL_FaslWriter *w, FaslSerStack *s,
 
 /* Step the topmost frame.  Returns 1 if the frame is done (caller pops),
  * 0 if it pushed children (frame stays on stack, children processed first). */
+/* --- Portable-FASL mode (see fasl.h) ---
+ * CLAMIGA_FASL_PORTABLE=1 makes the writer refuse strings that need
+ * FASL_TAG_WIDE_STRING; the refusal detail lives on the writer itself
+ * (CL_FaslWriter.nonportable_detail) for bi_compile_file's "FASL unit
+ * failed" diagnostic — not a global, so concurrent writers (e.g. two MP
+ * threads each running compile-file) can't race on the same buffer. */
+static int  fasl_portable_mode = -1;   /* -1 = environment not read yet */
+
+int cl_fasl_portable_mode(void)
+{
+    if (fasl_portable_mode < 0) {
+        char envbuf[16];
+        const char *s = platform_getenv("CLAMIGA_FASL_PORTABLE", envbuf,
+                                        (int)sizeof(envbuf));
+        fasl_portable_mode = (s && s[0] && s[0] != '0') ? 1 : 0;
+    }
+    return fasl_portable_mode;
+}
+
+void cl_fasl_set_portable_mode(int on)
+{
+    fasl_portable_mode = on ? 1 : 0;
+}
+
+const char *cl_fasl_nonportable_detail(const CL_FaslWriter *w)
+{
+    return w->nonportable_detail;
+}
+
 static int fasl_ser_step(CL_FaslWriter *w, FaslSerStack *s)
 {
     /* Cache frame fields locally — push() may reallocate s->frames. */
@@ -1179,6 +1209,29 @@ static int fasl_ser_step(CL_FaslWriter *w, FaslSerStack *s)
                 cl_fasl_write_u32(w, ws->length);
                 for (i = 0; i < ws->length; i++)
                     cl_fasl_write_u8(w, (uint8_t)ws->data[i]);
+            } else if (cl_fasl_portable_mode()) {
+                /* CLAMIGA_FASL_PORTABLE=1: this FASL is meant for a
+                 * byte-string build, which has no decoder for
+                 * TAG_WIDE_STRING — refuse now, on the host, and describe
+                 * the string (ASCII prefix + first offending code point)
+                 * for the compile-file diagnostic instead of letting the
+                 * Amiga fail the unit with BAD_TAG at load time. */
+                uint32_t cp = 0, n = 0;
+                char head[48];
+                for (i = 0; i < ws->length; i++)
+                    if (ws->data[i] > 0x7F) { cp = ws->data[i]; break; }
+                for (i = 0; i < ws->length && n < sizeof(head) - 1; i++) {
+                    uint32_t c = ws->data[i];
+                    head[n++] = (c >= 0x20 && c < 0x7F) ? (char)c : '?';
+                }
+                head[n] = '\0';
+                snprintf(w->nonportable_detail, sizeof(w->nonportable_detail),
+                         "non-ASCII string literal (U+%04X in \"%s%s\") cannot "
+                         "be loaded by byte-string builds -- use ASCII "
+                         "(CLAMIGA_FASL_PORTABLE=1)",
+                         (unsigned)cp, head, ws->length > n ? "..." : "");
+                w->error = FASL_ERR_NONPORTABLE;
+                return 0;
             } else {
                 cl_fasl_write_u8(w, FASL_TAG_WIDE_STRING);
                 cl_fasl_write_u32(w, ws->length);
@@ -1236,6 +1289,24 @@ static int fasl_ser_step(CL_FaslWriter *w, FaslSerStack *s)
             }
             cl_fasl_write_u8(w, FASL_TAG_NIL);
             return 1;
+        }
+
+        case TYPE_FFI_STUB: {
+            /* Wire format: tag | kind u8 | ctype u8 | b i16 | a u32 |
+             * name(obj) | aux(obj).  Pure data — reconstructed at load,
+             * no lookup by name (unlike FASL_TAG_FUNCTION).  Both child
+             * objects are pushed aux-first so name is written first. */
+            CL_FfiStub *fs = (CL_FfiStub *)CL_OBJ_TO_PTR(obj);
+            CL_Obj name = fs->name, aux = fs->aux;
+            cl_fasl_write_u8(w, FASL_TAG_FFI_STUB);
+            cl_fasl_write_u8(w, fs->kind);
+            cl_fasl_write_u8(w, fs->ctype);
+            cl_fasl_write_u16(w, (uint16_t)fs->b);
+            cl_fasl_write_u32(w, fs->a);
+            s->frames[idx].phase = PHASE_DONE;
+            if (!fasl_ser_stack_push(w, s, aux, PHASE_START)) return 1;
+            if (!fasl_ser_stack_push(w, s, name, PHASE_START)) return 1;
+            return 0;
         }
 
         case TYPE_SINGLE_FLOAT: {
@@ -1687,13 +1758,14 @@ static int fasl_ser_step(CL_FaslWriter *w, FaslSerStack *s)
 #define FASL_HIST_COMPLEX     14
 #define FASL_HIST_PATHNAME    15
 #define FASL_HIST_CLASS_REF   16
-#define FASL_HIST_OTHER       17
-#define FASL_HIST_COUNT       18
+#define FASL_HIST_FFI_STUB    17
+#define FASL_HIST_OTHER       18
+#define FASL_HIST_COUNT       19
 
 static const char *cl_fasl_hist_names[FASL_HIST_COUNT] = {
     "IMMEDIATE", "SYMBOL", "GENSYM", "STRING", "CONS", "VECTOR", "BIT_VECTOR",
     "BYTECODE", "CLOSURE", "FUNCTION", "STRUCT", "FLOAT", "BIGNUM", "RATIO",
-    "COMPLEX", "PATHNAME", "CLASS_REF", "OTHER"
+    "COMPLEX", "PATHNAME", "CLASS_REF", "FFI_STUB", "OTHER"
 };
 
 static uint64_t g_fasl_hist_bytes[FASL_HIST_COUNT];
@@ -1719,6 +1791,7 @@ static int cl_fasl_classify(CL_Obj obj)
     case TYPE_BYTECODE:      return FASL_HIST_BYTECODE;
     case TYPE_CLOSURE:       return FASL_HIST_CLOSURE;
     case TYPE_FUNCTION:      return FASL_HIST_FUNCTION;
+    case TYPE_FFI_STUB:      return FASL_HIST_FFI_STUB;
     case TYPE_STRUCT:        return FASL_HIST_STRUCT;
     case TYPE_SINGLE_FLOAT:
     case TYPE_DOUBLE_FLOAT:  return FASL_HIST_FLOAT;
@@ -2779,6 +2852,31 @@ CL_Obj cl_fasl_deserialize_obj(CL_FaslReader *r)
         lock_obj = cl_lock_alloc_obj((flags & 0x01) ? 1 : 0, name, "FASL");
         CL_GC_UNPROTECT(1);
         return lock_obj;
+    }
+
+    case FASL_TAG_FFI_STUB: {
+        /* Counterpart to TYPE_FFI_STUB in the writer: kind, ctype, b, a,
+         * then the name and aux objects; rebuilt as a fresh descriptor. */
+        uint8_t kind = cl_fasl_read_u8(r);
+        uint8_t ctype = cl_fasl_read_u8(r);
+        int16_t b = (int16_t)cl_fasl_read_u16(r);
+        uint32_t a = cl_fasl_read_u32(r);
+        CL_Obj name, aux, stub;
+        if (r->error) return CL_NIL;
+        if (kind > CL_STUB_KIND_MAX ||
+            (kind != CL_STUB_LIBCALL && ctype > CL_STUB_CT_MAX) ||
+            (kind == CL_STUB_LIBCALL && ctype > 7)) {
+            r->error = FASL_ERR_BAD_TAG;   /* corrupt descriptor */
+            return CL_NIL;
+        }
+        name = cl_fasl_deserialize_obj(r);
+        if (r->error) return CL_NIL;
+        CL_GC_PROTECT(name);
+        aux = cl_fasl_deserialize_obj(r);
+        if (r->error) { CL_GC_UNPROTECT(1); return CL_NIL; }
+        stub = cl_make_ffi_stub(kind, name, aux, a, b, ctype);
+        CL_GC_UNPROTECT(1);
+        return stub;
     }
 
     case FASL_TAG_FUNCTION: {

@@ -9,52 +9,14 @@
 ;;; 45 functions, 23 constants, 3 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.LAYERS"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*LAYERS-BASE*" "*LAYERS-VERSION*"
-   "+LAYERSIMPLE+" "+LAYERSMART+" "+LAYERSUPER+" "+LAYERUPDATING+" 
-   "+LAYERBACKDROP+" "+LAYERREFRESH+" "+LAYERIREFRESH+" "+LAYERIREFRESH2+" 
-   "+LAYER-CLIPRECTS-LOST+" "+LAYERSAVEBACK+" "+LAYERHIDDEN+" 
-   "+NEWLAYERINFO-CALLED+" "+LAYERS-NOBACKFILL+" "+LAYERS-BACKFILL+" 
-   "+LAYER-BACKMOST+" "+LAYER-FRONTMOST+" "*LAYER-INFO-SIZE*" 
-   "LAYER-INFO-TOP-LAYER" "LAYER-INFO-RES-PTR1" "LAYER-INFO-RES-PTR2" 
-   "LAYER-INFO-FREE-CLIP-RECTS" "LAYER-INFO-MIN-X" "LAYER-INFO-MIN-Y" 
-   "LAYER-INFO-MAX-X" "LAYER-INFO-MAX-Y" "LAYER-INFO-LOCK" 
-   "LAYER-INFO-GS-HEAD" "LAYER-INFO-PRIVATE-RESERVE3" 
-   "LAYER-INFO-PRIVATE-RESERVE4" "LAYER-INFO-FLAGS" "LAYER-INFO-RES-COUNT" 
-   "LAYER-INFO-LOCK-LAYERS-COUNT" "LAYER-INFO-PRIVATE-RESERVE5" 
-   "LAYER-INFO-BLANK-HOOK" "LAYER-INFO-RES-PTR5" "+NEWLOCKS+" 
-   "+CR-NEEDS-NO-CONCEALED-RASTERS+" "+CR-NEEDS-NO-LAYERBLIT-DAMAGE+" 
-   "+ISLESSX+" "+ISLESSY+" "+ISGRTRX+" "+ISGRTRY+" "*LAYER-SIZE*" 
-   "LAYER-FRONT" "LAYER-BACK" "LAYER-CLIP-RECT" "LAYER-RP" "LAYER-MIN-X" 
-   "LAYER-MIN-Y" "LAYER-MAX-X" "LAYER-MAX-Y" "LAYER-NLINK" "LAYER-PRIORITY" 
-   "LAYER-FLAGS" "LAYER-SUPER-BITMAP" "LAYER-SUPER-CLIP-RECT" 
-   "LAYER-WINDOW" "LAYER-SCROLL-X" "LAYER-SCROLL-Y" "LAYER-ON-SCREEN" 
-   "LAYER-OFF-SCREEN" "LAYER-BACKUP" "LAYER-SUPER-SAVE-CLIP-RECTS" 
-   "LAYER-UNDAMAGED" "LAYER-LAYER-INFO" "LAYER-LOCK" "LAYER-BACK-FILL" 
-   "LAYER-RESERVED1" "LAYER-CLIP-REGION" "LAYER-CLIPPED" "LAYER-WIDTH" 
-   "LAYER-HEIGHT" "LAYER-RESERVED2" "LAYER-DAMAGE-LIST" "*CLIP-RECT-SIZE*" 
-   "CLIP-RECT-NEXT" "CLIP-RECT-RESERVEDLINK" "CLIP-RECT-OBSCURED" 
-   "CLIP-RECT-BITMAP" "CLIP-RECT-MIN-X" "CLIP-RECT-MIN-Y" "CLIP-RECT-MAX-X" 
-   "CLIP-RECT-MAX-Y" "CLIP-RECT-VLINK" "CLIP-RECT-HOME" 
-   "CLIP-RECT-RESERVED" "CLIP-RECT-FLAGS" "INIT-LAYERS" 
-   "CREATE-UPFRONT-LAYER" "CREATE-BEHIND-LAYER" "UPFRONT-LAYER" 
-   "BEHIND-LAYER" "MOVE-LAYER" "SIZE-LAYER" "SCROLL-LAYER" "BEGIN-UPDATE" 
-   "END-UPDATE" "DELETE-LAYER" "LOCK-LAYER" "UNLOCK-LAYER" "LOCK-LAYERS" 
-   "UNLOCK-LAYERS" "LOCK-LAYER-INFO" "SWAP-BITS-RASTPORT-CLIP-RECT" 
-   "WHICH-LAYER" "UNLOCK-LAYER-INFO" "NEW-LAYER-INFO" "DISPOSE-LAYER-INFO" 
-   "FATTEN-LAYER-INFO" "THIN-LAYER-INFO" "MOVE-LAYER-IN-FRONT-OF" 
-   "INSTALL-CLIP-REGION" "MOVE-SIZE-LAYER" "CREATE-UPFRONT-HOOK-LAYER" 
-   "CREATE-BEHIND-HOOK-LAYER" "INSTALL-LAYER-HOOK" 
-   "INSTALL-LAYER-INFO-HOOK" "SORT-LAYER-CR" "DO-HOOK-CLIP-RECTS" 
-   "LAYER-OCCLUDED" "HIDE-LAYER" "SHOW-LAYER" "SET-LAYER-INFO-BOUNDS" 
-   "CREATE-UPFRONT-LAYER-TAG-LIST" "CREATE-BEHIND-LAYER-TAG-LIST" 
-   "WHICH-LAYER-BEHIND-LAYER" "IS-LAYER-VISIBLE" 
-   "RENDER-LAYER-INFO-TAG-LIST" "LOCK-LAYER-UPDATES" "UNLOCK-LAYER-UPDATES" 
-   "IS-VISIBLE-IN-LAYER" "IS-LAYER-HITABLE" ))
+  (:export "*LAYERS-BASE*" "*LAYERS-VERSION*"))
 
 (in-package "AMIGA.RAW.LAYERS")
 
@@ -68,217 +30,172 @@
 (defun %version>= (n)
   (and *layers-version* (>= *layers-version* n)))
 
-;;; --- constants from graphics/layers.i ---
-(defconstant +layersimple+ 1)
-(defconstant +layersmart+ 2)
-(defconstant +layersuper+ 4)
-(defconstant +layerupdating+ #x10)
-(defconstant +layerbackdrop+ #x40)
-(defconstant +layerrefresh+ #x80)
-(defconstant +layerirefresh+ #x200)
-(defconstant +layerirefresh2+ #x400)
-(defconstant +layer-cliprects-lost+ #x100)
-(defconstant +layersaveback+ #x800)
-(defconstant +layerhidden+ #x1000)
-(defconstant +newlayerinfo-called+ 1)
-(defconstant +layers-nobackfill+ 1)
-(defconstant +layers-backfill+ 0)
-(defconstant +layer-backmost+ 0)
-(defconstant +layer-frontmost+ 1)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.LAYERS"
+    (:base *layers-base* :version *layers-version*)
 
-;;; --- structures from graphics/layers.i ---
-(ffi:defcstruct (layer-info :size 102)   ; Layer_Info (graphics/layers.i)
-  (top-layer :fptr 0)
-  (res-ptr1 :fptr 4)
-  (res-ptr2 :fptr 8)
-  (free-clip-rects :fptr 12)
-  (min-x :i16 16)
-  (min-y :i16 18)
-  (max-x :i16 20)
-  (max-y :i16 22)
-  (lock (:struct 46) 24)
-  (gs-head (:struct 12) 70)
-  (private-reserve3 :i16 82)
-  (private-reserve4 :fptr 84)
-  (flags :i16 88)
-  (res-count :i8 90)
-  (lock-layers-count :i8 91)
-  (private-reserve5 :i16 92)
-  (blank-hook :fptr 94)
-  (res-ptr5 :fptr 98)
-)
+  ;; --- constants from graphics/layers.i ---
+  (:const "+LAYERSIMPLE+" 1)
+  (:const "+LAYERSMART+" 2)
+  (:const "+LAYERSUPER+" 4)
+  (:const "+LAYERUPDATING+" #x10)
+  (:const "+LAYERBACKDROP+" #x40)
+  (:const "+LAYERREFRESH+" #x80)
+  (:const "+LAYERIREFRESH+" #x200)
+  (:const "+LAYERIREFRESH2+" #x400)
+  (:const "+LAYER-CLIPRECTS-LOST+" #x100)
+  (:const "+LAYERSAVEBACK+" #x800)
+  (:const "+LAYERHIDDEN+" #x1000)
+  (:const "+NEWLAYERINFO-CALLED+" 1)
+  (:const "+LAYERS-NOBACKFILL+" 1)
+  (:const "+LAYERS-BACKFILL+" 0)
+  (:const "+LAYER-BACKMOST+" 0)
+  (:const "+LAYER-FRONTMOST+" 1)
 
-;;; --- constants from graphics/clip.i ---
-(defconstant +newlocks+ 1)
-(defconstant +cr-needs-no-concealed-rasters+ 1)
-(defconstant +cr-needs-no-layerblit-damage+ 2)
-(defconstant +islessx+ 1)
-(defconstant +islessy+ 2)
-(defconstant +isgrtrx+ 4)
-(defconstant +isgrtry+ 8)
+  ;; --- structures from graphics/layers.i ---
+  (:struct "LAYER-INFO" 102   ; Layer_Info (graphics/layers.i)
+    ("TOP-LAYER" :fptr 0)
+    ("RES-PTR1" :fptr 4)
+    ("RES-PTR2" :fptr 8)
+    ("FREE-CLIP-RECTS" :fptr 12)
+    ("MIN-X" :i16 16)
+    ("MIN-Y" :i16 18)
+    ("MAX-X" :i16 20)
+    ("MAX-Y" :i16 22)
+    ("LOCK" (:struct 46) 24)
+    ("GS-HEAD" (:struct 12) 70)
+    ("PRIVATE-RESERVE3" :i16 82)
+    ("PRIVATE-RESERVE4" :fptr 84)
+    ("FLAGS" :i16 88)
+    ("RES-COUNT" :i8 90)
+    ("LOCK-LAYERS-COUNT" :i8 91)
+    ("PRIVATE-RESERVE5" :i16 92)
+    ("BLANK-HOOK" :fptr 94)
+    ("RES-PTR5" :fptr 98)
+    )
 
-;;; --- structures from graphics/clip.i ---
-(ffi:defcstruct (layer :size 160)   ; Layer (graphics/clip.i)
-  (front :i32 0)
-  (back :i32 4)
-  (clip-rect :i32 8)
-  (rp :i32 12)
-  (min-x :i16 16)
-  (min-y :i16 18)
-  (max-x :i16 20)
-  (max-y :i16 22)
-  (nlink :fptr 24)
-  (priority :i16 28)
-  (flags :i16 30)
-  (super-bitmap :i32 32)
-  (super-clip-rect :i32 36)
-  (window :fptr 40)
-  (scroll-x :i16 44)
-  (scroll-y :i16 46)
-  (on-screen :fptr 48)
-  (off-screen :fptr 52)
-  (backup :fptr 56)
-  (super-save-clip-rects :fptr 60)
-  (undamaged :fptr 64)
-  (layer-info :fptr 68)
-  (lock (:struct 46) 72)
-  (back-fill :fptr 118)
-  (reserved1 :u32 122)
-  (clip-region :fptr 126)
-  (clipped :fptr 130)
-  (width :i16 134)
-  (height :i16 136)
-  (reserved2 (:struct 18) 138)
-  (damage-list :fptr 156)
-)
-(ffi:defcstruct (clip-rect :size 40)   ; ClipRect (graphics/clip.i)
-  (next :i32 0)
-  (reservedlink :i32 4)
-  (obscured :i32 8)
-  (bitmap :i32 12)
-  (min-x :i16 16)
-  (min-y :i16 18)
-  (max-x :i16 20)
-  (max-y :i16 22)
-  (vlink :fptr 24)
-  (home :fptr 28)
-  (reserved :i32 32)
-  (flags :i32 36)
-)
+  ;; --- constants from graphics/clip.i ---
+  (:const "+NEWLOCKS+" 1)
+  (:const "+CR-NEEDS-NO-CONCEALED-RASTERS+" 1)
+  (:const "+CR-NEEDS-NO-LAYERBLIT-DAMAGE+" 2)
+  (:const "+ISLESSX+" 1)
+  (:const "+ISLESSY+" 2)
+  (:const "+ISGRTRX+" 4)
+  (:const "+ISGRTRY+" 8)
 
-;;; --- functions (layers_lib.sfd + MorphOS SDK) ---
-(amiga.ffi:defcfun init-layers *layers-base* -30 (:a0 li)
-    :result :void
-    :doc "VOID InitLayers(struct Layer_Info * li) (A0) LVO -30")
+  ;; --- structures from graphics/clip.i ---
+  (:struct "LAYER" 160   ; Layer (graphics/clip.i)
+    ("FRONT" :i32 0)
+    ("BACK" :i32 4)
+    ("CLIP-RECT" :i32 8)
+    ("RP" :i32 12)
+    ("MIN-X" :i16 16)
+    ("MIN-Y" :i16 18)
+    ("MAX-X" :i16 20)
+    ("MAX-Y" :i16 22)
+    ("NLINK" :fptr 24)
+    ("PRIORITY" :i16 28)
+    ("FLAGS" :i16 30)
+    ("SUPER-BITMAP" :i32 32)
+    ("SUPER-CLIP-RECT" :i32 36)
+    ("WINDOW" :fptr 40)
+    ("SCROLL-X" :i16 44)
+    ("SCROLL-Y" :i16 46)
+    ("ON-SCREEN" :fptr 48)
+    ("OFF-SCREEN" :fptr 52)
+    ("BACKUP" :fptr 56)
+    ("SUPER-SAVE-CLIP-RECTS" :fptr 60)
+    ("UNDAMAGED" :fptr 64)
+    ("LAYER-INFO" :fptr 68)
+    ("LOCK" (:struct 46) 72)
+    ("BACK-FILL" :fptr 118)
+    ("RESERVED1" :u32 122)
+    ("CLIP-REGION" :fptr 126)
+    ("CLIPPED" :fptr 130)
+    ("WIDTH" :i16 134)
+    ("HEIGHT" :i16 136)
+    ("RESERVED2" (:struct 18) 138)
+    ("DAMAGE-LIST" :fptr 156)
+    )
+  (:struct "CLIP-RECT" 40   ; ClipRect (graphics/clip.i)
+    ("NEXT" :i32 0)
+    ("RESERVEDLINK" :i32 4)
+    ("OBSCURED" :i32 8)
+    ("BITMAP" :i32 12)
+    ("MIN-X" :i16 16)
+    ("MIN-Y" :i16 18)
+    ("MAX-X" :i16 20)
+    ("MAX-Y" :i16 22)
+    ("VLINK" :fptr 24)
+    ("HOME" :fptr 28)
+    ("RESERVED" :i32 32)
+    ("FLAGS" :i32 36)
+    )
+
+  ;; --- functions (layers_lib.sfd + MorphOS SDK) ---
+  (:fn "INIT-LAYERS" -30 (:a0) :void)   ; VOID InitLayers(struct Layer_Info * li) (A0) LVO -30
+  (:name "CREATE-UPFRONT-LAYER")   ; 8 registers: defined after the table via CALL-LIBRARY
+  (:name "CREATE-BEHIND-LAYER")   ; 8 registers: defined after the table via CALL-LIBRARY
+  (:fn "UPFRONT-LAYER" -48 (:a0 :a1) :signed)   ; LONG UpfrontLayer(LONG dummy, struct Layer * layer) (A0,A1) LVO -48
+  (:fn "BEHIND-LAYER" -54 (:a0 :a1) :signed)   ; LONG BehindLayer(LONG dummy, struct Layer * layer) (A0,A1) LVO -54
+  (:fn "MOVE-LAYER" -60 (:a0 :a1 :d0 :d1) :signed)   ; LONG MoveLayer(LONG dummy, struct Layer * layer, LONG dx, LONG dy) (A0,A1,D0,D1) LVO -60
+  (:fn "SIZE-LAYER" -66 (:a0 :a1 :d0 :d1) :signed)   ; LONG SizeLayer(LONG dummy, struct Layer * layer, LONG dx, LONG dy) (A0,A1,D0,D1) LVO -66
+  (:fn "SCROLL-LAYER" -72 (:a0 :a1 :d0 :d1) :void)   ; VOID ScrollLayer(LONG dummy, struct Layer * layer, LONG dx, LONG dy) (A0,A1,D0,D1) LVO -72
+  (:fn "BEGIN-UPDATE" -78 (:a0) :signed)   ; LONG BeginUpdate(struct Layer * l) (A0) LVO -78
+  (:fn "END-UPDATE" -84 (:a0 :d0) :void)   ; VOID EndUpdate(struct Layer * layer, UWORD flag) (A0,D0) LVO -84
+  (:fn "DELETE-LAYER" -90 (:a0 :a1) :signed)   ; LONG DeleteLayer(LONG dummy, struct Layer * layer) (A0,A1) LVO -90
+  (:fn "LOCK-LAYER" -96 (:a0 :a1) :void)   ; VOID LockLayer(LONG dummy, struct Layer * layer) (A0,A1) LVO -96
+  (:fn "UNLOCK-LAYER" -102 (:a0) :void)   ; VOID UnlockLayer(struct Layer * layer) (A0) LVO -102
+  (:fn "LOCK-LAYERS" -108 (:a0) :void)   ; VOID LockLayers(struct Layer_Info * li) (A0) LVO -108
+  (:fn "UNLOCK-LAYERS" -114 (:a0) :void)   ; VOID UnlockLayers(struct Layer_Info * li) (A0) LVO -114
+  (:fn "LOCK-LAYER-INFO" -120 (:a0) :void)   ; VOID LockLayerInfo(struct Layer_Info * li) (A0) LVO -120
+  (:fn "SWAP-BITS-RASTPORT-CLIP-RECT" -126 (:a0 :a1) :void)   ; VOID SwapBitsRastPortClipRect(struct RastPort * rp, struct ClipRect * cr) (A0,A1) LVO -126
+  (:fn "WHICH-LAYER" -132 (:a0 :d0 :d1) :pointer)   ; struct Layer * WhichLayer(struct Layer_Info * li, WORD x, WORD y) (A0,D0,D1) LVO -132
+  (:fn "UNLOCK-LAYER-INFO" -138 (:a0) :void)   ; VOID UnlockLayerInfo(struct Layer_Info * li) (A0) LVO -138
+  (:fn "NEW-LAYER-INFO" -144 () :pointer)   ; struct Layer_Info * NewLayerInfo() () LVO -144
+  (:fn "DISPOSE-LAYER-INFO" -150 (:a0) :void)   ; VOID DisposeLayerInfo(struct Layer_Info * li) (A0) LVO -150
+  (:fn "FATTEN-LAYER-INFO" -156 (:a0) :signed)   ; LONG FattenLayerInfo(struct Layer_Info * li) (A0) LVO -156
+  (:fn "THIN-LAYER-INFO" -162 (:a0) :void)   ; VOID ThinLayerInfo(struct Layer_Info * li) (A0) LVO -162
+  (:fn "MOVE-LAYER-IN-FRONT-OF" -168 (:a0 :a1) :signed)   ; LONG MoveLayerInFrontOf(struct Layer * layer_to_move, struct Layer * other_layer) (A0,A1) LVO -168
+  (:fn "INSTALL-CLIP-REGION" -174 (:a0 :a1) :pointer)   ; struct Region * InstallClipRegion(struct Layer * layer, struct Region * region) (A0,A1) LVO -174
+  (:fn "MOVE-SIZE-LAYER" -180 (:a0 :d0 :d1 :d2 :d3) :signed)   ; LONG MoveSizeLayer(struct Layer * layer, LONG dx, LONG dy, LONG dw, LONG dh) (A0,D0,D1,D2,D3) LVO -180
+  (:name "CREATE-UPFRONT-HOOK-LAYER")   ; 9 registers: defined after the table via CALL-LIBRARY
+  (:name "CREATE-BEHIND-HOOK-LAYER")   ; 9 registers: defined after the table via CALL-LIBRARY
+  (:fn "INSTALL-LAYER-HOOK" -198 (:a0 :a1) :pointer)   ; struct Hook * InstallLayerHook(struct Layer * layer, struct Hook * hook) (A0,A1) LVO -198
+  (:fn "INSTALL-LAYER-INFO-HOOK" -204 (:a0 :a1) :pointer)   ; struct Hook * InstallLayerInfoHook(struct Layer_Info * li, struct Hook * hook) (A0,A1) LVO -204
+  (:fn "SORT-LAYER-CR" -210 (:a0 :d0 :d1) :void)   ; VOID SortLayerCR(struct Layer * layer, WORD dx, WORD dy) (A0,D0,D1) LVO -210
+  (:fn "DO-HOOK-CLIP-RECTS" -216 (:a0 :a1 :a2) :void)   ; VOID DoHookClipRects(struct Hook * hook, struct RastPort * rport, CONST struct Rectangle * rect) (A0,A1,A2) LVO -216
+  (:fn "LAYER-OCCLUDED" -222 (:a0) :bool :not-morphos 45)   ; BOOL LayerOccluded(struct Layer * layer) (A0) LVO -222
+  (:fn "HIDE-LAYER" -228 (:a0) :signed :not-morphos 45)   ; LONG HideLayer(struct Layer * layer) (A0) LVO -228
+  (:fn "SHOW-LAYER" -234 (:a0 :a1) :signed :not-morphos 45)   ; LONG ShowLayer(struct Layer * layer, struct Layer * in_front_of) (A0,A1) LVO -234
+  (:fn "SET-LAYER-INFO-BOUNDS" -240 (:a0 :a1) :bool :not-morphos 45)   ; BOOL SetLayerInfoBounds(struct Layer_Info * li, CONST struct Rectangle * bounds) (A0,A1) LVO -240
+  (:name "CREATE-UPFRONT-LAYER-TAG-LIST")   ; 8 registers: defined after the table via CALL-LIBRARY
+  (:name "CREATE-BEHIND-LAYER-TAG-LIST")   ; 8 registers: defined after the table via CALL-LIBRARY
+  (:fn "WHICH-LAYER-BEHIND-LAYER" -252 (:a0 :d0 :d1) :pointer :morphos)   ; struct Layer * WhichLayerBehindLayer(struct Layer * l, LONG x, LONG y) (A0,D0,D1) LVO -252
+  (:fn "IS-LAYER-VISIBLE" -258 (:a0) :bool :morphos)   ; BOOL IsLayerVisible(struct Layer * l) (A0) LVO -258
+  (:fn "RENDER-LAYER-INFO-TAG-LIST" -282 (:a0 :a1) :bool :morphos)   ; BOOL RenderLayerInfoTagList(struct Layer_Info * li, struct TagItem * taglist) (A0,A1) LVO -282
+  (:fn "LOCK-LAYER-UPDATES" -288 (:a0) :void :morphos)   ; VOID LockLayerUpdates(struct Layer * l) (A0) LVO -288
+  (:fn "UNLOCK-LAYER-UPDATES" -294 (:a0) :void :morphos)   ; VOID UnlockLayerUpdates(struct Layer * l) (A0) LVO -294
+  (:fn "IS-VISIBLE-IN-LAYER" -300 (:a0 :d0 :d1 :d2 :d3) :bool :morphos)   ; BOOL IsVisibleInLayer(struct Layer * l, LONG x0, LONG y0, LONG x1, LONG y1) (A0,D0,D1,D2,D3) LVO -300
+  (:fn "IS-LAYER-HITABLE" -306 (:a0) :bool :morphos)   ; BOOL IsLayerHitable(struct Layer * l) (A0) LVO -306
+  )
+
+;;; Functions with more than seven register arguments: DEFUNs over
+;;; AMIGA:CALL-LIBRARY (exported by the (:name ...) rows above).
 (amiga.ffi:defcfun create-upfront-layer *layers-base* -36 (:a0 li :a1 bm :d0 x0 :d1 y0 :d2 x1 :d3 y1 :d4 flags :a2 bm2)
     :result :pointer
     :doc "struct Layer * CreateUpfrontLayer(struct Layer_Info * li, struct BitMap * bm, LONG x0, LONG y0, LONG x1, LONG y1, LONG flags, struct BitMap * bm2) (A0,A1,D0,D1,D2,D3,D4,A2) LVO -36")
 (amiga.ffi:defcfun create-behind-layer *layers-base* -42 (:a0 li :a1 bm :d0 x0 :d1 y0 :d2 x1 :d3 y1 :d4 flags :a2 bm2)
     :result :pointer
     :doc "struct Layer * CreateBehindLayer(struct Layer_Info * li, struct BitMap * bm, LONG x0, LONG y0, LONG x1, LONG y1, LONG flags, struct BitMap * bm2) (A0,A1,D0,D1,D2,D3,D4,A2) LVO -42")
-(amiga.ffi:defcfun upfront-layer *layers-base* -48 (:a0 dummy :a1 layer)
-    :result :signed
-    :doc "LONG UpfrontLayer(LONG dummy, struct Layer * layer) (A0,A1) LVO -48")
-(amiga.ffi:defcfun behind-layer *layers-base* -54 (:a0 dummy :a1 layer)
-    :result :signed
-    :doc "LONG BehindLayer(LONG dummy, struct Layer * layer) (A0,A1) LVO -54")
-(amiga.ffi:defcfun move-layer *layers-base* -60 (:a0 dummy :a1 layer :d0 dx :d1 dy)
-    :result :signed
-    :doc "LONG MoveLayer(LONG dummy, struct Layer * layer, LONG dx, LONG dy) (A0,A1,D0,D1) LVO -60")
-(amiga.ffi:defcfun size-layer *layers-base* -66 (:a0 dummy :a1 layer :d0 dx :d1 dy)
-    :result :signed
-    :doc "LONG SizeLayer(LONG dummy, struct Layer * layer, LONG dx, LONG dy) (A0,A1,D0,D1) LVO -66")
-(amiga.ffi:defcfun scroll-layer *layers-base* -72 (:a0 dummy :a1 layer :d0 dx :d1 dy)
-    :result :void
-    :doc "VOID ScrollLayer(LONG dummy, struct Layer * layer, LONG dx, LONG dy) (A0,A1,D0,D1) LVO -72")
-(amiga.ffi:defcfun begin-update *layers-base* -78 (:a0 l)
-    :result :signed
-    :doc "LONG BeginUpdate(struct Layer * l) (A0) LVO -78")
-(amiga.ffi:defcfun end-update *layers-base* -84 (:a0 layer :d0 flag)
-    :result :void
-    :doc "VOID EndUpdate(struct Layer * layer, UWORD flag) (A0,D0) LVO -84")
-(amiga.ffi:defcfun delete-layer *layers-base* -90 (:a0 dummy :a1 layer)
-    :result :signed
-    :doc "LONG DeleteLayer(LONG dummy, struct Layer * layer) (A0,A1) LVO -90")
-(amiga.ffi:defcfun lock-layer *layers-base* -96 (:a0 dummy :a1 layer)
-    :result :void
-    :doc "VOID LockLayer(LONG dummy, struct Layer * layer) (A0,A1) LVO -96")
-(amiga.ffi:defcfun unlock-layer *layers-base* -102 (:a0 layer)
-    :result :void
-    :doc "VOID UnlockLayer(struct Layer * layer) (A0) LVO -102")
-(amiga.ffi:defcfun lock-layers *layers-base* -108 (:a0 li)
-    :result :void
-    :doc "VOID LockLayers(struct Layer_Info * li) (A0) LVO -108")
-(amiga.ffi:defcfun unlock-layers *layers-base* -114 (:a0 li)
-    :result :void
-    :doc "VOID UnlockLayers(struct Layer_Info * li) (A0) LVO -114")
-(amiga.ffi:defcfun lock-layer-info *layers-base* -120 (:a0 li)
-    :result :void
-    :doc "VOID LockLayerInfo(struct Layer_Info * li) (A0) LVO -120")
-(amiga.ffi:defcfun swap-bits-rastport-clip-rect *layers-base* -126 (:a0 rp :a1 cr)
-    :result :void
-    :doc "VOID SwapBitsRastPortClipRect(struct RastPort * rp, struct ClipRect * cr) (A0,A1) LVO -126")
-(amiga.ffi:defcfun which-layer *layers-base* -132 (:a0 li :d0 x :d1 y)
-    :result :pointer
-    :doc "struct Layer * WhichLayer(struct Layer_Info * li, WORD x, WORD y) (A0,D0,D1) LVO -132")
-(amiga.ffi:defcfun unlock-layer-info *layers-base* -138 (:a0 li)
-    :result :void
-    :doc "VOID UnlockLayerInfo(struct Layer_Info * li) (A0) LVO -138")
-(amiga.ffi:defcfun new-layer-info *layers-base* -144 ()
-    :result :pointer
-    :doc "struct Layer_Info * NewLayerInfo() () LVO -144")
-(amiga.ffi:defcfun dispose-layer-info *layers-base* -150 (:a0 li)
-    :result :void
-    :doc "VOID DisposeLayerInfo(struct Layer_Info * li) (A0) LVO -150")
-(amiga.ffi:defcfun fatten-layer-info *layers-base* -156 (:a0 li)
-    :result :signed
-    :doc "LONG FattenLayerInfo(struct Layer_Info * li) (A0) LVO -156")
-(amiga.ffi:defcfun thin-layer-info *layers-base* -162 (:a0 li)
-    :result :void
-    :doc "VOID ThinLayerInfo(struct Layer_Info * li) (A0) LVO -162")
-(amiga.ffi:defcfun move-layer-in-front-of *layers-base* -168 (:a0 layer-to-move :a1 other-layer)
-    :result :signed
-    :doc "LONG MoveLayerInFrontOf(struct Layer * layer_to_move, struct Layer * other_layer) (A0,A1) LVO -168")
-(amiga.ffi:defcfun install-clip-region *layers-base* -174 (:a0 layer :a1 region)
-    :result :pointer
-    :doc "struct Region * InstallClipRegion(struct Layer * layer, struct Region * region) (A0,A1) LVO -174")
-(amiga.ffi:defcfun move-size-layer *layers-base* -180 (:a0 layer :d0 dx :d1 dy :d2 dw :d3 dh)
-    :result :signed
-    :doc "LONG MoveSizeLayer(struct Layer * layer, LONG dx, LONG dy, LONG dw, LONG dh) (A0,D0,D1,D2,D3) LVO -180")
 (amiga.ffi:defcfun create-upfront-hook-layer *layers-base* -186 (:a0 li :a1 bm :d0 x0 :d1 y0 :d2 x1 :d3 y1 :d4 flags :a3 hook :a2 bm2)
     :result :pointer
     :doc "struct Layer * CreateUpfrontHookLayer(struct Layer_Info * li, struct BitMap * bm, LONG x0, LONG y0, LONG x1, LONG y1, LONG flags, struct Hook * hook, struct BitMap * bm2) (A0,A1,D0,D1,D2,D3,D4,A3,A2) LVO -186")
 (amiga.ffi:defcfun create-behind-hook-layer *layers-base* -192 (:a0 li :a1 bm :d0 x0 :d1 y0 :d2 x1 :d3 y1 :d4 flags :a3 hook :a2 bm2)
     :result :pointer
     :doc "struct Layer * CreateBehindHookLayer(struct Layer_Info * li, struct BitMap * bm, LONG x0, LONG y0, LONG x1, LONG y1, LONG flags, struct Hook * hook, struct BitMap * bm2) (A0,A1,D0,D1,D2,D3,D4,A3,A2) LVO -192")
-(amiga.ffi:defcfun install-layer-hook *layers-base* -198 (:a0 layer :a1 hook)
-    :result :pointer
-    :doc "struct Hook * InstallLayerHook(struct Layer * layer, struct Hook * hook) (A0,A1) LVO -198")
-(amiga.ffi:defcfun install-layer-info-hook *layers-base* -204 (:a0 li :a1 hook)
-    :result :pointer
-    :doc "struct Hook * InstallLayerInfoHook(struct Layer_Info * li, struct Hook * hook) (A0,A1) LVO -204")
-(amiga.ffi:defcfun sort-layer-cr *layers-base* -210 (:a0 layer :d0 dx :d1 dy)
-    :result :void
-    :doc "VOID SortLayerCR(struct Layer * layer, WORD dx, WORD dy) (A0,D0,D1) LVO -210")
-(amiga.ffi:defcfun do-hook-clip-rects *layers-base* -216 (:a0 hook :a1 rport :a2 rect)
-    :result :void
-    :doc "VOID DoHookClipRects(struct Hook * hook, struct RastPort * rport, CONST struct Rectangle * rect) (A0,A1,A2) LVO -216")
-(when (and (not (member :morphos *features*)) (%version>= 45))
-  (amiga.ffi:defcfun layer-occluded *layers-base* -222 (:a0 layer)
-    :result :bool
-    :doc "BOOL LayerOccluded(struct Layer * layer) (A0) LVO -222"))
-(when (and (not (member :morphos *features*)) (%version>= 45))
-  (amiga.ffi:defcfun hide-layer *layers-base* -228 (:a0 layer)
-    :result :signed
-    :doc "LONG HideLayer(struct Layer * layer) (A0) LVO -228"))
-(when (and (not (member :morphos *features*)) (%version>= 45))
-  (amiga.ffi:defcfun show-layer *layers-base* -234 (:a0 layer :a1 in-front-of)
-    :result :signed
-    :doc "LONG ShowLayer(struct Layer * layer, struct Layer * in_front_of) (A0,A1) LVO -234"))
-(when (and (not (member :morphos *features*)) (%version>= 45))
-  (amiga.ffi:defcfun set-layer-info-bounds *layers-base* -240 (:a0 li :a1 bounds)
-    :result :bool
-    :doc "BOOL SetLayerInfoBounds(struct Layer_Info * li, CONST struct Rectangle * bounds) (A0,A1) LVO -240"))
 (when (member :morphos *features*)
   (amiga.ffi:defcfun create-upfront-layer-tag-list *layers-base* -234 (:a0 li :a1 bm :d0 x0 :d1 y0 :d2 x1 :d3 y1 :d4 flags :a2 taglist)
     :result :pointer
@@ -287,33 +204,5 @@
   (amiga.ffi:defcfun create-behind-layer-tag-list *layers-base* -240 (:a0 li :a1 bm :d0 x0 :d1 y0 :d2 x1 :d3 y1 :d4 flags :a2 taglist)
     :result :pointer
     :doc "struct Layer * CreateBehindLayerTagList(struct Layer_Info * li, struct BitMap * bm, LONG x0, LONG y0, LONG x1, LONG y1, LONG flags, struct TagItem * taglist) (A0,A1,D0,D1,D2,D3,D4,A2) LVO -240"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun which-layer-behind-layer *layers-base* -252 (:a0 l :d0 x :d1 y)
-    :result :pointer
-    :doc "struct Layer * WhichLayerBehindLayer(struct Layer * l, LONG x, LONG y) (A0,D0,D1) LVO -252"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun is-layer-visible *layers-base* -258 (:a0 l)
-    :result :bool
-    :doc "BOOL IsLayerVisible(struct Layer * l) (A0) LVO -258"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun render-layer-info-tag-list *layers-base* -282 (:a0 li :a1 taglist)
-    :result :bool
-    :doc "BOOL RenderLayerInfoTagList(struct Layer_Info * li, struct TagItem * taglist) (A0,A1) LVO -282"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun lock-layer-updates *layers-base* -288 (:a0 l)
-    :result :void
-    :doc "VOID LockLayerUpdates(struct Layer * l) (A0) LVO -288"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun unlock-layer-updates *layers-base* -294 (:a0 l)
-    :result :void
-    :doc "VOID UnlockLayerUpdates(struct Layer * l) (A0) LVO -294"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun is-visible-in-layer *layers-base* -300 (:a0 l :d0 x0 :d1 y0 :d2 x1 :d3 y1)
-    :result :bool
-    :doc "BOOL IsVisibleInLayer(struct Layer * l, LONG x0, LONG y0, LONG x1, LONG y1) (A0,D0,D1,D2,D3) LVO -300"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun is-layer-hitable *layers-base* -306 (:a0 l)
-    :result :bool
-    :doc "BOOL IsLayerHitable(struct Layer * l) (A0) LVO -306"))
 
 (provide "amiga/raw/layers")

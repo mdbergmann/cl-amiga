@@ -8,36 +8,14 @@
 ;;; 26 functions, 43 constants, 2 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.COMMODITIES"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*COMMODITIES-BASE*" "*COMMODITIES-VERSION*"
-   "+NB-VERSION+" "+CBD-NAMELEN+" "+CBD-TITLELEN+" "+CBD-DESCRLEN+" 
-   "+NBU-DUPLICATE+" "+NBU-UNIQUE+" "+NBU-NOTIFY+" "+COF-SHOW-HIDE+" 
-   "+CX-INVALID+" "+CX-FILTER+" "+CX-TYPEFILTER+" "+CX-SEND+" "+CX-SIGNAL+" 
-   "+CX-TRANSLATE+" "+CX-BROKER+" "+CX-DEBUG+" "+CX-CUSTOM+" "+CX-ZERO+" 
-   "+CXM-IEVENT+" "+CXM-COMMAND+" "+CXCMD-DISABLE+" "+CXCMD-ENABLE+" 
-   "+CXCMD-APPEAR+" "+CXCMD-DISAPPEAR+" "+CXCMD-KILL+" "+CXCMD-LIST-CHG+" 
-   "+CXCMD-UNIQUE+" "+IX-VERSION+" "+IXSYM-SHIFT+" "+IXSYM-CAPS+" 
-   "+IXSYM-ALT+" "+IXSYM-SHIFTMASK+" "+IXSYM-CAPSMASK+" "+IXSYM-ALTMASK+" 
-   "+IX-NORMALQUALS+" "+CBERR-OK+" "+CBERR-SYSERR+" "+CBERR-DUP+" 
-   "+CBERR-VERSION+" "+COERR-ISNULL+" "+COERR-NULLATTACH+" 
-   "+COERR-BADFILTER+" "+COERR-BADTYPE+" "*NEW-BROKER-SIZE*" 
-   "NEW-BROKER-VERSION" "NEW-BROKER-RESERVE1" "NEW-BROKER-NAME" 
-   "NEW-BROKER-TITLE" "NEW-BROKER-DESCR" "NEW-BROKER-UNIQUE" 
-   "NEW-BROKER-FLAGS" "NEW-BROKER-PRI" "NEW-BROKER-RESERVE2" 
-   "NEW-BROKER-PORT" "NEW-BROKER-RESERVED-CHANNEL" "*INPUT-XPRESSION-SIZE*" 
-   "INPUT-XPRESSION-VERSION" "INPUT-XPRESSION-CLASS" "INPUT-XPRESSION-CODE" 
-   "INPUT-XPRESSION-CODE-MASK" "INPUT-XPRESSION-QUALIFIER" 
-   "INPUT-XPRESSION-QUAL-MASK" "INPUT-XPRESSION-QUAL-SAME" "CREATE-CX-OBJ" 
-   "CX-BROKER" "ACTIVATE-CX-OBJ" "DELETE-CX-OBJ" "DELETE-CX-OBJ-ALL" 
-   "CX-OBJ-TYPE" "CX-OBJ-ERROR" "CLEAR-CX-OBJ-ERROR" "SET-CX-OBJ-PRI" 
-   "ATTACH-CX-OBJ" "ENQUEUE-CX-OBJ" "INSERT-CX-OBJ" "REMOVE-CX-OBJ" 
-   "SET-TRANSLATE" "SET-FILTER" "SET-FILTER-IX" "PARSE-IX" "CX-MSG-TYPE" 
-   "CX-MSG-DATA" "CX-MSG-ID" "DIVERT-CX-MSG" "ROUTE-CX-MSG" 
-   "DISPOSE-CX-MSG" "INVERT-KEY-MAP" "ADD-I-EVENTS" "MATCH-IX" ))
+  (:export "*COMMODITIES-BASE*" "*COMMODITIES-VERSION*"))
 
 (in-package "AMIGA.RAW.COMMODITIES")
 
@@ -51,153 +29,108 @@
 (defun %version>= (n)
   (and *commodities-version* (>= *commodities-version* n)))
 
-;;; --- constants from libraries/commodities.i ---
-(defconstant +nb-version+ 5)
-(defconstant +cbd-namelen+ #x18)
-(defconstant +cbd-titlelen+ #x28)
-(defconstant +cbd-descrlen+ #x28)
-(defconstant +nbu-duplicate+ 0)
-(defconstant +nbu-unique+ 1)
-(defconstant +nbu-notify+ 2)
-(defconstant +cof-show-hide+ 4)
-(defconstant +cx-invalid+ 0)
-(defconstant +cx-filter+ 1)
-(defconstant +cx-typefilter+ 2)
-(defconstant +cx-send+ 3)
-(defconstant +cx-signal+ 4)
-(defconstant +cx-translate+ 5)
-(defconstant +cx-broker+ 6)
-(defconstant +cx-debug+ 7)
-(defconstant +cx-custom+ 8)
-(defconstant +cx-zero+ 9)
-(defconstant +cxm-ievent+ #x20)
-(defconstant +cxm-command+ #x40)
-(defconstant +cxcmd-disable+ 15)
-(defconstant +cxcmd-enable+ #x11)
-(defconstant +cxcmd-appear+ #x13)
-(defconstant +cxcmd-disappear+ #x15)
-(defconstant +cxcmd-kill+ #x17)
-(defconstant +cxcmd-list-chg+ #x1B)
-(defconstant +cxcmd-unique+ #x19)
-(defconstant +ix-version+ 2)
-(defconstant +ixsym-shift+ 1)
-(defconstant +ixsym-caps+ 2)
-(defconstant +ixsym-alt+ 4)
-(defconstant +ixsym-shiftmask+ 3)
-(defconstant +ixsym-capsmask+ 7)
-(defconstant +ixsym-altmask+ #x30)
-(defconstant +ix-normalquals+ #x7FFF)
-(defconstant +cberr-ok+ 0)
-(defconstant +cberr-syserr+ 1)
-(defconstant +cberr-dup+ 2)
-(defconstant +cberr-version+ 3)
-(defconstant +coerr-isnull+ 1)
-(defconstant +coerr-nullattach+ 2)
-(defconstant +coerr-badfilter+ 4)
-(defconstant +coerr-badtype+ 8)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.COMMODITIES"
+    (:base *commodities-base* :version *commodities-version*)
 
-;;; --- structures from libraries/commodities.i ---
-(ffi:defcstruct (new-broker :size 26)   ; NewBroker (libraries/commodities.i)
-  (version :i8 0)
-  (reserve1 :i8 1)
-  (name :fptr 2)
-  (title :fptr 6)
-  (descr :fptr 10)
-  (unique :i16 14)
-  (flags :i16 16)
-  (pri :i8 18)
-  (reserve2 :i8 19)
-  (port :fptr 20)
-  (reserved-channel :i16 24)
-)
-(ffi:defcstruct (input-xpression :size 12)   ; InputXpression (libraries/commodities.i)
-  (version :u8 0)
-  (class :u8 1)
-  (code :u16 2)
-  (code-mask :u16 4)
-  (qualifier :u16 6)
-  (qual-mask :u16 8)
-  (qual-same :u16 10)
-)
+  ;; --- constants from libraries/commodities.i ---
+  (:const "+NB-VERSION+" 5)
+  (:const "+CBD-NAMELEN+" #x18)
+  (:const "+CBD-TITLELEN+" #x28)
+  (:const "+CBD-DESCRLEN+" #x28)
+  (:const "+NBU-DUPLICATE+" 0)
+  (:const "+NBU-UNIQUE+" 1)
+  (:const "+NBU-NOTIFY+" 2)
+  (:const "+COF-SHOW-HIDE+" 4)
+  (:const "+CX-INVALID+" 0)
+  (:const "+CX-FILTER+" 1)
+  (:const "+CX-TYPEFILTER+" 2)
+  (:const "+CX-SEND+" 3)
+  (:const "+CX-SIGNAL+" 4)
+  (:const "+CX-TRANSLATE+" 5)
+  (:const "+CX-BROKER+" 6)
+  (:const "+CX-DEBUG+" 7)
+  (:const "+CX-CUSTOM+" 8)
+  (:const "+CX-ZERO+" 9)
+  (:const "+CXM-IEVENT+" #x20)
+  (:const "+CXM-COMMAND+" #x40)
+  (:const "+CXCMD-DISABLE+" 15)
+  (:const "+CXCMD-ENABLE+" #x11)
+  (:const "+CXCMD-APPEAR+" #x13)
+  (:const "+CXCMD-DISAPPEAR+" #x15)
+  (:const "+CXCMD-KILL+" #x17)
+  (:const "+CXCMD-LIST-CHG+" #x1B)
+  (:const "+CXCMD-UNIQUE+" #x19)
+  (:const "+IX-VERSION+" 2)
+  (:const "+IXSYM-SHIFT+" 1)
+  (:const "+IXSYM-CAPS+" 2)
+  (:const "+IXSYM-ALT+" 4)
+  (:const "+IXSYM-SHIFTMASK+" 3)
+  (:const "+IXSYM-CAPSMASK+" 7)
+  (:const "+IXSYM-ALTMASK+" #x30)
+  (:const "+IX-NORMALQUALS+" #x7FFF)
+  (:const "+CBERR-OK+" 0)
+  (:const "+CBERR-SYSERR+" 1)
+  (:const "+CBERR-DUP+" 2)
+  (:const "+CBERR-VERSION+" 3)
+  (:const "+COERR-ISNULL+" 1)
+  (:const "+COERR-NULLATTACH+" 2)
+  (:const "+COERR-BADFILTER+" 4)
+  (:const "+COERR-BADTYPE+" 8)
 
-;;; --- functions (commodities_lib.sfd + MorphOS SDK) ---
-(amiga.ffi:defcfun create-cx-obj *commodities-base* -30 (:d0 type :a0 arg1 :a1 arg2)
-    :result :pointer
-    :doc "CxObj * CreateCxObj(ULONG type, LONG arg1, LONG arg2) (D0,A0,A1) LVO -30")
-(amiga.ffi:defcfun cx-broker *commodities-base* -36 (:a0 nb :d0 error)
-    :result :pointer
-    :doc "CxObj * CxBroker(CONST struct NewBroker * nb, LONG * error) (A0,D0) LVO -36")
-(amiga.ffi:defcfun activate-cx-obj *commodities-base* -42 (:a0 co :d0 flag)
-    :result :signed
-    :doc "LONG ActivateCxObj(CxObj * co, LONG flag) (A0,D0) LVO -42")
-(amiga.ffi:defcfun delete-cx-obj *commodities-base* -48 (:a0 co)
-    :result :void
-    :doc "VOID DeleteCxObj(CxObj * co) (A0) LVO -48")
-(amiga.ffi:defcfun delete-cx-obj-all *commodities-base* -54 (:a0 co)
-    :result :void
-    :doc "VOID DeleteCxObjAll(CxObj * co) (A0) LVO -54")
-(amiga.ffi:defcfun cx-obj-type *commodities-base* -60 (:a0 co)
-    :result :unsigned
-    :doc "ULONG CxObjType(CONST CxObj * co) (A0) LVO -60")
-(amiga.ffi:defcfun cx-obj-error *commodities-base* -66 (:a0 co)
-    :result :signed
-    :doc "LONG CxObjError(CONST CxObj * co) (A0) LVO -66")
-(amiga.ffi:defcfun clear-cx-obj-error *commodities-base* -72 (:a0 co)
-    :result :void
-    :doc "VOID ClearCxObjError(CxObj * co) (A0) LVO -72")
-(amiga.ffi:defcfun set-cx-obj-pri *commodities-base* -78 (:a0 co :d0 pri)
-    :result :signed
-    :doc "LONG SetCxObjPri(CxObj * co, LONG pri) (A0,D0) LVO -78")
-(amiga.ffi:defcfun attach-cx-obj *commodities-base* -84 (:a0 head-obj :a1 co)
-    :result :void
-    :doc "VOID AttachCxObj(CxObj * headObj, CxObj * co) (A0,A1) LVO -84")
-(amiga.ffi:defcfun enqueue-cx-obj *commodities-base* -90 (:a0 head-obj :a1 co)
-    :result :void
-    :doc "VOID EnqueueCxObj(CxObj * headObj, CxObj * co) (A0,A1) LVO -90")
-(amiga.ffi:defcfun insert-cx-obj *commodities-base* -96 (:a0 head-obj :a1 co :a2 pred)
-    :result :void
-    :doc "VOID InsertCxObj(CxObj * headObj, CxObj * co, CxObj * pred) (A0,A1,A2) LVO -96")
-(amiga.ffi:defcfun remove-cx-obj *commodities-base* -102 (:a0 co)
-    :result :void
-    :doc "VOID RemoveCxObj(CxObj * co) (A0) LVO -102")
-(amiga.ffi:defcfun set-translate *commodities-base* -114 (:a0 translator :a1 events)
-    :result :void
-    :doc "VOID SetTranslate(CxObj * translator, struct InputEvent * events) (A0,A1) LVO -114")
-(amiga.ffi:defcfun set-filter *commodities-base* -120 (:a0 filter :a1 text)
-    :result :void
-    :doc "VOID SetFilter(CxObj * filter, CONST_STRPTR text) (A0,A1) LVO -120")
-(amiga.ffi:defcfun set-filter-ix *commodities-base* -126 (:a0 filter :a1 ix)
-    :result :void
-    :doc "VOID SetFilterIX(CxObj * filter, CONST IX * ix) (A0,A1) LVO -126")
-(amiga.ffi:defcfun parse-ix *commodities-base* -132 (:a0 description :a1 ix)
-    :result :signed
-    :doc "LONG ParseIX(CONST_STRPTR description, IX * ix) (A0,A1) LVO -132")
-(amiga.ffi:defcfun cx-msg-type *commodities-base* -138 (:a0 cxm)
-    :result :unsigned
-    :doc "ULONG CxMsgType(CONST CxMsg * cxm) (A0) LVO -138")
-(amiga.ffi:defcfun cx-msg-data *commodities-base* -144 (:a0 cxm)
-    :result :pointer
-    :doc "APTR CxMsgData(CONST CxMsg * cxm) (A0) LVO -144")
-(amiga.ffi:defcfun cx-msg-id *commodities-base* -150 (:a0 cxm)
-    :result :signed
-    :doc "LONG CxMsgID(CONST CxMsg * cxm) (A0) LVO -150")
-(amiga.ffi:defcfun divert-cx-msg *commodities-base* -156 (:a0 cxm :a1 head-obj :a2 return-obj)
-    :result :void
-    :doc "VOID DivertCxMsg(CxMsg * cxm, CxObj * headObj, CxObj * returnObj) (A0,A1,A2) LVO -156")
-(amiga.ffi:defcfun route-cx-msg *commodities-base* -162 (:a0 cxm :a1 co)
-    :result :void
-    :doc "VOID RouteCxMsg(CxMsg * cxm, CxObj * co) (A0,A1) LVO -162")
-(amiga.ffi:defcfun dispose-cx-msg *commodities-base* -168 (:a0 cxm)
-    :result :void
-    :doc "VOID DisposeCxMsg(CxMsg * cxm) (A0) LVO -168")
-(amiga.ffi:defcfun invert-key-map *commodities-base* -174 (:d0 ansi-code :a0 event :a1 km)
-    :result :bool
-    :doc "BOOL InvertKeyMap(ULONG ansiCode, struct InputEvent * event, CONST struct KeyMap * km) (D0,A0,A1) LVO -174")
-(amiga.ffi:defcfun add-i-events *commodities-base* -180 (:a0 events)
-    :result :void
-    :doc "VOID AddIEvents(struct InputEvent * events) (A0) LVO -180")
-(amiga.ffi:defcfun match-ix *commodities-base* -204 (:a0 event :a1 ix)
-    :result :bool
-    :doc "BOOL MatchIX(CONST struct InputEvent * event, CONST IX * ix) (A0,A1) LVO -204")
+  ;; --- structures from libraries/commodities.i ---
+  (:struct "NEW-BROKER" 26   ; NewBroker (libraries/commodities.i)
+    ("VERSION" :i8 0)
+    ("RESERVE1" :i8 1)
+    ("NAME" :fptr 2)
+    ("TITLE" :fptr 6)
+    ("DESCR" :fptr 10)
+    ("UNIQUE" :i16 14)
+    ("FLAGS" :i16 16)
+    ("PRI" :i8 18)
+    ("RESERVE2" :i8 19)
+    ("PORT" :fptr 20)
+    ("RESERVED-CHANNEL" :i16 24)
+    )
+  (:struct "INPUT-XPRESSION" 12   ; InputXpression (libraries/commodities.i)
+    ("VERSION" :u8 0)
+    ("CLASS" :u8 1)
+    ("CODE" :u16 2)
+    ("CODE-MASK" :u16 4)
+    ("QUALIFIER" :u16 6)
+    ("QUAL-MASK" :u16 8)
+    ("QUAL-SAME" :u16 10)
+    )
+
+  ;; --- functions (commodities_lib.sfd + MorphOS SDK) ---
+  (:fn "CREATE-CX-OBJ" -30 (:d0 :a0 :a1) :pointer)   ; CxObj * CreateCxObj(ULONG type, LONG arg1, LONG arg2) (D0,A0,A1) LVO -30
+  (:fn "CX-BROKER" -36 (:a0 :d0) :pointer)   ; CxObj * CxBroker(CONST struct NewBroker * nb, LONG * error) (A0,D0) LVO -36
+  (:fn "ACTIVATE-CX-OBJ" -42 (:a0 :d0) :signed)   ; LONG ActivateCxObj(CxObj * co, LONG flag) (A0,D0) LVO -42
+  (:fn "DELETE-CX-OBJ" -48 (:a0) :void)   ; VOID DeleteCxObj(CxObj * co) (A0) LVO -48
+  (:fn "DELETE-CX-OBJ-ALL" -54 (:a0) :void)   ; VOID DeleteCxObjAll(CxObj * co) (A0) LVO -54
+  (:fn "CX-OBJ-TYPE" -60 (:a0) :unsigned)   ; ULONG CxObjType(CONST CxObj * co) (A0) LVO -60
+  (:fn "CX-OBJ-ERROR" -66 (:a0) :signed)   ; LONG CxObjError(CONST CxObj * co) (A0) LVO -66
+  (:fn "CLEAR-CX-OBJ-ERROR" -72 (:a0) :void)   ; VOID ClearCxObjError(CxObj * co) (A0) LVO -72
+  (:fn "SET-CX-OBJ-PRI" -78 (:a0 :d0) :signed)   ; LONG SetCxObjPri(CxObj * co, LONG pri) (A0,D0) LVO -78
+  (:fn "ATTACH-CX-OBJ" -84 (:a0 :a1) :void)   ; VOID AttachCxObj(CxObj * headObj, CxObj * co) (A0,A1) LVO -84
+  (:fn "ENQUEUE-CX-OBJ" -90 (:a0 :a1) :void)   ; VOID EnqueueCxObj(CxObj * headObj, CxObj * co) (A0,A1) LVO -90
+  (:fn "INSERT-CX-OBJ" -96 (:a0 :a1 :a2) :void)   ; VOID InsertCxObj(CxObj * headObj, CxObj * co, CxObj * pred) (A0,A1,A2) LVO -96
+  (:fn "REMOVE-CX-OBJ" -102 (:a0) :void)   ; VOID RemoveCxObj(CxObj * co) (A0) LVO -102
+  (:fn "SET-TRANSLATE" -114 (:a0 :a1) :void)   ; VOID SetTranslate(CxObj * translator, struct InputEvent * events) (A0,A1) LVO -114
+  (:fn "SET-FILTER" -120 (:a0 :a1) :void)   ; VOID SetFilter(CxObj * filter, CONST_STRPTR text) (A0,A1) LVO -120
+  (:fn "SET-FILTER-IX" -126 (:a0 :a1) :void)   ; VOID SetFilterIX(CxObj * filter, CONST IX * ix) (A0,A1) LVO -126
+  (:fn "PARSE-IX" -132 (:a0 :a1) :signed)   ; LONG ParseIX(CONST_STRPTR description, IX * ix) (A0,A1) LVO -132
+  (:fn "CX-MSG-TYPE" -138 (:a0) :unsigned)   ; ULONG CxMsgType(CONST CxMsg * cxm) (A0) LVO -138
+  (:fn "CX-MSG-DATA" -144 (:a0) :pointer)   ; APTR CxMsgData(CONST CxMsg * cxm) (A0) LVO -144
+  (:fn "CX-MSG-ID" -150 (:a0) :signed)   ; LONG CxMsgID(CONST CxMsg * cxm) (A0) LVO -150
+  (:fn "DIVERT-CX-MSG" -156 (:a0 :a1 :a2) :void)   ; VOID DivertCxMsg(CxMsg * cxm, CxObj * headObj, CxObj * returnObj) (A0,A1,A2) LVO -156
+  (:fn "ROUTE-CX-MSG" -162 (:a0 :a1) :void)   ; VOID RouteCxMsg(CxMsg * cxm, CxObj * co) (A0,A1) LVO -162
+  (:fn "DISPOSE-CX-MSG" -168 (:a0) :void)   ; VOID DisposeCxMsg(CxMsg * cxm) (A0) LVO -168
+  (:fn "INVERT-KEY-MAP" -174 (:d0 :a0 :a1) :bool)   ; BOOL InvertKeyMap(ULONG ansiCode, struct InputEvent * event, CONST struct KeyMap * km) (D0,A0,A1) LVO -174
+  (:fn "ADD-I-EVENTS" -180 (:a0) :void)   ; VOID AddIEvents(struct InputEvent * events) (A0) LVO -180
+  (:fn "MATCH-IX" -204 (:a0 :a1) :bool)   ; BOOL MatchIX(CONST struct InputEvent * event, CONST IX * ix) (A0,A1) LVO -204
+  )
 
 (provide "amiga/raw/commodities")

@@ -8,73 +8,14 @@
 ;;; 21 functions, 169 constants, 3 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.GADTOOLS"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*GADTOOLS-BASE*" "*GADTOOLS-VERSION*"
-   "+GENERIC-KIND+" "+BUTTON-KIND+" "+CHECKBOX-KIND+" "+INTEGER-KIND+" 
-   "+LISTVIEW-KIND+" "+MX-KIND+" "+NUMBER-KIND+" "+CYCLE-KIND+" 
-   "+PALETTE-KIND+" "+SCROLLER-KIND+" "+SLIDER-KIND+" "+STRING-KIND+" 
-   "+TEXT-KIND+" "+NUM-KINDS+" "+ARROWIDCMP+" "+BUTTONIDCMP+" 
-   "+CHECKBOXIDCMP+" "+INTEGERIDCMP+" "+LISTVIEWIDCMP+" "+MXIDCMP+" 
-   "+NUMBERIDCMP+" "+CYCLEIDCMP+" "+PALETTEIDCMP+" "+SCROLLERIDCMP+" 
-   "+SLIDERIDCMP+" "+STRINGIDCMP+" "+TEXTIDCMP+" "+PLACETEXT-LEFT+" 
-   "+PLACETEXT-RIGHT+" "+PLACETEXT-ABOVE+" "+PLACETEXT-BELOW+" 
-   "+PLACETEXT-IN+" "+NG-HIGHLABEL+" "+NG-GRIDLAYOUT+" "+MENU-IMAGE+" 
-   "+NM-TITLE+" "+NM-ITEM+" "+NM-SUB+" "+IM-ITEM+" "+IM-SUB+" "+NM-END+" 
-   "+NM-IGNORE+" "+NM-BARLABEL+" "+NM-MENUDISABLED+" "+NM-ITEMDISABLED+" 
-   "+NM-COMMANDSTRING+" "+NM-FLAGMASK+" "+NM-FLAGMASK-V39+" 
-   "+GTMENU-TRIMMED+" "+GTMENU-INVALID+" "+GTMENU-NOMEM+" "+MX-WIDTH+" 
-   "+MX-HEIGHT+" "+CHECKBOX-WIDTH+" "+CHECKBOX-HEIGHT+" "+GT-TAG-BASE+" 
-   "+GTVI-NEW-WINDOW+" "+GTVI-NW-TAGS+" "+GT-PRIVATE0+" "+GTCB-CHECKED+" 
-   "+GTLV-TOP+" "+GTLV-LABELS+" "+GTLV-READ-ONLY+" "+GTLV-SCROLL-WIDTH+" 
-   "+GTMX-LABELS+" "+GTMX-ACTIVE+" "+GTTX-TEXT+" "+GTTX-COPY-TEXT+" 
-   "+GTNM-NUMBER+" "+GTCY-LABELS+" "+GTCY-ACTIVE+" "+GTPA-DEPTH+" 
-   "+GTPA-COLOR+" "+GTPA-COLOR-OFFSET+" "+GTPA-INDICATOR-WIDTH+" 
-   "+GTPA-INDICATOR-HEIGHT+" "+GTSC-TOP+" "+GTSC-TOTAL+" "+GTSC-VISIBLE+" 
-   "+GTSC-OVERLAP+" "+GTSL-MIN+" "+GTSL-MAX+" "+GTSL-LEVEL+" 
-   "+GTSL-MAX-LEVEL-LEN+" "+GTSL-LEVEL-FORMAT+" "+GTSL-LEVEL-PLACE+" 
-   "+GTSL-DISP-FUNC+" "+GTST-STRING+" "+GTST-MAX-CHARS+" "+GTIN-NUMBER+" 
-   "+GTIN-MAX-CHARS+" "+GTMN-TEXT-ATTR+" "+GTMN-FRONT-PEN+" 
-   "+GTBB-RECESSED+" "+GT-VISUAL-INFO+" "+GTLV-SHOW-SELECTED+" 
-   "+GTLV-SELECTED+" "+GT-RESERVED1+" "+GTTX-BORDER+" "+GTNM-BORDER+" 
-   "+GTSC-ARROWS+" "+GTMN-MENU+" "+GTMX-SPACING+" "+GTMN-FULL-MENU+" 
-   "+GTMN-SECONDARY-ERROR+" "+GT-UNDERSCORE+" "+GTST-EDIT-HOOK+" 
-   "+GTIN-EDIT-HOOK+" "+GTMN-CHECKMARK+" "+GTMN-AMIGA-KEY+" 
-   "+GTMN-NEW-LOOK-MENUS+" "+GTCB-SCALED+" "+GTMX-SCALED+" 
-   "+GTPA-NUM-COLORS+" "+GTMX-TITLE-PLACE+" "+GTTX-FRONT-PEN+" 
-   "+GTTX-BACK-PEN+" "+GTTX-JUSTIFICATION+" "+GTNM-FRONT-PEN+" 
-   "+GTNM-BACK-PEN+" "+GTNM-JUSTIFICATION+" "+GTNM-FORMAT+" 
-   "+GTNM-MAX-NUMBER-LEN+" "+GTBB-FRAME-TYPE+" "+GTLV-MAKE-VISIBLE+" 
-   "+GTSL-MAX-PIXEL-LEN+" "+GTSL-JUSTIFICATION+" "+GTPA-COLOR-TABLE+" 
-   "+GTTX-CLIPPED+" "+GTNM-CLIPPED+" "+GTBB-RESERVED1+" "+GTMN-RESERVED1+" 
-   "+GTLV-TOTAL+" "+GTLV-VISIBLE+" "+GTBB-SCALE+" "+GTBB-HEADLINE+" 
-   "+GTBB-HEADLINE-PEN+" "+GTBB-HEADLINE-FONT+" "+GTVI-LEFT-BORDER+" 
-   "+GTVI-TOP-BORDER+" "+GTVI-ALIGN-RIGHT+" "+GTVI-ALIGN-BOTTOM+" 
-   "+GTVI-MIN-FONT-WIDTH+" "+GTVI-MIN-FONT-HEIGHT+" "+GTMX-SCALED-SPACING+" 
-   "+GT-RESERVED0+" "+GTJ-LEFT+" "+GTJ-RIGHT+" "+GTJ-CENTER+" 
-   "+BBFT-BUTTON+" "+BBFT-RIDGE+" "+BBFT-ICONDROPBOX+" "+BBFT-DISPLAY+" 
-   "+BBFT-CTXTFRAME+" "+INTERWIDTH+" "+INTERHEIGHT+" "+NWAY-KIND+" 
-   "+NWAYIDCMP+" "+GTNW-LABELS+" "+GTNW-ACTIVE+" "+GADTOOLBIT+" 
-   "+GADTOOLMASK+" "+LV-DRAW+" "+LVCB-OK+" "+LVCB-UNKNOWN+" "+LVR-NORMAL+" 
-   "+LVR-SELECTED+" "+LVR-NORMALDISABLED+" "+LVR-SELECTEDDISABLED+" 
-   "*NEW-GADGET-SIZE*" "NEW-GADGET-LEFT-EDGE" "NEW-GADGET-TOP-EDGE" 
-   "NEW-GADGET-WIDTH" "NEW-GADGET-HEIGHT" "NEW-GADGET-GADGET-TEXT" 
-   "NEW-GADGET-TEXT-ATTR" "NEW-GADGET-GADGET-ID" "NEW-GADGET-FLAGS" 
-   "NEW-GADGET-VISUAL-INFO" "NEW-GADGET-USER-DATA" "*NEW-MENU-SIZE*" 
-   "NEW-MENU-TYPE" "NEW-MENU-PAD" "NEW-MENU-LABEL" "NEW-MENU-COMM-KEY" 
-   "NEW-MENU-FLAGS" "NEW-MENU-MUTUAL-EXCLUDE" "NEW-MENU-USER-DATA" 
-   "*LV-DRAW-MSG-SIZE*" "LV-DRAW-MSG-METHOD-ID" "LV-DRAW-MSG-RASTPORT" 
-   "LV-DRAW-MSG-DRAW-INFO" "LV-DRAW-MSG-BOUNDS" "LV-DRAW-MSG-STATE" 
-   "CREATE-GADGET-A" "FREE-GADGETS" "GT-SET-GADGET-ATTRS-A" 
-   "CREATE-MENUS-A" "FREE-MENUS" "LAYOUT-MENU-ITEMS-A" "LAYOUT-MENUS-A" 
-   "GT-GET-I-MSG" "GT-REPLY-I-MSG" "GT-REFRESH-WINDOW" "GT-BEGIN-REFRESH" 
-   "GT-END-REFRESH" "GT-FILTER-I-MSG" "GT-POST-FILTER-I-MSG" 
-   "CREATE-CONTEXT" "DRAW-BEVEL-BOX-A" "GET-VISUAL-INFO-A" 
-   "FREE-VISUAL-INFO" "SET-DESIGN-FONT-A" "SCALE-GADGET-RECT-A" 
-   "GT-GET-GADGET-ATTRS-A" ))
+  (:export "*GADTOOLS-BASE*" "*GADTOOLS-VERSION*"))
 
 (in-package "AMIGA.RAW.GADTOOLS")
 
@@ -88,272 +29,235 @@
 (defun %version>= (n)
   (and *gadtools-version* (>= *gadtools-version* n)))
 
-;;; --- constants from libraries/gadtools.i ---
-(defconstant +generic-kind+ 0)
-(defconstant +button-kind+ 1)
-(defconstant +checkbox-kind+ 2)
-(defconstant +integer-kind+ 3)
-(defconstant +listview-kind+ 4)
-(defconstant +mx-kind+ 5)
-(defconstant +number-kind+ 6)
-(defconstant +cycle-kind+ 7)
-(defconstant +palette-kind+ 8)
-(defconstant +scroller-kind+ 9)
-(defconstant +slider-kind+ 11)
-(defconstant +string-kind+ 12)
-(defconstant +text-kind+ 13)
-(defconstant +num-kinds+ 14)
-(defconstant +arrowidcmp+ #x400068)
-(defconstant +buttonidcmp+ #x40)
-(defconstant +checkboxidcmp+ #x40)
-(defconstant +integeridcmp+ #x40)
-(defconstant +listviewidcmp+ #x400078)
-(defconstant +mxidcmp+ #x20)
-(defconstant +numberidcmp+ 0)
-(defconstant +cycleidcmp+ #x40)
-(defconstant +paletteidcmp+ #x40)
-(defconstant +scrolleridcmp+ #x70)
-(defconstant +slideridcmp+ #x70)
-(defconstant +stringidcmp+ #x40)
-(defconstant +textidcmp+ 0)
-(defconstant +placetext-left+ 1)
-(defconstant +placetext-right+ 2)
-(defconstant +placetext-above+ 4)
-(defconstant +placetext-below+ 8)
-(defconstant +placetext-in+ #x10)
-(defconstant +ng-highlabel+ #x20)
-(defconstant +ng-gridlayout+ #x80)
-(defconstant +menu-image+ #x80)
-(defconstant +nm-title+ 1)
-(defconstant +nm-item+ 2)
-(defconstant +nm-sub+ 3)
-(defconstant +im-item+ #x82)
-(defconstant +im-sub+ #x83)
-(defconstant +nm-end+ 0)
-(defconstant +nm-ignore+ #x40)
-(defconstant +nm-barlabel+ -1)
-(defconstant +nm-menudisabled+ 1)
-(defconstant +nm-itemdisabled+ #x10)
-(defconstant +nm-commandstring+ 4)
-(defconstant +nm-flagmask+ -199)
-(defconstant +nm-flagmask-v39+ -195)
-(defconstant +gtmenu-trimmed+ 1)
-(defconstant +gtmenu-invalid+ 2)
-(defconstant +gtmenu-nomem+ 3)
-(defconstant +mx-width+ #x11)
-(defconstant +mx-height+ 9)
-(defconstant +checkbox-width+ #x1A)
-(defconstant +checkbox-height+ 11)
-(defconstant +gt-tag-base+ #x80080000)
-(defconstant +gtvi-new-window+ #x80080001)
-(defconstant +gtvi-nw-tags+ #x80080002)
-(defconstant +gt-private0+ #x80080003)
-(defconstant +gtcb-checked+ #x80080004)
-(defconstant +gtlv-top+ #x80080005)
-(defconstant +gtlv-labels+ #x80080006)
-(defconstant +gtlv-read-only+ #x80080007)
-(defconstant +gtlv-scroll-width+ #x80080008)
-(defconstant +gtmx-labels+ #x80080009)
-(defconstant +gtmx-active+ #x8008000A)
-(defconstant +gttx-text+ #x8008000B)
-(defconstant +gttx-copy-text+ #x8008000C)
-(defconstant +gtnm-number+ #x8008000D)
-(defconstant +gtcy-labels+ #x8008000E)
-(defconstant +gtcy-active+ #x8008000F)
-(defconstant +gtpa-depth+ #x80080010)
-(defconstant +gtpa-color+ #x80080011)
-(defconstant +gtpa-color-offset+ #x80080012)
-(defconstant +gtpa-indicator-width+ #x80080013)
-(defconstant +gtpa-indicator-height+ #x80080014)
-(defconstant +gtsc-top+ #x80080015)
-(defconstant +gtsc-total+ #x80080016)
-(defconstant +gtsc-visible+ #x80080017)
-(defconstant +gtsc-overlap+ #x80080018)
-(defconstant +gtsl-min+ #x80080026)
-(defconstant +gtsl-max+ #x80080027)
-(defconstant +gtsl-level+ #x80080028)
-(defconstant +gtsl-max-level-len+ #x80080029)
-(defconstant +gtsl-level-format+ #x8008002A)
-(defconstant +gtsl-level-place+ #x8008002B)
-(defconstant +gtsl-disp-func+ #x8008002C)
-(defconstant +gtst-string+ #x8008002D)
-(defconstant +gtst-max-chars+ #x8008002E)
-(defconstant +gtin-number+ #x8008002F)
-(defconstant +gtin-max-chars+ #x80080030)
-(defconstant +gtmn-text-attr+ #x80080031)
-(defconstant +gtmn-front-pen+ #x80080032)
-(defconstant +gtbb-recessed+ #x80080033)
-(defconstant +gt-visual-info+ #x80080034)
-(defconstant +gtlv-show-selected+ #x80080035)
-(defconstant +gtlv-selected+ #x80080036)
-(defconstant +gt-reserved1+ #x80080038)
-(defconstant +gttx-border+ #x80080039)
-(defconstant +gtnm-border+ #x8008003A)
-(defconstant +gtsc-arrows+ #x8008003B)
-(defconstant +gtmn-menu+ #x8008003C)
-(defconstant +gtmx-spacing+ #x8008003D)
-(defconstant +gtmn-full-menu+ #x8008003E)
-(defconstant +gtmn-secondary-error+ #x8008003F)
-(defconstant +gt-underscore+ #x80080040)
-(defconstant +gtst-edit-hook+ #x80080037)
-(defconstant +gtin-edit-hook+ #x80080037)
-(defconstant +gtmn-checkmark+ #x80080041)
-(defconstant +gtmn-amiga-key+ #x80080042)
-(defconstant +gtmn-new-look-menus+ #x80080043)
-(defconstant +gtcb-scaled+ #x80080044)
-(defconstant +gtmx-scaled+ #x80080045)
-(defconstant +gtpa-num-colors+ #x80080046)
-(defconstant +gtmx-title-place+ #x80080047)
-(defconstant +gttx-front-pen+ #x80080048)
-(defconstant +gttx-back-pen+ #x80080049)
-(defconstant +gttx-justification+ #x8008004A)
-(defconstant +gtnm-front-pen+ #x80080048)
-(defconstant +gtnm-back-pen+ #x80080049)
-(defconstant +gtnm-justification+ #x8008004A)
-(defconstant +gtnm-format+ #x8008004B)
-(defconstant +gtnm-max-number-len+ #x8008004C)
-(defconstant +gtbb-frame-type+ #x8008004D)
-(defconstant +gtlv-make-visible+ #x8008004E)
-(defconstant +gtsl-max-pixel-len+ #x80080050)
-(defconstant +gtsl-justification+ #x80080051)
-(defconstant +gtpa-color-table+ #x80080052)
-(defconstant +gttx-clipped+ #x80080055)
-(defconstant +gtnm-clipped+ #x80080055)
-(defconstant +gtbb-reserved1+ #x8008005A)
-(defconstant +gtmn-reserved1+ #x8008005B)
-(defconstant +gtlv-total+ #x8008005C)
-(defconstant +gtlv-visible+ #x8008005D)
-(defconstant +gtbb-scale+ #x8008005C)
-(defconstant +gtbb-headline+ #x8008005D)
-(defconstant +gtbb-headline-pen+ #x8008005E)
-(defconstant +gtbb-headline-font+ #x8008005F)
-(defconstant +gtvi-left-border+ #x80080060)
-(defconstant +gtvi-top-border+ #x80080061)
-(defconstant +gtvi-align-right+ #x80080062)
-(defconstant +gtvi-align-bottom+ #x80080063)
-(defconstant +gtvi-min-font-width+ #x80080064)
-(defconstant +gtvi-min-font-height+ #x80080065)
-(defconstant +gtmx-scaled-spacing+ #x80080066)
-(defconstant +gt-reserved0+ #x80080037)
-(defconstant +gtj-left+ 0)
-(defconstant +gtj-right+ 1)
-(defconstant +gtj-center+ 2)
-(defconstant +bbft-button+ 1)
-(defconstant +bbft-ridge+ 2)
-(defconstant +bbft-icondropbox+ 3)
-(defconstant +bbft-display+ 6)
-(defconstant +bbft-ctxtframe+ 7)
-(defconstant +interwidth+ 8)
-(defconstant +interheight+ 4)
-(defconstant +nway-kind+ 7)
-(defconstant +nwayidcmp+ #x40)
-(defconstant +gtnw-labels+ #x8008000E)
-(defconstant +gtnw-active+ #x8008000F)
-(defconstant +gadtoolbit+ #x8000)
-(defconstant +gadtoolmask+ -32769)
-(defconstant +lv-draw+ #x202)
-(defconstant +lvcb-ok+ 0)
-(defconstant +lvcb-unknown+ 1)
-(defconstant +lvr-normal+ 0)
-(defconstant +lvr-selected+ 1)
-(defconstant +lvr-normaldisabled+ 2)
-(defconstant +lvr-selecteddisabled+ 8)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.GADTOOLS"
+    (:base *gadtools-base* :version *gadtools-version*)
 
-;;; --- structures from libraries/gadtools.i ---
-(ffi:defcstruct (new-gadget :size 30)   ; NewGadget (libraries/gadtools.i)
-  (left-edge :i16 0)
-  (top-edge :i16 2)
-  (width :i16 4)
-  (height :i16 6)
-  (gadget-text :fptr 8)
-  (text-attr :fptr 12)
-  (gadget-id :u16 16)
-  (flags :u32 18)
-  (visual-info :fptr 22)
-  (user-data :fptr 26)
-)
-(ffi:defcstruct (new-menu :size 20)   ; NewMenu (libraries/gadtools.i)
-  (type :u8 0)
-  (pad :u8 1)
-  (label :fptr 2)
-  (comm-key :fptr 6)
-  (flags :u16 10)
-  (mutual-exclude :i32 12)
-  (user-data :fptr 16)
-)
-(ffi:defcstruct (lv-draw-msg :size 24)   ; LVDrawMsg (libraries/gadtools.i)
-  (method-id :u32 0)
-  (rastport :fptr 4)
-  (draw-info :fptr 8)
-  (bounds (:struct 8) 12)
-  (state :u32 20)
-)
+  ;; --- constants from libraries/gadtools.i ---
+  (:const "+GENERIC-KIND+" 0)
+  (:const "+BUTTON-KIND+" 1)
+  (:const "+CHECKBOX-KIND+" 2)
+  (:const "+INTEGER-KIND+" 3)
+  (:const "+LISTVIEW-KIND+" 4)
+  (:const "+MX-KIND+" 5)
+  (:const "+NUMBER-KIND+" 6)
+  (:const "+CYCLE-KIND+" 7)
+  (:const "+PALETTE-KIND+" 8)
+  (:const "+SCROLLER-KIND+" 9)
+  (:const "+SLIDER-KIND+" 11)
+  (:const "+STRING-KIND+" 12)
+  (:const "+TEXT-KIND+" 13)
+  (:const "+NUM-KINDS+" 14)
+  (:const "+ARROWIDCMP+" #x400068)
+  (:const "+BUTTONIDCMP+" #x40)
+  (:const "+CHECKBOXIDCMP+" #x40)
+  (:const "+INTEGERIDCMP+" #x40)
+  (:const "+LISTVIEWIDCMP+" #x400078)
+  (:const "+MXIDCMP+" #x20)
+  (:const "+NUMBERIDCMP+" 0)
+  (:const "+CYCLEIDCMP+" #x40)
+  (:const "+PALETTEIDCMP+" #x40)
+  (:const "+SCROLLERIDCMP+" #x70)
+  (:const "+SLIDERIDCMP+" #x70)
+  (:const "+STRINGIDCMP+" #x40)
+  (:const "+TEXTIDCMP+" 0)
+  (:const "+PLACETEXT-LEFT+" 1)
+  (:const "+PLACETEXT-RIGHT+" 2)
+  (:const "+PLACETEXT-ABOVE+" 4)
+  (:const "+PLACETEXT-BELOW+" 8)
+  (:const "+PLACETEXT-IN+" #x10)
+  (:const "+NG-HIGHLABEL+" #x20)
+  (:const "+NG-GRIDLAYOUT+" #x80)
+  (:const "+MENU-IMAGE+" #x80)
+  (:const "+NM-TITLE+" 1)
+  (:const "+NM-ITEM+" 2)
+  (:const "+NM-SUB+" 3)
+  (:const "+IM-ITEM+" #x82)
+  (:const "+IM-SUB+" #x83)
+  (:const "+NM-END+" 0)
+  (:const "+NM-IGNORE+" #x40)
+  (:const "+NM-BARLABEL+" -1)
+  (:const "+NM-MENUDISABLED+" 1)
+  (:const "+NM-ITEMDISABLED+" #x10)
+  (:const "+NM-COMMANDSTRING+" 4)
+  (:const "+NM-FLAGMASK+" -199)
+  (:const "+NM-FLAGMASK-V39+" -195)
+  (:const "+GTMENU-TRIMMED+" 1)
+  (:const "+GTMENU-INVALID+" 2)
+  (:const "+GTMENU-NOMEM+" 3)
+  (:const "+MX-WIDTH+" #x11)
+  (:const "+MX-HEIGHT+" 9)
+  (:const "+CHECKBOX-WIDTH+" #x1A)
+  (:const "+CHECKBOX-HEIGHT+" 11)
+  (:const "+GT-TAG-BASE+" #x80080000)
+  (:const "+GTVI-NEW-WINDOW+" #x80080001)
+  (:const "+GTVI-NW-TAGS+" #x80080002)
+  (:const "+GT-PRIVATE0+" #x80080003)
+  (:const "+GTCB-CHECKED+" #x80080004)
+  (:const "+GTLV-TOP+" #x80080005)
+  (:const "+GTLV-LABELS+" #x80080006)
+  (:const "+GTLV-READ-ONLY+" #x80080007)
+  (:const "+GTLV-SCROLL-WIDTH+" #x80080008)
+  (:const "+GTMX-LABELS+" #x80080009)
+  (:const "+GTMX-ACTIVE+" #x8008000A)
+  (:const "+GTTX-TEXT+" #x8008000B)
+  (:const "+GTTX-COPY-TEXT+" #x8008000C)
+  (:const "+GTNM-NUMBER+" #x8008000D)
+  (:const "+GTCY-LABELS+" #x8008000E)
+  (:const "+GTCY-ACTIVE+" #x8008000F)
+  (:const "+GTPA-DEPTH+" #x80080010)
+  (:const "+GTPA-COLOR+" #x80080011)
+  (:const "+GTPA-COLOR-OFFSET+" #x80080012)
+  (:const "+GTPA-INDICATOR-WIDTH+" #x80080013)
+  (:const "+GTPA-INDICATOR-HEIGHT+" #x80080014)
+  (:const "+GTSC-TOP+" #x80080015)
+  (:const "+GTSC-TOTAL+" #x80080016)
+  (:const "+GTSC-VISIBLE+" #x80080017)
+  (:const "+GTSC-OVERLAP+" #x80080018)
+  (:const "+GTSL-MIN+" #x80080026)
+  (:const "+GTSL-MAX+" #x80080027)
+  (:const "+GTSL-LEVEL+" #x80080028)
+  (:const "+GTSL-MAX-LEVEL-LEN+" #x80080029)
+  (:const "+GTSL-LEVEL-FORMAT+" #x8008002A)
+  (:const "+GTSL-LEVEL-PLACE+" #x8008002B)
+  (:const "+GTSL-DISP-FUNC+" #x8008002C)
+  (:const "+GTST-STRING+" #x8008002D)
+  (:const "+GTST-MAX-CHARS+" #x8008002E)
+  (:const "+GTIN-NUMBER+" #x8008002F)
+  (:const "+GTIN-MAX-CHARS+" #x80080030)
+  (:const "+GTMN-TEXT-ATTR+" #x80080031)
+  (:const "+GTMN-FRONT-PEN+" #x80080032)
+  (:const "+GTBB-RECESSED+" #x80080033)
+  (:const "+GT-VISUAL-INFO+" #x80080034)
+  (:const "+GTLV-SHOW-SELECTED+" #x80080035)
+  (:const "+GTLV-SELECTED+" #x80080036)
+  (:const "+GT-RESERVED1+" #x80080038)
+  (:const "+GTTX-BORDER+" #x80080039)
+  (:const "+GTNM-BORDER+" #x8008003A)
+  (:const "+GTSC-ARROWS+" #x8008003B)
+  (:const "+GTMN-MENU+" #x8008003C)
+  (:const "+GTMX-SPACING+" #x8008003D)
+  (:const "+GTMN-FULL-MENU+" #x8008003E)
+  (:const "+GTMN-SECONDARY-ERROR+" #x8008003F)
+  (:const "+GT-UNDERSCORE+" #x80080040)
+  (:const "+GTST-EDIT-HOOK+" #x80080037)
+  (:const "+GTIN-EDIT-HOOK+" #x80080037)
+  (:const "+GTMN-CHECKMARK+" #x80080041)
+  (:const "+GTMN-AMIGA-KEY+" #x80080042)
+  (:const "+GTMN-NEW-LOOK-MENUS+" #x80080043)
+  (:const "+GTCB-SCALED+" #x80080044)
+  (:const "+GTMX-SCALED+" #x80080045)
+  (:const "+GTPA-NUM-COLORS+" #x80080046)
+  (:const "+GTMX-TITLE-PLACE+" #x80080047)
+  (:const "+GTTX-FRONT-PEN+" #x80080048)
+  (:const "+GTTX-BACK-PEN+" #x80080049)
+  (:const "+GTTX-JUSTIFICATION+" #x8008004A)
+  (:const "+GTNM-FRONT-PEN+" #x80080048)
+  (:const "+GTNM-BACK-PEN+" #x80080049)
+  (:const "+GTNM-JUSTIFICATION+" #x8008004A)
+  (:const "+GTNM-FORMAT+" #x8008004B)
+  (:const "+GTNM-MAX-NUMBER-LEN+" #x8008004C)
+  (:const "+GTBB-FRAME-TYPE+" #x8008004D)
+  (:const "+GTLV-MAKE-VISIBLE+" #x8008004E)
+  (:const "+GTSL-MAX-PIXEL-LEN+" #x80080050)
+  (:const "+GTSL-JUSTIFICATION+" #x80080051)
+  (:const "+GTPA-COLOR-TABLE+" #x80080052)
+  (:const "+GTTX-CLIPPED+" #x80080055)
+  (:const "+GTNM-CLIPPED+" #x80080055)
+  (:const "+GTBB-RESERVED1+" #x8008005A)
+  (:const "+GTMN-RESERVED1+" #x8008005B)
+  (:const "+GTLV-TOTAL+" #x8008005C)
+  (:const "+GTLV-VISIBLE+" #x8008005D)
+  (:const "+GTBB-SCALE+" #x8008005C)
+  (:const "+GTBB-HEADLINE+" #x8008005D)
+  (:const "+GTBB-HEADLINE-PEN+" #x8008005E)
+  (:const "+GTBB-HEADLINE-FONT+" #x8008005F)
+  (:const "+GTVI-LEFT-BORDER+" #x80080060)
+  (:const "+GTVI-TOP-BORDER+" #x80080061)
+  (:const "+GTVI-ALIGN-RIGHT+" #x80080062)
+  (:const "+GTVI-ALIGN-BOTTOM+" #x80080063)
+  (:const "+GTVI-MIN-FONT-WIDTH+" #x80080064)
+  (:const "+GTVI-MIN-FONT-HEIGHT+" #x80080065)
+  (:const "+GTMX-SCALED-SPACING+" #x80080066)
+  (:const "+GT-RESERVED0+" #x80080037)
+  (:const "+GTJ-LEFT+" 0)
+  (:const "+GTJ-RIGHT+" 1)
+  (:const "+GTJ-CENTER+" 2)
+  (:const "+BBFT-BUTTON+" 1)
+  (:const "+BBFT-RIDGE+" 2)
+  (:const "+BBFT-ICONDROPBOX+" 3)
+  (:const "+BBFT-DISPLAY+" 6)
+  (:const "+BBFT-CTXTFRAME+" 7)
+  (:const "+INTERWIDTH+" 8)
+  (:const "+INTERHEIGHT+" 4)
+  (:const "+NWAY-KIND+" 7)
+  (:const "+NWAYIDCMP+" #x40)
+  (:const "+GTNW-LABELS+" #x8008000E)
+  (:const "+GTNW-ACTIVE+" #x8008000F)
+  (:const "+GADTOOLBIT+" #x8000)
+  (:const "+GADTOOLMASK+" -32769)
+  (:const "+LV-DRAW+" #x202)
+  (:const "+LVCB-OK+" 0)
+  (:const "+LVCB-UNKNOWN+" 1)
+  (:const "+LVR-NORMAL+" 0)
+  (:const "+LVR-SELECTED+" 1)
+  (:const "+LVR-NORMALDISABLED+" 2)
+  (:const "+LVR-SELECTEDDISABLED+" 8)
 
-;;; --- functions (gadtools_lib.sfd + MorphOS SDK) ---
-(amiga.ffi:defcfun create-gadget-a *gadtools-base* -30 (:d0 kind :a0 gad :a1 ng :a2 taglist)
-    :result :pointer
-    :doc "struct Gadget * CreateGadgetA(ULONG kind, struct Gadget * gad, struct NewGadget * ng, CONST struct TagItem * taglist) (D0,A0,A1,A2) LVO -30")
-(amiga.ffi:defcfun free-gadgets *gadtools-base* -36 (:a0 gad)
-    :result :void
-    :doc "VOID FreeGadgets(struct Gadget * gad) (A0) LVO -36")
-(amiga.ffi:defcfun gt-set-gadget-attrs-a *gadtools-base* -42 (:a0 gad :a1 win :a2 req :a3 taglist)
-    :result :void
-    :doc "VOID GT_SetGadgetAttrsA(struct Gadget * gad, struct Window * win, struct Requester * req, CONST struct TagItem * taglist) (A0,A1,A2,A3) LVO -42")
-(amiga.ffi:defcfun create-menus-a *gadtools-base* -48 (:a0 newmenu :a1 taglist)
-    :result :pointer
-    :doc "struct Menu * CreateMenusA(CONST struct NewMenu * newmenu, struct TagItem * taglist) (A0,A1) LVO -48")
-(amiga.ffi:defcfun free-menus *gadtools-base* -54 (:a0 menu)
-    :result :void
-    :doc "VOID FreeMenus(struct Menu * menu) (A0) LVO -54")
-(amiga.ffi:defcfun layout-menu-items-a *gadtools-base* -60 (:a0 firstitem :a1 vi :a2 taglist)
-    :result :bool
-    :doc "BOOL LayoutMenuItemsA(struct MenuItem * firstitem, APTR vi, CONST struct TagItem * taglist) (A0,A1,A2) LVO -60")
-(amiga.ffi:defcfun layout-menus-a *gadtools-base* -66 (:a0 firstmenu :a1 vi :a2 taglist)
-    :result :bool
-    :doc "BOOL LayoutMenusA(struct Menu * firstmenu, APTR vi, CONST struct TagItem * taglist) (A0,A1,A2) LVO -66")
-(amiga.ffi:defcfun gt-get-i-msg *gadtools-base* -72 (:a0 iport)
-    :result :pointer
-    :doc "struct IntuiMessage * GT_GetIMsg(struct MsgPort * iport) (A0) LVO -72")
-(amiga.ffi:defcfun gt-reply-i-msg *gadtools-base* -78 (:a1 imsg)
-    :result :void
-    :doc "VOID GT_ReplyIMsg(struct IntuiMessage * imsg) (A1) LVO -78")
-(amiga.ffi:defcfun gt-refresh-window *gadtools-base* -84 (:a0 win :a1 req)
-    :result :void
-    :doc "VOID GT_RefreshWindow(struct Window * win, struct Requester * req) (A0,A1) LVO -84")
-(amiga.ffi:defcfun gt-begin-refresh *gadtools-base* -90 (:a0 win)
-    :result :void
-    :doc "VOID GT_BeginRefresh(struct Window * win) (A0) LVO -90")
-(amiga.ffi:defcfun gt-end-refresh *gadtools-base* -96 (:a0 win :d0 complete)
-    :result :void
-    :doc "VOID GT_EndRefresh(struct Window * win, BOOL complete) (A0,D0) LVO -96")
-(amiga.ffi:defcfun gt-filter-i-msg *gadtools-base* -102 (:a1 imsg)
-    :result :pointer
-    :doc "struct IntuiMessage * GT_FilterIMsg(CONST struct IntuiMessage * imsg) (A1) LVO -102")
-(amiga.ffi:defcfun gt-post-filter-i-msg *gadtools-base* -108 (:a1 imsg)
-    :result :pointer
-    :doc "struct IntuiMessage * GT_PostFilterIMsg(struct IntuiMessage * imsg) (A1) LVO -108")
-(amiga.ffi:defcfun create-context *gadtools-base* -114 (:a0 glistptr)
-    :result :pointer
-    :doc "struct Gadget * CreateContext(struct Gadget ** glistptr) (A0) LVO -114")
-(amiga.ffi:defcfun draw-bevel-box-a *gadtools-base* -120 (:a0 rport :d0 left :d1 top :d2 width :d3 height :a1 taglist)
-    :result :void
-    :doc "VOID DrawBevelBoxA(struct RastPort * rport, WORD left, WORD top, WORD width, WORD height, CONST struct TagItem * taglist) (A0,D0,D1,D2,D3,A1) LVO -120")
-(amiga.ffi:defcfun get-visual-info-a *gadtools-base* -126 (:a0 screen :a1 taglist)
-    :result :pointer
-    :doc "APTR GetVisualInfoA(struct Screen * screen, CONST struct TagItem * taglist) (A0,A1) LVO -126")
-(amiga.ffi:defcfun free-visual-info *gadtools-base* -132 (:a0 vi)
-    :result :void
-    :doc "VOID FreeVisualInfo(APTR vi) (A0) LVO -132")
-(when (and (not (member :morphos *features*)) (%version>= 47))
-  (amiga.ffi:defcfun set-design-font-a *gadtools-base* -138 (:a0 vi :a1 tattr :a2 tags)
-    :result :signed
-    :doc "LONG SetDesignFontA(APTR vi, struct TextAttr * tattr, CONST struct TagItem * tags) (A0,A1,A2) LVO -138"))
-(when (and (not (member :morphos *features*)) (%version>= 47))
-  (amiga.ffi:defcfun scale-gadget-rect-a *gadtools-base* -144 (:a0 ng :a1 tags)
-    :result :signed
-    :doc "LONG ScaleGadgetRectA(struct NewGadget * ng, CONST struct TagItem * tags) (A0,A1) LVO -144"))
-(amiga.ffi:defcfun gt-get-gadget-attrs-a *gadtools-base* -174 (:a0 gad :a1 win :a2 req :a3 taglist)
-    :result :signed
-    :doc "LONG GT_GetGadgetAttrsA(struct Gadget * gad, struct Window * win, struct Requester * req, CONST struct TagItem * taglist) (A0,A1,A2,A3) LVO -174")
+  ;; --- structures from libraries/gadtools.i ---
+  (:struct "NEW-GADGET" 30   ; NewGadget (libraries/gadtools.i)
+    ("LEFT-EDGE" :i16 0)
+    ("TOP-EDGE" :i16 2)
+    ("WIDTH" :i16 4)
+    ("HEIGHT" :i16 6)
+    ("GADGET-TEXT" :fptr 8)
+    ("TEXT-ATTR" :fptr 12)
+    ("GADGET-ID" :u16 16)
+    ("FLAGS" :u32 18)
+    ("VISUAL-INFO" :fptr 22)
+    ("USER-DATA" :fptr 26)
+    )
+  (:struct "NEW-MENU" 20   ; NewMenu (libraries/gadtools.i)
+    ("TYPE" :u8 0)
+    ("PAD" :u8 1)
+    ("LABEL" :fptr 2)
+    ("COMM-KEY" :fptr 6)
+    ("FLAGS" :u16 10)
+    ("MUTUAL-EXCLUDE" :i32 12)
+    ("USER-DATA" :fptr 16)
+    )
+  (:struct "LV-DRAW-MSG" 24   ; LVDrawMsg (libraries/gadtools.i)
+    ("METHOD-ID" :u32 0)
+    ("RASTPORT" :fptr 4)
+    ("DRAW-INFO" :fptr 8)
+    ("BOUNDS" (:struct 8) 12)
+    ("STATE" :u32 20)
+    )
+
+  ;; --- functions (gadtools_lib.sfd + MorphOS SDK) ---
+  (:fn "CREATE-GADGET-A" -30 (:d0 :a0 :a1 :a2) :pointer)   ; struct Gadget * CreateGadgetA(ULONG kind, struct Gadget * gad, struct NewGadget * ng, CONST struct TagItem * taglist) (D0,A0,A1,A2) LVO -30
+  (:fn "FREE-GADGETS" -36 (:a0) :void)   ; VOID FreeGadgets(struct Gadget * gad) (A0) LVO -36
+  (:fn "GT-SET-GADGET-ATTRS-A" -42 (:a0 :a1 :a2 :a3) :void)   ; VOID GT_SetGadgetAttrsA(struct Gadget * gad, struct Window * win, struct Requester * req, CONST struct TagItem * taglist) (A0,A1,A2,A3) LVO -42
+  (:fn "CREATE-MENUS-A" -48 (:a0 :a1) :pointer)   ; struct Menu * CreateMenusA(CONST struct NewMenu * newmenu, struct TagItem * taglist) (A0,A1) LVO -48
+  (:fn "FREE-MENUS" -54 (:a0) :void)   ; VOID FreeMenus(struct Menu * menu) (A0) LVO -54
+  (:fn "LAYOUT-MENU-ITEMS-A" -60 (:a0 :a1 :a2) :bool)   ; BOOL LayoutMenuItemsA(struct MenuItem * firstitem, APTR vi, CONST struct TagItem * taglist) (A0,A1,A2) LVO -60
+  (:fn "LAYOUT-MENUS-A" -66 (:a0 :a1 :a2) :bool)   ; BOOL LayoutMenusA(struct Menu * firstmenu, APTR vi, CONST struct TagItem * taglist) (A0,A1,A2) LVO -66
+  (:fn "GT-GET-I-MSG" -72 (:a0) :pointer)   ; struct IntuiMessage * GT_GetIMsg(struct MsgPort * iport) (A0) LVO -72
+  (:fn "GT-REPLY-I-MSG" -78 (:a1) :void)   ; VOID GT_ReplyIMsg(struct IntuiMessage * imsg) (A1) LVO -78
+  (:fn "GT-REFRESH-WINDOW" -84 (:a0 :a1) :void)   ; VOID GT_RefreshWindow(struct Window * win, struct Requester * req) (A0,A1) LVO -84
+  (:fn "GT-BEGIN-REFRESH" -90 (:a0) :void)   ; VOID GT_BeginRefresh(struct Window * win) (A0) LVO -90
+  (:fn "GT-END-REFRESH" -96 (:a0 :d0) :void)   ; VOID GT_EndRefresh(struct Window * win, BOOL complete) (A0,D0) LVO -96
+  (:fn "GT-FILTER-I-MSG" -102 (:a1) :pointer)   ; struct IntuiMessage * GT_FilterIMsg(CONST struct IntuiMessage * imsg) (A1) LVO -102
+  (:fn "GT-POST-FILTER-I-MSG" -108 (:a1) :pointer)   ; struct IntuiMessage * GT_PostFilterIMsg(struct IntuiMessage * imsg) (A1) LVO -108
+  (:fn "CREATE-CONTEXT" -114 (:a0) :pointer)   ; struct Gadget * CreateContext(struct Gadget ** glistptr) (A0) LVO -114
+  (:fn "DRAW-BEVEL-BOX-A" -120 (:a0 :d0 :d1 :d2 :d3 :a1) :void)   ; VOID DrawBevelBoxA(struct RastPort * rport, WORD left, WORD top, WORD width, WORD height, CONST struct TagItem * taglist) (A0,D0,D1,D2,D3,A1) LVO -120
+  (:fn "GET-VISUAL-INFO-A" -126 (:a0 :a1) :pointer)   ; APTR GetVisualInfoA(struct Screen * screen, CONST struct TagItem * taglist) (A0,A1) LVO -126
+  (:fn "FREE-VISUAL-INFO" -132 (:a0) :void)   ; VOID FreeVisualInfo(APTR vi) (A0) LVO -132
+  (:fn "SET-DESIGN-FONT-A" -138 (:a0 :a1 :a2) :signed :not-morphos 47)   ; LONG SetDesignFontA(APTR vi, struct TextAttr * tattr, CONST struct TagItem * tags) (A0,A1,A2) LVO -138
+  (:fn "SCALE-GADGET-RECT-A" -144 (:a0 :a1) :signed :not-morphos 47)   ; LONG ScaleGadgetRectA(struct NewGadget * ng, CONST struct TagItem * tags) (A0,A1) LVO -144
+  (:fn "GT-GET-GADGET-ATTRS-A" -174 (:a0 :a1 :a2 :a3) :signed)   ; LONG GT_GetGadgetAttrsA(struct Gadget * gad, struct Window * win, struct Requester * req, CONST struct TagItem * taglist) (A0,A1,A2,A3) LVO -174
+  )
 
 (provide "amiga/raw/gadtools")

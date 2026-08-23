@@ -23,215 +23,16 @@
 ;;; 144 functions, 370 constants, 27 structs, 20 skipped (see comments).
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.EXEC"
   (:use "CL" "FFI" "AMIGA.FFI")
   ;; distinct symbols  these names also exist in CL / FFI / AMIGA.FFI
   (:shadow "LIBRARY-VERSION" "DEBUG" "REMOVE" "SIGNAL" "CLOSE-LIBRARY")
-  (:export
-   "*EXEC-BASE*" "*EXEC-VERSION*"
-   "+ACPU-BUS-ERR+" "+ACPU-ADDRESS-ERR+" "+ACPU-INST-ERR+" 
-   "+ACPU-DIV-ZERO+" "+ACPU-CHK+" "+ACPU-TRAPV+" "+ACPU-PRIV-ERR+" 
-   "+ACPU-TRACE+" "+ACPU-LINE-A+" "+ACPU-LINE-F+" "+ACPU-FORMAT+" 
-   "+ACPU-SPURIOUS+" "+ACPU-AUTO-VEC1+" "+ACPU-AUTO-VEC2+" 
-   "+ACPU-AUTO-VEC3+" "+ACPU-AUTO-VEC4+" "+ACPU-AUTO-VEC5+" 
-   "+ACPU-AUTO-VEC6+" "+ACPU-AUTO-VEC7+" "+AT-DEAD-END+" "+AT-RECOVERY+" 
-   "+AG-NO-MEMORY+" "+AG-MAKE-LIB+" "+AG-OPEN-LIB+" "+AG-OPEN-DEV+" 
-   "+AG-OPEN-RES+" "+AG-IO-ERROR+" "+AG-NO-SIGNAL+" "+AG-BAD-PARM+" 
-   "+AG-CLOSE-LIB+" "+AG-CLOSE-DEV+" "+AG-PROC-CREATE+" "+AO-EXEC-LIB+" 
-   "+AO-GRAPHICS-LIB+" "+AO-LAYERS-LIB+" "+AO-INTUITION+" "+AO-MATH-LIB+" 
-   "+AO-DOS-LIB+" "+AO-RAM-LIB+" "+AO-ICON-LIB+" "+AO-EXPANSION-LIB+" 
-   "+AO-DISKFONT-LIB+" "+AO-UTILITY-LIB+" "+AO-KEY-MAP-LIB+" 
-   "+AO-AUDIO-DEV+" "+AO-CONSOLE-DEV+" "+AO-GAME-PORT-DEV+" 
-   "+AO-KEYBOARD-DEV+" "+AO-TRACK-DISK-DEV+" "+AO-TIMER-DEV+" 
-   "+AO-CIA-RSRC+" "+AO-DISK-RSRC+" "+AO-MISC-RSRC+" "+AO-BOOT-STRAP+" 
-   "+AO-WORKBENCH+" "+AO-DISK-COPY+" "+AO-GAD-TOOLS+" "+AO-UNKNOWN+" 
-   "+AN-EXEC-LIB+" "+AN-EXCPT-VECT+" "+AN-BASE-CHK-SUM+" "+AN-LIB-CHK-SUM+" 
-   "+AN-MEM-CORRUPT+" "+AN-INTR-MEM+" "+AN-INIT-A-PTR+" "+AN-SEM-CORRUPT+" 
-   "+AN-FREE-TWICE+" "+AN-BOGUS-EXCPT+" "+AN-IO-USED-TWICE+" 
-   "+AN-MEMORY-INSANE+" "+AN-IO-AFTER-CLOSE+" "+AN-STACK-PROBE+" 
-   "+AN-BAD-FREE-ADDR+" "+AN-BAD-SEMAPHORE+" "+AN-BAD-QUICK-INT+" 
-   "+AN-AVL-NOT-IMPL+" "+AN-TREE-NOT-IMPL+" "+AN-GRAPHICS-LIB+" 
-   "+AN-GFX-NO-MEM+" "+AN-GFX-NO-MEM-MSPC+" "+AN-LONG-FRAME+" 
-   "+AN-SHORT-FRAME+" "+AN-TEXT-TMP-RAS+" "+AN-BLT-BITMAP+" 
-   "+AN-REGION-MEMORY+" "+AN-MAKE-V-PORT+" "+AN-GFX-NEW-ERROR+" 
-   "+AN-GFX-FREE-ERROR+" "+AN-GFX-NO-LCM+" "+AN-OBSOLETE-FONT+" 
-   "+AN-LAYERS-LIB+" "+AN-LAYERS-NO-MEM+" "+AN-INTUITION+" 
-   "+AN-GADGET-TYPE+" "+AN-BAD-GADGET+" "+AN-CREATE-PORT+" 
-   "+AN-ITEM-ALLOC+" "+AN-SUB-ALLOC+" "+AN-PLANE-ALLOC+" 
-   "+AN-ITEM-BOX-TOP+" "+AN-OPEN-SCREEN+" "+AN-OPEN-SCRN-RAST+" 
-   "+AN-SYS-SCRN-TYPE+" "+AN-ADD-SW-GADGET+" "+AN-OPEN-WINDOW+" 
-   "+AN-BAD-STATE+" "+AN-BAD-MESSAGE+" "+AN-WEIRD-ECHO+" "+AN-NO-CONSOLE+" 
-   "+AN-NO-I-SEM+" "+AN-I-SEM-ORDER+" "+AN-DEAD-INTUI+" "+AN-MATH-LIB+" 
-   "+AN-DOS-LIB+" "+AN-START-MEM+" "+AN-END-TASK+" "+AN-Q-PKT-FAIL+" 
-   "+AN-ASYNC-PKT+" "+AN-FREE-VEC+" "+AN-DISK-BLK-SEQ+" "+AN-BITMAP+" 
-   "+AN-KEY-FREE+" "+AN-BAD-CHK-SUM+" "+AN-DISK-ERROR+" "+AN-KEY-RANGE+" 
-   "+AN-BAD-OVERLAY+" "+AN-BAD-INIT-FUNC+" "+AN-FILE-RECLOSED+" 
-   "+AN-CLI-OBSOLETE+" "+AN-RAM-LIB+" "+AN-BAD-SEG-LIST+" "+AN-ICON-LIB+" 
-   "+AN-EXPANSION-LIB+" "+AN-BAD-EXPANSION-FREE+" "+AN-DISKFONT-LIB+" 
-   "+AN-AUDIO-DEV+" "+AN-CONSOLE-DEV+" "+AN-NO-WINDOW+" 
-   "+AN-GAME-PORT-DEV+" "+AN-KEYBOARD-DEV+" "+AN-TRACK-DISK-DEV+" 
-   "+AN-TD-CALIB-SEEK+" "+AN-TD-DELAY+" "+AN-TIMER-DEV+" "+AN-TM-BAD-REQ+" 
-   "+AN-TM-BAD-SUPPLY+" "+AN-CIA-RSRC+" "+AN-DISK-RSRC+" "+AN-DR-HAS-DISK+" 
-   "+AN-DR-INT-NO-ACT+" "+AN-MISC-RSRC+" "+AN-BOOT-STRAP+" 
-   "+AN-BOOT-ERROR+" "+AN-WORKBENCH+" "+AN-NO-FONTS+" 
-   "+AN-WB-BAD-STARTUP-MSG1+" "+AN-WB-BAD-STARTUP-MSG2+" 
-   "+AN-WB-BAD-IO-MSG+" "+AN-WB-RE-LAYOUT-TOOL-MENU+" "+AN-DISK-COPY+" 
-   "+AN-GAD-TOOLS+" "+AN-UTILITY-LIB+" "+AN-UNKNOWN+" "+UNITB-ACTIVE+" 
-   "+UNITF-ACTIVE+" "+UNITB-INTASK+" "+UNITF-INTASK+" "*DEVICE-SIZE*" 
-   "*UNIT-SIZE*" "UNIT-FLAGS" "UNIT-PAD" "UNIT-OPENCNT" "+IOERR-OPENFAIL+" 
-   "+IOERR-ABORTED+" "+IOERR-NOCMD+" "+IOERR-BADLENGTH+" 
-   "+IOERR-BADADDRESS+" "+IOERR-UNITBUSY+" "+IOERR-SELFTEST+" 
-   "+ERR-OPENDEVICE+" "+AFB-68010+" "+AFF-68010+" "+AFB-68020+" 
-   "+AFF-68020+" "+AFB-68030+" "+AFF-68030+" "+AFB-68040+" "+AFF-68040+" 
-   "+AFB-68881+" "+AFF-68881+" "+AFB-68882+" "+AFF-68882+" "+AFB-FPU40+" 
-   "+AFF-FPU40+" "+AFB-68060+" "+AFF-68060+" "+AFB-FPGA+" "+AFF-FPGA+" 
-   "+AFB-PRIVATE+" "+AFF-PRIVATE+" "+CACRB-ENABLE-I+" "+CACRF-ENABLE-I+" 
-   "+CACRB-FREEZE-I+" "+CACRF-FREEZE-I+" "+CACRB-CLEAR-I+" 
-   "+CACRF-CLEAR-I+" "+CACRB-IBE+" "+CACRF-IBE+" "+CACRB-ENABLE-D+" 
-   "+CACRF-ENABLE-D+" "+CACRB-FREEZE-D+" "+CACRF-FREEZE-D+" 
-   "+CACRB-CLEAR-D+" "+CACRF-CLEAR-D+" "+CACRB-DBE+" "+CACRF-DBE+" 
-   "+CACRB-WRITE-ALLOCATE+" "+CACRF-WRITE-ALLOCATE+" "+CACRB-ENABLE-E+" 
-   "+CACRF-ENABLE-E+" "+CACRB-COPY-BACK+" "+CACRF-COPY-BACK+" 
-   "+DMAB-CONTINUE+" "+DMAF-CONTINUE+" "+DMAB-NO-MODIFY+" 
-   "+DMAF-NO-MODIFY+" "+DMAB-READ-FROM-RAM+" "+DMAF-READ-FROM-RAM+" 
-   "*EXEC-BASE-SIZE*" "EXEC-BASE-SOFT-VER" "EXEC-BASE-LOW-MEM-CHK-SUM" 
-   "EXEC-BASE-CHK-BASE" "EXEC-BASE-COLD-CAPTURE" "EXEC-BASE-COOL-CAPTURE" 
-   "EXEC-BASE-WARM-CAPTURE" "EXEC-BASE-SYS-STK-UPPER" 
-   "EXEC-BASE-SYS-STK-LOWER" "EXEC-BASE-MAX-LOC-MEM" 
-   "EXEC-BASE-DEBUG-ENTRY" "EXEC-BASE-DEBUG-DATA" "EXEC-BASE-ALERT-DATA" 
-   "EXEC-BASE-MAX-EXT-MEM" "EXEC-BASE-CHK-SUM" "EXEC-BASE-INT-VECTS" 
-   "EXEC-BASE-IVTBE" "EXEC-BASE-IVDSKBLK" "EXEC-BASE-IVSOFTINT" 
-   "EXEC-BASE-IVPORTS" "EXEC-BASE-IVCOPER" "EXEC-BASE-IVVERTB" 
-   "EXEC-BASE-IVBLIT" "EXEC-BASE-IVAUD0" "EXEC-BASE-IVAUD1" 
-   "EXEC-BASE-IVAUD2" "EXEC-BASE-IVAUD3" "EXEC-BASE-IVRBF" 
-   "EXEC-BASE-IVDSKSYNC" "EXEC-BASE-IVEXTER" "EXEC-BASE-IVINTEN" 
-   "EXEC-BASE-IVNMI" "EXEC-BASE-THIS-TASK" "EXEC-BASE-IDLE-COUNT" 
-   "EXEC-BASE-DISP-COUNT" "EXEC-BASE-QUANTUM" "EXEC-BASE-ELAPSED" 
-   "EXEC-BASE-SYS-FLAGS" "EXEC-BASE-ID-NEST-CNT" "EXEC-BASE-TD-NEST-CNT" 
-   "EXEC-BASE-ATTN-FLAGS" "EXEC-BASE-ATTN-RESCHED" "EXEC-BASE-RES-MODULES" 
-   "EXEC-BASE-TASK-TRAP-CODE" "EXEC-BASE-TASK-EXCEPT-CODE" 
-   "EXEC-BASE-TASK-EXIT-CODE" "EXEC-BASE-TASK-SIG-ALLOC" 
-   "EXEC-BASE-TASK-TRAP-ALLOC" "EXEC-BASE-MEM-LIST" 
-   "EXEC-BASE-RESOURCE-LIST" "EXEC-BASE-DEVICE-LIST" "EXEC-BASE-INTR-LIST" 
-   "EXEC-BASE-LIB-LIST" "EXEC-BASE-PORT-LIST" "EXEC-BASE-TASK-READY" 
-   "EXEC-BASE-TASK-WAIT" "EXEC-BASE-SOFT-INTS" "EXEC-BASE-LAST-ALERT" 
-   "EXEC-BASE-V-BLANK-FREQUENCY" "EXEC-BASE-POWER-SUPPLY-FREQUENCY" 
-   "EXEC-BASE-SEMAPHORE-LIST" "EXEC-BASE-KICK-MEM-PTR" 
-   "EXEC-BASE-KICK-TAG-PTR" "EXEC-BASE-KICK-CHECK-SUM" "EXEC-BASE-PAD0" 
-   "EXEC-BASE-LAUNCH-POINT" "EXEC-BASE-RAM-LIB-PRIVATE" 
-   "EXEC-BASE-E-CLOCK-FREQUENCY" "EXEC-BASE-CACHE-CONTROL" 
-   "EXEC-BASE-TASK-ID" "EXEC-BASE-RESERVED1" "EXEC-BASE-MMU-LOCK" 
-   "EXEC-BASE-RESERVED2" "EXEC-BASE-MEM-HANDLERS" "EXEC-BASE-MEM-HANDLER" 
-   "+SB-SAR+" "+SF-SAR+" "+SB-TQE+" "+SF-TQE+" "+SB-SINT+" "+SF-SINT+" 
-   "+SIH-PRIMASK+" "+SIH-QUEUES+" "+INTB-NMI+" "+INTF-NMI+" 
-   "*INTERRUPT-SIZE*" "INTERRUPT-DATA" "INTERRUPT-CODE" "*INT-VECTOR-SIZE*" 
-   "INT-VECTOR-DATA" "INT-VECTOR-CODE" "INT-VECTOR-NODE" 
-   "*SOFT-INT-LIST-SIZE*" "SOFT-INT-LIST-PAD" "+IOB-QUICK+" "+IOF-QUICK+" 
-   "+DEV-BEGINIO+" "+DEV-ABORTIO+" "+CMD-INVALID+" "+CMD-RESET+" 
-   "+CMD-READ+" "+CMD-WRITE+" "+CMD-UPDATE+" "+CMD-CLEAR+" "+CMD-STOP+" 
-   "+CMD-START+" "+CMD-FLUSH+" "+CMD-NONSTD+" "*IO-REQUEST-SIZE*" 
-   "IO-REQUEST-DEVICE" "IO-REQUEST-UNIT" "IO-REQUEST-COMMAND" 
-   "IO-REQUEST-FLAGS" "IO-REQUEST-ERROR" "*IO-STD-REQ-SIZE*" 
-   "IO-STD-REQ-DEVICE" "IO-STD-REQ-UNIT" "IO-STD-REQ-COMMAND" 
-   "IO-STD-REQ-FLAGS" "IO-STD-REQ-ERROR" "IO-STD-REQ-ACTUAL" 
-   "IO-STD-REQ-LENGTH" "IO-STD-REQ-DATA" "IO-STD-REQ-OFFSET" 
-   "+LIB-VECTSIZE+" "+LIB-RESERVED+" "+LIB-BASE+" "+LIB-USERDEF+" 
-   "+LIB-NONSTD+" "+LIB-OPEN+" "+LIB-CLOSE+" "+LIB-EXPUNGE+" 
-   "+LIB-EXTFUNC+" "+LIBB-SUMMING+" "+LIBF-SUMMING+" "+LIBB-CHANGED+" 
-   "+LIBF-CHANGED+" "+LIBB-SUMUSED+" "+LIBF-SUMUSED+" "+LIBB-DELEXP+" 
-   "+LIBF-DELEXP+" "+LIBB-EXP0-CNT+" "+LIBF-EXP0-CNT+" "*LIBRARY-SIZE*" 
-   "LIBRARY-FLAGS" "LIBRARY-PAD" "LIBRARY-NEGSIZE" "LIBRARY-POSSIZE" 
-   "LIBRARY-VERSION" "LIBRARY-REVISION" "LIBRARY-IDSTRING" "LIBRARY-SUM" 
-   "LIBRARY-OPENCNT" "*LIST-SIZE*" "LIST-HEAD" "LIST-TAIL" "LIST-TAILPRED" 
-   "LIST-TYPE" "LIST-PAD" "*MIN-LIST-SIZE*" "MIN-LIST-HEAD" "MIN-LIST-TAIL" 
-   "MIN-LIST-TAILPRED" "+MEMF-ANY+" "+MEMB-PUBLIC+" "+MEMF-PUBLIC+" 
-   "+MEMB-CHIP+" "+MEMF-CHIP+" "+MEMB-FAST+" "+MEMF-FAST+" "+MEMB-LOCAL+" 
-   "+MEMF-LOCAL+" "+MEMB-24-BITDMA+" "+MEMF-24-BITDMA+" "+MEMB-KICK+" 
-   "+MEMF-KICK+" "+MEMB-CLEAR+" "+MEMF-CLEAR+" "+MEMB-LARGEST+" 
-   "+MEMF-LARGEST+" "+MEMB-REVERSE+" "+MEMF-REVERSE+" "+MEMB-TOTAL+" 
-   "+MEMF-TOTAL+" "+MEMB-NO-EXPUNGE+" "+MEMF-NO-EXPUNGE+" "+MEM-BLOCKSIZE+" 
-   "+MEM-BLOCKMASK+" "+MEMHB-RECYCLE+" "+MEMHF-RECYCLE+" 
-   "+MEM-DID-NOTHING+" "+MEM-ALL-DONE+" "+MEM-TRY-AGAIN+" "*MEM-LIST-SIZE*" 
-   "MEM-LIST-NUMENTRIES" "*MEM-ENTRY-SIZE*" "MEM-ENTRY-REQS" 
-   "MEM-ENTRY-ADDR" "MEM-ENTRY-LENGTH" "*MEM-HANDLER-DATA-SIZE*" 
-   "MEM-HANDLER-DATA-REQUEST-SIZE" "MEM-HANDLER-DATA-REQUEST-FLAGS" 
-   "MEM-HANDLER-DATA-FLAGS" "*MEM-HEADER-SIZE*" "MEM-HEADER-ATTRIBUTES" 
-   "MEM-HEADER-FIRST" "MEM-HEADER-LOWER" "MEM-HEADER-UPPER" 
-   "MEM-HEADER-FREE" "*MEM-CHUNK-SIZE*" "MEM-CHUNK-NEXT" "MEM-CHUNK-BYTES" 
-   "MEM-CHUNK-SIZE" "+NT-UNKNOWN+" "+NT-TASK+" "+NT-INTERRUPT+" 
-   "+NT-DEVICE+" "+NT-MSGPORT+" "+NT-MESSAGE+" "+NT-FREEMSG+" 
-   "+NT-REPLYMSG+" "+NT-RESOURCE+" "+NT-LIBRARY+" "+NT-MEMORY+" 
-   "+NT-SOFTINT+" "+NT-FONT+" "+NT-PROCESS+" "+NT-SEMAPHORE+" 
-   "+NT-SIGNALSEM+" "+NT-BOOTNODE+" "+NT-KICKMEM+" "+NT-GRAPHICS+" 
-   "+NT-DEATHMESSAGE+" "+NT-USER+" "+NT-EXTENDED+" "*NODE-SIZE*" 
-   "NODE-SUCC" "NODE-PRED" "NODE-TYPE" "NODE-PRI" "NODE-NAME" 
-   "*MIN-NODE-SIZE*" "MIN-NODE-SUCC" "MIN-NODE-PRED" "+MP-SOFTINT+" 
-   "+PF-ACTION+" "+PA-SIGNAL+" "+PA-SOFTINT+" "+PA-IGNORE+" 
-   "*MSG-PORT-SIZE*" "MSG-PORT-FLAGS" "MSG-PORT-SIGBIT" "MSG-PORT-SIGTASK" 
-   "MSG-PORT-MSGLIST" "*MESSAGE-SIZE*" "MESSAGE-REPLYPORT" "MESSAGE-LENGTH" 
-   "+RTC-MATCHWORD+" "+RTB-COLDSTART+" "+RTF-COLDSTART+" "+RTB-SINGLETASK+" 
-   "+RTF-SINGLETASK+" "+RTB-AFTERDOS+" "+RTF-AFTERDOS+" "+RTB-AUTOINIT+" 
-   "+RTF-AUTOINIT+" "+RTW-NEVER+" "+RTW-COLDSTART+" "*RESIDENT-SIZE*" 
-   "RESIDENT-MATCHWORD" "RESIDENT-MATCHTAG" "RESIDENT-ENDSKIP" 
-   "RESIDENT-FLAGS" "RESIDENT-VERSION" "RESIDENT-TYPE" "RESIDENT-PRI" 
-   "RESIDENT-NAME" "RESIDENT-IDSTRING" "RESIDENT-INIT" "+SM-LOCKMSG+" 
-   "*SEMAPHORE-REQUEST-SIZE*" "SEMAPHORE-REQUEST-WAITER" 
-   "*SIGNAL-SEMAPHORE-SIZE*" "SIGNAL-SEMAPHORE-NESTCOUNT" 
-   "SIGNAL-SEMAPHORE-WAITQUEUE" "SIGNAL-SEMAPHORE-MULTIPLELINK" 
-   "SIGNAL-SEMAPHORE-OWNER" "SIGNAL-SEMAPHORE-QUEUECOUNT" 
-   "*SEMAPHORE-MESSAGE-SIZE*" "SEMAPHORE-MESSAGE-SEMAPHORE" 
-   "*SEMAPHORE-SIZE*" "SEMAPHORE-BIDS" "+TB-PROCTIME+" "+TF-PROCTIME+" 
-   "+TB-ETASK+" "+TF-ETASK+" "+TB-STACKCHK+" "+TF-STACKCHK+" "+TB-EXCEPT+" 
-   "+TF-EXCEPT+" "+TB-SWITCH+" "+TF-SWITCH+" "+TB-LAUNCH+" "+TF-LAUNCH+" 
-   "+TS-INVALID+" "+TS-ADDED+" "+TS-RUN+" "+TS-READY+" "+TS-WAIT+" 
-   "+TS-EXCEPT+" "+TS-REMOVED+" "+SIGB-ABORT+" "+SIGF-ABORT+" 
-   "+SIGB-CHILD+" "+SIGF-CHILD+" "+SIGB-BLIT+" "+SIGF-BLIT+" 
-   "+SIGB-SINGLE+" "+SIGF-SINGLE+" "+SIGB-INTUITION+" "+SIGF-INTUITION+" 
-   "+SIGB-NET+" "+SIGF-NET+" "+SIGB-DOS+" "+SIGF-DOS+" "+SYS-SIGALLOC+" 
-   "+SYS-TRAPALLOC+" "*TASK-SIZE*" "TASK-FLAGS" "TASK-STATE" 
-   "TASK-IDNESTCNT" "TASK-TDNESTCNT" "TASK-SIGALLOC" "TASK-SIGWAIT" 
-   "TASK-SIGRECVD" "TASK-SIGEXCEPT" "TASK-TRAPALLOC" "TASK-TRAPABLE" 
-   "TASK-EXCEPTDATA" "TASK-EXCEPTCODE" "TASK-TRAPDATA" "TASK-TRAPCODE" 
-   "TASK-SPREG" "TASK-SPLOWER" "TASK-SPUPPER" "TASK-SWITCH" "TASK-LAUNCH" 
-   "TASK-MEMENTRY" "TASK-USERDATA" "*STACK-SWAP-STRUCT-SIZE*" 
-   "STACK-SWAP-STRUCT-LOWER" "STACK-SWAP-STRUCT-UPPER" 
-   "STACK-SWAP-STRUCT-POINTER" "INIT-CODE" "INIT-STRUCT" "MAKE-LIBRARY" 
-   "MAKE-FUNCTIONS" "FIND-RESIDENT" "INIT-RESIDENT" "ALERT" "DEBUG" 
-   "DISABLE" "ENABLE" "FORBID" "PERMIT" "SET-SR" "SUPER-STATE" "USER-STATE" 
-   "SET-INT-VECTOR" "ADD-INT-SERVER" "REM-INT-SERVER" "CAUSE" "ALLOCATE" 
-   "DEALLOCATE" "ALLOC-MEM" "ALLOC-ABS" "FREE-MEM" "AVAIL-MEM" 
-   "ALLOC-ENTRY" "FREE-ENTRY" "INSERT" "ADD-HEAD" "ADD-TAIL" "REMOVE" 
-   "REM-HEAD" "REM-TAIL" "ENQUEUE" "FIND-NAME" "ADD-TASK" "REM-TASK" 
-   "FIND-TASK" "SET-TASK-PRI" "SET-SIGNAL" "SET-EXCEPT" "WAIT" "SIGNAL" 
-   "ALLOC-SIGNAL" "FREE-SIGNAL" "ALLOC-TRAP" "FREE-TRAP" "ADD-PORT" 
-   "REM-PORT" "PUT-MSG" "GET-MSG" "REPLY-MSG" "WAIT-PORT" "FIND-PORT" 
-   "ADD-LIBRARY" "REM-LIBRARY" "OLD-OPEN-LIBRARY" "CLOSE-LIBRARY" 
-   "SET-FUNCTION" "SUM-LIBRARY" "ADD-DEVICE" "REM-DEVICE" "OPEN-DEVICE" 
-   "CLOSE-DEVICE" "DO-IO" "SEND-IO" "CHECK-IO" "WAIT-IO" "ABORT-IO" 
-   "ADD-RESOURCE" "REM-RESOURCE" "OPEN-RESOURCE" "RAW-DO-FMT" "GET-CC" 
-   "TYPE-OF-MEM" "PROCURE" "VACATE" "OPEN-LIBRARY" "INIT-SEMAPHORE" 
-   "OBTAIN-SEMAPHORE" "RELEASE-SEMAPHORE" "ATTEMPT-SEMAPHORE" 
-   "OBTAIN-SEMAPHORE-LIST" "RELEASE-SEMAPHORE-LIST" "FIND-SEMAPHORE" 
-   "ADD-SEMAPHORE" "REM-SEMAPHORE" "SUM-KICK-DATA" "ADD-MEM-LIST" 
-   "COPY-MEM" "COPY-MEM-QUICK" "CACHE-CLEAR-U" "CACHE-CLEAR-E" 
-   "CACHE-CONTROL" "CREATE-IO-REQUEST" "DELETE-IO-REQUEST" 
-   "CREATE-MSG-PORT" "DELETE-MSG-PORT" "OBTAIN-SEMAPHORE-SHARED" 
-   "ALLOC-VEC" "FREE-VEC" "CREATE-POOL" "DELETE-POOL" "ALLOC-POOLED" 
-   "FREE-POOLED" "ATTEMPT-SEMAPHORE-SHARED" "COLD-REBOOT" "STACK-SWAP" 
-   "CACHE-PRE-DMA" "CACHE-POST-DMA" "ADD-MEM-HANDLER" "REM-MEM-HANDLER" 
-   "OBTAIN-QUICK-VECTOR" "NEW-MIN-LIST" "NEW-GET-TASK-ATTRS-A" 
-   "NEW-SET-TASK-ATTRS-A" "CHILD-STATUS" "CHILD-WAIT" "NEW-SET-FUNCTION" 
-   "NEW-CREATE-LIBRARY" "NEW-PPC-STACK-SWAP" "CACHE-FLUSH-DATA-AREA" 
-   "CACHE-INVALID-INST-AREA" "CACHE-INVALID-DATA-AREA" 
-   "CACHE-FLUSH-DATA-INST-AREA" "CACHE-TRASH-CACHE-AREA" 
-   "ALLOC-TASK-POOLED" "FREE-TASK-POOLED" "ALLOC-VEC-TASK-POOLED" 
-   "FREE-VEC-TASK-POOLED" "FLUSH-POOL" "FLUSH-TASK-POOL" "ALLOC-VEC-POOLED" 
-   "FREE-VEC-POOLED" "NEW-GET-SYSTEM-ATTRS-A" "NEW-SET-SYSTEM-ATTRS-A" 
-   "NEW-CREATE-TASK-A" "FIND-EXEC-NODE" "ADD-EXEC-NODE-A" "ALLOC-VEC-DMA" 
-   "FREE-VEC-DMA" "DUMP-TASK-STATE" "NEW-GET-TASK-PID-ATTRS-A" 
-   "NEW-SET-TASK-PID-ATTRS-A" ))
+  (:export "*EXEC-BASE*" "*EXEC-VERSION*"))
 
 (in-package "AMIGA.RAW.EXEC")
 
@@ -245,1147 +46,835 @@
 (defun %version>= (n)
   (and *exec-version* (>= *exec-version* n)))
 
-;;; --- constants from exec/alerts.i ---
-(defconstant +acpu-bus-err+ #x80000002)
-(defconstant +acpu-address-err+ #x80000003)
-(defconstant +acpu-inst-err+ #x80000004)
-(defconstant +acpu-div-zero+ #x80000005)
-(defconstant +acpu-chk+ #x80000006)
-(defconstant +acpu-trapv+ #x80000007)
-(defconstant +acpu-priv-err+ #x80000008)
-(defconstant +acpu-trace+ #x80000009)
-(defconstant +acpu-line-a+ #x8000000A)
-(defconstant +acpu-line-f+ #x8000000B)
-(defconstant +acpu-format+ #x8000000E)
-(defconstant +acpu-spurious+ #x80000018)
-(defconstant +acpu-auto-vec1+ #x80000019)
-(defconstant +acpu-auto-vec2+ #x8000001A)
-(defconstant +acpu-auto-vec3+ #x8000001B)
-(defconstant +acpu-auto-vec4+ #x8000001C)
-(defconstant +acpu-auto-vec5+ #x8000001D)
-(defconstant +acpu-auto-vec6+ #x8000001E)
-(defconstant +acpu-auto-vec7+ #x8000001F)
-(defconstant +at-dead-end+ #x80000000)
-(defconstant +at-recovery+ 0)
-(defconstant +ag-no-memory+ #x10000)
-(defconstant +ag-make-lib+ #x20000)
-(defconstant +ag-open-lib+ #x30000)
-(defconstant +ag-open-dev+ #x40000)
-(defconstant +ag-open-res+ #x50000)
-(defconstant +ag-io-error+ #x60000)
-(defconstant +ag-no-signal+ #x70000)
-(defconstant +ag-bad-parm+ #x80000)
-(defconstant +ag-close-lib+ #x90000)
-(defconstant +ag-close-dev+ #xA0000)
-(defconstant +ag-proc-create+ #xB0000)
-(defconstant +ao-exec-lib+ #x8001)
-(defconstant +ao-graphics-lib+ #x8002)
-(defconstant +ao-layers-lib+ #x8003)
-(defconstant +ao-intuition+ #x8004)
-(defconstant +ao-math-lib+ #x8005)
-(defconstant +ao-dos-lib+ #x8007)
-(defconstant +ao-ram-lib+ #x8008)
-(defconstant +ao-icon-lib+ #x8009)
-(defconstant +ao-expansion-lib+ #x800A)
-(defconstant +ao-diskfont-lib+ #x800B)
-(defconstant +ao-utility-lib+ #x800C)
-(defconstant +ao-key-map-lib+ #x800D)
-(defconstant +ao-audio-dev+ #x8010)
-(defconstant +ao-console-dev+ #x8011)
-(defconstant +ao-game-port-dev+ #x8012)
-(defconstant +ao-keyboard-dev+ #x8013)
-(defconstant +ao-track-disk-dev+ #x8014)
-(defconstant +ao-timer-dev+ #x8015)
-(defconstant +ao-cia-rsrc+ #x8020)
-(defconstant +ao-disk-rsrc+ #x8021)
-(defconstant +ao-misc-rsrc+ #x8022)
-(defconstant +ao-boot-strap+ #x8030)
-(defconstant +ao-workbench+ #x8031)
-(defconstant +ao-disk-copy+ #x8032)
-(defconstant +ao-gad-tools+ #x8033)
-(defconstant +ao-unknown+ #x8035)
-(defconstant +an-exec-lib+ #x1000000)
-(defconstant +an-excpt-vect+ #x1000001)
-(defconstant +an-base-chk-sum+ #x1000002)
-(defconstant +an-lib-chk-sum+ #x1000003)
-(defconstant +an-mem-corrupt+ #x81000005)
-(defconstant +an-intr-mem+ #x81000006)
-(defconstant +an-init-a-ptr+ #x1000007)
-(defconstant +an-sem-corrupt+ #x1000008)
-(defconstant +an-free-twice+ #x1000009)
-(defconstant +an-bogus-excpt+ #x8100000A)
-(defconstant +an-io-used-twice+ #x100000B)
-(defconstant +an-memory-insane+ #x100000C)
-(defconstant +an-io-after-close+ #x100000D)
-(defconstant +an-stack-probe+ #x100000E)
-(defconstant +an-bad-free-addr+ #x100000F)
-(defconstant +an-bad-semaphore+ #x1000010)
-(defconstant +an-bad-quick-int+ #x810000FF)
-(defconstant +an-avl-not-impl+ #x1000011)
-(defconstant +an-tree-not-impl+ #x1000012)
-(defconstant +an-graphics-lib+ #x2000000)
-(defconstant +an-gfx-no-mem+ #x82010000)
-(defconstant +an-gfx-no-mem-mspc+ #x82010001)
-(defconstant +an-long-frame+ #x82010006)
-(defconstant +an-short-frame+ #x82010007)
-(defconstant +an-text-tmp-ras+ #x2010009)
-(defconstant +an-blt-bitmap+ #x8201000A)
-(defconstant +an-region-memory+ #x8201000B)
-(defconstant +an-make-v-port+ #x82010030)
-(defconstant +an-gfx-new-error+ #x200000C)
-(defconstant +an-gfx-free-error+ #x200000D)
-(defconstant +an-gfx-no-lcm+ #x82011234)
-(defconstant +an-obsolete-font+ #x2000401)
-(defconstant +an-layers-lib+ #x3000000)
-(defconstant +an-layers-no-mem+ #x83010000)
-(defconstant +an-intuition+ #x4000000)
-(defconstant +an-gadget-type+ #x84000001)
-(defconstant +an-bad-gadget+ #x4000001)
-(defconstant +an-create-port+ #x84010002)
-(defconstant +an-item-alloc+ #x4010003)
-(defconstant +an-sub-alloc+ #x4010004)
-(defconstant +an-plane-alloc+ #x84010005)
-(defconstant +an-item-box-top+ #x84000006)
-(defconstant +an-open-screen+ #x84010007)
-(defconstant +an-open-scrn-rast+ #x84010008)
-(defconstant +an-sys-scrn-type+ #x84000009)
-(defconstant +an-add-sw-gadget+ #x8401000A)
-(defconstant +an-open-window+ #x8401000B)
-(defconstant +an-bad-state+ #x8400000C)
-(defconstant +an-bad-message+ #x8400000D)
-(defconstant +an-weird-echo+ #x8400000E)
-(defconstant +an-no-console+ #x8400000F)
-(defconstant +an-no-i-sem+ #x4000010)
-(defconstant +an-i-sem-order+ #x4000011)
-(defconstant +an-dead-intui+ #x4000012)
-(defconstant +an-math-lib+ #x5000000)
-(defconstant +an-dos-lib+ #x7000000)
-(defconstant +an-start-mem+ #x7010001)
-(defconstant +an-end-task+ #x7000002)
-(defconstant +an-q-pkt-fail+ #x7000003)
-(defconstant +an-async-pkt+ #x7000004)
-(defconstant +an-free-vec+ #x7000005)
-(defconstant +an-disk-blk-seq+ #x7000006)
-(defconstant +an-bitmap+ #x7000007)
-(defconstant +an-key-free+ #x7000008)
-(defconstant +an-bad-chk-sum+ #x7000009)
-(defconstant +an-disk-error+ #x700000A)
-(defconstant +an-key-range+ #x700000B)
-(defconstant +an-bad-overlay+ #x700000C)
-(defconstant +an-bad-init-func+ #x700000D)
-(defconstant +an-file-reclosed+ #x700000E)
-(defconstant +an-cli-obsolete+ #x700000F)
-(defconstant +an-ram-lib+ #x8000000)
-(defconstant +an-bad-seg-list+ #x8000001)
-(defconstant +an-icon-lib+ #x9000000)
-(defconstant +an-expansion-lib+ #xA000000)
-(defconstant +an-bad-expansion-free+ #xA000001)
-(defconstant +an-diskfont-lib+ #xB000000)
-(defconstant +an-audio-dev+ #x10000000)
-(defconstant +an-console-dev+ #x11000000)
-(defconstant +an-no-window+ #x11000001)
-(defconstant +an-game-port-dev+ #x12000000)
-(defconstant +an-keyboard-dev+ #x13000000)
-(defconstant +an-track-disk-dev+ #x14000000)
-(defconstant +an-td-calib-seek+ #x14000001)
-(defconstant +an-td-delay+ #x14000002)
-(defconstant +an-timer-dev+ #x15000000)
-(defconstant +an-tm-bad-req+ #x15000001)
-(defconstant +an-tm-bad-supply+ #x15000002)
-(defconstant +an-cia-rsrc+ #x20000000)
-(defconstant +an-disk-rsrc+ #x21000000)
-(defconstant +an-dr-has-disk+ #x21000001)
-(defconstant +an-dr-int-no-act+ #x21000002)
-(defconstant +an-misc-rsrc+ #x22000000)
-(defconstant +an-boot-strap+ #x30000000)
-(defconstant +an-boot-error+ #x30000001)
-(defconstant +an-workbench+ #x31000000)
-(defconstant +an-no-fonts+ #xB1000001)
-(defconstant +an-wb-bad-startup-msg1+ #x31000001)
-(defconstant +an-wb-bad-startup-msg2+ #x31000002)
-(defconstant +an-wb-bad-io-msg+ #x31000003)
-(defconstant +an-wb-re-layout-tool-menu+ #xB1010009)
-(defconstant +an-disk-copy+ #x32000000)
-(defconstant +an-gad-tools+ #x33000000)
-(defconstant +an-utility-lib+ #x34000000)
-(defconstant +an-unknown+ #x35000000)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.EXEC"
+    (:base *exec-base* :version *exec-version*)
 
-;;; --- constants from exec/devices.i ---
-(defconstant +unitb-active+ 0)
-(defconstant +unitf-active+ 1)
-(defconstant +unitb-intask+ 1)
-(defconstant +unitf-intask+ 2)
+  ;; --- constants from exec/alerts.i ---
+  (:const "+ACPU-BUS-ERR+" #x80000002)
+  (:const "+ACPU-ADDRESS-ERR+" #x80000003)
+  (:const "+ACPU-INST-ERR+" #x80000004)
+  (:const "+ACPU-DIV-ZERO+" #x80000005)
+  (:const "+ACPU-CHK+" #x80000006)
+  (:const "+ACPU-TRAPV+" #x80000007)
+  (:const "+ACPU-PRIV-ERR+" #x80000008)
+  (:const "+ACPU-TRACE+" #x80000009)
+  (:const "+ACPU-LINE-A+" #x8000000A)
+  (:const "+ACPU-LINE-F+" #x8000000B)
+  (:const "+ACPU-FORMAT+" #x8000000E)
+  (:const "+ACPU-SPURIOUS+" #x80000018)
+  (:const "+ACPU-AUTO-VEC1+" #x80000019)
+  (:const "+ACPU-AUTO-VEC2+" #x8000001A)
+  (:const "+ACPU-AUTO-VEC3+" #x8000001B)
+  (:const "+ACPU-AUTO-VEC4+" #x8000001C)
+  (:const "+ACPU-AUTO-VEC5+" #x8000001D)
+  (:const "+ACPU-AUTO-VEC6+" #x8000001E)
+  (:const "+ACPU-AUTO-VEC7+" #x8000001F)
+  (:const "+AT-DEAD-END+" #x80000000)
+  (:const "+AT-RECOVERY+" 0)
+  (:const "+AG-NO-MEMORY+" #x10000)
+  (:const "+AG-MAKE-LIB+" #x20000)
+  (:const "+AG-OPEN-LIB+" #x30000)
+  (:const "+AG-OPEN-DEV+" #x40000)
+  (:const "+AG-OPEN-RES+" #x50000)
+  (:const "+AG-IO-ERROR+" #x60000)
+  (:const "+AG-NO-SIGNAL+" #x70000)
+  (:const "+AG-BAD-PARM+" #x80000)
+  (:const "+AG-CLOSE-LIB+" #x90000)
+  (:const "+AG-CLOSE-DEV+" #xA0000)
+  (:const "+AG-PROC-CREATE+" #xB0000)
+  (:const "+AO-EXEC-LIB+" #x8001)
+  (:const "+AO-GRAPHICS-LIB+" #x8002)
+  (:const "+AO-LAYERS-LIB+" #x8003)
+  (:const "+AO-INTUITION+" #x8004)
+  (:const "+AO-MATH-LIB+" #x8005)
+  (:const "+AO-DOS-LIB+" #x8007)
+  (:const "+AO-RAM-LIB+" #x8008)
+  (:const "+AO-ICON-LIB+" #x8009)
+  (:const "+AO-EXPANSION-LIB+" #x800A)
+  (:const "+AO-DISKFONT-LIB+" #x800B)
+  (:const "+AO-UTILITY-LIB+" #x800C)
+  (:const "+AO-KEY-MAP-LIB+" #x800D)
+  (:const "+AO-AUDIO-DEV+" #x8010)
+  (:const "+AO-CONSOLE-DEV+" #x8011)
+  (:const "+AO-GAME-PORT-DEV+" #x8012)
+  (:const "+AO-KEYBOARD-DEV+" #x8013)
+  (:const "+AO-TRACK-DISK-DEV+" #x8014)
+  (:const "+AO-TIMER-DEV+" #x8015)
+  (:const "+AO-CIA-RSRC+" #x8020)
+  (:const "+AO-DISK-RSRC+" #x8021)
+  (:const "+AO-MISC-RSRC+" #x8022)
+  (:const "+AO-BOOT-STRAP+" #x8030)
+  (:const "+AO-WORKBENCH+" #x8031)
+  (:const "+AO-DISK-COPY+" #x8032)
+  (:const "+AO-GAD-TOOLS+" #x8033)
+  (:const "+AO-UNKNOWN+" #x8035)
+  (:const "+AN-EXEC-LIB+" #x1000000)
+  (:const "+AN-EXCPT-VECT+" #x1000001)
+  (:const "+AN-BASE-CHK-SUM+" #x1000002)
+  (:const "+AN-LIB-CHK-SUM+" #x1000003)
+  (:const "+AN-MEM-CORRUPT+" #x81000005)
+  (:const "+AN-INTR-MEM+" #x81000006)
+  (:const "+AN-INIT-A-PTR+" #x1000007)
+  (:const "+AN-SEM-CORRUPT+" #x1000008)
+  (:const "+AN-FREE-TWICE+" #x1000009)
+  (:const "+AN-BOGUS-EXCPT+" #x8100000A)
+  (:const "+AN-IO-USED-TWICE+" #x100000B)
+  (:const "+AN-MEMORY-INSANE+" #x100000C)
+  (:const "+AN-IO-AFTER-CLOSE+" #x100000D)
+  (:const "+AN-STACK-PROBE+" #x100000E)
+  (:const "+AN-BAD-FREE-ADDR+" #x100000F)
+  (:const "+AN-BAD-SEMAPHORE+" #x1000010)
+  (:const "+AN-BAD-QUICK-INT+" #x810000FF)
+  (:const "+AN-AVL-NOT-IMPL+" #x1000011)
+  (:const "+AN-TREE-NOT-IMPL+" #x1000012)
+  (:const "+AN-GRAPHICS-LIB+" #x2000000)
+  (:const "+AN-GFX-NO-MEM+" #x82010000)
+  (:const "+AN-GFX-NO-MEM-MSPC+" #x82010001)
+  (:const "+AN-LONG-FRAME+" #x82010006)
+  (:const "+AN-SHORT-FRAME+" #x82010007)
+  (:const "+AN-TEXT-TMP-RAS+" #x2010009)
+  (:const "+AN-BLT-BITMAP+" #x8201000A)
+  (:const "+AN-REGION-MEMORY+" #x8201000B)
+  (:const "+AN-MAKE-V-PORT+" #x82010030)
+  (:const "+AN-GFX-NEW-ERROR+" #x200000C)
+  (:const "+AN-GFX-FREE-ERROR+" #x200000D)
+  (:const "+AN-GFX-NO-LCM+" #x82011234)
+  (:const "+AN-OBSOLETE-FONT+" #x2000401)
+  (:const "+AN-LAYERS-LIB+" #x3000000)
+  (:const "+AN-LAYERS-NO-MEM+" #x83010000)
+  (:const "+AN-INTUITION+" #x4000000)
+  (:const "+AN-GADGET-TYPE+" #x84000001)
+  (:const "+AN-BAD-GADGET+" #x4000001)
+  (:const "+AN-CREATE-PORT+" #x84010002)
+  (:const "+AN-ITEM-ALLOC+" #x4010003)
+  (:const "+AN-SUB-ALLOC+" #x4010004)
+  (:const "+AN-PLANE-ALLOC+" #x84010005)
+  (:const "+AN-ITEM-BOX-TOP+" #x84000006)
+  (:const "+AN-OPEN-SCREEN+" #x84010007)
+  (:const "+AN-OPEN-SCRN-RAST+" #x84010008)
+  (:const "+AN-SYS-SCRN-TYPE+" #x84000009)
+  (:const "+AN-ADD-SW-GADGET+" #x8401000A)
+  (:const "+AN-OPEN-WINDOW+" #x8401000B)
+  (:const "+AN-BAD-STATE+" #x8400000C)
+  (:const "+AN-BAD-MESSAGE+" #x8400000D)
+  (:const "+AN-WEIRD-ECHO+" #x8400000E)
+  (:const "+AN-NO-CONSOLE+" #x8400000F)
+  (:const "+AN-NO-I-SEM+" #x4000010)
+  (:const "+AN-I-SEM-ORDER+" #x4000011)
+  (:const "+AN-DEAD-INTUI+" #x4000012)
+  (:const "+AN-MATH-LIB+" #x5000000)
+  (:const "+AN-DOS-LIB+" #x7000000)
+  (:const "+AN-START-MEM+" #x7010001)
+  (:const "+AN-END-TASK+" #x7000002)
+  (:const "+AN-Q-PKT-FAIL+" #x7000003)
+  (:const "+AN-ASYNC-PKT+" #x7000004)
+  (:const "+AN-FREE-VEC+" #x7000005)
+  (:const "+AN-DISK-BLK-SEQ+" #x7000006)
+  (:const "+AN-BITMAP+" #x7000007)
+  (:const "+AN-KEY-FREE+" #x7000008)
+  (:const "+AN-BAD-CHK-SUM+" #x7000009)
+  (:const "+AN-DISK-ERROR+" #x700000A)
+  (:const "+AN-KEY-RANGE+" #x700000B)
+  (:const "+AN-BAD-OVERLAY+" #x700000C)
+  (:const "+AN-BAD-INIT-FUNC+" #x700000D)
+  (:const "+AN-FILE-RECLOSED+" #x700000E)
+  (:const "+AN-CLI-OBSOLETE+" #x700000F)
+  (:const "+AN-RAM-LIB+" #x8000000)
+  (:const "+AN-BAD-SEG-LIST+" #x8000001)
+  (:const "+AN-ICON-LIB+" #x9000000)
+  (:const "+AN-EXPANSION-LIB+" #xA000000)
+  (:const "+AN-BAD-EXPANSION-FREE+" #xA000001)
+  (:const "+AN-DISKFONT-LIB+" #xB000000)
+  (:const "+AN-AUDIO-DEV+" #x10000000)
+  (:const "+AN-CONSOLE-DEV+" #x11000000)
+  (:const "+AN-NO-WINDOW+" #x11000001)
+  (:const "+AN-GAME-PORT-DEV+" #x12000000)
+  (:const "+AN-KEYBOARD-DEV+" #x13000000)
+  (:const "+AN-TRACK-DISK-DEV+" #x14000000)
+  (:const "+AN-TD-CALIB-SEEK+" #x14000001)
+  (:const "+AN-TD-DELAY+" #x14000002)
+  (:const "+AN-TIMER-DEV+" #x15000000)
+  (:const "+AN-TM-BAD-REQ+" #x15000001)
+  (:const "+AN-TM-BAD-SUPPLY+" #x15000002)
+  (:const "+AN-CIA-RSRC+" #x20000000)
+  (:const "+AN-DISK-RSRC+" #x21000000)
+  (:const "+AN-DR-HAS-DISK+" #x21000001)
+  (:const "+AN-DR-INT-NO-ACT+" #x21000002)
+  (:const "+AN-MISC-RSRC+" #x22000000)
+  (:const "+AN-BOOT-STRAP+" #x30000000)
+  (:const "+AN-BOOT-ERROR+" #x30000001)
+  (:const "+AN-WORKBENCH+" #x31000000)
+  (:const "+AN-NO-FONTS+" #xB1000001)
+  (:const "+AN-WB-BAD-STARTUP-MSG1+" #x31000001)
+  (:const "+AN-WB-BAD-STARTUP-MSG2+" #x31000002)
+  (:const "+AN-WB-BAD-IO-MSG+" #x31000003)
+  (:const "+AN-WB-RE-LAYOUT-TOOL-MENU+" #xB1010009)
+  (:const "+AN-DISK-COPY+" #x32000000)
+  (:const "+AN-GAD-TOOLS+" #x33000000)
+  (:const "+AN-UTILITY-LIB+" #x34000000)
+  (:const "+AN-UNKNOWN+" #x35000000)
 
-;;; --- structures from exec/devices.i ---
-(ffi:defcstruct (device :size 34)   ; DD (exec/devices.i)
-)
-(ffi:defcstruct (unit :size 38)   ; UNIT (exec/devices.i)
-  (flags :u8 34)
-  (pad :u8 35)
-  (opencnt :u16 36)
-)
+  ;; --- constants from exec/devices.i ---
+  (:const "+UNITB-ACTIVE+" 0)
+  (:const "+UNITF-ACTIVE+" 1)
+  (:const "+UNITB-INTASK+" 1)
+  (:const "+UNITF-INTASK+" 2)
 
-;;; --- constants from exec/errors.i ---
-(defconstant +ioerr-openfail+ -1)
-(defconstant +ioerr-aborted+ -2)
-(defconstant +ioerr-nocmd+ -3)
-(defconstant +ioerr-badlength+ -4)
-(defconstant +ioerr-badaddress+ -5)
-(defconstant +ioerr-unitbusy+ -6)
-(defconstant +ioerr-selftest+ -7)
-(defconstant +err-opendevice+ -1)
+  ;; --- structures from exec/devices.i ---
+  (:struct "DEVICE" 34   ; DD (exec/devices.i)
+    )
+  (:struct "UNIT" 38   ; UNIT (exec/devices.i)
+    ("FLAGS" :u8 34)
+    ("PAD" :u8 35)
+    ("OPENCNT" :u16 36)
+    )
 
-;;; --- constants from exec/execbase.i ---
-(defconstant +afb-68010+ 0)
-(defconstant +aff-68010+ 1)
-(defconstant +afb-68020+ 1)
-(defconstant +aff-68020+ 2)
-(defconstant +afb-68030+ 2)
-(defconstant +aff-68030+ 4)
-(defconstant +afb-68040+ 3)
-(defconstant +aff-68040+ 8)
-(defconstant +afb-68881+ 4)
-(defconstant +aff-68881+ #x10)
-(defconstant +afb-68882+ 5)
-(defconstant +aff-68882+ #x20)
-(defconstant +afb-fpu40+ 6)
-(defconstant +aff-fpu40+ #x40)
-(defconstant +afb-68060+ 7)
-(defconstant +aff-68060+ #x80)
-(defconstant +afb-fpga+ 10)
-(defconstant +aff-fpga+ #x400)
-(defconstant +afb-private+ 15)
-(defconstant +aff-private+ #x8000)
-(defconstant +cacrb-enable-i+ 0)
-(defconstant +cacrf-enable-i+ 1)
-(defconstant +cacrb-freeze-i+ 1)
-(defconstant +cacrf-freeze-i+ 2)
-(defconstant +cacrb-clear-i+ 3)
-(defconstant +cacrf-clear-i+ 8)
-(defconstant +cacrb-ibe+ 4)
-(defconstant +cacrf-ibe+ #x10)
-(defconstant +cacrb-enable-d+ 8)
-(defconstant +cacrf-enable-d+ #x100)
-(defconstant +cacrb-freeze-d+ 9)
-(defconstant +cacrf-freeze-d+ #x200)
-(defconstant +cacrb-clear-d+ 11)
-(defconstant +cacrf-clear-d+ #x800)
-(defconstant +cacrb-dbe+ 12)
-(defconstant +cacrf-dbe+ #x1000)
-(defconstant +cacrb-write-allocate+ 13)
-(defconstant +cacrf-write-allocate+ #x2000)
-(defconstant +cacrb-enable-e+ #x1E)
-(defconstant +cacrf-enable-e+ #x40000000)
-(defconstant +cacrb-copy-back+ #x1F)
-(defconstant +cacrf-copy-back+ #x80000000)
-(defconstant +dmab-continue+ 1)
-(defconstant +dmaf-continue+ 2)
-(defconstant +dmab-no-modify+ 2)
-(defconstant +dmaf-no-modify+ 4)
-(defconstant +dmab-read-from-ram+ 3)
-(defconstant +dmaf-read-from-ram+ 8)
+  ;; --- constants from exec/errors.i ---
+  (:const "+IOERR-OPENFAIL+" -1)
+  (:const "+IOERR-ABORTED+" -2)
+  (:const "+IOERR-NOCMD+" -3)
+  (:const "+IOERR-BADLENGTH+" -4)
+  (:const "+IOERR-BADADDRESS+" -5)
+  (:const "+IOERR-UNITBUSY+" -6)
+  (:const "+IOERR-SELFTEST+" -7)
+  (:const "+ERR-OPENDEVICE+" -1)
 
-;;; --- structures from exec/execbase.i ---
-(ffi:defcstruct (exec-base :size 632)   ; ExecBase (exec/execbase.i)
-  (soft-ver :u16 34)
-  (low-mem-chk-sum :i16 36)
-  (chk-base :u32 38)
-  (cold-capture :fptr 42)
-  (cool-capture :fptr 46)
-  (warm-capture :fptr 50)
-  (sys-stk-upper :fptr 54)
-  (sys-stk-lower :fptr 58)
-  (max-loc-mem :u32 62)
-  (debug-entry :fptr 66)
-  (debug-data :fptr 70)
-  (alert-data :fptr 74)
-  (max-ext-mem :fptr 78)
-  (chk-sum :i16 82)
-  (int-vects (:struct 0) 84)
-  (ivtbe (:struct 12) 84)
-  (ivdskblk (:struct 12) 96)
-  (ivsoftint (:struct 12) 108)
-  (ivports (:struct 12) 120)
-  (ivcoper (:struct 12) 132)
-  (ivvertb (:struct 12) 144)
-  (ivblit (:struct 12) 156)
-  (ivaud0 (:struct 12) 168)
-  (ivaud1 (:struct 12) 180)
-  (ivaud2 (:struct 12) 192)
-  (ivaud3 (:struct 12) 204)
-  (ivrbf (:struct 12) 216)
-  (ivdsksync (:struct 12) 228)
-  (ivexter (:struct 12) 240)
-  (ivinten (:struct 12) 252)
-  (ivnmi (:struct 12) 264)
-  (this-task :fptr 276)
-  (idle-count :u32 280)
-  (disp-count :u32 284)
-  (quantum :u16 288)
-  (elapsed :u16 290)
-  (sys-flags :u16 292)
-  (id-nest-cnt :i8 294)
-  (td-nest-cnt :i8 295)
-  (attn-flags :u16 296)
-  (attn-resched :u16 298)
-  (res-modules :fptr 300)
-  (task-trap-code :fptr 304)
-  (task-except-code :fptr 308)
-  (task-exit-code :fptr 312)
-  (task-sig-alloc :u32 316)
-  (task-trap-alloc :u16 320)
-  (mem-list (:struct 14) 322)
-  (resource-list (:struct 14) 336)
-  (device-list (:struct 14) 350)
-  (intr-list (:struct 14) 364)
-  (lib-list (:struct 14) 378)
-  (port-list (:struct 14) 392)
-  (task-ready (:struct 14) 406)
-  (task-wait (:struct 14) 420)
-  (soft-ints (:struct 80) 434)
-  (last-alert (:struct 16) 514)
-  (v-blank-frequency :u8 530)
-  (power-supply-frequency :u8 531)
-  (semaphore-list (:struct 14) 532)
-  (kick-mem-ptr :fptr 546)
-  (kick-tag-ptr :fptr 550)
-  (kick-check-sum :fptr 554)
-  (pad0 :u16 558)
-  (launch-point :u32 560)
-  (ram-lib-private :fptr 564)
-  (e-clock-frequency :u32 568)
-  (cache-control :u32 572)
-  (task-id :u32 576)
-  (reserved1 (:struct 20) 580)
-  (mmu-lock :fptr 600)
-  (reserved2 (:struct 12) 604)
-  (mem-handlers (:struct 12) 616)
-  (mem-handler :fptr 628)
-)
+  ;; --- constants from exec/execbase.i ---
+  (:const "+AFB-68010+" 0)
+  (:const "+AFF-68010+" 1)
+  (:const "+AFB-68020+" 1)
+  (:const "+AFF-68020+" 2)
+  (:const "+AFB-68030+" 2)
+  (:const "+AFF-68030+" 4)
+  (:const "+AFB-68040+" 3)
+  (:const "+AFF-68040+" 8)
+  (:const "+AFB-68881+" 4)
+  (:const "+AFF-68881+" #x10)
+  (:const "+AFB-68882+" 5)
+  (:const "+AFF-68882+" #x20)
+  (:const "+AFB-FPU40+" 6)
+  (:const "+AFF-FPU40+" #x40)
+  (:const "+AFB-68060+" 7)
+  (:const "+AFF-68060+" #x80)
+  (:const "+AFB-FPGA+" 10)
+  (:const "+AFF-FPGA+" #x400)
+  (:const "+AFB-PRIVATE+" 15)
+  (:const "+AFF-PRIVATE+" #x8000)
+  (:const "+CACRB-ENABLE-I+" 0)
+  (:const "+CACRF-ENABLE-I+" 1)
+  (:const "+CACRB-FREEZE-I+" 1)
+  (:const "+CACRF-FREEZE-I+" 2)
+  (:const "+CACRB-CLEAR-I+" 3)
+  (:const "+CACRF-CLEAR-I+" 8)
+  (:const "+CACRB-IBE+" 4)
+  (:const "+CACRF-IBE+" #x10)
+  (:const "+CACRB-ENABLE-D+" 8)
+  (:const "+CACRF-ENABLE-D+" #x100)
+  (:const "+CACRB-FREEZE-D+" 9)
+  (:const "+CACRF-FREEZE-D+" #x200)
+  (:const "+CACRB-CLEAR-D+" 11)
+  (:const "+CACRF-CLEAR-D+" #x800)
+  (:const "+CACRB-DBE+" 12)
+  (:const "+CACRF-DBE+" #x1000)
+  (:const "+CACRB-WRITE-ALLOCATE+" 13)
+  (:const "+CACRF-WRITE-ALLOCATE+" #x2000)
+  (:const "+CACRB-ENABLE-E+" #x1E)
+  (:const "+CACRF-ENABLE-E+" #x40000000)
+  (:const "+CACRB-COPY-BACK+" #x1F)
+  (:const "+CACRF-COPY-BACK+" #x80000000)
+  (:const "+DMAB-CONTINUE+" 1)
+  (:const "+DMAF-CONTINUE+" 2)
+  (:const "+DMAB-NO-MODIFY+" 2)
+  (:const "+DMAF-NO-MODIFY+" 4)
+  (:const "+DMAB-READ-FROM-RAM+" 3)
+  (:const "+DMAF-READ-FROM-RAM+" 8)
 
-;;; --- constants from exec/interrupts.i ---
-(defconstant +sb-sar+ 15)
-(defconstant +sf-sar+ #x8000)
-(defconstant +sb-tqe+ 14)
-(defconstant +sf-tqe+ #x4000)
-(defconstant +sb-sint+ 13)
-(defconstant +sf-sint+ #x2000)
-(defconstant +sih-primask+ #xF0)
-(defconstant +sih-queues+ 5)
-(defconstant +intb-nmi+ 15)
-(defconstant +intf-nmi+ #x8000)
+  ;; --- structures from exec/execbase.i ---
+  (:struct "EXEC-BASE" 632   ; ExecBase (exec/execbase.i)
+    ("SOFT-VER" :u16 34)
+    ("LOW-MEM-CHK-SUM" :i16 36)
+    ("CHK-BASE" :u32 38)
+    ("COLD-CAPTURE" :fptr 42)
+    ("COOL-CAPTURE" :fptr 46)
+    ("WARM-CAPTURE" :fptr 50)
+    ("SYS-STK-UPPER" :fptr 54)
+    ("SYS-STK-LOWER" :fptr 58)
+    ("MAX-LOC-MEM" :u32 62)
+    ("DEBUG-ENTRY" :fptr 66)
+    ("DEBUG-DATA" :fptr 70)
+    ("ALERT-DATA" :fptr 74)
+    ("MAX-EXT-MEM" :fptr 78)
+    ("CHK-SUM" :i16 82)
+    ("INT-VECTS" (:struct 0) 84)
+    ("IVTBE" (:struct 12) 84)
+    ("IVDSKBLK" (:struct 12) 96)
+    ("IVSOFTINT" (:struct 12) 108)
+    ("IVPORTS" (:struct 12) 120)
+    ("IVCOPER" (:struct 12) 132)
+    ("IVVERTB" (:struct 12) 144)
+    ("IVBLIT" (:struct 12) 156)
+    ("IVAUD0" (:struct 12) 168)
+    ("IVAUD1" (:struct 12) 180)
+    ("IVAUD2" (:struct 12) 192)
+    ("IVAUD3" (:struct 12) 204)
+    ("IVRBF" (:struct 12) 216)
+    ("IVDSKSYNC" (:struct 12) 228)
+    ("IVEXTER" (:struct 12) 240)
+    ("IVINTEN" (:struct 12) 252)
+    ("IVNMI" (:struct 12) 264)
+    ("THIS-TASK" :fptr 276)
+    ("IDLE-COUNT" :u32 280)
+    ("DISP-COUNT" :u32 284)
+    ("QUANTUM" :u16 288)
+    ("ELAPSED" :u16 290)
+    ("SYS-FLAGS" :u16 292)
+    ("ID-NEST-CNT" :i8 294)
+    ("TD-NEST-CNT" :i8 295)
+    ("ATTN-FLAGS" :u16 296)
+    ("ATTN-RESCHED" :u16 298)
+    ("RES-MODULES" :fptr 300)
+    ("TASK-TRAP-CODE" :fptr 304)
+    ("TASK-EXCEPT-CODE" :fptr 308)
+    ("TASK-EXIT-CODE" :fptr 312)
+    ("TASK-SIG-ALLOC" :u32 316)
+    ("TASK-TRAP-ALLOC" :u16 320)
+    ("MEM-LIST" (:struct 14) 322)
+    ("RESOURCE-LIST" (:struct 14) 336)
+    ("DEVICE-LIST" (:struct 14) 350)
+    ("INTR-LIST" (:struct 14) 364)
+    ("LIB-LIST" (:struct 14) 378)
+    ("PORT-LIST" (:struct 14) 392)
+    ("TASK-READY" (:struct 14) 406)
+    ("TASK-WAIT" (:struct 14) 420)
+    ("SOFT-INTS" (:struct 80) 434)
+    ("LAST-ALERT" (:struct 16) 514)
+    ("V-BLANK-FREQUENCY" :u8 530)
+    ("POWER-SUPPLY-FREQUENCY" :u8 531)
+    ("SEMAPHORE-LIST" (:struct 14) 532)
+    ("KICK-MEM-PTR" :fptr 546)
+    ("KICK-TAG-PTR" :fptr 550)
+    ("KICK-CHECK-SUM" :fptr 554)
+    ("PAD0" :u16 558)
+    ("LAUNCH-POINT" :u32 560)
+    ("RAM-LIB-PRIVATE" :fptr 564)
+    ("E-CLOCK-FREQUENCY" :u32 568)
+    ("CACHE-CONTROL" :u32 572)
+    ("TASK-ID" :u32 576)
+    ("RESERVED1" (:struct 20) 580)
+    ("MMU-LOCK" :fptr 600)
+    ("RESERVED2" (:struct 12) 604)
+    ("MEM-HANDLERS" (:struct 12) 616)
+    ("MEM-HANDLER" :fptr 628)
+    )
 
-;;; --- structures from exec/interrupts.i ---
-(ffi:defcstruct (interrupt :size 22)   ; IS (exec/interrupts.i)
-  (data :fptr 14)
-  (code :fptr 18)
-)
-(ffi:defcstruct (int-vector :size 12)   ; IV (exec/interrupts.i)
-  (data :fptr 0)
-  (code :fptr 4)
-  (node :fptr 8)
-)
-(ffi:defcstruct (soft-int-list :size 16)   ; SH (exec/interrupts.i)
-  (pad :u16 14)
-)
+  ;; --- constants from exec/interrupts.i ---
+  (:const "+SB-SAR+" 15)
+  (:const "+SF-SAR+" #x8000)
+  (:const "+SB-TQE+" 14)
+  (:const "+SF-TQE+" #x4000)
+  (:const "+SB-SINT+" 13)
+  (:const "+SF-SINT+" #x2000)
+  (:const "+SIH-PRIMASK+" #xF0)
+  (:const "+SIH-QUEUES+" 5)
+  (:const "+INTB-NMI+" 15)
+  (:const "+INTF-NMI+" #x8000)
 
-;;; --- constants from exec/io.i ---
-(defconstant +iob-quick+ 0)
-(defconstant +iof-quick+ 1)
-(defconstant +dev-beginio+ -6)
-(defconstant +dev-abortio+ -12)
-(defconstant +cmd-invalid+ 0)
-(defconstant +cmd-reset+ 1)
-(defconstant +cmd-read+ 2)
-(defconstant +cmd-write+ 3)
-(defconstant +cmd-update+ 4)
-(defconstant +cmd-clear+ 5)
-(defconstant +cmd-stop+ 6)
-(defconstant +cmd-start+ 7)
-(defconstant +cmd-flush+ 8)
-(defconstant +cmd-nonstd+ 9)
+  ;; --- structures from exec/interrupts.i ---
+  (:struct "INTERRUPT" 22   ; IS (exec/interrupts.i)
+    ("DATA" :fptr 14)
+    ("CODE" :fptr 18)
+    )
+  (:struct "INT-VECTOR" 12   ; IV (exec/interrupts.i)
+    ("DATA" :fptr 0)
+    ("CODE" :fptr 4)
+    ("NODE" :fptr 8)
+    )
+  (:struct "SOFT-INT-LIST" 16   ; SH (exec/interrupts.i)
+    ("PAD" :u16 14)
+    )
 
-;;; --- structures from exec/io.i ---
-(ffi:defcstruct (io-request :size 32)   ; IO (exec/io.i)
-  (device :fptr 20)
-  (unit :fptr 24)
-  (command :u16 28)
-  (flags :u8 30)
-  (error :i8 31)
-)
-(ffi:defcstruct (io-std-req :size 48)   ; IO (exec/io.i)
-  (device :fptr 20)
-  (unit :fptr 24)
-  (command :u16 28)
-  (flags :u8 30)
-  (error :i8 31)
-  (actual :u32 32)
-  (length :u32 36)
-  (data :fptr 40)
-  (offset :u32 44)
-)
+  ;; --- constants from exec/io.i ---
+  (:const "+IOB-QUICK+" 0)
+  (:const "+IOF-QUICK+" 1)
+  (:const "+DEV-BEGINIO+" -6)
+  (:const "+DEV-ABORTIO+" -12)
+  (:const "+CMD-INVALID+" 0)
+  (:const "+CMD-RESET+" 1)
+  (:const "+CMD-READ+" 2)
+  (:const "+CMD-WRITE+" 3)
+  (:const "+CMD-UPDATE+" 4)
+  (:const "+CMD-CLEAR+" 5)
+  (:const "+CMD-STOP+" 6)
+  (:const "+CMD-START+" 7)
+  (:const "+CMD-FLUSH+" 8)
+  (:const "+CMD-NONSTD+" 9)
 
-;;; --- constants from exec/libraries.i ---
-(defconstant +lib-vectsize+ 6)
-(defconstant +lib-reserved+ 4)
-(defconstant +lib-base+ -6)
-(defconstant +lib-userdef+ -30)
-(defconstant +lib-nonstd+ -30)
-(defconstant +lib-open+ -6)
-(defconstant +lib-close+ -12)
-(defconstant +lib-expunge+ -18)
-(defconstant +lib-extfunc+ -24)
-(defconstant +libb-summing+ 0)
-(defconstant +libf-summing+ 1)
-(defconstant +libb-changed+ 1)
-(defconstant +libf-changed+ 2)
-(defconstant +libb-sumused+ 2)
-(defconstant +libf-sumused+ 4)
-(defconstant +libb-delexp+ 3)
-(defconstant +libf-delexp+ 8)
-(defconstant +libb-exp0-cnt+ 4)
-(defconstant +libf-exp0-cnt+ #x10)
+  ;; --- structures from exec/io.i ---
+  (:struct "IO-REQUEST" 32   ; IO (exec/io.i)
+    ("DEVICE" :fptr 20)
+    ("UNIT" :fptr 24)
+    ("COMMAND" :u16 28)
+    ("FLAGS" :u8 30)
+    ("ERROR" :i8 31)
+    )
+  (:struct "IO-STD-REQ" 48   ; IO (exec/io.i)
+    ("DEVICE" :fptr 20)
+    ("UNIT" :fptr 24)
+    ("COMMAND" :u16 28)
+    ("FLAGS" :u8 30)
+    ("ERROR" :i8 31)
+    ("ACTUAL" :u32 32)
+    ("LENGTH" :u32 36)
+    ("DATA" :fptr 40)
+    ("OFFSET" :u32 44)
+    )
 
-;;; --- structures from exec/libraries.i ---
-(ffi:defcstruct (library :size 34)   ; LIB (exec/libraries.i)
-  (flags :u8 14)
-  (pad :u8 15)
-  (negsize :u16 16)
-  (possize :u16 18)
-  (version :u16 20)
-  (revision :u16 22)
-  (idstring :fptr 24)
-  (sum :u32 28)
-  (opencnt :u16 32)
-)
+  ;; --- constants from exec/libraries.i ---
+  (:const "+LIB-VECTSIZE+" 6)
+  (:const "+LIB-RESERVED+" 4)
+  (:const "+LIB-BASE+" -6)
+  (:const "+LIB-USERDEF+" -30)
+  (:const "+LIB-NONSTD+" -30)
+  (:const "+LIB-OPEN+" -6)
+  (:const "+LIB-CLOSE+" -12)
+  (:const "+LIB-EXPUNGE+" -18)
+  (:const "+LIB-EXTFUNC+" -24)
+  (:const "+LIBB-SUMMING+" 0)
+  (:const "+LIBF-SUMMING+" 1)
+  (:const "+LIBB-CHANGED+" 1)
+  (:const "+LIBF-CHANGED+" 2)
+  (:const "+LIBB-SUMUSED+" 2)
+  (:const "+LIBF-SUMUSED+" 4)
+  (:const "+LIBB-DELEXP+" 3)
+  (:const "+LIBF-DELEXP+" 8)
+  (:const "+LIBB-EXP0-CNT+" 4)
+  (:const "+LIBF-EXP0-CNT+" #x10)
 
-;;; --- structures from exec/lists.i ---
-(ffi:defcstruct (list :size 14)   ; LH (exec/lists.i)
-  (head :fptr 0)
-  (tail :fptr 4)
-  (tailpred :fptr 8)
-  (type :u8 12)
-  (pad :u8 13)
-)
-(ffi:defcstruct (min-list :size 12)   ; MLH (exec/lists.i)
-  (head :fptr 0)
-  (tail :fptr 4)
-  (tailpred :fptr 8)
-)
+  ;; --- structures from exec/libraries.i ---
+  (:struct "LIBRARY" 34   ; LIB (exec/libraries.i)
+    ("FLAGS" :u8 14)
+    ("PAD" :u8 15)
+    ("NEGSIZE" :u16 16)
+    ("POSSIZE" :u16 18)
+    ("VERSION" :u16 20)
+    ("REVISION" :u16 22)
+    ("IDSTRING" :fptr 24)
+    ("SUM" :u32 28)
+    ("OPENCNT" :u16 32)
+    )
 
-;;; --- constants from exec/memory.i ---
-(defconstant +memf-any+ 0)
-(defconstant +memb-public+ 0)
-(defconstant +memf-public+ 1)
-(defconstant +memb-chip+ 1)
-(defconstant +memf-chip+ 2)
-(defconstant +memb-fast+ 2)
-(defconstant +memf-fast+ 4)
-(defconstant +memb-local+ 8)
-(defconstant +memf-local+ #x100)
-(defconstant +memb-24-bitdma+ 9)
-(defconstant +memf-24-bitdma+ #x200)
-(defconstant +memb-kick+ 10)
-(defconstant +memf-kick+ #x400)
-(defconstant +memb-clear+ #x10)
-(defconstant +memf-clear+ #x10000)
-(defconstant +memb-largest+ #x11)
-(defconstant +memf-largest+ #x20000)
-(defconstant +memb-reverse+ #x12)
-(defconstant +memf-reverse+ #x40000)
-(defconstant +memb-total+ #x13)
-(defconstant +memf-total+ #x80000)
-(defconstant +memb-no-expunge+ #x1F)
-(defconstant +memf-no-expunge+ #x80000000)
-(defconstant +mem-blocksize+ 8)
-(defconstant +mem-blockmask+ 7)
-(defconstant +memhb-recycle+ 0)
-(defconstant +memhf-recycle+ 1)
-(defconstant +mem-did-nothing+ 0)
-(defconstant +mem-all-done+ -1)
-(defconstant +mem-try-again+ 1)
+  ;; --- structures from exec/lists.i ---
+  (:struct "LIST" 14   ; LH (exec/lists.i)
+    ("HEAD" :fptr 0)
+    ("TAIL" :fptr 4)
+    ("TAILPRED" :fptr 8)
+    ("TYPE" :u8 12)
+    ("PAD" :u8 13)
+    )
+  (:struct "MIN-LIST" 12   ; MLH (exec/lists.i)
+    ("HEAD" :fptr 0)
+    ("TAIL" :fptr 4)
+    ("TAILPRED" :fptr 8)
+    )
 
-;;; --- structures from exec/memory.i ---
-(ffi:defcstruct (mem-list :size 16)   ; ML (exec/memory.i)
-  (numentries :u16 14)
-)
-(ffi:defcstruct (mem-entry :size 8)   ; ME (exec/memory.i)
-  (reqs (:struct 0) 0)
-  (addr :fptr 0)
-  (length :u32 4)
-)
-(ffi:defcstruct (mem-handler-data :size 12)   ; MemHandlerData (exec/memory.i)
-  (request-size :u32 0)
-  (request-flags :u32 4)
-  (flags :u32 8)
-)
-(ffi:defcstruct (mem-header :size 32)   ; MH (exec/memory.i)
-  (attributes :u16 14)
-  (first :fptr 16)
-  (lower :fptr 20)
-  (upper :fptr 24)
-  (free :u32 28)
-)
-(ffi:defcstruct (mem-chunk :size 12)   ; MC (exec/memory.i)
-  (next :fptr 0)
-  (bytes :u32 4)
-  (size :fptr 8)
-)
+  ;; --- constants from exec/memory.i ---
+  (:const "+MEMF-ANY+" 0)
+  (:const "+MEMB-PUBLIC+" 0)
+  (:const "+MEMF-PUBLIC+" 1)
+  (:const "+MEMB-CHIP+" 1)
+  (:const "+MEMF-CHIP+" 2)
+  (:const "+MEMB-FAST+" 2)
+  (:const "+MEMF-FAST+" 4)
+  (:const "+MEMB-LOCAL+" 8)
+  (:const "+MEMF-LOCAL+" #x100)
+  (:const "+MEMB-24-BITDMA+" 9)
+  (:const "+MEMF-24-BITDMA+" #x200)
+  (:const "+MEMB-KICK+" 10)
+  (:const "+MEMF-KICK+" #x400)
+  (:const "+MEMB-CLEAR+" #x10)
+  (:const "+MEMF-CLEAR+" #x10000)
+  (:const "+MEMB-LARGEST+" #x11)
+  (:const "+MEMF-LARGEST+" #x20000)
+  (:const "+MEMB-REVERSE+" #x12)
+  (:const "+MEMF-REVERSE+" #x40000)
+  (:const "+MEMB-TOTAL+" #x13)
+  (:const "+MEMF-TOTAL+" #x80000)
+  (:const "+MEMB-NO-EXPUNGE+" #x1F)
+  (:const "+MEMF-NO-EXPUNGE+" #x80000000)
+  (:const "+MEM-BLOCKSIZE+" 8)
+  (:const "+MEM-BLOCKMASK+" 7)
+  (:const "+MEMHB-RECYCLE+" 0)
+  (:const "+MEMHF-RECYCLE+" 1)
+  (:const "+MEM-DID-NOTHING+" 0)
+  (:const "+MEM-ALL-DONE+" -1)
+  (:const "+MEM-TRY-AGAIN+" 1)
 
-;;; --- constants from exec/nodes.i ---
-(defconstant +nt-unknown+ 0)
-(defconstant +nt-task+ 1)
-(defconstant +nt-interrupt+ 2)
-(defconstant +nt-device+ 3)
-(defconstant +nt-msgport+ 4)
-(defconstant +nt-message+ 5)
-(defconstant +nt-freemsg+ 6)
-(defconstant +nt-replymsg+ 7)
-(defconstant +nt-resource+ 8)
-(defconstant +nt-library+ 9)
-(defconstant +nt-memory+ 10)
-(defconstant +nt-softint+ 11)
-(defconstant +nt-font+ 12)
-(defconstant +nt-process+ 13)
-(defconstant +nt-semaphore+ 14)
-(defconstant +nt-signalsem+ 15)
-(defconstant +nt-bootnode+ #x10)
-(defconstant +nt-kickmem+ #x11)
-(defconstant +nt-graphics+ #x12)
-(defconstant +nt-deathmessage+ #x13)
-(defconstant +nt-user+ #xFE)
-(defconstant +nt-extended+ #xFF)
+  ;; --- structures from exec/memory.i ---
+  (:struct "MEM-LIST" 16   ; ML (exec/memory.i)
+    ("NUMENTRIES" :u16 14)
+    )
+  (:struct "MEM-ENTRY" 8   ; ME (exec/memory.i)
+    ("REQS" (:struct 0) 0)
+    ("ADDR" :fptr 0)
+    ("LENGTH" :u32 4)
+    )
+  (:struct "MEM-HANDLER-DATA" 12   ; MemHandlerData (exec/memory.i)
+    ("REQUEST-SIZE" :u32 0)
+    ("REQUEST-FLAGS" :u32 4)
+    ("FLAGS" :u32 8)
+    )
+  (:struct "MEM-HEADER" 32   ; MH (exec/memory.i)
+    ("ATTRIBUTES" :u16 14)
+    ("FIRST" :fptr 16)
+    ("LOWER" :fptr 20)
+    ("UPPER" :fptr 24)
+    ("FREE" :u32 28)
+    )
+  (:struct "MEM-CHUNK" 12   ; MC (exec/memory.i)
+    ("NEXT" :fptr 0)
+    ("BYTES" :u32 4)
+    ("SIZE" :fptr 8)
+    )
 
-;;; --- structures from exec/nodes.i ---
-(ffi:defcstruct (node :size 14)   ; LN (exec/nodes.i)
-  (succ :fptr 0)
-  (pred :fptr 4)
-  (type :u8 8)
-  (pri :i8 9)
-  (name :fptr 10)
-)
-(ffi:defcstruct (min-node :size 8)   ; MLN (exec/nodes.i)
-  (succ :fptr 0)
-  (pred :fptr 4)
-)
+  ;; --- constants from exec/nodes.i ---
+  (:const "+NT-UNKNOWN+" 0)
+  (:const "+NT-TASK+" 1)
+  (:const "+NT-INTERRUPT+" 2)
+  (:const "+NT-DEVICE+" 3)
+  (:const "+NT-MSGPORT+" 4)
+  (:const "+NT-MESSAGE+" 5)
+  (:const "+NT-FREEMSG+" 6)
+  (:const "+NT-REPLYMSG+" 7)
+  (:const "+NT-RESOURCE+" 8)
+  (:const "+NT-LIBRARY+" 9)
+  (:const "+NT-MEMORY+" 10)
+  (:const "+NT-SOFTINT+" 11)
+  (:const "+NT-FONT+" 12)
+  (:const "+NT-PROCESS+" 13)
+  (:const "+NT-SEMAPHORE+" 14)
+  (:const "+NT-SIGNALSEM+" 15)
+  (:const "+NT-BOOTNODE+" #x10)
+  (:const "+NT-KICKMEM+" #x11)
+  (:const "+NT-GRAPHICS+" #x12)
+  (:const "+NT-DEATHMESSAGE+" #x13)
+  (:const "+NT-USER+" #xFE)
+  (:const "+NT-EXTENDED+" #xFF)
 
-;;; --- constants from exec/ports.i ---
-(defconstant +mp-softint+ #x10)
-(defconstant +pf-action+ 3)
-(defconstant +pa-signal+ 0)
-(defconstant +pa-softint+ 1)
-(defconstant +pa-ignore+ 2)
+  ;; --- structures from exec/nodes.i ---
+  (:struct "NODE" 14   ; LN (exec/nodes.i)
+    ("SUCC" :fptr 0)
+    ("PRED" :fptr 4)
+    ("TYPE" :u8 8)
+    ("PRI" :i8 9)
+    ("NAME" :fptr 10)
+    )
+  (:struct "MIN-NODE" 8   ; MLN (exec/nodes.i)
+    ("SUCC" :fptr 0)
+    ("PRED" :fptr 4)
+    )
 
-;;; --- structures from exec/ports.i ---
-(ffi:defcstruct (msg-port :size 34)   ; MP (exec/ports.i)
-  (flags :u8 14)
-  (sigbit :u8 15)
-  (sigtask :fptr 16)
-  (msglist (:struct 14) 20)
-)
-(ffi:defcstruct (message :size 20)   ; MN (exec/ports.i)
-  (replyport :fptr 14)
-  (length :u16 18)
-)
+  ;; --- constants from exec/ports.i ---
+  (:const "+MP-SOFTINT+" #x10)
+  (:const "+PF-ACTION+" 3)
+  (:const "+PA-SIGNAL+" 0)
+  (:const "+PA-SOFTINT+" 1)
+  (:const "+PA-IGNORE+" 2)
 
-;;; --- constants from exec/resident.i ---
-(defconstant +rtc-matchword+ #x4AFC)
-(defconstant +rtb-coldstart+ 0)
-(defconstant +rtf-coldstart+ 1)
-(defconstant +rtb-singletask+ 1)
-(defconstant +rtf-singletask+ 2)
-(defconstant +rtb-afterdos+ 2)
-(defconstant +rtf-afterdos+ 4)
-(defconstant +rtb-autoinit+ 7)
-(defconstant +rtf-autoinit+ #x80)
-(defconstant +rtw-never+ 0)
-(defconstant +rtw-coldstart+ 1)
+  ;; --- structures from exec/ports.i ---
+  (:struct "MSG-PORT" 34   ; MP (exec/ports.i)
+    ("FLAGS" :u8 14)
+    ("SIGBIT" :u8 15)
+    ("SIGTASK" :fptr 16)
+    ("MSGLIST" (:struct 14) 20)
+    )
+  (:struct "MESSAGE" 20   ; MN (exec/ports.i)
+    ("REPLYPORT" :fptr 14)
+    ("LENGTH" :u16 18)
+    )
 
-;;; --- structures from exec/resident.i ---
-(ffi:defcstruct (resident :size 26)   ; RT (exec/resident.i)
-  (matchword :u16 0)
-  (matchtag :fptr 2)
-  (endskip :fptr 6)
-  (flags :u8 10)
-  (version :u8 11)
-  (type :u8 12)
-  (pri :i8 13)
-  (name :fptr 14)
-  (idstring :fptr 18)
-  (init :fptr 22)
-)
+  ;; --- constants from exec/resident.i ---
+  (:const "+RTC-MATCHWORD+" #x4AFC)
+  (:const "+RTB-COLDSTART+" 0)
+  (:const "+RTF-COLDSTART+" 1)
+  (:const "+RTB-SINGLETASK+" 1)
+  (:const "+RTF-SINGLETASK+" 2)
+  (:const "+RTB-AFTERDOS+" 2)
+  (:const "+RTF-AFTERDOS+" 4)
+  (:const "+RTB-AUTOINIT+" 7)
+  (:const "+RTF-AUTOINIT+" #x80)
+  (:const "+RTW-NEVER+" 0)
+  (:const "+RTW-COLDSTART+" 1)
 
-;;; --- constants from exec/semaphores.i ---
-(defconstant +sm-lockmsg+ #x10)
+  ;; --- structures from exec/resident.i ---
+  (:struct "RESIDENT" 26   ; RT (exec/resident.i)
+    ("MATCHWORD" :u16 0)
+    ("MATCHTAG" :fptr 2)
+    ("ENDSKIP" :fptr 6)
+    ("FLAGS" :u8 10)
+    ("VERSION" :u8 11)
+    ("TYPE" :u8 12)
+    ("PRI" :i8 13)
+    ("NAME" :fptr 14)
+    ("IDSTRING" :fptr 18)
+    ("INIT" :fptr 22)
+    )
 
-;;; --- structures from exec/semaphores.i ---
-(ffi:defcstruct (semaphore-request :size 12)   ; SSR (exec/semaphores.i)
-  (waiter :fptr 8)
-)
-(ffi:defcstruct (signal-semaphore :size 46)   ; SS (exec/semaphores.i)
-  (nestcount :i16 14)
-  (waitqueue (:struct 12) 16)
-  (multiplelink (:struct 12) 28)
-  (owner :fptr 40)
-  (queuecount :i16 44)
-)
-(ffi:defcstruct (semaphore-message :size 24)   ; SemaphoreMessage (exec/semaphores.i)
-  (semaphore :fptr 20)
-)
-(ffi:defcstruct (semaphore :size 36)   ; SM (exec/semaphores.i)
-  (bids :i16 34)
-)
+  ;; --- constants from exec/semaphores.i ---
+  (:const "+SM-LOCKMSG+" #x10)
 
-;;; --- constants from exec/tasks.i ---
-(defconstant +tb-proctime+ 0)
-(defconstant +tf-proctime+ 1)
-(defconstant +tb-etask+ 3)
-(defconstant +tf-etask+ 8)
-(defconstant +tb-stackchk+ 4)
-(defconstant +tf-stackchk+ #x10)
-(defconstant +tb-except+ 5)
-(defconstant +tf-except+ #x20)
-(defconstant +tb-switch+ 6)
-(defconstant +tf-switch+ #x40)
-(defconstant +tb-launch+ 7)
-(defconstant +tf-launch+ #x80)
-(defconstant +ts-invalid+ 0)
-(defconstant +ts-added+ 1)
-(defconstant +ts-run+ 2)
-(defconstant +ts-ready+ 3)
-(defconstant +ts-wait+ 4)
-(defconstant +ts-except+ 5)
-(defconstant +ts-removed+ 6)
-(defconstant +sigb-abort+ 0)
-(defconstant +sigf-abort+ 1)
-(defconstant +sigb-child+ 1)
-(defconstant +sigf-child+ 2)
-(defconstant +sigb-blit+ 4)
-(defconstant +sigf-blit+ #x10)
-(defconstant +sigb-single+ 4)
-(defconstant +sigf-single+ #x10)
-(defconstant +sigb-intuition+ 5)
-(defconstant +sigf-intuition+ #x20)
-(defconstant +sigb-net+ 7)
-(defconstant +sigf-net+ #x80)
-(defconstant +sigb-dos+ 8)
-(defconstant +sigf-dos+ #x100)
-(defconstant +sys-sigalloc+ #xFFFF)
-(defconstant +sys-trapalloc+ #x8000)
+  ;; --- structures from exec/semaphores.i ---
+  (:struct "SEMAPHORE-REQUEST" 12   ; SSR (exec/semaphores.i)
+    ("WAITER" :fptr 8)
+    )
+  (:struct "SIGNAL-SEMAPHORE" 46   ; SS (exec/semaphores.i)
+    ("NESTCOUNT" :i16 14)
+    ("WAITQUEUE" (:struct 12) 16)
+    ("MULTIPLELINK" (:struct 12) 28)
+    ("OWNER" :fptr 40)
+    ("QUEUECOUNT" :i16 44)
+    )
+  (:struct "SEMAPHORE-MESSAGE" 24   ; SemaphoreMessage (exec/semaphores.i)
+    ("SEMAPHORE" :fptr 20)
+    )
+  (:struct "SEMAPHORE" 36   ; SM (exec/semaphores.i)
+    ("BIDS" :i16 34)
+    )
 
-;;; --- structures from exec/tasks.i ---
-(ffi:defcstruct (task :size 92)   ; TC_Struct (exec/tasks.i)
-  (flags :u8 14)
-  (state :u8 15)
-  (idnestcnt :i8 16)
-  (tdnestcnt :i8 17)
-  (sigalloc :u32 18)
-  (sigwait :u32 22)
-  (sigrecvd :u32 26)
-  (sigexcept :u32 30)
-  (trapalloc :u16 34)
-  (trapable :u16 36)
-  (exceptdata :fptr 38)
-  (exceptcode :fptr 42)
-  (trapdata :fptr 46)
-  (trapcode :fptr 50)
-  (spreg :fptr 54)
-  (splower :fptr 58)
-  (spupper :fptr 62)
-  (switch :fptr 66)
-  (launch :fptr 70)
-  (mementry (:struct 14) 74)
-  (userdata :fptr 88)
-)
-(ffi:defcstruct (stack-swap-struct :size 12)   ; StackSwapStruct (exec/tasks.i)
-  (lower :fptr 0)
-  (upper :u32 4)
-  (pointer :fptr 8)
-)
+  ;; --- constants from exec/tasks.i ---
+  (:const "+TB-PROCTIME+" 0)
+  (:const "+TF-PROCTIME+" 1)
+  (:const "+TB-ETASK+" 3)
+  (:const "+TF-ETASK+" 8)
+  (:const "+TB-STACKCHK+" 4)
+  (:const "+TF-STACKCHK+" #x10)
+  (:const "+TB-EXCEPT+" 5)
+  (:const "+TF-EXCEPT+" #x20)
+  (:const "+TB-SWITCH+" 6)
+  (:const "+TF-SWITCH+" #x40)
+  (:const "+TB-LAUNCH+" 7)
+  (:const "+TF-LAUNCH+" #x80)
+  (:const "+TS-INVALID+" 0)
+  (:const "+TS-ADDED+" 1)
+  (:const "+TS-RUN+" 2)
+  (:const "+TS-READY+" 3)
+  (:const "+TS-WAIT+" 4)
+  (:const "+TS-EXCEPT+" 5)
+  (:const "+TS-REMOVED+" 6)
+  (:const "+SIGB-ABORT+" 0)
+  (:const "+SIGF-ABORT+" 1)
+  (:const "+SIGB-CHILD+" 1)
+  (:const "+SIGF-CHILD+" 2)
+  (:const "+SIGB-BLIT+" 4)
+  (:const "+SIGF-BLIT+" #x10)
+  (:const "+SIGB-SINGLE+" 4)
+  (:const "+SIGF-SINGLE+" #x10)
+  (:const "+SIGB-INTUITION+" 5)
+  (:const "+SIGF-INTUITION+" #x20)
+  (:const "+SIGB-NET+" 7)
+  (:const "+SIGF-NET+" #x80)
+  (:const "+SIGB-DOS+" 8)
+  (:const "+SIGF-DOS+" #x100)
+  (:const "+SYS-SIGALLOC+" #xFFFF)
+  (:const "+SYS-TRAPALLOC+" #x8000)
 
-;;; --- functions (exec_lib.sfd + MorphOS SDK) ---
-;; skipped Supervisor: argument in A5 (reserved by the call dispatcher)
-(amiga.ffi:defcfun init-code *exec-base* -72 (:d0 start-class :d1 version)
-    :result :void
-    :doc "VOID InitCode(ULONG startClass, ULONG version) (D0,D1) LVO -72")
-(amiga.ffi:defcfun init-struct *exec-base* -78 (:a1 init-table :a2 memory :d0 size)
-    :result :void
-    :doc "VOID InitStruct(CONST_APTR initTable, APTR memory, ULONG size) (A1,A2,D0) LVO -78")
-(amiga.ffi:defcfun make-library *exec-base* -84 (:a0 func-init :a1 struct-init :a2 lib-init :d0 data-size :d1 seg-list)
-    :result :pointer
-    :doc "struct Library * MakeLibrary(CONST_APTR funcInit, CONST_APTR structInit, APTR libInit, ULONG dataSize, ULONG segList) (A0,A1,A2,D0,D1) LVO -84")
-(amiga.ffi:defcfun make-functions *exec-base* -90 (:a0 target :a1 function-array :a2 func-disp-base)
-    :result :void
-    :doc "VOID MakeFunctions(APTR target, CONST_APTR functionArray, ULONG funcDispBase) (A0,A1,A2) LVO -90")
-(amiga.ffi:defcfun find-resident *exec-base* -96 (:a1 name)
-    :result :pointer
-    :doc "struct Resident * FindResident(CONST_STRPTR name) (A1) LVO -96")
-(amiga.ffi:defcfun init-resident *exec-base* -102 (:a1 resident :d1 seg-list)
-    :result :pointer
-    :doc "APTR InitResident(CONST struct Resident * resident, ULONG segList) (A1,D1) LVO -102")
-(amiga.ffi:defcfun alert *exec-base* -108 (:d7 alert-num)
-    :result :void
-    :doc "VOID Alert(ULONG alertNum) (D7) LVO -108")
-(amiga.ffi:defcfun debug *exec-base* -114 (:d0 flags)
-    :result :void
-    :doc "VOID Debug(ULONG flags) (D0) LVO -114")
-(amiga.ffi:defcfun disable *exec-base* -120 ()
-    :result :void
-    :doc "VOID Disable() () LVO -120")
-(amiga.ffi:defcfun enable *exec-base* -126 ()
-    :result :void
-    :doc "VOID Enable() () LVO -126")
-(amiga.ffi:defcfun forbid *exec-base* -132 ()
-    :result :void
-    :doc "VOID Forbid() () LVO -132")
-(amiga.ffi:defcfun permit *exec-base* -138 ()
-    :result :void
-    :doc "VOID Permit() () LVO -138")
-(amiga.ffi:defcfun set-sr *exec-base* -144 (:d0 new-sr :d1 mask)
-    :result :unsigned
-    :doc "ULONG SetSR(ULONG newSR, ULONG mask) (D0,D1) LVO -144")
-(amiga.ffi:defcfun super-state *exec-base* -150 ()
-    :result :pointer
-    :doc "APTR SuperState() () LVO -150")
-(amiga.ffi:defcfun user-state *exec-base* -156 (:d0 sys-stack)
-    :result :void
-    :doc "VOID UserState(APTR sysStack) (D0) LVO -156")
-(amiga.ffi:defcfun set-int-vector *exec-base* -162 (:d0 int-number :a1 interrupt)
-    :result :pointer
-    :doc "struct Interrupt * SetIntVector(LONG intNumber, struct Interrupt * interrupt) (D0,A1) LVO -162")
-(amiga.ffi:defcfun add-int-server *exec-base* -168 (:d0 int-number :a1 interrupt)
-    :result :void
-    :doc "VOID AddIntServer(LONG intNumber, struct Interrupt * interrupt) (D0,A1) LVO -168")
-(amiga.ffi:defcfun rem-int-server *exec-base* -174 (:d0 int-number :a1 interrupt)
-    :result :void
-    :doc "VOID RemIntServer(LONG intNumber, struct Interrupt * interrupt) (D0,A1) LVO -174")
-(amiga.ffi:defcfun cause *exec-base* -180 (:a1 interrupt)
-    :result :void
-    :doc "VOID Cause(CONST struct Interrupt * interrupt) (A1) LVO -180")
-(amiga.ffi:defcfun allocate *exec-base* -186 (:a0 free-list :d0 byte-size)
-    :result :pointer
-    :doc "APTR Allocate(struct MemHeader * freeList, ULONG byteSize) (A0,D0) LVO -186")
-(amiga.ffi:defcfun deallocate *exec-base* -192 (:a0 free-list :a1 memory-block :d0 byte-size)
-    :result :void
-    :doc "VOID Deallocate(struct MemHeader * freeList, APTR memoryBlock, ULONG byteSize) (A0,A1,D0) LVO -192")
-(amiga.ffi:defcfun alloc-mem *exec-base* -198 (:d0 byte-size :d1 requirements)
-    :result :pointer
-    :doc "APTR AllocMem(ULONG byteSize, ULONG requirements) (D0,D1) LVO -198")
-(amiga.ffi:defcfun alloc-abs *exec-base* -204 (:d0 byte-size :a1 location)
-    :result :pointer
-    :doc "APTR AllocAbs(ULONG byteSize, APTR location) (D0,A1) LVO -204")
-(amiga.ffi:defcfun free-mem *exec-base* -210 (:a1 memory-block :d0 byte-size)
-    :result :void
-    :doc "VOID FreeMem(APTR memoryBlock, ULONG byteSize) (A1,D0) LVO -210")
-(amiga.ffi:defcfun avail-mem *exec-base* -216 (:d1 requirements)
-    :result :unsigned
-    :doc "ULONG AvailMem(ULONG requirements) (D1) LVO -216")
-(amiga.ffi:defcfun alloc-entry *exec-base* -222 (:a0 entry)
-    :result :pointer
-    :doc "struct MemList * AllocEntry(CONST struct MemList * entry) (A0) LVO -222")
-(amiga.ffi:defcfun free-entry *exec-base* -228 (:a0 entry)
-    :result :void
-    :doc "VOID FreeEntry(struct MemList * entry) (A0) LVO -228")
-(amiga.ffi:defcfun insert *exec-base* -234 (:a0 list :a1 node :a2 pred)
-    :result :void
-    :doc "VOID Insert(struct List * list, struct Node * node, struct Node * pred) (A0,A1,A2) LVO -234")
-(amiga.ffi:defcfun add-head *exec-base* -240 (:a0 list :a1 node)
-    :result :void
-    :doc "VOID AddHead(struct List * list, struct Node * node) (A0,A1) LVO -240")
-(amiga.ffi:defcfun add-tail *exec-base* -246 (:a0 list :a1 node)
-    :result :void
-    :doc "VOID AddTail(struct List * list, struct Node * node) (A0,A1) LVO -246")
-(amiga.ffi:defcfun remove *exec-base* -252 (:a1 node)
-    :result :void
-    :doc "VOID Remove(struct Node * node) (A1) LVO -252")
-(amiga.ffi:defcfun rem-head *exec-base* -258 (:a0 list)
-    :result :pointer
-    :doc "struct Node * RemHead(struct List * list) (A0) LVO -258")
-(amiga.ffi:defcfun rem-tail *exec-base* -264 (:a0 list)
-    :result :pointer
-    :doc "struct Node * RemTail(struct List * list) (A0) LVO -264")
-(amiga.ffi:defcfun enqueue *exec-base* -270 (:a0 list :a1 node)
-    :result :void
-    :doc "VOID Enqueue(struct List * list, struct Node * node) (A0,A1) LVO -270")
-(amiga.ffi:defcfun find-name *exec-base* -276 (:a0 list :a1 name)
-    :result :pointer
-    :doc "struct Node * FindName(struct List * list, CONST_STRPTR name) (A0,A1) LVO -276")
-(amiga.ffi:defcfun add-task *exec-base* -282 (:a1 task :a2 init-pc :a3 final-pc)
-    :result :pointer
-    :doc "APTR AddTask(struct Task * task, APTR initPC, APTR finalPC) (A1,A2,A3) LVO -282")
-(amiga.ffi:defcfun rem-task *exec-base* -288 (:a1 task)
-    :result :void
-    :doc "VOID RemTask(struct Task * task) (A1) LVO -288")
-(amiga.ffi:defcfun find-task *exec-base* -294 (:a1 name)
-    :result :pointer
-    :doc "struct Task * FindTask(CONST_STRPTR name) (A1) LVO -294")
-(amiga.ffi:defcfun set-task-pri *exec-base* -300 (:a1 task :d0 priority)
-    :result :i8
-    :doc "BYTE SetTaskPri(struct Task * task, LONG priority) (A1,D0) LVO -300")
-(amiga.ffi:defcfun set-signal *exec-base* -306 (:d0 new-signals :d1 signal-set)
-    :result :unsigned
-    :doc "ULONG SetSignal(ULONG newSignals, ULONG signalSet) (D0,D1) LVO -306")
-(amiga.ffi:defcfun set-except *exec-base* -312 (:d0 new-signals :d1 signal-set)
-    :result :unsigned
-    :doc "ULONG SetExcept(ULONG newSignals, ULONG signalSet) (D0,D1) LVO -312")
-(amiga.ffi:defcfun wait *exec-base* -318 (:d0 signal-set)
-    :result :unsigned
-    :doc "ULONG Wait(ULONG signalSet) (D0) LVO -318")
-(amiga.ffi:defcfun signal *exec-base* -324 (:a1 task :d0 signal-set)
-    :result :void
-    :doc "VOID Signal(struct Task * task, ULONG signalSet) (A1,D0) LVO -324")
-(amiga.ffi:defcfun alloc-signal *exec-base* -330 (:d0 signal-num)
-    :result :i8
-    :doc "BYTE AllocSignal(BYTE signalNum) (D0) LVO -330")
-(amiga.ffi:defcfun free-signal *exec-base* -336 (:d0 signal-num)
-    :result :void
-    :doc "VOID FreeSignal(BYTE signalNum) (D0) LVO -336")
-(amiga.ffi:defcfun alloc-trap *exec-base* -342 (:d0 trap-num)
-    :result :signed
-    :doc "LONG AllocTrap(LONG trapNum) (D0) LVO -342")
-(amiga.ffi:defcfun free-trap *exec-base* -348 (:d0 trap-num)
-    :result :void
-    :doc "VOID FreeTrap(LONG trapNum) (D0) LVO -348")
-(amiga.ffi:defcfun add-port *exec-base* -354 (:a1 port)
-    :result :void
-    :doc "VOID AddPort(struct MsgPort * port) (A1) LVO -354")
-(amiga.ffi:defcfun rem-port *exec-base* -360 (:a1 port)
-    :result :void
-    :doc "VOID RemPort(struct MsgPort * port) (A1) LVO -360")
-(amiga.ffi:defcfun put-msg *exec-base* -366 (:a0 port :a1 message)
-    :result :void
-    :doc "VOID PutMsg(struct MsgPort * port, struct Message * message) (A0,A1) LVO -366")
-(amiga.ffi:defcfun get-msg *exec-base* -372 (:a0 port)
-    :result :pointer
-    :doc "struct Message * GetMsg(struct MsgPort * port) (A0) LVO -372")
-(amiga.ffi:defcfun reply-msg *exec-base* -378 (:a1 message)
-    :result :void
-    :doc "VOID ReplyMsg(struct Message * message) (A1) LVO -378")
-(amiga.ffi:defcfun wait-port *exec-base* -384 (:a0 port)
-    :result :pointer
-    :doc "struct Message * WaitPort(struct MsgPort * port) (A0) LVO -384")
-(amiga.ffi:defcfun find-port *exec-base* -390 (:a1 name)
-    :result :pointer
-    :doc "struct MsgPort * FindPort(CONST_STRPTR name) (A1) LVO -390")
-(amiga.ffi:defcfun add-library *exec-base* -396 (:a1 library)
-    :result :void
-    :doc "VOID AddLibrary(struct Library * library) (A1) LVO -396")
-(amiga.ffi:defcfun rem-library *exec-base* -402 (:a1 library)
-    :result :void
-    :doc "VOID RemLibrary(struct Library * library) (A1) LVO -402")
-(amiga.ffi:defcfun old-open-library *exec-base* -408 (:a1 lib-name)
-    :result :pointer
-    :doc "struct Library * OldOpenLibrary(CONST_STRPTR libName) (A1) LVO -408")
-(amiga.ffi:defcfun close-library *exec-base* -414 (:a1 library)
-    :result :void
-    :doc "VOID CloseLibrary(struct Library * library) (A1) LVO -414")
-(amiga.ffi:defcfun set-function *exec-base* -420 (:a1 library :a0 func-offset :d0 new-function)
-    :result :pointer
-    :doc "APTR SetFunction(struct Library * library, LONG funcOffset, APTR newFunction) (A1,A0,D0) LVO -420")
-(amiga.ffi:defcfun sum-library *exec-base* -426 (:a1 library)
-    :result :void
-    :doc "VOID SumLibrary(struct Library * library) (A1) LVO -426")
-(amiga.ffi:defcfun add-device *exec-base* -432 (:a1 device)
-    :result :void
-    :doc "VOID AddDevice(struct Device * device) (A1) LVO -432")
-(amiga.ffi:defcfun rem-device *exec-base* -438 (:a1 device)
-    :result :void
-    :doc "VOID RemDevice(struct Device * device) (A1) LVO -438")
-(amiga.ffi:defcfun open-device *exec-base* -444 (:a0 dev-name :d0 unit :a1 io-request :d1 flags)
-    :result :i8
-    :doc "BYTE OpenDevice(CONST_STRPTR devName, ULONG unit, struct IORequest * ioRequest, ULONG flags) (A0,D0,A1,D1) LVO -444")
-(amiga.ffi:defcfun close-device *exec-base* -450 (:a1 io-request)
-    :result :void
-    :doc "VOID CloseDevice(struct IORequest * ioRequest) (A1) LVO -450")
-(amiga.ffi:defcfun do-io *exec-base* -456 (:a1 io-request)
-    :result :i8
-    :doc "BYTE DoIO(struct IORequest * ioRequest) (A1) LVO -456")
-(amiga.ffi:defcfun send-io *exec-base* -462 (:a1 io-request)
-    :result :void
-    :doc "VOID SendIO(struct IORequest * ioRequest) (A1) LVO -462")
-(amiga.ffi:defcfun check-io *exec-base* -468 (:a1 io-request)
-    :result :pointer
-    :doc "struct IORequest * CheckIO(CONST struct IORequest * ioRequest) (A1) LVO -468")
-(amiga.ffi:defcfun wait-io *exec-base* -474 (:a1 io-request)
-    :result :i8
-    :doc "BYTE WaitIO(struct IORequest * ioRequest) (A1) LVO -474")
-(amiga.ffi:defcfun abort-io *exec-base* -480 (:a1 io-request)
-    :result :void
-    :doc "VOID AbortIO(struct IORequest * ioRequest) (A1) LVO -480")
-(amiga.ffi:defcfun add-resource *exec-base* -486 (:a1 resource)
-    :result :void
-    :doc "VOID AddResource(APTR resource) (A1) LVO -486")
-(amiga.ffi:defcfun rem-resource *exec-base* -492 (:a1 resource)
-    :result :void
-    :doc "VOID RemResource(APTR resource) (A1) LVO -492")
-(amiga.ffi:defcfun open-resource *exec-base* -498 (:a1 res-name)
-    :result :pointer
-    :doc "APTR OpenResource(CONST_STRPTR resName) (A1) LVO -498")
-(amiga.ffi:defcfun raw-do-fmt *exec-base* -522 (:a0 format-string :a1 data-stream :a2 put-ch-proc :a3 put-ch-data)
-    :result :pointer
-    :doc "APTR RawDoFmt(CONST_STRPTR formatString, APTR dataStream, APTR putChProc, APTR putChData) (A0,A1,A2,A3) LVO -522")
-(amiga.ffi:defcfun get-cc *exec-base* -528 ()
-    :result :unsigned
-    :doc "ULONG GetCC() () LVO -528")
-(amiga.ffi:defcfun type-of-mem *exec-base* -534 (:a1 address)
-    :result :unsigned
-    :doc "ULONG TypeOfMem(CONST_APTR address) (A1) LVO -534")
-(amiga.ffi:defcfun procure *exec-base* -540 (:a0 sig-sem :a1 bid-msg)
-    :result :unsigned
-    :doc "ULONG Procure(struct SignalSemaphore * sigSem, struct SemaphoreMessage * bidMsg) (A0,A1) LVO -540")
-(amiga.ffi:defcfun vacate *exec-base* -546 (:a0 sig-sem :a1 bid-msg)
-    :result :void
-    :doc "VOID Vacate(struct SignalSemaphore * sigSem, struct SemaphoreMessage * bidMsg) (A0,A1) LVO -546")
-(amiga.ffi:defcfun open-library *exec-base* -552 (:a1 lib-name :d0 version)
-    :result :pointer
-    :doc "struct Library * OpenLibrary(CONST_STRPTR libName, ULONG version) (A1,D0) LVO -552")
-(amiga.ffi:defcfun init-semaphore *exec-base* -558 (:a0 sig-sem)
-    :result :void
-    :doc "VOID InitSemaphore(struct SignalSemaphore * sigSem) (A0) LVO -558")
-(amiga.ffi:defcfun obtain-semaphore *exec-base* -564 (:a0 sig-sem)
-    :result :void
-    :doc "VOID ObtainSemaphore(struct SignalSemaphore * sigSem) (A0) LVO -564")
-(amiga.ffi:defcfun release-semaphore *exec-base* -570 (:a0 sig-sem)
-    :result :void
-    :doc "VOID ReleaseSemaphore(struct SignalSemaphore * sigSem) (A0) LVO -570")
-(amiga.ffi:defcfun attempt-semaphore *exec-base* -576 (:a0 sig-sem)
-    :result :unsigned
-    :doc "ULONG AttemptSemaphore(struct SignalSemaphore * sigSem) (A0) LVO -576")
-(amiga.ffi:defcfun obtain-semaphore-list *exec-base* -582 (:a0 sig-sem)
-    :result :void
-    :doc "VOID ObtainSemaphoreList(struct List * sigSem) (A0) LVO -582")
-(amiga.ffi:defcfun release-semaphore-list *exec-base* -588 (:a0 sig-sem)
-    :result :void
-    :doc "VOID ReleaseSemaphoreList(struct List * sigSem) (A0) LVO -588")
-(amiga.ffi:defcfun find-semaphore *exec-base* -594 (:a1 name)
-    :result :pointer
-    :doc "struct SignalSemaphore * FindSemaphore(CONST_STRPTR name) (A1) LVO -594")
-(amiga.ffi:defcfun add-semaphore *exec-base* -600 (:a1 sig-sem)
-    :result :void
-    :doc "VOID AddSemaphore(struct SignalSemaphore * sigSem) (A1) LVO -600")
-(amiga.ffi:defcfun rem-semaphore *exec-base* -606 (:a1 sig-sem)
-    :result :void
-    :doc "VOID RemSemaphore(struct SignalSemaphore * sigSem) (A1) LVO -606")
-(amiga.ffi:defcfun sum-kick-data *exec-base* -612 ()
-    :result :unsigned
-    :doc "ULONG SumKickData() () LVO -612")
-(amiga.ffi:defcfun add-mem-list *exec-base* -618 (:d0 size :d1 attributes :d2 pri :a0 base :a1 name)
-    :result :void
-    :doc "VOID AddMemList(ULONG size, ULONG attributes, LONG pri, APTR base, STRPTR name) (D0,D1,D2,A0,A1) LVO -618")
-(amiga.ffi:defcfun copy-mem *exec-base* -624 (:a0 source :a1 dest :d0 size)
-    :result :void
-    :doc "VOID CopyMem(CONST_APTR source, APTR dest, ULONG size) (A0,A1,D0) LVO -624")
-(amiga.ffi:defcfun copy-mem-quick *exec-base* -630 (:a0 source :a1 dest :d0 size)
-    :result :void
-    :doc "VOID CopyMemQuick(CONST_APTR source, APTR dest, ULONG size) (A0,A1,D0) LVO -630")
-(amiga.ffi:defcfun cache-clear-u *exec-base* -636 ()
-    :result :void
-    :doc "VOID CacheClearU() () LVO -636")
-(amiga.ffi:defcfun cache-clear-e *exec-base* -642 (:a0 address :d0 length :d1 caches)
-    :result :void
-    :doc "VOID CacheClearE(APTR address, ULONG length, ULONG caches) (A0,D0,D1) LVO -642")
-(amiga.ffi:defcfun cache-control *exec-base* -648 (:d0 cache-bits :d1 cache-mask)
-    :result :unsigned
-    :doc "ULONG CacheControl(ULONG cacheBits, ULONG cacheMask) (D0,D1) LVO -648")
-(amiga.ffi:defcfun create-io-request *exec-base* -654 (:a0 port :d0 size)
-    :result :pointer
-    :doc "APTR CreateIORequest(struct MsgPort * port, ULONG size) (A0,D0) LVO -654")
-(amiga.ffi:defcfun delete-io-request *exec-base* -660 (:a0 iorequest)
-    :result :void
-    :doc "VOID DeleteIORequest(APTR iorequest) (A0) LVO -660")
-(amiga.ffi:defcfun create-msg-port *exec-base* -666 ()
-    :result :pointer
-    :doc "struct MsgPort * CreateMsgPort() () LVO -666")
-(amiga.ffi:defcfun delete-msg-port *exec-base* -672 (:a0 port)
-    :result :void
-    :doc "VOID DeleteMsgPort(struct MsgPort * port) (A0) LVO -672")
-(amiga.ffi:defcfun obtain-semaphore-shared *exec-base* -678 (:a0 sig-sem)
-    :result :void
-    :doc "VOID ObtainSemaphoreShared(struct SignalSemaphore * sigSem) (A0) LVO -678")
-(amiga.ffi:defcfun alloc-vec *exec-base* -684 (:d0 byte-size :d1 requirements)
-    :result :pointer
-    :doc "APTR AllocVec(ULONG byteSize, ULONG requirements) (D0,D1) LVO -684")
-(amiga.ffi:defcfun free-vec *exec-base* -690 (:a1 memory-block)
-    :result :void
-    :doc "VOID FreeVec(APTR memoryBlock) (A1) LVO -690")
-(amiga.ffi:defcfun create-pool *exec-base* -696 (:d0 requirements :d1 puddle-size :d2 thresh-size)
-    :result :pointer
-    :doc "APTR CreatePool(ULONG requirements, ULONG puddleSize, ULONG threshSize) (D0,D1,D2) LVO -696")
-(amiga.ffi:defcfun delete-pool *exec-base* -702 (:a0 pool-header)
-    :result :void
-    :doc "VOID DeletePool(APTR poolHeader) (A0) LVO -702")
-(amiga.ffi:defcfun alloc-pooled *exec-base* -708 (:a0 pool-header :d0 mem-size)
-    :result :pointer
-    :doc "APTR AllocPooled(APTR poolHeader, ULONG memSize) (A0,D0) LVO -708")
-(amiga.ffi:defcfun free-pooled *exec-base* -714 (:a0 pool-header :a1 memory :d0 mem-size)
-    :result :void
-    :doc "VOID FreePooled(APTR poolHeader, APTR memory, ULONG memSize) (A0,A1,D0) LVO -714")
-(amiga.ffi:defcfun attempt-semaphore-shared *exec-base* -720 (:a0 sig-sem)
-    :result :unsigned
-    :doc "ULONG AttemptSemaphoreShared(struct SignalSemaphore * sigSem) (A0) LVO -720")
-(amiga.ffi:defcfun cold-reboot *exec-base* -726 ()
-    :result :void
-    :doc "VOID ColdReboot() () LVO -726")
-(amiga.ffi:defcfun stack-swap *exec-base* -732 (:a0 new-stack)
-    :result :void
-    :doc "VOID StackSwap(struct StackSwapStruct * newStack) (A0) LVO -732")
-(amiga.ffi:defcfun cache-pre-dma *exec-base* -762 (:a0 address :a1 length :d0 flags)
-    :result :pointer
-    :doc "APTR CachePreDMA(CONST_APTR address, ULONG * length, ULONG flags) (A0,A1,D0) LVO -762")
-(amiga.ffi:defcfun cache-post-dma *exec-base* -768 (:a0 address :a1 length :d0 flags)
-    :result :void
-    :doc "VOID CachePostDMA(CONST_APTR address, ULONG * length, ULONG flags) (A0,A1,D0) LVO -768")
-(amiga.ffi:defcfun add-mem-handler *exec-base* -774 (:a1 memhand)
-    :result :void
-    :doc "VOID AddMemHandler(struct Interrupt * memhand) (A1) LVO -774")
-(amiga.ffi:defcfun rem-mem-handler *exec-base* -780 (:a1 memhand)
-    :result :void
-    :doc "VOID RemMemHandler(struct Interrupt * memhand) (A1) LVO -780")
-(amiga.ffi:defcfun obtain-quick-vector *exec-base* -786 (:a0 interrupt-code)
-    :result :unsigned
-    :doc "ULONG ObtainQuickVector(APTR interruptCode) (A0) LVO -786")
-(when (and (not (member :morphos *features*)) (%version>= 45))
-  (amiga.ffi:defcfun new-min-list *exec-base* -828 (:a0 minlist)
-    :result :void
-    :doc "VOID NewMinList(struct MinList * minlist) (A0) LVO -828"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun new-get-task-attrs-a *exec-base* -738 (:a0 task :a1 data :d0 data-size :d1 type :a2 tags)
-    :result :unsigned
-    :doc "ULONG NewGetTaskAttrsA(struct Task * task, APTR Data, ULONG DataSize, ULONG Type, struct TagItem * Tags) (A0,A1,D0,D1,A2) LVO -738"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun new-set-task-attrs-a *exec-base* -744 (:a0 task :a1 data :d0 data-size :d1 type :a2 tags)
-    :result :unsigned
-    :doc "ULONG NewSetTaskAttrsA(struct Task * task, APTR Data, ULONG DataSize, ULONG Type, struct TagItem * Tags) (A0,A1,D0,D1,A2) LVO -744"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun child-status *exec-base* -750 (:d0 tid)
-    :result :unsigned
-    :doc "ULONG ChildStatus(ULONG tid) (D0) LVO -750"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun child-wait *exec-base* -756 (:d0 tid)
-    :result :unsigned
-    :doc "ULONG ChildWait(ULONG tid) (D0) LVO -756"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun new-set-function *exec-base* -792 (:a0 library :a1 function :d0 offset :a2 tags)
-    :result :pointer
-    :doc "APTR NewSetFunction(struct Library * library, APTR function, LONG offset, struct TagItem * tags) (A0,A1,D0,A2) LVO -792"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun new-create-library *exec-base* -798 (:a0 tags)
-    :result :pointer
-    :doc "struct Library * NewCreateLibrary(struct TagItem * tags) (A0) LVO -798"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun new-ppc-stack-swap *exec-base* -804 (:a0 new-stack :a1 function :a2 args)
-    :result :unsigned
-    :doc "ULONG NewPPCStackSwap(struct StackSwapStruct * newStack, APTR function, struct PPCStackSwapArgs * args) (A0,A1,A2) LVO -804"))
-;; skipped VNewRawDoFmt: not a 68k register call (base,sysv)
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun cache-flush-data-area *exec-base* -828 (:a0 address :d0 size)
-    :result :void
-    :doc "VOID CacheFlushDataArea(APTR Address, ULONG Size) (A0,D0) LVO -828"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun cache-invalid-inst-area *exec-base* -834 (:a0 address :d0 size)
-    :result :void
-    :doc "VOID CacheInvalidInstArea(APTR Address, ULONG Size) (A0,D0) LVO -834"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun cache-invalid-data-area *exec-base* -840 (:a0 address :d0 size)
-    :result :void
-    :doc "VOID CacheInvalidDataArea(APTR Address, ULONG Size) (A0,D0) LVO -840"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun cache-flush-data-inst-area *exec-base* -846 (:a0 address :d0 size)
-    :result :void
-    :doc "VOID CacheFlushDataInstArea(APTR Address, ULONG Size) (A0,D0) LVO -846"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun cache-trash-cache-area *exec-base* -852 (:a0 address :d0 size)
-    :result :void
-    :doc "VOID CacheTrashCacheArea(APTR Address, ULONG Size) (A0,D0) LVO -852"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun alloc-task-pooled *exec-base* -858 (:d0 size)
-    :result :pointer
-    :doc "APTR AllocTaskPooled(ULONG Size) (D0) LVO -858"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun free-task-pooled *exec-base* -864 (:a1 address :d0 size)
-    :result :void
-    :doc "VOID FreeTaskPooled(APTR Address, ULONG Size) (A1,D0) LVO -864"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun alloc-vec-task-pooled *exec-base* -870 (:d0 size)
-    :result :pointer
-    :doc "APTR AllocVecTaskPooled(ULONG Size) (D0) LVO -870"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun free-vec-task-pooled *exec-base* -876 (:a1 address)
-    :result :void
-    :doc "VOID FreeVecTaskPooled(APTR Address) (A1) LVO -876"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun flush-pool *exec-base* -882 (:a0 pool-header)
-    :result :void
-    :doc "VOID FlushPool(APTR poolHeader) (A0) LVO -882"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun flush-task-pool *exec-base* -888 ()
-    :result :void
-    :doc "VOID FlushTaskPool() () LVO -888"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun alloc-vec-pooled *exec-base* -894 (:a0 pool-header :d0 mem-size)
-    :result :pointer
-    :doc "APTR AllocVecPooled(APTR poolHeader, ULONG memSize) (A0,D0) LVO -894"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun free-vec-pooled *exec-base* -900 (:a0 pool-header :a1 memory)
-    :result :void
-    :doc "VOID FreeVecPooled(APTR poolHeader, APTR memory) (A0,A1) LVO -900"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun new-get-system-attrs-a *exec-base* -906 (:a0 data :d0 data-size :d1 type :a1 tags)
-    :result :unsigned
-    :doc "ULONG NewGetSystemAttrsA(APTR Data, ULONG DataSize, ULONG Type, struct TagItem * Tags) (A0,D0,D1,A1) LVO -906"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun new-set-system-attrs-a *exec-base* -912 (:a0 data :d0 data-size :d1 type :a1 tags)
-    :result :unsigned
-    :doc "ULONG NewSetSystemAttrsA(APTR Data, ULONG DataSize, ULONG Type, struct TagItem * Tags) (A0,D0,D1,A1) LVO -912"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun new-create-task-a *exec-base* -918 (:a0 tags)
-    :result :pointer
-    :doc "struct Task * NewCreateTaskA(struct TagItem * Tags) (A0) LVO -918"))
-;; skipped NewRawDoFmt: not a 68k register call (base,sysv)
-;; skipped AllocateAligned: not a 68k register call (base,sysv)
-;; skipped AllocMemAligned: not a 68k register call (base,sysv)
-;; skipped AllocVecAligned: not a 68k register call (base,sysv)
-;; skipped AddExecNotify: not a 68k register call (base,sysv)
-;; skipped RemExecNotify: not a 68k register call (base,sysv)
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun find-exec-node *exec-base* -960 (:d0 type :a0 name)
-    :result :pointer
-    :doc "struct Node * FindExecNode(ULONG type, CONST_STRPTR name) (D0,A0) LVO -960"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun add-exec-node-a *exec-base* -966 (:a0 innode :a1 tags)
-    :result :pointer
-    :doc "APTR AddExecNodeA(APTR innode, struct TagItem * Tags) (A0,A1) LVO -966"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun alloc-vec-dma *exec-base* -972 (:d0 byte-size :d1 requirements)
-    :result :pointer
-    :doc "APTR AllocVecDMA(ULONG byteSize, ULONG requirements) (D0,D1) LVO -972"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun free-vec-dma *exec-base* -978 (:a1 memory-block)
-    :result :void
-    :doc "VOID FreeVecDMA(APTR memoryBlock) (A1) LVO -978"))
-;; skipped AllocPooledAligned: not a 68k register call (base,sysv)
-;; skipped AddResident: not a 68k register call (base,sysv)
-;; skipped FindTaskByPID: not a 68k register call (base,sysv)
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun dump-task-state *exec-base* -1026 (:a0 task)
-    :result :void
-    :doc "void DumpTaskState(struct Task * task) (A0) LVO -1026"))
-;; skipped AddExecNotifyType: not a 68k register call (base,sysv)
-;; skipped ShutdownA: not a 68k register call (base,sysv)
-;; skipped AvailPool: not a 68k register call (base,sysv)
-;; skipped PutMsgHead: not a 68k register call (base,sysv)
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun new-get-task-pid-attrs-a *exec-base* -1068 (:d0 task-pid :a0 data :d1 data-size :d2 type :a1 tags)
-    :result :unsigned
-    :doc "ULONG NewGetTaskPIDAttrsA(ULONG TaskPID, APTR Data, ULONG DataSize, ULONG Type, struct TagItem * Tags) (D0,A0,D1,D2,A1) LVO -1068"))
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun new-set-task-pid-attrs-a *exec-base* -1074 (:d0 task-pid :a0 data :d1 data-size :d2 type :a1 tags)
-    :result :unsigned
-    :doc "ULONG NewSetTaskPIDAttrsA(ULONG TaskPID, APTR Data, ULONG DataSize, ULONG Type, struct TagItem * Tags) (D0,A0,D1,D2,A1) LVO -1074"))
-;; skipped TLSAllocA: not a 68k register call (base,sysv)
-;; skipped TLSFree: not a 68k register call (base,sysv)
-;; skipped TLSGetValue: not a 68k register call (base,sysv)
-;; skipped TLSSetValue: not a 68k register call (base,sysv)
-;; skipped TLSCallDestructors: not a 68k register call (base,sysv)
+  ;; --- structures from exec/tasks.i ---
+  (:struct "TASK" 92   ; TC_Struct (exec/tasks.i)
+    ("FLAGS" :u8 14)
+    ("STATE" :u8 15)
+    ("IDNESTCNT" :i8 16)
+    ("TDNESTCNT" :i8 17)
+    ("SIGALLOC" :u32 18)
+    ("SIGWAIT" :u32 22)
+    ("SIGRECVD" :u32 26)
+    ("SIGEXCEPT" :u32 30)
+    ("TRAPALLOC" :u16 34)
+    ("TRAPABLE" :u16 36)
+    ("EXCEPTDATA" :fptr 38)
+    ("EXCEPTCODE" :fptr 42)
+    ("TRAPDATA" :fptr 46)
+    ("TRAPCODE" :fptr 50)
+    ("SPREG" :fptr 54)
+    ("SPLOWER" :fptr 58)
+    ("SPUPPER" :fptr 62)
+    ("SWITCH" :fptr 66)
+    ("LAUNCH" :fptr 70)
+    ("MEMENTRY" (:struct 14) 74)
+    ("USERDATA" :fptr 88)
+    )
+  (:struct "STACK-SWAP-STRUCT" 12   ; StackSwapStruct (exec/tasks.i)
+    ("LOWER" :fptr 0)
+    ("UPPER" :u32 4)
+    ("POINTER" :fptr 8)
+    )
+
+  ;; --- functions (exec_lib.sfd + MorphOS SDK) ---
+  ;; skipped Supervisor: argument in A5 (reserved by the call dispatcher)
+  (:fn "INIT-CODE" -72 (:d0 :d1) :void)   ; VOID InitCode(ULONG startClass, ULONG version) (D0,D1) LVO -72
+  (:fn "INIT-STRUCT" -78 (:a1 :a2 :d0) :void)   ; VOID InitStruct(CONST_APTR initTable, APTR memory, ULONG size) (A1,A2,D0) LVO -78
+  (:fn "MAKE-LIBRARY" -84 (:a0 :a1 :a2 :d0 :d1) :pointer)   ; struct Library * MakeLibrary(CONST_APTR funcInit, CONST_APTR structInit, APTR libInit, ULONG dataSize, ULONG segList) (A0,A1,A2,D0,D1) LVO -84
+  (:fn "MAKE-FUNCTIONS" -90 (:a0 :a1 :a2) :void)   ; VOID MakeFunctions(APTR target, CONST_APTR functionArray, ULONG funcDispBase) (A0,A1,A2) LVO -90
+  (:fn "FIND-RESIDENT" -96 (:a1) :pointer)   ; struct Resident * FindResident(CONST_STRPTR name) (A1) LVO -96
+  (:fn "INIT-RESIDENT" -102 (:a1 :d1) :pointer)   ; APTR InitResident(CONST struct Resident * resident, ULONG segList) (A1,D1) LVO -102
+  (:fn "ALERT" -108 (:d7) :void)   ; VOID Alert(ULONG alertNum) (D7) LVO -108
+  (:fn "DEBUG" -114 (:d0) :void)   ; VOID Debug(ULONG flags) (D0) LVO -114
+  (:fn "DISABLE" -120 () :void)   ; VOID Disable() () LVO -120
+  (:fn "ENABLE" -126 () :void)   ; VOID Enable() () LVO -126
+  (:fn "FORBID" -132 () :void)   ; VOID Forbid() () LVO -132
+  (:fn "PERMIT" -138 () :void)   ; VOID Permit() () LVO -138
+  (:fn "SET-SR" -144 (:d0 :d1) :unsigned)   ; ULONG SetSR(ULONG newSR, ULONG mask) (D0,D1) LVO -144
+  (:fn "SUPER-STATE" -150 () :pointer)   ; APTR SuperState() () LVO -150
+  (:fn "USER-STATE" -156 (:d0) :void)   ; VOID UserState(APTR sysStack) (D0) LVO -156
+  (:fn "SET-INT-VECTOR" -162 (:d0 :a1) :pointer)   ; struct Interrupt * SetIntVector(LONG intNumber, struct Interrupt * interrupt) (D0,A1) LVO -162
+  (:fn "ADD-INT-SERVER" -168 (:d0 :a1) :void)   ; VOID AddIntServer(LONG intNumber, struct Interrupt * interrupt) (D0,A1) LVO -168
+  (:fn "REM-INT-SERVER" -174 (:d0 :a1) :void)   ; VOID RemIntServer(LONG intNumber, struct Interrupt * interrupt) (D0,A1) LVO -174
+  (:fn "CAUSE" -180 (:a1) :void)   ; VOID Cause(CONST struct Interrupt * interrupt) (A1) LVO -180
+  (:fn "ALLOCATE" -186 (:a0 :d0) :pointer)   ; APTR Allocate(struct MemHeader * freeList, ULONG byteSize) (A0,D0) LVO -186
+  (:fn "DEALLOCATE" -192 (:a0 :a1 :d0) :void)   ; VOID Deallocate(struct MemHeader * freeList, APTR memoryBlock, ULONG byteSize) (A0,A1,D0) LVO -192
+  (:fn "ALLOC-MEM" -198 (:d0 :d1) :pointer)   ; APTR AllocMem(ULONG byteSize, ULONG requirements) (D0,D1) LVO -198
+  (:fn "ALLOC-ABS" -204 (:d0 :a1) :pointer)   ; APTR AllocAbs(ULONG byteSize, APTR location) (D0,A1) LVO -204
+  (:fn "FREE-MEM" -210 (:a1 :d0) :void)   ; VOID FreeMem(APTR memoryBlock, ULONG byteSize) (A1,D0) LVO -210
+  (:fn "AVAIL-MEM" -216 (:d1) :unsigned)   ; ULONG AvailMem(ULONG requirements) (D1) LVO -216
+  (:fn "ALLOC-ENTRY" -222 (:a0) :pointer)   ; struct MemList * AllocEntry(CONST struct MemList * entry) (A0) LVO -222
+  (:fn "FREE-ENTRY" -228 (:a0) :void)   ; VOID FreeEntry(struct MemList * entry) (A0) LVO -228
+  (:fn "INSERT" -234 (:a0 :a1 :a2) :void)   ; VOID Insert(struct List * list, struct Node * node, struct Node * pred) (A0,A1,A2) LVO -234
+  (:fn "ADD-HEAD" -240 (:a0 :a1) :void)   ; VOID AddHead(struct List * list, struct Node * node) (A0,A1) LVO -240
+  (:fn "ADD-TAIL" -246 (:a0 :a1) :void)   ; VOID AddTail(struct List * list, struct Node * node) (A0,A1) LVO -246
+  (:fn "REMOVE" -252 (:a1) :void)   ; VOID Remove(struct Node * node) (A1) LVO -252
+  (:fn "REM-HEAD" -258 (:a0) :pointer)   ; struct Node * RemHead(struct List * list) (A0) LVO -258
+  (:fn "REM-TAIL" -264 (:a0) :pointer)   ; struct Node * RemTail(struct List * list) (A0) LVO -264
+  (:fn "ENQUEUE" -270 (:a0 :a1) :void)   ; VOID Enqueue(struct List * list, struct Node * node) (A0,A1) LVO -270
+  (:fn "FIND-NAME" -276 (:a0 :a1) :pointer)   ; struct Node * FindName(struct List * list, CONST_STRPTR name) (A0,A1) LVO -276
+  (:fn "ADD-TASK" -282 (:a1 :a2 :a3) :pointer)   ; APTR AddTask(struct Task * task, APTR initPC, APTR finalPC) (A1,A2,A3) LVO -282
+  (:fn "REM-TASK" -288 (:a1) :void)   ; VOID RemTask(struct Task * task) (A1) LVO -288
+  (:fn "FIND-TASK" -294 (:a1) :pointer)   ; struct Task * FindTask(CONST_STRPTR name) (A1) LVO -294
+  (:fn "SET-TASK-PRI" -300 (:a1 :d0) :i8)   ; BYTE SetTaskPri(struct Task * task, LONG priority) (A1,D0) LVO -300
+  (:fn "SET-SIGNAL" -306 (:d0 :d1) :unsigned)   ; ULONG SetSignal(ULONG newSignals, ULONG signalSet) (D0,D1) LVO -306
+  (:fn "SET-EXCEPT" -312 (:d0 :d1) :unsigned)   ; ULONG SetExcept(ULONG newSignals, ULONG signalSet) (D0,D1) LVO -312
+  (:fn "WAIT" -318 (:d0) :unsigned)   ; ULONG Wait(ULONG signalSet) (D0) LVO -318
+  (:fn "SIGNAL" -324 (:a1 :d0) :void)   ; VOID Signal(struct Task * task, ULONG signalSet) (A1,D0) LVO -324
+  (:fn "ALLOC-SIGNAL" -330 (:d0) :i8)   ; BYTE AllocSignal(BYTE signalNum) (D0) LVO -330
+  (:fn "FREE-SIGNAL" -336 (:d0) :void)   ; VOID FreeSignal(BYTE signalNum) (D0) LVO -336
+  (:fn "ALLOC-TRAP" -342 (:d0) :signed)   ; LONG AllocTrap(LONG trapNum) (D0) LVO -342
+  (:fn "FREE-TRAP" -348 (:d0) :void)   ; VOID FreeTrap(LONG trapNum) (D0) LVO -348
+  (:fn "ADD-PORT" -354 (:a1) :void)   ; VOID AddPort(struct MsgPort * port) (A1) LVO -354
+  (:fn "REM-PORT" -360 (:a1) :void)   ; VOID RemPort(struct MsgPort * port) (A1) LVO -360
+  (:fn "PUT-MSG" -366 (:a0 :a1) :void)   ; VOID PutMsg(struct MsgPort * port, struct Message * message) (A0,A1) LVO -366
+  (:fn "GET-MSG" -372 (:a0) :pointer)   ; struct Message * GetMsg(struct MsgPort * port) (A0) LVO -372
+  (:fn "REPLY-MSG" -378 (:a1) :void)   ; VOID ReplyMsg(struct Message * message) (A1) LVO -378
+  (:fn "WAIT-PORT" -384 (:a0) :pointer)   ; struct Message * WaitPort(struct MsgPort * port) (A0) LVO -384
+  (:fn "FIND-PORT" -390 (:a1) :pointer)   ; struct MsgPort * FindPort(CONST_STRPTR name) (A1) LVO -390
+  (:fn "ADD-LIBRARY" -396 (:a1) :void)   ; VOID AddLibrary(struct Library * library) (A1) LVO -396
+  (:fn "REM-LIBRARY" -402 (:a1) :void)   ; VOID RemLibrary(struct Library * library) (A1) LVO -402
+  (:fn "OLD-OPEN-LIBRARY" -408 (:a1) :pointer)   ; struct Library * OldOpenLibrary(CONST_STRPTR libName) (A1) LVO -408
+  (:fn "CLOSE-LIBRARY" -414 (:a1) :void)   ; VOID CloseLibrary(struct Library * library) (A1) LVO -414
+  (:fn "SET-FUNCTION" -420 (:a1 :a0 :d0) :pointer)   ; APTR SetFunction(struct Library * library, LONG funcOffset, APTR newFunction) (A1,A0,D0) LVO -420
+  (:fn "SUM-LIBRARY" -426 (:a1) :void)   ; VOID SumLibrary(struct Library * library) (A1) LVO -426
+  (:fn "ADD-DEVICE" -432 (:a1) :void)   ; VOID AddDevice(struct Device * device) (A1) LVO -432
+  (:fn "REM-DEVICE" -438 (:a1) :void)   ; VOID RemDevice(struct Device * device) (A1) LVO -438
+  (:fn "OPEN-DEVICE" -444 (:a0 :d0 :a1 :d1) :i8)   ; BYTE OpenDevice(CONST_STRPTR devName, ULONG unit, struct IORequest * ioRequest, ULONG flags) (A0,D0,A1,D1) LVO -444
+  (:fn "CLOSE-DEVICE" -450 (:a1) :void)   ; VOID CloseDevice(struct IORequest * ioRequest) (A1) LVO -450
+  (:fn "DO-IO" -456 (:a1) :i8)   ; BYTE DoIO(struct IORequest * ioRequest) (A1) LVO -456
+  (:fn "SEND-IO" -462 (:a1) :void)   ; VOID SendIO(struct IORequest * ioRequest) (A1) LVO -462
+  (:fn "CHECK-IO" -468 (:a1) :pointer)   ; struct IORequest * CheckIO(CONST struct IORequest * ioRequest) (A1) LVO -468
+  (:fn "WAIT-IO" -474 (:a1) :i8)   ; BYTE WaitIO(struct IORequest * ioRequest) (A1) LVO -474
+  (:fn "ABORT-IO" -480 (:a1) :void)   ; VOID AbortIO(struct IORequest * ioRequest) (A1) LVO -480
+  (:fn "ADD-RESOURCE" -486 (:a1) :void)   ; VOID AddResource(APTR resource) (A1) LVO -486
+  (:fn "REM-RESOURCE" -492 (:a1) :void)   ; VOID RemResource(APTR resource) (A1) LVO -492
+  (:fn "OPEN-RESOURCE" -498 (:a1) :pointer)   ; APTR OpenResource(CONST_STRPTR resName) (A1) LVO -498
+  (:fn "RAW-DO-FMT" -522 (:a0 :a1 :a2 :a3) :pointer)   ; APTR RawDoFmt(CONST_STRPTR formatString, APTR dataStream, APTR putChProc, APTR putChData) (A0,A1,A2,A3) LVO -522
+  (:fn "GET-CC" -528 () :unsigned)   ; ULONG GetCC() () LVO -528
+  (:fn "TYPE-OF-MEM" -534 (:a1) :unsigned)   ; ULONG TypeOfMem(CONST_APTR address) (A1) LVO -534
+  (:fn "PROCURE" -540 (:a0 :a1) :unsigned)   ; ULONG Procure(struct SignalSemaphore * sigSem, struct SemaphoreMessage * bidMsg) (A0,A1) LVO -540
+  (:fn "VACATE" -546 (:a0 :a1) :void)   ; VOID Vacate(struct SignalSemaphore * sigSem, struct SemaphoreMessage * bidMsg) (A0,A1) LVO -546
+  (:fn "OPEN-LIBRARY" -552 (:a1 :d0) :pointer)   ; struct Library * OpenLibrary(CONST_STRPTR libName, ULONG version) (A1,D0) LVO -552
+  (:fn "INIT-SEMAPHORE" -558 (:a0) :void)   ; VOID InitSemaphore(struct SignalSemaphore * sigSem) (A0) LVO -558
+  (:fn "OBTAIN-SEMAPHORE" -564 (:a0) :void)   ; VOID ObtainSemaphore(struct SignalSemaphore * sigSem) (A0) LVO -564
+  (:fn "RELEASE-SEMAPHORE" -570 (:a0) :void)   ; VOID ReleaseSemaphore(struct SignalSemaphore * sigSem) (A0) LVO -570
+  (:fn "ATTEMPT-SEMAPHORE" -576 (:a0) :unsigned)   ; ULONG AttemptSemaphore(struct SignalSemaphore * sigSem) (A0) LVO -576
+  (:fn "OBTAIN-SEMAPHORE-LIST" -582 (:a0) :void)   ; VOID ObtainSemaphoreList(struct List * sigSem) (A0) LVO -582
+  (:fn "RELEASE-SEMAPHORE-LIST" -588 (:a0) :void)   ; VOID ReleaseSemaphoreList(struct List * sigSem) (A0) LVO -588
+  (:fn "FIND-SEMAPHORE" -594 (:a1) :pointer)   ; struct SignalSemaphore * FindSemaphore(CONST_STRPTR name) (A1) LVO -594
+  (:fn "ADD-SEMAPHORE" -600 (:a1) :void)   ; VOID AddSemaphore(struct SignalSemaphore * sigSem) (A1) LVO -600
+  (:fn "REM-SEMAPHORE" -606 (:a1) :void)   ; VOID RemSemaphore(struct SignalSemaphore * sigSem) (A1) LVO -606
+  (:fn "SUM-KICK-DATA" -612 () :unsigned)   ; ULONG SumKickData() () LVO -612
+  (:fn "ADD-MEM-LIST" -618 (:d0 :d1 :d2 :a0 :a1) :void)   ; VOID AddMemList(ULONG size, ULONG attributes, LONG pri, APTR base, STRPTR name) (D0,D1,D2,A0,A1) LVO -618
+  (:fn "COPY-MEM" -624 (:a0 :a1 :d0) :void)   ; VOID CopyMem(CONST_APTR source, APTR dest, ULONG size) (A0,A1,D0) LVO -624
+  (:fn "COPY-MEM-QUICK" -630 (:a0 :a1 :d0) :void)   ; VOID CopyMemQuick(CONST_APTR source, APTR dest, ULONG size) (A0,A1,D0) LVO -630
+  (:fn "CACHE-CLEAR-U" -636 () :void)   ; VOID CacheClearU() () LVO -636
+  (:fn "CACHE-CLEAR-E" -642 (:a0 :d0 :d1) :void)   ; VOID CacheClearE(APTR address, ULONG length, ULONG caches) (A0,D0,D1) LVO -642
+  (:fn "CACHE-CONTROL" -648 (:d0 :d1) :unsigned)   ; ULONG CacheControl(ULONG cacheBits, ULONG cacheMask) (D0,D1) LVO -648
+  (:fn "CREATE-IO-REQUEST" -654 (:a0 :d0) :pointer)   ; APTR CreateIORequest(struct MsgPort * port, ULONG size) (A0,D0) LVO -654
+  (:fn "DELETE-IO-REQUEST" -660 (:a0) :void)   ; VOID DeleteIORequest(APTR iorequest) (A0) LVO -660
+  (:fn "CREATE-MSG-PORT" -666 () :pointer)   ; struct MsgPort * CreateMsgPort() () LVO -666
+  (:fn "DELETE-MSG-PORT" -672 (:a0) :void)   ; VOID DeleteMsgPort(struct MsgPort * port) (A0) LVO -672
+  (:fn "OBTAIN-SEMAPHORE-SHARED" -678 (:a0) :void)   ; VOID ObtainSemaphoreShared(struct SignalSemaphore * sigSem) (A0) LVO -678
+  (:fn "ALLOC-VEC" -684 (:d0 :d1) :pointer)   ; APTR AllocVec(ULONG byteSize, ULONG requirements) (D0,D1) LVO -684
+  (:fn "FREE-VEC" -690 (:a1) :void)   ; VOID FreeVec(APTR memoryBlock) (A1) LVO -690
+  (:fn "CREATE-POOL" -696 (:d0 :d1 :d2) :pointer)   ; APTR CreatePool(ULONG requirements, ULONG puddleSize, ULONG threshSize) (D0,D1,D2) LVO -696
+  (:fn "DELETE-POOL" -702 (:a0) :void)   ; VOID DeletePool(APTR poolHeader) (A0) LVO -702
+  (:fn "ALLOC-POOLED" -708 (:a0 :d0) :pointer)   ; APTR AllocPooled(APTR poolHeader, ULONG memSize) (A0,D0) LVO -708
+  (:fn "FREE-POOLED" -714 (:a0 :a1 :d0) :void)   ; VOID FreePooled(APTR poolHeader, APTR memory, ULONG memSize) (A0,A1,D0) LVO -714
+  (:fn "ATTEMPT-SEMAPHORE-SHARED" -720 (:a0) :unsigned)   ; ULONG AttemptSemaphoreShared(struct SignalSemaphore * sigSem) (A0) LVO -720
+  (:fn "COLD-REBOOT" -726 () :void)   ; VOID ColdReboot() () LVO -726
+  (:fn "STACK-SWAP" -732 (:a0) :void)   ; VOID StackSwap(struct StackSwapStruct * newStack) (A0) LVO -732
+  (:fn "CACHE-PRE-DMA" -762 (:a0 :a1 :d0) :pointer)   ; APTR CachePreDMA(CONST_APTR address, ULONG * length, ULONG flags) (A0,A1,D0) LVO -762
+  (:fn "CACHE-POST-DMA" -768 (:a0 :a1 :d0) :void)   ; VOID CachePostDMA(CONST_APTR address, ULONG * length, ULONG flags) (A0,A1,D0) LVO -768
+  (:fn "ADD-MEM-HANDLER" -774 (:a1) :void)   ; VOID AddMemHandler(struct Interrupt * memhand) (A1) LVO -774
+  (:fn "REM-MEM-HANDLER" -780 (:a1) :void)   ; VOID RemMemHandler(struct Interrupt * memhand) (A1) LVO -780
+  (:fn "OBTAIN-QUICK-VECTOR" -786 (:a0) :unsigned)   ; ULONG ObtainQuickVector(APTR interruptCode) (A0) LVO -786
+  (:fn "NEW-MIN-LIST" -828 (:a0) :void :not-morphos 45)   ; VOID NewMinList(struct MinList * minlist) (A0) LVO -828
+  (:fn "NEW-GET-TASK-ATTRS-A" -738 (:a0 :a1 :d0 :d1 :a2) :unsigned :morphos)   ; ULONG NewGetTaskAttrsA(struct Task * task, APTR Data, ULONG DataSize, ULONG Type, struct TagItem * Tags) (A0,A1,D0,D1,A2) LVO -738
+  (:fn "NEW-SET-TASK-ATTRS-A" -744 (:a0 :a1 :d0 :d1 :a2) :unsigned :morphos)   ; ULONG NewSetTaskAttrsA(struct Task * task, APTR Data, ULONG DataSize, ULONG Type, struct TagItem * Tags) (A0,A1,D0,D1,A2) LVO -744
+  (:fn "CHILD-STATUS" -750 (:d0) :unsigned :morphos)   ; ULONG ChildStatus(ULONG tid) (D0) LVO -750
+  (:fn "CHILD-WAIT" -756 (:d0) :unsigned :morphos)   ; ULONG ChildWait(ULONG tid) (D0) LVO -756
+  (:fn "NEW-SET-FUNCTION" -792 (:a0 :a1 :d0 :a2) :pointer :morphos)   ; APTR NewSetFunction(struct Library * library, APTR function, LONG offset, struct TagItem * tags) (A0,A1,D0,A2) LVO -792
+  (:fn "NEW-CREATE-LIBRARY" -798 (:a0) :pointer :morphos)   ; struct Library * NewCreateLibrary(struct TagItem * tags) (A0) LVO -798
+  (:fn "NEW-PPC-STACK-SWAP" -804 (:a0 :a1 :a2) :unsigned :morphos)   ; ULONG NewPPCStackSwap(struct StackSwapStruct * newStack, APTR function, struct PPCStackSwapArgs * args) (A0,A1,A2) LVO -804
+  ;; skipped VNewRawDoFmt: not a 68k register call (base,sysv)
+  (:fn "CACHE-FLUSH-DATA-AREA" -828 (:a0 :d0) :void :morphos)   ; VOID CacheFlushDataArea(APTR Address, ULONG Size) (A0,D0) LVO -828
+  (:fn "CACHE-INVALID-INST-AREA" -834 (:a0 :d0) :void :morphos)   ; VOID CacheInvalidInstArea(APTR Address, ULONG Size) (A0,D0) LVO -834
+  (:fn "CACHE-INVALID-DATA-AREA" -840 (:a0 :d0) :void :morphos)   ; VOID CacheInvalidDataArea(APTR Address, ULONG Size) (A0,D0) LVO -840
+  (:fn "CACHE-FLUSH-DATA-INST-AREA" -846 (:a0 :d0) :void :morphos)   ; VOID CacheFlushDataInstArea(APTR Address, ULONG Size) (A0,D0) LVO -846
+  (:fn "CACHE-TRASH-CACHE-AREA" -852 (:a0 :d0) :void :morphos)   ; VOID CacheTrashCacheArea(APTR Address, ULONG Size) (A0,D0) LVO -852
+  (:fn "ALLOC-TASK-POOLED" -858 (:d0) :pointer :morphos)   ; APTR AllocTaskPooled(ULONG Size) (D0) LVO -858
+  (:fn "FREE-TASK-POOLED" -864 (:a1 :d0) :void :morphos)   ; VOID FreeTaskPooled(APTR Address, ULONG Size) (A1,D0) LVO -864
+  (:fn "ALLOC-VEC-TASK-POOLED" -870 (:d0) :pointer :morphos)   ; APTR AllocVecTaskPooled(ULONG Size) (D0) LVO -870
+  (:fn "FREE-VEC-TASK-POOLED" -876 (:a1) :void :morphos)   ; VOID FreeVecTaskPooled(APTR Address) (A1) LVO -876
+  (:fn "FLUSH-POOL" -882 (:a0) :void :morphos)   ; VOID FlushPool(APTR poolHeader) (A0) LVO -882
+  (:fn "FLUSH-TASK-POOL" -888 () :void :morphos)   ; VOID FlushTaskPool() () LVO -888
+  (:fn "ALLOC-VEC-POOLED" -894 (:a0 :d0) :pointer :morphos)   ; APTR AllocVecPooled(APTR poolHeader, ULONG memSize) (A0,D0) LVO -894
+  (:fn "FREE-VEC-POOLED" -900 (:a0 :a1) :void :morphos)   ; VOID FreeVecPooled(APTR poolHeader, APTR memory) (A0,A1) LVO -900
+  (:fn "NEW-GET-SYSTEM-ATTRS-A" -906 (:a0 :d0 :d1 :a1) :unsigned :morphos)   ; ULONG NewGetSystemAttrsA(APTR Data, ULONG DataSize, ULONG Type, struct TagItem * Tags) (A0,D0,D1,A1) LVO -906
+  (:fn "NEW-SET-SYSTEM-ATTRS-A" -912 (:a0 :d0 :d1 :a1) :unsigned :morphos)   ; ULONG NewSetSystemAttrsA(APTR Data, ULONG DataSize, ULONG Type, struct TagItem * Tags) (A0,D0,D1,A1) LVO -912
+  (:fn "NEW-CREATE-TASK-A" -918 (:a0) :pointer :morphos)   ; struct Task * NewCreateTaskA(struct TagItem * Tags) (A0) LVO -918
+  ;; skipped NewRawDoFmt: not a 68k register call (base,sysv)
+  ;; skipped AllocateAligned: not a 68k register call (base,sysv)
+  ;; skipped AllocMemAligned: not a 68k register call (base,sysv)
+  ;; skipped AllocVecAligned: not a 68k register call (base,sysv)
+  ;; skipped AddExecNotify: not a 68k register call (base,sysv)
+  ;; skipped RemExecNotify: not a 68k register call (base,sysv)
+  (:fn "FIND-EXEC-NODE" -960 (:d0 :a0) :pointer :morphos)   ; struct Node * FindExecNode(ULONG type, CONST_STRPTR name) (D0,A0) LVO -960
+  (:fn "ADD-EXEC-NODE-A" -966 (:a0 :a1) :pointer :morphos)   ; APTR AddExecNodeA(APTR innode, struct TagItem * Tags) (A0,A1) LVO -966
+  (:fn "ALLOC-VEC-DMA" -972 (:d0 :d1) :pointer :morphos)   ; APTR AllocVecDMA(ULONG byteSize, ULONG requirements) (D0,D1) LVO -972
+  (:fn "FREE-VEC-DMA" -978 (:a1) :void :morphos)   ; VOID FreeVecDMA(APTR memoryBlock) (A1) LVO -978
+  ;; skipped AllocPooledAligned: not a 68k register call (base,sysv)
+  ;; skipped AddResident: not a 68k register call (base,sysv)
+  ;; skipped FindTaskByPID: not a 68k register call (base,sysv)
+  (:fn "DUMP-TASK-STATE" -1026 (:a0) :void :morphos)   ; void DumpTaskState(struct Task * task) (A0) LVO -1026
+  ;; skipped AddExecNotifyType: not a 68k register call (base,sysv)
+  ;; skipped ShutdownA: not a 68k register call (base,sysv)
+  ;; skipped AvailPool: not a 68k register call (base,sysv)
+  ;; skipped PutMsgHead: not a 68k register call (base,sysv)
+  (:fn "NEW-GET-TASK-PID-ATTRS-A" -1068 (:d0 :a0 :d1 :d2 :a1) :unsigned :morphos)   ; ULONG NewGetTaskPIDAttrsA(ULONG TaskPID, APTR Data, ULONG DataSize, ULONG Type, struct TagItem * Tags) (D0,A0,D1,D2,A1) LVO -1068
+  (:fn "NEW-SET-TASK-PID-ATTRS-A" -1074 (:d0 :a0 :d1 :d2 :a1) :unsigned :morphos)   ; ULONG NewSetTaskPIDAttrsA(ULONG TaskPID, APTR Data, ULONG DataSize, ULONG Type, struct TagItem * Tags) (D0,A0,D1,D2,A1) LVO -1074
+  ;; skipped TLSAllocA: not a 68k register call (base,sysv)
+  ;; skipped TLSFree: not a 68k register call (base,sysv)
+  ;; skipped TLSGetValue: not a 68k register call (base,sysv)
+  ;; skipped TLSSetValue: not a 68k register call (base,sysv)
+  ;; skipped TLSCallDestructors: not a 68k register call (base,sysv)
+  )
 
 (provide "amiga/raw/exec")

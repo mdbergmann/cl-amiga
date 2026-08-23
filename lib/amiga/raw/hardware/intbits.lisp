@@ -6,54 +6,55 @@
 ;;; 0 functions, 32 constants, 0 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.HARDWARE.INTBITS"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+INTB-SETCLR+" "+INTB-INTEN+" "+INTB-EXTER+" "+INTB-DSKSYNC+" 
-   "+INTB-RBF+" "+INTB-AUD3+" "+INTB-AUD2+" "+INTB-AUD1+" "+INTB-AUD0+" 
-   "+INTB-BLIT+" "+INTB-VERTB+" "+INTB-COPER+" "+INTB-PORTS+" 
-   "+INTB-SOFTINT+" "+INTB-DSKBLK+" "+INTB-TBE+" "+INTF-SETCLR+" 
-   "+INTF-INTEN+" "+INTF-EXTER+" "+INTF-DSKSYNC+" "+INTF-RBF+" 
-   "+INTF-AUD3+" "+INTF-AUD2+" "+INTF-AUD1+" "+INTF-AUD0+" "+INTF-BLIT+" 
-   "+INTF-VERTB+" "+INTF-COPER+" "+INTF-PORTS+" "+INTF-SOFTINT+" 
-   "+INTF-DSKBLK+" "+INTF-TBE+" ))
+  (:export))
 
 (in-package "AMIGA.RAW.HARDWARE.INTBITS")
 
-;;; --- constants from hardware/intbits.i ---
-(defconstant +intb-setclr+ 15)
-(defconstant +intb-inten+ 14)
-(defconstant +intb-exter+ 13)
-(defconstant +intb-dsksync+ 12)
-(defconstant +intb-rbf+ 11)
-(defconstant +intb-aud3+ 10)
-(defconstant +intb-aud2+ 9)
-(defconstant +intb-aud1+ 8)
-(defconstant +intb-aud0+ 7)
-(defconstant +intb-blit+ 6)
-(defconstant +intb-vertb+ 5)
-(defconstant +intb-coper+ 4)
-(defconstant +intb-ports+ 3)
-(defconstant +intb-softint+ 2)
-(defconstant +intb-dskblk+ 1)
-(defconstant +intb-tbe+ 0)
-(defconstant +intf-setclr+ #x8000)
-(defconstant +intf-inten+ #x4000)
-(defconstant +intf-exter+ #x2000)
-(defconstant +intf-dsksync+ #x1000)
-(defconstant +intf-rbf+ #x800)
-(defconstant +intf-aud3+ #x400)
-(defconstant +intf-aud2+ #x200)
-(defconstant +intf-aud1+ #x100)
-(defconstant +intf-aud0+ #x80)
-(defconstant +intf-blit+ #x40)
-(defconstant +intf-vertb+ #x20)
-(defconstant +intf-coper+ #x10)
-(defconstant +intf-ports+ 8)
-(defconstant +intf-softint+ 4)
-(defconstant +intf-dskblk+ 2)
-(defconstant +intf-tbe+ 1)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.HARDWARE.INTBITS" ()
+
+  ;; --- constants from hardware/intbits.i ---
+  (:const "+INTB-SETCLR+" 15)
+  (:const "+INTB-INTEN+" 14)
+  (:const "+INTB-EXTER+" 13)
+  (:const "+INTB-DSKSYNC+" 12)
+  (:const "+INTB-RBF+" 11)
+  (:const "+INTB-AUD3+" 10)
+  (:const "+INTB-AUD2+" 9)
+  (:const "+INTB-AUD1+" 8)
+  (:const "+INTB-AUD0+" 7)
+  (:const "+INTB-BLIT+" 6)
+  (:const "+INTB-VERTB+" 5)
+  (:const "+INTB-COPER+" 4)
+  (:const "+INTB-PORTS+" 3)
+  (:const "+INTB-SOFTINT+" 2)
+  (:const "+INTB-DSKBLK+" 1)
+  (:const "+INTB-TBE+" 0)
+  (:const "+INTF-SETCLR+" #x8000)
+  (:const "+INTF-INTEN+" #x4000)
+  (:const "+INTF-EXTER+" #x2000)
+  (:const "+INTF-DSKSYNC+" #x1000)
+  (:const "+INTF-RBF+" #x800)
+  (:const "+INTF-AUD3+" #x400)
+  (:const "+INTF-AUD2+" #x200)
+  (:const "+INTF-AUD1+" #x100)
+  (:const "+INTF-AUD0+" #x80)
+  (:const "+INTF-BLIT+" #x40)
+  (:const "+INTF-VERTB+" #x20)
+  (:const "+INTF-COPER+" #x10)
+  (:const "+INTF-PORTS+" 8)
+  (:const "+INTF-SOFTINT+" 4)
+  (:const "+INTF-DSKBLK+" 2)
+  (:const "+INTF-TBE+" 1)
+  )
 
 (provide "amiga/raw/hardware/intbits")

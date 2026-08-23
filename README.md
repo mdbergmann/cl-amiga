@@ -353,15 +353,11 @@ When a literal object reachable from compiled code is an instance of a class tha
 - POSIX: `~/.cache/common-lisp/cl-amiga-<version>-fasl<n>/<source-path>.fasl`
 - AmigaOS: `S:cl-amiga/faslcache/<version>-fasl<n>/<source-path>.fasl`
 
-Pre-built `lib/boot.fasl` and `lib/clos.fasl` ship with the binary; on the lower-end 020 baseline this cuts cold boot from ~92 s to ~9 s. To regenerate them after editing `lib/*.lisp`:
+Pre-built `lib/boot.fasl` and `lib/clos.fasl` ship with the binary; on the lower-end 020 baseline this cuts cold boot from ~92 s to ~9 s. `make fasl` regenerates them after editing `lib/boot.lisp`/`lib/clos.lisp`.
 
-```
-./build/host/clamiga --non-interactive \
-    --eval '(compile-file "lib/boot.lisp" :output-file "lib/boot.fasl")' \
-    --eval '(compile-file "lib/clos.lisp" :output-file "lib/clos.fasl")'
-```
+`make fasl-amiga` does the same for everything under `lib/amiga/` (the curated modules, `AMIGA.REACTION` and the generated raw OS bindings), writing `lib/amiga/**/*.fasl` next to the sources: an Amiga run of the tree — the FS-UAE suite, or a real machine with the repo on it — then loads e.g. `lib/amiga/raw/intuition.fasl` instead of compiling ~4k forms on a 68020 at the first `(require "amiga/raw/intuition")`. This is optional for development (the Amiga's faslcache does the same lazily on first use), the files are gitignored, and `REQUIRE` ignores a FASL that is older than its source or was written by another FASL format version. The binary release ships these FASLs (see below). The host-compiled FASLs are portable because the FASL format is arch/endian-neutral and the `lib/amiga` sources have no reader conditionals — all platform variance is decided at load time. See `tests/test_lib_fasl_portable.sh`.
 
-Note: string literals in `lib/*.lisp` must stay ASCII-only — the m68k Amiga build is compiled without `CL_WIDE_STRINGS` to save RAM and cannot read FASLs that contain `FASL_TAG_WIDE_STRING`. The host and MorphOS builds have `CL_WIDE_STRINGS` (full Unicode, `CHAR-CODE-LIMIT` 1114112 — required by e.g. flexi-streams/drakma); their writers auto-downgrade all-ASCII wide strings to byte strings, so the shared `lib/` FASLs stay readable everywhere. Non-ASCII chars in source string literals will fail m68k Amiga boot with a `BAD_TAG` deserialize error. Comments are unaffected.
+Note: string literals in the `lib/` modules that ship as FASLs must stay ASCII-only — the m68k Amiga build is compiled without `CL_WIDE_STRINGS` to save RAM and cannot read FASLs that contain `FASL_TAG_WIDE_STRING`. The host and MorphOS builds have `CL_WIDE_STRINGS` (full Unicode, `CHAR-CODE-LIMIT` 1114112 — required by e.g. flexi-streams/drakma); their writers auto-downgrade all-ASCII wide strings to byte strings, so the shared `lib/` FASLs stay readable everywhere. `make fasl`, `make fasl-amiga` and the release script compile with `CLAMIGA_FASL_PORTABLE=1`, which makes the writer refuse such a literal on the host — the diagnostic names the file, source line and code point (`U+2014` for the usual em dash) — instead of the Amiga failing the whole module with a `BAD_TAG` deserialize error at load time. Comments and docstrings are unaffected (neither reaches the FASL).
 
 ### Exit hooks
 
@@ -1053,8 +1049,10 @@ It cross-compiles both AmigaOS 3 binaries — soft-float (`bin/aos3/`, runs
 on any 68020+) and hard-float (`bin/aos3-fpu/`, requires an FPU) — takes a
 natively built MorphOS binary (`MOS_BIN`, default `./clamiga-mos`), and
 assembles `clamiga-<version>/` with `bin/aos3/`, `bin/aos3-fpu/`, `bin/mos/`, `lib/` (precompiled
-FASLs where portable, Lisp sources where compilation must happen on the
-target), the package API reference under `docs/`, and `examples/` — then
+FASLs where portable — the core library and all of `lib/amiga/` including
+the raw OS bindings, with the `lib/amiga` sources alongside for reference —
+and Lisp sources where compilation must happen on the target, i.e. asdf and
+quicklisp), the package API reference under `docs/`, and `examples/` — then
 smoke-tests the deployed layout and produces `.zip` and `.lha` archives.
 The binaries find `lib/` relative to themselves, so the extracted tree
 runs from any directory without assigns or environment variables.
@@ -1271,19 +1269,21 @@ stores them: `(require "amiga/raw/gadgets/button")` →
     (amiga.raw.intuition:close-window win)))
 ```
 
-What a module contains, all derived mechanically from the SDK files:
+What a module contains, all derived mechanically from the SDK files — as
+one `amiga.ffi:define-binding-table` form whose names are built on first
+use (see *Footprint* below):
 
-- **Functions** — `amiga.ffi:defcfun` wrappers for every public library
-  function (LVO, registers and arity from the NDK's `*_lib.sfd`), with the
-  d0 result converted from the C return type: `struct X *`/`APTR`/`STRPTR`
-  come back as a foreign pointer (`NIL` for NULL), `LONG` is signed,
-  `BOOL` is `T`/`NIL`, `VOID` returns `NIL`, `ULONG`/`BPTR`/`Tag` stay
-  integers.  Arguments are integers or foreign pointers (`NIL` = NULL);
-  strings go through `ffi:with-foreign-string`.  The C prototype is the
-  docstring.  A dozen functions with more than seven register arguments
-  (`BltBitMap`, `ClipBlit`, …) go through `amiga:call-library`; the few
-  that return a `DOUBLE`, pass register pairs or use A5 are listed as
-  `;; skipped` comments in the module.
+- **Functions** — a binding for every public library function (LVO,
+  registers and arity from the NDK's `*_lib.sfd`), with the d0 result
+  converted from the C return type: `struct X *`/`APTR`/`STRPTR` come back
+  as a foreign pointer (`NIL` for NULL), `LONG` is signed, `BOOL` is
+  `T`/`NIL`, `VOID` returns `NIL`, `ULONG`/`BPTR`/`Tag` stay integers.
+  Arguments are integers or foreign pointers (`NIL` = NULL); strings go
+  through `ffi:with-foreign-string`.  The C prototype sits next to each
+  row as a comment.  A dozen functions with more than seven register
+  arguments (`BltBitMap`, `ClipBlit`, …) go through `amiga:call-library`;
+  the few that return a `DOUBLE`, pass register pairs or use A5 are listed
+  as `;; skipped` comments in the module.
 - **Constants** — every `EQU`, `ENUM`/`EITEM` and `BITDEF` of the matching
   assembler includes as `+name+`: `+idcmp-closewindow+`, `+wa-left+`,
   `+memf-chip+`, `+mode-newfile+`, `+adcmd-allocate+` … Where the NDK has
@@ -1341,11 +1341,48 @@ anything.  Its executable specification is `tests/test_amiga_bindgen.sh`
 (fixture SDK + checks of the committed output); the Amiga-side calls are
 exercised by `tests/amiga/test-raw-bindings.lisp`.
 
+The modules are also the reference for the hand-written ones: every
+constant, `+lvo-…+` offset and `defcfun` register assignment in
+`AMIGA.INTUITION`, `AMIGA.GFX`, `AMIGA.GADTOOLS`, `AMIGA.EXEC` and
+`AMIGA.AUDIO` is checked against the generated bindings by
+`tests/test_amiga_curated_vs_raw.sh` in `make test`.
+
+**Footprint.** A module costs what a program uses, not what it defines.
+Its bindings ship as one packed table (`amiga.ffi:define-binding-table`,
+~47 KB for intuition's ~1500 names) attached to the package; a name
+becomes a symbol — with its value or FFI stub, exported — the first time
+anything looks it up (the reader, `find-symbol`, `intern`, a FASL).
+`(require "amiga/raw/intuition")` is ~50 KB of heap on the host, a
+program that touches 150 of its names adds ~15 KB more, and the FASL is
+one byte-vector unit instead of thousands of definitions.  Everything
+stays ordinary CL: `do-symbols`, `apropos`, `unintern` and friends build
+the whole table on demand (the package is then a plain package), so
+nothing observable changes except memory.  `(clamiga::%binding-table-info
+"AMIGA.RAW.INTUITION")` reports entries, table bytes and symbols built so
+far.  A first `require` from source packs the table once, which a 68020
+feels; `make fasl-amiga` precompiles all of `lib/amiga/` on the host (see
+*Loading source and FASL files*), and the binary release ships those FASLs.
+
 ### Raw FFI Access
 
 Underneath the generated modules sits `amiga.ffi:defcfun` — a register
 spec plus an LVO, compiled to a dedicated bytecode op — and
-`ffi:defcstruct`; both are available for hand-written bindings:
+`ffi:defcstruct`; both are available for hand-written bindings.  Neither
+creates a wrapper function: the name's function cell receives a small
+*FFI stub* (a 20-byte binding descriptor the runtime calls directly — a
+function for every purpose: `#'`, `funcall`, `apply`, `trace`,
+`describe`, `ext:function-arglist`), which is what keeps a module with
+thousands of bindings affordable on an 8 MB machine.  A direct call to a
+`defcfun` name compiles to the library-call opcode in the caller;
+`(ffi::%ffi-stub-info #'name)` shows a stub's fields.  A whole library's
+worth of bindings goes into one `amiga.ffi:define-binding-table` — rows
+`(:const "NAME" value)`, `(:fn "NAME" lvo (:a0 …) :result)`, `(:struct
+"NAME" size ("FIELD" type offset) …)` — packed at compile time and
+materialised name by name on first reference; that is what the generated
+modules are (see `docs/amiga.md` for the row syntax).  `defcfun`'s `:doc`
+strings are kept on the host and dropped from the FASLs built by `make
+fasl-amiga` and the binary release (`amiga.ffi:*defcfun-docstrings*`,
+`scripts/compile-lib-fasls.sh --no-docstrings`) to save heap on the target.
 
 ```lisp
 (require "amiga/ffi")
@@ -1413,7 +1450,7 @@ Measured on the high-end FS-UAE config (A4000 / 68040 / Picasso96). The A/B micr
 | `arith-chain` | chained binary ops             |   300 ms |  40 ms |   7.5×  |
 | `call-loop`   | `OP_CALL` inside the loop body |   340 ms | 240 ms |  1.42×  |
 
-Compute-bound code sees the largest wins; call-heavy code is bounded by the same per-call helper round-trip the interpreter pays. On the real-world `examples/amiga/gfx/bouncing-lines.lisp` demo (FFI-dominated — five lines drawn through `graphics.library` each frame), the JIT now reaches **~615 FPS** versus **~500 FPS** on the bytecode VM. That lead only materialised once native `amiga-call` dispatch and `defcfun` compiler-macro inlining landed (467 → 525 → 615 FPS as those merged), since the frame time is mostly FFI calls rather than arithmetic. The remaining gap to compiled ACE BASIC (~1900 FPS through the same ROM graphics calls) is the structural cost of a dynamic, GC'd, tagged-value language — per-argument unboxing, dispatch and symbol lookup per call, GC safepoints — not codegen.
+Compute-bound code sees the largest wins; call-heavy code is bounded by the same per-call helper round-trip the interpreter pays. On the real-world `examples/amiga/gfx/bouncing-lines.lisp` demo (FFI-dominated — five lines drawn through `graphics.library` each frame), the JIT now reaches **~615 FPS** versus **~500 FPS** on the bytecode VM. That lead only materialised once native `amiga-call` dispatch and `defcfun` call inlining landed (467 → 525 → 615 FPS as those merged), since the frame time is mostly FFI calls rather than arithmetic. The remaining gap to compiled ACE BASIC (~1900 FPS through the same ROM graphics calls) is the structural cost of a dynamic, GC'd, tagged-value language — per-argument unboxing, dispatch and symbol lookup per call, GC safepoints — not codegen.
 
 The Amiga test suite passes on the JIT config; per-opcode JIT coverage (counter-bump, value-correctness, and unwind-recovery assertions) lives in `tests/amiga/test-jit.lisp`.
 

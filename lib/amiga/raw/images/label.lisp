@@ -8,19 +8,14 @@
 ;;; 1 functions, 24 constants, 0 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.IMAGES.LABEL"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*LABEL-BASE*" "*LABEL-VERSION*"
-   "+LJ-LEFT+" "+LJ-CENTRE+" "+LJ-RIGHT+" "+LJ-CENTER+" "+LABEL-LEFT+" 
-   "+LABEL-CENTRE+" "+LABEL-CENTER+" "+LABEL-RIGHT+" "+LVALIGN-BOTTOM+" 
-   "+LVALIGN-BASELINE+" "+LABEL-DUMMY+" "+LABEL-DRAW-INFO+" "+LABEL-TEXT+" 
-   "+LABEL-IMAGE+" "+LABEL-MAPPING+" "+LABEL-JUSTIFICATION+" "+LABEL-KEY+" 
-   "+LABEL-UNDERSCORE+" "+LABEL-DISPOSE-IMAGE+" "+LABEL-SOFT-STYLE+" 
-   "+LABEL-VERTICAL-SPACING+" "+LABEL-VERTICAL-ALIGNMENT+" 
-   "+LABEL-WORD-WRAP+" "+LABEL-MENU-MODE+" "LABEL-GET-CLASS" ))
+  (:export "*LABEL-BASE*" "*LABEL-VERSION*"))
 
 (in-package "AMIGA.RAW.IMAGES.LABEL")
 
@@ -34,36 +29,40 @@
 (defun %version>= (n)
   (and *label-version* (>= *label-version* n)))
 
-;;; --- constants from images/label.h ---
-(defconstant +lj-left+ 0)
-(defconstant +lj-centre+ 1)
-(defconstant +lj-right+ 2)
-(defconstant +lj-center+ 1)
-(defconstant +label-left+ 0)
-(defconstant +label-centre+ 1)
-(defconstant +label-center+ 1)
-(defconstant +label-right+ 2)
-(defconstant +lvalign-bottom+ 0)
-(defconstant +lvalign-baseline+ 1)
-(defconstant +label-dummy+ #x85006000)
-(defconstant +label-draw-info+ #x80020018)
-(defconstant +label-text+ #x85006001)
-(defconstant +label-image+ #x85006002)
-(defconstant +label-mapping+ #x85006003)
-(defconstant +label-justification+ #x85006004)
-(defconstant +label-key+ #x85006005)
-(defconstant +label-underscore+ #x85006006)
-(defconstant +label-dispose-image+ #x85006007)
-(defconstant +label-soft-style+ #x85006008)
-(defconstant +label-vertical-spacing+ #x85006009)
-(defconstant +label-vertical-alignment+ #x8500600A)
-(defconstant +label-word-wrap+ #x8500600B)
-(defconstant +label-menu-mode+ #x8500600C)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.IMAGES.LABEL"
+    (:base *label-base* :version *label-version*)
 
-;;; --- functions (label_lib.sfd + MorphOS SDK) ---
-(when (%version>= 40)
-  (amiga.ffi:defcfun label-get-class *label-base* -30 ()
-    :result :pointer
-    :doc "Class * LABEL_GetClass() () LVO -30"))
+  ;; --- constants from images/label.h ---
+  (:const "+LJ-LEFT+" 0)
+  (:const "+LJ-CENTRE+" 1)
+  (:const "+LJ-RIGHT+" 2)
+  (:const "+LJ-CENTER+" 1)
+  (:const "+LABEL-LEFT+" 0)
+  (:const "+LABEL-CENTRE+" 1)
+  (:const "+LABEL-CENTER+" 1)
+  (:const "+LABEL-RIGHT+" 2)
+  (:const "+LVALIGN-BOTTOM+" 0)
+  (:const "+LVALIGN-BASELINE+" 1)
+  (:const "+LABEL-DUMMY+" #x85006000)
+  (:const "+LABEL-DRAW-INFO+" #x80020018)
+  (:const "+LABEL-TEXT+" #x85006001)
+  (:const "+LABEL-IMAGE+" #x85006002)
+  (:const "+LABEL-MAPPING+" #x85006003)
+  (:const "+LABEL-JUSTIFICATION+" #x85006004)
+  (:const "+LABEL-KEY+" #x85006005)
+  (:const "+LABEL-UNDERSCORE+" #x85006006)
+  (:const "+LABEL-DISPOSE-IMAGE+" #x85006007)
+  (:const "+LABEL-SOFT-STYLE+" #x85006008)
+  (:const "+LABEL-VERTICAL-SPACING+" #x85006009)
+  (:const "+LABEL-VERTICAL-ALIGNMENT+" #x8500600A)
+  (:const "+LABEL-WORD-WRAP+" #x8500600B)
+  (:const "+LABEL-MENU-MODE+" #x8500600C)
+
+  ;; --- functions (label_lib.sfd + MorphOS SDK) ---
+  (:fn "LABEL-GET-CLASS" -30 () :pointer 40)   ; Class * LABEL_GetClass() () LVO -30
+  )
 
 (provide "amiga/raw/images/label")

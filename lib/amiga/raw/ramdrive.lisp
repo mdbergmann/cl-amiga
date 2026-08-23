@@ -7,13 +7,14 @@
 ;;; 2 functions, 0 constants, 0 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.RAMDRIVE"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*RAMDRIVE-BASE*" "*RAMDRIVE-VERSION*"
-   "KILL-RAD0" "KILL-RAD" ))
+  (:export "*RAMDRIVE-BASE*" "*RAMDRIVE-VERSION*"))
 
 (in-package "AMIGA.RAW.RAMDRIVE")
 
@@ -27,12 +28,15 @@
 (defun %version>= (n)
   (and *ramdrive-version* (>= *ramdrive-version* n)))
 
-;;; --- functions (ramdrive_lib.sfd + MorphOS SDK) ---
-(amiga.ffi:defcfun kill-rad0 *ramdrive-base* -42 ()
-    :result :pointer
-    :doc "STRPTR KillRAD0() () LVO -42")
-(amiga.ffi:defcfun kill-rad *ramdrive-base* -48 (:d0 unit)
-    :result :pointer
-    :doc "STRPTR KillRAD(ULONG unit) (D0) LVO -48")
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.RAMDRIVE"
+    (:base *ramdrive-base* :version *ramdrive-version*)
+
+  ;; --- functions (ramdrive_lib.sfd + MorphOS SDK) ---
+  (:fn "KILL-RAD0" -42 () :pointer)   ; STRPTR KillRAD0() () LVO -42
+  (:fn "KILL-RAD" -48 (:d0) :pointer)   ; STRPTR KillRAD(ULONG unit) (D0) LVO -48
+  )
 
 (provide "amiga/raw/ramdrive")

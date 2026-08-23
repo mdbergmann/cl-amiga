@@ -7,39 +7,43 @@
 ;;; 105 C macros skipped: not an integer constant (string, call, float).
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
-(require "amiga/ffi")
+;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
+;; AMIGA.FFI at read time, not only LOAD.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "amiga/ffi"))
 
 (defpackage "AMIGA.RAW.REACTION.REACTION-MACROS"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+GET-PATH+" "+GET-FILE+" "+GET-SCREEN+" "+GET-TIME+" "+CHECK-MARK+" 
-   "+POP-UP+" "+DROP-DOWN+" "+THIN-FRAME+" "+BUTTON-FRAME+" 
-   "+STANDARD-FRAME+" "+RIDGE-FRAME+" "+STRING-FRAME+" "+GROUP-FRAME+" 
-   "+DROP-BOX-FRAME+" "+H-BAR-FRAME+" "+V-BAR-FRAME+" "+RADIO-FRAME+" 
-   "+MX-FRAME+" "+START-MEMBER+" "+START-IMAGE+" ))
+  (:export))
 
 (in-package "AMIGA.RAW.REACTION.REACTION-MACROS")
 
-;;; --- constants from reaction/reaction_macros.h ---
-(defconstant +get-path+ 10)
-(defconstant +get-file+ 9)
-(defconstant +get-screen+ 11)
-(defconstant +get-time+ 12)
-(defconstant +check-mark+ 7)
-(defconstant +pop-up+ 6)
-(defconstant +drop-down+ 5)
-(defconstant +thin-frame+ 0)
-(defconstant +button-frame+ 1)
-(defconstant +standard-frame+ 11)
-(defconstant +ridge-frame+ 3)
-(defconstant +string-frame+ 3)
-(defconstant +group-frame+ 2)
-(defconstant +drop-box-frame+ 5)
-(defconstant +h-bar-frame+ 6)
-(defconstant +v-bar-frame+ 7)
-(defconstant +radio-frame+ 10)
-(defconstant +mx-frame+ 10)
-(defconstant +start-member+ #x85007014)
-(defconstant +start-image+ #x85007015)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.REACTION.REACTION-MACROS" ()
+
+  ;; --- constants from reaction/reaction_macros.h ---
+  (:const "+GET-PATH+" 10)
+  (:const "+GET-FILE+" 9)
+  (:const "+GET-SCREEN+" 11)
+  (:const "+GET-TIME+" 12)
+  (:const "+CHECK-MARK+" 7)
+  (:const "+POP-UP+" 6)
+  (:const "+DROP-DOWN+" 5)
+  (:const "+THIN-FRAME+" 0)
+  (:const "+BUTTON-FRAME+" 1)
+  (:const "+STANDARD-FRAME+" 11)
+  (:const "+RIDGE-FRAME+" 3)
+  (:const "+STRING-FRAME+" 3)
+  (:const "+GROUP-FRAME+" 2)
+  (:const "+DROP-BOX-FRAME+" 5)
+  (:const "+H-BAR-FRAME+" 6)
+  (:const "+V-BAR-FRAME+" 7)
+  (:const "+RADIO-FRAME+" 10)
+  (:const "+MX-FRAME+" 10)
+  (:const "+START-MEMBER+" #x85007014)
+  (:const "+START-IMAGE+" #x85007015)
+  )
 
 (provide "amiga/raw/reaction/reaction-macros")

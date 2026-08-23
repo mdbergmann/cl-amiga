@@ -191,7 +191,8 @@ enum CL_ObjType {
     TYPE_CONDVAR,
     TYPE_FOREIGN_POINTER,
     TYPE_RESTART,
-    TYPE_BYTE_VECTOR
+    TYPE_BYTE_VECTOR,
+    TYPE_FFI_STUB
 #ifdef CL_WIDE_STRINGS
     , TYPE_WIDE_STRING
 #endif
@@ -207,7 +208,7 @@ enum CL_ObjType {
 #ifdef CL_WIDE_STRINGS
 #define CL_TYPE_MAX TYPE_WIDE_STRING
 #else
-#define CL_TYPE_MAX TYPE_BYTE_VECTOR
+#define CL_TYPE_MAX TYPE_FFI_STUB
 #endif
 
 /* Header access macros */
@@ -262,9 +263,19 @@ typedef struct {
 #define CL_SYM_SPECIAL  0x01
 #define CL_SYM_INLINE   0x02
 #define CL_SYM_TRACED   0x04
-#define CL_SYM_EXPORTED 0x08
+#define CL_SYM_EXPORTED 0x08  /* hint: SOME package exports this symbol */
 #define CL_SYM_CONSTANT 0x10
 #define CL_SYM_LISTED   0x20  /* transient: bulk-export pass dedup marker */
+/* Exact: the symbol is on its HOME package's exported_symbols list.  Lets
+ * the reader's pkg:sym lookup and use-list inheritance answer "is this
+ * symbol external in its home package?" in O(1) instead of walking the
+ * home's export list (COMMON-LISP: ~980 cells, AMIGA.RAW.INTUITION:
+ * ~1950 — per qualified read).  Maintained by package.c alongside the
+ * list (export / unexport / bulk export) and cleared wherever a symbol
+ * loses or changes its home (unintern, delete-package, add-symbol).
+ * A symbol exported from a package that is NOT its home still takes the
+ * list walk (CL_SYM_EXPORTED set, home differs) — correct, just slower. */
+#define CL_SYM_EXPORTED_HOME 0x40
 
 #define CL_SYMBOL_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_SYMBOL)
 
@@ -472,6 +483,18 @@ typedef struct {
                                * Per-package because the symbol's home pkg
                                * may have it exported while a using/importing
                                * package does not (or vice versa). */
+    CL_Obj bindings;    /* NIL, or the package's demand-interned binding
+                         * table (bindtab.c): a vector #(blob base-var
+                         * version-var) whose blob is a packed byte vector
+                         * of (name, definition) entries.  A name that is
+                         * not present in `symbols` but is in the blob is
+                         * MATERIALISED — symbol, value/FFI stub, export —
+                         * the first time any lookup asks for it, so a
+                         * generated OS binding module costs O(names used)
+                         * instead of O(names defined).  Enumeration and
+                         * mutation of the symbol set flip the package
+                         * eager (materialise all, clear this).  See
+                         * specs/raw-bindings-footprint.md, Phase 2. */
     uint32_t sym_count;
 } CL_Package;
 
@@ -844,6 +867,72 @@ typedef struct {
 
 #define CL_FOREIGN_POINTER_P(obj) \
     (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_FOREIGN_POINTER)
+
+/* --- FFI stub (binding descriptor — a data object that IS a function) ---
+ *
+ * What an AMIGA.FFI:DEFCFUN wrapper or an FFI:DEFCSTRUCT accessor *is*,
+ * in 20 bytes: an OS library call (LVO + packed register spec + result
+ * kind) or a typed peek/poke at a fixed offset.  Stored in a symbol's
+ * function cell like any function object; callable through cl_vm_apply /
+ * OP_CALL / OP_APPLY (cl_ffi_stub_call, builtins_ffi.c); recognized by
+ * compile_call so a direct call to a CL_STUB_LIBCALL symbol compiles to a
+ * bare OP_AMIGA_CALL.  Replaces, per binding, a wrapper closure + its
+ * off-heap bytecode body + a compiler macro (~550 B and three AllocMems)
+ * — the generated raw OS binding modules define thousands of them, so on
+ * an 8 MB 68020 this is the difference between affordable and not.  See
+ * specs/raw-bindings-footprint.md.
+ *
+ * No raw C pointers inside: nothing to relink on image restore, and the
+ * FASL round-trips it as FASL_TAG_FFI_STUB.  GC children: name, aux. */
+typedef struct {
+    CL_Header hdr;
+    CL_Obj    name;     /* symbol — printing, arglist, trace, backtrace      */
+    CL_Obj    aux;      /* LIBCALL: library-base variable (symbol); else NIL */
+    uint32_t  a;        /* LIBCALL: regspec — register nibbles bits 0-27,
+                         *   result kind bits 28-31 (CL_AMIGA_RES_*);
+                         * field kinds: byte offset of the field            */
+    int16_t   b;        /* LIBCALL: LVO offset; *_IDX kinds: element size    */
+    uint8_t   kind;     /* CL_STUB_*                                         */
+    uint8_t   ctype;    /* LIBCALL: number of register args (0..7);
+                         * field kinds: CL_STUB_CT_* element C type          */
+} CL_FfiStub;           /* 20 bytes */
+
+#define CL_FFI_STUB_P(obj) \
+    (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_FFI_STUB)
+
+/* Stub kinds */
+#define CL_STUB_LIBCALL   0   /* (f arg...)      AmigaOS library call        */
+#define CL_STUB_PEEK      1   /* (f ptr)         read field at offset A       */
+#define CL_STUB_POKE      2   /* (f ptr val)     write field, returns VAL     */
+#define CL_STUB_PEEK_IDX  3   /* (f ptr i)       read element i, A + i*B      */
+#define CL_STUB_POKE_IDX  4   /* (f ptr i val)   write element i              */
+#define CL_STUB_FIELD_PTR 5   /* (f ptr)         foreign pointer to ptr + A   */
+#define CL_STUB_KIND_MAX  5
+
+/* Field element C types (CL_FfiStub.ctype for the field kinds).  Mirror
+ * FFI:DEFCSTRUCT's type keywords: :pointer is the legacy "32-bit address
+ * as an INTEGER", :fptr the foreign-pointer object (NIL for NULL). */
+#define CL_STUB_CT_U8      0
+#define CL_STUB_CT_I8      1
+#define CL_STUB_CT_U16     2
+#define CL_STUB_CT_I16     3
+#define CL_STUB_CT_U32     4
+#define CL_STUB_CT_I32     5
+#define CL_STUB_CT_POINTER 6
+#define CL_STUB_CT_FPTR    7
+#define CL_STUB_CT_SINGLE  8
+#define CL_STUB_CT_DOUBLE  9
+#define CL_STUB_CT_MAX     9
+
+/* Any of the four flat function representations — the thing OP_CALL can
+ * invoke without a symbol indirection.  Funcallable instances (generic
+ * functions) are CL_Structs and are NOT covered; callers that accept GFs
+ * unwrap them first (cl_unwrap_funcallable).  Use this wherever a
+ * "function designator or function object" check used to spell out
+ * CL_FUNCTION_P || CL_BYTECODE_P || CL_CLOSURE_P. */
+#define CL_FUNCTION_OBJ_P(obj) \
+    (CL_FUNCTION_P(obj) || CL_BYTECODE_P(obj) || CL_CLOSURE_P(obj) || \
+     CL_FFI_STUB_P(obj))
 
 /* --- Convenience accessors --- */
 
