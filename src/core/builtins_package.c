@@ -574,9 +574,11 @@ static CL_Obj bi_unintern(CL_Obj *args, int nargs)
                 c->cdr = cl_cdr(list);
             }
             pkg->sym_count--;
-            /* Clear home package if this was it */
+            /* Clear home package if this was it (and the per-home export
+             * flag with it — it tracks the OLD home's list, see types.h) */
             if (s->package == pkg_obj) {
                 s->package = CL_NIL;
+                s->flags &= ~CL_SYM_EXPORTED_HOME;
             }
             return SYM_T;
         }
@@ -774,8 +776,10 @@ static void unintern_own_nolock(CL_Obj sym, CL_Obj package)
                 c->cdr = cl_cdr(list);
             }
             pkg->sym_count--;
-            if (s->package == package)
+            if (s->package == package) {
                 s->package = CL_NIL;
+                s->flags &= ~CL_SYM_EXPORTED_HOME;
+            }
             return;
         }
         prev = list;

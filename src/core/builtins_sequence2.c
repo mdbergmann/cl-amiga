@@ -33,7 +33,7 @@ static CL_Obj call_func(CL_Obj func, CL_Obj *call_args, int nargs)
         CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(func);
         func = s->function;
     }
-    if (CL_FUNCTION_P(func) || CL_BYTECODE_P(func) || CL_CLOSURE_P(func))
+    if (CL_FUNCTION_OBJ_P(func))
         /* cl_vm_apply GC-roots call_args across the call (the function may
          * compact while reading its own args). */
         return cl_vm_apply(func, call_args, nargs);

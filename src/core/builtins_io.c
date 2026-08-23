@@ -1364,6 +1364,18 @@ static int cf_process_toplevel_form(CL_Obj expr,
 
     head = cl_car(expr);
 
+    /* (QUOTE x) at top level has no effect and LOAD discards the value
+     * (CLHS 3.2.3.1 leaves nothing to do for it) — emit no unit.  Every
+     * definer macro that ends in `',name` (DEFCFUN, DEFCSTRUCT, DEFSTRUCT,
+     * DEFCLASS ...) otherwise costs ~200 bytes of FASL per definition for
+     * a unit whose only job is to push a constant; in the generated OS
+     * binding modules that was a fifth of the file.  Non-cons atoms are
+     * already skipped above for the same reason. */
+    if (head == SYM_QUOTE) {
+        CL_GC_UNPROTECT(2);     /* expr, lex_env */
+        return 0;
+    }
+
     /* PROGN: each subform is a fresh top-level form (CLHS 3.2.3.1). */
     if (head == SYM_PROGN) {
         CL_Obj subs = cl_cdr(expr);
@@ -2754,6 +2766,19 @@ static CL_Obj bi_disassemble(CL_Obj *args, int n)
         cl_prin1_to_string(fname, nbuf, sizeof(nbuf));
         cl_write_cstring_to_stdout(nbuf);
         cl_write_cstring_to_stdout("\n  (no bytecode to disassemble)\n");
+        CL_GC_UNPROTECT(1);
+        return CL_NIL;
+    } else if (CL_FFI_STUB_P(arg)) {
+        /* An FFI binding descriptor has no bytecode either: print the
+         * descriptor itself (#<FFI-STUB NAME LVO n (k args)> / PEEK ...)
+         * — the printer shows every field. */
+        char nbuf[160];
+        CL_GC_PROTECT(arg);
+        cl_write_cstring_to_stdout("FFI stub: ");
+        cl_prin1_to_string(arg, nbuf, sizeof(nbuf));
+        cl_write_cstring_to_stdout(nbuf);
+        cl_write_cstring_to_stdout("\n  (a binding descriptor, no bytecode to "
+                                   "disassemble; see FFI::%FFI-STUB-INFO)\n");
         CL_GC_UNPROTECT(1);
         return CL_NIL;
     }

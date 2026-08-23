@@ -909,6 +909,7 @@ static CL_Obj class_of_type_name(CL_Obj obj)
             return class_name_sym("STRING", 6);
         case TYPE_FUNCTION:
         case TYPE_CLOSURE:
+        case TYPE_FFI_STUB:
             return class_name_sym("FUNCTION", 8);
         case TYPE_BYTECODE:
             return class_name_sym("COMPILED-FUNCTION", 17);

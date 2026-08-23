@@ -27,7 +27,9 @@
 #include "types.h"
 
 #define CL_IMAGE_MAGIC   0x434C494Du   /* "CLIM" */
-#define CL_IMAGE_VERSION 1             /* bump on ANY format change */
+#define CL_IMAGE_VERSION 2             /* bump on ANY format change.
+                                        * v2: TYPE_FFI_STUB heap type (new
+                                        * enum member, CL_TYPE_MAX moved). */
 
 /* Header flag bits (informational; the fingerprint is authoritative) */
 #define CL_IMAGE_FLAG_WIDE    0x0001

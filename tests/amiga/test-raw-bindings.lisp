@@ -17,11 +17,23 @@
 ;; The first REQUIRE of each raw module compiles it from source (a few
 ;; thousand forms for intuition/graphics/dos) — on a 68k that takes a
 ;; while, so flush a progress line per module to keep the FS-UAE
-;; watchdog (600 s without log output) from killing the run.
+;; watchdog (600 s without log output) from killing the run.  The line
+;; also carries the module's heap cost and load time (ROOM delta after a
+;; GC), so the suite log documents the binding footprint on the target —
+;; the number specs/raw-bindings-footprint.md is about.
+(defun %raw-heap-used ()
+  (ext:gc)
+  (let ((s (with-output-to-string (*standard-output*) (room))))
+    (or (parse-integer s :start (+ 8 (search "Heap:" s)) :junk-allowed t) 0)))
+
 (defun %raw-require (name)
-  (require name)
-  (format t "; raw-bindings: ~A loaded~%" name)
-  (finish-output))
+  (let ((before (%raw-heap-used))
+        (t0 (get-internal-real-time)))
+    (require name)
+    (format t "; raw-bindings: ~A loaded (~D KB heap, ~D ms)~%" name
+            (round (- (%raw-heap-used) before) 1024)
+            (- (get-internal-real-time) t0))
+    (finish-output)))
 
 (%raw-require "amiga/intuition")          ; curated module, for a cross-check
 (%raw-require "amiga/raw/exec")
@@ -98,6 +110,35 @@
 (check "raw-utility-smult32-negative" -35 (amiga.raw.utility:s-mult32 -5 7))
 (check "raw-utility-to-upper-u8" (char-code #\A)
   (amiga.raw.utility:to-upper (char-code #\a)))
+
+;;; --- the bindings are FFI stubs: indirect calls reach the OS too -----
+
+;; (f args) above compiled to OP_AMIGA_CALL; FUNCALL / APPLY / MAPCAR go
+;; through the stub object's own dispatch (cl_ffi_stub_call) instead.
+(check "raw-stub-funcall-apply-mapcar" '(35 35 (35 70))
+  (list (funcall #'amiga.raw.utility:u-mult32 5 7)
+        (apply 'amiga.raw.utility:u-mult32 '(5 7))
+        (mapcar #'amiga.raw.utility:u-mult32 '(5 10) '(7 7))))
+
+(check "raw-stub-descriptor" '(:libcall -138 :signed 2)   ; SMult32 is LVO -138
+  (let ((info (ffi::%ffi-stub-info #'amiga.raw.utility:s-mult32)))
+    (list (getf info :kind) (getf info :lvo) (getf info :result)
+          (getf info :nparams))))
+
+;; struct accessors are field stubs: reader + %SET- writer, DEFSETF-linked
+(check "raw-stub-field-accessors" '(:peek :i16 8 :poke)
+  (let ((get (ffi::%ffi-stub-info #'amiga.raw.intuition:window-width))
+        (set (ffi::%ffi-stub-info (fdefinition 'amiga.raw.intuition::%set-window-width))))
+    (list (getf get :kind) (getf get :ctype) (getf get :offset) (getf set :kind))))
+
+;; a stub is a function for every CL predicate; arity errors come from the
+;; stub itself
+(check "raw-stub-is-function" '(t t t t)
+  (list (functionp #'amiga.raw.utility:to-upper)
+        (compiled-function-p #'amiga.raw.utility:to-upper)
+        (typep #'amiga.raw.utility:to-upper 'function)
+        (handler-case (progn (funcall #'amiga.raw.utility:to-upper) nil)
+          (error (e) (and (search "expected 1" (format nil "~A" e)) t)))))
 
 ;;; --- dos.library: shadowed names, BPTRs, an end-to-end file round trip
 

@@ -1543,9 +1543,9 @@ void compile_defsetf(CL_Compiler *c, CL_Obj form)
     CL_GC_PROTECT(updater);
 
     /* Store mapping in setf_table at compile time (immediate side effect).
-     * Cons outside the write lock (STW-vs-rwlock deadlock — see
-     * cl_table_prepend_locked). */
-    cl_table_prepend_locked(&setf_table, cl_cons(accessor, updater));
+     * The registrar conses outside the write lock (STW-vs-rwlock
+     * deadlock — see cl_alist_index_prepend). */
+    cl_register_setf_updater(accessor, updater);
 
     /* Emit OP_DEFSETF so the mapping is registered at load time (FASL) */
     acc_idx = cl_add_constant(c, accessor);

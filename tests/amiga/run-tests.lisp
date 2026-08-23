@@ -8821,47 +8821,51 @@
            (amiga:call-library lib -132 nil))
         (amiga:close-library lib))))
 
-  ;; DEFCFUN regspec encoding: (:a1 :d0 :d1) -> 9 | (0<<4) | (1<<8) = #x109.
-  ;; macroexpand-1 produces (progn (defun NAME PARAMS
-  ;;   (amiga:%ffi-call BASE OFFSET REGSPEC . PARAMS))
-  ;;   (define-compiler-macro NAME ...) 'NAME) — the compiler
-  ;; matches the %FFI-CALL head exactly to emit OP_AMIGA_CALL.  We walk
-  ;; the expansion structurally rather than string-searching the printed
-  ;; form, so the test is robust to printer formatting.
+  ;; DEFCFUN installs an FFI STUB (a binding descriptor, lib/amiga/ffi.lisp)
+  ;; in the function cell; ffi::%ffi-stub-info exposes its fields.
+  ;; Register nibbles (:a1 :d0 :d1) -> 9 | (0<<4) | (1<<8) = #x109.
+  (defparameter *defcfun-test-base* nil)
+  (amiga.ffi:defcfun defcfun-test-foo *defcfun-test-base* -42 (:a1 r :d0 x :d1 y))
   (check "amiga-defcfun-regspec-encoding" 265   ; #x109
-    (let* ((expanded (macroexpand-1
-                       '(amiga.ffi:defcfun foo *base* -42
-                                           (:a1 r :d0 x :d1 y))))
-           (defun-form (second expanded))       ; (defun NAME PARAMS BODY)
-           (call-form (fourth defun-form)))     ; the %FFI-CALL form
-      (and (eq (first call-form) 'amiga:%ffi-call)
-           (fourth call-form))))                ; regspec literal
+    (getf (ffi::%ffi-stub-info 'defcfun-test-foo) :regspec))
+  (check "amiga-defcfun-stub-fields" '(:libcall -42 :unsigned 3 *defcfun-test-base*)
+    (let ((info (ffi::%ffi-stub-info #'defcfun-test-foo)))
+      (list (getf info :kind) (getf info :lvo) (getf info :result)
+            (getf info :nparams) (getf info :base))))
+  (check "amiga-defcfun-stub-is-a-function" '(t t t)
+    (list (functionp #'defcfun-test-foo)
+          (compiled-function-p #'defcfun-test-foo)
+          (typep #'defcfun-test-foo 'function)))
 
-  ;; DEFCFUN :VOID T sets bit 28 of regspec (#x10000000 = 268435456).
-  ;; (:d0 x) alone encodes to 0; with :void t it becomes #x10000000.
-  (check "amiga-defcfun-void-regspec-encoding" #x10000000
-    (let* ((expanded (macroexpand-1
-                       '(amiga.ffi:defcfun foo *base* -42 (:d0 x) :void t)))
-           (defun-form (second expanded))
-           (call-form (fourth defun-form)))
-      (and (eq (first call-form) 'amiga:%ffi-call)
-           (fourth call-form))))
+  ;; DEFCFUN :VOID T / :RESULT kinds are carried by the stub, including the
+  ;; sub-32-bit kinds that used to be Lisp post-processors.
+  (amiga.ffi:defcfun defcfun-test-void *defcfun-test-base* -42 (:d0 x) :void t)
+  (amiga.ffi:defcfun defcfun-test-bool *defcfun-test-base* -42 (:d0 x) :result :bool)
+  (amiga.ffi:defcfun defcfun-test-i16 *defcfun-test-base* -42 (:d0 x) :result :i16)
+  (check "amiga-defcfun-result-kinds" '(:void :bool :i16)
+    (list (getf (ffi::%ffi-stub-info 'defcfun-test-void) :result)
+          (getf (ffi::%ffi-stub-info 'defcfun-test-bool) :result)
+          (getf (ffi::%ffi-stub-info 'defcfun-test-i16) :result)))
 
-  ;; DEFCFUN with an empty regspec — regspec literal is 0, the defined
-  ;; function takes no parameters, and no register args follow.
-  (check "amiga-defcfun-empty-regspec" '(0 nil nil)
-    (let* ((expanded (macroexpand-1
-                       '(amiga.ffi:defcfun foo *base* -132 ())))
-           (defun-form (second expanded))
-           (params (third defun-form))          ; defun lambda list
-           (call-form (fourth defun-form)))
-      (list (fourth call-form)                  ; regspec
-            params                              ; () == NIL
-            (nthcdr 4 call-form))))             ; trailing args (none)
+  ;; DEFCFUN with an empty regspec — no register nibbles, arity 0.
+  (amiga.ffi:defcfun defcfun-test-empty *defcfun-test-base* -132 ())
+  (check "amiga-defcfun-empty-regspec" '(0 0 (ffi-stub))
+    (list (getf (ffi::%ffi-stub-info 'defcfun-test-empty) :regspec)
+          (getf (ffi::%ffi-stub-info 'defcfun-test-empty) :nparams)
+          (let ((s (prin1-to-string #'defcfun-test-empty)))
+            (and (search "#<FFI-STUB DEFCFUN-TEST-EMPTY" s) '(ffi-stub)))))
 
-  ;; DEFCFUN end-to-end via the compiled %FFI-CALL → OP_AMIGA_CALL path.
-  ;; Wrap dos.library IoErr (LVO -132, no register args) and verify it
-  ;; agrees with the runtime CALL-LIBRARY-FAST path on the same call.
+  ;; Wrong arity at a stub: the stub's own arity error, direct and via FUNCALL.
+  (check "amiga-defcfun-arity-error" '(t t)
+    (list (handler-case (progn (funcall #'defcfun-test-foo 1 2) nil)
+            (error (e) (and (search "expected 3" (format nil "~A" e)) t)))
+          (handler-case (progn (apply #'defcfun-test-empty '(1)) nil)
+            (error (e) (and (search "expected 0" (format nil "~A" e)) t)))))
+
+  ;; DEFCFUN end-to-end via the compiled stub → OP_AMIGA_CALL path, and the
+  ;; indirect FUNCALL / APPLY path through the stub's own dispatch.  Wrap
+  ;; dos.library IoErr (LVO -132, no register args) and verify it agrees
+  ;; with the runtime CALL-LIBRARY-FAST path on the same call.
   (defparameter *dos-base-for-defcfun-test* nil)
   (amiga.ffi:defcfun dos-io-err *dos-base-for-defcfun-test* -132 ())
   (check "amiga-defcfun-end-to-end" t
@@ -8869,6 +8873,8 @@
       (setq *dos-base-for-defcfun-test* lib)
       (prog1
         (= (dos-io-err)
+           (funcall #'dos-io-err)
+           (apply 'dos-io-err nil)
            (amiga:call-library-fast lib -132 0))
         (amiga:close-library lib))))
 

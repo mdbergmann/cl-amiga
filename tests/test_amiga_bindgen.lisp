@@ -77,9 +77,21 @@
       (let ((msg (format nil "~A" e)))
         (and (search "not open" msg) t)))))
 
-(defun compiler-macro-p (pkg name)
+;; A DEFCFUN binding with <= 7 register args is an FFI stub (a binding
+;; descriptor in the function cell, see lib/amiga/ffi.lisp); the >7
+;; plist path is an ordinary DEFUN.  STUB-INFO is the descriptor's plist
+;; or NIL.
+(defun stub-info (pkg name)
   (let ((s (sym pkg name)))
-    (and s (compiler-macro-function s) t)))
+    (and s (fboundp s) (ffi::%ffi-stub-info s))))
+
+(defun libcall-stub-p (pkg name &key lvo result nparams)
+  (let ((info (stub-info pkg name)))
+    (and info
+         (eq (getf info :kind) :libcall)
+         (or (null lvo) (eql (getf info :lvo) lvo))
+         (or (null result) (eq (getf info :result) result))
+         (or (null nparams) (eql (getf info :nparams) nparams)))))
 
 ;;; ----------------------------------------------------------------
 (defun fixture-checks ()
@@ -113,7 +125,12 @@
     (chk "ex-callback: function-pointer param named hook, LVO -66"
          (file-contains "example" "ex-callback *example-base* -66 (:a0 thing :a1 hook)"))
     (chk "ex-callback arity 2" (arity-ok-p (symbol-function (sym p "ex-callback")) 2))
-    (chk "compiler macro registered on ex-create" (compiler-macro-p p "ex-create"))
+    (chk "ex-create is an FFI stub: LVO -36, :pointer result, 2 args"
+         (libcall-stub-p p "ex-create" :lvo -36 :result :pointer :nparams 2))
+    (chk "ex-check stub carries the :bool result kind"
+         (libcall-stub-p p "ex-check" :lvo -42 :result :bool :nparams 2))
+    (chk "ex-count stub carries the :u16 result kind"
+         (libcall-stub-p p "ex-count" :result :u16))
     ;; varargs / alias / private are not bound
     (chk "varargs ExCreateTags not emitted" (not (sym p "ex-create-tags")))
     (chk "private ExPrivate not emitted" (not (sym p "ex-private")))
@@ -123,9 +140,10 @@
     (chk "Open shadows CL:OPEN" (and (sym p "open") (not (eq (sym p "open") 'cl:open))
                                      (fbound p "open") (external-p p "open")))
     (chk "CL:OPEN still CL's" (eq (symbol-package 'cl:open) (find-package "COMMON-LISP")))
-    ;; >7 registers -> call-library, no compiler macro
+    ;; >7 registers -> a DEFUN over call-library, not an FFI stub
     (chk "ex-big-blit defined (8 regs, plist path)" (fbound p "ex-big-blit"))
-    (chk "ex-big-blit has no compiler macro" (not (compiler-macro-p p "ex-big-blit")))
+    (chk "ex-big-blit (>7 registers) is a plain function, not a stub"
+         (and (fbound p "ex-big-blit") (not (stub-info p "ex-big-blit"))))
     (chk "ex-big-blit uses call-library with kind 3 (signed)"
          (file-contains "example" "(:a0 a :d0 x :d1 y :a1 b :d2 w :d3 h :d4 minterm :d5 mask)"))
     ;; skips
@@ -392,7 +410,7 @@
          (eql (sym-value "AMIGA.RAW.GRAPHICS" "*rastport-size*") 100))
     (chk "graphics: blt-bitmap (11 registers) via call-library"
          (and (fbound "AMIGA.RAW.GRAPHICS" "blt-bitmap")
-              (not (compiler-macro-p "AMIGA.RAW.GRAPHICS" "blt-bitmap"))))
+              (not (stub-info "AMIGA.RAW.GRAPHICS" "blt-bitmap"))))
     (chk "graphics: read-pixel ULONG -> :unsigned, write-pixel LONG -> :signed, set-a-pen :void"
          (and (file-contains "graphics" "defcfun read-pixel *graphics-base* -318 (:a1 rp :d0 x :d1 y)
     :result :unsigned")

@@ -131,6 +131,7 @@ const char *cl_type_name(CL_Obj obj)
         case TYPE_CONDVAR:  return "CONDITION-VARIABLE";
         case TYPE_FOREIGN_POINTER: return "FOREIGN-POINTER";
         case TYPE_RESTART:  return "RESTART";
+        case TYPE_FFI_STUB: return "FUNCTION";   /* a function for every CL predicate */
 #ifdef CL_WIDE_STRINGS
         case TYPE_WIDE_STRING: return "STRING";
 #endif

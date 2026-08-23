@@ -166,6 +166,10 @@ CL_Obj cl_make_pathname(CL_Obj host, CL_Obj device, CL_Obj directory,
                         CL_Obj name, CL_Obj type, CL_Obj version);
 CL_Obj cl_make_cell(CL_Obj value);
 CL_Obj cl_make_foreign_pointer(uint32_t address, uint32_t size, uint8_t flags);
+/* FFI binding descriptor (types.h CL_FfiStub).  NAME / AUX are GC-protected
+ * across the allocation. */
+CL_Obj cl_make_ffi_stub(uint8_t kind, CL_Obj name, CL_Obj aux,
+                        uint32_t a, int16_t b, uint8_t ctype);
 
 /* GC root protection (temporary, C-stack variables) */
 #ifdef DEBUG_GC

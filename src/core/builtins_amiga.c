@@ -50,6 +50,21 @@ CL_Obj cl_amiga_box_result(uint32_t result, int kind)
         if (result == 0)
             return CL_NIL;
         return cl_make_foreign_pointer(result, 0, 0);
+    /* Sub-32-bit C return types: only d0.w / d0.b are defined for a
+     * BOOL/WORD/UWORD/BYTE/UBYTE result — the upper bits are whatever the
+     * library left there, so mask before interpreting.  (These used to be
+     * Lisp post-processors around an :unsigned call; boxing them here
+     * lets DEFCFUN describe every binding as one descriptor.) */
+    case CL_AMIGA_RES_BOOL:
+        return (result & 0xFFFFu) ? CL_T : CL_NIL;
+    case CL_AMIGA_RES_U16:
+        return CL_MAKE_FIXNUM((int32_t)(result & 0xFFFFu));
+    case CL_AMIGA_RES_I16:
+        return CL_MAKE_FIXNUM((int32_t)(int16_t)(result & 0xFFFFu));
+    case CL_AMIGA_RES_U8:
+        return CL_MAKE_FIXNUM((int32_t)(result & 0xFFu));
+    case CL_AMIGA_RES_I8:
+        return CL_MAKE_FIXNUM((int32_t)(int8_t)(result & 0xFFu));
     case CL_AMIGA_RES_SIGNED: {
         int32_t sv = (int32_t)result;
         if (sv >= CL_FIXNUM_MIN && sv <= CL_FIXNUM_MAX)
@@ -213,10 +228,11 @@ static CL_Obj bi_amiga_call_library(CL_Obj *args, int nargs)
 
     if (nargs > 3 && !CL_NULL_P(args[3])) {
         if (!CL_FIXNUM_P(args[3]) || CL_FIXNUM_VAL(args[3]) < 0 ||
-            CL_FIXNUM_VAL(args[3]) > 3)
+            CL_FIXNUM_VAL(args[3]) > CL_AMIGA_RES_KIND_MAX)
             cl_error(CL_ERR_ARGS,
                      "AMIGA:CALL-LIBRARY: result-kind must be 0 (unsigned), "
-                     "1 (void), 2 (pointer) or 3 (signed)");
+                     "1 (void), 2 (pointer), 3 (signed), 4 (bool), 5 (u16), "
+                     "6 (i16), 7 (u8) or 8 (i8)");
         kind = (int)CL_FIXNUM_VAL(args[3]);
     }
 
@@ -587,6 +603,122 @@ static void amiga_defun(const char *name, CL_CFunc func, int min, int max)
 #endif /* PLATFORM_AMIGA */
 
 /* ================================================================
+ * Platform-neutral: library call through a base variable, and the
+ * DEFCFUN stub constructor.  Compiled everywhere so the bindings can be
+ * loaded, FASL'd and introspected on the host; only the final
+ * cl_amiga_ffi_call_dispatch differs per platform.
+ * ================================================================ */
+
+CL_Obj cl_amiga_call_via_base_sym(CL_Obj base_sym, int16_t offset,
+                                  uint32_t regspec, int n_args,
+                                  CL_Obj *args)
+{
+    CL_Obj base_val;
+    CL_ForeignPtr *bfp;
+
+    base_val = cl_symbol_value(base_sym);
+    if (base_val == CL_UNBOUND)
+        cl_error(CL_ERR_UNBOUND,
+                 "OP_AMIGA_CALL: unbound library base %s",
+                 cl_symbol_name(base_sym));
+    if (CL_NULL_P(base_val))
+        cl_error(CL_ERR_GENERAL,
+                 "OP_AMIGA_CALL: library base %s is NIL — the library "
+                 "is not open (bindings only open it on AmigaOS/MorphOS)",
+                 cl_symbol_name(base_sym));
+    if (!CL_FOREIGN_POINTER_P(base_val))
+        cl_error(CL_ERR_TYPE,
+                 "OP_AMIGA_CALL: %s is not a foreign pointer",
+                 cl_symbol_name(base_sym));
+    bfp = (CL_ForeignPtr *)CL_OBJ_TO_PTR(base_val);
+    return cl_amiga_ffi_call_dispatch(bfp->address, offset, regspec,
+                                      n_args, args);
+}
+
+/* (amiga:%make-libcall-stub name base-sym lvo reg-nibbles result-kind nparams)
+ *   → FFI stub
+ *
+ * The object AMIGA.FFI:DEFCFUN installs in NAME's function cell (types.h
+ * CL_FfiStub, kind CL_STUB_LIBCALL).  REG-NIBBLES is the 28-bit register
+ * layout (one nibble per value arg, low to high, D0..D7=0..7, A0..A4=8..12);
+ * RESULT-KIND one of CL_AMIGA_RES_* (0..8); NPARAMS the arity (0..7).
+ * The two are packed here into the stub's u32 regspec, which is how the
+ * sub-32-bit result kinds (bits 28-31) get past the fixnum range of a
+ * Lisp-side regspec literal. */
+static CL_Obj make_libcall_stub_checked(const char *who, CL_Obj *args)
+{
+    CL_Obj name = args[0], base_sym = args[1];
+    int32_t lvo, nibbles, kind, nparams;
+    int i;
+
+    if (!CL_SYMBOL_P(name))
+        cl_error(CL_ERR_TYPE, "%s: NAME must be a symbol", who);
+    if (!CL_SYMBOL_P(base_sym))
+        cl_error(CL_ERR_TYPE,
+                 "%s: %s: library base must be a symbol "
+                 "(the special variable holding the open library base)",
+                 who, cl_symbol_name(name));
+    if (!CL_FIXNUM_P(args[2]) || CL_FIXNUM_VAL(args[2]) > 0 ||
+        CL_FIXNUM_VAL(args[2]) < -32768)
+        cl_error(CL_ERR_ARGS,
+                 "%s: %s: LVO offset must be a negative integer >= -32768",
+                 who, cl_symbol_name(name));
+    lvo = CL_FIXNUM_VAL(args[2]);
+    if (!CL_FIXNUM_P(args[3]) || CL_FIXNUM_VAL(args[3]) < 0 ||
+        CL_FIXNUM_VAL(args[3]) > 0x0FFFFFFF)
+        cl_error(CL_ERR_ARGS,
+                 "%s: %s: register spec must be a fixnum of up to 7 "
+                 "register nibbles", who, cl_symbol_name(name));
+    nibbles = CL_FIXNUM_VAL(args[3]);
+    if (!CL_FIXNUM_P(args[4]) || CL_FIXNUM_VAL(args[4]) < 0 ||
+        CL_FIXNUM_VAL(args[4]) > CL_AMIGA_RES_KIND_MAX)
+        cl_error(CL_ERR_ARGS, "%s: %s: result kind must be 0..%d",
+                 who, cl_symbol_name(name), CL_AMIGA_RES_KIND_MAX);
+    kind = CL_FIXNUM_VAL(args[4]);
+    if (!CL_FIXNUM_P(args[5]) || CL_FIXNUM_VAL(args[5]) < 0 ||
+        CL_FIXNUM_VAL(args[5]) > 7)
+        cl_error(CL_ERR_ARGS,
+                 "%s: %s: argument count must be 0..7 "
+                 "(more registers go through AMIGA:CALL-LIBRARY)",
+                 who, cl_symbol_name(name));
+    nparams = CL_FIXNUM_VAL(args[5]);
+    /* Every used nibble must name a register the dispatcher loads
+     * (D0-D7/A0-A4 = 0..12; 13 = A5 is its scratch register). */
+    for (i = 0; i < nparams; i++) {
+        int reg = (nibbles >> (i * 4)) & 0xF;
+        if (reg > 12)
+            cl_error(CL_ERR_ARGS,
+                     "%s: %s: register index %d for argument %d is not one "
+                     "of D0-D7/A0-A4", who, cl_symbol_name(name), reg, i);
+    }
+    return cl_make_ffi_stub(CL_STUB_LIBCALL, name, base_sym,
+                            CL_AMIGA_MAKE_REGSPEC((uint32_t)nibbles, kind),
+                            (int16_t)lvo, (uint8_t)nparams);
+}
+
+static CL_Obj bi_amiga_make_libcall_stub(CL_Obj *args, int nargs)
+{
+    (void)nargs;
+    return make_libcall_stub_checked("%MAKE-LIBCALL-STUB", args);
+}
+
+/* (amiga::%defcfun name base-sym lvo reg-nibbles result-kind nparams) → name
+ *
+ * What AMIGA.FFI:DEFCFUN expands to: build the stub (same validation as
+ * %MAKE-LIBCALL-STUB) and install it in NAME's function cell.  One
+ * builtin call per binding keeps the generated modules' FASL units small
+ * — the form names only NAME, the base variable and this function. */
+static CL_Obj bi_amiga_defcfun(CL_Obj *args, int nargs)
+{
+    CL_Obj stub, name;
+    (void)nargs;
+    stub = make_libcall_stub_checked("DEFCFUN", args);
+    name = args[0];   /* args are VM-stack slots: forwarded across the alloc */
+    ((CL_Symbol *)CL_OBJ_TO_PTR(name))->function = stub;
+    return name;
+}
+
+/* ================================================================
  * Init
  * ================================================================ */
 
@@ -646,10 +778,18 @@ void cl_builtins_amiga_init(void)
     amiga_defun("AREXX-REPLY",        bi_amiga_arexx_reply,        1,  2);
     amiga_defun("AREXX-SEND",         bi_amiga_arexx_send,         2,  3);
 
+    /* DEFCFUN's stub constructor (internal, not exported: AMIGA.FFI spells
+     * it amiga::%make-libcall-stub; user code shouldn't write it). */
+    cl_register_builtin("%MAKE-LIBCALL-STUB", bi_amiga_make_libcall_stub,
+                        6, 6, cl_package_amiga);
+    cl_register_builtin("%DEFCFUN", bi_amiga_defcfun, 6, 6, cl_package_amiga);
+
     /* Intern AMIGA::%FFI-CALL — compile_call matches against this exact
-     * symbol object to emit OP_AMIGA_CALL.  Exported so defcfun (which
-     * lives in AMIGA.FFI) can emit it as `amiga:%ffi-call` without
-     * package gymnastics; user code shouldn't write it directly. */
+     * symbol object to emit OP_AMIGA_CALL.  Exported so Lisp code can
+     * write a bare `(amiga:%ffi-call base-sym lvo regspec args...)`
+     * without package gymnastics (the Amiga test suite does); DEFCFUN
+     * itself no longer emits it — its stubs reach OP_AMIGA_CALL through
+     * compile_call's stub hook. */
     cl_amiga_ffi_call_sym = cl_intern_in("%FFI-CALL", 9, cl_package_amiga);
     cl_export_symbol(cl_amiga_ffi_call_sym, cl_package_amiga);
     cl_gc_register_root(&cl_amiga_ffi_call_sym);

@@ -159,7 +159,10 @@ find lib/amiga -name '*.lisp' | while read -r f; do
     cp "$f" "$STAGE/$f"
 done
 echo "--- compile-file lib/amiga/** -> $REL/lib/amiga/**/*.fasl ---"
-sh scripts/compile-lib-fasls.sh -o "$STAGE" -b "$HOST_BIN" \
+# --no-docstrings: the DEFCFUN bindings ship without their C-prototype
+# docstrings (~16 KB of heap per raw OS module on the target; the .lisp
+# sources next to them keep the prototypes).
+sh scripts/compile-lib-fasls.sh -o "$STAGE" -b "$HOST_BIN" --no-docstrings \
     || { echo "ERROR: lib/amiga FASLs not produced" >&2; exit 1; }
 
 # docs: package API reference only (no benchmarks/screenshots)

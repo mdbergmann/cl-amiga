@@ -1271,7 +1271,7 @@ stores them: `(require "amiga/raw/gadgets/button")` →
 
 What a module contains, all derived mechanically from the SDK files:
 
-- **Functions** — `amiga.ffi:defcfun` wrappers for every public library
+- **Functions** — `amiga.ffi:defcfun` bindings for every public library
   function (LVO, registers and arity from the NDK's `*_lib.sfd`), with the
   d0 result converted from the C return type: `struct X *`/`APTR`/`STRPTR`
   come back as a foreign pointer (`NIL` for NULL), `LONG` is signed,
@@ -1353,7 +1353,18 @@ feels; `make fasl-amiga` precompiles all of `lib/amiga/` on the host (see
 
 Underneath the generated modules sits `amiga.ffi:defcfun` — a register
 spec plus an LVO, compiled to a dedicated bytecode op — and
-`ffi:defcstruct`; both are available for hand-written bindings:
+`ffi:defcstruct`; both are available for hand-written bindings.  Neither
+creates a wrapper function: the name's function cell receives a small
+*FFI stub* (a 20-byte binding descriptor the runtime calls directly — a
+function for every purpose: `#'`, `funcall`, `apply`, `trace`,
+`describe`, `ext:function-arglist`), which is what keeps a module with
+thousands of bindings affordable on an 8 MB machine.  A direct call to a
+`defcfun` name compiles to the library-call opcode in the caller;
+`(ffi::%ffi-stub-info #'name)` shows a stub's fields.  The generated
+modules' `.lisp` sources carry the C prototype of every function as its
+docstring; the FASLs built by `make fasl-amiga` and the binary release
+omit them (`amiga.ffi:*defcfun-docstrings*`, `scripts/compile-lib-fasls.sh
+--no-docstrings`) to save heap on the target.
 
 ```lisp
 (require "amiga/ffi")
@@ -1421,7 +1432,7 @@ Measured on the high-end FS-UAE config (A4000 / 68040 / Picasso96). The A/B micr
 | `arith-chain` | chained binary ops             |   300 ms |  40 ms |   7.5×  |
 | `call-loop`   | `OP_CALL` inside the loop body |   340 ms | 240 ms |  1.42×  |
 
-Compute-bound code sees the largest wins; call-heavy code is bounded by the same per-call helper round-trip the interpreter pays. On the real-world `examples/amiga/gfx/bouncing-lines.lisp` demo (FFI-dominated — five lines drawn through `graphics.library` each frame), the JIT now reaches **~615 FPS** versus **~500 FPS** on the bytecode VM. That lead only materialised once native `amiga-call` dispatch and `defcfun` compiler-macro inlining landed (467 → 525 → 615 FPS as those merged), since the frame time is mostly FFI calls rather than arithmetic. The remaining gap to compiled ACE BASIC (~1900 FPS through the same ROM graphics calls) is the structural cost of a dynamic, GC'd, tagged-value language — per-argument unboxing, dispatch and symbol lookup per call, GC safepoints — not codegen.
+Compute-bound code sees the largest wins; call-heavy code is bounded by the same per-call helper round-trip the interpreter pays. On the real-world `examples/amiga/gfx/bouncing-lines.lisp` demo (FFI-dominated — five lines drawn through `graphics.library` each frame), the JIT now reaches **~615 FPS** versus **~500 FPS** on the bytecode VM. That lead only materialised once native `amiga-call` dispatch and `defcfun` call inlining landed (467 → 525 → 615 FPS as those merged), since the frame time is mostly FFI calls rather than arithmetic. The remaining gap to compiled ACE BASIC (~1900 FPS through the same ROM graphics calls) is the structural cost of a dynamic, GC'd, tagged-value language — per-argument unboxing, dispatch and symbol lookup per call, GC safepoints — not codegen.
 
 The Amiga test suite passes on the JIT config; per-opcode JIT coverage (counter-bump, value-correctness, and unwind-recovery assertions) lives in `tests/amiga/test-jit.lisp`.
 

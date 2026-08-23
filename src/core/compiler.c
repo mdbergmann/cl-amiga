@@ -3873,24 +3873,10 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             compile_expr(c, let_form);
             CL_GC_UNPROTECT(12); /* place_arg ind_arg default_arg gensym_i gensym_d gensym_v sub_bindings inner_place helper_call setf_place_form let_bindings let_form */
         } else {
-            /* Check defsetf table */
-            CL_Obj updater = CL_NIL;
-            int found = 0;
-            {
-                CL_Obj entry;
-                cl_tables_rdlock();
-                entry = setf_table;
-                while (!CL_NULL_P(entry)) {
-                    CL_Obj pair = cl_car(entry);
-                    if (cl_car(pair) == head) {
-                        updater = cl_cdr(pair);
-                        found = 1;
-                        break;
-                    }
-                    entry = cl_cdr(entry);
-                }
-                cl_tables_rwunlock();
-            }
+            /* Check defsetf table (hash-indexed; an updater is always a
+             * symbol, so NIL means "no defsetf for HEAD") */
+            CL_Obj updater = cl_get_setf_updater(head);
+            int found = !CL_NULL_P(updater);
             if (found) {
                 /* Build (UPDATER place-args... VAL) and compile it as an
                  * ordinary call instead of hand-emitting OP_FLOAD/OP_CALL:
@@ -4245,6 +4231,35 @@ static int proper_list_length(CL_Obj list)
     return n;
 }
 
+/* Emit an AmigaOS library call: compile the N_VALUE_ARGS forms in REST in
+ * order (each pushed onto the VM stack), then OP_AMIGA_CALL with the
+ * library-base symbol as a constant, the LVO offset, the packed regspec
+ * (register nibbles bits 0-27, result kind bits 28-31) and the arg count.
+ * Shared by the AMIGA:%FFI-CALL special form and the DEFCFUN stub inline
+ * path below.  The JIT recognises the opcode and calls the trampoline
+ * natively. */
+static void emit_amiga_call(CL_Compiler *c, CL_Obj base_sym, int16_t lvo,
+                            uint32_t regspec, CL_Obj rest, int n_value_args)
+{
+    int sym_idx = cl_add_constant(c, base_sym);
+
+    /* Push value args in order.  Protect the cursor: compile_expr can
+     * compact, relocating the arg list cells (same class as the
+     * compile_let body-cursor bug). */
+    CL_GC_PROTECT(rest);
+    while (!CL_NULL_P(rest)) {
+        compile_expr(c, cl_car(rest));
+        rest = cl_cdr(rest);
+    }
+    CL_GC_UNPROTECT(1);
+
+    cl_emit(c, OP_AMIGA_CALL);
+    cl_emit_u16(c, (uint16_t)sym_idx);
+    cl_emit_i16(c, lvo);
+    cl_emit_i32(c, (int32_t)regspec);
+    cl_emit(c, (uint8_t)n_value_args);
+}
+
 static void compile_call(CL_Compiler *c, CL_Obj form)
 {
     CL_Obj func = cl_car(form);
@@ -4374,21 +4389,91 @@ static void compile_call(CL_Compiler *c, CL_Obj form)
         }
     }
 
-    /* AmigaOS FFI fast-path: (amiga:%ffi-call base-sym offset regspec args...)
-     * Form invariant (defcfun is the only emitter): arg 0 is a symbol literal
-     * naming the library-base var, arg 1 is the LVO offset (fixnum), arg 2 is
-     * the packed regspec (fixnum; 7 register nibbles in bits 0-27, result
-     * kind in bits 28-29 — CL_AMIGA_RES_* in builtins.h).  The rest are regular
-     * expressions, evaluated and pushed in order, then OP_AMIGA_CALL pops
-     * them and trampolines.  Skips the OP_FLOAD + OP_CALL dispatch and the
-     * call_builtin marshalling for every library call. */
+    /* FFI:DEFCSTRUCT's bulk installer (ffi::%define-cstruct-accessors
+     * '(entries)): register the accessor -> %SET-accessor DEFSETF pairs
+     * NOW, at compile time, before compiling the call itself — the
+     * per-field DEFSETF forms this call replaced had that immediate side
+     * effect wherever they were compiled (top level or not), and code
+     * relies on it: (progn (defcstruct pt (x :u16 0)) (setf (pt-x p) 1))
+     * compiled as ONE form must resolve PT-X's updater while the SETF is
+     * compiled.  Only a literal quoted list is inspected; anything else is
+     * just a call.  The registrar allocates (intern, cons): root FORM and
+     * re-derive FUNC afterwards, like the compiler-macro path above. */
+    if (CL_SYMBOL_P(func) && cl_ffi_define_cstruct_accessors_sym != CL_NIL &&
+        func == cl_ffi_define_cstruct_accessors_sym &&
+        cl_env_lookup_local_fun(c->env, func) < 0 &&
+        (!c->env || cl_env_resolve_fun_upvalue(c->env, func) < 0) &&
+        CL_CONS_P(args) && CL_NULL_P(cl_cdr(args)))
+    {
+        CL_Obj q = cl_car(args);
+        if (CL_CONS_P(q) && cl_car(q) == SYM_QUOTE &&
+            CL_CONS_P(cl_cdr(q)) && CL_NULL_P(cl_cdr(cl_cdr(q)))) {
+            CL_GC_PROTECT(form);
+            cl_ffi_cstruct_register_setfs(cl_car(cl_cdr(q)));
+            func = cl_car(form);
+            CL_GC_UNPROTECT(1);
+        }
+        /* fall through: ordinary call emission */
+    }
+
+    /* DEFCFUN stub inline: a direct call to a symbol whose GLOBAL function
+     * cell holds a CL_STUB_LIBCALL descriptor (what AMIGA.FFI:DEFCFUN
+     * installs — types.h CL_FfiStub) compiles to a bare OP_AMIGA_CALL in
+     * the caller: no FLOAD, no OP_CALL dispatch, no wrapper frame; the JIT
+     * turns the opcode into a native trampoline call.  This is what the
+     * per-function compiler macros DEFCFUN used to register did (one alist
+     * entry per binding, scanned for every call the compiler saw); the
+     * stub IS the definition, so the compiler reads it directly.
+     *
+     * Same scoping rules as a compiler macro: skipped when the name is
+     * lexically shadowed (flet/labels, an upvalue) or declared notinline.
+     * Same semantics too: the call site bakes in what the global
+     * definition was at compile time — a later redefinition of the name
+     * does not reach already-compiled callers (documented for the
+     * bindings).  An arity mismatch declines, so the runtime arity error
+     * (cl_ffi_stub_call) is the one the user sees, not a compile-time
+     * surprise.  Field stubs (DEFCSTRUCT accessors) are NOT inlined: the
+     * plain FLOAD + OP_CALL already reaches cl_ffi_stub_call with no
+     * wrapper frame, which is as cheap as an inlined builtin call. */
+    if (CL_SYMBOL_P(func) &&
+        !cl_compiler_notinline_p(c, func) &&
+        cl_env_lookup_local_fun(c->env, func) < 0 &&
+        (!c->env || cl_env_resolve_fun_upvalue(c->env, func) < 0))
+    {
+        CL_Obj fn = ((CL_Symbol *)CL_OBJ_TO_PTR(func))->function;
+        if (CL_FFI_STUB_P(fn)) {
+            CL_FfiStub *fs = (CL_FfiStub *)CL_OBJ_TO_PTR(fn);
+            if (fs->kind == CL_STUB_LIBCALL &&
+                proper_list_length(args) == (int)fs->ctype) {
+                /* copy the fields out first — emit_amiga_call compiles
+                 * argument forms, which can compact and move the stub */
+                CL_Obj base_sym = fs->aux;
+                int16_t lvo = fs->b;
+                uint32_t regspec = fs->a;
+                int n = (int)fs->ctype;
+                emit_amiga_call(c, base_sym, lvo, regspec, args, n);
+                CL_GC_UNPROTECT(1);  /* args */
+                c->in_tail = saved_tail;
+                return;
+            }
+        }
+    }
+
+    /* AmigaOS FFI special form: (amiga:%ffi-call base-sym offset regspec args...)
+     * Form invariant: arg 0 is a symbol literal naming the library-base var,
+     * arg 1 is the LVO offset (fixnum), arg 2 is the packed regspec (fixnum;
+     * 7 register nibbles in bits 0-27, result kind in bits 28-29 — only
+     * kinds 0-3 fit a Lisp fixnum; DEFCFUN's stubs carry the wider kinds).
+     * The rest are regular expressions, evaluated and pushed in order, then
+     * OP_AMIGA_CALL pops them and trampolines.  Skips the OP_FLOAD + OP_CALL
+     * dispatch and the call_builtin marshalling for every library call. */
     if (CL_SYMBOL_P(func) && cl_amiga_ffi_call_sym != CL_NIL &&
         func == cl_amiga_ffi_call_sym &&
         cl_env_lookup_local_fun(c->env, func) < 0 &&
         (!c->env || cl_env_resolve_fun_upvalue(c->env, func) < 0))
     {
         CL_Obj base_sym, offset_obj, regspec_obj, rest;
-        int n_value_args, sym_idx;
+        int n_value_args;
         int16_t lvo_offset;
         uint32_t regspec_val;
 
@@ -4418,24 +4503,9 @@ static void compile_call(CL_Compiler *c, CL_Obj form)
                      "AMIGA:%%FFI-CALL: too many register args (max 7), got %d",
                      n_value_args);
 
-        sym_idx = cl_add_constant(c, base_sym);
+        emit_amiga_call(c, base_sym, lvo_offset, regspec_val, rest, n_value_args);
 
-        /* Push value args in order.  Protect the cursor: compile_expr can
-         * compact, relocating the arg list cells (same class as the
-         * compile_let body-cursor bug). */
-        CL_GC_PROTECT(rest);
-        while (!CL_NULL_P(rest)) {
-            compile_expr(c, cl_car(rest));
-            rest = cl_cdr(rest);
-        }
-
-        cl_emit(c, OP_AMIGA_CALL);
-        cl_emit_u16(c, (uint16_t)sym_idx);
-        cl_emit_i16(c, lvo_offset);
-        cl_emit_i32(c, (int32_t)regspec_val);
-        cl_emit(c, (uint8_t)n_value_args);
-
-        CL_GC_UNPROTECT(2);  /* rest, args */
+        CL_GC_UNPROTECT(1);  /* args */
         c->in_tail = saved_tail;
         return;
     }
@@ -5341,28 +5411,46 @@ CL_Obj cl_get_macro(CL_Obj name)
  * compiler treats it as "decline" and proceeds with the normal call.
  * Otherwise the returned form replaces the call (re-compiled in place).
  *
- * Storage mirrors macro_table — prepend-only alist, snapshot-and-walk
- * lookup, GC-marked from mem.c.  defstruct uses these to inline
- * accessor wrappers like (line-sx l) → (clamiga::%struct-ref l 0)
- * which then trips the OP_STRUCT_REF compiler hook. */
+ * Storage mirrors macro_table — prepend-only alist, GC-marked from
+ * mem.c — but hash-indexed (CL_AlistIndex, compiler.h): compile_call
+ * probes this table for EVERY call form it compiles, so with a few
+ * hundred registered expanders (defstruct accessors, the generated OS
+ * bindings used to add ~550) a linear walk taxed the compilation of
+ * every unrelated call site.  defstruct uses these to inline accessor
+ * wrappers like (line-sx l) → (clamiga::%struct-ref l 0) which then
+ * trips the OP_STRUCT_REF compiler hook. */
+static CL_AlistIndex cmacro_index = { &compiler_macro_table, NULL, 0, 0, 0 };
+
 void cl_register_compiler_macro(CL_Obj name, CL_Obj expander)
 {
-    cl_table_prepend_locked(&compiler_macro_table, cl_cons(name, expander));
+    cl_alist_index_prepend(&cmacro_index, cl_cons(name, expander));
 }
 
 CL_Obj cl_get_compiler_macro(CL_Obj name)
 {
-    CL_Obj list;
-    cl_tables_rdlock();
-    list = compiler_macro_table;
-    cl_tables_rwunlock();
-    while (!CL_NULL_P(list)) {
-        CL_Obj pair = cl_car(list);
-        if (cl_car(pair) == name)
-            return cl_cdr(pair);
-        list = cl_cdr(list);
-    }
-    return CL_NIL;
+    CL_Obj pair = cl_alist_index_find(&cmacro_index, name);
+    return CL_NULL_P(pair) ? CL_NIL : cl_cdr(pair);
+}
+
+/* --- DEFSETF table: accessor -> updater function name ---
+ *
+ * Same shape and same reason: every (setf (f ...) v) the compiler sees
+ * probes this table (compile_setf) — one entry per defsetf, i.e. per
+ * struct field of every FFI:DEFCSTRUCT (~1550 for the four common OS
+ * binding modules) — so it is hash-indexed too.  Registered at compile
+ * time by compile_defsetf and at load time by OP_DEFSETF; read by
+ * compile_setf and %GET-DEFSETF-SETTER. */
+static CL_AlistIndex setf_index = { &setf_table, NULL, 0, 0, 0 };
+
+void cl_register_setf_updater(CL_Obj accessor, CL_Obj updater)
+{
+    cl_alist_index_prepend(&setf_index, cl_cons(accessor, updater));
+}
+
+CL_Obj cl_get_setf_updater(CL_Obj accessor)
+{
+    CL_Obj pair = cl_alist_index_find(&setf_index, accessor);
+    return CL_NULL_P(pair) ? CL_NIL : cl_cdr(pair);
 }
 
 /* --- Lexical notinline tracking (CLHS 3.2.2.1.3) --- */
@@ -5398,11 +5486,14 @@ int cl_compiler_notinline_p(CL_Compiler *c, CL_Obj func)
  * TYPEP O(deftypes) (see CL_AlistIndex in compiler.h). */
 static CL_AlistIndex type_index = { &type_table, NULL, 0, 0, 0 };
 
-/* Compaction moved the index's key symbols and entry conses — mark it
- * stale (called from the compaction update phase, world stopped). */
-void cl_type_index_gc_invalidate(void)
+/* Compaction moved the indexes' key symbols and entry conses — mark all
+ * three compiler-table indexes stale (called from the compaction update
+ * phase, world stopped). */
+void cl_compiler_indexes_gc_invalidate(void)
 {
     cl_alist_index_invalidate(&type_index);
+    cl_alist_index_invalidate(&cmacro_index);
+    cl_alist_index_invalidate(&setf_index);
 }
 
 void cl_register_type(CL_Obj name, CL_Obj expander)
@@ -5996,6 +6087,8 @@ void cl_compiler_init(void)
     setf_table = CL_NIL;
     type_table = CL_NIL;
     cl_alist_index_reset(&type_index);
+    cl_alist_index_reset(&setf_index);
+    cl_alist_index_reset(&cmacro_index);
     compiler_macro_table = CL_NIL;
     /* These two were missing from the reset: after a shutdown/re-init
      * cycle (test harnesses) they still hold PREVIOUS-arena offsets, and

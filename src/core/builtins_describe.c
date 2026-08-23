@@ -271,6 +271,90 @@ static void describe_function(CL_Obj obj, CL_Obj stream)
     CL_GC_UNPROTECT(2);
 }
 
+/* FFI binding descriptor (types.h CL_FfiStub): print what it binds.
+ * Fields are copied out before the first write (the stream writes can
+ * allocate and move the stub). */
+static void describe_ffi_stub(CL_Obj obj, CL_Obj stream)
+{
+    static const char *const ct_names[CL_STUB_CT_MAX + 1] = {
+        ":U8", ":I8", ":U16", ":I16", ":U32", ":I32",
+        ":POINTER", ":FPTR", ":SINGLE", ":DOUBLE" };
+    static const char *const res_names[CL_AMIGA_RES_KIND_MAX + 1] = {
+        ":UNSIGNED", ":VOID", ":POINTER", ":SIGNED", ":BOOL",
+        ":U16", ":I16", ":U8", ":I8" };
+    CL_FfiStub *fs = (CL_FfiStub *)CL_OBJ_TO_PTR(obj);
+    CL_Obj fname = fs->name, aux = fs->aux;
+    uint32_t a = fs->a;
+    int16_t b = fs->b;
+    uint8_t kind = fs->kind, ctype = fs->ctype;
+    char buf[96];
+    int i;
+
+    CL_GC_PROTECT(stream);
+    CL_GC_PROTECT(fname);
+    CL_GC_PROTECT(aux);
+
+    write_obj(stream, obj);
+    write_line(stream, " is a FUNCTION");
+    write_line(stream, "  Type: FFI stub (binding descriptor)");
+    write_str(stream, "  Name: ");
+    write_obj(stream, fname);
+    write_nl(stream);
+
+    if (kind == CL_STUB_LIBCALL) {
+        int rk = CL_AMIGA_RES_KIND(a);
+        write_line(stream, "  Kind: AmigaOS library call");
+        write_str(stream, "  Library base: ");
+        write_obj(stream, aux);
+        write_nl(stream);
+        snprintf(buf, sizeof(buf), "  LVO: %d", (int)b);
+        write_line(stream, buf);
+        snprintf(buf, sizeof(buf), "  Arguments: %u (registers:", (unsigned)ctype);
+        write_str(stream, buf);
+        for (i = 0; i < (int)ctype && i < 7; i++) {
+            int reg = (int)((a >> (i * 4)) & 0xF);
+            snprintf(buf, sizeof(buf), " %c%d", reg < 8 ? 'D' : 'A',
+                     reg < 8 ? reg : reg - 8);
+            write_str(stream, buf);
+        }
+        write_line(stream, ")");
+        snprintf(buf, sizeof(buf), "  Result: %s",
+                 rk <= CL_AMIGA_RES_KIND_MAX ? res_names[rk] : "?");
+        write_line(stream, buf);
+    } else {
+        const char *ct = ctype <= CL_STUB_CT_MAX ? ct_names[ctype] : "?";
+        switch (kind) {
+        case CL_STUB_PEEK:
+            snprintf(buf, sizeof(buf), "  Kind: struct field reader, %s at offset %u",
+                     ct, (unsigned)a);
+            break;
+        case CL_STUB_POKE:
+            snprintf(buf, sizeof(buf), "  Kind: struct field writer, %s at offset %u",
+                     ct, (unsigned)a);
+            break;
+        case CL_STUB_PEEK_IDX:
+            snprintf(buf, sizeof(buf),
+                     "  Kind: array field reader, %s at offset %u, %d-byte elements, count %u",
+                     ct, (unsigned)(a & 0xFFFFu), (int)b, (unsigned)(a >> 16));
+            break;
+        case CL_STUB_POKE_IDX:
+            snprintf(buf, sizeof(buf),
+                     "  Kind: array field writer, %s at offset %u, %d-byte elements, count %u",
+                     ct, (unsigned)(a & 0xFFFFu), (int)b, (unsigned)(a >> 16));
+            break;
+        case CL_STUB_FIELD_PTR:
+            snprintf(buf, sizeof(buf), "  Kind: embedded struct pointer at offset %u",
+                     (unsigned)a);
+            break;
+        default:
+            snprintf(buf, sizeof(buf), "  Kind: ? (%u)", (unsigned)kind);
+            break;
+        }
+        write_line(stream, buf);
+    }
+    CL_GC_UNPROTECT(3);
+}
+
 static void describe_closure(CL_Obj obj, CL_Obj stream)
 {
     CL_Closure *cl = (CL_Closure *)CL_OBJ_TO_PTR(obj);
@@ -685,6 +769,7 @@ void cl_describe_to_stream(CL_Obj obj, CL_Obj stream)
     if (CL_CONS_P(obj))         { describe_cons(obj, stream);         return; }
     if (CL_STRING_P(obj))       { describe_string(obj, stream);       return; }
     if (CL_FUNCTION_P(obj))     { describe_function(obj, stream);     return; }
+    if (CL_FFI_STUB_P(obj))     { describe_ffi_stub(obj, stream);     return; }
     if (CL_CLOSURE_P(obj))      { describe_closure(obj, stream);      return; }
     if (CL_VECTOR_P(obj))       { describe_vector(obj, stream);       return; }
     if (CL_PACKAGE_P(obj))      { describe_package(obj, stream);      return; }

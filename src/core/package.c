@@ -117,7 +117,19 @@ static CL_Obj find_own_symbol(const char *name, uint32_t len, CL_Obj package)
 static int exported_p_nolock(CL_Obj sym, CL_Obj package)
 {
     CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
-    CL_Obj list = pkg->exported_symbols;
+    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    CL_Obj list;
+    /* O(1) answers for the two dominant cases — see CL_SYM_EXPORTED_HOME
+     * in types.h.  (1) PACKAGE is the symbol's home: the exact per-home
+     * flag IS the list membership.  (2) No package at all exports the
+     * symbol (the hint flag is clear): the list cannot contain it.  Only
+     * "exported from a non-home package" (import + export, or exporting
+     * an inherited symbol) still walks the list. */
+    if (s->package == package)
+        return (s->flags & CL_SYM_EXPORTED_HOME) != 0;
+    if (!(s->flags & CL_SYM_EXPORTED))
+        return 0;
+    list = pkg->exported_symbols;
     while (!CL_NULL_P(list)) {
         if (cl_car(list) == sym) return 1;
         list = cl_cdr(list);
@@ -255,8 +267,12 @@ CL_Obj cl_make_package(const char *name)
  * call while holding cl_package_rwlock — see package_link_symbol_cell. */
 void cl_package_add_symbol_cell(CL_Obj package, CL_Obj symbol, CL_Obj cell)
 {
+    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(symbol);
     package_link_symbol_cell(package, symbol, cell);
-    ((CL_Symbol *)CL_OBJ_TO_PTR(symbol))->package = package;
+    s->package = package;
+    /* A new home: the symbol is not on THIS package's export list yet
+     * (the per-home flag must track the list exactly, see types.h). */
+    s->flags &= ~CL_SYM_EXPORTED_HOME;
 }
 
 /* Allocating convenience wrapper — must NOT be called while holding
@@ -447,9 +463,14 @@ void cl_export_symbol(CL_Obj sym, CL_Obj package)
     /* Keep the legacy global flag in sync (used by printer / describe
      * fast paths and by FASL loader as a "any package exports this"
      * heuristic).  Source of truth for find-symbol is the per-package
-     * list above. */
-    if (!conflict)
+     * list above — mirrored EXACTLY into CL_SYM_EXPORTED_HOME when
+     * PACKAGE is the symbol's home, so exported_p_nolock can answer the
+     * home case without walking the list. */
+    if (!conflict) {
         s->flags |= CL_SYM_EXPORTED;
+        if (s->package == package)
+            s->flags |= CL_SYM_EXPORTED_HOME;
+    }
     pkg_unlock();
     if (conflict)
         cl_error(CL_ERR_GENERAL,
@@ -492,7 +513,7 @@ void cl_unexport_symbol(CL_Obj sym, CL_Obj package)
     pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
     pkg_list_remove_eq(&pkg->exported_symbols, sym);
     if (s->package == package)
-        s->flags &= ~CL_SYM_EXPORTED;
+        s->flags &= ~(CL_SYM_EXPORTED | CL_SYM_EXPORTED_HOME);
     pkg_unlock();
 }
 
@@ -759,8 +780,12 @@ static void export_symbols_where(CL_Obj package, int (*pred)(CL_Obj sym))
             sym = cl_car(list);
             s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
             if (pred == NULL || pred(sym)) {
-                if (!(s->flags & CL_SYM_EXPORTED))
-                    s->flags |= CL_SYM_EXPORTED;
+                s->flags |= CL_SYM_EXPORTED;
+                /* Every symbol in PACKAGE's own table that passes PRED
+                 * ends up on the export list (already there, or pushed
+                 * below) — so the per-home flag is exact here too. */
+                if (s->package == package)
+                    s->flags |= CL_SYM_EXPORTED_HOME;
                 if (!(s->flags & CL_SYM_LISTED)) {
                     CL_Obj cell;
                     CL_GC_PROTECT(sym);

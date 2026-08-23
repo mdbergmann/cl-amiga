@@ -3,12 +3,18 @@
 # Amiga/MorphOS binaries (which load them instead of compiling the source on
 # a 68020 at first REQUIRE).
 #
-#   scripts/compile-lib-fasls.sh [-o OUTROOT] [-b CLAMIGA] [FILE...]
+#   scripts/compile-lib-fasls.sh [-o OUTROOT] [-b CLAMIGA] [-D] [FILE...]
 #
 #   -o OUTROOT   where lib/<module>.fasl lands (default: the repo root, i.e.
 #                next to the sources — what `make fasl-amiga` does; the
 #                binary release points it at its staging directory)
 #   -b CLAMIGA   host binary (default build/host/clamiga)
+#   -D, --no-docstrings
+#                bind AMIGA.FFI:*DEFCFUN-DOCSTRINGS* to NIL for the run, so
+#                the DEFCFUN bindings in the FASLs carry no docstrings (the C
+#                prototypes stay in the .lisp sources).  ~16 KB of heap per
+#                raw OS module on the target; `make fasl-amiga` and the binary
+#                release pass it, a host-only build may leave them in.
 #   FILE...      sources relative to the repo root (default: every .lisp
 #                under lib/amiga/, the ReAction/raw-bindings tree)
 #
@@ -34,12 +40,14 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUTROOT="$ROOT"
 CLAMIGA="$ROOT/build/host/clamiga"
 HEAP="${LIBFASL_HEAP:-256M}"
+DOCSTRINGS=1
 
 while [ $# -gt 0 ]; do
     case "$1" in
         -o) OUTROOT="$2"; shift 2 ;;
         -b) CLAMIGA="$2"; shift 2 ;;
-        -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+        -D|--no-docstrings) DOCSTRINGS=0; shift ;;
+        -h|--help) sed -n '2,36p' "$0"; exit 0 ;;
         --) shift; break ;;
         -*) echo "compile-lib-fasls: unknown option $1" >&2; exit 2 ;;
         *) break ;;
@@ -64,6 +72,19 @@ LOG="$TMPD/log"
 # One driver form per file; each prints a marker so the log can be split
 # per file and ERROR lines attributed to the module that produced them.
 : > "$DRIVER"
+if [ "$DOCSTRINGS" = 0 ]; then
+    # The switch must be in effect at macroexpansion time, i.e. in the
+    # compiling process, before the first DEFCFUN expands.  lib/amiga/ffi.lisp
+    # is itself one of the files compiled below; REQUIREing it here first
+    # (source or an existing FASL, whichever REQUIRE picks) and then
+    # setting the variable is enough — DEFVAR keeps the NIL when the
+    # file's own form runs again during its compile.
+    cat >> "$DRIVER" <<'EOF'
+(require "amiga/ffi")
+(setf amiga.ffi:*defcfun-docstrings* nil)
+(format t "~&LIBFASL: DEFCFUN docstrings disabled for this run~%")
+EOF
+fi
 n=0
 for src in "$@"; do
     case "$src" in

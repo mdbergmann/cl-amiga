@@ -4982,6 +4982,58 @@ check_contains "every exit hook ran once under compaction storm" "EXITHOOK-SUM:4
 check_absent   "no corruption diagnostics from the exit-hook walk" \
   "corrupted\|type 0\|SIGSEGV\|Unbound\|error in exit hook" "$out"
 
+# --- Case: FFI stubs (DEFCFUN / DEFCSTRUCT binding descriptors) ------------
+# The stub installers allocate a descriptor per binding (DEFCSTRUCT's bulk
+# installer also interns the %SET- setter symbols and conses defsetf
+# entries), the FASL reader rebuilds stubs from FASL_TAG_FFI_STUB with the
+# name rooted across the aux deserialize, and cl_ffi_stub_call's field
+# accessors allocate (:fptr readers, embedded-struct pointers).  Compile a
+# module clean, then load and exercise every stub kind under the storm.
+cat > "$WORK/stub.lisp" <<'EOF'
+(eval-when (:compile-toplevel :load-toplevel :execute) (require "amiga/ffi"))
+(defpackage :gcstress-stub (:use :cl :ffi :amiga.ffi)
+  (:export #:lc #:pt-x #:pt-p #:pt-sub #:pt-arr #:*pt-size* #:touch))
+(in-package :gcstress-stub)
+(defvar *base* nil)
+(defcfun lc *base* -30 (:a0 x :d0 y) :result :i16 :doc "WORD LC(APTR x, LONG y)")
+(defcstruct (pt :size 24) (x :i16 0) (p :fptr 4) (sub (:struct 4) 8) (arr (:array :u16 4) 12) (f :single 20))
+(defun touch (m)
+  (setf (pt-x m) -3 (pt-p m) m (pt-arr m 2) 777 (pt-f m) 0.5)
+  (list (pt-x m) (ffi:foreign-pointer-p (pt-p m)) (ffi:foreign-pointer-p (pt-sub m))
+        (pt-arr m 2) (pt-f m) (funcall #'pt-x m) (apply #'pt-arr (list m 2))))
+EOF
+if compile_fasl "$WORK/stub.lisp" "$WORK/stub.fasl"; then
+    cat > "$WORK/stub-load.lisp" <<EOF
+(load "$WORK/stub.fasl")
+(format t "STUB-INFO:~a~%" (getf (ffi::%ffi-stub-info #'gcstress-stub:lc) :result))
+(format t "STUB-ARGLIST:~a~%" (length (ext:function-arglist #'gcstress-stub:lc)))
+(let ((m (ffi:alloc-foreign gcstress-stub:*pt-size*)))
+  (format t "STUB-TOUCH:~a~%" (gcstress-stub:touch m))
+  (ffi:free-foreign m))
+(format t "STUB-CALL:~a~%"
+  (handler-case (gcstress-stub:lc 1 2) (error (e) (if (search "not open" (format nil "~a" e)) "NOT-OPEN" e))))
+(format t "STUB-PRINT:~a~%" (prin1-to-string #'gcstress-stub:pt-x))
+;; fresh definitions under the storm too (installers + interning); the
+;; accessors are interned in the CURRENT package (CL-USER here)
+(ffi:defcstruct (q :size 8) (a :u8 0) (b (:array :i8 4) 4))
+(let ((m (ffi:alloc-foreign 8)))
+  (setf (q-b m 3) -9)
+  (format t "STUB-FRESH:~a~%" (list (q-b m 3) (ext:function-arglist #'q-b)))
+  (ffi:free-foreign m))
+EOF
+    out=$(run_stress "$WORK/stub-load.lisp")
+    check_contains "FASL-loaded DEFCFUN stub keeps its result kind"     "STUB-INFO:I16" "$out"
+    check_contains "stub arglist synthesized under stress"              "STUB-ARGLIST:2" "$out"
+    check_contains "every DEFCSTRUCT stub kind works under compaction"  "STUB-TOUCH:(-3 T T 777 0.5 -3 777)" "$out"
+    check_contains "stub library call reaches the base-variable check"  "STUB-CALL:NOT-OPEN" "$out"
+    check_contains "stub printer survives compaction"                   "STUB-PRINT:#<FFI-STUB PT-X PEEK :I16 @0>" "$out"
+    check_contains "fresh DEFCSTRUCT under stress installs and runs"    "STUB-FRESH:(-9 (" "$out"
+    check_absent   "no corruption diagnostics from the stub paths" \
+      "corrupted\|type 0\|BADMARK\|badmark\|SIGSEGV\|Unbound" "$out"
+else
+    echo "  SKIP  FFI stub FASL compile failed"
+fi
+
 
 echo ""
 echo "$passed passed, $failed failed, $total total"

@@ -10,13 +10,16 @@
  *   - The AMIGA package exists on every platform with the same builtin
  *     names; on the host they signal a clear "only available on
  *     AmigaOS/MorphOS" error instead of being undefined.
- *   - AMIGA.FFI:DEFCFUN's regspec encoding: register nibbles, result kind
- *     in bits 28-29, the Lisp-side post-processors for BOOL/WORD/BYTE
- *     results, the >7-register plist fallback, the :A5 rejection.
- *   - FFI:DEFCSTRUCT's :fptr / (:struct N) / (:array T N) / :size.
+ *   - AMIGA.FFI:DEFCFUN's stub: register nibbles, result kind in bits
+ *     28-31 (including the BOOL/WORD/BYTE kinds that used to be Lisp
+ *     post-processors), arity, the >7-register plist fallback, the :A5
+ *     rejection, *DEFCFUN-DOCSTRINGS*.
+ *   - FFI:DEFCSTRUCT's :fptr / (:struct N) / (:array T N) / :size, now as
+ *     field stubs with bounds-checked array accessors.
  *
- * The Amiga-side half (calls that actually reach the OS) lives in
- * tests/amiga/test-raw-bindings.lisp.
+ * The stub object itself (type, GC, FASL, printer, VM dispatch) is pinned
+ * by tests/test_ffi_stub.c; the Amiga-side half (calls that actually reach
+ * the OS) lives in tests/amiga/test-raw-bindings.lisp.
  */
 #include "test.h"
 #include "core/types.h"
@@ -208,14 +211,51 @@ TEST(box_signed_large_positive_is_positive_bignum)
     ASSERT_EQ_INT(b->limbs[1], 0x7FFF);
 }
 
-TEST(res_kind_macro_decodes_bits_28_29)
+TEST(res_kind_macro_decodes_bits_28_31)
 {
     ASSERT_EQ_INT(CL_AMIGA_RES_KIND(0x00000008u), CL_AMIGA_RES_UNSIGNED);
     ASSERT_EQ_INT(CL_AMIGA_RES_KIND(0x10000008u), CL_AMIGA_RES_VOID);
     ASSERT_EQ_INT(CL_AMIGA_RES_KIND(0x20000008u), CL_AMIGA_RES_POINTER);
     ASSERT_EQ_INT(CL_AMIGA_RES_KIND(0x30000008u), CL_AMIGA_RES_SIGNED);
-    /* a regspec with every kind bit set still fits a positive fixnum */
+    ASSERT_EQ_INT(CL_AMIGA_RES_KIND(0x40000008u), CL_AMIGA_RES_BOOL);
+    ASSERT_EQ_INT(CL_AMIGA_RES_KIND(0x50000008u), CL_AMIGA_RES_U16);
+    ASSERT_EQ_INT(CL_AMIGA_RES_KIND(0x60000008u), CL_AMIGA_RES_I16);
+    ASSERT_EQ_INT(CL_AMIGA_RES_KIND(0x70000008u), CL_AMIGA_RES_U8);
+    ASSERT_EQ_INT(CL_AMIGA_RES_KIND(0x80000008u), CL_AMIGA_RES_I8);
+    /* the Lisp-visible (%ffi-call / call-library-fast) regspec is a fixnum:
+     * kinds 0-3 fit, the stub carries the wider kinds in its u32 */
     ASSERT(0x3FFFFFFFu <= (uint32_t)CL_FIXNUM_MAX);
+    ASSERT(0x40000000u >  (uint32_t)CL_FIXNUM_MAX);
+    ASSERT_EQ_INT((int)CL_AMIGA_MAKE_REGSPEC(0x109u, CL_AMIGA_RES_I16),
+                  (int)0x60000109u);
+    ASSERT_EQ_INT((int)CL_AMIGA_REGSPEC_NIBBLES(0x60000109u), 0x109);
+}
+
+/* The sub-32-bit kinds box only d0.w / d0.b — the upper bits of d0 are
+ * undefined for a BOOL/WORD/BYTE C result and must be masked off. */
+TEST(box_bool_tests_low_word_only)
+{
+    ASSERT(CL_NULL_P(cl_amiga_box_result(0x00010000u, CL_AMIGA_RES_BOOL)));
+    ASSERT(cl_amiga_box_result(0x00000001u, CL_AMIGA_RES_BOOL) == CL_T);
+    ASSERT(cl_amiga_box_result(0xFFFFFFFFu, CL_AMIGA_RES_BOOL) == CL_T);
+    ASSERT(cl_amiga_box_result(0x12340000u, CL_AMIGA_RES_BOOL) == CL_NIL);
+}
+
+TEST(box_u16_i16_u8_i8_mask_and_sign_extend)
+{
+    CL_Obj r;
+    r = cl_amiga_box_result(0x1234FFFFu, CL_AMIGA_RES_U16);
+    ASSERT(CL_FIXNUM_P(r)); ASSERT_EQ_INT(CL_FIXNUM_VAL(r), 65535);
+    r = cl_amiga_box_result(0x0000FFFFu, CL_AMIGA_RES_I16);
+    ASSERT(CL_FIXNUM_P(r)); ASSERT_EQ_INT(CL_FIXNUM_VAL(r), -1);
+    r = cl_amiga_box_result(0x12347FFFu, CL_AMIGA_RES_I16);
+    ASSERT(CL_FIXNUM_P(r)); ASSERT_EQ_INT(CL_FIXNUM_VAL(r), 32767);
+    r = cl_amiga_box_result(0x000001FFu, CL_AMIGA_RES_U8);
+    ASSERT(CL_FIXNUM_P(r)); ASSERT_EQ_INT(CL_FIXNUM_VAL(r), 255);
+    r = cl_amiga_box_result(200u, CL_AMIGA_RES_I8);
+    ASSERT(CL_FIXNUM_P(r)); ASSERT_EQ_INT(CL_FIXNUM_VAL(r), -56);
+    r = cl_amiga_box_result(0xFFFFFF7Fu, CL_AMIGA_RES_I8);
+    ASSERT(CL_FIXNUM_P(r)); ASSERT_EQ_INT(CL_FIXNUM_VAL(r), 127);
 }
 
 /* ================================================================
@@ -260,46 +300,49 @@ TEST(amiga_call_library_arity_accepts_result_kind)
  * AMIGA.FFI:DEFCFUN encoding
  * ================================================================ */
 
-TEST(defcfun_regspec_nibbles_and_kinds)
+/* DEFCFUN installs an FFI stub; ffi::%ffi-stub-info exposes its fields.
+ * Register nibbles: a0 -> 8, d0 -> 0, d1 -> 1, low nibble = first arg. */
+TEST(defcfun_installs_stub_with_regspec_and_kind)
 {
     ASSERT_STR_EQ(eval_print("(require \"amiga/ffi\")"), "T");
     ASSERT_STR_EQ(eval_print("(defvar cl-user::*tb* nil)"), "*TB*");
-    /* a0 -> nibble 8, d0 -> nibble 0 in the next position; void = kind 1 */
     ASSERT_STR_EQ(eval_print(
-        "(fourth (second (macroexpand-1 "
-        "'(amiga.ffi:defcfun cl-user::f1 cl-user::*tb* -30 (:a0 x :d0 y) :void t))))"),
-        "(%FFI-CALL *TB* -30 268435464 X Y)");
-    /* :result :pointer = kind 2 */
-    ASSERT(contains(eval_print(
-        "(macroexpand-1 '(amiga.ffi:defcfun cl-user::f2 cl-user::*tb* -36 (:a0 x) :result :pointer))"),
-        "-36 536870920 X"));
-    /* :result :signed = kind 3, d1 -> nibble 1 */
-    ASSERT(contains(eval_print(
-        "(macroexpand-1 '(amiga.ffi:defcfun cl-user::f3 cl-user::*tb* -42 (:d1 x) :result :signed))"),
-        "-42 805306369 X"));
-    /* :result :unsigned (default) = kind 0 */
-    ASSERT(contains(eval_print(
-        "(macroexpand-1 '(amiga.ffi:defcfun cl-user::f4 cl-user::*tb* -48 (:d0 a :d1 b :a0 c)))"),
-        "-48 2064 A B C"));
+        "(amiga.ffi:defcfun cl-user::f1 cl-user::*tb* -30 (:a0 x :d0 y) :void t)"), "F1");
+    ASSERT_STR_EQ(eval_print("(ffi::%ffi-stub-info #'cl-user::f1)"),
+        "(:KIND :LIBCALL :NAME F1 :BASE *TB* :LVO -30 :REGSPEC 8 :RESULT :VOID :NPARAMS 2)");
+    /* :result :pointer, one a0 arg */
+    eval_print("(amiga.ffi:defcfun cl-user::f2 cl-user::*tb* -36 (:a0 x) :result :pointer)");
+    ASSERT(contains(eval_print("(ffi::%ffi-stub-info 'cl-user::f2)"),
+                    ":LVO -36 :REGSPEC 8 :RESULT :POINTER :NPARAMS 1"));
+    /* :result :signed, d1 -> nibble 1 */
+    eval_print("(amiga.ffi:defcfun cl-user::f3 cl-user::*tb* -42 (:d1 x) :result :signed)");
+    ASSERT(contains(eval_print("(ffi::%ffi-stub-info 'cl-user::f3)"),
+                    ":LVO -42 :REGSPEC 1 :RESULT :SIGNED :NPARAMS 1"));
+    /* :result :unsigned (default); (:d0 a :d1 b :a0 c) -> 0 | 1<<4 | 8<<8 = 2064 */
+    eval_print("(amiga.ffi:defcfun cl-user::f4 cl-user::*tb* -48 (:d0 a :d1 b :a0 c))");
+    ASSERT(contains(eval_print("(ffi::%ffi-stub-info 'cl-user::f4)"),
+                    ":LVO -48 :REGSPEC 2064 :RESULT :UNSIGNED :NPARAMS 3"));
+    /* the stub is a function for every CL predicate */
+    ASSERT_STR_EQ(eval_print(
+        "(list (fboundp 'cl-user::f1) (functionp #'cl-user::f1) "
+        "(compiled-function-p #'cl-user::f1) (typep #'cl-user::f1 'function) "
+        "(type-of #'cl-user::f1) (class-name (class-of #'cl-user::f1)))"),
+        "(T T T T FUNCTION FUNCTION)");
+    ASSERT_STR_EQ(eval_print("(ext:function-arglist #'cl-user::f4)"), "(#:ARG0 #:ARG1 #:ARG2)");
+    ASSERT_STR_EQ(eval_print("(prin1-to-string #'cl-user::f4)"), "\"#<FFI-STUB F4 LVO -48 (3 args)>\"");
 }
 
-TEST(defcfun_lisp_side_post_processors)
+/* The sub-32-bit result kinds are carried by the stub (boxed in C by the
+ * trampoline, see box_* above) — no Lisp post-processor functions remain. */
+TEST(defcfun_sub_word_result_kinds_in_stub)
 {
-    /* :bool wraps an unsigned result in %RESULT-BOOL, in both the wrapper
-     * and the compiler-macro expansion */
-    const char *r = eval_print(
-        "(macroexpand-1 '(amiga.ffi:defcfun cl-user::f5 cl-user::*tb* -54 (:d0 x) :result :bool))");
-    ASSERT(contains(r, "(AMIGA.FFI::%RESULT-BOOL (%FFI-CALL *TB* -54 0 X))"));
-    ASSERT(contains(r, "(LIST (QUOTE AMIGA.FFI::%RESULT-BOOL)"));
-    /* the helpers themselves: only d0.w / d0.b are defined for BOOL/WORD/BYTE */
-    ASSERT_STR_EQ(eval_print("(amiga.ffi::%result-bool #x10000)"), "NIL");
-    ASSERT_STR_EQ(eval_print("(amiga.ffi::%result-bool #x1)"), "T");
-    ASSERT_STR_EQ(eval_print("(amiga.ffi::%result-bool #xFFFFFFFF)"), "T");
-    ASSERT_STR_EQ(eval_print("(amiga.ffi::%result-i16 #xFFFF)"), "-1");
-    ASSERT_STR_EQ(eval_print("(amiga.ffi::%result-i16 #x12347FFF)"), "32767");
-    ASSERT_STR_EQ(eval_print("(amiga.ffi::%result-u16 #x1234FFFF)"), "65535");
-    ASSERT_STR_EQ(eval_print("(amiga.ffi::%result-i8 200)"), "-56");
-    ASSERT_STR_EQ(eval_print("(amiga.ffi::%result-u8 #x1FF)"), "255");
+    eval_print("(amiga.ffi:defcfun cl-user::f5 cl-user::*tb* -54 (:d0 x) :result :bool)");
+    ASSERT(contains(eval_print("(ffi::%ffi-stub-info 'cl-user::f5)"), ":RESULT :BOOL"));
+    eval_print("(amiga.ffi:defcfun cl-user::f5b cl-user::*tb* -54 (:d0 x) :result :i16)");
+    ASSERT(contains(eval_print("(ffi::%ffi-stub-info 'cl-user::f5b)"), ":RESULT :I16"));
+    eval_print("(amiga.ffi:defcfun cl-user::f5c cl-user::*tb* -54 (:d0 x) :result :u8)");
+    ASSERT(contains(eval_print("(ffi::%ffi-stub-info 'cl-user::f5c)"), ":RESULT :U8"));
+    ASSERT_STR_EQ(eval_print("(fboundp 'amiga.ffi::%result-bool)"), "NIL");
 }
 
 TEST(defcfun_more_than_seven_registers_uses_call_library)
@@ -308,8 +351,14 @@ TEST(defcfun_more_than_seven_registers_uses_call_library)
         "(macroexpand-1 '(amiga.ffi:defcfun cl-user::f6 cl-user::*tb* -60 "
         "(:a0 a :d0 b :d1 c :a1 d :d2 e :d3 f :d4 g :d5 h) :result :pointer))");
     ASSERT(contains(r, "(CALL-LIBRARY *TB* -60 (LIST :A0 A :D0 B :D1 C :A1 D :D2 E :D3 F :D4 G :D5 H) 2)"));
-    /* no compiler macro on the plist path */
-    ASSERT(!contains(r, "DEFINE-COMPILER-MACRO"));
+    /* a real DEFUN, not a stub */
+    ASSERT(contains(r, "(DEFUN F6"));
+    eval_print("(amiga.ffi:defcfun cl-user::f6 cl-user::*tb* -60 "
+               "(:a0 a :d0 b :d1 c :a1 d :d2 e :d3 f :d4 g :d5 h) :result :i8)");
+    ASSERT_STR_EQ(eval_print("(ffi::%ffi-stub-info 'cl-user::f6)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(length (ext:function-arglist #'cl-user::f6))"), "8");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (function-lambda-expression #'cl-user::f6))"),
+                  "(NIL T F6)");
 }
 
 TEST(defcfun_rejects_a5)
@@ -324,11 +373,54 @@ TEST(defcfun_compiles_and_reports_nil_base_on_host)
 {
     ASSERT_STR_EQ(eval_print("(amiga.ffi:defcfun cl-user::f8 cl-user::*tb* -30 (:a0 x) :result :pointer)"), "F8");
     {
+        /* direct call: compile_call inlines the stub as OP_AMIGA_CALL */
         const char *r = eval_print("(cl-user::f8 1)");
         ASSERT(contains(r, "ERROR:"));
         ASSERT(contains(r, "*TB*"));
         ASSERT(contains(r, "not open"));
+        /* indirect call: the stub's own dispatch, same base check */
+        r = eval_print("(funcall #'cl-user::f8 1)");
+        ASSERT(contains(r, "not open"));
+        r = eval_print("(apply 'cl-user::f8 '(1))");
+        ASSERT(contains(r, "not open"));
     }
+    /* wrong arity at a direct call site is declined by the inliner and
+     * reported by the stub at run time; funcall/apply likewise */
+    ASSERT(contains(eval_print("(funcall (compile nil '(lambda () (cl-user::f8 1 2))))"),
+                    "Too many arguments to F8: expected 1, got 2"));
+    ASSERT(contains(eval_print("(funcall #'cl-user::f8)"),
+                    "Too few arguments to F8: expected 1, got 0"));
+}
+
+TEST(defcfun_direct_call_inlines_amiga_call)
+{
+    /* the caller's bytecode holds OP_AMIGA_CALL with the stub's fields;
+     * a lexically shadowed or notinline name is left as a plain call */
+    const char *r = eval_print(
+        "(with-output-to-string (*standard-output*) "
+        "  (disassemble (compile nil '(lambda (p) (cl-user::f8 p)))))");
+    ASSERT(contains(r, "AMIGA_CALL"));
+    ASSERT(contains(r, "off -30 regspec 0x20000008 nargs 1"));
+    r = eval_print(
+        "(with-output-to-string (*standard-output*) "
+        "  (disassemble (compile nil '(lambda (p) (declare (notinline cl-user::f8)) (cl-user::f8 p)))))");
+    ASSERT(!contains(r, "AMIGA_CALL"));
+    ASSERT(contains(r, "F8"));
+    r = eval_print(
+        "(with-output-to-string (*standard-output*) "
+        "  (disassemble (compile nil '(lambda (p) (flet ((cl-user::f8 (x) x)) (cl-user::f8 p))))))");
+    ASSERT(!contains(r, "AMIGA_CALL"));
+}
+
+TEST(defcfun_docstrings_switch)
+{
+    eval_print("(amiga.ffi:defcfun cl-user::f9 cl-user::*tb* -30 (:a0 x) :doc \"APTR F9(APTR x) (A0)\")");
+    ASSERT_STR_EQ(eval_print("(documentation 'cl-user::f9 'function)"), "\"APTR F9(APTR x) (A0)\"");
+    eval_print("(setf amiga.ffi:*defcfun-docstrings* nil)");
+    eval_print("(amiga.ffi:defcfun cl-user::f10 cl-user::*tb* -30 (:a0 x) :doc \"APTR F10(APTR x) (A0)\")");
+    ASSERT_STR_EQ(eval_print("(documentation 'cl-user::f10 'function)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(fboundp 'cl-user::f10)"), "T");
+    eval_print("(setf amiga.ffi:*defcfun-docstrings* t)");
 }
 
 TEST(library_version_reads_lib_version_field)
@@ -394,6 +486,47 @@ TEST(defcstruct_rejects_unknown_type)
     ASSERT(contains(eval_print("(ffi:defcstruct cl-user::bad2 (cl-user::a (:array :u8 0) 0))"), "ERROR:"));
 }
 
+/* The accessors are field stubs: reader + %SET- writer linked by DEFSETF,
+ * one installer call per struct; array accessors are bounds-checked. */
+TEST(defcstruct_accessors_are_field_stubs)
+{
+    ASSERT_STR_EQ(eval_print("(ffi::%ffi-stub-info #'cl-user::tst-x)"),
+                  "(:KIND :PEEK :NAME TST-X :CTYPE :I16 :OFFSET 0)");
+    ASSERT_STR_EQ(eval_print("(ffi::%ffi-stub-info 'cl-user::%set-tst-x)"),
+                  "(:KIND :POKE :NAME %SET-TST-X :CTYPE :I16 :OFFSET 0)");
+    ASSERT_STR_EQ(eval_print("(ffi::%ffi-stub-info #'cl-user::tst-arr)"),
+                  "(:KIND :PEEK-IDX :NAME TST-ARR :CTYPE :U8 :OFFSET 16 :ELT-SIZE 1 :COUNT 4)");
+    ASSERT_STR_EQ(eval_print("(ffi::%ffi-stub-info #'cl-user::tst-sub)"),
+                  "(:KIND :FIELD-PTR :NAME TST-SUB :OFFSET 8)");
+    /* embedded struct: reader only */
+    ASSERT_STR_EQ(eval_print("(fboundp 'cl-user::%set-tst-sub)"), "NIL");
+    /* defsetf linkage is what (setf (tst-x m) v) compiles through */
+    ASSERT_STR_EQ(eval_print("(clamiga::%get-defsetf-setter 'cl-user::tst-x)"), "%SET-TST-X");
+    ASSERT_STR_EQ(eval_print("(prin1-to-string #'cl-user::tst-arr)"),
+                  "\"#<FFI-STUB TST-ARR PEEK-IDX :U8 @16 [4 x 1]>\"");
+    ASSERT_STR_EQ(eval_print("(ext:function-arglist #'cl-user::%set-tst-arr)"), "(#:ARG0 #:ARG1 #:ARG2)");
+    /* the macro expands to ONE installer form per struct (FASL footprint) */
+    ASSERT(contains(eval_print("(macroexpand-1 '(ffi:defcstruct cl-user::two (cl-user::a :u8 0) (cl-user::b :u8 1)))"),
+                    "(FFI::%DEFINE-CSTRUCT-ACCESSORS (QUOTE ((TWO-A :U8 0) (TWO-B :U8 1))))"));
+}
+
+TEST(defcstruct_array_accessor_bounds_and_arity)
+{
+    ASSERT(contains(eval_print(
+        "(let ((m (ffi:alloc-foreign 32))) (unwind-protect (cl-user::tst-arr m 4) (ffi:free-foreign m)))"),
+        "TST-ARR: index 4 is out of range for a 4-element array field"));
+    ASSERT(contains(eval_print(
+        "(let ((m (ffi:alloc-foreign 32))) (unwind-protect (setf (cl-user::tst-arr m -1) 0) (ffi:free-foreign m)))"),
+        "index must be a non-negative fixnum"));
+    ASSERT(contains(eval_print(
+        "(let ((m (ffi:alloc-foreign 32))) (unwind-protect (cl-user::tst-x m 1) (ffi:free-foreign m)))"),
+        "Too many arguments to TST-X: expected 1, got 2"));
+    ASSERT(contains(eval_print("(cl-user::tst-x 42)"), "must be a foreign pointer"));
+    ASSERT(contains(eval_print(
+        "(let ((m (ffi:alloc-foreign 32))) (unwind-protect (setf (cl-user::tst-f m) \"x\") (ffi:free-foreign m)))"),
+        "must be a real number"));
+}
+
 int main(void)
 {
     setup();
@@ -414,22 +547,28 @@ int main(void)
     RUN(box_signed_large_negative_is_negative_bignum);
     RUN(box_signed_int32_min);
     RUN(box_signed_large_positive_is_positive_bignum);
-    RUN(res_kind_macro_decodes_bits_28_29);
+    RUN(res_kind_macro_decodes_bits_28_31);
+    RUN(box_bool_tests_low_word_only);
+    RUN(box_u16_i16_u8_i8_mask_and_sign_extend);
 
     RUN(amiga_package_exists_on_host);
     RUN(amiga_stub_signals_platform_error);
     RUN(amiga_call_library_arity_accepts_result_kind);
 
-    RUN(defcfun_regspec_nibbles_and_kinds);
-    RUN(defcfun_lisp_side_post_processors);
+    RUN(defcfun_installs_stub_with_regspec_and_kind);
+    RUN(defcfun_sub_word_result_kinds_in_stub);
     RUN(defcfun_more_than_seven_registers_uses_call_library);
     RUN(defcfun_rejects_a5);
     RUN(defcfun_compiles_and_reports_nil_base_on_host);
+    RUN(defcfun_direct_call_inlines_amiga_call);
+    RUN(defcfun_docstrings_switch);
     RUN(library_version_reads_lib_version_field);
 
     RUN(defcstruct_fptr_struct_array_size);
     RUN(defcstruct_derived_size_and_legacy_pointer);
     RUN(defcstruct_rejects_unknown_type);
+    RUN(defcstruct_accessors_are_field_stubs);
+    RUN(defcstruct_array_accessor_bounds_and_arity);
 
     REPORT();
     teardown();

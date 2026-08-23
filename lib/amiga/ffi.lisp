@@ -11,6 +11,7 @@
 (defpackage "AMIGA.FFI"
   (:use "CL" "FFI")
   (:export "WITH-LIBRARY" "WITH-TAG-LIST" "MAKE-TAG-LIST" "DEFCFUN"
+           "*DEFCFUN-DOCSTRINGS*"
            "LIBRARY-VERSION" "OPEN-LIBRARY-OR-DIE"))
 
 (in-package "AMIGA.FFI")
@@ -111,27 +112,32 @@ copied to foreign memory and freed."
              (ffi:free-foreign s)))))))
 
 ;;; ================================================================
-;;; defcfun — define a named wrapper for an Amiga library function
+;;; defcfun — define a named binding for an Amiga library function
 ;;; ================================================================
 
 ;;; (amiga.ffi:defcfun move-to *gfx-base* -240
 ;;;   (:a1 rastport :d0 x :d1 y) :result :void)
 ;;;
-;;; Expands to a call through AMIGA::%FFI-CALL — a special form the
-;;; compiler recognizes and emits as the dedicated OP_AMIGA_CALL bytecode
-;;; op.  No wrapper-function frame, no list allocation, no plist walk:
-;;; the value args go straight onto the VM stack and the trampoline
-;;; pulls them into m68k registers.
+;;; Installs an FFI STUB in MOVE-TO's function cell: a 20-byte descriptor
+;;; (library-base variable, LVO, packed register spec, result kind,
+;;; arity) that the runtime calls directly — no wrapper closure, no
+;;; bytecode body, no compiler macro.  It is a function for every CL
+;;; purpose (FUNCTIONP, #', FUNCALL, APPLY, TRACE, DESCRIBE,
+;;; EXT:FUNCTION-ARGLIST); a direct call site `(move-to rp x y)` is
+;;; recognized by the compiler and emitted as a bare OP_AMIGA_CALL (the
+;;; JIT calls the trampoline natively), an indirect call goes through the
+;;; stub's own dispatch (cl_ffi_stub_call).  Inspect one with
+;;; (ffi::%ffi-stub-info #'move-to) or DESCRIBE.
 ;;;
-;;; (defun move-to (rastport x y)
-;;;   (amiga:%ffi-call *gfx-base* -240 #x10000019 rastport x y))
+;;; Why a descriptor: the generated raw OS binding modules define
+;;; thousands of these; as wrapper functions each cost ~550 bytes of
+;;; heap plus three off-heap allocations, which put a full intuition
+;;; binding at ~0.4 MB — out of reach on an 8 MB 68020.  See
+;;; specs/raw-bindings-footprint.md.
 ;;;
-;;; Regspec layout (positive 31-bit fixnum):
-;;;   bits  0..27: 7 nibbles, one register index per value arg
-;;;   bits 28..29: result kind (CL_AMIGA_RES_* in builtins.h):
-;;;                0 = d0 as unsigned integer, 1 = void (NIL),
-;;;                2 = pointer (foreign pointer, NULL -> NIL),
-;;;                3 = d0 as signed integer
+;;; Register spec: 7 nibbles, one register index per value arg, low to
+;;; high (D0..D7 = 0..7, A0..A4 = 8..12); the result kind sits in bits
+;;; 28-31 of the stub's u32 regspec (CL_AMIGA_RES_* in builtins.h).
 ;;;
 ;;; :RESULT selects how the d0 value comes back:
 ;;;   :unsigned (default)  ULONG/UWORD/UBYTE/BPTR/Tag... as an integer
@@ -142,18 +148,19 @@ copied to foreign memory and freed."
 ;;;   :bool                BOOL -> T/NIL (tests d0.w, the 16-bit ABI width)
 ;;;   :i16 :u16 :i8 :u8    WORD/UWORD/BYTE/UBYTE results — only the low
 ;;;                        bits of d0 are defined for these C types
-;;; The first four are boxed in C; the rest post-process an :unsigned
-;;; result in Lisp.  :VOID T is the legacy spelling of :RESULT :VOID.
+;;; All nine are boxed in C by the trampoline.  :VOID T is the legacy
+;;; spelling of :RESULT :VOID.
 ;;;
 ;;; Functions with more than seven register arguments (a dozen in the
 ;;; whole OS: BltBitMap, ClipBlit, ModifyProp, CreateUpfrontLayer...)
-;;; fall back to AMIGA:CALL-LIBRARY's plist path, which has no register
-;;; cap.  :A5 can never carry an argument — it is the dispatcher's
-;;; scratch register (ffi_dispatch_m68k.s).
+;;; fall back to a DEFUN over AMIGA:CALL-LIBRARY's plist path, which has
+;;; no register cap.  :A5 can never carry an argument — it is the
+;;; dispatcher's scratch register (ffi_dispatch_m68k.s).
 ;;;
-;;; If the AMIGA::%FFI-CALL special form ever runs interpreted (no
-;;; compiler hook), CALL-LIBRARY-FAST is the matching runtime fallback —
-;;; both honor the same regspec encoding.
+;;; The stub is installed at compile time too (EVAL-WHEN), so a module
+;;; compiled with COMPILE-FILE gets its own intra-file calls inlined, and
+;;; AMIGA:%FFI-CALL remains available as the hand-written spelling of the
+;;; same call (kinds 0-3 only — a Lisp fixnum cannot hold bits 28-31).
 
 (defun %defcfun-reg-index (kw)
   "Return the register index (0..12) for an :Dn or :An keyword, or signal."
@@ -167,32 +174,38 @@ copied to foreign memory and freed."
 
 (defconstant +defcfun-void-bit+ #x10000000)  ; bit 28 -- kind 1 = void
 
+;; CL_AMIGA_RES_* (src/core/builtins.h)
 (defconstant +result-kind-unsigned+ 0)
 (defconstant +result-kind-void+     1)
 (defconstant +result-kind-pointer+  2)
 (defconstant +result-kind-signed+   3)
+(defconstant +result-kind-bool+     4)
+(defconstant +result-kind-u16+      5)
+(defconstant +result-kind-i16+      6)
+(defconstant +result-kind-u8+       7)
+(defconstant +result-kind-i8+       8)
 
 (defun %defcfun-result-kind (result)
-  "Map a :RESULT keyword to (values c-kind lisp-post-processor-or-nil)."
+  "Map a :RESULT keyword to its CL_AMIGA_RES_* code."
   (ecase result
-    (:unsigned (values +result-kind-unsigned+ nil))
-    (:void     (values +result-kind-void+ nil))
-    (:pointer  (values +result-kind-pointer+ nil))
-    (:signed   (values +result-kind-signed+ nil))
-    (:bool     (values +result-kind-unsigned+ '%result-bool))
-    (:u16      (values +result-kind-unsigned+ '%result-u16))
-    (:i16      (values +result-kind-unsigned+ '%result-i16))
-    (:u8       (values +result-kind-unsigned+ '%result-u8))
-    (:i8       (values +result-kind-unsigned+ '%result-i8))))
+    (:unsigned +result-kind-unsigned+)
+    (:void     +result-kind-void+)
+    (:pointer  +result-kind-pointer+)
+    (:signed   +result-kind-signed+)
+    (:bool     +result-kind-bool+)
+    (:u16      +result-kind-u16+)
+    (:i16      +result-kind-i16+)
+    (:u8       +result-kind-u8+)
+    (:i8       +result-kind-i8+)))
 
-;; Post-processors for the sub-32-bit result kinds.  Only the low word /
-;; byte of d0 is defined for a BOOL/WORD/BYTE C return type, so mask
-;; before interpreting.
-(defun %result-bool (v) (if (logtest v #xFFFF) t nil))
-(defun %result-u16 (v) (logand v #xFFFF))
-(defun %result-i16 (v) (let ((x (logand v #xFFFF))) (if (logbitp 15 x) (- x #x10000) x)))
-(defun %result-u8 (v) (logand v #xFF))
-(defun %result-i8 (v) (let ((x (logand v #xFF))) (if (logbitp 7 x) (- x #x100) x)))
+(defvar *defcfun-docstrings* t
+  "When true (the default) DEFCFUN records its :DOC string as the
+function's documentation.  Bound to NIL while the Amiga FASLs are built
+(scripts/compile-lib-fasls.sh --no-docstrings, i.e. `make fasl-amiga` and
+the binary release): a docstring costs ~130 bytes of heap per binding,
+~16 KB for the intuition module alone, that an 8 MB machine would rather
+spend elsewhere.  The generated .lisp sources always keep the C
+prototypes, so they remain readable on any system.")
 
 (defmacro defcfun (name library-base offset (&rest reg-spec)
                    &key void (result :unsigned) doc)
@@ -200,53 +213,48 @@ copied to foreign memory and freed."
 LVO OFFSET of the library whose base is held in the special variable
 LIBRARY-BASE.  REG-SPEC is a plist of (:register param-name ...) pairs.
 :RESULT (see the table above) chooses how d0 is returned; :VOID T is the
-legacy spelling of :RESULT :VOID.  DOC becomes the function's docstring.
+legacy spelling of :RESULT :VOID.  DOC becomes the function's docstring
+(unless *DEFCFUN-DOCSTRINGS* is NIL).
 
-In addition to the named function, registers a compiler macro on NAME
-so direct call sites -- `(move-to rp x y)` etc. -- compile down to a
-bare AMIGA:%FFI-CALL (= OP_AMIGA_CALL) in the caller, skipping the
-wrapper's LINK frame and the cl_vm_apply dispatch trip.  Indirect
-callers (funcall / sharp-quote) still hit the real wrapper function."
+NAME's function cell receives an FFI stub — a compact binding
+descriptor the runtime calls directly.  Direct call sites `(move-to rp
+x y)` compile to a bare OP_AMIGA_CALL in the caller; #'NAME, FUNCALL,
+APPLY, TRACE and DESCRIBE all work on the stub as on any function."
   (let* ((pairs (loop for (reg param) on reg-spec by #'cddr
                       collect (list reg param)))
          (params (mapcar #'second pairs))
          (n-params (length params))
          (result (if void :void result))
-         (docs (if doc (list doc) nil)))
-    (multiple-value-bind (kind post) (%defcfun-result-kind result)
-      (if (> n-params 7)
-          ;; Plist path: no register cap, no compiler macro.
-          (let ((plist (loop for (reg param) in pairs
-                             collect reg collect param)))
-            (dolist (pair pairs) (%defcfun-reg-index (first pair)))  ; validate
-            `(progn
-               (defun ,name ,params
-                 ,@docs
-                 ,(let ((call `(amiga:call-library ,library-base ,offset
-                                                   (list ,@plist) ,kind)))
-                    (if post `(,post ,call) call)))
-               ',name))
-          (let ((regspec 0) (shift 0))
-            (dolist (pair pairs)
-              (setf regspec (logior regspec
-                                    (ash (%defcfun-reg-index (first pair)) shift)))
-              (incf shift 4))
-            (setf regspec (logior regspec (ash kind 28)))
-            `(progn
-               (defun ,name ,params
-                 ,@docs
-                 ,(let ((call `(amiga:%ffi-call ,library-base ,offset ,regspec ,@params)))
-                    (if post `(,post ,call) call)))
-               ;; Decline expansion on argument-count mismatch so the caller
-               ;; gets the wrapper's normal arity error instead of a confusing
-               ;; mid-compile diagnostic.  CLHS 3.2.2.1.3: returning the &whole
-               ;; form means "no expansion".
-               (define-compiler-macro ,name (&whole form &rest args)
-                 (if (= (length args) ,n-params)
-                     ,(let ((call `(list* 'amiga:%ffi-call ',library-base ,offset ,regspec args)))
-                        (if post `(list ',post ,call) call))
-                     form))
-               ',name))))))
+         (kind (%defcfun-result-kind result))
+         (doc-forms (when (and doc *defcfun-docstrings*)
+                      `((setf (documentation ',name 'function) ,doc)))))
+    (if (> n-params 7)
+        ;; Plist path: a real DEFUN over CALL-LIBRARY, no register cap.
+        (let ((plist (loop for (reg param) in pairs
+                           collect reg collect param)))
+          (dolist (pair pairs) (%defcfun-reg-index (first pair)))  ; validate
+          `(progn
+             (defun ,name ,params
+               ,@(when (and doc *defcfun-docstrings*) (list doc))
+               (amiga:call-library ,library-base ,offset (list ,@plist) ,kind))
+             ',name))
+        (let ((regspec 0) (shift 0))
+          (dolist (pair pairs)
+            (setf regspec (logior regspec
+                                  (ash (%defcfun-reg-index (first pair)) shift)))
+            (incf shift 4))
+          `(progn
+             ;; amiga::%defcfun builds the stub and installs it in NAME's
+             ;; function cell (one small form per binding — the generated
+             ;; modules have thousands, and every symbol a top-level form
+             ;; names costs FASL bytes).  Compile time as well, so that
+             ;; later call sites in the same COMPILE-FILE see the stub and
+             ;; inline the library call (what the old compile-time compiler
+             ;; macro gave them).
+             (eval-when (:compile-toplevel :load-toplevel :execute)
+               (amiga::%defcfun ',name ',library-base ,offset ,regspec ,kind ,n-params))
+             ,@doc-forms
+             ',name)))))
 
 ;;; ================================================================
 ;;; Provide module

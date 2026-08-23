@@ -53,21 +53,55 @@ void cl_register_builtin_exported(const char *name, CL_CFunc func,
                                   int min, int max, CL_Obj package);
 
 /* AmigaOS library-call result kinds (builtins_amiga.c).  Encoded in bits
- * 28-29 of the OP_AMIGA_CALL / CALL-LIBRARY-FAST regspec (bits 0-27 hold
- * the seven register nibbles), so a regspec always stays a positive
- * 31-bit fixnum.  Kind 1 (void) is the former "bit 28 = void-p" flag —
- * the encoding is backward compatible with regspecs baked into existing
- * FASLs. */
+ * 28-31 of the OP_AMIGA_CALL regspec operand and of a CL_STUB_LIBCALL
+ * stub's `a` field (bits 0-27 hold the seven register nibbles).  The
+ * Lisp-visible AMIGA:%FFI-CALL / CALL-LIBRARY-FAST regspec is a positive
+ * fixnum and can therefore only carry kinds 0-3 (bits 28-29) — kinds 4-8
+ * reach the trampoline through DEFCFUN's stub (the C side packs them) or
+ * CALL-LIBRARY's explicit result-kind argument.  Kind 1 (void) is the
+ * former "bit 28 = void-p" flag — the encoding is backward compatible
+ * with regspecs baked into existing FASLs. */
 #define CL_AMIGA_RES_UNSIGNED 0   /* d0 as an unsigned 32-bit integer   */
 #define CL_AMIGA_RES_VOID     1   /* discard d0, return NIL              */
 #define CL_AMIGA_RES_POINTER  2   /* d0 as a foreign pointer, NULL -> NIL */
 #define CL_AMIGA_RES_SIGNED   3   /* d0 as a signed 32-bit integer       */
-#define CL_AMIGA_RES_KIND(regspec) ((int)(((regspec) >> 28) & 3))
+#define CL_AMIGA_RES_BOOL     4   /* BOOL: d0.w (16-bit ABI width) != 0 -> T */
+#define CL_AMIGA_RES_U16      5   /* UWORD: d0.w unsigned                */
+#define CL_AMIGA_RES_I16      6   /* WORD:  d0.w sign-extended           */
+#define CL_AMIGA_RES_U8       7   /* UBYTE: d0.b unsigned                */
+#define CL_AMIGA_RES_I8       8   /* BYTE:  d0.b sign-extended           */
+#define CL_AMIGA_RES_KIND_MAX 8
+#define CL_AMIGA_RES_KIND(regspec) ((int)(((regspec) >> 28) & 0xF))
+#define CL_AMIGA_REGSPEC_NIBBLES(regspec) ((uint32_t)(regspec) & 0x0FFFFFFFu)
+#define CL_AMIGA_MAKE_REGSPEC(nibbles, kind) \
+    (CL_AMIGA_REGSPEC_NIBBLES(nibbles) | ((uint32_t)(kind) << 28))
 
 /* Box a raw d0 result according to KIND.  Compiled on every platform
  * (unit-tested on the host); the Amiga dispatch paths and the
  * CALL-LIBRARY* builtins all route their results through it. */
 CL_Obj cl_amiga_box_result(uint32_t result, int kind);
+
+/* Resolve BASE_SYM (the library-base special variable a DEFCFUN names)
+ * and call LVO OFFSET of that library with the register args in ARGS
+ * (ARGS[0] = first register arg) per REGSPEC.  Shared by the VM's
+ * OP_AMIGA_CALL and the CL_STUB_LIBCALL path of cl_ffi_stub_call so the
+ * three error cases (unbound base, NIL base = library not open, non
+ * foreign-pointer base) read identically everywhere.  ARGS must be
+ * GC-rooted (VM stack slots).  Host builds signal the "only available
+ * on AmigaOS/MorphOS" error after the base checks. */
+CL_Obj cl_amiga_call_via_base_sym(CL_Obj base_sym, int16_t offset,
+                                  uint32_t regspec, int n_args,
+                                  CL_Obj *args);
+
+/* Invoke an FFI stub (types.h CL_FfiStub) with NARGS arguments in ARGS —
+ * the runtime entry behind cl_vm_apply / OP_CALL / OP_APPLY / FUNCALL for
+ * a stub function object.  Arity-checks against the stub's kind, then
+ * performs the library call or the typed peek/poke.  ARGS must be
+ * GC-rooted (callers copy them onto the VM stack).  builtins_ffi.c. */
+CL_Obj cl_ffi_stub_call(CL_Obj stub, CL_Obj *args, int nargs);
+
+/* Number of arguments a stub takes (its fixed arity). */
+int cl_ffi_stub_arity(CL_Obj stub);
 
 /* COMMON-LISP package handle (defined in package.c); declared here so the
  * shared defun() helper below can register into it without pulling in

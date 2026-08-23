@@ -474,7 +474,7 @@ fasl: $(HOST_BIN)
 # than its source or was written by another CL_FASL_VERSION.  The binary
 # release runs the same script into its staging tree.
 fasl-amiga: $(HOST_BIN)
-	sh scripts/compile-lib-fasls.sh -o . -b $(HOST_BIN)
+	sh scripts/compile-lib-fasls.sh -o . -b $(HOST_BIN) --no-docstrings
 
 clean-fasl-amiga:
 	find lib/amiga -name '*.fasl' -delete

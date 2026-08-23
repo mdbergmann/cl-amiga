@@ -1774,6 +1774,53 @@ static void print_obj(CL_Obj obj)
         break;
     }
 
+    case TYPE_FFI_STUB: {
+        /* #<FFI-STUB OPEN-WINDOW LVO -204 (1 args)>
+         * #<FFI-STUB WINDOW-WIDTH PEEK :I16 @8>
+         * #<FFI-STUB %SET-RP-PENS POKE-IDX :U8 @12 [1]>
+         * GC SAFETY (MT): same discipline as the function printers above —
+         * root obj and re-derive after every write.  The numeric tail is
+         * formatted before the first write so it reads the fields once. */
+        static const char *const ct_names[CL_STUB_CT_MAX + 1] = {
+            ":U8", ":I8", ":U16", ":I16", ":U32", ":I32",
+            ":POINTER", ":FPTR", ":SINGLE", ":DOUBLE" };
+        static const char *const kind_names[CL_STUB_KIND_MAX + 1] = {
+            "LIBCALL", "PEEK", "POKE", "PEEK-IDX", "POKE-IDX", "FIELD-PTR" };
+        CL_FfiStub *fs = (CL_FfiStub *)CL_OBJ_TO_PTR(obj);
+        char tail[64];
+        uint8_t kind = fs->kind;
+        if (kind == CL_STUB_LIBCALL) {
+            snprintf(tail, sizeof(tail), " LVO %d (%u args)>",
+                     (int)fs->b, (unsigned)fs->ctype);
+        } else if (kind <= CL_STUB_KIND_MAX) {
+            const char *ct = (fs->ctype <= CL_STUB_CT_MAX)
+                             ? ct_names[fs->ctype] : "?";
+            if (kind == CL_STUB_FIELD_PTR)
+                snprintf(tail, sizeof(tail), " %s @%u>",
+                         kind_names[kind], (unsigned)fs->a);
+            else if (kind == CL_STUB_PEEK_IDX || kind == CL_STUB_POKE_IDX)
+                /* a = offset (low 16) | element count (high 16) */
+                snprintf(tail, sizeof(tail), " %s %s @%u [%u x %d]>",
+                         kind_names[kind], ct, (unsigned)(fs->a & 0xFFFFu),
+                         (unsigned)(fs->a >> 16), (int)fs->b);
+            else
+                snprintf(tail, sizeof(tail), " %s %s @%u>",
+                         kind_names[kind], ct, (unsigned)fs->a);
+        } else {
+            snprintf(tail, sizeof(tail), " ?kind=%u>", (unsigned)kind);
+        }
+        CL_GC_PROTECT(obj);
+        out_str("#<FFI-STUB ");
+        fs = (CL_FfiStub *)CL_OBJ_TO_PTR(obj);
+        if (CL_SYMBOL_P(fs->name))
+            out_str_lisp(((CL_Symbol *)CL_OBJ_TO_PTR(fs->name))->name);
+        else
+            out_str("anonymous");
+        out_str(tail);
+        CL_GC_UNPROTECT(1);
+        break;
+    }
+
     default:
         out_str("#<unknown>");
         break;

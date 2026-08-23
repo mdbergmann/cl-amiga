@@ -151,7 +151,7 @@ static CL_Obj call_test(CL_Obj test_fn, CL_Obj a, CL_Obj b)
      * discriminating-function slot is a closure, handled below. */
     if (cl_funcallable_instance_p(test_fn))
         test_fn = cl_unwrap_funcallable(test_fn);
-    if (CL_FUNCTION_P(test_fn) || CL_BYTECODE_P(test_fn) || CL_CLOSURE_P(test_fn))
+    if (CL_FUNCTION_OBJ_P(test_fn))
         /* cl_vm_apply GC-roots targs across the call (a :test/:key may compact
          * while reading its args). */
         return cl_vm_apply(test_fn, targs, 2);
@@ -178,7 +178,7 @@ static CL_Obj call_1(CL_Obj fn, CL_Obj arg)
         if (v != CL_UNBOUND) return v;
         fn = cl_unwrap_funcallable(fn);
     }
-    if (CL_FUNCTION_P(fn) || CL_BYTECODE_P(fn) || CL_CLOSURE_P(fn))
+    if (CL_FUNCTION_OBJ_P(fn))
         /* cl_vm_apply GC-roots pargs across the call. */
         return cl_vm_apply(fn, pargs, 1);
     cl_error(CL_ERR_TYPE, "not a function");
@@ -195,7 +195,7 @@ static CL_Obj call_0(CL_Obj fn)
     }
     if (cl_funcallable_instance_p(fn))
         fn = cl_unwrap_funcallable(fn);
-    if (CL_FUNCTION_P(fn) || CL_BYTECODE_P(fn) || CL_CLOSURE_P(fn))
+    if (CL_FUNCTION_OBJ_P(fn))
         return cl_vm_apply(fn, NULL, 0);
     cl_error(CL_ERR_TYPE, "not a function");
     return CL_NIL;
