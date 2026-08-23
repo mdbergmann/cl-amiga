@@ -54,8 +54,11 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-case "$OUTROOT" in /*) ;; *) OUTROOT="$(pwd)/$OUTROOT" ;; esac
-case "$CLAMIGA" in /*) ;; *) CLAMIGA="$(pwd)/$CLAMIGA" ;; esac
+# Absolute already?  A drive-letter path (C:/...) is what the Makefile hands
+# the tests as TMPDIR on Windows -- it is absolute for the native clamiga.exe
+# the paths end up in, and must not get $(pwd) glued in front.
+case "$OUTROOT" in /*|[A-Za-z]:/*) ;; *) OUTROOT="$(pwd)/$OUTROOT" ;; esac
+case "$CLAMIGA" in /*|[A-Za-z]:/*) ;; *) CLAMIGA="$(pwd)/$CLAMIGA" ;; esac
 [ -x "$CLAMIGA" ] || { echo "compile-lib-fasls: no host binary at $CLAMIGA (make host)" >&2; exit 2; }
 
 cd "$ROOT" || exit 2

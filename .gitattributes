@@ -1,0 +1,9 @@
+# Check text files out with LF on every platform.
+#
+# GitHub's Windows runners (and a stock Git for Windows install) default to
+# core.autocrlf=true, which rewrites every text file to CRLF in the working
+# tree.  clamiga's reader treats a CR as whitespace, so the sources still
+# load -- but a string literal that spans lines then carries "\r\n", and a
+# test comparing such a literal against a file clamiga wrote ("\n" only)
+# fails on Windows alone (tests/test_amiga_bindgen.lisp was the first).
+* text=auto eol=lf

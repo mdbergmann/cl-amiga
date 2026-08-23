@@ -43,7 +43,13 @@ touching Windows-facing code:
   Makefile, because only command-line arguments are path-converted on the way
   from the MSYS shell to a native process — env vars and paths written into
   generated `.lisp` files are not.  `tests/shpath.sh` has `native_path` for
-  paths compared against clamiga's own output.
+  paths compared against clamiga's own output.  A shell script that decides
+  whether a path is absolute must accept `C:/...` next to `/...`.
+- **Line endings**: `.gitattributes` forces LF in the working tree (`* text=auto
+  eol=lf`) because Git for Windows — and GitHub's Windows runners — default to
+  `core.autocrlf=true`.  Without it a string literal that spans lines carries
+  `\r\n` on Windows only, and a test comparing it against clamiga's own output
+  fails there and nowhere else.
 
 Cross-compile for Amiga and test via FS-UAE:
 ```

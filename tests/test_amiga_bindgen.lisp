@@ -29,10 +29,23 @@
 (defvar *pass* 0)
 (defvar *fail* 0)
 
-(defun chk (name ok)
-  (if ok (incf *pass*) (incf *fail*))
-  (format t "~:[FAIL~;ok  ~] ~A~@[ [morphos]~]~%" ok name *mos*)
-  ok)
+;; One check = one line.  A check that SIGNALS counts as a failure and
+;; names the condition on its FAIL line -- it must not take the rest of the
+;; run with it (LOAD would recover at the next top-level form, print the
+;; summary with everything after the error silently unrun, and the shell
+;; driver only shows ok/FAIL lines).
+(defun %chk (name thunk)
+  (let* ((err nil)
+         (ok (handler-case (funcall thunk)
+               (error (e)
+                 (setf err (substitute #\Space #\Newline (princ-to-string e)))
+                 nil))))
+    (if ok (incf *pass*) (incf *fail*))
+    (format t "~:[FAIL~;ok  ~] ~A~:[~; [morphos]~]~@[ -- ERROR: ~A~]~%" ok name *mos* err)
+    ok))
+
+(defmacro chk (name form)
+  `(%chk ,name (lambda () ,form)))
 
 (defun raw-file (rel)
   (concatenate 'string *raw-dir* "/" rel ".lisp"))
@@ -56,6 +69,10 @@
 
 (defvar *file-cache* (make-hash-table :test 'equal))
 
+;; Line endings: the text is rebuilt with #\Newline only and the needle is
+;; stripped of #\Return, so a CRLF checkout of THIS file (Git for Windows'
+;; autocrlf default puts "\r\n" inside a string literal that spans lines)
+;; or a CRLF-written module compare equal to an LF one.
 (defun file-text (rel)
   (or (gethash rel *file-cache*)
       (setf (gethash rel *file-cache*)
@@ -63,11 +80,12 @@
               (with-output-to-string (out)
                 (loop for line = (read-line in nil nil)
                       while line
-                      do (write-string line out) (write-char #\Newline out)))))))
+                      do (write-string (string-right-trim '(#\Return) line) out)
+                         (write-char #\Newline out)))))))
 
 (defun file-contains (rel needle)
   "NEEDLE may span lines (it is matched against the whole file text)."
-  (and (search needle (file-text rel)) t))
+  (and (search (remove #\Return needle) (file-text rel)) t))
 
 ;;; Wrapper arity without calling it: the wrapper errors at the NIL base,
 ;;; but only after the arg-count check (a wrong count is an arity error).
@@ -132,6 +150,19 @@
   (some (lambda (r) (eql (third r) value)) (rows-named pkg :const name)))
 
 (defun name-row-p (pkg name) (and (rows-named pkg :name name) t))
+
+(defun fn-row-unguarded-p (pkg name)
+  "Every (:fn NAME ...) row is free of a :morphos / :not-morphos guard."
+  (and (rows-named pkg :fn name)
+       (every (lambda (r) (null (intersection '(:morphos :not-morphos) (nthcdr 5 r))))
+              (rows-named pkg :fn name))))
+
+;;; (setf (ACCESSOR ptr) value) through the accessor's DEFSETF -- the
+;;; user-facing contract of a struct field setter (there is no (SETF
+;;; ACCESSOR) function).  The accessor symbol exists only at run time, so
+;;; the SETF form is built and compiled here.
+(defun set-field (accessor ptr value)
+  (funcall (eval `(lambda (p v) (setf (,accessor p) v))) ptr value))
 
 ;;; ----------------------------------------------------------------
 (defun fixture-checks ()
@@ -267,12 +298,20 @@
          (multiple-value-bind (s status) (find-symbol "%SET-EX-THING-X" p)
            (and s (eq status :internal) (fboundp s)
                 (eq (getf (ffi::%ffi-stub-info s) :kind) :poke))))
+    ;; DEFSETF is the whole setter contract: there is no (SETF EX-THING-X)
+    ;; function, and asking for one says so by name
+    (chk "no (SETF EX-THING-X) function: FDEFINITION signals UNDEFINED-FUNCTION naming it"
+         (handler-case (progn (fdefinition (list 'setf (sym p "ex-thing-x"))) nil)
+           (undefined-function (e)
+             (and (equal (cell-error-name e) (list 'setf (sym p "ex-thing-x")))
+                  (search "(SETF EX-THING-X)" (princ-to-string e))
+                  t))))
     (chk "accessors work: x/y/flag on foreign memory"
          (let ((m (ffi:alloc-foreign 36)))
            (unwind-protect
                 (progn
-                  (funcall (fdefinition (list 'setf (sym p "ex-thing-x"))) -7 m)
-                  (funcall (fdefinition (list 'setf (sym p "ex-thing-flag"))) 200 m)
+                  (set-field (sym p "ex-thing-x") m -7)
+                  (set-field (sym p "ex-thing-flag") m 200)
                   (and (eql (funcall (sym p "ex-thing-x") m) -7)
                        (eql (funcall (sym p "ex-thing-flag") m) 200)
                        (null (funcall (sym p "ex-thing-name") m))
@@ -308,7 +347,9 @@
     (let ((p "AMIGA.RAW.MOSONLY"))
       (chk "mosonly: functions unconditional (whole lib is MorphOS-only)"
            (and (fbound p "mo-version") (fbound p "mo-create")
-                (file-contains "mosonly" "(amiga.ffi:defcfun mo-create *mosonly-base* -36 (:d0 size)")))
+                (fn-row-unguarded-p p "mo-version") (fn-row-unguarded-p p "mo-create")
+                (fn-row-p p "mo-create" :lvo -36 :regs '(:d0) :result :pointer)
+                (file-contains "mosonly" "MO_Create(ULONG size) (D0) LVO -36")))
       (chk "mosonly: header names MorphOS SDK as the source"
            (file-contains "mosonly" "MorphOS SDK mosonly_lib.fd"))))
   ;; --- class libraries: module path by kind, tags from the C header ---
@@ -325,10 +366,9 @@
               (file-contains "gadgets/fixgad" "(amiga.ffi:open-library-or-die \"gadgets/fixgad.gadget\" 0)")))
     (chk "gadgets/fixgad: functions (FIXGAD_GetClass pointer, FIXGAD_Refresh void)"
          (and (fbound p "fixgad-get-class") (external-p p "fixgad-get-class")
-              (file-contains "gadgets/fixgad" "defcfun fixgad-get-class *fixgad-base* -30 ()
-    :result :pointer")
-              (file-contains "gadgets/fixgad" "defcfun fixgad-refresh *fixgad-base* -36 (:a0 gadget)
-    :result :void")))
+              (fn-row-p p "fixgad-get-class" :lvo -30 :result :pointer)
+              (file-contains "gadgets/fixgad" "FIXGAD_GetClass() () LVO -30")
+              (fn-row-p p "fixgad-refresh" :lvo -36 :regs '(:a0) :result :void)))
     (chk "gadgets/fixgad: header lists gadgets/fixgad.h as a source"
          (file-contains "gadgets/fixgad" ";;;   gadgets/fixgad.h"))
     ;; #define expressions
@@ -379,7 +419,7 @@
     (chk "C: #undef/redefine — first value kept, later refs use the new one, no duplicate"
          (and (eql (sym-value p "+fixgad-dummy+") #x1400)
               (eql (sym-value p "+fixgad-after+") #x3001)
-              (= 1 (count-matches "(defconstant +fixgad-dummy+ " (file-text "gadgets/fixgad")))))
+              (= 1 (length (rows-named p :const "+fixgad-dummy+")))))
     ;; enums
     (chk "C: anonymous enum — implicit, explicit, expression, trailing comma"
          (and (eql (sym-value p "+fixgad-img-default+") 0) (eql (sym-value p "+fixgad-img-info+") 1)
@@ -403,12 +443,6 @@
               (eql (sym-value p "+reaction-dummy+") #x6000)
               (eql (sym-value p "+reaction-text-attr+") #x6005)
               (not (sym p "+make-id+")) (not (sym p "+reaction-reaction-h+"))))))
-
-(defun count-matches (needle text)
-  (let ((n 0) (start 0))
-    (loop for p = (search needle text :start2 start)
-          while p do (incf n) (setf start (1+ p)))
-    n))
 
 ;;; ----------------------------------------------------------------
 (defun committed-checks ()
@@ -558,8 +592,15 @@
          (eql (sym-value "AMIGA.RAW.TRACKFILE" "+tferror-unit-busy+") -202041))))
 
 ;;; ----------------------------------------------------------------
-(cond ((string= *mode* "fixture") (fixture-checks))
-      ((string= *mode* "committed") (committed-checks))
-      (t (error "unknown BINDGEN_CHECK mode ~S" *mode*)))
+;; An error between checks (not inside a CHK) must not leave a green-looking
+;; "fail=0" summary behind with the remaining checks unrun.
+(handler-case
+    (cond ((string= *mode* "fixture") (fixture-checks))
+          ((string= *mode* "committed") (committed-checks))
+          (t (error "unknown BINDGEN_CHECK mode ~S" *mode*)))
+  (error (e)
+    (incf *fail*)
+    (format t "FAIL checks aborted by an error outside a check -- ERROR: ~A~%"
+            (substitute #\Space #\Newline (princ-to-string e)))))
 
 (format t "~%BINDGEN-RESULT mode=~A morphos=~A pass=~D fail=~D~%" *mode* *mos* *pass* *fail*)
