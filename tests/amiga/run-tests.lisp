@@ -6057,6 +6057,17 @@
        (handler-case (slot-value (make-instance 'ubs-amiga) 'x)
          (cell-error () :cell)))
 (check "unbound-slot subtypep cell-error" t (subtypep 'unbound-slot 'cell-error))
+;; FDEFINITION of a (SETF accessor) name that has no (SETF accessor)
+;; function: UNDEFINED-FUNCTION, CELL-ERROR-NAME is the list, and the
+;; report names it (not "?")
+(check "fdefinition (setf x) undefined: cell-error-name is the list"
+       '(setf ubs-amiga-no-such-setter)
+       (handler-case (fdefinition '(setf ubs-amiga-no-such-setter))
+         (undefined-function (c) (cell-error-name c))))
+(check "fdefinition (setf x) undefined: report names (SETF X)" t
+       (handler-case (fdefinition '(setf ubs-amiga-no-such-setter))
+         (undefined-function (c)
+           (not (null (search "(SETF UBS-AMIGA-NO-SUCH-SETTER)" (princ-to-string c)))))))
 (check "unbound-slot report names the slot" t
        (handler-case (slot-value (make-instance 'ubs-amiga) 'x)
          (unbound-slot (c) (and (search "The slot X is unbound"

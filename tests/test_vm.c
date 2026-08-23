@@ -1853,6 +1853,20 @@ TEST(eval_cell_error_name_accessor)
         "FOO");
 }
 
+/* FDEFINITION of a (SETF accessor) name with no (SETF accessor) function
+ * (e.g. the accessor has only a DEFSETF): the UNDEFINED-FUNCTION names the
+ * whole function name, not "?", and CELL-ERROR-NAME is the list. */
+TEST(eval_undefined_setf_function_name_in_report)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (fdefinition '(setf no-such-setf-accessor-xyz))"
+        "  (undefined-function (e)"
+        "    (list (not (null (search \"(SETF NO-SUCH-SETF-ACCESSOR-XYZ)\""
+        "                             (princ-to-string e))))"
+        "          (cell-error-name e))))"),
+        "(T (SETF NO-SUCH-SETF-ACCESSOR-XYZ))");
+}
+
 TEST(eval_file_error_pathname_accessor)
 {
     ASSERT_STR_EQ(eval_print(
@@ -11102,6 +11116,7 @@ int main(void)
     RUN(eval_stream_error_stream_accessor);
     RUN(eval_package_error_package_accessor);
     RUN(eval_cell_error_name_accessor);
+    RUN(eval_undefined_setf_function_name_in_report);
     RUN(eval_file_error_pathname_accessor);
     RUN(eval_define_compiler_macro);
     RUN(eval_setf_values);

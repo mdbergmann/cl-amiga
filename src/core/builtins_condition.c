@@ -1287,8 +1287,23 @@ static void signal_cell_error(CL_Obj type_sym, CL_Obj name,
     CL_Obj slots = CL_NIL;
     CL_Obj cond;
     char msgbuf[160];
-    const char *sym_name = CL_NULL_P(name) ? "NIL"
-                          : (CL_SYMBOL_P(name) ? cl_symbol_name(name) : "?");
+    char namebuf[96];
+    const char *sym_name;
+
+    if (CL_NULL_P(name))
+        sym_name = "NIL";
+    else if (CL_SYMBOL_P(name))
+        sym_name = cl_symbol_name(name);
+    else if (CL_CONS_P(name) && CL_SYMBOL_P(cl_car(name))
+             && CL_CONS_P(cl_cdr(name)) && CL_SYMBOL_P(cl_car(cl_cdr(name)))
+             && CL_NULL_P(cl_cdr(cl_cdr(name)))) {
+        /* a (SETF ACCESSOR) function name -- FDEFINITION / FBOUNDP /
+         * FUNCALL on one that has only a DEFSETF land here */
+        snprintf(namebuf, sizeof(namebuf), "(%s %s)",
+                 cl_symbol_name(cl_car(name)), cl_symbol_name(cl_car(cl_cdr(name))));
+        sym_name = namebuf;
+    } else
+        sym_name = "?";
 
     CL_GC_PROTECT(name);
 

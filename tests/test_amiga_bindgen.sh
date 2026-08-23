@@ -45,7 +45,10 @@ run_checks() {
         out=$(BINDGEN_CHECK="$1" RAWDIR="$2" "$CLAMIGA" --no-userinit --non-interactive \
               --heap 256M --load "$CHECK" </dev/null 2>&1 | grep -v '^; Loading')
     fi
-    echo "$out" | grep -E '^(FAIL|ok  )' | sed 's/^/  /'
+    # ok/FAIL lines, plus anything clamiga's LOAD recovery printed (a check
+    # that errors out names its condition on its FAIL line; an ERROR line
+    # here means a top-level form died and the checks after it never ran)
+    echo "$out" | grep -E '^(FAIL|ok  |ERROR)' | sed 's/^/  /'
     summary=$(echo "$out" | grep '^BINDGEN-RESULT')
     if [ -z "$summary" ]; then
         echo "  FAIL: check script did not finish ($1, $3)"
