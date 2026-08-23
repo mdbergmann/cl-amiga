@@ -5086,15 +5086,15 @@ if compile_fasl "$WORK/bt.lisp" "$WORK/bt.fasl"; then
 ;; of these must survive the storm without reading a stale, pre-compaction
 ;; package/symbol pointer afterward.
 (defpackage :gcstress-bt3 (:use :cl))
-(amiga.ffi:define-binding-table "GCSTRESS-BT3" () (:const "+A+" 1) (:fn "FOO" -30 (:a0) :pointer))
+(amiga.ffi:define-binding-table "GCSTRESS-BT3" (:base gcstress-bt:*bt-base*) (:const "+A+" 1) (:fn "FOO" -30 (:a0) :pointer))
 (defpackage :gcstress-bt4 (:use :cl))
-(amiga.ffi:define-binding-table "GCSTRESS-BT4" () (:const "+A+" 1) (:fn "FOO" -30 (:a0) :pointer))
+(amiga.ffi:define-binding-table "GCSTRESS-BT4" (:base gcstress-bt:*bt-base*) (:const "+A+" 1) (:fn "FOO" -30 (:a0) :pointer))
 (defpackage :gcstress-bt5 (:use :cl))
-(amiga.ffi:define-binding-table "GCSTRESS-BT5" () (:const "+A+" 1) (:fn "FOO" -30 (:a0) :pointer))
+(amiga.ffi:define-binding-table "GCSTRESS-BT5" (:base gcstress-bt:*bt-base*) (:const "+A+" 1) (:fn "FOO" -30 (:a0) :pointer))
 (defpackage :gcstress-bt6 (:use :cl))
-(amiga.ffi:define-binding-table "GCSTRESS-BT6" () (:const "+A+" 1) (:fn "FOO" -30 (:a0) :pointer))
+(amiga.ffi:define-binding-table "GCSTRESS-BT6" (:base gcstress-bt:*bt-base*) (:const "+A+" 1) (:fn "FOO" -30 (:a0) :pointer))
 (defpackage :gcstress-bt7 (:use :cl))
-(amiga.ffi:define-binding-table "GCSTRESS-BT7" () (:const "+A+" 1) (:fn "FOO" -30 (:a0) :pointer))
+(amiga.ffi:define-binding-table "GCSTRESS-BT7" (:base gcstress-bt:*bt-base*) (:const "+A+" 1) (:fn "FOO" -30 (:a0) :pointer))
 
 (format t "BT-UNINTERN-BEFORE:~a~%" (not (null (clamiga::%binding-table-info "GCSTRESS-BT3"))))
 (unintern 'gcstress-bt3:foo "GCSTRESS-BT3")
