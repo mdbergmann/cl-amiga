@@ -418,10 +418,17 @@ TEST(compile_file_load_round_trip)
 {
     const char *dir = getenv("TMPDIR");
     char src[512], fasl[512], form[1400];
+    char *p;
     FILE *f;
     if (!dir || !*dir) dir = "/tmp";
     snprintf(src, sizeof(src), "%s/clamiga_stub_rt_%d.lisp", dir, (int)getpid());
     snprintf(fasl, sizeof(fasl), "%s/clamiga_stub_rt_%d.fasl", dir, (int)getpid());
+    /* The paths go into Lisp string literals below: a Windows TMPDIR spelled
+     * with backslashes ("C:\a\_temp\...") would have them eaten by the reader
+     * as escapes ("\t" -> tab).  Windows takes '/' everywhere, so spell the
+     * paths that way for the C runtime and the reader alike. */
+    for (p = src; *p; p++) if (*p == '\\') *p = '/';
+    for (p = fasl; *p; p++) if (*p == '\\') *p = '/';
     f = fopen(src, "w");
     ASSERT(f != NULL);
     fprintf(f,
