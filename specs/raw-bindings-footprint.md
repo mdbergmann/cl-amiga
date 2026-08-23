@@ -1,9 +1,10 @@
 # Raw OS bindings: pay-per-use footprint
 
-Status: Phase 1 and the side fixes IMPLEMENTED (2026-08-23, branch
-`feat/ffi-stub-descriptors`); Phase 2 PROPOSED.
-Date: 2026-08-22 (design), 2026-08-23 (Phase 1 results, see "Phase 1 —
-results" below)
+Status: Phase 1, the side fixes AND Phase 2 IMPLEMENTED (2026-08-23,
+branch `feat/ffi-stub-descriptors`).  See "Phase 1 — results" and
+"Phase 2 — results" below for what landed and where it deviates from
+the design text.
+Date: 2026-08-22 (design), 2026-08-23 (results)
 Scope: `lib/amiga/raw/*` (generated), `lib/amiga/ffi.lisp` (`defcfun`),
 `lib/ffi.lisp` (`defcstruct`), the curated `lib/amiga/*.lisp` modules that
 use both, and the runtime pieces that give them a representation.
@@ -477,6 +478,115 @@ ReAction example touching ~150 names ≈ **65 KB total vs 424 KB**; the
 four common modules for a typical program ≈ 0.25 MB vs 1.42 MB, and the
 load is one byte-vector read.  With everything touched (completion,
 cross-check test) it converges to the Phase 1 figure — never worse.
+
+### Phase 2 — results (implemented 2026-08-23)
+
+Measured with the appendix script (host, FASL-cache load, `ROOM` delta
+after `(ext:gc)`), alongside the two earlier columns:
+
+| module           | eager (Phase 0) | Phase 1   | **Phase 2** | table entries / bytes | symbols at load | FASL (P0 / P1 / **P2**) |
+|------------------|----------------:|----------:|------------:|----------------------:|----------------:|------------------------:|
+| raw/exec         |   216 KB        |  106 KB   |  **37 KB**  |   725 / 22 KB         |  10             |   — / 151 / **25 KB**   |
+| raw/intuition    |   424 KB        |  218 KB   |  **50 KB**  |  1485 / 47 KB         |  23             | 418 / 301 / **53 KB**   |
+| raw/graphics     |   477 KB        |  232 KB   |  **55 KB**  |  1511 / 51 KB         |  33             | 438 / 294 / **58 KB**   |
+| raw/dos          |   306 KB        |  140 KB   |  **34 KB**  |  1003 / 32 KB         |  10             |   — / 197 / **35 KB**   |
+| **the four**     | **1.42 MB**     | **0.71 MB** | **0.18 MB** |                     |                 |                         |
+
+All 131 raw FASLs together are 0.7 MB (`make fasl-amiga`).  On the
+target (FS-UAE 68040/JIT, the suite's `; raw-bindings:` lines):
+exec/dos/intuition/graphics **24/34/50/55 KB** (Phase 1: 90/135/210/223)
+at 140–160 ms per module from FASL.  Touching
+150 intuition names (a ReAction-program-sized working set) adds 14 KB
+(~95 B per name: symbol + name + export cons + stub/value).  Load time
+per module from a cached FASL is ~1 ms on the host; the FASL is one
+unit carrying the byte-vector literal plus the handful of eager forms.
+The "symbols at load" column is the base/version variables,
+`%version>=`, the `:shadow` names and the parameter names of the
+>7-register DEFCFUNs — cybergraphics, the worst case, has 46.
+
+What landed, and where it deviates from the design above:
+
+- **Blob**: `src/core/bindtab.c`, layout as designed (16-byte header,
+  16-byte entries sorted by name, name arena), packed in **C** by
+  `clamiga::%make-binding-table` — the `amiga.ffi:define-binding-table`
+  macro only calls it at macroexpansion time, so a source load on the
+  68020 packs in C too (the design allowed a Lisp packer).  Values are
+  u32 / i32 / or a wide big-endian magnitude of any size (the NDK has a
+  13-byte packed-string constant, `TEXTDTCLASS`); row kinds `:const`
+  `:var` `:fn` `:field` `:struct` `:name` — `:var` is the
+  `*NAME-SIZE*` special variable `defcstruct` used to `defvar`, `:name`
+  an export-only row for the >7-register functions whose `defcfun` over
+  `call-library` follows the table.  Guards are entry flags + a min
+  version byte, evaluated at **probe** time against `*features*` and the
+  `:version` variable.
+- **Package hook**: `CL_Package.bindings` = `#(blob base-var
+  version-var)`; one non-allocating lookup (`lookup_nolock` in
+  `package.c`) behind `find-symbol`, `intern`, the reader and use-list
+  inheritance: own table → own binding table → each used package's
+  externals then its table.  A hit is materialised outside
+  `cl_package_rwlock` and linked under it with a re-check; `cl_intern_in`
+  re-probes under the write lock so a table registered between its fast
+  path and its link cannot be shadowed by a fresh unbound symbol.
+  `%SET-<field>` names probe their field entry (the writer is built with
+  the reader and DEFSETF-registered).  Enumeration/mutation —
+  `%package-symbols`, `%package-external-symbols`, `unintern`,
+  `shadowing-import`, `unexport`, `import`, and `export` of a symbol not
+  present — flip the package eager first.  `use-package` needed nothing
+  (it never did conflict checking).  `CL_IMAGE_VERSION` 3 (package
+  layout); no FASL wire change, so no FASL bump.
+- **Deviation 1 — a failed guard is present, exported, unbound**, not
+  absent.  That is exactly what `(when guard (defcfun …))` + the
+  `:export` list produced, so `fboundp`-style feature probes
+  (`tests/amiga/test-raw-bindings.lisp`, `test_amiga_bindgen.lisp`) and
+  host-side reads of Amiga code (`amiga.raw.intuition:show-window` in a
+  file compiled on the host) keep working.
+- **Deviation 2 — registration fills present symbols.**  The generated
+  `defpackage` keeps its `:shadow` list (`amiga.raw.dos:open`), and
+  those symbols exist before the table does; `%register-binding-table`
+  walks the package's present symbols and installs the table's
+  definition on each one it names (with `force`, so a module reload
+  redefines like the eager forms did).  The design's "symbol present ⇒
+  never consult the table" invariant holds after that pass.
+- **Setters** are derived at probe time as designed; an `(:struct)`
+  embedded field has none.
+- **Generator**: one `define-binding-table` per module; the C prototype
+  moved from the `:doc` string to a trailing comment on each `:fn` row
+  (no doc arena — `*defcfun-docstrings*` still governs the eager
+  `defcfun`s); `;; skipped` comments stay; field-name clashes inside a
+  module become `;; dropped` comments instead of a silent redefinition.
+  Source size of intuition: 120 KB → 68 KB.
+- **Runtime bugs fixed on the way**: (1) `%CALL-MACRO-EXPANDER` spread a
+  macro form's arguments into a fixed `CL_Obj arg_array[255]` and
+  **silently dropped everything past the 254th** — the 1005-row
+  intuition table form lost 750 rows at macroexpansion.  `vm.c` gained
+  `cl_vm_apply_list` (an `OP_APPLY` stub frame, which spreads up to
+  `CALL-ARGUMENTS-LIMIT`) and the trampoline uses it beyond 254 args;
+  `tests/test_binding_table.c` pins 255/1005/4000.  (2) `MAKE-SYMBOL`
+  never filled the symbol's cached name hash (only
+  `cl_make_uninterned_symbol` did), so `import` / `export` /
+  `shadowing-import` of a fresh `make-symbol` symbol linked it into
+  bucket 0 of the package table and `find-symbol` never saw it again —
+  in any package.  Surfaced by the pre-commit review's lazy-package
+  tests.  (3) The same review caught that the eager-flip calls in
+  `cl_export_symbol` / `cl_import_symbol` / `unintern` / `unexport` /
+  `shadowing-import` ran an allocating call with the package (and
+  symbol) in unprotected C locals; they are rooted first now, with
+  gc-stress cases for each of the five.
+- **Tests**: `tests/test_binding_table.c` (packer, decoder, every row
+  kind and validation message, materialisation through every entry
+  point, guards/variants, inheritance, shadowing, flips, reload,
+  compaction, `compile-file` round trip, the trampoline);
+  `tests/test_amiga_bindgen.lisp` checks rows via
+  `%binding-table-entries` instead of grepping source;
+  `tests/test_amiga_curated_vs_raw.lisp` builds its LVO tables from the
+  rows; `test_gc_stress_regression.sh` and `test_mt_intern_stw.sh`
+  (both tiers) gained binding-table cases; `test_image.sh` saves and
+  restores a table; `tests/amiga/test-raw-bindings.lisp` checks laziness
+  on the target and keeps logging `ROOM` per module.
+
+Not done (noted, cheap to add later): a file-level source-location
+record for M-.; a table-walking `%package-external-symbols` that avoids
+the flip for completion; MUI/AHI inputs.
 
 ## Phase 3 — tree-shaking at `EXT:SAVE-IMAGE` (sketch, not designed)
 

@@ -15,18 +15,7 @@
 
 (defpackage "AMIGA.RAW.IMAGES.GLYPH"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*GLYPH-BASE*" "*GLYPH-VERSION*"
-   "+GLYPH-DUMMY+" "+GLYPH-GLYPH+" "+GLYPH-DRAW-INFO+" "+GLYPH-NONE+" 
-   "+GLYPH-DOWNARROW+" "+GLYPH-UPARROW+" "+GLYPH-LEFTARROW+" 
-   "+GLYPH-RIGHTARROW+" "+GLYPH-DROPDOWN+" "+GLYPH-POPUP+" 
-   "+GLYPH-CHECKMARK+" "+GLYPH-POPFONT+" "+GLYPH-POPFILE+" 
-   "+GLYPH-POPDRAWER+" "+GLYPH-POPSCREENMODE+" "+GLYPH-POPTIME+" 
-   "+GLYPH-RADIOBUTTON+" "+GLYPH-RETURNARROW+" "+GLYPH-BDOWNARROW+" 
-   "+GLYPH-BUPARROW+" "+GLYPH-BLEFTARROW+" "+GLYPH-BRIGHTARROW+" 
-   "+GLYPH-DROPDOWNMENU+" "+GLYPH-CYCLE+" "+GLYPH-POPDATE+" 
-   "+GLYPH-POPCOLOR+" "+GLYPH-POPCOLOUR+" "+GLYPH-SHIFTKEY+" 
-   "GLYPH-GET-CLASS" ))
+  (:export "*GLYPH-BASE*" "*GLYPH-VERSION*"))
 
 (in-package "AMIGA.RAW.IMAGES.GLYPH")
 
@@ -40,40 +29,44 @@
 (defun %version>= (n)
   (and *glyph-version* (>= *glyph-version* n)))
 
-;;; --- constants from images/glyph.h ---
-(defconstant +glyph-dummy+ #x85015000)
-(defconstant +glyph-glyph+ #x85015001)
-(defconstant +glyph-draw-info+ #x85015002)
-(defconstant +glyph-none+ 0)
-(defconstant +glyph-downarrow+ 1)
-(defconstant +glyph-uparrow+ 2)
-(defconstant +glyph-leftarrow+ 3)
-(defconstant +glyph-rightarrow+ 4)
-(defconstant +glyph-dropdown+ 5)
-(defconstant +glyph-popup+ 6)
-(defconstant +glyph-checkmark+ 7)
-(defconstant +glyph-popfont+ 8)
-(defconstant +glyph-popfile+ 9)
-(defconstant +glyph-popdrawer+ 10)
-(defconstant +glyph-popscreenmode+ 11)
-(defconstant +glyph-poptime+ 12)
-(defconstant +glyph-radiobutton+ #x12)
-(defconstant +glyph-returnarrow+ #x14)
-(defconstant +glyph-bdownarrow+ #x15)
-(defconstant +glyph-buparrow+ #x16)
-(defconstant +glyph-bleftarrow+ #x17)
-(defconstant +glyph-brightarrow+ #x18)
-(defconstant +glyph-dropdownmenu+ #x19)
-(defconstant +glyph-cycle+ #x1A)
-(defconstant +glyph-popdate+ #x1B)
-(defconstant +glyph-popcolor+ #x1C)
-(defconstant +glyph-popcolour+ #x1C)
-(defconstant +glyph-shiftkey+ #x20)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.IMAGES.GLYPH"
+    (:base *glyph-base* :version *glyph-version*)
 
-;;; --- functions (glyph_lib.sfd + MorphOS SDK) ---
-(when (%version>= 40)
-  (amiga.ffi:defcfun glyph-get-class *glyph-base* -30 ()
-    :result :pointer
-    :doc "Class * GLYPH_GetClass() () LVO -30"))
+  ;; --- constants from images/glyph.h ---
+  (:const "+GLYPH-DUMMY+" #x85015000)
+  (:const "+GLYPH-GLYPH+" #x85015001)
+  (:const "+GLYPH-DRAW-INFO+" #x85015002)
+  (:const "+GLYPH-NONE+" 0)
+  (:const "+GLYPH-DOWNARROW+" 1)
+  (:const "+GLYPH-UPARROW+" 2)
+  (:const "+GLYPH-LEFTARROW+" 3)
+  (:const "+GLYPH-RIGHTARROW+" 4)
+  (:const "+GLYPH-DROPDOWN+" 5)
+  (:const "+GLYPH-POPUP+" 6)
+  (:const "+GLYPH-CHECKMARK+" 7)
+  (:const "+GLYPH-POPFONT+" 8)
+  (:const "+GLYPH-POPFILE+" 9)
+  (:const "+GLYPH-POPDRAWER+" 10)
+  (:const "+GLYPH-POPSCREENMODE+" 11)
+  (:const "+GLYPH-POPTIME+" 12)
+  (:const "+GLYPH-RADIOBUTTON+" #x12)
+  (:const "+GLYPH-RETURNARROW+" #x14)
+  (:const "+GLYPH-BDOWNARROW+" #x15)
+  (:const "+GLYPH-BUPARROW+" #x16)
+  (:const "+GLYPH-BLEFTARROW+" #x17)
+  (:const "+GLYPH-BRIGHTARROW+" #x18)
+  (:const "+GLYPH-DROPDOWNMENU+" #x19)
+  (:const "+GLYPH-CYCLE+" #x1A)
+  (:const "+GLYPH-POPDATE+" #x1B)
+  (:const "+GLYPH-POPCOLOR+" #x1C)
+  (:const "+GLYPH-POPCOLOUR+" #x1C)
+  (:const "+GLYPH-SHIFTKEY+" #x20)
+
+  ;; --- functions (glyph_lib.sfd + MorphOS SDK) ---
+  (:fn "GLYPH-GET-CLASS" -30 () :pointer 40)   ; Class * GLYPH_GetClass() () LVO -30
+  )
 
 (provide "amiga/raw/images/glyph")

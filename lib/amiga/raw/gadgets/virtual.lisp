@@ -15,16 +15,7 @@
 
 (defpackage "AMIGA.RAW.GADGETS.VIRTUAL"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*VIRTUAL-BASE*" "*VIRTUAL-VERSION*"
-   "+VIRTUALA-BASE+" "+VIRTUALA-CONTENTS+" "+VIRTUALA-SCROLLER+" 
-   "+VIRTUALA-SCROLL-X+" "+VIRTUALA-SCROLL-Y+" "+VIRTUALA-VISIBLE-X+" 
-   "+VIRTUALA-VISIBLE-Y+" "+VIRTUALA-TOP-X+" "+VIRTUALA-TOP-Y+" 
-   "+VIRTUALA-TOTAL-X+" "+VIRTUALA-TOTAL-Y+" "+VIRTUALA-SCROLLER-X+" 
-   "+VIRTUALA-SCROLLER-Y+" "+VIRTUALA-INPUT-SCROLL+" 
-   "+VIRTUALA-NO-DISPOSE+" "+VIRTUALA-TARGET-X+" "+VIRTUALA-TARGET-Y+" 
-   "+VIRTUALA-MAP-X+" "+VIRTUALA-MAP-Y+" "VIRTUAL-GET-CLASS" 
-   "REFRESH-VIRTUAL-GADGET" "RETHINK-VIRTUAL-SIZE" ))
+  (:export "*VIRTUAL-BASE*" "*VIRTUAL-VERSION*"))
 
 (in-package "AMIGA.RAW.GADGETS.VIRTUAL")
 
@@ -38,39 +29,37 @@
 (defun %version>= (n)
   (and *virtual-version* (>= *virtual-version* n)))
 
-;;; --- constants from gadgets/virtual.h ---
-(defconstant +virtuala-base+ #x85024500)
-(defconstant +virtuala-contents+ #x85024500)
-(defconstant +virtuala-scroller+ #x85024501)
-(defconstant +virtuala-scroll-x+ #x85024502)
-(defconstant +virtuala-scroll-y+ #x85024503)
-(defconstant +virtuala-visible-x+ #x85024504)
-(defconstant +virtuala-visible-y+ #x85024505)
-(defconstant +virtuala-top-x+ #x85024506)
-(defconstant +virtuala-top-y+ #x85024507)
-(defconstant +virtuala-total-x+ #x85024508)
-(defconstant +virtuala-total-y+ #x85024509)
-(defconstant +virtuala-scroller-x+ #x8502450A)
-(defconstant +virtuala-scroller-y+ #x8502450B)
-(defconstant +virtuala-input-scroll+ #x8502450C)
-(defconstant +virtuala-no-dispose+ #x8502450D)
-(defconstant +virtuala-target-x+ #x8502450E)
-(defconstant +virtuala-target-y+ #x8502450F)
-(defconstant +virtuala-map-x+ #x85024510)
-(defconstant +virtuala-map-y+ #x85024511)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.GADGETS.VIRTUAL"
+    (:base *virtual-base* :version *virtual-version*)
 
-;;; --- functions (virtual_lib.sfd + MorphOS SDK) ---
-(when (%version>= 40)
-  (amiga.ffi:defcfun virtual-get-class *virtual-base* -30 ()
-    :result :pointer
-    :doc "Class * VIRTUAL_GetClass() () LVO -30"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun refresh-virtual-gadget *virtual-base* -36 (:a0 gadget :a1 obj :a2 window :a3 requester)
-    :result :void
-    :doc "VOID RefreshVirtualGadget(struct Gadget * gadget, Object * obj, struct Window * window, struct Requester * requester) (A0,A1,A2,A3) LVO -36"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun rethink-virtual-size *virtual-base* -42 (:a0 virt-obj :a1 rootlayout :a2 font :a3 screen :d0 layoutlimits)
-    :result :bool
-    :doc "BOOL RethinkVirtualSize(Object * virt_obj, Object * rootlayout, struct TextFont * font, struct Screen * screen, struct LayoutLimits * layoutlimits) (A0,A1,A2,A3,D0) LVO -42"))
+  ;; --- constants from gadgets/virtual.h ---
+  (:const "+VIRTUALA-BASE+" #x85024500)
+  (:const "+VIRTUALA-CONTENTS+" #x85024500)
+  (:const "+VIRTUALA-SCROLLER+" #x85024501)
+  (:const "+VIRTUALA-SCROLL-X+" #x85024502)
+  (:const "+VIRTUALA-SCROLL-Y+" #x85024503)
+  (:const "+VIRTUALA-VISIBLE-X+" #x85024504)
+  (:const "+VIRTUALA-VISIBLE-Y+" #x85024505)
+  (:const "+VIRTUALA-TOP-X+" #x85024506)
+  (:const "+VIRTUALA-TOP-Y+" #x85024507)
+  (:const "+VIRTUALA-TOTAL-X+" #x85024508)
+  (:const "+VIRTUALA-TOTAL-Y+" #x85024509)
+  (:const "+VIRTUALA-SCROLLER-X+" #x8502450A)
+  (:const "+VIRTUALA-SCROLLER-Y+" #x8502450B)
+  (:const "+VIRTUALA-INPUT-SCROLL+" #x8502450C)
+  (:const "+VIRTUALA-NO-DISPOSE+" #x8502450D)
+  (:const "+VIRTUALA-TARGET-X+" #x8502450E)
+  (:const "+VIRTUALA-TARGET-Y+" #x8502450F)
+  (:const "+VIRTUALA-MAP-X+" #x85024510)
+  (:const "+VIRTUALA-MAP-Y+" #x85024511)
+
+  ;; --- functions (virtual_lib.sfd + MorphOS SDK) ---
+  (:fn "VIRTUAL-GET-CLASS" -30 () :pointer 40)   ; Class * VIRTUAL_GetClass() () LVO -30
+  (:fn "REFRESH-VIRTUAL-GADGET" -36 (:a0 :a1 :a2 :a3) :void 40)   ; VOID RefreshVirtualGadget(struct Gadget * gadget, Object * obj, struct Window * window, struct Requester * requester) (A0,A1,A2,A3) LVO -36
+  (:fn "RETHINK-VIRTUAL-SIZE" -42 (:a0 :a1 :a2 :a3 :d0) :bool 40)   ; BOOL RethinkVirtualSize(Object * virt_obj, Object * rootlayout, struct TextFont * font, struct Screen * screen, struct LayoutLimits * layoutlimits) (A0,A1,A2,A3,D0) LVO -42
+  )
 
 (provide "amiga/raw/gadgets/virtual")

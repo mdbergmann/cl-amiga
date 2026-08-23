@@ -483,6 +483,18 @@ typedef struct {
                                * Per-package because the symbol's home pkg
                                * may have it exported while a using/importing
                                * package does not (or vice versa). */
+    CL_Obj bindings;    /* NIL, or the package's demand-interned binding
+                         * table (bindtab.c): a vector #(blob base-var
+                         * version-var) whose blob is a packed byte vector
+                         * of (name, definition) entries.  A name that is
+                         * not present in `symbols` but is in the blob is
+                         * MATERIALISED — symbol, value/FFI stub, export —
+                         * the first time any lookup asks for it, so a
+                         * generated OS binding module costs O(names used)
+                         * instead of O(names defined).  Enumeration and
+                         * mutation of the symbol set flip the package
+                         * eager (materialise all, clear this).  See
+                         * specs/raw-bindings-footprint.md, Phase 2. */
     uint32_t sym_count;
 } CL_Package;
 

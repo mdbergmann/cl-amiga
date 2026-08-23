@@ -30,7 +30,7 @@
  * ================================================================ */
 
 /* CL integer (fixnum or bignum) -> uint64_t (low 64 bits, two's complement). */
-static uint64_t ffi_obj_to_u64(CL_Obj o)
+uint64_t cl_ffi_obj_to_u64(CL_Obj o)
 {
     if (CL_FIXNUM_P(o))
         return (uint64_t)(int64_t)CL_FIXNUM_VAL(o);
@@ -49,7 +49,7 @@ static uint64_t ffi_obj_to_u64(CL_Obj o)
 }
 
 /* uint64_t -> CL integer (fixnum if it fits, else normalized bignum). */
-static CL_Obj ffi_u64_to_obj(uint64_t v)
+CL_Obj cl_ffi_u64_to_obj(uint64_t v)
 {
     CL_Obj bn;
     CL_Bignum *b;
@@ -65,7 +65,7 @@ static CL_Obj ffi_u64_to_obj(uint64_t v)
 }
 
 /* int64_t -> CL integer (signed). */
-static CL_Obj ffi_i64_to_obj(int64_t v)
+CL_Obj cl_ffi_i64_to_obj(int64_t v)
 {
     uint64_t mag;
     CL_Obj bn;
@@ -111,7 +111,7 @@ static CL_Obj bi_ffi_make_fp(CL_Obj *args, int nargs)
     (void)size;
     if (!CL_FIXNUM_P(args[0]) && !CL_BIGNUM_P(args[0]))
         cl_error(CL_ERR_TYPE, "FFI:MAKE-FOREIGN-POINTER: address must be an integer");
-    addr = ffi_obj_to_u64(args[0]);
+    addr = cl_ffi_obj_to_u64(args[0]);
     size = (nargs > 1 && !CL_NULL_P(args[1])) ? (uint32_t)CL_FIXNUM_VAL(args[1]) : 0;
     handle = platform_ffi_register((void *)(uintptr_t)addr);
     return cl_make_foreign_pointer(handle, size, 0);
@@ -128,7 +128,7 @@ static CL_Obj bi_ffi_fp_address(CL_Obj *args, int nargs)
         cl_error(CL_ERR_TYPE, "FFI:FOREIGN-POINTER-ADDRESS: argument must be a foreign pointer");
     fp = (CL_ForeignPtr *)CL_OBJ_TO_PTR(args[0]);
     real = platform_ffi_resolve(fp->address);
-    return ffi_u64_to_obj((uint64_t)(uintptr_t)real);
+    return cl_ffi_u64_to_obj((uint64_t)(uintptr_t)real);
 }
 
 /* (ffi:foreign-pointer-p obj) → T or NIL */
@@ -635,7 +635,7 @@ static CL_Obj bi_ffi_peek_u64(CL_Obj *args, int nargs)
 {
     uint64_t v;
     memcpy(&v, ffi_resolve_at(args, nargs, 1), sizeof(v));
-    return ffi_u64_to_obj(v);
+    return cl_ffi_u64_to_obj(v);
 }
 
 /* (ffi:peek-i64 fp &optional offset) → signed integer */
@@ -643,7 +643,7 @@ static CL_Obj bi_ffi_peek_i64(CL_Obj *args, int nargs)
 {
     int64_t v;
     memcpy(&v, ffi_resolve_at(args, nargs, 1), sizeof(v));
-    return ffi_i64_to_obj(v);
+    return cl_ffi_i64_to_obj(v);
 }
 
 /* (ffi:peek-single fp &optional offset) → single-float */
@@ -674,7 +674,7 @@ static CL_Obj bi_ffi_peek_pointer(CL_Obj *args, int nargs)
 /* (ffi:poke-i8 fp value &optional offset) → value */
 static CL_Obj bi_ffi_poke_i8(CL_Obj *args, int nargs)
 {
-    int8_t v = (int8_t)ffi_obj_to_u64(args[1]);
+    int8_t v = (int8_t)cl_ffi_obj_to_u64(args[1]);
     *(int8_t *)ffi_resolve_at(args, nargs, 2) = v;
     return args[1];
 }
@@ -682,7 +682,7 @@ static CL_Obj bi_ffi_poke_i8(CL_Obj *args, int nargs)
 /* (ffi:poke-i16 fp value &optional offset) → value */
 static CL_Obj bi_ffi_poke_i16(CL_Obj *args, int nargs)
 {
-    int16_t v = (int16_t)ffi_obj_to_u64(args[1]);
+    int16_t v = (int16_t)cl_ffi_obj_to_u64(args[1]);
     memcpy(ffi_resolve_at(args, nargs, 2), &v, sizeof(v));
     return args[1];
 }
@@ -690,7 +690,7 @@ static CL_Obj bi_ffi_poke_i16(CL_Obj *args, int nargs)
 /* (ffi:poke-i32 fp value &optional offset) → value */
 static CL_Obj bi_ffi_poke_i32(CL_Obj *args, int nargs)
 {
-    int32_t v = (int32_t)ffi_obj_to_u64(args[1]);
+    int32_t v = (int32_t)cl_ffi_obj_to_u64(args[1]);
     memcpy(ffi_resolve_at(args, nargs, 2), &v, sizeof(v));
     return args[1];
 }
@@ -698,7 +698,7 @@ static CL_Obj bi_ffi_poke_i32(CL_Obj *args, int nargs)
 /* (ffi:poke-u64 fp value &optional offset) → value */
 static CL_Obj bi_ffi_poke_u64(CL_Obj *args, int nargs)
 {
-    uint64_t v = ffi_obj_to_u64(args[1]);
+    uint64_t v = cl_ffi_obj_to_u64(args[1]);
     memcpy(ffi_resolve_at(args, nargs, 2), &v, sizeof(v));
     return args[1];
 }
@@ -706,7 +706,7 @@ static CL_Obj bi_ffi_poke_u64(CL_Obj *args, int nargs)
 /* (ffi:poke-i64 fp value &optional offset) → value (alias of poke-u64 bits) */
 static CL_Obj bi_ffi_poke_i64(CL_Obj *args, int nargs)
 {
-    uint64_t v = ffi_obj_to_u64(args[1]);
+    uint64_t v = cl_ffi_obj_to_u64(args[1]);
     memcpy(ffi_resolve_at(args, nargs, 2), &v, sizeof(v));
     return args[1];
 }
@@ -878,7 +878,7 @@ static uint32_t stub_int_arg(CL_Obj val, CL_Obj name)
     if (!CL_FIXNUM_P(val) && !CL_BIGNUM_P(val))
         cl_error(CL_ERR_TYPE, "%s: value must be an integer, got %s",
                  stub_display_name(name), cl_type_name(val));
-    return (uint32_t)ffi_obj_to_u64(val);
+    return (uint32_t)cl_ffi_obj_to_u64(val);
 }
 
 /* Store VAL into the CTYPE field at P (FFI:DEFCSTRUCT setter semantics:
@@ -914,7 +914,7 @@ static void stub_poke(uint8_t *p, int ctype, CL_Obj val, CL_Obj name)
             v = (uint32_t)(uintptr_t)platform_ffi_resolve(
                     ((CL_ForeignPtr *)CL_OBJ_TO_PTR(val))->address);
         else if (CL_FIXNUM_P(val) || CL_BIGNUM_P(val))
-            v = (uint32_t)ffi_obj_to_u64(val);
+            v = (uint32_t)cl_ffi_obj_to_u64(val);
         else
             cl_error(CL_ERR_TYPE,
                      "%s: pointer field value must be a foreign pointer, "
@@ -1028,6 +1028,30 @@ static int32_t stub_ct_size(int ctype)
     case CL_STUB_CT_DOUBLE:                   return 8;
     default:                                  return 4;
     }
+}
+
+/* The keyword <-> code tables, shared with the binding-table packer
+ * (bindtab.c) so DEFINE-BINDING-TABLE rows spell field types and result
+ * kinds exactly as DEFCSTRUCT / DEFCFUN do. */
+int cl_ffi_ctype_from_keyword(CL_Obj kw)
+{
+    return stub_keyword_index(kw, stub_ct_names, CL_STUB_CT_MAX + 1);
+}
+int cl_ffi_res_kind_from_keyword(CL_Obj kw)
+{
+    return stub_keyword_index(kw, stub_res_names, CL_AMIGA_RES_KIND_MAX + 1);
+}
+const char *cl_ffi_ctype_name(int ctype)
+{
+    return (ctype >= 0 && ctype <= CL_STUB_CT_MAX) ? stub_ct_names[ctype] : "?";
+}
+const char *cl_ffi_res_kind_name(int kind)
+{
+    return (kind >= 0 && kind <= CL_AMIGA_RES_KIND_MAX) ? stub_res_names[kind] : "?";
+}
+int32_t cl_ffi_ctype_size(int ctype)
+{
+    return stub_ct_size(ctype);
 }
 
 /* Validate and build one field stub.  WHO names the caller in errors;
@@ -1394,14 +1418,14 @@ static CLFFIType ffi_kw_to_type(CL_Obj kw)
 static void ffi_marshal_arg(CLFFIType t, CL_Obj v, CLFFIValue *out)
 {
     switch (t) {
-    case CL_FFI_I8:   out->i8  = (int8_t)ffi_obj_to_u64(v); break;
-    case CL_FFI_U8:   out->u8  = (uint8_t)ffi_obj_to_u64(v); break;
-    case CL_FFI_I16:  out->i16 = (int16_t)ffi_obj_to_u64(v); break;
-    case CL_FFI_U16:  out->u16 = (uint16_t)ffi_obj_to_u64(v); break;
-    case CL_FFI_I32:  out->i32 = (int32_t)ffi_obj_to_u64(v); break;
-    case CL_FFI_U32:  out->u32 = (uint32_t)ffi_obj_to_u64(v); break;
-    case CL_FFI_I64:  out->i64 = (int64_t)ffi_obj_to_u64(v); break;
-    case CL_FFI_U64:  out->u64 = ffi_obj_to_u64(v); break;
+    case CL_FFI_I8:   out->i8  = (int8_t)cl_ffi_obj_to_u64(v); break;
+    case CL_FFI_U8:   out->u8  = (uint8_t)cl_ffi_obj_to_u64(v); break;
+    case CL_FFI_I16:  out->i16 = (int16_t)cl_ffi_obj_to_u64(v); break;
+    case CL_FFI_U16:  out->u16 = (uint16_t)cl_ffi_obj_to_u64(v); break;
+    case CL_FFI_I32:  out->i32 = (int32_t)cl_ffi_obj_to_u64(v); break;
+    case CL_FFI_U32:  out->u32 = (uint32_t)cl_ffi_obj_to_u64(v); break;
+    case CL_FFI_I64:  out->i64 = (int64_t)cl_ffi_obj_to_u64(v); break;
+    case CL_FFI_U64:  out->u64 = cl_ffi_obj_to_u64(v); break;
     case CL_FFI_FLOAT:
         if (!CL_REALP(v))
             cl_error(CL_ERR_TYPE, "FFI:CALL-FOREIGN: :FLOAT argument must be a real number");
@@ -1416,7 +1440,7 @@ static void ffi_marshal_arg(CLFFIType t, CL_Obj v, CLFFIValue *out)
         else if (CL_FOREIGN_POINTER_P(v))
             out->p = platform_ffi_resolve(((CL_ForeignPtr *)CL_OBJ_TO_PTR(v))->address);
         else if (CL_INTEGER_P(v))
-            out->p = (void *)(uintptr_t)ffi_obj_to_u64(v);
+            out->p = (void *)(uintptr_t)cl_ffi_obj_to_u64(v);
         else
             cl_error(CL_ERR_TYPE, "FFI:CALL-FOREIGN: :POINTER argument must be a foreign pointer, integer, or NIL");
         break;
@@ -1435,10 +1459,10 @@ static CL_Obj ffi_box_result(CLFFIType t, CLFFIValue *r)
     case CL_FFI_U8:      return CL_MAKE_FIXNUM((int32_t)r->u8);
     case CL_FFI_I16:     return CL_MAKE_FIXNUM((int32_t)r->i16);
     case CL_FFI_U16:     return CL_MAKE_FIXNUM((int32_t)r->u16);
-    case CL_FFI_I32:     return ffi_i64_to_obj((int64_t)r->i32);
-    case CL_FFI_U32:     return ffi_u64_to_obj((uint64_t)r->u32);
-    case CL_FFI_I64:     return ffi_i64_to_obj(r->i64);
-    case CL_FFI_U64:     return ffi_u64_to_obj(r->u64);
+    case CL_FFI_I32:     return cl_ffi_i64_to_obj((int64_t)r->i32);
+    case CL_FFI_U32:     return cl_ffi_u64_to_obj((uint64_t)r->u32);
+    case CL_FFI_I64:     return cl_ffi_i64_to_obj(r->i64);
+    case CL_FFI_U64:     return cl_ffi_u64_to_obj(r->u64);
     case CL_FFI_FLOAT:   return cl_make_single_float(r->f);
     case CL_FFI_DOUBLE:  return cl_make_double_float(r->d);
     case CL_FFI_POINTER: return cl_make_foreign_pointer(platform_ffi_register(r->p), 0, 0);

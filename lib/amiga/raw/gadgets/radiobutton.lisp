@@ -15,15 +15,7 @@
 
 (defpackage "AMIGA.RAW.GADGETS.RADIOBUTTON"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*RADIOBUTTON-BASE*" "*RADIOBUTTON-VERSION*"
-   "+RBNA-DUMMY+" "+RBNA-USER-DATA+" "+RBNA-LABELS+" "+RBNA-LABEL+" 
-   "+RBNA-HINT-INFO+" "+RBNA-DISABLED+" "+RADIOBUTTON-DUMMY+" 
-   "+RADIOBUTTON-LABELS+" "+RADIOBUTTON-STRINGS+" "+RADIOBUTTON-SPACING+" 
-   "+RADIOBUTTON-SELECTED+" "+RADIOBUTTON-LABEL-PLACE+" 
-   "+RADIOBUTTON-LABEL-ARRAY+" "RADIOBUTTON-GET-CLASS" 
-   "ALLOC-RADIO-BUTTON-NODE-A" "FREE-RADIO-BUTTON-NODE" 
-   "SET-RADIO-BUTTON-NODE-ATTRS-A" "GET-RADIO-BUTTON-NODE-ATTRS-A" ))
+  (:export "*RADIOBUTTON-BASE*" "*RADIOBUTTON-VERSION*"))
 
 (in-package "AMIGA.RAW.GADGETS.RADIOBUTTON")
 
@@ -37,41 +29,33 @@
 (defun %version>= (n)
   (and *radiobutton-version* (>= *radiobutton-version* n)))
 
-;;; --- constants from gadgets/radiobutton.h ---
-(defconstant +rbna-dummy+ #x80020000)
-(defconstant +rbna-user-data+ #x80020001)
-(defconstant +rbna-labels+ #x80020002)
-(defconstant +rbna-label+ #x80020002)
-(defconstant +rbna-hint-info+ #x80020003)
-(defconstant +rbna-disabled+ #x80020004)
-(defconstant +radiobutton-dummy+ #x85014000)
-(defconstant +radiobutton-labels+ #x85014001)
-(defconstant +radiobutton-strings+ #x85014002)
-(defconstant +radiobutton-spacing+ #x85014003)
-(defconstant +radiobutton-selected+ #x85014004)
-(defconstant +radiobutton-label-place+ #x85014005)
-(defconstant +radiobutton-label-array+ #x85014006)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.GADGETS.RADIOBUTTON"
+    (:base *radiobutton-base* :version *radiobutton-version*)
 
-;;; --- functions (radiobutton_lib.sfd + MorphOS SDK) ---
-(when (%version>= 40)
-  (amiga.ffi:defcfun radiobutton-get-class *radiobutton-base* -30 ()
-    :result :pointer
-    :doc "Class * RADIOBUTTON_GetClass() () LVO -30"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun alloc-radio-button-node-a *radiobutton-base* -36 (:d0 columns :a0 tags)
-    :result :pointer
-    :doc "struct Node * AllocRadioButtonNodeA(ULONG columns, struct TagItem * tags) (D0,A0) LVO -36"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun free-radio-button-node *radiobutton-base* -42 (:a0 node)
-    :result :void
-    :doc "VOID FreeRadioButtonNode(struct Node * node) (A0) LVO -42"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun set-radio-button-node-attrs-a *radiobutton-base* -48 (:a0 node :a1 tags)
-    :result :void
-    :doc "VOID SetRadioButtonNodeAttrsA(struct Node * node, struct TagItem * tags) (A0,A1) LVO -48"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun get-radio-button-node-attrs-a *radiobutton-base* -54 (:a0 node :a1 tags)
-    :result :void
-    :doc "VOID GetRadioButtonNodeAttrsA(struct Node * node, struct TagItem * tags) (A0,A1) LVO -54"))
+  ;; --- constants from gadgets/radiobutton.h ---
+  (:const "+RBNA-DUMMY+" #x80020000)
+  (:const "+RBNA-USER-DATA+" #x80020001)
+  (:const "+RBNA-LABELS+" #x80020002)
+  (:const "+RBNA-LABEL+" #x80020002)
+  (:const "+RBNA-HINT-INFO+" #x80020003)
+  (:const "+RBNA-DISABLED+" #x80020004)
+  (:const "+RADIOBUTTON-DUMMY+" #x85014000)
+  (:const "+RADIOBUTTON-LABELS+" #x85014001)
+  (:const "+RADIOBUTTON-STRINGS+" #x85014002)
+  (:const "+RADIOBUTTON-SPACING+" #x85014003)
+  (:const "+RADIOBUTTON-SELECTED+" #x85014004)
+  (:const "+RADIOBUTTON-LABEL-PLACE+" #x85014005)
+  (:const "+RADIOBUTTON-LABEL-ARRAY+" #x85014006)
+
+  ;; --- functions (radiobutton_lib.sfd + MorphOS SDK) ---
+  (:fn "RADIOBUTTON-GET-CLASS" -30 () :pointer 40)   ; Class * RADIOBUTTON_GetClass() () LVO -30
+  (:fn "ALLOC-RADIO-BUTTON-NODE-A" -36 (:d0 :a0) :pointer 40)   ; struct Node * AllocRadioButtonNodeA(ULONG columns, struct TagItem * tags) (D0,A0) LVO -36
+  (:fn "FREE-RADIO-BUTTON-NODE" -42 (:a0) :void 40)   ; VOID FreeRadioButtonNode(struct Node * node) (A0) LVO -42
+  (:fn "SET-RADIO-BUTTON-NODE-ATTRS-A" -48 (:a0 :a1) :void 40)   ; VOID SetRadioButtonNodeAttrsA(struct Node * node, struct TagItem * tags) (A0,A1) LVO -48
+  (:fn "GET-RADIO-BUTTON-NODE-ATTRS-A" -54 (:a0 :a1) :void 40)   ; VOID GetRadioButtonNodeAttrsA(struct Node * node, struct TagItem * tags) (A0,A1) LVO -54
+  )
 
 (provide "amiga/raw/gadgets/radiobutton")

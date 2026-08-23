@@ -13,33 +13,34 @@
 
 (defpackage "AMIGA.RAW.PREFS.FONT"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+ID-FONT+" "+FONTNAMESIZE+" "+FP-WBFONT+" "+FP-SYSFONT+" 
-   "+FP-SCREENFONT+" "*FONT-PREFS-SIZE*" "FONT-PREFS-RESERVED" 
-   "FONT-PREFS-RESERVED2" "FONT-PREFS-TYPE" "FONT-PREFS-FRONT-PEN" 
-   "FONT-PREFS-BACK-PEN" "FONT-PREFS-DRAW-MODE" 
-   "FONT-PREFS-SPECIAL-DRAW-MODE" "FONT-PREFS-TEXT-ATTR" "FONT-PREFS-NAME" ))
+  (:export))
 
 (in-package "AMIGA.RAW.PREFS.FONT")
 
-;;; --- constants from prefs/font.i ---
-(defconstant +id-font+ #x464F4E54)
-(defconstant +fontnamesize+ #x80)
-(defconstant +fp-wbfont+ 0)
-(defconstant +fp-sysfont+ 1)
-(defconstant +fp-screenfont+ 2)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.PREFS.FONT" ()
 
-;;; --- structures from prefs/font.i ---
-(ffi:defcstruct (font-prefs :size 156)   ; FontPrefs (prefs/font.i)
-  (reserved (:struct 12) 0)
-  (reserved2 :u16 12)
-  (type :u16 14)
-  (front-pen :u8 16)
-  (back-pen :u8 17)
-  (draw-mode :u8 18)
-  (special-draw-mode :u8 19)
-  (text-attr (:struct 8) 20)
-  (name (:struct 128) 28)
-)
+  ;; --- constants from prefs/font.i ---
+  (:const "+ID-FONT+" #x464F4E54)
+  (:const "+FONTNAMESIZE+" #x80)
+  (:const "+FP-WBFONT+" 0)
+  (:const "+FP-SYSFONT+" 1)
+  (:const "+FP-SCREENFONT+" 2)
+
+  ;; --- structures from prefs/font.i ---
+  (:struct "FONT-PREFS" 156   ; FontPrefs (prefs/font.i)
+    ("RESERVED" (:struct 12) 0)
+    ("RESERVED2" :u16 12)
+    ("TYPE" :u16 14)
+    ("FRONT-PEN" :u8 16)
+    ("BACK-PEN" :u8 17)
+    ("DRAW-MODE" :u8 18)
+    ("SPECIAL-DRAW-MODE" :u8 19)
+    ("TEXT-ATTR" (:struct 8) 20)
+    ("NAME" (:struct 128) 28)
+    )
+  )
 
 (provide "amiga/raw/prefs/font")

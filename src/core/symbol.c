@@ -1,5 +1,6 @@
 #include "symbol.h"
 #include "package.h"
+#include "bindtab.h"
 #include "mem.h"
 #include "thread.h"
 #include "error.h"
@@ -290,13 +291,17 @@ CL_Obj cl_intern_in(const char *name, uint32_t len, CL_Obj package)
          * than before; OOM will surface elsewhere. */
     }
 
-    /* Fast path: read-lock check */
-    if (cl_package_rwlock) platform_rwlock_rdlock(cl_package_rwlock);
-    existing = cl_package_find_symbol_nolock(name, len, package);
-    if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
-    if (existing != CL_UNBOUND) {
-        if (heapname) platform_free(heapname);
-        return cl_normalize_nil_symbol(existing);
+    /* Fast path: present or inherited — including a name that lives in a
+     * package's demand-interned binding table (bindtab.c), which
+     * cl_find_symbol_with_status materialises before returning, so an
+     * INTERN of such a name yields the binding, never a fresh symbol. */
+    {
+        int status = 0;
+        existing = cl_find_symbol_with_status(name, len, package, &status);
+        if (status != 0) {
+            if (heapname) platform_free(heapname);
+            return existing;   /* already normalized */
+        }
     }
 
     /* Slow path: create the symbol AND its bucket cell outside the lock.
@@ -318,16 +323,30 @@ CL_Obj cl_intern_in(const char *name, uint32_t len, CL_Obj package)
 
     /* Write-lock with re-check; the link inside the lock is plain stores
      * only (cl_package_add_symbol_cell).  On the lost-race path our fresh
-     * symbol and cell simply become garbage. */
-    if (cl_package_rwlock) platform_rwlock_wrlock(cl_package_rwlock);
-    existing = cl_package_find_symbol_nolock(name, len, package);
-    if (existing != CL_UNBOUND) {
+     * symbol and cell simply become garbage.  The re-check includes the
+     * binding tables: a table registered since the fast path must win over
+     * our fresh symbol, or that symbol would shadow its own definition. */
+    {
+        int status = 0, name_idx = 0, def_idx = -1, want_setter = 0;
+        CL_Obj lazy_pkg = CL_NIL;
+        if (cl_package_rwlock) platform_rwlock_wrlock(cl_package_rwlock);
+        existing = cl_package_lookup_nolock(name, len, package, &status,
+                                            &lazy_pkg, &name_idx, &def_idx,
+                                            &want_setter);
+        if (existing != CL_UNBOUND) {
+            if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
+            if (heapname) platform_free(heapname);
+            return cl_normalize_nil_symbol(existing);
+        }
+        if (!CL_NULL_P(lazy_pkg)) {
+            if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
+            if (heapname) platform_free(heapname);
+            return cl_bindtab_materialize(lazy_pkg, name, len, name_idx,
+                                          def_idx, want_setter, 0);
+        }
+        cl_package_add_symbol_cell(package, sym, cell);
         if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
-        if (heapname) platform_free(heapname);
-        return cl_normalize_nil_symbol(existing);
     }
-    cl_package_add_symbol_cell(package, sym, cell);
-    if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
     if (heapname) platform_free(heapname);
     /* Newly-interned KEYWORD-package symbols are self-evaluating constants
      * and automatically external (CLHS 11.1.2.3.1).  Done here so any path

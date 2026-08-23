@@ -13,21 +13,25 @@
 
 (defpackage "AMIGA.RAW.PREFS.PREFHDR"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+ID-PREF+" "+ID-PRHD+" "*PREF-HEADER-SIZE*" "PREF-HEADER-VERSION" 
-   "PREF-HEADER-TYPE" "PREF-HEADER-FLAGS" ))
+  (:export))
 
 (in-package "AMIGA.RAW.PREFS.PREFHDR")
 
-;;; --- constants from prefs/prefhdr.i ---
-(defconstant +id-pref+ #x50524546)
-(defconstant +id-prhd+ #x50524844)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.PREFS.PREFHDR" ()
 
-;;; --- structures from prefs/prefhdr.i ---
-(ffi:defcstruct (pref-header :size 6)   ; PrefHeader (prefs/prefhdr.i)
-  (version :u8 0)
-  (type :u8 1)
-  (flags :u32 2)
-)
+  ;; --- constants from prefs/prefhdr.i ---
+  (:const "+ID-PREF+" #x50524546)
+  (:const "+ID-PRHD+" #x50524844)
+
+  ;; --- structures from prefs/prefhdr.i ---
+  (:struct "PREF-HEADER" 6   ; PrefHeader (prefs/prefhdr.i)
+    ("VERSION" :u8 0)
+    ("TYPE" :u8 1)
+    ("FLAGS" :u32 2)
+    )
+  )
 
 (provide "amiga/raw/prefs/prefhdr")

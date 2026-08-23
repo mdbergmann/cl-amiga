@@ -15,26 +15,7 @@
 
 (defpackage "AMIGA.RAW.TRACKFILE"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*TRACKFILE-BASE*" "*TRACKFILE-VERSION*"
-   "+TFUNIT-CONTROL+" "+TFSU-NEXT-AVAILABLE-UNIT+" "+TFERROR-UNIT-BUSY+" 
-   "+TFERROR-OUT-OF-MEMORY+" "+TFERROR-UNIT-NOT-FOUND+" 
-   "+TFERROR-ALREADY-IN-USE+" "+TFERROR-UNIT-NOT-ACTIVE+" 
-   "+TFERROR-INVALID-FILE+" "+TFERROR-INVALID-FILE-SIZE+" 
-   "+TFERROR-NO-FILE-GIVEN+" "+TFERROR-ABORTED+" 
-   "+TFERROR-INVALID-DRIVE-TYPE+" "+TFERROR-PROCESS-FAILED+" 
-   "+TFERROR-NO-MEDIUM-PRESENT+" "+TFERROR-READ-ONLY-VOLUME+" 
-   "+TFERROR-READ-ONLY-FILE+" "+TFERROR-DUPLICATE-DISK+" 
-   "+TFERROR-DUPLICATE-VOLUME+" "+TFERROR-DENIED+" 
-   "+TFERROR-NOT-SUPPORTED+" "+TF-DUMMY+" "+TF-IMAGE-FILE-NAME+" 
-   "+TF-IMAGE-FILE-HANDLE+" "+TF-WRITE-PROTECTED+" "+TF-DRIVE-TYPE+" 
-   "+TF-TIMEOUT+" "+TF-ENABLE-CHECKSUMS+" "+TF-TAG-ITEM-FAILED+" 
-   "+TF-MAX-CACHE-MEMORY+" "+TF-ENABLE-UNIT-CACHE+" 
-   "+TF-PREFILL-UNIT-CACHE+" "+TFGUD-ALL-UNITS+" "+TFEFS-UNSUPPORTED+" 
-   "+TF-MINIMUM-CACHE-SIZE+" "TF-START-UNIT-TAG-LIST" 
-   "TF-STOP-UNIT-TAG-LIST" "TF-INSERT-MEDIA-TAG-LIST" 
-   "TF-EJECT-MEDIA-TAG-LIST" "TF-GET-UNIT-DATA" "TF-FREE-UNIT-DATA" 
-   "TF-CHANGE-UNIT-TAG-LIST" "TF-EXAMINE-FILE-SIZE" ))
+  (:export "*TRACKFILE-BASE*" "*TRACKFILE-VERSION*"))
 
 (in-package "AMIGA.RAW.TRACKFILE")
 
@@ -48,66 +29,57 @@
 (defun %version>= (n)
   (and *trackfile-version* (>= *trackfile-version* n)))
 
-;;; --- constants from devices/trackfile.h ---
-(defconstant +tfunit-control+ -1)
-(defconstant +tfsu-next-available-unit+ -1)
-(defconstant +tferror-unit-busy+ -202041)
-(defconstant +tferror-out-of-memory+ -202042)
-(defconstant +tferror-unit-not-found+ -202043)
-(defconstant +tferror-already-in-use+ -202044)
-(defconstant +tferror-unit-not-active+ -202045)
-(defconstant +tferror-invalid-file+ -202046)
-(defconstant +tferror-invalid-file-size+ -202047)
-(defconstant +tferror-no-file-given+ -202048)
-(defconstant +tferror-aborted+ -202049)
-(defconstant +tferror-invalid-drive-type+ -202050)
-(defconstant +tferror-process-failed+ -202051)
-(defconstant +tferror-no-medium-present+ -202052)
-(defconstant +tferror-read-only-volume+ -202053)
-(defconstant +tferror-read-only-file+ -202054)
-(defconstant +tferror-duplicate-disk+ -202055)
-(defconstant +tferror-duplicate-volume+ -202056)
-(defconstant +tferror-denied+ -202057)
-(defconstant +tferror-not-supported+ -202058)
-(defconstant +tf-dummy+ #xA0200400)
-(defconstant +tf-image-file-name+ #xA0200401)
-(defconstant +tf-image-file-handle+ #xA0200402)
-(defconstant +tf-write-protected+ #xA0200403)
-(defconstant +tf-drive-type+ #xA0200404)
-(defconstant +tf-timeout+ #xA0200405)
-(defconstant +tf-enable-checksums+ #xA0200406)
-(defconstant +tf-tag-item-failed+ #xA0200407)
-(defconstant +tf-max-cache-memory+ #xA0200408)
-(defconstant +tf-enable-unit-cache+ #xA0200409)
-(defconstant +tf-prefill-unit-cache+ #xA020040A)
-(defconstant +tfgud-all-units+ -1)
-(defconstant +tfefs-unsupported+ -1)
-(defconstant +tf-minimum-cache-size+ #xB3B0)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.TRACKFILE"
+    (:base *trackfile-base* :version *trackfile-version*)
 
-;;; --- functions (trackfile_lib.sfd) ---
-(amiga.ffi:defcfun tf-start-unit-tag-list *trackfile-base* -42 (:d0 which-unit :a0 tags)
-    :result :signed
-    :doc "LONG TFStartUnitTagList(LONG which_unit, CONST struct TagItem * tags) (D0,A0) LVO -42")
-(amiga.ffi:defcfun tf-stop-unit-tag-list *trackfile-base* -48 (:d0 which-unit :a0 tags)
-    :result :signed
-    :doc "LONG TFStopUnitTagList(LONG which_unit, CONST struct TagItem * tags) (D0,A0) LVO -48")
-(amiga.ffi:defcfun tf-insert-media-tag-list *trackfile-base* -54 (:d0 which-unit :a0 tags)
-    :result :signed
-    :doc "LONG TFInsertMediaTagList(LONG which_unit, CONST struct TagItem * tags) (D0,A0) LVO -54")
-(amiga.ffi:defcfun tf-eject-media-tag-list *trackfile-base* -60 (:d0 which-unit :a0 tags)
-    :result :signed
-    :doc "LONG TFEjectMediaTagList(LONG which_unit, CONST struct TagItem * tags) (D0,A0) LVO -60")
-(amiga.ffi:defcfun tf-get-unit-data *trackfile-base* -66 (:d0 which-unit)
-    :result :pointer
-    :doc "struct TrackFileUnitData * TFGetUnitData(LONG which_unit) (D0) LVO -66")
-(amiga.ffi:defcfun tf-free-unit-data *trackfile-base* -72 (:a0 tfud)
-    :result :void
-    :doc "VOID TFFreeUnitData(struct TrackFileUnitData * tfud) (A0) LVO -72")
-(amiga.ffi:defcfun tf-change-unit-tag-list *trackfile-base* -78 (:d0 which-unit :a0 tags)
-    :result :signed
-    :doc "LONG TFChangeUnitTagList(LONG which_unit, CONST struct TagItem * tags) (D0,A0) LVO -78")
-(amiga.ffi:defcfun tf-examine-file-size *trackfile-base* -84 (:d0 file-size)
-    :result :signed
-    :doc "LONG TFExamineFileSize(LONG file_size) (D0) LVO -84")
+  ;; --- constants from devices/trackfile.h ---
+  (:const "+TFUNIT-CONTROL+" -1)
+  (:const "+TFSU-NEXT-AVAILABLE-UNIT+" -1)
+  (:const "+TFERROR-UNIT-BUSY+" -202041)
+  (:const "+TFERROR-OUT-OF-MEMORY+" -202042)
+  (:const "+TFERROR-UNIT-NOT-FOUND+" -202043)
+  (:const "+TFERROR-ALREADY-IN-USE+" -202044)
+  (:const "+TFERROR-UNIT-NOT-ACTIVE+" -202045)
+  (:const "+TFERROR-INVALID-FILE+" -202046)
+  (:const "+TFERROR-INVALID-FILE-SIZE+" -202047)
+  (:const "+TFERROR-NO-FILE-GIVEN+" -202048)
+  (:const "+TFERROR-ABORTED+" -202049)
+  (:const "+TFERROR-INVALID-DRIVE-TYPE+" -202050)
+  (:const "+TFERROR-PROCESS-FAILED+" -202051)
+  (:const "+TFERROR-NO-MEDIUM-PRESENT+" -202052)
+  (:const "+TFERROR-READ-ONLY-VOLUME+" -202053)
+  (:const "+TFERROR-READ-ONLY-FILE+" -202054)
+  (:const "+TFERROR-DUPLICATE-DISK+" -202055)
+  (:const "+TFERROR-DUPLICATE-VOLUME+" -202056)
+  (:const "+TFERROR-DENIED+" -202057)
+  (:const "+TFERROR-NOT-SUPPORTED+" -202058)
+  (:const "+TF-DUMMY+" #xA0200400)
+  (:const "+TF-IMAGE-FILE-NAME+" #xA0200401)
+  (:const "+TF-IMAGE-FILE-HANDLE+" #xA0200402)
+  (:const "+TF-WRITE-PROTECTED+" #xA0200403)
+  (:const "+TF-DRIVE-TYPE+" #xA0200404)
+  (:const "+TF-TIMEOUT+" #xA0200405)
+  (:const "+TF-ENABLE-CHECKSUMS+" #xA0200406)
+  (:const "+TF-TAG-ITEM-FAILED+" #xA0200407)
+  (:const "+TF-MAX-CACHE-MEMORY+" #xA0200408)
+  (:const "+TF-ENABLE-UNIT-CACHE+" #xA0200409)
+  (:const "+TF-PREFILL-UNIT-CACHE+" #xA020040A)
+  (:const "+TFGUD-ALL-UNITS+" -1)
+  (:const "+TFEFS-UNSUPPORTED+" -1)
+  (:const "+TF-MINIMUM-CACHE-SIZE+" #xB3B0)
+
+  ;; --- functions (trackfile_lib.sfd) ---
+  (:fn "TF-START-UNIT-TAG-LIST" -42 (:d0 :a0) :signed)   ; LONG TFStartUnitTagList(LONG which_unit, CONST struct TagItem * tags) (D0,A0) LVO -42
+  (:fn "TF-STOP-UNIT-TAG-LIST" -48 (:d0 :a0) :signed)   ; LONG TFStopUnitTagList(LONG which_unit, CONST struct TagItem * tags) (D0,A0) LVO -48
+  (:fn "TF-INSERT-MEDIA-TAG-LIST" -54 (:d0 :a0) :signed)   ; LONG TFInsertMediaTagList(LONG which_unit, CONST struct TagItem * tags) (D0,A0) LVO -54
+  (:fn "TF-EJECT-MEDIA-TAG-LIST" -60 (:d0 :a0) :signed)   ; LONG TFEjectMediaTagList(LONG which_unit, CONST struct TagItem * tags) (D0,A0) LVO -60
+  (:fn "TF-GET-UNIT-DATA" -66 (:d0) :pointer)   ; struct TrackFileUnitData * TFGetUnitData(LONG which_unit) (D0) LVO -66
+  (:fn "TF-FREE-UNIT-DATA" -72 (:a0) :void)   ; VOID TFFreeUnitData(struct TrackFileUnitData * tfud) (A0) LVO -72
+  (:fn "TF-CHANGE-UNIT-TAG-LIST" -78 (:d0 :a0) :signed)   ; LONG TFChangeUnitTagList(LONG which_unit, CONST struct TagItem * tags) (D0,A0) LVO -78
+  (:fn "TF-EXAMINE-FILE-SIZE" -84 (:d0) :signed)   ; LONG TFExamineFileSize(LONG file_size) (D0) LVO -84
+  )
 
 (provide "amiga/raw/trackfile")

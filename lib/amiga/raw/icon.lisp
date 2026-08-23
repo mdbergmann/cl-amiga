@@ -15,69 +15,7 @@
 
 (defpackage "AMIGA.RAW.ICON"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*ICON-BASE*" "*ICON-VERSION*"
-   "+ICONA-DUMMY+" "+ICONA-ERROR-CODE+" "+ICONA-ERROR-TAG-ITEM+" 
-   "+ICONCTRLA-SET-GLOBAL-SCREEN+" "+ICONCTRLA-GET-GLOBAL-SCREEN+" 
-   "+ICONCTRLA-SET-GLOBAL-PRECISION+" "+ICONCTRLA-GET-GLOBAL-PRECISION+" 
-   "+ICONCTRLA-SET-GLOBAL-EMBOSS-RECT+" 
-   "+ICONCTRLA-GET-GLOBAL-EMBOSS-RECT+" "+ICONCTRLA-SET-GLOBAL-FRAMELESS+" 
-   "+ICONCTRLA-GET-GLOBAL-FRAMELESS+" 
-   "+ICONCTRLA-SET-GLOBAL-NEW-ICONS-SUPPORT+" 
-   "+ICONCTRLA-GET-GLOBAL-NEW-ICONS-SUPPORT+" 
-   "+ICONCTRLA-SET-GLOBAL-COLOR-ICON-SUPPORT+" 
-   "+ICONCTRLA-GET-GLOBAL-COLOR-ICON-SUPPORT+" 
-   "+ICONCTRLA-SET-GLOBAL-IDENTIFY-HOOK+" 
-   "+ICONCTRLA-GET-GLOBAL-IDENTIFY-HOOK+" 
-   "+ICONCTRLA-SET-GLOBAL-MAX-NAME-LENGTH+" 
-   "+ICONCTRLA-GET-GLOBAL-MAX-NAME-LENGTH+" "+ICONCTRLA-GET-IMAGE-MASK1+" 
-   "+ICONCTRLA-GET-IMAGE-MASK2+" "+ICONCTRLA-SET-TRANSPARENT-COLOR1+" 
-   "+ICONCTRLA-GET-TRANSPARENT-COLOR1+" 
-   "+ICONCTRLA-SET-TRANSPARENT-COLOR2+" 
-   "+ICONCTRLA-GET-TRANSPARENT-COLOR2+" "+ICONCTRLA-SET-PALETTE1+" 
-   "+ICONCTRLA-GET-PALETTE1+" "+ICONCTRLA-SET-PALETTE2+" 
-   "+ICONCTRLA-GET-PALETTE2+" "+ICONCTRLA-SET-PALETTE-SIZE1+" 
-   "+ICONCTRLA-GET-PALETTE-SIZE1+" "+ICONCTRLA-SET-PALETTE-SIZE2+" 
-   "+ICONCTRLA-GET-PALETTE-SIZE2+" "+ICONCTRLA-SET-IMAGE-DATA1+" 
-   "+ICONCTRLA-GET-IMAGE-DATA1+" "+ICONCTRLA-SET-IMAGE-DATA2+" 
-   "+ICONCTRLA-GET-IMAGE-DATA2+" "+ICONCTRLA-SET-FRAMELESS+" 
-   "+ICONCTRLA-GET-FRAMELESS+" "+ICONCTRLA-SET-NEW-ICONS-SUPPORT+" 
-   "+ICONCTRLA-GET-NEW-ICONS-SUPPORT+" "+ICONCTRLA-SET-ASPECT-RATIO+" 
-   "+ICONCTRLA-GET-ASPECT-RATIO+" "+ICONCTRLA-SET-WIDTH+" 
-   "+ICONCTRLA-GET-WIDTH+" "+ICONCTRLA-SET-HEIGHT+" 
-   "+ICONCTRLA-GET-HEIGHT+" "+ICONCTRLA-IS-PALETTE-MAPPED+" 
-   "+ICONCTRLA-GET-SCREEN+" "+ICONCTRLA-HAS-REAL-IMAGE2+" 
-   "+ICONCTRLA-IS-NEW-ICON+" "+ICONCTRLA-IS-NATIVE-ICON+" 
-   "+ICON-ASPECT-RATIO-UNKNOWN+" "+ICONGETA-GET-DEFAULT-TYPE+" 
-   "+ICONGETA-GET-DEFAULT-NAME+" "+ICONGETA-FAIL-IF-UNAVAILABLE+" 
-   "+ICONGETA-GET-PALETTE-MAPPED-ICON+" "+ICONGETA-IS-DEFAULT-ICON+" 
-   "+ICONGETA-REMAP-ICON+" "+ICONGETA-GENERATE-IMAGE-MASKS+" 
-   "+ICONGETA-LABEL+" "+ICONGETA-SCREEN+" "+ICONGETA-IDENTIFY-BUFFER+" 
-   "+ICONGETA-IDENTIFY-ONLY+" "+ICONPUTA-NOTIFY-WORKBENCH+" 
-   "+ICONPUTA-PUT-DEFAULT-TYPE+" "+ICONPUTA-PUT-DEFAULT-NAME+" 
-   "+ICONPUTA-DROP-PLANAR-ICON-IMAGE+" "+ICONPUTA-DROP-CHUNKY-ICON-IMAGE+" 
-   "+ICONPUTA-DROP-NEW-ICON-TOOL-TYPES+" "+ICONPUTA-OPTIMIZE-IMAGE-SPACE+" 
-   "+ICONPUTA-ONLY-UPDATE-POSITION+" "+ICONPUTA-PRESERVE-OLD-ICON-IMAGES+" 
-   "+ICONDUPA-DUPLICATE-DRAWER-DATA+" "+ICONDUPA-DUPLICATE-IMAGES+" 
-   "+ICONDUPA-DUPLICATE-IMAGE-DATA+" "+ICONDUPA-DUPLICATE-DEFAULT-TOOL+" 
-   "+ICONDUPA-DUPLICATE-TOOL-TYPES+" "+ICONDUPA-DUPLICATE-TOOL-WINDOW+" 
-   "+ICONDUPA-ACTIVATE-IMAGE-DATA+" "+ICONDRAWA-DRAW-INFO+" 
-   "+ICONDRAWA-FRAMELESS+" "+ICONDRAWA-ERASE-BACKGROUND+" 
-   "+ICONDRAWA-BORDERLESS+" "+ICONDRAWA-IS-LINK+" 
-   "+ICONDRAWA-LABEL-SHADOW+" "+ICONDRAWA-LABEL-OUTLINE+" 
-   "*ICON-IDENTIFY-MSG-SIZE*" "ICON-IDENTIFY-MSG-SYS-BASE" 
-   "ICON-IDENTIFY-MSG-DOS-BASE" "ICON-IDENTIFY-MSG-UTILITY-BASE" 
-   "ICON-IDENTIFY-MSG-ICON-BASE" "ICON-IDENTIFY-MSG-FILE-LOCK" 
-   "ICON-IDENTIFY-MSG-PARENT-LOCK" "ICON-IDENTIFY-MSG-FIB" 
-   "ICON-IDENTIFY-MSG-FILE-HANDLE" "ICON-IDENTIFY-MSG-TAGS" 
-   "FREE-FREE-LIST" "ADD-FREE-LIST" "GET-DISK-OBJECT" "PUT-DISK-OBJECT" 
-   "FREE-DISK-OBJECT" "FIND-TOOL-TYPE" "MATCH-TOOL-VALUE" "BUMP-REVISION" 
-   "FREE-ALLOC" "GET-DEF-DISK-OBJECT" "PUT-DEF-DISK-OBJECT" 
-   "GET-DISK-OBJECT-NEW" "DELETE-DISK-OBJECT" "FREE-FREE" 
-   "DUP-DISK-OBJECT-A" "ICON-CONTROL-A" "DRAW-ICON-STATE-A" 
-   "GET-ICON-RECTANGLE-A" "NEW-DISK-OBJECT" "GET-ICON-TAG-LIST" 
-   "PUT-ICON-TAG-LIST" "LAYOUT-ICON-A" "CHANGE-TO-SELECTED-ICON-COLOR" 
-   "BUMP-REVISION-LENGTH" ))
+  (:export "*ICON-BASE*" "*ICON-VERSION*"))
 
 (in-package "AMIGA.RAW.ICON")
 
@@ -91,192 +29,139 @@
 (defun %version>= (n)
   (and *icon-version* (>= *icon-version* n)))
 
-;;; --- constants from workbench/icon.i ---
-(defconstant +icona-dummy+ #x80009000)
-(defconstant +icona-error-code+ #x80009001)
-(defconstant +icona-error-tag-item+ #x8000904B)
-(defconstant +iconctrla-set-global-screen+ #x80009002)
-(defconstant +iconctrla-get-global-screen+ #x80009003)
-(defconstant +iconctrla-set-global-precision+ #x80009004)
-(defconstant +iconctrla-get-global-precision+ #x80009005)
-(defconstant +iconctrla-set-global-emboss-rect+ #x80009006)
-(defconstant +iconctrla-get-global-emboss-rect+ #x80009007)
-(defconstant +iconctrla-set-global-frameless+ #x80009008)
-(defconstant +iconctrla-get-global-frameless+ #x80009009)
-(defconstant +iconctrla-set-global-new-icons-support+ #x8000900A)
-(defconstant +iconctrla-get-global-new-icons-support+ #x8000900B)
-(defconstant +iconctrla-set-global-color-icon-support+ #x8000904D)
-(defconstant +iconctrla-get-global-color-icon-support+ #x8000904E)
-(defconstant +iconctrla-set-global-identify-hook+ #x8000900C)
-(defconstant +iconctrla-get-global-identify-hook+ #x8000900D)
-(defconstant +iconctrla-set-global-max-name-length+ #x80009043)
-(defconstant +iconctrla-get-global-max-name-length+ #x80009044)
-(defconstant +iconctrla-get-image-mask1+ #x8000900E)
-(defconstant +iconctrla-get-image-mask2+ #x8000900F)
-(defconstant +iconctrla-set-transparent-color1+ #x80009010)
-(defconstant +iconctrla-get-transparent-color1+ #x80009011)
-(defconstant +iconctrla-set-transparent-color2+ #x80009012)
-(defconstant +iconctrla-get-transparent-color2+ #x80009013)
-(defconstant +iconctrla-set-palette1+ #x80009014)
-(defconstant +iconctrla-get-palette1+ #x80009015)
-(defconstant +iconctrla-set-palette2+ #x80009016)
-(defconstant +iconctrla-get-palette2+ #x80009017)
-(defconstant +iconctrla-set-palette-size1+ #x80009018)
-(defconstant +iconctrla-get-palette-size1+ #x80009019)
-(defconstant +iconctrla-set-palette-size2+ #x8000901A)
-(defconstant +iconctrla-get-palette-size2+ #x8000901B)
-(defconstant +iconctrla-set-image-data1+ #x8000901C)
-(defconstant +iconctrla-get-image-data1+ #x8000901D)
-(defconstant +iconctrla-set-image-data2+ #x8000901E)
-(defconstant +iconctrla-get-image-data2+ #x8000901F)
-(defconstant +iconctrla-set-frameless+ #x80009020)
-(defconstant +iconctrla-get-frameless+ #x80009021)
-(defconstant +iconctrla-set-new-icons-support+ #x80009022)
-(defconstant +iconctrla-get-new-icons-support+ #x80009023)
-(defconstant +iconctrla-set-aspect-ratio+ #x80009024)
-(defconstant +iconctrla-get-aspect-ratio+ #x80009025)
-(defconstant +iconctrla-set-width+ #x80009026)
-(defconstant +iconctrla-get-width+ #x80009027)
-(defconstant +iconctrla-set-height+ #x80009028)
-(defconstant +iconctrla-get-height+ #x80009029)
-(defconstant +iconctrla-is-palette-mapped+ #x8000902A)
-(defconstant +iconctrla-get-screen+ #x8000902B)
-(defconstant +iconctrla-has-real-image2+ #x8000902C)
-(defconstant +iconctrla-is-new-icon+ #x8000904F)
-(defconstant +iconctrla-is-native-icon+ #x80009050)
-(defconstant +icon-aspect-ratio-unknown+ 0)
-(defconstant +icongeta-get-default-type+ #x8000902D)
-(defconstant +icongeta-get-default-name+ #x8000902E)
-(defconstant +icongeta-fail-if-unavailable+ #x8000902F)
-(defconstant +icongeta-get-palette-mapped-icon+ #x80009030)
-(defconstant +icongeta-is-default-icon+ #x80009031)
-(defconstant +icongeta-remap-icon+ #x80009032)
-(defconstant +icongeta-generate-image-masks+ #x80009033)
-(defconstant +icongeta-label+ #x80009034)
-(defconstant +icongeta-screen+ #x80009045)
-(defconstant +icongeta-identify-buffer+ #x8000907A)
-(defconstant +icongeta-identify-only+ #x8000907B)
-(defconstant +iconputa-notify-workbench+ #x80009035)
-(defconstant +iconputa-put-default-type+ #x80009036)
-(defconstant +iconputa-put-default-name+ #x80009037)
-(defconstant +iconputa-drop-planar-icon-image+ #x80009038)
-(defconstant +iconputa-drop-chunky-icon-image+ #x80009039)
-(defconstant +iconputa-drop-new-icon-tool-types+ #x8000903A)
-(defconstant +iconputa-optimize-image-space+ #x8000903B)
-(defconstant +iconputa-only-update-position+ #x80009048)
-(defconstant +iconputa-preserve-old-icon-images+ #x80009054)
-(defconstant +icondupa-duplicate-drawer-data+ #x8000903C)
-(defconstant +icondupa-duplicate-images+ #x8000903D)
-(defconstant +icondupa-duplicate-image-data+ #x8000903E)
-(defconstant +icondupa-duplicate-default-tool+ #x8000903F)
-(defconstant +icondupa-duplicate-tool-types+ #x80009040)
-(defconstant +icondupa-duplicate-tool-window+ #x80009041)
-(defconstant +icondupa-activate-image-data+ #x80009052)
-(defconstant +icondrawa-draw-info+ #x80009042)
-(defconstant +icondrawa-frameless+ #x80009046)
-(defconstant +icondrawa-erase-background+ #x80009047)
-(defconstant +icondrawa-borderless+ #x80009053)
-(defconstant +icondrawa-is-link+ #x80009059)
-(defconstant +icondrawa-label-shadow+ #x8000905D)
-(defconstant +icondrawa-label-outline+ #x8000905E)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.ICON"
+    (:base *icon-base* :version *icon-version*)
 
-;;; --- structures from workbench/icon.i ---
-(ffi:defcstruct (icon-identify-msg :size 36)   ; IconIdentifyMsg (workbench/icon.i)
-  (sys-base :fptr 0)
-  (dos-base :fptr 4)
-  (utility-base :fptr 8)
-  (icon-base :fptr 12)
-  (file-lock :u32 16)
-  (parent-lock :u32 20)
-  (fib :fptr 24)
-  (file-handle :u32 28)
-  (tags :fptr 32)
-)
+  ;; --- constants from workbench/icon.i ---
+  (:const "+ICONA-DUMMY+" #x80009000)
+  (:const "+ICONA-ERROR-CODE+" #x80009001)
+  (:const "+ICONA-ERROR-TAG-ITEM+" #x8000904B)
+  (:const "+ICONCTRLA-SET-GLOBAL-SCREEN+" #x80009002)
+  (:const "+ICONCTRLA-GET-GLOBAL-SCREEN+" #x80009003)
+  (:const "+ICONCTRLA-SET-GLOBAL-PRECISION+" #x80009004)
+  (:const "+ICONCTRLA-GET-GLOBAL-PRECISION+" #x80009005)
+  (:const "+ICONCTRLA-SET-GLOBAL-EMBOSS-RECT+" #x80009006)
+  (:const "+ICONCTRLA-GET-GLOBAL-EMBOSS-RECT+" #x80009007)
+  (:const "+ICONCTRLA-SET-GLOBAL-FRAMELESS+" #x80009008)
+  (:const "+ICONCTRLA-GET-GLOBAL-FRAMELESS+" #x80009009)
+  (:const "+ICONCTRLA-SET-GLOBAL-NEW-ICONS-SUPPORT+" #x8000900A)
+  (:const "+ICONCTRLA-GET-GLOBAL-NEW-ICONS-SUPPORT+" #x8000900B)
+  (:const "+ICONCTRLA-SET-GLOBAL-COLOR-ICON-SUPPORT+" #x8000904D)
+  (:const "+ICONCTRLA-GET-GLOBAL-COLOR-ICON-SUPPORT+" #x8000904E)
+  (:const "+ICONCTRLA-SET-GLOBAL-IDENTIFY-HOOK+" #x8000900C)
+  (:const "+ICONCTRLA-GET-GLOBAL-IDENTIFY-HOOK+" #x8000900D)
+  (:const "+ICONCTRLA-SET-GLOBAL-MAX-NAME-LENGTH+" #x80009043)
+  (:const "+ICONCTRLA-GET-GLOBAL-MAX-NAME-LENGTH+" #x80009044)
+  (:const "+ICONCTRLA-GET-IMAGE-MASK1+" #x8000900E)
+  (:const "+ICONCTRLA-GET-IMAGE-MASK2+" #x8000900F)
+  (:const "+ICONCTRLA-SET-TRANSPARENT-COLOR1+" #x80009010)
+  (:const "+ICONCTRLA-GET-TRANSPARENT-COLOR1+" #x80009011)
+  (:const "+ICONCTRLA-SET-TRANSPARENT-COLOR2+" #x80009012)
+  (:const "+ICONCTRLA-GET-TRANSPARENT-COLOR2+" #x80009013)
+  (:const "+ICONCTRLA-SET-PALETTE1+" #x80009014)
+  (:const "+ICONCTRLA-GET-PALETTE1+" #x80009015)
+  (:const "+ICONCTRLA-SET-PALETTE2+" #x80009016)
+  (:const "+ICONCTRLA-GET-PALETTE2+" #x80009017)
+  (:const "+ICONCTRLA-SET-PALETTE-SIZE1+" #x80009018)
+  (:const "+ICONCTRLA-GET-PALETTE-SIZE1+" #x80009019)
+  (:const "+ICONCTRLA-SET-PALETTE-SIZE2+" #x8000901A)
+  (:const "+ICONCTRLA-GET-PALETTE-SIZE2+" #x8000901B)
+  (:const "+ICONCTRLA-SET-IMAGE-DATA1+" #x8000901C)
+  (:const "+ICONCTRLA-GET-IMAGE-DATA1+" #x8000901D)
+  (:const "+ICONCTRLA-SET-IMAGE-DATA2+" #x8000901E)
+  (:const "+ICONCTRLA-GET-IMAGE-DATA2+" #x8000901F)
+  (:const "+ICONCTRLA-SET-FRAMELESS+" #x80009020)
+  (:const "+ICONCTRLA-GET-FRAMELESS+" #x80009021)
+  (:const "+ICONCTRLA-SET-NEW-ICONS-SUPPORT+" #x80009022)
+  (:const "+ICONCTRLA-GET-NEW-ICONS-SUPPORT+" #x80009023)
+  (:const "+ICONCTRLA-SET-ASPECT-RATIO+" #x80009024)
+  (:const "+ICONCTRLA-GET-ASPECT-RATIO+" #x80009025)
+  (:const "+ICONCTRLA-SET-WIDTH+" #x80009026)
+  (:const "+ICONCTRLA-GET-WIDTH+" #x80009027)
+  (:const "+ICONCTRLA-SET-HEIGHT+" #x80009028)
+  (:const "+ICONCTRLA-GET-HEIGHT+" #x80009029)
+  (:const "+ICONCTRLA-IS-PALETTE-MAPPED+" #x8000902A)
+  (:const "+ICONCTRLA-GET-SCREEN+" #x8000902B)
+  (:const "+ICONCTRLA-HAS-REAL-IMAGE2+" #x8000902C)
+  (:const "+ICONCTRLA-IS-NEW-ICON+" #x8000904F)
+  (:const "+ICONCTRLA-IS-NATIVE-ICON+" #x80009050)
+  (:const "+ICON-ASPECT-RATIO-UNKNOWN+" 0)
+  (:const "+ICONGETA-GET-DEFAULT-TYPE+" #x8000902D)
+  (:const "+ICONGETA-GET-DEFAULT-NAME+" #x8000902E)
+  (:const "+ICONGETA-FAIL-IF-UNAVAILABLE+" #x8000902F)
+  (:const "+ICONGETA-GET-PALETTE-MAPPED-ICON+" #x80009030)
+  (:const "+ICONGETA-IS-DEFAULT-ICON+" #x80009031)
+  (:const "+ICONGETA-REMAP-ICON+" #x80009032)
+  (:const "+ICONGETA-GENERATE-IMAGE-MASKS+" #x80009033)
+  (:const "+ICONGETA-LABEL+" #x80009034)
+  (:const "+ICONGETA-SCREEN+" #x80009045)
+  (:const "+ICONGETA-IDENTIFY-BUFFER+" #x8000907A)
+  (:const "+ICONGETA-IDENTIFY-ONLY+" #x8000907B)
+  (:const "+ICONPUTA-NOTIFY-WORKBENCH+" #x80009035)
+  (:const "+ICONPUTA-PUT-DEFAULT-TYPE+" #x80009036)
+  (:const "+ICONPUTA-PUT-DEFAULT-NAME+" #x80009037)
+  (:const "+ICONPUTA-DROP-PLANAR-ICON-IMAGE+" #x80009038)
+  (:const "+ICONPUTA-DROP-CHUNKY-ICON-IMAGE+" #x80009039)
+  (:const "+ICONPUTA-DROP-NEW-ICON-TOOL-TYPES+" #x8000903A)
+  (:const "+ICONPUTA-OPTIMIZE-IMAGE-SPACE+" #x8000903B)
+  (:const "+ICONPUTA-ONLY-UPDATE-POSITION+" #x80009048)
+  (:const "+ICONPUTA-PRESERVE-OLD-ICON-IMAGES+" #x80009054)
+  (:const "+ICONDUPA-DUPLICATE-DRAWER-DATA+" #x8000903C)
+  (:const "+ICONDUPA-DUPLICATE-IMAGES+" #x8000903D)
+  (:const "+ICONDUPA-DUPLICATE-IMAGE-DATA+" #x8000903E)
+  (:const "+ICONDUPA-DUPLICATE-DEFAULT-TOOL+" #x8000903F)
+  (:const "+ICONDUPA-DUPLICATE-TOOL-TYPES+" #x80009040)
+  (:const "+ICONDUPA-DUPLICATE-TOOL-WINDOW+" #x80009041)
+  (:const "+ICONDUPA-ACTIVATE-IMAGE-DATA+" #x80009052)
+  (:const "+ICONDRAWA-DRAW-INFO+" #x80009042)
+  (:const "+ICONDRAWA-FRAMELESS+" #x80009046)
+  (:const "+ICONDRAWA-ERASE-BACKGROUND+" #x80009047)
+  (:const "+ICONDRAWA-BORDERLESS+" #x80009053)
+  (:const "+ICONDRAWA-IS-LINK+" #x80009059)
+  (:const "+ICONDRAWA-LABEL-SHADOW+" #x8000905D)
+  (:const "+ICONDRAWA-LABEL-OUTLINE+" #x8000905E)
 
-;;; --- functions (icon_lib.sfd + MorphOS SDK) ---
-(amiga.ffi:defcfun free-free-list *icon-base* -54 (:a0 freelist)
-    :result :void
-    :doc "VOID FreeFreeList(struct FreeList * freelist) (A0) LVO -54")
-(amiga.ffi:defcfun add-free-list *icon-base* -72 (:a0 freelist :a1 mem :a2 size)
-    :result :bool
-    :doc "BOOL AddFreeList(struct FreeList * freelist, CONST_APTR mem, ULONG size) (A0,A1,A2) LVO -72")
-(amiga.ffi:defcfun get-disk-object *icon-base* -78 (:a0 name)
-    :result :pointer
-    :doc "struct DiskObject * GetDiskObject(CONST_STRPTR name) (A0) LVO -78")
-(amiga.ffi:defcfun put-disk-object *icon-base* -84 (:a0 name :a1 diskobj)
-    :result :bool
-    :doc "BOOL PutDiskObject(CONST_STRPTR name, CONST struct DiskObject * diskobj) (A0,A1) LVO -84")
-(amiga.ffi:defcfun free-disk-object *icon-base* -90 (:a0 diskobj)
-    :result :void
-    :doc "VOID FreeDiskObject(struct DiskObject * diskobj) (A0) LVO -90")
-(amiga.ffi:defcfun find-tool-type *icon-base* -96 (:a0 tool-type-array :a1 type-name)
-    :result :pointer
-    :doc "UBYTE * FindToolType(CONST_STRPTR * toolTypeArray, CONST_STRPTR typeName) (A0,A1) LVO -96")
-(amiga.ffi:defcfun match-tool-value *icon-base* -102 (:a0 type-string :a1 value)
-    :result :bool
-    :doc "BOOL MatchToolValue(CONST_STRPTR typeString, CONST_STRPTR value) (A0,A1) LVO -102")
-(amiga.ffi:defcfun bump-revision *icon-base* -108 (:a0 newname :a1 oldname)
-    :result :pointer
-    :doc "STRPTR BumpRevision(STRPTR newname, CONST_STRPTR oldname) (A0,A1) LVO -108")
-(when (not (member :morphos *features*))
-  (amiga.ffi:defcfun free-alloc *icon-base* -114 (:a0 free :a1 len :a2 type)
-    :result :pointer
-    :doc "APTR FreeAlloc(struct FreeList * free, ULONG len, ULONG type) (A0,A1,A2) LVO -114"))
-(amiga.ffi:defcfun get-def-disk-object *icon-base* -120 (:d0 type)
-    :result :pointer
-    :doc "struct DiskObject * GetDefDiskObject(LONG type) (D0) LVO -120")
-(amiga.ffi:defcfun put-def-disk-object *icon-base* -126 (:a0 disk-object)
-    :result :bool
-    :doc "BOOL PutDefDiskObject(CONST struct DiskObject * diskObject) (A0) LVO -126")
-(amiga.ffi:defcfun get-disk-object-new *icon-base* -132 (:a0 name)
-    :result :pointer
-    :doc "struct DiskObject * GetDiskObjectNew(CONST_STRPTR name) (A0) LVO -132")
-(amiga.ffi:defcfun delete-disk-object *icon-base* -138 (:a0 name)
-    :result :bool
-    :doc "BOOL DeleteDiskObject(CONST_STRPTR name) (A0) LVO -138")
-(when (and (not (member :morphos *features*)) (%version>= 44))
-  (amiga.ffi:defcfun free-free *icon-base* -144 (:a0 fl :a1 address)
-    :result :void
-    :doc "VOID FreeFree(struct FreeList * fl, APTR address) (A0,A1) LVO -144"))
-(when (%version>= 44)
-  (amiga.ffi:defcfun dup-disk-object-a *icon-base* -150 (:a0 disk-object :a1 tags)
-    :result :pointer
-    :doc "struct DiskObject * DupDiskObjectA(CONST struct DiskObject * diskObject, CONST struct TagItem * tags) (A0,A1) LVO -150"))
-(when (%version>= 44)
-  (amiga.ffi:defcfun icon-control-a *icon-base* -156 (:a0 icon :a1 tags)
-    :result :unsigned
-    :doc "ULONG IconControlA(struct DiskObject * icon, CONST struct TagItem * tags) (A0,A1) LVO -156"))
-(when (%version>= 44)
-  (amiga.ffi:defcfun draw-icon-state-a *icon-base* -162 (:a0 rp :a1 icon :a2 label :d0 left-offset :d1 top-offset :d2 state :a3 tags)
-    :result :void
-    :doc "VOID DrawIconStateA(struct RastPort * rp, CONST struct DiskObject * icon, CONST_STRPTR label, LONG leftOffset, LONG topOffset, ULONG state, CONST struct TagItem * tags) (A0,A1,A2,D0,D1,D2,A3) LVO -162"))
-(when (%version>= 44)
-  (amiga.ffi:defcfun get-icon-rectangle-a *icon-base* -168 (:a0 rp :a1 icon :a2 label :a3 rect :a4 tags)
-    :result :bool
-    :doc "BOOL GetIconRectangleA(struct RastPort * rp, CONST struct DiskObject * icon, CONST_STRPTR label, struct Rectangle * rect, CONST struct TagItem * tags) (A0,A1,A2,A3,A4) LVO -168"))
-(when (%version>= 44)
-  (amiga.ffi:defcfun new-disk-object *icon-base* -174 (:d0 type)
-    :result :pointer
-    :doc "struct DiskObject * NewDiskObject(LONG type) (D0) LVO -174"))
-(when (%version>= 44)
-  (amiga.ffi:defcfun get-icon-tag-list *icon-base* -180 (:a0 name :a1 tags)
-    :result :pointer
-    :doc "struct DiskObject * GetIconTagList(CONST_STRPTR name, CONST struct TagItem * tags) (A0,A1) LVO -180"))
-(when (%version>= 44)
-  (amiga.ffi:defcfun put-icon-tag-list *icon-base* -186 (:a0 name :a1 icon :a2 tags)
-    :result :bool
-    :doc "BOOL PutIconTagList(CONST_STRPTR name, CONST struct DiskObject * icon, CONST struct TagItem * tags) (A0,A1,A2) LVO -186"))
-(when (%version>= 44)
-  (amiga.ffi:defcfun layout-icon-a *icon-base* -192 (:a0 icon :a1 screen :a2 tags)
-    :result :bool
-    :doc "BOOL LayoutIconA(struct DiskObject * icon, struct Screen * screen, struct TagItem * tags) (A0,A1,A2) LVO -192"))
-(when (%version>= 44)
-  (amiga.ffi:defcfun change-to-selected-icon-color *icon-base* -198 (:a0 cr)
-    :result :void
-    :doc "VOID ChangeToSelectedIconColor(struct ColorRegister * cr) (A0) LVO -198"))
-(when (and (not (member :morphos *features*)) (%version>= 44))
-  (amiga.ffi:defcfun bump-revision-length *icon-base* -204 (:a0 newname :a1 oldname :d0 max-length)
-    :result :pointer
-    :doc "STRPTR BumpRevisionLength(STRPTR newname, CONST_STRPTR oldname, ULONG maxLength) (A0,A1,D0) LVO -204"))
+  ;; --- structures from workbench/icon.i ---
+  (:struct "ICON-IDENTIFY-MSG" 36   ; IconIdentifyMsg (workbench/icon.i)
+    ("SYS-BASE" :fptr 0)
+    ("DOS-BASE" :fptr 4)
+    ("UTILITY-BASE" :fptr 8)
+    ("ICON-BASE" :fptr 12)
+    ("FILE-LOCK" :u32 16)
+    ("PARENT-LOCK" :u32 20)
+    ("FIB" :fptr 24)
+    ("FILE-HANDLE" :u32 28)
+    ("TAGS" :fptr 32)
+    )
+
+  ;; --- functions (icon_lib.sfd + MorphOS SDK) ---
+  (:fn "FREE-FREE-LIST" -54 (:a0) :void)   ; VOID FreeFreeList(struct FreeList * freelist) (A0) LVO -54
+  (:fn "ADD-FREE-LIST" -72 (:a0 :a1 :a2) :bool)   ; BOOL AddFreeList(struct FreeList * freelist, CONST_APTR mem, ULONG size) (A0,A1,A2) LVO -72
+  (:fn "GET-DISK-OBJECT" -78 (:a0) :pointer)   ; struct DiskObject * GetDiskObject(CONST_STRPTR name) (A0) LVO -78
+  (:fn "PUT-DISK-OBJECT" -84 (:a0 :a1) :bool)   ; BOOL PutDiskObject(CONST_STRPTR name, CONST struct DiskObject * diskobj) (A0,A1) LVO -84
+  (:fn "FREE-DISK-OBJECT" -90 (:a0) :void)   ; VOID FreeDiskObject(struct DiskObject * diskobj) (A0) LVO -90
+  (:fn "FIND-TOOL-TYPE" -96 (:a0 :a1) :pointer)   ; UBYTE * FindToolType(CONST_STRPTR * toolTypeArray, CONST_STRPTR typeName) (A0,A1) LVO -96
+  (:fn "MATCH-TOOL-VALUE" -102 (:a0 :a1) :bool)   ; BOOL MatchToolValue(CONST_STRPTR typeString, CONST_STRPTR value) (A0,A1) LVO -102
+  (:fn "BUMP-REVISION" -108 (:a0 :a1) :pointer)   ; STRPTR BumpRevision(STRPTR newname, CONST_STRPTR oldname) (A0,A1) LVO -108
+  (:fn "FREE-ALLOC" -114 (:a0 :a1 :a2) :pointer :not-morphos)   ; APTR FreeAlloc(struct FreeList * free, ULONG len, ULONG type) (A0,A1,A2) LVO -114
+  (:fn "GET-DEF-DISK-OBJECT" -120 (:d0) :pointer)   ; struct DiskObject * GetDefDiskObject(LONG type) (D0) LVO -120
+  (:fn "PUT-DEF-DISK-OBJECT" -126 (:a0) :bool)   ; BOOL PutDefDiskObject(CONST struct DiskObject * diskObject) (A0) LVO -126
+  (:fn "GET-DISK-OBJECT-NEW" -132 (:a0) :pointer)   ; struct DiskObject * GetDiskObjectNew(CONST_STRPTR name) (A0) LVO -132
+  (:fn "DELETE-DISK-OBJECT" -138 (:a0) :bool)   ; BOOL DeleteDiskObject(CONST_STRPTR name) (A0) LVO -138
+  (:fn "FREE-FREE" -144 (:a0 :a1) :void :not-morphos 44)   ; VOID FreeFree(struct FreeList * fl, APTR address) (A0,A1) LVO -144
+  (:fn "DUP-DISK-OBJECT-A" -150 (:a0 :a1) :pointer 44)   ; struct DiskObject * DupDiskObjectA(CONST struct DiskObject * diskObject, CONST struct TagItem * tags) (A0,A1) LVO -150
+  (:fn "ICON-CONTROL-A" -156 (:a0 :a1) :unsigned 44)   ; ULONG IconControlA(struct DiskObject * icon, CONST struct TagItem * tags) (A0,A1) LVO -156
+  (:fn "DRAW-ICON-STATE-A" -162 (:a0 :a1 :a2 :d0 :d1 :d2 :a3) :void 44)   ; VOID DrawIconStateA(struct RastPort * rp, CONST struct DiskObject * icon, CONST_STRPTR label, LONG leftOffset, LONG topOffset, ULONG state, CONST struct TagItem * tags) (A0,A1,A2,D0,D1,D2,A3) LVO -162
+  (:fn "GET-ICON-RECTANGLE-A" -168 (:a0 :a1 :a2 :a3 :a4) :bool 44)   ; BOOL GetIconRectangleA(struct RastPort * rp, CONST struct DiskObject * icon, CONST_STRPTR label, struct Rectangle * rect, CONST struct TagItem * tags) (A0,A1,A2,A3,A4) LVO -168
+  (:fn "NEW-DISK-OBJECT" -174 (:d0) :pointer 44)   ; struct DiskObject * NewDiskObject(LONG type) (D0) LVO -174
+  (:fn "GET-ICON-TAG-LIST" -180 (:a0 :a1) :pointer 44)   ; struct DiskObject * GetIconTagList(CONST_STRPTR name, CONST struct TagItem * tags) (A0,A1) LVO -180
+  (:fn "PUT-ICON-TAG-LIST" -186 (:a0 :a1 :a2) :bool 44)   ; BOOL PutIconTagList(CONST_STRPTR name, CONST struct DiskObject * icon, CONST struct TagItem * tags) (A0,A1,A2) LVO -186
+  (:fn "LAYOUT-ICON-A" -192 (:a0 :a1 :a2) :bool 44)   ; BOOL LayoutIconA(struct DiskObject * icon, struct Screen * screen, struct TagItem * tags) (A0,A1,A2) LVO -192
+  (:fn "CHANGE-TO-SELECTED-ICON-COLOR" -198 (:a0) :void 44)   ; VOID ChangeToSelectedIconColor(struct ColorRegister * cr) (A0) LVO -198
+  (:fn "BUMP-REVISION-LENGTH" -204 (:a0 :a1 :d0) :pointer :not-morphos 44)   ; STRPTR BumpRevisionLength(STRPTR newname, CONST_STRPTR oldname, ULONG maxLength) (A0,A1,D0) LVO -204
+  )
 
 (provide "amiga/raw/icon")

@@ -15,21 +15,7 @@
 
 (defpackage "AMIGA.RAW.GADGETS.CHOOSER"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*CHOOSER-BASE*" "*CHOOSER-VERSION*"
-   "+CHOOSER-MIN-WIDTH+" "+CHOOSER-MIN-HEIGHT+" "+CNA-DUMMY+" "+CNA-TEXT+" 
-   "+CNA-IMAGE+" "+CNA-SEL-IMAGE+" "+CNA-USER-DATA+" "+CNA-SEPARATOR+" 
-   "+CNA-DISABLED+" "+CNA-BG-PEN+" "+CNA-FG-PEN+" "+CNA-READ-ONLY+" 
-   "+CNA-COPY-TEXT+" "+CHOOSER-DUMMY+" "+CHOOSER-POP-UP+" 
-   "+CHOOSER-DROP-DOWN+" "+CHOOSER-TITLE+" "+CHOOSER-LABELS+" 
-   "+CHOOSER-ACTIVE+" "+CHOOSER-SELECTED+" "+CHOOSER-WIDTH+" 
-   "+CHOOSER-AUTO-FIT+" "+CHOOSER-MAX-LABELS+" "+CHOOSER-OFFSET+" 
-   "+CHOOSER-HIDDEN+" "+CHOOSER-LABEL-ARRAY+" "+CHOOSER-JUSTIFICATION+" 
-   "+CHOOSER-IMAGE-JUSTIFICATION+" "+CHOOSER-SELECTED-NODE+" 
-   "+CHOOSER-DEACTIVATE-ON-MOST-RAW-KEYS+" "+CHJ-LEFT+" "+CHJ-CENTER+" 
-   "+CHJ-RIGHT+" "CHOOSER-GET-CLASS" "ALLOC-CHOOSER-NODE-A" 
-   "FREE-CHOOSER-NODE" "SET-CHOOSER-NODE-ATTRS-A" 
-   "GET-CHOOSER-NODE-ATTRS-A" "SHOW-CHOOSER" "HIDE-CHOOSER" ))
+  (:export "*CHOOSER-BASE*" "*CHOOSER-VERSION*"))
 
 (in-package "AMIGA.RAW.GADGETS.CHOOSER")
 
@@ -43,69 +29,55 @@
 (defun %version>= (n)
   (and *chooser-version* (>= *chooser-version* n)))
 
-;;; --- constants from gadgets/chooser.h ---
-(defconstant +chooser-min-width+ #x24)
-(defconstant +chooser-min-height+ 10)
-(defconstant +cna-dummy+ #x85001500)
-(defconstant +cna-text+ #x85001501)
-(defconstant +cna-image+ #x85001502)
-(defconstant +cna-sel-image+ #x85001503)
-(defconstant +cna-user-data+ #x85001504)
-(defconstant +cna-separator+ #x85001505)
-(defconstant +cna-disabled+ #x85001506)
-(defconstant +cna-bg-pen+ #x85001507)
-(defconstant +cna-fg-pen+ #x85001508)
-(defconstant +cna-read-only+ #x85001509)
-(defconstant +cna-copy-text+ #x8500150A)
-(defconstant +chooser-dummy+ #x85001000)
-(defconstant +chooser-pop-up+ #x85001001)
-(defconstant +chooser-drop-down+ #x85001002)
-(defconstant +chooser-title+ #x85001003)
-(defconstant +chooser-labels+ #x85001004)
-(defconstant +chooser-active+ #x85001005)
-(defconstant +chooser-selected+ #x85001005)
-(defconstant +chooser-width+ #x85001006)
-(defconstant +chooser-auto-fit+ #x85001007)
-(defconstant +chooser-max-labels+ #x85001009)
-(defconstant +chooser-offset+ #x8500100A)
-(defconstant +chooser-hidden+ #x8500100B)
-(defconstant +chooser-label-array+ #x8500100C)
-(defconstant +chooser-justification+ #x8500100D)
-(defconstant +chooser-image-justification+ #x8500100E)
-(defconstant +chooser-selected-node+ #x8500100F)
-(defconstant +chooser-deactivate-on-most-raw-keys+ #x85001010)
-(defconstant +chj-left+ 0)
-(defconstant +chj-center+ 1)
-(defconstant +chj-right+ 2)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.GADGETS.CHOOSER"
+    (:base *chooser-base* :version *chooser-version*)
 
-;;; --- functions (chooser_lib.sfd + MorphOS SDK) ---
-(when (%version>= 40)
-  (amiga.ffi:defcfun chooser-get-class *chooser-base* -30 ()
-    :result :pointer
-    :doc "Class * CHOOSER_GetClass() () LVO -30"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun alloc-chooser-node-a *chooser-base* -36 (:a0 tags)
-    :result :pointer
-    :doc "struct Node * AllocChooserNodeA(struct TagItem * tags) (A0) LVO -36"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun free-chooser-node *chooser-base* -42 (:a0 node)
-    :result :void
-    :doc "VOID FreeChooserNode(struct Node * node) (A0) LVO -42"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun set-chooser-node-attrs-a *chooser-base* -48 (:a0 node :a1 tags)
-    :result :void
-    :doc "VOID SetChooserNodeAttrsA(struct Node * node, struct TagItem * tags) (A0,A1) LVO -48"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun get-chooser-node-attrs-a *chooser-base* -54 (:a0 node :a1 tags)
-    :result :void
-    :doc "VOID GetChooserNodeAttrsA(struct Node * node, struct TagItem * tags) (A0,A1) LVO -54"))
-(when (and (not (member :morphos *features*)) (%version>= 40))
-  (amiga.ffi:defcfun show-chooser *chooser-base* -60 (:a0 o :a1 w :d0 xpos :d1 ypos)
-    :result :unsigned
-    :doc "ULONG ShowChooser(Object * o, struct Window * w, ULONG xpos, ULONG ypos) (A0,A1,D0,D1) LVO -60"))
-(when (and (not (member :morphos *features*)) (%version>= 40))
-  (amiga.ffi:defcfun hide-chooser *chooser-base* -66 (:a0 o :a1 w)
-    :result :void
-    :doc "VOID HideChooser(Object * o, struct Window * w) (A0,A1) LVO -66"))
+  ;; --- constants from gadgets/chooser.h ---
+  (:const "+CHOOSER-MIN-WIDTH+" #x24)
+  (:const "+CHOOSER-MIN-HEIGHT+" 10)
+  (:const "+CNA-DUMMY+" #x85001500)
+  (:const "+CNA-TEXT+" #x85001501)
+  (:const "+CNA-IMAGE+" #x85001502)
+  (:const "+CNA-SEL-IMAGE+" #x85001503)
+  (:const "+CNA-USER-DATA+" #x85001504)
+  (:const "+CNA-SEPARATOR+" #x85001505)
+  (:const "+CNA-DISABLED+" #x85001506)
+  (:const "+CNA-BG-PEN+" #x85001507)
+  (:const "+CNA-FG-PEN+" #x85001508)
+  (:const "+CNA-READ-ONLY+" #x85001509)
+  (:const "+CNA-COPY-TEXT+" #x8500150A)
+  (:const "+CHOOSER-DUMMY+" #x85001000)
+  (:const "+CHOOSER-POP-UP+" #x85001001)
+  (:const "+CHOOSER-DROP-DOWN+" #x85001002)
+  (:const "+CHOOSER-TITLE+" #x85001003)
+  (:const "+CHOOSER-LABELS+" #x85001004)
+  (:const "+CHOOSER-ACTIVE+" #x85001005)
+  (:const "+CHOOSER-SELECTED+" #x85001005)
+  (:const "+CHOOSER-WIDTH+" #x85001006)
+  (:const "+CHOOSER-AUTO-FIT+" #x85001007)
+  (:const "+CHOOSER-MAX-LABELS+" #x85001009)
+  (:const "+CHOOSER-OFFSET+" #x8500100A)
+  (:const "+CHOOSER-HIDDEN+" #x8500100B)
+  (:const "+CHOOSER-LABEL-ARRAY+" #x8500100C)
+  (:const "+CHOOSER-JUSTIFICATION+" #x8500100D)
+  (:const "+CHOOSER-IMAGE-JUSTIFICATION+" #x8500100E)
+  (:const "+CHOOSER-SELECTED-NODE+" #x8500100F)
+  (:const "+CHOOSER-DEACTIVATE-ON-MOST-RAW-KEYS+" #x85001010)
+  (:const "+CHJ-LEFT+" 0)
+  (:const "+CHJ-CENTER+" 1)
+  (:const "+CHJ-RIGHT+" 2)
+
+  ;; --- functions (chooser_lib.sfd + MorphOS SDK) ---
+  (:fn "CHOOSER-GET-CLASS" -30 () :pointer 40)   ; Class * CHOOSER_GetClass() () LVO -30
+  (:fn "ALLOC-CHOOSER-NODE-A" -36 (:a0) :pointer 40)   ; struct Node * AllocChooserNodeA(struct TagItem * tags) (A0) LVO -36
+  (:fn "FREE-CHOOSER-NODE" -42 (:a0) :void 40)   ; VOID FreeChooserNode(struct Node * node) (A0) LVO -42
+  (:fn "SET-CHOOSER-NODE-ATTRS-A" -48 (:a0 :a1) :void 40)   ; VOID SetChooserNodeAttrsA(struct Node * node, struct TagItem * tags) (A0,A1) LVO -48
+  (:fn "GET-CHOOSER-NODE-ATTRS-A" -54 (:a0 :a1) :void 40)   ; VOID GetChooserNodeAttrsA(struct Node * node, struct TagItem * tags) (A0,A1) LVO -54
+  (:fn "SHOW-CHOOSER" -60 (:a0 :a1 :d0 :d1) :unsigned :not-morphos 40)   ; ULONG ShowChooser(Object * o, struct Window * w, ULONG xpos, ULONG ypos) (A0,A1,D0,D1) LVO -60
+  (:fn "HIDE-CHOOSER" -66 (:a0 :a1) :void :not-morphos 40)   ; VOID HideChooser(Object * o, struct Window * w) (A0,A1) LVO -66
+  )
 
 (provide "amiga/raw/gadgets/chooser")

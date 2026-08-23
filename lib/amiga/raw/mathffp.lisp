@@ -16,10 +16,7 @@
 
 (defpackage "AMIGA.RAW.MATHFFP"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*MATHFFP-BASE*" "*MATHFFP-VERSION*"
-   "SP-FIX" "SP-FLT" "SP-CMP" "SP-TST" "SP-ABS" "SP-NEG" "SP-ADD" "SP-SUB" 
-   "SP-MUL" "SP-DIV" "SP-FLOOR" "SP-CEIL" ))
+  (:export "*MATHFFP-BASE*" "*MATHFFP-VERSION*"))
 
 (in-package "AMIGA.RAW.MATHFFP")
 
@@ -33,42 +30,25 @@
 (defun %version>= (n)
   (and *mathffp-version* (>= *mathffp-version* n)))
 
-;;; --- functions (mathffp_lib.sfd + MorphOS SDK) ---
-(amiga.ffi:defcfun sp-fix *mathffp-base* -30 (:d0 parm)
-    :result :signed
-    :doc "LONG SPFix(FLOAT parm) (D0) LVO -30")
-(amiga.ffi:defcfun sp-flt *mathffp-base* -36 (:d0 integer)
-    :result :unsigned
-    :doc "FLOAT SPFlt(LONG integer) (D0) LVO -36")
-(amiga.ffi:defcfun sp-cmp *mathffp-base* -42 (:d1 left-parm :d0 right-parm)
-    :result :signed
-    :doc "LONG SPCmp(FLOAT leftParm, FLOAT rightParm) (D1,D0) LVO -42")
-(amiga.ffi:defcfun sp-tst *mathffp-base* -48 (:d1 parm)
-    :result :signed
-    :doc "LONG SPTst(FLOAT parm) (D1) LVO -48")
-(amiga.ffi:defcfun sp-abs *mathffp-base* -54 (:d0 parm)
-    :result :unsigned
-    :doc "FLOAT SPAbs(FLOAT parm) (D0) LVO -54")
-(amiga.ffi:defcfun sp-neg *mathffp-base* -60 (:d0 parm)
-    :result :unsigned
-    :doc "FLOAT SPNeg(FLOAT parm) (D0) LVO -60")
-(amiga.ffi:defcfun sp-add *mathffp-base* -66 (:d1 left-parm :d0 right-parm)
-    :result :unsigned
-    :doc "FLOAT SPAdd(FLOAT leftParm, FLOAT rightParm) (D1,D0) LVO -66")
-(amiga.ffi:defcfun sp-sub *mathffp-base* -72 (:d1 left-parm :d0 right-parm)
-    :result :unsigned
-    :doc "FLOAT SPSub(FLOAT leftParm, FLOAT rightParm) (D1,D0) LVO -72")
-(amiga.ffi:defcfun sp-mul *mathffp-base* -78 (:d1 left-parm :d0 right-parm)
-    :result :unsigned
-    :doc "FLOAT SPMul(FLOAT leftParm, FLOAT rightParm) (D1,D0) LVO -78")
-(amiga.ffi:defcfun sp-div *mathffp-base* -84 (:d1 left-parm :d0 right-parm)
-    :result :unsigned
-    :doc "FLOAT SPDiv(FLOAT leftParm, FLOAT rightParm) (D1,D0) LVO -84")
-(amiga.ffi:defcfun sp-floor *mathffp-base* -90 (:d0 parm)
-    :result :unsigned
-    :doc "FLOAT SPFloor(FLOAT parm) (D0) LVO -90")
-(amiga.ffi:defcfun sp-ceil *mathffp-base* -96 (:d0 parm)
-    :result :unsigned
-    :doc "FLOAT SPCeil(FLOAT parm) (D0) LVO -96")
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.MATHFFP"
+    (:base *mathffp-base* :version *mathffp-version*)
+
+  ;; --- functions (mathffp_lib.sfd + MorphOS SDK) ---
+  (:fn "SP-FIX" -30 (:d0) :signed)   ; LONG SPFix(FLOAT parm) (D0) LVO -30
+  (:fn "SP-FLT" -36 (:d0) :unsigned)   ; FLOAT SPFlt(LONG integer) (D0) LVO -36
+  (:fn "SP-CMP" -42 (:d1 :d0) :signed)   ; LONG SPCmp(FLOAT leftParm, FLOAT rightParm) (D1,D0) LVO -42
+  (:fn "SP-TST" -48 (:d1) :signed)   ; LONG SPTst(FLOAT parm) (D1) LVO -48
+  (:fn "SP-ABS" -54 (:d0) :unsigned)   ; FLOAT SPAbs(FLOAT parm) (D0) LVO -54
+  (:fn "SP-NEG" -60 (:d0) :unsigned)   ; FLOAT SPNeg(FLOAT parm) (D0) LVO -60
+  (:fn "SP-ADD" -66 (:d1 :d0) :unsigned)   ; FLOAT SPAdd(FLOAT leftParm, FLOAT rightParm) (D1,D0) LVO -66
+  (:fn "SP-SUB" -72 (:d1 :d0) :unsigned)   ; FLOAT SPSub(FLOAT leftParm, FLOAT rightParm) (D1,D0) LVO -72
+  (:fn "SP-MUL" -78 (:d1 :d0) :unsigned)   ; FLOAT SPMul(FLOAT leftParm, FLOAT rightParm) (D1,D0) LVO -78
+  (:fn "SP-DIV" -84 (:d1 :d0) :unsigned)   ; FLOAT SPDiv(FLOAT leftParm, FLOAT rightParm) (D1,D0) LVO -84
+  (:fn "SP-FLOOR" -90 (:d0) :unsigned)   ; FLOAT SPFloor(FLOAT parm) (D0) LVO -90
+  (:fn "SP-CEIL" -96 (:d0) :unsigned)   ; FLOAT SPCeil(FLOAT parm) (D0) LVO -96
+  )
 
 (provide "amiga/raw/mathffp")

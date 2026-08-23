@@ -15,9 +15,7 @@
 
 (defpackage "AMIGA.RAW.TRANSLATOR"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*TRANSLATOR-BASE*" "*TRANSLATOR-VERSION*"
-   "+TR-NOT-USED+" "+TR-NO-MEM+" "+TR-MAKE-BAD+" "TRANSLATE" ))
+  (:export "*TRANSLATOR-BASE*" "*TRANSLATOR-VERSION*"))
 
 (in-package "AMIGA.RAW.TRANSLATOR")
 
@@ -31,14 +29,19 @@
 (defun %version>= (n)
   (and *translator-version* (>= *translator-version* n)))
 
-;;; --- constants from libraries/translator.i ---
-(defconstant +tr-not-used+ -1)
-(defconstant +tr-no-mem+ -2)
-(defconstant +tr-make-bad+ -4)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.TRANSLATOR"
+    (:base *translator-base* :version *translator-version*)
 
-;;; --- functions (translator_lib.sfd + MorphOS SDK) ---
-(amiga.ffi:defcfun translate *translator-base* -30 (:a0 input-string :d0 input-length :a1 output-buffer :d1 buffer-size)
-    :result :signed
-    :doc "LONG Translate(CONST_STRPTR inputString, LONG inputLength, STRPTR outputBuffer, LONG bufferSize) (A0,D0,A1,D1) LVO -30")
+  ;; --- constants from libraries/translator.i ---
+  (:const "+TR-NOT-USED+" -1)
+  (:const "+TR-NO-MEM+" -2)
+  (:const "+TR-MAKE-BAD+" -4)
+
+  ;; --- functions (translator_lib.sfd + MorphOS SDK) ---
+  (:fn "TRANSLATE" -30 (:a0 :d0 :a1 :d1) :signed)   ; LONG Translate(CONST_STRPTR inputString, LONG inputLength, STRPTR outputBuffer, LONG bufferSize) (A0,D0,A1,D1) LVO -30
+  )
 
 (provide "amiga/raw/translator")

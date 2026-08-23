@@ -140,6 +140,34 @@
         (handler-case (progn (funcall #'amiga.raw.utility:to-upper) nil)
           (error (e) (and (search "expected 1" (format nil "~A" e)) t)))))
 
+;;; --- the modules are demand-interned binding tables (Phase 2) ----------
+
+;; a module's package carries its table after REQUIRE, and only the names
+;; this file has touched so far exist as symbols (a few dozen of ~1500)
+(check "raw-bindtab-intuition-lazy" t
+  (let ((info (clamiga::%binding-table-info "AMIGA.RAW.INTUITION")))
+    (and info
+         (> (getf info :entries) 1400)
+         (< (getf info :symbols) 200)
+         (eq (getf info :base) 'amiga.raw.intuition:*intuition-base*)
+         t)))
+
+;; first reference builds the symbol: exported, constant, right value
+(check "raw-bindtab-materialise-on-find-symbol" '(:external t #x8000006A)   ; WA_IDCMP = WA_Dummy + 10
+  (multiple-value-bind (s status) (find-symbol "+WA-IDCMP+" "AMIGA.RAW.INTUITION")
+    (list status (constantp s) (symbol-value s))))
+
+;; the %SET- writer of a field comes with its reader (DEFSETF-linked)
+(check "raw-bindtab-setter-probe" '(:internal :poke)
+  (multiple-value-bind (s status) (find-symbol "%SET-WINDOW-LEFT-EDGE" "AMIGA.RAW.INTUITION")
+    (list status (getf (ffi::%ffi-stub-info s) :kind))))
+
+;; the table rows decode back to what the generator emitted
+(check "raw-bindtab-rows" t
+  (let ((row (find-if (lambda (r) (and (eq (first r) :fn) (string= (second r) "OPEN-WINDOW-TAG-LIST")))
+                      (clamiga::%binding-table-entries "AMIGA.RAW.INTUITION"))))
+    (equal (cddr row) '(-606 (:a0 :a1) :pointer))))
+
 ;;; --- dos.library: shadowed names, BPTRs, an end-to-end file round trip
 
 (check "raw-dos-open-is-not-cl-open" t

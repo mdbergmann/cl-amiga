@@ -16,9 +16,7 @@
 
 (defpackage "AMIGA.RAW.MATHIEEEDOUBTRANS"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*MATHIEEEDOUBTRANS-BASE*" "*MATHIEEEDOUBTRANS-VERSION*"
-   "IEEEDP-TIEEE" ))
+  (:export "*MATHIEEEDOUBTRANS-BASE*" "*MATHIEEEDOUBTRANS-VERSION*"))
 
 (in-package "AMIGA.RAW.MATHIEEEDOUBTRANS")
 
@@ -32,42 +30,46 @@
 (defun %version>= (n)
   (and *mathieeedoubtrans-version* (>= *mathieeedoubtrans-version* n)))
 
-;;; --- functions (mathieeedoubtrans_lib.sfd + MorphOS SDK) ---
-;; skipped IEEEDPAtan: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPAtan: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPSin: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPSin: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPCos: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPCos: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPTan: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPTan: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPSincos: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPSincos: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPSinh: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPSinh: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPCosh: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPCosh: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPTanh: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPTanh: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPExp: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPExp: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPLog: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPLog: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPPow: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPPow: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPSqrt: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPSqrt: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPTieee: 64-bit register-pair argument
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun ieeedp-tieee *mathieeedoubtrans-base* -102 (:d0 parm)
-    :result :unsigned
-    :doc "FLOAT IEEEDPTieee(DOUBLE parm) (D0) LVO -102"))
-;; skipped IEEEDPFieee: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPAsin: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPAsin: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPAcos: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPAcos: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPLog10: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPLog10: DOUBLE result (d0/d1 register pair)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.MATHIEEEDOUBTRANS"
+    (:base *mathieeedoubtrans-base* :version *mathieeedoubtrans-version*)
+
+  ;; --- functions (mathieeedoubtrans_lib.sfd + MorphOS SDK) ---
+  ;; skipped IEEEDPAtan: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPAtan: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPSin: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPSin: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPCos: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPCos: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPTan: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPTan: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPSincos: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPSincos: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPSinh: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPSinh: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPCosh: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPCosh: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPTanh: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPTanh: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPExp: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPExp: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPLog: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPLog: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPPow: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPPow: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPSqrt: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPSqrt: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPTieee: 64-bit register-pair argument
+  (:fn "IEEEDP-TIEEE" -102 (:d0) :unsigned :morphos)   ; FLOAT IEEEDPTieee(DOUBLE parm) (D0) LVO -102
+  ;; skipped IEEEDPFieee: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPAsin: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPAsin: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPAcos: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPAcos: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPLog10: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPLog10: DOUBLE result (d0/d1 register pair)
+  )
 
 (provide "amiga/raw/mathieeedoubtrans")

@@ -14,20 +14,24 @@
 
 (defpackage "AMIGA.RAW.REACTION.REACTION-PREFS"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+BVT-GT+" "+BVT-THIN+" "+BVT-THICK+" "+BVT-XEN+" "+BVT-XENTHIN+" 
-   "+GLT-GT+" "+GLT-FLAT+" "+GLT-3-D+" ))
+  (:export))
 
 (in-package "AMIGA.RAW.REACTION.REACTION-PREFS")
 
-;;; --- constants from reaction/reaction_prefs.h ---
-(defconstant +bvt-gt+ 0)
-(defconstant +bvt-thin+ 1)
-(defconstant +bvt-thick+ 2)
-(defconstant +bvt-xen+ 3)
-(defconstant +bvt-xenthin+ 4)
-(defconstant +glt-gt+ 0)
-(defconstant +glt-flat+ 1)
-(defconstant +glt-3-d+ 2)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.REACTION.REACTION-PREFS" ()
+
+  ;; --- constants from reaction/reaction_prefs.h ---
+  (:const "+BVT-GT+" 0)
+  (:const "+BVT-THIN+" 1)
+  (:const "+BVT-THICK+" 2)
+  (:const "+BVT-XEN+" 3)
+  (:const "+BVT-XENTHIN+" 4)
+  (:const "+GLT-GT+" 0)
+  (:const "+GLT-FLAT+" 1)
+  (:const "+GLT-3-D+" 2)
+  )
 
 (provide "amiga/raw/reaction/reaction-prefs")

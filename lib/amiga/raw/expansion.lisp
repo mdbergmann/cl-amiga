@@ -18,68 +18,7 @@
 
 (defpackage "AMIGA.RAW.EXPANSION"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*EXPANSION-BASE*" "*EXPANSION-VERSION*"
-   "+ADNB-STARTPROC+" "+ADNF-STARTPROC+" "+EE-OK+" "+EE-LASTBOARD+" 
-   "+EE-NOEXPANSION+" "+EE-NOMEMORY+" "+EE-NOBOARD+" "+EE-BADMEM+" 
-   "+EBB-CLOGGED+" "+EBF-CLOGGED+" "+EBB-SHORTMEM+" "+EBF-SHORTMEM+" 
-   "+EBB-BADMEM+" "+EBF-BADMEM+" "+EBB-DOSFLAG+" "+EBF-DOSFLAG+" 
-   "+EBB-KICKBACK33+" "+EBF-KICKBACK33+" "+EBB-KICKBACK36+" 
-   "+EBF-KICKBACK36+" "+EBB-SILENTSTART+" "+EBF-SILENTSTART+" 
-   "+EBB-START-CC0+" "+EBF-START-CC0+" "*BOOT-NODE-SIZE*" "BOOT-NODE-FLAGS" 
-   "BOOT-NODE-DEVICE-NODE" "*EXPANSION-BASE-SIZE*" "EXPANSION-BASE-FLAGS" 
-   "EXPANSION-BASE-PRIVATE01" "EXPANSION-BASE-PRIVATE02" 
-   "EXPANSION-BASE-PRIVATE03" "EXPANSION-BASE-PRIVATE04" 
-   "EXPANSION-BASE-PRIVATE05" "EXPANSION-BASE-MOUNT-LIST" "+CDB-SHUTUP+" 
-   "+CDF-SHUTUP+" "+CDB-CONFIGME+" "+CDF-CONFIGME+" "+CDB-BADMEMORY+" 
-   "+CDF-BADMEMORY+" "+CDB-PROCESSED+" "+CDF-PROCESSED+" 
-   "*CONFIG-DEV-SIZE*" "CONFIG-DEV-NODE" "CONFIG-DEV-FLAGS" 
-   "CONFIG-DEV-PAD" "CONFIG-DEV-ROM" "CONFIG-DEV-BOARD-ADDR" 
-   "CONFIG-DEV-BOARD-SIZE" "CONFIG-DEV-SLOT-ADDR" "CONFIG-DEV-SLOT-SIZE" 
-   "CONFIG-DEV-DRIVER" "CONFIG-DEV-NEXT-CD" "CONFIG-DEV-UNUSED" 
-   "*CURRENT-BINDING-SIZE*" "CURRENT-BINDING-CONFIG-DEV" 
-   "CURRENT-BINDING-FILE-NAME" "CURRENT-BINDING-PRODUCT-STRING" 
-   "CURRENT-BINDING-TOOL-TYPES" "+E-SLOTSIZE+" "+E-SLOTMASK+" 
-   "+E-SLOTSHIFT+" "+E-EXPANSIONBASE+" "+EZ3-EXPANSIONBASE+" 
-   "+E-EXPANSIONSIZE+" "+E-EXPANSIONSLOTS+" "+E-MEMORYBASE+" 
-   "+E-MEMORYSIZE+" "+E-MEMORYSLOTS+" "+EZ3-CONFIGAREA+" 
-   "+EZ3-CONFIGAREAEND+" "+EZ3-SIZEGRANULARITY+" "+ERT-TYPEMASK+" 
-   "+ERT-TYPEBIT+" "+ERT-TYPESIZE+" "+ERT-NEWBOARD+" "+ERT-ZORROII+" 
-   "+ERT-ZORROIII+" "+ERTB-MEMLIST+" "+ERTF-MEMLIST+" "+ERTB-DIAGVALID+" 
-   "+ERTF-DIAGVALID+" "+ERTB-CHAINEDCONFIG+" "+ERTF-CHAINEDCONFIG+" 
-   "+ERT-MEMMASK+" "+ERT-MEMBIT+" "+ERT-MEMSIZE+" "+ERFB-MEMSPACE+" 
-   "+ERFF-MEMSPACE+" "+ERFB-NOSHUTUP+" "+ERFF-NOSHUTUP+" "+ERFB-EXTENDED+" 
-   "+ERFF-EXTENDED+" "+ERFB-ZORRO-III+" "+ERFF-ZORRO-III+" 
-   "+ERT-Z3-SSMASK+" "+ERT-Z3-SSBIT+" "+ERT-Z3-SSSIZE+" "+ECIB-INTENA+" 
-   "+ECIF-INTENA+" "+ECIB-RESET+" "+ECIF-RESET+" "+ECIB-INT2-PEND+" 
-   "+ECIF-INT2-PEND+" "+ECIB-INT6-PEND+" "+ECIF-INT6-PEND+" 
-   "+ECIB-INT7-PEND+" "+ECIF-INT7-PEND+" "+ECIB-INTERRUPTING+" 
-   "+ECIF-INTERRUPTING+" "+DAC-BUSWIDTH+" "+DAC-NIBBLEWIDE+" 
-   "+DAC-BYTEWIDE+" "+DAC-WORDWIDE+" "+DAC-BOOTTIME+" "+DAC-NEVER+" 
-   "+DAC-CONFIGTIME+" "+DAC-BINDTIME+" "*EXPANSION-ROM-SIZE*" 
-   "EXPANSION-ROM-TYPE" "EXPANSION-ROM-PRODUCT" "EXPANSION-ROM-FLAGS" 
-   "EXPANSION-ROM-RESERVED03" "EXPANSION-ROM-MANUFACTURER" 
-   "EXPANSION-ROM-SERIAL-NUMBER" "EXPANSION-ROM-INIT-DIAG-VEC" 
-   "EXPANSION-ROM-RESERVED0C" "EXPANSION-ROM-RESERVED0D" 
-   "EXPANSION-ROM-RESERVED0E" "EXPANSION-ROM-RESERVED0F" 
-   "*EXPANSION-CONTROL-SIZE*" "EXPANSION-CONTROL-INTERRUPT" 
-   "EXPANSION-CONTROL-Z3-HIGH-BASE" "EXPANSION-CONTROL-BASE-ADDRESS" 
-   "EXPANSION-CONTROL-SHUTUP" "EXPANSION-CONTROL-RESERVED14" 
-   "EXPANSION-CONTROL-RESERVED15" "EXPANSION-CONTROL-RESERVED16" 
-   "EXPANSION-CONTROL-RESERVED17" "EXPANSION-CONTROL-RESERVED18" 
-   "EXPANSION-CONTROL-RESERVED19" "EXPANSION-CONTROL-RESERVED1A" 
-   "EXPANSION-CONTROL-RESERVED1B" "EXPANSION-CONTROL-RESERVED1C" 
-   "EXPANSION-CONTROL-RESERVED1D" "EXPANSION-CONTROL-RESERVED1E" 
-   "EXPANSION-CONTROL-RESERVED1F" "*DIAG-AREA-SIZE*" "DIAG-AREA-CONFIG" 
-   "DIAG-AREA-FLAGS" "DIAG-AREA-SIZE" "DIAG-AREA-DIAG-POINT" 
-   "DIAG-AREA-BOOT-POINT" "DIAG-AREA-NAME" "DIAG-AREA-RESERVED01" 
-   "DIAG-AREA-RESERVED02" "ADD-CONFIG-DEV" "ADD-BOOT-NODE" 
-   "ALLOC-BOARD-MEM" "ALLOC-CONFIG-DEV" "ALLOC-EXPANSION-MEM" 
-   "CONFIG-BOARD" "CONFIG-CHAIN" "FIND-CONFIG-DEV" "FREE-BOARD-MEM" 
-   "FREE-CONFIG-DEV" "FREE-EXPANSION-MEM" "READ-EXPANSION-BYTE" 
-   "READ-EXPANSION-ROM" "REM-CONFIG-DEV" "WRITE-EXPANSION-BYTE" 
-   "OBTAIN-CONFIG-BINDING" "RELEASE-CONFIG-BINDING" "SET-CURRENT-BINDING" 
-   "GET-CURRENT-BINDING" "MAKE-DOS-NODE" "ADD-DOS-NODE" ))
+  (:export "*EXPANSION-BASE*" "*EXPANSION-VERSION*"))
 
 (in-package "AMIGA.RAW.EXPANSION")
 
@@ -93,247 +32,212 @@
 (defun %version>= (n)
   (and *expansion-version* (>= *expansion-version* n)))
 
-;;; --- constants from libraries/expansion.i ---
-(defconstant +adnb-startproc+ 0)
-(defconstant +adnf-startproc+ 1)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.EXPANSION"
+    (:base *expansion-base* :version *expansion-version*)
 
-;;; --- constants from libraries/expansionbase.i ---
-(defconstant +ee-ok+ 0)
-(defconstant +ee-lastboard+ #x28)
-(defconstant +ee-noexpansion+ #x29)
-(defconstant +ee-nomemory+ #x2A)
-(defconstant +ee-noboard+ #x2B)
-(defconstant +ee-badmem+ #x2C)
-(defconstant +ebb-clogged+ 0)
-(defconstant +ebf-clogged+ 1)
-(defconstant +ebb-shortmem+ 1)
-(defconstant +ebf-shortmem+ 2)
-(defconstant +ebb-badmem+ 2)
-(defconstant +ebf-badmem+ 4)
-(defconstant +ebb-dosflag+ 3)
-(defconstant +ebf-dosflag+ 8)
-(defconstant +ebb-kickback33+ 4)
-(defconstant +ebf-kickback33+ #x10)
-(defconstant +ebb-kickback36+ 5)
-(defconstant +ebf-kickback36+ #x20)
-(defconstant +ebb-silentstart+ 6)
-(defconstant +ebf-silentstart+ #x40)
-(defconstant +ebb-start-cc0+ 7)
-(defconstant +ebf-start-cc0+ #x80)
+  ;; --- constants from libraries/expansion.i ---
+  (:const "+ADNB-STARTPROC+" 0)
+  (:const "+ADNF-STARTPROC+" 1)
 
-;;; --- structures from libraries/expansionbase.i ---
-(ffi:defcstruct (boot-node :size 20)   ; BootNode (libraries/expansionbase.i)
-  (flags :u16 14)
-  (device-node :fptr 16)
-)
-(ffi:defcstruct (expansion-base :size 88)   ; ExpansionBase (libraries/expansionbase.i)
-  (flags :u8 34)
-  (private01 :u8 35)
-  (private02 :u32 36)
-  (private03 :u32 40)
-  (private04 (:struct 16) 44)
-  (private05 (:struct 14) 60)
-  (mount-list (:struct 14) 74)
-)
+  ;; --- constants from libraries/expansionbase.i ---
+  (:const "+EE-OK+" 0)
+  (:const "+EE-LASTBOARD+" #x28)
+  (:const "+EE-NOEXPANSION+" #x29)
+  (:const "+EE-NOMEMORY+" #x2A)
+  (:const "+EE-NOBOARD+" #x2B)
+  (:const "+EE-BADMEM+" #x2C)
+  (:const "+EBB-CLOGGED+" 0)
+  (:const "+EBF-CLOGGED+" 1)
+  (:const "+EBB-SHORTMEM+" 1)
+  (:const "+EBF-SHORTMEM+" 2)
+  (:const "+EBB-BADMEM+" 2)
+  (:const "+EBF-BADMEM+" 4)
+  (:const "+EBB-DOSFLAG+" 3)
+  (:const "+EBF-DOSFLAG+" 8)
+  (:const "+EBB-KICKBACK33+" 4)
+  (:const "+EBF-KICKBACK33+" #x10)
+  (:const "+EBB-KICKBACK36+" 5)
+  (:const "+EBF-KICKBACK36+" #x20)
+  (:const "+EBB-SILENTSTART+" 6)
+  (:const "+EBF-SILENTSTART+" #x40)
+  (:const "+EBB-START-CC0+" 7)
+  (:const "+EBF-START-CC0+" #x80)
 
-;;; --- constants from libraries/configvars.i ---
-(defconstant +cdb-shutup+ 0)
-(defconstant +cdf-shutup+ 1)
-(defconstant +cdb-configme+ 1)
-(defconstant +cdf-configme+ 2)
-(defconstant +cdb-badmemory+ 2)
-(defconstant +cdf-badmemory+ 4)
-(defconstant +cdb-processed+ 3)
-(defconstant +cdf-processed+ 8)
+  ;; --- structures from libraries/expansionbase.i ---
+  (:struct "BOOT-NODE" 20   ; BootNode (libraries/expansionbase.i)
+    ("FLAGS" :u16 14)
+    ("DEVICE-NODE" :fptr 16)
+    )
+  (:struct "EXPANSION-BASE" 88   ; ExpansionBase (libraries/expansionbase.i)
+    ("FLAGS" :u8 34)
+    ("PRIVATE01" :u8 35)
+    ("PRIVATE02" :u32 36)
+    ("PRIVATE03" :u32 40)
+    ("PRIVATE04" (:struct 16) 44)
+    ("PRIVATE05" (:struct 14) 60)
+    ("MOUNT-LIST" (:struct 14) 74)
+    )
 
-;;; --- structures from libraries/configvars.i ---
-(ffi:defcstruct (config-dev :size 68)   ; ConfigDev (libraries/configvars.i)
-  (node (:struct 14) 0)
-  (flags :u8 14)
-  (pad :u8 15)
-  (rom (:struct 16) 16)
-  (board-addr :fptr 32)
-  (board-size :u32 36)
-  (slot-addr :u16 40)
-  (slot-size :u16 42)
-  (driver :fptr 44)
-  (next-cd :fptr 48)
-  (unused (:struct 16) 52)
-)
-(ffi:defcstruct (current-binding :size 16)   ; CurrentBinding (libraries/configvars.i)
-  (config-dev :fptr 0)
-  (file-name :fptr 4)
-  (product-string :fptr 8)
-  (tool-types :fptr 12)
-)
+  ;; --- constants from libraries/configvars.i ---
+  (:const "+CDB-SHUTUP+" 0)
+  (:const "+CDF-SHUTUP+" 1)
+  (:const "+CDB-CONFIGME+" 1)
+  (:const "+CDF-CONFIGME+" 2)
+  (:const "+CDB-BADMEMORY+" 2)
+  (:const "+CDF-BADMEMORY+" 4)
+  (:const "+CDB-PROCESSED+" 3)
+  (:const "+CDF-PROCESSED+" 8)
 
-;;; --- constants from libraries/configregs.i ---
-(defconstant +e-slotsize+ #x10000)
-(defconstant +e-slotmask+ #xFFFF)
-(defconstant +e-slotshift+ #x10)
-(defconstant +e-expansionbase+ #xE80000)
-(defconstant +ez3-expansionbase+ #xFF000000)
-(defconstant +e-expansionsize+ #x80000)
-(defconstant +e-expansionslots+ 8)
-(defconstant +e-memorybase+ #x200000)
-(defconstant +e-memorysize+ #x800000)
-(defconstant +e-memoryslots+ #x80)
-(defconstant +ez3-configarea+ #x40000000)
-(defconstant +ez3-configareaend+ #x7FFFFFFF)
-(defconstant +ez3-sizegranularity+ #x80000)
-(defconstant +ert-typemask+ #xC0)
-(defconstant +ert-typebit+ 6)
-(defconstant +ert-typesize+ 2)
-(defconstant +ert-newboard+ #xC0)
-(defconstant +ert-zorroii+ #xC0)
-(defconstant +ert-zorroiii+ #x80)
-(defconstant +ertb-memlist+ 5)
-(defconstant +ertf-memlist+ #x20)
-(defconstant +ertb-diagvalid+ 4)
-(defconstant +ertf-diagvalid+ #x10)
-(defconstant +ertb-chainedconfig+ 3)
-(defconstant +ertf-chainedconfig+ 8)
-(defconstant +ert-memmask+ 7)
-(defconstant +ert-membit+ 0)
-(defconstant +ert-memsize+ 3)
-(defconstant +erfb-memspace+ 7)
-(defconstant +erff-memspace+ #x80)
-(defconstant +erfb-noshutup+ 6)
-(defconstant +erff-noshutup+ #x40)
-(defconstant +erfb-extended+ 5)
-(defconstant +erff-extended+ #x20)
-(defconstant +erfb-zorro-iii+ 4)
-(defconstant +erff-zorro-iii+ #x10)
-(defconstant +ert-z3-ssmask+ 15)
-(defconstant +ert-z3-ssbit+ 0)
-(defconstant +ert-z3-sssize+ 4)
-(defconstant +ecib-intena+ 1)
-(defconstant +ecif-intena+ 2)
-(defconstant +ecib-reset+ 3)
-(defconstant +ecif-reset+ 8)
-(defconstant +ecib-int2-pend+ 4)
-(defconstant +ecif-int2-pend+ #x10)
-(defconstant +ecib-int6-pend+ 5)
-(defconstant +ecif-int6-pend+ #x20)
-(defconstant +ecib-int7-pend+ 6)
-(defconstant +ecif-int7-pend+ #x40)
-(defconstant +ecib-interrupting+ 7)
-(defconstant +ecif-interrupting+ #x80)
-(defconstant +dac-buswidth+ #xC0)
-(defconstant +dac-nibblewide+ 0)
-(defconstant +dac-bytewide+ #x40)
-(defconstant +dac-wordwide+ #x80)
-(defconstant +dac-boottime+ #x30)
-(defconstant +dac-never+ 0)
-(defconstant +dac-configtime+ #x10)
-(defconstant +dac-bindtime+ #x20)
+  ;; --- structures from libraries/configvars.i ---
+  (:struct "CONFIG-DEV" 68   ; ConfigDev (libraries/configvars.i)
+    ("NODE" (:struct 14) 0)
+    ("FLAGS" :u8 14)
+    ("PAD" :u8 15)
+    ("ROM" (:struct 16) 16)
+    ("BOARD-ADDR" :fptr 32)
+    ("BOARD-SIZE" :u32 36)
+    ("SLOT-ADDR" :u16 40)
+    ("SLOT-SIZE" :u16 42)
+    ("DRIVER" :fptr 44)
+    ("NEXT-CD" :fptr 48)
+    ("UNUSED" (:struct 16) 52)
+    )
+  (:struct "CURRENT-BINDING" 16   ; CurrentBinding (libraries/configvars.i)
+    ("CONFIG-DEV" :fptr 0)
+    ("FILE-NAME" :fptr 4)
+    ("PRODUCT-STRING" :fptr 8)
+    ("TOOL-TYPES" :fptr 12)
+    )
 
-;;; --- structures from libraries/configregs.i ---
-(ffi:defcstruct (expansion-rom :size 16)   ; ExpansionRom (libraries/configregs.i)
-  (type :u8 0)
-  (product :u8 1)
-  (flags :u8 2)
-  (reserved03 :u8 3)
-  (manufacturer :u16 4)
-  (serial-number :u32 6)
-  (init-diag-vec :u16 10)
-  (reserved0c :u8 12)
-  (reserved0d :u8 13)
-  (reserved0e :u8 14)
-  (reserved0f :u8 15)
-)
-(ffi:defcstruct (expansion-control :size 16)   ; ExpansionControl (libraries/configregs.i)
-  (interrupt :u8 0)
-  (z3-high-base :u8 1)
-  (base-address :u8 2)
-  (shutup :u8 3)
-  (reserved14 :u8 4)
-  (reserved15 :u8 5)
-  (reserved16 :u8 6)
-  (reserved17 :u8 7)
-  (reserved18 :u8 8)
-  (reserved19 :u8 9)
-  (reserved1a :u8 10)
-  (reserved1b :u8 11)
-  (reserved1c :u8 12)
-  (reserved1d :u8 13)
-  (reserved1e :u8 14)
-  (reserved1f :u8 15)
-)
-(ffi:defcstruct (diag-area :size 14)   ; DiagArea (libraries/configregs.i)
-  (config :u8 0)
-  (flags :u8 1)
-  (size :u16 2)
-  (diag-point :u16 4)
-  (boot-point :u16 6)
-  (name :u16 8)
-  (reserved01 :u16 10)
-  (reserved02 :u16 12)
-)
+  ;; --- constants from libraries/configregs.i ---
+  (:const "+E-SLOTSIZE+" #x10000)
+  (:const "+E-SLOTMASK+" #xFFFF)
+  (:const "+E-SLOTSHIFT+" #x10)
+  (:const "+E-EXPANSIONBASE+" #xE80000)
+  (:const "+EZ3-EXPANSIONBASE+" #xFF000000)
+  (:const "+E-EXPANSIONSIZE+" #x80000)
+  (:const "+E-EXPANSIONSLOTS+" 8)
+  (:const "+E-MEMORYBASE+" #x200000)
+  (:const "+E-MEMORYSIZE+" #x800000)
+  (:const "+E-MEMORYSLOTS+" #x80)
+  (:const "+EZ3-CONFIGAREA+" #x40000000)
+  (:const "+EZ3-CONFIGAREAEND+" #x7FFFFFFF)
+  (:const "+EZ3-SIZEGRANULARITY+" #x80000)
+  (:const "+ERT-TYPEMASK+" #xC0)
+  (:const "+ERT-TYPEBIT+" 6)
+  (:const "+ERT-TYPESIZE+" 2)
+  (:const "+ERT-NEWBOARD+" #xC0)
+  (:const "+ERT-ZORROII+" #xC0)
+  (:const "+ERT-ZORROIII+" #x80)
+  (:const "+ERTB-MEMLIST+" 5)
+  (:const "+ERTF-MEMLIST+" #x20)
+  (:const "+ERTB-DIAGVALID+" 4)
+  (:const "+ERTF-DIAGVALID+" #x10)
+  (:const "+ERTB-CHAINEDCONFIG+" 3)
+  (:const "+ERTF-CHAINEDCONFIG+" 8)
+  (:const "+ERT-MEMMASK+" 7)
+  (:const "+ERT-MEMBIT+" 0)
+  (:const "+ERT-MEMSIZE+" 3)
+  (:const "+ERFB-MEMSPACE+" 7)
+  (:const "+ERFF-MEMSPACE+" #x80)
+  (:const "+ERFB-NOSHUTUP+" 6)
+  (:const "+ERFF-NOSHUTUP+" #x40)
+  (:const "+ERFB-EXTENDED+" 5)
+  (:const "+ERFF-EXTENDED+" #x20)
+  (:const "+ERFB-ZORRO-III+" 4)
+  (:const "+ERFF-ZORRO-III+" #x10)
+  (:const "+ERT-Z3-SSMASK+" 15)
+  (:const "+ERT-Z3-SSBIT+" 0)
+  (:const "+ERT-Z3-SSSIZE+" 4)
+  (:const "+ECIB-INTENA+" 1)
+  (:const "+ECIF-INTENA+" 2)
+  (:const "+ECIB-RESET+" 3)
+  (:const "+ECIF-RESET+" 8)
+  (:const "+ECIB-INT2-PEND+" 4)
+  (:const "+ECIF-INT2-PEND+" #x10)
+  (:const "+ECIB-INT6-PEND+" 5)
+  (:const "+ECIF-INT6-PEND+" #x20)
+  (:const "+ECIB-INT7-PEND+" 6)
+  (:const "+ECIF-INT7-PEND+" #x40)
+  (:const "+ECIB-INTERRUPTING+" 7)
+  (:const "+ECIF-INTERRUPTING+" #x80)
+  (:const "+DAC-BUSWIDTH+" #xC0)
+  (:const "+DAC-NIBBLEWIDE+" 0)
+  (:const "+DAC-BYTEWIDE+" #x40)
+  (:const "+DAC-WORDWIDE+" #x80)
+  (:const "+DAC-BOOTTIME+" #x30)
+  (:const "+DAC-NEVER+" 0)
+  (:const "+DAC-CONFIGTIME+" #x10)
+  (:const "+DAC-BINDTIME+" #x20)
 
-;;; --- functions (expansion_lib.sfd + MorphOS SDK) ---
-(amiga.ffi:defcfun add-config-dev *expansion-base* -30 (:a0 config-dev)
-    :result :void
-    :doc "VOID AddConfigDev(struct ConfigDev * configDev) (A0) LVO -30")
-(amiga.ffi:defcfun add-boot-node *expansion-base* -36 (:d0 boot-pri :d1 flags :a0 device-node :a1 config-dev)
-    :result :bool
-    :doc "BOOL AddBootNode(LONG bootPri, ULONG flags, struct DeviceNode * deviceNode, struct ConfigDev * configDev) (D0,D1,A0,A1) LVO -36")
-(amiga.ffi:defcfun alloc-board-mem *expansion-base* -42 (:d0 slot-spec)
-    :result :void
-    :doc "VOID AllocBoardMem(ULONG slotSpec) (D0) LVO -42")
-(amiga.ffi:defcfun alloc-config-dev *expansion-base* -48 ()
-    :result :pointer
-    :doc "struct ConfigDev * AllocConfigDev() () LVO -48")
-(amiga.ffi:defcfun alloc-expansion-mem *expansion-base* -54 (:d0 num-slots :d1 slot-align)
-    :result :pointer
-    :doc "APTR AllocExpansionMem(ULONG numSlots, ULONG slotAlign) (D0,D1) LVO -54")
-(amiga.ffi:defcfun config-board *expansion-base* -60 (:a0 board :a1 config-dev)
-    :result :void
-    :doc "VOID ConfigBoard(APTR board, struct ConfigDev * configDev) (A0,A1) LVO -60")
-(amiga.ffi:defcfun config-chain *expansion-base* -66 (:a0 base-addr)
-    :result :void
-    :doc "VOID ConfigChain(APTR baseAddr) (A0) LVO -66")
-(amiga.ffi:defcfun find-config-dev *expansion-base* -72 (:a0 old-config-dev :d0 manufacturer :d1 product)
-    :result :pointer
-    :doc "struct ConfigDev * FindConfigDev(CONST struct ConfigDev * oldConfigDev, LONG manufacturer, LONG product) (A0,D0,D1) LVO -72")
-(amiga.ffi:defcfun free-board-mem *expansion-base* -78 (:d0 start-slot :d1 slot-spec)
-    :result :void
-    :doc "VOID FreeBoardMem(ULONG startSlot, ULONG slotSpec) (D0,D1) LVO -78")
-(amiga.ffi:defcfun free-config-dev *expansion-base* -84 (:a0 config-dev)
-    :result :void
-    :doc "VOID FreeConfigDev(struct ConfigDev * configDev) (A0) LVO -84")
-(amiga.ffi:defcfun free-expansion-mem *expansion-base* -90 (:d0 start-slot :d1 num-slots)
-    :result :void
-    :doc "VOID FreeExpansionMem(ULONG startSlot, ULONG numSlots) (D0,D1) LVO -90")
-(amiga.ffi:defcfun read-expansion-byte *expansion-base* -96 (:a0 board :d0 offset)
-    :result :u8
-    :doc "UBYTE ReadExpansionByte(CONST_APTR board, ULONG offset) (A0,D0) LVO -96")
-(amiga.ffi:defcfun read-expansion-rom *expansion-base* -102 (:a0 board :a1 config-dev)
-    :result :void
-    :doc "VOID ReadExpansionRom(CONST_APTR board, struct ConfigDev * configDev) (A0,A1) LVO -102")
-(amiga.ffi:defcfun rem-config-dev *expansion-base* -108 (:a0 config-dev)
-    :result :void
-    :doc "VOID RemConfigDev(struct ConfigDev * configDev) (A0) LVO -108")
-(amiga.ffi:defcfun write-expansion-byte *expansion-base* -114 (:a0 board :d0 offset :d1 byte)
-    :result :void
-    :doc "VOID WriteExpansionByte(APTR board, ULONG offset, UBYTE byte) (A0,D0,D1) LVO -114")
-(amiga.ffi:defcfun obtain-config-binding *expansion-base* -120 ()
-    :result :void
-    :doc "VOID ObtainConfigBinding() () LVO -120")
-(amiga.ffi:defcfun release-config-binding *expansion-base* -126 ()
-    :result :void
-    :doc "VOID ReleaseConfigBinding() () LVO -126")
-(amiga.ffi:defcfun set-current-binding *expansion-base* -132 (:a0 current-binding :d0 binding-size)
-    :result :void
-    :doc "VOID SetCurrentBinding(struct CurrentBinding * currentBinding, ULONG bindingSize) (A0,D0) LVO -132")
-(amiga.ffi:defcfun get-current-binding *expansion-base* -138 (:a0 current-binding :d0 binding-size)
-    :result :unsigned
-    :doc "ULONG GetCurrentBinding(CONST struct CurrentBinding * currentBinding, ULONG bindingSize) (A0,D0) LVO -138")
-(amiga.ffi:defcfun make-dos-node *expansion-base* -144 (:a0 parm-packet)
-    :result :pointer
-    :doc "struct DeviceNode * MakeDosNode(CONST_APTR parmPacket) (A0) LVO -144")
-(amiga.ffi:defcfun add-dos-node *expansion-base* -150 (:d0 boot-pri :d1 flags :a0 device-node)
-    :result :bool
-    :doc "BOOL AddDosNode(LONG bootPri, ULONG flags, struct DeviceNode * deviceNode) (D0,D1,A0) LVO -150")
+  ;; --- structures from libraries/configregs.i ---
+  (:struct "EXPANSION-ROM" 16   ; ExpansionRom (libraries/configregs.i)
+    ("TYPE" :u8 0)
+    ("PRODUCT" :u8 1)
+    ("FLAGS" :u8 2)
+    ("RESERVED03" :u8 3)
+    ("MANUFACTURER" :u16 4)
+    ("SERIAL-NUMBER" :u32 6)
+    ("INIT-DIAG-VEC" :u16 10)
+    ("RESERVED0C" :u8 12)
+    ("RESERVED0D" :u8 13)
+    ("RESERVED0E" :u8 14)
+    ("RESERVED0F" :u8 15)
+    )
+  (:struct "EXPANSION-CONTROL" 16   ; ExpansionControl (libraries/configregs.i)
+    ("INTERRUPT" :u8 0)
+    ("Z3-HIGH-BASE" :u8 1)
+    ("BASE-ADDRESS" :u8 2)
+    ("SHUTUP" :u8 3)
+    ("RESERVED14" :u8 4)
+    ("RESERVED15" :u8 5)
+    ("RESERVED16" :u8 6)
+    ("RESERVED17" :u8 7)
+    ("RESERVED18" :u8 8)
+    ("RESERVED19" :u8 9)
+    ("RESERVED1A" :u8 10)
+    ("RESERVED1B" :u8 11)
+    ("RESERVED1C" :u8 12)
+    ("RESERVED1D" :u8 13)
+    ("RESERVED1E" :u8 14)
+    ("RESERVED1F" :u8 15)
+    )
+  (:struct "DIAG-AREA" 14   ; DiagArea (libraries/configregs.i)
+    ("CONFIG" :u8 0)
+    ("FLAGS" :u8 1)
+    ("SIZE" :u16 2)
+    ("DIAG-POINT" :u16 4)
+    ("BOOT-POINT" :u16 6)
+    ("NAME" :u16 8)
+    ("RESERVED01" :u16 10)
+    ("RESERVED02" :u16 12)
+    )
+
+  ;; --- functions (expansion_lib.sfd + MorphOS SDK) ---
+  (:fn "ADD-CONFIG-DEV" -30 (:a0) :void)   ; VOID AddConfigDev(struct ConfigDev * configDev) (A0) LVO -30
+  (:fn "ADD-BOOT-NODE" -36 (:d0 :d1 :a0 :a1) :bool)   ; BOOL AddBootNode(LONG bootPri, ULONG flags, struct DeviceNode * deviceNode, struct ConfigDev * configDev) (D0,D1,A0,A1) LVO -36
+  (:fn "ALLOC-BOARD-MEM" -42 (:d0) :void)   ; VOID AllocBoardMem(ULONG slotSpec) (D0) LVO -42
+  (:fn "ALLOC-CONFIG-DEV" -48 () :pointer)   ; struct ConfigDev * AllocConfigDev() () LVO -48
+  (:fn "ALLOC-EXPANSION-MEM" -54 (:d0 :d1) :pointer)   ; APTR AllocExpansionMem(ULONG numSlots, ULONG slotAlign) (D0,D1) LVO -54
+  (:fn "CONFIG-BOARD" -60 (:a0 :a1) :void)   ; VOID ConfigBoard(APTR board, struct ConfigDev * configDev) (A0,A1) LVO -60
+  (:fn "CONFIG-CHAIN" -66 (:a0) :void)   ; VOID ConfigChain(APTR baseAddr) (A0) LVO -66
+  (:fn "FIND-CONFIG-DEV" -72 (:a0 :d0 :d1) :pointer)   ; struct ConfigDev * FindConfigDev(CONST struct ConfigDev * oldConfigDev, LONG manufacturer, LONG product) (A0,D0,D1) LVO -72
+  (:fn "FREE-BOARD-MEM" -78 (:d0 :d1) :void)   ; VOID FreeBoardMem(ULONG startSlot, ULONG slotSpec) (D0,D1) LVO -78
+  (:fn "FREE-CONFIG-DEV" -84 (:a0) :void)   ; VOID FreeConfigDev(struct ConfigDev * configDev) (A0) LVO -84
+  (:fn "FREE-EXPANSION-MEM" -90 (:d0 :d1) :void)   ; VOID FreeExpansionMem(ULONG startSlot, ULONG numSlots) (D0,D1) LVO -90
+  (:fn "READ-EXPANSION-BYTE" -96 (:a0 :d0) :u8)   ; UBYTE ReadExpansionByte(CONST_APTR board, ULONG offset) (A0,D0) LVO -96
+  (:fn "READ-EXPANSION-ROM" -102 (:a0 :a1) :void)   ; VOID ReadExpansionRom(CONST_APTR board, struct ConfigDev * configDev) (A0,A1) LVO -102
+  (:fn "REM-CONFIG-DEV" -108 (:a0) :void)   ; VOID RemConfigDev(struct ConfigDev * configDev) (A0) LVO -108
+  (:fn "WRITE-EXPANSION-BYTE" -114 (:a0 :d0 :d1) :void)   ; VOID WriteExpansionByte(APTR board, ULONG offset, UBYTE byte) (A0,D0,D1) LVO -114
+  (:fn "OBTAIN-CONFIG-BINDING" -120 () :void)   ; VOID ObtainConfigBinding() () LVO -120
+  (:fn "RELEASE-CONFIG-BINDING" -126 () :void)   ; VOID ReleaseConfigBinding() () LVO -126
+  (:fn "SET-CURRENT-BINDING" -132 (:a0 :d0) :void)   ; VOID SetCurrentBinding(struct CurrentBinding * currentBinding, ULONG bindingSize) (A0,D0) LVO -132
+  (:fn "GET-CURRENT-BINDING" -138 (:a0 :d0) :unsigned)   ; ULONG GetCurrentBinding(CONST struct CurrentBinding * currentBinding, ULONG bindingSize) (A0,D0) LVO -138
+  (:fn "MAKE-DOS-NODE" -144 (:a0) :pointer)   ; struct DeviceNode * MakeDosNode(CONST_APTR parmPacket) (A0) LVO -144
+  (:fn "ADD-DOS-NODE" -150 (:d0 :d1 :a0) :bool)   ; BOOL AddDosNode(LONG bootPri, ULONG flags, struct DeviceNode * deviceNode) (D0,D1,A0) LVO -150
+  )
 
 (provide "amiga/raw/expansion")

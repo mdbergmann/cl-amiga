@@ -728,6 +728,50 @@ CL_Obj cl_vm_apply(CL_Obj func, CL_Obj *args, int nargs)
     }
 }
 
+/* (apply FUNC ARGLIST) from C, for any argument count up to
+ * CALL-ARGUMENTS-LIMIT.  cl_vm_apply's stub frame is an OP_CALL whose
+ * nargs operand is one byte, so it refuses more than 255 arguments; this
+ * variant runs the inline OP_APPLY instead, which spreads the list onto
+ * the GC-rooted VM stack with a 16-bit count and handles &rest callees,
+ * builtins and FFI stubs alike.  Used by the DEFMACRO expander trampoline
+ * (%CALL-MACRO-EXPANDER) for macro forms with hundreds of arguments — a
+ * generated binding module is one such form. */
+CL_Obj cl_vm_apply_list(CL_Obj func, CL_Obj arglist)
+{
+    CL_Frame *frame;
+    int base_fp, base_nlx, saved_sp;
+    CL_Obj result;
+
+    cl_check_c_stack("cl_vm_apply_list");
+    base_fp = cl_vm.fp;
+    saved_sp = cl_vm.sp;
+    base_nlx = cl_nlx_top;
+    if (cl_vm.fp >= cl_vm.frame_size)
+        cl_error(CL_ERR_OVERFLOW, "VM frame stack overflow");
+    if (cl_vm.sp + 2 >= (int)cl_vm.stack_size - 16)
+        cl_error(CL_ERR_OVERFLOW, "APPLY: VM stack overflow");
+
+    frame = &cl_vm.frames[cl_vm.fp++];
+    frame->stub_code[0] = OP_APPLY;
+    frame->stub_code[1] = OP_HALT;
+    frame->stub_code[2] = OP_HALT;
+    frame->bytecode = CL_NIL;
+    frame->code = frame->stub_code;
+    frame->constants = NULL;
+    frame->ip = 0;
+    frame->bp = cl_vm.sp;
+    frame->n_locals = 0;
+    frame->nargs = 0;
+    frame->nlx_level = cl_nlx_top;
+
+    cl_vm_push(func);
+    cl_vm_push(arglist);
+    result = cl_vm_run(base_fp, base_nlx);
+    cl_vm.fp = base_fp;
+    cl_vm.sp = saved_sp;
+    return result;
+}
+
 static uint16_t read_u16(uint8_t *code, uint32_t *ip)
 {
     uint16_t val = (code[*ip] << 8) | code[*ip + 1];

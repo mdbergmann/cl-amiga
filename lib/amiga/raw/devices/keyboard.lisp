@@ -13,17 +13,21 @@
 
 (defpackage "AMIGA.RAW.DEVICES.KEYBOARD"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+KBD-READEVENT+" "+KBD-READMATRIX+" "+KBD-ADDRESETHANDLER+" 
-   "+KBD-REMRESETHANDLER+" "+KBD-RESETHANDLERDONE+" ))
+  (:export))
 
 (in-package "AMIGA.RAW.DEVICES.KEYBOARD")
 
-;;; --- constants from devices/keyboard.i ---
-(defconstant +kbd-readevent+ 9)
-(defconstant +kbd-readmatrix+ 10)
-(defconstant +kbd-addresethandler+ 11)
-(defconstant +kbd-remresethandler+ 12)
-(defconstant +kbd-resethandlerdone+ 13)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.DEVICES.KEYBOARD" ()
+
+  ;; --- constants from devices/keyboard.i ---
+  (:const "+KBD-READEVENT+" 9)
+  (:const "+KBD-READMATRIX+" 10)
+  (:const "+KBD-ADDRESETHANDLER+" 11)
+  (:const "+KBD-REMRESETHANDLER+" 12)
+  (:const "+KBD-RESETHANDLERDONE+" 13)
+  )
 
 (provide "amiga/raw/devices/keyboard")

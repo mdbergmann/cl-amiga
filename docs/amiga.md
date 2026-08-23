@@ -72,11 +72,14 @@ Conveniences over `AMIGA`/`FFI` for the AmigaOS calling conventions.
 | `(library-version base)` | function | The `lib_Version` of an open library base (the OS revision actually running) |
 | `(defcfun name library-base offset (&rest reg-spec) &key void result doc)` | macro | Define `name` as a binding for the library function at `offset` in `library-base`; `reg-spec` alternates register keywords and parameter names (`(:a1 rastport :d0 x …)`); `:result` chooses how d0 comes back — `:unsigned` (default), `:void`, `:pointer` (foreign pointer, NIL for NULL), `:signed`, `:bool`, `:u16`/`:i16`/`:u8`/`:i8` (`:void t` is the legacy spelling of `:result :void`); more than seven registers fall back to a `defun` over `amiga:call-library`; `:doc` is the docstring.  The function cell receives an *FFI stub* (a compact binding descriptor — a function for every CL purpose; `(ffi::%ffi-stub-info #'name)` lists its fields); a direct call compiles to the library-call opcode in the caller |
 | `*defcfun-docstrings*` | variable | When NIL, `defcfun` drops its `:doc` string (default T); `scripts/compile-lib-fasls.sh --no-docstrings` — i.e. `make fasl-amiga` and the binary release — binds it for the Amiga FASLs to save heap on the target |
+| `(define-binding-table package (&key base version) &body rows)` | macro | A whole module's bindings as one packed table attached to `package`, materialised on first reference: `(:const "NAME" value)`, `(:var "NAME" value)`, `(:fn "NAME" lvo (:a0 …) :result [:not-morphos\|:morphos] [min-version])` (a `defcfun`), `(:struct "NAME" size ("FIELD" type offset) …)` (a `defcstruct`), `(:field "NAME" type offset)`, `(:name "NAME")` (export only); `base`/`version` name the library-base and `lib_Version` variables the `:fn` rows and version guards use.  Names are strings taken literally.  `(clamiga::%binding-table-info pkg)` / `(clamiga::%binding-table-entries pkg)` inspect a table |
 
 The generated modules under `lib/amiga/raw/` (`(require "amiga/raw/<lib>")`,
-packages `AMIGA.RAW.<LIB>`) are built on these: one `defcfun` per OS
-function, `defconstant`s and `ffi:defcstruct`s from the NDK includes — see
-*Raw OS bindings* in the main README.
+packages `AMIGA.RAW.<LIB>`) are built on these: one `define-binding-table`
+per module holding every OS function, constant and struct of the NDK
+includes, so `(require "amiga/raw/intuition")` costs the table bytes plus
+the names a program actually touches — see *Raw OS bindings* in the main
+README.
 
 ---
 

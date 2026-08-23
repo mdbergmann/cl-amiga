@@ -1,6 +1,7 @@
 #include "builtins.h"
 #include "symbol.h"
 #include "package.h"
+#include "bindtab.h"
 #include "mem.h"
 #include "error.h"
 #include "vm.h"
@@ -325,19 +326,21 @@ static CL_Obj bi_unexport(CL_Obj *args, int nargs)
     CL_Obj symbols = args[0];
     CL_Obj pkg = (nargs > 1) ? coerce_to_package(args[1]) : cl_current_package;
 
+    /* export-set mutation on a lazy package: go eager first (bindtab.c) —
+     * pkg/symbols must be rooted first, since materialising a whole table
+     * allocates heavily and can compact. */
+    CL_GC_PROTECT(symbols);
+    CL_GC_PROTECT(pkg);
+    cl_bindtab_materialize_all(pkg);
     if (CL_SYMBOL_P(symbols) || CL_NULL_P(symbols)) {
         cl_unexport_symbol(symbols, pkg);
     } else {
-        /* GC SAFETY: cl_unexport_symbol conses (package lists grow) — the cursor
-         * and pkg are re-read across those allocations. */
-        CL_GC_PROTECT(symbols);
-        CL_GC_PROTECT(pkg);
         while (!CL_NULL_P(symbols)) {
             cl_unexport_symbol(cl_car(symbols), pkg);
             symbols = cl_cdr(symbols);
         }
-        CL_GC_UNPROTECT(2);
     }
+    CL_GC_UNPROTECT(2);
     return SYM_T;
 }
 
@@ -557,6 +560,15 @@ static CL_Obj bi_unintern(CL_Obj *args, int nargs)
     }
 
     pkg_obj = (nargs > 1) ? coerce_to_package(args[1]) : cl_current_package;
+    /* A lazy package (demand-interned binding table, bindtab.c) goes
+     * eager before its symbol set is mutated, so an uninterned table name
+     * stays gone instead of being rebuilt by the next lookup.
+     * GC SAFETY: sym/pkg_obj must be rooted first — materialising a whole
+     * table allocates heavily and can compact. */
+    CL_GC_PROTECT(sym);
+    CL_GC_PROTECT(pkg_obj);
+    cl_bindtab_materialize_all(pkg_obj);
+    CL_GC_UNPROTECT(2);
     pkg = (CL_Package *)CL_OBJ_TO_PTR(pkg_obj);
     tbl = (CL_Vector *)CL_OBJ_TO_PTR(pkg->symbols);
     s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
@@ -641,10 +653,14 @@ static CL_Obj bi_package_symbols(CL_Obj *args, int nargs)
     uint32_t i, tbl_len;
     (void)nargs;
 
+    /* Enumeration of a lazy package (demand-interned binding table,
+     * bindtab.c) materialises every entry first — CLHS enumerates the
+     * whole symbol set, and from here on the package is ordinary. */
+    CL_GC_PROTECT(pkg_obj);
+    cl_bindtab_materialize_all(pkg_obj);
     /* GC SAFETY: cl_cons can compact — re-derive the symbol-table pointer
      * from the protected package handle on every access and root the
      * bucket cursor (raw vector pointers and cursor locals go stale). */
-    CL_GC_PROTECT(pkg_obj);
     CL_GC_PROTECT(result);
     tbl_len = ((CL_Vector *)CL_OBJ_TO_PTR(
                    ((CL_Package *)CL_OBJ_TO_PTR(pkg_obj))->symbols))->length;
@@ -675,6 +691,7 @@ static CL_Obj bi_package_external_symbols(CL_Obj *args, int nargs)
     CL_Obj result = CL_NIL;
     (void)nargs;
     CL_GC_PROTECT(pkg_obj);
+    cl_bindtab_materialize_all(pkg_obj);   /* lazy package: go eager (bindtab.c) */
     CL_GC_PROTECT(result);
     /* GC SAFETY: keeping the package ALIVE via pkg_obj does not FORWARD the
      * `list` C local — after a compaction inside cl_cons the cursor holds a
@@ -846,6 +863,13 @@ static CL_Obj bi_shadowing_import(CL_Obj *args, int nargs)
     CL_Obj symbols = args[0];
     CL_Obj pkg = (nargs > 1) ? coerce_to_package(args[1]) : cl_current_package;
 
+    /* symbol-set mutation on a lazy package: go eager first (bindtab.c) —
+     * pkg/symbols must be rooted first, since materialising a whole table
+     * (and shadowing_import_one's own conses below) allocates and can
+     * compact. */
+    CL_GC_PROTECT(symbols);
+    CL_GC_PROTECT(pkg);
+    cl_bindtab_materialize_all(pkg);
     if (CL_SYMBOL_P(symbols)) {
         shadowing_import_one(symbols, pkg);
     } else {
@@ -854,6 +878,7 @@ static CL_Obj bi_shadowing_import(CL_Obj *args, int nargs)
             symbols = cl_cdr(symbols);
         }
     }
+    CL_GC_UNPROTECT(2);
     return SYM_T;
 }
 

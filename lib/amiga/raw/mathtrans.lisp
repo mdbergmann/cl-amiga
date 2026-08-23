@@ -14,11 +14,7 @@
 
 (defpackage "AMIGA.RAW.MATHTRANS"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*MATHTRANS-BASE*" "*MATHTRANS-VERSION*"
-   "SP-ATAN" "SP-SIN" "SP-COS" "SP-TAN" "SP-SINCOS" "SP-SINH" "SP-COSH" 
-   "SP-TANH" "SP-EXP" "SP-LOG" "SP-POW" "SP-SQRT" "SP-TIEEE" "SP-FIEEE" 
-   "SP-ASIN" "SP-ACOS" "SP-LOG10" ))
+  (:export "*MATHTRANS-BASE*" "*MATHTRANS-VERSION*"))
 
 (in-package "AMIGA.RAW.MATHTRANS")
 
@@ -32,57 +28,30 @@
 (defun %version>= (n)
   (and *mathtrans-version* (>= *mathtrans-version* n)))
 
-;;; --- functions (mathtrans_lib.sfd + MorphOS SDK) ---
-(amiga.ffi:defcfun sp-atan *mathtrans-base* -30 (:d0 parm)
-    :result :unsigned
-    :doc "FLOAT SPAtan(FLOAT parm) (D0) LVO -30")
-(amiga.ffi:defcfun sp-sin *mathtrans-base* -36 (:d0 parm)
-    :result :unsigned
-    :doc "FLOAT SPSin(FLOAT parm) (D0) LVO -36")
-(amiga.ffi:defcfun sp-cos *mathtrans-base* -42 (:d0 parm)
-    :result :unsigned
-    :doc "FLOAT SPCos(FLOAT parm) (D0) LVO -42")
-(amiga.ffi:defcfun sp-tan *mathtrans-base* -48 (:d0 parm)
-    :result :unsigned
-    :doc "FLOAT SPTan(FLOAT parm) (D0) LVO -48")
-(amiga.ffi:defcfun sp-sincos *mathtrans-base* -54 (:d1 cos-result :d0 parm)
-    :result :unsigned
-    :doc "FLOAT SPSincos(FLOAT * cosResult, FLOAT parm) (D1,D0) LVO -54")
-(amiga.ffi:defcfun sp-sinh *mathtrans-base* -60 (:d0 parm)
-    :result :unsigned
-    :doc "FLOAT SPSinh(FLOAT parm) (D0) LVO -60")
-(amiga.ffi:defcfun sp-cosh *mathtrans-base* -66 (:d0 parm)
-    :result :unsigned
-    :doc "FLOAT SPCosh(FLOAT parm) (D0) LVO -66")
-(amiga.ffi:defcfun sp-tanh *mathtrans-base* -72 (:d0 parm)
-    :result :unsigned
-    :doc "FLOAT SPTanh(FLOAT parm) (D0) LVO -72")
-(amiga.ffi:defcfun sp-exp *mathtrans-base* -78 (:d0 parm)
-    :result :unsigned
-    :doc "FLOAT SPExp(FLOAT parm) (D0) LVO -78")
-(amiga.ffi:defcfun sp-log *mathtrans-base* -84 (:d0 parm)
-    :result :unsigned
-    :doc "FLOAT SPLog(FLOAT parm) (D0) LVO -84")
-(amiga.ffi:defcfun sp-pow *mathtrans-base* -90 (:d1 power :d0 arg)
-    :result :unsigned
-    :doc "FLOAT SPPow(FLOAT power, FLOAT arg) (D1,D0) LVO -90")
-(amiga.ffi:defcfun sp-sqrt *mathtrans-base* -96 (:d0 parm)
-    :result :unsigned
-    :doc "FLOAT SPSqrt(FLOAT parm) (D0) LVO -96")
-(amiga.ffi:defcfun sp-tieee *mathtrans-base* -102 (:d0 parm)
-    :result :unsigned
-    :doc "FLOAT SPTieee(FLOAT parm) (D0) LVO -102")
-(amiga.ffi:defcfun sp-fieee *mathtrans-base* -108 (:d0 parm)
-    :result :unsigned
-    :doc "FLOAT SPFieee(FLOAT parm) (D0) LVO -108")
-(amiga.ffi:defcfun sp-asin *mathtrans-base* -114 (:d0 parm)
-    :result :unsigned
-    :doc "FLOAT SPAsin(FLOAT parm) (D0) LVO -114")
-(amiga.ffi:defcfun sp-acos *mathtrans-base* -120 (:d0 parm)
-    :result :unsigned
-    :doc "FLOAT SPAcos(FLOAT parm) (D0) LVO -120")
-(amiga.ffi:defcfun sp-log10 *mathtrans-base* -126 (:d0 parm)
-    :result :unsigned
-    :doc "FLOAT SPLog10(FLOAT parm) (D0) LVO -126")
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.MATHTRANS"
+    (:base *mathtrans-base* :version *mathtrans-version*)
+
+  ;; --- functions (mathtrans_lib.sfd + MorphOS SDK) ---
+  (:fn "SP-ATAN" -30 (:d0) :unsigned)   ; FLOAT SPAtan(FLOAT parm) (D0) LVO -30
+  (:fn "SP-SIN" -36 (:d0) :unsigned)   ; FLOAT SPSin(FLOAT parm) (D0) LVO -36
+  (:fn "SP-COS" -42 (:d0) :unsigned)   ; FLOAT SPCos(FLOAT parm) (D0) LVO -42
+  (:fn "SP-TAN" -48 (:d0) :unsigned)   ; FLOAT SPTan(FLOAT parm) (D0) LVO -48
+  (:fn "SP-SINCOS" -54 (:d1 :d0) :unsigned)   ; FLOAT SPSincos(FLOAT * cosResult, FLOAT parm) (D1,D0) LVO -54
+  (:fn "SP-SINH" -60 (:d0) :unsigned)   ; FLOAT SPSinh(FLOAT parm) (D0) LVO -60
+  (:fn "SP-COSH" -66 (:d0) :unsigned)   ; FLOAT SPCosh(FLOAT parm) (D0) LVO -66
+  (:fn "SP-TANH" -72 (:d0) :unsigned)   ; FLOAT SPTanh(FLOAT parm) (D0) LVO -72
+  (:fn "SP-EXP" -78 (:d0) :unsigned)   ; FLOAT SPExp(FLOAT parm) (D0) LVO -78
+  (:fn "SP-LOG" -84 (:d0) :unsigned)   ; FLOAT SPLog(FLOAT parm) (D0) LVO -84
+  (:fn "SP-POW" -90 (:d1 :d0) :unsigned)   ; FLOAT SPPow(FLOAT power, FLOAT arg) (D1,D0) LVO -90
+  (:fn "SP-SQRT" -96 (:d0) :unsigned)   ; FLOAT SPSqrt(FLOAT parm) (D0) LVO -96
+  (:fn "SP-TIEEE" -102 (:d0) :unsigned)   ; FLOAT SPTieee(FLOAT parm) (D0) LVO -102
+  (:fn "SP-FIEEE" -108 (:d0) :unsigned)   ; FLOAT SPFieee(FLOAT parm) (D0) LVO -108
+  (:fn "SP-ASIN" -114 (:d0) :unsigned)   ; FLOAT SPAsin(FLOAT parm) (D0) LVO -114
+  (:fn "SP-ACOS" -120 (:d0) :unsigned)   ; FLOAT SPAcos(FLOAT parm) (D0) LVO -120
+  (:fn "SP-LOG10" -126 (:d0) :unsigned)   ; FLOAT SPLog10(FLOAT parm) (D0) LVO -126
+  )
 
 (provide "amiga/raw/mathtrans")

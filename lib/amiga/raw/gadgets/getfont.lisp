@@ -16,23 +16,7 @@
 
 (defpackage "AMIGA.RAW.GADGETS.GETFONT"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*GETFONT-BASE*" "*GETFONT-VERSION*"
-   "+GETFONT-DUMMY+" "+GETFONT-TEXT-ATTR+" "+GETFONT-DO-FRONT-PEN+" 
-   "+GETFONT-DO-BACK-PEN+" "+GETFONT-DO-STYLE+" "+GETFONT-DO-DRAW-MODE+" 
-   "+GETFONT-MIN-HEIGHT+" "+GETFONT-MAX-HEIGHT+" 
-   "+GETFONT-FIXED-WIDTH-ONLY+" "+GETFONT-TITLE-TEXT+" "+GETFONT-HEIGHT+" 
-   "+GETFONT-WIDTH+" "+GETFONT-LEFT-EDGE+" "+GETFONT-TOP-EDGE+" 
-   "+GETFONT-FRONT-PEN+" "+GETFONT-BACK-PEN+" "+GETFONT-DRAW-MODE+" 
-   "+GETFONT-MAX-FRONT-PEN+" "+GETFONT-MAX-BACK-PEN+" "+GETFONT-MODE-LIST+" 
-   "+GETFONT-FRONT-PENS+" "+GETFONT-BACK-PENS+" "+GETFONT-SOFT-STYLE+" 
-   "+GETFONT-SAMPLE-TEXT+" "+GETFONT-DO-CHAR-SET+" "+GETFONT-CHAR-SET+" 
-   "+GETFONT-O-TAG-ONLY+" "+GETFONT-SCALABLE-ONLY+" 
-   "+GETFONT-DO-SPECIAL-MODE+" "+GETFONT-SPECIAL-MODE+" 
-   "+GETFONT-FILTER-FUNC+" "+GETFONT-CS-FILTER-FUNC+" 
-   "+GETFONT-SPECIAL-MODE-BITMAP+" "+GETFONT-SPECIAL-MODE-BITMAP-WIDTH+" 
-   "+GETFONT-SPECIAL-MODE-BITMAP-HEIGHT+" "+GFONT-REQUEST+" 
-   "GETFONT-GET-CLASS" ))
+  (:export "*GETFONT-BASE*" "*GETFONT-VERSION*"))
 
 (in-package "AMIGA.RAW.GADGETS.GETFONT")
 
@@ -46,48 +30,52 @@
 (defun %version>= (n)
   (and *getfont-version* (>= *getfont-version* n)))
 
-;;; --- constants from gadgets/getfont.h ---
-(defconstant +getfont-dummy+ #x85040000)
-(defconstant +getfont-text-attr+ #x85040001)
-(defconstant +getfont-do-front-pen+ #x85040002)
-(defconstant +getfont-do-back-pen+ #x85040003)
-(defconstant +getfont-do-style+ #x85040004)
-(defconstant +getfont-do-draw-mode+ #x85040005)
-(defconstant +getfont-min-height+ #x85040006)
-(defconstant +getfont-max-height+ #x85040007)
-(defconstant +getfont-fixed-width-only+ #x85040008)
-(defconstant +getfont-title-text+ #x85040009)
-(defconstant +getfont-height+ #x8504000A)
-(defconstant +getfont-width+ #x8504000B)
-(defconstant +getfont-left-edge+ #x8504000C)
-(defconstant +getfont-top-edge+ #x8504000D)
-(defconstant +getfont-front-pen+ #x8504000E)
-(defconstant +getfont-back-pen+ #x8504000F)
-(defconstant +getfont-draw-mode+ #x85040010)
-(defconstant +getfont-max-front-pen+ #x85040011)
-(defconstant +getfont-max-back-pen+ #x85040012)
-(defconstant +getfont-mode-list+ #x85040013)
-(defconstant +getfont-front-pens+ #x85040014)
-(defconstant +getfont-back-pens+ #x85040015)
-(defconstant +getfont-soft-style+ #x85040016)
-(defconstant +getfont-sample-text+ #x85040017)
-(defconstant +getfont-do-char-set+ #x85040018)
-(defconstant +getfont-char-set+ #x85040019)
-(defconstant +getfont-o-tag-only+ #x8504001A)
-(defconstant +getfont-scalable-only+ #x8504001B)
-(defconstant +getfont-do-special-mode+ #x8504001C)
-(defconstant +getfont-special-mode+ #x8504001D)
-(defconstant +getfont-filter-func+ #x8504001E)
-(defconstant +getfont-cs-filter-func+ #x8504001F)
-(defconstant +getfont-special-mode-bitmap+ #x85040020)
-(defconstant +getfont-special-mode-bitmap-width+ #x85040021)
-(defconstant +getfont-special-mode-bitmap-height+ #x85040022)
-(defconstant +gfont-request+ #x600001)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.GADGETS.GETFONT"
+    (:base *getfont-base* :version *getfont-version*)
 
-;;; --- functions (getfont_lib.sfd + MorphOS SDK) ---
-(when (%version>= 40)
-  (amiga.ffi:defcfun getfont-get-class *getfont-base* -30 ()
-    :result :pointer
-    :doc "Class * GETFONT_GetClass() () LVO -30"))
+  ;; --- constants from gadgets/getfont.h ---
+  (:const "+GETFONT-DUMMY+" #x85040000)
+  (:const "+GETFONT-TEXT-ATTR+" #x85040001)
+  (:const "+GETFONT-DO-FRONT-PEN+" #x85040002)
+  (:const "+GETFONT-DO-BACK-PEN+" #x85040003)
+  (:const "+GETFONT-DO-STYLE+" #x85040004)
+  (:const "+GETFONT-DO-DRAW-MODE+" #x85040005)
+  (:const "+GETFONT-MIN-HEIGHT+" #x85040006)
+  (:const "+GETFONT-MAX-HEIGHT+" #x85040007)
+  (:const "+GETFONT-FIXED-WIDTH-ONLY+" #x85040008)
+  (:const "+GETFONT-TITLE-TEXT+" #x85040009)
+  (:const "+GETFONT-HEIGHT+" #x8504000A)
+  (:const "+GETFONT-WIDTH+" #x8504000B)
+  (:const "+GETFONT-LEFT-EDGE+" #x8504000C)
+  (:const "+GETFONT-TOP-EDGE+" #x8504000D)
+  (:const "+GETFONT-FRONT-PEN+" #x8504000E)
+  (:const "+GETFONT-BACK-PEN+" #x8504000F)
+  (:const "+GETFONT-DRAW-MODE+" #x85040010)
+  (:const "+GETFONT-MAX-FRONT-PEN+" #x85040011)
+  (:const "+GETFONT-MAX-BACK-PEN+" #x85040012)
+  (:const "+GETFONT-MODE-LIST+" #x85040013)
+  (:const "+GETFONT-FRONT-PENS+" #x85040014)
+  (:const "+GETFONT-BACK-PENS+" #x85040015)
+  (:const "+GETFONT-SOFT-STYLE+" #x85040016)
+  (:const "+GETFONT-SAMPLE-TEXT+" #x85040017)
+  (:const "+GETFONT-DO-CHAR-SET+" #x85040018)
+  (:const "+GETFONT-CHAR-SET+" #x85040019)
+  (:const "+GETFONT-O-TAG-ONLY+" #x8504001A)
+  (:const "+GETFONT-SCALABLE-ONLY+" #x8504001B)
+  (:const "+GETFONT-DO-SPECIAL-MODE+" #x8504001C)
+  (:const "+GETFONT-SPECIAL-MODE+" #x8504001D)
+  (:const "+GETFONT-FILTER-FUNC+" #x8504001E)
+  (:const "+GETFONT-CS-FILTER-FUNC+" #x8504001F)
+  (:const "+GETFONT-SPECIAL-MODE-BITMAP+" #x85040020)
+  (:const "+GETFONT-SPECIAL-MODE-BITMAP-WIDTH+" #x85040021)
+  (:const "+GETFONT-SPECIAL-MODE-BITMAP-HEIGHT+" #x85040022)
+  (:const "+GFONT-REQUEST+" #x600001)
+
+  ;; --- functions (getfont_lib.sfd + MorphOS SDK) ---
+  (:fn "GETFONT-GET-CLASS" -30 () :pointer 40)   ; Class * GETFONT_GetClass() () LVO -30
+  )
 
 (provide "amiga/raw/gadgets/getfont")

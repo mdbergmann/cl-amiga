@@ -15,39 +15,7 @@
 
 (defpackage "AMIGA.RAW.REALTIME"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*REALTIME-BASE*" "*REALTIME-VERSION*"
-   "+TICK-FREQ+" "+CONDUCTB-EXTERNAL+" "+CONDUCTF-EXTERNAL+" 
-   "+CONDUCTB-GOTTICK+" "+CONDUCTF-GOTTICK+" "+CONDUCTB-METROSET+" 
-   "+CONDUCTF-METROSET+" "+CONDUCTB-PRIVATE+" "+CONDUCTF-PRIVATE+" 
-   "+CONDSTATE-STOPPED+" "+CONDSTATE-PAUSED+" "+CONDSTATE-LOCATE+" 
-   "+CONDSTATE-RUNNING+" "+CONDSTATE-METRIC+" "+CONDSTATE-SHUTTLE+" 
-   "+CONDSTATE-LOCATE-SET+" "+PLAYERB-READY+" "+PLAYERF-READY+" 
-   "+PLAYERB-ALARMSET+" "+PLAYERF-ALARMSET+" "+PLAYERB-QUIET+" 
-   "+PLAYERF-QUIET+" "+PLAYERB-CONDUCTED+" "+PLAYERF-CONDUCTED+" 
-   "+PLAYERB-EXTSYNC+" "+PLAYERF-EXTSYNC+" "+PLAYER-BASE+" "+PLAYER-HOOK+" 
-   "+PLAYER-NAME+" "+PLAYER-PRIORITY+" "+PLAYER-CONDUCTOR+" 
-   "+PLAYER-READY+" "+PLAYER-ALARM-TIME+" "+PLAYER-ALARM+" 
-   "+PLAYER-ALARM-SIG-TASK+" "+PLAYER-ALARM-SIG-BIT+" "+PLAYER-CONDUCTED+" 
-   "+PLAYER-QUIET+" "+PLAYER-USER-DATA+" "+PLAYER-ID+" "+PLAYER-EXT-SYNC+" 
-   "+PLAYER-ERROR-CODE+" "+PM-TICK+" "+PM-STATE+" "+PM-POSITION+" 
-   "+PM-SHUTTLE+" "+RT-CONDUCTORS+" "+RTE-NOMEMORY+" "+RTE-NOCONDUCTOR+" 
-   "+RTE-NOTIMER+" "+RTE-PLAYING+" "+REAL-TIME-TICK-ERR-MIN+" 
-   "+REAL-TIME-TICK-ERR-MAX+" "*CONDUCTOR-SIZE*" "CONDUCTOR-RESERVED0" 
-   "CONDUCTOR-PLAYERS" "CONDUCTOR-CLOCK-TIME" "CONDUCTOR-START-TIME" 
-   "CONDUCTOR-EXTERNAL-TIME" "CONDUCTOR-MAX-EXTERNAL-TIME" 
-   "CONDUCTOR-METRONOME" "CONDUCTOR-RESERVED1" "CONDUCTOR-FLAGS" 
-   "CONDUCTOR-STATE" "*PLAYER-SIZE*" "PLAYER-RESERVED0" "PLAYER-RESERVED1" 
-   "PLAYER-HOOK" "PLAYER-SOURCE" "PLAYER-TASK" "PLAYER-METRIC-TIME" 
-   "PLAYER-ALARM-TIME" "PLAYER-USER-DATA" "PLAYER-PLAYER-ID" "PLAYER-FLAGS" 
-   "*PM-TIME-SIZE*" "PM-TIME-METHOD" "PM-TIME-TIME" "*PM-STATE-SIZE*" 
-   "PM-STATE-METHOD" "PM-STATE-OLD-STATE" "*REAL-TIME-BASE-SIZE*" 
-   "REAL-TIME-BASE-RESERVED0" "REAL-TIME-BASE-TIME" 
-   "REAL-TIME-BASE-TIME-FRAC" "REAL-TIME-BASE-RESERVED1" 
-   "REAL-TIME-BASE-TICK-ERR" "LOCK-REAL-TIME" "UNLOCK-REAL-TIME" 
-   "CREATE-PLAYER-A" "DELETE-PLAYER" "SET-PLAYER-ATTRS-A" 
-   "SET-CONDUCTOR-STATE" "EXTERNAL-SYNC" "NEXT-CONDUCTOR" "FIND-CONDUCTOR" 
-   "GET-PLAYER-ATTRS-A" ))
+  (:export "*REALTIME-BASE*" "*REALTIME-VERSION*"))
 
 (in-package "AMIGA.RAW.REALTIME")
 
@@ -61,132 +29,119 @@
 (defun %version>= (n)
   (and *realtime-version* (>= *realtime-version* n)))
 
-;;; --- constants from libraries/realtime.i ---
-(defconstant +tick-freq+ #x4B0)
-(defconstant +conductb-external+ 0)
-(defconstant +conductf-external+ 1)
-(defconstant +conductb-gottick+ 1)
-(defconstant +conductf-gottick+ 2)
-(defconstant +conductb-metroset+ 2)
-(defconstant +conductf-metroset+ 4)
-(defconstant +conductb-private+ 3)
-(defconstant +conductf-private+ 8)
-(defconstant +condstate-stopped+ 0)
-(defconstant +condstate-paused+ 1)
-(defconstant +condstate-locate+ 2)
-(defconstant +condstate-running+ 3)
-(defconstant +condstate-metric+ -1)
-(defconstant +condstate-shuttle+ -2)
-(defconstant +condstate-locate-set+ -3)
-(defconstant +playerb-ready+ 0)
-(defconstant +playerf-ready+ 1)
-(defconstant +playerb-alarmset+ 1)
-(defconstant +playerf-alarmset+ 2)
-(defconstant +playerb-quiet+ 2)
-(defconstant +playerf-quiet+ 4)
-(defconstant +playerb-conducted+ 3)
-(defconstant +playerf-conducted+ 8)
-(defconstant +playerb-extsync+ 4)
-(defconstant +playerf-extsync+ #x10)
-(defconstant +player-base+ #x80000040)
-(defconstant +player-hook+ #x80000041)
-(defconstant +player-name+ #x80000042)
-(defconstant +player-priority+ #x80000043)
-(defconstant +player-conductor+ #x80000044)
-(defconstant +player-ready+ #x80000045)
-(defconstant +player-alarm-time+ #x8000004C)
-(defconstant +player-alarm+ #x8000004D)
-(defconstant +player-alarm-sig-task+ #x80000046)
-(defconstant +player-alarm-sig-bit+ #x80000048)
-(defconstant +player-conducted+ #x80000047)
-(defconstant +player-quiet+ #x80000049)
-(defconstant +player-user-data+ #x8000004A)
-(defconstant +player-id+ #x8000004B)
-(defconstant +player-ext-sync+ #x8000004E)
-(defconstant +player-error-code+ #x8000004F)
-(defconstant +pm-tick+ 0)
-(defconstant +pm-state+ 1)
-(defconstant +pm-position+ 2)
-(defconstant +pm-shuttle+ 3)
-(defconstant +rt-conductors+ 0)
-(defconstant +rte-nomemory+ #x321)
-(defconstant +rte-noconductor+ #x322)
-(defconstant +rte-notimer+ #x323)
-(defconstant +rte-playing+ #x324)
-(defconstant +real-time-tick-err-min+ -705)
-(defconstant +real-time-tick-err-max+ #x2C1)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.REALTIME"
+    (:base *realtime-base* :version *realtime-version*)
 
-;;; --- structures from libraries/realtime.i ---
-(ffi:defcstruct (conductor :size 53)   ; Conductor (libraries/realtime.i)
-  (reserved0 :u16 14)
-  (players (:struct 12) 16)
-  (clock-time :u32 28)
-  (start-time :u32 32)
-  (external-time :u32 36)
-  (max-external-time :u32 40)
-  (metronome :u32 44)
-  (reserved1 :u16 48)
-  (flags :u16 50)
-  (state :u8 52)
-)
-(ffi:defcstruct (player :size 44)   ; Player (libraries/realtime.i)
-  (reserved0 :i8 14)
-  (reserved1 :i8 15)
-  (hook :fptr 16)
-  (source :fptr 20)
-  (task :fptr 24)
-  (metric-time :i32 28)
-  (alarm-time :i32 32)
-  (user-data :fptr 36)
-  (player-id :u16 40)
-  (flags :u16 42)
-)
-(ffi:defcstruct (pm-time :size 8)   ; pmTime (libraries/realtime.i)
-  (method :u32 0)
-  (time :u32 4)
-)
-(ffi:defcstruct (pm-state :size 8)   ; pmState (libraries/realtime.i)
-  (method :u32 0)
-  (old-state :u32 4)
-)
-(ffi:defcstruct (real-time-base :size 48)   ; RealTimeBase (libraries/realtime.i)
-  (reserved0 (:struct 2) 34)
-  (time :u32 36)
-  (time-frac :u32 40)
-  (reserved1 :i16 44)
-  (tick-err :i16 46)
-)
+  ;; --- constants from libraries/realtime.i ---
+  (:const "+TICK-FREQ+" #x4B0)
+  (:const "+CONDUCTB-EXTERNAL+" 0)
+  (:const "+CONDUCTF-EXTERNAL+" 1)
+  (:const "+CONDUCTB-GOTTICK+" 1)
+  (:const "+CONDUCTF-GOTTICK+" 2)
+  (:const "+CONDUCTB-METROSET+" 2)
+  (:const "+CONDUCTF-METROSET+" 4)
+  (:const "+CONDUCTB-PRIVATE+" 3)
+  (:const "+CONDUCTF-PRIVATE+" 8)
+  (:const "+CONDSTATE-STOPPED+" 0)
+  (:const "+CONDSTATE-PAUSED+" 1)
+  (:const "+CONDSTATE-LOCATE+" 2)
+  (:const "+CONDSTATE-RUNNING+" 3)
+  (:const "+CONDSTATE-METRIC+" -1)
+  (:const "+CONDSTATE-SHUTTLE+" -2)
+  (:const "+CONDSTATE-LOCATE-SET+" -3)
+  (:const "+PLAYERB-READY+" 0)
+  (:const "+PLAYERF-READY+" 1)
+  (:const "+PLAYERB-ALARMSET+" 1)
+  (:const "+PLAYERF-ALARMSET+" 2)
+  (:const "+PLAYERB-QUIET+" 2)
+  (:const "+PLAYERF-QUIET+" 4)
+  (:const "+PLAYERB-CONDUCTED+" 3)
+  (:const "+PLAYERF-CONDUCTED+" 8)
+  (:const "+PLAYERB-EXTSYNC+" 4)
+  (:const "+PLAYERF-EXTSYNC+" #x10)
+  (:const "+PLAYER-BASE+" #x80000040)
+  (:const "+PLAYER-HOOK+" #x80000041)
+  (:const "+PLAYER-NAME+" #x80000042)
+  (:const "+PLAYER-PRIORITY+" #x80000043)
+  (:const "+PLAYER-CONDUCTOR+" #x80000044)
+  (:const "+PLAYER-READY+" #x80000045)
+  (:const "+PLAYER-ALARM-TIME+" #x8000004C)
+  (:const "+PLAYER-ALARM+" #x8000004D)
+  (:const "+PLAYER-ALARM-SIG-TASK+" #x80000046)
+  (:const "+PLAYER-ALARM-SIG-BIT+" #x80000048)
+  (:const "+PLAYER-CONDUCTED+" #x80000047)
+  (:const "+PLAYER-QUIET+" #x80000049)
+  (:const "+PLAYER-USER-DATA+" #x8000004A)
+  (:const "+PLAYER-ID+" #x8000004B)
+  (:const "+PLAYER-EXT-SYNC+" #x8000004E)
+  (:const "+PLAYER-ERROR-CODE+" #x8000004F)
+  (:const "+PM-TICK+" 0)
+  (:const "+PM-STATE+" 1)
+  (:const "+PM-POSITION+" 2)
+  (:const "+PM-SHUTTLE+" 3)
+  (:const "+RT-CONDUCTORS+" 0)
+  (:const "+RTE-NOMEMORY+" #x321)
+  (:const "+RTE-NOCONDUCTOR+" #x322)
+  (:const "+RTE-NOTIMER+" #x323)
+  (:const "+RTE-PLAYING+" #x324)
+  (:const "+REAL-TIME-TICK-ERR-MIN+" -705)
+  (:const "+REAL-TIME-TICK-ERR-MAX+" #x2C1)
 
-;;; --- functions (realtime_lib.sfd + MorphOS SDK) ---
-(amiga.ffi:defcfun lock-real-time *realtime-base* -30 (:d0 lock-type)
-    :result :pointer
-    :doc "APTR LockRealTime(ULONG lockType) (D0) LVO -30")
-(amiga.ffi:defcfun unlock-real-time *realtime-base* -36 (:a0 lock)
-    :result :void
-    :doc "VOID UnlockRealTime(APTR lock) (A0) LVO -36")
-(amiga.ffi:defcfun create-player-a *realtime-base* -42 (:a0 tag-list)
-    :result :pointer
-    :doc "struct Player * CreatePlayerA(CONST struct TagItem * tagList) (A0) LVO -42")
-(amiga.ffi:defcfun delete-player *realtime-base* -48 (:a0 player)
-    :result :void
-    :doc "VOID DeletePlayer(struct Player * player) (A0) LVO -48")
-(amiga.ffi:defcfun set-player-attrs-a *realtime-base* -54 (:a0 player :a1 tag-list)
-    :result :bool
-    :doc "BOOL SetPlayerAttrsA(struct Player * player, CONST struct TagItem * tagList) (A0,A1) LVO -54")
-(amiga.ffi:defcfun set-conductor-state *realtime-base* -60 (:a0 player :d0 state :d1 time)
-    :result :signed
-    :doc "LONG SetConductorState(struct Player * player, ULONG state, LONG time) (A0,D0,D1) LVO -60")
-(amiga.ffi:defcfun external-sync *realtime-base* -66 (:a0 player :d0 min-time :d1 max-time)
-    :result :bool
-    :doc "BOOL ExternalSync(struct Player * player, LONG minTime, LONG maxTime) (A0,D0,D1) LVO -66")
-(amiga.ffi:defcfun next-conductor *realtime-base* -72 (:a0 previous-conductor)
-    :result :pointer
-    :doc "struct Conductor * NextConductor(CONST struct Conductor * previousConductor) (A0) LVO -72")
-(amiga.ffi:defcfun find-conductor *realtime-base* -78 (:a0 name)
-    :result :pointer
-    :doc "struct Conductor * FindConductor(CONST_STRPTR name) (A0) LVO -78")
-(amiga.ffi:defcfun get-player-attrs-a *realtime-base* -84 (:a0 player :a1 tag-list)
-    :result :unsigned
-    :doc "ULONG GetPlayerAttrsA(struct Player * player, CONST struct TagItem * tagList) (A0,A1) LVO -84")
+  ;; --- structures from libraries/realtime.i ---
+  (:struct "CONDUCTOR" 53   ; Conductor (libraries/realtime.i)
+    ("RESERVED0" :u16 14)
+    ("PLAYERS" (:struct 12) 16)
+    ("CLOCK-TIME" :u32 28)
+    ("START-TIME" :u32 32)
+    ("EXTERNAL-TIME" :u32 36)
+    ("MAX-EXTERNAL-TIME" :u32 40)
+    ("METRONOME" :u32 44)
+    ("RESERVED1" :u16 48)
+    ("FLAGS" :u16 50)
+    ("STATE" :u8 52)
+    )
+  (:struct "PLAYER" 44   ; Player (libraries/realtime.i)
+    ("RESERVED0" :i8 14)
+    ("RESERVED1" :i8 15)
+    ("HOOK" :fptr 16)
+    ("SOURCE" :fptr 20)
+    ("TASK" :fptr 24)
+    ("METRIC-TIME" :i32 28)
+    ("ALARM-TIME" :i32 32)
+    ("USER-DATA" :fptr 36)
+    ("PLAYER-ID" :u16 40)
+    ("FLAGS" :u16 42)
+    )
+  (:struct "PM-TIME" 8   ; pmTime (libraries/realtime.i)
+    ("METHOD" :u32 0)
+    ("TIME" :u32 4)
+    )
+  (:struct "PM-STATE" 8   ; pmState (libraries/realtime.i)
+    ("METHOD" :u32 0)
+    ("OLD-STATE" :u32 4)
+    )
+  (:struct "REAL-TIME-BASE" 48   ; RealTimeBase (libraries/realtime.i)
+    ("RESERVED0" (:struct 2) 34)
+    ("TIME" :u32 36)
+    ("TIME-FRAC" :u32 40)
+    ("RESERVED1" :i16 44)
+    ("TICK-ERR" :i16 46)
+    )
+
+  ;; --- functions (realtime_lib.sfd + MorphOS SDK) ---
+  (:fn "LOCK-REAL-TIME" -30 (:d0) :pointer)   ; APTR LockRealTime(ULONG lockType) (D0) LVO -30
+  (:fn "UNLOCK-REAL-TIME" -36 (:a0) :void)   ; VOID UnlockRealTime(APTR lock) (A0) LVO -36
+  (:fn "CREATE-PLAYER-A" -42 (:a0) :pointer)   ; struct Player * CreatePlayerA(CONST struct TagItem * tagList) (A0) LVO -42
+  (:fn "DELETE-PLAYER" -48 (:a0) :void)   ; VOID DeletePlayer(struct Player * player) (A0) LVO -48
+  (:fn "SET-PLAYER-ATTRS-A" -54 (:a0 :a1) :bool)   ; BOOL SetPlayerAttrsA(struct Player * player, CONST struct TagItem * tagList) (A0,A1) LVO -54
+  (:fn "SET-CONDUCTOR-STATE" -60 (:a0 :d0 :d1) :signed)   ; LONG SetConductorState(struct Player * player, ULONG state, LONG time) (A0,D0,D1) LVO -60
+  (:fn "EXTERNAL-SYNC" -66 (:a0 :d0 :d1) :bool)   ; BOOL ExternalSync(struct Player * player, LONG minTime, LONG maxTime) (A0,D0,D1) LVO -66
+  (:fn "NEXT-CONDUCTOR" -72 (:a0) :pointer)   ; struct Conductor * NextConductor(CONST struct Conductor * previousConductor) (A0) LVO -72
+  (:fn "FIND-CONDUCTOR" -78 (:a0) :pointer)   ; struct Conductor * FindConductor(CONST_STRPTR name) (A0) LVO -78
+  (:fn "GET-PLAYER-ATTRS-A" -84 (:a0 :a1) :unsigned)   ; ULONG GetPlayerAttrsA(struct Player * player, CONST struct TagItem * tagList) (A0,A1) LVO -84
+  )
 
 (provide "amiga/raw/realtime")

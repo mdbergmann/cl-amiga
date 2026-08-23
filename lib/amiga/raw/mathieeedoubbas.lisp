@@ -16,9 +16,7 @@
 
 (defpackage "AMIGA.RAW.MATHIEEEDOUBBAS"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*MATHIEEEDOUBBAS-BASE*" "*MATHIEEEDOUBBAS-VERSION*"
-   "IEEEDP-FIX" "IEEEDP-CMP" "IEEEDP-TST" ))
+  (:export "*MATHIEEEDOUBBAS-BASE*" "*MATHIEEEDOUBBAS-VERSION*"))
 
 (in-package "AMIGA.RAW.MATHIEEEDOUBBAS")
 
@@ -32,38 +30,36 @@
 (defun %version>= (n)
   (and *mathieeedoubbas-version* (>= *mathieeedoubbas-version* n)))
 
-;;; --- functions (mathieeedoubbas_lib.sfd + MorphOS SDK) ---
-;; skipped IEEEDPFix: 64-bit register-pair argument
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun ieeedp-fix *mathieeedoubbas-base* -30 (:d0 parm)
-    :result :signed
-    :doc "LONG IEEEDPFix(DOUBLE parm) (D0) LVO -30"))
-;; skipped IEEEDPFlt: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPCmp: 64-bit register-pair argument
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun ieeedp-cmp *mathieeedoubbas-base* -42 (:d0 left-parm :d2 right-parm)
-    :result :signed
-    :doc "LONG IEEEDPCmp(DOUBLE leftParm, DOUBLE rightParm) (D0,D2) LVO -42"))
-;; skipped IEEEDPTst: 64-bit register-pair argument
-(when (member :morphos *features*)
-  (amiga.ffi:defcfun ieeedp-tst *mathieeedoubbas-base* -48 (:d0 parm)
-    :result :signed
-    :doc "LONG IEEEDPTst(DOUBLE parm) (D0) LVO -48"))
-;; skipped IEEEDPAbs: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPAbs: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPNeg: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPNeg: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPAdd: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPAdd: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPSub: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPSub: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPMul: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPMul: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPDiv: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPDiv: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPFloor: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPFloor: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPCeil: DOUBLE result (d0/d1 register pair)
-;; skipped IEEEDPCeil: DOUBLE result (d0/d1 register pair)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.MATHIEEEDOUBBAS"
+    (:base *mathieeedoubbas-base* :version *mathieeedoubbas-version*)
+
+  ;; --- functions (mathieeedoubbas_lib.sfd + MorphOS SDK) ---
+  ;; skipped IEEEDPFix: 64-bit register-pair argument
+  (:fn "IEEEDP-FIX" -30 (:d0) :signed :morphos)   ; LONG IEEEDPFix(DOUBLE parm) (D0) LVO -30
+  ;; skipped IEEEDPFlt: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPCmp: 64-bit register-pair argument
+  (:fn "IEEEDP-CMP" -42 (:d0 :d2) :signed :morphos)   ; LONG IEEEDPCmp(DOUBLE leftParm, DOUBLE rightParm) (D0,D2) LVO -42
+  ;; skipped IEEEDPTst: 64-bit register-pair argument
+  (:fn "IEEEDP-TST" -48 (:d0) :signed :morphos)   ; LONG IEEEDPTst(DOUBLE parm) (D0) LVO -48
+  ;; skipped IEEEDPAbs: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPAbs: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPNeg: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPNeg: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPAdd: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPAdd: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPSub: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPSub: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPMul: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPMul: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPDiv: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPDiv: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPFloor: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPFloor: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPCeil: DOUBLE result (d0/d1 register pair)
+  ;; skipped IEEEDPCeil: DOUBLE result (d0/d1 register pair)
+  )
 
 (provide "amiga/raw/mathieeedoubbas")

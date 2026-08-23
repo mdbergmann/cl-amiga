@@ -15,19 +15,7 @@
 
 (defpackage "AMIGA.RAW.GADGETS.SLIDER"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*SLIDER-BASE*" "*SLIDER-VERSION*"
-   "+SLIDER-DUMMY+" "+SLIDER-MIN+" "+SLIDER-MAX+" "+SLIDER-LEVEL+" 
-   "+SLIDER-ORIENTATION+" "+SLIDER-DISP-HOOK+" "+SLIDER-TICKS+" 
-   "+SLIDER-SHORT-TICKS+" "+SLIDER-TICK-SIZE+" "+SLIDER-KNOB-IMAGE+" 
-   "+SLIDER-BODY-FILL+" "+SLIDER-BODY-IMAGE+" "+SLIDER-GRADIENT+" 
-   "+SLIDER-PEN-ARRAY+" "+SLIDER-INVERT+" "+SLIDER-KNOB-DELTA+" 
-   "+SLIDER-LEVEL-FORMAT+" "+SLIDER-LEVEL-PLACE+" "+SLIDER-LEVEL-JUSTIFY+" 
-   "+SLIDER-LEVEL-DOMAIN+" "+SLIDER-LEVEL-SPACE+" "+SLIDER-LEVEL-HOOK+" 
-   "+SLIDER-LEVEL-MAX-LEN+" "+SLIDER-NOTIFY-DISABLE+" 
-   "+SLIDER-INIT-DISP-HOOK+" "+SORIENT-HORIZ+" "+SORIENT-VERT+" 
-   "+SLIDER-HORIZONTAL+" "+SLIDER-VERTICAL+" "+SLJ-LEFT+" "+SLJ-CENTER+" 
-   "+SLJ-RIGHT+" "SLIDER-GET-CLASS" ))
+  (:export "*SLIDER-BASE*" "*SLIDER-VERSION*"))
 
 (in-package "AMIGA.RAW.GADGETS.SLIDER")
 
@@ -41,44 +29,48 @@
 (defun %version>= (n)
   (and *slider-version* (>= *slider-version* n)))
 
-;;; --- constants from gadgets/slider.h ---
-(defconstant +slider-dummy+ #x85028000)
-(defconstant +slider-min+ #x85028001)
-(defconstant +slider-max+ #x85028002)
-(defconstant +slider-level+ #x85028003)
-(defconstant +slider-orientation+ #x85028004)
-(defconstant +slider-disp-hook+ #x85028005)
-(defconstant +slider-ticks+ #x85028006)
-(defconstant +slider-short-ticks+ #x85028007)
-(defconstant +slider-tick-size+ #x85028008)
-(defconstant +slider-knob-image+ #x85028009)
-(defconstant +slider-body-fill+ #x8502800A)
-(defconstant +slider-body-image+ #x8502800B)
-(defconstant +slider-gradient+ #x8502800C)
-(defconstant +slider-pen-array+ #x8502800D)
-(defconstant +slider-invert+ #x8502800E)
-(defconstant +slider-knob-delta+ #x8502800F)
-(defconstant +slider-level-format+ #x85028010)
-(defconstant +slider-level-place+ #x85028011)
-(defconstant +slider-level-justify+ #x85028012)
-(defconstant +slider-level-domain+ #x85028013)
-(defconstant +slider-level-space+ #x85028014)
-(defconstant +slider-level-hook+ #x85028015)
-(defconstant +slider-level-max-len+ #x85028016)
-(defconstant +slider-notify-disable+ #x85028017)
-(defconstant +slider-init-disp-hook+ #x85028018)
-(defconstant +sorient-horiz+ 2)
-(defconstant +sorient-vert+ 4)
-(defconstant +slider-horizontal+ 2)
-(defconstant +slider-vertical+ 4)
-(defconstant +slj-left+ 0)
-(defconstant +slj-center+ 1)
-(defconstant +slj-right+ 2)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.GADGETS.SLIDER"
+    (:base *slider-base* :version *slider-version*)
 
-;;; --- functions (slider_lib.sfd + MorphOS SDK) ---
-(when (%version>= 40)
-  (amiga.ffi:defcfun slider-get-class *slider-base* -30 ()
-    :result :pointer
-    :doc "Class * SLIDER_GetClass() () LVO -30"))
+  ;; --- constants from gadgets/slider.h ---
+  (:const "+SLIDER-DUMMY+" #x85028000)
+  (:const "+SLIDER-MIN+" #x85028001)
+  (:const "+SLIDER-MAX+" #x85028002)
+  (:const "+SLIDER-LEVEL+" #x85028003)
+  (:const "+SLIDER-ORIENTATION+" #x85028004)
+  (:const "+SLIDER-DISP-HOOK+" #x85028005)
+  (:const "+SLIDER-TICKS+" #x85028006)
+  (:const "+SLIDER-SHORT-TICKS+" #x85028007)
+  (:const "+SLIDER-TICK-SIZE+" #x85028008)
+  (:const "+SLIDER-KNOB-IMAGE+" #x85028009)
+  (:const "+SLIDER-BODY-FILL+" #x8502800A)
+  (:const "+SLIDER-BODY-IMAGE+" #x8502800B)
+  (:const "+SLIDER-GRADIENT+" #x8502800C)
+  (:const "+SLIDER-PEN-ARRAY+" #x8502800D)
+  (:const "+SLIDER-INVERT+" #x8502800E)
+  (:const "+SLIDER-KNOB-DELTA+" #x8502800F)
+  (:const "+SLIDER-LEVEL-FORMAT+" #x85028010)
+  (:const "+SLIDER-LEVEL-PLACE+" #x85028011)
+  (:const "+SLIDER-LEVEL-JUSTIFY+" #x85028012)
+  (:const "+SLIDER-LEVEL-DOMAIN+" #x85028013)
+  (:const "+SLIDER-LEVEL-SPACE+" #x85028014)
+  (:const "+SLIDER-LEVEL-HOOK+" #x85028015)
+  (:const "+SLIDER-LEVEL-MAX-LEN+" #x85028016)
+  (:const "+SLIDER-NOTIFY-DISABLE+" #x85028017)
+  (:const "+SLIDER-INIT-DISP-HOOK+" #x85028018)
+  (:const "+SORIENT-HORIZ+" 2)
+  (:const "+SORIENT-VERT+" 4)
+  (:const "+SLIDER-HORIZONTAL+" 2)
+  (:const "+SLIDER-VERTICAL+" 4)
+  (:const "+SLJ-LEFT+" 0)
+  (:const "+SLJ-CENTER+" 1)
+  (:const "+SLJ-RIGHT+" 2)
+
+  ;; --- functions (slider_lib.sfd + MorphOS SDK) ---
+  (:fn "SLIDER-GET-CLASS" -30 () :pointer 40)   ; Class * SLIDER_GetClass() () LVO -30
+  )
 
 (provide "amiga/raw/gadgets/slider")

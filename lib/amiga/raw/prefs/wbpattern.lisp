@@ -13,64 +13,56 @@
 
 (defpackage "AMIGA.RAW.PREFS.WBPATTERN"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+ID-PTRN+" "+WBP-ROOT+" "+WBP-DRAWER+" "+WBP-SCREEN+" "+WBPB-PATTERN+" 
-   "+WBPF-PATTERN+" "+WBPB-NOREMAP+" "+WBPF-NOREMAP+" "+WBPF-DITHER-MASK+" 
-   "+WBPF-DITHER-DEF+" "+WBPF-DITHER-BAD+" "+WBPF-DITHER-GOOD+" 
-   "+WBPF-DITHER-BEST+" "+WBPF-PLACEMENT-MASK+" "+WBPF-PLACEMENT-TILE+" 
-   "+WBPF-PLACEMENT-CENTER+" "+WBPF-PLACEMENT-SCALE+" 
-   "+WBPF-PLACEMENT-SCALEGOOD+" "+WBPF-ALIGNMENT-MASK+" 
-   "+WBPF-ALIGNMENT-MIDDLE+" "+WBPF-ALIGNMENT-LEFTTOP+" 
-   "+WBPF-ALIGNMENT-RIGHTBOTTOM+" "+WBPF-PRECISION-DEF+" 
-   "+WBPF-PRECISION-ICON+" "+WBPF-PRECISION-IMAGE+" 
-   "+WBPF-PRECISION-EXACT+" "+MAXDEPTH+" "+DEFPATDEPTH+" "+PAT-WIDTH+" 
-   "+PAT-HEIGHT+" "*WB-PATTERN-PREFS-SIZE*" "WB-PATTERN-PREFS-RESERVED" 
-   "WB-PATTERN-PREFS-WHICH" "WB-PATTERN-PREFS-FLAGS" 
-   "WB-PATTERN-PREFS-REVISION" "WB-PATTERN-PREFS-DEPTH" 
-   "WB-PATTERN-PREFS-DATA-LENGTH" ))
+  (:export))
 
 (in-package "AMIGA.RAW.PREFS.WBPATTERN")
 
-;;; --- constants from prefs/wbpattern.i ---
-(defconstant +id-ptrn+ #x5054524E)
-(defconstant +wbp-root+ 0)
-(defconstant +wbp-drawer+ 1)
-(defconstant +wbp-screen+ 2)
-(defconstant +wbpb-pattern+ 0)
-(defconstant +wbpf-pattern+ 1)
-(defconstant +wbpb-noremap+ 4)
-(defconstant +wbpf-noremap+ #x10)
-(defconstant +wbpf-dither-mask+ #x300)
-(defconstant +wbpf-dither-def+ 0)
-(defconstant +wbpf-dither-bad+ #x100)
-(defconstant +wbpf-dither-good+ #x200)
-(defconstant +wbpf-dither-best+ #x300)
-(defconstant +wbpf-placement-mask+ #x3000)
-(defconstant +wbpf-placement-tile+ 0)
-(defconstant +wbpf-placement-center+ #x1000)
-(defconstant +wbpf-placement-scale+ #x2000)
-(defconstant +wbpf-placement-scalegood+ #x3000)
-(defconstant +wbpf-alignment-mask+ #xC000)
-(defconstant +wbpf-alignment-middle+ 0)
-(defconstant +wbpf-alignment-lefttop+ #x4000)
-(defconstant +wbpf-alignment-rightbottom+ #x8000)
-(defconstant +wbpf-precision-def+ 0)
-(defconstant +wbpf-precision-icon+ #x400)
-(defconstant +wbpf-precision-image+ #x800)
-(defconstant +wbpf-precision-exact+ #xC00)
-(defconstant +maxdepth+ 3)
-(defconstant +defpatdepth+ 2)
-(defconstant +pat-width+ #x10)
-(defconstant +pat-height+ #x10)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.PREFS.WBPATTERN" ()
 
-;;; --- structures from prefs/wbpattern.i ---
-(ffi:defcstruct (wb-pattern-prefs :size 24)   ; WBPatternPrefs (prefs/wbpattern.i)
-  (reserved (:struct 16) 0)
-  (which :u16 16)
-  (flags :u16 18)
-  (revision :i8 20)
-  (depth :i8 21)
-  (data-length :u16 22)
-)
+  ;; --- constants from prefs/wbpattern.i ---
+  (:const "+ID-PTRN+" #x5054524E)
+  (:const "+WBP-ROOT+" 0)
+  (:const "+WBP-DRAWER+" 1)
+  (:const "+WBP-SCREEN+" 2)
+  (:const "+WBPB-PATTERN+" 0)
+  (:const "+WBPF-PATTERN+" 1)
+  (:const "+WBPB-NOREMAP+" 4)
+  (:const "+WBPF-NOREMAP+" #x10)
+  (:const "+WBPF-DITHER-MASK+" #x300)
+  (:const "+WBPF-DITHER-DEF+" 0)
+  (:const "+WBPF-DITHER-BAD+" #x100)
+  (:const "+WBPF-DITHER-GOOD+" #x200)
+  (:const "+WBPF-DITHER-BEST+" #x300)
+  (:const "+WBPF-PLACEMENT-MASK+" #x3000)
+  (:const "+WBPF-PLACEMENT-TILE+" 0)
+  (:const "+WBPF-PLACEMENT-CENTER+" #x1000)
+  (:const "+WBPF-PLACEMENT-SCALE+" #x2000)
+  (:const "+WBPF-PLACEMENT-SCALEGOOD+" #x3000)
+  (:const "+WBPF-ALIGNMENT-MASK+" #xC000)
+  (:const "+WBPF-ALIGNMENT-MIDDLE+" 0)
+  (:const "+WBPF-ALIGNMENT-LEFTTOP+" #x4000)
+  (:const "+WBPF-ALIGNMENT-RIGHTBOTTOM+" #x8000)
+  (:const "+WBPF-PRECISION-DEF+" 0)
+  (:const "+WBPF-PRECISION-ICON+" #x400)
+  (:const "+WBPF-PRECISION-IMAGE+" #x800)
+  (:const "+WBPF-PRECISION-EXACT+" #xC00)
+  (:const "+MAXDEPTH+" 3)
+  (:const "+DEFPATDEPTH+" 2)
+  (:const "+PAT-WIDTH+" #x10)
+  (:const "+PAT-HEIGHT+" #x10)
+
+  ;; --- structures from prefs/wbpattern.i ---
+  (:struct "WB-PATTERN-PREFS" 24   ; WBPatternPrefs (prefs/wbpattern.i)
+    ("RESERVED" (:struct 16) 0)
+    ("WHICH" :u16 16)
+    ("FLAGS" :u16 18)
+    ("REVISION" :i8 20)
+    ("DEPTH" :i8 21)
+    ("DATA-LENGTH" :u16 22)
+    )
+  )
 
 (provide "amiga/raw/prefs/wbpattern")

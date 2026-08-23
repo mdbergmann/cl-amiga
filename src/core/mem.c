@@ -2406,6 +2406,7 @@ static void gc_mark_push(CL_Obj obj)
         GC_VISIT(p->local_nicknames);                                         \
         GC_VISIT(p->shadowing_symbols);                                       \
         GC_VISIT(p->exported_symbols);                                        \
+        GC_VISIT(p->bindings);                                                \
         break;                                                               \
     }                                                                        \
     case TYPE_HASHTABLE: {                                                    \
@@ -5330,6 +5331,7 @@ static void gc_verify_marked(void)
                 gc_verify_check_ref(parent_off, "local_nicknames", p->local_nicknames);
                 gc_verify_check_ref(parent_off, "shadowing", p->shadowing_symbols);
                 gc_verify_check_ref(parent_off, "exported", p->exported_symbols);
+                gc_verify_check_ref(parent_off, "bindings", p->bindings);
                 break;
             }
             default:

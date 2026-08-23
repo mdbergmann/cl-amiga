@@ -15,14 +15,7 @@
 
 (defpackage "AMIGA.RAW.GADGETS.PALETTE"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*PALETTE-BASE*" "*PALETTE-VERSION*"
-   "+PALETTE-DUMMY+" "+PALETTE-COLOUR+" "+PALETTE-COLOUR-OFFSET+" 
-   "+PALETTE-COLOUR-TABLE+" "+PALETTE-NUM-COLOURS+" "+PALETTE-MIN-COLOURS+" 
-   "+PALETTE-RENDER-HOOK+" "+PB-DRAW+" "+PBCB-OK+" "+PBCB-UNKNOWN+" 
-   "+PBR-NORMAL+" "+PBR-SELECTED+" "+PBR-NORMALDISABLED+" 
-   "+PBR-SELECTEDDISABLED+" "+PALETTE-COLOR+" "+PALETTE-COLOR-OFFSET+" 
-   "+PALETTE-COLOR-TABLE+" "+PALETTE-NUM-COLORS+" "PALETTE-GET-CLASS" ))
+  (:export "*PALETTE-BASE*" "*PALETTE-VERSION*"))
 
 (in-package "AMIGA.RAW.GADGETS.PALETTE")
 
@@ -36,30 +29,34 @@
 (defun %version>= (n)
   (and *palette-version* (>= *palette-version* n)))
 
-;;; --- constants from gadgets/palette.h ---
-(defconstant +palette-dummy+ #x85004000)
-(defconstant +palette-colour+ #x85004001)
-(defconstant +palette-colour-offset+ #x85004002)
-(defconstant +palette-colour-table+ #x85004003)
-(defconstant +palette-num-colours+ #x85004004)
-(defconstant +palette-min-colours+ #x85004005)
-(defconstant +palette-render-hook+ #x85004007)
-(defconstant +pb-draw+ #x202)
-(defconstant +pbcb-ok+ 0)
-(defconstant +pbcb-unknown+ 1)
-(defconstant +pbr-normal+ 0)
-(defconstant +pbr-selected+ 1)
-(defconstant +pbr-normaldisabled+ 2)
-(defconstant +pbr-selecteddisabled+ 8)
-(defconstant +palette-color+ #x85004001)
-(defconstant +palette-color-offset+ #x85004002)
-(defconstant +palette-color-table+ #x85004003)
-(defconstant +palette-num-colors+ #x85004004)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.GADGETS.PALETTE"
+    (:base *palette-base* :version *palette-version*)
 
-;;; --- functions (palette_lib.sfd + MorphOS SDK) ---
-(when (%version>= 40)
-  (amiga.ffi:defcfun palette-get-class *palette-base* -30 ()
-    :result :pointer
-    :doc "Class * PALETTE_GetClass() () LVO -30"))
+  ;; --- constants from gadgets/palette.h ---
+  (:const "+PALETTE-DUMMY+" #x85004000)
+  (:const "+PALETTE-COLOUR+" #x85004001)
+  (:const "+PALETTE-COLOUR-OFFSET+" #x85004002)
+  (:const "+PALETTE-COLOUR-TABLE+" #x85004003)
+  (:const "+PALETTE-NUM-COLOURS+" #x85004004)
+  (:const "+PALETTE-MIN-COLOURS+" #x85004005)
+  (:const "+PALETTE-RENDER-HOOK+" #x85004007)
+  (:const "+PB-DRAW+" #x202)
+  (:const "+PBCB-OK+" 0)
+  (:const "+PBCB-UNKNOWN+" 1)
+  (:const "+PBR-NORMAL+" 0)
+  (:const "+PBR-SELECTED+" 1)
+  (:const "+PBR-NORMALDISABLED+" 2)
+  (:const "+PBR-SELECTEDDISABLED+" 8)
+  (:const "+PALETTE-COLOR+" #x85004001)
+  (:const "+PALETTE-COLOR-OFFSET+" #x85004002)
+  (:const "+PALETTE-COLOR-TABLE+" #x85004003)
+  (:const "+PALETTE-NUM-COLORS+" #x85004004)
+
+  ;; --- functions (palette_lib.sfd + MorphOS SDK) ---
+  (:fn "PALETTE-GET-CLASS" -30 () :pointer 40)   ; Class * PALETTE_GetClass() () LVO -30
+  )
 
 (provide "amiga/raw/gadgets/palette")

@@ -14,16 +14,7 @@
 
 (defpackage "AMIGA.RAW.GADGETS.LISTVIEW"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*LISTVIEW-BASE*" "*LISTVIEW-VERSION*"
-   "+LVJ-LEFT+" "+LVJ-CENTER+" "+LVJ-RIGHT+" "+LISTVIEW-DUMMY+" 
-   "+LISTVIEW-LABELS+" "+LISTVIEW-TOP+" "+LISTVIEW-VISIBLE+" 
-   "+LISTVIEW-TOTAL+" "+LISTVIEW-SHOW-SELECTED+" "+LISTVIEW-SELECTED+" 
-   "+LISTVIEW-SELECTED-NODE+" "+LISTVIEW-MAKE-VISIBLE+" 
-   "+LISTVIEW-MULTI-SELECT+" "+LISTVIEW-ITEM-HEIGHT+" 
-   "+LISTVIEW-CALL-HOOK+" "+LISTVIEW-SCROLL-UP+" "+LISTVIEW-SCROLL-DOWN+" 
-   "+LISTVIEW-SCROLL-LEFT+" "+LISTVIEW-SCROLL-RIGHT+" "+LISTVIEW-SPACING+" 
-   "LISTVIEW-GET-CLASS" ))
+  (:export "*LISTVIEW-BASE*" "*LISTVIEW-VERSION*"))
 
 (in-package "AMIGA.RAW.GADGETS.LISTVIEW")
 
@@ -37,32 +28,36 @@
 (defun %version>= (n)
   (and *listview-version* (>= *listview-version* n)))
 
-;;; --- constants from gadgets/listview.h ---
-(defconstant +lvj-left+ 0)
-(defconstant +lvj-center+ 1)
-(defconstant +lvj-right+ 2)
-(defconstant +listview-dummy+ #x84000000)
-(defconstant +listview-labels+ #x84000001)
-(defconstant +listview-top+ #x84000002)
-(defconstant +listview-visible+ #x84000003)
-(defconstant +listview-total+ #x84000004)
-(defconstant +listview-show-selected+ #x84000006)
-(defconstant +listview-selected+ #x84000007)
-(defconstant +listview-selected-node+ #x84000007)
-(defconstant +listview-make-visible+ #x84000008)
-(defconstant +listview-multi-select+ #x84000009)
-(defconstant +listview-item-height+ #x8400000A)
-(defconstant +listview-call-hook+ #x8400000B)
-(defconstant +listview-scroll-up+ #x8400000C)
-(defconstant +listview-scroll-down+ #x8400000D)
-(defconstant +listview-scroll-left+ #x8400000E)
-(defconstant +listview-scroll-right+ #x8400000F)
-(defconstant +listview-spacing+ #x84000010)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.GADGETS.LISTVIEW"
+    (:base *listview-base* :version *listview-version*)
 
-;;; --- functions (listview_lib.sfd) ---
-(when (%version>= 40)
-  (amiga.ffi:defcfun listview-get-class *listview-base* -30 ()
-    :result :pointer
-    :doc "Class * LISTVIEW_GetClass() () LVO -30"))
+  ;; --- constants from gadgets/listview.h ---
+  (:const "+LVJ-LEFT+" 0)
+  (:const "+LVJ-CENTER+" 1)
+  (:const "+LVJ-RIGHT+" 2)
+  (:const "+LISTVIEW-DUMMY+" #x84000000)
+  (:const "+LISTVIEW-LABELS+" #x84000001)
+  (:const "+LISTVIEW-TOP+" #x84000002)
+  (:const "+LISTVIEW-VISIBLE+" #x84000003)
+  (:const "+LISTVIEW-TOTAL+" #x84000004)
+  (:const "+LISTVIEW-SHOW-SELECTED+" #x84000006)
+  (:const "+LISTVIEW-SELECTED+" #x84000007)
+  (:const "+LISTVIEW-SELECTED-NODE+" #x84000007)
+  (:const "+LISTVIEW-MAKE-VISIBLE+" #x84000008)
+  (:const "+LISTVIEW-MULTI-SELECT+" #x84000009)
+  (:const "+LISTVIEW-ITEM-HEIGHT+" #x8400000A)
+  (:const "+LISTVIEW-CALL-HOOK+" #x8400000B)
+  (:const "+LISTVIEW-SCROLL-UP+" #x8400000C)
+  (:const "+LISTVIEW-SCROLL-DOWN+" #x8400000D)
+  (:const "+LISTVIEW-SCROLL-LEFT+" #x8400000E)
+  (:const "+LISTVIEW-SCROLL-RIGHT+" #x8400000F)
+  (:const "+LISTVIEW-SPACING+" #x84000010)
+
+  ;; --- functions (listview_lib.sfd) ---
+  (:fn "LISTVIEW-GET-CLASS" -30 () :pointer 40)   ; Class * LISTVIEW_GetClass() () LVO -30
+  )
 
 (provide "amiga/raw/gadgets/listview")

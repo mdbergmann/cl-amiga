@@ -1269,19 +1269,21 @@ stores them: `(require "amiga/raw/gadgets/button")` →
     (amiga.raw.intuition:close-window win)))
 ```
 
-What a module contains, all derived mechanically from the SDK files:
+What a module contains, all derived mechanically from the SDK files — as
+one `amiga.ffi:define-binding-table` form whose names are built on first
+use (see *Footprint* below):
 
-- **Functions** — `amiga.ffi:defcfun` bindings for every public library
-  function (LVO, registers and arity from the NDK's `*_lib.sfd`), with the
-  d0 result converted from the C return type: `struct X *`/`APTR`/`STRPTR`
-  come back as a foreign pointer (`NIL` for NULL), `LONG` is signed,
-  `BOOL` is `T`/`NIL`, `VOID` returns `NIL`, `ULONG`/`BPTR`/`Tag` stay
-  integers.  Arguments are integers or foreign pointers (`NIL` = NULL);
-  strings go through `ffi:with-foreign-string`.  The C prototype is the
-  docstring.  A dozen functions with more than seven register arguments
-  (`BltBitMap`, `ClipBlit`, …) go through `amiga:call-library`; the few
-  that return a `DOUBLE`, pass register pairs or use A5 are listed as
-  `;; skipped` comments in the module.
+- **Functions** — a binding for every public library function (LVO,
+  registers and arity from the NDK's `*_lib.sfd`), with the d0 result
+  converted from the C return type: `struct X *`/`APTR`/`STRPTR` come back
+  as a foreign pointer (`NIL` for NULL), `LONG` is signed, `BOOL` is
+  `T`/`NIL`, `VOID` returns `NIL`, `ULONG`/`BPTR`/`Tag` stay integers.
+  Arguments are integers or foreign pointers (`NIL` = NULL); strings go
+  through `ffi:with-foreign-string`.  The C prototype sits next to each
+  row as a comment.  A dozen functions with more than seven register
+  arguments (`BltBitMap`, `ClipBlit`, …) go through `amiga:call-library`;
+  the few that return a `DOUBLE`, pass register pairs or use A5 are listed
+  as `;; skipped` comments in the module.
 - **Constants** — every `EQU`, `ENUM`/`EITEM` and `BITDEF` of the matching
   assembler includes as `+name+`: `+idcmp-closewindow+`, `+wa-left+`,
   `+memf-chip+`, `+mode-newfile+`, `+adcmd-allocate+` … Where the NDK has
@@ -1345,7 +1347,19 @@ constant, `+lvo-…+` offset and `defcfun` register assignment in
 `AMIGA.AUDIO` is checked against the generated bindings by
 `tests/test_amiga_curated_vs_raw.sh` in `make test`.
 
-A first `(require "amiga/raw/intuition")` compiles ~4k forms, which a 68020
+**Footprint.** A module costs what a program uses, not what it defines.
+Its bindings ship as one packed table (`amiga.ffi:define-binding-table`,
+~47 KB for intuition's ~1500 names) attached to the package; a name
+becomes a symbol — with its value or FFI stub, exported — the first time
+anything looks it up (the reader, `find-symbol`, `intern`, a FASL).
+`(require "amiga/raw/intuition")` is ~50 KB of heap on the host, a
+program that touches 150 of its names adds ~15 KB more, and the FASL is
+one byte-vector unit instead of thousands of definitions.  Everything
+stays ordinary CL: `do-symbols`, `apropos`, `unintern` and friends build
+the whole table on demand (the package is then a plain package), so
+nothing observable changes except memory.  `(clamiga::%binding-table-info
+"AMIGA.RAW.INTUITION")` reports entries, table bytes and symbols built so
+far.  A first `require` from source packs the table once, which a 68020
 feels; `make fasl-amiga` precompiles all of `lib/amiga/` on the host (see
 *Loading source and FASL files*), and the binary release ships those FASLs.
 
@@ -1360,11 +1374,15 @@ function for every purpose: `#'`, `funcall`, `apply`, `trace`,
 `describe`, `ext:function-arglist`), which is what keeps a module with
 thousands of bindings affordable on an 8 MB machine.  A direct call to a
 `defcfun` name compiles to the library-call opcode in the caller;
-`(ffi::%ffi-stub-info #'name)` shows a stub's fields.  The generated
-modules' `.lisp` sources carry the C prototype of every function as its
-docstring; the FASLs built by `make fasl-amiga` and the binary release
-omit them (`amiga.ffi:*defcfun-docstrings*`, `scripts/compile-lib-fasls.sh
---no-docstrings`) to save heap on the target.
+`(ffi::%ffi-stub-info #'name)` shows a stub's fields.  A whole library's
+worth of bindings goes into one `amiga.ffi:define-binding-table` — rows
+`(:const "NAME" value)`, `(:fn "NAME" lvo (:a0 …) :result)`, `(:struct
+"NAME" size ("FIELD" type offset) …)` — packed at compile time and
+materialised name by name on first reference; that is what the generated
+modules are (see `docs/amiga.md` for the row syntax).  `defcfun`'s `:doc`
+strings are kept on the host and dropped from the FASLs built by `make
+fasl-amiga` and the binary release (`amiga.ffi:*defcfun-docstrings*`,
+`scripts/compile-lib-fasls.sh --no-docstrings`) to save heap on the target.
 
 ```lisp
 (require "amiga/ffi")

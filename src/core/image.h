@@ -27,7 +27,10 @@
 #include "types.h"
 
 #define CL_IMAGE_MAGIC   0x434C494Du   /* "CLIM" */
-#define CL_IMAGE_VERSION 2             /* bump on ANY format change.
+#define CL_IMAGE_VERSION 3             /* bump on ANY format change.
+                                        * v3: CL_Package gained the
+                                        * `bindings` slot (demand-interned
+                                        * binding tables, bindtab.c).
                                         * v2: TYPE_FFI_STUB heap type (new
                                         * enum member, CL_TYPE_MAX moved). */
 

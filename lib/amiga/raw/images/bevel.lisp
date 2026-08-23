@@ -15,21 +15,7 @@
 
 (defpackage "AMIGA.RAW.IMAGES.BEVEL"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*BEVEL-BASE*" "*BEVEL-VERSION*"
-   "+BEVEL-DUMMY+" "+BEVEL-STYLE+" "+BEVEL-LABEL+" "+BEVEL-LABEL-IMAGE+" 
-   "+BEVEL-LABEL-PLACE+" "+BEVEL-INNER-TOP+" "+BEVEL-INNER-LEFT+" 
-   "+BEVEL-INNER-WIDTH+" "+BEVEL-INNER-HEIGHT+" "+BEVEL-HORIZ-SIZE+" 
-   "+BEVEL-HORZ-SIZE+" "+BEVEL-VERT-SIZE+" "+BEVEL-FILL-PEN+" 
-   "+BEVEL-FILL-PATTERN+" "+BEVEL-TEXT-PEN+" "+BEVEL-TRANSPARENT+" 
-   "+BEVEL-SOFT-STYLE+" "+BEVEL-COLOR-MAP+" "+BEVEL-COLOUR-MAP+" 
-   "+BEVEL-FLAGS+" "+BVS-THIN+" "+BVS-BUTTON+" "+BVS-GROUP+" "+BVS-FIELD+" 
-   "+BVS-NONE+" "+BVS-DROPBOX+" "+BVS-SBAR-HORIZ+" "+BVS-SBAR-VERT+" 
-   "+BVS-BOX+" "+BVS-STANDARD+" "+BVS-CONTAINER+" "+BVS-KNOB+" 
-   "+BVS-DISPLAY+" "+BVS-SBAR-HORZ+" "+BVS-FOCUS+" "+BVS-RADIOBUTTON+" 
-   "+BFLG-XENFILL+" "+BFLG-TRANS+" "+BVJ-TOP-CENTER+" "+BVJ-TOP-LEFT+" 
-   "+BVJ-TOP-RIGHT+" "+BVJ-IN-CENTER+" "+BVJ-IN-LEFT+" "+BVJ-IN-RIGHT+" 
-   "+BVJ-BOT-CENTER+" "+BVJ-BOT-LEFT+" "+BVJ-BOT-RIGHT+" "BEVEL-GET-CLASS" ))
+  (:export "*BEVEL-BASE*" "*BEVEL-VERSION*"))
 
 (in-package "AMIGA.RAW.IMAGES.BEVEL")
 
@@ -43,59 +29,63 @@
 (defun %version>= (n)
   (and *bevel-version* (>= *bevel-version* n)))
 
-;;; --- constants from images/bevel.h ---
-(defconstant +bevel-dummy+ #x85016000)
-(defconstant +bevel-style+ #x85016001)
-(defconstant +bevel-label+ #x85016003)
-(defconstant +bevel-label-image+ #x85016004)
-(defconstant +bevel-label-place+ #x85016005)
-(defconstant +bevel-inner-top+ #x85016006)
-(defconstant +bevel-inner-left+ #x85016007)
-(defconstant +bevel-inner-width+ #x85016008)
-(defconstant +bevel-inner-height+ #x85016009)
-(defconstant +bevel-horiz-size+ #x8501600A)
-(defconstant +bevel-horz-size+ #x8501600A)
-(defconstant +bevel-vert-size+ #x8501600B)
-(defconstant +bevel-fill-pen+ #x8501600C)
-(defconstant +bevel-fill-pattern+ #x8501600D)
-(defconstant +bevel-text-pen+ #x8501600E)
-(defconstant +bevel-transparent+ #x8501600F)
-(defconstant +bevel-soft-style+ #x85016010)
-(defconstant +bevel-color-map+ #x85016011)
-(defconstant +bevel-colour-map+ #x85016011)
-(defconstant +bevel-flags+ #x85016012)
-(defconstant +bvs-thin+ 0)
-(defconstant +bvs-button+ 1)
-(defconstant +bvs-group+ 2)
-(defconstant +bvs-field+ 3)
-(defconstant +bvs-none+ 4)
-(defconstant +bvs-dropbox+ 5)
-(defconstant +bvs-sbar-horiz+ 6)
-(defconstant +bvs-sbar-vert+ 7)
-(defconstant +bvs-box+ 8)
-(defconstant +bvs-standard+ 11)
-(defconstant +bvs-container+ 12)
-(defconstant +bvs-knob+ 13)
-(defconstant +bvs-display+ 14)
-(defconstant +bvs-sbar-horz+ 6)
-(defconstant +bvs-focus+ 9)
-(defconstant +bvs-radiobutton+ 10)
-(defconstant +bflg-xenfill+ 1)
-(defconstant +bflg-trans+ 2)
-(defconstant +bvj-top-center+ 0)
-(defconstant +bvj-top-left+ 1)
-(defconstant +bvj-top-right+ 2)
-(defconstant +bvj-in-center+ 3)
-(defconstant +bvj-in-left+ 4)
-(defconstant +bvj-in-right+ 5)
-(defconstant +bvj-bot-center+ 6)
-(defconstant +bvj-bot-left+ 7)
-(defconstant +bvj-bot-right+ 8)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.IMAGES.BEVEL"
+    (:base *bevel-base* :version *bevel-version*)
 
-;;; --- functions (bevel_lib.sfd + MorphOS SDK) ---
-(when (%version>= 40)
-  (amiga.ffi:defcfun bevel-get-class *bevel-base* -30 ()
-    :result :pointer
-    :doc "Class * BEVEL_GetClass() () LVO -30"))
+  ;; --- constants from images/bevel.h ---
+  (:const "+BEVEL-DUMMY+" #x85016000)
+  (:const "+BEVEL-STYLE+" #x85016001)
+  (:const "+BEVEL-LABEL+" #x85016003)
+  (:const "+BEVEL-LABEL-IMAGE+" #x85016004)
+  (:const "+BEVEL-LABEL-PLACE+" #x85016005)
+  (:const "+BEVEL-INNER-TOP+" #x85016006)
+  (:const "+BEVEL-INNER-LEFT+" #x85016007)
+  (:const "+BEVEL-INNER-WIDTH+" #x85016008)
+  (:const "+BEVEL-INNER-HEIGHT+" #x85016009)
+  (:const "+BEVEL-HORIZ-SIZE+" #x8501600A)
+  (:const "+BEVEL-HORZ-SIZE+" #x8501600A)
+  (:const "+BEVEL-VERT-SIZE+" #x8501600B)
+  (:const "+BEVEL-FILL-PEN+" #x8501600C)
+  (:const "+BEVEL-FILL-PATTERN+" #x8501600D)
+  (:const "+BEVEL-TEXT-PEN+" #x8501600E)
+  (:const "+BEVEL-TRANSPARENT+" #x8501600F)
+  (:const "+BEVEL-SOFT-STYLE+" #x85016010)
+  (:const "+BEVEL-COLOR-MAP+" #x85016011)
+  (:const "+BEVEL-COLOUR-MAP+" #x85016011)
+  (:const "+BEVEL-FLAGS+" #x85016012)
+  (:const "+BVS-THIN+" 0)
+  (:const "+BVS-BUTTON+" 1)
+  (:const "+BVS-GROUP+" 2)
+  (:const "+BVS-FIELD+" 3)
+  (:const "+BVS-NONE+" 4)
+  (:const "+BVS-DROPBOX+" 5)
+  (:const "+BVS-SBAR-HORIZ+" 6)
+  (:const "+BVS-SBAR-VERT+" 7)
+  (:const "+BVS-BOX+" 8)
+  (:const "+BVS-STANDARD+" 11)
+  (:const "+BVS-CONTAINER+" 12)
+  (:const "+BVS-KNOB+" 13)
+  (:const "+BVS-DISPLAY+" 14)
+  (:const "+BVS-SBAR-HORZ+" 6)
+  (:const "+BVS-FOCUS+" 9)
+  (:const "+BVS-RADIOBUTTON+" 10)
+  (:const "+BFLG-XENFILL+" 1)
+  (:const "+BFLG-TRANS+" 2)
+  (:const "+BVJ-TOP-CENTER+" 0)
+  (:const "+BVJ-TOP-LEFT+" 1)
+  (:const "+BVJ-TOP-RIGHT+" 2)
+  (:const "+BVJ-IN-CENTER+" 3)
+  (:const "+BVJ-IN-LEFT+" 4)
+  (:const "+BVJ-IN-RIGHT+" 5)
+  (:const "+BVJ-BOT-CENTER+" 6)
+  (:const "+BVJ-BOT-LEFT+" 7)
+  (:const "+BVJ-BOT-RIGHT+" 8)
+
+  ;; --- functions (bevel_lib.sfd + MorphOS SDK) ---
+  (:fn "BEVEL-GET-CLASS" -30 () :pointer 40)   ; Class * BEVEL_GetClass() () LVO -30
+  )
 
 (provide "amiga/raw/images/bevel")

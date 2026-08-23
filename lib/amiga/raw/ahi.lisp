@@ -13,15 +13,7 @@
 
 (defpackage "AMIGA.RAW.AHI"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*AHI-BASE*" "*AHI-VERSION*"
-   "AHI-ALLOC-AUDIO-A" "AHI-FREE-AUDIO" "AHI-KILL-AUDIO" 
-   "AHI-CONTROL-AUDIO-A" "AHI-SET-VOL" "AHI-SET-FREQ" "AHI-SET-SOUND" 
-   "AHI-SET-EFFECT" "AHI-LOAD-SOUND" "AHI-UNLOAD-SOUND" "AHI-NEXT-AUDIO-ID" 
-   "AHI-GET-AUDIO-ATTRS-A" "AHI-BEST-AUDIO-IDA" "AHI-ALLOC-AUDIO-REQUEST-A" 
-   "AHI-AUDIO-REQUEST-A" "AHI-FREE-AUDIO-REQUEST" "AHI-PLAY-A" 
-   "AHI-SAMPLE-FRAME-SIZE" "AHI-ADD-AUDIO-MODE" "AHI-REMOVE-AUDIO-MODE" 
-   "AHI-LOAD-MODE-FILE" ))
+  (:export "*AHI-BASE*" "*AHI-VERSION*"))
 
 (in-package "AMIGA.RAW.AHI")
 
@@ -35,69 +27,34 @@
 (defun %version>= (n)
   (and *ahi-version* (>= *ahi-version* n)))
 
-;;; --- functions (MorphOS SDK) ---
-(amiga.ffi:defcfun ahi-alloc-audio-a *ahi-base* -42 (:a1 tag-list)
-    :result :pointer
-    :doc "struct AHIAudioCtrl * AHI_AllocAudioA(struct TagItem * tagList) (A1) LVO -42")
-(amiga.ffi:defcfun ahi-free-audio *ahi-base* -48 (:a2 audio-ctrl)
-    :result :void
-    :doc "void AHI_FreeAudio(struct AHIAudioCtrl * AudioCtrl) (A2) LVO -48")
-(amiga.ffi:defcfun ahi-kill-audio *ahi-base* -54 ()
-    :result :void
-    :doc "void AHI_KillAudio() () LVO -54")
-(amiga.ffi:defcfun ahi-control-audio-a *ahi-base* -60 (:a2 audio-ctrl :a1 tag-list)
-    :result :unsigned
-    :doc "ULONG AHI_ControlAudioA(struct AHIAudioCtrl * AudioCtrl, struct TagItem * tagList) (A2,A1) LVO -60")
-(amiga.ffi:defcfun ahi-set-vol *ahi-base* -66 (:d0 channel :d1 volume :d2 pan :a2 audio-ctrl :d3 flags)
-    :result :void
-    :doc "void AHI_SetVol(UWORD Channel, Fixed Volume, sposition Pan, struct AHIAudioCtrl * AudioCtrl, ULONG Flags) (D0,D1,D2,A2,D3) LVO -66")
-(amiga.ffi:defcfun ahi-set-freq *ahi-base* -72 (:d0 channel :d1 freq :a2 audio-ctrl :d2 flags)
-    :result :void
-    :doc "void AHI_SetFreq(UWORD Channel, ULONG Freq, struct AHIAudioCtrl * AudioCtrl, ULONG Flags) (D0,D1,A2,D2) LVO -72")
-(amiga.ffi:defcfun ahi-set-sound *ahi-base* -78 (:d0 channel :d1 sound :d2 offset :d3 length :a2 audio-ctrl :d4 flags)
-    :result :void
-    :doc "void AHI_SetSound(UWORD Channel, UWORD Sound, ULONG Offset, LONG Length, struct AHIAudioCtrl * AudioCtrl, ULONG Flags) (D0,D1,D2,D3,A2,D4) LVO -78")
-(amiga.ffi:defcfun ahi-set-effect *ahi-base* -84 (:a0 effect :a2 audio-ctrl)
-    :result :unsigned
-    :doc "ULONG AHI_SetEffect(APTR Effect, struct AHIAudioCtrl * AudioCtrl) (A0,A2) LVO -84")
-(amiga.ffi:defcfun ahi-load-sound *ahi-base* -90 (:d0 sound :d1 type :a0 info :a2 audio-ctrl)
-    :result :unsigned
-    :doc "ULONG AHI_LoadSound(UWORD Sound, ULONG Type, APTR Info, struct AHIAudioCtrl * AudioCtrl) (D0,D1,A0,A2) LVO -90")
-(amiga.ffi:defcfun ahi-unload-sound *ahi-base* -96 (:d0 sound :a2 audioctrl)
-    :result :void
-    :doc "void AHI_UnloadSound(UWORD Sound, struct AHIAudioCtrl * Audioctrl) (D0,A2) LVO -96")
-(amiga.ffi:defcfun ahi-next-audio-id *ahi-base* -102 (:d0 last-id)
-    :result :unsigned
-    :doc "ULONG AHI_NextAudioID(ULONG Last_ID) (D0) LVO -102")
-(amiga.ffi:defcfun ahi-get-audio-attrs-a *ahi-base* -108 (:d0 id :a2 audioctrl :a1 tag-list)
-    :result :bool
-    :doc "BOOL AHI_GetAudioAttrsA(ULONG ID, struct AHIAudioCtrl * Audioctrl, struct TagItem * tagList) (D0,A2,A1) LVO -108")
-(amiga.ffi:defcfun ahi-best-audio-ida *ahi-base* -114 (:a1 tag-list)
-    :result :unsigned
-    :doc "ULONG AHI_BestAudioIDA(struct TagItem * tagList) (A1) LVO -114")
-(amiga.ffi:defcfun ahi-alloc-audio-request-a *ahi-base* -120 (:a0 tag-list)
-    :result :pointer
-    :doc "struct AHIAudioModeRequester * AHI_AllocAudioRequestA(struct TagItem * tagList) (A0) LVO -120")
-(amiga.ffi:defcfun ahi-audio-request-a *ahi-base* -126 (:a0 requester :a1 tag-list)
-    :result :bool
-    :doc "BOOL AHI_AudioRequestA(struct AHIAudioModeRequester * requester, struct TagItem * tagList) (A0,A1) LVO -126")
-(amiga.ffi:defcfun ahi-free-audio-request *ahi-base* -132 (:a0 requester)
-    :result :void
-    :doc "void AHI_FreeAudioRequest(struct AHIAudioModeRequester * requester) (A0) LVO -132")
-(amiga.ffi:defcfun ahi-play-a *ahi-base* -138 (:a2 audioctrl :a1 tag-list)
-    :result :void
-    :doc "void AHI_PlayA(struct AHIAudioCtrl * Audioctrl, struct TagItem * tagList) (A2,A1) LVO -138")
-(amiga.ffi:defcfun ahi-sample-frame-size *ahi-base* -144 (:d0 sample-type)
-    :result :unsigned
-    :doc "ULONG AHI_SampleFrameSize(ULONG SampleType) (D0) LVO -144")
-(amiga.ffi:defcfun ahi-add-audio-mode *ahi-base* -150 (:a0 private)
-    :result :unsigned
-    :doc "ULONG AHI_AddAudioMode(struct TagItem * Private) (A0) LVO -150")
-(amiga.ffi:defcfun ahi-remove-audio-mode *ahi-base* -156 (:d0 private)
-    :result :unsigned
-    :doc "ULONG AHI_RemoveAudioMode(ULONG Private) (D0) LVO -156")
-(amiga.ffi:defcfun ahi-load-mode-file *ahi-base* -162 (:a0 private)
-    :result :unsigned
-    :doc "ULONG AHI_LoadModeFile(STRPTR Private) (A0) LVO -162")
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.AHI"
+    (:base *ahi-base* :version *ahi-version*)
+
+  ;; --- functions (MorphOS SDK) ---
+  (:fn "AHI-ALLOC-AUDIO-A" -42 (:a1) :pointer)   ; struct AHIAudioCtrl * AHI_AllocAudioA(struct TagItem * tagList) (A1) LVO -42
+  (:fn "AHI-FREE-AUDIO" -48 (:a2) :void)   ; void AHI_FreeAudio(struct AHIAudioCtrl * AudioCtrl) (A2) LVO -48
+  (:fn "AHI-KILL-AUDIO" -54 () :void)   ; void AHI_KillAudio() () LVO -54
+  (:fn "AHI-CONTROL-AUDIO-A" -60 (:a2 :a1) :unsigned)   ; ULONG AHI_ControlAudioA(struct AHIAudioCtrl * AudioCtrl, struct TagItem * tagList) (A2,A1) LVO -60
+  (:fn "AHI-SET-VOL" -66 (:d0 :d1 :d2 :a2 :d3) :void)   ; void AHI_SetVol(UWORD Channel, Fixed Volume, sposition Pan, struct AHIAudioCtrl * AudioCtrl, ULONG Flags) (D0,D1,D2,A2,D3) LVO -66
+  (:fn "AHI-SET-FREQ" -72 (:d0 :d1 :a2 :d2) :void)   ; void AHI_SetFreq(UWORD Channel, ULONG Freq, struct AHIAudioCtrl * AudioCtrl, ULONG Flags) (D0,D1,A2,D2) LVO -72
+  (:fn "AHI-SET-SOUND" -78 (:d0 :d1 :d2 :d3 :a2 :d4) :void)   ; void AHI_SetSound(UWORD Channel, UWORD Sound, ULONG Offset, LONG Length, struct AHIAudioCtrl * AudioCtrl, ULONG Flags) (D0,D1,D2,D3,A2,D4) LVO -78
+  (:fn "AHI-SET-EFFECT" -84 (:a0 :a2) :unsigned)   ; ULONG AHI_SetEffect(APTR Effect, struct AHIAudioCtrl * AudioCtrl) (A0,A2) LVO -84
+  (:fn "AHI-LOAD-SOUND" -90 (:d0 :d1 :a0 :a2) :unsigned)   ; ULONG AHI_LoadSound(UWORD Sound, ULONG Type, APTR Info, struct AHIAudioCtrl * AudioCtrl) (D0,D1,A0,A2) LVO -90
+  (:fn "AHI-UNLOAD-SOUND" -96 (:d0 :a2) :void)   ; void AHI_UnloadSound(UWORD Sound, struct AHIAudioCtrl * Audioctrl) (D0,A2) LVO -96
+  (:fn "AHI-NEXT-AUDIO-ID" -102 (:d0) :unsigned)   ; ULONG AHI_NextAudioID(ULONG Last_ID) (D0) LVO -102
+  (:fn "AHI-GET-AUDIO-ATTRS-A" -108 (:d0 :a2 :a1) :bool)   ; BOOL AHI_GetAudioAttrsA(ULONG ID, struct AHIAudioCtrl * Audioctrl, struct TagItem * tagList) (D0,A2,A1) LVO -108
+  (:fn "AHI-BEST-AUDIO-IDA" -114 (:a1) :unsigned)   ; ULONG AHI_BestAudioIDA(struct TagItem * tagList) (A1) LVO -114
+  (:fn "AHI-ALLOC-AUDIO-REQUEST-A" -120 (:a0) :pointer)   ; struct AHIAudioModeRequester * AHI_AllocAudioRequestA(struct TagItem * tagList) (A0) LVO -120
+  (:fn "AHI-AUDIO-REQUEST-A" -126 (:a0 :a1) :bool)   ; BOOL AHI_AudioRequestA(struct AHIAudioModeRequester * requester, struct TagItem * tagList) (A0,A1) LVO -126
+  (:fn "AHI-FREE-AUDIO-REQUEST" -132 (:a0) :void)   ; void AHI_FreeAudioRequest(struct AHIAudioModeRequester * requester) (A0) LVO -132
+  (:fn "AHI-PLAY-A" -138 (:a2 :a1) :void)   ; void AHI_PlayA(struct AHIAudioCtrl * Audioctrl, struct TagItem * tagList) (A2,A1) LVO -138
+  (:fn "AHI-SAMPLE-FRAME-SIZE" -144 (:d0) :unsigned)   ; ULONG AHI_SampleFrameSize(ULONG SampleType) (D0) LVO -144
+  (:fn "AHI-ADD-AUDIO-MODE" -150 (:a0) :unsigned)   ; ULONG AHI_AddAudioMode(struct TagItem * Private) (A0) LVO -150
+  (:fn "AHI-REMOVE-AUDIO-MODE" -156 (:d0) :unsigned)   ; ULONG AHI_RemoveAudioMode(ULONG Private) (D0) LVO -156
+  (:fn "AHI-LOAD-MODE-FILE" -162 (:a0) :unsigned)   ; ULONG AHI_LoadModeFile(STRPTR Private) (A0) LVO -162
+  )
 
 (provide "amiga/raw/ahi")

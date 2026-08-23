@@ -15,40 +15,7 @@
 
 (defpackage "AMIGA.RAW.CARDRES"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*CARDRES-BASE*" "*CARDRES-VERSION*"
-   "+CARDB-RESETREMOVE+" "+CARDF-RESETREMOVE+" "+CARDB-IFAVAILABLE+" 
-   "+CARDF-IFAVAILABLE+" "+CARDB-DELAYOWNERSHIP+" "+CARDF-DELAYOWNERSHIP+" 
-   "+CARDB-POSTSTATUS+" "+CARDF-POSTSTATUS+" "+CARDB-REMOVEHANDLE+" 
-   "+CARDF-REMOVEHANDLE+" "+CARD-STATUSB-CCDET+" "+CARD-STATUSF-CCDET+" 
-   "+CARD-STATUSB-BVD1+" "+CARD-STATUSF-BVD1+" "+CARD-STATUSB-SC+" 
-   "+CARD-STATUSF-SC+" "+CARD-STATUSB-BVD2+" "+CARD-STATUSF-BVD2+" 
-   "+CARD-STATUSB-DA+" "+CARD-STATUSF-DA+" "+CARD-STATUSB-WR+" 
-   "+CARD-STATUSF-WR+" "+CARD-STATUSB-BSY+" "+CARD-STATUSF-BSY+" 
-   "+CARD-STATUSB-IRQ+" "+CARD-STATUSF-IRQ+" "+CARD-VOLTAGE-0-V+" 
-   "+CARD-VOLTAGE-5-V+" "+CARD-VOLTAGE-12-V+" "+CARD-ENABLEB-DIGAUDIO+" 
-   "+CARD-ENABLEF-DIGAUDIO+" "+CARD-DISABLEB-WP+" "+CARD-DISABLEF-WP+" 
-   "+CARD-INTB-SETCLR+" "+CARD-INTF-SETCLR+" "+CARD-INTB-BVD1+" 
-   "+CARD-INTF-BVD1+" "+CARD-INTB-SC+" "+CARD-INTF-SC+" "+CARD-INTB-BVD2+" 
-   "+CARD-INTF-BVD2+" "+CARD-INTB-DA+" "+CARD-INTF-DA+" "+CARD-INTB-BSY+" 
-   "+CARD-INTF-BSY+" "+CARD-INTB-IRQ+" "+CARD-INTF-IRQ+" 
-   "+CARD-INTERFACE-AMIGA-0+" "+CISTPL-AMIGAXIP+" "+XIPFLAGB-AUTORUN+" 
-   "+XIPFLAGF-AUTORUN+" "+RES-RESERVED+" "+RES-USERDEF+" "+RES-NONSTD+" 
-   "*CARD-HANDLE-SIZE*" "CARD-HANDLE-CARD-NODE" "CARD-HANDLE-CARD-REMOVED" 
-   "CARD-HANDLE-CARD-INSERTED" "CARD-HANDLE-CARD-STATUS" 
-   "CARD-HANDLE-CARD-FLAGS" "*DEVICE-T-DATA-SIZE*" "DEVICE-T-DATA-D-TSIZE" 
-   "DEVICE-T-DATA-D-TSPEED" "DEVICE-T-DATA-D-TTYPE" 
-   "DEVICE-T-DATA-D-TFLAGS" "*CARD-MEMORY-MAP-SIZE*" 
-   "CARD-MEMORY-MAP-COMMON-MEMORY" "CARD-MEMORY-MAP-ATTRIBUTE-MEMORY" 
-   "CARD-MEMORY-MAP-IO-MEMORY" "CARD-MEMORY-MAP-COMMON-MEM-SIZE" 
-   "CARD-MEMORY-MAP-ATTRIBUTE-MEM-SIZE" "CARD-MEMORY-MAP-IO-MEM-SIZE" 
-   "*TP-AMIGA-XIP-SIZE*" "TP-AMIGA-XIP-AMIGA-XIP" "TP-AMIGA-XIP-XIPLOC" 
-   "TP-AMIGA-XIP-XIPFLAGS" "TP-AMIGA-XIP-XIPRESRV" "OWN-CARD" 
-   "RELEASE-CARD" "GET-CARD-MAP" "BEGIN-CARD-ACCESS" "END-CARD-ACCESS" 
-   "READ-CARD-STATUS" "CARD-RESET-REMOVE" "CARD-MISC-CONTROL" 
-   "CARD-ACCESS-SPEED" "CARD-PROGRAM-VOLTAGE" "CARD-RESET-CARD" 
-   "COPY-TUPLE" "DEVICE-TUPLE" "IF-AMIGA-XIP" "CARD-FORCE-CHANGE" 
-   "CARD-CHANGE-COUNT" "CARD-INTERFACE" ))
+  (:export "*CARDRES-BASE*" "*CARDRES-VERSION*"))
 
 (in-package "AMIGA.RAW.CARDRES")
 
@@ -62,142 +29,115 @@
 (defun %version>= (n)
   (and *cardres-version* (>= *cardres-version* n)))
 
-;;; --- constants from resources/card.i ---
-(defconstant +cardb-resetremove+ 0)
-(defconstant +cardf-resetremove+ 1)
-(defconstant +cardb-ifavailable+ 1)
-(defconstant +cardf-ifavailable+ 2)
-(defconstant +cardb-delayownership+ 2)
-(defconstant +cardf-delayownership+ 4)
-(defconstant +cardb-poststatus+ 3)
-(defconstant +cardf-poststatus+ 8)
-(defconstant +cardb-removehandle+ 0)
-(defconstant +cardf-removehandle+ 1)
-(defconstant +card-statusb-ccdet+ 6)
-(defconstant +card-statusf-ccdet+ #x40)
-(defconstant +card-statusb-bvd1+ 5)
-(defconstant +card-statusf-bvd1+ #x20)
-(defconstant +card-statusb-sc+ 5)
-(defconstant +card-statusf-sc+ #x20)
-(defconstant +card-statusb-bvd2+ 4)
-(defconstant +card-statusf-bvd2+ #x10)
-(defconstant +card-statusb-da+ 4)
-(defconstant +card-statusf-da+ #x10)
-(defconstant +card-statusb-wr+ 3)
-(defconstant +card-statusf-wr+ 8)
-(defconstant +card-statusb-bsy+ 2)
-(defconstant +card-statusf-bsy+ 4)
-(defconstant +card-statusb-irq+ 2)
-(defconstant +card-statusf-irq+ 4)
-(defconstant +card-voltage-0-v+ 0)
-(defconstant +card-voltage-5-v+ 1)
-(defconstant +card-voltage-12-v+ 2)
-(defconstant +card-enableb-digaudio+ 1)
-(defconstant +card-enablef-digaudio+ 2)
-(defconstant +card-disableb-wp+ 3)
-(defconstant +card-disablef-wp+ 8)
-(defconstant +card-intb-setclr+ 7)
-(defconstant +card-intf-setclr+ #x80)
-(defconstant +card-intb-bvd1+ 5)
-(defconstant +card-intf-bvd1+ #x20)
-(defconstant +card-intb-sc+ 5)
-(defconstant +card-intf-sc+ #x20)
-(defconstant +card-intb-bvd2+ 4)
-(defconstant +card-intf-bvd2+ #x10)
-(defconstant +card-intb-da+ 4)
-(defconstant +card-intf-da+ #x10)
-(defconstant +card-intb-bsy+ 2)
-(defconstant +card-intf-bsy+ 4)
-(defconstant +card-intb-irq+ 2)
-(defconstant +card-intf-irq+ 4)
-(defconstant +card-interface-amiga-0+ 0)
-(defconstant +cistpl-amigaxip+ #x91)
-(defconstant +xipflagb-autorun+ 0)
-(defconstant +xipflagf-autorun+ 1)
-(defconstant +res-reserved+ 0)
-(defconstant +res-userdef+ -6)
-(defconstant +res-nonstd+ -6)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.CARDRES"
+    (:base *cardres-base* :version *cardres-version*)
 
-;;; --- structures from resources/card.i ---
-(ffi:defcstruct (card-handle :size 28)   ; CardHandle (resources/card.i)
-  (card-node (:struct 14) 0)
-  (card-removed :fptr 14)
-  (card-inserted :fptr 18)
-  (card-status :fptr 22)
-  (card-flags :u8 26)
-)
-(ffi:defcstruct (device-t-data :size 10)   ; DeviceTData (resources/card.i)
-  (d-tsize :u32 0)
-  (d-tspeed :u32 4)
-  (d-ttype :u8 8)
-  (d-tflags :u8 9)
-)
-(ffi:defcstruct (card-memory-map :size 24)   ; CardMemoryMap (resources/card.i)
-  (common-memory :fptr 0)
-  (attribute-memory :fptr 4)
-  (io-memory :fptr 8)
-  (common-mem-size :u32 12)
-  (attribute-mem-size :u32 16)
-  (io-mem-size :u32 20)
-)
-(ffi:defcstruct (tp-amiga-xip :size 8)   ; TP_AmigaXIP (resources/card.i)
-  (amiga-xip (:struct 2) 0)
-  (xiploc (:struct 4) 2)
-  (xipflags (:struct 1) 6)
-  (xipresrv (:struct 1) 7)
-)
+  ;; --- constants from resources/card.i ---
+  (:const "+CARDB-RESETREMOVE+" 0)
+  (:const "+CARDF-RESETREMOVE+" 1)
+  (:const "+CARDB-IFAVAILABLE+" 1)
+  (:const "+CARDF-IFAVAILABLE+" 2)
+  (:const "+CARDB-DELAYOWNERSHIP+" 2)
+  (:const "+CARDF-DELAYOWNERSHIP+" 4)
+  (:const "+CARDB-POSTSTATUS+" 3)
+  (:const "+CARDF-POSTSTATUS+" 8)
+  (:const "+CARDB-REMOVEHANDLE+" 0)
+  (:const "+CARDF-REMOVEHANDLE+" 1)
+  (:const "+CARD-STATUSB-CCDET+" 6)
+  (:const "+CARD-STATUSF-CCDET+" #x40)
+  (:const "+CARD-STATUSB-BVD1+" 5)
+  (:const "+CARD-STATUSF-BVD1+" #x20)
+  (:const "+CARD-STATUSB-SC+" 5)
+  (:const "+CARD-STATUSF-SC+" #x20)
+  (:const "+CARD-STATUSB-BVD2+" 4)
+  (:const "+CARD-STATUSF-BVD2+" #x10)
+  (:const "+CARD-STATUSB-DA+" 4)
+  (:const "+CARD-STATUSF-DA+" #x10)
+  (:const "+CARD-STATUSB-WR+" 3)
+  (:const "+CARD-STATUSF-WR+" 8)
+  (:const "+CARD-STATUSB-BSY+" 2)
+  (:const "+CARD-STATUSF-BSY+" 4)
+  (:const "+CARD-STATUSB-IRQ+" 2)
+  (:const "+CARD-STATUSF-IRQ+" 4)
+  (:const "+CARD-VOLTAGE-0-V+" 0)
+  (:const "+CARD-VOLTAGE-5-V+" 1)
+  (:const "+CARD-VOLTAGE-12-V+" 2)
+  (:const "+CARD-ENABLEB-DIGAUDIO+" 1)
+  (:const "+CARD-ENABLEF-DIGAUDIO+" 2)
+  (:const "+CARD-DISABLEB-WP+" 3)
+  (:const "+CARD-DISABLEF-WP+" 8)
+  (:const "+CARD-INTB-SETCLR+" 7)
+  (:const "+CARD-INTF-SETCLR+" #x80)
+  (:const "+CARD-INTB-BVD1+" 5)
+  (:const "+CARD-INTF-BVD1+" #x20)
+  (:const "+CARD-INTB-SC+" 5)
+  (:const "+CARD-INTF-SC+" #x20)
+  (:const "+CARD-INTB-BVD2+" 4)
+  (:const "+CARD-INTF-BVD2+" #x10)
+  (:const "+CARD-INTB-DA+" 4)
+  (:const "+CARD-INTF-DA+" #x10)
+  (:const "+CARD-INTB-BSY+" 2)
+  (:const "+CARD-INTF-BSY+" 4)
+  (:const "+CARD-INTB-IRQ+" 2)
+  (:const "+CARD-INTF-IRQ+" 4)
+  (:const "+CARD-INTERFACE-AMIGA-0+" 0)
+  (:const "+CISTPL-AMIGAXIP+" #x91)
+  (:const "+XIPFLAGB-AUTORUN+" 0)
+  (:const "+XIPFLAGF-AUTORUN+" 1)
+  (:const "+RES-RESERVED+" 0)
+  (:const "+RES-USERDEF+" -6)
+  (:const "+RES-NONSTD+" -6)
 
-;;; --- functions (cardres_lib.sfd + MorphOS SDK) ---
-(amiga.ffi:defcfun own-card *cardres-base* -6 (:a1 handle)
-    :result :pointer
-    :doc "struct CardHandle * OwnCard(struct CardHandle * handle) (A1) LVO -6")
-(amiga.ffi:defcfun release-card *cardres-base* -12 (:a1 handle :d0 flags)
-    :result :void
-    :doc "VOID ReleaseCard(struct CardHandle * handle, ULONG flags) (A1,D0) LVO -12")
-(amiga.ffi:defcfun get-card-map *cardres-base* -18 ()
-    :result :pointer
-    :doc "struct CardMemoryMap * GetCardMap() () LVO -18")
-(amiga.ffi:defcfun begin-card-access *cardres-base* -24 (:a1 handle)
-    :result :bool
-    :doc "BOOL BeginCardAccess(struct CardHandle * handle) (A1) LVO -24")
-(amiga.ffi:defcfun end-card-access *cardres-base* -30 (:a1 handle)
-    :result :bool
-    :doc "BOOL EndCardAccess(struct CardHandle * handle) (A1) LVO -30")
-(amiga.ffi:defcfun read-card-status *cardres-base* -36 ()
-    :result :u8
-    :doc "UBYTE ReadCardStatus() () LVO -36")
-(amiga.ffi:defcfun card-reset-remove *cardres-base* -42 (:a1 handle :d0 flag)
-    :result :bool
-    :doc "BOOL CardResetRemove(struct CardHandle * handle, ULONG flag) (A1,D0) LVO -42")
-(amiga.ffi:defcfun card-misc-control *cardres-base* -48 (:a1 handle :d1 control-bits)
-    :result :u8
-    :doc "UBYTE CardMiscControl(struct CardHandle * handle, UBYTE control_bits) (A1,D1) LVO -48")
-(amiga.ffi:defcfun card-access-speed *cardres-base* -54 (:a1 handle :d0 nanoseconds)
-    :result :unsigned
-    :doc "ULONG CardAccessSpeed(struct CardHandle * handle, ULONG nanoseconds) (A1,D0) LVO -54")
-(amiga.ffi:defcfun card-program-voltage *cardres-base* -60 (:a1 handle :d0 voltage)
-    :result :signed
-    :doc "LONG CardProgramVoltage(struct CardHandle * handle, ULONG voltage) (A1,D0) LVO -60")
-(amiga.ffi:defcfun card-reset-card *cardres-base* -66 (:a1 handle)
-    :result :bool
-    :doc "BOOL CardResetCard(struct CardHandle * handle) (A1) LVO -66")
-(amiga.ffi:defcfun copy-tuple *cardres-base* -72 (:a1 handle :a0 buffer :d1 tuplecode :d0 size)
-    :result :bool
-    :doc "BOOL CopyTuple(struct CardHandle * handle, UBYTE * buffer, ULONG tuplecode, ULONG size) (A1,A0,D1,D0) LVO -72")
-(amiga.ffi:defcfun device-tuple *cardres-base* -78 (:a0 tuple-data :a1 storage)
-    :result :unsigned
-    :doc "ULONG DeviceTuple(CONST UBYTE * tuple_data, struct DeviceTData * storage) (A0,A1) LVO -78")
-(amiga.ffi:defcfun if-amiga-xip *cardres-base* -84 (:a2 handle)
-    :result :pointer
-    :doc "struct Resident * IfAmigaXIP(struct CardHandle * handle) (A2) LVO -84")
-(amiga.ffi:defcfun card-force-change *cardres-base* -90 ()
-    :result :bool
-    :doc "BOOL CardForceChange() () LVO -90")
-(amiga.ffi:defcfun card-change-count *cardres-base* -96 ()
-    :result :unsigned
-    :doc "ULONG CardChangeCount() () LVO -96")
-(amiga.ffi:defcfun card-interface *cardres-base* -102 ()
-    :result :unsigned
-    :doc "ULONG CardInterface() () LVO -102")
+  ;; --- structures from resources/card.i ---
+  (:struct "CARD-HANDLE" 28   ; CardHandle (resources/card.i)
+    ("CARD-NODE" (:struct 14) 0)
+    ("CARD-REMOVED" :fptr 14)
+    ("CARD-INSERTED" :fptr 18)
+    ("CARD-STATUS" :fptr 22)
+    ("CARD-FLAGS" :u8 26)
+    )
+  (:struct "DEVICE-T-DATA" 10   ; DeviceTData (resources/card.i)
+    ("D-TSIZE" :u32 0)
+    ("D-TSPEED" :u32 4)
+    ("D-TTYPE" :u8 8)
+    ("D-TFLAGS" :u8 9)
+    )
+  (:struct "CARD-MEMORY-MAP" 24   ; CardMemoryMap (resources/card.i)
+    ("COMMON-MEMORY" :fptr 0)
+    ("ATTRIBUTE-MEMORY" :fptr 4)
+    ("IO-MEMORY" :fptr 8)
+    ("COMMON-MEM-SIZE" :u32 12)
+    ("ATTRIBUTE-MEM-SIZE" :u32 16)
+    ("IO-MEM-SIZE" :u32 20)
+    )
+  (:struct "TP-AMIGA-XIP" 8   ; TP_AmigaXIP (resources/card.i)
+    ("AMIGA-XIP" (:struct 2) 0)
+    ("XIPLOC" (:struct 4) 2)
+    ("XIPFLAGS" (:struct 1) 6)
+    ("XIPRESRV" (:struct 1) 7)
+    )
+
+  ;; --- functions (cardres_lib.sfd + MorphOS SDK) ---
+  (:fn "OWN-CARD" -6 (:a1) :pointer)   ; struct CardHandle * OwnCard(struct CardHandle * handle) (A1) LVO -6
+  (:fn "RELEASE-CARD" -12 (:a1 :d0) :void)   ; VOID ReleaseCard(struct CardHandle * handle, ULONG flags) (A1,D0) LVO -12
+  (:fn "GET-CARD-MAP" -18 () :pointer)   ; struct CardMemoryMap * GetCardMap() () LVO -18
+  (:fn "BEGIN-CARD-ACCESS" -24 (:a1) :bool)   ; BOOL BeginCardAccess(struct CardHandle * handle) (A1) LVO -24
+  (:fn "END-CARD-ACCESS" -30 (:a1) :bool)   ; BOOL EndCardAccess(struct CardHandle * handle) (A1) LVO -30
+  (:fn "READ-CARD-STATUS" -36 () :u8)   ; UBYTE ReadCardStatus() () LVO -36
+  (:fn "CARD-RESET-REMOVE" -42 (:a1 :d0) :bool)   ; BOOL CardResetRemove(struct CardHandle * handle, ULONG flag) (A1,D0) LVO -42
+  (:fn "CARD-MISC-CONTROL" -48 (:a1 :d1) :u8)   ; UBYTE CardMiscControl(struct CardHandle * handle, UBYTE control_bits) (A1,D1) LVO -48
+  (:fn "CARD-ACCESS-SPEED" -54 (:a1 :d0) :unsigned)   ; ULONG CardAccessSpeed(struct CardHandle * handle, ULONG nanoseconds) (A1,D0) LVO -54
+  (:fn "CARD-PROGRAM-VOLTAGE" -60 (:a1 :d0) :signed)   ; LONG CardProgramVoltage(struct CardHandle * handle, ULONG voltage) (A1,D0) LVO -60
+  (:fn "CARD-RESET-CARD" -66 (:a1) :bool)   ; BOOL CardResetCard(struct CardHandle * handle) (A1) LVO -66
+  (:fn "COPY-TUPLE" -72 (:a1 :a0 :d1 :d0) :bool)   ; BOOL CopyTuple(struct CardHandle * handle, UBYTE * buffer, ULONG tuplecode, ULONG size) (A1,A0,D1,D0) LVO -72
+  (:fn "DEVICE-TUPLE" -78 (:a0 :a1) :unsigned)   ; ULONG DeviceTuple(CONST UBYTE * tuple_data, struct DeviceTData * storage) (A0,A1) LVO -78
+  (:fn "IF-AMIGA-XIP" -84 (:a2) :pointer)   ; struct Resident * IfAmigaXIP(struct CardHandle * handle) (A2) LVO -84
+  (:fn "CARD-FORCE-CHANGE" -90 () :bool)   ; BOOL CardForceChange() () LVO -90
+  (:fn "CARD-CHANGE-COUNT" -96 () :unsigned)   ; ULONG CardChangeCount() () LVO -96
+  (:fn "CARD-INTERFACE" -102 () :unsigned)   ; ULONG CardInterface() () LVO -102
+  )
 
 (provide "amiga/raw/cardres")

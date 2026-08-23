@@ -15,64 +15,7 @@
 
 (defpackage "AMIGA.RAW.LOWLEVEL"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*LOWLEVEL-BASE*" "*LOWLEVEL-VERSION*"
-   "+LLKB-LSHIFT+" "+LLKF-LSHIFT+" "+LLKB-RSHIFT+" "+LLKF-RSHIFT+" 
-   "+LLKB-CAPSLOCK+" "+LLKF-CAPSLOCK+" "+LLKB-CONTROL+" "+LLKF-CONTROL+" 
-   "+LLKB-LALT+" "+LLKF-LALT+" "+LLKB-RALT+" "+LLKF-RALT+" "+LLKB-LAMIGA+" 
-   "+LLKF-LAMIGA+" "+LLKB-RAMIGA+" "+LLKF-RAMIGA+" "+SJA-DUMMY+" 
-   "+SJA-TYPE+" "+SJA-REINITIALIZE+" "+SJA-TYPE-AUTOSENSE+" 
-   "+SJA-TYPE-GAMECTLR+" "+SJA-TYPE-MOUSE+" "+SJA-TYPE-JOYSTK+" 
-   "+JP-TYPE-NOTAVAIL+" "+JP-TYPE-GAMECTLR+" "+JP-TYPE-MOUSE+" 
-   "+JP-TYPE-JOYSTK+" "+JP-TYPE-UNKNOWN+" "+JP-TYPE-MASK+" 
-   "+JPB-BUTTON-BLUE+" "+JPF-BUTTON-BLUE+" "+JPB-BUTTON-RED+" 
-   "+JPF-BUTTON-RED+" "+JPB-BUTTON-YELLOW+" "+JPF-BUTTON-YELLOW+" 
-   "+JPB-BUTTON-GREEN+" "+JPF-BUTTON-GREEN+" "+JPB-BUTTON-FORWARD+" 
-   "+JPF-BUTTON-FORWARD+" "+JPB-BUTTON-REVERSE+" "+JPF-BUTTON-REVERSE+" 
-   "+JPB-BUTTON-PLAY+" "+JPF-BUTTON-PLAY+" "+JP-BUTTON-MASK+" 
-   "+JPB-JOY-UP+" "+JPF-JOY-UP+" "+JPB-JOY-DOWN+" "+JPF-JOY-DOWN+" 
-   "+JPB-JOY-LEFT+" "+JPF-JOY-LEFT+" "+JPB-JOY-RIGHT+" "+JPF-JOY-RIGHT+" 
-   "+JP-DIRECTION-MASK+" "+JP-MHORZ-MASK+" "+JP-MVERT-MASK+" 
-   "+JP-MOUSE-MASK+" "+JPB-BTN1+" "+JPF-BTN1+" "+JPB-BTN2+" "+JPF-BTN2+" 
-   "+JPB-BTN3+" "+JPF-BTN3+" "+JPB-BTN4+" "+JPF-BTN4+" "+JPB-BTN5+" 
-   "+JPF-BTN5+" "+JPB-BTN6+" "+JPF-BTN6+" "+JPB-BTN7+" "+JPF-BTN7+" 
-   "+JPB-UP+" "+JPF-UP+" "+JPB-DOWN+" "+JPF-DOWN+" "+JPB-LEFT+" 
-   "+JPF-LEFT+" "+JPB-RIGHT+" "+JPF-RIGHT+" "+SCON-DUMMY+" 
-   "+SCON-TAKE-OVER-SYS+" "+SCON-KILL-REQ+" "+SCON-CD-REBOOT+" 
-   "+SCON-STOP-INPUT+" "+SCON-ADD-CREATE-KEYS+" "+SCON-REM-CREATE-KEYS+" 
-   "+CD-REBOOT-ON+" "+CD-REBOOT-OFF+" "+CD-REBOOT-DEFAULT+" 
-   "+RAWKEY-PORT0-BUTTON-BLUE+" "+RAWKEY-PORT0-BUTTON-RED+" 
-   "+RAWKEY-PORT0-BUTTON-YELLOW+" "+RAWKEY-PORT0-BUTTON-GREEN+" 
-   "+RAWKEY-PORT0-BUTTON-FORWARD+" "+RAWKEY-PORT0-BUTTON-REVERSE+" 
-   "+RAWKEY-PORT0-BUTTON-PLAY+" "+RAWKEY-PORT0-JOY-UP+" 
-   "+RAWKEY-PORT0-JOY-DOWN+" "+RAWKEY-PORT0-JOY-LEFT+" 
-   "+RAWKEY-PORT0-JOY-RIGHT+" "+RAWKEY-PORT1-BUTTON-BLUE+" 
-   "+RAWKEY-PORT1-BUTTON-RED+" "+RAWKEY-PORT1-BUTTON-YELLOW+" 
-   "+RAWKEY-PORT1-BUTTON-GREEN+" "+RAWKEY-PORT1-BUTTON-FORWARD+" 
-   "+RAWKEY-PORT1-BUTTON-REVERSE+" "+RAWKEY-PORT1-BUTTON-PLAY+" 
-   "+RAWKEY-PORT1-JOY-UP+" "+RAWKEY-PORT1-JOY-DOWN+" 
-   "+RAWKEY-PORT1-JOY-LEFT+" "+RAWKEY-PORT1-JOY-RIGHT+" 
-   "+RAWKEY-PORT2-BUTTON-BLUE+" "+RAWKEY-PORT2-BUTTON-RED+" 
-   "+RAWKEY-PORT2-BUTTON-YELLOW+" "+RAWKEY-PORT2-BUTTON-GREEN+" 
-   "+RAWKEY-PORT2-BUTTON-FORWARD+" "+RAWKEY-PORT2-BUTTON-REVERSE+" 
-   "+RAWKEY-PORT2-BUTTON-PLAY+" "+RAWKEY-PORT2-JOY-UP+" 
-   "+RAWKEY-PORT2-JOY-DOWN+" "+RAWKEY-PORT2-JOY-LEFT+" 
-   "+RAWKEY-PORT2-JOY-RIGHT+" "+RAWKEY-PORT3-BUTTON-BLUE+" 
-   "+RAWKEY-PORT3-BUTTON-RED+" "+RAWKEY-PORT3-BUTTON-YELLOW+" 
-   "+RAWKEY-PORT3-BUTTON-GREEN+" "+RAWKEY-PORT3-BUTTON-FORWARD+" 
-   "+RAWKEY-PORT3-BUTTON-REVERSE+" "+RAWKEY-PORT3-BUTTON-PLAY+" 
-   "+RAWKEY-PORT3-JOY-UP+" "+RAWKEY-PORT3-JOY-DOWN+" 
-   "+RAWKEY-PORT3-JOY-LEFT+" "+RAWKEY-PORT3-JOY-RIGHT+" "+LANG-UNKNOWN+" 
-   "+LANG-AMERICAN+" "+LANG-ENGLISH+" "+LANG-GERMAN+" "+LANG-FRENCH+" 
-   "+LANG-SPANISH+" "+LANG-ITALIAN+" "+LANG-PORTUGUESE+" "+LANG-DANISH+" 
-   "+LANG-DUTCH+" "+LANG-NORWEGIAN+" "+LANG-FINNISH+" "+LANG-SWEDISH+" 
-   "+LANG-JAPANESE+" "+LANG-CHINESE+" "+LANG-ARABIC+" "+LANG-GREEK+" 
-   "+LANG-HEBREW+" "+LANG-KOREAN+" "*KEY-QUERY-SIZE*" "KEY-QUERY-KEY-CODE" 
-   "KEY-QUERY-PRESSED" "READ-JOY-PORT" "GET-LANGUAGE-SELECTION" "GET-KEY" 
-   "QUERY-KEYS" "ADD-KB-INT" "REM-KB-INT" "SYSTEM-CONTROL-A" 
-   "ADD-TIMER-INT" "REM-TIMER-INT" "STOP-TIMER-INT" "START-TIMER-INT" 
-   "ELAPSED-TIME" "ADD-V-BLANK-INT" "REM-V-BLANK-INT" 
-   "SET-JOY-PORT-ATTRS-A" ))
+  (:export "*LOWLEVEL-BASE*" "*LOWLEVEL-VERSION*"))
 
 (in-package "AMIGA.RAW.LOWLEVEL")
 
@@ -86,225 +29,187 @@
 (defun %version>= (n)
   (and *lowlevel-version* (>= *lowlevel-version* n)))
 
-;;; --- constants from libraries/lowlevel.i ---
-(defconstant +llkb-lshift+ #x10)
-(defconstant +llkf-lshift+ #x10000)
-(defconstant +llkb-rshift+ #x11)
-(defconstant +llkf-rshift+ #x20000)
-(defconstant +llkb-capslock+ #x12)
-(defconstant +llkf-capslock+ #x40000)
-(defconstant +llkb-control+ #x13)
-(defconstant +llkf-control+ #x80000)
-(defconstant +llkb-lalt+ #x14)
-(defconstant +llkf-lalt+ #x100000)
-(defconstant +llkb-ralt+ #x15)
-(defconstant +llkf-ralt+ #x200000)
-(defconstant +llkb-lamiga+ #x16)
-(defconstant +llkf-lamiga+ #x400000)
-(defconstant +llkb-ramiga+ #x17)
-(defconstant +llkf-ramiga+ #x800000)
-(defconstant +sja-dummy+ #x80C00100)
-(defconstant +sja-type+ #x80C00101)
-(defconstant +sja-reinitialize+ #x80C00102)
-(defconstant +sja-type-autosense+ 0)
-(defconstant +sja-type-gamectlr+ 1)
-(defconstant +sja-type-mouse+ 2)
-(defconstant +sja-type-joystk+ 3)
-(defconstant +jp-type-notavail+ 0)
-(defconstant +jp-type-gamectlr+ #x10000000)
-(defconstant +jp-type-mouse+ #x20000000)
-(defconstant +jp-type-joystk+ #x30000000)
-(defconstant +jp-type-unknown+ #x40000000)
-(defconstant +jp-type-mask+ #xF0000000)
-(defconstant +jpb-button-blue+ #x17)
-(defconstant +jpf-button-blue+ #x800000)
-(defconstant +jpb-button-red+ #x16)
-(defconstant +jpf-button-red+ #x400000)
-(defconstant +jpb-button-yellow+ #x15)
-(defconstant +jpf-button-yellow+ #x200000)
-(defconstant +jpb-button-green+ #x14)
-(defconstant +jpf-button-green+ #x100000)
-(defconstant +jpb-button-forward+ #x13)
-(defconstant +jpf-button-forward+ #x80000)
-(defconstant +jpb-button-reverse+ #x12)
-(defconstant +jpf-button-reverse+ #x40000)
-(defconstant +jpb-button-play+ #x11)
-(defconstant +jpf-button-play+ #x20000)
-(defconstant +jp-button-mask+ #xFE0000)
-(defconstant +jpb-joy-up+ 3)
-(defconstant +jpf-joy-up+ 8)
-(defconstant +jpb-joy-down+ 2)
-(defconstant +jpf-joy-down+ 4)
-(defconstant +jpb-joy-left+ 1)
-(defconstant +jpf-joy-left+ 2)
-(defconstant +jpb-joy-right+ 0)
-(defconstant +jpf-joy-right+ 1)
-(defconstant +jp-direction-mask+ 15)
-(defconstant +jp-mhorz-mask+ #xFF)
-(defconstant +jp-mvert-mask+ #xFF00)
-(defconstant +jp-mouse-mask+ #xFFFF)
-(defconstant +jpb-btn1+ #x17)
-(defconstant +jpf-btn1+ #x800000)
-(defconstant +jpb-btn2+ #x16)
-(defconstant +jpf-btn2+ #x400000)
-(defconstant +jpb-btn3+ #x15)
-(defconstant +jpf-btn3+ #x200000)
-(defconstant +jpb-btn4+ #x14)
-(defconstant +jpf-btn4+ #x100000)
-(defconstant +jpb-btn5+ #x13)
-(defconstant +jpf-btn5+ #x80000)
-(defconstant +jpb-btn6+ #x12)
-(defconstant +jpf-btn6+ #x40000)
-(defconstant +jpb-btn7+ #x11)
-(defconstant +jpf-btn7+ #x20000)
-(defconstant +jpb-up+ 3)
-(defconstant +jpf-up+ 8)
-(defconstant +jpb-down+ 2)
-(defconstant +jpf-down+ 4)
-(defconstant +jpb-left+ 1)
-(defconstant +jpf-left+ 2)
-(defconstant +jpb-right+ 0)
-(defconstant +jpf-right+ 1)
-(defconstant +scon-dummy+ #x80C00000)
-(defconstant +scon-take-over-sys+ #x80C00000)
-(defconstant +scon-kill-req+ #x80C00001)
-(defconstant +scon-cd-reboot+ #x80C00002)
-(defconstant +scon-stop-input+ #x80C00003)
-(defconstant +scon-add-create-keys+ #x80C00004)
-(defconstant +scon-rem-create-keys+ #x80C00005)
-(defconstant +cd-reboot-on+ 1)
-(defconstant +cd-reboot-off+ 0)
-(defconstant +cd-reboot-default+ 2)
-(defconstant +rawkey-port0-button-blue+ #x72)
-(defconstant +rawkey-port0-button-red+ #x78)
-(defconstant +rawkey-port0-button-yellow+ #x77)
-(defconstant +rawkey-port0-button-green+ #x76)
-(defconstant +rawkey-port0-button-forward+ #x75)
-(defconstant +rawkey-port0-button-reverse+ #x74)
-(defconstant +rawkey-port0-button-play+ #x73)
-(defconstant +rawkey-port0-joy-up+ #x79)
-(defconstant +rawkey-port0-joy-down+ #x7A)
-(defconstant +rawkey-port0-joy-left+ #x7C)
-(defconstant +rawkey-port0-joy-right+ #x7B)
-(defconstant +rawkey-port1-button-blue+ #x172)
-(defconstant +rawkey-port1-button-red+ #x178)
-(defconstant +rawkey-port1-button-yellow+ #x177)
-(defconstant +rawkey-port1-button-green+ #x176)
-(defconstant +rawkey-port1-button-forward+ #x175)
-(defconstant +rawkey-port1-button-reverse+ #x174)
-(defconstant +rawkey-port1-button-play+ #x173)
-(defconstant +rawkey-port1-joy-up+ #x179)
-(defconstant +rawkey-port1-joy-down+ #x17A)
-(defconstant +rawkey-port1-joy-left+ #x17C)
-(defconstant +rawkey-port1-joy-right+ #x17B)
-(defconstant +rawkey-port2-button-blue+ #x272)
-(defconstant +rawkey-port2-button-red+ #x278)
-(defconstant +rawkey-port2-button-yellow+ #x277)
-(defconstant +rawkey-port2-button-green+ #x276)
-(defconstant +rawkey-port2-button-forward+ #x275)
-(defconstant +rawkey-port2-button-reverse+ #x274)
-(defconstant +rawkey-port2-button-play+ #x273)
-(defconstant +rawkey-port2-joy-up+ #x279)
-(defconstant +rawkey-port2-joy-down+ #x27A)
-(defconstant +rawkey-port2-joy-left+ #x27C)
-(defconstant +rawkey-port2-joy-right+ #x27B)
-(defconstant +rawkey-port3-button-blue+ #x372)
-(defconstant +rawkey-port3-button-red+ #x378)
-(defconstant +rawkey-port3-button-yellow+ #x377)
-(defconstant +rawkey-port3-button-green+ #x376)
-(defconstant +rawkey-port3-button-forward+ #x375)
-(defconstant +rawkey-port3-button-reverse+ #x374)
-(defconstant +rawkey-port3-button-play+ #x373)
-(defconstant +rawkey-port3-joy-up+ #x379)
-(defconstant +rawkey-port3-joy-down+ #x37A)
-(defconstant +rawkey-port3-joy-left+ #x37C)
-(defconstant +rawkey-port3-joy-right+ #x37B)
-(defconstant +lang-unknown+ 0)
-(defconstant +lang-american+ 1)
-(defconstant +lang-english+ 2)
-(defconstant +lang-german+ 3)
-(defconstant +lang-french+ 4)
-(defconstant +lang-spanish+ 5)
-(defconstant +lang-italian+ 6)
-(defconstant +lang-portuguese+ 7)
-(defconstant +lang-danish+ 8)
-(defconstant +lang-dutch+ 9)
-(defconstant +lang-norwegian+ 10)
-(defconstant +lang-finnish+ 11)
-(defconstant +lang-swedish+ 12)
-(defconstant +lang-japanese+ 13)
-(defconstant +lang-chinese+ 14)
-(defconstant +lang-arabic+ 15)
-(defconstant +lang-greek+ #x10)
-(defconstant +lang-hebrew+ #x11)
-(defconstant +lang-korean+ #x12)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.LOWLEVEL"
+    (:base *lowlevel-base* :version *lowlevel-version*)
 
-;;; --- structures from libraries/lowlevel.i ---
-(ffi:defcstruct (key-query :size 4)   ; KeyQuery (libraries/lowlevel.i)
-  (key-code :u16 0)
-  (pressed :u16 2)
-)
+  ;; --- constants from libraries/lowlevel.i ---
+  (:const "+LLKB-LSHIFT+" #x10)
+  (:const "+LLKF-LSHIFT+" #x10000)
+  (:const "+LLKB-RSHIFT+" #x11)
+  (:const "+LLKF-RSHIFT+" #x20000)
+  (:const "+LLKB-CAPSLOCK+" #x12)
+  (:const "+LLKF-CAPSLOCK+" #x40000)
+  (:const "+LLKB-CONTROL+" #x13)
+  (:const "+LLKF-CONTROL+" #x80000)
+  (:const "+LLKB-LALT+" #x14)
+  (:const "+LLKF-LALT+" #x100000)
+  (:const "+LLKB-RALT+" #x15)
+  (:const "+LLKF-RALT+" #x200000)
+  (:const "+LLKB-LAMIGA+" #x16)
+  (:const "+LLKF-LAMIGA+" #x400000)
+  (:const "+LLKB-RAMIGA+" #x17)
+  (:const "+LLKF-RAMIGA+" #x800000)
+  (:const "+SJA-DUMMY+" #x80C00100)
+  (:const "+SJA-TYPE+" #x80C00101)
+  (:const "+SJA-REINITIALIZE+" #x80C00102)
+  (:const "+SJA-TYPE-AUTOSENSE+" 0)
+  (:const "+SJA-TYPE-GAMECTLR+" 1)
+  (:const "+SJA-TYPE-MOUSE+" 2)
+  (:const "+SJA-TYPE-JOYSTK+" 3)
+  (:const "+JP-TYPE-NOTAVAIL+" 0)
+  (:const "+JP-TYPE-GAMECTLR+" #x10000000)
+  (:const "+JP-TYPE-MOUSE+" #x20000000)
+  (:const "+JP-TYPE-JOYSTK+" #x30000000)
+  (:const "+JP-TYPE-UNKNOWN+" #x40000000)
+  (:const "+JP-TYPE-MASK+" #xF0000000)
+  (:const "+JPB-BUTTON-BLUE+" #x17)
+  (:const "+JPF-BUTTON-BLUE+" #x800000)
+  (:const "+JPB-BUTTON-RED+" #x16)
+  (:const "+JPF-BUTTON-RED+" #x400000)
+  (:const "+JPB-BUTTON-YELLOW+" #x15)
+  (:const "+JPF-BUTTON-YELLOW+" #x200000)
+  (:const "+JPB-BUTTON-GREEN+" #x14)
+  (:const "+JPF-BUTTON-GREEN+" #x100000)
+  (:const "+JPB-BUTTON-FORWARD+" #x13)
+  (:const "+JPF-BUTTON-FORWARD+" #x80000)
+  (:const "+JPB-BUTTON-REVERSE+" #x12)
+  (:const "+JPF-BUTTON-REVERSE+" #x40000)
+  (:const "+JPB-BUTTON-PLAY+" #x11)
+  (:const "+JPF-BUTTON-PLAY+" #x20000)
+  (:const "+JP-BUTTON-MASK+" #xFE0000)
+  (:const "+JPB-JOY-UP+" 3)
+  (:const "+JPF-JOY-UP+" 8)
+  (:const "+JPB-JOY-DOWN+" 2)
+  (:const "+JPF-JOY-DOWN+" 4)
+  (:const "+JPB-JOY-LEFT+" 1)
+  (:const "+JPF-JOY-LEFT+" 2)
+  (:const "+JPB-JOY-RIGHT+" 0)
+  (:const "+JPF-JOY-RIGHT+" 1)
+  (:const "+JP-DIRECTION-MASK+" 15)
+  (:const "+JP-MHORZ-MASK+" #xFF)
+  (:const "+JP-MVERT-MASK+" #xFF00)
+  (:const "+JP-MOUSE-MASK+" #xFFFF)
+  (:const "+JPB-BTN1+" #x17)
+  (:const "+JPF-BTN1+" #x800000)
+  (:const "+JPB-BTN2+" #x16)
+  (:const "+JPF-BTN2+" #x400000)
+  (:const "+JPB-BTN3+" #x15)
+  (:const "+JPF-BTN3+" #x200000)
+  (:const "+JPB-BTN4+" #x14)
+  (:const "+JPF-BTN4+" #x100000)
+  (:const "+JPB-BTN5+" #x13)
+  (:const "+JPF-BTN5+" #x80000)
+  (:const "+JPB-BTN6+" #x12)
+  (:const "+JPF-BTN6+" #x40000)
+  (:const "+JPB-BTN7+" #x11)
+  (:const "+JPF-BTN7+" #x20000)
+  (:const "+JPB-UP+" 3)
+  (:const "+JPF-UP+" 8)
+  (:const "+JPB-DOWN+" 2)
+  (:const "+JPF-DOWN+" 4)
+  (:const "+JPB-LEFT+" 1)
+  (:const "+JPF-LEFT+" 2)
+  (:const "+JPB-RIGHT+" 0)
+  (:const "+JPF-RIGHT+" 1)
+  (:const "+SCON-DUMMY+" #x80C00000)
+  (:const "+SCON-TAKE-OVER-SYS+" #x80C00000)
+  (:const "+SCON-KILL-REQ+" #x80C00001)
+  (:const "+SCON-CD-REBOOT+" #x80C00002)
+  (:const "+SCON-STOP-INPUT+" #x80C00003)
+  (:const "+SCON-ADD-CREATE-KEYS+" #x80C00004)
+  (:const "+SCON-REM-CREATE-KEYS+" #x80C00005)
+  (:const "+CD-REBOOT-ON+" 1)
+  (:const "+CD-REBOOT-OFF+" 0)
+  (:const "+CD-REBOOT-DEFAULT+" 2)
+  (:const "+RAWKEY-PORT0-BUTTON-BLUE+" #x72)
+  (:const "+RAWKEY-PORT0-BUTTON-RED+" #x78)
+  (:const "+RAWKEY-PORT0-BUTTON-YELLOW+" #x77)
+  (:const "+RAWKEY-PORT0-BUTTON-GREEN+" #x76)
+  (:const "+RAWKEY-PORT0-BUTTON-FORWARD+" #x75)
+  (:const "+RAWKEY-PORT0-BUTTON-REVERSE+" #x74)
+  (:const "+RAWKEY-PORT0-BUTTON-PLAY+" #x73)
+  (:const "+RAWKEY-PORT0-JOY-UP+" #x79)
+  (:const "+RAWKEY-PORT0-JOY-DOWN+" #x7A)
+  (:const "+RAWKEY-PORT0-JOY-LEFT+" #x7C)
+  (:const "+RAWKEY-PORT0-JOY-RIGHT+" #x7B)
+  (:const "+RAWKEY-PORT1-BUTTON-BLUE+" #x172)
+  (:const "+RAWKEY-PORT1-BUTTON-RED+" #x178)
+  (:const "+RAWKEY-PORT1-BUTTON-YELLOW+" #x177)
+  (:const "+RAWKEY-PORT1-BUTTON-GREEN+" #x176)
+  (:const "+RAWKEY-PORT1-BUTTON-FORWARD+" #x175)
+  (:const "+RAWKEY-PORT1-BUTTON-REVERSE+" #x174)
+  (:const "+RAWKEY-PORT1-BUTTON-PLAY+" #x173)
+  (:const "+RAWKEY-PORT1-JOY-UP+" #x179)
+  (:const "+RAWKEY-PORT1-JOY-DOWN+" #x17A)
+  (:const "+RAWKEY-PORT1-JOY-LEFT+" #x17C)
+  (:const "+RAWKEY-PORT1-JOY-RIGHT+" #x17B)
+  (:const "+RAWKEY-PORT2-BUTTON-BLUE+" #x272)
+  (:const "+RAWKEY-PORT2-BUTTON-RED+" #x278)
+  (:const "+RAWKEY-PORT2-BUTTON-YELLOW+" #x277)
+  (:const "+RAWKEY-PORT2-BUTTON-GREEN+" #x276)
+  (:const "+RAWKEY-PORT2-BUTTON-FORWARD+" #x275)
+  (:const "+RAWKEY-PORT2-BUTTON-REVERSE+" #x274)
+  (:const "+RAWKEY-PORT2-BUTTON-PLAY+" #x273)
+  (:const "+RAWKEY-PORT2-JOY-UP+" #x279)
+  (:const "+RAWKEY-PORT2-JOY-DOWN+" #x27A)
+  (:const "+RAWKEY-PORT2-JOY-LEFT+" #x27C)
+  (:const "+RAWKEY-PORT2-JOY-RIGHT+" #x27B)
+  (:const "+RAWKEY-PORT3-BUTTON-BLUE+" #x372)
+  (:const "+RAWKEY-PORT3-BUTTON-RED+" #x378)
+  (:const "+RAWKEY-PORT3-BUTTON-YELLOW+" #x377)
+  (:const "+RAWKEY-PORT3-BUTTON-GREEN+" #x376)
+  (:const "+RAWKEY-PORT3-BUTTON-FORWARD+" #x375)
+  (:const "+RAWKEY-PORT3-BUTTON-REVERSE+" #x374)
+  (:const "+RAWKEY-PORT3-BUTTON-PLAY+" #x373)
+  (:const "+RAWKEY-PORT3-JOY-UP+" #x379)
+  (:const "+RAWKEY-PORT3-JOY-DOWN+" #x37A)
+  (:const "+RAWKEY-PORT3-JOY-LEFT+" #x37C)
+  (:const "+RAWKEY-PORT3-JOY-RIGHT+" #x37B)
+  (:const "+LANG-UNKNOWN+" 0)
+  (:const "+LANG-AMERICAN+" 1)
+  (:const "+LANG-ENGLISH+" 2)
+  (:const "+LANG-GERMAN+" 3)
+  (:const "+LANG-FRENCH+" 4)
+  (:const "+LANG-SPANISH+" 5)
+  (:const "+LANG-ITALIAN+" 6)
+  (:const "+LANG-PORTUGUESE+" 7)
+  (:const "+LANG-DANISH+" 8)
+  (:const "+LANG-DUTCH+" 9)
+  (:const "+LANG-NORWEGIAN+" 10)
+  (:const "+LANG-FINNISH+" 11)
+  (:const "+LANG-SWEDISH+" 12)
+  (:const "+LANG-JAPANESE+" 13)
+  (:const "+LANG-CHINESE+" 14)
+  (:const "+LANG-ARABIC+" 15)
+  (:const "+LANG-GREEK+" #x10)
+  (:const "+LANG-HEBREW+" #x11)
+  (:const "+LANG-KOREAN+" #x12)
 
-;;; --- functions (lowlevel_lib.sfd + MorphOS SDK) ---
-(when (%version>= 40)
-  (amiga.ffi:defcfun read-joy-port *lowlevel-base* -30 (:d0 port)
-    :result :unsigned
-    :doc "ULONG ReadJoyPort(ULONG port) (D0) LVO -30"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun get-language-selection *lowlevel-base* -36 ()
-    :result :u8
-    :doc "UBYTE GetLanguageSelection() () LVO -36"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun get-key *lowlevel-base* -48 ()
-    :result :unsigned
-    :doc "ULONG GetKey() () LVO -48"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun query-keys *lowlevel-base* -54 (:a0 query-array :d1 array-size)
-    :result :void
-    :doc "VOID QueryKeys(struct KeyQuery * queryArray, LONG arraySize) (A0,D1) LVO -54"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun add-kb-int *lowlevel-base* -60 (:a0 int-routine :a1 int-data)
-    :result :pointer
-    :doc "APTR AddKBInt(APTR intRoutine, APTR intData) (A0,A1) LVO -60"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun rem-kb-int *lowlevel-base* -66 (:a1 int-handle)
-    :result :void
-    :doc "VOID RemKBInt(APTR intHandle) (A1) LVO -66"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun system-control-a *lowlevel-base* -72 (:a1 tag-list)
-    :result :unsigned
-    :doc "ULONG SystemControlA(CONST struct TagItem * tagList) (A1) LVO -72"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun add-timer-int *lowlevel-base* -78 (:a0 int-routine :a1 int-data)
-    :result :pointer
-    :doc "APTR AddTimerInt(APTR intRoutine, APTR intData) (A0,A1) LVO -78"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun rem-timer-int *lowlevel-base* -84 (:a1 int-handle)
-    :result :void
-    :doc "VOID RemTimerInt(APTR intHandle) (A1) LVO -84"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun stop-timer-int *lowlevel-base* -90 (:a1 int-handle)
-    :result :void
-    :doc "VOID StopTimerInt(APTR intHandle) (A1) LVO -90"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun start-timer-int *lowlevel-base* -96 (:a1 int-handle :d0 time-interval :d1 continuous)
-    :result :void
-    :doc "VOID StartTimerInt(APTR intHandle, ULONG timeInterval, BOOL continuous) (A1,D0,D1) LVO -96"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun elapsed-time *lowlevel-base* -102 (:a0 context)
-    :result :unsigned
-    :doc "ULONG ElapsedTime(struct EClockVal * context) (A0) LVO -102"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun add-v-blank-int *lowlevel-base* -108 (:a0 int-routine :a1 int-data)
-    :result :pointer
-    :doc "APTR AddVBlankInt(APTR intRoutine, APTR intData) (A0,A1) LVO -108"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun rem-v-blank-int *lowlevel-base* -114 (:a1 int-handle)
-    :result :void
-    :doc "VOID RemVBlankInt(APTR intHandle) (A1) LVO -114"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun set-joy-port-attrs-a *lowlevel-base* -132 (:d0 port-number :a1 tag-list)
-    :result :bool
-    :doc "BOOL SetJoyPortAttrsA(ULONG portNumber, CONST struct TagItem * tagList) (D0,A1) LVO -132"))
+  ;; --- structures from libraries/lowlevel.i ---
+  (:struct "KEY-QUERY" 4   ; KeyQuery (libraries/lowlevel.i)
+    ("KEY-CODE" :u16 0)
+    ("PRESSED" :u16 2)
+    )
+
+  ;; --- functions (lowlevel_lib.sfd + MorphOS SDK) ---
+  (:fn "READ-JOY-PORT" -30 (:d0) :unsigned 40)   ; ULONG ReadJoyPort(ULONG port) (D0) LVO -30
+  (:fn "GET-LANGUAGE-SELECTION" -36 () :u8 40)   ; UBYTE GetLanguageSelection() () LVO -36
+  (:fn "GET-KEY" -48 () :unsigned 40)   ; ULONG GetKey() () LVO -48
+  (:fn "QUERY-KEYS" -54 (:a0 :d1) :void 40)   ; VOID QueryKeys(struct KeyQuery * queryArray, LONG arraySize) (A0,D1) LVO -54
+  (:fn "ADD-KB-INT" -60 (:a0 :a1) :pointer 40)   ; APTR AddKBInt(APTR intRoutine, APTR intData) (A0,A1) LVO -60
+  (:fn "REM-KB-INT" -66 (:a1) :void 40)   ; VOID RemKBInt(APTR intHandle) (A1) LVO -66
+  (:fn "SYSTEM-CONTROL-A" -72 (:a1) :unsigned 40)   ; ULONG SystemControlA(CONST struct TagItem * tagList) (A1) LVO -72
+  (:fn "ADD-TIMER-INT" -78 (:a0 :a1) :pointer 40)   ; APTR AddTimerInt(APTR intRoutine, APTR intData) (A0,A1) LVO -78
+  (:fn "REM-TIMER-INT" -84 (:a1) :void 40)   ; VOID RemTimerInt(APTR intHandle) (A1) LVO -84
+  (:fn "STOP-TIMER-INT" -90 (:a1) :void 40)   ; VOID StopTimerInt(APTR intHandle) (A1) LVO -90
+  (:fn "START-TIMER-INT" -96 (:a1 :d0 :d1) :void 40)   ; VOID StartTimerInt(APTR intHandle, ULONG timeInterval, BOOL continuous) (A1,D0,D1) LVO -96
+  (:fn "ELAPSED-TIME" -102 (:a0) :unsigned 40)   ; ULONG ElapsedTime(struct EClockVal * context) (A0) LVO -102
+  (:fn "ADD-V-BLANK-INT" -108 (:a0 :a1) :pointer 40)   ; APTR AddVBlankInt(APTR intRoutine, APTR intData) (A0,A1) LVO -108
+  (:fn "REM-V-BLANK-INT" -114 (:a1) :void 40)   ; VOID RemVBlankInt(APTR intHandle) (A1) LVO -114
+  (:fn "SET-JOY-PORT-ATTRS-A" -132 (:d0 :a1) :bool 40)   ; BOOL SetJoyPortAttrsA(ULONG portNumber, CONST struct TagItem * tagList) (D0,A1) LVO -132
+  )
 
 (provide "amiga/raw/lowlevel")

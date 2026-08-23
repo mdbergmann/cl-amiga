@@ -143,23 +143,41 @@ constant name in the curated modules, so it is evaluated."
           (eval offset)
           (loop for (reg nil) on regspec by #'cddr collect reg))))
 
-(defun defcfun-table (path)
-  "Hash: offset -> list of (name base regs) for every DEFCFUN in PATH."
-  (let ((table (make-hash-table)))
-    (dolist (form (read-forms path))
+(defun raw-table-from-package (pkg-name)
+  "Hash: offset -> list of (name base regs) for every library function the
+raw package PKG-NAME binds: the :fn rows of its binding table (a generated
+module IS one AMIGA.FFI:DEFINE-BINDING-TABLE, see
+specs/raw-bindings-footprint.md) plus the >7-register DEFCFUN forms that
+follow the table in its source.  BASE is the table's :base variable name,
+REGS the register keyword list — the same shape DEFCFUN-ENTRY yields."
+  (let* ((table (make-hash-table))
+         (info (clamiga::%binding-table-info pkg-name))
+         (base (and info (getf info :base) (symbol-name (getf info :base)))))
+    (unless info
+      (error "~A carries no binding table (enumerated before the tables were read?)"
+             pkg-name))
+    (dolist (row (clamiga::%binding-table-entries pkg-name))
+      (when (eq (first row) :fn)
+        (destructuring-bind (kind name lvo regs &rest more) row
+          (declare (ignore kind more))
+          (push (list name base regs) (gethash lvo table)))))
+    (dolist (form (read-forms (raw-package-source pkg-name)))
       (walk-defcfuns form
                      (lambda (f)
-                       (destructuring-bind (name base offset regs) (defcfun-entry f)
-                         (push (list name base regs) (gethash offset table))))))
+                       (destructuring-bind (name fbase offset regs) (defcfun-entry f)
+                         (push (list name fbase regs) (gethash offset table))))))
     table))
 
 (defvar *raw-tables* (make-hash-table :test #'equal)
-  "raw package name -> its defcfun-table, built on demand")
+  "raw package name -> its function table")
 
 (defun raw-table (pkg-name)
   (or (gethash pkg-name *raw-tables*)
-      (setf (gethash pkg-name *raw-tables*)
-            (defcfun-table (raw-package-source pkg-name)))))
+      (setf (gethash pkg-name *raw-tables*) (raw-table-from-package pkg-name))))
+
+;; Read every raw table now, before any check can enumerate a package
+;; (DO-SYMBOLS on a lazy package materialises it and drops the table).
+(dolist (rp (raw-packages)) (raw-table (package-name rp)))
 
 (defun normalize (name)
   "Dash-free upper-case spelling, so SET-DRMD and SET-DR-MD compare equal."

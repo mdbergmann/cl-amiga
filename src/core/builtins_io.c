@@ -2207,7 +2207,19 @@ static CL_Obj bi_call_macro_expander(CL_Obj *args, int n)
 
     saved_env = cl_current_lex_env;
     cl_current_lex_env = env;
-    result = cl_vm_apply(inner, arg_array, nargs);
+    if (CL_NULL_P(rest)) {
+        result = cl_vm_apply(inner, arg_array, nargs);
+    } else {
+        /* More than 254 arguments after the head: the array path above
+         * (and cl_vm_apply's one-byte OP_CALL stub) cannot carry them — it
+         * used to drop the tail SILENTLY, so a DEFMACRO with &body over a
+         * thousand-row form (a generated binding module is exactly that)
+         * expanded with most of its rows missing.  Call through OP_APPLY,
+         * which spreads up to CALL-ARGUMENTS-LIMIT: (apply inner
+         * whole-form . (cdr whole-form)) — one cons. */
+        CL_Obj arglist = cl_cons(form, cl_cdr(form));
+        result = cl_vm_apply_list(inner, arglist);
+    }
     cl_current_lex_env = saved_env;
 
     CL_GC_UNPROTECT(3);

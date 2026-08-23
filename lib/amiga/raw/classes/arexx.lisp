@@ -15,15 +15,7 @@
 
 (defpackage "AMIGA.RAW.CLASSES.AREXX"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*AREXX-BASE*" "*AREXX-VERSION*"
-   "+AREXX-DUMMY+" "+AREXX-HOST-NAME+" "+AREXX-DEF-EXTENSION+" 
-   "+AREXX-COMMANDS+" "+AREXX-ERROR-CODE+" "+AREXX-SIG-MASK+" 
-   "+AREXX-NO-SLOT+" "+AREXX-REPLY-HOOK+" "+AREXX-MSG-PORT+" 
-   "+RXERR-NO-COMMAND-LIST+" "+RXERR-NO-PORT-NAME+" 
-   "+RXERR-PORT-ALREADY-EXISTS+" "+RXERR-OUT-OF-MEMORY+" 
-   "+AREXX-DEF-EXTENTION+" "+AM-HANDLEEVENT+" "+AM-EXECUTE+" "+AM-FLUSH+" 
-   "AREXX-GET-CLASS" ))
+  (:export "*AREXX-BASE*" "*AREXX-VERSION*"))
 
 (in-package "AMIGA.RAW.CLASSES.AREXX")
 
@@ -37,29 +29,33 @@
 (defun %version>= (n)
   (and *arexx-version* (>= *arexx-version* n)))
 
-;;; --- constants from classes/arexx.h ---
-(defconstant +arexx-dummy+ #x85030000)
-(defconstant +arexx-host-name+ #x85030001)
-(defconstant +arexx-def-extension+ #x85030002)
-(defconstant +arexx-commands+ #x85030003)
-(defconstant +arexx-error-code+ #x85030004)
-(defconstant +arexx-sig-mask+ #x85030005)
-(defconstant +arexx-no-slot+ #x85030006)
-(defconstant +arexx-reply-hook+ #x85030007)
-(defconstant +arexx-msg-port+ #x85030008)
-(defconstant +rxerr-no-command-list+ 1)
-(defconstant +rxerr-no-port-name+ 2)
-(defconstant +rxerr-port-already-exists+ 3)
-(defconstant +rxerr-out-of-memory+ 4)
-(defconstant +arexx-def-extention+ #x85030002)
-(defconstant +am-handleevent+ #x590001)
-(defconstant +am-execute+ #x590002)
-(defconstant +am-flush+ #x590003)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.CLASSES.AREXX"
+    (:base *arexx-base* :version *arexx-version*)
 
-;;; --- functions (arexx_lib.sfd + MorphOS SDK) ---
-(when (%version>= 40)
-  (amiga.ffi:defcfun arexx-get-class *arexx-base* -30 ()
-    :result :pointer
-    :doc "Class * AREXX_GetClass() () LVO -30"))
+  ;; --- constants from classes/arexx.h ---
+  (:const "+AREXX-DUMMY+" #x85030000)
+  (:const "+AREXX-HOST-NAME+" #x85030001)
+  (:const "+AREXX-DEF-EXTENSION+" #x85030002)
+  (:const "+AREXX-COMMANDS+" #x85030003)
+  (:const "+AREXX-ERROR-CODE+" #x85030004)
+  (:const "+AREXX-SIG-MASK+" #x85030005)
+  (:const "+AREXX-NO-SLOT+" #x85030006)
+  (:const "+AREXX-REPLY-HOOK+" #x85030007)
+  (:const "+AREXX-MSG-PORT+" #x85030008)
+  (:const "+RXERR-NO-COMMAND-LIST+" 1)
+  (:const "+RXERR-NO-PORT-NAME+" 2)
+  (:const "+RXERR-PORT-ALREADY-EXISTS+" 3)
+  (:const "+RXERR-OUT-OF-MEMORY+" 4)
+  (:const "+AREXX-DEF-EXTENTION+" #x85030002)
+  (:const "+AM-HANDLEEVENT+" #x590001)
+  (:const "+AM-EXECUTE+" #x590002)
+  (:const "+AM-FLUSH+" #x590003)
+
+  ;; --- functions (arexx_lib.sfd + MorphOS SDK) ---
+  (:fn "AREXX-GET-CLASS" -30 () :pointer 40)   ; Class * AREXX_GetClass() () LVO -30
+  )
 
 (provide "amiga/raw/classes/arexx")

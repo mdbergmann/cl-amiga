@@ -15,14 +15,7 @@
 
 (defpackage "AMIGA.RAW.IMAGES.PENMAP"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*PENMAP-BASE*" "*PENMAP-VERSION*"
-   "+PENMAP-DUMMY+" "+PENMAP-SELECT-BG-PEN+" "+PENMAP-SELECT-DATA+" 
-   "+PENMAP-RENDER-BG-PEN+" "+PENMAP-RENDER-DATA+" "+PENMAP-PALETTE+" 
-   "+PENMAP-SCREEN+" "+PENMAP-IMAGE-TYPE+" "+PENMAP-TRANSPARENT+" 
-   "+PENMAP-PRECISION+" "+PENMAP-COLOR-MAP+" "+PENMAP-MASK-BLIT+" 
-   "+PENMAP-COMPRESSED+" "+PENMAP-MASK-PLANE+" "+PENMAP-SELECT-MASK-PLANE+" 
-   "+IMAGE-CHUNKY+" "+IMAGE-IMAGE+" "+IMAGE-DRAWLIST+" "PENMAP-GET-CLASS" ))
+  (:export "*PENMAP-BASE*" "*PENMAP-VERSION*"))
 
 (in-package "AMIGA.RAW.IMAGES.PENMAP")
 
@@ -36,30 +29,34 @@
 (defun %version>= (n)
   (and *penmap-version* (>= *penmap-version* n)))
 
-;;; --- constants from images/penmap.h ---
-(defconstant +penmap-dummy+ #x85018000)
-(defconstant +penmap-select-bg-pen+ #x85018001)
-(defconstant +penmap-select-data+ #x85018002)
-(defconstant +penmap-render-bg-pen+ #x80020006)
-(defconstant +penmap-render-data+ #x80020007)
-(defconstant +penmap-palette+ #x85018003)
-(defconstant +penmap-screen+ #x85018004)
-(defconstant +penmap-image-type+ #x85018005)
-(defconstant +penmap-transparent+ #x85018006)
-(defconstant +penmap-precision+ #x85018008)
-(defconstant +penmap-color-map+ #x85018009)
-(defconstant +penmap-mask-blit+ #x8501800A)
-(defconstant +penmap-compressed+ #x8501800B)
-(defconstant +penmap-mask-plane+ #x8501800C)
-(defconstant +penmap-select-mask-plane+ #x8501800D)
-(defconstant +image-chunky+ 0)
-(defconstant +image-image+ 1)
-(defconstant +image-drawlist+ 2)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.IMAGES.PENMAP"
+    (:base *penmap-base* :version *penmap-version*)
 
-;;; --- functions (penmap_lib.sfd + MorphOS SDK) ---
-(when (%version>= 40)
-  (amiga.ffi:defcfun penmap-get-class *penmap-base* -30 ()
-    :result :pointer
-    :doc "Class * PENMAP_GetClass() () LVO -30"))
+  ;; --- constants from images/penmap.h ---
+  (:const "+PENMAP-DUMMY+" #x85018000)
+  (:const "+PENMAP-SELECT-BG-PEN+" #x85018001)
+  (:const "+PENMAP-SELECT-DATA+" #x85018002)
+  (:const "+PENMAP-RENDER-BG-PEN+" #x80020006)
+  (:const "+PENMAP-RENDER-DATA+" #x80020007)
+  (:const "+PENMAP-PALETTE+" #x85018003)
+  (:const "+PENMAP-SCREEN+" #x85018004)
+  (:const "+PENMAP-IMAGE-TYPE+" #x85018005)
+  (:const "+PENMAP-TRANSPARENT+" #x85018006)
+  (:const "+PENMAP-PRECISION+" #x85018008)
+  (:const "+PENMAP-COLOR-MAP+" #x85018009)
+  (:const "+PENMAP-MASK-BLIT+" #x8501800A)
+  (:const "+PENMAP-COMPRESSED+" #x8501800B)
+  (:const "+PENMAP-MASK-PLANE+" #x8501800C)
+  (:const "+PENMAP-SELECT-MASK-PLANE+" #x8501800D)
+  (:const "+IMAGE-CHUNKY+" 0)
+  (:const "+IMAGE-IMAGE+" 1)
+  (:const "+IMAGE-DRAWLIST+" 2)
+
+  ;; --- functions (penmap_lib.sfd + MorphOS SDK) ---
+  (:fn "PENMAP-GET-CLASS" -30 () :pointer 40)   ; Class * PENMAP_GetClass() () LVO -30
+  )
 
 (provide "amiga/raw/images/penmap")

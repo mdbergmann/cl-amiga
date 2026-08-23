@@ -15,12 +15,7 @@
 
 (defpackage "AMIGA.RAW.GADGETS.CHECKBOX"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*CHECKBOX-BASE*" "*CHECKBOX-VERSION*"
-   "+CHECKBOX-DUMMY+" "+CHECKBOX-TEXT-PEN+" "+CHECKBOX-FILL-TEXT-PEN+" 
-   "+CHECKBOX-BACKGROUND-PEN+" "+CHECKBOX-BEVEL-STYLE+" 
-   "+CHECKBOX-TEXT-PLACE+" "+CHECKBOX-CHECKED+" "+CHECKBOX-INVERT+" 
-   "CHECKBOX-GET-CLASS" ))
+  (:export "*CHECKBOX-BASE*" "*CHECKBOX-VERSION*"))
 
 (in-package "AMIGA.RAW.GADGETS.CHECKBOX")
 
@@ -34,20 +29,24 @@
 (defun %version>= (n)
   (and *checkbox-version* (>= *checkbox-version* n)))
 
-;;; --- constants from gadgets/checkbox.h ---
-(defconstant +checkbox-dummy+ #x85011000)
-(defconstant +checkbox-text-pen+ #x85011001)
-(defconstant +checkbox-fill-text-pen+ #x85011002)
-(defconstant +checkbox-background-pen+ #x85011003)
-(defconstant +checkbox-bevel-style+ #x85011004)
-(defconstant +checkbox-text-place+ #x85011005)
-(defconstant +checkbox-checked+ #x80030013)
-(defconstant +checkbox-invert+ #x85011006)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.GADGETS.CHECKBOX"
+    (:base *checkbox-base* :version *checkbox-version*)
 
-;;; --- functions (checkbox_lib.sfd + MorphOS SDK) ---
-(when (%version>= 40)
-  (amiga.ffi:defcfun checkbox-get-class *checkbox-base* -30 ()
-    :result :pointer
-    :doc "Class * CHECKBOX_GetClass() () LVO -30"))
+  ;; --- constants from gadgets/checkbox.h ---
+  (:const "+CHECKBOX-DUMMY+" #x85011000)
+  (:const "+CHECKBOX-TEXT-PEN+" #x85011001)
+  (:const "+CHECKBOX-FILL-TEXT-PEN+" #x85011002)
+  (:const "+CHECKBOX-BACKGROUND-PEN+" #x85011003)
+  (:const "+CHECKBOX-BEVEL-STYLE+" #x85011004)
+  (:const "+CHECKBOX-TEXT-PLACE+" #x85011005)
+  (:const "+CHECKBOX-CHECKED+" #x80030013)
+  (:const "+CHECKBOX-INVERT+" #x85011006)
+
+  ;; --- functions (checkbox_lib.sfd + MorphOS SDK) ---
+  (:fn "CHECKBOX-GET-CLASS" -30 () :pointer 40)   ; Class * CHECKBOX_GetClass() () LVO -30
+  )
 
 (provide "amiga/raw/gadgets/checkbox")

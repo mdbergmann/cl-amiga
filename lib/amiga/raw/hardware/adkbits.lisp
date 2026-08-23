@@ -13,56 +13,52 @@
 
 (defpackage "AMIGA.RAW.HARDWARE.ADKBITS"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+ADKB-SETCLR+" "+ADKB-PRECOMP1+" "+ADKB-PRECOMP0+" "+ADKB-MFMPREC+" 
-   "+ADKB-UARTBRK+" "+ADKB-WORDSYNC+" "+ADKB-MSBSYNC+" "+ADKB-FAST+" 
-   "+ADKB-USE3-PN+" "+ADKB-USE2-P3+" "+ADKB-USE1-P2+" "+ADKB-USE0-P1+" 
-   "+ADKB-USE3-VN+" "+ADKB-USE2-V3+" "+ADKB-USE1-V2+" "+ADKB-USE0-V1+" 
-   "+ADKF-SETCLR+" "+ADKF-PRECOMP1+" "+ADKF-PRECOMP0+" "+ADKF-MFMPREC+" 
-   "+ADKF-UARTBRK+" "+ADKF-WORDSYNC+" "+ADKF-MSBSYNC+" "+ADKF-FAST+" 
-   "+ADKF-USE3-PN+" "+ADKF-USE2-P3+" "+ADKF-USE1-P2+" "+ADKF-USE0-P1+" 
-   "+ADKF-USE3-VN+" "+ADKF-USE2-V3+" "+ADKF-USE1-V2+" "+ADKF-USE0-V1+" 
-   "+ADKF-PRE000-NS+" "+ADKF-PRE140-NS+" "+ADKF-PRE280-NS+" 
-   "+ADKF-PRE560-NS+" ))
+  (:export))
 
 (in-package "AMIGA.RAW.HARDWARE.ADKBITS")
 
-;;; --- constants from hardware/adkbits.i ---
-(defconstant +adkb-setclr+ 15)
-(defconstant +adkb-precomp1+ 14)
-(defconstant +adkb-precomp0+ 13)
-(defconstant +adkb-mfmprec+ 12)
-(defconstant +adkb-uartbrk+ 11)
-(defconstant +adkb-wordsync+ 10)
-(defconstant +adkb-msbsync+ 9)
-(defconstant +adkb-fast+ 8)
-(defconstant +adkb-use3-pn+ 7)
-(defconstant +adkb-use2-p3+ 6)
-(defconstant +adkb-use1-p2+ 5)
-(defconstant +adkb-use0-p1+ 4)
-(defconstant +adkb-use3-vn+ 3)
-(defconstant +adkb-use2-v3+ 2)
-(defconstant +adkb-use1-v2+ 1)
-(defconstant +adkb-use0-v1+ 0)
-(defconstant +adkf-setclr+ #x8000)
-(defconstant +adkf-precomp1+ #x4000)
-(defconstant +adkf-precomp0+ #x2000)
-(defconstant +adkf-mfmprec+ #x1000)
-(defconstant +adkf-uartbrk+ #x800)
-(defconstant +adkf-wordsync+ #x400)
-(defconstant +adkf-msbsync+ #x200)
-(defconstant +adkf-fast+ #x100)
-(defconstant +adkf-use3-pn+ #x80)
-(defconstant +adkf-use2-p3+ #x40)
-(defconstant +adkf-use1-p2+ #x20)
-(defconstant +adkf-use0-p1+ #x10)
-(defconstant +adkf-use3-vn+ 8)
-(defconstant +adkf-use2-v3+ 4)
-(defconstant +adkf-use1-v2+ 2)
-(defconstant +adkf-use0-v1+ 1)
-(defconstant +adkf-pre000-ns+ 0)
-(defconstant +adkf-pre140-ns+ #x2000)
-(defconstant +adkf-pre280-ns+ #x4000)
-(defconstant +adkf-pre560-ns+ #x6000)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.HARDWARE.ADKBITS" ()
+
+  ;; --- constants from hardware/adkbits.i ---
+  (:const "+ADKB-SETCLR+" 15)
+  (:const "+ADKB-PRECOMP1+" 14)
+  (:const "+ADKB-PRECOMP0+" 13)
+  (:const "+ADKB-MFMPREC+" 12)
+  (:const "+ADKB-UARTBRK+" 11)
+  (:const "+ADKB-WORDSYNC+" 10)
+  (:const "+ADKB-MSBSYNC+" 9)
+  (:const "+ADKB-FAST+" 8)
+  (:const "+ADKB-USE3-PN+" 7)
+  (:const "+ADKB-USE2-P3+" 6)
+  (:const "+ADKB-USE1-P2+" 5)
+  (:const "+ADKB-USE0-P1+" 4)
+  (:const "+ADKB-USE3-VN+" 3)
+  (:const "+ADKB-USE2-V3+" 2)
+  (:const "+ADKB-USE1-V2+" 1)
+  (:const "+ADKB-USE0-V1+" 0)
+  (:const "+ADKF-SETCLR+" #x8000)
+  (:const "+ADKF-PRECOMP1+" #x4000)
+  (:const "+ADKF-PRECOMP0+" #x2000)
+  (:const "+ADKF-MFMPREC+" #x1000)
+  (:const "+ADKF-UARTBRK+" #x800)
+  (:const "+ADKF-WORDSYNC+" #x400)
+  (:const "+ADKF-MSBSYNC+" #x200)
+  (:const "+ADKF-FAST+" #x100)
+  (:const "+ADKF-USE3-PN+" #x80)
+  (:const "+ADKF-USE2-P3+" #x40)
+  (:const "+ADKF-USE1-P2+" #x20)
+  (:const "+ADKF-USE0-P1+" #x10)
+  (:const "+ADKF-USE3-VN+" 8)
+  (:const "+ADKF-USE2-V3+" 4)
+  (:const "+ADKF-USE1-V2+" 2)
+  (:const "+ADKF-USE0-V1+" 1)
+  (:const "+ADKF-PRE000-NS+" 0)
+  (:const "+ADKF-PRE140-NS+" #x2000)
+  (:const "+ADKF-PRE280-NS+" #x4000)
+  (:const "+ADKF-PRE560-NS+" #x6000)
+  )
 
 (provide "amiga/raw/hardware/adkbits")

@@ -16,45 +16,7 @@
 
 (defpackage "AMIGA.RAW.GADGETS.LAYOUT"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*LAYOUT-BASE*" "*LAYOUT-VERSION*"
-   "+LM-ADDCHILD+" "+LM-ADDIMAGE+" "+LM-REMOVECHILD+" "+LM-MODIFYCHILD+" 
-   "+LAYOUT-DUMMY+" "+LAYOUT-ORIENTATION+" "+LAYOUT-FIXED-HORIZ+" 
-   "+LAYOUT-FIXED-VERT+" "+LAYOUT-HORIZ-ALIGNMENT+" 
-   "+LAYOUT-VERT-ALIGNMENT+" "+LAYOUT-SHRINK-WRAP+" "+LAYOUT-EVEN-SIZE+" 
-   "+LAYOUT-INNER-SPACING+" "+LAYOUT-HORIZ-SPACING+" 
-   "+LAYOUT-VERT-SPACING+" "+INTERSPACING+" "+INTERSPACE+" 
-   "+LAYOUT-TOP-SPACING+" "+LAYOUT-BOTTOM-SPACING+" "+LAYOUT-LEFT-SPACING+" 
-   "+LAYOUT-RIGHT-SPACING+" "+LAYOUT-BEVEL-STATE+" "+LAYOUT-BEVEL-STYLE+" 
-   "+LAYOUT-LABEL+" "+LAYOUT-LABEL-IMAGE+" "+LAYOUT-LABEL-PLACE+" 
-   "+LAYOUT-REMOVE-CHILD+" "+LAYOUT-ADD-CHILD+" "+LAYOUT-ADD-IMAGE+" 
-   "+LAYOUT-MODIFY-CHILD+" "+LAYOUT-REL-VERIFY+" "+LAYOUT-REL-CODE+" 
-   "+LAYOUT-PARENT+" "+LAYOUT-DEFER-LAYOUT+" "+LAYOUT-REQUEST-LAYOUT+" 
-   "+LAYOUT-REQUEST-REFRESH+" "+LAYOUT-TEXT-PEN+" "+LAYOUT-FILL-PEN+" 
-   "+LAYOUT-FILL-PATTERN+" "+LAYOUT-PAGE-BACK-FILL+" "+LAYOUT-BACK-FILL+" 
-   "+LAYOUT-TAB-VERIFY+" "+LAYOUT-LABEL-COLUMN+" "+LAYOUT-LABEL-WIDTH+" 
-   "+LAYOUT-ALIGN-LABELS+" "+LAYOUT-SPACE-INNER+" "+LAYOUT-SPACE-OUTER+" 
-   "+LAYOUT-REL-ADDRESS+" "+LAYOUT-HELP-HIT+" "+LAYOUT-HELP-GADGET+" 
-   "+LAYOUT-DISPOSE-LABELS+" "+LAYOUT-INVERTED+" "+LAYOUT-WEIGHT-BAR+" 
-   "+LAYOUT-NO-LAYOUT+" "+LAYOUT-LAYOUT-BACK-FILL+" "+LAYOUT-LAYOUT-MAGIC+" 
-   "+LAYOUT-CHAR-SET+" "+LAYOUT-IMMEDIATE+" "+LAYOUT-DO-IMMEDIATE+" 
-   "+CHILD-DUMMY+" "+CHILD-MIN-WIDTH+" "+CHILD-MIN-HEIGHT+" 
-   "+CHILD-NOMINAL-SIZE+" "+CHILD-MAX-WIDTH+" "+CHILD-MAX-HEIGHT+" 
-   "+CHILD-WEIGHTED-WIDTH+" "+CHILD-WEIGHTED-HEIGHT+" 
-   "+CHILD-REPLACE-OBJECT+" "+CHILD-REPLACE-IMAGE+" "+CHILD-CACHE-DOMAIN+" 
-   "+CHILD-WEIGHT-MINIMUM+" "+CHILD-LABEL+" "+CHILD-NO-DISPOSE+" 
-   "+CHILD-SCALE-HEIGHT+" "+CHILD-SCALE-WIDTH+" "+CHILD-WEIGHT-BAR+" 
-   "+CHILD-DATA-TYPE+" "+LAYOUT-HORIZONTAL+" "+LAYOUT-VERTICAL+" 
-   "+LAYOUT-ORIENT-HORIZ+" "+LAYOUT-ORIENT-VERT+" "+LALIGN-LEFT+" 
-   "+LALIGN-RIGHT+" "+LALIGN-CENTER+" "+LALIGN-CENTRE+" 
-   "+LAYOUT-ALIGN-LEFT+" "+LAYOUT-ALIGN-RIGHT+" "+LAYOUT-ALIGN-CENTER+" 
-   "+LALIGN-TOP+" "+LALIGN-BOTTOM+" "+LAYOUT-ALIGN-TOP+" 
-   "+LAYOUT-ALIGN-BOTTOM+" "+PAGE-DUMMY+" "+PAGE-ADD+" "+PAGE-REMOVE+" 
-   "+PAGE-CURRENT+" "+PAGE-FIXED-VERT+" "+PAGE-FIXED-HORIZ+" 
-   "+PAGE-TRANSPARENT+" "+PAGE-NO-DISPOSE+" "LAYOUT-GET-CLASS" 
-   "ACTIVATE-LAYOUT-GADGET" "FLUSH-LAYOUT-DOMAIN-CACHE" "RETHINK-LAYOUT" 
-   "LAYOUT-LIMITS" "PAGE-GET-CLASS" "SET-PAGE-GADGET-ATTRS-A" 
-   "REFRESH-PAGE-GADGET" ))
+  (:export "*LAYOUT-BASE*" "*LAYOUT-VERSION*"))
 
 (in-package "AMIGA.RAW.GADGETS.LAYOUT")
 
@@ -68,140 +30,123 @@
 (defun %version>= (n)
   (and *layout-version* (>= *layout-version* n)))
 
-;;; --- constants from gadgets/layout.h ---
-(defconstant +lm-addchild+ #x540001)
-(defconstant +lm-addimage+ #x540002)
-(defconstant +lm-removechild+ #x540003)
-(defconstant +lm-modifychild+ #x540004)
-(defconstant +layout-dummy+ #x85007000)
-(defconstant +layout-orientation+ #x85007001)
-(defconstant +layout-fixed-horiz+ #x85007002)
-(defconstant +layout-fixed-vert+ #x85007003)
-(defconstant +layout-horiz-alignment+ #x85007004)
-(defconstant +layout-vert-alignment+ #x85007005)
-(defconstant +layout-shrink-wrap+ #x85007006)
-(defconstant +layout-even-size+ #x85007007)
-(defconstant +layout-inner-spacing+ #x85007009)
-(defconstant +layout-horiz-spacing+ #x85007009)
-(defconstant +layout-vert-spacing+ #x85007009)
-(defconstant +interspacing+ 1)
-(defconstant +interspace+ 1)
-(defconstant +layout-top-spacing+ #x8500700A)
-(defconstant +layout-bottom-spacing+ #x8500700B)
-(defconstant +layout-left-spacing+ #x8500700C)
-(defconstant +layout-right-spacing+ #x8500700D)
-(defconstant +layout-bevel-state+ #x8500700E)
-(defconstant +layout-bevel-style+ #x8500700F)
-(defconstant +layout-label+ #x85007010)
-(defconstant +layout-label-image+ #x85007011)
-(defconstant +layout-label-place+ #x85007012)
-(defconstant +layout-remove-child+ #x85007013)
-(defconstant +layout-add-child+ #x85007014)
-(defconstant +layout-add-image+ #x85007015)
-(defconstant +layout-modify-child+ #x85007016)
-(defconstant +layout-rel-verify+ #x85007017)
-(defconstant +layout-rel-code+ #x85007018)
-(defconstant +layout-parent+ #x85007019)
-(defconstant +layout-defer-layout+ #x8500701A)
-(defconstant +layout-request-layout+ #x8500701B)
-(defconstant +layout-request-refresh+ #x8500701C)
-(defconstant +layout-text-pen+ #x8500701D)
-(defconstant +layout-fill-pen+ #x8500701E)
-(defconstant +layout-fill-pattern+ #x8500701F)
-(defconstant +layout-page-back-fill+ #x85007020)
-(defconstant +layout-back-fill+ #x8003002C)
-(defconstant +layout-tab-verify+ #x85007021)
-(defconstant +layout-label-column+ #x85007022)
-(defconstant +layout-label-width+ #x85007023)
-(defconstant +layout-align-labels+ #x85007024)
-(defconstant +layout-space-inner+ #x85007025)
-(defconstant +layout-space-outer+ #x85007026)
-(defconstant +layout-rel-address+ #x85007027)
-(defconstant +layout-help-hit+ #x85007028)
-(defconstant +layout-help-gadget+ #x85007029)
-(defconstant +layout-dispose-labels+ #x85007000)
-(defconstant +layout-inverted+ #x8500702A)
-(defconstant +layout-weight-bar+ #x8500702B)
-(defconstant +layout-no-layout+ #x8500702C)
-(defconstant +layout-layout-back-fill+ #x8500702D)
-(defconstant +layout-layout-magic+ #x8500702E)
-(defconstant +layout-char-set+ #x8500702F)
-(defconstant +layout-immediate+ #x85007030)
-(defconstant +layout-do-immediate+ #x85007031)
-(defconstant +child-dummy+ #x85007100)
-(defconstant +child-min-width+ #x85007101)
-(defconstant +child-min-height+ #x85007102)
-(defconstant +child-nominal-size+ #x8500710B)
-(defconstant +child-max-width+ #x85007103)
-(defconstant +child-max-height+ #x85007104)
-(defconstant +child-weighted-width+ #x85007105)
-(defconstant +child-weighted-height+ #x85007106)
-(defconstant +child-replace-object+ #x85007107)
-(defconstant +child-replace-image+ #x85007008)
-(defconstant +child-cache-domain+ #x85007109)
-(defconstant +child-weight-minimum+ #x8500710A)
-(defconstant +child-label+ #x8500710C)
-(defconstant +child-no-dispose+ #x8500710D)
-(defconstant +child-scale-height+ #x8500710E)
-(defconstant +child-scale-width+ #x8500710F)
-(defconstant +child-weight-bar+ #x8500702B)
-(defconstant +child-data-type+ #x85007110)
-(defconstant +layout-horizontal+ 0)
-(defconstant +layout-vertical+ 1)
-(defconstant +layout-orient-horiz+ 0)
-(defconstant +layout-orient-vert+ 1)
-(defconstant +lalign-left+ 0)
-(defconstant +lalign-right+ 1)
-(defconstant +lalign-center+ 2)
-(defconstant +lalign-centre+ 2)
-(defconstant +layout-align-left+ 0)
-(defconstant +layout-align-right+ 1)
-(defconstant +layout-align-center+ 2)
-(defconstant +lalign-top+ 0)
-(defconstant +lalign-bottom+ 1)
-(defconstant +layout-align-top+ 0)
-(defconstant +layout-align-bottom+ 1)
-(defconstant +page-dummy+ #x85007200)
-(defconstant +page-add+ #x85007201)
-(defconstant +page-remove+ #x85007202)
-(defconstant +page-current+ #x85007203)
-(defconstant +page-fixed-vert+ #x85007204)
-(defconstant +page-fixed-horiz+ #x85007205)
-(defconstant +page-transparent+ #x85007206)
-(defconstant +page-no-dispose+ #x85007207)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.GADGETS.LAYOUT"
+    (:base *layout-base* :version *layout-version*)
 
-;;; --- functions (layout_lib.sfd + MorphOS SDK) ---
-(when (%version>= 40)
-  (amiga.ffi:defcfun layout-get-class *layout-base* -30 ()
-    :result :pointer
-    :doc "Class * LAYOUT_GetClass() () LVO -30"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun activate-layout-gadget *layout-base* -36 (:a0 gadget :a1 window :a2 requester :d0 object)
-    :result :bool
-    :doc "BOOL ActivateLayoutGadget(struct Gadget * gadget, struct Window * window, struct Requester * requester, ULONG object) (A0,A1,A2,D0) LVO -36"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun flush-layout-domain-cache *layout-base* -42 (:a0 gadget)
-    :result :void
-    :doc "VOID FlushLayoutDomainCache(struct Gadget * gadget) (A0) LVO -42"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun rethink-layout *layout-base* -48 (:a0 gadget :a1 window :a2 requester :d0 refresh)
-    :result :bool
-    :doc "BOOL RethinkLayout(struct Gadget * gadget, struct Window * window, struct Requester * requester, LONG refresh) (A0,A1,A2,D0) LVO -48"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun layout-limits *layout-base* -54 (:a0 gadget :a1 limits :a2 font :a3 screen)
-    :result :void
-    :doc "VOID LayoutLimits(struct Gadget * gadget, struct LayoutLimits * limits, struct TextFont * font, struct Screen * screen) (A0,A1,A2,A3) LVO -54"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun page-get-class *layout-base* -60 ()
-    :result :pointer
-    :doc "Class * PAGE_GetClass() () LVO -60"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun set-page-gadget-attrs-a *layout-base* -66 (:a0 gadget :a1 object :a2 window :a3 requester :a4 tags)
-    :result :unsigned
-    :doc "ULONG SetPageGadgetAttrsA(struct Gadget * gadget, Object * object, struct Window * window, struct Requester * requester, struct TagItem * tags) (A0,A1,A2,A3,A4) LVO -66"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun refresh-page-gadget *layout-base* -72 (:a0 gadget :a1 object :a2 window :a3 requester)
-    :result :void
-    :doc "VOID RefreshPageGadget(struct Gadget * gadget, Object * object, struct Window * window, struct Requester * requester) (A0,A1,A2,A3) LVO -72"))
+  ;; --- constants from gadgets/layout.h ---
+  (:const "+LM-ADDCHILD+" #x540001)
+  (:const "+LM-ADDIMAGE+" #x540002)
+  (:const "+LM-REMOVECHILD+" #x540003)
+  (:const "+LM-MODIFYCHILD+" #x540004)
+  (:const "+LAYOUT-DUMMY+" #x85007000)
+  (:const "+LAYOUT-ORIENTATION+" #x85007001)
+  (:const "+LAYOUT-FIXED-HORIZ+" #x85007002)
+  (:const "+LAYOUT-FIXED-VERT+" #x85007003)
+  (:const "+LAYOUT-HORIZ-ALIGNMENT+" #x85007004)
+  (:const "+LAYOUT-VERT-ALIGNMENT+" #x85007005)
+  (:const "+LAYOUT-SHRINK-WRAP+" #x85007006)
+  (:const "+LAYOUT-EVEN-SIZE+" #x85007007)
+  (:const "+LAYOUT-INNER-SPACING+" #x85007009)
+  (:const "+LAYOUT-HORIZ-SPACING+" #x85007009)
+  (:const "+LAYOUT-VERT-SPACING+" #x85007009)
+  (:const "+INTERSPACING+" 1)
+  (:const "+INTERSPACE+" 1)
+  (:const "+LAYOUT-TOP-SPACING+" #x8500700A)
+  (:const "+LAYOUT-BOTTOM-SPACING+" #x8500700B)
+  (:const "+LAYOUT-LEFT-SPACING+" #x8500700C)
+  (:const "+LAYOUT-RIGHT-SPACING+" #x8500700D)
+  (:const "+LAYOUT-BEVEL-STATE+" #x8500700E)
+  (:const "+LAYOUT-BEVEL-STYLE+" #x8500700F)
+  (:const "+LAYOUT-LABEL+" #x85007010)
+  (:const "+LAYOUT-LABEL-IMAGE+" #x85007011)
+  (:const "+LAYOUT-LABEL-PLACE+" #x85007012)
+  (:const "+LAYOUT-REMOVE-CHILD+" #x85007013)
+  (:const "+LAYOUT-ADD-CHILD+" #x85007014)
+  (:const "+LAYOUT-ADD-IMAGE+" #x85007015)
+  (:const "+LAYOUT-MODIFY-CHILD+" #x85007016)
+  (:const "+LAYOUT-REL-VERIFY+" #x85007017)
+  (:const "+LAYOUT-REL-CODE+" #x85007018)
+  (:const "+LAYOUT-PARENT+" #x85007019)
+  (:const "+LAYOUT-DEFER-LAYOUT+" #x8500701A)
+  (:const "+LAYOUT-REQUEST-LAYOUT+" #x8500701B)
+  (:const "+LAYOUT-REQUEST-REFRESH+" #x8500701C)
+  (:const "+LAYOUT-TEXT-PEN+" #x8500701D)
+  (:const "+LAYOUT-FILL-PEN+" #x8500701E)
+  (:const "+LAYOUT-FILL-PATTERN+" #x8500701F)
+  (:const "+LAYOUT-PAGE-BACK-FILL+" #x85007020)
+  (:const "+LAYOUT-BACK-FILL+" #x8003002C)
+  (:const "+LAYOUT-TAB-VERIFY+" #x85007021)
+  (:const "+LAYOUT-LABEL-COLUMN+" #x85007022)
+  (:const "+LAYOUT-LABEL-WIDTH+" #x85007023)
+  (:const "+LAYOUT-ALIGN-LABELS+" #x85007024)
+  (:const "+LAYOUT-SPACE-INNER+" #x85007025)
+  (:const "+LAYOUT-SPACE-OUTER+" #x85007026)
+  (:const "+LAYOUT-REL-ADDRESS+" #x85007027)
+  (:const "+LAYOUT-HELP-HIT+" #x85007028)
+  (:const "+LAYOUT-HELP-GADGET+" #x85007029)
+  (:const "+LAYOUT-DISPOSE-LABELS+" #x85007000)
+  (:const "+LAYOUT-INVERTED+" #x8500702A)
+  (:const "+LAYOUT-WEIGHT-BAR+" #x8500702B)
+  (:const "+LAYOUT-NO-LAYOUT+" #x8500702C)
+  (:const "+LAYOUT-LAYOUT-BACK-FILL+" #x8500702D)
+  (:const "+LAYOUT-LAYOUT-MAGIC+" #x8500702E)
+  (:const "+LAYOUT-CHAR-SET+" #x8500702F)
+  (:const "+LAYOUT-IMMEDIATE+" #x85007030)
+  (:const "+LAYOUT-DO-IMMEDIATE+" #x85007031)
+  (:const "+CHILD-DUMMY+" #x85007100)
+  (:const "+CHILD-MIN-WIDTH+" #x85007101)
+  (:const "+CHILD-MIN-HEIGHT+" #x85007102)
+  (:const "+CHILD-NOMINAL-SIZE+" #x8500710B)
+  (:const "+CHILD-MAX-WIDTH+" #x85007103)
+  (:const "+CHILD-MAX-HEIGHT+" #x85007104)
+  (:const "+CHILD-WEIGHTED-WIDTH+" #x85007105)
+  (:const "+CHILD-WEIGHTED-HEIGHT+" #x85007106)
+  (:const "+CHILD-REPLACE-OBJECT+" #x85007107)
+  (:const "+CHILD-REPLACE-IMAGE+" #x85007008)
+  (:const "+CHILD-CACHE-DOMAIN+" #x85007109)
+  (:const "+CHILD-WEIGHT-MINIMUM+" #x8500710A)
+  (:const "+CHILD-LABEL+" #x8500710C)
+  (:const "+CHILD-NO-DISPOSE+" #x8500710D)
+  (:const "+CHILD-SCALE-HEIGHT+" #x8500710E)
+  (:const "+CHILD-SCALE-WIDTH+" #x8500710F)
+  (:const "+CHILD-WEIGHT-BAR+" #x8500702B)
+  (:const "+CHILD-DATA-TYPE+" #x85007110)
+  (:const "+LAYOUT-HORIZONTAL+" 0)
+  (:const "+LAYOUT-VERTICAL+" 1)
+  (:const "+LAYOUT-ORIENT-HORIZ+" 0)
+  (:const "+LAYOUT-ORIENT-VERT+" 1)
+  (:const "+LALIGN-LEFT+" 0)
+  (:const "+LALIGN-RIGHT+" 1)
+  (:const "+LALIGN-CENTER+" 2)
+  (:const "+LALIGN-CENTRE+" 2)
+  (:const "+LAYOUT-ALIGN-LEFT+" 0)
+  (:const "+LAYOUT-ALIGN-RIGHT+" 1)
+  (:const "+LAYOUT-ALIGN-CENTER+" 2)
+  (:const "+LALIGN-TOP+" 0)
+  (:const "+LALIGN-BOTTOM+" 1)
+  (:const "+LAYOUT-ALIGN-TOP+" 0)
+  (:const "+LAYOUT-ALIGN-BOTTOM+" 1)
+  (:const "+PAGE-DUMMY+" #x85007200)
+  (:const "+PAGE-ADD+" #x85007201)
+  (:const "+PAGE-REMOVE+" #x85007202)
+  (:const "+PAGE-CURRENT+" #x85007203)
+  (:const "+PAGE-FIXED-VERT+" #x85007204)
+  (:const "+PAGE-FIXED-HORIZ+" #x85007205)
+  (:const "+PAGE-TRANSPARENT+" #x85007206)
+  (:const "+PAGE-NO-DISPOSE+" #x85007207)
+
+  ;; --- functions (layout_lib.sfd + MorphOS SDK) ---
+  (:fn "LAYOUT-GET-CLASS" -30 () :pointer 40)   ; Class * LAYOUT_GetClass() () LVO -30
+  (:fn "ACTIVATE-LAYOUT-GADGET" -36 (:a0 :a1 :a2 :d0) :bool 40)   ; BOOL ActivateLayoutGadget(struct Gadget * gadget, struct Window * window, struct Requester * requester, ULONG object) (A0,A1,A2,D0) LVO -36
+  (:fn "FLUSH-LAYOUT-DOMAIN-CACHE" -42 (:a0) :void 40)   ; VOID FlushLayoutDomainCache(struct Gadget * gadget) (A0) LVO -42
+  (:fn "RETHINK-LAYOUT" -48 (:a0 :a1 :a2 :d0) :bool 40)   ; BOOL RethinkLayout(struct Gadget * gadget, struct Window * window, struct Requester * requester, LONG refresh) (A0,A1,A2,D0) LVO -48
+  (:fn "LAYOUT-LIMITS" -54 (:a0 :a1 :a2 :a3) :void 40)   ; VOID LayoutLimits(struct Gadget * gadget, struct LayoutLimits * limits, struct TextFont * font, struct Screen * screen) (A0,A1,A2,A3) LVO -54
+  (:fn "PAGE-GET-CLASS" -60 () :pointer 40)   ; Class * PAGE_GetClass() () LVO -60
+  (:fn "SET-PAGE-GADGET-ATTRS-A" -66 (:a0 :a1 :a2 :a3 :a4) :unsigned 40)   ; ULONG SetPageGadgetAttrsA(struct Gadget * gadget, Object * object, struct Window * window, struct Requester * requester, struct TagItem * tags) (A0,A1,A2,A3,A4) LVO -66
+  (:fn "REFRESH-PAGE-GADGET" -72 (:a0 :a1 :a2 :a3) :void 40)   ; VOID RefreshPageGadget(struct Gadget * gadget, Object * object, struct Window * window, struct Requester * requester) (A0,A1,A2,A3) LVO -72
+  )
 
 (provide "amiga/raw/gadgets/layout")

@@ -99,6 +99,14 @@ cat > state.lisp <<'EOF'
 (defvar *im-base* nil)
 (amiga.ffi:defcfun im-lc *im-base* -30 (:a0 x :d0 y) :result :u16)
 (ffi:defcstruct (im-pt :size 8) (x :i16 0) (arr (:array :u8 4) 4))
+;; A demand-interned binding table (bindtab.c): the blob hangs off the
+;; package (CL_Package.bindings), one name built before the save, the rest
+;; must still materialise lazily after the restore.
+(defpackage "IM-BT" (:use "CL"))
+(amiga.ffi:define-binding-table "IM-BT" (:base *im-base*)
+  (:const "+BEFORE+" 11) (:const "+AFTER+" 22) (:fn "IM-BT-CALL" -36 (:a0) :bool)
+  (:struct "IM-NODE" 4 ("X" :i16 0)))
+(defvar *im-bt-before* 'im-bt:+before+)
 (format t "STATE-LOADED~%")
 EOF
 
@@ -118,6 +126,11 @@ cat > verify.lisp <<'EOF'
                                 (ffi:free-foreign m)))
                             (handler-case (im-lc 1 2)
                               (error (e) (if (search "not open" (format nil "~a" e)) :not-open e)))))
+(format t "BT=~a~%" (list (getf (clamiga::%binding-table-info "IM-BT") :entries)
+                          (eq *im-bt-before* 'im-bt:+before+)
+                          (multiple-value-bind (s st) (find-symbol "+AFTER+" "IM-BT") (list st (symbol-value s)))
+                          (getf (ffi::%ffi-stub-info #'im-bt:im-bt-call) :lvo)
+                          im-bt:*im-node-size*))
 (dotimes (i 20000) (cons i i))
 (ext:gc)
 (format t "GC-OK=~a~%" (im-fib 10))
@@ -135,7 +148,8 @@ out=$("$TIMEOUT" 60 "$CLAMIGA" --no-userinit --image session.img \
 ec=$?
 check "restore_verifies_state" 0 "$ec" "$out" \
     "FIB=144" "MACRO=42" "CLOS=Rex speaks" "HT=IM-HIT" "CLOSURE=42" \
-    "READER=4242" "RESTOREDP=T" "STUB=(U16 -30 (-7 9) NOT-OPEN)" "GC-OK=55"
+    "READER=4242" "RESTOREDP=T" "STUB=(U16 -30 (-7 9) NOT-OPEN)" \
+    "BT=(5 T (EXTERNAL 22) -36 4)" "GC-OK=55"
 
 # --- Restore into a larger heap ------------------------------------------
 

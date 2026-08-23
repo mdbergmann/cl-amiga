@@ -13,41 +13,39 @@
 
 (defpackage "AMIGA.RAW.PREFS.SERIAL"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+ID-SERL+" "+PARITY-NONE+" "+PARITY-EVEN+" "+PARITY-ODD+" 
-   "+PARITY-MARK+" "+PARITY-SPACE+" "+HSHAKE-XON+" "+HSHAKE-RTS+" 
-   "+HSHAKE-NONE+" "*SERIAL-PREFS-SIZE*" "SERIAL-PREFS-RESERVED" 
-   "SERIAL-PREFS-UNIT0-MAP" "SERIAL-PREFS-BAUD-RATE" 
-   "SERIAL-PREFS-INPUT-BUFFER" "SERIAL-PREFS-OUTPUT-BUFFER" 
-   "SERIAL-PREFS-INPUT-HANDSHAKE" "SERIAL-PREFS-OUTPUT-HANDSHAKE" 
-   "SERIAL-PREFS-PARITY" "SERIAL-PREFS-BITS-PER-CHAR" 
-   "SERIAL-PREFS-STOP-BITS" ))
+  (:export))
 
 (in-package "AMIGA.RAW.PREFS.SERIAL")
 
-;;; --- constants from prefs/serial.i ---
-(defconstant +id-serl+ #x5345524C)
-(defconstant +parity-none+ 0)
-(defconstant +parity-even+ 1)
-(defconstant +parity-odd+ 2)
-(defconstant +parity-mark+ 3)
-(defconstant +parity-space+ 4)
-(defconstant +hshake-xon+ 0)
-(defconstant +hshake-rts+ 1)
-(defconstant +hshake-none+ 2)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.PREFS.SERIAL" ()
 
-;;; --- structures from prefs/serial.i ---
-(ffi:defcstruct (serial-prefs :size 33)   ; SerialPrefs (prefs/serial.i)
-  (reserved (:struct 12) 0)
-  (unit0-map :u32 12)
-  (baud-rate :u32 16)
-  (input-buffer :u32 20)
-  (output-buffer :u32 24)
-  (input-handshake :u8 28)
-  (output-handshake :u8 29)
-  (parity :u8 30)
-  (bits-per-char :u8 31)
-  (stop-bits :u8 32)
-)
+  ;; --- constants from prefs/serial.i ---
+  (:const "+ID-SERL+" #x5345524C)
+  (:const "+PARITY-NONE+" 0)
+  (:const "+PARITY-EVEN+" 1)
+  (:const "+PARITY-ODD+" 2)
+  (:const "+PARITY-MARK+" 3)
+  (:const "+PARITY-SPACE+" 4)
+  (:const "+HSHAKE-XON+" 0)
+  (:const "+HSHAKE-RTS+" 1)
+  (:const "+HSHAKE-NONE+" 2)
+
+  ;; --- structures from prefs/serial.i ---
+  (:struct "SERIAL-PREFS" 33   ; SerialPrefs (prefs/serial.i)
+    ("RESERVED" (:struct 12) 0)
+    ("UNIT0-MAP" :u32 12)
+    ("BAUD-RATE" :u32 16)
+    ("INPUT-BUFFER" :u32 20)
+    ("OUTPUT-BUFFER" :u32 24)
+    ("INPUT-HANDSHAKE" :u8 28)
+    ("OUTPUT-HANDSHAKE" :u8 29)
+    ("PARITY" :u8 30)
+    ("BITS-PER-CHAR" :u8 31)
+    ("STOP-BITS" :u8 32)
+    )
+  )
 
 (provide "amiga/raw/prefs/serial")

@@ -11,7 +11,7 @@
 (defpackage "AMIGA.FFI"
   (:use "CL" "FFI")
   (:export "WITH-LIBRARY" "WITH-TAG-LIST" "MAKE-TAG-LIST" "DEFCFUN"
-           "*DEFCFUN-DOCSTRINGS*"
+           "*DEFCFUN-DOCSTRINGS*" "DEFINE-BINDING-TABLE"
            "LIBRARY-VERSION" "OPEN-LIBRARY-OR-DIE"))
 
 (in-package "AMIGA.FFI")
@@ -255,6 +255,58 @@ APPLY, TRACE and DESCRIBE all work on the stub as on any function."
                (amiga::%defcfun ',name ',library-base ,offset ,regspec ,kind ,n-params))
              ,@doc-forms
              ',name)))))
+
+;;; ================================================================
+;;; define-binding-table — a whole module's bindings, demand-interned
+;;; ================================================================
+
+;;; The generated raw OS modules (lib/amiga/raw/) define ~2000 names
+;;; each and a program touches a few dozen.  DEFINE-BINDING-TABLE packs
+;;; every binding of a package into ONE byte vector (at macroexpansion
+;;; time, so a compiled module's FASL carries that vector and nothing
+;;; else) and attaches it to the package; a name is materialised — its
+;;; symbol, value or FFI stub, export — the first time anything looks it
+;;; up (the reader, FIND-SYMBOL, INTERN, a FASL reference).  Untouched
+;;; names cost their table bytes only.  Materialised symbols are ordinary
+;;; symbols of an ordinary package; DO-SYMBOLS / APROPOS / UNINTERN and
+;;; the other enumerating or mutating operations build every entry first,
+;;; so no laziness is observable except as memory.  See
+;;; specs/raw-bindings-footprint.md (Phase 2) and src/core/bindtab.c.
+;;;
+;;;   (amiga.ffi:define-binding-table "AMIGA.RAW.INTUITION"
+;;;       (:base *intuition-base* :version *intuition-version*)
+;;;     (:const "+WA-LEFT+" #x80000064)          ; DEFCONSTANT
+;;;     (:var "*MSG-SIZE*" 4)                     ; DEFVAR (a struct size)
+;;;     (:fn "OPEN-WINDOW" -204 (:a0) :pointer)   ; DEFCFUN: lvo (regs) result
+;;;     (:fn "SHOW-WINDOW" -834 (:a0 :a1) :bool :not-morphos 46)   ; guards
+;;;     (:struct "WINDOW" 136                     ; DEFCSTRUCT: *WINDOW-SIZE*
+;;;       ("LEFT-EDGE" :i16 4)                    ;   + WINDOW-LEFT-EDGE ...
+;;;       ("RPORT" :fptr 50)
+;;;       ("USER-DATA" (:struct 4) 120))
+;;;     (:field "SOME-ACCESSOR" (:array :u16 4) 12)  ; one accessor
+;;;     (:name "BLT-BITMAP"))                     ; exported, defined elsewhere
+;;;
+;;; Names are strings, taken literally (like DEFPACKAGE's :EXPORT).  :fn
+;;; rows are what DEFCFUN takes: the LVO, the argument registers in
+;;; order, the :RESULT kind, then optionally :NOT-MORPHOS / :MORPHOS and
+;;; a minimum library version (checked against the :VERSION variable at
+;;; lookup time; a name whose guard fails still exists, unbound — the
+;;; (when guard (defcfun ..)) behaviour).  A :fn name may repeat with
+;;; exclusive guards (platform variants at different LVOs).  Struct
+;;; accessors get their %SET- writer and DEFSETF like DEFCSTRUCT.  The
+;;; package must already exist (DEFPACKAGE); its :EXPORT list needs only
+;;; the names defined by ordinary forms (the base and version variables),
+;;; everything in the table is exported by the table.
+
+(defmacro define-binding-table (package (&key base version) &body rows)
+  "Attach the binding table built from ROWS to PACKAGE (a package
+designator) so its names are materialised on first reference.  BASE names
+the special variable holding the open library base (needed by :fn rows),
+VERSION the variable holding its lib_Version (for version guards).  See
+the comment above for the row syntax."
+  (let ((blob (clamiga::%make-binding-table rows)))
+    `(eval-when (:compile-toplevel :load-toplevel :execute)
+       (clamiga::%register-binding-table ,package ,blob ',base ',version))))
 
 ;;; ================================================================
 ;;; Provide module

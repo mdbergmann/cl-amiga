@@ -13,109 +13,92 @@
 
 (defpackage "AMIGA.RAW.DEVICES.SERIAL"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+SER-DEFAULT-CTLCHAR+" "+SDCMD-QUERY+" "+SDCMD-BREAK+" 
-   "+SDCMD-SETPARAMS+" "+SER-DEVFINISH+" "+SERB-XDISABLED+" 
-   "+SERF-XDISABLED+" "+SERB-EOFMODE+" "+SERF-EOFMODE+" "+SERB-SHARED+" 
-   "+SERF-SHARED+" "+SERB-RAD-BOOGIE+" "+SERF-RAD-BOOGIE+" 
-   "+SERB-QUEUEDBRK+" "+SERF-QUEUEDBRK+" "+SERB-7-WIRE+" "+SERF-7-WIRE+" 
-   "+SERB-PARTY-ODD+" "+SERF-PARTY-ODD+" "+SERB-PARTY-ON+" 
-   "+SERF-PARTY-ON+" "+IOSTB-XOFFREAD+" "+IOSTF-XOFFREAD+" 
-   "+IOSTB-XOFFWRITE+" "+IOSTF-XOFFWRITE+" "+IOSTB-READBREAK+" 
-   "+IOSTF-READBREAK+" "+IOSTB-WROTEBREAK+" "+IOSTF-WROTEBREAK+" 
-   "+IOSTB-OVERRUN+" "+IOSTF-OVERRUN+" "+SEXTB-MSPON+" "+SEXTF-MSPON+" 
-   "+SEXTB-MARK+" "+SEXTF-MARK+" "+SER-ERR-DEV-BUSY+" 
-   "+SER-ERR-BAUD-MISMATCH+" "+SER-ERR-BUF-ERR+" "+SER-ERR-INV-PARAM+" 
-   "+SER-ERR-LINE-ERR+" "+SER-ERR-PARITY-ERR+" "+SER-ERR-TIMER-ERR+" 
-   "+SER-ERR-BUF-OVERFLOW+" "+SER-ERR-NO-DSR+" "+SER-ERR-DETECTED-BREAK+" 
-   "+SER-DBAUD+" "+SER-ERR-INV-BAUD+" "+SER-ERR-NOT-OPEN+" 
-   "+SER-ERR-PORT-RESET+" "+SER-ERR-INIT-ERR+" "+SER-ERR-NO-CTS+" 
-   "+IOSERB-QUEUED+" "+IOSERF-QUEUED+" "+IOSERB-ABORT+" "+IOSERF-ABORT+" 
-   "+IOSERB-ACTIVE+" "+IOSERF-ACTIVE+" "*TERMARRAY-SIZE*" 
-   "TERMARRAY-TERMARRAY-0" "TERMARRAY-TERMARRAY-1" "*IOEXTSER-SIZE*" 
-   "IOEXTSER-CTLCHAR" "IOEXTSER-RBUFLEN" "IOEXTSER-EXTFLAGS" 
-   "IOEXTSER-BAUD" "IOEXTSER-BRKTIME" "IOEXTSER-TERMARRAY" 
-   "IOEXTSER-READLEN" "IOEXTSER-WRITELEN" "IOEXTSER-STOPBITS" 
-   "IOEXTSER-SERFLAGS" "IOEXTSER-STATUS" ))
+  (:export))
 
 (in-package "AMIGA.RAW.DEVICES.SERIAL")
 
-;;; --- constants from devices/serial.i ---
-(defconstant +ser-default-ctlchar+ #x11130000)
-(defconstant +sdcmd-query+ 9)
-(defconstant +sdcmd-break+ 10)
-(defconstant +sdcmd-setparams+ 11)
-(defconstant +ser-devfinish+ 11)
-(defconstant +serb-xdisabled+ 7)
-(defconstant +serf-xdisabled+ #x80)
-(defconstant +serb-eofmode+ 6)
-(defconstant +serf-eofmode+ #x40)
-(defconstant +serb-shared+ 5)
-(defconstant +serf-shared+ #x20)
-(defconstant +serb-rad-boogie+ 4)
-(defconstant +serf-rad-boogie+ #x10)
-(defconstant +serb-queuedbrk+ 3)
-(defconstant +serf-queuedbrk+ 8)
-(defconstant +serb-7-wire+ 2)
-(defconstant +serf-7-wire+ 4)
-(defconstant +serb-party-odd+ 1)
-(defconstant +serf-party-odd+ 2)
-(defconstant +serb-party-on+ 0)
-(defconstant +serf-party-on+ 1)
-(defconstant +iostb-xoffread+ 4)
-(defconstant +iostf-xoffread+ #x10)
-(defconstant +iostb-xoffwrite+ 3)
-(defconstant +iostf-xoffwrite+ 8)
-(defconstant +iostb-readbreak+ 2)
-(defconstant +iostf-readbreak+ 4)
-(defconstant +iostb-wrotebreak+ 1)
-(defconstant +iostf-wrotebreak+ 2)
-(defconstant +iostb-overrun+ 0)
-(defconstant +iostf-overrun+ 1)
-(defconstant +sextb-mspon+ 1)
-(defconstant +sextf-mspon+ 2)
-(defconstant +sextb-mark+ 0)
-(defconstant +sextf-mark+ 1)
-(defconstant +ser-err-dev-busy+ 1)
-(defconstant +ser-err-baud-mismatch+ 2)
-(defconstant +ser-err-buf-err+ 4)
-(defconstant +ser-err-inv-param+ 5)
-(defconstant +ser-err-line-err+ 6)
-(defconstant +ser-err-parity-err+ 9)
-(defconstant +ser-err-timer-err+ 11)
-(defconstant +ser-err-buf-overflow+ 12)
-(defconstant +ser-err-no-dsr+ 13)
-(defconstant +ser-err-detected-break+ 15)
-(defconstant +ser-dbaud+ #x2580)
-(defconstant +ser-err-inv-baud+ 3)
-(defconstant +ser-err-not-open+ 7)
-(defconstant +ser-err-port-reset+ 8)
-(defconstant +ser-err-init-err+ 10)
-(defconstant +ser-err-no-cts+ 14)
-(defconstant +ioserb-queued+ 6)
-(defconstant +ioserf-queued+ #x40)
-(defconstant +ioserb-abort+ 5)
-(defconstant +ioserf-abort+ #x20)
-(defconstant +ioserb-active+ 4)
-(defconstant +ioserf-active+ #x10)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.DEVICES.SERIAL" ()
 
-;;; --- structures from devices/serial.i ---
-(ffi:defcstruct (termarray :size 8)   ; TERMARRAY (devices/serial.i)
-  (termarray-0 :u32 0)
-  (termarray-1 :u32 4)
-)
-(ffi:defcstruct (ioextser :size 82)   ; IOEXTSER (devices/serial.i)
-  (ctlchar :u32 48)
-  (rbuflen :u32 52)
-  (extflags :u32 56)
-  (baud :u32 60)
-  (brktime :u32 64)
-  (termarray (:struct 8) 68)
-  (readlen :u8 76)
-  (writelen :u8 77)
-  (stopbits :u8 78)
-  (serflags :u8 79)
-  (status :u16 80)
-)
+  ;; --- constants from devices/serial.i ---
+  (:const "+SER-DEFAULT-CTLCHAR+" #x11130000)
+  (:const "+SDCMD-QUERY+" 9)
+  (:const "+SDCMD-BREAK+" 10)
+  (:const "+SDCMD-SETPARAMS+" 11)
+  (:const "+SER-DEVFINISH+" 11)
+  (:const "+SERB-XDISABLED+" 7)
+  (:const "+SERF-XDISABLED+" #x80)
+  (:const "+SERB-EOFMODE+" 6)
+  (:const "+SERF-EOFMODE+" #x40)
+  (:const "+SERB-SHARED+" 5)
+  (:const "+SERF-SHARED+" #x20)
+  (:const "+SERB-RAD-BOOGIE+" 4)
+  (:const "+SERF-RAD-BOOGIE+" #x10)
+  (:const "+SERB-QUEUEDBRK+" 3)
+  (:const "+SERF-QUEUEDBRK+" 8)
+  (:const "+SERB-7-WIRE+" 2)
+  (:const "+SERF-7-WIRE+" 4)
+  (:const "+SERB-PARTY-ODD+" 1)
+  (:const "+SERF-PARTY-ODD+" 2)
+  (:const "+SERB-PARTY-ON+" 0)
+  (:const "+SERF-PARTY-ON+" 1)
+  (:const "+IOSTB-XOFFREAD+" 4)
+  (:const "+IOSTF-XOFFREAD+" #x10)
+  (:const "+IOSTB-XOFFWRITE+" 3)
+  (:const "+IOSTF-XOFFWRITE+" 8)
+  (:const "+IOSTB-READBREAK+" 2)
+  (:const "+IOSTF-READBREAK+" 4)
+  (:const "+IOSTB-WROTEBREAK+" 1)
+  (:const "+IOSTF-WROTEBREAK+" 2)
+  (:const "+IOSTB-OVERRUN+" 0)
+  (:const "+IOSTF-OVERRUN+" 1)
+  (:const "+SEXTB-MSPON+" 1)
+  (:const "+SEXTF-MSPON+" 2)
+  (:const "+SEXTB-MARK+" 0)
+  (:const "+SEXTF-MARK+" 1)
+  (:const "+SER-ERR-DEV-BUSY+" 1)
+  (:const "+SER-ERR-BAUD-MISMATCH+" 2)
+  (:const "+SER-ERR-BUF-ERR+" 4)
+  (:const "+SER-ERR-INV-PARAM+" 5)
+  (:const "+SER-ERR-LINE-ERR+" 6)
+  (:const "+SER-ERR-PARITY-ERR+" 9)
+  (:const "+SER-ERR-TIMER-ERR+" 11)
+  (:const "+SER-ERR-BUF-OVERFLOW+" 12)
+  (:const "+SER-ERR-NO-DSR+" 13)
+  (:const "+SER-ERR-DETECTED-BREAK+" 15)
+  (:const "+SER-DBAUD+" #x2580)
+  (:const "+SER-ERR-INV-BAUD+" 3)
+  (:const "+SER-ERR-NOT-OPEN+" 7)
+  (:const "+SER-ERR-PORT-RESET+" 8)
+  (:const "+SER-ERR-INIT-ERR+" 10)
+  (:const "+SER-ERR-NO-CTS+" 14)
+  (:const "+IOSERB-QUEUED+" 6)
+  (:const "+IOSERF-QUEUED+" #x40)
+  (:const "+IOSERB-ABORT+" 5)
+  (:const "+IOSERF-ABORT+" #x20)
+  (:const "+IOSERB-ACTIVE+" 4)
+  (:const "+IOSERF-ACTIVE+" #x10)
+
+  ;; --- structures from devices/serial.i ---
+  (:struct "TERMARRAY" 8   ; TERMARRAY (devices/serial.i)
+    ("TERMARRAY-0" :u32 0)
+    ("TERMARRAY-1" :u32 4)
+    )
+  (:struct "IOEXTSER" 82   ; IOEXTSER (devices/serial.i)
+    ("CTLCHAR" :u32 48)
+    ("RBUFLEN" :u32 52)
+    ("EXTFLAGS" :u32 56)
+    ("BAUD" :u32 60)
+    ("BRKTIME" :u32 64)
+    ("TERMARRAY" (:struct 8) 68)
+    ("READLEN" :u8 76)
+    ("WRITELEN" :u8 77)
+    ("STOPBITS" :u8 78)
+    ("SERFLAGS" :u8 79)
+    ("STATUS" :u16 80)
+    )
+  )
 
 (provide "amiga/raw/devices/serial")

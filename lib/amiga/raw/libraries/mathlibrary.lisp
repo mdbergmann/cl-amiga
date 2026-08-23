@@ -13,20 +13,22 @@
 
 (defpackage "AMIGA.RAW.LIBRARIES.MATHLIBRARY"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*MATH-IEEE-BASE-SIZE*" "MATH-IEEE-BASE-MATH-IEEE-BASE-LIB-NODE" 
-   "MATH-IEEE-BASE-MATH-IEEE-BASE-RESERVED" 
-   "MATH-IEEE-BASE-MATH-IEEE-BASE-TASK-OPEN-LIB" 
-   "MATH-IEEE-BASE-MATH-IEEE-BASE-TASK-CLOSE-LIB" ))
+  (:export))
 
 (in-package "AMIGA.RAW.LIBRARIES.MATHLIBRARY")
 
-;;; --- structures from libraries/mathlibrary.i ---
-(ffi:defcstruct (math-ieee-base :size 60)   ; MathIEEEBase (libraries/mathlibrary.i)
-  (math-ieee-base-lib-node (:struct 34) 0)
-  (math-ieee-base-reserved (:struct 18) 34)
-  (math-ieee-base-task-open-lib :fptr 52)
-  (math-ieee-base-task-close-lib :fptr 56)
-)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.LIBRARIES.MATHLIBRARY" ()
+
+  ;; --- structures from libraries/mathlibrary.i ---
+  (:struct "MATH-IEEE-BASE" 60   ; MathIEEEBase (libraries/mathlibrary.i)
+    ("MATH-IEEE-BASE-LIB-NODE" (:struct 34) 0)
+    ("MATH-IEEE-BASE-RESERVED" (:struct 18) 34)
+    ("MATH-IEEE-BASE-TASK-OPEN-LIB" :fptr 52)
+    ("MATH-IEEE-BASE-TASK-CLOSE-LIB" :fptr 56)
+    )
+  )
 
 (provide "amiga/raw/libraries/mathlibrary")

@@ -13,18 +13,22 @@
 
 (defpackage "AMIGA.RAW.GADGETS.GRADIENTSLIDER"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+GRAD-DUMMY+" "+GRAD-MAX-VAL+" "+GRAD-CUR-VAL+" "+GRAD-SKIP-VAL+" 
-   "+GRAD-KNOB-PIXELS+" "+GRAD-PEN-ARRAY+" ))
+  (:export))
 
 (in-package "AMIGA.RAW.GADGETS.GRADIENTSLIDER")
 
-;;; --- constants from gadgets/gradientslider.i ---
-(defconstant +grad-dummy+ #x85000000)
-(defconstant +grad-max-val+ #x85000001)
-(defconstant +grad-cur-val+ #x85000002)
-(defconstant +grad-skip-val+ #x85000003)
-(defconstant +grad-knob-pixels+ #x85000004)
-(defconstant +grad-pen-array+ #x85000005)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.GADGETS.GRADIENTSLIDER" ()
+
+  ;; --- constants from gadgets/gradientslider.i ---
+  (:const "+GRAD-DUMMY+" #x85000000)
+  (:const "+GRAD-MAX-VAL+" #x85000001)
+  (:const "+GRAD-CUR-VAL+" #x85000002)
+  (:const "+GRAD-SKIP-VAL+" #x85000003)
+  (:const "+GRAD-KNOB-PIXELS+" #x85000004)
+  (:const "+GRAD-PEN-ARRAY+" #x85000005)
+  )
 
 (provide "amiga/raw/gadgets/gradientslider")

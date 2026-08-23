@@ -13,86 +13,73 @@
 
 (defpackage "AMIGA.RAW.PREFS.PRINTERTXT"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+ID-PTXT+" "+ID-PUNT+" "+ID-PDEV+" "+DRIVERNAMESIZE+" 
-   "+DEVICENAMESIZE+" "+UNITNAMESIZE+" "+PP-PARALLEL+" "+PP-SERIAL+" 
-   "+PT-FANFOLD+" "+PT-SINGLE+" "+PS-US-LETTER+" "+PS-US-LEGAL+" 
-   "+PS-N-TRACTOR+" "+PS-W-TRACTOR+" "+PS-CUSTOM+" "+PS-EURO-A0+" 
-   "+PS-EURO-A1+" "+PS-EURO-A2+" "+PS-EURO-A3+" "+PS-EURO-A4+" 
-   "+PS-EURO-A5+" "+PS-EURO-A6+" "+PS-EURO-A7+" "+PS-EURO-A8+" "+PP-PICA+" 
-   "+PP-ELITE+" "+PP-FINE+" "+PS-SIX-LPI+" "+PS-EIGHT-LPI+" "+PQ-DRAFT+" 
-   "+PQ-LETTER+" "*PRINTER-TXT-PREFS-SIZE*" "PRINTER-TXT-PREFS-RESERVED" 
-   "PRINTER-TXT-PREFS-DRIVER" "PRINTER-TXT-PREFS-PORT" 
-   "PRINTER-TXT-PREFS-PAPER-TYPE" "PRINTER-TXT-PREFS-PAPER-SIZE" 
-   "PRINTER-TXT-PREFS-PAPER-LENGTH" "PRINTER-TXT-PREFS-PITCH" 
-   "PRINTER-TXT-PREFS-SPACING" "PRINTER-TXT-PREFS-LEFT-MARGIN" 
-   "PRINTER-TXT-PREFS-RIGHT-MARGIN" "PRINTER-TXT-PREFS-QUALITY" 
-   "*PRINTER-UNIT-PREFS-SIZE*" "PRINTER-UNIT-PREFS-RESERVED" 
-   "PRINTER-UNIT-PREFS-UNIT-NUM" "PRINTER-UNIT-PREFS-OPEN-DEVICE-FLAGS" 
-   "PRINTER-UNIT-PREFS-DEVICE-NAME" "*PRINTER-DEVICE-UNIT-PREFS-SIZE*" 
-   "PRINTER-DEVICE-UNIT-PREFS-RESERVED" 
-   "PRINTER-DEVICE-UNIT-PREFS-UNIT-NUM" 
-   "PRINTER-DEVICE-UNIT-PREFS-UNIT-NAME" ))
+  (:export))
 
 (in-package "AMIGA.RAW.PREFS.PRINTERTXT")
 
-;;; --- constants from prefs/printertxt.i ---
-(defconstant +id-ptxt+ #x50545854)
-(defconstant +id-punt+ #x50554E54)
-(defconstant +id-pdev+ #x50444556)
-(defconstant +drivernamesize+ #x1E)
-(defconstant +devicenamesize+ #x20)
-(defconstant +unitnamesize+ #x20)
-(defconstant +pp-parallel+ 0)
-(defconstant +pp-serial+ 1)
-(defconstant +pt-fanfold+ 0)
-(defconstant +pt-single+ 1)
-(defconstant +ps-us-letter+ 0)
-(defconstant +ps-us-legal+ 1)
-(defconstant +ps-n-tractor+ 2)
-(defconstant +ps-w-tractor+ 3)
-(defconstant +ps-custom+ 4)
-(defconstant +ps-euro-a0+ 5)
-(defconstant +ps-euro-a1+ 6)
-(defconstant +ps-euro-a2+ 7)
-(defconstant +ps-euro-a3+ 8)
-(defconstant +ps-euro-a4+ 9)
-(defconstant +ps-euro-a5+ 10)
-(defconstant +ps-euro-a6+ 11)
-(defconstant +ps-euro-a7+ 12)
-(defconstant +ps-euro-a8+ 13)
-(defconstant +pp-pica+ 0)
-(defconstant +pp-elite+ 1)
-(defconstant +pp-fine+ 2)
-(defconstant +ps-six-lpi+ 0)
-(defconstant +ps-eight-lpi+ 1)
-(defconstant +pq-draft+ 0)
-(defconstant +pq-letter+ 1)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.PREFS.PRINTERTXT" ()
 
-;;; --- structures from prefs/printertxt.i ---
-(ffi:defcstruct (printer-txt-prefs :size 63)   ; PrinterTxtPrefs (prefs/printertxt.i)
-  (reserved (:struct 16) 0)
-  (driver (:struct 30) 16)
-  (port :u8 46)
-  (paper-type :u16 47)
-  (paper-size :u16 49)
-  (paper-length :u16 51)
-  (pitch :u16 53)
-  (spacing :u16 55)
-  (left-margin :u16 57)
-  (right-margin :u16 59)
-  (quality :u16 61)
-)
-(ffi:defcstruct (printer-unit-prefs :size 44)   ; PrinterUnitPrefs (prefs/printertxt.i)
-  (reserved :i32 0)
-  (unit-num :i32 4)
-  (open-device-flags :u32 8)
-  (device-name (:struct 32) 12)
-)
-(ffi:defcstruct (printer-device-unit-prefs :size 9)   ; PrinterDeviceUnitPrefs (prefs/printertxt.i)
-  (reserved :i32 0)
-  (unit-num :i32 4)
-  (unit-name :u8 8)
-)
+  ;; --- constants from prefs/printertxt.i ---
+  (:const "+ID-PTXT+" #x50545854)
+  (:const "+ID-PUNT+" #x50554E54)
+  (:const "+ID-PDEV+" #x50444556)
+  (:const "+DRIVERNAMESIZE+" #x1E)
+  (:const "+DEVICENAMESIZE+" #x20)
+  (:const "+UNITNAMESIZE+" #x20)
+  (:const "+PP-PARALLEL+" 0)
+  (:const "+PP-SERIAL+" 1)
+  (:const "+PT-FANFOLD+" 0)
+  (:const "+PT-SINGLE+" 1)
+  (:const "+PS-US-LETTER+" 0)
+  (:const "+PS-US-LEGAL+" 1)
+  (:const "+PS-N-TRACTOR+" 2)
+  (:const "+PS-W-TRACTOR+" 3)
+  (:const "+PS-CUSTOM+" 4)
+  (:const "+PS-EURO-A0+" 5)
+  (:const "+PS-EURO-A1+" 6)
+  (:const "+PS-EURO-A2+" 7)
+  (:const "+PS-EURO-A3+" 8)
+  (:const "+PS-EURO-A4+" 9)
+  (:const "+PS-EURO-A5+" 10)
+  (:const "+PS-EURO-A6+" 11)
+  (:const "+PS-EURO-A7+" 12)
+  (:const "+PS-EURO-A8+" 13)
+  (:const "+PP-PICA+" 0)
+  (:const "+PP-ELITE+" 1)
+  (:const "+PP-FINE+" 2)
+  (:const "+PS-SIX-LPI+" 0)
+  (:const "+PS-EIGHT-LPI+" 1)
+  (:const "+PQ-DRAFT+" 0)
+  (:const "+PQ-LETTER+" 1)
+
+  ;; --- structures from prefs/printertxt.i ---
+  (:struct "PRINTER-TXT-PREFS" 63   ; PrinterTxtPrefs (prefs/printertxt.i)
+    ("RESERVED" (:struct 16) 0)
+    ("DRIVER" (:struct 30) 16)
+    ("PORT" :u8 46)
+    ("PAPER-TYPE" :u16 47)
+    ("PAPER-SIZE" :u16 49)
+    ("PAPER-LENGTH" :u16 51)
+    ("PITCH" :u16 53)
+    ("SPACING" :u16 55)
+    ("LEFT-MARGIN" :u16 57)
+    ("RIGHT-MARGIN" :u16 59)
+    ("QUALITY" :u16 61)
+    )
+  (:struct "PRINTER-UNIT-PREFS" 44   ; PrinterUnitPrefs (prefs/printertxt.i)
+    ("RESERVED" :i32 0)
+    ("UNIT-NUM" :i32 4)
+    ("OPEN-DEVICE-FLAGS" :u32 8)
+    ("DEVICE-NAME" (:struct 32) 12)
+    )
+  (:struct "PRINTER-DEVICE-UNIT-PREFS" 9   ; PrinterDeviceUnitPrefs (prefs/printertxt.i)
+    ("RESERVED" :i32 0)
+    ("UNIT-NUM" :i32 4)
+    ("UNIT-NAME" :u8 8)
+    )
+  )
 
 (provide "amiga/raw/prefs/printertxt")

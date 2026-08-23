@@ -15,27 +15,7 @@
 
 (defpackage "AMIGA.RAW.GADGETS.CLICKTAB"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*CLICKTAB-BASE*" "*CLICKTAB-VERSION*"
-   "+TNA-DUMMY+" "+TNA-USER-DATA+" "+TNA-ENABLED+" "+TNA-SPACING+" 
-   "+TNA-HIGHLIGHT+" "+TNA-IMAGE+" "+TNA-SEL-IMAGE+" "+TNA-TEXT+" 
-   "+TNA-NUMBER+" "+TNA-TEXT-PEN+" "+TNA-DISABLED+" "+TNA-FLAGGED+" 
-   "+TNA-HINT-INFO+" "+TNA-CLOSE-GADGET+" "+TNA-SOFT-STYLE+" 
-   "+TNA-HELP-TEXT+" "+CLICKTAB-DUMMY+" "+CLICKTAB-LABELS+" 
-   "+CLICKTAB-CURRENT+" "+CLICKTAB-CURRENT-NODE+" "+CLICKTAB-ORIENTATION+" 
-   "+CLICKTAB-PAGE-GROUP+" "+CLICKTAB-PAGE-GROUP-BACK-FILL+" 
-   "+CLICKTAB-LABEL-TRUNCATE+" "+CLICKTAB-FLAG-IMAGE+" 
-   "+CLICKTAB-EVEN-SIZE+" "+CLICKTAB-TOTAL+" "+CLICKTAB-PAGE-GROUP-BORDER+" 
-   "+CLICKTAB-PAGE-BORDER+" "+CLICKTAB-AUTO-FIT+" 
-   "+CLICKTAB-AUTO-TAB-NUMBERING+" "+CLICKTAB-CLOSE-IMAGE+" 
-   "+CLICKTAB-CLOSED+" "+CLICKTAB-NODE-CLOSED+" 
-   "+CLICKTAB-CLOSE-PLACEMENT+" "+CLICKTAB-CHOOSER-FLAG-IMAGE+" 
-   "+CLICKTAB-MINOR-LABEL-CHANGE+" 
-   "+CLICKTAB-TABS-OFFSET-AS-LAYOUT-SPACING+" "+CTORIENT-HORIZ+" 
-   "+CTORIENT-VERT+" "+CTORIENT-HORIZFLIP+" "+CTORIENT-VERTFLIP+" 
-   "+PLACECLOSE-LEFT+" "+PLACECLOSE-RIGHT+" "CLICKTAB-GET-CLASS" 
-   "ALLOC-CLICK-TAB-NODE-A" "FREE-CLICK-TAB-NODE" 
-   "SET-CLICK-TAB-NODE-ATTRS-A" "GET-CLICK-TAB-NODE-ATTRS-A" ))
+  (:export "*CLICKTAB-BASE*" "*CLICKTAB-VERSION*"))
 
 (in-package "AMIGA.RAW.GADGETS.CLICKTAB")
 
@@ -49,72 +29,64 @@
 (defun %version>= (n)
   (and *clicktab-version* (>= *clicktab-version* n)))
 
-;;; --- constants from gadgets/clicktab.h ---
-(defconstant +tna-dummy+ #x80010000)
-(defconstant +tna-user-data+ #x80010001)
-(defconstant +tna-enabled+ #x80010002)
-(defconstant +tna-spacing+ #x80010003)
-(defconstant +tna-highlight+ #x80010004)
-(defconstant +tna-image+ #x80010005)
-(defconstant +tna-sel-image+ #x80010006)
-(defconstant +tna-text+ #x80010007)
-(defconstant +tna-number+ #x80010008)
-(defconstant +tna-text-pen+ #x80010009)
-(defconstant +tna-disabled+ #x8001000A)
-(defconstant +tna-flagged+ #x8001000B)
-(defconstant +tna-hint-info+ #x8001000C)
-(defconstant +tna-close-gadget+ #x8001000D)
-(defconstant +tna-soft-style+ #x8001000E)
-(defconstant +tna-help-text+ #x8001000F)
-(defconstant +clicktab-dummy+ #x85027000)
-(defconstant +clicktab-labels+ #x85027001)
-(defconstant +clicktab-current+ #x85027002)
-(defconstant +clicktab-current-node+ #x85027003)
-(defconstant +clicktab-orientation+ #x85027004)
-(defconstant +clicktab-page-group+ #x85027005)
-(defconstant +clicktab-page-group-back-fill+ #x85027006)
-(defconstant +clicktab-label-truncate+ #x85027007)
-(defconstant +clicktab-flag-image+ #x85027008)
-(defconstant +clicktab-even-size+ #x85027009)
-(defconstant +clicktab-total+ #x8502700A)
-(defconstant +clicktab-page-group-border+ #x8502700B)
-(defconstant +clicktab-page-border+ #x8502700B)
-(defconstant +clicktab-auto-fit+ #x8502700C)
-(defconstant +clicktab-auto-tab-numbering+ #x8502700D)
-(defconstant +clicktab-close-image+ #x8502700E)
-(defconstant +clicktab-closed+ #x8502700F)
-(defconstant +clicktab-node-closed+ #x85027010)
-(defconstant +clicktab-close-placement+ #x85027011)
-(defconstant +clicktab-chooser-flag-image+ #x85027012)
-(defconstant +clicktab-minor-label-change+ #x85027013)
-(defconstant +clicktab-tabs-offset-as-layout-spacing+ #x85027014)
-(defconstant +ctorient-horiz+ 0)
-(defconstant +ctorient-vert+ 1)
-(defconstant +ctorient-horizflip+ 2)
-(defconstant +ctorient-vertflip+ 3)
-(defconstant +placeclose-left+ 0)
-(defconstant +placeclose-right+ 1)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.GADGETS.CLICKTAB"
+    (:base *clicktab-base* :version *clicktab-version*)
 
-;;; --- functions (clicktab_lib.sfd + MorphOS SDK) ---
-(when (%version>= 40)
-  (amiga.ffi:defcfun clicktab-get-class *clicktab-base* -30 ()
-    :result :pointer
-    :doc "Class * CLICKTAB_GetClass() () LVO -30"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun alloc-click-tab-node-a *clicktab-base* -36 (:a0 tags)
-    :result :pointer
-    :doc "struct Node * AllocClickTabNodeA(struct TagItem * tags) (A0) LVO -36"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun free-click-tab-node *clicktab-base* -42 (:a0 node)
-    :result :void
-    :doc "VOID FreeClickTabNode(struct Node * node) (A0) LVO -42"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun set-click-tab-node-attrs-a *clicktab-base* -48 (:a0 node :a1 tags)
-    :result :void
-    :doc "VOID SetClickTabNodeAttrsA(struct Node * node, struct TagItem * tags) (A0,A1) LVO -48"))
-(when (%version>= 40)
-  (amiga.ffi:defcfun get-click-tab-node-attrs-a *clicktab-base* -54 (:a0 node :a1 tags)
-    :result :void
-    :doc "VOID GetClickTabNodeAttrsA(struct Node * node, struct TagItem * tags) (A0,A1) LVO -54"))
+  ;; --- constants from gadgets/clicktab.h ---
+  (:const "+TNA-DUMMY+" #x80010000)
+  (:const "+TNA-USER-DATA+" #x80010001)
+  (:const "+TNA-ENABLED+" #x80010002)
+  (:const "+TNA-SPACING+" #x80010003)
+  (:const "+TNA-HIGHLIGHT+" #x80010004)
+  (:const "+TNA-IMAGE+" #x80010005)
+  (:const "+TNA-SEL-IMAGE+" #x80010006)
+  (:const "+TNA-TEXT+" #x80010007)
+  (:const "+TNA-NUMBER+" #x80010008)
+  (:const "+TNA-TEXT-PEN+" #x80010009)
+  (:const "+TNA-DISABLED+" #x8001000A)
+  (:const "+TNA-FLAGGED+" #x8001000B)
+  (:const "+TNA-HINT-INFO+" #x8001000C)
+  (:const "+TNA-CLOSE-GADGET+" #x8001000D)
+  (:const "+TNA-SOFT-STYLE+" #x8001000E)
+  (:const "+TNA-HELP-TEXT+" #x8001000F)
+  (:const "+CLICKTAB-DUMMY+" #x85027000)
+  (:const "+CLICKTAB-LABELS+" #x85027001)
+  (:const "+CLICKTAB-CURRENT+" #x85027002)
+  (:const "+CLICKTAB-CURRENT-NODE+" #x85027003)
+  (:const "+CLICKTAB-ORIENTATION+" #x85027004)
+  (:const "+CLICKTAB-PAGE-GROUP+" #x85027005)
+  (:const "+CLICKTAB-PAGE-GROUP-BACK-FILL+" #x85027006)
+  (:const "+CLICKTAB-LABEL-TRUNCATE+" #x85027007)
+  (:const "+CLICKTAB-FLAG-IMAGE+" #x85027008)
+  (:const "+CLICKTAB-EVEN-SIZE+" #x85027009)
+  (:const "+CLICKTAB-TOTAL+" #x8502700A)
+  (:const "+CLICKTAB-PAGE-GROUP-BORDER+" #x8502700B)
+  (:const "+CLICKTAB-PAGE-BORDER+" #x8502700B)
+  (:const "+CLICKTAB-AUTO-FIT+" #x8502700C)
+  (:const "+CLICKTAB-AUTO-TAB-NUMBERING+" #x8502700D)
+  (:const "+CLICKTAB-CLOSE-IMAGE+" #x8502700E)
+  (:const "+CLICKTAB-CLOSED+" #x8502700F)
+  (:const "+CLICKTAB-NODE-CLOSED+" #x85027010)
+  (:const "+CLICKTAB-CLOSE-PLACEMENT+" #x85027011)
+  (:const "+CLICKTAB-CHOOSER-FLAG-IMAGE+" #x85027012)
+  (:const "+CLICKTAB-MINOR-LABEL-CHANGE+" #x85027013)
+  (:const "+CLICKTAB-TABS-OFFSET-AS-LAYOUT-SPACING+" #x85027014)
+  (:const "+CTORIENT-HORIZ+" 0)
+  (:const "+CTORIENT-VERT+" 1)
+  (:const "+CTORIENT-HORIZFLIP+" 2)
+  (:const "+CTORIENT-VERTFLIP+" 3)
+  (:const "+PLACECLOSE-LEFT+" 0)
+  (:const "+PLACECLOSE-RIGHT+" 1)
+
+  ;; --- functions (clicktab_lib.sfd + MorphOS SDK) ---
+  (:fn "CLICKTAB-GET-CLASS" -30 () :pointer 40)   ; Class * CLICKTAB_GetClass() () LVO -30
+  (:fn "ALLOC-CLICK-TAB-NODE-A" -36 (:a0) :pointer 40)   ; struct Node * AllocClickTabNodeA(struct TagItem * tags) (A0) LVO -36
+  (:fn "FREE-CLICK-TAB-NODE" -42 (:a0) :void 40)   ; VOID FreeClickTabNode(struct Node * node) (A0) LVO -42
+  (:fn "SET-CLICK-TAB-NODE-ATTRS-A" -48 (:a0 :a1) :void 40)   ; VOID SetClickTabNodeAttrsA(struct Node * node, struct TagItem * tags) (A0,A1) LVO -48
+  (:fn "GET-CLICK-TAB-NODE-ATTRS-A" -54 (:a0 :a1) :void 40)   ; VOID GetClickTabNodeAttrsA(struct Node * node, struct TagItem * tags) (A0,A1) LVO -54
+  )
 
 (provide "amiga/raw/gadgets/clicktab")

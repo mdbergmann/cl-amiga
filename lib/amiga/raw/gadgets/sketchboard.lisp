@@ -14,25 +14,7 @@
 
 (defpackage "AMIGA.RAW.GADGETS.SKETCHBOARD"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*SKETCHBOARD-BASE*" "*SKETCHBOARD-VERSION*"
-   "+SKETCHBOARD-DUMMY+" "+SGA-BITMAP+" "+SGA-MOUSE-X+" "+SGA-MOUSE-Y+" 
-   "+SGA-WIDTH+" "+SGA-HEIGHT+" "+SGA-A-PEN+" "+SGA-TOOL+" 
-   "+SGA-UNDO-AVAILABLE+" "+SGA-REDO-AVAILABLE+" "+SGA-SHOW-GRID+" 
-   "+SGA-SCALE+" "+SGA-AF-PT+" "+SGA-AF-PT-SIZE+" "+SGA-H-PROP-TOTAL+" 
-   "+SGA-H-PROP-TOP+" "+SGA-H-PROP-VISIBLE+" "+SGA-V-PROP-TOTAL+" 
-   "+SGA-V-PROP-TOP+" "+SGA-V-PROP-VISIBLE+" "+SGA-HOT-SPOT+" 
-   "+SGA-CHANGED+" "+SGA-RASTPORT+" "+SGA-SKETCH-BOARD-RECT+" 
-   "+SGA-SUB-WIDTH+" "+SGA-SUB-HEIGHT+" "+SGA-DOUBLE-SCALE-X+" 
-   "+SGA-DOUBLE-SCALE-Y+" "+SGA-TOP-LAYER-BITMAP+" "+SGA-TOP-LAYER-WIDTH+" 
-   "+SGA-WITH-BEVEL+" "+SGA-SCROLL-WHEEL-RESPONSE+" "+SGA-MAX-UNDO-STEPS+" 
-   "+SGA-UPDATED-BITMAP+" "+SGA-MAX-SCALE+" "+SGTOOL-FREEHAND-DOTS+" 
-   "+SGTOOL-FREEHAND+" "+SGTOOL-ELLIPSE+" "+SGTOOL-ELLIPSE-FILLED+" 
-   "+SGTOOL-RECT+" "+SGTOOL-RECT-FILLED+" "+SGTOOL-LINE+" "+SGTOOL-FILL+" 
-   "+SGTOOL-GETPEN+" "+SGTOOL-HOTSPOT+" "+SGTOOL-SELECT+" "+SGTOOL-MOVE+" 
-   "+SGSCROLLWHEEL-NOTHING+" "+SGSCROLLWHEEL-SCROLLANDZOOM+" 
-   "+SGSCROLLWHEEL-ZOOM+" "+SGM-CLEAR+" "+SGM-UNDO+" "+SGM-REDO+" 
-   "+SGM-SCROLL+" "SKETCHBOARD-GET-CLASS" ))
+  (:export "*SKETCHBOARD-BASE*" "*SKETCHBOARD-VERSION*"))
 
 (in-package "AMIGA.RAW.GADGETS.SKETCHBOARD")
 
@@ -46,66 +28,70 @@
 (defun %version>= (n)
   (and *sketchboard-version* (>= *sketchboard-version* n)))
 
-;;; --- constants from gadgets/sketchboard.h ---
-(defconstant +sketchboard-dummy+ #x85024600)
-(defconstant +sga-bitmap+ #x85024600)
-(defconstant +sga-mouse-x+ #x85024601)
-(defconstant +sga-mouse-y+ #x85024602)
-(defconstant +sga-width+ #x85024603)
-(defconstant +sga-height+ #x85024604)
-(defconstant +sga-a-pen+ #x85024605)
-(defconstant +sga-tool+ #x85024606)
-(defconstant +sga-undo-available+ #x85024607)
-(defconstant +sga-redo-available+ #x85024608)
-(defconstant +sga-show-grid+ #x85024609)
-(defconstant +sga-scale+ #x8502460A)
-(defconstant +sga-af-pt+ #x8502460B)
-(defconstant +sga-af-pt-size+ #x8502460C)
-(defconstant +sga-h-prop-total+ #x8502460D)
-(defconstant +sga-h-prop-top+ #x8502460E)
-(defconstant +sga-h-prop-visible+ #x8502460F)
-(defconstant +sga-v-prop-total+ #x85024610)
-(defconstant +sga-v-prop-top+ #x85024611)
-(defconstant +sga-v-prop-visible+ #x85024612)
-(defconstant +sga-hot-spot+ #x85024613)
-(defconstant +sga-changed+ #x85024614)
-(defconstant +sga-rastport+ #x85024615)
-(defconstant +sga-sketch-board-rect+ #x85024616)
-(defconstant +sga-sub-width+ #x85024617)
-(defconstant +sga-sub-height+ #x85024618)
-(defconstant +sga-double-scale-x+ #x85024619)
-(defconstant +sga-double-scale-y+ #x8502461A)
-(defconstant +sga-top-layer-bitmap+ #x8502461B)
-(defconstant +sga-top-layer-width+ #x8502461C)
-(defconstant +sga-with-bevel+ #x8502461D)
-(defconstant +sga-scroll-wheel-response+ #x8502461E)
-(defconstant +sga-max-undo-steps+ #x8502461F)
-(defconstant +sga-updated-bitmap+ #x85024620)
-(defconstant +sga-max-scale+ #x85024621)
-(defconstant +sgtool-freehand-dots+ 0)
-(defconstant +sgtool-freehand+ 1)
-(defconstant +sgtool-ellipse+ 2)
-(defconstant +sgtool-ellipse-filled+ 3)
-(defconstant +sgtool-rect+ 4)
-(defconstant +sgtool-rect-filled+ 5)
-(defconstant +sgtool-line+ 6)
-(defconstant +sgtool-fill+ 7)
-(defconstant +sgtool-getpen+ 8)
-(defconstant +sgtool-hotspot+ 9)
-(defconstant +sgtool-select+ 10)
-(defconstant +sgtool-move+ 11)
-(defconstant +sgscrollwheel-nothing+ 0)
-(defconstant +sgscrollwheel-scrollandzoom+ 1)
-(defconstant +sgscrollwheel-zoom+ 2)
-(defconstant +sgm-clear+ #x580100)
-(defconstant +sgm-undo+ #x580101)
-(defconstant +sgm-redo+ #x580102)
-(defconstant +sgm-scroll+ #x580103)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.GADGETS.SKETCHBOARD"
+    (:base *sketchboard-base* :version *sketchboard-version*)
 
-;;; --- functions (sketchboard_lib.sfd) ---
-(when (%version>= 40)
-  (amiga.ffi:defcfun sketchboard-get-class *sketchboard-base* -30 ()
-    :result :pointer
-    :doc "Class * SKETCHBOARD_GetClass() () LVO -30"))
+  ;; --- constants from gadgets/sketchboard.h ---
+  (:const "+SKETCHBOARD-DUMMY+" #x85024600)
+  (:const "+SGA-BITMAP+" #x85024600)
+  (:const "+SGA-MOUSE-X+" #x85024601)
+  (:const "+SGA-MOUSE-Y+" #x85024602)
+  (:const "+SGA-WIDTH+" #x85024603)
+  (:const "+SGA-HEIGHT+" #x85024604)
+  (:const "+SGA-A-PEN+" #x85024605)
+  (:const "+SGA-TOOL+" #x85024606)
+  (:const "+SGA-UNDO-AVAILABLE+" #x85024607)
+  (:const "+SGA-REDO-AVAILABLE+" #x85024608)
+  (:const "+SGA-SHOW-GRID+" #x85024609)
+  (:const "+SGA-SCALE+" #x8502460A)
+  (:const "+SGA-AF-PT+" #x8502460B)
+  (:const "+SGA-AF-PT-SIZE+" #x8502460C)
+  (:const "+SGA-H-PROP-TOTAL+" #x8502460D)
+  (:const "+SGA-H-PROP-TOP+" #x8502460E)
+  (:const "+SGA-H-PROP-VISIBLE+" #x8502460F)
+  (:const "+SGA-V-PROP-TOTAL+" #x85024610)
+  (:const "+SGA-V-PROP-TOP+" #x85024611)
+  (:const "+SGA-V-PROP-VISIBLE+" #x85024612)
+  (:const "+SGA-HOT-SPOT+" #x85024613)
+  (:const "+SGA-CHANGED+" #x85024614)
+  (:const "+SGA-RASTPORT+" #x85024615)
+  (:const "+SGA-SKETCH-BOARD-RECT+" #x85024616)
+  (:const "+SGA-SUB-WIDTH+" #x85024617)
+  (:const "+SGA-SUB-HEIGHT+" #x85024618)
+  (:const "+SGA-DOUBLE-SCALE-X+" #x85024619)
+  (:const "+SGA-DOUBLE-SCALE-Y+" #x8502461A)
+  (:const "+SGA-TOP-LAYER-BITMAP+" #x8502461B)
+  (:const "+SGA-TOP-LAYER-WIDTH+" #x8502461C)
+  (:const "+SGA-WITH-BEVEL+" #x8502461D)
+  (:const "+SGA-SCROLL-WHEEL-RESPONSE+" #x8502461E)
+  (:const "+SGA-MAX-UNDO-STEPS+" #x8502461F)
+  (:const "+SGA-UPDATED-BITMAP+" #x85024620)
+  (:const "+SGA-MAX-SCALE+" #x85024621)
+  (:const "+SGTOOL-FREEHAND-DOTS+" 0)
+  (:const "+SGTOOL-FREEHAND+" 1)
+  (:const "+SGTOOL-ELLIPSE+" 2)
+  (:const "+SGTOOL-ELLIPSE-FILLED+" 3)
+  (:const "+SGTOOL-RECT+" 4)
+  (:const "+SGTOOL-RECT-FILLED+" 5)
+  (:const "+SGTOOL-LINE+" 6)
+  (:const "+SGTOOL-FILL+" 7)
+  (:const "+SGTOOL-GETPEN+" 8)
+  (:const "+SGTOOL-HOTSPOT+" 9)
+  (:const "+SGTOOL-SELECT+" 10)
+  (:const "+SGTOOL-MOVE+" 11)
+  (:const "+SGSCROLLWHEEL-NOTHING+" 0)
+  (:const "+SGSCROLLWHEEL-SCROLLANDZOOM+" 1)
+  (:const "+SGSCROLLWHEEL-ZOOM+" 2)
+  (:const "+SGM-CLEAR+" #x580100)
+  (:const "+SGM-UNDO+" #x580101)
+  (:const "+SGM-REDO+" #x580102)
+  (:const "+SGM-SCROLL+" #x580103)
+
+  ;; --- functions (sketchboard_lib.sfd) ---
+  (:fn "SKETCHBOARD-GET-CLASS" -30 () :pointer 40)   ; Class * SKETCHBOARD_GetClass() () LVO -30
+  )
 
 (provide "amiga/raw/gadgets/sketchboard")

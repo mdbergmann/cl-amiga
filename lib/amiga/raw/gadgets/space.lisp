@@ -15,12 +15,7 @@
 
 (defpackage "AMIGA.RAW.GADGETS.SPACE"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*SPACE-BASE*" "*SPACE-VERSION*"
-   "+SPACE-DUMMY+" "+SPACE-MIN-HEIGHT+" "+SPACE-MIN-WIDTH+" 
-   "+SPACE-MOUSE-X+" "+SPACE-MOUSE-Y+" "+SPACE-TRANSPARENT+" 
-   "+SPACE-AREA-BOX+" "+SPACE-RENDER-HOOK+" "+SPACE-BEVEL-STYLE+" 
-   "+SPACE-DOMAIN-BEVEL+" "+SPACE-RENDER-BOX+" "SPACE-GET-CLASS" ))
+  (:export "*SPACE-BASE*" "*SPACE-VERSION*"))
 
 (in-package "AMIGA.RAW.GADGETS.SPACE")
 
@@ -34,23 +29,27 @@
 (defun %version>= (n)
   (and *space-version* (>= *space-version* n)))
 
-;;; --- constants from gadgets/space.h ---
-(defconstant +space-dummy+ #x85009000)
-(defconstant +space-min-height+ #x85009001)
-(defconstant +space-min-width+ #x85009002)
-(defconstant +space-mouse-x+ #x85009003)
-(defconstant +space-mouse-y+ #x85009004)
-(defconstant +space-transparent+ #x85009005)
-(defconstant +space-area-box+ #x85009006)
-(defconstant +space-render-hook+ #x85009007)
-(defconstant +space-bevel-style+ #x85009008)
-(defconstant +space-domain-bevel+ #x85009009)
-(defconstant +space-render-box+ #x8500900A)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.GADGETS.SPACE"
+    (:base *space-base* :version *space-version*)
 
-;;; --- functions (space_lib.sfd + MorphOS SDK) ---
-(when (%version>= 40)
-  (amiga.ffi:defcfun space-get-class *space-base* -30 ()
-    :result :pointer
-    :doc "Class * SPACE_GetClass() () LVO -30"))
+  ;; --- constants from gadgets/space.h ---
+  (:const "+SPACE-DUMMY+" #x85009000)
+  (:const "+SPACE-MIN-HEIGHT+" #x85009001)
+  (:const "+SPACE-MIN-WIDTH+" #x85009002)
+  (:const "+SPACE-MOUSE-X+" #x85009003)
+  (:const "+SPACE-MOUSE-Y+" #x85009004)
+  (:const "+SPACE-TRANSPARENT+" #x85009005)
+  (:const "+SPACE-AREA-BOX+" #x85009006)
+  (:const "+SPACE-RENDER-HOOK+" #x85009007)
+  (:const "+SPACE-BEVEL-STYLE+" #x85009008)
+  (:const "+SPACE-DOMAIN-BEVEL+" #x85009009)
+  (:const "+SPACE-RENDER-BOX+" #x8500900A)
+
+  ;; --- functions (space_lib.sfd + MorphOS SDK) ---
+  (:fn "SPACE-GET-CLASS" -30 () :pointer 40)   ; Class * SPACE_GetClass() () LVO -30
+  )
 
 (provide "amiga/raw/gadgets/space")

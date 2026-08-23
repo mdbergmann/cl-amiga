@@ -100,6 +100,17 @@ CL_Obj cl_amiga_call_via_base_sym(CL_Obj base_sym, int16_t offset,
  * GC-rooted (callers copy them onto the VM stack).  builtins_ffi.c. */
 CL_Obj cl_ffi_stub_call(CL_Obj stub, CL_Obj *args, int nargs);
 
+/* FFI keyword/code tables and integer boxing shared with bindtab.c
+ * (builtins_ffi.c).  *_from_keyword return -1 for an unknown keyword. */
+int cl_ffi_ctype_from_keyword(CL_Obj kw);        /* :U8 .. :DOUBLE -> CL_STUB_CT_* */
+int cl_ffi_res_kind_from_keyword(CL_Obj kw);     /* :UNSIGNED .. :I8 -> CL_AMIGA_RES_* */
+const char *cl_ffi_ctype_name(int ctype);
+const char *cl_ffi_res_kind_name(int kind);
+int32_t cl_ffi_ctype_size(int ctype);            /* element bytes: 1/2/4/8 */
+uint64_t cl_ffi_obj_to_u64(CL_Obj o);            /* integer -> low 64 bits (two's complement) */
+CL_Obj cl_ffi_u64_to_obj(uint64_t v);            /* fixnum or bignum */
+CL_Obj cl_ffi_i64_to_obj(int64_t v);
+
 /* Number of arguments a stub takes (its fixed arity). */
 int cl_ffi_stub_arity(CL_Obj stub);
 

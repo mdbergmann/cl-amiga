@@ -15,9 +15,7 @@
 
 (defpackage "AMIGA.RAW.CIA"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*CIA-BASE*" "*CIA-VERSION*"
-   ))
+  (:export "*CIA-BASE*" "*CIA-VERSION*"))
 
 (in-package "AMIGA.RAW.CIA")
 
@@ -31,10 +29,17 @@
 (defun %version>= (n)
   (and *cia-version* (>= *cia-version* n)))
 
-;;; --- functions (cia_lib.sfd + MorphOS SDK) ---
-;; skipped AddICRVector: argument in A6 (library base register)
-;; skipped RemICRVector: argument in A6 (library base register)
-;; skipped AbleICR: argument in A6 (library base register)
-;; skipped SetICR: argument in A6 (library base register)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.CIA"
+    (:base *cia-base* :version *cia-version*)
+
+  ;; --- functions (cia_lib.sfd + MorphOS SDK) ---
+  ;; skipped AddICRVector: argument in A6 (library base register)
+  ;; skipped RemICRVector: argument in A6 (library base register)
+  ;; skipped AbleICR: argument in A6 (library base register)
+  ;; skipped SetICR: argument in A6 (library base register)
+  )
 
 (provide "amiga/raw/cia")

@@ -15,26 +15,7 @@
 
 (defpackage "AMIGA.RAW.GADGETS.BUTTON"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*BUTTON-BASE*" "*BUTTON-VERSION*"
-   "+BUTTON-DUMMY+" "+BUTTON-PUSH-BUTTON+" "+BUTTON-GLYPH+" 
-   "+BUTTON-ARRAY+" "+BUTTON-TEXT-PEN+" "+BUTTON-FILL-PEN+" 
-   "+BUTTON-FILL-TEXT-PEN+" "+BUTTON-BACKGROUND-PEN+" "+BUTTON-CURRENT+" 
-   "+BUTTON-RENDER-IMAGE+" "+BUTTON-SELECT-IMAGE+" "+BUTTON-BEVEL-STYLE+" 
-   "+BUTTON-TRANSPARENT+" "+BUTTON-JUSTIFICATION+" "+BUTTON-SOFT-STYLE+" 
-   "+BUTTON-AUTO-BUTTON+" "+BUTTON-VAR-ARGS+" "+BUTTON-DOMAIN-STRING+" 
-   "+BUTTON-INTEGER+" "+BUTTON-BITMAP+" "+BUTTON-TEXT-PADDING+" 
-   "+BUTTON-ANIM-BUTTON+" "+BUTTON-ANIM-IMAGES+" "+BUTTON-SEL-ANIM-IMAGES+" 
-   "+BUTTON-MAX-ANIM-IMAGES+" "+BUTTON-ANIM-IMAGE-NUMBER+" 
-   "+BUTTON-ADD-ANIM-IMAGE-NUMBER+" "+BUTTON-SUB-ANIM-IMAGE-NUMBER+" 
-   "+BUTTON-ERASE-BACKGROUND+" "+BUTTON-HORIZ-ALIGNMENT+" 
-   "+BUTTON-VERT-ALIGNMENT+" "+BCJ-LEFT+" "+BCJ-CENTER+" "+BCJ-RIGHT+" 
-   "+BCJ-CENTRE+" "+BALIGN-LEFT+" "+BALIGN-TOP+" "+BALIGN-CENTER+" 
-   "+BALIGN-RIGHT+" "+BALIGN-BOTTOM+" "+BAG-POPFILE+" "+BAG-POPDRAWER+" 
-   "+BAG-POPFONT+" "+BAG-CHECKBOX+" "+BAG-CANCELBOX+" "+BAG-UPARROW+" 
-   "+BAG-DNARROW+" "+BAG-RTARROW+" "+BAG-LFARROW+" "+BAG-POPTIME+" 
-   "+BAG-POPSCREEN+" "+BAG-POPUP+" "+BAG-POPDATE+" "+BAG-POPCOLOR+" 
-   "+BAG-POPCOLOUR+" "BUTTON-GET-CLASS" ))
+  (:export "*BUTTON-BASE*" "*BUTTON-VERSION*"))
 
 (in-package "AMIGA.RAW.GADGETS.BUTTON")
 
@@ -48,67 +29,71 @@
 (defun %version>= (n)
   (and *button-version* (>= *button-version* n)))
 
-;;; --- constants from gadgets/button.h ---
-(defconstant +button-dummy+ #x84000000)
-(defconstant +button-push-button+ #x84000001)
-(defconstant +button-glyph+ #x84000002)
-(defconstant +button-array+ #x84000003)
-(defconstant +button-text-pen+ #x84000005)
-(defconstant +button-fill-pen+ #x84000006)
-(defconstant +button-fill-text-pen+ #x84000007)
-(defconstant +button-background-pen+ #x84000008)
-(defconstant +button-current+ #x84000009)
-(defconstant +button-render-image+ #x8003000A)
-(defconstant +button-select-image+ #x8003000C)
-(defconstant +button-bevel-style+ #x8400000D)
-(defconstant +button-transparent+ #x8400000F)
-(defconstant +button-justification+ #x84000010)
-(defconstant +button-soft-style+ #x84000011)
-(defconstant +button-auto-button+ #x84000012)
-(defconstant +button-var-args+ #x84000013)
-(defconstant +button-domain-string+ #x84000014)
-(defconstant +button-integer+ #x84000015)
-(defconstant +button-bitmap+ #x84000016)
-(defconstant +button-text-padding+ #x84000028)
-(defconstant +button-anim-button+ #x84000032)
-(defconstant +button-anim-images+ #x84000033)
-(defconstant +button-sel-anim-images+ #x84000034)
-(defconstant +button-max-anim-images+ #x84000035)
-(defconstant +button-anim-image-number+ #x84000036)
-(defconstant +button-add-anim-image-number+ #x84000037)
-(defconstant +button-sub-anim-image-number+ #x84000038)
-(defconstant +button-erase-background+ #x84000039)
-(defconstant +button-horiz-alignment+ #x8400003A)
-(defconstant +button-vert-alignment+ #x8400003B)
-(defconstant +bcj-left+ 0)
-(defconstant +bcj-center+ 1)
-(defconstant +bcj-right+ 2)
-(defconstant +bcj-centre+ 1)
-(defconstant +balign-left+ 0)
-(defconstant +balign-top+ 0)
-(defconstant +balign-center+ 1)
-(defconstant +balign-right+ 2)
-(defconstant +balign-bottom+ 2)
-(defconstant +bag-popfile+ 1)
-(defconstant +bag-popdrawer+ 2)
-(defconstant +bag-popfont+ 3)
-(defconstant +bag-checkbox+ 4)
-(defconstant +bag-cancelbox+ 5)
-(defconstant +bag-uparrow+ 6)
-(defconstant +bag-dnarrow+ 7)
-(defconstant +bag-rtarrow+ 8)
-(defconstant +bag-lfarrow+ 9)
-(defconstant +bag-poptime+ 10)
-(defconstant +bag-popscreen+ 11)
-(defconstant +bag-popup+ 12)
-(defconstant +bag-popdate+ 13)
-(defconstant +bag-popcolor+ 14)
-(defconstant +bag-popcolour+ 14)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.GADGETS.BUTTON"
+    (:base *button-base* :version *button-version*)
 
-;;; --- functions (button_lib.sfd + MorphOS SDK) ---
-(when (%version>= 40)
-  (amiga.ffi:defcfun button-get-class *button-base* -30 ()
-    :result :pointer
-    :doc "Class * BUTTON_GetClass() () LVO -30"))
+  ;; --- constants from gadgets/button.h ---
+  (:const "+BUTTON-DUMMY+" #x84000000)
+  (:const "+BUTTON-PUSH-BUTTON+" #x84000001)
+  (:const "+BUTTON-GLYPH+" #x84000002)
+  (:const "+BUTTON-ARRAY+" #x84000003)
+  (:const "+BUTTON-TEXT-PEN+" #x84000005)
+  (:const "+BUTTON-FILL-PEN+" #x84000006)
+  (:const "+BUTTON-FILL-TEXT-PEN+" #x84000007)
+  (:const "+BUTTON-BACKGROUND-PEN+" #x84000008)
+  (:const "+BUTTON-CURRENT+" #x84000009)
+  (:const "+BUTTON-RENDER-IMAGE+" #x8003000A)
+  (:const "+BUTTON-SELECT-IMAGE+" #x8003000C)
+  (:const "+BUTTON-BEVEL-STYLE+" #x8400000D)
+  (:const "+BUTTON-TRANSPARENT+" #x8400000F)
+  (:const "+BUTTON-JUSTIFICATION+" #x84000010)
+  (:const "+BUTTON-SOFT-STYLE+" #x84000011)
+  (:const "+BUTTON-AUTO-BUTTON+" #x84000012)
+  (:const "+BUTTON-VAR-ARGS+" #x84000013)
+  (:const "+BUTTON-DOMAIN-STRING+" #x84000014)
+  (:const "+BUTTON-INTEGER+" #x84000015)
+  (:const "+BUTTON-BITMAP+" #x84000016)
+  (:const "+BUTTON-TEXT-PADDING+" #x84000028)
+  (:const "+BUTTON-ANIM-BUTTON+" #x84000032)
+  (:const "+BUTTON-ANIM-IMAGES+" #x84000033)
+  (:const "+BUTTON-SEL-ANIM-IMAGES+" #x84000034)
+  (:const "+BUTTON-MAX-ANIM-IMAGES+" #x84000035)
+  (:const "+BUTTON-ANIM-IMAGE-NUMBER+" #x84000036)
+  (:const "+BUTTON-ADD-ANIM-IMAGE-NUMBER+" #x84000037)
+  (:const "+BUTTON-SUB-ANIM-IMAGE-NUMBER+" #x84000038)
+  (:const "+BUTTON-ERASE-BACKGROUND+" #x84000039)
+  (:const "+BUTTON-HORIZ-ALIGNMENT+" #x8400003A)
+  (:const "+BUTTON-VERT-ALIGNMENT+" #x8400003B)
+  (:const "+BCJ-LEFT+" 0)
+  (:const "+BCJ-CENTER+" 1)
+  (:const "+BCJ-RIGHT+" 2)
+  (:const "+BCJ-CENTRE+" 1)
+  (:const "+BALIGN-LEFT+" 0)
+  (:const "+BALIGN-TOP+" 0)
+  (:const "+BALIGN-CENTER+" 1)
+  (:const "+BALIGN-RIGHT+" 2)
+  (:const "+BALIGN-BOTTOM+" 2)
+  (:const "+BAG-POPFILE+" 1)
+  (:const "+BAG-POPDRAWER+" 2)
+  (:const "+BAG-POPFONT+" 3)
+  (:const "+BAG-CHECKBOX+" 4)
+  (:const "+BAG-CANCELBOX+" 5)
+  (:const "+BAG-UPARROW+" 6)
+  (:const "+BAG-DNARROW+" 7)
+  (:const "+BAG-RTARROW+" 8)
+  (:const "+BAG-LFARROW+" 9)
+  (:const "+BAG-POPTIME+" 10)
+  (:const "+BAG-POPSCREEN+" 11)
+  (:const "+BAG-POPUP+" 12)
+  (:const "+BAG-POPDATE+" 13)
+  (:const "+BAG-POPCOLOR+" 14)
+  (:const "+BAG-POPCOLOUR+" 14)
+
+  ;; --- functions (button_lib.sfd + MorphOS SDK) ---
+  (:fn "BUTTON-GET-CLASS" -30 () :pointer 40)   ; Class * BUTTON_GetClass() () LVO -30
+  )
 
 (provide "amiga/raw/gadgets/button")

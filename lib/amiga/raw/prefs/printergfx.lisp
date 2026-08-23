@@ -13,72 +13,63 @@
 
 (defpackage "AMIGA.RAW.PREFS.PRINTERGFX"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+ID-PGFX+" "+PA-HORIZONTAL+" "+PA-VERTICAL+" "+PS-BW+" "+PS-GREYSCALE+" 
-   "+PS-COLOR+" "+PS-GREY-SCALE2+" "+PI-POSITIVE+" "+PI-NEGATIVE+" 
-   "+PCCB-RED+" "+PCCF-RED+" "+PCCB-GREEN+" "+PCCF-GREEN+" "+PCCB-BLUE+" 
-   "+PCCF-BLUE+" "+PD-IGNORE+" "+PD-BOUNDED+" "+PD-ABSOLUTE+" "+PD-PIXEL+" 
-   "+PD-MULTIPLY+" "+PD-ORDERED+" "+PD-HALFTONE+" "+PD-FLOYD+" 
-   "+PGFB-CENTER-IMAGE+" "+PGFF-CENTER-IMAGE+" "+PGFB-INTEGER-SCALING+" 
-   "+PGFF-INTEGER-SCALING+" "+PGFB-ANTI-ALIAS+" "+PGFF-ANTI-ALIAS+" 
-   "*PRINTER-GFX-PREFS-SIZE*" "PRINTER-GFX-PREFS-RESERVED" 
-   "PRINTER-GFX-PREFS-ASPECT" "PRINTER-GFX-PREFS-SHADE" 
-   "PRINTER-GFX-PREFS-IMAGE" "PRINTER-GFX-PREFS-THRESHOLD" 
-   "PRINTER-GFX-PREFS-COLOR-CORRECT" "PRINTER-GFX-PREFS-DIMENSIONS" 
-   "PRINTER-GFX-PREFS-DITHERING" "PRINTER-GFX-PREFS-GRAPHIC-FLAGS" 
-   "PRINTER-GFX-PREFS-PRINT-DENSITY" "PRINTER-GFX-PREFS-PRINT-MAX-WIDTH" 
-   "PRINTER-GFX-PREFS-PRINT-MAX-HEIGHT" "PRINTER-GFX-PREFS-PRINT-X-OFFSET" 
-   "PRINTER-GFX-PREFS-PRINT-Y-OFFSET" ))
+  (:export))
 
 (in-package "AMIGA.RAW.PREFS.PRINTERGFX")
 
-;;; --- constants from prefs/printergfx.i ---
-(defconstant +id-pgfx+ #x50474658)
-(defconstant +pa-horizontal+ 0)
-(defconstant +pa-vertical+ 1)
-(defconstant +ps-bw+ 0)
-(defconstant +ps-greyscale+ 1)
-(defconstant +ps-color+ 2)
-(defconstant +ps-grey-scale2+ 3)
-(defconstant +pi-positive+ 0)
-(defconstant +pi-negative+ 1)
-(defconstant +pccb-red+ 0)
-(defconstant +pccf-red+ 1)
-(defconstant +pccb-green+ 1)
-(defconstant +pccf-green+ 2)
-(defconstant +pccb-blue+ 2)
-(defconstant +pccf-blue+ 4)
-(defconstant +pd-ignore+ 0)
-(defconstant +pd-bounded+ 1)
-(defconstant +pd-absolute+ 2)
-(defconstant +pd-pixel+ 3)
-(defconstant +pd-multiply+ 4)
-(defconstant +pd-ordered+ 0)
-(defconstant +pd-halftone+ 1)
-(defconstant +pd-floyd+ 2)
-(defconstant +pgfb-center-image+ 0)
-(defconstant +pgff-center-image+ 1)
-(defconstant +pgfb-integer-scaling+ 1)
-(defconstant +pgff-integer-scaling+ 2)
-(defconstant +pgfb-anti-alias+ 2)
-(defconstant +pgff-anti-alias+ 4)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.PREFS.PRINTERGFX" ()
 
-;;; --- structures from prefs/printergfx.i ---
-(ffi:defcstruct (printer-gfx-prefs :size 36)   ; PrinterGfxPrefs (prefs/printergfx.i)
-  (reserved (:struct 16) 0)
-  (aspect :u16 16)
-  (shade :u16 18)
-  (image :u16 20)
-  (threshold :i16 22)
-  (color-correct :u8 24)
-  (dimensions :u8 25)
-  (dithering :u8 26)
-  (graphic-flags :u16 27)
-  (print-density :u8 29)
-  (print-max-width :u16 30)
-  (print-max-height :u16 32)
-  (print-x-offset :u8 34)
-  (print-y-offset :u8 35)
-)
+  ;; --- constants from prefs/printergfx.i ---
+  (:const "+ID-PGFX+" #x50474658)
+  (:const "+PA-HORIZONTAL+" 0)
+  (:const "+PA-VERTICAL+" 1)
+  (:const "+PS-BW+" 0)
+  (:const "+PS-GREYSCALE+" 1)
+  (:const "+PS-COLOR+" 2)
+  (:const "+PS-GREY-SCALE2+" 3)
+  (:const "+PI-POSITIVE+" 0)
+  (:const "+PI-NEGATIVE+" 1)
+  (:const "+PCCB-RED+" 0)
+  (:const "+PCCF-RED+" 1)
+  (:const "+PCCB-GREEN+" 1)
+  (:const "+PCCF-GREEN+" 2)
+  (:const "+PCCB-BLUE+" 2)
+  (:const "+PCCF-BLUE+" 4)
+  (:const "+PD-IGNORE+" 0)
+  (:const "+PD-BOUNDED+" 1)
+  (:const "+PD-ABSOLUTE+" 2)
+  (:const "+PD-PIXEL+" 3)
+  (:const "+PD-MULTIPLY+" 4)
+  (:const "+PD-ORDERED+" 0)
+  (:const "+PD-HALFTONE+" 1)
+  (:const "+PD-FLOYD+" 2)
+  (:const "+PGFB-CENTER-IMAGE+" 0)
+  (:const "+PGFF-CENTER-IMAGE+" 1)
+  (:const "+PGFB-INTEGER-SCALING+" 1)
+  (:const "+PGFF-INTEGER-SCALING+" 2)
+  (:const "+PGFB-ANTI-ALIAS+" 2)
+  (:const "+PGFF-ANTI-ALIAS+" 4)
+
+  ;; --- structures from prefs/printergfx.i ---
+  (:struct "PRINTER-GFX-PREFS" 36   ; PrinterGfxPrefs (prefs/printergfx.i)
+    ("RESERVED" (:struct 16) 0)
+    ("ASPECT" :u16 16)
+    ("SHADE" :u16 18)
+    ("IMAGE" :u16 20)
+    ("THRESHOLD" :i16 22)
+    ("COLOR-CORRECT" :u8 24)
+    ("DIMENSIONS" :u8 25)
+    ("DITHERING" :u8 26)
+    ("GRAPHIC-FLAGS" :u16 27)
+    ("PRINT-DENSITY" :u8 29)
+    ("PRINT-MAX-WIDTH" :u16 30)
+    ("PRINT-MAX-HEIGHT" :u16 32)
+    ("PRINT-X-OFFSET" :u8 34)
+    ("PRINT-Y-OFFSET" :u8 35)
+    )
+  )
 
 (provide "amiga/raw/prefs/printergfx")

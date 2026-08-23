@@ -15,11 +15,7 @@
 
 (defpackage "AMIGA.RAW.INPUT"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*INPUT-BASE*" "*INPUT-VERSION*"
-   "+IND-ADDHANDLER+" "+IND-REMHANDLER+" "+IND-WRITEEVENT+" 
-   "+IND-SETTHRESH+" "+IND-SETPERIOD+" "+IND-SETMPORT+" "+IND-SETMTYPE+" 
-   "+IND-SETMTRIG+" "+IND-ADDEVENT+" "PEEK-QUALIFIER" ))
+  (:export "*INPUT-BASE*" "*INPUT-VERSION*"))
 
 (in-package "AMIGA.RAW.INPUT")
 
@@ -33,20 +29,25 @@
 (defun %version>= (n)
   (and *input-version* (>= *input-version* n)))
 
-;;; --- constants from devices/input.i ---
-(defconstant +ind-addhandler+ 9)
-(defconstant +ind-remhandler+ 10)
-(defconstant +ind-writeevent+ 11)
-(defconstant +ind-setthresh+ 12)
-(defconstant +ind-setperiod+ 13)
-(defconstant +ind-setmport+ 14)
-(defconstant +ind-setmtype+ 15)
-(defconstant +ind-setmtrig+ #x10)
-(defconstant +ind-addevent+ #x18)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.INPUT"
+    (:base *input-base* :version *input-version*)
 
-;;; --- functions (input_lib.sfd + MorphOS SDK) ---
-(amiga.ffi:defcfun peek-qualifier *input-base* -42 ()
-    :result :u16
-    :doc "UWORD PeekQualifier() () LVO -42")
+  ;; --- constants from devices/input.i ---
+  (:const "+IND-ADDHANDLER+" 9)
+  (:const "+IND-REMHANDLER+" 10)
+  (:const "+IND-WRITEEVENT+" 11)
+  (:const "+IND-SETTHRESH+" 12)
+  (:const "+IND-SETPERIOD+" 13)
+  (:const "+IND-SETMPORT+" 14)
+  (:const "+IND-SETMTYPE+" 15)
+  (:const "+IND-SETMTRIG+" #x10)
+  (:const "+IND-ADDEVENT+" #x18)
+
+  ;; --- functions (input_lib.sfd + MorphOS SDK) ---
+  (:fn "PEEK-QUALIFIER" -42 () :u16)   ; UWORD PeekQualifier() () LVO -42
+  )
 
 (provide "amiga/raw/input")

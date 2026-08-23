@@ -13,51 +13,48 @@
 
 (defpackage "AMIGA.RAW.DEVICES.SCSIDISK"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "+DEVICES-SCSIDISK-I+" "+HD-SCSICMD+" "+SCSIF-WRITE+" "+SCSIF-READ+" 
-   "+SCSIB-READ-WRITE+" "+SCSIF-NOSENSE+" "+SCSIF-AUTOSENSE+" 
-   "+SCSIF-OLDAUTOSENSE+" "+SCSIB-AUTOSENSE+" "+SCSIB-OLDAUTOSENSE+" 
-   "+HFERR-SELF-UNIT+" "+HFERR-DMA+" "+HFERR-PHASE+" "+HFERR-PARITY+" 
-   "+HFERR-SEL-TIMEOUT+" "+HFERR-BAD-STATUS+" "+HFERR-NO-BOARD+" 
-   "*SCSI-CMD-SIZE*" "SCSI-CMD-DATA" "SCSI-CMD-LENGTH" "SCSI-CMD-ACTUAL" 
-   "SCSI-CMD-COMMAND" "SCSI-CMD-CMD-LENGTH" "SCSI-CMD-CMD-ACTUAL" 
-   "SCSI-CMD-FLAGS" "SCSI-CMD-STATUS" "SCSI-CMD-SENSE-DATA" 
-   "SCSI-CMD-SENSE-LENGTH" "SCSI-CMD-SENSE-ACTUAL" ))
+  (:export))
 
 (in-package "AMIGA.RAW.DEVICES.SCSIDISK")
 
-;;; --- constants from devices/scsidisk.i ---
-(defconstant +devices-scsidisk-i+ 1)
-(defconstant +hd-scsicmd+ #x1C)
-(defconstant +scsif-write+ 0)
-(defconstant +scsif-read+ 1)
-(defconstant +scsib-read-write+ 0)
-(defconstant +scsif-nosense+ 0)
-(defconstant +scsif-autosense+ 2)
-(defconstant +scsif-oldautosense+ 6)
-(defconstant +scsib-autosense+ 1)
-(defconstant +scsib-oldautosense+ 2)
-(defconstant +hferr-self-unit+ #x28)
-(defconstant +hferr-dma+ #x29)
-(defconstant +hferr-phase+ #x2A)
-(defconstant +hferr-parity+ #x2B)
-(defconstant +hferr-sel-timeout+ #x2C)
-(defconstant +hferr-bad-status+ #x2D)
-(defconstant +hferr-no-board+ #x32)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.DEVICES.SCSIDISK" ()
 
-;;; --- structures from devices/scsidisk.i ---
-(ffi:defcstruct (scsi-cmd :size 30)   ; SCSICmd (devices/scsidisk.i)
-  (data :fptr 0)
-  (length :u32 4)
-  (actual :u32 8)
-  (command :fptr 12)
-  (cmd-length :u16 16)
-  (cmd-actual :u16 18)
-  (flags :u8 20)
-  (status :u8 21)
-  (sense-data :fptr 22)
-  (sense-length :u16 26)
-  (sense-actual :u16 28)
-)
+  ;; --- constants from devices/scsidisk.i ---
+  (:const "+DEVICES-SCSIDISK-I+" 1)
+  (:const "+HD-SCSICMD+" #x1C)
+  (:const "+SCSIF-WRITE+" 0)
+  (:const "+SCSIF-READ+" 1)
+  (:const "+SCSIB-READ-WRITE+" 0)
+  (:const "+SCSIF-NOSENSE+" 0)
+  (:const "+SCSIF-AUTOSENSE+" 2)
+  (:const "+SCSIF-OLDAUTOSENSE+" 6)
+  (:const "+SCSIB-AUTOSENSE+" 1)
+  (:const "+SCSIB-OLDAUTOSENSE+" 2)
+  (:const "+HFERR-SELF-UNIT+" #x28)
+  (:const "+HFERR-DMA+" #x29)
+  (:const "+HFERR-PHASE+" #x2A)
+  (:const "+HFERR-PARITY+" #x2B)
+  (:const "+HFERR-SEL-TIMEOUT+" #x2C)
+  (:const "+HFERR-BAD-STATUS+" #x2D)
+  (:const "+HFERR-NO-BOARD+" #x32)
+
+  ;; --- structures from devices/scsidisk.i ---
+  (:struct "SCSI-CMD" 30   ; SCSICmd (devices/scsidisk.i)
+    ("DATA" :fptr 0)
+    ("LENGTH" :u32 4)
+    ("ACTUAL" :u32 8)
+    ("COMMAND" :fptr 12)
+    ("CMD-LENGTH" :u16 16)
+    ("CMD-ACTUAL" :u16 18)
+    ("FLAGS" :u8 20)
+    ("STATUS" :u8 21)
+    ("SENSE-DATA" :fptr 22)
+    ("SENSE-LENGTH" :u16 26)
+    ("SENSE-ACTUAL" :u16 28)
+    )
+  )
 
 (provide "amiga/raw/devices/scsidisk")

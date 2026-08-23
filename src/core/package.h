@@ -58,9 +58,33 @@ CL_Obj cl_package_find_symbol_nolock(const char *name, uint32_t len, CL_Obj pack
 CL_Obj cl_package_find_external(const char *name, uint32_t len, CL_Obj package);
 
 /* Find symbol with status:
-   0 = not found, 1 = :INTERNAL, 2 = :EXTERNAL, 3 = :INHERITED */
+   0 = not found, 1 = :INTERNAL, 2 = :EXTERNAL, 3 = :INHERITED.
+   Like every lookup above, consults the demand-interned binding tables
+   (bindtab.c) and materialises a lazy hit before returning. */
 CL_Obj cl_find_symbol_with_status(const char *name, uint32_t len,
                                    CL_Obj package, int *status);
+
+/* Under cl_package_rwlock (any mode), for cl_intern_in's re-check and
+ * bindtab.c: the complete non-allocating lookup.  Returns the symbol
+ * (raw; CL_UNBOUND when absent) and *status as above; a lazy binding-table
+ * hit returns CL_UNBOUND with *lazy_pkg set and the entry coordinates the
+ * caller passes to cl_bindtab_materialize after unlocking. */
+CL_Obj cl_package_lookup_nolock(const char *name, uint32_t len, CL_Obj package,
+                                int *status, CL_Obj *lazy_pkg,
+                                int *name_idx, int *def_idx, int *want_setter);
+
+/* PACKAGE's own table only, raw symbol (SYM_NIL not normalized),
+ * CL_UNBOUND when absent.  Lock must be held. */
+CL_Obj cl_package_find_own_symbol_nolock(const char *name, uint32_t len,
+                                         CL_Obj package);
+
+/* Non-allocating export of a present, not-yet-exported SYMBOL through the
+ * pre-consed CELL; write lock must be held (bindtab.c's materialiser). */
+void cl_package_push_export_cell_nolock(CL_Obj package, CL_Obj symbol,
+                                        CL_Obj cell);
+
+/* cl_symbol_external_p without taking the lock (holder owns it). */
+int cl_package_exported_p_nolock(CL_Obj sym, CL_Obj package);
 
 /* Map the heap-allocated SYM_NIL (storage shadow for the NIL constant)
  * to the user-facing CL_NIL value.  Apply at any boundary that returns

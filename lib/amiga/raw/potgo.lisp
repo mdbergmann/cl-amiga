@@ -15,9 +15,7 @@
 
 (defpackage "AMIGA.RAW.POTGO"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*POTGO-BASE*" "*POTGO-VERSION*"
-   "+RESOURCES-POTGO-I+" "ALLOC-POT-BITS" "FREE-POT-BITS" "WRITE-POTGO" ))
+  (:export "*POTGO-BASE*" "*POTGO-VERSION*"))
 
 (in-package "AMIGA.RAW.POTGO")
 
@@ -31,18 +29,19 @@
 (defun %version>= (n)
   (and *potgo-version* (>= *potgo-version* n)))
 
-;;; --- constants from resources/potgo.i ---
-(defconstant +resources-potgo-i+ 1)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.POTGO"
+    (:base *potgo-base* :version *potgo-version*)
 
-;;; --- functions (potgo_lib.sfd + MorphOS SDK) ---
-(amiga.ffi:defcfun alloc-pot-bits *potgo-base* -6 (:d0 bits)
-    :result :u16
-    :doc "UWORD AllocPotBits(UWORD bits) (D0) LVO -6")
-(amiga.ffi:defcfun free-pot-bits *potgo-base* -12 (:d0 bits)
-    :result :void
-    :doc "VOID FreePotBits(UWORD bits) (D0) LVO -12")
-(amiga.ffi:defcfun write-potgo *potgo-base* -18 (:d0 word :d1 mask)
-    :result :void
-    :doc "VOID WritePotgo(UWORD word, UWORD mask) (D0,D1) LVO -18")
+  ;; --- constants from resources/potgo.i ---
+  (:const "+RESOURCES-POTGO-I+" 1)
+
+  ;; --- functions (potgo_lib.sfd + MorphOS SDK) ---
+  (:fn "ALLOC-POT-BITS" -6 (:d0) :u16)   ; UWORD AllocPotBits(UWORD bits) (D0) LVO -6
+  (:fn "FREE-POT-BITS" -12 (:d0) :void)   ; VOID FreePotBits(UWORD bits) (D0) LVO -12
+  (:fn "WRITE-POTGO" -18 (:d0 :d1) :void)   ; VOID WritePotgo(UWORD word, UWORD mask) (D0,D1) LVO -18
+  )
 
 (provide "amiga/raw/potgo")

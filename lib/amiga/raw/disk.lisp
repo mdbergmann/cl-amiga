@@ -15,22 +15,7 @@
 
 (defpackage "AMIGA.RAW.DISK"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*DISK-BASE*" "*DISK-VERSION*"
-   "+DRB-ALLOC0+" "+DRF-ALLOC0+" "+DRB-ALLOC1+" "+DRF-ALLOC1+" 
-   "+DRB-ALLOC2+" "+DRF-ALLOC2+" "+DRB-ALLOC3+" "+DRF-ALLOC3+" 
-   "+DRB-DETECT0+" "+DRF-DETECT0+" "+DRB-ACTIVE+" "+DRF-ACTIVE+" 
-   "+DSKDMAOFF+" "+DR-ALLOCUNIT+" "+DR-FREEUNIT+" "+DR-GETUNIT+" 
-   "+DR-GIVEUNIT+" "+DR-GETUNITID+" "+DR-READUNITID+" "+DR-LASTCOMM+" 
-   "+DRT-AMIGA+" "+DRT-37422-D2-S+" "+DRT-EMPTY+" "+DRT-150-RPM+" 
-   "*DISCRESOURCEUNIT-SIZE*" "DISCRESOURCEUNIT-DISCBLOCK" 
-   "DISCRESOURCEUNIT-DISCSYNC" "DISCRESOURCEUNIT-INDEX" 
-   "*DISCRESOURCE-SIZE*" "DISCRESOURCE-CURRENT" "DISCRESOURCE-FLAGS" 
-   "DISCRESOURCE-UNITINIT" "DISCRESOURCE-SYSLIB" "DISCRESOURCE-CIARESOURCE" 
-   "DISCRESOURCE-UNITID" "DISCRESOURCE-WAITING" "DISCRESOURCE-DISCBLOCK" 
-   "DISCRESOURCE-DISCSYNC" "DISCRESOURCE-INDEX" "DISCRESOURCE-CURRTASK" 
-   "ALLOC-UNIT" "FREE-UNIT" "GET-UNIT" "GIVE-UNIT" "GET-UNIT-ID" 
-   "READ-UNIT-ID" ))
+  (:export "*DISK-BASE*" "*DISK-VERSION*"))
 
 (in-package "AMIGA.RAW.DISK")
 
@@ -44,70 +29,65 @@
 (defun %version>= (n)
   (and *disk-version* (>= *disk-version* n)))
 
-;;; --- constants from resources/disk.i ---
-(defconstant +drb-alloc0+ 0)
-(defconstant +drf-alloc0+ 1)
-(defconstant +drb-alloc1+ 1)
-(defconstant +drf-alloc1+ 2)
-(defconstant +drb-alloc2+ 2)
-(defconstant +drf-alloc2+ 4)
-(defconstant +drb-alloc3+ 3)
-(defconstant +drf-alloc3+ 8)
-(defconstant +drb-detect0+ 4)
-(defconstant +drf-detect0+ #x10)
-(defconstant +drb-active+ 7)
-(defconstant +drf-active+ #x80)
-(defconstant +dskdmaoff+ #x4000)
-(defconstant +dr-allocunit+ -6)
-(defconstant +dr-freeunit+ -12)
-(defconstant +dr-getunit+ -18)
-(defconstant +dr-giveunit+ -24)
-(defconstant +dr-getunitid+ -30)
-(defconstant +dr-readunitid+ -36)
-(defconstant +dr-lastcomm+ -36)
-(defconstant +drt-amiga+ 0)
-(defconstant +drt-37422-d2-s+ #x55555555)
-(defconstant +drt-empty+ #xFFFFFFFF)
-(defconstant +drt-150-rpm+ #xAAAAAAAA)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.DISK"
+    (:base *disk-base* :version *disk-version*)
 
-;;; --- structures from resources/disk.i ---
-(ffi:defcstruct (discresourceunit :size 86)   ; DISCRESOURCEUNIT (resources/disk.i)
-  (discblock (:struct 22) 20)
-  (discsync (:struct 22) 42)
-  (index (:struct 22) 64)
-)
-(ffi:defcstruct (discresource :size 148)   ; DISCRESOURCE (resources/disk.i)
-  (current :fptr 34)
-  (flags :u8 38)
-  (unitinit :u8 39)
-  (syslib :fptr 40)
-  (ciaresource :fptr 44)
-  (unitid (:struct 16) 48)
-  (waiting (:struct 14) 64)
-  (discblock (:struct 22) 78)
-  (discsync (:struct 22) 100)
-  (index (:struct 22) 122)
-  (currtask :fptr 144)
-)
+  ;; --- constants from resources/disk.i ---
+  (:const "+DRB-ALLOC0+" 0)
+  (:const "+DRF-ALLOC0+" 1)
+  (:const "+DRB-ALLOC1+" 1)
+  (:const "+DRF-ALLOC1+" 2)
+  (:const "+DRB-ALLOC2+" 2)
+  (:const "+DRF-ALLOC2+" 4)
+  (:const "+DRB-ALLOC3+" 3)
+  (:const "+DRF-ALLOC3+" 8)
+  (:const "+DRB-DETECT0+" 4)
+  (:const "+DRF-DETECT0+" #x10)
+  (:const "+DRB-ACTIVE+" 7)
+  (:const "+DRF-ACTIVE+" #x80)
+  (:const "+DSKDMAOFF+" #x4000)
+  (:const "+DR-ALLOCUNIT+" -6)
+  (:const "+DR-FREEUNIT+" -12)
+  (:const "+DR-GETUNIT+" -18)
+  (:const "+DR-GIVEUNIT+" -24)
+  (:const "+DR-GETUNITID+" -30)
+  (:const "+DR-READUNITID+" -36)
+  (:const "+DR-LASTCOMM+" -36)
+  (:const "+DRT-AMIGA+" 0)
+  (:const "+DRT-37422-D2-S+" #x55555555)
+  (:const "+DRT-EMPTY+" #xFFFFFFFF)
+  (:const "+DRT-150-RPM+" #xAAAAAAAA)
 
-;;; --- functions (disk_lib.sfd + MorphOS SDK) ---
-(amiga.ffi:defcfun alloc-unit *disk-base* -6 (:d0 unit-num)
-    :result :bool
-    :doc "BOOL AllocUnit(LONG unitNum) (D0) LVO -6")
-(amiga.ffi:defcfun free-unit *disk-base* -12 (:d0 unit-num)
-    :result :void
-    :doc "VOID FreeUnit(LONG unitNum) (D0) LVO -12")
-(amiga.ffi:defcfun get-unit *disk-base* -18 (:a1 unit-pointer)
-    :result :pointer
-    :doc "struct DiskResourceUnit * GetUnit(struct DiskResourceUnit * unitPointer) (A1) LVO -18")
-(amiga.ffi:defcfun give-unit *disk-base* -24 ()
-    :result :void
-    :doc "VOID GiveUnit() () LVO -24")
-(amiga.ffi:defcfun get-unit-id *disk-base* -30 (:d0 unit-num)
-    :result :signed
-    :doc "LONG GetUnitID(LONG unitNum) (D0) LVO -30")
-(amiga.ffi:defcfun read-unit-id *disk-base* -36 (:d0 unit-num)
-    :result :signed
-    :doc "LONG ReadUnitID(LONG unitNum) (D0) LVO -36")
+  ;; --- structures from resources/disk.i ---
+  (:struct "DISCRESOURCEUNIT" 86   ; DISCRESOURCEUNIT (resources/disk.i)
+    ("DISCBLOCK" (:struct 22) 20)
+    ("DISCSYNC" (:struct 22) 42)
+    ("INDEX" (:struct 22) 64)
+    )
+  (:struct "DISCRESOURCE" 148   ; DISCRESOURCE (resources/disk.i)
+    ("CURRENT" :fptr 34)
+    ("FLAGS" :u8 38)
+    ("UNITINIT" :u8 39)
+    ("SYSLIB" :fptr 40)
+    ("CIARESOURCE" :fptr 44)
+    ("UNITID" (:struct 16) 48)
+    ("WAITING" (:struct 14) 64)
+    ("DISCBLOCK" (:struct 22) 78)
+    ("DISCSYNC" (:struct 22) 100)
+    ("INDEX" (:struct 22) 122)
+    ("CURRTASK" :fptr 144)
+    )
+
+  ;; --- functions (disk_lib.sfd + MorphOS SDK) ---
+  (:fn "ALLOC-UNIT" -6 (:d0) :bool)   ; BOOL AllocUnit(LONG unitNum) (D0) LVO -6
+  (:fn "FREE-UNIT" -12 (:d0) :void)   ; VOID FreeUnit(LONG unitNum) (D0) LVO -12
+  (:fn "GET-UNIT" -18 (:a1) :pointer)   ; struct DiskResourceUnit * GetUnit(struct DiskResourceUnit * unitPointer) (A1) LVO -18
+  (:fn "GIVE-UNIT" -24 () :void)   ; VOID GiveUnit() () LVO -24
+  (:fn "GET-UNIT-ID" -30 (:d0) :signed)   ; LONG GetUnitID(LONG unitNum) (D0) LVO -30
+  (:fn "READ-UNIT-ID" -36 (:d0) :signed)   ; LONG ReadUnitID(LONG unitNum) (D0) LVO -36
+  )
 
 (provide "amiga/raw/disk")

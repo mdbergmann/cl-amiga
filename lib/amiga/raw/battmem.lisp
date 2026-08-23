@@ -17,19 +17,7 @@
 
 (defpackage "AMIGA.RAW.BATTMEM"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*BATTMEM-BASE*" "*BATTMEM-VERSION*"
-   "+BATTMEM-AMIGA-AMNESIA-ADDR+" "+BATTMEM-AMIGA-AMNESIA-LEN+" 
-   "+BATTMEM-SCSI-TIMEOUT-ADDR+" "+BATTMEM-SCSI-TIMEOUT-LEN+" 
-   "+BATTMEM-SCSI-LUNS-ADDR+" "+BATTMEM-SCSI-LUNS-LEN+" 
-   "+BATTMEM-SHARED-AMNESIA-ADDR+" "+BATTMEM-SHARED-AMNESIA-LEN+" 
-   "+BATTMEM-SCSI-HOST-ID-ADDR+" "+BATTMEM-SCSI-HOST-ID-LEN+" 
-   "+BATTMEM-SCSI-SYNC-XFER-ADDR+" "+BATTMEM-SCSI-SYNC-XFER-LEN+" 
-   "+BATTMEM-SCSI-FAST-SYNC-ADDR+" "+BATTMEM-SCSI-FAST-SYNC-LEN+" 
-   "+BATTMEM-SCSI-TAG-QUEUES-ADDR+" "+BATTMEM-SCSI-TAG-QUEUES-LEN+" 
-   "+BATTMEM-IDE-EXTRA-WAIT-ADDR+" "+BATTMEM-IDE-EXTRA-WAIT-LEN+" 
-   "OBTAIN-BATT-SEMAPHORE" "RELEASE-BATT-SEMAPHORE" "READ-BATT-MEM" 
-   "WRITE-BATT-MEM" ))
+  (:export "*BATTMEM-BASE*" "*BATTMEM-VERSION*"))
 
 (in-package "AMIGA.RAW.BATTMEM")
 
@@ -43,40 +31,39 @@
 (defun %version>= (n)
   (and *battmem-version* (>= *battmem-version* n)))
 
-;;; --- constants from resources/battmembitsamiga.i ---
-(defconstant +battmem-amiga-amnesia-addr+ 0)
-(defconstant +battmem-amiga-amnesia-len+ 1)
-(defconstant +battmem-scsi-timeout-addr+ 1)
-(defconstant +battmem-scsi-timeout-len+ 1)
-(defconstant +battmem-scsi-luns-addr+ 2)
-(defconstant +battmem-scsi-luns-len+ 1)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.BATTMEM"
+    (:base *battmem-base* :version *battmem-version*)
 
-;;; --- constants from resources/battmembitsshared.i ---
-(defconstant +battmem-shared-amnesia-addr+ #x40)
-(defconstant +battmem-shared-amnesia-len+ 1)
-(defconstant +battmem-scsi-host-id-addr+ #x41)
-(defconstant +battmem-scsi-host-id-len+ 3)
-(defconstant +battmem-scsi-sync-xfer-addr+ #x44)
-(defconstant +battmem-scsi-sync-xfer-len+ 1)
-(defconstant +battmem-scsi-fast-sync-addr+ #x45)
-(defconstant +battmem-scsi-fast-sync-len+ 1)
-(defconstant +battmem-scsi-tag-queues-addr+ #x46)
-(defconstant +battmem-scsi-tag-queues-len+ 1)
-(defconstant +battmem-ide-extra-wait-addr+ #x47)
-(defconstant +battmem-ide-extra-wait-len+ 1)
+  ;; --- constants from resources/battmembitsamiga.i ---
+  (:const "+BATTMEM-AMIGA-AMNESIA-ADDR+" 0)
+  (:const "+BATTMEM-AMIGA-AMNESIA-LEN+" 1)
+  (:const "+BATTMEM-SCSI-TIMEOUT-ADDR+" 1)
+  (:const "+BATTMEM-SCSI-TIMEOUT-LEN+" 1)
+  (:const "+BATTMEM-SCSI-LUNS-ADDR+" 2)
+  (:const "+BATTMEM-SCSI-LUNS-LEN+" 1)
 
-;;; --- functions (battmem_lib.sfd + MorphOS SDK) ---
-(amiga.ffi:defcfun obtain-batt-semaphore *battmem-base* -6 ()
-    :result :void
-    :doc "VOID ObtainBattSemaphore() () LVO -6")
-(amiga.ffi:defcfun release-batt-semaphore *battmem-base* -12 ()
-    :result :void
-    :doc "VOID ReleaseBattSemaphore() () LVO -12")
-(amiga.ffi:defcfun read-batt-mem *battmem-base* -18 (:a0 buffer :d0 offset :d1 length)
-    :result :unsigned
-    :doc "ULONG ReadBattMem(APTR buffer, ULONG offset, ULONG length) (A0,D0,D1) LVO -18")
-(amiga.ffi:defcfun write-batt-mem *battmem-base* -24 (:a0 buffer :d0 offset :d1 length)
-    :result :unsigned
-    :doc "ULONG WriteBattMem(CONST_APTR buffer, ULONG offset, ULONG length) (A0,D0,D1) LVO -24")
+  ;; --- constants from resources/battmembitsshared.i ---
+  (:const "+BATTMEM-SHARED-AMNESIA-ADDR+" #x40)
+  (:const "+BATTMEM-SHARED-AMNESIA-LEN+" 1)
+  (:const "+BATTMEM-SCSI-HOST-ID-ADDR+" #x41)
+  (:const "+BATTMEM-SCSI-HOST-ID-LEN+" 3)
+  (:const "+BATTMEM-SCSI-SYNC-XFER-ADDR+" #x44)
+  (:const "+BATTMEM-SCSI-SYNC-XFER-LEN+" 1)
+  (:const "+BATTMEM-SCSI-FAST-SYNC-ADDR+" #x45)
+  (:const "+BATTMEM-SCSI-FAST-SYNC-LEN+" 1)
+  (:const "+BATTMEM-SCSI-TAG-QUEUES-ADDR+" #x46)
+  (:const "+BATTMEM-SCSI-TAG-QUEUES-LEN+" 1)
+  (:const "+BATTMEM-IDE-EXTRA-WAIT-ADDR+" #x47)
+  (:const "+BATTMEM-IDE-EXTRA-WAIT-LEN+" 1)
+
+  ;; --- functions (battmem_lib.sfd + MorphOS SDK) ---
+  (:fn "OBTAIN-BATT-SEMAPHORE" -6 () :void)   ; VOID ObtainBattSemaphore() () LVO -6
+  (:fn "RELEASE-BATT-SEMAPHORE" -12 () :void)   ; VOID ReleaseBattSemaphore() () LVO -12
+  (:fn "READ-BATT-MEM" -18 (:a0 :d0 :d1) :unsigned)   ; ULONG ReadBattMem(APTR buffer, ULONG offset, ULONG length) (A0,D0,D1) LVO -18
+  (:fn "WRITE-BATT-MEM" -24 (:a0 :d0 :d1) :unsigned)   ; ULONG WriteBattMem(CONST_APTR buffer, ULONG offset, ULONG length) (A0,D0,D1) LVO -24
+  )
 
 (provide "amiga/raw/battmem")

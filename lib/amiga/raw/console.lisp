@@ -16,38 +16,7 @@
 
 (defpackage "AMIGA.RAW.CONSOLE"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*CONSOLE-BASE*" "*CONSOLE-VERSION*"
-   "+CD-ASKKEYMAP+" "+CD-SETKEYMAP+" "+CD-ASKDEFAULTKEYMAP+" 
-   "+CD-SETDEFAULTKEYMAP+" "+CD-SETUPSCROLLBACK+" 
-   "+CD-SETSCROLLBACKPOSITION+" "+SGR-PRIMARY+" "+SGR-BOLD+" "+SGR-ITALIC+" 
-   "+SGR-UNDERSCORE+" "+SGR-NEGATIVE+" "+SGR-NORMAL+" "+SGR-NOTITALIC+" 
-   "+SGR-NOTUNDERSCORE+" "+SGR-POSITIVE+" "+SGR-BLACK+" "+SGR-RED+" 
-   "+SGR-GREEN+" "+SGR-YELLOW+" "+SGR-BLUE+" "+SGR-MAGENTA+" "+SGR-CYAN+" 
-   "+SGR-WHITE+" "+SGR-DEFAULT+" "+SGR-BLACKBG+" "+SGR-REDBG+" 
-   "+SGR-GREENBG+" "+SGR-YELLOWBG+" "+SGR-BLUEBG+" "+SGR-MAGENTABG+" 
-   "+SGR-CYANBG+" "+SGR-WHITEBG+" "+SGR-DEFAULTBG+" "+SGR-CLR0+" 
-   "+SGR-CLR1+" "+SGR-CLR2+" "+SGR-CLR3+" "+SGR-CLR4+" "+SGR-CLR5+" 
-   "+SGR-CLR6+" "+SGR-CLR7+" "+SGR-CLR0-BG+" "+SGR-CLR1-BG+" 
-   "+SGR-CLR2-BG+" "+SGR-CLR3-BG+" "+SGR-CLR4-BG+" "+SGR-CLR5-BG+" 
-   "+SGR-CLR6-BG+" "+SGR-CLR7-BG+" "+DSR-CPR+" "+CTC-HSETTAB+" 
-   "+CTC-HCLRTAB+" "+CTC-HCLRTABSALL+" "+TBC-HCLRTAB+" "+TBC-HCLRTABSALL+" 
-   "+M-LNM+" "*CONSOLE-SCROLLBACK-SIZE*" 
-   "CONSOLE-SCROLLBACK-SCROLLER-GADGET" "CONSOLE-SCROLLBACK-NUM-LINES" 
-   "+CONU-LIBRARY+" "+CONU-STANDARD+" "+CONU-CHARMAP+" "+CONU-SNIPMAP+" 
-   "+CONFLAG-DEFAULT+" "+CONFLAG-NODRAW-ON-NEWSIZE+" "+PMB-ASM+" 
-   "+PMB-AWM+" "+MAXTABS+" "*CON-UNIT-SIZE*" "CON-UNIT-WINDOW" 
-   "CON-UNIT-XCP" "CON-UNIT-YCP" "CON-UNIT-X-MAX" "CON-UNIT-Y-MAX" 
-   "CON-UNIT-XR-SIZE" "CON-UNIT-YR-SIZE" "CON-UNIT-XR-ORIGIN" 
-   "CON-UNIT-YR-ORIGIN" "CON-UNIT-XR-EXTANT" "CON-UNIT-YR-EXTANT" 
-   "CON-UNIT-X-MIN-SHRINK" "CON-UNIT-Y-MIN-SHRINK" "CON-UNIT-XCCP" 
-   "CON-UNIT-YCCP" "CON-UNIT-KEY-MAP-STRUCT" "CON-UNIT-TAB-STOPS" 
-   "CON-UNIT-MASK" "CON-UNIT-FG-PEN" "CON-UNIT-BG-PEN" "CON-UNIT-AOL-PEN" 
-   "CON-UNIT-DRAW-MODE" "CON-UNIT-OBSOLETE1" "CON-UNIT-OBSOLETE2" 
-   "CON-UNIT-MINTERMS" "CON-UNIT-FONT" "CON-UNIT-ALGO-STYLE" 
-   "CON-UNIT-TX-FLAGS" "CON-UNIT-TX-HEIGHT" "CON-UNIT-TX-WIDTH" 
-   "CON-UNIT-TX-BASELINE" "CON-UNIT-TX-SPACING" "CON-UNIT-MODES" 
-   "CON-UNIT-RAW-EVENTS" "CD-INPUT-HANDLER" "RAW-KEY-CONVERT" ))
+  (:export "*CONSOLE-BASE*" "*CONSOLE-VERSION*"))
 
 (in-package "AMIGA.RAW.CONSOLE")
 
@@ -61,125 +30,128 @@
 (defun %version>= (n)
   (and *console-version* (>= *console-version* n)))
 
-;;; --- constants from devices/console.i ---
-(defconstant +cd-askkeymap+ 9)
-(defconstant +cd-setkeymap+ 10)
-(defconstant +cd-askdefaultkeymap+ 11)
-(defconstant +cd-setdefaultkeymap+ 12)
-(defconstant +cd-setupscrollback+ 13)
-(defconstant +cd-setscrollbackposition+ 14)
-(defconstant +sgr-primary+ 0)
-(defconstant +sgr-bold+ 1)
-(defconstant +sgr-italic+ 3)
-(defconstant +sgr-underscore+ 4)
-(defconstant +sgr-negative+ 7)
-(defconstant +sgr-normal+ #x16)
-(defconstant +sgr-notitalic+ #x17)
-(defconstant +sgr-notunderscore+ #x18)
-(defconstant +sgr-positive+ #x1B)
-(defconstant +sgr-black+ #x1E)
-(defconstant +sgr-red+ #x1F)
-(defconstant +sgr-green+ #x20)
-(defconstant +sgr-yellow+ #x21)
-(defconstant +sgr-blue+ #x22)
-(defconstant +sgr-magenta+ #x23)
-(defconstant +sgr-cyan+ #x24)
-(defconstant +sgr-white+ #x25)
-(defconstant +sgr-default+ #x27)
-(defconstant +sgr-blackbg+ #x28)
-(defconstant +sgr-redbg+ #x29)
-(defconstant +sgr-greenbg+ #x2A)
-(defconstant +sgr-yellowbg+ #x2B)
-(defconstant +sgr-bluebg+ #x2C)
-(defconstant +sgr-magentabg+ #x2D)
-(defconstant +sgr-cyanbg+ #x2E)
-(defconstant +sgr-whitebg+ #x2F)
-(defconstant +sgr-defaultbg+ #x31)
-(defconstant +sgr-clr0+ #x1E)
-(defconstant +sgr-clr1+ #x1F)
-(defconstant +sgr-clr2+ #x20)
-(defconstant +sgr-clr3+ #x21)
-(defconstant +sgr-clr4+ #x22)
-(defconstant +sgr-clr5+ #x23)
-(defconstant +sgr-clr6+ #x24)
-(defconstant +sgr-clr7+ #x25)
-(defconstant +sgr-clr0-bg+ #x28)
-(defconstant +sgr-clr1-bg+ #x29)
-(defconstant +sgr-clr2-bg+ #x2A)
-(defconstant +sgr-clr3-bg+ #x2B)
-(defconstant +sgr-clr4-bg+ #x2C)
-(defconstant +sgr-clr5-bg+ #x2D)
-(defconstant +sgr-clr6-bg+ #x2E)
-(defconstant +sgr-clr7-bg+ #x2F)
-(defconstant +dsr-cpr+ 6)
-(defconstant +ctc-hsettab+ 0)
-(defconstant +ctc-hclrtab+ 2)
-(defconstant +ctc-hclrtabsall+ 5)
-(defconstant +tbc-hclrtab+ 0)
-(defconstant +tbc-hclrtabsall+ 3)
-(defconstant +m-lnm+ #x14)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.CONSOLE"
+    (:base *console-base* :version *console-version*)
 
-;;; --- structures from devices/console.i ---
-(ffi:defcstruct (console-scrollback :size 6)   ; ConsoleScrollback (devices/console.i)
-  (scroller-gadget :fptr 0)
-  (num-lines :u16 4)
-)
+  ;; --- constants from devices/console.i ---
+  (:const "+CD-ASKKEYMAP+" 9)
+  (:const "+CD-SETKEYMAP+" 10)
+  (:const "+CD-ASKDEFAULTKEYMAP+" 11)
+  (:const "+CD-SETDEFAULTKEYMAP+" 12)
+  (:const "+CD-SETUPSCROLLBACK+" 13)
+  (:const "+CD-SETSCROLLBACKPOSITION+" 14)
+  (:const "+SGR-PRIMARY+" 0)
+  (:const "+SGR-BOLD+" 1)
+  (:const "+SGR-ITALIC+" 3)
+  (:const "+SGR-UNDERSCORE+" 4)
+  (:const "+SGR-NEGATIVE+" 7)
+  (:const "+SGR-NORMAL+" #x16)
+  (:const "+SGR-NOTITALIC+" #x17)
+  (:const "+SGR-NOTUNDERSCORE+" #x18)
+  (:const "+SGR-POSITIVE+" #x1B)
+  (:const "+SGR-BLACK+" #x1E)
+  (:const "+SGR-RED+" #x1F)
+  (:const "+SGR-GREEN+" #x20)
+  (:const "+SGR-YELLOW+" #x21)
+  (:const "+SGR-BLUE+" #x22)
+  (:const "+SGR-MAGENTA+" #x23)
+  (:const "+SGR-CYAN+" #x24)
+  (:const "+SGR-WHITE+" #x25)
+  (:const "+SGR-DEFAULT+" #x27)
+  (:const "+SGR-BLACKBG+" #x28)
+  (:const "+SGR-REDBG+" #x29)
+  (:const "+SGR-GREENBG+" #x2A)
+  (:const "+SGR-YELLOWBG+" #x2B)
+  (:const "+SGR-BLUEBG+" #x2C)
+  (:const "+SGR-MAGENTABG+" #x2D)
+  (:const "+SGR-CYANBG+" #x2E)
+  (:const "+SGR-WHITEBG+" #x2F)
+  (:const "+SGR-DEFAULTBG+" #x31)
+  (:const "+SGR-CLR0+" #x1E)
+  (:const "+SGR-CLR1+" #x1F)
+  (:const "+SGR-CLR2+" #x20)
+  (:const "+SGR-CLR3+" #x21)
+  (:const "+SGR-CLR4+" #x22)
+  (:const "+SGR-CLR5+" #x23)
+  (:const "+SGR-CLR6+" #x24)
+  (:const "+SGR-CLR7+" #x25)
+  (:const "+SGR-CLR0-BG+" #x28)
+  (:const "+SGR-CLR1-BG+" #x29)
+  (:const "+SGR-CLR2-BG+" #x2A)
+  (:const "+SGR-CLR3-BG+" #x2B)
+  (:const "+SGR-CLR4-BG+" #x2C)
+  (:const "+SGR-CLR5-BG+" #x2D)
+  (:const "+SGR-CLR6-BG+" #x2E)
+  (:const "+SGR-CLR7-BG+" #x2F)
+  (:const "+DSR-CPR+" 6)
+  (:const "+CTC-HSETTAB+" 0)
+  (:const "+CTC-HCLRTAB+" 2)
+  (:const "+CTC-HCLRTABSALL+" 5)
+  (:const "+TBC-HCLRTAB+" 0)
+  (:const "+TBC-HCLRTABSALL+" 3)
+  (:const "+M-LNM+" #x14)
 
-;;; --- constants from devices/conunit.i ---
-(defconstant +conu-library+ -1)
-(defconstant +conu-standard+ 0)
-(defconstant +conu-charmap+ 1)
-(defconstant +conu-snipmap+ 3)
-(defconstant +conflag-default+ 0)
-(defconstant +conflag-nodraw-on-newsize+ 1)
-(defconstant +pmb-asm+ #x15)
-(defconstant +pmb-awm+ #x16)
-(defconstant +maxtabs+ #x50)
+  ;; --- structures from devices/console.i ---
+  (:struct "CONSOLE-SCROLLBACK" 6   ; ConsoleScrollback (devices/console.i)
+    ("SCROLLER-GADGET" :fptr 0)
+    ("NUM-LINES" :u16 4)
+    )
 
-;;; --- structures from devices/conunit.i ---
-(ffi:defcstruct (con-unit :size 296)   ; ConUnit (devices/conunit.i)
-  (window :fptr 34)
-  (xcp :i16 38)
-  (ycp :i16 40)
-  (x-max :i16 42)
-  (y-max :i16 44)
-  (xr-size :i16 46)
-  (yr-size :i16 48)
-  (xr-origin :i16 50)
-  (yr-origin :i16 52)
-  (xr-extant :i16 54)
-  (yr-extant :i16 56)
-  (x-min-shrink :i16 58)
-  (y-min-shrink :i16 60)
-  (xccp :i16 62)
-  (yccp :i16 64)
-  (key-map-struct (:struct 32) 66)
-  (tab-stops (:struct 160) 98)
-  (mask :i8 258)
-  (fg-pen :i8 259)
-  (bg-pen :i8 260)
-  (aol-pen :i8 261)
-  (draw-mode :i8 262)
-  (obsolete1 :i8 263)
-  (obsolete2 :fptr 264)
-  (minterms (:struct 8) 268)
-  (font :fptr 276)
-  (algo-style :u8 280)
-  (tx-flags :u8 281)
-  (tx-height :u16 282)
-  (tx-width :u16 284)
-  (tx-baseline :u16 286)
-  (tx-spacing :i16 288)
-  (modes (:struct 3) 290)
-  (raw-events (:struct 3) 293)
-)
+  ;; --- constants from devices/conunit.i ---
+  (:const "+CONU-LIBRARY+" -1)
+  (:const "+CONU-STANDARD+" 0)
+  (:const "+CONU-CHARMAP+" 1)
+  (:const "+CONU-SNIPMAP+" 3)
+  (:const "+CONFLAG-DEFAULT+" 0)
+  (:const "+CONFLAG-NODRAW-ON-NEWSIZE+" 1)
+  (:const "+PMB-ASM+" #x15)
+  (:const "+PMB-AWM+" #x16)
+  (:const "+MAXTABS+" #x50)
 
-;;; --- functions (console_lib.sfd + MorphOS SDK) ---
-(amiga.ffi:defcfun cd-input-handler *console-base* -42 (:a0 events :a1 console-device)
-    :result :pointer
-    :doc "struct InputEvent * CDInputHandler(CONST struct InputEvent * events, struct Library * consoleDevice) (A0,A1) LVO -42")
-(amiga.ffi:defcfun raw-key-convert *console-base* -48 (:a0 events :a1 buffer :d1 length :a2 key-map)
-    :result :signed
-    :doc "LONG RawKeyConvert(CONST struct InputEvent * events, STRPTR buffer, LONG length, CONST struct KeyMap * keyMap) (A0,A1,D1,A2) LVO -48")
+  ;; --- structures from devices/conunit.i ---
+  (:struct "CON-UNIT" 296   ; ConUnit (devices/conunit.i)
+    ("WINDOW" :fptr 34)
+    ("XCP" :i16 38)
+    ("YCP" :i16 40)
+    ("X-MAX" :i16 42)
+    ("Y-MAX" :i16 44)
+    ("XR-SIZE" :i16 46)
+    ("YR-SIZE" :i16 48)
+    ("XR-ORIGIN" :i16 50)
+    ("YR-ORIGIN" :i16 52)
+    ("XR-EXTANT" :i16 54)
+    ("YR-EXTANT" :i16 56)
+    ("X-MIN-SHRINK" :i16 58)
+    ("Y-MIN-SHRINK" :i16 60)
+    ("XCCP" :i16 62)
+    ("YCCP" :i16 64)
+    ("KEY-MAP-STRUCT" (:struct 32) 66)
+    ("TAB-STOPS" (:struct 160) 98)
+    ("MASK" :i8 258)
+    ("FG-PEN" :i8 259)
+    ("BG-PEN" :i8 260)
+    ("AOL-PEN" :i8 261)
+    ("DRAW-MODE" :i8 262)
+    ("OBSOLETE1" :i8 263)
+    ("OBSOLETE2" :fptr 264)
+    ("MINTERMS" (:struct 8) 268)
+    ("FONT" :fptr 276)
+    ("ALGO-STYLE" :u8 280)
+    ("TX-FLAGS" :u8 281)
+    ("TX-HEIGHT" :u16 282)
+    ("TX-WIDTH" :u16 284)
+    ("TX-BASELINE" :u16 286)
+    ("TX-SPACING" :i16 288)
+    ("MODES" (:struct 3) 290)
+    ("RAW-EVENTS" (:struct 3) 293)
+    )
+
+  ;; --- functions (console_lib.sfd + MorphOS SDK) ---
+  (:fn "CD-INPUT-HANDLER" -42 (:a0 :a1) :pointer)   ; struct InputEvent * CDInputHandler(CONST struct InputEvent * events, struct Library * consoleDevice) (A0,A1) LVO -42
+  (:fn "RAW-KEY-CONVERT" -48 (:a0 :a1 :d1 :a2) :signed)   ; LONG RawKeyConvert(CONST struct InputEvent * events, STRPTR buffer, LONG length, CONST struct KeyMap * keyMap) (A0,A1,D1,A2) LVO -48
+  )
 
 (provide "amiga/raw/console")

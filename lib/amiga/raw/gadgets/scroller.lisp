@@ -15,13 +15,7 @@
 
 (defpackage "AMIGA.RAW.GADGETS.SCROLLER"
   (:use "CL" "FFI" "AMIGA.FFI")
-  (:export
-   "*SCROLLER-BASE*" "*SCROLLER-VERSION*"
-   "+SCROLLER-DUMMY+" "+SCROLLER-TOP+" "+SCROLLER-VISIBLE+" 
-   "+SCROLLER-TOTAL+" "+SCROLLER-ORIENTATION+" "+SCROLLER-ARROWS+" 
-   "+SCROLLER-STRETCH+" "+SCROLLER-ARROW-DELTA+" "+SCROLLER-SIGNAL-TASK+" 
-   "+SCROLLER-SIGNAL-TASK-BIT+" "+SORIENT-HORIZ+" "+SORIENT-VERT+" 
-   "+SCROLLER-HORIZONTAL+" "+SCROLLER-VERTICAL+" "SCROLLER-GET-CLASS" ))
+  (:export "*SCROLLER-BASE*" "*SCROLLER-VERSION*"))
 
 (in-package "AMIGA.RAW.GADGETS.SCROLLER")
 
@@ -35,26 +29,30 @@
 (defun %version>= (n)
   (and *scroller-version* (>= *scroller-version* n)))
 
-;;; --- constants from gadgets/scroller.h ---
-(defconstant +scroller-dummy+ #x85005000)
-(defconstant +scroller-top+ #x85005001)
-(defconstant +scroller-visible+ #x85005002)
-(defconstant +scroller-total+ #x85005003)
-(defconstant +scroller-orientation+ #x85005004)
-(defconstant +scroller-arrows+ #x85005005)
-(defconstant +scroller-stretch+ #x85005006)
-(defconstant +scroller-arrow-delta+ #x85005007)
-(defconstant +scroller-signal-task+ #x8500500A)
-(defconstant +scroller-signal-task-bit+ #x8500500B)
-(defconstant +sorient-horiz+ 2)
-(defconstant +sorient-vert+ 4)
-(defconstant +scroller-horizontal+ 2)
-(defconstant +scroller-vertical+ 4)
+;;; Binding table  every name below is built the first time anything
+;;; refers to it (specs/raw-bindings-footprint.md); until then the module
+;;; costs the packed table only.  Row syntax: AMIGA.FFI:DEFINE-BINDING-TABLE.
+(amiga.ffi:define-binding-table "AMIGA.RAW.GADGETS.SCROLLER"
+    (:base *scroller-base* :version *scroller-version*)
 
-;;; --- functions (scroller_lib.sfd + MorphOS SDK) ---
-(when (%version>= 40)
-  (amiga.ffi:defcfun scroller-get-class *scroller-base* -30 ()
-    :result :pointer
-    :doc "Class * SCROLLER_GetClass() () LVO -30"))
+  ;; --- constants from gadgets/scroller.h ---
+  (:const "+SCROLLER-DUMMY+" #x85005000)
+  (:const "+SCROLLER-TOP+" #x85005001)
+  (:const "+SCROLLER-VISIBLE+" #x85005002)
+  (:const "+SCROLLER-TOTAL+" #x85005003)
+  (:const "+SCROLLER-ORIENTATION+" #x85005004)
+  (:const "+SCROLLER-ARROWS+" #x85005005)
+  (:const "+SCROLLER-STRETCH+" #x85005006)
+  (:const "+SCROLLER-ARROW-DELTA+" #x85005007)
+  (:const "+SCROLLER-SIGNAL-TASK+" #x8500500A)
+  (:const "+SCROLLER-SIGNAL-TASK-BIT+" #x8500500B)
+  (:const "+SORIENT-HORIZ+" 2)
+  (:const "+SORIENT-VERT+" 4)
+  (:const "+SCROLLER-HORIZONTAL+" 2)
+  (:const "+SCROLLER-VERTICAL+" 4)
+
+  ;; --- functions (scroller_lib.sfd + MorphOS SDK) ---
+  (:fn "SCROLLER-GET-CLASS" -30 () :pointer 40)   ; Class * SCROLLER_GetClass() () LVO -30
+  )
 
 (provide "amiga/raw/gadgets/scroller")

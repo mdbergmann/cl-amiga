@@ -1550,6 +1550,7 @@ void cl_builtins_inspect_init(void);
 void cl_builtins_thread_init(void);
 void cl_builtins_ffi_init(void);
 void cl_builtins_amiga_init(void);
+void cl_builtins_bindtab_init(void);
 
 /* --- Function arglist introspection (EXT:FUNCTION-ARGLIST) ----------------
  *
@@ -2100,6 +2101,7 @@ void cl_builtins_init(void)
     cl_builtins_thread_init();
     cl_builtins_ffi_init();
     cl_builtins_amiga_init();
+    cl_builtins_bindtab_init();
 
     /* CL functions not yet implemented — register stubs so FBOUNDP /
      * SYMBOL-FUNCTION return non-NIL; any call signals an error. */

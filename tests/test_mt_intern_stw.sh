@@ -45,6 +45,16 @@ if [ -n "$CLAMIGA_GC_STRESS" ]; then
     runs=1
     run_timeout=90
     cat > "$tmp" <<'EOF'
+;; Demand-interned binding table (bindtab.c): every thread looks up the
+;; SAME 12 names in one lazy package; a materialisation allocates outside
+;; cl_package_rwlock and links under it with a re-check, so the losers of
+;; a race must end up with the winner's symbol — all lists EQ, pairwise.
+(defpackage "T2-LAZY" (:use "CL"))
+(clamiga::%register-binding-table "T2-LAZY"
+  (clamiga::%make-binding-table
+   (loop for i below 12 collect (list :const (format nil "+L~D+" i) i)))
+  nil nil)
+(defvar *lazy-names* (loop for i below 12 collect (format nil "+L~D+" i)))
 (defvar *threads*
   (let (acc)
     (dotimes (tid 4 acc)
@@ -54,6 +64,11 @@ if [ -n "$CLAMIGA_GC_STRESS" ]; then
           (lambda ()
             (let ((pkg (make-package (format nil "T2-PKG-~d" tid))))
               (dotimes (i 15)
+                ;; lazy package: concurrent first-touch of the same names
+                (when (< i 12)
+                  (multiple-value-bind (s st) (find-symbol (nth i *lazy-names*) "T2-LAZY")
+                    (unless (and (eq st :external) (eql (symbol-value s) i))
+                      (error "lazy symbol ~A wrong: ~A ~A" (nth i *lazy-names*) s st))))
                 ;; Fresh names: every intern takes the slow path (symbol +
                 ;; bucket-cell alloc, then the write-locked link) while the
                 ;; peers hammer the read lock — exactly the pre-fix
@@ -78,17 +93,31 @@ if [ -n "$CLAMIGA_GC_STRESS" ]; then
                   (eval (list 'deftype
                               (intern (format nil "T2-TYP-~d-~d" tid i))
                               '() ''integer))))
-              :ok))))
+              (cons :ok (mapcar (lambda (nm) (find-symbol nm "T2-LAZY")) *lazy-names*))))))
        acc))))
-(let ((n 0))
+(let ((n 0) (lists nil))
   (dolist (th *threads*)
-    (when (eq (mp:join-thread th) :ok) (incf n)))
+    (let ((r (mp:join-thread th)))
+      (when (and (consp r) (eq (car r) :ok)) (incf n) (push (cdr r) lists))))
+  ;; every thread saw the SAME symbol objects
+  (unless (every (lambda (l) (every #'eq l (first lists))) lists)
+    (error "lazy symbols differ between threads"))
   (format t "T2-DONE=~d~%" n))
 EOF
 else
     runs=4
     run_timeout=60
     cat > "$tmp" <<'EOF'
+;; Demand-interned binding table (bindtab.c): the four threads first-touch
+;; the SAME 60 names of one lazy package concurrently (materialisation =
+;; allocate outside cl_package_rwlock, link under it with a re-check); the
+;; losers of a race must end up with the winner's symbol — all lists EQ.
+(defpackage "T2-LAZY" (:use "CL"))
+(clamiga::%register-binding-table "T2-LAZY"
+  (clamiga::%make-binding-table
+   (loop for i below 60 collect (list :const (format nil "+L~D+" i) i)))
+  nil nil)
+(defvar *lazy-names* (loop for i below 60 collect (format nil "+L~D+" i)))
 (defvar *threads*
   (let (acc)
     (dotimes (tid 4 acc)
@@ -97,6 +126,11 @@ else
          (mp:make-thread
           (lambda ()
             (dotimes (i 300)
+              ;; lazy package: concurrent first-touch of the same names
+              (when (< i 60)
+                (multiple-value-bind (s st) (find-symbol (nth i *lazy-names*) "T2-LAZY")
+                  (unless (and (eq st :external) (eql (symbol-value s) i))
+                    (error "lazy symbol ~A wrong: ~A ~A" (nth i *lazy-names*) s st))))
               ;; Fresh names: every intern takes the slow path (symbol +
               ;; bucket-cell alloc, then the write-locked link) while the
               ;; peers hammer the read lock — exactly the pre-fix
@@ -114,11 +148,15 @@ else
               ;; Allocation pressure so STW GCs actually happen mid-loop.
               (when (zerop (mod i 10))
                 (make-string 2048 :initial-element #\x)))
-            :ok)))
+            (cons :ok (mapcar (lambda (nm) (find-symbol nm "T2-LAZY")) *lazy-names*)))))
        acc))))
-(let ((n 0))
+(let ((n 0) (lists nil))
   (dolist (th *threads*)
-    (when (eq (mp:join-thread th) :ok) (incf n)))
+    (let ((r (mp:join-thread th)))
+      (when (and (consp r) (eq (car r) :ok)) (incf n) (push (cdr r) lists))))
+  ;; every thread saw the SAME symbol objects
+  (unless (every (lambda (l) (every #'eq l (first lists))) lists)
+    (error "lazy symbols differ between threads"))
   (format t "T2-DONE=~d~%" n))
 EOF
 fi
