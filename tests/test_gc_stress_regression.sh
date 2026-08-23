@@ -5132,6 +5132,66 @@ if compile_fasl "$WORK/bt.lisp" "$WORK/bt.fasl"; then
   (list (clamiga::%binding-table-info "GCSTRESS-BT7")
         (eq (find-symbol "FOREIGN" "GCSTRESS-BT7") *bt7-foreign*)
         (fboundp 'gcstress-bt7::foo)))
+
+;; SHED (SAVE-IMAGE :SHAKE-BINDINGS, spec Phase 3) under the storm: the blob
+;; becomes garbage while the compactor runs on every allocation, so a stale
+;; reference to it — or a probe that reads the NIL blob slot as a byte vector
+;; — would surface here.  What was touched before the shed must survive the
+;; churn intact; what was not must stay a clean miss.
+(defpackage :gcstress-bt8 (:use :cl))
+(amiga.ffi:define-binding-table "GCSTRESS-BT8" (:base gcstress-bt:*bt-base*)
+  (:const "+A+" 1) (:const "+B+" #x746578742E6461746174797065)
+  (:fn "FOO" -30 (:a0) :pointer) (:struct "PT" 8 ("X" :i16 0)))
+(defvar *bt8-a* 'gcstress-bt8:+a+)
+(defvar *bt8-foo* (fboundp 'gcstress-bt8:foo))
+(format t "BT-SHED-BYTES:~a~%" (> (clamiga::%shed-binding-tables "GCSTRESS-BT8") 60))
+(dotimes (i 300) (make-string 64))
+(ext:gc)
+(format t "BT-SHED:~a~%"
+  (list (getf (clamiga::%binding-table-info "GCSTRESS-BT8") :shed)
+        (eq *bt8-a* 'gcstress-bt8:+a+)
+        gcstress-bt8:+a+
+        (getf (ffi::%ffi-stub-info #'gcstress-bt8:foo) :lvo)
+        (multiple-value-list (find-symbol "+B+" "GCSTRESS-BT8"))))
+;; the eager flip must be a no-op on a shed package, not a NIL-blob read
+(clamiga::%binding-table-materialize-all "GCSTRESS-BT8")
+(dotimes (i 300) (make-string 64))
+(format t "BT-SHED-FLIP:~a~%"
+  (list (getf (clamiga::%binding-table-info "GCSTRESS-BT8") :shed)
+        (multiple-value-list (find-symbol "PT-X" "GCSTRESS-BT8"))))
+;; re-registering over a shed package brings the names back
+(amiga.ffi:define-binding-table "GCSTRESS-BT8" (:base gcstress-bt:*bt-base*)
+  (:const "+A+" 1) (:const "+B+" 2))
+(format t "BT-SHED-RELOAD:~a~%"
+  (list (eq *bt8-a* 'gcstress-bt8:+a+) gcstress-bt8:+b+
+        (getf (clamiga::%binding-table-info "GCSTRESS-BT8") :shed)))
+
+;; The reader's shed hint (reader.c) inspects the PACKAGE *after* a lookup
+;; that can materialise an INHERITED name — an allocation, i.e. a compaction
+;; under this harness.  Reading `pkg:name` where NAME lives in a used
+;; package's still-lazy table is exactly that window: the name materialises
+;; (status :INHERITED, not :EXTERNAL), so the error path runs with the
+;; package object it looked up before the allocation.  Holding that
+;; unprotected would produce a garbled/wrong message or a fault here.
+;; The hint itself must NOT fire: GCSTRESS-BT10 was shed, but the miss is
+;; an :INHERITED hit from GCSTRESS-BT9's still-lazy table, which shedding
+;; BT10 cannot have caused — only a clean not-found (status 0) earns the
+;; "shed by SAVE-IMAGE" wording.
+(defpackage :gcstress-bt9 (:use :cl))
+(amiga.ffi:define-binding-table "GCSTRESS-BT9" () (:const "+INHERITED+" 5))
+(defpackage :gcstress-bt10 (:use :cl :gcstress-bt9))
+(amiga.ffi:define-binding-table "GCSTRESS-BT10" () (:const "+OWN+" 6))
+(clamiga::%shed-binding-tables "GCSTRESS-BT10")
+(format t "BT-SHED-INHERIT:~a~%"
+  (handler-case (progn (read-from-string "gcstress-bt10:+inherited+") :no-error)
+    (error (c) (let ((m (format nil "~a" c)))
+                 (list (and (search "not exported from" m) t)
+                       (and (search "GCSTRESS-BT10" m) t)
+                       (and (search "shed by SAVE-IMAGE" m) t))))))
+;; ...and the inherited name really was materialised by that lookup
+(format t "BT-SHED-INHERIT-VAL:~a~%"
+  (list (symbol-value (find-symbol "+INHERITED+" "GCSTRESS-BT9"))
+        (nth-value 1 (find-symbol "+INHERITED+" "GCSTRESS-BT10"))))
 EOF
     out=$(run_stress "$WORK/bt-load.lisp")
     check_contains "FASL-loaded binding table registers (entry count)"     "BT-INFO:12" "$out"
@@ -5153,6 +5213,14 @@ EOF
     check_contains "SHADOWING-IMPORT into a lazy package flips and shadows" "BT-SHADOW-AFTER:(NIL T T)" "$out"
     check_contains "EXPORT of a foreign symbol into a lazy package (before)" "BT-EXPORT-BEFORE:T" "$out"
     check_contains "EXPORT of a foreign symbol into a lazy package flips"   "BT-EXPORT-AFTER:(NIL T T)" "$out"
+    check_contains "SHED reports the blob bytes it dropped"                 "BT-SHED-BYTES:T" "$out"
+    check_contains "SHED keeps touched names, drops untouched, under stress" \
+      "BT-SHED:(T T 1 -30 (NIL NIL))" "$out"
+    check_contains "eager flip on a shed package is a no-op under stress"   "BT-SHED-FLIP:(T (NIL NIL))" "$out"
+    check_contains "re-registering over a shed package restores lookups"    "BT-SHED-RELOAD:(T 2 NIL)" "$out"
+    check_contains "shed hint reads a LIVE package after an inherited materialisation, and stays silent (miss isn't shed-caused)" \
+      "BT-SHED-INHERIT:(T T NIL)" "$out"
+    check_contains "the inherited name materialised through the used table"  "BT-SHED-INHERIT-VAL:(5 INHERITED)" "$out"
     check_absent   "no corruption diagnostics from the binding-table paths" \
       "corrupted\|type 0\|BADMARK\|badmark\|SIGSEGV\|Unbound" "$out"
 else

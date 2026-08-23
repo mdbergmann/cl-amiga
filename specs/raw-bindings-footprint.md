@@ -3,8 +3,11 @@
 Status: Phase 1, the side fixes AND Phase 2 IMPLEMENTED (2026-08-23,
 branch `feat/ffi-stub-descriptors`).  See "Phase 1 — results" and
 "Phase 2 — results" below for what landed and where it deviates from
-the design text.
-Date: 2026-08-22 (design), 2026-08-23 (results)
+the design text.  Phase 3 (EXT:SAVE-IMAGE :SHAKE-BINDINGS, for Closure
+Tale's image-based deployment) IMPLEMENTED 2026-08-23 — see "Phase 3 —
+results".  Phase 4 (rebase the curated modules onto raw) DESIGNED
+2026-08-23, not yet implemented.
+Date: 2026-08-22 (design), 2026-08-23 (results, Phase 3+4)
 Scope: `lib/amiga/raw/*` (generated), `lib/amiga/ffi.lisp` (`defcfun`),
 `lib/ffi.lisp` (`defcstruct`), the curated `lib/amiga/*.lisp` modules that
 use both, and the runtime pieces that give them a representation.
@@ -588,13 +591,418 @@ Not done (noted, cheap to add later): a file-level source-location
 record for M-.; a table-walking `%package-external-symbols` that avoids
 the flip for completion; MUI/AHI inputs.
 
-## Phase 3 — tree-shaking at `EXT:SAVE-IMAGE` (sketch, not designed)
+## Phase 3 — image delivery: shed the binding tables at `EXT:SAVE-IMAGE` (IMPLEMENTED 2026-08-23)
 
-The LispWorks/Allegro "delivery" model: load, scan every bytecode
-constant vector and symbol cell for referenced symbols of the raw
-packages, unintern the rest, GC, save.  Helps only image-based
-deployment and breaks on `(intern (format nil …))`-style dynamic
-references; Phase 2 makes it mostly moot.  Left as a note.
+Motivation: Closure Tale is moving to image-based deployment —
+`clamiga` + `closure.img`, the second user story of
+`specs/image-save-load.md` (today `run-amiga.sh` boots `clamiga --load
+src/main-amiga.lisp` and pays the full load every start).  In an image
+the set of referenced names is **closed** the moment the dump is
+written; a binding table's only job — answering a name not seen before
+— ends there, so in a delivered image the blobs are dead weight.
+
+Measured (host, 2026-08-23): after Phase 2 the four common modules cost
+179 KB of heap, of which **152.7 KB is the blobs** (exec 22,190 B,
+intuition 47,491 B, graphics 50,815 B, dos 32,182 B; the name arena is
+48–52 % of each).  A base image is 384 KB of heap, 560 KB with the four
+loaded.  Shedding the tables takes the four modules to ~26 KB of eager
+definitions plus ~95 B per name the program actually touched.
+
+The original sketch here was the LispWorks/Allegro delivery model: scan
+every bytecode constant vector for referenced symbols, unintern the
+rest.  That inverts the value: the risky part (unintern by reachability)
+chases only the ~95 B/name materialised residue, while the safe part —
+dropping the tables — recovers 85 % of the cost.  So Level 1 below
+drops the tables and is designed; the unintern pass stays a sketch
+(Level 2), deliberately.
+
+### Level 1 — `:shake-bindings`
+
+Surface: `(ext:save-image path &key quit shake-bindings)`.  In
+`bi_save_image` (image.c:1388) parse `KW_SHAKE_BINDINGS` next to
+`KW_QUIT_IMG` (the keyword loop at image.c:1399), builtin registration
+max args 3 → 5 (image.c:1441), the unknown-keyword message names both.
+The flag rides the pending-save state (`image_pending_shake` next to
+`image_pending_quit`, image.c:213; `cl_image_save_request` gains the
+parameter — image.h:71).  `t` sheds every lazy package; no package-list
+variant until something needs one (by construction only raw binding
+modules are lazy).  Not an env var, not a `require` mode: shedding is a
+property of one dump.
+
+Execution: in `cl_image_save_run_if_pending` (image.c:619), after the
+save hooks and the re-checked preconditions and **before** step 3's
+`cl_gc(); cl_gc_compact();` (image.c:677) — so a table registered by a
+save hook's own `require` is shed too, and the blobs are garbage by the
+time the dump GC runs.  Walk `cl_package_registry` (package.c:31), call
+the new `cl_bindtab_shed(pkg)` on every package whose `bindings` is
+non-NIL, then print one line in the house style:
+
+    ; SAVE-IMAGE: shed 4 binding tables (149 KB) - raw names not
+    ; referenced before the save do not exist in the restored image
+
+`cl_bindtab_shed` (bindtab.c) is **not** the eager flip
+(`cl_bindtab_materialize_all`, bindtab.c:1050, would materialise ~5000
+symbols — the opposite of the goal): under the write lock it stores NIL
+into the vector's `CL_BT_SLOT_BLOB` and keeps the 3-slot vector — its
+presence is the "this package *was* lazy" marker.  The save
+preconditions guarantee a single thread (image.c:262), so the lock is
+belt-and-braces.  The blob's only reference is that slot (the FASL
+unit's constant vector is not retained after load — the measured
+50 KB/module Phase 2 delta counts one copy), so the dump GC reclaims
+it.
+
+Two NIL-blob guards make the rest of the runtime treat a shed table as
+a guaranteed miss with **no changes at the call sites**:
+`cl_bindtab_probe_nolock` returns 0 when the blob slot is NIL (covers
+the funnel checks at package.c:357/372/400/553/660/706), and
+`cl_bindtab_materialize_all` no-ops — today it only checks
+`pkg_bindings` for NIL (bindtab.c:1053) and would `view_blob` a NIL
+blob, so this guard is load-bearing, not cosmetic.
+
+### The closed-world contract (restored image)
+
+- Every name touched before the save is an ordinary symbol with its
+  stub/value — direct calls, `#'`, `funcall`, `(setf (field …))`,
+  `trace` unchanged.
+- A never-touched name is **gone**: `find-symbol` → NIL,NIL (per CLHS,
+  indistinguishable from a name that never existed); `intern` makes a
+  fresh unbound symbol.  Dynamic references — `(intern (format nil …))`,
+  `read` of input naming raw symbols — must all happen before the save:
+  the same closed-world assumption every delivery-model Lisp makes.
+- **Read-time probes change behaviour**: under Phase 2,
+  `(fboundp 'amiga.raw.x:untouched)` materialised the name and returned
+  NIL; in a shed image the *reader* signals "Symbol … not exported"
+  (reader.c:833).  Touch probed names before saving, or probe with
+  `(find-symbol "NAME" pkg)`.
+- Diagnosability: the kept 3-slot vector answers a new
+  `cl_package_shed_p`; the reader's qualified-symbol miss appends
+  ", whose binding table was shed by SAVE-IMAGE :SHAKE-BINDINGS - names
+  not referenced before the image was saved do not exist in it";
+  `%binding-table-info` returns `(:shed T :entries 0 …)`; `describe` of
+  the package says it.
+- Guard outcomes are **baked on the saving machine**: a materialised
+  V47/MorphOS-guarded name carries the save machine's answer (the eager
+  modules had the same property per load; an image carries it across
+  machines).  Ship images built against the oldest configuration you
+  support, or keep explicit `(amiga:%version>= n)`-style checks in app
+  code.
+- Escape hatch: hand-loading the module's FASL again re-registers a
+  fresh table (`%register-binding-table` replaces any previous one,
+  bindtab.h:99) — a restored dev session can buy the full name set
+  back; `require` alone won't (the module is in `*modules*`).
+
+No `CL_FASL_VERSION` bump (no wire change) and no `CL_IMAGE_VERSION`
+bump (no layout change — a shed package is an ordinary package whose
+bindings vector has a NIL slot; images are per-build anyway).
+
+### Level 2 — sketch: uninterning the dead residue (not designed)
+
+What remains per touched name is ~95 B (symbol + name + export cons +
+stub/value).  Some touched names are dead at runtime — a folded
+`+wa-left+` whose value sits in a constant vector while the symbol is
+referenced by nothing but the package.  A precise pass exists: mark
+from all roots with the shed packages' symbol tables and export lists
+treated as weak, unintern the unmarked, let the dump GC sweep them.
+Two anchors defeat the naive version — `setf_table` roots the
+`(reader . %SET-reader)` pair of every materialised field accessor, and
+the `documentation` hash roots host docstrings — so the pass needs
+per-table weakness rules.  Payoff: a ReAction-sized working set of 150
+names is 14 KB total, the dead subset less.  Revisit only if
+measurement after Phase 4 shows tens of KB of dead residue; until then
+the risk/benefit is upside down.
+
+### Deployment recipe (Closure Tale)
+
+Images are per-build and per-platform (docs/ext.md "Images are
+per-build"), so the shipped image must be written by the shipped Amiga
+binary — inside FS-UAE, the same harness `tests/amiga/image-save.lisp`
+uses:
+
+1. A build entry script loads everything `src/main-amiga.lisp` loads
+   but stops **before** UI init: no open screen/window/file (OS handles
+   don't survive — open streams and owned foreign pointers block the
+   save, image.c:277-320; restored foreign pointers are invalidated).
+2. Push the game entry onto `ext:*restore-hooks*`, then
+   `(ext:save-image "closure.img" :shake-bindings t :quit t)`.
+3. Shipped launch line: `clamiga --image closure.img` (restore hooks
+   run after `~/.clamigarc`; add `--no-userinit` if rc interference
+   matters).  `--eval "(tale:main)"` works too — actions run after the
+   restore (main.c:747).
+4. Ship `clamiga` + `closure.img` + the runtime data files (worlds/);
+   `lib/` is needed only for post-restore `require`s of modules the
+   image doesn't already contain.
+
+### Tests
+
+Host (`make test`):
+
+- `tests/test_binding_table.c`: shed a registered table — following GC
+  reclaims the blob (heap shrinks), probe misses, materialise-all
+  no-ops, `%binding-table-info` reports `:shed`, re-registration
+  restores laziness; the same under `CLAMIGA_GC_STRESS=1` (gc-stress
+  tier).
+- `tests/test_image.sh`: load raw/intuition on the host; touch a
+  constant, a field accessor and `#'`a function;
+  `(ext:save-image f :shake-bindings t)`.  Restored: touched names
+  intact (value, `(setf (field …))`, `funcall` reaches the arity
+  check), untouched name → `find-symbol` NIL, reader `pkg:untouched`
+  error carries the shed hint, image file measurably smaller than an
+  unshaken one.  `:shake-bindings` with no lazy package loaded: clean
+  no-op.
+
+Amiga (`make -f Makefile.cross test-amiga`): extend
+`tests/amiga/image-save.lisp` / `image-verify.lisp` — save with a raw
+module loaded and an OS call touched; the restored session makes the
+call against the real library and logs `ROOM` next to the existing
+`; raw-bindings:` suite lines.
+
+Docs: `docs/ext.md` heap-images table (`&key quit shake-bindings`) plus
+a delivery paragraph; one sentence in README "Heap images".
+
+Effort: ≈ 1 day — `cl_bindtab_shed` + the two NIL-blob guards + keyword
+plumbing + reader hint + tests.
+
+### Phase 3 — results (implemented 2026-08-23)
+
+Measured on the host (`--heap 64M`, FASL-cache load, image file size and
+the `ROOM` heap the dump reports):
+
+| image contents                     | plain      | `:shake-bindings t` | shed   |
+|------------------------------------|-----------:|--------------------:|-------:|
+| base session (no raw module)       |   589 KB   |      589 KB (no-op) |   0    |
+| + raw/intuition                    |   665 KB   |          617 KB     |  47 KB |
+| + exec, intuition, graphics, dos   |   781 KB   |          629 KB     | 150 KB |
+
+Heap at the dump: 449 → 402 KB (intuition), 560 → 411 KB (the four).  The
+saving is exactly the blob bytes — nothing else changes — and a session
+with no lazy package is an untouched no-op.
+
+What landed, and where it deviates from the design above:
+
+- **`cl_bindtab_shed` / `cl_bindtab_shed_all` / `cl_bindtab_shed_p`**
+  (`bindtab.c`) as designed: a plain store of NIL into
+  `CL_BT_SLOT_BLOB` under the write lock, the 3-slot vector kept as the
+  "was lazy" marker, the blob reclaimed by the dump GC.
+  `EXT:SAVE-IMAGE` gained `:shake-bindings` (max args 3 → 5,
+  `image_pending_shake`, shed at step 2b — after the save hooks, before
+  `cl_gc(); cl_gc_compact()`).
+- **The NIL-blob guard went in three places, not two.**  Besides
+  `cl_bindtab_probe_nolock` and `cl_bindtab_materialize_all`,
+  `cl_bindtab_materialize` needed it: it tests the bindings *vector* for
+  NIL to detect a concurrent flip, and a shed package has a non-NIL
+  vector.  All three now read the blob through one `pkg_blob()` helper,
+  which is the invariant worth keeping: nothing reads
+  `CL_BT_SLOT_BLOB` directly.
+- **Deviation — an internal `clamiga::%shed-binding-tables` builtin.**
+  The design had no Lisp surface at all, which would have made the
+  operation testable only by writing an image (and untestable under
+  `CLAMIGA_GC_STRESS`, where a dump is impractical).  It mirrors the
+  existing `%BINDING-TABLE-MATERIALIZE-ALL` hook: internal, undocumented
+  in `docs/ext.md`, returns the bytes shed.
+- `%BINDING-TABLE-INFO` reports `:SHED T` with `:ENTRIES`/`:BYTES` 0;
+  `%BINDING-TABLE-ENTRIES` returns NIL.  The reader's
+  unknown-qualified-symbol error appends "that package's binding table
+  was shed by SAVE-IMAGE :SHAKE-BINDINGS, so only names referenced
+  before the image was saved exist in it" — the single most important
+  line of the whole phase, since the alternative reads as a typo.
+- **The printed line names the session, not just the image**: shedding
+  is permanent for the running process too, and a write failure
+  afterwards does not put the tables back.  `; SAVE-IMAGE: shed N
+  binding table(s) (K KB) - the image and this session now resolve only
+  the names already referenced in those packages`.
+- **A GC bug caught before it shipped, in the hint itself.**  The first
+  version asked `cl_bindtab_shed_p(package)` *after*
+  `cl_find_symbol_with_status` — but `package` is an **unprotected**
+  reader local, and that lookup allocates whenever it materialises an
+  **inherited** name from a used package's table (status `:INHERITED`,
+  which is exactly when the error path runs).  Any allocation may
+  compact, leaving the local stale: the textbook failure of this
+  codebase's GC discipline, in code whose only job is to print a
+  message.  The shipped form **samples the flag before the lookup**
+  (`int shed_pkg = cl_bindtab_shed_p(package);`) — no GC window by
+  construction, no lock, and cheaper than the intermediate fix that
+  re-derived the package with `cl_find_package` on the error path.
+  `test_gc_stress_regression.sh` pins the window ("shed hint reads a
+  LIVE package after an inherited materialisation") with a shed package
+  that uses a still-lazy one.  Worth remembering: reading a package or
+  symbol *after* a lookup is not obviously an allocating call site, but
+  with demand-interning it is one.
+- **Learned while testing**: materialising a field accessor also
+  materialises its `%SET-` twin, so a shed package never has a
+  half-present reader/writer pair — worth knowing, and now pinned.
+- Not done: `DESCRIBE` of a package says nothing about its binding
+  table (it never did — there is no package branch for it), so
+  `%BINDING-TABLE-INFO` remains the introspection path.
+- No `CL_FASL_VERSION` / `CL_IMAGE_VERSION` bump, as predicted (a shed
+  package is an ordinary package whose bindings vector has a NIL slot).
+- **Tests**: `tests/test_binding_table.c` (two cases: the closed-package
+  semantics end to end, and `shed_all` proving the blobs become garbage
+  by measuring `cl_heap.bump` across a compaction);
+  `tests/test_image.sh` (10 new checks: the report line, the image
+  actually shrinks, the restored session keeps touched names and misses
+  untouched ones with the hint, an unshaken control image, the no-lazy-
+  package no-op, the keyword error); `test_gc_stress_regression.sh`
+  (shed under the every-allocation compaction storm — and `test_image.sh`
+  already runs under `CLAMIGA_GC_STRESS=1` in that target);
+  `tests/amiga/image-save.lisp` + `image-verify.lisp` now save with
+  `:shake-bindings t` and check 9 target-side properties (the second
+  Amiga image leg, `boot.img` → full suite, deliberately stays unshaken
+  so shedding cannot mask a regression there).
+
+## Phase 4 — rebase the curated modules onto raw (designed 2026-08-23)
+
+The deferred item from `raw_os_bindings_generator`, finally affordable.
+Motivation is **single source of truth**, not memory: every curated
+LVO, offset and constant value duplicates a generated raw row and can
+drift (the cross-check test exists precisely because it did); and for
+Closure Tale's image deployment Phase 3 has nothing to shed until the
+game's modules sit on the tables.  A bonus is speed: the curated
+intuition/gadtools/exec/audio calls go through `amiga:call-library`'s
+runtime plist path (consing per call); rebased onto raw `:fn` stubs
+they compile to bare `OP_AMIGA_CALL`.
+
+### Census (2026-08-23; the numbers the design rests on)
+
+Seven curated modules (there is no curated `dos`), 285 exported names,
+all with explicit `:export` string lists, none with `:shadow`:
+
+- **Functions**: 73 entry points (15 `defcfun` in graphics; 36 hand
+  `amiga:call-library` sites + `+LVO-…+` constants in
+  intuition/gadtools/exec; audio funnels 10 exec calls through one
+  `%exec`; reaction already calls raw packages; arexx has no FFI).
+  **65 name-identical** to a raw `:fn` row (some in `raw/exec` /
+  `raw/dos` rather than the module's own library), **8 renamed**,
+  **0 missing**.  The renames are three generator conventions:
+  `MOVE-TO/DRAW-TO` → raw `MOVE/DRAW` (no `-TO` in the SFD name),
+  hump-splitting (`SET-DRMD`→`SET-DR-MD`, `GT-GET-IMSG`→`GT-GET-I-MSG`,
+  `GT-REPLY-IMSG`→`GT-REPLY-I-MSG`, inverse `BEST-MODE-ID-A`→
+  `BEST-MODE-IDA`), a dropped `%` (`%WRITE-CHUNKY-PIXELS`→
+  `WRITE-CHUNKY-PIXELS`) and the foreign-library prefix
+  (`+LVO-DOS-DELAY+`→`AMIGA.RAW.DOS:DELAY`).
+- **Constants**: 172 non-LVO; **148 name-identical** (including the
+  tag-expression ones — raw inlines the absolute values), 24 absent
+  under the curated name: 5 renamed (`+JAM1+`→`+RP-JAM1+` family,
+  `+WA-CUSTOMSCREEN+`→`+WA-CUSTOM-SCREEN+`), 5 living in another raw
+  module (`+TAG-USER+`→utility, `+IECLASS-…+`/`+IEQUALIFIER-…+`→
+  devices/inputevent), 3 kind-changed to the `:struct`-derived size
+  variable (`+RASTPORT-SIZE+`→`*RASTPORT-SIZE*` etc.), and 11
+  genuinely curated-only (minterm/timing/API constants + the
+  `+WA-DUMMY+`/`+SA-DUMMY+` tag bases).  One value quirk:
+  `+NM-BARLABEL+` is `#xFFFFFFFF` curated vs `-1` raw — same 32 bits.
+- **Struct accessors**: 61; **38 identical, 22 renamed** (hump splits,
+  `WINDOW-UPORT`→`WINDOW-USER-PORT`, the C-field-prefix conventions in
+  NewMenu/InputEvent, and audio's flattened `IOAUDIO` vs raw's
+  `IO-REQUEST` header + `IO-AUDIO` tail split), **1 missing**
+  (`IOAUDIO-LN-PRI` — the Node priority; alias it to raw/exec's
+  NODE/MESSAGE accessor if the generator emits one, else it stays a
+  hand accessor).
+- **No dynamic name lookups anywhere in `lib/amiga`** — zero `intern`
+  / `find-symbol` / `read-from-string`; reaction's tag builders take
+  resolved values, class names are strings passed to `NewObjectA`.
+  Renames cannot break a reflective path.
+- **The C runtime binds only to `AMIGA` and `KEYWORD` names**
+  (package.c:1370, builtins_amiga.c:783-794 — nothing interns into
+  `AMIGA.GFX` etc. by name).
+- **Every external user is package-qualified against the curated
+  names** (lambda-tale/src 280 refs, dominated by `amiga.gfx:set-a-pen`
+  68 / `rect-fill` 39; one `:use` in `examples/amiga/gfx/`), so the
+  curated API surface must stay stable — and can, cheaply.
+
+### Design
+
+Curated packages, names and exports stay exactly as they are.  What
+changes is where the definitions come from:
+
+1. Each curated module `(require "amiga/raw/<lib>")` (plus
+   `raw/utility`, `raw/devices/inputevent`, `raw/exec`, `raw/dos`
+   where the census says so) **before** its `defpackage` — the
+   established order (see the `amiga/ffi`-before-`#+amigaos` rule).
+2. **Name-identical entries (65 fn + 148 const + 38 accessors) become
+   import-and-reexport**: the `defpackage` gains `(:import-from
+   "AMIGA.RAW.GRAPHICS" "SET-A-PEN" …)`; the existing `:export` list
+   already names them.  Importing materialises each name once
+   (~107 B) — the curated surface is ~285 names, so the whole eager
+   cost is ~30 KB and the tables stay lazy for everything else.  The
+   curated `defcfun`s, hand LVO constants, `call-library` wrappers
+   whose body is just the call, duplicated `defconstant`s and
+   duplicated `defcstruct`s are deleted.
+3. **Renamed functions/accessors (8 + 22) become aliases sharing the
+   raw stub object**: `(setf (fdefinition 'move-to)
+   #'amiga.raw.graphics:move)` — one line each; `compile_call` inlines
+   through the curated name exactly as through the raw one (the global
+   function cell holds a stub).  Writable renamed accessors also get
+   `(defsetf rastport-fgpen amiga.raw.graphics::%set-rastport-fg-pen)`.
+4. **Renamed/kind-changed constants** keep a curated `defconstant`
+   whose value *is* the raw symbol: `(defconstant +jam1+
+   amiga.raw.graphics:+rp-jam1+)`, `(defconstant +rastport-size+
+   amiga.raw.graphics:*rastport-size*)` — one definition of the value,
+   two names.  The 11 curated-only constants stay as they are.
+5. **Base/version variables**: where the names differ (`*gfx-base*` vs
+   the raw module's variable) the curated name becomes
+   `define-symbol-macro` onto the raw variable, so open/close code and
+   the stubs always see the same cell.  Curated open-library code sets
+   the raw variable.
+6. **`+NM-BARLABEL+` takes raw's `-1`** (import).  Verify the u32 tag
+   poke path accepts the negative and the menu-bar label still renders
+   (Amiga suite).
+7. **What keeps hand definitions**: the Lisp-level API (`with-window`,
+   `with-bitmap`, `write-chunky`'s planar fallback, `play-sample`, the
+   arexx server, reaction's pool/tag helpers) — unchanged; audio's
+   flattened `IOAUDIO` accessors become aliases onto
+   `IO-REQUEST-*`/`IO-AUDIO-*` per the census, `IOAUDIO-LN-PRI` per
+   above; reaction's 8 duplicated class constants stay duplicated
+   *deliberately* (reaction.lisp:73-81 — the raw class modules open
+   their class library at require time, which must not happen on a
+   bare 3.1/host load) — the cross-check test keeps guarding their
+   values; `+TAG-DONE+` can switch to an import from `raw/utility`
+   (reaction already requires it).
+
+Compile order: `compile-lib-fasls.sh` compiles each curated module
+with its raw modules loaded (the `require` at the top of the file does
+it — same requirement cross-compiling user code has today).  No
+`CL_FASL_VERSION` / `CL_IMAGE_VERSION` change.
+
+### Footprint accounting (state it honestly)
+
+For a FASL-loaded program using only curated modules (lambda-tale's
+set: exec/graphics/intuition/gadtools/audio, ~97 KB eager today), the
+rebase **costs** memory: the raw tables it pulls in (~135 KB) plus
+~30 KB of imports, minus the deleted duplicates.  The offsetting
+levers: Phase 2b-style blob compaction (the name arena front-codes
+77 KB → 49 KB across the big four; 12-byte entries save another
+~19 KB) if the FASL-mode number matters, and **Phase 3**, which turns
+the tables back into ~0 for the shipped image — rebase + shed is
+strictly better than today (~60 KB vs ~97 KB, single source of truth,
+no `call-library` consing).  A program loading curated *and* raw
+modules (the ReAction examples) wins immediately (the duplicates go).
+
+### Tests
+
+- `tests/test_amiga_curated_vs_raw.lisp` changes role: identical-name
+  entries become the *same symbol*, so (1) assert `eq` of the function
+  cells for every import/alias pair, (2) assert the frozen 285-name
+  export surface is intact (fboundp/boundp per name — API stability),
+  (3) keep value-matching only for the documented hand definitions
+  (reaction's 8, curated-only constants, any remaining hand
+  accessor) — the "uncovered" report should shrink to exactly that
+  list.
+- Host: `make test` + gc-stress over the import-heavy load path;
+  `tests/test_lib_fasl_portable.sh` (curated FASLs now carry
+  `:import-from` units).
+- Amiga: `test-gui.lisp`, `test-reaction.lisp`, `examples-amiga`
+  screenshots unchanged — they are the regression net for the 36
+  `call-library` sites now going through stubs; plus the
+  `+NM-BARLABEL+` menu check.
+- Downstream: run lambda-tale's and Closure's suites against the
+  rebased checkout before a release (their repos, their gates — but
+  they are the API's biggest users).
+
+### Effort and order
+
+≈ 1–2 days: exec (trivial) → graphics (the 2 `MOVE/DRAW` aliases +
+15 defcfun deletions) → intuition → gadtools → audio → reaction
+cleanup.  Independent of Phase 3; for Closure the pair lands as
+rebase first, then shed.
 
 ## Side fixes (independent, small, worth doing regardless)
 
@@ -695,6 +1103,14 @@ load-bearing.
    flips + generator + tests (≈ 4–6 days).  Re-measure; then revisit
    rebasing the curated modules onto raw (the deferred item in
    `raw_os_bindings_generator`).
+4. Phase 3 (≈ 1 day): worthwhile once an image-based deployment
+   exists (Closure Tale).  For Closure the payoff arrives together
+   with the curated rebase — the game uses only curated modules, so
+   there is nothing to shed until those sit on the raw tables.
+5. Phase 4 (≈ 1–2 days): independent of Phase 3, but for Closure the
+   pair lands as rebase first, then shed.  FASL-mode footprint goes
+   up slightly (see "Footprint accounting"); the image mode it
+   enables ends below today's numbers.
 
 ## Appendix — measurement method
 

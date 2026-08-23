@@ -71,8 +71,14 @@ void cl_image_note_boot_roots(void);
 /* Arm a pending save (called by EXT:SAVE-IMAGE after validating
  * preconditions).  The dump itself runs at the next top-level safe point
  * where the main thread is at rest.  Signals a Lisp error on invalid
- * arguments or failed preconditions. */
-void cl_image_save_request(const char *path, int quit);
+ * arguments or failed preconditions.
+ *
+ * SHAKE: shed every demand-interned binding table just before the dump
+ * (bindtab.h, spec Phase 3) — the delivery mode.  It shrinks the image by
+ * whatever the tables weigh (~150 KB for the four common raw modules) at
+ * the price of closing those packages at the names already referenced, in
+ * the image AND in this session. */
+void cl_image_save_request(const char *path, int quit, int shake);
 
 /* Non-zero while a save is armed. */
 int cl_image_save_pending_p(void);

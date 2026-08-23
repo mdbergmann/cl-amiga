@@ -404,6 +404,12 @@ saving; `ext:*save-hooks*` / `ext:*restore-hooks*` exist to tear down and
 rebuild such OS state around the snapshot, and `ext:*image-restored-p*` lets
 `~/.clamigarc` skip loads the image already contains.
 
+For a shipped application image, `:shake-bindings t` additionally drops the
+demand-interned binding tables of the raw OS modules (~150 KB for the four
+common ones).  Names the program referenced before the save keep working;
+names it never referenced stop existing — the delivery trade, described in
+[docs/ext.md](docs/ext.md#shipping-an-image-shake-bindings).
+
 See [docs/ext.md](docs/ext.md#heap-images) and the runnable examples in
 `tests/test_image.sh` / `tests/test_image.c` (host) and
 `tests/amiga/image-save.lisp` / `image-verify.lisp` (Amiga).

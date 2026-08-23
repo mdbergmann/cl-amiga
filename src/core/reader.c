@@ -2,6 +2,7 @@
 #include "readtable.h"
 #include "symbol.h"
 #include "package.h"
+#include "bindtab.h"   /* cl_bindtab_shed_p — the shed-package hint below */
 #include "mem.h"
 #include "bignum.h"
 #include "float.h"
@@ -827,9 +828,35 @@ check_keyword:
                  * symbol value IS CL_NIL) is distinguished from "not found"
                  * (which also returns CL_NIL). */
                 int status = 0;
-                CL_Obj sym = cl_find_symbol_with_status(sym_name, (uint32_t)sym_len, package, &status);
+                CL_Obj sym;
+                /* Sampled BEFORE the lookup on purpose.  A shed package
+                 * (SAVE-IMAGE :SHAKE-BINDINGS) resolves only the names
+                 * referenced before the image was saved, and saying so turns
+                 * an apparent typo into an actionable message — but asking
+                 * afterwards would mean reading `package`, an unprotected
+                 * local, across a call that allocates whenever it
+                 * materialises an inherited name.  Any allocation may
+                 * compact, which would leave that local stale.  Two loads
+                 * here, no lock, no GC window. */
+                int shed_pkg = cl_bindtab_shed_p(package);
+                sym = cl_find_symbol_with_status(sym_name, (uint32_t)sym_len, package, &status);
                 if (status != 2) {
                     if (read_suppress) return CL_NIL;
+                    /* The hint is only true when status is 0 (no entry
+                     * found anywhere): shedding drops a package's own
+                     * lazy blob outright, so a name it would have held
+                     * turns into a clean miss, never a status 1
+                     * (:INTERNAL) or 3 (:INHERITED) hit.  Attaching the
+                     * hint to those would blame shedding for a miss it
+                     * cannot cause — e.g. a name materialised through a
+                     * used package's still-lazy table (:INHERITED). */
+                    if (shed_pkg && status == 0)
+                        cl_reader_error(CL_ERR_PARSE,
+                                 "Symbol %s not exported from %s - that package's "
+                                 "binding table was shed by SAVE-IMAGE "
+                                 ":SHAKE-BINDINGS, so only names referenced before "
+                                 "the image was saved exist in it",
+                                 sym_name, pkg_name);
                     cl_reader_error(CL_ERR_PARSE, "Symbol %s not exported from %s",
                              sym_name, pkg_name);
                 }

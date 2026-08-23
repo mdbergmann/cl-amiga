@@ -20,6 +20,10 @@
  *   - GC: materialised symbols and their stubs survive compaction
  *   - COMPILE-FILE of a DEFINE-BINDING-TABLE module: the FASL carries the
  *     blob, a fresh load registers it, names resolve lazily
+ *   - SHEDDING (SAVE-IMAGE :SHAKE-BINDINGS, Phase 3): the blob goes, the
+ *     marker stays, touched names keep working, untouched ones stop
+ *     existing (with a reader error that says why), the flip becomes a
+ *     no-op, and re-registration undoes it
  *   - the DEFMACRO trampoline with > 254 arguments (the bug a 1000-row
  *     table form exposed: it used to drop the tail silently)
  *
@@ -499,6 +503,128 @@ TEST(materialised_symbols_survive_compaction)
 }
 
 /* ================================================================
+ * Shedding — SAVE-IMAGE :SHAKE-BINDINGS (spec Phase 3)
+ * ================================================================ */
+
+TEST(shed_closes_the_package_at_the_names_already_referenced)
+{
+    define_fixture("BTT-S");
+    /* touch three names of different kinds before the shed */
+    eval_print("(defvar *btt-s-one* 'btt-s:+one+)");
+    eval_print("(defvar *btt-s-foo* #'btt-s:foo)");
+    eval_print("(defvar *btt-s-ptx* (fboundp 'btt-s:pt-x))");
+
+    ASSERT_STR_EQ(eval_print("(getf (clamiga::%binding-table-info \"BTT-S\") :shed)"), "NIL");
+    /* sheds exactly the blob's bytes, and only once */
+    ASSERT_STR_EQ(eval_print("(let ((b (getf (clamiga::%binding-table-info \"BTT-S\") :bytes)))"
+                             "  (list (= b (clamiga::%shed-binding-tables \"BTT-S\"))"
+                             "        (clamiga::%shed-binding-tables \"BTT-S\")))"), "(T 0)");
+
+    /* the marker stays: this package WAS lazy, and says so */
+    ASSERT_STR_EQ(eval_print("(list (getf (clamiga::%binding-table-info \"BTT-S\") :shed)"
+                             "      (getf (clamiga::%binding-table-info \"BTT-S\") :entries)"
+                             "      (getf (clamiga::%binding-table-info \"BTT-S\") :bytes)"
+                             "      (clamiga::%binding-table-entries \"BTT-S\"))"),
+                  "(T 0 0 NIL)");
+
+    /* touched names keep value, stub and identity */
+    ASSERT_STR_EQ(eval_print("(list (eq *btt-s-one* 'btt-s:+one+) btt-s:+one+"
+                             " (eq *btt-s-foo* #'btt-s:foo)"
+                             " (getf (ffi::%ffi-stub-info #'btt-s:foo) :lvo)"
+                             " (fboundp 'btt-s:pt-x))"),
+                  "(T 1 T -36 T)");
+
+    /* a field's %SET- writer is built WITH its reader, so touching PT-X
+     * carried the setter across too — the pair is never half-present */
+    ASSERT_STR_EQ(eval_print("(nth-value 1 (find-symbol \"%SET-PT-X\" \"BTT-S\"))"), ":INTERNAL");
+
+    /* untouched names are GONE — a clean CLHS miss */
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (find-symbol \"+U32+\" \"BTT-S\"))"), "(NIL NIL)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (find-symbol \"WIN-LEFT\" \"BTT-S\"))"), "(NIL NIL)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (find-symbol \"%SET-WIN-LEFT\" \"BTT-S\"))"), "(NIL NIL)");
+    /* the reader says WHY, instead of looking like a typo */
+    ASSERT(contains(eval_print("(read-from-string \"btt-s:+u32+\")"), "shed by SAVE-IMAGE"));
+
+    /* the eager flip is a no-op on a shed package: nothing to materialise,
+     * and the marker survives (without the NIL-blob guard this reads a NIL
+     * byte vector) */
+    ASSERT_STR_EQ(eval_print("(progn (clamiga::%binding-table-materialize-all \"BTT-S\")"
+                             " (list (getf (clamiga::%binding-table-info \"BTT-S\") :shed)"
+                             "       (multiple-value-list (find-symbol \"+U32+\" \"BTT-S\"))))"),
+                  "(T (NIL NIL))");
+
+    /* INTERN still makes an ordinary fresh symbol (CLHS 11.1.1.2) — unbound,
+     * internal, and NOT the shed binding.  Done last: it adds the name. */
+    ASSERT_STR_EQ(eval_print("(let ((s (intern \"+NEG+\" \"BTT-S\")))"
+                             "  (list (symbolp s) (boundp s) (nth-value 1 (find-symbol \"+NEG+\" \"BTT-S\"))))"),
+                  "(T NIL :INTERNAL)");
+    /* enumeration sees only what is present, and does not resurrect */
+    ASSERT_STR_EQ(eval_print("(let ((n 0)) (do-symbols (s \"BTT-S\")"
+                             "   (when (eq (symbol-package s) (find-package \"BTT-S\")) (incf n)))"
+                             " (list (< n 10) (getf (clamiga::%binding-table-info \"BTT-S\") :shed)))"),
+                  "(T T)");
+
+    /* re-registering a table undoes it (loading the module's FASL again),
+     * and the symbols materialised before stay EQ */
+    eval_print("(clamiga::%register-binding-table \"BTT-S\""
+               " (clamiga::%make-binding-table '((:const \"+ONE+\" 1) (:const \"+U32+\" #xFFFFFFFF)"
+               "                                 (:fn \"FOO\" -36 (:a0) :pointer)))"
+               " '*btt-base* nil)");
+    ASSERT_STR_EQ(eval_print("(list (getf (clamiga::%binding-table-info \"BTT-S\") :shed)"
+                             " (eq *btt-s-one* 'btt-s:+one+) btt-s:+u32+)"),
+                  "(NIL T 4294967295)");
+
+    /* an ordinary package has nothing to shed */
+    eval_print("(defpackage \"BTT-S-PLAIN\" (:use \"CL\"))");
+    ASSERT_STR_EQ(eval_print("(list (clamiga::%shed-binding-tables \"BTT-S-PLAIN\")"
+                             " (clamiga::%binding-table-info \"BTT-S-PLAIN\"))"), "(0 NIL)");
+    /* nor has a package already flipped eager */
+    define_fixture("BTT-S2");
+    eval_print("(clamiga::%binding-table-materialize-all \"BTT-S2\")");
+    ASSERT_STR_EQ(eval_print("(clamiga::%shed-binding-tables \"BTT-S2\")"), "0");
+}
+
+TEST(shed_all_reclaims_the_blobs)
+{
+    CL_Obj pkg, pkg2;
+    uint32_t bytes = 0, count, before, after;
+
+    define_fixture("BTT-S3");
+    define_fixture("BTT-S4");
+    pkg = cl_find_package("BTT-S3", 6);
+    pkg2 = cl_find_package("BTT-S4", 6);
+    ASSERT(CL_PACKAGE_P(pkg) && CL_PACKAGE_P(pkg2));
+    ASSERT(cl_bindtab_shed_p(pkg) == 0);
+
+    /* a dense heap measurement: compact first, so `bump` is live bytes */
+    cl_gc();
+    cl_gc_compact();
+    before = cl_heap.bump;
+
+    /* every lazy package in the registry — the fixtures of the tests above
+     * are still lazy too, so the count is a lower bound, not an equality */
+    count = cl_bindtab_shed_all(&bytes);
+    ASSERT(count >= 2);
+    ASSERT(bytes > 200);
+    ASSERT(cl_bindtab_shed_p(pkg) == 1);
+    ASSERT(cl_bindtab_shed_p(pkg2) == 1);
+
+    /* the blobs were reachable ONLY from the packages: they are garbage now */
+    cl_gc();
+    cl_gc_compact();
+    after = cl_heap.bump;
+    ASSERT(before > after);
+    ASSERT(before - after >= bytes);
+
+    /* shedding again finds nothing, and reports it */
+    ASSERT(cl_bindtab_shed(pkg) == 0);
+    ASSERT(cl_bindtab_shed_all(NULL) == 0);
+    /* a non-package argument is simply not a table */
+    ASSERT(cl_bindtab_shed(CL_NIL) == 0);
+    ASSERT(cl_bindtab_shed_p(CL_NIL) == 0);
+}
+
+/* ================================================================
  * The macro, COMPILE-FILE and the > 254-argument expander
  * ================================================================ */
 
@@ -574,6 +700,8 @@ int main(void)
     RUN(export_import_on_lazy_package_flip_first);
     RUN(unexport_and_shadowing_import_on_lazy_package_flip_first);
     RUN(materialised_symbols_survive_compaction);
+    RUN(shed_closes_the_package_at_the_names_already_referenced);
+    RUN(shed_all_reclaims_the_blobs);
 
     RUN(define_binding_table_macro_and_compile_file_round_trip);
     RUN(macro_trampoline_carries_more_than_254_arguments);

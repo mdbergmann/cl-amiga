@@ -179,6 +179,17 @@ static CL_Obj bindings_slot(CL_Obj vec, int slot)
     return ((CL_Vector *)CL_OBJ_TO_PTR(vec))->data[slot];
 }
 
+/* The package's blob, or CL_NIL when it has no table OR the table was SHED
+ * (cl_bindtab_shed: the vector stays as the "was lazy" marker, its blob
+ * slot is NIL).  Every reader of the blob goes through this — a shed table
+ * must read as a guaranteed miss, never as a NIL byte vector. */
+static CL_Obj pkg_blob(CL_Obj package)
+{
+    CL_Obj vec = pkg_bindings(package);
+    if (CL_NULL_P(vec)) return CL_NIL;
+    return bindings_slot(vec, CL_BT_SLOT_BLOB);
+}
+
 /* ================================================================
  * Keyword helpers (by name — no pre-interned roots needed)
  * ================================================================ */
@@ -813,12 +824,13 @@ int cl_bindtab_probe_nolock(CL_Obj package, const char *name, uint32_t len,
                             int *want_setter)
 {
     CL_Obj vec = pkg_bindings(package);
+    CL_Obj blob = pkg_blob(package);
     BtView v;
     uint32_t i;
     const uint8_t *nm = (const uint8_t *)name;
 
-    if (CL_NULL_P(vec)) return 0;
-    view_blob(bindings_slot(vec, CL_BT_SLOT_BLOB), &v);
+    if (CL_NULL_P(blob)) return 0;   /* no table, or shed at SAVE-IMAGE */
+    view_blob(blob, &v);
     i = lower_bound(&v, nm, len);
     if (entry_name_is(&v, i, nm, len)) {
         uint32_t j = i;
@@ -925,9 +937,11 @@ CL_Obj cl_bindtab_materialize(CL_Obj package, const char *query, uint32_t qlen,
 
     /* 1. Copy everything we need out of the blob (it moves under GC). */
     vec = pkg_bindings(package);
-    if (CL_NULL_P(vec)) {
+    if (CL_NULL_P(pkg_blob(package))) {
         /* A concurrent flip materialised every entry and dropped the table
-         * between the probe and here: the name is present now. */
+         * between the probe and here (then the name is present now), or a
+         * concurrent SHED dropped the blob (then it is not, and NIL — "no
+         * such symbol" — is the right answer). */
         CL_Obj present = CL_UNBOUND;
         if (qlen) {
             pkg_rdlock();
@@ -1050,27 +1064,30 @@ CL_Obj cl_bindtab_materialize(CL_Obj package, const char *query, uint32_t qlen,
 void cl_bindtab_materialize_all(CL_Obj package)
 {
     uint32_t i, n;
-    if (!CL_PACKAGE_P(package) || CL_NULL_P(pkg_bindings(package))) return;
+    /* A SHED package (vector present, blob NIL) has nothing to materialise
+     * and keeps its marker: this is not "flip me eager", it is "the names
+     * are gone".  Without the pkg_blob check view_blob would read a NIL. */
+    if (!CL_PACKAGE_P(package) || CL_NULL_P(pkg_blob(package))) return;
     CL_GC_PROTECT(package);
     {
         BtView v;
-        view_blob(bindings_slot(pkg_bindings(package), CL_BT_SLOT_BLOB), &v);
+        view_blob(pkg_blob(package), &v);
         n = v.n;
     }
     for (i = 0; i < n; i++) {
         uint8_t nbuf[256];
         uint32_t nlen;
         int name_idx = 0, def_idx = -1, want_setter = 0, hit = 0;
-        CL_Obj existing, vec;
+        CL_Obj existing, blob;
         /* re-derive the blob each round: the previous materialisation
          * may have compacted the heap, or a peer flip may have dropped
          * the table (then everything is present already). */
-        vec = pkg_bindings(package);
-        if (CL_NULL_P(vec)) break;
+        blob = pkg_blob(package);
+        if (CL_NULL_P(blob)) break;   /* peer flip dropped it, or a shed */
         {
             BtView v;
             BtEntry e, p;
-            view_blob(bindings_slot(vec, CL_BT_SLOT_BLOB), &v);
+            view_blob(blob, &v);
             decode_entry(&v, i, &e);
             /* one materialisation per distinct name (variants are adjacent) */
             if (i > 0) {
@@ -1186,6 +1203,60 @@ void cl_bindtab_register(CL_Obj package, CL_Obj blob, CL_Obj base_sym,
 }
 
 /* ================================================================
+ * Shedding (SAVE-IMAGE :SHAKE-BINDINGS — spec Phase 3)
+ * ================================================================ */
+
+int cl_bindtab_shed_p(CL_Obj package)
+{
+    if (!CL_PACKAGE_P(package)) return 0;
+    return !CL_NULL_P(pkg_bindings(package)) && CL_NULL_P(pkg_blob(package));
+}
+
+uint32_t cl_bindtab_shed(CL_Obj package)
+{
+    CL_Obj vec, blob;
+    uint32_t bytes;
+
+    if (!CL_PACKAGE_P(package)) return 0;
+    vec = pkg_bindings(package);
+    if (CL_NULL_P(vec)) return 0;
+    blob = bindings_slot(vec, CL_BT_SLOT_BLOB);
+    if (CL_NULL_P(blob)) return 0;            /* already shed */
+    bytes = ((CL_ByteVector *)CL_OBJ_TO_PTR(blob))->length;
+
+    /* Plain store under the write lock — no allocation, so the "never
+     * allocate under the package lock" rule is trivially satisfied.  The
+     * vector itself STAYS: its presence with a NIL blob is what
+     * cl_bindtab_shed_p reports, and what the reader's "not exported"
+     * error turns into an actionable message.  The blob's only reference
+     * is this slot, so the next GC reclaims it. */
+    pkg_wrlock();
+    ((CL_Vector *)CL_OBJ_TO_PTR(vec))->data[CL_BT_SLOT_BLOB] = CL_NIL;
+    pkg_unlock();
+    return bytes;
+}
+
+uint32_t cl_bindtab_shed_all(uint32_t *bytes_out)
+{
+    CL_Obj reg;
+    uint32_t count = 0, bytes = 0;
+
+    /* Non-allocating walk of the package registry (an alist of
+     * (name-string . package)), so nothing can move underneath it. */
+    reg = cl_package_registry;
+    while (!CL_NULL_P(reg)) {
+        CL_Obj entry = cl_car(reg);
+        if (CL_CONS_P(entry)) {
+            uint32_t n = cl_bindtab_shed(cl_cdr(entry));
+            if (n) { count++; bytes += n; }
+        }
+        reg = cl_cdr(reg);
+    }
+    if (bytes_out) *bytes_out = bytes;
+    return count;
+}
+
+/* ================================================================
  * Builtins
  * ================================================================ */
 
@@ -1233,22 +1304,44 @@ static CL_Obj bi_binding_table_materialize_all(CL_Obj *args, int nargs)
     return CL_T;
 }
 
+/* (clamiga::%shed-binding-tables &optional package) -> bytes shed
+ *   With PACKAGE, sheds that one; with no argument, every lazy package.
+ *   The destructive delivery operation EXT:SAVE-IMAGE :SHAKE-BINDINGS
+ *   performs — exposed here (internal, like %BINDING-TABLE-MATERIALIZE-ALL)
+ *   so it is testable without writing an image. */
+static CL_Obj bi_shed_binding_tables(CL_Obj *args, int nargs)
+{
+    uint32_t bytes = 0;
+    if (nargs >= 1 && !CL_NULL_P(args[0]))
+        bytes = cl_bindtab_shed(coerce_package(args[0], "%SHED-BINDING-TABLES"));
+    else
+        (void)cl_bindtab_shed_all(&bytes);
+    return CL_MAKE_FIXNUM((int32_t)bytes);
+}
+
 /* (clamiga::%binding-table-info package)
- *   -> (:entries N :bytes B :symbols S :base SYM :version SYM), or NIL
- *      when PACKAGE has no binding table.  :SYMBOLS is the number of
- *      symbols currently present (materialised + the eager ones). */
+ *   -> (:entries N :bytes B :symbols S :base SYM :version SYM :shed BOOL),
+ *      or NIL when PACKAGE has no binding table.  :SYMBOLS is the number
+ *      of symbols currently present (materialised + the eager ones).
+ *      :SHED T means the table was dropped by SAVE-IMAGE :SHAKE-BINDINGS —
+ *      the package is closed at the names it had then, and :ENTRIES /
+ *      :BYTES read 0. */
 static CL_Obj bi_binding_table_info(CL_Obj *args, int nargs)
 {
     CL_Obj pkg = coerce_package(args[0], "%BINDING-TABLE-INFO");
     CL_Obj vec, plist = CL_NIL, blob, base, version;
     uint32_t n, bytes, syms;
+    int shed;
     (void)nargs;
     vec = pkg_bindings(pkg);
     if (CL_NULL_P(vec)) return CL_NIL;
     blob = bindings_slot(vec, CL_BT_SLOT_BLOB);
     base = bindings_slot(vec, CL_BT_SLOT_BASE);
     version = bindings_slot(vec, CL_BT_SLOT_VERSION);
-    {
+    shed = CL_NULL_P(blob);
+    if (shed) {
+        n = 0; bytes = 0;            /* shed: the marker without the table */
+    } else {
         BtView v;
         view_blob(blob, &v);
         n = v.n; bytes = v.len;
@@ -1258,6 +1351,8 @@ static CL_Obj bi_binding_table_info(CL_Obj *args, int nargs)
     CL_GC_PROTECT(version);
     CL_GC_PROTECT(plist);
     /* built back to front */
+    plist = cl_cons(shed ? CL_T : CL_NIL, plist);
+    plist = cl_cons(keyword("SHED"), plist);
     plist = cl_cons(version, plist); plist = cl_cons(keyword("VERSION"), plist);
     plist = cl_cons(base, plist);    plist = cl_cons(keyword("BASE"), plist);
     plist = cl_cons(CL_MAKE_FIXNUM((int32_t)syms), plist);  plist = cl_cons(keyword("SYMBOLS"), plist);
@@ -1352,9 +1447,8 @@ static CL_Obj bi_binding_table_entries(CL_Obj *args, int nargs)
         blob = src;
     } else {
         CL_Obj pkg = coerce_package(src, "%BINDING-TABLE-ENTRIES");
-        CL_Obj vec = pkg_bindings(pkg);
-        if (CL_NULL_P(vec)) return CL_NIL;
-        blob = bindings_slot(vec, CL_BT_SLOT_BLOB);
+        blob = pkg_blob(pkg);           /* NIL for ordinary AND shed */
+        if (CL_NULL_P(blob)) return CL_NIL;
     }
     CL_GC_PROTECT(blob);
     CL_GC_PROTECT(result);
@@ -1392,6 +1486,7 @@ void cl_builtins_bindtab_init(void)
     cl_register_builtin("%MAKE-BINDING-TABLE", bi_make_binding_table, 1, 1, cl_package_clamiga);
     cl_register_builtin("%REGISTER-BINDING-TABLE", bi_register_binding_table, 4, 4, cl_package_clamiga);
     cl_register_builtin("%BINDING-TABLE-MATERIALIZE-ALL", bi_binding_table_materialize_all, 1, 1, cl_package_clamiga);
+    cl_register_builtin("%SHED-BINDING-TABLES", bi_shed_binding_tables, 0, 1, cl_package_clamiga);
     cl_register_builtin("%BINDING-TABLE-INFO", bi_binding_table_info, 1, 1, cl_package_clamiga);
     cl_register_builtin("%BINDING-TABLE-ENTRIES", bi_binding_table_entries, 1, 1, cl_package_clamiga);
 }

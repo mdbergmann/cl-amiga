@@ -19,6 +19,7 @@
 #include "error.h"
 #include "symbol.h"
 #include "package.h"
+#include "bindtab.h"      /* :SHAKE-BINDINGS sheds the binding tables */
 #include "stream.h"
 #include "reader.h"
 #include "readtable.h"
@@ -213,6 +214,7 @@ static int image_boot_roots = -1;          /* snapshot at end of C init */
 static char image_pending_path[1024];
 static int  image_pending = 0;
 static int  image_pending_quit = 0;
+static int  image_pending_shake = 0;
 
 /* Staged image awaiting restore (loaded before cl_mem_init). */
 static char          *image_staged_buf = NULL;
@@ -227,6 +229,7 @@ static CL_Obj SYM_SAVE_HOOKS = CL_NIL;        /* EXT:*SAVE-HOOKS* */
 static CL_Obj SYM_RESTORE_HOOKS = CL_NIL;     /* EXT:*RESTORE-HOOKS* */
 static CL_Obj SYM_IMAGE_RESTORED_P = CL_NIL;  /* EXT:*IMAGE-RESTORED-P* */
 static CL_Obj KW_QUIT_IMG = CL_NIL;
+static CL_Obj KW_SHAKE_BINDINGS = CL_NIL;
 
 void cl_image_note_boot_roots(void)
 {
@@ -593,7 +596,7 @@ static int image_have_save_hooks(void)
     return hooks != CL_UNBOUND && CL_CONS_P(hooks);
 }
 
-void cl_image_save_request(const char *path, int quit)
+void cl_image_save_request(const char *path, int quit, int shake)
 {
     if (!path || !path[0])
         cl_error(CL_ERR_FILE, "SAVE-IMAGE: empty pathname");
@@ -613,13 +616,14 @@ void cl_image_save_request(const char *path, int quit)
 
     strcpy(image_pending_path, path);
     image_pending_quit = quit;
+    image_pending_shake = shake;
     image_pending = 1;
 }
 
 int cl_image_save_run_if_pending(void)
 {
     const char *pre;
-    int quit;
+    int quit, shake;
 
     if (!image_pending)
         return 0;
@@ -628,7 +632,9 @@ int cl_image_save_run_if_pending(void)
 
     image_pending = 0;
     quit = image_pending_quit;
+    shake = image_pending_shake;
     image_pending_quit = 0;
+    image_pending_shake = 0;
 
     /* 1. Save hooks first — a hook may close the very streams that would
      * otherwise abort the save. */
@@ -672,6 +678,30 @@ int cl_image_save_run_if_pending(void)
             }
         }
 #endif
+    }
+
+    /* 2b. :SHAKE-BINDINGS — shed the demand-interned binding tables
+     * (specs/raw-bindings-footprint.md, Phase 3).  After the save hooks, so
+     * a hook that REQUIREd another raw module is covered too, and before
+     * the dump GC below, which is what actually reclaims the blobs.
+     *
+     * This closes those packages permanently — in the image and in this
+     * session (a failed write afterwards does not put them back; re-loading
+     * the module's FASL does).  Say so: silently losing names would be the
+     * worst possible failure mode to debug from a restored image. */
+    if (shake) {
+        uint32_t bytes = 0;
+        uint32_t count = cl_bindtab_shed_all(&bytes);
+        if (count) {
+            char buf[320];
+            snprintf(buf, sizeof(buf),
+                     "; SAVE-IMAGE: shed %u binding table%s (%u KB) - the image "
+                     "and this session now resolve only the names already "
+                     "referenced in those packages\n",
+                     (unsigned)count, count == 1 ? "" : "s",
+                     (unsigned)((bytes + 1023) >> 10));
+            platform_write_string(buf);
+        }
     }
 
     /* 3. Dump the minimal, hole-free heap: full GC, then compaction
@@ -1388,7 +1418,7 @@ static const char *image_coerce_path(CL_Obj obj, char *buf, uint32_t buflen)
 static CL_Obj bi_save_image(CL_Obj *args, int nargs)
 {
     char path[1024];
-    int quit = 0;
+    int quit = 0, shake = 0;
     int i;
 
     if (!image_coerce_path(args[0], path, sizeof(path)))
@@ -1399,15 +1429,17 @@ static CL_Obj bi_save_image(CL_Obj *args, int nargs)
     for (i = 1; i + 1 < nargs; i += 2) {
         if (args[i] == KW_QUIT_IMG)
             quit = !CL_NULL_P(args[i + 1]);
+        else if (args[i] == KW_SHAKE_BINDINGS)
+            shake = !CL_NULL_P(args[i + 1]);
         else
             cl_error(CL_ERR_ARGS,
-                     "SAVE-IMAGE: unknown keyword argument (only :QUIT is "
-                     "accepted)");
+                     "SAVE-IMAGE: unknown keyword argument (only :QUIT and "
+                     ":SHAKE-BINDINGS are accepted)");
     }
     if (i != nargs)
         cl_error(CL_ERR_ARGS, "SAVE-IMAGE: odd number of keyword arguments");
 
-    cl_image_save_request(path, quit);
+    cl_image_save_request(path, quit, shake);
 
     /* The dump itself runs after this top-level form finishes, at the
      * next safe point where the main thread is at rest (spec).  Return
@@ -1437,7 +1469,9 @@ void cl_image_builtins_init(void)
 
     KW_QUIT_IMG = cl_intern_keyword("QUIT", 4);
     cl_gc_register_root(&KW_QUIT_IMG);
+    KW_SHAKE_BINDINGS = cl_intern_keyword("SHAKE-BINDINGS", 14);
+    cl_gc_register_root(&KW_SHAKE_BINDINGS);
 
-    cl_register_builtin_exported("SAVE-IMAGE", bi_save_image, 1, 3,
+    cl_register_builtin_exported("SAVE-IMAGE", bi_save_image, 1, 5,
                                  cl_package_ext);
 }
