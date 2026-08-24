@@ -4192,6 +4192,80 @@
       (close s) "/tmp/")
     (error (c) "T:")))
 
+; FINISH-OUTPUT / FORCE-OUTPUT must reach the OS through every stream
+; DESIGNATOR (CLHS 21.1.1.1), not only through an explicit concrete stream.
+; The builtins used to ignore an absent argument, T, and synonym/two-way
+; wrappers entirely — flushing nothing while returning NIL.  That is what a
+; batch harness pays for: a run that dutifully flushes its log after every
+; step is writing into a buffer it never empties, and when the process dies
+; the tail of the log is not where it died.
+;
+; Probe: write into a file stream's userland write buffer (the 4K IOBuf on
+; AmigaOS, stdio's on the host), flush through the designator under test, then
+; read the file back through a SECOND stream while the writer is still open —
+; append/shared open mode on both platforms.  Order matters: read back BEFORE
+; closing, since CLOSE flushes too and would hide the bug.
+(defvar *fo-out* nil)
+(defun %fo-path (name) (concatenate 'string *test-tmp* name))
+(defun %fo-open (name)
+  (let ((p (%fo-path name)))
+    (when (probe-file p) (delete-file p))
+    (open p :direction :output :if-exists :append :if-does-not-exist :create)))
+(defun %fo-peek (name)
+  (with-open-file (in (%fo-path name) :direction :input :if-does-not-exist nil)
+    (if in (or (read-line in nil nil) "<empty>") "<missing>")))
+; Peek FIRST (that is the assertion), then close.  The close must happen: this
+; suite runs twice per boot, once from a fresh start and once from a restored
+; heap image, and AmigaOS does no resource tracking — a filehandle left open by
+; the first process keeps its lock on T: for the rest of the session, so the
+; second run's DELETE-FILE fails.  Closing after the peek costs the test
+; nothing, since the flush under test has already been proven by then.
+(defun %fo-check (name stream)
+  (prog1 (%fo-peek name)
+    (setq *fo-out* nil)
+    (close stream)))
+
+(check "finish-output absent designator flushes *standard-output*" "PAYLOAD"
+  (let ((out (%fo-open "_clt_fo1.txt")))
+    (let ((*standard-output* out)) (write-string "PAYLOAD") (finish-output))
+    (%fo-check "_clt_fo1.txt" out)))
+(check "finish-output t flushes *terminal-io*" "PAYLOAD"
+  (let ((out (%fo-open "_clt_fo2.txt")))
+    (write-string "PAYLOAD" out)
+    (let ((*terminal-io* (make-two-way-stream (make-string-input-stream "") out)))
+      (finish-output t))
+    (%fo-check "_clt_fo2.txt" out)))
+(check "finish-output through synonym stream" "PAYLOAD"
+  (let ((out (%fo-open "_clt_fo3.txt")))
+    (setq *fo-out* out)
+    (write-string "PAYLOAD" out)
+    (finish-output (make-synonym-stream '*fo-out*))
+    (%fo-check "_clt_fo3.txt" out)))
+(check "finish-output through two-way stream" "PAYLOAD"
+  (let ((out (%fo-open "_clt_fo4.txt")))
+    (write-string "PAYLOAD" out)
+    (finish-output (make-two-way-stream (make-string-input-stream "") out))
+    (%fo-check "_clt_fo4.txt" out)))
+(check "force-output absent designator flushes" "PAYLOAD"
+  (let ((out (%fo-open "_clt_fo5.txt")))
+    (let ((*standard-output* out)) (write-string "PAYLOAD") (force-output))
+    (%fo-check "_clt_fo5.txt" out)))
+(check "finish-output through broadcast stream" "PAYLOAD"
+  (let ((out (%fo-open "_clt_fo6.txt")))
+    (write-string "PAYLOAD" out)
+    (finish-output (make-broadcast-stream out))
+    (%fo-check "_clt_fo6.txt" out)))
+(check "finish-output through synonym of two-way" "PAYLOAD"
+  (let ((out (%fo-open "_clt_fo7.txt")))
+    (setq *fo-out* (make-two-way-stream (make-string-input-stream "") out))
+    (write-string "PAYLOAD" out)
+    (finish-output (make-synonym-stream '*fo-out*))
+    (%fo-check "_clt_fo7.txt" out)))
+; Flushing the console must stay a harmless no-op (Flush() on the DOS Output()
+; handle), not an error — this is the form a batch harness writes.
+(check "finish-output on console stream" nil (finish-output *error-output*))
+(check "force-output on console stream" nil (force-output *standard-output*))
+
 ; open for output and input
 (check "open output creates stream" t (let ((s (open (concatenate 'string *test-tmp* "_clt_s8.txt") :direction :output))) (close s) (streamp s)))
 (let ((s (open (concatenate 'string *test-tmp* "_clt_s8.txt") :direction :output))) (write-string "Test123" s) (close s))

@@ -24,7 +24,7 @@ void cl_fasl_writer_init(CL_FaslWriter *w, uint8_t *buf, uint32_t capacity)
      * Detect corruption where w points into the binary's data segment
      * (happens when a non-volatile local survives longjmp with garbage). */
     if (!w) {
-        fprintf(stderr, "[FASL] BUG: cl_fasl_writer_init called with NULL writer\n");
+        cl_fatal_diag("[FASL] BUG: cl_fasl_writer_init called with NULL writer\n");
         abort();
     }
     w->data = buf;

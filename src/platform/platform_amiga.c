@@ -41,6 +41,20 @@ void platform_write_string(const char *str)
     }
 }
 
+/* Write() above is the unbuffered DOS primitive — it bypasses the FileHandle's
+ * fh_Buf layer (that buffer serves FGetC/FPutC/FPuts), so every string is
+ * already one packet to the console or to the shell's `>file` redirect handle.
+ * Flush() therefore has nothing of ours to push, and is here so the console
+ * branch of FINISH-OUTPUT is not a lie: should anything ever put buffered DOS
+ * writes on this handle, the flush is already wired through. */
+void platform_flush_output(void)
+{
+    BPTR out = Output();
+    if (out) {
+        Flush(out);
+    }
+}
+
 int platform_read_line(char *buf, int bufsize)
 {
     BPTR in = Input();

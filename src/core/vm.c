@@ -1740,8 +1740,8 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
         op = code[ip++]; \
         CL_OPCOUNT_TICK(op); \
         if (__builtin_expect(!dispatch_table[op], 0)) { \
-            fprintf(stderr, "[VM] NULL dispatch for op=0x%02x ip=%u fp=%d\n", op, ip-1, cl_vm.fp); \
-            cl_capture_backtrace(); fprintf(stderr, "%s", cl_backtrace_buf); fflush(stderr); abort(); \
+            cl_fatal_diag("[VM] NULL dispatch for op=0x%02x ip=%u fp=%d\n", op, ip-1, cl_vm.fp); \
+            cl_capture_backtrace(); cl_fatal_diag("%s", cl_backtrace_buf); abort(); \
         } \
         goto *dispatch_table[op]; \
     } while(0)
@@ -1753,8 +1753,8 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
     op = code[ip++];
     CL_OPCOUNT_TICK(op);
     if (__builtin_expect(!dispatch_table[op], 0)) {
-        fprintf(stderr, "[VM] NULL initial dispatch for op=0x%02x ip=%u fp=%d\n", op, ip-1, cl_vm.fp);
-        cl_capture_backtrace(); fprintf(stderr, "%s", cl_backtrace_buf); fflush(stderr); abort();
+        cl_fatal_diag("[VM] NULL initial dispatch for op=0x%02x ip=%u fp=%d\n", op, ip-1, cl_vm.fp);
+        cl_capture_backtrace(); cl_fatal_diag("%s", cl_backtrace_buf); abort();
     }
     goto *dispatch_table[op];
 

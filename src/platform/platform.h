@@ -42,6 +42,15 @@ void  platform_free(void *ptr);
 
 /* Console I/O */
 void  platform_write_string(const char *str);
+/* Push anything still pending on the standard-output handle out to the OS.
+ * This is what FINISH-OUTPUT / FORCE-OUTPUT on a console stream reaches, and
+ * what the fatal-exit paths call before terminating so a crash-time diagnostic
+ * cannot be stranded behind an unflushed buffer.  Both current back-ends
+ * already write through (POSIX fflushes per write, AmigaOS uses raw Write()),
+ * so today this is cheap insurance rather than a fix — but it is the only
+ * thing standing between a redirected log and a lost death point should any
+ * layer ever start buffering. */
+void  platform_flush_output(void);
 int   platform_read_line(char *buf, int bufsize);
 int   platform_getchar(void);
 void  platform_ungetchar(int ch);

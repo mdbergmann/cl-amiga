@@ -500,15 +500,33 @@ static CL_Obj bi_fresh_line(CL_Obj *args, int n)
 /* Flush a stream for finish/force-output.  Shared so a socket write deadline
  * that elapses while draining the buffer raises EXT:SOCKET-TIMEOUT here too,
  * rather than being silently swallowed (these are what hunchentoot calls to
- * push a response). */
-static void flush_output_stream(CL_Stream *st)
+ * push a response).
+ *
+ * Takes the stream OBJECT, not a CL_Stream*, because the first thing it must
+ * do is unwrap synonym / two-way wrappers: *TERMINAL-IO* is a two-way stream
+ * over the console (cl_stream_init), so dispatching on the wrapper's own
+ * stream_type matched no branch and (finish-output t) flushed nothing. */
+static void flush_output_stream(CL_Obj stream)
 {
-    if (st->stream_type == CL_STREAM_FILE) {
+    CL_Stream *st;
+
+    stream = cl_stream_resolve_backing(stream, 1);
+    if (!CL_STREAM_P(stream))
+        return;
+    st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+
+    if (st->stream_type == CL_STREAM_CONSOLE) {
+        platform_flush_output();
+    } else if (st->stream_type == CL_STREAM_FILE) {
         platform_file_flush((PlatformFile)st->handle_id);
     } else if (st->stream_type == CL_STREAM_SOCKET) {
+        /* Read the deadline BEFORE the flush: draining the buffer parks in a
+         * GC safe region, a peer can compact, and `st` is then a stale arena
+         * pointer that must not be dereferenced for the message. */
+        uint32_t wto = st->write_timeout_ms;
         if (platform_socket_flush((PlatformSocket)st->handle_id) == PLATFORM_SOCKET_TIMEOUT)
             cl_error(CL_ERR_TIMEOUT, "WRITE on socket stream timed out after %u ms",
-                     (unsigned)st->write_timeout_ms);
+                     (unsigned)wto);
     } else if (st->stream_type == CL_STREAM_BROADCAST) {
         /* Fan the flush out to every component (CLHS 21.1.1.1.1).  A child
          * flush can block in a GC safe region and compact the arena, so keep
@@ -516,28 +534,29 @@ static void flush_output_stream(CL_Stream *st)
         CL_Obj comps = st->string_buf;
         CL_GC_PROTECT(comps);
         while (CL_CONS_P(comps)) {
-            CL_Obj child = cl_stream_resolve_backing(cl_car(comps), 1);
-            if (CL_STREAM_P(child))
-                flush_output_stream((CL_Stream *)CL_OBJ_TO_PTR(child));
+            flush_output_stream(cl_car(comps));
             comps = cl_cdr(comps);
         }
         CL_GC_UNPROTECT(1);
     }
 }
 
-/* (finish-output &optional stream) => NIL */
+/* (finish-output &optional stream) => NIL
+ *
+ * The stream argument is a stream DESIGNATOR (CLHS 21.1.1.1): absent or NIL
+ * means *STANDARD-OUTPUT*, T means *TERMINAL-IO*.  Both defaults used to fall
+ * through the old `n > 0 && CL_STREAM_P(args[0])` guard, which made the bare
+ * (finish-output) that batch scripts and test harnesses write a no-op. */
 static CL_Obj bi_finish_output(CL_Obj *args, int n)
 {
-    if (n > 0 && !CL_NULL_P(args[0]) && CL_STREAM_P(args[0]))
-        flush_output_stream((CL_Stream *)CL_OBJ_TO_PTR(args[0]));
+    flush_output_stream(cl_resolve_output_stream(args, n, 0));
     return CL_NIL;
 }
 
 /* (force-output &optional stream) => NIL */
 static CL_Obj bi_force_output(CL_Obj *args, int n)
 {
-    if (n > 0 && !CL_NULL_P(args[0]) && CL_STREAM_P(args[0]))
-        flush_output_stream((CL_Stream *)CL_OBJ_TO_PTR(args[0]));
+    flush_output_stream(cl_resolve_output_stream(args, n, 0));
     return CL_NIL;
 }
 

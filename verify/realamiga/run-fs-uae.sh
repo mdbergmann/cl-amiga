@@ -37,13 +37,31 @@ rm -f "$LOG"
 # custom run that still wants this watchdog, e.g. the game test suites).
 [ "${KEEP_BOOT_OVERRIDE:-0}" = 1 ] || rm -f build/amiga/boot-override
 
+# Say what the log actually contained at the moment we gave up.  Without this
+# the make output shows only "killing FS-UAE" and the reader has to guess
+# whether the run died early, wrote nothing, or was merely slow — and the log
+# on disk is read later, after the emulator's own shutdown may have appended
+# more.  Printing the size and the final lines here pins the state at kill time.
+report_log_state() {
+	if [ -f "$LOG" ]; then
+		echo "=== Watchdog: log is $(wc -c < "$LOG" | tr -d ' ') bytes, \
+$(wc -l < "$LOG" | tr -d ' ') lines; last lines at kill time: ==="
+		tail -n 5 "$LOG" | sed 's/^/    /'
+	else
+		echo "=== Watchdog: $LOG does not exist — the run never wrote anything ==="
+	fi
+}
+
 kill_fsuae() {
+	# SIGTERM first, and give it real time: a clean FS-UAE shutdown closes the
+	# emulated hard drives, which is what commits the last of the suite log to
+	# the host filesystem.  SIGKILL loses whatever the emulator still held.
 	kill "$FSUAE_PID" 2>/dev/null
-	# Give it a moment to exit on SIGTERM, then force.
-	for _ in 1 2 3 4 5; do
+	for _ in 1 2 3 4 5 6 7 8 9 10; do
 		kill -0 "$FSUAE_PID" 2>/dev/null || return
 		sleep 1
 	done
+	echo "=== Watchdog: FS-UAE ignored SIGTERM for 10s — SIGKILL (log may be truncated) ==="
 	kill -9 "$FSUAE_PID" 2>/dev/null
 }
 
@@ -83,6 +101,7 @@ while kill -0 "$FSUAE_PID" 2>/dev/null; do
 	# Path 3a: no new output for too long (hang / Guru before completion).
 	if [ $((now - last_change)) -ge "$STALL_TIMEOUT" ]; then
 		echo "=== Watchdog: no log output for ${STALL_TIMEOUT}s — killing FS-UAE ==="
+		report_log_state
 		kill_fsuae
 		break
 	fi
@@ -90,6 +109,7 @@ while kill -0 "$FSUAE_PID" 2>/dev/null; do
 	# Path 3b: absolute ceiling.
 	if [ $((now - start)) -ge "$HARD_TIMEOUT" ]; then
 		echo "=== Watchdog: hard timeout ${HARD_TIMEOUT}s reached — killing FS-UAE ==="
+		report_log_state
 		kill_fsuae
 		break
 	fi
