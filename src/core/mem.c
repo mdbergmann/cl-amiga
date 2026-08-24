@@ -256,6 +256,7 @@ void cl_gc_register_root(CL_Obj *root_ptr)
         platform_write_string(
             "FATAL: cl_gc_register_root: CL_MAX_GLOBAL_ROOTS exceeded — "
             "raise the limit in mem.h\n");
+        platform_flush_output();
         exit(1);
     }
     global_roots[n_global_roots++] = root_ptr;
@@ -799,6 +800,7 @@ void cl_mem_init(uint32_t heap_size)
                  "FATAL: Failed to allocate %u-byte heap (try a smaller --heap)\n",
                  (unsigned)heap_size);
         platform_write_string(msg);
+        platform_flush_output();
         exit(1);
     }
     cl_arena_base = cl_heap.arena;
@@ -1194,6 +1196,7 @@ void cl_storage_error(const char *fmt, ...)
     platform_write_string("FATAL: ");
     platform_write_string(cl_error_msg);
     platform_write_string("\n");
+    platform_flush_output();
     exit(1);
 }
 
@@ -2056,21 +2059,19 @@ CL_Obj cl_make_pathname(CL_Obj host, CL_Obj device, CL_Obj directory,
 void cl_gc_push_root(CL_Obj *root)
 {
     if (gc_root_count > CL_GC_ROOT_STACK_SIZE || gc_root_count < 0) {
-        fprintf(stderr, "[GC-ROOT-BUG] push_root: gc_root_count=%d is CORRUPT (max=%d)\n",
-                gc_root_count, CL_GC_ROOT_STACK_SIZE);
+        cl_fatal_diag("[GC-ROOT-BUG] push_root: gc_root_count=%d is CORRUPT (max=%d)\n",
+                      gc_root_count, CL_GC_ROOT_STACK_SIZE);
         cl_capture_backtrace();
-        fprintf(stderr, "%s", cl_backtrace_buf);
-        fflush(stderr);
+        cl_fatal_diag("%s", cl_backtrace_buf);
         abort();
     }
     if (gc_root_count < CL_GC_ROOT_STACK_SIZE) {
         gc_root_stack[gc_root_count++] = root;
     } else {
-        fprintf(stderr, "FATAL: GC root stack overflow (%d/%d) — increase CL_GC_ROOT_STACK_SIZE\n",
-                gc_root_count, CL_GC_ROOT_STACK_SIZE);
+        cl_fatal_diag("FATAL: GC root stack overflow (%d/%d) — increase CL_GC_ROOT_STACK_SIZE\n",
+                      gc_root_count, CL_GC_ROOT_STACK_SIZE);
         cl_capture_backtrace();
-        fprintf(stderr, "%s", cl_backtrace_buf);
-        fflush(stderr);
+        cl_fatal_diag("%s", cl_backtrace_buf);
         abort();
     }
 }
@@ -2122,20 +2123,18 @@ void cl_gc_push_root_dbg(CL_Obj *root, const char *file, int line)
 void cl_gc_pop_roots(int n)
 {
     if (gc_root_count > CL_GC_ROOT_STACK_SIZE || gc_root_count < 0) {
-        fprintf(stderr, "[GC-ROOT-BUG] pop_roots(%d): gc_root_count=%d is CORRUPT (max=%d)\n",
-                n, gc_root_count, CL_GC_ROOT_STACK_SIZE);
+        cl_fatal_diag("[GC-ROOT-BUG] pop_roots(%d): gc_root_count=%d is CORRUPT (max=%d)\n",
+                      n, gc_root_count, CL_GC_ROOT_STACK_SIZE);
         cl_capture_backtrace();
-        fprintf(stderr, "%s", cl_backtrace_buf);
-        fflush(stderr);
+        cl_fatal_diag("%s", cl_backtrace_buf);
         abort();
     }
     gc_root_count -= n;
     if (gc_root_count < 0) {
-        fprintf(stderr, "[GC-ROOT-BUG] pop_roots(%d): gc_root_count went negative -> %d\n",
-                n, gc_root_count);
+        cl_fatal_diag("[GC-ROOT-BUG] pop_roots(%d): gc_root_count went negative -> %d\n",
+                      n, gc_root_count);
         cl_capture_backtrace();
-        fprintf(stderr, "%s", cl_backtrace_buf);
-        fflush(stderr);
+        cl_fatal_diag("%s", cl_backtrace_buf);
         abort();
     }
 }
@@ -5046,6 +5045,7 @@ int cl_gc_minor(uint32_t seen_gc_count)
          * fail loudly instead of corrupting silently. */
         platform_write_string("FATAL: gengc dirty-page walk desynced "
                               "mid-update — heap invariant broken\n");
+        platform_flush_output();
         exit(1);
     }
     /* Survivors' own children + young hash tables (note POST-slide offs) */

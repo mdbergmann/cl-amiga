@@ -226,6 +226,22 @@ void cl_setjmp_overrun_check(void);
  * runs after cl_thread_init(). */
 CL_NORETURN void cl_fatal_exit(int code);
 
+/* Print a last-words diagnostic from a path that is about to abort() or
+ * exit(), routed to the process's standard-output HANDLE.
+ *
+ * Use this instead of fprintf(stderr, ...) in any always-compiled fatal path.
+ * On AmigaOS the shell's `>file` redirection rebinds Output() only — stderr is
+ * a separate handle, so an fprintf(stderr) death message is written where
+ * nothing is capturing it and the run's log simply ends mid-suite with no
+ * indication of why.  That is what makes an unattended FS-UAE failure
+ * undiagnosable: the log's last line is an unrelated earlier one.
+ *
+ * Deliberately does NOT go through cl_write_cstring_to_stdout: these callers
+ * fire when the heap or the VM stack is already suspect, and resolving
+ * *STANDARD-OUTPUT* would read the very arena under suspicion.  Goes straight
+ * to platform_write_string and flushes. */
+void cl_fatal_diag(const char *fmt, ...);
+
 /* Unwind with an existing condition object. Caller must have already
  * signaled via cl_signal_condition. Preserves the condition so the
  * debugger can dispatch PRINT-OBJECT for a meaningful report. */

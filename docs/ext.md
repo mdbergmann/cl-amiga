@@ -167,9 +167,34 @@ Rules and limits:
   set when `~/.clamigarc` runs, so an rc file can skip loads the image
   already contains.
 
+### Shipping an image: `:shake-bindings`
+
+A generated OS binding module (`amiga/raw/…`) ships one packed *binding
+table* and builds a symbol only when something names it, so a module costs
+what a program uses rather than what it defines.  In an application image
+the set of referenced names is already closed, and those tables — ~150 KB
+for the four common modules — are dead weight.
+
+```lisp
+(ext:save-image "closure.img" :quit t :shake-bindings t)
+```
+
+drops them just before the dump.  Names referenced before the save are
+ordinary symbols and keep working (value, `#'`, `funcall`, `(setf (field
+…))`); names never referenced **stop existing** — `find-symbol` returns
+`NIL`, and reading `pkg:name` signals an error that says the table was
+shed.  So reference everything the program needs before saving, including
+names it would otherwise reach through `intern`/`read` at run time; and
+because platform and version guards are resolved when a name is built,
+build the image on the oldest configuration you support.  The shed is
+permanent for the running session too, not only the image — loading the
+module's FASL again re-attaches a table if you need it back.
+
+Use it for delivery, not for a development snapshot.
+
 | Signature | Kind | Description |
 |-----------|------|-------------|
-| `(save-image pathname &key quit)` | function | Arm a heap-image dump; it executes at the next top-level safe point.  With `:quit t` the process exits after writing |
+| `(save-image pathname &key quit shake-bindings)` | function | Arm a heap-image dump; it executes at the next top-level safe point.  With `:quit t` the process exits after writing; with `:shake-bindings t` the demand-interned binding tables are shed first (see above) |
 | `*save-hooks*` | variable | Functions funcalled (most recent first) right before the dump — close streams / tear down FFI state here |
 | `*restore-hooks*` | variable | Functions funcalled (most recent first) after a `--image` restore, following `~/.clamigarc` |
 | `*image-restored-p*` | variable | `T` when this session came from `--image` |

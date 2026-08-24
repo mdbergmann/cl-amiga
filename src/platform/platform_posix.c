@@ -177,6 +177,11 @@ void platform_write_string(const char *str)
     fflush(stdout);
 }
 
+void platform_flush_output(void)
+{
+    fflush(stdout);
+}
+
 int platform_read_line(char *buf, int bufsize)
 {
     char *r;

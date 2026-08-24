@@ -244,8 +244,30 @@ CL_NORETURN void cl_error_frame_longjmp(int code)
  * MorphOS -noixemul crt0 post-main-teardown freeze that
  * cl_thread_restore_main_tls() exists to prevent.  Safe/no-op on every other
  * platform (see cl_thread_restore_main_tls). */
+void cl_fatal_diag(const char *fmt, ...)
+{
+    /* Static, not on the stack: several callers are stack-overflow and
+     * stack-corruption paths where a 512-byte frame is exactly what must not
+     * be taken.  Fatal paths never run concurrently in a way that makes the
+     * shared buffer worse than losing the message. */
+    static char buf[512];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    buf[sizeof(buf) - 1] = '\0';
+    platform_write_string(buf);
+    platform_flush_output();
+}
+
 CL_NORETURN void cl_fatal_exit(int code)
 {
+    /* Push the diagnostic the caller just wrote out to the OS before the
+     * process goes away.  Nothing above us is buffered today, but a fatal
+     * exit is precisely where a stranded buffer costs the most: the log a
+     * post-mortem is read from would end on an unrelated earlier line with
+     * no trace of why the run stopped. */
+    platform_flush_output();
     cl_thread_restore_main_tls();
     exit(code);
 }

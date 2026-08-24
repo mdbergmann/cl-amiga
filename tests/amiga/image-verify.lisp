@@ -39,6 +39,29 @@
 (img-check "dead thread join signals" t
            (handler-case (progn (mp:join-thread *img-dead-thr*) nil)
              (error () t)))
+; :SHAKE-BINDINGS (spec Phase 3) — the image was saved with its binding
+; table shed.  Names referenced before the save are ordinary symbols; the
+; rest do not exist, and the reader says why instead of implying a typo.
+(img-check "shed table keeps its marker" t
+           (getf (clamiga::%binding-table-info "IMG-BT") :shed))
+(img-check "shed table reports no entries" 0
+           (getf (clamiga::%binding-table-info "IMG-BT") :entries))
+(img-check "touched constant survives the shed" 11 (symbol-value *img-bt-kept*))
+(img-check "touched name keeps its identity" t
+           (eq *img-bt-kept* (find-symbol "+KEPT+" "IMG-BT")))
+(img-check "touched libcall stub survives" -30
+           (getf (ffi::%ffi-stub-info (symbol-function (find-symbol "IMG-CALL" "IMG-BT"))) :lvo))
+(img-check "untouched name is gone" '(nil nil)
+           (multiple-value-list (find-symbol "+GONE+" "IMG-BT")))
+(img-check "untouched field accessor is gone" '(nil nil)
+           (multiple-value-list (find-symbol "IMG-NODE-X" "IMG-BT")))
+(img-check "reader explains a shed miss" t
+           (handler-case (progn (read-from-string "img-bt:+gone+") nil)
+             (error (c) (and (search "shed by SAVE-IMAGE" (format nil "~a" c)) t))))
+(img-check "eager flip on a shed package is a no-op" t
+           (progn (clamiga::%binding-table-materialize-all "IMG-BT")
+                  (getf (clamiga::%binding-table-info "IMG-BT") :shed)))
+
 ; The restored heap must survive GC + compaction (offsets, JIT relink,
 ; blob-attached bytecode all get exercised by the collector).
 (img-check "gc after restore" 55

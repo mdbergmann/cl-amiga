@@ -31,5 +31,21 @@
 
 (push (lambda () (format t "IMAGE-RESTORE-HOOK-RAN~%")) ext:*restore-hooks*)
 
+; A demand-interned binding table (bindtab.c) + the delivery mode
+; :SHAKE-BINDINGS (specs/raw-bindings-footprint.md, Phase 3): one name is
+; touched before the save, the table is shed with the dump.  The restored
+; session must keep the touched name — value, identity, stub — and miss
+; every untouched one cleanly.  Defined inline rather than REQUIREd from
+; lib/amiga/raw so this leg stays independent of the raw FASLs.
+(require "amiga/ffi")
+(defvar *img-bt-base* nil)
+(defpackage "IMG-BT" (:use "CL"))
+(amiga.ffi:define-binding-table "IMG-BT" (:base *img-bt-base*)
+  (:const "+KEPT+" 11) (:const "+GONE+" 22)
+  (:fn "IMG-CALL" -30 (:a0) :bool)
+  (:struct "IMG-NODE" 4 ("X" :i16 0)))
+(defvar *img-bt-kept* 'img-bt:+kept+)
+(defvar *img-bt-fn* (fboundp 'img-bt:img-call))
+
 (format t "IMAGE-STATE-BUILT fib10=~a~%" (img-fib 10))
-(ext:save-image "build/amiga/clamiga-test.img" :quit t)
+(ext:save-image "build/amiga/clamiga-test.img" :quit t :shake-bindings t)

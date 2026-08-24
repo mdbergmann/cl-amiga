@@ -209,7 +209,8 @@ test_batch test_boot_log test_mx_error_context \
                 test_compile_file_stderr test_fasl_cache_dir test_make_load_form \
                 test_struct_slot_access test_defconstant_fasl test_peephole_diff \
                 test_defvar_special_fasl test_stack_depth test_argv_utf8 \
-                test_utf8_filenames test_image test_amiga_bindgen \
+                test_utf8_filenames test_image test_finish_output_flush \
+                test_amiga_bindgen \
                 test_amiga_reaction test_amiga_curated_vs_raw \
                 test_lib_fasl_portable
 

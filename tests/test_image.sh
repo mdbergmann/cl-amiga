@@ -15,6 +15,8 @@
 #   corrupt image → clean refusal (explicit --image exits 1)
 #   auto-discovery of clamiga.img in the cwd; --no-image bypasses it
 #   ~/.clamigarc runs after a restore with EXT:*IMAGE-RESTORED-P* = T
+#   :shake-bindings — the delivery mode: binding tables shed before the dump,
+#     touched names intact, untouched ones gone with a reader error saying why
 #
 # Run: sh tests/test_image.sh build/host/clamiga
 
@@ -237,6 +239,93 @@ out=$(HOME="$WORK/rc-home" CLAMIGA_NO_USERINIT= "$TIMEOUT" 60 "$CLAMIGA" \
     --eval '(format t "RC-DONE~%")' </dev/null 2>&1)
 ec=$?
 check "clamigarc_sees_restored_p" 0 "$ec" "$out" "RC-RESTORED=T" "RC-DONE"
+
+# --- :SHAKE-BINDINGS — image delivery sheds the binding tables -----------
+# (specs/raw-bindings-footprint.md Phase 3.)  A delivered image has a CLOSED
+# set of referenced names, so the tables that answer "a name nobody has asked
+# for yet" are dead weight.  Shedding drops them: what was touched before the
+# save keeps working, what was not stops existing — with an error that says
+# so rather than looking like a typo.
+
+cat > shake-state.lisp <<'EOF'
+(require "amiga/ffi")
+(defvar *sh-base* nil)
+(defpackage "SH-BT" (:use "CL"))
+;; 400 rows: big enough that shedding is visible in the image's size
+(eval (list* 'amiga.ffi:define-binding-table "SH-BT" '((:base *sh-base*))
+             (loop for i below 400 collect (list :const (format nil "+SH-C~D+" i) i))))
+(defvar *sh-touched* 'sh-bt:+sh-c7+)
+(format t "SHAKE-STATE=~a~%" (getf (clamiga::%binding-table-info "SH-BT") :entries))
+EOF
+
+cat > shake-verify.lisp <<'EOF'
+(format t "SH-INFO=~a~%" (list (getf (clamiga::%binding-table-info "SH-BT") :shed)
+                               (getf (clamiga::%binding-table-info "SH-BT") :entries)))
+(format t "SH-TOUCHED=~a~%" (list (eq *sh-touched* 'sh-bt:+sh-c7+) sh-bt:+sh-c7+))
+(format t "SH-UNTOUCHED=~a~%" (multiple-value-list (find-symbol "+SH-C9+" "SH-BT")))
+(format t "SH-READ=~a~%" (handler-case (read-from-string "sh-bt:+sh-c9+")
+                           (error (e) (if (search "shed by SAVE-IMAGE" (format nil "~a" e))
+                                          :hinted :plain))))
+EOF
+
+out=$("$TIMEOUT" 60 "$CLAMIGA" $CLI --heap 8M --non-interactive \
+    --load shake-state.lisp \
+    --eval '(ext:save-image "shake-plain.img" :quit t)' </dev/null 2>&1)
+ec=$?
+check "shake_baseline_save" 0 "$ec" "$out" "SHAKE-STATE=400" "Image saved"
+desc="save_without_shake_keeps_the_tables"
+check_absent "$desc" "$out" "shed"
+
+out=$("$TIMEOUT" 60 "$CLAMIGA" $CLI --heap 8M --non-interactive \
+    --load shake-state.lisp \
+    --eval '(ext:save-image "shake-shaken.img" :quit t :shake-bindings t)' </dev/null 2>&1)
+ec=$?
+check "shake_bindings_save_reports_what_it_shed" 0 "$ec" "$out" \
+    "shed 1 binding table" "resolve only the names already referenced" "Image saved"
+
+desc="shake_bindings_shrinks_the_image"
+sz_plain=$(wc -c < shake-plain.img)
+sz_shaken=$(wc -c < shake-shaken.img)
+if [ "$sz_shaken" -lt "$sz_plain" ]; then
+    ok
+else
+    fail "$desc" "shaken image $sz_shaken not smaller than $sz_plain" ""
+fi
+
+out=$("$TIMEOUT" 60 "$CLAMIGA" --no-userinit --image shake-shaken.img \
+    --non-interactive --load shake-verify.lisp </dev/null 2>&1)
+ec=$?
+check "shaken_image_closed_at_referenced_names" 0 "$ec" "$out" \
+    "SH-INFO=(T 0)" "SH-TOUCHED=(T 7)" "SH-UNTOUCHED=(NIL NIL)" "SH-READ=HINTED"
+
+# The unshaken twin is the control: the same untouched name still resolves.
+out=$("$TIMEOUT" 60 "$CLAMIGA" --no-userinit --image shake-plain.img \
+    --non-interactive --load shake-verify.lisp </dev/null 2>&1)
+ec=$?
+check "unshaken_image_still_materialises_on_demand" 0 "$ec" "$out" \
+    "SH-INFO=(NIL 400)" "SH-UNTOUCHED=(+SH-C9+ EXTERNAL)" "SH-READ=+SH-C9+"
+
+# Nothing lazy loaded: a clean no-op, not an error and not a stray message.
+out=$("$TIMEOUT" 60 "$CLAMIGA" $CLI --heap 8M --non-interactive \
+    --eval '(defvar *im-n* 3)' \
+    --eval '(ext:save-image "noshake.img" :quit t :shake-bindings t)' </dev/null 2>&1)
+ec=$?
+check "shake_bindings_without_any_table_is_a_no_op" 0 "$ec" "$out" "Image saved"
+desc="no_op_shake_says_nothing"
+check_absent "$desc" "$out" "shed"
+
+out=$("$TIMEOUT" 60 "$CLAMIGA" --no-userinit --image noshake.img \
+    --non-interactive --eval '(format t "NOSHAKE=~a~%" *im-n*)' </dev/null 2>&1)
+ec=$?
+check "no_op_shake_image_restores" 0 "$ec" "$out" "NOSHAKE=3"
+
+# An unknown keyword names the ones that exist.
+out=$("$TIMEOUT" 60 "$CLAMIGA" $CLI --heap 8M --non-interactive \
+    --eval '(handler-case (ext:save-image "x.img" :bogus t)
+              (error (e) (format t "KWERR=~a~%" e)))' </dev/null 2>&1)
+ec=$?
+check "unknown_keyword_lists_quit_and_shake_bindings" 0 "$ec" "$out" \
+    "KWERR=.*:QUIT and :SHAKE-BINDINGS"
 
 # --- Report --------------------------------------------------------------
 

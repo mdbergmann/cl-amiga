@@ -18,6 +18,11 @@
  * every entry is built and the table dropped — so no laziness is ever
  * observable except as memory.
  *
+ * The one exception is deliberate and explicit: SAVE-IMAGE :SHAKE-BINDINGS
+ * SHEDS the tables (cl_bindtab_shed) for image-based delivery, where the
+ * set of referenced names is closed by definition.  A shed package is
+ * closed at the names it has — the rest stop existing.
+ *
  * Blob layout (big-endian throughout, so the FASL byte-vector literal is
  * byte-identical on the LE host and the BE m68k target):
  *
@@ -129,11 +134,32 @@ CL_Obj cl_bindtab_materialize(CL_Obj package, const char *query, uint32_t qlen,
                               int force);
 
 /* Flip PACKAGE eager: materialise every entry not yet present and drop the
- * table.  No-op for an ordinary package. */
+ * table.  No-op for an ordinary package, and for a SHED one (see below). */
 void cl_bindtab_materialize_all(CL_Obj package);
 
+/* SHED PACKAGE's table: drop the blob but KEEP the bindings vector as a
+ * marker (specs/raw-bindings-footprint.md, Phase 3).  The opposite of the
+ * eager flip — nothing is materialised, so what was never referenced stops
+ * existing: probes miss, the package is closed at the names it has.  This
+ * is what SAVE-IMAGE :SHAKE-BINDINGS does to every lazy package before the
+ * dump, turning ~150 KB of tables for the four common raw modules into
+ * garbage the dump GC reclaims.  Returns the blob's size in bytes (0 when
+ * PACKAGE has no table or was already shed).  Re-registering a table
+ * (loading the module's FASL again) undoes it. */
+uint32_t cl_bindtab_shed(CL_Obj package);
+
+/* Shed every package in the registry; returns how many were shed and, via
+ * BYTES_OUT (may be NULL), their total blob bytes. */
+uint32_t cl_bindtab_shed_all(uint32_t *bytes_out);
+
+/* True when PACKAGE's table was shed — a lookup miss in it means "this
+ * name was never referenced before the image was saved", which is what the
+ * reader's unknown-qualified-symbol error says. */
+int cl_bindtab_shed_p(CL_Obj package);
+
 /* CLAMIGA builtins: %MAKE-BINDING-TABLE, %REGISTER-BINDING-TABLE,
- * %BINDING-TABLE-ENTRIES, %BINDING-TABLE-INFO, %BINDING-TABLE-MATERIALIZE-ALL */
+ * %BINDING-TABLE-ENTRIES, %BINDING-TABLE-INFO, %BINDING-TABLE-MATERIALIZE-ALL,
+ * %SHED-BINDING-TABLES */
 void cl_builtins_bindtab_init(void);
 
 #endif /* CL_BINDTAB_H */
