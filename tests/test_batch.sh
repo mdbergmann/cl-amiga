@@ -75,6 +75,25 @@ check "batch_skip_blank_lines" "3" "$result"
 result=$(echo '(list 1 2 3)' | "$CLAMIGA" --no-userinit --batch 2>&1)
 check "batch_list_result" "(1 2 3)" "$result"
 
+# --- Zero values print nothing (issue #6) ---
+# (values) returns no values at all, so the REPL echoes nothing — not NIL.
+
+result=$(echo '(values)' | "$CLAMIGA" --no-userinit --batch 2>&1)
+check "batch_values_none_prints_nothing" "" "$result"
+
+result=$(echo '(values-list nil)' | "$CLAMIGA" --no-userinit --batch 2>&1)
+check "batch_values_list_empty_prints_nothing" "" "$result"
+
+# One value that happens to be NIL is still a value and must print.
+result=$(echo '(values nil)' | "$CLAMIGA" --no-userinit --batch 2>&1)
+check "batch_values_nil_prints_nil" "NIL" "$result"
+
+# A zero-value form must not silence the forms after it.
+result=$(printf '(values)\n(+ 40 2)\n(values)\n(list)\n' | \
+         "$CLAMIGA" --no-userinit --batch 2>&1)
+check "batch_values_none_does_not_swallow_next" "42
+NIL" "$result"
+
 # --- REPL buffer overflow: loud discard, never a silently-truncated eval ---
 # A multi-line form larger than the 4096-char accumulator used to have its
 # overflowing lines silently dropped, then the mangled prefix was evaluated.

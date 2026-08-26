@@ -856,6 +856,14 @@
 (check "mv-list values" '(1 2 3) (multiple-value-list (values 1 2 3)))
 (check "mv-list none" nil (multiple-value-list (values)))
 (check "mv-list single" '(3) (multiple-value-list (+ 1 2)))
+; Zero values must survive a FUNCTION RETURN as zero values — this is what
+; the REPL's "print nothing for (values)" rule reads (issue #6), and on
+; m68k the JIT'd return path maintains cl_mv_count itself.  Checked cold
+; and again after warm-up so a JIT'd body is covered too.
+(defun mv-none-fn () (values))
+(check "mv-list none through call" nil (multiple-value-list (mv-none-fn)))
+(dotimes (i 60) (mv-none-fn))
+(check "mv-list none through call warm" nil (multiple-value-list (mv-none-fn)))
 (check "nth-value 0" 10 (nth-value 0 (values 10 20 30)))
 (check "nth-value 1" 20 (nth-value 1 (values 10 20 30)))
 (check "nth-value 2" 30 (nth-value 2 (values 10 20 30)))
