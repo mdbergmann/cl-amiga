@@ -7215,19 +7215,19 @@ TEST(history_star_basic)
 {
     /* Eval (+ 1 2) => 3, update history, check * */
     CL_Obj form = cl_eval_string("'(+ 1 2)");
-    CL_Obj result = CL_MAKE_FIXNUM(3);
-    cl_repl_update_history(form, result);
+    CL_Obj values = cl_cons(CL_MAKE_FIXNUM(3), CL_NIL);
+    cl_repl_update_history(form, values);
     ASSERT_EQ_INT(eval_int("*"), 3);
 }
 
 TEST(history_star_shift)
 {
     /* First eval: result 10 */
-    cl_repl_update_history(CL_NIL, CL_MAKE_FIXNUM(10));
+    cl_repl_update_history(CL_NIL, cl_cons(CL_MAKE_FIXNUM(10), CL_NIL));
     /* Second eval: result 20 */
-    cl_repl_update_history(CL_NIL, CL_MAKE_FIXNUM(20));
+    cl_repl_update_history(CL_NIL, cl_cons(CL_MAKE_FIXNUM(20), CL_NIL));
     /* Third eval: result 30 */
-    cl_repl_update_history(CL_NIL, CL_MAKE_FIXNUM(30));
+    cl_repl_update_history(CL_NIL, cl_cons(CL_MAKE_FIXNUM(30), CL_NIL));
 
     ASSERT_EQ_INT(eval_int("*"), 30);
     ASSERT_EQ_INT(eval_int("**"), 20);
@@ -7241,9 +7241,9 @@ TEST(history_plus_shift)
     form2 = cl_eval_string("'(second-form)");
     form3 = cl_eval_string("'(third-form)");
 
-    cl_repl_update_history(form1, CL_MAKE_FIXNUM(1));
-    cl_repl_update_history(form2, CL_MAKE_FIXNUM(2));
-    cl_repl_update_history(form3, CL_MAKE_FIXNUM(3));
+    cl_repl_update_history(form1, cl_cons(CL_MAKE_FIXNUM(1), CL_NIL));
+    cl_repl_update_history(form2, cl_cons(CL_MAKE_FIXNUM(2), CL_NIL));
+    cl_repl_update_history(form3, cl_cons(CL_MAKE_FIXNUM(3), CL_NIL));
 
     /* + should be the last form */
     ASSERT_STR_EQ(eval_print("+"), "(THIRD-FORM)");
@@ -7323,6 +7323,250 @@ TEST(repl_eval_string_nothing_evaluated_signals_no_values)
     ASSERT_EQ_INT(cl_repl_result_printable(cl_eval_string(";; just a comment")), 0);
     cl_eval_string("(values 1 2 3)");
     ASSERT_EQ_INT(cl_repl_result_printable(cl_eval_string("   ")), 0);
+}
+
+/* --- REPL multiple-value echo (CLHS 25.1) --- */
+
+/* Print the list of values the REPL would echo for STR. */
+static const char *repl_values(const char *str)
+{
+    static char buf[256];
+    CL_Obj result = cl_eval_string(str);
+    CL_Obj values = cl_repl_values_list(result);
+    CL_GC_PROTECT(values);        /* printing allocates and can compact */
+    cl_prin1_to_string(values, buf, sizeof(buf));
+    CL_GC_UNPROTECT(1);
+    return buf;
+}
+
+TEST(repl_values_list_zero_one_and_many)
+{
+    /* Zero values print nothing at all (issue #6) */
+    ASSERT_STR_EQ(repl_values("(values)"), "NIL");
+    ASSERT_STR_EQ(repl_values("(values-list nil)"), "NIL");
+    /* One value — including a NIL one, which is still a value */
+    ASSERT_STR_EQ(repl_values("42"), "(42)");
+    ASSERT_STR_EQ(repl_values("(values nil)"), "(NIL)");
+    ASSERT_STR_EQ(repl_values("(car '())"), "(NIL)");
+    /* Every value is echoed, not just the primary */
+    ASSERT_STR_EQ(repl_values("(floor 7 2)"), "(3 1)");
+    ASSERT_STR_EQ(repl_values("(values 1 2 3)"), "(1 2 3)");
+    ASSERT_STR_EQ(repl_values("(values-list '(:a :b))"), "(:A :B)");
+}
+
+TEST(repl_values_list_index_zero_comes_from_the_stack)
+{
+    /* cl_mv_values[0] is stale for every producer that only writes
+     * cl_mv_count = 1 (OP_CONST, OP_GLOAD, arithmetic, …), so slot 0 must
+     * come from the returned primary. */
+    cl_eval_string("(values 111 222)");
+    ASSERT_STR_EQ(repl_values("(+ 1 2)"), "(3)");
+    cl_eval_string("(values 111 222)");
+    ASSERT_STR_EQ(repl_values("'sym"), "(SYM)");
+}
+
+TEST(repl_history_slash_holds_all_values)
+{
+    /* CLHS 25.1.1: * is the primary value, / the list of all of them. */
+    CL_Obj values = cl_repl_values_list(cl_eval_string("(floor 7 2)"));
+    CL_GC_PROTECT(values);
+    cl_repl_update_history(CL_NIL, values);
+    CL_GC_UNPROTECT(1);
+    ASSERT_EQ_INT(eval_int("*"), 3);
+    ASSERT_STR_EQ(eval_print("/"), "(3 1)");
+
+    cl_repl_update_history(CL_NIL, cl_repl_values_list(cl_eval_string("9")));
+    ASSERT_EQ_INT(eval_int("*"), 9);
+    ASSERT_STR_EQ(eval_print("/"), "(9)");
+    ASSERT_STR_EQ(eval_print("//"), "(3 1)");
+
+    cl_repl_update_history(CL_NIL, cl_repl_values_list(cl_eval_string("(values)")));
+    ASSERT_STR_EQ(eval_print("*"), "NIL");     /* no primary value */
+    ASSERT_STR_EQ(eval_print("/"), "NIL");     /* no values at all */
+    ASSERT_STR_EQ(eval_print("//"), "(9)");
+    ASSERT_STR_EQ(eval_print("///"), "(3 1)");
+}
+
+/* --- Multiple-values hygiene (CLHS 3.1.7 / 5.1) ---
+ *
+ * A form specified to return one value must not hand its caller the
+ * multiple values of some earlier form.  The compiler enforces this by
+ * emitting OP_MV_RESET in front of the opcodes that observe the MV state
+ * (see cl_mv_normalize); these tests pin both directions — the leak is
+ * closed AND real multiple values still propagate. */
+
+static const char *mvl(const char *form)
+{
+    static char buf[256];
+    char src[512];
+    snprintf(src, sizeof(src), "(multiple-value-list %s)", form);
+    return strcpy(buf, eval_print(src));
+}
+
+TEST(mv_hygiene_single_value_forms_do_not_leak)
+{
+    /* The value came back through OP_LOAD, which leaves the MV buffer
+     * holding (values 1 2) / (floor 7 2). */
+    ASSERT_STR_EQ(mvl("(let ((x (values 1 2))) x)"), "(1)");
+    ASSERT_STR_EQ(mvl("(let ((x (floor 7 2))) x)"), "(3)");
+    ASSERT_STR_EQ(mvl("(let* ((x (values 1 2))) x)"), "(1)");
+    /* ... through a boxed (closed-over, mutated) binding: OP_CELL_REF */
+    ASSERT_STR_EQ(mvl("(let ((x (values 1 2)))"
+                      "  (funcall (lambda () (setq x x))) x)"), "(1)");
+    /* ... out of a function whose body is a bare parameter reference */
+    cl_eval_string("(defun mv-passthrough (x) x)");
+    ASSERT_STR_EQ(mvl("(mv-passthrough (values 1 2))"), "(1)");
+    /* ... through the peeking stores of SETQ / SETF (CLHS 5.1) */
+    ASSERT_STR_EQ(mvl("(let ((y 0)) (setq y (values 1 2)))"), "(1)");
+    ASSERT_STR_EQ(mvl("(let ((y 0)) (setq y (floor 7 2)) y)"), "(3)");
+    cl_eval_string("(defvar *mv-global* nil)");
+    ASSERT_STR_EQ(mvl("(setq *mv-global* (values 1 2))"), "(1)");
+    ASSERT_STR_EQ(mvl("(setf *mv-global* (values 1 2))"), "(1)");
+}
+
+TEST(mv_hygiene_short_circuit_forms_return_one_value)
+{
+    /* CLHS 5.1: a non-last AND/OR arm contributes only its primary value;
+     * so does a COND clause with no body. */
+    ASSERT_STR_EQ(mvl("(or (values 1 2) 3)"), "(1)");
+    ASSERT_STR_EQ(mvl("(and (values nil 2) 3)"), "(NIL)");
+    ASSERT_STR_EQ(mvl("(cond ((values 1 2)))"), "(1)");
+    /* The LAST arm still propagates everything */
+    ASSERT_STR_EQ(mvl("(or nil (values 1 2))"), "(1 2)");
+    ASSERT_STR_EQ(mvl("(and 1 (values 3 4))"), "(3 4)");
+    ASSERT_STR_EQ(mvl("(and (values 1 2))"), "(1 2)");
+}
+
+TEST(mv_hygiene_joins_do_not_leak)
+{
+    /* Both arms deliver a single value through OP_LOAD */
+    ASSERT_STR_EQ(mvl("(let ((a 1) (b 2)) (values a b) (if t a b))"), "(1)");
+    ASSERT_STR_EQ(mvl("(let ((a 1)) (values a 2) (if nil a 7))"), "(7)");
+    ASSERT_STR_EQ(mvl("(let ((a 1)) (values a 2) (cond (nil 0) (t a)))"), "(1)");
+    ASSERT_STR_EQ(mvl("(let ((a 1)) (values a 2) (case 9 (9 a) (t 0)))"), "(1)");
+    /* Local RETURN-FROM exit through the block's result slot */
+    ASSERT_STR_EQ(mvl("(block b (let ((x (values 1 2))) (return-from b x)))"),
+                  "(1)");
+    /* Loop result form */
+    ASSERT_STR_EQ(mvl("(let ((a 1)) (values a 2) (dolist (i '(1)) i))"), "(NIL)");
+}
+
+TEST(mv_hygiene_mixed_joins_normalize_only_the_stale_arm)
+{
+    /* The hard case: one arm of the join can deliver several values while
+     * another arrives through OP_LOAD.  Resetting at the join would throw
+     * away the first arm's extra values; not resetting would let the second
+     * hand out the values of whatever ran before it (here the TEST form,
+     * which is deliberately multi-valued).  The stale arm gets a reset on a
+     * landing only it reaches — cl_mv_close_join. */
+    ASSERT_STR_EQ(mvl("(let ((y 5)) (if (values nil 2) (floor 7 2) y))"), "(5)");
+    ASSERT_STR_EQ(mvl("(let ((y 5)) (if (values t 2) (floor 7 2) y))"), "(3 1)");
+    /* ... and with the arms the other way round, so the stale arm is the one
+     * that arrives by JMP rather than by falling through */
+    ASSERT_STR_EQ(mvl("(let ((y 5)) (if (values t 2) y (floor 7 2)))"), "(5)");
+    ASSERT_STR_EQ(mvl("(let ((y 5)) (if (values nil 2) y (floor 7 2)))"), "(3 1)");
+    /* Multi-armed joins: COND / CASE / TYPECASE share one exit chain */
+    ASSERT_STR_EQ(mvl("(let ((y 5)) (cond ((values nil 2) (floor 7 2)) (t y)))"),
+                  "(5)");
+    ASSERT_STR_EQ(mvl("(let ((y 5)) (cond ((values t 2) (floor 7 2)) (t y)))"),
+                  "(3 1)");
+    ASSERT_STR_EQ(mvl("(let ((y 5)) (case 9 (1 (floor 7 2)) (t y)))"), "(5)");
+    ASSERT_STR_EQ(mvl("(let ((y 5)) (case 1 (1 (floor 7 2)) (t y)))"), "(3 1)");
+    ASSERT_STR_EQ(mvl("(let ((y 5)) (typecase \"s\" (integer (floor 7 2)) (t y)))"),
+                  "(5)");
+    /* Local BLOCK / loop exits, which reach the join through a result slot */
+    ASSERT_STR_EQ(mvl("(let ((y 5)) (block b"
+                      "  (when (values nil 2) (return-from b (floor 7 2))) y))"),
+                  "(5)");
+    ASSERT_STR_EQ(mvl("(let ((y 5)) (block b"
+                      "  (when (values t 2) (return-from b (floor 7 2))) y))"),
+                  "(3 1)");
+    ASSERT_STR_EQ(mvl("(let ((y 5)) (dolist (i '(1) y)"
+                      "  (when (values nil 2) (return (floor 7 2)))))"), "(5)");
+    ASSERT_STR_EQ(mvl("(let ((y 5)) (dolist (i '(1) y)"
+                      "  (when (values t 2) (return (floor 7 2)))))"), "(3 1)");
+    ASSERT_STR_EQ(mvl("(let ((y 5)) (dotimes (i 1 y)"
+                      "  (when (values nil 2) (return (floor 7 2)))))"), "(5)");
+    ASSERT_STR_EQ(mvl("(let ((y 5)) (do ((i 0 (1+ i))) ((> i 0) y)"
+                      "  (when (values nil 2) (return (floor 7 2)))))"), "(5)");
+}
+
+TEST(mv_hygiene_real_multiple_values_still_propagate)
+{
+    ASSERT_STR_EQ(mvl("(values 1 2)"), "(1 2)");
+    ASSERT_STR_EQ(mvl("(progn 0 (values 1 2))"), "(1 2)");
+    ASSERT_STR_EQ(mvl("(let ((x 1)) (values x 2))"), "(1 2)");
+    ASSERT_STR_EQ(mvl("(if t (values 1 2) (values 3 4))"), "(1 2)");
+    ASSERT_STR_EQ(mvl("(when t (values 1 2))"), "(1 2)");
+    ASSERT_STR_EQ(mvl("(cond (t (values 1 2)))"), "(1 2)");
+    ASSERT_STR_EQ(mvl("(case 1 (1 (values 1 2)))"), "(1 2)");
+    ASSERT_STR_EQ(mvl("(block b (values 1 2))"), "(1 2)");
+    ASSERT_STR_EQ(mvl("(block b (return-from b (values 1 2)))"), "(1 2)");
+    ASSERT_STR_EQ(mvl("(catch 'c (values 1 2))"), "(1 2)");
+    ASSERT_STR_EQ(mvl("(catch 'c (throw 'c (values 1 2)))"), "(1 2)");
+    ASSERT_STR_EQ(mvl("(unwind-protect (values 1 2) nil)"), "(1 2)");
+    ASSERT_STR_EQ(mvl("(multiple-value-prog1 (values 1 2) nil)"), "(1 2)");
+    ASSERT_STR_EQ(mvl("(locally (values 1 2))"), "(1 2)");
+    ASSERT_STR_EQ(mvl("(the integer (values 1 2))"), "(1 2)");
+    ASSERT_STR_EQ(mvl("(progv '(*mv-progv*) '(1) (values 1 2))"), "(1 2)");
+    ASSERT_STR_EQ(mvl("(dolist (i '(1)) (return (values 1 2)))"), "(1 2)");
+    ASSERT_STR_EQ(mvl("(handler-case (values 1 2) (error () nil))"), "(1 2)");
+    ASSERT_STR_EQ(mvl("(restart-case (values 1 2) (r () nil))"), "(1 2)");
+    ASSERT_STR_EQ(mvl("(multiple-value-call #'values (values 1 2))"), "(1 2)");
+    ASSERT_STR_EQ(mvl("(funcall (lambda () (values 1 2)))"), "(1 2)");
+    ASSERT_STR_EQ(mvl("(apply #'values '(1 2))"), "(1 2)");
+    ASSERT_STR_EQ(mvl("(floor 7 2)"), "(3 1)");
+}
+
+TEST(mv_hygiene_call_result_is_classified_from_the_callee)
+{
+    /* A call's MV state belongs to the CALLEE, never to whatever its last
+     * argument happened to compile to.  Emitting OP_CALL raw let the state
+     * of the final argument stand — and an argument that arrives through
+     * OP_LOAD is CL_MV_STALE, so the observer reset it: every function whose
+     * body was a MULTIPLE-VALUE-PROG1 lost its second value, because the
+     * VALUES-LIST call that restores them ends in a variable load
+     * (serapeum's SWAPHASH; caught by make test-extra).  cl_emit_call is
+     * now the single point where that classification happens. */
+    cl_eval_string("(defun mv-swap (k v ht)"
+                   "  (multiple-value-prog1 (gethash k ht)"
+                   "    (setf (gethash k ht) v)))");
+    cl_eval_string("(defvar *mv-ht* (make-hash-table))");
+    cl_eval_string("(setf (gethash 'k *mv-ht*) 1)");
+    ASSERT_STR_EQ(mvl("(mv-swap 'k 2 *mv-ht*)"), "(1 T)");
+    ASSERT_STR_EQ(eval_print("(nth-value 1 (mv-swap 'k 3 *mv-ht*))"), "T");
+    ASSERT_STR_EQ(eval_print("(nth-value 1 (mv-swap 'absent 1 *mv-ht*))"), "NIL");
+    /* The same shape without the hash table: the cleanup form's last
+     * argument is a plain variable. */
+    cl_eval_string("(defun mv-p1 (a b) (multiple-value-prog1 (values a b) (list b)))");
+    ASSERT_STR_EQ(mvl("(mv-p1 1 2)"), "(1 2)");
+}
+
+TEST(mv_hygiene_bind_and_nth_value_read_their_own_form)
+{
+    /* MULTIPLE-VALUE-BIND and NTH-VALUE read the MV buffer; it must
+     * describe THEIR values form, not something evaluated before it. */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-bind (a b) (let ((x (values 1 2))) x) (list a b))"),
+        "(1 NIL)");
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-bind (a b) (floor 7 2) (list a b))"), "(3 1)");
+    ASSERT_STR_EQ(eval_print("(nth-value 1 (let ((x (values 1 2))) x))"), "NIL");
+    ASSERT_STR_EQ(eval_print("(nth-value 1 (floor 7 2))"), "1");
+    /* NTH-VALUE itself returns exactly one value */
+    ASSERT_STR_EQ(mvl("(nth-value 0 (values 1 2))"), "(1)");
+}
+
+TEST(mv_hygiene_zero_values_survive_a_call)
+{
+    /* (values) through a function return, and through forms that must not
+     * turn "no values" into "one NIL value". */
+    cl_eval_string("(defun mv-none () (values))");
+    ASSERT_STR_EQ(mvl("(mv-none)"), "NIL");
+    ASSERT_STR_EQ(mvl("(progn 1 (mv-none))"), "NIL");
+    ASSERT_STR_EQ(mvl("(let ((x 1)) x (mv-none))"), "NIL");
+    ASSERT_STR_EQ(mvl("(block b (mv-none))"), "NIL");
+    ASSERT_STR_EQ(mvl("(if t (mv-none) 1)"), "NIL");
 }
 
 /* --- Printer control variables --- */
@@ -11699,6 +11943,19 @@ int main(void)
     RUN(repl_one_value_prints_even_when_nil);
     RUN(repl_zero_values_do_not_leak_into_next_form);
     RUN(repl_eval_string_nothing_evaluated_signals_no_values);
+    RUN(repl_values_list_zero_one_and_many);
+    RUN(repl_values_list_index_zero_comes_from_the_stack);
+    RUN(repl_history_slash_holds_all_values);
+
+    /* Multiple-values hygiene */
+    RUN(mv_hygiene_single_value_forms_do_not_leak);
+    RUN(mv_hygiene_short_circuit_forms_return_one_value);
+    RUN(mv_hygiene_joins_do_not_leak);
+    RUN(mv_hygiene_mixed_joins_normalize_only_the_stale_arm);
+    RUN(mv_hygiene_real_multiple_values_still_propagate);
+    RUN(mv_hygiene_call_result_is_classified_from_the_callee);
+    RUN(mv_hygiene_bind_and_nth_value_read_their_own_form);
+    RUN(mv_hygiene_zero_values_survive_a_call);
 
     /* Printer control variables */
     RUN(eval_print_var_defaults);

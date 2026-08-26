@@ -42,9 +42,20 @@ void cl_repl_init_minimal(void);
 /* Compute net parenthesis depth, skipping strings/comments/char literals */
 int cl_paren_depth(const char *str);
 
-/* Update REPL history variables (*, **, ***, +, ++, +++).
+/* Update REPL history variables (*, **, ***, /, //, ///, +, ++, +++).
+ * VALUES is the list from cl_repl_values_list; its first element becomes *.
  * Called after each successful REPL eval. Exposed for testing. */
-void cl_repl_update_history(CL_Obj form, CL_Obj result);
+void cl_repl_update_history(CL_Obj form, CL_Obj values);
+
+/* The list of ALL values the form just returned — what the REPL echoes and
+ * what / is bound to.  `primary` is what cl_vm_eval returned; the rest come
+ * from the current thread's MV state, so call this right after the eval,
+ * before anything else can run Lisp code.  (values) yields NIL. */
+CL_Obj cl_repl_values_list(CL_Obj primary);
+
+/* Echo VALUES, one per line; nothing at all for the empty list.
+ * COLORIZE wraps each value in the REPL's result color. */
+void cl_repl_print_values(CL_Obj values, int colorize);
 
 /* Non-zero if the form just evaluated produced at least one value, i.e.
  * whether the REPL should print anything for it — (values) returns zero

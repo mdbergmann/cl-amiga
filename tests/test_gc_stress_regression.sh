@@ -5228,6 +5228,47 @@ else
 fi
 
 
+# --- REPL multiple-value echo under forced compaction ------------------------
+# cl_repl_values_list conses the value list out of the primary (a C local) and
+# the thread's mv_values[] buffer, then the REPL prints it and stores it in / —
+# a chain of allocations sitting on GC-relocatable objects.  Under stress every
+# cl_cons compacts, so an unprotected primary or a re-read of a stale mv slot
+# shows up here as a wrong or garbled echo.  Driven through the BATCH REPL
+# (not --load) because that is the loop that owns the echo.
+repl_stress() {
+    printf '%s\n' "$1" | CLAMIGA_GC_STRESS=1 "$TIMEOUT" 120 "$CLAMIGA" \
+        --no-userinit --heap 48M --batch 2>&1
+}
+
+out=$(repl_stress '(floor 7 2)')
+check_contains "REPL echoes both values of FLOOR under stress" "^3$" "$out"
+check_contains "REPL echoes the secondary value under stress"  "^1$" "$out"
+
+out=$(repl_stress '(values-list (list "a" (list 1 2) (quote sym)))')
+check_contains "REPL echoes a consed string value under stress"  '^"a"$'    "$out"
+check_contains "REPL echoes a consed list value under stress"    "^(1 2)$"  "$out"
+check_contains "REPL echoes a symbol value under stress"         "^SYM$"    "$out"
+check_absent   "no corruption diagnostics from the REPL echo path" \
+  "corrupted\|type 0\|BADMARK\|badmark\|SIGSEGV\|Unbound" "$out"
+
+# The compiler's MV normalization runs on every form it compiles; under stress
+# the OP_MV_RESET emission sits between allocating compile steps.
+cat > "$WORK/mv-hygiene.lisp" <<'EOF'
+(defun mvh-passthrough (x) x)
+(defun mvh-all ()
+  (list (multiple-value-list (let ((x (floor 7 2))) x))
+        (multiple-value-list (mvh-passthrough (values 1 2)))
+        (multiple-value-list (or (values 1 2) 3))
+        (multiple-value-list (block b (let ((x (values 1 2))) (return-from b x))))
+        (multiple-value-list (if t (values 1 2) (values 3 4)))
+        (multiple-value-list (unwind-protect (values 1 2) nil))
+        (multiple-value-list (catch (quote c) (throw (quote c) (values 1 2))))))
+(format t "MVH:~a~%" (mvh-all))
+EOF
+out=$(run_stress "$WORK/mv-hygiene.lisp")
+check_contains "MV hygiene holds while compiling under stress" \
+  "MVH:((3) (1) (1) (1) (1 2) (1 2) (1 2))" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

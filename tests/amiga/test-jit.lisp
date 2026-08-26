@@ -98,17 +98,32 @@
          (= 78 (nth 6 bs)) (= 117 (nth 7 bs))))) ; 0x4E 0x75
 
 ; --- 1-arg identity: (defun f (x) x) compiles to
-;   move.l 8(a7),d0    ; 0x20 0x2F 0x00 0x08
-;   rts                ; 0x4E 0x75
-; (6 bytes).  C ABI on m68k puts the first arg at 4(sp) after JSR;
+;   jsr cl_jit_runtime_mv_reset  ; 0x4E 0xB9 + abs32 target
+;   move.l 8(a7),d0              ; 0x20 0x2F 0x00 0x08
+;   rts                          ; 0x4E 0x75
+; (12 bytes).  C ABI on m68k puts the first arg at 4(sp) after JSR;
 ; cl_jit_invoke prepends `func_obj` as the first C arg (so OP_UPVAL
 ; can reach the active closure's upvalues) which shifts the user's
 ; first arg to 8(sp).  The returned CL_Obj is whatever bit pattern
 ; the caller passed — fixnums, symbols, conses all round-trip
-; without reinterpretation. ---
+; without reinterpretation.
+;
+; The leading JSR writes cl_mv_count = 1: OP_LOAD leaves the
+; multiple-value buffer describing whatever ran before the call, so
+; without it (f (values 1 2)) would return TWO values.  The bytecode
+; body carries an explicit OP_MV_RESET for exactly that reason (see
+; matches_passthrough / cl_mv_normalize), and the helper's absolute
+; address differs per build — so these check the SHAPE and the stack
+; displacement, which is what the template is really about. ---
+(defun jit-passthrough-shape-p (bs disp)
+  (and (= 12 (length bs))
+       (= 78 (nth 0 bs)) (= 185 (nth 1 bs))       ; 0x4E 0xB9  jsr abs.l
+       (= 32 (nth 6 bs)) (= 47 (nth 7 bs))        ; 0x20 0x2F  move.l d(a7),d0
+       (= 0 (nth 8 bs))  (= disp (nth 9 bs))      ; big-endian 16-bit disp
+       (= 78 (nth 10 bs)) (= 117 (nth 11 bs))))   ; 0x4E 0x75  rts
 (defun jit-id (x) x)
-(check "jit-id-bytes" '(32 47 0 8 78 117)
-  (clamiga::%jit-dump-bytes #'jit-id))
+(check "jit-id-bytes" t
+  (jit-passthrough-shape-p (clamiga::%jit-dump-bytes #'jit-id) 8))
 (check "jit-id-counter-bump" t
   (let ((before (clamiga::%jit-invoke-count)))
     (jit-id 42)
@@ -121,19 +136,27 @@
 (check "jit-id-symbol"       'foo (jit-id 'foo))
 (check "jit-id-cons"         '(1 2 3) (jit-id '(1 2 3)))
 (check "jit-id-string"       "hello" (jit-id "hello"))
+; The template's leading mv-reset is load-bearing, not decoration: a
+; pass-through returns exactly ONE value even when its argument form
+; produced several (CLHS 3.1.7).  Checked warm, so it is the native
+; template answering — the interpreter side is covered by the
+; "mv hygiene" checks in run-tests.lisp.
+(check "jit-id-single-value" '(1)
+  (progn (dotimes (i 60) (jit-id 1))
+         (multiple-value-list (jit-id (values 1 2)))))
 
-; --- 2-arg pass-through: same template as 1-arg identity, just a
-; different stack displacement.  With the func-obj-first ABI, user
+; --- 2-arg pass-through: same template as 1-arg identity (mv-reset
+; JSR + load + rts), just a different stack displacement.  With the func-obj-first ABI, user
 ; arg j sits at (8 + 4*j)(a7): first arg at 8(a7), second arg at
 ; 12(a7).  The behavioral test then proves cl_jit_invoke's 2-arg
 ; dispatch loads both args off the VM stack and passes them in the
 ; right order. ---
 (defun jit-2arg-fst (x y) x)
 (defun jit-2arg-snd (x y) y)
-(check "jit-2arg-fst-bytes" '(32 47 0 8 78 117)
-  (clamiga::%jit-dump-bytes #'jit-2arg-fst))
-(check "jit-2arg-snd-bytes" '(32 47 0 12 78 117)
-  (clamiga::%jit-dump-bytes #'jit-2arg-snd))
+(check "jit-2arg-fst-bytes" t
+  (jit-passthrough-shape-p (clamiga::%jit-dump-bytes #'jit-2arg-fst) 8))
+(check "jit-2arg-snd-bytes" t
+  (jit-passthrough-shape-p (clamiga::%jit-dump-bytes #'jit-2arg-snd) 12))
 (check "jit-2arg-counter-bump" t
   (let ((before (clamiga::%jit-invoke-count)))
     (jit-2arg-fst 1 2)
@@ -155,16 +178,16 @@
 ; func-obj-first ABI offsets every user arg by +4.  The 6-arg case
 ; proves all six switch arms load args in the correct order. ---
 (defun jit-3arg-mid (x y z) y)
-(check "jit-3arg-mid-bytes" '(32 47 0 12 78 117)
-  (clamiga::%jit-dump-bytes #'jit-3arg-mid))
+(check "jit-3arg-mid-bytes" t
+  (jit-passthrough-shape-p (clamiga::%jit-dump-bytes #'jit-3arg-mid) 12))
 (check "jit-3arg-mid-returns" 'b (jit-3arg-mid 'a 'b 'c))
 
 (defun jit-6arg-1 (a b c d e f) a)
 (defun jit-6arg-6 (a b c d e f) f)
-(check "jit-6arg-1-bytes" '(32 47 0 8 78 117)
-  (clamiga::%jit-dump-bytes #'jit-6arg-1))
-(check "jit-6arg-6-bytes" '(32 47 0 28 78 117)
-  (clamiga::%jit-dump-bytes #'jit-6arg-6))
+(check "jit-6arg-1-bytes" t
+  (jit-passthrough-shape-p (clamiga::%jit-dump-bytes #'jit-6arg-1) 8))
+(check "jit-6arg-6-bytes" t
+  (jit-passthrough-shape-p (clamiga::%jit-dump-bytes #'jit-6arg-6) 28))
 (check "jit-6arg-1-returns" 'first  (jit-6arg-1 'first 2 3 4 5 'last))
 (check "jit-6arg-6-returns" 'last   (jit-6arg-6 'first 2 3 4 5 'last))
 

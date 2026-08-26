@@ -848,10 +848,11 @@ OP_TAILCALL).
   calls" above.
 - *MV_RESET and `mv_count` propagation.*  Investigated 2026-05-14
   and reverted.  Bytecode VM resets `cl_mv_count = 1` as a side
-  effect of every value-producing opcode (OP_CONST, OP_NIL, OP_LOAD,
-  …).  The walker doesn't emit per-opcode resets, so a multi-value
-  producer's mv_count leaks through a JIT'd body's OP_RET to the
-  caller.  Two tried-and-reverted fixes:  (i) reset in
+  effect of most value-producing opcodes (OP_CONST, OP_NIL, the
+  arithmetic ops, … — but NOT OP_LOAD/OP_DUP/OP_CELL_REF, which
+  deliberately leave the buffer alone).  The walker doesn't emit
+  per-opcode resets, so a multi-value producer's mv_count leaks
+  through a JIT'd body's OP_RET to the caller.  Two tried-and-reverted fixes:  (i) reset in
   `cl_jit_invoke` after the native call — broke CLOS dispatch (CLOS
   internals route MVs through JIT'd intermediates and need them
   propagated);  (ii) reset in walker's OP_RET emitter — same CLOS
@@ -870,6 +871,31 @@ OP_TAILCALL).
   whatever mv_count their callers were last left with — fine for the
   current test suite and bouncing-lines hot path (nothing reads
   mv_count from JIT'd code), but a latent correctness gap.
+
+  **Update 2026-08-26 (compiler MV hygiene).**  The compiler now
+  emits an explicit `OP_MV_RESET` wherever a form's value reaches an
+  observer through an opcode that leaves the buffer alone
+  (`cl_mv_normalize`, compiler.c) — so the shapes that used to leak
+  in the *interpreter* are fixed there, and the walker picks the
+  reset up for free because it already compiles that opcode.  Two
+  consequences for this file:
+
+  - `matches_passthrough` was updated to the new 9-byte body shape
+    (`OP_LOAD j; OP_STORE k; OP_POP; OP_LOAD k; OP_MV_RESET; OP_RET`)
+    and its template now JSRs `cl_jit_runtime_mv_reset` before
+    loading the argument.  Without that the matcher would silently
+    stop firing — and honoring the opcode is mandatory, since
+    `(f (values 1 2))` for `(defun f (x) x)` must yield ONE value.
+  - The per-opcode gap itself is unchanged and is now a *cold/warm
+    divergence* rather than a uniform leak: a JIT'd body whose result
+    comes from a native template that doesn't write mv_count
+    (`matches_trivial_leaf`'s constant return, the walker's OP_CONST/
+    OP_LOAD/arith templates) returns with whatever mv_count the
+    caller last left, where the interpreter would have written 1.
+    Observable only through `multiple-value-list` / `nth-value` /
+    `multiple-value-bind` on a JIT'd call whose caller just produced
+    multiple values.  The fix remains the cached-thread-pointer
+    inline write below.
 
 ## Status (2026-05-17, post OP_AMIGA_CALL walker + defcfun inlining)
 
