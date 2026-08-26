@@ -94,6 +94,32 @@ result=$(printf '(values)\n(+ 40 2)\n(values)\n(list)\n' | \
 check "batch_values_none_does_not_swallow_next" "42
 NIL" "$result"
 
+# --- Every value is echoed, one per line (CLHS 25.1) ---
+
+result=$(echo '(floor 7 2)' | "$CLAMIGA" --no-userinit --batch 2>&1)
+check "batch_two_values_one_per_line" "3
+1" "$result"
+
+result=$(echo '(values 1 2 3)' | "$CLAMIGA" --no-userinit --batch 2>&1)
+check "batch_three_values_one_per_line" "1
+2
+3" "$result"
+
+result=$(echo "(values-list '(:a \"b\"))" | "$CLAMIGA" --no-userinit --batch 2>&1)
+check "batch_values_printed_readably" ':A
+"b"' "$result"
+
+# A form specified to return ONE value must not echo the multiple values of
+# an earlier one — the value comes back through OP_LOAD, which leaves the
+# MV buffer alone (compiler MV hygiene, see cl_mv_normalize).
+result=$(echo '(let ((x (floor 7 2))) x)' | "$CLAMIGA" --no-userinit --batch 2>&1)
+check "batch_single_value_form_echoes_one_value" "3" "$result"
+
+result=$(printf '(defun mv-id (x) x)\n(mv-id (values 1 2))\n' | \
+         "$CLAMIGA" --no-userinit --batch 2>&1)
+check "batch_passthrough_defun_echoes_one_value" "MV-ID
+1" "$result"
+
 # --- REPL buffer overflow: loud discard, never a silently-truncated eval ---
 # A multi-line form larger than the 4096-char accumulator used to have its
 # overflowing lines silently dropped, then the mangled prefix was evaluated.

@@ -218,17 +218,26 @@ static int matches_trivial_leaf(const CL_Bytecode *bc, CL_Obj *value_out)
  * Body `xj` compiles to `OP_LOAD <j>`; the implicit block-return
  * postlude adds `OP_STORE <k> ; OP_POP ; OP_LOAD <k>` (slot k is the
  * block-return cell since slots 0..k-1 hold the k parameters), and the
- * function trailer adds `OP_RET`.  Total 8 bytes regardless of k:
+ * function trailer adds `OP_MV_RESET ; OP_RET`.  Total 9 bytes
+ * regardless of k:
  *
  *   OP_LOAD  j   2 bytes   (0 <= j < k)
  *   OP_STORE k   2 bytes
  *   OP_POP       1 byte
  *   OP_LOAD  k   2 bytes
+ *   OP_MV_RESET  1 byte
  *   OP_RET       1 byte
  *
- * No allocation, no side effects — safe to collapse to a single "load
- * arg, return" sequence.  Strict on metadata so optional/&key/&rest
- * variants don't sneak through.
+ * The OP_MV_RESET is not optional: OP_LOAD leaves the multiple-value
+ * buffer describing whatever ran before the call, so without it
+ * `(f (values 1 2))` would return TWO values (compiler MV hygiene, see
+ * cl_mv_normalize).  The emitter below therefore calls the same
+ * one-line helper the walker's OP_MV_RESET case uses before loading the
+ * argument — still far cheaper than a LINK'd walker frame.
+ *
+ * No allocation, no side effects otherwise — safe to collapse to
+ * "reset mv, load arg, return".  Strict on metadata so optional/&key/
+ * &rest variants don't sneak through.
  *
  * Capped at the arity that `cl_jit_invoke` knows how to dispatch
  * (`CL_JIT_PASSTHROUGH_MAX_ARITY` — bump in lockstep with the switch).
@@ -247,7 +256,7 @@ static int matches_passthrough(const CL_Bytecode *bc, uint8_t *slot_out)
     if (bc->n_upvalues != 0) return 0;
     arity = (uint8_t)bc->arity;
     if (bc->n_locals != (uint16_t)(arity + 1)) return 0;
-    if (bc->code_len != 8) return 0;
+    if (bc->code_len != 9) return 0;
 
     if (bc->code[0] != OP_LOAD)  return 0;
     slot = bc->code[1];
@@ -257,7 +266,8 @@ static int matches_passthrough(const CL_Bytecode *bc, uint8_t *slot_out)
     if (bc->code[4] != OP_POP)   return 0;
     if (bc->code[5] != OP_LOAD)  return 0;
     if (bc->code[6] != arity)    return 0;
-    if (bc->code[7] != OP_RET)   return 0;
+    if (bc->code[7] != OP_MV_RESET) return 0;
+    if (bc->code[8] != OP_RET)   return 0;
 
     *slot_out = slot;
     return 1;
@@ -2927,14 +2937,24 @@ void cl_jit_compile(CL_Bytecode *bc)
         emit_obj_imm_d0(&cb, &relocs, value);
         m68k_emit_rts(&cb);
     } else if (matches_passthrough(bc, &slot)) {
-        /* Emit: move.l (8 + 4*slot)(sp),d0 ; rts.  The C ABI on m68k
-         * lays args out starting at 4(A7) after JSR pushes the return
-         * address, each 32-bit slot bumping by 4.  cl_jit_invoke casts
-         * native_code to the matching arity's C function-pointer type
-         * and passes args through normal calling convention with
-         * `func` prepended, so user-arg j sits at C-ABI slot (j+1)
-         * = (4 + 4*(j+1))(sp) = (8 + 4*j)(sp).  No heap immediates. */
+        /* Emit: jsr mv_reset ; move.l (8 + 4*slot)(sp),d0 ; rts.  The C
+         * ABI on m68k lays args out starting at 4(A7) after JSR pushes
+         * the return address, each 32-bit slot bumping by 4.
+         * cl_jit_invoke casts native_code to the matching arity's C
+         * function-pointer type and passes args through normal calling
+         * convention with `func` prepended, so user-arg j sits at C-ABI
+         * slot (j+1) = (4 + 4*(j+1))(sp) = (8 + 4*j)(sp).  No heap
+         * immediates.
+         *
+         * The helper call comes FIRST so the displacement is computed
+         * against the unchanged A7 (JSR's pushed return address is gone
+         * again by the time the move runs), and so the load into D0 —
+         * a caller-saved register the helper is free to clobber — is
+         * the last thing that happens before RTS.  It writes
+         * `cl_mv_count = 1`, which the matched shape requires: OP_LOAD
+         * does not touch the MV buffer (see matches_passthrough). */
         int16_t disp = (int16_t)(8 + 4 * (int)slot);
+        m68k_emit_jsr_abs_l(&cb, (uint32_t)(uintptr_t)&cl_jit_runtime_mv_reset);
         m68k_emit_move_l_disp_an_to_dn(&cb, disp, REG_A7, REG_D0);
         m68k_emit_rts(&cb);
     } else if (walker_compile(bc, &cb, &relocs)) {

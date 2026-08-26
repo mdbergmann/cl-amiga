@@ -875,6 +875,49 @@
 (check "mv let" '(1 2 3) (multiple-value-list (let ((x 1)) (values x 2 3))))
 (check "mvp1" '(1 2 3) (multiple-value-list (multiple-value-prog1 (values 1 2 3) (+ 4 5))))
 
+; --- Multiple-values hygiene (CLHS 3.1.7 / 5.1) ---
+; A form specified to return ONE value must not pass on the multiple values
+; of an earlier form.  The value here comes back through OP_LOAD / the
+; peeking stores, which leave the MV buffer alone, so the compiler has to
+; emit OP_MV_RESET in front of the observing opcode (cl_mv_normalize).
+; The m68k JIT compiles that opcode too, so every case is checked cold and
+; again warm, with the JIT'd body in play.
+(defun mv-hyg-let () (multiple-value-list (let ((x (floor 7 2))) x)))
+(defun mv-hyg-passthrough (x) x)
+(defun mv-hyg-call () (multiple-value-list (mv-hyg-passthrough (values 1 2))))
+(defun mv-hyg-setq () (let ((y 0)) (setq y (values 1 2)) (multiple-value-list y)))
+(defun mv-hyg-or () (multiple-value-list (or (values 1 2) 3)))
+(defun mv-hyg-block ()
+  (multiple-value-list (block b (let ((x (values 1 2))) (return-from b x)))))
+; ... and real multiple values must still survive all of the above shapes.
+(defun mv-hyg-keep-if () (multiple-value-list (if t (values 1 2) (values 3 4))))
+(defun mv-hyg-keep-block () (multiple-value-list (block b (return-from b (values 1 2)))))
+(defun mv-hyg-keep-uwp () (multiple-value-list (unwind-protect (values 1 2) nil)))
+(defun mv-hyg-keep-catch () (multiple-value-list (catch 'c (throw 'c (values 1 2)))))
+; ... and a MIXED join — one arm multi-valued, the other arriving through
+; OP_LOAD — must normalize only the stale arm (cl_mv_close_join).
+(defun mv-hyg-mix-a () (multiple-value-list
+                         (let ((y 5)) (if (values nil 2) (floor 7 2) y))))
+(defun mv-hyg-mix-b () (multiple-value-list
+                         (let ((y 5)) (if (values t 2) (floor 7 2) y))))
+(defun mv-hyg-mix-c () (multiple-value-list
+                         (let ((y 5)) (if (values t 2) y (floor 7 2)))))
+(defun mv-hyg-mix-d () (multiple-value-list
+                         (let ((y 5)) (cond ((values nil 2) (floor 7 2)) (t y)))))
+(defun mv-hyg-mix-e () (multiple-value-list
+                         (let ((y 5)) (block b (when (values nil 2)
+                                                 (return-from b (floor 7 2))) y))))
+(defun mv-hyg-all ()
+  (list (mv-hyg-let) (mv-hyg-call) (mv-hyg-setq) (mv-hyg-or) (mv-hyg-block)
+        (mv-hyg-keep-if) (mv-hyg-keep-block) (mv-hyg-keep-uwp) (mv-hyg-keep-catch)
+        (mv-hyg-mix-a) (mv-hyg-mix-b) (mv-hyg-mix-c) (mv-hyg-mix-d) (mv-hyg-mix-e)))
+(defvar *mv-hyg-expected*
+  '((3) (1) (1) (1) (1) (1 2) (1 2) (1 2) (1 2)
+    (5) (3 1) (5) (5) (5)))
+(check "mv hygiene" *mv-hyg-expected* (mv-hyg-all))
+(dotimes (i 60) (mv-hyg-all))
+(check "mv hygiene warm" *mv-hyg-expected* (mv-hyg-all))
+
 ; --- Dynamic (special) variables ---
 (setq *dv1* 10)
 (check "defvar basic" 10 *dv1*)

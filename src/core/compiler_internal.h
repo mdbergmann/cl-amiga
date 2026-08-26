@@ -105,6 +105,10 @@ typedef struct {
      * so a body-local optimize declaration ends with the body (CLHS 3.3.4)
      * instead of leaking into sibling forms. */
     CL_OptimizeSettings saved_optimize;
+    /* Multiple-values bookkeeping for control-flow joins: c->mv_state as of
+     * the arm compiled BEFORE the postlude runs (IF_AFTER_ELSE stores
+     * THEN's).  The postlude merges it — see cl_mv_join. */
+    int      mv_state;
     /* Continuation form to dispatch when this postlude drains (used by
      * IF_AFTER_THEN to carry the ELSE form across THEN's compilation).
      * GC-traced via cl_compiler_gc_mark_thread's tail_stack walk.
@@ -119,6 +123,12 @@ typedef struct {
     int result_slot;  /* local slot where return value is stored */
     int uses_nlx;     /* 1 if NLX-based (compile_block), 0 if local-jump (loop forms) */
     int dyn_depth;    /* special binding depth at block entry (for local-jump unwinding) */
+    /* Merge of c->mv_state over every local-jump RETURN-FROM exit into this
+     * block; the block's postlude merges it with the fall-through path's.
+     * exit_stale_mask marks which exit_patches[] entries were stale, so the
+     * postlude can route just those through an OP_MV_RESET. */
+    int mv_state;
+    uint32_t exit_stale_mask;
 } CL_BlockInfo;
 
 /* Tagbody tracking for go */
@@ -185,6 +195,10 @@ typedef struct CL_Compiler_s {
     int const_count;
     CL_CompEnv *env;
     int in_tail;      /* Are we in tail position? */
+    /* Multiple-values hygiene — one of CL_MV_STALE / CL_MV_ONE / CL_MV_MANY
+     * describing the MV state (cl_mv_count / cl_mv_values) at the current
+     * emission point.  See the enum and cl_mv_normalize. */
+    int mv_state;
     int special_depth; /* Current number of active dynamic bindings */
     CL_BlockInfo blocks[CL_MAX_BLOCKS];
     int block_count;
@@ -276,6 +290,60 @@ int cl_add_constant(CL_Compiler *c, CL_Obj obj);
 void cl_emit_const(CL_Compiler *c, CL_Obj obj);
 int cl_emit_jump(CL_Compiler *c, uint8_t op);
 void cl_patch_jump(CL_Compiler *c, int patch_pos);
+
+/* --- Multiple-values hygiene (CLHS 3.1.7 / 5.1 / 5.3) ---
+ *
+ * Only a handful of opcodes OBSERVE the multiple-value state (cl_mv_count /
+ * cl_mv_values): OP_RET and OP_HALT hand it to the caller, OP_MV_TO_LIST,
+ * OP_MV_LOAD and OP_NTH_VALUE read the buffer, OP_BLOCK_RETURN snapshots it
+ * into the NLX frame.  Making every value-producing opcode write
+ * `cl_mv_count = 1` would be correct but costs a store per OP_LOAD — and in
+ * the m68k JIT a whole JSR (specs/native-backend.md).  So the compiler
+ * instead tracks what the state means at each emission point and drops a
+ * single OP_MV_RESET in front of an observer that would otherwise read some
+ * earlier form's values.
+ *
+ *   CL_MV_MANY   the state describes THIS form's values and there may be
+ *                more than one of them (the value came out of a call).
+ *                Never reset — that is what makes (floor 7 2) two-valued.
+ *   CL_MV_ONE    the state describes this form's single value (constant,
+ *                arithmetic, OP_GLOAD, an explicit OP_MV_RESET, …).
+ *                Resetting is a no-op, which is what lets a join keep it.
+ *   CL_MV_STALE  the value was pushed by an opcode that leaves the buffer
+ *                alone — OP_LOAD, OP_CELL_REF, the peeking stores — so the
+ *                buffer still describes some EARLIER form.  Must be reset
+ *                before an observer.
+ *
+ * compile_expr_step re-asserts CL_MV_MANY for every form, so a handler that
+ * forgets to classify its result leaves the pre-existing leak in place
+ * instead of emitting an OP_MV_RESET that would DESTROY real values. */
+#define CL_MV_STALE 0
+#define CL_MV_ONE   1
+#define CL_MV_MANY  2
+
+/* Emit OP_CALL / OP_TAILCALL with its u8 argument count.  Always use this
+ * rather than two cl_emit calls: it is where a call's result is classified
+ * CL_MV_MANY (the callee owns the MV state). */
+void cl_emit_call(CL_Compiler *c, uint8_t op, uint8_t nargs);
+
+/* Emit OP_MV_RESET if the state is CL_MV_STALE.  Call immediately before
+ * any opcode that observes the MV state. */
+void cl_mv_normalize(CL_Compiler *c);
+/* Merge a control-flow join: the value arriving here came either from the
+ * arm just compiled (c->mv_state) or from an already-compiled arm (OTHER). */
+void cl_mv_join(CL_Compiler *c, int other);
+/* The merge itself, for accumulating over N arms (CL_MV_ONE = identity). */
+int cl_mv_merge(int a, int b);
+/* Patch a join fed by two pending-jump chains (arms that left the state
+ * self-describing / stale) plus the falling-through arm in c->mv_state,
+ * giving the stale arms their own OP_MV_RESET when the arms disagree.
+ * ANY_STALE and MERGED are accumulated by the caller over all arms. */
+void cl_mv_close_join(CL_Compiler *c, int ok_chain, int stale_chain,
+                      int any_stale, int merged);
+/* Same, for a join fed by an explicit patch array (local-jump BLOCK / loop
+ * exits); bit i of STALE_MASK marks patches[i] as a stale arm. */
+void cl_mv_close_patch_join(CL_Compiler *c, const int *patches, int n,
+                            uint32_t stale_mask, int merged);
 
 /* Pending-jump chain threaded through the operand placeholders (see
  * compiler.c).  Chain heads start at CL_JUMP_CHAIN_END; cl_emit_jump_chain

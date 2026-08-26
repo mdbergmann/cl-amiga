@@ -28,8 +28,7 @@ static void emit_dbind_error(CL_Compiler *c, CL_Obj helper_sym)
     int idx = cl_add_constant(c, helper_sym);
     cl_emit(c, OP_FLOAD);
     cl_emit_u16(c, (uint16_t)idx);
-    cl_emit(c, OP_CALL);
-    cl_emit(c, 0);       /* 0 arguments */
+    cl_emit_call(c, OP_CALL, 0);       /* 0 arguments */
     cl_emit(c, OP_POP);  /* helper never returns; keeps the stack balanced */
 }
 
@@ -1132,6 +1131,8 @@ CL_Obj compile_block(CL_Compiler *c, CL_Obj form)
     bi->n_patches = 0;
     bi->uses_nlx = needs_nlx;
     bi->dyn_depth = c->special_depth;
+    bi->mv_state = CL_MV_ONE;   /* identity; merged with each exit */
+    bi->exit_stale_mask = 0;
 
     /* CRITICAL: push the BLOCK frame BEFORE compile_nontail_body so the
      * BLOCK postlude drains AFTER any PROGN_ITER frames the body
@@ -1277,13 +1278,18 @@ void emit_block_or_return_postlude(CL_Compiler *c, CL_TailFrame *tf)
         break;
     }
     case CL_TAIL_BLOCK_LOCAL: {
-        int i;
         CL_BlockInfo *bi = &c->blocks[tf->saved_block_count];  /* this block's slot */
         cl_emit(c, OP_STORE);
         cl_emit(c, (uint8_t)tf->result_slot);
         cl_emit(c, OP_POP);
-        for (i = 0; i < bi->n_patches; i++)
-            cl_patch_jump(c, bi->exit_patches[i]);
+        /* The STORE/JMP/LOAD round trip runs no Lisp, so the MV buffer still
+         * describes whichever arm produced the result — the fall-through
+         * (c->mv_state) or a local RETURN-FROM (merged into bi->mv_state).
+         * Patch the exits here, giving the stale ones their own reset when
+         * another arm can deliver several values. */
+        cl_mv_close_patch_join(c, bi->exit_patches, bi->n_patches,
+                               bi->exit_stale_mask,
+                               cl_mv_merge(c->mv_state, bi->mv_state));
         cl_emit(c, OP_LOAD);
         cl_emit(c, (uint8_t)tf->result_slot);
         cl_env_clear_boxed(c->env, tf->saved_local_count);
@@ -1294,6 +1300,8 @@ void emit_block_or_return_postlude(CL_Compiler *c, CL_TailFrame *tf)
     case CL_TAIL_RETURN_FROM_LOCAL: {
         CL_BlockInfo *bi = &c->blocks[tf->bi_index];
         c->in_tail = tf->saved_tail;
+        /* Record this exit's MV state for the block's join (see above). */
+        bi->mv_state = cl_mv_merge(bi->mv_state, c->mv_state);
         if (tf->unwind_count > 0) {
             cl_emit(c, OP_DYNUNBIND);
             cl_emit(c, (uint8_t)tf->unwind_count);
@@ -1301,13 +1309,19 @@ void emit_block_or_return_postlude(CL_Compiler *c, CL_TailFrame *tf)
         cl_emit(c, OP_STORE);
         cl_emit(c, (uint8_t)bi->result_slot);
         cl_emit(c, OP_POP);
-        if (bi->n_patches < CL_MAX_BLOCK_PATCHES)
+        if (bi->n_patches < CL_MAX_BLOCK_PATCHES) {
+            if (c->mv_state == CL_MV_STALE)
+                bi->exit_stale_mask |= (uint32_t)1 << bi->n_patches;
             bi->exit_patches[bi->n_patches++] = cl_emit_jump(c, OP_JMP);
+        }
         break;
     }
     case CL_TAIL_RETURN_FROM_NLX:
     case CL_TAIL_OUTER_RETURN_FROM:
         c->in_tail = tf->saved_tail;
+        /* OP_BLOCK_RETURN snapshots the MV state into the NLX frame and the
+         * landing pad restores it, so it has to describe the value form. */
+        cl_mv_normalize(c);
         cl_emit(c, OP_BLOCK_RETURN);
         cl_emit_u16(c, (uint16_t)tf->tag_idx);
         break;
@@ -1482,6 +1496,7 @@ void compile_tagbody(CL_Compiler *c, CL_Obj form)
 
         /* tagbody returns NIL */
         cl_emit(c, OP_NIL);
+        c->mv_state = CL_MV_ONE;   /* statements' MV states don't survive */
     } else {
         /* Local path (non-NLX): efficient local jumps */
         cursor = body;
@@ -1507,6 +1522,7 @@ void compile_tagbody(CL_Compiler *c, CL_Obj form)
 
         /* tagbody returns NIL */
         cl_emit(c, OP_NIL);
+        c->mv_state = CL_MV_ONE;   /* statements' MV states don't survive */
     }
 
     /* Restore */
@@ -1605,6 +1621,12 @@ void compile_catch(CL_Compiler *c, CL_Obj form)
     /* OP_UNCATCH: pop catch frame (normal exit) */
     cl_emit(c, OP_UNCATCH);
 
+    /* The throw landing arrives with the MV state restored from the NLX
+     * frame, so that arm describes the thrown values.  Normalize the
+     * normal-exit arm here — before the JMP, so only that arm pays — and
+     * both paths reach the join self-describing. */
+    cl_mv_normalize(c);
+
     /* JMP past the throw landing */
     jmp_pos = cl_emit_jump(c, OP_JMP);
 
@@ -1613,6 +1635,10 @@ void compile_catch(CL_Compiler *c, CL_Obj form)
 
     /* [past_landing]: both paths converge, result is on stack */
     cl_patch_jump(c, jmp_pos);
+    /* The throw arm can deliver several values (the landing restores them
+     * from the NLX frame), and the normal arm was normalized above, so the
+     * join is self-describing and possibly multi-valued. */
+    c->mv_state = CL_MV_MANY;
 
     c->in_tail = saved_tail;  /* restore for the caller's continuation */
 }
@@ -1664,7 +1690,10 @@ void compile_unwind_protect(CL_Compiler *c, CL_Obj form)
     cleanup_forms = cl_cdr(cl_cdr(form));
     CL_GC_UNPROTECT(1);
 
-    /* OP_MV_TO_LIST: pop primary, build full list of all values, push list */
+    /* OP_MV_TO_LIST: pop primary, build full list of all values, push list.
+     * Normalize first so the saved list is the protected form's own values
+     * (CLHS 5.2: unwind-protect returns the protected form's values). */
+    cl_mv_normalize(c);
     cl_emit(c, OP_MV_TO_LIST);
 
     /* Save the list in slot */
@@ -1707,8 +1736,8 @@ void compile_unwind_protect(CL_Compiler *c, CL_Obj form)
     cl_emit_u16(c, (uint16_t)vl_idx);
     cl_emit(c, OP_LOAD);
     cl_emit(c, (uint8_t)list_slot);
-    cl_emit(c, OP_CALL);
-    cl_emit(c, 1);
+    cl_emit_call(c, OP_CALL, 1);
+    c->mv_state = CL_MV_MANY;   /* VALUES-LIST re-establishes all values */
 
     cl_env_clear_boxed(env, saved_local_count);
 
@@ -2008,6 +2037,8 @@ static int push_loop_nil_block(CL_Compiler *c, CL_BlockInfo **bi_out)
     bi->result_slot = result_slot;
     bi->uses_nlx = 0;
     bi->dyn_depth = c->special_depth;
+    bi->mv_state = CL_MV_ONE;   /* identity; merged with each exit */
+    bi->exit_stale_mask = 0;
     *bi_out = bi;
     return result_slot;
 }
@@ -2019,9 +2050,12 @@ static void emit_loop_epilogue(CL_Compiler *c, CL_BlockInfo *bi,
                                int saved_block_count)
 {
     CL_CompEnv *env = c->env;
-    int i;
-    for (i = 0; i < bi->n_patches; i++)
-        cl_patch_jump(c, bi->exit_patches[i]);
+    /* c->mv_state still describes the result form stored into the slot
+     * (STORE/POP/JMP/LOAD run no Lisp); join it with the RETURN exits,
+     * normalizing the stale ones if another arm is multi-valued. */
+    cl_mv_close_patch_join(c, bi->exit_patches, bi->n_patches,
+                           bi->exit_stale_mask,
+                           cl_mv_merge(c->mv_state, bi->mv_state));
     cl_emit(c, OP_LOAD);
     cl_emit(c, (uint8_t)result_slot);
     cl_env_clear_boxed(env, saved_local_count);
@@ -2843,6 +2877,7 @@ void compile_restart_case(CL_Compiler *c, CL_Obj form)
     cl_emit(c, OP_LOAD);
     cl_emit(c, (uint8_t)dispatch_slot);         /* push args-list */
     cl_emit(c, OP_APPLY);                       /* result on stack */
+    c->mv_state = CL_MV_MANY;                   /* the handler's values */
 
     /* [past_landing]: both paths converge with one value on stack */
     cl_patch_jump(c, jmp_pos);

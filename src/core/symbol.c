@@ -175,6 +175,9 @@ CL_Obj SYM_PLUS = CL_NIL;
 CL_Obj SYM_PLUSPLUS = CL_NIL;
 CL_Obj SYM_PLUSPLUSPLUS = CL_NIL;
 CL_Obj SYM_MINUS = CL_NIL;
+CL_Obj SYM_SLASH = CL_NIL;
+CL_Obj SYM_SLASHSLASH = CL_NIL;
+CL_Obj SYM_SLASHSLASHSLASH = CL_NIL;
 
 /* Standard stream variable symbols */
 CL_Obj SYM_STANDARD_INPUT = CL_NIL;
@@ -644,6 +647,8 @@ void cl_symbol_init(void)
     SYM_STARSTARSTAR   = cl_intern_in("***", 3, cl_package_cl);
     SYM_PLUSPLUS        = cl_intern_in("++", 2, cl_package_cl);
     SYM_PLUSPLUSPLUS   = cl_intern_in("+++", 3, cl_package_cl);
+    SYM_SLASHSLASH     = cl_intern_in("//", 2, cl_package_cl);
+    SYM_SLASHSLASHSLASH = cl_intern_in("///", 3, cl_package_cl);
 
     /* Standard stream variable symbols — mark as special */
     SYM_STANDARD_INPUT   = cl_intern_in("*STANDARD-INPUT*", 16, cl_package_cl);
@@ -1157,6 +1162,9 @@ void cl_symbol_init(void)
     cl_gc_register_root(&SYM_PLUSPLUS);
     cl_gc_register_root(&SYM_PLUSPLUSPLUS);
     cl_gc_register_root(&SYM_MINUS);
+    cl_gc_register_root(&SYM_SLASH);
+    cl_gc_register_root(&SYM_SLASHSLASH);
+    cl_gc_register_root(&SYM_SLASHSLASHSLASH);
     cl_gc_register_root(&SYM_STANDARD_INPUT);
     cl_gc_register_root(&SYM_STANDARD_OUTPUT);
     cl_gc_register_root(&SYM_ERROR_OUTPUT);

@@ -1,0 +1,99 @@
+#!/bin/sh
+# Interactive REPL: multiple-value echo and the value history variables.
+#
+# CLHS 25.1 says the REPL prints "the results" of the form, plural — SBCL
+# prints 3 and 1 for (floor 7 2).  clamiga used to print only the primary
+# value, because printing all of them would have been WRONG more often than
+# right: value-propagating opcodes leave the multiple-value buffer alone, so
+# (let ((x (floor 7 2))) x) still carried floor's second value.  The
+# compiler now normalizes the MV state in front of every observer
+# (cl_mv_normalize), which is what makes the echo below trustworthy — so
+# this test pins the echo AND the hygiene together, through the real
+# interactive loop (test_batch.sh covers the batch loop).
+#
+# It also pins CLHS 25.1.1's value history: * is the primary value, / the
+# list of all of them, // and /// the two before that.
+#
+# Run: sh tests/test_repl_values.sh build/host/clamiga
+
+CLAMIGA="${1:-build/host/clamiga}"
+
+TIMEOUT=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
+if [ -z "$TIMEOUT" ]; then
+    echo "SKIP test_repl_values: neither timeout nor gtimeout on PATH"
+    exit 0
+fi
+
+out=$(mktemp "${TMPDIR:-/tmp}/clamiga_replvals_XXXXXX") || exit 1
+trap 'rm -f "$out"' EXIT
+
+fail=0
+passed=0
+
+# Feed the interactive REPL (no --batch) and strip the banner, the prompts
+# and the sign-off, leaving just the echoed values.
+repl() {
+    printf '%s\n(quit)\n' "$1" |
+        "$TIMEOUT" 60 "$CLAMIGA" --no-userinit --no-color > "$out" 2>&1
+    sed -e 's/COMMON-LISP-USER> //g' "$out" |
+        sed -n '/^Type (quit) to exit\./,$p' |
+        grep -v '^Type (quit) to exit\.$' | grep -v '^Bye\.$' | grep -v '^$'
+}
+
+check() {
+    desc="$1"; expected="$2"; actual="$3"
+    if [ "$actual" = "$expected" ]; then
+        echo "  ok  $desc"
+        passed=$((passed + 1))
+    else
+        echo "  FAIL  $desc"
+        echo "    expected: $expected"
+        echo "    got:      $actual"
+        fail=1
+    fi
+}
+
+# --- Every value is echoed, one per line ---
+
+check "repl_echoes_both_values_of_floor" "3
+1" "$(repl '(floor 7 2)')"
+
+check "repl_echoes_three_values" "1
+2
+3" "$(repl '(values 1 2 3)')"
+
+check "repl_zero_values_echo_nothing" "" "$(repl '(values)')"
+
+check "repl_single_value_unchanged" "42" "$(repl '42')"
+
+# --- The echo tells the truth: a one-value form echoes one value ---
+
+check "repl_variable_reference_echoes_one_value" "3" \
+      "$(repl '(let ((x (floor 7 2))) x)')"
+
+check "repl_setq_echoes_one_value" "1" \
+      "$(repl '(let ((y 0)) (setq y (values 1 2)))')"
+
+# --- Value history (CLHS 25.1.1): * is primary, / is the list ---
+
+check "repl_history_star_and_slash" "3
+1
+(3 (3 1))" "$(repl '(floor 7 2)
+(list * /)')"
+
+# / of (values 1 2) is (1 2); the next form returns the single value 7, so
+# / becomes (7) and (1 2) shifts into //.
+check "repl_history_slash_shifts" "1
+2
+7
+((7) (1 2) NIL)" "$(repl '(values 1 2)
+7
+(list / // ///)')"
+
+if [ "$fail" -eq 0 ]; then
+    echo "test_repl_values: $passed passed, 0 failed"
+    echo PASS
+    exit 0
+fi
+echo "test_repl_values: FAILED"
+exit 1

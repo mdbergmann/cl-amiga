@@ -488,14 +488,72 @@ int cl_repl_result_printable(CL_Obj primary)
     return cl_mv_count != 0 || !CL_NULL_P(primary);
 }
 
-/* Update REPL history variables after a successful eval.
- * form = the expression that was read, result = the value it produced. */
-void cl_repl_update_history(CL_Obj form, CL_Obj result)
+/* All the values the form just returned, as a freshly consed list — the
+ * REPL prints every one of them (CLHS 25.1: "the results of the evaluation
+ * are printed"), and the same list becomes / .
+ *
+ * Mirrors OP_MV_TO_LIST, including its stale-count disambiguation: index 0
+ * is taken from the returned primary rather than cl_mv_values[0], because
+ * the opcodes that write `cl_mv_count = 1` without touching the buffer
+ * (OP_CONST, OP_GLOAD, the arithmetic ops, …) leave slot 0 holding an
+ * older value.  Call immediately after cl_vm_eval, before anything that
+ * could run Lisp code and overwrite the MV state. */
+CL_Obj cl_repl_values_list(CL_Obj primary)
 {
-    /* Shift ***: *** <- **, ** <- *, * <- result */
+    CL_Obj list = CL_NIL;
+    int count = cl_mv_count;
+    int i;
+
+    if (count <= 0)
+        return cl_repl_result_printable(primary) ? cl_cons(primary, CL_NIL)
+                                                 : CL_NIL;
+    if (count > CL_MAX_MV) count = CL_MAX_MV;
+
+    /* cl_cons can compact; cl_mv_values[] is GC-marked and forwarded for
+     * i < mv_count (mem.c), so re-read each slot inside the loop, and keep
+     * the partially built list and the primary rooted. */
+    CL_GC_PROTECT(primary);
+    CL_GC_PROTECT(list);
+    for (i = count - 1; i >= 1; i--)
+        list = cl_cons(cl_mv_values[i], list);
+    list = cl_cons(primary, list);
+    CL_GC_UNPROTECT(2);
+    return list;
+}
+
+/* Echo one value per line, SBCL-style: (floor 7 2) prints 3 then 1, and
+ * (values) prints nothing at all.  VALUES is the list from
+ * cl_repl_values_list; printing runs Lisp (PRINT-OBJECT methods), so it is
+ * kept rooted across the walk. */
+void cl_repl_print_values(CL_Obj values, int colorize)
+{
+    CL_GC_PROTECT(values);
+    while (CL_CONS_P(values)) {
+        if (colorize) cl_color_set(CL_COLOR_DIM_GREEN);
+        cl_prin1(cl_car(values));
+        if (colorize) cl_color_reset();
+        cl_write_cstring_to_stdout("\n");
+        values = cl_cdr(values);
+    }
+    CL_GC_UNPROTECT(1);
+}
+
+/* Update REPL history variables after a successful eval (CLHS 25.1.1).
+ * form = the expression that was read, values = its values (cl_repl_values_list),
+ * whose first element is the primary value stored in *. */
+void cl_repl_update_history(CL_Obj form, CL_Obj values)
+{
+    CL_Obj primary = CL_CONS_P(values) ? cl_car(values) : CL_NIL;
+
+    /* Shift ***: *** <- **, ** <- *, * <- primary value */
     cl_set_symbol_value(SYM_STARSTARSTAR, cl_symbol_value(SYM_STARSTAR));
     cl_set_symbol_value(SYM_STARSTAR, cl_symbol_value(SYM_STAR));
-    cl_set_symbol_value(SYM_STAR, result);
+    cl_set_symbol_value(SYM_STAR, primary);
+
+    /* Shift ///: /// <- //, // <- /, / <- the whole values list */
+    cl_set_symbol_value(SYM_SLASHSLASHSLASH, cl_symbol_value(SYM_SLASHSLASH));
+    cl_set_symbol_value(SYM_SLASHSLASH, cl_symbol_value(SYM_SLASH));
+    cl_set_symbol_value(SYM_SLASH, values);
 
     /* Shift +++: +++ <- ++, ++ <- +, + <- form */
     cl_set_symbol_value(SYM_PLUSPLUSPLUS, cl_symbol_value(SYM_PLUSPLUS));
@@ -599,20 +657,19 @@ void cl_repl(void)
                     bytecode = cl_compile(expr);
 
                     if (!CL_NULL_P(bytecode)) {
-                        int printable;
+                        CL_Obj values;
                         result = cl_vm_eval(bytecode);
-                        /* Read the MV state before anything else runs Lisp */
-                        printable = cl_repl_result_printable(result);
+                        /* Capture the MV state before anything else runs
+                         * Lisp — the history update and PRINT-OBJECT
+                         * methods both overwrite it. */
+                        values = cl_repl_values_list(result);
+                        CL_GC_PROTECT(values);
 
-                        /* Update history: shift *, **, ***, +, ++, +++ */
-                        cl_repl_update_history(expr, result);
+                        /* Update history: *, **, ***, /, //, ///, + ... */
+                        cl_repl_update_history(expr, values);
 
-                        if (printable) {
-                            cl_color_set(CL_COLOR_DIM_GREEN);
-                            cl_prin1(result);
-                            cl_color_reset();
-                            cl_write_cstring_to_stdout("\n");
-                        }
+                        cl_repl_print_values(values, 1);
+                        CL_GC_UNPROTECT(1);  /* values */
                     }
                     CL_GC_UNPROTECT(1);
                 }
@@ -727,12 +784,10 @@ void cl_repl_batch(void)
                     CL_GC_UNPROTECT(1);
 
                     if (!CL_NULL_P(bytecode)) {
+                        /* One line per value; (values) prints nothing at
+                         * all — see cl_repl */
                         result = cl_vm_eval(bytecode);
-                        /* (values) prints nothing — see cl_repl */
-                        if (cl_repl_result_printable(result)) {
-                            cl_prin1(result);
-                            cl_write_cstring_to_stdout("\n");
-                        }
+                        cl_repl_print_values(cl_repl_values_list(result), 0);
                     }
                     CL_UNCATCH();
                 } else if (err == CL_ERR_EXIT) {
@@ -1081,12 +1136,14 @@ void cl_repl_init_no_userinit(int no_userinit)
         BOOT_TIME("user init");
     }
 
-    /* Look up *, +, - (already interned by builtins as arithmetic functions) */
+    /* Look up *, +, -, / (already interned by builtins as arithmetic
+     * functions — CLHS 25.1.1 gives them a value binding as well) */
     SYM_STAR  = cl_intern_in("*", 1, cl_package_cl);
     SYM_PLUS  = cl_intern_in("+", 1, cl_package_cl);
     SYM_MINUS = cl_intern_in("-", 1, cl_package_cl);
+    SYM_SLASH = cl_intern_in("/", 1, cl_package_cl);
 
-    /* Mark all 7 history symbols as special with initial value NIL */
+    /* Mark all 10 history symbols as special with initial value NIL */
     init_history_symbol(SYM_STAR);
     init_history_symbol(SYM_STARSTAR);
     init_history_symbol(SYM_STARSTARSTAR);
@@ -1094,6 +1151,9 @@ void cl_repl_init_no_userinit(int no_userinit)
     init_history_symbol(SYM_PLUSPLUS);
     init_history_symbol(SYM_PLUSPLUSPLUS);
     init_history_symbol(SYM_MINUS);
+    init_history_symbol(SYM_SLASH);
+    init_history_symbol(SYM_SLASHSLASH);
+    init_history_symbol(SYM_SLASHSLASHSLASH);
     BOOT_TIME("ready");
 }
 

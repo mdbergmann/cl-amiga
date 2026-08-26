@@ -135,6 +135,36 @@ toggles, and safety guarantees.
 (shows progress during the multi-second boot) and for spotting startup-time
 regressions; see `tests/test_boot_log.sh` for the exact behavior.
 
+### REPL results
+
+The REPL prints **every** value a form returns, one per line — a form that
+returns no values prints nothing at all:
+
+```lisp
+CL-USER> (floor 7 2)
+3
+1
+CL-USER> (values)
+CL-USER> (let ((x (floor 7 2))) x)   ; one value, so one line
+3
+```
+
+The standard history variables (CLHS 25.1.1) are bound after each form:
+`*`, `**`, `***` hold the last three *primary* values, `/`, `//`, `///` the
+last three value *lists*, and `+`, `++`, `+++` the last three forms
+(`-` is the form currently being evaluated).
+
+```lisp
+CL-USER> (floor 7 2)
+3
+1
+CL-USER> (list * /)
+(3 (3 1))
+```
+
+See `tests/test_repl_values.sh` (interactive loop) and `tests/test_batch.sh`
+(`--batch` loop) for the exact behavior.
+
 ### Version
 
 From Lisp, on any platform:

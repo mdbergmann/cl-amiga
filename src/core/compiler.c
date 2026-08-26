@@ -437,6 +437,7 @@ void cl_emit_const(CL_Compiler *c, CL_Obj obj)
     int idx = cl_add_constant(c, obj);
     cl_emit(c, OP_CONST);
     cl_emit_u16(c, (uint16_t)idx);
+    c->mv_state = CL_MV_ONE;   /* OP_CONST pushes exactly one value */
 }
 
 int cl_emit_jump(CL_Compiler *c, uint8_t op)
@@ -455,6 +456,121 @@ void cl_patch_jump(CL_Compiler *c, int patch_pos)
     c->code[patch_pos + 1] = (uint8_t)((offset >> 16) & 0xFF);
     c->code[patch_pos + 2] = (uint8_t)((offset >> 8) & 0xFF);
     c->code[patch_pos + 3] = (uint8_t)(offset & 0xFF);
+}
+
+/* --- Multiple-values hygiene ---
+ *
+ * See the CL_MV_* comment in compiler_internal.h for the model.  These two
+ * are the whole interface: normalize before an observer, join at a merge. */
+
+/* Emit a call opcode plus its argument count.  Centralized so the MV
+ * classification happens in ONE place: the callee establishes the state and
+ * may leave more than one value (CL_MV_MANY).  A raw cl_emit of OP_CALL
+ * would leave whatever the last thing compiled was — typically the final
+ * ARGUMENT — so a call whose last argument is a plain variable reference
+ * would be classified CL_MV_STALE and the observer would reset it.  That
+ * mis-classification silently dropped the second value of every function
+ * whose body is a MULTIPLE-VALUE-PROG1 (serapeum's SWAPHASH). */
+void cl_emit_call(CL_Compiler *c, uint8_t op, uint8_t nargs)
+{
+    cl_emit(c, op);
+    cl_emit(c, nargs);
+    c->mv_state = CL_MV_MANY;
+}
+
+void cl_mv_normalize(CL_Compiler *c)
+{
+    if (c->mv_state == CL_MV_STALE) {
+        cl_emit(c, OP_MV_RESET);
+        c->mv_state = CL_MV_ONE;
+    }
+}
+
+/* Commutative, associative merge of two arms' states.  CL_MV_ONE is the
+ * identity, which makes it usable as an accumulator seed. */
+int cl_mv_merge(int a, int b)
+{
+    if (a == b) return a;
+    if (a != CL_MV_STALE && b != CL_MV_STALE)
+        return CL_MV_MANY;          /* ONE + MANY: both self-describing */
+    if (a == CL_MV_MANY || b == CL_MV_MANY) {
+        /* STALE + MANY.  Resetting at the observer would throw away the
+         * MANY arm's extra values, so keep the state and accept that the
+         * stale arm still leaks — exactly what it did before this pass.
+         * Normalizing the stale arm in place would need a jump stub; not
+         * worth the bytes until a real program trips over it. */
+        return CL_MV_MANY;
+    }
+    return CL_MV_STALE;             /* STALE + ONE: a later reset is a no-op */
+}
+
+void cl_mv_join(CL_Compiler *c, int other)
+{
+    c->mv_state = cl_mv_merge(c->mv_state, other);
+}
+
+/* Close a multi-armed join.  OK_CHAIN holds the pending jumps of arms that
+ * left the MV state describing their own value, STALE_CHAIN those that left
+ * it stale, and c->mv_state describes the arm that FALLS THROUGH to here.
+ *
+ * When the arms disagree — one of them may deliver several values while
+ * another arrives through OP_LOAD — neither answer works for the whole
+ * join: resetting at the join would throw away the multi-valued arm's extra
+ * values, and not resetting lets the stale arm hand out an older form's.
+ * So the stale arms get a reset of their own, on a landing only they reach:
+ *
+ *     [arm code]  JMP ok_chain / JMP stale_chain
+ *     ...
+ *     [fall-through arm]
+ *     JMP Ljoin              ; only when the fall-through is NOT stale
+ *   Lstub:  OP_MV_RESET      ; stale arms (and a stale fall-through) land here
+ *   Ljoin:                   ; ok arms land here
+ *
+ * Costs one byte plus at most one jump, and only when the arms actually
+ * disagree; the uniform cases just patch both chains to the same spot. */
+void cl_mv_close_join(CL_Compiler *c, int ok_chain, int stale_chain,
+                      int any_stale, int merged)
+{
+    if (any_stale && merged == CL_MV_MANY) {
+        int fall_stale = (c->mv_state == CL_MV_STALE);
+        int over = CL_JUMP_CHAIN_END;
+        if (!fall_stale) over = cl_emit_jump(c, OP_JMP);
+        cl_patch_jump_chain(c, stale_chain);
+        cl_emit(c, OP_MV_RESET);
+        if (!fall_stale) cl_patch_jump(c, over);
+        cl_patch_jump_chain(c, ok_chain);
+        c->mv_state = CL_MV_MANY;
+        return;
+    }
+    cl_patch_jump_chain(c, stale_chain);
+    cl_patch_jump_chain(c, ok_chain);
+    c->mv_state = merged;
+}
+
+/* cl_mv_close_join for a join fed by an explicit patch array rather than
+ * pending-jump chains — the local-jump BLOCK exits and the loop epilogue,
+ * whose arms store their result into a slot and jump to a shared reload.
+ * STALE_MASK has bit i set when patches[i] left the MV state stale. */
+void cl_mv_close_patch_join(CL_Compiler *c, const int *patches, int n,
+                            uint32_t stale_mask, int merged)
+{
+    int i;
+    int fall_stale = (c->mv_state == CL_MV_STALE);
+    if ((stale_mask != 0 || fall_stale) && merged == CL_MV_MANY) {
+        int over = 0;
+        if (!fall_stale) over = cl_emit_jump(c, OP_JMP);
+        for (i = 0; i < n; i++)
+            if (stale_mask & ((uint32_t)1 << i)) cl_patch_jump(c, patches[i]);
+        cl_emit(c, OP_MV_RESET);
+        if (!fall_stale) cl_patch_jump(c, over);
+        for (i = 0; i < n; i++)
+            if (!(stale_mask & ((uint32_t)1 << i))) cl_patch_jump(c, patches[i]);
+        c->mv_state = CL_MV_MANY;
+        return;
+    }
+    for (i = 0; i < n; i++)
+        cl_patch_jump(c, patches[i]);
+    c->mv_state = merged;
 }
 
 /* Pending-jump chains: instead of collecting patch positions in a
@@ -887,6 +1003,7 @@ CL_TailFrame *cl_tail_push(CL_Compiler *c)
     }
     tf = &c->tail_stack[c->tail_count++];
     tf->cont_form = CL_NIL;  /* default: no continuation */
+    tf->mv_state = CL_MV_MANY; /* default: never provokes a reset */
     /* Snapshot the effective optimize settings unconditionally (4 bytes) so
      * no declaration-accepting prelude can forget it; only postludes of
      * bodies that process declarations restore from it. */
@@ -1092,6 +1209,7 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
         return;
     }
     memset(inner, 0, sizeof(*inner));
+    inner->mv_state = CL_MV_ONE;  /* nothing emitted yet */
 
     /* Claim the name the caller handed over (compile_defun / compile_named_lambda
      * set pending_lambda_name just before compiling this form) BEFORE the body is
@@ -1428,6 +1546,10 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
             cl_emit(inner, (uint8_t)special_param_count);
         }
     }
+    /* OP_RET hands the MV state to the caller (CLHS 3.1.7): a body whose
+     * tail form was a plain variable reference must return ONE value, not
+     * whatever the last (values …) inside it happened to leave behind. */
+    cl_mv_normalize(inner);
     cl_emit(inner, OP_RET);
 
     /* Peephole post-pass (no-op unless the effective speed reached >= 2;
@@ -2833,12 +2955,15 @@ static CL_Obj emit_tail_postlude(CL_Compiler *c, CL_TailFrame *tf)
          * the ELSE branch, patch the JNIL landing, and either dispatch
          * the ELSE form (if there is one) or emit OP_NIL inline. */
         int jmp_pos = cl_emit_jump(c, OP_JMP);
+        int then_mv = c->mv_state;   /* THEN's, for the join below */
         cl_patch_jump(c, tf->block_push_pos);  /* jnil_pos: JNIL → here */
         if (CL_NULL_P(tf->cont_form)) {
             /* No ELSE (or `(if t b nil)` collapsed): emit NIL inline
              * and patch the JMP immediately. */
             cl_emit(c, OP_NIL);
             cl_patch_jump(c, jmp_pos);
+            c->mv_state = CL_MV_ONE;    /* the implicit NIL arm ... */
+            cl_mv_join(c, then_mv);     /* ... so the join is THEN's */
             return CL_NIL;
         } else {
             /* Push AFTER_ELSE frame to patch jmp_pos once ELSE drains,
@@ -2848,13 +2973,33 @@ static CL_Obj emit_tail_postlude(CL_Compiler *c, CL_TailFrame *tf)
             new_tf->kind = CL_TAIL_IF_AFTER_ELSE;
             new_tf->block_push_pos = jmp_pos;
             new_tf->saved_tail = tf->saved_tail;
+            new_tf->mv_state = then_mv;  /* joined once ELSE has drained */
             c->in_tail = tf->saved_tail;
             return tf->cont_form;
         }
     }
-    case CL_TAIL_IF_AFTER_ELSE:
-        cl_patch_jump(c, tf->block_push_pos);  /* jmp_pos: JMP past ELSE → here */
+    case CL_TAIL_IF_AFTER_ELSE: {
+        /* c->mv_state is ELSE's (it falls through), tf->mv_state is THEN's
+         * (it arrives via the JMP at block_push_pos).  When one arm can
+         * deliver several values and the other arrives stale, the stale one
+         * needs a reset on its own path — see cl_mv_close_join, of which
+         * this is the two-arm, single-jump case. */
+        int then_mv = tf->mv_state, else_mv = c->mv_state;
+        int merged = cl_mv_merge(then_mv, else_mv);
+        if (merged == CL_MV_MANY && else_mv == CL_MV_STALE) {
+            cl_emit(c, OP_MV_RESET);            /* only ELSE reaches here */
+            cl_patch_jump(c, tf->block_push_pos);
+        } else if (merged == CL_MV_MANY && then_mv == CL_MV_STALE) {
+            int over = cl_emit_jump(c, OP_JMP); /* ELSE hops the stub */
+            cl_patch_jump(c, tf->block_push_pos);  /* THEN lands on it */
+            cl_emit(c, OP_MV_RESET);
+            cl_patch_jump(c, over);
+        } else {
+            cl_patch_jump(c, tf->block_push_pos);
+        }
+        c->mv_state = merged;
         return CL_NIL;
+    }
     case CL_TAIL_HANDLER_BIND:
         cl_emit(c, OP_HANDLER_POP);
         cl_emit(c, (uint8_t)tf->saved_macro_count); /* count of handlers */
@@ -3028,6 +3173,10 @@ static void compile_setq(CL_Compiler *c, CL_Obj form)
             cl_emit(c, OP_GSTORE);
             cl_emit_u16(c, (uint16_t)idx);
         }
+        /* SETQ returns the primary value of the last assignment (CLHS 5.1.1),
+         * but the stores above only peek — the MV buffer still holds the
+         * value form's values.  See cl_mv_normalize. */
+        c->mv_state = CL_MV_STALE;
 
         rest = cl_cdr(cl_cdr(rest));
         if (!CL_NULL_P(rest)) {
@@ -3223,6 +3372,11 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             cl_emit(c, OP_GSTORE);
             cl_emit_u16(c, (uint16_t)idx);
         }
+        /* Every store above PEEKS the new value and leaves it on the stack
+         * without touching the MV buffer, so the buffer still describes the
+         * value form's values — but SETF of a variable yields exactly one
+         * value (CLHS 5.1.1). */
+        c->mv_state = CL_MV_STALE;
     } else if (CL_CONS_P(place)) {
         CL_Obj head = cl_car(place);
 
@@ -3606,8 +3760,7 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                     tmp = cl_cdr(tmp);
                 }
                 CL_GC_UNPROTECT(1);
-                cl_emit(c, OP_CALL);
-                cl_emit(c, (uint8_t)(2 + nindices));
+                cl_emit_call(c, OP_CALL, (uint8_t)(2 + nindices));
             }
         } else if (head == SETF_SYM_NTH) {
             int idx = cl_add_constant(c, SETF_HELPER_NTH);
@@ -3616,32 +3769,28 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             compile_expr(c, cl_car(cl_cdr(place)));
             compile_expr(c, cl_car(cl_cdr(cl_cdr(place))));
             compile_expr(c, val_form);
-            cl_emit(c, OP_CALL);
-            cl_emit(c, 3);
+            cl_emit_call(c, OP_CALL, 3);
         } else if (head == SETF_SYM_SYMBOL_VALUE) {
             int idx = cl_add_constant(c, SETF_HELPER_SV);
             cl_emit(c, OP_FLOAD);
             cl_emit_u16(c, (uint16_t)idx);
             compile_expr(c, cl_car(cl_cdr(place)));
             compile_expr(c, val_form);
-            cl_emit(c, OP_CALL);
-            cl_emit(c, 2);
+            cl_emit_call(c, OP_CALL, 2);
         } else if (head == SETF_SYM_SYMBOL_FUNCTION || head == SETF_SYM_FDEFINITION) {
             int idx = cl_add_constant(c, SETF_HELPER_SF);
             cl_emit(c, OP_FLOAD);
             cl_emit_u16(c, (uint16_t)idx);
             compile_expr(c, cl_car(cl_cdr(place)));
             compile_expr(c, val_form);
-            cl_emit(c, OP_CALL);
-            cl_emit(c, 2);
+            cl_emit_call(c, OP_CALL, 2);
         } else if (head == SETF_SYM_SYMBOL_PLIST) {
             int idx = cl_add_constant(c, SETF_HELPER_SP);
             cl_emit(c, OP_FLOAD);
             cl_emit_u16(c, (uint16_t)idx);
             compile_expr(c, cl_car(cl_cdr(place)));
             compile_expr(c, val_form);
-            cl_emit(c, OP_CALL);
-            cl_emit(c, 2);
+            cl_emit_call(c, OP_CALL, 2);
         } else if (head == SETF_SYM_ROW_MAJOR_AREF) {
             /* (setf (row-major-aref arr idx) val) → (%setf-row-major-aref arr idx val) */
             int idx = cl_add_constant(c, SETF_HELPER_ROW_MAJOR_AREF);
@@ -3650,8 +3799,7 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             compile_expr(c, cl_car(cl_cdr(place)));       /* array */
             compile_expr(c, cl_car(cl_cdr(cl_cdr(place)))); /* index */
             compile_expr(c, val_form);                     /* value */
-            cl_emit(c, OP_CALL);
-            cl_emit(c, 3);
+            cl_emit_call(c, OP_CALL, 3);
         } else if (head == SETF_SYM_FILL_POINTER) {
             /* (setf (fill-pointer vec) val) → (%setf-fill-pointer vec val) */
             int idx = cl_add_constant(c, SETF_HELPER_FILL_POINTER);
@@ -3659,8 +3807,7 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             cl_emit_u16(c, (uint16_t)idx);
             compile_expr(c, cl_car(cl_cdr(place)));       /* vector */
             compile_expr(c, val_form);                     /* new fill-pointer */
-            cl_emit(c, OP_CALL);
-            cl_emit(c, 2);
+            cl_emit_call(c, OP_CALL, 2);
         } else if (head == SETF_SYM_GETHASH) {
             /* (setf (gethash key ht) val) → (%setf-gethash key ht val) */
             int idx = cl_add_constant(c, SETF_HELPER_GETHASH);
@@ -3669,8 +3816,7 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             compile_expr(c, cl_car(cl_cdr(place)));       /* key */
             compile_expr(c, cl_car(cl_cdr(cl_cdr(place)))); /* hash-table */
             compile_expr(c, val_form);                     /* value */
-            cl_emit(c, OP_CALL);
-            cl_emit(c, 3);
+            cl_emit_call(c, OP_CALL, 3);
         } else if (head == SETF_SYM_BIT) {
             /* (setf (bit bv idx) val) → (%setf-bit bv idx val) */
             int idx = cl_add_constant(c, SETF_HELPER_BIT);
@@ -3679,8 +3825,7 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             compile_expr(c, cl_car(cl_cdr(place)));       /* bit-vector */
             compile_expr(c, cl_car(cl_cdr(cl_cdr(place)))); /* index */
             compile_expr(c, val_form);                     /* value */
-            cl_emit(c, OP_CALL);
-            cl_emit(c, 3);
+            cl_emit_call(c, OP_CALL, 3);
         } else if (head == SETF_SYM_SBIT) {
             /* (setf (sbit bv idx) val) → (%setf-sbit bv idx val) */
             int idx = cl_add_constant(c, SETF_HELPER_SBIT);
@@ -3689,8 +3834,7 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             compile_expr(c, cl_car(cl_cdr(place)));       /* bit-vector */
             compile_expr(c, cl_car(cl_cdr(cl_cdr(place)))); /* index */
             compile_expr(c, val_form);                     /* value */
-            cl_emit(c, OP_CALL);
-            cl_emit(c, 3);
+            cl_emit_call(c, OP_CALL, 3);
         } else if (head == SETF_SYM_GET) {
             /* (setf (get sym indicator [default]) val) → (%setf-get sym indicator val).
              * Per CLHS §5.1.1.1.1, every subform of the place — including
@@ -3716,8 +3860,7 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             }
             CL_GC_UNPROTECT(2);                           /* ind_form, rest_after_ind */
             compile_expr(c, val_form);                     /* value */
-            cl_emit(c, OP_CALL);
-            cl_emit(c, 3);
+            cl_emit_call(c, OP_CALL, 3);
         } else if (head == SETF_SYM_GETF) {
             /* (setf (getf PLACE IND [DEFAULT]) VAL).
              *
@@ -3992,8 +4135,7 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                             args = cl_cdr(args);
                         }
                         CL_GC_UNPROTECT(1);          /* args */
-                        cl_emit(c, OP_CALL);
-                        cl_emit(c, (uint8_t)nargs);
+                        cl_emit_call(c, OP_CALL, (uint8_t)nargs);
                         CL_GC_UNPROTECT(2);           /* place, val_form */
                         c->in_tail = saved_tail;
                         return;
@@ -4385,6 +4527,7 @@ static void compile_call(CL_Compiler *c, CL_Obj form)
             emit_folded_constant(c, folded);
             CL_GC_UNPROTECT(1);  /* args */
             c->in_tail = saved_tail;
+            c->mv_state = CL_MV_ONE;   /* OP_CONST/OP_NIL/OP_T: one value */
             return;
         }
     }
@@ -4454,6 +4597,7 @@ static void compile_call(CL_Compiler *c, CL_Obj form)
                 emit_amiga_call(c, base_sym, lvo, regspec, args, n);
                 CL_GC_UNPROTECT(1);  /* args */
                 c->in_tail = saved_tail;
+                c->mv_state = CL_MV_ONE;   /* OP_AMIGA_CALL: one value */
                 return;
             }
         }
@@ -4507,6 +4651,7 @@ static void compile_call(CL_Compiler *c, CL_Obj form)
 
         CL_GC_UNPROTECT(1);  /* args */
         c->in_tail = saved_tail;
+        c->mv_state = CL_MV_ONE;   /* OP_AMIGA_CALL: one value */
         return;
     }
 
@@ -4546,6 +4691,7 @@ static void compile_call(CL_Compiler *c, CL_Obj form)
                         cl_emit(c, (uint8_t)idx);
                         CL_GC_UNPROTECT(1);
                         c->in_tail = saved_tail;
+                        c->mv_state = CL_MV_ONE;   /* both push exactly one value */
                         return;
                     }
                 }
@@ -4581,6 +4727,7 @@ static void compile_call(CL_Compiler *c, CL_Obj form)
             cl_emit(c, opcode);
             CL_GC_UNPROTECT(2);  /* rest, args */
             c->in_tail = saved_tail;
+            c->mv_state = CL_MV_ONE;   /* inlined builtin opcodes: one value */
             return;
         }
     }
@@ -4640,12 +4787,9 @@ static void compile_call(CL_Compiler *c, CL_Obj form)
                  nargs);
     }
 
-    if (c->in_tail) {
-        cl_emit(c, OP_TAILCALL);
-    } else {
-        cl_emit(c, OP_CALL);
-    }
-    cl_emit(c, (uint8_t)nargs);
+    /* cl_emit_call also classifies the result CL_MV_MANY: the callee
+     * establishes the MV state, which is what makes (floor 7 2) two-valued. */
+    cl_emit_call(c, c->in_tail ? OP_TAILCALL : OP_CALL, (uint8_t)nargs);
 }
 
 /* Trampoline-aware analog of compile_body.  Strips leading declarations
@@ -4741,8 +4885,12 @@ static void compile_symbol(CL_Compiler *c, CL_Obj sym)
 {
     int slot;
 
-    if (CL_NULL_P(sym)) { cl_emit(c, OP_NIL); return; }
-    if (sym == SYM_T)    { cl_emit(c, OP_T);   return; }
+    /* Every path out of here pushes exactly one value; only the two that go
+     * through OP_LOAD / OP_CELL_REF leave the MV buffer describing an older
+     * form (CL_MV_STALE).  Being precise about the difference is what lets a
+     * join like (if p x *global*) still see "stale" and normalize. */
+    if (CL_NULL_P(sym)) { cl_emit(c, OP_NIL); c->mv_state = CL_MV_ONE; return; }
+    if (sym == SYM_T)    { cl_emit(c, OP_T);  c->mv_state = CL_MV_ONE; return; }
 
     {
         CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
@@ -4772,6 +4920,12 @@ static void compile_symbol(CL_Compiler *c, CL_Obj sym)
         cl_emit(c, (uint8_t)slot);
         if (c->env->boxed[slot])
             cl_emit(c, OP_CELL_REF);
+        /* Neither OP_LOAD nor OP_CELL_REF touches the MV buffer, so it still
+         * describes whatever ran before this reference — see cl_mv_normalize.
+         * (Not resetting here is deliberate and load-bearing: the local-jump
+         * BLOCK join stores and reloads its result through a slot and relies
+         * on the MV state surviving that round trip.) */
+        c->mv_state = CL_MV_STALE;
         return;
     }
 
@@ -4780,8 +4934,11 @@ static void compile_symbol(CL_Compiler *c, CL_Obj sym)
         if (uv_idx >= 0) {
             cl_emit(c, OP_UPVAL);
             cl_emit(c, (uint8_t)uv_idx);
-            if (c->env->upvalues[uv_idx].is_boxed)
+            c->mv_state = CL_MV_ONE;       /* OP_UPVAL writes mv_count */
+            if (c->env->upvalues[uv_idx].is_boxed) {
                 cl_emit(c, OP_CELL_REF);
+                c->mv_state = CL_MV_STALE; /* ... but OP_CELL_REF does not */
+            }
             return;
         }
     }
@@ -4803,6 +4960,7 @@ static void compile_symbol(CL_Compiler *c, CL_Obj sym)
         int idx = cl_add_constant(c, sym);
         cl_emit(c, OP_GLOAD);
         cl_emit_u16(c, (uint16_t)idx);
+        c->mv_state = CL_MV_ONE;   /* OP_GLOAD writes mv_count */
     }
 }
 
@@ -4831,7 +4989,17 @@ static int compile_expr_step(CL_Compiler *c, CL_Obj *expr_p)
      * a clean, actionable error. */
     cl_check_recursion_guards("cl_compile");
 
-    if (CL_NULL_P(expr))    { cl_emit(c, OP_NIL); return 0; }
+    /* MV hygiene default (see the CL_MV_* comment in compiler_internal.h):
+     * assume this form's code establishes the MV state and may leave more
+     * than one value, which is what a call does.  The forms whose value is
+     * delivered by an opcode that leaves the MV buffer alone mark themselves
+     * CL_MV_STALE instead — compile_symbol's OP_LOAD path, compile_setq's
+     * peeking stores, the local-jump BLOCK join.  Erring towards MANY leaves
+     * an existing leak in place; erring towards STALE would emit a reset
+     * that destroys real values. */
+    c->mv_state = CL_MV_MANY;
+
+    if (CL_NULL_P(expr))    { cl_emit(c, OP_NIL); c->mv_state = CL_MV_ONE; return 0; }
     if (CL_FIXNUM_P(expr))  { cl_emit_const(c, expr); return 0; }
     if (CL_CHAR_P(expr))    { cl_emit_const(c, expr); return 0; }
     if (CL_ANY_STRING_P(expr)) { cl_emit_const(c, expr); return 0; }
@@ -5185,11 +5353,8 @@ static int compile_expr_step(CL_Compiler *c, CL_Obj *expr_p)
             }
             CL_GC_UNPROTECT(1);
             c->in_tail = saved_tail;
-            if (c->in_tail)
-                cl_emit(c, OP_TAILCALL);
-            else
-                cl_emit(c, OP_CALL);
-            cl_emit(c, (uint8_t)nargs);
+            cl_emit_call(c, c->in_tail ? OP_TAILCALL : OP_CALL,
+                         (uint8_t)nargs);
             return 0;
         }
 
@@ -5222,6 +5387,7 @@ static int compile_expr_step(CL_Compiler *c, CL_Obj *expr_p)
                 cl_emit(c, OP_CONS);
             c->in_tail = saved_tail;
             cl_emit(c, OP_APPLY);
+            c->mv_state = CL_MV_MANY;   /* the callee establishes the MV state */
             return 0;
         }
 
@@ -5624,6 +5790,7 @@ static CL_Obj cl_compile_env(CL_Obj expr, CL_Obj lex_env)
     env = cl_env_create(NULL);
     comp->env = env;
     comp->in_tail = 0;
+    comp->mv_state = CL_MV_ONE;   /* nothing emitted yet */
 
     /* Register compiler for GC root marking.  The anchor records this frame
      * as the owner, which keeps the compiler alive across NLX landings in VM
@@ -5651,6 +5818,9 @@ static CL_Obj cl_compile_env(CL_Obj expr, CL_Obj lex_env)
 
     compile_expr(comp, expr);
 
+    /* The caller of cl_vm_eval (EVAL, LOAD, the REPL's value echo) reads the
+     * MV state this leaves behind, so it must describe EXPR's own values. */
+    cl_mv_normalize(comp);
     cl_emit(comp, OP_HALT);
 
     /* Peephole post-pass — see the compile_lambda call site. */

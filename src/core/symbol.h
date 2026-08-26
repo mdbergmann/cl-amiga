@@ -204,6 +204,9 @@ extern CL_Obj SYM_PLUS;          /* + — last form */
 extern CL_Obj SYM_PLUSPLUS;       /* ++ — second-to-last form */
 extern CL_Obj SYM_PLUSPLUSPLUS;  /* +++ — third-to-last form */
 extern CL_Obj SYM_MINUS;         /* - — current form being evaluated */
+extern CL_Obj SYM_SLASH;         /* / — list of the last result's values */
+extern CL_Obj SYM_SLASHSLASH;    /* // — same, one evaluation earlier */
+extern CL_Obj SYM_SLASHSLASHSLASH; /* /// — two evaluations earlier */
 
 /* Standard stream variables */
 extern CL_Obj SYM_STANDARD_INPUT;    /* *STANDARD-INPUT* */

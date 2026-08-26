@@ -462,14 +462,19 @@ void cl_invoke_debugger(CL_Obj condition)
             CL_CATCH(err);
             if (err == CL_ERR_NONE) {
                 CL_Obj result = cl_eval_string(line);
+                /* One line per value, as at the top-level REPL: zero
+                 * values — (values) — print nothing at all.  Snapshot the
+                 * MV state before cl_prin1_to_string can run Lisp. */
+                CL_Obj values = cl_repl_values_list(result);
                 char buf[512];
-                /* Zero values — (values) — print nothing, as at the
-                 * top-level REPL (see cl_repl_result_printable). */
-                if (cl_repl_result_printable(result)) {
-                    cl_prin1_to_string(result, buf, sizeof(buf));
+                CL_GC_PROTECT(values);
+                while (CL_CONS_P(values)) {
+                    cl_prin1_to_string(cl_car(values), buf, sizeof(buf));
                     cl_write_cstring_to_debug_io(buf);
                     cl_write_cstring_to_debug_io("\n");
+                    values = cl_cdr(values);
                 }
+                CL_GC_UNPROTECT(1);
                 CL_UNCATCH();
             } else {
                 CL_UNCATCH();
