@@ -437,16 +437,55 @@ CL_Obj cl_eval_string(const char *str)
     stream.line = 1;
 
     expr = cl_read_from_string(&stream);
-    if (CL_NULL_P(expr)) return CL_NIL;
+    /* Nothing evaluated — leave a definitive "no values" signal rather than
+     * whatever MV state the PREVIOUS call left behind, or a caller gating
+     * its echo on cl_repl_result_printable() (the Debug> prompt) prints
+     * NIL for input that produced nothing.
+     *
+     * KNOWN LIMITATION (deliberately not fixed here): a form that READS as
+     * NIL — `nil`, `()` — is indistinguishable from "nothing was read",
+     * since both yield CL_NULL_P(expr), so it is skipped instead of
+     * evaluated and lands in this branch too.  cl_repl / cl_repl_batch
+     * conflate the two exactly the same way, which is why a top-level `nil`
+     * echoes nothing where SBCL prints NIL.  Separating them needs a reader
+     * signal for "read nothing" (comment-only input relies on the
+     * conflation today) and must land in all three loops at once — fixing
+     * it here alone would only make the Debug> prompt disagree with the
+     * REPL above it. */
+    if (CL_NULL_P(expr)) {
+        cl_mv_count = 0;
+        return CL_NIL;
+    }
 
     CL_GC_PROTECT(expr);
     bytecode = cl_compile(expr);
     CL_GC_UNPROTECT(1);
 
-    if (CL_NULL_P(bytecode)) return CL_NIL;
+    if (CL_NULL_P(bytecode)) {
+        cl_mv_count = 0;   /* nothing ran — same signal as above */
+        return CL_NIL;
+    }
 
     result = cl_vm_eval(bytecode);
     return result;
+}
+
+/* Does the form the REPL just evaluated have any values to print?
+ *
+ * cl_mv_count == 0 means the form returned zero values — (values) — and
+ * per CLHS 25.1 the REPL prints the values of the form, so zero values
+ * print nothing at all (not NIL).
+ *
+ * The non-NIL guard mirrors OP_MV_TO_LIST's disambiguation (vm.c): many
+ * value-propagating opcodes (OP_LOAD, OP_DUP, OP_POP, ...) leave the MV
+ * buffer untouched, so a non-NIL primary with count 0 is a stale leak
+ * from an earlier (values) rather than a true zero-value return — print
+ * it.  A real (values) leaves the primary NIL, so it still prints
+ * nothing.  Call this immediately after cl_vm_eval, before anything that
+ * could evaluate Lisp code and overwrite the MV state. */
+int cl_repl_result_printable(CL_Obj primary)
+{
+    return cl_mv_count != 0 || !CL_NULL_P(primary);
 }
 
 /* Update REPL history variables after a successful eval.
@@ -560,15 +599,20 @@ void cl_repl(void)
                     bytecode = cl_compile(expr);
 
                     if (!CL_NULL_P(bytecode)) {
+                        int printable;
                         result = cl_vm_eval(bytecode);
+                        /* Read the MV state before anything else runs Lisp */
+                        printable = cl_repl_result_printable(result);
 
                         /* Update history: shift *, **, ***, +, ++, +++ */
                         cl_repl_update_history(expr, result);
 
-                        cl_color_set(CL_COLOR_DIM_GREEN);
-                        cl_prin1(result);
-                        cl_color_reset();
-                        cl_write_cstring_to_stdout("\n");
+                        if (printable) {
+                            cl_color_set(CL_COLOR_DIM_GREEN);
+                            cl_prin1(result);
+                            cl_color_reset();
+                            cl_write_cstring_to_stdout("\n");
+                        }
                     }
                     CL_GC_UNPROTECT(1);
                 }
@@ -684,8 +728,11 @@ void cl_repl_batch(void)
 
                     if (!CL_NULL_P(bytecode)) {
                         result = cl_vm_eval(bytecode);
-                        cl_prin1(result);
-                        cl_write_cstring_to_stdout("\n");
+                        /* (values) prints nothing — see cl_repl */
+                        if (cl_repl_result_printable(result)) {
+                            cl_prin1(result);
+                            cl_write_cstring_to_stdout("\n");
+                        }
                     }
                     CL_UNCATCH();
                 } else if (err == CL_ERR_EXIT) {

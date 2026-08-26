@@ -7272,6 +7272,59 @@ TEST(history_arithmetic_still_works)
     ASSERT_EQ_INT(eval_int("(- 10 3)"), 7);
 }
 
+/* --- REPL result printing --- */
+
+TEST(repl_zero_values_print_nothing)
+{
+    /* (values) returns no values at all, so the REPL prints nothing —
+     * it used to print NIL (issue #6). */
+    ASSERT_EQ_INT(cl_repl_result_printable(cl_eval_string("(values)")), 0);
+    ASSERT_EQ_INT(cl_repl_result_printable(cl_eval_string("(values-list nil)")), 0);
+    ASSERT_EQ_INT(cl_repl_result_printable(cl_eval_string("(progn (values))")), 0);
+    /* Zero values survive a function return as zero values */
+    cl_eval_string("(defun repl-zero-values-fn () (values))");
+    ASSERT_EQ_INT(cl_repl_result_printable(
+                      cl_eval_string("(repl-zero-values-fn)")), 0);
+}
+
+TEST(repl_one_value_prints_even_when_nil)
+{
+    /* A single value that happens to be NIL is still a value. */
+    ASSERT(cl_repl_result_printable(cl_eval_string("(values nil)")));
+    ASSERT(cl_repl_result_printable(cl_eval_string("(list)")));
+    ASSERT(cl_repl_result_printable(cl_eval_string("(car '())")));
+    /* Ordinary values, single and multiple */
+    ASSERT(cl_repl_result_printable(cl_eval_string("(+ 1 2)")));
+    ASSERT(cl_repl_result_printable(cl_eval_string("(values 1 2 3)")));
+    ASSERT(cl_repl_result_printable(cl_eval_string("(floor 7 2)")));
+}
+
+TEST(repl_zero_values_do_not_leak_into_next_form)
+{
+    /* cl_mv_count is thread state that survives across top-level forms,
+     * and value-propagating opcodes don't reset it — a (values) must not
+     * silence the NEXT form's result. */
+    cl_eval_string("(values)");
+    ASSERT(cl_repl_result_printable(cl_eval_string("42")));
+    cl_eval_string("(values)");
+    ASSERT(cl_repl_result_printable(cl_eval_string("'foo")));
+    cl_eval_string("(values)");
+    ASSERT(cl_repl_result_printable(cl_eval_string("(list)")));
+}
+
+TEST(repl_eval_string_nothing_evaluated_signals_no_values)
+{
+    /* When cl_eval_string evaluates nothing at all — blank or comment-only
+     * input — it must leave a definitive "no values" signal instead of the
+     * MV state of the PREVIOUS call, or a caller gating its echo on
+     * cl_repl_result_printable (the Debug> prompt) echoes NIL for input
+     * that produced nothing. */
+    cl_eval_string("(values 1 2 3)");
+    ASSERT_EQ_INT(cl_repl_result_printable(cl_eval_string(";; just a comment")), 0);
+    cl_eval_string("(values 1 2 3)");
+    ASSERT_EQ_INT(cl_repl_result_printable(cl_eval_string("   ")), 0);
+}
+
 /* --- Printer control variables --- */
 
 TEST(eval_print_var_defaults)
@@ -11641,6 +11694,11 @@ int main(void)
     RUN(history_plus_shift);
     RUN(history_minus_during_eval);
     RUN(history_arithmetic_still_works);
+
+    RUN(repl_zero_values_print_nothing);
+    RUN(repl_one_value_prints_even_when_nil);
+    RUN(repl_zero_values_do_not_leak_into_next_form);
+    RUN(repl_eval_string_nothing_evaluated_signals_no_values);
 
     /* Printer control variables */
     RUN(eval_print_var_defaults);

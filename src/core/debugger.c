@@ -463,9 +463,13 @@ void cl_invoke_debugger(CL_Obj condition)
             if (err == CL_ERR_NONE) {
                 CL_Obj result = cl_eval_string(line);
                 char buf[512];
-                cl_prin1_to_string(result, buf, sizeof(buf));
-                cl_write_cstring_to_debug_io(buf);
-                cl_write_cstring_to_debug_io("\n");
+                /* Zero values — (values) — print nothing, as at the
+                 * top-level REPL (see cl_repl_result_printable). */
+                if (cl_repl_result_printable(result)) {
+                    cl_prin1_to_string(result, buf, sizeof(buf));
+                    cl_write_cstring_to_debug_io(buf);
+                    cl_write_cstring_to_debug_io("\n");
+                }
                 CL_UNCATCH();
             } else {
                 CL_UNCATCH();

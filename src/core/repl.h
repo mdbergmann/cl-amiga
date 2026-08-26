@@ -46,4 +46,11 @@ int cl_paren_depth(const char *str);
  * Called after each successful REPL eval. Exposed for testing. */
 void cl_repl_update_history(CL_Obj form, CL_Obj result);
 
+/* Non-zero if the form just evaluated produced at least one value, i.e.
+ * whether the REPL should print anything for it — (values) returns zero
+ * values and prints nothing.  `primary` is what cl_vm_eval returned; the
+ * value count comes from the current thread's MV state, so call this
+ * right after the eval.  Exposed for testing. */
+int cl_repl_result_printable(CL_Obj primary);
+
 #endif /* CL_REPL_H */
