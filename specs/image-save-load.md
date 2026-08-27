@@ -259,8 +259,9 @@ usual) — the recommended mode for build scripts.
 
 - `clamiga --image FILE` — explicit.
 - Auto-discovery, mirroring the `lib/boot.fasl` search in repl.c
-  (cwd → CLAMIGA_HOME → exedir → exedir/../..): `clamiga.img` next to
-  `lib/` is used when present.  `--no-image` bypasses it.
+  (cwd → CLAMIGA_HOME → exedir → exedir/../lib/clamiga → exedir/../..):
+  `clamiga.img` next to `lib/` is used when present.  `--no-image`
+  bypasses it.
 
 ### Sequence in main()
 

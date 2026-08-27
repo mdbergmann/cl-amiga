@@ -3,6 +3,8 @@
 # directory other than the source root:
 #   - executable-relative fallback: build/host/clamiga resolves ../../lib/
 #     (also through a $PATH symlink) with no environment setup
+#   - install prefix (<prefix>/bin/clamiga + <prefix>/lib/clamiga/): resolves
+#     ../lib/clamiga/, shims included, with no environment setup
 #   - $CLAMIGA_HOME fallback: a bare copied binary finds lib/ via the env var
 #   - when nothing is found: boot fails with a diagnostic naming
 #     CLAMIGA_HOME instead of a generic REQUIRE error later, and REQUIRE
@@ -78,6 +80,35 @@ else
     # resolution.
     echo "  skip  symlink_boot_and_require (no symlink support on this host)"
 fi
+
+# --- Installed FHS layout: <prefix>/bin/clamiga + <prefix>/lib/clamiga/ ---
+# An install prefix (the layout SBCL uses): the binary in bin/, the whole
+# lib/ tree beside it in ../lib/clamiga/.  Must work with no env var and from a
+# cwd that has no lib/ of its own — the only lib/ in reach here is the
+# installed one (cwd has none, $CLAMIGA_HOME is unset, <exedir>/lib/ and
+# <exedir>/../../lib/ do not exist), so finding gray-streams proves the
+# ../lib/clamiga/ leg resolved.
+
+mkdir -p "$WORKDIR/prefix/bin" "$WORKDIR/prefix/lib"
+cp -pR "$ROOT/lib" "$WORKDIR/prefix/lib/clamiga"
+cp "$ABS_CLAMIGA" "$WORKDIR/prefix/bin/clamiga"
+result=$(cd "$WORKDIR" && env -u CLAMIGA_HOME "$WORKDIR/prefix/bin/clamiga" \
+    --no-userinit --non-interactive --eval "$EVAL_REQUIRE" </dev/null 2>&1)
+check_contains     "fhs_install_boot_and_require" "GS-OK R=3" "$result"
+check_not_contains "fhs_install_no_boot_error"    "cannot locate its runtime library" "$result"
+
+# The bundled ASDF shims live under the installed lib/ too — they are
+# resolved from asdf.lisp's own load truename, so they must land inside
+# <prefix>/lib/clamiga/shims/ rather than in the source tree.
+result=$(cd "$WORKDIR" && env -u CLAMIGA_HOME "$WORKDIR/prefix/bin/clamiga" \
+    --no-userinit --non-interactive --eval '(require "asdf")' \
+    --eval '(dolist (d (symbol-value (find-symbol "*CENTRAL-REGISTRY*" "ASDF"))) (format t "REG ~A~%" d))' \
+    </dev/null 2>&1)
+# (matched by tail, not by absolute path: macOS resolves the temp dir's
+# /var -> /private/var symlink in the truename.  "lib/clamiga/shims/" only
+# exists in the installed tree — the source tree has "lib/shims/".)
+check_contains "fhs_install_shims_under_prefix" \
+    "/prefix/lib/clamiga/shims/cl+ssl/" "$result"
 
 # --- $CLAMIGA_HOME fallback: bare copied binary, lib/ nowhere nearby ---
 

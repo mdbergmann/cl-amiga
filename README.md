@@ -425,11 +425,11 @@ start; a game or app can ship as `clamiga` + `app.img`.
 clamiga --image mysession.img              ; next day: instantly back
 ```
 
-A file named `clamiga.img` in the current directory (or next to the binary) is
-restored automatically at startup; `--no-image` skips that.  Images are strictly
-per-build — a fingerprint makes any other clamiga build (or platform/variant)
-refuse them cleanly — and can be restored into a larger `--heap` than they were
-saved with.  Worker threads and open file/socket streams must be closed before
+A file named `clamiga.img` in the current directory (or next to the binary, or
+in an install prefix's `lib/clamiga/`) is restored automatically at startup;
+`--no-image` skips that.  Images are strictly per-build — a fingerprint makes
+any other clamiga build (or platform/variant) refuse them cleanly — and can be
+restored into a larger `--heap` than they were saved with.  Worker threads and open file/socket streams must be closed before
 saving; `ext:*save-hooks*` / `ext:*restore-hooks*` exist to tear down and
 rebuild such OS state around the snapshot, and `ext:*image-restored-p*` lets
 `~/.clamigarc` skip loads the image already contains.
@@ -476,7 +476,7 @@ CL-Amiga speaks the SLYNK protocol, so you can drive it from Emacs with [SLY](ht
 
 clamiga comes up exactly like every other implementation — there is no clamiga-specific Lisp startup file or init form. The backend (`slynk/backend/clamiga.lisp`) pulls in clamiga's Gray streams itself via `(require "gray-streams")`, which needs to locate the bundled `lib/`.
 
-clamiga finds `lib/` in three ways, in order: relative to the current working directory (so running it from the source root just works), under **`$CLAMIGA_HOME`**, and relative to the clamiga executable itself — both `lib/` next to the binary and `../../lib/` above it, so the in-repo `build/host/clamiga` (or a symlink to it on `$PATH`) locates the bundled `lib/` from any directory with no setup at all. On AmigaOS the executable-relative lookup is `PROGDIR:`. Set `CLAMIGA_HOME` explicitly when the binary lives outside the source tree (e.g. copied to `/usr/local/bin`); see `tests/test_lib_search_cwd.sh` for the exact resolution behavior.
+clamiga finds `lib/` in three ways, in order: relative to the current working directory (so running it from the source root just works), under **`$CLAMIGA_HOME`**, and relative to the clamiga executable itself. The executable-relative lookup tries three layouts — `lib/` next to the binary (binary release), `../lib/clamiga/` (an install prefix: `<prefix>/bin/clamiga` + `<prefix>/lib/clamiga/`, the same layout SBCL uses), and `../../lib/` above it (the in-repo `build/host/clamiga`) — so an installed clamiga, or a symlink to the in-repo binary on `$PATH`, locates the bundled `lib/` from any directory with no environment setup at all. The same three locations are searched for a `clamiga.img` [heap image](#heap-images). On AmigaOS the executable-relative lookup is `PROGDIR:`. `CLAMIGA_HOME` is only needed for a binary that sits in none of those layouts (e.g. a bare copy of the executable); see `tests/test_lib_search_cwd.sh` for the exact resolution behavior.
 
 > **Heap sizing:** the 4 MB default thrashes the GC once SLYNK and its contribs load. Use **`--heap 96M` as a practical minimum** — that also carries a real application's dependency graph (e.g. `(asdf:load-system :sento)`). Give more headroom (`512M`) if you can.
 

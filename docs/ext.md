@@ -147,10 +147,10 @@ after writing, running `ext:*exit-hooks*` as usual — the recommended mode
 for build scripts.
 
 Restore explicitly with `clamiga --image mysession.img`, or implicitly: a
-file named `clamiga.img` in the current directory (or next to the binary /
-under `$CLAMIGA_HOME`) is auto-discovered at startup; `--no-image` skips
-that.  An image saved with a small `--heap` restores fine into a larger
-one.
+file named `clamiga.img` in the current directory (or next to the binary,
+under `$CLAMIGA_HOME`, or in an install prefix's `lib/clamiga/`) is
+auto-discovered at startup; `--no-image` skips that.  An image saved with
+a small `--heap` restores fine into a larger one.
 
 Rules and limits:
 

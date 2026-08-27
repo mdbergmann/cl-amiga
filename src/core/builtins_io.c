@@ -3614,20 +3614,20 @@ static CL_Obj bi_require(CL_Obj *args, int n)
             }
 
             /* Executable-relative fallback (mirrors the boot.lisp search in
-               repl.c): a deployed layout has lib/ next to the binary, the
-               in-repo build has it two levels above build/host/clamiga — so
-               a plain `clamiga` on $PATH works from any directory without
-               CLAMIGA_HOME. */
+               repl.c, sharing its cl_lib_rel_dirs table): a deployed layout
+               has lib/ next to the binary, an install prefix has
+               ../lib/clamiga/, the in-repo build has lib/ two levels above
+               build/host/clamiga — so a plain `clamiga` on $PATH works from
+               any directory without CLAMIGA_HOME. */
             if (!have_fasl && !have_lisp) {
                 char prefix[300];
                 if (platform_executable_prefix(prefix, (int)sizeof(prefix))) {
-                    static const char *rels[] = { "", "../../" };
                     int ri;
-                    for (ri = 0; ri < 2 && !have_fasl && !have_lisp; ri++) {
-                        snprintf(fasl_path, sizeof(fasl_path), "%s%slib/%.*s.fasl",
-                                 prefix, rels[ri], (int)len, name);
-                        snprintf(lisp_path, sizeof(lisp_path), "%s%slib/%.*s.lisp",
-                                 prefix, rels[ri], (int)len, name);
+                    for (ri = 0; ri < CL_LIB_REL_COUNT && !have_fasl && !have_lisp; ri++) {
+                        snprintf(fasl_path, sizeof(fasl_path), "%s%s%.*s.fasl",
+                                 prefix, cl_lib_rel_dirs[ri], (int)len, name);
+                        snprintf(lisp_path, sizeof(lisp_path), "%s%s%.*s.lisp",
+                                 prefix, cl_lib_rel_dirs[ri], (int)len, name);
                         have_fasl = platform_file_exists(fasl_path);
                         have_lisp = platform_file_exists(lisp_path);
                     }
@@ -3682,7 +3682,7 @@ static CL_Obj bi_require(CL_Obj *args, int n)
         }
 
         if (!found) {
-            char msg[512];
+            char msg[640];   /* fixed text ~330 chars + 3x the module name */
             snprintf(msg, sizeof(msg),
                      "REQUIRE: cannot find module \"%.*s\" - looked for "
                      "lib/%.*s.fasl and lib/%.*s.lisp under the current "
@@ -3690,9 +3690,11 @@ static CL_Obj bi_require(CL_Obj *args, int n)
                      "directory, PROGDIR: and two levels above the binary "
                      "(in-repo layout).",
 #else
-                     "directory, $CLAMIGA_HOME, and the clamiga executable's "
-                     "directory. If clamiga runs outside its installation, "
-                     "set CLAMIGA_HOME to the cl-amiga directory.",
+                     "directory, $CLAMIGA_HOME, and - relative to the clamiga "
+                     "executable - lib/, ../lib/clamiga/ (installed layout) "
+                     "and ../../lib/ (in-repo build). If clamiga runs outside "
+                     "its installation, set CLAMIGA_HOME to the cl-amiga "
+                     "directory.",
 #endif
                      (int)len, name, (int)len, name, (int)len, name);
             cl_error(CL_ERR_GENERAL, "%s", msg);
