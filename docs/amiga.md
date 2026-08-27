@@ -16,6 +16,7 @@ register-based library calls); the rest are Lisp libraries loaded on demand via
 | `AMIGA.REACTION` | `(require "amiga/reaction")` | ReAction / BOOPSI helpers over the generated class modules: methods, objects and attributes, the window.class event loop, requesters |
 | `AMIGA.AUDIO` | `(require "amiga/audio")` | Non-blocking 8-bit sample playback through audio.device |
 | `AMIGA.ASYNCIO` | `(require "amiga/asyncio")` | Double-buffered asynchronous file I/O over DOS packets (the NDK AsynchIO package as Lisp) |
+| `AMIGA.IFF` | `(require "amiga/iff")` | IFF file parsing and writing over iffparse.library, with the NDK `sift` chunk lister |
 
 `COMMON-LISP-USER` `:use`s `AMIGA` on AmigaOS, so its symbols are available
 unqualified. The `AMIGA.*` libraries are referenced by their package prefix
@@ -509,6 +510,45 @@ with it, timed against plain synchronous streams;
 `tests/amiga/test-asyncio.lisp` is the executable specification
 (`tests/test_amiga_asyncio.sh` load-checks module and example on the
 host).
+
+---
+
+## `AMIGA.IFF` — IFF parsing and writing over iffparse.library
+
+The NDK 3.1 `sift` example (`sift.c`, Amiga Developer CD) as Common
+Lisp, grown into a module: `sift` prints the IFFCheck-like chunk
+listing of any IFF file or of the clipboard (the C's `-c`), and the
+machinery it needs — `ParseIFF` stepping, chunk inspection, the
+matching write side — is exported for programs reading or writing IFF
+themselves (ILBM, 8SVX, FTXT, own formats).  Chunk identifiers travel
+as integers; `id-string` / `string-id` convert (`"FORM"` ⇄
+`#x464F524D`) and work on any host, as does the module itself — only
+`available-p` (and every open) needs AmigaOS/MorphOS.  Parse and write
+errors signal a Lisp error carrying the iffparse `IFFERR_#?` text.
+
+| Signature | Kind | Description |
+|-----------|------|-------------|
+| `(available-p)` | function | True when iffparse.library is open: AmigaOS/MorphOS; `NIL` on the host |
+| `(open-iff source &key direction clipboard-unit)` | function | `source` is a file name or `:clipboard` (unit `clipboard-unit`, default 0); `direction` `:read` (default) or `:write` (create, replacing).  Returns an `IFF-FILE`; signals on failure |
+| `(close-iff file)` | function | `CloseIFF`, close the stream underneath, `FreeIFF`.  Idempotent; returns `T` |
+| `(with-iff (var source &rest args) &body body)` | macro | `open-iff` + `unwind-protect`ed `close-iff` |
+| `(parse-step file &optional mode)` | function | One `ParseIFF` step; `mode` `:rawstep` (default), `:step` or `:scan`.  Returns `:chunk` on entering a context, `:end-of-chunk` before leaving one, `:eof` at the end |
+| `(current-chunk file)` | function | The current context node as `(values id type size scan)`, integers; `NIL` when there is none |
+| `(iff-depth file)` | function | Chunk nesting depth (`iff_Depth`): 1 at the top-level `FORM` (the default outer context counts) |
+| `(read-chunk-bytes file vector &optional n)` | function | Current chunk data into a `(unsigned-byte 8)` vector; clips at the chunk boundary, returns bytes read |
+| `(push-chunk file type id &optional size)` | function | Write side: open a chunk.  `type`/`id` are 4-character strings or integers, `type` `NIL` for plain data chunks; default `size` `IFFSIZE_UNKNOWN` is back-patched by `pop-chunk` |
+| `(pop-chunk file)` | function | Close the innermost chunk: pad byte if odd, size patched |
+| `(write-chunk-bytes file data &optional n)` | function | Write a byte vector's or 8-bit string's bytes into the current chunk |
+| `(map-chunks function source &key clipboard-unit)` | function | Parse `source` and call `function` with `(id type size depth)` per chunk entered; returns the chunk count |
+| `(sift source &key stream clipboard-unit)` | function | The `sift` program: print the indented chunk listing to `stream`; returns the chunk count |
+| `(id-string id)` / `(string-id string)` | function | Integer identifier ⇄ 4-character string, e.g. `#x464F524D` ⇄ `"FORM"` |
+| `(error-string code)` | function | The text for an iffparse `IFFERR_#?` code, matching the C sift's message table |
+
+`examples/amiga/iff/sift.lisp` builds a nested CAT-of-FORMs file with
+the write side, lists it, reads chunk data back and tries the
+clipboard; `tests/amiga/test-iff.lisp` is the executable specification
+(`tests/test_amiga_iff.sh` covers the pure-Lisp half and load-checks
+module and example on the host).
 
 ---
 

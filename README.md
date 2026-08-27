@@ -1306,6 +1306,32 @@ error code.  [`examples/amiga/asyncio/copyfile.lisp`](examples/amiga/asyncio/cop
 copies and verifies a file with it, timed against plain streams;
 `tests/amiga/test-asyncio.lisp` is the executable specification.
 
+### IFF files (iffparse.library)
+
+`(require "amiga/iff")` — package `AMIGA.IFF` — reads and writes IFF
+files through `iffparse.library`, grown from the NDK's `sift` example:
+`sift` prints the IFFCheck-like chunk listing of any IFF file, or of
+the clipboard (the C program's `-c`).
+
+```lisp
+(require "amiga/iff")
+
+(amiga.iff:sift "work:picture.ilbm")     ; . FORM 3120 ILBM
+                                         ; . . BMHD 20 ILBM
+                                         ; . . BODY 2986 ILBM ...
+(amiga.iff:sift :clipboard)
+```
+
+Under it: `with-iff` (a file or `:clipboard`, `:read` or `:write`),
+`parse-step` / `current-chunk` / `read-chunk-bytes` for walking chunks,
+`push-chunk` / `write-chunk-bytes` / `pop-chunk` (sizes back-patched,
+odd chunks padded) for writing, `map-chunks` over a whole file, and
+`id-string` / `string-id` for the `"FORM"` ⇄ integer identifiers.
+Parse errors signal a Lisp error carrying the iffparse error text.
+[`examples/amiga/iff/sift.lisp`](examples/amiga/iff/sift.lisp) builds,
+lists and re-reads a nested IFF; `tests/amiga/test-iff.lisp` is the
+executable specification.
+
 ### Raw OS bindings (generated)
 
 Every public function, constant and structure of the AmigaOS 3.2 API is

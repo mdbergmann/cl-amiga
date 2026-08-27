@@ -9062,7 +9062,13 @@ y" 1))
   ; Separate file for the same reader-needs-the-package reason.
   (handler-case
     (load "tests/amiga/test-asyncio.lisp")
-    (error (e) (format t "ERROR loading asyncio tests: ~A~%" e))))
+    (error (e) (format t "ERROR loading asyncio tests: ~A~%" e)))
+
+  ; --- IFF parsing/writing (lib/amiga/iff.lisp) over iffparse.library ---
+  ; Separate file for the same reader-needs-the-package reason.
+  (handler-case
+    (load "tests/amiga/test-iff.lisp")
+    (error (e) (format t "ERROR loading iff tests: ~A~%" e))))
 
 ; --- Gray streams: (typep gray-stream 'stream) regression ---
 ; Load gray-streams.lisp and verify that a CLOS-based Gray stream instance
