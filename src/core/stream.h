@@ -207,6 +207,16 @@ void cl_write_cstring_to_error(const char *s);
 void cl_write_cstring_to_debug_io(const char *s);
 void cl_write_cstring_to_trace(const char *s);
 
+/* FRESH-LINE core (builtins_stream.c): newline on `stream` unless it is at
+ * column 0; returns 1 if a newline was written. */
+int cl_stream_fresh_line(CL_Obj stream);
+
+/* REPL column support: fresh-line on the stream bound to `sym`, and re-sync
+ * that stream's column to 0 after the terminal echoed the user's Enter (see
+ * stream.c for why the echo is invisible to charpos). */
+void cl_stream_sym_fresh_line(CL_Obj sym);
+void cl_stream_sym_note_bol(CL_Obj sym);
+
 /* Resolve a stream-designator argument at args[idx] to a concrete stream:
  * missing or NIL yields the standard input/output stream, T yields
  * *terminal-io*, a stream yields itself, anything else is a TYPE-ERROR.

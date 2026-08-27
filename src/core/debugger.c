@@ -501,8 +501,21 @@ void cl_invoke_debugger(CL_Obj condition)
         cl_color_reset();
     }
 
-    cl_in_debugger = 0;
-    cl_debugger_depth--;
+    /* platform_read_line hit EOF — Ctrl-D (POSIX) / Ctrl-\ (Amiga) /
+     * Ctrl-Z (Windows) at the Debug> prompt.  Treat it as :q and abort to
+     * top level, like SBCL, instead of letting the EOF take the whole
+     * session down: stdio's EOF flag is sticky, so without clearing it the
+     * top-level REPL's next read also returns EOF and the REPL exits
+     * ("Bye.") with all the session's state (issue #13).  This loop only
+     * runs when stdin is a real tty (checked on entry above), so after the
+     * clear the next read blocks for fresh input — a second Ctrl-D at the
+     * top-level prompt still exits; and if the terminal is really gone,
+     * reads keep returning EOF and the top level exits as before. */
+    platform_clear_stdin_eof();
+    cl_write_cstring_to_debug_io("\n");  /* Ctrl-D echoes no newline */
+    jump_to_top_level(); /* longjmp — returns only if there is no error
+                          * frame, and then it has already zeroed
+                          * cl_in_debugger/cl_debugger_depth. */
 }
 
 void cl_debugger_init(void)

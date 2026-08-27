@@ -116,7 +116,34 @@ TEST(read_string)
 
 TEST(read_string_escape)
 {
+    /* CLHS 2.4.5: backslash is a single escape — the next character is taken
+     * exactly as itself.  "a\nb" is the three characters a n b; CL has no
+     * C-style \n escape (the old reader had one, which silently corrupted
+     * conforming code such as "a\nb" meaning "anb"). */
     CL_Obj obj = reads("\"a\\nb\"");
+    CL_String *s;
+    ASSERT(CL_STRING_P(obj));
+    s = (CL_String *)CL_OBJ_TO_PTR(obj);
+    ASSERT_EQ_INT((int)s->length, 3);
+    ASSERT_EQ_INT(s->data[1], 'n');
+
+    /* \" and \\ still yield " and \ — that IS the single-escape rule. */
+    obj = reads("\"a\\\"b\"");
+    s = (CL_String *)CL_OBJ_TO_PTR(obj);
+    ASSERT_EQ_INT((int)s->length, 3);
+    ASSERT_EQ_INT(s->data[1], '"');
+
+    obj = reads("\"a\\\\b\"");
+    s = (CL_String *)CL_OBJ_TO_PTR(obj);
+    ASSERT_EQ_INT((int)s->length, 3);
+    ASSERT_EQ_INT(s->data[1], '\\');
+}
+
+TEST(read_string_literal_newline)
+{
+    /* A string literal spans lines: everything up to the closing quote is
+     * accumulated, newlines included (CLHS 2.4.5). */
+    CL_Obj obj = reads("\"a\nb\"");
     CL_String *s;
     ASSERT(CL_STRING_P(obj));
     s = (CL_String *)CL_OBJ_TO_PTR(obj);
@@ -1140,6 +1167,7 @@ int main(void)
     RUN(read_t);
     RUN(read_string);
     RUN(read_string_escape);
+    RUN(read_string_literal_newline);
     RUN(read_empty_list);
     RUN(read_list);
     RUN(read_nested_list);

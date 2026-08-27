@@ -962,13 +962,10 @@ static CL_Obj read_string(void)
                 cl_reader_error(CL_ERR_PARSE, "Unterminated string escape");
                 return CL_NIL;
             }
-            switch (ch) {
-            case 'n': ch = '\n'; break;
-            case 't': ch = '\t'; break;
-            case '\\': ch = '\\'; break;
-            case '"': ch = '"'; break;
-            default: break;
-            }
+            /* CLHS 2.4.5: backslash is a single escape — the next character
+             * is taken exactly as itself, so "a\nb" is the three characters
+             * a n b.  CL has no C-style \n / \t escapes; a newline goes into
+             * a string as a literal newline or via FORMAT's ~%. */
         }
 #ifdef CL_WIDE_STRINGS
         if (ch > 0x7F) {

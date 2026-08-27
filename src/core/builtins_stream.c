@@ -465,8 +465,9 @@ static CL_Obj bi_terpri(CL_Obj *args, int n)
 /* FRESH-LINE core: consult the column of the stream that actually carries
  * it.  Synonym/two-way wrappers never update their own charpos, so unwrap to
  * the output backing; a broadcast stream performs the operation on every
- * component and returns the last component's result (CLHS 21.1.1.1.1). */
-static int stream_fresh_line(CL_Obj stream)
+ * component and returns the last component's result (CLHS 21.1.1.1.1).
+ * Exported (non-static) so the REPL's value echo can fresh-line from C. */
+int cl_stream_fresh_line(CL_Obj stream)
 {
     CL_Stream *st;
     stream = cl_stream_resolve_backing(stream, 1);
@@ -478,7 +479,7 @@ static int stream_fresh_line(CL_Obj stream)
         /* the recursive write can block and compact — keep the cursor rooted */
         CL_GC_PROTECT(comps);
         while (CL_CONS_P(comps)) {
-            r = stream_fresh_line(cl_car(comps));
+            r = cl_stream_fresh_line(cl_car(comps));
             comps = cl_cdr(comps);
         }
         CL_GC_UNPROTECT(1);
@@ -494,7 +495,7 @@ static int stream_fresh_line(CL_Obj stream)
 static CL_Obj bi_fresh_line(CL_Obj *args, int n)
 {
     CL_Obj stream = cl_resolve_output_stream(args, n, 0);
-    return stream_fresh_line(stream) ? CL_T : CL_NIL;
+    return cl_stream_fresh_line(stream) ? CL_T : CL_NIL;
 }
 
 /* Flush a stream for finish/force-output.  Shared so a socket write deadline

@@ -205,6 +205,11 @@ int platform_read_line(char *buf, int bufsize)
     return 1;
 }
 
+void platform_clear_stdin_eof(void)
+{
+    clearerr(stdin);
+}
+
 /* --- TTY control (raw mode / size / input availability) ---------------
  *
  * Raw mode switches console reads from stdio (getchar) to direct read(2)

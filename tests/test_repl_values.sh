@@ -14,6 +14,13 @@
 # It also pins CLHS 25.1.1's value history: * is the primary value, / the
 # list of all of them, // and /// the two before that.
 #
+# And it pins the REPL's line discipline (issue #14): values start on a
+# fresh line (so (format t "x") echoes NIL below the x, with no spurious
+# blank line when the form printed nothing), a string literal may span
+# input lines (CLHS 2.4.5 — the scanner asks for more input instead of
+# handing the reader an "Unterminated string"), and prin1 prints a newline
+# inside a string literally, escaping only " and \ (CLHS 22.1.3.4).
+#
 # Run: sh tests/test_repl_values.sh build/host/clamiga
 
 CLAMIGA="${1:-build/host/clamiga}"
@@ -35,7 +42,7 @@ passed=0
 repl() {
     printf '%s\n(quit)\n' "$1" |
         "$TIMEOUT" 60 "$CLAMIGA" --no-userinit --no-color > "$out" 2>&1
-    sed -e 's/COMMON-LISP-USER> //g' "$out" |
+    sed -e 's/COMMON-LISP-USER> //g' -e 's/^ *> //' "$out" |
         sed -n '/^Type (quit) to exit\./,$p' |
         grep -v '^Type (quit) to exit\.$' | grep -v '^Bye\.$' | grep -v '^$'
 }
@@ -89,6 +96,36 @@ check "repl_history_slash_shifts" "1
 ((7) (1 2) NIL)" "$(repl '(values 1 2)
 7
 (list / // ///)')"
+
+# --- Values start on a fresh line (issue #14) ---
+
+# Output without a trailing newline: the echoed NIL goes on its own line,
+# not glued to the hello!.
+check "repl_value_on_fresh_line_after_output" "hello!
+NIL" "$(repl '(format t "~a" "hello!")')"
+
+# Output that already ends at column 0 gets no extra blank line (the
+# grep -v '^$' in repl() would hide one, so count the lines instead).
+lines=$(repl '(format t "~a~%" "hello!")' | wc -l | tr -d ' ')
+check "repl_no_double_newline_after_terpri" "2" "$lines"
+
+# --- prin1 prints a newline inside a string literally (CLHS 22.1.3.4) ---
+
+check "repl_prin1_newline_literal" '"a
+"' "$(repl '(format nil "a~%")')"
+
+# --- A string literal may span input lines (CLHS 2.4.5, issue #14) ---
+
+check "repl_multiline_string_literal" '"x
+y"' "$(repl '"x
+y"')"
+
+check "repl_multiline_string_length" "3" "$(repl '(length "x
+y")')"
+
+# --- Reader: backslash is a single escape (CLHS 2.4.5) ---
+
+check "repl_string_backslash_n_is_letter_n" '#\n' "$(repl '(char "x\n" 1)')"
 
 if [ "$fail" -eq 0 ]; then
     echo "test_repl_values: $passed passed, 0 failed"

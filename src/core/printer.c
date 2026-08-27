@@ -846,9 +846,11 @@ static void print_string(CL_Obj obj)
         for (i = 0; i < len; i++) {
             int ch = (unsigned char)
                 ((CL_String *)CL_OBJ_TO_PTR(obj))->data[i];
+            /* CLHS 22.1.3.4: only " and \ take a backslash; every other
+             * character — newline and tab included — is output as itself.
+             * The old \n / \t escapes broke print-read consistency: CL's
+             * reader treats \ as a single escape, so "a\n" re-read as "an". */
             if (ch == '"' || ch == '\\') out_char('\\');
-            if (ch == '\n') { out_char('\\'); out_char('n'); continue; }
-            if (ch == '\t') { out_char('\\'); out_char('t'); continue; }
             out_char(ch);
         }
         out_char('"');
@@ -1191,9 +1193,9 @@ static void print_obj(CL_Obj obj)
             for (i = 0; i < wlen; i++) {
                 uint32_t ch =
                     ((CL_WideString *)CL_OBJ_TO_PTR(obj))->data[i];
+                /* Only " and \ take a backslash (CLHS 22.1.3.4) — a newline
+                 * or tab is written as itself, like print_string above. */
                 if (ch == '"' || ch == '\\') out_char('\\');
-                if (ch == '\n') { out_char('\\'); out_char('n'); continue; }
-                if (ch == '\t') { out_char('\\'); out_char('t'); continue; }
                 /* Non-ASCII graphic chars are written verbatim (the output
                  * layer UTF-8-encodes per destination stream), NOT as \uXXXX:
                  * CL has no such string escape, so the old form failed to

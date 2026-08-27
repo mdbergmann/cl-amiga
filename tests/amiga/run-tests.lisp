@@ -115,6 +115,24 @@
 (check "string equal" t (equal "foo" "foo"))
 (check "string not equal" nil (equal "foo" "bar"))
 
+; --- String literals: CLHS 2.4.5 escapes + 22.1.3.4 printing (issue #14) ---
+; Backslash is a single escape: \n is the letter n, not a newline.
+(check "backslash-n is letter n" #\n (char "x\n" 1))
+(check "backslash-n length" 2 (length "x\n"))
+(check "backslash-quote" #\" (char "x\"y" 1))
+(check "backslash-backslash" #\\ (char "x\\y" 1))
+; A string literal spans lines: the newline is accumulated, and the whole
+; form reaches the reader through the suite's paren-balanced line
+; accumulation — this line break exercises the unterminated-string fix.
+(check "multi-line string literal" 3 (length "x
+y"))
+(check "multi-line string newline" #\Newline (char "x
+y" 1))
+; prin1 escapes only " and \; a newline in the string prints literally.
+(check "prin1 newline literal" (format nil "\"a~%\"")
+       (prin1-to-string (format nil "a~%")))
+(check "prin1 escapes quote" "\"a\\\"b\"" (prin1-to-string "a\"b"))
+
 ; --- Control flow ---
 (check "if true" 1 (if t 1 2))
 (check "if false" 2 (if nil 1 2))
