@@ -10,6 +10,7 @@ AmigaOS, see the main README.
 | `gfx/bouncing-lines.lisp` | Bouncing colour-cycling lines in a window — the `AMIGA.INTUITION` / `AMIGA.GFX` curated bindings, an IDCMP event loop, FPS overlay | AmigaOS 3.1+ or MorphOS |
 | `arexx/` | `clamiga.rexx`, a shell client for the `AMIGA.AREXX` development port, and a CygnusEd macro that saves and loads the current file | ARexx |
 | `reaction/` | ReAction GUIs — ports of the NDK 3.2 `Examples/` programs (below) | AmigaOS 3.5+/3.2 or MorphOS (ReAction classes) |
+| `asyncio/copyfile.lisp` | Double-buffered asynchronous file copy over DOS packets — the `AMIGA.ASYNCIO` port of the NDK 3.1 AsynchIO package, timed against plain synchronous streams and byte-verified | AmigaOS 3.1+ or MorphOS |
 
 ## ReAction (`reaction/`)
 

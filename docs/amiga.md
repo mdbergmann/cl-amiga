@@ -1,4 +1,4 @@
-# AmigaOS Packages — `AMIGA`, `AMIGA.FFI`, `AMIGA.EXEC`, `AMIGA.INTUITION`, `AMIGA.GFX`, `AMIGA.GADTOOLS`, `AMIGA.REACTION`, `AMIGA.AUDIO`, `AMIGA.AREXX`
+# AmigaOS Packages — `AMIGA`, `AMIGA.FFI`, `AMIGA.EXEC`, `AMIGA.INTUITION`, `AMIGA.GFX`, `AMIGA.GADTOOLS`, `AMIGA.REACTION`, `AMIGA.AUDIO`, `AMIGA.ASYNCIO`, `AMIGA.AREXX`
 
 The AmigaOS-native bindings. These exist **only on the AmigaOS build** — on the
 POSIX host the packages are not present. `AMIGA` is a C-level package (raw
@@ -15,6 +15,7 @@ register-based library calls); the rest are Lisp libraries loaded on demand via
 | `AMIGA.GADTOOLS` | `(require "amiga/gadtools")` | GadTools gadgets, menus, bevel boxes, VisualInfo |
 | `AMIGA.REACTION` | `(require "amiga/reaction")` | ReAction / BOOPSI helpers over the generated class modules: methods, objects and attributes, the window.class event loop, requesters |
 | `AMIGA.AUDIO` | `(require "amiga/audio")` | Non-blocking 8-bit sample playback through audio.device |
+| `AMIGA.ASYNCIO` | `(require "amiga/asyncio")` | Double-buffered asynchronous file I/O over DOS packets (the NDK AsynchIO package as Lisp) |
 
 `COMMON-LISP-USER` `:use`s `AMIGA` on AmigaOS, so its symbols are available
 unqualified. The `AMIGA.*` libraries are referenced by their package prefix
@@ -472,6 +473,45 @@ section of the main README, the ports of the NDK examples under
 
 ---
 
+## `AMIGA.ASYNCIO` — Asynchronous file I/O over DOS packets
+
+The NDK 3.1 AsynchIO package (`asyncio.c`, Amiga Developer CD) as Common
+Lisp: two buffers alternate, and while the program consumes or fills one,
+an `ACTION_READ` / `ACTION_WRITE` packet for the other is in flight at the
+filesystem handler — sent with `PutMsg`, collected with `WaitPort` over an
+embedded reply port using the classic `PA_IGNORE` / `SIGB_SINGLE` trick.
+Buffers are rounded to the device's block size and 16-byte aligned for
+DMA.  The module loads on every system; `available-p` (and every open)
+needs AmigaOS/MorphOS.  An async file must be used from the thread that
+opened it, and file names cannot be interactive streams (`CON:`, `RAW:`,
+`*`; `NIL:` works).  I/O errors signal a Lisp error carrying the DOS
+error code.
+
+| Signature | Kind | Description |
+|-----------|------|-------------|
+| `(available-p)` | function | True when DOS packets can be spoken here: AmigaOS/MorphOS with dos.library; `NIL` on the host |
+| `(open-async name mode &key buffer-size)` | function | Open `name` for `:read` (read-ahead starts before this returns), `:write` (create, replacing) or `:append`.  `buffer-size` (default 8192) is the total for both buffers, rounded up to twice the device block size.  Returns an `ASYNC-FILE`; signals on failure |
+| `(close-async file)` | function | Flush buffered writes, close, free the OS memory.  Idempotent; returns `T` |
+| `(with-async-file (var name mode &rest args) &body body)` | macro | `open-async` + `unwind-protect`ed `close-async` |
+| `(read-async file dest &optional n)` | function | Read up to `n` bytes into `dest` — a foreign pointer, an integer address, or a `(unsigned-byte 8)` vector (defaults `n` to its length).  Returns bytes read; short only at EOF, `0` at EOF proper |
+| `(write-async file src &optional n)` | function | Write `n` bytes from `src` (same kinds as `read-async`); a full buffer goes out asynchronously while the other fills |
+| `(seek-async file position whence)` | function | `whence` is `:start` / `:current` / `:end`; returns the previous logical position, like DOS `Seek`.  `(seek-async f 0 :current)` is a position probe |
+| `(read-byte-async file)` | function | Next byte as an integer, `NIL` at EOF — a single `peek-u8` on the fast path |
+| `(read-char-async file)` | function | Next byte as a `CHARACTER`, `NIL` at EOF |
+| `(read-line-async file)` | function | Next line without its newline, `NIL` at EOF |
+| `(write-byte-async file byte)` | function | Write one byte (0..255) |
+| `(write-char-async file char)` | function | Write one 8-bit character |
+| `(write-string-async file string)` | function | Write a string's bytes |
+| `(write-line-async file string)` | function | `write-string-async` plus a newline |
+
+`examples/amiga/asyncio/copyfile.lisp` copies and verifies a 256 KB file
+with it, timed against plain synchronous streams;
+`tests/amiga/test-asyncio.lisp` is the executable specification
+(`tests/test_amiga_asyncio.sh` load-checks module and example on the
+host).
+
+---
+
 ## `AMIGA.AREXX` — ARexx development port
 
 An ARexx host port that lets a native Amiga editor drive the running Lisp:
@@ -510,7 +550,9 @@ AmigaOS via FS-UAE; `tests/amiga/test-reaction.lisp` (with
 `tests/test_amiga_reaction.sh` on the host) covers `AMIGA.REACTION`, and
 `examples/amiga/reaction/` are its worked examples — run and photographed
 unattended by `verify/realamiga/run-reaction-examples.sh`;
-`tests/amiga/test-audio.lisp` covers `AMIGA.AUDIO`; the
+`tests/amiga/test-audio.lisp` covers `AMIGA.AUDIO`;
+`tests/amiga/test-asyncio.lisp` (with `tests/test_amiga_asyncio.sh` on
+the host) covers `AMIGA.ASYNCIO`; the
 `tests/amiga/arexx-tests.lisp` drives `AMIGA.AREXX` end to end
 over the real host protocol, and `tests/test_dev_commands.sh` is the
 host-side specification for the command layer;

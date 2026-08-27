@@ -1281,6 +1281,31 @@ reference for the classes' use; `tests/amiga/test-reaction.lisp` /
 specification, and `verify/realamiga/run-reaction-examples.sh` runs and
 photographs every example in FS-UAE.
 
+### Async file I/O (DOS packets)
+
+`(require "amiga/asyncio")` — package `AMIGA.ASYNCIO` — is a Common Lisp
+port of the NDK's AsynchIO package: double-buffered file I/O that sends
+`ACTION_READ` / `ACTION_WRITE` packets straight to the filesystem
+handler, so the next buffer load is transferred **while your Lisp code
+runs**.  Buffers are rounded to the device's block size and 16-byte
+aligned for DMA.
+
+```lisp
+(require "amiga/asyncio")
+
+(amiga.asyncio:with-async-file (f "data.bin" :read)   ; read-ahead starts here
+  (loop for b = (amiga.asyncio:read-byte-async f)
+        while b do (process b)))                      ; next block already in flight
+```
+
+`open-async` (`:read` / `:write` / `:append`), `read-async` /
+`write-async` (bulk, to a foreign pointer or a Lisp byte vector),
+`seek-async`, byte / char / line convenience functions, and
+`with-async-file`.  I/O errors signal a Lisp error carrying the DOS
+error code.  [`examples/amiga/asyncio/copyfile.lisp`](examples/amiga/asyncio/copyfile.lisp)
+copies and verifies a file with it, timed against plain streams;
+`tests/amiga/test-asyncio.lisp` is the executable specification.
+
 ### Raw OS bindings (generated)
 
 Every public function, constant and structure of the AmigaOS 3.2 API is
