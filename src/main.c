@@ -462,11 +462,18 @@ static int discover_image(void)
     {
         char prefix[512];
         if (platform_executable_prefix(prefix, (int)sizeof(prefix))) {
-            static const char *rels[] = { "", "../../" };
             int ri;
-            for (ri = 0; ri < 2; ri++) {
+            /* Same executable-relative locations as the lib/ search, minus
+             * the trailing "lib/" component: an image ships beside the
+             * binary (release layout), in <prefix>/lib/clamiga/ next to the
+             * runtime library it was saved from (installed layout), or in
+             * the repo root (in-repo build). */
+            static const char *const img_dirs[CL_LIB_REL_COUNT] = {
+                "", "../lib/clamiga/", "../../"
+            };
+            for (ri = 0; ri < CL_LIB_REL_COUNT; ri++) {
                 snprintf(path, sizeof(path), "%s%sclamiga.img",
-                         prefix, rels[ri]);
+                         prefix, img_dirs[ri]);
                 if (platform_file_exists(path))
                     return cl_image_stage(path, 0) == 0;
             }

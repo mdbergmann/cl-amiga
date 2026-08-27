@@ -13,7 +13,8 @@
 #   deferred-dump semantics at the REPL (batch): the session continues
 #     after the dump, state created before the save is in the image
 #   corrupt image → clean refusal (explicit --image exits 1)
-#   auto-discovery of clamiga.img in the cwd; --no-image bypasses it
+#   auto-discovery of clamiga.img in the cwd and in an install prefix's
+#     lib/clamiga/; --no-image bypasses it
 #   ~/.clamigarc runs after a restore with EXT:*IMAGE-RESTORED-P* = T
 #   :shake-bindings — the delivery mode: binding tables shed before the dump,
 #     touched names intact, untouched ones gone with a reader error saying why
@@ -227,6 +228,17 @@ out=$("$TIMEOUT" 60 "$CLAMIGA" --no-userinit --non-interactive \
 ec=$?
 check "corrupt_discovery_falls_back" 0 "$ec" "$out" "FALLBACK=NIL" "different build"
 rm -f clamiga.img
+
+# Install prefix (`make install`-style layout): <prefix>/bin/clamiga picks up an image
+# in <prefix>/lib/clamiga/, beside the runtime library it belongs to — the
+# same executable-relative locations the lib/ search uses.
+mkdir -p prefix/bin prefix/lib/clamiga
+cp "$CLAMIGA" prefix/bin/clamiga
+cp session.img prefix/lib/clamiga/clamiga.img
+out=$(cd prefix && "$TIMEOUT" 60 bin/clamiga --no-userinit --non-interactive \
+    --eval '(format t "DISC-FHS=~a~%" ext:*image-restored-p*)' </dev/null 2>&1)
+ec=$?
+check "auto_discovery_installed_layout" 0 "$ec" "$out" "DISC-FHS=T"
 
 # --- ~/.clamigarc runs after restore with *IMAGE-RESTORED-P* = T ---------
 

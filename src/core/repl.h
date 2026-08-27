@@ -64,4 +64,21 @@ void cl_repl_print_values(CL_Obj values, int colorize);
  * right after the eval.  Exposed for testing. */
 int cl_repl_result_printable(CL_Obj primary);
 
+#ifndef PLATFORM_AMIGA
+/* Runtime-library directories to try relative to the clamiga executable's
+ * own directory (platform_executable_prefix), in order — used for boot.lisp
+ * (repl.c), REQUIRE modules (builtins_io.c) and heap-image discovery
+ * (main.c), which must all agree on where an installation keeps lib/:
+ *
+ *   "lib/"             binary release / distribution dir: lib/ beside clamiga
+ *   "../lib/clamiga/"  install prefix, the layout SBCL uses:
+ *                      <prefix>/bin/clamiga + <prefix>/lib/clamiga/
+ *   "../../lib/"       in-repo build: build/host/clamiga, lib/ two levels up
+ *
+ * Each entry ends in '/' and is appended directly to the executable prefix.
+ * AmigaOS uses PROGDIR: plus a ParentDir climb instead (see repl.c). */
+extern const char *const cl_lib_rel_dirs[];
+#define CL_LIB_REL_COUNT 3
+#endif
+
 #endif /* CL_REPL_H */

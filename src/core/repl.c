@@ -841,6 +841,15 @@ static void boot_timing_log(const char *phase, uint32_t t_start, uint32_t *t_pre
 }
 #define BOOT_TIME(phase) boot_timing_log((phase), t_start, &t_prev)
 
+#ifndef PLATFORM_AMIGA
+/* Executable-relative runtime-library locations, tried in this order by
+ * boot loading (below), REQUIRE (builtins_io.c) and heap-image discovery
+ * (main.c).  See repl.h for what each layout is. */
+const char *const cl_lib_rel_dirs[CL_LIB_REL_COUNT] = {
+    "lib/", "../lib/clamiga/", "../../lib/"
+};
+#endif
+
 /* A boot candidate EXISTED but its load errored (the CL_CATCH in
    try_load_boot_pair swallowed the longjmp).  Without this report the
    failure is indistinguishable from "file not found" and the closing
@@ -1063,21 +1072,21 @@ void cl_repl_init_no_userinit(int no_userinit)
         }
 
         /* Executable-relative fallback: covers a deployed layout (lib/ next
-           to the clamiga binary) and the in-repo build (build/host/clamiga
-           with lib/ two levels up), so a plain `clamiga` on $PATH — symlink
-           included — finds its runtime from any directory with no
-           environment setup at all. */
+           to the clamiga binary), an install prefix (bin/clamiga +
+           lib/clamiga/, the layout SBCL uses) and the
+           in-repo build (build/host/clamiga with lib/ two levels up), so a
+           plain `clamiga` on $PATH — symlink included — finds its runtime
+           from any directory with no environment setup at all. */
         if (!boot_loaded) {
             char prefix[512];
             if (platform_executable_prefix(prefix, (int)sizeof(prefix))) {
-                static const char *rels[] = { "", "../../" };
                 int ri;
-                for (ri = 0; ri < 2 && !boot_loaded; ri++) {
+                for (ri = 0; ri < CL_LIB_REL_COUNT && !boot_loaded; ri++) {
                     char fasl_path[700], src_path[700];
-                    snprintf(fasl_path, sizeof(fasl_path), "%s%slib/boot.fasl",
-                             prefix, rels[ri]);
-                    snprintf(src_path, sizeof(src_path), "%s%slib/boot.lisp",
-                             prefix, rels[ri]);
+                    snprintf(fasl_path, sizeof(fasl_path), "%s%sboot.fasl",
+                             prefix, cl_lib_rel_dirs[ri]);
+                    snprintf(src_path, sizeof(src_path), "%s%sboot.lisp",
+                             prefix, cl_lib_rel_dirs[ri]);
                     boot_loaded = try_load_boot_pair(fasl_path, src_path);
                 }
             }
@@ -1097,7 +1106,8 @@ void cl_repl_init_no_userinit(int no_userinit)
                 ";        directory so lib/ sits next to the binary.\n"
 #else
                 ";        Searched lib/ under the current directory, $CLAMIGA_HOME/lib/,\n"
-                ";        and lib/ next to (and ../../lib/ above) the clamiga executable.\n"
+                ";        and - relative to the clamiga executable - lib/,\n"
+                ";        ../lib/clamiga/ (installed layout) and ../../lib/ (in-repo build).\n"
                 ";        Set CLAMIGA_HOME to your cl-amiga checkout/installation, e.g.\n"
                 ";            export CLAMIGA_HOME=/path/to/cl-amiga\n"
 #endif
