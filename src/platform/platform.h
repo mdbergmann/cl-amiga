@@ -62,6 +62,15 @@ void  platform_drain_input(void);  /* Drain residual data from stdin (AmigaOS CL
  * launcher, or a SLY worker), so the debugger falls back to non-interactive
  * reporting instead of deadlocking on a read no one will ever satisfy. */
 int   platform_stdin_is_interactive(void);
+/* Clear a sticky end-of-file condition on stdin so reading can resume after
+ * a terminal-generated EOF (Ctrl-D / Ctrl-Z).  stdio's EOF flag latches: once
+ * fgets has seen EOF every later fgets returns NULL without touching the fd,
+ * even though a tty happily delivers more input after Ctrl-D.  The debugger
+ * calls this when Ctrl-D at the Debug> prompt aborts to top level, so the
+ * top-level REPL's next read blocks for fresh input instead of inheriting
+ * the EOF and exiting the session (issue #13).  Only meaningful when stdin
+ * is interactive; on a closed pipe the next read just returns EOF again. */
+void  platform_clear_stdin_eof(void);
 
 /* --- TTY control (raw mode / size / input availability) ---------------
  * Backing for EXT:TTY-RAW-MODE and EXT:TTY-SIZE, and for LISTEN /

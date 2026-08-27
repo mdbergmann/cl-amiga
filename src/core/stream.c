@@ -2018,3 +2018,35 @@ void cl_write_cstring_to_trace(const char *s)
 {
     cl_write_cstring_to_stream_sym(SYM_TRACE_OUTPUT, s);
 }
+
+/* --- REPL column support (issue #14) --- */
+
+/* FRESH-LINE from C on the stream bound to `sym` (a standard stream
+ * variable).  A non-native binding (e.g. a Gray stream under SLY) is left
+ * alone — its column is not observable from C, and the SLY REPL does its
+ * own result formatting anyway. */
+void cl_stream_sym_fresh_line(CL_Obj sym)
+{
+    CL_Obj val;
+    if (CL_NULL_P(sym)) return;
+    val = cl_symbol_value(sym);
+    if (CL_STREAM_P(val))
+        cl_stream_fresh_line(val);
+}
+
+/* The interactive REPL calls this after reading an input line: the Enter
+ * that delivered the line moved the console cursor to column 0 (via the
+ * terminal's input echo, which the stream layer never sees), so re-sync the
+ * stream's column tracking.  Without this, the prompt's own width lingers in
+ * charpos and the fresh-line before the value echo would emit a spurious
+ * blank line after forms that print nothing. */
+void cl_stream_sym_note_bol(CL_Obj sym)
+{
+    CL_Obj val;
+    if (CL_NULL_P(sym)) return;
+    val = cl_symbol_value(sym);
+    if (!CL_STREAM_P(val)) return;
+    val = cl_stream_resolve_backing(val, 1);
+    if (!CL_STREAM_P(val)) return;
+    ((CL_Stream *)CL_OBJ_TO_PTR(val))->charpos = 0;
+}

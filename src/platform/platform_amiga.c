@@ -79,6 +79,13 @@ int platform_read_line(char *buf, int bufsize)
     return 1;
 }
 
+void platform_clear_stdin_eof(void)
+{
+    /* No-op: console EOF (Ctrl-\) on AmigaOS is per-read — dos.library has
+     * no sticky stdio-style EOF flag, and the next FGets on Input() simply
+     * blocks for fresh input. */
+}
+
 /* --- TTY control (raw mode / size / input availability) ---------------
  *
  * Raw mode = SetMode(Input(), 1): the console handler delivers characters

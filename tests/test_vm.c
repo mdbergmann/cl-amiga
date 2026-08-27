@@ -7183,6 +7183,26 @@ TEST(paren_depth_strings)
     ASSERT_EQ_INT(cl_paren_depth("(print \"\\\"\")"), 0);
 }
 
+TEST(paren_depth_unterminated_string)
+{
+    /* A string literal runs to the closing quote, newlines included (CLHS
+     * 2.4.5) — an unterminated one means "need more input", not "complete
+     * form with balanced parens" (which handed the reader a parse error at
+     * the REPL, issue #14). */
+    ASSERT_EQ_INT(cl_paren_depth("\""), 1);
+    ASSERT_EQ_INT(cl_paren_depth("\"abc"), 1);
+    ASSERT_EQ_INT(cl_paren_depth("\"abc\ndef"), 1);
+    ASSERT_EQ_INT(cl_paren_depth("(print \"abc"), 1);
+    /* Trailing backslash: the escape consumes the (future) next char, so
+     * the string is still open. */
+    ASSERT_EQ_INT(cl_paren_depth("\"abc\\"), 1);
+    /* An escaped quote does not close the string. */
+    ASSERT_EQ_INT(cl_paren_depth("\"abc\\\""), 1);
+    /* Once the quote closes, the form is complete again. */
+    ASSERT_EQ_INT(cl_paren_depth("\"abc\ndef\""), 0);
+    ASSERT_EQ_INT(cl_paren_depth("\"\n\""), 0);
+}
+
 TEST(paren_depth_comments)
 {
     /* Parens in comments should not count */
@@ -8110,8 +8130,9 @@ TEST(eval_format_write)
 
 TEST(eval_format_freshline)
 {
-    /* ~&: fresh line */
-    ASSERT_STR_EQ(eval_print("(format nil \"hello~&world\")"), "\"hello\\nworld\"");
+    /* ~&: fresh line.  The newline in the value prints literally inside the
+     * quotes — prin1 escapes only " and \ (CLHS 22.1.3.4). */
+    ASSERT_STR_EQ(eval_print("(format nil \"hello~&world\")"), "\"hello\nworld\"");
 }
 
 TEST(eval_format_page)
@@ -9148,7 +9169,7 @@ TEST(eval_print_pretty_long_list)
     ASSERT_STR_EQ(eval_print(
         "(let ((*print-pretty* t) (*print-right-margin* 10))"
         "  (write-to-string '(alpha beta gamma delta)))"),
-        "\"(ALPHA BETA\\n GAMMA DELTA)\"");
+        "\"(ALPHA BETA\n GAMMA DELTA)\"");
 }
 
 TEST(eval_print_pretty_nested)
@@ -9166,7 +9187,7 @@ TEST(eval_print_pretty_vector)
     ASSERT_STR_EQ(eval_print(
         "(let ((*print-pretty* t) (*print-right-margin* 10))"
         "  (write-to-string (vector 'alpha 'beta 'gamma)))"),
-        "\"#(ALPHA BETA\\n  GAMMA)\"");
+        "\"#(ALPHA BETA\n  GAMMA)\"");
 }
 
 TEST(eval_print_pretty_empty)
@@ -9198,7 +9219,7 @@ TEST(eval_pprint_basic)
         "(let ((s (make-string-output-stream)))"
         "  (pprint '(1 2 3) s)"
         "  (get-output-stream-string s))"),
-        "\"\\n(1 2 3)\"");
+        "\"\n(1 2 3)\"");
 }
 
 TEST(eval_print_pretty_write_keyword)
@@ -9214,7 +9235,7 @@ TEST(eval_print_pretty_write_to_string)
     /* write-to-string :pretty t with narrow margin */
     ASSERT_STR_EQ(eval_print(
         "(write-to-string '(alpha beta gamma delta) :pretty t :right-margin 10)"),
-        "\"(ALPHA BETA\\n GAMMA DELTA)\"");
+        "\"(ALPHA BETA\n GAMMA DELTA)\"");
 }
 
 TEST(eval_print_pretty_off_no_break)
@@ -11928,6 +11949,7 @@ int main(void)
     RUN(paren_depth_balanced);
     RUN(paren_depth_unbalanced);
     RUN(paren_depth_strings);
+    RUN(paren_depth_unterminated_string);
     RUN(paren_depth_comments);
     RUN(paren_depth_char_literals);
     RUN(paren_depth_multiline);

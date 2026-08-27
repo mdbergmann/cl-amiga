@@ -3560,8 +3560,8 @@ TEST(broadcast_stream_fresh_line_uses_component_column)
         "        (fresh-line (make-broadcast-stream))))");
     char buf[64];
     cl_prin1_to_string(result, buf, sizeof(buf));
-    /* clamiga's prin1 escapes a newline inside a string as \n */
-    ASSERT_STR_EQ(buf, "(T NIL \"x\\n\" NIL)");
+    /* prin1 prints the newline inside the string literally (CLHS 22.1.3.4) */
+    ASSERT_STR_EQ(buf, "(T NIL \"x\n\" NIL)");
 }
 
 TEST(broadcast_stream_typep_and_printer)

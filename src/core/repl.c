@@ -347,6 +347,7 @@ int cl_paren_depth(const char *str)
 
         /* String literal — skip to closing quote */
         if (c == '"') {
+            int closed = 0;
             i++;
             while (str[i] != '\0') {
                 if (str[i] == '\\' && str[i + 1] != '\0') {
@@ -355,10 +356,17 @@ int cl_paren_depth(const char *str)
                 }
                 if (str[i] == '"') {
                     i++;
+                    closed = 1;
                     break;
                 }
                 i++;
             }
+            /* Unterminated string: a CLHS 2.4.5 string literal runs to the
+             * closing quote, newlines included, so the form needs more input
+             * — signal "incomplete" for the continuation prompt rather than
+             * letting the reader raise "Unterminated string" (issue #14). */
+            if (!closed)
+                return 1;
             if (pending_forms > 0 && depth == 0) pending_forms--;
             continue;
         }
@@ -527,7 +535,18 @@ CL_Obj cl_repl_values_list(CL_Obj primary)
  * kept rooted across the walk. */
 void cl_repl_print_values(CL_Obj values, int colorize)
 {
+    if (!CL_CONS_P(values))
+        return;
+    /* Root values before the fresh-line below: the write can block in the
+     * stream layer (a GC safe region), letting a peer thread compact while
+     * the list is otherwise invisible — cl_repl_batch passes it unrooted. */
     CL_GC_PROTECT(values);
+    /* Values start on a fresh line (issue #14): after (format t "~a" "hi")
+     * the NIL goes below the hi, not glued to it.  CLHS leaves the top-level
+     * loop's format open — this matches SBCL.  A form that ended at column 0
+     * (or printed nothing) gets no extra blank line, which is what makes
+     * this FRESH-LINE and not TERPRI. */
+    cl_stream_sym_fresh_line(SYM_STANDARD_OUTPUT);
     while (CL_CONS_P(values)) {
         if (colorize) cl_color_set(CL_COLOR_DIM_GREEN);
         cl_prin1(cl_car(values));
@@ -576,6 +595,13 @@ void cl_repl(void)
 
         /* Safe point: run pending compaction (no C locals hold CL_Obj here) */
         cl_gc_compact_if_pending();
+
+        /* The Enter that delivered this line put the console cursor at
+         * column 0 — mirror that in *standard-output*'s column tracking so
+         * the FRESH-LINE in cl_repl_print_values is exact.  Batch mode
+         * (cl_repl_batch) must NOT do this: it prints no prompts and its
+         * input is never echoed, so there charpos is already the truth. */
+        cl_stream_sym_note_bol(SYM_STANDARD_OUTPUT);
 
         /* When accumulator is empty, apply line-level skip rules */
         if (accum_len == 0) {
