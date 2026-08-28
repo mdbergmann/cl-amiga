@@ -208,11 +208,11 @@ test-amiga: $(BUILDDIR)/clamiga
 	verify/realamiga/run-fs-uae.sh verify/realamiga/verify.fs-uae
 	@$(MAKE) --no-print-directory -f Makefile.cross verify-amiga
 
-# Run the ReAction example programs (examples/amiga/reaction/) unattended in
-# FS-UAE and photograph every window into build/amiga/shots/*.png — see
-# verify/realamiga/run-reaction-examples.sh.
+# Run the GUI example programs (examples/amiga/gfx/ and reaction/) unattended
+# in FS-UAE and photograph every window and custom screen into
+# build/amiga/shots/*.png — see verify/realamiga/run-examples.sh.
 examples-amiga: $(BUILDDIR)/clamiga
-	verify/realamiga/run-reaction-examples.sh $(BUILDDIR)/clamiga
+	verify/realamiga/run-examples.sh $(BUILDDIR)/clamiga
 
 test-amiga-lowend: $(BUILDDIR)/clamiga
 	@if [ "$(FPU)" = "1" ]; then \

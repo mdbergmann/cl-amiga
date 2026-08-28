@@ -589,14 +589,17 @@ Amiga in sight, which is how the command layer is tested.
 AmigaOS via FS-UAE; `tests/amiga/test-reaction.lisp` (with
 `tests/test_amiga_reaction.sh` on the host) covers `AMIGA.REACTION`, and
 `examples/amiga/reaction/` are its worked examples — run and photographed
-unattended by `verify/realamiga/run-reaction-examples.sh`;
+unattended by `verify/realamiga/run-examples.sh`, together with the
+graphics examples (`tests/amiga/test-gfx-examples.lisp` runs those in the
+suite, `tests/test_amiga_gfx_examples.sh` load-checks them on the host);
 `tests/amiga/test-audio.lisp` covers `AMIGA.AUDIO`;
 `tests/amiga/test-asyncio.lisp` (with `tests/test_amiga_asyncio.sh` on
 the host) covers `AMIGA.ASYNCIO`; the
 `tests/amiga/arexx-tests.lisp` drives `AMIGA.AREXX` end to end
 over the real host protocol, and `tests/test_dev_commands.sh` is the
 host-side specification for the command layer;
-`examples/amiga/gfx/bouncing-lines.lisp` is a runnable graphics demo. See the
+`examples/amiga/gfx/` holds the runnable graphics demos (bouncing lines,
+the NDK double-buffering example, the RKM hardware-sprite example). See the
 [AmigaOS Native GUI](../README.md#amigaos-native-gui) and
 [Raw FFI Access](../README.md#raw-ffi-access) sections of the main README.
 

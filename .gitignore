@@ -16,8 +16,8 @@ verify/realamiga/*
 !verify/realamiga/verify-lowend.fs-uae
 !verify/realamiga/verify-lowend-28.fs-uae
 !verify/realamiga/run-fs-uae.sh
-!verify/realamiga/run-reaction-examples.sh
-!verify/realamiga/reaction-examples.lisp
+!verify/realamiga/run-examples.sh
+!verify/realamiga/examples.lisp
 !verify/realamiga/screen-grab.lisp
 
 # MorphOS debug trace artifact

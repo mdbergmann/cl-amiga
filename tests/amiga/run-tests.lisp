@@ -9068,7 +9068,14 @@ y" 1))
   ; Separate file for the same reader-needs-the-package reason.
   (handler-case
     (load "tests/amiga/test-iff.lisp")
-    (error (e) (format t "ERROR loading iff tests: ~A~%" e))))
+    (error (e) (format t "ERROR loading iff tests: ~A~%" e)))
+
+  ; --- the graphics examples (examples/amiga/gfx/): double-buffering,
+  ; hardware sprite, bouncing lines — each run for a second or two ---
+  ; Separate file for the same reader-needs-the-package reason.
+  (handler-case
+    (load "tests/amiga/test-gfx-examples.lisp")
+    (error (e) (format t "ERROR loading gfx-examples tests: ~A~%" e))))
 
 ; --- Gray streams: (typep gray-stream 'stream) regression ---
 ; Load gray-streams.lisp and verify that a CLOS-based Gray stream instance
