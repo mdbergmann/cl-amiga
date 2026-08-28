@@ -213,6 +213,7 @@ test_batch test_repl_values test_boot_log test_mx_error_context \
                 test_utf8_filenames test_image test_finish_output_flush \
                 test_amiga_bindgen \
                 test_amiga_reaction test_amiga_curated_vs_raw \
+                test_amiga_asyncio test_amiga_iff \
                 test_lib_fasl_portable
 
 # The two that drive make itself and take no clamiga binary.
