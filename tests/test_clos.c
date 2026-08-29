@@ -4112,11 +4112,212 @@ TEST(dep_class_redefinition_notifies)
     ASSERT_STR_EQ(eval_print("(first *dep-log7*)"), "REINITIALIZE-INSTANCE");
 }
 
+TEST(class_redefinition_keeps_metaobject_identity)
+{
+    /* CLHS DEFCLASS / 4.3.6: redefining a class modifies the EXISTING
+       class object — FIND-CLASS keeps returning the same metaobject, and
+       that metaobject reflects the new definition. */
+    eval_print("(defclass redef-id-c () ((a :initform 1)))");
+    eval_print("(defvar *redef-id-c1* (find-class 'redef-id-c))");
+    eval_print("(defclass redef-id-c () ((a :initform 2) (b :initform 3)))");
+    ASSERT_STR_EQ(eval_print("(eq *redef-id-c1* (find-class 'redef-id-c))"), "T");
+    ASSERT_STR_EQ(eval_print("(length (class-direct-slots *redef-id-c1*))"), "2");
+    ASSERT_STR_EQ(eval_print("(slot-value (make-instance 'redef-id-c) 'b)"), "3");
+    ASSERT_STR_EQ(eval_print("(eq (class-of (make-instance 'redef-id-c)) *redef-id-c1*)"),
+                  "T");
+}
+
+TEST(class_redefinition_keeps_methods_dispatching)
+{
+    /* The lib/gray-streams.lisp reload bug: OUTPUT-STREAM-P's method is
+       specialized on GRAY:FUNDAMENTAL-OUTPUT-STREAM; re-LOADing the file
+       re-DEFCLASSes that class, and a stream class defined afterwards no
+       longer dispatched to the method (dispatch compares class objects by
+       EQ along the CPL, and the redefinition used to allocate a fresh
+       metaobject).  A method specialized on a class must keep applying to
+       instances of subclasses defined AFTER the class was redefined. */
+    eval_print("(defclass redef-m-base () ())");
+    eval_print("(defgeneric redef-m-gf (x))");
+    eval_print("(defmethod redef-m-gf ((x redef-m-base)) :base)");
+    eval_print("(defmethod redef-m-gf ((x t)) :t)");
+    eval_print("(defclass redef-m-base () ())");
+    eval_print("(defclass redef-m-sub (redef-m-base) ())");
+    ASSERT_STR_EQ(eval_print("(redef-m-gf (make-instance 'redef-m-sub))"), ":BASE");
+    ASSERT_STR_EQ(eval_print("(redef-m-gf (make-instance 'redef-m-base))"), ":BASE");
+    /* Gray's exact shape: base AND intermediate both redefined, then a
+       leaf defined below the redefined intermediate. */
+    eval_print("(defclass redef-m-mid (redef-m-base) ())");
+    eval_print("(defmethod redef-m-gf ((x redef-m-mid)) :mid)");
+    eval_print("(defclass redef-m-base () ())");
+    eval_print("(defclass redef-m-mid (redef-m-base) ())");
+    eval_print("(defclass redef-m-leaf (redef-m-mid) ())");
+    ASSERT_STR_EQ(eval_print("(redef-m-gf (make-instance 'redef-m-leaf))"), ":MID");
+    /* The method's specializer IS the current class object. */
+    ASSERT_STR_EQ(eval_print(
+        "(eq (first (method-specializers "
+        "       (find-method #'redef-m-gf nil (list (find-class 'redef-m-base)))))"
+        "    (find-class 'redef-m-base))"), "T");
+}
+
+TEST(class_redefinition_refinalizes_subclasses)
+{
+    /* CLHS 4.3.6: redefining a class updates its subclasses.  A subclass
+       defined BEFORE the redefinition sees the superclass's new slots,
+       keeps its own, and stays linked as a direct subclass. */
+    eval_print("(defclass redef-s-base () ((a :initform 1)))");
+    eval_print("(defclass redef-s-sub (redef-s-base) ((b :initform 2)))");
+    eval_print("(defclass redef-s-leaf (redef-s-sub) ((d :initform 4)))");
+    ASSERT_STR_EQ(eval_print("(slot-exists-p (make-instance 'redef-s-sub) 'c)"), "NIL");
+    eval_print("(defclass redef-s-base () ((a :initform 10) (c :initform 30)))");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((o (make-instance 'redef-s-sub)))"
+        "  (list (slot-value o 'a) (slot-value o 'b) (slot-value o 'c)))"),
+        "(10 2 30)");
+    /* transitive: the grandchild is re-finalized too */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((o (make-instance 'redef-s-leaf)))"
+        "  (list (slot-value o 'a) (slot-value o 'b) (slot-value o 'c) (slot-value o 'd)))"),
+        "(10 2 30 4)");
+    ASSERT_STR_EQ(eval_print(
+        "(and (member (find-class 'redef-s-sub)"
+        "             (class-direct-subclasses (find-class 'redef-s-base))) t)"), "T");
+    ASSERT_STR_EQ(eval_print(
+        "(and (member (find-class 'redef-s-base)"
+        "             (class-precedence-list (class-of (make-instance 'redef-s-leaf)))) t)"),
+        "T");
+    /* A slot REMOVED from the superclass disappears from the subclass. */
+    eval_print("(defclass redef-s-base () ((c :initform 300)))");
+    ASSERT_STR_EQ(eval_print("(slot-exists-p (make-instance 'redef-s-sub) 'a)"), "NIL");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((o (make-instance 'redef-s-leaf)))"
+        "  (list (slot-value o 'b) (slot-value o 'c) (slot-value o 'd)))"),
+        "(2 300 4)");
+}
+
+TEST(class_redefinition_changed_supers_relinks)
+{
+    /* A redefinition that changes the direct superclasses keeps the
+       metaobject but moves it from the old super's direct-subclasses to
+       the new one's; TYPEP follows the new hierarchy. */
+    eval_print("(defclass redef-r-a () ())");
+    eval_print("(defclass redef-r-b () ())");
+    eval_print("(defclass redef-r-c (redef-r-a) ())");
+    eval_print("(defvar *redef-r-c* (find-class 'redef-r-c))");
+    eval_print("(defclass redef-r-c (redef-r-b) ())");
+    ASSERT_STR_EQ(eval_print("(eq *redef-r-c* (find-class 'redef-r-c))"), "T");
+    ASSERT_STR_EQ(eval_print(
+        "(and (member *redef-r-c* (class-direct-subclasses (find-class 'redef-r-a))) t)"),
+        "NIL");
+    ASSERT_STR_EQ(eval_print(
+        "(and (member *redef-r-c* (class-direct-subclasses (find-class 'redef-r-b))) t)"),
+        "T");
+    ASSERT_STR_EQ(eval_print("(typep (make-instance 'redef-r-c) 'redef-r-a)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(typep (make-instance 'redef-r-c) 'redef-r-b)"), "T");
+    /* No duplicate link when the super is unchanged across a redefinition. */
+    eval_print("(defclass redef-r-c (redef-r-b) ())");
+    ASSERT_STR_EQ(eval_print(
+        "(count *redef-r-c* (class-direct-subclasses (find-class 'redef-r-b)))"), "1");
+}
+
+TEST(class_redefinition_class_prototype_refreshed)
+{
+    /* The cached CLASS-PROTOTYPE was allocated with the old slot layout;
+       a redefinition must drop it so the next call builds a fresh one. */
+    eval_print("(defclass redef-p-c () ((a :initform 1)))");
+    eval_print("(defvar *redef-p-proto* (class-prototype (find-class 'redef-p-c)))");
+    eval_print("(defclass redef-p-c () ((a :initform 1) (b :initform 2)))");
+    ASSERT_STR_EQ(eval_print(
+        "(eq *redef-p-proto* (class-prototype (find-class 'redef-p-c)))"), "NIL");
+    ASSERT_STR_EQ(eval_print(
+        "(slot-exists-p (class-prototype (find-class 'redef-p-c)) 'b)"), "T");
+}
+
+TEST(class_redefinition_metaclass_keeps_identity)
+{
+    /* :metaclass path: redefining a class with the same user metaclass
+       reinitializes the existing metaobject (AMOP ENSURE-CLASS-USING-CLASS
+       on an existing class) — identity holds, methods keep dispatching,
+       the metaclass's own slot is updated from the initargs, and a
+       REINITIALIZE-INSTANCE :AROUND on the metaclass observes the
+       redefinition (INITIALIZE-INSTANCE's :AROUND does not re-fire). */
+    eval_print("(defclass redef-mc-meta (standard-class)"
+               "  ((tag :initarg :tag :initform :none :reader redef-mc-tag)))");
+    eval_print("(defvar *redef-mc-init* 0)");
+    eval_print("(defvar *redef-mc-reinit* 0)");
+    eval_print("(defmethod initialize-instance :around ((c redef-mc-meta) &rest args)"
+               "  (declare (ignore args)) (incf *redef-mc-init*) (call-next-method))");
+    eval_print("(defmethod reinitialize-instance :around ((c redef-mc-meta) &rest args)"
+               "  (declare (ignore args)) (incf *redef-mc-reinit*) (call-next-method))");
+    eval_print("(defclass redef-mc-c () ((a :initform 1)) (:metaclass redef-mc-meta))");
+    eval_print("(defvar *redef-mc-c1* (find-class 'redef-mc-c))");
+    eval_print("(defgeneric redef-mc-gf (x))");
+    eval_print("(defmethod redef-mc-gf ((x redef-mc-c)) :c)");
+    ASSERT_STR_EQ(eval_print("*redef-mc-init*"), "1");
+    eval_print("(defclass redef-mc-c () ((a :initform 1) (b :initform 2))"
+               "  (:metaclass redef-mc-meta))");
+    ASSERT_STR_EQ(eval_print("(eq *redef-mc-c1* (find-class 'redef-mc-c))"), "T");
+    ASSERT_STR_EQ(eval_print("(class-name (class-of (find-class 'redef-mc-c)))"),
+                  "REDEF-MC-META");
+    ASSERT_STR_EQ(eval_print("*redef-mc-init*"), "1");
+    ASSERT_STR_EQ(eval_print("*redef-mc-reinit*"), "1");
+    ASSERT_STR_EQ(eval_print("(slot-value (make-instance 'redef-mc-c) 'b)"), "2");
+    eval_print("(defclass redef-mc-sub (redef-mc-c) () (:metaclass redef-mc-meta))");
+    ASSERT_STR_EQ(eval_print("(redef-mc-gf (make-instance 'redef-mc-sub))"), ":C");
+    /* Metaclass slot: keeps its value across a DEFCLASS redefinition
+       (not re-supplied) and updates on a direct REINITIALIZE-INSTANCE.
+       AMOP class reinitialization: :DIRECT-SLOTS / :DIRECT-SUPERCLASSES
+       / :DIRECT-DEFAULT-INITARGS that are NOT supplied stay unchanged,
+       and the super->subclass link is not duplicated. */
+    ASSERT_STR_EQ(eval_print("(redef-mc-tag (find-class 'redef-mc-c))"), ":NONE");
+    eval_print("(reinitialize-instance (find-class 'redef-mc-c) :tag :tagged)");
+    ASSERT_STR_EQ(eval_print("(eq *redef-mc-c1* (find-class 'redef-mc-c))"), "T");
+    ASSERT_STR_EQ(eval_print("(redef-mc-tag (find-class 'redef-mc-c))"), ":TAGGED");
+    ASSERT_STR_EQ(eval_print("*redef-mc-reinit*"), "2");
+    ASSERT_STR_EQ(eval_print("(slot-value (make-instance 'redef-mc-c) 'b)"), "2");
+    ASSERT_STR_EQ(eval_print("(redef-mc-gf (make-instance 'redef-mc-sub))"), ":C");
+    ASSERT_STR_EQ(eval_print(
+        "(count *redef-mc-c1* (class-direct-subclasses (find-class 'standard-object)))"),
+        "1");
+    ASSERT_STR_EQ(eval_print(
+        "(count (find-class 'redef-mc-sub) (class-direct-subclasses *redef-mc-c1*))"),
+        "1");
+    /* A metaclass CHANGE cannot reuse the struct: a fresh metaobject of
+       the new metaclass replaces it, and the class still works. */
+    eval_print("(defclass redef-mc-c () ((a :initform 5)))");
+    ASSERT_STR_EQ(eval_print("(eq *redef-mc-c1* (find-class 'redef-mc-c))"), "NIL");
+    ASSERT_STR_EQ(eval_print("(class-name (class-of (find-class 'redef-mc-c)))"),
+                  "STANDARD-CLASS");
+    ASSERT_STR_EQ(eval_print("(slot-value (make-instance 'redef-mc-c) 'a)"), "5");
+}
+
+TEST(class_redefinition_metaclass_subclass_reinit_keeps_supers)
+{
+    /* Regression: REINITIALIZE-INSTANCE on a class metaobject whose
+       current direct superclass is itself an instance of a user-defined
+       metaclass (not one of the whitelisted metaclasses FIND-CLASS
+       round-trips a class object for), called WITHOUT re-supplying
+       :DIRECT-SUPERCLASSES, must keep the current superclasses per
+       AMOP's REINITIALIZE-INSTANCE contract instead of routing the
+       already-resolved class objects back through FIND-CLASS (which
+       fails to look them up by name and errors). */
+    eval_print("(defclass redef-mc2-meta (standard-class) ())");
+    eval_print("(defclass redef-mc2-c () () (:metaclass redef-mc2-meta))");
+    eval_print("(defclass redef-mc2-sub (redef-mc2-c) () (:metaclass redef-mc2-meta))");
+    eval_print("(defvar *redef-mc2-sub* (find-class 'redef-mc2-sub))");
+    eval_print("(reinitialize-instance *redef-mc2-sub*)");
+    ASSERT_STR_EQ(eval_print("(eq *redef-mc2-sub* (find-class 'redef-mc2-sub))"), "T");
+    ASSERT_STR_EQ(eval_print(
+        "(eq (car (class-direct-superclasses *redef-mc2-sub*)) (find-class 'redef-mc2-c))"),
+        "T");
+    ASSERT_STR_EQ(eval_print("(typep (make-instance 'redef-mc2-sub) 'redef-mc2-c)"), "T");
+}
+
 TEST(dep_class_redefinition_migrates_dependents)
 {
-    /* %ENSURE-CLASS allocates a fresh class struct on redefinition,
-       so the dependents registry must migrate the entry to the new
-       metaobject — otherwise a second redefinition would not notify. */
+    /* %ENSURE-CLASS updates the class metaobject in place on
+       redefinition, so dependents stay attached across any number of
+       redefinitions (the migration leg in ENSURE-CLASS-USING-CLASS only
+       runs when the metaobject could not be reused). */
     eval_print("(defclass dep-c8 () ())");
     eval_print("(defvar *dep-log8* 0)");
     eval_print(
@@ -5056,6 +5257,15 @@ int main(void)
     RUN(dep_remove_method_notifies);
     RUN(dep_class_redefinition_notifies);
     RUN(dep_class_redefinition_migrates_dependents);
+
+    /* Class redefinition keeps the metaobject (CLHS 4.3.6) */
+    RUN(class_redefinition_keeps_metaobject_identity);
+    RUN(class_redefinition_keeps_methods_dispatching);
+    RUN(class_redefinition_refinalizes_subclasses);
+    RUN(class_redefinition_changed_supers_relinks);
+    RUN(class_redefinition_class_prototype_refreshed);
+    RUN(class_redefinition_metaclass_keeps_identity);
+    RUN(class_redefinition_metaclass_subclass_reinit_keeps_supers);
     RUN(dep_gf_combination_swap_notifies);
     RUN(dep_gf_same_combination_no_notify);
     RUN(dep_isolated_between_metaobjects);

@@ -31,7 +31,7 @@ them.
 | `(class-finalized-p class)` | function | True if the class has been finalized. |
 | `(class-prototype class)` | generic function | A (lazily allocated) prototype instance of the class. |
 | `(finalize-inheritance class)` | generic function | Finalize the class: compute CPL, effective slots, layout. |
-| `(ensure-class name &rest keys)` | function | Define or redefine a class; what `defclass` expands into. |
+| `(ensure-class name &rest keys)` | function | Define or redefine a class; what `defclass` expands into. Redefinition updates the existing class metaobject in place (same `find-class` object, methods specialized on it keep applying) and re-finalizes its subclasses; with a user metaclass it runs `reinitialize-instance` on the class. |
 | `(ensure-class-using-class class name &rest keys)` | generic function | `ensure-class` protocol hook; `class` is the existing class or `nil`. |
 | `(validate-superclass class superclass)` | generic function | Whether `superclass` may serve as a superclass of `class`. |
 | `forward-referenced-class` | class | Placeholder for a superclass not yet defined. |

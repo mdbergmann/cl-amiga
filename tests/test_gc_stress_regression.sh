@@ -644,10 +644,29 @@ cat > "$WORK/clos-redef.lisp" <<'EOF'
                         (tag :initarg :tag :accessor gcs-tag)))
 (let ((o (make-instance 'gcs-redef :id 11 :tag 'hi)))
   (format t "REDEF2:~a ~a~%" (gcs-id o) (gcs-tag o)))
+;; In-place redefinition (CLHS 4.3.6): the metaobject is REUSED, its
+;; subclasses re-finalized and the struct type re-registered — every one of
+;; those allocates under GC stress while the class table, the subclass links
+;; and the old CPLs are live.  Identity, dispatch on a later subclass and the
+;; re-finalized earlier subclass must all survive compaction.
+(defclass gcs-redef-base () ((a :initform 1)))
+(defvar *gcs-redef-base* (find-class 'gcs-redef-base))
+(defgeneric gcs-redef-gf (x))
+(defmethod gcs-redef-gf ((x gcs-redef-base)) :base)
+(defmethod gcs-redef-gf ((x t)) :t)
+(defclass gcs-redef-early (gcs-redef-base) ((b :initform 2)))
+(defclass gcs-redef-base () ((a :initform 10) (c :initform 30)))
+(defclass gcs-redef-late (gcs-redef-base) ())
+(format t "REDEF3:~a ~a ~a~%"
+        (eq *gcs-redef-base* (find-class 'gcs-redef-base))
+        (gcs-redef-gf (make-instance 'gcs-redef-late))
+        (let ((o (make-instance 'gcs-redef-early)))
+          (list (slot-value o 'a) (slot-value o 'b) (slot-value o 'c))))
 EOF
 out=$(run_stress "$WORK/clos-redef.lisp")
 check_contains "defclass first definition works under GC stress"        "REDEF1:7" "$out"
 check_contains "defclass redefinition works under GC stress"            "REDEF2:11 HI" "$out"
+check_contains "in-place redefinition: identity, dispatch, subclass refinalized" "REDEF3:T BASE (10 2 30)" "$out"
 check_absent   "no struct-as-function from stale funcallable-instance cache" "Not a function: heap object type" "$out"
 
 # --- Case 19b: custom generic-function metaclass under GC stress -------------
