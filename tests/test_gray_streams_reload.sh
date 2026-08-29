@@ -25,6 +25,13 @@
 
 CLAMIGA="${1:-build/host/clamiga}"
 
+# Paths written into the generated .lisp file must be in clamiga's own
+# spelling: under MSYS2 "$(pwd)" is /c/... but a native clamiga.exe resolves
+# that against the current drive as C:/c/... and the LOAD fails.  (Before
+# this, LOAD's per-form recovery swallowed that error on Windows and the test
+# still printed its DONE marker — see the ERROR: check below.)
+. "$(dirname "$0")/shpath.sh"
+
 TIMEOUT=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
 if [ -z "$TIMEOUT" ]; then
     echo "SKIP test_gray_streams_reload: neither timeout nor gtimeout on PATH"
@@ -49,6 +56,9 @@ trap cleanup EXIT INT TERM
 
 printf 'hello gray streams\n' > "$data"
 
+gray_lisp=$(native_path "$gray")
+data_lisp=$(native_path "$data")
+
 cat > "$tmp" <<EOF
 (setq *load-verbose* nil)
 ;; Base boot does not pull gray-streams (it arrives via quicklisp-compat),
@@ -56,16 +66,16 @@ cat > "$tmp" <<EOF
 ;; LOAD re-runs the integration block, and before the fix that re-captured
 ;; ORIG-CLOSE et al as the gray GFs, so any subsequent CLOSE recursed to a
 ;; VM frame stack overflow.
-(load "$gray")
-(load "$gray")
+(load "$gray_lisp")
+(load "$gray_lisp")
 ;; Exercise the wrapped CL-I/O entry points on an ordinary file stream.
-(let ((s (open "$data" :direction :input)))
+(let ((s (open "$data_lisp" :direction :input)))
   (read-char s)            ; READ-CHAR wrapper
   (close s))               ; CLOSE (stream t) -> must NOT re-dispatch itself
 (let ((o (make-string-output-stream)))
   (write-char #\\X o)       ; WRITE-CHAR wrapper
   (close o))
-(with-open-file (s "$data" :direction :input)
+(with-open-file (s "$data_lisp" :direction :input)
   (read-line s))
 ;; Second reload bug: the reload re-DEFCLASSes GRAY:FUNDAMENTAL-*-STREAM.
 ;; %ENSURE-CLASS used to allocate a FRESH class metaobject on redefinition,
@@ -98,6 +108,14 @@ elif [ "$ec" -ne 0 ]; then
 elif ! echo "$out" | grep -q "GRAY-RELOAD-DONE"; then
     echo "  FAIL gray_streams_reload (no GRAY-RELOAD-DONE marker)"
     echo "    output: $(echo "$out" | tail -8)"
+    echo ""; echo "0 passed, 1 failed, $total total"; echo "FAIL"; exit 1
+elif echo "$out" | grep -q "^ERROR:"; then
+    # LOAD recovers per form and carries on, so a failed (LOAD gray) — e.g. a
+    # path clamiga cannot resolve — would still reach the DONE marker while
+    # exercising nothing.  Any ERROR: line means the script did not run as
+    # written.
+    echo "  FAIL gray_streams_reload (ERROR: in output — a form failed and LOAD recovered past it)"
+    echo "    output: $(echo "$out" | grep -A3 "^ERROR:" | head -12)"
     echo ""; echo "0 passed, 1 failed, $total total"; echo "FAIL"; exit 1
 elif echo "$out" | grep -qi "overflow\|RUNAWAY"; then
     echo "  FAIL gray_streams_reload (overflow/runaway in output)"
