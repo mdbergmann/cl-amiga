@@ -6041,6 +6041,26 @@ y" 1))
 (check "provide character designator" t (provide #\Z))
 (check "modules contains char-named module" "Z" (find "Z" *modules* :test #'string=))
 (check "require character already provided" nil (require #\Z))
+; GitHub #18: a symbol designator names the module in upper case ("TEST-MOD-1"
+; for :test-mod-1) while modules register their lowercase file name.  REQUIRE's
+; "already loaded" test folds case, so no spelling triggers a second load.
+(check "require keyword designator case-folded" nil (require :test-mod-1))
+(check "require symbol designator case-folded" nil (require 'test-mod-1))
+(check "require upper-case string case-folded" nil (require "TEST-MOD-1"))
+(check "require lower-case string vs upper-case provide" nil (require "test-mod-sym"))
+; Folding is a membership rule, not a rewrite: *modules* keeps PROVIDE's spelling.
+(check "modules keeps provide spelling" nil (find "TEST-MOD-1" *modules* :test #'string=))
+; PROVIDE's duplicate check stays exact: both spellings may be registered
+; (asdf.lisp provides "asdf" and "ASDF", as SBCL does).
+(check "provide keeps both spellings" 2
+  (progn (provide "both-mod") (provide "BOTH-MOD") (provide "BOTH-MOD")
+         (count "both-mod" *modules* :test #'string-equal)))
+; (The real-module leg -- a keyword REQUIRE of an already loaded lib/ module
+; being a no-op -- sits after the Gray-streams block below, which LOADs
+; gray-streams.lisp itself and must be the first load of that file.)
+(check "require unknown module still errors" t
+  (handler-case (progn (require :no-such-module-zz) nil)
+    (error () t)))
 
 ; --- Read-time eval (#.) ---
 (check "#. arithmetic" 3 #.(+ 1 2))
@@ -9092,6 +9112,14 @@ y" 1))
 (handler-case
   (load "lib/gray-streams.lisp")
   (error (e) (format t "ERROR loading gray-streams: ~A~%" e)))
+
+; GitHub #18, real-module leg: gray-streams.lisp just PROVIDEd "gray-streams",
+; so a REQUIRE spelled as a keyword ("GRAY-STREAMS" after the reader upcases
+; it) must be a no-op (NIL) -- not a second LOAD of the file, which is what
+; the case-sensitive membership test used to do (and a reload breaks the
+; OUTPUT-STREAM-P / INPUT-STREAM-P checks right below).
+(check "require keyword of loaded lib module is no-op" nil
+  (progn (require "gray-streams") (require :gray-streams) (require "GRAY-STREAMS")))
 
 (handler-case
   (progn
