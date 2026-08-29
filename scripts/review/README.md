@@ -10,7 +10,7 @@ Problematic code never enters history.
 git commit
    └─ githooks/pre-commit  →  scripts/review/pre-commit.sh
         1. staged diff written to .reviews/staged.diff; claude READS it
-           (Read+Bash, read-only)              →  .reviews/log-<timestamp>.md
+           (Read+Grep+Glob, no shell)          →  .reviews/log-<timestamp>.md
              STATUS: CLEAN   →  (go to step 2)
              STATUS: ISSUES  →  fix agent edits the staged files,
                                 re-stages them  →  (go to step 2)
@@ -49,12 +49,23 @@ then delegates to `scripts/review/pre-commit.sh`.
 - **Diff delivered as a file, not piped** — the staged diff is written to
   `.reviews/staged.diff` and the reviewer is told to read it. Headless
   `claude -p` stalls when a large diff is piped on stdin and it must answer in
-  one shot; reading it as a file (with Read+Bash) lets the agent work reliably,
+  one shot; reading it as a file (with Read+Grep+Glob) lets the agent work reliably,
   at the cost of an agentic review that can run for minutes (hence the 600s
   default timeout).
 - **Partial-staging guard** — if a staged file also has *unstaged* edits,
   auto-restaging would sweep those in, so the hook leaves the fixes unstaged and
   aborts instead; you re-stage deliberately.
+- **Index guard** — the staged tree is snapshotted (`git write-tree`) before
+  the reviewer, the fix agent and the tests run, and put back (`git read-tree`)
+  if any of them moved the index. The reviewer used to have Bash and once ran
+  `git stash` / `git stash pop` to build a baseline: stash resets the index,
+  pop restores the files *unstaged*, and git re-reads the index after the hook
+  — the commit went in **empty** with the changes left in the working tree.
+  The reviewer therefore no longer gets a shell at all (`Read,Grep,Glob`; on a
+  later run a Bash-equipped reviewer went as far as `git commit`, moving HEAD
+  so the real commit could not lock the ref). A restore is noted in the review
+  log; if the restore fails, or HEAD moved during the hook, the commit is
+  blocked with a message saying so.
 - **Fix agent only edits files in the commit** and records a `RESOLVED:` /
   `DISMISSED:` note per finding in that review's log file.
 - Tests run on the working tree as-is (after any fixes), validating the final
