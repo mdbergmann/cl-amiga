@@ -2107,14 +2107,12 @@ void cl_builtins_init(void)
      * SYMBOL-FUNCTION return non-NIL; any call signals an error. */
     defstub("APROPOS");
     defstub("APROPOS-LIST");
-    /* MAKE-BROADCAST-STREAM / MAKE-CONCATENATED-STREAM and their -STREAMS
-     * accessors are real builtins in builtins_stream.c (CLHS 21.2). */
-    defstub("ECHO-STREAM-INPUT-STREAM");
-    defstub("ECHO-STREAM-OUTPUT-STREAM");
+    /* MAKE-BROADCAST-STREAM / MAKE-CONCATENATED-STREAM / MAKE-ECHO-STREAM
+     * and their component accessors are real builtins in builtins_stream.c
+     * (CLHS 21.2). */
     defstub("INVALID-METHOD-ERROR");
     defstub("LOAD-LOGICAL-PATHNAME-TRANSLATIONS");
     defstub("LOGICAL-PATHNAME");
-    defstub("MAKE-ECHO-STREAM");
     /* MAKE-LOAD-FORM (generic function) and MAKE-LOAD-FORM-SAVING-SLOTS
      * are defined in lib/clos.lisp (CLHS 7.6); no stub here. */
     defstub("METHOD-COMBINATION-ERROR");

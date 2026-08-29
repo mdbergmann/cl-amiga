@@ -137,6 +137,25 @@ static CL_Obj bi_make_test_stream(CL_Obj *args, int n)
     return cl_make_stream(dir, stype);
 }
 
+/* Input-side backing of `stream` for state probes (LISTEN,
+ * READ-CHAR-NO-HANG, INTERACTIVE-STREAM-P): cl_stream_resolve_backing(_, 0)
+ * plus a descent through echo wrappers.  The read path deliberately stops
+ * at an echo stream (the wrapper is what echoes), but the data — position,
+ * EOF flag, console/socket readiness — lives in its input component.  The
+ * descent stops at a wrapper holding a pushed-back char: that char is the
+ * next thing read, so the wrapper itself answers "available". */
+static CL_Obj probe_input_backing(CL_Obj stream)
+{
+    stream = cl_stream_resolve_backing(stream, 0);
+    while (CL_STREAM_P(stream)) {
+        CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+        if (st->stream_type != CL_STREAM_ECHO || st->unread_char != -1)
+            break;
+        stream = cl_stream_resolve_backing(st->string_buf, 0);
+    }
+    return stream;
+}
+
 /* (interactive-stream-p stream) => T or NIL */
 static CL_Obj bi_interactive_stream_p(CL_Obj *args, int n)
 {
@@ -144,10 +163,10 @@ static CL_Obj bi_interactive_stream_p(CL_Obj *args, int n)
     CL_UNUSED(n);
     if (!CL_STREAM_P(args[0]))
         cl_error(CL_ERR_TYPE, "INTERACTIVE-STREAM-P: argument is not a stream");
-    /* args[0] may be a synonym-/two-way-stream (e.g. *TERMINAL-IO*) wrapping
-     * a console stream; resolve both directions since either child could be
-     * the console. */
-    rs = cl_stream_resolve_backing(args[0], 0);
+    /* args[0] may be a synonym-/two-way-/echo-stream (e.g. *TERMINAL-IO*)
+     * wrapping a console stream; resolve both directions since either child
+     * could be the console. */
+    rs = probe_input_backing(args[0]);
     if (CL_STREAM_P(rs) && ((CL_Stream *)CL_OBJ_TO_PTR(rs))->stream_type == CL_STREAM_CONSOLE)
         return CL_T;
     rs = cl_stream_resolve_backing(args[0], 1);
@@ -739,6 +758,54 @@ static CL_Obj bi_two_way_stream_output_stream(CL_Obj *args, int n)
     st = (CL_Stream *)CL_OBJ_TO_PTR(args[0]);
     if (st->stream_type != CL_STREAM_TWO_WAY)
         cl_error(CL_ERR_TYPE, "TWO-WAY-STREAM-OUTPUT-STREAM: not a two-way stream");
+    return st->element_type;
+}
+
+/* (make-echo-stream input-stream output-stream)
+ * Bidirectional: reads come from input-stream and every element read is
+ * echoed to output-stream; direct writes go to output-stream unechoed
+ * (CLHS 21.1, 21.2).  The echo path in stream.c only dispatches to native
+ * CL_Stream objects, so — as for broadcast/concatenated streams, and unlike
+ * make-two-way-stream with its Lisp-level Gray shim — Gray-stream (CLOS)
+ * components are rejected here rather than silently reading as EOF or
+ * dropping the echo. */
+static CL_Obj bi_make_echo_stream(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    if (!is_input_stream_designator(args[0]))
+        cl_error(CL_ERR_TYPE, "MAKE-ECHO-STREAM: first argument is not an input stream");
+    if (!is_output_stream_designator(args[1]))
+        cl_error(CL_ERR_TYPE, "MAKE-ECHO-STREAM: second argument is not an output stream");
+    if (!CL_STREAM_P(args[0]))
+        cl_error(CL_ERR_TYPE, "MAKE-ECHO-STREAM: first argument is a Gray stream, which is "
+                 "not supported as an echo-stream component");
+    if (!CL_STREAM_P(args[1]))
+        cl_error(CL_ERR_TYPE, "MAKE-ECHO-STREAM: second argument is a Gray stream, which is "
+                 "not supported as an echo-stream component");
+    return cl_make_echo_stream(args[0], args[1]);
+}
+
+/* (echo-stream-input-stream echo-stream) */
+static CL_Obj bi_echo_stream_input_stream(CL_Obj *args, int n)
+{
+    CL_Stream *st;
+    CL_UNUSED(n);
+    if (!CL_STREAM_P(args[0]) ||
+        ((CL_Stream *)CL_OBJ_TO_PTR(args[0]))->stream_type != CL_STREAM_ECHO)
+        cl_error(CL_ERR_TYPE, "ECHO-STREAM-INPUT-STREAM: argument is not an echo stream");
+    st = (CL_Stream *)CL_OBJ_TO_PTR(args[0]);
+    return st->string_buf;
+}
+
+/* (echo-stream-output-stream echo-stream) */
+static CL_Obj bi_echo_stream_output_stream(CL_Obj *args, int n)
+{
+    CL_Stream *st;
+    CL_UNUSED(n);
+    if (!CL_STREAM_P(args[0]) ||
+        ((CL_Stream *)CL_OBJ_TO_PTR(args[0]))->stream_type != CL_STREAM_ECHO)
+        cl_error(CL_ERR_TYPE, "ECHO-STREAM-OUTPUT-STREAM: argument is not an echo stream");
+    st = (CL_Stream *)CL_OBJ_TO_PTR(args[0]);
     return st->element_type;
 }
 
@@ -1830,10 +1897,17 @@ static CL_Obj bi_stream_element_type(CL_Obj *args, int n)
     if (!CL_STREAM_P(args[0]))
         cl_error(CL_ERR_TYPE, "STREAM-ELEMENT-TYPE: not a stream");
     st = (CL_Stream *)CL_OBJ_TO_PTR(args[0]);
+    /* A two-way / echo stream reports its input component's element type:
+     * an echo stream over binary file streams must answer (UNSIGNED-BYTE 8)
+     * so that code choosing READ-BYTE vs READ-CHAR by element type works
+     * through the wrapper (ansi-test make-echo-stream.4/.9). */
+    while ((st->stream_type == CL_STREAM_TWO_WAY || st->stream_type == CL_STREAM_ECHO) &&
+           CL_STREAM_P(st->string_buf))
+        st = (CL_Stream *)CL_OBJ_TO_PTR(st->string_buf);
     /* A file stream's explicitly recorded element-type (from OPEN
      * :element-type '(unsigned-byte 8)) wins — this is how a binary file
      * stream reports itself.  Only FILE streams store a type here; for
-     * TWO-WAY/SYNONYM streams the element_type slot holds a child stream. */
+     * TWO-WAY/ECHO/SYNONYM streams the element_type slot holds a child stream. */
     if (st->stream_type == CL_STREAM_FILE && !CL_NULL_P(st->element_type))
         return st->element_type;
     if (st->stream_type == CL_STREAM_SOCKET) {
@@ -1874,11 +1948,13 @@ static CL_Obj bi_listen(CL_Obj *args, int n)
 {
     CL_Obj stream = cl_resolve_input_stream(args, n, 0);
     CL_Stream *st;
-    /* Unwrap a synonym-/two-way-stream designator (e.g. *TERMINAL-IO*) to
-     * the concrete input-side stream so unread_char/flags/stream_type below
-     * are read from the object that actually carries that state — the
-     * wrapper's own fields are never touched by READ-CHAR/UNREAD-CHAR. */
-    stream = cl_stream_resolve_backing(stream, 0);
+    /* Unwrap a synonym-/two-way-/echo-stream designator (e.g. *TERMINAL-IO*)
+     * to the concrete input-side stream so unread_char/flags/stream_type
+     * below are read from the object that actually carries that state — a
+     * synonym/two-way wrapper's own fields are never touched by
+     * READ-CHAR/UNREAD-CHAR, and an echo wrapper's only matter when it holds
+     * a pushed-back char (probe_input_backing stops there). */
+    stream = probe_input_backing(stream);
     if (!CL_STREAM_P(stream)) return CL_NIL;
     st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
     /* A concatenated stream listens on its current component.  Popping an
@@ -1888,7 +1964,7 @@ static CL_Obj bi_listen(CL_Obj *args, int n)
         if (st->unread_char != -1) return CL_T;
         if (st->flags & CL_STREAM_FLAG_EOF) return CL_NIL;
         if (!CL_CONS_P(st->string_buf)) return CL_NIL;
-        stream = cl_stream_resolve_backing(cl_car(st->string_buf), 0);
+        stream = probe_input_backing(cl_car(st->string_buf));
         if (!CL_STREAM_P(stream)) return CL_NIL;
         st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
     }
@@ -1944,20 +2020,21 @@ static CL_Obj bi_read_char_no_hang(CL_Obj *args, int n)
     CL_Obj eof_value = (n >= 3) ? args[2] : CL_NIL;
     /* Unwrap to the concrete input-side stream for the availability check —
      * same reasoning as bi_listen: unread_char/flags/stream_type live on the
-     * backing stream, not on a synonym-/two-way-stream wrapper like
+     * backing stream, not on a synonym-/two-way-/echo-stream wrapper like
      * *TERMINAL-IO*.  `backing` is CL_NIL for a designator that fails to
      * resolve (e.g. a synonym whose symbol is unbound); leave `available`
      * false in that case and fall through to cl_stream_read_char(stream)
      * below, which resolves (and fails) the same way cl_stream_read_char
      * always has, keeping error/EOF behavior unchanged for that edge case. */
-    CL_Obj backing = cl_stream_resolve_backing(stream, 0);
+    CL_Obj backing = probe_input_backing(stream);
     CL_Stream *st = CL_STREAM_P(backing) ? (CL_Stream *)CL_OBJ_TO_PTR(backing) : NULL;
     int available;
+    int in_memory;
 
     /* Check if a character is immediately available */
+    in_memory = st && (st->stream_type == CL_STREAM_STRING || st->stream_type == CL_STREAM_CBUF);
     available = st && ((st->unread_char != -1) ||
-                (!(st->flags & CL_STREAM_FLAG_EOF) &&
-                 (st->stream_type == CL_STREAM_STRING || st->stream_type == CL_STREAM_CBUF) &&
+                (!(st->flags & CL_STREAM_FLAG_EOF) && in_memory &&
                  st->position < st->out_buf_len));
     /* Console availability mirrors LISTEN: exact in raw mode, conservative
      * in cooked mode (see bi_listen). */
@@ -1968,8 +2045,12 @@ static CL_Obj bi_read_char_no_hang(CL_Obj *args, int n)
         available = 1;
 
     if (!available) {
-        /* Check for EOF */
-        if (st && (st->flags & CL_STREAM_FLAG_EOF)) {
+        /* Check for EOF.  An in-memory stream can never block, so "nothing
+         * available" IS end of file there — its read path never sets the
+         * EOF flag, and answering NIL instead of eof-value made
+         * (read-char-no-hang s nil :eof) on an exhausted string stream
+         * indistinguishable from "no input yet". */
+        if (st && ((st->flags & CL_STREAM_FLAG_EOF) || in_memory)) {
             if (eof_error_p)
                 cl_error(CL_ERR_EOF, "READ-CHAR-NO-HANG: end of file");
             return eof_value;
@@ -2126,6 +2207,9 @@ void cl_builtins_stream_init(void)
     defun("BROADCAST-STREAM-STREAMS", bi_broadcast_stream_streams, 1, 1);
     defun("MAKE-CONCATENATED-STREAM", bi_make_concatenated_stream, 0, -1);
     defun("CONCATENATED-STREAM-STREAMS", bi_concatenated_stream_streams, 1, 1);
+    defun("MAKE-ECHO-STREAM", bi_make_echo_stream, 2, 2);
+    defun("ECHO-STREAM-INPUT-STREAM", bi_echo_stream_input_stream, 1, 1);
+    defun("ECHO-STREAM-OUTPUT-STREAM", bi_echo_stream_output_stream, 1, 1);
 
     /* Step 8: File streams */
     defun("OPEN", bi_open, 1, -1);
