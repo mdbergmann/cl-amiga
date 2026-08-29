@@ -8,6 +8,8 @@ AmigaOS, see the main README.
 | Directory | What | Needs |
 |-----------|------|-------|
 | `gfx/bouncing-lines.lisp` | Bouncing colour-cycling lines in a window — the `AMIGA.INTUITION` / `AMIGA.GFX` curated bindings, an IDCMP event loop, FPS overlay | AmigaOS 3.1+ or MorphOS |
+| `gfx/doublebuffer.lisp` | The NDK 3.1 `intuition/doublebuffer.c` example — a face bouncing at the frame rate on a HIRES custom screen through two `ScreenBuffer`s (`AllocScreenBuffer` / `ChangeScreenBuffer`, the `dbi_SafeMessage` reply protocol, the held-off `WaitTOF` retry), an attached control screen (`SA_Parent`) with GadTools sliders, `LendMenus`, two windows on one IDCMP port | AmigaOS 3.0+ (V39) |
+| `gfx/sprite.lisp` | The RKM "Simple Sprite" example (`ssprite.c`) — a hardware sprite: `GetSprite` / `ChangeSprite` / `MoveSprite` / `FreeSprite`, the sprite colour registers via `SetRGB4`, image data in CHIP memory, sprite DMA off/on through a custom-chip register write | AmigaOS 3+ on a native chipset (real or FS-UAE) |
 | `arexx/` | `clamiga.rexx`, a shell client for the `AMIGA.AREXX` development port, and a CygnusEd macro that saves and loads the current file | ARexx |
 | `reaction/` | ReAction GUIs — ports of the NDK 3.2 `Examples/` programs (below) | AmigaOS 3.5+/3.2 or MorphOS (ReAction classes) |
 | `asyncio/copyfile.lisp` | Double-buffered asynchronous file copy over DOS packets — the `AMIGA.ASYNCIO` port of the NDK 3.1 AsynchIO package, timed against plain synchronous streams and byte-verified | AmigaOS 3.1+ or MorphOS |
@@ -52,7 +54,28 @@ clamiga --eval '(require "amiga/reaction")' \
 On a system without the ReAction classes (the host, a bare AmigaOS 3.1)
 each example loads and says so instead of failing.
 
-`make -f Makefile.cross examples-amiga` (= `verify/realamiga/run-reaction-examples.sh`)
-runs all of them in FS-UAE (whose OS 3.9 Workbench has the classes),
-photographs every window and converts the shots to PNG under
-`build/amiga/shots/`.
+## Graphics (`gfx/`)
+
+`bouncing-lines.lisp` uses the curated `AMIGA.INTUITION` / `AMIGA.GFX`
+bindings; `doublebuffer.lisp` and `sprite.lisp` are ports of the NDK 3.1
+and RKM Companion C examples written against the generated raw bindings
+(`AMIGA.RAW.GRAPHICS`, `AMIGA.RAW.INTUITION`, `AMIGA.RAW.EXEC`, plus the
+GadTools helpers) and keep the C's structure — each file names its
+source and what it demonstrates.  Both open their own custom screen;
+the sprite one has to, because a hardware sprite is invisible over an
+RTG screen.  `run` returns a plist of what happened (frames swapped,
+sprite number and final position), which is what the test suite checks.
+
+Run one unattended — its loop returns after the timeout:
+
+```
+clamiga --eval '(require "amiga/intuition")' \
+        --eval '(setf amiga.intuition:*event-loop-timeout* 5)' \
+        --load examples/amiga/gfx/doublebuffer.lisp
+```
+
+`make -f Makefile.cross examples-amiga` (= `verify/realamiga/run-examples.sh`)
+runs all the GUI examples — `gfx/` and `reaction/` — in FS-UAE (whose OS
+3.9 Workbench has the ReAction classes), photographs every new window on
+the Workbench screen and every custom screen, and converts the shots to
+PNG under `build/amiga/shots/`.

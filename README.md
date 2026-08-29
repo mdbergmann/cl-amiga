@@ -1031,7 +1031,7 @@ Then build CL-Amiga:
 ```
 make -f Makefile.cross amiga        # Cross-compile with m68k-amigaos-gcc
 make -f Makefile.cross test-amiga   # Build, deploy to FS-UAE, run Amiga tests
-make -f Makefile.cross examples-amiga # Run + photograph the ReAction examples in FS-UAE (build/amiga/shots/)
+make -f Makefile.cross examples-amiga # Run + photograph the GUI examples (gfx/, reaction/) in FS-UAE (build/amiga/shots/)
 make -f Makefile.cross clean        # Remove cross-build artifacts
 ```
 
@@ -1278,8 +1278,28 @@ ReAction examples — `buttons`, `checkbox`, `chooser`, `clicktab`,
 `fuelgauge`, `integer`, `listbrowser`, `requester` — and is the
 reference for the classes' use; `tests/amiga/test-reaction.lisp` /
 `tests/test_amiga_reaction.sh` are the module's executable
-specification, and `verify/realamiga/run-reaction-examples.sh` runs and
+specification, and `verify/realamiga/run-examples.sh` runs and
 photographs every example in FS-UAE.
+
+### Graphics examples (double-buffering, sprites)
+
+[`examples/amiga/gfx/`](examples/amiga/gfx/) holds the graphics demos:
+`bouncing-lines.lisp` (a window on the Workbench screen, drawn through
+the curated `AMIGA.GFX`), `doublebuffer.lisp` — the NDK 3.1
+`intuition/doublebuffer.c` example: a face bouncing on a HIRES custom
+screen at the frame rate via `AllocScreenBuffer` / `ChangeScreenBuffer`
+and the `dbi_SafeMessage` protocol, with an attached control screen of
+GadTools sliders and `LendMenus` — and `sprite.lisp`, the RKM "Simple
+Sprite" listing: a hardware sprite claimed with `GetSprite`, coloured,
+and walked across a LORES screen with `MoveSprite` under `WaitTOF`.
+Both ports are written against the generated raw bindings
+(`AMIGA.RAW.GRAPHICS` / `AMIGA.RAW.INTUITION`) and are the reference
+for those parts of the API; setting
+`amiga.intuition:*event-loop-timeout*` runs any of them unattended for
+that many seconds.  `tests/amiga/test-gfx-examples.lisp` runs them in
+the FS-UAE suite, `tests/test_amiga_gfx_examples.sh` load-checks them
+on the host, and `make -f Makefile.cross examples-amiga` photographs
+them.
 
 ### Async file I/O (DOS packets)
 
@@ -1612,7 +1632,7 @@ contrib/
 examples/
   amiga/          AmigaOS examples
     arexx/          ARexx client + CygnusEd macro (clamiga.rexx, load-current-file.ced)
-    gfx/            Graphics demos (bouncing-lines.lisp)
+    gfx/            Graphics demos (bouncing-lines, doublebuffer, sprite)
     reaction/       ReAction GUI examples ported from the NDK 3.2 (buttons, checkbox, chooser, ...)
 tests/
   test_*.c        Host test suites (C)

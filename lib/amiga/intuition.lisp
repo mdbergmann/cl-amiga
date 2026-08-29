@@ -28,7 +28,7 @@
    "GET-MSG" "REPLY-MSG" "WAIT-PORT"
    "MSG-CLASS" "MSG-CODE" "MSG-QUALIFIER" "MSG-MOUSE-X" "MSG-MOUSE-Y"
    "MSG-RAW-KEY"
-   "EVENT-LOOP" "*EVENT-LOOP-MAX-WAITS*"
+   "EVENT-LOOP" "*EVENT-LOOP-MAX-WAITS*" "*EVENT-LOOP-TIMEOUT*"
    ;; Input event qualifier bits (IntuiMessage->Qualifier)
    "+IEQUALIFIER-LSHIFT+" "+IEQUALIFIER-RSHIFT+" "+IEQUALIFIER-CAPSLOCK+"
    ;; Mouse button codes (IDCMP_MOUSEBUTTONS msg-code values)
@@ -519,6 +519,18 @@ Uses exec.library WaitPort."
   "Sleep for TICKS ticks (1/50s each on PAL) via dos.library Delay."
   (with-library (dos "dos.library")
     (amiga:call-library dos +lvo-dos-delay+ (list :d1 ticks))))
+
+(defvar *event-loop-timeout* nil
+  "Seconds after which a GUI program's own event loop should return
+instead of waiting for the user; NIL = interactive (run until the
+window is closed).  Set it before loading a program to run it
+unattended -- the examples under examples/amiga/gfx/ honour it, and the
+examples' harness and the test suite set it:
+     --eval '(require \"amiga/intuition\")'
+     --eval '(setf amiga.intuition:*event-loop-timeout* 5)' --load ...
+EVENT-LOOP itself is bounded by *EVENT-LOOP-MAX-WAITS*; see also
+AMIGA.REACTION:*EVENT-LOOP-TIMEOUT*, the same knob for ReAction
+programs.")
 
 (defvar *event-loop-max-waits* nil
   "If non-NIL, bound EVENT-LOOP's wait for the next IDCMP message to

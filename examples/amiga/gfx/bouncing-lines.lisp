@@ -110,8 +110,15 @@
            (lines (init-lines iw ih))
            (frames 0)
            (fps 0.0)
-           (t0 (get-internal-real-time)))
-      (loop until (close-requested-p win) do
+           (t0 (get-internal-real-time))
+           ;; Unattended runs (the examples' harness, the test suite)
+           ;; set *EVENT-LOOP-TIMEOUT*; interactively it is NIL.
+           (deadline (and *event-loop-timeout*
+                          (+ t0 (round (* *event-loop-timeout*
+                                          internal-time-units-per-second))))))
+      (loop until (or (close-requested-p win)
+                      (and deadline (> (get-internal-real-time) deadline)))
+            do
         (draw-frame rp lines iw ih)
         ;; Repaint the FPS overlay every frame — draw-frame's rect-fill
         ;; wipes the inner window each iteration, so a once-per-second
@@ -125,4 +132,6 @@
                   frames 0
                   t0 (get-internal-real-time))))))))
 
-(run)
+(if *intuition-base*
+    (run)
+    (format t "bouncing-lines: not available - AmigaOS/MorphOS with intuition.library required~%"))

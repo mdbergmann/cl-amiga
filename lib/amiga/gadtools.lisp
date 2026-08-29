@@ -437,14 +437,15 @@ Returns the foreign pointer (caller must free it and any label strings)."
         (ffi:make-foreign-pointer result))))
 
 (defun layout-menus (menu visual-info &rest tags)
-  "Layout menus for display. Must be called after CREATE-MENUS."
+  "Layout menus for display. Must be called after CREATE-MENUS.
+Returns T when LayoutMenusA succeeded, NIL when it failed."
   (let* ((tag-list (amiga.ffi:make-tag-list tags))
          (result (amiga:call-library *gadtools-base*
                                      +lvo-layout-menus-a+
                                      (list :a0 menu :a1 visual-info
                                            :a2 tag-list))))
     (ffi:free-foreign tag-list)
-    (zerop result)))
+    (not (zerop result))))
 
 (defun free-menus (menu)
   "Free a menu strip."
