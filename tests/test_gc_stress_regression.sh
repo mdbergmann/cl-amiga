@@ -5269,6 +5269,43 @@ out=$(run_stress "$WORK/mv-hygiene.lisp")
 check_contains "MV hygiene holds while compiling under stress" \
   "MVH:((3) (1) (1) (1) (1 2) (1 2) (1 2))" "$out"
 
+# --- LOOP ... INTO tail-pointer accumulation under forced compaction --------
+# GitHub #19: an INTO accumulator is spliced in order through a hidden tail
+# pointer (LIST / COPY-LIST / RPLACD / LAST per step) instead of push +
+# NREVERSE.  Both the head variable and the tail cons are VM locals that a
+# compaction between two steps relocates; a stale tail would splice onto a
+# dead cons and the body would print a truncated or garbled accumulation.
+cat > "$WORK/loop-into.lisp" <<'EOF'
+(defun li-steps ()
+  (let (seen)
+    (loop for x in '(1 2 3)
+          collect x into r
+          nconc (list (* x 10)) into r
+          append (list (* x 100)) into r
+          do (push (copy-list r) seen))
+    (nreverse seen)))
+(format t "LI1:~a~%" (li-steps))
+(format t "LI2:~a~%"
+        (loop :for e :in (list 1 2 3)
+              :nconc (list :elem e) :into acc
+              :when (= e 3) :do (setf (getf acc :elem) 10)
+              :finally (return acc)))
+(format t "LI3:~a~%"
+        (loop for x in '(nil 1 nil 2 3 nil)
+              nconc (and x (list x)) into r
+              when x collect (list x) into r2
+              finally (return (list r r2))))
+EOF
+out=$(run_stress "$WORK/loop-into.lisp")
+check_contains "LOOP INTO accumulates in order under stress" \
+  "LI1:((1 10 100) (1 10 100 2 20 200) (1 10 100 2 20 200 3 30 300))" "$out"
+check_contains "LOOP NCONC INTO plist survives setf getf under stress" \
+  "LI2:(ELEM 10 ELEM 2 ELEM 3)" "$out"
+check_contains "LOOP INTO tail pointer survives NIL chunks under stress" \
+  "LI3:((1 2 3) ((1) (2) (3)))" "$out"
+check_absent   "no corruption diagnostics from the LOOP INTO path" \
+  "corrupted\|type 0\|BADMARK\|badmark\|SIGSEGV\|Unbound" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

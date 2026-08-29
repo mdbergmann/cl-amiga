@@ -5180,7 +5180,39 @@ y" 1))
 (check "loop collect" '(1 2 3) (loop for x in '(1 2 3) collect x))
 (check "loop collect expr" '(1 4 9) (loop for x in '(1 2 3) collect (* x x)))
 (check "loop for type-spec" '(0 1 2 3) (loop for i fixnum from 0 to 3 collect i))
-(check "loop collect into" '(1 2 3) (loop for x in '(1 2 3 4 5) collect x into r do (when (= x 3) (return (nreverse r)))))
+;; GitHub #19: an INTO variable is user-visible in the body and in FINALLY
+;; (CLHS 6.1.3, "like a variable established by WITH"), so it must hold the
+;; accumulation IN ORDER at every step -- it used to be built reversed and
+;; NREVERSEd only at loop end, so (setf (getf acc :k) v) on a plist built by
+;; NCONC ... INTO ACC saw (3 :K 2 :K 1 :K).
+(check "loop collect into" '(1 2 3) (loop for x in '(1 2 3 4 5) collect x into r do (when (= x 3) (return r))))
+(check "loop collect into in-order each step" '((1) (1 2) (1 2 3))
+  (let (seen) (loop for x in '(1 2 3) collect x into r do (push (copy-list r) seen)) (nreverse seen)))
+(check "loop nconc into in-order each step" '((:k 1) (:k 1 :k 2))
+  (let (seen) (loop for x in '(1 2) nconc (list :k x) into r do (push (copy-list r) seen)) (nreverse seen)))
+(check "loop append into in-order each step" '((1 a) (1 a 2 b))
+  (let (seen) (loop for x in '(1 2) for y in '(a b) append (list x y) into r do (push (copy-list r) seen)) (nreverse seen)))
+(check "loop nconc into plist setf getf (#19)" '(:elem 10 :elem 2 :elem 3)
+  (loop :for e :in (list 1 2 3)
+        :nconc (list :elem e) :into acc
+        :when (= e 3) :do (setf (getf acc :elem) 10)
+        :finally (return acc)))
+(check "loop append into copies its argument" nil
+  (let ((src (list 1 2))) (eq src (loop for i below 1 append src into acc finally (return acc)))))
+(check "loop nconc into skips NIL chunks" '(1 2 3)
+  (loop for x in '(nil 1 nil 2 3 nil) nconc (and x (list x)) into r finally (return r)))
+(check "loop collect+nconc into same var" '(1 10 2 20 3 30)
+  (loop for x in '(1 2 3) collect x into r nconc (list (* x 10)) into r finally (return r)))
+(check "loop into shared by top-level and WHEN clause" '(1 x 2 3 x)
+  (loop for x in '(1 2 3) collect x into r when (oddp x) collect 'x into r finally (return r)))
+(check "loop into in if/else" '(a 1 b 2)
+  (loop for x in '(1 2) for y in '(a b)
+        if (oddp x) collect y into r and collect x into r
+        else nconc (list y x) into r
+        finally (return r)))
+(check "loop into after loop-finish" '(1 2)
+  (loop for x in '(1 2 3) collect x into r do (when (= x 2) (loop-finish)) finally (return r)))
+(check "loop into empty" nil (loop for x in nil collect x into r finally (return r)))
 (check "loop sum" 15 (loop for x in '(1 2 3 4 5) sum x))
 (check "loop sum into" 6 (loop for x in '(1 2 3 4 5) sum x into tot do (when (= x 3) (return tot))))
 (check "loop count" 3 (loop for x in '(1 nil 2 nil 3) count x))

@@ -176,6 +176,143 @@ TEST(for_and_mixed_from_then_parallel)
                   "(0 1 3)");
 }
 
+/* ================================================================
+ * GitHub #19: INTO accumulators are user-visible and must be in order
+ *
+ * An INTO variable is "like a variable established by WITH" (CLHS 6.1.3)
+ * and can be read in the body and in FINALLY.  The list accumulators used
+ * to build it reversed (push / NRECONC / REVAPPEND) and NREVERSE it only in
+ * the loop epilogue, so the body saw (3 :K 2 :K 1 :K) and a (setf (getf
+ * acc :k) v) on it corrupted the result.  INTO variables now carry a
+ * hidden tail pointer and are spliced in order at every step; the
+ * anonymous accumulator keeps the cheaper reverse-and-NREVERSE strategy.
+ * ================================================================ */
+
+TEST(into_collect_in_order_each_step)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let (seen)"
+        "  (loop for x in '(1 2 3) collect x into r do (push (copy-list r) seen))"
+        "  (nreverse seen))"),
+                  "((1) (1 2) (1 2 3))");
+}
+
+TEST(into_nconc_in_order_each_step)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let (seen)"
+        "  (loop for x in '(1 2) nconc (list :k x) into r do (push (copy-list r) seen))"
+        "  (nreverse seen))"),
+                  "((:K 1) (:K 1 :K 2))");
+}
+
+TEST(into_append_in_order_each_step)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let (seen)"
+        "  (loop for x in '(1 2) for y in '(a b)"
+        "        append (list x y) into r do (push (copy-list r) seen))"
+        "  (nreverse seen))"),
+                  "((1 A) (1 A 2 B))");
+}
+
+TEST(into_nconc_plist_setf_getf_issue_19)
+{
+    /* The reporter's exact form. */
+    ASSERT_STR_EQ(eval_print(
+        "(loop :for e :in (list 1 2 3)"
+        "      :nconc (list :elem e) :into acc"
+        "      :when (= e 3) :do (setf (getf acc :elem) 10)"
+        "      :finally (return acc))"),
+                  "(:ELEM 10 :ELEM 2 :ELEM 3)");
+}
+
+TEST(into_return_from_body_in_order)
+{
+    /* No NREVERSE needed (or allowed) by the caller. */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for x in '(1 2 3 4 5) collect x into r"
+        "      do (when (= x 3) (return r)))"),
+                  "(1 2 3)");
+}
+
+TEST(into_append_copies_argument)
+{
+    /* APPEND must not share structure with its argument (CLHS 6.1.3). */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((src (list 1 2)))"
+        "  (list (eq src (loop for i below 1 append src into acc"
+        "                      finally (return acc)))"
+        "        src))"),
+                  "(NIL (1 2))");
+}
+
+TEST(into_nconc_and_append_skip_nil_chunks)
+{
+    /* A NIL chunk must not disturb the tail pointer — before or after the
+       first real element. */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for x in '(nil 1 nil 2 3 nil)"
+        "      nconc (and x (list x)) into r finally (return r))"),
+                  "(1 2 3)");
+    ASSERT_STR_EQ(eval_print(
+        "(loop for x in '(nil 1 nil 2 3 nil)"
+        "      append (and x (list x)) into r finally (return r))"),
+                  "(1 2 3)");
+}
+
+TEST(into_mixed_kinds_same_var)
+{
+    /* COLLECT, NCONC and APPEND into ONE variable share its tail pointer. */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for x in '(1 2 3)"
+        "      collect x into r"
+        "      nconc (list (* x 10)) into r"
+        "      append (list (* x 100)) into r"
+        "      finally (return r))"),
+                  "(1 10 100 2 20 200 3 30 300)");
+}
+
+TEST(into_shared_by_toplevel_and_conditional_clause)
+{
+    /* Both clause parsers (top-level and IF/WHEN sub-clause) must agree on
+       the same hidden tail variable for the same INTO name. */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for x in '(1 2 3) collect x into r"
+        "      when (oddp x) collect 'x into r"
+        "      finally (return r))"),
+                  "(1 X 2 3 X)");
+    ASSERT_STR_EQ(eval_print(
+        "(loop for x in '(1 2) for y in '(a b)"
+        "      if (oddp x) collect y into r and collect x into r"
+        "      else nconc (list y x) into r"
+        "      finally (return r))"),
+                  "(A 1 B 2)");
+}
+
+TEST(into_after_loop_finish_and_empty)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(loop for x in '(1 2 3) collect x into r"
+        "      do (when (= x 2) (loop-finish)) finally (return r))"),
+                  "(1 2)");
+    ASSERT_STR_EQ(eval_print(
+        "(loop for x in nil collect x into r finally (return r))"),
+                  "NIL");
+}
+
+TEST(anonymous_accumulator_unchanged)
+{
+    /* The default accumulator keeps its reverse-and-NREVERSE strategy and
+       still mixes the three kinds in source order. */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for x in '(1 2) collect x nconc (list (* x 10)) append (list 'a))"),
+                  "(1 10 A 2 20 A)");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((src (list 1 2))) (eq src (loop for i below 1 append src)))"),
+                  "NIL");
+}
+
 int main(void)
 {
     setup();
@@ -190,6 +327,18 @@ int main(void)
     RUN(then_step_uses_stepped_sibling);
     RUN(for_and_mixed_then_from_parallel);
     RUN(for_and_mixed_from_then_parallel);
+
+    RUN(into_collect_in_order_each_step);
+    RUN(into_nconc_in_order_each_step);
+    RUN(into_append_in_order_each_step);
+    RUN(into_nconc_plist_setf_getf_issue_19);
+    RUN(into_return_from_body_in_order);
+    RUN(into_append_copies_argument);
+    RUN(into_nconc_and_append_skip_nil_chunks);
+    RUN(into_mixed_kinds_same_var);
+    RUN(into_shared_by_toplevel_and_conditional_clause);
+    RUN(into_after_loop_finish_and_empty);
+    RUN(anonymous_accumulator_unchanged);
 
     teardown();
     REPORT();
