@@ -3460,20 +3460,150 @@ static const char *module_name_cstr(CL_Obj arg, uint32_t *len_out, char *charbuf
     return NULL;
 }
 
-/* Check if module name is in *modules* list (string= comparison) */
-static int module_provided_p(const char *name, uint32_t len)
+/* ASCII case-insensitive equality of two byte strings of equal length. */
+static int module_name_equalp(const char *a, const char *b, uint32_t len)
+{
+    uint32_t i;
+    for (i = 0; i < len; i++) {
+        unsigned char ca = (unsigned char)a[i], cb = (unsigned char)b[i];
+        if (ca >= 'A' && ca <= 'Z') ca = (unsigned char)(ca + ('a' - 'A'));
+        if (cb >= 'A' && cb <= 'Z') cb = (unsigned char)(cb + ('a' - 'A'));
+        if (ca != cb) return 0;
+    }
+    return 1;
+}
+
+/* Check if module name is in *modules* list.
+   fold_case=0: exact (string=) match — PROVIDE's duplicate check, so a
+   module may register both spellings, e.g. asdf.lisp's (provide "asdf")
+   (provide "ASDF"), exactly as SBCL does.
+   fold_case=1: string-equal match — REQUIRE's "already loaded" test.  The
+   CLHS leaves the comparison implementation-dependent; folding case is what
+   makes (require :gray-streams) after (require "gray-streams") a no-op
+   instead of a second load (the reader upcases the symbol, the module
+   provides its lowercase file name). */
+static int module_provided_p(const char *name, uint32_t len, int fold_case)
 {
     CL_Obj list = cl_symbol_value(SYM_STAR_MODULES);
     while (!CL_NULL_P(list)) {
         CL_Obj entry = cl_car(list);
         if (CL_STRING_P(entry)) {
             CL_String *s = (CL_String *)CL_OBJ_TO_PTR(entry);
-            if (s->length == len && memcmp(s->data, name, len) == 0)
+            if (s->length == len &&
+                (fold_case ? module_name_equalp(s->data, name, len)
+                           : memcmp(s->data, name, len) == 0))
                 return 1;
         }
         list = cl_cdr(list);
     }
     return 0;
+}
+
+/* Downcase an ASCII module name into buf.  Returns 1 if the name had any
+   uppercase ASCII letter (i.e. the downcased spelling is a new candidate)
+   and fits, 0 otherwise. */
+static int module_name_downcase(const char *name, uint32_t len,
+                                char *buf, uint32_t bufsz)
+{
+    uint32_t i;
+    int changed = 0;
+    if (len + 1 > bufsz) return 0;
+    for (i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)name[i];
+        if (c >= 'A' && c <= 'Z') { c = (unsigned char)(c + ('a' - 'A')); changed = 1; }
+        buf[i] = (char)c;
+    }
+    buf[len] = '\0';
+    return changed;
+}
+
+#define MODULE_PATH_MAX 512   /* REQUIRE's candidate path buffers */
+
+/* Locate lib/<name>.fasl and lib/<name>.lisp for REQUIRE's
+   implementation-defined search.  Fills fasl_path/lisp_path (each
+   MODULE_PATH_MAX bytes) and sets *have_fasl / *have_lisp to whether each exists.  The
+   search order is: cwd-relative lib/, then platform fallbacks (Amiga:
+   PROGDIR: and the in-repo ancestor; host: $CLAMIGA_HOME and the
+   executable-relative cl_lib_rel_dirs table). */
+static void module_locate(const char *name, uint32_t len,
+                          char *fasl_path, char *lisp_path,
+                          int *have_fasl, int *have_lisp)
+{
+    snprintf(fasl_path, MODULE_PATH_MAX, "lib/%.*s.fasl", (int)len, name);
+    snprintf(lisp_path, MODULE_PATH_MAX, "lib/%.*s.lisp", (int)len, name);
+    *have_fasl = platform_file_exists(fasl_path);
+    *have_lisp = platform_file_exists(lisp_path);
+
+#ifdef PLATFORM_AMIGA
+    if (!*have_fasl && !*have_lisp) {
+        snprintf(fasl_path, MODULE_PATH_MAX, "PROGDIR:lib/%.*s.fasl", (int)len, name);
+        snprintf(lisp_path, MODULE_PATH_MAX, "PROGDIR:lib/%.*s.lisp", (int)len, name);
+        *have_fasl = platform_file_exists(fasl_path);
+        *have_lisp = platform_file_exists(lisp_path);
+    }
+    /* Executable-relative in-repo layout (build/amiga/clamiga with
+       lib/ two levels up) — mirrors the boot.lisp search in repl.c
+       and the host's "../../" fallback, so REQUIRE works when
+       clamiga is launched from any cwd (e.g. an example project
+       directory).  "PROGDIR://" cannot express this (parent-climb
+       slashes only apply to cwd-relative paths), so the ancestor is
+       resolved through dos.library ParentDir. */
+    if (!*have_fasl && !*have_lisp) {
+        char prefix[300];
+        if (platform_executable_ancestor_prefix(2, prefix,
+                                                (int)sizeof(prefix))) {
+            snprintf(fasl_path, MODULE_PATH_MAX, "%slib/%.*s.fasl",
+                     prefix, (int)len, name);
+            snprintf(lisp_path, MODULE_PATH_MAX, "%slib/%.*s.lisp",
+                     prefix, (int)len, name);
+            *have_fasl = platform_file_exists(fasl_path);
+            *have_lisp = platform_file_exists(lisp_path);
+        }
+    }
+#else
+    /* Host fallback: when clamiga is launched from a directory other
+       than its source root (e.g. an editor/Sly session whose cwd
+       follows the file buffer), cwd-relative "lib/" won't exist.
+       Honour $CLAMIGA_HOME so the bundled lib/ is still found without
+       forcing the process working directory — on Amiga PROGDIR: above
+       already serves this role. */
+    if (!*have_fasl && !*have_lisp) {
+        char homebuf[256];
+        const char *home = platform_getenv("CLAMIGA_HOME", homebuf, sizeof(homebuf));
+        if (home && home[0]) {
+            size_t hlen = strlen(home);
+            /* tolerate a trailing slash on CLAMIGA_HOME */
+            int hcut = (hlen > 0 && home[hlen - 1] == '/') ? (int)(hlen - 1) : (int)hlen;
+            snprintf(fasl_path, MODULE_PATH_MAX, "%.*s/lib/%.*s.fasl",
+                     hcut, home, (int)len, name);
+            snprintf(lisp_path, MODULE_PATH_MAX, "%.*s/lib/%.*s.lisp",
+                     hcut, home, (int)len, name);
+            *have_fasl = platform_file_exists(fasl_path);
+            *have_lisp = platform_file_exists(lisp_path);
+        }
+    }
+
+    /* Executable-relative fallback (mirrors the boot.lisp search in
+       repl.c, sharing its cl_lib_rel_dirs table): a deployed layout
+       has lib/ next to the binary, an install prefix has
+       ../lib/clamiga/, the in-repo build has lib/ two levels above
+       build/host/clamiga — so a plain `clamiga` on $PATH works from
+       any directory without CLAMIGA_HOME. */
+    if (!*have_fasl && !*have_lisp) {
+        char prefix[300];
+        if (platform_executable_prefix(prefix, (int)sizeof(prefix))) {
+            int ri;
+            for (ri = 0; ri < CL_LIB_REL_COUNT && !*have_fasl && !*have_lisp; ri++) {
+                snprintf(fasl_path, MODULE_PATH_MAX, "%s%s%.*s.fasl",
+                         prefix, cl_lib_rel_dirs[ri], (int)len, name);
+                snprintf(lisp_path, MODULE_PATH_MAX, "%s%s%.*s.lisp",
+                         prefix, cl_lib_rel_dirs[ri], (int)len, name);
+                *have_fasl = platform_file_exists(fasl_path);
+                *have_lisp = platform_file_exists(lisp_path);
+            }
+        }
+    }
+#endif
 }
 
 /*
@@ -3490,7 +3620,7 @@ static CL_Obj bi_provide(CL_Obj *args, int n)
     CL_UNUSED(n);
     name = module_name_cstr(args[0], &len, charbuf);
 
-    if (module_provided_p(name, len))
+    if (module_provided_p(name, len, 0))
         return SYM_T;
 
     /* Push string onto *modules* */
@@ -3513,8 +3643,9 @@ static CL_Obj bi_require(CL_Obj *args, int n)
 
     name = module_name_cstr(args[0], &len, charbuf);
 
-    /* Already provided? */
-    if (module_provided_p(name, len))
+    /* Already provided?  Case-folded: (require :asdf) after (require "asdf")
+       must not load twice. */
+    if (module_provided_p(name, len, 1))
         return CL_NIL;
 
     if (n >= 2 && !CL_NULL_P(args[1])) {
@@ -3556,84 +3687,23 @@ static CL_Obj bi_require(CL_Obj *args, int n)
 
         /* Try .fasl and .lisp; prefer .fasl only if newer than .lisp */
         {
-            char fasl_path[512], lisp_path[512];
+            char fasl_path[MODULE_PATH_MAX], lisp_path[MODULE_PATH_MAX];
             int have_fasl = 0, have_lisp = 0;
 
-            snprintf(fasl_path, sizeof(fasl_path), "lib/%.*s.fasl", (int)len, name);
-            snprintf(lisp_path, sizeof(lisp_path), "lib/%.*s.lisp", (int)len, name);
-            have_fasl = platform_file_exists(fasl_path);
-            have_lisp = platform_file_exists(lisp_path);
+            module_locate(name, len, fasl_path, lisp_path, &have_fasl, &have_lisp);
 
-#ifdef PLATFORM_AMIGA
+            /* Case fallback (issue #18): the module name is a string
+               designator, and a symbol's name is upcased by the reader —
+               (require :asdf) / (require 'asdf) arrive here as "ASDF" while
+               the file is lib/asdf.lisp.  Amiga and macOS file systems are
+               case-insensitive and hide this; a case-sensitive host (Linux)
+               needs the downcased spelling tried explicitly. */
             if (!have_fasl && !have_lisp) {
-                snprintf(fasl_path, sizeof(fasl_path), "PROGDIR:lib/%.*s.fasl", (int)len, name);
-                snprintf(lisp_path, sizeof(lisp_path), "PROGDIR:lib/%.*s.lisp", (int)len, name);
-                have_fasl = platform_file_exists(fasl_path);
-                have_lisp = platform_file_exists(lisp_path);
+                char lcname[256];
+                if (module_name_downcase(name, len, lcname, sizeof(lcname)))
+                    module_locate(lcname, len, fasl_path, lisp_path,
+                                  &have_fasl, &have_lisp);
             }
-            /* Executable-relative in-repo layout (build/amiga/clamiga with
-               lib/ two levels up) — mirrors the boot.lisp search in repl.c
-               and the host's "../../" fallback, so REQUIRE works when
-               clamiga is launched from any cwd (e.g. an example project
-               directory).  "PROGDIR://" cannot express this (parent-climb
-               slashes only apply to cwd-relative paths), so the ancestor is
-               resolved through dos.library ParentDir. */
-            if (!have_fasl && !have_lisp) {
-                char prefix[300];
-                if (platform_executable_ancestor_prefix(2, prefix,
-                                                        (int)sizeof(prefix))) {
-                    snprintf(fasl_path, sizeof(fasl_path), "%slib/%.*s.fasl",
-                             prefix, (int)len, name);
-                    snprintf(lisp_path, sizeof(lisp_path), "%slib/%.*s.lisp",
-                             prefix, (int)len, name);
-                    have_fasl = platform_file_exists(fasl_path);
-                    have_lisp = platform_file_exists(lisp_path);
-                }
-            }
-#else
-            /* Host fallback: when clamiga is launched from a directory other
-               than its source root (e.g. an editor/Sly session whose cwd
-               follows the file buffer), cwd-relative "lib/" won't exist.
-               Honour $CLAMIGA_HOME so the bundled lib/ is still found without
-               forcing the process working directory — on Amiga PROGDIR: above
-               already serves this role. */
-            if (!have_fasl && !have_lisp) {
-                char homebuf[256];
-                const char *home = platform_getenv("CLAMIGA_HOME", homebuf, sizeof(homebuf));
-                if (home && home[0]) {
-                    size_t hlen = strlen(home);
-                    /* tolerate a trailing slash on CLAMIGA_HOME */
-                    int hcut = (hlen > 0 && home[hlen - 1] == '/') ? (int)(hlen - 1) : (int)hlen;
-                    snprintf(fasl_path, sizeof(fasl_path), "%.*s/lib/%.*s.fasl",
-                             hcut, home, (int)len, name);
-                    snprintf(lisp_path, sizeof(lisp_path), "%.*s/lib/%.*s.lisp",
-                             hcut, home, (int)len, name);
-                    have_fasl = platform_file_exists(fasl_path);
-                    have_lisp = platform_file_exists(lisp_path);
-                }
-            }
-
-            /* Executable-relative fallback (mirrors the boot.lisp search in
-               repl.c, sharing its cl_lib_rel_dirs table): a deployed layout
-               has lib/ next to the binary, an install prefix has
-               ../lib/clamiga/, the in-repo build has lib/ two levels above
-               build/host/clamiga — so a plain `clamiga` on $PATH works from
-               any directory without CLAMIGA_HOME. */
-            if (!have_fasl && !have_lisp) {
-                char prefix[300];
-                if (platform_executable_prefix(prefix, (int)sizeof(prefix))) {
-                    int ri;
-                    for (ri = 0; ri < CL_LIB_REL_COUNT && !have_fasl && !have_lisp; ri++) {
-                        snprintf(fasl_path, sizeof(fasl_path), "%s%s%.*s.fasl",
-                                 prefix, cl_lib_rel_dirs[ri], (int)len, name);
-                        snprintf(lisp_path, sizeof(lisp_path), "%s%s%.*s.lisp",
-                                 prefix, cl_lib_rel_dirs[ri], (int)len, name);
-                        have_fasl = platform_file_exists(fasl_path);
-                        have_lisp = platform_file_exists(lisp_path);
-                    }
-                }
-            }
-#endif
 
             /* Pre-validate FASL header — if magic or version mismatches the
                current runtime, treat the FASL as absent so we recompile from
@@ -3685,7 +3755,8 @@ static CL_Obj bi_require(CL_Obj *args, int n)
             char msg[640];   /* fixed text ~330 chars + 3x the module name */
             snprintf(msg, sizeof(msg),
                      "REQUIRE: cannot find module \"%.*s\" - looked for "
-                     "lib/%.*s.fasl and lib/%.*s.lisp under the current "
+                     "lib/%.*s.fasl and lib/%.*s.lisp (and the lowercase "
+                     "spelling) under the current "
 #ifdef PLATFORM_AMIGA
                      "directory, PROGDIR: and two levels above the binary "
                      "(in-repo layout).",
