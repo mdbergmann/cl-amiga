@@ -8714,11 +8714,13 @@ TEST(eval_loop_collect_expr)
 
 TEST(eval_loop_collect_into)
 {
-    /* collect into named var — use do + return to verify accumulation */
+    /* collect into named var — use do + return to verify accumulation.
+       The INTO variable is user-visible and holds the accumulation IN
+       ORDER at every step (CLHS 6.1.3; GitHub #19) — no NREVERSE. */
     ASSERT_STR_EQ(eval_print(
         "(loop for x in '(1 2 3 4 5)"
         "  collect x into result"
-        "  do (when (= x 3) (return (nreverse result))))"), "(1 2 3)");
+        "  do (when (= x 3) (return result)))"), "(1 2 3)");
 }
 
 TEST(eval_loop_sum)

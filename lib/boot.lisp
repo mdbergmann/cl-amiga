@@ -2388,19 +2388,44 @@ type is purely advisory here, so it is discarded once parsed."
       (string= kn "NCONC") (string= kn "NCONCING")
       (string= kn "APPEND") (string= kn "APPENDING")))
 
-(defun %loop-accum-body (kn expr accum-var)
+(defun %loop-accum-body (kn expr accum-var &optional tail-var)
   "Generate the body form for accumulation kind KN.
 
-List accumulators (COLLECT/NCONC/APPEND) all build the accumulator in
-REVERSED order (newest element first) so that a single NREVERSE at loop
-end yields the correct order.  This is what lets COLLECT, NCONC and
-APPEND be freely mixed into the same accumulation (CLHS 6.1.3) — e.g.
-`(loop ... if x nconc l else collect e)`.  COLLECT pushes one element;
-NCONC reverse-splices the list destructively (NRECONC — the list may be
-destroyed, like NCONC); APPEND reverse-copies it (REVAPPEND — no
-destruction, like APPEND).  The finalizer (%loop-list-accum-p) emits the
-matching NREVERSE."
+Two strategies for the list accumulators (COLLECT/NCONC/APPEND), both
+letting the three be freely mixed into one accumulation (CLHS 6.1.3),
+e.g. `(loop ... if x nconc l else collect e)`:
+
+* Anonymous accumulator (TAIL-VAR is NIL): build REVERSED (newest element
+  first) and NREVERSE once at loop end — the cheapest way on a 68020, and
+  unobservable because nothing can see the variable before the loop
+  returns.  COLLECT pushes one element; NCONC reverse-splices
+  destructively (NRECONC — the argument may be destroyed, like NCONC);
+  APPEND reverse-copies (REVAPPEND — no destruction, like APPEND).  The
+  clause parser emits the matching NREVERSE in the result form.
+
+* INTO variable (TAIL-VAR is the hidden tail-pointer gensym): the
+  variable is user-visible in the loop body and in FINALLY (CLHS 6.1.3:
+  it is \"like a variable established by WITH\"), so it must hold the
+  accumulation IN ORDER at every step — GitHub #19 was `(loop ... nconc
+  (list :k e) into acc do (setf (getf acc :k) ...))` seeing a reversed
+  plist.  Each clause splices at the tail: COLLECT a fresh cons, NCONC
+  the list itself (and re-LASTs it), APPEND a COPY-LIST of it.  No
+  epilogue NREVERSE."
   (cond
+    ((and tail-var (or (string= kn "COLLECT") (string= kn "COLLECTING")))
+     (let ((c (gensym "C")))
+       `(let ((,c (list ,expr)))
+          (if ,tail-var (rplacd ,tail-var ,c) (setq ,accum-var ,c))
+          (setq ,tail-var ,c))))
+    ((and tail-var (or (string= kn "APPEND") (string= kn "APPENDING")
+                       (string= kn "NCONC") (string= kn "NCONCING")))
+     (let ((l (gensym "L")))
+       `(let ((,l ,(if (or (string= kn "APPEND") (string= kn "APPENDING"))
+                       `(copy-list ,expr)
+                       expr)))
+          (when ,l
+            (if ,tail-var (rplacd ,tail-var ,l) (setq ,accum-var ,l))
+            (setq ,tail-var (last ,l))))))
     ((or (string= kn "COLLECT") (string= kn "COLLECTING"))
      `(push ,expr ,accum-var))
     ((or (string= kn "SUM") (string= kn "SUMMING"))
@@ -2857,11 +2882,15 @@ group reduces to the ordinary sequential init-then-step."
                ;; CLHS 6.1.3.1: INTO var may be followed by OF-TYPE type-spec.
                (when (and rest (%loop-keyword-p (car rest) "OF-TYPE"))
                  (setq rest (cddr rest)))
-               (unless (member accum-var into-vars)
-                 (push accum-var into-vars)
-                 (push (list accum-var init-val) bindings)
-                 (when is-list-accum
-                   (push `(setq ,accum-var (nreverse ,accum-var)) epilogue))))
+               ;; INTO-VARS is an alist (var . tail-var); a list
+               ;; accumulator gets a hidden tail pointer so the user-visible
+               ;; variable stays in order (see %LOOP-ACCUM-BODY).
+               (unless (assoc accum-var into-vars)
+                 (let ((tail (and is-list-accum (gensym "TAIL"))))
+                   (push (cons accum-var tail) into-vars)
+                   (push (list accum-var init-val) bindings)
+                   (when tail
+                     (push (list tail nil) bindings)))))
              (progn
                (unless default-accum
                  (setq default-accum (gensym "ACC"))
@@ -2869,7 +2898,8 @@ group reduces to the ordinary sequential init-then-step."
                  (setq result-form (if is-list-accum `(nreverse ,default-accum)
                                        default-accum)))
                (setq accum-var default-accum)))
-         (setq form (%loop-accum-body kn expr accum-var))))
+         (setq form (%loop-accum-body kn expr accum-var
+                                      (cdr (assoc accum-var into-vars))))))
       ;; Nested IF/WHEN/UNLESS as sub-clause (standard LOOP syntax)
       ((or (%loop-keyword-p sub "IF") (%loop-keyword-p sub "WHEN")
            (%loop-keyword-p sub "UNLESS"))
@@ -3094,11 +3124,16 @@ group reduces to the ordinary sequential init-then-step."
                      ;; consume it so the clause parses.
                      (when (and rest (%loop-keyword-p (car rest) "OF-TYPE"))
                        (setq rest (cddr rest)))
-                     (unless (member accum-var into-vars)
-                       (push accum-var into-vars)
-                       (push (list accum-var init-val) bindings)
-                       (when is-list-accum
-                         (push `(setq ,accum-var (nreverse ,accum-var)) epilogue))))
+                     ;; INTO-VARS is an alist (var . tail-var); a list
+                     ;; accumulator gets a hidden tail pointer so the
+                     ;; user-visible variable stays in order (see
+                     ;; %LOOP-ACCUM-BODY).
+                     (unless (assoc accum-var into-vars)
+                       (let ((tail (and is-list-accum (gensym "TAIL"))))
+                         (push (cons accum-var tail) into-vars)
+                         (push (list accum-var init-val) bindings)
+                         (when tail
+                           (push (list tail nil) bindings)))))
                    (progn
                      (unless default-accum
                        (setq default-accum (gensym "ACC"))
@@ -3106,7 +3141,9 @@ group reduces to the ordinary sequential init-then-step."
                        (setq result-form (if is-list-accum `(nreverse ,default-accum)
                                              default-accum)))
                      (setq accum-var default-accum)))
-               (push (%loop-accum-body kn expr accum-var) body)))
+               (push (%loop-accum-body kn expr accum-var
+                                       (cdr (assoc accum-var into-vars)))
+                     body)))
             ;; NAMED
             ((%loop-keyword-p kw "NAMED")
              (setq block-name (car rest))
