@@ -670,15 +670,29 @@ static int32_t read_i32_be(const uint8_t *p)
  * sourcing the operands and pushing the result back.  `is_sub == 0`
  * produces an ADD; `is_sub == 1` produces a SUB.
  *
- * Tag accounting: both operands carry bit-0 tag = 1.  For ADD the
- * raw tagged sum carries bit-0 = 0 with one surplus tag, so SUBQ #1
- * restores `... | 1`.  For SUB the raw tagged difference cancels
- * both tags, so ADDQ #1 sets bit-0 back.
+ * Tag accounting: both operands carry bit-0 tag = 1.  For ADD one tag
+ * is stripped from a FIRST (SUBQ #1 — a is odd, so this can't
+ * overflow), and the ADD then yields the tagged sum 2(va+vb)+1
+ * directly.  For SUB the raw tagged difference cancels both tags, so
+ * ADDQ #1 sets bit-0 back.
+ *
+ * Why the tag is stripped before the ADD and not after: the V flag of
+ * a 32-bit add is only an exact fixnum-overflow test when the value it
+ * is computed on is the final tagged result.  Adding the two tagged
+ * operands first gives 2(va+vb)+2, and for va+vb = -2^30-1 (e.g.
+ * most-negative-fixnum + -1) that is exactly INT_MIN — representable,
+ * V clear — and the SUBQ #1 that stripped the surplus tag afterwards
+ * wrapped it to 0x7FFFFFFF: tagged most-positive-fixnum, silently.
+ * With the tag stripped first every sum outside the fixnum range
+ * overflows the 32-bit add, and every sum inside it does not.  The
+ * SUB template never had the hole: 2(va-vb) is in range exactly when
+ * va-vb is, and the ADDQ #1 cannot overflow from an even value.
  *
  * Overflow recovery (BVS taken): D0 holds the 32-bit-wrapped result.
- * For ADD, original a = wrapped - b, so SUB d1,d0; for SUB, original
- * a = wrapped + b, so ADD d1,d0.  Either way D0 ends up with a, D1
- * still holds b, and we fall into the common slow-path JSR.
+ * For ADD, original a = wrapped - b + 1, so SUB d1,d0 / ADDQ #1,d0;
+ * for SUB, original a = wrapped + b, so ADD d1,d0.  Either way D0 ends
+ * up with a, D1 still holds b, and we fall into the common slow-path
+ * JSR.
  *
  * Caller-saved discipline: D0/D1/A0/A1 only — D5/D6/D7 are the cache
  * regs and stay untouched. */
@@ -695,21 +709,28 @@ static void emit_arith_compute(CodeBuf *cb, int is_sub, uint32_t helper,
     beq_b_pc = (int32_t)cb_len(cb) + 2;
     m68k_emit_beq_w(cb, 0);
 
-    if (is_sub) m68k_emit_sub_l_dn_to_dm(cb, REG_D1, REG_D0);
-    else        m68k_emit_add_l_dn_to_dm(cb, REG_D1, REG_D0);
+    if (is_sub) {
+        m68k_emit_sub_l_dn_to_dm(cb, REG_D1, REG_D0);   /* 2(va-vb): tags cancel */
+    } else {
+        m68k_emit_subq_l_dn(cb, 1, REG_D0);             /* strip a's tag first */
+        m68k_emit_add_l_dn_to_dm(cb, REG_D1, REG_D0);   /* 2(va+vb)+1: V is exact */
+    }
     bvs_pc = (int32_t)cb_len(cb) + 2;
     m68k_emit_bvs_w(cb, 0);
 
     if (is_sub) m68k_emit_addq_l_dn(cb, 1, REG_D0);  /* tag was cancelled */
-    else        m68k_emit_subq_l_dn(cb, 1, REG_D0);  /* strip surplus tag */
     bra_pc = (int32_t)cb_len(cb) + 2;
     m68k_emit_bra_w(cb, 0);
 
     /* Overflow-recovery shim: reconstruct original a in D0. */
     {
         int32_t overflow_off = (int32_t)cb_len(cb);
-        if (is_sub) m68k_emit_add_l_dn_to_dm(cb, REG_D1, REG_D0);
-        else        m68k_emit_sub_l_dn_to_dm(cb, REG_D1, REG_D0);
+        if (is_sub) {
+            m68k_emit_add_l_dn_to_dm(cb, REG_D1, REG_D0);
+        } else {
+            m68k_emit_sub_l_dn_to_dm(cb, REG_D1, REG_D0);
+            m68k_emit_addq_l_dn(cb, 1, REG_D0);
+        }
         m68k_patch_disp16(cb_data(cb), cb_len(cb),
                           (uint32_t)bvs_pc,
                           (int16_t)(overflow_off - bvs_pc));

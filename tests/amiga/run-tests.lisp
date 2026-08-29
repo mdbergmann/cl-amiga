@@ -8401,6 +8401,39 @@ y" 1))
 (check "thread-yield no crash" nil
   (mp:thread-yield))
 
+; --- JIT fixnum + / - at the fixnum boundaries (regression) ---
+; The m68k JIT's ADD template added the two tagged operands and tested the
+; V flag before stripping the surplus tag.  For va+vb = -2^30-1 (e.g.
+; most-negative-fixnum + -1) the tagged sum is exactly INT_MIN — V clear —
+; and the SUBQ #1 afterwards wrapped it to tagged MOST-POSITIVE-FIXNUM, so
+; (+ most-negative-fixnum -1) returned 1073741823 instead of a bignum.
+; Surfaced by the atomic-decf underflow check above.  The operands go
+; through a DEFUN so the arithmetic is JIT-compiled, not folded.
+(defun jit-fx-add (a b) (+ a b))
+(defun jit-fx-sub (a b) (- a b))
+(check "jit + most-negative-fixnum -1 is a bignum" -1073741825
+  (jit-fx-add -1073741824 -1))
+(check "jit + pair summing to -2^30-1 is a bignum" -1073741825
+  (jit-fx-add -536870913 -536870912))
+(check "jit + landing exactly on most-negative-fixnum stays fixnum" '(-1073741824 t)
+  (let ((r (jit-fx-add -1073741823 -1))) (list r (typep r 'fixnum))))
+(check "jit + most-positive-fixnum 1 is a bignum" 1073741824
+  (jit-fx-add 1073741823 1))
+(check "jit + landing exactly on most-positive-fixnum stays fixnum" '(1073741823 t)
+  (let ((r (jit-fx-add 1073741822 1))) (list r (typep r 'fixnum))))
+(check "jit + most-negative-fixnum 0 unchanged" -1073741824
+  (jit-fx-add -1073741824 0))
+(check "jit - most-negative-fixnum 1 is a bignum" -1073741825
+  (jit-fx-sub -1073741824 1))
+(check "jit - most-positive-fixnum -1 is a bignum" 1073741824
+  (jit-fx-sub 1073741823 -1))
+(check "jit - landing exactly on most-negative-fixnum stays fixnum" '(-1073741824 t)
+  (let ((r (jit-fx-sub -1073741823 1))) (list r (typep r 'fixnum))))
+(check "jit - 0 most-negative-fixnum is a bignum" 1073741824
+  (jit-fx-sub 0 -1073741824))
+(check "jit +/- plain values still add" '(7 -1 -3)
+  (list (jit-fx-add 3 4) (jit-fx-add 2 -3) (jit-fx-sub -1 2)))
+
 ; --- Lock operations ---
 (check "make-lock" t
   (not (null (mp:make-lock "test-lock"))))
