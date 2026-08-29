@@ -139,7 +139,10 @@ LIB_OBJS = $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(LIB_SRCS))
 TESTOBJDIR    = $(BUILDDIR)/test-obj
 LIB_TEST_OBJS = $(patsubst $(SRCDIR)/%.c,$(TESTOBJDIR)/%.o,$(LIB_SRCS))
 
-.PHONY: host test test-fast test-plus test-extra linux-test clean verify-amiga install-hooks docs-check docs-update test-gc-stress test-mt-thread-exit-race fasl fasl-amiga clean-fasl-amiga
+DESTDIR ?=
+PREFIX ?= /usr/local
+
+.PHONY: host test test-fast test-plus test-extra linux-test clean verify-amiga install-hooks docs-check docs-update test-gc-stress test-mt-thread-exit-race fasl fasl-amiga clean-fasl-amiga install uninstall
 
 host: $(HOST_BIN)
 
@@ -515,6 +518,15 @@ install-hooks:
 	@chmod +x githooks/* 2>/dev/null || true
 	@echo "=> auto-review hook activated (core.hooksPath=githooks)"
 	@echo "   bypass one commit with 'git commit --no-verify'; disable with CLAUDE_AUTO_REVIEW=0"
+
+install: host fasl
+	cp -pR lib/ $(DESTDIR)$(PREFIX)/lib/clamiga
+	mkdir -p $(DESTDIR)$(PREFIX)/bin
+	install -m755 $(BUILDDIR)/clamiga $(DESTDIR)$(PREFIX)/bin
+
+uninstall:
+	rm -f $(DESTDIR)$(PREFIX)/bin/clamiga
+	rm -rf $(DESTDIR)$(PREFIX)/lib/clamiga
 
 clean:
 	rm -rf build
