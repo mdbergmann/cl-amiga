@@ -314,7 +314,7 @@ versions. The goal is to upstream each one as the remaining API gaps close.
 | **rfc2388** | https://github.com/mdbergmann/rfc2388 | `#+cl-amiga` MIME multipart parsing using a `:latin-1` external format. Used by Hunchentoot for multipart form/file uploads. |
 | **cl-fad** | https://github.com/mdbergmann/cl-fad | `#+:cl-amiga` directory/pathname/file utilities (`list-directory`, `file-exists-p`, …) mapped onto CL-Amiga's `directory`/`probe-file`. Used by Hunchentoot. |
 | **hunchentoot** | https://github.com/mdbergmann/hunchentoot | `#+:cl-amiga` web-server adaptations (e.g. `set-timeouts` over the usocket clamiga backend). Runs CL-Amiga as an HTTP server. |
-| **atomics** | https://codeberg.org/mdbergmann/atomics | `#+clamiga` compare-and-swap / atomic-op branch in `atomics.lisp`. Backs bordeaux-threads v2's atomic API. |
+| **atomics** | https://codeberg.org/mdbergmann/atomics | `#+clamiga` branch in `atomics.lisp` mapping `cas` / `atomic-incf` / `atomic-decf` onto `mp:compare-and-swap` / `mp:atomic-incf` / `mp:atomic-decf`. Backs bordeaux-threads v2's atomic API. |
 | **fset** | https://github.com/mdbergmann/fset | `#+cl-amiga` branches in `Code/port.lisp` (lock/memory-barrier stubs onto the `MP` package, a `make-char` helper). The functional-collections library; its own suite passes 17/17 on CL-Amiga. |
 
 > **fset dependency:** fset 2.4.x requires `misc-extensions` ≥ 4.2.4, which is
@@ -694,6 +694,14 @@ diffs the real package exports against a committed snapshot; run
   `*standard-output*` reaches the shell window (or a worker can open its own
   `CON:` window via `open`). See the size-keyword tests in
   `tests/test_threads.c` / `tests/amiga/run-tests.lisp` for usage.
+  Atomic operations: `mp:compare-and-swap` (alias `mp:cas`) on `car`/`cdr`,
+  `svref`, `symbol-value` / special variables, `slot-value` and defstruct
+  accessors — returns the value the place held, `eq` to the old value exactly
+  when it swapped — plus `mp:atomic-incf` / `mp:atomic-decf` for fixnum
+  counters. A native compare-exchange on the host, a `Forbid()`/`Permit()`
+  window on the single-core Amiga targets. Library backends map onto these
+  directly (the `atomics` fork does). See `tests/test_atomics.c` /
+  `tests/amiga/run-tests.lisp` and [docs/mp.md](docs/mp.md).
   Two built-in hang-triage diagnostics: `(mp:dump-thread-waits)` prints every
   live thread's current wait state (which lock/condvar it is blocked on), and
   setting `CLAMIGA_LOCK_DIAG=<ms>` in the environment makes any blocking
@@ -1574,7 +1582,7 @@ Point-in-time benchmark results (sento actor throughput on host, Amiga JIT call 
 - **Amiga GUI bindings are incomplete** — the Intuition/Graphics/GadTools abstractions cover common use cases (windows, drawing, gadgets, menus) but not the full API surface; more libraries (ASL requesters, Layers, Commodities) are not yet wrapped
 - **Composite streams** — `make-two-way-stream`, `make-broadcast-stream`, and `make-concatenated-stream` are implemented with their `-streams` accessors (see the composite-stream tests in `tests/test_stream.c` / `tests/amiga/run-tests.lisp` for usage); `make-echo-stream` is not yet implemented
 - **Stream external formats** — character streams default to UTF-8; `(open … :external-format :latin-1)` (also `:iso-8859-1`) selects an 8-bit-transparent stream where each code point 0–255 maps to a single raw byte with no transcoding, for byte-faithful I/O over a character stream (e.g. an `rfc2388` multipart upload written to a temp file). `stream-external-format` reports `:latin-1` / `:default`. Other named encodings are not yet selectable. See `tests/test_stream.c` (`open_latin1_*`) and `tests/amiga/run-tests.lisp` for usage.
-- **Threading** — `MP` package covers the core bordeaux-threads surface (threads with `interrupt`/`destroy`, mutex + recursive locks, named condition variables with timeout, `with-lock-held` / `with-recursive-lock-held`, type predicates). `(ql:quickload :bordeaux-threads)` and Quicklisp itself currently rely on local patches we ship — `lib/quicklisp-compat.lisp` (maps the BT v2 surface onto `MP`, adapts Quicklisp's network/HTTP layer) plus the CL-Amiga library forks cloned into `~/quicklisp/local-projects` and the auto-registered `swank` stub from `lib/shims/` (see [Quicklisp](#quicklisp)); the plan is to upstream these once the remaining API gaps close. Not yet covered: semaphores, atomic integers, `with-timeout`, `:timeout` on `acquire-lock`
+- **Threading** — `MP` package covers the core bordeaux-threads surface (threads with `interrupt`/`destroy`, mutex + recursive locks, named condition variables with timeout, `with-lock-held` / `with-recursive-lock-held`, type predicates). `(ql:quickload :bordeaux-threads)` and Quicklisp itself currently rely on local patches we ship — `lib/quicklisp-compat.lisp` (maps the BT v2 surface onto `MP`, adapts Quicklisp's network/HTTP layer) plus the CL-Amiga library forks cloned into `~/quicklisp/local-projects` and the auto-registered `swank` stub from `lib/shims/` (see [Quicklisp](#quicklisp)); the plan is to upstream these once the remaining API gaps close. Not yet covered: semaphores, `with-timeout`, `:timeout` on `acquire-lock`
 - **ANSI CL gaps** — while major subsystems work (CLOS, conditions, packages, the full numeric tower, arrays, pathnames, streams, loop, format), some corners of the spec remain unimplemented
 - **CPU time on AmigaOS** — `get-internal-run-time` (and the "cpu" figure that `time` prints) measures real process CPU time on POSIX hosts via `getrusage`, but falls back to wall-clock time on AmigaOS because exec has no per-task CPU accounting — there, run time and real time report the same value.
 - **Socket timeout clock on AmigaOS** — the socket read/write timeout deadlines are measured with a `DateStamp`-based millisecond clock, which resets at midnight. A timeout window that straddles 00:00 can therefore fire early or late by up to the elapsed-since-midnight amount — a once-a-day edge that is harmless for the typical second-scale timeouts but not exact. Switching the Amiga deadline source to a monotonic `timer.device` clock would remove it. (POSIX is unaffected.)
@@ -1582,8 +1590,7 @@ Point-in-time benchmark results (sento actor throughput on host, Amiga JIT call 
 
 ## TODO
 
-- **CAS (compare-and-swap)** — atomic CAS primitive for lock-free data structures; on Amiga can possibly stay with lock-based implementation
-- **Upstream `bordeaux-threads` and Quicklisp patches** — close the remaining `MP`/BT v2 API gaps (semaphores, atomic integers + place macros, `with-timeout`, `:timeout` on `acquire-lock`, `native-lock-p` / `native-recursive-lock-p` / `recursive-lock-p`) so the local-projects shim becomes an `impl-cl-amiga.lisp` mergeable upstream; same for the Quicklisp network/HTTP adaptations currently in `lib/quicklisp-compat.lisp`
+- **Upstream `bordeaux-threads` and Quicklisp patches** — close the remaining `MP`/BT v2 API gaps (semaphores, `with-timeout`, `:timeout` on `acquire-lock`, `native-lock-p` / `native-recursive-lock-p` / `recursive-lock-p`) so the local-projects shim becomes an `impl-cl-amiga.lisp` mergeable upstream; same for the Quicklisp network/HTTP adaptations currently in `lib/quicklisp-compat.lisp`
 - **Native AmigaOS 4 version** — the other PPC-based next-gen system; a natural next step on the MorphOS build's path
 - **Bignum performance** — optional GMP backend for faster arbitrary-precision arithmetic
 

@@ -3405,6 +3405,183 @@ group reduces to the ordinary sequential init-then-step."
     (when colon-p (write-char #\) s))))
 
 ;;; ============================================================
+;;; MP atomic operations: COMPARE-AND-SWAP (alias CAS), ATOMIC-INCF,
+;;; ATOMIC-DECF
+;;; ============================================================
+;;; Defined HERE, in the CL section, with every MP name written out as
+;;; mp::NAME — not in the (in-package :mp) block below.  That block is
+;;; read while the CL macros boot.lisp itself defines (LOOP, UNLESS,
+;;; CASE, DOLIST, ...) are not yet external from COMMON-LISP (the export
+;;; pass runs after boot), so on a source boot an unqualified LOOP there
+;;; would intern a fresh, undefined MP::LOOP.  Read in the CL section
+;;; those names resolve to the CL symbols on both load paths.
+;;;
+;;; The cell primitives mp::%CAS-CAR / %CAS-CDR / %CAS-SVREF /
+;;; %CAS-STRUCT-SLOT / %CAS-SYMBOL-VALUE are C builtins
+;;; (builtins_thread.c) over the platform CAS: a native compare-exchange
+;;; on the host, a Forbid()/Permit() window on the single-core AmigaOS and
+;;; MorphOS targets.  Each returns the value the cell held when the CAS
+;;; was decided — EQ to OLD exactly when the swap happened.
+;;; mp::%CAS-SLOT-VALUE lives in clos.lisp (it needs the slot-location
+;;; machinery).
+
+(defun mp::%atomic-place (place env)
+  "Analyse PLACE for MP:COMPARE-AND-SWAP / ATOMIC-INCF / ATOMIC-DECF.
+Returns three values: a LET* binding list that evaluates the place's
+subforms exactly once, left to right (CLHS 5.1.1.1); a form reading the
+place through those bindings; and a function of two forms (OLD NEW)
+returning the mp::%CAS-* call that swaps it.  Macro and symbol-macro
+places are expanded, (THE type place) is unwrapped, and a defstruct
+accessor is recognised through the compiler macro DEFSTRUCT installs
+for it."
+  (let ((form place))
+    (loop
+      (cond
+        ((symbolp form)
+         (multiple-value-bind (expansion expanded-p) (macroexpand-1 form env)
+           (unless expanded-p
+             ;; A variable: only a special (global) one has a cell; the
+             ;; builtin follows the thread's dynamic binding if one exists.
+             ;; An ordinary lexical has no such cell — CASing it through
+             ;; SYMBOL-VALUE would silently hit an unrelated global, so
+             ;; reject it here instead (this only sees global specialness;
+             ;; a symbol special only by a local DECLARE is indistinguishable
+             ;; from a plain lexical without environment introspection this
+             ;; implementation doesn't have, and is rejected too).
+             (unless (mp::%symbol-specialp form)
+               (error "MP:COMPARE-AND-SWAP: ~S is not a special variable~%  ~
+A bare symbol place must name a variable declared SPECIAL (DEFVAR, ~
+DEFPARAMETER, or PROCLAIM); an ordinary lexical has no shared cell to CAS."
+                      form))
+             (return (values '()
+                             `(symbol-value ',form)
+                             (lambda (old new)
+                               `(mp::%cas-symbol-value ',form ,old ,new)))))
+           (setq form expansion)))
+        ((not (consp form))
+         (error "MP:COMPARE-AND-SWAP: ~S is not a place" place))
+        (t
+         (let ((head (car form))
+               (args (cdr form)))
+           (flet ((cell (nargs reader casser)
+                    ;; Bind ARGS to temporaries and build the reader / CAS
+                    ;; forms over them.  READER and CASSER take the temps.
+                    (unless (= (length args) nargs)
+                      (error "MP:COMPARE-AND-SWAP: ~S expects ~D argument~:P, got ~S"
+                             head nargs form))
+                    (let ((temps '()))
+                      (dolist (a args)
+                        (declare (ignore a))
+                        (push (gensym "PLACE") temps))
+                      (setq temps (nreverse temps))
+                      (return (values (mapcar #'list temps args)
+                                      (apply reader temps)
+                                      (lambda (old new)
+                                        (apply casser old new temps)))))))
+             (case head
+               ((car first)
+                (cell 1 (lambda (c) `(car ,c))
+                        (lambda (o nw c) `(mp::%cas-car ,c ,o ,nw))))
+               ((cdr rest)
+                (cell 1 (lambda (c) `(cdr ,c))
+                        (lambda (o nw c) `(mp::%cas-cdr ,c ,o ,nw))))
+               ((svref aref)
+                (cell 2 (lambda (v i) `(svref ,v ,i))
+                        (lambda (o nw v i) `(mp::%cas-svref ,v ,i ,o ,nw))))
+               ((symbol-value)
+                (cell 1 (lambda (s) `(symbol-value ,s))
+                        (lambda (o nw s) `(mp::%cas-symbol-value ,s ,o ,nw))))
+               ((clamiga::%struct-ref)
+                (cell 2 (lambda (s i) `(clamiga::%struct-ref ,s ,i))
+                        (lambda (o nw s i) `(mp::%cas-struct-slot ,s ,i ,o ,nw))))
+               ((slot-value)
+                (cell 2 (lambda (i s) `(slot-value ,i ,s))
+                        (lambda (o nw i s) `(mp::%cas-slot-value ,i ,s ,o ,nw))))
+               ((the)
+                (unless (= (length args) 2)
+                  (error "MP:COMPARE-AND-SWAP: malformed THE place ~S" form))
+                (setq form (car (cdr args))))
+               (t
+                (let ((expansion
+                        (cond ((macro-function head env)
+                               (macroexpand-1 form env))
+                              ((compiler-macro-function head env)
+                               (funcall (compiler-macro-function head env)
+                                        form env))
+                              (t form))))
+                  (when (eq expansion form)
+                    (error "MP:COMPARE-AND-SWAP: unsupported place ~S~%  Supported: ~
+(CAR c) (CDR c) (FIRST c) (REST c), (SVREF v i) / (AREF v i) on a simple-vector, ~
+(SYMBOL-VALUE s) or a special variable, (SLOT-VALUE o 's), a DEFSTRUCT slot accessor, ~
+and macros or (THE type ...) wrapping one of these."
+                           place))
+                  (setq form expansion)))))))))))
+
+(defmacro mp::compare-and-swap (place old new &environment env)
+  "Atomically compare the value of PLACE with OLD (under EQ) and, when they
+are the same, store NEW.  Returns the value PLACE held when the comparison
+was made: EQ to OLD exactly when the swap happened.  PLACE's subforms are
+evaluated once, before OLD and NEW.  Atomic with respect to every other
+COMPARE-AND-SWAP / ATOMIC-INCF / ATOMIC-DECF on the same cell across all
+threads; a plain SETF of the cell is not part of that protocol.  Supported
+places: (CAR c) (CDR c) (FIRST c) (REST c), (SVREF v i) / (AREF v i) on a
+simple-vector, (SYMBOL-VALUE s) or a special variable (the calling thread's
+dynamic binding, if any), (SLOT-VALUE o 's), DEFSTRUCT slot accessors, and
+macros or (THE type ...) wrapping one of these."
+  (multiple-value-bind (bindings reader casser) (mp::%atomic-place place env)
+    (declare (ignore reader))
+    (let ((o (gensym "OLD"))
+          (nw (gensym "NEW")))
+      `(let* (,@bindings (,o ,old) (,nw ,new))
+         ,(funcall casser o nw)))))
+
+(defmacro mp::cas (place old new)
+  "Alias for MP:COMPARE-AND-SWAP."
+  `(mp::compare-and-swap ,place ,old ,new))
+
+(defun mp::%atomic-fixnum-sum (old delta operator)
+  "OLD + DELTA for ATOMIC-INCF / ATOMIC-DECF: both must be fixnums, and so
+must the result — an atomic counter never silently becomes a bignum."
+  (unless (typep old 'fixnum)
+    (error 'type-error :datum old :expected-type 'fixnum))
+  (unless (typep delta 'fixnum)
+    (error 'type-error :datum delta :expected-type 'fixnum))
+  (let ((new (+ old delta)))
+    (unless (typep new 'fixnum)
+      (error "~S: ~D ~:[-~;+~] ~D overflows a fixnum"
+             operator old (>= delta 0) (abs delta)))
+    new))
+
+(defun mp::%atomic-add-expansion (place delta env operator)
+  ;; CAS retry loop: read the cell, compute the fixnum sum, swap it in if
+  ;; the cell still holds what was read; a lost race just goes round again.
+  (multiple-value-bind (bindings reader casser) (mp::%atomic-place place env)
+    (let ((d (gensym "DELTA"))
+          (o (gensym "OLD"))
+          (nw (gensym "NEW")))
+      `(let* (,@bindings (,d ,delta))
+         (loop
+           (let* ((,o ,reader)
+                  (,nw (mp::%atomic-fixnum-sum ,o ,d ',operator)))
+             (when (eq ,o ,(funcall casser o nw))
+               (return ,nw))))))))
+
+(defmacro mp::atomic-incf (place &optional (delta 1) &environment env)
+  "Atomically add DELTA (default 1) to the fixnum in PLACE and return the
+new value.  PLACE and its current value must be fixnums, as must the
+result; otherwise an error is signalled and PLACE is left unchanged.  Same
+places as MP:COMPARE-AND-SWAP; PLACE's subforms are evaluated once, before
+DELTA."
+  (mp::%atomic-add-expansion place delta env 'mp::atomic-incf))
+
+(defmacro mp::atomic-decf (place &optional (delta 1) &environment env)
+  "Atomically subtract DELTA (default 1) from the fixnum in PLACE and
+return the new value.  See MP:ATOMIC-INCF."
+  (mp::%atomic-add-expansion place `(- ,delta) env 'mp::atomic-decf))
+
+(export '(mp::compare-and-swap mp::cas mp::atomic-incf mp::atomic-decf) :mp)
+
+;;; ============================================================
 ;;; EXT package: defglobal
 ;;; ============================================================
 

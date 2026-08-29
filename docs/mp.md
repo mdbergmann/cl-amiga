@@ -71,11 +71,40 @@ with safepoints across all live threads.
 | `(write-memory-barrier)` | function | Release/write fence |
 
 > `%make-recursive-lock` is the internal primitive behind `make-recursive-lock`.
-> Not yet covered: semaphores, atomic integers, `with-timeout`, and `:timeout` on
+> Not yet covered: semaphores, `with-timeout`, and `:timeout` on
 > `acquire-lock` — see [Known Limitations](../README.md#known-limitations-and-future-work).
+
+## Atomic operations
+
+| Signature | Kind | Description |
+|-----------|------|-------------|
+| `(compare-and-swap place old new)` | macro | Atomically store `new` in `place` if it holds `old` (under `eq`). Returns the value `place` held when the comparison was made — `eq` to `old` exactly when the swap happened |
+| `(cas place old new)` | macro | Alias for `compare-and-swap` |
+| `(atomic-incf place &optional (delta 1))` | macro | Atomically add `delta` to the fixnum in `place`; returns the new value |
+| `(atomic-decf place &optional (delta 1))` | macro | Atomically subtract `delta` from the fixnum in `place`; returns the new value |
+
+Supported places: `(car c)` `(cdr c)` `(first c)` `(rest c)`, `(svref v i)` /
+`(aref v i)` on a simple-vector, `(symbol-value s)` or a special variable
+(the calling thread's dynamic binding when one is in effect), `(slot-value o 's)`
+on a standard-object or structure, defstruct slot accessors, and macros,
+symbol-macros or `(the type ...)` wrapping one of these.  The place's subforms
+are evaluated once, left to right, before `old` and `new` (or `delta`).  An
+unsupported place is an error at macroexpansion time.
+
+`atomic-incf` / `atomic-decf` require the current value, the delta and the
+result to be fixnums; anything else signals an error and leaves the place
+unchanged — a counter never silently turns into a bignum.
+
+The primitive is real on every target: a native compare-exchange on the host,
+and a `Forbid()`/`Permit()` window on AmigaOS and MorphOS, where the single
+core makes disabling task switching a complete atomicity guarantee.  These
+operations are atomic with respect to each other across all threads; a plain
+`setf` of the same cell is not part of the protocol.  A library backend maps
+onto them directly — e.g. `atomics:cas` as
+`(eq old (mp:compare-and-swap place old new))`.
 
 ## Source of truth
 
 `tests/test_threads.c`, `tests/test_dynbind_threaded.c`,
-`tests/test_gc_threaded.c`, and the threading block in
-`tests/amiga/run-tests.lisp`.
+`tests/test_gc_threaded.c`, `tests/test_atomics.c`, and the threading and
+atomics blocks in `tests/amiga/run-tests.lisp`.
