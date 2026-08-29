@@ -12,10 +12,18 @@
 #     missing tool BLOCKS the commit — it is never silently skipped. The only
 #     bypass is an explicit `git commit --no-verify`.
 #   * The staged diff is written to a file and the reviewer is told to READ it
-#     (with Read+Bash tools), NOT piped on stdin. Headless `claude -p` stalls
+#     (with Read+Grep+Glob tools — no shell), NOT piped on stdin. Headless `claude -p` stalls
 #     when a large diff arrives on stdin and it must answer in a single shot;
 #     reading the diff as a file lets the agent work through it reliably.
 #   * Never sweep in changes the user didn't stage (partial-staging guard).
+#   * The INDEX the user staged is what gets committed.  The reviewer used to
+#     run with Bash and once did `git stash` / `git stash pop` to build a
+#     baseline: stash resets the index, pop restores the files UNSTAGED, and git
+#     re-reads the index after this hook — so the commit went in EMPTY with the
+#     changes left in the working tree; on a later run it went as far as
+#     `git commit`, moving HEAD.  The reviewer has no shell now, and the staged
+#     tree + HEAD are snapshotted before any agent runs: a moved index is
+#     restored with `git read-tree`, a moved HEAD blocks the commit (index guard).
 #
 # Override behaviour via env vars (see scripts/review/README.md):
 #   CLAUDE_AUTO_REVIEW=0   disable entirely (or use `git commit --no-verify`)
@@ -62,6 +70,36 @@ fi
 TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
 maybe_timeout() { # maybe_timeout <secs> <cmd...>
   if [ -n "$TIMEOUT_BIN" ]; then "$TIMEOUT_BIN" "$@"; else shift; "$@"; fi
+}
+
+# Index guard.  INDEX_TREE is the tree object of the staged index, taken before
+# any agent or build runs.  index_guard <stage> compares the live index against
+# it and, if an agent's `git stash`/`reset`/`add` moved it, puts the snapshot
+# back so the commit carries exactly what was staged (see design principles).
+# Fail-CLOSED if the restore itself fails: an unknown index must not be
+# committed.
+INDEX_TREE=""
+HEAD_SHA="$(git rev-parse -q --verify HEAD 2>/dev/null || echo root)"
+snapshot_index() { INDEX_TREE="$(git write-tree)"; }
+index_guard() { # index_guard <stage-description>
+  # HEAD moved (an agent committed/reset/checked out)?  git would fail the
+  # real commit with "cannot lock ref 'HEAD'" anyway — say why, and block.
+  head_now="$(git rev-parse -q --verify HEAD 2>/dev/null || echo root)"
+  if [ "$head_now" != "$HEAD_SHA" ]; then
+    echo "[auto-review] HEAD moved during $1 ($HEAD_SHA -> $head_now): an agent ran git commit/reset/checkout — COMMIT BLOCKED. Inspect 'git log', put the branch back, and commit again." >&2
+    [ -n "$LOG" ] && printf '_Index guard: HEAD moved during %s (%s -> %s) — COMMIT BLOCKED._\n\n' "$1" "$HEAD_SHA" "$head_now" >> "$LOG"
+    exit 1
+  fi
+  now="$(git write-tree)"
+  [ "$now" = "$INDEX_TREE" ] && return 0
+  echo "[auto-review] WARNING: the index changed during $1 (an agent ran git stash/reset/add?) — restoring the staged snapshot $INDEX_TREE." >&2
+  if git read-tree "$INDEX_TREE" && [ "$(git write-tree)" = "$INDEX_TREE" ]; then
+    [ -n "$LOG" ] && printf '_Index guard: the index was altered during %s and restored from the staged snapshot._\n\n' "$1" >> "$LOG"
+    return 0
+  fi
+  echo "[auto-review] index guard: could not restore the staged snapshot — COMMIT BLOCKED. Re-stage your changes and commit again." >&2
+  [ -n "$LOG" ] && printf '_Index guard: could not restore the staged snapshot during %s — COMMIT BLOCKED._\n\n' "$1" >> "$LOG"
+  exit 1
 }
 
 # Stage 2: build + run the fast test tier on the resulting tree. Fail-CLOSED on a
@@ -118,6 +156,7 @@ find .reviews -maxdepth 1 -name 'log-*.md' -type f -mtime +30 -delete 2>/dev/nul
 DIFF_FILE="$ROOT/.reviews/staged.diff"
 git diff --cached --no-color > "$DIFF_FILE"
 [ -s "$DIFF_FILE" ] || exit 0
+snapshot_index
 
 TS="$(date '+%Y-%m-%d %H:%M:%S')"
 PARENT="$(git rev-parse --short HEAD 2>/dev/null || echo root)"
@@ -140,17 +179,21 @@ Output format, STRICTLY:
 - If ISSUES, follow with a markdown list, one item per finding:
   "- [HIGH|MED|LOW] path:line - problem - suggested fix"
 - Report ONLY substantive problems (bugs, GC-safety, memory/32-bit, C89/C99, HyperSpec deviations, missing/incorrect tests, security). No style nits, no speculation.
-- Read the diff file and any surrounding source files you need for context (Read tool); you may grep the tree via Bash to verify claims. Do NOT edit anything.'
+- Read the diff file and any surrounding source files you need for context (Read tool); use Grep/Glob to search the tree and verify claims. You have no shell: do not try to build, run tests, or run git — you are inside a pre-commit hook and the hook runs the tests itself after you. Do NOT edit anything.'
 
 # No stdin: the diff is read from $DIFF_FILE. Redirect </dev/null so headless
-# claude doesn't wait on (or block reading) an empty stdin. Read+Bash only, so
-# the agent can read the diff/sources and grep, but cannot edit or run amok.
+# claude doesn't wait on (or block reading) an empty stdin.  Read+Grep+Glob
+# only: the agent can read the diff/sources and search the tree, but has NO
+# shell — a reviewer with Bash ran `git stash`/`pop` (emptying the commit) and,
+# on a later run, `git commit` (moving HEAD so the real commit could not lock
+# the ref).  Verification by grep does not need a shell.
 REVIEW_OUT="$(maybe_timeout "$REVIEW_TIMEOUT" "$CLAUDE_BIN" -p "$REVIEW_PROMPT" \
   --model "$REVIEW_MODEL" \
-  --tools "Read,Bash" \
+  --tools "Read,Grep,Glob" \
   --permission-mode bypassPermissions \
   --output-format text </dev/null 2>/dev/null)"
 RC=$?
+index_guard "the review"
 
 if [ $RC -ne 0 ] || [ -z "$REVIEW_OUT" ]; then
   echo "[auto-review] reviewer error/timeout (rc=$RC) — COMMIT BLOCKED. The mandatory review did not complete." >&2
@@ -179,7 +222,9 @@ STATUS_LINE="$(printf '%s\n' "$REVIEW_OUT" | grep -m1 '^STATUS:' || printf '%s\n
 case "$STATUS_LINE" in
   *CLEAN*)
     echo "[auto-review] review clean." >&2
-    run_tests_or_abort || exit 1
+    run_tests_or_abort; TESTS_RC=$?
+    index_guard "the tests"
+    [ $TESTS_RC -eq 0 ] || exit 1
     echo "[auto-review] commit proceeding." >&2
     exit 0
     ;;
@@ -219,6 +264,7 @@ maybe_timeout "$REVIEW_TIMEOUT" "$CLAUDE_BIN" -p "$FIX_PROMPT" \
   --allowedTools "Read,Grep,Glob,Edit,Write" \
   --output-format text >/dev/null 2>&1
 FRC=$?
+index_guard "the fix agent"
 
 if [ $FRC -ne 0 ]; then
   echo "[auto-review] fix agent error/timeout (rc=$FRC) — aborting commit. Any fixes are in your working tree; re-stage and commit, or use --no-verify." >&2
@@ -238,6 +284,9 @@ echo "$STAGED_FILES" | while IFS= read -r f; do
 done
 
 echo "[auto-review] fixes applied and re-staged." >&2
-run_tests_or_abort || exit 1
+snapshot_index   # the re-staged fixes are now the intended index
+run_tests_or_abort; TESTS_RC=$?
+index_guard "the tests"
+[ $TESTS_RC -eq 0 ] || exit 1
 echo "[auto-review] commit proceeding WITH fixes (see $LOG; 'git show HEAD' after)." >&2
 exit 0
