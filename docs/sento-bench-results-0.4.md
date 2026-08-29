@@ -15,6 +15,8 @@ numbers measure framework message-plumbing overhead, not application work);
 speed 1 vs speed 3 comparison this entry's deltas are computed against;
 [benchmarks.md](benchmarks.md) has the TLAB and generational-GC A/B entries
 (default speed) that decompose the 0.4 gains per feature.
+[sento-bench-results-0.8.md](sento-bench-results-0.8.md) is the follow-up
+measurement, with a same-session A/B against this entry's binary.
 
 ## Environment
 
