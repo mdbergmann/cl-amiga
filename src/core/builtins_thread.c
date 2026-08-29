@@ -1871,6 +1871,130 @@ static CL_Obj bi_condition_variable_p(CL_Obj *args, int n)
 }
 
 /* ================================================================
+ * Compare-and-swap cell builtins — the primitives MP:COMPARE-AND-SWAP,
+ * MP:ATOMIC-INCF and MP:ATOMIC-DECF (boot.lisp) expand into, one per
+ * place kind.  Every Lisp place is a single 32-bit CL_Obj cell in the
+ * arena, so each is one cl_cas_cell on that cell.  All of them return
+ * the value the cell held when the CAS was decided: EQ to OLD exactly
+ * when the swap happened (SBCL's CAS convention).
+ *
+ * GC: nothing here allocates between computing the cell address and
+ * the CAS, and the operands are rooted in args[], so no protection is
+ * needed.  Under the host's generational collector the first store to
+ * a read-protected old-space page takes the write-watch fault like any
+ * other store: the handler unprotects the page and the CAS instruction
+ * re-executes.
+ * ================================================================ */
+
+/* (mp::%cas-car cons old new) -> previous car */
+static CL_Obj bi_cas_car(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    if (!CL_CONS_P(args[0]))
+        cl_signal_type_error(args[0], "CONS", "MP:COMPARE-AND-SWAP (CAR)");
+    return cl_cas_cell(&((CL_Cons *)CL_OBJ_TO_PTR(args[0]))->car,
+                       args[1], args[2]);
+}
+
+/* (mp::%cas-cdr cons old new) -> previous cdr */
+static CL_Obj bi_cas_cdr(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    if (!CL_CONS_P(args[0]))
+        cl_signal_type_error(args[0], "CONS", "MP:COMPARE-AND-SWAP (CDR)");
+    return cl_cas_cell(&((CL_Cons *)CL_OBJ_TO_PTR(args[0]))->cdr,
+                       args[1], args[2]);
+}
+
+/* (mp::%cas-svref simple-vector index old new) -> previous element.
+ * Same admission as SVREF: a rank-1 general vector without fill pointer,
+ * displacement or adjustability (flags == 0). */
+static CL_Obj bi_cas_svref(CL_Obj *args, int n)
+{
+    CL_Vector *vec;
+    int32_t idx;
+    CL_UNUSED(n);
+    if (!CL_VECTOR_P(args[0]))
+        cl_signal_type_error(args[0], "SIMPLE-VECTOR",
+                             "MP:COMPARE-AND-SWAP (SVREF)");
+    vec = (CL_Vector *)CL_OBJ_TO_PTR(args[0]);
+    if (vec->rank > 1 || vec->flags != 0)
+        cl_signal_type_error(args[0], "SIMPLE-VECTOR",
+                             "MP:COMPARE-AND-SWAP (SVREF)");
+    if (!CL_FIXNUM_P(args[1]))
+        cl_signal_type_error(args[1], "FIXNUM",
+                             "MP:COMPARE-AND-SWAP (SVREF index)");
+    idx = CL_FIXNUM_VAL(args[1]);
+    if (idx < 0 || (uint32_t)idx >= vec->length)
+        cl_error(CL_ERR_ARGS,
+                 "MP:COMPARE-AND-SWAP (SVREF): index %d out of range for a "
+                 "vector of length %u", (int)idx, (unsigned)vec->length);
+    return cl_cas_cell(&cl_vector_data(vec)[idx], args[2], args[3]);
+}
+
+/* (mp::%cas-struct-slot struct index old new) -> previous slot value.
+ * STRUCT is a defstruct instance or a CLOS instance (both TYPE_STRUCT);
+ * INDEX is the positional slot index, as for CLAMIGA::%STRUCT-REF. */
+static CL_Obj bi_cas_struct_slot(CL_Obj *args, int n)
+{
+    CL_Struct *st;
+    int32_t idx;
+    CL_UNUSED(n);
+    if (!CL_STRUCT_P(args[0]))
+        cl_signal_type_error(args[0], "STRUCTURE-OBJECT",
+                             "MP:COMPARE-AND-SWAP (structure slot)");
+    if (!CL_FIXNUM_P(args[1]))
+        cl_signal_type_error(args[1], "FIXNUM",
+                             "MP:COMPARE-AND-SWAP (structure slot index)");
+    st = (CL_Struct *)CL_OBJ_TO_PTR(args[0]);
+    idx = CL_FIXNUM_VAL(args[1]);
+    if (idx < 0 || (uint32_t)idx >= st->n_slots)
+        cl_error(CL_ERR_ARGS,
+                 "MP:COMPARE-AND-SWAP (structure slot): index %d out of range "
+                 "(n_slots=%u)", (int)idx, (unsigned)st->n_slots);
+    return cl_cas_cell(&st->slots[idx], args[2], args[3]);
+}
+
+/* (mp::%cas-symbol-value symbol old new) -> previous value.
+ * Targets the calling thread's dynamic binding when one is in effect,
+ * else the global value cell — the same resolution SYMBOL-VALUE and SET
+ * use, so (let ((*x* ..)) (cas (symbol-value '*x*) ..)) never touches
+ * the global cell.  Constants are rejected as by SET; an unbound target
+ * signals UNBOUND-VARIABLE as SYMBOL-VALUE would. */
+static CL_Obj bi_cas_symbol_value(CL_Obj *args, int n)
+{
+    CL_Symbol *s;
+    CL_Obj prev;
+    CL_UNUSED(n);
+    if (!CL_SYMBOL_OR_NIL_P(args[0]))
+        cl_signal_type_error(args[0], "SYMBOL",
+                             "MP:COMPARE-AND-SWAP (SYMBOL-VALUE)");
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(CL_NULL_P(args[0]) ? SYM_NIL : args[0]);
+    if (s->flags & CL_SYM_CONSTANT)
+        cl_error(CL_ERR_GENERAL,
+                 "MP:COMPARE-AND-SWAP: cannot assign to constant variable %s",
+                 cl_symbol_name(args[0]));
+    prev = cl_symbol_value_cas(args[0], args[1], args[2]);
+    if (prev == CL_UNBOUND)
+        cl_signal_unbound_variable(args[0]);
+    return prev;
+}
+
+/* (mp::%symbol-specialp symbol) -> generalized boolean.
+ * Backs the bare-symbol-place check in MP::%ATOMIC-PLACE (boot.lisp):
+ * a plain symbol only has a shared value cell to CAS when it is globally
+ * special (DEFVAR/DEFPARAMETER/PROCLAIM SPECIAL) — an ordinary lexical
+ * has none, and treating it as one would silently CAS an unrelated
+ * global instead of erroring. */
+static CL_Obj bi_symbol_specialp(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    if (!CL_SYMBOL_OR_NIL_P(args[0]))
+        cl_signal_type_error(args[0], "SYMBOL", "MP::%SYMBOL-SPECIALP");
+    return cl_symbol_specialp(args[0]) ? SYM_T : CL_NIL;
+}
+
+/* ================================================================
  * Registration
  * ================================================================ */
 
@@ -1880,6 +2004,13 @@ static CL_Obj bi_condition_variable_p(CL_Obj *args, int n)
 static void mp_defun(const char *name, CL_CFunc func, int min, int max)
 {
     cl_register_builtin_exported(name, func, min, max, cl_package_mp);
+}
+
+/* Internal (unexported) MP helper — reached from the MP macros in boot.lisp
+ * and, for a library backend, as mp::%name. */
+static void mp_defun_internal(const char *name, CL_CFunc func, int min, int max)
+{
+    cl_register_builtin(name, func, min, max, cl_package_mp);
 }
 
 void cl_builtins_thread_init(void)
@@ -1957,6 +2088,14 @@ void cl_builtins_thread_init(void)
     mp_defun("THREADP",                  bi_threadp,                 1, 1);
     mp_defun("LOCKP",                    bi_lockp,                   1, 1);
     mp_defun("CONDITION-VARIABLE-P",     bi_condition_variable_p,    1, 1);
+
+    /* Compare-and-swap cell primitives (MP:COMPARE-AND-SWAP expands to these) */
+    mp_defun_internal("%CAS-CAR",          bi_cas_car,          3, 3);
+    mp_defun_internal("%CAS-CDR",          bi_cas_cdr,          3, 3);
+    mp_defun_internal("%CAS-SVREF",        bi_cas_svref,        4, 4);
+    mp_defun_internal("%CAS-STRUCT-SLOT",  bi_cas_struct_slot,  4, 4);
+    mp_defun_internal("%CAS-SYMBOL-VALUE", bi_cas_symbol_value, 3, 3);
+    mp_defun_internal("%SYMBOL-SPECIALP",  bi_symbol_specialp, 1, 1);
 
     /* Register cached symbols for GC compaction forwarding */
     cl_gc_register_root(&KW_NAME_THR);

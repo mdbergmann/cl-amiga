@@ -698,6 +698,12 @@ CL_Obj cl_symbol_value(CL_Obj sym);
 void   cl_set_symbol_value(CL_Obj sym, CL_Obj val);
 int    cl_symbol_boundp(CL_Obj sym);
 
+/* Compare-and-swap primitives behind MP:COMPARE-AND-SWAP.  Both return the
+ * value the cell held when the CAS was decided (== OLD iff it swapped).
+ * cl_symbol_value_cas returns CL_UNBOUND for an unbound target binding. */
+CL_Obj cl_cas_cell(volatile CL_Obj *cell, CL_Obj old, CL_Obj new_val);
+CL_Obj cl_symbol_value_cas(CL_Obj sym, CL_Obj old, CL_Obj new_val);
+
 /* ================================================================
  * Compatibility macros
  *

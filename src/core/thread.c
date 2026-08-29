@@ -830,6 +830,50 @@ void cl_set_symbol_value(CL_Obj sym, CL_Obj val)
     ((CL_Symbol *)CL_OBJ_TO_PTR(sym))->value = val;
 }
 
+/* Compare-and-swap on one CL_Obj cell — the primitive behind
+ * MP:COMPARE-AND-SWAP.  Returns the value the cell held when the CAS was
+ * decided: OLD when the swap happened, the other content when it did not
+ * (the SBCL CAS convention; callers test success with an EQ against OLD).
+ *
+ * platform_atomic_cas is a native lock-cmpxchg / LL-SC on the host and a
+ * Forbid()/Permit() window on the single-core AmigaOS and MorphOS targets,
+ * where disabling task switching is a complete atomicity guarantee.  A
+ * failed hardware CAS must not simply return a fresh read of the cell: a
+ * racing thread could store OLD back between the failure and that read,
+ * and the caller would then take a swap that never happened for success.
+ * So re-decide from the re-read value until the cell either differs from
+ * OLD or the swap succeeds. */
+CL_Obj cl_cas_cell(volatile CL_Obj *cell, CL_Obj old, CL_Obj new_val)
+{
+    for (;;) {
+        CL_Obj seen = *cell;
+        if (seen != old) return seen;
+        if (platform_atomic_cas(cell, old, new_val)) return old;
+    }
+}
+
+/* CAS on a symbol's value with the same binding resolution as
+ * CL_SYMBOL_VALUE / CL_SET_SYMBOL_VALUE: a thread-local (dynamic) binding of
+ * SYM in the calling thread is the target if one exists, else the global
+ * cell.  Returns the previous value — CL_UNBOUND if the target binding was
+ * unbound (the caller decides how to report that).  A TLV entry is owned
+ * by its thread alone, so a plain compare-then-store is atomic there. */
+CL_Obj cl_symbol_value_cas(CL_Obj sym, CL_Obj old, CL_Obj new_val)
+{
+    CL_Thread *t = (cl_thread_count <= 1)
+                   ? cl_main_thread_ptr
+                   : (CL_Thread *)platform_tls_get();
+    if (CL_NULL_P(sym)) sym = SYM_NIL;
+    if (t->tlv_entry_count > 0) {
+        CL_Obj v = cl_tlv_get(t, sym);
+        if (v != CL_TLV_ABSENT) {
+            if (v == old) cl_tlv_set(t, sym, new_val);
+            return v;
+        }
+    }
+    return cl_cas_cell(&((CL_Symbol *)CL_OBJ_TO_PTR(sym))->value, old, new_val);
+}
+
 int cl_symbol_boundp(CL_Obj sym)
 {
     CL_Thread *t = (cl_thread_count <= 1)

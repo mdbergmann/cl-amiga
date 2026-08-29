@@ -5325,6 +5325,40 @@ check_contains "LOOP INTO tail pointer survives NIL chunks under stress" \
 check_absent   "no corruption diagnostics from the LOOP INTO path" \
   "corrupted\|type 0\|BADMARK\|badmark\|SIGSEGV\|Unbound" "$out"
 
+# --- Case: MP:COMPARE-AND-SWAP / ATOMIC-INCF cell primitives under stress ---
+# The %CAS-* builtins take the cell address and CAS it without allocating in
+# between, so a compaction can never move the cell out from under them; the
+# expansions (place temporaries, the %ATOMIC-FIXNUM-SUM call, a freshly
+# consed NEW in the retry loop) do allocate around every CAS.  Every place
+# kind is exercised, with the swapped-in values being fresh heap objects.
+cat > "$WORK/atomics.lisp" <<'EOF'
+(defstruct gcs-pt (x nil) (n 0))
+(defclass gcs-ck () ((s :initform nil)))
+(defvar *gcs-sv* nil)
+(let ((c (cons nil 0)) (v (vector nil 0)) (p (make-gcs-pt)) (i (make-instance 'gcs-ck))
+      (head (list nil)))
+  (dotimes (k 200)
+    (mp:cas (car c) (car c) (list k))
+    (mp:cas (svref v 0) (svref v 0) (list k))
+    (mp:cas (gcs-pt-x p) (gcs-pt-x p) (list k))
+    (mp:cas (slot-value i 's) (slot-value i 's) (list k))
+    (mp:cas *gcs-sv* *gcs-sv* (list k))
+    (mp:atomic-incf (cdr c))
+    (mp:atomic-incf (svref v 1) 2)
+    (mp:atomic-incf (gcs-pt-n p) 3)
+    (loop (let* ((old (car head)) (new (cons k old)))
+            (when (eq old (mp:cas (car head) old new)) (return)))))
+  (format t "ATOMICS:~a~%"
+          (list (car c) (svref v 0) (gcs-pt-x p) (slot-value i 's) *gcs-sv*
+                (cdr c) (svref v 1) (gcs-pt-n p)
+                (length (car head)) (reduce #'+ (car head)))))
+EOF
+out=$(run_stress "$WORK/atomics.lisp")
+check_contains "CAS / ATOMIC-INCF on every place kind under stress" \
+  "ATOMICS:((199) (199) (199) (199) (199) 200 400 600 200 19900)" "$out"
+check_absent   "no corruption diagnostics from the CAS path" \
+  "corrupted\|type 0\|BADMARK\|badmark\|SIGSEGV\|Unbound" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

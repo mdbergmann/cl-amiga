@@ -794,6 +794,40 @@ directly instead of attempting a symbol lookup."
       (t
        (error "~S has no slot-index-table (not a CLOS instance)" instance)))))
 
+;;; COMPARE-AND-SWAP on (SLOT-VALUE INSTANCE SLOT-NAME) — the (SLOT-VALUE ...)
+;;; place of MP:COMPARE-AND-SWAP / MP:ATOMIC-INCF expands to this.  Resolves
+;;; the slot exactly as %SLOT-VALUE-SLOW does — the registry index for an
+;;; instance slot, the shared (name . value) cons for a :CLASS slot, the
+;;; positional index for a defstruct instance — and swaps that one cell
+;;; with the MP cell primitive.  Returns the value the slot held when the
+;;; CAS was decided (EQ to OLD exactly when it swapped); an unbound slot
+;;; goes through SLOT-UNBOUND like a read would.  SLOT-VALUE-USING-CLASS
+;;; extensions are not consulted: there is no portable CAS protocol for
+;;; them, and the only atomic thing available is the storage cell itself.
+(defun mp::%cas-slot-value (instance slot-name old new)
+  (let* ((class (class-of instance))
+         (index-table (class-slot-index-table class)))
+    (cond
+      (index-table
+       (let ((esd (gethash slot-name index-table)))
+         (unless esd
+           (error "~S has no slot named ~S" instance slot-name))
+         (let* ((location (slot-definition-location esd))
+                (prev (if (consp location)
+                          (mp::%cas-cdr location old new)
+                          (mp::%cas-struct-slot instance location old new))))
+           (if (eq prev *slot-unbound-marker*)
+               (slot-unbound class instance slot-name)
+               prev))))
+      ((structurep instance)
+       (let ((idx (%find-struct-slot-index instance slot-name)))
+         (unless idx
+           (error "~S has no slot named ~S" instance slot-name))
+         (mp::%cas-struct-slot instance idx old new)))
+      (t
+       (error "MP:COMPARE-AND-SWAP on SLOT-VALUE: ~S is not a standard-object ~
+               or structure-object" instance)))))
+
 (defun slot-unbound (class instance slot-name)
   "Called when an unbound slot is accessed. Default signals an error.
 Specialize via defmethod to provide lazy initialization."
