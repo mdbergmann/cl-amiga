@@ -6599,6 +6599,43 @@ y" 1))
 (check "redef before" 'one (rg-amiga-ra (make-instance 'rg-amiga-redef)))
 (defclass rg-amiga-redef () ((pad :initform 0) (a :initform 'two :reader rg-amiga-ra)))
 (check "redef after slot reorder" 'two (rg-amiga-ra (make-instance 'rg-amiga-redef)))
+; CLHS DEFCLASS / 4.3.6: redefinition updates the EXISTING class object.
+; Regression for the gray-streams reload bug: %ENSURE-CLASS used to allocate a
+; fresh metaobject, so methods specialized on the class stopped applying to
+; subclasses defined after the redefinition (dispatch is EQ on the CPL).
+(defclass rg-amiga-idc () ((a :initform 1)))
+(defvar *rg-amiga-idc* (find-class 'rg-amiga-idc))
+(defgeneric rg-amiga-idgf (x))
+(defmethod rg-amiga-idgf ((x rg-amiga-idc)) :base)
+(defmethod rg-amiga-idgf ((x t)) :t)
+(defclass rg-amiga-idsub0 (rg-amiga-idc) ((b :initform 2)))
+(defclass rg-amiga-idc () ((a :initform 10) (c :initform 30)))
+(check "redef keeps metaobject identity" t (eq *rg-amiga-idc* (find-class 'rg-amiga-idc)))
+(check "redef class-of is the same object" t
+       (eq (class-of (make-instance 'rg-amiga-idc)) *rg-amiga-idc*))
+(defclass rg-amiga-idsub (rg-amiga-idc) ())
+(check "redef method dispatches on later subclass" :base
+       (rg-amiga-idgf (make-instance 'rg-amiga-idsub)))
+(check "redef method dispatches on redefined class" :base
+       (rg-amiga-idgf (make-instance 'rg-amiga-idc)))
+; CLHS 4.3.6: subclasses defined BEFORE the redefinition are updated too
+(check "redef re-finalizes earlier subclass" '(10 2 30)
+       (let ((o (make-instance 'rg-amiga-idsub0)))
+         (list (slot-value o 'a) (slot-value o 'b) (slot-value o 'c))))
+(check "redef earlier subclass still linked" t
+       (and (member (find-class 'rg-amiga-idsub0)
+                    (class-direct-subclasses *rg-amiga-idc*)) t))
+; changed supers: same object, re-linked under the new super
+(defclass rg-amiga-idother () ())
+(defclass rg-amiga-idsub (rg-amiga-idother) ())
+(check "redef changed supers keeps identity" t
+       (eq (find-class 'rg-amiga-idsub) (class-of (make-instance 'rg-amiga-idsub))))
+(check "redef changed supers leaves old super" nil
+       (and (member (find-class 'rg-amiga-idsub) (class-direct-subclasses *rg-amiga-idc*)) t))
+(check "redef changed supers typep new super" t (typep (make-instance 'rg-amiga-idsub) 'rg-amiga-idother))
+(check "redef changed supers not typep old super" nil (typep (make-instance 'rg-amiga-idsub) 'rg-amiga-idc))
+(check "redef changed supers old method no longer applies" :t
+       (rg-amiga-idgf (make-instance 'rg-amiga-idsub)))
 ; SET-FUNCALLABLE-INSTANCE-FUNCTION must beat the VM's slot-3 bypass
 (defclass rg-amiga-sfi () ((x :initform 'orig :reader rg-amiga-sfix)))
 (check "sfix fast" 'orig (rg-amiga-sfix (make-instance 'rg-amiga-sfi)))
@@ -7189,12 +7226,49 @@ y" 1))
       (apply #'call-next-method class
              :direct-superclasses (amiga-ins-super (find-class topc) direct-superclasses)
              initargs)))
+;; Redefinition of a metaclass'd class goes through REINITIALIZE-INSTANCE
+;; (AMOP), so the injection :around is mirrored there — exactly as serapeum's
+;; TOPMOST-OBJECT-CLASS does.
+(defmethod reinitialize-instance :around
+    ((class amiga-topmost-mc) &rest initargs
+     &key (direct-superclasses nil direct-superclasses-p) (topc nil topc-p))
+  (let ((topc (if topc-p topc (amiga-topc class))))
+    (if (or (not direct-superclasses-p)
+            (find topc direct-superclasses :test (lambda (a b) (subtypep b a))))
+        (call-next-method)
+        (apply #'call-next-method class
+               :direct-superclasses (amiga-ins-super (find-class topc) direct-superclasses)
+               initargs))))
 (defclass amiga-meta (amiga-topmost-mc) () (:default-initargs :topc 'amiga-topmost))
 (defclass amiga-tc-user () () (:metaclass amiga-meta))
 (check "metaclass topmost: instance is typep injected superclass" t
        (typep (make-instance 'amiga-tc-user) 'amiga-topmost))
 (check "metaclass topmost: metaclass slot from default-initargs" 'amiga-topmost
        (amiga-topc (find-class 'amiga-tc-user)))
+;; CLHS 4.3.6 with a user metaclass: redefinition keeps the metaobject (the
+;; same object, same metaclass), re-runs the injection via the REINITIALIZE-
+;; INSTANCE :around, and methods specialized on the class keep dispatching.
+(defvar *amiga-tc-user-1* (find-class 'amiga-tc-user))
+(defgeneric amiga-tc-gf (x))
+(defmethod amiga-tc-gf ((x amiga-tc-user)) :user)
+(defclass amiga-tc-user () ((z :initform 26)) (:metaclass amiga-meta))
+(check "metaclass redef: keeps metaobject identity" t
+       (eq *amiga-tc-user-1* (find-class 'amiga-tc-user)))
+(check "metaclass redef: still an instance of the metaclass" 'amiga-meta
+       (class-name (class-of (find-class 'amiga-tc-user))))
+(check "metaclass redef: superclass re-injected" t
+       (typep (make-instance 'amiga-tc-user) 'amiga-topmost))
+(check "metaclass redef: new slot present" 26
+       (slot-value (make-instance 'amiga-tc-user) 'z))
+(defclass amiga-tc-sub (amiga-tc-user) () (:metaclass amiga-meta))
+(check "metaclass redef: method dispatches on later subclass" :user
+       (amiga-tc-gf (make-instance 'amiga-tc-sub)))
+(check "metaclass redef: reinitialize-instance keeps unsupplied slots" 26
+       (progn (reinitialize-instance (find-class 'amiga-tc-user) :topc 'amiga-topmost)
+              (slot-value (make-instance 'amiga-tc-user) 'z)))
+(check "metaclass redef: no duplicate subclass link" 1
+       (count (find-class 'amiga-tc-sub)
+              (class-direct-subclasses (find-class 'amiga-tc-user))))
 
 ; --- Specialized array element types (VECT-TYPE, specs/mop.md) ---
 (check "array-element-type fixnum array" 'fixnum
@@ -9863,6 +9937,23 @@ y" 1))
            (prog1 (and (eql (read-char s) #\h) t) (close s)))))
 (check "gray-streams reload: close string stream does not recurse" t
        (let ((s (make-string-output-stream))) (write-char #\X s) (close s) t))
+; The reload re-DEFCLASSes GRAY:FUNDAMENTAL-*-STREAM.  A Gray class defined
+; AFTER the reload must still satisfy OUTPUT-STREAM-P / INPUT-STREAM-P: the
+; methods are specialized on the class objects captured at first load, and a
+; class redefinition keeps the metaobject (CLHS 4.3.6).  Before the fix these
+; returned NIL on the host (where .clamigarc had already loaded gray-streams).
+(defclass test-gs-reload-out (gray:fundamental-character-output-stream) ())
+(defmethod gray:stream-write-char ((s test-gs-reload-out) c) (declare (ignore s c)) nil)
+(defclass test-gs-reload-in (gray:fundamental-character-input-stream) ())
+(check "gray-streams reload: output-stream-p on class defined after reload" t
+       (output-stream-p (make-instance 'test-gs-reload-out)))
+(check "gray-streams reload: input-stream-p on class defined after reload" t
+       (input-stream-p (make-instance 'test-gs-reload-in)))
+(check "gray-streams reload: output class is not input-stream-p" nil
+       (input-stream-p (make-instance 'test-gs-reload-out)))
+(check "gray-streams reload: fundamental-stream identity survives reload" t
+       (eq (find-class 'gray:fundamental-stream)
+           (second (class-precedence-list (find-class 'gray:fundamental-output-stream)))))
 
 ; --- Alexandria-driven conformance regressions ---
 ; Bugs surfaced by ALEXANDRIA's test suite; see tests/test_alexandria_regress.c

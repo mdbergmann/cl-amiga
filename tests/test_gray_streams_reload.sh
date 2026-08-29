@@ -67,6 +67,19 @@ cat > "$tmp" <<EOF
   (close o))
 (with-open-file (s "$data" :direction :input)
   (read-line s))
+;; Second reload bug: the reload re-DEFCLASSes GRAY:FUNDAMENTAL-*-STREAM.
+;; %ENSURE-CLASS used to allocate a FRESH class metaobject on redefinition,
+;; so OUTPUT-STREAM-P / INPUT-STREAM-P (methods specialized on the OLD
+;; metaobject) returned NIL for any Gray stream class defined AFTER the
+;; reload (STREAMP stayed T).  CLHS 4.3.6: redefinition updates the existing
+;; class object — FIND-CLASS identity and method dispatch must survive.
+(defclass gr-out (gray:fundamental-character-output-stream) ())
+(defmethod gray:stream-write-char ((s gr-out) c) (declare (ignore s c)) nil)
+(defclass gr-in (gray:fundamental-character-input-stream) ())
+(let ((o (make-instance 'gr-out)) (i (make-instance 'gr-in)))
+  (format t "GRAY-RELOAD-PREDICATES:~a ~a ~a ~a~%"
+          (output-stream-p o) (input-stream-p o)
+          (input-stream-p i) (output-stream-p i)))
 (format t "GRAY-RELOAD-DONE~%")
 EOF
 
@@ -89,6 +102,10 @@ elif ! echo "$out" | grep -q "GRAY-RELOAD-DONE"; then
 elif echo "$out" | grep -qi "overflow\|RUNAWAY"; then
     echo "  FAIL gray_streams_reload (overflow/runaway in output)"
     echo "    output: $(echo "$out" | tail -8)"
+    echo ""; echo "0 passed, 1 failed, $total total"; echo "FAIL"; exit 1
+elif ! echo "$out" | grep -q "GRAY-RELOAD-PREDICATES:T NIL T NIL"; then
+    echo "  FAIL gray_streams_reload (OUTPUT-STREAM-P / INPUT-STREAM-P wrong on a Gray class defined after the reload — class redefinition lost the metaobject)"
+    echo "    output: $(echo "$out" | grep GRAY-RELOAD-PREDICATES; echo "$out" | tail -4)"
     echo ""; echo "0 passed, 1 failed, $total total"; echo "FAIL"; exit 1
 fi
 

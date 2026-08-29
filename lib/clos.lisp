@@ -1102,12 +1102,11 @@ Specialize via defmethod to provide lazy initialization."
 
 ;;; --- Class creation at runtime ---
 
-(defun %finalize-and-register-class (class name supers direct-super-names)
-  "Shared tail of class creation: run the finalization protocol, register
-   the instance struct type, install the class in the class table, link it
-   into each super's direct-subclasses, and invalidate dispatch caches.
-   Used by both the standard %ENSURE-CLASS path and the metaclass path
-   (the INITIALIZE-INSTANCE method on class metaobjects)."
+(defun %finalize-and-register-struct-type (class name direct-super-names)
+  "Run the finalization protocol on CLASS and (re)register its instance
+   struct type from the finalized slot layout.  Shared by fresh class
+   creation and by the re-finalization of an already-registered class
+   (redefinition of the class itself, or of one of its superclasses)."
   ;; Run the finalization protocol. Routes through the GF if available
   ;; (always the case once clos.lisp finishes loading), otherwise falls
   ;; back to the internal body.
@@ -1135,16 +1134,84 @@ Specialize via defmethod to provide lazy initialization."
           (%register-struct-type name (length instance-esds)
                                  (if direct-super-names (car direct-super-names) nil)
                                  struct-slot-specs))))
+  class)
+
+(defun %unfinalize-class (class)
+  "Mark CLASS as needing re-finalization: clear FINALIZED-P so the next
+   FINALIZE-INHERITANCE recomputes the CPL, effective slots, slot index
+   table and default initargs, and drop the cached CLASS-PROTOTYPE, which
+   was allocated with the old slot layout.  Direct-subclasses and
+   direct-methods are deliberately kept — the metaobject stays the same
+   object, so every method specialized on it and every subclass linked to
+   it remains valid."
+  (%struct-set class 8 nil)                   ; 8: prototype
+  (%set-class-finalized-p class nil)
+  class)
+
+(defun %refinalize-subclasses (class &optional visited)
+  "CLHS 4.3.6 / AMOP: redefining a class updates its subclasses too.
+   Re-finalize every (transitive) subclass of CLASS so their CPLs,
+   effective slots and struct layouts reflect the redefined superclass.
+   Parents are re-finalized before children (the recursion runs after the
+   subclass's own finalization), which COMPUTE-SLOTS relies on.  VISITED
+   is an EQ hash table threaded through the recursion so a class reachable
+   via multiple diamond-inheritance paths is re-finalized only once."
+  (let ((visited (or visited (make-hash-table :test 'eq))))
+    (dolist (sub (class-direct-subclasses class))
+      (unless (gethash sub visited)
+        (setf (gethash sub visited) t)
+        (%unfinalize-class sub)
+        (%finalize-and-register-struct-type
+           sub (class-name sub)
+           (mapcar #'class-name (class-direct-superclasses sub)))
+        (%refinalize-subclasses sub visited)))))
+
+(defun %finalize-and-register-class (class name supers direct-super-names)
+  "Shared tail of class creation: run the finalization protocol, register
+   the instance struct type, install the class in the class table, link it
+   into each super's direct-subclasses, re-finalize any existing
+   subclasses (a redefined class keeps its metaobject, and with it its
+   subclass links), and invalidate dispatch caches.  Used by both the
+   standard %ENSURE-CLASS path and the metaclass path (the
+   INITIALIZE-INSTANCE / REINITIALIZE-INSTANCE methods on class
+   metaobjects)."
+  (%finalize-and-register-struct-type class name direct-super-names)
   ;; Register class
   (setf (find-class name) class)
-  ;; Register as subclass of each direct super
+  ;; Register as subclass of each direct super (idempotent: a direct
+  ;; REINITIALIZE-INSTANCE on a class metaobject re-runs this without
+  ;; the unlink step, and must not duplicate the link).
   (dolist (super supers)
-    (%set-class-direct-subclasses super
-      (cons class (class-direct-subclasses super))))
+    (unless (member class (class-direct-subclasses super) :test #'eq)
+      (%set-class-direct-subclasses super
+        (cons class (class-direct-subclasses super)))))
+  ;; Redefinition: propagate the new layout to existing subclasses.  A
+  ;; freshly created class has no subclasses, so this is a no-op for it.
+  (%refinalize-subclasses class)
   ;; Invalidate all GF dispatch caches (class hierarchy changed)
   (when (fboundp '%invalidate-all-gf-caches)
     (%invalidate-all-gf-caches))
   class)
+
+(defun %reusable-class-metaobject-p (old-class type-name)
+  "True when OLD-CLASS (from FIND-CLASS, may be NIL) is a class metaobject
+   whose struct type is exactly TYPE-NAME, so a redefinition can update it
+   in place.  CLHS DEFCLASS / 4.3.6: redefining a class modifies the
+   EXISTING class object — FIND-CLASS keeps returning the same object, and
+   methods specialized on it (or on its superclasses) keep dispatching on
+   instances of classes defined after the redefinition.  A metaobject of a
+   different struct type (a metaclass change, a BUILT-IN-CLASS or a
+   FORWARD-REFERENCED-CLASS stub) cannot be reused and is replaced."
+  (and old-class
+       (structurep old-class)
+       (eq (%struct-type-name old-class) type-name)))
+
+(defun %unlink-from-old-supers (old-class)
+  "Drop OLD-CLASS from each of its former supers' direct-subclasses; the
+   redefinition re-links it under its (possibly different) new supers."
+  (dolist (old-super (class-direct-superclasses old-class))
+    (%set-class-direct-subclasses old-super
+      (remove old-class (class-direct-subclasses old-super) :test #'eq))))
 
 (defun %ensure-class (name direct-super-names direct-slot-defs
                       &optional direct-default-initargs metaclass)
@@ -1171,17 +1238,26 @@ Specialize via defmethod to provide lazy initialization."
              (supers (if direct-super-names
                          (mapcar #'find-class direct-super-names)
                          (list (find-class 'standard-object))))
-             (class (%make-struct 'standard-class
-                      name supers direct-slot-defs
-                      nil nil nil nil nil nil nil nil nil)))
-        (%set-class-direct-default-initargs class direct-default-initargs)
+             (reuse (%reusable-class-metaobject-p old-class 'standard-class))
+             (class (if reuse
+                        old-class
+                        (%make-struct 'standard-class
+                          name supers direct-slot-defs
+                          nil nil nil nil nil nil nil nil nil))))
         ;; On redefinition, drop the old class from each former super's
-        ;; direct-subclasses so the old metaobject and its slot-defs are
-        ;; reachable only from find-class — which we're about to overwrite.
+        ;; direct-subclasses (read BEFORE the direct-superclasses slot is
+        ;; overwritten below); %FINALIZE-AND-REGISTER-CLASS re-links it
+        ;; under the new supers.
         (when old-class
-          (dolist (old-super (class-direct-superclasses old-class))
-            (%set-class-direct-subclasses old-super
-              (remove old-class (class-direct-subclasses old-super) :test #'eq))))
+          (%unlink-from-old-supers old-class))
+        (when reuse
+          ;; Update the existing metaobject in place (CLHS 4.3.6): new
+          ;; direct supers / slots, and force re-finalization.  Slot 6
+          ;; (direct-subclasses) and slot 7 (direct-methods) survive.
+          (%struct-set class 1 supers)                 ; 1: direct-superclasses
+          (%set-class-direct-slots class direct-slot-defs)
+          (%unfinalize-class class))
+        (%set-class-direct-default-initargs class direct-default-initargs)
         (%finalize-and-register-class class name supers direct-super-names))))
 
 ;;; --- Metaclass-driven class creation ---
@@ -1207,35 +1283,46 @@ Specialize via defmethod to provide lazy initialization."
 
 (defun %ensure-class-via-metaclass (name direct-super-names direct-slot-defs
                                     direct-default-initargs meta-name)
-  ;; On redefinition, drop the old class from each former super's
-  ;; direct-subclasses (parity with the standard %ENSURE-CLASS path).
-  (let ((old-class (find-class name nil)))
-    (when old-class
-      (dolist (old-super (class-direct-superclasses old-class))
-        (%set-class-direct-subclasses old-super
-          (remove old-class (class-direct-subclasses old-super) :test #'eq)))))
-  (let* ((meta-class (find-class meta-name))
-         (total-slots (length (%struct-slot-names meta-name)))
-         (n-extra (- total-slots 12))
-         ;; 12 fixed class slots (filled by INITIALIZE-INSTANCE) + the
-         ;; metaclass's own slots, initially unbound.
-         (class (apply #'%make-struct meta-name
-                       (append (make-list 12 :initial-element nil)
-                               (make-list (max 0 n-extra)
-                                          :initial-element *slot-unbound-marker*))))
+  (let* ((old-class (find-class name nil))
+         ;; Same metaclass as before: update the existing metaobject in
+         ;; place through REINITIALIZE-INSTANCE (AMOP ENSURE-CLASS-USING-
+         ;; CLASS on an existing class), so FIND-CLASS identity and every
+         ;; method specialized on the class survive.  A different
+         ;; metaclass (or no old class) allocates a fresh instance and
+         ;; goes through INITIALIZE-INSTANCE.
+         (reuse (%reusable-class-metaobject-p old-class meta-name))
+         (meta-class (find-class meta-name))
          (initargs (%merge-metaclass-default-initargs meta-class
                      (list :name name
                            :direct-superclasses direct-super-names
                            :direct-slots direct-slot-defs
                            :direct-default-initargs direct-default-initargs))))
-    (apply #'initialize-instance class initargs)
-    class))
+    ;; On redefinition, drop the old class from each former super's
+    ;; direct-subclasses (parity with the standard %ENSURE-CLASS path);
+    ;; read before the direct-superclasses slot is overwritten.
+    (when old-class
+      (%unlink-from-old-supers old-class))
+    (if reuse
+        (progn
+          (apply #'reinitialize-instance old-class initargs)
+          old-class)
+        (let* ((total-slots (length (%struct-slot-names meta-name)))
+               (n-extra (- total-slots 12))
+               ;; 12 fixed class slots (filled by INITIALIZE-INSTANCE) +
+               ;; the metaclass's own slots, initially unbound.
+               (class (apply #'%make-struct meta-name
+                             (append (make-list 12 :initial-element nil)
+                                     (make-list (max 0 n-extra)
+                                                :initial-element *slot-unbound-marker*)))))
+          (apply #'initialize-instance class initargs)
+          class))))
 
 ;;; --- Class finalization body ---
 ;;; Shared between the FINALIZE-INHERITANCE GF default method and the
 ;;; bootstrap path used by %ENSURE-CLASS before the GFs are defined.
-;;; Calling twice is idempotent — the class struct is replaced on
-;;; redefinition, so a fresh class always starts with FINALIZED-P = NIL.
+;;; Calling twice is idempotent — a redefinition keeps the class struct
+;;; but clears FINALIZED-P (see %UNFINALIZE-CLASS), so the next call
+;;; recomputes everything from the new direct supers / slots.
 
 (defun %find-inherited-class-slot-cell (class slot-name)
   "Walk CLASS's direct-superclasses' effective slots looking for a
@@ -3266,21 +3353,61 @@ already-existing GF the installed combination is preserved."
 ;;;
 ;;; Normal classes (metaclass = STANDARD-CLASS) never reach here: they are
 ;;; built directly by %ENSURE-CLASS without going through INITIALIZE-INSTANCE.
-(defmethod initialize-instance ((class standard-class) &rest initargs
-                                &key name direct-superclasses
-                                &allow-other-keys)
-  (let ((supers (if direct-superclasses
-                    (mapcar #'find-class direct-superclasses)
-                    (list (find-class 'standard-object)))))
-    (%struct-set class 0 name)                              ; 0: name
-    (%struct-set class 1 supers)                            ; 1: direct-superclasses
-    (%struct-set class 2 (getf initargs :direct-slots))     ; 2: direct-slots
-    (%set-class-direct-default-initargs class
-      (getf initargs :direct-default-initargs))             ; 11
+(defun %initialize-class-metaobject (class initargs name reinit-p)
+  "Body shared by the INITIALIZE-INSTANCE and REINITIALIZE-INSTANCE
+   methods on STANDARD-CLASS: fill the fixed 12-slot class layout from
+   INITARGS, populate metaclass-specific slots, then finalize and
+   register the class.  On reinitialization (REINIT-P, class
+   redefinition) the metaobject is the SAME struct as before, so its
+   direct-subclasses and direct-methods survive and get re-finalized /
+   keep dispatching; and — as in AMOP's class reinitialization protocol —
+   :DIRECT-SUPERCLASSES, :DIRECT-SLOTS and :DIRECT-DEFAULT-INITARGS that
+   are NOT supplied keep their current values instead of resetting."
+  (let ((not-supplied (list nil)))
+    (flet ((initarg (key current)
+             (let ((v (getf initargs key not-supplied)))
+               (if (eq v not-supplied)
+                   (if reinit-p current nil)
+                   v))))
+      (let* ((direct-superclasses-supplied-p
+              (not (eq (getf initargs :direct-superclasses not-supplied) not-supplied)))
+             (super-spec (initarg :direct-superclasses
+                                  (class-direct-superclasses class)))
+             (supers (cond
+                       (direct-superclasses-supplied-p
+                        (if super-spec
+                            (mapcar #'find-class super-spec)
+                            (list (find-class 'standard-object))))
+                       (reinit-p
+                        ;; Not supplied on reinit: SUPER-SPEC came from the
+                        ;; CURRENT branch of INITARG, i.e. CLASS-DIRECT-
+                        ;; SUPERCLASSES — already-resolved class objects, not
+                        ;; name specifiers.  Routing them back through
+                        ;; FIND-CLASS only round-trips a class-object argument
+                        ;; for a narrow metaclass whitelist and errors for any
+                        ;; user-defined metaclass instance (AMOP
+                        ;; REINITIALIZE-INSTANCE requires keeping the current
+                        ;; superclasses here).
+                        super-spec)
+                       (t
+                        (list (find-class 'standard-object))))))
+        (when reinit-p
+          (%unfinalize-class class))
+        (%struct-set class 0 name)                          ; 0: name
+        (%struct-set class 1 supers)                        ; 1: direct-superclasses
+        (%struct-set class 2 (initarg :direct-slots
+                                      (class-direct-slots class))) ; 2
+        (%set-class-direct-default-initargs class
+          (initarg :direct-default-initargs
+                   (class-direct-default-initargs class)))))) ; 11
+  (let ((supers (class-direct-superclasses class)))
     ;; Populate metaclass-specific slots (indices 12+) from the initargs,
     ;; matching each slot's :INITARG against the supplied keys.  The
     ;; metaclass's effective slots carry the locations assigned (at 12+)
-    ;; by %ASSIGN-SLOT-LOCATIONS.
+    ;; by %ASSIGN-SLOT-LOCATIONS.  A slot that is neither supplied nor
+    ;; still unbound keeps its value — on reinitialization that is the
+    ;; value from the previous definition (CLHS REINITIALIZE-INSTANCE:
+    ;; initforms are not re-evaluated for bound slots).
     (let ((index-table (class-slot-index-table (class-of class))))
       (when index-table
         (maphash
@@ -3301,6 +3428,10 @@ already-existing GF the installed combination is preserved."
     (%finalize-and-register-class class name supers
                                   (mapcar #'class-name supers))
     class))
+
+(defmethod initialize-instance ((class standard-class) &rest initargs
+                                &key name &allow-other-keys)
+  (%initialize-class-metaobject class initargs name nil))
 
 ;;; --- no-applicable-method (CLHS 7.6.6.3) ---
 ;;; Called by the dispatch machinery (via %NO-APPLICABLE-METHOD) when a
@@ -3498,15 +3629,19 @@ already-existing GF the installed combination is preserved."
          (metaclass     (getf keys :metaclass))
          (new-class (%ensure-class name direct-supers direct-slots direct-inits
                                    metaclass)))
-    ;; Redefinition: %ENSURE-CLASS allocates a fresh class struct, so
-    ;; any dependents previously registered on the old metaobject would
-    ;; be orphaned.  Migrate them to the new struct and then notify
-    ;; them with the initargs that drove the redefinition.
+    ;; Redefinition: %ENSURE-CLASS normally updates the existing
+    ;; metaobject in place, so the dependents registered on it stay
+    ;; attached.  Only when the metaobject could NOT be reused (metaclass
+    ;; change, BUILT-IN-CLASS / FORWARD-REFERENCED-CLASS stub) is a fresh
+    ;; struct allocated — migrate the dependents to it so a later
+    ;; redefinition still notifies.  Then notify them with the initargs
+    ;; that drove the redefinition.
     (when class
-      (let ((old-deps (gethash class *metaobject-dependents*)))
-        (when old-deps
-          (setf (gethash new-class *metaobject-dependents*) old-deps)
-          (remhash class *metaobject-dependents*)))
+      (unless (eq class new-class)
+        (let ((old-deps (gethash class *metaobject-dependents*)))
+          (when old-deps
+            (setf (gethash new-class *metaobject-dependents*) old-deps)
+            (remhash class *metaobject-dependents*))))
       (apply #'%notify-dependents new-class 'reinitialize-instance keys))
     new-class))
 
@@ -3601,6 +3736,18 @@ already-existing GF the installed combination is preserved."
   "Re-apply initargs to an existing instance."
   (apply #'shared-initialize instance nil initargs)
   instance)
+
+;;; AMOP: ENSURE-CLASS-USING-CLASS on an EXISTING class with a user
+;;; metaclass reinitializes the class metaobject in place instead of
+;;; allocating a new one (see %ENSURE-CLASS-VIA-METACLASS).  Metaclass
+;;; :AROUND methods on REINITIALIZE-INSTANCE (e.g. serapeum's
+;;; TOPMOST-OBJECT-CLASS re-injecting its superclass) wrap this primary
+;;; method exactly as their INITIALIZE-INSTANCE counterparts do.
+(defmethod reinitialize-instance ((class standard-class) &rest initargs
+                                  &key name &allow-other-keys)
+  (%initialize-class-metaobject class initargs
+                                (or name (class-name class))
+                                t))
 
 (defgeneric change-class (instance new-class &rest initargs))
 (defmethod change-class ((instance t) new-class &rest initargs)
