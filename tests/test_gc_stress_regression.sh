@@ -4284,14 +4284,35 @@ check_contains "EXT tty builtins stable under stress" "TTY-STRESS:T" "$out"
 check_absent   "no corruption in tty case" \
   "corrupted pointer\|not of type\|Guru\|SIGSEGV\|badmark" "$out"
 
-# --- Broadcast / concatenated streams under stress -------------------------
+# --- Broadcast / concatenated / echo streams under stress -------------------
 # The constructors cons the component list across allocating calls, the
 # broadcast write path walks that list while recursive writes allocate
 # (string-output-stream growth), and the concatenated read path pops it
 # while recursive reads run — every one of those cursors must stay rooted
 # across compaction or the fan-out writes into / reads from a stale offset.
+# The echo read path re-derives the wrapper between the child read and the
+# echoing child write (both can allocate/compact): a stale wrapper offset
+# there would echo into, or flag EOF on, whatever slid into its old slot.
 cat > "$WORK/bcast.lisp" <<'EOF'
 (let ((ok t))
+  (dotimes (i 50)
+    (let* ((log (make-string-output-stream))
+           (es (make-echo-stream (make-string-input-stream (format nil "ec~d ho~d" i i)) log)))
+      (peek-char nil es)                     ; parks a char in the child, unechoed
+      (let ((c1 (read-char es)))             ; consumes it through the wrapper: echoed once
+        (unread-char c1 es)                  ; back onto the wrapper: must not echo again
+        (unless (and (eql (read-char es) c1)
+                     (string= (read-line es) (format nil "c~d ho~d" i i))
+                     (string= (get-output-stream-string log)
+                              (format nil "ec~d ho~d" i i)))
+          (setf ok nil))))
+    ;; READ through the wrapper: the reader conses symbols/lists while the
+    ;; wrapper and both children are live only through the stream object.
+    (let* ((log (make-string-output-stream))
+           (es (make-echo-stream (make-string-input-stream (format nil "(a b ~d)" i)) log)))
+      (unless (and (equal (read es) (list 'a 'b i))
+                   (string= (get-output-stream-string log) (format nil "(a b ~d)" i)))
+        (setf ok nil))))
   (dotimes (i 50)
     (let* ((a (make-string-output-stream))
            (b (make-string-output-stream))
@@ -4325,8 +4346,8 @@ cat > "$WORK/bcast.lisp" <<'EOF'
   (format t "BCAST-STRESS:~a~%" ok))
 EOF
 out=$(run_stress "$WORK/bcast.lisp")
-check_contains "broadcast/concatenated streams stable under stress" "BCAST-STRESS:T" "$out"
-check_absent   "no corruption in broadcast/concatenated case" \
+check_contains "broadcast/concatenated/echo streams stable under stress" "BCAST-STRESS:T" "$out"
+check_absent   "no corruption in broadcast/concatenated/echo case" \
   "corrupted pointer\|not of type\|Guru\|SIGSEGV\|badmark\|not a stream" "$out"
 
 # --- Case: EXT UDP datagram stream send/receive under GC stress -------------

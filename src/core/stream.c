@@ -693,7 +693,12 @@ static CL_Obj resolve_synonym(CL_Obj stream)
 }
 
 /* Resolve synonym and two-way stream wrappers to a concrete stream.
- * `writing` selects the output child of a two-way stream (else input child). */
+ * `writing` selects the output child of a two-way stream (else input child).
+ * An echo stream unwraps to its output child for writing only: direct output
+ * goes to that child unechoed (CLHS 21.1), but a READ must stop at the echo
+ * wrapper itself — it is the wrapper that copies each element read to the
+ * output child, and its own unread_char slot is what keeps a pushed-back
+ * char from being echoed twice. */
 static CL_Obj resolve_stream(CL_Obj stream, int writing)
 {
     CL_Stream *st;
@@ -705,7 +710,8 @@ static CL_Obj resolve_stream(CL_Obj stream, int writing)
             if (CL_NULL_P(stream) || !CL_STREAM_P(stream))
                 return CL_NIL;
             st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
-        } else if (st->stream_type == CL_STREAM_TWO_WAY) {
+        } else if (st->stream_type == CL_STREAM_TWO_WAY ||
+                   (st->stream_type == CL_STREAM_ECHO && writing)) {
             stream = writing ? st->element_type : st->string_buf;
             if (CL_NULL_P(stream) || !CL_STREAM_P(stream))
                 return CL_NIL;
@@ -868,10 +874,32 @@ int cl_stream_read_char(CL_Obj stream)
     st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
     CL_GC_UNPROTECT(1);
 
-    /* Check for pushed-back character (already decoded code point) */
+    /* Check for pushed-back character (already decoded code point).  On an
+     * echo stream this slot only ever holds a char that was read through the
+     * wrapper (and therefore already echoed) and then UNREAD-CHARed — so
+     * handing it back without echoing is exactly the CLHS 21.1 rule that a
+     * character unread and re-read is echoed only once. */
     if (st->unread_char != -1) {
         ch = st->unread_char;
         st->unread_char = -1;
+        if (iolock) platform_mutex_unlock(iolock);
+        return ch;
+    }
+
+    /* Echo streams: take the element from the input child and copy it to the
+     * output child (CLHS 21.1).  Both the child read and the child write can
+     * block inside a GC safe region (console/socket) and let a peer STW-GC
+     * compact the arena, so keep the wrapper rooted and re-derive st between
+     * the two before reading its child slots. */
+    if (st->stream_type == CL_STREAM_ECHO) {
+        CL_GC_PROTECT(stream);
+        ch = cl_stream_read_char(st->string_buf);
+        st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+        if (ch == -1)
+            st->flags |= CL_STREAM_FLAG_EOF;
+        else
+            cl_stream_write_char(st->element_type, ch);
+        CL_GC_UNPROTECT(1);
         if (iolock) platform_mutex_unlock(iolock);
         return ch;
     }
@@ -985,6 +1013,21 @@ int cl_stream_read_byte(CL_Obj stream)
     if (st->unread_char != -1) {
         ch = st->unread_char;
         st->unread_char = -1;
+        if (iolock) platform_mutex_unlock(iolock);
+        return ch;
+    }
+
+    /* Echo streams: same read-then-echo as cl_stream_read_char, with raw
+     * bytes (see the GC hazard note there). */
+    if (st->stream_type == CL_STREAM_ECHO) {
+        CL_GC_PROTECT(stream);
+        ch = cl_stream_read_byte(st->string_buf);
+        st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+        if (ch == -1)
+            st->flags |= CL_STREAM_FLAG_EOF;
+        else
+            cl_stream_write_byte(st->element_type, ch);
+        CL_GC_UNPROTECT(1);
         if (iolock) platform_mutex_unlock(iolock);
         return ch;
     }
@@ -1480,6 +1523,20 @@ int cl_stream_peek_char(CL_Obj stream)
 {
     stream = resolve_stream(stream, 0);
     if (CL_NULL_P(stream)) return -1;
+    /* Echo streams: a peek must not echo (CLHS PEEK-CHAR: the character is
+     * not consumed; ansi-test peek-char.17).  A char already pushed back
+     * onto the wrapper is what the next read returns, so answer with it;
+     * otherwise peek on the INPUT CHILD, which parks the char in the child's
+     * own unread slot — the read that later consumes it goes through the
+     * wrapper and echoes it then, exactly once. */
+    {
+        CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+        if (st->stream_type == CL_STREAM_ECHO) {
+            if (st->unread_char != -1)
+                return st->unread_char;
+            return cl_stream_peek_char(st->string_buf);
+        }
+    }
     {
         /* cl_stream_read_char can block (socket/console) inside a GC safe
          * region, letting a peer compact and relocate the stream.  Root
@@ -1901,15 +1958,36 @@ CL_Obj cl_make_synonym_stream(CL_Obj symbol)
     return s;
 }
 
+/* Shared constructor for the two wrapper kinds with an input child in
+ * string_buf and an output child in element_type.  cl_make_stream allocates
+ * and may compact: the two component offsets are C locals (copies of the
+ * caller's rooted args[]), so they must be forwarded across it. */
+static CL_Obj make_io_pair_stream(uint32_t stream_type,
+                                  CL_Obj input_stream, CL_Obj output_stream)
+{
+    CL_Obj s;
+    CL_GC_PROTECT(input_stream);
+    CL_GC_PROTECT(output_stream);
+    s = cl_make_stream(CL_STREAM_IO, stream_type);
+    if (!CL_NULL_P(s)) {
+        CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(s);
+        st->string_buf = input_stream;    /* input child */
+        st->element_type = output_stream; /* output child */
+    }
+    CL_GC_UNPROTECT(2);
+    return s;
+}
+
 CL_Obj cl_make_two_way_stream(CL_Obj input_stream, CL_Obj output_stream)
 {
-    CL_Obj s = cl_make_stream(CL_STREAM_IO, CL_STREAM_TWO_WAY);
-    CL_Stream *st;
-    if (CL_NULL_P(s)) return CL_NIL;
-    st = (CL_Stream *)CL_OBJ_TO_PTR(s);
-    st->string_buf = input_stream;   /* input child */
-    st->element_type = output_stream; /* output child */
-    return s;
+    return make_io_pair_stream(CL_STREAM_TWO_WAY, input_stream, output_stream);
+}
+
+/* Same slot layout as a two-way stream; the ECHO type is what makes the
+ * read paths copy each element to the output child. */
+CL_Obj cl_make_echo_stream(CL_Obj input_stream, CL_Obj output_stream)
+{
+    return make_io_pair_stream(CL_STREAM_ECHO, input_stream, output_stream);
 }
 
 /* streams: proper list of component output streams (may be NIL — such a

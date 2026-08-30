@@ -3725,6 +3725,249 @@ TEST(make_concatenated_stream_rejects_non_input_stream)
     ASSERT(result == cl_intern_keyword("TYPE-ERROR", 10));
 }
 
+/* --- Echo stream tests (CLHS 21.2 MAKE-ECHO-STREAM) ---
+ * Expected values follow the ansi-test suite (streams/make-echo-stream.lsp,
+ * peek-char.lsp 17-19, unread-char.lsp 3). */
+
+TEST(echo_stream_echoes_reads)
+{
+    /* Each element read through the wrapper is copied to the output
+     * component; constructing the stream echoes nothing by itself. */
+    CL_Obj result = cl_eval_string(
+        "(let* ((is (make-string-input-stream \"foo\"))"
+        "       (os (make-string-output-stream))"
+        "       (s (make-echo-stream is os)))"
+        "  (list (get-output-stream-string os)"
+        "        (read-char s)"
+        "        (get-output-stream-string os)"
+        "        (read-line s nil)"
+        "        (get-output-stream-string os)"
+        "        (read-char s nil :eof)"
+        "        (get-output-stream-string os)))");
+    char buf[96];
+    cl_prin1_to_string(result, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(\"\" #\\f \"f\" \"oo\" \"oo\" :EOF \"\")");
+}
+
+TEST(echo_stream_direct_writes_not_echoed_elsewhere)
+{
+    /* Output written to the echo stream goes to the output component
+     * (make-echo-stream.13/.17/.20/.21): write-char, write-string with
+     * :start/:end, write-line, fresh-line, finish/force-output. */
+    CL_Obj result = cl_eval_string(
+        "(let* ((is (make-string-input-stream \"foo\"))"
+        "       (os (make-string-output-stream))"
+        "       (s (make-echo-stream is os)))"
+        "  (list (write-char #\\X s)"
+        "        (fresh-line s)"
+        "        (write-string \"0159X\" s :start 1 :end 4)"
+        "        (finish-output s) (force-output s)"
+        "        (input-stream-p s) (output-stream-p s)"
+        "        (get-output-stream-string os)))");
+    char buf[96];
+    cl_prin1_to_string(result, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(#\\X T \"0159X\" NIL NIL T T \"X\n159\")");
+}
+
+TEST(echo_stream_accessors_and_close)
+{
+    /* Accessors return the components; CLOSE closes only the wrapper
+     * (make-echo-stream.10). */
+    CL_Obj result = cl_eval_string(
+        "(let* ((is (make-string-input-stream \"foo\"))"
+        "       (os (make-string-output-stream))"
+        "       (s (make-echo-stream is os)))"
+        "  (list (eq (echo-stream-input-stream s) is)"
+        "        (eq (echo-stream-output-stream s) os)"
+        "        (open-stream-p s) (close s) (open-stream-p s)"
+        "        (open-stream-p is) (open-stream-p os)"
+        "        (read-char s nil :closed)))");
+    char buf[64];
+    cl_prin1_to_string(result, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(T T T T NIL T T :CLOSED)");
+}
+
+TEST(echo_stream_unread_echoes_once)
+{
+    /* CLHS 21.1: a character unread and then re-read is echoed only once
+     * (unread-char.3). */
+    CL_Obj result = cl_eval_string(
+        "(with-input-from-string (is \"abc\")"
+        "  (with-output-to-string (os)"
+        "    (let ((s (make-echo-stream is os)))"
+        "      (read-char s) (unread-char #\\a s)"
+        "      (read-char s) (read-char s) (read-char s)"
+        "      (unread-char #\\c s) (read-char s))))");
+    CL_String *s;
+    ASSERT(CL_ANY_STRING_P(result));
+    s = (CL_String *)CL_OBJ_TO_PTR(result);
+    ASSERT_STR_EQ(s->data, "abc");
+}
+
+TEST(echo_stream_peek_char_semantics)
+{
+    /* peek-char nil does not echo (peek-char.17); the later read of the
+     * peeked char echoes it exactly once.  peek-char T / char echo the
+     * characters they skip, and the char left for the next read is not
+     * echoed twice (peek-char.18/.19). */
+    CL_Obj result = cl_eval_string(
+        "(list"
+        "  (let* ((is (make-string-input-stream \"ab\"))"
+        "         (os (make-string-output-stream))"
+        "         (s (make-echo-stream is os)))"
+        "    (list (peek-char nil s) (get-output-stream-string os)"
+        "          (read-char s) (read-char s) (get-output-stream-string os)))"
+        "  (let* ((is (make-string-input-stream \"   ab\"))"
+        "         (os (make-string-output-stream))"
+        "         (s (make-echo-stream is os)))"
+        "    (list (peek-char t s) (get-output-stream-string os)"
+        "          (read-char s) (get-output-stream-string os)))"
+        "  (let* ((is (make-string-input-stream \"abcde\"))"
+        "         (os (make-string-output-stream))"
+        "         (s (make-echo-stream is os)))"
+        "    (list (peek-char #\\c s) (get-output-stream-string os)"
+        "          (read-line s) (get-output-stream-string os))))");
+    char buf[160];
+    cl_prin1_to_string(result, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf,
+        "((#\\a \"\" #\\a #\\b \"ab\") (#\\a \"   a\" #\\a \"\") (#\\c \"abc\" \"cde\" \"de\"))");
+}
+
+TEST(echo_stream_read_char_no_hang_listen_and_read_sequence)
+{
+    /* read-char-no-hang and listen see through the wrapper to the input
+     * component (make-echo-stream.6/.7/.11); READ-SEQUENCE falls back to
+     * the per-element path and echoes (make-echo-stream.8). */
+    CL_Obj result = cl_eval_string(
+        "(list"
+        "  (let* ((is (make-string-input-stream \"foo\"))"
+        "         (os (make-string-output-stream))"
+        "         (s (make-echo-stream is os)))"
+        "    (list (coerce (loop repeat 4 collect (read-char-no-hang s nil #\\z)) 'string)"
+        "          (get-output-stream-string os)))"
+        "  (let* ((is (make-string-input-stream \"fo\"))"
+        "         (os (make-string-output-stream))"
+        "         (s (make-echo-stream is os)))"
+        "    (list (listen s) (read-char s) (listen s) (read-char s) (listen s)))"
+        "  (let* ((is (make-string-input-stream \"foo\"))"
+        "         (os (make-string-output-stream))"
+        "         (s (make-echo-stream is os))"
+        "         (x (copy-seq \"xxxxxx\")))"
+        "    (list (read-sequence x s) x (get-output-stream-string os))))");
+    char buf[128];
+    cl_prin1_to_string(result, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "((\"fooz\" \"foo\") (T #\\f T #\\o NIL) (3 \"fooxxx\" \"foo\"))");
+}
+
+TEST(echo_stream_binary_file_components)
+{
+    /* READ-BYTE / READ-SEQUENCE through an echo stream over binary file
+     * streams echo bytes (make-echo-stream.4/.9); stream-element-type
+     * reports the input component's type. */
+    CL_Obj result = cl_eval_string(
+        "(let ((pn (format nil \"~a/clamiga-echo-~d.dat\" (or (ext:getenv \"TMPDIR\") \"/tmp\") (random 100000)))"
+        "      (pn2 (format nil \"~a/clamiga-echo2-~d.dat\" (or (ext:getenv \"TMPDIR\") \"/tmp\") (random 100000)))"
+        "      (et '(unsigned-byte 8)))"
+        "  (with-open-file (os pn :direction :output :element-type et :if-exists :supersede)"
+        "    (dolist (x '(2 3 5 7 11)) (write-byte x os)))"
+        "  (prog1"
+        "    (with-open-file (is pn :direction :input :element-type et)"
+        "      (list"
+        "        (with-open-file (os pn2 :direction :output :if-exists :supersede :element-type et)"
+        "          (let ((s (make-echo-stream is os)))"
+        "            (list (stream-element-type s)"
+        "                  (loop repeat 6 collect (read-byte s nil :eof)))))"
+        "        (with-open-file (s pn2 :direction :input :element-type et)"
+        "          (loop repeat 6 collect (read-byte s nil :eof)))))"
+        "    (delete-file pn) (delete-file pn2)))");
+    char buf[128];
+    cl_prin1_to_string(result, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(((UNSIGNED-BYTE 8) (2 3 5 7 11 :EOF)) (2 3 5 7 11 :EOF))");
+}
+
+TEST(echo_stream_reader_and_nesting)
+{
+    /* READ through an echo stream echoes exactly what the reader consumed;
+     * an echo stream is itself a valid component of two-way / broadcast /
+     * concatenated / echo streams. */
+    CL_Obj result = cl_eval_string(
+        "(list"
+        "  (let* ((is (make-string-input-stream \"(1 2 3) tail\"))"
+        "         (os (make-string-output-stream))"
+        "         (s (make-echo-stream is os)))"
+        "    (list (read s) (get-output-stream-string os)))"
+        "  (let* ((log1 (make-string-output-stream))"
+        "         (log2 (make-string-output-stream))"
+        "         (inner (make-echo-stream (make-string-input-stream \"xy\") log1))"
+        "         (outer (make-echo-stream (make-concatenated-stream inner) log2)))"
+        "    (list (read-line outer nil)"
+        "          (get-output-stream-string log1) (get-output-stream-string log2))))");
+    char buf[96];
+    cl_prin1_to_string(result, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(((1 2 3) \"(1 2 3)\") (\"xy\" \"xy\" \"xy\"))");
+}
+
+TEST(echo_stream_typep_and_printer)
+{
+    CL_Obj result = cl_eval_string(
+        "(let ((es (make-echo-stream (make-string-input-stream \"\")"
+        "                            (make-string-output-stream))))"
+        "  (list (typep es 'echo-stream)"
+        "        (typep es 'stream)"
+        "        (typep es 'two-way-stream)"
+        "        (streamp es)"
+        "        (with-output-to-string (s) (prin1 es s))))");
+    char buf[80];
+    cl_prin1_to_string(result, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(T T NIL T \"#<ECHO-STREAM>\")");
+}
+
+TEST(make_echo_stream_rejects_bad_components)
+{
+    CL_Obj result;
+    result = cl_eval_string(
+        "(handler-case (make-echo-stream 42 (make-string-output-stream))"
+        "  (error (c) (declare (ignore c)) :type-error))");
+    ASSERT(result == cl_intern_keyword("TYPE-ERROR", 10));
+
+    result = cl_eval_string(
+        "(handler-case (make-echo-stream (make-string-output-stream) (make-string-output-stream))"
+        "  (error (c) (declare (ignore c)) :type-error))");
+    ASSERT(result == cl_intern_keyword("TYPE-ERROR", 10));
+
+    result = cl_eval_string(
+        "(handler-case (make-echo-stream (make-string-input-stream \"\") (make-string-input-stream \"\"))"
+        "  (error (c) (declare (ignore c)) :type-error))");
+    ASSERT(result == cl_intern_keyword("TYPE-ERROR", 10));
+
+    result = cl_eval_string(
+        "(handler-case (echo-stream-input-stream (make-string-input-stream \"\"))"
+        "  (error (c) (declare (ignore c)) :type-error))");
+    ASSERT(result == cl_intern_keyword("TYPE-ERROR", 10));
+
+    result = cl_eval_string(
+        "(handler-case (echo-stream-output-stream (make-two-way-stream"
+        "                 (make-string-input-stream \"\") (make-string-output-stream)))"
+        "  (error (c) (declare (ignore c)) :type-error))");
+    ASSERT(result == cl_intern_keyword("TYPE-ERROR", 10));
+}
+
+TEST(read_char_no_hang_string_stream_eof_value)
+{
+    /* Regression: an exhausted string stream returned NIL ("no input yet")
+     * from READ-CHAR-NO-HANG instead of the eof-value — an in-memory stream
+     * can never block, so nothing available IS end of file (CLHS). */
+    CL_Obj result = cl_eval_string(
+        "(let ((s (make-string-input-stream \"fo\")))"
+        "  (list (read-char-no-hang s nil :eof) (read-char-no-hang s nil :eof)"
+        "        (read-char-no-hang s nil :eof) (read-char-no-hang s nil :eof)"
+        "        (handler-case (read-char-no-hang s)"
+        "          (end-of-file () :eof-error))))");
+    char buf[64];
+    cl_prin1_to_string(result, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(#\\f #\\o :EOF :EOF :EOF-ERROR)");
+}
+
 TEST(load_from_stream)
 {
     /* CLHS: LOAD's filespec may be a stream — the ICL/SLYNK injection path
@@ -4531,6 +4774,20 @@ int main(void)
     RUN(concatenated_stream_read_from_it);
     RUN(concatenated_stream_typep_and_printer);
     RUN(make_concatenated_stream_rejects_non_input_stream);
+
+    /* Echo streams (CLHS 21.2) */
+    RUN(echo_stream_echoes_reads);
+    RUN(echo_stream_direct_writes_not_echoed_elsewhere);
+    RUN(echo_stream_accessors_and_close);
+    RUN(echo_stream_unread_echoes_once);
+    RUN(echo_stream_peek_char_semantics);
+    RUN(echo_stream_read_char_no_hang_listen_and_read_sequence);
+    RUN(echo_stream_binary_file_components);
+    RUN(echo_stream_reader_and_nesting);
+    RUN(echo_stream_typep_and_printer);
+    RUN(make_echo_stream_rejects_bad_components);
+    RUN(read_char_no_hang_string_stream_eof_value);
+
     RUN(load_from_stream);
     RUN(broadcast_concatenated_icl_slynk_muffle_pattern);
     RUN(make_two_way_stream_rejects_non_stream);

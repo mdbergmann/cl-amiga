@@ -192,6 +192,10 @@ CL_Obj cl_make_broadcast_stream_list(CL_Obj streams);
 /* Create a concatenated stream reading a list of input streams in order. */
 CL_Obj cl_make_concatenated_stream_list(CL_Obj streams);
 
+/* Create an echo stream: reads come from input_stream and are echoed to
+ * output_stream; direct writes go to output_stream unechoed (CLHS 21.1). */
+CL_Obj cl_make_echo_stream(CL_Obj input_stream, CL_Obj output_stream);
+
 /* --- Stream-aware write helpers ---
  *
  * Write a C string to the stream currently bound to `sym`.  If the symbol

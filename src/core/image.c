@@ -279,7 +279,7 @@ static const char *image_save_preconditions(void)
 
     /* 2 + 3. One arena walk: open file/socket streams and owned foreign
      * pointers.  Console, string, synonym, two-way, broadcast,
-     * concatenated, cbuf and closed streams are fine. */
+     * concatenated, echo, cbuf and closed streams are fine. */
     ptr = cl_heap.arena + CL_ALIGN;
     end = cl_heap.arena + cl_heap.bump;
     while (ptr < end) {
@@ -1254,6 +1254,7 @@ int cl_image_restore_staged(void)
                 case CL_STREAM_TWO_WAY:
                 case CL_STREAM_BROADCAST:
                 case CL_STREAM_CONCATENATED:
+                case CL_STREAM_ECHO:
                     break;   /* no OS handle involved / children are arena refs */
                 case CL_STREAM_STRING:
                     if (st->out_buf_handle != 0 &&

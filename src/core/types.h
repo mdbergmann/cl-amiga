@@ -641,6 +641,8 @@ typedef struct {
 #define CL_STREAM_TWO_WAY  6  /* Two-way: input=string_buf child, output=element_type child */
 #define CL_STREAM_BROADCAST     7  /* Broadcast: string_buf = list of output streams; writes fan out */
 #define CL_STREAM_CONCATENATED  8  /* Concatenated: string_buf = list of remaining input streams */
+#define CL_STREAM_ECHO          9  /* Echo: input=string_buf child, output=element_type child;
+                                    * every element read is echoed to the output child */
 
 /* Stream flags */
 #define CL_STREAM_FLAG_OPEN  0x01
