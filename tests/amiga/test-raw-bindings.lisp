@@ -454,6 +454,31 @@
         (eq (and (member :morphos *features*) t) (and (fboundp s) t)))
       (null (find-package "AMIGA.RAW.MUIMASTER"))))
 
+;; the additive post-3.8 sources (specs/mui-bindings.md section 3.7): new
+;; constants from the MUI 5 SDK's mui.h and the MorphOS SDK's mui.h are
+;; unguarded and materialise on every MUI, while the known count
+;; evolutions keep the 3.8 baseline value
+(check "raw-mui-additive-constants" t
+  (if *raw-mui-p*
+      (and (= (symbol-value (%raw-sym "AMIGA.RAW.MUIMASTER" "+MUIA-APPLICATION-USED-CLASSES+")) #x8042E9A7)
+           (= (symbol-value (%raw-sym "AMIGA.RAW.MUIMASTER" "+MUIA-WINDOW-HAS-ALPHA+")) #x8042E632)
+           (equal (symbol-value (%raw-sym "AMIGA.RAW.MUIMASTER" "+MUIC-TITLE+")) "Title.mui")
+           (= (symbol-value (%raw-sym "AMIGA.RAW.MUIMASTER" "+MPEN-COUNT+")) 8)
+           (= (symbol-value (%raw-sym "AMIGA.RAW.MUIMASTER" "+MUIMASTER-VMIN+")) 11))
+      (null (find-package "AMIGA.RAW.MUIMASTER"))))
+
+;; the MUI 5 vectors (MUI_Show -216 ...) exist in the AmigaOS MUI 5 fd
+;; only: bound exactly when this is NOT MorphOS and the running muimaster
+;; reports lib_Version >= 20 — unbound under MUI 3.8 (v19) and on MorphOS
+;; (whose fd keeps those vectors private)
+(check "raw-mui-show-version-guard" t
+  (if *raw-mui-p*
+      (let ((s (%raw-sym "AMIGA.RAW.MUIMASTER" "MUI-SHOW"))
+            (v (symbol-value (%raw-sym "AMIGA.RAW.MUIMASTER" "*MUIMASTER-VERSION*"))))
+        (eq (and (>= v 20) (not (member :morphos *features*)) t)
+            (and (fboundp s) t)))
+      (null (find-package "AMIGA.RAW.MUIMASTER"))))
+
 ;;; --- callbacks: Lisp functions the OS calls ------------------------------
 ;;; FFI:MAKE-CALLBACK on the target (specs/mui-bindings.md section 10): a
 ;;; 68k stub (the MorphOS emulator's 68k, on PPC) enters Lisp with the

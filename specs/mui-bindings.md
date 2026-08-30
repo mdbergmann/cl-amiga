@@ -1,13 +1,14 @@
 # MUI from Lisp — raw bindings + `AMIGA.MUI` (2026-08-30)
 
-Status: **Layer 1 (§3, the raw module), the BOOPSI split (§4.1), Layer 2
+Status: **everything in this spec is implemented** — Layer 1 (§3, the
+raw module, including the struct reader and MCC modules of §3.6 and the
+MUI 5 / MorphOS header merge of §3.7), the BOOPSI split (§4.1), Layer 2
 (`AMIGA.MUI`, §4), the §5 examples and the `amiga/hook` callback runtime
-of §10 (hooks and custom classes, §4.5) are implemented** — see §3.5,
-§4.6, §4.7 and §10.5 for what was built and where it deviates from the
-sketch.  Open: §8 step 5 (struct reader, MCC modules, MUI 5 / MorphOS
-header merge).  Companion to `specs/raw-bindings-footprint.md` (the
-binding-table format) and to `lib/amiga/reaction.lisp` (the toolkit
-layer this one mirrors).
+of §10 (hooks and custom classes, §4.5) — see §3.5, §3.6, §3.7, §4.6,
+§4.7 and §10.5 for what was built and where it deviates from the sketch.
+Companion to `specs/raw-bindings-footprint.md` (the binding-table
+format) and to `lib/amiga/reaction.lisp` (the toolkit layer this one
+mirrors).
 
 ## 1. Goal
 
@@ -295,12 +296,13 @@ Host load: ~0 heap beyond the table; FASL 37 KB.
 - ~~**Phase 2 — C structs from `.h`**~~ — **built 2026-08-30**, see
   §3.6.
 - ~~**Phase 3 — MCC headers**~~ — **built 2026-08-30**, see §3.6.
-- **Phase 3b — MUI 5 (AmigaOS) SDK** as an alternative primary: its fd
+- ~~**Phase 3b — MUI 5 (AmigaOS) SDK** as an alternative primary: its fd
   has more functions with `##bias` beyond 198 and the header adds `MUIB_`
   tags; version markers → `(%version>= 20)` guards, exactly the OS 3.2
   vs 3.0 handling.  Also pull `gg:os-include/libraries/mui.h` from the
   MorphOS box as a second constant source (conflicting values = fatal,
-  like the LVO check).
+  like the LVO check).~~  **Built 2026-08-30** — as additive sources next
+  to the 3.8 baseline rather than an alternative primary; see §3.7.
 
 ### 3.6 C structs and MCC headers — as built (2026-08-30)
 
@@ -365,6 +367,72 @@ emits it as a `(:struct …)` row exactly like a `.i` `STRUCTURE`, so the
   to equal the raw `X` accessor's offset / `*X-SIZE*` — a name without a
   raw namesake fails.  The listbrowser example builds its `ColumnInfo`
   array through the generated accessors.
+
+### 3.7 MUI 5 / MorphOS header merge — as built (2026-08-30)
+
+Phase 3b of §3.4, built as **additive sources next to the 3.8 baseline**
+(not an alternative primary — the committed rows stay byte-identical, the
+"3.8 value wins" rule of §3.1 stays checkable).  Inputs, both optional
+and only used next to `MUI_SDK`:
+
+- `MUI5_SDK=tools/mui5-sdk` (gitignored): the unpacked `SDK/MUI` of the
+  muidev.de **MUI 5.0-20210831 os3** release.  It ships
+  `sfd/muimaster_lib.sfd` ready-made (93 `##private` gaps, no
+  `##version` markers), which the wrapper copies out alone — the sibling
+  `mccclass_lib.sfd` is the interface `.mcc` files export, no module —
+  and `C/include/libraries/mui.h` (1527 defines).
+- The MorphOS SDK's `libraries/mui.h`, pulled from
+  `gg:os-include/libraries/mui.h` (the .213 box, 2026-08-30) into
+  `tools/mos-sdk/libraries/` — `MOS_SDK` *is* a copy of `gg:os-include`,
+  so the header sits at its natural place and the wrapper picks it up by
+  existence (`BINDGEN_MOS_MUI_INCLUDE_H`).  Its `#include
+  <libraries/charsets.h>` is not in the copy and is skipped silently; no
+  constant of the header references that file's names.
+
+**Functions** (from the MUI 5 sfd): the 25-function overlap with the 3.8
+fd is cross-checked like the MorphOS one (`LVO cross-check MUI SDK vs
+MUI 5 SDK: 25 functions agree, 0 differ`; both cross-checks run before
+the merge, on the pristine tables).  Exactly **4 public vectors are
+new** — `MUI_Show` −216, `MUI_Hide` −222, `MUI_LayoutObj` −228,
+`MUI_Offset` −234 — and none of them is public in the MorphOS fd, so
+they carry `(:not-morphos 20)`: bound only where the running muimaster
+reports lib_Version ≥ 20 on AmigaOS (the sfd has no version markers, so
+20 — both MUI 5 and MorphOS's MUI report 20 — is the default; a marker
+> 19 would win).  The version floor in `merge-library-functions` is
+source-aware: 19 for the `:mui`/`:mui5` sources, 39 for OS libraries.
+`MUI_GetRGBColor` −690 is *not* in the MUI 5 fd and stays `:morphos`.
+
+**Constants** (from both headers): each additive header is parsed in a
+**fresh environment** seeded with the `.i` symbols only, so its values
+are its own rather than first-definition-wins leftovers; only names the
+baseline does not define join the table, as one synthetic i-file per
+source (`;; --- constants from libraries/mui.h (MUI 5 SDK, additive)
+---`).  A shared name with a differing value is **fatal** (`CONFLICT
+<name>: baseline <v>, <v> from <src>` + refusal to write) unless listed
+in `*MUI-VALUE-EVOLUTIONS*` — the known post-3.8 count/version markers
+(`MUIMASTER_VMIN` 11→20, `MUIMASTER_VLATEST` 19→20, `MPEN_COUNT` 8→9,
+`MUII_Count` 42→55, `MUII_LASTPAT` 145→147, `MUIV_Frame_Count` 13→24,
+`MUIV_Dirlist_SortType_Count` MUI5 9 vs MorphOS 7), where the earliest
+source wins (baseline, then MUI 5, then MorphOS).  **Structs are never
+taken from additive headers** — layouts stay 3.8's, a program must not
+poke fields the running MUI lacks.  Result: **+500 constants from the
+MUI 5 header, +84 more from the MorphOS one** (the newer `MUIA_`/`MUIM_`/
+`MUIV_` tags, `MUIC_` names such as `Panel.mui`/`Title.mui`/
+`Process.mui`, `MIBENUM_*`) — `muimaster` now carries 30 functions and
+1475 constants, 2047 table entries in 81 KB packed.  The expected
+`MUIB_` tag bases of the §3.4 sketch do **not** exist in either os3/
+MorphOS header (an OS4/AROS-ism; the os3 MUI 5 header's `muiaros.h`
+include sits in an `#ifdef __AROS__` block).
+
+Tests: the fixture grew `mui5-sfd/` (a post-3.8 vector shared with the
+MorphOS fd → version guard only; one AmigaOS-only; one under `==version
+21`), `mui5-include_h/` + `mos-mui-include_h/` (dedupe against baseline
+and across sources, a fresh-environment isolation case, an evolution, an
+additive struct that must NOT appear) and `mui-conflict_h/` (a third
+generator run that must refuse); committed mode pins the 4 vectors'
+guards, additive constants from both sources and the evolutions;
+`tests/amiga/test-raw-bindings.lisp` checks the additive constants and
+the `MUI_Show` version guard on the target.
 
 ## 4. Layer 2 — `AMIGA.MUI` (`lib/amiga/mui.lisp`, hand-written)
 
@@ -752,7 +820,10 @@ Amiga (`make -f Makefile.cross test-amiga`, FS-UAE has MUI 3.8):
 6. ~~Phase 2 struct reader, MCC modules.~~  **Done 2026-08-30** (§3.6):
    the `MUI_AreaData` / `MUI_RenderInfo` / `MUIP_*` layouts of §4.7 are
    generated and the curated constants pinned to them.
-7. Later: MUI 5 / MorphOS header merge (§3.4 Phase 3b).
+7. ~~Later: MUI 5 / MorphOS header merge (§3.4 Phase 3b).~~  **Done
+   2026-08-30** (§3.7): the MUI 5 SDK's 4 post-3.8 vectors under
+   `(:not-morphos 20)`, +584 additive constants from the MUI 5 and
+   MorphOS headers, value conflicts fatal with a curated evolution list.
 
 ## 9. Decisions to take before coding
 

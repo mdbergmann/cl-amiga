@@ -466,11 +466,13 @@ verify-amiga:
 # back to the copy inside the cross toolchain), when MOS_SDK points at a
 # copy of the MorphOS SDK's os-include (fd/ + clib/), the MorphOS tables,
 # and from the MUI 3.8 developer kit (MUI_SDK=<copy of MUI:Developer>,
-# default tools/mui-sdk) the muimaster module's constants.  The output is
+# default tools/mui-sdk) the muimaster module's constants; the MUI 5 SDK
+# (MUI5_SDK=tools/mui5-sdk) and the MorphOS SDK's libraries/mui.h add the
+# post-3.8 muimaster surface.  The output is
 # committed; CI checks it (tests/test_amiga_bindgen.sh) but never needs the
 # SDKs.  See README "Raw OS bindings".
 gen-amiga-bindings: $(HOST_BIN)
-	NDK="$(NDK)" MOS_SDK="$(MOS_SDK)" MUI_SDK="$(MUI_SDK)" sh scripts/gen-amiga-bindings.sh
+	NDK="$(NDK)" MOS_SDK="$(MOS_SDK)" MUI_SDK="$(MUI_SDK)" MUI5_SDK="$(MUI5_SDK)" sh scripts/gen-amiga-bindings.sh
 
 # Both FASL targets compile with CLAMIGA_FASL_PORTABLE=1: the output is loaded
 # by the byte-string m68k AmigaOS binaries (and MorphOS), so a non-ASCII

@@ -290,17 +290,30 @@ of temporaries; the caller frees both (%WITH-ULONG-ARRAY does)."
 ;;; Objects
 ;;; ================================================================
 
+;;; The MUIC_ names the mechanical keyword rule of CLASS-ID cannot
+;;; spell: MorphOS's interior capitals and its .mcc aliases.  The
+;;; coverage check of tests/test_amiga_mui.sh proves that the rule plus
+;;; this list reach every +MUIC-*+ constant of the generated table.
+(defparameter *class-id-irregulars*
+  '((:fs-protection-bits . "FSProtectionBits.mui")
+    (:fsprotectionbits   . "FSProtectionBits.mui")
+    (:textinput          . "Textinput.mcc")
+    (:textinputscroll    . "Textinputscroll.mcc")))
+
 (defun class-id (class)
   "The MUI class name -- the MUIC_* string MUI_NewObjectA takes -- for
 the designator CLASS.  A string is returned as it is (\"Window.mui\",
 amiga.raw.muimaster:+muic-window+); a keyword is the MUIC_ name in Lisp
 spelling: hyphens dropped, the first letter upper case, the rest lower,
 \".mui\" appended -- :WINDOW is \"Window.mui\", :NUMERIC-BUTTON and
-:NUMERICBUTTON are \"Numericbutton.mui\".  That rule covers every class
-of mui.h (tests/test_amiga_mui.sh checks all 65) and of the newer MUIs
-\(:CALENDAR, :HOTKEYSTRING ...) alike."
+:NUMERICBUTTON are \"Numericbutton.mui\".  That rule (plus the handful
+of MorphOS irregulars in *CLASS-ID-IRREGULARS* -- :FS-PROTECTION-BITS,
+the :TEXTINPUT .mcc aliases) covers every class of mui.h and of the
+newer MUIs (tests/test_amiga_mui.sh checks all 107)."
   (cond ((stringp class) class)
         ((keywordp class)
+         (let ((irregular (assoc class *class-id-irregulars*)))
+           (when irregular (return-from class-id (cdr irregular))))
          (let ((name (remove #\- (symbol-name class))))
            (when (or (zerop (length name)) (notevery #'alphanumericp name))
              (error "AMIGA.MUI:CLASS-ID: ~S does not name a MUI class -- expected a keyword like :WINDOW or :NUMERIC-BUTTON (for MUIC_Window, MUIC_Numericbutton), or the class name string itself (\"Window.mui\")"

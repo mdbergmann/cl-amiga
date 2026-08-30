@@ -1,0 +1,31 @@
+* fixture for tests/test_amiga_bindgen.sh: the MUI 5 (AmigaOS) SDK's
+* shipped muimaster_lib.sfd (BINDGEN_MUI5_SFD) -- ADDITIVE next to the
+* 3.8 kit: the overlap must agree with the 3.8 rendering exactly
+* (cross-checked), and the public functions beyond the 3.8 fd join
+* muimaster under (%version>= 20) -- or under the sfd's own ==version
+* when that says something later.  MUI_Show is also in the MorphOS SDK's
+* rendering (mos-sfd) at the same vector, so it carries no platform
+* guard; MUI_Offset and MUI_Fix21 are AmigaOS-only (:not-morphos).
+==base _MUIMasterBase
+==basetype struct Library *
+==libname muimaster.library
+==bias 30
+==public
+Object * MUI_NewObjectA(char * class, struct TagItem * tags) (a0,a1)
+==varargs
+Object * MUI_NewObject(char * class, Tag tags, ...) (a0,a1)
+VOID MUI_DisposeObject(Object * obj) (a0)
+LONG MUI_RequestA(APTR app, APTR win, LONGBITS flags, char * title, char * gadgets, char * format, APTR params) (d0,d1,d2,a0,a1,a2,a3)
+==private
+ULONG MUI_Private() ()
+ULONG MUI_Private() ()
+==public
+LONG MUI_ObtainPen(struct MUI_RenderInfo * mri, struct MUI_PenSpec * spec, ULONG flags) (a0,a1,d0)
+Object * MUI_MakeObjectA(LONG type, ULONG * params) (d0,a0)
+==bias 216
+==public
+ULONG MUI_Show(Object * obj) (a0)
+VOID MUI_Offset(Object * obj, LONG x, LONG y) (a0,d0,d1)
+==version 21
+LONG MUI_Fix21(Object * obj) (a0)
+==end

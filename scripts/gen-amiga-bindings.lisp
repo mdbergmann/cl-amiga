@@ -28,6 +28,27 @@
 ;;;                        the headers of MUI custom classes (the .sh
 ;;;                        wrapper collects them from the kit's ExtClasses/
 ;;;                        and MCC_HEADERS=<dir>) -> amiga/raw/mui/<name>
+;;;   BINDGEN_MUI5_SFD     dir with the MUI 5 (AmigaOS) SDK's
+;;;                        muimaster_lib.sfd (the SDK ships sfd/; the .sh
+;;;                        wrapper copies it out alone).  ADDITIVE: the
+;;;                        public functions beyond the 3.8 fd join
+;;;                        muimaster under (%version>= 20) -- MUI 5 for
+;;;                        AmigaOS and MorphOS's built-in MUI both report
+;;;                        lib_Version 20.
+;;;   BINDGEN_MUI5_INCLUDE_H  the MUI 5 SDK's C/include -- its
+;;;                        libraries/mui.h is an additive constant source
+;;;   BINDGEN_MOS_MUI_INCLUDE_H  a root holding the MorphOS SDK's
+;;;                        libraries/mui.h (a copy of gg:os-include, i.e.
+;;;                        MOS_SDK itself) -- an additive constant source
+;;;                        too.  Additive sources need the MUI 3.8 kit
+;;;                        (the baseline): their NEW names join the
+;;;                        muimaster table unguarded, a name the baseline
+;;;                        also defines must have the baseline's value --
+;;;                        any other difference is fatal, except the known
+;;;                        post-3.8 count/version evolutions of
+;;;                        *MUI-VALUE-EVOLUTIONS* (the 3.8 value wins).
+;;;                        Structs and functions are NOT taken from the
+;;;                        additive headers (layouts stay 3.8's).
 ;;;   BINDGEN_OUT          output directory (default lib/amiga/raw/)
 ;;;   BINDGEN_LIBS         comma list restricting the libraries generated
 ;;;                        (default: all)
@@ -2083,7 +2104,12 @@ exists in the NDK (ndk-lib) and maybe in the MorphOS SDK (mos-lib)."
                  (m-public (and m (not (sfd-fn-private m))))
                  (same (and m-public
                             (string= (fn-signature-key m) (fn-signature-key f))))
-                 (minv (and (sfd-fn-version f) (> (sfd-fn-version f) 39)
+                 ;; a version below the floor is what the library always
+                 ;; had: OS libraries open at 33..39, muimaster (the MUI
+                 ;; SDK sources) at 19 (= MUI 3.8) -- only later versions
+                 ;; need a runtime (%version>= N) guard
+                 (vfloor (if (member (sfd-fn-source f) '(:mui :mui5)) 19 39))
+                 (minv (and (sfd-fn-version f) (> (sfd-fn-version f) vfloor)
                             (sfd-fn-version f))))
             (push (make-emit-fn :fn f
                                 :guard (cond ((null mos-lib) nil)
@@ -2545,9 +2571,10 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
 ;;; and a miscounted table would jump into the wrong vector on one
 ;;; platform.  Returns (values agreeing differing); each difference is a
 ;;; warning.
-(defun verify-lvos-against-mos (lib mos)
+(defun verify-lvos-against-mos (lib other &optional (lib-label "MUI SDK")
+                                            (other-label "MorphOS SDK"))
   (let ((by-name (make-hash-table :test 'equal)) (same 0) (bad 0))
-    (dolist (f (sfd-lib-functions mos))
+    (dolist (f (sfd-lib-functions other))
       (unless (sfd-fn-private f) (setf (gethash (sfd-fn-name f) by-name) f)))
     (dolist (f (sfd-lib-functions lib))
       (let ((m (and (not (sfd-fn-private f)) (gethash (sfd-fn-name f) by-name))))
@@ -2556,11 +2583,146 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
                       (equal (sfd-fn-regs m) (sfd-fn-regs f)))
                  (incf same))
                 (t (incf bad)
-                   (asm-warn "~A: ~A is at LVO ~D (~{~A~^,~}) in the MUI SDK but ~D (~{~A~^,~}) in the MorphOS SDK — a ##private gap miscounted?"
+                   (asm-warn "~A: ~A is at LVO ~D (~{~A~^,~}) in the ~A but ~D (~{~A~^,~}) in the ~A — a ##private gap miscounted?"
                              (sfd-lib-name lib) (sfd-fn-name f)
-                             (sfd-fn-lvo f) (sfd-fn-regs f)
-                             (sfd-fn-lvo m) (sfd-fn-regs m)))))))
+                             (sfd-fn-lvo f) (sfd-fn-regs f) lib-label
+                             (sfd-fn-lvo m) (sfd-fn-regs m) other-label))))))
     (values same bad)))
+
+;;; ================================================================
+;;; Additive MUI headers — the MUI 5 SDK's and the MorphOS SDK's mui.h
+;;; ================================================================
+;;;
+;;; The muimaster module's baseline is MUI 3.8: its numbers are the common
+;;; subset of every MUI a program can meet, and later MUIs keep them.  The
+;;; post-3.8 headers (the MUI 5 SDK for AmigaOS, the MorphOS SDK's
+;;; gg:os-include/libraries/mui.h) are ADDITIVE constant sources: each is
+;;; parsed in a fresh environment (so its values are its own, not the
+;;; baseline's first-definition-wins leftovers), then only the names the
+;;; baseline does NOT define join the table — unguarded, because a tag
+;;; unknown to an older muimaster is simply ignored by the class, and a
+;;; missing class makes MUI_NewObjectA return NULL, which the curated
+;;; layer reports by name.  A name both define must have the baseline's
+;;; value: anything else is fatal (a wrong or miscounted header), except
+;;; the known count/version markers below, which legitimately grew after
+;;; 3.8 — for those the 3.8 value wins, silently (a marker only the
+;;; additive sources carry keeps the earlier source's value: baseline,
+;;; then MUI 5, then MorphOS).  Structs are NOT taken
+;;; from additive headers (layouts stay 3.8's — a program must not poke
+;;; fields the running MUI does not have); their new functions come from
+;;; the MUI 5 SDK's sfd instead, under (%version>= 20) guards.
+
+(defparameter *mui-value-evolutions*
+  '("MUIMASTER_VMIN"       ; 11 -> 20 (each SDK's own OpenLibrary minimum)
+    "MUIMASTER_VLATEST"    ; 19 -> 20
+    "MPEN_COUNT"           ; 8 -> 9 (a pen was added after 3.8)
+    "PSD_NUMMUIPENS"       ; defined as MPEN_COUNT
+    "MUII_Count"           ; 42 -> 55 (built-in images added)
+    "MUII_LASTPAT"         ; 145 -> 147
+    "MUIV_Frame_Count"     ; 13 -> 24 (frame types added)
+    "MUIV_Dirlist_SortType_Count"))  ; MUI 5 says 9, MorphOS 7
+
+(defun copy-string-table (table)
+  (let ((out (make-hash-table :test 'equal)))
+    (maphash (lambda (k v) (setf (gethash k out) v)) table)
+    out))
+
+(defun baseline-known-value (name)
+  "What NAME is worth in the fully parsed baseline environment: an
+integer, a string, :OPAQUE (defined, but not as a value — a function-like
+macro, an unresolvable expression), or :NONE."
+  (let ((entry (gethash name *asm-symbols*)))
+    (cond (entry (if (eq (first entry) :string)
+                     (second entry)
+                     (handler-case (resolve-asm-symbol name)
+                       (error () :opaque))))
+          ((gethash name *c-macros*) :opaque)
+          (t :none))))
+
+(defun parse-additive-mui-header (root snap-syms snap-macros)
+  "Parse ROOT/libraries/mui.h (and the twin-less headers it includes
+under ROOT) in a fresh environment seeded with SNAP-SYMS/SNAP-MACROS —
+the symbol table as it stood after the .i files, before any C header —
+so every value is the additive header's own.  Returns (values consts
+skipped): the resolvable constants in definition order, values stored in
+the i-consts, and the count of object-like macros that were skipped or
+unresolvable."
+  (let ((*asm-symbols* (copy-string-table snap-syms))
+        (*c-macros* (copy-string-table snap-macros))
+        (*i-files* (make-hash-table :test 'equal))
+        (*c-struct-layouts* (make-hash-table :test 'equal))
+        (*i-struct-layouts* (make-hash-table :test 'equal))
+        (*i-struct-layouts-key* -1)
+        (*h-include-roots* (list (dir-path root))))
+    (parse-h-file "libraries/mui.h")
+    (let ((files (sort (loop for k being the hash-keys of *i-files* collect k)
+                       #'string<))
+          (consts nil) (skipped 0))
+      ;; the primary file's constants first, then its includes' (sorted)
+      (dolist (rel (cons "libraries/mui.h"
+                         (remove "libraries/mui.h" files :test #'string=)))
+        (let ((hfile (gethash rel *i-files*)))
+          (when hfile
+            (incf skipped (i-file-skipped hfile))
+            (dolist (c (i-file-constants hfile))
+              (let ((v (const-value c)))
+                (cond (v (setf (i-const-value c) v) (push c consts))
+                      (t (incf skipped))))))))
+      (values (nreverse consts) skipped))))
+
+(defun merge-additive-mui-headers (sources snap-syms snap-macros baseline-p)
+  "Parse each additive (LABEL ROOT) source and register one synthetic
+i-file per source under a pseudo include path, holding only the constants
+NEW relative to the baseline and to earlier sources.  Signals an error on
+any value conflict not covered by *MUI-VALUE-EVOLUTIONS*.  Returns the
+pseudo paths, in order, for the muimaster module's include list."
+  (when (and sources (not baseline-p))
+    (format t "MUI additive headers: ignored without the MUI 3.8 SDK (the baseline)~%")
+    (return-from merge-additive-mui-headers nil))
+  (let ((seen (make-hash-table :test 'equal))   ; new C name -> (value . label)
+        (conflicts nil) (evolutions nil) (out nil))
+    (dolist (src sources)
+      (destructuring-bind (label root) src
+        (multiple-value-bind (consts skipped)
+            (parse-additive-mui-header root snap-syms snap-macros)
+          (let ((new nil))
+            (dolist (c consts)
+              (let* ((name (i-const-name c)) (v (i-const-value c))
+                     (base (baseline-known-value name))
+                     (prev (gethash name seen)))
+                (cond
+                  ((not (eq base :none))
+                   (cond ((equal base v))       ; agrees with the baseline
+                         ((member name *mui-value-evolutions* :test #'string=)
+                          (pushnew name evolutions :test #'string=))
+                         ((eq base :opaque))    ; a baseline macro without a value
+                         (t (push (list name base v label) conflicts))))
+                  (prev
+                   (unless (equal (car prev) v)
+                     (if (member name *mui-value-evolutions* :test #'string=)
+                         (pushnew name evolutions :test #'string=)
+                         (push (list name (car prev) v
+                                     (format nil "~A vs ~A" (cdr prev) label))
+                               conflicts))))
+                  (t (setf (gethash name seen) (cons v label))
+                     (push c new)))))
+            (let* ((pseudo (format nil "libraries/mui.h (~A, additive)" label))
+                   (hf (make-i-file :path pseudo :constants (nreverse new))))
+              (setf (gethash pseudo *i-files*) hf)
+              (push pseudo out)
+              (format t "~A libraries/mui.h: ~D new constants (additive)~@[, ~D skipped~]~%"
+                      label (length (i-file-constants hf))
+                      (and (plusp skipped) skipped)))))))
+    (when evolutions
+      (format t "MUI additive headers: ~D known value evolution~:P kept at the value of the earliest source (~{~A~^, ~})~%"
+              (length evolutions) (sort evolutions #'string<)))
+    (when conflicts
+      (dolist (cfl (reverse conflicts))
+        (format t "CONFLICT ~A: baseline ~S, ~S from the ~A~%"
+                (first cfl) (second cfl) (third cfl) (fourth cfl)))
+      (error "gen-amiga-bindings: ~D differing value~:P for existing MUI names — the 3.8 header is the baseline; a legitimate post-3.8 evolution belongs in *MUI-VALUE-EVOLUTIONS*, anything else is a wrong header"
+             (length conflicts)))
+    (nreverse out)))
 
 (defun run ()
   (let* ((ndk-sfd (getenv-or "BINDGEN_NDK_SFD"
@@ -2572,6 +2734,9 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
          (mos-only (comma-list (getenv-or "BINDGEN_MOS_ONLY" "muimaster,ahi,cybergraphics")))
          (mui-sfd (getenv-or "BINDGEN_MUI_SFD" nil))
          (mui-inc-h (getenv-or "BINDGEN_MUI_INCLUDE_H" nil))
+         (mui5-sfd (getenv-or "BINDGEN_MUI5_SFD" nil))
+         (mui5-inc-h (getenv-or "BINDGEN_MUI5_INCLUDE_H" nil))
+         (mos-mui-inc-h (getenv-or "BINDGEN_MOS_MUI_INCLUDE_H" nil))
          (mcc-inc-h (getenv-or "BINDGEN_MCC_INCLUDE_H" nil))
          (out-dir (dir-path (getenv-or "BINDGEN_OUT" "lib/amiga/raw")))
          (only (comma-list (getenv-or "BINDGEN_LIBS" nil)))
@@ -2589,6 +2754,8 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
          (ndk-libs (load-sfd-dir ndk-sfd :ndk))
          (mos-libs (load-sfd-dir mos-sfd :mos))
          (mui-libs (load-sfd-dir mui-sfd :mui))
+         (mui5-libs (load-sfd-dir mui5-sfd :mui5))
+         (extra-mui-includes nil)
          (claimed-includes (make-hash-table :test 'equal))
          (totals (list 0 0 0 0))
          (modules 0))
@@ -2640,6 +2807,42 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
                          (incf same s) (incf bad b)))))
                  mui-libs)
         (format t "LVO cross-check MUI SDK vs MorphOS SDK: ~D functions agree, ~D differ~%" same bad)))
+    ;; The MUI 5 SDK's sfd (additive): the public functions beyond the 3.8
+    ;; fd join the primary muimaster table under (%version>= 20) — MUI 5
+    ;; for AmigaOS and MorphOS's built-in MUI both report lib_Version 20.
+    ;; The overlap must agree exactly with the 3.8 rendering (a
+    ;; disagreement means a ##private gap was miscounted somewhere).
+    ;; Runs AFTER the cross-checks above, which compare the pristine
+    ;; tables.
+    (when (plusp (hash-table-count mui5-libs))
+      (cond
+        ((null mui-sfd)
+         (format t "MUI 5 SDK sfd: ignored without the MUI 3.8 SDK (the baseline)~%"))
+        (t
+         (maphash
+          (lambda (k lib5)
+            (let ((base (gethash k ndk-libs)))
+              (cond
+                ((or (null base) (not (eq (sfd-lib-source base) :mui)))
+                 (asm-warn "MUI 5 SDK: ~A_lib.sfd has no MUI 3.8 SDK twin — ignored" k))
+                (t
+                 (multiple-value-bind (same bad)
+                     (verify-lvos-against-mos base lib5 "MUI SDK" "MUI 5 SDK")
+                   (format t "LVO cross-check MUI SDK vs MUI 5 SDK: ~D functions agree, ~D differ~%"
+                           same bad))
+                 (let ((known (make-hash-table :test 'equal)) (added 0))
+                   (dolist (f (sfd-lib-functions base))
+                     (setf (gethash (sfd-fn-name f) known) t))
+                   (dolist (f (sfd-lib-functions lib5))
+                     (unless (or (sfd-fn-private f) (gethash (sfd-fn-name f) known))
+                       (unless (and (sfd-fn-version f) (> (sfd-fn-version f) 19))
+                         (setf (sfd-fn-version f) 20))
+                       (setf (sfd-lib-functions base)
+                             (append (sfd-lib-functions base) (list f)))
+                       (incf added)))
+                   (format t "MUI 5 SDK: ~A gains ~D post-3.8 function~:P ((%version>= 20))~%"
+                           k added))))))
+          mui5-libs))))
     ;; Parse every .i under the subsystem dirs first (the symbol table is
     ;; global: STRUCTURE bases and EQUs reference other files), then the
     ;; twin-less .h files (their macros reference the .i constants).
@@ -2655,7 +2858,17 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
             (push rel all-inc))))
       (setf all-inc (sort all-inc #'string<))
       (parse-i-files ndk-inc (remove-if-not (lambda (r) (ends-with ".i" r)) all-inc))
-      (parse-h-files (remove-if-not (lambda (r) (ends-with ".h" r)) all-inc))
+      ;; snapshot for the additive MUI headers: the .i symbols only, no C
+      ;; macro yet — their parse must see its own values, not the
+      ;; baseline's first-definition-wins leftovers
+      (let ((snap-syms (copy-string-table *asm-symbols*))
+            (snap-macros (copy-string-table *c-macros*)))
+        (parse-h-files (remove-if-not (lambda (r) (ends-with ".h" r)) all-inc))
+        (setf extra-mui-includes
+              (merge-additive-mui-headers
+               (remove nil (list (and mui5-inc-h (list "MUI 5 SDK" mui5-inc-h))
+                                 (and mos-mui-inc-h (list "MorphOS SDK" mos-mui-inc-h))))
+               snap-syms snap-macros (and mui-sfd t))))
       ;; --- library modules ---
       (let ((names nil))
         (maphash (lambda (k v) (declare (ignore v)) (push k names)) ndk-libs)
@@ -2667,7 +2880,12 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
           (when (or (null only) (member name only :test #'string=))
             (let* ((ndk (gethash name ndk-libs))
                    (mos (gethash name mos-libs))
-                   (includes (if ndk (includes-for name) nil))
+                   (includes (let ((inc (if ndk (includes-for name) nil)))
+                               ;; the additive MUI headers' synthetic
+                               ;; i-files (new constants only)
+                               (if (string= name "muimaster")
+                                   (append inc extra-mui-includes)
+                                   inc)))
                    (stem (lib-module-stem name (or (and ndk (sfd-lib-libname ndk))
                                                    (and mos (sfd-lib-libname mos)))))
                    (module (concatenate 'string "amiga/raw/" stem))

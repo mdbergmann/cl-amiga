@@ -18,7 +18,9 @@
 #     functions MorphOS lacks at the same LVO get a (not :morphos) guard,
 #     MorphOS-only ones a :morphos guard.  Without MOS_SDK the output is
 #     AmigaOS-only (no guards, no MorphOS extensions) — commit only output
-#     generated WITH the MorphOS SDK.
+#     generated WITH the MorphOS SDK.  When the copy also carries
+#     libraries/mui.h (as gg:os-include does), that header joins the
+#     muimaster module as an ADDITIVE constant source — see MUI5_SDK.
 #   * optionally the MUI 3.8 developer kit: MUI_SDK=<dir> (default
 #     tools/mui-sdk, a copy of MUI:Developer — FD/muimaster_lib.fd,
 #     C/Include/clib/muimaster_protos.h, C/Include/libraries/mui.h).  Its
@@ -34,6 +36,16 @@
 #     .i STRUCTUREs.
 #   * MUI custom-class headers (<Name>_mcc.h): the kit's ExtClasses/ and
 #     MCC_HEADERS=<dir> — each a header-only module amiga/raw/mui/<name>.
+#   * optionally the MUI 5 (AmigaOS) SDK: MUI5_SDK=<dir> (default
+#     tools/mui5-sdk, the unpacked SDK/MUI of the muidev.de os3 release —
+#     sfd/muimaster_lib.sfd, C/include/libraries/mui.h).  ADDITIVE, and
+#     only used next to the 3.8 kit: the sfd's post-3.8 public functions
+#     join muimaster under (%version>= 20) guards, the header's new
+#     constants join unguarded.  The MorphOS SDK's libraries/mui.h is
+#     merged the same way.  A name the 3.8 header also defines must keep
+#     the 3.8 value — the generator stops on any other difference (the
+#     known post-3.8 count evolutions are listed in the generator's
+#     *MUI-VALUE-EVOLUTIONS*).  Structs always come from the 3.8 header.
 #
 # Usage:
 #   scripts/gen-amiga-bindings.sh                      # NDK only
@@ -42,7 +54,7 @@
 #
 # Environment knobs (all optional): NDK (unpacked NDK 3.2), PREFIX
 # (toolchain prefix), HOST_BIN, NDK_SFD, NDK_INCLUDE, NDK_INCLUDE_H, OUT,
-# MOS_SDK, MUI_SDK, MCC_HEADERS, BINDGEN_LIBS (comma list),
+# MOS_SDK, MUI_SDK, MUI5_SDK, MCC_HEADERS, BINDGEN_LIBS (comma list),
 # BINDGEN_MOS_ONLY (comma list of MorphOS-only libraries to emit),
 # BINDGEN_DOCSTRINGS=0.
 set -e
@@ -131,6 +143,36 @@ else
     echo "MUI SDK: none (set MUI_SDK=<copy of MUI:Developer with FD/ and C/Include/> — muimaster is emitted from the MorphOS SDK function table only, without libraries/mui.h constants)"
 fi
 
+# The MUI 5 (AmigaOS) SDK and the MorphOS SDK's libraries/mui.h — additive
+# sources for muimaster, only next to the 3.8 kit (the baseline).
+MUI5_SDK=${MUI5_SDK:-$ROOT/tools/mui5-sdk}
+MUI5_TMP=
+if [ -n "$MUI_TMP" ] && [ -f "$MUI5_SDK/C/include/libraries/mui.h" ]; then
+    MUI5_TMP=$(mktemp -d "${TMPDIR:-/tmp}/mui5-sfd.XXXXXX")
+    if [ -f "$MUI5_SDK/sfd/muimaster_lib.sfd" ]; then
+        # the SDK ships the sfd; copy it out alone (the sibling
+        # mccclass_lib.sfd is an interface .mcc files export — no library)
+        cp "$MUI5_SDK/sfd/muimaster_lib.sfd" "$MUI5_TMP/"
+    else
+        need_fd2sfd
+        "$FD2SFD" --quiet "$MUI5_SDK/fd/muimaster_lib.fd" \
+            "$MUI5_SDK/C/include/clib/muimaster_protos.h" \
+            "$MUI5_TMP/muimaster_lib.sfd" >/dev/null 2>&1 || {
+            echo "gen-amiga-bindings: warning: fd2sfd failed for the MUI 5 SDK" >&2
+        }
+    fi
+    echo "MUI 5 SDK: $MUI5_SDK (additive)"
+    export BINDGEN_MUI5_SFD="$MUI5_TMP" BINDGEN_MUI5_INCLUDE_H="$MUI5_SDK/C/include"
+else
+    echo "MUI 5 SDK: none (set MUI5_SDK=<unpacked SDK/MUI of the muidev.de os3 release> — the post-3.8 muimaster functions and constants are omitted)"
+fi
+if [ -n "$MUI_TMP" ] && [ -n "$MOS_SDK" ] && [ -f "$MOS_SDK/libraries/mui.h" ]; then
+    echo "MorphOS SDK: libraries/mui.h joins muimaster (additive)"
+    export BINDGEN_MOS_MUI_INCLUDE_H="$MOS_SDK"
+else
+    echo "MorphOS mui.h: none (pull gg:os-include/libraries/mui.h into \$MOS_SDK/libraries/ — the MorphOS-side MUI constants are omitted)"
+fi
+
 # MUI custom-class headers (<Name>_mcc.h): the kit's ExtClasses/ samples
 # (MCC_Tron) and MCC_HEADERS=<dir> (the headers of the classes you have —
 # NList_mcc.h, TextEditor_mcc.h ...) are collected into one mui/ directory
@@ -169,5 +211,6 @@ status=$?
 
 [ -n "$MOS_TMP" ] && rm -rf "$MOS_TMP"
 [ -n "$MUI_TMP" ] && rm -rf "$MUI_TMP"
+[ -n "$MUI5_TMP" ] && rm -rf "$MUI5_TMP"
 [ -n "$MCC_TMP" ] && rm -rf "$MCC_TMP"
 exit $status

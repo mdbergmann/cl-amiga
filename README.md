@@ -1602,6 +1602,14 @@ instead.  `muimaster` (MUI) is generated from the MUI 3.8 developer kit
 the same way an NDK library is from the NDK: its 25 functions and the
 `mui.h` constants are unconditional (MUI 3.8 on AmigaOS, MorphOS's
 built-in MUI, MUI 5 all keep them), MorphOS's additions `:morphos`.  On
+top of that baseline the post-3.8 MUI surface is merged in additively:
+the MUI 5 SDK contributes its extra library functions (`MUI_Show` … —
+bound only when the running muimaster reports version 20+) and both the
+MUI 5 and the MorphOS `mui.h` contribute their newer `MUIA_`/`MUIM_`/
+`MUIV_` tags and `MUIC_` class names, unguarded — a tag unknown to an
+older MUI is simply ignored, a missing class makes `MUI_NewObjectA`
+return `NULL`.  Values always stay the 3.8 baseline's; the generator
+refuses to run if a newer header disagrees on an existing name.  On
 the host (macOS/Linux/Windows) the modules load too — the base stays
 `NIL` and any call reports that — which is how they are unit-tested.
 
@@ -1613,6 +1621,11 @@ to merge MorphOS, and a copy of `MUI:Developer` from the MUI 3.8
 distribution (`MUI_SDK=<dir>`, default `tools/mui-sdk`; `FD/` and
 `C/Include/`) for `muimaster`; without them the output is AmigaOS-only
 and `muimaster` a MorphOS function table without constants.  The
+post-3.8 MUI surface comes from two more optional inputs: the MUI 5 SDK
+for AmigaOS (`MUI5_SDK=<dir>`, default `tools/mui5-sdk` — the unpacked
+`SDK/MUI` of the muidev.de os3 release) and the MorphOS SDK's
+`libraries/mui.h` placed into `$MOS_SDK/libraries/` (it is
+`gg:os-include/libraries/mui.h` on a MorphOS box).  The
 `<Name>_mcc.h` headers of the kit's `ExtClasses/` become the
 `amiga/raw/mui/` modules; `MCC_HEADERS=<dir>` adds the headers of the
 custom classes you have.  None of the SDKs is redistributed; only the

@@ -72,6 +72,8 @@ gen_log=$(BINDGEN_NDK_SFD="$FIX/sfd" BINDGEN_NDK_INCLUDE="$FIX/include" \
           BINDGEN_NDK_INCLUDE_H="$FIX/include_h" \
           BINDGEN_MOS_SFD="$FIX/mos-sfd" BINDGEN_MOS_ONLY=mosonly \
           BINDGEN_MUI_SFD="$FIX/mui-sfd" BINDGEN_MUI_INCLUDE_H="$FIX/mui-include_h" \
+          BINDGEN_MUI5_SFD="$FIX/mui5-sfd" BINDGEN_MUI5_INCLUDE_H="$FIX/mui5-include_h" \
+          BINDGEN_MOS_MUI_INCLUDE_H="$FIX/mos-mui-include_h" \
           BINDGEN_MCC_INCLUDE_H="$FIX/mcc-include_h" \
           BINDGEN_OUT="$GEN_OUT" \
           "$CLAMIGA" --no-userinit --non-interactive --heap 64M \
@@ -89,9 +91,31 @@ if echo "$gen_log" | grep -q 'warnings:'; then
     echo "  FAIL: generator reported warnings on the fixture (must be clean)"
     fail=1
 fi
-# the MUI fd is checked against the MorphOS rendering of the same library
+# the MUI fd is checked against the MorphOS rendering of the same library,
+# and against the MUI 5 SDK's (both cross-checks see the pristine 3.8
+# table -- MUI_Show joins only afterwards)
 if ! echo "$gen_log" | grep -q '^LVO cross-check MUI SDK vs MorphOS SDK: 5 functions agree, 0 differ'; then
     echo "  FAIL: expected the MUI-vs-MorphOS LVO cross-check to report 5 agreeing functions"
+    fail=1
+fi
+if ! echo "$gen_log" | grep -q '^LVO cross-check MUI SDK vs MUI 5 SDK: 5 functions agree, 0 differ'; then
+    echo "  FAIL: expected the MUI-vs-MUI5 LVO cross-check to report 5 agreeing functions"
+    fail=1
+fi
+if ! echo "$gen_log" | grep -q '^MUI 5 SDK: muimaster gains 3 post-3.8 functions ((%version>= 20))'; then
+    echo "  FAIL: expected 3 post-3.8 functions from the MUI 5 SDK sfd"
+    fail=1
+fi
+if ! echo "$gen_log" | grep -q '^MUI 5 SDK libraries/mui.h: 5 new constants (additive), 3 skipped'; then
+    echo "  FAIL: expected 5 new constants (3 skipped) from the MUI 5 header"
+    fail=1
+fi
+if ! echo "$gen_log" | grep -q '^MorphOS SDK libraries/mui.h: 1 new constants (additive)'; then
+    echo "  FAIL: expected 1 new constant from the MorphOS header"
+    fail=1
+fi
+if ! echo "$gen_log" | grep -q '^MUI additive headers: 1 known value evolution kept at the value of the earliest source (MUIMASTER_VMIN)'; then
+    echo "  FAIL: expected the MUIMASTER_VMIN evolution to be reported"
     fail=1
 fi
 for f in example.lisp mosonly.lisp muimaster.lisp exec/exbase.lisp gadgets/fixgad.lisp \
@@ -134,8 +158,8 @@ if echo "$gen_log2" | grep -q 'warnings:'; then
     fail=1
 fi
 if [ -f "$GEN_OUT2/muimaster.lisp" ]; then
-    if ! grep -q '^;;; 6 functions, 0 constants, 0 structs\.$' "$GEN_OUT2/muimaster.lisp"; then
-        echo "  FAIL: without the MUI SDK muimaster must carry 6 functions and 0 constants"
+    if ! grep -q '^;;; 7 functions, 0 constants, 0 structs\.$' "$GEN_OUT2/muimaster.lisp"; then
+        echo "  FAIL: without the MUI SDK muimaster must carry 7 functions and 0 constants"
         fail=1
     fi
     if grep -q 'MUI 3.8 SDK\|libraries/mui.h' "$GEN_OUT2/muimaster.lisp"; then
@@ -155,6 +179,31 @@ else
     echo "  FAIL: muimaster.lisp not generated without the MUI SDK"
     fail=1
 fi
+
+echo "=== test_amiga_bindgen: additive header conflicting with the baseline ==="
+# a differing value for an existing name that is NOT a known evolution
+# must name the conflict and stop the generator before anything is written
+GEN_OUT3="$TMPD/out-conflict"
+gen_log3=$(BINDGEN_NDK_SFD="$FIX/sfd" BINDGEN_NDK_INCLUDE="$FIX/include" \
+           BINDGEN_NDK_INCLUDE_H="$FIX/include_h" \
+           BINDGEN_MUI_SFD="$FIX/mui-sfd" BINDGEN_MUI_INCLUDE_H="$FIX/mui-include_h" \
+           BINDGEN_MOS_MUI_INCLUDE_H="$FIX/mui-conflict_h" \
+           BINDGEN_OUT="$GEN_OUT3" \
+           "$CLAMIGA" --no-userinit --non-interactive --heap 64M \
+           --load "$ROOT/scripts/gen-amiga-bindings.lisp" </dev/null 2>&1 | grep -v '^; Loading')
+if ! echo "$gen_log3" | grep -q '^CONFLICT MUIA_Window_CloseRequest: baseline 2151868526, 305419896 from the MorphOS SDK'; then
+    echo "  FAIL: expected the conflicting MUIA_Window_CloseRequest to be named"
+    fail=1
+fi
+if ! echo "$gen_log3" | grep -q 'differing value for existing MUI names'; then
+    echo "  FAIL: expected the generator to refuse on a conflicting additive value"
+    fail=1
+fi
+if [ -f "$GEN_OUT3/muimaster.lisp" ]; then
+    echo "  FAIL: no output may be written on a conflict"
+    fail=1
+fi
+[ $fail -eq 0 ] && echo "  ok   conflicting additive value refused, nothing written"
 
 echo "=== test_amiga_bindgen: committed lib/amiga/raw ==="
 run_checks committed "$ROOT/lib/amiga/raw" ""

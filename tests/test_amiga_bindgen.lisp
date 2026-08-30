@@ -505,8 +505,8 @@
               (not (sym p "+fix-alias+")) (not (sym p "+window-object+")) (not (sym p "+end+"))
               (not (sym p "+muiv-window-alt-height-screen+")) (not (sym p "+muia-window-open-obsolete+"))
               (file-contains "muimaster" ";;; 6 C macros skipped: not an integer or ASCII-string constant")))
-    (chk "muimaster: header counts 6 functions, 28 constants (5 strings), 11 structs, 4 skipped"
-         (file-contains "muimaster" ";;; 6 functions, 28 constants (5 of them strings), 11 structs, 4 skipped (see comments)."))
+    (chk "muimaster: header counts 9 functions, 34 constants (6 strings), 11 structs, 4 skipped"
+         (file-contains "muimaster" ";;; 9 functions, 34 constants (6 of them strings), 11 structs, 4 skipped (see comments)."))
     ;; values
     (chk "muimaster: negative MUIV_, ((STRPTR)~0) -> #xFFFFFFFF, ((STRPTR) 0) -> 0, (1<<0)"
          (and (eql (sym-value p "+muiv-application-return-id-quit+") -1)
@@ -528,6 +528,36 @@
               (eql (sym-value p "+muikey-press+") 0) (eql (sym-value p "+muikey-toggle+") 1)
               (eql (sym-value p "+mpen-shine+") 0) (eql (sym-value p "+mpen-count+") 8)
               (eql (sym-value p "+psd-nummuipens+") 8)))
+    ;; --- the additive post-3.8 sources: the MUI 5 SDK's sfd + header
+    ;; (BINDGEN_MUI5_SFD / BINDGEN_MUI5_INCLUDE_H) and the MorphOS SDK's
+    ;; mui.h (BINDGEN_MOS_MUI_INCLUDE_H) ---
+    (chk "muimaster additive: MUI_Show is in the MUI 5 sfd AND the MorphOS one — a version guard only"
+         (and (fn-row-p p "mui-show" :lvo -216 :regs '(:a0) :result :unsigned :min-version 20)
+              (fn-row-unguarded-p p "mui-show")
+              (external-p p "mui-show")
+              (not (fbound p "mui-show"))))   ; the version variable is NIL here: guarded out
+    (chk "muimaster additive: MUI_Offset / MUI_Fix21 are AmigaOS-only — :not-morphos, min version from the sfd"
+         (and (fn-row-p p "mui-offset" :lvo -222 :regs '(:a0 :d0 :d1) :result :void
+                        :guard :not-morphos :min-version 20)
+              (fn-row-p p "mui-fix21" :lvo -228 :regs '(:a0) :result :signed
+                        :guard :not-morphos :min-version 21)
+              (not (fbound p "mui-offset"))))
+    (chk "muimaster additive: new constants join — the MUI 5 header, its enum, the MorphOS header; a shared new name once"
+         (and (const-row-p p "+muic-panel+" "Panel.mui")
+              (= 1 (length (rows-named p :const "+muic-panel+")))
+              (eql (sym-value p "+muiv-fix-both+") 7)
+              (= 1 (length (rows-named p :const "+muiv-fix-both+")))
+              (eql (sym-value p "+muia-fix-new5+") #xCAFF)   ; (EXB_MAGIC+1) against the .i symbols
+              (eql (sym-value p "+fixenum5-a+") 40) (eql (sym-value p "+fixenum5-b+") 41)
+              (eql (sym-value p "+muia-fix-mos-only+") #x80421111)
+              (file-contains "muimaster" ";; --- constants from libraries/mui.h (MUI 5 SDK, additive) ---")
+              (file-contains "muimaster" ";; --- constants from libraries/mui.h (MorphOS SDK, additive) ---")))
+    (chk "muimaster additive: the 3.8 value wins a known evolution; a baseline-only reference stays out; structs are not taken"
+         (and (eql (sym-value p "+muimaster-vmin+") 11)
+              (not (sym p "+muia-fix-bad+"))
+              (not (sym p "*fix-new5-size*"))
+              (file-contains "muimaster" ";;;   libraries/mui.h (MUI 5 SDK, additive)")
+              (file-contains "muimaster" ";;;   libraries/mui.h (MorphOS SDK, additive)")))
     ;; --- C struct definitions, laid out by the m68k rules ---
     (chk "C struct: MUI_MinMax — six WORDs, 12 bytes, *mui-min-max-size* + accessors exported"
          (and (eql (sym-value p "*mui-min-max-size*") 12)
@@ -777,12 +807,15 @@
          (and (file-contains "timer" "timer.device is a device/resource")
               (null (sym-value "AMIGA.RAW.TIMER" "*timer-base*"))))
     ;; muimaster: generated from the MUI 3.8 developer kit (primary) + the
-    ;; MorphOS SDK (twin) + libraries/mui.h
-    (chk "muimaster: sources = MUI 3.8 SDK + MorphOS SDK + libraries/mui.h; 3.8 vectors unguarded"
+    ;; MorphOS SDK (twin) + libraries/mui.h, plus the ADDITIVE post-3.8
+    ;; sources (the MUI 5 SDK, the MorphOS SDK's mui.h)
+    (chk "muimaster: sources = MUI 3.8 SDK + MorphOS SDK + libraries/mui.h (+ the two additive headers); 3.8 vectors unguarded"
          (and (probe-file (raw-file "muimaster"))
               (file-contains "muimaster" ";;;   MUI 3.8 SDK muimaster_lib.fd + clib/muimaster_protos.h (via fd2sfd)")
               (file-contains "muimaster" ";;;   MorphOS SDK muimaster_lib.fd + clib/muimaster_protos.h (via fd2sfd)")
               (file-contains "muimaster" ";;;   libraries/mui.h")
+              (file-contains "muimaster" ";;;   libraries/mui.h (MUI 5 SDK, additive)")
+              (file-contains "muimaster" ";;;   libraries/mui.h (MorphOS SDK, additive)")
               (fn-row-p "AMIGA.RAW.MUIMASTER" "mui-new-object-a" :lvo -30 :regs '(:a0 :a1) :result :pointer)
               (fn-row-unguarded-p "AMIGA.RAW.MUIMASTER" "mui-new-object-a")
               (fbound "AMIGA.RAW.MUIMASTER" "mui-new-object-a")
@@ -794,13 +827,36 @@
     (chk "muimaster: MUI_GetRGBColor (-690) is MorphOS-only"
          (and (fn-row-p "AMIGA.RAW.MUIMASTER" "mui-get-rgb-color" :lvo -690 :guard :morphos)
               (eq *mos* (fbound "AMIGA.RAW.MUIMASTER" "mui-get-rgb-color"))))
-    (chk "muimaster: ~1460 entries incl. 79 string constants and 136 structs, table < 70 KB"
+    ;; the MUI 5 SDK's post-3.8 vectors: in the AmigaOS fd only (MorphOS
+    ;; keeps them private), so :not-morphos AND lib_Version >= 20 — never
+    ;; bound on MUI 3.8 (v19) or on MorphOS, exactly like C code compiled
+    ;; against the MUI 5 SDK that checks MUIMASTER_VLATEST
+    (chk "muimaster: MUI 5 vectors MUI_Show/Hide/LayoutObj/Offset carry (:not-morphos 20), unbound here"
+         (and (fn-row-p "AMIGA.RAW.MUIMASTER" "mui-show" :lvo -216 :regs '(:a0)
+                        :result :unsigned :guard :not-morphos :min-version 20)
+              (fn-row-p "AMIGA.RAW.MUIMASTER" "mui-hide" :lvo -222 :regs '(:a0)
+                        :result :unsigned :guard :not-morphos :min-version 20)
+              (fn-row-p "AMIGA.RAW.MUIMASTER" "mui-layout-obj" :lvo -228
+                        :result :bool :guard :not-morphos :min-version 20)
+              (fn-row-p "AMIGA.RAW.MUIMASTER" "mui-offset" :lvo -234
+                        :result :void :guard :not-morphos :min-version 20)
+              (not (fbound "AMIGA.RAW.MUIMASTER" "mui-show"))))
+    ;; the additive constants: new post-3.8 names from each header, the
+    ;; known count evolutions kept at the 3.8 value
+    (chk "muimaster: additive constants — MUI 5 SDK and MorphOS names present, evolutions keep the 3.8 value"
+         (and (const-row-p "AMIGA.RAW.MUIMASTER" "+muia-application-used-classes+" #x8042E9A7)
+              (const-row-p "AMIGA.RAW.MUIMASTER" "+muic-title+" "Title.mui")
+              (const-row-p "AMIGA.RAW.MUIMASTER" "+muia-window-has-alpha+" #x8042E632)
+              (eql (sym-value "AMIGA.RAW.MUIMASTER" "+mpen-count+") 8)
+              (eql (sym-value "AMIGA.RAW.MUIMASTER" "+muimaster-vmin+") 11)
+              (eql (sym-value "AMIGA.RAW.MUIMASTER" "+muii-count+") 42)))
+    (chk "muimaster: ~2050 entries incl. 121 string constants and 136 structs, table < 100 KB"
          (let ((info (clamiga::%binding-table-info "AMIGA.RAW.MUIMASTER")))
-           (and (> (getf info :entries) 1400) (< (getf info :entries) 1600)
-                (< (getf info :bytes) 70000)
-                (= 79 (count-if (lambda (r) (and (eq (first r) :const) (stringp (third r))))
-                                (table-rows "AMIGA.RAW.MUIMASTER")))
-                (file-contains "muimaster" ";;; 26 functions, 891 constants (79 of them strings), 136 structs, 1 skipped (see comments)."))))
+           (and (> (getf info :entries) 1900) (< (getf info :entries) 2200)
+                (< (getf info :bytes) 100000)
+                (= 121 (count-if (lambda (r) (and (eq (first r) :const) (stringp (third r))))
+                                 (table-rows "AMIGA.RAW.MUIMASTER")))
+                (file-contains "muimaster" ";;; 30 functions, 1475 constants (121 of them strings), 136 structs, 1 skipped (see comments)."))))
     ;; the C structs of mui.h, laid out by the 68k rules (the hand-typed
     ;; offsets of lib/amiga/mui.lisp are pinned to these rows by
     ;; tests/test_amiga_curated_vs_raw.lisp)
