@@ -1281,6 +1281,15 @@ after that many seconds — how the examples run unattended.
 `available-p` tells whether the classes can be opened (OS 3.5+/3.2,
 MorphOS); the module itself loads everywhere.
 
+The toolkit-neutral half — the foreign pool, `with-tags`, `do-method`,
+`object-class`, `get-attr` / `get-attr-pointer` / `set-attrs`, the exec
+label lists — is its own module, `(require "amiga/boopsi")`, package
+`AMIGA.BOOPSI`, which `AMIGA.REACTION` re-exports (same symbols).  It
+works on any BOOPSI object, including intuition's built-in classes on a
+bare OS 3.1 with no toolkit installed; `tests/amiga/test-boopsi.lisp`
+drives a `propgclass` object through it, and `docs/amiga.md` has the
+table.
+
 [`examples/amiga/reaction/`](examples/amiga/reaction/) ports the NDK 3.2
 ReAction examples — `buttons`, `checkbox`, `chooser`, `clicktab`,
 `fuelgauge`, `integer`, `listbrowser`, `requester` — and is the
@@ -1549,7 +1558,8 @@ fasl-amiga` and the binary release (`amiga.ffi:*defcfun-docstrings*`,
 | `(require "amiga/intuition")` | `AMIGA.INTUITION` | Windows, screens, IDCMP events, public screens, pointer sprites |
 | `(require "amiga/graphics")` | `AMIGA.GFX` | Drawing, text, fonts, offscreen bitmaps and blits, planar upload |
 | `(require "amiga/gadtools")` | `AMIGA.GADTOOLS` | Gadgets, menus, bevel boxes, VisualInfo |
-| `(require "amiga/reaction")` | `AMIGA.REACTION` | ReAction / BOOPSI helpers over the raw class modules: `do-method`, `new-object`, `get-attr`, `set-gadget-attrs`, `open-window` / `do-window-events`, `open-requester`, foreign pool and label lists (AmigaOS 3.5+/3.2, MorphOS) |
+| `(require "amiga/boopsi")` | `AMIGA.BOOPSI` | Toolkit-neutral BOOPSI helpers for any object — ReAction, MUI or intuition's built-in classes: `with-foreign-pool` / `pool-string`, `with-tags`, `do-method`, `object-class`, `get-attr` / `set-attrs`, exec label lists |
+| `(require "amiga/reaction")` | `AMIGA.REACTION` | ReAction helpers over the raw class modules: `new-object`, `set-gadget-attrs`, `open-window` / `do-window-events`, `open-requester`; re-exports `AMIGA.BOOPSI` (AmigaOS 3.5+/3.2, MorphOS) |
 | `(require "amiga/audio")` | `AMIGA.AUDIO` | audio.device channel allocation, non-blocking 8-bit sample playback from chip RAM |
 
 The GUI modules are exercised end-to-end by `tests/amiga/test-gui.lisp`

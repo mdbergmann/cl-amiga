@@ -1,4 +1,4 @@
-# AmigaOS Packages — `AMIGA`, `AMIGA.FFI`, `AMIGA.EXEC`, `AMIGA.INTUITION`, `AMIGA.GFX`, `AMIGA.GADTOOLS`, `AMIGA.REACTION`, `AMIGA.AUDIO`, `AMIGA.ASYNCIO`, `AMIGA.AREXX`
+# AmigaOS Packages — `AMIGA`, `AMIGA.FFI`, `AMIGA.EXEC`, `AMIGA.INTUITION`, `AMIGA.GFX`, `AMIGA.GADTOOLS`, `AMIGA.BOOPSI`, `AMIGA.REACTION`, `AMIGA.AUDIO`, `AMIGA.ASYNCIO`, `AMIGA.AREXX`
 
 The AmigaOS-native bindings. These exist **only on the AmigaOS build** — on the
 POSIX host the packages are not present. `AMIGA` is a C-level package (raw
@@ -13,7 +13,8 @@ register-based library calls); the rest are Lisp libraries loaded on demand via
 | `AMIGA.INTUITION` | `(require "amiga/intuition")` | Windows, screens, IDCMP events, public screens |
 | `AMIGA.GFX` | `(require "amiga/graphics")` | Drawing: lines, rectangles, ellipses, text, pens, fonts, bitmaps, blits |
 | `AMIGA.GADTOOLS` | `(require "amiga/gadtools")` | GadTools gadgets, menus, bevel boxes, VisualInfo |
-| `AMIGA.REACTION` | `(require "amiga/reaction")` | ReAction / BOOPSI helpers over the generated class modules: methods, objects and attributes, the window.class event loop, requesters |
+| `AMIGA.BOOPSI` | `(require "amiga/boopsi")` | Toolkit-neutral BOOPSI helpers: the foreign pool, tag lists from Lisp values, `do-method`, `get-attr` / `set-attrs`, exec label lists — shared by `AMIGA.REACTION` (and MUI) |
+| `AMIGA.REACTION` | `(require "amiga/reaction")` | ReAction helpers over the generated class modules: object creation, the window.class event loop, requesters; re-exports `AMIGA.BOOPSI` |
 | `AMIGA.AUDIO` | `(require "amiga/audio")` | Non-blocking 8-bit sample playback through audio.device |
 | `AMIGA.ASYNCIO` | `(require "amiga/asyncio")` | Double-buffered asynchronous file I/O over DOS packets (the NDK AsynchIO package as Lisp) |
 | `AMIGA.IFF` | `(require "amiga/iff")` | IFF file parsing and writing over iffparse.library, with the NDK `sift` chunk lister |
@@ -433,35 +434,58 @@ usage end-to-end.
 
 ---
 
-## `AMIGA.REACTION` — ReAction / BOOPSI helpers
+## `AMIGA.BOOPSI` — toolkit-neutral BOOPSI helpers
 
-What amiga.lib and reaction.lib give a C ReAction program — `DoMethod()`,
-the `RA_*` macros, `NewList()`, literals that outlive the objects — on top
+What every BOOPSI object needs from the Lisp side regardless of the
+toolkit that created it — ReAction's class libraries, MUI's classes, or
+intuition's built-in `buttongclass` / `propgclass` / `icclass` that every
+AmigaOS since 2.0 has: memory that lives as long as the objects holding
+pointers to it, tag lists from Lisp values, `DoMethod()`, `GetAttr` /
+`SetAttrsA`, `NewList()`.  Object creation and disposal belong to the
+toolkit module (`AMIGA.REACTION`), which `:use`s this package and
+re-exports every name below, so `amiga.reaction:with-foreign-pool` and
+`amiga.boopsi:with-foreign-pool` are one symbol.  The module loads on
+every system (the host included); `tests/amiga/test-boopsi.lisp` drives it
+against the built-in intuition classes with no toolkit installed, and
+`tests/test_amiga_boopsi.sh` checks the portable half on the host.
+
+| Signature | Kind | Description |
+|-----------|------|-------------|
+| `(with-foreign-pool () &body body)` | macro | Run `body` with a foreign pool; every `pool-alloc`/`pool-string`/`new-list` made inside — also the string tag values of `with-tags`, `set-attrs` and the toolkit's `new-object`, `set-gadget-attrs`, `open-requester` — is freed on exit, normally or not.  Wrap the life of a GUI in one |
+| `(pool-alloc size)` | function | Zeroed foreign memory living until the pool exits |
+| `(pool-string string)` | function | A NUL-terminated foreign copy of `string` living until the pool exits |
+| `(new-list)` | function | A fresh, initialised exec `struct List` (pooled) — the label list of a chooser / clicktab / listbrowser, filled with `amiga.raw.exec:add-tail` |
+| `(free-list-nodes list free-node)` | function | `RemHead` every node of `list` and call `free-node` on it (e.g. `amiga.raw.gadgets.chooser:free-chooser-node`); returns the count |
+| `(with-tags (var &rest tags) &body body)` | macro | Bind `var` to a TagItem array built from the `(tag value ...)` plist for `body` — for library functions that take a tag list themselves (`alloc-list-browser-node-a`, `alloc-chooser-node-a`, `new-object-a` of a built-in class, …); values may be integers, foreign pointers, `T`/`NIL` or strings (pooled, since the receiver keeps the pointer); the array is freed on exit |
+| `(object-class object)` | function | `OCLASS(object)`: the object's IClass as a foreign pointer |
+| `(do-method object method-id &rest args)` | function | `IDoMethodA`: invoke a method on a BOOPSI object — `CallHookPkt` on the object's class dispatcher; `args` are the message longwords after the MethodID (integers, foreign pointers, `T`/`NIL`), so `(do-method obj +om-get+ attr storage)` is an `opGet`; returns d0 as an unsigned integer |
+| `(get-attr attribute object)` | function | `GetAttr`: the value as an unsigned integer, `NIL` if the object does not know the attribute |
+| `(get-attr-pointer attribute object)` | function | `get-attr` for a pointer-valued attribute (`WINDOW_Window`, `LISTBROWSER_SelectedNode` …): a foreign pointer or `NIL` |
+| `(set-attrs object &rest tags)` | function | `SetAttrsA` with `with-tags`' value rules; returns the class's result |
+
+---
+
+## `AMIGA.REACTION` — ReAction helpers
+
+What reaction.lib and the `RA_*` macros give a C ReAction program on top
 of the generated class modules (`amiga/raw/classes/window`,
 `amiga/raw/gadgets/*`, `amiga/raw/images/*`, `amiga/raw/classes/requester`),
-which supply the tags, method IDs and class functions.  The module loads on
-every system (the host included); the classes themselves exist on AmigaOS
-3.5+/3.2 and MorphOS.  See the [ReAction](../README.md#reaction-amigaos-3532-morphos)
-section of the main README, the ports of the NDK examples under
+which supply the tags, method IDs and class functions, and of
+`AMIGA.BOOPSI` above, whose names this package re-exports (`do-method`,
+`object-class`, `with-foreign-pool`, `pool-alloc`, `pool-string`,
+`new-list`, `free-list-nodes`, `with-tags`, `get-attr`, `get-attr-pointer`,
+`set-attrs` — see that table).  The module loads on every system (the host
+included); the classes themselves exist on AmigaOS 3.5+/3.2 and MorphOS.
+See the [ReAction](../README.md#reaction-amigaos-3532-morphos) section of
+the main README, the ports of the NDK examples under
 `examples/amiga/reaction/`, and `tests/amiga/test-reaction.lisp` /
 `tests/test_amiga_reaction.sh` for usage end to end.
 
 | Signature | Kind | Description |
 |-----------|------|-------------|
 | `(available-p)` | function | True when the ReAction classes can be opened here (window.class opens); `NIL` on the host and on an AmigaOS without ReAction |
-| `(do-method object method-id &rest args)` | function | `IDoMethodA`: invoke a method on a BOOPSI object — `CallHookPkt` on the object's class dispatcher; `args` are the message longwords after the MethodID (integers, foreign pointers, `T`/`NIL`); returns d0 as an unsigned integer |
-| `(object-class object)` | function | `OCLASS(object)`: the object's IClass as a foreign pointer |
-| `(with-foreign-pool () &body body)` | macro | Run `body` with a foreign pool; every `pool-alloc`/`pool-string`/`new-list` made inside — also the string tag values of `new-object`, `set-attrs`, `set-gadget-attrs`, `open-requester` — is freed on exit.  Wrap the life of a GUI in one |
-| `(pool-alloc size)` | function | Zeroed foreign memory living until the pool exits |
-| `(pool-string string)` | function | A NUL-terminated foreign copy of `string` living until the pool exits |
-| `(new-list)` | function | A fresh, initialised exec `struct List` (pooled) — the label list of a chooser / clicktab / listbrowser, filled with `amiga.raw.exec:add-tail` |
-| `(free-list-nodes list free-node)` | function | `RemHead` every node of `list` and call `free-node` on it (e.g. `amiga.raw.gadgets.chooser:free-chooser-node`); returns the count |
-| `(with-tags (var &rest tags) &body body)` | macro | Bind `var` to a TagItem array built from the `(tag value ...)` plist for `body` — for class functions that take a tag list themselves (`alloc-list-browser-node-a`, `alloc-chooser-node-a`, …); strings are pooled, the array freed on exit |
 | `(new-object class &rest tags)` | function | `NewObjectA(class, NULL, tags)`: `class` is what a class module's `xxx-get-class` returns; tag values may be integers, foreign pointers, `T`/`NIL` or strings (pooled, the object keeps the pointer).  Returns the object; signals when the class returns NULL |
 | `(dispose-object object)` | function | `DisposeObject` — a window or layout object takes everything attached to it along; `NIL` is ignored |
-| `(get-attr attribute object)` | function | `GetAttr`: the value as an unsigned integer, `NIL` if the object does not know the attribute |
-| `(get-attr-pointer attribute object)` | function | `get-attr` for a pointer-valued attribute (`WINDOW_Window`, `LISTBROWSER_SelectedNode` …): a foreign pointer or `NIL` |
-| `(set-attrs object &rest tags)` | function | `SetAttrsA` with `new-object`'s value rules |
 | `(set-gadget-attrs gadget window &rest tags)` | function | `SetGadgetAttrsA(gadget, window, NULL, tags)` — change and refresh a displayed gadget (`window` may be `NIL`) |
 | `(open-window window-object)` | function | `RA_OpenWindow` (`WM_OPEN`): the `struct Window` as a foreign pointer, or `NIL` |
 | `(close-window window-object)` | function | `RA_CloseWindow` (`WM_CLOSE`) — the object survives |
@@ -586,7 +610,9 @@ Amiga in sight, which is how the command layer is tested.
 ## Source of truth
 
 `tests/amiga/test-gui.lisp` exercises the Intuition/Graphics/GadTools path on
-AmigaOS via FS-UAE; `tests/amiga/test-reaction.lisp` (with
+AmigaOS via FS-UAE; `tests/amiga/test-boopsi.lisp` (with
+`tests/test_amiga_boopsi.sh` on the host) covers `AMIGA.BOOPSI` against the
+built-in intuition classes; `tests/amiga/test-reaction.lisp` (with
 `tests/test_amiga_reaction.sh` on the host) covers `AMIGA.REACTION`, and
 `examples/amiga/reaction/` are its worked examples — run and photographed
 unattended by `verify/realamiga/run-examples.sh`, together with the

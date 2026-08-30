@@ -315,7 +315,7 @@ Host load: ~0 heap beyond the table; FASL 37 KB.
 
 ### 4.1 Shared BOOPSI core
 
-`AMIGA.REACTION` already holds the toolkit-neutral half: `%ulong`,
+`AMIGA.REACTION` originally held the toolkit-neutral half: `%ulong`,
 `with-foreign-pool` / `pool-alloc` / `pool-string`, `%build-tags` /
 `with-tags`, `object-class` (OCLASS), `do-method` (`CallHookPkt` on the
 dispatcher — MUI objects are plain BOOPSI objects, so this works for
@@ -331,6 +331,29 @@ to share it:
 - **(B)** `AMIGA.MUI` simply `(require "amiga/reaction")` and re-exports.
   No refactor, but "MUI depends on ReAction" reads wrong and duplicates
   nothing only by accident.
+
+**Decided (A), done 2026-08-30.**  As built: `AMIGA.BOOPSI` exports
+`do-method`, `object-class`, `with-foreign-pool`, `pool-alloc`,
+`pool-string`, `new-list`, `free-list-nodes`, `with-tags`, `get-attr`,
+`get-attr-pointer`, `set-attrs` — the spec's list plus the two exec-List
+helpers, which are not a ReAction concept either.  `AMIGA.REACTION`
+`(:use "AMIGA.BOOPSI")`, `(:import-from "AMIGA.BOOPSI" "%ULONG"
+"%WITH-TAGS")` for the helpers it uses itself, and names the shared
+symbols in its own `:export` — `defpackage` processes `:use` before
+`:export`, so that re-exports the inherited symbol rather than minting a
+homonym (`(eq 'amiga.reaction:do-method 'amiga.boopsi:do-method)`, asserted
+by the tests).  `new-object` / `dispose-object` / `set-gadget-attrs` stay
+in `AMIGA.REACTION`; `AMIGA.MUI` gets its own over `MUI_NewObjectA`.
+Error messages of the moved code say `AMIGA.BOOPSI:`.  Tests:
+`tests/test_amiga_boopsi.sh` (host; standalone load with no toolkit
+package present, the portable half, the symbol identity) and
+`tests/amiga/test-boopsi.lisp` (FS-UAE and real MorphOS; a `propgclass`
+object of intuition's built-in classes through `do-method` OM_GET/OM_SET,
+`get-attr`, `set-attrs`, `object-class` — no toolkit needed, so the
+layer is proven on a bare 3.1 too.  Only `PGA_Top` is read back: the
+classic propgclass answers OM_GET for nothing else, MorphOS's for more —
+tests of the layer must not lean on one OS's class).  `AMIGA.MUI` should `:use` it the
+same way.
 
 ### 4.2 Exports of `AMIGA.MUI`
 
@@ -515,8 +538,8 @@ Amiga (`make -f Makefile.cross test-amiga`, FS-UAE has MUI 3.8):
    mapping, `:string` rows (bindtab.c) — regenerate, commit
    `lib/amiga/raw/muimaster.lisp` (+ FASL).  Host bindgen/bindtab tests.~~
    **Done 2026-08-30** (§3.5).
-2. `lib/amiga/boopsi.lisp` split (if A) — pure refactor, all existing
-   gates green before step 3.
+2. ~~`lib/amiga/boopsi.lisp` split (if A) — pure refactor, all existing
+   gates green before step 3.~~  **Done 2026-08-30** (§4.1).
 3. `lib/amiga/mui.lisp` + host tests + `hello.lisp`; FS-UAE
    `test-mui.lisp` green.
 4. Remaining examples, harness, docs.
@@ -527,8 +550,8 @@ Amiga (`make -f Makefile.cross test-amiga`, FS-UAE has MUI 3.8):
 
 1. ~~`:string` binding-table row (A) vs. defconstant tail (B)~~ —
    **decided (A)**, spelled `(:const NAME "string")`; see §3.5.
-2. Extract `AMIGA.BOOPSI` (A) vs. `AMIGA.MUI` over `AMIGA.REACTION` (B)
-   — §4.1.
+2. ~~Extract `AMIGA.BOOPSI` (A) vs. `AMIGA.MUI` over `AMIGA.REACTION` (B)~~
+   — **decided (A)**, built; see §4.1.
 3. ~~Generator input location~~ — **decided**: `tools/mui-sdk/`
    (gitignored copy of `MUI:Developer`), MUI 3.8 as the baseline,
    MorphOS / MUI 5 headers additive later (§3.1).  Note the kit's

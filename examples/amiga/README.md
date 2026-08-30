@@ -21,9 +21,10 @@ Common Lisp ports of the ReAction examples shipped with the AmigaOS 3.2
 NDK, written against the generated raw class modules
 (`lib/amiga/raw/classes/window`, `gadgets/*`, `images/*`,
 `classes/requester`) and the `AMIGA.REACTION` helpers
-(`lib/amiga/reaction.lisp`: `DoMethod`, `RA_OpenWindow` /
-`RA_HandleInput`, string pools, label lists).  Each file names the NDK
-program it ports and what it demonstrates.
+(`lib/amiga/reaction.lisp`: `RA_OpenWindow` / `RA_HandleInput`, object
+creation, over `lib/amiga/boopsi.lisp`'s `DoMethod`, string pools and
+label lists, which it re-exports).  Each file names the NDK program it
+ports and what it demonstrates.
 
 | Example | NDK source | Shows |
 |---------|-----------|-------|

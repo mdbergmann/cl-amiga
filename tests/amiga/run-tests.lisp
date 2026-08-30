@@ -9464,6 +9464,13 @@ y" 1))
     (load "tests/amiga/test-raw-bindings.lisp")
     (error (e) (format t "ERROR loading raw-bindings tests: ~A~%" e)))
 
+  ; --- toolkit-neutral BOOPSI helpers (lib/amiga/boopsi.lisp) ---
+  ; Separate file for the same reader-needs-the-package reason; drives
+  ; objects of intuition's built-in classes, so it needs no toolkit at all.
+  (handler-case
+    (load "tests/amiga/test-boopsi.lisp")
+    (error (e) (format t "ERROR loading boopsi tests: ~A~%" e)))
+
   ; --- ReAction helpers (lib/amiga/reaction.lisp) over the raw classes ---
   ; Separate file for the same reader-needs-the-package reason; skips the
   ; class half where the ReAction classes are absent.

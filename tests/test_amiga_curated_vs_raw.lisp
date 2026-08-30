@@ -54,6 +54,7 @@
     ("amiga/gadtools"  "AMIGA.GADTOOLS"  ("AMIGA.RAW.GADTOOLS" "AMIGA.RAW.INTUITION"))
     ("amiga/audio"     "AMIGA.AUDIO"     ("AMIGA.RAW.EXEC"))
     ("amiga/arexx"     "AMIGA.AREXX"     ("AMIGA.RAW.REXXSYSLIB" "AMIGA.RAW.EXEC"))
+    ("amiga/boopsi"    "AMIGA.BOOPSI"    ())
     ("amiga/reaction"  "AMIGA.REACTION"  ())))
 
 ;;; library base variable (as the curated DEFCFUNs name it) -> raw package
