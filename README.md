@@ -1373,8 +1373,11 @@ symbols as `AMIGA.REACTION`'s).  Not yet: Lisp-side hooks and custom
 classes (`MUIA_List_DisplayHook`, `MUI_CreateCustomClass`), which need
 callbacks the m68k/PPC runtime does not provide.
 
-[`examples/amiga/mui/`](examples/amiga/mui/) holds the MUI examples
-(`hello`, above); `tests/amiga/test-mui.lisp` / `tests/test_amiga_mui.sh`
+[`examples/amiga/mui/`](examples/amiga/mui/) holds the MUI examples:
+`hello` (above) and the ports of the MUI 3.8 developer kit's hook-free
+demos — `balancing`, `pages`, `menus`, `showhide`, `virtual` — plus
+`layout`, `slidorama` and `requester` on group layout, the numeric
+classes and `MUI_Request`; `tests/amiga/test-mui.lisp` / `tests/test_amiga_mui.sh`
 are the module's executable specification — the Amiga side drives a real
 Application / Window / String tree, fires `MUIM_Notify` from Lisp and
 reads the return IDs back without a user — and `docs/amiga.md` has the

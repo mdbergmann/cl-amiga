@@ -297,7 +297,9 @@
 
 ;;; --- the examples load on the host and bow out ------------------------
 
-(defparameter *examples* '("hello"))
+(defparameter *examples*
+  '("hello" "layout" "balancing" "pages" "menus" "showhide" "slidorama"
+    "virtual" "requester"))
 
 (dolist (name *examples*)
   (check (format nil "example-~A-loads-and-bows-out" name) t

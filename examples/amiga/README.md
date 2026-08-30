@@ -64,11 +64,24 @@ every `MUIA_` / `MUIM_` / `MUIV_` / `MUIC_` constant of `libraries/mui.h`)
 and the `AMIGA.MUI` helpers (`lib/amiga/mui.lisp`: objects by class name,
 `MUI_MakeObject`, the `MUIM_Notify` idiom, the `MUIM_Application_NewInput`
 loop, over `lib/amiga/boopsi.lisp`'s `DoMethod` and string pools, which
-it re-exports).  Each file names what it demonstrates.
+it re-exports).  Most are ports of the demos in the MUI 3.8 developer
+kit (`MUI:Developer/C/Examples/`); the kit's `Layout.c` and
+`Slidorama.c` are hook and custom-class demos, which Lisp cannot write
+on the target yet, so `layout` and `slidorama` are hook-free programs
+on the same subjects.  Each file names its source and what it
+demonstrates.
 
-| Example | Shows |
-|---------|-------|
-| `hello.lisp` | The minimal MUI application: Application / Window / Group / Text / `MUI_MakeObject` button, `MUIM_Notify` on `MUIA_Window_CloseRequest` and `MUIA_Pressed`, `MUIA_Window_Open`, the event loop |
+| Example | SDK source | Shows |
+|---------|-----------|-------|
+| `hello.lisp` | — | The minimal MUI application: Application / Window / Group / Text / `MUI_MakeObject` button, `MUIM_Notify` on `MUIA_Window_CloseRequest` and `MUIA_Pressed`, `MUIA_Window_Open`, the event loop |
+| `layout.lisp` | — | What the group layout does with its attributes: `MUIA_Group_Horiz` / `_Columns` / `_SameSize`, `MUIA_Weight`, every `MUIV_Frame_*`, the `MUII_*` backgrounds, `MUIA_FrameTitle` |
+| `balancing.lisp` | `Balancing.c` | `Balance.mui` objects between weighted rectangles, buttons and labels; `MUIA_ObjectID`; `MUIV_Window_Width_Screen(50)` via `window-size-screen` |
+| `pages.lisp` | `Pages.c` | `Register.mui` tabs over four pages of string / cycle / radio / checkmark / slider objects, plus a `MUIA_Group_PageMode` group switched by a cycle through `notify` with `MUIV_TriggerValue` |
+| `menus.lisp` | `Menus.c` | A menu strip built from `Menustrip` / `Menu` / `Menuitem` objects (shortcuts, checkmark, toggle and radio items, separators), menu selections as return IDs, `MUIA_Application_MenuAction`, `MUIM_FindUData` / `SetUData` / `GetUData`, a menu inserted and removed at run time, `MUI_Request` |
+| `showhide.lisp` | `ShowHide.c` | Checkmarks that show and hide buttons through `MUIA_ShowMe` with `MUIV_TriggerValue`; buttons added and removed live with `MUIM_Group_InitChange` / `OM_ADDMEMBER` / `OM_REMMEMBER` / `MUIM_Group_ExitChange` |
+| `slidorama.lisp` | (`Slidorama.c`) | Knobs, sliders, numeric buttons, a gauge with its scale and a levelmeter; `MUIA_Numeric_Format`; a slider driving the gauge and the levelmeter by notification |
+| `virtual.lisp` | `Virtual.c` | `Scrollgroup.mui` / `Virtgroup.mui` viewports: a long text with the window's border scrollers, the `MUII_*` images and backgrounds, a list filled by `MUIM_List_Insert`, a virtual group inside a virtual group scrolled by arrow buttons, `MUIM_Window_SetCycleChain` |
+| `requester.lisp` | — | `MUI_Request`: an information requester, a yes/no question, a three-way choice with a default, and one formatted with `%ld` / `%s` parameters |
 
 Run one interactively:
 

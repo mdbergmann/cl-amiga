@@ -526,14 +526,26 @@ Ports of the hook-free MUI 3.8 SDK demos, each ending with the
 | File | SDK source | Shows |
 |---|---|---|
 | `hello.lisp` | — | §4.3, the minimal application / window / notify / loop |
-| `layout.lisp` | `Layout.c` | groups (horiz/vert/columns), weights, frames, `MUII_*` backgrounds |
-| `balancing.lisp` | `Balancing.c` | `Balance.mui` between groups |
-| `pages.lisp` | `Pages.c` | `MUIA_Group_PageMode` + `Register.mui`, cycle-driven page switch via `notify` with `MUIV_TriggerValue` |
-| `menus.lisp` | `Menus.c` | `Menustrip`/`Menu`/`Menuitem` objects, `MUIA_Menuitem_Shortcut`, checkmarks |
-| `showhide.lisp` | `ShowHide.c` | `MUIA_ShowMe` / `MUIM_Group_InitChange` / `ExitChange` |
-| `slidorama.lisp` | `Slidorama.c` | sliders and gauges tied together with `notify` only |
-| `virtual.lisp` | `Virtual.c` | `Virtgroup.mui` + `Scrollgroup.mui` |
-| `requester.lisp` | — | `request` (`MUI_RequestA`) with format params |
+| `layout.lisp` | — (see below) | groups (horiz/vert/columns), weights, same-size, every frame, `MUII_*` backgrounds |
+| `balancing.lisp` | `Balancing.c` | `Balance.mui` between groups, `MUIA_ObjectID`, `window-size-screen` |
+| `pages.lisp` | `Pages.c` | `Register.mui`, the string/cycle/radio/checkmark/slider macros; plus `MUIA_Group_PageMode` with a cycle-driven page switch via `notify` with `MUIV_TriggerValue` |
+| `menus.lisp` | `Menus.c` | `Menustrip`/`Menu`/`Menuitem` objects instead of the C's `struct NewMenu` (no foreign struct), shortcuts, checkmark/toggle/radio items, `MUIA_Application_MenuAction`, `MUIM_FindUData`/`SetUData`/`GetUData`, `MUIM_Family_Insert`/`Remove`, `request` |
+| `showhide.lisp` | `ShowHide.c` | `MUIA_ShowMe` via `MUIV_TriggerValue`; plus `MUIM_Group_InitChange` / `OM_ADDMEMBER` / `OM_REMMEMBER` / `ExitChange` (the C has no dynamic children) |
+| `slidorama.lisp` | — (see below) | knobs, sliders, numeric buttons, gauge + scale, levelmeter, `MUIA_Numeric_Format`, a slider driving gauge and levelmeter with `notify` only |
+| `virtual.lisp` | `Virtual.c` | `Scrollgroup.mui` + `Virtgroup.mui`, `MUII_*` images, `MUIM_List_Insert` from a `pool-string-array`, nested virtual groups scrolled by `notify`, `MUIM_Window_SetCycleChain` |
+| `requester.lisp` | — | `request` (`MUI_RequestA`) with gadget syntax and `%ld`/`%s` params |
+
+Two SDK demos are not ports, checked against the sources 2026-08-30:
+`Layout.c` is the *custom layout hook* demo (`MUIA_Group_LayoutHook`,
+`MUIM_CallHook`) and `Slidorama.c` builds four *custom classes*
+(`MUI_CreateCustomClass` dispatchers overriding `MUIM_Numeric_Stringify`
+and `MUIM_HandleInput`) — both §4.5 territory.  `layout.lisp` and
+`slidorama.lisp` are hook-free programs on the same subjects (what the
+layout engine does with the group attributes; the knob table and
+numeric buttons of the C with `MUIA_Numeric_Format` where it overrode
+Stringify).  `Menus.c`'s static strip comes from a gadtools `struct
+NewMenu` array through `MUIO_MenustripNM`; the port builds the same
+strip from objects, the second way the C's own comment describes.
 
 Harness: `verify/realamiga/examples.lisp` adds the `"mui"` directory
 (skip when `(mui:available-p)` is NIL, like `reaction`), sets
@@ -610,8 +622,14 @@ Amiga (`make -f Makefile.cross test-amiga`, FS-UAE has MUI 3.8):
    `test-mui.lisp` green.~~  **Done 2026-08-30** (§4.6); `hello` is in
    the examples harness, README / `docs/amiga.md` / `examples/amiga/
    README.md` have their MUI sections.
-4. Remaining §5 examples (`layout`, `balancing`, `pages`, `menus`,
-   `showhide`, `slidorama`, `virtual`, `requester`).
+4. ~~Remaining §5 examples (`layout`, `balancing`, `pages`, `menus`,
+   `showhide`, `slidorama`, `virtual`, `requester`).~~  **Done
+   2026-08-30**: all nine load-check on the host, run and are
+   photographed by `examples-amiga` in FS-UAE (MUI 3.8, 20/20 with the
+   gfx and ReAction ones), and run on the real MorphOS box (muimaster
+   22, 9/9, photographed) with no per-MUI difference — the
+   `MUIV_Notify_Application` caveat of §4.6 does not arise because
+   every example sets its notifications up before opening the window.
 5. Later: Phase 2 struct reader, MCC modules, MUI 5 / MorphOS header
    merge, and the `amiga/hook` runtime feature that unlocks §4.5.
 
