@@ -9478,6 +9478,13 @@ y" 1))
     (load "tests/amiga/test-reaction.lisp")
     (error (e) (format t "ERROR loading reaction tests: ~A~%" e)))
 
+  ; --- MUI helpers (lib/amiga/mui.lisp) over muimaster.library ---
+  ; Separate file for the same reader-needs-the-package reason; skips the
+  ; object half where MUI is absent.
+  (handler-case
+    (load "tests/amiga/test-mui.lisp")
+    (error (e) (format t "ERROR loading mui tests: ~A~%" e)))
+
   ; --- async file I/O (lib/amiga/asyncio.lisp) over DOS packets ---
   ; Separate file for the same reader-needs-the-package reason.
   (handler-case

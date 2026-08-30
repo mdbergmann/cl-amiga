@@ -227,7 +227,7 @@ test_batch test_repl_values test_boot_log test_mx_error_context \
                 test_defvar_special_fasl test_stack_depth test_argv_utf8 \
                 test_utf8_filenames test_image test_finish_output_flush \
                 test_amiga_bindgen \
-                test_amiga_boopsi test_amiga_reaction test_amiga_curated_vs_raw \
+                test_amiga_boopsi test_amiga_reaction test_amiga_mui test_amiga_curated_vs_raw \
                 test_amiga_asyncio test_amiga_iff test_amiga_gfx_examples \
                 test_lib_fasl_portable
 

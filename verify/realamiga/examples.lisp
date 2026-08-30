@@ -7,8 +7,8 @@
 ;;; and does not stop the others.  The host side (run-examples.sh)
 ;;; greps the EXAMPLE-OK / EXAMPLE-FAIL / EXAMPLE-SKIP / EXAMPLES-DONE
 ;;; lines.  The graphics examples honour AMIGA.INTUITION's timeout, the
-;;; ReAction ones AMIGA.REACTION's; the latter are skipped where the
-;;; ReAction classes are absent.
+;;; ReAction ones AMIGA.REACTION's, the MUI ones AMIGA.MUI's; the latter
+;;; two are skipped where the ReAction classes / MUI are absent.
 ;;;
 ;;; Not loaded by the Amiga test suite — it has its own focused checks
 ;;; (tests/amiga/test-gfx-examples.lisp, test-reaction.lisp); this is
@@ -16,6 +16,7 @@
 
 (require "amiga/intuition")
 (require "amiga/reaction")
+(require "amiga/mui")
 
 (defparameter *examples*
   '(("gfx" "bouncing-lines")
@@ -23,10 +24,12 @@
     ("gfx" "sprite")
     ("reaction" "buttons") ("reaction" "checkbox") ("reaction" "chooser")
     ("reaction" "clicktab") ("reaction" "fuelgauge") ("reaction" "integer")
-    ("reaction" "listbrowser") ("reaction" "requester")))
+    ("reaction" "listbrowser") ("reaction" "requester")
+    ("mui" "hello")))
 
 (setf amiga.intuition:*event-loop-timeout* 6
-      amiga.reaction:*event-loop-timeout* 6)
+      amiga.reaction:*event-loop-timeout* 6
+      amiga.mui:*event-loop-timeout* 6)
 
 ;; screen-grab.lisp runs detached beside us and writes T:screen-grab-ready
 ;; once it is watching; give it up to 60 s so the first window is not up
@@ -39,16 +42,24 @@
           (probe-file "T:screen-grab-ready")))
 
 (let ((ok 0) (failed 0) (skipped 0)
-      (reaction-p (amiga.reaction:available-p)))
+      (reaction-p (amiga.reaction:available-p))
+      (mui-p (amiga.mui:available-p)))
   (unless reaction-p
     (format t "~&; ReAction classes not available on this system - reaction/ examples skipped~%"))
+  (unless mui-p
+    (format t "~&; MUI not available on this system - mui/ examples skipped~%"))
   (dolist (example *examples*)
     (destructuring-bind (dir name) example
       (format t "~&=== example: ~A/~A ===~%" dir name)
       (finish-output)
-      (if (and (string= dir "reaction") (not reaction-p))
-          (progn (incf skipped)
-                 (format t "~&EXAMPLE-SKIP ~A/~A: no ReAction classes~%" dir name))
+      (cond
+        ((and (string= dir "reaction") (not reaction-p))
+         (incf skipped)
+         (format t "~&EXAMPLE-SKIP ~A/~A: no ReAction classes~%" dir name))
+        ((and (string= dir "mui") (not mui-p))
+         (incf skipped)
+         (format t "~&EXAMPLE-SKIP ~A/~A: no MUI~%" dir name))
+        (t
           (let ((start (get-internal-real-time)))
             (handler-case
                 (progn
@@ -59,7 +70,7 @@
                              internal-time-units-per-second)))
               (error (e)
                 (incf failed)
-                (format t "~&EXAMPLE-FAIL ~A/~A: ~A~%" dir name e)))))
+                (format t "~&EXAMPLE-FAIL ~A/~A: ~A~%" dir name e))))))
       (finish-output)))
   (format t "~&EXAMPLES-DONE ~D ok, ~D failed, ~D skipped~%" ok failed skipped)
   (finish-output))

@@ -1,9 +1,10 @@
 # MUI from Lisp — raw bindings + `AMIGA.MUI` (2026-08-30)
 
-Status: **Layer 1 (§3, the raw module) is implemented** — see §3.5 for
-what was built and where it deviates from the sketch.  Layer 2
-(`AMIGA.MUI`, §4), the examples (§5) and the rest of §6/§7 are still
-design.  Companion to `specs/raw-bindings-footprint.md` (the
+Status: **Layer 1 (§3, the raw module), the BOOPSI split (§4.1) and
+Layer 2 (`AMIGA.MUI`, §4) are implemented** — see §3.5 and §4.6 for what
+was built and where it deviates from the sketch; `hello.lisp` of §5, its
+harness entry and the docs are in.  The remaining §5 examples are the
+open item (§8 step 4).  Companion to `specs/raw-bindings-footprint.md` (the
 binding-table format) and to `lib/amiga/reaction.lisp` (the toolkit
 layer this one mirrors).
 
@@ -452,6 +453,71 @@ library name (raw-module policy).
   — for stock classes that means `MUIM_Set`-style tricks; the Lisp loop
   can simply `Wait` on a `timer.device` signal via `:signals` instead.
 
+### 4.6 As built (2026-08-30)
+
+`lib/amiga/mui.lisp`, package `AMIGA.MUI`, `(:use "AMIGA.BOOPSI")` +
+`(:import-from "AMIGA.BOOPSI" "%ULONG" "%WITH-TAGS")` exactly like
+`AMIGA.REACTION`; re-exports the BOOPSI names of the §4.2 table
+(`new-list` / `free-list-nodes` stay inherited-only: no exec label lists
+in MUI).  Deviations from §4.2, all deliberate:
+
+- **The library is opened lazily**, not at `require`: `*muimaster-base*`
+  is NIL until the first entry point (or `available-p`) opens
+  `muimaster.library` v11, and stays open for the process (as in C).
+  The four functions the module calls itself — `MUI_NewObjectA`,
+  `MUI_DisposeObject`, `MUI_MakeObjectA`, `MUI_RequestA` — are its own
+  `defcfun`s over that base (the raw module cannot be `require`d where
+  MUI is absent); `test_amiga_curated_vs_raw` maps `*MUIMASTER-BASE*` →
+  `AMIGA.RAW.MUIMASTER` and pins their LVOs/registers, and the 28
+  hand-typed `MUIM_`/`MUIV_`/`MUIO_`/`MUIMASTER_VMIN` constants, to the
+  generated table.  Every entry point that needs the library says
+  "AMIGA.MUI:NEW-OBJECT: muimaster.library (MUI 3.8 or newer, version
+  11) is not available … check AVAILABLE-P" instead of the generic
+  OP_AMIGA_CALL "base is NIL".
+- **No class table** (§9.4 decided): `class-id` maps a keyword
+  mechanically — hyphens dropped, `string-capitalize`, `.mui` — which
+  reproduces all 65 `MUIC_*` strings (the host test proves it against
+  the raw table) and covers MUI 4/5 classes (`:calendar`,
+  `:hotkeystring`) with nothing to keep in sync.  An unknown class is
+  reported by MUI's NULL: the error names the string *and* the keyword.
+  A `struct IClass *` as `class` goes through intuition's `NewObjectA`.
+- `make-object` takes the parameters as `mui.h` lists them; a *list* of
+  strings is the `STRPTR *entries` of `:cycle` / `:radio` (a pooled
+  `pool-string-array`).  Labels and entries are pooled (the object keeps
+  them); `request`'s `%s` parameters are temporaries freed after the
+  call, so `request` needs no pool.
+- `notify` validates before touching the object (attribute and method
+  must be integers, destination an object or one of the four keywords,
+  trigger a value or `:every-time`, parameters values or
+  `:trigger-value` / `:not-trigger-value`), so the argument errors are
+  the same on the host; `%notify-args` is the testable packing.
+- `application-input` folds d0 to a signed LONG (`:quit` for −1, NIL for
+  0); `do-application-events` follows MUI's rule that a zero mask means
+  "NewInput again at once" and never spins on it.
+- The `MUIV_Window_*` function-like macros collapse to four functions,
+  because the four families share the formulas: `window-size-minmax`
+  (−p), `window-size-visible` (−100−p), `window-size-screen` (−200−p),
+  `window-edge-delta` (−3−p).
+- Tests as §6, MUI-specific: `tests/test_amiga_mui.sh` (41 host checks
+  incl. the example load) and `tests/amiga/test-mui.lisp` (FS-UAE MUI 3.8
+  and real MorphOS): Rectangle/Text/String objects, `get-attr-string`
+  round trip, `make-object` button/slider/cycle, `return-id` →
+  `application-input`, `:quit`, **notify without a user** (both
+  `:application` and the object as destination; a non-matching trigger
+  stays silent), window open/close read back, the bounded loop, and the
+  loop's ID/`:quit`/`(return)` semantics.  Three MUI facts the two real
+  MUIs taught the tests: the return-ID queue is FIFO and Quit is just an
+  entry in it (an ID queued after Quit comes back from the next
+  `NewInput`); `MUIV_Notify_Application` from an object in a never-opened
+  window fires on MUI 3.8 (the app pointer is propagated at attach time)
+  but is silently dropped on MorphOS's muimaster 22 (resolved at window
+  setup) — the object destination works on both, and the usual "set up
+  notifications, then open" order is fine either way; and a real MorphOS
+  box can have a class called `Nonexistent.mui`, so the bogus-class test
+  asks for `Clamigabogus.mui`.  Test files that `require` the raw module
+  conditionally must look every constant up with `find-symbol`: a
+  `amiga.raw.muimaster:` prefix is read before the `when` runs.
+
 ## 5. Examples — `examples/amiga/mui/`
 
 Ports of the hook-free MUI 3.8 SDK demos, each ending with the
@@ -540,9 +606,12 @@ Amiga (`make -f Makefile.cross test-amiga`, FS-UAE has MUI 3.8):
    **Done 2026-08-30** (§3.5).
 2. ~~`lib/amiga/boopsi.lisp` split (if A) — pure refactor, all existing
    gates green before step 3.~~  **Done 2026-08-30** (§4.1).
-3. `lib/amiga/mui.lisp` + host tests + `hello.lisp`; FS-UAE
-   `test-mui.lisp` green.
-4. Remaining examples, harness, docs.
+3. ~~`lib/amiga/mui.lisp` + host tests + `hello.lisp`; FS-UAE
+   `test-mui.lisp` green.~~  **Done 2026-08-30** (§4.6); `hello` is in
+   the examples harness, README / `docs/amiga.md` / `examples/amiga/
+   README.md` have their MUI sections.
+4. Remaining §5 examples (`layout`, `balancing`, `pages`, `menus`,
+   `showhide`, `slidorama`, `virtual`, `requester`).
 5. Later: Phase 2 struct reader, MCC modules, MUI 5 / MorphOS header
    merge, and the `amiga/hook` runtime feature that unlocks §4.5.
 
@@ -559,8 +628,10 @@ Amiga (`make -f Makefile.cross test-amiga`, FS-UAE has MUI 3.8):
    `.mcc` exports): it has no `clib/` twin, so the wrapper's fd2sfd loop
    skips it by itself — no module for it, which is right (there is no
    `muiclass.library` to open).
-4. Keyword class names in `new-object` (`:window`) — keep, or strings
-   only (`+muic-window+`) to stay 1:1?
+4. ~~Keyword class names in `new-object` (`:window`) — keep, or strings
+   only (`+muic-window+`) to stay 1:1?~~ — **decided: both**, the
+   keyword by a mechanical rule rather than a table (§4.6); strings and
+   the raw `+muic-*+` constants pass through unchanged.
 
 ## 10. Appendix — what `ffi:make-callback` on the target requires
 

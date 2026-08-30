@@ -29,7 +29,8 @@
 ;;; the toolkit module: AMIGA.REACTION (NewObjectA / DisposeObject and the
 ;;; window.class event loop) and AMIGA.MUI (MUI_NewObjectA /
 ;;; MUI_DisposeObject and the Application event loop).  Both :USE this
-;;; package and re-export its names, so a program written against
+;;; package and re-export its names (AMIGA.MUI all but the exec-list
+;;; pair, which mean nothing to MUI), so a program written against
 ;;; amiga.reaction:with-foreign-pool never needs to know where it lives.
 ;;;
 ;;; The module loads on any system (the host included): it depends only

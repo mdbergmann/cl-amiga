@@ -1039,7 +1039,7 @@ Then build CL-Amiga:
 ```
 make -f Makefile.cross amiga        # Cross-compile with m68k-amigaos-gcc
 make -f Makefile.cross test-amiga   # Build, deploy to FS-UAE, run Amiga tests
-make -f Makefile.cross examples-amiga # Run + photograph the GUI examples (gfx/, reaction/) in FS-UAE (build/amiga/shots/)
+make -f Makefile.cross examples-amiga # Run + photograph the GUI examples (gfx/, reaction/, mui/) in FS-UAE (build/amiga/shots/)
 make -f Makefile.cross clean        # Remove cross-build artifacts
 ```
 
@@ -1297,6 +1297,88 @@ reference for the classes' use; `tests/amiga/test-reaction.lisp` /
 `tests/test_amiga_reaction.sh` are the module's executable
 specification, and `verify/realamiga/run-examples.sh` runs and
 photographs every example in FS-UAE.
+
+### MUI (AmigaOS 3.x with MUI 3.8+, MorphOS)
+
+MUI — the Magic User Interface, 3.8 on classic AmigaOS and built into
+MorphOS — is a BOOPSI toolkit whose classes are created *by name*
+through `muimaster.library` (`MUI_NewObjectA("Window.mui", tags)`) and
+driven with `SetAttrs` / `GetAttr` / `DoMethod` like any BOOPSI object.
+Every function of `muimaster.library` and every `MUIA_` / `MUIM_` /
+`MUIV_` / `MUII_` / `MUIC_` constant of `libraries/mui.h` is in the
+generated raw module `amiga/raw/muimaster` (the `MUIC_*` class names
+and the `MUIX_*` text-style escapes are string constants); what a C
+program gets from the `mui.h` shortcut macros and amiga.lib on top —
+`ApplicationObject` / `WindowObject` / `SimpleButton`, `DoMethod`,
+the `MUIM_Notify` idiom, the `MUIM_Application_NewInput` loop,
+`MUI_Request` — is `(require "amiga/mui")`, package `AMIGA.MUI`:
+
+```lisp
+(require "amiga/mui")
+(require "amiga/raw/muimaster")
+
+(defpackage "HELLO-MUI"
+  (:use "CL")
+  (:local-nicknames ("MUI" "AMIGA.MUI") ("M" "AMIGA.RAW.MUIMASTER")))
+(in-package "HELLO-MUI")
+
+(mui:with-foreign-pool ()                          ; strings live as long as the objects
+  (let* ((ok  (mui:make-object :button "_OK"))     ; SimpleButton("_OK")
+         (win (mui:new-object :window               ; WindowObject, ... End
+                m:+muia-window-title+ "Hello from Lisp"
+                m:+muia-window-id+    (mui:make-id "HELO")
+                m:+muia-window-root-object+
+                (mui:new-object :group              ; VGroup
+                  m:+muia-group-child+
+                  (mui:new-object :text m:+muia-text-contents+
+                                  (concatenate 'string m:+muix-c+ "Hello, MUI!"))
+                  m:+muia-group-child+ ok)))
+         (app (mui:new-object :application          ; ApplicationObject
+                m:+muia-application-title+  "HelloMUI"
+                m:+muia-application-base+   "HELLOMUI"
+                m:+muia-application-window+ win)))
+    (unwind-protect
+         (progn
+           ;; DoMethod(win, MUIM_Notify, MUIA_Window_CloseRequest, TRUE,
+           ;;          MUIV_Notify_Application, 2, MUIM_Application_ReturnID, MUIV_Application_ReturnID_Quit)
+           (mui:notify win m:+muia-window-close-request+ t
+                       :application m:+muim-application-return-id+
+                       m:+muiv-application-return-id-quit+)
+           (mui:notify ok m:+muia-pressed+ nil
+                       :application m:+muim-application-return-id+ 1)
+           (mui:set-attrs win m:+muia-window-open+ t)          ; set(win, MUIA_Window_Open, TRUE)
+           (mui:do-application-events ((id) app)               ; NewInput / Wait until Quit
+             (case id (1 (format t "OK pressed~%")))))
+      (mui:dispose-object app))))                   ; takes the window and its children along
+```
+
+`new-object` takes a class keyword (`:window` is `"Window.mui"`,
+`:numeric-button` `"Numericbutton.mui"` — every class of `mui.h` and of
+the newer MUIs, see `class-id`) or the name string, plus tag/value
+pairs with integers, foreign pointers (child objects), `T`/`NIL` and
+strings; `make-object` is `MUI_MakeObject`'s builtin collection
+(`:button`, `:checkmark`, `:cycle`, `:radio`, `:slider`, `:string`, …);
+`notify` takes `:every-time`, the `:self` / `:window` / `:application` /
+`:parent` destinations and `:trigger-value` in the parameters; `get-attr`,
+`get-attr-string`, `set-attrs`, `do-method` (any `MUIM_*` method),
+`return-id` / `application-input` for the return-ID queue, `request`
+(`MUI_RequestA`), `pool-string-array` for `MUIA_Cycle_Entries`, `make-id`
+and the `MUIV_Window_*` size macros complete it.  Setting
+`amiga.mui:*event-loop-timeout*` makes `do-application-events` return
+after that many seconds — how the examples run unattended.  `available-p`
+tells whether `muimaster.library` opens; the module itself loads
+everywhere (the raw module, by contrast, needs the library at `require`
+time).  The toolkit-neutral half is `AMIGA.BOOPSI`, re-exported (same
+symbols as `AMIGA.REACTION`'s).  Not yet: Lisp-side hooks and custom
+classes (`MUIA_List_DisplayHook`, `MUI_CreateCustomClass`), which need
+callbacks the m68k/PPC runtime does not provide.
+
+[`examples/amiga/mui/`](examples/amiga/mui/) holds the MUI examples
+(`hello`, above); `tests/amiga/test-mui.lisp` / `tests/test_amiga_mui.sh`
+are the module's executable specification — the Amiga side drives a real
+Application / Window / String tree, fires `MUIM_Notify` from Lisp and
+reads the return IDs back without a user — and `docs/amiga.md` has the
+table.
 
 ### Graphics examples (double-buffering, sprites)
 
@@ -1560,6 +1642,7 @@ fasl-amiga` and the binary release (`amiga.ffi:*defcfun-docstrings*`,
 | `(require "amiga/gadtools")` | `AMIGA.GADTOOLS` | Gadgets, menus, bevel boxes, VisualInfo |
 | `(require "amiga/boopsi")` | `AMIGA.BOOPSI` | Toolkit-neutral BOOPSI helpers for any object — ReAction, MUI or intuition's built-in classes: `with-foreign-pool` / `pool-string`, `with-tags`, `do-method`, `object-class`, `get-attr` / `set-attrs`, exec label lists |
 | `(require "amiga/reaction")` | `AMIGA.REACTION` | ReAction helpers over the raw class modules: `new-object`, `set-gadget-attrs`, `open-window` / `do-window-events`, `open-requester`; re-exports `AMIGA.BOOPSI` (AmigaOS 3.5+/3.2, MorphOS) |
+| `(require "amiga/mui")` | `AMIGA.MUI` | MUI helpers over `muimaster.library`: `new-object` by class name, `make-object`, `notify`, `do-application-events`, `request`; re-exports `AMIGA.BOOPSI` (AmigaOS 3.x with MUI 3.8+, MorphOS) |
 | `(require "amiga/audio")` | `AMIGA.AUDIO` | audio.device channel allocation, non-blocking 8-bit sample playback from chip RAM |
 
 The GUI modules are exercised end-to-end by `tests/amiga/test-gui.lisp`
@@ -1601,7 +1684,8 @@ Point-in-time benchmark results (sento actor throughput on host, Amiga JIT call 
 ## Known Limitations and Future Work
 
 - **Alpha status / ANSI CL gaps** — the major subsystems work (CLOS, conditions, packages, the full numeric tower, arrays, pathnames, streams, `loop`, `format`) and real CL libraries load, but corners of the spec remain unimplemented. Concretely, these standard operators are `fboundp` but signal a "not yet implemented" error when called: `apropos` / `apropos-list`, `y-or-n-p` / `yes-or-no-p`, `pprint-tab` / `pprint-tabular`, `print-not-readable-object`, `invalid-method-error` / `method-combination-error`, and logical pathnames (`logical-pathname`, `load-logical-pathname-translations`; `(typep x 'logical-pathname)` is always `nil`). `defstruct` supports `(:type list)` / `(:type vector)` but ignores `:named` and `:initial-offset`. The metaobject protocol is a working AMOP subset rather than the complete MOP — see [docs/mop.md](docs/mop.md) for what is covered.
-- **Amiga OS coverage** — every OS library is callable 1:1 through the generated raw bindings under `lib/amiga/raw/` (`asl`, `layers`, `commodities`, `datatypes`, `locale`, … — see [Raw OS bindings](#raw-os-bindings-generated)), but the idiomatic Lisp layer on top of them covers only Intuition, Graphics, GadTools, ReAction, ARexx, audio.device, IFF and async DOS I/O (see [Available Amiga Modules](#available-amiga-modules)). Everything else — ASL requesters, Layers, Commodities, Datatypes, Locale, … — is raw-binding-only for now: fully usable, but with C-shaped structures and tag lists rather than a Lisp-shaped API.
+- **Amiga OS coverage** — every OS library is callable 1:1 through the generated raw bindings under `lib/amiga/raw/` (`asl`, `layers`, `commodities`, `datatypes`, `locale`, … — see [Raw OS bindings](#raw-os-bindings-generated)), but the idiomatic Lisp layer on top of them covers only Intuition, Graphics, GadTools, ReAction, MUI, ARexx, audio.device, IFF and async DOS I/O (see [Available Amiga Modules](#available-amiga-modules)). Everything else — ASL requesters, Layers, Commodities, Datatypes, Locale, … — is raw-binding-only for now: fully usable, but with C-shaped structures and tag lists rather than a Lisp-shaped API.
+- **No Lisp callbacks on AmigaOS/MorphOS** — `ffi:make-callback` works on the host only, so a `struct Hook` or BOOPSI dispatcher cannot re-enter Lisp on the target yet: MUI custom classes and hook attributes (`MUIA_List_DisplayHook`, …), ReAction and ASL hooks, and AmiSSL passphrase callbacks are out of reach until that runtime feature exists (`specs/mui-bindings.md`, section 10). Everything hook-free in those toolkits works.
 - **Composite streams** — `make-two-way-stream`, `make-broadcast-stream`, `make-concatenated-stream`, and `make-echo-stream` are implemented with their component accessors (see the composite-stream tests in `tests/test_stream.c` / `tests/amiga/run-tests.lisp` for usage). Broadcast, concatenated, and echo streams accept native stream components only — a Gray stream component is rejected with a type error (a two-way stream may wrap Gray streams)
 - **Stream external formats** — character streams default to UTF-8; `(open … :external-format :latin-1)` (also `:iso-8859-1`) selects an 8-bit-transparent stream where each code point 0–255 maps to a single raw byte with no transcoding, for byte-faithful I/O over a character stream (e.g. an `rfc2388` multipart upload written to a temp file). `stream-external-format` reports `:latin-1` / `:default`. Other named encodings are not yet selectable — an unrecognised `:external-format` is silently treated as the default. See `tests/test_stream.c` (`open_latin1_*`) and `tests/amiga/run-tests.lisp` for usage.
 - **Threading** — `MP` package covers the core bordeaux-threads surface (threads with `interrupt`/`destroy`, mutex + recursive locks, named condition variables with timeout, `with-lock-held` / `with-recursive-lock-held`, `compare-and-swap` / `atomic-incf` / `atomic-decf`, type predicates). `(ql:quickload :bordeaux-threads)` resolves to the CL-Amiga [bordeaux-threads fork](#library-forks-cl-amiga-backends) cloned into `~/quicklisp/local-projects` (its `impl-clamiga.lisp` backends map the BT v1/v2 API onto `MP`); Quicklisp itself relies on `lib/quicklisp-compat.lisp` (network/HTTP adaptations) and the auto-registered `swank` stub from `lib/shims/` (see [Quicklisp](#quicklisp)). The plan is to upstream these once the remaining API gaps close. Not yet covered: semaphores, `with-timeout`, and `:timeout` on `acquire-lock` / `with-lock-held` (the fork marks these as not implemented, so BT signals its `not-implemented` condition rather than blocking)
@@ -1662,6 +1746,7 @@ examples/
     arexx/          ARexx client + CygnusEd macro (clamiga.rexx, load-current-file.ced)
     gfx/            Graphics demos (bouncing-lines, doublebuffer, sprite)
     reaction/       ReAction GUI examples ported from the NDK 3.2 (buttons, checkbox, chooser, ...)
+    mui/            MUI GUI examples (hello)
 tests/
   test_*.c        Host test suites (C)
   amiga/          Amiga test suite (Lisp)

@@ -55,7 +55,8 @@
     ("amiga/audio"     "AMIGA.AUDIO"     ("AMIGA.RAW.EXEC"))
     ("amiga/arexx"     "AMIGA.AREXX"     ("AMIGA.RAW.REXXSYSLIB" "AMIGA.RAW.EXEC"))
     ("amiga/boopsi"    "AMIGA.BOOPSI"    ())
-    ("amiga/reaction"  "AMIGA.REACTION"  ())))
+    ("amiga/reaction"  "AMIGA.REACTION"  ())
+    ("amiga/mui"       "AMIGA.MUI"       ())))
 
 ;;; library base variable (as the curated DEFCFUNs name it) -> raw package
 (defparameter *base-var->raw-package*
@@ -66,7 +67,8 @@
     ("*GADTOOLS-BASE*"  . "AMIGA.RAW.GADTOOLS")
     ("*DOS-BASE*"       . "AMIGA.RAW.DOS")
     ("*UTILITY-BASE*"   . "AMIGA.RAW.UTILITY")
-    ("*REXXSYS-BASE*"   . "AMIGA.RAW.REXXSYSLIB")))
+    ("*REXXSYS-BASE*"   . "AMIGA.RAW.REXXSYSLIB")
+    ("*MUIMASTER-BASE*" . "AMIGA.RAW.MUIMASTER")))
 
 ;;; ------------------------------------------------------------------
 ;;; Load everything: all generated modules (two directory levels:

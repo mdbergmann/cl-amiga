@@ -12,6 +12,7 @@ AmigaOS, see the main README.
 | `gfx/sprite.lisp` | The RKM "Simple Sprite" example (`ssprite.c`) — a hardware sprite: `GetSprite` / `ChangeSprite` / `MoveSprite` / `FreeSprite`, the sprite colour registers via `SetRGB4`, image data in CHIP memory, sprite DMA off/on through a custom-chip register write | AmigaOS 3+ on a native chipset (real or FS-UAE) |
 | `arexx/` | `clamiga.rexx`, a shell client for the `AMIGA.AREXX` development port, and a CygnusEd macro that saves and loads the current file | ARexx |
 | `reaction/` | ReAction GUIs — ports of the NDK 3.2 `Examples/` programs (below) | AmigaOS 3.5+/3.2 or MorphOS (ReAction classes) |
+| `mui/` | MUI GUIs — the `AMIGA.MUI` helpers over `muimaster.library` (below) | AmigaOS 3.x with MUI 3.8+, or MorphOS |
 | `asyncio/copyfile.lisp` | Double-buffered asynchronous file copy over DOS packets — the `AMIGA.ASYNCIO` port of the NDK 3.1 AsynchIO package, timed against plain synchronous streams and byte-verified | AmigaOS 3.1+ or MorphOS |
 | `iff/sift.lisp` | The NDK 3.1 `sift` program as Lisp — `AMIGA.IFF` over iffparse.library builds a nested IFF with back-patched chunk sizes, prints its IFFCheck-like listing (files or the clipboard, the C's `-c`), reads chunk data back | AmigaOS 3.1+ or MorphOS |
 
@@ -55,6 +56,37 @@ clamiga --eval '(require "amiga/reaction")' \
 On a system without the ReAction classes (the host, a bare AmigaOS 3.1)
 each example loads and says so instead of failing.
 
+## MUI (`mui/`)
+
+Common Lisp MUI programs written against the generated raw module
+(`lib/amiga/raw/muimaster`: the 26 `muimaster.library` functions and
+every `MUIA_` / `MUIM_` / `MUIV_` / `MUIC_` constant of `libraries/mui.h`)
+and the `AMIGA.MUI` helpers (`lib/amiga/mui.lisp`: objects by class name,
+`MUI_MakeObject`, the `MUIM_Notify` idiom, the `MUIM_Application_NewInput`
+loop, over `lib/amiga/boopsi.lisp`'s `DoMethod` and string pools, which
+it re-exports).  Each file names what it demonstrates.
+
+| Example | Shows |
+|---------|-------|
+| `hello.lisp` | The minimal MUI application: Application / Window / Group / Text / `MUI_MakeObject` button, `MUIM_Notify` on `MUIA_Window_CloseRequest` and `MUIA_Pressed`, `MUIA_Window_Open`, the event loop |
+
+Run one interactively:
+
+```
+clamiga --load examples/amiga/mui/hello.lisp
+```
+
+Run one unattended — the window closes itself after the timeout:
+
+```
+clamiga --eval '(require "amiga/mui")' \
+        --eval '(setf amiga.mui:*event-loop-timeout* 5)' \
+        --load examples/amiga/mui/hello.lisp
+```
+
+On a system without MUI (the host, an Amiga without `muimaster.library`)
+each example loads and says so instead of failing.
+
 ## Graphics (`gfx/`)
 
 `bouncing-lines.lisp` uses the curated `AMIGA.INTUITION` / `AMIGA.GFX`
@@ -76,7 +108,7 @@ clamiga --eval '(require "amiga/intuition")' \
 ```
 
 `make -f Makefile.cross examples-amiga` (= `verify/realamiga/run-examples.sh`)
-runs all the GUI examples — `gfx/` and `reaction/` — in FS-UAE (whose OS
-3.9 Workbench has the ReAction classes), photographs every new window on
+runs all the GUI examples — `gfx/`, `reaction/` and `mui/` — in FS-UAE (whose
+OS 3.9 Workbench has the ReAction classes and MUI 3.8), photographs every new window on
 the Workbench screen and every custom screen, and converts the shots to
 PNG under `build/amiga/shots/`.
