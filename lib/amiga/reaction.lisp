@@ -65,7 +65,8 @@
    ;; Methods (AMIGA.BOOPSI, re-exported)
    "DO-METHOD" "OBJECT-CLASS"
    ;; Foreign memory whose lifetime is the GUI's lifetime (AMIGA.BOOPSI, re-exported)
-   "WITH-FOREIGN-POOL" "POOL-ALLOC" "POOL-STRING" "NEW-LIST" "FREE-LIST-NODES"
+   "WITH-FOREIGN-POOL" "POOL-ALLOC" "POOL-STRING" "POOL-HOOK" "POOL-FINALIZER"
+   "NEW-LIST" "FREE-LIST-NODES"
    "WITH-TAGS"
    ;; Objects and attributes (GET-ATTR, GET-ATTR-POINTER, SET-ATTRS: AMIGA.BOOPSI, re-exported)
    "NEW-OBJECT" "DISPOSE-OBJECT" "GET-ATTR" "GET-ATTR-POINTER"

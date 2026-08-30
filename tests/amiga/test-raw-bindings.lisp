@@ -453,3 +453,191 @@
       (let ((s (%raw-sym "AMIGA.RAW.MUIMASTER" "MUI-GET-RGB-COLOR")))
         (eq (and (member :morphos *features*) t) (and (fboundp s) t)))
       (null (find-package "AMIGA.RAW.MUIMASTER"))))
+
+;;; --- callbacks: Lisp functions the OS calls ------------------------------
+;;; FFI:MAKE-CALLBACK on the target (specs/mui-bindings.md section 10): a
+;;; 68k stub (the MorphOS emulator's 68k, on PPC) enters Lisp with the
+;;; caller's registers and stack.  utility.library's CallHookPkt is the
+;;; OS-side caller here: it jumps to h_Entry with a0 = hook, a2 = object,
+;;; a1 = message -- the register convention every hook, dispatcher and
+;;; MUI class method uses.
+
+(format t "; raw-bindings: callbacks~%")
+(finish-output)
+
+;; a hook (AMIGA.FFI:MAKE-HOOK): the registers arrive as the three
+;; arguments, the return value is d0, h_Data reads back
+(check "callback-hook-registers-and-result" '(4711 t #xCAFE 99)
+  (let* ((seen nil)
+         (message (ffi:alloc-foreign 4))
+         (hook (amiga.ffi:make-hook
+                (lambda (h o m)
+                  (setf seen (list (ffi:foreign-pointer-address h)
+                                   (ffi:foreign-pointer-address o)
+                                   (ffi:peek-u32 m 0)))
+                  4711)
+                :data 99)))
+    (ffi:poke-u32 message #xCAFE 0)
+    (unwind-protect
+         (let ((result (amiga.raw.utility:call-hook-pkt hook message message)))
+           (list result
+                 (and (= (first seen) (ffi:foreign-pointer-address hook))    ; a0
+                      (= (second seen) (ffi:foreign-pointer-address message)) ; a2
+                      t)
+                 (third seen)                                                ; a1 -> message
+                 (amiga.ffi:hook-data hook)))
+      (amiga.ffi:free-hook hook)
+      (ffi:free-foreign message))))
+
+;; NULL object / message arrive as NULL pointers; T/NIL/pointer results
+(check "callback-hook-null-args-and-result-coercion" '(t 1 0)
+  (let ((hook-nulls (amiga.ffi:make-hook
+                     (lambda (h o m) h (and (ffi:null-pointer-p o) (ffi:null-pointer-p m)))))
+        (hook-nil (amiga.ffi:make-hook (lambda (h o m) h o m nil))))
+    (unwind-protect
+         (list (= 1 (amiga.raw.utility:call-hook-pkt hook-nulls nil nil))
+               (amiga.raw.utility:call-hook-pkt hook-nulls nil nil)
+               (amiga.raw.utility:call-hook-pkt hook-nil nil nil))
+      (amiga.ffi:free-hook hook-nil)
+      (amiga.ffi:free-hook hook-nulls))))
+
+;; C-convention (stack) arguments: a 68k snippet -- pushed here as machine
+;; code into public memory, entered by CallHookPkt as a hook entry --
+;; pushes two longwords and calls a MAKE-CALLBACK function pointer, the
+;; way a C library calls a C callback.  Checks the stack decoder: an
+;; :int32 -10, an :int16 in a promoted 4-byte slot (0x001F), the result
+;; back in d0.
+;;
+;;   2F3C 0000 001F   move.l #31,-(sp)
+;;   2F3C FFFF FFF6   move.l #-10,-(sp)
+;;   4EB9 hhhh llll   jsr    callback.l
+;;   508F             addq.l #8,sp
+;;   4E75             rts
+(defun %write-caller-snippet (code callback-address)
+  (let ((words (list #x2F3C #x0000 #x001F
+                     #x2F3C #xFFFF #xFFF6
+                     #x4EB9 (ldb (byte 16 16) callback-address) (ldb (byte 16 0) callback-address)
+                     #x508F
+                     #x4E75)))
+    (loop for w in words for off from 0 by 2 do (ffi:poke-u16 code w off))
+    (amiga.raw.exec:cache-clear-u)))            ; fresh code past the caches
+
+(check "callback-c-stack-arguments" '(21 -10 31)
+  (let* ((seen nil)
+         (cb (ffi:make-callback :int32 '(:int32 :int16)
+                                (lambda (a b) (setf seen (list a b)) (+ a b))))
+         (code (ffi:alloc-foreign 24))
+         (hook (ffi:alloc-foreign 20)))
+    (%write-caller-snippet code (ffi:foreign-pointer-address cb))
+    (ffi:poke-u32 hook (ffi:foreign-pointer-address code) 8)    ; h_Entry = the snippet
+    (unwind-protect
+         (let ((r (amiga.raw.utility:call-hook-pkt hook nil nil)))
+           (list (if (>= r #x80000000) (- r #x100000000) r) (first seen) (second seen)))
+      (ffi:free-callback cb)
+      (ffi:free-foreign hook)
+      (ffi:free-foreign code))))
+
+;; a signed 32-bit result comes back in d0 (here through :signed = the
+;; CallHookPkt binding's unsigned result, wrapped by the test)
+(check "callback-negative-result-in-d0" -5
+  (let ((hook (amiga.ffi:make-hook (lambda (h o m) h o m -5))))
+    (unwind-protect
+         (let ((r (amiga.raw.utility:call-hook-pkt hook nil nil)))
+           (if (>= r #x80000000) (- r #x100000000) r))
+      (amiga.ffi:free-hook hook))))
+
+;; the foreign-callback boundary: an error inside the hook does not unwind
+;; through CallHookPkt -- the hook returns 0 to the OS and the condition is
+;; re-signaled once CallHookPkt has returned, where HANDLER-CASE catches it
+;; with its class and message; afterwards nothing is pending
+(check "callback-error-is-deferred-to-the-caller" '("boom 42" :type-error 3)
+  (let ((bad (amiga.ffi:make-hook (lambda (h o m) h o m (error "boom ~A" 42))))
+        (typed (amiga.ffi:make-hook (lambda (h o m) h o m (car 5))))
+        (good (amiga.ffi:make-hook (lambda (h o m) h o m 3))))
+    (unwind-protect
+         (list (handler-case (progn (amiga.raw.utility:call-hook-pkt bad nil nil) :no-error)
+                 (simple-error (e) (format nil "~A" e)))
+               (handler-case (progn (amiga.raw.utility:call-hook-pkt typed nil nil) :no-error)
+                 (type-error () :type-error))
+               (amiga.raw.utility:call-hook-pkt good nil nil))
+      (amiga.ffi:free-hook good)
+      (amiga.ffi:free-hook typed)
+      (amiga.ffi:free-hook bad))))
+
+;; THROW to a catch outside the callback is refused (an error naming the
+;; boundary), a catch inside works, an UNWIND-PROTECT cleanup inside runs
+(check "callback-non-local-exit-across-boundary-refused" '(t 7 t)
+  (let* ((cleaned nil)
+         (thrower (amiga.ffi:make-hook (lambda (h o m) h o m (throw 'outside 1))))
+         (inner (amiga.ffi:make-hook (lambda (h o m) h o m (catch 'inside (throw 'inside 7)))))
+         (cleanup (amiga.ffi:make-hook
+                   (lambda (h o m) h o m (unwind-protect (error "e") (setf cleaned t))))))
+    (unwind-protect
+         (list (handler-case (catch 'outside (amiga.raw.utility:call-hook-pkt thrower nil nil) nil)
+                 (error (e) (and (search "foreign callback" (format nil "~A" e)) t)))
+               (amiga.raw.utility:call-hook-pkt inner nil nil)
+               (progn (handler-case (amiga.raw.utility:call-hook-pkt cleanup nil nil)
+                        (error () nil))
+                      cleaned))
+      (amiga.ffi:free-hook cleanup)
+      (amiga.ffi:free-hook inner)
+      (amiga.ffi:free-hook thrower))))
+
+;; a hook that calls the OS which calls another hook: the inner escape is
+;; re-signaled inside the outer hook's Lisp and handled there
+(check "callback-nested-hooks" 11
+  (let* ((inner (amiga.ffi:make-hook (lambda (h o m) h o m (error "inner"))))
+         (outer (amiga.ffi:make-hook
+                 (lambda (h o m) h o m
+                   (handler-case (amiga.raw.utility:call-hook-pkt inner nil nil)
+                     (error () 11))))))
+    (unwind-protect (amiga.raw.utility:call-hook-pkt outer nil nil)
+      (amiga.ffi:free-hook outer)
+      (amiga.ffi:free-hook inner))))
+
+;; a dispatcher entry (MAKE-DISPATCHER) is the same convention: class in
+;; a0, object in a2, message in a1 -- entered here through a hook struct
+;; whose h_Entry it is
+(check "callback-dispatcher-entry" '(#x80423874 t)
+  (let* ((seen nil)
+         (dispatcher (amiga.ffi:make-dispatcher
+                      (lambda (class object message) object
+                        (setf seen (ffi:foreign-pointer-address class))
+                        (ffi:peek-u32 message 0))))
+         (hook (ffi:alloc-foreign 20))
+         (message (ffi:alloc-foreign 8)))
+    (ffi:poke-u32 hook (ffi:foreign-pointer-address dispatcher) 8)
+    (ffi:poke-u32 message #x80423874 0)
+    (unwind-protect
+         (list (amiga.raw.utility:call-hook-pkt hook nil message)
+               (= seen (ffi:foreign-pointer-address hook)))
+      (amiga.ffi:free-dispatcher dispatcher)
+      (ffi:free-foreign message)
+      (ffi:free-foreign hook))))
+
+;; the target refuses what its stub cannot deliver, at creation time
+(check "callback-unsupported-types-rejected-at-creation" '(t t t)
+  (flet ((refused (needle thunk)
+           (handler-case (progn (funcall thunk) nil)
+             (error (e) (and (search needle (format nil "~A" e)) t)))))
+    (list (refused ":DOUBLE" (lambda () (ffi:make-callback :double '() (lambda () 1d0))))
+          (refused ":FLOAT" (lambda () (ffi:make-callback :void '(:float) (lambda (x) x))))
+          (refused "64-bit argument cannot arrive in a register"
+                   (lambda () (ffi:make-callback :void '(:int64) (lambda (x) x) '(:d0)))))))
+
+;; 64-bit stack arguments take two slots, high word first: the snippet
+;; pushes 0x0000001F then 0xFFFFFFF6, read as one :int64
+(check "callback-int64-stack-argument" t
+  (let* ((seen nil)
+         (cb (ffi:make-callback :void '(:int64) (lambda (v) (setf seen v))))
+         (code (ffi:alloc-foreign 24))
+         (hook (ffi:alloc-foreign 20)))
+    (%write-caller-snippet code (ffi:foreign-pointer-address cb))
+    (ffi:poke-u32 hook (ffi:foreign-pointer-address code) 8)
+    (unwind-protect
+         (progn (amiga.raw.utility:call-hook-pkt hook nil nil)
+                ;; -10 in the high longword, 31 in the low one
+                (= seen (logior (ash -10 32) 31)))
+      (ffi:free-callback cb)
+      (ffi:free-foreign hook)
+      (ffi:free-foreign code))))

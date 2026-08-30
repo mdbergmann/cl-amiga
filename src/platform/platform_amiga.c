@@ -3097,20 +3097,209 @@ int platform_ffi_call(void *fn, CLFFIType ret_type, CLFFIValue *ret_val,
     return -1;  /* unsupported */
 }
 
+/* ================================================================
+ * Callbacks — Lisp functions as C function pointers and hook entries
+ *
+ * A callback is a few words of 68k code in AllocVec'd memory (all RAM is
+ * executable on the 68k; the MorphOS emulator runs 68k code from any
+ * memory) with the closure descriptor baked in as an immediate, so one
+ * shared C entry can tell the callbacks apart.  No libffi needed.
+ *
+ * m68k (AmigaOS 3):
+ *
+ *     movem.l d0-d7/a0-a6,-(sp)     ; the caller's registers: frame[0..14]
+ *     move.l  sp,-(sp)              ; &frame
+ *     pea     <closure>.l
+ *     jsr     cl_amiga_callback_entry.l   ; C: (closure, frame) -> d0
+ *     lea     12(sp),sp             ; the two args + the saved d0 slot
+ *     movem.l (sp)+,d1-d7/a0-a6     ; callee-saved back, d0 = result
+ *     rts
+ *
+ * frame[15] is the caller's return address, frame[16..] its C-stack
+ * arguments.  Register arguments (struct Hook: a0/a2/a1; BOOPSI dispatcher:
+ * the same) are read from frame[reg].  C-stack arguments follow the ABI of
+ * the toolchain that compiles clamiga (m68k-amigaos-gcc, -mcpu=68020):
+ * every scalar argument occupies one 4-byte slot — char / short are
+ * promoted by the caller (`pea -3.l` for a char -3) — and a 64-bit one two,
+ * high word first.  Verified by disassembling a probe (see
+ * specs/mui-bindings.md §10.1).
+ *
+ * MorphOS (PPC): the template is `pea <closure>.l; jsr <gate>.l; addq.l
+ * #4,sp; rts`, where <gate> is one shared struct EmulLibEntry (TRAP_LIB)
+ * around a native function — the emulator executes the pea/jsr, hits the
+ * trap word and calls the PPC function, whose r3 becomes d0 for the `rts`.
+ * The PPC side finds the closure at 4(REG_A7) (above the jsr's return
+ * address), the C-stack arguments at 12(REG_A7) (above the caller's return
+ * address as well), and the registers in the emulator's frame (REG_D0 ..
+ * REG_A6) — the same frame platform_amiga_call writes on the way out.
+ * MorphOS's own CallHookPkt calls a 68k h_Entry through the emulator, so a
+ * native (PPC) MUI invoking a Lisp hook takes the same path.
+ *
+ * Both entries hand the decoded CLFFIValue[] to the generic handler
+ * (builtins_ffi.c ffi_callback_handler), which owns the foreign-callback
+ * boundary: it never longjmps out of here.
+ * ================================================================ */
+
+typedef struct {
+    CLFFIType ret_type;
+    int       nargs;
+    CLFFIType arg_types[CL_FFI_MAX_ARGS];
+    int8_t    arg_regs[CL_FFI_MAX_ARGS];   /* CL_FFI_REG_STACK, 0..7 = d0..d7, 8..14 = a0..a6 */
+    platform_ffi_cb_handler handler;
+    void     *user_data;
+    void     *code;                        /* the AllocVec'd stub */
+} AmigaClosure;
+
+/* Decode the arguments from the 68k register image REGS (d0-d7/a0-a6, 15
+ * longwords as the caller left them) and the C-stack arguments at STACK,
+ * run the handler, return what goes into d0. */
+static uint32_t amiga_closure_invoke(AmigaClosure *pc, const uint32_t *regs,
+                                     const uint32_t *stack)
+{
+    CLFFIValue cargs[CL_FFI_MAX_ARGS];
+    CLFFIValue cret;
+    int i, si = 0;
+
+    for (i = 0; i < pc->nargs; i++) {
+        CLFFIType ty = pc->arg_types[i];
+        int r = pc->arg_regs[i];
+        int wide = (ty == CL_FFI_I64 || ty == CL_FFI_U64);
+        uint32_t hi, lo = 0;
+        if (r >= 0 && r <= 14) {
+            hi = regs[r];
+        } else {
+            hi = stack[si++];
+            if (wide) lo = stack[si++];
+        }
+        switch (ty) {
+        case CL_FFI_I8:      cargs[i].i8  = (int8_t)hi;   break;
+        case CL_FFI_U8:      cargs[i].u8  = (uint8_t)hi;  break;
+        case CL_FFI_I16:     cargs[i].i16 = (int16_t)hi;  break;
+        case CL_FFI_U16:     cargs[i].u16 = (uint16_t)hi; break;
+        case CL_FFI_I32:     cargs[i].i32 = (int32_t)hi;  break;
+        case CL_FFI_U32:     cargs[i].u32 = hi;           break;
+        case CL_FFI_I64:     cargs[i].i64 = (int64_t)(((uint64_t)hi << 32) | lo); break;
+        case CL_FFI_U64:     cargs[i].u64 = ((uint64_t)hi << 32) | lo; break;
+        case CL_FFI_POINTER: cargs[i].p   = (void *)hi;   break;
+        default:             cargs[i].u32 = hi;           break;  /* fp rejected at creation */
+        }
+    }
+
+    memset(&cret, 0, sizeof(cret));
+    pc->handler(pc->user_data, cargs, &cret);
+
+    switch (pc->ret_type) {
+    case CL_FFI_I8:      return (uint32_t)(int32_t)cret.i8;
+    case CL_FFI_U8:      return cret.u8;
+    case CL_FFI_I16:     return (uint32_t)(int32_t)cret.i16;
+    case CL_FFI_U16:     return cret.u16;
+    case CL_FFI_I32:     return (uint32_t)cret.i32;
+    case CL_FFI_U32:     return cret.u32;
+    case CL_FFI_POINTER: return (uint32_t)cret.p;
+    default:             return 0;   /* void; 64-bit / fp rejected at creation */
+    }
+}
+
+#ifndef PLATFORM_MORPHOS
+
+/* Entered from the m68k stub (not static: the stub carries its address). */
+uint32_t cl_amiga_callback_entry(AmigaClosure *pc, uint32_t *frame)
+{
+    return amiga_closure_invoke(pc, frame, frame + 16);
+}
+
+#define AMIGA_STUB_WORDS 14
+
+static void amiga_write_stub(uint16_t *c, AmigaClosure *pc)
+{
+    uint32_t entry = (uint32_t)&cl_amiga_callback_entry;
+    uint32_t desc  = (uint32_t)pc;
+    c[0]  = 0x48E7; c[1]  = 0xFFFE;                   /* movem.l d0-d7/a0-a6,-(sp) */
+    c[2]  = 0x2F0F;                                   /* move.l  sp,-(sp)          */
+    c[3]  = 0x4879; c[4]  = (uint16_t)(desc >> 16);   /* pea     desc.l            */
+                    c[5]  = (uint16_t)desc;
+    c[6]  = 0x4EB9; c[7]  = (uint16_t)(entry >> 16);  /* jsr     entry.l           */
+                    c[8]  = (uint16_t)entry;
+    c[9]  = 0x4FEF; c[10] = 0x000C;                   /* lea     12(sp),sp         */
+    c[11] = 0x4CDF; c[12] = 0x7FFE;                   /* movem.l (sp)+,d1-d7/a0-a6 */
+    c[13] = 0x4E75;                                   /* rts                       */
+}
+
+#else  /* MorphOS */
+
+#include <emul/emulinterface.h>
+#include <emul/emulregs.h>
+
+static ULONG cl_mos_callback_gate(void)
+{
+    uint32_t regs[15];
+    const uint32_t *sp = (const uint32_t *)REG_A7;
+    AmigaClosure *pc = (AmigaClosure *)sp[1];
+    regs[0]  = REG_D0; regs[1]  = REG_D1; regs[2]  = REG_D2; regs[3]  = REG_D3;
+    regs[4]  = REG_D4; regs[5]  = REG_D5; regs[6]  = REG_D6; regs[7]  = REG_D7;
+    regs[8]  = REG_A0; regs[9]  = REG_A1; regs[10] = REG_A2; regs[11] = REG_A3;
+    regs[12] = REG_A4; regs[13] = REG_A5; regs[14] = REG_A6;
+    return (ULONG)amiga_closure_invoke(pc, regs, sp + 3);
+}
+
+static const struct EmulLibEntry cl_mos_callback_gate_entry = {
+    TRAP_LIB, 0, (void (*)(void))cl_mos_callback_gate
+};
+
+#define AMIGA_STUB_WORDS 8
+
+static void amiga_write_stub(uint16_t *c, AmigaClosure *pc)
+{
+    uint32_t gate = (uint32_t)&cl_mos_callback_gate_entry;
+    uint32_t desc = (uint32_t)pc;
+    c[0] = 0x4879; c[1] = (uint16_t)(desc >> 16); c[2] = (uint16_t)desc;   /* pea desc.l  */
+    c[3] = 0x4EB9; c[4] = (uint16_t)(gate >> 16); c[5] = (uint16_t)gate;   /* jsr gate.l  */
+    c[6] = 0x588F;                                                         /* addq.l #4,sp */
+    c[7] = 0x4E75;                                                         /* rts          */
+}
+
+#endif
+
 void *platform_ffi_make_closure(CLFFIType ret_type, int nargs,
                                 const CLFFIType *arg_types,
+                                const int8_t *arg_regs,
                                 platform_ffi_cb_handler handler,
                                 void *user_data, void **out_closure)
 {
-    (void)ret_type; (void)nargs; (void)arg_types;
-    (void)handler; (void)user_data;
+    AmigaClosure *pc;
+    uint16_t *code;
+    int i;
+
     if (out_closure) *out_closure = NULL;
-    return NULL;  /* unsupported */
+    if (nargs < 0 || nargs > CL_FFI_MAX_ARGS) return NULL;
+    pc = (AmigaClosure *)AllocVec(sizeof(AmigaClosure), MEMF_PUBLIC | MEMF_CLEAR);
+    if (!pc) return NULL;
+    code = (uint16_t *)AllocVec(AMIGA_STUB_WORDS * 2, MEMF_PUBLIC | MEMF_CLEAR);
+    if (!code) { FreeVec(pc); return NULL; }
+
+    pc->ret_type = ret_type;
+    pc->nargs = nargs;
+    for (i = 0; i < nargs; i++) {
+        pc->arg_types[i] = arg_types[i];
+        pc->arg_regs[i] = arg_regs ? arg_regs[i] : (int8_t)CL_FFI_REG_STACK;
+    }
+    pc->handler = handler;
+    pc->user_data = user_data;
+    pc->code = code;
+
+    amiga_write_stub(code, pc);
+    platform_cache_clear(code, AMIGA_STUB_WORDS * 2);   /* fresh code past the I-cache */
+
+    if (out_closure) *out_closure = pc;
+    return code;
 }
 
 void platform_ffi_free_closure(void *closure)
 {
-    (void)closure;
+    AmigaClosure *pc = (AmigaClosure *)closure;
+    if (!pc) return;
+    if (pc->code) FreeVec(pc->code);
+    FreeVec(pc);
 }
 
 uint32_t platform_ffi_peek32(uint32_t handle, uint32_t offset)

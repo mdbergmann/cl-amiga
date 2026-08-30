@@ -12,7 +12,11 @@
   (:use "CL" "FFI")
   (:export "WITH-LIBRARY" "WITH-TAG-LIST" "MAKE-TAG-LIST" "DEFCFUN"
            "*DEFCFUN-DOCSTRINGS*" "DEFINE-BINDING-TABLE"
-           "LIBRARY-VERSION" "OPEN-LIBRARY-OR-DIE"))
+           "LIBRARY-VERSION" "OPEN-LIBRARY-OR-DIE"
+           ;; Lisp functions the OS calls back: struct Hook entries and
+           ;; BOOPSI class dispatchers
+           "MAKE-HOOK" "FREE-HOOK" "HOOK-ENTRY" "HOOK-DATA"
+           "MAKE-DISPATCHER" "FREE-DISPATCHER" "CALLBACK-ULONG"))
 
 (in-package "AMIGA.FFI")
 
@@ -311,6 +315,128 @@ the comment above for the row syntax."
   (let ((blob (clamiga::%make-binding-table rows)))
     `(eval-when (:compile-toplevel :load-toplevel :execute)
        (clamiga::%register-binding-table ,package ,blob ',base ',version))))
+
+;;; ================================================================
+;;; Hooks and dispatchers — Lisp functions the OS calls
+;;; ================================================================
+
+;;; A struct Hook (utility/hooks.h) is how AmigaOS hands a callback to the
+;;; system: MUI's MUIA_List_DisplayHook and MUIM_CallHook, ReAction's
+;;; LISTBROWSER_*Hook, ASL's ASLFR_FilterFunc, commodities, the layout
+;;; hooks of MUI groups.  The OS jumps to h_Entry with the hook in a0, the
+;;; "object" in a2 and the "message" in a1 -- a register convention no C
+;;; compiler follows, which is what FFI:MAKE-CALLBACK's REGS argument
+;;; describes.  A BOOPSI class dispatcher (MakeClass /
+;;; MUI_CreateCustomClass) is entered the same way with the class in a0.
+;;;
+;;; The Lisp function runs on the OS's stack, between the C frames of the
+;;; caller (a semaphore held, a class dispatch in progress): it cannot
+;;; unwind across them, so the runtime treats every callback as a
+;;; boundary -- an unhandled error, a THROW or RETURN-FROM to a target
+;;; outside the callback, or an ABORT restart is caught there, the
+;;; callback returns 0, and the condition is re-signaled on the Lisp side
+;;; once the library call that invoked the hook has returned (a
+;;; HANDLER-CASE around that call catches it; the debugger shows it there).
+;;; A HANDLER-CASE inside the callback works as usual.  See the "Foreign-
+;;; callback boundary" note in src/core/thread.h and
+;;; EXT:*CALLBACK-ERROR-POLICY*.
+;;;
+;;; On the host these are ordinary C-ABI callbacks (libffi): a hook's
+;;; entry is a C function of (hook, object, message), which is how
+;;; tests/test_amiga_boopsi.lisp drives the whole path without an Amiga.
+
+(defun callback-ulong (value who)
+  "Coerce VALUE, what a hook or dispatcher function returned, to the ULONG
+the OS expects in d0: an integer (wrapped to 32 bits), a foreign pointer
+\(its address), T (1) or NIL (0).  WHO names the caller for the error."
+  (cond ((null value) 0)
+        ((eq value t) 1)
+        ((integerp value) (logand value #xFFFFFFFF))
+        ((ffi:foreign-pointer-p value) (ffi:foreign-pointer-address value))
+        (t (error "~A: the Lisp function returned ~S -- a hook or dispatcher returns a ULONG: an integer, a foreign pointer, T or NIL"
+                  who value))))
+
+(defun %check-callback-function (function who)
+  (unless (functionp function)
+    (error "~A: ~S is not a function -- expected a function of three arguments (hook object message), see the docstring"
+           who function)))
+
+;; struct Hook: MinNode (8) | h_Entry (+8) | h_SubEntry (+12) | h_Data (+16) = 20 bytes
+(defconstant +hook-size+ 20)
+
+(defvar *hooks* (make-hash-table)
+  "hook address -> the callback (FFI:MAKE-CALLBACK) installed as its
+h_Entry.  The struct's own h_Entry longword is what the OS calls; this
+table is what HOOK-ENTRY and FREE-HOOK read, exact on the host too, where
+a callback's address does not fit the 32-bit field.")
+
+(defun make-hook (function &key data)
+  "A struct Hook whose entry calls FUNCTION, a function of three
+arguments -- the hook itself, the object and the message, all foreign
+pointers (the registers a0, a2, a1 of the hook convention) -- and returns
+what the OS gets back in d0: an integer, a foreign pointer, T or NIL
+\(CALLBACK-ULONG).  DATA (an integer, a foreign pointer, T/NIL) goes into
+h_Data, readable back with HOOK-DATA.  Returns the hook as a foreign
+pointer, to pass wherever the OS takes a struct Hook * (a MUIA_*Hook tag
+value, CallHookPkt, MUIM_CallHook).  The hook must outlive every object
+that was given it; FREE-HOOK releases it -- or use AMIGA.BOOPSI:POOL-HOOK
+and let the foreign pool do that.  What an error inside FUNCTION does is
+described at the top of this section."
+  (%check-callback-function function 'make-hook)
+  (let* ((callback (ffi:make-callback
+                    :uint32 '(:pointer :pointer :pointer)
+                    (lambda (hook object message)
+                      (callback-ulong (funcall function hook object message) 'make-hook))
+                    '(:a0 :a2 :a1)))
+         (hook (ffi:alloc-foreign +hook-size+)))
+    (ffi:poke-u32 hook (logand (ffi:foreign-pointer-address callback) #xFFFFFFFF) 8) ; h_Entry
+    (ffi:poke-u32 hook 0 12)                                        ; h_SubEntry: unused
+    (ffi:poke-u32 hook (callback-ulong data 'make-hook) 16)         ; h_Data
+    (setf (gethash (ffi:foreign-pointer-address hook) *hooks*) callback)
+    hook))
+
+(defun hook-entry (hook)
+  "The h_Entry of HOOK as a foreign pointer -- the callback FFI:MAKE-CALLBACK
+built (on the host, a C function of (hook, object, message))."
+  (or (gethash (ffi:foreign-pointer-address hook) *hooks*)
+      (error "AMIGA.FFI:HOOK-ENTRY: ~S is not a live MAKE-HOOK hook" hook)))
+
+(defun hook-data (hook)
+  "The h_Data longword of HOOK, as an unsigned integer.  SETF-able."
+  (ffi:peek-u32 hook 16))
+
+(defun (setf hook-data) (value hook)
+  (ffi:poke-u32 hook (callback-ulong value 'hook-data) 16)
+  value)
+
+(defun free-hook (hook)
+  "Release a MAKE-HOOK hook: the callback and the struct.  Only after every
+object that holds the hook is disposed; NIL is ignored."
+  (when hook
+    (ffi:free-callback (hook-entry hook))
+    (remhash (ffi:foreign-pointer-address hook) *hooks*)
+    (ffi:free-foreign hook))
+  nil)
+
+(defun make-dispatcher (function)
+  "A BOOPSI class dispatcher -- what intuition's MakeClass and MUI's
+MUI_CreateCustomClass take -- that calls FUNCTION with the class, the
+object and the message (foreign pointers; the registers a0, a2, a1).  The
+message's MethodID is its first longword; FUNCTION returns the method's
+result (CALLBACK-ULONG), typically what DoSuperMethodA returned for the
+methods it does not handle itself.  Returns the entry as a foreign
+pointer; FREE-DISPATCHER releases it once the class is removed."
+  (%check-callback-function function 'make-dispatcher)
+  (ffi:make-callback :uint32 '(:pointer :pointer :pointer)
+                     (lambda (class object message)
+                       (callback-ulong (funcall function class object message)
+                                       'make-dispatcher))
+                     '(:a0 :a2 :a1)))
+
+(defun free-dispatcher (dispatcher)
+  "Release a MAKE-DISPATCHER entry (after the class is gone); NIL is ignored."
+  (when dispatcher (ffi:free-callback dispatcher))
+  nil)
 
 ;;; ================================================================
 ;;; Provide module

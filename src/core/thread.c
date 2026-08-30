@@ -1150,6 +1150,11 @@ void cl_thread_reset_lisp_state(CL_Thread *t)
     t->handler_active_mask = 0;
     t->restart_top = 0;
     t->restart_floor = 0;
+    t->nlx_floor = 0;
+    t->callback_depth = 0;
+    t->callback_error_code = 0;
+    t->callback_error = CL_NIL;
+    t->last_condition = CL_NIL;
     t->vm.sp = 0;
     t->vm.fp = 0;
     for (i = 0; i < CL_MAX_MV; i++)
@@ -1182,6 +1187,32 @@ void cl_thread_reset_lisp_state(CL_Thread *t)
     }
     t->tlv_entry_count = 0;
     t->vm_extra_count = 0;   /* cl_vm_gc_mark_extra_thread walks this too */
+}
+
+int cl_thread_current_is_registered(void)
+{
+    void *me = platform_tls_get();
+    CL_Thread *t;
+    int found = 0;
+    if (!me) return 0;
+    /* A foreign task must not BLOCK on Lisp's list mutex, but it must also
+     * not walk cl_thread_list lock-free: cl_thread_unregister unlinks a node
+     * from the middle of the list under this same lock, and once unlinked a
+     * concurrent free (cl_thread_free_worker, from the zombie reaper or a
+     * GC-sweep finalize) can reclaim it at any time — a lock-free reader
+     * that already holds a pointer read before the unlink would then
+     * dereference `t->next` on freed memory. platform_mutex_trylock never
+     * blocks (AttemptSemaphore on AmigaOS, pthread_mutex_trylock on POSIX),
+     * so on contention we just answer "not registered" — the same benign
+     * fallback the old stale-head-pointer comment relied on, since a thread
+     * that is genuinely registered is not also concurrently mutating the
+     * list under its own identity. */
+    if (!cl_thread_list_lock) return 0;
+    if (platform_mutex_trylock(cl_thread_list_lock) != 0) return 0;
+    for (t = cl_thread_list; t; t = t->next)
+        if ((void *)t == me) { found = 1; break; }
+    platform_mutex_unlock(cl_thread_list_lock);
+    return found;
 }
 
 void cl_thread_free_worker(CL_Thread *t)

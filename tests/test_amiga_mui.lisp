@@ -48,10 +48,17 @@
 
 (check "host-mui-not-available" nil (amiga.mui:available-p))
 
-(check "mui-exports" '("*EVENT-LOOP-TIMEOUT*" "APPLICATION-INPUT" "AVAILABLE-P" "CLASS-ID"
-                       "DISPOSE-OBJECT" "DO-APPLICATION-EVENTS" "DO-METHOD" "GET-ATTR"
-                       "GET-ATTR-POINTER" "GET-ATTR-STRING" "MAKE-ID" "MAKE-OBJECT"
-                       "NEW-OBJECT" "NOTIFY" "OBJECT-CLASS" "POOL-ALLOC" "POOL-STRING"
+(check "mui-exports" '("*EVENT-LOOP-TIMEOUT*" "ADD-MIN-MAX" "APPLICATION-INPUT"
+                       "AREA-BOTTOM" "AREA-DRAW-INFO" "AREA-FLAGS" "AREA-FONT" "AREA-HEIGHT"
+                       "AREA-LEFT" "AREA-MBOTTOM" "AREA-MHEIGHT" "AREA-MLEFT" "AREA-MRIGHT"
+                       "AREA-MTOP" "AREA-MWIDTH" "AREA-PENS" "AREA-RASTPORT" "AREA-RENDER-INFO"
+                       "AREA-RIGHT" "AREA-SCREEN" "AREA-TOP" "AREA-WIDTH" "AREA-WINDOW"
+                       "AVAILABLE-P" "CLASS-ID" "CREATE-CUSTOM-CLASS" "CUSTOM-CLASS-CLASS"
+                       "DISPOSE-OBJECT" "DO-APPLICATION-EVENTS" "DO-METHOD" "DO-SUPER-METHOD"
+                       "DRAW-FLAGS" "GET-ATTR" "GET-ATTR-POINTER" "GET-ATTR-STRING" "INST-DATA"
+                       "MAKE-ID" "MAKE-OBJECT" "METHOD-ID" "MIN-MAX-INFO"
+                       "NEW-OBJECT" "NOTIFY" "OBJECT-CLASS" "POOL-ALLOC" "POOL-FINALIZER"
+                       "POOL-HOOK" "POOL-STRING"
                        "POOL-STRING-ARRAY" "REQUEST" "RETURN-ID" "SET-ATTRS"
                        "WINDOW-EDGE-DELTA" "WINDOW-SIZE-MINMAX" "WINDOW-SIZE-SCREEN"
                        "WINDOW-SIZE-VISIBLE" "WITH-FOREIGN-POOL" "WITH-TAGS")
@@ -295,11 +302,61 @@
   (progn (macroexpand-1 '(amiga.mui:do-application-events ((id) app :timeout 2) (print id) (return)))
          :done))
 
+;;; --- custom classes: the portable half -------------------------------------
+;;; The class functions need MUI; what the host can check is their
+;;; validation, the pool requirement, and the struct arithmetic of the
+;;; mui.h shortcuts (offsets into a fake object).
+
+(check "mui-create-custom-class-validates-before-mui" '(t t t t)
+  (flet ((msg-has (needle thunk)
+           (handler-case (progn (funcall thunk) nil)
+             (error (e) (and (search needle (format nil "~A" e)) t)))))
+    (list (msg-has "not a function"
+                   (lambda () (amiga.mui:create-custom-class :area 5)))
+          (msg-has "DATA-SIZE"
+                   (lambda () (amiga.mui:create-custom-class :area (lambda (c o m) c o m 0) :data-size -1)))
+          (msg-has "CLASS-ID"
+                   (lambda () (amiga.mui:create-custom-class 42 (lambda (c o m) c o m 0))))
+          (msg-has "WITH-FOREIGN-POOL"
+                   (lambda () (amiga.mui:create-custom-class :area (lambda (c o m) c o m 0)))))))
+
+(check "mui-create-custom-class-without-mui" t
+  (handler-case (progn (amiga.mui:with-foreign-pool ()
+                         (amiga.mui:create-custom-class :area (lambda (c o m) c o m 0)))
+                       nil)
+    (error (e) (and (search "muimaster.library" (format nil "~A" e)) t))))
+
+;; POOL-HOOK is AMIGA.BOOPSI's (its own checks are in test_amiga_boopsi.lisp)
+(check "mui-pool-hook-is-boopsi-pool-hook" t
+  (eq (find-symbol "POOL-HOOK" "AMIGA.MUI") (find-symbol "POOL-HOOK" "AMIGA.BOOPSI")))
+
+;; the _left/_top/_width/_height, _addleft.., _mleft.. shortcuts over a
+;; fake MUI_AreaData: mad_Box at +52 (WORDs), the four BYTE margins at +60
+(check "mui-area-shortcuts-arithmetic" '(100 50 200 20 299 69 103 52 194 16 296 67)
+  (let ((obj (ffi:alloc-foreign 80)))
+    (ffi:poke-i16 obj 100 52) (ffi:poke-i16 obj 50 54)
+    (ffi:poke-i16 obj 200 56) (ffi:poke-i16 obj 20 58)
+    (ffi:poke-i8 obj 3 60) (ffi:poke-i8 obj 2 61) (ffi:poke-i8 obj 6 62) (ffi:poke-i8 obj 4 63)
+    (prog1 (list (amiga.mui:area-left obj) (amiga.mui:area-top obj)
+                 (amiga.mui:area-width obj) (amiga.mui:area-height obj)
+                 (amiga.mui:area-right obj) (amiga.mui:area-bottom obj)
+                 (amiga.mui:area-mleft obj) (amiga.mui:area-mtop obj)
+                 (amiga.mui:area-mwidth obj) (amiga.mui:area-mheight obj)
+                 (amiga.mui:area-mright obj) (amiga.mui:area-mbottom obj))
+      (ffi:free-foreign obj))))
+
+;; a method message: MethodID first; MUIP_Draw.flags second
+(check "mui-method-id-and-draw-flags" '(#x80426F3F 3)
+  (let ((msg (ffi:alloc-foreign 8)))
+    (ffi:poke-u32 msg #x80426F3F 0) (ffi:poke-u32 msg 3 4)
+    (prog1 (list (amiga.mui:method-id msg) (amiga.mui:draw-flags msg))
+      (ffi:free-foreign msg))))
+
 ;;; --- the examples load on the host and bow out ------------------------
 
 (defparameter *examples*
   '("hello" "layout" "balancing" "pages" "menus" "showhide" "slidorama"
-    "virtual" "requester"))
+    "virtual" "requester" "class1" "hooks"))
 
 (dolist (name *examples*)
   (check (format nil "example-~A-loads-and-bows-out" name) t

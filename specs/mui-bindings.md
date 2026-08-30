@@ -1,10 +1,11 @@
 # MUI from Lisp — raw bindings + `AMIGA.MUI` (2026-08-30)
 
-Status: **Layer 1 (§3, the raw module), the BOOPSI split (§4.1) and
-Layer 2 (`AMIGA.MUI`, §4) are implemented** — see §3.5 and §4.6 for what
-was built and where it deviates from the sketch; `hello.lisp` of §5, its
-harness entry and the docs are in.  The remaining §5 examples are the
-open item (§8 step 4).  Companion to `specs/raw-bindings-footprint.md` (the
+Status: **Layer 1 (§3, the raw module), the BOOPSI split (§4.1), Layer 2
+(`AMIGA.MUI`, §4), the §5 examples and the `amiga/hook` callback runtime
+of §10 (hooks and custom classes, §4.5) are implemented** — see §3.5,
+§4.6, §4.7 and §10.5 for what was built and where it deviates from the
+sketch.  Open: §8 step 5 (struct reader, MCC modules, MUI 5 / MorphOS
+header merge).  Companion to `specs/raw-bindings-footprint.md` (the
 binding-table format) and to `lib/amiga/reaction.lisp` (the toolkit
 layer this one mirrors).
 
@@ -434,7 +435,7 @@ answers NIL rather than erroring when `muimaster.library` is missing,
 while `(require "amiga/raw/muimaster")` fails at require time with the
 library name (raw-module policy).
 
-### 4.5 Out of scope for v1 — and why
+### 4.5 Out of scope for v1 — and why (superseded: see §4.7)
 
 - **Hooks and custom classes** (`MUIA_List_DisplayHook`/`ConstructHook`/
   `DestructHook`, `MUIM_CallHook`, `MUI_CreateCustomClass` dispatchers,
@@ -445,13 +446,74 @@ library name (raw-module policy).
   glue that spills the registers, plus MorphOS's PPC gate), tracked
   separately as "amiga/hook".  `AMIGA.MUI` is designed so that adding
   `make-hook` later slots in without API change (`%ulong` already
-  accepts foreign pointers as tag values).
+  accepts foreign pointers as tag values).  **Built 2026-08-30 — §4.7,
+  §10.5.**
 - Lists still work without hooks: `List.mui` with `MUIA_List_Format` and
   `MUIM_List_InsertSingle` of pooled strings uses MUI's default
   display; `Cycle`/`Radio` take `pool-string-array`.
 - Timers: `MUIM_Application_AddInputHandler` targets an object *method*
   — for stock classes that means `MUIM_Set`-style tricks; the Lisp loop
   can simply `Wait` on a `timer.device` signal via `:signals` instead.
+  (With custom classes, a Lisp class can now be the target.)
+
+### 4.7 Hooks and custom classes — as built (2026-08-30)
+
+Over the callback runtime of §10.5, three thin Lisp layers:
+
+- `AMIGA.FFI` (`lib/amiga/ffi.lisp`, "Hooks and dispatchers"):
+  `make-hook (function &key data)` → a `struct Hook` (20 bytes, own
+  allocation) whose `h_Entry` is `(ffi:make-callback :uint32 '(:pointer
+  :pointer :pointer) wrapper '(:a0 :a2 :a1))`; the wrapper calls FUNCTION
+  with `(hook object message)` and coerces its result with
+  `callback-ulong` (integer / foreign pointer / T / NIL — anything else is
+  an error naming the value, delivered through the boundary).  `h_SubEntry`
+  is left NULL; `h_Data` is DATA.  `hook-entry`, `hook-data` (setf-able),
+  `free-hook`; `make-dispatcher (function)` is the same entry for
+  `(class object message)` returned bare, for `MakeClass` /
+  `MUI_CreateCustomClass`; `free-dispatcher`.  A Lisp-side table maps
+  hook address → callback, because on the host a callback's address does
+  not fit the 32-bit `h_Entry` (the struct field is still poked, low 32
+  bits — meaningless there, exact on the target).
+- `AMIGA.BOOPSI`: the foreign pool now holds *finalizer functions* next
+  to pointers (`pool-finalizer`), released in reverse order of creation;
+  `pool-hook (function &key data)` is `make-hook` + a finalizer.  The
+  contract "dispose the objects inside the pool's body" is what makes
+  the LIFO order sufficient.  Re-exported by `AMIGA.REACTION` and
+  `AMIGA.MUI`.
+- `AMIGA.MUI`: `create-custom-class (superclass function &key data-size)`
+  → `MUI_CreateCustomClass(NULL, name-or-NULL, mcc-or-NULL, data-size,
+  dispatcher)` through two more own `defcfun`s (LVO −108 / −114, pinned
+  by `test_amiga_curated_vs_raw`), the class deleted and the dispatcher
+  freed by a pool finalizer (so it must be called inside a pool: an error
+  says so); `custom-class-class` (`mcc_Class`, offset 24 of `struct
+  MUI_CustomClass` per mui.h 3.8), `do-super-method` (`CallHookPkt` on
+  `cl_Super->cl_Dispatcher`, offsets 24 / 0 of `struct IClass`),
+  `method-id`, `inst-data` (`cl_InstOffset`, offset 32), `min-max-info`
+  / `add-min-max` (`MUIP_AskMinMax`, `struct MUI_MinMax`), `draw-flags`
+  (`MUIP_Draw`), and the `_xxx(obj)` shortcuts of mui.h as `area-*`
+  functions over the `MUI_NotifyData` (28 bytes) + `MUI_AreaData`
+  layout: `mad_RenderInfo` +28, `mad_Font` +36, `mad_MinMax` +40,
+  `mad_Box` +52, the four margin bytes +60..63, `mad_Flags` +64;
+  `MUI_RenderInfo` fields at 0/4/8/12/16/20.  The raw module has no
+  struct rows for mui.h (its structs come from `.i` files and mui.h has
+  none), so these offsets are hand-typed and checked on the target by
+  `test-mui.lisp` (a live `MUIM_Draw` reads a plausible `_mwidth` and a
+  non-NULL `_rp`).
+
+Examples: `class1.lisp` (the SDK's `Class1.c`, verbatim in shape) and
+`hooks.lisp` (display hook + `MUIM_CallHook`, the idioms of `psi.c` /
+`AppWindow.c`).  Tests: `tests/test_amiga_boopsi.lisp` drives a
+`make-hook` hook on the host through `call-foreign` of its entry (the
+host entry is a C function of the three arguments); `test-raw-bindings
+.lisp` on the target through `CallHookPkt` (registers, NULLs, result
+coercion, deferred errors, refused THROWs, nesting, a dispatcher entry,
+the creation-time type refusals) and, for the C-stack decoder, through
+a 68k caller snippet poked into public memory (`move.l #x,-(sp)` ×2,
+`jsr callback.l`, `addq.l #8,sp`, `rts`) that `CallHookPkt` enters as a
+hook — no C code needed; `test-mui.lisp` has MUI call a display hook
+and a `MUIM_CallHook` hook, re-signal a hook's error at `set-attrs`,
+and dispatch `MUIM_AskMinMax` / `MUIM_Draw` to a Lisp custom class in an
+opened window.
 
 ### 4.6 As built (2026-08-30)
 
@@ -630,8 +692,12 @@ Amiga (`make -f Makefile.cross test-amiga`, FS-UAE has MUI 3.8):
    22, 9/9, photographed) with no per-MUI difference — the
    `MUIV_Notify_Application` caveat of §4.6 does not arise because
    every example sets its notifications up before opening the window.
-5. Later: Phase 2 struct reader, MCC modules, MUI 5 / MorphOS header
-   merge, and the `amiga/hook` runtime feature that unlocks §4.5.
+5. ~~The `amiga/hook` runtime feature that unlocks §4.5.~~  **Done
+   2026-08-30** (§10.5, §4.7): `class1` and `hooks` join the examples
+   harness.
+6. Later: Phase 2 struct reader (mui.h has no `.i` twin, so the
+   `MUI_AreaData` / `MUI_RenderInfo` / `MUIP_*` layouts of §4.7 are
+   hand-typed), MCC modules, MUI 5 / MorphOS header merge.
 
 ## 9. Decisions to take before coding
 
@@ -774,3 +840,87 @@ no user data, so
 - Unlocks: CFFI `defcallback` on the target, MUI custom classes and
   hooks (§4.5), AmiSSL encrypted keys on MorphOS, ReAction hooks
   (`LISTBROWSER_*Hook`, `GA_*`), ASL / commodities hooks.
+
+### 10.5 As built (2026-08-30)
+
+Everything above, in one pass, with these deviations:
+
+- **The stack ABI is simpler than §10.1 said.**  Disassembling a probe
+  compiled by the toolchain (m68k-amigaos-gcc 6.5, `-mcpu=68020`) shows
+  every scalar argument pushed as one 4-byte slot — `pea -3.l` for a
+  `char` −3, `pea 0x1234` for a `short`, the callee reading them with
+  `move.l (a0)+` and `extb.l` / `move.b 3(a0)` — and a `long long` as two
+  slots, high word first.  So the decoder is `stack[i]` per argument,
+  two for 64-bit, no 2-byte rounding.  The PUSH_ROUNDING remark of §10.1
+  describes the 68000 `-m68000` convention, not what this toolchain
+  emits; the raw bindings and every callback consumer here are 68020+.
+- **One stub shape serves both conventions** (as planned): the 28-byte
+  m68k stub `movem.l d0-d7/a0-a6,-(sp); move.l sp,-(sp); pea closure.l;
+  jsr cl_amiga_callback_entry.l; lea 12(sp),sp; movem.l (sp)+,d1-d7/
+  a0-a6; rts`, closure and entry baked in as immediates; the C entry
+  decodes register arguments from `frame[reg]` and stack arguments from
+  `frame[16..]` (`frame[15]` is the caller's return address).  The
+  descriptor is `AmigaClosure` in `platform_amiga.c`; the stub and the
+  descriptor are `AllocVec(MEMF_PUBLIC)`, `CacheClearU` after writing.
+  Exposed as `platform_ffi_make_closure`'s new `arg_regs` parameter
+  (`CL_FFI_REG_STACK` or 0..14 = d0..d7/a0..a6; POSIX/Win32 ignore it)
+  and `ffi:make-callback`'s optional fourth argument, a list of `:d0`…
+  `:a6` / `NIL` — the register-ABI variant is not a separate function.
+- **MorphOS: one shared `EmulLibEntry` gate, the identity in the 68k
+  template** — `pea closure.l; jsr gate.l; addq.l #4,sp; rts` (16
+  bytes).  The gate reads the closure at `4(REG_A7)`, the C-stack
+  arguments from `12(REG_A7)` (above the two return addresses), the
+  registers from `REG_D0`…`REG_A6`, and its return value is d0.  Hooks
+  take the same route (MorphOS's `CallHookPkt` runs a non-gate `h_Entry`
+  through the emulator), so no descriptor lives in the Hook struct and
+  `h_SubEntry` stays free.  Verified on the real box: see the MorphOS
+  paragraph below.
+- **Refusals at creation time on the target**: `:float` / `:double`
+  arguments, and `:float` / `:double` / `:int64` / `:uint64` results
+  (the stub returns d0 only); a 64-bit argument in a register.  The
+  host keeps libffi's full type set.
+- **The boundary** (§10.3.1, in `ffi_callback_handler`, platform-
+  neutral): per-thread `nlx_floor` (every THROW / RETURN-FROM / GO
+  search loop in vm.c, builtins_io.c, builtins_condition.c and the JIT
+  runtime stops at it; the miss error says why when the target exists
+  below the floor), `handler_floor` / `restart_floor` raised to the
+  tops, `callback_depth` (keeps `cl_invoke_debugger` and `*debugger-
+  hook*` out unless `ext:*callback-error-policy*` is `:debug`), a
+  `CL_CATCH` frame; on an escape the VM sp/fp and NLX top are restored
+  and the condition — the object itself, via a new `CT->last_condition`
+  that `cl_error` / `cl_error_from_condition` / `cl_abort_current_thread`
+  write immediately before unwinding — is parked in
+  `callback_error` / `callback_error_code` / `callback_error_msg`
+  (first escape wins), the callback returns 0.
+  `cl_ffi_deferred_error_check()` re-signals it exactly as `ERROR`
+  would (`cl_signal_condition` + `cl_error_from_condition`: type, slots
+  and PRINT-OBJECT intact; `CL_ERR_EXIT` re-raised as an exit) from every
+  foreign-call return path: `call-foreign`, `cl_amiga_ffi_call_dispatch`
+  (VM opcode, JIT helper and stub callers), `call-library` / `-fast`.
+  Nested foreign calls inside a callback re-signal inside that
+  callback's Lisp.  `cl_error` now roots its condition across the
+  handlers and the debugger (bi_error's discipline — it did not).
+- **Foreign task** (§10.3.2): `cl_thread_current_is_registered()`
+  compares the TLS slot against `cl_thread_list` by identity, no
+  dereference, no lock; a miss returns 0 and bumps a counter that the
+  next `cl_ffi_deferred_error_check` on a Lisp thread reports once as a
+  warning — nothing is printed from the foreign task itself.
+- **GC**: `callback_error` and `last_condition` are marked and forwarded
+  with the other per-thread roots; `test_gc_stress_regression.sh`'s FFI
+  case now errors inside a comparator under forced compaction and reads
+  the message back after qsort.
+- **MorphOS, verified on the real box (MorphOS 3.20, muimaster 22)**
+  the same day: the callback section of `test-raw-bindings.lisp` (10
+  checks — registers through `CallHookPkt`, the 68k caller snippet for
+  C-stack `:int32` / `:int16` / `:int64` arguments, deferred errors,
+  refused THROWs, nesting, a dispatcher entry) and the whole of
+  `test-mui.lisp` with the hook and custom-class checks pass, 88/88, and
+  `class1` / `hooks` run and were photographed there.  So the frame
+  layout the gate assumes — closure at `4(REG_A7)`, C-stack arguments
+  from `12(REG_A7)`, registers in `REG_D0`…`REG_A6`, r3 → d0 — holds
+  both for a 68k caller (the snippet, run by the emulator) and for
+  MUI 4's native `CallHookPkt` / `DoMethod` reaching a 68k `h_Entry`.
+  `platform_amiga_call`'s save/restore of `Dn[2..7]` / `An[2..6]` around
+  an outgoing call is what keeps a Lisp method that calls back into the
+  OS (`do-super-method`, `SetAPen`) from disturbing the frame MUI is
+  still using underneath.

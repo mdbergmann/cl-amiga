@@ -66,10 +66,11 @@ and the `AMIGA.MUI` helpers (`lib/amiga/mui.lisp`: objects by class name,
 loop, over `lib/amiga/boopsi.lisp`'s `DoMethod` and string pools, which
 it re-exports).  Most are ports of the demos in the MUI 3.8 developer
 kit (`MUI:Developer/C/Examples/`); the kit's `Layout.c` and
-`Slidorama.c` are hook and custom-class demos, which Lisp cannot write
-on the target yet, so `layout` and `slidorama` are hook-free programs
-on the same subjects.  Each file names its source and what it
-demonstrates.
+`Slidorama.c` are a layout-hook and a custom-class demo, so `layout` and
+`slidorama` are hook-free programs on the same subjects, while `class1`
+ports the kit's `Class1.c` custom class and `hooks` shows the hook
+idioms the kit spreads over `psi.c`, `Layout.c` and `AppWindow.c`.  Each
+file names its source and what it demonstrates.
 
 | Example | SDK source | Shows |
 |---------|-----------|-------|
@@ -82,6 +83,8 @@ demonstrates.
 | `slidorama.lisp` | (`Slidorama.c`) | Knobs, sliders, numeric buttons, a gauge with its scale and a levelmeter; `MUIA_Numeric_Format`; a slider driving the gauge and the levelmeter by notification |
 | `virtual.lisp` | `Virtual.c` | `Scrollgroup.mui` / `Virtgroup.mui` viewports: a long text with the window's border scrollers, the `MUII_*` images and backgrounds, a list filled by `MUIM_List_Insert`, a virtual group inside a virtual group scrolled by arrow buttons, `MUIM_Window_SetCycleChain` |
 | `requester.lisp` | — | `MUI_Request`: an information requester, a yes/no question, a three-way choice with a default, and one formatted with `%ld` / `%s` parameters |
+| `class1.lisp` | `Class1.c` | A custom class written in Lisp: `create-custom-class` over `Area.mui` with a dispatcher answering `MUIM_AskMinMax` (`add-min-max` after `do-super-method`) and `MUIM_Draw` (a fan of lines through graphics.library inside `area-mleft` … `area-mbottom`, `area-rastport`, the `TEXTPEN` of `area-draw-info`), `new-object` of the class's `custom-class-class` |
+| `hooks.lisp` | (`psi.c`, `AppWindow.c`) | `struct Hook`s that call Lisp: a `MUIA_List_DisplayHook` formatting two columns and the title row (`pool-hook`, the builtin String construct / destruct hooks, `MUIM_List_InsertSingle`), buttons whose `MUIA_Pressed` runs a Lisp hook through `MUIM_CallHook` with a parameter, a `MUIA_Listview_DoubleClick` doing the same with `MUIV_TriggerValue` |
 
 Run one interactively:
 

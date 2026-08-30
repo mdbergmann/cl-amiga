@@ -482,6 +482,25 @@ void cl_nlx_debug_dump(const char *where, unsigned tag)
 }
 #endif
 
+/* The tail of a "no catch / no block / no tagbody" error message when the
+ * target does exist but sits below cl_nlx_floor — i.e. outside the foreign
+ * callback that is running (thread.h "Foreign-callback boundary").  Empty
+ * otherwise.  TYPE is the CL_NLX_* kind to look for, -1 for any. */
+const char *cl_nlx_boundary_hint(CL_Obj tag, int type)
+{
+    int i;
+    if (cl_nlx_floor <= 0) return "";
+    for (i = cl_nlx_floor - 1; i >= 0; i--) {
+        if ((type < 0 || cl_nlx_stack[i].type == type) &&
+            cl_nlx_stack[i].tag == tag)
+            return " -- the target lies outside the foreign callback that is "
+                   "running: a non-local exit cannot cross the C frames of the "
+                   "caller (signal an error instead; it is re-signaled once the "
+                   "foreign call returns)";
+    }
+    return "";
+}
+
 /* Funcallable instance support: a standard-generic-function struct is a
  * callable object whose "discriminating function" lives at slot 3.  The
  * VM + funcall/apply treat it as transparent — they unwrap to slot 3 and
@@ -3444,7 +3463,9 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
 #ifdef DEBUG_NLX
             cl_nlx_debug_dump("BLOCK_RETURN scan", (unsigned)block_tag);
 #endif
-            for (i = cl_nlx_top - 1; i >= 0; i--) {
+            /* cl_nlx_floor: frames below it belong to Lisp outside the
+             * foreign callback we may be running in — never a target. */
+            for (i = cl_nlx_top - 1; i >= cl_nlx_floor; i--) {
                 if (cl_nlx_stack[i].type == CL_NLX_BLOCK &&
                     cl_nlx_stack[i].tag == block_tag) {
                     int j;
@@ -3475,8 +3496,9 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     CL_LONGJMP(cl_nlx_stack[i].buf, 1);
                 }
             }
-            cl_error(CL_ERR_GENERAL, "RETURN-FROM: no block named %s",
-                     CL_NULL_P(block_tag) ? "NIL" : cl_symbol_name(block_tag));
+            cl_error(CL_ERR_GENERAL, "RETURN-FROM: no block named %s%s",
+                     CL_NULL_P(block_tag) ? "NIL" : cl_symbol_name(block_tag),
+                     cl_nlx_boundary_hint(block_tag, CL_NLX_BLOCK));
             VM_BREAK;
         }
 
@@ -3608,7 +3630,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
 #ifdef DEBUG_NLX
             cl_nlx_debug_dump("TAGBODY_GO scan", (unsigned)tagbody_id);
 #endif
-            for (i = cl_nlx_top - 1; i >= 0; i--) {
+            for (i = cl_nlx_top - 1; i >= cl_nlx_floor; i--) {
                 if (cl_nlx_stack[i].type == CL_NLX_TAGBODY &&
                     cl_nlx_stack[i].tag == tagbody_id) {
                     int j;
@@ -3639,7 +3661,8 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             cl_nlx_dbg("[NLX] TAGBODY_GO: NO MATCHING FRAME for id=0x%08x\n",
                     (unsigned)tagbody_id);
 #endif
-            cl_error(CL_ERR_GENERAL, "GO: tagbody frame not found");
+            cl_error(CL_ERR_GENERAL, "GO: tagbody frame not found%s",
+                     cl_nlx_boundary_hint(tagbody_id, CL_NLX_TAGBODY));
             VM_BREAK;
         }
 
@@ -4435,7 +4458,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 CL_Obj pval = cl_pending_value;
                 int i;
 
-                for (i = cl_nlx_top - 1; i >= 0; i--) {
+                for (i = cl_nlx_top - 1; i >= cl_nlx_floor; i--) {
                     if ((cl_nlx_stack[i].type == CL_NLX_CATCH ||
                          cl_nlx_stack[i].type == CL_NLX_BLOCK ||
                          cl_nlx_stack[i].type == CL_NLX_TAGBODY) &&
@@ -4466,7 +4489,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             } else if (should_rethrow && cl_pending_throw == 2) {
                 /* Re-throw error: find interposing UWPROT or error frame (skip stale) */
                 int i;
-                for (i = cl_nlx_top - 1; i >= 0; i--) {
+                for (i = cl_nlx_top - 1; i >= cl_nlx_floor; i--) {
                     if (cl_nlx_stack[i].type == CL_NLX_UWPROT &&
                         !nlx_frame_is_stale(&cl_nlx_stack[i])) {
                         cl_nlx_top = i;

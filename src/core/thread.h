@@ -95,6 +95,31 @@ typedef struct CL_Thread_s {
     int               restart_top;
     int               restart_floor;
 
+    /* ---- Foreign-callback boundary (builtins_ffi.c, ffi_callback_handler) ----
+     * While Lisp runs inside a C callback — a struct Hook entry MUI or
+     * ReAction invoked, a qsort comparator — no non-local exit may cross the
+     * C frames of the foreign caller (held semaphores, dispatcher state,
+     * Forbid() nesting).  nlx_floor hides the NLX frames established
+     * outside the callback from THROW / RETURN-FROM / GO: every tag-search
+     * loop stops at it, so the miss becomes an ordinary "no catch" error
+     * caught at the boundary — the same way handler_floor / restart_floor
+     * hide the outer handlers and restarts.  callback_depth > 0 keeps the
+     * interactive debugger (and *DEBUGGER-HOOK*) out, see
+     * cl_invoke_debugger.  A condition that reaches the boundary is parked
+     * in callback_error / callback_error_code (its message in
+     * callback_error_msg) and re-signaled by cl_ffi_deferred_error_check
+     * once the foreign call that invoked the callback has returned.
+     * last_condition is the condition an unwind is currently carrying
+     * (written by cl_error / cl_error_from_condition immediately before
+     * they longjmp), which is how the boundary gets hold of the object the
+     * catch site would otherwise never see. */
+    int    nlx_floor;
+    int    callback_depth;
+    int    callback_error_code;     /* 0 = nothing pending */
+    char   callback_error_msg[512];
+    CL_Obj callback_error;          /* the parked condition, NIL for CL_ERR_EXIT */
+    CL_Obj last_condition;
+
     /* ---- Pending throw state ---- */
     int    pending_throw;      /* 0=none, 1=throw, 2=error */
     CL_Obj pending_tag;
@@ -428,6 +453,13 @@ static inline CL_Thread *cl_get_current_thread(void)
 #define cl_current_thread cl_get_current_thread()
 #define CT cl_current_thread
 
+/* Is the calling OS thread / task a registered Lisp thread?  The TLS slot
+ * of a foreign task (input.device calling a gadget method, a non-Lisp
+ * pthread) is NULL or junk — this compares it against cl_thread_list by
+ * identity and never dereferences it.  Used by the FFI callback entry
+ * before it touches any Lisp state (thread.c). */
+int cl_thread_current_is_registered(void);
+
 /* Initialize/shutdown thread system */
 void cl_thread_init(void);
 void cl_thread_shutdown(void);
@@ -757,6 +789,10 @@ CL_Obj cl_symbol_value_cas(CL_Obj sym, CL_Obj old, CL_Obj new_val);
 #define cl_restart_stack    (CT->restart_stack)
 #define cl_restart_top      (CT->restart_top)
 #define cl_restart_floor    (CT->restart_floor)
+
+/* Foreign-callback boundary: the lowest NLX frame a THROW / RETURN-FROM /
+ * GO may target (0 outside any callback) */
+#define cl_nlx_floor        (CT->nlx_floor)
 
 /* Pending throw */
 #define cl_pending_throw      (CT->pending_throw)

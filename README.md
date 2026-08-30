@@ -66,6 +66,10 @@ ReAction GUIs from Lisp — four of the [`examples/amiga/reaction/`](examples/am
 
 ![The checkbox, fuelgauge, listbrowser and clicktab ReAction examples](docs/scrshts/clamiga-reaction.png)
 
+MUI GUIs from Lisp — four of the [`examples/amiga/mui/`](examples/amiga/mui/) ports of the MUI SDK examples (layout, slidorama, pages, requester), running on AmigaOS 3.2 with MUI 3.8:
+
+![The layout, slidorama, pages and requester MUI examples](docs/scrshts/clamiga-mui.png)
+
 ## Building
 
 ### Host (macOS / Linux)
@@ -458,6 +462,18 @@ arbitrary C calls with full argument/return marshaling (`ffi:call-foreign`,
 libffi-backed, incl. variadics), Lisp-as-C callbacks (`ffi:make-callback`, libffi
 closures), and typed memory access
 (`ffi:peek-i8/i16/i32/u64/i64/single/double/pointer` and the matching `poke-*`).
+`ffi:make-callback` exists on AmigaOS/MorphOS as well — there it builds a
+68k entry point, and its optional `regs` list names the register each
+argument arrives in (`'(:a0 :a2 :a1)` is the `struct Hook` convention),
+see [MUI](#mui-amigaos-3x-with-mui-38-morphos).  On every platform a
+callback is a *boundary*: Lisp runs on the foreign caller's stack, so an
+unhandled error inside it — or a `throw` / `return-from` to a target
+outside it — does not unwind through the C frames; the callback returns
+0 / NULL and the condition is re-signaled once the foreign call that
+invoked it returns, where a `handler-case` around `ffi:call-foreign` (or
+the library call) catches it.  `ext:*callback-error-policy*` (`:defer`,
+the default) can be set to `:debug` on the host to enter the debugger
+inside the callback instead.
 
 ```lisp
 ;; Resolve and call libc directly
@@ -1369,19 +1385,35 @@ after that many seconds — how the examples run unattended.  `available-p`
 tells whether `muimaster.library` opens; the module itself loads
 everywhere (the raw module, by contrast, needs the library at `require`
 time).  The toolkit-neutral half is `AMIGA.BOOPSI`, re-exported (same
-symbols as `AMIGA.REACTION`'s).  Not yet: Lisp-side hooks and custom
-classes (`MUIA_List_DisplayHook`, `MUI_CreateCustomClass`), which need
-callbacks the m68k/PPC runtime does not provide.
+symbols as `AMIGA.REACTION`'s).
+
+**Hooks and custom classes** are Lisp functions too.  `pool-hook` makes
+a `struct Hook` whose entry is a Lisp function of `(hook object message)`
+— a `MUIA_List_DisplayHook`, the target of a `MUIM_CallHook`
+notification, a `MUIA_Group_LayoutHook` — and `create-custom-class` is
+`MUI_CreateCustomClass` with a Lisp dispatcher of `(class object
+message)`, with `do-super-method`, `method-id`, `inst-data`,
+`add-min-max` and the `_rp(obj)` / `_mleft(obj)` shortcuts (`area-rastport`,
+`area-mleft`, …) for writing its methods; both live in the foreign pool
+and are released after the objects.  The function runs on MUI's stack,
+so nothing may unwind through MUI: an unhandled error (or a `throw` to a
+catch outside the hook) is caught at the callback, the hook returns 0,
+and the condition is re-signaled in Lisp when the call into MUI that
+invoked it returns — a `handler-case` around `set-attrs` or the event
+loop catches it there, the debugger shows it there.
 
 [`examples/amiga/mui/`](examples/amiga/mui/) holds the MUI examples:
-`hello` (above) and the ports of the MUI 3.8 developer kit's hook-free
-demos — `balancing`, `pages`, `menus`, `showhide`, `virtual` — plus
-`layout`, `slidorama` and `requester` on group layout, the numeric
-classes and `MUI_Request`; `tests/amiga/test-mui.lisp` / `tests/test_amiga_mui.sh`
-are the module's executable specification — the Amiga side drives a real
-Application / Window / String tree, fires `MUIM_Notify` from Lisp and
-reads the return IDs back without a user — and `docs/amiga.md` has the
-table.
+`hello` (above), the ports of the MUI 3.8 developer kit's demos —
+`balancing`, `pages`, `menus`, `showhide`, `virtual`, and `class1`, the
+kit's simplest custom class (a subclass of `Area.mui` drawing a fan of
+lines from `MUIM_Draw`) — plus `layout`, `slidorama`, `requester` and
+`hooks` on group layout, the numeric classes, `MUI_Request`, and a list
+display hook with `MUIM_CallHook` buttons; `tests/amiga/test-mui.lisp` /
+`tests/test_amiga_mui.sh` are the module's executable specification —
+the Amiga side drives a real Application / Window / String tree, fires
+`MUIM_Notify` from Lisp, has MUI dispatch to a Lisp custom class and call
+a Lisp display hook, and reads the return IDs back without a user — and
+`docs/amiga.md` has the table.
 
 ### Graphics examples (double-buffering, sprites)
 
@@ -1636,16 +1668,16 @@ fasl-amiga` and the binary release (`amiga.ffi:*defcfun-docstrings*`,
 
 | Module | Package | Description |
 |--------|---------|-------------|
-| `(require "ffi")` | `FFI` | Foreign pointers, typed peek/poke, defcstruct (all platforms); dlopen/libffi calls + callbacks (host) |
-| `(require "amiga/ffi")` | `AMIGA.FFI` | Tag lists, defcfun, with-library, open-library-or-die, library-version (AmigaOS) |
+| `(require "ffi")` | `FFI` | Foreign pointers, typed peek/poke, defcstruct, callbacks (all platforms); dlopen/libffi calls (host) |
+| `(require "amiga/ffi")` | `AMIGA.FFI` | Tag lists, defcfun, with-library, open-library-or-die, library-version, `make-hook` / `make-dispatcher` — `struct Hook`s and BOOPSI dispatchers that call Lisp (AmigaOS) |
 | `(require "amiga/raw/<lib>")` | `AMIGA.RAW.<LIB>` | Generated 1:1 bindings for every OS library (`exec`, `dos`, `intuition`, `graphics`, `utility`, `asl`, `locale`, `iffparse`, `datatypes`, `rexxsyslib`, …), the ReAction classes (`gadgets/button`, `gadgets/layout`, `images/bevel`, `classes/window`, …), device/resource tables (`timer`, `cia`, …) and header-only constant/struct modules (`devices/audio`, `hardware/custom`, `reaction/reaction`, …) — see above |
 | `(require "amiga/exec")` | `AMIGA.EXEC` | AvailMem/MEMF_* memory introspection, chip-RAM upload helper |
 | `(require "amiga/intuition")` | `AMIGA.INTUITION` | Windows, screens, IDCMP events, public screens, pointer sprites |
 | `(require "amiga/graphics")` | `AMIGA.GFX` | Drawing, text, fonts, offscreen bitmaps and blits, planar upload |
 | `(require "amiga/gadtools")` | `AMIGA.GADTOOLS` | Gadgets, menus, bevel boxes, VisualInfo |
-| `(require "amiga/boopsi")` | `AMIGA.BOOPSI` | Toolkit-neutral BOOPSI helpers for any object — ReAction, MUI or intuition's built-in classes: `with-foreign-pool` / `pool-string`, `with-tags`, `do-method`, `object-class`, `get-attr` / `set-attrs`, exec label lists |
+| `(require "amiga/boopsi")` | `AMIGA.BOOPSI` | Toolkit-neutral BOOPSI helpers for any object — ReAction, MUI or intuition's built-in classes: `with-foreign-pool` / `pool-string` / `pool-hook`, `with-tags`, `do-method`, `object-class`, `get-attr` / `set-attrs`, exec label lists |
 | `(require "amiga/reaction")` | `AMIGA.REACTION` | ReAction helpers over the raw class modules: `new-object`, `set-gadget-attrs`, `open-window` / `do-window-events`, `open-requester`; re-exports `AMIGA.BOOPSI` (AmigaOS 3.5+/3.2, MorphOS) |
-| `(require "amiga/mui")` | `AMIGA.MUI` | MUI helpers over `muimaster.library`: `new-object` by class name, `make-object`, `notify`, `do-application-events`, `request`; re-exports `AMIGA.BOOPSI` (AmigaOS 3.x with MUI 3.8+, MorphOS) |
+| `(require "amiga/mui")` | `AMIGA.MUI` | MUI helpers over `muimaster.library`: `new-object` by class name, `make-object`, `notify`, `do-application-events`, `request`, custom classes with Lisp dispatchers (`create-custom-class`, `do-super-method`, the `_mleft(obj)` shortcuts); re-exports `AMIGA.BOOPSI` (AmigaOS 3.x with MUI 3.8+, MorphOS) |
 | `(require "amiga/audio")` | `AMIGA.AUDIO` | audio.device channel allocation, non-blocking 8-bit sample playback from chip RAM |
 
 The GUI modules are exercised end-to-end by `tests/amiga/test-gui.lisp`
@@ -1688,7 +1720,7 @@ Point-in-time benchmark results (sento actor throughput on host, Amiga JIT call 
 
 - **Alpha status / ANSI CL gaps** — the major subsystems work (CLOS, conditions, packages, the full numeric tower, arrays, pathnames, streams, `loop`, `format`) and real CL libraries load, but corners of the spec remain unimplemented. Concretely, these standard operators are `fboundp` but signal a "not yet implemented" error when called: `apropos` / `apropos-list`, `y-or-n-p` / `yes-or-no-p`, `pprint-tab` / `pprint-tabular`, `print-not-readable-object`, `invalid-method-error` / `method-combination-error`, and logical pathnames (`logical-pathname`, `load-logical-pathname-translations`; `(typep x 'logical-pathname)` is always `nil`). `defstruct` supports `(:type list)` / `(:type vector)` but ignores `:named` and `:initial-offset`. The metaobject protocol is a working AMOP subset rather than the complete MOP — see [docs/mop.md](docs/mop.md) for what is covered.
 - **Amiga OS coverage** — every OS library is callable 1:1 through the generated raw bindings under `lib/amiga/raw/` (`asl`, `layers`, `commodities`, `datatypes`, `locale`, … — see [Raw OS bindings](#raw-os-bindings-generated)), but the idiomatic Lisp layer on top of them covers only Intuition, Graphics, GadTools, ReAction, MUI, ARexx, audio.device, IFF and async DOS I/O (see [Available Amiga Modules](#available-amiga-modules)). Everything else — ASL requesters, Layers, Commodities, Datatypes, Locale, … — is raw-binding-only for now: fully usable, but with C-shaped structures and tag lists rather than a Lisp-shaped API.
-- **No Lisp callbacks on AmigaOS/MorphOS** — `ffi:make-callback` works on the host only, so a `struct Hook` or BOOPSI dispatcher cannot re-enter Lisp on the target yet: MUI custom classes and hook attributes (`MUIA_List_DisplayHook`, …), ReAction and ASL hooks, and AmiSSL passphrase callbacks are out of reach until that runtime feature exists (`specs/mui-bindings.md`, section 10). Everything hook-free in those toolkits works.
+- **Callbacks on AmigaOS/MorphOS** — `ffi:make-callback` builds real entry points on the target too (a 68k stub; on MorphOS a 68k stub into a PPC gate), with the AmigaOS register conventions through its `regs` argument, so `struct Hook`s and BOOPSI dispatchers re-enter Lisp (`amiga.ffi:make-hook` / `make-dispatcher`, `amiga.boopsi:pool-hook`, `amiga.mui:create-custom-class`). Two limits: `:float` / `:double` arguments and 64-bit or floating-point results are refused on the target (the stub returns d0 only), and a callback invoked from a task that is not a Lisp thread — intuition calling a `gadgetclass` method from input.device — returns 0 with a warning instead of running Lisp, so custom *gadget* classes stay out of reach (custom MUI classes are fine: MUI dispatches from the application's own task).
 - **Composite streams** — `make-two-way-stream`, `make-broadcast-stream`, `make-concatenated-stream`, and `make-echo-stream` are implemented with their component accessors (see the composite-stream tests in `tests/test_stream.c` / `tests/amiga/run-tests.lisp` for usage). Broadcast, concatenated, and echo streams accept native stream components only — a Gray stream component is rejected with a type error (a two-way stream may wrap Gray streams)
 - **Stream external formats** — character streams default to UTF-8; `(open … :external-format :latin-1)` (also `:iso-8859-1`) selects an 8-bit-transparent stream where each code point 0–255 maps to a single raw byte with no transcoding, for byte-faithful I/O over a character stream (e.g. an `rfc2388` multipart upload written to a temp file). `stream-external-format` reports `:latin-1` / `:default`. Other named encodings are not yet selectable — an unrecognised `:external-format` is silently treated as the default. See `tests/test_stream.c` (`open_latin1_*`) and `tests/amiga/run-tests.lisp` for usage.
 - **Threading** — `MP` package covers the core bordeaux-threads surface (threads with `interrupt`/`destroy`, mutex + recursive locks, named condition variables with timeout, `with-lock-held` / `with-recursive-lock-held`, `compare-and-swap` / `atomic-incf` / `atomic-decf`, type predicates). `(ql:quickload :bordeaux-threads)` resolves to the CL-Amiga [bordeaux-threads fork](#library-forks-cl-amiga-backends) cloned into `~/quicklisp/local-projects` (its `impl-clamiga.lisp` backends map the BT v1/v2 API onto `MP`); Quicklisp itself relies on `lib/quicklisp-compat.lisp` (network/HTTP adaptations) and the auto-registered `swank` stub from `lib/shims/` (see [Quicklisp](#quicklisp)). The plan is to upstream these once the remaining API gaps close. Not yet covered: semaphores, `with-timeout`, and `:timeout` on `acquire-lock` / `with-lock-held` (the fork marks these as not implemented, so BT signals its `not-implemented` condition rather than blocking)

@@ -74,6 +74,18 @@ Conveniences over `AMIGA`/`FFI` for the AmigaOS calling conventions.
 | `(with-library (var name &optional (version 0)) &body body)` | macro | Open library `name`, bind the base to `var`, run `body`, close it after |
 | `(open-library-or-die name &optional (version 0))` | function | `OpenLibrary` that signals a descriptive error (naming the library) instead of returning NIL |
 | `(library-version base)` | function | The `lib_Version` of an open library base (the OS revision actually running) |
+| `(make-hook function &key data)` | function | A `struct Hook` whose entry calls `function` with the hook, the object and the message (foreign pointers — a0, a2, a1 of the hook convention); the result is what the OS gets in d0 (`callback-ulong`: integer, pointer, `T`/`NIL`); `data` goes into `h_Data`.  Returns the hook as a foreign pointer.  The function runs on the OS's stack: an unhandled error or a non-local exit to outside the hook is caught there, the hook returns 0, and the condition is re-signaled after the library call that invoked it returns |
+| `(free-hook hook)` | function | Release a hook (after every object holding it is gone); `NIL` is ignored |
+| `(hook-entry hook)`, `(hook-data hook)` | function | The callback behind `h_Entry` (on the host a C function of `(hook, object, message)`), and `h_Data` as an unsigned integer (`setf`-able) |
+| `(make-dispatcher function)` | function | A BOOPSI class dispatcher for `MakeClass` / `MUI_CreateCustomClass`: `function` gets the class, the object and the message and returns the method's result |
+| `(free-dispatcher dispatcher)` | function | Release it once the class is removed |
+| `(callback-ulong value who)` | function | The ULONG coercion the hook / dispatcher results go through: integers (wrapped to 32 bits), foreign pointers, `T` (1), `NIL` (0) |
+
+Under `make-hook` sits `ffi:make-callback`'s `regs` argument — `'(:a0 :a2 :a1)` — which
+also serves any other register-convention entry the OS may call.  On the target a
+callback returns a 32-bit integer or pointer in d0 and takes no `:float` / `:double`
+arguments; a callback invoked from a task that is not a Lisp thread (intuition calling a
+gadget class from input.device) returns 0 and is reported with a warning.
 | `(defcfun name library-base offset (&rest reg-spec) &key void result doc)` | macro | Define `name` as a binding for the library function at `offset` in `library-base`; `reg-spec` alternates register keywords and parameter names (`(:a1 rastport :d0 x …)`); `:result` chooses how d0 comes back — `:unsigned` (default), `:void`, `:pointer` (foreign pointer, NIL for NULL), `:signed`, `:bool`, `:u16`/`:i16`/`:u8`/`:i8` (`:void t` is the legacy spelling of `:result :void`); more than seven registers fall back to a `defun` over `amiga:call-library`; `:doc` is the docstring.  The function cell receives an *FFI stub* (a compact binding descriptor — a function for every CL purpose; `(ffi::%ffi-stub-info #'name)` lists its fields); a direct call compiles to the library-call opcode in the caller |
 | `*defcfun-docstrings*` | variable | When NIL, `defcfun` drops its `:doc` string (default T); `scripts/compile-lib-fasls.sh --no-docstrings` — i.e. `make fasl-amiga` and the binary release — binds it for the Amiga FASLs to save heap on the target |
 | `(define-binding-table package (&key base version) &body rows)` | macro | A whole module's bindings as one packed table attached to `package`, materialised on first reference: `(:const "NAME" value)`, `(:var "NAME" value)` (`value` an integer of any size or an ASCII string of at most 255 characters — `mui.h`'s `MUIC_Window "Window.mui"`), `(:fn "NAME" lvo (:a0 …) :result [:not-morphos\|:morphos] [min-version])` (a `defcfun`), `(:struct "NAME" size ("FIELD" type offset) …)` (a `defcstruct`), `(:field "NAME" type offset)`, `(:name "NAME")` (export only); `base`/`version` name the library-base and `lib_Version` variables the `:fn` rows and version guards use.  Names are strings taken literally.  `(clamiga::%binding-table-info pkg)` / `(clamiga::%binding-table-entries pkg)` inspect a table |
@@ -454,9 +466,11 @@ against the built-in intuition classes with no toolkit installed, and
 
 | Signature | Kind | Description |
 |-----------|------|-------------|
-| `(with-foreign-pool () &body body)` | macro | Run `body` with a foreign pool; every `pool-alloc`/`pool-string`/`new-list` made inside — also the string tag values of `with-tags`, `set-attrs` and the toolkit's `new-object`, `set-gadget-attrs`, `open-requester` — is freed on exit, normally or not.  Wrap the life of a GUI in one |
+| `(with-foreign-pool () &body body)` | macro | Run `body` with a foreign pool; every `pool-alloc`/`pool-string`/`pool-hook`/`new-list` made inside — also the string tag values of `with-tags`, `set-attrs` and the toolkit's `new-object`, `set-gadget-attrs`, `open-requester` — is freed on exit, normally or not, in reverse order of creation.  Wrap the life of a GUI in one and dispose the objects inside `body`: what the pool holds must outlive them |
 | `(pool-alloc size)` | function | Zeroed foreign memory living until the pool exits |
 | `(pool-string string)` | function | A NUL-terminated foreign copy of `string` living until the pool exits |
+| `(pool-hook function &key data)` | function | `amiga.ffi:make-hook` with the pool's lifetime — what a `MUIA_List_DisplayHook`, `MUIM_CallHook`, `LISTBROWSER_*Hook` value should be; freed after `body` has disposed the objects |
+| `(pool-finalizer function)` | function | Call `function` (no arguments) when the pool exits, in its turn among the entries — for GUI-lifetime resources that are not plain memory (`create-custom-class` uses it) |
 | `(new-list)` | function | A fresh, initialised exec `struct List` (pooled) — the label list of a chooser / clicktab / listbrowser, filled with `amiga.raw.exec:add-tail` |
 | `(free-list-nodes list free-node)` | function | `RemHead` every node of `list` and call `free-node` on it (e.g. `amiga.raw.gadgets.chooser:free-chooser-node`); returns the count |
 | `(with-tags (var &rest tags) &body body)` | macro | Bind `var` to a TagItem array built from the `(tag value ...)` plist for `body` — for library functions that take a tag list themselves (`alloc-list-browser-node-a`, `alloc-chooser-node-a`, `new-object-a` of a built-in class, …); values may be integers, foreign pointers, `T`/`NIL` or strings (pooled, since the receiver keeps the pointer); the array is freed on exit |
@@ -515,8 +529,11 @@ every system and opens muimaster.library on first use; the raw module
 needs it at `require` time.  See the [MUI](../README.md#mui-amigaos-3x-with-mui-38-morphos)
 section of the main README, `examples/amiga/mui/`, and
 `tests/amiga/test-mui.lisp` / `tests/test_amiga_mui.sh` for usage end to
-end.  Hooks and custom classes are not available yet (no Lisp callbacks
-on the target).
+end.  Hooks are `pool-hook` (above, re-exported); custom classes are
+below.  Both run Lisp on MUI's stack: an error there is caught at the
+callback, the method or hook returns 0, and the condition is re-signaled
+when the call into MUI that dispatched it returns (`new-object`,
+`set-attrs`, `application-input` …).
 
 | Signature | Kind | Description |
 |-----------|------|-------------|
@@ -535,6 +552,15 @@ on the target).
 | `(request application window title gadgets format &rest params)` | function | `MUI_RequestA`: `application` / `window` objects or `NIL`, `gadgets` as `"_Save\|_Use\|*_Cancel"`, a printf-style `format` whose `params` are longwords (`%ld`) and strings (`%s`, copied for the call); returns the gadget number (1 = leftmost, 0 = rightmost) |
 | `(make-id string)` | function | `MAKE_ID('M','A','I','N')` from a four-character string — `MUIA_Window_ID` |
 | `(window-size-minmax p)`, `(window-size-visible p)`, `(window-size-screen p)`, `(window-edge-delta p)` | function | The `MUIV_Window_{Width,Height,AltWidth,AltHeight}_{MinMax,Visible,Screen}(p)` and `MUIV_Window_{TopEdge,AltTopEdge}_Delta(p)` macros |
+| `(create-custom-class superclass function &key data-size)` | function | `MUI_CreateCustomClass` over `superclass` (a class designator or another custom class) with a Lisp dispatcher: `function` gets the class, the object and the message and returns the method's result — for the methods it does not handle, `(do-super-method class object message)`.  `data-size` bytes of zeroed instance data per object.  Returns the `struct MUI_CustomClass`; deleted, and the dispatcher released, when the enclosing `with-foreign-pool` exits |
+| `(custom-class-class mcc)` | function | Its `struct IClass` (`mcc_Class`) — what `new-object` takes to make an object of the class |
+| `(do-super-method class object message)` | function | `DoSuperMethodA`: the message on to the superclass, from inside a dispatcher |
+| `(method-id message)` | function | The `MethodID` of a method message |
+| `(inst-data class object)` | function | `INST_DATA(class, object)`: the object's instance data as a foreign pointer |
+| `(min-max-info message)`, `(add-min-max message &key min-width min-height max-width max-height def-width def-height)` | function | The `MUI_MinMax` of a `MUIM_AskMinMax` message, and adding to its six fields after `do-super-method` — what every `AskMinMax` method does |
+| `(draw-flags message)` | function | The flags of a `MUIM_Draw` message (`MADF_DRAWOBJECT` …) |
+| `(area-rastport object)`, `(area-window object)`, `(area-draw-info object)`, `(area-screen object)`, `(area-pens object)`, `(area-font object)`, `(area-render-info object)`, `(area-flags object)` | function | `_rp(obj)`, `_window(obj)`, `_dri(obj)`, `_screen(obj)`, `_pens(obj)`, `_font(obj)`, `muiRenderInfo(obj)`, `mad_Flags` — valid when mui.h says they are (render info between `MUIM_Setup` / `MUIM_Cleanup`, window and rastport between `MUIM_Show` / `MUIM_Hide`) |
+| `(area-left object)` … `(area-bottom object)`, `(area-mleft object)` … `(area-mbottom object)` | function | `_left` / `_top` / `_width` / `_height` / `_right` / `_bottom` and `_mleft` / `_mtop` / `_mwidth` / `_mheight` / `_mright` / `_mbottom` — the object's box and the box inside its frame, valid during `MUIM_Draw` |
 
 ---
 

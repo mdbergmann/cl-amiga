@@ -348,5 +348,172 @@ STRING-CELL for the notification test.  Returns the application."
             (amiga.mui:dispose-object app))))
       '((1 2) (9) (3))))
 
+;;; --- hooks and custom classes ------------------------------------------------
+;;; Lisp functions MUI calls (specs/mui-bindings.md section 4.5, unlocked
+;;; by the callback runtime of section 10): a MUIA_List_DisplayHook that
+;;; formats the rows of a List, MUIM_CallHook driven by a notification,
+;;; and a custom class -- a subclass of Area.mui whose dispatcher answers
+;;; MUIM_AskMinMax and MUIM_Draw from Lisp -- shown in an opened window so
+;;; MUI really dispatches to it.  The custom class is that of
+;;; examples/amiga/mui/class1.lisp.
+
+;; MUIM_CallHook: a notification on a String's contents calls a Lisp hook
+;; with a parameter; the hook's a2 is the object the method was sent to
+(check "mui-callhook-from-notification" '(1 t 77)
+  (if *mui-p*
+      (amiga.mui:with-foreign-pool ()
+        (let* ((calls '())
+               (hook (amiga.mui:pool-hook
+                      (lambda (h o m) h
+                        (push (list (ffi:foreign-pointer-address o) (ffi:peek-u32 m 0)) calls)
+                        0)))
+               (cell (list nil)))
+          (multiple-value-bind (app win) (%mui-make-app cell)
+            (let ((str (car cell)))
+              (unwind-protect
+                   (progn
+                     (amiga.mui:set-attrs win (%m "+MUIA-WINDOW-OPEN+") t)
+                     ;; DoMethod(str, MUIM_Notify, MUIA_String_Contents, MUIV_EveryTime,
+                     ;;          app, 3, MUIM_CallHook, &hook, 77)
+                     (amiga.mui:notify str (%m "+MUIA-STRING-CONTENTS+") :every-time
+                                       app (%m "+MUIM-CALL-HOOK+") hook 77)
+                     (amiga.mui:set-attrs str (%m "+MUIA-STRING-CONTENTS+") "fire")
+                     (list (length calls)
+                           (= (first (first calls)) (ffi:foreign-pointer-address app))
+                           (second (first calls))))
+                (amiga.mui:set-attrs win (%m "+MUIA-WINDOW-OPEN+") nil)
+                (amiga.mui:dispose-object app))))))
+      '(1 t 77)))
+
+;; an error inside a hook MUI calls is re-signaled at the Lisp call that
+;; made MUI call it -- here SET-ATTRS -- and the program goes on
+(check "mui-hook-error-surfaces-at-the-mui-call" '("hook failed" t)
+  (if *mui-p*
+      (amiga.mui:with-foreign-pool ()
+        (let* ((hook (amiga.mui:pool-hook (lambda (h o m) h o m (error "hook failed"))))
+               (cell (list nil)))
+          (multiple-value-bind (app win) (%mui-make-app cell)
+            (let ((str (car cell)))
+              (unwind-protect
+                   (progn
+                     (amiga.mui:set-attrs win (%m "+MUIA-WINDOW-OPEN+") t)
+                     (amiga.mui:notify str (%m "+MUIA-STRING-CONTENTS+") :every-time
+                                       app (%m "+MUIM-CALL-HOOK+") hook 1)
+                     (list (handler-case
+                               (progn (amiga.mui:set-attrs str (%m "+MUIA-STRING-CONTENTS+") "x")
+                                      :no-error)
+                             (simple-error (e) (format nil "~A" e)))
+                           ;; the object is intact and MUI is not
+                           (equal "x" (amiga.mui:get-attr-string (%m "+MUIA-STRING-CONTENTS+") str))))
+                (amiga.mui:set-attrs win (%m "+MUIA-WINDOW-OPEN+") nil)
+                (amiga.mui:dispose-object app))))))
+      '("hook failed" t)))
+
+;; MUIA_List_DisplayHook: MUI calls the hook with the STRPTR array (a2)
+;; and the entry (a1, NULL for the title row) while rendering the opened
+;; window; the hook writes the columns.  Two columns, a title, two entries
+;; copied by the builtin String construct hook.
+(check "mui-list-display-hook-is-called" '(t t t)
+  (if *mui-p*
+      (amiga.mui:with-foreign-pool ()
+        (let* ((rows '())
+               (title-a (amiga.mui:pool-string "Name"))
+               (title-b (amiga.mui:pool-string "Len"))
+               (lens (make-hash-table :test #'equal))
+               (hook (amiga.mui:pool-hook
+                      (lambda (h array entry) h
+                        (if (ffi:null-pointer-p entry)
+                            (progn (push :title rows)
+                                   (ffi:poke-u32 array (ffi:foreign-pointer-address title-a) 0)
+                                   (ffi:poke-u32 array (ffi:foreign-pointer-address title-b) 4))
+                            (let ((s (ffi:foreign-to-string entry)))
+                              (push s rows)
+                              (ffi:poke-u32 array (ffi:foreign-pointer-address entry) 0)
+                              (ffi:poke-u32 array (ffi:foreign-pointer-address (gethash s lens)) 4)))
+                        0)))
+               (list (amiga.mui:new-object :list
+                                           (%m "+MUIA-LIST-FORMAT+") "BAR,"
+                                           (%m "+MUIA-LIST-TITLE+") t
+                                           (%m "+MUIA-LIST-DISPLAY-HOOK+") hook
+                                           (%m "+MUIA-LIST-CONSTRUCT-HOOK+") (%m "+MUIV-LIST-CONSTRUCT-HOOK-STRING+")
+                                           (%m "+MUIA-LIST-DESTRUCT-HOOK+") (%m "+MUIV-LIST-DESTRUCT-HOOK-STRING+")))
+               (win (amiga.mui:new-object :window
+                                          (%m "+MUIA-WINDOW-TITLE+") "AMIGA.MUI display hook"
+                                          (%m "+MUIA-WINDOW-ROOT-OBJECT+")
+                                          (amiga.mui:new-object :listview (%m "+MUIA-LISTVIEW-LIST+") list)))
+               (app (amiga.mui:new-object :application
+                                          (%m "+MUIA-APPLICATION-BASE+") "CLAMIGAMUIHOOK"
+                                          (%m "+MUIA-APPLICATION-WINDOW+") win)))
+          (unwind-protect
+               (progn
+                 (dolist (s '("alpha" "be"))
+                   (setf (gethash s lens) (amiga.mui:pool-string (format nil "~D" (length s))))
+                   (amiga.mui:do-method list (%m "+MUIM-LIST-INSERT-SINGLE+")
+                                        (amiga.mui:pool-string s) (%m "+MUIV-LIST-INSERT-BOTTOM+")))
+                 (amiga.mui:set-attrs win (%m "+MUIA-WINDOW-OPEN+") t)
+                 ;; let MUI render (the loop polls; nobody clicks)
+                 (amiga.mui:do-application-events ((id) app :timeout 1) id)
+                 (list (and (member :title rows) t)
+                       (and (member "alpha" rows :test #'equal) t)
+                       (and (member "be" rows :test #'equal) t)))
+            (amiga.mui:set-attrs win (%m "+MUIA-WINDOW-OPEN+") nil)
+            (amiga.mui:dispose-object app))))
+      '(t t t)))
+
+;; a custom class: MUI dispatches MUIM_AskMinMax and MUIM_Draw to the
+;; Lisp dispatcher of an object in an opened window; DO-SUPER-METHOD
+;; reaches Area.mui (the object gets a size), ADD-MIN-MAX is honoured
+;; (the object is at least 100 pixels wide), the mui.h shortcuts read the
+;; live MUI_AreaData, INST-DATA is zeroed instance data of the requested
+;; size, the class is deleted by the pool
+(check "mui-custom-class-dispatches-from-lisp" '(t t t t t t)
+  (if *mui-p*
+      (let ((methods '()) (draw-width nil) (inst-ok nil) (rp-ok nil))
+        (amiga.mui:with-foreign-pool ()
+          (let* ((ask-id (%m "+MUIM-ASK-MIN-MAX+"))
+                 (draw-id (%m "+MUIM-DRAW+"))
+                 (mcc (amiga.mui:create-custom-class
+                       :area
+                       (lambda (class object message)
+                         (let ((id (amiga.mui:method-id message)))
+                           (push id methods)
+                           (cond ((= id ask-id)
+                                  (amiga.mui:do-super-method class object message)
+                                  (amiga.mui:add-min-max message :min-width 100 :def-width 120 :max-width 500
+                                                                 :min-height 40 :def-height 90 :max-height 300)
+                                  0)
+                                 ((= id draw-id)
+                                  (amiga.mui:do-super-method class object message)
+                                  (setf draw-width (amiga.mui:area-mwidth object)
+                                        rp-ok (not (ffi:null-pointer-p (amiga.mui:area-rastport object))))
+                                  (let ((data (amiga.mui:inst-data class object)))
+                                    (setf inst-ok (and (zerop (ffi:peek-u32 data 0))
+                                                       (zerop (ffi:peek-u32 data 4)))))
+                                  0)
+                                 (t (amiga.mui:do-super-method class object message)))))
+                       :data-size 8))
+                 (obj (amiga.mui:new-object (amiga.mui:custom-class-class mcc)
+                                            (%m "+MUIA-FRAME+") (%m "+MUIV-FRAME-TEXT+")))
+                 (win (amiga.mui:new-object :window
+                                            (%m "+MUIA-WINDOW-TITLE+") "AMIGA.MUI custom class"
+                                            (%m "+MUIA-WINDOW-ROOT-OBJECT+")
+                                            (amiga.mui:new-object :group (%m "+MUIA-GROUP-CHILD+") obj)))
+                 (app (amiga.mui:new-object :application
+                                            (%m "+MUIA-APPLICATION-BASE+") "CLAMIGAMUICLASS"
+                                            (%m "+MUIA-APPLICATION-WINDOW+") win)))
+            (unwind-protect
+                 (progn
+                   (amiga.mui:set-attrs win (%m "+MUIA-WINDOW-OPEN+") t)
+                   (amiga.mui:do-application-events ((id) app :timeout 1) id))
+              (amiga.mui:set-attrs win (%m "+MUIA-WINDOW-OPEN+") nil)
+              (amiga.mui:dispose-object app))
+            (list (and (member ask-id methods) t)          ; MUI asked for sizes
+                  (and (member draw-id methods) t)         ; and had it drawn
+                  (and (integerp draw-width) (>= draw-width 100))   ; ADD-MIN-MAX honoured
+                  rp-ok                                    ; _rp(obj) live during Draw
+                  inst-ok                                  ; zeroed instance data
+                  (> (length methods) 2)))))               ; OM_NEW, Setup, Show ... forwarded
+      '(t t t t t t)))
+
 (format t "; mui: done~%")
 (finish-output)

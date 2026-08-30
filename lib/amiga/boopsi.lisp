@@ -54,7 +54,8 @@
    ;; Methods
    "DO-METHOD" "OBJECT-CLASS"
    ;; Foreign memory whose lifetime is the GUI's lifetime
-   "WITH-FOREIGN-POOL" "POOL-ALLOC" "POOL-STRING" "NEW-LIST" "FREE-LIST-NODES"
+   "WITH-FOREIGN-POOL" "POOL-ALLOC" "POOL-STRING" "POOL-HOOK" "POOL-FINALIZER"
+   "NEW-LIST" "FREE-LIST-NODES"
    "WITH-TAGS"
    ;; Attributes
    "GET-ATTR" "GET-ATTR-POINTER" "SET-ATTRS"))
@@ -91,26 +92,52 @@ address), T/NIL (TRUE/FALSE or a NULL pointer)."
 
 (defvar *foreign-pool* nil
   "The innermost WITH-FOREIGN-POOL: a cons whose CAR is the list of
-foreign pointers to free on exit, or NIL outside any pool.")
+entries to release on exit -- foreign pointers (freed with
+FFI:FREE-FOREIGN) and finalizer functions (called) -- most recent first;
+NIL outside any pool.")
 
 (defmacro with-foreign-pool (() &body body)
   "Run BODY with a fresh foreign pool; every POOL-ALLOC / POOL-STRING /
-NEW-LIST made inside -- directly, or by WITH-TAGS and the toolkit
-functions that build tag lists for you (NEW-OBJECT, SET-ATTRS,
+POOL-HOOK / NEW-LIST made inside -- directly, or by WITH-TAGS and the
+toolkit functions that build tag lists for you (NEW-OBJECT, SET-ATTRS,
 SET-GADGET-ATTRS, OPEN-REQUESTER ...) when they copy a string value -- is
-freed when BODY exits, normally or not.  Wrap the whole life of a GUI in
-one."
+freed when BODY exits, normally or not, in reverse order of creation.
+Wrap the whole life of a GUI in one, and dispose the objects inside BODY:
+what the pool holds (strings, hooks, custom classes) must outlive them."
   `(let ((*foreign-pool* (list nil)))
      (unwind-protect
           (progn ,@body)
        (dolist (p (car *foreign-pool*))
-         (ffi:free-foreign p)))))
+         (if (functionp p)
+             (funcall p)
+             (ffi:free-foreign p))))))
 
-(defun %pool-register (pointer)
+(defun %pool-register (entry)
   (unless *foreign-pool*
-    (error "AMIGA.BOOPSI: a foreign allocation with the GUI's lifetime was requested outside WITH-FOREIGN-POOL -- wrap the code that builds and runs the GUI in (WITH-FOREIGN-POOL () ...) (AMIGA.BOOPSI:WITH-FOREIGN-POOL, re-exported by AMIGA.REACTION)"))
-  (push pointer (car *foreign-pool*))
-  pointer)
+    (error "AMIGA.BOOPSI: a foreign allocation with the GUI's lifetime was requested outside WITH-FOREIGN-POOL -- wrap the code that builds and runs the GUI in (WITH-FOREIGN-POOL () ...) (AMIGA.BOOPSI:WITH-FOREIGN-POOL, re-exported by AMIGA.REACTION and AMIGA.MUI)"))
+  (push entry (car *foreign-pool*))
+  entry)
+
+(defun pool-finalizer (function)
+  "Call FUNCTION (of no arguments) when the enclosing WITH-FOREIGN-POOL
+exits -- after everything registered later has been released, before
+everything registered earlier.  For resources with the GUI's lifetime
+that are not plain foreign memory (a custom class, a device).  Returns
+FUNCTION."
+  (unless (functionp function)
+    (error "AMIGA.BOOPSI:POOL-FINALIZER: ~S is not a function" function))
+  (%pool-register function))
+
+(defun pool-hook (function &key data)
+  "AMIGA.FFI:MAKE-HOOK -- a struct Hook calling FUNCTION with (hook object
+message), h_Data = DATA -- that lives until the enclosing
+WITH-FOREIGN-POOL exits.  What a MUIA_List_DisplayHook, MUIM_CallHook,
+LISTBROWSER_*Hook ... value should be: the object keeps the pointer, so
+the hook must outlive it, and the pool frees it after BODY has disposed
+the objects."
+  (let ((hook (amiga.ffi:make-hook function :data data)))
+    (pool-finalizer (lambda () (amiga.ffi:free-hook hook)))
+    hook))
 
 (defun pool-alloc (size)
   "Allocate SIZE zeroed bytes of foreign memory that live until the

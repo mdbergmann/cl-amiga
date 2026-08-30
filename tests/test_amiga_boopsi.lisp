@@ -36,7 +36,8 @@
         (find-package "AMIGA.MUI")))
 
 (check "boopsi-exports" '("DO-METHOD" "FREE-LIST-NODES" "GET-ATTR" "GET-ATTR-POINTER"
-                          "NEW-LIST" "OBJECT-CLASS" "POOL-ALLOC" "POOL-STRING"
+                          "NEW-LIST" "OBJECT-CLASS" "POOL-ALLOC" "POOL-FINALIZER"
+                          "POOL-HOOK" "POOL-STRING"
                           "SET-ATTRS" "WITH-FOREIGN-POOL" "WITH-TAGS")
   (let ((names '()))
     (do-external-symbols (s "AMIGA.BOOPSI") (push (symbol-name s) names))
@@ -98,6 +99,94 @@
               (amiga.boopsi:pool-string "inner-2")
               (length (car amiga.boopsi::*foreign-pool*)))))
       (list inner-count (length (car amiga.boopsi::*foreign-pool*))))))
+
+;;; --- hooks in the pool ---------------------------------------------------
+;;; On the host a MAKE-HOOK hook's entry is a plain C function of
+;;; (hook, object, message) -- libffi's callback -- so it can be driven
+;;; through FFI:CALL-FOREIGN exactly as CallHookPkt drives it on the Amiga
+;;; (tests/amiga/test-raw-bindings.lisp does that half).
+
+(defun call-hook (hook object message)
+  (ffi:call-foreign (amiga.ffi:hook-entry hook) :uint32 '(:pointer :pointer :pointer)
+                    (list hook object message)))
+
+;; finalizers run at pool exit, most recent first, after the pointers
+;; registered after them and before those registered before
+(check "boopsi-pool-finalizers-run-in-reverse-order" '(:second :first)
+  (let ((order '()))
+    (amiga.boopsi:with-foreign-pool ()
+      (amiga.boopsi:pool-finalizer (lambda () (push :first order)))
+      (amiga.boopsi:pool-string "between")
+      (amiga.boopsi:pool-finalizer (lambda () (push :second order))))
+    (reverse order)))
+
+(check "boopsi-pool-finalizer-runs-on-unwind" :ran
+  (let ((state :not-run))
+    (catch 'out
+      (amiga.boopsi:with-foreign-pool ()
+        (amiga.boopsi:pool-finalizer (lambda () (setf state :ran)))
+        (throw 'out nil)))
+    state))
+
+(check "boopsi-pool-finalizer-rejects-non-functions" t
+  (handler-case (progn (amiga.boopsi:with-foreign-pool () (amiga.boopsi:pool-finalizer 5)) nil)
+    (error (e) (and (search "POOL-FINALIZER" (format nil "~A" e)) t))))
+
+;; POOL-HOOK: the hook receives hook / object / message (a0 / a2 / a1 on
+;; the Amiga, the three C arguments here), its return value reaches the
+;; caller as a ULONG, h_Data reads back
+(check "boopsi-pool-hook-round-trip" '(4711 t #x1234 #xCAFE 99 7)
+  (amiga.boopsi:with-foreign-pool ()
+    (let* ((seen nil)
+           (message (amiga.boopsi:pool-alloc 4))
+           (hook (amiga.boopsi:pool-hook
+                  (lambda (h o m)
+                    (setf seen (list (ffi:foreign-pointer-address h)
+                                     (ffi:foreign-pointer-address o)
+                                     (ffi:peek-u32 m 0)))
+                    4711)
+                  :data 99)))
+      (ffi:poke-u32 message #xCAFE 0)
+      (let ((result (call-hook hook (ffi:make-foreign-pointer #x1234) message)))
+        (list result
+              (= (first seen) (ffi:foreign-pointer-address hook))   ; a0 = the hook itself
+              (second seen)                                        ; a2 = the object
+              (third seen)                                         ; a1 = the message
+              (amiga.ffi:hook-data hook)
+              (progn (setf (amiga.ffi:hook-data hook) 7)
+                     (amiga.ffi:hook-data hook)))))))
+
+(check "boopsi-pool-hook-needs-a-pool" t
+  (handler-case (progn (amiga.boopsi:pool-hook (lambda (h o m) h o m 0)) nil)
+    (error (e) (and (search "WITH-FOREIGN-POOL" (format nil "~A" e)) t))))
+
+;; the hook is freed by the pool: its entry is gone afterwards
+(check "boopsi-pool-hook-freed-at-pool-exit" t
+  (let ((hook (amiga.boopsi:with-foreign-pool ()
+                (amiga.boopsi:pool-hook (lambda (h o m) h o m 1)))))
+    (handler-case (progn (amiga.ffi:hook-entry hook) nil)
+      (error (e) (and (search "not a live MAKE-HOOK hook" (format nil "~A" e)) t)))))
+
+;; the foreign-callback boundary through a hook: an error in the hook
+;; function does not unwind through the C caller -- the hook returns 0 and
+;; the condition is re-signaled once the call returns, where a
+;; HANDLER-CASE around it catches it; a bad return value is reported the
+;; same way, naming the value
+(check "boopsi-pool-hook-error-is-deferred" '("hook boom" t)
+  (amiga.boopsi:with-foreign-pool ()
+    (let ((bad (amiga.boopsi:pool-hook (lambda (h o m) h o m (error "hook boom"))))
+          (bad-value (amiga.boopsi:pool-hook (lambda (h o m) h o m "not a ulong"))))
+      (list (handler-case (progn (call-hook bad nil nil) :no-error)
+              (error (e) (format nil "~A" e)))
+            (handler-case (progn (call-hook bad-value nil nil) nil)
+              (error (e) (let ((msg (format nil "~A" e)))
+                           (and (search "\"not a ulong\"" msg) (search "ULONG" msg) t))))))))
+
+(check "boopsi-pool-hook-throw-across-boundary-is-refused" t
+  (amiga.boopsi:with-foreign-pool ()
+    (let ((hook (amiga.boopsi:pool-hook (lambda (h o m) h o m (throw 'outside 1)))))
+      (handler-case (catch 'outside (call-hook hook nil nil) nil)
+        (error (e) (and (search "foreign callback" (format nil "~A" e)) t))))))
 
 ;; (the host's foreign addresses are 64-bit and the exec list holds
 ;; longwords, so compare modulo 2^32 — on the Amiga that is the identity)

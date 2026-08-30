@@ -456,12 +456,24 @@ typedef void (*platform_ffi_cb_handler)(void *user_data,
                                         const CLFFIValue *args,
                                         CLFFIValue *ret);
 
+/* Where a callback argument arrives (ARG_REGS below): the C stack, or a
+ * 68k register — 0..7 = d0..d7, 8..14 = a0..a6 — for the AmigaOS
+ * register conventions (a struct Hook entry gets hook/object/message in
+ * a0/a2/a1, a BOOPSI dispatcher class/object/message the same way). */
+#define CL_FFI_REG_STACK (-1)
+
 /* Build an executable trampoline callable from C with the given signature.
- * Returns the callable code address (wrap it as a foreign pointer), or NULL
- * on failure / unsupported.  *OUT_CLOSURE receives an opaque handle to pass
- * to platform_ffi_free_closure. */
+ * ARG_REGS is NULL (every argument on the C stack) or an array of NARGS
+ * entries per the encoding above; platforms without register-passing
+ * conventions (POSIX, Windows) ignore it, so a hook entry built there is
+ * a plain C function of (hook, object, message).  Returns the callable
+ * code address (wrap it as a foreign pointer), or NULL on failure /
+ * unsupported.  *OUT_CLOSURE receives an opaque handle to pass to
+ * platform_ffi_free_closure.  The trampoline zeroes the result slot
+ * before invoking HANDLER, so a handler that declines leaves 0 / NULL. */
 void *platform_ffi_make_closure(CLFFIType ret_type, int nargs,
                                 const CLFFIType *arg_types,
+                                const int8_t *arg_regs,
                                 platform_ffi_cb_handler handler,
                                 void *user_data, void **out_closure);
 

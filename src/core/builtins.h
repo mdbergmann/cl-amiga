@@ -93,6 +93,17 @@ CL_Obj cl_amiga_call_via_base_sym(CL_Obj base_sym, int16_t offset,
                                   uint32_t regspec, int n_args,
                                   CL_Obj *args);
 
+/* Foreign-callback boundary (builtins_ffi.c; thread.h "Foreign-callback
+ * boundary").  cl_ffi_deferred_error_check re-signals, on the Lisp side,
+ * a condition that escaped a callback while the OS was between the caller
+ * and the callback — every path that returns from foreign code calls it
+ * (call-foreign, the OP_AMIGA_CALL dispatch, call-library).  No-op when
+ * nothing is pending.  cl_callback_debugger_allowed answers whether the
+ * interactive debugger may open on this thread right now: not while a
+ * callback is running unless EXT:*CALLBACK-ERROR-POLICY* is :DEBUG. */
+void cl_ffi_deferred_error_check(void);
+int  cl_callback_debugger_allowed(void);
+
 /* Invoke an FFI stub (types.h CL_FfiStub) with NARGS arguments in ARGS —
  * the runtime entry behind cl_vm_apply / OP_CALL / OP_APPLY / FUNCALL for
  * a stub function object.  Arity-checks against the stub's kind, then

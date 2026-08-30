@@ -193,6 +193,8 @@ CL_NORETURN void cl_error_frame_longjmp(int code)
      * Restore all dynamic bindings before leaving the VM.
      * Reset GC root stack — longjmp invalidates stack-local roots. */
     cl_nlx_top = 0;
+    cl_nlx_floor = 0;
+    CT->callback_depth = 0;
     cl_saved_pending_top = 0;
     cl_pending_throw = 0;
     cl_dynbind_restore_to(0);
@@ -363,9 +365,18 @@ void cl_error(int code, const char *fmt, ...)
     /* Signal through condition handler stack before unwinding */
     {
         CL_Obj cond = cl_create_condition_from_error(code, cl_error_msg);
+        /* Rooted across the handlers and the debugger, which allocate
+         * freely (bi_error's discipline); the unwind below restores the
+         * root count, so no explicit pop. */
+        CL_GC_PROTECT(cond);
         cl_signal_condition(cond);
         /* Invoke debugger before unwinding (returns if user picks "top level") */
         cl_invoke_debugger(cond);
+        /* The condition this unwind carries — read at a foreign-callback
+         * boundary (thread.h last_condition).  Written last, so a nested
+         * error handled inside a handler cannot leave its own condition
+         * here. */
+        CT->last_condition = cond;
     }
 
     cl_error_unwind(code);
@@ -392,7 +403,9 @@ CL_NORETURN void cl_abort_current_thread(const char *msg)
     cl_capture_backtrace();
     {
         CL_Obj cond = cl_create_condition_from_error(CL_ERR_GENERAL, cl_error_msg);
+        CL_GC_PROTECT(cond);
         cl_signal_condition(cond);
+        CT->last_condition = cond;   /* see cl_error */
     }
 
     cl_error_unwind(CL_ERR_GENERAL);  /* no debugger — does not return */
@@ -411,6 +424,16 @@ void cl_error_from_condition(CL_Obj condition)
     if (!CL_CONDITION_P(condition)) {
         cl_error(CL_ERR_GENERAL, "cl_error_from_condition: not a condition");
     }
+
+    /* Rooted across the print-object-hook dispatch below (cl_vm_apply, which
+     * allocates freely) and the debugger invocation: this function re-derives
+     * from `condition` afterward (CL_OBJ_TO_PTR, cl_invoke_debugger, and the
+     * CT->last_condition store a GC-stress cycle can relocate) and the caller's
+     * own CL_GC_PROTECT of its copy does not keep this parameter's separate
+     * stack slot current across a compaction. Unprotected on exit, same as
+     * cl_error/cl_abort_current_thread: cl_error_unwind's longjmp restores
+     * gc_root_count. */
+    CL_GC_PROTECT(condition);
 
     /* Map condition type → numeric code so callers (incl. C-level tests
      * via eval_print's "ERROR:N") see the same code as the legacy
@@ -468,6 +491,7 @@ void cl_error_from_condition(CL_Obj condition)
 
     cl_capture_backtrace();
     cl_invoke_debugger(condition);
+    CT->last_condition = condition;   /* see cl_error */
     cl_error_unwind(cl_error_code);
 }
 

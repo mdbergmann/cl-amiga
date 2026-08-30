@@ -36,6 +36,15 @@
 ;;;                      / MUIA_Radio_Entries
 ;;;   MAKE-ID, CLASS-ID, WINDOW-SIZE-MINMAX / -VISIBLE / -SCREEN,
 ;;;   WINDOW-EDGE-DELTA  the remaining function-like macros of mui.h
+;;;   CREATE-CUSTOM-CLASS / CUSTOM-CLASS-CLASS
+;;;                      MUI_CreateCustomClass with a Lisp dispatcher (a
+;;;                      function of class, object, message), deleted by
+;;;                      the foreign pool; DO-SUPER-METHOD, INST-DATA,
+;;;                      METHOD-ID and the _mleft(obj) family of mui.h
+;;;                      shortcuts (AREA-MLEFT ...) for writing its methods
+;;;   POOL-HOOK          (AMIGA.BOOPSI) a struct Hook calling a Lisp
+;;;                      function, for MUIA_List_DisplayHook, MUIM_CallHook,
+;;;                      MUIA_Group_LayoutHook ...
 ;;;
 ;;; The module loads on any system -- the host, an Amiga without MUI: it
 ;;; opens muimaster.library on the first call that needs it, and
@@ -50,12 +59,12 @@
 ;;; cannot be loaded where MUI is absent); tests/test_amiga_curated_vs_raw.sh
 ;;; requires them to agree with the generated table.
 ;;;
-;;; Not yet: Lisp-side hooks and custom classes.  FFI:MAKE-CALLBACK is
-;;; unsupported on AmigaOS/MorphOS, so MUIA_List_DisplayHook & co. and
-;;; MUI_CreateCustomClass dispatchers wait for the amiga/hook runtime
-;;; feature (specs/mui-bindings.md, sections 4.5 and 10).  Everything
-;;; hook-free -- lists with the default display, cycles, radios, sliders,
-;;; menus, requesters, notifications between objects -- works today.
+;;; Hooks and custom classes run Lisp on MUI's stack, inside its C
+;;; frames: an error there cannot unwind through MUI, so the runtime
+;;; catches it at the callback, returns 0 to MUI and re-signals it on the
+;;; Lisp side once the library call that invoked the hook has returned --
+;;; typically at NEW-OBJECT, SET-ATTRS or APPLICATION-INPUT.  See the
+;;; "Hooks and dispatchers" section of lib/amiga/ffi.lisp.
 ;;;
 ;;; See examples/amiga/mui/ and tests/amiga/test-mui.lisp for the
 ;;; executable specification of this module; tests/test_amiga_mui.sh runs
@@ -84,8 +93,8 @@
    ;; Methods (AMIGA.BOOPSI, re-exported)
    "DO-METHOD" "OBJECT-CLASS"
    ;; Foreign memory whose lifetime is the GUI's lifetime (AMIGA.BOOPSI, re-exported)
-   "WITH-FOREIGN-POOL" "POOL-ALLOC" "POOL-STRING" "WITH-TAGS"
-   "POOL-STRING-ARRAY"
+   "WITH-FOREIGN-POOL" "POOL-ALLOC" "POOL-STRING" "POOL-HOOK" "POOL-FINALIZER"
+   "WITH-TAGS" "POOL-STRING-ARRAY"
    ;; Objects and attributes (GET-ATTR, GET-ATTR-POINTER, SET-ATTRS: AMIGA.BOOPSI, re-exported)
    "CLASS-ID" "NEW-OBJECT" "MAKE-OBJECT" "DISPOSE-OBJECT"
    "GET-ATTR" "GET-ATTR-POINTER" "GET-ATTR-STRING" "SET-ATTRS"
@@ -95,7 +104,16 @@
    ;; Requesters and the mui.h helper macros
    "REQUEST" "MAKE-ID"
    "WINDOW-SIZE-MINMAX" "WINDOW-SIZE-VISIBLE" "WINDOW-SIZE-SCREEN"
-   "WINDOW-EDGE-DELTA"))
+   "WINDOW-EDGE-DELTA"
+   ;; Custom classes: MUI_CreateCustomClass with a Lisp dispatcher, and
+   ;; what a dispatcher's methods need
+   "CREATE-CUSTOM-CLASS" "CUSTOM-CLASS-CLASS" "DO-SUPER-METHOD"
+   "METHOD-ID" "INST-DATA" "MIN-MAX-INFO" "ADD-MIN-MAX" "DRAW-FLAGS"
+   ;; The mui.h shortcuts for custom-class methods: _rp(obj), _mleft(obj) ...
+   "AREA-RENDER-INFO" "AREA-RASTPORT" "AREA-WINDOW" "AREA-DRAW-INFO"
+   "AREA-SCREEN" "AREA-PENS" "AREA-FONT" "AREA-FLAGS"
+   "AREA-LEFT" "AREA-TOP" "AREA-WIDTH" "AREA-HEIGHT" "AREA-RIGHT" "AREA-BOTTOM"
+   "AREA-MLEFT" "AREA-MTOP" "AREA-MWIDTH" "AREA-MHEIGHT" "AREA-MRIGHT" "AREA-MBOTTOM"))
 
 (in-package "AMIGA.MUI")
 
@@ -198,6 +216,14 @@ library open for the process's lifetime."
 (amiga.ffi:defcfun %make-object-a *muimaster-base* -120
   (:d0 type :a0 params) :result :pointer
   :doc "Object *MUI_MakeObjectA(LONG type, ULONG *params)")
+
+(amiga.ffi:defcfun %create-custom-class *muimaster-base* -108
+  (:a0 base :a1 supername :a2 supermcc :d0 datasize :a3 dispatcher) :result :pointer
+  :doc "struct MUI_CustomClass *MUI_CreateCustomClass(struct Library *base, char *supername, struct MUI_CustomClass *supermcc, int datasize, APTR dispatcher)")
+
+(amiga.ffi:defcfun %delete-custom-class *muimaster-base* -114
+  (:a0 mcc) :result :bool
+  :doc "BOOL MUI_DeleteCustomClass(struct MUI_CustomClass *mcc)")
 
 ;;; ================================================================
 ;;; Foreign memory with the GUI's lifetime — MUI additions
@@ -576,5 +602,162 @@ percent of the screen size."
   "MUIV_Window_TopEdge_Delta(p) / AltTopEdge: P pixels below the screen's
 title bar."
   (- -3 p))
+
+;;; ================================================================
+;;; Custom classes
+;;; ================================================================
+
+;;; A MUI custom class is a BOOPSI class whose dispatcher is a Lisp
+;;; function (AMIGA.FFI:MAKE-DISPATCHER): MUI enters it with the class,
+;;; the object and the message for every method sent to an object of the
+;;; class -- OM_NEW, MUIM_AskMinMax, MUIM_Draw, OM_SET ... -- and the
+;;; function handles what it wants and passes the rest to the superclass
+;;; with DO-SUPER-METHOD, exactly as the C examples of the MUI SDK do
+;;; (Class1.c: examples/amiga/mui/class1.lisp).  The message is a foreign
+;;; pointer to the method's struct (MethodID first, METHOD-ID); the
+;;; object's instance data is INST-DATA; the shortcut macros of mui.h
+;;; that a MUIM_Draw method uses (_rp, _mleft, _mwidth ...) are the AREA-*
+;;; functions below.  MUI_CreateCustomClass builds the dispatcher Hook
+;;; itself and reserves its h_Data (mui.h), so per-class state lives in
+;;; Lisp closures or in cl_UserData.
+;;;
+;;; The dispatcher runs inside MUI: an error in a method is caught at the
+;;; callback, the method returns 0 and the condition is re-signaled on the
+;;; Lisp side when the call into MUI that dispatched the method returns.
+
+(defun create-custom-class (superclass function &key (data-size 0))
+  "MUI_CreateCustomClass(NULL, SUPERCLASS, ..., DATA-SIZE, dispatcher): a
+new private class over SUPERCLASS -- a class name (:AREA, \"Area.mui\", see
+CLASS-ID) or another custom class (a foreign pointer from this function)
+-- whose dispatcher calls FUNCTION with the class, the object and the
+message (foreign pointers).  FUNCTION returns the method's result
+\(CALLBACK-ULONG): for the methods it does not handle, what
+\(DO-SUPER-METHOD class object message) returns.  DATA-SIZE bytes of
+zeroed instance data per object are reachable with INST-DATA.  Returns
+the struct MUI_CustomClass as a foreign pointer; NEW-OBJECT takes its
+CUSTOM-CLASS-CLASS.  The class is deleted (MUI_DeleteCustomClass) and
+the dispatcher released when the enclosing WITH-FOREIGN-POOL exits --
+after BODY has disposed the objects of the class -- so it must be called
+inside one."
+  (unless (functionp function)
+    (error "AMIGA.MUI:CREATE-CUSTOM-CLASS: ~S is not a function -- expected the dispatcher, a function of (class object message)"
+           function))
+  (unless (and (integerp data-size) (<= 0 data-size 65535))
+    (error "AMIGA.MUI:CREATE-CUSTOM-CLASS: DATA-SIZE ~S is not an integer between 0 and 65535"
+           data-size))
+  (unless (ffi:foreign-pointer-p superclass)
+    (class-id superclass))                                    ; validate first
+  (unless amiga.boopsi::*foreign-pool*
+    (error "AMIGA.MUI:CREATE-CUSTOM-CLASS: called outside WITH-FOREIGN-POOL -- the pool deletes the class after the objects are gone; wrap the GUI in (WITH-FOREIGN-POOL () ...)"))
+  (%muimaster "CREATE-CUSTOM-CLASS")
+  (let ((dispatcher (amiga.ffi:make-dispatcher function))
+        (mcc nil))
+    (unwind-protect
+         (setf mcc
+               (if (ffi:foreign-pointer-p superclass)
+                   (%create-custom-class nil nil superclass data-size dispatcher)
+                   (ffi:with-foreign-string (name (class-id superclass))
+                     (%create-custom-class nil name nil data-size dispatcher))))
+      (unless mcc
+        (amiga.ffi:free-dispatcher dispatcher)))
+    (unless mcc
+      (error "AMIGA.MUI:CREATE-CUSTOM-CLASS: MUI_CreateCustomClass returned NULL for superclass ~S -- the superclass is unknown to this MUI, or memory is exhausted"
+             (if (ffi:foreign-pointer-p superclass) superclass (class-id superclass))))
+    (pool-finalizer (lambda ()
+                      (%delete-custom-class mcc)
+                      (amiga.ffi:free-dispatcher dispatcher)))
+    mcc))
+
+(defun custom-class-class (mcc)
+  "The struct IClass of a CREATE-CUSTOM-CLASS class (mcc->mcc_Class) as a
+foreign pointer -- what NEW-OBJECT takes to make an object of it."
+  (ffi:make-foreign-pointer (ffi:peek-u32 mcc 24)))          ; struct MUI_CustomClass.mcc_Class
+
+(defun method-id (message)
+  "The MethodID of a method MESSAGE (its first longword), as an unsigned
+integer -- compare against the MUIM_ / OM_ constants."
+  (ffi:peek-u32 message 0))
+
+(defun do-super-method (class object message)
+  "DoSuperMethodA(CLASS, OBJECT, MESSAGE): pass MESSAGE on to the
+superclass of CLASS, from inside a dispatcher.  Returns the result as an
+unsigned integer (the object for OM_NEW, 0 on failure)."
+  ;; struct IClass.cl_Super (+24) -> its cl_Dispatcher hook (+0)
+  (amiga.raw.utility:call-hook-pkt (ffi:make-foreign-pointer (ffi:peek-u32 class 24))
+                                   object message))
+
+(defun inst-data (class object)
+  "INST_DATA(CLASS, OBJECT): the instance data of OBJECT that CLASS's
+DATA-SIZE reserved, as a foreign pointer (zeroed at OM_NEW)."
+  (ffi:pointer+ object (ffi:peek-u16 class 32)))             ; struct IClass.cl_InstOffset
+
+;;; MUIM_AskMinMax: struct MUIP_AskMinMax { ULONG MethodID; struct MUI_MinMax *MinMaxInfo; }
+;;; struct MUI_MinMax { WORD MinWidth, MinHeight, MaxWidth, MaxHeight, DefWidth, DefHeight; }
+
+(defun min-max-info (message)
+  "The struct MUI_MinMax a MUIM_AskMinMax MESSAGE points at, as a foreign
+pointer: six WORDs -- MinWidth, MinHeight, MaxWidth, MaxHeight, DefWidth,
+DefHeight -- at offsets 0, 2, 4, 6, 8, 10."
+  (ffi:make-foreign-pointer (ffi:peek-u32 message 4)))
+
+(defun add-min-max (message &key (min-width 0) (min-height 0) (max-width 0)
+                                 (max-height 0) (def-width 0) (def-height 0))
+  "Add the given amounts to the MUI_MinMax of a MUIM_AskMinMax MESSAGE --
+what every AskMinMax method does after DO-SUPER-METHOD has filled in the
+superclass's frame and spacing (the values must be ADDED, not set).
+Returns NIL."
+  (let ((info (min-max-info message)))
+    (loop for delta in (list min-width min-height max-width max-height def-width def-height)
+          for offset from 0 by 2
+          unless (zerop delta)
+            do (ffi:poke-i16 info (+ (ffi:peek-i16 info offset) delta) offset)))
+  nil)
+
+(defun draw-flags (message)
+  "The flags of a MUIM_Draw MESSAGE (struct MUIP_Draw.flags): test
+MADF_DRAWOBJECT before rendering, MADF_DRAWUPDATE for an update."
+  (ffi:peek-u32 message 4))
+
+;;; The mui.h shortcuts for custom-class methods.  An Object * points at
+;;; its MUI_NotifyData (28 bytes) followed by the MUI_AreaData:
+;;;   +28 mad_RenderInfo   +36 mad_Font   +40 mad_MinMax (12)
+;;;   +52 mad_Box (IBox: Left, Top, Width, Height, WORDs)
+;;;   +60 mad_addleft +61 mad_addtop +62 mad_subwidth +63 mad_subheight (BYTEs)
+;;;   +64 mad_Flags
+;;; MUI_RenderInfo: +0 mri_WindowObject +4 mri_Screen +8 mri_DrawInfo
+;;;   +12 mri_Pens +16 mri_Window +20 mri_RastPort +24 mri_Flags
+;;; Validity is mui.h's: the render info between MUIM_Setup and
+;;; MUIM_Cleanup, the window and rastport between MUIM_Show and MUIM_Hide,
+;;; the box and its margins during MUIM_Draw.
+
+(defun area-render-info (object)
+  "muiRenderInfo(obj): the struct MUI_RenderInfo of OBJECT (valid between
+MUIM_Setup and MUIM_Cleanup), as a foreign pointer."
+  (ffi:make-foreign-pointer (ffi:peek-u32 object 28)))
+
+(defun %render-info-field (object offset)
+  (ffi:make-foreign-pointer (ffi:peek-u32 (area-render-info object) offset)))
+
+(defun area-window (object)    "_window(obj): the struct Window (MUIM_Show..MUIM_Hide)."  (%render-info-field object 16))
+(defun area-rastport (object)  "_rp(obj): the struct RastPort to draw into (MUIM_Show..MUIM_Hide)." (%render-info-field object 20))
+(defun area-draw-info (object) "_dri(obj): the screen's struct DrawInfo (MUIM_Setup..MUIM_Cleanup)." (%render-info-field object 8))
+(defun area-screen (object)    "_screen(obj): the struct Screen (MUIM_Setup..MUIM_Cleanup)." (%render-info-field object 4))
+(defun area-pens (object)      "_pens(obj): MUI's pen array, UWORD[] (MUIM_Setup..MUIM_Cleanup)." (%render-info-field object 12))
+(defun area-font (object)      "_font(obj): the object's struct TextFont (MUIM_Setup..MUIM_Cleanup)." (ffi:make-foreign-pointer (ffi:peek-u32 object 36)))
+(defun area-flags (object)     "mad_Flags of OBJECT (MADF_*)." (ffi:peek-u32 object 64))
+
+(defun area-left (object)   "_left(obj): the object's left edge (MUIM_Draw)."  (ffi:peek-i16 object 52))
+(defun area-top (object)    "_top(obj): the object's top edge (MUIM_Draw)."    (ffi:peek-i16 object 54))
+(defun area-width (object)  "_width(obj): the object's width (MUIM_Draw)."     (ffi:peek-i16 object 56))
+(defun area-height (object) "_height(obj): the object's height (MUIM_Draw)."   (ffi:peek-i16 object 58))
+(defun area-right (object)  "_right(obj): left + width - 1."   (+ (area-left object) (area-width object) -1))
+(defun area-bottom (object) "_bottom(obj): top + height - 1."  (+ (area-top object) (area-height object) -1))
+
+(defun area-mleft (object)   "_mleft(obj): the left edge inside the frame (MUIM_Draw)."   (+ (area-left object) (ffi:peek-i8 object 60)))
+(defun area-mtop (object)    "_mtop(obj): the top edge inside the frame (MUIM_Draw)."     (+ (area-top object) (ffi:peek-i8 object 61)))
+(defun area-mwidth (object)  "_mwidth(obj): the width inside the frame (MUIM_Draw)."      (- (area-width object) (ffi:peek-i8 object 62)))
+(defun area-mheight (object) "_mheight(obj): the height inside the frame (MUIM_Draw)."    (- (area-height object) (ffi:peek-i8 object 63)))
+(defun area-mright (object)  "_mright(obj): mleft + mwidth - 1."   (+ (area-mleft object) (area-mwidth object) -1))
+(defun area-mbottom (object) "_mbottom(obj): mtop + mheight - 1."  (+ (area-mtop object) (area-mheight object) -1))
 
 (provide "amiga/mui")
