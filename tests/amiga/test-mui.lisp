@@ -465,10 +465,36 @@ STRING-CELL for the notification test.  Returns the application."
 ;; reaches Area.mui (the object gets a size), ADD-MIN-MAX is honoured
 ;; (the object is at least 100 pixels wide), the mui.h shortcuts read the
 ;; live MUI_AreaData, INST-DATA is zeroed instance data of the requested
-;; size, the class is deleted by the pool
-(check "mui-custom-class-dispatches-from-lisp" '(t t t t t t)
+;; size, the class is deleted by the pool -- and the generated struct
+;; accessors of the raw module (mui.h's C structs laid out by the
+;; generator: MUI_AreaData behind the MUI_NotifyData, its IBox, its
+;; MUI_RenderInfo, the MUIP_AskMinMax message) read the same live values
+;; as the curated shortcuts
+(when *mui-p*
+  (require "amiga/raw/intuition"))                ; struct IBox's accessors
+(defun %raw-area-agrees-p (object message)
+  "During MUIM_Draw: the raw accessors against AMIGA.MUI's area-* shortcuts."
+  (let* ((mad (ffi:pointer+ object (%m "*MUI-NOTIFY-DATA-SIZE*")))
+         (box (funcall (%mui-sym "MUI-AREA-DATA-BOX") mad))
+         (mri (funcall (%mui-sym "MUI-AREA-DATA-RENDER-INFO") mad))
+         (i-box-width (find-symbol "I-BOX-WIDTH" "AMIGA.RAW.INTUITION"))
+         (i-box-left (find-symbol "I-BOX-LEFT" "AMIGA.RAW.INTUITION")))
+    (and (= (funcall i-box-width box) (amiga.mui:area-width object))
+         (= (funcall i-box-left box) (amiga.mui:area-left object))
+         (= (funcall (%mui-sym "MUI-AREA-DATA-FLAGS") mad) (amiga.mui:area-flags object))
+         (= (- (amiga.mui:area-width object) (funcall (%mui-sym "MUI-AREA-DATA-SUBWIDTH") mad))
+            (amiga.mui:area-mwidth object))
+         (= (ffi:foreign-pointer-address (funcall (%mui-sym "MUI-RENDER-INFO-RASTPORT") mri))
+            (ffi:foreign-pointer-address (amiga.mui:area-rastport object)))
+         (= (ffi:foreign-pointer-address (funcall (%mui-sym "MUI-RENDER-INFO-WINDOW") mri))
+            (ffi:foreign-pointer-address (amiga.mui:area-window object)))
+         (= (ffi:foreign-pointer-address (funcall (%mui-sym "MUI-AREA-DATA-FONT") mad))
+            (ffi:foreign-pointer-address (amiga.mui:area-font object)))
+         (= (funcall (%mui-sym "MUIP-DRAW-FLAGS") message) (amiga.mui:draw-flags message))
+         t)))
+(check "mui-custom-class-dispatches-from-lisp" '(t t t t t t t)
   (if *mui-p*
-      (let ((methods '()) (draw-width nil) (inst-ok nil) (rp-ok nil))
+      (let ((methods '()) (draw-width nil) (inst-ok nil) (rp-ok nil) (raw-ok nil))
         (amiga.mui:with-foreign-pool ()
           (let* ((ask-id (%m "+MUIM-ASK-MIN-MAX+"))
                  (draw-id (%m "+MUIM-DRAW+"))
@@ -481,11 +507,19 @@ STRING-CELL for the notification test.  Returns the application."
                                   (amiga.mui:do-super-method class object message)
                                   (amiga.mui:add-min-max message :min-width 100 :def-width 120 :max-width 500
                                                                  :min-height 40 :def-height 90 :max-height 300)
+                                  ;; the raw MUIP_AskMinMax / MUI_MinMax accessors see the addition
+                                  (let ((info (funcall (%mui-sym "MUIP-ASK-MIN-MAX-MIN-MAX-INFO") message)))
+                                    (setf raw-ok
+                                          (and (= (ffi:foreign-pointer-address info)
+                                                  (ffi:foreign-pointer-address (amiga.mui:min-max-info message)))
+                                               (>= (funcall (%mui-sym "MUI-MIN-MAX-MIN-WIDTH") info) 100)
+                                               (>= (funcall (%mui-sym "MUI-MIN-MAX-DEF-HEIGHT") info) 90))))
                                   0)
                                  ((= id draw-id)
                                   (amiga.mui:do-super-method class object message)
                                   (setf draw-width (amiga.mui:area-mwidth object)
-                                        rp-ok (not (ffi:null-pointer-p (amiga.mui:area-rastport object))))
+                                        rp-ok (not (ffi:null-pointer-p (amiga.mui:area-rastport object)))
+                                        raw-ok (and raw-ok (%raw-area-agrees-p object message)))
                                   (let ((data (amiga.mui:inst-data class object)))
                                     (setf inst-ok (and (zerop (ffi:peek-u32 data 0))
                                                        (zerop (ffi:peek-u32 data 4)))))
@@ -512,8 +546,9 @@ STRING-CELL for the notification test.  Returns the application."
                   (and (integerp draw-width) (>= draw-width 100))   ; ADD-MIN-MAX honoured
                   rp-ok                                    ; _rp(obj) live during Draw
                   inst-ok                                  ; zeroed instance data
-                  (> (length methods) 2)))))               ; OM_NEW, Setup, Show ... forwarded
-      '(t t t t t t)))
+                  (> (length methods) 2)                   ; OM_NEW, Setup, Show ... forwarded
+                  (and raw-ok t)))))                       ; the generated struct rows agree
+      '(t t t t t t t)))
 
 (format t "; mui: done~%")
 (finish-output)

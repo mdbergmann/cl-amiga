@@ -5,7 +5,7 @@
 ;;;   MorphOS SDK getfont_lib.fd + clib/getfont_protos.h (via fd2sfd)
 ;;;   gadgets/getfont.h
 ;;;
-;;; 1 functions, 36 constants, 0 structs.
+;;; 1 functions, 36 constants, 1 structs.
 ;;; 1 C macro skipped: not an integer or ASCII-string constant (call, float, non-ASCII).
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
@@ -73,6 +73,12 @@
   (:const "+GETFONT-SPECIAL-MODE-BITMAP-WIDTH+" #x85040021)
   (:const "+GETFONT-SPECIAL-MODE-BITMAP-HEIGHT+" #x85040022)
   (:const "+GFONT-REQUEST+" #x600001)
+
+  ;; --- structures from gadgets/getfont.h ---
+  (:struct "GF-REQUEST" 8   ; gfRequest (gadgets/getfont.h)
+    ("METHOD-ID" :u32 0)
+    ("WINDOW" :fptr 4)
+    )
 
   ;; --- functions (getfont_lib.sfd + MorphOS SDK) ---
   (:fn "GETFONT-GET-CLASS" -30 () :pointer 40)   ; Class * GETFONT_GetClass() () LVO -30

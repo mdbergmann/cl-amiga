@@ -5,7 +5,7 @@
 ;;;   MorphOS SDK getfile_lib.fd + clib/getfile_protos.h (via fd2sfd)
 ;;;   gadgets/getfile.h
 ;;;
-;;; 1 functions, 29 constants, 0 structs.
+;;; 1 functions, 29 constants, 2 structs.
 ;;; 1 C macro skipped: not an integer or ASCII-string constant (call, float, non-ASCII).
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
@@ -66,6 +66,16 @@
   (:const "+GETFILE-INITIAL-SHOW-VOLUMES+" #x8506001A)
   (:const "+GFILE-REQUEST+" #x620001)
   (:const "+GFILE-FREELIST+" #x620002)
+
+  ;; --- structures from gadgets/getfile.h ---
+  (:struct "GFILE-REQUEST" 8   ; gfileRequest (gadgets/getfile.h)
+    ("METHOD-ID" :u32 0)
+    ("WINDOW" :fptr 4)
+    )
+  (:struct "GFILE-FREELIST" 8   ; gfileFreelist (gadgets/getfile.h)
+    ("METHOD-ID" :u32 0)
+    ("FILELIST" :fptr 4)
+    )
 
   ;; --- functions (getfile_lib.sfd + MorphOS SDK) ---
   (:fn "GETFILE-GET-CLASS" -30 () :pointer 40)   ; Class * GETFILE_GetClass() () LVO -30

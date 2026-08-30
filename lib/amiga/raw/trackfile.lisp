@@ -4,7 +4,7 @@
 ;;;   trackfile_lib.sfd ($VER: trackfile_lib.sfd 2.3 (10.8.2020))
 ;;;   devices/trackfile.h
 ;;;
-;;; 8 functions, 35 constants (1 of them strings), 0 structs.
+;;; 8 functions, 35 constants (1 of them strings), 2 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
 ;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
@@ -70,6 +70,34 @@
   (:const "+TFGUD-ALL-UNITS+" -1)
   (:const "+TFEFS-UNSUPPORTED+" -1)
   (:const "+TF-MINIMUM-CACHE-SIZE+" #xB3B0)
+
+  ;; --- structures from devices/trackfile.h ---
+  (:struct "TRACK-FILE-CHECKSUM" 8   ; TrackFileChecksum (devices/trackfile.h)
+    ("HIGH" :u32 0)
+    ("LOW" :u32 4)
+    )
+  (:struct "TRACK-FILE-UNIT-DATA" 106   ; TrackFileUnitData (devices/trackfile.h)
+    ("NEXT" :fptr 0)
+    ("SIZE" :u32 4)
+    ("UNIT-NUMBER" :i32 8)
+    ("DRIVE-TYPE" :i32 12)
+    ("DEVICE-NAME" :fptr 16)
+    ("FILE-NAME" :fptr 20)
+    ("IS-ACTIVE" :i16 24)
+    ("IS-WRITABLE" :i16 26)
+    ("MEDIUM-IS-PRESENT" :i16 28)
+    ("IS-BUSY" :i16 30)
+    ("CHECKSUMS-ENABLED" :i16 32)
+    ("CHECKSUM" (:struct 8) 34)
+    ("VOLUME-VALID" :i16 42)
+    ("VOLUME-NAME" (:struct 32) 44)
+    ("VOLUME-DATE" (:struct 12) 76)
+    ("FILE-SYS-SIGNATURE" :u32 88)
+    ("BOOT-BLOCK-CHECKSUM" :u32 92)
+    ("CACHE-ENABLED" :i16 96)
+    ("CACHE-ACCESSES" :u32 98)
+    ("CACHE-MISSES" :u32 102)
+    )
 
   ;; --- functions (trackfile_lib.sfd) ---
   (:fn "TF-START-UNIT-TAG-LIST" -42 (:d0 :a0) :signed)   ; LONG TFStartUnitTagList(LONG which_unit, CONST struct TagItem * tags) (D0,A0) LVO -42

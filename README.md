@@ -1548,13 +1548,30 @@ use (see *Footprint* below):
   `#define` whose body is a string literal becomes a **string constant**:
   `amiga.raw.muimaster:+muic-window+` is `"Window.mui"`, `+muix-c+` the
   `"\033c"` centering escape, `+trackfilename+` `"trackfile.device"`.
-  (C structs defined only in a `.h` are not generated — write those with
-  `ffi:defcstruct`.)
-- **Structures** — `ffi:defcstruct` layouts for every `STRUCTURE`, with
-  the NDK's own offsets and sizes: `(amiga.raw.intuition:window-width w)`,
+- **Structures** — `ffi:defcstruct` layouts for every `STRUCTURE` of the
+  assembler includes, with the NDK's own offsets and sizes:
+  `(amiga.raw.intuition:window-width w)`,
   `(setf (amiga.raw.gadtools:new-gadget-left-edge ng) 10)`,
-  `amiga.raw.exec:*io-std-req-size*`.  Pointer fields (`APTR`) read as
-  foreign pointers, embedded structs as a pointer to the field.
+  `amiga.raw.exec:*io-std-req-size*` — and for every `struct` a C header
+  without an assembler twin defines, laid out by the 68k rules (2-byte
+  alignment; the MorphOS headers pack to the same layout): `mui.h`'s
+  `MUI_MinMax`, `MUI_AreaData`, `MUI_RenderInfo` and the `MUIP_*` method
+  messages (`(amiga.raw.muimaster:muip-draw-flags msg)`,
+  `*muip-ask-min-max-size*`), `listbrowser.h`'s `ColumnInfo`
+  (`*column-info-size*`, `(setf (column-info-title ci) …)`).  Pointer
+  fields (`APTR`, `struct X *`) read as foreign pointers; an embedded
+  struct, a `char[n]` buffer and an array of structs as a pointer to the
+  field; an array of scalars by index (`(mui-pub-screen-desc-system-pens
+  d 3)`); the members of a nested union or struct are flattened next to
+  it (`mui-input-handler-node-millis`).  A struct the reader cannot lay
+  out (a bitfield) is a `;; skipped struct` comment naming the reason.
+- **MUI custom classes** — the header of an MCC (`<Name>_mcc.h`: the
+  kit's `ExtClasses/`, and `MCC_HEADERS=<dir>` for the NList / TextEditor
+  / BetterString headers you have) becomes `amiga/raw/mui/<name>`:
+  `(require "amiga/raw/mui/tron")` → `amiga.raw.mui.tron:+muic-tron+`,
+  `+muim-tron-demo+`, `*muip-tron-demo-size*`.  Constants and method
+  structs only — the class opens by name through `MUI_NewObjectA`, there
+  is no library base.
 - **The library base** — `*intuition-base*` etc., opened at `require` time
   (a missing library fails there, with its name); `*intuition-version*`
   is the running `lib_Version`.  Device and resource tables
@@ -1595,8 +1612,11 @@ the copy inside the cross toolchain is the fallback) — add
 to merge MorphOS, and a copy of `MUI:Developer` from the MUI 3.8
 distribution (`MUI_SDK=<dir>`, default `tools/mui-sdk`; `FD/` and
 `C/Include/`) for `muimaster`; without them the output is AmigaOS-only
-and `muimaster` a MorphOS function table without constants.  None of the
-SDKs is redistributed; only the output is.  The generator is
+and `muimaster` a MorphOS function table without constants.  The
+`<Name>_mcc.h` headers of the kit's `ExtClasses/` become the
+`amiga/raw/mui/` modules; `MCC_HEADERS=<dir>` adds the headers of the
+custom classes you have.  None of the SDKs is redistributed; only the
+output is.  The generator is
 `scripts/gen-amiga-bindings.lisp` (runs on the host build of clamiga) and
 cross-checks every LVO against the NDK's own `lvo/*.i` before writing
 anything.  Its executable specification is `tests/test_amiga_bindgen.sh`
@@ -1607,7 +1627,11 @@ The modules are also the reference for the hand-written ones: every
 constant, `+lvo-…+` offset and `defcfun` register assignment in
 `AMIGA.INTUITION`, `AMIGA.GFX`, `AMIGA.GADTOOLS`, `AMIGA.EXEC` and
 `AMIGA.AUDIO` is checked against the generated bindings by
-`tests/test_amiga_curated_vs_raw.sh` in `make test`.
+`tests/test_amiga_curated_vs_raw.sh` in `make test` — and so is every
+struct offset or size a hand-written module spells as
+`+<accessor>-offset+` / `+<struct>-size+` (`AMIGA.MUI`'s
+`+mui-area-data-flags-offset+` against `mui-area-data-flags`, its
+`+iclass-super-offset+` against intuition's `iclass-super`).
 
 **Footprint.** A module costs what a program uses, not what it defines.
 Its bindings ship as one packed table (`amiga.ffi:define-binding-table`,
@@ -1674,7 +1698,7 @@ fasl-amiga` and the binary release (`amiga.ffi:*defcfun-docstrings*`,
 |--------|---------|-------------|
 | `(require "ffi")` | `FFI` | Foreign pointers, typed peek/poke, defcstruct, callbacks (all platforms); dlopen/libffi calls (host) |
 | `(require "amiga/ffi")` | `AMIGA.FFI` | Tag lists, defcfun, with-library, open-library-or-die, library-version, `make-hook` / `make-dispatcher` — `struct Hook`s and BOOPSI dispatchers that call Lisp (AmigaOS) |
-| `(require "amiga/raw/<lib>")` | `AMIGA.RAW.<LIB>` | Generated 1:1 bindings for every OS library (`exec`, `dos`, `intuition`, `graphics`, `utility`, `asl`, `locale`, `iffparse`, `datatypes`, `rexxsyslib`, …), the ReAction classes (`gadgets/button`, `gadgets/layout`, `images/bevel`, `classes/window`, …), device/resource tables (`timer`, `cia`, …) and header-only constant/struct modules (`devices/audio`, `hardware/custom`, `reaction/reaction`, …) — see above |
+| `(require "amiga/raw/<lib>")` | `AMIGA.RAW.<LIB>` | Generated 1:1 bindings for every OS library (`exec`, `dos`, `intuition`, `graphics`, `utility`, `asl`, `locale`, `iffparse`, `datatypes`, `rexxsyslib`, …), the ReAction classes (`gadgets/button`, `gadgets/layout`, `images/bevel`, `classes/window`, …), device/resource tables (`timer`, `cia`, …), header-only constant/struct modules (`devices/audio`, `hardware/custom`, `reaction/reaction`, …) and the MUI custom-class headers (`mui/tron`, …) — see above |
 | `(require "amiga/exec")` | `AMIGA.EXEC` | AvailMem/MEMF_* memory introspection, chip-RAM upload helper |
 | `(require "amiga/intuition")` | `AMIGA.INTUITION` | Windows, screens, IDCMP events, public screens, pointer sprites |
 | `(require "amiga/graphics")` | `AMIGA.GFX` | Drawing, text, fonts, offscreen bitmaps and blits, planar upload |

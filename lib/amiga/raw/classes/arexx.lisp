@@ -5,7 +5,7 @@
 ;;;   MorphOS SDK arexx_lib.fd + clib/arexx_protos.h (via fd2sfd)
 ;;;   classes/arexx.h
 ;;;
-;;; 1 functions, 17 constants, 0 structs.
+;;; 1 functions, 17 constants, 2 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
 ;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
@@ -53,6 +53,28 @@
   (:const "+AM-HANDLEEVENT+" #x590001)
   (:const "+AM-EXECUTE+" #x590002)
   (:const "+AM-FLUSH+" #x590003)
+
+  ;; --- structures from classes/arexx.h ---
+  (:struct "AP-EXECUTE" 28   ; apExecute (classes/arexx.h)
+    ("METHOD-ID" :u32 0)
+    ("COMMAND-STRING" :fptr 4)
+    ("PORT-NAME" :fptr 8)
+    ("RC" :fptr 12)
+    ("RC2" :fptr 16)
+    ("RESULT" :fptr 20)
+    ("IO" :u32 24)
+    )
+  (:struct "A-REXX-CMD" 34   ; ARexxCmd (classes/arexx.h)
+    ("NAME" :fptr 0)
+    ("ID" :u16 4)
+    ("FUNC" :fptr 6)
+    ("ARG-TEMPLATE" :fptr 10)
+    ("FLAGS" :u32 14)
+    ("ARG-LIST" :fptr 18)
+    ("RC" :i32 22)
+    ("RC2" :i32 26)
+    ("RESULT" :fptr 30)
+    )
 
   ;; --- functions (arexx_lib.sfd + MorphOS SDK) ---
   (:fn "AREXX-GET-CLASS" -30 () :pointer 40)   ; Class * AREXX_GetClass() () LVO -30

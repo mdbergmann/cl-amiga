@@ -26,7 +26,7 @@
 ;;;   graphics/collide.h
 ;;;   graphics/graphint.h
 ;;;
-;;; 161 functions, 711 constants, 53 structs, 3 skipped (see comments).
+;;; 161 functions, 711 constants, 53 structs, 4 skipped (see comments).
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
 ;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
@@ -1526,6 +1526,9 @@
   (:const "+BOTTOMHIT+" 2)
   (:const "+LEFTHIT+" 4)
   (:const "+RIGHTHIT+" 8)
+
+  ;; --- structures from graphics/graphint.h ---
+  ;; skipped struct Isrvstr: function pointer ccode: expected (
 
   ;; --- functions (graphics_lib.sfd + MorphOS SDK) ---
   (:name "BLT-BITMAP")   ; 11 registers: defined after the table via CALL-LIBRARY

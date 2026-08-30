@@ -5,7 +5,7 @@
 ;;;   MorphOS SDK drawlist_lib.fd + clib/drawlist_protos.h (via fd2sfd)
 ;;;   images/drawlist.h
 ;;;
-;;; 1 functions, 21 constants, 0 structs.
+;;; 1 functions, 21 constants, 1 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
 ;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
@@ -57,6 +57,16 @@
   (:const "+DLST-START+" 13)
   (:const "+DLST-BOUNDS+" 13)
   (:const "+DLST-LINESIZE+" 14)
+
+  ;; --- structures from images/drawlist.h ---
+  (:struct "DRAW-LIST" 12   ; DrawList (images/drawlist.h)
+    ("DIRECTIVE" :i16 0)
+    ("X1" :u16 2)
+    ("Y1" :u16 4)
+    ("X2" :u16 6)
+    ("Y2" :u16 8)
+    ("PEN" :i16 10)
+    )
 
   ;; --- functions (drawlist_lib.sfd + MorphOS SDK) ---
   (:fn "DRAWLIST-GET-CLASS" -30 () :pointer 40)   ; Class * DRAWLIST_GetClass() () LVO -30

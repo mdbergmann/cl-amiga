@@ -28,6 +28,12 @@
 #     the MUIC_* class-name strings of libraries/mui.h.  Without MUI_SDK
 #     muimaster is emitted from the MorphOS SDK's function table alone
 #     (no constants) — commit only output generated WITH the MUI SDK.
+#   * the C struct definitions of every twin-less header (mui.h's
+#     MUI_MinMax / MUI_AreaData / MUIP_* messages, listbrowser.h's
+#     ColumnInfo ...) are laid out by the m68k rules and emitted like the
+#     .i STRUCTUREs.
+#   * MUI custom-class headers (<Name>_mcc.h): the kit's ExtClasses/ and
+#     MCC_HEADERS=<dir> — each a header-only module amiga/raw/mui/<name>.
 #
 # Usage:
 #   scripts/gen-amiga-bindings.sh                      # NDK only
@@ -36,8 +42,9 @@
 #
 # Environment knobs (all optional): NDK (unpacked NDK 3.2), PREFIX
 # (toolchain prefix), HOST_BIN, NDK_SFD, NDK_INCLUDE, NDK_INCLUDE_H, OUT,
-# MOS_SDK, MUI_SDK, BINDGEN_LIBS (comma list), BINDGEN_MOS_ONLY (comma
-# list of MorphOS-only libraries to emit), BINDGEN_DOCSTRINGS=0.
+# MOS_SDK, MUI_SDK, MCC_HEADERS, BINDGEN_LIBS (comma list),
+# BINDGEN_MOS_ONLY (comma list of MorphOS-only libraries to emit),
+# BINDGEN_DOCSTRINGS=0.
 set -e
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -124,6 +131,32 @@ else
     echo "MUI SDK: none (set MUI_SDK=<copy of MUI:Developer with FD/ and C/Include/> — muimaster is emitted from the MorphOS SDK function table only, without libraries/mui.h constants)"
 fi
 
+# MUI custom-class headers (<Name>_mcc.h): the kit's ExtClasses/ samples
+# (MCC_Tron) and MCC_HEADERS=<dir> (the headers of the classes you have —
+# NList_mcc.h, TextEditor_mcc.h ...) are collected into one mui/ directory
+# that the generator reads as a third C-header root; each becomes the
+# header-only module amiga/raw/mui/<name>.  (A header already under the
+# kit's C/Include/mui/ needs no collecting: that root is searched anyway.)
+MCC_TMP=
+mcc_n=0
+for h in "$MUI_SDK"/ExtClasses/*/Developer/C/Include/MUI/*_mcc.h \
+         "$MUI_SDK"/ExtClasses/*/Developer/C/Include/mui/*_mcc.h \
+         ${MCC_HEADERS:+"$MCC_HEADERS"/*_mcc.h}; do
+    [ -f "$h" ] || continue
+    if [ -z "$MCC_TMP" ]; then
+        MCC_TMP=$(mktemp -d "${TMPDIR:-/tmp}/mcc-inc.XXXXXX")
+        mkdir "$MCC_TMP/mui"
+    fi
+    # (a case-insensitive file system matches both spellings above)
+    [ -f "$MCC_TMP/mui/$(basename "$h")" ] && continue
+    cp "$h" "$MCC_TMP/mui/"
+    mcc_n=$((mcc_n + 1))
+done
+if [ -n "$MCC_TMP" ]; then
+    echo "MCC headers: $mcc_n (mui/<Name>_mcc.h -> amiga/raw/mui/<name>)"
+    export BINDGEN_MCC_INCLUDE_H="$MCC_TMP"
+fi
+
 # The directory holds generated files only — clear stale ones.
 mkdir -p "$OUT"
 find "$OUT" -name '*.lisp' -type f -exec rm -f {} +
@@ -136,4 +169,5 @@ status=$?
 
 [ -n "$MOS_TMP" ] && rm -rf "$MOS_TMP"
 [ -n "$MUI_TMP" ] && rm -rf "$MUI_TMP"
+[ -n "$MCC_TMP" ] && rm -rf "$MCC_TMP"
 exit $status

@@ -6,7 +6,7 @@
 ;;;   devices/keymap.i
 ;;;   libraries/keymap.h
 ;;;
-;;; 9 functions, 72 constants, 3 structs.
+;;; 9 functions, 72 constants, 3 structs, 2 skipped (see comments).
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
 ;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
@@ -131,6 +131,10 @@
   (:const "+RAWKEY-WHEEL-DOWN+" #x7B)
   (:const "+RAWKEY-WHEEL-LEFT+" #x7C)
   (:const "+RAWKEY-WHEEL-RIGHT+" #x7D)
+
+  ;; --- structures from libraries/keymap.h ---
+  ;; skipped struct KeyMap: the STRUCTURE of devices/keymap.i is the binding (32 bytes)
+  ;; skipped struct KeyMapNode: the STRUCTURE of devices/keymap.i is the binding (46 bytes)
 
   ;; --- functions (keymap_lib.sfd + MorphOS SDK) ---
   (:fn "SET-KEY-MAP-DEFAULT" -30 (:a0) :void)   ; VOID SetKeyMapDefault(struct KeyMap * keyMap) (A0) LVO -30

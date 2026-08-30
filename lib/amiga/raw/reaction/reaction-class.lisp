@@ -3,7 +3,7 @@
 ;;; Sources:
 ;;;   reaction/reaction_class.h
 ;;;
-;;; 0 functions, 4 constants, 0 structs.
+;;; 0 functions, 4 constants, 2 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
 ;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
@@ -27,6 +27,19 @@
   (:const "+GMC-VISIBLE+" 2)
   (:const "+GMC-PARTIAL+" 1)
   (:const "+GMC-INVISIBLE+" 0)
+
+  ;; --- structures from reaction/reaction_class.h ---
+  (:struct "SPECIAL-PENS" 10   ; SpecialPens (reaction/reaction_class.h)
+    ("VERSION" :i16 0)
+    ("DARK-PEN" :i32 2)
+    ("LIGHT-PEN" :i32 6)
+    )
+  (:struct "GP-CLIP-RECT" 16   ; gpClipRect (reaction/reaction_class.h)
+    ("METHOD-ID" :u32 0)
+    ("G-INFO" :fptr 4)
+    ("CLIP-RECT" :fptr 8)
+    ("FLAGS" :u32 12)
+    )
   )
 
 (provide "amiga/raw/reaction/reaction-class")

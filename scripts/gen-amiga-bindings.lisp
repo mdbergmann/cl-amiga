@@ -24,6 +24,10 @@
 ;;;                        library with a MorphOS twin, like every NDK one.
 ;;;   BINDGEN_MUI_INCLUDE_H  the kit's C/Include — a second C-header root
 ;;;                        (libraries/mui.h), searched after the NDK's
+;;;   BINDGEN_MCC_INCLUDE_H  a third C-header root holding mui/<Name>_mcc.h,
+;;;                        the headers of MUI custom classes (the .sh
+;;;                        wrapper collects them from the kit's ExtClasses/
+;;;                        and MCC_HEADERS=<dir>) -> amiga/raw/mui/<name>
 ;;;   BINDGEN_OUT          output directory (default lib/amiga/raw/)
 ;;;   BINDGEN_LIBS         comma list restricting the libraries generated
 ;;;                        (default: all)
@@ -50,8 +54,11 @@
 ;;;   * (:const ...) rows for the object-like #defines and enumerators of
 ;;;     the C headers that have NO assembler twin (the ReAction tags in
 ;;;     gadgets/*.h, images/*.h, classes/*.h, reaction/*.h, the MUI tags
-;;;     and MUIC_* class-name strings of libraries/mui.h ...) — see
-;;;     "C header parsing" below.
+;;;     and MUIC_* class-name strings of libraries/mui.h ...), and
+;;;     (:struct ...) rows for their struct definitions (MUI_MinMax, the
+;;;     MUIP_* messages, ColumnInfo ...), laid out by the m68k rules — see
+;;;     "C header parsing" below.  The MUI custom-class headers
+;;;     (mui/<Name>_mcc.h) are modules of their own, amiga/raw/mui/<name>.
 ;;;   * Platform tagging: functions the MorphOS SDK does not have at the
 ;;;     same LVO carry :not-morphos, MorphOS-only ones :morphos; functions
 ;;;     newer than OS 3.0 carry the minimum lib_Version.  All three are
@@ -144,11 +151,13 @@
 ;;; Whole-identifier spelling overrides, applied before the CamelCase
 ;;; split so that "RastPort", "RPort" and "BitMap" come out as one word
 ;;; the way the Amiga world writes them (rastport, window-rport, bitmap,
-;;; init-bitmap, blt-bitmap ...).  Everything else is mechanical.
+;;; init-bitmap, blt-bitmap ...), and mui.h's "RGBcolor" as rgb-color
+;;; rather than rg-bcolor.  Everything else is mechanical.
 (defparameter *spelling-overrides*
   '(("RastPort" . "Rastport")
     ("RPort" . "Rport")
-    ("BitMap" . "Bitmap")))
+    ("BitMap" . "Bitmap")
+    ("RGBcolor" . "RgbColor")))
 
 (defun apply-spelling-overrides (s)
   (dolist (pair *spelling-overrides* s)
@@ -639,9 +648,10 @@ whitespace-delimited token (see OPERAND-FIELD)."
     ("RPTR" . (:u16 . 2))))
 
 (defstruct i-struct
-  name          ; assembler STRUCTURE name
-  fields        ; list of (c-name type offset) in order; type = keyword or (:struct n)
+  name          ; assembler STRUCTURE name, or the C struct's tag
+  fields        ; list of (c-name type offset), most recent first; type = keyword, (:struct n) or (:array kw n)
   size-labels   ; list of (label-name . offset) for *_SIZE / *_SIZEOF labels
+  size          ; a C struct's sizeof (NIL for a STRUCTURE: its size labels decide)
   file)
 
 (defstruct i-const
@@ -652,7 +662,8 @@ whitespace-delimited token (see OPERAND-FIELD)."
   path           ; relative include path, e.g. "intuition/intuition.i"
   structs        ; list of i-struct
   constants      ; list of i-const (in definition order)
-  (skipped 0))   ; .h only: object-like macros that are not integer constants
+  (skipped 0)    ; .h only: object-like macros that are not integer constants
+  skipped-structs) ; .h only: (name . reason) for struct definitions not laid out
 
 (defvar *i-files* (make-hash-table :test 'equal)) ; rel path -> i-file
 (defvar *i-include-root* nil)
@@ -869,11 +880,12 @@ whitespace-delimited token (see OPERAND-FIELD)."
 ;;; are known).  Function-like macros, floats and anything that is not an
 ;;; integer expression or a string (the NewObject(...) convenience macros)
 ;;; are skipped — counted in the module header, not warned about.  C
-;;; struct definitions are not read.
+;;; struct definitions are read too — see "C struct definitions" below.
 ;;;
 ;;; The C headers live under one or more roots searched in order — the
 ;;; NDK's Include_H first, then an SDK that ships headers of its own (the
-;;; MUI developer kit's C/Include); the first root that has a file wins.
+;;; MUI developer kit's C/Include), then the directory of MUI custom-class
+;;; headers (BINDGEN_MCC_INCLUDE_H); the first root that has a file wins.
 
 (defvar *h-include-roots* nil)                      ; dirs of the .h files, in search order
 (defvar *c-macros* (make-hash-table :test 'equal))  ; name -> t, for #ifdef
@@ -1326,8 +1338,404 @@ Struct bodies are skipped by brace depth; string literals are ignored."
                    (t (incf i))))))
     (nreverse out)))
 
+;;; --- C struct definitions ---
+;;;
+;;; A twin-less header's struct definitions become (:struct ...) rows
+;;; like a .i file's STRUCTUREs: mui.h's MUI_MinMax / MUI_AreaData /
+;;; MUI_RenderInfo and the MUIP_* method messages, listbrowser.h's
+;;; ColumnInfo.  The layout rules are the m68k AmigaOS ABI's: a member of
+;;; two or more bytes is aligned to 2 (a ULONG after a UBYTE sits at
+;;; offset 2, not 4), a struct is padded to a multiple of its largest
+;;; member alignment (1 or 2), an enum is an int.  The MorphOS SDK's
+;;; headers `#pragma pack(2)' to exactly this layout (the OS structures
+;;; are shared with 68k code), so one table serves both platforms.
+;;;
+;;; Members: the exec/types.h scalars and the C types (char, short, int,
+;;; long, float, double, signed / unsigned), the pointer typedefs (APTR,
+;;; STRPTR ...), `T *' and function pointers (:fptr), `struct X' by value
+;;; ((:struct size) — X a STRUCTURE of the .i files, a C struct read
+;;; before it, or a typedef of one), arrays ((:array elt n) for scalars
+;;; and pointers; a char[n] buffer and an array of structs as (:struct
+;;; bytes), a pointer to the field), `enum X' (:i32), and nested struct /
+;;; union members, whose leaves are flattened into the enclosing struct
+;;; next to the member itself (ihn_stuff.ihn_timer.ihn_millis becomes
+;;; MUI-INPUT-HANDLER-NODE-MILLIS, which is what mui.h's ihn_Millis macro
+;;; spells).  A struct with a bitfield or a member of unknown type is
+;;; skipped with a comment naming the reason; a forward declaration, a
+;;; reserved (_-prefixed) name and a definition inside an inactive #if
+;;; block are not read.
+
+(defparameter *c-scalar-types*
+  ;; the words of a member's type (const / volatile dropped), in source
+  ;; order -> keyword and size
+  '(("BYTE" :i8 1) ("char" :i8 1) ("signed char" :i8 1) ("int8" :i8 1) ("TEXT" :i8 1)
+    ("UBYTE" :u8 1) ("unsigned char" :u8 1) ("uint8" :u8 1)
+    ("WORD" :i16 2) ("SHORT" :i16 2) ("short" :i16 2) ("short int" :i16 2)
+    ("signed short" :i16 2) ("int16" :i16 2) ("BOOL" :i16 2) ("COUNT" :i16 2)
+    ("UWORD" :u16 2) ("USHORT" :u16 2) ("unsigned short" :u16 2)
+    ("unsigned short int" :u16 2) ("uint16" :u16 2) ("UCOUNT" :u16 2)
+    ("LONG" :i32 4) ("int" :i32 4) ("long" :i32 4) ("long int" :i32 4) ("signed" :i32 4)
+    ("signed int" :i32 4) ("signed long" :i32 4) ("int32" :i32 4) ("SIPTR" :i32 4)
+    ("ULONG" :u32 4) ("unsigned" :u32 4) ("unsigned int" :u32 4) ("unsigned long" :u32 4)
+    ("unsigned long int" :u32 4) ("uint32" :u32 4) ("IPTR" :u32 4) ("Tag" :u32 4)
+    ("LONGBITS" :u32 4) ("BPTR" :u32 4) ("BSTR" :u32 4) ("Object" :u32 4)
+    ("FLOAT" :single 4) ("float" :single 4)
+    ("DOUBLE" :double 8) ("double" :double 8)
+    ("APTR" :fptr 4) ("CONST_APTR" :fptr 4) ("STRPTR" :fptr 4) ("CONST_STRPTR" :fptr 4)
+    ("PLANEPTR" :fptr 4) ("CPTR" :fptr 4) ("FPTR" :fptr 4) ("ClassID" :fptr 4)
+    ("Msg" :fptr 4) ("CxObj" :fptr 4) ("CxMsg" :fptr 4)
+    ;; only ever behind a * or as a function pointer's return type
+    ("void" :u32 4) ("VOID" :u32 4)))
+
+(defvar *c-struct-layouts* (make-hash-table :test 'equal)) ; C struct / typedef name -> (size align)
+(defvar *i-struct-layouts* (make-hash-table :test 'equal)) ; C name of a STRUCTURE -> (size align)
+(defvar *i-struct-layouts-key* -1)                          ; (hash-table-count *i-files*) it was built for
+
+(defun i-struct-layout (name)
+  "(size align file) of the STRUCTURE the .i files parsed so far define
+under the C name NAME, or NIL.  A STRUCTURE's alignment is 2 unless its
+size is odd (the exec / intuition structures all start with a pointer or
+a word)."
+  (unless (= *i-struct-layouts-key* (hash-table-count *i-files*))
+    (setf *i-struct-layouts-key* (hash-table-count *i-files*))
+    (clrhash *i-struct-layouts*)
+    (maphash (lambda (rel ifile)
+               (dolist (st (i-file-structs ifile))
+                 (unless (i-struct-size st)   ; a C struct: in *c-struct-layouts*
+                   (dolist (v (struct-variants st))
+                     (let ((cname (first v)) (size (second v)))
+                       (unless (gethash cname *i-struct-layouts*)
+                         (setf (gethash cname *i-struct-layouts*)
+                               (list size (if (oddp size) 1 2) rel))))))))
+             *i-files*))
+  (gethash name *i-struct-layouts*))
+
+(defun known-struct-layout (name)
+  "(size align) of the struct NAME: a C struct read from a header (or a
+typedef of one), else a STRUCTURE of the .i files under its C name, else
+NIL."
+  (or (gethash name *c-struct-layouts*)
+      (let ((lay (i-struct-layout name)))
+        (and lay (list (first lay) (second lay))))))
+
+(defun align-up (n a)
+  (* a (ceiling n a)))
+
+(defun tokenize-c-decl (s)
+  "Tokens of a struct member declaration or a struct statement: (:id
+name), (:op \"*\") and the other punctuation, (:brace text) for a {...}
+block, (:dim text) for a [...] subscript, (:num text) for a bitfield
+width."
+  (let ((toks nil) (i 0) (n (length s)))
+    (flet ((matching (open close start)
+             (let ((d 0))
+               (loop for k from start below n
+                     do (cond ((char= (char s k) open) (incf d))
+                              ((char= (char s k) close)
+                               (decf d)
+                               (when (zerop d) (return k))))
+                     finally (error "unbalanced ~C" open)))))
+      (loop while (< i n)
+            do (let ((c (char s i)))
+                 (cond
+                   ((member c '(#\Space #\Tab #\Newline #\Return)) (incf i))
+                   ((or (alpha-char-p c) (char= c #\_))
+                    (let ((j i))
+                      (loop while (and (< j n) (ident-char-p (char s j))) do (incf j))
+                      (push (list :id (subseq s i j)) toks)
+                      (setf i j)))
+                   ((digit-char-p c)
+                    (let ((j i))
+                      (loop while (and (< j n) (ident-char-p (char s j))) do (incf j))
+                      (push (list :num (subseq s i j)) toks)
+                      (setf i j)))
+                   ((char= c #\{)
+                    (let ((e (matching #\{ #\} i)))
+                      (push (list :brace (subseq s (1+ i) e)) toks)
+                      (setf i (1+ e))))
+                   ((char= c #\[)
+                    (let ((e (matching #\[ #\] i)))
+                      (push (list :dim (subseq s (1+ i) e)) toks)
+                      (setf i (1+ e))))
+                   ((member c '(#\* #\( #\) #\, #\: #\;))
+                    (push (list :op (string c)) toks)
+                    (incf i))
+                   (t (error "unexpected ~S" c)))))
+      (nreverse toks))))
+
+(defun split-c-declarations (body)
+  "The member declarations of a struct body: BODY split at the semicolons
+outside braces, brackets and parentheses; blank pieces dropped."
+  (let ((out nil) (start 0) (depth 0))
+    (dotimes (i (length body))
+      (let ((c (char body i)))
+        (cond ((member c '(#\{ #\[ #\()) (incf depth))
+              ((member c '(#\} #\] #\))) (decf depth))
+              ((and (char= c #\;) (zerop depth))
+               (push (subseq body start i) out)
+               (setf start (1+ i))))))
+    (push (subseq body start) out)
+    (remove-if #'blank-string-p (nreverse out))))
+
+(defun c-member (base name pointer count dims char-p)
+  "One laid-out member: (name type size align leaves).  BASE is the
+declaration's type — (:scalar kw size align), (:aggregate size align
+leaves) or (:tag name) for a `struct NAME' whose layout is looked up
+only now: a pointer to it needs none (C allows a pointer to a struct
+declared later, or never — mui.h's MUIP_AskMinMax points at a MUI_MinMax
+defined 1400 lines below).  POINTER covers `*' declarators and function
+pointers; COUNT is the product of the DIMS array bounds."
+  (cond
+    (pointer
+     (if (> dims 0)
+         (list name (list :array :fptr count) (* 4 count) 2 nil)
+         (list name :fptr 4 2 nil)))
+    ((eq (first base) :scalar)
+     (destructuring-bind (kw size align) (cdr base)
+       (cond ((zerop dims) (list name kw size align nil))
+             ;; char[n]: a text buffer — a pointer to it, like an
+             ;; embedded struct
+             (char-p (list name (list :struct count) count 1 nil))
+             (t (list name (list :array kw count) (* size count) align nil)))))
+    (t
+     (destructuring-bind (size align leaves)
+         (if (eq (first base) :tag)
+             (let ((lay (known-struct-layout (second base))))
+               (unless lay (error "unknown struct ~A" (second base)))
+               (list (first lay) (second lay) nil))
+             (cdr base))
+       (if (> dims 0)
+           (list name (list :struct (* size count)) (* size count) align nil)
+           (list name (list :struct size) size align leaves))))))
+
+(defun parse-c-declaration (decl)
+  "The members one declaration of a struct body declares — `WORD a, b;'
+is two — each (name type size align leaves), NAME being NIL for an
+anonymous nested struct / union (its LEAVES are what the enclosing struct
+gets).  Signals on anything that cannot be laid out."
+  (let ((toks (tokenize-c-decl decl))
+        (base nil) (char-p nil))
+    (labels ((peek () (car toks))
+             (next () (pop toks))
+             (id-p (tk &optional name)
+               (and tk (eq (first tk) :id) (or (null name) (string= (second tk) name))))
+             (op-p (tk s) (and tk (eq (first tk) :op) (string= (second tk) s)))
+             (qualifier-p (tk)
+               ;; const / volatile, and a compiler's calling-convention
+               ;; word on a function pointer (LONG __STDARGS__ (*fn)())
+               (and (id-p tk)
+                    (or (member (second tk) '("const" "volatile") :test #'string=)
+                        (starts-with "__" (second tk))))))
+      (loop while (qualifier-p (peek)) do (next))
+      ;; --- the type ---
+      (cond
+        ((and (id-p (peek)) (member (second (peek)) '("struct" "union") :test #'string=))
+         (let ((kind (if (string= (second (next)) "union") :union :struct))
+               (tag nil))
+           (when (id-p (peek)) (setf tag (second (next))))
+           (cond ((and (peek) (eq (first (peek)) :brace))
+                  (multiple-value-bind (leaves size align)
+                      (parse-c-aggregate-body (second (next)) kind)
+                    (setf base (list :aggregate size align leaves))))
+                 (tag (setf base (list :tag tag)))   ; resolved per declarator
+                 (t (error "~(~A~) without a tag or a body" kind)))))
+        ((id-p (peek) "enum")
+         (next)
+         (when (id-p (peek)) (next))
+         (when (and (peek) (eq (first (peek)) :brace)) (next))
+         (setf base (list :scalar :i32 4 2)))
+        (t
+         ;; type words: the leading identifiers — the last of them is the
+         ;; first declarator's name unless a * or ( follows
+         (let ((words nil))
+           (loop while (id-p (peek)) do (push (second (next)) words))
+           (setf words (nreverse words))
+           (unless (or (op-p (peek) "*") (op-p (peek) "("))
+             (unless (cdr words) (error "no type in ~S" (collapse-whitespace decl)))
+             (push (list :id (car (last words))) toks)
+             (setf words (butlast words)))
+           (setf words (remove-if (lambda (w) (qualifier-p (list :id w))) words))
+           (let* ((key (format nil "~{~A~^ ~}" words))
+                  (hit (assoc key *c-scalar-types* :test #'string=)))
+             (cond (hit
+                    (setf base (list :scalar (second hit) (third hit) (min 2 (third hit)))
+                          char-p (member key '("char" "TEXT") :test #'string=)))
+                   ((and (null (cdr words)) (known-struct-layout (first words)))
+                    (setf base (list :tag (first words))))   ; a typedef'd struct
+                   (t (error "unknown type ~A" key)))))))
+      ;; --- the declarators ---
+      (let ((members nil))
+        (loop
+          (let ((pointer nil) (name nil) (count 1) (dims 0))
+            (loop while (op-p (peek) "*") do (next) (setf pointer t))
+            (cond
+              ((op-p (peek) "(")
+               ;; a function pointer: ( * name ) ( parameters )
+               (next)
+               (loop while (op-p (peek) "*") do (next))
+               (unless (id-p (peek)) (error "function pointer without a name"))
+               (setf name (second (next)) pointer t)
+               (unless (op-p (next) ")") (error "function pointer ~A: expected )" name))
+               (unless (op-p (next) "(") (error "function pointer ~A: expected (" name))
+               (let ((d 1))
+                 (loop while (> d 0)
+                       do (let ((tk (next)))
+                            (cond ((null tk) (error "function pointer ~A: unbalanced (" name))
+                                  ((op-p tk "(") (incf d))
+                                  ((op-p tk ")") (decf d)))))))
+              (t
+               (when (id-p (peek)) (setf name (second (next))))
+               (loop while (and (peek) (eq (first (peek)) :dim))
+                     do (let ((e (second (next))))
+                          (multiple-value-bind (v status) (c-eval-expr e)
+                            (unless (and (eq status :ok) (integerp v) (> v 0))
+                              (error "array bound [~A] of ~A" (collapse-whitespace e) name))
+                            (setf count (* count v))
+                            (incf dims))))
+               (when (op-p (peek) ":") (error "bitfield ~A" name))))
+            (push (c-member base name pointer count dims char-p) members)
+            (cond ((op-p (peek) ",") (next))
+                  ((null (peek)) (return))
+                  (t (error "unexpected ~A after ~A" (second (peek)) name)))))
+        (nreverse members)))))
+
+(defun parse-c-aggregate-body (text kind)
+  "The members between the braces of a struct (KIND :struct) or union
+(:union), laid out by the m68k rules.  Returns (values fields size
+align): FIELDS are (c-name type offset) — every named member, each
+followed by the leaves of its nested anonymous struct / union — with
+offsets relative to the aggregate; SIZE is the padded sizeof."
+  (let ((fields nil) (offset 0) (size 0) (align 1))
+    (dolist (decl (split-c-declarations text))
+      (dolist (m (parse-c-declaration decl))
+        (destructuring-bind (name type msize malign leaves) m
+          (let ((at (if (eq kind :union) 0 (align-up offset malign))))
+            (when name (push (list name type at) fields))
+            (dolist (leaf leaves)
+              (push (list (first leaf) (second leaf) (+ at (third leaf))) fields))
+            (setf align (max align malign))
+            (if (eq kind :union)
+                (setf size (max size msize))
+                (setf offset (+ at msize) size offset))))))
+    (values (nreverse fields) (align-up size align) align)))
+
+(defun scan-c-structs (text)
+  "Every top-level struct / union definition of TEXT (a header's active C
+text), in order: (kind tag body typedef-names) — KIND :struct / :union,
+TAG the tag or NIL, BODY the text between the braces, TYPEDEF-NAMES the
+names a `typedef struct ... { } Name;' gives it; and (:alias tag
+(names)) for a `typedef struct Tag Name;' without a body.  Prototypes,
+extern declarations and forward declarations are passed over."
+  (let ((out nil) (i 0) (n (length text)) (depth 0))
+    (labels ((skip-literal (q)
+               (incf i)
+               (loop while (and (< i n) (char/= (char text i) q))
+                     do (when (char= (char text i) #\\) (incf i)) (incf i))
+               (incf i))
+             (statement-end (start)
+               ;; index of the ; that ends the statement at START, braces skipped
+               (let ((d 0))
+                 (loop for k from start below n
+                       do (let ((c (char text k)))
+                            (cond ((char= c #\{) (incf d))
+                                  ((char= c #\}) (decf d))
+                                  ((and (char= c #\;) (zerop d)) (return k))))
+                       finally (return n))))
+             (definition (toks)
+               ;; the (kind tag body names) / (:alias ...) of one statement's tokens, or NIL
+               (let ((typedef nil))
+                 (when (and toks (eq (first (car toks)) :id) (string= (second (car toks)) "typedef"))
+                   (setf typedef t) (pop toks))
+                 (when (and toks (eq (first (car toks)) :id)
+                            (member (second (car toks)) '("struct" "union") :test #'string=))
+                   (let ((kind (if (string= (second (pop toks)) "union") :union :struct))
+                         (tag nil))
+                     (when (and toks (eq (first (car toks)) :id))
+                       (setf tag (second (pop toks))))
+                     (cond
+                       ((and toks (eq (first (car toks)) :brace))
+                        (let ((body (second (pop toks)))
+                              (names nil))
+                          (when typedef
+                            ;; declarators: Name / , Name — a *Name is a
+                            ;; pointer typedef, not a name of the struct
+                            (let ((pointer nil))
+                              (dolist (tk toks)
+                                (cond ((and (eq (first tk) :op) (string= (second tk) "*")) (setf pointer t))
+                                      ((and (eq (first tk) :op) (string= (second tk) ",")) (setf pointer nil))
+                                      ((and (eq (first tk) :id) (not pointer)) (push (second tk) names))))))
+                          (list kind tag body (nreverse names))))
+                       ((and typedef tag toks (eq (first (car toks)) :id) (null (cdr toks)))
+                        (list :alias tag (list (second (car toks)))))
+                       (t nil)))))))
+      (loop while (< i n)
+            do (let ((c (char text i)))
+                 (cond
+                   ((char= c #\") (skip-literal #\"))
+                   ((char= c #\') (skip-literal #\'))
+                   ((char= c #\{) (incf depth) (incf i))
+                   ((char= c #\}) (decf depth) (incf i))
+                   ((or (alpha-char-p c) (char= c #\_))
+                    (let ((j i))
+                      (loop while (and (< j n) (ident-char-p (char text j))) do (incf j))
+                      (cond
+                        ((and (zerop depth)
+                              (member (subseq text i j) '("typedef" "struct" "union") :test #'string=))
+                         (let* ((e (statement-end i))
+                                (def (handler-case (definition (tokenize-c-decl (subseq text i e)))
+                                       (error () nil))))
+                           (when def (push def out))
+                           (setf i (1+ e))))
+                        (t (setf i j)))))
+                   (t (incf i))))))
+    (nreverse out)))
+
+(defun read-c-structs (hfile text)
+  "Lay out every struct definition of TEXT and record it in HFILE: the
+readable ones as i-structs (fields most recent first, like the .i
+reader's), the rest as skipped with the reason.  Every struct read, and
+every typedef name of it, becomes known to the structs after it."
+  (let ((structs nil) (skipped nil))
+    (dolist (def (scan-c-structs text))
+      (if (eq (first def) :alias)
+          (let ((lay (known-struct-layout (second def))))
+            (when lay
+              (dolist (nm (third def)) (setf (gethash nm *c-struct-layouts*) lay))))
+          (destructuring-bind (kind tag body names) def
+            (let ((name (or tag (first names)))
+                  (twin nil))
+              (when name
+                (handler-case
+                    (multiple-value-bind (fields size align) (parse-c-aggregate-body body kind)
+                      (let ((lay (list size align)))
+                        (cond
+                          ;; a struct the .i files define too (libraries/keymap.h
+                          ;; repeats devices/keymap.i's KeyMap): the STRUCTURE's
+                          ;; row is the binding — the same layout, or a warning
+                          ((setf twin (i-struct-layout name))
+                           (push (cons name (format nil "the STRUCTURE of ~A is the binding (~D bytes)"
+                                                    (third twin) (first twin)))
+                                 skipped)
+                           (unless (= (first twin) size)
+                             (asm-warn "~A: struct ~A is ~D bytes here but the STRUCTURE of ~A is ~D — the .i wins"
+                                       (i-file-path hfile) name size (third twin) (first twin))))
+                          (t
+                           (setf (gethash name *c-struct-layouts*) lay)
+                           (dolist (nm names) (setf (gethash nm *c-struct-layouts*) lay))
+                           (if (char= (char name 0) #\_)
+                               (push (cons name "reserved identifier") skipped)
+                               (push (make-i-struct :name name :size size :fields (reverse fields)
+                                                    :file (i-file-path hfile))
+                                     structs))))))
+                  (error (e)
+                    (push (cons name (princ-to-string e)) skipped))))))))
+    (setf (i-file-structs hfile) (nreverse structs)
+          (i-file-skipped-structs hfile) (nreverse skipped))
+    hfile))
+
 (defun parse-h-file (relpath)
-  "Read one twin-less C header into *i-files* (constants only)."
+  "Read one twin-less C header into *i-files*: its constants and its
+struct definitions."
   (when (gethash relpath *i-files*)
     (return-from parse-h-file (gethash relpath *i-files*)))
   (let ((full (h-file-path relpath)))
@@ -1435,8 +1843,9 @@ Struct bodies are skipped by brace depth; string literals are ignored."
                  (push name undefined)))
               ((string= dname "include") (do-include rest))
               (t nil))))
-        ;; enumerators
-        (dolist (items (scan-c-enums (get-output-stream-string c-text)))
+        (let ((active (get-output-stream-string c-text)))
+          ;; enumerators
+          (dolist (items (scan-c-enums active))
           (let ((next 0) (prev nil))
             (dolist (item items)
               (destructuring-bind (name . expr) item
@@ -1459,7 +1868,9 @@ Struct bodies are skipped by brace depth; string literals are ignored."
                     (prev
                      (register name (list :cexpr (format nil "(~A + 1)" prev)))
                      (push (make-i-const :name name :value nil :file relpath :quiet t) consts)))
-                  (setf prev name)))))))
+                  (setf prev name))))))
+          ;; struct definitions, in order: a struct may embed one read before it
+          (read-c-structs hfile active)))
       (setf (i-file-constants hfile) (nreverse consts)
             (i-file-skipped hfile) skipped)
       hfile)))
@@ -1480,7 +1891,10 @@ Struct bodies are skipped by brace depth; string literals are ignored."
     ("SM" . "Semaphore") ("ML" . "MemList") ("ME" . "MemEntry") ("MH" . "MemHeader")
     ("MC" . "MemChunk") ("IS" . "Interrupt") ("IV" . "IntVector") ("SH" . "SoftIntList")
     ("DD" . "Device") ("UNIT" . "Unit") ("RT" . "Resident") ("SYSBASE" . "ExecBase")
-    ("memh" . "MemHandlerData")))
+    ("memh" . "MemHandlerData")
+    ;; timer.i's TIMEVAL is C's struct timeval (texteditor.h embeds one);
+    ;; the same Lisp name either way
+    ("TIMEVAL" . "timeval")))
 
 (defun struct-c-name (asm-name)
   (or (cdr (assoc asm-name *struct-aliases* :test #'string=)) asm-name))
@@ -1533,8 +1947,22 @@ relative path counts once."
     (dolist (root *h-include-roots*)
       (dolist (p (directory (concatenate 'string root dir "/*.h")))
         (let ((rel (concatenate 'string dir "/" (pathname-name p) ".h")))
-          (unless (member rel rels :test #'string=) (push rel rels)))))
+          ;; (case-insensitively: on a case-insensitive file system the
+          ;; mui/ and MUI/ scans find the same files)
+          (unless (member rel rels :test #'string-equal) (push rel rels)))))
     (remove-if-not #'h-twinless-p (nreverse rels))))
+
+(defun header-module-stem (rel)
+  "The module stem (amiga/raw/<stem>) of a header-only module: the include
+path without its extension, _ spelled - (reaction/reaction_macros.h ->
+reaction/reaction-macros); an MUI custom-class header mui/<Name>_mcc.h ->
+mui/<name>, the class's file name under MUI:Libs/mui/ in lower case."
+  (let* ((slash (position #\/ rel))
+         (dir (and slash (subseq rel 0 slash)))
+         (base (if slash (subseq rel (1+ slash)) rel)))
+    (if (and dir (string-equal dir "mui") (ends-with "_mcc.h" base))
+        (format nil "mui/~(~A~)" (subseq base 0 (- (length base) 6)))
+        (substitute #\- #\_ (subseq rel 0 (- (length rel) 2))))))
 
 (defun default-includes-for (libname)
   "Convention: <lib>/*.i (plus the twin-less <lib>/*.h) if that NDK
@@ -1568,10 +1996,14 @@ has no .i twin."
 ;;; Header-only modules: .i files (and twin-less .h files) that no library
 ;;; claims get a module named after their path, e.g. devices/audio.i ->
 ;;; amiga/raw/devices/audio, gadgets/tabs.h -> amiga/raw/gadgets/tabs.
+;;; mui/ (either spelling) holds the MUI custom-class headers, <Name>_mcc.h
+;;; -> amiga/raw/mui/<name>: the class opens by name through MUI_NewObjectA
+;;; (there is no library to open), so the module is constants and structs.
 (defparameter *header-only-dirs* '("devices" "hardware" "prefs" "resources"
                                    "libraries" "graphics" "exec" "dos" "intuition"
                                    "utility" "workbench" "datatypes" "diskfont"
-                                   "rexx" "classes" "gadgets" "images" "reaction"))
+                                   "rexx" "classes" "gadgets" "images" "reaction"
+                                   "mui" "MUI"))
 
 ;;; Skipped includes: obsolete-name compatibility files, and C headers
 ;;; that hold no bindable constants (statement macros, stdio aliases) or
@@ -1826,7 +2258,9 @@ names defined."
     (nreverse names)))
 
 (defun field-type-size (ty)
-  (cond ((consp ty) (second ty))
+  (cond ((and (consp ty) (eq (first ty) :array))
+         (* (third ty) (field-type-size (second ty))))
+        ((consp ty) (second ty))
         ((member ty '(:i8 :u8)) 1)
         ((member ty '(:i16 :u16)) 2)
         ((member ty '(:i32 :u32 :single :fptr)) 4)
@@ -1835,8 +2269,9 @@ names defined."
 
 (defun struct-variants (st)
   "A STRUCTURE with several *_SIZE labels (exec's IO / IOSTD) yields one
-C struct per size label, each covering the fields up to that label.
-Returns a list of (c-name size fields)."
+C struct per size label, each covering the fields up to that label.  A C
+struct (read from a header) carries its sizeof.  Returns a list of
+(c-name size fields)."
   (let* ((labels (reverse (i-struct-size-labels st)))   ; definition order
          (fields (reverse (i-struct-fields st)))
          (max-end (reduce #'max
@@ -1846,7 +2281,9 @@ Returns a list of (c-name size fields)."
          (out nil))
     (cond
       ((null labels)
-       (list (list (struct-c-name (i-struct-name st)) max-end fields)))
+       (list (list (struct-c-name (i-struct-name st))
+                   (or (i-struct-size st) max-end)
+                   fields)))
       (t
        (loop for (lbl . off) in labels
              do (let* ((prefix (let ((p (position #\_ lbl :from-end t)))
@@ -1958,7 +2395,7 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
                                  (string-upcase cn) (format-hex val)
                                  (and (or (> val #xFFFFFFFF) (< val (- #x80000000)))
                                       "value exceeds 32 bits")))))))))
-            (when (i-file-structs ifile)
+            (when (or (i-file-structs ifile) (i-file-skipped-structs ifile))
               (format body "~&~%  ;; --- structures from ~A ---~%" rel)
               (dolist (st (i-file-structs ifile))
                 (dolist (variant (struct-variants st))
@@ -1967,7 +2404,11 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
                       (when (claim (format nil "*~A-SIZE*" lname) :struct)
                         (incf n-structs)
                         (dolist (e (emit-struct body st cname size fields #'claim))
-                          (push e exports)))))))))))
+                          (push e exports)))))))
+              ;; a C struct the header reader could not lay out
+              (dolist (sk (i-file-skipped-structs ifile))
+                (incf n-skipped)
+                (format body "  ;; skipped struct ~A: ~A~%" (car sk) (cdr sk)))))))
       ;; --- functions ---
       (unless header-only
         (format body "~&~%  ;; --- functions (~A~@[ + ~A~]) ---~%"
@@ -2131,16 +2572,19 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
          (mos-only (comma-list (getenv-or "BINDGEN_MOS_ONLY" "muimaster,ahi,cybergraphics")))
          (mui-sfd (getenv-or "BINDGEN_MUI_SFD" nil))
          (mui-inc-h (getenv-or "BINDGEN_MUI_INCLUDE_H" nil))
+         (mcc-inc-h (getenv-or "BINDGEN_MCC_INCLUDE_H" nil))
          (out-dir (dir-path (getenv-or "BINDGEN_OUT" "lib/amiga/raw")))
          (only (comma-list (getenv-or "BINDGEN_LIBS" nil)))
          (*docstrings* (not (string= (getenv-or "BINDGEN_DOCSTRINGS" "1") "0")))
          (*i-include-root* (dir-path ndk-inc))
-         (*h-include-roots* (if mui-inc-h
-                                (list (dir-path ndk-inc-h) (dir-path mui-inc-h))
-                                (list (dir-path ndk-inc-h))))
+         (*h-include-roots* (mapcar #'dir-path
+                                    (remove nil (list ndk-inc-h mui-inc-h mcc-inc-h))))
          (*asm-symbols* (make-hash-table :test 'equal))
          (*c-macros* (make-hash-table :test 'equal))
          (*i-files* (make-hash-table :test 'equal))
+         (*c-struct-layouts* (make-hash-table :test 'equal))
+         (*i-struct-layouts* (make-hash-table :test 'equal))
+         (*i-struct-layouts-key* -1)
          (*asm-warnings* nil)
          (ndk-libs (load-sfd-dir ndk-sfd :ndk))
          (mos-libs (load-sfd-dir mos-sfd :mos))
@@ -2167,6 +2611,8 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
                 mui-libs))
       (t
        (format t "MUI SDK: none — muimaster is emitted from the MorphOS SDK's function table only (no libraries/mui.h constants); commit only output generated WITH the MUI SDK~%")))
+    (when mcc-inc-h
+      (format t "MCC headers: ~A (mui/*_mcc.h -> amiga/raw/mui/<name>)~%" mcc-inc-h))
     (format t "Output: ~A~%" out-dir)
     ;; LVO self-check against the NDK's lvo/*.i — a mismatch means the SFD
     ;; parser miscounted and every later LVO of that library is wrong, so
@@ -2204,7 +2650,8 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
             (unless (member rel *skip-includes* :test #'string=)
               (push rel all-inc))))
         (dolist (rel (twinless-h-files d))
-          (unless (member rel *skip-includes* :test #'string=)
+          (unless (or (member rel *skip-includes* :test #'string=)
+                      (member rel all-inc :test #'string-equal))   ; mui/ vs MUI/
             (push rel all-inc))))
       (setf all-inc (sort all-inc #'string<))
       (parse-i-files ndk-inc (remove-if-not (lambda (r) (ends-with ".i" r)) all-inc))
@@ -2236,8 +2683,7 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
       (dolist (rel all-inc)
         (unless (gethash rel claimed-includes)
           (let* ((ifile (gethash rel *i-files*))
-                 ;; drop ".i" / ".h"; reaction_macros -> reaction-macros
-                 (stem (substitute #\- #\_ (subseq rel 0 (- (length rel) 2))))
+                 (stem (header-module-stem rel))
                  (module (concatenate 'string "amiga/raw/" stem))
                  (path (concatenate 'string out-dir stem ".lisp")))
             (when (and ifile

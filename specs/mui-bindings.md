@@ -290,28 +290,81 @@ Host load: ~0 heap beyond the table; FASL 37 KB.
   `Rectangle.mui`, the `:morphos` guard), skipped where the library is
   absent.
 
-### 3.4 Later phases of the raw layer (not v1)
+### 3.4 Later phases of the raw layer
 
-- **Phase 2 — C structs from `.h`**: a small C struct reader (member
-  types ULONG/LONG/UWORD/WORD/UBYTE/BYTE/BOOL/APTR/`T *`, `struct X`
-  (size from the `.i` symbol table — `MinNode`, `Node`, `Hook`,
-  `Rectangle`, `TextFont`… are all there), arrays, unions = max, m68k
-  2-byte alignment) emitting `:struct` rows.  Unlocks `MUI_MinMax`,
-  `MUI_InputHandlerNode`, `MUI_EventHandlerNode`, the `MUIP_*` messages —
-  and, as a bonus, the ReAction `.h`-only structs (`ColumnInfo` etc.,
-  today "built by hand" in the listbrowser example).  Needed for real
-  use only once callbacks exist (§4.5).
-- **Phase 3 — MCC headers**: `mui/*_mcc.h` (TextEditor, NList,
-  BetterString, …) → `amiga/raw/mui/<name>` modules, mirroring
-  `MUI:Libs/mui/<Name>.mcc` the way `gadgets/button.gadget` →
-  `gadgets/button`; the class opens through `MUI_NewObjectA` by name, so
-  these modules are constants-only (no base variable).
+- ~~**Phase 2 — C structs from `.h`**~~ — **built 2026-08-30**, see
+  §3.6.
+- ~~**Phase 3 — MCC headers**~~ — **built 2026-08-30**, see §3.6.
 - **Phase 3b — MUI 5 (AmigaOS) SDK** as an alternative primary: its fd
   has more functions with `##bias` beyond 198 and the header adds `MUIB_`
   tags; version markers → `(%version>= 20)` guards, exactly the OS 3.2
   vs 3.0 handling.  Also pull `gg:os-include/libraries/mui.h` from the
   MorphOS box as a second constant source (conflicting values = fatal,
   like the LVO check).
+
+### 3.6 C structs and MCC headers — as built (2026-08-30)
+
+The header reader of `gen-amiga-bindings.lisp` ("C struct definitions")
+lays out every `struct` / `union` definition of a twin-less header and
+emits it as a `(:struct …)` row exactly like a `.i` `STRUCTURE`, so the
+136 structs of `mui.h` (`MUI_MinMax`, `MUI_NotifyData`, `MUI_AreaData`,
+`MUI_RenderInfo`, `MUI_CustomClass`, the `MUI_*HandlerNode`s, every
+`MUIP_*` message) and the ReAction ones (`ColumnInfo`, `lbSort`,
+`SpeedButtonNode`…) are generated — 600 structs across the tree, up from
+584.
+
+- **Layout rules** are the m68k ABI's: a member of ≥ 2 bytes is aligned
+  to 2, a struct is padded to its largest member alignment (1 or 2), an
+  enum is an `int`.  The MorphOS SDK headers `#pragma pack(2)` to exactly
+  this layout, so one table serves both platforms.
+- **Member types**: the `exec/types.h` scalars and the C types
+  (`char`/`short`/`int`/`long`/`float`/`double`, signed/unsigned), the
+  pointer typedefs, `T *` and function pointers (`:fptr` — a pointer
+  needs no layout, C allows pointers to structs declared later or never:
+  `MUIP_AskMinMax` points at a `MUI_MinMax` defined 1400 lines below),
+  `struct X` by value (`(:struct size)`; X a `.i` `STRUCTURE` under its C
+  name — `MinNode`, `IBox`, `TextFont`, `timeval` — a C struct read
+  before it, or a typedef of one), arrays (`(:array elt n)` for scalars
+  and pointers; a `char[n]` buffer and an array of structs as
+  `(:struct bytes)`, a pointer to the field), `enum X` (`:i32`), nested
+  struct / union members whose leaves are flattened next to the member
+  (`MUI-INPUT-HANDLER-NODE-MILLIS`, as mui.h's `ihn_Millis` macro spells
+  it), `typedef struct [Tag] {…} Name, *Ptr;` (Name an alias, Ptr not),
+  `typedef struct Tag Alias;`.
+- **Skips**, each a `;; skipped struct X: reason` comment counted in the
+  module header: a bitfield, an unknown member type, a reserved
+  `_`-prefixed name (`__dummyXFC2__` — still laid out, so a struct
+  embedding it works), and a struct the `.i` files already define
+  (`libraries/keymap.h` repeats `devices/keymap.i`'s `KeyMap`: the
+  `STRUCTURE`'s row is the binding, a differing size would be a
+  warning).  Forward declarations, prototypes, externs and definitions in
+  inactive `#if` blocks are not read.  Across the real NDK + MUI kit one
+  struct is skipped for a reason other than those (`Isrvstr`).
+- **MCC headers**: `mui/<Name>_mcc.h` under any header root (either
+  spelling of `mui/`) → `amiga/raw/mui/<name>`, package
+  `AMIGA.RAW.MUI.<NAME>`, header-only (constants + method structs; the
+  class opens by name).  `scripts/gen-amiga-bindings.sh` collects the
+  kit's `ExtClasses/*/Developer/C/Include/MUI/*_mcc.h` and
+  `MCC_HEADERS=<dir>` into one temporary root (`BINDGEN_MCC_INCLUDE_H`);
+  the committed tree carries `mui/tron` from the kit's `MCC_Tron` sample.
+- **Tests**: the fixture `mui.h` (`tests/fixtures/bindgen/`) carries a
+  struct per rule — alignment, `.i` and C embeds, all array kinds, a
+  union with a nested struct, typedef forms, the skips — plus two MCC
+  headers (one under the MUI root's `mui/`, one under the third root's
+  `MUI/`); `tests/test_amiga_bindgen.lisp` pins every offset and the
+  module paths (151 checks per platform), and its committed mode pins
+  `mui.h`'s real layouts (`MUI_AreaData` 40 with `mad_Flags` at 36,
+  `MUI_PubScreenDesc` 1084 …), `ColumnInfo`, the keymap deferral and
+  `mui/tron`.
+- **The curated layer over it**: `lib/amiga/mui.lisp` cannot require the
+  raw module (it opens `muimaster.library` at load), so its offsets are
+  constants named after the generated accessors
+  (`+mui-area-data-flags-offset+`, `+mui-notify-data-size+`,
+  `+iclass-super-offset+` …) and `tests/test_amiga_curated_vs_raw.lisp`'s
+  new check 4 requires each `+X-OFFSET+` / `+X-SIZE+` of a curated module
+  to equal the raw `X` accessor's offset / `*X-SIZE*` — a name without a
+  raw namesake fails.  The listbrowser example builds its `ColumnInfo`
+  array through the generated accessors.
 
 ## 4. Layer 2 — `AMIGA.MUI` (`lib/amiga/mui.lisp`, hand-written)
 
@@ -494,11 +547,12 @@ Over the callback runtime of §10.5, three thin Lisp layers:
   functions over the `MUI_NotifyData` (28 bytes) + `MUI_AreaData`
   layout: `mad_RenderInfo` +28, `mad_Font` +36, `mad_MinMax` +40,
   `mad_Box` +52, the four margin bytes +60..63, `mad_Flags` +64;
-  `MUI_RenderInfo` fields at 0/4/8/12/16/20.  The raw module has no
-  struct rows for mui.h (its structs come from `.i` files and mui.h has
-  none), so these offsets are hand-typed and checked on the target by
-  `test-mui.lisp` (a live `MUIM_Draw` reads a plausible `_mwidth` and a
-  non-NULL `_rp`).
+  `MUI_RenderInfo` fields at 0/4/8/12/16/20.  These offsets are
+  constants named after the generated struct accessors and pinned to the
+  raw rows on the host (§3.6, check 4 of `test_amiga_curated_vs_raw`),
+  and checked live on the target by `test-mui.lisp` (a `MUIM_Draw` reads
+  a plausible `_mwidth` and a non-NULL `_rp`, and the raw accessors read
+  the same values).
 
 Examples: `class1.lisp` (the SDK's `Class1.c`, verbatim in shape) and
 `hooks.lisp` (display hook + `MUIM_CallHook`, the idioms of `psi.c` /
@@ -695,9 +749,10 @@ Amiga (`make -f Makefile.cross test-amiga`, FS-UAE has MUI 3.8):
 5. ~~The `amiga/hook` runtime feature that unlocks §4.5.~~  **Done
    2026-08-30** (§10.5, §4.7): `class1` and `hooks` join the examples
    harness.
-6. Later: Phase 2 struct reader (mui.h has no `.i` twin, so the
-   `MUI_AreaData` / `MUI_RenderInfo` / `MUIP_*` layouts of §4.7 are
-   hand-typed), MCC modules, MUI 5 / MorphOS header merge.
+6. ~~Phase 2 struct reader, MCC modules.~~  **Done 2026-08-30** (§3.6):
+   the `MUI_AreaData` / `MUI_RenderInfo` / `MUIP_*` layouts of §4.7 are
+   generated and the curated constants pinned to them.
+7. Later: MUI 5 / MorphOS header merge (§3.4 Phase 3b).
 
 ## 9. Decisions to take before coding
 

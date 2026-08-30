@@ -65,7 +65,7 @@
   (volume    :u16    44)
   (cycles    :u16    46))
 
-(defconstant +ioaudio-size+ 68)
+(defconstant +io-audio-size+ 68)
 
 ;;; Commands (exec/io.h, devices/audio.h)
 (defconstant +cmd-write+ 3)
@@ -124,7 +124,7 @@ ADIOF_NOWAIT."
           (when (zerop port) (return-from open-audio nil))
           (setf port (ffi:make-foreign-pointer port))
           (setf io (%exec +lvo-create-io-request+
-                          (list :a0 port :d0 +ioaudio-size+)))
+                          (list :a0 port :d0 +io-audio-size+)))
           (when (zerop io) (return-from open-audio nil))
           (setf io (ffi:make-foreign-pointer io))
           ;; OpenDevice on audio.device doubles as ADCMD_ALLOCATE when

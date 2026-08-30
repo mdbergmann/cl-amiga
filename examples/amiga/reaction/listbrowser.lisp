@@ -53,20 +53,22 @@
 (defvar *auto-fit* nil)
 
 (defun make-column-info (columns)
-  "A struct ColumnInfo array — { WORD ci_Width; STRPTR ci_Title; ULONG
-ci_Flags; } per column, 10 bytes each, terminated by { -1, ~0, -1 } —
-in pooled memory.  COLUMNS is a list of (width title)."
+  "A struct ColumnInfo array — one per column, terminated by { -1, ~0, ~0 }
+— in pooled memory, laid out by the generated gadgets/listbrowser
+bindings (*column-info-size*, column-info-width / -title / -flags).
+COLUMNS is a list of (width title)."
   (let* ((n (length columns))
-         (ci (ra:pool-alloc (* 10 (1+ n)))))
+         (size lb:*column-info-size*)
+         (ci (ra:pool-alloc (* size (1+ n)))))
     (loop for (width title) in columns
-          for offset from 0 by 10
-          do (ffi:poke-i16 ci width offset)
-             (ffi:poke-u32 ci (ffi:foreign-pointer-address (ra:pool-string title)) (+ offset 2))
-             (ffi:poke-u32 ci 0 (+ offset 6)))
-    (let ((end (* 10 n)))
-      (ffi:poke-i16 ci -1 end)
-      (ffi:poke-u32 ci #xFFFFFFFF (+ end 2))
-      (ffi:poke-u32 ci #xFFFFFFFF (+ end 6)))
+          for entry = ci then (ffi:pointer+ entry size)
+          do (setf (lb:column-info-width entry) width
+                   (lb:column-info-title entry) (ra:pool-string title)
+                   (lb:column-info-flags entry) 0))
+    (let ((end (ffi:pointer+ ci (* size n))))
+      (setf (lb:column-info-width end) -1
+            (lb:column-info-title end) #xFFFFFFFF
+            (lb:column-info-flags end) #xFFFFFFFF))
     ci))
 
 (defun make-row-list (rows)

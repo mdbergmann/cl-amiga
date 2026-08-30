@@ -88,7 +88,8 @@ enum
 
 enum FixGadHow { FIXGAD_SAVE = 0, FIXGAD_USE };
 
-/* C structs are not read; an enum inside one is not a top-level enum */
+/* a C struct is read (14 bytes: enums are ints); the enum inside it is
+ * not a top-level enum */
 struct FixGadInfo
 {
     WORD fgi_Width;

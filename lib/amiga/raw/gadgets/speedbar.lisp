@@ -5,7 +5,7 @@
 ;;;   MorphOS SDK speedbar_lib.fd + clib/speedbar_protos.h (via fd2sfd)
 ;;;   gadgets/speedbar.h
 ;;;
-;;; 5 functions, 57 constants, 0 structs.
+;;; 5 functions, 57 constants, 1 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
 ;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
@@ -93,6 +93,14 @@
   (:const "+SBTYPE-BOTH+" 0)
   (:const "+SBTYPE-TEXT+" 1)
   (:const "+SBTYPE-IMAGE+" 2)
+
+  ;; --- structures from gadgets/speedbar.h ---
+  (:struct "SB-SET-NODE-ATTRS" 16   ; sbSetNodeAttrs (gadgets/speedbar.h)
+    ("METHOD-ID" :u32 0)
+    ("G-INFO" :fptr 4)
+    ("NODE" :fptr 8)
+    ("ATTR-LIST" :fptr 12)
+    )
 
   ;; --- functions (speedbar_lib.sfd + MorphOS SDK) ---
   (:fn "SPEEDBAR-GET-CLASS" -30 () :pointer 40)   ; Class * SPEEDBAR_GetClass() () LVO -30

@@ -35,7 +35,7 @@ ports and what it demonstrates.
 | `clicktab.lisp` | `ClickTab.c` | clicktab.gadget tabs switching a page.gadget (`PAGE_Current` + `RethinkLayout`) |
 | `fuelgauge.lisp` | `FuelGauge.c` | fuelgauge.gadget animated from the program with `set-gadget-attrs`, busy pointer via `set-attrs` |
 | `integer.lisp` | `Integer.c` | integer.gadget with/without arrows, `GA_TabCycle`, `ActivateLayoutGadget`, reading `INTEGER_Number` back |
-| `listbrowser.lisp` | `ListBrowser1.c` | listbrowser.gadget with three columns (`struct ColumnInfo` built by hand), node attributes read back, multi-select / auto-fit toggled live |
+| `listbrowser.lisp` | `ListBrowser1.c` | listbrowser.gadget with three columns (the `struct ColumnInfo` array built through the generated `gadgets/listbrowser` struct accessors), node attributes read back, multi-select / auto-fit toggled live |
 | `requester.lisp` | `Requester.c` | requester.class: info, multi-button, string (with chooser presets) and integer requesters through `open-requester` |
 
 Run one interactively:

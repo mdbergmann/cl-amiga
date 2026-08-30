@@ -9,7 +9,7 @@
 ;;; is #x200).  Until they are rebased onto the raw modules, this test makes
 ;;; every hand-typed value agree with the generated one.
 ;;;
-;;; Three checks:
+;;; Four checks:
 ;;;   1. CONSTANTS  every +NAME+ constant owned by a curated package that also
 ;;;      exists under the same name in any AMIGA.RAW.* package has the same
 ;;;      value (compared on the loaded symbols, so macro/expression values
@@ -22,6 +22,15 @@
 ;;;   3. DEFCFUN  every AMIGA.FFI:DEFCFUN in a curated module exists in the raw
 ;;;      module of its library base at the same offset with the same register
 ;;;      assignment.
+;;;   4. STRUCT LAYOUTS  a curated module that reads an OS struct by hand
+;;;      (AMIGA.MUI's custom-class support cannot require the raw muimaster
+;;;      module, which opens the library at load) spells its offsets and sizes
+;;;      as constants of a fixed form, and each must agree with the generated
+;;;      struct rows: +<ACCESSOR>-OFFSET+ is the offset of the raw field
+;;;      accessor <ACCESSOR> (+MUI-AREA-DATA-FLAGS-OFFSET+ = 36), +<STRUCT>-SIZE+
+;;;      the raw *<STRUCT>-SIZE* (+MUI-NOTIFY-DATA-SIZE+ = 28) -- in whichever
+;;;      raw module carries the struct.  A name without a raw namesake FAILS
+;;;      (a typo would otherwise pin nothing).
 ;;; Checks 2 and 3 read the SOURCE forms (the offsets/registers are not
 ;;; introspectable on the compiled wrappers), honouring IN-PACKAGE and
 ;;; descending into the raw modules' WHEN/PROGN platform guards.
@@ -160,10 +169,20 @@ REGS the register keyword list — the same shape DEFCFUN-ENTRY yields."
       (error "~A carries no binding table (enumerated before the tables were read?)"
              pkg-name))
     (dolist (row (clamiga::%binding-table-entries pkg-name))
-      (when (eq (first row) :fn)
-        (destructuring-bind (kind name lvo regs &rest more) row
-          (declare (ignore kind more))
-          (push (list name base regs) (gethash lvo table)))))
+      (case (first row)
+        (:fn
+         (destructuring-bind (kind name lvo regs &rest more) row
+           (declare (ignore kind more))
+           (push (list name base regs) (gethash lvo table))))
+        ;; the struct rows, for check 4: (:field "ACCESSOR" type offset) and
+        ;; the (:var "*STRUCT-SIZE*" n) a (:struct ...) row expands into
+        (:field
+         (setf (gethash (second row) *raw-fields*) (cons pkg-name (fourth row))))
+        (:var
+         (let ((n (second row)))
+           (when (and (> (length n) 7) (char= (char n 0) #\*) (suffix-p "-SIZE*" n))
+             (setf (gethash (subseq n 1 (- (length n) 6)) *raw-sizes*)
+                   (cons pkg-name (third row))))))))
     (dolist (form (read-forms (raw-package-source pkg-name)))
       (walk-defcfuns form
                      (lambda (f)
@@ -173,6 +192,14 @@ REGS the register keyword list — the same shape DEFCFUN-ENTRY yields."
 
 (defvar *raw-tables* (make-hash-table :test #'equal)
   "raw package name -> its function table")
+(defvar *raw-fields* (make-hash-table :test #'equal)
+  "\"ACCESSOR\" -> (raw-package . offset), every struct field row of every raw module")
+(defvar *raw-sizes* (make-hash-table :test #'equal)
+  "\"STRUCT\" -> (raw-package . size), every *STRUCT-SIZE* of every raw module")
+
+(defun suffix-p (suffix s)
+  (and (>= (length s) (length suffix))
+       (string= suffix s :start2 (- (length s) (length suffix)))))
 
 (defun raw-table (pkg-name)
   (or (gethash pkg-name *raw-tables*)
@@ -212,6 +239,15 @@ without the library prefix."
                (char= #\+ (char n (1- (length n)))))
       (normalize (subseq n 5 (1- (length n)))))))
 
+(defun layout-constant-key (sym)
+  "For a struct layout constant (check 4): (values \"ACCESSOR\" :offset) for
++ACCESSOR-OFFSET+, (values \"STRUCT\" :size) for +STRUCT-SIZE+; NIL otherwise."
+  (let ((n (symbol-name sym)))
+    (when (and (> (length n) 8) (char= #\+ (char n 0)) (char= #\+ (char n (1- (length n)))))
+      (cond ((suffix-p "-OFFSET+" n) (values (subseq n 1 (- (length n) 8)) :offset))
+            ((suffix-p "-SIZE+" n) (values (subseq n 1 (- (length n) 6)) :size))
+            (t nil)))))
+
 ;;; ------------------------------------------------------------------
 ;;; Check 1: constants by name against every raw package
 ;;; ------------------------------------------------------------------
@@ -234,7 +270,8 @@ without the library prefix."
          (matched 0)
          (uncovered '()))
     (dolist (s (owned-constants pkg))
-      (unless (lvo-constant-function-name s)   ; LVO constants: check 2
+      (unless (or (lvo-constant-function-name s)   ; LVO constants: check 2
+                  (layout-constant-key s))         ; struct layouts: check 4
         (let ((hits '()))
           (dolist (rp raws)
             (multiple-value-bind (rs status) (find-symbol (symbol-name s) rp)
@@ -317,12 +354,36 @@ without the library prefix."
       (pass "~A: ~D DEFCFUN~:P match the raw bindings' LVO and registers" pkg-name n))))
 
 ;;; ------------------------------------------------------------------
+;;; Check 4: struct layout constants against the raw modules' struct rows
+;;; ------------------------------------------------------------------
+
+(defun check-layout-constants (pkg-name)
+  (let ((n 0))
+    (dolist (s (owned-constants (find-package pkg-name)))
+      (multiple-value-bind (key kind) (layout-constant-key s)
+        (when key
+          (incf n)
+          (let ((raw (if (eq kind :offset)
+                         (gethash key *raw-fields*)
+                         (gethash key *raw-sizes*))))
+            (cond ((null raw)
+                   (failed "~A:~A: no AMIGA.RAW.* module has ~:[a struct *~A-SIZE*~;a struct field accessor ~A~] -- the constant pins nothing (misspelt, or the struct is not generated?)"
+                           pkg-name (symbol-name s) (eq kind :offset) key))
+                  ((/= (cdr raw) (symbol-value s))
+                   (failed "~A:~A = ~D but ~A's ~:[*~A-SIZE*~;~A~] is at ~D"
+                           pkg-name (symbol-name s) (symbol-value s)
+                           (car raw) (eq kind :offset) key (cdr raw))))))))
+    (when (> n 0)
+      (pass "~A: ~D struct layout constant~:P agree with the raw struct rows" pkg-name n))))
+
+;;; ------------------------------------------------------------------
 
 (dolist (c *curated*)
   (destructuring-bind (require-name pkg-name raw-pkgs) c
     (check-constants pkg-name)
     (when raw-pkgs
       (check-lvo-constants pkg-name raw-pkgs))
-    (check-defcfuns require-name pkg-name)))
+    (check-defcfuns require-name pkg-name)
+    (check-layout-constants pkg-name)))
 
 (format t "~&CURATED-VS-RAW-RESULT ok=~D fail=~D uncovered=~D~%" *ok* *fail* *uncovered*)

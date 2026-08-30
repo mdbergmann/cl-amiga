@@ -4,7 +4,7 @@
 ;;;   listview_lib.sfd ($VER: listview_lib.sfd 47.1 (30.11.2021))
 ;;;   gadgets/listview.h
 ;;;
-;;; 1 functions, 20 constants, 0 structs.
+;;; 1 functions, 20 constants, 1 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
 ;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
@@ -55,6 +55,25 @@
   (:const "+LISTVIEW-SCROLL-LEFT+" #x8400000E)
   (:const "+LISTVIEW-SCROLL-RIGHT+" #x8400000F)
   (:const "+LISTVIEW-SPACING+" #x84000010)
+
+  ;; --- structures from gadgets/listview.h ---
+  (:struct "LIST-LABEL-NODE" 48   ; ListLabelNode (gadgets/listview.h)
+    ("NODE" (:struct 14) 0)
+    ("USER-DATA" :u32 14)
+    ("RENDER-FOREGROUND" :i16 18)
+    ("RENDER-BACKGROUND" :i16 20)
+    ("SELECT-FOREGROUND" :i16 22)
+    ("SELECT-BACKGROUND" :i16 24)
+    ("RENDER-IMAGE" :fptr 26)
+    ("SELECT-IMAGE" :fptr 30)
+    ("TEXT-LENGTH" :i16 34)
+    ("LEFT-EDGE" :i16 36)
+    ("TOP-EDGE" :i16 38)
+    ("WIDTH" :i16 40)
+    ("HEIGHT" :i16 42)
+    ("JUSTIFICATION" :i16 44)
+    ("SELECTED" :i16 46)
+    )
 
   ;; --- functions (listview_lib.sfd) ---
   (:fn "LISTVIEW-GET-CLASS" -30 () :pointer 40)   ; Class * LISTVIEW_GetClass() () LVO -30

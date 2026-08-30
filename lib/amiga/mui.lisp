@@ -668,10 +668,65 @@ inside one."
                       (amiga.ffi:free-dispatcher dispatcher)))
     mcc))
 
+;;; ----------------------------------------------------------------
+;;; Struct layouts.  The custom-class support reads MUI's and intuition's
+;;; structs by hand: this module cannot require the generated
+;;; amiga/raw/muimaster (it opens muimaster.library at load, and AMIGA.MUI
+;;; must load where MUI is absent).  So every offset and size below is a
+;;; constant named after the generated accessor or size --
+;;; +MUI-AREA-DATA-FLAGS-OFFSET+ is the offset of
+;;; AMIGA.RAW.MUIMASTER:MUI-AREA-DATA-FLAGS, +MUI-NOTIFY-DATA-SIZE+ its
+;;; *MUI-NOTIFY-DATA-SIZE* -- and tests/test_amiga_curated_vs_raw.lisp
+;;; requires each to agree with the generated struct row (check 4).  The
+;;; layouts are mui.h 3.8's and intuition/classes.h's, the same on MorphOS
+;;; (its headers pack(2) to the 68k layout).
+;;; ----------------------------------------------------------------
+
+;; struct MUI_CustomClass (mui.h)
+(defconstant +mui-custom-class-class-offset+ 24)         ; mcc_Class
+;; struct IClass (intuition/classes.h)
+(defconstant +iclass-dispatcher-offset+ 0)               ; cl_Dispatcher, a struct Hook
+(defconstant +iclass-super-offset+ 24)                   ; cl_Super
+(defconstant +iclass-inst-offset-offset+ 32)             ; cl_InstOffset (UWORD)
+;; the custom-class method messages
+(defconstant +muip-ask-min-max-min-max-info-offset+ 4)   ; struct MUIP_AskMinMax.MinMaxInfo
+(defconstant +muip-draw-flags-offset+ 4)                 ; struct MUIP_Draw.flags
+;; struct MUI_MinMax: six WORDs
+(defconstant +mui-min-max-size+ 12)
+(defconstant +mui-min-max-min-width-offset+ 0)
+(defconstant +mui-min-max-min-height-offset+ 2)
+(defconstant +mui-min-max-max-width-offset+ 4)
+(defconstant +mui-min-max-max-height-offset+ 6)
+(defconstant +mui-min-max-def-width-offset+ 8)
+(defconstant +mui-min-max-def-height-offset+ 10)
+;; an Object * points at its MUI_NotifyData, followed by the MUI_AreaData
+;; (mui.h's struct __dummyXFC2__): an area field sits at
+;; +MUI-NOTIFY-DATA-SIZE+ plus its MUI_AreaData offset
+(defconstant +mui-notify-data-size+ 28)
+(defconstant +mui-area-data-render-info-offset+ 0)       ; mad_RenderInfo
+(defconstant +mui-area-data-font-offset+ 8)              ; mad_Font
+(defconstant +mui-area-data-box-offset+ 24)              ; mad_Box, a struct IBox
+(defconstant +mui-area-data-addleft-offset+ 32)          ; mad_addleft .. mad_subheight, BYTEs
+(defconstant +mui-area-data-addtop-offset+ 33)
+(defconstant +mui-area-data-subwidth-offset+ 34)
+(defconstant +mui-area-data-subheight-offset+ 35)
+(defconstant +mui-area-data-flags-offset+ 36)            ; mad_Flags
+;; struct IBox (intuition.h): four WORDs
+(defconstant +i-box-left-offset+ 0)
+(defconstant +i-box-top-offset+ 2)
+(defconstant +i-box-width-offset+ 4)
+(defconstant +i-box-height-offset+ 6)
+;; struct MUI_RenderInfo
+(defconstant +mui-render-info-screen-offset+ 4)          ; mri_Screen
+(defconstant +mui-render-info-draw-info-offset+ 8)       ; mri_DrawInfo
+(defconstant +mui-render-info-pens-offset+ 12)           ; mri_Pens
+(defconstant +mui-render-info-window-offset+ 16)         ; mri_Window
+(defconstant +mui-render-info-rastport-offset+ 20)       ; mri_RastPort
+
 (defun custom-class-class (mcc)
   "The struct IClass of a CREATE-CUSTOM-CLASS class (mcc->mcc_Class) as a
 foreign pointer -- what NEW-OBJECT takes to make an object of it."
-  (ffi:make-foreign-pointer (ffi:peek-u32 mcc 24)))          ; struct MUI_CustomClass.mcc_Class
+  (ffi:make-foreign-pointer (ffi:peek-u32 mcc +mui-custom-class-class-offset+)))
 
 (defun method-id (message)
   "The MethodID of a method MESSAGE (its first longword), as an unsigned
@@ -682,23 +737,22 @@ integer -- compare against the MUIM_ / OM_ constants."
   "DoSuperMethodA(CLASS, OBJECT, MESSAGE): pass MESSAGE on to the
 superclass of CLASS, from inside a dispatcher.  Returns the result as an
 unsigned integer (the object for OM_NEW, 0 on failure)."
-  ;; struct IClass.cl_Super (+24) -> its cl_Dispatcher hook (+0)
-  (amiga.raw.utility:call-hook-pkt (ffi:make-foreign-pointer (ffi:peek-u32 class 24))
-                                   object message))
+  ;; struct IClass.cl_Super -> its cl_Dispatcher hook
+  (amiga.raw.utility:call-hook-pkt
+   (ffi:make-foreign-pointer (+ (ffi:peek-u32 class +iclass-super-offset+)
+                                +iclass-dispatcher-offset+))
+   object message))
 
 (defun inst-data (class object)
   "INST_DATA(CLASS, OBJECT): the instance data of OBJECT that CLASS's
 DATA-SIZE reserved, as a foreign pointer (zeroed at OM_NEW)."
-  (ffi:pointer+ object (ffi:peek-u16 class 32)))             ; struct IClass.cl_InstOffset
-
-;;; MUIM_AskMinMax: struct MUIP_AskMinMax { ULONG MethodID; struct MUI_MinMax *MinMaxInfo; }
-;;; struct MUI_MinMax { WORD MinWidth, MinHeight, MaxWidth, MaxHeight, DefWidth, DefHeight; }
+  (ffi:pointer+ object (ffi:peek-u16 class +iclass-inst-offset-offset+)))
 
 (defun min-max-info (message)
   "The struct MUI_MinMax a MUIM_AskMinMax MESSAGE points at, as a foreign
 pointer: six WORDs -- MinWidth, MinHeight, MaxWidth, MaxHeight, DefWidth,
 DefHeight -- at offsets 0, 2, 4, 6, 8, 10."
-  (ffi:make-foreign-pointer (ffi:peek-u32 message 4)))
+  (ffi:make-foreign-pointer (ffi:peek-u32 message +muip-ask-min-max-min-max-info-offset+)))
 
 (defun add-min-max (message &key (min-width 0) (min-height 0) (max-width 0)
                                  (max-height 0) (def-width 0) (def-height 0))
@@ -708,7 +762,9 @@ superclass's frame and spacing (the values must be ADDED, not set).
 Returns NIL."
   (let ((info (min-max-info message)))
     (loop for delta in (list min-width min-height max-width max-height def-width def-height)
-          for offset from 0 by 2
+          for offset in (list +mui-min-max-min-width-offset+ +mui-min-max-min-height-offset+
+                              +mui-min-max-max-width-offset+ +mui-min-max-max-height-offset+
+                              +mui-min-max-def-width-offset+ +mui-min-max-def-height-offset+)
           unless (zerop delta)
             do (ffi:poke-i16 info (+ (ffi:peek-i16 info offset) delta) offset)))
   nil)
@@ -716,47 +772,54 @@ Returns NIL."
 (defun draw-flags (message)
   "The flags of a MUIM_Draw MESSAGE (struct MUIP_Draw.flags): test
 MADF_DRAWOBJECT before rendering, MADF_DRAWUPDATE for an update."
-  (ffi:peek-u32 message 4))
+  (ffi:peek-u32 message +muip-draw-flags-offset+))
 
-;;; The mui.h shortcuts for custom-class methods.  An Object * points at
-;;; its MUI_NotifyData (28 bytes) followed by the MUI_AreaData:
-;;;   +28 mad_RenderInfo   +36 mad_Font   +40 mad_MinMax (12)
-;;;   +52 mad_Box (IBox: Left, Top, Width, Height, WORDs)
-;;;   +60 mad_addleft +61 mad_addtop +62 mad_subwidth +63 mad_subheight (BYTEs)
-;;;   +64 mad_Flags
-;;; MUI_RenderInfo: +0 mri_WindowObject +4 mri_Screen +8 mri_DrawInfo
-;;;   +12 mri_Pens +16 mri_Window +20 mri_RastPort +24 mri_Flags
+;;; The mui.h shortcuts for custom-class methods, over the MUI_AreaData
+;;; that follows the object's MUI_NotifyData (the layout constants above).
 ;;; Validity is mui.h's: the render info between MUIM_Setup and
 ;;; MUIM_Cleanup, the window and rastport between MUIM_Show and MUIM_Hide,
 ;;; the box and its margins during MUIM_Draw.
 
+(defun %area-offset (field-offset)
+  "The offset of a MUI_AreaData field from the object."
+  (+ +mui-notify-data-size+ field-offset))
+
 (defun area-render-info (object)
   "muiRenderInfo(obj): the struct MUI_RenderInfo of OBJECT (valid between
 MUIM_Setup and MUIM_Cleanup), as a foreign pointer."
-  (ffi:make-foreign-pointer (ffi:peek-u32 object 28)))
+  (ffi:make-foreign-pointer
+   (ffi:peek-u32 object (%area-offset +mui-area-data-render-info-offset+))))
 
 (defun %render-info-field (object offset)
   (ffi:make-foreign-pointer (ffi:peek-u32 (area-render-info object) offset)))
 
-(defun area-window (object)    "_window(obj): the struct Window (MUIM_Show..MUIM_Hide)."  (%render-info-field object 16))
-(defun area-rastport (object)  "_rp(obj): the struct RastPort to draw into (MUIM_Show..MUIM_Hide)." (%render-info-field object 20))
-(defun area-draw-info (object) "_dri(obj): the screen's struct DrawInfo (MUIM_Setup..MUIM_Cleanup)." (%render-info-field object 8))
-(defun area-screen (object)    "_screen(obj): the struct Screen (MUIM_Setup..MUIM_Cleanup)." (%render-info-field object 4))
-(defun area-pens (object)      "_pens(obj): MUI's pen array, UWORD[] (MUIM_Setup..MUIM_Cleanup)." (%render-info-field object 12))
-(defun area-font (object)      "_font(obj): the object's struct TextFont (MUIM_Setup..MUIM_Cleanup)." (ffi:make-foreign-pointer (ffi:peek-u32 object 36)))
-(defun area-flags (object)     "mad_Flags of OBJECT (MADF_*)." (ffi:peek-u32 object 64))
+(defun area-window (object)    "_window(obj): the struct Window (MUIM_Show..MUIM_Hide)."  (%render-info-field object +mui-render-info-window-offset+))
+(defun area-rastport (object)  "_rp(obj): the struct RastPort to draw into (MUIM_Show..MUIM_Hide)." (%render-info-field object +mui-render-info-rastport-offset+))
+(defun area-draw-info (object) "_dri(obj): the screen's struct DrawInfo (MUIM_Setup..MUIM_Cleanup)." (%render-info-field object +mui-render-info-draw-info-offset+))
+(defun area-screen (object)    "_screen(obj): the struct Screen (MUIM_Setup..MUIM_Cleanup)." (%render-info-field object +mui-render-info-screen-offset+))
+(defun area-pens (object)      "_pens(obj): MUI's pen array, UWORD[] (MUIM_Setup..MUIM_Cleanup)." (%render-info-field object +mui-render-info-pens-offset+))
+(defun area-font (object)      "_font(obj): the object's struct TextFont (MUIM_Setup..MUIM_Cleanup)." (ffi:make-foreign-pointer (ffi:peek-u32 object (%area-offset +mui-area-data-font-offset+))))
+(defun area-flags (object)     "mad_Flags of OBJECT (MADF_*)." (ffi:peek-u32 object (%area-offset +mui-area-data-flags-offset+)))
 
-(defun area-left (object)   "_left(obj): the object's left edge (MUIM_Draw)."  (ffi:peek-i16 object 52))
-(defun area-top (object)    "_top(obj): the object's top edge (MUIM_Draw)."    (ffi:peek-i16 object 54))
-(defun area-width (object)  "_width(obj): the object's width (MUIM_Draw)."     (ffi:peek-i16 object 56))
-(defun area-height (object) "_height(obj): the object's height (MUIM_Draw)."   (ffi:peek-i16 object 58))
+(defun %box-field (object box-offset)
+  "A WORD of the object's mad_Box (a struct IBox)."
+  (ffi:peek-i16 object (%area-offset (+ +mui-area-data-box-offset+ box-offset))))
+
+(defun area-left (object)   "_left(obj): the object's left edge (MUIM_Draw)."  (%box-field object +i-box-left-offset+))
+(defun area-top (object)    "_top(obj): the object's top edge (MUIM_Draw)."    (%box-field object +i-box-top-offset+))
+(defun area-width (object)  "_width(obj): the object's width (MUIM_Draw)."     (%box-field object +i-box-width-offset+))
+(defun area-height (object) "_height(obj): the object's height (MUIM_Draw)."   (%box-field object +i-box-height-offset+))
 (defun area-right (object)  "_right(obj): left + width - 1."   (+ (area-left object) (area-width object) -1))
 (defun area-bottom (object) "_bottom(obj): top + height - 1."  (+ (area-top object) (area-height object) -1))
 
-(defun area-mleft (object)   "_mleft(obj): the left edge inside the frame (MUIM_Draw)."   (+ (area-left object) (ffi:peek-i8 object 60)))
-(defun area-mtop (object)    "_mtop(obj): the top edge inside the frame (MUIM_Draw)."     (+ (area-top object) (ffi:peek-i8 object 61)))
-(defun area-mwidth (object)  "_mwidth(obj): the width inside the frame (MUIM_Draw)."      (- (area-width object) (ffi:peek-i8 object 62)))
-(defun area-mheight (object) "_mheight(obj): the height inside the frame (MUIM_Draw)."    (- (area-height object) (ffi:peek-i8 object 63)))
+(defun %margin (object field-offset)
+  "One of the four BYTE margins of the MUI_AreaData."
+  (ffi:peek-i8 object (%area-offset field-offset)))
+
+(defun area-mleft (object)   "_mleft(obj): the left edge inside the frame (MUIM_Draw)."   (+ (area-left object) (%margin object +mui-area-data-addleft-offset+)))
+(defun area-mtop (object)    "_mtop(obj): the top edge inside the frame (MUIM_Draw)."     (+ (area-top object) (%margin object +mui-area-data-addtop-offset+)))
+(defun area-mwidth (object)  "_mwidth(obj): the width inside the frame (MUIM_Draw)."      (- (area-width object) (%margin object +mui-area-data-subwidth-offset+)))
+(defun area-mheight (object) "_mheight(obj): the height inside the frame (MUIM_Draw)."    (- (area-height object) (%margin object +mui-area-data-subheight-offset+)))
 (defun area-mright (object)  "_mright(obj): mleft + mwidth - 1."   (+ (area-mleft object) (area-mwidth object) -1))
 (defun area-mbottom (object) "_mbottom(obj): mtop + mheight - 1."  (+ (area-mtop object) (area-mheight object) -1))
 

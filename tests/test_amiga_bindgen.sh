@@ -72,12 +72,17 @@ gen_log=$(BINDGEN_NDK_SFD="$FIX/sfd" BINDGEN_NDK_INCLUDE="$FIX/include" \
           BINDGEN_NDK_INCLUDE_H="$FIX/include_h" \
           BINDGEN_MOS_SFD="$FIX/mos-sfd" BINDGEN_MOS_ONLY=mosonly \
           BINDGEN_MUI_SFD="$FIX/mui-sfd" BINDGEN_MUI_INCLUDE_H="$FIX/mui-include_h" \
+          BINDGEN_MCC_INCLUDE_H="$FIX/mcc-include_h" \
           BINDGEN_OUT="$GEN_OUT" \
           "$CLAMIGA" --no-userinit --non-interactive --heap 64M \
           --load "$ROOT/scripts/gen-amiga-bindings.lisp" </dev/null 2>&1 | grep -v '^; Loading')
 echo "$gen_log" | sed 's/^/  /'
-if ! echo "$gen_log" | grep -q '^7 modules:'; then
-    echo "  FAIL: expected 7 modules (example, mosonly, muimaster, exec/exbase, gadgets/fixgad, classes/fixreq, reaction/reaction)"
+if ! echo "$gen_log" | grep -q '^9 modules:'; then
+    echo "  FAIL: expected 9 modules (example, mosonly, muimaster, exec/exbase, gadgets/fixgad, classes/fixreq, reaction/reaction, mui/fixlist, mui/fixed)"
+    fail=1
+fi
+if ! echo "$gen_log" | grep -q '^MCC headers: '; then
+    echo "  FAIL: a run with BINDGEN_MCC_INCLUDE_H must name the MCC header root"
     fail=1
 fi
 if echo "$gen_log" | grep -q 'warnings:'; then
@@ -90,12 +95,16 @@ if ! echo "$gen_log" | grep -q '^LVO cross-check MUI SDK vs MorphOS SDK: 5 funct
     fail=1
 fi
 for f in example.lisp mosonly.lisp muimaster.lisp exec/exbase.lisp gadgets/fixgad.lisp \
-         classes/fixreq.lisp reaction/reaction.lisp; do
+         classes/fixreq.lisp reaction/reaction.lisp mui/fixlist.lisp mui/fixed.lisp; do
     [ -f "$GEN_OUT/$f" ] || { echo "  FAIL: $f not generated"; fail=1; }
 done
 # class libraries are NOT top-level modules, a header with a .i twin
-# yields no module of its own, and the MUI header is claimed by muimaster
-for f in fixgad.lisp fixreq.lisp libraries/example.lisp libraries/mui.lisp; do
+# yields no module of its own, the MUI header is claimed by muimaster, and
+# an MCC module is named after the class, not the header (mui/fixed for
+# MUI/Fixed_mcc.h — the directory's spelling is checked by the Lisp side,
+# a file test here would pass on a case-insensitive file system)
+for f in fixgad.lisp fixreq.lisp libraries/example.lisp libraries/mui.lisp \
+         mui/Fixlist_mcc.lisp mui/fixlist-mcc.lisp; do
     [ -f "$GEN_OUT/$f" ] && { echo "  FAIL: $f must not be generated"; fail=1; }
 done
 run_checks fixture "$GEN_OUT" ""
