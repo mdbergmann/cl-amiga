@@ -70,6 +70,10 @@ MUI GUIs from Lisp — four of the [`examples/amiga/mui/`](examples/amiga/mui/) 
 
 ![The layout, slidorama, pages and requester MUI examples](docs/scrshts/clamiga-mui.png)
 
+The same programs on MorphOS 3.20 (MUI 4, built into the OS) — layout, slidorama, pages, and `class1`, a custom class whose `MUIM_Draw` method is a Lisp function:
+
+![The layout, slidorama, pages and class1 MUI examples on MorphOS](docs/scrshts/clamiga-mui-mos.png)
+
 ## Building
 
 ### Host (macOS / Linux)
