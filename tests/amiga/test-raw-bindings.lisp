@@ -625,6 +625,31 @@
           (refused "64-bit argument cannot arrive in a register"
                    (lambda () (ffi:make-callback :void '(:int64) (lambda (x) x) '(:d0)))))))
 
+;; a hook called on a Lisp WORKER thread while other threads register and
+;; unregister: the callback entry's "is this a Lisp thread?" check takes
+;; the thread-list lock without blocking (a foreign task must never wait
+;; on it) and retries under contention -- every call must still be
+;; recognised, or the hook would silently return 0
+(check "callback-on-worker-thread-under-thread-churn" '(0 40)
+  (let* ((hook (amiga.ffi:make-hook (lambda (h o m) h o m 7)))
+         (churn (mp:make-thread
+                 (lambda ()
+                   (dotimes (i 40)
+                     (mp:join-thread (mp:make-thread (lambda () nil))))
+                   40)))
+         (worker (mp:make-thread
+                  (lambda ()
+                    (let ((bad 0))
+                      (dotimes (i 200)
+                        (unless (= 7 (amiga.raw.utility:call-hook-pkt hook nil nil))
+                          (incf bad)))
+                      bad)))))
+    (unwind-protect
+         (let ((churned (mp:join-thread churn))
+               (bad (mp:join-thread worker)))
+           (list bad churned))
+      (amiga.ffi:free-hook hook))))
+
 ;; 64-bit stack arguments take two slots, high word first: the snippet
 ;; pushes 0x0000001F then 0xFFFFFFF6, read as one :int64
 (check "callback-int64-stack-argument" t
