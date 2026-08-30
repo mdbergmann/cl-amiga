@@ -19,6 +19,15 @@
 #     MorphOS-only ones a :morphos guard.  Without MOS_SDK the output is
 #     AmigaOS-only (no guards, no MorphOS extensions) — commit only output
 #     generated WITH the MorphOS SDK.
+#   * optionally the MUI 3.8 developer kit: MUI_SDK=<dir> (default
+#     tools/mui-sdk, a copy of MUI:Developer — FD/muimaster_lib.fd,
+#     C/Include/clib/muimaster_protos.h, C/Include/libraries/mui.h).  Its
+#     fd+clib pair is converted with fd2sfd like the MorphOS SDK's and joins
+#     the AmigaOS (primary) tables; C/Include is a second C-header root, so
+#     the muimaster module gets every MUIA_/MUIM_/MUIV_/MUII_/MUIO_ tag and
+#     the MUIC_* class-name strings of libraries/mui.h.  Without MUI_SDK
+#     muimaster is emitted from the MorphOS SDK's function table alone
+#     (no constants) — commit only output generated WITH the MUI SDK.
 #
 # Usage:
 #   scripts/gen-amiga-bindings.sh                      # NDK only
@@ -27,8 +36,8 @@
 #
 # Environment knobs (all optional): NDK (unpacked NDK 3.2), PREFIX
 # (toolchain prefix), HOST_BIN, NDK_SFD, NDK_INCLUDE, NDK_INCLUDE_H, OUT,
-# MOS_SDK, BINDGEN_LIBS (comma list), BINDGEN_MOS_ONLY (comma list of
-# MorphOS-only libraries to emit), BINDGEN_DOCSTRINGS=0.
+# MOS_SDK, MUI_SDK, BINDGEN_LIBS (comma list), BINDGEN_MOS_ONLY (comma
+# list of MorphOS-only libraries to emit), BINDGEN_DOCSTRINGS=0.
 set -e
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -58,32 +67,61 @@ if [ ! -d "$NDK_SFD" ] || [ ! -d "$NDK_INCLUDE" ] || [ ! -d "$NDK_INCLUDE_H" ]; 
     exit 1
 fi
 
-MOS_TMP=
-if [ -n "$MOS_SDK" ]; then
-    FD2SFD=${FD2SFD:-$PREFIX/bin/fd2sfd}
-    if [ ! -x "$FD2SFD" ]; then
-        echo "gen-amiga-bindings: $FD2SFD not found (part of the toolchain)" >&2
-        exit 1
-    fi
-    if [ ! -d "$MOS_SDK/fd" ] || [ ! -d "$MOS_SDK/clib" ]; then
-        echo "gen-amiga-bindings: MOS_SDK=$MOS_SDK needs fd/ and clib/ subdirectories" >&2
-        exit 1
-    fi
-    MOS_TMP=$(mktemp -d "${TMPDIR:-/tmp}/mos-sfd.XXXXXX")
+FD2SFD=${FD2SFD:-$PREFIX/bin/fd2sfd}
+
+# Convert every <fd dir>/*_lib.fd that has a <clib dir>/*_protos.h twin to
+# <out dir>/*_lib.sfd; prints the count.  A fd without a clib (the MUI
+# kit's muiclass_lib.fd, an interface .mcc files export) is skipped: no
+# library to open, no module.
+fd_dir_to_sfd() {
+    fddir="$1"; clibdir="$2"; outdir="$3"
     n=0
-    for fd in "$MOS_SDK"/fd/*_lib.fd; do
+    for fd in "$fddir"/*_lib.fd; do
         b=$(basename "$fd" _lib.fd)
-        clib="$MOS_SDK/clib/${b}_protos.h"
+        clib="$clibdir/${b}_protos.h"
         if [ -f "$clib" ]; then
-            if "$FD2SFD" --quiet "$fd" "$clib" "$MOS_TMP/${b}_lib.sfd" >/dev/null 2>&1; then
+            if "$FD2SFD" --quiet "$fd" "$clib" "$outdir/${b}_lib.sfd" >/dev/null 2>&1; then
                 n=$((n + 1))
             else
                 echo "gen-amiga-bindings: warning: fd2sfd failed for $b" >&2
             fi
         fi
     done
+    echo "$n"
+}
+
+need_fd2sfd() {
+    if [ ! -x "$FD2SFD" ]; then
+        echo "gen-amiga-bindings: $FD2SFD not found (part of the toolchain)" >&2
+        exit 1
+    fi
+}
+
+MOS_TMP=
+if [ -n "$MOS_SDK" ]; then
+    need_fd2sfd
+    if [ ! -d "$MOS_SDK/fd" ] || [ ! -d "$MOS_SDK/clib" ]; then
+        echo "gen-amiga-bindings: MOS_SDK=$MOS_SDK needs fd/ and clib/ subdirectories" >&2
+        exit 1
+    fi
+    MOS_TMP=$(mktemp -d "${TMPDIR:-/tmp}/mos-sfd.XXXXXX")
+    n=$(fd_dir_to_sfd "$MOS_SDK/fd" "$MOS_SDK/clib" "$MOS_TMP")
     echo "MorphOS SDK: $n libraries converted to sfd"
     export BINDGEN_MOS_SFD="$MOS_TMP"
+fi
+
+# The MUI 3.8 developer kit (MUI:Developer): FD/ + C/Include/clib/ for the
+# function table, C/Include/ as the second C-header root (libraries/mui.h).
+MUI_SDK=${MUI_SDK:-$ROOT/tools/mui-sdk}
+MUI_TMP=
+if [ -d "$MUI_SDK/FD" ] && [ -d "$MUI_SDK/C/Include/clib" ] && [ -f "$MUI_SDK/C/Include/libraries/mui.h" ]; then
+    need_fd2sfd
+    MUI_TMP=$(mktemp -d "${TMPDIR:-/tmp}/mui-sfd.XXXXXX")
+    n=$(fd_dir_to_sfd "$MUI_SDK/FD" "$MUI_SDK/C/Include/clib" "$MUI_TMP")
+    echo "MUI SDK: $MUI_SDK ($n libraries converted to sfd)"
+    export BINDGEN_MUI_SFD="$MUI_TMP" BINDGEN_MUI_INCLUDE_H="$MUI_SDK/C/Include"
+else
+    echo "MUI SDK: none (set MUI_SDK=<copy of MUI:Developer with FD/ and C/Include/> — muimaster is emitted from the MorphOS SDK function table only, without libraries/mui.h constants)"
 fi
 
 # The directory holds generated files only — clear stale ones.
@@ -97,4 +135,5 @@ export BINDGEN_NDK_SFD="$NDK_SFD" BINDGEN_NDK_INCLUDE="$NDK_INCLUDE" \
 status=$?
 
 [ -n "$MOS_TMP" ] && rm -rf "$MOS_TMP"
+[ -n "$MUI_TMP" ] && rm -rf "$MUI_TMP"
 exit $status

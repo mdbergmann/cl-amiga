@@ -4,7 +4,7 @@
 ;;;   prefs/reaction.h
 ;;;
 ;;; 0 functions, 1 constants, 0 structs.
-;;; 1 C macro skipped: not an integer constant (string, call, float).
+;;; 1 C macro skipped: not an integer or ASCII-string constant (call, float, non-ASCII).
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
 ;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see

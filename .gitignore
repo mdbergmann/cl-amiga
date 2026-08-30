@@ -36,11 +36,14 @@ mosdebug.log
 /lib/amiga/**/*.fasl
 
 # Local copies of the SDKs that `make gen-amiga-bindings` reads — the
-# unpacked AmigaOS 3.2 NDK (tools/aos32-ndk) and the MorphOS SDK's
-# os-include (fd/ + clib/, MOS_SDK=tools/mos-sdk) — not redistributed;
-# only the generated lib/amiga/raw/ output is committed.
+# unpacked AmigaOS 3.2 NDK (tools/aos32-ndk), the MorphOS SDK's
+# os-include (fd/ + clib/, MOS_SDK=tools/mos-sdk) and the MUI 3.8
+# developer kit (MUI:Developer — FD/, C/Include/, MUI_SDK=tools/mui-sdk)
+# — not redistributed; only the generated lib/amiga/raw/ output is
+# committed.
 /tools/aos32-ndk/
 /tools/mos-sdk/
+/tools/mui-sdk/
 
 # Amiga temp-device paths ("T:...") become literal host files when the
 # Amiga test suite runs on the host (a supported repro technique — see

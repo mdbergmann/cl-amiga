@@ -1,0 +1,23 @@
+* fixture for tests/test_amiga_bindgen.sh: the MorphOS SDK's rendering of
+* muimaster.library -- the same public vectors as the MUI 3.8 kit
+* (mui-sfd/muimaster_lib.sfd; the generator cross-checks the two and
+* emits the shared functions unguarded) plus a MorphOS-only function at a
+* far vector, which gets the :morphos guard.
+==base _MUIMasterBase
+==basetype struct Library *
+==libname muimaster.library
+==bias 30
+==public
+Object * MUI_NewObjectA(char * class, struct TagItem * tags) (a0,a1)
+VOID MUI_DisposeObject(Object * obj) (a0)
+LONG MUI_RequestA(APTR app, APTR win, LONGBITS flags, char * title, char * gadgets, char * format, APTR params) (d0,d1,d2,a0,a1,a2,a3)
+==private
+ULONG MUI_Private() ()
+ULONG MUI_Private() ()
+==public
+LONG MUI_ObtainPen(struct MUI_RenderInfo * mri, struct MUI_PenSpec * spec, ULONG flags) (a0,a1,d0)
+Object * MUI_MakeObjectA(LONG type, ULONG * params) (d0,a0)
+==bias 690
+==public
+LONG MUI_GetRGBColor(const struct MUI_RenderInfo * mri, const struct MUI_PenSpec * spec, ULONG * rgb) (a0,a1,a2)
+==end

@@ -17,6 +17,13 @@
 ;;;                        the .sh wrapper does that)
 ;;;   BINDGEN_MOS_ONLY     comma list of MorphOS-only libraries to emit
 ;;;                        (default: muimaster,ahi,cybergraphics)
+;;;   BINDGEN_MUI_SFD      dir with the MUI 3.8 developer kit's *_lib.sfd
+;;;                        (optional; fd2sfd of FD/ + C/Include/clib/, the
+;;;                        .sh wrapper does that).  Joins the PRIMARY
+;;;                        (AmigaOS) tables: muimaster becomes an AmigaOS
+;;;                        library with a MorphOS twin, like every NDK one.
+;;;   BINDGEN_MUI_INCLUDE_H  the kit's C/Include — a second C-header root
+;;;                        (libraries/mui.h), searched after the NDK's
 ;;;   BINDGEN_OUT          output directory (default lib/amiga/raw/)
 ;;;   BINDGEN_LIBS         comma list restricting the libraries generated
 ;;;                        (default: all)
@@ -42,7 +49,8 @@
 ;;;     equivalent: *NAME-SIZE* + accessors) for every STRUCTURE.
 ;;;   * (:const ...) rows for the object-like #defines and enumerators of
 ;;;     the C headers that have NO assembler twin (the ReAction tags in
-;;;     gadgets/*.h, images/*.h, classes/*.h, reaction/*.h ...) — see
+;;;     gadgets/*.h, images/*.h, classes/*.h, reaction/*.h, the MUI tags
+;;;     and MUIC_* class-name strings of libraries/mui.h ...) — see
 ;;;     "C header parsing" below.
 ;;;   * Platform tagging: functions the MorphOS SDK does not have at the
 ;;;     same LVO carry :not-morphos, MorphOS-only ones :morphos; functions
@@ -637,7 +645,7 @@ whitespace-delimited token (see OPERAND-FIELD)."
   file)
 
 (defstruct i-const
-  name value file
+  name value file  ; value: integer, string (a C header's "..." #define), or NIL = resolve later
   quiet)         ; t for C-header constants: unresolvable -> dropped silently
 
 (defstruct i-file
@@ -843,19 +851,95 @@ whitespace-delimited token (see OPERAND-FIELD)."
 ;;;     expression — C operators, casts to the integer types, number
 ;;;     suffixes (0x45L), char literals, references to other macros and
 ;;;     to assembler constants (TAG_USER, GA_Image ...);
+;;;   * every object-like #define whose body is ONE ASCII string literal
+;;;     (mui.h's MUIC_Window "Window.mui", MUIMASTER_NAME, the MUIX_C
+;;;     "\033c" text-style escapes) — a string constant; escapes are
+;;;     decoded, control characters are written as a #. form so the
+;;;     module stays printable; a literal with non-ASCII characters (the
+;;;     FASLs must stay ASCII, see `make fasl`) or a concatenation of
+;;;     literals is skipped;
 ;;;   * every enumerator of every top-level enum.
 ;;;
 ;;; seen through the preprocessor: comments, backslash continuations,
 ;;; #ifdef / #ifndef / #if 0 / #elif / #else / #endif (only macros defined
 ;;; by the headers themselves count as defined, so __cplusplus / __GNUC__
-;;; blocks are skipped), #undef, and #include of another twin-less header
-;;; (read first, so its macros are known).  Function-like macros, strings,
-;;; floats and anything that is not an integer expression (the
-;;; NewObject(...) convenience macros) are skipped — counted in the module
-;;; header, not warned about.  C struct definitions are not read.
+;;; blocks are skipped — and mui.h's own `#define MUI_OBSOLETE` makes its
+;;; #ifdef MUI_OBSOLETE blocks live, as they are for a C program), #undef,
+;;; and #include of another twin-less header (read first, so its macros
+;;; are known).  Function-like macros, floats and anything that is not an
+;;; integer expression or a string (the NewObject(...) convenience macros)
+;;; are skipped — counted in the module header, not warned about.  C
+;;; struct definitions are not read.
+;;;
+;;; The C headers live under one or more roots searched in order — the
+;;; NDK's Include_H first, then an SDK that ships headers of its own (the
+;;; MUI developer kit's C/Include); the first root that has a file wins.
 
-(defvar *h-include-root* nil)                       ; dir of the .h files
+(defvar *h-include-roots* nil)                      ; dirs of the .h files, in search order
 (defvar *c-macros* (make-hash-table :test 'equal))  ; name -> t, for #ifdef
+
+(defun h-file-path (rel)
+  "Absolute path of the C header REL under the first root that has it;
+under the first root when none does (so a probe fails and a warning names
+a real location)."
+  (or (loop for root in *h-include-roots*
+            for p = (concatenate 'string root rel)
+            when (probe-file p) return p)
+      (concatenate 'string (or (first *h-include-roots*) "") rel)))
+
+(defun c-string-literal (body)
+  "If BODY is exactly one C string literal, its decoded contents (the
+usual escapes: \\n \\t \\\\ \\\" octal, \\xHH ...), else NIL.  A second
+value says whether every character is ASCII — what a string constant may
+hold (the binding table and the FASLs are byte strings)."
+  (let ((n (length body)))
+    (when (and (>= n 2) (char= (char body 0) #\") (char= (char body (1- n)) #\"))
+      (let ((out (make-string-output-stream)) (i 1) (ascii t) (closed nil))
+        (loop while (< i n)
+              do (let ((c (char body i)))
+                   (cond
+                     ((char= c #\")
+                      (setf closed (= i (1- n)))
+                      (return))
+                     ((and (char= c #\\) (< (1+ i) n))
+                      (let ((e (char body (1+ i))))
+                        (incf i 2)
+                        (cond
+                          ((digit-char-p e 8)
+                           ;; up to three octal digits
+                           (let ((v (digit-char-p e 8)) (k 1))
+                             (loop while (and (< k 3) (< i n) (digit-char-p (char body i) 8))
+                                   do (setf v (+ (* v 8) (digit-char-p (char body i) 8)))
+                                      (incf i) (incf k))
+                             (write-char (code-char v) out)))
+                          ((char-equal e #\x)
+                           (let ((v 0) (any nil))
+                             (loop while (and (< i n) (digit-char-p (char body i) 16))
+                                   do (setf v (+ (* v 16) (digit-char-p (char body i) 16)) any t)
+                                      (incf i))
+                             (unless any (return-from c-string-literal nil))
+                             (write-char (code-char (logand v 255)) out)))
+                          (t (write-char (case e
+                                           (#\n #\Newline) (#\t #\Tab) (#\r #\Return)
+                                           (#\a (code-char 7)) (#\b (code-char 8))
+                                           (#\f (code-char 12)) (#\v (code-char 11))
+                                           (t e))
+                                         out)))))
+                     (t (write-char c out) (incf i)))))
+        (when closed
+          (let ((s (get-output-stream-string out)))
+            (loop for ch across s
+                  unless (< (char-code ch) 128) do (setf ascii nil))
+            (values s ascii)))))))
+
+(defun lisp-string-form (s)
+  "S as Lisp source for a binding-table row: a string literal when every
+character is printable, else a #. form that builds it from character
+codes — mui.h's MUIX_C \"\\033c\" reads as (27 99) instead of a stray ESC
+byte in the module."
+  (if (every (lambda (c) (<= 32 (char-code c) 126)) s)
+      (lisp-string s)
+      (format nil "#.(map 'string #'code-char '(~{~D~^ ~}))" (map 'list #'char-code s))))
 
 (define-condition c-unknown-symbol (error)
   ((name :initarg :name :reader c-unknown-symbol-name))
@@ -945,13 +1029,17 @@ access, braces ...) signals an error."
     "signed" "void" "float" "double" "const" "volatile" "struct" "union" "enum"))
 
 (defun c-cast-apply (words pointer v)
-  "Narrow V the way a C cast to the type spelled by WORDS would."
+  "Narrow V the way a C cast to the type spelled by WORDS would.  POINTER
+is true for a `T *' cast; the pointer typedefs (APTR, STRPTR ... — mui.h's
+((STRPTR)~0)) are 32-bit addresses too, so they read unsigned."
   (flet ((has (w) (member w words :test #'string=))
          (u (bits) (logand v (1- (ash 1 bits))))
          (s (bits) (let ((m (logand v (1- (ash 1 bits)))))
                      (if (logbitp (1- bits) m) (- m (ash 1 bits)) m))))
     (cond
-      (pointer (u 32))
+      ((or pointer (has "APTR") (has "CONST_APTR") (has "STRPTR") (has "CONST_STRPTR")
+           (has "CPTR") (has "PLANEPTR"))
+       (u 32))
       ((or (has "float") (has "double")) (error "floating-point cast"))
       ((or (has "UBYTE") (has "uint8") (and (has "unsigned") (has "char"))) (u 8))
       ((or (has "BYTE") (has "int8") (has "char")) (s 8))
@@ -1242,7 +1330,7 @@ Struct bodies are skipped by brace depth; string literals are ignored."
   "Read one twin-less C header into *i-files* (constants only)."
   (when (gethash relpath *i-files*)
     (return-from parse-h-file (gethash relpath *i-files*)))
-  (let ((full (concatenate 'string *h-include-root* relpath)))
+  (let ((full (h-file-path relpath)))
     (unless (probe-file full)
       (asm-warn "include not found: ~A" relpath)
       (return-from parse-h-file nil))
@@ -1279,6 +1367,14 @@ Struct bodies are skipped by brace depth; string literals are ignored."
                       (when (emit-p name)
                         (push (make-i-const :name name :value nil :file relpath :quiet t) consts)))
                      (t (incf skipped)))))
+               (define-string (name s ascii)
+                 ;; a string macro: known to #ifdef and to the symbol table
+                 ;; (an expression that references it is "not a value" ->
+                 ;; skipped), emitted only when printable ASCII
+                 (register name (list :string s))
+                 (cond ((not ascii) (incf skipped))
+                       ((emit-p name)
+                        (push (make-i-const :name name :value s :file relpath :quiet t) consts))))
                (do-define (rest)
                  (let* ((e (or (position-if-not #'ident-char-p rest) (length rest)))
                         (name (subseq rest 0 e)))
@@ -1290,7 +1386,10 @@ Struct bodies are skipped by brace depth; string literals are ignored."
                        (t
                         (let ((body (trim (subseq rest e))))
                           (unless (blank-string-p body)
-                            (define-constant name body))))))))
+                            (multiple-value-bind (s ascii) (c-string-literal body)
+                              (if s
+                                  (define-string name s ascii)
+                                  (define-constant name body))))))))))
                (do-include (rest)
                  (let* ((s (trim rest))
                         (open (and (> (length s) 0) (char s 0)))
@@ -1298,7 +1397,7 @@ Struct bodies are skipped by brace depth; string literals are ignored."
                         (end (and close (position close s :start 1)))
                         (inc (and end (subseq s 1 end))))
                    (when (and inc (ends-with ".h" inc)
-                              (probe-file (concatenate 'string *h-include-root* inc))
+                              (probe-file (h-file-path inc))
                               (h-twinless-p inc)
                               (not (member inc *skip-includes* :test #'string=)))
                      (parse-h-file inc)))))
@@ -1393,6 +1492,7 @@ Struct bodies are skipped by brace depth; string literals are ignored."
 (defparameter *module-includes*
   '(("layers"      "graphics/layers.i" "graphics/clip.i")
     ("keymap"      "devices/keymap.i" "libraries/keymap.h")
+    ("muimaster"   "libraries/mui.h")          ; the MUI SDK's header root
     ("trackfile"   "devices/trackfile.h")
     ("timer"       "devices/timer.i")
     ("console"     "devices/console.i" "devices/conunit.i")
@@ -1419,16 +1519,22 @@ Struct bodies are skipped by brace depth; string literals are ignored."
 
 (defun include-path (rel)
   "Absolute path of the include REL: .h files live under the C header
-root, everything else under the assembler include root."
-  (concatenate 'string (if (ends-with ".h" rel) *h-include-root* *i-include-root*) rel))
+roots (first hit), everything else under the assembler include root."
+  (if (ends-with ".h" rel)
+      (h-file-path rel)
+      (concatenate 'string *i-include-root* rel)))
 
 (defun twinless-h-files (dir)
   "Relative paths of the C headers in DIR that have no .i twin — the
-ones that take part in the module layout."
-  (when *h-include-root*
-    (remove-if-not #'h-twinless-p
-                   (mapcar (lambda (p) (concatenate 'string dir "/" (pathname-name p) ".h"))
-                           (directory (concatenate 'string *h-include-root* dir "/*.h"))))))
+ones that take part in the module layout.  Every header root is scanned
+(a header the second root adds joins the layout like the NDK's); a
+relative path counts once."
+  (let ((rels nil))
+    (dolist (root *h-include-roots*)
+      (dolist (p (directory (concatenate 'string root dir "/*.h")))
+        (let ((rel (concatenate 'string dir "/" (pathname-name p) ".h")))
+          (unless (member rel rels :test #'string=) (push rel rels)))))
+    (remove-if-not #'h-twinless-p (nreverse rels))))
 
 (defun default-includes-for (libname)
   "Convention: <lib>/*.i (plus the twin-less <lib>/*.h) if that NDK
@@ -1446,7 +1552,7 @@ has no .i twin."
              for i-rel = (concatenate 'string sub libname ".i")
              for h-rel = (concatenate 'string sub libname ".h")
              for hits = (append (and (probe-file (include-path i-rel)) (list i-rel))
-                                (and *h-include-root*
+                                (and *h-include-roots*
                                      (probe-file (include-path h-rel))
                                      (h-twinless-p h-rel)
                                      (list h-rel)))
@@ -1776,10 +1882,10 @@ searches through the kind subdirectory."
         (t libname)))
 
 (defun const-value (c)
-  "Value of the constant C, or NIL.  A value read at definition time wins
-(a C macro #undef'd and redefined later keeps its first value, like
-TEXTEDITOR_Dummy); otherwise the name is resolved through the symbol
-table.  Assembler constants that cannot be resolved are a warning (the
+  "Value of the constant C — an integer or a string — or NIL.  A value
+read at definition time wins (a C macro #undef'd and redefined later
+keeps its first value, like TEXTEDITOR_Dummy); otherwise the name is
+resolved through the symbol table.  Assembler constants that cannot be resolved are a warning (the
 .i grammar is fully understood, so it is a parser gap); C macros that
 cannot be resolved are simply not integer constants (NewObject(...)
 aliases and the like) and stay quiet."
@@ -1804,8 +1910,8 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
          (name-rows (make-hash-table :test 'equal))
          (exports nil)                        ; every name the table defines (for :shadow)
          (lisp-names (make-hash-table :test 'equal))
-         (n-fns 0) (n-consts 0) (n-structs 0) (n-skipped 0)
-         (n-macros-skipped 0))      ; C macros that are not integer constants
+         (n-fns 0) (n-consts 0) (n-strings 0) (n-structs 0) (n-skipped 0)
+         (n-macros-skipped 0))      ; C macros that are neither integer nor string constants
     (flet ((claim (name what &optional value)
              ;; WHAT is a kind keyword.  VALUE disambiguates: for constants
              ;; two C spellings of the same value (GA_Left / GA_LEFT)
@@ -1814,7 +1920,7 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
              ;; C name, different LVO under exclusive guards) all pass.
              (let ((prev (gethash name lisp-names)))
                (cond ((and prev (eq what :constant) (eq (car prev) :constant)
-                           (eql (cdr prev) value))
+                           (equal (cdr prev) value))
                       nil)
                      ((and prev (eq what :function) (eq (car prev) :function)
                            (equal (cdr prev) value))
@@ -1842,10 +1948,16 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
                     (when (and val (claim cn :constant val))
                       (incf n-consts)
                       (push cn exports)
-                      (format body "  (:const ~S ~A)~@[   ; ~A~]~%"
-                              (string-upcase cn) (format-hex val)
-                              (and (or (> val #xFFFFFFFF) (< val (- #x80000000)))
-                                   "value exceeds 32 bits")))))))
+                      (cond
+                        ((stringp val)
+                         ;; a string #define (MUIC_Window "Window.mui")
+                         (incf n-strings)
+                         (format body "  (:const ~S ~A)~%" (string-upcase cn) (lisp-string-form val)))
+                        (t
+                         (format body "  (:const ~S ~A)~@[   ; ~A~]~%"
+                                 (string-upcase cn) (format-hex val)
+                                 (and (or (> val #xFFFFFFFF) (< val (- #x80000000)))
+                                      "value exceeds 32 bits")))))))))
             (when (i-file-structs ifile)
               (format body "~&~%  ;; --- structures from ~A ---~%" rel)
               (dolist (st (i-file-structs ifile))
@@ -1859,7 +1971,9 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
       ;; --- functions ---
       (unless header-only
         (format body "~&~%  ;; --- functions (~A~@[ + ~A~]) ---~%"
-                (if ndk-lib (format nil "~A_lib.sfd" lib-short-name) "MorphOS SDK")
+                (cond ((null ndk-lib) "MorphOS SDK")
+                      ((eq (sfd-lib-source ndk-lib) :mui) "MUI SDK")
+                      (t (format nil "~A_lib.sfd" lib-short-name)))
                 (and ndk-lib mos-lib "MorphOS SDK"))
         (dolist (efn (merge-library-functions ndk-lib mos-lib))
           (let* ((fn (emit-fn-fn efn))
@@ -1877,15 +1991,19 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
         (format out ";;; ~A — GENERATED by scripts/gen-amiga-bindings.lisp. DO NOT EDIT.~%" module-name)
         (format out ";;;~%;;; Sources:~%")
         (when ndk-lib
-          (format out ";;;   ~A_lib.sfd~@[ (~A)~]~%" lib-short-name (sfd-lib-id ndk-lib)))
+          (if (eq (sfd-lib-source ndk-lib) :mui)
+              (format out ";;;   MUI 3.8 SDK ~A_lib.fd + clib/~A_protos.h (via fd2sfd)~%"
+                      lib-short-name lib-short-name)
+              (format out ";;;   ~A_lib.sfd~@[ (~A)~]~%" lib-short-name (sfd-lib-id ndk-lib))))
         (when mos-lib
           (format out ";;;   MorphOS SDK ~A_lib.fd + clib/~A_protos.h (via fd2sfd)~%"
                   lib-short-name lib-short-name))
         (dolist (rel includes) (format out ";;;   ~A~%" rel))
-        (format out ";;;~%;;; ~D functions, ~D constants, ~D structs~@[, ~D skipped (see comments)~].~%"
-                n-fns n-consts n-structs (and (> n-skipped 0) n-skipped))
+        (format out ";;;~%;;; ~D functions, ~D constants~@[ (~D of them strings)~], ~D structs~@[, ~D skipped (see comments)~].~%"
+                n-fns n-consts (and (> n-strings 0) n-strings) n-structs
+                (and (> n-skipped 0) n-skipped))
         (when (> n-macros-skipped 0)
-          (format out ";;; ~D C macro~:P skipped: not an integer constant (string, call, float).~%"
+          (format out ";;; ~D C macro~:P skipped: not an integer or ASCII-string constant (call, float, non-ASCII).~%"
                   n-macros-skipped))
         (format out ";;; Regenerate with `make gen-amiga-bindings` — see README \"Raw OS bindings\".~%~%")
         (format out ";; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see~%;; AMIGA.FFI at read time, not only LOAD.~%(eval-when (:compile-toplevel :load-toplevel :execute)~%  (require \"amiga/ffi\"))~%~%")
@@ -1979,6 +2097,30 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
             (format *error-output* "WARNING: cannot parse ~A: ~A~%" p e)))))
     libs))
 
+;;; Cross-check of a library both the MUI SDK and the MorphOS SDK describe:
+;;; the public functions common to both must sit at the same LVO with the
+;;; same registers.  The two fd files count their ##private gaps
+;;; independently, so a disagreement means one of them was miscounted —
+;;; and a miscounted table would jump into the wrong vector on one
+;;; platform.  Returns (values agreeing differing); each difference is a
+;;; warning.
+(defun verify-lvos-against-mos (lib mos)
+  (let ((by-name (make-hash-table :test 'equal)) (same 0) (bad 0))
+    (dolist (f (sfd-lib-functions mos))
+      (unless (sfd-fn-private f) (setf (gethash (sfd-fn-name f) by-name) f)))
+    (dolist (f (sfd-lib-functions lib))
+      (let ((m (and (not (sfd-fn-private f)) (gethash (sfd-fn-name f) by-name))))
+        (when m
+          (cond ((and (= (sfd-fn-lvo m) (sfd-fn-lvo f))
+                      (equal (sfd-fn-regs m) (sfd-fn-regs f)))
+                 (incf same))
+                (t (incf bad)
+                   (asm-warn "~A: ~A is at LVO ~D (~{~A~^,~}) in the MUI SDK but ~D (~{~A~^,~}) in the MorphOS SDK — a ##private gap miscounted?"
+                             (sfd-lib-name lib) (sfd-fn-name f)
+                             (sfd-fn-lvo f) (sfd-fn-regs f)
+                             (sfd-fn-lvo m) (sfd-fn-regs m)))))))
+    (values same bad)))
+
 (defun run ()
   (let* ((ndk-sfd (getenv-or "BINDGEN_NDK_SFD"
                              "tools/m68k-amigaos-gcc/prefix/m68k-amigaos/ndk/lib/sfd"))
@@ -1987,17 +2129,22 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
          (ndk-inc-h (getenv-or "BINDGEN_NDK_INCLUDE_H" ndk-inc))
          (mos-sfd (getenv-or "BINDGEN_MOS_SFD" nil))
          (mos-only (comma-list (getenv-or "BINDGEN_MOS_ONLY" "muimaster,ahi,cybergraphics")))
+         (mui-sfd (getenv-or "BINDGEN_MUI_SFD" nil))
+         (mui-inc-h (getenv-or "BINDGEN_MUI_INCLUDE_H" nil))
          (out-dir (dir-path (getenv-or "BINDGEN_OUT" "lib/amiga/raw")))
          (only (comma-list (getenv-or "BINDGEN_LIBS" nil)))
          (*docstrings* (not (string= (getenv-or "BINDGEN_DOCSTRINGS" "1") "0")))
          (*i-include-root* (dir-path ndk-inc))
-         (*h-include-root* (dir-path ndk-inc-h))
+         (*h-include-roots* (if mui-inc-h
+                                (list (dir-path ndk-inc-h) (dir-path mui-inc-h))
+                                (list (dir-path ndk-inc-h))))
          (*asm-symbols* (make-hash-table :test 'equal))
          (*c-macros* (make-hash-table :test 'equal))
          (*i-files* (make-hash-table :test 'equal))
          (*asm-warnings* nil)
          (ndk-libs (load-sfd-dir ndk-sfd :ndk))
          (mos-libs (load-sfd-dir mos-sfd :mos))
+         (mui-libs (load-sfd-dir mui-sfd :mui))
          (claimed-includes (make-hash-table :test 'equal))
          (totals (list 0 0 0 0))
          (modules 0))
@@ -2005,6 +2152,21 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
     (format t "NDK include: ~A~%" ndk-inc)
     (format t "NDK C headers: ~A~%" ndk-inc-h)
     (format t "MorphOS sfd: ~A (~D libraries)~%" (or mos-sfd "none") (hash-table-count mos-libs))
+    ;; The MUI SDK's libraries join the primary table: muimaster is then an
+    ;; AmigaOS library with a MorphOS twin, merged like every NDK one
+    ;; (MorphOS-only MUI_GetRGBColor gets :morphos), and its module claims
+    ;; libraries/mui.h through *module-includes*.
+    (cond
+      (mui-sfd
+       (format t "MUI SDK sfd: ~A (~D libraries), C headers: ~A~%"
+               mui-sfd (hash-table-count mui-libs) (or mui-inc-h "none"))
+       (maphash (lambda (k lib)
+                  (when (gethash k ndk-libs)
+                    (error "gen-amiga-bindings: ~A_lib.sfd is in both the NDK and the MUI SDK — which is primary?" k))
+                  (setf (gethash k ndk-libs) lib))
+                mui-libs))
+      (t
+       (format t "MUI SDK: none — muimaster is emitted from the MorphOS SDK's function table only (no libraries/mui.h constants); commit only output generated WITH the MUI SDK~%")))
     (format t "Output: ~A~%" out-dir)
     ;; LVO self-check against the NDK's lvo/*.i — a mismatch means the SFD
     ;; parser miscounted and every later LVO of that library is wrong, so
@@ -2019,6 +2181,19 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
       (when (> bad 0)
         (dolist (w (reverse *asm-warnings*)) (format t "  ~A~%" w))
         (error "gen-amiga-bindings: ~D LVO mismatches against the NDK's lvo/*.i — refusing to write bindings" bad)))
+    ;; The MUI SDK has no lvo/*.i; its fd is checked against the MorphOS
+    ;; SDK's rendering of the same library instead (a warning per
+    ;; disagreement — the module then carries both variants under
+    ;; exclusive guards, which the log makes visible).
+    (when (plusp (hash-table-count mui-libs))
+      (let ((same 0) (bad 0))
+        (maphash (lambda (k lib)
+                   (let ((mos (gethash k mos-libs)))
+                     (when mos
+                       (multiple-value-bind (s b) (verify-lvos-against-mos lib mos)
+                         (incf same s) (incf bad b)))))
+                 mui-libs)
+        (format t "LVO cross-check MUI SDK vs MorphOS SDK: ~D functions agree, ~D differ~%" same bad)))
     ;; Parse every .i under the subsystem dirs first (the symbol table is
     ;; global: STRUCTURE bases and EQUs reference other files), then the
     ;; twin-less .h files (their macros reference the .i constants).

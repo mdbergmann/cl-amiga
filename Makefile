@@ -463,12 +463,14 @@ verify-amiga:
 # Pre-compile boot files to FASL for faster startup
 # Regenerate the raw AmigaOS/MorphOS API bindings (lib/amiga/raw/) from the
 # AmigaOS 3.2 NDK (NDK=<unpacked NDK 3.2>, default tools/aos32-ndk; falls
-# back to the copy inside the cross toolchain) and, when MOS_SDK points at a
-# copy of the MorphOS SDK's os-include (fd/ + clib/), the MorphOS tables.
-# The output is committed; CI checks it (tests/test_amiga_bindgen.sh) but
-# never needs the SDKs.  See README "Raw OS bindings".
+# back to the copy inside the cross toolchain), when MOS_SDK points at a
+# copy of the MorphOS SDK's os-include (fd/ + clib/), the MorphOS tables,
+# and from the MUI 3.8 developer kit (MUI_SDK=<copy of MUI:Developer>,
+# default tools/mui-sdk) the muimaster module's constants.  The output is
+# committed; CI checks it (tests/test_amiga_bindgen.sh) but never needs the
+# SDKs.  See README "Raw OS bindings".
 gen-amiga-bindings: $(HOST_BIN)
-	NDK="$(NDK)" MOS_SDK="$(MOS_SDK)" sh scripts/gen-amiga-bindings.sh
+	NDK="$(NDK)" MOS_SDK="$(MOS_SDK)" MUI_SDK="$(MUI_SDK)" sh scripts/gen-amiga-bindings.sh
 
 # Both FASL targets compile with CLAMIGA_FASL_PORTABLE=1: the output is loaded
 # by the byte-string m68k AmigaOS binaries (and MorphOS), so a non-ASCII

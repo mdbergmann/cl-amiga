@@ -4,8 +4,7 @@
 ;;;   trackfile_lib.sfd ($VER: trackfile_lib.sfd 2.3 (10.8.2020))
 ;;;   devices/trackfile.h
 ;;;
-;;; 8 functions, 34 constants, 0 structs.
-;;; 1 C macro skipped: not an integer constant (string, call, float).
+;;; 8 functions, 35 constants (1 of them strings), 0 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
 ;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
@@ -37,6 +36,7 @@
 
   ;; --- constants from devices/trackfile.h ---
   (:const "+TFUNIT-CONTROL+" -1)
+  (:const "+TRACKFILENAME+" "trackfile.device")
   (:const "+TFSU-NEXT-AVAILABLE-UNIT+" -1)
   (:const "+TFERROR-UNIT-BUSY+" -202041)
   (:const "+TFERROR-OUT-OF-MEMORY+" -202042)

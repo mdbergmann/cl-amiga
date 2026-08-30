@@ -1409,11 +1409,17 @@ use (see *Footprint* below):
   `+memf-chip+`, `+mode-newfile+`, `+adcmd-allocate+` … Where the NDK has
   no assembler include for a C header (the ReAction tags in
   `gadgets/*.h`, `images/*.h`, `classes/*.h`, `reaction/*.h`, the
-  `RAWKEY_*` codes of `libraries/keymap.h`, `devices/trackfile.h`), its
-  integer `#define`s and enumerators are read instead:
-  `+button-justification+`, `+layout-add-child+`, `+wmhi-closewindow+`,
-  `+reqimage-warning+`, `+rawkey-f1+` … (C structs defined only in a `.h`
-  are not generated — write those with `ffi:defcstruct`).
+  `RAWKEY_*` codes of `libraries/keymap.h`, `devices/trackfile.h`, and
+  the MUI 3.8 developer kit's `libraries/mui.h` — every `MUIA_`/`MUIM_`/
+  `MUIV_`/`MUII_`/`MUIO_` tag, method and value), its integer `#define`s
+  and enumerators are read instead: `+button-justification+`,
+  `+layout-add-child+`, `+wmhi-closewindow+`, `+reqimage-warning+`,
+  `+rawkey-f1+`, `+muia-window-close-request+`, `+muim-notify+` … A
+  `#define` whose body is a string literal becomes a **string constant**:
+  `amiga.raw.muimaster:+muic-window+` is `"Window.mui"`, `+muix-c+` the
+  `"\033c"` centering escape, `+trackfilename+` `"trackfile.device"`.
+  (C structs defined only in a `.h` are not generated — write those with
+  `ffi:defcstruct`.)
 - **Structures** — `ffi:defcstruct` layouts for every `STRUCTURE`, with
   the NDK's own offsets and sizes: `(amiga.raw.intuition:window-width w)`,
   `(setf (amiga.raw.gadtools:new-gadget-left-edge ng) 10)`,
@@ -1440,21 +1446,27 @@ generator merges the MorphOS SDK's function tables with the NDK's: the
 OS 3.2 additions MorphOS lacks (or places something else at — `ShowWindow`,
 `ErrorOutput`, `NewMinList`, the diskfont outline API …) exist only when
 `:morphos` is absent, MorphOS' own extensions (`AllocVecPooled`,
-`GetMonitorList`, plus the MorphOS-only libraries on the generator's
-allowlist — `muimaster`, `ahi`, `cybergraphics` by default, function
+`GetMonitorList`, `MUI_GetRGBColor`, plus the MorphOS-only libraries on
+the generator's allowlist — `ahi`, `cybergraphics` by default, function
 tables only) only when it is present, and functions newer than OS 3.0
 are also gated on the running library's version — so a call that would
 jump into a wrong or missing vector is an "undefined function" error
-instead.  On the host (macOS/Linux/Windows) the modules load too — the
-base stays `NIL` and any call reports that — which is how they are
-unit-tested.
+instead.  `muimaster` (MUI) is generated from the MUI 3.8 developer kit
+the same way an NDK library is from the NDK: its 25 functions and the
+`mui.h` constants are unconditional (MUI 3.8 on AmigaOS, MorphOS's
+built-in MUI, MUI 5 all keep them), MorphOS's additions `:morphos`.  On
+the host (macOS/Linux/Windows) the modules load too — the base stays
+`NIL` and any call reports that — which is how they are unit-tested.
 
 The modules are committed; regenerate them with `make gen-amiga-bindings`
 from an unpacked AmigaOS 3.2 NDK (`NDK=<dir>`, default `tools/aos32-ndk`;
 the copy inside the cross toolchain is the fallback) — add
 `MOS_SDK=/path/to/morphos/os-include` (the copy with `fd/` and `clib/`)
-to merge MorphOS; without it the output is AmigaOS-only.  Neither SDK is
-redistributed; only the output is.  The generator is
+to merge MorphOS, and a copy of `MUI:Developer` from the MUI 3.8
+distribution (`MUI_SDK=<dir>`, default `tools/mui-sdk`; `FD/` and
+`C/Include/`) for `muimaster`; without them the output is AmigaOS-only
+and `muimaster` a MorphOS function table without constants.  None of the
+SDKs is redistributed; only the output is.  The generator is
 `scripts/gen-amiga-bindings.lisp` (runs on the host build of clamiga) and
 cross-checks every LVO against the NDK's own `lvo/*.i` before writing
 anything.  Its executable specification is `tests/test_amiga_bindgen.sh`

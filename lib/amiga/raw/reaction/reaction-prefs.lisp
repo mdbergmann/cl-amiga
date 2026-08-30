@@ -3,8 +3,8 @@
 ;;; Sources:
 ;;;   reaction/reaction_prefs.h
 ;;;
-;;; 0 functions, 8 constants, 0 structs.
-;;; 2 C macros skipped: not an integer constant (string, call, float).
+;;; 0 functions, 9 constants (1 of them strings), 0 structs.
+;;; 1 C macro skipped: not an integer or ASCII-string constant (call, float, non-ASCII).
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
 ;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
@@ -24,6 +24,7 @@
 (amiga.ffi:define-binding-table "AMIGA.RAW.REACTION.REACTION-PREFS" ()
 
   ;; --- constants from reaction/reaction_prefs.h ---
+  (:const "+RAPREFSSEMAPHORE+" "REACTION-PREFS")
   (:const "+BVT-GT+" 0)
   (:const "+BVT-THIN+" 1)
   (:const "+BVT-THICK+" 2)

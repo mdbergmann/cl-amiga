@@ -5380,6 +5380,61 @@ check_contains "CAS / ATOMIC-INCF on every place kind under stress" \
 check_absent   "no corruption diagnostics from the CAS path" \
   "corrupted\|type 0\|BADMARK\|badmark\|SIGSEGV\|Unbound" "$out"
 
+# --- Case: demand-interned binding table (bindtab.c) under stress -----------
+# The packer reads the row list without allocating and the materialiser
+# copies an entry out of the blob (a byte vector that MOVES) before it
+# allocates the symbol, value and stub — every value encoding is exercised:
+# u32, i32, wide bignum, and the string payload a C header's MUIC_Window
+# "Window.mui" becomes.  Then the eager flip (DO-SYMBOLS) materialises the
+# rest under churn, and a FASL round trip carries the blob through LOAD.
+cat > "$WORK/bindtab.lisp" <<'EOF'
+;; compile-time too: COMPILE-FILE must see AMIGA.FFI (the macro) at read time
+(eval-when (:compile-toplevel :load-toplevel :execute) (require "amiga/ffi"))
+(defpackage "GCS-BT" (:use "CL") (:export "*GCS-BASE*" "*GCS-VERSION*"))
+(in-package "GCS-BT")
+(defvar *gcs-base* nil)
+(defvar *gcs-version* nil)
+(amiga.ffi:define-binding-table "GCS-BT" (:base *gcs-base* :version *gcs-version*)
+  (:const "+U32+" #xFFFFFFFF) (:const "+NEG+" -5)
+  (:const "+BIG+" #x746578742E6461746174797065)
+  (:const "+CLASS+" "Window.mui") (:const "+EMPTY+" "")
+  (:var "*VS*" "vs")
+  (:fn "CALL-ME" -30 (:a0 :d0) :u16)
+  (:struct "NODE" 14 ("SUCC" :fptr 0) ("TYPE" :u8 8)))
+(let ((acc nil))
+  (dolist (n '("+CLASS+" "+BIG+" "+NEG+" "NODE-TYPE" "+U32+" "+EMPTY+" "*VS*" "CALL-ME"))
+    (dotimes (i 50) (make-string 40))
+    (push (symbol-name (find-symbol n "GCS-BT")) acc))
+  (format t "BT-LAZY:~a~%" (list (length acc) +class+ +empty+ *vs* +big+ +neg+ +u32+
+                                 (constantp '+class+) (fboundp 'node-type) (fboundp 'call-me))))
+(let ((n 0))
+  (do-symbols (s "GCS-BT") (when (eq (symbol-package s) (find-package "GCS-BT")) (incf n)))
+  (format t "BT-FLIP:~a~%" (list (>= n 9) (null (clamiga::%binding-table-info "GCS-BT")) +class+ *node-size*)))
+EOF
+out=$(run_stress "$WORK/bindtab.lisp")
+check_contains "binding table materialises every value kind under stress" \
+  'BT-LAZY:(8 Window.mui  vs 9221870457395268199001198522469 -5 4294967295 T T T)' "$out"
+check_contains "binding table eager flip under stress keeps the values" \
+  "BT-FLIP:(T T Window.mui 14)" "$out"
+check_absent   "no corruption diagnostics from the binding-table path" \
+  "corrupted\|type 0\|BADMARK\|badmark\|SIGSEGV\|Unbound" "$out"
+# the same table through COMPILE-FILE (clean) and LOAD (stress): the blob
+# is a byte-vector literal in the FASL
+cat > "$WORK/bindtab-load.lisp" <<EOF
+(require "amiga/ffi")
+(defpackage "GCS-BT" (:use "CL") (:export "*GCS-BASE*" "*GCS-VERSION*"))
+(load "$WORK/bindtab.fasl")
+(format t "BT-FASL:~a~%" (list gcs-bt::+class+ gcs-bt::+big+ (fboundp 'gcs-bt::node-succ)))
+EOF
+if compile_fasl "$WORK/bindtab.lisp" "$WORK/bindtab.fasl"; then
+    out=$(run_stress "$WORK/bindtab-load.lisp")
+    check_contains "binding table FASL loads under stress" \
+      "BT-FASL:(Window.mui 9221870457395268199001198522469 T)" "$out"
+else
+    total=$((total + 1)); failed=$((failed + 1))
+    echo "  FAIL  binding table FASL: compile_fasl failed"
+fi
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

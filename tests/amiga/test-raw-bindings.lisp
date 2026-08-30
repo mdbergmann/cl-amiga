@@ -405,3 +405,51 @@
              (= (symbol-value (%raw-sym "AMIGA.RAW.CLASSES.WINDOW" "+WMHI-IGNORE+")) -1)
              t))
       (null (find-package "AMIGA.RAW.CLASSES.WINDOW"))))
+
+;;; --- muimaster.library: the MUI 3.8 SDK functions + libraries/mui.h -----
+;;; The module opens muimaster.library at REQUIRE time (MUI 3.8 in the
+;;; FS-UAE Workbench, MUI 4 built into MorphOS); where MUI is absent the
+;;; checks assert that nothing was loaded.  Like the ReAction classes, the
+;;; symbols are looked up at run time.
+
+(defvar *raw-mui-p*
+  (let ((b (amiga:open-library "muimaster.library" 11)))   ; MUIMASTER_VMIN
+    (when b (amiga:close-library b) t)))
+
+(format t "; raw-bindings: muimaster.library ~:[absent — skipping~;present~]~%" *raw-mui-p*)
+(when *raw-mui-p*
+  (%raw-require "amiga/raw/muimaster"))
+
+;; the MUIC_* class names of mui.h are string constants; the tags, values
+;; and MUIMASTER_VMIN (what the base was opened with) are integers
+(check "raw-mui-string-and-tag-constants" t
+  (if *raw-mui-p*
+      (and (equal (symbol-value (%raw-sym "AMIGA.RAW.MUIMASTER" "+MUIC-WINDOW+")) "Window.mui")
+           (equal (symbol-value (%raw-sym "AMIGA.RAW.MUIMASTER" "+MUIC-RECTANGLE+")) "Rectangle.mui")
+           (equal (symbol-value (%raw-sym "AMIGA.RAW.MUIMASTER" "+MUIX-C+"))
+                  (format nil "~Cc" (code-char 27)))
+           (= (symbol-value (%raw-sym "AMIGA.RAW.MUIMASTER" "+MUIMASTER-VMIN+")) 11)
+           (= (symbol-value (%raw-sym "AMIGA.RAW.MUIMASTER" "+MUIA-WINDOW-CLOSE-REQUEST+")) #x8042E86E)
+           (= (symbol-value (%raw-sym "AMIGA.RAW.MUIMASTER" "+MUIV-APPLICATION-RETURN-ID-QUIT+")) -1)
+           (>= (symbol-value (%raw-sym "AMIGA.RAW.MUIMASTER" "*MUIMASTER-VERSION*")) 11)
+           t)
+      (null (find-package "AMIGA.RAW.MUIMASTER"))))
+
+;; the vectors reach the library (the ##private gaps of the fd were counted
+;; right): MUI_NewObjectA of a Rectangle.mui by its MUIC_ name string,
+;; then MUI_DisposeObject
+(check "raw-mui-new-dispose-object" t
+  (if *raw-mui-p*
+      (ffi:with-foreign-string (cls (symbol-value (%raw-sym "AMIGA.RAW.MUIMASTER" "+MUIC-RECTANGLE+")))
+        (let ((obj (funcall (%raw-sym "AMIGA.RAW.MUIMASTER" "MUI-NEW-OBJECT-A") cls nil)))
+          (and obj (ffi:foreign-pointer-p obj) (not (ffi:null-pointer-p obj))
+               (progn (funcall (%raw-sym "AMIGA.RAW.MUIMASTER" "MUI-DISPOSE-OBJECT") obj) t))))
+      (null (find-package "AMIGA.RAW.MUIMASTER"))))
+
+;; MUI_GetRGBColor is MorphOS-only (LVO -690 does not exist in MUI 3.8):
+;; the name exists, the binding only under :morphos
+(check "raw-mui-get-rgb-color-morphos-only" t
+  (if *raw-mui-p*
+      (let ((s (%raw-sym "AMIGA.RAW.MUIMASTER" "MUI-GET-RGB-COLOR")))
+        (eq (and (member :morphos *features*) t) (and (fboundp s) t)))
+      (null (find-package "AMIGA.RAW.MUIMASTER"))))

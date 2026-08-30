@@ -276,6 +276,7 @@ APPLY, TRACE and DESCRIBE all work on the stub as on any function."
 ;;;   (amiga.ffi:define-binding-table "AMIGA.RAW.INTUITION"
 ;;;       (:base *intuition-base* :version *intuition-version*)
 ;;;     (:const "+WA-LEFT+" #x80000064)          ; DEFCONSTANT
+;;;     (:const "+MUIC-WINDOW+" "Window.mui")     ; DEFCONSTANT of a string (ASCII, <= 255)
 ;;;     (:var "*MSG-SIZE*" 4)                     ; DEFVAR (a struct size)
 ;;;     (:fn "OPEN-WINDOW" -204 (:a0) :pointer)   ; DEFCFUN: lvo (regs) result
 ;;;     (:fn "SHOW-WINDOW" -834 (:a0 :a1) :bool :not-morphos 46)   ; guards
@@ -286,8 +287,11 @@ APPLY, TRACE and DESCRIBE all work on the stub as on any function."
 ;;;     (:field "SOME-ACCESSOR" (:array :u16 4) 12)  ; one accessor
 ;;;     (:name "BLT-BITMAP"))                     ; exported, defined elsewhere
 ;;;
-;;; Names are strings, taken literally (like DEFPACKAGE's :EXPORT).  :fn
-;;; rows are what DEFCFUN takes: the LVO, the argument registers in
+;;; Names are strings, taken literally (like DEFPACKAGE's :EXPORT).  A
+;;; :const / :var value is an integer of any size or an ASCII string of at
+;;; most 255 characters (a C header's string #define, mui.h's MUIC_*
+;;; class names); the string is materialised as a fresh simple string.
+;;; :fn rows are what DEFCFUN takes: the LVO, the argument registers in
 ;;; order, the :RESULT kind, then optionally :NOT-MORPHOS / :MORPHOS and
 ;;; a minimum library version (checked against the :VERSION variable at
 ;;; lookup time; a name whose guard fails still exists, unbound — the
