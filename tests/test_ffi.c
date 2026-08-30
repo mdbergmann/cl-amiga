@@ -632,6 +632,27 @@ TEST(lisp_ffi_callback_inner_handlers_and_nesting_work)
         "(:CAUGHT T (1 2 7 9))");
 }
 
+TEST(lisp_ffi_callback_on_worker_thread_under_list_churn)
+{
+    /* cl_thread_current_is_registered walks the thread list under a
+     * non-blocking trylock (a foreign task must never block on it): a
+     * callback on a Lisp WORKER, racing threads that register and
+     * unregister, must still be recognised every time — a false "not
+     * registered" would make the comparator silently return 0. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((churn (mp:make-thread (lambda () "
+        "                (dotimes (i 100) (mp:join-thread (mp:make-thread (lambda () nil))))))) "
+        "      (worker (mp:make-thread (lambda () "
+        "                 (let ((bad 0)) "
+        "                   (dotimes (i 150) "
+        "                     (unless (equal " QSORT_WITH("(lambda (a b) (- (ffi:peek-i32 a) (ffi:peek-i32 b)))")
+        "                                    '(1 2 7 9)) (incf bad))) "
+        "                   bad))))) "
+        "  (mp:join-thread churn) "
+        "  (mp:join-thread worker))"),
+        "0");
+}
+
 TEST(lisp_ffi_callback_policy_variable)
 {
     ASSERT_STR_EQ(eval_print("ext:*callback-error-policy*"), ":DEFER");
@@ -757,6 +778,7 @@ int main(void)
     RUN(lisp_ffi_callback_error_not_seen_by_outer_handlers_inside);
     RUN(lisp_ffi_callback_nlx_across_boundary_refused);
     RUN(lisp_ffi_callback_inner_handlers_and_nesting_work);
+    RUN(lisp_ffi_callback_on_worker_thread_under_list_churn);
     RUN(lisp_ffi_callback_policy_variable);
     RUN(lisp_ffi_make_callback_regs_argument);
 #endif
