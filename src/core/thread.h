@@ -114,6 +114,12 @@ typedef struct CL_Thread_s {
     /* ---- Multiple values ---- */
     CL_Obj mv_values[CL_MAX_MV];
     int    mv_count;
+    /* Ctrl-C break poll counter (vm.c VM_POLL_BREAK): bumped on every
+     * OP_CALL/OP_TAILCALL and backward OP_JMP, so it MUST be per-thread —
+     * as a process-wide static every thread wrote the same cache line on
+     * every call, which cost the 8-thread sento matrix 10–27% (see
+     * docs/sento-bench-results-0.8.md). */
+    uint32_t break_poll_ctr;
     /* mv state captured by call_builtin before its per-call reset; lets
      * NLX builtins (THROW) see the multiple values of their last argument. */
     int    pre_call_mv_count;

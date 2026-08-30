@@ -162,9 +162,21 @@ $(HOST_BIN): $(HOST_OBJS)
 	@mkdir -p $(dir $@)
 	$(CC_HOST) $(CFLAGS_HOST) -o $@ $^ $(HOST_LIBS)
 
+# vm.c is compiled WITHOUT link-time optimization.  cl_vm_run is one giant
+# computed-goto function whose register allocation is shared by every opcode;
+# under -flto the link-time code generator makes different inlining/allocation
+# choices for it than the plain compiler does, and from d467727 on those
+# choices cost every opcode ~15-25% (call-free local-variable loops, measured
+# by trunk/bench-opt.lisp vm.* rows; bisected, and nothing in the source of
+# the hot handlers had changed).  Building vm.o at -O3 without LTO puts the
+# interpreter back at (or under) its 0.4 speed while the rest of the runtime
+# keeps whole-program LTO.  Per-file rather than global: the no-LTO shape is
+# measurably slower for everything else (docs/sento-bench-results-0.8.md).
+$(BUILDDIR)/core/vm.o: OBJ_CFLAGS_EXTRA = -fno-lto
+
 $(BUILDDIR)/%.o: $(SRCDIR)/%.c
 	@mkdir -p $(dir $@)
-	$(CC_HOST) $(CFLAGS_HOST) -I$(SRCDIR) -MMD -MP -c -o $@ $<
+	$(CC_HOST) $(CFLAGS_HOST) $(OBJ_CFLAGS_EXTRA) -I$(SRCDIR) -MMD -MP -c -o $@ $<
 
 # Include auto-generated dependency files
 -include $(HOST_OBJS:.o=.d)

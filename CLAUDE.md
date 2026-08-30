@@ -107,6 +107,15 @@ For 0.5 the correct base was `95bda65` (89 commits), not the `v0.4` tag.
 - All structs must work at 32-bit — no `size_t` or pointer-sized fields in heap objects
 - Use `uint32_t`/`int32_t` explicitly, not `int` or `long` for sized data
 - C89/C99 compatible — no C11+ features
+- **The VM hot path is fragile in two specific ways** (both bisected in the 0.8
+  cycle, see `docs/sento-bench-results-0.8.md`): (1) anything written on every
+  opcode/call must be per-thread — a process-wide static there (the Ctrl-C
+  poll counter was one) makes all threads bounce one cache line and costs
+  25%+ under MT; `trunk/bench-opt.lisp`'s `mt.*` rows catch it. (2) `vm.o` is
+  deliberately built **without LTO** (`Makefile`, `OBJ_CFLAGS_EXTRA`); the
+  giant `cl_vm_run` is sensitive to code added anywhere in it, so after
+  touching `vm.c` compare the `vm.*` rows of bench-opt against
+  `docs/benchmarks.md` before committing.
 
 ### FASL Versioning (Critical)
 

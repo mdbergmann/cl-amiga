@@ -7,6 +7,50 @@ command, and results, so later runs can be compared like-for-like.
 Related: [specs/performance.md](../specs/performance.md) is the optimization
 *plan*; this file is the *measured results* log.
 
+## 2026-08-30 — 0.8 regression root causes: per-thread break-poll counter + vm.o without LTO
+
+**Context**: [sento-bench-results-0.8.md](sento-bench-results-0.8.md) found
+master 9–27% below a same-session 0.4 binary on every sento cell. Three
+bisects (all on deterministic micro probes, not on the noisy sento cell):
+
+1. `8f9e85f` — the Ctrl-C poll counter was a process-wide `static` bumped on
+   every `OP_CALL`/backward `OP_JMP` → all threads bounce one cache line.
+   **Fixed**: counter in `CL_Thread`.
+2. `d467727` — an LTO code-generation artifact in the giant `cl_vm_run`:
+   every opcode 15–25% slower single-threaded with identical bytecode.
+   **Mitigated**: `vm.o` built with `-fno-lto` (Makefile), rest of the
+   runtime keeps LTO.
+3. `d467727` — a residual layout effect on the local-variable loops that
+   survives no-LTO; structural (one giant function), left as is.
+
+**Environment**: Apple M3 Ultra, macOS 26.6.2, `make host`.  Probes: 8
+threads each running a call loop / special-bind loop (wall ns per op);
+bench-opt rows (ms, best of 3, `--heap 64M`).
+
+| Probe                      | 0.4 (`cfd2bab`) | master before | + counter fix | + vm.o no-LTO |
+| -------------------------- | --------------: | ------------: | ------------: | ------------: |
+| 8-thread call loop (ns/op) |  6.8 |  27–29 | **7.5** | 6.8 |
+| 8-thread special-bind      |  7.5 |  25–27 | **8.1** | 7.6 |
+| vm.local-shuffle (ms)      |   47 |     56 |    56 | **52** |
+| vm.fixnum-loop             |   58 |     66 |    66 | **60** |
+| vm.call-return             |   56 |     61 |    61 | **54** |
+| mt.call-x8 (new row)       |    — |      — |    64 | **57** |
+| mt.dynbind-x8 (new row)    |    — |      — |    48 | **44** |
+
+sento matrix (msg/s, cold speed-3 cache): pinned/ask 24,256 → **28,976**
+(0.4: 33,239), shared/ask 19,191 → **22,302** (25,466), pinned/tell
+169,018 → 175,227 (191,254); full table in the 0.8 results doc.
+
+**Guards**: the `mt.*` rows are the 8-thread twins of `vm.call-return` /
+a dynamic-binding loop — a shared write on the call path shows as 3–4×
+the single-thread figure (healthy: within ~1.5×). After touching `vm.c`,
+compare the `vm.*` rows against this table.
+
+**Reproduce**: `echo '(quit)' | ./build/host/clamiga --heap 64M --load
+trunk/bench-opt.lisp`; sento: `trunk/sento-bench-matrix.lisp`.
+
+---
+
 ## 2026-07-15 — Generational GC (host): sliding nursery + dirty-page tracking
 
 **Branch**: `perf/gengc` (on top of the TLAB branch).  Design:

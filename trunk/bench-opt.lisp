@@ -175,6 +175,51 @@ Verify the (deterministic) result against EXPECTED."
            (lambda () (%bo-call-return n reps))))
 
 ;; =====================================================================
+;; mt.* — the same VM hot paths run by 8 threads at once.  Single-threaded
+;; numbers cannot see a per-call write to shared memory (a process-wide
+;; counter, a global inline cache, ...): every thread then bounces one
+;; cache line on every call and the 8-thread wall time explodes while the
+;; 1-thread figure is unchanged.  That exact bug cost the sento matrix
+;; 10–27% in the 0.8 cycle (docs/sento-bench-results-0.8.md) — the
+;; Ctrl-C break-poll counter was a static.  Healthy: mt.call-x8 is within
+;; ~1.5x of vm.call-return's ms (same total work, spread over 8 cores);
+;; a shared write shows as 3–4x.
+
+(defun %bo-mt-run (nthreads fn n)
+  "Run (FN N) on NTHREADS threads; return the sum of their results."
+  (let* ((results (make-array nthreads :initial-element 0))
+         (threads (let ((acc nil))
+                    (dotimes (k nthreads)
+                      (let ((k k))
+                        (push (mp:make-thread
+                               (lambda () (setf (svref results k) (funcall fn n)))
+                               :name "bo-mt")
+                              acc)))
+                    acc)))
+    (dolist (th threads) (mp:join-thread th))
+    (let ((s 0))
+      (dotimes (k nthreads) (setq s (+ s (svref results k))))
+      s)))
+
+(defvar *bo-mt-special* 0)
+(defun %bo-mt-dynbind (n reps)
+  (let ((s 0))
+    (dotimes (r reps)
+      (setq s 0)
+      (dotimes (i n)
+        (let ((*bo-mt-special* i))
+          (setq s (+ s *bo-mt-special*)))))
+    s))
+
+(let ((n 10000) (reps (%bo-scaled 100)))
+  (%bo-run "mt.call-x8" (* 8 (+ (%bo-sum-below n) n))
+           (lambda () (%bo-mt-run 8 (lambda (n) (%bo-call-return n reps)) n))))
+
+(let ((n 10000) (reps (%bo-scaled 100)))
+  (%bo-run "mt.dynbind-x8" (* 8 (%bo-sum-below n))
+           (lambda () (%bo-mt-run 8 (lambda (n) (%bo-mt-dynbind n reps)) n))))
+
+;; =====================================================================
 ;; opt.* — emit-time optimization targets (spec 1.3).
 
 ;; Constant subexpressions: today each (* 3 4), (- 100 58), (ash 1 5),

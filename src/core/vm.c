@@ -53,8 +53,14 @@ extern int32_t cl_bytevec_check_value(CL_Obj value, int is_signed,
  * Safe between opcodes: bytecode code arrays live outside the arena
  * (platform_alloc), so the nested VM run inside BREAK — including any GC
  * it triggers — cannot move the interpreter's code pointer, and the
- * caller's frame/stack discipline is exactly that of OP_CALL. */
-static uint32_t vm_break_poll_ctr = 0;
+ * caller's frame/stack discipline is exactly that of OP_CALL.
+ *
+ * The poll counter lives in CL_Thread (break_poll_ctr), NOT in a static:
+ * it is written on every call by every thread, and a shared static made
+ * all threads bounce one cache line — a 3–4x slowdown of the 8-thread
+ * call loop (bisected to the commit that introduced it; see
+ * docs/sento-bench-results-0.8.md).  cl_vm_run already holds its thread
+ * in `thr`, so the per-thread counter is free to reach. */
 
 static void vm_handle_break(void)
 {
@@ -77,10 +83,11 @@ static void vm_handle_break(void)
     }
 }
 
-/* Counter-gated poll, cheap enough for the OP_JMP/OP_CALL hot path. */
+/* Counter-gated poll, cheap enough for the OP_JMP/OP_CALL hot path.  Uses
+ * cl_vm_run's `thr` local (per-thread counter — see the note above). */
 #define VM_POLL_BREAK() \
     do { \
-        if (((++vm_break_poll_ctr) & 1023) == 0) { \
+        if (((++thr->break_poll_ctr) & 1023) == 0) { \
             frame->ip = ip; \
             vm_handle_break(); \
         } \

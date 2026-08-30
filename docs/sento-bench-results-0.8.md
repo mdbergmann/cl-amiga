@@ -6,14 +6,17 @@ for the 0.8 cycle — master ahead of the 0.8 version bump — run at
 because every cell came in below 0.4, a same-session A/B against a 0.4
 binary built from the v0.4 bump commit.
 
-**Headline: 0.8 is slower than 0.4 on every cell of the matrix, and the
-A/B pins it on the runtime.** The 0.4 binary reproduces its July numbers
-today, on the same machine, same sento, same session; the 0.8 binary is
-−9% to −27% against it. The async-ask cells lose the most (~+11–13 µs per
-message on both dispatchers), the plain `tell` mailbox path the least.
-GC is not the cause — the collector's share of wall time is *lower* in 0.8
-in every cell. The offending change(s) among the 168 commits between
-`cfd2bab` and `5b4bbf6` have not been bisected yet; see Observations.
+**Headline: 0.8 was slower than 0.4 on every cell of the matrix, and the
+A/B pinned it on the runtime.** The 0.4 binary reproduces its July numbers
+today, on the same machine, same sento, same session; the 0.8 binary as
+measured on 2026-08-29 was −9% to −27% against it, the async-ask cells
+losing the most (~+11–13 µs per message on both dispatchers). GC was not
+the cause — the collector's share of wall time is *lower* in 0.8 in every
+cell. **Two of three causes were bisected and fixed on 2026-08-30** (a
+process-global counter on the call path; an LTO code-generation artifact
+in the interpreter loop); the ask cells recovered about half of their gap
+(−27% → −13%). The residual is a compiler-layout effect in `cl_vm_run`
+that no source-level tweak reached — see "Root causes" below.
 
 Companion documents: [sento-bench-results-0.2.md](sento-bench-results-0.2.md)
 records the 0.2 baseline and describes the benchmark itself (N sender
@@ -125,7 +128,79 @@ every cell of every leg; worst single stop-the-world pause 7.3 ms (0.8) vs
 8.0 ms (0.4) on the pinned cells. 0.8 collects *less* — it simply pushes
 fewer messages, so it allocates less.
 
-## Observations
+## Root causes (2026-08-30) and what was done
+
+Three bisects, each driven by a probe that reads the same every time it
+runs (±1–2%), so verdicts are clean; the sento cell itself is too noisy
+and too slow (3 min/step) to bisect on directly.
+
+1. **`8f9e85f` (Ctrl-C break-in) — a process-global counter on the call
+   path.** `VM_POLL_BREAK()` did `++vm_break_poll_ctr` on a `static` at
+   every `OP_CALL`/`OP_TAILCALL` and backward `OP_JMP`. Every thread
+   therefore wrote the same cache line on every call. An 8-thread call
+   loop went from 6.8 ns to 27 ns per call (3.5×), a special-bind loop
+   7.5 → 26 ns; single-threaded nothing changed, which is why no existing
+   benchmark saw it. **Fixed**: the counter lives in `CL_Thread`
+   (`thr->break_poll_ctr`; `cl_vm_run` already holds `thr` in a register).
+   8-thread call loop back to 7.5 ns; sento pinned/ask +8–10%, tell/ask‑s
+   +3–6%. Not `__thread`: on macOS that is a `tlv_get_addr` call per
+   access and left ~3 ns on the table.
+2. **`d467727` (FFI stub descriptors) — an LTO code-generation artifact in
+   `cl_vm_run`.** After this commit *every* opcode got 15–25% slower
+   single-threaded (bench-opt: `vm.local-shuffle` +19%, `vm.fixnum-loop`
+   +14%, `vm.call-return` +9%, even the C-builtin `set.*` rows +10%),
+   with byte-identical bytecode and no change to any hot handler's source.
+   Building the whole program without LTO recovered it; outlining the new
+   `OP_CALL` branch or forcing `cl_symbol_value` out of line did nothing.
+   `cl_vm_run` is one 40 KB computed-goto function whose register
+   allocation is shared by all opcodes, and the link-time code generator
+   simply makes different choices for it than the compiler does.
+   **Mitigated**: `vm.o` alone is built with `-fno-lto` (Makefile,
+   `OBJ_CFLAGS_EXTRA`); the rest of the runtime keeps whole-program LTO
+   (measurably better for everything else). Local-shuffle 68 → 61 ms,
+   fixnum-loop 62 → 55, call-return 54 → 49 ns per call — the latter two
+   now at or under the 0.4 binary.
+3. **Also `d467727` — a residual layout effect that survives no-LTO.** With
+   `vm.o` built the same way, the commit's parent reads 52 ms on the
+   local-shuffle loop, the commit 61 (its `unwind-protect` loop +8%).
+   Outlining the added code, `-O2`, `-fno-unroll-loops` change nothing;
+   `-fno-inline-functions` makes it far worse. This is left as is: the
+   fix is structural (per-opcode handler functions instead of one giant
+   `cl_vm_run`), not a tweak. `trunk/bench-opt.lisp` tracks it.
+
+Excluded along the way, each by a controlled experiment: the atomics
+backend (lock vs CAS on the same binary: identical), thread creation cost
+(equal), condvar hand-off latency (equal, ~4.2 µs per round trip), CLOS
+instantiation/dispatch (equal or faster), the bundled `boot.fasl` vs a
+speed-3 source compile (equal), sento 3.4.4 (both binaries ran it).
+
+### After the fixes
+
+Same protocol (cold cache, speed 3), commit = the working tree that
+became the fix commit; the "0.4" column is the same-session A/B binary.
+
+| Cell         | 0.8 before | 0.8 after | 0.4 (A/B) | after vs 0.4 | before vs 0.4 |
+| ------------ | ---------: | --------: | --------: | -----------: | ------------: |
+| PINNED tell  | 169,018 | **175,227** | 191,254 |  −8.4% | −11.6% |
+| PINNED ask-s |  94,165 |  **97,733** | 103,441 |  −5.5% |  −9.0% |
+| PINNED ask   |  24,256 |  **28,976** |  33,239 | **−12.8%** | −27.0% |
+| SHARED tell  |  29,491 |  **29,748** |  30,204 |  −1.5% |  −2.4% |
+| SHARED ask-s |  43,513 |  **45,849** |  49,673 |  −7.7% | −12.4% |
+| SHARED ask   |  19,191 |  **22,302** |  25,466 | **−12.4%** | −24.6% |
+
+Per message on pinned/ask: 41.2 µs → 34.5 µs (0.4: 30.1 µs). The
+remaining 4.4 µs is consistent with item 3 above plus the modest
+contended-lock and allocation-under-contention differences the component
+micro-benchmark shows (lock acquire +21%, cons+struct +50% at 8 threads),
+none of which is a single fixable site.
+
+Two regression guards were added so this cannot come back unnoticed:
+`trunk/bench-opt.lisp` now has `mt.call-x8` / `mt.dynbind-x8` (the same
+VM loops on 8 threads — a shared write on the call path shows as 3–4× the
+single-thread `vm.call-return` figure; healthy is within ~1.5×), and
+`CLAUDE.md` records both constraints.
+
+## Observations (as measured on 2026-08-29, before the fixes)
 
 - **A runtime regression, concentrated on the async-reply path.** The
   extra per-message cost is ~0.7–1 µs on `tell`/`ask-s` pinned, ~3 µs on
