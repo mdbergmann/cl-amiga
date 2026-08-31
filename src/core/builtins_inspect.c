@@ -533,6 +533,18 @@ static void inspect_loop(InspectState *state)
         write_str("Inspect> ");
         cl_color_reset();
     }
+
+    /* platform_read_line hit EOF — Ctrl-D (POSIX) / Ctrl-\ (Amiga) /
+     * Ctrl-Z (Windows) at the Inspect> prompt.  Treat it as `q`: leave the
+     * inspector and return to the caller, exactly as the debugger treats EOF
+     * at Debug> as :q (issue #13).  Falling out of the loop already returns,
+     * but stdio's EOF flag is sticky, so without clearing it the top-level
+     * REPL's next read returned EOF too and the whole session exited ("Bye.")
+     * along with all its state (issue #25).  A second Ctrl-D at the top-level
+     * prompt still exits; and if the terminal is really gone, reads keep
+     * returning EOF and the top level exits as before. */
+    platform_clear_stdin_eof();
+    write_str("\n");  /* Ctrl-D echoes no newline */
 }
 
 /* --- Builtin: (inspect object) --- */

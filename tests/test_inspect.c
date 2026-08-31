@@ -13,6 +13,14 @@
 #include "core/repl.h"
 #include "platform/platform.h"
 #include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+#ifdef PLATFORM_WIN32
+#define NULL_DEVICE "NUL"
+#else
+#define NULL_DEVICE "/dev/null"
+#endif
 
 /* Component access functions from builtins_inspect.c */
 extern int cl_inspect_component_count(CL_Obj obj);
@@ -280,6 +288,64 @@ TEST(inspect_show_obj_to_standard_output)
     ASSERT(strstr(out, "CONS") != NULL);
 }
 
+/* Ctrl-D at the Inspect> prompt returns from INSPECT — like `q` — and leaves
+ * stdin readable (issue #25, the inspector half of the debugger's issue #13).
+ *
+ * The loop always fell out on EOF; what it left behind was stdio's *sticky*
+ * EOF indicator, so the top-level REPL's very next read returned EOF too and
+ * the whole session exited ("Bye.") with all its state.  A Ctrl-D at a
+ * terminal is exactly a read that reports EOF, so this drives the loop with
+ * an already-empty stdin, then proves the session can still read by appending
+ * a line to that same file and reading it back — which only succeeds if the
+ * indicator was cleared.  tests/test_inspect_eof.sh checks the same contract
+ * end-to-end over a real PTY; this one runs everywhere, including the CI
+ * images that have no expect(1). */
+TEST(inspect_eof_returns_and_leaves_stdin_readable)
+{
+    char path[512], tmpdir[400], line[64];
+    const char *tmp = getenv("TMPDIR");
+    const char *out;
+    FILE *f;
+
+    if (!tmp || !tmp[0]) tmp = "/tmp";
+    snprintf(tmpdir, sizeof(tmpdir), "%s", tmp);
+    snprintf(path, sizeof(path), "%s/cl_inspect_eof_stdin.txt", tmpdir);
+
+    f = fopen(path, "w");
+    ASSERT(f != NULL);
+    if (!f) return;
+    fclose(f);                     /* empty — the first read sees EOF */
+
+    ASSERT(freopen(path, "r", stdin) != NULL);
+
+    eval("(setq *standard-output* (make-string-output-stream))");
+    /* Returns at all only because the loop exits on EOF; NIL is what INSPECT
+     * yields (its values are unspecified, this one has never had any). */
+    ASSERT(CL_NULL_P(eval("(inspect '(1 2 3))")));
+
+    /* The regression: stdin must not be left reporting EOF. */
+    ASSERT_EQ_INT(feof(stdin) ? 1 : 0, 0);
+
+    out = eval_str(
+        "(prog1 (get-output-stream-string *standard-output*)"
+        "       (setq *standard-output* (make-synonym-stream '*terminal-io*)))");
+    ASSERT(strstr(out, "Inspecting") != NULL);
+
+    /* Fresh input still arrives, as the line typed after a Ctrl-D does. */
+    f = fopen(path, "a");
+    ASSERT(f != NULL);
+    if (f) {
+        fputs("(+ 40 2)\n", f);
+        fclose(f);
+    }
+    ASSERT_EQ_INT(platform_read_line(line, sizeof(line)), 1);
+    ASSERT_STR_EQ(line, "(+ 40 2)");
+
+    if (!freopen(NULL_DEVICE, "r", stdin))
+        clearerr(stdin);
+    remove(path);
+}
+
 int main(void)
 {
     test_init();
@@ -312,6 +378,9 @@ int main(void)
     RUN(inspect_out_of_range);
     RUN(inspect_is_bound);
     RUN(inspect_show_obj_to_standard_output);
+
+    /* Interactive-loop tests (redirect stdin — keep last) */
+    RUN(inspect_eof_returns_and_leaves_stdin_readable);
 
     teardown();
     REPORT();

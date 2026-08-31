@@ -217,7 +217,7 @@ test_batch test_repl_values test_boot_log test_mx_error_context \
                 test_mt_dispatch_cache_race test_mt_thread_exit_gc test_mt_thread_identity \
                 test_mt_intern_stw test_mt_stream_close_race test_mt_interrupt_parked \
                 test_lock_diag test_break_diag test_debugger_backtrace \
-                test_debugger_eof \
+                test_debugger_eof test_inspect_eof \
                 test_io_diag test_ql_socket_timeouts test_stream_outbuf_leak \
                 test_tls_loopback test_compiler_chain_unwind test_mt_lock_contention_throughput \
                 test_mt_print_stress test_load_keywords test_load_rebind \
