@@ -86,6 +86,18 @@ make test-extra    # Heavyweight trunk integration scripts
 make clean         # Remove build artifacts
 ```
 
+`make install` (and `make uninstall`) lays the binary and its `lib/` out under
+an install prefix, the same way SBCL does — `<prefix>/bin/clamiga` plus
+`<prefix>/lib/clamiga/`. The prefix is `/usr/local` unless you say otherwise:
+
+```
+make install PREFIX=/opt/clamiga
+```
+
+An installed clamiga finds its library there on its own, from any working
+directory and with no environment setup (`tests/test_lib_search_cwd.sh` covers
+the full resolution order).
+
 ### Host (Windows)
 
 `make host` also builds a **native Windows executable** — a real `.exe` with no
