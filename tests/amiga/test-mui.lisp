@@ -270,6 +270,17 @@ STRING-CELL for the notification test.  Returns the application."
                 (amiga.mui:dispose-object app))))))
       '(42 43)))
 
+;; MUIV_TriggerValue is substituted only under a MUIV_EveryTime trigger
+;; (Notify.mui).  Under a fixed trigger MUI hands the method the raw
+;; 0x49893131 -- refused here, at the call site.  Pure argument checking, so
+;; it runs whether or not muimaster.library is around.
+(check "mui-notify-trigger-value-needs-every-time" '(t (#x49893131))
+  (list (handler-case
+            (progn (amiga.mui::%notify-args 1 t :application 2 '(:trigger-value)) nil)
+          (error (c) (let ((s (format nil "~A" c)))
+                       (and (search ":EVERY-TIME" s) (search ":TRIGGER-VALUE" s) t))))
+        (subseq (amiga.mui::%notify-args 1 :every-time :self 2 '(:trigger-value)) 5)))
+
 ;; a notification whose trigger value does not match stays silent
 ;; (window open, see above)
 (check "mui-notify-trigger-value-selects" '(nil 5)

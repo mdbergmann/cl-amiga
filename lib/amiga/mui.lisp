@@ -472,6 +472,19 @@ TrigVal, DestObj, FollowParams, then the method and its parameters."
   (unless (integerp method)
     (error "AMIGA.MUI:NOTIFY: method ~S is not an integer -- expected a MUIM_ method ID (amiga/raw/muimaster), e.g. MUIM_Application_ReturnID or MUIM_Set"
            method))
+  ;; Notify.mui defines the substitution for the MUIV_EveryTime trigger only:
+  ;; "MUIV_EveryTime makes MUI execute the notification method every time when
+  ;; TrigAttr changes.  In this case, the special value MUIV_TriggerValue in
+  ;; the notification method will be replaced with the value that TrigAttr has
+  ;; been set to."  Under a fixed trigger MUI leaves the magic longword alone
+  ;; and the callee is handed 0x49893131 -- caught here, where the call site
+  ;; is still in view, instead of as a nonsense value inside a hook.
+  (unless (eq trigger :every-time)
+    (let ((special (find-if (lambda (p) (member p '(:trigger-value :not-trigger-value)))
+                            params)))
+      (when special
+        (error "AMIGA.MUI:NOTIFY: ~S needs an :EVERY-TIME trigger -- MUI only substitutes MUIV_TriggerValue when TrigVal is MUIV_EveryTime, so under the trigger ~S the method would be handed the raw magic value.  Notify on the attribute that carries the value you want (MUIA_List_Active rather than MUIA_Listview_DoubleClick, say), or pass the value the trigger already fixes"
+               special trigger))))
   (list* attribute
          (%notify-trigger trigger)
          (%notify-destination dest)
@@ -484,9 +497,11 @@ TrigVal, DestObj, FollowParams, then the method and its parameters."
 T/NIL, or :EVERY-TIME (MUIV_EveryTime) -- invoke METHOD with PARAMS on
 DEST: an object, or :SELF / :WINDOW / :APPLICATION / :PARENT
 \(MUIV_Notify_*).  In PARAMS, :TRIGGER-VALUE stands for the new attribute
-value (MUIV_TriggerValue) and :NOT-TRIGGER-VALUE for its logical inverse;
-strings are copied into the enclosing WITH-FOREIGN-POOL.  FollowParams is
-computed.  The C idiom
+value (MUIV_TriggerValue) and :NOT-TRIGGER-VALUE for its logical inverse
+-- both only under a :EVERY-TIME trigger, the one case MUI substitutes
+them (asking for one under a fixed trigger is an error here rather than a
+magic longword delivered to the method).  Strings are copied into the
+enclosing WITH-FOREIGN-POOL.  FollowParams is computed.  The C idiom
   DoMethod(win, MUIM_Notify, MUIA_Window_CloseRequest, TRUE,
            app, 2, MUIM_Application_ReturnID, MUIV_Application_ReturnID_Quit)
 is (notify win +muia-window-close-request+ t app

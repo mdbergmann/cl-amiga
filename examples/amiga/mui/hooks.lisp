@@ -14,6 +14,23 @@
 ;;; MUIM_CallHook as a NOTIFY method with a parameter and with
 ;;; MUIV_TriggerValue, MUIA_Listview_DoubleClick, MUIM_List_GetEntry.
 ;;;
+;;; One MUI rule this program is built around, because getting it wrong is
+;;; silent: MUI replaces :TRIGGER-VALUE (MUIV_TriggerValue) in a
+;;; notification method *only when the trigger is :EVERY-TIME*.  Notify.mui
+;;; says it in one sentence -- "The special value MUIV_EveryTime makes MUI
+;;; execute the notification method every time when TrigAttr changes.  In
+;;; this case, the special value MUIV_TriggerValue in the notification
+;;; method will be replaced with the value that TrigAttr has been set to."
+;;; Ask for it under a fixed trigger (..._DoubleClick, TRUE) and no
+;;; substitution happens: the hook is handed the raw magic 0x49893131,
+;;; which in clamiga is a bignum, not a row index.  So the selection hook
+;;; below takes :TRIGGER-VALUE from MUIA_List_Active / :EVERY-TIME, where
+;;; it is defined, and the double-click hook asks the list which entry is
+;;; active instead -- the idiom every SDK example uses (psi.c, MUI-Demo.c,
+;;; WbMan.c, Popup.c all call MUIM_List_GetEntry with
+;;; MUIV_List_GetEntry_Active after a MUIA_Listview_DoubleClick, which is
+;;; a BOOL and carries TRUE, never an index).
+;;;
 ;;; A hook runs inside MUI, on its stack: an error in it is caught at the
 ;;; callback, the hook returns 0, and the condition is re-signaled in Lisp
 ;;; when the MUI call that invoked it returns -- here that is
@@ -46,6 +63,29 @@ time, so this file reads on a system where that package does not exist."
 (defparameter *planets*
   '(("Mercury" 0) ("Venus" 0) ("Earth" 1) ("Mars" 2)
     ("Jupiter" 95) ("Saturn" 146) ("Uranus" 28) ("Neptune" 16)))
+
+(defun planet-at (index)
+  "The *PLANETS* row at INDEX, or NIL when there is none.  MUI hands the
+index over as an unsigned longword, so MUIV_List_Active_Off (-1) arrives
+as #xFFFFFFFF and simply falls outside the list."
+  (and (< index (length *planets*)) (nth index *planets*)))
+
+(defun planet-named (name)
+  "The *PLANETS* row whose name is NAME -- NIL for NIL, which is what
+ACTIVE-ENTRY answers when no entry is active."
+  (and name (assoc name *planets* :test #'string=)))
+
+(defun active-entry (list storage)
+  "MUIM_List_GetEntry with MUIV_List_GetEntry_Active: the active entry of
+LIST -- the string MUI copied at insert time -- as a Lisp string, or NIL
+when no entry is active.  STORAGE is a pooled longword the method writes
+the entry pointer into, made once so the hook allocates nothing."
+  (ffi:poke-u32 storage 0 0)
+  (mui:do-method list (m "+MUIM-LIST-GET-ENTRY+")
+                 (m "+MUIV-LIST-GET-ENTRY-ACTIVE+") storage)
+  (let ((entry (ffi:peek-u32 storage 0)))
+    (unless (zerop entry)
+      (ffi:foreign-to-string (ffi:make-foreign-pointer entry)))))
 
 (defun children (objects)
   (loop for o in objects collect (m "+MUIA-GROUP-CHILD+") collect o))
@@ -88,8 +128,19 @@ time, so this file reads on a system where that package does not exist."
                      (m "+MUIA-BACKGROUND+") (m "+MUII-TEXT-BACK+")
                      (m "+MUIA-TEXT-SET-MIN+") nil
                      (m "+MUIA-TEXT-CONTENTS+")
-                     (concatenate 'string (m "+MUIX-C+") "Press a button or double-click a planet.")))
+                     (concatenate 'string (m "+MUIX-C+")
+                                  "Press a button, or click and double-click a planet.")))
            (calls 0)
+           (list (mui:new-object :list
+                   (m "+MUIA-FRAME+") (m "+MUIV-FRAME-INPUT-LIST+")
+                   (m "+MUIA-LIST-FORMAT+") "BAR,"                    ; two columns
+                   (m "+MUIA-LIST-TITLE+") t                          ; the hook sees a NULL entry
+                   (m "+MUIA-LIST-DISPLAY-HOOK+") (make-display-hook moons-column)
+                   (m "+MUIA-LIST-CONSTRUCT-HOOK+") (m "+MUIV-LIST-CONSTRUCT-HOOK-STRING+")
+                   (m "+MUIA-LIST-DESTRUCT-HOOK+") (m "+MUIV-LIST-DESTRUCT-HOOK-STRING+")))
+           (listview (mui:new-object :listview
+                       (m "+MUIA-LISTVIEW-LIST+") list))
+           (entry-storage (mui:pool-alloc 4))       ; MUIM_List_GetEntry's APTR *
            ;; MUIM_CallHook's hook: a1 = the parameters after the hook in
            ;; the MUIM_CallHook message, here one longword
            (press-hook (mui:pool-hook
@@ -101,26 +152,33 @@ time, so this file reads on a system where that package does not exist."
                                            (format nil "~AButton ~D pressed -- hook call ~D."
                                                    (m "+MUIX-C+") n calls)))
                           0)))
-           ;; the same, with MUIV_TriggerValue = the active entry's index
+           ;; the same, with MUIV_TriggerValue -- taken from MUIA_List_Active
+           ;; under an :EVERY-TIME trigger, the one place MUI substitutes it
+           (select-hook (mui:pool-hook
+                         (lambda (hook app message)
+                           (declare (ignore hook app))
+                           (let ((planet (planet-at (ffi:peek-u32 message 0))))
+                             (incf calls)
+                             (mui:set-attrs report (m "+MUIA-TEXT-CONTENTS+")
+                                            (if planet
+                                                (format nil "~A~A selected -- hook call ~D."
+                                                        (m "+MUIX-C+") (first planet) calls)
+                                                (format nil "~ANothing selected -- hook call ~D."
+                                                        (m "+MUIX-C+") calls))))
+                           0)))
+           ;; the double click carries no index: ask the list for its active
+           ;; entry, the way psi.c and MUI-Demo.c do
            (click-hook (mui:pool-hook
                         (lambda (hook app message)
-                          (declare (ignore hook app))
-                          (let* ((index (ffi:peek-u32 message 0))
-                                 (planet (nth index *planets*)))
+                          (declare (ignore hook app message))
+                          (let ((planet (planet-named (active-entry list entry-storage))))
                             (incf calls)
-                            (mui:set-attrs report (m "+MUIA-TEXT-CONTENTS+")
-                                           (format nil "~A~A has ~D moon~:P -- hook call ~D."
-                                                   (m "+MUIX-C+") (first planet) (second planet) calls)))
+                            (when planet
+                              (mui:set-attrs report (m "+MUIA-TEXT-CONTENTS+")
+                                             (format nil "~A~A has ~D moon~:P -- hook call ~D."
+                                                     (m "+MUIX-C+") (first planet) (second planet)
+                                                     calls))))
                           0)))
-           (list (mui:new-object :list
-                   (m "+MUIA-FRAME+") (m "+MUIV-FRAME-INPUT-LIST+")
-                   (m "+MUIA-LIST-FORMAT+") "BAR,"                    ; two columns
-                   (m "+MUIA-LIST-TITLE+") t                          ; the hook sees a NULL entry
-                   (m "+MUIA-LIST-DISPLAY-HOOK+") (make-display-hook moons-column)
-                   (m "+MUIA-LIST-CONSTRUCT-HOOK+") (m "+MUIV-LIST-CONSTRUCT-HOOK-STRING+")
-                   (m "+MUIA-LIST-DESTRUCT-HOOK+") (m "+MUIV-LIST-DESTRUCT-HOOK-STRING+")))
-           (listview (mui:new-object :listview
-                       (m "+MUIA-LISTVIEW-LIST+") list))
            (one   (mui:make-object :button "Hook _1"))
            (two   (mui:make-object :button "Hook _2"))
            (three (mui:make-object :button "Hook _3"))
@@ -135,7 +193,7 @@ time, so this file reads on a system where that package does not exist."
                       (m "+MUIA-BACKGROUND+") (m "+MUII-TEXT-BACK+")
                       (m "+MUIA-TEXT-CONTENTS+")
                       (concatenate 'string (m "+MUIX-C+")
-                                   (format nil "The list rows come from a Lisp display hook,~%the buttons and a double-click call Lisp hooks through MUIM_CallHook.")))
+                                   (format nil "The list rows come from a Lisp display hook,~%the buttons, the selection and a double-click~%call Lisp hooks through MUIM_CallHook.")))
                     listview
                     report
                     (hgroup (list (m "+MUIA-GROUP-SAME-SIZE+") t) one two three quit))))
@@ -166,11 +224,17 @@ time, so this file reads on a system where that package does not exist."
                    for i from 1
                    do (mui:notify button (m "+MUIA-PRESSED+") nil
                                   :application (m "+MUIM-CALL-HOOK+") press-hook i))
-             ;; a double-click hands the hook the entry's index
+             ;; DoMethod(list, MUIM_Notify, MUIA_List_Active, MUIV_EveryTime,
+             ;;          app, 3, MUIM_CallHook, &hook, MUIV_TriggerValue)
+             ;; -- an :EVERY-TIME trigger, so MUI substitutes the new value
+             (mui:notify list (m "+MUIA-LIST-ACTIVE+") :every-time
+                         :application (m "+MUIM-CALL-HOOK+") select-hook :trigger-value)
+             ;; a double click carries TRUE, so there is nothing worth
+             ;; substituting: the hook reads the active entry itself.  The 0
+             ;; is a placeholder parameter, there only so the hook's a1
+             ;; points inside the notification message rather than past it.
              (mui:notify listview (m "+MUIA-LISTVIEW-DOUBLE-CLICK+") t
-                         :application (m "+MUIM-CALL-HOOK+") click-hook :trigger-value)
-             (mui:notify listview (m "+MUIA-LISTVIEW-DOUBLE-CLICK+") t
-                         list (m "+MUIM-SET+") (m "+MUIA-LIST-ACTIVE+") (m "+MUIV-LIST-ACTIVE-OFF+"))
+                         :application (m "+MUIM-CALL-HOOK+") click-hook 0)
              (mui:set-attrs win (m "+MUIA-WINDOW-OPEN+") t)
              (when (zerop (or (mui:get-attr (m "+MUIA-WINDOW-OPEN+") win) 0))
                (error "hooks: the window would not open"))

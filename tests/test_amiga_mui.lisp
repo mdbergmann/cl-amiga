@@ -177,10 +177,30 @@
         (subseq (amiga.mui::%notify-args 1 7 :parent 2 '()) 1 3)))
 
 (check "mui-notify-args-follow-params-and-not-trigger" '(1 4 #x49893133)
-  (let ((args (amiga.mui::%notify-args 1 t :self 9 '(:not-trigger-value 5 6))))
+  (let ((args (amiga.mui::%notify-args 1 :every-time :self 9 '(:not-trigger-value 5 6))))
     (list (nth 3 (amiga.mui::%notify-args 1 t :self 9 '()))
           (nth 3 args)
           (nth 5 args))))
+
+;; MUI substitutes MUIV_TriggerValue / MUIV_NotTriggerValue only under a
+;; MUIV_EveryTime trigger (Notify.mui).  Asking for one under a fixed trigger
+;; used to pack the raw 0x49893131 into the message and hand it to the method
+;; -- a bignum, above MOST-POSITIVE-FIXNUM, once it reached Lisp.
+(check "mui-notify-trigger-value-needs-every-time" '(t t t t)
+  (list (message-mentions (lambda () (amiga.mui::%notify-args 1 t :application 2
+                                                              '(:trigger-value)))
+                          ":TRIGGER-VALUE" ":EVERY-TIME")
+        (message-mentions (lambda () (amiga.mui::%notify-args 1 5 :application 2
+                                                              '(7 :not-trigger-value)))
+                          ":NOT-TRIGGER-VALUE" ":EVERY-TIME")
+        ;; ... and stays a plain parameter list when the trigger is right
+        (equal '(#x49893131 #x49893133)
+               (subseq (amiga.mui::%notify-args 1 :every-time :self 2
+                                                '(:trigger-value :not-trigger-value))
+                       5))
+        ;; a fixed trigger with ordinary parameters is untouched
+        (equal '(1 1 1 2 2 7)
+               (amiga.mui::%notify-args 1 t :self 2 '(7)))))
 
 ;; a destination object goes in as it is (DO-METHOD turns it into its address)
 (check "mui-notify-args-object-destination" t
