@@ -1,4 +1,4 @@
-;;; amiga/reaction.lisp — ReAction / BOOPSI helpers for CL-Amiga
+;;; amiga/reaction.lisp — ReAction helpers for CL-Amiga
 ;;;
 ;;; Loaded via (require "amiga/reaction").
 ;;;
@@ -8,25 +8,28 @@
 ;;; NewObjectA / SetAttrsA / GetAttr / DisposeObject and through object
 ;;; METHODS.  The generated raw bindings (lib/amiga/raw/classes/,
 ;;; gadgets/, images/) already provide every class's tags, method IDs and
-;;; the few real library functions they export.  What a C program gets
-;;; from amiga.lib / reaction.lib — DoMethod(), the RA_OpenWindow /
-;;; RA_HandleInput macros, NewList(), string literals that live as long
-;;; as the objects that reference them — is what this module adds:
+;;; the few real library functions they export; the toolkit-neutral BOOPSI
+;;; half — DoMethod(), NewList(), tag lists from Lisp values, string
+;;; literals that live as long as the objects that reference them — is
+;;; AMIGA.BOOPSI (lib/amiga/boopsi.lisp), which this package :USEs and
+;;; re-exports (DO-METHOD, OBJECT-CLASS, WITH-FOREIGN-POOL, POOL-ALLOC,
+;;; POOL-STRING, NEW-LIST, FREE-LIST-NODES, WITH-TAGS, GET-ATTR,
+;;; GET-ATTR-POINTER, SET-ATTRS), so amiga.reaction:with-foreign-pool and
+;;; amiga.boopsi:with-foreign-pool are one symbol.  What this module adds
+;;; is the ReAction-specific part — what a C program gets from
+;;; reaction.lib and the RA_* macros:
 ;;;
-;;;   DO-METHOD          IDoMethodA: CallHookPkt on the object's class
-;;;                      dispatcher (OCLASS(obj) = the IClass whose first
-;;;                      member is the dispatcher Hook)
 ;;;   NEW-OBJECT         NewObjectA with a Lisp tag plist — integers,
 ;;;                      foreign pointers, T/NIL and strings, the strings
 ;;;                      copied into a WITH-FOREIGN-POOL that outlives the
 ;;;                      objects
-;;;   GET-ATTR / SET-ATTRS / SET-GADGET-ATTRS
+;;;   DISPOSE-OBJECT     intuition's DisposeObject
+;;;   SET-GADGET-ATTRS   SetGadgetAttrsA
 ;;;   OPEN-WINDOW / CLOSE-WINDOW / ICONIFY / HANDLE-INPUT
 ;;;                      the RA_* macros as functions
 ;;;   DO-WINDOW-EVENTS   the canonical Wait()/RA_HandleInput event loop,
 ;;;                      with an optional timeout for unattended runs
 ;;;   OPEN-REQUESTER     requester.class RM_OPENREQ
-;;;   NEW-LIST / FREE-LIST-NODES   exec list headers for label lists
 ;;;
 ;;; The module itself loads on any system (including the host and an
 ;;; AmigaOS 3.1 without ReAction): it only depends on exec/dos/utility/
@@ -43,22 +46,29 @@
 ;; these packages at read time, not only LOAD.
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (require "amiga/ffi")
+  (require "amiga/boopsi")
   (require "amiga/raw/exec")
   (require "amiga/raw/dos")
   (require "amiga/raw/utility")
   (require "amiga/raw/intuition"))
 
+;; The :EXPORT list names the AMIGA.BOOPSI symbols too: DEFPACKAGE processes
+;; :USE before :EXPORT (CLHS DEFPACKAGE), so exporting an inherited name
+;; re-exports that very symbol rather than creating a homonym.  The two
+;; %-helpers this file uses itself are imported rather than duplicated.
 (defpackage "AMIGA.REACTION"
-  (:use "CL" "FFI" "AMIGA.FFI")
+  (:use "CL" "FFI" "AMIGA.FFI" "AMIGA.BOOPSI")
+  (:import-from "AMIGA.BOOPSI" "%ULONG" "%WITH-TAGS")
   (:export
    ;; Availability
    "AVAILABLE-P"
-   ;; Methods
+   ;; Methods (AMIGA.BOOPSI, re-exported)
    "DO-METHOD" "OBJECT-CLASS"
-   ;; Foreign memory whose lifetime is the GUI's lifetime
-   "WITH-FOREIGN-POOL" "POOL-ALLOC" "POOL-STRING" "NEW-LIST" "FREE-LIST-NODES"
+   ;; Foreign memory whose lifetime is the GUI's lifetime (AMIGA.BOOPSI, re-exported)
+   "WITH-FOREIGN-POOL" "POOL-ALLOC" "POOL-STRING" "POOL-HOOK" "POOL-FINALIZER"
+   "NEW-LIST" "FREE-LIST-NODES"
    "WITH-TAGS"
-   ;; Objects and attributes
+   ;; Objects and attributes (GET-ATTR, GET-ATTR-POINTER, SET-ATTRS: AMIGA.BOOPSI, re-exported)
    "NEW-OBJECT" "DISPOSE-OBJECT" "GET-ATTR" "GET-ATTR-POINTER"
    "SET-ATTRS" "SET-GADGET-ATTRS"
    ;; window.class
@@ -88,7 +98,6 @@
 (defconstant +window-sig-mask+ #x85025002)   ; WINDOW_SigMask
 (defconstant +wmhi-lastmsg+    0)            ; WMHI_LASTMSG
 (defconstant +rm-openreq+      #x650001)     ; classes/requester.h RM_OPENREQ
-(defconstant +tag-done+        0)            ; utility/tagitem.h TAG_DONE
 
 ;;; ================================================================
 ;;; Availability
@@ -104,159 +113,6 @@ modules would fail to REQUIRE."
          (when base
            (amiga:close-library base)
            t))))
-
-;;; ================================================================
-;;; ULONG coercion — what may stand for a tag value / message longword
-;;; ================================================================
-
-(defun %ulong (value)
-  "Coerce VALUE to the unsigned 32-bit longword the OS sees: integers
-\(negative ones two's-complement wrapped), foreign pointers (their
-address), T/NIL (TRUE/FALSE or a NULL pointer)."
-  (cond ((null value) 0)
-        ((eq value t) 1)
-        ((integerp value) (logand value #xFFFFFFFF))
-        ((ffi:foreign-pointer-p value) (ffi:foreign-pointer-address value))
-        (t (error "AMIGA.REACTION: ~S cannot be passed as a ULONG -- expected an integer, a foreign pointer, a string (tag values only), T or NIL"
-                  value))))
-
-;;; ================================================================
-;;; Foreign pool — allocations that must outlive a call
-;;; ================================================================
-
-;;; BOOPSI objects keep the POINTERS they are given: GA_Text, the
-;;; LABEL_Text pieces, CHOOSER_Labels lists, REQS_Buffer... all must stay
-;;; valid until the object is disposed.  A C program gets that for free
-;;; from string literals and statics; here WITH-FOREIGN-POOL collects
-;;; the foreign copies and frees them when the GUI's dynamic extent ends.
-
-(defvar *foreign-pool* nil
-  "The innermost WITH-FOREIGN-POOL: a cons whose CAR is the list of
-foreign pointers to free on exit, or NIL outside any pool.")
-
-(defmacro with-foreign-pool (() &body body)
-  "Run BODY with a fresh foreign pool; every POOL-ALLOC / POOL-STRING /
-NEW-LIST made inside (directly or through NEW-OBJECT, SET-ATTRS,
-SET-GADGET-ATTRS and OPEN-REQUESTER string tag values) is freed when
-BODY exits, normally or not.  Wrap the whole life of a GUI in one."
-  `(let ((*foreign-pool* (list nil)))
-     (unwind-protect
-          (progn ,@body)
-       (dolist (p (car *foreign-pool*))
-         (ffi:free-foreign p)))))
-
-(defun %pool-register (pointer)
-  (unless *foreign-pool*
-    (error "AMIGA.REACTION: a foreign allocation with the GUI's lifetime was requested outside WITH-FOREIGN-POOL -- wrap the code that builds and runs the GUI in (AMIGA.REACTION:WITH-FOREIGN-POOL () ...)"))
-  (push pointer (car *foreign-pool*))
-  pointer)
-
-(defun pool-alloc (size)
-  "Allocate SIZE zeroed bytes of foreign memory that live until the
-enclosing WITH-FOREIGN-POOL exits."
-  (%pool-register (ffi:alloc-foreign size)))
-
-(defun pool-string (string)
-  "A NUL-terminated foreign copy of STRING that lives until the
-enclosing WITH-FOREIGN-POOL exits."
-  (%pool-register (ffi:foreign-string string)))
-
-(defun new-list ()
-  "A fresh, initialised exec struct List (what amiga.lib's NewList()
-leaves behind), allocated in the enclosing WITH-FOREIGN-POOL.  Feed it
-the nodes of a CHOOSER_Labels / CLICKTAB_Labels / LISTBROWSER_Labels
-list with AMIGA.RAW.EXEC:ADD-TAIL."
-  (let* ((list (pool-alloc amiga.raw.exec:*list-size*))
-         (addr (ffi:foreign-pointer-address list)))
-    ;; lh_Head = &lh_Tail, lh_Tail = NULL, lh_TailPred = &lh_Head
-    (ffi:poke-u32 list (+ addr 4) 0)
-    (ffi:poke-u32 list 0 4)
-    (ffi:poke-u32 list addr 8)
-    list))
-
-(defun free-list-nodes (list free-node)
-  "Remove every node from the exec LIST (RemHead until empty) and call
-FREE-NODE on each -- e.g. AMIGA.RAW.GADGETS.CHOOSER:FREE-CHOOSER-NODE.
-Returns the number of nodes freed."
-  (loop for node = (amiga.raw.exec:rem-head list)
-        while node
-        count (progn (funcall free-node node) t)))
-
-;;; ================================================================
-;;; Tag lists with Lisp values
-;;; ================================================================
-
-(defun %build-tags (tags)
-  "Allocate a TagItem array from the plist TAGS (tag value ...).  Values go
-through %ULONG; strings are copied into the foreign pool, because the
-object the list is handed to keeps the pointer.  Returns the array; the
-caller frees it (the ARRAY is not retained by NewObjectA / SetAttrsA)."
-  (unless (evenp (length tags))
-    (error "AMIGA.REACTION: odd-length tag list ~S -- expected (tag value ...) pairs" tags))
-  (let* ((n (floor (length tags) 2))
-         (array (ffi:alloc-foreign (* 8 (1+ n))))
-         (ok nil))
-    (unwind-protect
-         (progn
-           (loop for (tag value) on tags by #'cddr
-                 for offset from 0 by 8
-                 do (unless (integerp tag)
-                      (error "AMIGA.REACTION: tag ~S is not an integer (value ~S) -- the tag constants come from the amiga/raw/... modules" tag value))
-                    (ffi:poke-u32 array (logand tag #xFFFFFFFF) offset)
-                    (ffi:poke-u32 array
-                                  (if (stringp value)
-                                      (ffi:foreign-pointer-address (pool-string value))
-                                      (%ulong value))
-                                  (+ offset 4)))
-           (ffi:poke-u32 array +tag-done+ (* 8 n))
-           (ffi:poke-u32 array 0 (+ (* 8 n) 4))
-           (setf ok t)
-           array)
-      (unless ok (ffi:free-foreign array)))))
-
-(defmacro %with-tags ((var tags) &body body)
-  `(let ((,var (%build-tags ,tags)))
-     (unwind-protect (progn ,@body)
-       (ffi:free-foreign ,var))))
-
-(defmacro with-tags ((var &rest tags) &body body)
-  "Bind VAR to a TagItem array built from the TAGS plist (tag value
-...) for the extent of BODY -- for the class-library functions that take
-a tag list themselves: AllocListBrowserNodeA, AllocChooserNodeA,
-AllocClickTabNodeA, GetListBrowserNodeAttrsA...  Same value rules as
-NEW-OBJECT (string values are copied into the enclosing
-WITH-FOREIGN-POOL); the array is freed on exit."
-  `(%with-tags (,var (list ,@tags))
-     ,@body))
-
-;;; ================================================================
-;;; Methods
-;;; ================================================================
-
-(defun object-class (object)
-  "OCLASS(object): the IClass of a BOOPSI object.  The object pointer
-points just past its struct _Object header, whose last longword is
-o_Class."
-  (ffi:peek-pointer (ffi:pointer+ object -4)))
-
-(defun do-method (object method-id &rest args)
-  "IDoMethodA: invoke METHOD-ID on the BOOPSI OBJECT.  ARGS become the
-longwords following the MethodID in the message (integers, foreign
-pointers, T/NIL).  Returns the dispatcher's d0 as an unsigned integer --
-wrap it with FFI:MAKE-FOREIGN-POINTER when the method returns a pointer
-\(OPEN-WINDOW does).  A class's dispatcher is the Hook at the start of
-its IClass, so this is CallHookPkt(OCLASS(obj), obj, msg) -- exactly what
-amiga.lib's DoMethodA does."
-  (let* ((n (length args))
-         (msg (ffi:alloc-foreign (* 4 (1+ n)))))
-    (unwind-protect
-         (progn
-           (ffi:poke-u32 msg (logand method-id #xFFFFFFFF) 0)
-           (loop for a in args
-                 for offset from 4 by 4
-                 do (ffi:poke-u32 msg (%ulong a) offset))
-           (amiga.raw.utility:call-hook-pkt (object-class object) object msg))
-      (ffi:free-foreign msg))))
 
 ;;; ================================================================
 ;;; Objects and attributes
@@ -286,30 +142,6 @@ layout object, everything attached to it.  NIL is ignored."
   (when object
     (amiga.raw.intuition:dispose-object object))
   nil)
-
-(defun get-attr (attribute object)
-  "GetAttr(ATTRIBUTE, OBJECT): the attribute's current value as an
-unsigned integer, or NIL if the object does not know the attribute."
-  (let ((storage (ffi:alloc-foreign 4)))
-    (unwind-protect
-         (if (zerop (amiga.raw.intuition:get-attr attribute object storage))
-             nil
-             (ffi:peek-u32 storage 0))
-      (ffi:free-foreign storage))))
-
-(defun get-attr-pointer (attribute object)
-  "GET-ATTR for a pointer-valued attribute (WINDOW_Window, ...): a
-foreign pointer, or NIL for NULL / unknown."
-  (let ((value (get-attr attribute object)))
-    (if (or (null value) (zerop value))
-        nil
-        (ffi:make-foreign-pointer value))))
-
-(defun set-attrs (object &rest tags)
-  "SetAttrsA(OBJECT, TAGS) -- same value rules as NEW-OBJECT.  Returns
-the class's result (non-zero usually means a visual refresh is due)."
-  (%with-tags (array tags)
-    (amiga.raw.intuition:set-attrs-a object array)))
 
 (defun set-gadget-attrs (gadget window &rest tags)
   "SetGadgetAttrsA(GADGET, WINDOW, NULL, TAGS): change attributes of a

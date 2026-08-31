@@ -376,7 +376,7 @@ CONTEXT-VAR, free all gadgets on exit."
   (nm-mutual-exclude :u32 12)
   (nm-user-data :pointer 16))
 
-(defconstant +new-menu-entry-size+ 20)
+(defconstant +new-menu-size+ 20)
 
 (defun make-new-menu-array (entries)
   "Build a foreign NewMenu array from a list of menu specs.
@@ -384,12 +384,12 @@ Each entry is (type label &key commkey flags userdata) or :bar for separator.
 The array is terminated by NM_END.
 Returns the foreign pointer (caller must free it and any label strings)."
   (let* ((n (length entries))
-         (size (* (1+ n) +new-menu-entry-size+))
+         (size (* (1+ n) +new-menu-size+))
          (ptr (ffi:alloc-foreign size))
          (strings nil))
     (loop for entry in entries
           for i from 0
-          for offset = (* i +new-menu-entry-size+)
+          for offset = (* i +new-menu-size+)
           do (if (eq entry :bar)
                  ;; Separator bar
                  (progn
@@ -419,7 +419,7 @@ Returns the foreign pointer (caller must free it and any label strings)."
                    (ffi:poke-u32 ptr 0 (+ offset 12))
                    (ffi:poke-u32 ptr userdata (+ offset 16)))))
     ;; Terminate with NM_END
-    (let ((end-offset (* n +new-menu-entry-size+)))
+    (let ((end-offset (* n +new-menu-size+)))
       (ffi:poke-u8 ptr +nm-end+ end-offset))
     (values ptr strings)))
 

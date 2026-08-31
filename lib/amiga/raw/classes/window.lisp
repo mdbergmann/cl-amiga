@@ -5,8 +5,8 @@
 ;;;   MorphOS SDK window_lib.fd + clib/window_protos.h (via fd2sfd)
 ;;;   classes/window.h
 ;;;
-;;; 1 functions, 114 constants, 0 structs.
-;;; 1 C macro skipped: not an integer constant (string, call, float).
+;;; 1 functions, 114 constants, 4 structs.
+;;; 1 C macro skipped: not an integer or ASCII-string constant (call, float, non-ASCII).
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
 ;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
@@ -151,6 +151,26 @@
   (:const "+WM-RESTORE+" #x570010)
   (:const "+SAVE+" 0)
   (:const "+USE+" 1)
+
+  ;; --- structures from classes/window.h ---
+  (:struct "WM-HANDLE" 8   ; wmHandle (classes/window.h)
+    ("METHOD-ID" :u32 0)
+    ("CODE" :fptr 4)
+    )
+  (:struct "WM-ACTIVATE-GADGET" 8   ; wmActivateGadget (classes/window.h)
+    ("METHOD-ID" :u32 0)
+    ("OBJECT" :fptr 4)
+    )
+  (:struct "WM-SNAPSHOT" 8   ; wmSnapshot (classes/window.h)
+    ("METHOD-ID" :u32 0)
+    ("HOW" :i32 4)
+    )
+  (:struct "HINT-INFO" 12   ; HintInfo (classes/window.h)
+    ("GADGET-ID" :i16 0)
+    ("CODE" :i16 2)
+    ("TEXT" :fptr 4)
+    ("FLAGS" :u32 8)
+    )
 
   ;; --- functions (window_lib.sfd + MorphOS SDK) ---
   (:fn "WINDOW-GET-CLASS" -30 () :pointer 40)   ; Class * WINDOW_GetClass() () LVO -30

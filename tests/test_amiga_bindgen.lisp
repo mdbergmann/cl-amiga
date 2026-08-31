@@ -147,7 +147,8 @@
         (rows-named pkg :field name)))
 
 (defun const-row-p (pkg name value)
-  (some (lambda (r) (eql (third r) value)) (rows-named pkg :const name)))
+  "Some (:const NAME value) row; VALUE an integer or a string."
+  (some (lambda (r) (equal (third r) value)) (rows-named pkg :const name)))
 
 (defun name-row-p (pkg name) (and (rows-named pkg :name name) t))
 
@@ -399,13 +400,19 @@
          (and (eql (sym-value p "+fixgad-comment+") 8) (eql (sym-value p "+fixgad-slash+") 9)))
     (chk "C: empty-body macro and include guard are not constants"
          (and (not (sym p "+fixgad-flag+")) (not (sym p "+gadgets-fixgad-h+"))))
+    ;; a string #define is a string constant (the class name of a
+    ;; ReAction gadget, mui.h's MUIC_* names)
+    (chk "C: string macro FIXGAD_Name -> string constant"
+         (and (equal (sym-value p "+fixgad-name+") "gadgets/fixgad.gadget")
+              (constantp (sym p "+fixgad-name+")) (external-p p "+fixgad-name+")
+              (const-row-p p "+fixgad-name+" "gadgets/fixgad.gadget")))
     ;; what is skipped
-    (chk "C: string / float / NewObject / sizeof / statement / function-like macros not emitted"
-         (and (not (sym p "+fixgad-name+")) (not (sym p "+fixgad-float+"))
+    (chk "C: float / NewObject / sizeof / statement / function-like macros not emitted"
+         (and (not (sym p "+fixgad-float+"))
               (not (sym p "+fix-gad-object+")) (not (sym p "+fixgad-size+"))
               (not (sym p "+fixgad-stmt+")) (not (sym p "+fix-gad-set+"))))
-    (chk "C: skipped macros counted in the header (5)"
-         (file-contains "gadgets/fixgad" ";;; 5 C macros skipped: not an integer constant"))
+    (chk "C: skipped macros counted in the header (4)"
+         (file-contains "gadgets/fixgad" ";;; 4 C macros skipped: not an integer or ASCII-string constant"))
     ;; conditionals
     (chk "C: #ifdef __cplusplus block skipped, #ifndef taken, #else of it skipped"
          (and (not (sym p "+fixgad-cpp+")) (eql (sym-value p "+fixgad-not-cpp+") 2)
@@ -430,7 +437,15 @@
                                                (eql (sym-value p "+fixgad-td-a+") 100)
                                                (eql (sym-value p "+fixgad-td-b+") 101)))
     (chk "C: enum inside a struct body is not read" (not (sym p "+fixgad-inner+")))
-    (chk "C: constants exported" (and (external-p p "+fixgad-dummy+") (external-p p "+fixgad-td-b+"))))
+    (chk "C: constants exported" (and (external-p p "+fixgad-dummy+") (external-p p "+fixgad-td-b+")))
+    ;; a C struct of the header: enums are ints, the inline enum too
+    (chk "C struct: FixGadInfo 14 bytes — WORD 0, enum 2, inline enum 6, STRPTR 10"
+         (and (eql (sym-value p "*fix-gad-info-size*") 14)
+              (field-row-p p "fix-gad-info-width" :i16 0)
+              (field-row-p p "fix-gad-info-how" :i32 2)
+              (field-row-p p "fix-gad-info-inner" :i32 6)
+              (field-row-p p "fix-gad-info-title" :fptr 10)
+              (external-p p "fix-gad-info-title"))))
   (let ((p "AMIGA.RAW.CLASSES.FIXREQ"))
     (chk "classes/fixreq: package, .class opened by bare name, tags from classes/fixreq.h"
          (and (find-package p) (fbound p "fixreq-get-class")
@@ -442,7 +457,249 @@
          (and (find-package p) (not (sym p "*reaction-base*"))
               (eql (sym-value p "+reaction-dummy+") #x6000)
               (eql (sym-value p "+reaction-text-attr+") #x6005)
-              (not (sym p "+make-id+")) (not (sym p "+reaction-reaction-h+"))))))
+              (not (sym p "+make-id+")) (not (sym p "+reaction-reaction-h+")))))
+  ;; --- the MUI SDK: an sfd joining the primary table (with private gaps
+  ;; and a MorphOS twin), a header under the SECOND C-header root claimed
+  ;; through *module-includes*, string constants ---
+  (chk "muimaster: libraries/mui.h yields no header-only module (claimed by muimaster)"
+       (not (probe-file (raw-file "libraries/mui"))))
+  (load-raw "muimaster")
+  (let ((p "AMIGA.RAW.MUIMASTER"))
+    (chk "muimaster: package, muimaster.library opened at load, header names both SDKs and mui.h"
+         (and (find-package p) (boundp (sym p "*muimaster-base*")) (null (sym-value p "*muimaster-base*"))
+              (file-contains "muimaster" "(amiga.ffi:open-library-or-die \"muimaster.library\" 0)")
+              (file-contains "muimaster" ";;;   MUI 3.8 SDK muimaster_lib.fd + clib/muimaster_protos.h (via fd2sfd)")
+              (file-contains "muimaster" ";;;   MorphOS SDK muimaster_lib.fd + clib/muimaster_protos.h (via fd2sfd)")
+              (file-contains "muimaster" ";;;   libraries/mui.h")
+              (file-contains "muimaster" ";; --- functions (MUI SDK + MorphOS SDK) ---")))
+    (chk "muimaster: ##private gaps advance the bias — ObtainPen -60, MakeObjectA -66; shared vectors unguarded"
+         (and (fn-row-p p "mui-new-object-a" :lvo -30 :regs '(:a0 :a1) :result :pointer)
+              (fn-row-p p "mui-dispose-object" :lvo -36 :regs '(:a0) :result :void)
+              (fn-row-p p "mui-request-a" :lvo -42 :regs '(:d0 :d1 :d2 :a0 :a1 :a2 :a3) :result :signed)
+              (fn-row-p p "mui-obtain-pen" :lvo -60 :regs '(:a0 :a1 :d0) :result :signed)
+              (fn-row-p p "mui-make-object-a" :lvo -66 :regs '(:d0 :a0) :result :pointer)
+              (fn-row-unguarded-p p "mui-new-object-a") (fn-row-unguarded-p p "mui-obtain-pen")
+              (= 1 (fn-row-count p "mui-obtain-pen"))
+              (fbound p "mui-new-object-a")
+              (not (sym p "mui-private")) (not (sym p "mui-new-object"))))
+    (chk "muimaster: MorphOS-only MUI_GetRGBColor at -690 carries :morphos, defined iff :morphos"
+         (and (fn-row-p p "mui-get-rgb-color" :lvo -690 :regs '(:a0 :a1 :a2) :result :signed :guard :morphos)
+              (external-p p "mui-get-rgb-color")
+              (eq *mos* (fbound p "mui-get-rgb-color"))))
+    ;; string constants
+    (chk "muimaster: string #defines -> string constants (MUIC_* names, the #else of #ifdef _DCC)"
+         (and (equal (sym-value p "+muic-window+") "Window.mui")
+              (equal (sym-value p "+muic-notify+") "Notify.mui")
+              (equal (sym-value p "+muimaster-name+") "muimaster.library")
+              (constantp (sym p "+muic-window+"))
+              (external-p p "+muic-window+")
+              (const-row-p p "+muic-window+" "Window.mui")
+              (file-contains "muimaster" "(:const \"+MUIC-WINDOW+\" \"Window.mui\")")))
+    (chk "muimaster: escapes decoded and re-quoted; a control character through a #. form"
+         (and (equal (sym-value p "+fix-esc+") "say \"hi\"\\")
+              (file-contains "muimaster" "(:const \"+FIX-ESC+\" \"say \\\"hi\\\"\\\\\")")
+              (equal (sym-value p "+muix-c+") (format nil "~Cc" (code-char 27)))
+              (file-contains "muimaster" "(:const \"+MUIX-C+\" #.(map 'string #'code-char '(27 99)))")))
+    (chk "muimaster: concatenation, non-ASCII, MAKE_ID(), string alias and NewObject( shortcuts skipped (6)"
+         (and (not (sym p "+fix-cat+")) (not (sym p "+fix-lat1+")) (not (sym p "+fix-id+"))
+              (not (sym p "+fix-alias+")) (not (sym p "+window-object+")) (not (sym p "+end+"))
+              (not (sym p "+muiv-window-alt-height-screen+")) (not (sym p "+muia-window-open-obsolete+"))
+              (file-contains "muimaster" ";;; 6 C macros skipped: not an integer or ASCII-string constant")))
+    (chk "muimaster: header counts 9 functions, 34 constants (6 strings), 11 structs, 4 skipped"
+         (file-contains "muimaster" ";;; 9 functions, 34 constants (6 of them strings), 11 structs, 4 skipped (see comments)."))
+    ;; values
+    (chk "muimaster: negative MUIV_, ((STRPTR)~0) -> #xFFFFFFFF, ((STRPTR) 0) -> 0, (1<<0)"
+         (and (eql (sym-value p "+muiv-application-return-id-quit+") -1)
+              (eql (sym-value p "+mc-template-id+") #xFFFFFFFF)
+              (eql (sym-value p "+muiv-application-save-envarc+") #xFFFFFFFF)
+              (eql (sym-value p "+muiv-application-save-env+") 0)
+              (eql (sym-value p "+mui-ehf-alwayskeys+") 1)
+              (eql (sym-value p "+muiv-trigger-value+") #x49893131)
+              (eql (sym-value p "+muiv-every-time+") #x49893131)
+              (eql (sym-value p "+muimaster-vmin+") 11)))
+    (chk "muimaster: the header's own #define MUI_OBSOLETE makes its #ifdef blocks live"
+         (and (eql (sym-value p "+muim-application-input+") #x8042D0F5)
+              (eql (sym-value p "+muim-notify+") #x8042C9CB)
+              (eql (sym-value p "+muim-application-new-input+") #x80423BA6)
+              (eql (sym-value p "+muia-window-close-request+") #x8042E86E)
+              (not (sym p "+mui-obsolete+")) (not (sym p "+libraries-mui-h+"))))
+    (chk "muimaster: enumerators with negative starts; PSD_NUMMUIPENS = MPEN_COUNT forward reference"
+         (and (eql (sym-value p "+muikey-release+") -2) (eql (sym-value p "+muikey-none+") -1)
+              (eql (sym-value p "+muikey-press+") 0) (eql (sym-value p "+muikey-toggle+") 1)
+              (eql (sym-value p "+mpen-shine+") 0) (eql (sym-value p "+mpen-count+") 8)
+              (eql (sym-value p "+psd-nummuipens+") 8)))
+    ;; --- the additive post-3.8 sources: the MUI 5 SDK's sfd + header
+    ;; (BINDGEN_MUI5_SFD / BINDGEN_MUI5_INCLUDE_H) and the MorphOS SDK's
+    ;; mui.h (BINDGEN_MOS_MUI_INCLUDE_H) ---
+    (chk "muimaster additive: MUI_Show is in the MUI 5 sfd AND the MorphOS one — a version guard only"
+         (and (fn-row-p p "mui-show" :lvo -216 :regs '(:a0) :result :unsigned :min-version 20)
+              (fn-row-unguarded-p p "mui-show")
+              (external-p p "mui-show")
+              (not (fbound p "mui-show"))))   ; the version variable is NIL here: guarded out
+    (chk "muimaster additive: MUI_Offset / MUI_Fix21 are AmigaOS-only — :not-morphos, min version from the sfd"
+         (and (fn-row-p p "mui-offset" :lvo -222 :regs '(:a0 :d0 :d1) :result :void
+                        :guard :not-morphos :min-version 20)
+              (fn-row-p p "mui-fix21" :lvo -228 :regs '(:a0) :result :signed
+                        :guard :not-morphos :min-version 21)
+              (not (fbound p "mui-offset"))))
+    (chk "muimaster additive: new constants join — the MUI 5 header, its enum, the MorphOS header; a shared new name once"
+         (and (const-row-p p "+muic-panel+" "Panel.mui")
+              (= 1 (length (rows-named p :const "+muic-panel+")))
+              (eql (sym-value p "+muiv-fix-both+") 7)
+              (= 1 (length (rows-named p :const "+muiv-fix-both+")))
+              (eql (sym-value p "+muia-fix-new5+") #xCAFF)   ; (EXB_MAGIC+1) against the .i symbols
+              (eql (sym-value p "+fixenum5-a+") 40) (eql (sym-value p "+fixenum5-b+") 41)
+              (eql (sym-value p "+muia-fix-mos-only+") #x80421111)
+              (file-contains "muimaster" ";; --- constants from libraries/mui.h (MUI 5 SDK, additive) ---")
+              (file-contains "muimaster" ";; --- constants from libraries/mui.h (MorphOS SDK, additive) ---")))
+    (chk "muimaster additive: the 3.8 value wins a known evolution; a baseline-only reference stays out; structs are not taken"
+         (and (eql (sym-value p "+muimaster-vmin+") 11)
+              (not (sym p "+muia-fix-bad+"))
+              (not (sym p "*fix-new5-size*"))
+              (file-contains "muimaster" ";;;   libraries/mui.h (MUI 5 SDK, additive)")
+              (file-contains "muimaster" ";;;   libraries/mui.h (MorphOS SDK, additive)")))
+    ;; --- C struct definitions, laid out by the m68k rules ---
+    (chk "C struct: MUI_MinMax — six WORDs, 12 bytes, *mui-min-max-size* + accessors exported"
+         (and (eql (sym-value p "*mui-min-max-size*") 12)
+              (field-row-p p "mui-min-max-min-width" :i16 0)
+              (field-row-p p "mui-min-max-def-height" :i16 10)
+              (external-p p "*mui-min-max-size*") (external-p p "mui-min-max-def-height")
+              (file-contains "muimaster" "(:struct \"MUI-MIN-MAX\" 12   ; MUI_MinMax (libraries/mui.h)")))
+    (chk "C struct: MUIP_Notify — ULONGs and an APTR, a trailing /* ... */ comment ignored"
+         (and (eql (sym-value p "*muip-notify-size*") 20)
+              (field-row-p p "muip-notify-method-id" :u32 0)
+              (field-row-p p "muip-notify-dest-obj" :fptr 12)
+              (field-row-p p "muip-notify-follow-params" :u32 16)))
+    (chk "C struct: MUIP_AskMinMax — a struct pointer member is :fptr"
+         (and (eql (sym-value p "*muip-ask-min-max-size*") 8)
+              (field-row-p p "muip-ask-min-max-min-max-info" :fptr 4)))
+    (chk "C struct: MUIP_Setup — a pointer to a struct that is never defined needs no layout"
+         (and (eql (sym-value p "*muip-setup-size*") 8)
+              (field-row-p p "muip-setup-render-info" :fptr 4)))
+    (chk "C struct: ExBase repeated in C — the STRUCTURE of exec/exbase.i is the binding, no row here"
+         (and (not (sym p "*ex-base-size*"))
+              (file-contains "muimaster" ";; skipped struct ExBase: the STRUCTURE of exec/exbase.i is the binding (6 bytes)")))
+    (chk "C struct: MUI_RGBcolor spelled mui-rgb-color" (eql (sym-value p "*mui-rgb-color-size*") 12))
+    (chk "C struct: alignment — a ULONG after a UBYTE sits at 2; an odd size is padded to even (112)"
+         (and (eql (sym-value p "*fix-layout-size*") 112)
+              (field-row-p p "fix-layout-tag" :u8 0)
+              (field-row-p p "fix-layout-flags" :u32 2)
+              (field-row-p p "fix-layout-odd" :i8 110)))
+    (chk "C struct: embedded structs by value — a STRUCTURE of the .i files (ExBase, 6) and a C struct read before (MUI_MinMax)"
+         (and (field-row-p p "fix-layout-base" :struct 6)
+              (file-contains "muimaster" "(\"BASE\" (:struct 6) 6)")
+              (field-row-p p "fix-layout-min-max" :struct 12)
+              (file-contains "muimaster" "(\"MIN-MAX\" (:struct 12) 12)")))
+    (chk "C struct: arrays — char[32] a pointer (:struct 32), BYTE[4] (:array :i8 4), struct[2] (:struct 24), Object *[1] (:array :fptr 1)"
+         (and (field-row-p p "fix-layout-name" :struct 24)
+              (file-contains "muimaster" "(\"NAME\" (:struct 32) 24)")
+              (field-row-p p "fix-layout-pens" '(:array :i8 4) 56)
+              (field-row-p p "fix-layout-palette" :struct 60)
+              (file-contains "muimaster" "(\"PALETTE\" (:struct 24) 60)")
+              (field-row-p p "fix-layout-objs" '(:array :fptr 1) 84)))
+    (chk "C struct: a function pointer, `const char *a, *b', `WORD w, h', unsigned char, enum, BYTE"
+         (and (field-row-p p "fix-layout-func" :fptr 88)
+              (field-row-p p "fix-layout-text" :fptr 92) (field-row-p p "fix-layout-help" :fptr 96)
+              (field-row-p p "fix-layout-w" :i16 100) (field-row-p p "fix-layout-h" :i16 102)
+              (field-row-p p "fix-layout-u8" :u8 104)
+              (field-row-p p "fix-layout-how" :i32 106)))
+    (chk "C struct: the accessors work on foreign memory (scalar, setf, indexed array, embedded pointer)"
+         (let ((m (ffi:alloc-foreign 112)))
+           (unwind-protect
+                (progn
+                  (set-field (sym p "fix-layout-flags") m #x12345678)
+                  (set-field (sym p "fix-layout-odd") m -7)
+                  (ffi:poke-i8 m -3 58)
+                  (and (eql (funcall (sym p "fix-layout-flags") m) #x12345678)
+                       (eql (funcall (sym p "fix-layout-odd") m) -7)
+                       (eql (funcall (sym p "fix-layout-pens") m 2) -3)
+                       (eql (funcall (sym p "fix-layout-pens") m 0) 0)
+                       (null (funcall (sym p "fix-layout-objs") m 0))
+                       (= 24 (- (ffi:foreign-pointer-address (funcall (sym p "fix-layout-name") m))
+                                (ffi:foreign-pointer-address m)))
+                       (= 12 (- (ffi:foreign-pointer-address (funcall (sym p "fix-layout-min-max") m))
+                                (ffi:foreign-pointer-address m)))))
+             (ffi:free-foreign m))))
+    (chk "C struct: a union member and its nested struct — the member (:struct 4) and its leaves flattened at the same offset"
+         (and (eql (sym-value p "*fix-stuff-size*") 24)
+              (field-row-p p "fix-stuff-node" :struct 0)
+              (field-row-p p "fix-stuff-stuff" :struct 6)
+              (file-contains "muimaster" "(\"STUFF\" (:struct 4) 6)")
+              (field-row-p p "fix-stuff-sigs" :u32 6)
+              (field-row-p p "fix-stuff-timer" :struct 6)
+              (field-row-p p "fix-stuff-millis" :u16 6)
+              (field-row-p p "fix-stuff-current" :u16 8)
+              (field-row-p p "fix-stuff-flags" :u32 10)))
+    (chk "C struct: a named anonymous struct member (:struct 8) with its leaves; an anonymous union's leaves only"
+         (and (field-row-p p "fix-stuff-layout" :struct 14)
+              (file-contains "muimaster" "(\"LAYOUT\" (:struct 8) 14)")
+              (field-row-p p "fix-stuff-width" :i32 14)
+              (field-row-p p "fix-stuff-height" :i32 18)
+              (field-row-p p "fix-stuff-a" :u8 22)
+              (field-row-p p "fix-stuff-b" :u16 22)))
+    (chk "C struct: typedef struct Tag {...} Name, *Ptr — the tag names the row, Name is an alias, Ptr is not"
+         (and (eql (sym-value p "*fix-typed-size*") 2)
+              (field-row-p p "fix-typed-a" :i16 0)
+              (not (sym p "*fix-typed-name-size*")) (not (sym p "*fix-typed-ptr-size*"))))
+    (chk "C struct: typedef struct {...} Name — named by the typedef; a typedef'd struct as a member"
+         (and (eql (sym-value p "*fix-anon-size*") 6)
+              (field-row-p p "fix-anon-id" :i32 0)
+              (field-row-p p "fix-anon-t" :struct 4)
+              (file-contains "muimaster" "(\"T\" (:struct 2) 4)")))
+    (chk "C struct: typedef struct Tag Alias; — members of the typedef, the alias and the tag"
+         (and (eql (sym-value p "*fix-uses-anon-size*") 10)
+              (field-row-p p "fix-uses-anon-a" :struct 0)
+              (field-row-p p "fix-uses-anon-b" :struct 6)
+              (field-row-p p "fix-uses-anon-c" :struct 8)
+              (not (sym p "*fix-alias-size*"))))
+    (chk "C struct: a bitfield, an unknown embedded struct and a reserved name are skipped with the reason"
+         (and (not (sym p "*fix-bits-size*")) (not (sym p "*fix-unknown-size*"))
+              (not (sym p "*--dummy-xfc2---size*"))
+              (file-contains "muimaster" ";; skipped struct FixBits: bitfield fb_Flags")
+              (file-contains "muimaster" ";; skipped struct FixUnknown: unknown struct NoSuchThing")
+              (file-contains "muimaster" ";; skipped struct __dummyXFC2__: reserved identifier")))
+    (chk "C struct: a skipped reserved struct still has a layout (FixLast embeds it: 14)"
+         (and (eql (sym-value p "*fix-last-size*") 14)
+              (field-row-p p "fix-last-d" :struct 0)))
+    (chk "C struct: a forward declaration, an extern, a prototype and an #if 0 definition yield nothing"
+         (and (not (sym p "*fix-fwd-size*")) (not (sym p "*fix-dead-size*"))
+              (not (sym p "*library-size*"))
+              (not (sym p "fix-base")) (not (sym p "fix-func"))))
+    (chk "C struct: the enumerators next to the structs are constants; the struct count is in the run log"
+         (and (eql (sym-value p "+fixhow-a+") 0) (eql (sym-value p "+fixhow-b+") 1)
+              (eql (sym-value p "+psd-maxlen-name+") 32))))
+  ;; --- MUI custom-class headers: mui/<Name>_mcc.h -> amiga/raw/mui/<name>,
+  ;; from the MUI root's mui/ and from the third root (MUI/ spelling) ---
+  (load-raw "mui/fixlist")
+  (load-raw "mui/fixed")
+  (let ((p "AMIGA.RAW.MUI.FIXLIST"))
+    (chk "mui/fixlist: package AMIGA.RAW.MUI.FIXLIST, header-only (no base), a binding table"
+         (and (find-package p) (not (sym p "*fixlist-base*")) (not (sym p "*fixlist-mcc-base*"))
+              (clamiga::%binding-table-info p)
+              (file-contains "mui/fixlist" ";;;   mui/Fixlist_mcc.h")
+              (file-contains "mui/fixlist" "(amiga.ffi:define-binding-table \"AMIGA.RAW.MUI.FIXLIST\" ()")))
+    (chk "mui/fixlist: MUIC_ string, MUIM_/MUIV_/MUIA_ constants, the NewObject shortcut skipped"
+         (and (equal (sym-value p "+muic-fixlist+") "Fixlist.mcc")
+              (eql (sym-value p "+muim-fixlist-insert+") #x80020002)
+              (eql (sym-value p "+muiv-fixlist-insert-bottom+") -2)
+              (eql (sym-value p "+muia-fixlist-entries+") #x80020011)
+              (not (sym p "+fixlist-object+"))
+              (file-contains "mui/fixlist" ";;; 1 C macro skipped")))
+    (chk "mui/fixlist: the MUIP_ method struct"
+         (and (eql (sym-value p "*muip-fixlist-insert-size*") 16)
+              (field-row-p p "muip-fixlist-insert-entries" :fptr 4)
+              (field-row-p p "muip-fixlist-insert-pos" :i32 12)))
+    (chk "mui/fixlist: the #include of libraries/mui.h does not copy its constants into the module"
+         (and (not (sym p "+muic-window+")) (not (sym p "+muim-notify+")) (not (sym p "*mui-min-max-size*")))))
+  (let ((p "AMIGA.RAW.MUI.FIXED"))
+    (chk "mui/fixed: from the third root — named after the class, not the header"
+         (and (find-package p) (not (sym p "*fixed-base*"))
+              (equal (sym-value p "+muic-fixed+") "Fixed.mcc")
+              (eql (sym-value p "+muia-fixed-width+") #x80030010)))
+    (chk "mui/fixed: a method struct embedding a struct of libraries/mui.h (included first)"
+         (and (eql (sym-value p "*muip-fixed-layout-size*") 16)
+              (field-row-p p "muip-fixed-layout-mm" :struct 4)
+              (file-contains "mui/fixed" "(\"MM\" (:struct 12) 4)")))))
 
 ;;; ----------------------------------------------------------------
 (defun committed-checks ()
@@ -549,8 +806,165 @@
     (chk "timer: device module leaves base NIL (no OpenLibrary)"
          (and (file-contains "timer" "timer.device is a device/resource")
               (null (sym-value "AMIGA.RAW.TIMER" "*timer-base*"))))
-    (chk "muimaster: MorphOS-only module present"
-         (and (probe-file (raw-file "muimaster")) (fbound "AMIGA.RAW.MUIMASTER" "mui-new-object-a")))
+    ;; muimaster: generated from the MUI 3.8 developer kit (primary) + the
+    ;; MorphOS SDK (twin) + libraries/mui.h, plus the ADDITIVE post-3.8
+    ;; sources (the MUI 5 SDK, the MorphOS SDK's mui.h)
+    (chk "muimaster: sources = MUI 3.8 SDK + MorphOS SDK + libraries/mui.h (+ the two additive headers); 3.8 vectors unguarded"
+         (and (probe-file (raw-file "muimaster"))
+              (file-contains "muimaster" ";;;   MUI 3.8 SDK muimaster_lib.fd + clib/muimaster_protos.h (via fd2sfd)")
+              (file-contains "muimaster" ";;;   MorphOS SDK muimaster_lib.fd + clib/muimaster_protos.h (via fd2sfd)")
+              (file-contains "muimaster" ";;;   libraries/mui.h")
+              (file-contains "muimaster" ";;;   libraries/mui.h (MUI 5 SDK, additive)")
+              (file-contains "muimaster" ";;;   libraries/mui.h (MorphOS SDK, additive)")
+              (fn-row-p "AMIGA.RAW.MUIMASTER" "mui-new-object-a" :lvo -30 :regs '(:a0 :a1) :result :pointer)
+              (fn-row-unguarded-p "AMIGA.RAW.MUIMASTER" "mui-new-object-a")
+              (fbound "AMIGA.RAW.MUIMASTER" "mui-new-object-a")
+              (fn-row-p "AMIGA.RAW.MUIMASTER" "mui-request-a" :lvo -42 :regs '(:d0 :d1 :d2 :a0 :a1 :a2 :a3) :result :signed)
+              (fn-row-p "AMIGA.RAW.MUIMASTER" "mui-make-object-a" :lvo -120 :regs '(:d0 :a0) :result :pointer)
+              (fn-row-p "AMIGA.RAW.MUIMASTER" "mui-obtain-pen" :lvo -156 :regs '(:a0 :a1 :d0) :result :signed)
+              (fn-row-p "AMIGA.RAW.MUIMASTER" "mui-end-refresh" :lvo -198 :regs '(:a0 :d0) :result :void)
+              (fn-row-unguarded-p "AMIGA.RAW.MUIMASTER" "mui-end-refresh")))
+    (chk "muimaster: MUI_GetRGBColor (-690) is MorphOS-only"
+         (and (fn-row-p "AMIGA.RAW.MUIMASTER" "mui-get-rgb-color" :lvo -690 :guard :morphos)
+              (eq *mos* (fbound "AMIGA.RAW.MUIMASTER" "mui-get-rgb-color"))))
+    ;; the MUI 5 SDK's post-3.8 vectors: in the AmigaOS fd only (MorphOS
+    ;; keeps them private), so :not-morphos AND lib_Version >= 20 — never
+    ;; bound on MUI 3.8 (v19) or on MorphOS, exactly like C code compiled
+    ;; against the MUI 5 SDK that checks MUIMASTER_VLATEST
+    (chk "muimaster: MUI 5 vectors MUI_Show/Hide/LayoutObj/Offset carry (:not-morphos 20), unbound here"
+         (and (fn-row-p "AMIGA.RAW.MUIMASTER" "mui-show" :lvo -216 :regs '(:a0)
+                        :result :unsigned :guard :not-morphos :min-version 20)
+              (fn-row-p "AMIGA.RAW.MUIMASTER" "mui-hide" :lvo -222 :regs '(:a0)
+                        :result :unsigned :guard :not-morphos :min-version 20)
+              (fn-row-p "AMIGA.RAW.MUIMASTER" "mui-layout-obj" :lvo -228
+                        :result :bool :guard :not-morphos :min-version 20)
+              (fn-row-p "AMIGA.RAW.MUIMASTER" "mui-offset" :lvo -234
+                        :result :void :guard :not-morphos :min-version 20)
+              (not (fbound "AMIGA.RAW.MUIMASTER" "mui-show"))))
+    ;; the additive constants: new post-3.8 names from each header, the
+    ;; known count evolutions kept at the 3.8 value
+    (chk "muimaster: additive constants — MUI 5 SDK and MorphOS names present, evolutions keep the 3.8 value"
+         (and (const-row-p "AMIGA.RAW.MUIMASTER" "+muia-application-used-classes+" #x8042E9A7)
+              (const-row-p "AMIGA.RAW.MUIMASTER" "+muic-title+" "Title.mui")
+              (const-row-p "AMIGA.RAW.MUIMASTER" "+muia-window-has-alpha+" #x8042E632)
+              (eql (sym-value "AMIGA.RAW.MUIMASTER" "+mpen-count+") 8)
+              (eql (sym-value "AMIGA.RAW.MUIMASTER" "+muimaster-vmin+") 11)
+              (eql (sym-value "AMIGA.RAW.MUIMASTER" "+muii-count+") 42)))
+    (chk "muimaster: ~2050 entries incl. 121 string constants and 136 structs, table < 100 KB"
+         (let ((info (clamiga::%binding-table-info "AMIGA.RAW.MUIMASTER")))
+           (and (> (getf info :entries) 1900) (< (getf info :entries) 2200)
+                (< (getf info :bytes) 100000)
+                (= 121 (count-if (lambda (r) (and (eq (first r) :const) (stringp (third r))))
+                                 (table-rows "AMIGA.RAW.MUIMASTER")))
+                (file-contains "muimaster" ";;; 30 functions, 1475 constants (121 of them strings), 136 structs, 1 skipped (see comments)."))))
+    ;; the C structs of mui.h, laid out by the 68k rules (the hand-typed
+    ;; offsets of lib/amiga/mui.lisp are pinned to these rows by
+    ;; tests/test_amiga_curated_vs_raw.lisp)
+    (chk "muimaster: MUI_MinMax 12, MUI_NotifyData 28, MUI_AreaData 40 (mad_Box 24, mad_Flags 36), MUI_RenderInfo 28 (mri_RastPort 20)"
+         (and (eql (sym-value "AMIGA.RAW.MUIMASTER" "*mui-min-max-size*") 12)
+              (field-row-p "AMIGA.RAW.MUIMASTER" "mui-min-max-def-height" :i16 10)
+              (eql (sym-value "AMIGA.RAW.MUIMASTER" "*mui-notify-data-size*") 28)
+              (eql (sym-value "AMIGA.RAW.MUIMASTER" "*mui-area-data-size*") 40)
+              (field-row-p "AMIGA.RAW.MUIMASTER" "mui-area-data-render-info" :fptr 0)
+              (field-row-p "AMIGA.RAW.MUIMASTER" "mui-area-data-box" :struct 24)
+              (field-row-p "AMIGA.RAW.MUIMASTER" "mui-area-data-addleft" :i8 32)
+              (field-row-p "AMIGA.RAW.MUIMASTER" "mui-area-data-flags" :u32 36)
+              (eql (sym-value "AMIGA.RAW.MUIMASTER" "*mui-render-info-size*") 28)
+              (field-row-p "AMIGA.RAW.MUIMASTER" "mui-render-info-rastport" :fptr 20)
+              (field-row-p "AMIGA.RAW.MUIMASTER" "mui-render-info-flags" :u32 24)))
+    (chk "muimaster: MUI_CustomClass 28 (mcc_Class 24); the MUIP_* messages — AskMinMax 8, Draw 8, HandleInput 12, Notify 20"
+         (and (eql (sym-value "AMIGA.RAW.MUIMASTER" "*mui-custom-class-size*") 28)
+              (field-row-p "AMIGA.RAW.MUIMASTER" "mui-custom-class-class" :fptr 24)
+              (eql (sym-value "AMIGA.RAW.MUIMASTER" "*muip-ask-min-max-size*") 8)
+              (field-row-p "AMIGA.RAW.MUIMASTER" "muip-ask-min-max-min-max-info" :fptr 4)
+              (field-row-p "AMIGA.RAW.MUIMASTER" "muip-draw-flags" :u32 4)
+              (eql (sym-value "AMIGA.RAW.MUIMASTER" "*muip-handle-input-size*") 12)
+              (field-row-p "AMIGA.RAW.MUIMASTER" "muip-handle-input-imsg" :fptr 4)
+              (field-row-p "AMIGA.RAW.MUIMASTER" "muip-handle-input-muikey" :i32 8)
+              (eql (sym-value "AMIGA.RAW.MUIMASTER" "*muip-notify-size*") 20)
+              (field-row-p "AMIGA.RAW.MUIMASTER" "muip-notify-dest-obj" :fptr 12)))
+    (chk "muimaster: MUI_InputHandlerNode — the union's leaves (sigs / millis / current) flattened at 12"
+         (and (eql (sym-value "AMIGA.RAW.MUIMASTER" "*mui-input-handler-node-size*") 24)
+              (field-row-p "AMIGA.RAW.MUIMASTER" "mui-input-handler-node-node" :struct 0)
+              (field-row-p "AMIGA.RAW.MUIMASTER" "mui-input-handler-node-object" :fptr 8)
+              (field-row-p "AMIGA.RAW.MUIMASTER" "mui-input-handler-node-sigs" :u32 12)
+              (field-row-p "AMIGA.RAW.MUIMASTER" "mui-input-handler-node-millis" :u16 12)
+              (field-row-p "AMIGA.RAW.MUIMASTER" "mui-input-handler-node-current" :u16 14)
+              (field-row-p "AMIGA.RAW.MUIMASTER" "mui-input-handler-node-flags" :u32 16)
+              (field-row-p "AMIGA.RAW.MUIMASTER" "mui-input-handler-node-method" :u32 20)))
+    (chk "muimaster: MUI_EventHandlerNode 24 (BYTE priority at 9), MUI_LayoutMsg 36 (lm_Layout.Width at 20), MUI_List_TestPos_Result 12"
+         (and (eql (sym-value "AMIGA.RAW.MUIMASTER" "*mui-event-handler-node-size*") 24)
+              (field-row-p "AMIGA.RAW.MUIMASTER" "mui-event-handler-node-priority" :i8 9)
+              (field-row-p "AMIGA.RAW.MUIMASTER" "mui-event-handler-node-class" :fptr 16)
+              (eql (sym-value "AMIGA.RAW.MUIMASTER" "*mui-layout-msg-size*") 36)
+              (field-row-p "AMIGA.RAW.MUIMASTER" "mui-layout-msg-min-max" :struct 8)
+              (field-row-p "AMIGA.RAW.MUIMASTER" "mui-layout-msg-width" :i32 20)
+              (eql (sym-value "AMIGA.RAW.MUIMASTER" "*mui-list-test-pos-result-size*") 12)
+              (field-row-p "AMIGA.RAW.MUIMASTER" "mui-list-test-pos-result-yoffset" :i16 10)))
+    (chk "muimaster: MUI_PubScreenDesc 1084 — char[32] Name a pointer at 4, BYTE SystemPens[20] indexed at 487, RGBcolor Palette[8] at 516; MUI_Command's LONG[5]"
+         (and (eql (sym-value "AMIGA.RAW.MUIMASTER" "*mui-pub-screen-desc-size*") 1084)
+              (field-row-p "AMIGA.RAW.MUIMASTER" "mui-pub-screen-desc-name" :struct 4)
+              (field-row-p "AMIGA.RAW.MUIMASTER" "mui-pub-screen-desc-display-id" :u32 468)
+              (field-row-p "AMIGA.RAW.MUIMASTER" "mui-pub-screen-desc-system-pens" '(:array :i8 20) 487)
+              (field-row-p "AMIGA.RAW.MUIMASTER" "mui-pub-screen-desc-palette" :struct 516)
+              (field-row-p "AMIGA.RAW.MUIMASTER" "mui-pub-screen-desc-user-data" :fptr 1080)
+              (eql (sym-value "AMIGA.RAW.MUIMASTER" "*mui-rgb-color-size*") 12)
+              (eql (sym-value "AMIGA.RAW.MUIMASTER" "*mui-command-size*") 36)
+              (field-row-p "AMIGA.RAW.MUIMASTER" "mui-command-reserved" '(:array :i32 5) 16)))
+    (chk "muimaster: the reserved __dummyXFC2__ is the one skipped struct"
+         (file-contains "muimaster" ";; skipped struct __dummyXFC2__: reserved identifier"))
+    ;; ReAction headers' structs
+    (chk "gadgets/listbrowser: struct ColumnInfo 10 (WORD, STRPTR at 2, ULONG at 6); lbSort's struct Hook * member"
+         (and (eql (sym-value "AMIGA.RAW.GADGETS.LISTBROWSER" "*column-info-size*") 10)
+              (field-row-p "AMIGA.RAW.GADGETS.LISTBROWSER" "column-info-width" :i16 0)
+              (field-row-p "AMIGA.RAW.GADGETS.LISTBROWSER" "column-info-title" :fptr 2)
+              (field-row-p "AMIGA.RAW.GADGETS.LISTBROWSER" "column-info-flags" :u32 6)
+              (eql (sym-value "AMIGA.RAW.GADGETS.LISTBROWSER" "*lb-sort-size*") 20)
+              (field-row-p "AMIGA.RAW.GADGETS.LISTBROWSER" "lb-sort-compare-hook" :fptr 16)))
+    (chk "keymap: libraries/keymap.h repeats devices/keymap.i's KeyMap — the STRUCTURE's row (32) is the binding"
+         (and (eql (sym-value "AMIGA.RAW.KEYMAP" "*key-map-size*") 32)
+              (file-contains "keymap" ";; skipped struct KeyMap: the STRUCTURE of devices/keymap.i is the binding (32 bytes)")))
+    ;; MUI custom-class headers -> amiga/raw/mui/<name>
+    (chk "mui/tron: the kit's ExtClasses/MCC_Tron header — MUIC_Tron, MUIM_/MUIA_ tags, the MUIP_ struct, no base"
+         (and (probe-file (raw-file "mui/tron"))
+              (find-package "AMIGA.RAW.MUI.TRON")
+              (not (sym "AMIGA.RAW.MUI.TRON" "*tron-base*"))
+              (equal (sym-value "AMIGA.RAW.MUI.TRON" "+muic-tron+") "Tron.mcc")
+              (eql (sym-value "AMIGA.RAW.MUI.TRON" "+muim-tron-demo+") #x8002000B)
+              (eql (sym-value "AMIGA.RAW.MUI.TRON" "+muia-tron-running+") #x80020040)
+              (eql (sym-value "AMIGA.RAW.MUI.TRON" "*muip-tron-demo-size*") 4)
+              (file-contains "mui/tron" ";;;   mui/Tron_mcc.h")))
+    (chk "muimaster: MUIC_* class names and MUIX_* text styles are strings"
+         (and (equal (sym-value "AMIGA.RAW.MUIMASTER" "+muic-application+") "Application.mui")
+              (equal (sym-value "AMIGA.RAW.MUIMASTER" "+muic-window+") "Window.mui")
+              (equal (sym-value "AMIGA.RAW.MUIMASTER" "+muic-group+") "Group.mui")
+              (equal (sym-value "AMIGA.RAW.MUIMASTER" "+muic-text+") "Text.mui")
+              (equal (sym-value "AMIGA.RAW.MUIMASTER" "+muimaster-name+") "muimaster.library")
+              (equal (sym-value "AMIGA.RAW.MUIMASTER" "+muix-c+") (format nil "~Cc" (code-char 27)))
+              (equal (sym-value "AMIGA.RAW.MUIMASTER" "+muix-b+") (format nil "~Cb" (code-char 27)))
+              (constantp (sym "AMIGA.RAW.MUIMASTER" "+muic-window+"))))
+    (chk "muimaster: tags, methods and values of mui.h"
+         (and (eql (sym-value "AMIGA.RAW.MUIMASTER" "+muimaster-vmin+") 11)
+              (eql (sym-value "AMIGA.RAW.MUIMASTER" "+muia-application-title+") #x804281B8)
+              (eql (sym-value "AMIGA.RAW.MUIMASTER" "+muia-window-close-request+") #x8042E86E)
+              (eql (sym-value "AMIGA.RAW.MUIMASTER" "+muia-window-root-object+") #x8042CBA5)
+              (eql (sym-value "AMIGA.RAW.MUIMASTER" "+muia-group-child+") #x804226E6)
+              (eql (sym-value "AMIGA.RAW.MUIMASTER" "+muia-text-contents+") #x8042F8DC)
+              (eql (sym-value "AMIGA.RAW.MUIMASTER" "+muia-pressed+") #x80423535)
+              (eql (sym-value "AMIGA.RAW.MUIMASTER" "+muim-notify+") #x8042C9CB)
+              (eql (sym-value "AMIGA.RAW.MUIMASTER" "+muim-application-new-input+") #x80423BA6)
+              (eql (sym-value "AMIGA.RAW.MUIMASTER" "+muim-application-return-id+") #x804276EF)
+              (eql (sym-value "AMIGA.RAW.MUIMASTER" "+muiv-application-return-id-quit+") -1)
+              (eql (sym-value "AMIGA.RAW.MUIMASTER" "+muiv-notify-application+") 3)
+              (eql (sym-value "AMIGA.RAW.MUIMASTER" "+muiv-trigger-value+") #x49893131)
+              (eql (sym-value "AMIGA.RAW.MUIMASTER" "+muiv-every-time+") #x49893131)
+              (eql (sym-value "AMIGA.RAW.MUIMASTER" "+muii-window-back+") 0)
+              (eql (sym-value "AMIGA.RAW.MUIMASTER" "+muio-button+") 2)
+              (eql (sym-value "AMIGA.RAW.MUIMASTER" "+mui-maxmax+") 10000)
+              (eql (sym-value "AMIGA.RAW.MUIMASTER" "+mc-template-id+") #xFFFFFFFF)
+              (eql (sym-value "AMIGA.RAW.MUIMASTER" "+muikey-release+") -2)
+              ;; the header's own #define MUI_OBSOLETE keeps these live
+              (eql (sym-value "AMIGA.RAW.MUIMASTER" "+muim-application-input+") #x8042D0F5)))
     ;; ReAction class libraries: under gadgets/ images/ classes/, with the
     ;; tags that exist only in the NDK's C headers
     (chk "class libs: no top-level button / bevel / window modules"

@@ -5,8 +5,8 @@
 ;;;   MorphOS SDK requester_lib.fd + clib/requester_protos.h (via fd2sfd)
 ;;;   classes/requester.h
 ;;;
-;;; 1 functions, 62 constants, 0 structs.
-;;; 1 C macro skipped: not an integer constant (string, call, float).
+;;; 1 functions, 62 constants, 1 structs.
+;;; 1 C macro skipped: not an integer or ASCII-string constant (call, float, non-ASCII).
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
 ;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
@@ -99,6 +99,14 @@
   (:const "+REQIMAGE-ERROR+" 3)
   (:const "+REQIMAGE-QUESTION+" 4)
   (:const "+REQIMAGE-INSERTDISK+" 5)
+
+  ;; --- structures from classes/requester.h ---
+  (:struct "OR-REQUEST" 16   ; orRequest (classes/requester.h)
+    ("METHOD-ID" :u32 0)
+    ("ATTRS" :fptr 4)
+    ("WINDOW" :fptr 8)
+    ("SCREEN" :fptr 12)
+    )
 
   ;; --- functions (requester_lib.sfd + MorphOS SDK) ---
   (:fn "REQUESTER-GET-CLASS" -30 () :pointer 40)   ; Class * REQUESTER_GetClass() () LVO -30

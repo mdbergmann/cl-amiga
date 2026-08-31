@@ -21,7 +21,7 @@
 (defpackage "AMIGA.RAW.UTILITY"
   (:use "CL" "FFI" "AMIGA.FFI")
   ;; distinct symbols  these names also exist in CL / FFI / AMIGA.FFI
-  (:shadow "+TAG-DONE+" "+TAG-IGNORE+" "+TAG-MORE+" "+TAG-SKIP+")
+  (:shadow "HOOK-ENTRY" "HOOK-DATA" "+TAG-DONE+" "+TAG-IGNORE+" "+TAG-MORE+" "+TAG-SKIP+")
   (:export "*UTILITY-BASE*" "*UTILITY-VERSION*"))
 
 (in-package "AMIGA.RAW.UTILITY")

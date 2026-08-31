@@ -5,8 +5,8 @@
 ;;;   MorphOS SDK layout_lib.fd + clib/layout_protos.h (via fd2sfd)
 ;;;   gadgets/layout.h
 ;;;
-;;; 8 functions, 100 constants, 0 structs.
-;;; 1 C macro skipped: not an integer constant (string, call, float).
+;;; 8 functions, 100 constants, 6 structs.
+;;; 1 C macro skipped: not an integer or ASCII-string constant (call, float, non-ASCII).
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
 ;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
@@ -137,6 +137,45 @@
   (:const "+PAGE-FIXED-HORIZ+" #x85007205)
   (:const "+PAGE-TRANSPARENT+" #x85007206)
   (:const "+PAGE-NO-DISPOSE+" #x85007207)
+
+  ;; --- structures from gadgets/layout.h ---
+  (:struct "WEIGHT-OBJECT" 24   ; WeightObject (gadgets/layout.h)
+    ("SUCC-HEIGHT" :u32 0)
+    ("PRED-HEIGHT" :u32 4)
+    ("RESERVED1" :u32 8)
+    ("SUCC-WIDTH" :u32 12)
+    ("PRED-WIDTH" :u32 16)
+    ("RESERVED2" :u32 20)
+    )
+  (:struct "LAYOUT-LIMITS" 8   ; LayoutLimits (gadgets/layout.h)
+    ("MIN-WIDTH" :u16 0)
+    ("MIN-HEIGHT" :u16 2)
+    ("MAX-WIDTH" :u16 4)
+    ("MAX-HEIGHT" :u16 6)
+    )
+  (:struct "LM-ADD-CHILD" 16   ; lmAddChild (gadgets/layout.h)
+    ("METHOD-ID" :u32 0)
+    ("WINDOW" :fptr 4)
+    ("OBJECT" :fptr 8)
+    ("OBJECT-ATTRS" :fptr 12)
+    )
+  (:struct "LM-ADD-IMAGE" 16   ; lmAddImage (gadgets/layout.h)
+    ("METHOD-ID" :u32 0)
+    ("WINDOW" :fptr 4)
+    ("OBJECT" :fptr 8)
+    ("OBJECT-ATTRS" :fptr 12)
+    )
+  (:struct "LM-REMOVE-CHILD" 12   ; lmRemoveChild (gadgets/layout.h)
+    ("METHOD-ID" :u32 0)
+    ("WINDOW" :fptr 4)
+    ("OBJECT" :fptr 8)
+    )
+  (:struct "LM-MODIFY-CHILD" 16   ; lmModifyChild (gadgets/layout.h)
+    ("METHOD-ID" :u32 0)
+    ("WINDOW" :fptr 4)
+    ("OBJECT" :fptr 8)
+    ("OBJECT-ATTRS" :fptr 12)
+    )
 
   ;; --- functions (layout_lib.sfd + MorphOS SDK) ---
   (:fn "LAYOUT-GET-CLASS" -30 () :pointer 40)   ; Class * LAYOUT_GetClass() () LVO -30

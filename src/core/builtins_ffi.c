@@ -16,6 +16,7 @@
 #include "string_utils.h"
 #include "vm.h"
 #include "compiler.h"   /* cl_register_setf_updater (DEFCSTRUCT setters) */
+#include "stream.h"     /* cl_write_cstring_to_debug_io (callback diagnostics) */
 #include "../platform/platform.h"
 #include "../platform/platform_thread.h"
 #include <string.h>
@@ -1558,6 +1559,7 @@ static CL_Obj bi_ffi_call_foreign(CL_Obj *args, int nargs)
     if (platform_ffi_call(fn, ret_type, &rv, n, nfixed, atypes, avals) != 0)
         cl_error(CL_ERR_GENERAL,
                  "FFI:CALL-FOREIGN: foreign call failed (FFI calls are not supported on this platform)");
+    cl_ffi_deferred_error_check();   /* a callback may have parked an error */
 
     return ffi_box_result(ret_type, &rv);
 }
@@ -1578,6 +1580,7 @@ typedef struct {
     int       in_use;
     CLFFIType ret_type;
     CLFFIType arg_types[CL_FFI_MAX_ARGS];
+    int8_t    arg_regs[CL_FFI_MAX_ARGS];   /* CL_FFI_REG_STACK or a 68k register (platform.h) */
     int       nargs;
     void     *plat_closure;
     uint32_t  code_handle; /* side-table handle from platform_ffi_register(code) */
@@ -1590,41 +1593,202 @@ static FFICallback ffi_callbacks[CL_FFI_MAX_CALLBACKS];
  * plat_closure (foreign code then invokes the wrong Lisp function). */
 static void *ffi_callback_lock = NULL;
 
+/* EXT:*CALLBACK-ERROR-POLICY* — :DEFER (default) parks a condition that
+ * escapes a callback until the foreign call returns; :DEBUG lets the
+ * interactive debugger open on the foreign caller's stack (host only in
+ * practice — on the target the OS is mid-dispatch under it). */
+static CL_Obj SYM_CALLBACK_ERROR_POLICY = CL_NIL;
+static CL_Obj kw_callback_debug = CL_NIL;
+
+/* Calls of a callback from a task/thread that is not a Lisp thread (§10.3.2
+ * of specs/mui-bindings.md: intuition invokes gadget-class methods from
+ * input.device's task).  Counted here — nothing else is safe to do from
+ * such a task — and reported by cl_ffi_deferred_error_check from the next
+ * foreign call that returns on a Lisp thread. */
+static volatile uint32_t ffi_foreign_task_calls = 0;
+static uint32_t ffi_foreign_task_reported = 0;
+
+int cl_callback_debugger_allowed(void)
+{
+    if (CT->callback_depth == 0) return 1;
+    return !CL_NULL_P(SYM_CALLBACK_ERROR_POLICY) &&
+           cl_symbol_value(SYM_CALLBACK_ERROR_POLICY) == kw_callback_debug;
+}
+
 /* Invoked (via the platform trampoline) when foreign code calls a callback.
- * Marshals C args -> CL, applies the Lisp function, marshals the result back. */
+ * Marshals C args -> CL, applies the Lisp function, marshals the result back.
+ *
+ * This is the foreign-callback BOUNDARY (thread.h, "Foreign-callback
+ * boundary"): the Lisp function runs on the foreign caller's stack, inside
+ * its C frames, and nothing may longjmp across those — not an unhandled
+ * error, not a THROW to a catch tag of the Lisp that made the foreign call,
+ * not a restart of the REPL.  So for the dynamic extent of the call:
+ *   - the NLX / handler / restart floors hide every frame established
+ *     outside the callback (a THROW to one of them is a "no catch" error,
+ *     a HANDLER-CASE around the foreign call does not see the condition
+ *     until it is re-signaled below),
+ *   - callback_depth keeps the debugger out (cl_invoke_debugger),
+ *   - a CL_CATCH frame catches whatever unwinds: the VM stack is restored
+ *     to what the foreign caller left, the condition is parked in the
+ *     thread, the callback returns 0 / NULL.
+ * cl_ffi_deferred_error_check, called by every foreign-call path once the
+ * OS has returned, re-signals the parked condition on the caller's side of
+ * the boundary — a HANDLER-CASE around (call-hook-pkt ...) or (do-method
+ * ...) catches it there, the debugger shows it there. */
 static void ffi_callback_handler(void *ud, const CLFFIValue *cargs, CLFFIValue *cret)
 {
     FFICallback *cb = (FFICallback *)ud;
     CL_Obj clargs[CL_FFI_MAX_ARGS];
     CL_Obj result = CL_NIL;
+    CL_Thread *t;
     int i, n = cb->nargs;
+    int saved_sp, saved_fp, saved_nlx_top;
+    int saved_nlx_floor, saved_handler_floor, saved_restart_floor;
+    int err;
+
+    if (!cl_thread_current_is_registered()) {
+        /* No VM, no Lisp state, a stack of unknown size: the only safe
+         * answer is the callback's zero result (cret is pre-zeroed by
+         * every platform trampoline). */
+        ffi_foreign_task_calls++;
+        return;
+    }
+    t = CT;
+
+    saved_sp = cl_vm.sp;
+    saved_fp = cl_vm.fp;
+    saved_nlx_top = cl_nlx_top;
+    saved_nlx_floor = t->nlx_floor;
+    saved_handler_floor = cl_handler_floor;
+    saved_restart_floor = cl_restart_floor;
+    t->nlx_floor = cl_nlx_top;
+    cl_handler_floor = cl_handler_top;
+    cl_restart_floor = cl_restart_top;
+    t->callback_depth++;
 
     for (i = 0; i < n; i++) clargs[i] = CL_NIL;
     /* Protect every arg slot BEFORE any boxing allocates — a later box may
-     * trigger GC that would otherwise strand earlier (already-boxed) args. */
+     * trigger GC that would otherwise strand earlier (already-boxed) args.
+     * Pushed before CL_CATCH so the frame's root snapshot includes them and
+     * the single CL_GC_UNPROTECT below balances both paths. */
     for (i = 0; i < n; i++) CL_GC_PROTECT(clargs[i]);
     CL_GC_PROTECT(result);
 
-    for (i = 0; i < n; i++)
-        clargs[i] = ffi_box_result(cb->arg_types[i], (CLFFIValue *)&cargs[i]);
-    result = cl_vm_apply(cb->lisp_fn, clargs, n);
-    if (cb->ret_type != CL_FFI_VOID)
-        ffi_marshal_arg(cb->ret_type, result, cret);
+    CL_CATCH(err);
+    if (err == CL_ERR_NONE) {
+        for (i = 0; i < n; i++)
+            clargs[i] = ffi_box_result(cb->arg_types[i], (CLFFIValue *)&cargs[i]);
+        result = cl_vm_apply(cb->lisp_fn, clargs, n);
+        if (cb->ret_type != CL_FFI_VOID)
+            ffi_marshal_arg(cb->ret_type, result, cret);
+        CL_UNCATCH();
+    } else {
+        CL_UNCATCH();
+        /* The frame restore already dropped the roots, dynamic bindings,
+         * handlers and restarts established inside; the VM stub frame
+         * cl_vm_apply pushed and the NLX frames of the abandoned Lisp are
+         * ours to drop. */
+        cl_vm.sp = saved_sp;
+        cl_vm.fp = saved_fp;
+        cl_nlx_top = saved_nlx_top;
+        if (t->callback_error_code == 0) {   /* the first escape wins */
+            t->callback_error_code = err;
+            t->callback_error = (err == CL_ERR_EXIT) ? CL_NIL : t->last_condition;
+            strncpy(t->callback_error_msg, cl_error_msg,
+                    sizeof(t->callback_error_msg) - 1);
+            t->callback_error_msg[sizeof(t->callback_error_msg) - 1] = '\0';
+        }
+        memset(cret, 0, sizeof(*cret));
+    }
 
     CL_GC_UNPROTECT(n + 1);
+    t->callback_depth--;
+    t->nlx_floor = saved_nlx_floor;
+    cl_handler_floor = saved_handler_floor;
+    cl_restart_floor = saved_restart_floor;
 }
 
-/* (ffi:make-callback ret-type arg-types lisp-fn) → foreign-pointer
- * Returns a C-callable function pointer that invokes LISP-FN. */
+/* The caller's side of the boundary: re-signal what a callback parked.
+ * Called by every path that returns from foreign code — FFI:CALL-FOREIGN,
+ * the OP_AMIGA_CALL dispatch (VM, JIT and stub callers alike), AMIGA:CALL-
+ * LIBRARY / -FAST.  Nested foreign calls are fine: a callback that itself
+ * calls the OS re-signals the inner escape inside its own Lisp, which
+ * either handles it or carries it to the outer boundary. */
+void cl_ffi_deferred_error_check(void)
+{
+    CL_Thread *t = CT;
+    int code;
+    CL_Obj cond;
+
+    if (ffi_foreign_task_calls != ffi_foreign_task_reported) {
+        char buf[160];
+        ffi_foreign_task_reported = ffi_foreign_task_calls;
+        snprintf(buf, sizeof(buf),
+                 "; WARNING: an FFI callback was invoked from a task that is not a "
+                 "Lisp thread (%u call%s so far) and returned 0 -- Lisp cannot run "
+                 "there (see FFI:MAKE-CALLBACK)\n",
+                 (unsigned)ffi_foreign_task_reported,
+                 ffi_foreign_task_reported == 1 ? "" : "s");
+        cl_write_cstring_to_debug_io(buf);
+    }
+
+    if (t->callback_error_code == 0) return;
+    code = t->callback_error_code;
+    cond = t->callback_error;
+    t->callback_error_code = 0;
+    t->callback_error = CL_NIL;
+    if (code == CL_ERR_EXIT)
+        cl_error(CL_ERR_EXIT, "");
+    if (!CL_NULL_P(cond) && CL_CONDITION_P(cond)) {
+        /* Exactly ERROR's path: handlers, then the debugger with the
+         * original condition (type, slots, PRINT-OBJECT intact).  Both
+         * calls unwind via longjmp, which restores the root count. */
+        CL_GC_PROTECT(cond);
+        cl_signal_condition(cond);
+        cl_error_from_condition(cond);
+    }
+    cl_error(code, "%s", t->callback_error_msg);
+}
+
+/* Map a register keyword of MAKE-CALLBACK's REGS list to platform.h's
+ * encoding; NIL = the C stack. */
+static int8_t ffi_callback_reg(CL_Obj kw)
+{
+    const char *name;
+    if (CL_NULL_P(kw)) return CL_FFI_REG_STACK;
+    if (!CL_SYMBOL_P(kw) ||
+        ((CL_Symbol *)CL_OBJ_TO_PTR(kw))->package != cl_package_keyword)
+        cl_error(CL_ERR_TYPE,
+                 "FFI:MAKE-CALLBACK: REGS entries must be :D0-:D7, :A0-:A6 or NIL");
+    name = cl_symbol_name(kw);
+    if ((name[0] == 'D' || name[0] == 'A') && name[1] >= '0' && name[2] == '\0') {
+        int n = name[1] - '0';
+        if (name[0] == 'D' && n <= 7) return (int8_t)n;
+        if (name[0] == 'A' && n <= 6) return (int8_t)(8 + n);
+    }
+    cl_error(CL_ERR_ARGS,
+             "FFI:MAKE-CALLBACK: unknown register %s (expected :D0-:D7, :A0-:A6 or NIL)",
+             name);
+    return CL_FFI_REG_STACK;
+}
+
+/* (ffi:make-callback ret-type arg-types lisp-fn &optional regs) → foreign-pointer
+ * Returns a C-callable function pointer that invokes LISP-FN.  REGS, a
+ * list parallel to ARG-TYPES of :D0-:D7 / :A0-:A6 / NIL, names the 68k
+ * register each argument arrives in — the struct Hook convention is
+ * (:a0 :a2 :a1) for (hook object message), a BOOPSI dispatcher's the same
+ * for (class object message); NIL (and an absent list) means the C stack.
+ * The host ignores REGS: its callbacks are C-ABI functions, so a hook
+ * entry made there is simply a C function of (hook, object, message). */
 static CL_Obj bi_ffi_make_callback(CL_Obj *args, int nargs)
 {
-    int slot, i, n = 0;
+    int slot, i, n = 0, nregs = 0;
     CLFFIType ret_type;
     CLFFIType atypes[CL_FFI_MAX_ARGS];
+    int8_t aregs[CL_FFI_MAX_ARGS];
     CL_Obj tlist;
     void *code, *plat = NULL;
     FFICallback *cb;
-    (void)nargs;
 
     ret_type = ffi_kw_to_type(args[0]);
     for (tlist = args[1]; !CL_NULL_P(tlist); tlist = cl_cdr(tlist)) {
@@ -1632,6 +1796,46 @@ static CL_Obj bi_ffi_make_callback(CL_Obj *args, int nargs)
             cl_error(CL_ERR_ARGS, "FFI:MAKE-CALLBACK: too many argument types (max %d)", CL_FFI_MAX_ARGS);
         atypes[n++] = ffi_kw_to_type(cl_car(tlist));
     }
+    for (i = 0; i < n; i++) aregs[i] = CL_FFI_REG_STACK;
+    if (nargs > 3) {
+        for (tlist = args[3]; !CL_NULL_P(tlist); tlist = cl_cdr(tlist)) {
+            if (!CL_CONS_P(tlist))
+                cl_error(CL_ERR_TYPE, "FFI:MAKE-CALLBACK: REGS must be a list");
+            if (nregs >= n)
+                cl_error(CL_ERR_ARGS,
+                         "FFI:MAKE-CALLBACK: REGS has more entries than ARG-TYPES (%d)", n);
+            aregs[nregs++] = ffi_callback_reg(cl_car(tlist));
+        }
+        if (nregs != 0 && nregs != n)
+            cl_error(CL_ERR_ARGS,
+                     "FFI:MAKE-CALLBACK: REGS names %d register%s for %d argument%s -- "
+                     "give one entry per argument (NIL for a stack argument)",
+                     nregs, nregs == 1 ? "" : "s", n, n == 1 ? "" : "s");
+    }
+    if (!CL_FUNCTION_P(args[2]) && !CL_CLOSURE_P(args[2]) &&
+        !cl_funcallable_instance_p(args[2]))
+        cl_error(CL_ERR_TYPE, "FFI:MAKE-CALLBACK: LISP-FN must be a function");
+#ifdef PLATFORM_AMIGA
+    /* The 68k stub / MorphOS gate return d0 only and do not touch fp0. */
+    if (ret_type == CL_FFI_FLOAT || ret_type == CL_FFI_DOUBLE ||
+        ret_type == CL_FFI_I64 || ret_type == CL_FFI_U64)
+        cl_error(CL_ERR_ARGS,
+                 "FFI:MAKE-CALLBACK: on AmigaOS/MorphOS a callback returns a 32-bit "
+                 "integer or pointer in d0 -- :FLOAT, :DOUBLE, :INT64 and :UINT64 "
+                 "results are not supported");
+    for (i = 0; i < n; i++) {
+        if (atypes[i] == CL_FFI_FLOAT || atypes[i] == CL_FFI_DOUBLE)
+            cl_error(CL_ERR_ARGS,
+                     "FFI:MAKE-CALLBACK: on AmigaOS/MorphOS :FLOAT / :DOUBLE callback "
+                     "arguments are not supported (fp0 vs d0/d1 differs between the "
+                     "soft-float and FPU builds)");
+        if ((atypes[i] == CL_FFI_I64 || atypes[i] == CL_FFI_U64) &&
+            aregs[i] != CL_FFI_REG_STACK)
+            cl_error(CL_ERR_ARGS,
+                     "FFI:MAKE-CALLBACK: a 64-bit argument cannot arrive in a "
+                     "register (argument %d)", i + 1);
+    }
+#endif
 
     /* Claim the slot under the lock (in_use=1 immediately) so a peer
      * thread's scan cannot pick the same slot; release it on failure. */
@@ -1648,10 +1852,14 @@ static CL_Obj bi_ffi_make_callback(CL_Obj *args, int nargs)
 
     cb->ret_type = ret_type;
     cb->nargs = n;
-    for (i = 0; i < n; i++) cb->arg_types[i] = atypes[i];
+    for (i = 0; i < n; i++) {
+        cb->arg_types[i] = atypes[i];
+        cb->arg_regs[i] = aregs[i];
+    }
     cb->lisp_fn = args[2];  /* rooted slot — survives the alloc below */
 
-    code = platform_ffi_make_closure(ret_type, n, atypes, ffi_callback_handler, cb, &plat);
+    code = platform_ffi_make_closure(ret_type, n, atypes, cb->arg_regs,
+                                     ffi_callback_handler, cb, &plat);
     if (!code) {
         cb->lisp_fn = CL_NIL;
         cb->in_use = 0;
@@ -1714,6 +1922,19 @@ void cl_builtins_ffi_init(void)
         }
         platform_mutex_init(&ffi_callback_lock);
     }
+
+    /* EXT:*CALLBACK-ERROR-POLICY* (see cl_callback_debugger_allowed).
+     * Rooted before the interning below allocates, like *EXIT-HOOKS*. */
+    cl_gc_register_root(&SYM_CALLBACK_ERROR_POLICY);
+    cl_gc_register_root(&kw_callback_debug);
+    kw_callback_debug = cl_intern_keyword("DEBUG", 5);
+    SYM_CALLBACK_ERROR_POLICY = cl_intern_in("*CALLBACK-ERROR-POLICY*", 23, cl_package_ext);
+    {
+        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_CALLBACK_ERROR_POLICY);
+        s->flags |= CL_SYM_SPECIAL;
+        s->value = cl_intern_keyword("DEFER", 5);
+    }
+    cl_export_symbol(SYM_CALLBACK_ERROR_POLICY, cl_package_ext);
 
     /* Register all keyword cache slots as GC roots BEFORE any cl_intern_keyword
      * call allocates — a compaction triggered mid-sequence would leave already-
@@ -1807,6 +2028,6 @@ void cl_builtins_ffi_init(void)
     ffi_defun("CLOSE-LIBRARY",          bi_ffi_close_library,       1, 1);
     ffi_defun("SYMBOL-POINTER",         bi_ffi_symbol_pointer,      1, 2);
     ffi_defun("CALL-FOREIGN",           bi_ffi_call_foreign,        4, 5);
-    ffi_defun("MAKE-CALLBACK",          bi_ffi_make_callback,       3, 3);
+    ffi_defun("MAKE-CALLBACK",          bi_ffi_make_callback,       3, 4);
     ffi_defun("FREE-CALLBACK",          bi_ffi_free_callback,       1, 1);
 }

@@ -1,11 +1,12 @@
 #!/bin/sh
 # Host-side test of lib/amiga/reaction.lisp (AMIGA.REACTION) and of the
 # examples/amiga/reaction/ programs: tests/test_amiga_reaction.lisp checks
-# the portable half of the module (ULONG coercion, the foreign pool,
-# NEW-LIST, WITH-TAGS, the diagnostics) and loads every example — the
-# host has no ReAction, so each must compile completely and bow out with
-# its "not available" line instead of failing.  The class half runs on
-# the Amiga in tests/amiga/test-reaction.lisp.
+# the ReAction-specific portable surface, that the toolkit-neutral half is
+# AMIGA.BOOPSI's re-exported (tests/test_amiga_boopsi.sh covers it), and
+# loads every example — the host has no ReAction, so each must compile
+# completely and bow out with its "not available" line instead of
+# failing.  The class half runs on the Amiga in
+# tests/amiga/test-reaction.lisp.
 #
 # Run: sh tests/test_amiga_reaction.sh build/host/clamiga
 

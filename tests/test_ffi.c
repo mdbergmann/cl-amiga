@@ -524,6 +524,177 @@ TEST(lisp_ffi_free_callback)
         "  n)"),
         "65");
 }
+
+/* ---- The foreign-callback boundary (thread.h "Foreign-callback boundary",
+ * builtins_ffi.c ffi_callback_handler): Lisp running inside a C callback
+ * must never longjmp across the foreign caller's frames.  qsort is the
+ * foreign caller here; the comparator is the callback. ---- */
+
+/* A helper form: qsort four ints through comparator FN, return the sorted
+ * list; the callback is freed on every exit. */
+#define QSORT_WITH(fn) \
+    "(let* ((arr (ffi:alloc-foreign 16)) " \
+    "       (cmp (ffi:make-callback :int32 '(:pointer :pointer) " fn "))) " \
+    "  (ffi:poke-i32 arr 9 0) (ffi:poke-i32 arr 2 4) " \
+    "  (ffi:poke-i32 arr 7 8) (ffi:poke-i32 arr 1 12) " \
+    "  (unwind-protect " \
+    "      (progn (ffi:call-foreign (ffi:symbol-pointer \"qsort\") :void " \
+    "               '(:pointer :uint64 :uint64 :pointer) (list arr 4 4 cmp)) " \
+    "             (list (ffi:peek-i32 arr 0) (ffi:peek-i32 arr 4) " \
+    "                   (ffi:peek-i32 arr 8) (ffi:peek-i32 arr 12))) " \
+    "    (ffi:free-callback cmp) (ffi:free-foreign arr)))"
+
+TEST(lisp_ffi_callback_error_is_deferred_to_caller)
+{
+    /* An unhandled ERROR inside the comparator does not unwind through
+     * qsort: the callback returns 0, and once qsort has returned the
+     * condition is re-signaled where a HANDLER-CASE around the foreign
+     * call catches it -- with its original class and message. */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case " QSORT_WITH("(lambda (a b) (declare (ignore a b)) (error \"boom ~A\" 42))")
+        "  (simple-error (e) (format nil \"caught: ~A\" e)))"),
+        "\"caught: boom 42\"");
+    /* the class survives: a TYPE-ERROR is a TYPE-ERROR on the other side */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case " QSORT_WITH("(lambda (a b) (declare (ignore a b)) (car 5))")
+        "  (type-error () :type-error) (error () :other))"),
+        ":TYPE-ERROR");
+    /* nothing left pending: the next foreign call is clean */
+    ASSERT_STR_EQ(eval_print(QSORT_WITH("(lambda (a b) (- (ffi:peek-i32 a) (ffi:peek-i32 b)))")),
+                  "(1 2 7 9)");
+}
+
+TEST(lisp_ffi_callback_error_not_seen_by_outer_handlers_inside)
+{
+    /* A HANDLER-BIND established around the foreign call is hidden while
+     * the callback runs (its handler could transfer control across the C
+     * frames) and runs at the re-signal instead: it sees the condition
+     * exactly once, after qsort has returned. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((seen 0)) "
+        "  (handler-case "
+        "      (handler-bind ((error (lambda (c) (declare (ignore c)) (incf seen)))) "
+        "        " QSORT_WITH("(lambda (a b) (declare (ignore a b)) (error \"x\"))") ") "
+        "    (error () nil)) "
+        "  seen)"),
+        "1");
+}
+
+TEST(lisp_ffi_callback_nlx_across_boundary_refused)
+{
+    /* THROW / RETURN-FROM to a target outside the callback is not a
+     * transfer but an error, caught at the boundary and deferred; the
+     * message names the cause. */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (catch 'outer "
+        "  " QSORT_WITH("(lambda (a b) (declare (ignore a b)) (throw 'outer :escaped))") ") "
+        "  (error (e) (let ((m (format nil \"~A\" e))) "
+        "               (list (and (search \"No catch for tag OUTER\" m) t) "
+        "                     (and (search \"foreign callback\" m) t)))))"),
+        "(T T)");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (block outer "
+        "  " QSORT_WITH("(lambda (a b) (declare (ignore a b)) (return-from outer :escaped))") ") "
+        "  (error (e) (and (search \"foreign callback\" (format nil \"~A\" e)) t)))"),
+        "T");
+    /* an ABORT restart of the REPL is hidden too: no restart named ABORT */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (restart-case "
+        "  " QSORT_WITH("(lambda (a b) (declare (ignore a b)) (invoke-restart 'leave))") " "
+        "  (leave () :left)) "
+        "  (error () :refused))"),
+        ":REFUSED");
+}
+
+TEST(lisp_ffi_callback_inner_handlers_and_nesting_work)
+{
+    /* HANDLER-CASE inside the callback is ordinary; a callback may itself
+     * make a foreign call whose callback errors (handled inside). */
+    ASSERT_STR_EQ(eval_print(
+        QSORT_WITH("(lambda (a b) (handler-case (error \"inner\") "
+                   "  (error () (- (ffi:peek-i32 a) (ffi:peek-i32 b)))))")),
+        "(1 2 7 9)");
+    ASSERT_STR_EQ(eval_print(
+        QSORT_WITH("(lambda (a b) "
+                   "  (handler-case " QSORT_WITH("(lambda (x y) (declare (ignore x y)) (error \"deep\"))")
+                   "    (error () nil)) "
+                   "  (- (ffi:peek-i32 a) (ffi:peek-i32 b)))")),
+        "(1 2 7 9)");
+    /* UNWIND-PROTECT cleanups inside the callback run on the way to the
+     * boundary; a THROW to a catch INSIDE the callback is a normal exit */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((cleaned 0)) "
+        "  (list (handler-case " QSORT_WITH("(lambda (a b) (declare (ignore a b)) "
+                                          "  (unwind-protect (error \"e\") (incf cleaned)))")
+        "          (error () :caught)) "
+        "        (> cleaned 0) "
+        "        " QSORT_WITH("(lambda (a b) (catch 'in (throw 'in (- (ffi:peek-i32 a) (ffi:peek-i32 b)))))") "))"),
+        "(:CAUGHT T (1 2 7 9))");
+}
+
+TEST(lisp_ffi_callback_on_worker_thread_under_list_churn)
+{
+    /* cl_thread_current_is_registered walks the thread list under a
+     * non-blocking trylock (a foreign task must never block on it): a
+     * callback on a Lisp WORKER, racing threads that register and
+     * unregister, must still be recognised every time — a false "not
+     * registered" would make the comparator silently return 0. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((churn (mp:make-thread (lambda () "
+        "                (dotimes (i 100) (mp:join-thread (mp:make-thread (lambda () nil))))))) "
+        "      (worker (mp:make-thread (lambda () "
+        "                 (let ((bad 0)) "
+        "                   (dotimes (i 150) "
+        "                     (unless (equal " QSORT_WITH("(lambda (a b) (- (ffi:peek-i32 a) (ffi:peek-i32 b)))")
+        "                                    '(1 2 7 9)) (incf bad))) "
+        "                   bad))))) "
+        "  (mp:join-thread churn) "
+        "  (mp:join-thread worker))"),
+        "0");
+}
+
+TEST(lisp_ffi_callback_policy_variable)
+{
+    ASSERT_STR_EQ(eval_print("ext:*callback-error-policy*"), ":DEFER");
+    ASSERT_STR_EQ(eval_print("(and (boundp 'ext:*callback-error-policy*) "
+                             "     (eq (nth-value 1 (find-symbol \"*CALLBACK-ERROR-POLICY*\" \"EXT\")) :external))"),
+                  "T");
+}
+
+TEST(lisp_ffi_make_callback_regs_argument)
+{
+    /* REGS (the AmigaOS register conventions) is accepted and validated
+     * everywhere; on the host it is ignored -- the callback is a C
+     * function and a register-spec comparator sorts like any other. */
+    ASSERT_STR_EQ(eval_print(
+        "(let* ((arr (ffi:alloc-foreign 8)) "
+        "       (cmp (ffi:make-callback :int32 '(:pointer :pointer) "
+        "              (lambda (a b) (- (ffi:peek-i32 a) (ffi:peek-i32 b))) '(:a0 :a1)))) "
+        "  (ffi:poke-i32 arr 5 0) (ffi:poke-i32 arr 3 4) "
+        "  (ffi:call-foreign (ffi:symbol-pointer \"qsort\") :void "
+        "    '(:pointer :uint64 :uint64 :pointer) (list arr 2 4 cmp)) "
+        "  (prog1 (list (ffi:peek-i32 arr 0) (ffi:peek-i32 arr 4)) "
+        "    (ffi:free-callback cmp) (ffi:free-foreign arr)))"),
+        "(3 5)");
+    /* NIL entries = stack; a partial list is refused, so is an unknown
+     * register, a non-list, and a non-function */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((cb (ffi:make-callback :void '(:int32 :pointer) (lambda (a b) a b) '(nil :d0)))) "
+        "  (ffi:free-callback cb) t)"),
+        "T");
+    ASSERT_STR_EQ(eval_print(
+        "(list (handler-case (progn (ffi:make-callback :int32 '(:pointer :pointer) (lambda (a b) a b) '(:a0)) nil) "
+        "        (error (e) (and (search \"one entry per argument\" (format nil \"~A\" e)) t))) "
+        "      (handler-case (progn (ffi:make-callback :int32 '(:pointer) (lambda (a) a) '(:a9)) nil) "
+        "        (error (e) (and (search \"unknown register A9\" (format nil \"~A\" e)) t))) "
+        "      (handler-case (progn (ffi:make-callback :int32 '(:pointer) (lambda (a) a) '(:x0)) nil) "
+        "        (error (e) (and (search \"unknown register X0\" (format nil \"~A\" e)) t))) "
+        "      (handler-case (progn (ffi:make-callback :int32 '(:pointer) (lambda (a) a) :a0) nil) "
+        "        (error (e) (and (search \"must be a list\" (format nil \"~A\" e)) t))) "
+        "      (handler-case (progn (ffi:make-callback :int32 '() 42) nil) "
+        "        (error (e) (and (search \"must be a function\" (format nil \"~A\" e)) t))))"),
+        "(T T T T T)");
+}
 #endif
 
 /* ================================================================
@@ -603,6 +774,13 @@ int main(void)
     RUN(lisp_ffi_call_double);
     RUN(lisp_ffi_callback_qsort);
     RUN(lisp_ffi_free_callback);
+    RUN(lisp_ffi_callback_error_is_deferred_to_caller);
+    RUN(lisp_ffi_callback_error_not_seen_by_outer_handlers_inside);
+    RUN(lisp_ffi_callback_nlx_across_boundary_refused);
+    RUN(lisp_ffi_callback_inner_handlers_and_nesting_work);
+    RUN(lisp_ffi_callback_on_worker_thread_under_list_churn);
+    RUN(lisp_ffi_callback_policy_variable);
+    RUN(lisp_ffi_make_callback_regs_argument);
 #endif
 
     REPORT();

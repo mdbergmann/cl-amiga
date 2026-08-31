@@ -3,8 +3,8 @@
 ;;; Sources:
 ;;;   reaction/reaction_prefs.h
 ;;;
-;;; 0 functions, 8 constants, 0 structs.
-;;; 2 C macros skipped: not an integer constant (string, call, float).
+;;; 0 functions, 9 constants (1 of them strings), 1 structs.
+;;; 1 C macro skipped: not an integer or ASCII-string constant (call, float, non-ASCII).
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
 ;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
@@ -24,6 +24,7 @@
 (amiga.ffi:define-binding-table "AMIGA.RAW.REACTION.REACTION-PREFS" ()
 
   ;; --- constants from reaction/reaction_prefs.h ---
+  (:const "+RAPREFSSEMAPHORE+" "REACTION-PREFS")
   (:const "+BVT-GT+" 0)
   (:const "+BVT-THIN+" 1)
   (:const "+BVT-THICK+" 2)
@@ -32,6 +33,29 @@
   (:const "+GLT-GT+" 0)
   (:const "+GLT-FLAT+" 1)
   (:const "+GLT-3-D+" 2)
+
+  ;; --- structures from reaction/reaction_prefs.h ---
+  (:struct "UI-PREFS" 340   ; UIPrefs (reaction/reaction_prefs.h)
+    ("SEMAPHORE" (:struct 46) 0)
+    ("PREFS-VERSION" :u16 46)
+    ("PREFS-SIZE" :u16 48)
+    ("BEVEL-TYPE" :u8 50)
+    ("LAYOUT-SPACING" :u16 52)
+    ("3-D-LOOK" :i16 54)
+    ("LABEL-PEN" :u16 56)
+    ("LABEL-PLACE" :u8 58)
+    ("3-D-LABEL" :u8 59)
+    ("RESERVED1" :fptr 60)
+    ("SIMPLE-REFRESH" :i16 64)
+    ("PATTERN" (:array :u8 256) 66)
+    ("RESERVED2" :fptr 322)
+    ("3-D-PROP" :i16 326)
+    ("RESERVED3" :i16 328)
+    ("GLYPH-TYPE" :u8 330)
+    ("RESERVED4" :u8 331)
+    ("FALLBACK-ATTR" :fptr 332)
+    ("LABEL-ATTR" :fptr 336)
+    )
   )
 
 (provide "amiga/raw/reaction/reaction-prefs")

@@ -1,0 +1,24 @@
+* fixture for tests/test_amiga_bindgen.sh: the MUI 3.8 developer kit's
+* FD/muimaster_lib.fd + C/Include/clib/muimaster_protos.h as fd2sfd renders
+* them (BINDGEN_MUI_SFD) -- the ##private gaps between the public blocks
+* come out as MUI_Private() entries that still advance the bias, and the
+* varargs stubs share their base function's vector.  Joins the PRIMARY
+* (AmigaOS) tables: muimaster is generated like an NDK library, with the
+* MorphOS SDK's rendering (mos-sfd/muimaster_lib.sfd) as its twin.
+==base _MUIMasterBase
+==basetype struct Library *
+==libname muimaster.library
+==bias 30
+==public
+Object * MUI_NewObjectA(char * class, struct TagItem * tags) (a0,a1)
+==varargs
+Object * MUI_NewObject(char * class, Tag tags, ...) (a0,a1)
+VOID MUI_DisposeObject(Object * obj) (a0)
+LONG MUI_RequestA(APTR app, APTR win, LONGBITS flags, char * title, char * gadgets, char * format, APTR params) (d0,d1,d2,a0,a1,a2,a3)
+==private
+ULONG MUI_Private() ()
+ULONG MUI_Private() ()
+==public
+LONG MUI_ObtainPen(struct MUI_RenderInfo * mri, struct MUI_PenSpec * spec, ULONG flags) (a0,a1,d0)
+Object * MUI_MakeObjectA(LONG type, ULONG * params) (d0,a0)
+==end

@@ -261,6 +261,7 @@ static CL_Obj bi_amiga_call_library(CL_Obj *args, int nargs)
     }
 
     result = platform_amiga_call(fp->address, offset, regs, reg_mask);
+    cl_ffi_deferred_error_check();   /* a Lisp hook the OS called may have parked an error */
     return cl_amiga_box_result(result, kind);
 }
 
@@ -320,6 +321,7 @@ static CL_Obj bi_amiga_call_library_fast(CL_Obj *args, int nargs)
     }
 
     result = platform_amiga_call(fp->address, offset, regs, reg_mask);
+    cl_ffi_deferred_error_check();
     return cl_amiga_box_result(result, CL_AMIGA_RES_KIND(regspec));
 }
 
@@ -356,6 +358,11 @@ CL_Obj cl_amiga_ffi_call_dispatch(uint32_t base_addr, int16_t offset,
     }
 
     result = platform_amiga_call(base_addr, offset, regs, reg_mask);
+    /* The OS may have called a Lisp hook / dispatcher in there (CallHookPkt,
+     * DoMethod, MUI_NewObject...): re-signal what it parked, on this side of
+     * the boundary.  Covers the VM's OP_AMIGA_CALL, the JIT helper and the
+     * stub path alike. */
+    cl_ffi_deferred_error_check();
     return cl_amiga_box_result(result, CL_AMIGA_RES_KIND(regspec));
 }
 

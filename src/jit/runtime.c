@@ -950,7 +950,8 @@ CL_Obj cl_jit_runtime_block_post_longjmp(void)
 void cl_jit_runtime_block_return(CL_Obj tag, CL_Obj value)
 {
     int i, j, mi;
-    for (i = cl_nlx_top - 1; i >= 0; i--) {
+    /* cl_nlx_floor: no target below a foreign-callback boundary (thread.h) */
+    for (i = cl_nlx_top - 1; i >= cl_nlx_floor; i--) {
         if (cl_nlx_stack[i].type == CL_NLX_BLOCK &&
             cl_nlx_stack[i].tag == tag) {
             /* Check for an interposing UWPROT frame.  If present, the
@@ -983,8 +984,9 @@ void cl_jit_runtime_block_return(CL_Obj tag, CL_Obj value)
             CL_LONGJMP(cl_nlx_stack[i].buf, 1);
         }
     }
-    cl_error(CL_ERR_GENERAL, "RETURN-FROM: no block named %s",
-             CL_NULL_P(tag) ? "NIL" : cl_symbol_name(tag));
+    cl_error(CL_ERR_GENERAL, "RETURN-FROM: no block named %s%s",
+             CL_NULL_P(tag) ? "NIL" : cl_symbol_name(tag),
+             cl_nlx_boundary_hint(tag, CL_NLX_BLOCK));
 }
 
 /* --- OP_CATCH / OP_UNCATCH ----------------------------------------------
@@ -1123,7 +1125,7 @@ void cl_jit_runtime_uwprot_rethrow(void)
         CL_Obj ptag = cl_pending_tag;
         CL_Obj pval = cl_pending_value;
         int i, j, mi;
-        for (i = cl_nlx_top - 1; i >= 0; i--) {
+        for (i = cl_nlx_top - 1; i >= cl_nlx_floor; i--) {
             if ((cl_nlx_stack[i].type == CL_NLX_CATCH ||
                  cl_nlx_stack[i].type == CL_NLX_BLOCK ||
                  cl_nlx_stack[i].type == CL_NLX_TAGBODY) &&
@@ -1158,7 +1160,7 @@ void cl_jit_runtime_uwprot_rethrow(void)
          * doesn't keep per-helper base_fp, and the outermost
          * cl_error_frames longjmp target restores VM state itself. */
         int i;
-        for (i = cl_nlx_top - 1; i >= 0; i--) {
+        for (i = cl_nlx_top - 1; i >= cl_nlx_floor; i--) {
             if (cl_nlx_stack[i].type == CL_NLX_UWPROT &&
                 !jit_nlx_frame_is_stale(&cl_nlx_stack[i])) {
                 cl_nlx_top = i;
@@ -1476,7 +1478,7 @@ CL_Obj cl_jit_runtime_tagbody_post_longjmp(void)
 void cl_jit_runtime_tagbody_go(CL_Obj tagbody_id, CL_Obj tag_index)
 {
     int i, j, mi;
-    for (i = cl_nlx_top - 1; i >= 0; i--) {
+    for (i = cl_nlx_top - 1; i >= cl_nlx_floor; i--) {
         if (cl_nlx_stack[i].type == CL_NLX_TAGBODY &&
             cl_nlx_stack[i].tag == tagbody_id) {
             /* UWPROT interposition: if a non-stale UWPROT frame
@@ -1504,7 +1506,8 @@ void cl_jit_runtime_tagbody_go(CL_Obj tagbody_id, CL_Obj tag_index)
             CL_LONGJMP(cl_nlx_stack[i].buf, 1);
         }
     }
-    cl_error(CL_ERR_GENERAL, "GO: tagbody frame not found");
+    cl_error(CL_ERR_GENERAL, "GO: tagbody frame not found%s",
+             cl_nlx_boundary_hint(tagbody_id, CL_NLX_TAGBODY));
 }
 
 #endif /* JIT_M68K */

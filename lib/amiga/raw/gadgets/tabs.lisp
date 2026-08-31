@@ -3,7 +3,7 @@
 ;;; Sources:
 ;;;   gadgets/tabs.h
 ;;;
-;;; 0 functions, 8 constants, 0 structs.
+;;; 0 functions, 8 constants, 1 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
 ;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
@@ -31,6 +31,13 @@
   (:const "+TABS-DUMMY+" #x84000000)
   (:const "+TABS-LABELS+" #x84000001)
   (:const "+TABS-CURRENT+" #x84000002)
+
+  ;; --- structures from gadgets/tabs.h ---
+  (:struct "TAG-TAB-LABEL" 16   ; tagTabLabel (gadgets/tabs.h)
+    ("LABEL" :fptr 0)
+    ("PENS" (:array :i16 4) 4)
+    ("ATTRS" :fptr 12)
+    )
   )
 
 (provide "amiga/raw/gadgets/tabs")

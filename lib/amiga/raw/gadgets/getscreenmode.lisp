@@ -5,8 +5,8 @@
 ;;;   MorphOS SDK getscreenmode_lib.fd + clib/getscreenmode_protos.h (via fd2sfd)
 ;;;   gadgets/getscreenmode.h
 ;;;
-;;; 1 functions, 31 constants, 0 structs.
-;;; 1 C macro skipped: not an integer constant (string, call, float).
+;;; 1 functions, 31 constants, 1 structs.
+;;; 1 C macro skipped: not an integer or ASCII-string constant (call, float, non-ASCII).
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
 ;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
@@ -68,6 +68,12 @@
   (:const "+GETSCREENMODE-FILTER-FUNC+" #x8504101C)
   (:const "+GETSCREENMODE-CUSTOM-SM-LIST+" #x8504101D)
   (:const "+GSM-REQUEST+" #x610001)
+
+  ;; --- structures from gadgets/getscreenmode.h ---
+  (:struct "GSM-REQUEST" 8   ; gsmRequest (gadgets/getscreenmode.h)
+    ("METHOD-ID" :u32 0)
+    ("WINDOW" :fptr 4)
+    )
 
   ;; --- functions (getscreenmode_lib.sfd + MorphOS SDK) ---
   (:fn "GETSCREENMODE-GET-CLASS" -30 () :pointer 40)   ; Class * GETSCREENMODE_GetClass() () LVO -30

@@ -233,6 +233,11 @@ CL_Obj cl_vm_apply(CL_Obj func, CL_Obj *args, int nargs);
  * inline OP_APPLY; cl_vm_apply's one-byte OP_CALL stub stops at 255. */
 CL_Obj cl_vm_apply_list(CL_Obj func, CL_Obj arglist);
 
+/* Suffix for a THROW / RETURN-FROM / GO miss when the target exists but is
+ * hidden below cl_nlx_floor (inside a foreign callback); "" otherwise.
+ * TYPE = CL_NLX_* kind, -1 for any. */
+const char *cl_nlx_boundary_hint(CL_Obj tag, int type);
+
 /* Unwrap a funcallable instance (standard-generic-function struct) to its
  * discriminating function. Returns the input unchanged for other types. */
 CL_Obj cl_unwrap_funcallable(CL_Obj obj);

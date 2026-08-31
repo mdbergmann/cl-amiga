@@ -294,7 +294,7 @@ the display's native format.  Signals on failure."
 
 ;;; struct RastPort is 100 bytes; rp_BitMap sits at offset 4.
 (defconstant +rastport-size+ 100)
-(defconstant +rp-bitmap-offset+ 4)
+(defconstant +rastport-bitmap-offset+ 4)
 
 (defmacro with-bitmap-rastport ((var bitmap) &body body)
   "A scratch RastPort rendering into BITMAP: allocated, InitRastPort'd
@@ -304,14 +304,14 @@ can target one."
   `(ffi:with-foreign-alloc (,var +rastport-size+)
      (init-rastport ,var)
      (ffi:poke-u32 ,var (ffi:foreign-pointer-address ,bitmap)
-                   +rp-bitmap-offset+)
+                   +rastport-bitmap-offset+)
      ,@body))
 
 (defun rastport-bitmap (rastport)
   "Pointer to the BitMap RASTPORT renders into (rp_BitMap).  A window
 rastport's bitmap is the natural ALLOC-BITMAP :FRIEND -- offscreen
 bitmaps allocated with it land in the display's native format."
-  (ffi:make-foreign-pointer (ffi:peek-u32 rastport +rp-bitmap-offset+)))
+  (ffi:make-foreign-pointer (ffi:peek-u32 rastport +rastport-bitmap-offset+)))
 
 (amiga.ffi:defcfun write-pixel *gfx-base* -324
   (:a1 rastport :d0 x :d1 y))

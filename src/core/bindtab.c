@@ -122,15 +122,17 @@ static int name_cmp(const uint8_t *a, uint32_t alen, const uint8_t *b, uint32_t 
 }
 
 /* The value of a CONST/VAR entry, copied out of the blob into C memory
- * (the three encodings: u32, i32, or a wide magnitude in the arena as
- * u8 nbytes, u8 sign, big-endian bytes — any integer the NDK has, e.g.
- * the 13-byte packed-string constants of datatypes.i). */
+ * (the four encodings: u32, i32, a wide magnitude in the arena as u8
+ * nbytes, u8 sign, big-endian bytes — any integer the NDK has, e.g. the
+ * 13-byte packed-string constants of datatypes.i — or a string in the
+ * arena as u8 len, ASCII bytes — mui.h's MUIC_Window "Window.mui"). */
 typedef struct {
     int      wide;
-    uint32_t a;          /* u32 / i32 payload when !wide */
+    int      string;     /* CL_BT_F_STRING: mag[0..nbytes) are the characters */
+    uint32_t a;          /* u32 / i32 payload when !wide && !string */
     int      is_signed;  /* CL_BT_F_SIGNED */
     uint8_t  neg, nbytes;
-    uint8_t  mag[255];   /* big-endian magnitude when wide */
+    uint8_t  mag[255];   /* big-endian magnitude when wide; the bytes when string */
 } BtValue;
 
 static void decode_value(const BtView *v, const BtEntry *e, BtValue *val)
@@ -144,12 +146,19 @@ static void decode_value(const BtView *v, const BtEntry *e, BtValue *val)
         val->nbytes = p[0];
         val->neg = p[1];
         memcpy(val->mag, p + 2, val->nbytes);
+    } else if (e->flags & CL_BT_F_STRING) {
+        const uint8_t *p = v->names + e->a;
+        val->string = 1;
+        val->nbytes = p[0];
+        memcpy(val->mag, p + 1, val->nbytes);
     }
 }
 
-/* Box a decoded value: fixnum or bignum.  Allocates. */
+/* Box a decoded value: fixnum, bignum or a fresh simple string.  Allocates. */
 static CL_Obj value_to_obj(const BtValue *val)
 {
+    if (val->string)
+        return cl_make_string((const char *)val->mag, val->nbytes);
     if (!val->wide)
         return val->is_signed ? cl_ffi_i64_to_obj((int64_t)(int32_t)val->a)
                               : cl_ffi_u64_to_obj((uint64_t)val->a);
@@ -268,13 +277,23 @@ static const char *validate_blob(CL_Obj blob)
         for (k = 0; k < e.name_len; k++)
             if (entry_name(&v, &e)[k] >= 0x80) return "non-ASCII name";
         if (e.kind > CL_BT_KIND_MAX) return "unknown entry kind";
+        if (e.flags & ~CL_BT_F_KNOWN) return "unknown entry flag";
         switch (e.kind) {
         case CL_BT_CONST: case CL_BT_VAR:
+            if ((e.flags & CL_BT_F_WIDE) && (e.flags & CL_BT_F_STRING))
+                return "value flagged both wide integer and string";
             if (e.flags & CL_BT_F_WIDE) {
                 if ((uint64_t)e.a + 2 > v.names_len) return "wide value outside the arena";
                 if (v.names[e.a] == 0 ||
                     (uint64_t)e.a + 2 + v.names[e.a] > v.names_len)
                     return "wide value outside the arena";
+            }
+            if (e.flags & CL_BT_F_STRING) {
+                if ((uint64_t)e.a + 1 > v.names_len ||
+                    (uint64_t)e.a + 1 + v.names[e.a] > v.names_len)
+                    return "string value outside the arena";
+                for (k = 0; k < v.names[e.a]; k++)
+                    if (v.names[e.a + 1 + k] >= 0x80) return "non-ASCII string value";
             }
             break;
         case CL_BT_LIBCALL:
@@ -423,15 +442,54 @@ static uint32_t parse_name(BtBuild *b, CL_Obj obj, const char *what, uint8_t *bu
     return len;
 }
 
-/* Encode an integer VALUE into the record: a u32, an i32 (CL_BT_F_SIGNED),
- * or — beyond 32 bits either way — a wide payload (CL_BT_F_WIDE: u8 nbytes,
- * u8 sign, big-endian magnitude of up to 255 bytes). */
+/* Room for MORE bytes in the wide-payload arena. */
+static void wide_reserve(BtBuild *b, uint32_t more)
+{
+    if (b->wide_len + more > b->wide_cap) {
+        uint32_t ncap = b->wide_cap ? b->wide_cap * 2 : 256;
+        uint8_t *nw;
+        while (ncap < b->wide_len + more) ncap *= 2;
+        nw = (uint8_t *)platform_alloc(ncap);
+        if (!nw) BT_FAIL(b, "DEFINE-BINDING-TABLE: out of memory");
+        if (b->wide) { memcpy(nw, b->wide, b->wide_len); platform_free(b->wide); }
+        b->wide = nw; b->wide_cap = ncap;
+    }
+}
+
+/* Encode VALUE into the record.  An integer: a u32, an i32
+ * (CL_BT_F_SIGNED), or — beyond 32 bits either way — a wide payload
+ * (CL_BT_F_WIDE: u8 nbytes, u8 sign, big-endian magnitude of up to 255
+ * bytes).  A string (a C header's string #define): CL_BT_F_STRING, the
+ * payload u8 len + the bytes — ASCII only, like the names, so the FASL is
+ * byte-identical on every platform and the reader never sees an encoding
+ * question; at most 255 characters. */
 static void encode_value(BtBuild *b, BtRec *r, CL_Obj value, const uint8_t *name, uint32_t nlen)
 {
     int neg;
     uint8_t mag[256];     /* big-endian magnitude, leading zeros stripped */
     uint32_t nbytes = 0, i;
 
+    if (CL_ANY_STRING_P(value)) {
+        uint32_t len = cl_string_length(value);
+        if (len > 255)
+            BT_FAIL(b, "DEFINE-BINDING-TABLE: row %d (%.*s): string value must be at most 255 characters (got %u)",
+                    b->row, (int)nlen, (const char *)name, (unsigned)len);
+        for (i = 0; i < len; i++) {
+            int ch = cl_string_char_at(value, i);
+            if (ch < 0 || ch >= 0x80)
+                BT_FAIL(b, "DEFINE-BINDING-TABLE: row %d (%.*s): string value must be ASCII (character %u is code %d)",
+                        b->row, (int)nlen, (const char *)name, (unsigned)i, ch);
+            mag[i] = (uint8_t)ch;
+        }
+        wide_reserve(b, 1 + len);
+        r->has_wide = 1;
+        r->wide_off = b->wide_len;
+        r->flags |= CL_BT_F_STRING;
+        b->wide[b->wide_len++] = (uint8_t)len;
+        memcpy(b->wide + b->wide_len, mag, len);
+        b->wide_len += len;
+        return;
+    }
     if (CL_FIXNUM_P(value)) {
         int32_t v = CL_FIXNUM_VAL(value);
         uint32_t m;
@@ -455,7 +513,7 @@ static void encode_value(BtBuild *b, BtRec *r, CL_Obj value, const uint8_t *name
             mag[nbytes++] = lo;
         }
     } else {
-        BT_FAIL(b, "DEFINE-BINDING-TABLE: row %d (%.*s): value must be an integer, got %s",
+        BT_FAIL(b, "DEFINE-BINDING-TABLE: row %d (%.*s): value must be an integer or a string, got %s",
                 b->row, (int)nlen, (const char *)name, cl_type_name(value));
         return;
     }
@@ -473,15 +531,7 @@ static void encode_value(BtBuild *b, BtRec *r, CL_Obj value, const uint8_t *name
         }
     }
     /* wide: append the payload to the wide arena */
-    if (b->wide_len + 2 + nbytes > b->wide_cap) {
-        uint32_t ncap = b->wide_cap ? b->wide_cap * 2 : 256;
-        uint8_t *nw;
-        while (ncap < b->wide_len + 2 + nbytes) ncap *= 2;
-        nw = (uint8_t *)platform_alloc(ncap);
-        if (!nw) BT_FAIL(b, "DEFINE-BINDING-TABLE: out of memory");
-        if (b->wide) { memcpy(nw, b->wide, b->wide_len); platform_free(b->wide); }
-        b->wide = nw; b->wide_cap = ncap;
-    }
+    wide_reserve(b, 2 + nbytes);
     r->has_wide = 1;
     r->wide_off = b->wide_len;
     r->flags |= CL_BT_F_WIDE;
@@ -1363,7 +1413,7 @@ static CL_Obj bi_binding_table_info(CL_Obj *args, int nargs)
 }
 
 /* One decoded entry as a row in DEFINE-BINDING-TABLE syntax:
- *   (:const "N" v) (:var "N" v)
+ *   (:const "N" v) (:var "N" v)        v = integer or string
  *   (:fn "N" lvo (:a0 ...) :result [:not-morphos|:morphos] [minver])
  *   (:field "N" type offset)   type = ctype keyword | (:array ct n) | :struct
  *   (:name "N")

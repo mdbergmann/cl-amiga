@@ -22,6 +22,16 @@
 static CL_Thread cl_main_thread;
 CL_Thread *cl_main_thread_ptr = NULL;
 
+/* Whether cl_main_thread is currently linked into cl_thread_list — set once,
+ * in cl_thread_init, cleared as the very first thing cl_thread_shutdown does
+ * (before cl_thread_unregister and the nlx_stack/saved_pending_stack frees
+ * that follow it).  cl_main_thread_ptr itself stays non-NULL forever (the
+ * crash handler needs it), so pointer identity alone cannot tell a live main
+ * thread from a torn-down one; cl_thread_current_is_registered's fast path
+ * needs this flag to avoid answering "registered" for a callback that lands
+ * on the main task/thread after shutdown has freed its NLX/pending stacks. */
+static volatile int cl_main_thread_registered = 0;
+
 /* The main task's TLS slot value (tc_UserData on AmigaOS/MorphOS) as it was
  * BEFORE cl_thread_init overwrote it — restored at exit so the C runtime's
  * post-main teardown finds its own context, not our CL_Thread*. */
@@ -1150,6 +1160,11 @@ void cl_thread_reset_lisp_state(CL_Thread *t)
     t->handler_active_mask = 0;
     t->restart_top = 0;
     t->restart_floor = 0;
+    t->nlx_floor = 0;
+    t->callback_depth = 0;
+    t->callback_error_code = 0;
+    t->callback_error = CL_NIL;
+    t->last_condition = CL_NIL;
     t->vm.sp = 0;
     t->vm.fp = 0;
     for (i = 0; i < CL_MAX_MV; i++)
@@ -1182,6 +1197,49 @@ void cl_thread_reset_lisp_state(CL_Thread *t)
     }
     t->tlv_entry_count = 0;
     t->vm_extra_count = 0;   /* cl_vm_gc_mark_extra_thread walks this too */
+}
+
+int cl_thread_current_is_registered(void)
+{
+    void *me = platform_tls_get();
+    CL_Thread *t;
+    int found = 0;
+    int attempts;
+    if (!me) return 0;
+    /* Fast path for the common case — a GUI program's hooks and dispatchers
+     * all run on the main thread — answered without touching the lock at
+     * all.  Pointer identity alone is not enough: cl_thread_shutdown leaves
+     * cl_main_thread_ptr valid forever (the crash handler needs it) but
+     * unregisters cl_main_thread and frees its nlx_stack/saved_pending_stack,
+     * so a callback landing on the main task/thread after shutdown must fall
+     * through to "not registered" rather than resolve to torn-down state via
+     * this identity check. cl_main_thread_registered tracks exactly whether
+     * cl_main_thread is currently linked into cl_thread_list. */
+    if (me == (void *)cl_main_thread_ptr) return cl_main_thread_registered;
+    /* A foreign task must not BLOCK on Lisp's list mutex, but it must also
+     * not walk cl_thread_list lock-free: cl_thread_unregister unlinks a node
+     * from the middle of the list under this same lock, and once unlinked a
+     * concurrent free (cl_thread_free_worker, from the zombie reaper or a
+     * GC-sweep finalize) can reclaim it at any time — a lock-free reader
+     * that already holds a pointer read before the unlink would then
+     * dereference `t->next` on freed memory. platform_mutex_trylock never
+     * blocks (AttemptSemaphore on AmigaOS, pthread_mutex_trylock on POSIX).
+     * The lock is only ever held for a few instructions (a link, an unlink,
+     * a scan), so a bounded retry with a yield between attempts makes a
+     * false "not registered" for a genuine Lisp worker — whose hook would
+     * then silently return 0 — practically impossible, while a foreign task
+     * still never waits indefinitely. */
+    if (!cl_thread_list_lock) return 0;
+    for (attempts = 0; attempts < 1000; attempts++) {
+        if (platform_mutex_trylock(cl_thread_list_lock) == 0) {
+            for (t = cl_thread_list; t; t = t->next)
+                if ((void *)t == me) { found = 1; break; }
+            platform_mutex_unlock(cl_thread_list_lock);
+            return found;
+        }
+        platform_thread_yield();
+    }
+    return 0;
 }
 
 void cl_thread_free_worker(CL_Thread *t)
@@ -1259,6 +1317,7 @@ void cl_thread_init(void)
     /* Register main thread in both registry and side table */
     cl_thread_register(&cl_main_thread);
     cl_thread_table[0] = &cl_main_thread;
+    cl_main_thread_registered = 1;
 }
 
 /* Restore the main task's TLS slot (tc_UserData) to the value it held before
@@ -1281,6 +1340,12 @@ void cl_thread_restore_main_tls(void)
 
 void cl_thread_shutdown(void)
 {
+    /* Clear BEFORE unregistering/freeing anything: a callback that lands on
+     * the main task/thread from this point on must see "not registered"
+     * from cl_thread_current_is_registered's fast path, not a stale "yes"
+     * from cl_main_thread_ptr identity alone (which stays valid forever). */
+    cl_main_thread_registered = 0;
+
     /* Unregister main thread */
     cl_thread_unregister(&cl_main_thread);
 

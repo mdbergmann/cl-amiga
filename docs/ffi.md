@@ -87,12 +87,28 @@ all rejected with a diagnostic rather than silently corrupting memory.
 | `(close-library library)` | function | `dlclose` it |
 | `(symbol-pointer name &optional library)` | function | `dlsym` — resolve a symbol to a foreign pointer; `library` defaults to the default namespace |
 | `(call-foreign fn-ptr ret-type arg-types arg-values &optional n-fixed)` | function | Call a C function (libffi); `n-fixed` = count of fixed args for variadic calls |
-| `(make-callback ret-type arg-types lisp-fn)` | function | Create a C-callable callback from a Lisp function (libffi closure) |
+| `(make-callback ret-type arg-types lisp-fn &optional regs)` | function | Create a C-callable callback from a Lisp function — a libffi closure on the host, a 68k stub (into a PPC gate on MorphOS) on the target, where it works too.  `regs`, a list parallel to `arg-types` of `:d0`–`:d7` / `:a0`–`:a6` / `NIL`, names the 68k register each argument arrives in for the AmigaOS register conventions (`'(:a0 :a2 :a1)` = a `struct Hook` entry's hook / object / message; the host ignores it).  On the target the result is a 32-bit integer or pointer in d0 and `:float` / `:double` arguments are refused |
 | `(free-callback callback)` | function | Release a callback |
+| `ext:*callback-error-policy*` | variable | What an unhandled error inside a callback does: `:defer` (default) — the callback returns 0 / NULL and the condition is re-signaled once the foreign call that invoked it returns, where a `handler-case` around `call-foreign` (or the library call) catches it; `:debug` — enter the debugger inside the callback (host only in practice) |
+
+A callback is a *boundary*: the Lisp function runs on the foreign caller's
+stack, between its C frames, and no non-local exit may cross them.  A
+`throw` / `return-from` / `go` to a target outside the callback, or an
+`invoke-restart` of a restart established outside it, is an error (the
+message says why) that is handled like any other unhandled error inside the
+callback — parked and re-signaled after the foreign call returns.
+`handler-case`, `unwind-protect` and `catch` *inside* the callback work as
+usual; a callback may itself make foreign calls whose callbacks error.  A
+callback invoked from a thread or task that is not a Lisp thread returns 0
+without running Lisp, and the next foreign call that returns on a Lisp
+thread prints a warning.
 
 ## Source of truth
 
 `tests/test_ffi.c` and `trunk/load-and-test-cffi.lisp` (the CFFI backend
-end-to-end). See also [Host FFI](../README.md#host-ffi-dlopen--libffi--cffi) in
+end-to-end); the callback boundary is tested there (host) and in
+`tests/amiga/test-raw-bindings.lisp` (target, through `CallHookPkt` and a
+68k caller snippet).  See also [Host FFI](../README.md#host-ffi-dlopen--libffi--cffi) in
 the main README. Higher-level utilities (`defcstruct`, `with-foreign-alloc`) live
-in `lib/ffi.lisp`.
+in `lib/ffi.lisp`; the AmigaOS hook and dispatcher wrappers in
+`lib/amiga/ffi.lisp` (`AMIGA.FFI`, [amiga.md](amiga.md)).

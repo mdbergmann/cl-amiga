@@ -1777,7 +1777,8 @@ static CL_Obj bi_error(CL_Obj *args, int n)
 void cl_throw_to_tag(CL_Obj tag, CL_Obj value)
 {
     int i;
-    for (i = cl_nlx_top - 1; i >= 0; i--) {
+    /* cl_nlx_floor: no target below a foreign-callback boundary (thread.h) */
+    for (i = cl_nlx_top - 1; i >= cl_nlx_floor; i--) {
         if (cl_nlx_stack[i].type == CL_NLX_CATCH &&
             cl_nlx_stack[i].tag == tag) {
             int j;

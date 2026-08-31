@@ -278,6 +278,15 @@ void cl_invoke_debugger(CL_Obj condition)
     if (cl_in_debugger)
         return;
 
+    /* Inside a foreign callback (thread.h "Foreign-callback boundary") the
+     * debugger — and *DEBUGGER-HOOK*, whose SLDB would offer restarts that
+     * unwind across the OS's frames — stays out unless
+     * EXT:*CALLBACK-ERROR-POLICY* is :DEBUG.  The condition is parked at
+     * the boundary and re-signaled, debugger included, once the foreign
+     * call has returned. */
+    if (!cl_callback_debugger_allowed())
+        return;
+
     /* Depth guard.  The *debugger-hook* is invoked below while cl_in_debugger
      * is still 0, so a hook (or a restart it drives) that re-signals recurses
      * back into cl_invoke_debugger via cl_error_from_condition without the

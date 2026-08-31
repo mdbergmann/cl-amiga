@@ -2251,11 +2251,13 @@ static void posix_closure_tramp(ffi_cif *cif, void *ret, void **args, void *ud)
 
 void *platform_ffi_make_closure(CLFFIType ret_type, int nargs,
                                 const CLFFIType *arg_types,
+                                const int8_t *arg_regs,
                                 platform_ffi_cb_handler handler,
                                 void *user_data, void **out_closure)
 {
     PosixClosure *pc;
     int i;
+    (void)arg_regs;   /* C ABI only: every argument is a stack/register C arg */
     if (nargs < 0 || nargs > CL_FFI_MAX_ARGS) return NULL;
     pc = (PosixClosure *)calloc(1, sizeof(PosixClosure));
     if (!pc) return NULL;

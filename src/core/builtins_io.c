@@ -2285,8 +2285,10 @@ static CL_Obj bi_throw(CL_Obj *args, int n)
 #ifdef DEBUG_NLX
     cl_nlx_debug_dump("THROW enter", (unsigned)tag);
 #endif
-    /* Scan NLX stack for matching catch */
-    for (i = cl_nlx_top - 1; i >= 0; i--) {
+    /* Scan NLX stack for matching catch — down to cl_nlx_floor: a catch
+     * established outside the foreign callback we may be running in is
+     * not a target (thread.h). */
+    for (i = cl_nlx_top - 1; i >= cl_nlx_floor; i--) {
         if (cl_nlx_stack[i].type == CL_NLX_CATCH &&
             cl_nlx_stack[i].tag == tag) {
             int j;
@@ -2325,7 +2327,11 @@ static CL_Obj bi_throw(CL_Obj *args, int n)
 #ifdef DEBUG_NLX
     cl_nlx_debug_dump("THROW no-catch", (unsigned)tag);
 #endif
-    cl_error(CL_ERR_GENERAL, "No catch for tag");
+    if (CL_SYMBOL_P(tag))
+        cl_error(CL_ERR_GENERAL, "No catch for tag %s%s", cl_symbol_name(tag),
+                 cl_nlx_boundary_hint(tag, CL_NLX_CATCH));
+    cl_error(CL_ERR_GENERAL, "No catch for tag%s",
+             cl_nlx_boundary_hint(tag, CL_NLX_CATCH));
     return CL_NIL;
 }
 

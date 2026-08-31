@@ -4,8 +4,8 @@
 ;;;   getcolor_lib.sfd ($VER: getcolor_lib.sfd 47.1 (30.11.2021))
 ;;;   gadgets/getcolor.h
 ;;;
-;;; 1 functions, 21 constants, 0 structs.
-;;; 1 C macro skipped: not an integer constant (string, call, float).
+;;; 1 functions, 21 constants, 1 structs.
+;;; 1 C macro skipped: not an integer or ASCII-string constant (call, float, non-ASCII).
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
 ;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
@@ -57,6 +57,12 @@
   (:const "+GETCOLOR-SHOW-HSB+" #x85043012)
   (:const "+GETCOLOR-SMALL-TEXT-ATTR+" #x85043013)
   (:const "+GCOLOR-REQUEST+" #x630001)
+
+  ;; --- structures from gadgets/getcolor.h ---
+  (:struct "GC-REQUEST" 8   ; gcRequest (gadgets/getcolor.h)
+    ("METHOD-ID" :u32 0)
+    ("WINDOW" :fptr 4)
+    )
 
   ;; --- functions (getcolor_lib.sfd) ---
   (:fn "GETCOLOR-GET-CLASS" -30 () :pointer 40)   ; Class * GETCOLOR_GetClass() () LVO -30

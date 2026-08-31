@@ -5,16 +5,29 @@
 ;;; Loaded from run-tests.lisp via (load ...) inside #+amigaos, like
 ;;; test-raw-bindings.lisp: CHECK comes from run-tests.lisp.  The portable
 ;;; half (ULONG coercion, the foreign pool, NEW-LIST, WITH-TAGS, the
-;;; error paths) runs everywhere and is mirrored on the host by
-;;; tests/test_amiga_reaction.sh; the ReAction half needs the classes
-;;; (OS 3.5+/3.2, MorphOS, the FS-UAE OS 3.9 Workbench) and is skipped —
-;;; with an assertion that AVAILABLE-P says so — where they are absent.
+;;; error paths) is AMIGA.BOOPSI's, re-exported — test-boopsi.lisp drives
+;;; it against intuition's built-in classes; here it runs again through
+;;; the AMIGA.REACTION names, the spelling every ReAction program uses,
+;;; and is mirrored on the host by tests/test_amiga_reaction.sh.  The
+;;; ReAction half needs the classes (OS 3.5+/3.2, MorphOS, the FS-UAE OS
+;;; 3.9 Workbench) and is skipped — with an assertion that AVAILABLE-P
+;;; says so — where they are absent.
 
 (require "amiga/reaction")
 (format t "; reaction: amiga/reaction loaded~%")
 (finish-output)
 
-;;; --- portable half -----------------------------------------------------
+;;; --- portable half (AMIGA.BOOPSI, through the AMIGA.REACTION names) -----
+
+;; the same symbols, not homonyms: one implementation
+(check "reaction-shares-boopsi-symbols" t
+  (let ((ok t))
+    (dolist (name '("DO-METHOD" "OBJECT-CLASS" "WITH-FOREIGN-POOL" "POOL-ALLOC"
+                    "POOL-STRING" "NEW-LIST" "FREE-LIST-NODES" "WITH-TAGS"
+                    "GET-ATTR" "GET-ATTR-POINTER" "SET-ATTRS" "%ULONG" "%WITH-TAGS"))
+      (unless (eq (find-symbol name "AMIGA.REACTION") (find-symbol name "AMIGA.BOOPSI"))
+        (setf ok nil)))
+    ok))
 
 (check "reaction-ulong-coercions" '(0 1 5 #xFFFFFFFF #x80000000)
   (list (amiga.reaction::%ulong nil) (amiga.reaction::%ulong t)

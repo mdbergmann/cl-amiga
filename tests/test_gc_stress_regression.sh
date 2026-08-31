@@ -826,7 +826,7 @@ check_absent   "no dropped LET* binding from setf-expansion"     "Unbound variab
 # to compaction.  Every operation is a C builtin in the FFI package, so no
 # Lisp library load is needed.
 cat > "$WORK/ffi.lisp" <<'EOF'
-(defpackage :gcstress-ffi (:use :cl) (:export #:run))
+(defpackage :gcstress-ffi (:use :cl) (:export #:run #:run-hook-stress))
 (in-package :gcstress-ffi)
 (defun run ()
   ;; typed peek/poke whose reads allocate (bignum / float / foreign-pointer)
@@ -860,6 +860,32 @@ cat > "$WORK/ffi.lisp" <<'EOF'
                           (list arr 5 4 cmp))
         (format t "FFI-SORT:~a~%"
                 (loop for i below 5 collect (ffi:peek-i32 arr (* i 4))))
+        (ffi:free-foreign arr))
+      ;; the foreign-callback boundary under stress: the comparator errors
+      ;; (allocating a condition, a backtrace, the handler's format) -- the
+      ;; parked condition lives in a per-thread slot the GC must forward
+      ;; across the compactions between the callback and the re-signal,
+      ;; and the HANDLER-CASE around qsort must see it with its message
+      (let ((arr (ffi:alloc-foreign 20))
+            (cmp (ffi:make-callback :int32 '(:pointer :pointer)
+                   (lambda (a b) (declare (ignore a b)) (make-list 4)
+                     (error "stress ~A" (make-string 3 :initial-element #\z))))))
+        (loop for v in '(9 2 7 1 5) for i from 0 do (ffi:poke-i32 arr v (* i 4)))
+        (format t "FFI-CB-ERROR:~a~%"
+                (handler-case
+                    (progn (ffi:call-foreign qsort* :void '(:pointer :uint64 :uint64 :pointer)
+                                             (list arr 5 4 cmp))
+                           :no-error)
+                  (simple-error (e) (make-list 8) (format nil "~a" e))))
+        ;; and the slot is clear again: a well-behaved comparator sorts
+        (let ((ok (ffi:make-callback :int32 '(:pointer :pointer)
+                    (lambda (a b) (make-list 2) (- (ffi:peek-i32 a) (ffi:peek-i32 b))))))
+          (ffi:call-foreign qsort* :void '(:pointer :uint64 :uint64 :pointer)
+                            (list arr 5 4 ok))
+          (format t "FFI-CB-AFTER:~a~%"
+                  (loop for i below 5 collect (ffi:peek-i32 arr (* i 4))))
+          (ffi:free-callback ok))
+        (ffi:free-callback cmp)
         (ffi:free-foreign arr))))
   ;; Bulk byte transfer.  POKE-BYTES/PEEK-BYTES hold a raw foreign address
   ;; AND a raw pointer into a Lisp vector's elements across the copy loop,
@@ -891,19 +917,52 @@ cat > "$WORK/ffi.lisp" <<'EOF'
               (list (ffi:peek-u8 p 100) (ffi:peek-u8 p 103))
               (list (ffi:peek-u8 p 200) (ffi:peek-u8 p 201) (ffi:peek-u8 p 202))))
     (ffi:free-foreign p)))
+
+;; the *print-object-hook* dispatch INSIDE cl_error_from_condition itself
+;; allocates (FORMAT / MAKE-STRING) between boxing `condition` for the hook
+;; call and this function's own later re-derivation of it (the typebuf
+;; snprintf, CT->last_condition, the debugger's condition arg) -- an
+;; unprotected `condition` C parameter there goes stale across the very
+;; compaction the hook call triggers, so the report text after the hook
+;; would be read from relocated/garbage memory.
+;;
+;; Left genuinely UNHANDLED: a handler-case/handler-bind that transfers
+;; control catches the condition inside cl_signal_condition, which never
+;; reaches cl_error_from_condition at all -- only an uncaught ERROR gets
+;; here.  --non-interactive makes cl_invoke_debugger's fallback
+;; non-blocking (writes the condition to *error-output* and returns), and
+;; the ultimate unwind is caught by LOAD's own per-form recovery in the
+;; caller, not inside this function -- so this run function is expected to
+;; error out, and is called as its own top-level form for that reason.
+(defun run-hook-stress ()
+  (let ((qsort* (ffi:symbol-pointer "qsort"))
+        (arr (ffi:alloc-foreign 20)))
+    (let ((cmp (ffi:make-callback :int32 '(:pointer :pointer)
+                 (lambda (a b) (declare (ignore a b)) (make-list 4)
+                   (error "hookstress ~A" (make-string 3 :initial-element #\q))))))
+      (loop for v in '(9 2 7 1 5) for i from 0 do (ffi:poke-i32 arr v (* i 4)))
+      (let ((clamiga::*print-object-hook*
+              (lambda (c) (declare (ignore c))
+                (format nil "HOOKED-~A" (make-string 4 :initial-element #\y)))))
+        (ffi:call-foreign qsort* :void '(:pointer :uint64 :uint64 :pointer)
+                          (list arr 5 4 cmp))))))
 EOF
 if compile_fasl "$WORK/ffi.lisp" "$WORK/ffi.fasl"; then
     cat > "$WORK/ffi-load.lisp" <<EOF
 (load "$WORK/ffi.fasl")
 (gcstress-ffi:run)
+(gcstress-ffi:run-hook-stress)
 EOF
     out=$(run_stress "$WORK/ffi-load.lisp")
     check_contains "ffi typed peek/poke boxes results under stress"  "FFI-MEM:4294967300 6.25" "$out"
     check_contains "ffi pointer+ registration/finalizer survives"    "FFI-PTRS:200" "$out"
     check_contains "ffi foreign calls return correct values"         "FFI-CALL:99 1024.0" "$out"
     check_contains "ffi callback comparator sorts under stress"      "FFI-SORT:(1 2 5 7 9)" "$out"
+    check_contains "ffi callback error deferred across compactions"  "FFI-CB-ERROR:stress zzz" "$out"
+    check_contains "ffi callback slot clear after deferred error"    "FFI-CB-AFTER:(1 2 5 7 9)" "$out"
     check_contains "ffi poke-bytes/peek-bytes survive compaction"    "FFI-BULK:0" "$out"
     check_contains "ffi bulk string source and sub-span correct"     "FFI-BULK-SPAN:(119 122) (12 13 14)" "$out"
+    check_contains "ffi uncaught callback condition survives print-object-hook compaction" "HOOKED-yyyy" "$out"
     check_absent   "no corruption in FFI alloc/call/callback paths"  "Unbound variable\|type 0\|corrupted\|Undefined function" "$out"
 else
     echo "  SKIP  FFI gc-stress: clean FASL compile failed"
@@ -5379,6 +5438,61 @@ check_contains "CAS / ATOMIC-INCF on every place kind under stress" \
   "ATOMICS:((199) (199) (199) (199) (199) 200 400 600 200 19900)" "$out"
 check_absent   "no corruption diagnostics from the CAS path" \
   "corrupted\|type 0\|BADMARK\|badmark\|SIGSEGV\|Unbound" "$out"
+
+# --- Case: demand-interned binding table (bindtab.c) under stress -----------
+# The packer reads the row list without allocating and the materialiser
+# copies an entry out of the blob (a byte vector that MOVES) before it
+# allocates the symbol, value and stub — every value encoding is exercised:
+# u32, i32, wide bignum, and the string payload a C header's MUIC_Window
+# "Window.mui" becomes.  Then the eager flip (DO-SYMBOLS) materialises the
+# rest under churn, and a FASL round trip carries the blob through LOAD.
+cat > "$WORK/bindtab.lisp" <<'EOF'
+;; compile-time too: COMPILE-FILE must see AMIGA.FFI (the macro) at read time
+(eval-when (:compile-toplevel :load-toplevel :execute) (require "amiga/ffi"))
+(defpackage "GCS-BT" (:use "CL") (:export "*GCS-BASE*" "*GCS-VERSION*"))
+(in-package "GCS-BT")
+(defvar *gcs-base* nil)
+(defvar *gcs-version* nil)
+(amiga.ffi:define-binding-table "GCS-BT" (:base *gcs-base* :version *gcs-version*)
+  (:const "+U32+" #xFFFFFFFF) (:const "+NEG+" -5)
+  (:const "+BIG+" #x746578742E6461746174797065)
+  (:const "+CLASS+" "Window.mui") (:const "+EMPTY+" "")
+  (:var "*VS*" "vs")
+  (:fn "CALL-ME" -30 (:a0 :d0) :u16)
+  (:struct "NODE" 14 ("SUCC" :fptr 0) ("TYPE" :u8 8)))
+(let ((acc nil))
+  (dolist (n '("+CLASS+" "+BIG+" "+NEG+" "NODE-TYPE" "+U32+" "+EMPTY+" "*VS*" "CALL-ME"))
+    (dotimes (i 50) (make-string 40))
+    (push (symbol-name (find-symbol n "GCS-BT")) acc))
+  (format t "BT-LAZY:~a~%" (list (length acc) +class+ +empty+ *vs* +big+ +neg+ +u32+
+                                 (constantp '+class+) (fboundp 'node-type) (fboundp 'call-me))))
+(let ((n 0))
+  (do-symbols (s "GCS-BT") (when (eq (symbol-package s) (find-package "GCS-BT")) (incf n)))
+  (format t "BT-FLIP:~a~%" (list (>= n 9) (null (clamiga::%binding-table-info "GCS-BT")) +class+ *node-size*)))
+EOF
+out=$(run_stress "$WORK/bindtab.lisp")
+check_contains "binding table materialises every value kind under stress" \
+  'BT-LAZY:(8 Window.mui  vs 9221870457395268199001198522469 -5 4294967295 T T T)' "$out"
+check_contains "binding table eager flip under stress keeps the values" \
+  "BT-FLIP:(T T Window.mui 14)" "$out"
+check_absent   "no corruption diagnostics from the binding-table path" \
+  "corrupted\|type 0\|BADMARK\|badmark\|SIGSEGV\|Unbound" "$out"
+# the same table through COMPILE-FILE (clean) and LOAD (stress): the blob
+# is a byte-vector literal in the FASL
+cat > "$WORK/bindtab-load.lisp" <<EOF
+(require "amiga/ffi")
+(defpackage "GCS-BT" (:use "CL") (:export "*GCS-BASE*" "*GCS-VERSION*"))
+(load "$WORK/bindtab.fasl")
+(format t "BT-FASL:~a~%" (list gcs-bt::+class+ gcs-bt::+big+ (fboundp 'gcs-bt::node-succ)))
+EOF
+if compile_fasl "$WORK/bindtab.lisp" "$WORK/bindtab.fasl"; then
+    out=$(run_stress "$WORK/bindtab-load.lisp")
+    check_contains "binding table FASL loads under stress" \
+      "BT-FASL:(Window.mui 9221870457395268199001198522469 T)" "$out"
+else
+    total=$((total + 1)); failed=$((failed + 1))
+    echo "  FAIL  binding table FASL: compile_fasl failed"
+fi
 
 echo ""
 echo "$passed passed, $failed failed, $total total"

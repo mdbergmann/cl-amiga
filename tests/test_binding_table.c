@@ -111,6 +111,7 @@ static void define_fixture(const char *pkg)
         "  (clamiga::%%make-binding-table"
         "   '((:const \"+ONE+\" 1) (:const \"+U32+\" #xFFFFFFFF) (:const \"+NEG+\" -5)"
         "     (:const \"+BIG+\" #x746578742E6461746174797065) (:const \"+NEGBIG+\" -123456789012345678901234567890)"
+        "     (:const \"+CLASS+\" \"Window.mui\")"
         "     (:var \"*SZ*\" 12)"
         "     (:fn \"OPEN\" -30 (:d1 :d2) :unsigned)"
         "     (:fn \"FOO\" -36 (:a0) :pointer)"
@@ -138,17 +139,22 @@ TEST(pack_decode_round_trip_every_row_kind)
         " '((:const \"+B+\" #xFFFFFFFF) (:const \"+A+\" 1) (:const \"+N+\" -5)"
         "   (:const \"+W+\" #x746578742E6461746174797065) (:const \"+NW+\" -123456789012345678901234567890)"
         "   (:const \"+S31+\" #x80000000) (:const \"+M31+\" -2147483648) (:const \"+M32+\" -2147483649)"
+        "   (:const \"+STR+\" \"Window.mui\") (:const \"+EMPTY+\" \"\") (:var \"*VS*\" \"vs\")"
         "   (:var \"*V*\" 7)"
         "   (:fn \"F\" -30 (:a0 :d0) :pointer) (:fn \"G\" -36 () :void :morphos 40)"
         "   (:fn \"G\" -42 () :void :not-morphos)"
         "   (:field \"P-X\" :i16 0) (:field \"P-A\" (:array :u16 3) 4) (:field \"P-S\" (:struct 8) 10)"
         "   (:struct \"Q\" 8 (\"X\" :u8 0) (\"Y\" (:array :i8 2) 1))"
         "   (:name \"BIG\"))))");
-    /* sorted by name, struct expanded into *Q-SIZE* + accessors, variants kept in order */
+    /* sorted by name, struct expanded into *Q-SIZE* + accessors, variants kept
+     * in order; string values (a C header's MUIC_Window "Window.mui") come
+     * back as strings, the empty string included */
     ASSERT_STR_EQ(r,
-        "((:VAR \"*Q-SIZE*\" 8) (:VAR \"*V*\" 7) (:CONST \"+A+\" 1) (:CONST \"+B+\" 4294967295)"
+        "((:VAR \"*Q-SIZE*\" 8) (:VAR \"*V*\" 7) (:VAR \"*VS*\" \"vs\") (:CONST \"+A+\" 1) (:CONST \"+B+\" 4294967295)"
+        " (:CONST \"+EMPTY+\" \"\")"
         " (:CONST \"+M31+\" -2147483648) (:CONST \"+M32+\" -2147483649) (:CONST \"+N+\" -5)"
         " (:CONST \"+NW+\" -123456789012345678901234567890) (:CONST \"+S31+\" 2147483648)"
+        " (:CONST \"+STR+\" \"Window.mui\")"
         " (:CONST \"+W+\" 9221870457395268199001198522469) (:NAME \"BIG\")"
         " (:FN \"F\" -30 (:A0 :D0) :POINTER) (:FN \"G\" -36 NIL :VOID :MORPHOS 40)"
         " (:FN \"G\" -42 NIL :VOID :NOT-MORPHOS) (:FIELD \"P-A\" (:ARRAY :U16 3) 4)"
@@ -170,12 +176,29 @@ TEST(pack_blob_layout_and_size)
     ASSERT_STR_EQ(eval_print(
         "(aref (clamiga::%make-binding-table '((:const \"+A+\" 1))) 5)"), "0");
     ASSERT_STR_EQ(eval_print("(clamiga::%binding-table-entries (clamiga::%make-binding-table '()))"), "NIL");
+    /* a string value: u8 length + the bytes in the arena after the names —
+     * header 16 + 1 entry x 16 + "+A+" 3 + (1 + "xy" 2) = 38; the entry's
+     * payload is the arena offset of the length byte (3), flags = STRING */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((b (clamiga::%make-binding-table '((:const \"+A+\" \"xy\")))))"
+        " (list (length b) (aref b 23) (aref b 27) (aref b 35) (aref b 36) (aref b 37)))"),
+        "(38 16 3 2 120 121)");
 }
 
 TEST(packer_rejects_malformed_rows)
 {
     ASSERT(contains(eval_print("(clamiga::%make-binding-table '((:const \"+A+\" 1.5)))"),
-                    "row 1 (+A+): value must be an integer"));
+                    "row 1 (+A+): value must be an integer or a string, got SINGLE-FLOAT"));
+    ASSERT(contains(eval_print("(clamiga::%make-binding-table '((:const \"+A+\" :kw)))"),
+                    "row 1 (+A+): value must be an integer or a string"));
+    /* string values: ASCII, at most 255 characters (the arena length byte) */
+    ASSERT(contains(eval_print("(clamiga::%make-binding-table (list (list :const \"+A+\" (format nil \"W~Andow\" (code-char 233)))))"),
+                    "row 1 (+A+): string value must be ASCII (character 1 is code 233)"));
+    ASSERT(contains(eval_print("(clamiga::%make-binding-table (list (list :const \"+A+\" (make-string 256 :initial-element #\\x))))"),
+                    "row 1 (+A+): string value must be at most 255 characters (got 256)"));
+    ASSERT_STR_EQ(eval_print("(length (third (first (clamiga::%binding-table-entries"
+                             " (clamiga::%make-binding-table (list (list :const \"+A+\" (make-string 255 :initial-element #\\x))))))))"),
+                  "255");
     ASSERT(contains(eval_print("(clamiga::%make-binding-table '((:const \"\" 1)))"),
                     "1..255 characters"));
     ASSERT(contains(eval_print("(clamiga::%make-binding-table '((:const \"\\\"\" 1)))"),
@@ -226,6 +249,20 @@ TEST(register_rejects_corrupt_blobs_and_bad_args)
         "(let ((b (clamiga::%make-binding-table '((:const \"+A+\" 1))))) (setf (aref b 22) 99)"
         " (clamiga::%register-binding-table \"BTT-R\" b nil nil))"),
         "unknown entry kind"));
+    /* a string value whose length byte (arena offset 3 = blob byte 35 in
+     * the one-row layout) points past the arena, and an unknown flag bit */
+    ASSERT(contains(eval_print(
+        "(let ((b (clamiga::%make-binding-table '((:const \"+A+\" \"xy\"))))) (setf (aref b 35) 200)"
+        " (clamiga::%register-binding-table \"BTT-R\" b nil nil))"),
+        "string value outside the arena"));
+    ASSERT(contains(eval_print(
+        "(let ((b (clamiga::%make-binding-table '((:const \"+A+\" \"xy\"))))) (setf (aref b 36) 200)"
+        " (clamiga::%register-binding-table \"BTT-R\" b nil nil))"),
+        "non-ASCII string value"));
+    ASSERT(contains(eval_print(
+        "(let ((b (clamiga::%make-binding-table '((:const \"+A+\" 1))))) (setf (aref b 23) 128)"
+        " (clamiga::%register-binding-table \"BTT-R\" b nil nil))"),
+        "unknown entry flag"));
     ASSERT(contains(eval_print(
         "(clamiga::%register-binding-table \"BTT-R\""
         " (clamiga::%make-binding-table '((:fn \"F\" -30 () :void))) nil nil)"),
@@ -247,13 +284,21 @@ TEST(find_symbol_materialises_constants_and_variables)
     define_fixture("BTT-A");
     /* nothing built at registration beyond the shadow + eager names */
     ASSERT(contains(eval_print("(getf (clamiga::%binding-table-info \"BTT-A\") :symbols)"), "1"));
-    ASSERT_STR_EQ(eval_print("(getf (clamiga::%binding-table-info \"BTT-A\") :entries)"), "19");
+    ASSERT_STR_EQ(eval_print("(getf (clamiga::%binding-table-info \"BTT-A\") :entries)"), "20");
     ASSERT_STR_EQ(eval_print("(multiple-value-list (find-symbol \"+ONE+\" \"BTT-A\"))"),
                   "(BTT-A:+ONE+ :EXTERNAL)");
     ASSERT_STR_EQ(eval_print("(list btt-a:+one+ btt-a:+u32+ btt-a:+neg+ btt-a:+big+ btt-a:+negbig+ btt-a:*sz*)"),
                   "(1 4294967295 -5 9221870457395268199001198522469 -123456789012345678901234567890 12)");
     ASSERT_STR_EQ(eval_print("(list (constantp 'btt-a:+one+) (constantp 'btt-a:*sz*) (boundp 'btt-a:*sz*))"),
                   "(T NIL T)");
+    /* a string constant: a fresh simple string, DEFCONSTANT semantics, the
+     * same object on every read */
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (find-symbol \"+CLASS+\" \"BTT-A\"))"),
+                  "(BTT-A:+CLASS+ :EXTERNAL)");
+    ASSERT_STR_EQ(eval_print("(list btt-a:+class+ (constantp 'btt-a:+class+) (simple-string-p btt-a:+class+)"
+                             " (eq btt-a:+class+ (symbol-value 'btt-a:+class+)))"),
+                  "(\"Window.mui\" T T T)");
+    ASSERT(contains(eval_print("(setq btt-a:+class+ \"x\")"), "constant"));
     /* a special variable, like DEFCSTRUCT's defvar: dynamically rebindable */
     ASSERT_STR_EQ(eval_print("(let ((btt-a:*sz* 99)) (list btt-a:*sz* (symbol-value 'btt-a:*sz*)))"), "(99 99)");
     ASSERT(contains(eval_print("(setq btt-a:+one+ 2)"), "constant"));
@@ -496,10 +541,11 @@ TEST(materialised_symbols_survive_compaction)
     ASSERT_STR_EQ(eval_print("(getf (ffi::%ffi-stub-info #'btt-j:foo) :lvo)"), "-36");
     /* materialise under churn: names built while the heap moves */
     ASSERT_STR_EQ(eval_print(
-        "(let ((acc nil)) (dolist (n '(\"+NEG+\" \"PT-X\" \"WIN-RP\" \"*SZ*\" \"+U32+\")) "
+        "(let ((acc nil)) (dolist (n '(\"+NEG+\" \"PT-X\" \"WIN-RP\" \"*SZ*\" \"+U32+\" \"+CLASS+\")) "
         "  (dotimes (i 2000) (make-string 40)) (ext:gc) (push (symbol-name (find-symbol n \"BTT-J\")) acc))"
-        " (list (length acc) (fboundp 'btt-j:pt-x) btt-j:+neg+ btt-j:*sz*))"),
-        "(5 T -5 12)");
+        " (dotimes (i 2000) (make-string 40)) (ext:gc)"
+        " (list (length acc) (fboundp 'btt-j:pt-x) btt-j:+neg+ btt-j:*sz* btt-j:+class+))"),
+        "(6 T -5 12 \"Window.mui\")");
 }
 
 /* ================================================================
@@ -638,6 +684,7 @@ TEST(define_binding_table_macro_and_compile_file_round_trip)
           "(defvar *m-base* nil)\n"
           "(amiga.ffi:define-binding-table \"BTT-MOD\" (:base *m-base*)\n"
           "  (:const \"+K+\" #x80000064)\n"
+          "  (:const \"+S+\" \"Notify.mui\")\n"
           "  (:struct \"NODE\" 14 (\"SUCC\" :fptr 0) (\"TYPE\" :u8 8))\n"
           "  (:fn \"CALL-ME\" -30 (:a0 :d0) :u16)\n"
           "  (:name \"LATE\"))\n"
@@ -650,10 +697,11 @@ TEST(define_binding_table_macro_and_compile_file_round_trip)
     /* wipe and reload from the FASL: the blob comes back, names resolve lazily */
     eval_print("(delete-package \"BTT-MOD\")");
     eval_print("(progn (defpackage \"BTT-MOD\" (:use \"CL\") (:export \"*M-BASE*\")) (load \"/tmp/btt-mod.fasl\"))");
-    ASSERT_STR_EQ(eval_print("(getf (clamiga::%binding-table-info \"BTT-MOD\") :entries)"), "6");
+    ASSERT_STR_EQ(eval_print("(getf (clamiga::%binding-table-info \"BTT-MOD\") :entries)"), "7");
     ASSERT_STR_EQ(eval_print("(list btt-mod:+k+ btt-mod:*node-size* (fboundp 'btt-mod:node-succ)"
-                             " (getf (ffi::%ffi-stub-info #'btt-mod:call-me) :result) (btt-mod:late 1) (btt-mod::user-of-k))"),
-                  "(2147483748 14 T :U16 (:LATE 1) 2147483748)");
+                             " (getf (ffi::%ffi-stub-info #'btt-mod:call-me) :result) (btt-mod:late 1) (btt-mod::user-of-k)"
+                             " btt-mod:+s+ (constantp 'btt-mod:+s+))"),
+                  "(2147483748 14 T :U16 (:LATE 1) 2147483748 \"Notify.mui\" T)");
     unlink("/tmp/btt-mod.lisp");
     unlink("/tmp/btt-mod.fasl");
 }

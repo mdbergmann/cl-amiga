@@ -17,6 +17,38 @@
 ;;;                        the .sh wrapper does that)
 ;;;   BINDGEN_MOS_ONLY     comma list of MorphOS-only libraries to emit
 ;;;                        (default: muimaster,ahi,cybergraphics)
+;;;   BINDGEN_MUI_SFD      dir with the MUI 3.8 developer kit's *_lib.sfd
+;;;                        (optional; fd2sfd of FD/ + C/Include/clib/, the
+;;;                        .sh wrapper does that).  Joins the PRIMARY
+;;;                        (AmigaOS) tables: muimaster becomes an AmigaOS
+;;;                        library with a MorphOS twin, like every NDK one.
+;;;   BINDGEN_MUI_INCLUDE_H  the kit's C/Include — a second C-header root
+;;;                        (libraries/mui.h), searched after the NDK's
+;;;   BINDGEN_MCC_INCLUDE_H  a third C-header root holding mui/<Name>_mcc.h,
+;;;                        the headers of MUI custom classes (the .sh
+;;;                        wrapper collects them from the kit's ExtClasses/
+;;;                        and MCC_HEADERS=<dir>) -> amiga/raw/mui/<name>
+;;;   BINDGEN_MUI5_SFD     dir with the MUI 5 (AmigaOS) SDK's
+;;;                        muimaster_lib.sfd (the SDK ships sfd/; the .sh
+;;;                        wrapper copies it out alone).  ADDITIVE: the
+;;;                        public functions beyond the 3.8 fd join
+;;;                        muimaster under (%version>= 20) -- MUI 5 for
+;;;                        AmigaOS and MorphOS's built-in MUI both report
+;;;                        lib_Version 20.
+;;;   BINDGEN_MUI5_INCLUDE_H  the MUI 5 SDK's C/include -- its
+;;;                        libraries/mui.h is an additive constant source
+;;;   BINDGEN_MOS_MUI_INCLUDE_H  a root holding the MorphOS SDK's
+;;;                        libraries/mui.h (a copy of gg:os-include, i.e.
+;;;                        MOS_SDK itself) -- an additive constant source
+;;;                        too.  Additive sources need the MUI 3.8 kit
+;;;                        (the baseline): their NEW names join the
+;;;                        muimaster table unguarded, a name the baseline
+;;;                        also defines must have the baseline's value --
+;;;                        any other difference is fatal, except the known
+;;;                        post-3.8 count/version evolutions of
+;;;                        *MUI-VALUE-EVOLUTIONS* (the 3.8 value wins).
+;;;                        Structs and functions are NOT taken from the
+;;;                        additive headers (layouts stay 3.8's).
 ;;;   BINDGEN_OUT          output directory (default lib/amiga/raw/)
 ;;;   BINDGEN_LIBS         comma list restricting the libraries generated
 ;;;                        (default: all)
@@ -42,8 +74,12 @@
 ;;;     equivalent: *NAME-SIZE* + accessors) for every STRUCTURE.
 ;;;   * (:const ...) rows for the object-like #defines and enumerators of
 ;;;     the C headers that have NO assembler twin (the ReAction tags in
-;;;     gadgets/*.h, images/*.h, classes/*.h, reaction/*.h ...) — see
-;;;     "C header parsing" below.
+;;;     gadgets/*.h, images/*.h, classes/*.h, reaction/*.h, the MUI tags
+;;;     and MUIC_* class-name strings of libraries/mui.h ...), and
+;;;     (:struct ...) rows for their struct definitions (MUI_MinMax, the
+;;;     MUIP_* messages, ColumnInfo ...), laid out by the m68k rules — see
+;;;     "C header parsing" below.  The MUI custom-class headers
+;;;     (mui/<Name>_mcc.h) are modules of their own, amiga/raw/mui/<name>.
 ;;;   * Platform tagging: functions the MorphOS SDK does not have at the
 ;;;     same LVO carry :not-morphos, MorphOS-only ones :morphos; functions
 ;;;     newer than OS 3.0 carry the minimum lib_Version.  All three are
@@ -136,11 +172,13 @@
 ;;; Whole-identifier spelling overrides, applied before the CamelCase
 ;;; split so that "RastPort", "RPort" and "BitMap" come out as one word
 ;;; the way the Amiga world writes them (rastport, window-rport, bitmap,
-;;; init-bitmap, blt-bitmap ...).  Everything else is mechanical.
+;;; init-bitmap, blt-bitmap ...), and mui.h's "RGBcolor" as rgb-color
+;;; rather than rg-bcolor.  Everything else is mechanical.
 (defparameter *spelling-overrides*
   '(("RastPort" . "Rastport")
     ("RPort" . "Rport")
-    ("BitMap" . "Bitmap")))
+    ("BitMap" . "Bitmap")
+    ("RGBcolor" . "RgbColor")))
 
 (defun apply-spelling-overrides (s)
   (dolist (pair *spelling-overrides* s)
@@ -631,20 +669,22 @@ whitespace-delimited token (see OPERAND-FIELD)."
     ("RPTR" . (:u16 . 2))))
 
 (defstruct i-struct
-  name          ; assembler STRUCTURE name
-  fields        ; list of (c-name type offset) in order; type = keyword or (:struct n)
+  name          ; assembler STRUCTURE name, or the C struct's tag
+  fields        ; list of (c-name type offset), most recent first; type = keyword, (:struct n) or (:array kw n)
   size-labels   ; list of (label-name . offset) for *_SIZE / *_SIZEOF labels
+  size          ; a C struct's sizeof (NIL for a STRUCTURE: its size labels decide)
   file)
 
 (defstruct i-const
-  name value file
+  name value file  ; value: integer, string (a C header's "..." #define), or NIL = resolve later
   quiet)         ; t for C-header constants: unresolvable -> dropped silently
 
 (defstruct i-file
   path           ; relative include path, e.g. "intuition/intuition.i"
   structs        ; list of i-struct
   constants      ; list of i-const (in definition order)
-  (skipped 0))   ; .h only: object-like macros that are not integer constants
+  (skipped 0)    ; .h only: object-like macros that are not integer constants
+  skipped-structs) ; .h only: (name . reason) for struct definitions not laid out
 
 (defvar *i-files* (make-hash-table :test 'equal)) ; rel path -> i-file
 (defvar *i-include-root* nil)
@@ -843,19 +883,96 @@ whitespace-delimited token (see OPERAND-FIELD)."
 ;;;     expression — C operators, casts to the integer types, number
 ;;;     suffixes (0x45L), char literals, references to other macros and
 ;;;     to assembler constants (TAG_USER, GA_Image ...);
+;;;   * every object-like #define whose body is ONE ASCII string literal
+;;;     (mui.h's MUIC_Window "Window.mui", MUIMASTER_NAME, the MUIX_C
+;;;     "\033c" text-style escapes) — a string constant; escapes are
+;;;     decoded, control characters are written as a #. form so the
+;;;     module stays printable; a literal with non-ASCII characters (the
+;;;     FASLs must stay ASCII, see `make fasl`) or a concatenation of
+;;;     literals is skipped;
 ;;;   * every enumerator of every top-level enum.
 ;;;
 ;;; seen through the preprocessor: comments, backslash continuations,
 ;;; #ifdef / #ifndef / #if 0 / #elif / #else / #endif (only macros defined
 ;;; by the headers themselves count as defined, so __cplusplus / __GNUC__
-;;; blocks are skipped), #undef, and #include of another twin-less header
-;;; (read first, so its macros are known).  Function-like macros, strings,
-;;; floats and anything that is not an integer expression (the
-;;; NewObject(...) convenience macros) are skipped — counted in the module
-;;; header, not warned about.  C struct definitions are not read.
+;;; blocks are skipped — and mui.h's own `#define MUI_OBSOLETE` makes its
+;;; #ifdef MUI_OBSOLETE blocks live, as they are for a C program), #undef,
+;;; and #include of another twin-less header (read first, so its macros
+;;; are known).  Function-like macros, floats and anything that is not an
+;;; integer expression or a string (the NewObject(...) convenience macros)
+;;; are skipped — counted in the module header, not warned about.  C
+;;; struct definitions are read too — see "C struct definitions" below.
+;;;
+;;; The C headers live under one or more roots searched in order — the
+;;; NDK's Include_H first, then an SDK that ships headers of its own (the
+;;; MUI developer kit's C/Include), then the directory of MUI custom-class
+;;; headers (BINDGEN_MCC_INCLUDE_H); the first root that has a file wins.
 
-(defvar *h-include-root* nil)                       ; dir of the .h files
+(defvar *h-include-roots* nil)                      ; dirs of the .h files, in search order
 (defvar *c-macros* (make-hash-table :test 'equal))  ; name -> t, for #ifdef
+
+(defun h-file-path (rel)
+  "Absolute path of the C header REL under the first root that has it;
+under the first root when none does (so a probe fails and a warning names
+a real location)."
+  (or (loop for root in *h-include-roots*
+            for p = (concatenate 'string root rel)
+            when (probe-file p) return p)
+      (concatenate 'string (or (first *h-include-roots*) "") rel)))
+
+(defun c-string-literal (body)
+  "If BODY is exactly one C string literal, its decoded contents (the
+usual escapes: \\n \\t \\\\ \\\" octal, \\xHH ...), else NIL.  A second
+value says whether every character is ASCII — what a string constant may
+hold (the binding table and the FASLs are byte strings)."
+  (let ((n (length body)))
+    (when (and (>= n 2) (char= (char body 0) #\") (char= (char body (1- n)) #\"))
+      (let ((out (make-string-output-stream)) (i 1) (ascii t) (closed nil))
+        (loop while (< i n)
+              do (let ((c (char body i)))
+                   (cond
+                     ((char= c #\")
+                      (setf closed (= i (1- n)))
+                      (return))
+                     ((and (char= c #\\) (< (1+ i) n))
+                      (let ((e (char body (1+ i))))
+                        (incf i 2)
+                        (cond
+                          ((digit-char-p e 8)
+                           ;; up to three octal digits
+                           (let ((v (digit-char-p e 8)) (k 1))
+                             (loop while (and (< k 3) (< i n) (digit-char-p (char body i) 8))
+                                   do (setf v (+ (* v 8) (digit-char-p (char body i) 8)))
+                                      (incf i) (incf k))
+                             (write-char (code-char v) out)))
+                          ((char-equal e #\x)
+                           (let ((v 0) (any nil))
+                             (loop while (and (< i n) (digit-char-p (char body i) 16))
+                                   do (setf v (+ (* v 16) (digit-char-p (char body i) 16)) any t)
+                                      (incf i))
+                             (unless any (return-from c-string-literal nil))
+                             (write-char (code-char (logand v 255)) out)))
+                          (t (write-char (case e
+                                           (#\n #\Newline) (#\t #\Tab) (#\r #\Return)
+                                           (#\a (code-char 7)) (#\b (code-char 8))
+                                           (#\f (code-char 12)) (#\v (code-char 11))
+                                           (t e))
+                                         out)))))
+                     (t (write-char c out) (incf i)))))
+        (when closed
+          (let ((s (get-output-stream-string out)))
+            (loop for ch across s
+                  unless (< (char-code ch) 128) do (setf ascii nil))
+            (values s ascii)))))))
+
+(defun lisp-string-form (s)
+  "S as Lisp source for a binding-table row: a string literal when every
+character is printable, else a #. form that builds it from character
+codes — mui.h's MUIX_C \"\\033c\" reads as (27 99) instead of a stray ESC
+byte in the module."
+  (if (every (lambda (c) (<= 32 (char-code c) 126)) s)
+      (lisp-string s)
+      (format nil "#.(map 'string #'code-char '(~{~D~^ ~}))" (map 'list #'char-code s))))
 
 (define-condition c-unknown-symbol (error)
   ((name :initarg :name :reader c-unknown-symbol-name))
@@ -945,13 +1062,17 @@ access, braces ...) signals an error."
     "signed" "void" "float" "double" "const" "volatile" "struct" "union" "enum"))
 
 (defun c-cast-apply (words pointer v)
-  "Narrow V the way a C cast to the type spelled by WORDS would."
+  "Narrow V the way a C cast to the type spelled by WORDS would.  POINTER
+is true for a `T *' cast; the pointer typedefs (APTR, STRPTR ... — mui.h's
+((STRPTR)~0)) are 32-bit addresses too, so they read unsigned."
   (flet ((has (w) (member w words :test #'string=))
          (u (bits) (logand v (1- (ash 1 bits))))
          (s (bits) (let ((m (logand v (1- (ash 1 bits)))))
                      (if (logbitp (1- bits) m) (- m (ash 1 bits)) m))))
     (cond
-      (pointer (u 32))
+      ((or pointer (has "APTR") (has "CONST_APTR") (has "STRPTR") (has "CONST_STRPTR")
+           (has "CPTR") (has "PLANEPTR"))
+       (u 32))
       ((or (has "float") (has "double")) (error "floating-point cast"))
       ((or (has "UBYTE") (has "uint8") (and (has "unsigned") (has "char"))) (u 8))
       ((or (has "BYTE") (has "int8") (has "char")) (s 8))
@@ -1238,11 +1359,407 @@ Struct bodies are skipped by brace depth; string literals are ignored."
                    (t (incf i))))))
     (nreverse out)))
 
+;;; --- C struct definitions ---
+;;;
+;;; A twin-less header's struct definitions become (:struct ...) rows
+;;; like a .i file's STRUCTUREs: mui.h's MUI_MinMax / MUI_AreaData /
+;;; MUI_RenderInfo and the MUIP_* method messages, listbrowser.h's
+;;; ColumnInfo.  The layout rules are the m68k AmigaOS ABI's: a member of
+;;; two or more bytes is aligned to 2 (a ULONG after a UBYTE sits at
+;;; offset 2, not 4), a struct is padded to a multiple of its largest
+;;; member alignment (1 or 2), an enum is an int.  The MorphOS SDK's
+;;; headers `#pragma pack(2)' to exactly this layout (the OS structures
+;;; are shared with 68k code), so one table serves both platforms.
+;;;
+;;; Members: the exec/types.h scalars and the C types (char, short, int,
+;;; long, float, double, signed / unsigned), the pointer typedefs (APTR,
+;;; STRPTR ...), `T *' and function pointers (:fptr), `struct X' by value
+;;; ((:struct size) — X a STRUCTURE of the .i files, a C struct read
+;;; before it, or a typedef of one), arrays ((:array elt n) for scalars
+;;; and pointers; a char[n] buffer and an array of structs as (:struct
+;;; bytes), a pointer to the field), `enum X' (:i32), and nested struct /
+;;; union members, whose leaves are flattened into the enclosing struct
+;;; next to the member itself (ihn_stuff.ihn_timer.ihn_millis becomes
+;;; MUI-INPUT-HANDLER-NODE-MILLIS, which is what mui.h's ihn_Millis macro
+;;; spells).  A struct with a bitfield or a member of unknown type is
+;;; skipped with a comment naming the reason; a forward declaration, a
+;;; reserved (_-prefixed) name and a definition inside an inactive #if
+;;; block are not read.
+
+(defparameter *c-scalar-types*
+  ;; the words of a member's type (const / volatile dropped), in source
+  ;; order -> keyword and size
+  '(("BYTE" :i8 1) ("char" :i8 1) ("signed char" :i8 1) ("int8" :i8 1) ("TEXT" :i8 1)
+    ("UBYTE" :u8 1) ("unsigned char" :u8 1) ("uint8" :u8 1)
+    ("WORD" :i16 2) ("SHORT" :i16 2) ("short" :i16 2) ("short int" :i16 2)
+    ("signed short" :i16 2) ("int16" :i16 2) ("BOOL" :i16 2) ("COUNT" :i16 2)
+    ("UWORD" :u16 2) ("USHORT" :u16 2) ("unsigned short" :u16 2)
+    ("unsigned short int" :u16 2) ("uint16" :u16 2) ("UCOUNT" :u16 2)
+    ("LONG" :i32 4) ("int" :i32 4) ("long" :i32 4) ("long int" :i32 4) ("signed" :i32 4)
+    ("signed int" :i32 4) ("signed long" :i32 4) ("int32" :i32 4) ("SIPTR" :i32 4)
+    ("ULONG" :u32 4) ("unsigned" :u32 4) ("unsigned int" :u32 4) ("unsigned long" :u32 4)
+    ("unsigned long int" :u32 4) ("uint32" :u32 4) ("IPTR" :u32 4) ("Tag" :u32 4)
+    ("LONGBITS" :u32 4) ("BPTR" :u32 4) ("BSTR" :u32 4) ("Object" :u32 4)
+    ("FLOAT" :single 4) ("float" :single 4)
+    ("DOUBLE" :double 8) ("double" :double 8)
+    ("APTR" :fptr 4) ("CONST_APTR" :fptr 4) ("STRPTR" :fptr 4) ("CONST_STRPTR" :fptr 4)
+    ("PLANEPTR" :fptr 4) ("CPTR" :fptr 4) ("FPTR" :fptr 4) ("ClassID" :fptr 4)
+    ("Msg" :fptr 4) ("CxObj" :fptr 4) ("CxMsg" :fptr 4)
+    ;; only ever behind a * or as a function pointer's return type
+    ("void" :u32 4) ("VOID" :u32 4)))
+
+(defvar *c-struct-layouts* (make-hash-table :test 'equal)) ; C struct / typedef name -> (size align)
+(defvar *i-struct-layouts* (make-hash-table :test 'equal)) ; C name of a STRUCTURE -> (size align)
+(defvar *i-struct-layouts-key* -1)                          ; (hash-table-count *i-files*) it was built for
+
+(defun i-struct-layout (name)
+  "(size align file) of the STRUCTURE the .i files parsed so far define
+under the C name NAME, or NIL.  A STRUCTURE's alignment is 2 unless its
+size is odd (the exec / intuition structures all start with a pointer or
+a word)."
+  (unless (= *i-struct-layouts-key* (hash-table-count *i-files*))
+    (setf *i-struct-layouts-key* (hash-table-count *i-files*))
+    (clrhash *i-struct-layouts*)
+    (maphash (lambda (rel ifile)
+               (dolist (st (i-file-structs ifile))
+                 (unless (i-struct-size st)   ; a C struct: in *c-struct-layouts*
+                   (dolist (v (struct-variants st))
+                     (let ((cname (first v)) (size (second v)))
+                       (unless (gethash cname *i-struct-layouts*)
+                         (setf (gethash cname *i-struct-layouts*)
+                               (list size (if (oddp size) 1 2) rel))))))))
+             *i-files*))
+  (gethash name *i-struct-layouts*))
+
+(defun known-struct-layout (name)
+  "(size align) of the struct NAME: a C struct read from a header (or a
+typedef of one), else a STRUCTURE of the .i files under its C name, else
+NIL."
+  (or (gethash name *c-struct-layouts*)
+      (let ((lay (i-struct-layout name)))
+        (and lay (list (first lay) (second lay))))))
+
+(defun align-up (n a)
+  (* a (ceiling n a)))
+
+(defun tokenize-c-decl (s)
+  "Tokens of a struct member declaration or a struct statement: (:id
+name), (:op \"*\") and the other punctuation, (:brace text) for a {...}
+block, (:dim text) for a [...] subscript, (:num text) for a bitfield
+width."
+  (let ((toks nil) (i 0) (n (length s)))
+    (flet ((matching (open close start)
+             (let ((d 0))
+               (loop for k from start below n
+                     do (cond ((char= (char s k) open) (incf d))
+                              ((char= (char s k) close)
+                               (decf d)
+                               (when (zerop d) (return k))))
+                     finally (error "unbalanced ~C" open)))))
+      (loop while (< i n)
+            do (let ((c (char s i)))
+                 (cond
+                   ((member c '(#\Space #\Tab #\Newline #\Return)) (incf i))
+                   ((or (alpha-char-p c) (char= c #\_))
+                    (let ((j i))
+                      (loop while (and (< j n) (ident-char-p (char s j))) do (incf j))
+                      (push (list :id (subseq s i j)) toks)
+                      (setf i j)))
+                   ((digit-char-p c)
+                    (let ((j i))
+                      (loop while (and (< j n) (ident-char-p (char s j))) do (incf j))
+                      (push (list :num (subseq s i j)) toks)
+                      (setf i j)))
+                   ((char= c #\{)
+                    (let ((e (matching #\{ #\} i)))
+                      (push (list :brace (subseq s (1+ i) e)) toks)
+                      (setf i (1+ e))))
+                   ((char= c #\[)
+                    (let ((e (matching #\[ #\] i)))
+                      (push (list :dim (subseq s (1+ i) e)) toks)
+                      (setf i (1+ e))))
+                   ((member c '(#\* #\( #\) #\, #\: #\;))
+                    (push (list :op (string c)) toks)
+                    (incf i))
+                   (t (error "unexpected ~S" c)))))
+      (nreverse toks))))
+
+(defun split-c-declarations (body)
+  "The member declarations of a struct body: BODY split at the semicolons
+outside braces, brackets and parentheses; blank pieces dropped."
+  (let ((out nil) (start 0) (depth 0))
+    (dotimes (i (length body))
+      (let ((c (char body i)))
+        (cond ((member c '(#\{ #\[ #\()) (incf depth))
+              ((member c '(#\} #\] #\))) (decf depth))
+              ((and (char= c #\;) (zerop depth))
+               (push (subseq body start i) out)
+               (setf start (1+ i))))))
+    (push (subseq body start) out)
+    (remove-if #'blank-string-p (nreverse out))))
+
+(defun c-member (base name pointer count dims char-p)
+  "One laid-out member: (name type size align leaves).  BASE is the
+declaration's type — (:scalar kw size align), (:aggregate size align
+leaves) or (:tag name) for a `struct NAME' whose layout is looked up
+only now: a pointer to it needs none (C allows a pointer to a struct
+declared later, or never — mui.h's MUIP_AskMinMax points at a MUI_MinMax
+defined 1400 lines below).  POINTER covers `*' declarators and function
+pointers; COUNT is the product of the DIMS array bounds."
+  (cond
+    (pointer
+     (if (> dims 0)
+         (list name (list :array :fptr count) (* 4 count) 2 nil)
+         (list name :fptr 4 2 nil)))
+    ((eq (first base) :scalar)
+     (destructuring-bind (kw size align) (cdr base)
+       (cond ((zerop dims) (list name kw size align nil))
+             ;; char[n]: a text buffer — a pointer to it, like an
+             ;; embedded struct
+             (char-p (list name (list :struct count) count 1 nil))
+             (t (list name (list :array kw count) (* size count) align nil)))))
+    (t
+     (destructuring-bind (size align leaves)
+         (if (eq (first base) :tag)
+             (let ((lay (known-struct-layout (second base))))
+               (unless lay (error "unknown struct ~A" (second base)))
+               (list (first lay) (second lay) nil))
+             (cdr base))
+       (if (> dims 0)
+           (list name (list :struct (* size count)) (* size count) align nil)
+           (list name (list :struct size) size align leaves))))))
+
+(defun parse-c-declaration (decl)
+  "The members one declaration of a struct body declares — `WORD a, b;'
+is two — each (name type size align leaves), NAME being NIL for an
+anonymous nested struct / union (its LEAVES are what the enclosing struct
+gets).  Signals on anything that cannot be laid out."
+  (let ((toks (tokenize-c-decl decl))
+        (base nil) (char-p nil))
+    (labels ((peek () (car toks))
+             (next () (pop toks))
+             (id-p (tk &optional name)
+               (and tk (eq (first tk) :id) (or (null name) (string= (second tk) name))))
+             (op-p (tk s) (and tk (eq (first tk) :op) (string= (second tk) s)))
+             (qualifier-p (tk)
+               ;; const / volatile, and a compiler's calling-convention
+               ;; word on a function pointer (LONG __STDARGS__ (*fn)())
+               (and (id-p tk)
+                    (or (member (second tk) '("const" "volatile") :test #'string=)
+                        (starts-with "__" (second tk))))))
+      (loop while (qualifier-p (peek)) do (next))
+      ;; --- the type ---
+      (cond
+        ((and (id-p (peek)) (member (second (peek)) '("struct" "union") :test #'string=))
+         (let ((kind (if (string= (second (next)) "union") :union :struct))
+               (tag nil))
+           (when (id-p (peek)) (setf tag (second (next))))
+           (cond ((and (peek) (eq (first (peek)) :brace))
+                  (multiple-value-bind (leaves size align)
+                      (parse-c-aggregate-body (second (next)) kind)
+                    (setf base (list :aggregate size align leaves))))
+                 (tag (setf base (list :tag tag)))   ; resolved per declarator
+                 (t (error "~(~A~) without a tag or a body" kind)))))
+        ((id-p (peek) "enum")
+         (next)
+         (when (id-p (peek)) (next))
+         (when (and (peek) (eq (first (peek)) :brace)) (next))
+         (setf base (list :scalar :i32 4 2)))
+        (t
+         ;; type words: the leading identifiers — the last of them is the
+         ;; first declarator's name unless a * or ( follows
+         (let ((words nil))
+           (loop while (id-p (peek)) do (push (second (next)) words))
+           (setf words (nreverse words))
+           (unless (or (op-p (peek) "*") (op-p (peek) "("))
+             (unless (cdr words) (error "no type in ~S" (collapse-whitespace decl)))
+             (push (list :id (car (last words))) toks)
+             (setf words (butlast words)))
+           (setf words (remove-if (lambda (w) (qualifier-p (list :id w))) words))
+           (let* ((key (format nil "~{~A~^ ~}" words))
+                  (hit (assoc key *c-scalar-types* :test #'string=)))
+             (cond (hit
+                    (setf base (list :scalar (second hit) (third hit) (min 2 (third hit)))
+                          char-p (member key '("char" "TEXT") :test #'string=)))
+                   ((and (null (cdr words)) (known-struct-layout (first words)))
+                    (setf base (list :tag (first words))))   ; a typedef'd struct
+                   (t (error "unknown type ~A" key)))))))
+      ;; --- the declarators ---
+      (let ((members nil))
+        (loop
+          (let ((pointer nil) (name nil) (count 1) (dims 0))
+            (loop while (op-p (peek) "*") do (next) (setf pointer t))
+            (cond
+              ((op-p (peek) "(")
+               ;; a function pointer: ( * name ) ( parameters )
+               (next)
+               (loop while (op-p (peek) "*") do (next))
+               (unless (id-p (peek)) (error "function pointer without a name"))
+               (setf name (second (next)) pointer t)
+               (unless (op-p (next) ")") (error "function pointer ~A: expected )" name))
+               (unless (op-p (next) "(") (error "function pointer ~A: expected (" name))
+               (let ((d 1))
+                 (loop while (> d 0)
+                       do (let ((tk (next)))
+                            (cond ((null tk) (error "function pointer ~A: unbalanced (" name))
+                                  ((op-p tk "(") (incf d))
+                                  ((op-p tk ")") (decf d)))))))
+              (t
+               (when (id-p (peek)) (setf name (second (next))))
+               (loop while (and (peek) (eq (first (peek)) :dim))
+                     do (let ((e (second (next))))
+                          (multiple-value-bind (v status) (c-eval-expr e)
+                            (unless (and (eq status :ok) (integerp v) (> v 0))
+                              (error "array bound [~A] of ~A" (collapse-whitespace e) name))
+                            (setf count (* count v))
+                            (incf dims))))
+               (when (op-p (peek) ":") (error "bitfield ~A" name))))
+            (push (c-member base name pointer count dims char-p) members)
+            (cond ((op-p (peek) ",") (next))
+                  ((null (peek)) (return))
+                  (t (error "unexpected ~A after ~A" (second (peek)) name)))))
+        (nreverse members)))))
+
+(defun parse-c-aggregate-body (text kind)
+  "The members between the braces of a struct (KIND :struct) or union
+(:union), laid out by the m68k rules.  Returns (values fields size
+align): FIELDS are (c-name type offset) — every named member, each
+followed by the leaves of its nested anonymous struct / union — with
+offsets relative to the aggregate; SIZE is the padded sizeof."
+  (let ((fields nil) (offset 0) (size 0) (align 1))
+    (dolist (decl (split-c-declarations text))
+      (dolist (m (parse-c-declaration decl))
+        (destructuring-bind (name type msize malign leaves) m
+          (let ((at (if (eq kind :union) 0 (align-up offset malign))))
+            (when name (push (list name type at) fields))
+            (dolist (leaf leaves)
+              (push (list (first leaf) (second leaf) (+ at (third leaf))) fields))
+            (setf align (max align malign))
+            (if (eq kind :union)
+                (setf size (max size msize))
+                (setf offset (+ at msize) size offset))))))
+    (values (nreverse fields) (align-up size align) align)))
+
+(defun scan-c-structs (text)
+  "Every top-level struct / union definition of TEXT (a header's active C
+text), in order: (kind tag body typedef-names) — KIND :struct / :union,
+TAG the tag or NIL, BODY the text between the braces, TYPEDEF-NAMES the
+names a `typedef struct ... { } Name;' gives it; and (:alias tag
+(names)) for a `typedef struct Tag Name;' without a body.  Prototypes,
+extern declarations and forward declarations are passed over."
+  (let ((out nil) (i 0) (n (length text)) (depth 0))
+    (labels ((skip-literal (q)
+               (incf i)
+               (loop while (and (< i n) (char/= (char text i) q))
+                     do (when (char= (char text i) #\\) (incf i)) (incf i))
+               (incf i))
+             (statement-end (start)
+               ;; index of the ; that ends the statement at START, braces skipped
+               (let ((d 0))
+                 (loop for k from start below n
+                       do (let ((c (char text k)))
+                            (cond ((char= c #\{) (incf d))
+                                  ((char= c #\}) (decf d))
+                                  ((and (char= c #\;) (zerop d)) (return k))))
+                       finally (return n))))
+             (definition (toks)
+               ;; the (kind tag body names) / (:alias ...) of one statement's tokens, or NIL
+               (let ((typedef nil))
+                 (when (and toks (eq (first (car toks)) :id) (string= (second (car toks)) "typedef"))
+                   (setf typedef t) (pop toks))
+                 (when (and toks (eq (first (car toks)) :id)
+                            (member (second (car toks)) '("struct" "union") :test #'string=))
+                   (let ((kind (if (string= (second (pop toks)) "union") :union :struct))
+                         (tag nil))
+                     (when (and toks (eq (first (car toks)) :id))
+                       (setf tag (second (pop toks))))
+                     (cond
+                       ((and toks (eq (first (car toks)) :brace))
+                        (let ((body (second (pop toks)))
+                              (names nil))
+                          (when typedef
+                            ;; declarators: Name / , Name — a *Name is a
+                            ;; pointer typedef, not a name of the struct
+                            (let ((pointer nil))
+                              (dolist (tk toks)
+                                (cond ((and (eq (first tk) :op) (string= (second tk) "*")) (setf pointer t))
+                                      ((and (eq (first tk) :op) (string= (second tk) ",")) (setf pointer nil))
+                                      ((and (eq (first tk) :id) (not pointer)) (push (second tk) names))))))
+                          (list kind tag body (nreverse names))))
+                       ((and typedef tag toks (eq (first (car toks)) :id) (null (cdr toks)))
+                        (list :alias tag (list (second (car toks)))))
+                       (t nil)))))))
+      (loop while (< i n)
+            do (let ((c (char text i)))
+                 (cond
+                   ((char= c #\") (skip-literal #\"))
+                   ((char= c #\') (skip-literal #\'))
+                   ((char= c #\{) (incf depth) (incf i))
+                   ((char= c #\}) (decf depth) (incf i))
+                   ((or (alpha-char-p c) (char= c #\_))
+                    (let ((j i))
+                      (loop while (and (< j n) (ident-char-p (char text j))) do (incf j))
+                      (cond
+                        ((and (zerop depth)
+                              (member (subseq text i j) '("typedef" "struct" "union") :test #'string=))
+                         (let* ((e (statement-end i))
+                                (def (handler-case (definition (tokenize-c-decl (subseq text i e)))
+                                       (error () nil))))
+                           (when def (push def out))
+                           (setf i (1+ e))))
+                        (t (setf i j)))))
+                   (t (incf i))))))
+    (nreverse out)))
+
+(defun read-c-structs (hfile text)
+  "Lay out every struct definition of TEXT and record it in HFILE: the
+readable ones as i-structs (fields most recent first, like the .i
+reader's), the rest as skipped with the reason.  Every struct read, and
+every typedef name of it, becomes known to the structs after it."
+  (let ((structs nil) (skipped nil))
+    (dolist (def (scan-c-structs text))
+      (if (eq (first def) :alias)
+          (let ((lay (known-struct-layout (second def))))
+            (when lay
+              (dolist (nm (third def)) (setf (gethash nm *c-struct-layouts*) lay))))
+          (destructuring-bind (kind tag body names) def
+            (let ((name (or tag (first names)))
+                  (twin nil))
+              (when name
+                (handler-case
+                    (multiple-value-bind (fields size align) (parse-c-aggregate-body body kind)
+                      (let ((lay (list size align)))
+                        (cond
+                          ;; a struct the .i files define too (libraries/keymap.h
+                          ;; repeats devices/keymap.i's KeyMap): the STRUCTURE's
+                          ;; row is the binding — the same layout, or a warning
+                          ((setf twin (i-struct-layout name))
+                           (push (cons name (format nil "the STRUCTURE of ~A is the binding (~D bytes)"
+                                                    (third twin) (first twin)))
+                                 skipped)
+                           (unless (= (first twin) size)
+                             (asm-warn "~A: struct ~A is ~D bytes here but the STRUCTURE of ~A is ~D — the .i wins"
+                                       (i-file-path hfile) name size (third twin) (first twin))))
+                          (t
+                           (setf (gethash name *c-struct-layouts*) lay)
+                           (dolist (nm names) (setf (gethash nm *c-struct-layouts*) lay))
+                           (if (char= (char name 0) #\_)
+                               (push (cons name "reserved identifier") skipped)
+                               (push (make-i-struct :name name :size size :fields (reverse fields)
+                                                    :file (i-file-path hfile))
+                                     structs))))))
+                  (error (e)
+                    (push (cons name (princ-to-string e)) skipped))))))))
+    (setf (i-file-structs hfile) (nreverse structs)
+          (i-file-skipped-structs hfile) (nreverse skipped))
+    hfile))
+
 (defun parse-h-file (relpath)
-  "Read one twin-less C header into *i-files* (constants only)."
+  "Read one twin-less C header into *i-files*: its constants and its
+struct definitions."
   (when (gethash relpath *i-files*)
     (return-from parse-h-file (gethash relpath *i-files*)))
-  (let ((full (concatenate 'string *h-include-root* relpath)))
+  (let ((full (h-file-path relpath)))
     (unless (probe-file full)
       (asm-warn "include not found: ~A" relpath)
       (return-from parse-h-file nil))
@@ -1279,6 +1796,14 @@ Struct bodies are skipped by brace depth; string literals are ignored."
                       (when (emit-p name)
                         (push (make-i-const :name name :value nil :file relpath :quiet t) consts)))
                      (t (incf skipped)))))
+               (define-string (name s ascii)
+                 ;; a string macro: known to #ifdef and to the symbol table
+                 ;; (an expression that references it is "not a value" ->
+                 ;; skipped), emitted only when printable ASCII
+                 (register name (list :string s))
+                 (cond ((not ascii) (incf skipped))
+                       ((emit-p name)
+                        (push (make-i-const :name name :value s :file relpath :quiet t) consts))))
                (do-define (rest)
                  (let* ((e (or (position-if-not #'ident-char-p rest) (length rest)))
                         (name (subseq rest 0 e)))
@@ -1290,7 +1815,10 @@ Struct bodies are skipped by brace depth; string literals are ignored."
                        (t
                         (let ((body (trim (subseq rest e))))
                           (unless (blank-string-p body)
-                            (define-constant name body))))))))
+                            (multiple-value-bind (s ascii) (c-string-literal body)
+                              (if s
+                                  (define-string name s ascii)
+                                  (define-constant name body))))))))))
                (do-include (rest)
                  (let* ((s (trim rest))
                         (open (and (> (length s) 0) (char s 0)))
@@ -1298,7 +1826,7 @@ Struct bodies are skipped by brace depth; string literals are ignored."
                         (end (and close (position close s :start 1)))
                         (inc (and end (subseq s 1 end))))
                    (when (and inc (ends-with ".h" inc)
-                              (probe-file (concatenate 'string *h-include-root* inc))
+                              (probe-file (h-file-path inc))
                               (h-twinless-p inc)
                               (not (member inc *skip-includes* :test #'string=)))
                      (parse-h-file inc)))))
@@ -1336,8 +1864,9 @@ Struct bodies are skipped by brace depth; string literals are ignored."
                  (push name undefined)))
               ((string= dname "include") (do-include rest))
               (t nil))))
-        ;; enumerators
-        (dolist (items (scan-c-enums (get-output-stream-string c-text)))
+        (let ((active (get-output-stream-string c-text)))
+          ;; enumerators
+          (dolist (items (scan-c-enums active))
           (let ((next 0) (prev nil))
             (dolist (item items)
               (destructuring-bind (name . expr) item
@@ -1360,7 +1889,9 @@ Struct bodies are skipped by brace depth; string literals are ignored."
                     (prev
                      (register name (list :cexpr (format nil "(~A + 1)" prev)))
                      (push (make-i-const :name name :value nil :file relpath :quiet t) consts)))
-                  (setf prev name)))))))
+                  (setf prev name))))))
+          ;; struct definitions, in order: a struct may embed one read before it
+          (read-c-structs hfile active)))
       (setf (i-file-constants hfile) (nreverse consts)
             (i-file-skipped hfile) skipped)
       hfile)))
@@ -1381,7 +1912,10 @@ Struct bodies are skipped by brace depth; string literals are ignored."
     ("SM" . "Semaphore") ("ML" . "MemList") ("ME" . "MemEntry") ("MH" . "MemHeader")
     ("MC" . "MemChunk") ("IS" . "Interrupt") ("IV" . "IntVector") ("SH" . "SoftIntList")
     ("DD" . "Device") ("UNIT" . "Unit") ("RT" . "Resident") ("SYSBASE" . "ExecBase")
-    ("memh" . "MemHandlerData")))
+    ("memh" . "MemHandlerData")
+    ;; timer.i's TIMEVAL is C's struct timeval (texteditor.h embeds one);
+    ;; the same Lisp name either way
+    ("TIMEVAL" . "timeval")))
 
 (defun struct-c-name (asm-name)
   (or (cdr (assoc asm-name *struct-aliases* :test #'string=)) asm-name))
@@ -1393,6 +1927,7 @@ Struct bodies are skipped by brace depth; string literals are ignored."
 (defparameter *module-includes*
   '(("layers"      "graphics/layers.i" "graphics/clip.i")
     ("keymap"      "devices/keymap.i" "libraries/keymap.h")
+    ("muimaster"   "libraries/mui.h")          ; the MUI SDK's header root
     ("trackfile"   "devices/trackfile.h")
     ("timer"       "devices/timer.i")
     ("console"     "devices/console.i" "devices/conunit.i")
@@ -1419,16 +1954,36 @@ Struct bodies are skipped by brace depth; string literals are ignored."
 
 (defun include-path (rel)
   "Absolute path of the include REL: .h files live under the C header
-root, everything else under the assembler include root."
-  (concatenate 'string (if (ends-with ".h" rel) *h-include-root* *i-include-root*) rel))
+roots (first hit), everything else under the assembler include root."
+  (if (ends-with ".h" rel)
+      (h-file-path rel)
+      (concatenate 'string *i-include-root* rel)))
 
 (defun twinless-h-files (dir)
   "Relative paths of the C headers in DIR that have no .i twin — the
-ones that take part in the module layout."
-  (when *h-include-root*
-    (remove-if-not #'h-twinless-p
-                   (mapcar (lambda (p) (concatenate 'string dir "/" (pathname-name p) ".h"))
-                           (directory (concatenate 'string *h-include-root* dir "/*.h"))))))
+ones that take part in the module layout.  Every header root is scanned
+(a header the second root adds joins the layout like the NDK's); a
+relative path counts once."
+  (let ((rels nil))
+    (dolist (root *h-include-roots*)
+      (dolist (p (directory (concatenate 'string root dir "/*.h")))
+        (let ((rel (concatenate 'string dir "/" (pathname-name p) ".h")))
+          ;; (case-insensitively: on a case-insensitive file system the
+          ;; mui/ and MUI/ scans find the same files)
+          (unless (member rel rels :test #'string-equal) (push rel rels)))))
+    (remove-if-not #'h-twinless-p (nreverse rels))))
+
+(defun header-module-stem (rel)
+  "The module stem (amiga/raw/<stem>) of a header-only module: the include
+path without its extension, _ spelled - (reaction/reaction_macros.h ->
+reaction/reaction-macros); an MUI custom-class header mui/<Name>_mcc.h ->
+mui/<name>, the class's file name under MUI:Libs/mui/ in lower case."
+  (let* ((slash (position #\/ rel))
+         (dir (and slash (subseq rel 0 slash)))
+         (base (if slash (subseq rel (1+ slash)) rel)))
+    (if (and dir (string-equal dir "mui") (ends-with "_mcc.h" base))
+        (format nil "mui/~(~A~)" (subseq base 0 (- (length base) 6)))
+        (substitute #\- #\_ (subseq rel 0 (- (length rel) 2))))))
 
 (defun default-includes-for (libname)
   "Convention: <lib>/*.i (plus the twin-less <lib>/*.h) if that NDK
@@ -1446,7 +2001,7 @@ has no .i twin."
              for i-rel = (concatenate 'string sub libname ".i")
              for h-rel = (concatenate 'string sub libname ".h")
              for hits = (append (and (probe-file (include-path i-rel)) (list i-rel))
-                                (and *h-include-root*
+                                (and *h-include-roots*
                                      (probe-file (include-path h-rel))
                                      (h-twinless-p h-rel)
                                      (list h-rel)))
@@ -1462,10 +2017,14 @@ has no .i twin."
 ;;; Header-only modules: .i files (and twin-less .h files) that no library
 ;;; claims get a module named after their path, e.g. devices/audio.i ->
 ;;; amiga/raw/devices/audio, gadgets/tabs.h -> amiga/raw/gadgets/tabs.
+;;; mui/ (either spelling) holds the MUI custom-class headers, <Name>_mcc.h
+;;; -> amiga/raw/mui/<name>: the class opens by name through MUI_NewObjectA
+;;; (there is no library to open), so the module is constants and structs.
 (defparameter *header-only-dirs* '("devices" "hardware" "prefs" "resources"
                                    "libraries" "graphics" "exec" "dos" "intuition"
                                    "utility" "workbench" "datatypes" "diskfont"
-                                   "rexx" "classes" "gadgets" "images" "reaction"))
+                                   "rexx" "classes" "gadgets" "images" "reaction"
+                                   "mui" "MUI"))
 
 ;;; Skipped includes: obsolete-name compatibility files, and C headers
 ;;; that hold no bindable constants (statement macros, stdio aliases) or
@@ -1545,7 +2104,12 @@ exists in the NDK (ndk-lib) and maybe in the MorphOS SDK (mos-lib)."
                  (m-public (and m (not (sfd-fn-private m))))
                  (same (and m-public
                             (string= (fn-signature-key m) (fn-signature-key f))))
-                 (minv (and (sfd-fn-version f) (> (sfd-fn-version f) 39)
+                 ;; a version below the floor is what the library always
+                 ;; had: OS libraries open at 33..39, muimaster (the MUI
+                 ;; SDK sources) at 19 (= MUI 3.8) -- only later versions
+                 ;; need a runtime (%version>= N) guard
+                 (vfloor (if (member (sfd-fn-source f) '(:mui :mui5)) 19 39))
+                 (minv (and (sfd-fn-version f) (> (sfd-fn-version f) vfloor)
                             (sfd-fn-version f))))
             (push (make-emit-fn :fn f
                                 :guard (cond ((null mos-lib) nil)
@@ -1720,7 +2284,9 @@ names defined."
     (nreverse names)))
 
 (defun field-type-size (ty)
-  (cond ((consp ty) (second ty))
+  (cond ((and (consp ty) (eq (first ty) :array))
+         (* (third ty) (field-type-size (second ty))))
+        ((consp ty) (second ty))
         ((member ty '(:i8 :u8)) 1)
         ((member ty '(:i16 :u16)) 2)
         ((member ty '(:i32 :u32 :single :fptr)) 4)
@@ -1729,8 +2295,9 @@ names defined."
 
 (defun struct-variants (st)
   "A STRUCTURE with several *_SIZE labels (exec's IO / IOSTD) yields one
-C struct per size label, each covering the fields up to that label.
-Returns a list of (c-name size fields)."
+C struct per size label, each covering the fields up to that label.  A C
+struct (read from a header) carries its sizeof.  Returns a list of
+(c-name size fields)."
   (let* ((labels (reverse (i-struct-size-labels st)))   ; definition order
          (fields (reverse (i-struct-fields st)))
          (max-end (reduce #'max
@@ -1740,7 +2307,9 @@ Returns a list of (c-name size fields)."
          (out nil))
     (cond
       ((null labels)
-       (list (list (struct-c-name (i-struct-name st)) max-end fields)))
+       (list (list (struct-c-name (i-struct-name st))
+                   (or (i-struct-size st) max-end)
+                   fields)))
       (t
        (loop for (lbl . off) in labels
              do (let* ((prefix (let ((p (position #\_ lbl :from-end t)))
@@ -1776,10 +2345,10 @@ searches through the kind subdirectory."
         (t libname)))
 
 (defun const-value (c)
-  "Value of the constant C, or NIL.  A value read at definition time wins
-(a C macro #undef'd and redefined later keeps its first value, like
-TEXTEDITOR_Dummy); otherwise the name is resolved through the symbol
-table.  Assembler constants that cannot be resolved are a warning (the
+  "Value of the constant C — an integer or a string — or NIL.  A value
+read at definition time wins (a C macro #undef'd and redefined later
+keeps its first value, like TEXTEDITOR_Dummy); otherwise the name is
+resolved through the symbol table.  Assembler constants that cannot be resolved are a warning (the
 .i grammar is fully understood, so it is a parser gap); C macros that
 cannot be resolved are simply not integer constants (NewObject(...)
 aliases and the like) and stay quiet."
@@ -1804,8 +2373,8 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
          (name-rows (make-hash-table :test 'equal))
          (exports nil)                        ; every name the table defines (for :shadow)
          (lisp-names (make-hash-table :test 'equal))
-         (n-fns 0) (n-consts 0) (n-structs 0) (n-skipped 0)
-         (n-macros-skipped 0))      ; C macros that are not integer constants
+         (n-fns 0) (n-consts 0) (n-strings 0) (n-structs 0) (n-skipped 0)
+         (n-macros-skipped 0))      ; C macros that are neither integer nor string constants
     (flet ((claim (name what &optional value)
              ;; WHAT is a kind keyword.  VALUE disambiguates: for constants
              ;; two C spellings of the same value (GA_Left / GA_LEFT)
@@ -1814,7 +2383,7 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
              ;; C name, different LVO under exclusive guards) all pass.
              (let ((prev (gethash name lisp-names)))
                (cond ((and prev (eq what :constant) (eq (car prev) :constant)
-                           (eql (cdr prev) value))
+                           (equal (cdr prev) value))
                       nil)
                      ((and prev (eq what :function) (eq (car prev) :function)
                            (equal (cdr prev) value))
@@ -1842,11 +2411,17 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
                     (when (and val (claim cn :constant val))
                       (incf n-consts)
                       (push cn exports)
-                      (format body "  (:const ~S ~A)~@[   ; ~A~]~%"
-                              (string-upcase cn) (format-hex val)
-                              (and (or (> val #xFFFFFFFF) (< val (- #x80000000)))
-                                   "value exceeds 32 bits")))))))
-            (when (i-file-structs ifile)
+                      (cond
+                        ((stringp val)
+                         ;; a string #define (MUIC_Window "Window.mui")
+                         (incf n-strings)
+                         (format body "  (:const ~S ~A)~%" (string-upcase cn) (lisp-string-form val)))
+                        (t
+                         (format body "  (:const ~S ~A)~@[   ; ~A~]~%"
+                                 (string-upcase cn) (format-hex val)
+                                 (and (or (> val #xFFFFFFFF) (< val (- #x80000000)))
+                                      "value exceeds 32 bits")))))))))
+            (when (or (i-file-structs ifile) (i-file-skipped-structs ifile))
               (format body "~&~%  ;; --- structures from ~A ---~%" rel)
               (dolist (st (i-file-structs ifile))
                 (dolist (variant (struct-variants st))
@@ -1855,11 +2430,17 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
                       (when (claim (format nil "*~A-SIZE*" lname) :struct)
                         (incf n-structs)
                         (dolist (e (emit-struct body st cname size fields #'claim))
-                          (push e exports)))))))))))
+                          (push e exports)))))))
+              ;; a C struct the header reader could not lay out
+              (dolist (sk (i-file-skipped-structs ifile))
+                (incf n-skipped)
+                (format body "  ;; skipped struct ~A: ~A~%" (car sk) (cdr sk)))))))
       ;; --- functions ---
       (unless header-only
         (format body "~&~%  ;; --- functions (~A~@[ + ~A~]) ---~%"
-                (if ndk-lib (format nil "~A_lib.sfd" lib-short-name) "MorphOS SDK")
+                (cond ((null ndk-lib) "MorphOS SDK")
+                      ((eq (sfd-lib-source ndk-lib) :mui) "MUI SDK")
+                      (t (format nil "~A_lib.sfd" lib-short-name)))
                 (and ndk-lib mos-lib "MorphOS SDK"))
         (dolist (efn (merge-library-functions ndk-lib mos-lib))
           (let* ((fn (emit-fn-fn efn))
@@ -1877,15 +2458,19 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
         (format out ";;; ~A — GENERATED by scripts/gen-amiga-bindings.lisp. DO NOT EDIT.~%" module-name)
         (format out ";;;~%;;; Sources:~%")
         (when ndk-lib
-          (format out ";;;   ~A_lib.sfd~@[ (~A)~]~%" lib-short-name (sfd-lib-id ndk-lib)))
+          (if (eq (sfd-lib-source ndk-lib) :mui)
+              (format out ";;;   MUI 3.8 SDK ~A_lib.fd + clib/~A_protos.h (via fd2sfd)~%"
+                      lib-short-name lib-short-name)
+              (format out ";;;   ~A_lib.sfd~@[ (~A)~]~%" lib-short-name (sfd-lib-id ndk-lib))))
         (when mos-lib
           (format out ";;;   MorphOS SDK ~A_lib.fd + clib/~A_protos.h (via fd2sfd)~%"
                   lib-short-name lib-short-name))
         (dolist (rel includes) (format out ";;;   ~A~%" rel))
-        (format out ";;;~%;;; ~D functions, ~D constants, ~D structs~@[, ~D skipped (see comments)~].~%"
-                n-fns n-consts n-structs (and (> n-skipped 0) n-skipped))
+        (format out ";;;~%;;; ~D functions, ~D constants~@[ (~D of them strings)~], ~D structs~@[, ~D skipped (see comments)~].~%"
+                n-fns n-consts (and (> n-strings 0) n-strings) n-structs
+                (and (> n-skipped 0) n-skipped))
         (when (> n-macros-skipped 0)
-          (format out ";;; ~D C macro~:P skipped: not an integer constant (string, call, float).~%"
+          (format out ";;; ~D C macro~:P skipped: not an integer or ASCII-string constant (call, float, non-ASCII).~%"
                   n-macros-skipped))
         (format out ";;; Regenerate with `make gen-amiga-bindings` — see README \"Raw OS bindings\".~%~%")
         (format out ";; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see~%;; AMIGA.FFI at read time, not only LOAD.~%(eval-when (:compile-toplevel :load-toplevel :execute)~%  (require \"amiga/ffi\"))~%~%")
@@ -1979,6 +2564,166 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
             (format *error-output* "WARNING: cannot parse ~A: ~A~%" p e)))))
     libs))
 
+;;; Cross-check of a library both the MUI SDK and the MorphOS SDK describe:
+;;; the public functions common to both must sit at the same LVO with the
+;;; same registers.  The two fd files count their ##private gaps
+;;; independently, so a disagreement means one of them was miscounted —
+;;; and a miscounted table would jump into the wrong vector on one
+;;; platform.  Returns (values agreeing differing); each difference is a
+;;; warning.
+(defun verify-lvos-against-mos (lib other &optional (lib-label "MUI SDK")
+                                            (other-label "MorphOS SDK"))
+  (let ((by-name (make-hash-table :test 'equal)) (same 0) (bad 0))
+    (dolist (f (sfd-lib-functions other))
+      (unless (sfd-fn-private f) (setf (gethash (sfd-fn-name f) by-name) f)))
+    (dolist (f (sfd-lib-functions lib))
+      (let ((m (and (not (sfd-fn-private f)) (gethash (sfd-fn-name f) by-name))))
+        (when m
+          (cond ((and (= (sfd-fn-lvo m) (sfd-fn-lvo f))
+                      (equal (sfd-fn-regs m) (sfd-fn-regs f)))
+                 (incf same))
+                (t (incf bad)
+                   (asm-warn "~A: ~A is at LVO ~D (~{~A~^,~}) in the ~A but ~D (~{~A~^,~}) in the ~A — a ##private gap miscounted?"
+                             (sfd-lib-name lib) (sfd-fn-name f)
+                             (sfd-fn-lvo f) (sfd-fn-regs f) lib-label
+                             (sfd-fn-lvo m) (sfd-fn-regs m) other-label))))))
+    (values same bad)))
+
+;;; ================================================================
+;;; Additive MUI headers — the MUI 5 SDK's and the MorphOS SDK's mui.h
+;;; ================================================================
+;;;
+;;; The muimaster module's baseline is MUI 3.8: its numbers are the common
+;;; subset of every MUI a program can meet, and later MUIs keep them.  The
+;;; post-3.8 headers (the MUI 5 SDK for AmigaOS, the MorphOS SDK's
+;;; gg:os-include/libraries/mui.h) are ADDITIVE constant sources: each is
+;;; parsed in a fresh environment (so its values are its own, not the
+;;; baseline's first-definition-wins leftovers), then only the names the
+;;; baseline does NOT define join the table — unguarded, because a tag
+;;; unknown to an older muimaster is simply ignored by the class, and a
+;;; missing class makes MUI_NewObjectA return NULL, which the curated
+;;; layer reports by name.  A name both define must have the baseline's
+;;; value: anything else is fatal (a wrong or miscounted header), except
+;;; the known count/version markers below, which legitimately grew after
+;;; 3.8 — for those the 3.8 value wins, silently (a marker only the
+;;; additive sources carry keeps the earlier source's value: baseline,
+;;; then MUI 5, then MorphOS).  Structs are NOT taken
+;;; from additive headers (layouts stay 3.8's — a program must not poke
+;;; fields the running MUI does not have); their new functions come from
+;;; the MUI 5 SDK's sfd instead, under (%version>= 20) guards.
+
+(defparameter *mui-value-evolutions*
+  '("MUIMASTER_VMIN"       ; 11 -> 20 (each SDK's own OpenLibrary minimum)
+    "MUIMASTER_VLATEST"    ; 19 -> 20
+    "MPEN_COUNT"           ; 8 -> 9 (a pen was added after 3.8)
+    "PSD_NUMMUIPENS"       ; defined as MPEN_COUNT
+    "MUII_Count"           ; 42 -> 55 (built-in images added)
+    "MUII_LASTPAT"         ; 145 -> 147
+    "MUIV_Frame_Count"     ; 13 -> 24 (frame types added)
+    "MUIV_Dirlist_SortType_Count"))  ; MUI 5 says 9, MorphOS 7
+
+(defun copy-string-table (table)
+  (let ((out (make-hash-table :test 'equal)))
+    (maphash (lambda (k v) (setf (gethash k out) v)) table)
+    out))
+
+(defun baseline-known-value (name)
+  "What NAME is worth in the fully parsed baseline environment: an
+integer, a string, :OPAQUE (defined, but not as a value — a function-like
+macro, an unresolvable expression), or :NONE."
+  (let ((entry (gethash name *asm-symbols*)))
+    (cond (entry (if (eq (first entry) :string)
+                     (second entry)
+                     (handler-case (resolve-asm-symbol name)
+                       (error () :opaque))))
+          ((gethash name *c-macros*) :opaque)
+          (t :none))))
+
+(defun parse-additive-mui-header (root snap-syms snap-macros)
+  "Parse ROOT/libraries/mui.h (and the twin-less headers it includes
+under ROOT) in a fresh environment seeded with SNAP-SYMS/SNAP-MACROS —
+the symbol table as it stood after the .i files, before any C header —
+so every value is the additive header's own.  Returns (values consts
+skipped): the resolvable constants in definition order, values stored in
+the i-consts, and the count of object-like macros that were skipped or
+unresolvable."
+  (let ((*asm-symbols* (copy-string-table snap-syms))
+        (*c-macros* (copy-string-table snap-macros))
+        (*i-files* (make-hash-table :test 'equal))
+        (*c-struct-layouts* (make-hash-table :test 'equal))
+        (*i-struct-layouts* (make-hash-table :test 'equal))
+        (*i-struct-layouts-key* -1)
+        (*h-include-roots* (list (dir-path root))))
+    (parse-h-file "libraries/mui.h")
+    (let ((files (sort (loop for k being the hash-keys of *i-files* collect k)
+                       #'string<))
+          (consts nil) (skipped 0))
+      ;; the primary file's constants first, then its includes' (sorted)
+      (dolist (rel (cons "libraries/mui.h"
+                         (remove "libraries/mui.h" files :test #'string=)))
+        (let ((hfile (gethash rel *i-files*)))
+          (when hfile
+            (incf skipped (i-file-skipped hfile))
+            (dolist (c (i-file-constants hfile))
+              (let ((v (const-value c)))
+                (cond (v (setf (i-const-value c) v) (push c consts))
+                      (t (incf skipped))))))))
+      (values (nreverse consts) skipped))))
+
+(defun merge-additive-mui-headers (sources snap-syms snap-macros baseline-p)
+  "Parse each additive (LABEL ROOT) source and register one synthetic
+i-file per source under a pseudo include path, holding only the constants
+NEW relative to the baseline and to earlier sources.  Signals an error on
+any value conflict not covered by *MUI-VALUE-EVOLUTIONS*.  Returns the
+pseudo paths, in order, for the muimaster module's include list."
+  (when (and sources (not baseline-p))
+    (format t "MUI additive headers: ignored without the MUI 3.8 SDK (the baseline)~%")
+    (return-from merge-additive-mui-headers nil))
+  (let ((seen (make-hash-table :test 'equal))   ; new C name -> (value . label)
+        (conflicts nil) (evolutions nil) (out nil))
+    (dolist (src sources)
+      (destructuring-bind (label root) src
+        (multiple-value-bind (consts skipped)
+            (parse-additive-mui-header root snap-syms snap-macros)
+          (let ((new nil))
+            (dolist (c consts)
+              (let* ((name (i-const-name c)) (v (i-const-value c))
+                     (base (baseline-known-value name))
+                     (prev (gethash name seen)))
+                (cond
+                  ((not (eq base :none))
+                   (cond ((equal base v))       ; agrees with the baseline
+                         ((member name *mui-value-evolutions* :test #'string=)
+                          (pushnew name evolutions :test #'string=))
+                         ((eq base :opaque))    ; a baseline macro without a value
+                         (t (push (list name base v label) conflicts))))
+                  (prev
+                   (unless (equal (car prev) v)
+                     (if (member name *mui-value-evolutions* :test #'string=)
+                         (pushnew name evolutions :test #'string=)
+                         (push (list name (car prev) v
+                                     (format nil "~A vs ~A" (cdr prev) label))
+                               conflicts))))
+                  (t (setf (gethash name seen) (cons v label))
+                     (push c new)))))
+            (let* ((pseudo (format nil "libraries/mui.h (~A, additive)" label))
+                   (hf (make-i-file :path pseudo :constants (nreverse new))))
+              (setf (gethash pseudo *i-files*) hf)
+              (push pseudo out)
+              (format t "~A libraries/mui.h: ~D new constants (additive)~@[, ~D skipped~]~%"
+                      label (length (i-file-constants hf))
+                      (and (plusp skipped) skipped)))))))
+    (when evolutions
+      (format t "MUI additive headers: ~D known value evolution~:P kept at the value of the earliest source (~{~A~^, ~})~%"
+              (length evolutions) (sort evolutions #'string<)))
+    (when conflicts
+      (dolist (cfl (reverse conflicts))
+        (format t "CONFLICT ~A: baseline ~S, ~S from the ~A~%"
+                (first cfl) (second cfl) (third cfl) (fourth cfl)))
+      (error "gen-amiga-bindings: ~D differing value~:P for existing MUI names — the 3.8 header is the baseline; a legitimate post-3.8 evolution belongs in *MUI-VALUE-EVOLUTIONS*, anything else is a wrong header"
+             (length conflicts)))
+    (nreverse out)))
+
 (defun run ()
   (let* ((ndk-sfd (getenv-or "BINDGEN_NDK_SFD"
                              "tools/m68k-amigaos-gcc/prefix/m68k-amigaos/ndk/lib/sfd"))
@@ -1987,17 +2732,30 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
          (ndk-inc-h (getenv-or "BINDGEN_NDK_INCLUDE_H" ndk-inc))
          (mos-sfd (getenv-or "BINDGEN_MOS_SFD" nil))
          (mos-only (comma-list (getenv-or "BINDGEN_MOS_ONLY" "muimaster,ahi,cybergraphics")))
+         (mui-sfd (getenv-or "BINDGEN_MUI_SFD" nil))
+         (mui-inc-h (getenv-or "BINDGEN_MUI_INCLUDE_H" nil))
+         (mui5-sfd (getenv-or "BINDGEN_MUI5_SFD" nil))
+         (mui5-inc-h (getenv-or "BINDGEN_MUI5_INCLUDE_H" nil))
+         (mos-mui-inc-h (getenv-or "BINDGEN_MOS_MUI_INCLUDE_H" nil))
+         (mcc-inc-h (getenv-or "BINDGEN_MCC_INCLUDE_H" nil))
          (out-dir (dir-path (getenv-or "BINDGEN_OUT" "lib/amiga/raw")))
          (only (comma-list (getenv-or "BINDGEN_LIBS" nil)))
          (*docstrings* (not (string= (getenv-or "BINDGEN_DOCSTRINGS" "1") "0")))
          (*i-include-root* (dir-path ndk-inc))
-         (*h-include-root* (dir-path ndk-inc-h))
+         (*h-include-roots* (mapcar #'dir-path
+                                    (remove nil (list ndk-inc-h mui-inc-h mcc-inc-h))))
          (*asm-symbols* (make-hash-table :test 'equal))
          (*c-macros* (make-hash-table :test 'equal))
          (*i-files* (make-hash-table :test 'equal))
+         (*c-struct-layouts* (make-hash-table :test 'equal))
+         (*i-struct-layouts* (make-hash-table :test 'equal))
+         (*i-struct-layouts-key* -1)
          (*asm-warnings* nil)
          (ndk-libs (load-sfd-dir ndk-sfd :ndk))
          (mos-libs (load-sfd-dir mos-sfd :mos))
+         (mui-libs (load-sfd-dir mui-sfd :mui))
+         (mui5-libs (load-sfd-dir mui5-sfd :mui5))
+         (extra-mui-includes nil)
          (claimed-includes (make-hash-table :test 'equal))
          (totals (list 0 0 0 0))
          (modules 0))
@@ -2005,6 +2763,23 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
     (format t "NDK include: ~A~%" ndk-inc)
     (format t "NDK C headers: ~A~%" ndk-inc-h)
     (format t "MorphOS sfd: ~A (~D libraries)~%" (or mos-sfd "none") (hash-table-count mos-libs))
+    ;; The MUI SDK's libraries join the primary table: muimaster is then an
+    ;; AmigaOS library with a MorphOS twin, merged like every NDK one
+    ;; (MorphOS-only MUI_GetRGBColor gets :morphos), and its module claims
+    ;; libraries/mui.h through *module-includes*.
+    (cond
+      (mui-sfd
+       (format t "MUI SDK sfd: ~A (~D libraries), C headers: ~A~%"
+               mui-sfd (hash-table-count mui-libs) (or mui-inc-h "none"))
+       (maphash (lambda (k lib)
+                  (when (gethash k ndk-libs)
+                    (error "gen-amiga-bindings: ~A_lib.sfd is in both the NDK and the MUI SDK — which is primary?" k))
+                  (setf (gethash k ndk-libs) lib))
+                mui-libs))
+      (t
+       (format t "MUI SDK: none — muimaster is emitted from the MorphOS SDK's function table only (no libraries/mui.h constants); commit only output generated WITH the MUI SDK~%")))
+    (when mcc-inc-h
+      (format t "MCC headers: ~A (mui/*_mcc.h -> amiga/raw/mui/<name>)~%" mcc-inc-h))
     (format t "Output: ~A~%" out-dir)
     ;; LVO self-check against the NDK's lvo/*.i — a mismatch means the SFD
     ;; parser miscounted and every later LVO of that library is wrong, so
@@ -2019,6 +2794,55 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
       (when (> bad 0)
         (dolist (w (reverse *asm-warnings*)) (format t "  ~A~%" w))
         (error "gen-amiga-bindings: ~D LVO mismatches against the NDK's lvo/*.i — refusing to write bindings" bad)))
+    ;; The MUI SDK has no lvo/*.i; its fd is checked against the MorphOS
+    ;; SDK's rendering of the same library instead (a warning per
+    ;; disagreement — the module then carries both variants under
+    ;; exclusive guards, which the log makes visible).
+    (when (plusp (hash-table-count mui-libs))
+      (let ((same 0) (bad 0))
+        (maphash (lambda (k lib)
+                   (let ((mos (gethash k mos-libs)))
+                     (when mos
+                       (multiple-value-bind (s b) (verify-lvos-against-mos lib mos)
+                         (incf same s) (incf bad b)))))
+                 mui-libs)
+        (format t "LVO cross-check MUI SDK vs MorphOS SDK: ~D functions agree, ~D differ~%" same bad)))
+    ;; The MUI 5 SDK's sfd (additive): the public functions beyond the 3.8
+    ;; fd join the primary muimaster table under (%version>= 20) — MUI 5
+    ;; for AmigaOS and MorphOS's built-in MUI both report lib_Version 20.
+    ;; The overlap must agree exactly with the 3.8 rendering (a
+    ;; disagreement means a ##private gap was miscounted somewhere).
+    ;; Runs AFTER the cross-checks above, which compare the pristine
+    ;; tables.
+    (when (plusp (hash-table-count mui5-libs))
+      (cond
+        ((null mui-sfd)
+         (format t "MUI 5 SDK sfd: ignored without the MUI 3.8 SDK (the baseline)~%"))
+        (t
+         (maphash
+          (lambda (k lib5)
+            (let ((base (gethash k ndk-libs)))
+              (cond
+                ((or (null base) (not (eq (sfd-lib-source base) :mui)))
+                 (asm-warn "MUI 5 SDK: ~A_lib.sfd has no MUI 3.8 SDK twin — ignored" k))
+                (t
+                 (multiple-value-bind (same bad)
+                     (verify-lvos-against-mos base lib5 "MUI SDK" "MUI 5 SDK")
+                   (format t "LVO cross-check MUI SDK vs MUI 5 SDK: ~D functions agree, ~D differ~%"
+                           same bad))
+                 (let ((known (make-hash-table :test 'equal)) (added 0))
+                   (dolist (f (sfd-lib-functions base))
+                     (setf (gethash (sfd-fn-name f) known) t))
+                   (dolist (f (sfd-lib-functions lib5))
+                     (unless (or (sfd-fn-private f) (gethash (sfd-fn-name f) known))
+                       (unless (and (sfd-fn-version f) (> (sfd-fn-version f) 19))
+                         (setf (sfd-fn-version f) 20))
+                       (setf (sfd-lib-functions base)
+                             (append (sfd-lib-functions base) (list f)))
+                       (incf added)))
+                   (format t "MUI 5 SDK: ~A gains ~D post-3.8 function~:P ((%version>= 20))~%"
+                           k added))))))
+          mui5-libs))))
     ;; Parse every .i under the subsystem dirs first (the symbol table is
     ;; global: STRUCTURE bases and EQUs reference other files), then the
     ;; twin-less .h files (their macros reference the .i constants).
@@ -2029,11 +2853,22 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
             (unless (member rel *skip-includes* :test #'string=)
               (push rel all-inc))))
         (dolist (rel (twinless-h-files d))
-          (unless (member rel *skip-includes* :test #'string=)
+          (unless (or (member rel *skip-includes* :test #'string=)
+                      (member rel all-inc :test #'string-equal))   ; mui/ vs MUI/
             (push rel all-inc))))
       (setf all-inc (sort all-inc #'string<))
       (parse-i-files ndk-inc (remove-if-not (lambda (r) (ends-with ".i" r)) all-inc))
-      (parse-h-files (remove-if-not (lambda (r) (ends-with ".h" r)) all-inc))
+      ;; snapshot for the additive MUI headers: the .i symbols only, no C
+      ;; macro yet — their parse must see its own values, not the
+      ;; baseline's first-definition-wins leftovers
+      (let ((snap-syms (copy-string-table *asm-symbols*))
+            (snap-macros (copy-string-table *c-macros*)))
+        (parse-h-files (remove-if-not (lambda (r) (ends-with ".h" r)) all-inc))
+        (setf extra-mui-includes
+              (merge-additive-mui-headers
+               (remove nil (list (and mui5-inc-h (list "MUI 5 SDK" mui5-inc-h))
+                                 (and mos-mui-inc-h (list "MorphOS SDK" mos-mui-inc-h))))
+               snap-syms snap-macros (and mui-sfd t))))
       ;; --- library modules ---
       (let ((names nil))
         (maphash (lambda (k v) (declare (ignore v)) (push k names)) ndk-libs)
@@ -2045,7 +2880,12 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
           (when (or (null only) (member name only :test #'string=))
             (let* ((ndk (gethash name ndk-libs))
                    (mos (gethash name mos-libs))
-                   (includes (if ndk (includes-for name) nil))
+                   (includes (let ((inc (if ndk (includes-for name) nil)))
+                               ;; the additive MUI headers' synthetic
+                               ;; i-files (new constants only)
+                               (if (string= name "muimaster")
+                                   (append inc extra-mui-includes)
+                                   inc)))
                    (stem (lib-module-stem name (or (and ndk (sfd-lib-libname ndk))
                                                    (and mos (sfd-lib-libname mos)))))
                    (module (concatenate 'string "amiga/raw/" stem))
@@ -2061,8 +2901,7 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
       (dolist (rel all-inc)
         (unless (gethash rel claimed-includes)
           (let* ((ifile (gethash rel *i-files*))
-                 ;; drop ".i" / ".h"; reaction_macros -> reaction-macros
-                 (stem (substitute #\- #\_ (subseq rel 0 (- (length rel) 2))))
+                 (stem (header-module-stem rel))
                  (module (concatenate 'string "amiga/raw/" stem))
                  (path (concatenate 'string out-dir stem ".lisp")))
             (when (and ifile

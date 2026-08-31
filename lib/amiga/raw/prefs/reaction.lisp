@@ -3,8 +3,8 @@
 ;;; Sources:
 ;;;   prefs/reaction.h
 ;;;
-;;; 0 functions, 1 constants, 0 structs.
-;;; 1 C macro skipped: not an integer constant (string, call, float).
+;;; 0 functions, 1 constants, 1 structs.
+;;; 1 C macro skipped: not an integer or ASCII-string constant (call, float, non-ASCII).
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
 ;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
@@ -25,6 +25,24 @@
 
   ;; --- constants from prefs/reaction.h ---
   (:const "+FONTNAMESIZE+" #x80)
+
+  ;; --- structures from prefs/reaction.h ---
+  (:struct "REACTION-PREFS" 546   ; ReactionPrefs (prefs/reaction.h)
+    ("BEVEL-TYPE" :u16 0)
+    ("GLYPH-TYPE" :u16 2)
+    ("LAYOUT-SPACING" :u16 4)
+    ("3-D-PROP" :i16 6)
+    ("LABEL-PEN" :u16 8)
+    ("LABEL-PLACE" :u16 10)
+    ("3-D-LABEL" :i16 12)
+    ("SIMPLE-REFRESH" :i16 14)
+    ("3-D-LOOK" :i16 16)
+    ("FALLBACK-ATTR" (:struct 8) 18)
+    ("LABEL-ATTR" (:struct 8) 26)
+    ("FALLBACK-NAME" (:array :u8 128) 34)
+    ("LABEL-NAME" (:array :u8 128) 162)
+    ("PATTERN" (:array :u8 256) 290)
+    )
   )
 
 (provide "amiga/raw/prefs/reaction")

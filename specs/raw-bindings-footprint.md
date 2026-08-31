@@ -393,7 +393,17 @@ FASL).
 
 Size: intuition ≈ 1950 entries × 12 B ≈ 23 KB + ≈ 25 KB of names
 ≈ **50 KB resident**, plus an optional u16 hash index (8 KB) built on
-first probe.  Everything else is pay-per-use: symbol 36 B + name ≈ 28 B
+first probe.
+
+*As built* (`src/core/bindtab.h` is the authority): 16-byte header,
+16-byte entries, one name arena that also holds the out-of-line
+payloads — wide integers (`CL_BT_F_WIDE`: u8 nbytes, u8 sign, magnitude)
+and, since 2026-08-30, **string values** (`CL_BT_F_STRING`: u8 len +
+ASCII bytes) for the string `#define`s of a C header (`mui.h`'s
+`MUIC_Window "Window.mui"`, the `MUIX_*` text-style escapes); a
+`(:const NAME "string")` row materialises as a `DEFCONSTANT` of a fresh
+simple string.  No hash index: the probe binary-searches the sorted
+entries.  Everything else is pay-per-use: symbol 36 B + name ≈ 28 B
 + 2 conses 24 B + stub 20 B ≈ **~110 B per touched binding**.
 
 ### Package hook

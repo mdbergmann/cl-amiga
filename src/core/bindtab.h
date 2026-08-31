@@ -31,11 +31,17 @@
  *   entries n x 16:    u32 name_off, u16 name_len, u8 kind, u8 flags,
  *                      u32 a, i16 b, u8 c, u8 d        — sorted by name
  *   name arena:        names_len bytes (ASCII, no terminators), plus the
- *                      8-byte payloads of CL_BT_F_WIDE values
+ *                      payloads of CL_BT_F_WIDE values (u8 nbytes, u8 sign,
+ *                      big-endian magnitude) and CL_BT_F_STRING values
+ *                      (u8 len, ASCII bytes)
  *
  * Per kind:
  *   CL_BT_CONST / CL_BT_VAR   value: a as u32, or i32 when CL_BT_F_SIGNED,
- *                             or the i64 at arena[a] when CL_BT_F_WIDE.
+ *                             or the integer at arena[a] when CL_BT_F_WIDE,
+ *                             or the string at arena[a] when CL_BT_F_STRING
+ *                             (a C header's string #define — MUIC_Window
+ *                             "Window.mui"; materialised as a fresh simple
+ *                             string).
  *                             CONST -> CL_SYM_CONSTANT, VAR -> CL_SYM_SPECIAL
  *                             (a DEFCSTRUCT's *NAME-SIZE*).
  *   CL_BT_LIBCALL             a regspec (nibbles | result kind << 28),
@@ -81,7 +87,9 @@
 #define CL_BT_F_NOT_MORPHOS 0x01   /* only when :MORPHOS is absent */
 #define CL_BT_F_MORPHOS     0x02   /* only when :MORPHOS is present */
 #define CL_BT_F_SIGNED      0x04   /* CONST/VAR: a is an int32 */
-#define CL_BT_F_WIDE        0x08   /* CONST/VAR: a = arena offset of an i64 */
+#define CL_BT_F_WIDE        0x08   /* CONST/VAR: a = arena offset of a wide integer */
+#define CL_BT_F_STRING      0x10   /* CONST/VAR: a = arena offset of (u8 len, ASCII bytes) */
+#define CL_BT_F_KNOWN       0x1F   /* every flag above; others reject the blob */
 
 /* CL_Package.bindings vector slots */
 #define CL_BT_SLOT_BLOB     0
@@ -92,8 +100,8 @@
 /* Pack a list of rows into a blob (byte vector).  Row syntax (what
  * AMIGA.FFI:DEFINE-BINDING-TABLE takes; names are strings, used
  * literally like DEFPACKAGE's :EXPORT strings):
- *   (:const "NAME" integer)
- *   (:var   "NAME" integer)
+ *   (:const "NAME" integer-or-ascii-string)
+ *   (:var   "NAME" integer-or-ascii-string)
  *   (:fn    "NAME" lvo (reg-keyword...) result-keyword [:not-morphos|:morphos] [min-version])
  *   (:field "NAME" type offset)        type = ctype keyword | (:struct n) | (:array ctype n)
  *   (:struct "NAME" size ("FIELD" type offset)...)   -> (:var "*NAME-SIZE*") + (:field "NAME-FIELD" ..)

@@ -3097,6 +3097,11 @@ static void gc_mark_thread_roots(CL_Thread *t)
      * bc->name a stale offset under GC stress. */
     GC_DBG_SRC("pending_lambda_name", 0);
     gc_mark_obj(t->pending_lambda_name);
+    /* Foreign-callback boundary: the condition parked by a callback until
+     * the foreign call returns, and the one an unwind is carrying. */
+    GC_DBG_SRC("callback_error", 0);
+    gc_mark_obj(t->callback_error);
+    gc_mark_obj(t->last_condition);
 
     /* Thread metadata */
     GC_DBG_SRC("thread-metadata", 0);
@@ -3860,6 +3865,8 @@ static void gc_update_thread_roots(CL_Thread *t)
             gc_update_slot(&t->saved_pending_stack[i].pending_mv_values[m]);
     }
     gc_update_slot(&t->pending_lambda_name);  /* see gc_mark counterpart */
+    gc_update_slot(&t->callback_error);
+    gc_update_slot(&t->last_condition);
 
     /* Thread metadata */
     gc_update_slot(&t->name);

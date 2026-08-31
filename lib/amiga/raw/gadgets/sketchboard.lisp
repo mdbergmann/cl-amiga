@@ -4,7 +4,7 @@
 ;;;   sketchboard_lib.sfd ($VER: sketchboard_lib.sfd 47.1 (30.11.2021))
 ;;;   gadgets/sketchboard.h
 ;;;
-;;; 1 functions, 54 constants, 0 structs.
+;;; 1 functions, 54 constants, 2 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
 ;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
@@ -89,6 +89,18 @@
   (:const "+SGM-UNDO+" #x580101)
   (:const "+SGM-REDO+" #x580102)
   (:const "+SGM-SCROLL+" #x580103)
+
+  ;; --- structures from gadgets/sketchboard.h ---
+  (:struct "SP-GENERAL" 38   ; spGeneral (gadgets/sketchboard.h)
+    ("METHOD-ID" :u32 0)
+    ("G-INFO" (:struct 34) 4)
+    )
+  (:struct "SP-SCROLL-RASTER" 16   ; spScrollRaster (gadgets/sketchboard.h)
+    ("METHOD-ID" :u32 0)
+    ("G-INFO" :fptr 4)
+    ("DELTA-X" :i32 8)
+    ("DELTA-Y" :i32 12)
+    )
 
   ;; --- functions (sketchboard_lib.sfd) ---
   (:fn "SKETCHBOARD-GET-CLASS" -30 () :pointer 40)   ; Class * SKETCHBOARD_GetClass() () LVO -30

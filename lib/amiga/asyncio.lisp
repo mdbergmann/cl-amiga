@@ -114,7 +114,7 @@ module still loads for compilation and the portable checks."
 (defconstant +dp-arg2+     80)          ;   .dp_Arg2 buffer address
 (defconstant +dp-arg3+     84)          ;   .dp_Arg3 buffer size
 (defconstant +scratch+    104)          ; one longword for byte/char I/O
-(defconstant +header-size+ 112)         ; buffers start here (16-aligned)
+(defconstant +header-bytes+ 112)         ; buffers start here (16-aligned)
 (defconstant +standard-packet-size+ 68) ; sizeof(struct StandardPacket)
 
 ;;; ================================================================
@@ -247,14 +247,14 @@ Signals an error (with the DOS error code) if the file cannot be opened."
                                      2 bpb))))))
         (dos:un-lock lock))
       (let* ((half (floor buffer-size 2))
-             (mem (exec:alloc-vec (+ +header-size+ buffer-size 15)
+             (mem (exec:alloc-vec (+ +header-bytes+ buffer-size 15)
                                   (logior exec:+memf-public+ exec:+memf-clear+))))
         (unless mem
           (dos:close handle)
           (error "AMIGA.ASYNCIO: cannot allocate ~D bytes for ~S"
-                 (+ +header-size+ buffer-size 15) file-name))
+                 (+ +header-bytes+ buffer-size 15) file-name))
         (let* ((base (ffi:foreign-pointer-address mem))
-               (buf0 (logand (+ base +header-size+ 15) #xFFFFFFF0))
+               (buf0 (logand (+ base +header-bytes+ 15) #xFFFFFFF0))
                (fh-struct (ffi:make-foreign-pointer (ash handle 2)))  ; BADDR
                (af (%make-async-file
                     :name file-name :fh handle

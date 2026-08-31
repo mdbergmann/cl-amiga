@@ -5,7 +5,7 @@
 ;;;   MorphOS SDK palette_lib.fd + clib/palette_protos.h (via fd2sfd)
 ;;;   gadgets/palette.h
 ;;;
-;;; 1 functions, 18 constants, 0 structs.
+;;; 1 functions, 18 constants, 1 structs.
 ;;; Regenerate with `make gen-amiga-bindings`  see README "Raw OS bindings".
 
 ;; compile-time too: COMPILE-FILE (the host builds the lib/amiga FASLs) must see
@@ -54,6 +54,17 @@
   (:const "+PALETTE-COLOR-OFFSET+" #x85004002)
   (:const "+PALETTE-COLOR-TABLE+" #x85004003)
   (:const "+PALETTE-NUM-COLORS+" #x85004004)
+
+  ;; --- structures from gadgets/palette.h ---
+  (:struct "P-BOX-DRAW-MSG" 32   ; PBoxDrawMsg (gadgets/palette.h)
+    ("METHOD-ID" :u32 0)
+    ("RASTPORT" :fptr 4)
+    ("DRAW-INFO" :fptr 8)
+    ("BOUNDS" (:struct 8) 12)
+    ("STATE" :u32 20)
+    ("COLOR" :u32 24)
+    ("GADGET" :fptr 28)
+    )
 
   ;; --- functions (palette_lib.sfd + MorphOS SDK) ---
   (:fn "PALETTE-GET-CLASS" -30 () :pointer 40)   ; Class * PALETTE_GetClass() () LVO -30
