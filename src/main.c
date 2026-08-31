@@ -875,8 +875,10 @@ int main(int argc, char *argv[])
         platform_write_string("Common Lisp for MorphOS\n");
 #elif defined(PLATFORM_AMIGA)
         platform_write_string("Common Lisp for AmigaOS\n");
+#elif defined(PLATFORM_WIN32)
+        platform_write_string("Common Lisp for Windows\n");
 #else
-        platform_write_string("Common Lisp for AmigaOS 3+\n");
+        platform_write_string("Common Lisp for POSIX hosts\n");
 #endif
         /* Line 5:  )))       //  \\ */
         cl_color_set(CL_COLOR_LIGHT_BLUE);
