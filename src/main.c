@@ -877,6 +877,10 @@ int main(int argc, char *argv[])
         platform_write_string("Common Lisp for AmigaOS\n");
 #elif defined(PLATFORM_WIN32)
         platform_write_string("Common Lisp for Windows\n");
+#elif defined(__APPLE__)
+        platform_write_string("Common Lisp for macOS\n");
+#elif defined(__linux__)
+        platform_write_string("Common Lisp for Linux\n");
 #else
         platform_write_string("Common Lisp for POSIX hosts\n");
 #endif
