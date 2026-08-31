@@ -100,9 +100,9 @@ static CL_Obj bi_setf_nth(CL_Obj *args, int n)
     CL_Obj list;
     CL_Cons *cell;
     CL_UNUSED(n);
-    if (!CL_FIXNUM_P(args[0]))
-        cl_error(CL_ERR_TYPE, "%SETF-NTH: index must be a number");
-    idx = CL_FIXNUM_VAL(args[0]);
+    /* Same index rules as NTH: non-negative only — a negative index used to
+     * walk zero conses and clobber the first element. */
+    idx = cl_extract_count_or_clamp(args[0], "%SETF-NTH");
     list = args[1];
     while (idx > 0 && !CL_NULL_P(list)) {
         list = cl_cdr(list);

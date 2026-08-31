@@ -14,11 +14,13 @@
 /* --- List utility helpers --- */
 
 /* Extract a non-negative integer count argument (BUTLAST/NBUTLAST/LAST style).
+ * Declared in builtins.h — NTH and %SETF-NTH in the neighbouring files walk a
+ * list by the same rules.
  * - Fixnum non-negative: return its value, clamped to INT32_MAX.
  * - Positive bignum: return INT32_MAX (caller treats as "more than length").
  * - Negative bignum / negative fixnum: signal TYPE-ERROR.
  * - Non-integer: signal TYPE-ERROR. */
-static int32_t extract_count_or_clamp(CL_Obj n_arg, const char *fn_name)
+int32_t cl_extract_count_or_clamp(CL_Obj n_arg, const char *fn_name)
 {
     if (CL_FIXNUM_P(n_arg)) {
         int32_t v = CL_FIXNUM_VAL(n_arg);
@@ -70,7 +72,7 @@ static CL_Obj extract_test_arg(CL_Obj *args, int n, int start)
 
 static CL_Obj bi_nthcdr(CL_Obj *args, int n)
 {
-    int32_t idx = extract_count_or_clamp(args[0], "NTHCDR");
+    int32_t idx = cl_extract_count_or_clamp(args[0], "NTHCDR");
     CL_Obj list = args[1];
     CL_UNUSED(n);
     while (idx > 0 && !CL_NULL_P(list)) {
@@ -90,7 +92,7 @@ static CL_Obj bi_last(CL_Obj *args, int n)
     CL_Obj p;
 
     if (n >= 2)
-        count = extract_count_or_clamp(args[1], "LAST");
+        count = cl_extract_count_or_clamp(args[1], "LAST");
     if (CL_NULL_P(list)) return CL_NIL;
     if (!CL_CONS_P(list))
         cl_signal_type_error(list, "LIST", "LAST");
@@ -643,7 +645,7 @@ static CL_Obj bi_butlast(CL_Obj *args, int n)
     CL_Obj p, result = CL_NIL, tail = CL_NIL;
 
     if (n >= 2)
-        count = extract_count_or_clamp(args[1], "BUTLAST");
+        count = cl_extract_count_or_clamp(args[1], "BUTLAST");
     if (CL_NULL_P(list)) return CL_NIL;
     if (!CL_CONS_P(list))
         cl_signal_type_error(list, "LIST", "BUTLAST");
@@ -691,7 +693,7 @@ static CL_Obj bi_nbutlast(CL_Obj *args, int n)
     int32_t i;
 
     if (n >= 2)
-        count = extract_count_or_clamp(args[1], "NBUTLAST");
+        count = cl_extract_count_or_clamp(args[1], "NBUTLAST");
     if (CL_NULL_P(list)) return CL_NIL;
     if (!CL_CONS_P(list))
         cl_signal_type_error(list, "LIST", "NBUTLAST");

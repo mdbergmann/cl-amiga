@@ -451,13 +451,15 @@ static CL_Obj bi_reverse(CL_Obj *args, int n)
 
 static CL_Obj bi_nth(CL_Obj *args, int n)
 {
-    int idx;
+    int32_t idx;
     CL_Obj list;
     CL_UNUSED(n);
 
-    if (!CL_FIXNUM_P(args[0]))
-        cl_error(CL_ERR_TYPE, "NTH: index must be a number");
-    idx = CL_FIXNUM_VAL(args[0]);
+    /* CLHS 14.2 NTH: n is a *non-negative* integer.  A negative one is a
+     * type error (it used to fall straight through the walk loop and hand
+     * back the first element), and a bignum is a perfectly good index that
+     * simply runs off the end of any list — NIL, not an error. */
+    idx = cl_extract_count_or_clamp(args[0], "NTH");
     list = args[1];
     while (idx > 0 && !CL_NULL_P(list)) {
         list = cl_cdr(list);

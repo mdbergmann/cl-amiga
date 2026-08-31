@@ -1861,6 +1861,16 @@ y" 1))
 (check "nthcdr 0" '(1 2 3) (nthcdr 0 '(1 2 3)))
 (check "nthcdr 2" '(3) (nthcdr 2 '(1 2 3)))
 (check "nthcdr past end" nil (nthcdr 5 '(1 2 3)))
+; CLHS 14.2: NTH's index is a non-negative integer -- a bignum runs off the
+; end (NIL), a negative one is a type error.  A MUI hook handed the
+; unsubstituted MUIV_TriggerValue (#x49893131, a bignum here) hit this.
+(check "nth bignum index" nil (nth #x49893131 '(1 2 3)))
+(check "nthcdr bignum index" nil (nthcdr #x49893131 '(1 2 3)))
+(check "nth negative index" :te
+       (handler-case (nth -1 '(1 2 3)) (type-error () :te)))
+(check "setf nth negative index" '(1 2 3)
+       (let ((x (list 1 2 3)))
+         (handler-case (progn (setf (nth -1 x) 99) x) (type-error () x))))
 (check "last" '(3) (last '(1 2 3)))
 (check "last 2" '(2 3) (last '(1 2 3) 2))
 (check "last nil" nil (last nil))

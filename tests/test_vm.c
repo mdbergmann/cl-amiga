@@ -4779,6 +4779,36 @@ TEST(eval_nthcdr)
     ASSERT_STR_EQ(eval_print("(nthcdr 5 '(1 2 3))"), "NIL");
 }
 
+/* CLHS 14.2 NTH: "n---a non-negative integer".  Regression for a MUI hook
+ * that was handed the unsubstituted MUIV_TriggerValue (#x49893131 — above
+ * MOST-POSITIVE-FIXNUM, so a bignum) and got "index must be a number" from
+ * NTH; the negative case silently returned the first element. */
+TEST(eval_nth_index_domain)
+{
+    ASSERT_STR_EQ(eval_print("(nth 0 '(1 2 3))"), "1");
+    ASSERT_STR_EQ(eval_print("(nth 2 '(1 2 3))"), "3");
+    ASSERT_STR_EQ(eval_print("(nth 9 '(1 2 3))"), "NIL");
+    /* a bignum index is a legal non-negative integer: past the end -> NIL */
+    ASSERT_STR_EQ(eval_print("(nth #x49893131 '(1 2 3))"), "NIL");
+    ASSERT_STR_EQ(eval_print("(nth (1+ most-positive-fixnum) '(1 2 3))"), "NIL");
+    ASSERT_STR_EQ(eval_print("(nthcdr #x49893131 '(1 2 3))"), "NIL");
+    /* negative and non-integer indices are type errors, not silent CARs */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (nth -1 '(1 2 3)) (type-error () :te))"), ":TE");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (nth (- -1 most-positive-fixnum) '(1 2 3))"
+        "  (type-error () :te))"), ":TE");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (nth 'a '(1 2 3)) (type-error () :te))"), ":TE");
+    /* (setf (nth n l)) walks by the same rules */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((l (list 1 2 3))) (setf (nth 1 l) 99) l)"), "(1 99 3)");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((l (list 1 2 3)))"
+        "  (handler-case (progn (setf (nth -1 l) 99) l) (type-error () l)))"),
+        "(1 2 3)");
+}
+
 TEST(eval_last)
 {
     ASSERT_STR_EQ(eval_print("(last '(1 2 3))"), "(3)");
@@ -11649,6 +11679,7 @@ int main(void)
 
     /* Phase 5 Tier 3 */
     RUN(eval_nthcdr);
+    RUN(eval_nth_index_domain);
     RUN(eval_last);
     RUN(eval_acons);
     RUN(eval_copy_list);

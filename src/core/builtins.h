@@ -10,6 +10,14 @@
 
 void cl_builtins_init(void);
 
+/* A CLHS "non-negative integer" list index/count argument (NTH, NTHCDR,
+ * LAST, BUTLAST, %SETF-NTH), as an int32_t a walk loop can count down:
+ * a non-negative fixnum as itself, a positive bignum clamped to INT32_MAX
+ * (longer than any list the arena can hold, so the walk falls off the end),
+ * and anything else — a negative index, a non-integer — a TYPE-ERROR
+ * naming FN_NAME.  Defined in builtins_lists.c. */
+int32_t cl_extract_count_or_clamp(CL_Obj n_arg, const char *fn_name);
+
 /* Anchor the GET-INTERNAL-REAL-TIME epoch at the current instant.  main()
  * calls this right after platform_init() so internal real time counts from
  * process start — (get-internal-real-time) then measures launch-to-here
