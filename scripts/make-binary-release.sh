@@ -291,9 +291,13 @@ if [ "$SMOKE" = 1 ]; then
         echo "ERROR: cl+ssl shim did not resolve from the release lib/shims/ — see $OUT/smoke.log" >&2
         exit 1; }
     # lib/amiga must come up from the shipped FASLs (not the sources next to
-    # them) and work: REQUIRE prints the file it loads.
-    grep -q "; Loading .*rel/lib/amiga/raw/exec\.fasl" "$OUT/smoke.log" &&
-    grep -q "; Loading .*rel/lib/amiga/reaction\.fasl" "$OUT/smoke.log" &&
+    # them) and work: REQUIRE prints the file it loads.  REQUIRE's
+    # executable-relative leg concatenates the layout onto the exedir and
+    # never normalises, so the loaded path reads
+    # rel/bin/aos3/../../lib/amiga/... — the `rel/` anchor plus `.*` still
+    # pins the file to the staged copy, which is what this asserts.
+    grep -q "; Loading .*rel/.*lib/amiga/raw/exec\.fasl" "$OUT/smoke.log" &&
+    grep -q "; Loading .*rel/.*lib/amiga/reaction\.fasl" "$OUT/smoke.log" &&
     grep -q "^MEMF-CHIP 2" "$OUT/smoke.log" || {
         echo "ERROR: lib/amiga did not load from the release FASLs — see $OUT/smoke.log" >&2
         exit 1; }
