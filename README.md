@@ -675,6 +675,13 @@ diffs the real package exports against a committed snapshot; run
   function's name), and `flet`/`labels` locals under the name they were
   declared with. `<anonymous>` means a genuinely unnamed `lambda`.
   See `tests/test_debugger_backtrace.sh` and `tests/test_backtrace.c`.
+- **Interactive inspector** — `(inspect obj)` opens an `Inspect>` prompt that
+  numbers the object's components and lets you walk into them: `<n>` descends,
+  `u` goes back up, `r` returns to the root, `d` describes, `p` prints,
+  `e <expr>` evaluates, `q` leaves. Ctrl-D (EOF) at the prompt acts like `q`,
+  the same contract the `Debug>` prompt keeps: it leaves the inspector and
+  returns to the caller, with the session still running.
+  See `tests/test_inspect.c` and `tests/test_inspect_eof.sh`.
 - **Platform abstraction** — all OS calls go through `platform.h` (POSIX and AmigaOS implementations)
 - **FFI** — generic foreign pointer type + peek/poke (all platforms); 68k assembly trampoline for AmigaOS register-based library calls
 - **Threading** (MP package) — kernel threads, per-thread dynamic bindings (TLV), locks, named condition variables, thread interruption/destruction, type predicates; stop-the-world GC with safepoints; POSIX pthreads (with `__thread`-backed TLS) and AmigaOS processes/SignalSemaphores.
