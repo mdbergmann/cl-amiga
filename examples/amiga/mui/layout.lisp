@@ -1,19 +1,33 @@
-;;; layout.lisp — what MUI's group layout does with the group attributes:
-;;; orientation, columns, weights, same-size, frames and backgrounds.
+;;; layout.lisp — the port of the MUI SDK's Layout.c: a *custom layout
+;;; hook*.  A group hands its layout to a MUIA_Group_LayoutHook -- here a
+;;; Lisp function -- which MUI calls twice for two different questions:
+;;; MUILM_MINMAX ("how big do you want to be?", answered from the sizes
+;;; the children already asked for) and MUILM_LAYOUT ("place your
+;;; children"), where this one scatters them at random inside the
+;;; rectangle it was given.  Any other lm_Type must be answered with
+;;; MUILM_UNKNOWN.
 ;;;
-;;; The MUI SDK's Layout.c demonstrates a *custom layout hook*
-;;; (MUIA_Group_LayoutHook, MUIM_CallHook) that places the children at
-;;; random -- a Lisp callback the m68k/PPC runtime does not provide yet
-;;; (specs/mui-bindings.md, section 4.5).  This program shows the other
-;;; side of the same subject: everything MUI's own layout engine does when
-;;; a program states its intentions with attributes instead of a hook.
-;;; The window is resizable -- drag its corner to watch the weights and
-;;; columns follow.
+;;; The game the C plays with them is here too: eight buttons whose
+;;; MUIA_Pressed notification calls a second Lisp hook through
+;;; MUIM_CallHook with the button's number; click them in order and a
+;;; hidden ninth button appears (MUIA_ShowMe), click that to quit.  Get
+;;; the order wrong and it beeps and starts over.  Overlapping objects
+;;; are, as the C's own comment says, usually a bad idea -- a real layout
+;;; hook is more sophisticated; this one shows the mechanism.
 ;;;
-;;; What it shows: MUIA_Group_Horiz / MUIA_Group_Columns /
-;;; MUIA_Group_SameSize, MUIA_Weight, MUIA_FixHeight, every MUIV_Frame_*
-;;; on a text object, MUIA_Background with the MUII_* pens and patterns,
-;;; MUIA_FrameTitle (the C's GroupFrameT), MUIO_Label flags.
+;;; What it shows: MUIA_Group_LayoutHook with an AMIGA.MUI:POOL-HOOK,
+;;; LAYOUT-MSG-TYPE / LAYOUT-MSG-WIDTH / LAYOUT-MSG-HEIGHT and
+;;; LAYOUT-MSG-MIN-MAX with SET-MIN-MAX, LAYOUT-CHILDREN (the
+;;; NextObject() walk of lm_Children), AREA-MIN-WIDTH / AREA-MIN-HEIGHT
+;;; (mui.h's _minwidth / _minheight), LAYOUT-CHILD (MUI_Layout),
+;;; MUI_MAXMAX, MUIM_CallHook with a parameter, MUIA_ShowMe driven from a
+;;; return ID.
+;;;
+;;; The hooks run inside MUI, on its stack: an error in one is caught at
+;;; the callback, the hook returns 0, and the condition is re-signaled in
+;;; Lisp when the MUI call that invoked it returns -- for the layout hook
+;;; that is the SET-ATTRS that opens the window, for the press hook the
+;;; APPLICATION-INPUT inside the event loop.
 ;;;
 ;;; Run on AmigaOS 3.x with MUI 3.8+ installed, or on MorphOS:
 ;;;   clamiga --load examples/amiga/mui/layout.lisp
@@ -23,13 +37,15 @@
 ;;;           --load examples/amiga/mui/layout.lisp
 
 (require "amiga/mui")
+(require "amiga/raw/intuition")    ; DisplayBeep
 
 (when (amiga.mui:available-p)
   (require "amiga/raw/muimaster"))
 
 (defpackage "MUI-LAYOUT"
   (:use "CL")
-  (:local-nicknames ("MUI" "AMIGA.MUI")))
+  (:local-nicknames ("MUI" "AMIGA.MUI")
+                    ("INTUI" "AMIGA.RAW.INTUITION")))
 
 (in-package "MUI-LAYOUT")
 
@@ -39,127 +55,165 @@ time, so this file reads on a system where that package does not exist."
   (symbol-value (or (find-symbol name "AMIGA.RAW.MUIMASTER")
                     (error "layout: amiga.raw.muimaster:~A not found" name))))
 
+(defconstant +id-reward+ 1)             ; ID_REWARD
+
+(defparameter *button-labels*
+  '("Click" "me" "in" "correct" "sequence" "to" "be" "rewarded!"))
+
 ;;; The mui.h macros this program uses, as functions.
 
 (defun children (objects)
-  "Child, obj, Child, obj ... -- MUIA_Group_Child before every object."
   (loop for o in objects collect (m "+MUIA-GROUP-CHILD+") collect o))
 
 (defun vgroup (tags &rest objects)
-  "VGroup, tags..., Child, ..., End"
   (apply #'mui:new-object :group (append tags (children objects))))
 
-(defun hgroup (tags &rest objects)
-  "HGroup: a group with MUIA_Group_Horiz."
-  (apply #'vgroup (list* (m "+MUIA-GROUP-HORIZ+") t tags) objects))
+;;; ---------------------------------------------------------------------
+;;; The custom layout function
+;;; ---------------------------------------------------------------------
 
-(defun col-group (columns tags &rest objects)
-  "ColGroup(n): MUIA_Group_Columns lays the children out row by row."
-  (apply #'vgroup (list* (m "+MUIA-GROUP-COLUMNS+") columns tags) objects))
+(defun layout-min-max (message)
+  "MUILM_MINMAX: MUI has already asked our children how big they want to
+be, so their AREA-MIN-WIDTH / AREA-MIN-HEIGHT are known and we can size
+ourselves from them.  As in the C, we ask for twice the biggest child in
+each direction, a default of four times that, and no maximum."
+  (let ((maxmax (m "+MUI-MAXMAX+"))
+        (max-min-width 0)
+        (max-min-height 0))
+    (dolist (child (mui:layout-children message))
+      (let ((w (mui:area-min-width child))
+            (h (mui:area-min-height child)))
+        (when (and (< max-min-width maxmax) (> w max-min-width))
+          (setf max-min-width w))
+        (when (and (< max-min-height maxmax) (> h max-min-height))
+          (setf max-min-height h))))
+    (mui:set-min-max (mui:layout-msg-min-max message)
+                     :min-width  (* 2 max-min-width)
+                     :min-height (* 2 max-min-height)
+                     :def-width  (* 4 max-min-width)
+                     :def-height (* 4 max-min-height)
+                     :max-width  maxmax
+                     :max-height maxmax))
+  0)
 
-(defun group-frame-t (title)
-  "GroupFrameT(title): a group frame with a title on the group background."
-  (list (m "+MUIA-FRAME+") (m "+MUIV-FRAME-GROUP+")
-        (m "+MUIA-FRAME-TITLE+") title
-        (m "+MUIA-BACKGROUND+") (m "+MUII-GROUP-BACK+")))
+(defun layout-place (message)
+  "MUILM_LAYOUT: place every child inside the rectangle
+\(0, 0, width-1, height-1) MUI gave us.  A group is free to put them
+anywhere in there; this one throws them at random positions, at their
+minimum size.  Returns T when all of them were placed, NIL on the first
+refusal -- errors during layout are hard for MUI to recover from."
+  (let ((width  (mui:layout-msg-width message))
+        (height (mui:layout-msg-height message)))
+    (dolist (child (mui:layout-children message) t)
+      (let* ((mw (mui:area-min-width child))
+             (mh (mui:area-min-height child))
+             (left (random (max 1 (- width mw))))
+             (top  (random (max 1 (- height mh)))))
+        (unless (mui:layout-child child left top mw mh)
+          (return nil))))))
 
-(defun centered (text)
-  "MUIX_C -- the text engine's centre escape -- in front of TEXT."
-  (concatenate 'string (m "+MUIX-C+") text))
+(defun make-layout-hook ()
+  "The MUIA_Group_LayoutHook: a struct Hook whose entry is a Lisp
+function of (hook object message).  The lm_Types are fetched once,
+outside the function MUI calls for every layout pass."
+  (let ((minmax-type (m "+MUILM-MINMAX+"))
+        (layout-type (m "+MUILM-LAYOUT+"))
+        (unknown     (m "+MUILM-UNKNOWN+")))
+    (mui:pool-hook
+     (lambda (hook object message)
+       (declare (ignore hook object))
+       (let ((type (mui:layout-msg-type message)))
+         (cond ((= type minmax-type) (layout-min-max message))
+               ((= type layout-type) (layout-place message))
+               (t unknown)))))))
 
-(defun text (contents &rest tags)
-  "TextObject, TextFrame, MUIA_Text_Contents, ... End"
-  (apply #'mui:new-object :text
-         (m "+MUIA-FRAME+") (m "+MUIV-FRAME-TEXT+")
-         (m "+MUIA-TEXT-CONTENTS+") (centered contents)
-         tags))
+;;; ---------------------------------------------------------------------
+;;; The button game — a second hook, called through MUIM_CallHook
+;;; ---------------------------------------------------------------------
 
-(defun framed (frame-name label)
-  "A text object wearing the frame MUIV_Frame_<FRAME-NAME>."
-  (mui:new-object :text
-    (m "+MUIA-FRAME+") (m (format nil "+MUIV-FRAME-~A+" frame-name))
-    (m "+MUIA-TEXT-CONTENTS+") (centered label)))
+(defun make-press-hook ()
+  "The C's PressFunc, with its `static int lastnum` as a closure
+variable: MUIM_CallHook hands us the button's number in the message's
+first longword, and the object the method was sent to -- the application,
+because that is the notification's destination -- in the hook's second
+argument.  The buttons have to arrive in order 0 .. 7; the eighth in a
+row queues ID_REWARD for the event loop."
+  (let ((last-num -1))
+    (mui:pool-hook
+     (lambda (hook app message)
+       (declare (ignore hook))
+       (let ((n (ffi:peek-u32 message 0)))
+         (incf last-num)
+         (cond ((/= last-num n)
+                (intui:display-beep nil)
+                (setf last-num -1))
+               ((= last-num 7)
+                (mui:return-id app +id-reward+)
+                (setf last-num -1))))
+       0))))
 
-(defun swatch (image-name)
-  "A rectangle painted with the background MUII_<IMAGE-NAME>."
-  (mui:new-object :rectangle
-    (m "+MUIA-FRAME+") (m "+MUIV-FRAME-TEXT+")
-    (m "+MUIA-BACKGROUND+") (m (format nil "+MUII-~A+" image-name))
-    (m "+MUIA-FIX-HEIGHT+") 16))
-
-(defun c-label (label)
-  "CLabel(label): MUI_MakeObject(MUIO_Label, label, MUIO_Label_Centered)"
-  (mui:make-object :label label (m "+MUIO-LABEL-CENTERED+")))
-
-(defun hv-space ()
-  "HVSpace: an empty rectangle that takes whatever room is left."
-  (mui:new-object :rectangle))
+;;; ---------------------------------------------------------------------
 
 (defun run ()
+  (setf *random-state* (make-random-state t))   ; the C's srand(time(0))
   (mui:with-foreign-pool ()
-    (let* ((quit (mui:make-object :button "_Quit"))
+    (let* ((layout-hook (make-layout-hook))
+           (press-hook  (make-press-hook))
+           (buttons (mapcar (lambda (label) (mui:make-object :button label))
+                            *button-labels*))
+           (yeah (mui:make-object :button
+                                  (format nil "Yeah!~%You did it!~%Click to quit!")))
            (win (mui:new-object :window
-                  (m "+MUIA-WINDOW-TITLE+") "Group Layout"
-                  (m "+MUIA-WINDOW-ID+")    (mui:make-id "LAYO")
+                  (m "+MUIA-WINDOW-TITLE+") "Custom Layout"
+                  (m "+MUIA-WINDOW-ID+")    (mui:make-id "CLS3")
                   (m "+MUIA-WINDOW-ROOT-OBJECT+")
                   (vgroup '()
                     (mui:new-object :text
                       (m "+MUIA-FRAME+") (m "+MUIV-FRAME-TEXT+")
                       (m "+MUIA-BACKGROUND+") (m "+MUII-TEXT-BACK+")
                       (m "+MUIA-TEXT-CONTENTS+")
-                      (centered (format nil "MUI lays the objects out itself: groups nest, weights share the room,~%columns align, frames and backgrounds come from the user's MUI preferences.~%Resize the window to watch it work.")))
-                    ;; the room a horizontal group has is shared by MUIA_Weight
-                    (hgroup (group-frame-t "MUIA_Group_Horiz with MUIA_Weight 50 / 100 / 200")
-                      (text "weight 50"  (m "+MUIA-WEIGHT+") 50)
-                      (text "weight 100" (m "+MUIA-WEIGHT+") 100)
-                      (text "weight 200" (m "+MUIA-WEIGHT+") 200))
-                    ;; MUIA_Group_Columns: children fill the rows left to right
-                    (col-group 3 (group-frame-t "MUIA_Group_Columns 3")
-                      (mui:make-object :button "One")   (mui:make-object :button "Two")
-                      (mui:make-object :button "Three") (mui:make-object :button "Four")
-                      (mui:make-object :button "Five")  (mui:make-object :button "Six"))
-                    ;; MUIA_Group_SameSize: every child as wide as the widest
-                    (hgroup (append (group-frame-t "MUIA_Group_SameSize")
-                                    (list (m "+MUIA-GROUP-SAME-SIZE+") t))
-                      (mui:make-object :button "Short")
-                      (mui:make-object :button "A much longer label")
-                      (mui:make-object :button "Mid"))
-                    ;; MUIV_Frame_*: the frames of mui.h, each on a text object
-                    (hgroup (group-frame-t "MUIA_Frame, MUIV_Frame_*")
-                      (framed "BUTTON" "Button")   (framed "TEXT" "Text")
-                      (framed "STRING" "String")   (framed "GROUP" "Group")
-                      (framed "READ-LIST" "ReadList") (framed "GAUGE" "Gauge")
-                      (framed "VIRTUAL" "Virtual"))
-                    ;; MUIA_Background: the pens and patterns of MUII_*
-                    (col-group 8 (group-frame-t "MUIA_Background, MUII_*")
-                      (c-label "Background") (c-label "Shadow") (c-label "Shine")
-                      (c-label "Fill") (c-label "ShadowBack") (c-label "ShineBack")
-                      (c-label "FillBack") (c-label "TextBack")
-                      (swatch "BACKGROUND") (swatch "SHADOW") (swatch "SHINE")
-                      (swatch "FILL") (swatch "SHADOWBACK") (swatch "SHINEBACK")
-                      (swatch "FILLBACK") (swatch "TEXT-BACK"))
-                    ;; the quit button, centred by two elastic rectangles
-                    (hgroup '() (hv-space) quit (hv-space)))))
+                      (concatenate 'string (m "+MUIX-C+")
+                                   (format nil "Demonstration of a custom layout hook.~%Since it's usually no good idea to have overlapping~%objects, your hooks should be more sophisticated.")))
+                    ;; the group whose layout is ours: GroupFrame plus
+                    ;; MUIA_Group_LayoutHook, and the nine children
+                    (apply #'vgroup
+                           (list (m "+MUIA-FRAME+") (m "+MUIV-FRAME-GROUP+")
+                                 (m "+MUIA-GROUP-LAYOUT-HOOK+") layout-hook)
+                           (append buttons (list yeah))))))
            (app (mui:new-object :application
                   (m "+MUIA-APPLICATION-TITLE+")       "Layout"
-                  (m "+MUIA-APPLICATION-VERSION+")     "$VER: Layout 1.0"
-                  (m "+MUIA-APPLICATION-DESCRIPTION+") "Show MUI's group layout"
-                  (m "+MUIA-APPLICATION-BASE+")        "LAYOUT"
+                  (m "+MUIA-APPLICATION-VERSION+")     "$VER: Layout 19.5 (12.02.97)"
+                  (m "+MUIA-APPLICATION-COPYRIGHT+")   "(C) 1993, Stefan Stuntz"
+                  (m "+MUIA-APPLICATION-AUTHOR+")      "Stefan Stuntz"
+                  (m "+MUIA-APPLICATION-DESCRIPTION+") "Demonstrate custom layout hooks."
+                  (m "+MUIA-APPLICATION-BASE+")        "Layout"
                   (m "+MUIA-APPLICATION-WINDOW+")      win)))
       (unwind-protect
            (progn
              (mui:notify win (m "+MUIA-WINDOW-CLOSE-REQUEST+") t
                          :application (m "+MUIM-APPLICATION-RETURN-ID+")
                          (m "+MUIV-APPLICATION-RETURN-ID-QUIT+"))
-             (mui:notify quit (m "+MUIA-PRESSED+") nil
+             (mui:notify yeah (m "+MUIA-PRESSED+") nil
                          :application (m "+MUIM-APPLICATION-RETURN-ID+")
                          (m "+MUIV-APPLICATION-RETURN-ID-QUIT+"))
+             ;; DoMethod(b[i], MUIM_Notify, MUIA_Pressed, FALSE,
+             ;;          app, 3, MUIM_CallHook, &PressHook, i)
+             (loop for button in buttons
+                   for i from 0
+                   do (mui:notify button (m "+MUIA-PRESSED+") nil
+                                  :application (m "+MUIM-CALL-HOOK+") press-hook i))
+             (mui:set-attrs yeah (m "+MUIA-SHOW-ME+") nil)
              (mui:set-attrs win (m "+MUIA-WINDOW-OPEN+") t)
              (when (zerop (or (mui:get-attr (m "+MUIA-WINDOW-OPEN+") win) 0))
                (error "layout: the window would not open"))
-             ;; nothing to do per return ID: the layout is all MUI's
-             (mui:do-application-events ((id) app)))
-        (mui:dispose-object app)))))
+             ;; ID_REWARD comes out of the press hook (it queued it with
+             ;; MUIM_Application_ReturnID); MUIV_Application_ReturnID_Quit
+             ;; ends the loop by itself
+             (mui:do-application-events ((id) app)
+               (when (= id +id-reward+)
+                 (mui:set-attrs yeah (m "+MUIA-SHOW-ME+") t)))
+             (mui:set-attrs win (m "+MUIA-WINDOW-OPEN+") nil))
+        (mui:dispose-object app)))))          ; then the pool frees the hooks
 
 (if (mui:available-p)
     (run)

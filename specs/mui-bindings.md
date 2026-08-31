@@ -610,10 +610,13 @@ Over the callback runtime of §10.5, three thin Lisp layers:
   MUI_CustomClass` per mui.h 3.8), `do-super-method` (`CallHookPkt` on
   `cl_Super->cl_Dispatcher`, offsets 24 / 0 of `struct IClass`),
   `method-id`, `inst-data` (`cl_InstOffset`, offset 32), `min-max-info`
-  / `add-min-max` (`MUIP_AskMinMax`, `struct MUI_MinMax`), `draw-flags`
-  (`MUIP_Draw`), and the `_xxx(obj)` shortcuts of mui.h as `area-*`
+  / `add-min-max` / `set-min-max` (`MUIP_AskMinMax`, `struct
+  MUI_MinMax`), `draw-flags` (`MUIP_Draw`), `request-idcmp` /
+  `reject-idcmp` (LVO −90 / −96, for a class answering
+  `MUIM_HandleInput`), and the `_xxx(obj)` shortcuts of mui.h as `area-*`
   functions over the `MUI_NotifyData` (28 bytes) + `MUI_AreaData`
-  layout: `mad_RenderInfo` +28, `mad_Font` +36, `mad_MinMax` +40,
+  layout: `mad_RenderInfo` +28, `mad_Font` +36, `mad_MinMax` +40
+  (`area-min-width` / `area-min-height` = `_minwidth` / `_minheight`),
   `mad_Box` +52, the four margin bytes +60..63, `mad_Flags` +64;
   `MUI_RenderInfo` fields at 0/4/8/12/16/20.  These offsets are
   constants named after the generated struct accessors and pinned to the
@@ -621,8 +624,21 @@ Over the callback runtime of §10.5, three thin Lisp layers:
   and checked live on the target by `test-mui.lisp` (a `MUIM_Draw` reads
   a plausible `_mwidth` and a non-NULL `_rp`, and the raw accessors read
   the same values).
+- `AMIGA.MUI`, **custom layout hooks (2026-08-31)**: a group whose
+  `MUIA_Group_LayoutHook` is a `pool-hook` gets a `struct MUI_LayoutMsg`,
+  read with `layout-msg-type` (+0), `layout-msg-min-max` (+8 — the
+  `MUI_MinMax` is *embedded*, unlike `MUIP_AskMinMax`'s pointer) and
+  `layout-msg-width` / `-height` (+20 / +24, both setf-able for a
+  virtual group), the children walked by `layout-children` (intuition's
+  `NextObject` over `lm_Children`, returned as a Lisp list) and placed by
+  `layout-child` (`MUI_Layout`, LVO −126).  Five more offset constants,
+  pinned the same way.
 
-Examples: `class1.lisp` (the SDK's `Class1.c`, verbatim in shape) and
+Examples: `class1.lisp` (the SDK's `Class1.c`, verbatim in shape),
+`layout.lisp` (`Layout.c`: the layout hook + the `MUIM_CallHook` button
+game), `slidorama.lisp` (`Slidorama.c`: four custom classes, `OM_NEW`
+with `GetTagData`, `MUIM_HandleInput`, `MUIM_Numeric_Stringify`
+returning a `STRPTR` from `inst-data`) and
 `hooks.lisp` (display hook + `MUIM_CallHook`, the idioms of `psi.c` /
 `AppWindow.c`).  Tests: `tests/test_amiga_boopsi.lisp` drives a
 `make-hook` hook on the host through `call-foreign` of its entry (the
@@ -635,7 +651,13 @@ a 68k caller snippet poked into public memory (`move.l #x,-(sp)` ×2,
 hook — no C code needed; `test-mui.lisp` has MUI call a display hook
 and a `MUIM_CallHook` hook, re-signal a hook's error at `set-attrs`,
 and dispatch `MUIM_AskMinMax` / `MUIM_Draw` to a Lisp custom class in an
-opened window.
+opened window, lay a group out from a Lisp `MUIA_Group_LayoutHook` (both
+`lm_Type`s, the children read back at the size the hook gave them), and
+run a `MUIM_Setup` / `MUIM_Cleanup` / `MUIM_Numeric_Stringify` class
+that asks for IDCMP classes with `request-idcmp`.  The portable halves —
+the `MUI_LayoutMsg` accessors, `set-min-max`, `area-min-*`, the
+"without MUI" diagnostics — are checked on the host by
+`test_amiga_mui.lisp` over hand-built messages.
 
 ### 4.6 As built (2026-08-30)
 
@@ -710,26 +732,31 @@ Ports of the hook-free MUI 3.8 SDK demos, each ending with the
 | File | SDK source | Shows |
 |---|---|---|
 | `hello.lisp` | — | §4.3, the minimal application / window / notify / loop |
-| `layout.lisp` | — (see below) | groups (horiz/vert/columns), weights, same-size, every frame, `MUII_*` backgrounds |
+| `layout.lisp` | `Layout.c` | the custom layout hook: `MUIA_Group_LayoutHook` as a `pool-hook`, `layout-msg-type` / `-width` / `-height` / `-min-max`, `layout-children` (the `NextObject()` walk), `area-min-width` / `-min-height` (`_minwidth`/`_minheight`), `set-min-max`, `layout-child` (`MUI_Layout`), `MUI_MAXMAX`; plus the C's `MUIM_CallHook` button game and `MUIA_ShowMe` reward |
+| `group-layout.lisp` | — (see below) | groups (horiz/vert/columns), weights, same-size, every frame, `MUII_*` backgrounds |
 | `balancing.lisp` | `Balancing.c` | `Balance.mui` between groups, `MUIA_ObjectID`, `window-size-screen` |
 | `pages.lisp` | `Pages.c` | `Register.mui`, the string/cycle/radio/checkmark/slider macros; plus `MUIA_Group_PageMode` with a cycle-driven page switch via `notify` with `MUIV_TriggerValue` |
 | `menus.lisp` | `Menus.c` | `Menustrip`/`Menu`/`Menuitem` objects instead of the C's `struct NewMenu` (no foreign struct), shortcuts, checkmark/toggle/radio items, `MUIA_Application_MenuAction`, `MUIM_FindUData`/`SetUData`/`GetUData`, `MUIM_Family_Insert`/`Remove`, `request` |
 | `showhide.lisp` | `ShowHide.c` | `MUIA_ShowMe` via `MUIV_TriggerValue`; plus `MUIM_Group_InitChange` / `OM_ADDMEMBER` / `OM_REMMEMBER` / `ExitChange` (the C has no dynamic children) |
-| `slidorama.lisp` | — (see below) | knobs, sliders, numeric buttons, gauge + scale, levelmeter, `MUIA_Numeric_Format`, a slider driving gauge and levelmeter with `notify` only |
+| `slidorama.lisp` | `Slidorama.c` | four custom classes with Lisp dispatchers: a `Levelmeter.mui` subclass with `OM_NEW` (`GetTagData` on the `opSet`'s `ops_AttrList`, a private `TAG_USER` tag), `MUIM_Setup`/`MUIM_Cleanup` (`request-idcmp`/`reject-idcmp`) and `MUIM_HandleInput` over the `IntuiMessage`, a `Slider.mui` and a `Numericbutton.mui` overriding `MUIM_Numeric_Stringify` (a `STRPTR` out of `inst-data`); around them the C's knob table and numeric buttons |
+| `numeric.lisp` | — (see below) | knobs, sliders, numeric buttons, gauge + scale, levelmeter, `MUIA_Numeric_Format`, a slider driving gauge and levelmeter with `notify` only |
 | `virtual.lisp` | `Virtual.c` | `Scrollgroup.mui` + `Virtgroup.mui`, `MUII_*` images, `MUIM_List_Insert` from a `pool-string-array`, nested virtual groups scrolled by `notify`, `MUIM_Window_SetCycleChain` |
 | `requester.lisp` | — | `request` (`MUI_RequestA`) with gadget syntax and `%ld`/`%s` params |
 
-Two SDK demos are not ports, checked against the sources 2026-08-30:
-`Layout.c` is the *custom layout hook* demo (`MUIA_Group_LayoutHook`,
-`MUIM_CallHook`) and `Slidorama.c` builds four *custom classes*
-(`MUI_CreateCustomClass` dispatchers overriding `MUIM_Numeric_Stringify`
-and `MUIM_HandleInput`) — both §4.5 territory.  `layout.lisp` and
-`slidorama.lisp` are hook-free programs on the same subjects (what the
-layout engine does with the group attributes; the knob table and
-numeric buttons of the C with `MUIA_Numeric_Format` where it overrode
-Stringify).  `Menus.c`'s static strip comes from a gadtools `struct
-NewMenu` array through `MUIO_MenustripNM`; the port builds the same
-strip from objects, the second way the C's own comment describes.
+`Layout.c` (the *custom layout hook* demo) and `Slidorama.c` (four
+*custom classes*) were §4.5 territory when this list was first written,
+so `layout.lisp` and `slidorama.lisp` started as hook-free programs on
+the same subjects.  The callback runtime of §10 removed that limit and
+both are **faithful ports since 2026-08-31**; the hook-free programs
+live on beside them as `group-layout.lisp` (what the layout engine does
+with the group attributes) and `numeric.lisp` (the knob table and
+numeric buttons with `MUIA_Numeric_Format` where the C overrode
+Stringify).  One deviation, marked in the file: `Slidorama.c` creates
+its Timebutton / Timeslider classes but never instantiates them, and the
+port puts both in the window so the third dispatcher is visible.
+`Menus.c`'s static strip comes from a gadtools `struct NewMenu` array
+through `MUIO_MenustripNM`; the port builds the same strip from objects,
+the second way the C's own comment describes.
 
 Harness: `verify/realamiga/examples.lisp` adds the `"mui"` directory
 (skip when `(mui:available-p)` is NIL, like `reaction`), sets
@@ -817,6 +844,12 @@ Amiga (`make -f Makefile.cross test-amiga`, FS-UAE has MUI 3.8):
 5. ~~The `amiga/hook` runtime feature that unlocks §4.5.~~  **Done
    2026-08-30** (§10.5, §4.7): `class1` and `hooks` join the examples
    harness.
+5b. ~~The two SDK demos step 4 could not port (`Layout.c`,
+   `Slidorama.c`).~~  **Done 2026-08-31**: `layout.lisp` and
+   `slidorama.lisp` are the faithful ports, the hook-free programs they
+   replace kept as `group-layout.lisp` / `numeric.lisp`; the curated
+   layer gained the layout-hook surface and `request-idcmp` /
+   `reject-idcmp` (§4.7).
 6. ~~Phase 2 struct reader, MCC modules.~~  **Done 2026-08-30** (§3.6):
    the `MUI_AreaData` / `MUI_RenderInfo` / `MUIP_*` layouts of §4.7 are
    generated and the curated constants pinned to them.

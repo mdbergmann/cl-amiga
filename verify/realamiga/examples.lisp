@@ -25,9 +25,10 @@
     ("reaction" "buttons") ("reaction" "checkbox") ("reaction" "chooser")
     ("reaction" "clicktab") ("reaction" "fuelgauge") ("reaction" "integer")
     ("reaction" "listbrowser") ("reaction" "requester")
-    ("mui" "hello") ("mui" "layout") ("mui" "balancing") ("mui" "pages")
-    ("mui" "menus") ("mui" "showhide") ("mui" "slidorama") ("mui" "virtual")
-    ("mui" "requester") ("mui" "class1") ("mui" "hooks")))
+    ("mui" "hello") ("mui" "layout") ("mui" "group-layout") ("mui" "balancing")
+    ("mui" "pages") ("mui" "menus") ("mui" "showhide") ("mui" "slidorama")
+    ("mui" "numeric") ("mui" "virtual") ("mui" "requester") ("mui" "class1")
+    ("mui" "hooks")))
 
 (setf amiga.intuition:*event-loop-timeout* 6
       amiga.reaction:*event-loop-timeout* 6

@@ -550,5 +550,158 @@ STRING-CELL for the notification test.  Returns the application."
                   (and raw-ok t)))))                       ; the generated struct rows agree
       '(t t t t t t t)))
 
+;; a custom layout hook: MUIA_Group_LayoutHook makes MUI ask a Lisp
+;; function both of its layout questions.  MUILM_MINMAX is answered with
+;; SET-MIN-MAX over the children's AREA-MIN-WIDTH / AREA-MIN-HEIGHT (the
+;; group must then really be at least that wide), MUILM_LAYOUT places
+;; every child of LAYOUT-CHILDREN with LAYOUT-CHILD -- and the placement
+;; is read back from the children's own _left/_top/_width afterwards.
+;; This is the mechanism of examples/amiga/mui/layout.lisp.
+(check "mui-custom-layout-hook-lays-the-group-out" '(t t 3 t t t)
+  (if *mui-p*
+      (let ((types '()) (child-count 0) (min-width nil)
+            (placed t) (positions '()))
+        (amiga.mui:with-foreign-pool ()
+          (let* ((minmax-type (%m "+MUILM-MINMAX+"))
+                 (layout-type (%m "+MUILM-LAYOUT+"))
+                 (maxmax      (%m "+MUI-MAXMAX+"))
+                 (hook (amiga.mui:pool-hook
+                        (lambda (hook object message)
+                          (declare (ignore hook object))
+                          (let ((type (amiga.mui:layout-msg-type message))
+                                (kids (amiga.mui:layout-children message)))
+                            (pushnew type types)
+                            (cond
+                              ((= type minmax-type)
+                               (setf child-count (length kids))
+                               (let ((w 0) (h 0))
+                                 (dolist (child kids)
+                                   (setf w (max w (amiga.mui:area-min-width child))
+                                         h (max h (amiga.mui:area-min-height child))))
+                                 (setf min-width w)
+                                 (amiga.mui:set-min-max
+                                  (amiga.mui:layout-msg-min-max message)
+                                  :min-width (* 2 w) :min-height (* 2 h)
+                                  :def-width (* 3 w) :def-height (* 3 h)
+                                  :max-width maxmax :max-height maxmax))
+                               0)
+                              ((= type layout-type)
+                               ;; a column of the children, each at its
+                               ;; minimum size, top to bottom
+                               (let ((top 0))
+                                 (dolist (child kids)
+                                   (let ((mw (amiga.mui:area-min-width child))
+                                         (mh (amiga.mui:area-min-height child)))
+                                     (unless (amiga.mui:layout-child child 0 top mw mh)
+                                       (setf placed nil))
+                                     (incf top mh))))
+                               t)
+                              (t (%m "+MUILM-UNKNOWN+")))))))
+                 (kids (list (amiga.mui:make-object :button "One")
+                             (amiga.mui:make-object :button "Two")
+                             (amiga.mui:make-object :button "Three")))
+                 (group (apply #'amiga.mui:new-object :group
+                               (%m "+MUIA-GROUP-LAYOUT-HOOK+") hook
+                               (loop for k in kids
+                                     collect (%m "+MUIA-GROUP-CHILD+") collect k)))
+                 (win (amiga.mui:new-object :window
+                                            (%m "+MUIA-WINDOW-TITLE+") "AMIGA.MUI layout hook"
+                                            (%m "+MUIA-WINDOW-ROOT-OBJECT+") group))
+                 (app (amiga.mui:new-object :application
+                                            (%m "+MUIA-APPLICATION-BASE+") "CLAMIGAMUILAYOUT"
+                                            (%m "+MUIA-APPLICATION-WINDOW+") win)))
+            (unwind-protect
+                 (progn
+                   (amiga.mui:set-attrs win (%m "+MUIA-WINDOW-OPEN+") t)
+                   (amiga.mui:do-application-events ((id) app :timeout 1) id)
+                   ;; the hook put them in a column at their minimum size
+                   (setf positions
+                         (loop for k in kids
+                               collect (list (amiga.mui:area-width k)
+                                             (amiga.mui:area-min-width k)))))
+              (amiga.mui:set-attrs win (%m "+MUIA-WINDOW-OPEN+") nil)
+              (amiga.mui:dispose-object app))
+            (list (and (member minmax-type types) t)   ; MUI asked for the size
+                  (and (member layout-type types) t)   ; and had the children placed
+                  child-count                          ; LAYOUT-CHILDREN found all three
+                  placed                               ; every LAYOUT-CHILD succeeded
+                  (and (integerp min-width) (> min-width 0))  ; _minwidth was live
+                  ;; each child ended up exactly its minimum width
+                  (and (every (lambda (p) (= (first p) (second p))) positions) t)))))
+      '(t t 3 t t t)))
+
+;; a custom class that handles input: MUIM_Setup asks for IDCMP classes
+;; with REQUEST-IDCMP and MUIM_Cleanup gives them back with REJECT-IDCMP
+;; -- both run just from opening and closing the window, with no user.
+;; The same class overrides MUIM_Numeric_Stringify (a Slider.mui
+;; subclass), returning a STRPTR out of its own instance data: MUI calls
+;; it while sizing and drawing the slider.  Both idioms are
+;; examples/amiga/mui/slidorama.lisp's.
+(check "mui-custom-class-input-and-stringify" '(t t t t t)
+  (if *mui-p*
+      (let ((setup nil) (cleanup nil) (stringified nil) (seen-values '()) (failed nil))
+        (amiga.mui:with-foreign-pool ()
+          (let* ((setup-id     (%m "+MUIM-SETUP+"))
+                 (cleanup-id   (%m "+MUIM-CLEANUP+"))
+                 (stringify-id (%m "+MUIM-NUMERIC-STRINGIFY+"))
+                 (value-of     (symbol-function (%mui-sym "MUIP-NUMERIC-STRINGIFY-VALUE")))
+                 (idcmp (logior amiga.raw.intuition:+idcmp-mousemove+
+                                amiga.raw.intuition:+idcmp-intuiticks+))
+                 (mcc (amiga.mui:create-custom-class
+                       :slider
+                       (lambda (class object message)
+                         (let ((id (amiga.mui:method-id message)))
+                           (cond
+                             ((= id setup-id)
+                              (if (zerop (amiga.mui:do-super-method class object message))
+                                  nil
+                                  (progn (amiga.mui:request-idcmp object idcmp)
+                                         (setf setup t)
+                                         t)))
+                             ((= id cleanup-id)
+                              (amiga.mui:reject-idcmp object idcmp)
+                              (setf cleanup t)
+                              (amiga.mui:do-super-method class object message))
+                             ((= id stringify-id)
+                              ;; MUI asks for several values while sizing
+                              ;; the slider (it needs the widest label),
+                              ;; so collect them rather than keep the last
+                              (setf stringified t)
+                              (pushnew (funcall value-of message) seen-values)
+                              ;; a STRPTR out of our own instance data
+                              (let ((buffer (amiga.mui:inst-data class object))
+                                    (text "clamiga"))
+                                (ffi:poke-bytes buffer text 0 0 (length text))
+                                (ffi:poke-u8 buffer 0 (length text))
+                                buffer))
+                             (t (amiga.mui:do-super-method class object message)))))
+                       :data-size 16))
+                 (slider (amiga.mui:new-object (amiga.mui:custom-class-class mcc)
+                                               (%m "+MUIA-NUMERIC-MIN+") 0
+                                               (%m "+MUIA-NUMERIC-MAX+") 100
+                                               (%m "+MUIA-NUMERIC-VALUE+") 42))
+                 (win (amiga.mui:new-object :window
+                                            (%m "+MUIA-WINDOW-TITLE+") "AMIGA.MUI input class"
+                                            (%m "+MUIA-WINDOW-ROOT-OBJECT+")
+                                            (amiga.mui:new-object :group
+                                                                  (%m "+MUIA-GROUP-CHILD+") slider)))
+                 (app (amiga.mui:new-object :application
+                                            (%m "+MUIA-APPLICATION-BASE+") "CLAMIGAMUIINPUT"
+                                            (%m "+MUIA-APPLICATION-WINDOW+") win)))
+            (unwind-protect
+                 (handler-case
+                     (progn
+                       (amiga.mui:set-attrs win (%m "+MUIA-WINDOW-OPEN+") t)
+                       (amiga.mui:do-application-events ((id) app :timeout 1) id)
+                       (amiga.mui:set-attrs win (%m "+MUIA-WINDOW-OPEN+") nil))
+                   (error (e) (setf failed (format nil "~A" e))))
+              (amiga.mui:dispose-object app))
+            (list setup                                  ; MUIM_Setup ran, IDCMP asked for
+                  cleanup                                ; MUIM_Cleanup gave them back
+                  stringified                            ; Stringify was overridden
+                  (and (member 42 seen-values) t)        ; the slider's own value among them
+                  (null failed)))))                      ; no deferred hook error
+      '(t t t t t)))
+
 (format t "; mui: done~%")
 (finish-output)

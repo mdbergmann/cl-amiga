@@ -41,10 +41,17 @@
 ;;;                      function of class, object, message), deleted by
 ;;;                      the foreign pool; DO-SUPER-METHOD, INST-DATA,
 ;;;                      METHOD-ID and the _mleft(obj) family of mui.h
-;;;                      shortcuts (AREA-MLEFT ...) for writing its methods
+;;;                      shortcuts (AREA-MLEFT ...) for writing its methods;
+;;;                      REQUEST-IDCMP / REJECT-IDCMP for a class that
+;;;                      answers MUIM_HandleInput
 ;;;   POOL-HOOK          (AMIGA.BOOPSI) a struct Hook calling a Lisp
 ;;;                      function, for MUIA_List_DisplayHook, MUIM_CallHook,
 ;;;                      MUIA_Group_LayoutHook ...
+;;;   LAYOUT-CHILDREN / LAYOUT-MSG-* / SET-MIN-MAX / LAYOUT-CHILD
+;;;                      what a MUIA_Group_LayoutHook reads out of its
+;;;                      struct MUI_LayoutMsg and does with it: the
+;;;                      NextObject() walk of lm_Children as a list, the
+;;;                      message's fields, and MUI_Layout for each child
 ;;;
 ;;; The module loads on any system -- the host, an Amiga without MUI: it
 ;;; opens muimaster.library on the first call that needs it, and
@@ -108,12 +115,17 @@
    ;; Custom classes: MUI_CreateCustomClass with a Lisp dispatcher, and
    ;; what a dispatcher's methods need
    "CREATE-CUSTOM-CLASS" "CUSTOM-CLASS-CLASS" "DO-SUPER-METHOD"
-   "METHOD-ID" "INST-DATA" "MIN-MAX-INFO" "ADD-MIN-MAX" "DRAW-FLAGS"
+   "METHOD-ID" "INST-DATA" "MIN-MAX-INFO" "ADD-MIN-MAX" "SET-MIN-MAX"
+   "DRAW-FLAGS" "REQUEST-IDCMP" "REJECT-IDCMP"
    ;; The mui.h shortcuts for custom-class methods: _rp(obj), _mleft(obj) ...
    "AREA-RENDER-INFO" "AREA-RASTPORT" "AREA-WINDOW" "AREA-DRAW-INFO"
    "AREA-SCREEN" "AREA-PENS" "AREA-FONT" "AREA-FLAGS"
    "AREA-LEFT" "AREA-TOP" "AREA-WIDTH" "AREA-HEIGHT" "AREA-RIGHT" "AREA-BOTTOM"
-   "AREA-MLEFT" "AREA-MTOP" "AREA-MWIDTH" "AREA-MHEIGHT" "AREA-MRIGHT" "AREA-MBOTTOM"))
+   "AREA-MLEFT" "AREA-MTOP" "AREA-MWIDTH" "AREA-MHEIGHT" "AREA-MRIGHT" "AREA-MBOTTOM"
+   "AREA-MIN-WIDTH" "AREA-MIN-HEIGHT"
+   ;; Custom layout hooks: the struct MUI_LayoutMsg and MUI_Layout
+   "LAYOUT-MSG-TYPE" "LAYOUT-MSG-MIN-MAX" "LAYOUT-MSG-WIDTH" "LAYOUT-MSG-HEIGHT"
+   "LAYOUT-CHILDREN" "LAYOUT-CHILD"))
 
 (in-package "AMIGA.MUI")
 
@@ -224,6 +236,18 @@ library open for the process's lifetime."
 (amiga.ffi:defcfun %delete-custom-class *muimaster-base* -114
   (:a0 mcc) :result :bool
   :doc "BOOL MUI_DeleteCustomClass(struct MUI_CustomClass *mcc)")
+
+(amiga.ffi:defcfun %request-idcmp *muimaster-base* -90
+  (:a0 object :d0 flags) :result :void
+  :doc "VOID MUI_RequestIDCMP(Object *obj, ULONG flags)")
+
+(amiga.ffi:defcfun %reject-idcmp *muimaster-base* -96
+  (:a0 object :d0 flags) :result :void
+  :doc "VOID MUI_RejectIDCMP(Object *obj, ULONG flags)")
+
+(amiga.ffi:defcfun %layout *muimaster-base* -126
+  (:a0 object :d0 left :d1 top :d2 width :d3 height :d4 flags) :result :bool
+  :doc "BOOL MUI_Layout(Object *obj, LONG l, LONG t, LONG w, LONG h, ULONG flags)")
 
 ;;; ================================================================
 ;;; Foreign memory with the GUI's lifetime — MUI additions
@@ -712,12 +736,22 @@ inside one."
 (defconstant +mui-min-max-max-height-offset+ 6)
 (defconstant +mui-min-max-def-width-offset+ 8)
 (defconstant +mui-min-max-def-height-offset+ 10)
+;; struct MUI_LayoutMsg: what a MUIA_Group_LayoutHook is called with.
+;; lm_MinMax is embedded (not a pointer, as in MUIP_AskMinMax), and
+;; lm_Layout's Width/Height are its 20/24 (the generator flattens them).
+(defconstant +mui-layout-msg-size+ 36)
+(defconstant +mui-layout-msg-type-offset+ 0)
+(defconstant +mui-layout-msg-children-offset+ 4)
+(defconstant +mui-layout-msg-min-max-offset+ 8)
+(defconstant +mui-layout-msg-width-offset+ 20)
+(defconstant +mui-layout-msg-height-offset+ 24)
 ;; an Object * points at its MUI_NotifyData, followed by the MUI_AreaData
 ;; (mui.h's struct __dummyXFC2__): an area field sits at
 ;; +MUI-NOTIFY-DATA-SIZE+ plus its MUI_AreaData offset
 (defconstant +mui-notify-data-size+ 28)
 (defconstant +mui-area-data-render-info-offset+ 0)       ; mad_RenderInfo
 (defconstant +mui-area-data-font-offset+ 8)              ; mad_Font
+(defconstant +mui-area-data-min-max-offset+ 12)          ; mad_MinMax, a struct MUI_MinMax
 (defconstant +mui-area-data-box-offset+ 24)              ; mad_Box, a struct IBox
 (defconstant +mui-area-data-addleft-offset+ 32)          ; mad_addleft .. mad_subheight, BYTEs
 (defconstant +mui-area-data-addtop-offset+ 33)
@@ -767,6 +801,13 @@ pointer: six WORDs -- MinWidth, MinHeight, MaxWidth, MaxHeight, DefWidth,
 DefHeight -- at offsets 0, 2, 4, 6, 8, 10."
   (ffi:make-foreign-pointer (ffi:peek-u32 message +muip-ask-min-max-min-max-info-offset+)))
 
+(defun %min-max-offsets ()
+  "The six WORD offsets of a struct MUI_MinMax, in the keyword order the
+functions below take them."
+  (list +mui-min-max-min-width-offset+ +mui-min-max-min-height-offset+
+        +mui-min-max-max-width-offset+ +mui-min-max-max-height-offset+
+        +mui-min-max-def-width-offset+ +mui-min-max-def-height-offset+))
+
 (defun add-min-max (message &key (min-width 0) (min-height 0) (max-width 0)
                                  (max-height 0) (def-width 0) (def-height 0))
   "Add the given amounts to the MUI_MinMax of a MUIM_AskMinMax MESSAGE --
@@ -775,11 +816,27 @@ superclass's frame and spacing (the values must be ADDED, not set).
 Returns NIL."
   (let ((info (min-max-info message)))
     (loop for delta in (list min-width min-height max-width max-height def-width def-height)
-          for offset in (list +mui-min-max-min-width-offset+ +mui-min-max-min-height-offset+
-                              +mui-min-max-max-width-offset+ +mui-min-max-max-height-offset+
-                              +mui-min-max-def-width-offset+ +mui-min-max-def-height-offset+)
+          for offset in (%min-max-offsets)
           unless (zerop delta)
             do (ffi:poke-i16 info (+ (ffi:peek-i16 info offset) delta) offset)))
+  nil)
+
+(defun set-min-max (info &key min-width min-height max-width max-height
+                              def-width def-height)
+  "Set the given fields of the struct MUI_MinMax INFO -- a foreign
+pointer, from MIN-MAX-INFO (a MUIM_AskMinMax message) or from
+LAYOUT-MSG-MIN-MAX (a MUILM_MINMAX layout message).  NIL leaves a field
+as it is.  A custom layout hook SETs the six words, because it computes
+the whole group's size itself; an MUIM_AskMinMax method ADDs to what its
+superclass filled in instead -- that is ADD-MIN-MAX, which takes the
+message directly.  Returns NIL."
+  (loop for value in (list min-width min-height max-width max-height def-width def-height)
+        for offset in (%min-max-offsets)
+        when value
+          do (unless (integerp value)
+               (error "AMIGA.MUI:SET-MIN-MAX: ~S is not an integer -- the fields of a MUI_MinMax are WORDs (MUI_MAXMAX = 10000 means unlimited)"
+                      value))
+             (ffi:poke-i16 info value offset))
   nil)
 
 (defun draw-flags (message)
@@ -835,5 +892,109 @@ MUIM_Setup and MUIM_Cleanup), as a foreign pointer."
 (defun area-mheight (object) "_mheight(obj): the height inside the frame (MUIM_Draw)."    (- (area-height object) (%margin object +mui-area-data-subheight-offset+)))
 (defun area-mright (object)  "_mright(obj): mleft + mwidth - 1."   (+ (area-mleft object) (area-mwidth object) -1))
 (defun area-mbottom (object) "_mbottom(obj): mtop + mheight - 1."  (+ (area-mtop object) (area-mheight object) -1))
+
+(defun %area-min-max (object offset)
+  "A WORD of the object's mad_MinMax (a struct MUI_MinMax)."
+  (ffi:peek-i16 object (%area-offset (+ +mui-area-data-min-max-offset+ offset))))
+
+(defun area-min-width (object)
+  "_minwidth(obj): the minimum width OBJECT settled on when MUI asked it
+\(valid between MUIM_Show and MUIM_Hide) -- what a custom layout hook
+reads from each of its children before placing them."
+  (%area-min-max object +mui-min-max-min-width-offset+))
+
+(defun area-min-height (object)
+  "_minheight(obj): the minimum height OBJECT settled on (MUIM_Show..MUIM_Hide)."
+  (%area-min-max object +mui-min-max-min-height-offset+))
+
+;;; ================================================================
+;;; Custom layout hooks
+;;; ================================================================
+
+;;; A group whose MUIA_Group_LayoutHook is a POOL-HOOK lays its children
+;;; out itself.  MUI calls the hook with a struct MUI_LayoutMsg and one of
+;;; two lm_Types: MUILM_MINMAX, where the hook reports the group's own
+;;; minimum / maximum / default size (its children have already been
+;;; asked, so AREA-MIN-WIDTH / AREA-MIN-HEIGHT of each is known), and
+;;; MUILM_LAYOUT, where it calls LAYOUT-CHILD for every child inside the
+;;; rectangle (0, 0, LAYOUT-MSG-WIDTH - 1, LAYOUT-MSG-HEIGHT - 1).  Any
+;;; other lm_Type must be answered with MUILM_UNKNOWN.  The port of the
+;;; MUI SDK's Layout.c is examples/amiga/mui/layout.lisp.
+
+(defun layout-msg-type (message)
+  "lm_Type of a MUI_LayoutMsg: MUILM_MINMAX or MUILM_LAYOUT (a layout
+hook returns MUILM_UNKNOWN for anything else)."
+  (ffi:peek-u32 message +mui-layout-msg-type-offset+))
+
+(defun layout-msg-min-max (message)
+  "The struct MUI_MinMax embedded in a MUI_LayoutMsg (lm_MinMax), as a
+foreign pointer -- what a MUILM_MINMAX hook fills in with SET-MIN-MAX."
+  (ffi:pointer+ message +mui-layout-msg-min-max-offset+))
+
+(defun layout-msg-width (message)
+  "lm_Layout.Width: the width MUI gives the group for a MUILM_LAYOUT.
+SETF-able -- a virtual group writes back the width it really needs."
+  (ffi:peek-i32 message +mui-layout-msg-width-offset+))
+
+(defun (setf layout-msg-width) (value message)
+  (ffi:poke-i32 message value +mui-layout-msg-width-offset+)
+  value)
+
+(defun layout-msg-height (message)
+  "lm_Layout.Height: the height MUI gives the group for a MUILM_LAYOUT.
+SETF-able, like LAYOUT-MSG-WIDTH."
+  (ffi:peek-i32 message +mui-layout-msg-height-offset+))
+
+(defun (setf layout-msg-height) (value message)
+  (ffi:poke-i32 message value +mui-layout-msg-height-offset+)
+  value)
+
+(defun layout-children (message)
+  "The children of the group being laid out, as a list of objects
+\(foreign pointers): the NextObject() walk of a MUI_LayoutMsg's
+lm_Children that every custom layout hook starts with.  The order is the
+order the children were added in."
+  (let ((list (ffi:make-foreign-pointer
+               (ffi:peek-u32 message +mui-layout-msg-children-offset+))))
+    (if (ffi:null-pointer-p list)
+        '()
+        (let ((cursor (ffi:alloc-foreign 4)))
+          (unwind-protect
+               (progn
+                 (ffi:poke-u32 cursor (ffi:peek-u32 list 0) 0)   ; mlh_Head
+                 (loop for child = (amiga.raw.intuition:next-object cursor)
+                       while child
+                       collect child))
+            (ffi:free-foreign cursor))))))
+
+(defun layout-child (child left top width height &optional (flags 0))
+  "MUI_Layout(CHILD, LEFT, TOP, WIDTH, HEIGHT, FLAGS): place CHILD at
+LEFT/TOP with WIDTH x HEIGHT, in coordinates relative to the group's own
+rectangle -- what a custom layout hook calls for each of LAYOUT-CHILDREN
+on a MUILM_LAYOUT message.  Returns T when MUI accepted the placement;
+a hook that gets NIL should stop and return FALSE (errors during layout
+are hard for MUI to recover from)."
+  (%muimaster "LAYOUT-CHILD")
+  (%layout child left top width height flags))
+
+;;; MUI_RequestIDCMP / MUI_RejectIDCMP — what a custom class that answers
+;;; MUIM_HandleInput asks for in MUIM_Setup and gives back in MUIM_Cleanup.
+
+(defun request-idcmp (object flags)
+  "MUI_RequestIDCMP(OBJECT, FLAGS): ask the window OBJECT lives in for
+the IDCMP classes FLAGS (IDCMP_MOUSEMOVE, IDCMP_INTUITICKS ...), so
+MUI sends OBJECT a MUIM_HandleInput for them.  A custom class does this
+in its MUIM_Setup method and REJECT-IDCMP with the same flags in
+MUIM_Cleanup.  Returns NIL."
+  (%muimaster "REQUEST-IDCMP")
+  (%request-idcmp object flags)
+  nil)
+
+(defun reject-idcmp (object flags)
+  "MUI_RejectIDCMP(OBJECT, FLAGS): give back the IDCMP classes
+REQUEST-IDCMP asked for, in MUIM_Cleanup.  Returns NIL."
+  (%muimaster "REJECT-IDCMP")
+  (%reject-idcmp object flags)
+  nil)
 
 (provide "amiga/mui")

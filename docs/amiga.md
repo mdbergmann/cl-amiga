@@ -15,7 +15,7 @@ register-based library calls); the rest are Lisp libraries loaded on demand via
 | `AMIGA.GADTOOLS` | `(require "amiga/gadtools")` | GadTools gadgets, menus, bevel boxes, VisualInfo |
 | `AMIGA.BOOPSI` | `(require "amiga/boopsi")` | Toolkit-neutral BOOPSI helpers: the foreign pool, tag lists from Lisp values, `do-method`, `get-attr` / `set-attrs`, exec label lists — shared by `AMIGA.REACTION` and `AMIGA.MUI` |
 | `AMIGA.REACTION` | `(require "amiga/reaction")` | ReAction helpers over the generated class modules: object creation, the window.class event loop, requesters; re-exports `AMIGA.BOOPSI` |
-| `AMIGA.MUI` | `(require "amiga/mui")` | MUI helpers over muimaster.library: objects by class name, `MUI_MakeObject`, `MUIM_Notify`, the Application event loop, `MUI_Request`; re-exports `AMIGA.BOOPSI` |
+| `AMIGA.MUI` | `(require "amiga/mui")` | MUI helpers over muimaster.library: objects by class name, `MUI_MakeObject`, `MUIM_Notify`, the Application event loop, `MUI_Request`, custom classes and layout hooks with Lisp dispatchers; re-exports `AMIGA.BOOPSI` |
 | `AMIGA.AUDIO` | `(require "amiga/audio")` | Non-blocking 8-bit sample playback through audio.device |
 | `AMIGA.ASYNCIO` | `(require "amiga/asyncio")` | Double-buffered asynchronous file I/O over DOS packets (the NDK AsynchIO package as Lisp) |
 | `AMIGA.IFF` | `(require "amiga/iff")` | IFF file parsing and writing over iffparse.library, with the NDK `sift` chunk lister |
@@ -558,9 +558,17 @@ when the call into MUI that dispatched it returns (`new-object`,
 | `(method-id message)` | function | The `MethodID` of a method message |
 | `(inst-data class object)` | function | `INST_DATA(class, object)`: the object's instance data as a foreign pointer |
 | `(min-max-info message)`, `(add-min-max message &key min-width min-height max-width max-height def-width def-height)` | function | The `MUI_MinMax` of a `MUIM_AskMinMax` message, and adding to its six fields after `do-super-method` — what every `AskMinMax` method does |
+| `(set-min-max info &key min-width min-height max-width max-height def-width def-height)` | function | Set (not add) the fields of a `MUI_MinMax` — `min-max-info`'s, or `layout-msg-min-max`'s; `NIL` leaves a field alone.  What a custom layout hook answers `MUILM_MINMAX` with |
 | `(draw-flags message)` | function | The flags of a `MUIM_Draw` message (`MADF_DRAWOBJECT` …) |
+| `(request-idcmp object flags)`, `(reject-idcmp object flags)` | function | `MUI_RequestIDCMP` / `MUI_RejectIDCMP`: ask the object's window for IDCMP classes in `MUIM_Setup`, give them back in `MUIM_Cleanup` — what a class answering `MUIM_HandleInput` does |
 | `(area-rastport object)`, `(area-window object)`, `(area-draw-info object)`, `(area-screen object)`, `(area-pens object)`, `(area-font object)`, `(area-render-info object)`, `(area-flags object)` | function | `_rp(obj)`, `_window(obj)`, `_dri(obj)`, `_screen(obj)`, `_pens(obj)`, `_font(obj)`, `muiRenderInfo(obj)`, `mad_Flags` — valid when mui.h says they are (render info between `MUIM_Setup` / `MUIM_Cleanup`, window and rastport between `MUIM_Show` / `MUIM_Hide`) |
 | `(area-left object)` … `(area-bottom object)`, `(area-mleft object)` … `(area-mbottom object)` | function | `_left` / `_top` / `_width` / `_height` / `_right` / `_bottom` and `_mleft` / `_mtop` / `_mwidth` / `_mheight` / `_mright` / `_mbottom` — the object's box and the box inside its frame, valid during `MUIM_Draw` |
+| `(area-min-width object)`, `(area-min-height object)` | function | `_minwidth(obj)` / `_minheight(obj)` — the size the object settled on, valid between `MUIM_Show` and `MUIM_Hide`; what a layout hook reads from each child |
+| `(layout-msg-type message)` | function | `lm_Type` of a `MUI_LayoutMsg` (a `MUIA_Group_LayoutHook`'s message): `MUILM_MINMAX` or `MUILM_LAYOUT` — anything else the hook answers with `MUILM_UNKNOWN` |
+| `(layout-msg-min-max message)` | function | The `MUI_MinMax` embedded in the message (not a pointer to one, as in `MUIP_AskMinMax`) — fill it with `set-min-max` |
+| `(layout-msg-width message)`, `(layout-msg-height message)` | function | `lm_Layout.Width` / `.Height`: the rectangle MUI gives the group for a `MUILM_LAYOUT`.  `setf`-able — a virtual group writes back what it really needs |
+| `(layout-children message)` | function | The group's children as a list of objects — the `NextObject()` walk of `lm_Children` |
+| `(layout-child child left top width height &optional flags)` | function | `MUI_Layout`: place one child inside the group's rectangle, in coordinates relative to it.  `T` when MUI accepted it |
 
 ---
 

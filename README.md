@@ -66,7 +66,7 @@ ReAction GUIs from Lisp — four of the [`examples/amiga/reaction/`](examples/am
 
 ![The checkbox, fuelgauge, listbrowser and clicktab ReAction examples](docs/scrshts/clamiga-reaction.png)
 
-MUI GUIs from Lisp — four of the [`examples/amiga/mui/`](examples/amiga/mui/) ports of the MUI SDK examples (layout, slidorama, pages, requester), running on AmigaOS 3.2 with MUI 3.8:
+MUI GUIs from Lisp — four of the [`examples/amiga/mui/`](examples/amiga/mui/) ports of the MUI SDK examples (layout, slidorama, pages, requester), running on AmigaOS 3.9 with MUI 3.8.  `layout`'s group places its children from a Lisp `MUIA_Group_LayoutHook`, and every levelmeter and slider in `slidorama` is an instance of a MUI custom class whose dispatcher is a Lisp function:
 
 ![The layout, slidorama, pages and requester MUI examples](docs/scrshts/clamiga-mui.png)
 
@@ -1397,9 +1397,15 @@ a `struct Hook` whose entry is a Lisp function of `(hook object message)`
 notification, a `MUIA_Group_LayoutHook` — and `create-custom-class` is
 `MUI_CreateCustomClass` with a Lisp dispatcher of `(class object
 message)`, with `do-super-method`, `method-id`, `inst-data`,
-`add-min-max` and the `_rp(obj)` / `_mleft(obj)` shortcuts (`area-rastport`,
-`area-mleft`, …) for writing its methods; both live in the foreign pool
-and are released after the objects.  The function runs on MUI's stack,
+`add-min-max` / `set-min-max`, `request-idcmp` / `reject-idcmp` for a
+class that answers `MUIM_HandleInput`, and the `_rp(obj)` / `_mleft(obj)`
+/ `_minwidth(obj)` shortcuts (`area-rastport`, `area-mleft`,
+`area-min-width`, …) for writing its methods; both live in the foreign
+pool and are released after the objects.  A group that lays itself out
+reads its `struct MUI_LayoutMsg` with `layout-msg-type`,
+`layout-msg-width` / `-height`, `layout-msg-min-max` and
+`layout-children` (the `NextObject()` walk), and places each child with
+`layout-child` (`MUI_Layout`).  The function runs on MUI's stack,
 so nothing may unwind through MUI: an unhandled error (or a `throw` to a
 catch outside the hook) is caught at the callback, the hook returns 0,
 and the condition is re-signaled in Lisp when the call into MUI that
@@ -1408,11 +1414,15 @@ loop catches it there, the debugger shows it there.
 
 [`examples/amiga/mui/`](examples/amiga/mui/) holds the MUI examples:
 `hello` (above), the ports of the MUI 3.8 developer kit's demos —
-`balancing`, `pages`, `menus`, `showhide`, `virtual`, and `class1`, the
-kit's simplest custom class (a subclass of `Area.mui` drawing a fan of
-lines from `MUIM_Draw`) — plus `layout`, `slidorama`, `requester` and
-`hooks` on group layout, the numeric classes, `MUI_Request`, and a list
-display hook with `MUIM_CallHook` buttons; `tests/amiga/test-mui.lisp` /
+`balancing`, `pages`, `menus`, `showhide`, `virtual`, `class1` (the
+kit's simplest custom class, a subclass of `Area.mui` drawing a fan of
+lines from `MUIM_Draw`), `layout` (a custom layout hook placing the
+group's children itself) and `slidorama` (four custom classes: a
+`Levelmeter.mui` that follows the mouse through `MUIM_HandleInput`, and
+`MUIM_Numeric_Stringify` overrides on `Slider.mui` and
+`Numericbutton.mui`) — plus `group-layout`, `numeric`, `requester` and
+`hooks` on the group attributes, the numeric classes, `MUI_Request`, and a
+list display hook with `MUIM_CallHook` buttons; `tests/amiga/test-mui.lisp` /
 `tests/test_amiga_mui.sh` are the module's executable specification —
 the Amiga side drives a real Application / Window / String tree, fires
 `MUIM_Notify` from Lisp, has MUI dispatch to a Lisp custom class and call

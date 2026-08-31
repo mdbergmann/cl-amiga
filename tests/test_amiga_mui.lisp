@@ -50,16 +50,20 @@
 
 (check "mui-exports" '("*EVENT-LOOP-TIMEOUT*" "ADD-MIN-MAX" "APPLICATION-INPUT"
                        "AREA-BOTTOM" "AREA-DRAW-INFO" "AREA-FLAGS" "AREA-FONT" "AREA-HEIGHT"
-                       "AREA-LEFT" "AREA-MBOTTOM" "AREA-MHEIGHT" "AREA-MLEFT" "AREA-MRIGHT"
+                       "AREA-LEFT" "AREA-MBOTTOM" "AREA-MHEIGHT" "AREA-MIN-HEIGHT"
+                       "AREA-MIN-WIDTH" "AREA-MLEFT" "AREA-MRIGHT"
                        "AREA-MTOP" "AREA-MWIDTH" "AREA-PENS" "AREA-RASTPORT" "AREA-RENDER-INFO"
                        "AREA-RIGHT" "AREA-SCREEN" "AREA-TOP" "AREA-WIDTH" "AREA-WINDOW"
                        "AVAILABLE-P" "CLASS-ID" "CREATE-CUSTOM-CLASS" "CUSTOM-CLASS-CLASS"
                        "DISPOSE-OBJECT" "DO-APPLICATION-EVENTS" "DO-METHOD" "DO-SUPER-METHOD"
                        "DRAW-FLAGS" "GET-ATTR" "GET-ATTR-POINTER" "GET-ATTR-STRING" "INST-DATA"
+                       "LAYOUT-CHILD" "LAYOUT-CHILDREN" "LAYOUT-MSG-HEIGHT"
+                       "LAYOUT-MSG-MIN-MAX" "LAYOUT-MSG-TYPE" "LAYOUT-MSG-WIDTH"
                        "MAKE-ID" "MAKE-OBJECT" "METHOD-ID" "MIN-MAX-INFO"
                        "NEW-OBJECT" "NOTIFY" "OBJECT-CLASS" "POOL-ALLOC" "POOL-FINALIZER"
                        "POOL-HOOK" "POOL-STRING"
-                       "POOL-STRING-ARRAY" "REQUEST" "RETURN-ID" "SET-ATTRS"
+                       "POOL-STRING-ARRAY" "REJECT-IDCMP" "REQUEST" "REQUEST-IDCMP"
+                       "RETURN-ID" "SET-ATTRS" "SET-MIN-MAX"
                        "WINDOW-EDGE-DELTA" "WINDOW-SIZE-MINMAX" "WINDOW-SIZE-SCREEN"
                        "WINDOW-SIZE-VISIBLE" "WITH-FOREIGN-POOL" "WITH-TAGS")
   (let ((names '()))
@@ -352,11 +356,80 @@
     (prog1 (list (amiga.mui:method-id msg) (amiga.mui:draw-flags msg))
       (ffi:free-foreign msg))))
 
+;; _minwidth(obj) / _minheight(obj): mad_MinMax at +28 (MUI_NotifyData)
+;; +12 (mad_RenderInfo, priv7, mad_Font), its first two WORDs
+(check "mui-area-min-size-shortcuts" '(133 47)
+  (let ((obj (ffi:alloc-foreign 80)))
+    (ffi:poke-i16 obj 133 40) (ffi:poke-i16 obj 47 42)
+    (prog1 (list (amiga.mui:area-min-width obj) (amiga.mui:area-min-height obj))
+      (ffi:free-foreign obj))))
+
+;;; --- custom layout hooks: the struct MUI_LayoutMsg -------------------------
+;;; MUI_Layout itself needs MUI; the message a layout hook is handed is
+;;; plain memory, so the accessors and SET-MIN-MAX are checked here on a
+;;; hand-built one (lm_Type 0, lm_Children 4, lm_MinMax 8, Width 20,
+;;; Height 24 -- 36 bytes in all).
+
+(check "mui-layout-msg-accessors" '(2 640 480 100 200)
+  (let ((msg (ffi:alloc-foreign 36)))
+    (ffi:poke-u32 msg 2 0)                      ; MUILM_LAYOUT
+    (ffi:poke-i32 msg 640 20) (ffi:poke-i32 msg 480 24)
+    (prog1 (list (amiga.mui:layout-msg-type msg)
+                 (amiga.mui:layout-msg-width msg)
+                 (amiga.mui:layout-msg-height msg)
+                 ;; SETF-able: a virtual group writes back what it needs
+                 (setf (amiga.mui:layout-msg-width msg) 100)
+                 (setf (amiga.mui:layout-msg-height msg) 200))
+      (ffi:free-foreign msg))))
+
+;; lm_MinMax is embedded in the message, not a pointer to one as in
+;; MUIP_AskMinMax: LAYOUT-MSG-MIN-MAX is the message plus 8
+(check "mui-layout-msg-min-max-is-embedded" t
+  (let ((msg (ffi:alloc-foreign 36)))
+    (prog1 (= (ffi:foreign-pointer-address (amiga.mui:layout-msg-min-max msg))
+              (+ (ffi:foreign-pointer-address msg) 8))
+      (ffi:free-foreign msg))))
+
+;; SET-MIN-MAX writes the six WORDs (MinW, MinH, MaxW, MaxH, DefW, DefH);
+;; NIL leaves a field alone
+(check "mui-set-min-max" '(20 10 10000 10000 40 -1)
+  (let ((msg (ffi:alloc-foreign 36)))
+    (ffi:poke-i16 msg -1 18)                    ; DefHeight: left alone below
+    (amiga.mui:set-min-max (amiga.mui:layout-msg-min-max msg)
+                           :min-width 20 :min-height 10
+                           :max-width 10000 :max-height 10000
+                           :def-width 40 :def-height nil)
+    (prog1 (loop for offset from 8 below 20 by 2 collect (ffi:peek-i16 msg offset))
+      (ffi:free-foreign msg))))
+
+(check "mui-set-min-max-rejects-non-integers" t
+  (let ((msg (ffi:alloc-foreign 36)))
+    (prog1 (message-mentions
+            (lambda () (amiga.mui:set-min-max (amiga.mui:layout-msg-min-max msg)
+                                              :min-width "wide"))
+            "SET-MIN-MAX" "not an integer" "MUI_MAXMAX")
+      (ffi:free-foreign msg))))
+
+;; an empty lm_Children (a NULL MinList) is no children, not a crash
+(check "mui-layout-children-of-null-list" nil
+  (let ((msg (ffi:alloc-foreign 36)))
+    (prog1 (amiga.mui:layout-children msg)
+      (ffi:free-foreign msg))))
+
+;; the three entry points that need the library report it, not a NULL call
+(check "mui-layout-entry-points-without-mui" '(t t t)
+  (list (message-mentions (lambda () (amiga.mui:layout-child nil 0 0 10 10))
+                          "LAYOUT-CHILD" "muimaster.library")
+        (message-mentions (lambda () (amiga.mui:request-idcmp nil 0))
+                          "REQUEST-IDCMP" "muimaster.library")
+        (message-mentions (lambda () (amiga.mui:reject-idcmp nil 0))
+                          "REJECT-IDCMP" "muimaster.library")))
+
 ;;; --- the examples load on the host and bow out ------------------------
 
 (defparameter *examples*
-  '("hello" "layout" "balancing" "pages" "menus" "showhide" "slidorama"
-    "virtual" "requester" "class1" "hooks"))
+  '("hello" "layout" "group-layout" "balancing" "pages" "menus" "showhide"
+    "slidorama" "numeric" "virtual" "requester" "class1" "hooks"))
 
 (dolist (name *examples*)
   (check (format nil "example-~A-loads-and-bows-out" name) t

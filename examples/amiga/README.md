@@ -59,28 +59,30 @@ each example loads and says so instead of failing.
 ## MUI (`mui/`)
 
 Common Lisp MUI programs written against the generated raw module
-(`lib/amiga/raw/muimaster`: the 26 `muimaster.library` functions and
+(`lib/amiga/raw/muimaster`: the 30 `muimaster.library` functions and
 every `MUIA_` / `MUIM_` / `MUIV_` / `MUIC_` constant of `libraries/mui.h`)
 and the `AMIGA.MUI` helpers (`lib/amiga/mui.lisp`: objects by class name,
 `MUI_MakeObject`, the `MUIM_Notify` idiom, the `MUIM_Application_NewInput`
 loop, over `lib/amiga/boopsi.lisp`'s `DoMethod` and string pools, which
 it re-exports).  Most are ports of the demos in the MUI 3.8 developer
-kit (`MUI:Developer/C/Examples/`); the kit's `Layout.c` and
-`Slidorama.c` are a layout-hook and a custom-class demo, so `layout` and
-`slidorama` are hook-free programs on the same subjects, while `class1`
-ports the kit's `Class1.c` custom class and `hooks` shows the hook
-idioms the kit spreads over `psi.c`, `Layout.c` and `AppWindow.c`.  Each
-file names its source and what it demonstrates.
+kit (`MUI:Developer/C/Examples/`), the hook and custom-class ones
+(`Layout.c`, `Slidorama.c`, `Class1.c`) included — their Lisp functions
+are called by MUI itself.  `group-layout` and `numeric` are the
+attribute-only counterparts of `layout` and `slidorama`, and `hooks`
+collects the hook idioms the kit spreads over `psi.c`, `Layout.c` and
+`AppWindow.c`.  Each file names its source and what it demonstrates.
 
 | Example | SDK source | Shows |
 |---------|-----------|-------|
 | `hello.lisp` | — | The minimal MUI application: Application / Window / Group / Text / `MUI_MakeObject` button, `MUIM_Notify` on `MUIA_Window_CloseRequest` and `MUIA_Pressed`, `MUIA_Window_Open`, the event loop |
-| `layout.lisp` | — | What the group layout does with its attributes: `MUIA_Group_Horiz` / `_Columns` / `_SameSize`, `MUIA_Weight`, every `MUIV_Frame_*`, the `MUII_*` backgrounds, `MUIA_FrameTitle` |
+| `layout.lisp` | `Layout.c` | A custom layout hook: `MUIA_Group_LayoutHook` is a Lisp function (`pool-hook`) answering `MUILM_MINMAX` from the children's `area-min-width` / `area-min-height` with `set-min-max`, and `MUILM_LAYOUT` by scattering `layout-children` at random with `layout-child` (`MUI_Layout`); plus the SDK's button game — `MUIM_CallHook` with a parameter, a reward button shown through `MUIA_ShowMe` |
+| `group-layout.lisp` | — | The other side of `layout`: what MUI's own layout engine does with the group attributes — `MUIA_Group_Horiz` / `_Columns` / `_SameSize`, `MUIA_Weight`, every `MUIV_Frame_*`, the `MUII_*` backgrounds, `MUIA_FrameTitle` |
 | `balancing.lisp` | `Balancing.c` | `Balance.mui` objects between weighted rectangles, buttons and labels; `MUIA_ObjectID`; `MUIV_Window_Width_Screen(50)` via `window-size-screen` |
 | `pages.lisp` | `Pages.c` | `Register.mui` tabs over four pages of string / cycle / radio / checkmark / slider objects, plus a `MUIA_Group_PageMode` group switched by a cycle through `notify` with `MUIV_TriggerValue` |
 | `menus.lisp` | `Menus.c` | A menu strip built from `Menustrip` / `Menu` / `Menuitem` objects (shortcuts, checkmark, toggle and radio items, separators), menu selections as return IDs, `MUIA_Application_MenuAction`, `MUIM_FindUData` / `SetUData` / `GetUData`, a menu inserted and removed at run time, `MUI_Request` |
 | `showhide.lisp` | `ShowHide.c` | Checkmarks that show and hide buttons through `MUIA_ShowMe` with `MUIV_TriggerValue`; buttons added and removed live with `MUIM_Group_InitChange` / `OM_ADDMEMBER` / `OM_REMMEMBER` / `MUIM_Group_ExitChange` |
-| `slidorama.lisp` | (`Slidorama.c`) | Knobs, sliders, numeric buttons, a gauge with its scale and a levelmeter; `MUIA_Numeric_Format`; a slider driving the gauge and the levelmeter by notification |
+| `slidorama.lisp` | `Slidorama.c` | Four custom classes with Lisp dispatchers: a `Levelmeter.mui` subclass that follows the mouse (`OM_NEW` with `GetTagData` on the `opSet`, `request-idcmp` / `reject-idcmp` in `MUIM_Setup` / `MUIM_Cleanup`, `MUIM_HandleInput` over the `IntuiMessage`), a `Slider.mui` whose `MUIM_Numeric_Stringify` prints `:-))` ratings, and one dispatcher shared by a `Slider.mui` and a `Numericbutton.mui` subclass printing `mm:ss`; around them the C's knob table and numeric buttons |
+| `numeric.lisp` | — | The notification-only side of `slidorama`: knobs, sliders, numeric buttons, a gauge with its scale and a levelmeter; `MUIA_Numeric_Format`; a slider driving the gauge and the levelmeter by notification |
 | `virtual.lisp` | `Virtual.c` | `Scrollgroup.mui` / `Virtgroup.mui` viewports: a long text with the window's border scrollers, the `MUII_*` images and backgrounds, a list filled by `MUIM_List_Insert`, a virtual group inside a virtual group scrolled by arrow buttons, `MUIM_Window_SetCycleChain` |
 | `requester.lisp` | — | `MUI_Request`: an information requester, a yes/no question, a three-way choice with a default, and one formatted with `%ld` / `%s` parameters |
 | `class1.lisp` | `Class1.c` | A custom class written in Lisp: `create-custom-class` over `Area.mui` with a dispatcher answering `MUIM_AskMinMax` (`add-min-max` after `do-super-method`) and `MUIM_Draw` (a fan of lines through graphics.library inside `area-mleft` … `area-mbottom`, `area-rastport`, the `TEXTPEN` of `area-draw-info`), `new-object` of the class's `custom-class-class` |
