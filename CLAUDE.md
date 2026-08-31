@@ -107,6 +107,7 @@ For 0.5 the correct base was `95bda65` (89 commits), not the `v0.4` tag.
 - All structs must work at 32-bit — no `size_t` or pointer-sized fields in heap objects
 - Use `uint32_t`/`int32_t` explicitly, not `int` or `long` for sized data
 - C89/C99 compatible — no C11+ features
+- keep it simple, try not to overdo it in complexity
 - **The VM hot path is fragile in two specific ways** (both bisected in the 0.8
   cycle, see `docs/sento-bench-results-0.8.md`): (1) anything written on every
   opcode/call must be per-thread — a process-wide static there (the Ctrl-C
