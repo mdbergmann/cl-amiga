@@ -61,6 +61,8 @@ make -f Makefile.cross examples-amiga # Run the GUI examples (gfx/ + reaction/) 
 make -f Makefile.cross clean        # Remove cross-build artifacts
 ```
 - Uses `m68k-amigaos-gcc` toolchain from `tools/m68k-amigaos-gcc/prefix`
+- Binaries are linked stripped (`-s`); add `STRIP=0` to keep the symbol hunks when you need function names in MuForce/SegTracker hit reports or `m68k-amigaos-gdb`
+- Only `test-amiga`/`test-amiga-lowend`/`run-examples.sh` copy the binary into `build/amiga/` (what FS-UAE runs) — a plain `amiga` build never touches it, so experimental builds with another `BUILDDIR=` are safe
 - **Preferred method** for building the Amiga binary — faster than compiling inside the emulator with vbcc
 - `test-amiga` places the binary in `build/amiga/`, boots FS-UAE, runs the Amiga test suite, and verifies results
 - Runs fully unattended: FS-UAE auto-quits (`C:UAEquit`) when the suite finishes, and a host-side watchdog (`verify/realamiga/run-fs-uae.sh`) kills it if clamiga hangs; results are checked automatically

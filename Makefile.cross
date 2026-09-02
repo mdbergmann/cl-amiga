@@ -62,8 +62,23 @@ else
 WIDEFLAGS =
 endif
 
-CFLAGS    = -noixemul -mcpu=68020 $(FLOATFLAGS) $(WIDEFLAGS) -std=c99 -Wall -Os -fno-tree-switch-conversion -DPLATFORM_AMIGA -DJIT_M68K $(DEBUG_FLAGS)
-LDFLAGS   = -noixemul -mcpu=68020 $(FLOATFLAGS) -fno-tree-switch-conversion
+# -fomit-frame-pointer: this gcc keeps a5 frames even at -Os (~2000 link/unlk
+# pairs); dropping them saved 8.4 KB of code in the 0.8 binary and frees a5 as
+# a general register.  Functions using __builtin_frame_address(0)
+# (CL_CAPTURE_SP) still get a real frame.  Measured 2026-09-01, both variants
+# suite-verified in FS-UAE 2026-09-02.
+CFLAGS    = -noixemul -mcpu=68020 $(FLOATFLAGS) $(WIDEFLAGS) -std=c99 -Wall -Os -fomit-frame-pointer -fno-tree-switch-conversion -DPLATFORM_AMIGA -DJIT_M68K $(DEBUG_FLAGS)
+
+# STRIP=1 (default) links with -s, dropping the HUNK_SYMBOL blocks — ~40 KB
+# of the 0.8 binary that nothing at runtime reads.  STRIP=0 keeps them so
+# MuForce / SegTracker hit reports and m68k-amigaos-gdb show function names.
+STRIP ?= 1
+ifeq ($(STRIP),1)
+STRIPFLAGS = -s
+else
+STRIPFLAGS =
+endif
+LDFLAGS   = -noixemul -mcpu=68020 $(FLOATFLAGS) -fno-tree-switch-conversion $(STRIPFLAGS)
 
 # AmiSSL SDK headers (vendored in include/amissl-sdk — see its README.md):
 # give the build TLS (EXT:SOCKET-START-TLS) through amisslmaster.library,
@@ -169,8 +184,6 @@ check-toolchain:
 $(BUILDDIR)/clamiga: $(ALL_OBJS)
 	@mkdir -p $(dir $@)
 	$(CC) $(LDFLAGS) -o $@ $^ -lm
-	@mkdir -p build/amiga
-	cp $(BUILDDIR)/clamiga build/amiga/clamiga
 
 $(BUILDDIR)/%.o: $(SRCDIR)/%.c
 	@mkdir -p $(dir $@)
@@ -197,9 +210,12 @@ $(BUILDDIR)/%.o: $(SRCDIR)/%.s
 # `C:UAEquit` (appended to call-on-ustartup) quits FS-UAE when the suite
 # finishes, and the script's watchdog kills it if clamiga hangs.  No manual
 # window-closing required.
-# The explicit cp (also done on relink) matters when switching FPU= variants:
-# without it an up-to-date $(BUILDDIR)/clamiga skips the link rule and FS-UAE
-# would silently test whichever variant was deployed last.
+# Only the FS-UAE targets (and run-examples.sh) copy into build/amiga/ — the
+# link rule deliberately does not, so an experimental `make amiga BUILDDIR=...`
+# never replaces the binary FS-UAE runs.  The cp lives here, not in the link
+# rule, also because of FPU= variant switching: an up-to-date $(BUILDDIR)/clamiga
+# skips the link rule, and FS-UAE would silently test whichever variant was
+# deployed last.
 test-amiga: $(BUILDDIR)/clamiga
 	@mkdir -p build/amiga
 	cp $(BUILDDIR)/clamiga build/amiga/clamiga
