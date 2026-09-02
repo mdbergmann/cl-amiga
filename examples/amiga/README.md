@@ -10,6 +10,7 @@ AmigaOS, see the main README.
 | `gfx/bouncing-lines.lisp` | Bouncing colour-cycling lines in a window — the `AMIGA.INTUITION` / `AMIGA.GFX` curated bindings, an IDCMP event loop, FPS overlay | AmigaOS 3.1+ or MorphOS |
 | `gfx/doublebuffer.lisp` | The NDK 3.1 `intuition/doublebuffer.c` example — a face bouncing at the frame rate on a HIRES custom screen through two `ScreenBuffer`s (`AllocScreenBuffer` / `ChangeScreenBuffer`, the `dbi_SafeMessage` reply protocol, the held-off `WaitTOF` retry), an attached control screen (`SA_Parent`) with GadTools sliders, `LendMenus`, two windows on one IDCMP port | AmigaOS 3.0+ (V39) |
 | `gfx/sprite.lisp` | The RKM "Simple Sprite" example (`ssprite.c`) — a hardware sprite: `GetSprite` / `ChangeSprite` / `MoveSprite` / `FreeSprite`, the sprite colour registers via `SetRGB4`, image data in CHIP memory, sprite DMA off/on through a custom-chip register write | AmigaOS 3+ on a native chipset (real or FS-UAE) |
+| `gfx/screenshot.lisp` | Save the front screen (or the Workbench) as a PPM file — the FS-UAE harness's photographer as a program: `LockPubScreen`, the screen list under `LockIBase`, RTG screens through cybergraphics / Picasso96 `ReadPixelArray` (both opened by hand and called by LVO), chipset screens from their bitplanes in CHIP memory resolved through the ViewPort's `ColorMap`, the file written straight from the foreign buffer | AmigaOS 3+ or MorphOS (cybergraphics.library or Picasso96 for RTG screens) |
 | `arexx/` | `clamiga.rexx`, a shell client for the `AMIGA.AREXX` development port, and a CygnusEd macro that saves and loads the current file | ARexx |
 | `reaction/` | ReAction GUIs — ports of the NDK 3.2 `Examples/` programs (below) | AmigaOS 3.5+/3.2 or MorphOS (ReAction classes) |
 | `mui/` | MUI GUIs — the `AMIGA.MUI` helpers over `muimaster.library` (below) | AmigaOS 3.x with MUI 3.8+, or MorphOS |
@@ -116,6 +117,14 @@ source and what it demonstrates.  Both open their own custom screen;
 the sprite one has to, because a hardware sprite is invisible over an
 RTG screen.  `run` returns a plist of what happened (frames swapped,
 sprite number and final position), which is what the test suite checks.
+
+`screenshot.lisp` is the photographer of the harness below as a program
+of its own: it saves whatever screen is in front — or the Workbench,
+`(screenshot:grab :screen :workbench :file "RAM:wb.ppm")` — as a binary
+PPM, reading RTG screens through cybergraphics / Picasso96 and chipset
+screens from their bitplanes; `grab` returns a plist (`:width :height
+:depth :method :bytes`) the test suite checks against the screen, and
+`screen-rgb` hands any program the pixels of a screen.
 
 Run one unattended — its loop returns after the timeout:
 

@@ -702,7 +702,8 @@ the host) covers `AMIGA.ASYNCIO`; the
 over the real host protocol, and `tests/test_dev_commands.sh` is the
 host-side specification for the command layer;
 `examples/amiga/gfx/` holds the runnable graphics demos (bouncing lines,
-the NDK double-buffering example, the RKM hardware-sprite example). See the
+the NDK double-buffering example, the RKM hardware-sprite example, a
+screen grabber that saves any screen as a PPM file). See the
 [AmigaOS Native GUI](../README.md#amigaos-native-gui) and
 [Raw FFI Access](../README.md#raw-ffi-access) sections of the main README.
 

@@ -9508,7 +9508,8 @@ y" 1))
     (error (e) (format t "ERROR loading iff tests: ~A~%" e)))
 
   ; --- the graphics examples (examples/amiga/gfx/): double-buffering,
-  ; hardware sprite, bouncing lines — each run for a second or two ---
+  ; hardware sprite, bouncing lines, the screen grabber — each run for a
+  ; second or two ---
   ; Separate file for the same reader-needs-the-package reason.
   (handler-case
     (load "tests/amiga/test-gfx-examples.lisp")

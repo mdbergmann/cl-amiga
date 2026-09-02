@@ -7,7 +7,8 @@
 ;;; defaults to interactive, that the ports' RUN functions refuse with
 ;;; the C program's message (their teardown runs over nothing allocated),
 ;;; and the pure arithmetic the ports carry (RASSIZE, the sprite colour
-;;; register rule, the sprite image).  tests/amiga/test-gfx-examples.lisp
+;;; register rule, the sprite image, the screen grabber's planar-or-RTG
+;;; decision and nibble table).  tests/amiga/test-gfx-examples.lisp
 ;;; runs the programs for real in FS-UAE.
 
 (defvar *pass* 0)
@@ -84,6 +85,56 @@
 
 (check "host-sprite-dma-is-a-noop-off-amiga" nil
   (funcall (example-fn "SIMPLE-SPRITE" "SPRITE-DMA") t))
+
+;;; ---------------------------------------------------------------- screenshot
+
+(check "host-screenshot-loads-and-bows-out" t
+  (load-quietly "examples/amiga/gfx/screenshot.lisp"))
+
+(check "host-screenshot-not-available" nil
+  (funcall (example-fn "SCREENSHOT" "AVAILABLE-P")))
+
+;; Neither RTG library can be opened on the host (AMIGA:OPEN-LIBRARY is
+;; not even there) -- the example must not have tried.
+(check "host-screenshot-no-rtg-reader" nil
+  (funcall (example-fn "SCREENSHOT" "RTG-READER")))
+
+(check "host-screenshot-grab-refuses" t
+  (handler-case (progn (funcall (example-fn "SCREENSHOT" "GRAB")) nil)
+    (error (e) (and (search "graphics.library" (format nil "~A" e)) t))))
+
+(check "host-screenshot-ppm-header" (format nil "P6~%320 200~%255~%")
+  (funcall (example-fn "SCREENSHOT" "PPM-HEADER") 320 200))
+
+;; The planar-vs-RTG decision from a BitMap's shape: PAL hires x 4 planes
+;; and LORES x 2 are planar, a word-rounded row a little wider than the
+;; screen still is (384 bits for 320 pixels, the limit), a 16-bit RTG
+;; bitmap (BytesPerRow = width x 2, Depth 16) and an 8-bit chunky one
+;; (BytesPerRow = width) are not, nor is a bitmap with fewer rows than
+;; the screen.
+(check "host-screenshot-planar-geometry" '(t t t nil nil nil)
+  (let ((planar-p (example-fn "SCREENSHOT" "PLANAR-GEOMETRY-P")))
+    (list (funcall planar-p 640 256 80 256 4)
+          (funcall planar-p 320 200 40 200 2)
+          (funcall planar-p 320 200 48 200 3)
+          (funcall planar-p 640 480 1280 480 16)
+          (funcall planar-p 640 480 640 480 8)
+          (funcall planar-p 640 256 80 128 4))))
+
+;; The nibble table of a 2-plane screen: 16 x 16 entries of 12 bytes.
+;; Entry #x18 is plane 1 nibble 0001 (pixel 3 gets bit 1) over plane 0
+;; nibble 1000 (pixel 0 gets bit 0): pixel 0 pen 1, pixels 1-2 pen 0,
+;; pixel 3 pen 2.  Entry #x88 has both nibbles 1000: pixel 0 pen 3.
+(check "host-screenshot-nibble-table"
+    '(3072 (255 0 0 0 0 0 0 0 0 0 255 0) (0 0 255 0 0 0 0 0 0 0 0 0))
+  (let ((r (make-array 256 :element-type '(unsigned-byte 8) :initial-element 0))
+        (g (make-array 256 :element-type '(unsigned-byte 8) :initial-element 0))
+        (b (make-array 256 :element-type '(unsigned-byte 8) :initial-element 0)))
+    (setf (aref r 1) 255 (aref g 2) 255 (aref b 3) 255)
+    (let ((table (funcall (example-fn "SCREENSHOT" "NIBBLE-TABLE") 2 r g b)))
+      (list (length table)
+            (coerce (subseq table (* #x18 12) (* #x19 12)) 'list)
+            (coerce (subseq table (* #x88 12) (* #x89 12)) 'list)))))
 
 (format t "~%~D passed, ~D failed~%" *pass* *fail*)
 (if (zerop *fail*)

@@ -1,6 +1,7 @@
 #!/bin/sh
 # Host-side test of the examples/amiga/gfx/ programs (bouncing-lines,
-# the NDK double-buffering port, the RKM hardware-sprite port):
+# the NDK double-buffering port, the RKM hardware-sprite port, the
+# screen grabber):
 # tests/test_amiga_gfx_examples.lisp loads every one — the host has no
 # Amiga, so each must compile completely and bow out with its "not
 # available" line instead of failing — and checks that their RUN

@@ -21,6 +21,9 @@
 ;;; example's few seconds.  Hardware sprites are not in any bitmap, so a
 ;;; shot of the sprite example's screen shows the screen without the
 ;;; sprite.
+;;;
+;;; The same technique as a program of its own, for a screen of your
+;;; choice: examples/amiga/gfx/screenshot.lisp.
 
 (require "amiga/ffi")
 (require "amiga/raw/exec")

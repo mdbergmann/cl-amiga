@@ -1448,7 +1448,7 @@ the Amiga side drives a real Application / Window / String tree, fires
 a Lisp display hook, and reads the return IDs back without a user — and
 `docs/amiga.md` has the table.
 
-### Graphics examples (double-buffering, sprites)
+### Graphics examples (double-buffering, sprites, screenshots)
 
 [`examples/amiga/gfx/`](examples/amiga/gfx/) holds the graphics demos:
 `bouncing-lines.lisp` (a window on the Workbench screen, drawn through
@@ -1456,12 +1456,16 @@ the curated `AMIGA.GFX`), `doublebuffer.lisp` — the NDK 3.1
 `intuition/doublebuffer.c` example: a face bouncing on a HIRES custom
 screen at the frame rate via `AllocScreenBuffer` / `ChangeScreenBuffer`
 and the `dbi_SafeMessage` protocol, with an attached control screen of
-GadTools sliders and `LendMenus` — and `sprite.lisp`, the RKM "Simple
+GadTools sliders and `LendMenus` — `sprite.lisp`, the RKM "Simple
 Sprite" listing: a hardware sprite claimed with `GetSprite`, coloured,
-and walked across a LORES screen with `MoveSprite` under `WaitTOF`.
-Both ports are written against the generated raw bindings
-(`AMIGA.RAW.GRAPHICS` / `AMIGA.RAW.INTUITION`) and are the reference
-for those parts of the API; setting
+and walked across a LORES screen with `MoveSprite` under `WaitTOF` —
+and `screenshot.lisp`, which saves the front screen (or the Workbench)
+as a PPM file: RTG screens through cybergraphics.library / Picasso96
+`ReadPixelArray`, chipset screens straight from their bitplanes and the
+ViewPort's palette — the technique the FS-UAE harness uses to
+photograph the other examples.  The ports are written against the
+generated raw bindings (`AMIGA.RAW.GRAPHICS` / `AMIGA.RAW.INTUITION`)
+and are the reference for those parts of the API; setting
 `amiga.intuition:*event-loop-timeout*` runs any of them unattended for
 that many seconds.  `tests/amiga/test-gfx-examples.lisp` runs them in
 the FS-UAE suite, `tests/test_amiga_gfx_examples.sh` load-checks them
