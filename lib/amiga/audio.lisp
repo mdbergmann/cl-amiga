@@ -228,10 +228,14 @@ channel OpenDevice allocated, given ioa_Unit MASK (1, 2, 4 or 8): AUD0 at
   (let ((ch (position mask '(1 2 4 8))))
     (when ch (+ #xA0 (* ch 16)))))
 
-#+m68k
+;;; Defined on every platform (it is only FFI pokes) but called just
+;;; under a runtime m68k guard in PLAY-SAMPLE — never gated with #+m68k,
+;;; so the one host-compiled lib/amiga FASL keeps it for the m68k target
+;;; that loads it (same reason as OPEN-AUDIO's precedence).
 (defun %poke-channel-pervol (mask period volume)
   "Write AUDxPER and AUDxVOL for channel MASK straight to the custom
-registers (AUDxPER at block+6, AUDxVOL at block+8)."
+registers (AUDxPER at block+6, AUDxVOL at block+8).  Meaningful only on
+m68k (Paula); PLAY-SAMPLE calls it only there."
   (let ((base (%channel-reg-base mask)))
     (when base
       (let ((custom (ffi:make-foreign-pointer #xDFF000 #x200)))
@@ -260,9 +264,13 @@ the write was queued, NIL if the device rejected it."
     (setf (ioaudio-volume io) (min +max-volume+ (max 0 volume)))
     (setf (ioaudio-cycles io) cycles)
     ;; this AmigaOS ignores ADIOF_PERVOL — set the channel's Paula
-    ;; period/volume ourselves so the write is not silent (see above)
-    #+m68k (%poke-channel-pervol (ioaudio-unit io) period
-                                 (min +max-volume+ (max 0 volume)))
+    ;; period/volume ourselves so the write is not silent (see above).
+    ;; Runtime *FEATURES*, not #+m68k: this file ships as one host-compiled
+    ;; FASL, so the m68k branch must survive to the m68k machine that loads
+    ;; it (a #+m68k would resolve on the host that built the FASL).
+    (when (find :m68k *features*)
+      (%poke-channel-pervol (ioaudio-unit io) period
+                            (min +max-volume+ (max 0 volume))))
     (%exec +lvo-send-io+ (list :a1 io))
     (setf (audio-pending audio) t)
     ;; SendIO has no return value; a rejected request comes back
