@@ -44,9 +44,26 @@
 (defparameter *audio-test-max-chip*
   (amiga.exec:alloc-chip-bytes *audio-test-max-wave*))
 
+; --- Paula register math for the ADIOF_PERVOL workaround ---
+; This AmigaOS's audio.device ignores ioa_Period/ioa_Volume in a
+; CMD_WRITE (verified on FS-UAE and real Vampire/AOS 3.2), so
+; PLAY-SAMPLE sets the channel's Paula registers itself.
+; %CHANNEL-REG-BASE is the offset of a channel's register block from
+; #xDFF000: AUD0 at #xA0, then +16 per channel; NIL for a mask naming
+; no single channel.  Pure arithmetic, so it is checked directly.
+(check "audio-reg-base-ch0" #xA0 (amiga.audio::%channel-reg-base 1))
+(check "audio-reg-base-ch1" #xB0 (amiga.audio::%channel-reg-base 2))
+(check "audio-reg-base-ch2" #xC0 (amiga.audio::%channel-reg-base 4))
+(check "audio-reg-base-ch3" #xD0 (amiga.audio::%channel-reg-base 8))
+(check "audio-reg-base-multi-mask-nil" nil (amiga.audio::%channel-reg-base 3))
+(check "audio-reg-base-zero-mask-nil" nil (amiga.audio::%channel-reg-base 0))
+
 ; MorphOS machines have no Paula and may lack audio.device entirely;
 ; OPEN-AUDIO then returns NIL cleanly.  Skip the device tests there
 ; instead of failing them — on m68k a NIL open is a real regression.
+; (The device checks below run PLAY-SAMPLE on a freshly opened channel —
+; the exact scenario the register workaround fixes — so they also
+; exercise %POKE-CHANNEL-PERVOL on m68k.)
 (defparameter *audio-available* nil)
 
 (let ((audio (amiga.audio:open-audio)))

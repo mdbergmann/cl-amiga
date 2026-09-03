@@ -177,6 +177,38 @@ request as a side effect once the device has finished with it."
   (%reclaim audio)
   nil)
 
+;;; Period/volume without trusting ADIOF_PERVOL.
+;;;
+;;; The flag is meant to make audio.device take ioa_Period and ioa_Volume
+;;; from the CMD_WRITE request.  On AmigaOS 3.2 it does not: the device
+;;; ignores both and plays the channel at whatever its Paula period and
+;;; volume registers already hold — and a freshly allocated channel holds
+;;; volume 0, so the very first write on it is silent.  Verified by ear
+;;; and by playback timing on FS-UAE and on real Vampire/AOS 3.2 hardware:
+;;; a request carrying period 443 and volume 64 played at the wrong period
+;;; and dead silent until AUDxVOL was set by hand, after which a request
+;;; with NO flag played correctly.  So on m68k, PLAY-SAMPLE sets the
+;;; channel's Paula registers itself just before the write; the flag stays
+;;; set too, harmless on any device that does honour it.  The PPC ports
+;;; have no Paula at all, so this is m68k-only and they keep the flag path.
+
+(defun %channel-reg-base (mask)
+  "Byte offset (add to #xDFF000) of the Paula register block for the
+channel OpenDevice allocated, given ioa_Unit MASK (1, 2, 4 or 8): AUD0 at
+#xA0, then +16 per channel.  NIL for a mask that names no single channel."
+  (let ((ch (position mask '(1 2 4 8))))
+    (when ch (+ #xA0 (* ch 16)))))
+
+#+m68k
+(defun %poke-channel-pervol (mask period volume)
+  "Write AUDxPER and AUDxVOL for channel MASK straight to the custom
+registers (AUDxPER at block+6, AUDxVOL at block+8)."
+  (let ((base (%channel-reg-base mask)))
+    (when base
+      (let ((custom (ffi:make-foreign-pointer #xDFF000 #x200)))
+        (ffi:poke-u16 custom period (+ base 6))
+        (ffi:poke-u16 custom volume (+ base 8))))))
+
 (defun play-sample (audio chip-data length &key (period 443)
                                                 (volume +max-volume+)
                                                 (cycles 1))
@@ -198,6 +230,10 @@ the write was queued, NIL if the device rejected it."
     (setf (ioaudio-period io) period)
     (setf (ioaudio-volume io) (min +max-volume+ (max 0 volume)))
     (setf (ioaudio-cycles io) cycles)
+    ;; this AmigaOS ignores ADIOF_PERVOL — set the channel's Paula
+    ;; period/volume ourselves so the write is not silent (see above)
+    #+m68k (%poke-channel-pervol (ioaudio-unit io) period
+                                 (min +max-volume+ (max 0 volume)))
     (%exec +lvo-send-io+ (list :a1 io))
     (setf (audio-pending audio) t)
     ;; SendIO has no return value; a rejected request comes back
