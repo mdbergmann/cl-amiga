@@ -848,21 +848,21 @@ int main(int argc, char *argv[])
         /* Drain residual CLI data from stdin (AmigaOS leaks command line to Input()) */
         platform_drain_input();
         platform_write_string("\n");
-        /* Line 1:   )))     \\ */
+        /* Line 1:   (((      \\ */
         cl_color_set(CL_COLOR_LIGHT_BLUE);
-        platform_write_string("  )))     ");
+        platform_write_string("  (((      ");
         cl_color_set(CL_COLOR_RED);
         platform_write_string("\\\\\n");
-        /* Line 2:  )))       \\          CL-Amiga v<version> */
+        /* Line 2:  (((        \\          CL-Amiga v<version> */
         cl_color_set(CL_COLOR_LIGHT_BLUE);
-        platform_write_string(" )))       ");
+        platform_write_string(" (((        ");
         cl_color_set(CL_COLOR_RED);
         platform_write_string("\\\\          ");
         cl_color_set(CL_COLOR_DIM_CYAN);
         platform_write_string("CL-Amiga v" CL_VERSION_STRING "\n");
-        /* Line 3: )))         \\ */
+        /* Line 3: (((          \\ */
         cl_color_set(CL_COLOR_LIGHT_BLUE);
-        platform_write_string(")))         ");
+        platform_write_string("(((          ");
         cl_color_set(CL_COLOR_RED);
         platform_write_string("\\\\\n");
         /* Line 4: )))         /\\        Common Lisp for <platform> */
