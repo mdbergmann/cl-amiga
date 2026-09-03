@@ -1539,8 +1539,10 @@ void cl_builtins_sequence_init(void);
 void cl_builtins_sequence2_init(void);
 void cl_builtins_type_init(void);
 void cl_builtins_condition_init(void);
+void cl_builtins_condition_shutdown(void);
 void cl_builtins_package_init(void);
 void cl_builtins_struct_init(void);
+void cl_builtins_struct_shutdown(void);
 void cl_builtins_stream_init(void);
 void cl_builtins_array_init(void);
 void cl_float_math_init(void);
@@ -2161,4 +2163,29 @@ void cl_builtins_init(void)
 
     /* Register cached symbols for GC compaction forwarding */
     cl_gc_register_root(&trace_list);
+}
+
+/* Release the builtin modules' off-arena side tables at process exit.
+ *
+ * These are hash indexes and slot maps allocated with platform_alloc, sized
+ * to the image and rebuilt (never grown) as the registries change — so no
+ * amount of GC returns them, and on AmigaOS, where a process's memory is not
+ * reclaimed by the OS, they are Fast RAM lost until reboot.  Called from
+ * main() after the VM is down, so nothing can repopulate them. */
+void cl_builtins_shutdown(void)
+{
+    uint32_t i;
+
+    cl_builtins_struct_shutdown();
+    cl_builtins_condition_shutdown();
+
+    /* Deduped package names held by the builtin registry (builtin_reg_pkgs).
+     * At most BUILTIN_REG_MAX_PKGS short strings — a few dozen bytes — but
+     * the point of this pass is that nothing is left behind, and the registry
+     * is dead once the VM is. */
+    for (i = 0; i < builtin_reg_pkg_count; i++) {
+        platform_free((void *)builtin_reg_pkgs[i]);
+        builtin_reg_pkgs[i] = NULL;
+    }
+    builtin_reg_pkg_count = 0;
 }

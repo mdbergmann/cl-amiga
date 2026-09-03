@@ -67,6 +67,7 @@ PLATFORM_SRC = $(PLATFORM_IMPL) \
                $(SRCDIR)/platform/tls_openssl.c
 CORE_SRC     = $(SRCDIR)/core/types.c \
                $(SRCDIR)/core/mem.c \
+               $(SRCDIR)/core/mem_track.c \
                $(SRCDIR)/core/error.c \
                $(SRCDIR)/core/symbol.c \
                $(SRCDIR)/core/package.c \
@@ -142,7 +143,7 @@ LIB_TEST_OBJS = $(patsubst $(SRCDIR)/%.c,$(TESTOBJDIR)/%.o,$(LIB_SRCS))
 DESTDIR ?=
 PREFIX ?= /usr/local
 
-.PHONY: host test test-fast test-plus test-extra linux-test clean verify-amiga install-hooks docs-check docs-update test-gc-stress test-mt-thread-exit-race fasl fasl-amiga clean-fasl-amiga install uninstall
+.PHONY: host test test-fast test-plus test-extra linux-test clean verify-amiga install-hooks docs-check docs-update test-gc-stress test-memleak test-mt-thread-exit-race fasl fasl-amiga clean-fasl-amiga install uninstall
 
 host: $(HOST_BIN)
 
@@ -219,6 +220,7 @@ test_batch test_repl_values test_repl_paste test_boot_log test_mx_error_context 
                 test_lock_diag test_break_diag test_debugger_backtrace \
                 test_debugger_eof test_inspect_eof \
                 test_io_diag test_ql_socket_timeouts test_stream_outbuf_leak \
+                test_shutdown_leak \
                 test_tls_loopback test_compiler_chain_unwind test_mt_lock_contention_throughput \
                 test_mt_print_stress test_load_keywords test_load_rebind \
                 test_dev_commands test_userinit test_compile_file_package \
@@ -302,6 +304,28 @@ test-gc-stress:
 	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_tls_loopback.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
 	@echo "--- test_image (CLAMIGA_GC_STRESS=1, forced compaction) ---"
 	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_image.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
+	@echo "--- test_shutdown_leak (CLAMIGA_GC_STRESS=1, forced compaction) ---"
+	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_shutdown_leak.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
+
+# `make test-memleak` builds a DEBUG_MEM_TRACK binary — every platform_alloc
+# tagged with its call site — and asserts that a run ends with ZERO off-heap
+# bytes outstanding.  This is the strong form of tests/test_shutdown_leak.sh:
+# that one checks the shutdown paths report plausible figures, this one proves
+# nothing at all was left behind, and names the file:line if something was.
+#
+# It matters far more than a host build suggests.  AmigaOS has no per-process
+# reclaim: memory clamiga does not hand back before exiting is gone from the
+# system pool until reboot, so an unfreed block is Fast RAM the user loses on
+# every launch.  Kept out of the fast tier because it needs a separate build;
+# run it after touching any shutdown path, the compiler pool, the FASL reader,
+# or anything that holds platform_alloc'd memory in a static.
+MEMTRACK_BUILDDIR = build/host-memtrack
+test-memleak:
+	@$(MAKE) --no-print-directory host \
+		BUILDDIR=$(MEMTRACK_BUILDDIR) \
+		DEBUG_FLAGS="-DDEBUG_MEM_TRACK"
+	@echo "--- test_memleak_tracked (zero off-heap bytes at exit) ---"
+	@$(TEST_TMPDIR_ENV) sh $(TEST_SRCDIR)/test_memleak_tracked.sh $(MEMTRACK_BUILDDIR)/clamiga$(EXE)
 
 # `make test-mt-thread-exit-race` builds a dedicated DEBUG_THREAD_RACE_HOOKS
 # binary whose sole purpose (see the constructor in src/core/thread.c) is to

@@ -83,6 +83,7 @@ make host          # Build for host (gcc)
 make test          # Fast test tier (C unit + shell tests)
 make test-plus     # Fast tier + host-cold-test (sento cold-load smoke test)
 make test-extra    # Heavyweight trunk integration scripts
+make test-memleak  # Off-heap allocation tracer: assert nothing leaks at exit
 make clean         # Remove build artifacts
 ```
 
@@ -970,6 +971,37 @@ generational machinery needs an MMU and is compiled out there.
 
 See `tests/test_gengc.c` and `tests/test_gengc_watch.c` for the behavioral
 contract, and `specs/generational-gc.md` for the design.
+
+### Memory outside the heap
+
+Not everything CL-Amiga allocates lives in the GC arena, so not everything
+shows up in `ROOM`.  Each compiled function owns a bytecode body, a constants
+pool, `&key` arrays, a line map and (on m68k) its JIT code; the compiler keeps
+a pool of large working buffers; the struct, condition and type registries
+keep hash indexes.  All of that is ordinary system memory, and CL-Amiga
+returns it — during a run when the collector proves a function dead, and at
+exit for everything still live.
+
+This matters more on AmigaOS than anywhere else: **AmigaOS does not reclaim a
+program's memory when it exits**, so anything a program fails to hand back is
+gone from the system pool until the machine is rebooted.
+
+Two diagnostics report on it:
+
+- `CLAMIGA_MEM_DIAG=1` (environment) prints, at exit, how much off-heap memory
+  each shutdown stage handed back and — on AmigaOS — how much free system
+  memory changed across the whole run.  Compare it with `Avail` before and
+  after.  A small, constant residue is the shell's own bookkeeping; a figure
+  that grows with what the program did, or grows run over run, is a leak.
+- `(ext:%bytecode-offheap-stats)` returns `(bytes objects)` — how much
+  compiled-code memory has been returned to the system since startup.  It must
+  grow after a GC that follows redefining functions, `compile`, or reloading a
+  file.
+
+`make test-memleak` builds with `-DDEBUG_MEM_TRACK`, which tags every off-heap
+allocation with the source line that made it and asserts a run ends with zero
+bytes outstanding — naming the file and line if not.  See
+`tests/test_memleak_tracked.sh` and `tests/test_shutdown_leak.sh`.
 
 ### Exact float printing and reading
 

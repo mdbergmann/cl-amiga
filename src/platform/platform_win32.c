@@ -20,6 +20,12 @@
  * against ws2_32.
  */
 
+/* This file DEFINES platform_alloc / platform_free, so it must opt out of
+ * the DEBUG_MEM_TRACK macros in platform.h that redirect those names to the
+ * leak tracer — otherwise the definitions themselves get renamed.  It calls
+ * the allocator nowhere else, so nothing here goes untracked. */
+#define CL_MEM_TRACK_IMPL 1
+
 #include "platform.h"
 #include "platform_thread.h"
 #include "tls_openssl.h"
@@ -946,6 +952,20 @@ const char *platform_getenv(const char *name, char *buf, int bufsize)
 {
     (void)buf; (void)bufsize;
     return getenv(name);
+}
+
+/* No system-wide figure worth reporting: the kernel reclaims a process's
+ * memory at exit, so an unfreed block here is a bug for valgrind/ASan to
+ * find, not RAM the machine loses.  See platform.h. */
+unsigned long platform_mem_available(void)
+{
+    return 0;
+}
+
+/* Nothing to take back: the kernel closes every descriptor and reclaims the
+ * whole address space when the process ends.  See platform.h. */
+void platform_release_resources(void)
+{
 }
 
 const char *platform_executable_prefix(char *buf, int bufsize)

@@ -1200,7 +1200,7 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
 
 
     /* Heap-allocate inner compiler (too large for AmigaOS stack).
-     * Routed through cl_compiler_pool_acquire so the 155KB block is
+     * Routed through cl_compiler_pool_acquire so the ~366 KB block is
      * recycled across calls and never returned to AmigaOS — see the
      * pool comment in cl_compile. */
     inner = cl_compiler_pool_acquire();
@@ -5691,10 +5691,12 @@ void cl_register_setf_function(CL_Obj accessor, CL_Obj setf_fn_sym)
 
 /* --- Public API --- */
 
-/* CL_Compiler is ~155KB — too large for the AmigaOS stack and too costly
- * to alloc/free per call.  AllocVec/FreeVec of 155KB blocks fragments the
- * AmigaOS system pool: after roughly 44 cycles loading lib/clos.lisp the
- * next AllocVec(155KB) returns NULL even though plenty of free RAM exists.
+/* CL_Compiler is ~366 KB (375,212 bytes on m68k — code[262144] and
+ * constants[8192] dominate; see compiler_internal.h) — far too large for the
+ * AmigaOS stack and too costly to alloc/free per call.  AllocVec/FreeVec of
+ * blocks that size fragments the AmigaOS system pool: after roughly 44 cycles
+ * loading lib/clos.lisp the next AllocVec returns NULL even though plenty of
+ * free RAM exists.
  * To avoid that we keep a process-wide free-list — popped on entry, pushed
  * on exit — so a successfully allocated CL_Compiler is never returned to
  * AmigaOS.  Nested compiles (parent chain) are handled correctly: each
@@ -5702,6 +5704,14 @@ void cl_register_setf_function(CL_Obj accessor, CL_Obj setf_fn_sym)
  * compile-time macro expansion) so memory growth is bounded. */
 static CL_Compiler *cl_compiler_pool_head = NULL;
 static void *cl_compiler_pool_lock = NULL;
+/* Blocks currently parked on the free list.  Kept so cl_compiler_pool_init
+ * can top the pool up to CL_COMPILER_POOL_PREWARM instead of blindly adding
+ * another 8 blocks: cl_compiler_init runs again on every heap re-init (unit
+ * tests, embedded restarts), and an unconditional pre-warm grew the pool by
+ * ~2.9 MB per cycle. */
+static int cl_compiler_pool_count = 0;
+
+#define CL_COMPILER_POOL_PREWARM 8
 
 static CL_Compiler *cl_compiler_pool_acquire(void)
 {
@@ -5710,6 +5720,7 @@ static CL_Compiler *cl_compiler_pool_acquire(void)
     if (cl_compiler_pool_head) {
         c = cl_compiler_pool_head;
         cl_compiler_pool_head = (CL_Compiler *)c->parent; /* free-list link */
+        cl_compiler_pool_count--;
     }
     if (cl_compiler_pool_lock) platform_mutex_unlock(cl_compiler_pool_lock);
     if (!c) {
@@ -5721,32 +5732,129 @@ static CL_Compiler *cl_compiler_pool_acquire(void)
 static void cl_compiler_pool_release(CL_Compiler *c)
 {
     if (!c) return;
-    /* Drop owned external buffers — only the 155KB struct itself is pooled. */
+    /* Drop owned external buffers — only the big struct itself is pooled. */
     if (c->tail_stack) { platform_free(c->tail_stack); c->tail_stack = NULL; }
     if (cl_compiler_pool_lock) platform_mutex_lock(cl_compiler_pool_lock);
     c->parent = cl_compiler_pool_head; /* reuse parent slot as free-list link */
     cl_compiler_pool_head = c;
+    cl_compiler_pool_count++;
     if (cl_compiler_pool_lock) platform_mutex_unlock(cl_compiler_pool_lock);
 }
 
 void cl_compiler_pool_init(void)
 {
-    int i;
     if (!cl_compiler_pool_lock)
         platform_mutex_init(&cl_compiler_pool_lock);
-    /* Pre-warm: AmigaOS AllocVec of 155 KB succeeds reliably at startup
+    /* Pre-warm: an AmigaOS AllocVec this size succeeds reliably at startup
      * (system pool unfragmented) but starts to fail after a workload like
      * source-loading lib/clos.lisp churns memory.  Reserve enough blocks
      * up front to cover the worst-case nested-compile chain depth we have
      * seen (1 outer cl_compile + several compile_lambda for inner lambdas
      * in CLOS-heavy methods).  8 is comfortably above the high-water mark
-     * observed and only costs ~1.2 MB on a 64 MB Amiga. */
-    for (i = 0; i < 8; i++) {
+     * observed.  It is not cheap: 8 x ~366 KB is ~2.9 MB reserved for the
+     * whole run, which is affordable on the 64 MB machines this targets but
+     * is the single largest thing clamiga holds outside the arena.
+     *
+     * Top up to the target rather than adding a fixed 8: this runs again on
+     * every cl_compiler_init, i.e. once per heap re-init. */
+    if (cl_compiler_pool_lock) platform_mutex_lock(cl_compiler_pool_lock);
+    while (cl_compiler_pool_count < CL_COMPILER_POOL_PREWARM) {
         CL_Compiler *c = (CL_Compiler *)platform_alloc(sizeof(CL_Compiler));
         if (!c) break;
         c->tail_stack = NULL;
         c->parent = cl_compiler_pool_head;
         cl_compiler_pool_head = c;
+        cl_compiler_pool_count++;
+    }
+    if (cl_compiler_pool_lock) platform_mutex_unlock(cl_compiler_pool_lock);
+}
+
+/* Release the compiler pool at process exit.
+ *
+ * During a run the pool deliberately never returns a CL_Compiler to the OS
+ * (see the comment above cl_compiler_pool_head): re-AllocVec-ing blocks this
+ * size fragments the AmigaOS system pool until the allocation fails outright.
+ * That reasoning stops at process exit, where the blocks are pure loss — on
+ * AmigaOS memory not handed back before the process ends is gone from the
+ * system pool until reboot, so eight ~366 KB blocks (~2.9 MB) went missing on
+ * every clamiga launch.  This was the bulk of a measured 3.74 MB of Fast RAM
+ * lost per run on a Vampire (see tests/test_shutdown_leak.sh).
+ *
+ * Safe here because no compile can be in flight: main() calls this after the
+ * exit hooks and the VM are done, so every block that was ever handed out has
+ * been released back to the free list. */
+void cl_compiler_shutdown(void)
+{
+    CL_Compiler *c;
+
+    if (cl_compiler_pool_lock) platform_mutex_lock(cl_compiler_pool_lock);
+    c = cl_compiler_pool_head;
+    cl_compiler_pool_head = NULL;
+    cl_compiler_pool_count = 0;
+    if (cl_compiler_pool_lock) platform_mutex_unlock(cl_compiler_pool_lock);
+
+    {
+        int n = 0;
+        while (c) {
+            CL_Compiler *next = (CL_Compiler *)c->parent;  /* free-list link */
+            if (c->tail_stack) platform_free(c->tail_stack);
+            platform_free(c);
+            c = next;
+            n++;
+        }
+        if (cl_mem_diag) {
+            char buf[160];
+            snprintf(buf, sizeof(buf),
+                     "[mem] compiler pool: %d block(s) x %lu bytes = %lu "
+                     "bytes released\n",
+                     n, (unsigned long)sizeof(CL_Compiler),
+                     (unsigned long)n * (unsigned long)sizeof(CL_Compiler));
+            platform_write_string(buf);
+        }
+    }
+
+    /* Hash indexes over the deftype / compiler-macro / defsetf alists.  Each
+     * is a platform_alloc'd table sized to twice the entry count, rebuilt
+     * (not grown) whenever its alist changes, so only an explicit reset ever
+     * returns one.  A few hundred deftypes already make these tens of KB. */
+    cl_alist_index_reset(&type_index);
+    cl_alist_index_reset(&setf_index);
+    cl_alist_index_reset(&cmacro_index);
+
+    if (cl_compiler_pool_lock) {
+        platform_mutex_destroy(cl_compiler_pool_lock);
+        cl_compiler_pool_lock = NULL;
+    }
+    if (cl_tables_rwlock) {
+        platform_rwlock_destroy(cl_tables_rwlock);
+        cl_tables_rwlock = NULL;
+    }
+}
+
+/* Release the interned source-file pool: one entry plus one path copy per
+ * file ever compiled, never shrinking during a run.
+ *
+ * Separate from cl_compiler_shutdown, and called LAST (main.c, after
+ * cl_mem_shutdown), because every CL_Bytecode's `source_file` points into
+ * this pool.  That is why bytecode_release_offheap must not free the string
+ * per object — the pool owns it — and why freeing the pool while bytecodes
+ * still reference it would leave dangling pointers that the crash handler
+ * dereferences when it prints a frame's source location.  cl_mem_shutdown's
+ * off-heap walk NULLs every source_file first, so by the time this runs
+ * nothing points here any more. */
+void cl_compiler_release_source_pool(void)
+{
+    CL_SourceFileEntry *e = cl_source_file_pool;
+    cl_source_file_pool = NULL;
+    while (e) {
+        CL_SourceFileEntry *next = e->next;
+        if (e->path) platform_free(e->path);
+        platform_free(e);
+        e = next;
+    }
+    if (cl_source_file_pool_lock) {
+        platform_rwlock_destroy(cl_source_file_pool_lock);
+        cl_source_file_pool_lock = NULL;
     }
 }
 

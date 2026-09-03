@@ -79,6 +79,17 @@ static int gc_mark_grow_failed = 0; /* Per-cycle latch: stop re-attempting a
  * failure), which is worth knowing about long before it becomes a 49s GC. */
 static uint32_t gc_mark_stack_grows = 0;
 static uint32_t gc_mark_rescan_passes = 0;
+
+/* Off-heap bytecode payload handed back to the allocator since heap init:
+ * total bytes and the number of bytecode objects finalized.  Exposed as
+ * (ext:%bytecode-offheap-stats).  A CL_Bytecode owns up to eight
+ * platform_alloc'd buffers that live outside the arena, so "how much of that
+ * has actually been returned" is not visible in any arena statistic — on
+ * AmigaOS, where an unreturned block is lost until reboot, it is the number
+ * that decides whether a long REPL session or a repeated launch bleeds Fast
+ * RAM.  Monotonic; wraps at 4GB (diagnostic only).  Reset by cl_mem_init. */
+static uint32_t gc_bc_offheap_bytes = 0;
+static uint32_t gc_bc_offheap_count = 0;
 /* Test hook: when nonzero, caps growth at this many entries so the overflow
  * re-scan fallback can be exercised deterministically (see
  * tests/test_gc_markstack.c).  0 = normal heap-proportional cap. */
@@ -134,6 +145,7 @@ static void gc_diag_report(const char *kind, uint64_t pause_us)
 /* Forward declarations */
 static void gc_mark(void);
 static void gc_sweep(void);
+static uint32_t bytecode_release_offheap(CL_Bytecode *bc);
 static uint64_t gc_stop_world_timed(int multithread);
 static void gc_reset_transient_state(void);
 static int root_slot_independently_forwarded(CL_Obj *slot);
@@ -734,8 +746,21 @@ static void gen_reset(void)
 }
 #endif /* CL_GENGC */
 
+/* CLAMIGA_MEM_DIAG=1 — report at shutdown how much off-heap object payload
+ * was handed back (gc_release_all_offheap).  On AmigaOS, where unreturned
+ * memory is lost to the system until reboot, this is the number to watch:
+ * pair it with `Avail` before and after a run to account for every byte. */
+int cl_mem_diag = 0;
+
 void cl_mem_init(uint32_t heap_size)
 {
+    {
+        char dbuf[8];
+        const char *d = platform_getenv("CLAMIGA_MEM_DIAG", dbuf,
+                                        (int)sizeof(dbuf));
+        cl_mem_diag = (d && d[0] && !(d[0] == '0' && d[1] == '\0'));
+    }
+
     if (heap_size == 0)
         heap_size = CL_DEFAULT_HEAP_SIZE;
 
@@ -874,6 +899,8 @@ void cl_mem_init(uint32_t heap_size)
     gc_time_stw_max_us = 0;
     gc_stw_stops = 0;
     gc_epoch_skips = 0;
+    gc_bc_offheap_bytes = 0;
+    gc_bc_offheap_count = 0;
 
     /* Reset GC state that survives in static storage across heap
      * re-initialization (each C unit test, embedded restarts): pending
@@ -1060,18 +1087,81 @@ static void gc_reset_transient_state(void)
     jit_scan_free_valid = 0;
 }
 
+/* Hand back the off-heap buffers owned by objects that are STILL LIVE when
+ * the runtime shuts down, and return the total bytes released.
+ *
+ * Freeing the arena releases only the arena.  Every CL_Bytecode in it owns
+ * up to eight platform_alloc'd satellites (body, constants, &key arrays,
+ * line map, JIT code + relocs) that live OUTSIDE the arena, and the GC only
+ * ever reclaims those for objects it has proved dead.  At exit the whole
+ * boot image — every function in boot.fasl, clos.fasl and anything the user
+ * loaded — is by definition still live, so none of it is ever swept and all
+ * of it was leaked.
+ *
+ * On a host OS the kernel reclaims the process's address space and nobody
+ * notices.  On AmigaOS there is no such backstop: AllocVec'd memory not
+ * returned before the process exits is gone from the system pool until the
+ * next reboot, so every clamiga run permanently ate a few megabytes of Fast
+ * RAM.  That is the leak this walk closes.
+ *
+ * The walk mirrors gc_sweep's: step object by object from the first slot to
+ * the bump pointer using the header size.  Free-list blocks are walked over
+ * safely — a free block's header word is its raw size, which reads back as
+ * an unmarked TYPE_CONS, so it never matches TYPE_BYTECODE and its size
+ * still advances the cursor correctly.
+ *
+ * Only memory is released here.  OS handles (stream fds, lock mutexes,
+ * thread handles) are deliberately left to the dedicated shutdown paths that
+ * already ran — cl_stream_shutdown and cl_thread_shutdown — so this walk
+ * cannot double-close a handle or print a spurious "dropped without CLOSE"
+ * warning for a stream the caller never had to close. */
+static uint32_t gc_release_all_offheap(void)
+{
+    uint8_t *ptr = cl_heap.arena + CL_ALIGN;  /* offset 0 is reserved for NIL */
+    uint8_t *end = cl_heap.arena + cl_heap.bump;
+    uint32_t freed = 0;
+
+    while (ptr < end) {
+        uint32_t size = CL_HDR_SIZE(ptr);
+        if (size == 0) break;             /* corrupt header — stop, don't guess */
+        if (CL_HDR_TYPE(ptr) == TYPE_BYTECODE)
+            freed += bytecode_release_offheap((CL_Bytecode *)ptr);
+        ptr += size;
+    }
+    return freed;
+}
+
 void cl_mem_shutdown(void)
 {
 #ifdef CL_GENGC
-    {
-        int was_pages = gen_arena_pages;
-        uint32_t watch_bytes = gen_npages * gen_page;
-        gen_reset();   /* unprotect + detach handler before freeing */
-        if (cl_heap.arena && was_pages) {
-            platform_free_pages(cl_heap.arena, watch_bytes);
-            cl_heap.arena = NULL;
-            gen_arena_pages = 0;
+    int was_pages = gen_arena_pages;
+    uint32_t watch_bytes = gen_npages * gen_page;
+    gen_reset();   /* unprotect + detach handler before we touch any page */
+#endif
+
+    /* Before the arena goes away, hand back what hangs off it.  Must run
+     * after gen_reset() above (the nursery pages are read-protected until
+     * then) and before either free below. */
+    if (cl_heap.arena) {
+        uint32_t reclaimed = gc_bc_offheap_bytes;   /* freed by the GC so far */
+        uint32_t offheap = gc_release_all_offheap();
+        if (cl_mem_diag) {
+            char buf[192];
+            snprintf(buf, sizeof(buf),
+                     "[mem] off-heap bytecode payload: %lu bytes reclaimed by "
+                     "GC during the run, %lu released at shutdown\n"
+                     "[mem] arena: %lu bytes\n",
+                     (unsigned long)reclaimed, (unsigned long)offheap,
+                     (unsigned long)cl_heap.arena_size);
+            platform_write_string(buf);
         }
+    }
+
+#ifdef CL_GENGC
+    if (cl_heap.arena && was_pages) {
+        platform_free_pages(cl_heap.arena, watch_bytes);
+        cl_heap.arena = NULL;
+        gen_arena_pages = 0;
     }
 #endif
     if (cl_heap.arena) {
@@ -2245,6 +2335,12 @@ void cl_gc_mark_stack_set_test_limit(uint32_t max_entries)
     gc_mark_stack_test_limit = max_entries;
 }
 
+void cl_gc_offheap_stats(uint32_t *bytes, uint32_t *count)
+{
+    if (bytes) *bytes = gc_bc_offheap_bytes;
+    if (count) *count = gc_bc_offheap_count;
+}
+
 void cl_gc_time_stats(uint64_t *stw_us, uint64_t *mark_us,
                       uint64_t *sweep_us, uint64_t *compact_us)
 {
@@ -3380,24 +3476,110 @@ static void gc_srcloc_forward(void)
     }
 }
 
+/* Release every off-heap buffer owned by a CL_Bytecode and return the
+ * number of bytes handed back.
+ *
+ * A CL_Bytecode is a small arena object with EIGHT platform_alloc'd
+ * satellites hanging off it — the bytecode body, the constants pool, the
+ * three &key arrays, the pc→line map, and the JIT's native code plus its
+ * reloc table.  Each is allocated fresh for exactly one bytecode (see
+ * compiler.c cl_compile_lambda / cl_compile, fasl.c read_bytecode and
+ * image.c restore — none of them ever aliases a buffer into a second
+ * object), so ownership is exclusive and freeing here is a clean handback.
+ *
+ * `source_file` is deliberately NOT freed: it points into the interned
+ * source-file pool (cl_intern_source_file), which is shared by every
+ * bytecode compiled from the same file and owned by that pool.
+ *
+ * Every field is NULLed and its length zeroed so a second call is a
+ * no-op — the sweep can reach the same corpse twice (once directly, once
+ * via the coalesce loop), and the shutdown walk runs over objects the
+ * sweep may already have finalized. */
+static uint32_t bytecode_release_offheap(CL_Bytecode *bc)
+{
+    uint32_t freed = 0;
+    int had_any = (bc->code || bc->constants || bc->key_syms ||
+                   bc->key_slots || bc->key_suppliedp_slots ||
+                   bc->line_map || bc->native_code || bc->native_relocs);
+
+    if (bc->code) {
+        freed += bc->code_len;
+        platform_free(bc->code);
+        bc->code = NULL;
+    }
+    bc->code_len = 0;
+
+    if (bc->constants) {
+        freed += (uint32_t)bc->n_constants * (uint32_t)sizeof(CL_Obj);
+        platform_free(bc->constants);
+        bc->constants = NULL;
+    }
+    bc->n_constants = 0;
+
+    if (bc->key_syms) {
+        freed += (uint32_t)bc->n_keys * (uint32_t)sizeof(CL_Obj);
+        platform_free(bc->key_syms);
+        bc->key_syms = NULL;
+    }
+    if (bc->key_slots) {
+        freed += bc->n_keys;
+        platform_free(bc->key_slots);
+        bc->key_slots = NULL;
+    }
+    if (bc->key_suppliedp_slots) {
+        freed += bc->n_keys;
+        platform_free(bc->key_suppliedp_slots);
+        bc->key_suppliedp_slots = NULL;
+    }
+    bc->n_keys = 0;
+
+    if (bc->line_map) {
+        freed += (uint32_t)bc->line_map_count * (uint32_t)sizeof(CL_LineEntry);
+        platform_free(bc->line_map);
+        bc->line_map = NULL;
+    }
+    bc->line_map_count = 0;
+
+    if (bc->native_code) {
+        freed += bc->native_len;
+        platform_free(bc->native_code);
+        bc->native_code = NULL;
+    }
+    bc->native_len = 0;
+
+    if (bc->native_relocs) {
+        freed += (uint32_t)bc->native_reloc_count * (uint32_t)sizeof(uint32_t);
+        platform_free(bc->native_relocs);
+        bc->native_relocs = NULL;
+    }
+    bc->native_reloc_count = 0;
+
+    /* Not ours to free — the interned source-file pool owns the string (see
+     * cl_intern_source_file).  Dropped rather than kept so no bytecode is
+     * left pointing into that pool after cl_compiler_shutdown releases it. */
+    bc->source_file = NULL;
+
+    if (had_any) {
+        gc_bc_offheap_bytes += freed;
+        gc_bc_offheap_count++;
+    }
+    return freed;
+}
+
 static void gc_finalize_dead(uint8_t *ptr)
 {
     switch (CL_HDR_TYPE(ptr)) {
     case TYPE_BYTECODE: {
-        /* Free the JIT artifacts owned by a dead bytecode: native_code and
-         * the reloc table are platform_alloc'd (see cl_jit_compile) and were
-         * otherwise leaked for good when the object is swept.  Safe here:
-         * the world is stopped and a DEAD (unmarked) bytecode cannot be
-         * executing — any running bytecode is reachable from a VM frame or
-         * the conservative JIT stack scan and would have been marked.
-         * Fields are NULLed so a re-finalize is a no-op. */
-        CL_Bytecode *bc = (CL_Bytecode *)ptr;
-        if (bc->native_code)   { platform_free(bc->native_code); }
-        if (bc->native_relocs) { platform_free(bc->native_relocs); }
-        bc->native_code = NULL;
-        bc->native_relocs = NULL;
-        bc->native_len = 0;
-        bc->native_reloc_count = 0;
+        /* Free every off-heap buffer owned by a dead bytecode: the body, the
+         * constants pool, the &key arrays, the line map and the JIT artifacts
+         * are all platform_alloc'd and were otherwise leaked for good when
+         * the object is swept.  Safe here: the world is stopped and a DEAD
+         * (unmarked) bytecode cannot be executing — a running one is
+         * reachable from a VM frame (gc_mark_thread_roots marks both
+         * vm.frames[i].bytecode and nlx_stack[i].bytecode, which is what
+         * keeps the raw frame->code / frame->constants pointers valid) or
+         * from the conservative JIT stack scan, and would have been marked. */
+        bytecode_release_offheap((CL_Bytecode *)ptr);
         break;
     }
     case TYPE_STREAM: {

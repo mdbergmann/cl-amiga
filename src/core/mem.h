@@ -94,6 +94,19 @@ extern CL_Heap cl_heap;
 void cl_mem_init(uint32_t heap_size);
 void cl_mem_shutdown(void);
 
+/* CLAMIGA_MEM_DIAG=1: report memory handed back at shutdown (set by
+ * cl_mem_init).  Matters most on AmigaOS, where anything not returned before
+ * the process exits is lost to the system until reboot. */
+extern int cl_mem_diag;
+
+/* Off-heap bytecode payload returned to the allocator since heap init: total
+ * bytes and number of bytecode objects finalized.  A CL_Bytecode's body,
+ * constants pool, &key arrays, line map and JIT artifacts all live OUTSIDE
+ * the arena, so no arena statistic shows whether they are being reclaimed.
+ * Either out-param may be NULL.  Exposed to Lisp as
+ * (ext:%bytecode-offheap-stats). */
+void cl_gc_offheap_stats(uint32_t *bytes, uint32_t *count);
+
 /* Signal a storage error without allocating (safe when heap is exhausted) */
 void cl_storage_error(const char *fmt, ...);
 

@@ -3024,12 +3024,30 @@ CL_Obj cl_fasl_deserialize_bytecode(CL_FaslReader *r)
     bc->source_line = cl_fasl_read_u16(r);
     source_file_len = cl_fasl_read_u16(r);
     if (source_file_len > 0) {
+        /* Read into a scratch buffer, then INTERN.  bc->source_file must
+         * point into the shared source-file pool, the same as the compiler
+         * (compiler.c) and image restore (image.c) produce: the pool owns
+         * those strings and frees them once at shutdown, which is why
+         * bytecode_release_offheap must not free the field per object.
+         *
+         * Keeping the raw copy here instead — as this did — was both a leak
+         * and a waste: nothing ever freed it, and every function in a FASL
+         * got its own copy of the same path, so loading boot.fasl + clos.fasl
+         * alone carried ~1400 duplicates of two strings (~104 KB, measured
+         * with DEBUG_MEM_TRACK).  Interning makes it two. */
         char *sf = (char *)platform_alloc(source_file_len + 1);
         if (sf) {
             cl_fasl_read_bytes(r, sf, source_file_len);
             sf[source_file_len] = '\0';
             bc = (CL_Bytecode *)CL_OBJ_TO_PTR(bc_obj);
-            bc->source_file = sf;
+            bc->source_file = cl_intern_source_file(sf);
+            platform_free(sf);
+        } else {
+            /* Out of memory for the scratch buffer: the name is forfeit, but
+             * the bytes still have to be consumed or every later field in
+             * this FASL is read from the wrong offset. */
+            r->pos += source_file_len;
+            if (r->pos > r->size) { r->pos = r->size; r->error = FASL_ERR_TRUNCATED; }
         }
     }
 
