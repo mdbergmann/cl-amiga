@@ -75,6 +75,20 @@
     (check "audio-channel-mask-is-one-channel" t
       (not (null (member (amiga.audio:audio-channel-mask audio) '(1 2 4 8)))))
 
+    ; A channel whose Paula registers PLAY-SAMPLE pokes must be
+    ; un-stealable (audio.device autodoc: direct register writes require a
+    ; locked or max-precedence channel).  On m68k OPEN-AUDIO pins any
+    ; allocation to +MAX-PRECEDENCE+ and lets the caller's softer hint go;
+    ; off m68k there is no poke, so the hint is honoured as given.  ln_Pri
+    ; is the message node's priority (IOAudio offset 9), the field
+    ; OpenDevice/ADCMD_ALLOCATE reads for the allocation precedence.
+    (let ((lowpri (amiga.audio:open-audio :precedence -50)))
+      (when lowpri
+        (check "audio-precedence-pinned"
+               #+m68k amiga.audio:+max-precedence+ #-m68k -50
+               (amiga.audio::ioaudio-ln-pri (amiga.audio::audio-io lowpri)))
+        (amiga.audio:close-audio lowpri)))
+
     ; Full second queued: still audibly playing right after SendIO.
     (check "audio-play-sample-queues" t
       (amiga.audio:play-sample audio *audio-test-chip* 8000

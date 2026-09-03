@@ -26,7 +26,7 @@
    "PLAY-SAMPLE" "STOP-SAMPLE" "PLAYING-P"
    ;; Helpers
    "PERIOD-FOR-RATE"
-   "+MAX-VOLUME+" "+MAX-SAMPLE-BYTES+"))
+   "+MAX-VOLUME+" "+MAX-SAMPLE-BYTES+" "+MAX-PRECEDENCE+"))
 
 (in-package "AMIGA.AUDIO")
 
@@ -76,6 +76,17 @@
 
 (defconstant +max-volume+ 64)
 
+(defconstant +max-precedence+ 127
+  "ADALLOC_MAXPREC — the highest allocation precedence; a channel held
+at it cannot be stolen (nothing can steal a channel of equal or greater
+precedence).  On m68k PLAY-SAMPLE writes the channel's Paula period and
+volume registers by hand (this AmigaOS ignores ADIOF_PERVOL), and the
+audio.device autodoc is explicit that a caller storing directly to the
+hardware registers must lock the channel or hold it at max precedence so
+it cannot be stolen out from under the poke.  OPEN-AUDIO takes the latter
+road — a field on the allocation, no extra (and, on this device,
+hang-prone) synchronous command.")
+
 ;;; Paula's per-channel length register counts 16-bit words, so one
 ;;; request carries at most 65536 words of sample data (NDK audio.doc:
 ;;; CMD_WRITE's ioa_Length is valid "2 thru 131072, must be even number").
@@ -116,7 +127,13 @@ hardware minimum of 124 (about 28.6 kHz)."
 handle, or NIL if no channel (or no audio.device) is available.
 PRECEDENCE (-128..127) is the allocation priority; equal-or-louder
 users can steal the channel back.  Never blocks: allocation runs with
-ADIOF_NOWAIT."
+ADIOF_NOWAIT.
+
+On m68k PRECEDENCE is a hint only: because PLAY-SAMPLE pokes the
+channel's Paula registers directly there, the channel is always
+allocated at +MAX-PRECEDENCE+ so it cannot be stolen (see that
+constant).  Off m68k there is no poke and PRECEDENCE is honoured as
+given."
   (let ((port nil) (io nil) (chanmap nil) (name nil) (ok nil))
     (unwind-protect
         (progn
@@ -133,7 +150,19 @@ ADIOF_NOWAIT."
           ;; channel suits us.
           (setf chanmap (ffi:alloc-foreign 4))
           (ffi:poke-bytes chanmap #(1 2 4 8))
-          (setf (ioaudio-ln-pri io) (logand precedence #xFF))
+          ;; m68k pokes this channel's Paula registers in PLAY-SAMPLE, so
+          ;; it must be un-stealable — hold it at max precedence and let the
+          ;; caller's softer hint go.  Off m68k, honour PRECEDENCE as asked.
+          ;; Checked against *FEATURES* at runtime, not #+m68k: this file
+          ;; ships as a host-precompiled FASL (see scripts/make-binary-
+          ;; release.sh), and a reader conditional would bake in whichever
+          ;; branch the host compiling it resolved, not the machine that
+          ;; later loads it.
+          (setf (ioaudio-ln-pri io)
+                (logand (if (find :m68k *features*)
+                            +max-precedence+
+                            precedence)
+                        #xFF))
           (setf (ioaudio-flags io) +adiof-nowait+)
           (setf (ioaudio-data io) (ffi:foreign-pointer-address chanmap))
           (setf (ioaudio-length io) 4)
