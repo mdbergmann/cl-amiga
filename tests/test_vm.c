@@ -3291,6 +3291,123 @@ TEST(eval_destructuring_bind_dotted_after_aux_rejected)
         "  (error () :err))"), ":ERR");
 }
 
+/* Regression: a destructuring &key section silently accepted keywords it
+ * did not name — (destructuring-bind (&key a) '(:b 1) a) returned NIL where
+ * CLHS 3.4.4 (destructuring lambda lists follow the 3.4.1.4 keyword rules)
+ * requires an error, as ordinary lambda lists already did.  Found by
+ * chipi-ui's CHART--RIGHT-AXIS-REJECTS-UNKNOWN-KEYS.  Both paths — the
+ * compiler special form and the boot.lisp %dbind-expand macro used by
+ * MACROEXPAND/code walkers — must agree, and both honour the two ways of
+ * suppressing the check: &allow-other-keys in the lambda list and
+ * :allow-other-keys with a true value in the list itself (3.4.1.4.1). */
+TEST(eval_destructuring_bind_unknown_key_rejected)
+{
+    /* PROGRAM-ERROR, like the VM's own check for function calls */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (destructuring-bind (&key a) '(:b 1) a)"
+        "  (program-error () :err))"), ":ERR");
+    /* the chipi-ui shape: ((keyword var)) specs plus a defaulted key */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (destructuring-bind (&key ((:series ids)) range)"
+        "                  '(:series (soc) :label \"%\") (list ids range))"
+        "  (program-error () :err))"), ":ERR");
+    /* the message names the offending key AND what the section accepts */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (destructuring-bind (&key ((:series ids)) range)"
+        "                  '(:series (soc) :label \"%\") (list ids range))"
+        "  (error (e) (princ-to-string e)))"),
+        "\"destructuring-bind: unknown keyword argument :LABEL "
+        "(accepted: :SERIES :RANGE)\"");
+    /* &key with no keys accepts nothing but :allow-other-keys */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (destructuring-bind (x y &key) '(1 2 :z 3) (list x y))"
+        "  (program-error () :err))"), ":ERR");
+    /* &rest before &key does not exempt the section */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (destructuring-bind (&rest r &key a) '(:b 1) r)"
+        "  (program-error () :err))"), ":ERR");
+    /* nested pattern, and &optional ahead of &key */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (destructuring-bind ((&key a)) '((:b 1)) a)"
+        "  (program-error () :err))"), ":ERR");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (destructuring-bind (a &optional b &key c) '(1 2 :d 3) c)"
+        "  (program-error () :err))"), ":ERR");
+    /* a non-symbol in keyword position is diagnosed, not compared blindly */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (destructuring-bind (&key a) '(5 1) a)"
+        "  (program-error () :err))"), ":ERR");
+
+    /* --- the check must NOT fire here --- */
+    /* known keys still bind, in any order; leftmost duplicate wins */
+    ASSERT_STR_EQ(eval_print(
+        "(destructuring-bind (&key a b) '(:b 2 :a 1) (list a b))"), "(1 2)");
+    ASSERT_STR_EQ(eval_print(
+        "(destructuring-bind (&key a) '(:a 1 :a 2) a)"), "1");
+    /* &allow-other-keys in the lambda list */
+    ASSERT_STR_EQ(eval_print(
+        "(destructuring-bind (&key a &allow-other-keys) '(:b 1 :a 2) a)"), "2");
+    /* :allow-other-keys T in the list; NIL there does not suppress */
+    ASSERT_STR_EQ(eval_print(
+        "(destructuring-bind (&key a) '(:b 1 :allow-other-keys t) a)"), "NIL");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (destructuring-bind (&key a) '(:b 1 :allow-other-keys nil) a)"
+        "  (program-error () :err))"), ":ERR");
+    /* leftmost :allow-other-keys value wins when it appears more than once
+     * (CLHS 3.4.1.4.1): the leading NIL must not be shadowed by a later T */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (destructuring-bind (&key a)"
+        "                  '(:b 1 :allow-other-keys nil :allow-other-keys t) a)"
+        "  (program-error () :err))"), ":ERR");
+    ASSERT_STR_EQ(eval_print(
+        "(destructuring-bind (&key a)"
+        "    '(:b 1 :allow-other-keys t :allow-other-keys nil) a)"), "NIL");
+    /* ansi-test destructuring-bind.23: :allow-other-keys itself is always
+     * an accepted key, even for an empty &key section */
+    ASSERT_STR_EQ(eval_print(
+        "(destructuring-bind (&rest x &key) '(:allow-other-keys 1) x)"),
+        "(:ALLOW-OTHER-KEYS 1)");
+    /* (safety 0) elides the check, like the arity guards */
+    ASSERT_STR_EQ(eval_print(
+        "(locally (declare (optimize (safety 0)))"
+        "  (destructuring-bind (&key a) '(:b 1) a))"), "NIL");
+
+    /* --- the macro path (%dbind-expand) must agree on all of it --- */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (eval (macroexpand-1"
+        "  '(destructuring-bind (&key a) '(:b 1) a)))"
+        "  (program-error () :err))"), ":ERR");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (eval (macroexpand-1"
+        "  '(destructuring-bind (&key ((:series ids)) range)"
+        "      '(:series (soc) :label \"%\") (list ids range))))"
+        "  (error (e) (princ-to-string e)))"),
+        "\"destructuring-bind: unknown keyword argument :LABEL "
+        "(accepted: :SERIES :RANGE)\"");
+    ASSERT_STR_EQ(eval_print(
+        "(eval (macroexpand-1"
+        "  '(destructuring-bind (&key a &allow-other-keys) '(:b 1 :a 2) a)))"),
+        "2");
+    ASSERT_STR_EQ(eval_print(
+        "(eval (macroexpand-1"
+        "  '(destructuring-bind (&key a) '(:b 1 :allow-other-keys t) a)))"),
+        "NIL");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (eval (macroexpand-1"
+        "  '(destructuring-bind (&key a)"
+        "       '(:b 1 :allow-other-keys nil :allow-other-keys t) a)))"
+        "  (program-error () :err))"), ":ERR");
+    ASSERT_STR_EQ(eval_print(
+        "(eval (macroexpand-1"
+        "  '(destructuring-bind (&rest x &key) '(:allow-other-keys 1) x)))"),
+        "(:ALLOW-OTHER-KEYS 1)");
+    /* &aux after &key is not a keyword */
+    ASSERT_STR_EQ(eval_print(
+        "(eval (macroexpand-1"
+        "  '(destructuring-bind (&key a &aux (b (list a))) '(:a 1) (list a b))))"),
+        "(1 (1))");
+}
+
 TEST(eval_destructuring_bind_body)
 {
     ASSERT_STR_EQ(eval_print(
@@ -11593,6 +11710,7 @@ int main(void)
     RUN(eval_destructuring_bind_dotted_macroexpand_path);
     RUN(eval_destructuring_bind_dotted_after_key_rejected);
     RUN(eval_destructuring_bind_dotted_after_aux_rejected);
+    RUN(eval_destructuring_bind_unknown_key_rejected);
     RUN(eval_destructuring_bind_body);
     RUN(eval_destructuring_bind_key);
     RUN(eval_destructuring_bind_optional_rest_key);

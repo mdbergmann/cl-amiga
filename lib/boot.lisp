@@ -435,7 +435,25 @@ Spec is var | (var ...) | ((keyword var) ...)."
                  ((eq item '&optional) (scan (cdr ll) 1 cur))
                  ((or (eq item '&rest) (eq item '&body))
                   (b (cadr ll) cur) (scan (cddr ll) mode cur))
-                 ((eq item '&key) (scan (cdr ll) 2 cur))
+                 ((eq item '&key)
+                  ;; Unknown-keyword check (CLHS 3.4.4 gives destructuring
+                  ;; &key the 3.4.1.4 rules): a keyword the section does not
+                  ;; name is an error unless the lambda list says
+                  ;; &allow-other-keys, or the list itself carries
+                  ;; :allow-other-keys with a true value (3.4.1.4.1) — the
+                  ;; runtime helper handles the latter.  Mirrors the call
+                  ;; compile_destructure_pattern emits on the native path.
+                  (let ((kws nil) (allow nil))
+                    (do ((tail (cdr ll) (cdr tail)))
+                        ((or (atom tail) (eq (car tail) '&aux)))
+                      (if (eq (car tail) '&allow-other-keys)
+                          (setq allow t)
+                          (push (%dbind-parse-key (car tail)) kws)))
+                    (when (not allow)
+                      (b (gensym "DBK")
+                         (list 'clamiga::%dbind-check-keys cur
+                               (list 'quote (nreverse kws))))))
+                  (scan (cdr ll) 2 cur))
                  ((eq item '&allow-other-keys) (scan (cdr ll) mode cur))
                  ((eq item '&aux) (scan (cdr ll) 3 cur))
                  ((= mode 0)

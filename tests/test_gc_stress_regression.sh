@@ -1263,6 +1263,38 @@ out=$(run_stress "$WORK/db-arity.lisp")
 check_contains "destructuring-bind arity guards fire correctly under stress" "DBARITY:FEW/MANY/NEST/(1 2)" "$out"
 check_absent   "no corruption from stale pattern cursor in arity guards"     "Unbound variable\|type 0\|corrupted\|Undefined" "$out"
 
+# --- Case: DESTRUCTURING-BIND unknown-keyword check under GC stress ----------
+# The &key walker now conses the section's keyword list at compile time
+# (cl_cons + cl_intern_keyword, both can compact) while compiling allocating
+# default forms in the same loop, then emits that list as a constant for the
+# %DBIND-CHECK-KEYS call.  Compile under stress and confirm: a known key still
+# binds through its allocating default, an unknown key is rejected with the
+# accepted set spelled out (so the constant survived), &allow-other-keys and
+# :allow-other-keys t suppress the check, and nothing is corrupted.
+cat > "$WORK/db-unknown-key.lisp" <<'EOF'
+(defun key-probe (args)
+  (destructuring-bind (&key ((:series ids) (list :none)) (range (list 0 (length ids)))
+                            (fresh-kw-alpha (make-string 3 :initial-element #\a)))
+      args
+    (list ids range fresh-kw-alpha)))
+(defun key-probe-aok (args)
+  (destructuring-bind (&key (a (list 1)) &allow-other-keys) args a))
+(let ((last nil))
+  (dotimes (i 30)
+    (setq last
+          (list (key-probe (list :series (list i) :range (list i (+ i 1))))
+                (handler-case (key-probe (list :series (list i) :label i))
+                  (program-error (e) (princ-to-string e)))
+                (key-probe-aok (list :b i :a (list i)))
+                (destructuring-bind (&key a) (list :b i :allow-other-keys t) a))))
+  (format t "DBKEY:~a~%" last))
+EOF
+out=$(run_stress "$WORK/db-unknown-key.lisp")
+check_contains "destructuring-bind unknown-keyword check under stress" \
+  "DBKEY:(((29) (29 30) aaa) destructuring-bind: unknown keyword argument :LABEL (accepted: :SERIES :RANGE :FRESH-KW-ALPHA) (29) NIL)" "$out"
+check_absent   "no corruption from the compile-time keyword list" \
+  "Unbound variable\|type 0\|corrupted\|Undefined" "$out"
+
 # --- Case: defstruct with MULTIPLE (:constructor ...) options under GC stress -
 # Regression for the defstruct fix: every (:constructor ...) option must be
 # emitted (was: only the last survived).  Compile a struct with two BOA

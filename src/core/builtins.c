@@ -22,6 +22,7 @@
  * helpers; declared extern in compiler_internal.h, interned in cl_builtins_init. */
 CL_Obj cl_dbind_too_few_sym = CL_NIL;
 CL_Obj cl_dbind_too_many_sym = CL_NIL;
+CL_Obj cl_dbind_check_keys_sym = CL_NIL;
 
 /* --- Image-relink builtin registry (builtins.h) ---
  *
@@ -541,6 +542,67 @@ static CL_Obj bi_dbind_too_many(CL_Obj *args, int n)
     CL_UNUSED(args); CL_UNUSED(n);
     cl_error(CL_ERR_ARGS,
              "destructuring-bind: too many elements in list for the lambda list");
+    return CL_NIL;
+}
+
+/* (clamiga::%dbind-check-keys list allowed-keywords) => NIL
+ * The unknown-keyword check of a destructuring &key section.  CLHS 3.4.4
+ * gives destructuring lambda lists the 3.4.1.4 keyword rules: a keyword the
+ * section does not name is an error, unless the lambda list says
+ * &allow-other-keys (then the compiler emits no call at all) or the list
+ * itself carries :allow-other-keys with a true value (3.4.1.4.1).
+ * :allow-other-keys is always accepted (3.4.1.4.1.1).  The walk is by pairs
+ * and stops at an odd trailing element, which the binding loop already
+ * treats as "not supplied" — this helper adds exactly the missing check.
+ * Signals PROGRAM-ERROR (CL_ERR_ARGS), like the VM's check for calls. */
+static CL_Obj bi_dbind_check_keys(CL_Obj *args, int n)
+{
+    CL_Obj list = args[0], allowed = args[1], p, a;
+    CL_UNUSED(n);
+
+    for (p = list; CL_CONS_P(p) && CL_CONS_P(cl_cdr(p)); p = cl_cdr(cl_cdr(p)))
+        if (cl_car(p) == KW_ALLOW_OTHER_KEYS) {
+            if (!CL_NULL_P(cl_car(cl_cdr(p))))
+                return CL_NIL;
+            break;
+        }
+
+    for (p = list; CL_CONS_P(p) && CL_CONS_P(cl_cdr(p)); p = cl_cdr(cl_cdr(p))) {
+        CL_Obj key = cl_car(p);
+        char accepted[128];
+        size_t used = 0;
+
+        if (key == KW_ALLOW_OTHER_KEYS) continue;
+        for (a = allowed; CL_CONS_P(a); a = cl_cdr(a))
+            if (cl_car(a) == key) break;
+        if (CL_CONS_P(a)) continue;
+
+        if (!CL_SYMBOL_P(key))
+            cl_error(CL_ERR_ARGS,
+                     "destructuring-bind: keyword argument is not a symbol "
+                     "(got a %s)", cl_type_name(key));
+        /* Name what the section WOULD accept — a typo is the common case.
+         * Bounded buffer; a long section is cut off with "...". */
+        accepted[0] = '\0';
+        for (a = allowed; CL_CONS_P(a); a = cl_cdr(a)) {
+            const char *nm = cl_symbol_name(cl_car(a));
+            size_t len = strlen(nm);
+            if (used + 2 + len + sizeof(" ...") > sizeof(accepted)) {
+                strcpy(accepted + used, " ...");
+                break;
+            }
+            accepted[used++] = ' ';
+            accepted[used++] = ':';
+            memcpy(accepted + used, nm, len);
+            used += len;
+            accepted[used] = '\0';
+        }
+        cl_error(CL_ERR_ARGS,
+                 "destructuring-bind: unknown keyword argument %s%s (accepted:%s)",
+                 ((CL_Symbol *)CL_OBJ_TO_PTR(key))->package == cl_package_keyword
+                     ? ":" : "",
+                 cl_symbol_name(key), used ? accepted : " none");
+    }
     return CL_NIL;
 }
 
@@ -2027,6 +2089,9 @@ void cl_builtins_init(void)
     cl_gc_register_root(&cl_dbind_too_few_sym);
     cl_dbind_too_many_sym = cl_intern_in("%DBIND-TOO-MANY", 15, cl_package_clamiga);
     cl_gc_register_root(&cl_dbind_too_many_sym);
+    cl_register_builtin("%DBIND-CHECK-KEYS", bi_dbind_check_keys, 2, 2, cl_package_clamiga);
+    cl_dbind_check_keys_sym = cl_intern_in("%DBIND-CHECK-KEYS", 17, cl_package_clamiga);
+    cl_gc_register_root(&cl_dbind_check_keys_sym);
     cl_register_builtin("%SET-SYMBOL-PLIST", bi_set_symbol_plist, 2, 2, cl_package_clamiga);
     defun("GET", bi_get, 2, 3);
     cl_register_builtin("%SETF-GET", bi_setf_get, 3, 3, cl_package_clamiga);
