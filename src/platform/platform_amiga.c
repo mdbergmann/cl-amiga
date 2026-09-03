@@ -129,6 +129,16 @@ int platform_tty_char_avail(void)
         return 0;
     if (!IsInteractive(in))
         return 1;   /* file/pipe input: data (or EOF) is always "ready" */
+    /* Cooked-mode reads go through FGets/FGetC, whose read-ahead lives in
+     * the handle's fh_Buf where WaitForChar() (a console-handler query)
+     * cannot see it — the tail of a pasted multi-line form sits there after
+     * FGets returned its first line.  Same probe platform_drain_input uses.
+     * Raw-mode reads bypass that buffer, so only consult it in cooked mode. */
+    if (!tty_raw_active) {
+        struct FileHandle *fh = (struct FileHandle *)BADDR(in);
+        if (fh->fh_Buf != 0 && fh->fh_Pos >= 0 && fh->fh_Pos < fh->fh_End)
+            return 1;
+    }
     return WaitForChar(in, 1) ? 1 : 0;   /* 1 microsecond: poll, don't wait */
 }
 

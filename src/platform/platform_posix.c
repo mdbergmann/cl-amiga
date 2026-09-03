@@ -287,12 +287,40 @@ int platform_tty_raw_active(void)
     return tty_raw_active;
 }
 
+/* Bytes stdio has already pulled off fd 0 but not yet handed out — the
+ * cooked-mode reads (fgets / getchar) go through stdio, and select() on the
+ * fd cannot see that buffer.  A pipe or file read slurps everything
+ * available in one go, so after platform_read_line returned the first line
+ * of a pasted multi-line form the rest sits exactly here.  (A tty in
+ * canonical mode hands out one line per read, so there the type-ahead
+ * stays in the kernel and select() finds it.)
+ *
+ * The FILE layout is libc-specific; the two we build on export it:
+ * glibc's struct _IO_FILE (_IO_read_ptr/_IO_read_end) and the BSD/macOS
+ * __sFILE (_r = bytes left for getc, ungetc included).  Elsewhere answer
+ * "nothing", the conservative pre-existing behavior. */
+static int stdin_stdio_buffered(void)
+{
+#if defined(__GLIBC__)
+    return stdin->_IO_read_ptr < stdin->_IO_read_end;
+#elif defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || \
+      defined(__OpenBSD__) || defined(__DragonFly__)
+    return stdin->_r > 0;
+#else
+    return 0;
+#endif
+}
+
 int platform_tty_char_avail(void)
 {
     fd_set rfds;
     struct timeval tv;
     int r;
     if (tty_pushback != -1)
+        return 1;
+    /* Raw-mode reads bypass stdio, so its buffer is not what the next read
+     * returns — only consult it in cooked mode. */
+    if (!tty_raw_active && stdin_stdio_buffered())
         return 1;
     FD_ZERO(&rfds);
     FD_SET(STDIN_FILENO, &rfds);

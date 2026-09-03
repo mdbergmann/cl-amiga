@@ -263,6 +263,82 @@ TEST(lisp_tty_builtins_and_input_loop)
     ASSERT_STR_EQ(eval_print("(ext:tty-raw-mode nil)"), "T");
 }
 
+/* Cooked (canonical) mode: after platform_read_line took one line, the
+ * rest of a pasted multi-line form is type-ahead the probe MUST report.
+ * The REPL asks exactly this before printing its continuation prompt —
+ * when the next line is already there, the terminal has echoed it, and a
+ * prompt would land after the echo, glued to the value (issue #14).  On a
+ * tty the type-ahead is still in the kernel (canonical reads return one
+ * line each), so this pins the select() half of the probe. */
+TEST(cooked_typeahead_visible_after_line_read)
+{
+    char line[64];
+
+    ASSERT_EQ_INT(platform_tty_raw_active(), 0);
+    ASSERT_EQ_INT(platform_tty_char_avail(), 0);
+
+    /* Two lines arrive in one burst, like a paste. */
+    ASSERT_EQ_INT((int)write(pty_master, "a\nb\n", 4), 4);
+    ASSERT_EQ_INT(wait_char_avail(), 1);
+    ASSERT_EQ_INT(platform_read_line(line, sizeof(line)), 1);
+    ASSERT_STR_EQ(line, "a");
+
+    /* The second line is pending: no prompt should be printed now. */
+    ASSERT_EQ_INT(wait_char_avail(), 1);
+    ASSERT_EQ_INT(platform_read_line(line, sizeof(line)), 1);
+    ASSERT_STR_EQ(line, "b");
+
+    /* Nothing left: a human is being waited for, the prompt is due. */
+    ASSERT_EQ_INT(platform_tty_char_avail(), 0);
+}
+
+/* Same contract with stdin on a PIPE (an editor or `printf ... | clamiga`):
+ * one read slurps both lines into stdio's buffer, where the fd-level
+ * probe cannot see the second one — the probe has to look inside stdio.
+ * That peek exists on the libcs whose FILE layout is public (glibc, the
+ * BSDs / macOS); elsewhere the probe is allowed to answer 0 (conservative:
+ * the prompt is printed, the pre-fix behavior), so that assertion is
+ * guarded by the same condition platform_posix.c compiles the peek under.
+ * The fd-level half is pinned unconditionally: a line that arrives AFTER
+ * the first read is visible everywhere, and an empty pipe reports 0. */
+TEST(pipe_typeahead_visible_after_line_read)
+{
+    int fds[2];
+    int hold;
+    char line[64];
+
+    ASSERT_EQ_INT(pipe(fds), 0);
+    hold = dup(STDIN_FILENO);
+    ASSERT(hold >= 0);
+    ASSERT(dup2(fds[0], STDIN_FILENO) >= 0);
+
+    /* Both lines already there: fgets buffers the second one. */
+    ASSERT_EQ_INT((int)write(fds[1], "a\nb\n", 4), 4);
+    ASSERT_EQ_INT(platform_read_line(line, sizeof(line)), 1);
+    ASSERT_STR_EQ(line, "a");
+#if defined(__GLIBC__) || defined(__APPLE__) || defined(__FreeBSD__) || \
+    defined(__NetBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
+    ASSERT_EQ_INT(platform_tty_char_avail(), 1);
+#endif
+    ASSERT_EQ_INT(platform_read_line(line, sizeof(line)), 1);
+    ASSERT_STR_EQ(line, "b");
+
+    /* Writer still open, nothing written: not pending. */
+    ASSERT_EQ_INT(platform_tty_char_avail(), 0);
+
+    /* A line that lands after the read is in the pipe, not in stdio. */
+    ASSERT_EQ_INT((int)write(fds[1], "c\n", 2), 2);
+    ASSERT_EQ_INT(wait_char_avail(), 1);
+    ASSERT_EQ_INT(platform_read_line(line, sizeof(line)), 1);
+    ASSERT_STR_EQ(line, "c");
+    ASSERT_EQ_INT(platform_tty_char_avail(), 0);
+
+    dup2(hold, STDIN_FILENO);
+    close(hold);
+    close(fds[0]);
+    close(fds[1]);
+}
+
 TEST(non_tty_fails_gracefully)
 {
     int devnull = open("/dev/null", O_RDONLY);
@@ -297,6 +373,8 @@ int main(void)
     RUN(raw_read_avail_and_pushback);
     RUN(tty_size_reports_winsize);
     RUN(lisp_tty_builtins_and_input_loop);
+    RUN(cooked_typeahead_visible_after_line_read);
+    RUN(pipe_typeahead_visible_after_line_read);
     RUN(non_tty_fails_gracefully);
 
     pty_stdin_restore();

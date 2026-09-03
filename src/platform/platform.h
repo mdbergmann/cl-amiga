@@ -95,9 +95,16 @@ int   platform_tty_size(int *cols, int *rows);
 
 /* Returns 1 if platform_getchar() would return without blocking, else 0.
  * Exact while raw mode is active (raw-mode reads bypass the C library's
- * input buffering); best-effort in cooked mode, where line buffering can
- * hide already-buffered characters (a 0 then is conservative, matching
- * LISTEN's historical behavior). */
+ * input buffering).  In cooked mode it also counts what the line reader
+ * has already buffered ahead (stdio's buffer on glibc and the BSD libcs
+ * including macOS; the DOS FileHandle buffer on AmigaOS) on top of the
+ * OS-level probe, so the tail of a pasted multi-line form is reported as
+ * pending after platform_read_line returned its first line — that is what
+ * the REPL asks before printing a continuation prompt.  Where the libc's
+ * buffer is opaque (Windows) a cooked-mode 0 is conservative for input
+ * that arrived through a pipe, matching LISTEN's historical behavior; a
+ * console/tty is exact everywhere, because canonical reads deliver one line
+ * at a time and the rest stays visible to the OS probe. */
 int   platform_tty_char_avail(void);
 
 /* File I/O (bulk read) */

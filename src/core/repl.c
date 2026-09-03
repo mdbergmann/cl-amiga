@@ -644,8 +644,23 @@ void cl_repl(void)
         depth = cl_paren_depth(accum);
 
         if (depth > 0) {
-            /* Incomplete expression — show continuation prompt */
-            repl_continuation_prompt();
+            /* Incomplete expression — show the continuation prompt, but
+             * only if we are actually about to wait for a human.  When the
+             * rest of the form is already pending (a pasted multi-line
+             * form, or an editor that sends the whole form at once) the
+             * terminal has echoed those lines before we get here, so a
+             * prompt now would land AFTER them, glued to the value's first
+             * line (issue #14):
+             *
+             *     COMMON-LISP-USER> "
+             *     "
+             *                     > "        <- prompt after the echo
+             *     "
+             *
+             * Skipping it gives the transcript a typed-form-by-form REPL
+             * (SBCL, which has no continuation prompt at all) shows. */
+            if (!platform_tty_char_avail())
+                repl_continuation_prompt();
             continue;
         }
 
