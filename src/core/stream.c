@@ -325,6 +325,49 @@ void cl_stream_shutdown(void)
     stream_initialized = 0;
 }
 
+void cl_stream_release_tables(void)
+{
+    uint32_t blk;
+    int i;
+
+    /* Output-buffer directory.  cl_stream_shutdown deliberately keeps these
+     * blocks so a re-init can reuse them verbatim; at process exit there is
+     * no re-init, and each block is 256 slots (a few KB) of platform_alloc'd
+     * memory the OS will not reclaim on AmigaOS.  Block 0 is static BSS —
+     * only blocks 1.. were allocated. */
+    for (blk = 1; blk < outbuf_nblocks; blk++) {
+        CL_OutBuf *b = outbuf_dir[blk];
+        if (!b) continue;
+        for (i = 0; i < CL_OUTBUF_BLOCK_SIZE; i++)
+            if (b[i].data) { platform_free(b[i].data); b[i].data = NULL; }
+        outbuf_dir[blk] = NULL;
+        platform_free(b);
+    }
+    outbuf_nblocks = 1;
+
+    /* Per-socket lock blocks: never freed during the run by design (a looked-up
+     * lock must stay valid for the life of the process, unlocked readers and
+     * all).  Each block carries 2 x 32 OS mutexes — on AmigaOS that is 64
+     * SignalSemaphores per block. */
+    for (blk = 0; blk < CL_SOCK_LOCK_MAX_BLOCKS; blk++) {
+        SockLockPair *b = cl_sock_lock_dir[blk];
+        if (!b) continue;
+        cl_sock_lock_dir[blk] = NULL;
+        for (i = 0; i < CL_SOCK_LOCK_BLOCK_SIZE; i++) {
+            if (b[i].read_mutex)  platform_mutex_destroy(b[i].read_mutex);
+            if (b[i].write_mutex) platform_mutex_destroy(b[i].write_mutex);
+        }
+        platform_free(b);
+    }
+
+    /* Module locks — all lazily created by cl_stream_init, so NULLing them
+     * here leaves the module able to re-initialize cleanly. */
+    if (cl_stream_table_mutex)  { platform_mutex_destroy(cl_stream_table_mutex);  cl_stream_table_mutex = NULL; }
+    if (cl_console_read_mutex)  { platform_mutex_destroy(cl_console_read_mutex);  cl_console_read_mutex = NULL; }
+    if (cl_console_write_mutex) { platform_mutex_destroy(cl_console_write_mutex); cl_console_write_mutex = NULL; }
+    if (cl_file_io_mutex)       { platform_mutex_destroy(cl_file_io_mutex);       cl_file_io_mutex = NULL; }
+}
+
 CL_Obj cl_make_stream(uint32_t direction, uint32_t stream_type)
 {
     CL_Stream *st = (CL_Stream *)cl_alloc(TYPE_STREAM, sizeof(CL_Stream));

@@ -10,6 +10,10 @@
 
 void cl_builtins_init(void);
 
+/* Release builtin-module side tables (struct/CLOS slot index, condition
+ * hierarchy index) at process exit.  See builtins.c. */
+void cl_builtins_shutdown(void);
+
 /* A CLHS "non-negative integer" list index/count argument (NTH, NTHCDR,
  * LAST, BUTLAST, %SETF-NTH), as an int32_t a walk loop can count down:
  * a non-negative fixnum as itself, a positive bignum clamped to INT32_MAX

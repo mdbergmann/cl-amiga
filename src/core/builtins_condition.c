@@ -2067,6 +2067,14 @@ static CL_Obj bi_use_value(CL_Obj *args, int n)
 
 /* --- Registration --- */
 
+/* Release the condition-hierarchy hash index at process exit — a
+ * platform_alloc'd table sized to twice the number of registered condition
+ * types, rebuilt rather than grown, so nothing else hands it back. */
+void cl_builtins_condition_shutdown(void)
+{
+    cl_alist_index_reset(&cond_index);
+}
+
 void cl_builtins_condition_init(void)
 {
     /* After a shutdown/re-init cycle (test harnesses) these statics

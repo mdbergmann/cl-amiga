@@ -483,6 +483,48 @@ static int discover_image(void)
     return 0;
 }
 
+/* Free system memory sampled at startup, for the CLAMIGA_MEM_DIAG report. */
+static unsigned long mem_diag_start_avail = 0;
+
+/* Report, at the very end of shutdown, how much system memory this process
+ * failed to hand back.  Only meaningful on AmigaOS, where there is no
+ * per-process reclaim and a leaked block is Fast RAM the machine loses until
+ * reboot — so `Avail` before and after a run is exactly what a user sees, and
+ * this is clamiga saying the same number about itself.
+ *
+ * WHERE is deliberately part of the line: the worker-thread fast path skips
+ * cl_mem_shutdown by design and will always show a large delta, and reading
+ * that as a leak would send someone chasing a bug that isn't there.
+ *
+ * A small nonzero delta is normal — the DOS console and the shell's own
+ * buffers move underneath us — but it must not grow with what the program
+ * did, and must not grow run over run. */
+static void mem_diag_report(const char *where)
+{
+    unsigned long now;
+    char buf[192];
+
+    if (!cl_mem_diag || mem_diag_start_avail == 0)
+        return;
+    now = platform_mem_available();
+    if (now >= mem_diag_start_avail) {
+        snprintf(buf, sizeof(buf),
+                 "[mem] %s: system memory fully returned (%lu bytes free, "
+                 "%lu more than at startup)\n",
+                 where, now, now - mem_diag_start_avail);
+    } else {
+        snprintf(buf, sizeof(buf),
+                 "[mem] %s: %lu bytes NOT returned to the system "
+                 "(free %lu at start, %lu now)\n",
+                 where, mem_diag_start_avail - now, mem_diag_start_avail, now);
+    }
+    /* platform_write_string, not stderr: on AmigaOS the shell's `>file`
+     * redirect captures Output() only, and this line has to land in the log
+     * next to the rest of the run. */
+    platform_write_string(buf);
+    platform_flush_output();
+}
+
 /* Evaluate --eval in CL-USER context (not whatever *package* was left by --load) */
 static CL_Obj eval_string_in_cl_user(const char *str)
 {
@@ -666,6 +708,12 @@ int main(int argc, char *argv[])
     /* Anchor GET-INTERNAL-REAL-TIME at process start so Lisp code can
      * measure launch-to-here directly (boot/load profiling). */
     cl_internal_time_init();
+
+    /* Baseline for the CLAMIGA_MEM_DIAG leak report printed at shutdown.
+     * Sampled here, before a single byte of runtime state exists, so the
+     * closing sample measures everything this process failed to hand back.
+     * Zero on hosts, where the figure is meaningless (see platform.h). */
+    mem_diag_start_avail = platform_mem_available();
 
     /* Heap image: stage (read + verify) BEFORE cl_mem_init so the arena
      * can be sized to the image's payload.  An explicit --image that
@@ -980,12 +1028,46 @@ shutdown:
      * cl_thread_shutdown). */
     if (cl_thread_count > 0) {
         SHUTDOWN_TRACE("workers still running — fast _exit, arena left to OS");
+        mem_diag_report("worker-thread fast exit (arena deliberately not freed)");
         fflush(NULL);
         _exit(cl_exit_code);
     }
 
+    /* Past the worker check: this process is single-threaded again, so it is
+     * finally safe to take away state that a live thread could still have
+     * been using.  Each of these releases memory that lives OUTSIDE the GC
+     * arena and that nothing else ever hands back — the compiler pool (eight
+     * ~366 KB blocks) with its hash indexes and interned source paths, the
+     * struct/CLOS slot index and the condition-hierarchy index, the stream
+     * module's segmented directories and its OS mutexes, and on AmigaOS the
+     * still-open DOS files, their I/O buffers and the public ARexx port.
+     *
+     * They deliberately run HERE rather than earlier: destroying the console
+     * mutex or the compiler lock while a worker is still printing or
+     * compiling hangs the process at exit — the same hazard that makes
+     * cl_thread_shutdown leak its primitives above.  A run that ends with
+     * workers alive skips all of it and _exits, which on AmigaOS does leak;
+     * the CLAMIGA_MEM_DIAG line says so rather than reporting a clean exit. */
+    cl_compiler_shutdown();
+    SHUTDOWN_TRACE("compiler done");
+    cl_builtins_shutdown();
+    SHUTDOWN_TRACE("builtins done");
+    cl_stream_release_tables();
+    SHUTDOWN_TRACE("stream tables done");
+    platform_release_resources();
+    SHUTDOWN_TRACE("platform resources done");
+
     cl_mem_shutdown();
     SHUTDOWN_TRACE("mem done");
+    /* Last, because the arena walk in cl_mem_shutdown is what clears the
+     * bytecode pointers into this pool (see compiler.c). */
+    cl_compiler_release_source_pool();
+    SHUTDOWN_TRACE("source pool done");
+    /* Every clamiga-owned allocator is now closed, so anything the tracer
+     * still shows as live is a leak with a file:line on it (-DDEBUG_MEM_TRACK
+     * builds only; a no-op macro otherwise). */
+    cl_mem_track_report();
+    mem_diag_report("exit");
 
 #if defined(PLATFORM_AMIGA) && !defined(PLATFORM_MORPHOS)
     /* m68k AmigaOS (-noixemul): every clamiga-owned resource is already

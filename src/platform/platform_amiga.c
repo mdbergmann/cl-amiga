@@ -1,3 +1,9 @@
+/* This file DEFINES platform_alloc / platform_free, so it must opt out of
+ * the DEBUG_MEM_TRACK macros in platform.h that redirect those names to the
+ * leak tracer — otherwise the definitions themselves get renamed.  It calls
+ * the allocator nowhere else, so nothing here goes untracked. */
+#define CL_MEM_TRACK_IMPL 1
+
 #include "platform.h"
 #include "platform_thread.h"
 
@@ -922,6 +928,11 @@ const char *platform_getenv(const char *name, char *buf, int bufsize)
     LONG len = GetVar((STRPTR)name, buf, bufsize, 0);
     if (len < 0) return NULL;
     return buf;
+}
+
+unsigned long platform_mem_available(void)
+{
+    return (unsigned long)AvailMem(MEMF_ANY);
 }
 
 int platform_break_pending(void)
@@ -3038,6 +3049,37 @@ void platform_shutdown(void)
         memset(&req, 0, sizeof(req));
         req.op = REQ_SHUTDOWN;
         sock_call(&req);
+    }
+}
+
+void platform_release_resources(void)
+{
+    /* Remove our public ARexx port from exec's list.  This is a correctness
+     * fix before it is a memory one: a public port left registered outlives
+     * the process and points at memory DOS has reclaimed, so the next program
+     * that looks the name up finds a corpse. */
+    platform_arexx_close();
+
+    /* Close any file left open at exit.  A stream the program never CLOSEd
+     * still holds a DOS handle and an 8 KB IOBuf (two 4 KB buffers plus the
+     * header); on AmigaOS neither comes back on its own, and the buffered
+     * write side would silently lose whatever had not been flushed.
+     * platform_file_close does the flush, the Close and the buffer free. */
+    {
+        int fh;
+        for (fh = 1; fh < PLATFORM_FILE_TABLE_SIZE; fh++)
+            if (file_table[fh])
+                platform_file_close((PlatformFile)fh);
+    }
+
+    if (file_table_mutex) {
+        platform_mutex_destroy(file_table_mutex);
+        file_table_mutex = NULL;
+        file_table_init = 0;
+    }
+    if (reactor_init_mutex) {
+        platform_mutex_destroy(reactor_init_mutex);
+        reactor_init_mutex = NULL;
     }
 }
 

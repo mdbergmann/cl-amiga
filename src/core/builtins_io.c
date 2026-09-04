@@ -905,6 +905,14 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                 if (fasl_buf) platform_free(fasl_buf);
                 if (fw) {
                     cl_fasl_writer_unregister(fw);
+                    /* Same release the normal path does: the writer's
+                     * shared-object table and hash are platform_alloc'd and
+                     * are NOT freed by platform_free(fw).  They are normally
+                     * NULL on the file-level writer (the per-unit scratch
+                     * writer does the dedup), but the two paths must not
+                     * disagree — this one is (QUIT) inside LOAD, i.e. exactly
+                     * the exit path where a leak is permanent on AmigaOS. */
+                    cl_fasl_writer_release(fw);
                     platform_free(fw);
                 }
                 cl_error(CL_ERR_EXIT, "");
@@ -2912,6 +2920,27 @@ static CL_Obj bi_ext_gc_mark_stats(CL_Obj *args, int n)
                                    CL_NIL)));
 }
 
+/* (ext:%bytecode-offheap-stats) — off-heap bytecode payload returned to the
+ * allocator since heap init, as a 2-element list: (bytes objects).
+ *
+ * A compiled function is a small arena object with up to eight
+ * platform_alloc'd buffers hanging off it (bytecode body, constants pool,
+ * &key arrays, pc→line map, JIT native code and its reloc table).  Those
+ * live outside the GC arena, so nothing in ROOM or the arena statistics says
+ * whether they are being handed back.  Redefining a function, LOADing a file
+ * twice or any COMPILE churn orphans a bytecode; this counter must grow
+ * after the next GC.  If it stays flat while functions are being replaced,
+ * the runtime is leaking compiled-code memory — which on AmigaOS is Fast RAM
+ * lost to the system until reboot. */
+static CL_Obj bi_ext_bytecode_offheap_stats(CL_Obj *args, int n)
+{
+    uint32_t bytes, count;
+    CL_UNUSED(args); CL_UNUSED(n);
+    cl_gc_offheap_stats(&bytes, &count);
+    return cl_cons(CL_MAKE_FIXNUM((int32_t)bytes),
+                   cl_cons(CL_MAKE_FIXNUM((int32_t)count), CL_NIL));
+}
+
 /* (ext:%gc-time-stats) — cumulative GC phase timers as a 9-element list:
  * (gc-count compact-count stw-seconds mark-seconds sweep-seconds
  *  compact-seconds stw-stops stw-max-seconds epoch-skips).  Counts are
@@ -4820,6 +4849,7 @@ void cl_builtins_io_init(void)
     extfun("GC", bi_ext_gc, 0, 0);
     extfun("GC-COMPACT", bi_ext_gc_compact, 0, 0);
     extfun("%GC-MARK-STATS", bi_ext_gc_mark_stats, 0, 0);
+    extfun("%BYTECODE-OFFHEAP-STATS", bi_ext_bytecode_offheap_stats, 0, 0);
     extfun("%GC-TIME-STATS", bi_ext_gc_time_stats, 0, 0);
 #ifdef CL_GENGC
     extfun("%GENGC-STATS", bi_ext_gengc_stats, 0, 0);

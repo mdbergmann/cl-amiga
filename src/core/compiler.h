@@ -58,6 +58,16 @@ void cl_compiler_indexes_gc_invalidate(void);
 
 void cl_compiler_init(void);
 
+/* Release the pooled CL_Compiler blocks (~366 KB each, 8 pre-warmed) and the
+ * compiler's own locks.  Call at process exit only, once no compile can be in
+ * flight — during a run the pool must keep its blocks (see compiler.c). */
+void cl_compiler_shutdown(void);
+
+/* Release the interned source-file pool.  Must run AFTER cl_mem_shutdown:
+ * bytecode objects point into this pool, and the arena walk there clears
+ * those pointers first.  See compiler.c. */
+void cl_compiler_release_source_pool(void);
+
 /* Expand one level of macro (returns form unchanged if not a macro call) */
 CL_Obj cl_macroexpand_1(CL_Obj form);
 

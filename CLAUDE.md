@@ -14,6 +14,7 @@ make host          # Build for host (gcc)
 make test          # Fast test tier: C unit tests + shell tests (mandatory — must pass before committing)
 make test-plus     # Fast tier + host-cold-test (sento cold-load smoke test)
 make test-extra    # Heavyweight trunk integration scripts (quicklisp/ansi-tests)
+make test-memleak  # Off-heap allocation tracer: assert zero bytes leak at exit
 make clean         # Remove build artifacts
 ```
 
@@ -157,6 +158,31 @@ Any C code that holds `CL_Obj` values across allocating calls **must** GC-protec
 - **Tests must be tight on production code** — test the exact behavior, not just the happy path; cover edge cases, boundary conditions, and error paths thoroughly
 - **Target 90% test coverage** — aim for at least 90% coverage across the codebase
 - **The gc-stress test suite is critical for the stability and resiliency of clamiga** (`make test-gc-stress`, forces compaction every alloc via `DEBUG_GC_STRESS`/`CLAMIGA_GC_STRESS=1` to make unprotected-`CL_Obj` GC bugs deterministic). When changing or adding any code, make sure there is coverage not only in the unit tests but **also in the gc-stress suite** — exercise new allocating paths under GC stress so compaction/relocation bugs surface in CI rather than in the field.
+
+### Off-heap memory must be handed back (AmigaOS has no exit reclaim)
+
+`platform_alloc` memory lives **outside** the GC arena, so no arena statistic
+sees it and a host build cannot observe it leaking — the kernel reclaims the
+address space at exit. **AmigaOS does not.** A block never freed is Fast RAM
+gone from the system pool until reboot, so an exit-path leak is a per-launch
+cost to the user, not a hygiene issue. (Measured: clamiga lost 3,743,160 bytes
+on *every* launch on a Vampire until the 0.8 shutdown paths were fixed.)
+
+- Run **`make test-memleak`** after touching any shutdown path, the compiler
+  pool, the FASL reader/writer, or anything that parks `platform_alloc`
+  memory in a static. It builds with `-DDEBUG_MEM_TRACK`, tags every
+  allocation with its `__FILE__`/`__LINE__`, and fails with the exact call
+  site if a run ends with anything outstanding.
+- A new long-lived off-heap allocation needs a matching release in one of the
+  shutdown functions `main()` calls, and a scenario in
+  `tests/test_memleak_tracked.sh`.
+- **Order matters**: teardown that takes away *shared* state (module mutexes,
+  the compiler pool, stream tables, open files) must run only *after* the
+  `cl_thread_count > 0` check in `main()`. Destroying a console mutex or a
+  compiler lock while a worker thread is still live hangs the process at exit
+  — `test_mt_print_stress` and `test_mt_gc_regression` catch it.
+- `CLAMIGA_MEM_DIAG=1` makes each stage report what it handed back, and on
+  AmigaOS prints the whole-process `AvailMem` delta. Pair it with `Avail`.
 
 ## Documentation
 

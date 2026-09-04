@@ -1244,6 +1244,26 @@ static CL_Obj bi_struct_change_class(CL_Obj *args, int n)
     return SYM_T;
 }
 
+/* Release the struct/CLOS slot index at process exit.
+ *
+ * Both arrays are platform_alloc'd (outside the GC arena) and are rebuilt
+ * from scratch whenever the registry changes, so nothing but an explicit
+ * teardown ever hands them back.  They scale with the image: a CLOS-heavy
+ * session interns one `pairs` entry per (type, slot) pair, which reaches
+ * tens of KB before ASDF is even loaded.  On AmigaOS that is Fast RAM the
+ * machine does not get back until reboot. */
+void cl_builtins_struct_shutdown(void)
+{
+    if (struct_index.slots) platform_free(struct_index.slots);
+    struct_index.slots = NULL;
+    struct_index.cap = 0;
+    if (struct_index.pairs) platform_free(struct_index.pairs);
+    struct_index.pairs = NULL;
+    struct_index.pair_cap = 0;
+    struct_index.dirty = 0;
+    struct_index.disabled = 0;
+}
+
 void cl_builtins_struct_init(void)
 {
     /* A re-initialized runtime (test harnesses: cl_mem_shutdown +

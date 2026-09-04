@@ -1368,8 +1368,12 @@ void cl_thread_shutdown(void)
      * primitives yanks them out from under live code: the next worker
      * safepoint locks a destroyed gc_mutex (UB on pthreads, a NULL
      * ObtainSemaphore on Amiga), and its exit path locks a destroyed
-     * cl_thread_list_lock.  Deliberately LEAK them instead — the process
-     * is exiting, the OS reclaims everything. */
+     * cl_thread_list_lock.  Deliberately LEAK them instead: the process is
+     * exiting, and a handful of orphaned OS primitives is a far better
+     * outcome than a crash in teardown.  (On AmigaOS the leak is real — the
+     * system does not reclaim a process's memory — which is why this path
+     * warns and why main() reports it separately in the CLAMIGA_MEM_DIAG
+     * line rather than counting it as a clean exit.) */
     if (cl_thread_count > 0) {
         static int warned = 0;
         if (!warned) {
@@ -1405,5 +1409,34 @@ void cl_thread_shutdown(void)
     if (cl_thread_list_lock) {
         platform_mutex_destroy(cl_thread_list_lock);
         cl_thread_list_lock = NULL;
+    }
+
+    /* Locks and condition variables created from Lisp (MP:MAKE-LOCK,
+     * MP:MAKE-CONDITION-VARIABLE).  The GC destroys one only when its wrapper
+     * object is proved dead; anything still reachable at exit — a lock held in
+     * a global, the usual case — was never destroyed at all.  Each is an OS
+     * primitive (a SignalSemaphore on AmigaOS), so on a machine with no
+     * per-process reclaim they accumulate across runs.
+     *
+     * A lock recorded as HELD is skipped, exactly as gc_finalize_dead does:
+     * destroying a held mutex is undefined behavior.  No worker is left to
+     * release it (cl_thread_count == 0 here), so leaking that one is the
+     * correct trade. */
+    {
+        uint32_t i;
+        for (i = 0; i < CL_MAX_LOCKS; i++) {
+            void *h = cl_lock_table[i];
+            if (!h) continue;
+            cl_lock_table[i] = NULL;
+            if (cl_lock_held[i]) { cl_lock_held[i] = NULL; cl_lock_depth[i] = 0; continue; }
+            cl_lock_depth[i] = 0;
+            platform_mutex_destroy(h);
+        }
+        for (i = 0; i < CL_MAX_CONDVARS; i++) {
+            void *h = cl_condvar_table[i];
+            if (!h) continue;
+            cl_condvar_table[i] = NULL;
+            platform_condvar_destroy(h);
+        }
     }
 }

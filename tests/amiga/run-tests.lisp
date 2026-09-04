@@ -466,6 +466,34 @@ y" 1))
            (plusp (second stats))      ; via at least one grow operation
            (zerop (third stats))))))   ; quadratic re-scan fallback never ran
 
+; --- Off-heap bytecode payload is reclaimed (Fast RAM leak regression) ---
+; A compiled function is a small arena object with up to eight
+; platform_alloc'd buffers hanging off it: the bytecode body, the constants
+; pool, the three &key arrays, the pc->line map, and on m68k the JIT's native
+; code plus its reloc table.  Those live OUTSIDE the arena, so no arena
+; statistic can see them, and the sweep used to drop every one of them on the
+; floor -- redefining a function leaked its old body for good.
+;
+; This matters far more here than on a host.  AmigaOS has no per-process
+; reclaim: memory clamiga never hands back is gone from the system pool until
+; the machine is rebooted.  Together with the compiler pool and the live image
+; released at shutdown, this cost 3,743,160 bytes of Fast RAM on EVERY launch
+; (measured with Avail on a Vampire).  See tests/test_shutdown_leak.sh.
+(check "dead bytecode off-heap payload is reclaimed by GC" t
+  (let ((before (first (ext:%bytecode-offheap-stats))))
+    (dotimes (i 300)
+      (eval (list 'defun 'offheap-churn-victim (list 'x)
+                  (list '+ 'x i i i i i i i i))))
+    (ext:gc)
+    (ext:gc)
+    (let ((grown (- (first (ext:%bytecode-offheap-stats)) before)))
+      ; 300 redefinitions, each orphaning at least a body and a constants
+      ; pool -- far above any noise floor, far below the true figure.
+      (> grown 3000))))
+
+(check "off-heap stats report a finalized object count" t
+  (plusp (second (ext:%bytecode-offheap-stats))))
+
 ; --- Quasiquote ---
 (check "qq atom" 42 `42)
 (check "qq symbol" 'foo `foo)

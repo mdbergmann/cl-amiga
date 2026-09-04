@@ -33,6 +33,13 @@ void cl_stream_init(void);
 /* Shutdown stream subsystem (free buffers) */
 void cl_stream_shutdown(void);
 
+/* Process-exit teardown: release the segmented side tables cl_stream_shutdown
+ * deliberately keeps (output-buffer directory blocks, per-socket lock blocks
+ * and their OS mutexes) plus the module locks.  Separate from
+ * cl_stream_shutdown because unit-test teardowns call that one and then
+ * re-init; this is the "nothing comes after" variant. */
+void cl_stream_release_tables(void);
+
 /* Allocate a stream object on the heap */
 CL_Obj cl_make_stream(uint32_t direction, uint32_t stream_type);
 

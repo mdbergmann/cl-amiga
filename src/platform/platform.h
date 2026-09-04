@@ -40,6 +40,29 @@
 void *platform_alloc(unsigned long size);
 void  platform_free(void *ptr);
 
+/* Off-heap allocation leak tracer — see src/core/mem_track.c.
+ *
+ * Built only with -DDEBUG_MEM_TRACK, where it redirects every platform_alloc
+ * / platform_free to a wrapper that tags each block with its call site, and
+ * CLAMIGA_MEM_DIAG=1 then prints what is still outstanding at exit, grouped
+ * by file:line.  This is the tool for AmigaOS memory loss: nothing there
+ * reclaims a process's memory, so a block never freed is Fast RAM the machine
+ * loses until reboot, and no arena statistic can see it.
+ *
+ * mem_track.c defines CL_MEM_TRACK_IMPL so it alone still reaches the real
+ * allocator underneath. */
+#ifdef DEBUG_MEM_TRACK
+void *cl_mem_track_alloc(unsigned long size, const char *file, int line);
+void  cl_mem_track_free(void *ptr);
+void  cl_mem_track_report(void);
+#  ifndef CL_MEM_TRACK_IMPL
+#    define platform_alloc(size) cl_mem_track_alloc((size), __FILE__, __LINE__)
+#    define platform_free(ptr)   cl_mem_track_free(ptr)
+#  endif
+#else
+#  define cl_mem_track_report() ((void)0)
+#endif
+
 /* Console I/O */
 void  platform_write_string(const char *str);
 /* Push anything still pending on the standard-output handle out to the OS.
@@ -308,6 +331,17 @@ const char *platform_expand_home(const char *path, char *buf, int bufsize);
 /* Environment */
 const char *platform_getenv(const char *name, char *buf, int bufsize);
 
+/* Free system memory in bytes, or 0 where the platform has no meaningful
+ * answer (POSIX/Windows, where a process's memory is reclaimed at exit and
+ * "free RAM" is a kernel bookkeeping figure, not something clamiga can leak).
+ *
+ * On AmigaOS this is AvailMem(MEMF_ANY) — the real, shared system pool.
+ * There is no per-process reclaim there: whatever clamiga does not hand back
+ * before it exits is gone until the machine is rebooted.  Sampling this at
+ * startup and again at the end of shutdown is the ground truth for "did this
+ * run leak?", and is what CLAMIGA_MEM_DIAG=1 reports. */
+unsigned long platform_mem_available(void);
+
 /* Break-request poll (Ctrl-C).  Returns nonzero — and consumes the request —
  * when the user asked to interrupt the running program: SIGINT on POSIX
  * (a second SIGINT while one is still pending force-exits the process),
@@ -349,6 +383,19 @@ int platform_getcwd(char *buf, int bufsize);
 /* Lifecycle */
 void  platform_init(void);
 void  platform_shutdown(void);
+
+/* Final platform teardown, called only once NO worker thread is left alive
+ * (main.c runs it after cl_thread_shutdown, past the point where a surviving
+ * worker forces an early _exit).  Kept separate from platform_shutdown for
+ * exactly that reason: it takes away shared state — open DOS file handles and
+ * their buffers, the public ARexx port, the platform's own mutexes — and
+ * doing that under a live thread is the "yank shared state out from under
+ * running code" hazard the shutdown path is otherwise careful to avoid.
+ *
+ * Real work only on AmigaOS, where nothing is reclaimed when a process ends.
+ * A no-op on POSIX and Windows, where the kernel closes the descriptors and
+ * frees the address space. */
+void  platform_release_resources(void);
 
 /* Put the FPU control state into the mode the runtime expects.  Real work
  * only on the hard-float m68k build (FPU=1: sets the 68881/68882 FPCR to
