@@ -62,6 +62,7 @@
     ("amiga/graphics"  "AMIGA.GFX"       ("AMIGA.RAW.GRAPHICS"))
     ("amiga/gadtools"  "AMIGA.GADTOOLS"  ("AMIGA.RAW.GADTOOLS" "AMIGA.RAW.INTUITION"))
     ("amiga/audio"     "AMIGA.AUDIO"     ("AMIGA.RAW.EXEC"))
+    ("amiga/ahi"       "AMIGA.AHI"       ("AMIGA.RAW.AHI" "AMIGA.RAW.EXEC"))
     ("amiga/arexx"     "AMIGA.AREXX"     ("AMIGA.RAW.REXXSYSLIB" "AMIGA.RAW.EXEC"))
     ("amiga/boopsi"    "AMIGA.BOOPSI"    ())
     ("amiga/reaction"  "AMIGA.REACTION"  ())
@@ -77,6 +78,7 @@
     ("*DOS-BASE*"       . "AMIGA.RAW.DOS")
     ("*UTILITY-BASE*"   . "AMIGA.RAW.UTILITY")
     ("*REXXSYS-BASE*"   . "AMIGA.RAW.REXXSYSLIB")
+    ("*AHI-BASE*"       . "AMIGA.RAW.AHI")
     ("*MUIMASTER-BASE*" . "AMIGA.RAW.MUIMASTER")))
 
 ;;; ------------------------------------------------------------------

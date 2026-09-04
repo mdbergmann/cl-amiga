@@ -16,6 +16,7 @@ AmigaOS, see the main README.
 | `mui/` | MUI GUIs — the `AMIGA.MUI` helpers over `muimaster.library` (below) | AmigaOS 3.x with MUI 3.8+, or MorphOS |
 | `asyncio/copyfile.lisp` | Double-buffered asynchronous file copy over DOS packets — the `AMIGA.ASYNCIO` port of the NDK 3.1 AsynchIO package, timed against plain synchronous streams and byte-verified | AmigaOS 3.1+ or MorphOS |
 | `iff/sift.lisp` | The NDK 3.1 `sift` program as Lisp — `AMIGA.IFF` over iffparse.library builds a nested IFF with back-patched chunk sizes, prints its IFFCheck-like listing (files or the clipboard, the C's `-c`), reads chunk data back | AmigaOS 3.1+ or MorphOS |
+| `audio/ahi-play.lisp` | Sound through AHI — the opt-in `AMIGA.AHI` module: lists the audio modes of the installed drivers, plays a tone on the user's unit 0 through the device interface (one request, then two queued gapless at two pitches), then a major chord on three channels of AHI's mixer through the low-level API, no hooks | AHI 4+ installed (AmigaOS 3.x, Aminet `ahiusr`) or MorphOS |
 
 ## ReAction (`reaction/`)
 

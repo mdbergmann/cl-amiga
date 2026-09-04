@@ -9562,6 +9562,13 @@ y" 1))
     (load "tests/amiga/test-audio.lisp")
     (error (e) (format t "ERROR loading audio tests: ~A~%" e)))
 
+  ; --- ahi.device tests (lib/amiga/ahi.lisp, opt-in AHI playback) ---
+  ; Separate file for the same reader-needs-the-package reason.  Skips
+  ; its device checks where ahi.device is not installed.
+  (handler-case
+    (load "tests/amiga/test-ahi.lisp")
+    (error (e) (format t "ERROR loading ahi tests: ~A~%" e)))
+
   ; --- generated raw OS bindings (lib/amiga/raw/) ---
   ; Separate file for the same reader-needs-the-package reason.
   (handler-case

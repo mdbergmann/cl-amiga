@@ -39,14 +39,17 @@ mosdebug.log
 # unpacked AmigaOS 3.2 NDK (tools/aos32-ndk), the MorphOS SDK's
 # os-include (fd/ + clib/ + libraries/mui.h, MOS_SDK=tools/mos-sdk), the
 # MUI 3.8 developer kit (MUI:Developer — FD/, C/Include/,
-# MUI_SDK=tools/mui-sdk) and the MUI 5 SDK for AmigaOS (the muidev.de os3
-# release's SDK/MUI — sfd/, C/include/, MUI5_SDK=tools/mui5-sdk)
+# MUI_SDK=tools/mui-sdk), the MUI 5 SDK for AmigaOS (the muidev.de os3
+# release's SDK/MUI — sfd/, C/include/, MUI5_SDK=tools/mui5-sdk) and the
+# AHI developer kit (the unpacked Developer/ drawer of Aminet's
+# driver/audio/m68k-amigaos-ahidev.lha — Include/, AHI_SDK=tools/ahi-sdk)
 # — not redistributed; only the generated lib/amiga/raw/ output is
 # committed.
 /tools/aos32-ndk/
 /tools/mos-sdk/
 /tools/mui-sdk/
 /tools/mui5-sdk/
+/tools/ahi-sdk/
 
 # Amiga temp-device paths ("T:...") become literal host files when the
 # Amiga test suite runs on the host (a supported repro technique — see

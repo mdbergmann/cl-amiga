@@ -46,6 +46,16 @@
 #     the 3.8 value — the generator stops on any other difference (the
 #     known post-3.8 count evolutions are listed in the generator's
 #     *MUI-VALUE-EVOLUTIONS*).  Structs always come from the 3.8 header.
+#   * optionally the AHI developer kit: AHI_SDK=<dir> (default
+#     tools/ahi-sdk, the unpacked m68k-amigaos-ahi/Developer drawer of
+#     Aminet's driver/audio/m68k-amigaos-ahidev.lha — Include/SFD/
+#     ahi_lib.sfd, Include/C/devices/ahi.h, Include/Asm/lvo/ahi_lib.i).
+#     ahi.device then joins the AmigaOS (primary) tables with the MorphOS
+#     SDK's table as its twin, and its module carries the header's tags,
+#     sample types, error codes and structs (AHIRequest, AHISampleInfo ...).
+#     Without AHI_SDK ahi is emitted from the MorphOS SDK's function table
+#     alone (no constants, no structs) — commit only output generated WITH
+#     the AHI SDK.  The kit's ahi_sub (the driver-side API) is not generated.
 #
 # Usage:
 #   scripts/gen-amiga-bindings.sh                      # NDK only
@@ -54,7 +64,7 @@
 #
 # Environment knobs (all optional): NDK (unpacked NDK 3.2), PREFIX
 # (toolchain prefix), HOST_BIN, NDK_SFD, NDK_INCLUDE, NDK_INCLUDE_H, OUT,
-# MOS_SDK, MUI_SDK, MUI5_SDK, MCC_HEADERS, BINDGEN_LIBS (comma list),
+# MOS_SDK, MUI_SDK, MUI5_SDK, AHI_SDK, MCC_HEADERS, BINDGEN_LIBS (comma list),
 # BINDGEN_MOS_ONLY (comma list of MorphOS-only libraries to emit),
 # BINDGEN_DOCSTRINGS=0.
 set -e
@@ -173,6 +183,24 @@ else
     echo "MorphOS mui.h: none (pull gg:os-include/libraries/mui.h into \$MOS_SDK/libraries/ — the MorphOS-side MUI constants are omitted)"
 fi
 
+# The AHI developer kit: its sfd (shipped as such, no fd2sfd needed) joins
+# the primary tables, Include/C is another C-header root (devices/ahi.h),
+# Include/Asm/lvo the LVO cross-check.  Only ahi_lib.sfd is copied out:
+# the sibling ahi_sub_lib.sfd is the driver-side API, not generated.
+AHI_SDK=${AHI_SDK:-$ROOT/tools/ahi-sdk}
+AHI_TMP=
+if [ -f "$AHI_SDK/Include/SFD/ahi_lib.sfd" ] && [ -f "$AHI_SDK/Include/C/devices/ahi.h" ]; then
+    AHI_TMP=$(mktemp -d "${TMPDIR:-/tmp}/ahi-sfd.XXXXXX")
+    cp "$AHI_SDK/Include/SFD/ahi_lib.sfd" "$AHI_TMP/"
+    echo "AHI SDK: $AHI_SDK"
+    export BINDGEN_AHI_SFD="$AHI_TMP" BINDGEN_AHI_INCLUDE_H="$AHI_SDK/Include/C"
+    if [ -d "$AHI_SDK/Include/Asm/lvo" ]; then
+        export BINDGEN_AHI_LVO="$AHI_SDK/Include/Asm/lvo"
+    fi
+else
+    echo "AHI SDK: none (set AHI_SDK=<unpacked Developer/ drawer of m68k-amigaos-ahidev.lha> — ahi is emitted from the MorphOS SDK function table only, without devices/ahi.h constants and structs)"
+fi
+
 # MUI custom-class headers (<Name>_mcc.h): the kit's ExtClasses/ samples
 # (MCC_Tron) and MCC_HEADERS=<dir> (the headers of the classes you have —
 # NList_mcc.h, TextEditor_mcc.h ...) are collected into one mui/ directory
@@ -212,5 +240,6 @@ status=$?
 [ -n "$MOS_TMP" ] && rm -rf "$MOS_TMP"
 [ -n "$MUI_TMP" ] && rm -rf "$MUI_TMP"
 [ -n "$MUI5_TMP" ] && rm -rf "$MUI5_TMP"
+[ -n "$AHI_TMP" ] && rm -rf "$AHI_TMP"
 [ -n "$MCC_TMP" ] && rm -rf "$MCC_TMP"
 exit $status

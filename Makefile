@@ -230,7 +230,7 @@ test_batch test_repl_values test_repl_paste test_boot_log test_mx_error_context 
                 test_utf8_filenames test_image test_finish_output_flush \
                 test_amiga_bindgen \
                 test_amiga_boopsi test_amiga_reaction test_amiga_mui test_amiga_curated_vs_raw \
-                test_amiga_asyncio test_amiga_iff test_amiga_gfx_examples \
+                test_amiga_asyncio test_amiga_ahi test_amiga_iff test_amiga_gfx_examples \
                 test_lib_fasl_portable
 
 # The two that drive make itself and take no clamiga binary.
@@ -492,11 +492,14 @@ verify-amiga:
 # and from the MUI 3.8 developer kit (MUI_SDK=<copy of MUI:Developer>,
 # default tools/mui-sdk) the muimaster module's constants; the MUI 5 SDK
 # (MUI5_SDK=tools/mui5-sdk) and the MorphOS SDK's libraries/mui.h add the
-# post-3.8 muimaster surface.  The output is
+# post-3.8 muimaster surface; the AHI developer kit (AHI_SDK=tools/ahi-sdk,
+# the unpacked Developer/ drawer of Aminet's m68k-amigaos-ahidev.lha) makes
+# ahi.device an AmigaOS module carrying devices/ahi.h's tags and structs.
+# The output is
 # committed; CI checks it (tests/test_amiga_bindgen.sh) but never needs the
 # SDKs.  See README "Raw OS bindings".
 gen-amiga-bindings: $(HOST_BIN)
-	NDK="$(NDK)" MOS_SDK="$(MOS_SDK)" MUI_SDK="$(MUI_SDK)" MUI5_SDK="$(MUI5_SDK)" sh scripts/gen-amiga-bindings.sh
+	NDK="$(NDK)" MOS_SDK="$(MOS_SDK)" MUI_SDK="$(MUI_SDK)" MUI5_SDK="$(MUI5_SDK)" AHI_SDK="$(AHI_SDK)" sh scripts/gen-amiga-bindings.sh
 
 # Both FASL targets compile with CLAMIGA_FASL_PORTABLE=1: the output is loaded
 # by the byte-string m68k AmigaOS binaries (and MorphOS), so a non-ASCII

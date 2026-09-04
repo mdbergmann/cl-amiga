@@ -1,4 +1,4 @@
-# AmigaOS Packages — `AMIGA`, `AMIGA.FFI`, `AMIGA.EXEC`, `AMIGA.INTUITION`, `AMIGA.GFX`, `AMIGA.GADTOOLS`, `AMIGA.BOOPSI`, `AMIGA.REACTION`, `AMIGA.MUI`, `AMIGA.AUDIO`, `AMIGA.ASYNCIO`, `AMIGA.AREXX`
+# AmigaOS Packages — `AMIGA`, `AMIGA.FFI`, `AMIGA.EXEC`, `AMIGA.INTUITION`, `AMIGA.GFX`, `AMIGA.GADTOOLS`, `AMIGA.BOOPSI`, `AMIGA.REACTION`, `AMIGA.MUI`, `AMIGA.AUDIO`, `AMIGA.AHI`, `AMIGA.ASYNCIO`, `AMIGA.AREXX`
 
 The AmigaOS-native bindings. These exist **only on the AmigaOS build** — on the
 POSIX host the packages are not present. `AMIGA` is a C-level package (raw
@@ -17,6 +17,7 @@ register-based library calls); the rest are Lisp libraries loaded on demand via
 | `AMIGA.REACTION` | `(require "amiga/reaction")` | ReAction helpers over the generated class modules: object creation, the window.class event loop, requesters; re-exports `AMIGA.BOOPSI` |
 | `AMIGA.MUI` | `(require "amiga/mui")` | MUI helpers over muimaster.library: objects by class name, `MUI_MakeObject`, `MUIM_Notify`, the Application event loop, `MUI_Request`, custom classes and layout hooks with Lisp dispatchers; re-exports `AMIGA.BOOPSI` |
 | `AMIGA.AUDIO` | `(require "amiga/audio")` | Non-blocking 8-bit sample playback through audio.device |
+| `AMIGA.AHI` | `(require "amiga/ahi")` | Opt-in AHI (ahi.device) playback: 8/16-bit mono/stereo samples at any rate from any memory, gapless double buffering, the audio mode database, AHI's mixer through the hook-free low-level API |
 | `AMIGA.ASYNCIO` | `(require "amiga/asyncio")` | Double-buffered asynchronous file I/O over DOS packets (the NDK AsynchIO package as Lisp) |
 | `AMIGA.IFF` | `(require "amiga/iff")` | IFF file parsing and writing over iffparse.library, with the NDK `sift` chunk lister |
 
@@ -99,7 +100,7 @@ README.
 
 ---
 
-## `AMIGA.EXEC` — Memory introspection & chip RAM
+## `AMIGA.EXEC` — Memory introspection, chip RAM, device I/O
 
 ```lisp
 (require "amiga/exec")
@@ -111,6 +112,13 @@ README.
 | `(avail-mem &optional (requirements +memf-any+))` | function | Free system memory in bytes — exec.library AvailMem; `requirements` is a `MEMF_*` mask (`+memf-largest+` ORed in asks for the largest single free block, `+memf-total+` for the pool's total size) |
 | `(alloc-chip-bytes bytes)` | function | Copy the `(unsigned-byte 8)` vector `bytes` into a fresh chip-RAM allocation (blitter masks, sprites, audio samples); returns the chip foreign pointer, freed with `amiga:free-chip` |
 | `*exec-base*` | variable | ExecBase foreign pointer (read from absolute address 4) |
+| `(create-msg-port)` / `(delete-msg-port port)` | function | A reply port as a foreign pointer (or `NIL`) / free it |
+| `(create-io-request port size)` / `(delete-io-request io)` | function | A zeroed `size`-byte I/O request replying to `port` (or `NIL`) / free it |
+| `(open-device name unit io &optional (flags 0))` / `(close-device io)` | function | OpenDevice by name (a Lisp string) on the request; returns the `io_Error` code, 0 on success / CloseDevice |
+| `(send-io io)` / `(check-io io)` / `(wait-io io)` / `(abort-io io)` / `(do-io io)` | function | The asynchronous quartet — start a request, true once it completed, take it back (returns `io_Error`), ask the device to abort it — and the synchronous DoIO |
+| `(io-request-device io)` / `(io-request-error io)` | function | The device base OpenDevice stored in the request (a foreign pointer — ahi.device's functions are called through it) / its `io_Error` byte |
+
+`AMIGA.AUDIO` and `AMIGA.AHI` are the device-I/O calls in use, end to end.
 
 - **Constants:** `MEMF_*` requirement/option flags `+memf-any+`, `+memf-public+`,
   `+memf-chip+`, `+memf-fast+`, `+memf-clear+`, `+memf-largest+`, `+memf-total+`.
@@ -447,6 +455,55 @@ usage end-to-end.
 
 ---
 
+## `AMIGA.AHI` — Sound through AHI (opt-in)
+
+Playback through ahi.device, the AHI audio system (an Aminet install on
+AmigaOS 3.x, built into MorphOS): 8- or 16-bit, mono or stereo samples at
+any sample rate from any memory (no chip RAM), mixed onto whatever the
+user configured — Paula, a sound card, a PPC machine's audio.  Strictly
+**opt-in**: only `(require "amiga/ahi")` touches ahi.device, and
+`AMIGA.AUDIO` stays the Paula module, independent of this one.  Two tiers:
+the *device interface* (a handle on one of the user's AHI units, one sound
+at a time, non-blocking, double-buffered) and the *low-level API* (AHI's
+own mixer, several sounds on several channels, driven from the program —
+never through AHI's SoundFunc/PlayerFunc hooks, which run in interrupt
+context).  See `tests/amiga/test-ahi.lisp` for usage end-to-end and
+`examples/amiga/audio/ahi-play.lisp` for a program.
+
+The device's functions are called library-style through the base
+`OpenDevice` leaves in the request: `open-ahi` stores it in
+`amiga.raw.ahi:*ahi-base*`, arming the generated `AMIGA.RAW.AHI` table
+until the last handle closes.
+
+| Signature | Kind | Description |
+|-----------|------|-------------|
+| `(open-ahi &key (unit +ahi-default-unit+) (version 4))` | function | Open ahi.device and return a handle, or `NIL` when AHI is absent or the unit will not open; `unit` 0..3 (the user's AHI preferences units) or `:none` for the function interface alone (no playback) |
+| `(close-ahi ahi)` | function | Stop playback, close the unit, free the requests and the port; the last close disarms the raw table |
+| `(with-ahi (var &rest open-args) &body body)` | macro | `open-ahi`, bind the handle, close on exit; signals when it cannot open |
+| `(ahi-open-p ahi)` / `(ahi-unit ahi)` | function | Whether the handle is open / the unit number it opened |
+| `(play-sample ahi data length &key (type :mono8) (rate 8000) (volume 1.0) (pan 0.5) (priority 0))` | function | Start `length` bytes at `data` (a foreign pointer, see `make-sample-buffer`) on the unit, cutting off what it was playing; `type` `:mono8` `:mono16` `:stereo8` `:stereo16`, `rate` Hz, `volume` 0..1, `pan` 0 (left)..1 (right); returns immediately, `T` when the device took the request |
+| `(queue-sample ahi data length &key …)` | function | Like `play-sample` but *after* the sound in flight, gapless (linked through `ahir_Link`); at most two in flight — `NIL` when both buffers are busy |
+| `(stop-sample ahi)` | function | Abort what is in flight (queued too) and take the requests back |
+| `(playing-p ahi)` | function | True while a sample is still sounding; reclaims finished requests |
+| `(sample-bytes samples &key (bits 8))` | function | Pack a vector of signed sample values (8-bit -128..127, or 16-bit -32768..32767 big-endian; stereo interleaved by the caller) into the `(unsigned-byte 8)` bytes AHI plays |
+| `(make-sample-buffer bytes)` | function | Copy such a byte vector into a fresh foreign buffer; free with `ffi:free-foreign` once nothing refers to it |
+| `(sample-frame-size type)` / `(sample-type-code type)` | function | Bytes per frame (1, 2, 2, 4) / the `AHIST_*` code of a sample type |
+| `(audio-modes)` | function | Every audio mode ID in AHI's database |
+| `(audio-mode-name id)` / `(audio-mode-info id)` | function | A mode's name / a plist: `:name :driver :bits :max-channels :min-mix-freq :max-mix-freq :stereo :panning :hifi :volume :realtime :record` |
+| `(best-audio-mode &key stereo panning hifi volume record (realtime t) bits max-channels)` | function | The mode `AHI_BestAudioIDA` picks for the requirements (a boolean key given demands or forbids the feature), or `NIL` |
+| `(alloc-audio &key (audio-id +ahi-default-id+) mix-freq (channels 4) (sounds 8))` | function | AHI's mixer on a mode: an `AHIAudioCtrl` foreign pointer, or `NIL`; silent until `start-playback`.  From a handle opened with `:unit :none` — a unit open through the device interface holds the hardware (on Paula all of it) and the allocation then fails |
+| `(free-audio ctrl)` / `(with-audio-ctrl (var &rest alloc-args) &body body)` | function / macro | Release the mixer / allocate, bind, free on exit |
+| `(load-sound ctrl sound data frames &key (type :mono8))` | function | Make the `frames` sample frames at `data` sound number `sound`; `T`, or `NIL` and the `AHIE_*` code |
+| `(unload-sound ctrl sound)` | function | Forget a sound |
+| `(start-playback ctrl)` / `(stop-playback ctrl)` | function | Start / stop the mixer (`AHIC_Play`) |
+| `(play ctrl channel &key sound offset length frequency volume pan loop-sound loop-offset loop-length loop-frequency loop-volume loop-pan)` | function | `AHI_PlayA`: set a channel up in one go — `sound` (`NIL` silences it) from `offset` for `length` frames at `frequency` Hz, `volume` / `pan`, and what loops after it |
+| `(set-volume ctrl channel volume &key (pan 0.5) immediate)` / `(set-frequency ctrl channel hz &key immediate)` / `(set-sound ctrl channel sound &key offset length immediate)` | function | The single-attribute calls (`AHI_SetVol` / `AHI_SetFreq` / `AHI_SetSound`) |
+| `(to-fixed x)` / `(from-fixed n)` | function | AHI's 16.16 `Fixed` from / to a real |
+
+- **Constants:** `+ahi-default-unit+` (0), `+ahi-no-unit+` (255).
+
+---
+
 ## `AMIGA.BOOPSI` — toolkit-neutral BOOPSI helpers
 
 What every BOOPSI object needs from the Lisp side regardless of the
@@ -696,6 +753,9 @@ unattended by `verify/realamiga/run-examples.sh`, together with the
 graphics examples (`tests/amiga/test-gfx-examples.lisp` runs those in the
 suite, `tests/test_amiga_gfx_examples.sh` load-checks them on the host);
 `tests/amiga/test-audio.lisp` covers `AMIGA.AUDIO`;
+`tests/amiga/test-ahi.lisp` covers `AMIGA.AHI` (skipping the device
+checks where AHI is absent), `examples/amiga/audio/ahi-play.lisp` being
+its worked example;
 `tests/amiga/test-asyncio.lisp` (with `tests/test_amiga_asyncio.sh` on
 the host) covers `AMIGA.ASYNCIO`; the
 `tests/amiga/arexx-tests.lisp` drives `AMIGA.AREXX` end to end
