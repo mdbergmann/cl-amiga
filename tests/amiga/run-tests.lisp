@@ -1318,6 +1318,72 @@ y" 1))
   (handler-case (eval (macroexpand-1 '(destructuring-bind (a &aux (b 1) . c) '(1) (list a b c))))
     (error () :err)))
 
+; CLHS 3.4.4 / 3.4.1.4: a destructuring &key section rejects a keyword it
+; does not name (PROGRAM-ERROR, like a function call) unless the lambda list
+; says &allow-other-keys or the list carries :allow-other-keys T.  Regression:
+; (destructuring-bind (&key a) '(:b 1) a) used to return NIL silently.
+(check "d-bind unknown key errors" :err
+  (handler-case (destructuring-bind (&key a) '(:b 1) a) (program-error () :err)))
+(check "d-bind unknown key errors ((kw var) spec + default)" :err
+  (handler-case (destructuring-bind (&key ((:series ids)) range) '(:series (soc) :label "%")
+                  (list ids range))
+    (program-error () :err)))
+(check "d-bind unknown key message names key and accepted set"
+       "destructuring-bind: unknown keyword argument :LABEL (accepted: :SERIES :RANGE)"
+  (handler-case (destructuring-bind (&key ((:series ids)) range) '(:series (soc) :label "%")
+                  (list ids range))
+    (error (e) (princ-to-string e))))
+(check "d-bind empty &key rejects any key" :err
+  (handler-case (destructuring-bind (x y &key) '(1 2 :z 3) (list x y)) (program-error () :err)))
+(check "d-bind &rest+&key still checks" :err
+  (handler-case (destructuring-bind (&rest r &key a) '(:b 1) r) (program-error () :err)))
+(check "d-bind nested &key checks" :err
+  (handler-case (destructuring-bind ((&key a)) '((:b 1)) a) (program-error () :err)))
+(check "d-bind known keys bind, leftmost duplicate wins" '(1 2 1)
+  (list (destructuring-bind (&key a b) '(:b 2 :a 1) a)
+        (destructuring-bind (&key a b) '(:b 2 :a 1) b)
+        (destructuring-bind (&key a) '(:a 1 :a 2) a)))
+(check "d-bind &allow-other-keys suppresses" 2
+  (destructuring-bind (&key a &allow-other-keys) '(:b 1 :a 2) a))
+(check "d-bind :allow-other-keys t suppresses" nil
+  (destructuring-bind (&key a) '(:b 1 :allow-other-keys t) a))
+(check "d-bind :allow-other-keys nil does not suppress" :err
+  (handler-case (destructuring-bind (&key a) '(:b 1 :allow-other-keys nil) a)
+    (program-error () :err)))
+; CLHS 3.4.1.4.1: with more than one :allow-other-keys property, only the
+; leftmost value is consulted.
+(check "d-bind :allow-other-keys leftmost nil does not suppress" :err
+  (handler-case (destructuring-bind (&key a)
+                    '(:b 1 :allow-other-keys nil :allow-other-keys t) a)
+    (program-error () :err)))
+(check "d-bind :allow-other-keys leftmost t suppresses" nil
+  (destructuring-bind (&key a)
+      '(:b 1 :allow-other-keys t :allow-other-keys nil) a))
+(check "d-bind :allow-other-keys always accepted (ansi .23)" '(:allow-other-keys 1)
+  (destructuring-bind (&rest x &key) '(:allow-other-keys 1) x))
+(check "d-bind unknown key check elided at safety 0" nil
+  (locally (declare (optimize (safety 0)))
+    (destructuring-bind (&key a) '(:b 1) a)))
+(check "d-bind unknown key errors (macroexpand path)" :err
+  (handler-case (eval (macroexpand-1 '(destructuring-bind (&key a) '(:b 1) a)))
+    (program-error () :err)))
+(check "d-bind unknown key message (macroexpand path)"
+       "destructuring-bind: unknown keyword argument :LABEL (accepted: :SERIES :RANGE)"
+  (handler-case (eval (macroexpand-1 '(destructuring-bind (&key ((:series ids)) range)
+                                          '(:series (soc) :label "%") (list ids range))))
+    (error (e) (princ-to-string e))))
+(check "d-bind &allow-other-keys suppresses (macroexpand path)" 2
+  (eval (macroexpand-1 '(destructuring-bind (&key a &allow-other-keys) '(:b 1 :a 2) a))))
+(check "d-bind :allow-other-keys t suppresses (macroexpand path)" nil
+  (eval (macroexpand-1 '(destructuring-bind (&key a) '(:b 1 :allow-other-keys t) a))))
+(check "d-bind :allow-other-keys leftmost nil does not suppress (macroexpand path)" :err
+  (handler-case
+      (eval (macroexpand-1 '(destructuring-bind (&key a)
+                                '(:b 1 :allow-other-keys nil :allow-other-keys t) a)))
+    (program-error () :err)))
+(check "d-bind &key then &aux (macroexpand path)" '(1 (1))
+  (eval (macroexpand-1 '(destructuring-bind (&key a &aux (b (list a))) '(:a 1) (list a b)))))
+
 ;; Compiler-chain unwind regression: the compile-time errors just above are
 ;; caught by HANDLER-CASE via longjmp, and the abandoned compiler must be
 ;; freed at the NLX landing (anchor-based unwind).  The old protect-flag walk

@@ -821,8 +821,9 @@ rest are parsed and accepted as conforming no-ops.
     value-transparent: anything that would overflow fixnum range or involve
     floats/ratios is left to the runtime. `(optimize (speed 0))` disables both.
   - At **`safety 0`** the `(the type value)` runtime check (`OP_ASSERT_TYPE`)
-    and the `destructuring-bind` too-few/too-many arity guards are not emitted;
-    at `safety ≥ 1` they are.
+    and the `destructuring-bind` guards — too-few/too-many arity and the
+    unknown-keyword check of a `&key` section — are not emitted; at
+    `safety ≥ 1` they are.
   - At **`speed ≥ 2`** a bytecode **peephole post-pass** runs over each
     compiled function: it removes store-then-reload round trips and discarded
     pure values, fuses `(not ...)` tests into inverted branches, threads

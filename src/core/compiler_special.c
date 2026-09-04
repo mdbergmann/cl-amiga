@@ -308,9 +308,15 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
         /* &key — keyword destructuring (plist-based) */
         if (elem == SYM_AMP_KEY) {
             CL_Obj rest = cl_cdr(pattern);
+            /* The section's keywords, collected for the unknown-keyword
+             * check emitted after the loop (CLHS 3.4.1.4 via 3.4.4). */
+            CL_Obj allowed = CL_NIL;
+            int allow_other_keys = 0;
             int scan_slot = alloc_temp_slot(env);
-            /* GC-protect cursor — compile_expr (default_val) can compact, making rest stale */
+            /* GC-protect both cursors — compile_expr (default_val), cl_cons
+             * and cl_intern_keyword can compact, making them stale */
             CL_GC_PROTECT(rest);
+            CL_GC_PROTECT(allowed);
 
             /* CONS_P (not !NULL_P): a dotted tail after &key is malformed
              * per CLHS 3.4.5 (the dotted abbreviation stands in the &rest
@@ -324,42 +330,42 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
                 int found_pos, not_found_pos, done_pos;
                 const char *kw_name;
 
-                /* Skip &allow-other-keys */
+                /* &allow-other-keys: this section takes any keyword, so no
+                 * unknown-keyword check is emitted for it. */
                 if (CL_SYMBOL_P(spec) && spec == SYM_AMP_ALLOW_OTHER_KEYS) {
+                    allow_other_keys = 1;
                     rest = cl_cdr(rest);
                     continue;
                 }
 
                 /* Parse key spec: var | (var default) | (var default supplied-p) |
-                   ((keyword var) default [supplied-p]) */
+                   ((keyword var) default [supplied-p]).
+                   Two steps: first the keyword, then everything else. */
+                if (CL_CONS_P(spec) && CL_CONS_P(cl_car(spec))) {
+                    /* ((keyword var) default ...) */
+                    keyword_sym = cl_car(cl_car(spec));
+                } else {
+                    /* keyword derived from var name */
+                    kw_name = cl_symbol_name(CL_CONS_P(spec) ? cl_car(spec) : spec);
+                    keyword_sym = cl_intern_keyword(kw_name,
+                                     (uint32_t)strlen(kw_name));
+                }
+                allowed = cl_cons(keyword_sym, allowed);
+                /* GC SAFETY: cl_intern_keyword may intern a NEW keyword and
+                 * cl_cons allocates — either can compact.  Re-derive the
+                 * keyword, spec and the rest of the parse from the two
+                 * protected cursors before using any of them. */
+                keyword_sym = cl_car(allowed);
+                spec = cl_car(rest);
                 if (CL_CONS_P(spec)) {
                     CL_Obj first = cl_car(spec);
-                    if (CL_CONS_P(first)) {
-                        /* ((keyword var) default ...) */
-                        keyword_sym = cl_car(first);
-                        var = cl_car(cl_cdr(first));
-                    } else {
-                        /* keyword derived from var name.
-                         * GC SAFETY: cl_intern_keyword may intern a NEW
-                         * keyword (allocates, can compact) — re-derive spec
-                         * and var from the protected cursor afterwards. */
-                        kw_name = cl_symbol_name(first);
-                        keyword_sym = cl_intern_keyword(kw_name,
-                                         (uint32_t)strlen(kw_name));
-                        spec = cl_car(rest);
-                        var = cl_car(spec);
-                    }
+                    var = CL_CONS_P(first) ? cl_car(cl_cdr(first)) : first;
                     if (!CL_NULL_P(cl_cdr(spec)))
                         default_val = cl_car(cl_cdr(spec));
                     if (!CL_NULL_P(cl_cdr(spec)) &&
                         !CL_NULL_P(cl_cdr(cl_cdr(spec))))
                         supplied_p = cl_car(cl_cdr(cl_cdr(spec)));
                 } else {
-                    kw_name = cl_symbol_name(spec);
-                    keyword_sym = cl_intern_keyword(kw_name,
-                                     (uint32_t)strlen(kw_name));
-                    /* GC SAFETY: same re-derive as above. */
-                    spec = cl_car(rest);
                     var = spec;
                 }
 
@@ -453,13 +459,48 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
 
                 rest = cl_cdr(rest);
             }
-            if (!CL_NULL_P(rest))
+            if (!CL_NULL_P(rest)) {
+                /* Drop the roots before the longjmp: a GC root left behind
+                 * by a compile-time cl_error corrupts the heap later (see
+                 * the NB at the top of this function). */
+                CL_GC_UNPROTECT(2);
                 cl_error(CL_ERR_GENERAL,
                          "destructuring-bind: dotted lambda-list tail %s after &key "
                          "(the dotted abbreviation stands in the &rest position, "
                          "which must precede &key)",
                          CL_SYMBOL_P(rest) ? cl_symbol_name(rest) : "?");
-            CL_GC_UNPROTECT(1);
+            }
+
+            /* Unknown-keyword check (CLHS 3.4.1.4 via 3.4.4): unless the
+             * section says &allow-other-keys, call %DBIND-CHECK-KEYS with
+             * the list and the section's keywords; it signals PROGRAM-ERROR
+             * for a keyword not in that set (and honours a :allow-other-keys
+             * t in the list itself).  "Should signal" (CLHS 1.4.2.3) — safe
+             * code only, so (safety 0) elides it like the arity guards. */
+            if (!allow_other_keys && c->optimize_settings.safety >= 1) {
+                int idx;
+                /* `allowed` was consed in reverse; put it back in lambda-list
+                 * order so the error message lists keywords as written.
+                 * In place, no allocation. */
+                CL_Obj prev = CL_NIL, cur = allowed;
+                while (CL_CONS_P(cur)) {
+                    CL_Obj next = cl_cdr(cur);
+                    ((CL_Cons *)CL_OBJ_TO_PTR(cur))->cdr = prev;
+                    prev = cur;
+                    cur = next;
+                }
+                allowed = prev;
+
+                idx = cl_add_constant(c, cl_dbind_check_keys_sym);
+                cl_emit(c, OP_FLOAD);
+                cl_emit_u16(c, (uint16_t)idx);
+                cl_emit(c, OP_LOAD);
+                cl_emit(c, (uint8_t)pos_slot);
+                cl_emit_const(c, allowed);
+                cl_emit_call(c, OP_CALL, 2);
+                cl_emit(c, OP_POP);
+            }
+            CL_GC_UNPROTECT(2);
             goto done;
         }
 

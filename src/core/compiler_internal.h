@@ -251,13 +251,16 @@ typedef struct CL_Compiler_s {
 
 /* --- Shared globals (defined in compiler.c) --- */
 
-/* Cached, GC-registered symbols for the destructuring-bind arity-error
- * runtime helpers (%DBIND-TOO-FEW / %DBIND-TOO-MANY).  Interned once at
- * startup (cl_builtins_init) so the compiler can emit the guard calls without
- * allocating — keeping compile_destructure_pattern allocation-free, and thus
- * free of any GC root that could leak across a compile-time cl_error longjmp. */
+/* Cached, GC-registered symbols for the destructuring-bind runtime helpers
+ * (%DBIND-TOO-FEW / %DBIND-TOO-MANY arity errors, %DBIND-CHECK-KEYS unknown-
+ * keyword check).  Interned once at startup (cl_builtins_init) so the
+ * compiler can emit the guard calls without allocating — keeping the
+ * required-parameter walk of compile_destructure_pattern allocation-free, and
+ * thus free of any GC root that could leak across a compile-time cl_error
+ * longjmp. */
 extern CL_Obj cl_dbind_too_few_sym;
 extern CL_Obj cl_dbind_too_many_sym;
+extern CL_Obj cl_dbind_check_keys_sym;
 
 extern CL_Obj macro_table;
 extern CL_Obj setf_table;
