@@ -31,21 +31,6 @@
 (in-package "AMIGA.AUDIO")
 
 ;;; ================================================================
-;;; LVO offsets (from amiga/exec_lib.fd)
-;;; ================================================================
-
-(defconstant +lvo-open-device+       -444)  ; A0 name, D0 unit, A1 io, D1 flags
-(defconstant +lvo-close-device+      -450)  ; A1 io
-(defconstant +lvo-send-io+           -462)  ; A1 io
-(defconstant +lvo-check-io+          -468)  ; A1 io
-(defconstant +lvo-wait-io+           -474)  ; A1 io
-(defconstant +lvo-abort-io+          -480)  ; A1 io
-(defconstant +lvo-create-io-request+ -654)  ; A0 port, D0 size
-(defconstant +lvo-delete-io-request+ -660)  ; A0 io
-(defconstant +lvo-create-msg-port+   -666)
-(defconstant +lvo-delete-msg-port+   -672)  ; A0 port
-
-;;; ================================================================
 ;;; struct IOAudio (devices/audio.h) — 68 bytes.
 ;;; The embedded IORequest fields the module touches, then the
 ;;; audio-specific tail.  m68k struct alignment is 2 bytes, so the
@@ -102,15 +87,9 @@ hardware minimum of 124 (about 28.6 kHz)."
   (max 124 (round +pal-clock+ rate)))
 
 ;;; ================================================================
-;;; Exec device-I/O calls — dynamic CALL-LIBRARY on ExecBase, the
-;;; same idiom as AMIGA.EXEC's AVAIL-MEM.
-;;; ================================================================
-
-(defun %exec (lvo regs)
-  (amiga:call-library amiga.exec:*exec-base* lvo regs))
-
-;;; ================================================================
 ;;; The audio handle — one allocated channel, one reusable IOAudio.
+;;; The exec device-I/O calls (OpenDevice, the request and port
+;;; allocators, SendIO/CheckIO/WaitIO/AbortIO) are AMIGA.EXEC's.
 ;;; ================================================================
 
 (defstruct (audio (:constructor %make-audio))
@@ -134,16 +113,13 @@ channel's Paula registers directly there, the channel is always
 allocated at +MAX-PRECEDENCE+ so it cannot be stolen (see that
 constant).  Off m68k there is no poke and PRECEDENCE is honoured as
 given."
-  (let ((port nil) (io nil) (chanmap nil) (name nil) (ok nil))
+  (let ((port nil) (io nil) (chanmap nil) (ok nil))
     (unwind-protect
         (progn
-          (setf port (%exec +lvo-create-msg-port+ nil))
-          (when (zerop port) (return-from open-audio nil))
-          (setf port (ffi:make-foreign-pointer port))
-          (setf io (%exec +lvo-create-io-request+
-                          (list :a0 port :d0 +io-audio-size+)))
-          (when (zerop io) (return-from open-audio nil))
-          (setf io (ffi:make-foreign-pointer io))
+          (setf port (amiga.exec:create-msg-port))
+          (unless port (return-from open-audio nil))
+          (setf io (amiga.exec:create-io-request port +io-audio-size+))
+          (unless io (return-from open-audio nil))
           ;; OpenDevice on audio.device doubles as ADCMD_ALLOCATE when
           ;; ioa_Length is non-zero: ioa_Data points at an array of
           ;; acceptable channel masks, one byte each — any single
@@ -166,21 +142,16 @@ given."
           (setf (ioaudio-flags io) +adiof-nowait+)
           (setf (ioaudio-data io) (ffi:foreign-pointer-address chanmap))
           (setf (ioaudio-length io) 4)
-          (setf name (ffi:foreign-string "audio.device"))
-          (unless (zerop (%exec +lvo-open-device+
-                                (list :a0 name :d0 0 :a1 io :d1 0)))
+          (unless (zerop (amiga.exec:open-device "audio.device" 0 io 0))
             (return-from open-audio nil))
           (setf ok t)
           (%make-audio :port port :io io))
-      ;; The channel-map and name buffers are only read inside
-      ;; OpenDevice; the partial plumbing only survives a success.
+      ;; The channel map is only read inside OpenDevice; the partial
+      ;; plumbing only survives a success.
       (when chanmap (ffi:free-foreign chanmap))
-      (when name (ffi:free-foreign name))
       (unless ok
-        (when (ffi:foreign-pointer-p io)
-          (%exec +lvo-delete-io-request+ (list :a0 io)))
-        (when (ffi:foreign-pointer-p port)
-          (%exec +lvo-delete-msg-port+ (list :a0 port)))))))
+        (when io (amiga.exec:delete-io-request io))
+        (when port (amiga.exec:delete-msg-port port))))))
 
 (defun %reclaim (audio)
   "Take the in-flight request back from the device, aborting it if it
@@ -188,18 +159,18 @@ is still playing.  WAIT-IO here only ever completes an already done or
 just-aborted request, so the wait is bounded and effectively instant."
   (when (audio-pending audio)
     (let ((io (audio-io audio)))
-      (when (zerop (%exec +lvo-check-io+ (list :a1 io)))
-        (%exec +lvo-abort-io+ (list :a1 io)))
-      (%exec +lvo-wait-io+ (list :a1 io)))
+      (unless (amiga.exec:check-io io)
+        (amiga.exec:abort-io io))
+      (amiga.exec:wait-io io))
     (setf (audio-pending audio) nil)))
 
 (defun playing-p (audio)
   "True while the last PLAY-SAMPLE is still sounding.  Reclaims the
 request as a side effect once the device has finished with it."
   (when (audio-pending audio)
-    (if (zerop (%exec +lvo-check-io+ (list :a1 (audio-io audio))))
-        t
-        (progn (%reclaim audio) nil))))
+    (if (amiga.exec:check-io (audio-io audio))
+        (progn (%reclaim audio) nil)
+        t)))
 
 (defun stop-sample (audio)
   "Silence the channel: abort any in-flight write."
@@ -271,11 +242,11 @@ the write was queued, NIL if the device rejected it."
     (when (find :m68k *features*)
       (%poke-channel-pervol (ioaudio-unit io) period
                             (min +max-volume+ (max 0 volume))))
-    (%exec +lvo-send-io+ (list :a1 io))
+    (amiga.exec:send-io io)
     (setf (audio-pending audio) t)
     ;; SendIO has no return value; a rejected request comes back
     ;; completed with io_Error set.
-    (if (and (not (zerop (%exec +lvo-check-io+ (list :a1 io))))
+    (if (and (amiga.exec:check-io io)
              (not (zerop (ioaudio-error io))))
         (progn (%reclaim audio) nil)
         t)))
@@ -283,9 +254,9 @@ the write was queued, NIL if the device rejected it."
 (defun close-audio (audio)
   "Stop playback, free the channel and all request plumbing."
   (%reclaim audio)
-  (%exec +lvo-close-device+ (list :a1 (audio-io audio)))
-  (%exec +lvo-delete-io-request+ (list :a0 (audio-io audio)))
-  (%exec +lvo-delete-msg-port+ (list :a0 (audio-port audio)))
+  (amiga.exec:close-device (audio-io audio))
+  (amiga.exec:delete-io-request (audio-io audio))
+  (amiga.exec:delete-msg-port (audio-port audio))
   (setf (audio-io audio) nil (audio-port audio) nil)
   nil)
 

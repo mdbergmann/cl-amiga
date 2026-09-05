@@ -1660,7 +1660,7 @@ OS 3.2 additions MorphOS lacks (or places something else at — `ShowWindow`,
 `ErrorOutput`, `NewMinList`, the diskfont outline API …) exist only when
 `:morphos` is absent, MorphOS' own extensions (`AllocVecPooled`,
 `GetMonitorList`, `MUI_GetRGBColor`, plus the MorphOS-only libraries on
-the generator's allowlist — `ahi`, `cybergraphics` by default, function
+the generator's allowlist — `cybergraphics` by default, function
 tables only) only when it is present, and functions newer than OS 3.0
 are also gated on the running library's version — so a call that would
 jump into a wrong or missing vector is an "undefined function" error
@@ -1675,7 +1675,14 @@ MUI 5 and the MorphOS `mui.h` contribute their newer `MUIA_`/`MUIM_`/
 `MUIV_` tags and `MUIC_` class names, unguarded — a tag unknown to an
 older MUI is simply ignored, a missing class makes `MUI_NewObjectA`
 return `NULL`.  Values always stay the 3.8 baseline's; the generator
-refuses to run if a newer header disagrees on an existing name.  On
+refuses to run if a newer header disagrees on an existing name.  `ahi`
+(ahi.device, the AHI audio system — an Aminet install on AmigaOS, built
+into MorphOS) is generated from the AHI developer kit the same way:
+its 20 functions and every tag, sample type, error code and struct of
+`devices/ahi.h`, with the MorphOS SDK's table as the cross-check.  A
+device has no `OpenLibrary`, so its base variable starts `NIL` and is
+armed by whoever opens it — `AMIGA.AHI` does, from the request's
+`io_Device`.  On
 the host (macOS/Linux/Windows) the modules load too — the base stays
 `NIL` and any call reports that — which is how they are unit-tested.
 
@@ -1694,7 +1701,11 @@ for AmigaOS (`MUI5_SDK=<dir>`, default `tools/mui5-sdk` — the unpacked
 `gg:os-include/libraries/mui.h` on a MorphOS box).  The
 `<Name>_mcc.h` headers of the kit's `ExtClasses/` become the
 `amiga/raw/mui/` modules; `MCC_HEADERS=<dir>` adds the headers of the
-custom classes you have.  None of the SDKs is redistributed; only the
+custom classes you have.  The AHI developer kit (`AHI_SDK=<dir>`,
+default `tools/ahi-sdk` — the unpacked `Developer/` drawer of Aminet's
+`driver/audio/m68k-amigaos-ahidev.lha`) makes `ahi` an AmigaOS module
+with its constants and structs; without it `ahi` is a bare MorphOS
+function table.  None of the SDKs is redistributed; only the
 output is.  The generator is
 `scripts/gen-amiga-bindings.lisp` (runs on the host build of clamiga) and
 cross-checks every LVO against the NDK's own `lvo/*.i` before writing
@@ -1704,8 +1715,8 @@ exercised by `tests/amiga/test-raw-bindings.lisp`.
 
 The modules are also the reference for the hand-written ones: every
 constant, `+lvo-…+` offset and `defcfun` register assignment in
-`AMIGA.INTUITION`, `AMIGA.GFX`, `AMIGA.GADTOOLS`, `AMIGA.EXEC` and
-`AMIGA.AUDIO` is checked against the generated bindings by
+`AMIGA.INTUITION`, `AMIGA.GFX`, `AMIGA.GADTOOLS`, `AMIGA.EXEC`,
+`AMIGA.AUDIO` and `AMIGA.AHI` is checked against the generated bindings by
 `tests/test_amiga_curated_vs_raw.sh` in `make test` — and so is every
 struct offset or size a hand-written module spells as
 `+<accessor>-offset+` / `+<struct>-size+` (`AMIGA.MUI`'s
@@ -1778,7 +1789,7 @@ fasl-amiga` and the binary release (`amiga.ffi:*defcfun-docstrings*`,
 | `(require "ffi")` | `FFI` | Foreign pointers, typed peek/poke, defcstruct, callbacks (all platforms); dlopen/libffi calls (host) |
 | `(require "amiga/ffi")` | `AMIGA.FFI` | Tag lists, defcfun, with-library, open-library-or-die, library-version, `make-hook` / `make-dispatcher` — `struct Hook`s and BOOPSI dispatchers that call Lisp (AmigaOS) |
 | `(require "amiga/raw/<lib>")` | `AMIGA.RAW.<LIB>` | Generated 1:1 bindings for every OS library (`exec`, `dos`, `intuition`, `graphics`, `utility`, `asl`, `locale`, `iffparse`, `datatypes`, `rexxsyslib`, …), the ReAction classes (`gadgets/button`, `gadgets/layout`, `images/bevel`, `classes/window`, …), device/resource tables (`timer`, `cia`, …), header-only constant/struct modules (`devices/audio`, `hardware/custom`, `reaction/reaction`, …) and the MUI custom-class headers (`mui/tron`, …) — see above |
-| `(require "amiga/exec")` | `AMIGA.EXEC` | AvailMem/MEMF_* memory introspection, chip-RAM upload helper |
+| `(require "amiga/exec")` | `AMIGA.EXEC` | AvailMem/MEMF_* memory introspection, chip-RAM upload helper, the exec device-I/O calls (`open-device`, `create-io-request`, `send-io` / `check-io` / `wait-io` / `abort-io`, `do-io`) |
 | `(require "amiga/intuition")` | `AMIGA.INTUITION` | Windows, screens, IDCMP events, public screens, pointer sprites |
 | `(require "amiga/graphics")` | `AMIGA.GFX` | Drawing, text, fonts, offscreen bitmaps and blits, planar upload |
 | `(require "amiga/gadtools")` | `AMIGA.GADTOOLS` | Gadgets, menus, bevel boxes, VisualInfo |
@@ -1786,6 +1797,7 @@ fasl-amiga` and the binary release (`amiga.ffi:*defcfun-docstrings*`,
 | `(require "amiga/reaction")` | `AMIGA.REACTION` | ReAction helpers over the raw class modules: `new-object`, `set-gadget-attrs`, `open-window` / `do-window-events`, `open-requester`; re-exports `AMIGA.BOOPSI` (AmigaOS 3.5+/3.2, MorphOS) |
 | `(require "amiga/mui")` | `AMIGA.MUI` | MUI helpers over `muimaster.library`: `new-object` by class name, `make-object`, `notify`, `do-application-events`, `request`, custom classes with Lisp dispatchers (`create-custom-class`, `do-super-method`, the `_mleft(obj)` shortcuts); re-exports `AMIGA.BOOPSI` (AmigaOS 3.x with MUI 3.8+, MorphOS) |
 | `(require "amiga/audio")` | `AMIGA.AUDIO` | audio.device channel allocation, non-blocking 8-bit sample playback from chip RAM |
+| `(require "amiga/ahi")` | `AMIGA.AHI` | **Opt-in** AHI (ahi.device) playback: 8/16-bit mono/stereo samples at any rate from any memory on the user's AHI unit (`play-sample`, gapless double-buffered `queue-sample`), the audio mode database, and AHI's mixer through the hook-free low-level API (`alloc-audio`, `load-sound`, `play`, `set-volume`, …); AmigaOS with AHI installed, or MorphOS |
 
 The GUI modules are exercised end-to-end by `tests/amiga/test-gui.lisp`
 (run by the Amiga test suite) — use it as the reference for working
@@ -1797,6 +1809,26 @@ examples of every export.  `AMIGA.AUDIO` is exercised the same way by
 with `playing-p`, cut it off with `stop-sample`.  Playback never
 blocks: requests go out via `SendIO` and are reclaimed with
 `CheckIO`/`AbortIO`.
+
+`AMIGA.AHI` is the same shape over AHI, and strictly opt-in: nothing
+loads or probes ahi.device unless a program `(require "amiga/ahi")`s
+it, and `AMIGA.AUDIO` stays the Paula module — no detection, no
+fallback between the two (both can be loaded; on a Paula machine
+AHI's own driver takes its channels through audio.device, so used at
+the same time they contend for the four).  `open-ahi` opens the unit
+the user configured in the AHI preferences (unit 0 by default), then
+`play-sample` takes a foreign buffer of 8- or 16-bit, mono or stereo
+samples at any rate — `sample-bytes` packs signed sample values,
+`make-sample-buffer` uploads them, no chip RAM involved — and
+`queue-sample` links a second request behind the first for gapless
+streaming from two buffers.  The low-level tier (`alloc-audio`,
+`load-sound`, `start-playback`, `play`, `set-volume` / `set-frequency` /
+`set-sound`) is AHI's mixer driven from the program on a mode picked
+with `best-audio-mode` or listed by `audio-modes` / `audio-mode-info`;
+it never installs an AHI hook (those run in interrupt context).
+`tests/amiga/test-ahi.lisp` is the executable specification — it skips
+its device checks where AHI is absent — and
+`examples/amiga/audio/ahi-play.lisp` a program using both tiers.
 
 ## JIT (m68k)
 
@@ -1826,7 +1858,7 @@ Point-in-time benchmark results (sento actor throughput on host, Amiga JIT call 
 ## Known Limitations and Future Work
 
 - **Alpha status / ANSI CL gaps** — the major subsystems work (CLOS, conditions, packages, the full numeric tower, arrays, pathnames, streams, `loop`, `format`) and real CL libraries load, but corners of the spec remain unimplemented. Concretely, these standard operators are `fboundp` but signal a "not yet implemented" error when called: `apropos` / `apropos-list`, `y-or-n-p` / `yes-or-no-p`, `pprint-tab` / `pprint-tabular`, `print-not-readable-object`, `invalid-method-error` / `method-combination-error`, and logical pathnames (`logical-pathname`, `load-logical-pathname-translations`; `(typep x 'logical-pathname)` is always `nil`). `defstruct` supports `(:type list)` / `(:type vector)` but ignores `:named` and `:initial-offset`. The metaobject protocol is a working AMOP subset rather than the complete MOP — see [docs/mop.md](docs/mop.md) for what is covered.
-- **Amiga OS coverage** — every OS library is callable 1:1 through the generated raw bindings under `lib/amiga/raw/` (`asl`, `layers`, `commodities`, `datatypes`, `locale`, … — see [Raw OS bindings](#raw-os-bindings-generated)), but the idiomatic Lisp layer on top of them covers only Intuition, Graphics, GadTools, ReAction, MUI, ARexx, audio.device, IFF and async DOS I/O (see [Available Amiga Modules](#available-amiga-modules)). Everything else — ASL requesters, Layers, Commodities, Datatypes, Locale, … — is raw-binding-only for now: fully usable, but with C-shaped structures and tag lists rather than a Lisp-shaped API.
+- **Amiga OS coverage** — every OS library is callable 1:1 through the generated raw bindings under `lib/amiga/raw/` (`asl`, `layers`, `commodities`, `datatypes`, `locale`, … — see [Raw OS bindings](#raw-os-bindings-generated)), but the idiomatic Lisp layer on top of them covers only Intuition, Graphics, GadTools, ReAction, MUI, ARexx, audio.device, AHI (opt-in), IFF and async DOS I/O (see [Available Amiga Modules](#available-amiga-modules)). Everything else — ASL requesters, Layers, Commodities, Datatypes, Locale, … — is raw-binding-only for now: fully usable, but with C-shaped structures and tag lists rather than a Lisp-shaped API.
 - **Callbacks on AmigaOS/MorphOS** — `ffi:make-callback` builds real entry points on the target too (a 68k stub; on MorphOS a 68k stub into a PPC gate), with the AmigaOS register conventions through its `regs` argument, so `struct Hook`s and BOOPSI dispatchers re-enter Lisp (`amiga.ffi:make-hook` / `make-dispatcher`, `amiga.boopsi:pool-hook`, `amiga.mui:create-custom-class`). Two limits: `:float` / `:double` arguments and 64-bit or floating-point results are refused on the target (the stub returns d0 only), and a callback invoked from a task that is not a Lisp thread — intuition calling a `gadgetclass` method from input.device — returns 0 with a warning instead of running Lisp, so custom *gadget* classes stay out of reach (custom MUI classes are fine: MUI dispatches from the application's own task).
 - **Composite streams** — `make-two-way-stream`, `make-broadcast-stream`, `make-concatenated-stream`, and `make-echo-stream` are implemented with their component accessors (see the composite-stream tests in `tests/test_stream.c` / `tests/amiga/run-tests.lisp` for usage). Broadcast, concatenated, and echo streams accept native stream components only — a Gray stream component is rejected with a type error (a two-way stream may wrap Gray streams)
 - **Stream external formats** — character streams default to UTF-8; `(open … :external-format :latin-1)` (also `:iso-8859-1`) selects an 8-bit-transparent stream where each code point 0–255 maps to a single raw byte with no transcoding, for byte-faithful I/O over a character stream (e.g. an `rfc2388` multipart upload written to a temp file). `stream-external-format` reports `:latin-1` / `:default`. Other named encodings are not yet selectable — an unrecognised `:external-format` is silently treated as the default. See `tests/test_stream.c` (`open_latin1_*`) and `tests/amiga/run-tests.lisp` for usage.

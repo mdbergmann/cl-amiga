@@ -49,6 +49,21 @@
 ;;;                        *MUI-VALUE-EVOLUTIONS* (the 3.8 value wins).
 ;;;                        Structs and functions are NOT taken from the
 ;;;                        additive headers (layouts stay 3.8's).
+;;;   BINDGEN_AHI_SFD      dir with the AHI developer kit's ahi_lib.sfd
+;;;                        (the kit ships sfd; the .sh wrapper copies it
+;;;                        out alone, leaving ahi_sub -- the driver-side
+;;;                        API -- behind).  Joins the PRIMARY tables:
+;;;                        ahi.device becomes an AmigaOS module with a
+;;;                        MorphOS twin.  Its V4 functions carry no version
+;;;                        guard: V4 is the AHI baseline (see
+;;;                        MERGE-LIBRARY-FUNCTIONS).
+;;;   BINDGEN_AHI_INCLUDE_H  the kit's Include/C -- another C-header root
+;;;                        (devices/ahi.h: the tags, sample types, error
+;;;                        codes and the AHIRequest / AHISampleInfo ...
+;;;                        structs), claimed by the ahi module
+;;;   BINDGEN_AHI_LVO      the kit's Include/Asm/lvo -- its ahi_lib.i is
+;;;                        the LVO cross-check for the AHI table, fatal on
+;;;                        a mismatch like the NDK's lvo/*.i
 ;;;   BINDGEN_OUT          output directory (default lib/amiga/raw/)
 ;;;   BINDGEN_LIBS         comma list restricting the libraries generated
 ;;;                        (default: all)
@@ -1400,6 +1415,9 @@ Struct bodies are skipped by brace depth; string literals are ignored."
     ("ULONG" :u32 4) ("unsigned" :u32 4) ("unsigned int" :u32 4) ("unsigned long" :u32 4)
     ("unsigned long int" :u32 4) ("uint32" :u32 4) ("IPTR" :u32 4) ("Tag" :u32 4)
     ("LONGBITS" :u32 4) ("BPTR" :u32 4) ("BSTR" :u32 4) ("Object" :u32 4)
+    ;; devices/ahi.h: typedef LONG Fixed (16.16 fixed point), typedef
+    ;; Fixed sposition (a stereo position) -- AHIRequest's volume and pan
+    ("Fixed" :i32 4) ("sposition" :i32 4)
     ("FLOAT" :single 4) ("float" :single 4)
     ("DOUBLE" :double 8) ("double" :double 8)
     ("APTR" :fptr 4) ("CONST_APTR" :fptr 4) ("STRPTR" :fptr 4) ("CONST_STRPTR" :fptr 4)
@@ -1928,6 +1946,7 @@ struct definitions."
   '(("layers"      "graphics/layers.i" "graphics/clip.i")
     ("keymap"      "devices/keymap.i" "libraries/keymap.h")
     ("muimaster"   "libraries/mui.h")          ; the MUI SDK's header root
+    ("ahi"         "devices/ahi.h")            ; the AHI SDK's header root
     ("trackfile"   "devices/trackfile.h")
     ("timer"       "devices/timer.i")
     ("console"     "devices/console.i" "devices/conunit.i")
@@ -2035,7 +2054,10 @@ has no .i twin."
                                 "exec/initializers.i" "graphics/gfxmacros.i"
                                 "hardware/cia.i"
                                 "graphics/gfxmacros.h" "dos/ansiio.h"
-                                "reaction/reaction_author.h"))
+                                "reaction/reaction_author.h"
+                                ;; the AHI kit's driver-side API (ahi_sub):
+                                ;; not generated, so its header stays out
+                                "libraries/ahi_sub.h"))
 
 (defun lib-module-stem (name libname)
   "Module path of a library: class libraries live under their kind
@@ -2106,9 +2128,17 @@ exists in the NDK (ndk-lib) and maybe in the MorphOS SDK (mos-lib)."
                             (string= (fn-signature-key m) (fn-signature-key f))))
                  ;; a version below the floor is what the library always
                  ;; had: OS libraries open at 33..39, muimaster (the MUI
-                 ;; SDK sources) at 19 (= MUI 3.8) -- only later versions
-                 ;; need a runtime (%version>= N) guard
-                 (vfloor (if (member (sfd-fn-source f) '(:mui :mui5)) 19 39))
+                 ;; SDK sources) at 19 (= MUI 3.8), ahi.device at 4 (AHI
+                 ;; V4, 1997, is the baseline every installed AHI provides
+                 ;; -- and a guard would be useless there anyway: the
+                 ;; device base is only known at runtime, io_Device after
+                 ;; OpenDevice, long after the guard was evaluated at
+                 ;; intern time against a NIL version) -- only later
+                 ;; versions need a runtime (%version>= N) guard
+                 (vfloor (case (sfd-fn-source f)
+                           ((:mui :mui5) 19)
+                           (:ahi 4)
+                           (t 39)))
                  (minv (and (sfd-fn-version f) (> (sfd-fn-version f) vfloor)
                             (sfd-fn-version f))))
             (push (make-emit-fn :fn f
@@ -2440,6 +2470,7 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
         (format body "~&~%  ;; --- functions (~A~@[ + ~A~]) ---~%"
                 (cond ((null ndk-lib) "MorphOS SDK")
                       ((eq (sfd-lib-source ndk-lib) :mui) "MUI SDK")
+                      ((eq (sfd-lib-source ndk-lib) :ahi) "AHI SDK")
                       (t (format nil "~A_lib.sfd" lib-short-name)))
                 (and ndk-lib mos-lib "MorphOS SDK"))
         (dolist (efn (merge-library-functions ndk-lib mos-lib))
@@ -2458,10 +2489,14 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
         (format out ";;; ~A — GENERATED by scripts/gen-amiga-bindings.lisp. DO NOT EDIT.~%" module-name)
         (format out ";;;~%;;; Sources:~%")
         (when ndk-lib
-          (if (eq (sfd-lib-source ndk-lib) :mui)
-              (format out ";;;   MUI 3.8 SDK ~A_lib.fd + clib/~A_protos.h (via fd2sfd)~%"
-                      lib-short-name lib-short-name)
-              (format out ";;;   ~A_lib.sfd~@[ (~A)~]~%" lib-short-name (sfd-lib-id ndk-lib))))
+          (case (sfd-lib-source ndk-lib)
+            (:mui
+             (format out ";;;   MUI 3.8 SDK ~A_lib.fd + clib/~A_protos.h (via fd2sfd)~%"
+                     lib-short-name lib-short-name))
+            (:ahi
+             (format out ";;;   AHI SDK ~A_lib.sfd~@[ (~A)~]~%" lib-short-name (sfd-lib-id ndk-lib)))
+            (t
+             (format out ";;;   ~A_lib.sfd~@[ (~A)~]~%" lib-short-name (sfd-lib-id ndk-lib)))))
         (when mos-lib
           (format out ";;;   MorphOS SDK ~A_lib.fd + clib/~A_protos.h (via fd2sfd)~%"
                   lib-short-name lib-short-name))
@@ -2528,8 +2563,12 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
 ;;; Cross-check: the NDK also ships lvo/<lib>_lib.i (sfdc's own rendering
 ;;; of the same SFD).  Every function we parsed must sit at exactly that
 ;;; LVO — any mismatch means the SFD parser miscounted an entry.
-(defun verify-lvos-against-ndk (lib)
-  (let ((path (concatenate 'string *i-include-root* "lvo/" (sfd-lib-name lib) "_lib.i"))
+(defun verify-lvos-against-ndk (lib &optional lvo-dir)
+  "LVO-DIR (with trailing slash) is where <lib>_lib.i lives; default the
+NDK's lvo/ under the assembler include root.  The AHI kit ships its own."
+  (let ((path (concatenate 'string
+                           (or lvo-dir (concatenate 'string *i-include-root* "lvo/"))
+                           (sfd-lib-name lib) "_lib.i"))
         (table (make-hash-table :test 'equal))
         (bad 0) (checked 0))
     (when (probe-file path)
@@ -2737,13 +2776,16 @@ pseudo paths, in order, for the muimaster module's include list."
          (mui5-sfd (getenv-or "BINDGEN_MUI5_SFD" nil))
          (mui5-inc-h (getenv-or "BINDGEN_MUI5_INCLUDE_H" nil))
          (mos-mui-inc-h (getenv-or "BINDGEN_MOS_MUI_INCLUDE_H" nil))
+         (ahi-sfd (getenv-or "BINDGEN_AHI_SFD" nil))
+         (ahi-inc-h (getenv-or "BINDGEN_AHI_INCLUDE_H" nil))
+         (ahi-lvo (getenv-or "BINDGEN_AHI_LVO" nil))
          (mcc-inc-h (getenv-or "BINDGEN_MCC_INCLUDE_H" nil))
          (out-dir (dir-path (getenv-or "BINDGEN_OUT" "lib/amiga/raw")))
          (only (comma-list (getenv-or "BINDGEN_LIBS" nil)))
          (*docstrings* (not (string= (getenv-or "BINDGEN_DOCSTRINGS" "1") "0")))
          (*i-include-root* (dir-path ndk-inc))
          (*h-include-roots* (mapcar #'dir-path
-                                    (remove nil (list ndk-inc-h mui-inc-h mcc-inc-h))))
+                                    (remove nil (list ndk-inc-h mui-inc-h ahi-inc-h mcc-inc-h))))
          (*asm-symbols* (make-hash-table :test 'equal))
          (*c-macros* (make-hash-table :test 'equal))
          (*i-files* (make-hash-table :test 'equal))
@@ -2755,6 +2797,7 @@ pseudo paths, in order, for the muimaster module's include list."
          (mos-libs (load-sfd-dir mos-sfd :mos))
          (mui-libs (load-sfd-dir mui-sfd :mui))
          (mui5-libs (load-sfd-dir mui5-sfd :mui5))
+         (ahi-libs (load-sfd-dir ahi-sfd :ahi))
          (extra-mui-includes nil)
          (claimed-includes (make-hash-table :test 'equal))
          (totals (list 0 0 0 0))
@@ -2778,6 +2821,21 @@ pseudo paths, in order, for the muimaster module's include list."
                 mui-libs))
       (t
        (format t "MUI SDK: none — muimaster is emitted from the MorphOS SDK's function table only (no libraries/mui.h constants); commit only output generated WITH the MUI SDK~%")))
+    ;; The AHI developer kit's table joins the primary set the same way:
+    ;; ahi.device is then an AmigaOS module with a MorphOS twin (no longer
+    ;; a MorphOS-only allowlist entry) claiming devices/ahi.h through
+    ;; *module-includes*.
+    (cond
+      (ahi-sfd
+       (format t "AHI SDK sfd: ~A (~D libraries), C headers: ~A, lvo: ~A~%"
+               ahi-sfd (hash-table-count ahi-libs) (or ahi-inc-h "none") (or ahi-lvo "none"))
+       (maphash (lambda (k lib)
+                  (when (gethash k ndk-libs)
+                    (error "gen-amiga-bindings: ~A_lib.sfd is in both the NDK/MUI set and the AHI SDK — which is primary?" k))
+                  (setf (gethash k ndk-libs) lib))
+                ahi-libs))
+      (t
+       (format t "AHI SDK: none — ahi is emitted from the MorphOS SDK's function table only (no devices/ahi.h constants or structs); commit only output generated WITH the AHI SDK~%")))
     (when mcc-inc-h
       (format t "MCC headers: ~A (mui/*_mcc.h -> amiga/raw/mui/<name>)~%" mcc-inc-h))
     (format t "Output: ~A~%" out-dir)
@@ -2807,6 +2865,32 @@ pseudo paths, in order, for the muimaster module's include list."
                          (incf same s) (incf bad b)))))
                  mui-libs)
         (format t "LVO cross-check MUI SDK vs MorphOS SDK: ~D functions agree, ~D differ~%" same bad)))
+    ;; The AHI kit ships its own lvo/ahi_lib.i: the same fatal cross-check
+    ;; as the NDK's, read from the kit's directory -- and the MorphOS SDK's
+    ;; rendering of ahi.device is compared like the MUI SDK's (a warning
+    ;; per disagreement).
+    (when (plusp (hash-table-count ahi-libs))
+      (when ahi-lvo
+        (let ((checked 0) (bad 0))
+          (maphash (lambda (k lib) (declare (ignore k))
+                     (multiple-value-bind (c b)
+                         (verify-lvos-against-ndk lib (dir-path ahi-lvo))
+                       (incf checked c) (incf bad b)))
+                   ahi-libs)
+          (format t "LVO cross-check against the AHI SDK's lvo/*.i: ~D functions checked, ~D mismatches~%"
+                  checked bad)
+          (when (> bad 0)
+            (dolist (w (reverse *asm-warnings*)) (format t "  ~A~%" w))
+            (error "gen-amiga-bindings: ~D LVO mismatches against the AHI SDK's lvo/*.i — refusing to write bindings" bad))))
+      (let ((same 0) (bad 0))
+        (maphash (lambda (k lib)
+                   (let ((mos (gethash k mos-libs)))
+                     (when mos
+                       (multiple-value-bind (s b)
+                           (verify-lvos-against-mos lib mos "AHI SDK")
+                         (incf same s) (incf bad b)))))
+                 ahi-libs)
+        (format t "LVO cross-check AHI SDK vs MorphOS SDK: ~D functions agree, ~D differ~%" same bad)))
     ;; The MUI 5 SDK's sfd (additive): the public functions beyond the 3.8
     ;; fd join the primary muimaster table under (%version>= 20) — MUI 5
     ;; for AmigaOS and MorphOS's built-in MUI both report lib_Version 20.
