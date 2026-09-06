@@ -1,8 +1,10 @@
 # CL-Amiga Cross-compilation Makefile
 # Uses m68k-amigaos-gcc from tools/m68k-amigaos-gcc/prefix
-# Run: make -f Makefile.cross [amiga|test-amiga|clean]
+# Run: make -f Makefile.cross [amiga|test-amiga|image-amiga|clean]
 #      make -f Makefile.cross amiga FPU=1   (hard-float variant, see below)
 #      make -f Makefile.cross amiga WIDE=1  (wide-string variant, see below)
+#      make -f Makefile.cross image-amiga   (bare-boot clamiga.img beside the
+#                                            binary, saved + verified in FS-UAE)
 
 TOOLCHAIN = $(CURDIR)/tools/m68k-amigaos-gcc/prefix
 CC        = $(TOOLCHAIN)/bin/m68k-amigaos-gcc
@@ -163,7 +165,7 @@ ALL_SRCS = $(MAIN_SRC) $(PLATFORM_SRC) $(CORE_SRC) $(JIT_SRC)
 ALL_OBJS = $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(ALL_SRCS)) \
            $(patsubst $(SRCDIR)/%.s,$(BUILDDIR)/%.o,$(PLATFORM_ASM))
 
-.PHONY: amiga test-amiga test-amiga-lowend examples-amiga clean check-toolchain
+.PHONY: amiga test-amiga test-amiga-lowend examples-amiga image-amiga clean check-toolchain
 
 amiga: check-toolchain $(BUILDDIR)/clamiga
 
@@ -185,6 +187,11 @@ check-toolchain:
 $(BUILDDIR)/clamiga: $(ALL_OBJS)
 	@mkdir -p $(dir $@)
 	$(CC) $(LDFLAGS) -o $@ $^ -lm
+	@# A heap image belongs to the binary that wrote it: the fingerprint
+	@# only covers version/format, so a relink of the same version would
+	@# still accept an image holding the PREVIOUS build's boot.lisp.  Drop
+	@# it; image-amiga writes a fresh one.
+	@rm -f $(BUILDDIR)/clamiga.img
 
 $(BUILDDIR)/%.o: $(SRCDIR)/%.c
 	@mkdir -p $(dir $@)
@@ -230,6 +237,17 @@ test-amiga: $(BUILDDIR)/clamiga
 # build/amiga/shots/*.png — see verify/realamiga/run-examples.sh.
 examples-amiga: $(BUILDDIR)/clamiga
 	verify/realamiga/run-examples.sh $(BUILDDIR)/clamiga
+
+# Bare-boot heap image for deployment (specs/image-save-load.md, README
+# "Heap images"): images are per-build, so the Amiga binary writes its own —
+# unattended in FS-UAE through the boot-override hook of call-on-ustartup —
+# and restarts from it to prove the result.  Lands beside the binary as
+# $(BUILDDIR)/clamiga.img (FPU=1: build/cross-fpu/clamiga.img), which is
+# where startup looks (PROGDIR:).  make-binary-release.sh runs the same
+# script against the staged release layout, so the shipped images come from
+# the shipped FASLs.
+image-amiga: $(BUILDDIR)/clamiga
+	verify/realamiga/make-image.sh $(BUILDDIR)
 
 test-amiga-lowend: $(BUILDDIR)/clamiga
 	@if [ "$(FPU)" = "1" ]; then \

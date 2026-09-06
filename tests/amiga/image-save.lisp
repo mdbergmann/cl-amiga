@@ -47,5 +47,13 @@
 (defvar *img-bt-kept* 'img-bt:+kept+)
 (defvar *img-bt-fn* (fboundp 'img-bt:img-call))
 
-(format t "IMAGE-STATE-BUILT fib10=~a~%" (img-fib 10))
+; Process-derived state the restore must re-derive rather than carry over:
+; the verify leg runs from a DIFFERENT directory (CLAmiga:tests, see
+; call-on-ustartup) and must see its own cwd in *default-pathname-defaults*,
+; and a fresh *random-state* — its first draw must not be the draw this
+; (untouched, image-bound) state would have produced.
+(defvar *img-saved-dpd* (namestring *default-pathname-defaults*))
+(defvar *img-rnd-next* (random 1000000 (make-random-state nil)))
+
+(format t "IMAGE-STATE-BUILT fib10=~a dpd=~a~%" (img-fib 10) *img-saved-dpd*)
 (ext:save-image "build/amiga/clamiga-test.img" :quit t :shake-bindings t)

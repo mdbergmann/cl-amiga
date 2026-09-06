@@ -62,6 +62,15 @@
            (progn (clamiga::%binding-table-materialize-all "IMG-BT")
                   (getf (clamiga::%binding-table-info "IMG-BT") :shed)))
 
+; Process-derived state is re-derived on restore: this leg runs from
+; CLAmiga:tests (call-on-ustartup), the save leg ran from CLAmiga:.
+(img-check "dpd is the restoring cwd, not the saver's" t
+           (let ((dpd (namestring *default-pathname-defaults*)))
+             (and (string/= dpd *img-saved-dpd*)
+                  (not (null (search "tests" dpd))))))
+(img-check "random-state reseeded" t
+           (/= (random 1000000) *img-rnd-next*))
+
 ; The restored heap must survive GC + compaction (offsets, JIT relink,
 ; blob-attached bytecode all get exercised by the collector).
 (img-check "gc after restore" 55

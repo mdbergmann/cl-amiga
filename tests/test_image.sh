@@ -15,6 +15,9 @@
 #   corrupt image → clean refusal (explicit --image exits 1)
 #   auto-discovery of clamiga.img in the cwd and in an install prefix's
 #     lib/clamiga/; --no-image bypasses it
+#   process state is re-derived on restore, not carried from the saver:
+#     *default-pathname-defaults* names the RESTORING process's cwd,
+#     *random-state* is freshly seeded
 #   ~/.clamigarc runs after a restore with EXT:*IMAGE-RESTORED-P* = T
 #   :shake-bindings — the delivery mode: binding tables shed before the dump,
 #     touched names intact, untouched ones gone with a reader error saying why
@@ -239,6 +242,36 @@ out=$(cd prefix && "$TIMEOUT" 60 bin/clamiga --no-userinit --non-interactive \
     --eval '(format t "DISC-FHS=~a~%" ext:*image-restored-p*)' </dev/null 2>&1)
 ec=$?
 check "auto_discovery_installed_layout" 0 "$ec" "$out" "DISC-FHS=T"
+
+# --- Process state is re-derived on restore, not carried from the saver --
+# *DEFAULT-PATHNAME-DEFAULTS* is heap state: carried over, a restored
+# session merges relative paths against the SAVING process's cwd (for a
+# shipped clamiga.img, a directory on the build machine) while REQUIRE/LOAD
+# check existence against the real cwd — "found" a file, then failed to open
+# it.  *RANDOM-STATE* likewise: the saver's clock-seeded state would replay
+# the same (random) sequence on every restore.  Save in dpd-a/, restore
+# from dpd-b/.
+mkdir -p dpd-a dpd-b
+out=$(cd dpd-a && "$TIMEOUT" 60 "$CLAMIGA" $CLI --non-interactive \
+    --eval '(format t "RND-NEXT=~a~%" (random 1000000 (make-random-state nil)))' \
+    --eval '(ext:save-image "dpd.img")' </dev/null 2>&1)
+ec=$?
+check "process_state_save_in_dir_a" 0 "$ec" "$out" "RND-NEXT=" "Image saved"
+rnd_saved=$(echo "$out" | sed -n 's/^RND-NEXT=//p')
+out=$(cd dpd-b && "$TIMEOUT" 60 "$CLAMIGA" --no-userinit --image ../dpd-a/dpd.img \
+    --non-interactive \
+    --eval '(format t "DPD=~a~%" (namestring *default-pathname-defaults*))' \
+    --eval '(format t "RND-FIRST=~a~%" (random 1000000))' </dev/null 2>&1)
+ec=$?
+check "dpd_is_the_restoring_cwd" 0 "$ec" "$out" "^DPD=.*/dpd-b/$"
+check_absent "dpd_not_the_saving_cwd" "$out" "^DPD=.*dpd-a"
+rnd_restored=$(echo "$out" | sed -n 's/^RND-FIRST=//p')
+if [ -n "$rnd_saved" ] && [ -n "$rnd_restored" ] && [ "$rnd_saved" != "$rnd_restored" ]; then
+    desc="random_state_reseeded_on_restore"; ok
+else
+    fail "random_state_reseeded_on_restore" \
+        "saver's next draw $rnd_saved, restored first draw $rnd_restored" "$out"
+fi
 
 # --- ~/.clamigarc runs after restore with *IMAGE-RESTORED-P* = T ---------
 

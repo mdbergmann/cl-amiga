@@ -546,6 +546,7 @@ int main(int argc, char *argv[])
     int no_jit = 0;
     int boot_log = 0;
     int no_image = 0;
+    uint32_t image_ms = 0, image_t0;   /* --boot-log: stage + restore cost */
     const char *image_file = NULL;
     const char *script_file = NULL;
     CLAction actions[MAX_ACTIONS];
@@ -718,13 +719,20 @@ int main(int argc, char *argv[])
     /* Heap image: stage (read + verify) BEFORE cl_mem_init so the arena
      * can be sized to the image's payload.  An explicit --image that
      * fails to stage is fatal; a discovered clamiga.img that fails falls
-     * back to a normal boot (cl_image_stage already said why). */
+     * back to a normal boot (cl_image_stage already said why).
+     *
+     * --boot-log accounting: the image path's cost is this stage (read +
+     * verify) plus the restore after the C init below.  Neither runs inside
+     * cl_repl_init_from_image, whose clock alone would report the restore
+     * as 0 ms — the one number the comparison with a FASL boot is about. */
+    image_t0 = platform_time_ms();
     if (image_file) {
         if (cl_image_stage(image_file, 0) != 0)
             exit(1);
     } else if (!no_image) {
         discover_image();
     }
+    image_ms = platform_time_ms() - image_t0;
     if (cl_image_staged_p()) {
         /* arena must hold the payload plus working headroom; an explicit
          * --heap wins when it is already big enough. */
@@ -776,8 +784,10 @@ int main(int argc, char *argv[])
     cl_image_note_boot_roots();
 
     if (cl_image_staged_p()) {
+        image_t0 = platform_time_ms();
         if (cl_image_restore_staged() == 0) {
-            cl_repl_init_from_image(no_userinit);
+            image_ms += platform_time_ms() - image_t0;
+            cl_repl_init_from_image(no_userinit, image_ms);
         } else {
             /* Pre-arena verification failed (reason already printed). */
             cl_image_discard_staged();

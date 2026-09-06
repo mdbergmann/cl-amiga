@@ -22,7 +22,9 @@ set -u
 
 CONFIG="${1:?usage: run-fs-uae.sh CONFIG.fs-uae}"
 FSUAE="verify/realamiga/FS-UAE.app/Contents/MacOS/fs-uae"
-LOG="build/amiga/test-results.log"
+# FSUAE_LOG: a custom boot-override that writes its markers elsewhere
+# (make-image.sh) names its log here, so the suite log is left alone.
+LOG="${FSUAE_LOG:-build/amiga/test-results.log}"
 
 POLL="${POLL:-5}"                       # seconds between checks
 SENTINEL_GRACE="${SENTINEL_GRACE:-30}"  # wait this long for UAEquit after the marker

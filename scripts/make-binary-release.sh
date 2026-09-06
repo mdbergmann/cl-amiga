@@ -10,6 +10,9 @@
 #                           FPU=1, -m68881) — REQUIRES an FPU (68881/68882,
 #                           68040/68060, Vampire/PiStorm)
 #     bin/mos/clamiga       MorphOS (PPC) binary, built natively on MorphOS
+#     bin/*/clamiga.img     bare-boot heap image (boot + CLOS) beside EACH
+#                           binary: startup restores it in one read instead
+#                           of loading lib/boot.fasl + clos.fasl (see below)
 #     lib/                  runtime library — FASLs where portable, sources
 #                           where compilation must happen on the target
 #     docs/                 package API reference (signatures + descriptions)
@@ -59,6 +62,23 @@
 #   the source line, not on the Amiga with BAD_TAG at REQUIRE time
 #   (tests/test_lib_fasl_portable.sh runs the same compile in `make test`).
 #
+# Heap images (specs/image-save-load.md): each binary starts from the
+# clamiga.img beside it — a snapshot of the booted runtime (boot + CLOS),
+# restored in one read instead of loading the two FASLs form by form.
+#   - One image PER BINARY, next to it.  Images are per-build (a fingerprint
+#     ties them to version/format/FPU/platform) and PROGDIR: is the first
+#     executable-relative place startup looks.  A single image at the
+#     release root would be found via the cwd by all three binaries and
+#     refused by two of them on every start.
+#   - The host cannot write them the way it writes FASLs.  The aos3 pair is
+#     saved by the staged m68k binaries themselves, unattended in FS-UAE
+#     (verify/realamiga/make-image.sh against the staged layout, so each
+#     image is dumped from the very FASLs that ship, then restarted from the
+#     release root to verify).  The MorphOS one is saved natively
+#     (`make -f Makefile.mos image`) and passed in as MOS_IMG.
+#   - boot.fasl + clos.fasl still ship: they are what --no-image boots from
+#     and the fallback when an image is refused.
+#
 # The binaries sit two directory levels below the release root on purpose:
 # both the boot search (repl.c) and REQUIRE resolve lib/ via the
 # executable-ancestor fallback (PROGDIR: two levels up), so the release runs
@@ -70,6 +90,13 @@
 #   MOS_BIN=path   MorphOS binary to package (default: ./clamiga-mos).
 #                  There is no MorphOS cross toolchain here — build it
 #                  natively with Makefile.mos and copy it over.
+#   MOS_IMG=path   Its bare-boot heap image (default: ./clamiga-mos.img),
+#                  saved on MorphOS by THAT binary from the same source
+#                  tree: `make -f Makefile.mos image` writes
+#                  build/morphos/clamiga.img (and verifies it).
+#
+# The aos3 images need the FS-UAE setup of `make -f Makefile.cross
+# test-amiga` (pkill fs-uae first if an emulator is lingering).
 
 set -euo pipefail
 
@@ -85,6 +112,8 @@ elif command -v gtimeout > /dev/null 2>&1; then TIMEOUT="gtimeout 300"
 else TIMEOUT=""; fi
 
 MOS_BIN=${MOS_BIN:-$ROOT/clamiga-mos}
+MOS_IMG=${MOS_IMG:-$ROOT/clamiga-mos.img}
+FSUAE_BIN=verify/realamiga/FS-UAE.app/Contents/MacOS/fs-uae
 
 # --- version from the single source of truth ------------------------------
 ver_field() { sed -n "s/^#define CL_VERSION_$1 \([0-9][0-9]*\)$/\1/p" src/core/types.h; }
@@ -104,6 +133,17 @@ if [ ! -f "$MOS_BIN" ]; then
     echo "ERROR: MorphOS binary not found: $MOS_BIN" >&2
     echo "       Build it natively on MorphOS (make -f Makefile.mos) and copy it" >&2
     echo "       here, or point MOS_BIN=... at it." >&2
+    exit 1
+fi
+if [ ! -f "$MOS_IMG" ]; then
+    echo "ERROR: MorphOS heap image not found: $MOS_IMG" >&2
+    echo "       Save it on MorphOS with the binary in MOS_BIN (make -f Makefile.mos image" >&2
+    echo "       writes build/morphos/clamiga.img) and copy it here, or point MOS_IMG=... at it." >&2
+    exit 1
+fi
+if [ ! -x "$FSUAE_BIN" ]; then
+    echo "ERROR: FS-UAE not found at $FSUAE_BIN — the aos3 heap images are saved" >&2
+    echo "       in the emulator (same setup as make -f Makefile.cross test-amiga)." >&2
     exit 1
 fi
 
@@ -165,6 +205,21 @@ echo "--- compile-file lib/amiga/** -> $REL/lib/amiga/**/*.fasl ---"
 sh scripts/compile-lib-fasls.sh -o "$STAGE" -b "$HOST_BIN" --no-docstrings \
     || { echo "ERROR: lib/amiga FASLs not produced" >&2; exit 1; }
 
+# heap images: one per binary, beside it (policy above).  The m68k pair is
+# saved by the staged binaries from the staged layout in FS-UAE, and each is
+# restarted from the release root — where no image sits, so discovery has to
+# take the PROGDIR: leg — and must report the restore and this version.
+REL_DIR="build/release/$REL"
+for t in aos3 aos3-fpu; do
+    echo "--- Saving + verifying $REL/bin/$t/clamiga.img in FS-UAE ---"
+    verify/realamiga/make-image.sh "$REL_DIR/bin/$t" "$REL_DIR" \
+        || { echo "ERROR: heap image for bin/$t not produced" >&2; exit 1; }
+    grep -q "^IMAGE-VERSION $VERSION" build/amiga/image.log || {
+        echo "ERROR: the bin/$t image run reported another version than $VERSION — see build/amiga/image.log" >&2
+        exit 1; }
+done
+cp "$MOS_IMG" "$STAGE/bin/mos/clamiga.img"
+
 # docs: package API reference only (no benchmarks/screenshots)
 cp docs/README.md docs/amiga.md docs/clamiga.md docs/ext.md docs/ffi.md \
    docs/gray.md docs/mop.md docs/mp.md docs/package-symbols.txt \
@@ -184,6 +239,7 @@ Common Lisp for AmigaOS 3+ and MorphOS.
   bin/aos3/clamiga      AmigaOS 3.x, 68020 or better — runs on any CPU
   bin/aos3-fpu/clamiga  AmigaOS 3.x, hard-float build — REQUIRES an FPU
   bin/mos/clamiga       MorphOS (PowerPC, native)
+  bin/*/clamiga.img     heap image of the bare boot, one per binary (see Startup)
   lib/                  runtime library (precompiled FASLs + Lisp sources)
   docs/                 package API reference (call signatures included)
   examples/             example programs (Lisp source)
@@ -222,6 +278,15 @@ Quicklisp systems) needs more — with too little stack you get a clean
 
 For bigger programs raise the heap, e.g.:
   bin/aos3/clamiga --heap 16M
+
+Startup
+-------
+Each binary starts from the clamiga.img beside it: a snapshot of the
+booted runtime (boot + CLOS), restored in one read instead of loading
+lib/boot.fasl and lib/clos.fasl form by form.  Keep the image next to
+its binary — it is tied to that exact build and refused by any other.
+"clamiga --no-image" boots from the FASLs instead, and "--boot-log"
+prints the startup phase timings either way.
 
 Libraries
 ---------
@@ -272,9 +337,29 @@ if [ "$SMOKE" = 1 ]; then
     # that the archives preserve too and that REQUIRE decides on.
     cp -Rp "$STAGE" "$SMOKEDIR/rel"
     cp "$HOST_BIN" "$SMOKEDIR/rel/bin/aos3/clamiga"
+    # Heap images are per-build: the staged bin/aos3/clamiga.img is the m68k
+    # one, which the host binary would refuse and fall back to the FASLs — a
+    # green run proving nothing about images.  Save a host image into the
+    # copy with the same script the targets use, verify it from the release
+    # root with the same check script, and require the main smoke run below
+    # to have come from it.
+    rm -f "$SMOKEDIR/rel/bin/aos3/clamiga.img"
+    ( cd "$SMOKEDIR/rel/bin/aos3" && CLAMIGA_NO_USERINIT=1 CLAMIGA_HOME= $TIMEOUT \
+        ./clamiga --no-userinit --no-image --non-interactive \
+        --load "$ROOT/scripts/save-boot-image.lisp" ) > "$OUT/smoke-image.log" 2>&1 \
+      && [ -s "$SMOKEDIR/rel/bin/aos3/clamiga.img" ] || {
+        echo "ERROR: host image save in the release layout failed — see $OUT/smoke-image.log" >&2
+        exit 1; }
+    ( cd "$SMOKEDIR/rel" && CLAMIGA_NO_USERINIT=1 CLAMIGA_HOME= $TIMEOUT \
+        bin/aos3/clamiga --no-userinit --non-interactive \
+        --load "$ROOT/scripts/verify-boot-image.lisp" ) >> "$OUT/smoke-image.log" 2>&1 \
+      && grep -q "^BOOT-IMAGE-VERIFIED" "$OUT/smoke-image.log" || {
+        echo "ERROR: release layout did not start from bin/aos3/clamiga.img — see $OUT/smoke-image.log" >&2
+        exit 1; }
     ( cd "$SMOKEDIR" && \
       CLAMIGA_NO_USERINIT=1 CLAMIGA_HOME= $TIMEOUT \
         "$SMOKEDIR/rel/bin/aos3/clamiga" --non-interactive --heap 48M \
+        --eval '(format t "IMAGE-RESTORED ~a~%" ext:*image-restored-p*)' \
         --eval '(require "gray-streams")' \
         --eval '(require "asdf")' \
         --eval '(format t "SHIM-AT ~a~%" (asdf:system-source-directory (asdf:find-system "cl+ssl")))' \
@@ -284,6 +369,17 @@ if [ "$SMOKE" = 1 ]; then
         --eval '(format t "SMOKE-OK ~a~%" (lisp-implementation-version))' \
         --eval '(quit)' ) | tee "$OUT/smoke.log" | grep -q "SMOKE-OK $VERSION" || {
         echo "ERROR: smoke test failed — see $OUT/smoke.log" >&2; exit 1; }
+    grep -q "^IMAGE-RESTORED T" "$OUT/smoke.log" || {
+        echo "ERROR: the smoke session did not come from bin/aos3/clamiga.img — see $OUT/smoke.log" >&2
+        exit 1; }
+    # --no-image: the FASL boot must still bring the layout up — it is the
+    # fallback when an image is refused.
+    ( cd "$SMOKEDIR" && CLAMIGA_NO_USERINIT=1 CLAMIGA_HOME= $TIMEOUT \
+        "$SMOKEDIR/rel/bin/aos3/clamiga" --non-interactive --no-image \
+        --eval '(format t "FASL-BOOT ~a ~a~%" ext:*image-restored-p* (lisp-implementation-version))' \
+        --eval '(quit)' ) | tee "$OUT/smoke-noimage.log" | grep -q "^FASL-BOOT NIL $VERSION" || {
+        echo "ERROR: --no-image FASL boot of the release layout failed — see $OUT/smoke-noimage.log" >&2
+        exit 1; }
     # The cl+ssl shim must resolve out of the release's own lib/shims/ —
     # this is what makes drakma/hunchentoot TLS work from a binary install
     # regardless of what Quicklisp/ocicl have on disk.

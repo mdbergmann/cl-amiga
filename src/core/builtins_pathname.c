@@ -969,36 +969,45 @@ void cl_builtins_pathname_init(void)
     defun("PATHNAME-MATCH-P", bi_pathname_match_p, 2, 2);
     defun("TRANSLATE-PATHNAME", bi_translate_pathname, 3, 3);
 
-    /* Initialize *default-pathname-defaults* to the process's current working
-     * directory in absolute directory form.  Conforming implementations seed it
-     * with the cwd so relative merges (merge-pathnames, ASDF :tree directives,
-     * etc.) resolve to absolute pathnames.  An empty pathname here would leave
-     * (merge-pathnames "x/" *default-pathname-defaults*) relative, which ASDF's
-     * source-registry rejects ("Expected an absolute pathname").  Fall back to
-     * the empty pathname only if the cwd cannot be determined. */
-    {
-        char cwd[512];
-        CL_Obj dpd = CL_NIL;
-        if (platform_getcwd(cwd, (int)sizeof(cwd))) {
-            uint32_t clen = (uint32_t)strlen(cwd);
-            /* Ensure directory form (trailing separator) so the namestring has
-             * no name/type component. */
-            if (clen > 0 && clen + 1 < sizeof(cwd)
-                && cwd[clen - 1] != '/'
+    cl_pathname_default_from_cwd();
+}
+
+/* Set *default-pathname-defaults* to the process's current working
+ * directory in absolute directory form.  Conforming implementations seed it
+ * with the cwd so relative merges (merge-pathnames, ASDF :tree directives,
+ * etc.) resolve to absolute pathnames.  An empty pathname here would leave
+ * (merge-pathnames "x/" *default-pathname-defaults*) relative, which ASDF's
+ * source-registry rejects ("Expected an absolute pathname").  Fall back to
+ * the empty pathname only if the cwd cannot be determined.
+ *
+ * Called at init and again after a heap-image restore (image.c): the value
+ * is heap state and comes back with the image, i.e. it would name the cwd
+ * of the process that SAVED the image — for a shipped clamiga.img, a
+ * directory on the build machine — and every relative LOAD/REQUIRE would
+ * resolve there while the existence checks look at the real cwd. */
+void cl_pathname_default_from_cwd(void)
+{
+    char cwd[512];
+    CL_Obj dpd = CL_NIL;
+    if (platform_getcwd(cwd, (int)sizeof(cwd))) {
+        uint32_t clen = (uint32_t)strlen(cwd);
+        /* Ensure directory form (trailing separator) so the namestring has
+         * no name/type component. */
+        if (clen > 0 && clen + 1 < sizeof(cwd)
+            && cwd[clen - 1] != '/'
 #ifdef PLATFORM_AMIGA
-                && cwd[clen - 1] != ':'
+            && cwd[clen - 1] != ':'
 #endif
-               ) {
-                cwd[clen] = '/';
-                cwd[clen + 1] = '\0';
-                clen++;
-            }
-            dpd = cl_parse_namestring(cwd, clen);
+           ) {
+            cwd[clen] = '/';
+            cwd[clen + 1] = '\0';
+            clen++;
         }
-        if (CL_NULL_P(dpd))
-            dpd = cl_make_pathname(CL_NIL, CL_NIL, CL_NIL, CL_NIL, CL_NIL, CL_NIL);
-        /* Dereference after all allocating calls so we hold a fresh pointer
-         * even if GC compaction relocated the symbol object. */
-        ((CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_DEFAULT_PATHNAME_DEFAULTS))->value = dpd;
+        dpd = cl_parse_namestring(cwd, clen);
     }
+    if (CL_NULL_P(dpd))
+        dpd = cl_make_pathname(CL_NIL, CL_NIL, CL_NIL, CL_NIL, CL_NIL, CL_NIL);
+    /* Dereference after all allocating calls so we hold a fresh pointer
+     * even if GC compaction relocated the symbol object. */
+    ((CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_DEFAULT_PATHNAME_DEFAULTS))->value = dpd;
 }

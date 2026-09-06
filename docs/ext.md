@@ -166,6 +166,10 @@ Rules and limits:
 - `ext:*image-restored-p*` is `T` in a restored session — it is already
   set when `~/.clamigarc` runs, so an rc file can skip loads the image
   already contains.
+- **Process state is re-derived, not restored.**  `*default-pathname-defaults*`
+  names the restoring process's current directory (not the one the image
+  was saved from), and `*random-state*` is freshly seeded, exactly as on a
+  normal boot.
 
 ### Shipping an image: `:shake-bindings`
 
