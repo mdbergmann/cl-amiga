@@ -8,10 +8,11 @@
 ;;; cl-amiga instead implements TLS in the C runtime (EXT:SOCKET-START-TLS,
 ;;; backed by OpenSSL on the host, AmiSSL on AmigaOS, openssl3.library on
 ;;; MorphOS) and this shim provides the exact CL+SSL API surface that
-;;; drakma and hunchentoot consume — MAKE-SSL-CLIENT-STREAM,
-;;; MAKE-SSL-SERVER-STREAM, MAKE-CONTEXT, WITH-GLOBAL-CONTEXT,
-;;; +SSL-VERIFY-NONE+, SSL-STREAM-X509-CERTIFICATE — on top of it.  Both
-;;; load unmodified against this system.
+;;; drakma, hunchentoot and websocket-driver's client consume —
+;;; MAKE-SSL-CLIENT-STREAM, MAKE-SSL-SERVER-STREAM, MAKE-CONTEXT,
+;;; WITH-GLOBAL-CONTEXT, +SSL-VERIFY-NONE+, +SSL-VERIFY-PEER+,
+;;; ENSURE-INITIALIZED, SSL-CHECK-VERIFY-P, SSL-STREAM-X509-CERTIFICATE — on
+;;; top of it.  All three load unmodified against this system.
 ;;;
 ;;; Registered automatically: loading ASDF (lib/asdf.lisp) pushes this
 ;;; directory onto ASDF:*CENTRAL-REGISTRY*, which is searched before the

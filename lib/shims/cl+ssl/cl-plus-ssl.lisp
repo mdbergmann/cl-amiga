@@ -1,9 +1,10 @@
 ;;;; cl-plus-ssl.lisp --- cl+ssl-compatible facade over cl-amiga native TLS.
 ;;;
-;;; Implements the slice of the CL+SSL API that drakma and hunchentoot
-;;; actually use (see cl+ssl.asd for the background) on top of the runtime's
-;;; EXT:SOCKET-START-TLS.  Key behavioural differences from the real cl+ssl,
-;;; all invisible to those clients:
+;;; Implements the slice of the CL+SSL API that drakma, hunchentoot and
+;;; websocket-driver's client actually use (see cl+ssl.asd for the
+;;; background) on top of the runtime's EXT:SOCKET-START-TLS.  Key
+;;; behavioural differences from the real cl+ssl, all invisible to those
+;;; clients:
 ;;;
 ;;;  - TLS upgrades the socket stream IN PLACE: MAKE-SSL-CLIENT-STREAM /
 ;;;    MAKE-SSL-SERVER-STREAM return the same stream object they were given
@@ -22,6 +23,8 @@
   (:export #:+ssl-verify-none+
            #:+ssl-verify-peer+
            #:*make-ssl-client-stream-verify-default*
+           #:ensure-initialized
+           #:ssl-check-verify-p
            #:ssl-error
            #:ssl-error-message
            #:make-context
@@ -42,6 +45,40 @@
   ((message :initarg :message :initform "" :reader ssl-error-message))
   (:report (lambda (condition stream)
              (format stream "SSL error: ~a" (ssl-error-message condition)))))
+
+;;; Initialisation.  The real cl+ssl loads libssl/libcrypto and seeds the
+;;; RNG here; the native runtime brings TLS up by itself, so this exists for
+;;; callers that insist on it (websocket-driver's client calls it before
+;;; every wss:// connect).
+(defun ensure-initialized (&key method rand-seed)
+  "cl+ssl compatibility: TLS needs no explicit initialisation on cl-amiga.
+METHOD and RAND-SEED are accepted and ignored."
+  (declare (ignore method rand-seed))
+  t)
+
+;;; The deprecated global verification switch.  cl+ssl keeps it around as the
+;;; fallback for MAKE-SSL-CLIENT-STREAM's :VERIFY: once set, an unspecified
+;;; :VERIFY means :OPTIONAL; never set, *MAKE-SSL-CLIENT-STREAM-VERIFY-DEFAULT*
+;;; decides.  Same three-state variable and accessor pair as the original.
+(defvar *ssl-check-verify-p* :unspecified
+  ":UNSPECIFIED until (SETF SSL-CHECK-VERIFY-P) is called, then T or NIL.")
+
+(defun ssl-check-verify-p ()
+  "True when the deprecated global peer-verification switch has been turned
+on with (SETF SSL-CHECK-VERIFY-P)."
+  (and *ssl-check-verify-p*
+       (not (eq *ssl-check-verify-p* :unspecified))))
+
+(defun (setf ssl-check-verify-p) (check-verify-p)
+  (setf *ssl-check-verify-p* (not (null check-verify-p))))
+
+(defun %client-verify-default ()
+  "MAKE-SSL-CLIENT-STREAM's :VERIFY when the caller passes none: :OPTIONAL
+once the deprecated switch is on, else *MAKE-SSL-CLIENT-STREAM-VERIFY-DEFAULT*
+-- the same rule the original cl+ssl applies."
+  (if (ssl-check-verify-p)
+      :optional
+      *make-ssl-client-stream-verify-default*))
 
 ;;; Contexts.  The real cl+ssl wraps a foreign SSL_CTX; here a context is a
 ;;; plain bag of options that MAKE-SSL-*-STREAM folds into the native
@@ -133,12 +170,13 @@ foreign state to release, so :AUTO-FREE-P needs no action."
   (and x (namestring x)))
 
 (defun make-ssl-client-stream (socket &key certificate key password
-                                           (verify *make-ssl-client-stream-verify-default*)
+                                           (verify (%client-verify-default))
                                            hostname
                                            &allow-other-keys)
   "Upgrade the connected socket stream SOCKET to client-side TLS and return
-it.  VERIFY is NIL, :OPTIONAL or :REQUIRED (cl+ssl semantics); with a
-non-NIL VERIFY the peer chain is checked against the global context's
+it.  VERIFY is NIL, :OPTIONAL or :REQUIRED (cl+ssl semantics; the default
+follows the deprecated SSL-CHECK-VERIFY-P switch exactly like the original);
+with a non-NIL VERIFY the peer chain is checked against the global context's
 verify-location (or the provider's default trust store), plus HOSTNAME when
 given.  CERTIFICATE/KEY/PASSWORD configure an optional client certificate."
   (check-type verify (member nil :optional :required))
