@@ -83,6 +83,7 @@ For a downloadable **binary release** (AmigaOS 3 + MorphOS), run `scripts/make-b
 3. **Commit** as `chore(release): bump version to X.Y` touching only those two files, with a headline paragraph summarizing the cycle (see `git show v0.4` for the format). Re-run `make test` on the bumped tree.
 4. **Annotated tag**: `git tag -a vX.Y -m "CL-Amiga X.Y — <headlines>; Amiga suite N/N, test-extra N/0"` with the real numbers from step 1.
 5. **Push**: `git push origin master vX.Y`.
+6. **Aminet** (after `scripts/make-binary-release.sh`): `AMINET_UPLOADER="you@example.org (Name)" scripts/aminet-upload.sh --dry-run` stages `clamiga.lha` + `clamiga.readme` under `build/release/aminet/` from `scripts/aminet-readme.in` (release notes = the tag message, or `--notes FILE`) and checks them against Aminet's rules; without `--dry-run` it uploads by anonymous FTP to `main.aminet.net/new/` after a confirmation. The archive is uploaded under the *same name* as the existing package (that is how Aminet updates work; the version lives in the readme). Aminet asks for at most one update per week.
 
 **Deriving the headlines — do not use `vPREV..HEAD`.** Master's history was rewritten (`git filter-repo`, 2026-07-24), so tags created before that point are no longer ancestors of master: `git log v0.4..HEAD` returns the *entire* rewritten history (786 commits), not the release delta, and silently yields headlines from cycles long past. Check with `git merge-base --is-ancestor vPREV HEAD`; when it fails, find the previous release's *rewritten* bump commit instead and diff from that:
 

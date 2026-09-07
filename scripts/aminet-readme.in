@@ -1,0 +1,59 @@
+Short:        Amiga specific Common Lisp
+Author:       manfred.bergmann@me.com (Manfred Bergmann)
+Uploader:     @UPLOADER@
+Type:         dev/lang
+Version:      @VERSION@
+Architecture: m68k-amigaos >= 3.0.0; ppc-morphos
+Requires:     68020+, 1 MB RAM (more for big programs); FPU for bin/aos3-fpu
+Distribution: Aminet
+URL:          https://github.com/mdbergmann/cl-amiga
+
+CL-Amiga @VERSION@ - Common Lisp for AmigaOS 3 and MorphOS
+=====================================================
+
+A Common Lisp built for the Amiga: a compact bytecode VM in portable C
+with an optional native m68k JIT, CLOS with the MOP, Gray streams,
+threads, sockets with TLS (AmiSSL), an FFI with Lisp callbacks, and
+bindings for Intuition, Graphics, GadTools, ReAction, MUI, BOOPSI,
+audio.device, AHI, iffparse and DOS packets, plus generated 1:1 bindings
+for every library of the NDK 3.2 and the MorphOS SDK.  ASDF and
+Quicklisp are included.  Small programs run in 1 MB of RAM, and the
+same compiled FASLs run unchanged on 68k and PowerPC.
+
+Getting started
+---------------
+1. Unpack anywhere - no installer, no assigns:
+     lha x clamiga.lha Work:
+
+2. Pick your binary:
+     bin/aos3/clamiga      AmigaOS 3.x, any 68020+ (floats in software)
+     bin/aos3-fpu/clamiga  AmigaOS 3.x with an FPU (68881/882, 040/060,
+                           Vampire, PiStorm) - crashes without one
+     bin/mos/clamiga       MorphOS (PowerPC, native)
+
+3. Start it from a Shell with a 128K stack:
+     stack 131072
+     cd Work:clamiga-@VERSION@
+     bin/aos3/clamiga
+
+4. At the prompt:
+     (format t "Hello, Amiga!~%")
+     (require "amiga/intuition")     ; the OS bindings load on demand
+     (load "examples/amiga/gfx/bouncing-lines.lisp")
+     (quit)
+
+5. Going further:
+     bin/aos3/clamiga --heap 16M     ; more heap for bigger programs
+     bin/aos3/clamiga --load examples/amiga/reaction/listbrowser.lisp
+   examples/ holds ready-to-run programs (ReAction and MUI GUIs,
+   graphics, audio, IFF, ARexx), docs/README.md is the package reference
+   (EXT, MP, FFI, GRAY, MOP and the AMIGA.* bindings), and
+   README-BINARY.txt has the details on the binaries, the heap image and
+   the libraries.
+
+Changes in @VERSION@
+--------------------
+@NOTES@
+
+License: Apache 2.0.  Source code, documentation and issue tracker:
+https://github.com/mdbergmann/cl-amiga

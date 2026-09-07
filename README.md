@@ -1193,6 +1193,27 @@ smoke-tests the deployed layout and produces `.zip` and `.lha` archives.
 The binaries find `lib/` relative to themselves, so the extracted tree
 runs from any directory without assigns or environment variables.
 
+The release is published on Aminet as
+[dev/lang/clamiga.lha](https://aminet.net/package/dev/lang/clamiga).
+`scripts/aminet-upload.sh` takes the `.lha` the release script produced,
+writes the accompanying `clamiga.readme` from `scripts/aminet-readme.in`
+(version, uploader and the release notes filled in — the annotated tag's
+message by default, or `--notes FILE`), checks the pair against Aminet's
+rules (readme fields, 40-character `Short:`, 78-column ASCII lines,
+30-character file names, archive integrity) and uploads both by
+anonymous FTP to `main.aminet.net/new/`, where the Aminet moderators pick
+them up:
+
+```
+AMINET_UPLOADER="you@example.org (Your Name)" scripts/aminet-upload.sh --dry-run   # stage + check only
+AMINET_UPLOADER="you@example.org (Your Name)" scripts/aminet-upload.sh             # ... and upload
+```
+
+Aminet updates a package by an upload under the same file name, so the
+archive goes up as `clamiga.lha` with the version in the readme.
+`tests/test_aminet_upload.sh` is the executable specification of the
+rules the script enforces.
+
 ## AmigaOS Native GUI
 
 CL-Amiga provides Lisp bindings for Intuition, Graphics, and GadTools — loaded on demand via `require` with zero binary size impact. A generic FFI layer (`FFI` package) provides foreign memory access on all platforms; the `AMIGA` package adds register-based library call dispatch via a 68k assembly trampoline.

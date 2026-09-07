@@ -233,8 +233,9 @@ test_batch test_repl_values test_repl_paste test_boot_log test_mx_error_context 
                 test_amiga_asyncio test_amiga_ahi test_amiga_iff test_amiga_gfx_examples \
                 test_lib_fasl_portable
 
-# The two that drive make itself and take no clamiga binary.
-SHELL_TESTS_NOARG = test_cross_wide_knob test_test_extra
+# The ones that take no clamiga binary: two drive make itself, one the
+# Aminet upload script (dry runs only, no network).
+SHELL_TESTS_NOARG = test_cross_wide_knob test_test_extra test_aminet_upload
 
 test-fast: $(TEST_BINS) host
 	@echo "=== Running tests (fast tier: skips sento/host-cold-test) ==="
