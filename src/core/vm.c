@@ -892,12 +892,22 @@ static void trace_print_exit(CL_Obj name_sym, CL_Obj result)
 
 /* --- Backtrace capture --- */
 
-/* Look up source line for a given IP in a bytecode's line map.
- * Returns 0 if no mapping found. Uses binary-like scan (entries sorted by pc). */
+/* Look up the source line for a frame's saved IP in a bytecode's line map.
+ * Returns 0 if no mapping found.  Entries are sorted by pc.
+ *
+ * A frame's ip is a RESUME point: it sits just past the instruction that
+ * was executing when the frame was saved (an OP_CALL into a callee, a
+ * builtin or FFI call that signalled, a Ctrl-C poll).  The line of that
+ * instruction is wanted, so the lookup is done at ip - 1, the last byte of
+ * the instruction.  At ip itself a call that is followed directly by the
+ * next form's code -- `(list (f)\n (g))` -- would land on the entry the
+ * compiler recorded for `(g)`, one line too far.  Entries only ever start
+ * at instruction boundaries, so ip - 1 can never cross into a later one. */
 static int lookup_source_line(CL_Bytecode *bc, uint32_t ip)
 {
     int i, best_line = 0;
     if (!bc->line_map || bc->line_map_count == 0) return 0;
+    if (ip > 0) ip--;
     for (i = 0; i < bc->line_map_count; i++) {
         if (bc->line_map[i].pc <= ip)
             best_line = bc->line_map[i].line;
@@ -2446,6 +2456,12 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                             cl_vm.stack[cl_vm.sp - nargs - 1]);
                     cl_trace_depth++;
                 }
+                /* No frame is pushed for a builtin, so record where this
+                 * frame is before the call: an error the builtin signals is
+                 * reported (backtrace, EXT:BACKTRACE) at this call's line,
+                 * not at the last bytecode call's.  One store per builtin
+                 * call; the bytecode-callee path below saves ip anyway. */
+                frame->ip = ip;
                 result = call_builtin(f, arg_base, nargs);
                 if (traced) {
                     cl_trace_depth--;
@@ -2474,6 +2490,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     func_obj = cl_vm.stack[cl_vm.sp - nargs - 1];
                     cl_trace_depth++;
                 }
+                frame->ip = ip;   /* as for a builtin: errors land on this line */
                 result = cl_ffi_stub_call(func_obj, arg_base, nargs);
                 if (traced) {
                     cl_trace_depth--;
@@ -3808,6 +3825,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     f = (CL_Function *)CL_OBJ_TO_PTR(apply_func);
                     cl_trace_depth++;
                 }
+                frame->ip = ip;   /* as in OP_CALL: errors land on this line */
                 result = call_builtin(f, &cl_vm.stack[args_base], nflat);
                 cl_vm.sp = args_base;  /* drop the spread args */
                 if (traced) {
@@ -3867,8 +3885,10 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             } else if (CL_FFI_STUB_P(apply_func)) {
                 /* FFI stub: spread args are rooted at args_base; apply_func
                  * is rooted above.  Same shape as the builtin branch. */
-                CL_Obj result = cl_ffi_stub_call(apply_func,
-                                                 &cl_vm.stack[args_base], nflat);
+                CL_Obj result;
+                frame->ip = ip;   /* errors land on this line */
+                result = cl_ffi_stub_call(apply_func,
+                                          &cl_vm.stack[args_base], nflat);
                 cl_vm.sp = args_base;  /* drop the spread args */
                 cl_vm_push(result);
                 cl_mv_count = 1;
@@ -4667,7 +4687,12 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
 
             /* Args sit at [sp-n_args .. sp-1]; pop after dispatch.  The
              * base-variable checks and the trampoline are shared with the
-             * CL_STUB_LIBCALL path (cl_amiga_call_via_base_sym). */
+             * CL_STUB_LIBCALL path (cl_amiga_call_via_base_sym).  Save ip
+             * first: a rejected argument or an unopened library is then
+             * reported at THIS call's line -- without it the backtrace
+             * showed the line of the previous bytecode call (the clicktab
+             * example's "line 134" for an error on line 135). */
+            frame->ip = ip;
             result = cl_amiga_call_via_base_sym(
                 base_sym, off, regspec, (int)n_args,
                 &cl_vm.stack[cl_vm.sp - n_args]);

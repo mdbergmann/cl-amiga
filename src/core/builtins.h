@@ -98,6 +98,13 @@ void cl_register_builtin_exported(const char *name, CL_CFunc func,
  * CALL-LIBRARY* builtins all route their results through it. */
 CL_Obj cl_amiga_box_result(uint32_t result, int kind);
 
+/* The 32-bit register image of a register argument: integers (two's
+ * complement), foreign pointers (address), NIL (0), T (1); anything else
+ * is a TYPE-ERROR naming argument number ARG_INDEX (1-based), its register
+ * REG_IDX (D0..D7 = 0..7, A0..A5 = 8..13) and the value.  Compiled on every
+ * platform; the host dispatch stub applies it before its platform error. */
+uint32_t cl_amiga_ffi_arg_to_u32(CL_Obj val, int arg_index, int reg_idx);
+
 /* Resolve BASE_SYM (the library-base special variable a DEFCFUN names)
  * and call LVO OFFSET of that library with the register args in ARGS
  * (ARGS[0] = first register arg) per REGSPEC.  Shared by the VM's

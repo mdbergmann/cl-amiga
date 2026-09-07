@@ -9549,6 +9549,44 @@ y" 1))
            (amiga:call-library-fast lib -132 0))
         (amiga:close-library lib))))
 
+  ;; Register arguments take T / NIL like tag values do -- T is 1 (a C TRUE
+  ;; for a BOOL or LONG flag such as RethinkLayout's refresh), NIL is 0 /
+  ;; NULL -- on every call path: a direct call site (OP_AMIGA_CALL), the
+  ;; stub's own dispatch (FUNCALL / APPLY), CALL-LIBRARY and
+  ;; CALL-LIBRARY-FAST.  dos.library SetIoErr(LONG) (LVO -462, d1) stores the
+  ;; value IoErr() returns, which makes the register image observable.
+  ;; Regression: T was rejected ("register argument must be integer or
+  ;; foreign pointer") -- the reaction clicktab example died on its first
+  ;; tab click, (rethink-layout group window nil t).
+  (amiga.ffi:defcfun dos-set-io-err *dos-base-for-defcfun-test* -462 (:d1 code) :result :signed)
+  (check "amiga-ffi-register-arg-t-nil" '(1 0 1 0 1 0)
+    (let ((lib (amiga:open-library "dos.library" 36)))
+      (setq *dos-base-for-defcfun-test* lib)
+      (prog1
+        (list (progn (dos-set-io-err t) (dos-io-err))
+              (progn (dos-set-io-err nil) (dos-io-err))
+              (progn (funcall #'dos-set-io-err t) (dos-io-err))
+              (progn (apply #'dos-set-io-err '(nil)) (dos-io-err))
+              (progn (amiga:call-library lib -462 (list :d1 t)) (dos-io-err))
+              (progn (amiga:call-library-fast lib -462 1 nil) (dos-io-err)))
+        (dos-set-io-err 0)
+        (amiga:close-library lib))))
+
+  ;; A value no register can carry is a TYPE-ERROR naming the argument, its
+  ;; register and the value -- and the library is not called.
+  (check "amiga-ffi-register-arg-type-error" '(t t)
+    (let ((lib (amiga:open-library "dos.library" 36)))
+      (setq *dos-base-for-defcfun-test* lib)
+      (dos-set-io-err 0)
+      (prog1
+        (list (handler-case (progn (dos-set-io-err "one") nil)
+                (type-error (e)
+                  (let ((m (format nil "~A" e)))
+                    (and (search "register argument 1 (:D1)" m)
+                         (search "\"one\"" m) t))))
+              (zerop (dos-io-err)))
+        (amiga:close-library lib))))
+
   ; --- Intuition/Graphics/GadTools tests ---
   ; These are in a separate file because the reader needs the packages
   ; to exist before it can read amiga.intuition:* qualified symbols.

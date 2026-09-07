@@ -14,6 +14,7 @@
 #include "package.h"
 #include "compiler.h"
 #include "string_utils.h"
+#include "printer.h"
 #include "thread.h"
 #include "../platform/platform.h"
 #include <string.h>
@@ -92,6 +93,58 @@ CL_Obj cl_amiga_box_result(uint32_t result, int kind)
     return bn;
 }
 
+/* Register names for diagnostics, indexed like decode_register_keyword and
+ * the regspec nibbles (D0..D7 = 0..7, A0..A5 = 8..13). */
+static const char *const amiga_reg_names[14] = {
+    "D0", "D1", "D2", "D3", "D4", "D5", "D6", "D7",
+    "A0", "A1", "A2", "A3", "A4", "A5"
+};
+
+/* The 32-bit register image of the Lisp value VAL, given as register
+ * argument number ARG_INDEX (1-based, for the message) bound for register
+ * REG_IDX: an integer as its two's-complement longword (a fixnum, or the
+ * low 32 bits of a bignum -- negative LONGs wrap), a foreign pointer as its
+ * address, NIL as 0 (NULL / FALSE) and T as 1 (TRUE).  That is the coercion
+ * AMIGA.BOOPSI applies to tag values, so a BOOL or LONG flag parameter such
+ * as RethinkLayout's `refresh` takes a Lisp boolean at the call site.
+ * Anything else is a TYPE-ERROR that names the argument, its register and
+ * the offending value.
+ *
+ * Shared by CALL-LIBRARY, CALL-LIBRARY-FAST and the OP_AMIGA_CALL dispatch
+ * (VM, JIT and stub callers alike).  Platform-neutral so the host build
+ * checks a binding's arguments before its "only on AmigaOS" error and
+ * tests/test_amiga_ffi.c pins the rules. */
+uint32_t cl_amiga_ffi_arg_to_u32(CL_Obj val, int arg_index, int reg_idx)
+{
+    char shown[80];
+
+    if (CL_FIXNUM_P(val))
+        return (uint32_t)CL_FIXNUM_VAL(val);
+    if (CL_BIGNUM_P(val)) {
+        CL_Bignum *bn = (CL_Bignum *)CL_OBJ_TO_PTR(val);
+        uint32_t mag = (uint32_t)bn->limbs[0];
+        if (bn->length > 1)
+            mag |= ((uint32_t)bn->limbs[1]) << 16;
+        return bn->sign ? (uint32_t)0u - mag : mag;
+    }
+    if (CL_FOREIGN_POINTER_P(val)) {
+        CL_ForeignPtr *fp = (CL_ForeignPtr *)CL_OBJ_TO_PTR(val);
+        return fp->address;
+    }
+    if (CL_NULL_P(val))
+        return 0;
+    if (val == CL_T)
+        return 1;
+    cl_prin1_to_string(val, shown, (int)sizeof(shown));
+    cl_error(CL_ERR_TYPE,
+             "AMIGA FFI: register argument %d (:%s) must be an integer, a "
+             "foreign pointer, T or NIL -- got %s",
+             arg_index,
+             (reg_idx >= 0 && reg_idx < 14) ? amiga_reg_names[reg_idx] : "?",
+             shown);
+    return 0;
+}
+
 #ifdef PLATFORM_AMIGA
 
 /* ================================================================
@@ -136,30 +189,6 @@ static int decode_register_keyword(CL_Obj kw)
     return -1;
 }
 
-/* Helper: convert a CL_Obj argument to a uint32_t for register loading.
- * Accepts fixnums, bignums, and foreign pointers (extracts address). */
-static uint32_t ffi_arg_to_u32(CL_Obj val)
-{
-    if (CL_FIXNUM_P(val))
-        return (uint32_t)CL_FIXNUM_VAL(val);
-    if (CL_BIGNUM_P(val)) {
-        CL_Bignum *bn = (CL_Bignum *)CL_OBJ_TO_PTR(val);
-        uint32_t r = (uint32_t)bn->limbs[0];
-        if (bn->length > 1)
-            r |= ((uint32_t)bn->limbs[1]) << 16;
-        return r;
-    }
-    if (CL_FOREIGN_POINTER_P(val)) {
-        CL_ForeignPtr *fp = (CL_ForeignPtr *)CL_OBJ_TO_PTR(val);
-        return fp->address;
-    }
-    if (CL_NULL_P(val))
-        return 0;
-    cl_error(CL_ERR_TYPE,
-             "AMIGA:CALL-LIBRARY: register argument must be integer or foreign pointer");
-    return 0;
-}
-
 /* ================================================================
  * Library management
  * ================================================================ */
@@ -202,8 +231,8 @@ static CL_Obj bi_amiga_close_library(CL_Obj *args, int nargs)
 /* (amiga:call-library base offset reg-spec &optional result-kind) → object
  *
  * reg-spec is a plist: (:D0 val :A0 ptr :D1 42 ...)
- * Each keyword names a 68k register, each value is the argument.
- * Values can be fixnums, bignums, or foreign pointers.
+ * Each keyword names a 68k register, each value is the argument: an
+ * integer, a foreign pointer, NIL (0) or T (1) -- cl_amiga_ffi_arg_to_u32.
  * RESULT-KIND is one of the CL_AMIGA_RES_* fixnums (default 0 = d0 as an
  * unsigned integer) — the plist path has no regspec to carry it, and the
  * generated bindings use this entry for the handful of OS functions with
@@ -217,6 +246,7 @@ static CL_Obj bi_amiga_call_library(CL_Obj *args, int nargs)
     CL_Obj spec;
     uint32_t result;
     int kind = CL_AMIGA_RES_UNSIGNED;
+    int arg_no = 0;
 
     if (!CL_FOREIGN_POINTER_P(args[0]))
         cl_error(CL_ERR_TYPE, "AMIGA:CALL-LIBRARY: base must be a foreign pointer");
@@ -256,7 +286,7 @@ static CL_Obj bi_amiga_call_library(CL_Obj *args, int nargs)
         reg_idx = decode_register_keyword(kw);
         if (reg_idx < 0)
             cl_error(CL_ERR_ARGS, "AMIGA:CALL-LIBRARY: unknown register keyword");
-        regs[reg_idx] = ffi_arg_to_u32(val);
+        regs[reg_idx] = cl_amiga_ffi_arg_to_u32(val, ++arg_no, reg_idx);
         reg_mask |= (uint16_t)(1 << reg_idx);
     }
 
@@ -316,7 +346,7 @@ static CL_Obj bi_amiga_call_library_fast(CL_Obj *args, int nargs)
         if (reg_idx > 13)
             cl_error(CL_ERR_ARGS,
                      "AMIGA:CALL-LIBRARY-FAST: invalid register index in regspec");
-        regs[reg_idx] = ffi_arg_to_u32(args[3 + i]);
+        regs[reg_idx] = cl_amiga_ffi_arg_to_u32(args[3 + i], i + 1, reg_idx);
         reg_mask |= (uint16_t)(1 << reg_idx);
     }
 
@@ -353,7 +383,7 @@ CL_Obj cl_amiga_ffi_call_dispatch(uint32_t base_addr, int16_t offset,
         if (reg_idx > 13)
             cl_error(CL_ERR_ARGS,
                      "OP_AMIGA_CALL: invalid register index in regspec");
-        regs[reg_idx] = ffi_arg_to_u32(arg_base[i]);
+        regs[reg_idx] = cl_amiga_ffi_arg_to_u32(arg_base[i], i + 1, reg_idx);
         reg_mask |= (uint16_t)(1 << reg_idx);
     }
 
@@ -571,8 +601,25 @@ CL_Obj cl_amiga_ffi_call_dispatch(uint32_t base_addr, int16_t offset,
                                   uint32_t regspec, int n_args,
                                   CL_Obj *arg_base)
 {
-    (void)base_addr; (void)offset; (void)regspec;
-    (void)n_args; (void)arg_base;
+    int i;
+    (void)base_addr; (void)offset;
+
+    /* Same argument checks as the Amiga dispatch, so a binding called with
+     * a value no register can carry (a string, a float) fails the same way
+     * on the host as on the target -- that is what lets lib/amiga be unit-
+     * tested here.  Only a call whose arguments would have been loaded
+     * reaches the platform error. */
+    if (n_args < 0 || n_args > 7)
+        cl_error(CL_ERR_ARGS,
+                 "OP_AMIGA_CALL: too many register args (max 7), got %d",
+                 n_args);
+    for (i = 0; i < n_args; i++) {
+        int reg_idx = (int)((regspec >> (i * 4)) & 0xF);
+        if (reg_idx > 13)
+            cl_error(CL_ERR_ARGS,
+                     "OP_AMIGA_CALL: invalid register index in regspec");
+        (void)cl_amiga_ffi_arg_to_u32(arg_base[i], i + 1, reg_idx);
+    }
     cl_error(CL_ERR_GENERAL,
              "AMIGA:%%FFI-CALL: AmigaOS library calls are only available on "
              "AmigaOS/MorphOS builds (this is the host build)");

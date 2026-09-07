@@ -49,6 +49,12 @@ register spec. This is the lowest level; higher-level packages are built on it.
 | `(alloc-chip size)` | function | Allocate `size` bytes of Chip RAM; returns a foreign pointer |
 | `(free-chip pointer)` | function | Free Chip RAM from `alloc-chip` |
 
+A register value is an integer (a negative `LONG` wraps to its two's-complement
+longword), a foreign pointer (its address), `nil` (0: NULL / FALSE) or `t` (1:
+TRUE) — the same for `call-library`, `call-library-fast` and every `defcfun`
+binding.  Anything else signals a `type-error` naming the argument, its register
+and the value.
+
 ARexx host-port transport. These are the raw primitives; ordinary use goes
 through `AMIGA.AREXX` below, which builds the handler thread on top of them.
 

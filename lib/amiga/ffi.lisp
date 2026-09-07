@@ -155,6 +155,15 @@ copied to foreign memory and freed."
 ;;; All nine are boxed in C by the trampoline.  :VOID T is the legacy
 ;;; spelling of :RESULT :VOID.
 ;;;
+;;; Argument values, for any register: an integer (its two's-complement
+;;; longword -- a negative LONG wraps, a bignum contributes its low 32
+;;; bits), a foreign pointer (its address), NIL (0: a NULL pointer or
+;;; FALSE) or T (1: TRUE, for a BOOL or LONG flag such as RethinkLayout's
+;;; refresh) -- the coercion tag values get in AMIGA.BOOPSI.  Anything
+;;; else -- a string, a float, a symbol -- is a TYPE-ERROR naming the
+;;; argument, its register and the value; a string an OS function keeps
+;;; must be copied out first (FFI:FOREIGN-STRING, AMIGA.BOOPSI:POOL-STRING).
+;;;
 ;;; Functions with more than seven register arguments (a dozen in the
 ;;; whole OS: BltBitMap, ClipBlit, ModifyProp, CreateUpfrontLayer...)
 ;;; fall back to a DEFUN over AMIGA:CALL-LIBRARY's plist path, which has

@@ -239,6 +239,56 @@
             (amiga.reaction:dispose-object win-obj))))
       '(t t 0 0 :looped 1 t)))
 
+;; The clicktab example's tab-click handler, on a page.gadget inside a
+;; layout group of an open window: PAGE_Current through SET-GADGET-ATTRS,
+;; then RethinkLayout(group, window, NULL, TRUE) through the generated raw
+;; binding with a Lisp T for the BOOL refresh argument --
+;; (rethink-layout *main-group* window nil t).  Regression: T was not a
+;; register image, so the first tab click died with "register argument
+;; must be integer or foreign pointer" (reported at the line before).
+(check "reaction-page-current-rethink-layout-with-t" '(t t)
+  (if *reaction-p*
+      (amiga.reaction:with-foreign-pool ()
+        (let* ((layout-cls (funcall (%ra-sym "AMIGA.RAW.GADGETS.LAYOUT" "LAYOUT-GET-CLASS")))
+               (page-cls (funcall (%ra-sym "AMIGA.RAW.GADGETS.LAYOUT" "PAGE-GET-CLASS")))
+               (button-cls (funcall (%ra-sym "AMIGA.RAW.GADGETS.BUTTON" "BUTTON-GET-CLASS")))
+               (win-cls (funcall (%ra-sym "AMIGA.RAW.CLASSES.WINDOW" "WINDOW-GET-CLASS")))
+               (page-add (%ra-val "AMIGA.RAW.GADGETS.LAYOUT" "+PAGE-ADD+"))
+               (page-current (%ra-val "AMIGA.RAW.GADGETS.LAYOUT" "+PAGE-CURRENT+"))
+               (page (amiga.reaction:new-object
+                      page-cls
+                      page-add (amiga.reaction:new-object button-cls
+                                                          amiga.raw.intuition:+ga-text+ "Page 1")
+                      page-add (amiga.reaction:new-object button-cls
+                                                          amiga.raw.intuition:+ga-text+ "Page 2")))
+               (group (amiga.reaction:new-object
+                       layout-cls
+                       (%ra-val "AMIGA.RAW.GADGETS.LAYOUT" "+LAYOUT-ORIENTATION+")
+                       (%ra-val "AMIGA.RAW.GADGETS.LAYOUT" "+LAYOUT-VERTICAL+")
+                       (%ra-val "AMIGA.RAW.GADGETS.LAYOUT" "+LAYOUT-ADD-CHILD+") page))
+               (win-obj (amiga.reaction:new-object
+                         win-cls
+                         amiga.raw.intuition:+wa-title+ "AMIGA.REACTION page"
+                         amiga.raw.intuition:+wa-left+ 40
+                         amiga.raw.intuition:+wa-top+ 40
+                         (%ra-val "AMIGA.RAW.CLASSES.WINDOW" "+WINDOW-PARENT-GROUP+") group)))
+          (unwind-protect
+               (let ((window (amiga.reaction:open-window win-obj)))
+                 (unless window (error "reaction page test: the window did not open"))
+                 ;; PAGE_Current is documented for OM_SET/OM_UPDATE only (no
+                 ;; GetAttr promise), so what is checked is that both calls
+                 ;; complete: the page flip, and RethinkLayout's BOOL result
+                 ;; (T or NIL, never an error) with T in the register
+                 (list (progn
+                         (amiga.reaction:set-gadget-attrs page window page-current 1)
+                         t)
+                       (let ((r (funcall (%ra-sym "AMIGA.RAW.GADGETS.LAYOUT" "RETHINK-LAYOUT")
+                                         group window nil t)))
+                         (or (eq r t) (null r)))))
+            (amiga.reaction:close-window win-obj)
+            (amiga.reaction:dispose-object win-obj))))
+      '(t t)))
+
 ;; a raw method through DO-METHOD: WM_CLOSE on a never-opened window is
 ;; harmless and returns; WM_OPEN via DO-METHOD is what OPEN-WINDOW does
 (check "reaction-do-method-open-close" t

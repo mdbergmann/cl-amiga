@@ -1816,6 +1816,13 @@ fasl-amiga` and the binary release (`amiga.ffi:*defcfun-docstrings*`,
   (amiga:close-library dos))
 ```
 
+A register argument — for `defcfun` bindings, the generated modules and
+`call-library` alike — is an integer (negative values wrap to the
+two's-complement longword), a foreign pointer, `nil` (NULL / FALSE) or `t`
+(TRUE, 1), the same coercion tag values get; a `BOOL` parameter such as
+`RethinkLayout`'s `refresh` takes a Lisp boolean.  Anything else is a
+`type-error` naming the argument, its register and the value.
+
 (For the host's general-purpose foreign-function engine, see [Host FFI](#host-ffi-dlopen--libffi--cffi) above.)
 
 ### Available Amiga Modules

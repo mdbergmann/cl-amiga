@@ -262,6 +262,118 @@ TEST(box_u16_i16_u8_i8_mask_and_sign_extend)
  * AMIGA package surface on the host
  * ================================================================ */
 
+/* ================================================================
+ * cl_amiga_ffi_arg_to_u32 — what a register argument may be
+ * ================================================================ */
+
+TEST(arg_to_u32_integers_pointers_and_booleans)
+{
+    CL_Obj fp = cl_make_foreign_pointer(0x00DFF000u, 0, 0);
+
+    ASSERT(cl_amiga_ffi_arg_to_u32(CL_MAKE_FIXNUM(42), 1, 0) == 42u);
+    ASSERT(cl_amiga_ffi_arg_to_u32(CL_MAKE_FIXNUM(0), 1, 0) == 0u);
+    /* a negative LONG is its two's-complement longword */
+    ASSERT(cl_amiga_ffi_arg_to_u32(CL_MAKE_FIXNUM(-1), 1, 0) == 0xFFFFFFFFu);
+    ASSERT(cl_amiga_ffi_arg_to_u32(CL_MAKE_FIXNUM(-2), 1, 0) == 0xFFFFFFFEu);
+    /* bignums: the low 32 bits, two's complement for negatives (the sign
+     * used to be dropped: -1073741825 came out as +1073741825) */
+    ASSERT(cl_amiga_ffi_arg_to_u32(cl_eval_string("#xFFFFFFFF"), 1, 0) == 0xFFFFFFFFu);
+    ASSERT(cl_amiga_ffi_arg_to_u32(cl_eval_string("#x80000000"), 1, 0) == 0x80000000u);
+    ASSERT(cl_amiga_ffi_arg_to_u32(cl_eval_string("#x746578"), 1, 0) == 0x746578u);
+    ASSERT(cl_amiga_ffi_arg_to_u32(cl_eval_string("-2147483648"), 1, 0) == 0x80000000u);
+    ASSERT(cl_amiga_ffi_arg_to_u32(cl_eval_string("-1073741825"), 1, 0) == 0xBFFFFFFFu);
+    /* a foreign pointer is its address */
+    ASSERT(cl_amiga_ffi_arg_to_u32(fp, 1, 8) == 0x00DFF000u);
+    /* NIL is NULL / FALSE, T is TRUE -- the tag-value coercion of
+     * AMIGA.BOOPSI, so (rethink-layout group win nil t) is a valid call */
+    ASSERT(cl_amiga_ffi_arg_to_u32(CL_NIL, 1, 8) == 0u);
+    ASSERT(cl_amiga_ffi_arg_to_u32(CL_T, 4, 0) == 1u);
+}
+
+/* Call the converter on VAL for argument ARG_INDEX in register REG_IDX and
+ * return the error message it signals, or NULL if it accepted the value. */
+static const char *arg_to_u32_error(CL_Obj val, int arg_index, int reg_idx)
+{
+    static char buf[512];
+    int err;
+    CL_CATCH(err);
+    if (err == CL_ERR_NONE) {
+        (void)cl_amiga_ffi_arg_to_u32(val, arg_index, reg_idx);
+        CL_UNCATCH();
+        return NULL;
+    }
+    CL_UNCATCH();
+    snprintf(buf, sizeof(buf), "%d:%s", err, cl_error_msg);
+    return buf;
+}
+
+TEST(arg_to_u32_rejects_other_objects_naming_argument_and_register)
+{
+    const char *m;
+
+    /* a string: the message names the argument position, the register the
+     * argument was bound for, what is accepted, and the value itself */
+    m = arg_to_u32_error(cl_eval_string("\"nope\""), 2, 8);
+    ASSERT(m != NULL);
+    ASSERT(contains(m, "register argument 2 (:A0)"));
+    ASSERT(contains(m, "must be an integer, a foreign pointer, T or NIL"));
+    ASSERT(contains(m, "got \"nope\""));
+    {
+        char kind[8];
+        snprintf(kind, sizeof(kind), "%d:", CL_ERR_TYPE);
+        ASSERT(strncmp(m, kind, strlen(kind)) == 0);   /* a TYPE-ERROR */
+    }
+    /* a float, a symbol, a list, a character: not register images either */
+    m = arg_to_u32_error(cl_eval_string("1.5"), 1, 0);
+    ASSERT(m != NULL && contains(m, "register argument 1 (:D0)") && contains(m, "got 1.5"));
+    m = arg_to_u32_error(cl_eval_string("':foo"), 7, 6);
+    ASSERT(m != NULL && contains(m, "register argument 7 (:D6)") && contains(m, "got :FOO"));
+    m = arg_to_u32_error(cl_eval_string("'(1 2)"), 3, 12);
+    ASSERT(m != NULL && contains(m, "register argument 3 (:A4)") && contains(m, "got (1 2)"));
+    m = arg_to_u32_error(cl_eval_string("#\\x"), 1, 1);
+    ASSERT(m != NULL && contains(m, "(:D1)"));
+    /* the accepted kinds do not signal */
+    ASSERT(arg_to_u32_error(CL_T, 1, 0) == NULL);
+    ASSERT(arg_to_u32_error(CL_NIL, 1, 0) == NULL);
+    ASSERT(arg_to_u32_error(CL_MAKE_FIXNUM(7), 1, 0) == NULL);
+}
+
+TEST(host_dispatch_checks_register_args_before_platform_error)
+{
+    const char *r;
+    /* runs after defcfun_installs_stub_with_regspec_and_kind, which asserts
+     * on being the FIRST to require amiga/ffi; here it is a no-op */
+    eval_print("(require \"amiga/ffi\")");
+    /* a defcfun over an OPEN base (any foreign pointer will do on the host):
+     * RethinkLayout(gadget, window, requester, refresh) (A0,A1,A2,D0) */
+    eval_print("(defvar cl-user::*tb-open* (ffi:make-foreign-pointer 4))");
+    ASSERT_STR_EQ(eval_print("(amiga.ffi:defcfun cl-user::rethink cl-user::*tb-open* -48 "
+                             "(:a0 gadget :a1 window :a2 requester :d0 refresh) :result :bool)"),
+                  "RETHINK");
+    /* T and NIL are register images (1 and 0): every argument is accepted
+     * and the call gets as far as the platform check -- direct call site
+     * (OP_AMIGA_CALL), FUNCALL and APPLY (the stub's own dispatch) alike */
+    r = eval_print("(cl-user::rethink (ffi:make-foreign-pointer 8) nil nil t)");
+    ASSERT(contains(r, "only available on AmigaOS/MorphOS"));
+    r = eval_print("(funcall #'cl-user::rethink nil nil nil t)");
+    ASSERT(contains(r, "only available on AmigaOS/MorphOS"));
+    r = eval_print("(apply #'cl-user::rethink (list 1 2 3 t))");
+    ASSERT(contains(r, "only available on AmigaOS/MorphOS"));
+    /* a string in a register slot is the argument error, on every path,
+     * naming the argument, its register and the value */
+    r = eval_print("(cl-user::rethink nil nil nil \"yes\")");
+    ASSERT(contains(r, "ERROR:"));
+    ASSERT(contains(r, "register argument 4 (:D0)"));
+    ASSERT(contains(r, "got \"yes\""));
+    ASSERT(!contains(r, "only available"));
+    r = eval_print("(funcall #'cl-user::rethink 1.5 nil nil t)");
+    ASSERT(contains(r, "register argument 1 (:A0)"));
+    ASSERT(contains(r, "got 1.5"));
+    r = eval_print("(apply #'cl-user::rethink (list nil nil :req t))");
+    ASSERT(contains(r, "register argument 3 (:A2)"));
+    ASSERT(contains(r, "got :REQ"));
+}
+
 TEST(amiga_package_exists_on_host)
 {
     ASSERT_STR_EQ(eval_print("(package-name (find-package \"AMIGA\"))"), "\"AMIGA\"");
@@ -551,11 +663,15 @@ int main(void)
     RUN(box_bool_tests_low_word_only);
     RUN(box_u16_i16_u8_i8_mask_and_sign_extend);
 
+    RUN(arg_to_u32_integers_pointers_and_booleans);
+    RUN(arg_to_u32_rejects_other_objects_naming_argument_and_register);
+
     RUN(amiga_package_exists_on_host);
     RUN(amiga_stub_signals_platform_error);
     RUN(amiga_call_library_arity_accepts_result_kind);
 
     RUN(defcfun_installs_stub_with_regspec_and_kind);
+    RUN(host_dispatch_checks_register_args_before_platform_error);
     RUN(defcfun_sub_word_result_kinds_in_stub);
     RUN(defcfun_more_than_seven_registers_uses_call_library);
     RUN(defcfun_rejects_a5);

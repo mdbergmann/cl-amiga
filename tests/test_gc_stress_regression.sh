@@ -5143,6 +5143,16 @@ if compile_fasl "$WORK/stub.lisp" "$WORK/stub.fasl"; then
   (ffi:free-foreign m))
 (format t "STUB-CALL:~a~%"
   (handler-case (gcstress-stub:lc 1 2) (error (e) (if (search "not open" (format nil "~a" e)) "NOT-OPEN" e))))
+;; register-argument coercion with the base open: T / NIL are register
+;; images and reach the platform check; a string is the type error, whose
+;; condition and printed value are allocated under the storm
+(setq gcstress-stub::*base* (ffi:make-foreign-pointer 4))
+(format t "STUB-ARG-T:~a~%"
+  (handler-case (gcstress-stub:lc nil t) (error (e) (if (search "only available" (format nil "~a" e)) "REACHED-PLATFORM" e))))
+(format t "STUB-ARG-BAD:~a~%"
+  (handler-case (gcstress-stub:lc "str" t)
+    (error (e) (let ((m (format nil "~a" e))) (if (and (search "register argument 1 (:A0)" m) (search "\"str\"" m)) "NAMED" m)))))
+(setq gcstress-stub::*base* nil)
 (format t "STUB-PRINT:~a~%" (prin1-to-string #'gcstress-stub:pt-x))
 ;; fresh definitions under the storm too (installers + interning); the
 ;; accessors are interned in the CURRENT package (CL-USER here)
@@ -5157,6 +5167,8 @@ EOF
     check_contains "stub arglist synthesized under stress"              "STUB-ARGLIST:2" "$out"
     check_contains "every DEFCSTRUCT stub kind works under compaction"  "STUB-TOUCH:(-3 T T 777 0.5 -3 777)" "$out"
     check_contains "stub library call reaches the base-variable check"  "STUB-CALL:NOT-OPEN" "$out"
+    check_contains "T / NIL register args pass the argument check"      "STUB-ARG-T:REACHED-PLATFORM" "$out"
+    check_contains "rejected register arg names argument, register, value" "STUB-ARG-BAD:NAMED" "$out"
     check_contains "stub printer survives compaction"                   "STUB-PRINT:#<FFI-STUB PT-X PEEK :I16 @0>" "$out"
     check_contains "fresh DEFCSTRUCT under stress installs and runs"    "STUB-FRESH:(-9 (" "$out"
     check_absent   "no corruption diagnostics from the stub paths" \
