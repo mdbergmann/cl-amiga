@@ -288,6 +288,13 @@ cl_image_restore(file)             # instead of cl_repl_init's boot load
        NULL the native_code fields; recreate outbuf slots
     7. relink walk (next section)
     8. clear cl_srcloc_table
+    9. re-derive process state that came back from the SAVING process:
+       *DEFAULT-PATHNAME-DEFAULTS* from this process's cwd
+       (cl_pathname_default_from_cwd — otherwise a shipped clamiga.img
+       merges every relative LOAD/REQUIRE against a build-machine
+       directory while the existence checks use the real cwd), and a
+       freshly seeded *RANDOM-STATE* (otherwise every restore replays the
+       saver's sequence)
 skip boot.lisp; run ~/.clamigarc unless --no-userinit; run
 EXT:*RESTORE-HOOKS*; enter REPL/actions
 ```

@@ -59,6 +59,7 @@ make -f Makefile.cross amiga FPU=1  # Hard-float variant to build/cross-fpu/clam
 make -f Makefile.cross amiga WIDE=1 # Wide-string variant (CHAR-CODE-LIMIT > 65533, for flexi-streams/drakma); composes with FPU=1; releases stay narrow
 make -f Makefile.cross test-amiga   # Cross-compile, copy binary, launch FS-UAE, verify results
 make -f Makefile.cross examples-amiga # Run the GUI examples (gfx/ + reaction/) unattended in FS-UAE, screenshots to build/amiga/shots/
+make -f Makefile.cross image-amiga  # Save + verify a bare-boot clamiga.img beside the cross binary in FS-UAE (images are per-build; composes with FPU=1)
 make -f Makefile.cross clean        # Remove cross-build artifacts
 ```
 - Uses `m68k-amigaos-gcc` toolchain from `tools/m68k-amigaos-gcc/prefix`
@@ -72,7 +73,7 @@ make -f Makefile.cross clean        # Remove cross-build artifacts
 
 Releases are tag-only (no GitHub release artifacts). Follow the `v0.4`/`v0.5` precedent:
 
-For a downloadable **binary release** (AmigaOS 3 + MorphOS), run `scripts/make-binary-release.sh` after tagging — it cross-builds the aos3 binaries (soft-float and hard-float `FPU=1`), packages a natively built MorphOS binary (`MOS_BIN=...`, built with `Makefile.mos` on MorphOS), assembles `bin/aos3` + `bin/aos3-fpu` + `bin/mos` + `lib/` (FASLs where portable — the header comment documents which files must ship as source and why) + `docs/` + `examples/` under `build/release/`, smoke-tests the layout, and emits `.zip`/`.lha`.
+For a downloadable **binary release** (AmigaOS 3 + MorphOS), run `scripts/make-binary-release.sh` after tagging — it cross-builds the aos3 binaries (soft-float and hard-float `FPU=1`), saves + verifies a bare-boot `clamiga.img` beside each of them in FS-UAE (heap images are per-build, so the staged m68k binaries write their own from the staged layout — needs the `test-amiga` emulator setup), packages a natively built MorphOS binary and its image (`MOS_BIN=...` / `MOS_IMG=...`, built with `Makefile.mos` and `make -f Makefile.mos image` on MorphOS), assembles `bin/aos3` + `bin/aos3-fpu` + `bin/mos` + `lib/` (FASLs where portable — the header comment documents which files must ship as source and why) + `docs/` + `examples/` under `build/release/`, smoke-tests the layout (including that it starts from the image and that `--no-image` still boots from the FASLs), and emits `.zip`/`.lha`.
 
 1. **Gates green first**: `make test-plus`, `make test-gc-stress`, `make test-extra`, `make -f Makefile.cross test-amiga`, and `make -f Makefile.cross test-amiga FPU=1` must all pass (`pkill fs-uae` first if an emulator is lingering). Record the Amiga-suite and test-extra pass counts — they go in the tag message.
 2. **Bump the version** — exactly two files:

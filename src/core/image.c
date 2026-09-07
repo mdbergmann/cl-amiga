@@ -1376,6 +1376,22 @@ int cl_image_restore_staged(void)
      * GenGC watermark/crossing map/protection). */
     cl_mem_adopt_image_finish();
 
+    /* Process-derived Lisp state came back from the SAVING process and
+     * must be re-derived from this one, exactly as a fresh boot derives it
+     * (the heap is a normal heap again here, so these may allocate):
+     *   *DEFAULT-PATHNAME-DEFAULTS* — the saver's cwd; for a shipped
+     *     clamiga.img a directory on the build machine.  REQUIRE/LOAD
+     *     check existence against the real cwd but merge the path against
+     *     this, so a relative load "found" a file and then failed to open it.
+     *   *RANDOM-STATE* — the saver's state, seeded from its clock: every
+     *     restore would replay the same (random) sequence. */
+    cl_pathname_default_from_cwd();
+    if (CL_SYMBOL_P(SYM_RANDOM_STATE)) {
+        CL_Obj rs = cl_make_random_state(platform_time_ms() ^
+                                         platform_universal_time());
+        ((CL_Symbol *)CL_OBJ_TO_PTR(SYM_RANDOM_STATE))->value = rs;
+    }
+
     /* EXT:*IMAGE-RESTORED-P* — set before .clamigarc runs so an rc file
      * can skip redundant loads. */
     if (CL_SYMBOL_P(SYM_IMAGE_RESTORED_P))

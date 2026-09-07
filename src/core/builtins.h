@@ -10,6 +10,11 @@
 
 void cl_builtins_init(void);
 
+/* Set *DEFAULT-PATHNAME-DEFAULTS* from the process's cwd (builtins_pathname.c).
+ * Run at init and after a heap-image restore, where the restored value would
+ * still name the saving process's directory. */
+void cl_pathname_default_from_cwd(void);
+
 /* Release builtin-module side tables (struct/CLOS slot index, condition
  * hierarchy index) at process exit.  See builtins.c. */
 void cl_builtins_shutdown(void);

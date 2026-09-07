@@ -28,7 +28,10 @@ void cl_repl_init_no_userinit(int no_userinit);
  * export passes are skipped entirely.  Runs the user init file (unless
  * suppressed) with EXT:*IMAGE-RESTORED-P* already T, then
  * EXT:*RESTORE-HOOKS*. */
-void cl_repl_init_from_image(int no_userinit);
+/* Post-restore init (userinit + EXT:*RESTORE-HOOKS*).  image_ms is what
+ * main() measured for staging + restoring the image, so --boot-log's
+ * "image restored" line reports the real cost rather than 0. */
+void cl_repl_init_from_image(int no_userinit, uint32_t image_ms);
 
 /* When non-zero (the default), cl_repl_init suppresses "; [boot] ..."
  * progress lines.  main.c clears it only when --boot-log is given, so

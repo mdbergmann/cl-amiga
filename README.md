@@ -456,7 +456,20 @@ any other clamiga build (or platform/variant) refuse them cleanly — and can be
 restored into a larger `--heap` than they were saved with.  Worker threads and open file/socket streams must be closed before
 saving; `ext:*save-hooks*` / `ext:*restore-hooks*` exist to tear down and
 rebuild such OS state around the snapshot, and `ext:*image-restored-p*` lets
-`~/.clamigarc` skip loads the image already contains.
+`~/.clamigarc` skip loads the image already contains.  Process state is
+re-derived on restore, not carried over: `*default-pathname-defaults*` names
+the restoring process's directory and `*random-state*` is freshly seeded.
+
+The binary release starts this way itself: each shipped binary has a
+bare-boot `clamiga.img` beside it (`bin/aos3/clamiga.img` and so on), so
+startup restores boot and CLOS in one read instead of loading `lib/boot.fasl`
+and `lib/clos.fasl`; `--no-image` boots from the FASLs, and `--boot-log`
+prints the phase timings either way.  Images are per-build, so each is
+written by its own binary: `make -f Makefile.cross image-amiga` saves and
+verifies one for a cross build unattended in FS-UAE, `make -f Makefile.mos
+image` natively on MorphOS, and `scripts/make-binary-release.sh` does it for
+the staged release (see `scripts/save-boot-image.lisp` /
+`verify-boot-image.lisp`, exercised by `tests/test_boot_image_scripts.sh`).
 
 For a shipped application image, `:shake-bindings t` additionally drops the
 demand-interned binding tables of the raw OS modules (~150 KB for the four
@@ -1112,6 +1125,7 @@ Then build CL-Amiga:
 make -f Makefile.cross amiga        # Cross-compile with m68k-amigaos-gcc
 make -f Makefile.cross test-amiga   # Build, deploy to FS-UAE, run Amiga tests
 make -f Makefile.cross examples-amiga # Run + photograph the GUI examples (gfx/, reaction/, mui/) in FS-UAE (build/amiga/shots/)
+make -f Makefile.cross image-amiga  # Save + verify a bare-boot clamiga.img beside the cross binary in FS-UAE (composes with FPU=1)
 make -f Makefile.cross clean        # Remove cross-build artifacts
 ```
 
@@ -1145,6 +1159,7 @@ The MorphOS binary is built natively *under* MorphOS with the MorphOS SDK's GCC:
 
 ```
 make -f Makefile.mos                # build build/morphos/clamiga
+make -f Makefile.mos image          # save + verify build/morphos/clamiga.img (bare-boot heap image)
 make -f Makefile.mos clean
 ```
 

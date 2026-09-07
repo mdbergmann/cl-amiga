@@ -71,6 +71,21 @@ check_contains "bootlog_overrides_batch" "; [boot]" "$result"
 result=$(echo '(+ 1 2)' | "$CLAMIGA" --no-userinit --batch 2>&1)
 check_not_contains "batch_stays_quiet" "; [boot]" "$result"
 
+# --- --boot-log on an image restore: the restore line covers stage + restore ---
+# main() times the staging (read + verify) and the restore and hands the sum
+# to the post-restore init, whose own clock would otherwise report the one
+# number this line exists for as 0 ms.  No FASL boot phases on this path.
+
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/clamiga_bootlog_XXXXXX")
+trap 'rm -rf "$WORK"' EXIT INT TERM
+"$CLAMIGA" --no-userinit --no-image --non-interactive \
+    --eval "(ext:save-image \"$WORK/bootlog.img\")" </dev/null >/dev/null 2>&1
+result=$("$CLAMIGA" --no-userinit --non-interactive --boot-log \
+    --image "$WORK/bootlog.img" --eval '(format t "R=~A~%" (+ 1 2))' </dev/null 2>&1)
+check_contains     "bootlog_image_restored_line"   "image restored (read + relink)" "$result"
+check_not_contains "bootlog_image_skips_fasl_boot" "boot library" "$result"
+check_contains     "bootlog_image_still_evaluates" "R=3" "$result"
+
 # --- Summary ---
 
 echo ""

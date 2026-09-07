@@ -145,9 +145,21 @@ ALL_OBJS = $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(ALL_SRCS))
 # (CL_JMPBUF_GUARD sizing) is enforced at every clamiga boot by
 # cl_setjmp_overrun_check().
 
-.PHONY: morphos clean
+.PHONY: morphos image clean
 
 morphos: $(BUILDDIR)/clamiga
+
+# Bare-boot heap image beside the binary (build/morphos/clamiga.img) — the
+# MorphOS counterpart of Makefile.cross's image-amiga, run natively since
+# images are per-build (specs/image-save-load.md).  Save from the binary's
+# own directory (where startup looks for an image), then restart from the
+# repo root and require the restore to verify — the second run exits 1
+# without BOOT-IMAGE-VERIFIED.  The release script packages the result as
+# MOS_IMG=... next to MOS_BIN=... .
+image: $(BUILDDIR)/clamiga
+	rm -f $(BUILDDIR)/clamiga.img
+	cd $(BUILDDIR) && ./clamiga --no-userinit --no-image --non-interactive --boot-log --load ../../scripts/save-boot-image.lisp
+	$(BUILDDIR)/clamiga --no-userinit --non-interactive --boot-log --load scripts/verify-boot-image.lisp
 
 $(BUILDDIR)/clamiga: $(ALL_OBJS)
 	@mkdir -p $(dir $@)

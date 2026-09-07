@@ -17,6 +17,7 @@ verify/realamiga/*
 !verify/realamiga/verify-lowend-28.fs-uae
 !verify/realamiga/run-fs-uae.sh
 !verify/realamiga/run-examples.sh
+!verify/realamiga/make-image.sh
 !verify/realamiga/examples.lisp
 !verify/realamiga/screen-grab.lisp
 
@@ -28,6 +29,7 @@ mosdebug.log
 
 # MorphOS-built binary dropped in for scripts/make-binary-release.sh
 /clamiga-mos
+/clamiga-mos.img
 
 # `make fasl-amiga` precompiles lib/amiga/** next to the sources (host-built,
 # loaded by the Amiga binaries instead of compiling at first REQUIRE); the

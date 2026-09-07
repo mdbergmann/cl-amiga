@@ -1219,13 +1219,17 @@ void cl_repl_init(void)
  * the user init file and the restore hooks.  EXT:*IMAGE-RESTORED-P* was
  * set to T by cl_image_restore_staged BEFORE this, so ~/.clamigarc can
  * skip redundant loads. */
-void cl_repl_init_from_image(int no_userinit)
+void cl_repl_init_from_image(int no_userinit, uint32_t image_ms)
 {
-    uint32_t t_start = platform_time_ms();
+    /* Start the clock image_ms in the past: the stage (read + verify) and
+     * the restore (arena copy + relink walk) ran in main() before this
+     * call, and they are what the FASL boot's "boot library" + "CLOS"
+     * lines are to be compared against. */
+    uint32_t t_start = platform_time_ms() - image_ms;
     uint32_t t_prev  = t_start;
     extern void cl_image_run_restore_hooks(void);
 
-    BOOT_TIME("image restored");
+    BOOT_TIME("image restored (read + relink)");
 
     if (!no_userinit) {
         load_user_init();
