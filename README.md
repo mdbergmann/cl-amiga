@@ -1210,7 +1210,8 @@ AMINET_UPLOADER="you@example.org (Your Name)" scripts/aminet-upload.sh          
 ```
 
 Aminet updates a package by an upload under the same file name, so the
-archive goes up as `clamiga.lha` with the version in the readme.
+archive goes up as `clamiga.lha` with the version in the readme.  The
+script runs from macOS or Linux (not from MSYS2 on Windows).
 `tests/test_aminet_upload.sh` is the executable specification of the
 rules the script enforces.
 

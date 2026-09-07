@@ -79,6 +79,13 @@ UPLOADER=${AMINET_UPLOADER:-}
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
+# The release is pushed from a developer's macOS or Linux machine; the
+# readme checks lean on the POSIX text tools behaving as they do there.
+case "$(uname -s)" in
+    MINGW*|MSYS*|CLANGARM64*|CLANG64*|UCRT64*)
+        die "aminet-upload.sh runs from macOS or Linux, not from MSYS2 / Git Bash" ;;
+esac
+
 while [ $# -gt 0 ]; do
     case "$1" in
         --dry-run)   DRY_RUN=1 ;;

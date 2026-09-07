@@ -20,6 +20,17 @@
 #         too-long Short:, CR line endings, a mismatched archive top dir.
 #
 # Run: sh tests/test_aminet_upload.sh
+#
+# macOS / Linux only.  The upload is made from a developer's machine, and
+# the script refuses to run under MSYS2 (where the CRLF-template refusal
+# below did not reproduce with MSYS2's shell tools), so the Windows CI job
+# skips this test.
+
+case "$(uname -s)" in
+    MINGW*|MSYS*|CLANGARM64*|CLANG64*|UCRT64*)
+        echo "skip: test_aminet_upload (aminet-upload.sh runs from macOS or Linux, not from MSYS2)"
+        exit 0 ;;
+esac
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SCRIPT="$ROOT/scripts/aminet-upload.sh"
