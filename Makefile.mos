@@ -156,9 +156,16 @@ morphos: $(BUILDDIR)/clamiga
 # repo root and require the restore to verify — the second run exits 1
 # without BOOT-IMAGE-VERIFIED.  The release script packages the result as
 # MOS_IMG=... next to MOS_BIN=... .
+#
+# The save script is copied beside the binary first: make runs under the
+# GG shell, whose `..` is meaningless to the -noixemul clamiga it launches
+# (AmigaDOS spells the parent directory as a leading `/`), so a
+# `../../scripts/...` argument fails with "Cannot open file" on the box.
 image: $(BUILDDIR)/clamiga
 	rm -f $(BUILDDIR)/clamiga.img
-	cd $(BUILDDIR) && ./clamiga --no-userinit --no-image --non-interactive --boot-log --load ../../scripts/save-boot-image.lisp
+	cp scripts/save-boot-image.lisp $(BUILDDIR)/save-boot-image.lisp
+	cd $(BUILDDIR) && ./clamiga --no-userinit --no-image --non-interactive --boot-log --load save-boot-image.lisp
+	rm -f $(BUILDDIR)/save-boot-image.lisp
 	$(BUILDDIR)/clamiga --no-userinit --non-interactive --boot-log --load scripts/verify-boot-image.lisp
 
 $(BUILDDIR)/clamiga: $(ALL_OBJS)

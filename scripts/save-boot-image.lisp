@@ -6,7 +6,11 @@
 ;;; boot + CLOS:
 ;;;
 ;;;   cd bin/aos3
-;;;   clamiga --no-userinit --no-image --non-interactive --load ../../scripts/save-boot-image.lisp
+;;;   clamiga --no-userinit --no-image --non-interactive --load //scripts/save-boot-image.lisp
+;;;
+;;; (`//` is AmigaDOS for the grandparent directory: the native binary does
+;;; not know `..`, so `../../scripts/...` fails there with "Cannot open
+;;; file" -- that spelling is for a POSIX host only.)
 ;;;
 ;;; `make -f Makefile.cross image-amiga` runs it unattended in FS-UAE,
 ;;; `make -f Makefile.mos image` natively on MorphOS, and
