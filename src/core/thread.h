@@ -88,7 +88,6 @@ typedef struct CL_Thread_s {
     CL_VM    vm;
 
     /* ---- Dynamic binding stack ---- */
-    CL_DynBinding     dyn_stack[CL_MAX_DYN_BINDINGS];
     int               dyn_top;
 
     /* ---- NLX stack (heap-allocated) ---- */
@@ -104,7 +103,6 @@ typedef struct CL_Thread_s {
     int               saved_pending_max;
 
     /* ---- Handler stack ---- */
-    CL_HandlerBinding handler_stack[CL_MAX_HANDLER_BINDINGS];
     int               handler_top;
     int               handler_floor;
     /* Per-handler "active" bit (bit j = handler_stack[j] enabled).  This is the
@@ -120,7 +118,6 @@ typedef struct CL_Thread_s {
     uint64_t          handler_active_mask;
 
     /* ---- Restart stack ---- */
-    CL_RestartBinding restart_stack[CL_MAX_RESTART_BINDINGS];
     int               restart_top;
     int               restart_floor;
 
@@ -145,7 +142,6 @@ typedef struct CL_Thread_s {
     int    nlx_floor;
     int    callback_depth;
     int    callback_error_code;     /* 0 = nothing pending */
-    char   callback_error_msg[512];
     CL_Obj callback_error;          /* the parked condition, NIL for CL_ERR_EXIT */
     CL_Obj last_condition;
 
@@ -154,15 +150,12 @@ typedef struct CL_Thread_s {
     CL_Obj pending_tag;
     CL_Obj pending_value;
     int    pending_error_code;
-    char   pending_error_msg[512];
     int    pending_mv_count;
     CL_Obj pending_mv_values[CL_MAX_MV];
 
     /* ---- Error frames ---- */
-    CL_ErrorFrame error_frames[CL_MAX_ERROR_FRAMES];
     int           error_frame_top;
     int           error_code;
-    char          error_msg[512];
     int           exit_code;
 
     /* ---- Multiple values ---- */
@@ -194,12 +187,7 @@ typedef struct CL_Thread_s {
     CL_Obj thread_obj;
 
     /* ---- GC root stack (per-thread) ---- */
-    CL_Obj *gc_roots[CL_GC_ROOT_STACK_SIZE];
     int     gc_root_count;
-#ifdef DEBUG_GC
-    const char *gc_root_files[CL_GC_ROOT_STACK_SIZE];
-    int         gc_root_lines[CL_GC_ROOT_STACK_SIZE];
-#endif
 
     /* ---- Reader state ---- */
     CL_Obj      rd_stream;
@@ -229,11 +217,7 @@ typedef struct CL_Thread_s {
     /* ---- Printer state ---- */
     int32_t pr_depth;
     int32_t pr_column;
-    int32_t pr_indent_stack[CL_PP_INDENT_MAX];
     int32_t pr_indent_top;
-    int32_t pr_block_start[CL_PP_INDENT_MAX];
-    CL_Obj  pr_circle_keys[CL_CIRCLE_HT_SIZE];
-    int32_t pr_circle_vals[CL_CIRCLE_HT_SIZE];
     int     pr_circle_count;
     int     pr_circle_next_label;
     int     pr_circle_active;
@@ -250,7 +234,6 @@ typedef struct CL_Thread_s {
      * skip the apply — terminates Lisp-side circular print-object recursion
      * (e.g. sento's actor-cell ↔ message-box ↔ queue ↔ message-item cycle). */
 #define CL_PR_INPROG_MAX 32
-    CL_Obj  pr_inprog[CL_PR_INPROG_MAX];
     int     pr_inprog_top;
 
     /* ---- Compiler chain ---- */
@@ -298,8 +281,6 @@ typedef struct CL_Thread_s {
      * tests/test_backtrace.c detects a runaway append with. */
     char  *backtrace_buf;
     int    backtrace_cap;
-    char   backtrace_inline[CL_BACKTRACE_BUF_SIZE];
-    char  *c_stack_base;
     int    debug_base_fp;   /* VM frame depth snapshot at error time, so the
                              * debugger-hook (SLDB) sees the error-time
                              * backtrace rather than its own pushed frames. */
@@ -333,7 +314,6 @@ typedef struct CL_Thread_s {
     int32_t jit_current_nargs;
 
     /* ---- VM extras ---- */
-    CL_Obj vm_extra_args_buf[256];
     int    vm_extra_count;
 
 
@@ -343,13 +323,6 @@ typedef struct CL_Thread_s {
     long   c_stack_max_val;
 
     /* ---- VM trace buffer (crash diagnostics) ---- */
-    struct {
-        uint8_t  op;
-        uint32_t ip;
-        int      fp;
-        int      sp;
-        uint8_t *code;
-    } vm_trace_buf[CL_VM_TRACE_SIZE];
     int vm_trace_pos;
 
     /* ---- Crash diagnostics ---- */
@@ -367,7 +340,6 @@ typedef struct CL_Thread_s {
     int debugger_depth;
 
     /* ---- Thread-Local Value (TLV) table ---- */
-    CL_TLVEntry tlv_table[CL_TLV_TABLE_SIZE];
     uint32_t    tlv_entry_count;  /* number of active TLV entries — 0 = skip probes */
 
 #ifdef CL_TLAB
@@ -440,7 +412,6 @@ typedef struct CL_Thread_s {
      * outstanding rdlock so the diagnostic can name the leaking caller. */
 #define CL_RDLOCK_SITES_MAX 32
     int         rdlock_tables_held;
-    const char *rdlock_tables_sites[CL_RDLOCK_SITES_MAX];
     int         rdlock_tables_sites_top;
     int         rdlock_package_held;
 
@@ -467,9 +438,65 @@ typedef struct CL_Thread_s {
      * then ensures the cell in the init code and in the function body are
      * the same deserialized object (CLHS 3.2.4.4). */
 #define CL_LTV_INIT_MAX 32
+    int    ltv_init_count;
+
+    /* Top of the UNWIND-PROTECT value save stack (mv_save_buf below).  A
+     * scalar every NLX push reads: it must stay in the scalar section — the
+     * first build had it after the 8 KB buffer, which put it back into the
+     * per-dispatch base-materialization the note below describes. */
+    int32_t mv_save_top;
+
+    /* ---- Large per-thread tables ----
+     *
+     * Every array bigger than a cache line lives HERE, after all the scalar
+     * fields, and new ones go here too.  The reason is the code the C
+     * compiler emits for cl_vm_run: it merges every opcode handler's
+     * VM_DISPATCH into ONE shared indirect branch, and any per-thread field
+     * whose offset from `thr` exceeds the immediate range of a load
+     * (aarch64: 16KB for 4-byte fields, 32KB for 8-byte; 68020: 32KB) has
+     * its base address materialized in that shared block — one stack reload
+     * plus an add on EVERY dispatch, for every such field the handlers
+     * touch.  With the 32KB dyn_stack sitting near the top of the struct,
+     * everything after it (the NLX/handler/restart tops, mv_count, the
+     * GC-root count, the printer state) paid that, and adding two more such
+     * fields in the Tier-4 phase-2 NLX work cost a uniform ~0.5ns per
+     * dispatch (+17% on an empty loop) until this reorder.  Same class of
+     * sensitivity as the slot_ic note below and the vm.o/LTO note in
+     * CLAUDE.md.  Element access into these tables is by index and does
+     * not care where they sit. */
+    CL_DynBinding     dyn_stack[CL_MAX_DYN_BINDINGS];
+    CL_HandlerBinding handler_stack[CL_MAX_HANDLER_BINDINGS];
+    CL_RestartBinding restart_stack[CL_MAX_RESTART_BINDINGS];
+    char   callback_error_msg[512];
+    char   pending_error_msg[512];
+    CL_ErrorFrame error_frames[CL_MAX_ERROR_FRAMES];
+    char          error_msg[512];
+    CL_Obj *gc_roots[CL_GC_ROOT_STACK_SIZE];
+#ifdef DEBUG_GC
+    const char *gc_root_files[CL_GC_ROOT_STACK_SIZE];
+    int         gc_root_lines[CL_GC_ROOT_STACK_SIZE];
+#endif
+    int32_t pr_indent_stack[CL_PP_INDENT_MAX];
+    int32_t pr_block_start[CL_PP_INDENT_MAX];
+    CL_Obj  pr_circle_keys[CL_CIRCLE_HT_SIZE];
+    int32_t pr_circle_vals[CL_CIRCLE_HT_SIZE];
+    CL_Obj  pr_inprog[CL_PR_INPROG_MAX];
+    /* backtrace_inline must stay immediately before c_stack_base — see the
+     * backtrace_buf comment above and tests/test_backtrace.c. */
+    char   backtrace_inline[CL_BACKTRACE_BUF_SIZE];
+    char  *c_stack_base;
+    struct {
+        uint8_t  op;
+        uint32_t ip;
+        int      fp;
+        int      sp;
+        uint8_t *code;
+    } vm_trace_buf[CL_VM_TRACE_SIZE];
+    CL_Obj vm_extra_args_buf[256];
+    CL_TLVEntry tlv_table[CL_TLV_TABLE_SIZE];
+    const char *rdlock_tables_sites[CL_RDLOCK_SITES_MAX];
     CL_Obj ltv_init_cells[CL_LTV_INIT_MAX];
     CL_Obj ltv_init_thunks[CL_LTV_INIT_MAX];
-    int    ltv_init_count;
 
     /* Slot-index cache for SLOT-VALUE and friends (see CL_SlotICEntry).
      * Holds CL_Obj keys that are NOT GC roots: the generation stamp makes
@@ -483,6 +510,13 @@ typedef struct CL_Thread_s {
      * trunk/bench-prims.lisp, which is the layout sensitivity CLAUDE.md
      * warns about.  New per-thread tables belong here too. */
     CL_SlotICEntry slot_ic[CL_SLOT_IC_SIZE];
+
+    /* UNWIND-PROTECT value save stack (vm.h CL_MV_SAVE_SIZE): records of
+     * [values..., fixnum count] pushed by OP_MV_SAVE while a cleanup runs.
+     * Every used word is a CL_Obj — marked and forwarded by the GC up to
+     * mv_save_top (a scalar, so it lives with the other scalars above the
+     * tables).  At the end for the same layout reason as slot_ic. */
+    CL_Obj  mv_save_buf[CL_MV_SAVE_SIZE];
 } CL_Thread;
 
 /* Current thread pointer — TLS-backed.

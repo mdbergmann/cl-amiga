@@ -1117,36 +1117,27 @@ Spec is var | (var ...) | ((keyword var) ...)."
 ;;   - closures use value capture, so setq on outer variables doesn't propagate;
 ;;     rplaca on a shared cons cell does propagate
 (defmacro handler-case (form &rest clauses)
-  ;; Normal-return path uses (return-from BLK (handler-bind ... FORM)) so ALL
-  ;; values of FORM are returned (CLHS: handler-case yields the values of its
-  ;; body when no condition is handled).  An earlier version bound the CATCH
-  ;; result to a single variable, which collapsed multiple values to the
-  ;; primary one — e.g. (handler-case (values a b) ...) lost b, breaking
-  ;; callers like rfc2388/str-based code that destructure a (values ...).
-  ;; On a handled condition the handler throws TAG, the RETURN-FROM is skipped,
-  ;; CATCH returns normally, and control falls through to the clause dispatch.
-  (let ((tag (gensym "HC"))
-        (box (gensym "BOX"))
-        (blk (gensym "HCBLK")))
-    `(let ((,box (cons nil nil)))
-       (block ,blk
-         (catch ',tag
-           (return-from ,blk
-             (handler-bind
-               ,(mapcar (lambda (clause)
-                          `(,(car clause) (lambda (c)
-                                            (rplaca ,box c)
-                                            (throw ',tag ',tag))))
-                        clauses)
-               ,form)))
-         (typecase (car ,box)
-           ,@(mapcar (lambda (clause)
-                       (let ((type (car clause))
-                             (arglist (cadr clause))
-                             (body (cddr clause)))
-                         `(,type (let ((,(if arglist (car arglist) (gensym)) (car ,box)))
-                                   ,@body))))
-                     clauses))))))
+  ;; The clauses compile to the CLAMIGA::%HANDLER-CASE special form: one NLX
+  ;; frame plus one handler binding per clause, no cons and no closure per
+  ;; entry, and the clause body entered directly by the condition-signalling
+  ;; code once the form's dynamic extent has been unwound (CLHS 9.1.3).  ALL
+  ;; values of FORM are returned on the normal path.  A :no-error clause is
+  ;; rewritten first, exactly as CLHS 9.2.23 (HANDLER-CASE) specifies:
+  ;;   (block #1=#:error-return
+  ;;     (multiple-value-call #'(lambda (nvars) nbody)
+  ;;       (block #2=#:normal-return
+  ;;         (return-from #1# (handler-case (return-from #2# form) clauses)))))
+  (let ((no-error (assoc :no-error clauses)))
+    (if no-error
+        (let ((error-return (gensym "HC-ERROR-RETURN"))
+              (normal-return (gensym "HC-NORMAL-RETURN")))
+          `(block ,error-return
+             (multiple-value-call (lambda ,(cadr no-error) ,@(cddr no-error))
+               (block ,normal-return
+                 (return-from ,error-return
+                   (handler-case (return-from ,normal-return ,form)
+                     ,@(remove no-error clauses)))))))
+        `(clamiga::%handler-case ,form ,@clauses))))
 
 ;; ignore-errors — catch errors, return (values nil condition)
 (defmacro ignore-errors (&rest body)
@@ -1534,6 +1525,73 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
         (t (push p result))))
     (reverse result)))
 
+;; Compiler-macro expander shared by every DEFSTRUCT keyword constructor
+;; (specs/performance.md 4.2 item 6).  A call whose arguments are literal
+;; keywords naming slots — (make-item :message m :time-out 5) — becomes a
+;; positional (%make-struct 'name v0 v1 ...): no &key parse in OP_CALL, no
+;; wrapper frame.  Evaluation order follows the keyword call exactly: the
+;; supplied argument forms left to right (bound to temporaries unless they
+;; are constants), then the init-forms of the unsupplied slots in slot order
+;; (CLHS 3.4.1.4).  The expander DECLINES — returns FORM unchanged, so the
+;; ordinary keyword call is compiled — whenever the shape is not that simple:
+;; a non-keyword or unknown key, a duplicate key (leftmost wins at run time),
+;; :allow-other-keys, an odd argument count, or an unsupplied slot whose
+;; init-form is not a constant (a non-constant init-form belongs in the
+;; constructor's own lexical environment, not the caller's).
+(defun %struct-keyword-ctor-expand (form struct-name slot-specs)
+  (let* ((args (cdr form))
+         (n (length args))
+         (slot-keys (mapcar (lambda (s) (intern (symbol-name (car s)) :keyword))
+                            slot-specs))
+         (supplied nil)              ; alist (slot-key . value-form), call order
+         (ok t))
+    (if (oddp n)
+        form
+        (progn
+          ;; Validate every key; collect (key . value-form) in call order.
+          (do ((a args (cddr a)))
+              ((or (null a) (not ok)))
+            (let ((k (car a)))
+              (cond ((not (keywordp k)) (setq ok nil))
+                    ((eq k :allow-other-keys) (setq ok nil))
+                    ((not (member k slot-keys)) (setq ok nil))
+                    ((assoc k supplied) (setq ok nil))
+                    (t (setq supplied (cons (cons k (cadr a)) supplied))))))
+          (setq supplied (nreverse supplied))
+          ;; Every unsupplied slot needs a constant init-form.
+          (when ok
+            (do ((keys slot-keys (cdr keys))
+                 (specs slot-specs (cdr specs)))
+                ((or (null keys) (not ok)))
+              (unless (or (assoc (car keys) supplied)
+                          (constantp (cadr (car specs))))
+                (setq ok nil))))
+          (if (not ok)
+              form
+              ;; Bind non-constant supplied forms to temporaries in call
+              ;; order, then build the positional %make-struct call.
+              (let ((bindings nil)
+                    (values-by-key nil))
+                (dolist (pair supplied)
+                  (let ((vf (cdr pair)))
+                    (if (constantp vf)
+                        (setq values-by-key (cons (cons (car pair) vf) values-by-key))
+                        (let ((tmp (gensym "CTOR")))
+                          (setq bindings (cons (list tmp vf) bindings))
+                          (setq values-by-key
+                                (cons (cons (car pair) tmp) values-by-key))))))
+                (let ((positional
+                        (mapcar (lambda (key spec)
+                                  (let ((hit (assoc key values-by-key)))
+                                    (if hit (cdr hit) (cadr spec))))
+                                slot-keys slot-specs))
+                      (call nil))
+                  (setq call (cons 'clamiga::%make-struct
+                                   (cons (list 'quote struct-name) positional)))
+                  (if bindings
+                      (list 'let* (nreverse bindings) call)
+                      call))))))))
+
 (defmacro defstruct (name-and-options &rest slot-specs)
   (let* ((name (if (consp name-and-options) (car name-and-options) name-and-options))
          (options (if (consp name-and-options) (cdr name-and-options) nil))
@@ -1728,12 +1786,18 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
                     (push `(defun ,ctor-name ,(%boa-patch-defaults boa-lambda-list all-slots)
                              (%make-struct ',name ,@slot-inits))
                           forms))
-                  ;; Standard keyword constructor
+                  ;; Standard keyword constructor — plus a compiler macro
+                  ;; that turns a literal-keyword call into a positional
+                  ;; %make-struct (see %struct-keyword-ctor-expand).
                   (let ((key-params (mapcar (lambda (s)
                                               (list (car s) (cadr s)))
                                             all-slots)))
                     (push `(defun ,ctor-name (&key ,@key-params)
                              (%make-struct ',name ,@(mapcar #'car all-slots)))
+                          forms)
+                    (push `(define-compiler-macro ,ctor-name (&whole form &rest args)
+                             (declare (ignore args))
+                             (%struct-keyword-ctor-expand form ',name ',all-slots))
                           forms)))))
           ;; Predicate
           (when pred-name

@@ -6509,9 +6509,9 @@ y" 1))
 (defmethod nmp-test ((x point)) (if (next-method-p) 'has-next 'no-next))
 (check "next-method-p" 'no-next (nmp-test (make-instance 'point :x 0 :y 0)))
 ; Regression: an auxiliary (:after) method must NOT see an ENCLOSING dispatch's
-; call-next-method specials.  :after methods run raw, so the effective method
-; must bind *call-next-method-function*/*next-method-p-function* to NIL around
-; them; otherwise a non-conformant :after doing (when (next-method-p)
+; call-next-method state.  :after methods run raw, so the effective method
+; must bind the call-next-method special (*CNM*) to NIL around them;
+; otherwise a non-conformant :after doing (when (next-method-p)
 ; (call-next-method)) leaks into the outer GF's chain whenever the GF is
 ; dispatched from inside another GF's method (real failure: a sento mailbox
 ; init :after jumped into hunchentoot's request handler on a worker thread).
@@ -11228,6 +11228,205 @@ y" 1))
 (check "a warm cache does not serve the superseded class" 'fallback
   (t4-rc-tag *t4-rc2*))
 (check "accessors follow the new class" 2 (t4-rc-v *t4-rc2*))
+
+; --- Tier-4 phase 2: call and unwind protocol (specs/performance.md 4.2) ---
+; The target side of tests/test_tier4_phase2.sh.  The NLX frames no longer
+; setjmp (one landing per VM activation — a full movem on 68k, saved on
+; every CATCH / BLOCK / TAGBODY / UNWIND-PROTECT entry), a global call is
+; one fused CALL_GLOBAL, UNWIND-PROTECT keeps its values off the heap,
+; HANDLER-CASE is a special form, and CALL-NEXT-METHOD runs on a method
+; vector.  Every case pins the behaviour those changes had to keep.
+
+; CALL_GLOBAL: redefinition reaches a compiled call site; undefined is catchable
+(defun t4p2-callee (x) (list :v1 x))
+(defun t4p2-caller (x) (t4p2-callee x))
+(check "fused call sees the definition" '(:v1 1) (t4p2-caller 1))
+(defun t4p2-callee (x) (list :v2 x))
+(check "fused call sees the redefinition" '(:v2 2) (t4p2-caller 2))
+(check "fused call of an undefined function is catchable" :uf
+  (handler-case (t4p2-undefined-fn 1) (undefined-function () :uf)))
+(defun t4p2-tail (n acc) (if (= n 0) acc (t4p2-tail (1- n) (+ acc 1))))
+(check "fused global tail call runs in constant space" 5000 (t4p2-tail 5000 0))
+
+; the frame's function slot: every call shape returns to the right depth
+(defun t4p2-opt (a &optional (b 10)) (list a b))
+(defun t4p2-rest (a &rest r) (list a r))
+(defun t4p2-key (a &key (b 1)) (list a b))
+(check "call shapes keep the stack balanced" '((:v2 1) (1 10) (1 (2)) (1 2) 1 1)
+  (list (t4p2-callee 1) (t4p2-opt 1) (t4p2-rest 1 2) (t4p2-key 1 :b 2)
+        (funcall (lambda (x) x) 1) (apply (lambda (x &rest r) (+ x (length r))) 1 nil)))
+(check "apply of a funcall value keeps all values" '(2 4)
+  (multiple-value-list (apply (lambda (x) (values x (* 2 x))) (list (funcall #'car '(2))))))
+
+; the shared NLX landing
+(check "throw within one activation" 42 (catch 'tg (t4p2-callee (throw 'tg 42))))
+(check "throw carries several values" '(1 2 3)
+  (multiple-value-list (catch 'tg (throw 'tg (values 1 2 3)))))
+(check "return-from out of a mapcar closure" 2
+  (block b (mapcar (lambda (x) (when (> x 1) (return-from b x))) '(1 2 3))))
+(check "go out of a mapcar closure" 5
+  (let ((n 0)) (tagbody top (incf n) (mapcar (lambda (x) (when (< n 5) (go top))) '(1))) n))
+(defvar *t4p2-log* nil)
+(check "throw past an inner catch runs both cleanups" '(:o (:in :out))
+  (let ((r (catch 'outer
+             (unwind-protect
+                 (catch 'inner (unwind-protect (throw 'outer :o) (push :in *t4p2-log*)))
+               (push :out *t4p2-log*)))))
+    (list r (reverse *t4p2-log*))))
+(check "a cleanup's own throw abandons the pending transfer" 1
+  (catch 'a (unwind-protect (throw 'a 1)
+              (catch 'b (unwind-protect (throw 'b 2) nil)))))
+(check "a cleanup's error abandons the pending throw" :cleanup-error-won
+  (handler-case (catch 'z (unwind-protect (throw 'z 1) (error "in cleanup")))
+    (error () :cleanup-error-won)))
+(defun t4p2-nest (n)
+  (if (= n 0) (throw 'top :from-bottom) (catch (gensym) (t4p2-nest (1- n)))))
+;; 12 deep, not more: on the JIT config every level of a JIT'd recursion is
+;; a C frame (cl_jit_runtime_call -> cl_vm_apply), and the suite's stack is small
+(check "throw to a frame many catches below" :from-bottom (catch 'top (t4p2-nest 12)))
+(check "throw inside a worker thread" :thread-ok
+  (mp:join-thread (mp:make-thread (lambda () (catch 'tt (unwind-protect (throw 'tt :thread-ok) nil))))))
+(check "invoke-restart runs the cleanup first" '(:r 7 (:rc))
+  (let ((*t4p2-log* nil))
+    (restart-case (unwind-protect (invoke-restart 'r 7) (push :rc *t4p2-log*))
+      (r (v) (list :r v *t4p2-log*)))))
+(check "muffle-warning's C-owned frame still lands" :after-warn
+  (handler-bind ((warning (lambda (w) (declare (ignore w)) (muffle-warning))))
+    (warn "silenced") :after-warn))
+; a local return-from / go from inside a call's argument list (pre-existing
+; operand-stack leak, exposed by the CLHS :no-error expansion — now NLX)
+(check "local return-from inside call args" '(:a 2 :c)
+  (list :a (block b (list 1 (return-from b 2))) :c))
+(check "local go inside call args" '(:a 3 :c)
+  (list :a (let ((n 0)) (tagbody a (list 1 (if (< (incf n) 3) (go a)))) n) :c))
+(check "return inside args of a mapcar call" '(:a 2 :c)
+  (list :a (block nil (mapcar (lambda (x) x) (list 1 (return 2)))) :c))
+(check "local return-from in a later parallel-LET init" '(:a 2 :c)
+  (list :a (block er (let ((e 1) (a (return-from er 2)) (f 3)) (list e a f))) :c))
+(check "local return-from in THROW's value form" '(:a 2 :c)
+  (list :a (block er (throw 'never (return-from er 2))) :c))
+
+; UNWIND-PROTECT value passing on the per-thread save stack
+(check "zero values survive the cleanup" nil
+  (multiple-value-list (unwind-protect (values) (t4p2-callee 0))))
+(check "two values survive the cleanup" '(1 2)
+  (multiple-value-list (unwind-protect (values 1 2) (values 9 9 9))))
+(check "twenty values survive the cleanup" '(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20)
+  (multiple-value-list
+    (unwind-protect (values 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20) nil)))
+(check "nested unwind-protects keep their own values" '(:a :b)
+  (multiple-value-list
+    (unwind-protect (unwind-protect (values :a :b) (unwind-protect (values :x :y) nil))
+      (unwind-protect (values :p :q) nil))))
+(check "unwind-protect inside a cleanup with a parked throw" '(5 6)
+  (let (r) (catch 'a (unwind-protect (throw 'a 1)
+                       (setq r (multiple-value-list (unwind-protect (values 5 6) nil)))))
+    r))
+(check "with-lock-held keeps the second value" '(1 t)
+  (let ((h (make-hash-table)) (l (mp:make-lock)))
+    (setf (gethash 'k h) 1)
+    (multiple-value-list (mp:with-lock-held (l) (gethash 'k h)))))
+(defun t4p2-cleanup-rec (n)
+  (unwind-protect (values 1 2 3 4 5 6 7 8 9 10) (when (> n 0) (t4p2-cleanup-rec (1- n)))))
+;; on the JIT config the C stack guard may fire first (a JIT'd recursion is
+;; C recursion) — either way it must be a clean, catchable error
+(check "save-stack overflow is a clean error" :clean-overflow-error
+  (handler-case (progn (t4p2-cleanup-rec 400) :no-overflow)
+    (error (e) (if (or (search "value-save stack overflow" (princ-to-string e))
+                       (search "C stack" (princ-to-string e)))
+                   :clean-overflow-error (princ-to-string e)))))
+(check "runtime usable after the overflow" '(7 8)
+  (multiple-value-list (unwind-protect (values 7 8) nil)))
+
+; HANDLER-CASE as a special form
+(check "first matching clause wins" :general
+  (handler-case (error 'simple-error :format-control "s") (error () :general) (simple-error () :specific)))
+(check "all values of the form on normal exit" '(1 2 3)
+  (multiple-value-list (handler-case (values 1 2 3) (error () :ok))))
+(check ":no-error receives all values" '((:ne 1 2))
+  (multiple-value-list (handler-case (values 1 2) (:no-error (a b) (list :ne a b)) (error () :e))))
+(check ":no-error skipped on a handled error" :err
+  (handler-case (error "x") (:no-error (v) (* v 10)) (error () :err)))
+(defvar *t4p2-sp* :global)
+(check "special clause variable is bound dynamically" '(simple-error :global)
+  (list (handler-case (error "x") (error (*t4p2-sp*) (type-of (symbol-value '*t4p2-sp*))))
+        *t4p2-sp*))
+(check "clause declarations accepted" :declared
+  (handler-case (error "x") (error (e) (declare (ignore e)) :declared)))
+(check "cleanups run before the clause, inner first" '(:c1 :c2)
+  (let ((*t4p2-log* nil))
+    (handler-case (unwind-protect (unwind-protect (error "x") (push :c1 *t4p2-log*))
+                    (push :c2 *t4p2-log*))
+      (error () (reverse *t4p2-log*)))))
+(check "inner handler-case beats outer handler-bind" '(:hc-first nil)
+  (let ((*t4p2-log* nil))
+    (list (handler-bind ((error (lambda (c) (declare (ignore c)) (push :outer-hb *t4p2-log*))))
+            (handler-case (error "x") (error () :hc-first)))
+          *t4p2-log*)))
+(check "signal with no matching clause returns nil" nil
+  (handler-case (signal 'warning) (error () :e)))
+(check "handler-case inside a worker thread" :thread-caught
+  (mp:join-thread (mp:make-thread (lambda () (handler-case (error "in thread") (error () :thread-caught))))))
+(check "handler-case around restart-case" :hc
+  (handler-case (restart-case (error "r") (retry () :retried)) (error () :hc)))
+(check "re-signal from a clause" '(:rethrown "x")
+  (handler-case (handler-case (error "x") (error (e) (error e)))
+    (error (e) (list :rethrown (princ-to-string e)))))
+(check "handler-case in a loop with errors" 250
+  (let ((acc 0)) (dotimes (i 500) (setq acc (+ acc (handler-case (if (evenp i) (error "e") 1) (error () 0))))) acc))
+
+; DEFSTRUCT keyword constructors: the compiler macro's positional call
+(defstruct t4p2-st (a 0) (b 0) (c 'sym))
+(check "constructor with literal keys" '(1 2 sym)
+  (let ((s (make-t4p2-st :a 1 :b 2))) (list (t4p2-st-a s) (t4p2-st-b s) (t4p2-st-c s))))
+(check "argument forms evaluated in call order" '(:b :a)
+  (let ((*t4p2-log* nil))
+    (make-t4p2-st :b (push :b *t4p2-log*) :a (push :a *t4p2-log*))
+    (reverse *t4p2-log*)))
+(check "leftmost duplicate key wins" 1 (t4p2-st-a (make-t4p2-st :a 1 :a 2)))
+(check "unknown key is an error" :unknown-key-error
+  (handler-case (make-t4p2-st :zz 1) (error () :unknown-key-error)))
+(check "non-literal key takes the keyword call" 7 (let ((k :a)) (t4p2-st-a (make-t4p2-st k 7))))
+(defstruct t4p2-dyn (a (list 1 2)))
+(check "non-constant init-form evaluated per call" nil
+  (eq (t4p2-dyn-a (make-t4p2-dyn)) (t4p2-dyn-a (make-t4p2-dyn))))
+(defstruct (t4p2-sub (:include t4p2-st)) (d 4))
+(check ":include slots included" '(1 9) (let ((s (make-t4p2-sub :a 1 :d 9))) (list (t4p2-sub-a s) (t4p2-sub-d s))))
+
+; CALL-NEXT-METHOD on the per-EMF method vector
+(defclass t4p2-thing () ())
+(defclass t4p2-other (t4p2-thing) ())
+(defgeneric t4p2-g1 (x))
+(defmethod t4p2-g1 ((x t4p2-thing)) (push :thing *t4p2-log*) (list :thing))
+(defmethod t4p2-g1 ((x t4p2-other)) (push :other *t4p2-log*) (cons :other (call-next-method)))
+(defmethod t4p2-g1 :around ((x t4p2-thing)) (push :around *t4p2-log*) (list :at (call-next-method)))
+(defmethod t4p2-g1 :before ((x t4p2-thing)) (push :before *t4p2-log*))
+(defmethod t4p2-g1 :after ((x t4p2-thing)) (push :after *t4p2-log*))
+(check "standard combination result and order" '((:at (:other :thing)) (:around :before :other :thing :after))
+  (let ((*t4p2-log* nil))
+    (let ((r (t4p2-g1 (make-instance 't4p2-other)))) (list r (reverse *t4p2-log*)))))
+(defgeneric t4p2-g2 (x y))
+(defmethod t4p2-g2 ((x t4p2-thing) y) (list :base y))
+(defmethod t4p2-g2 ((x t4p2-other) y) (call-next-method x (* y 10)))
+(check "call-next-method with explicit arguments" '(:base 40) (t4p2-g2 (make-instance 't4p2-other) 4))
+(defgeneric t4p2-g3 (x))
+(defmethod t4p2-g3 ((x t4p2-thing)) (call-next-method))
+(check "no next method is an error" :no-next
+  (handler-case (t4p2-g3 (make-instance 't4p2-thing)) (error () :no-next)))
+(defgeneric t4p2-g4 (x))
+(defmethod t4p2-g4 ((x t4p2-thing)) (next-method-p))
+(defmethod t4p2-g4 ((x t4p2-other)) (list (next-method-p) (call-next-method)))
+(check "next-method-p in first and last" '(nil (t nil))
+  (list (t4p2-g4 (make-instance 't4p2-thing)) (t4p2-g4 (make-instance 't4p2-other))))
+(defgeneric t4p2-mv (x))
+(defmethod t4p2-mv ((x t4p2-thing)) (values 1 2))
+(defmethod t4p2-mv ((x t4p2-other)) (call-next-method))
+(defmethod t4p2-mv :around ((x t4p2-other)) (call-next-method))
+(check "multiple values through around and primary" '(1 2)
+  (multiple-value-list (t4p2-mv (make-instance 't4p2-other))))
+(defmethod t4p2-g1 ((x t4p2-other)) :redefined)
+(check "method redefinition rebuilds the chain" '(:at :redefined)
+  (let ((*t4p2-log* nil)) (t4p2-g1 (make-instance 't4p2-other))))
 
 ; --- Exit hooks (EXT:*EXIT-HOOKS*) ---
 ; The list API here, plus one real hook registered at the bottom: it can only

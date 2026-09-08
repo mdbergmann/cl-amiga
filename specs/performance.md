@@ -691,45 +691,113 @@ call row of bench-prims — the VM's hot fields had moved onto different cache
 lines.  New per-thread tables go at the END of the struct.  This is the same
 sensitivity CLAUDE.md records for `vm.o` and LTO.
 
-### 4.2 Phase 2 — the call and unwind protocol (~20–25%)
+### 4.2 Phase 2 — the call and unwind protocol ✅ DONE except item 5 (2026-09-08)
 
-One to three weeks; medium risk because it touches the VM's frame layout and
-NLX machinery.  Target: 1-arg call 48 → ~28 ns absolute, builtin call
-~15 → ~8 ns, unwind-protect 93 → ~15 ns.
+Items 1, 2, 3, 4, 6 and 7 landed; item 5 is open (below).  Behaviour is
+pinned by `tests/test_tier4_phase2.sh` (141 checks, also run under `make
+test-gc-stress`) and the "Tier-4 phase 2" block of
+`tests/amiga/run-tests.lisp`.  Full numbers in docs/benchmarks.md
+2026-09-08 (phase 2).  `CL_FASL_VERSION` is 32: six new opcodes.
 
-1. **OP_CALL / OP_RET slimming**: move the six unconditional validation blocks
-   (first-opcode probe, bytecode re-typecheck, constants-vs-first-op, the
-   OP_RET ip-bounds and constants checks) behind `DEBUG_VM` — they caught real
-   GC corruption once and must stay available, but not on every call; let the
-   frame's `bp` skip the function slot so the per-call arg-shift loop goes
-   away; run `CL_SAFEPOINT` on the `thr` the loop already holds; fuse
-   `FLOAD sym; CALL n` into one `CALL_GLOBAL` opcode (symbol → function
-   resolution and the push happen once, in the handler).
-2. **NLX frames without setjmp**: keep one `setjmp` per `cl_vm_run`
-   activation (the C-level landing that `cl_error` needs) and unwind
-   bytecode-level UWPROT/CATCH/BLOCK frames by walking the NLX stack — the
-   `CL_NLXFrame` already records everything needed to resume at
-   `catch_ip + offset`.  Removes the setjmp, the `cl_compiler_mark` /
-   `cl_printer_state_save` calls and the saved-pending `strncpy` per frame.
-   On 68k a setjmp is a full `movem`, so the win is larger there.
-3. **handler-case codegen**: the handler clause is a lexical jump target, so
-   record its ip in the handler frame instead of allocating a cons and a
-   closure per entry (the same shape unwind-protect already uses).
-4. **unwind-protect value passing**: keep the protected form's values in the
-   MV buffer across the cleanup instead of `MV_TO_LIST` + a `VALUES-LIST`
-   call (one allocation and one builtin call per unwind-protect and per
-   `with-lock-held`).
-5. **Non-escaping `flet`/`labels`**: when a local function is only ever
-   called (never `#'`-referenced or passed), compile calls to it directly
-   instead of allocating a closure on every entry.
-6. **Keyword constructors**: `defstruct` emits a compiler macro for its
-   constructor that turns constant keywords into a positional `%make-...`
-   call (sento allocates one 9-slot `message-item/bt` with 4 keywords per
-   message).
-7. **:around / call-next-method chains**: replace the `&rest` closure chain
-   with a per-EMF vector of method functions and a fixnum "next" index bound
-   in one special, so a level costs one call instead of APPLY + three
-   dynamic bindings + a closure allocation.
+**Per-primitive result** (absolute ns, min of 5, same session): call-1arg
+51 → 43, call-3arg 58 → 51, &key call 79 → 71, unwind-protect 123 → 81,
+handler-case 118 → 55, with-lock-held 134 → 89, lock+condvar 151 → 102,
+make-struct 98 → 55, gf-around+primary 539 → 485, call-next-method 541 →
+490, gf 1-arg 91 → 78 (full table in docs/benchmarks.md).  No row
+regressed.  The targets in the original
+plan (1-arg call ~28, unwind-protect ~15) were not reached: what remains
+in a call is the frame push itself, the arity/NIL-fill work and the
+`OP_RET` restore, and an unwind-protect still pushes a 26-field frame and
+a saved-pending record.
+
+**Acceptance cell**: sento pinned/tell **207,293 → 208,088 msg/s (+0.4%)**
+— unchanged — while the CPU time the run burns dropped 10% (206.6 → 186.3
+CPU-seconds per 122 s of wall time).  The cell is no longer bound by the
+actor thread's VM work; see "What the sento cell is bound by" below before
+planning phase 3 against it.
+
+1. **OP_CALL / OP_RET slimming** ✅ — the six structural validations are
+   `#ifdef DEBUG_VM`; the safepoint reads `thr`; one header-type read
+   classifies the callee (was three `cl_funcallable_instance_p` calls per
+   call); `cl_trace_count` and every other per-thread field the loop
+   touches is read through `thr` (each was a `cl_get_current_thread` — a
+   TLS lookup once a second thread exists); the arguments stay where they
+   were pushed and the new `CL_Frame.fslot` tells `OP_RET` whether a
+   function slot sits under `bp` (the per-call arg-shift loop is gone);
+   `FLOAD sym; CALL n` is one `OP_CALL_GLOBAL` (and `OP_TAILCALL_GLOBAL`),
+   which resolves the symbol after the arguments and pushes nothing.  The
+   m68k JIT walker has templates for both (self-recursive TCO kept).
+2. **NLX frames without setjmp** ✅ — one `jmp_buf` per `cl_vm_run`
+   activation, armed lazily by the first NLX push; a frame carries a
+   pointer to it (`CL_NLXFrame.landing`; NULL for the C- and JIT-owned
+   frames, which keep their own `buf`), and one landing block restores
+   from the frame at `cl_nlx_top`.  A transfer that originates in the
+   same activation (`RETURN-FROM`, `GO`, a re-throw) is a `goto` — no
+   longjmp at all.  The marks are read off `thr` (no `cl_compiler_mark` /
+   `cl_printer_state_save` calls), and the 512-byte error-message copy in
+   the saved-pending record happens only when an error is actually
+   pending.  `cl_nlx_jump()` is now the only way to transfer to a frame.
+3. **handler-case codegen** ✅ — `HANDLER-CASE` expands to the special
+   form `CLAMIGA::%HANDLER-CASE` (`OP_HANDLER_CASE_PUSH` / `_POP`): one
+   NLX frame plus one handler binding per clause whose "handler" is the
+   clause index as a fixnum; `cl_signal_condition` transfers to the frame
+   instead of calling a function (through interposed cleanups as pending
+   kind 3), and the landing is a table of per-clause `OP_JMP`s.  A
+   `:no-error` clause is rewritten first, exactly as CLHS 9.2.23 shows.
+   The m68k JIT walker bails on functions containing one (they run
+   interpreted) — the old expansion was JIT-able; a template is a
+   follow-up.
+4. **unwind-protect value passing** ✅ — `OP_MV_SAVE` parks the protected
+   form's values on a per-thread save stack (`CL_Thread.mv_save_buf`,
+   fixnum-tagged count on top, GC-marked as a whole) and `OP_MV_RESTORE`
+   pops them after the cleanup: no list, no `VALUES-LIST` call, no local
+   slot.  Every NLX landing and error frame drops the records of
+   abandoned cleanups.  The JIT has templates for both.
+5. **Non-escaping `flet`/`labels`** ⬜ **open** — not in this commit.  The
+   safe design is inline expansion at each call site: a local function
+   that is never `#'`-referenced, never recursive and has a simple lambda
+   list is compiled as `(block name (let* ((param g) ...) body))` at the
+   call, with the call-site bindings introduced since the definition
+   hidden from the body's name lookups (the same sentinel trick the &key
+   default prologue uses) so free variables resolve in the definition
+   environment.  The escape and recursion scans can reuse `nlx_scan`'s
+   macro-aware walker.
+6. **Keyword constructors** ✅ — every `defstruct` keyword constructor
+   carries a compiler macro (`%struct-keyword-ctor-expand`) that turns a
+   literal-keyword call into a positional `%make-struct`, binding the
+   argument forms to temporaries in call order and taking the unsupplied
+   slots' constant init-forms.  It declines (leaving the keyword call) on a
+   non-keyword or unknown key, a duplicate, `:allow-other-keys`, an odd
+   count, or an unsupplied slot whose init-form is not a constant.
+7. **:around / call-next-method chains** ✅ — one special, `*CNM*`, bound
+   to `(next . args)` per level, where `next` is the per-EMF LIST of the
+   method functions still to run (built once, never mutated; terminated
+   by T when the last one never uses CALL-NEXT-METHOD, so it is called
+   bare); `CALL-NEXT-METHOD` pops it, `NEXT-METHOD-P` asks whether it is a
+   cons.  A level costs one cons, one binding and inline CAR/CDR instead
+   of three bindings, a closure and an `&rest` list.  A first version
+   used a simple-vector plus an index and was *slower* than the closures
+   it replaced: the LENGTH and SVREF builtin calls per level cost more
+   than the two bindings and the closure they saved (measured in
+   bench-prims: 539 → 592 vs the list's 539 → ~430).
+
+**A compiler bug this exposed and fixed**: a *local* `RETURN-FROM` or `GO`
+from inside the argument list of a call — `(block b (list 1 (return-from
+b 2)))` — left the call's already-pushed arguments on the operand stack
+(the old `handler-case` expansion never hit it because its `catch` forced
+the NLX path).  `nlx_scan` now routes such exits through the NLX frame,
+whose landing restores the stack pointer.
+
+**What the sento cell is bound by**: not the actor thread's VM work
+alone.  The per-message VM cost shrank (the 10% CPU-time drop) but the
+rate did not; a steady-state per-thread `sample` shows no lock contention
+and several threads saturated in `cl_vm_run` (the bench builds a fresh
+actor system per iteration, so the busy set shifts).  Whether the
+producers, allocation plus stop-the-world collections across 20+ threads,
+or the consumer sets the rate was not resolved in this phase.  Resolve
+that per thread before using this cell as the phase-3 gate; a
+`:load-threads 1` variant isolates the consumer.  Phase 3's
+superinstructions will show on bench-prims regardless.
 
 ### 4.3 Phase 3 — superinstructions (~10–15%)
 

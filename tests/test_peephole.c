@@ -82,7 +82,7 @@ TEST(opcode_info_exhaustive_and_rejects_gaps)
     ASSERT(cl_opcode_info(0x07) == NULL);
     ASSERT(cl_opcode_info(0x1F) == NULL);
     ASSERT(cl_opcode_info(0x51) == NULL);
-    ASSERT(cl_opcode_info(0xAC) == NULL);
+    ASSERT(cl_opcode_info(0xB2) == NULL);
     ASSERT(cl_opcode_info(0xFE) == NULL);
 }
 
@@ -112,6 +112,7 @@ TEST(decoder_knows_every_opcode)
         case CL_OPND_JREL:     opnd_len = 4; break;
         case CL_OPND_U16_JREL: opnd_len = 6; break;
         case CL_OPND_U16_U16:  opnd_len = 4; break;
+        case CL_OPND_U16_U8:   opnd_len = 3; break;
         case CL_OPND_AMIGA:    opnd_len = 9; break;
         default:               opnd_len = 0; break;
         }

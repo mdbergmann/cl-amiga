@@ -151,7 +151,8 @@ TEST(fold_emits_single_constant)
 {
     const char *out = disasm("(+ 1 2 3)");
     ASSERT(strstr(out, "; 6") != NULL);       /* folded literal 6 */
-    ASSERT(strstr(out, "FLOAD") == NULL);     /* no call to + */
+    ASSERT(strstr(out, "FLOAD") == NULL);     /* no call to + ... */
+    ASSERT(strstr(out, "CALL") == NULL);      /* ... in either call shape */
     ASSERT(strstr(out, "ADD") == NULL);       /* no inline add opcode */
 }
 
@@ -159,8 +160,9 @@ TEST(fold_disabled_at_speed_0)
 {
     const char *out = disasm(
         "(locally (declare (optimize (speed 0))) (+ 1 2 3))");
-    /* Not folded: three-arg + compiles as a real call */
-    ASSERT(strstr(out, "FLOAD") != NULL);
+    /* Not folded: three-arg + compiles as a real call (a global call is
+     * one fused CALL_GLOBAL since Tier-4 phase 2, not FLOAD + CALL) */
+    ASSERT(strstr(out, "CALL_GLOBAL") != NULL);
     /* value still correct */
     ASSERT_STR_EQ("3",
         eval_str("(locally (declare (optimize (speed 0))) (+ 1 2))"));
@@ -185,7 +187,7 @@ TEST(fold_respects_shadowing_and_notinline)
     {
         const char *out = disasm(
             "(locally (declare (notinline +)) (+ 1 2))");
-        ASSERT(strstr(out, "FLOAD") != NULL);
+        ASSERT(strstr(out, "CALL_GLOBAL") != NULL);   /* a real call */
     }
 }
 

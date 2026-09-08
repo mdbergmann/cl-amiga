@@ -54,6 +54,7 @@ int cl_error_frame_push(void)
     cl_error_frames[cl_error_frame_top].saved_restart_top = cl_restart_top;
     cl_error_frames[cl_error_frame_top].saved_dyn_top = cl_dyn_top;
     cl_error_frames[cl_error_frame_top].saved_nlx_top = cl_nlx_top;
+    cl_error_frames[cl_error_frame_top].saved_mv_save_top = CT->mv_save_top;
     cl_error_frames[cl_error_frame_top].saved_printer = cl_printer_state_save();
     return cl_error_frame_top++;
 }
@@ -184,6 +185,8 @@ CL_NORETURN void cl_error_frame_longjmp(int code)
          * (aborted pprint-dispatch fn / print hook / stream error) — see
          * CL_ErrorFrame.saved_printer. */
         cl_printer_state_restore(cl_error_frames[cl_error_frame_top - 1].saved_printer);
+        /* Drop the unwind-protect value records of abandoned cleanups. */
+        CT->mv_save_top = cl_error_frames[cl_error_frame_top - 1].saved_mv_save_top;
         CL_LONGJMP(cl_error_frames[cl_error_frame_top - 1].buf, code);
     }
 
@@ -197,6 +200,7 @@ CL_NORETURN void cl_error_frame_longjmp(int code)
     CT->callback_depth = 0;
     cl_saved_pending_top = 0;
     cl_pending_throw = 0;
+    CT->mv_save_top = 0;
     cl_dynbind_restore_to(0);
     cl_handler_top = 0;
     cl_restart_top = 0;
@@ -305,7 +309,7 @@ CL_NORETURN static void cl_error_unwind(int code)
                         sizeof(cl_pending_error_msg) - 1);
                 cl_pending_error_msg[sizeof(cl_pending_error_msg) - 1] = '\0';
                 cl_nlx_top = i;
-                CL_LONGJMP(cl_nlx_stack[i].buf, 1);
+                cl_nlx_jump(&cl_nlx_stack[i]);
             }
         }
     }

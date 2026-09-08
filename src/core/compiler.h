@@ -103,6 +103,8 @@ CL_Obj cl_amiga_ffi_call_dispatch(uint32_t base_addr, int16_t offset,
  * matched by compile_call to emit OP_STRUCT_REF / OP_STRUCT_SET.
  * Initialized by cl_builtins_struct_init. */
 extern CL_Obj cl_struct_ref_sym;
+/* CLAMIGA::%HANDLER-CASE — the HANDLER-CASE special form (builtins_condition.c) */
+extern CL_Obj cl_handler_case_sym;
 extern CL_Obj cl_struct_set_sym;
 
 /* FFI::%DEFINE-CSTRUCT-ACCESSORS — FFI:DEFCSTRUCT's bulk accessor

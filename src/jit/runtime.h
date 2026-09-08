@@ -142,6 +142,10 @@ CL_Obj cl_jit_runtime_progv_unbind(CL_Obj mark_obj, CL_Obj result);
 
 CL_Obj cl_jit_runtime_fload(CL_Obj sym);
 CL_Obj cl_jit_runtime_call (CL_Obj *operand_top, uint32_t nargs);
+/* OP_CALL_GLOBAL: like cl_jit_runtime_call, but the callee is resolved from
+ * SYM (no function slot under the arguments). */
+CL_Obj cl_jit_runtime_call_global(CL_Obj *operand_top, uint32_t nargs,
+                                  CL_Obj sym);
 
 /* OP_APPLY backing.  Mirrors the VM's OP_APPLY semantics: walks the
  * arglist into a stack-local CL_Obj[64] (max 64 args, matching the VM),
@@ -309,6 +313,10 @@ void   cl_jit_runtime_uwprot_rethrow(void);
  * Matches the VM's quirk where cl_mv_count==0 with non-NIL primary is
  * treated as a single-value list. */
 CL_Obj cl_jit_runtime_mv_to_list(CL_Obj primary);
+/* OP_MV_SAVE / OP_MV_RESTORE (unwind-protect value passing, vm.h). */
+void   cl_jit_runtime_mv_save(CL_Obj primary);
+void   cl_jit_runtime_mv_save_empty(void);
+CL_Obj cl_jit_runtime_mv_restore(void);
 
 /* Kw prologue for JIT'd functions whose lambda-list carries &key.
  * Mirrors the matching code in vm.c::OP_CALL normal path:

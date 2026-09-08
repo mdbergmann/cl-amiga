@@ -1780,9 +1780,22 @@ Specialize via defmethod to provide lazy initialization."
 (defvar *generic-function-table* (clamiga::%make-sync-hash-table 'equal))
 
 ;;; --- call-next-method support ---
-(defvar *call-next-method-function* nil)
-(defvar *call-next-method-args* nil)
-(defvar *next-method-p-function* nil)
+;;;
+;;; A method with a next-method chain runs with *CNM* bound to
+;;; (NEXT . ARGS): NEXT is the per-EMF list of the method functions still
+;;; to run after it (most specific first, built once per EMF, never
+;;; mutated), ARGS the argument list.  CALL-NEXT-METHOD pops NEXT;
+;;; NEXT-METHOD-P asks whether it is a cons.  A chain whose LAST function
+;;; never uses CALL-NEXT-METHOD / NEXT-METHOD-P ends in T instead of NIL,
+;;; so that function is called bare (no binding) — a non-simple last
+;;; function gets NEXT = NIL and signals "No next method".  One cons, one
+;;; dynamic binding and only inline CAR/CDR per level: this replaced a
+;;; per-level closure chain that bound three specials and allocated a
+;;; closure and an &rest list for every method entered (specs/
+;;; performance.md 4.2 item 7).  A first version kept the functions in a
+;;; simple-vector with an index; the LENGTH and SVREF calls per level
+;;; made it slower than the closures it replaced.
+(defvar *cnm* nil)
 (defvar *current-method-args* nil)
 
 ;;; --- Dependent-maintenance protocol (AMOP §5.4) ---
@@ -1811,19 +1824,48 @@ are defined."
       (dolist (dep deps)
         (apply #'update-dependent metaobject dep initargs)))))
 
+(defun %cnm-invoke (chain args)
+  "Run the first function of CHAIN (a chain list, see *CNM*) on ARGS.
+A chain terminated by T instead of NIL says its last function never reads
+*CNM*: that one is called bare.  The hot callers (the chain entry lambdas
+and CALL-NEXT-METHOD) inline this body: a call per level is exactly what
+the chain is meant to save."
+  (let ((rest (cdr chain)))
+    (if (eq rest t)
+        (apply (car chain) args)
+        (let ((*cnm* (cons rest args)))
+          (apply (car chain) args)))))
+
+(defun %cnm-chain (methods)
+  "The chain list of METHODS' functions, most specific first, terminated
+by T when the last method is simple-primary (see *CNM*) and NIL otherwise."
+  (let ((chain (if (method-simple-primary-p (car (last methods))) t nil)))
+    (dolist (m (reverse methods))
+      (setq chain (cons (method-function m) chain)))
+    chain))
+
 (defun call-next-method (&rest args)
   "Call the next most-specific method.
 When called with no arguments, passes the original method arguments."
-  (if *call-next-method-function*
-      (apply *call-next-method-function*
-             (if args args *call-next-method-args*))
-      (error "No next method")))
+  ;; (car st) is the remaining chain: a cons, or NIL when this is the last
+  ;; method (T never appears there — it is only ever a chain's terminator,
+  ;; consumed below).  So a bare AND is the whole test: no CONSP call.
+  (let* ((st *cnm*)
+         (chain (and st (car st))))
+    (if chain
+        ;; %CNM-INVOKE, inlined: one call fewer per level.
+        (let ((args (if args args (cdr st)))
+              (rest (cdr chain)))
+          (if (eq rest t)
+              (apply (car chain) args)
+              (let ((*cnm* (cons rest args)))
+                (apply (car chain) args))))
+        (error "No next method"))))
 
 (defun next-method-p ()
   "Return T if there is a next method."
-  (if *next-method-p-function*
-      (funcall *next-method-p-function*)
-      nil))
+  (let ((st *cnm*))
+    (if (and st (car st)) t nil)))
 
 ;;; --- Subclass predicate ---
 
@@ -1988,11 +2030,9 @@ When called with no arguments, passes the original method arguments."
                      ;; the OUTER method's chain (observed: a sento mailbox :after
                      ;; leaking into hunchentoot's request handler on a worker
                      ;; thread, only because that handler had the specials bound).
-                     ;; The primary chain rebinds the trio itself (%MAKE-METHOD-
+                     ;; The primary chain rebinds *CNM* itself (%MAKE-METHOD-
                      ;; CHAIN), so its methods are unaffected.
-                     (let ((*call-next-method-function* nil)
-                           (*call-next-method-args* nil)
-                           (*next-method-p-function* nil))
+                     (let ((*cnm* nil))
                        ;; Execute :before methods
                        (dolist (m before)
                          (apply (method-function m) args))
@@ -2195,42 +2235,47 @@ When called with no arguments, passes the original method arguments."
   nil)
 
 (defun %make-method-chain (methods)
-  "Build a call-next-method chain from primary methods."
+  "Build the primary-method chain of METHODS (most specific first): the EMF
+entry that calls the first method with its CALL-NEXT-METHOD state (*CNM*)
+established."
   (cond
     ((null methods)
      (lambda (&rest call-args)
        (declare (ignore call-args))
        (error "No next method")))
-    ;; Leaf optimization: the last method in a chain has no "next method"
-    ;; binding to provide, and if its body never references CALL-NEXT-METHOD
-    ;; / NEXT-METHOD-P we can return its function unwrapped — saving three
-    ;; dynamic-binding push/pops on the deepest call of every CNM chain.
+    ;; Leaf optimization: a single method whose body never references
+    ;; CALL-NEXT-METHOD / NEXT-METHOD-P needs no chain at all — its
+    ;; function IS the EMF.
     ((and (null (cdr methods))
           (method-simple-primary-p (car methods)))
      (method-function (car methods)))
     (t
-     (let* ((m (car methods))
-            (rest-chain (%make-method-chain (cdr methods)))
-            (has-next (not (null (cdr methods)))))
+     (let ((chain (%cnm-chain methods)))
        (lambda (&rest call-args)
-         (let* ((actual-args (if call-args call-args *current-method-args*))
-                (*call-next-method-function* rest-chain)
-                (*call-next-method-args* actual-args)
-                (*next-method-p-function* (lambda () has-next)))
-           (apply (method-function m) actual-args)))))))
+         ;; %CNM-INVOKE inlined (see there)
+         (let ((args (if call-args call-args *current-method-args*))
+               (rest (cdr chain)))
+           (if (eq rest t)
+               (apply (car chain) args)
+               (let ((*cnm* (cons rest args)))
+                 (apply (car chain) args)))))))))
 
 (defun %make-around-chain (around-methods inner)
-  "Build an :around chain that wraps INNER."
+  "Build an :around chain that wraps INNER (the primary EMF).  INNER is the
+last element of the chain list; it never reads *CNM* (a chain entry
+rebinds it, a bare method function does not use it), so the chain ends
+in T and the last :around's CALL-NEXT-METHOD reaches it without a binding."
   (if (null around-methods)
       inner
-      (let* ((m (car around-methods))
-             (rest-chain (%make-around-chain (cdr around-methods) inner)))
+      (let ((chain (cons inner t)))
+        (dolist (m (reverse around-methods))
+          (setq chain (cons (method-function m) chain)))
         (lambda (&rest call-args)
-          (let* ((actual-args (if call-args call-args *current-method-args*))
-                 (*call-next-method-function* rest-chain)
-                 (*call-next-method-args* actual-args)
-                 (*next-method-p-function* (lambda () t)))
-            (apply (method-function m) actual-args))))))
+          ;; %CNM-INVOKE inlined (see there); the chain has at least two
+          ;; elements here, so the first :around is never called bare.
+          (let* ((args (if call-args call-args *current-method-args*))
+                 (*cnm* (cons (cdr chain) args)))
+            (apply (car chain) args))))))
 
 ;;; --- GF dispatch cache ---
 
@@ -4294,21 +4339,19 @@ The :MOST-SPECIFIC-LAST option (supplied via DEFGENERIC's
 (defun %call-method-impl (method next-methods)
   (let ((args *current-method-args*))
     (if next-methods
-        (let* ((rest-chain (%make-method-chain next-methods))
-               (*call-next-method-function* rest-chain)
-               (*call-next-method-args* args)
-               (*next-method-p-function* (lambda () (not (null next-methods)))))
-          (apply (method-function method) args))
+        ;; METHOD followed by NEXT-METHODS as one chain; the chain is
+        ;; built per call — this is the long-form combination path.
+        (%cnm-invoke (%cnm-chain (cons method next-methods)) args)
         (apply (method-function method) args))))
 
 (defun %make-anon-method (fn)
   "Construct an anonymous method (CLHS MAKE-METHOD) whose method-function
    is FN.  Used by CALL-METHOD to wrap a (MAKE-METHOD FORM) designator into
-   a real method object.  simple-primary-p is NIL so that %make-method-chain
-   always wraps the anonymous method in a closure that properly binds
-   *call-next-method-function* to the \"No next method\" error before
-   invoking FN — preventing infinite recursion when FORM calls
-   call-next-method and the anonymous method is the last in the chain."
+   a real method object.  simple-primary-p is NIL so that a chain ending in
+   the anonymous method always runs it with a *CNM* binding whose next
+   index is past the end — CALL-NEXT-METHOD then signals \"No next method\"
+   instead of recursing forever when FORM calls call-next-method and the
+   anonymous method is the last in the chain."
   (%make-struct 'standard-method
     nil nil nil fn nil nil))
 

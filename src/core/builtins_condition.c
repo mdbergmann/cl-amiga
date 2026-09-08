@@ -1452,6 +1452,12 @@ CL_Obj cl_signal_condition(CL_Obj condition)
             continue;
         if (cl_condition_type_matches(cond->type_name,
                                       cl_handler_stack[i].type_name)) {
+            /* A HANDLER-CASE clause binding: no handler function runs — the
+             * transfer itself IS the handling (CLHS 9.1.3: handler-case's
+             * clause is entered after the dynamic extent of the form is
+             * unwound).  Never returns. */
+            if (CL_FIXNUM_P(cl_handler_stack[i].handler))
+                cl_handler_case_transfer(i, condition);
             /* CLHS 9.1.4: while a handler runs, that handler and every handler
              * established more recently than it are disabled, so a condition it
              * signals is handled by the *outer* handlers.  Disable the band
@@ -1632,6 +1638,9 @@ static CL_Obj bi_warn(CL_Obj *args, int n)
         frame->compiler_mark = cl_compiler_mark();
         frame->printer_mark = cl_printer_state_save();
         frame->saved_pending_mark = cl_saved_pending_top;
+        frame->mv_save_mark = CT->mv_save_top;
+        frame->saved_jit_depth = CT->jit_depth;
+        frame->landing = NULL;   /* C-owned frame: cl_nlx_jump uses buf */
         /* Snapshot the handler ACTIVE mask too: cl_signal_condition
          * disables the running handler's band while it executes, and the
          * muffle longjmp skips cl_signal_condition's own restore.  Without
@@ -1682,6 +1691,7 @@ static CL_Obj bi_warn(CL_Obj *args, int n)
             cl_compiler_unwind_to(f->compiler_mark, CL_CAPTURE_SP());
             cl_printer_state_restore(f->printer_mark);
             cl_saved_pending_top = f->saved_pending_mark;
+            CT->mv_save_top = f->mv_save_mark;
             cl_vm.sp = f->vm_sp;
             cl_vm.fp = f->vm_fp;
             muffled = 1;
@@ -1795,7 +1805,7 @@ void cl_throw_to_tag(CL_Obj tag, CL_Obj value)
                     { int mi; for (mi = 0; mi < cl_mv_count && mi < CL_MAX_MV; mi++)
                         cl_pending_mv_values[mi] = cl_mv_values[mi]; }
                     cl_nlx_top = j;
-                    longjmp(cl_nlx_stack[j].buf, 1);
+                    cl_nlx_jump(&cl_nlx_stack[j]);
                 }
             }
             cl_nlx_stack[i].result = value;
@@ -1804,7 +1814,7 @@ void cl_throw_to_tag(CL_Obj tag, CL_Obj value)
             { int mi; for (mi = 0; mi < cl_mv_count && mi < CL_MAX_MV; mi++)
                 cl_nlx_stack[i].mv_values[mi] = cl_mv_values[mi]; }
             cl_nlx_top = i;
-            longjmp(cl_nlx_stack[i].buf, 1);
+            cl_nlx_jump(&cl_nlx_stack[i]);
         }
     }
     cl_error(CL_ERR_GENERAL, "INVOKE-RESTART: no catch for restart tag");
@@ -2075,8 +2085,16 @@ void cl_builtins_condition_shutdown(void)
     cl_alist_index_reset(&cond_index);
 }
 
+/* The HANDLER-CASE special form's operator, CLAMIGA::%HANDLER-CASE (what the
+ * boot.lisp HANDLER-CASE macro expands to); recognized by identity in
+ * compile_expr.  Interned in CLAMIGA at init and GC-rooted, like
+ * cl_struct_ref_sym. */
+CL_Obj cl_handler_case_sym = CL_NIL;
+
 void cl_builtins_condition_init(void)
 {
+    cl_handler_case_sym = cl_intern_in("%HANDLER-CASE", 13, cl_package_clamiga);
+    cl_gc_register_root(&cl_handler_case_sym);
     /* After a shutdown/re-init cycle (test harnesses) these statics
      * still hold PREVIOUS-arena offsets, and gc_mark marks them —
      * setting "mark bits" at interior positions of unrelated

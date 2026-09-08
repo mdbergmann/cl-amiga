@@ -159,6 +159,7 @@ static int peep_decode(PeepCode *pc, const uint8_t *code, uint32_t len)
         case CL_OPND_JREL:     opnd_len = 4; break;
         case CL_OPND_U16_JREL: opnd_len = 6; break;
         case CL_OPND_U16_U16:  opnd_len = 4; break;
+        case CL_OPND_U16_U8:   opnd_len = 3; break;
         case CL_OPND_AMIGA:    opnd_len = 9; break;
         case CL_OPND_CLOSURE: {
             /* u16 template const index + 2 bytes per template upvalue.

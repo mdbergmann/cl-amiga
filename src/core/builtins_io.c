@@ -2318,7 +2318,7 @@ static CL_Obj bi_throw(CL_Obj *args, int n)
                     { int mi; for (mi = 0; mi < cl_pre_call_mv_count && mi < CL_MAX_MV; mi++)
                         cl_pending_mv_values[mi] = cl_pre_call_mv_values[mi]; }
                     cl_nlx_top = j;
-                    CL_LONGJMP(cl_nlx_stack[j].buf, 1);
+                    cl_nlx_jump(&cl_nlx_stack[j]);
                 }
             }
             /* No interposing UWPROT — go directly to catch.
@@ -2328,7 +2328,7 @@ static CL_Obj bi_throw(CL_Obj *args, int n)
             { int mi; for (mi = 0; mi < cl_pre_call_mv_count && mi < CL_MAX_MV; mi++)
                 cl_nlx_stack[i].mv_values[mi] = cl_pre_call_mv_values[mi]; }
             cl_nlx_top = i;
-            CL_LONGJMP(cl_nlx_stack[i].buf, 1);
+            cl_nlx_jump(&cl_nlx_stack[i]);
         }
     }
 
@@ -2702,6 +2702,21 @@ static void disasm_bytecode(CL_Obj bcobj)
             snprintf(line, sizeof(line), "  %04lu: %-12s %u %u\n",
                     (unsigned long)start_ip, info->name,
                     (unsigned int)a, (unsigned int)b);
+            cl_write_cstring_to_stdout(line);
+            break;
+        }
+
+        case CL_OPND_U16_U8: {
+            /* CALL_GLOBAL / TAILCALL_GLOBAL: symbol const index + nargs */
+            uint16_t a = (uint16_t)((code[ip] << 8) | code[ip + 1]);
+            uint8_t b = code[ip + 2];
+            ip += 3;
+            annot[0] = '\0';
+            if (a < n_constants)
+                cl_prin1_to_string(constants[a], annot, sizeof(annot));
+            snprintf(line, sizeof(line), "  %04lu: %-12s %-4u %u ; %s\n",
+                    (unsigned long)start_ip, info->name,
+                    (unsigned int)a, (unsigned int)b, annot);
             cl_write_cstring_to_stdout(line);
             break;
         }

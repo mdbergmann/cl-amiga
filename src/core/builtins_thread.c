@@ -276,6 +276,8 @@ static void *thread_entry(void *arg)
             frame->restart_mark = t->restart_top;
             frame->gc_root_mark = t->gc_root_count;
             frame->mv_count = 1;
+            frame->mv_save_mark = t->mv_save_top;
+            frame->landing = NULL;   /* C-owned frame: cl_nlx_jump uses buf */
             my_nlx_idx = t->nlx_top;
             t->nlx_top++;
 

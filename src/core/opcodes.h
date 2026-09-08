@@ -35,6 +35,8 @@
  *                     the first byte after both operands (BLOCK_PUSH,
  *                     TAGBODY_PUSH)
  *   CL_OPND_U16_U16   two big-endian u16 (DEFSETF)
+ *   CL_OPND_U16_U8    one big-endian u16 const index + one u8 (the fused
+ *                     global calls: symbol index + argument count)
  *   CL_OPND_CLOSURE   u16 template const index + one (is_local, index) byte
  *                     pair per template upvalue — VARIABLE length; decoding
  *                     needs the constant pool to read the template's
@@ -66,7 +68,8 @@ typedef enum {
     CL_OPND_U16_JREL,
     CL_OPND_U16_U16,
     CL_OPND_CLOSURE,
-    CL_OPND_AMIGA
+    CL_OPND_AMIGA,
+    CL_OPND_U16_U8
 } CL_OperandKind;
 
 #define CL_OPF_MVW    0x01
@@ -165,6 +168,26 @@ typedef enum {
     /* Inline %struct-ref / %struct-set fast-path */ \
     X(OP_STRUCT_REF,   0xAA, "STRUCT_REF",   CL_OPND_U8, CL_OPF_MVW)         /* Pop obj, push obj->slots[idx] */ \
     X(OP_STRUCT_SET,   0xAB, "STRUCT_SET",   CL_OPND_U8, CL_OPF_MVW)         /* Pop val+obj, slots[idx]=val, push val */ \
+    /* Fused `FLOAD sym; CALL n` / `FLOAD sym; TAILCALL n` — the callee is
+     * resolved from the symbol constant in the handler, after the arguments,
+     * and never occupies a stack slot (frame->fslot = 0).  Same fall-through
+     * caveat as OP_TAILCALL for builtin callees. */ \
+    X(OP_CALL_GLOBAL,     0xAC, "CALL_GLOBAL",     CL_OPND_U16_U8, CL_OPF_MVW|CL_OPF_MVR) /* Call symbol's function with N args */ \
+    X(OP_TAILCALL_GLOBAL, 0xAD, "TAILCALL_GLOBAL", CL_OPND_U16_U8, CL_OPF_MVW|CL_OPF_MVR) /* Tail call of symbol's function; NOT unconditional */ \
+    /* UNWIND-PROTECT value passing (vm.h CL_MV_SAVE_SIZE): MV_SAVE pops the
+     * primary and parks it with the rest of the MV buffer on the per-thread
+     * save stack; MV_RESTORE pops that record back into the MV buffer and
+     * pushes the primary (NIL for zero values). */ \
+    X(OP_MV_SAVE,      0xAE, "MV_SAVE",      CL_OPND_NONE, CL_OPF_MVR)       /* Pop primary; push MV record on the save stack */ \
+    X(OP_MV_RESTORE,   0xAF, "MV_RESTORE",   CL_OPND_NONE, CL_OPF_MVW)       /* Pop save-stack record into MV buffer; push primary */ \
+    /* HANDLER-CASE as a special form (CLAMIGA::%HANDLER-CASE): PUSH takes the
+     * clause type list (u16 const) and the landing offset; it pushes one
+     * CL_NLX_HANDLER_CASE frame and one handler binding per clause, no cons
+     * and no closure.  The landing is a table of OP_JMPs, one per clause,
+     * entered with the condition on the stack.  POP unwinds both on the
+     * normal exit and leaves the MV state alone. */ \
+    X(OP_HANDLER_CASE_PUSH, 0xB0, "HANDLER_CASE_PUSH", CL_OPND_U16_JREL, 0)   /* NLX frame + N clause bindings */ \
+    X(OP_HANDLER_CASE_POP,  0xB1, "HANDLER_CASE_POP",  CL_OPND_NONE, 0)       /* Pop the frame and its bindings (normal exit) */ \
     X(OP_HALT,         0xFF, "HALT",         CL_OPND_NONE, CL_OPF_UNCOND)    /* Stop VM */
 
 /*

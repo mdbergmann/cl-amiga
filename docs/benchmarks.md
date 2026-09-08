@@ -7,6 +7,104 @@ command, and results, so later runs can be compared like-for-like.
 Related: [specs/performance.md](../specs/performance.md) is the optimization
 *plan*; this file is the *measured results* log.
 
+## 2026-09-08 — Tier 4 phase 2 landed: call and unwind protocol
+
+**Context**: results for [specs/performance.md](../specs/performance.md) 4.2
+(items 1, 2, 3, 4, 6, 7; item 5 — direct calls for non-escaping local
+functions — is not in this commit).  Both binaries built with `make host`
+from the same tree state; the "before" is a `git worktree` of the phase-1
+tree (`80e4b838`), built and measured in the SAME session.
+
+**Environment**: Apple M3 Ultra, macOS 26.6.2. `--heap 192M` for sento,
+`--heap 64M` for the microbench.
+
+**Per-primitive** (`trunk/bench-prims.lisp`, ABSOLUTE ns — the empty-loop
+baseline included, since it moved by 2 ns between the two runs — minimum
+of 5 runs per row).  Rows that moved by 3 ns or more:
+
+| row | before | after | delta |
+| --- | ---: | ---: | ---: |
+| call-1arg | 51 | 43 | −8 |
+| call-3arg | 58 | 51 | −7 |
+| call-&key-2of3 | 79 | 71 | −8 |
+| call-&rest-2 | 77 | 67 | −10 |
+| call-mvbind | 78 | 70 | −8 |
+| flet-call | 84 | 78 | −6 |
+| gf-1arg-1method | 91 | 78 | −13 |
+| gf-2arg-2methods | 99 | 87 | −12 |
+| gf-around+primary | 539 | 485 | **−54** |
+| gf-call-next-method | 541 | 490 | **−51** |
+| accessor-read | 35 | 31 | −4 |
+| slot-value-write | 67 | 64 | −3 |
+| with-slots-incf | 149 | 142 | −7 |
+| make-instance-2init | 3,284 | 2,844 | −440 |
+| make-struct-2init | 98 | 55 | **−43** |
+| list-4 | 70 | 64 | −6 |
+| closure-alloc | 46 | 43 | −3 |
+| handler-case | 118 | 55 | **−63** |
+| handler-bind | 57 | 51 | −6 |
+| unwind-protect | 123 | 81 | **−42** |
+| catch-throw | 64 | 55 | −9 |
+| typep-class | 54 | 51 | −3 |
+| svref | 55 | 48 | −7 |
+| lock-acquire-release | 134 | 89 | **−45** |
+| lock+condvar-notify | 151 | 102 | **−49** |
+
+No row regressed by 3 ns or more (the largest move up is `case-keyword`,
++2).  The empty loop is 26.0 ns before and after (`(dotimes (i n) (setq
+acc i))`, 7 process runs each).
+
+**Which item paid**: the fused `CALL_GLOBAL` and the OP_CALL slimming took
+every call row 6–10 ns and the two plain gf rows 12–13; the setjmp-free
+NLX frames and the value save stack took `unwind-protect` 123 → 81 and
+both lock rows −45/−49 (`with-lock-held` is an unwind-protect); the
+special-form `handler-case` took its row 118 → 55 (that row used to cons a
+box and a closure and push three NLX frames per entry); the constructor
+compiler macro took `make-struct-2init` 98 → 55; the list-based
+`call-next-method` chains took the two `call-next-method` rows −51/−54.
+
+**A layout trap, again**: the first build of the NLX work lost ~0.5 ns on
+*every* dispatch (empty loop 26 → 31 ns) with no change to any hot handler.
+The disassembly showed why: clang merges every `VM_DISPATCH` into one
+shared indirect branch and materializes `thr + <offset>` there for each
+per-thread field the handlers touch whose offset exceeds the load
+immediate range; the 32 KB `dyn_stack` sat near the top of `CL_Thread`, so
+every scalar after it (the NLX/handler/restart tops, `mv_count`, the
+printer state) cost a stack reload plus an add per dispatch, and the NLX
+work added two more.  Moving every large table to the end of the struct
+recovered all of it (and is the reorder that ships).  See the comment on
+the "Large per-thread tables" section of `thread.h`.
+
+**Acceptance cell** — sento pinned/tell (`trunk/profile-sento-bench.lisp`:
+`:load-threads 4`, `:duration 15`, `:num-iterations 8`, warm ASDF cache):
+
+| | AVG msg/s | MEDIAN | MIN | CPU s per 122 s wall |
+| --- | ---: | ---: | ---: | ---: |
+| before (phase-1 tree) | 207,293 | 192,906 | 177,940 | 206.6 |
+| after (phase 2) | 208,088 | 193,614 | 180,772 | 186.3 |
+| | **+0.4%** | +0.4% | +1.6% | **−10%** |
+
+The throughput did not move, while the CPU time burned per run dropped
+10%.  A per-thread `sample` at steady state (10 s, after "BENCH STEADY
+STATE BEGIN") shows no lock contention (`__psynch_mutexwait` ≈ 0 on every
+thread) and several threads saturated in `cl_vm_run` — the consumer is
+not the only busy thread, and the bench creates a fresh actor system per
+iteration, so the busy set changes over the run.  What limits the rate
+with this configuration (the producer side, allocation and stop-the-world
+collections across 20+ threads, or the consumer) was not resolved here;
+the per-thread breakdown is the place to start before gating phase 3 on
+this cell.  A `:load-threads 1` variant would isolate the consumer.
+
+**Gates**: `make test` (incl. `tests/test_tier4_phase2.sh`, 141 checks),
+`make test-gc-stress`, `make test-memleak`, `make -f Makefile.cross
+test-amiga` (fresh boot 4555/4556 — the one miss is the known FS-UAE-only
+`audio-short-sample-completes` — and restored image 4556/4556).
+
+**Reproduce**: as for phase 1 below (`git worktree add --detach /tmp/base
+80e4b838`, min-of-5 bench-prims, the sento cell).
+
+---
+
 ## 2026-09-08 — Tier 4 phase 1 landed: runtime taxes removed (+37.6% sento)
 
 **Context**: results for [specs/performance.md](../specs/performance.md) 4.1

@@ -93,6 +93,15 @@ static void vm_handle_break(void)
         } \
     } while (0)
 
+/* CL_SAFEPOINT on the thread the dispatch loop already holds.  The generic
+ * macro (thread.h) re-derives the thread through cl_get_current_thread —
+ * a TLS lookup on every OP_CALL once a second thread exists. */
+#define VM_SAFEPOINT() \
+    do { \
+        if (thr->gc_requested) cl_gc_safepoint(); \
+        if (thr->interrupt_pending) cl_thread_handle_interrupt(thr); \
+    } while (0)
+
 /* Debug: UWP stack watchpoint.  Activate with -DCL_DEBUG_UWP */
 #ifdef CL_DEBUG_UWP
 static int dbg_watch_idx = -1;
@@ -406,7 +415,7 @@ static CL_Bytecode *get_frame_bytecode(CL_Frame *f);
 void cl_nlx_overflow_summary(const char *where)
 {
     int k;
-    int counts[4] = {0,0,0,0};
+    int counts[CL_NLX_TYPE_COUNT] = {0,0,0,0,0};
     unsigned top_tag = 0; int top_tag_cnt = 0;
     int window = cl_nlx_top < 64 ? cl_nlx_top : 64;
 
@@ -414,10 +423,10 @@ void cl_nlx_overflow_summary(const char *where)
             where, cl_nlx_top, cl_nlx_max);
     for (k = 0; k < cl_nlx_top && k < cl_nlx_max; k++) {
         int t = cl_nlx_stack[k].type;
-        if (t >= 0 && t < 4) counts[t]++;
+        if (t >= 0 && t < CL_NLX_TYPE_COUNT) counts[t]++;
     }
-    fprintf(stderr, "[NLX-OVERFLOW] by type: CATCH=%d UWPROT=%d BLOCK=%d TAGBODY=%d\n",
-            counts[0], counts[1], counts[2], counts[3]);
+    fprintf(stderr, "[NLX-OVERFLOW] by type: CATCH=%d UWPROT=%d BLOCK=%d TAGBODY=%d HANDLER-CASE=%d\n",
+            counts[0], counts[1], counts[2], counts[3], counts[4]);
     /* Most-repeated tag among the top `window` frames = the leak signature. */
     for (k = cl_nlx_top - 1; k >= 0 && k > cl_nlx_top - window - 1; k--) {
         unsigned tg = (unsigned)cl_nlx_stack[k].tag;
@@ -747,6 +756,7 @@ CL_Obj cl_vm_apply(CL_Obj func, CL_Obj *args, int nargs)
         frame->n_locals = 0;
         frame->nargs = 0;
         frame->nlx_level = cl_nlx_top;
+        frame->fslot = 0;
 
         /* Push function and arguments onto VM stack */
         cl_vm_push(func);
@@ -800,6 +810,7 @@ CL_Obj cl_vm_apply_list(CL_Obj func, CL_Obj arglist)
     frame->n_locals = 0;
     frame->nargs = 0;
     frame->nlx_level = cl_nlx_top;
+    frame->fslot = 0;
 
     cl_vm_push(func);
     cl_vm_push(arglist);
@@ -1364,6 +1375,56 @@ static int nlx_frame_is_stale(CL_NLXFrame *nlx)
     return target->code != nlx->code;
 }
 
+/* Transfer to NLX frame F — see vm.h.  A VM-pushed frame lands in its
+ * cl_vm_run activation's shared landing; a C- or JIT-owned frame in its
+ * own buf.  The caller has set cl_nlx_top and the frame's result / the
+ * pending state. */
+void cl_nlx_jump(CL_NLXFrame *f)
+{
+    if (f->landing)
+        CL_LONGJMP(*f->landing, 1);
+    CL_LONGJMP(f->buf, 1);
+}
+
+/* HANDLER-CASE clause transfer — see vm.h.  Called from cl_signal_condition
+ * when the matching binding is a clause binding (fixnum handler).  Same
+ * protocol as a THROW: an interposing (non-stale) UNWIND-PROTECT frame
+ * above the target runs first, with the transfer parked as pending kind 3
+ * — target frame index in cl_pending_tag as a fixnum, condition in
+ * cl_pending_value — for OP_UWRETHROW / the JIT's uwprot_rethrow to
+ * re-initiate; otherwise the frame lands directly. */
+void cl_handler_case_transfer(int binding_idx, CL_Obj condition)
+{
+    int ni = cl_handler_stack[binding_idx].nlx_index;
+    int k = (int)CL_FIXNUM_VAL(cl_handler_stack[binding_idx].handler);
+    CL_NLXFrame *f;
+    int j;
+
+    if (ni < 0 || ni >= cl_nlx_top ||
+        cl_nlx_stack[ni].type != CL_NLX_HANDLER_CASE)
+        cl_error(CL_ERR_GENERAL,
+                 "HANDLER-CASE: clause binding without its frame (nlx %d)", ni);
+    f = &cl_nlx_stack[ni];
+    f->hc_clause = k;
+    for (j = cl_nlx_top - 1; j > ni; j--) {
+        if (cl_nlx_stack[j].type == CL_NLX_UWPROT &&
+            !nlx_frame_is_stale(&cl_nlx_stack[j])) {
+            cl_pending_throw = 3;
+            cl_pending_tag = CL_MAKE_FIXNUM(ni);
+            cl_pending_value = condition;
+            cl_pending_mv_count = 1;
+            cl_pending_mv_values[0] = condition;
+            cl_nlx_top = j;
+            cl_nlx_jump(&cl_nlx_stack[j]);
+        }
+    }
+    f->result = condition;
+    f->mv_count = 1;
+    f->mv_values[0] = condition;
+    cl_nlx_top = ni;
+    cl_nlx_jump(f);
+}
+
 /* Cheap heuristic: does fptr look like a real native code pointer rather than
  * a clobbered func slot?  Returns 1 if plausible, 0 if it should be rejected
  * as corrupt.  Kept as a separate, non-static function so it can be unit
@@ -1656,6 +1717,130 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
 #define cl_mv_count (thr->mv_count)
 #undef cl_mv_values
 #define cl_mv_values (thr->mv_values)
+    /* The same shadowing for every other per-thread field the loop touches.
+     * Each of these is a CT-> macro in thread.h, i.e. a cl_get_current_thread
+     * call — a platform TLS lookup once a second thread exists.  An NLX push
+     * reads a dozen of them, so under the MT sento matrix a single
+     * UNWIND-PROTECT cost a dozen pthread_getspecific calls.  Every landing
+     * reloads `thr` first, so the shadows stay valid across longjmp. */
+#undef cl_nlx_stack
+#define cl_nlx_stack (thr->nlx_stack)
+#undef cl_nlx_top
+#define cl_nlx_top (thr->nlx_top)
+#undef cl_nlx_max
+#define cl_nlx_max (thr->nlx_max)
+#undef cl_nlx_floor
+#define cl_nlx_floor (thr->nlx_floor)
+#undef cl_dyn_top
+#define cl_dyn_top (thr->dyn_top)
+#undef cl_handler_stack
+#define cl_handler_stack (thr->handler_stack)
+#undef cl_handler_top
+#define cl_handler_top (thr->handler_top)
+#undef cl_handler_active_mask
+#define cl_handler_active_mask (thr->handler_active_mask)
+#undef cl_restart_stack
+#define cl_restart_stack (thr->restart_stack)
+#undef cl_restart_top
+#define cl_restart_top (thr->restart_top)
+#undef cl_error_frame_top
+#define cl_error_frame_top (thr->error_frame_top)
+#undef gc_root_count
+#define gc_root_count (thr->gc_root_count)
+#undef cl_saved_pending_stack
+#define cl_saved_pending_stack (thr->saved_pending_stack)
+#undef cl_saved_pending_top
+#define cl_saved_pending_top (thr->saved_pending_top)
+#undef cl_saved_pending_max
+#define cl_saved_pending_max (thr->saved_pending_max)
+#undef cl_pending_throw
+#define cl_pending_throw (thr->pending_throw)
+#undef cl_pending_tag
+#define cl_pending_tag (thr->pending_tag)
+#undef cl_pending_value
+#define cl_pending_value (thr->pending_value)
+#undef cl_pending_error_code
+#define cl_pending_error_code (thr->pending_error_code)
+#undef cl_pending_error_msg
+#define cl_pending_error_msg (thr->pending_error_msg)
+#undef cl_pending_mv_count
+#define cl_pending_mv_count (thr->pending_mv_count)
+#undef cl_pending_mv_values
+#define cl_pending_mv_values (thr->pending_mv_values)
+#undef cl_trace_count
+#define cl_trace_count (thr->trace_count)
+#undef cl_trace_depth
+#define cl_trace_depth (thr->trace_depth)
+#undef cl_pre_call_mv_count
+#define cl_pre_call_mv_count (thr->pre_call_mv_count)
+#undef cl_pre_call_mv_values
+#define cl_pre_call_mv_values (thr->pre_call_mv_values)
+
+    /* ---- The activation's single NLX landing ----
+     *
+     * Every NLX frame this activation pushes (OP_CATCH / OP_UWPROT /
+     * OP_BLOCK_PUSH / OP_TAGBODY_PUSH) shares ONE jmp_buf, armed lazily by
+     * the first push, instead of each push running its own setjmp: the
+     * frame already records everything the landing needs (code, constants,
+     * bytecode, sp/fp, the marks, catch_ip + offset), so a transfer to any
+     * of them longjmps here and the code at `nlx_landing` restores from
+     * cl_nlx_stack[cl_nlx_top].  A transfer that originates in THIS
+     * activation's own loop (RETURN-FROM / GO / a re-throw) does not even
+     * longjmp — it jumps to the landing directly.  On 68k a setjmp is a
+     * full movem; an UNWIND-PROTECT used to pay it on every entry.
+     *
+     * landing_armed is volatile: it is written after the setjmp and read
+     * after a longjmp, which C99 7.13.2.1 otherwise leaves indeterminate. */
+    struct { jmp_buf buf; CL_JMPBUF_GUARD } landing;
+    volatile int landing_armed = 0;
+
+#define VM_NLX_ARM() do {                                                  \
+        if (!landing_armed) {                                              \
+            if (CL_SETJMP(landing.buf) != 0) goto nlx_landing;             \
+            landing_armed = 1;                                             \
+        }                                                                  \
+    } while (0)
+
+    /* Fill the NLX frame at NLX for a push by this activation.  The marks
+     * are read straight off `thr` (no cl_compiler_mark / cl_printer_state_save
+     * calls, which went through cl_get_current_thread). */
+#define VM_NLX_FRAME_INIT(nlx, ty, tg, off) do {                            \
+        (nlx)->type = (ty);                                                \
+        (nlx)->landing = &landing.buf;                                     \
+        (nlx)->vm_sp = cl_vm.sp;                                           \
+        (nlx)->vm_fp = cl_vm.fp;                                           \
+        (nlx)->tag = (tg);                                                 \
+        (nlx)->result = CL_NIL;                                            \
+        (nlx)->catch_ip = ip;                                              \
+        (nlx)->offset = (off);                                             \
+        (nlx)->code = code;                                                \
+        (nlx)->constants = constants;                                      \
+        (nlx)->bytecode = frame->bytecode;                                 \
+        (nlx)->base_fp = base_fp;                                          \
+        (nlx)->dyn_mark = cl_dyn_top;                                      \
+        (nlx)->handler_mark = cl_handler_top;                              \
+        (nlx)->handler_active_mask = cl_handler_active_mask;               \
+        (nlx)->restart_mark = cl_restart_top;                              \
+        (nlx)->error_mark = cl_error_frame_top;                            \
+        (nlx)->gc_root_mark = gc_root_count;                               \
+        (nlx)->compiler_mark = (void *)thr->active_compiler;               \
+        (nlx)->printer_mark.depth = thr->pr_depth;                         \
+        (nlx)->printer_mark.inprog_top = thr->pr_inprog_top;               \
+        (nlx)->printer_mark.dispatch_active = thr->pr_pprint_dispatch_active; \
+        (nlx)->printer_mark.circle_active = thr->pr_circle_active;         \
+        (nlx)->mv_count = 1;                                               \
+        (nlx)->saved_pending_mark = cl_saved_pending_top;                  \
+        (nlx)->saved_jit_depth = thr->jit_depth;                           \
+        (nlx)->mv_save_mark = thr->mv_save_top;                            \
+    } while (0)
+
+    /* Transfer to NLX frame F: straight to this activation's landing when
+     * F belongs to it, else through cl_nlx_jump (longjmp to the owning
+     * activation, or to a C/JIT frame's own buf). */
+#define VM_NLX_GOTO(f) do {                                                \
+        if ((f)->landing == &landing.buf) goto nlx_landing_local;          \
+        cl_nlx_jump(f);                                                    \
+    } while (0)
 
     /* OP_LT/GT/LE/GE share one body: fixnum fast path, else a REAL type check
      * and cl_arith_compare.  OP is used identically in both paths so codegen is
@@ -1681,6 +1866,14 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
         if (!constants) {                                                    \
             fprintf(stderr, "[VM] BUG: " opname " with NULL constants "     \
                     "(idx=%u fp=%d ip=%u)\n", idx, cl_vm.fp, ip);           \
+            cl_error(CL_ERR_GENERAL, opname " with NULL constants ptr");    \
+        }                                                                   \
+    } while (0)
+    /* Same, for a handler whose index variable is not named `idx`. */
+#define VM_REQUIRE_CONSTANTS_IDX(opname, idxv) do {                          \
+        if (!constants) {                                                    \
+            fprintf(stderr, "[VM] BUG: " opname " with NULL constants "     \
+                    "(idx=%u fp=%d ip=%u)\n", (unsigned)(idxv), cl_vm.fp, ip); \
             cl_error(CL_ERR_GENERAL, opname " with NULL constants ptr");    \
         }                                                                   \
     } while (0)
@@ -1726,6 +1919,8 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
         [OP_JTRUE]       = &&vm_op_OP_JTRUE,
         [OP_CALL]        = &&vm_op_OP_CALL,
         [OP_TAILCALL]    = &&vm_op_OP_TAILCALL,
+        [OP_CALL_GLOBAL] = &&vm_op_OP_CALL_GLOBAL,
+        [OP_TAILCALL_GLOBAL] = &&vm_op_OP_TAILCALL_GLOBAL,
         [OP_RET]         = &&vm_op_OP_RET,
         [OP_CLOSURE]     = &&vm_op_OP_CLOSURE,
         [OP_APPLY]       = &&vm_op_OP_APPLY,
@@ -1742,6 +1937,10 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
         [OP_UWRETHROW]   = &&vm_op_OP_UWRETHROW,
         [OP_MV_LOAD]     = &&vm_op_OP_MV_LOAD,
         [OP_MV_TO_LIST]  = &&vm_op_OP_MV_TO_LIST,
+        [OP_MV_SAVE]     = &&vm_op_OP_MV_SAVE,
+        [OP_MV_RESTORE]  = &&vm_op_OP_MV_RESTORE,
+        [OP_HANDLER_CASE_PUSH] = &&vm_op_OP_HANDLER_CASE_PUSH,
+        [OP_HANDLER_CASE_POP]  = &&vm_op_OP_HANDLER_CASE_POP,
         [OP_NTH_VALUE]   = &&vm_op_OP_NTH_VALUE,
         [OP_DYNBIND]     = &&vm_op_OP_DYNBIND,
         [OP_DYNUNBIND]   = &&vm_op_OP_DYNUNBIND,
@@ -1979,6 +2178,135 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
         op = code[ip - 1];
         goto vm_op_unknown;
 #endif
+
+    /* ---- Shared NLX landing (see the `landing` declaration above) ----
+     *
+     * Reached by longjmp (nlx_landing: reload the thread pointer first —
+     * `thr` is an automatic cached at entry and is not reliably live across
+     * a longjmp re-entry, notably under MorphOS's 68k emulation) or by a
+     * direct goto from this activation's own loop (nlx_landing_local).
+     * The thrower set cl_nlx_top to the target frame's index and stored
+     * the result / pending state in it.  Everything the loop caches is
+     * re-derived here, so nothing modified since the setjmp is read. */
+    nlx_landing:
+        thr = cl_get_current_thread();
+    nlx_landing_local:
+        {
+            CL_NLXFrame *nlx = &cl_nlx_stack[cl_nlx_top];
+            cl_dynbind_restore_to(nlx->dyn_mark);
+            cl_handler_top = nlx->handler_mark;
+            /* Restore the CLHS 9.1.4 disabled-handler band to its state at
+             * this frame's establishment.  If the throw unwound out of a
+             * running handler (e.g. INVOKE-RESTART), this re-enables the
+             * band that handler had disabled, so the next SIGNAL is caught. */
+            cl_handler_active_mask = nlx->handler_active_mask;
+            cl_restart_top = nlx->restart_mark;
+            cl_error_frame_top = nlx->error_mark;
+            gc_root_count = nlx->gc_root_mark;
+            cl_jit_restore_depth(nlx->saved_jit_depth);
+            cl_compiler_unwind_to(nlx->compiler_mark, CL_CAPTURE_SP());
+            cl_printer_state_restore(nlx->printer_mark);
+            cl_saved_pending_top = nlx->saved_pending_mark;
+            /* Drop the UNWIND-PROTECT value records of the cleanups this
+             * transfer abandoned (OP_MV_SAVE). */
+            thr->mv_save_top = nlx->mv_save_mark;
+            cl_vm.sp = nlx->vm_sp;
+            cl_vm.fp = nlx->vm_fp;
+            frame = &cl_vm.frames[cl_vm.fp - 1];
+            code = nlx->code;
+            constants = nlx->constants;
+            base_fp = nlx->base_fp;
+            ip = nlx->catch_ip + nlx->offset;
+            /* Sync frame with NLX-restored state — a tail call between the
+             * push and the transfer may have changed frame->code/constants/
+             * bytecode to the tail target */
+            frame->code = code;
+            frame->constants = constants;
+            frame->bytecode = nlx->bytecode;
+#ifdef DEBUG_NLX
+            cl_nlx_dbg("[NLX] landing type=%d top=%d sp=%d fp=%d ip=%u\n",
+                       nlx->type, cl_nlx_top, cl_vm.sp, cl_vm.fp, ip);
+#endif
+            switch (nlx->type) {
+            case CL_NLX_UWPROT:
+                /* Pass-through, not a target: the transfer is still in
+                 * flight, so cl_pending_throw stays set.  The saved slot was
+                 * pushed at arming time (before the throw); update it now
+                 * with the actual pending state that triggered this cleanup,
+                 * so UWRETHROW can re-initiate it if the cleanup body
+                 * completes without a new NLX of its own. */
+                if (cl_saved_pending_top > 0) {
+                    CL_SavedPending *sp =
+                        &cl_saved_pending_stack[cl_saved_pending_top - 1];
+                    sp->pending_throw    = cl_pending_throw;
+                    sp->pending_tag      = cl_pending_tag;
+                    sp->pending_value    = cl_pending_value;
+                    sp->pending_mv_count = cl_pending_mv_count;
+                    { int _mi; for (_mi = 0;
+                                    _mi < cl_pending_mv_count && _mi < CL_MAX_MV;
+                                    _mi++)
+                        sp->pending_mv_values[_mi] = cl_pending_mv_values[_mi]; }
+                    sp->pending_error_code = cl_pending_error_code;
+                    strncpy(sp->pending_error_msg, cl_pending_error_msg,
+                            sizeof(sp->pending_error_msg) - 1);
+                    sp->pending_error_msg[sizeof(sp->pending_error_msg) - 1] = '\0';
+                    sp->entered_via_longjmp = 1; /* our landing fired — UWRETHROW must rethrow */
+                }
+                /* The protected form produced no values on this path: park
+                 * an EMPTY record for the OP_MV_RESTORE after the cleanup
+                 * (it runs only when the transfer is parked for an enclosing
+                 * cleanup rather than re-thrown). */
+                if (thr->mv_save_top + 1 > CL_MV_SAVE_SIZE)
+                    cl_error(CL_ERR_OVERFLOW,
+                             "UNWIND-PROTECT value-save stack overflow");
+                thr->mv_save_buf[thr->mv_save_top++] = CL_MAKE_FIXNUM(0);
+                break;
+            case CL_NLX_TAGBODY: {
+                /* Target of a completed transfer (see the CATCH case). */
+                CL_Obj tag_index = nlx->result;
+                cl_pending_throw = 0;
+                cl_mv_count = 1;
+                /* Re-arm: keep the NLX frame active for repeated GO */
+                cl_nlx_top++;
+                cl_vm_push(tag_index);
+                break;
+            }
+            case CL_NLX_HANDLER_CASE: {
+                /* The clause bindings are gone (handler_top was restored to
+                 * the frame's mark above).  Resume at the matched clause's
+                 * OP_JMP in the landing table with the condition on the
+                 * stack as the clause's sole value. */
+                CL_Obj cond = nlx->result;
+                cl_pending_throw = 0;
+                cl_mv_count = 1;
+                cl_mv_values[0] = cond;
+                ip += 5 * (uint32_t)nlx->hc_clause;
+                cl_vm_push(cond);
+                break;
+            }
+            default: {
+                /* CATCH / BLOCK: this landing IS the target of a non-local
+                 * transfer, so that transfer is complete: drop any pending
+                 * NLX state.  The pending state can be a FOREIGN one — an
+                 * error unwind (cl_pending_throw == 2) that landed in an
+                 * UNWIND-PROTECT cleanup, where the cleanup then threw out
+                 * to this catch.  CLHS 5.2 says the original transfer is
+                 * abandoned when a cleanup initiates its own; leaving the
+                 * flag set instead let the next enclosing OP_UWRETHROW
+                 * resurrect that abandoned error. */
+                CL_Obj throw_result = nlx->result;
+                int mi;
+                cl_pending_throw = 0;
+                /* Restore multiple values preserved across NLX */
+                cl_mv_count = nlx->mv_count;
+                for (mi = 0; mi < cl_mv_count && mi < CL_MAX_MV; mi++)
+                    cl_mv_values[mi] = nlx->mv_values[mi];
+                cl_vm_push(throw_result);
+                break;
+            }
+            }
+        }
+        VM_DISPATCH();
 
         VM_CASE(OP_HALT): {
             CL_Obj result = (cl_vm.sp > (int)(frame->bp + frame->n_locals))
@@ -2408,15 +2736,23 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
         VM_CASE(OP_TAILCALL): {
             uint8_t nargs = code[ip++];
             int is_tail = (op == OP_TAILCALL);
-            CL_SAFEPOINT();
-            VM_POLL_BREAK();
+            /* fslot: 1 when the callee sits in a stack slot below the
+             * arguments (OP_CALL / OP_TAILCALL), 0 when the arguments are
+             * the only thing on the stack (OP_CALL_GLOBAL / OP_TAILCALL_GLOBAL
+             * resolve the callee from a symbol constant).  Everything after
+             * `do_call` is shared and parameterized by it. */
+            int fslot = 1;
             CL_Obj *arg_base;
             CL_Obj func_obj;
+            unsigned ftype;
+
+            VM_SAFEPOINT();
+            VM_POLL_BREAK();
 
             /* Stack: [func] [arg0] [arg1] ... [argN-1]
                func is below the args */
             arg_base = &cl_vm.stack[cl_vm.sp - nargs];
-            func_obj = cl_vm.stack[cl_vm.sp - nargs - 1];
+            func_obj = arg_base[-1];
 
             /* Resolve symbol to its function binding (for funcall/apply) */
             if (CL_SYMBOL_P(func_obj)) {
@@ -2424,61 +2760,63 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 func_obj = s->function;
                 if (CL_NULL_P(func_obj) || func_obj == CL_UNBOUND)
                     cl_error(CL_ERR_TYPE, "Not a function: symbol %s",
-                             cl_symbol_name(cl_vm.stack[cl_vm.sp - nargs - 1]));
-                cl_vm.stack[cl_vm.sp - nargs - 1] = func_obj;
+                             cl_symbol_name(arg_base[-1]));
+                arg_base[-1] = func_obj;
             }
+            goto do_call;
 
-            /* Reader-GF fast path: an accessor call is answered right here
-             * — no unwrap to the discriminating function, no frame, no
-             * bytecode body.  cl_gf_reader_ic_probe matches the receiver's
-             * type_desc against the GF's inline cache (up to 4 entries, so
-             * a call site alternating between a few receiver classes still
-             * hits) and yields CL_UNBOUND on a miss (or on an unbound
-             * slot), which falls through to ordinary dispatch below.
-             * Non-allocating, so no GC can run here and nothing needs
-             * GC-protecting.
-             *
-             * OP_TAILCALL is excluded on purpose: it must unwind the caller's
-             * frame, which this shortcut does not do.  Tail-position accessor
-             * calls still take the (already fast) Lisp reader discriminator.
-             *
-             * Bypassing slot 3 is only sound because a GF holding a reader IC
-             * is one CLOS promoted; SET-FUNCALLABLE-INSTANCE-FUNCTION demotes
-             * it before retargeting slot 3, so a user-installed function can
-             * never be skipped. */
-            if (!is_tail && nargs == 1 && cl_funcallable_instance_p(func_obj)) {
-                CL_Obj slot_v = cl_gf_reader_ic_probe(func_obj, arg_base[0]);
-                if (slot_v != CL_UNBOUND) {
-                    cl_vm.sp -= (nargs + 1);
-                    cl_vm_push(slot_v);
-                    cl_mv_count = 1;
-                    VM_BREAK;
-                }
+        VM_CASE(OP_CALL_GLOBAL):
+        VM_CASE(OP_TAILCALL_GLOBAL): {
+            /* FLOAD sym; CALL n fused: the symbol's function binding is
+             * resolved here, after the arguments were evaluated, and never
+             * passes through the value stack — so there is no function slot
+             * under the arguments and OP_RET has nothing extra to drop.
+             * Same resolution rules as OP_FLOAD (function cell, then the
+             * value cell for a LABELS/FLET binding, else UNDEFINED-FUNCTION).
+             * The frame records fslot = 0 for OP_RET. */
+            uint16_t sym_idx = read_u16(code, &ip);
+            CL_Obj sym;
+            CL_Symbol *s;
+            nargs = code[ip++];
+            is_tail = (op == OP_TAILCALL_GLOBAL);
+            fslot = 0;
+            VM_SAFEPOINT();
+            VM_POLL_BREAK();
+            VM_REQUIRE_CONSTANTS_IDX("OP_CALL_GLOBAL", sym_idx);
+            sym = constants[sym_idx];
+            /* Validate sym is a valid symbol before dereferencing — same
+             * check OP_FLOAD performs on the identical constant-pool
+             * resolution, kept unconditionally (not DEBUG_VM-gated) because
+             * it has caught real GC corruption on that path. */
+            if (!CL_HEAP_P(sym) || sym >= cl_heap.arena_size ||
+                CL_HDR_TYPE(CL_OBJ_TO_PTR(sym)) != TYPE_SYMBOL) {
+                fprintf(stderr, "[VM] CALL_GLOBAL: constant[%d] = 0x%08x is NOT a symbol "
+                        "(heap=%d, arena_bound=%d, type=%d) fp=%d ip=%u\n",
+                        sym_idx, (unsigned)sym, CL_HEAP_P(sym),
+                        (sym < cl_heap.arena_size),
+                        (CL_HEAP_P(sym) && sym < cl_heap.arena_size)
+                            ? CL_HDR_TYPE(CL_OBJ_TO_PTR(sym)) : -1,
+                        cl_vm.fp, ip);
+                cl_capture_backtrace();
+                fprintf(stderr, "%s", cl_backtrace_buf);
+                cl_error(CL_ERR_GENERAL, "OP_CALL_GLOBAL: corrupted constant pool entry");
             }
-
-            /* Writer-GF fast path: the mirror image for (setf (x obj) v) —
-             * a 2-arg call to a promoted writer GF ((setf x) takes VAL OBJ,
-             * new-value first per CLHS 5.1.1.2) stores into the cached slot
-             * index and returns VAL right here.  Same tail exclusion and
-             * slot-3-bypass justification as the reader probe above. */
-            if (!is_tail && nargs == 2 && cl_funcallable_instance_p(func_obj)) {
-                CL_Obj slot_v = cl_gf_writer_ic_probe(func_obj, arg_base[0],
-                                                      arg_base[1]);
-                if (slot_v != CL_UNBOUND) {
-                    cl_vm.sp -= (nargs + 1);
-                    cl_vm_push(slot_v);
-                    cl_mv_count = 1;
-                    VM_BREAK;
-                }
+            s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+            func_obj = s->function;
+            if (func_obj == CL_UNBOUND) {
+                func_obj = cl_symbol_value_on(thr, sym);
+                if (func_obj == CL_UNBOUND)
+                    cl_error(CL_ERR_UNDEFINED, "Undefined function: %s",
+                             cl_symbol_name(sym));
             }
+            arg_base = &cl_vm.stack[cl_vm.sp - nargs];
+        }
 
-            /* Unwrap funcallable instances (GF struct → discriminating fn). */
-            if (cl_funcallable_instance_p(func_obj)) {
-                func_obj = cl_unwrap_funcallable(func_obj);
-                cl_vm.stack[cl_vm.sp - nargs - 1] = func_obj;
-            }
-
-            /* Bounds-check before type predicate macros dereference func_obj */
+        do_call:
+            /* Bounds-check before anything dereferences func_obj; one header
+             * read then classifies the callee for every branch below (the
+             * CL_*_P predicates each re-read it, and the stores in between
+             * keep the compiler from merging them). */
             if (CL_HEAP_P(func_obj) && func_obj >= cl_heap.arena_size) {
                 fprintf(stderr, "[VM] CALL: func_obj=0x%08x out of arena (size=0x%08x) nargs=%d fp=%d ip=%u\n",
                         (unsigned)func_obj, (unsigned)cl_heap.arena_size, nargs, cl_vm.fp, ip);
@@ -2486,19 +2824,70 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 fprintf(stderr, "%s", cl_backtrace_buf);
                 cl_error(CL_ERR_GENERAL, "OP_CALL: corrupted function object (out of arena)");
             }
+            ftype = CL_HEAP_P(func_obj) ? CL_HDR_TYPE(CL_OBJ_TO_PTR(func_obj)) : 0xFFu;
 
-            if (CL_FUNCTION_P(func_obj)) {
+            /* Funcallable instance (a generic function struct).  Only a
+             * TYPE_STRUCT can be one, so a bytecode/builtin callee pays a
+             * single compare here instead of three cl_funcallable_instance_p
+             * calls. */
+            if (ftype == TYPE_STRUCT && cl_funcallable_instance_p(func_obj)) {
+                /* Reader-GF fast path: an accessor call is answered right
+                 * here — no unwrap to the discriminating function, no frame,
+                 * no bytecode body.  cl_gf_reader_ic_probe matches the
+                 * receiver's type_desc against the GF's inline cache (up to
+                 * 4 entries, so a call site alternating between a few
+                 * receiver classes still hits) and yields CL_UNBOUND on a
+                 * miss (or on an unbound slot), which falls through to
+                 * ordinary dispatch below.  Non-allocating, so no GC can run
+                 * here and nothing needs GC-protecting.
+                 *
+                 * OP_TAILCALL is excluded on purpose: it must unwind the
+                 * caller's frame, which this shortcut does not do.
+                 * Tail-position accessor calls still take the (already
+                 * fast) Lisp reader discriminator.
+                 *
+                 * Bypassing slot 3 is only sound because a GF holding a
+                 * reader IC is one CLOS promoted;
+                 * SET-FUNCALLABLE-INSTANCE-FUNCTION demotes it before
+                 * retargeting slot 3, so a user-installed function can
+                 * never be skipped.  The writer probe is the mirror image
+                 * for (setf (x obj) v): a 2-arg call to a promoted writer GF
+                 * ((setf x) takes VAL OBJ, new-value first per CLHS
+                 * 5.1.1.2) stores into the cached slot and returns VAL. */
+                if (!is_tail) {
+                    CL_Obj slot_v = CL_UNBOUND;
+                    if (nargs == 1)
+                        slot_v = cl_gf_reader_ic_probe(func_obj, arg_base[0]);
+                    else if (nargs == 2)
+                        slot_v = cl_gf_writer_ic_probe(func_obj, arg_base[0],
+                                                       arg_base[1]);
+                    if (slot_v != CL_UNBOUND) {
+                        cl_vm.sp -= (nargs + fslot);
+                        cl_vm_push(slot_v);
+                        cl_mv_count = 1;
+                        VM_BREAK;
+                    }
+                }
+                /* Unwrap (GF struct → discriminating fn). */
+                func_obj = cl_unwrap_funcallable(func_obj);
+                if (fslot) arg_base[-1] = func_obj;
+                if (CL_HEAP_P(func_obj) && func_obj >= cl_heap.arena_size)
+                    cl_error(CL_ERR_GENERAL, "OP_CALL: corrupted discriminating function (out of arena)");
+                ftype = CL_HEAP_P(func_obj) ? CL_HDR_TYPE(CL_OBJ_TO_PTR(func_obj)) : 0xFFu;
+            }
+
+            if (ftype == TYPE_FUNCTION) {
                 /* Built-in C function */
                 CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(func_obj);
-                int traced = is_func_traced(func_obj);
+                int traced = (cl_trace_count > 0) && is_func_traced(func_obj);
                 CL_Obj result;
                 if (traced) {
+                    /* The trace print can allocate/compact — root func_obj
+                     * across it (OP_CALL_GLOBAL has no stack slot holding
+                     * it) and re-derive f before handing it to call_builtin. */
+                    CL_GC_PROTECT(func_obj);
                     trace_print_entry(f->name, arg_base, nargs);
-                    /* The trace print can allocate/compact — re-derive f
-                     * from the (rooted, forwarded) function stack slot
-                     * before handing it to call_builtin. */
-                    f = (CL_Function *)CL_OBJ_TO_PTR(
-                            cl_vm.stack[cl_vm.sp - nargs - 1]);
+                    f = (CL_Function *)CL_OBJ_TO_PTR(func_obj);
                     cl_trace_depth++;
                 }
                 /* No frame is pushed for a builtin, so record where this
@@ -2512,42 +2901,39 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     cl_trace_depth--;
                     /* f is stale after the builtin ran; result must survive
                      * the exit print's own allocations before the push. */
-                    f = (CL_Function *)CL_OBJ_TO_PTR(
-                            cl_vm.stack[cl_vm.sp - nargs - 1]);
+                    f = (CL_Function *)CL_OBJ_TO_PTR(func_obj);
                     CL_GC_PROTECT(result);
                     trace_print_exit(f->name, result);
-                    CL_GC_UNPROTECT(1);
+                    CL_GC_UNPROTECT(2);   /* result, func_obj */
                 }
-                cl_vm.sp -= (nargs + 1);
+                cl_vm.sp -= (nargs + fslot);
                 cl_vm_push(result);
-            } else if (CL_FFI_STUB_P(func_obj)) {
+            } else if (ftype == TYPE_FFI_STUB) {
                 /* FFI stub (DEFCFUN / DEFCSTRUCT descriptor): dispatch like
                  * a builtin — args are already rooted on the stack, no
                  * frame is pushed, the result replaces func+args.  Under
                  * OP_TAILCALL the following OP_RET returns it, exactly as
                  * for a builtin callee. */
                 CL_Obj result;
-                int traced = is_func_traced(func_obj);
+                int traced = (cl_trace_count > 0) && is_func_traced(func_obj);
                 if (traced) {
+                    /* the trace print can compact — root func_obj across it */
+                    CL_GC_PROTECT(func_obj);
                     trace_print_entry(get_func_name(func_obj), arg_base, nargs);
-                    /* the trace print can compact — re-derive from the
-                     * rooted function slot */
-                    func_obj = cl_vm.stack[cl_vm.sp - nargs - 1];
                     cl_trace_depth++;
                 }
                 frame->ip = ip;   /* as for a builtin: errors land on this line */
                 result = cl_ffi_stub_call(func_obj, arg_base, nargs);
                 if (traced) {
                     cl_trace_depth--;
-                    func_obj = cl_vm.stack[cl_vm.sp - nargs - 1];
                     CL_GC_PROTECT(result);
                     trace_print_exit(get_func_name(func_obj), result);
-                    CL_GC_UNPROTECT(1);
+                    CL_GC_UNPROTECT(2);   /* result, func_obj */
                 }
-                cl_vm.sp -= (nargs + 1);
+                cl_vm.sp -= (nargs + fslot);
                 cl_vm_push(result);
                 cl_mv_count = 1;
-            } else if (CL_BYTECODE_P(func_obj) || CL_CLOSURE_P(func_obj)) {
+            } else if (ftype == TYPE_BYTECODE || ftype == TYPE_CLOSURE) {
                 CL_Bytecode *callee_bc;
                 CL_Frame *new_frame;
                 int callee_arity, has_rest, n_opt, has_key, i;
@@ -2647,14 +3033,15 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                      * because the dispatch needs the resolved bytecode
                      * pointer immediately. */
                     CL_Obj nresult = cl_jit_invoke(func_obj, callee_bc, nargs);
-                    cl_vm.sp -= (nargs + 1);
+                    cl_vm.sp -= (nargs + fslot);
                     cl_vm_push(nresult);
                     VM_BREAK;
                 }
 
-                /* GC-protect func_obj: it gets removed from the VM stack
-                 * before &rest processing which calls cl_cons (allocating).
-                 * Without this, GC can sweep the closure/bytecode. */
+                /* GC-protect func_obj across the &rest consing below: on
+                 * the tail path its stack slot is overwritten by the
+                 * argument copy, and OP_CALL_GLOBAL never had one.  Without
+                 * this, GC can sweep or move the closure/bytecode. */
                 if (has_rest || has_key)
                     CL_GC_PROTECT(func_obj);
 
@@ -2670,12 +3057,13 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                             (((CL_Symbol *)CL_OBJ_TO_PTR(cur_name))->flags & CL_SYM_TRACED))
                             cl_trace_depth--;
                         if (is_func_traced(func_obj)) {
+                            /* The trace print can allocate/compact: root
+                             * func_obj across it — it is stored into
+                             * frame->bytecode below — and re-derive the raw
+                             * callee_bc pointer from it afterwards. */
+                            CL_GC_PROTECT(func_obj);
                             trace_print_entry(callee_bc->name, arg_base, nargs);
-                            /* The trace print can allocate/compact: re-read
-                             * func_obj from its (rooted, forwarded) stack slot
-                             * — it is stored into frame->bytecode below — and
-                             * re-derive the raw callee_bc pointer from it. */
-                            func_obj = cl_vm.stack[cl_vm.sp - nargs - 1];
+                            CL_GC_UNPROTECT(1);
                             if (CL_CLOSURE_P(func_obj)) {
                                 CL_Closure *tcl = (CL_Closure *)CL_OBJ_TO_PTR(func_obj);
                                 callee_bc = (CL_Bytecode *)CL_OBJ_TO_PTR(tcl->bytecode);
@@ -2829,12 +3217,13 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     int n_positional = callee_arity + n_opt;
 
                     /* Trace: entry for normal call */
-                    if (is_func_traced(func_obj))  {
+                    if (cl_trace_count > 0 && is_func_traced(func_obj))  {
+                        /* Root func_obj across the (allocating) trace print
+                         * and re-derive callee_bc afterwards (see tailcall
+                         * twin). */
+                        CL_GC_PROTECT(func_obj);
                         trace_print_entry(callee_bc->name, arg_base, nargs);
-                        /* Re-read func_obj / re-derive callee_bc after the
-                         * (allocating) trace print — the stack slot is still
-                         * live until the shift below (see tailcall twin). */
-                        func_obj = cl_vm.stack[cl_vm.sp - nargs - 1];
+                        CL_GC_UNPROTECT(1);
                         if (CL_CLOSURE_P(func_obj)) {
                             CL_Closure *tcl = (CL_Closure *)CL_OBJ_TO_PTR(func_obj);
                             callee_bc = (CL_Bytecode *)CL_OBJ_TO_PTR(tcl->bytecode);
@@ -2844,15 +3233,11 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                         cl_trace_depth++;
                     }
 
-                    /* Remove func_obj from under args; shift args down */
-                    {
-                        int j;
-                        for (j = 0; j < nargs; j++)
-                            cl_vm.stack[cl_vm.sp - nargs - 1 + j] =
-                                cl_vm.stack[cl_vm.sp - nargs + j];
-                        cl_vm.sp--;
-                    }
-
+                    /* The arguments stay where they were pushed: the new
+                     * frame's bp is their first slot, and the function slot
+                     * (if any) sits just below bp, where OP_RET drops it
+                     * via frame->fslot.  This used to shift every argument
+                     * down one slot on every call. */
                     new_bp = cl_vm.sp - nargs;
 
                     /* Save extra args for keyword processing */
@@ -2970,21 +3355,21 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     new_frame->n_locals = callee_bc->n_locals;
                     new_frame->nargs = nargs;
                     new_frame->nlx_level = cl_nlx_top;
+                    new_frame->fslot = (uint8_t)fslot;
 
                     frame = new_frame;
                     code = callee_bc->code;
                     constants = callee_bc->constants;
                     ip = 0;
 
-                    /* Targeted crash diagnostic: detect frame push at fp=44→45 */
-                    if (0 && cl_vm.fp >= 44) {
-                        const char *_fn = "?";
-                        if (callee_bc->name != CL_NIL && CL_SYMBOL_P(callee_bc->name))
-                            _fn = cl_symbol_name(callee_bc->name);
-                        fprintf(stderr, "[DIAG-FP45] NORMAL-CALL fp=%d→%d fn=%s code=%p\n",
-                                cl_vm.fp - 1, cl_vm.fp, _fn, (void *)code);
-                        fflush(stderr);
-                    }
+#ifdef DEBUG_VM
+                    /* Structural validations of the freshly pushed frame.
+                     * These caught real GC corruption once (a swept-and-reused
+                     * bytecode, a NULL constants pool) and stay available for
+                     * a -DDEBUG_VM build, but they cost a handful of dependent
+                     * loads on EVERY call, so the production loop trusts the
+                     * checks at the top of this handler (non-NULL code, sane
+                     * closure->bytecode) and the OP_RET pair below. */
 
                     /* Validate: code pointer must be valid */
                     if (!code) {
@@ -3072,6 +3457,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                                      first_op);
                         }
                     }
+#endif /* DEBUG_VM */
                 }
             } else {
                 /* Print what we got for debugging */
@@ -3114,12 +3500,18 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 }
             }
 
-            /* Pop frame */
-            cl_vm.sp = frame->bp;
+            /* Pop frame — and the function slot OP_CALL left under the
+             * arguments (fslot = 1), which is what the caller pushed before
+             * them; OP_CALL_GLOBAL, OP_APPLY and the entry frames have none. */
+            cl_vm.sp = frame->bp - frame->fslot;
             cl_vm.fp--;
 
             if (cl_vm.fp <= base_fp) {
-                /* Returned from top-level call */
+                /* Returned from top-level call.  Any NLX frame still above
+                 * base_nlx was pushed by this activation and never popped;
+                 * it points at this activation's landing, which is about to
+                 * go away, so drop it (OP_HALT does the same). */
+                cl_nlx_top = base_nlx;
                 return result;
             }
 
@@ -3128,6 +3520,12 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             code = frame->code;
             constants = frame->constants;
             ip = frame->ip;
+
+#ifdef DEBUG_VM
+            /* Structural validations of the restored caller frame — see the
+             * matching DEBUG_VM block in OP_CALL: the ip-bounds check alone
+             * is four dependent loads (frame -> closure -> bytecode ->
+             * code_len) on every return. */
 
             /* Safety check: validate restored ip is within bytecode bounds */
             if (code && !CL_NULL_P(frame->bytecode)) {
@@ -3189,9 +3587,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     cl_error(CL_ERR_GENERAL, "NULL constants in restored frame");
                 }
             }
-
-            /* CRASH HUNT: check before/after push when returning from CLASS-SLOT-INDEX-TABLE at fp >= 44 */
-            /* [RET-DIAG] suppressed */
+#endif /* DEBUG_VM */
 
             cl_vm_push(result);
             VM_BREAK;
@@ -3310,10 +3706,75 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
 
             cl_handler_stack[cl_handler_top].type_name = type_sym;
             cl_handler_stack[cl_handler_top].handler = handler;
+            cl_handler_stack[cl_handler_top].nlx_index = -1;
             cl_handler_stack[cl_handler_top].handler_mark = cl_handler_top;
             /* Mark this binding enabled in the active mask (see thread.h). */
             cl_handler_active_mask |= ((uint64_t)1 << cl_handler_top);
             cl_handler_top++;
+            VM_BREAK;
+        }
+
+        VM_CASE(OP_HANDLER_CASE_PUSH): {
+            /* (clamiga::%handler-case form (type (var) . body)...):
+             * u16 = constant index of the clause TYPE list, i32 = offset of
+             * the landing, a table of one OP_JMP (5 bytes) per clause.  One
+             * NLX frame for the form and one handler binding per clause,
+             * whose "handler" is the clause index as a fixnum.  Clause 0 is
+             * pushed LAST so it is the innermost binding: cl_signal_condition
+             * walks the stack top-down, and CLHS 9.1.4 wants the textually
+             * first matching clause (same ordering as compile_handler_bind).
+             * Nothing is allocated. */
+            uint16_t idx = read_u16(code, &ip);
+            int32_t hc_offset = read_i32(code, &ip);
+            CL_Obj types;
+            CL_NLXFrame *nlx;
+            int n = 0, k, ni;
+            VM_REQUIRE_CONSTANTS("OP_HANDLER_CASE_PUSH");
+            types = constants[idx];
+            { CL_Obj t = types; while (CL_CONS_P(t)) { n++; t = cl_cdr(t); } }
+            if (cl_nlx_top >= cl_nlx_max) {
+                cl_nlx_overflow_summary("vm");
+                cl_error(CL_ERR_OVERFLOW, "NLX stack overflow");
+            }
+            if (cl_handler_top + n > CL_MAX_HANDLER_BINDINGS)
+                cl_error(CL_ERR_OVERFLOW, "Handler stack overflow");
+            VM_NLX_ARM();
+            nlx = &cl_nlx_stack[cl_nlx_top];
+            VM_NLX_FRAME_INIT(nlx, CL_NLX_HANDLER_CASE, types, hc_offset);
+            nlx->hc_clause = 0;
+            ni = cl_nlx_top++;
+            for (k = n - 1; k >= 0; k--) {
+                CL_Obj t = types;
+                int j;
+                for (j = 0; j < k; j++) t = cl_cdr(t);
+                cl_handler_stack[cl_handler_top].type_name = cl_car(t);
+                cl_handler_stack[cl_handler_top].handler = CL_MAKE_FIXNUM(k);
+                cl_handler_stack[cl_handler_top].nlx_index = ni;
+                cl_handler_stack[cl_handler_top].handler_mark = cl_handler_top;
+                cl_handler_active_mask |= ((uint64_t)1 << cl_handler_top);
+                cl_handler_top++;
+            }
+            VM_BREAK;
+        }
+
+        VM_CASE(OP_HANDLER_CASE_POP): {
+            /* Normal exit: drop the clause bindings and the frame (search
+             * backward for the frame, like the other *_POP opcodes).  The
+             * MV state is the form's and is left alone. */
+            int hi;
+            for (hi = cl_nlx_top - 1; hi >= 0; hi--) {
+                if (cl_nlx_stack[hi].type == CL_NLX_HANDLER_CASE) {
+                    int old_top = cl_handler_top;
+                    cl_handler_top = cl_nlx_stack[hi].handler_mark;
+                    if (cl_handler_top < old_top)
+                        cl_handler_active_mask &=
+                            ~CL_HANDLER_BAND_MASK(cl_handler_top, old_top);
+                    cl_nlx_top = hi;
+                    break;
+                }
+            }
+            if (hi < 0 && cl_nlx_top > 0)
+                cl_nlx_top--;
             VM_BREAK;
         }
 
@@ -3423,91 +3884,15 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     cl_error(CL_ERR_OVERFLOW, "NLX stack overflow");
                 }
 
+            /* No setjmp here — see the shared landing. */
+            VM_NLX_ARM();
             nlx = &cl_nlx_stack[cl_nlx_top];
-            nlx->type = CL_NLX_BLOCK;
-            nlx->vm_sp = cl_vm.sp;
-            nlx->vm_fp = cl_vm.fp;
-            nlx->tag = block_tag;
-            nlx->result = CL_NIL;
-            nlx->catch_ip = ip;
-            nlx->offset = block_offset;
-            nlx->code = code;
-            nlx->constants = constants;
-            nlx->bytecode = frame->bytecode;
-            nlx->base_fp = base_fp;
-            nlx->dyn_mark = cl_dyn_top;
-            nlx->handler_mark = cl_handler_top;
-            nlx->handler_active_mask = cl_handler_active_mask;
-            nlx->restart_mark = cl_restart_top;
-            nlx->error_mark = cl_error_frame_top;
-            nlx->gc_root_mark = gc_root_count;
-            nlx->compiler_mark = cl_compiler_mark();
-            nlx->printer_mark = cl_printer_state_save();
-            nlx->mv_count = 1;
-            nlx->saved_pending_mark = cl_saved_pending_top;
-            nlx->saved_jit_depth = CT->jit_depth;
-
-            {
+            VM_NLX_FRAME_INIT(nlx, CL_NLX_BLOCK, block_tag, block_offset);
 #ifdef DEBUG_NLX
-            int _sj_ret = CL_SETJMP(nlx->buf);
-            cl_nlx_dbg("[NLX] BLOCK_PUSH setjmp ret=%d top=%d tag=0x%08x sp=%d fp=%d\n",
-                    _sj_ret, cl_nlx_top, (unsigned)block_tag, cl_vm.sp, cl_vm.fp);
-            if (_sj_ret == 0) {
-#else
-            if (CL_SETJMP(nlx->buf) == 0) {
+            cl_nlx_dbg("[NLX] BLOCK_PUSH top=%d tag=0x%08x sp=%d fp=%d\n",
+                    cl_nlx_top, (unsigned)block_tag, cl_vm.sp, cl_vm.fp);
 #endif
-                /* Normal path: block body executes */
-                cl_nlx_top++;
-            } else {
-                /* longjmp from return-from: restore state */
-                /* Reload cached thread pointer — see OP_TAGBODY_PUSH note:
-                 * `thr` is not reliably live across a longjmp re-entry under
-                 * MorphOS 68k emulation; rebuild from the canonical source. */
-                thr = cl_get_current_thread();
-                nlx = &cl_nlx_stack[cl_nlx_top];
-                cl_dynbind_restore_to(nlx->dyn_mark);
-                cl_handler_top = nlx->handler_mark;
-                /* Restore the CLHS 9.1.4 disabled-handler band to its state at
-                 * this frame's establishment.  If the throw unwound out of a
-                 * running handler (e.g. INVOKE-RESTART), this re-enables the
-                 * band that handler had disabled, so the next SIGNAL is caught. */
-                cl_handler_active_mask = nlx->handler_active_mask;
-                cl_restart_top = nlx->restart_mark;
-                cl_error_frame_top = nlx->error_mark;
-                gc_root_count = nlx->gc_root_mark;
-                cl_jit_restore_depth(nlx->saved_jit_depth);
-                cl_compiler_unwind_to(nlx->compiler_mark, CL_CAPTURE_SP());
-                cl_printer_state_restore(nlx->printer_mark);
-                cl_saved_pending_top = nlx->saved_pending_mark;
-                /* Target of a completed transfer — see the OP_CATCH landing. */
-                cl_pending_throw = 0;
-                {
-                    CL_Obj block_result = nlx->result;
-                    cl_vm.sp = nlx->vm_sp;
-                    cl_vm.fp = nlx->vm_fp;
-                    frame = &cl_vm.frames[cl_vm.fp - 1];
-                    code = nlx->code;
-                    constants = nlx->constants;
-                    base_fp = nlx->base_fp;
-                    ip = nlx->catch_ip + nlx->offset;
-                    /* Sync frame with NLX-restored state — a tail call
-                     * between BLOCK_PUSH and longjmp may have changed
-                     * frame->code/constants/bytecode to the tail target */
-                    frame->code = code;
-                    frame->constants = constants;
-                    frame->bytecode = nlx->bytecode;
-                    /* Restore multiple values preserved across NLX */
-                    cl_mv_count = nlx->mv_count;
-                    { int mi; for (mi = 0; mi < cl_mv_count && mi < CL_MAX_MV; mi++)
-                        cl_mv_values[mi] = nlx->mv_values[mi]; }
-                    cl_vm_push(block_result);
-#ifdef DEBUG_NLX
-                    cl_nlx_dbg("[NLX] BLOCK_PUSH resume: sp=%d fp=%d top=%d\n",
-                            cl_vm.sp, cl_vm.fp, cl_nlx_top);
-#endif
-                }
-            }
-            }
+            cl_nlx_top++;
             VM_BREAK;
         }
 
@@ -3559,17 +3944,17 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                             { int mi; for (mi = 0; mi < cl_mv_count && mi < CL_MAX_MV; mi++)
                                 cl_pending_mv_values[mi] = cl_mv_values[mi]; }
                             cl_nlx_top = j;
-                            CL_LONGJMP(cl_nlx_stack[j].buf, 1);
+                            VM_NLX_GOTO(&cl_nlx_stack[j]);
                         }
                     }
-                    /* No interposing UWPROT — longjmp directly to block */
+                    /* No interposing UWPROT — transfer directly to the block */
                     cl_nlx_stack[i].result = value;
                     /* Preserve multiple values across NLX */
                     cl_nlx_stack[i].mv_count = cl_mv_count;
                     { int mi; for (mi = 0; mi < cl_mv_count && mi < CL_MAX_MV; mi++)
                         cl_nlx_stack[i].mv_values[mi] = cl_mv_values[mi]; }
                     cl_nlx_top = i;
-                    CL_LONGJMP(cl_nlx_stack[i].buf, 1);
+                    VM_NLX_GOTO(&cl_nlx_stack[i]);
                 }
             }
             cl_error(CL_ERR_GENERAL, "RETURN-FROM: no block named %s%s",
@@ -3590,92 +3975,16 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     cl_error(CL_ERR_OVERFLOW, "NLX stack overflow");
                 }
 
+            /* No setjmp here — see the shared landing (which re-arms the
+             * frame for repeated GO). */
+            VM_NLX_ARM();
             nlx = &cl_nlx_stack[cl_nlx_top];
-            nlx->type = CL_NLX_TAGBODY;
-            nlx->vm_sp = cl_vm.sp;
-            nlx->vm_fp = cl_vm.fp;
-            nlx->tag = tagbody_id;
-            nlx->result = CL_NIL;
-            nlx->catch_ip = ip;
-            nlx->offset = tb_offset;
-            nlx->code = code;
-            nlx->constants = constants;
-            nlx->bytecode = frame->bytecode;
-            nlx->base_fp = base_fp;
-            nlx->dyn_mark = cl_dyn_top;
-            nlx->handler_mark = cl_handler_top;
-            nlx->handler_active_mask = cl_handler_active_mask;
-            nlx->restart_mark = cl_restart_top;
-            nlx->error_mark = cl_error_frame_top;
-            nlx->gc_root_mark = gc_root_count;
-            nlx->compiler_mark = cl_compiler_mark();
-            nlx->printer_mark = cl_printer_state_save();
-            nlx->saved_pending_mark = cl_saved_pending_top;
-            nlx->saved_jit_depth = CT->jit_depth;
-
-            {
+            VM_NLX_FRAME_INIT(nlx, CL_NLX_TAGBODY, tagbody_id, tb_offset);
 #ifdef DEBUG_NLX
-            int _sj_ret = CL_SETJMP(nlx->buf);
-            cl_nlx_dbg("[NLX] TAGBODY_PUSH setjmp ret=%d top=%d id=0x%08x sp=%d fp=%d\n",
-                    _sj_ret, cl_nlx_top, (unsigned)tagbody_id, cl_vm.sp, cl_vm.fp);
-            if (_sj_ret == 0) {
-#else
-            if (CL_SETJMP(nlx->buf) == 0) {
+            cl_nlx_dbg("[NLX] TAGBODY_PUSH top=%d id=0x%08x sp=%d fp=%d\n",
+                    cl_nlx_top, (unsigned)tagbody_id, cl_vm.sp, cl_vm.fp);
 #endif
-                /* Normal path: tagbody body executes */
-                cl_nlx_top++;
-            } else {
-                /* longjmp from cross-closure GO: restore state */
-                /* Reload the cached thread pointer.  `thr` is an automatic
-                 * cached once at cl_vm_run entry and dereferenced by every
-                 * push/pop/mv macro; it is not reliably live across a longjmp
-                 * re-entry.  On real 68k the callee-saved register that holds
-                 * it survives, but under MorphOS's 68k emulation the restore
-                 * differs, leaving `thr` indeterminate and corrupting the VM
-                 * stack the moment the dispatch loop resumes.  Rebuild it from
-                 * the canonical source like the other loop locals below. */
-                thr = cl_get_current_thread();
-                nlx = &cl_nlx_stack[cl_nlx_top];
-                cl_dynbind_restore_to(nlx->dyn_mark);
-                cl_handler_top = nlx->handler_mark;
-                /* Restore the CLHS 9.1.4 disabled-handler band to its state at
-                 * this frame's establishment.  If the throw unwound out of a
-                 * running handler (e.g. INVOKE-RESTART), this re-enables the
-                 * band that handler had disabled, so the next SIGNAL is caught. */
-                cl_handler_active_mask = nlx->handler_active_mask;
-                cl_restart_top = nlx->restart_mark;
-                cl_error_frame_top = nlx->error_mark;
-                gc_root_count = nlx->gc_root_mark;
-                cl_jit_restore_depth(nlx->saved_jit_depth);
-                cl_compiler_unwind_to(nlx->compiler_mark, CL_CAPTURE_SP());
-                cl_printer_state_restore(nlx->printer_mark);
-                cl_saved_pending_top = nlx->saved_pending_mark;
-                /* Target of a completed transfer — see the OP_CATCH landing. */
-                cl_pending_throw = 0;
-                {
-                    CL_Obj tag_index = nlx->result;
-                    cl_vm.sp = nlx->vm_sp;
-                    cl_vm.fp = nlx->vm_fp;
-                    frame = &cl_vm.frames[cl_vm.fp - 1];
-                    code = nlx->code;
-                    constants = nlx->constants;
-                    base_fp = nlx->base_fp;
-                    ip = nlx->catch_ip + nlx->offset;
-                    /* Sync frame with NLX-restored state */
-                    frame->code = code;
-                    frame->constants = constants;
-                    frame->bytecode = nlx->bytecode;
-                    cl_mv_count = 1;
-                    /* Re-arm: keep NLX frame active for repeated GO */
-                    cl_nlx_top++;
-                    cl_vm_push(tag_index);
-#ifdef DEBUG_NLX
-                    cl_nlx_dbg("[NLX] TAGBODY_PUSH resume: tag_index=%d sp=%d fp=%d top=%d\n",
-                            (int)CL_FIXNUM_VAL(tag_index), cl_vm.sp, cl_vm.fp, cl_nlx_top);
-#endif
-                }
-            }
-            }
+            cl_nlx_top++;
             VM_BREAK;
         }
 
@@ -3724,13 +4033,13 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                             { int mi; for (mi = 0; mi < cl_mv_count && mi < CL_MAX_MV; mi++)
                                 cl_pending_mv_values[mi] = cl_mv_values[mi]; }
                             cl_nlx_top = j;
-                            CL_LONGJMP(cl_nlx_stack[j].buf, 1);
+                            VM_NLX_GOTO(&cl_nlx_stack[j]);
                         }
                     }
-                    /* No interposing UWPROT — longjmp directly to tagbody */
+                    /* No interposing UWPROT — transfer directly to the tagbody */
                     cl_nlx_stack[i].result = tag_index;
                     cl_nlx_top = i;
-                    CL_LONGJMP(cl_nlx_stack[i].buf, 1);
+                    VM_NLX_GOTO(&cl_nlx_stack[i]);
                 }
             }
 #ifdef DEBUG_NLX
@@ -4133,6 +4442,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     new_frame->n_locals = callee_bc->n_locals;
                     new_frame->nargs = call_nargs;
                     new_frame->nlx_level = cl_nlx_top;  /* mirror OP_CALL */
+                    new_frame->fslot = 0;   /* apply_func was popped above */
 
                     /* DIAG: OP_APPLY frame push */
                     if (0 && cl_vm.fp >= 44) {
@@ -4166,87 +4476,12 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     cl_error(CL_ERR_OVERFLOW, "NLX stack overflow");
                 }
 
+            /* No setjmp here: the frame points at this activation's shared
+             * landing (armed once), which restores from it on a throw. */
+            VM_NLX_ARM();
             nlx = &cl_nlx_stack[cl_nlx_top];
-            nlx->type = CL_NLX_CATCH;
-            nlx->vm_sp = cl_vm.sp;
-            nlx->vm_fp = cl_vm.fp;
-            nlx->tag = catch_tag;
-            nlx->result = CL_NIL;
-            nlx->catch_ip = ip;
-            nlx->offset = catch_offset;
-            nlx->code = code;
-            nlx->constants = constants;
-            nlx->bytecode = frame->bytecode;
-            nlx->base_fp = base_fp;
-            nlx->dyn_mark = cl_dyn_top;
-            nlx->handler_mark = cl_handler_top;
-            nlx->handler_active_mask = cl_handler_active_mask;
-            nlx->restart_mark = cl_restart_top;
-            nlx->error_mark = cl_error_frame_top;
-            nlx->gc_root_mark = gc_root_count;
-            nlx->compiler_mark = cl_compiler_mark();
-            nlx->printer_mark = cl_printer_state_save();
-            nlx->mv_count = 1;
-            nlx->saved_pending_mark = cl_saved_pending_top;
-            nlx->saved_jit_depth = CT->jit_depth;
-
-            if (CL_SETJMP(nlx->buf) == 0) {
-                /* Normal path: body executes */
-                cl_nlx_top++;
-            } else {
-                /* longjmp from throw: restore state from NLX frame.
-                 * Recompute nlx from global — the local pointer may be
-                 * indeterminate after longjmp (C99 7.13.2.1). */
-                /* Same hazard applies to the cached thread pointer (see
-                 * OP_TAGBODY_PUSH): reload it before any cl_vm/mv access. */
-                thr = cl_get_current_thread();
-                nlx = &cl_nlx_stack[cl_nlx_top];
-                cl_dynbind_restore_to(nlx->dyn_mark);
-                cl_handler_top = nlx->handler_mark;
-                /* Restore the CLHS 9.1.4 disabled-handler band to its state at
-                 * this frame's establishment.  If the throw unwound out of a
-                 * running handler (e.g. INVOKE-RESTART), this re-enables the
-                 * band that handler had disabled, so the next SIGNAL is caught. */
-                cl_handler_active_mask = nlx->handler_active_mask;
-                cl_restart_top = nlx->restart_mark;
-                cl_error_frame_top = nlx->error_mark;
-                gc_root_count = nlx->gc_root_mark;
-                cl_jit_restore_depth(nlx->saved_jit_depth);
-                cl_compiler_unwind_to(nlx->compiler_mark, CL_CAPTURE_SP());
-                cl_printer_state_restore(nlx->printer_mark);
-                cl_saved_pending_top = nlx->saved_pending_mark;
-                /* This landing IS the target of a non-local transfer, so that
-                 * transfer is complete: drop any pending NLX state.  The
-                 * pending state can be a FOREIGN one — an error unwind
-                 * (cl_pending_throw == 2) that longjmp'd into an
-                 * UNWIND-PROTECT cleanup, where the cleanup then threw out to
-                 * this catch.  CLHS 5.2 says the original transfer is
-                 * abandoned when a cleanup initiates its own; leaving the flag
-                 * set instead let the next enclosing OP_UWRETHROW resurrect
-                 * that abandoned error, so the throw appeared to succeed and
-                 * the error resurfaced moments later.  The UWPROT landing does
-                 * NOT do this — it is a pass-through, not a target. */
-                cl_pending_throw = 0;
-                {
-                    CL_Obj throw_result = nlx->result;
-                    cl_vm.sp = nlx->vm_sp;
-                    cl_vm.fp = nlx->vm_fp;
-                    frame = &cl_vm.frames[cl_vm.fp - 1];
-                    code = nlx->code;
-                    constants = nlx->constants;
-                    base_fp = nlx->base_fp;
-                    ip = nlx->catch_ip + nlx->offset;
-                    /* Sync frame with NLX-restored state */
-                    frame->code = code;
-                    frame->constants = constants;
-                    frame->bytecode = nlx->bytecode;
-                    /* Restore multiple values preserved across NLX */
-                    cl_mv_count = nlx->mv_count;
-                    { int mi; for (mi = 0; mi < cl_mv_count && mi < CL_MAX_MV; mi++)
-                        cl_mv_values[mi] = nlx->mv_values[mi]; }
-                    cl_vm_push(throw_result);
-                }
-            }
+            VM_NLX_FRAME_INIT(nlx, CL_NLX_CATCH, catch_tag, catch_offset);
+            cl_nlx_top++;
             VM_BREAK;
         }
 
@@ -4277,186 +4512,84 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     cl_error(CL_ERR_OVERFLOW, "NLX stack overflow");
                 }
 
+            /* No setjmp here (see the shared landing): the frame points at
+             * this activation's landing, which — for an UWPROT frame —
+             * updates the saved-pending slot below and jumps to the cleanup. */
+            VM_NLX_ARM();
             nlx = &cl_nlx_stack[cl_nlx_top];
-            nlx->type = CL_NLX_UWPROT;
-            nlx->vm_sp = cl_vm.sp;
-            nlx->vm_fp = cl_vm.fp;
-            nlx->tag = CL_NIL;
-            nlx->result = CL_NIL;
-            nlx->catch_ip = ip;
-            nlx->offset = uwp_offset;
-            nlx->code = code;
-            nlx->constants = constants;
-            nlx->bytecode = frame->bytecode;
-            nlx->base_fp = base_fp;
-            nlx->dyn_mark = cl_dyn_top;
-            nlx->handler_mark = cl_handler_top;
-            nlx->handler_active_mask = cl_handler_active_mask;
-            nlx->restart_mark = cl_restart_top;
-            nlx->error_mark = cl_error_frame_top;
-            nlx->gc_root_mark = gc_root_count;
-            nlx->compiler_mark = cl_compiler_mark();
-            nlx->printer_mark = cl_printer_state_save();
+            VM_NLX_FRAME_INIT(nlx, CL_NLX_UWPROT, CL_NIL, uwp_offset);
 
-            if (CL_SETJMP(nlx->buf) == 0) {
-                /* Normal path: save and clear pending throw state so that a
-                 * nested unwind-protect inside the cleanup cannot clobber
-                 * the outer non-local transfer. */
-                if (cl_saved_pending_top >= cl_saved_pending_max)
-                    cl_error(CL_ERR_OVERFLOW, "saved-pending stack overflow");
-                {
-                    CL_SavedPending *sp = &cl_saved_pending_stack[cl_saved_pending_top++];
-                    sp->pending_throw    = cl_pending_throw;
-                    /* GC SAFETY (audit tier 4): with no throw in flight the
-                     * tag/value globals still hold the last COMPLETED throw's
-                     * objects.  This parking slot is deliberately skipped by
-                     * the GC walks while pending_throw==0 (it may hold
-                     * garbage), so parking those live offsets here lets the
-                     * cleanup body's compactions move the objects out from
-                     * under the copies; UWRETHROW then restores STALE offsets
-                     * into the always-marked cl_pending_tag/value — the next
-                     * mark walk follows them into arbitrary object interiors
-                     * and ORs mark bits mid-object (observed: a GF dispatch
-                     * cache's bucket array → circular chain → GC spins
-                     * forever).  Park NILs instead; the values are
-                     * meaningless without an armed throw. */
-                    if (cl_pending_throw) {
-                        sp->pending_tag      = cl_pending_tag;
-                        sp->pending_value    = cl_pending_value;
-                        sp->pending_mv_count = cl_pending_mv_count;
-                        { int _mi; for (_mi = 0; _mi < cl_pending_mv_count && _mi < CL_MAX_MV; _mi++)
-                            sp->pending_mv_values[_mi] = cl_pending_mv_values[_mi]; }
-                    } else {
-                        sp->pending_tag      = CL_NIL;
-                        sp->pending_value    = CL_NIL;
-                        sp->pending_mv_count = 0;
-                    }
-                    sp->pending_error_code = cl_pending_error_code;
-                    strncpy(sp->pending_error_msg, cl_pending_error_msg,
-                            sizeof(sp->pending_error_msg) - 1);
-                    sp->pending_error_msg[sizeof(sp->pending_error_msg) - 1] = '\0';
-                    sp->entered_via_longjmp = 0; /* set to 1 in longjmp branch if triggered */
-                }
-                cl_pending_throw    = 0;
-                cl_pending_tag      = CL_NIL;
-                cl_pending_value    = CL_NIL;
-                cl_pending_mv_count = 0;
-                cl_pending_error_code = 0;
-                cl_pending_error_msg[0] = '\0';
-                nlx->saved_pending_mark = cl_saved_pending_top;
-                nlx->saved_jit_depth = CT->jit_depth;
-                cl_nlx_top++;
-
-
-#ifdef CL_DEBUG_UWP
-                if (frame->n_locals >= 1 &&
-                    cl_vm.stack[frame->bp] != CL_NIL &&
-                    cl_vm.stack[frame->bp] != CL_T &&
-                    cl_vm.fp >= 88 && dbg_watch_idx < 0) {
-                    dbg_watch_idx = frame->bp;
-                    dbg_watch_orig = cl_vm.stack[frame->bp];
-                    dbg_watch_nlx = cl_nlx_top - 1;
-                    fprintf(stderr, "[UWP-WATCH] armed on stack[%d]=0x%x fp=%d nlx=%d\n",
-                            frame->bp, (unsigned)cl_vm.stack[frame->bp], cl_vm.fp, dbg_watch_nlx);
-                }
-#endif
-            } else {
-                /* longjmp from throw/error through UWP: restore state, jump to cleanup.
-                 * Recompute nlx — local pointer may be indeterminate after longjmp. */
-                /* Reload cached thread pointer too (see OP_TAGBODY_PUSH). */
-                thr = cl_get_current_thread();
-                nlx = &cl_nlx_stack[cl_nlx_top];
-                cl_dynbind_restore_to(nlx->dyn_mark);
-                cl_handler_top = nlx->handler_mark;
-                /* Restore the CLHS 9.1.4 disabled-handler band to its state at
-                 * this frame's establishment.  If the throw unwound out of a
-                 * running handler (e.g. INVOKE-RESTART), this re-enables the
-                 * band that handler had disabled, so the next SIGNAL is caught. */
-                cl_handler_active_mask = nlx->handler_active_mask;
-                cl_restart_top = nlx->restart_mark;
-                cl_error_frame_top = nlx->error_mark;
-                gc_root_count = nlx->gc_root_mark;
-                cl_jit_restore_depth(nlx->saved_jit_depth);
-                cl_compiler_unwind_to(nlx->compiler_mark, CL_CAPTURE_SP());
-                cl_printer_state_restore(nlx->printer_mark);
-                cl_saved_pending_top = nlx->saved_pending_mark;
-                /* The saved slot was pushed at arming time (before the throw).
-                 * Update it now with the actual pending state that triggered
-                 * this cleanup, so UWRETHROW can re-initiate it if the cleanup
-                 * body completes without a new NLX of its own. */
-                if (cl_saved_pending_top > 0) {
-                    CL_SavedPending *sp =
-                        &cl_saved_pending_stack[cl_saved_pending_top - 1];
-                    sp->pending_throw    = cl_pending_throw;
+            /* Save and clear pending throw state so that a nested
+             * unwind-protect inside the cleanup cannot clobber the outer
+             * non-local transfer. */
+            if (cl_saved_pending_top >= cl_saved_pending_max)
+                cl_error(CL_ERR_OVERFLOW, "saved-pending stack overflow");
+            {
+                CL_SavedPending *sp = &cl_saved_pending_stack[cl_saved_pending_top++];
+                int pt = cl_pending_throw;
+                sp->pending_throw    = pt;
+                /* GC SAFETY (audit tier 4): with no throw in flight the
+                 * tag/value globals still hold the last COMPLETED throw's
+                 * objects.  This parking slot is deliberately skipped by
+                 * the GC walks while pending_throw==0 (it may hold
+                 * garbage), so parking those live offsets here lets the
+                 * cleanup body's compactions move the objects out from
+                 * under the copies; UWRETHROW then restores STALE offsets
+                 * into the always-marked cl_pending_tag/value — the next
+                 * mark walk follows them into arbitrary object interiors
+                 * and ORs mark bits mid-object (observed: a GF dispatch
+                 * cache's bucket array → circular chain → GC spins
+                 * forever).  Park NILs instead; the values are
+                 * meaningless without an armed throw.  The 512-byte error
+                 * message is likewise only meaningful for a pending ERROR
+                 * (pt == 2) — copying it on every entry was the single
+                 * most expensive thing an UNWIND-PROTECT did. */
+                if (pt) {
                     sp->pending_tag      = cl_pending_tag;
                     sp->pending_value    = cl_pending_value;
                     sp->pending_mv_count = cl_pending_mv_count;
-                    { int _mi; for (_mi = 0;
-                                    _mi < cl_pending_mv_count && _mi < CL_MAX_MV;
-                                    _mi++)
+                    { int _mi; for (_mi = 0; _mi < cl_pending_mv_count && _mi < CL_MAX_MV; _mi++)
                         sp->pending_mv_values[_mi] = cl_pending_mv_values[_mi]; }
                     sp->pending_error_code = cl_pending_error_code;
-                    strncpy(sp->pending_error_msg, cl_pending_error_msg,
-                            sizeof(sp->pending_error_msg) - 1);
-                    sp->pending_error_msg[sizeof(sp->pending_error_msg) - 1] = '\0';
-                    sp->entered_via_longjmp = 1; /* our longjmp fired — UWRETHROW must rethrow */
+                    if (pt == 2) {
+                        strncpy(sp->pending_error_msg, cl_pending_error_msg,
+                                sizeof(sp->pending_error_msg) - 1);
+                        sp->pending_error_msg[sizeof(sp->pending_error_msg) - 1] = '\0';
+                    } else {
+                        sp->pending_error_msg[0] = '\0';
+                    }
+                    cl_pending_throw    = 0;
+                    cl_pending_tag      = CL_NIL;
+                    cl_pending_value    = CL_NIL;
+                    cl_pending_mv_count = 0;
+                    cl_pending_error_code = 0;
+                    cl_pending_error_msg[0] = '\0';
+                } else {
+                    sp->pending_tag      = CL_NIL;
+                    sp->pending_value    = CL_NIL;
+                    sp->pending_mv_count = 0;
+                    sp->pending_error_code = 0;
+                    sp->pending_error_msg[0] = '\0';
                 }
-                cl_vm.sp = nlx->vm_sp;
-                cl_vm.fp = nlx->vm_fp;
-                frame = &cl_vm.frames[cl_vm.fp - 1];
-                code = nlx->code;
-                constants = nlx->constants;
-                base_fp = nlx->base_fp;
-                ip = nlx->catch_ip + nlx->offset;
-                /* Sync frame with NLX-restored state */
-                frame->code = code;
-                frame->constants = constants;
-                frame->bytecode = nlx->bytecode;
+                sp->entered_via_longjmp = 0; /* set to 1 by the landing if triggered */
+            }
+            /* The record above is part of this frame's dynamic extent: a
+             * transfer to this frame must find it, not drop it. */
+            nlx->saved_pending_mark = cl_saved_pending_top;
+            cl_nlx_top++;
 
 #ifdef CL_DEBUG_UWP
-                /* Detect slot corruption after UWP longjmp */
-                {
-                    int di;
-                    int has_corruption = 0;
-                    for (di = 0; di < frame->n_locals && di < 8; di++) {
-                        if (cl_vm.stack[frame->bp + di] == CL_T) {
-                            has_corruption = 1;
-                            break;
-                        }
-                    }
-                    if (has_corruption) {
-                        int fi;
-                        fprintf(stderr, "[UWP-LONGJMP] CORRUPTION at bp=%d sp=%d fp=%d n_locals=%d\n",
-                                frame->bp, cl_vm.sp, cl_vm.fp, frame->n_locals);
-                        fprintf(stderr, "[UWP-LONGJMP] slots:");
-                        for (di = 0; di < frame->n_locals && di < 16; di++)
-                            fprintf(stderr, " [%d]=0x%x", di, (unsigned)cl_vm.stack[frame->bp + di]);
-                        fprintf(stderr, "\n");
-                        fprintf(stderr, "[UWP-LONGJMP] nlx_top=%d, pending_throw=%d\n",
-                                cl_nlx_top, cl_pending_throw);
-                        /* Print NLX stack and frame stack */
-                        for (fi = cl_nlx_top; fi >= 0 && fi >= cl_nlx_top - 5; fi--)
-                            fprintf(stderr, "[UWP-LONGJMP] nlx[%d] type=%d vm_fp=%d vm_sp=%d\n",
-                                    fi, cl_nlx_stack[fi].type, cl_nlx_stack[fi].vm_fp, cl_nlx_stack[fi].vm_sp);
-                        for (fi = cl_vm.fp - 1; fi >= 0 && fi >= cl_vm.fp - 15; fi--) {
-                            CL_Frame *f = &cl_vm.frames[fi];
-                            const char *fn = "?";
-                            CL_Bytecode *fbc = NULL;
-                            if (CL_CLOSURE_P(f->bytecode)) {
-                                CL_Closure *cc = (CL_Closure *)CL_OBJ_TO_PTR(f->bytecode);
-                                fbc = (CL_Bytecode *)CL_OBJ_TO_PTR(cc->bytecode);
-                            } else if (CL_BYTECODE_P(f->bytecode)) {
-                                fbc = (CL_Bytecode *)CL_OBJ_TO_PTR(f->bytecode);
-                            }
-                            if (fbc && fbc->name != CL_NIL) fn = cl_symbol_name(fbc->name);
-                            else if (fbc) fn = "<anon>";
-                            fprintf(stderr, "  frame[%d] fn=%s bp=%d n_locals=%d nargs=%d\n",
-                                    fi, fn, f->bp, f->n_locals, f->nargs);
-                        }
-                    }
-                }
-#endif
+            if (frame->n_locals >= 1 &&
+                cl_vm.stack[frame->bp] != CL_NIL &&
+                cl_vm.stack[frame->bp] != CL_T &&
+                cl_vm.fp >= 88 && dbg_watch_idx < 0) {
+                dbg_watch_idx = frame->bp;
+                dbg_watch_orig = cl_vm.stack[frame->bp];
+                dbg_watch_nlx = cl_nlx_top - 1;
+                fprintf(stderr, "[UWP-WATCH] armed on stack[%d]=0x%x fp=%d nlx=%d\n",
+                        frame->bp, (unsigned)cl_vm.stack[frame->bp], cl_vm.fp, dbg_watch_nlx);
             }
+#endif
             VM_BREAK;
         }
 
@@ -4553,7 +4686,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                                 !nlx_frame_is_stale(&cl_nlx_stack[j])) {
                                 /* Jump to interposing UWPROT first */
                                 cl_nlx_top = j;
-                                CL_LONGJMP(cl_nlx_stack[j].buf, 1);
+                                VM_NLX_GOTO(&cl_nlx_stack[j]);
                             }
                         }
                         /* No interposing UWPROT, go directly to target */
@@ -4563,12 +4696,38 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                         { int mi; for (mi = 0; mi < cl_pending_mv_count && mi < CL_MAX_MV; mi++)
                             cl_nlx_stack[i].mv_values[mi] = cl_pending_mv_values[mi]; }
                         cl_nlx_top = i;
-                        CL_LONGJMP(cl_nlx_stack[i].buf, 1);
+                        VM_NLX_GOTO(&cl_nlx_stack[i]);
                     }
                 }
                 /* No catch found — signal error */
                 cl_pending_throw = 0;
                 cl_error(CL_ERR_GENERAL, "No catch for tag during re-throw");
+            } else if (should_rethrow && cl_pending_throw == 3) {
+                /* Re-initiate a HANDLER-CASE clause transfer: the target
+                 * frame index travels in cl_pending_tag (a fixnum — see
+                 * cl_handler_case_transfer), the condition in
+                 * cl_pending_value; hc_clause is already set in the frame. */
+                int i = (int)CL_FIXNUM_VAL(cl_pending_tag);
+                int j;
+                if (i < cl_nlx_floor || i >= cl_nlx_top ||
+                    cl_nlx_stack[i].type != CL_NLX_HANDLER_CASE) {
+                    cl_pending_throw = 0;
+                    cl_error(CL_ERR_GENERAL,
+                             "HANDLER-CASE frame vanished during re-throw");
+                }
+                for (j = cl_nlx_top - 1; j > i; j--) {
+                    if (cl_nlx_stack[j].type == CL_NLX_UWPROT &&
+                        !nlx_frame_is_stale(&cl_nlx_stack[j])) {
+                        cl_nlx_top = j;
+                        VM_NLX_GOTO(&cl_nlx_stack[j]);
+                    }
+                }
+                cl_pending_throw = 0;
+                cl_nlx_stack[i].result = cl_pending_value;
+                cl_nlx_stack[i].mv_count = 1;
+                cl_nlx_stack[i].mv_values[0] = cl_pending_value;
+                cl_nlx_top = i;
+                VM_NLX_GOTO(&cl_nlx_stack[i]);
             } else if (should_rethrow && cl_pending_throw == 2) {
                 /* Re-throw error: find interposing UWPROT or error frame (skip stale) */
                 int i;
@@ -4576,7 +4735,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     if (cl_nlx_stack[i].type == CL_NLX_UWPROT &&
                         !nlx_frame_is_stale(&cl_nlx_stack[i])) {
                         cl_nlx_top = i;
-                        CL_LONGJMP(cl_nlx_stack[i].buf, 1);
+                        VM_NLX_GOTO(&cl_nlx_stack[i]);
                     }
                 }
                 /* No more UWPROT — propagate to error handler.
@@ -4638,6 +4797,48 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             }
             cl_vm_push(list);
             cl_mv_count = 1;
+            VM_BREAK;
+        }
+
+        VM_CASE(OP_MV_SAVE): {
+            /* UNWIND-PROTECT value passing (vm.h): pop the primary and park
+             * it with the rest of the MV buffer as one record on the
+             * per-thread save stack — values first, then the count as a
+             * fixnum on top.  No list, no local slot.  The record survives
+             * the cleanup forms (which clobber the MV buffer) and is popped
+             * by OP_MV_RESTORE; the landing drops it on a non-local exit. */
+            CL_Obj primary = cl_vm_pop();
+            int n = cl_mv_count;
+            int i;
+            if (n < 0) n = 0;
+            if (n > CL_MAX_MV) n = CL_MAX_MV;
+            if (thr->mv_save_top + n + 1 > CL_MV_SAVE_SIZE)
+                cl_error(CL_ERR_OVERFLOW,
+                         "UNWIND-PROTECT value-save stack overflow");
+            if (n > 0) {
+                thr->mv_save_buf[thr->mv_save_top++] = primary;
+                for (i = 1; i < n; i++)
+                    thr->mv_save_buf[thr->mv_save_top++] = cl_mv_values[i];
+            }
+            thr->mv_save_buf[thr->mv_save_top++] = CL_MAKE_FIXNUM(n);
+            VM_BREAK;
+        }
+
+        VM_CASE(OP_MV_RESTORE): {
+            /* Pop the record back into the MV buffer; push the primary. */
+            int n, i;
+            if (thr->mv_save_top < 1)
+                cl_error(CL_ERR_GENERAL,
+                         "OP_MV_RESTORE: value-save stack underflow");
+            n = (int)CL_FIXNUM_VAL(thr->mv_save_buf[--thr->mv_save_top]);
+            if (n < 0 || n > CL_MAX_MV || thr->mv_save_top < n)
+                cl_error(CL_ERR_GENERAL,
+                         "OP_MV_RESTORE: corrupt value-save record");
+            thr->mv_save_top -= n;
+            for (i = 0; i < n; i++)
+                cl_mv_values[i] = thr->mv_save_buf[thr->mv_save_top + i];
+            cl_mv_count = n;
+            cl_vm_push(n > 0 ? cl_mv_values[0] : CL_NIL);
             VM_BREAK;
         }
 
@@ -4917,6 +5118,58 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
 #define cl_mv_count (CT->mv_count)
 #undef cl_mv_values
 #define cl_mv_values (CT->mv_values)
+#undef cl_nlx_stack
+#define cl_nlx_stack (CT->nlx_stack)
+#undef cl_nlx_top
+#define cl_nlx_top (CT->nlx_top)
+#undef cl_nlx_max
+#define cl_nlx_max (CT->nlx_max)
+#undef cl_nlx_floor
+#define cl_nlx_floor (CT->nlx_floor)
+#undef cl_dyn_top
+#define cl_dyn_top (CT->dyn_top)
+#undef cl_handler_stack
+#define cl_handler_stack (CT->handler_stack)
+#undef cl_handler_top
+#define cl_handler_top (CT->handler_top)
+#undef cl_handler_active_mask
+#define cl_handler_active_mask (CT->handler_active_mask)
+#undef cl_restart_stack
+#define cl_restart_stack (CT->restart_stack)
+#undef cl_restart_top
+#define cl_restart_top (CT->restart_top)
+#undef cl_error_frame_top
+#define cl_error_frame_top (CT->error_frame_top)
+#undef gc_root_count
+#define gc_root_count (CT->gc_root_count)
+#undef cl_saved_pending_stack
+#define cl_saved_pending_stack (CT->saved_pending_stack)
+#undef cl_saved_pending_top
+#define cl_saved_pending_top (CT->saved_pending_top)
+#undef cl_saved_pending_max
+#define cl_saved_pending_max (CT->saved_pending_max)
+#undef cl_pending_throw
+#define cl_pending_throw (CT->pending_throw)
+#undef cl_pending_tag
+#define cl_pending_tag (CT->pending_tag)
+#undef cl_pending_value
+#define cl_pending_value (CT->pending_value)
+#undef cl_pending_error_code
+#define cl_pending_error_code (CT->pending_error_code)
+#undef cl_pending_error_msg
+#define cl_pending_error_msg (CT->pending_error_msg)
+#undef cl_pending_mv_count
+#define cl_pending_mv_count (CT->pending_mv_count)
+#undef cl_pending_mv_values
+#define cl_pending_mv_values (CT->pending_mv_values)
+#undef cl_trace_count
+#define cl_trace_count (CT->trace_count)
+#undef cl_trace_depth
+#define cl_trace_depth (CT->trace_depth)
+#undef cl_pre_call_mv_count
+#define cl_pre_call_mv_count (CT->pre_call_mv_count)
+#undef cl_pre_call_mv_values
+#define cl_pre_call_mv_values (CT->pre_call_mv_values)
 
 #undef VM_DISPATCH
 #undef VM_CASE
@@ -4972,6 +5225,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
     frame->n_locals = bc->n_locals;
     frame->nargs = 0;
     frame->nlx_level = cl_nlx_top;
+    frame->fslot = 0;
 
     /* Allocate space for locals */
     {

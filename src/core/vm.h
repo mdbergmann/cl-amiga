@@ -34,6 +34,15 @@ typedef struct {
     uint8_t stub_code[3]; /* For cl_vm_apply stub frames: OP_CALL,nargs,OP_HALT.
                              Embedded here so it survives longjmp past the
                              cl_vm_apply C frame (stack-use-after-return fix). */
+    uint8_t fslot;       /* 1 if the caller's function object sits in the
+                            stack slot just below bp (OP_CALL / OP_TAILCALL
+                            push [func][args...] and the frame's bp is the
+                            first argument), 0 if nothing is under the
+                            arguments (OP_CALL_GLOBAL, OP_APPLY, the entry
+                            frames of cl_vm_eval / cl_vm_apply).  OP_RET
+                            restores sp = bp - fslot, which is what lets a
+                            call leave its arguments where they were pushed
+                            instead of shifting them down over the func. */
     int nlx_level;       /* NLX stack depth when this frame was entered.
                             Used by OP_TAILCALL to pop BLOCK/CATCH frames
                             from the current function before reusing the frame. */
@@ -69,10 +78,27 @@ void cl_dynbind_restore_to(int mark);
 #define CL_NLX_UWPROT   1
 #define CL_NLX_BLOCK    2
 #define CL_NLX_TAGBODY  3
+#define CL_NLX_HANDLER_CASE 4  /* OP_HANDLER_CASE_PUSH: the clause landing of a
+                                * HANDLER-CASE.  Its handler bindings hold the
+                                * clause index as a fixnum and point back at
+                                * this frame (CL_HandlerBinding.nlx_index);
+                                * cl_signal_condition transfers here instead
+                                * of calling a handler function. */
+#define CL_NLX_TYPE_COUNT 5
 #define CL_MAX_NLX_FRAMES 2048
 
 typedef struct {
     uint8_t type;          /* CL_NLX_CATCH or CL_NLX_UWPROT */
+    /* Where a non-local transfer to this frame lands.  A frame pushed by
+     * the bytecode VM (OP_CATCH / OP_UWPROT / OP_BLOCK_PUSH / OP_TAGBODY_PUSH)
+     * does NOT setjmp: `landing` points at the ONE jmp_buf its cl_vm_run
+     * activation armed on its first NLX push, and the activation's shared
+     * landing code restores everything from the frame at cl_nlx_top.  A
+     * frame pushed by C code (bi_warn, the thread-entry abort frame) or by
+     * JIT'd native code (which setjmps inline) has landing == NULL and owns
+     * `buf`.  cl_nlx_jump() picks the right one; nothing else may longjmp
+     * to an NLX frame directly. */
+    jmp_buf *landing;
     jmp_buf buf;
     CL_JMPBUF_GUARD        /* MorphOS PPC setjmp overrun guard — see types.h */
     int vm_sp;
@@ -110,6 +136,14 @@ typedef struct {
     int mv_count;          /* multiple value count to preserve across NLX */
     CL_Obj mv_values[CL_MAX_MV]; /* multiple values to preserve across NLX */
     int saved_pending_mark; /* saved_pending_top depth at frame creation */
+    int mv_save_mark;      /* CL_Thread.mv_save_top at frame creation: the
+                            * UNWIND-PROTECT value records pushed above it
+                            * (OP_MV_SAVE) belong to cleanups this transfer
+                            * abandons, so the landing drops them. */
+    int32_t hc_clause;     /* CL_NLX_HANDLER_CASE: index of the clause whose
+                            * type matched, set by the transfer; the landing
+                            * resumes at catch_ip + offset + 5 * hc_clause
+                            * (the per-clause OP_JMP table). */
     int saved_jit_depth;   /* CT->jit_depth at frame creation.  Restored on
                             * every longjmp landing (like the CL_ErrorFrame
                             * twin): a THROW/RETURN-FROM/GO that unwinds past
@@ -125,11 +159,50 @@ typedef struct {
                             * CL_ErrorFrame.saved_printer twin). */
 } CL_NLXFrame;
 
+/* Transfer control to NLX frame F (never returns): longjmp to the owning
+ * cl_vm_run activation's landing, or to the frame's own buf for a C/JIT
+ * frame.  The caller has already set cl_nlx_top to F's index and stored the
+ * result / pending state the landing consumes. */
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((noreturn))
+#endif
+void cl_nlx_jump(CL_NLXFrame *f);
+
+/* HANDLER-CASE clause transfer (never returns): handler binding BINDING_IDX
+ * matched CONDITION.  Runs the interposing UNWIND-PROTECT cleanups (pending
+ * kind 3, target frame index in cl_pending_tag) and lands in the owning
+ * CL_NLX_HANDLER_CASE frame with the condition as its result. */
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((noreturn))
+#endif
+void cl_handler_case_transfer(int binding_idx, CL_Obj condition);
+
+/* --- UNWIND-PROTECT value save stack (OP_MV_SAVE / OP_MV_RESTORE) ---
+ *
+ * The values of a protected form must survive the cleanup forms, which
+ * clobber the MV buffer.  Instead of consing them into a list and calling
+ * VALUES-LIST afterwards, OP_MV_SAVE pushes one record — the values, then
+ * their count as a FIXNUM on top — onto a small per-thread stack, and
+ * OP_MV_RESTORE pops it back into the MV buffer.  Every word in the buffer
+ * is a valid CL_Obj (the count is fixnum-tagged), so the GC marks and
+ * forwards the whole used prefix.  A record costs count + 1 words; the
+ * fixed size bounds the nesting of ACTIVE cleanups (a cleanup that recurses
+ * into another unwind-protect) — 2048 words is one single-value record per
+ * VM frame (CL_VM_FRAME_SIZE), so a single-valued cleanup recursion hits
+ * "Call stack overflow" first, and a multi-valued one gets a clean
+ * "value-save stack overflow" error. */
+#define CL_MV_SAVE_SIZE 2048
+
 /* --- Condition handler binding stack --- */
 
 typedef struct {
     CL_Obj type_name;     /* Condition type symbol to match */
-    CL_Obj handler;       /* Handler function (closure or function) */
+    CL_Obj handler;       /* Handler function (closure or function) — or, for a
+                             HANDLER-CASE clause, the clause index as a FIXNUM:
+                             no function is called, control transfers to the
+                             NLX frame at nlx_index (cl_handler_case_transfer). */
+    int nlx_index;        /* CL_NLX_HANDLER_CASE frame owning this binding, or
+                             -1 for an ordinary HANDLER-BIND binding */
     int handler_mark;     /* Handler stack depth when this binding was established */
     /* The per-binding enabled/disabled state (CLHS 9.1.4) now lives in the
      * per-thread cl_handler_active_mask (bit j = binding j enabled), so it can

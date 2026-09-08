@@ -716,6 +716,11 @@ static CL_Obj scan_nlx_macroexpand_1(CL_Obj form)
 /* Recursion-depth cap for the NLX walker — guards against C-stack overflow
  * from pathologically nested forms (mirrors scan_body_for_boxing). */
 static int scan_nlx_recurse_depth = 0;
+/* > 0 while scanning inside the argument list of a call form — see the
+ * RETURN-FROM / GO check at the top of nlx_scan.  Reset by the two scan
+ * entry points so a scan abandoned by a longjmp cannot leave it raised. */
+static int scan_nlx_arg_depth = 0;
+extern CL_Obj bi_special_operator_p(CL_Obj *args, int n);   /* builtins_mutation.c */
 #define SCAN_NLX_MAX_RECURSE_DEPTH 500
 
 /* NLX walker modes:
@@ -810,6 +815,27 @@ static int nlx_scan(CL_Obj form, int mode, CL_Obj tag, int anon)
             return 1;
     }
 
+    /* A RETURN-FROM (or GO) sitting inside the ARGUMENT LIST of a call —
+     * (block b (list 1 (return-from b 2))), (tagbody a (f (go a))) — must
+     * take the NLX path too.  The local-jump exit only stores the value and
+     * jumps; the call's already-pushed arguments (the 1 above) stay on the
+     * operand stack, so everything the enclosing form pushes afterwards
+     * lands one slot too high (observed: FORMAT called with its arguments
+     * shifted, a call landing on "Not a function: symbol T").  The NLX
+     * landing restores the stack pointer from the frame.  Statement-level
+     * special forms (IF/PROGN/LET bodies...) leave nothing pending and keep
+     * the cheap local exit — see the arg-depth bookkeeping below. */
+    if (scan_nlx_arg_depth > 0) {
+        if (mode == NLX_BLOCK) {
+            if (head == SYM_RETURN_FROM && CL_CONS_P(rest) && cl_car(rest) == tag)
+                return 1;
+            if (anon && head == SYM_RETURN)
+                return 1;
+        }
+        if (mode == NLX_ANY_CLOSURE && head == SYM_GO)
+            return 1;
+    }
+
     /* Closure-creating forms.  Must appear as (OP ...) — a bare symbol
      * LAMBDA used as a variable does not create a closure. */
     if (head == SYM_LAMBDA || head == SYM_NAMED_LAMBDA
@@ -841,7 +867,8 @@ static int nlx_scan(CL_Obj form, int mode, CL_Obj tag, int anon)
      * cl_restart_top from the block frame's saved marks, unwinding them. */
     if (mode == NLX_BLOCK &&
         (head == SYM_UNWIND_PROTECT || head == SYM_CATCH ||
-         head == SYM_HANDLER_BIND))
+         head == SYM_HANDLER_BIND ||
+         (cl_handler_case_sym != CL_NIL && head == cl_handler_case_sym)))
         return nlx_scan(form, NLX_FIND_RF, tag, anon);
 
     scan_nlx_recurse_depth++;
@@ -907,6 +934,7 @@ static int nlx_scan(CL_Obj form, int mode, CL_Obj tag, int anon)
     /* (let/let* ((var value)...) body...) — scan values + body, skip names. */
     if (head == SYM_LET || head == SYM_LETSTAR) {
         CL_Obj bindings, body;
+        int idx = 0;
         if (!CL_CONS_P(rest)) goto done;
         bindings = cl_car(rest);
         body = cl_cdr(rest);
@@ -914,8 +942,19 @@ static int nlx_scan(CL_Obj form, int mode, CL_Obj tag, int anon)
         CL_GC_PROTECT(body);
         while (CL_CONS_P(bindings)) {
             CL_Obj clause = cl_car(bindings);
-            if (CL_CONS_P(clause) && CL_CONS_P(cl_cdr(clause)))
-                if (nlx_scan(cl_car(cl_cdr(clause)), mode, tag, anon)) { r = 1; break; }
+            if (CL_CONS_P(clause) && CL_CONS_P(cl_cdr(clause))) {
+                /* A parallel LET evaluates every init form before it binds
+                 * any variable (compile_let pushes them all, then stores),
+                 * so an init after the first runs with the earlier values
+                 * pending on the operand stack — a local exit from there
+                 * would leave them behind.  LET* binds as it goes. */
+                int saved_depth = scan_nlx_arg_depth;
+                if (head == SYM_LET && idx > 0) scan_nlx_arg_depth++;
+                r = nlx_scan(cl_car(cl_cdr(clause)), mode, tag, anon);
+                scan_nlx_arg_depth = saved_depth;
+                if (r) break;
+            }
+            idx++;
             bindings = cl_cdr(bindings);
         }
         if (!r) r = nlx_scan_body(body, mode, tag, anon);
@@ -951,20 +990,29 @@ static int nlx_scan(CL_Obj form, int mode, CL_Obj tag, int anon)
         CL_GC_PROTECT(clauses);
         CL_GC_PROTECT(endc);
         CL_GC_PROTECT(body);
+        {
+        int idx = 0;
         while (CL_CONS_P(clauses)) {
             CL_Obj clause = cl_car(clauses);
             if (CL_CONS_P(clause) && CL_CONS_P(cl_cdr(clause))) {
                 /* clause is re-read after the first nlx_scan below, which can
-                 * compact — keep a protected cursor for it too. */
+                 * compact — keep a protected cursor for it too.  A parallel
+                 * DO evaluates all inits (and all steps) before assigning,
+                 * like LET: forms after the first see pending temporaries. */
+                int saved_depth = scan_nlx_arg_depth;
                 CL_GC_PROTECT(clause);
+                if (head == SYM_DO && idx > 0) scan_nlx_arg_depth++;
                 if (nlx_scan(cl_car(cl_cdr(clause)), mode, tag, anon)) r = 1;
                 else if (CL_CONS_P(cl_cdr(cl_cdr(clause))) &&
                          nlx_scan(cl_car(cl_cdr(cl_cdr(clause))), mode, tag, anon))
                     r = 1;
+                scan_nlx_arg_depth = saved_depth;
                 CL_GC_UNPROTECT(1);
                 if (r) break;
             }
+            idx++;
             clauses = cl_cdr(clauses);
+        }
         }
         if (!r && CL_CONS_P(endc) && nlx_scan_body(endc, mode, tag, anon)) r = 1;
         if (!r) r = nlx_scan_body(body, mode, tag, anon);
@@ -1023,6 +1071,25 @@ static int nlx_scan(CL_Obj form, int mode, CL_Obj tag, int anon)
         }
         CL_GC_UNPROTECT(2);
         if (!r) r = nlx_scan_body(body, mode, tag, anon);
+        goto done;
+    }
+
+    /* (clamiga::%handler-case form (type ([var]) . body)...) — the clause
+     * CAR is a type spec and the CADR a variable list, not code: scan the
+     * form and each clause BODY only (same reasoning as handler-bind). */
+    if (cl_handler_case_sym != CL_NIL && head == cl_handler_case_sym) {
+        CL_Obj clauses;
+        if (!CL_CONS_P(rest)) goto done;
+        clauses = cl_cdr(rest);
+        CL_GC_PROTECT(clauses);
+        r = nlx_scan(cl_car(rest), mode, tag, anon);
+        while (!r && CL_CONS_P(clauses)) {
+            CL_Obj clause = cl_car(clauses);
+            if (CL_CONS_P(clause) && CL_CONS_P(cl_cdr(clause)))
+                r = nlx_scan_body(cl_cdr(cl_cdr(clause)), mode, tag, anon);
+            clauses = cl_cdr(clauses);
+        }
+        CL_GC_UNPROTECT(1);
         goto done;
     }
 
@@ -1088,15 +1155,35 @@ static int nlx_scan(CL_Obj form, int mode, CL_Obj tag, int anon)
      * evaluated code.  (Includes ((lambda ...) args) immediate calls — the
      * head cons is scanned too.)
      * GC SAFETY: protect `cur` — nlx_scan recursion can macroexpand and
-     * compact, and the cursor is re-read (cl_cdr) afterward. */
+     * compact, and the cursor is re-read (cl_cdr) afterward.
+     *
+     * A function call (or MULTIPLE-VALUE-CALL, PROGV and THROW, whose first
+     * subform is a pending temporary just like an argument) evaluates its subforms with
+     * the earlier ones already on the operand stack: bump the arg depth so
+     * a RETURN-FROM / GO found below is routed to the NLX path (see the
+     * check at the top).  A special operator that fell through to here
+     * (IF, PROGN, BLOCK, TAGBODY, THE, LOCALLY, ...) evaluates its subforms
+     * at statement level and leaves the depth alone. */
     {
         CL_Obj cur = form;
+        int saved_arg_depth = scan_nlx_arg_depth;
+        int is_call = 1;
+        if (CL_SYMBOL_P(head) && head != SYM_MULTIPLE_VALUE_CALL &&
+            head != SYM_PROGV && head != SYM_THROW) {
+            CL_Obj sop_args[1];
+            sop_args[0] = head;
+            if (bi_special_operator_p(sop_args, 1) != CL_NIL)
+                is_call = 0;
+        }
+        if (is_call)
+            scan_nlx_arg_depth++;
         CL_GC_PROTECT(cur);
         while (CL_CONS_P(cur)) {
-            if (nlx_scan(cl_car(cur), mode, tag, anon)) { r = 1; CL_GC_UNPROTECT(1); goto done; }
+            if (nlx_scan(cl_car(cur), mode, tag, anon)) { r = 1; break; }
             cur = cl_cdr(cur);
         }
         CL_GC_UNPROTECT(1);
+        scan_nlx_arg_depth = saved_arg_depth;
     }
 
 done:
@@ -1109,6 +1196,7 @@ done:
  * if a TAGBODY needs NLX for cross-closure go support. */
 static int tree_has_closure_forms(CL_Obj tree)
 {
+    scan_nlx_arg_depth = 0;
     return nlx_scan_body(tree, NLX_ANY_CLOSURE, CL_NIL, 0);
 }
 
@@ -1119,6 +1207,7 @@ static int tree_has_closure_forms(CL_Obj tree)
  * against a specific tag.  All recursion sees through macro expansions. */
 static int tree_needs_nlx_block(CL_Obj body, CL_Obj tag)
 {
+    scan_nlx_arg_depth = 0;
     return nlx_scan_body(body, NLX_BLOCK, tag, CL_NULL_P(tag));
 }
 
@@ -1684,6 +1773,151 @@ void compile_catch(CL_Compiler *c, CL_Obj form)
     c->in_tail = saved_tail;  /* restore for the caller's continuation */
 }
 
+/* --- %handler-case (the HANDLER-CASE special form) --- */
+
+#define CL_HC_MAX_CLAUSES 64   /* = CL_MAX_HANDLER_BINDINGS: one binding each */
+
+/* The K-th clause of (%handler-case form clause...), re-derived from the
+ * (GC-protected) form so a compaction between two reads cannot stale it. */
+static CL_Obj hc_nth_clause(CL_Obj form, int k)
+{
+    CL_Obj cl = cl_cdr(cl_cdr(form));
+    while (k-- > 0) cl = cl_cdr(cl);
+    return cl_car(cl);
+}
+
+void compile_handler_case(CL_Compiler *c, CL_Obj form)
+{
+    /* (clamiga::%handler-case form (typespec ([var]) declaration* form*)...)
+     *
+     * What boot.lisp's HANDLER-CASE macro expands to, after rewriting a
+     * :no-error clause away (CLHS 9.2.23's own expansion).  It used to expand
+     * to (block (catch (return-from (handler-bind ((type (lambda (c) ...)))
+     * form)))) + typecase: a cons, a closure and three NLX frames on EVERY
+     * entry, and the clause type tested twice.  Emitted shape:
+     *
+     *   HANDLER_CASE_PUSH <types> landing   ; 1 NLX frame + N bindings
+     *     <form>                            ; in_tail = 0
+     *   HANDLER_CASE_POP                    ; normal exit: values of form
+     *   JMP end
+     * landing:                              ; entered with [condition]
+     *   JMP clause_0 ; JMP clause_1 ; ...   ; 5 bytes each: the transfer
+     * clause_k:                             ;   resumes at landing + 5k
+     *   STORE g; POP   (var clause)         ; or just POP
+     *   <(let ((var g)) . body)>            ; LET handles declarations
+     *   JMP end
+     * end:
+     *
+     * A clause body is compiled as a LET so `(declare ...)` forms and a
+     * special VAR work exactly as in any binding form; the condition is
+     * handed to it through a gensym-named local slot. */
+    CL_Obj types = CL_NIL;
+    int n = 0, k, types_idx;
+    int saved_tail = c->in_tail;
+    int push_pos, end_chain = CL_JUMP_CHAIN_END;
+    int table_pos[CL_HC_MAX_CLAUSES];
+
+    CL_GC_PROTECT(form);
+    c->in_tail = 0;
+
+    {
+        CL_Obj cl = cl_cdr(cl_cdr(form));
+        while (CL_CONS_P(cl)) { n++; cl = cl_cdr(cl); }
+        if (n > CL_HC_MAX_CLAUSES)
+            cl_error(CL_ERR_OVERFLOW,
+                     "HANDLER-CASE: too many clauses (%d, max %d)",
+                     n, CL_HC_MAX_CLAUSES);
+    }
+    for (k = 0; k < n; k++) {
+        CL_Obj cl = hc_nth_clause(form, k);
+        if (!CL_CONS_P(cl) || !CL_CONS_P(cl_cdr(cl)) ||
+            !(CL_NULL_P(cl_car(cl_cdr(cl))) || CL_CONS_P(cl_car(cl_cdr(cl)))))
+            cl_error(CL_ERR_GENERAL,
+                     "HANDLER-CASE: malformed clause %d — expected "
+                     "(typespec ([var]) form*)", k);
+    }
+
+    /* The clause TYPE list, in clause order, as one constant.  Built back to
+     * front; cl_cons forwards its own operands and `types` is rooted. */
+    CL_GC_PROTECT(types);
+    for (k = n - 1; k >= 0; k--)
+        types = cl_cons(cl_car(hc_nth_clause(form, k)), types);
+    types_idx = cl_add_constant(c, types);
+    CL_GC_UNPROTECT(1);   /* types */
+
+    cl_emit(c, OP_HANDLER_CASE_PUSH);
+    cl_emit_u16(c, (uint16_t)types_idx);
+    push_pos = c->code_pos;
+    cl_emit_i32(c, 0);   /* landing, patched below */
+
+    /* The protected form.  Keep in_tail = 0: it must fall through to the
+     * POP so the frame and bindings are unwound on normal exit (a tail
+     * call would replace the frame and leak them — see compile_catch). */
+    compile_expr(c, cl_car(cl_cdr(form)));
+    cl_emit(c, OP_HANDLER_CASE_POP);
+    /* Normal arm: the form's own values.  Normalize a stale state here,
+     * before the jump, so only this arm pays and the join is
+     * self-describing (as compile_catch does). */
+    cl_mv_normalize(c);
+    end_chain = cl_emit_jump_chain(c, OP_JMP, end_chain);
+
+    /* landing: the per-clause jump table (must stay exactly 5 bytes per
+     * entry — OP_JMP + i32 — since the VM lands at landing + 5 * k). */
+    cl_patch_jump(c, push_pos);
+    for (k = 0; k < n; k++)
+        table_pos[k] = cl_emit_jump(c, OP_JMP);
+
+    for (k = 0; k < n; k++) {
+        CL_Obj cl = hc_nth_clause(form, k);
+        CL_Obj var_list = cl_car(cl_cdr(cl));
+        CL_Obj let_form;
+        CL_CompEnv *env = c->env;
+        int saved_local_count = env->local_count;
+
+        cl_patch_jump(c, table_pos[k]);
+        /* stack: [condition] */
+        if (CL_CONS_P(var_list)) {
+            CL_Obj g = cl_gensym_with_name("HC");
+            CL_Obj binding, bindings;
+            int slot;
+            CL_GC_PROTECT(g);
+            slot = cl_env_add_local(env, g);
+            cl_emit(c, OP_STORE);
+            cl_emit(c, (uint8_t)slot);
+            cl_emit(c, OP_POP);
+            /* (let ((var g)) . body) — every operand is re-derived from
+             * the rooted form or rooted g right before the cons that
+             * consumes it. */
+            binding = cl_cons(g, CL_NIL);                               /* (g) */
+            binding = cl_cons(cl_car(cl_car(cl_cdr(hc_nth_clause(form, k)))),
+                              binding);                                 /* (var g) */
+            bindings = cl_cons(binding, CL_NIL);                        /* ((var g)) */
+            let_form = cl_cons(bindings, cl_cdr(cl_cdr(hc_nth_clause(form, k))));
+            let_form = cl_cons(SYM_LET, let_form);
+            CL_GC_UNPROTECT(1);   /* g */
+        } else {
+            cl_emit(c, OP_POP);
+            let_form = cl_cons(CL_NIL, cl_cdr(cl_cdr(hc_nth_clause(form, k))));
+            let_form = cl_cons(SYM_LET, let_form);
+        }
+        CL_GC_PROTECT(let_form);
+        compile_expr(c, let_form);
+        CL_GC_UNPROTECT(1);
+        cl_env_clear_boxed(env, saved_local_count);
+        env->local_count = saved_local_count;
+        cl_mv_normalize(c);
+        if (k < n - 1)
+            end_chain = cl_emit_jump_chain(c, OP_JMP, end_chain);
+    }
+
+    cl_patch_jump_chain(c, end_chain);
+    /* Every arm reaches the join self-describing; the form's arm and the
+     * LET bodies may be multi-valued. */
+    c->mv_state = CL_MV_MANY;
+    c->in_tail = saved_tail;
+    CL_GC_UNPROTECT(1);   /* form */
+}
+
 /* --- Unwind-protect --- */
 
 void compile_unwind_protect(CL_Compiler *c, CL_Obj form)
@@ -1698,22 +1932,10 @@ void compile_unwind_protect(CL_Compiler *c, CL_Obj form)
      * where p (presentp) is the second value. */
     CL_Obj protected_form = cl_car(cl_cdr(form));
     CL_Obj cleanup_forms;
-    CL_CompEnv *env = c->env;
-    int saved_local_count = env->local_count;
     int saved_tail = c->in_tail;
     int uwprot_pos, jmp_pos;
-    int list_slot;
-    CL_Obj vl_sym;
-    int vl_idx;
 
     c->in_tail = 0;
-
-    /* Allocate slot to hold the saved values list */
-    list_slot = env->local_count;
-    env->locals[list_slot] = CL_NIL;  /* Clear stale binding */
-    env->local_count++;
-    if (env->local_count > env->max_locals)
-        env->max_locals = env->local_count;
 
     /* OP_UWPROT offset_to_cleanup_landing */
     cl_emit(c, OP_UWPROT);
@@ -1731,16 +1953,13 @@ void compile_unwind_protect(CL_Compiler *c, CL_Obj form)
     cleanup_forms = cl_cdr(cl_cdr(form));
     CL_GC_UNPROTECT(1);
 
-    /* OP_MV_TO_LIST: pop primary, build full list of all values, push list.
-     * Normalize first so the saved list is the protected form's own values
-     * (CLHS 5.2: unwind-protect returns the protected form's values). */
+    /* OP_MV_SAVE: pop the primary and park it, with the rest of the MV
+     * buffer, on the per-thread value-save stack (vm.h CL_MV_SAVE_SIZE) —
+     * no list is consed and no local slot is needed.  Normalize first so
+     * the record holds the protected form's own values (CLHS 5.2:
+     * unwind-protect returns the protected form's values). */
     cl_mv_normalize(c);
-    cl_emit(c, OP_MV_TO_LIST);
-
-    /* Save the list in slot */
-    cl_emit(c, OP_STORE);
-    cl_emit(c, (uint8_t)list_slot);
-    cl_emit(c, OP_POP);
+    cl_emit(c, OP_MV_SAVE);
 
     /* OP_UWPOP: normal exit, pop frame, clear pending */
     cl_emit(c, OP_UWPOP);
@@ -1748,7 +1967,9 @@ void compile_unwind_protect(CL_Compiler *c, CL_Obj form)
     /* JMP to cleanup_start (skip the landing) */
     jmp_pos = cl_emit_jump(c, OP_JMP);
 
-    /* [cleanup_landing]: longjmp arrives here */
+    /* [cleanup_landing]: a non-local transfer through the frame arrives
+     * here; the landing parked an EMPTY value record for the MV_RESTORE
+     * below, so both paths reach the cleanup with one record on top. */
     cl_patch_jump(c, uwprot_pos);
 
     /* [cleanup_start]: both paths merge */
@@ -1769,22 +1990,14 @@ void compile_unwind_protect(CL_Compiler *c, CL_Obj form)
     /* OP_UWRETHROW: if pending throw, re-initiate (never returns); else nop */
     cl_emit(c, OP_UWRETHROW);
 
-    /* Restore MV state by calling VALUES-LIST on saved list. The call leaves
-     * the primary on the stack and sets cl_mv_count / cl_mv_values. */
-    vl_sym = cl_intern_in("VALUES-LIST", 11, cl_package_cl);
-    vl_idx = cl_add_constant(c, vl_sym);
-    cl_emit(c, OP_FLOAD);
-    cl_emit_u16(c, (uint16_t)vl_idx);
-    cl_emit(c, OP_LOAD);
-    cl_emit(c, (uint8_t)list_slot);
-    cl_emit_call(c, OP_CALL, 1);
-    c->mv_state = CL_MV_MANY;   /* VALUES-LIST re-establishes all values */
-
-    cl_env_clear_boxed(env, saved_local_count);
+    /* OP_MV_RESTORE: pop the record back into the MV buffer and push the
+     * primary — the protected form's values are re-established exactly as
+     * VALUES-LIST used to do, with no call and no allocation. */
+    cl_emit(c, OP_MV_RESTORE);
+    c->mv_state = CL_MV_MANY;   /* all of the protected form's values */
 
     /* Restore */
     c->in_tail = saved_tail;
-    env->local_count = saved_local_count;
 }
 
 /* --- Flet / Labels --- */

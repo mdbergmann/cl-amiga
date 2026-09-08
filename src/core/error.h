@@ -131,6 +131,12 @@ typedef struct {
      * was silently bypassed the same way whenever an unwind-protect (e.g. the
      * one WITH-OUTPUT-TO-STRING expands to) enclosed the call. */
     int saved_nlx_top;
+    /* CL_Thread.mv_save_top snapshot at push time (vm.h, OP_MV_SAVE).  An
+     * unwind-protect cleanup that was running when the error unwound to this
+     * frame leaves its saved-values record behind; dropping back to the
+     * snapshot keeps the save stack from creeping up across recovered
+     * errors (LOAD's per-form recovery, the REPL). */
+    int saved_mv_save_top;
     /* cl_handler_active_mask snapshot at push time.  Restored on the unwind
      * path (cl_error_unwind) alongside saved_handler_top, so a CLHS 9.1.4
      * disabled-handler band is re-enabled when a C-level cl_error longjmp

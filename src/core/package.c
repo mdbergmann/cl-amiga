@@ -1064,6 +1064,7 @@ static const char *const clos_internal_names[] = {
     "%ACCESSOR-READER-BODY", "%ACCESSOR-WRITER-BODY",
     "%ADD-METHOD-TO-GF", "%ASSIGN-SLOT-LOCATIONS",
     "%BOA-PATCH-DEFAULTS", "%BODY-SIMPLE-PRIMARY-P",
+    "%CNM-CHAIN", "%CNM-INVOKE",
     "%BUILD-DISCRIMINATING-FUNCTION",
     "%BUILD-EFFECTIVE-METHOD", "%BUILD-LONG-EFFECTIVE-METHOD",
     "%BUILD-SHORT-EFFECTIVE-METHOD", "%BUILD-SLOT-INDEX-TABLE",
@@ -1151,6 +1152,7 @@ static const char *const clos_internal_names[] = {
     "%REGISTER-STANDARD-COMBINATION",
     "%REGISTER-STRUCT-CLASS", "%REGISTER-STRUCT-TYPE",
     "%REMF",
+    "%STRUCT-KEYWORD-CTOR-EXPAND",
     "%REPORT-DISPATCH-NO-PRIMARY",
     "%RESOLVE-METHOD-COMBINATION", "%RESOLVE-SPECIALIZERS",
     "%SYMBOL-MACRO-EXPANSION",
@@ -1204,7 +1206,7 @@ static const char *const clos_internal_names[] = {
      * loading in the CL package; pre-interning them here keeps them in
      * CLAMIGA so they don't pollute COMMON-LISP's external symbols. */
     "*%CLOS-LOAD-START*", "*%CLOS-PREV*",
-    "*CALL-NEXT-METHOD-ARGS*", "*CALL-NEXT-METHOD-FUNCTION*",
+    "*CNM*",
     "*CLASS-TABLE*",
     "*CLOS-DIAGNOSE-NO-APPLICABLE*", "*CLOS-DIAGNOSE-NO-PRIMARY*",
     "*CURRENT-METHOD-ARGS*",
@@ -1214,7 +1216,7 @@ static const char *const clos_internal_names[] = {
     "*GENERIC-FUNCTION-TABLE*",
     "*GF-CACHE-HEALS*", "*GF-METHODS-LOCK*",
     "*METAOBJECT-DEPENDENTS*",
-    "*METHOD-COMBINATIONS*", "*NEXT-METHOD-P-FUNCTION*",
+    "*METHOD-COMBINATIONS*",
     /* *PRINT-OBJECT-HOOK* is interned directly in CLAMIGA by symbol.c. */
     "*READER-GFS*", "*READER-METHOD-SLOTS*",
     "*SLOT-ACCESS-PROTOCOL-EXTENDED-P*",

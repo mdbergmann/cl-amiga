@@ -478,6 +478,17 @@ void cl_emit_call(CL_Compiler *c, uint8_t op, uint8_t nargs)
     c->mv_state = CL_MV_MANY;
 }
 
+/* OP_CALL_GLOBAL / OP_TAILCALL_GLOBAL: `u16 symbol-const-index, u8 nargs`.
+ * Same MV classification as cl_emit_call. */
+void cl_emit_call_global(CL_Compiler *c, uint8_t op, uint16_t sym_idx,
+                         uint8_t nargs)
+{
+    cl_emit(c, op);
+    cl_emit_u16(c, sym_idx);
+    cl_emit(c, nargs);
+    c->mv_state = CL_MV_MANY;
+}
+
 void cl_mv_normalize(CL_Compiler *c)
 {
     if (c->mv_state == CL_MV_STALE) {
@@ -2159,6 +2170,34 @@ top:
             body = cl_cdr(body);
         }
         CL_GC_UNPROTECT(2); /* body, clauses */
+        return;
+    }
+
+    /* (clamiga::%handler-case form (type ([var]) . body)...) — the HANDLER-CASE
+     * special form.  The clause CAR is a type spec and the CADR a variable
+     * list, not evaluated code; scan the form and each clause body. */
+    if (cl_handler_case_sym != CL_NIL && head == cl_handler_case_sym) {
+        CL_Obj clauses;
+        if (!CL_CONS_P(rest)) return;
+        clauses = cl_cdr(rest);
+        CL_GC_PROTECT(clauses);
+        scan_body_for_boxing(cl_car(rest), vars, n_vars,
+                             mutated, captured, closure_depth);
+        while (CL_CONS_P(clauses)) {
+            CL_Obj clause = cl_car(clauses);
+            if (CL_CONS_P(clause) && CL_CONS_P(cl_cdr(clause))) {
+                CL_Obj cbody = cl_cdr(cl_cdr(clause));
+                CL_GC_PROTECT(cbody);
+                while (CL_CONS_P(cbody)) {
+                    scan_body_for_boxing(cl_car(cbody), vars, n_vars,
+                                         mutated, captured, closure_depth);
+                    cbody = cl_cdr(cbody);
+                }
+                CL_GC_UNPROTECT(1);
+            }
+            clauses = cl_cdr(clauses);
+        }
+        CL_GC_UNPROTECT(1);
         return;
     }
 
@@ -4408,6 +4447,7 @@ static void compile_call(CL_Compiler *c, CL_Obj form)
     CL_Obj args = cl_cdr(form);
     int nargs = 0;
     int saved_tail = c->in_tail;
+    int global_sym_idx = -1;
     char func_name_buf[128];
 
     /* Snapshot before any allocating call: compile_expr in the argument loop
@@ -4732,6 +4772,12 @@ static void compile_call(CL_Compiler *c, CL_Obj form)
         }
     }
 
+    /* A call to a GLOBAL function name does not push the function at all:
+     * it compiles to OP_CALL_GLOBAL / OP_TAILCALL_GLOBAL, which resolve the
+     * symbol's function binding in the handler after the arguments have been
+     * pushed (one dispatch and no stack slot instead of FLOAD + CALL; the
+     * symbol's binding is read at call time, so redefinition still takes
+     * effect).  global_sym_idx >= 0 records that shape for the emit below. */
     if (CL_SYMBOL_P(func)) {
         int fun_slot = cl_env_lookup_local_fun(c->env, func);
         if (fun_slot >= 0) {
@@ -4747,14 +4793,10 @@ static void compile_call(CL_Compiler *c, CL_Obj form)
                 if (c->env->upvalues[uv_idx].is_boxed)
                     cl_emit(c, OP_CELL_REF);
             } else {
-                int idx = cl_add_constant(c, func);
-                cl_emit(c, OP_FLOAD);
-                cl_emit_u16(c, (uint16_t)idx);
+                global_sym_idx = cl_add_constant(c, func);
             }
         } else {
-            int idx = cl_add_constant(c, func);
-            cl_emit(c, OP_FLOAD);
-            cl_emit_u16(c, (uint16_t)idx);
+            global_sym_idx = cl_add_constant(c, func);
         }
     } else {
         compile_expr(c, func);
@@ -4789,7 +4831,11 @@ static void compile_call(CL_Compiler *c, CL_Obj form)
 
     /* cl_emit_call also classifies the result CL_MV_MANY: the callee
      * establishes the MV state, which is what makes (floor 7 2) two-valued. */
-    cl_emit_call(c, c->in_tail ? OP_TAILCALL : OP_CALL, (uint8_t)nargs);
+    if (global_sym_idx >= 0)
+        cl_emit_call_global(c, c->in_tail ? OP_TAILCALL_GLOBAL : OP_CALL_GLOBAL,
+                            (uint16_t)global_sym_idx, (uint8_t)nargs);
+    else
+        cl_emit_call(c, c->in_tail ? OP_TAILCALL : OP_CALL, (uint8_t)nargs);
 }
 
 /* Trampoline-aware analog of compile_body.  Strips leading declarations
@@ -5295,6 +5341,10 @@ static int compile_expr_step(CL_Compiler *c, CL_Obj *expr_p)
             if (CL_NULL_P(tail)) { cl_emit(c, OP_NIL); return 0; }
             *expr_p = tail;
             return 1;
+        }
+        if (cl_handler_case_sym != CL_NIL && head == cl_handler_case_sym) {
+            compile_handler_case(c, expr);
+            return 0;
         }
         if (head == SYM_RESTART_CASE) { compile_restart_case(c, expr); return 0; }
         if (head == SYM_DECLARE) {

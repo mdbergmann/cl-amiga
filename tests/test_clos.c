@@ -4784,9 +4784,9 @@ TEST(compute_applicable_methods_public)
 }
 
 /* Regression: an auxiliary (:before/:after) method must NOT observe the
- * CALL-NEXT-METHOD specials of an ENCLOSING dispatch.  :before/:after methods
- * are applied raw, so the effective method must bind *call-next-method-function*
- * / *next-method-p-function* to NIL around them; otherwise a non-conformant
+ * CALL-NEXT-METHOD state of an ENCLOSING dispatch.  :before/:after methods
+ * are applied raw, so the effective method must bind the call-next-method
+ * special (*CNM*) to NIL around them; otherwise a non-conformant
  * :after doing (when (next-method-p) (call-next-method)) leaks into the outer
  * GF's method chain whenever the GF is dispatched from inside another GF's
  * method.  Real-world failure: a sento mailbox INITIALIZE-INSTANCE :after

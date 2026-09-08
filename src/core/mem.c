@@ -903,8 +903,16 @@ void cl_mem_init(uint32_t heap_size)
      * a pre-re-init cl_error pointing into the fresh arena. */
     {
         CL_Thread *rt;
-        for (rt = cl_thread_list; rt; rt = rt->next)
+        for (rt = cl_thread_list; rt; rt = rt->next) {
             cl_thread_reset_lisp_state(rt);
+            /* cl_thread_reset_lisp_state (thread.c) predates the Tier-4
+             * phase-2 mv_save stack and does not clear mv_save_top yet —
+             * reset it here too, otherwise a nonzero mv_save_top left by an
+             * in-flight OP_MV_SAVE record is a stale offset into the just-
+             * freed arena that gc_mark_thread_roots/gc_update_thread_roots
+             * will walk once the fresh heap's bump front grows past it. */
+            rt->mv_save_top = 0;
+        }
     }
     /* Drop any grown mark stack from a previous heap: the growth cap is
      * derived from the (possibly different) new arena size, and unit tests
@@ -1299,6 +1307,10 @@ void cl_storage_error(const char *fmt, ...)
     cl_dynbind_restore_to(0);
     cl_handler_top = 0;
     cl_restart_top = 0;
+    /* Drop any unwind-protect value-save records the abandoned cleanups
+     * held — same reasoning as the resets above, and as the mv_save_top
+     * reset error.c's frame unwind now performs (Tier-4 phase 2). */
+    CT->mv_save_top = 0;
     if (cl_error_frame_top > 0) {
         /* Don't decrement here — CL_UNCATCH at the catch site pops */
         longjmp(cl_error_frames[cl_error_frame_top - 1].buf, CL_ERR_STORAGE);
@@ -3206,6 +3218,13 @@ static void gc_mark_thread_roots(CL_Thread *t)
     GC_DBG_SRC("pending_tag/value", 0);
     gc_mark_obj(t->pending_tag);
     gc_mark_obj(t->pending_value);
+    /* UNWIND-PROTECT value records (OP_MV_SAVE): every used word is a
+     * CL_Obj — the values, and their count as a fixnum — live across the
+     * allocating cleanup forms. */
+    for (i = 0; i < t->mv_save_top && i < CL_MV_SAVE_SIZE; i++) {
+        GC_DBG_SRC("mv_save_buf", i);
+        gc_mark_obj(t->mv_save_buf[i]);
+    }
     /* Secondary values of an in-flight THROW.  These are live while an
      * unwind-protect cleanup runs (arbitrary allocating Lisp) between
      * the throw and the catch landing; without marking, a sweep during
@@ -4075,6 +4094,9 @@ static void gc_update_thread_roots(CL_Thread *t)
         gc_update_slot(&t->mv_values[i]);
     gc_update_slot(&t->pending_tag);
     gc_update_slot(&t->pending_value);
+    /* UNWIND-PROTECT value records — mirror of the mark phase. */
+    for (i = 0; i < t->mv_save_top && i < CL_MV_SAVE_SIZE; i++)
+        gc_update_slot(&t->mv_save_buf[i]);
     /* In-flight THROW secondary values + saved pending-throw snapshots —
      * mirror of gc_mark_thread_roots (a snapshot restored after an
      * allocating unwind-protect cleanup must hold FORWARDED offsets, or

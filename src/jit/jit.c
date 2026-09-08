@@ -947,6 +947,7 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
         case OP_LT: case OP_GT: case OP_LE: case OP_GE: case OP_NUMEQ:
         case OP_MV_RESET: case OP_BLOCK_POP:
         case OP_UWPOP: case OP_UWRETHROW: case OP_MV_TO_LIST:
+        case OP_MV_SAVE: case OP_MV_RESTORE:
         case OP_MAKE_CELL: case OP_CELL_REF:
         case OP_RPLACA: case OP_RPLACD: case OP_ASET:
         case OP_ARGC: case OP_NTH_VALUE:
@@ -970,6 +971,8 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
         case OP_HANDLER_PUSH: case OP_RESTART_PUSH:
         case OP_TAGBODY_GO:
             step = 3; break;
+        case OP_CALL_GLOBAL: case OP_TAILCALL_GLOBAL:
+            step = 4; break;   /* u16 sym_idx + u8 nargs */
         case OP_JMP: case OP_JNIL: case OP_JTRUE: {
             int32_t offset;
             uint32_t target;
@@ -1877,6 +1880,31 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             break;
         }
 
+        case OP_MV_SAVE: {
+            /* Pops the primary into D0 and parks it with the MV buffer on
+             * the per-thread save stack (compile_unwind_protect, after the
+             * protected form).  Non-allocating helper, nothing pushed back:
+             * emit the call by hand rather than through emit_helper_call_1,
+             * which always pushes D0. */
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_mv_save;
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
+            cache_flush(cb, &cache_head, &cache_depth);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_addq_l_an(cb, 4, REG_A7);
+            break;
+        }
+
+        case OP_MV_RESTORE: {
+            /* Pops the save-stack record back into the MV buffer; the
+             * helper returns the primary in D0, which becomes TOS. */
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_mv_restore;
+            cache_flush(cb, &cache_head, &cache_depth);
+            m68k_emit_jsr_abs_l(cb, helper);
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
+            break;
+        }
+
         case OP_MV_RESET: {
             /* Explicit OP_MV_RESET — emitted by the compiler between
              * (and …) / (or …) arms so a falsy result doesn't carry
@@ -2083,6 +2111,132 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
              * Cache is depth=0 from the flush above, matching the
              * canonical state at branch boundaries — safe for any
              * later branch target that lands past us. */
+            m68k_emit_move_l_disp_an_to_dn(cb, saved_d7_disp, REG_A6, REG_D7);
+            m68k_emit_move_l_disp_an_to_dn(cb, saved_d6_disp, REG_A6, REG_D6);
+            m68k_emit_move_l_disp_an_to_dn(cb, saved_d5_disp, REG_A6, REG_D5);
+            m68k_emit_unlk_an(cb, REG_A6);
+            m68k_emit_rts(cb);
+            break;
+        }
+
+        case OP_CALL_GLOBAL: {
+            /* u16 sym_idx, u8 nargs — the fused `FLOAD sym; CALL n`.
+             * Same shape as OP_CALL's template with one more helper
+             * argument (the symbol, baked as a relocated immediate) and
+             * no function slot on the operand stack: only the N args
+             * are dropped afterwards.  C-ABI order on the m68k stack is
+             * (operand_top, nargs, sym), so sym is pushed first. */
+            uint16_t sym_idx;
+            uint8_t nargs;
+            CL_Obj sym;
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_call_global;
+            int16_t drop_bytes;
+            if (ip + 2 >= bc->code_len) goto fail;
+            sym_idx = ((uint16_t)bc->code[ip] << 8) | bc->code[ip + 1];
+            ip += 2;
+            nargs = bc->code[ip++];
+            if (sym_idx >= bc->n_constants || bc->constants == NULL) goto fail;
+            sym = bc->constants[sym_idx];
+            if (!CL_SYMBOL_P(sym)) goto fail;
+            drop_bytes = (int16_t)(4 * (int32_t)nargs);
+
+            cache_flush(cb, &cache_head, &cache_depth);
+            m68k_emit_move_l_an_to_am(cb, REG_A7, REG_A0);
+            emit_obj_imm_predec(cb, relocs, sym);
+            m68k_emit_move_l_imm32_predec(cb, (uint32_t)nargs, REG_A7);
+            m68k_emit_move_l_an_predec_am(cb, REG_A0, REG_A7);
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_lea_disp_an_to_am(cb, 12, REG_A7, REG_A7);
+            if (drop_bytes)
+                m68k_emit_lea_disp_an_to_am(cb, drop_bytes, REG_A7, REG_A7);
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
+            break;
+        }
+
+        case OP_TAILCALL_GLOBAL: {
+            /* u16 sym_idx, u8 nargs — `FLOAD sym; TAILCALL n` fused.  Same
+             * two paths as OP_TAILCALL: self-recursive TCO when the symbol
+             * IS this function's name (decided at walk time — a call to any
+             * other name can never be a self call — and confirmed at run
+             * time by cl_jit_runtime_is_self_tco on the resolved binding, so
+             * a redefinition still takes the generic path), else the
+             * cl_jit_runtime_call_global fallback + UNLK/RTS.  The only
+             * layout difference from OP_TAILCALL: no func slot under the
+             * args, so the copy loop's sources are unchanged and the drop is
+             * 4*N, not 4*(N+1). */
+            uint16_t sym_idx;
+            uint8_t nargs;
+            CL_Obj sym;
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_call_global;
+            int16_t drop_bytes;
+            int self_tco;
+            int32_t guard_branch_pc = 0;
+            if (ip + 2 >= bc->code_len) goto fail;
+            sym_idx = ((uint16_t)bc->code[ip] << 8) | bc->code[ip + 1];
+            ip += 2;
+            nargs = bc->code[ip++];
+            if (sym_idx >= bc->n_constants || bc->constants == NULL) goto fail;
+            sym = bc->constants[sym_idx];
+            if (!CL_SYMBOL_P(sym)) goto fail;
+            drop_bytes = (int16_t)(4 * (int32_t)nargs);
+
+            cache_flush(cb, &cache_head, &cache_depth);
+
+            self_tco = !is_kw && (nargs == arity) && CL_SYMBOL_P(bc->name) &&
+                       sym == bc->name;
+
+            if (self_tco) {
+                uint32_t self_obj = (uint32_t)CL_PTR_TO_OBJ(bc);
+                uint32_t fload = (uint32_t)(uintptr_t)&cl_jit_runtime_fload;
+                uint32_t guard = (uint32_t)(uintptr_t)&cl_jit_runtime_is_self_tco;
+                int32_t entry_off, bra_disp;
+                uint32_t i;
+
+                /* D0 = current binding of the symbol (may signal
+                 * UNDEFINED-FUNCTION exactly as the VM would). */
+                emit_obj_imm_predec(cb, relocs, sym);
+                m68k_emit_jsr_abs_l(cb, fload);
+                m68k_emit_addq_l_an(cb, 4, REG_A7);
+                /* cl_jit_runtime_is_self_tco(func, self_bc): push self_bc
+                 * (2nd arg) then func (1st). */
+                emit_obj_imm_predec(cb, relocs, self_obj);
+                m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+                m68k_emit_jsr_abs_l(cb, guard);
+                m68k_emit_addq_l_an(cb, 8, REG_A7);
+                m68k_emit_tst_l_dn(cb, REG_D0);
+                guard_branch_pc = (int32_t)cb_len(cb) + 2;
+                m68k_emit_beq_w(cb, 0);   /* D0==0 → not self → fallback */
+
+                /* Copy args into frame slots — see OP_TAILCALL. */
+                for (i = 0; i < nargs; i++) {
+                    int16_t src_disp = (int16_t)(4 * (int32_t)i);
+                    int16_t dst_disp = slot_disp((uint8_t)(nargs - 1 - i),
+                                                 slot_anchor, is_kw);
+                    m68k_emit_move_l_disp_an_to_dn(cb, src_disp, REG_A7, REG_D0);
+                    m68k_emit_move_l_dn_to_disp_am(cb, REG_D0, dst_disp, REG_A6);
+                }
+                m68k_emit_lea_disp_an_to_am(cb,
+                    (int16_t)(frame_size - 12), REG_A6, REG_A7);
+                entry_off = bc_to_native[0];
+                bra_disp = entry_off - ((int32_t)cb_len(cb) + 2);
+                if (bra_disp < -32768 || bra_disp > 32767) goto fail;
+                m68k_emit_bra_w(cb, (int16_t)bra_disp);
+
+                m68k_patch_disp16(cb_data(cb), cb_len(cb),
+                                  (uint32_t)guard_branch_pc,
+                                  (int16_t)((int32_t)cb_len(cb) - guard_branch_pc));
+            }
+
+            /* Fallback / non-self path: as OP_CALL_GLOBAL, then return. */
+            m68k_emit_move_l_an_to_am(cb, REG_A7, REG_A0);
+            emit_obj_imm_predec(cb, relocs, sym);
+            m68k_emit_move_l_imm32_predec(cb, (uint32_t)nargs, REG_A7);
+            m68k_emit_move_l_an_predec_am(cb, REG_A0, REG_A7);
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_lea_disp_an_to_am(cb, 12, REG_A7, REG_A7);
+            if (drop_bytes)
+                m68k_emit_lea_disp_an_to_am(cb, drop_bytes, REG_A7, REG_A7);
+
             m68k_emit_move_l_disp_an_to_dn(cb, saved_d7_disp, REG_A6, REG_D7);
             m68k_emit_move_l_disp_an_to_dn(cb, saved_d6_disp, REG_A6, REG_D6);
             m68k_emit_move_l_disp_an_to_dn(cb, saved_d5_disp, REG_A6, REG_D5);
@@ -3403,6 +3557,7 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
         sf->n_locals  = nargs;
         sf->nargs     = (uint16_t)nargs;
         sf->nlx_level = cl_nlx_top;
+        sf->fslot     = 0;
         pushed_frame  = 1;
     }
 

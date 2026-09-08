@@ -1130,8 +1130,9 @@ OP_JMP OP_JNIL OP_JTRUE
 OP_ADD OP_SUB OP_MUL OP_LT OP_GT OP_LE OP_GE OP_NUMEQ OP_EQ OP_NOT
 OP_CAR OP_CDR OP_CONS OP_LIST OP_RPLACA OP_ASET
 OP_GLOAD OP_GSTORE OP_FLOAD OP_FSTORE OP_CALL OP_TAILCALL
+OP_CALL_GLOBAL OP_TAILCALL_GLOBAL
 OP_STRUCT_REF OP_STRUCT_SET OP_DYNBIND OP_DYNUNBIND
-OP_MV_RESET OP_MV_TO_LIST
+OP_MV_RESET OP_MV_TO_LIST OP_MV_SAVE OP_MV_RESTORE
 OP_BLOCK_PUSH OP_BLOCK_POP OP_BLOCK_RETURN
 OP_UWPROT OP_UWPOP OP_UWRETHROW
 OP_CLOSURE OP_MAKE_CELL OP_CELL_REF OP_CELL_SET_LOCAL
@@ -1146,7 +1147,13 @@ opcodes the walker hasn't grown emitters for (most of `OP_TAGBODY_*`,
 `OP_CATCH` / `OP_THROW`, `OP_PROGV`, `OP_HANDLER_*`, and the
 specialized-vector accessors), plus the &rest / &optional prologue
 shapes and self-TCO for kw entries — all called out as deferred in
-prior status sections.
+prior status sections.  Since Tier-4 phase 2 (2026-09-08)
+`OP_HANDLER_CASE_PUSH` / `OP_HANDLER_CASE_POP` join that list: every
+`HANDLER-CASE` now compiles to them instead of the old CATCH + BLOCK +
+HANDLER-BIND expansion the walker could emit, so a function containing
+one runs interpreted until the template is written (the landing is a
+per-clause `OP_JMP` table entered with the condition on the operand
+stack; the signaller lands in the frame's `buf` exactly like CATCH).
 
 **Open levers, unchanged from 2026-05-17:**
 

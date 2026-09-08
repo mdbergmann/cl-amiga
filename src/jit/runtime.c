@@ -363,6 +363,25 @@ CL_Obj cl_jit_runtime_call(CL_Obj *operand_top, uint32_t nargs)
     return cl_vm_apply(func, args, (int)nargs);
 }
 
+/* Backing for OP_CALL_GLOBAL / the fallback arm of OP_TAILCALL_GLOBAL: the
+ * fused `FLOAD sym; CALL n`.  The arguments sit on the operand stack exactly
+ * as for cl_jit_runtime_call, but there is no function slot under them — the
+ * callee is resolved from SYM here (same rules as cl_jit_runtime_fload) and
+ * handed to cl_vm_apply. */
+CL_Obj cl_jit_runtime_call_global(CL_Obj *operand_top, uint32_t nargs,
+                                  CL_Obj sym)
+{
+    CL_Obj args[256];
+    CL_Obj func;
+    uint32_t i;
+
+    if (nargs > 255) nargs = 255;   /* defensive — the operand is a u8 */
+    func = cl_jit_runtime_fload(sym);
+    for (i = 0; i < nargs; i++)
+        args[i] = operand_top[nargs - 1 - i];
+    return cl_vm_apply(func, args, (int)nargs);
+}
+
 /* Backing for OP_APPLY.  Flatten `arglist` into a stack-local buffer, resolve
  * a SYMBOL func through its function cell, then delegate to cl_vm_apply which
  * handles builtins, closures, and JIT-compiled callees uniformly.  The VM's
@@ -862,7 +881,10 @@ static CL_NLXFrame *nlx_alloc_common(int type, CL_Obj tag)
     nlx->compiler_mark       = cl_compiler_mark();
     nlx->printer_mark        = cl_printer_state_save();
     nlx->saved_jit_depth     = CT->jit_depth;
+    nlx->saved_pending_mark  = cl_saved_pending_top;
+    nlx->mv_save_mark        = CT->mv_save_top;
     nlx->mv_count            = 1;
+    nlx->landing             = NULL;   /* JIT frame: setjmps inline into buf */
     return nlx;
 }
 
@@ -910,6 +932,7 @@ static void nlx_restore_core(CL_NLXFrame *nlx, void *landing_anchor)
     cl_jit_restore_depth(nlx->saved_jit_depth);
     cl_compiler_unwind_to(nlx->compiler_mark, landing_anchor);
     cl_printer_state_restore(nlx->printer_mark);
+    CT->mv_save_top = nlx->mv_save_mark;
 }
 
 /* BLOCK/CATCH longjmp arrival: core restore + full multiple-value set +
@@ -973,7 +996,7 @@ void cl_jit_runtime_block_return(CL_Obj tag, CL_Obj value)
                     for (mi = 0; mi < cl_mv_count && mi < CL_MAX_MV; mi++)
                         cl_pending_mv_values[mi] = cl_mv_values[mi];
                     cl_nlx_top = j;
-                    CL_LONGJMP(cl_nlx_stack[j].buf, 1);
+                    cl_nlx_jump(&cl_nlx_stack[j]);
                 }
             }
             cl_nlx_stack[i].result   = value;
@@ -981,7 +1004,7 @@ void cl_jit_runtime_block_return(CL_Obj tag, CL_Obj value)
             for (mi = 0; mi < cl_mv_count && mi < CL_MAX_MV; mi++)
                 cl_nlx_stack[i].mv_values[mi] = cl_mv_values[mi];
             cl_nlx_top = i;
-            CL_LONGJMP(cl_nlx_stack[i].buf, 1);
+            cl_nlx_jump(&cl_nlx_stack[i]);
         }
     }
     cl_error(CL_ERR_GENERAL, "RETURN-FROM: no block named %s%s",
@@ -1110,10 +1133,61 @@ void cl_jit_runtime_uwprot_post_longjmp(void)
      * Read the frame's saved marks and restore. */
     CL_NLXFrame *nlx = &cl_nlx_stack[cl_nlx_top];
     nlx_restore_core(nlx, CL_CAPTURE_SP());
-    /* Intentionally don't touch cl_mv_count / cl_mv_values: the
-     * protected-form's MVs are captured via OP_MV_TO_LIST in the
-     * compiled cleanup epilogue, and the throw site may have arranged
-     * its own MV state that the cleanup forms must observe. */
+    /* Intentionally don't touch cl_mv_count / cl_mv_values: the throw
+     * site may have arranged its own MV state that the cleanup forms must
+     * observe.  The protected form's values were never produced on this
+     * path, so park an EMPTY record for the OP_MV_RESTORE after the
+     * cleanup (mirrors the VM's UWPROT landing). */
+    cl_jit_runtime_mv_save_empty();
+}
+
+/* Backing for OP_MV_SAVE (vm.h CL_MV_SAVE_SIZE): park PRIMARY plus the rest
+ * of the MV buffer as one record on the per-thread save stack.  Mirrors the
+ * VM opcode exactly.  Non-allocating. */
+void cl_jit_runtime_mv_save(CL_Obj primary)
+{
+    CL_Thread *t = CT;
+    int n = t->mv_count;
+    int i;
+    if (n < 0) n = 0;
+    if (n > CL_MAX_MV) n = CL_MAX_MV;
+    if (t->mv_save_top + n + 1 > CL_MV_SAVE_SIZE)
+        cl_error(CL_ERR_OVERFLOW, "UNWIND-PROTECT value-save stack overflow");
+    if (n > 0) {
+        t->mv_save_buf[t->mv_save_top++] = primary;
+        for (i = 1; i < n; i++)
+            t->mv_save_buf[t->mv_save_top++] = t->mv_values[i];
+    }
+    t->mv_save_buf[t->mv_save_top++] = CL_MAKE_FIXNUM(n);
+}
+
+/* The UWPROT longjmp arm's record: zero values, so the OP_MV_RESTORE after
+ * the cleanup finds something to pop (it only runs when the pending transfer
+ * was parked for an enclosing cleanup rather than re-thrown). */
+void cl_jit_runtime_mv_save_empty(void)
+{
+    CL_Thread *t = CT;
+    if (t->mv_save_top + 1 > CL_MV_SAVE_SIZE)
+        cl_error(CL_ERR_OVERFLOW, "UNWIND-PROTECT value-save stack overflow");
+    t->mv_save_buf[t->mv_save_top++] = CL_MAKE_FIXNUM(0);
+}
+
+/* Backing for OP_MV_RESTORE: pop the record back into the MV buffer and
+ * return the primary (NIL for zero values).  Non-allocating. */
+CL_Obj cl_jit_runtime_mv_restore(void)
+{
+    CL_Thread *t = CT;
+    int n, i;
+    if (t->mv_save_top < 1)
+        cl_error(CL_ERR_GENERAL, "OP_MV_RESTORE: value-save stack underflow");
+    n = (int)CL_FIXNUM_VAL(t->mv_save_buf[--t->mv_save_top]);
+    if (n < 0 || n > CL_MAX_MV || t->mv_save_top < n)
+        cl_error(CL_ERR_GENERAL, "OP_MV_RESTORE: corrupt value-save record");
+    t->mv_save_top -= n;
+    for (i = 0; i < n; i++)
+        t->mv_values[i] = t->mv_save_buf[t->mv_save_top + i];
+    t->mv_count = n;
+    return n > 0 ? t->mv_values[0] : CL_NIL;
 }
 
 void cl_jit_runtime_uwprot_rethrow(void)
@@ -1134,7 +1208,7 @@ void cl_jit_runtime_uwprot_rethrow(void)
                     if (cl_nlx_stack[j].type == CL_NLX_UWPROT &&
                         !jit_nlx_frame_is_stale(&cl_nlx_stack[j])) {
                         cl_nlx_top = j;
-                        CL_LONGJMP(cl_nlx_stack[j].buf, 1);
+                        cl_nlx_jump(&cl_nlx_stack[j]);
                     }
                 }
                 cl_pending_throw = 0;
@@ -1148,11 +1222,36 @@ void cl_jit_runtime_uwprot_rethrow(void)
                 for (mi = 0; mi < cl_pending_mv_count && mi < CL_MAX_MV; mi++)
                     cl_nlx_stack[i].mv_values[mi] = cl_pending_mv_values[mi];
                 cl_nlx_top = i;
-                CL_LONGJMP(cl_nlx_stack[i].buf, 1);
+                cl_nlx_jump(&cl_nlx_stack[i]);
             }
         }
         cl_pending_throw = 0;
         cl_error(CL_ERR_GENERAL, "No catch for tag during re-throw");
+    } else if (p == 3) {
+        /* Pending HANDLER-CASE clause transfer (cl_handler_case_transfer):
+         * target frame index in cl_pending_tag, condition in
+         * cl_pending_value.  Mirrors vm.c OP_UWRETHROW. */
+        int i = (int)CL_FIXNUM_VAL(cl_pending_tag);
+        int j;
+        if (i < cl_nlx_floor || i >= cl_nlx_top ||
+            cl_nlx_stack[i].type != CL_NLX_HANDLER_CASE) {
+            cl_pending_throw = 0;
+            cl_error(CL_ERR_GENERAL,
+                     "HANDLER-CASE frame vanished during re-throw");
+        }
+        for (j = cl_nlx_top - 1; j > i; j--) {
+            if (cl_nlx_stack[j].type == CL_NLX_UWPROT &&
+                !jit_nlx_frame_is_stale(&cl_nlx_stack[j])) {
+                cl_nlx_top = j;
+                cl_nlx_jump(&cl_nlx_stack[j]);
+            }
+        }
+        cl_pending_throw = 0;
+        cl_nlx_stack[i].result = cl_pending_value;
+        cl_nlx_stack[i].mv_count = 1;
+        cl_nlx_stack[i].mv_values[0] = cl_pending_value;
+        cl_nlx_top = i;
+        cl_nlx_jump(&cl_nlx_stack[i]);
     } else {
         /* p == 2: pending error.  Search for next UWPROT, else replay
          * the original error through cl_error_frames.  This skips the
@@ -1164,7 +1263,7 @@ void cl_jit_runtime_uwprot_rethrow(void)
             if (cl_nlx_stack[i].type == CL_NLX_UWPROT &&
                 !jit_nlx_frame_is_stale(&cl_nlx_stack[i])) {
                 cl_nlx_top = i;
-                CL_LONGJMP(cl_nlx_stack[i].buf, 1);
+                cl_nlx_jump(&cl_nlx_stack[i]);
             }
         }
         {
@@ -1498,12 +1597,12 @@ void cl_jit_runtime_tagbody_go(CL_Obj tagbody_id, CL_Obj tag_index)
                     for (mi = 0; mi < cl_mv_count && mi < CL_MAX_MV; mi++)
                         cl_pending_mv_values[mi] = cl_mv_values[mi];
                     cl_nlx_top = j;
-                    CL_LONGJMP(cl_nlx_stack[j].buf, 1);
+                    cl_nlx_jump(&cl_nlx_stack[j]);
                 }
             }
             cl_nlx_stack[i].result = tag_index;
             cl_nlx_top = i;
-            CL_LONGJMP(cl_nlx_stack[i].buf, 1);
+            cl_nlx_jump(&cl_nlx_stack[i]);
         }
     }
     cl_error(CL_ERR_GENERAL, "GO: tagbody frame not found%s",
