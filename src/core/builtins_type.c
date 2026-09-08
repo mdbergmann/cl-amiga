@@ -139,115 +139,243 @@ static int obj_elt_class(CL_Obj obj)
     return AEC_T;
 }
 
-/* --- typep for simple symbol type specifiers --- */
+/* --- typep for simple symbol type specifiers ---
+ *
+ * The standard type names are dispatched by a small integer code kept in
+ * the top byte of the specifier symbol's own flags word (types.h,
+ * CL_SYM_TYPECODE), assigned once at startup by cl_typep_codes_init.  What
+ * used to be a cascade of up to ~45 strcmp calls per TYPEP — paid on every
+ * OP_ASSERT_TYPE, so on every (declare (type ...)) in compiled code, and
+ * paid in FULL by exactly the specifiers that are NOT standard names
+ * (structure, condition and CLOS class types, which fell through the whole
+ * cascade first) — is now one load and a switch.  On m68k, where strcmp is
+ * far more expensive relative to the rest, the saving is larger still.
+ *
+ * The code is keyed on symbol IDENTITY, matching how the compound-specifier
+ * heads are already compared (head == TYPE_SYM_INTEGER, below).  A symbol
+ * that merely shares a standard type NAME without being the COMMON-LISP
+ * symbol therefore reaches the user-type path; typep_symbol_by_name at the
+ * end of that path re-checks it against the name table before signalling,
+ * so such a specifier still resolves exactly as it used to, just slower. */
 
-static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
+enum {
+    TS_NONE = 0,
+    TS_T, TS_NIL, TS_NULL, TS_BOOLEAN, TS_SYMBOL, TS_KEYWORD,
+    TS_CONS, TS_LIST, TS_ATOM,
+    TS_FIXNUM, TS_BIGNUM, TS_INTEGER, TS_UNSIGNED_BYTE, TS_SIGNED_BYTE,
+    TS_BIT, TS_RATIO, TS_RATIONAL,
+    TS_SINGLE_FLOAT, TS_DOUBLE_FLOAT, TS_FLOAT, TS_REAL, TS_COMPLEX,
+    TS_NUMBER,
+    TS_CHARACTER, TS_BASE_CHAR, TS_STANDARD_CHAR, TS_EXTENDED_CHAR,
+    TS_STRING, TS_SIMPLE_STRING, TS_BASE_STRING, TS_SIMPLE_BASE_STRING,
+    TS_BIT_VECTOR, TS_SIMPLE_BIT_VECTOR,
+    TS_ARRAY, TS_SIMPLE_ARRAY, TS_VECTOR, TS_SIMPLE_VECTOR, TS_SEQUENCE,
+    TS_FUNCTION, TS_GENERIC_FUNCTION, TS_COMPILED_FUNCTION,
+    TS_HASH_TABLE, TS_PACKAGE, TS_RESTART,
+    TS_STREAM, TS_SYNONYM_STREAM, TS_FILE_STREAM, TS_STRING_STREAM,
+    TS_TWO_WAY_STREAM, TS_BROADCAST_STREAM, TS_CONCATENATED_STREAM,
+    TS_ECHO_STREAM,
+    TS_RANDOM_STATE, TS_PATHNAME, TS_LOGICAL_PATHNAME, TS_READTABLE,
+    TS_STRUCTURE,
+    TS_LAST
+};
+
+/* The standard type names, in COMMON-LISP, and their codes.  SHORT-FLOAT
+ * and LONG-FLOAT are clamiga's single/double aliases; GENERIC-FUNCTION and
+ * STANDARD-GENERIC-FUNCTION answer alike, as do STRUCTURE and
+ * STRUCTURE-OBJECT.  Keep in sync with the switch in typep_builtin_code. */
+static const struct { const char *name; uint8_t code; } typep_name_codes[] = {
+    { "T", TS_T }, { "NIL", TS_NIL }, { "NULL", TS_NULL },
+    { "BOOLEAN", TS_BOOLEAN }, { "SYMBOL", TS_SYMBOL },
+    { "KEYWORD", TS_KEYWORD },
+    { "CONS", TS_CONS }, { "LIST", TS_LIST }, { "ATOM", TS_ATOM },
+    { "FIXNUM", TS_FIXNUM }, { "BIGNUM", TS_BIGNUM },
+    { "INTEGER", TS_INTEGER },
+    { "UNSIGNED-BYTE", TS_UNSIGNED_BYTE }, { "SIGNED-BYTE", TS_SIGNED_BYTE },
+    { "BIT", TS_BIT }, { "RATIO", TS_RATIO }, { "RATIONAL", TS_RATIONAL },
+    { "SINGLE-FLOAT", TS_SINGLE_FLOAT }, { "SHORT-FLOAT", TS_SINGLE_FLOAT },
+    { "DOUBLE-FLOAT", TS_DOUBLE_FLOAT }, { "LONG-FLOAT", TS_DOUBLE_FLOAT },
+    { "FLOAT", TS_FLOAT }, { "REAL", TS_REAL }, { "COMPLEX", TS_COMPLEX },
+    { "NUMBER", TS_NUMBER },
+    { "CHARACTER", TS_CHARACTER }, { "BASE-CHAR", TS_BASE_CHAR },
+    { "STANDARD-CHAR", TS_STANDARD_CHAR },
+    { "EXTENDED-CHAR", TS_EXTENDED_CHAR },
+    { "STRING", TS_STRING }, { "SIMPLE-STRING", TS_SIMPLE_STRING },
+    { "BASE-STRING", TS_BASE_STRING },
+    { "SIMPLE-BASE-STRING", TS_SIMPLE_BASE_STRING },
+    { "BIT-VECTOR", TS_BIT_VECTOR },
+    { "SIMPLE-BIT-VECTOR", TS_SIMPLE_BIT_VECTOR },
+    { "ARRAY", TS_ARRAY }, { "SIMPLE-ARRAY", TS_SIMPLE_ARRAY },
+    { "VECTOR", TS_VECTOR }, { "SIMPLE-VECTOR", TS_SIMPLE_VECTOR },
+    { "SEQUENCE", TS_SEQUENCE },
+    { "FUNCTION", TS_FUNCTION },
+    { "GENERIC-FUNCTION", TS_GENERIC_FUNCTION },
+    { "STANDARD-GENERIC-FUNCTION", TS_GENERIC_FUNCTION },
+    { "COMPILED-FUNCTION", TS_COMPILED_FUNCTION },
+    { "HASH-TABLE", TS_HASH_TABLE }, { "PACKAGE", TS_PACKAGE },
+    { "RESTART", TS_RESTART },
+    { "STREAM", TS_STREAM }, { "SYNONYM-STREAM", TS_SYNONYM_STREAM },
+    { "FILE-STREAM", TS_FILE_STREAM }, { "STRING-STREAM", TS_STRING_STREAM },
+    { "TWO-WAY-STREAM", TS_TWO_WAY_STREAM },
+    { "BROADCAST-STREAM", TS_BROADCAST_STREAM },
+    { "CONCATENATED-STREAM", TS_CONCATENATED_STREAM },
+    { "ECHO-STREAM", TS_ECHO_STREAM },
+    { "RANDOM-STATE", TS_RANDOM_STATE }, { "PATHNAME", TS_PATHNAME },
+    { "LOGICAL-PATHNAME", TS_LOGICAL_PATHNAME },
+    { "READTABLE", TS_READTABLE },
+    { "STRUCTURE", TS_STRUCTURE }, { "STRUCTURE-OBJECT", TS_STRUCTURE }
+};
+
+/* Stamp each standard type name's COMMON-LISP symbol with its code.  Called
+ * from cl_builtins_type_init, after the package system is up.  The symbols
+ * are interned (created if need be) so the code survives however they are
+ * first referenced later; no GC rooting is needed because the code lives in
+ * the symbol itself, which the collector moves as one object. */
+static void cl_typep_codes_init(void)
 {
-    const char *tname = cl_symbol_name(type_sym);
+    size_t i;
+    for (i = 0; i < sizeof(typep_name_codes) / sizeof(typep_name_codes[0]);
+         i++) {
+        const char *nm = typep_name_codes[i].name;
+        CL_Obj sym = cl_intern_in(nm, (uint32_t)strlen(nm), cl_package_cl);
+        if (!CL_NULL_P(sym) && CL_SYMBOL_P(sym)) {
+            CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+            s->flags = (s->flags & ~CL_SYM_TYPECODE_MASK)
+                       | ((uint32_t)typep_name_codes[i].code
+                          << CL_SYM_TYPECODE_SHIFT);
+        }
+    }
+    /* NIL is the tag 0; its flags live on the SYM_NIL storage shadow. */
+    if (!CL_NULL_P(SYM_NIL) && CL_SYMBOL_P(SYM_NIL)) {
+        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_NIL);
+        s->flags = (s->flags & ~CL_SYM_TYPECODE_MASK)
+                   | ((uint32_t)TS_NIL << CL_SYM_TYPECODE_SHIFT);
+    }
+}
 
-    if (strcmp(tname, "T") == 0)              return 1;
-    if (strcmp(tname, "NIL") == 0)            return 0;
-    if (strcmp(tname, "NULL") == 0)           return CL_NULL_P(obj);
-    if (strcmp(tname, "BOOLEAN") == 0)        return CL_NULL_P(obj) || obj == SYM_T;
-    if (strcmp(tname, "SYMBOL") == 0)         return CL_NULL_P(obj) || CL_SYMBOL_P(obj);
-    if (strcmp(tname, "KEYWORD") == 0) {
+/* Look a standard type name up by string.  Only the compatibility path at
+ * the end of typep_symbol uses this, so the linear walk is off the hot
+ * path entirely. */
+static uint8_t typep_code_for_name(const char *tname)
+{
+    size_t i;
+    for (i = 0; i < sizeof(typep_name_codes) / sizeof(typep_name_codes[0]);
+         i++)
+        if (strcmp(tname, typep_name_codes[i].name) == 0)
+            return typep_name_codes[i].code;
+    return TS_NONE;
+}
+
+static int typep_builtin_code(CL_Obj obj, uint8_t code)
+{
+    switch (code) {
+    case TS_T:       return 1;
+    case TS_NIL:     return 0;
+    case TS_NULL:    return CL_NULL_P(obj);
+    case TS_BOOLEAN: return CL_NULL_P(obj) || obj == SYM_T;
+    case TS_SYMBOL:  return CL_NULL_P(obj) || CL_SYMBOL_P(obj);
+    case TS_KEYWORD:
         if (!CL_NULL_P(obj) && CL_SYMBOL_P(obj)) {
             CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(obj);
             return s->package == cl_package_keyword;
         }
         return 0;
-    }
-    if (strcmp(tname, "CONS") == 0)           return CL_CONS_P(obj);
-    if (strcmp(tname, "LIST") == 0)           return CL_NULL_P(obj) || CL_CONS_P(obj);
-    if (strcmp(tname, "ATOM") == 0)           return !CL_CONS_P(obj);
-    if (strcmp(tname, "FIXNUM") == 0)  return CL_FIXNUM_P(obj);
-    if (strcmp(tname, "BIGNUM") == 0)  return CL_BIGNUM_P(obj);
-    if (strcmp(tname, "INTEGER") == 0) return CL_INTEGER_P(obj);
-    /* Bare unsigned-byte / signed-byte / bit / mod — no compound size given */
-    if (strcmp(tname, "UNSIGNED-BYTE") == 0) {
+    case TS_CONS:    return CL_CONS_P(obj);
+    case TS_LIST:    return CL_NULL_P(obj) || CL_CONS_P(obj);
+    case TS_ATOM:    return !CL_CONS_P(obj);
+    case TS_FIXNUM:  return CL_FIXNUM_P(obj);
+    case TS_BIGNUM:  return CL_BIGNUM_P(obj);
+    case TS_INTEGER: return CL_INTEGER_P(obj);
+    /* Bare unsigned-byte / signed-byte / bit — no compound size given */
+    case TS_UNSIGNED_BYTE:
         if (CL_FIXNUM_P(obj)) return CL_FIXNUM_VAL(obj) >= 0;
         if (CL_BIGNUM_P(obj))
             return ((CL_Bignum *)CL_OBJ_TO_PTR(obj))->sign == 0;
         return 0;
-    }
-    if (strcmp(tname, "SIGNED-BYTE") == 0) return CL_INTEGER_P(obj);
-    if (strcmp(tname, "BIT") == 0)
+    case TS_SIGNED_BYTE: return CL_INTEGER_P(obj);
+    case TS_BIT:
         return CL_FIXNUM_P(obj)
                && (CL_FIXNUM_VAL(obj) == 0 || CL_FIXNUM_VAL(obj) == 1);
-    if (strcmp(tname, "RATIO") == 0)  return CL_RATIO_P(obj);
-    if (strcmp(tname, "RATIONAL") == 0) return CL_RATIONAL_P(obj);
-    if (strcmp(tname, "SINGLE-FLOAT") == 0 || strcmp(tname, "SHORT-FLOAT") == 0)
-        return CL_SINGLE_FLOAT_P(obj);
-    if (strcmp(tname, "DOUBLE-FLOAT") == 0 || strcmp(tname, "LONG-FLOAT") == 0)
-        return CL_DOUBLE_FLOAT_P(obj);
-    if (strcmp(tname, "FLOAT") == 0)  return CL_FLOATP(obj);
-    if (strcmp(tname, "REAL") == 0)   return CL_REALP(obj);
-    if (strcmp(tname, "COMPLEX") == 0) return CL_COMPLEX_P(obj);
-    if (strcmp(tname, "NUMBER") == 0) return CL_NUMBER_P(obj);
-    if (strcmp(tname, "CHARACTER") == 0)      return CL_CHAR_P(obj);
+    case TS_RATIO:        return CL_RATIO_P(obj);
+    case TS_RATIONAL:     return CL_RATIONAL_P(obj);
+    case TS_SINGLE_FLOAT: return CL_SINGLE_FLOAT_P(obj);
+    case TS_DOUBLE_FLOAT: return CL_DOUBLE_FLOAT_P(obj);
+    case TS_FLOAT:        return CL_FLOATP(obj);
+    case TS_REAL:         return CL_REALP(obj);
+    case TS_COMPLEX:      return CL_COMPLEX_P(obj);
+    case TS_NUMBER:       return CL_NUMBER_P(obj);
+    case TS_CHARACTER:    return CL_CHAR_P(obj);
 #ifdef CL_WIDE_STRINGS
-    if (strcmp(tname, "BASE-CHAR") == 0)     return CL_CHAR_P(obj) && CL_CHAR_VAL(obj) <= 255;
-    if (strcmp(tname, "STANDARD-CHAR") == 0) return CL_CHAR_P(obj) && CL_CHAR_VAL(obj) < 128;
-    if (strcmp(tname, "EXTENDED-CHAR") == 0) return CL_CHAR_P(obj) && CL_CHAR_VAL(obj) > 255;
-    if (strcmp(tname, "STRING") == 0)         return CL_ANY_STRING_P(obj) || CL_STRING_VECTOR_P(obj);
-    if (strcmp(tname, "SIMPLE-STRING") == 0)  return CL_ANY_STRING_P(obj);
-    if (strcmp(tname, "BASE-STRING") == 0)    return CL_STRING_P(obj) || CL_STRING_VECTOR_P(obj);
-    if (strcmp(tname, "SIMPLE-BASE-STRING") == 0) return CL_STRING_P(obj);
+    case TS_BASE_CHAR:
+        return CL_CHAR_P(obj) && CL_CHAR_VAL(obj) <= 255;
+    case TS_STANDARD_CHAR:
+        return CL_CHAR_P(obj) && CL_CHAR_VAL(obj) < 128;
+    case TS_EXTENDED_CHAR:
+        return CL_CHAR_P(obj) && CL_CHAR_VAL(obj) > 255;
+    case TS_STRING:
+        return CL_ANY_STRING_P(obj) || CL_STRING_VECTOR_P(obj);
+    case TS_SIMPLE_STRING: return CL_ANY_STRING_P(obj);
 #else
-    if (strcmp(tname, "BASE-CHAR") == 0)     return CL_CHAR_P(obj);
-    if (strcmp(tname, "STANDARD-CHAR") == 0) return CL_CHAR_P(obj);
-    if (strcmp(tname, "EXTENDED-CHAR") == 0) return 0;
-    if (strcmp(tname, "STRING") == 0)         return CL_STRING_P(obj) || CL_STRING_VECTOR_P(obj);
-    if (strcmp(tname, "SIMPLE-STRING") == 0)  return CL_STRING_P(obj);
-    if (strcmp(tname, "BASE-STRING") == 0)    return CL_STRING_P(obj) || CL_STRING_VECTOR_P(obj);
-    if (strcmp(tname, "SIMPLE-BASE-STRING") == 0) return CL_STRING_P(obj);
+    case TS_BASE_CHAR:     return CL_CHAR_P(obj);
+    case TS_STANDARD_CHAR: return CL_CHAR_P(obj);
+    case TS_EXTENDED_CHAR: return 0;
+    case TS_STRING:
+        return CL_STRING_P(obj) || CL_STRING_VECTOR_P(obj);
+    case TS_SIMPLE_STRING: return CL_STRING_P(obj);
 #endif
-    if (strcmp(tname, "BIT-VECTOR") == 0)
-        return CL_BIT_VECTOR_P(obj);
-    if (strcmp(tname, "SIMPLE-BIT-VECTOR") == 0) {
+    case TS_BASE_STRING:
+        return CL_STRING_P(obj) || CL_STRING_VECTOR_P(obj);
+    case TS_SIMPLE_BASE_STRING: return CL_STRING_P(obj);
+    case TS_BIT_VECTOR:         return CL_BIT_VECTOR_P(obj);
+    case TS_SIMPLE_BIT_VECTOR:
         if (!CL_BIT_VECTOR_P(obj)) return 0;
         { CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(obj);
-          return !(bv->flags & (CL_VEC_FLAG_FILL_POINTER | CL_VEC_FLAG_ADJUSTABLE)); }
-    }
-    if (strcmp(tname, "ARRAY") == 0 || strcmp(tname, "SIMPLE-ARRAY") == 0) {
+          return !(bv->flags & (CL_VEC_FLAG_FILL_POINTER |
+                                CL_VEC_FLAG_ADJUSTABLE)); }
+    case TS_ARRAY:
+    case TS_SIMPLE_ARRAY: {
+        int simple = (code == TS_SIMPLE_ARRAY);
         if (CL_ANY_STRING_P(obj)) return 1;
         if (CL_BIT_VECTOR_P(obj)) {
-            if (strcmp(tname, "SIMPLE-ARRAY") == 0) {
+            if (simple) {
                 CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(obj);
-                return !(bv->flags & (CL_VEC_FLAG_FILL_POINTER | CL_VEC_FLAG_ADJUSTABLE));
+                return !(bv->flags & (CL_VEC_FLAG_FILL_POINTER |
+                                      CL_VEC_FLAG_ADJUSTABLE));
             }
             return 1;
         }
         if (CL_BYTE_VECTOR_P(obj)) {
-            if (strcmp(tname, "SIMPLE-ARRAY") == 0) {
+            if (simple) {
                 CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(obj);
-                return !(bv->flags & (CL_VEC_FLAG_FILL_POINTER | CL_VEC_FLAG_ADJUSTABLE));
+                return !(bv->flags & (CL_VEC_FLAG_FILL_POINTER |
+                                      CL_VEC_FLAG_ADJUSTABLE));
             }
             return 1;
         }
         if (!CL_VECTOR_P(obj)) return 0;
-        if (strcmp(tname, "SIMPLE-ARRAY") == 0) {
+        if (simple) {
             CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
-            /* simple = no fill-pointer and not adjustable (multidim flag is ok) */
-            return !(v->flags & (CL_VEC_FLAG_FILL_POINTER | CL_VEC_FLAG_ADJUSTABLE));
+            /* simple = no fill-pointer and not adjustable (multidim ok) */
+            return !(v->flags & (CL_VEC_FLAG_FILL_POINTER |
+                                 CL_VEC_FLAG_ADJUSTABLE));
         }
         return 1;
     }
-    if (strcmp(tname, "VECTOR") == 0) {
+    case TS_VECTOR:
         if (CL_ANY_STRING_P(obj)) return 1;
         if (CL_BIT_VECTOR_P(obj)) return 1;
         if (CL_BYTE_VECTOR_P(obj)) return 1;
         if (!CL_VECTOR_P(obj)) return 0;
-        { CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj); return v->rank <= 1; }
-    }
-    if (strcmp(tname, "SIMPLE-VECTOR") == 0) {
+        { CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
+          return v->rank <= 1; }
+    case TS_SIMPLE_VECTOR: {
         /* 1D, element-type T (not string), no fill-pointer, not adjustable */
         CL_Vector *v;
         if (!CL_VECTOR_P(obj)) return 0;
         v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
         return v->rank <= 1 && v->flags == 0;
     }
-    if (strcmp(tname, "SEQUENCE") == 0) {
+    case TS_SEQUENCE:
         /* Only lists and one-dimensional arrays (vectors) are sequences;
          * a multidimensional array is NOT a sequence (CLHS "sequence"). */
         if (CL_NULL_P(obj) || CL_CONS_P(obj) || CL_ANY_STRING_P(obj) ||
@@ -258,19 +386,53 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
             return v->rank <= 1;
         }
         return 0;
-    }
-    if (strcmp(tname, "FUNCTION") == 0)
+    case TS_FUNCTION:
         return CL_FUNCTION_OBJ_P(obj) || cl_funcallable_instance_p(obj);
-    if (strcmp(tname, "GENERIC-FUNCTION") == 0)
+    case TS_GENERIC_FUNCTION:
         return cl_funcallable_instance_p(obj);
-    if (strcmp(tname, "STANDARD-GENERIC-FUNCTION") == 0)
-        return cl_funcallable_instance_p(obj);
-    if (strcmp(tname, "COMPILED-FUNCTION") == 0)
+    case TS_COMPILED_FUNCTION:
         return CL_CLOSURE_P(obj) || CL_BYTECODE_P(obj);
-    if (strcmp(tname, "HASH-TABLE") == 0)     return CL_HASHTABLE_P(obj);
-    if (strcmp(tname, "PACKAGE") == 0)        return CL_PACKAGE_P(obj);
-    if (strcmp(tname, "RESTART") == 0)        return CL_RESTART_P(obj);
-    if (strcmp(tname, "STREAM") == 0) {
+    case TS_HASH_TABLE: return CL_HASHTABLE_P(obj);
+    case TS_PACKAGE:    return CL_PACKAGE_P(obj);
+    case TS_RESTART:    return CL_RESTART_P(obj);
+    case TS_SYNONYM_STREAM:
+        if (!CL_STREAM_P(obj)) return 0;
+        return ((CL_Stream *)CL_OBJ_TO_PTR(obj))->stream_type
+               == CL_STREAM_SYNONYM;
+    case TS_FILE_STREAM:
+        if (!CL_STREAM_P(obj)) return 0;
+        { uint32_t st = ((CL_Stream *)CL_OBJ_TO_PTR(obj))->stream_type;
+          return st == CL_STREAM_FILE || st == CL_STREAM_CONSOLE; }
+    case TS_STRING_STREAM:
+        if (!CL_STREAM_P(obj)) return 0;
+        return ((CL_Stream *)CL_OBJ_TO_PTR(obj))->stream_type
+               == CL_STREAM_STRING;
+    case TS_TWO_WAY_STREAM:
+        if (!CL_STREAM_P(obj)) return 0;
+        return ((CL_Stream *)CL_OBJ_TO_PTR(obj))->stream_type
+               == CL_STREAM_TWO_WAY;
+    case TS_BROADCAST_STREAM:
+        if (!CL_STREAM_P(obj)) return 0;
+        return ((CL_Stream *)CL_OBJ_TO_PTR(obj))->stream_type
+               == CL_STREAM_BROADCAST;
+    case TS_CONCATENATED_STREAM:
+        if (!CL_STREAM_P(obj)) return 0;
+        return ((CL_Stream *)CL_OBJ_TO_PTR(obj))->stream_type
+               == CL_STREAM_CONCATENATED;
+    case TS_ECHO_STREAM:
+        if (!CL_STREAM_P(obj)) return 0;
+        return ((CL_Stream *)CL_OBJ_TO_PTR(obj))->stream_type
+               == CL_STREAM_ECHO;
+    case TS_RANDOM_STATE:     return CL_RANDOM_STATE_P(obj);
+    case TS_PATHNAME:         return CL_PATHNAME_P(obj);
+    case TS_LOGICAL_PATHNAME: return 0;
+    case TS_READTABLE:
+        /* Readtables are fixnum pool indices */
+        if (!CL_FIXNUM_P(obj)) return 0;
+        { int idx = CL_FIXNUM_VAL(obj);
+          return idx >= 0 && idx < CL_RT_POOL_SIZE; }
+    case TS_STRUCTURE: return CL_STRUCT_P(obj);
+    case TS_STREAM: {
         if (CL_STREAM_P(obj)) return 1;
         /* Gray streams are CLOS instances (CL_STRUCT_P); check CPL for
          * GRAY::FUNDAMENTAL-STREAM.  The symbol is looked up lazily so
@@ -300,47 +462,18 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
         }
         return 0;
     }
-    if (strcmp(tname, "SYNONYM-STREAM") == 0) {
-        if (!CL_STREAM_P(obj)) return 0;
-        return ((CL_Stream *)CL_OBJ_TO_PTR(obj))->stream_type == CL_STREAM_SYNONYM;
+    default: break;
     }
-    if (strcmp(tname, "FILE-STREAM") == 0) {
-        if (!CL_STREAM_P(obj)) return 0;
-        { uint32_t st = ((CL_Stream *)CL_OBJ_TO_PTR(obj))->stream_type;
-          return st == CL_STREAM_FILE || st == CL_STREAM_CONSOLE; }
-    }
-    if (strcmp(tname, "STRING-STREAM") == 0) {
-        if (!CL_STREAM_P(obj)) return 0;
-        return ((CL_Stream *)CL_OBJ_TO_PTR(obj))->stream_type == CL_STREAM_STRING;
-    }
-    if (strcmp(tname, "TWO-WAY-STREAM") == 0) {
-        if (!CL_STREAM_P(obj)) return 0;
-        return ((CL_Stream *)CL_OBJ_TO_PTR(obj))->stream_type == CL_STREAM_TWO_WAY;
-    }
-    if (strcmp(tname, "BROADCAST-STREAM") == 0) {
-        if (!CL_STREAM_P(obj)) return 0;
-        return ((CL_Stream *)CL_OBJ_TO_PTR(obj))->stream_type == CL_STREAM_BROADCAST;
-    }
-    if (strcmp(tname, "CONCATENATED-STREAM") == 0) {
-        if (!CL_STREAM_P(obj)) return 0;
-        return ((CL_Stream *)CL_OBJ_TO_PTR(obj))->stream_type == CL_STREAM_CONCATENATED;
-    }
-    if (strcmp(tname, "ECHO-STREAM") == 0) {
-        if (!CL_STREAM_P(obj)) return 0;
-        return ((CL_Stream *)CL_OBJ_TO_PTR(obj))->stream_type == CL_STREAM_ECHO;
-    }
-    if (strcmp(tname, "RANDOM-STATE") == 0) return CL_RANDOM_STATE_P(obj);
-    if (strcmp(tname, "PATHNAME") == 0)     return CL_PATHNAME_P(obj);
-    if (strcmp(tname, "LOGICAL-PATHNAME") == 0) return 0;
-    if (strcmp(tname, "READTABLE") == 0) {
-        /* Readtables are fixnum pool indices */
-        if (!CL_FIXNUM_P(obj)) return 0;
-        { int idx = CL_FIXNUM_VAL(obj); return idx >= 0 && idx < CL_RT_POOL_SIZE; }
-    }
+    return 0;
+}
 
+/* Everything a standard type name does not answer: structure types,
+ * condition types, DEFTYPE expanders and CLOS classes.  This is the path
+ * sento's (declare (type <class>) ...) takes, and it used to run the whole
+ * strcmp cascade above before reaching its first real check. */
+static int typep_user_type(CL_Obj obj, CL_Obj type_sym)
+{
     /* Structure types — check hierarchy for struct objects */
-    if (strcmp(tname, "STRUCTURE") == 0 || strcmp(tname, "STRUCTURE-OBJECT") == 0)
-        return CL_STRUCT_P(obj);
     {
         extern int cl_is_struct_type(CL_Obj type_sym);
         extern int cl_struct_type_matches(CL_Obj obj_type, CL_Obj test_type);
@@ -400,9 +533,40 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
         }
     }
 
+    /* Compatibility net for a symbol that carries a standard type NAME but
+     * is not the COMMON-LISP symbol — one interned in a package that does
+     * not inherit CL, or reached through a FASL read under such a
+     * *PACKAGE*.  The old name-keyed cascade answered those; keep doing so,
+     * on this cold path only, rather than signalling a type error. */
+    {
+        uint8_t code = typep_code_for_name(cl_symbol_name(type_sym));
+        if (code != TS_NONE)
+            return typep_builtin_code(obj, code);
+    }
+
     cl_error(CL_ERR_TYPE, "TYPEP: unknown type specifier %s",
              cl_symbol_name(type_sym));
     return 0;
+}
+
+/* TYPEP on a bare symbol specifier.  One flags load decides between the
+ * standard-type switch and the user-type path; see the block comment on
+ * typep_name_codes above. */
+static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
+{
+    uint8_t code;
+
+    /* CL_NIL is the tag 0 — the type NIL, which nothing is of.  Handled
+     * here so the flags read below never dereferences the null tag. */
+    if (CL_NULL_P(type_sym))
+        return 0;
+    if (!CL_SYMBOL_P(type_sym))
+        return typep_user_type(obj, type_sym);
+
+    code = (uint8_t)CL_SYM_TYPECODE((CL_Symbol *)CL_OBJ_TO_PTR(type_sym));
+    if (code != TS_NONE)
+        return typep_builtin_code(obj, code);
+    return typep_user_type(obj, type_sym);
 }
 
 /* --- Numeric range type check: (type [low [high]]) ---
@@ -2939,6 +3103,9 @@ void cl_builtins_type_init(void)
     TYPE_SYM_SIMPLE_BASE_STRING = cl_intern_in("SIMPLE-BASE-STRING", 18, cl_package_cl);
     TYPE_SYM_BIT_VECTOR        = cl_intern_in("BIT-VECTOR", 10, cl_package_cl);
     TYPE_SYM_SIMPLE_BIT_VECTOR = cl_intern_in("SIMPLE-BIT-VECTOR", 17, cl_package_cl);
+
+    /* Stamp the standard type names with their TYPEP dispatch codes. */
+    cl_typep_codes_init();
 
     defun("TYPE-OF", bi_type_of, 1, 1);
     /* CLHS: typep and subtypep take an optional ENV argument.  We

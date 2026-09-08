@@ -788,19 +788,15 @@ CL_Obj *cl_current_package_ref(void)
     return &t->current_package;
 }
 
+/* Thread-deriving wrapper over cl_symbol_value_on (thread.h), which is what
+ * the VM calls with the thread it already holds.  CL_NIL's value cell lives
+ * on the SYM_NIL storage shadow; the inline does that fixup. */
 CL_Obj cl_symbol_value(CL_Obj sym)
 {
     CL_Thread *t = (cl_thread_count <= 1)
                    ? cl_main_thread_ptr
                    : (CL_Thread *)platform_tls_get();
-    /* CL_NIL is the constant tag (0) — its value/function/plist live on
-     * the heap-allocated SYM_NIL storage shadow. */
-    if (CL_NULL_P(sym)) sym = SYM_NIL;
-    if (t->tlv_entry_count > 0) {
-        CL_Obj v = cl_tlv_get(t, sym);
-        if (v != CL_TLV_ABSENT) return v;
-    }
-    return ((CL_Symbol *)CL_OBJ_TO_PTR(sym))->value;
+    return cl_symbol_value_on(t, sym);
 }
 
 /* C-level dynamic binding, mirroring OP_DYNBIND: installs a THREAD-LOCAL

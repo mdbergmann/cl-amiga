@@ -11067,6 +11067,133 @@ y" 1))
 (check "*image-restored-p* is bound" t
   (if (member ext:*image-restored-p* '(nil t)) t nil))
 
+; --- Tier-4 phase 1: runtime-tax removals (specs/performance.md 4.1) ---
+; The target side of tests/test_tier4_phase1.sh.  Every case here pins a
+; behaviour a Phase-1 speed change had to preserve, and each is worth more
+; on the Amiga than on the host: the type-code dispatch replaced a strcmp
+; cascade (far costlier on 68k), and the slot / GF caches replaced lock and
+; hash work on a CPU where every one of those is dear.
+
+; call_builtin's multiple-value save: THROW must still deliver its value
+; form's extra values now that the common single-value case is one store.
+(check "throw carries all values" '(1 2 3)
+  (multiple-value-list (catch 'tk (throw 'tk (values 1 2 3)))))
+(check "throw carries one value" '(7)
+  (multiple-value-list (catch 'tk (throw 'tk 7))))
+(check "throw carries no values" nil
+  (multiple-value-list (catch 'tk (throw 'tk (values)))))
+(check "throw through unwind-protect keeps values" '(4 5 6)
+  (multiple-value-list
+    (catch 'tk (unwind-protect (throw 'tk (values 4 5 6)) (list 1)))))
+
+; TYPEP dispatches standard type names by a code stored on the symbol.
+(check "typep standard names" '(t nil t t t t t t)
+  (list (typep 5 'fixnum) (typep 5 'nil) (typep nil 'null) (typep nil 'list)
+        (typep "s" 'string) (typep #\a 'character) (typep :k 'keyword)
+        (typep '(1) 'sequence)))
+(check "typep array simplicity" '(nil t nil)
+  (list (typep (make-array 2 :adjustable t) 'simple-array)
+        (typep (make-array 2 :adjustable t) 'array)
+        (typep (make-array 2 :fill-pointer 1) 'simple-vector)))
+(check "typep multidim array is not a sequence" '(t nil nil)
+  (list (typep (make-array '(2 2)) 'array)
+        (typep (make-array '(2 2)) 'vector)
+        (typep (make-array '(2 2)) 'sequence)))
+(defstruct t4-s a)
+(defclass t4-c () ())
+(defclass t4-d (t4-c) ())
+(check "typep struct and class types" '(t t nil t nil)
+  (list (typep (make-t4-s) 't4-s) (typep (make-t4-s) 'structure-object)
+        (typep 5 't4-s) (typep (make-instance 't4-d) 't4-c)
+        (typep (make-instance 't4-c) 't4-d)))
+(deftype t4-small () '(integer 0 9))
+(check "typep deftype still expands" '(t nil)
+  (list (typep 5 't4-small) (typep 50 't4-small)))
+; a symbol that only SHARES a standard type name resolves by name
+(defpackage :t4-other (:use))
+(check "typep by name for a non-CL symbol" '(t nil)
+  (list (typep 5 (intern "FIXNUM" :t4-other))
+        (typep "s" (intern "FIXNUM" :t4-other))))
+
+; The per-thread slot-index cache must be retired by class redefinition.
+(defclass t4-sc () ((a :initform 'a1) (b :initform 'b1)))
+(defvar *t4-o1* (make-instance 't4-sc))
+(dotimes (i 200) (slot-value *t4-o1* 'a) (slot-value *t4-o1* 'b))
+(check "slots before redefinition" '(a1 b1)
+  (list (slot-value *t4-o1* 'a) (slot-value *t4-o1* 'b)))
+(defclass t4-sc () ((z :initform 'z2) (a :initform 'a2) (b :initform 'b2)))
+(defvar *t4-o2* (make-instance 't4-sc))
+(check "warmed slot cache does not survive redefinition" '(z2 a2 b2)
+  (list (slot-value *t4-o2* 'z) (slot-value *t4-o2* 'a)
+        (slot-value *t4-o2* 'b)))
+(check "slot write lands in the new layout" '(z2 set-a b2)
+  (progn (setf (slot-value *t4-o2* 'a) 'set-a)
+         (list (slot-value *t4-o2* 'z) (slot-value *t4-o2* 'a)
+               (slot-value *t4-o2* 'b))))
+(check "with-slots agrees with slot-value" '(z2 set-a b2)
+  (with-slots (z a b) *t4-o2* (list z a b)))
+(check "a missing slot still errors when cached" '(:error :error)
+  (list (handler-case (slot-value *t4-o2* 'nosuch) (error () :error))
+        (handler-case (slot-value *t4-o2* 'nosuch) (error () :error))))
+(defclass t4-sd () ((b :initform 'd-b) (a :initform 'd-a)))
+(defvar *t4-d* (make-instance 't4-sd))
+(check "two classes sharing slot names" '(d-a d-b set-a)
+  (progn (dotimes (i 50) (slot-value *t4-d* 'a) (slot-value *t4-o2* 'a))
+         (list (slot-value *t4-d* 'a) (slot-value *t4-d* 'b)
+               (slot-value *t4-o2* 'a))))
+
+; The GF inline cache validates by class NAME instead of a *CLASS-TABLE*
+; lookup under the tables lock.
+(defclass t4-ga () ((v :initarg :v :accessor t4-ga-v)))
+(defclass t4-gb (t4-ga) ())
+(defgeneric t4-who (x))
+(defmethod t4-who ((x t4-ga)) 'ga)
+(defmethod t4-who ((x t4-gb)) 'gb)
+(defvar *t4-a* (make-instance 't4-ga :v 1))
+(defvar *t4-b* (make-instance 't4-gb :v 2))
+(check "dispatch alternating receiver classes" '(ga gb ga gb)
+  (list (t4-who *t4-a*) (t4-who *t4-b*)
+        (t4-who *t4-a*) (t4-who *t4-b*)))
+(defgeneric t4-kind (x))
+(defmethod t4-kind ((x integer)) 'int)
+(defmethod t4-kind ((x string)) 'str)
+(defmethod t4-kind ((x symbol)) 'sym)
+(defmethod t4-kind ((x t)) 'other)
+(check "dispatch on built-in receiver classes" '(int str sym other)
+  (progn (dotimes (i 20) (t4-kind 1) (t4-kind "s"))
+         (list (t4-kind 1) (t4-kind "s") (t4-kind 'a) (t4-kind 1.5))))
+(defgeneric t4-pair (x y))
+(defmethod t4-pair ((x t4-ga) (y integer)) 'ga-int)
+(defmethod t4-pair ((x t4-ga) (y string)) 'ga-str)
+(defmethod t4-pair ((x t4-gb) (y integer)) 'gb-int)
+(check "two-argument dispatch" '(ga-int ga-str gb-int)
+  (progn (dotimes (i 20) (t4-pair *t4-a* 1))
+         (list (t4-pair *t4-a* 1) (t4-pair *t4-a* "s") (t4-pair *t4-b* 1))))
+(defmethod t4-who ((x t4-gb)) 'gb-new)
+(check "redefining a method invalidates the cache" '(ga gb-new)
+  (list (t4-who *t4-a*) (t4-who *t4-b*)))
+(check "accessors read and write through their caches" '(1 99)
+  (progn (setf (t4-ga-v *t4-b*) 99)
+         (list (t4-ga-v *t4-a*) (t4-ga-v *t4-b*))))
+
+; OP_CONS / OP_LIST / &rest build from GC-rooted stack slots.
+(defun t4-r0 (&rest r) r)
+(defun t4-r1 (a &rest r) (list a r))
+(defun t4-k1 (a &key b c) (list a b c))
+(check "cons from the stack" '(1 . 2) (cons 1 2))
+(check "list at arity 8" '(1 2 3 4 5 6 7 8) (list 1 2 3 4 5 6 7 8))
+(check "empty &rest" nil (t4-r0))
+(check "&rest collects arguments" '(1 2 3) (t4-r0 1 2 3))
+(check "required plus &rest" '(1 (2 3)) (t4-r1 1 2 3))
+(check "&rest through apply" '(1 2 3 4) (apply #'t4-r0 (list 1 2 3 4)))
+(check "&key after required" '(1 2 3) (t4-k1 1 :b 2 :c 3))
+(check "long &rest through apply" 300
+  (length (apply #'t4-r0 (loop for i from 1 to 300 collect i))))
+(check "consing under collection pressure" 3
+  (let ((acc nil))
+    (dotimes (i 5000) (setq acc (list i (cons i i) (list i i i))))
+    (length acc)))
+
 ; --- Exit hooks (EXT:*EXIT-HOOKS*) ---
 ; The list API here, plus one real hook registered at the bottom: it can only
 ; run from main.c's shutdown funnel, so its marker in the results log is the

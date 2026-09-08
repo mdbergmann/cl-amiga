@@ -323,6 +323,27 @@ static uint32_t align_up(uint32_t size)
     return (size + CL_ALIGN - 1) & ~(CL_ALIGN - 1);
 }
 
+/* Zero a freshly allocated block before its header is written.
+ *
+ * The zeroing itself is mandatory (see the call sites: stale bytes in
+ * padding are read back as CL_Obj fields by the GC and the FASL writer),
+ * but for a CONS — CL_MIN_ALLOC_SIZE, and far and away the most allocated
+ * object — an out-of-line memset call costs more than the four stores it
+ * performs.  The cutoff stays at the minimum block size on purpose: a
+ * tuned memset beats a scalar word loop from surprisingly few bytes up
+ * (measured on this host at 32 bytes and above), so widening this is a
+ * pessimization, not an improvement.  SIZE is CL_ALIGN-aligned here. */
+static inline void alloc_zero(void *ptr, uint32_t size)
+{
+    if (size == CL_MIN_ALLOC_SIZE) {
+        uint32_t *p = (uint32_t *)ptr;
+        uint32_t n = CL_MIN_ALLOC_SIZE / 4;
+        while (n--) *p++ = 0;
+    } else {
+        memset(ptr, 0, size);
+    }
+}
+
 #ifdef CL_TLAB
 /* ================================================================
  * TLAB — per-thread allocation buffers (multi-threaded fast path)
@@ -1387,7 +1408,7 @@ void *cl_alloc(uint8_t type, uint32_t size)
             platform_mutex_unlock(alloc_mutex);
         }
         if (ptr) {
-            memset(ptr, 0, size);
+            alloc_zero(ptr, size);
             ((CL_Header *)ptr)->header = CL_MAKE_HDR(type, size);
 #ifdef CL_GENGC
             /* Young finalizable objects are tracked so a minor GC can
@@ -1574,7 +1595,7 @@ void *cl_alloc(uint8_t type, uint32_t size)
      * Zeroing prevents stale data in padding/trailing bytes from being
      * misinterpreted by GC (e.g. closure padding read as upvalue slots)
      * or FASL serializer (traverses object graph by following CL_Obj fields). */
-    memset(ptr, 0, size);
+    alloc_zero(ptr, size);
     ((CL_Header *)ptr)->header = CL_MAKE_HDR(type, size);
     cl_heap.total_allocated += size;
     cl_heap.total_consed += size;
@@ -1607,6 +1628,33 @@ CL_Obj cl_cons(CL_Obj car, CL_Obj cdr)
     if (!c) return CL_NIL;
     c->car = car;
     c->cdr = cdr;
+    return CL_PTR_TO_OBJ(c);
+}
+
+/* Cons whose CAR and CDR are ALREADY GC-rooted by the caller — passed by
+ * ADDRESS, not by value.
+ *
+ * cl_cons has to push both arguments onto the GC root stack because its
+ * by-value parameters are invisible to a compaction triggered inside
+ * cl_alloc.  The VM's own cons sites (OP_CONS, OP_LIST, &rest building)
+ * do not need that: their operands live in GC-rooted storage — VM stack
+ * slots, which the collector forwards in place, or a local the caller has
+ * already CL_GC_PROTECTed.  Taking the addresses lets this read the
+ * operands AFTER the allocation, so a relocation during cl_alloc is
+ * simply observed rather than needing two more root-stack entries per
+ * cons (four stack writes and two bounds checks on the hottest allocation
+ * path in the system).
+ *
+ * The caller must guarantee both locations are rooted and remain valid
+ * across the call — the VM stack below sp, or a CL_GC_PROTECTed local.
+ * Nothing here allocates after cl_alloc returns, so the raw pointer c is
+ * stable for the two stores. */
+CL_Obj cl_cons_rooted(const CL_Obj *car_ref, const CL_Obj *cdr_ref)
+{
+    CL_Cons *c = (CL_Cons *)cl_alloc(TYPE_CONS, sizeof(CL_Cons));
+    if (!c) return CL_NIL;
+    c->car = *car_ref;
+    c->cdr = *cdr_ref;
     return CL_PTR_TO_OBJ(c);
 }
 

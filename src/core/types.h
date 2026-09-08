@@ -260,6 +260,18 @@ typedef struct {
     uint32_t flags;   /* bit 0: IS_SPECIAL (declared by defvar/defparameter) */
 } CL_Symbol;
 
+/* Bits 24..31 of CL_Symbol.flags hold this symbol's standard type-specifier
+ * code (0 = not a standard type name), set once at startup by
+ * cl_typep_codes_init in builtins_type.c.  TYPEP on a symbol specifier is
+ * then one load and a switch instead of a ~45-deep strcmp cascade — it runs
+ * on every OP_ASSERT_TYPE, i.e. on every (declare (type ...)) in compiled
+ * code.  Nothing else writes the upper byte: flags are only ever OR'd or
+ * cleared bit-wise after cl_make_symbol zeroes them. */
+#define CL_SYM_TYPECODE_SHIFT 24
+#define CL_SYM_TYPECODE_MASK  0xFF000000u
+#define CL_SYM_TYPECODE(s)    (((s)->flags & CL_SYM_TYPECODE_MASK) >> \
+                               CL_SYM_TYPECODE_SHIFT)
+
 #define CL_SYM_SPECIAL  0x01
 #define CL_SYM_INLINE   0x02
 #define CL_SYM_TRACED   0x04

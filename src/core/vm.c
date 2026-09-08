@@ -384,7 +384,8 @@ CL_Obj cl_vm_pop(void)
 }
 
 /* Forward declarations */
-static CL_Obj call_builtin(CL_Function *func, CL_Obj *args, int nargs);
+static CL_Obj call_builtin(CL_Thread *thr, CL_Function *func,
+                           CL_Obj *args, int nargs);
 static CL_Obj cl_vm_run(int base_fp, int base_nlx);
 void vm_trace_dump(void);
 
@@ -643,6 +644,15 @@ CL_Obj cl_vm_apply(CL_Obj func, CL_Obj *args, int nargs)
      * standard call path sees the underlying discriminating function. */
     func = cl_unwrap_funcallable(func);
 
+    /* C-stack guard for EVERY callee kind, not just the bytecode one below.
+     * cl_vm_apply is the C-level recursion point (a builtin that applies a
+     * function, MAPCAR/REDUCE/SORT, the FFI callback entry), so the check
+     * that used to sit in call_builtin — where it ran on every builtin
+     * dispatch — belongs here, where the C stack actually grows.  The
+     * accessor probes above return without recursing and stay unguarded:
+     * they are the JIT's hot call path. */
+    cl_check_c_stack("cl_vm_apply");
+
     /* C builtins: call directly, no VM entry needed.
      *
      * GC-root the caller's args by copying them onto the VM stack and
@@ -667,7 +677,8 @@ CL_Obj cl_vm_apply(CL_Obj func, CL_Obj *args, int nargs)
                      CL_CALL_ARGS_LIMIT);
         for (i = 0; i < nargs; i++)
             cl_vm_push(args[i]);
-        result = call_builtin(f, &cl_vm.stack[base], nargs);
+        result = call_builtin(cl_get_current_thread(), f,
+                              &cl_vm.stack[base], nargs);
         cl_vm.sp = saved_sp;
         return result;
     }
@@ -711,7 +722,7 @@ CL_Obj cl_vm_apply(CL_Obj func, CL_Obj *args, int nargs)
         int base_fp, base_nlx, saved_sp;
         CL_Obj result;
 
-        cl_check_c_stack("cl_vm_apply");
+        /* (the C-stack guard ran above, ahead of every callee kind) */
 
         /* Push a minimal stub frame BEFORE pushing func+args.
          * bp = current sp, n_locals = 0.  After OP_CALL consumes
@@ -1379,11 +1390,21 @@ int cl_vm_builtin_fptr_plausible(const void *fptr)
 
 /* Validate builtin call arguments — called before the actual fptr dispatch.
  * Separated from call_builtin to keep call_builtin's stack frame tiny
- * (minimizes surface area for stack corruption). */
+ * (minimizes surface area for stack corruption).
+ *
+ * Deliberately NO cl_check_c_stack here.  A builtin call does not by itself
+ * grow the C stack — Lisp-to-Lisp calls stay inside one cl_vm_run
+ * activation — so every path that actually recurses in C passes through a
+ * guarded entry point first: cl_vm_apply / cl_vm_apply_list / cl_vm_eval /
+ * cl_vm_run, and cl_check_recursion_guards in the reader and compiler.
+ * Checking here too cost a platform_stack_headroom call on every builtin
+ * dispatch (~0.5% of the sento profile) for a guard those entry points
+ * already provide — verified by re-running the three overflow shapes
+ * (nested source, runaway Lisp recursion, recursion through MAPCAR) and
+ * getting byte-identical diagnostics. */
 static void validate_builtin(CL_Function *func, int nargs)
 {
     CL_CFunc fptr;
-    cl_check_c_stack("call_builtin");
     if (nargs < func->min_args) {
         cl_error(CL_ERR_ARGS, "%s: too few arguments (got %d, need %d)",
                  CL_NULL_P(func->name) ? "?" : cl_symbol_name(func->name),
@@ -1418,30 +1439,36 @@ static void validate_builtin(CL_Function *func, int nargs)
  * Kept deliberately minimal (no large locals, no cached pointers that
  * survive across the fptr call) to avoid stack-corruption exposure.
  * All validation is done in validate_builtin() before we get here. */
-/* Crash diagnostics: last builtin called (survives crashes) */
-volatile const char *last_builtin_name = "(none)";
-volatile void *last_builtin_fptr = NULL;
-volatile CL_Obj last_builtin_obj = 0;
-
-static CL_Obj call_builtin(CL_Function *func, CL_Obj *args, int nargs)
+/* THR is the calling thread, passed in rather than looked up: this used to
+ * do two cl_get_current_thread() calls per builtin, and every caller
+ * (cl_vm_run's OP_CALL / OP_APPLY, cl_vm_apply) already holds the pointer. */
+static CL_Obj call_builtin(CL_Thread *thr, CL_Function *func,
+                           CL_Obj *args, int nargs)
 {
     CL_Obj result;
+    int mc;
     validate_builtin(func, nargs);
-    /* Record for crash diagnostics */
-    last_builtin_name = (!CL_NULL_P(func->name) && CL_SYMBOL_P(func->name))
-                        ? cl_symbol_name(func->name) : "?";
-    last_builtin_fptr = (void *)func->func;
-    last_builtin_obj = CL_PTR_TO_OBJ(func);
-    /* Save pre-reset mv state so NLX builtins (THROW) can see the
-     * multiple values of their last argument after call_builtin's reset. */
-    { CL_Thread *t = cl_get_current_thread();
-      int mi;
-      t->pre_call_mv_count = t->mv_count;
-      for (mi = 0; mi < t->mv_count && mi < CL_MAX_MV; mi++)
-          t->pre_call_mv_values[mi] = t->mv_values[mi];
-      t->mv_count = 1; }
+    /* Crash diagnostics for main.c's fatal handler: ONE per-thread store.
+     * The name is derived there, not here — cl_symbol_name is a call plus
+     * an arena dereference on every builtin call, and the char * it hands
+     * back dangles the moment compaction moves the name string. */
+    thr->last_builtin = CL_PTR_TO_OBJ(func);
+    /* Save pre-reset mv state so NLX builtins (THROW) can see the multiple
+     * values of their last argument after call_builtin's reset.  The
+     * single-value case — every call whose last argument was not a VALUES
+     * / multiple-value producer — is one store instead of a loop. */
+    mc = thr->mv_count;
+    thr->pre_call_mv_count = mc;
+    if (mc == 1) {
+        thr->pre_call_mv_values[0] = thr->mv_values[0];
+    } else {
+        int mi;
+        for (mi = 0; mi < mc && mi < CL_MAX_MV; mi++)
+            thr->pre_call_mv_values[mi] = thr->mv_values[mi];
+    }
+    thr->mv_count = 1;
     result = func->func(args, nargs);
-    cl_get_current_thread()->mv_values[0] = result;
+    thr->mv_values[0] = result;
     return result;
 }
 
@@ -2005,7 +2032,13 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 cl_error(CL_ERR_GENERAL, "OP_GLOAD with NULL constants ptr");
             }
             sym = constants[idx];
-            CL_Obj val = cl_symbol_value(sym);
+            /* Inline fast path: no dynamic binding active on this thread
+             * means the value IS the symbol's global cell — no TLS lookup
+             * (thr is the loop's cached thread) and no TLV probe.  GLOAD is
+             * 5% of all dispatches in the sento profile. */
+            CL_Obj val = (thr->tlv_entry_count == 0 && !CL_NULL_P(sym))
+                         ? ((CL_Symbol *)CL_OBJ_TO_PTR(sym))->value
+                         : cl_symbol_value_on(thr, sym);
             if (val == CL_UNBOUND)
                 cl_error(CL_ERR_UNBOUND, "Unbound variable: %s",
                          cl_symbol_name(sym));
@@ -2092,9 +2125,9 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     cl_error(CL_ERR_GENERAL, "OP_FLOAD: corrupted function binding");
                 }
                 cl_vm_push(fval);
-            } else if (cl_symbol_value(sym) != CL_UNBOUND) {
+            } else if (cl_symbol_value_on(thr, sym) != CL_UNBOUND) {
                 /* Fall back to value slot (for labels/flet value bindings) */
-                cl_vm_push(cl_symbol_value(sym));
+                cl_vm_push(cl_symbol_value_on(thr, sym));
             } else {
                 cl_error(CL_ERR_UNDEFINED, "Undefined function: %s",
                          cl_symbol_name(sym));
@@ -2173,9 +2206,15 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             VM_BREAK;
 
         VM_CASE(OP_CONS): {
-            CL_Obj cdr_val = cl_vm_pop();
-            CL_Obj car_val = cl_vm_pop();
-            cl_vm_push(cl_cons(car_val, cdr_val));
+            /* PEEK, do not pop: below sp the operands are GC roots the
+             * collector forwards in place, so cl_cons_rooted needs no
+             * root-stack push for them.  Popping first would leave them
+             * above sp — invisible to a compaction inside the allocation. */
+            int cbase = cl_vm.sp - 2;
+            CL_Obj cell = cl_cons_rooted(&cl_vm.stack[cbase],
+                                         &cl_vm.stack[cbase + 1]);
+            cl_vm.sp = cbase;
+            cl_vm_push(cell);
             cl_mv_count = 1;
             VM_BREAK;
         }
@@ -2348,12 +2387,18 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
 
         VM_CASE(OP_LIST): {
             uint8_t n = code[ip++];
+            int lbase = cl_vm.sp - n;
             CL_Obj list = CL_NIL;
             int i;
-            /* Build list from stack (last element is on top) */
-            for (i = 0; i < n; i++) {
-                list = cl_cons(cl_vm_pop(), list);
-            }
+            /* Build the list from the stack (last element on top), leaving
+             * sp alone until it is built: the elements stay GC roots for
+             * the whole loop, so only the partial list needs protecting —
+             * one root-stack entry for the opcode instead of two per cons. */
+            CL_GC_PROTECT(list);
+            for (i = n - 1; i >= 0; i--)
+                list = cl_cons_rooted(&cl_vm.stack[lbase + i], &list);
+            CL_GC_UNPROTECT(1);
+            cl_vm.sp = lbase;
             cl_vm_push(list);
             cl_mv_count = 1;
             VM_BREAK;
@@ -2462,7 +2507,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                  * not at the last bytecode call's.  One store per builtin
                  * call; the bytecode-callee path below saves ip anyway. */
                 frame->ip = ip;
-                result = call_builtin(f, arg_base, nargs);
+                result = call_builtin(thr, f, arg_base, nargs);
                 if (traced) {
                     cl_trace_depth--;
                     /* f is stale after the builtin ran; result must survive
@@ -2664,12 +2709,20 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     /* Handle &rest */
                     if (has_rest) {
                         CL_Obj rest = CL_NIL;
+                        CL_Obj *xa = vm_extra_args;
                         int j;
+                        /* vm_extra_args[0..vm_extra_args_count) is a marked
+                         * and forwarded GC root (mem.c gc_mark_thread /
+                         * gc_slot_is_rooted), so the elements need no
+                         * protection — only the partial list does, and once
+                         * for the whole loop rather than per cons. */
+                        CL_GC_PROTECT(rest);
                         for (j = n_extra - 1; j >= 0; j--)
-                            rest = cl_cons(vm_extra_args[j], rest);
+                            rest = cl_cons_rooted(&xa[j], &rest);
+                        CL_GC_UNPROTECT(1);
                         cl_vm_push(rest);
 
-                        /* Re-derive callee_bc: cl_cons() above may trigger GC
+                        /* Re-derive callee_bc: the consing above may trigger GC
                          * compaction which moves arena objects.  func_obj was
                          * GC-protected so its CL_Obj was updated, but the raw
                          * C pointer callee_bc still points to the OLD arena
@@ -2822,12 +2875,18 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     /* Handle &rest parameter */
                     if (has_rest) {
                         CL_Obj rest = CL_NIL;
+                        CL_Obj *xa = vm_extra_args;
                         int j;
+                        /* As in OP_TAILCALL above: the extra-args buffer is
+                         * itself a forwarded GC root, so only the partial
+                         * list needs protecting, once for the loop. */
+                        CL_GC_PROTECT(rest);
                         for (j = n_extra - 1; j >= 0; j--)
-                            rest = cl_cons(vm_extra_args[j], rest);
+                            rest = cl_cons_rooted(&xa[j], &rest);
+                        CL_GC_UNPROTECT(1);
                         cl_vm_push(rest);
 
-                        /* Re-derive callee_bc: cl_cons() above may trigger GC
+                        /* Re-derive callee_bc: the consing above may trigger GC
                          * compaction which moves arena objects.  func_obj was
                          * GC-protected so its CL_Obj was updated, but the raw
                          * C pointer callee_bc still points to the OLD arena
@@ -3826,7 +3885,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     cl_trace_depth++;
                 }
                 frame->ip = ip;   /* as in OP_CALL: errors land on this line */
-                result = call_builtin(f, &cl_vm.stack[args_base], nflat);
+                result = call_builtin(thr, f, &cl_vm.stack[args_base], nflat);
                 cl_vm.sp = args_base;  /* drop the spread args */
                 if (traced) {
                     cl_trace_depth--;
@@ -3971,16 +4030,20 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     vm_extra_args_count = n_extra;
 
                     /* &rest: cons the surplus args directly off the stack, while
-                     * their slots are still live (before truncation).  cl_cons
-                     * protects both its arguments, and the stack slots are
-                     * GC-rooted, so the partial list survives compaction. */
+                     * their slots are still live (before truncation).  The
+                     * stack slots are GC roots the collector forwards in
+                     * place, so cl_cons_rooted reads them after the
+                     * allocation and only the partial list is protected. */
                     {
                         CL_Obj rest = CL_NIL;
                         if (has_rest) {
                             int j;
+                            CL_GC_PROTECT(rest);
                             for (j = call_nargs - 1; j >= n_positional; j--)
-                                rest = cl_cons(cl_vm.stack[new_bp + j], rest);
-                            /* Re-derive callee_bc: cl_cons() may have triggered
+                                rest = cl_cons_rooted(&cl_vm.stack[new_bp + j],
+                                                      &rest);
+                            CL_GC_UNPROTECT(1);
+                            /* Re-derive callee_bc: the consing may have triggered
                              * GC compaction.  call_func is GC-protected so its
                              * CL_Obj was forwarded, but the raw C pointer
                              * callee_bc still aimed at the old arena location. */

@@ -112,12 +112,28 @@ static uint32_t slot_pair_hash(CL_Obj name, CL_Obj slot)
 
 static CL_Obj struct_entry_specs_raw(CL_Obj entry);  /* defined below */
 
+/* Registry layout generation.  Bumped by exactly the two events that set
+ * struct_index.dirty — a struct/class type (re)registration, and a
+ * compaction that relocates the symbols every slot cache is keyed by — and
+ * read by the per-thread slot caches (thread.h, CL_SlotICEntry) to decide
+ * whether their entries still mean anything.  Starts at 1 so a zeroed
+ * thread's entries (gen 0) never match.
+ *
+ * volatile because peer threads read it without taking the tables lock:
+ * that bounds how long a thread can keep using a cached index after
+ * another thread redefines a class to the hardware's coherency window.
+ * (Redefining a class while other threads dispatch on it is already
+ * unsynchronized in this implementation; this narrows the window rather
+ * than widening it.) */
+static volatile uint32_t cl_struct_layout_gen = 1;
+
 /* Mark the index stale.  Called from gc_update_shared_roots during the
  * compaction update phase (world stopped) — and mirrored inline, under
  * the tables wrlock, by bi_register_struct_type. */
 void cl_struct_index_gc_invalidate(void)
 {
     struct_index.dirty = 1;
+    cl_struct_layout_gen++;
 }
 
 /* (Re)build the index from the current struct_table.  Caller holds the
@@ -510,6 +526,9 @@ static CL_Obj bi_register_struct_type(CL_Obj *args, int n)
         ((CL_Cons *)CL_OBJ_TO_PTR(cell))->cdr = struct_table;
         struct_table = cell;
         struct_index.dirty = 1;
+        /* Retires every thread's cached slot index for this type — and,
+         * cheaply, for all others (see cl_struct_layout_gen). */
+        cl_struct_layout_gen++;
         cl_tables_rwunlock();
     }
 
@@ -767,45 +786,79 @@ static int32_t slot_pair_probe(CL_Obj type_name, CL_Obj slot_name)
 }
 
 /* Resolve SLOT_NAME to its index in OBJ's registered layout.
- * Returns the index, or -1 on any miss.  Non-erroring, non-allocating. */
+ * Returns the index, or -1 on any miss.  Non-erroring, non-allocating.
+ *
+ * A per-thread (type, slot) -> index cache sits in front of the shared
+ * pair index (thread.h, CL_SlotICEntry).  On a repeat access — which is
+ * what a slot read in a loop, an accessor fallback, or WITH-SLOTS always
+ * is — the answer costs a generation compare and two identity compares,
+ * with no tables rdlock/unlock pair and no hash probe.  The index bound
+ * check stays OUTSIDE the cache: two instances of one type_desc can have
+ * different n_slots (an instance obsoleted by class redefinition), so the
+ * cached position is the type's layout position, re-checked against THIS
+ * instance every time. */
 static int32_t struct_slot_resolve(CL_Obj obj, CL_Obj slot_name)
 {
     CL_Struct *st;
-    CL_Obj entry, specs;
+    CL_Obj entry, specs, type_desc;
+    CL_SlotICEntry *ic;
+    uint32_t gen;
+    int32_t raw = -1;
     int32_t idx = 0;
 
     if (!CL_STRUCT_P(obj))
         return -1;
     st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
+    type_desc = st->type_desc;
 
-    /* O(1) pair-index probe — the per-access path of every SLOT-VALUE.
-     * Falls through to the rebuild-then-walk path only when the index
-     * is dirty, unbuilt, or disabled. */
+    /* Read the generation once: no allocation happens below, so it cannot
+     * change under us, and the compare and the store must agree. */
+    gen = cl_struct_layout_gen;
+    ic = &cl_get_current_thread()->slot_ic[
+             slot_pair_hash(type_desc, slot_name) & (CL_SLOT_IC_SIZE - 1)];
+    if (ic->gen == gen && ic->type == type_desc && ic->slot == slot_name) {
+        raw = ic->idx;
+        return (raw >= 0 && (uint32_t)raw < st->n_slots) ? raw : -1;
+    }
+
+    /* O(1) pair-index probe — the shared fallback.  Falls through to the
+     * rebuild-then-walk path only when the index is dirty, unbuilt, or
+     * disabled. */
     cl_tables_rdlock();
     if (struct_index.pairs && !struct_index.dirty && !struct_index.disabled) {
-        int32_t pidx = slot_pair_probe(st->type_desc, slot_name);
+        raw = slot_pair_probe(type_desc, slot_name);
         cl_tables_rwunlock();
-        return (pidx >= 0 && (uint32_t)pidx < st->n_slots) ? pidx : -1;
+        goto found;
     }
     cl_tables_rwunlock();
 
     /* find_struct_entry never allocates from the arena (index rebuilds
      * use platform_alloc), so st cannot move underneath us. */
-    entry = find_struct_entry(st->type_desc);
+    entry = find_struct_entry(type_desc);
     if (CL_NULL_P(entry))
-        return -1;
+        goto found;                 /* raw stays -1: unregistered type */
     specs = struct_entry_specs_raw(entry);
     while (CL_CONS_P(specs)) {
         CL_Cons *c = (CL_Cons *)CL_OBJ_TO_PTR(specs);
         CL_Obj name = CL_CONS_P(c->car)
             ? ((CL_Cons *)CL_OBJ_TO_PTR(c->car))->car
             : c->car;
-        if (name == slot_name)
-            return ((uint32_t)idx < st->n_slots) ? idx : -1;
+        if (name == slot_name) {
+            raw = idx;
+            goto found;
+        }
         idx++;
         specs = c->cdr;
     }
-    return -1;
+
+found:
+    /* Cache the LAYOUT answer, negative results included: "this type has
+     * no such slot" is just as worth not re-deriving as a hit. */
+    ic->type = type_desc;
+    ic->slot = slot_name;
+    ic->idx  = raw;
+    ic->gen  = gen;
+    return (raw >= 0 && (uint32_t)raw < st->n_slots) ? raw : -1;
 }
 
 /* (%struct-slot-value obj slot-name miss) — value of the instance slot
@@ -878,53 +931,110 @@ static CL_Obj bi_struct_slot_count(CL_Obj *args, int n)
  * why the field failures only ever mis-classified the built-in-typed argument.
  * Interning in cl_package_cl makes class-of independent of *PACKAGE*
  * entirely. */
-static CL_Obj class_name_sym(const char *name, uint32_t len)
+/* The built-in class names, resolved ONCE at init and held in GC-registered
+ * statics rather than re-interned per call.
+ *
+ * cl_intern_in hashes the name string and probes the package table on every
+ * call; class_of_type_name runs on every CLOS dispatch whose receiver is not
+ * a struct — a fixnum, a symbol, a string — so the intern showed up in the
+ * sento profile under %GF-IC-EMF.  The names are all standard COMMON-LISP
+ * symbols that exist for the life of the process, so caching them is pure
+ * profit.  Indices are private to this file; keep them in step with
+ * class_name_init below. */
+enum {
+    CN_NULL = 0, CN_FIXNUM, CN_CHARACTER, CN_CONS, CN_SYMBOL, CN_STRING,
+    CN_FUNCTION, CN_COMPILED_FUNCTION, CN_VECTOR, CN_ARRAY, CN_PACKAGE,
+    CN_HASH_TABLE, CN_BIGNUM, CN_SINGLE_FLOAT, CN_DOUBLE_FLOAT, CN_RATIO,
+    CN_STREAM, CN_RANDOM_STATE, CN_BIT_VECTOR, CN_PATHNAME, CN_T,
+    CN_COUNT
+};
+
+static CL_Obj class_name_cache[CN_COUNT];
+
+static const struct { const char *name; uint32_t len; } class_name_table[] = {
+    { "NULL", 4 }, { "FIXNUM", 6 }, { "CHARACTER", 9 }, { "CONS", 4 },
+    { "SYMBOL", 6 }, { "STRING", 6 }, { "FUNCTION", 8 },
+    { "COMPILED-FUNCTION", 17 }, { "VECTOR", 6 }, { "ARRAY", 5 },
+    { "PACKAGE", 7 }, { "HASH-TABLE", 10 }, { "BIGNUM", 6 },
+    { "SINGLE-FLOAT", 12 }, { "DOUBLE-FLOAT", 12 }, { "RATIO", 5 },
+    { "STREAM", 6 }, { "RANDOM-STATE", 12 }, { "BIT-VECTOR", 10 },
+    { "PATHNAME", 8 }, { "T", 1 }
+};
+
+/* Resolve every built-in class name in the COMMON-LISP package and register
+ * the cache as GC roots so compaction forwards them.  Called from
+ * cl_builtins_struct_init.
+ *
+ * The names MUST be resolved in COMMON-LISP, never through a *PACKAGE*-
+ * relative cl_intern: *class-table* (clos.lisp) is keyed by those exact
+ * CL-package symbols, and a KEYWORD-relative excursion (a #. or #+ reader
+ * form) used to yield a different symbol, whereupon class-of silently fell
+ * back to the T class and CLOS computed an empty applicable-method set for
+ * an argument a method plainly applied to. */
+static void class_name_init(void)
 {
-    return cl_intern_in(name, len, cl_package_cl);
+    int i;
+    for (i = 0; i < CN_COUNT; i++) {
+        class_name_cache[i] = cl_intern_in(class_name_table[i].name,
+                                           class_name_table[i].len,
+                                           cl_package_cl);
+        cl_gc_register_root(&class_name_cache[i]);
+    }
+}
+
+/* Built-in class name by index.  Falls back to interning if init has not
+ * run yet (a partially built runtime in a unit test), so this is never
+ * wrong, only occasionally slower. */
+static CL_Obj class_name_sym(int idx)
+{
+    CL_Obj s = class_name_cache[idx];
+    if (CL_NULL_P(s))
+        return cl_intern_in(class_name_table[idx].name,
+                            class_name_table[idx].len, cl_package_cl);
+    return s;
 }
 
 /* Core of %CLASS-OF: map any object to its CL class-name symbol.
- * May allocate ONLY on an intern miss (never after boot — every name
- * below is a standard preinterned CL symbol); callers that hold raw
- * CL_Obj locals across it must still GC-protect them. */
+ * Non-allocating once class_name_init has run (the boot case falls back to
+ * interning); a struct or condition answers from its own header. */
 static CL_Obj class_of_type_name(CL_Obj obj)
 {
     if (CL_NULL_P(obj))
-        return class_name_sym("NULL", 4);
+        return class_name_sym(CN_NULL);
     if (CL_FIXNUM_P(obj))
-        return class_name_sym("FIXNUM", 6);
+        return class_name_sym(CN_FIXNUM);
     if (CL_CHAR_P(obj))
-        return class_name_sym("CHARACTER", 9);
+        return class_name_sym(CN_CHARACTER);
 
     if (CL_HEAP_P(obj)) {
         switch (CL_HDR_TYPE(CL_OBJ_TO_PTR(obj))) {
         case TYPE_CONS:
-            return class_name_sym("CONS", 4);
+            return class_name_sym(CN_CONS);
         case TYPE_SYMBOL:
-            return class_name_sym("SYMBOL", 6);
+            return class_name_sym(CN_SYMBOL);
         case TYPE_STRING:
 #ifdef CL_WIDE_STRINGS
         case TYPE_WIDE_STRING:
 #endif
-            return class_name_sym("STRING", 6);
+            return class_name_sym(CN_STRING);
         case TYPE_FUNCTION:
         case TYPE_CLOSURE:
         case TYPE_FFI_STUB:
-            return class_name_sym("FUNCTION", 8);
+            return class_name_sym(CN_FUNCTION);
         case TYPE_BYTECODE:
-            return class_name_sym("COMPILED-FUNCTION", 17);
+            return class_name_sym(CN_COMPILED_FUNCTION);
         case TYPE_VECTOR: {
             CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
             if (v->flags & CL_VEC_FLAG_STRING)
-                return class_name_sym("STRING", 6);
+                return class_name_sym(CN_STRING);
             return (v->rank <= 1)
-                ? class_name_sym("VECTOR", 6)
-                : class_name_sym("ARRAY", 5);
+                ? class_name_sym(CN_VECTOR)
+                : class_name_sym(CN_ARRAY);
         }
         case TYPE_PACKAGE:
-            return class_name_sym("PACKAGE", 7);
+            return class_name_sym(CN_PACKAGE);
         case TYPE_HASHTABLE:
-            return class_name_sym("HASH-TABLE", 10);
+            return class_name_sym(CN_HASH_TABLE);
         case TYPE_CONDITION: {
             CL_Condition *cond = (CL_Condition *)CL_OBJ_TO_PTR(obj);
             return cond->type_name;
@@ -934,36 +1044,48 @@ static CL_Obj class_of_type_name(CL_Obj obj)
             return st->type_desc;
         }
         case TYPE_BIGNUM:
-            return class_name_sym("BIGNUM", 6);
+            return class_name_sym(CN_BIGNUM);
         case TYPE_SINGLE_FLOAT:
-            return class_name_sym("SINGLE-FLOAT", 12);
+            return class_name_sym(CN_SINGLE_FLOAT);
         case TYPE_DOUBLE_FLOAT:
-            return class_name_sym("DOUBLE-FLOAT", 12);
+            return class_name_sym(CN_DOUBLE_FLOAT);
         case TYPE_RATIO:
-            return class_name_sym("RATIO", 5);
+            return class_name_sym(CN_RATIO);
         case TYPE_STREAM:
-            return class_name_sym("STREAM", 6);
+            return class_name_sym(CN_STREAM);
         case TYPE_RANDOM_STATE:
-            return class_name_sym("RANDOM-STATE", 12);
+            return class_name_sym(CN_RANDOM_STATE);
         case TYPE_BIT_VECTOR:
-            return class_name_sym("BIT-VECTOR", 10);
+            return class_name_sym(CN_BIT_VECTOR);
         case TYPE_BYTE_VECTOR:
             /* No standard class for specialized byte vectors — they are
              * instances of the built-in VECTOR class for CLOS dispatch. */
-            return class_name_sym("VECTOR", 6);
+            return class_name_sym(CN_VECTOR);
         case TYPE_PATHNAME:
-            return class_name_sym("PATHNAME", 8);
+            return class_name_sym(CN_PATHNAME);
         default:
             break;
         }
     }
-    return class_name_sym("T", 1);
+    return class_name_sym(CN_T);
 }
 
 static CL_Obj bi_class_of(CL_Obj *args, int n)
 {
     CL_UNUSED(n);
     return class_of_type_name(args[0]);
+}
+
+/* Is CLS a class metaobject whose CLASS-NAME is NAME?  Slot 0 of a class
+ * struct holds its name (clos.lisp CLASS-NAME).  Non-erroring: anything
+ * that is not a struct with at least one slot simply is not that class. */
+static int cl_class_named_p(CL_Obj cls, CL_Obj name)
+{
+    CL_Struct *cs;
+    if (!CL_STRUCT_P(cls))
+        return 0;
+    cs = (CL_Struct *)CL_OBJ_TO_PTR(cls);
+    return cs->n_slots >= 1 && cs->slots[0] == name;
 }
 
 /* (%gf-ic-emf gf a) / (%gf-ic-emf gf a b) — probe GF's inline cache
@@ -984,13 +1106,28 @@ static CL_Obj bi_class_of(CL_Obj *args, int n)
  * (such a receiver can never legitimately hit an IC entry, since ICs
  * are populated with table-resident classes).
  *
- * GC note: class_of_type_name can allocate only on an intern miss
- * (never after boot).  Both names are resolved BEFORE the ic cons is
- * read, and name1 is protected across the name2 resolution, so nothing
- * here holds a stale offset even in that worst case. */
+ * The check runs in the direction that needs no table and no lock: rather
+ * than resolving the receiver's class NAME to a class object through
+ * *CLASS-TABLE* (a tables rdlock plus an EQ-hash probe per dispatch, and
+ * per ARGUMENT for a 2-arg GF), it compares the receiver's name against
+ * the name of the class already cached in the IC — slot 0 of a class
+ * metaobject is its name (CLASS-NAME, clos.lisp).  The two are equivalent
+ * for cache-validation purposes: a hit still means "the receiver's class
+ * is exactly the cached one", and every event that could make a cached
+ * class stale (class redefinition, ADD-METHOD, REMOVE-METHOD) already
+ * clears slot 8.  A receiver whose type name is not in *CLASS-TABLE*
+ * misses either way — before, because the lookup yielded NIL; now,
+ * because no cached class carries that name.
+ *
+ * GC note: class_of_type_name allocates only if it has to intern a class
+ * name, which cannot happen once class_name_init has run — but "cannot
+ * happen after boot" is not a licence to hold an unprotected CL_Obj across
+ * it.  So both names are resolved FIRST (name1 protected across name2's
+ * resolution), and the GF's own fields are read from the rooted argument
+ * slot afterwards; nothing here outlives an allocation. */
 static CL_Obj bi_gf_ic_emf(CL_Obj *args, int n)
 {
-    CL_Obj name1, name2 = CL_NIL, cls1, cls2 = CL_NIL, ic;
+    CL_Obj name1, name2 = CL_NIL, ic;
     CL_Struct *st;
     CL_Cons *c;
     int two = (n == 3);
@@ -1005,33 +1142,24 @@ static CL_Obj bi_gf_ic_emf(CL_Obj *args, int n)
         CL_GC_UNPROTECT(1);
     }
 
-    cl_tables_rdlock();
-    if (CL_NULL_P(cl_clos_class_table)) {
-        cl_tables_rwunlock();
-        return CL_NIL;
-    }
-    cls1 = ht_eq_lookup(cl_clos_class_table, name1);
-    if (two)
-        cls2 = ht_eq_lookup(cl_clos_class_table, name2);
-    cl_tables_rwunlock();
-    if (CL_NULL_P(cls1) || (two && CL_NULL_P(cls2)))
-        return CL_NIL;
-
+    /* args[] are GC-rooted VM-stack slots, so re-deriving st here is safe
+     * even if the resolutions above compacted. */
     st = (CL_Struct *)CL_OBJ_TO_PTR(args[0]);
     if (st->n_slots < 9)
         return CL_NIL;
     ic = st->slots[8];
     if (!CL_CONS_P(ic))
         return CL_NIL;
+
     c = (CL_Cons *)CL_OBJ_TO_PTR(ic);
-    if (c->car != cls1)
+    if (!cl_class_named_p(c->car, name1))
         return CL_NIL;
     if (!two)
         return c->cdr;
     if (!CL_CONS_P(c->cdr))
         return CL_NIL;
     c = (CL_Cons *)CL_OBJ_TO_PTR(c->cdr);
-    if (c->car != cls2)
+    if (!cl_class_named_p(c->car, name2))
         return CL_NIL;
     return c->cdr;
 }
@@ -1278,6 +1406,15 @@ void cl_builtins_struct_init(void)
     struct_table = CL_NIL;
     cl_clos_class_table = CL_NIL;
     cl_slot_unbound_marker = CL_NIL;
+    /* Same reasoning for the class-name cache: these are registered GC
+     * roots, so a leftover offset from the previous arena would be marked
+     * and forwarded as if live by the first collection the registration
+     * calls below trigger.  class_name_init at the end of this function
+     * refills them; until then class_name_sym interns on demand. */
+    {
+        int cni;
+        for (cni = 0; cni < CN_COUNT; cni++) class_name_cache[cni] = CL_NIL;
+    }
     if (struct_index.slots) platform_free(struct_index.slots);
     struct_index.slots = NULL;
     struct_index.cap = 0;
@@ -1320,6 +1457,9 @@ void cl_builtins_struct_init(void)
      * struct-access bytecodes.  The %STRUCT-REF / %STRUCT-SET builtins
      * stay registered above as the runtime fallback for callers with a
      * dynamically-computed slot index. */
+    /* Built-in class-name symbols for %CLASS-OF / the GF inline cache. */
+    class_name_init();
+
     cl_struct_ref_sym = cl_intern_in("%STRUCT-REF", 11, cl_package_clamiga);
     cl_struct_set_sym = cl_intern_in("%STRUCT-SET", 11, cl_package_clamiga);
     cl_gc_register_root(&cl_struct_ref_sym);

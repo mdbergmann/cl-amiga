@@ -22,6 +22,35 @@ struct CL_Compiler_s;
 #define CL_CIRCLE_HT_SIZE    256
 #define CL_VM_TRACE_SIZE     64
 
+/* ---- Per-thread slot-resolution cache (builtins_struct.c) ----
+ *
+ * SLOT-VALUE / (SETF SLOT-VALUE) / SLOT-BOUNDP resolve a (type, slot-name)
+ * pair to a slot index on EVERY access.  The shared pair index answers that
+ * in O(1), but reaching it costs a tables rdlock and unlock — a real
+ * pthread_rwlock pair, ~2% of the sento profile on its own — plus the hash
+ * probe.  This cache answers the repeat case with three compares and no
+ * lock at all.
+ *
+ * Per-thread on purpose: a shared table would need either a lock (the cost
+ * being removed) or atomic multi-word publication, since a torn read of
+ * (type, slot, index) across threads would return an index belonging to a
+ * different type.  Nothing here is shared, so there is nothing to tear.
+ *
+ * Entries are validated against cl_struct_layout_gen, which is bumped by
+ * every event that can invalidate them: a type (re)registration, and a
+ * compaction that moves the symbols the keys are made of.  A stale entry
+ * therefore fails the generation compare before its (possibly recycled)
+ * key offsets are ever compared.  gen 0 never matches, so a zeroed thread
+ * starts with an empty cache. */
+#define CL_SLOT_IC_SIZE      64   /* power of two */
+
+typedef struct {
+    CL_Obj   type;   /* instance type_desc symbol */
+    CL_Obj   slot;   /* slot-name symbol */
+    int32_t  idx;    /* resolved position, or -1 for "no such slot" */
+    uint32_t gen;    /* cl_struct_layout_gen this entry was resolved under */
+} CL_SlotICEntry;
+
 /* Saved pending-throw stack depth (pushed once per active UWP arming) */
 #define CL_MAX_SAVED_PENDING 256
 
@@ -145,6 +174,14 @@ typedef struct CL_Thread_s {
      * every call, which cost the 8-thread sento matrix 10–27% (see
      * docs/sento-bench-results-0.8.md). */
     uint32_t break_poll_ctr;
+    /* Crash diagnostics: the CL_Function object of the builtin this thread
+     * entered last, stored by call_builtin and printed by main.c's fatal
+     * handler.  Per-thread for the same reason as break_poll_ctr — a
+     * process-wide static written on every builtin call makes all threads
+     * bounce one cache line.  Deliberately NOT a GC root: the fatal
+     * handler validates it before dereferencing, and rooting it would keep
+     * a dead builtin alive to no purpose. */
+    CL_Obj last_builtin;
     /* mv state captured by call_builtin before its per-call reset; lets
      * NLX builtins (THROW) see the multiple values of their last argument. */
     int    pre_call_mv_count;
@@ -433,6 +470,19 @@ typedef struct CL_Thread_s {
     CL_Obj ltv_init_cells[CL_LTV_INIT_MAX];
     CL_Obj ltv_init_thunks[CL_LTV_INIT_MAX];
     int    ltv_init_count;
+
+    /* Slot-index cache for SLOT-VALUE and friends (see CL_SlotICEntry).
+     * Holds CL_Obj keys that are NOT GC roots: the generation stamp makes
+     * every entry unusable after a compaction, so a stale offset here is
+     * never compared against a live one, let alone dereferenced.
+     *
+     * Deliberately LAST in the struct.  It is a kilobyte of cold-ish table,
+     * and putting it anywhere earlier pushes the VM's own hot fields (the
+     * stack pointers, mv state, the poll counter) onto different cache
+     * lines — measured as a uniform ~3ns on every call row of
+     * trunk/bench-prims.lisp, which is the layout sensitivity CLAUDE.md
+     * warns about.  New per-thread tables belong here too. */
+    CL_SlotICEntry slot_ic[CL_SLOT_IC_SIZE];
 } CL_Thread;
 
 /* Current thread pointer — TLS-backed.
@@ -735,6 +785,30 @@ void   cl_tlv_rehash(CL_Thread *t);
 CL_Obj cl_symbol_value(CL_Obj sym);
 void   cl_set_symbol_value(CL_Obj sym, CL_Obj val);
 int    cl_symbol_boundp(CL_Obj sym);
+
+/* Symbol-value read on a thread the caller already holds.
+ *
+ * cl_symbol_value re-derives the thread on every call (a TLS lookup once
+ * cl_thread_count > 1), which the VM does not need: cl_vm_run caches the
+ * CL_Thread * for the whole dispatch loop.  OP_GLOAD is 5% of all opcodes
+ * in the sento profile — 72 per message — so the lookup is pure overhead
+ * there.  With no dynamic binding active on this thread the TLV probe is
+ * skipped too and the read is one arena load.
+ *
+ * Declared here (not in a .c) so the VM's GLOAD/GSTORE handlers inline it.
+ * SYM_NIL: CL_NIL is the tag 0, whose value cell lives on the heap-allocated
+ * NIL storage shadow — the same fixup cl_symbol_value does. */
+extern CL_Obj SYM_NIL;   /* symbol.h; declared here to keep this inline */
+
+static inline CL_Obj cl_symbol_value_on(CL_Thread *t, CL_Obj sym)
+{
+    if (CL_NULL_P(sym)) sym = SYM_NIL;
+    if (t->tlv_entry_count > 0) {
+        CL_Obj v = cl_tlv_get(t, sym);
+        if (v != CL_TLV_ABSENT) return v;
+    }
+    return ((CL_Symbol *)CL_OBJ_TO_PTR(sym))->value;
+}
 
 /* Compare-and-swap primitives behind MP:COMPARE-AND-SWAP.  Both return the
  * value the cell held when the CAS was decided (== OLD iff it swapped).

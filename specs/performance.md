@@ -554,6 +554,212 @@ in bench-opt.  See docs/benchmarks.md 2026-07-10.
 
 ---
 
+## Tier 4 — 2× vs ECL (profiled 2026-09-08)
+
+Goal: **at least 2× on real workloads on the host**, with every change landing in
+the shared runtime (`vm.c`, the builtins, `clos.lisp`) so m68k and PPC gain the
+same way.  A host-only native backend is explicitly out of scope for this tier.
+Reference workload: the sento actor pipeline (`trunk/profile-sento-bench.lisp`,
+pinned dispatcher, `tell`), where ECL 26.5.5 is ~2.9× faster.
+
+### 4.0 Where the time goes (baseline measurements)
+
+Host, Apple M3 Ultra, master at `1e76a19d`.  The pinned/tell cell is bound by the
+single actor thread (the senders sit in backpressure sleep), so the per-message
+figure is that thread's cost.  Full numbers in docs/benchmarks.md 2026-09-08.
+
+| | msg/s | µs per message |
+| --- | ---: | ---: |
+| clamiga 0.9, 4 load threads | 175k | 5.7 |
+| ECL 26.5.5 (benchmarks.md 2026-07-15, 8 load threads) | 512k | 2.0 |
+
+**Compile speed is not part of the gap**: `(asdf:load-system "sento" :force t)`
+recompiles in 0.39 s on clamiga and 15.06 s on ECL (gcc per file).
+
+**Sampled profile** (macOS `sample`, on-CPU samples only): about **70% self time
+in `cl_vm_run`** — opcode dispatch plus the OP_CALL/OP_RET protocol, which is
+inlined into the loop.  The remaining ~30% is a handful of runtime taxes, each
+attributable to one call site:
+
+| tax | share | what it does per operation |
+| --- | ---: | --- |
+| `struct_slot_resolve` + `cl_tables_rdlock` | ~6% | every SLOT-VALUE takes the tables rwlock and probes two hash indexes |
+| `call_builtin` overhead | ~7% | `cl_check_c_stack` (→ `platform_stack_headroom`), `last_builtin_name = cl_symbol_name(...)` into process-wide statics, two TLS lookups, the pre-call MV copy loop |
+| `bi_gethash` from Lisp | ~6% | dispatch caches / class tables probed from Lisp |
+| `typep_symbol` | ~2% | a cascade of ~45 `strcmp` calls before a struct/class name is reached; sento's `(declare (type ...))` emits ~11 OP_ASSERT_TYPE per message |
+| `cl_symbol_value` | ~2% | TLS lookup for the thread instead of the `thr` the VM already holds |
+| `bi_gf_ic_emf` | ~1% | `class_of_type_name` **interns** "FIXNUM"/"SYMBOL"/... per dispatch on a non-instance argument, then takes the rwlock |
+| `cl_cons` | ~1% | `CL_GC_PROTECT` of both args on every cons, `memset` for an 8-byte object |
+
+**Opcode counts** (`DEBUG_FLAGS=-DPROFILE_OPCODES` build, 501k messages):
+~1450 bytecodes and **139 calls per message** (both sides).  LOAD/POP/STORE/
+CONST/NIL are 50% of all dispatches (STORE is always followed by POP: 21% of
+dispatches as a pair), FLOAD+CALL+TAILCALL+RET 21%, GLOAD 5% (72 per message —
+`*slot-access-protocol-extended-p*` and `*slot-unbound-marker*` are each read
+twice per slot access by the SLOT-VALUE compiler macro), MV_RESET 3%.
+
+**Per-primitive cost** (`trunk/bench-prims.lisp`, ns net of the loop baseline —
+30 ns clamiga / 20 ns ECL — so an absolute 1-arg call is 48 vs 13 ns):
+
+| primitive | clamiga | ECL | notes |
+| --- | ---: | ---: | --- |
+| call, 1 arg | 18 | 0 | OP_CALL: safepoint via TLS, 2 funcallable probes, arity check, arg-shift loop, NIL fill, 8-field frame, 4 validations; OP_RET: 2 validations |
+| call, &key 2 of 3 | 44 | 3 | keyword parse in OP_CALL |
+| multiple-value-bind | 50 | 0 | STORE/POP/MV_LOAD plumbing |
+| flet call | 54 | 0 | allocates a closure per entry |
+| generic call, 1 method | 68 | 24 | OP_CALL → discriminator frame → `%GF-IC-EMF` → EMF → method |
+| generic call with :around / call-next-method | 525 | 79 | `&rest` chain closures, 3 dynamic bindings, APPLY per level |
+| accessor read / write | 4 / 5 | 0 | reader/writer IC in OP_CALL — the target shape |
+| slot-value read | 45 | 1 | 2 GLOADs + rwlock + 2 hash probes |
+| with-slots incf | 134 | 22 | |
+| make-struct, 2 keywords | 72 | 34 | |
+| list of 4 | 52 | 25 | |
+| unwind-protect | 93 | 2 | setjmp, 15-field NLX frame, `cl_compiler_mark`, `cl_printer_state_save`, saved-pending `strncpy`, MV_TO_LIST + VALUES-LIST |
+| handler-case | 104 | 52 | cons + closure + CATCH + BLOCK_PUSH + HANDLER_PUSH |
+| catch/throw | 37 | 1 | |
+| with-lock-held, uncontended | 117 | 44 | = unwind-protect + acquire + release |
+| typep on a class | 88 | 51 | |
+
+`CLAMIGA_FORCE_SPEED=3` changes **no row** — the emit-time and peephole work of
+1.3/1.8 is exhausted; the remaining cost is in the runtime C and the protocol.
+
+### 4.1 Phase 1 — remove the taxes ✅ DONE (2026-09-08)
+
+Each item is pure C, no format change, measurable in isolation on its
+bench-prims row and as a `sample` share.  **Result: +37.6% on the sento
+pinned/tell acceptance cell** (155,204 → 213,543 msg/s, both measured in the
+same session; full table in docs/benchmarks.md 2026-09-08).  Behaviour is
+pinned by `tests/test_tier4_phase1.sh` (34 checks, also run under
+`make test-gc-stress`) and by the Tier-4 section of
+`tests/amiga/run-tests.lisp`.
+
+1. **`call_builtin` slimming** ✅ — no `cl_check_c_stack` per builtin call; it
+   moved to the head of `cl_vm_apply`, which is where the C stack actually
+   grows (a Lisp-to-Lisp call stays inside one `cl_vm_run` activation, so
+   every real C recursion point — `cl_vm_apply`, `cl_vm_apply_list`,
+   `cl_vm_eval`, `cl_vm_run`, and `cl_check_recursion_guards` in the reader
+   and compiler — is still guarded; verified to produce the identical clean
+   error on the same three overflow shapes as before).  The
+   `last_builtin_name/fptr/obj` process-wide statics became ONE per-thread
+   `CL_Obj` store (`CL_Thread.last_builtin`); `main.c`'s fatal handler
+   derives the name and code pointer from it, which is also strictly safer
+   than the old `cl_symbol_name` char pointer that dangled after compaction.
+   `thr` is a parameter now instead of two TLS lookups, and the
+   `pre_call_mv_values` copy is one store in the `mv_count == 1` case.
+2. **SLOT-VALUE resolution cache** ✅ — implemented as a per-thread
+   `(type, slot) -> index` cache in front of the shared pair index
+   (`CL_Thread.slot_ic`, `struct_slot_resolve`) rather than as per-call-site
+   cells in the compiler macros.  A repeat access costs three compares and
+   **no tables rdlock and no hash probe**, which was the measured cost; it
+   needs no `load-time-value` plumbing, no FASL change and no `make fasl`
+   regeneration, and it covers `SLOT-BOUNDP` and the accessor fallbacks that
+   a compiler-macro cell would have missed.  Per-thread by construction, so
+   there is no multi-word publication to tear.  Invalidation is the global
+   `cl_struct_layout_gen`, bumped by both events that set
+   `struct_index.dirty`: a type (re)registration, and a collection that moves
+   the symbols the keys are made of.  **Not done**: folding the
+   `*slot-access-protocol-extended-p*` latch and the unbound-marker compare
+   into the builtin — that part still costs two GLOADs per access and is
+   carried into Phase 2, where the codegen is being touched anyway.
+3. **GF inline cache without intern or lock** ✅ — `class_of_type_name` reads
+   pre-interned, GC-registered class-name symbols instead of calling
+   `cl_intern_in` per dispatch.  `%GF-IC-EMF` drops the `*CLASS-TABLE*`
+   lookup entirely by validating in the other direction: it compares the
+   receiver's class name against the *name of the class already in the
+   cache* (slot 0 of a class metaobject), so there is no table and no
+   `cl_tables_rdlock` — and no generation counter was needed, because every
+   event that can stale a cached class already clears the GF's slot 8.
+4. **`typep_symbol` by symbol identity** ✅ — each standard type name's
+   COMMON-LISP symbol carries its type code in the top byte of its own
+   `flags` word (`CL_SYM_TYPECODE`), so TYPEP is one load and a switch.
+   Struct / condition / class specifiers, which used to run the whole
+   cascade before reaching their first real check, now skip it entirely.  A
+   symbol that merely shares a standard type name still resolves, by name,
+   on the cold path.  Worth more on 68k, where strcmp is dearer.
+5. **`cl_symbol_value_on(thr, sym)`** ✅ plus an inline OP_GLOAD fast path
+   when `tlv_entry_count == 0`.
+6. **VM-rooted cons** ✅ — `cl_cons_rooted` takes its operands by ADDRESS and
+   reads them after the allocation, so OP_CONS, OP_LIST and the three &rest
+   builders cons from GC-rooted VM-stack / extra-arg slots with no root-stack
+   push per operand.  The zeroing is inlined at exactly `CL_MIN_ALLOC_SIZE`;
+   measurement showed a tuned `memset` beating a scalar word loop from 32
+   bytes up, so a wider cutoff is a pessimization.
+
+**Layout lesson (cost a full measurement cycle):** the first version put the
+1KB `slot_ic` table in the middle of `CL_Thread` and lost ~3ns on *every*
+call row of bench-prims — the VM's hot fields had moved onto different cache
+lines.  New per-thread tables go at the END of the struct.  This is the same
+sensitivity CLAUDE.md records for `vm.o` and LTO.
+
+### 4.2 Phase 2 — the call and unwind protocol (~20–25%)
+
+One to three weeks; medium risk because it touches the VM's frame layout and
+NLX machinery.  Target: 1-arg call 48 → ~28 ns absolute, builtin call
+~15 → ~8 ns, unwind-protect 93 → ~15 ns.
+
+1. **OP_CALL / OP_RET slimming**: move the six unconditional validation blocks
+   (first-opcode probe, bytecode re-typecheck, constants-vs-first-op, the
+   OP_RET ip-bounds and constants checks) behind `DEBUG_VM` — they caught real
+   GC corruption once and must stay available, but not on every call; let the
+   frame's `bp` skip the function slot so the per-call arg-shift loop goes
+   away; run `CL_SAFEPOINT` on the `thr` the loop already holds; fuse
+   `FLOAD sym; CALL n` into one `CALL_GLOBAL` opcode (symbol → function
+   resolution and the push happen once, in the handler).
+2. **NLX frames without setjmp**: keep one `setjmp` per `cl_vm_run`
+   activation (the C-level landing that `cl_error` needs) and unwind
+   bytecode-level UWPROT/CATCH/BLOCK frames by walking the NLX stack — the
+   `CL_NLXFrame` already records everything needed to resume at
+   `catch_ip + offset`.  Removes the setjmp, the `cl_compiler_mark` /
+   `cl_printer_state_save` calls and the saved-pending `strncpy` per frame.
+   On 68k a setjmp is a full `movem`, so the win is larger there.
+3. **handler-case codegen**: the handler clause is a lexical jump target, so
+   record its ip in the handler frame instead of allocating a cons and a
+   closure per entry (the same shape unwind-protect already uses).
+4. **unwind-protect value passing**: keep the protected form's values in the
+   MV buffer across the cleanup instead of `MV_TO_LIST` + a `VALUES-LIST`
+   call (one allocation and one builtin call per unwind-protect and per
+   `with-lock-held`).
+5. **Non-escaping `flet`/`labels`**: when a local function is only ever
+   called (never `#'`-referenced or passed), compile calls to it directly
+   instead of allocating a closure on every entry.
+6. **Keyword constructors**: `defstruct` emits a compiler macro for its
+   constructor that turns constant keywords into a positional `%make-...`
+   call (sento allocates one 9-slot `message-item/bt` with 4 keywords per
+   message).
+7. **:around / call-next-method chains**: replace the `&rest` closure chain
+   with a per-EMF vector of method functions and a fixnum "next" index bound
+   in one special, so a level costs one call instead of APPLY + three
+   dynamic bindings + a closure allocation.
+
+### 4.3 Phase 3 — superinstructions (~10–15%)
+
+What actually crosses 2×.  The peephole pass (1.8) already decodes and
+re-encodes bytecode, so fused opcodes can be emitted there without touching the
+compiler.  Candidates from the opcode counts, in order: `STORE n; POP` →
+`STORE_POP n` (21% of all dispatches today), `LOAD a; LOAD b`, `GLOAD; JNIL`,
+`CONST; EQ; JNIL`, `LOAD; STRUCT_REF`.  Requires a `CL_FASL_VERSION` bump, new
+X-macro rows in `opcodes.h` (disassembler and peephole decoder follow for
+free), and either walker templates for the new opcodes in the m68k JIT or a
+walker bail-out on them (bail keeps correctness; templates keep the JIT's
+coverage).
+
+### Expected result and validation
+
+- Phases 1+2 ≈ 1.6–1.7× on sento pinned/tell; all three ≈ 2×.  ECL parity
+  (~2.9×) is another 1.5× beyond that and only a host native backend gets
+  there.
+- Harness: `trunk/bench-prims.lisp` row by row (each item names its row),
+  `trunk/bench-opt.lisp` `vm.*`/`mt.*` rows for regressions in the loop,
+  `trunk/profile-sento-bench.lisp` + `sample` for the CPU shares, and the
+  sento 6-cell matrix (`trunk/sento-bench-matrix.lisp`) as the acceptance
+  gate.  Record every step in docs/benchmarks.md.
+- Gates: `make test`, `make test-gc-stress` (every item touches allocating
+  or rooting paths), `make test-plus`, and `make -f Makefile.cross test-amiga`
+  for anything in Phase 2/3 (frame layout, NLX, new opcodes reach the JIT
+  walker).
+
+---
+
 ## Implementation Order
 
 Recommended sequence balancing impact vs. risk:
@@ -570,6 +776,9 @@ Recommended sequence balancing impact vs. risk:
 | 8 | 1.8 (bytecode peephole post-pass, after 1.3 + profiling), 2.5 (free-list segregation) | ✅ 1.8 DONE (2026-07-10); 2.5 pending |
 | 9 | 3.1 (slot access), 3.2 (keyword pre-comp) | ✅ 3.1 DONE (2026-07-05: registry hash index + fused slot-access builtins + C GF inline-cache probe); 3.2 pending |
 | — | 2.4 (set ops in C) | Deprioritized — measured near-zero real-world use (2026-07-05) |
+| 10 | 4.1 (runtime taxes: call_builtin, SLOT-VALUE resolution cache, GF IC without intern/lock, typep by identity, symbol_value(thr), rooted cons) | ✅ DONE (2026-09-08) — +37.6% on sento pinned/tell |
+| 11 | 4.2 (call + NLX protocol: OP_CALL/OP_RET slimming, CALL_GLOBAL, setjmp-free NLX frames, handler-case/unwind-protect codegen, direct flet, keyword constructors, CNM chains) | Planned |
+| 12 | 4.3 (superinstructions via the peephole pass; FASL bump; JIT walker) | Planned |
 
 Lesson from phase 6: **profile a real workload before picking the next item** — the
 biggest win so far (1.9) was not in the plan, and a planned item (2.4) measured
@@ -583,6 +792,9 @@ is the current cold-compile leader; re-profile before starting phase 7.
   output). Capture a before/after delta against the baseline logged in
   [docs/benchmarks.md](../docs/benchmarks.md) when landing an optimization,
   and append the new numbers there.
+- **Tier 4 items map to rows of `trunk/bench-prims.lisp`** (per-primitive ns,
+  portable to ECL/SBCL so each row carries a native reference point); the
+  sento pinned/tell cell is the acceptance gate for the tier as a whole.
 - All 656+ host tests must pass after each phase
 - Amiga test suite must pass via FS-UAE after each phase
 - Integration tests: `load-and-test-5am.lisp` (57/57), `load-and-test-fset.lisp` (17/17)

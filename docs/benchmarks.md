@@ -7,6 +7,198 @@ command, and results, so later runs can be compared like-for-like.
 Related: [specs/performance.md](../specs/performance.md) is the optimization
 *plan*; this file is the *measured results* log.
 
+## 2026-09-08 — Tier 4 phase 1 landed: runtime taxes removed (+37.6% sento)
+
+**Context**: results for [specs/performance.md](../specs/performance.md) 4.1
+(the six runtime-tax items).  Both binaries built with `make host` from the
+same tree state — the "before" column is a `git worktree` of the unmodified
+`1e76a19d`, built and measured in the SAME session as the "after" column,
+because this host drifts by more between sessions than several of these
+items are worth.
+
+**Environment**: Apple M3 Ultra, macOS 26.6.2. `--heap 192M` for sento,
+`--heap 64M` for the microbench.
+
+**Acceptance cell** — sento pinned/tell (`trunk/profile-sento-bench.lisp`:
+`:load-threads 4`, `:duration 15`, `:num-iterations 8`, warm ASDF cache):
+
+| | AVG msg/s | MEDIAN | MIN | µs per message (avg) |
+| --- | ---: | ---: | ---: | ---: |
+| before (`1e77a16d` tree) | 155,204 | 150,540 | 148,684 | 6.4 |
+| after (phase 1) | **213,543** | 202,691 | 185,854 | 4.7 |
+| | **+37.6%** | +34.6% | +25.0% | |
+
+That is above the 20–25% the phase was scoped for.  ECL 26.5.5 remains the
+reference at ~512k msg/s (2026-07-15 entry below); the gap is now ~2.4×
+rather than ~2.9×.
+
+**Per-primitive** (`trunk/bench-prims.lisp`, ns net of the empty-loop
+baseline, **minimum of 5 runs** per row — a single run on this host varies by
+up to 20% on the short rows, enough to hide or invent a 5ns change).  Only
+rows that moved beyond ±2ns are listed; the full output is reproducible with
+the command below.
+
+| row | before | after | delta |
+| --- | ---: | ---: | ---: |
+| typep-class | 89 | 27 | **−62** |
+| gf-2arg-2methods | 105 | 68 | **−37** |
+| gf-call-next-method | 525 | 490 | −35 |
+| with-slots-incf | 134 | 115 | −19 |
+| gf-around+primary | 512 | 499 | −13 |
+| lock+condvar-notify | 127 | 116 | −11 |
+| call-&rest-2 | 55 | 47 | −8 |
+| slot-value-write | 46 | 38 | −8 |
+| lock-acquire-release | 109 | 101 | −8 |
+| slot-value-read | 45 | 38 | −7 |
+| list-4 | 49 | 42 | −7 |
+| gf-1arg-1method | 69 | 63 | −6 |
+| struct-push-pop | 39 | 33 | −6 |
+| svref | 29 | 25 | −4 |
+| cons | 8 | 5 | −3 |
+| handler-case | 97 | 94 | −3 |
+| make-instance-2init | 3,461 | 3,119 | −342 |
+
+`typep-class` is now *below* ECL's figure for that row (51 net / 71 absolute).
+The empty-loop baseline was 26 before and 25 after, so the absolute cost of a
+row is `net + 25`.
+
+**Which item paid**, from the incremental measurements taken as each landed:
+`call_builtin` slimming moved every builtin-heavy row at once (svref 30→22,
+gethash-eq 16→11, catch-throw 38→31, unwind-protect 98→87); the rooted cons
+took `cons` 10→3 and `&rest` 58→47; the type code took `typep-class` 93→26;
+the GF cache took `gf-2arg` 105→68; the slot cache took the `slot-value` and
+`with-slots` rows.
+
+**A layout trap worth recording**: the first version of the per-thread slot
+cache sat in the middle of `CL_Thread` and cost a uniform ~3ns on *every*
+call row — the VM's hot fields had been pushed onto different cache lines.
+Moving the 1KB table to the end of the struct recovered all of it.  Same
+class of sensitivity as the `vm.o`/LTO note in CLAUDE.md; the bench-prims
+call rows are what catches it.
+
+**Gates**: `make test`, `make test-gc-stress` (516/516), `make test-plus`
+(host-cold-test 585/585), `make test-memleak` (5/5), and
+`tests/test_tier4_phase1.sh` (34 checks, run in the fast tier and again under
+`CLAMIGA_GC_STRESS=1`).
+
+**Reproduce**:
+
+```
+# before/after microbench, minimum of N runs (single runs are too noisy)
+for i in 1 2 3 4 5; do ./build/host/clamiga --no-userinit --heap 64M \
+    --non-interactive --load trunk/bench-prims.lisp; done   # take the min per row
+# acceptance cell
+./build/host/clamiga --heap 192M --load trunk/profile-sento-bench.lisp
+# a fair "before": build the unmodified commit in a worktree and measure it
+# in the same session, not against a number from another day
+git worktree add --detach /tmp/base <commit> && make -C /tmp/base host
+```
+
+---
+
+## 2026-09-08 — Tier 4 baseline: sento vs ECL, profile shares, per-primitive costs
+
+**Context**: baseline for [specs/performance.md](../specs/performance.md) Tier 4
+("2× vs ECL").  Master at `1e76a19d` (0.9), `make host`.  ECL 26.5.5 from
+Homebrew, sento 3.4.4 local checkout in both.
+
+**Environment**: Apple M3 Ultra, macOS 26.6.2, `--heap 192M` for sento,
+`--heap 64M` for the microbench.
+
+**sento pinned/tell** (`trunk/profile-sento-bench.lisp`: `:load-threads 4`,
+`:duration 15`, `:num-iterations 8`, warm ASDF cache, default speed):
+
+| | AVG msg/s | µs per message |
+| --- | ---: | ---: |
+| clamiga | **174,597** (dev 13,258) | 5.7 |
+| ECL (2026-07-15 entry below, 8 load threads) | 512k | 2.0 |
+
+ECL could not be re-run today: its `ql:quickload` of the bench dependencies
+fails compiling the current serapeum (`level0/hash-tables`), so the July figure
+stands.  sento itself loads and compiles on ECL.
+
+**Recompile** `(asdf:load-system "sento" :force t)`, warm dependency cache:
+clamiga **0.39 s**, ECL **15.06 s**.
+
+**Profile** (`sample` 25 s at steady state, on-CPU samples ≈ 38.7k): `cl_vm_run`
+self 26,646 (**69%**); `call_builtin` self 1,880 + its `cl_symbol_name` 323 +
+`platform_stack_headroom` 190 + TLS 120 (~7%); `bi_gethash` inclusive 2,302
+(6%); `struct_slot_resolve` inclusive 2,179 of which `pthread_rwlock_rdlock`
+729 (6%); `cl_symbol_value` 617; `typep_symbol` → `strcmp` 596; `cl_alloc`
+496; `cl_gc_push_root`/`pop_roots` 719 (of which 223 under `cl_cons`);
+`bi_gf_ic_emf` → `cl_intern_in` 73.
+
+**Opcode counts** (`make host BUILDDIR=build/host-opprof
+DEBUG_FLAGS=-DPROFILE_OPCODES`, pinned, 2 load threads, 4 s, 501,405 messages):
+727,953,971 ops = **1,452 per message**, 138 calls per message
+(CALL 54.9M, TAILCALL 13.1M, APPLY 1.5M).  Top rows: LOAD 18.9%, POP 12.4%,
+STORE 10.8%, FLOAD 8.7%, CALL 7.5%, JNIL 5.7%, GLOAD 5.0% (72/message), CONST
+4.6%, MV_RESET 3.3%, RET 3.0%, STRUCT_REF 2.5%, ASSERT_TYPE 0.74%
+(10.8/message).
+
+**Per-primitive cost** (`trunk/bench-prims.lisp`, 1M iterations per row, ns
+net of the empty-loop baseline: clamiga speed 1 = 30.0, speed 3 = 24.0,
+ECL = 20.1; ECL rows are native `compile-file` output):
+
+| row | clamiga s1 | clamiga s3 | ECL |
+| --- | ---: | ---: | ---: |
+| fixnum-add | -1 | 3 | -5 |
+| call-1arg | 18 | 20 | -7 |
+| call-3arg | 27 | 31 | -8 |
+| call-&key-2of3 | 44 | 48 | 3 |
+| call-&rest-2 | 56 | 59 | 13 |
+| call-mvbind | 50 | 54 | -9 |
+| flet-call | 54 | 55 | -10 |
+| funcall-closure | 14 | 20 | -6 |
+| closure-cell-incf | 32 | 36 | -7 |
+| apply-3list | 30 | 34 | 5 |
+| gf-1arg-1method | 68 | 70 | 24 |
+| gf-2arg-2methods | 104 | 111 | 31 |
+| gf-around+primary | 529 | 551 | 79 |
+| gf-call-next-method | 521 | 534 | 79 |
+| accessor-read | 4 | 10 | -4 |
+| accessor-write | 5 | 11 | -3 |
+| slot-value-read | 45 | 47 | 1 |
+| slot-value-write | 43 | 49 | 5 |
+| with-slots-incf | 134 | 131 | 22 |
+| struct-read | -1 | 1 | -8 |
+| struct-write | 1 | 2 | -11 |
+| struct-push-pop | 39 | 41 | 10 |
+| make-instance-2init | 3,526 | 3,580 | 1,564 |
+| make-struct-2init | 72 | 70 | 34 |
+| cons | 8 | 13 | -4 |
+| list-4 | 52 | 54 | 25 |
+| closure-alloc | 20 | 24 | 21 |
+| special-read | -1 | 1 | -12 |
+| special-bind | 8 | 12 | -9 |
+| handler-case | 104 | 98 | 52 |
+| handler-bind | 29 | 30 | 20 |
+| unwind-protect | 93 | 94 | 2 |
+| catch-throw | 37 | 41 | 1 |
+| typep-class | 88 | 95 | 51 |
+| case-keyword | 40 | 40 | -10 |
+| gethash-eq | 14 | 18 | -11 |
+| svref | 30 | 32 | -11 |
+| lock-acquire-release | 117 | 115 | 44 |
+| lock+condvar-notify | 131 | 139 | 43 |
+
+Negative values are loop-overhead noise (the row is free).  Speed 3 changes no
+row beyond noise.
+
+**Reproduce**:
+
+```
+./build/host/clamiga --no-userinit --heap 64M --non-interactive --load trunk/bench-prims.lisp
+CLAMIGA_FORCE_SPEED=3 ./build/host/clamiga --no-userinit --heap 64M --non-interactive --load trunk/bench-prims.lisp
+ecl --norc --eval '(progn (load (compile-file "trunk/bench-prims.lisp" :output-file "/tmp/bench-prims.fas")) (quit))'
+# profile: run trunk/profile-sento-bench.lisp in the background, wait for
+#   "BENCH STEADY STATE BEGIN", then: sample <pid> 25 -file out.sample
+# opcode counts: PROFILE_OPCODES build, (clamiga::%op-counts-reset) before and
+#   (clamiga::%op-counts-dump) after one run-benchmark call
+```
+
+---
+
 ## 2026-08-30 — 0.8 regression root causes: per-thread break-poll counter + vm.o without LTO
 
 **Context**: [sento-bench-results-0.8.md](sento-bench-results-0.8.md) found

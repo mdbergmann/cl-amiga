@@ -226,6 +226,7 @@ test_batch test_repl_values test_repl_paste test_boot_log test_mx_error_context 
                 test_dev_commands test_userinit test_compile_file_package \
                 test_compile_file_stderr test_fasl_cache_dir test_make_load_form \
                 test_struct_slot_access test_defconstant_fasl test_peephole_diff \
+                test_tier4_phase1 \
                 test_defvar_special_fasl test_stack_depth test_argv_utf8 \
                 test_utf8_filenames test_image test_boot_image_scripts test_finish_output_flush \
                 test_amiga_bindgen \
@@ -301,6 +302,8 @@ test-gc-stress:
 	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_mt_intern_stw.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
 	@echo "--- test_peephole_diff (CLAMIGA_GC_STRESS=1, forced compaction) ---"
 	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_peephole_diff.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
+	@echo "--- test_tier4_phase1 (CLAMIGA_GC_STRESS=1, forced compaction) ---"
+	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_tier4_phase1.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
 	@echo "--- test_tls_loopback (CLAMIGA_GC_STRESS=1, forced compaction) ---"
 	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_tls_loopback.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
 	@echo "--- test_image (CLAMIGA_GC_STRESS=1, forced compaction) ---"

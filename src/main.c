@@ -127,16 +127,28 @@ static void crash_dump(int sig, void *fault_addr)
                            bc->source_line);
             (void)write(2, buf, len);
         }
-        /* Print last builtin called */
+        /* Print the last builtin this thread entered (call_builtin stores
+         * the CL_Function object; name and code pointer are derived here so
+         * the hot path pays a single store).  Every dereference is guarded:
+         * after a crash the recorded offset may be stale or the arena
+         * corrupt, and the handler must not fault while reporting. */
         {
-            extern volatile const char *last_builtin_name;
-            extern volatile void *last_builtin_fptr;
-            extern volatile CL_Obj last_builtin_obj;
+            CL_Thread *t = cl_current_thread;
+            CL_Obj fo = t ? t->last_builtin : CL_NIL;
+            const char *nm = "(none)";
+            void *fptr = NULL;
+            if (CL_HEAP_P(fo) && fo < cl_heap.arena_size &&
+                CL_FUNCTION_P(fo)) {
+                CL_Function *bf = (CL_Function *)CL_OBJ_TO_PTR(fo);
+                fptr = (void *)bf->func;
+                nm = (!CL_NULL_P(bf->name) && CL_SYMBOL_P(bf->name))
+                     ? cl_symbol_name(bf->name) : "?";
+            } else if (fo != CL_NIL) {
+                nm = "(stale/corrupt)";
+            }
             len = snprintf(buf, sizeof(buf),
                            "[FATAL] last_builtin: %s fptr=%p obj=0x%08x\n",
-                           last_builtin_name ? last_builtin_name : "(null)",
-                           last_builtin_fptr,
-                           (unsigned)last_builtin_obj);
+                           nm, fptr, (unsigned)fo);
             (void)write(2, buf, len);
         }
     }
