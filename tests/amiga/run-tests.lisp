@@ -9143,10 +9143,12 @@ y" 1))
 ; backtrace had a hole exactly where the user's code was.  Only safe now that
 ; compile_lambda claims the name at entry: the LABELS case checks the other
 ; half, that a lambda nested in the local's body does not wear the local's
-; name.  The LETs keep each call off the tail path so the frame really exists.
+; name.  The LETs keep each call off the tail path so the frame really exists,
+; and the #' references keep the locals closures: a non-escaping local
+; function is compiled inline and has no frame (checked right after).
 (defun bt-flet-host ()
   (flet ((bt-flet-local () (ext:backtrace)))
-    (let ((r (bt-flet-local))) r)))
+    (let ((r (funcall #'bt-flet-local))) r)))
 (defparameter *amiga-bt-flet* (bt-flet-host))
 (check "backtrace: flet local carries its own name" "BT-FLET-LOCAL"
   (symbol-name (second (first *amiga-bt-flet*))))
@@ -9155,12 +9157,27 @@ y" 1))
 
 (defun bt-lab-host ()
   (labels ((bt-lab-local () (let ((v (funcall (lambda () (ext:backtrace))))) v)))
-    (let ((r (bt-lab-local))) r)))
+    (let ((r (funcall #'bt-lab-local))) r)))
 (defparameter *amiga-bt-lab* (bt-lab-host))
 (check "backtrace: lambda nested in a labels local stays anonymous" nil
   (second (first *amiga-bt-lab*)))
 (check "backtrace: labels local carries its own name" "BT-LAB-LOCAL"
   (symbol-name (second (second *amiga-bt-lab*))))
+
+; An inlined local (specs/performance.md 4.2 item 5) has no frame: the host
+; is frame 0.  (debug 3) keeps the closure and brings the frame back.
+(defun bt-inl-host ()
+  (flet ((bt-inl-local () (ext:backtrace)))
+    (let ((r (bt-inl-local))) r)))
+(check "backtrace: inlined local has no frame of its own" "BT-INL-HOST"
+  (symbol-name (second (first (bt-inl-host)))))
+(defun bt-inl-host3 ()
+  (declare (optimize (debug 3)))
+  (flet ((bt-inl-local3 () (ext:backtrace)))
+    (let ((r (bt-inl-local3))) r)))
+(check "backtrace: (debug 3) keeps the local's frame" '("BT-INL-LOCAL3" "BT-INL-HOST3")
+  (let ((bt (bt-inl-host3)))
+    (list (symbol-name (second (first bt))) (symbol-name (second (second bt))))))
 
 (defgeneric bt-meth-gf (x))
 (defmethod bt-meth-gf ((x integer)) (ext:backtrace))
@@ -11427,6 +11444,60 @@ y" 1))
 (defmethod t4p2-g1 ((x t4p2-other)) :redefined)
 (check "method redefinition rebuilds the chain" '(:at :redefined)
   (let ((*t4p2-log* nil)) (t4p2-g1 (make-instance 't4p2-other))))
+
+; --- Tier-4 phase 2 item 5: local-function inlining (specs/performance.md 4.2) ---
+; A FLET/LABELS function that never escapes keeps no closure: each call
+; compiles to its body in place, with the names the call site bound since
+; the definition hidden from the body.  Host coverage with DISASSEMBLE
+; pins: tests/test_local_inline.sh; here the semantics on the m68k build,
+; where the JIT compiles the expanded caller.
+(defun t4p2-li-twice (a) (flet ((twice (x) (* x 2))) (+ (twice a) (twice (1+ a)))))
+(check "inlined flet helper" 14 (t4p2-li-twice 3))
+(check "inlined: multiple values" '(4 40)
+  (flet ((f (x) (values x (* x 10)))) (multiple-value-list (f 4))))
+(check "inlined: argument order and single evaluation" '((:a :b) (1 2))
+  (let ((log nil))
+    (flet ((f (a b) (list a b)))
+      (list (f (progn (push 1 log) :a) (progn (push 2 log) :b)) (reverse log)))))
+(check "inlined: variable bound after the definition is hidden" '(2 1)
+  (let ((x 1)) (flet ((f () x)) (let ((x 2)) (list x (f))))))
+(check "inlined: local function bound after is hidden" '(2 1)
+  (flet ((g () 1)) (flet ((f () (g))) (flet ((g () 2)) (list (g) (f))))))
+(check "inlined: macrolet bound after is hidden" '(2 1)
+  (macrolet ((m () 1)) (flet ((f () (m))) (macrolet ((m () 2)) (list (m) (f))))))
+(check "inlined: symbol-macrolet bound after is hidden" '(2 1)
+  (symbol-macrolet ((s 1)) (flet ((f () s)) (symbol-macrolet ((s 2)) (list s (f))))))
+(check "inlined: BLOCK opened after is hidden" 1
+  (block b (flet ((f () (return-from b 1))) (block b (f) 2) :not-reached)))
+(check "inlined: GO tag bound after is hidden" :outer-out
+  (let (r)
+    (tagbody
+       (flet ((f () (go out)))
+         (tagbody (f) out (setq r :inner-out) (go end)))
+     out (setq r :outer-out)
+     end)
+    r))
+(check "inlined: implicit block" 6 (flet ((f (x) (return-from f (* x 3)) :no)) (f 2)))
+(check "inlined: nested inlining" 3 (flet ((g (x) (1+ x))) (flet ((f (x) (g (g x)))) (f 1))))
+(check "inlined: parameter assigned and captured" 2
+  (flet ((f (x) (setq x (1+ x)) (funcall (lambda () x)))) (f 1)))
+(check "inlined: wrong arity is a PROGRAM-ERROR" :perr
+  (handler-case (flet ((f (x) x)) (f 1 2)) (program-error () :perr)))
+(check "inlined: unwind-protect and handler-case in the body" '((1 2) t (:caught 3))
+  (let ((cleaned nil))
+    (flet ((f () (unwind-protect (values 1 2) (setq cleaned t)))
+           (g (x) (handler-case (error "boom") (error () (list :caught x)))))
+      (list (multiple-value-list (f)) cleaned (g 3)))))
+(defun t4p2-li-count-down (n)
+  (flet ((step (k) (if (zerop k) :done (t4p2-li-count-down (1- k))))) (step n)))
+(check "inlined body in tail position" :done (t4p2-li-count-down 20000))
+(check "closure kept: #'f, nested lambda, notinline" '(1 (2 3) 7)
+  (flet ((f (x) x)) (list (funcall #'f 1) (mapcar (lambda (y) (f y)) '(2 3))
+                          (locally (declare (notinline f)) (f 7)))))
+(check "LABELS leaf inlined next to a recursive member" 14
+  (labels ((leaf (x) (* x 2))
+           (rec (n acc) (if (zerop n) acc (rec (1- n) (+ acc n)))))
+    (+ (leaf 4) (rec 3 0))))
 
 ; --- Exit hooks (EXT:*EXIT-HOOKS*) ---
 ; The list API here, plus one real hook registered at the bottom: it can only

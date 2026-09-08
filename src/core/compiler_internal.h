@@ -247,7 +247,40 @@ typedef struct CL_Compiler_s {
      * speed is written: cl_compiler_seed_optimize_settings and
      * cl_process_declaration_specifier. */
     uint8_t peep_speed_max;
+    /* Local-function inlining (compiler_special.c).  hide_*: the BLOCK /
+     * TAGBODY twins of CL_CompEnv's hiding bands — entries in [lo, hi) of
+     * blocks[] / tagbodies[] are invisible to RETURN-FROM / GO while an
+     * inlined body compiles.  funuse_*: scratch state of the escape scan
+     * (one nlx_scan walk per FLET/LABELS form): the candidate names are
+     * env->local_funs[funuse_lo .. funuse_lo + funuse_n), bit i of
+     * funuse_escaped is set when candidate i must keep a closure, and
+     * funuse_calls[i] counts its direct call sites (saturating).  Lives
+     * here rather than in statics because compiles run concurrently on
+     * several threads and nest through macro expansion. */
+    int hide_block_lo, hide_block_hi;
+    int hide_tagbody_lo, hide_tagbody_hi;
+    int funuse_lo, funuse_n;
+    uint32_t funuse_escaped;
+    uint8_t funuse_calls[32];
 } CL_Compiler;
+
+/* Local-function inlining knobs (compiler_special.c).  A local function
+ * is compiled inline when it is called with a simple lambda list from its
+ * own body scope only (never #'-referenced, never called from a nested
+ * closure, never recursive) AND either has a single call site or a body of
+ * at most CL_LOCAL_INLINE_MAX_SIZE conses; at most CL_LOCAL_INLINE_MAX_PARAMS
+ * parameters.  cl_local_inline_enabled is the process-wide switch
+ * (CLAMIGA_NO_LOCAL_INLINE=1 clears it — for A/B runs and bug isolation). */
+#define CL_LOCAL_INLINE_MAX_PARAMS 8
+#define CL_LOCAL_INLINE_MAX_SIZE   48
+#define CL_LOCAL_INLINE_MAX_NAMES  32
+extern int cl_local_inline_enabled;
+/* CLAMIGA::%LOCAL-ARITY-ERROR (builtins.c): what an inlined call site with
+ * the wrong argument count compiles to, so the runtime error matches the
+ * one the closure call would have signalled. */
+extern CL_Obj cl_local_arity_error_sym;
+void compile_local_inline_call(CL_Compiler *c, int fun_idx, CL_Obj args,
+                               int saved_tail);
 
 /* --- Shared globals (defined in compiler.c) --- */
 

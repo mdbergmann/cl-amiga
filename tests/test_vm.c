@@ -6342,9 +6342,12 @@ TEST(eval_backtrace_flet_local_named)
 {
     int err;
     /* (+ 1 ...) keeps the local's frame off the tail path so it is really on
-     * the stack when the error is signalled. */
+     * the stack when the error is signalled.  The #' reference keeps the
+     * local a closure: a non-escaping local function is compiled inline
+     * (no frame of its own — see eval_backtrace_inlined_local_no_frame),
+     * and this test is about the closure's NAME. */
     eval_print("(defun bt-flet-host () "
-               "(flet ((bt-flet-local () (error \"boom\"))) (+ 1 (bt-flet-local))))");
+               "(flet ((bt-flet-local () (error \"boom\"))) (+ 1 (funcall #'bt-flet-local))))");
     CL_CATCH(err);
     if (err == CL_ERR_NONE) {
         cl_eval_string("(bt-flet-host)");
@@ -6369,7 +6372,7 @@ TEST(eval_backtrace_labels_local_named)
      * not exist at all. */
     eval_print("(defun bt-lab-host () "
                "(labels ((bt-lab-local () (+ 1 (funcall (lambda () (error \"boom\")))))) "
-               "(+ 1 (bt-lab-local))))");
+               "(+ 1 (funcall #'bt-lab-local))))");
     CL_CATCH(err);
     if (err == CL_ERR_NONE) {
         cl_eval_string("(bt-lab-host)");
@@ -6380,6 +6383,43 @@ TEST(eval_backtrace_labels_local_named)
     ASSERT(strstr(cl_backtrace_buf, "  0: <anonymous>") != NULL);
     ASSERT(strstr(cl_backtrace_buf, "  1: BT-LAB-LOCAL") != NULL);
     ASSERT(strstr(cl_backtrace_buf, "  2: BT-LAB-HOST") != NULL);
+    cl_vm.sp = 0;
+    cl_vm.fp = 0;
+}
+
+/* A non-escaping local function is compiled inline (specs/performance.md
+ * 4.2 item 5): the call has no frame, so the backtrace shows the HOST as
+ * frame 0 — the error's line still points into the local's body, which is
+ * the diagnostic that remains.  (debug 3) turns inlining off for the
+ * function and brings the local's frame back. */
+TEST(eval_backtrace_inlined_local_no_frame)
+{
+    int err;
+    eval_print("(defun bt-inl-host () "
+               "(flet ((bt-inl-local () (error \"boom\"))) (+ 1 (bt-inl-local))))");
+    CL_CATCH(err);
+    if (err == CL_ERR_NONE) {
+        cl_eval_string("(bt-inl-host)");
+        CL_UNCATCH();
+    } else {
+        CL_UNCATCH();
+    }
+    ASSERT(strstr(cl_backtrace_buf, "  0: BT-INL-HOST") != NULL);
+    ASSERT(strstr(cl_backtrace_buf, "BT-INL-LOCAL") == NULL);
+    cl_vm.sp = 0;
+    cl_vm.fp = 0;
+
+    eval_print("(defun bt-inl-host3 () (declare (optimize (debug 3))) "
+               "(flet ((bt-inl-local3 () (error \"boom\"))) (+ 1 (bt-inl-local3))))");
+    CL_CATCH(err);
+    if (err == CL_ERR_NONE) {
+        cl_eval_string("(bt-inl-host3)");
+        CL_UNCATCH();
+    } else {
+        CL_UNCATCH();
+    }
+    ASSERT(strstr(cl_backtrace_buf, "  0: BT-INL-LOCAL3") != NULL);
+    ASSERT(strstr(cl_backtrace_buf, "  1: BT-INL-HOST3") != NULL);
     cl_vm.sp = 0;
     cl_vm.fp = 0;
 }
@@ -11945,6 +11985,7 @@ int main(void)
     RUN(eval_backtrace_restart_case_handler_bind_named);
     RUN(eval_backtrace_flet_local_named);
     RUN(eval_backtrace_labels_local_named);
+    RUN(eval_backtrace_inlined_local_no_frame);
     RUN(eval_backtrace_method_named);
     RUN(eval_backtrace_setf_named_flet_local_stays_anonymous);
     RUN(eval_named_lambda_setf_name_stays_anonymous);

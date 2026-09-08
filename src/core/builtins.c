@@ -545,6 +545,25 @@ static CL_Obj bi_dbind_too_many(CL_Obj *args, int n)
     return CL_NIL;
 }
 
+/* (clamiga::%local-arity-error NAME EXPECTED GOT) — what the compiler emits
+ * at a call to an inlined FLET/LABELS function with the wrong number of
+ * arguments (compile_local_inline_call).  The arguments have already been
+ * evaluated and dropped, exactly as they would have been for the closure
+ * call the VM would have refused; the error is the same PROGRAM-ERROR the
+ * VM's arity check raises (vm.c OP_CALL). */
+CL_Obj cl_local_arity_error_sym = CL_NIL;
+static CL_Obj bi_local_arity_error(CL_Obj *args, int n)
+{
+    int expected = CL_FIXNUM_P(args[1]) ? (int)CL_FIXNUM_VAL(args[1]) : 0;
+    int got      = CL_FIXNUM_P(args[2]) ? (int)CL_FIXNUM_VAL(args[2]) : 0;
+    CL_UNUSED(n);
+    cl_error(CL_ERR_ARGS, "Too %s arguments to %s: expected %d, got %d",
+             got < expected ? "few" : "many",
+             CL_SYMBOL_P(args[0]) ? cl_symbol_name(args[0]) : "<local function>",
+             expected, got);
+    return CL_NIL;
+}
+
 /* (clamiga::%dbind-check-keys list allowed-keywords) => NIL
  * The unknown-keyword check of a destructuring &key section.  CLHS 3.4.4
  * gives destructuring lambda lists the 3.4.1.4 keyword rules: a keyword the
@@ -2094,6 +2113,9 @@ void cl_builtins_init(void)
     cl_register_builtin("%DBIND-CHECK-KEYS", bi_dbind_check_keys, 2, 2, cl_package_clamiga);
     cl_dbind_check_keys_sym = cl_intern_in("%DBIND-CHECK-KEYS", 17, cl_package_clamiga);
     cl_gc_register_root(&cl_dbind_check_keys_sym);
+    cl_register_builtin("%LOCAL-ARITY-ERROR", bi_local_arity_error, 3, 3, cl_package_clamiga);
+    cl_local_arity_error_sym = cl_intern_in("%LOCAL-ARITY-ERROR", 18, cl_package_clamiga);
+    cl_gc_register_root(&cl_local_arity_error_sym);
     cl_register_builtin("%SET-SYMBOL-PLIST", bi_set_symbol_plist, 2, 2, cl_package_clamiga);
     defun("GET", bi_get, 2, 3);
     cl_register_builtin("%SETF-GET", bi_setf_get, 3, 3, cl_package_clamiga);

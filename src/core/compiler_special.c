@@ -732,10 +732,37 @@ extern CL_Obj bi_special_operator_p(CL_Obj *args, int n);   /* builtins_mutation
  *                     subtree.
  *   NLX_BLOCK       — true if a closure or unwind-protect form contains a
  *                     matching return-from (named block), or any closure /
- *                     uwp-with-(return) exists (anonymous block). */
-enum { NLX_ANY_CLOSURE, NLX_FIND_RF, NLX_BLOCK };
+ *                     uwp-with-(return) exists (anonymous block).
+ *   NLX_FUNUSE      — local-function inlining escape scan (see "Local-
+ *                     function inlining" below).  Never returns 1; it
+ *                     records, in the active compiler's funuse_* state,
+ *                     which of the FLET/LABELS names under analysis must
+ *                     keep a closure — #'NAME anywhere, (declare (notinline
+ *                     NAME)), or a call from inside a closure — and counts
+ *                     the direct call sites of the rest.  `anon` carries
+ *                     "inside a closure" in this mode; `tag` is unused. */
+enum { NLX_ANY_CLOSURE, NLX_FIND_RF, NLX_BLOCK, NLX_FUNUSE };
 
 static int nlx_scan(CL_Obj form, int mode, CL_Obj tag, int anon);
+
+/* NLX_FUNUSE: index of SYM among the names under analysis
+ * (c->env->local_funs[c->funuse_lo ..]), or -1.  Reads the names through
+ * the env entries, which the compiler's GC walkers forward, so a
+ * compaction inside a macro expansion cannot stale the comparison. */
+static int funuse_index(CL_Obj sym)
+{
+    CL_Compiler *c = cl_active_compiler;
+    int i;
+    if (!c || c->funuse_n == 0 || !CL_SYMBOL_P(sym) || !c->env) return -1;
+    for (i = 0; i < c->funuse_n; i++)
+        if (c->env->local_funs[c->funuse_lo + i].name == sym) return i;
+    return -1;
+}
+
+static void funuse_escape(int fi)
+{
+    cl_active_compiler->funuse_escaped |= ((uint32_t)1 << fi);
+}
 
 /* Walk a list of body forms — all in code (evaluated) position. */
 static int nlx_scan_body(CL_Obj body, int mode, CL_Obj tag, int anon)
@@ -802,10 +829,95 @@ static int nlx_scan(CL_Obj form, int mode, CL_Obj tag, int anon)
     CL_Obj head, rest;
     int r = 0;
 
-    if (!CL_CONS_P(form)) return 0;
     if (scan_nlx_recurse_depth >= SCAN_NLX_MAX_RECURSE_DEPTH) return 0;
+    if (!CL_CONS_P(form)) {
+        /* A bare symbol is a symbol-macro reference when one is bound: the
+         * escape scan must see what it expands to (`(symbol-macrolet ((s
+         * #'f)) ... s)` references F).  The other modes keep their existing
+         * blind spot — the sole consequence there is a BLOCK compiled with
+         * the cheap local exit, which the runtime still handles. */
+        if (mode == NLX_FUNUSE && CL_SYMBOL_P(form) && !CL_NULL_P(form)) {
+            CL_CompEnv *env = cl_active_compiler ? cl_active_compiler->env : NULL;
+            CL_Obj exp = CL_NIL;
+            if (env && cl_env_lookup_symbol_macro_p(env, form, &exp)) {
+                scan_nlx_recurse_depth++;
+                r = nlx_scan(exp, mode, tag, anon);
+                scan_nlx_recurse_depth--;
+                return r;
+            }
+        }
+        return 0;
+    }
     head = cl_car(form);
     rest = cl_cdr(form);
+
+    /* Local-function inlining escape scan (NLX_FUNUSE). */
+    if (mode == NLX_FUNUSE) {
+        int fi;
+        /* #'NAME — the closure escapes.  (function (lambda ...)) falls
+         * through to the general walk, which scans the lambda as a closure. */
+        if (head == SYM_FUNCTION && CL_CONS_P(rest) && CL_SYMBOL_P(cl_car(rest))) {
+            fi = funuse_index(cl_car(rest));
+            if (fi >= 0) funuse_escape(fi);
+            return 0;
+        }
+        /* (declare ... (notinline NAME ...)) forbids inlining (CLHS 3.2.2.3);
+         * no other declaration mentions a function in a way that matters. */
+        if (head == SYM_DECLARE) {
+            CL_Obj specs = rest;
+            while (CL_CONS_P(specs)) {
+                CL_Obj spec = cl_car(specs);
+                if (CL_CONS_P(spec) && cl_car(spec) == SYM_NOTINLINE_DECL) {
+                    CL_Obj fns = cl_cdr(spec);
+                    while (CL_CONS_P(fns)) {
+                        fi = funuse_index(cl_car(fns));
+                        if (fi >= 0) funuse_escape(fi);
+                        fns = cl_cdr(fns);
+                    }
+                }
+                specs = cl_cdr(specs);
+            }
+            return 0;
+        }
+        /* (NAME args...) — from inside a closure the call needs the closure
+         * (the body is inlined only from the defining function's own code);
+         * at the definition level it is a direct call site.  Either way the
+         * arguments are code.  NAME shadows a global macro of the same
+         * name, so this must come before the macro-expansion branch. */
+        fi = funuse_index(head);
+        if (fi >= 0) {
+            CL_Compiler *c = cl_active_compiler;
+            if (anon) funuse_escape(fi);
+            else if (c->funuse_calls[fi] < 255) c->funuse_calls[fi]++;
+            scan_nlx_recurse_depth++;
+            nlx_scan_body(rest, mode, tag, anon);
+            scan_nlx_recurse_depth--;
+            return 0;
+        }
+        /* An inner FLET/LABELS: its function bodies are closures, its body
+         * is not — unlike the closure-form rule below, which would treat
+         * the whole form as a closure and refuse every helper called from
+         * the body of a nested FLET. */
+        if (head == SYM_FLET || head == SYM_LABELS) {
+            CL_Obj defs, body;
+            if (!CL_CONS_P(rest)) return 0;
+            defs = cl_car(rest);
+            body = cl_cdr(rest);
+            scan_nlx_recurse_depth++;
+            CL_GC_PROTECT(defs);
+            CL_GC_PROTECT(body);
+            while (CL_CONS_P(defs)) {
+                CL_Obj def = cl_car(defs);
+                if (CL_CONS_P(def) && CL_CONS_P(cl_cdr(def)))
+                    nlx_scan_body(cl_cdr(cl_cdr(def)), mode, tag, 1);
+                defs = cl_cdr(defs);
+            }
+            nlx_scan_body(body, mode, tag, anon);
+            CL_GC_UNPROTECT(2);
+            scan_nlx_recurse_depth--;
+            return 0;
+        }
+    }
 
     /* RETURN-FROM / RETURN detection. */
     if (mode == NLX_FIND_RF) {
@@ -849,6 +961,9 @@ static int nlx_scan(CL_Obj form, int mode, CL_Obj tag, int anon)
             if (anon) return 1;
             return nlx_scan(form, NLX_FIND_RF, tag, anon);
         }
+        /* NLX_FUNUSE: everything below this form runs inside a closure. */
+        if (mode == NLX_FUNUSE && !anon)
+            return nlx_scan(form, NLX_FUNUSE, tag, 1);
         /* NLX_FIND_RF: fall through to the structural handlers below, which
          * descend the closure body (skipping its lambda list). */
     }
@@ -1336,6 +1451,13 @@ static CL_Obj return_from_prelude(CL_Compiler *c, CL_Obj tag,
     CL_TailFrame *tf;
 
     for (i = c->block_count - 1; i >= 0; i--) {
+        if (i < c->hide_block_hi && i >= c->hide_block_lo) {
+            /* Blocks opened between a local function's definition and the
+             * call site where its body is being inlined — invisible to it
+             * (compile_local_inline_call). */
+            i = c->hide_block_lo;
+            continue;
+        }
         if (c->blocks[i].tag == tag) {
             CL_BlockInfo *bi = &c->blocks[i];
             c->in_tail = 0;
@@ -1670,6 +1792,12 @@ void compile_go(CL_Compiler *c, CL_Obj form)
     /* Search tagbodies innermost-first for matching tag */
     for (i = c->tagbody_count - 1; i >= 0; i--) {
         CL_TagbodyInfo *tb = &c->tagbodies[i];
+        if (i < c->hide_tagbody_hi && i >= c->hide_tagbody_lo) {
+            /* Hidden from an inlined local function's body — see the
+             * matching skip in return_from_prelude. */
+            i = c->hide_tagbody_lo;
+            continue;
+        }
         for (j = 0; j < tb->n_tags; j++) {
             if (tb->tags[j].tag == tag) {
                 CL_TagInfo *ti = &tb->tags[j];
@@ -2000,6 +2128,360 @@ void compile_unwind_protect(CL_Compiler *c, CL_Obj form)
     c->in_tail = saved_tail;
 }
 
+/* --- Local-function inlining (specs/performance.md 4.2 item 5) ------------
+ *
+ * A FLET/LABELS function that never escapes is not compiled into a closure
+ * at all: each call to it compiles to its body in place —
+ *
+ *   args (call-site env) ; STORE params ; (BLOCK name (LOCALLY . body))
+ *
+ * — with the parameters bound as fresh locals and everything the call site
+ * bound SINCE the definition (variables, local functions, macros, symbol
+ * macros, blocks, go tags) hidden from the body through the hide_* bands in
+ * CL_CompEnv / CL_Compiler, so its free names resolve in the definition
+ * environment exactly as they would in the closure.  What it saves: the
+ * closure allocation on every entry to the FLET (one heap object per
+ * captured variable set), and per call the OP_CALL frame push, arity check
+ * and OP_RET (bench-prims "flet-call": 43 ns → the body alone).
+ *
+ * "Never escapes" is decided by one macro-aware walk over the form
+ * (nlx_scan in NLX_FUNUSE mode) — a function keeps its closure when any of
+ * these appears in its scope: #'NAME; (declare (notinline NAME)); a call
+ * from inside a closure (a LAMBDA, a sibling's or nested local function's
+ * body, a HANDLER-BIND handler, a RESTART-CASE clause ...), since the body
+ * is only ever inlined into the defining function's own code; for LABELS,
+ * any reference from a group member's body (recursion, direct or mutual).
+ * Also excluded: names that are not plain symbols, lambda lists with any
+ * &-keyword, more than CL_LOCAL_INLINE_MAX_PARAMS parameters, a special
+ * parameter, a (special ...) declaration in the body, and — to bound code
+ * growth — a body over CL_LOCAL_INLINE_MAX_SIZE conses called from more
+ * than one site.  (optimize (space > speed)) or (debug 3) turns it off for
+ * the form; CLAMIGA_NO_LOCAL_INLINE=1 for the process.
+ *
+ * The analysis is what makes the closure-free binding safe; two guards in
+ * compiler.c (inline_local_misuse) report the case it cannot foresee — a
+ * macro that expands differently on each expansion — as a clear compile
+ * error rather than loading an empty slot. */
+
+/* Shape test: returns the parameter count, or -1 when BINDING is not
+ * inlinable on shape alone (see the list above). */
+static int local_inline_shape(CL_Obj binding)
+{
+    CL_Obj name, ll, body, p;
+    int n = 0;
+
+    if (!CL_CONS_P(binding) || !CL_CONS_P(cl_cdr(binding))) return -1;
+    name = cl_car(binding);
+    if (!CL_SYMBOL_P(name) || CL_NULL_P(name) || name == SYM_T) return -1;
+    if (((CL_Symbol *)CL_OBJ_TO_PTR(name))->package == cl_package_keyword) return -1;
+
+    ll = cl_car(cl_cdr(binding));
+    for (p = ll; !CL_NULL_P(p); p = cl_cdr(p)) {
+        CL_Obj v, q;
+        if (!CL_CONS_P(p)) return -1;                 /* dotted list */
+        v = cl_car(p);
+        if (!CL_SYMBOL_P(v) || CL_NULL_P(v) || v == SYM_T) return -1;
+        if (cl_symbol_name(v)[0] == '&') return -1;   /* any lambda-list keyword */
+        if (((CL_Symbol *)CL_OBJ_TO_PTR(v))->package == cl_package_keyword) return -1;
+        if (cl_symbol_specialp(v)) return -1;         /* would need a dynamic binding */
+        for (q = ll; q != p; q = cl_cdr(q))
+            if (cl_car(q) == v) return -1;            /* duplicate parameter */
+        if (++n > CL_LOCAL_INLINE_MAX_PARAMS) return -1;
+    }
+
+    /* Leading declarations: a (special ...) changes how the body's
+     * references bind — leave that to the closure path. */
+    for (body = cl_cdr(cl_cdr(binding)); CL_CONS_P(body); body = cl_cdr(body)) {
+        CL_Obj f = cl_car(body);
+        CL_Obj specs;
+        if (CL_ANY_STRING_P(f) && CL_CONS_P(cl_cdr(body))) continue;
+        if (!CL_CONS_P(f) || cl_car(f) != SYM_DECLARE) break;
+        for (specs = cl_cdr(f); CL_CONS_P(specs); specs = cl_cdr(specs)) {
+            CL_Obj spec = cl_car(specs);
+            if (CL_CONS_P(spec) && cl_car(spec) == SYM_SPECIAL_DECL) return -1;
+        }
+    }
+    return n;
+}
+
+/* Cons count of TREE, stopping once it exceeds LIMIT (returns LIMIT + 1). */
+static int local_inline_size(CL_Obj tree, int limit)
+{
+    int n = 0;
+    while (CL_CONS_P(tree) && n <= limit) {
+        n++;
+        if (CL_CONS_P(cl_car(tree)))
+            n += local_inline_size(cl_car(tree), limit - n);
+        tree = cl_cdr(tree);
+    }
+    return n;
+}
+
+/* Run the escape scan for the N local functions of FORM (a FLET or LABELS
+ * form, GC-protected by the caller).  The candidate names are registered
+ * as env->local_funs[lo .. lo+N) for the duration of the walk, so the
+ * walker identifies them by entry (funuse_index), and unregistered again.
+ * Every function body is walked as a closure; the form's body is not.  For
+ * FLET a sibling reference inside a function body names an OUTER function,
+ * so counting it as an escape is merely conservative; for LABELS it is the
+ * recursion check.  Results stay in c->funuse_escaped / c->funuse_calls. */
+static void local_inline_scan(CL_Compiler *c, CL_Obj form, int n)
+{
+    CL_CompEnv *env = c->env;
+    int lo = env->local_fun_count;
+    int i;
+    CL_Obj b;
+
+    c->funuse_lo = lo;
+    c->funuse_n = 0;
+    c->funuse_escaped = 0;
+    memset(c->funuse_calls, 0, sizeof(c->funuse_calls));
+
+    b = cl_car(cl_cdr(form));
+    for (i = 0; i < n; i++, b = cl_cdr(b)) {
+        CL_Obj binding = cl_car(b);
+        CL_Obj name = CL_CONS_P(binding) ? cl_car(binding) : CL_NIL;
+        if (cl_env_add_local_fun(env, name, -1) < 0) {
+            /* No room to register — nothing in this form is inlined. */
+            env->local_fun_count = lo;
+            c->funuse_escaped = ~(uint32_t)0;
+            return;
+        }
+    }
+    c->funuse_n = n;
+
+    /* GC SAFETY: the walk macroexpands (allocates / compacts); every cursor
+     * re-read after a scan call is rooted.  form itself is the caller's. */
+    scan_nlx_arg_depth = 0;
+    b = cl_car(cl_cdr(form));
+    CL_GC_PROTECT(b);
+    while (CL_CONS_P(b)) {
+        CL_Obj def = cl_car(b);
+        if (CL_CONS_P(def) && CL_CONS_P(cl_cdr(def)))
+            nlx_scan_body(cl_cdr(cl_cdr(def)), NLX_FUNUSE, CL_NIL, 1);
+        b = cl_cdr(b);
+    }
+    CL_GC_UNPROTECT(1);
+    nlx_scan_body(cl_cdr(cl_cdr(form)), NLX_FUNUSE, CL_NIL, 0);
+
+    c->funuse_n = 0;
+    env->local_fun_count = lo;   /* unregister the scan entries */
+}
+
+/* Decide inlining for candidate I of the form the scan just ran over.
+ * ESCAPED / CALLS are the scan results (copied out by the caller, since a
+ * nested FLET compiled meanwhile reuses the scratch fields). */
+static int local_inline_decide(CL_Obj binding, int i, uint32_t escaped,
+                               const uint8_t *calls)
+{
+    int nparams, size;
+    if (i >= CL_LOCAL_INLINE_MAX_NAMES) return 0;
+    if (escaped & ((uint32_t)1 << i)) return 0;
+    nparams = local_inline_shape(binding);
+    if (nparams < 0) return 0;
+    size = local_inline_size(cl_cdr(cl_cdr(binding)), CL_LOCAL_INLINE_MAX_SIZE);
+    if (calls[i] > 1 && size > CL_LOCAL_INLINE_MAX_SIZE) return 0;
+#ifdef DEBUG_COMPILER
+    fprintf(stderr, "; inline: local function %s (%d params, %d call sites, %d conses)\n",
+            cl_symbol_name(cl_car(binding)), nparams, calls[i], size);
+#endif
+    return 1;
+}
+
+/* Whether the effective optimize policy allows inlining at all. */
+static int local_inline_policy_ok(CL_Compiler *c)
+{
+    return cl_local_inline_enabled &&
+           c->optimize_settings.space <= c->optimize_settings.speed &&
+           c->optimize_settings.debug < 3;
+}
+
+static void local_inline_fill(CL_Compiler *c, CL_Obj b, int idx,
+                              CL_Obj inline_body,
+                              int local_mark, int fun_mark,
+                              int macro_mark, int smacro_mark,
+                              int block_mark, int tagbody_mark);
+
+/* Register BINDING (GC-protected through the cursor B it was read from) as
+ * an inlined local function: an anonymous slot so the name shadows global
+ * macros / compiler macros like any local function, the entry's inline
+ * fields, and the definition marks.  FUN_MARK / LOCAL_MARK are the env
+ * counts the body may see up to (FLET hides its own group, LABELS not). */
+static void local_inline_register(CL_Compiler *c, CL_Obj b, int slot,
+                                  int local_mark, int fun_mark,
+                                  int macro_mark, int smacro_mark,
+                                  int block_mark, int tagbody_mark)
+{
+    CL_CompEnv *env = c->env;
+    int idx = cl_env_add_local_fun(env, cl_car(cl_car(b)), slot);
+    if (idx < 0) {
+        /* Same silent overflow as the closure path (see compile_labels);
+         * a call then falls through to the global name — nothing is
+         * emitted that would read the slot. */
+        return;
+    }
+    local_inline_fill(c, b, idx, CL_NIL, local_mark, fun_mark,
+                      macro_mark, smacro_mark, block_mark, tagbody_mark);
+}
+
+/* Fill entry IDX (already registered) with the inline fields.  The body
+ * form is (LOCALLY . body) — LOCALLY so the function's declarations and
+ * docstring stay legal — wrapped in (BLOCK name ...) only when the body
+ * returns from it; pass INLINE_BODY = CL_NIL to have it built here.  B is
+ * the GC-protected bindings cursor at this binding; the conses are
+ * sequenced and re-read from it, as compile_flet builds its lambda form. */
+static void local_inline_fill(CL_Compiler *c, CL_Obj b, int idx,
+                              CL_Obj inline_body,
+                              int local_mark, int fun_mark,
+                              int macro_mark, int smacro_mark,
+                              int block_mark, int tagbody_mark)
+{
+    CL_CompEnv *env = c->env;
+    if (CL_NULL_P(inline_body)) {
+        /* The implicit BLOCK only when the body can RETURN-FROM it (a
+         * macro-aware scan, like compile_block's): a local-exit block
+         * costs a result-slot STORE/POP/LOAD round trip per call. */
+        int needs_block;
+        scan_nlx_arg_depth = 0;
+        needs_block = nlx_scan_body(cl_cdr(cl_cdr(cl_car(b))), NLX_FIND_RF,
+                                    cl_car(cl_car(b)), 0);
+        inline_body = cl_cons(SYM_LOCALLY, cl_cdr(cl_cdr(cl_car(b))));
+        if (needs_block) {
+            CL_GC_PROTECT(inline_body);
+            inline_body = cl_cons(inline_body, CL_NIL);
+            inline_body = cl_cons(cl_car(cl_car(b)), inline_body);
+            inline_body = cl_cons(SYM_BLOCK, inline_body);
+            CL_GC_UNPROTECT(1);
+        }
+    }
+    env->local_funs[idx].inline_body     = inline_body;
+    env->local_funs[idx].inline_params   = cl_car(cl_cdr(cl_car(b)));
+    env->local_funs[idx].def_local_mark  = local_mark;
+    env->local_funs[idx].def_fun_mark    = fun_mark;
+    env->local_funs[idx].def_macro_mark  = macro_mark;
+    env->local_funs[idx].def_smacro_mark = smacro_mark;
+    env->local_funs[idx].def_block_mark  = block_mark;
+    env->local_funs[idx].def_tagbody_mark = tagbody_mark;
+}
+
+/* A call to inlined local function env->local_funs[FUN_IDX] with ARGS
+ * (GC-protected by compile_call).  Emits the arguments, binds the
+ * parameters, then compiles the body with the call site's newer bindings
+ * hidden.  Leaves c->in_tail = SAVED_TAIL and mv_state as the body's. */
+void compile_local_inline_call(CL_Compiler *c, int fun_idx, CL_Obj args,
+                               int saved_tail)
+{
+    CL_CompEnv *env = c->env;
+    int nparams = 0, nargs = 0, i;
+    int saved_local_count;
+    CL_Obj cur;
+
+    for (cur = env->local_funs[fun_idx].inline_params; CL_CONS_P(cur); cur = cl_cdr(cur))
+        nparams++;
+    for (cur = args; CL_CONS_P(cur); cur = cl_cdr(cur))
+        nargs++;
+
+    /* 1. The arguments, left to right, in the CALL-SITE environment. */
+    c->in_tail = 0;
+    cur = args;
+    CL_GC_PROTECT(cur);
+    while (CL_CONS_P(cur)) {
+        compile_expr(c, cl_car(cur));
+        cur = cl_cdr(cur);
+    }
+    CL_GC_UNPROTECT(1);
+
+    if (nargs != nparams) {
+        /* Evaluated and dropped, then the same PROGRAM-ERROR the VM's arity
+         * check raises for the closure call — at run time, when the call
+         * is reached, not when the function is compiled. */
+        for (i = 0; i < nargs; i++)
+            cl_emit(c, OP_POP);
+        cl_emit_const(c, env->local_funs[fun_idx].name);
+        cl_emit_const(c, CL_MAKE_FIXNUM(nparams));
+        cl_emit_const(c, CL_MAKE_FIXNUM(nargs));
+        cl_emit_call_global(c, OP_CALL_GLOBAL,
+                            (uint16_t)cl_add_constant(c, cl_local_arity_error_sym), 3);
+        c->in_tail = saved_tail;
+        return;
+    }
+
+    /* 2. Bind the parameters as fresh locals above everything the call
+     *    site holds (the last argument is on top of the stack).  Boxing
+     *    follows LET: a parameter both assigned and captured by a closure
+     *    in the body lives in a cell. */
+    saved_local_count = env->local_count;
+    if (nparams > 0) {
+        CL_Obj params[CL_LOCAL_INLINE_MAX_PARAMS];
+        uint8_t needs_boxing[CL_LOCAL_INLINE_MAX_PARAMS];
+        int slots[CL_LOCAL_INLINE_MAX_PARAMS];
+        cur = env->local_funs[fun_idx].inline_params;
+        for (i = 0; i < nparams; i++, cur = cl_cdr(cur))
+            params[i] = cl_car(cur);
+        for (i = 0; i < nparams; i++)
+            CL_GC_PROTECT(params[i]);
+        /* The body list is (LOCALLY . body) inside the BLOCK: scan that. */
+        determine_boxed_vars(cl_cdr(cl_cdr(env->local_funs[fun_idx].inline_body)),
+                             params, nparams, needs_boxing);
+        for (i = 0; i < nparams; i++) {
+            slots[i] = cl_env_add_local(env, params[i]);
+            if (slots[i] < 0)
+                cl_error(CL_ERR_OVERFLOW,
+                         "Too many local variable slots in one function (max %d): "
+                         "simplify or split the function", CL_MAX_LOCALS);
+        }
+        cl_gc_pop_roots(nparams);
+        for (i = nparams - 1; i >= 0; i--) {
+            cl_emit(c, OP_STORE);
+            cl_emit(c, (uint8_t)slots[i]);
+            cl_emit(c, OP_POP);
+            if (needs_boxing[i]) {
+                cl_emit(c, OP_LOAD);
+                cl_emit(c, (uint8_t)slots[i]);
+                cl_emit(c, OP_MAKE_CELL);
+                cl_emit(c, OP_STORE);
+                cl_emit(c, (uint8_t)slots[i]);
+                cl_emit(c, OP_POP);
+                env->boxed[slots[i]] = 1;
+            }
+        }
+    }
+
+    /* 3. Hide what the call site bound since the definition, 4. the body
+     *    (its own compile_expr drains every tail frame it pushes, so the
+     *    bands are restored right after the block), 5. restore. */
+    {
+        CL_LocalFun *lf = &env->local_funs[fun_idx];
+        int s_ll = env->hide_local_lo,  s_lh = env->hide_local_hi;
+        int s_fl = env->hide_fun_lo,    s_fh = env->hide_fun_hi;
+        int s_ml = env->hide_macro_lo,  s_mh = env->hide_macro_hi;
+        int s_sl = env->hide_smacro_lo, s_sh = env->hide_smacro_hi;
+        int s_bl = c->hide_block_lo,    s_bh = c->hide_block_hi;
+        int s_tl = c->hide_tagbody_lo,  s_th = c->hide_tagbody_hi;
+
+        env->hide_local_lo  = lf->def_local_mark;  env->hide_local_hi  = saved_local_count;
+        env->hide_fun_lo    = lf->def_fun_mark;    env->hide_fun_hi    = env->local_fun_count;
+        env->hide_macro_lo  = lf->def_macro_mark;  env->hide_macro_hi  = env->local_macro_count;
+        env->hide_smacro_lo = lf->def_smacro_mark; env->hide_smacro_hi = env->symbol_macro_count;
+        c->hide_block_lo    = lf->def_block_mark;  c->hide_block_hi    = c->block_count;
+        c->hide_tagbody_lo  = lf->def_tagbody_mark; c->hide_tagbody_hi = c->tagbody_count;
+
+        c->in_tail = saved_tail;
+        compile_expr(c, env->local_funs[fun_idx].inline_body);
+
+        env->hide_local_lo  = s_ll; env->hide_local_hi  = s_lh;
+        env->hide_fun_lo    = s_fl; env->hide_fun_hi    = s_fh;
+        env->hide_macro_lo  = s_ml; env->hide_macro_hi  = s_mh;
+        env->hide_smacro_lo = s_sl; env->hide_smacro_hi = s_sh;
+        c->hide_block_lo    = s_bl; c->hide_block_hi    = s_bh;
+        c->hide_tagbody_lo  = s_tl; c->hide_tagbody_hi  = s_th;
+    }
+
+    cl_env_clear_boxed(env, saved_local_count);
+    env->local_count = saved_local_count;
+    c->in_tail = saved_tail;
+}
+
 /* --- Flet / Labels --- */
 
 CL_Obj compile_flet(CL_Compiler *c, CL_Obj form)
@@ -2016,10 +2498,31 @@ CL_Obj compile_flet(CL_Compiler *c, CL_Obj form)
     int saved_fun_count = env->local_fun_count;
     int saved_tail = c->in_tail;
     CL_TailFrame *tf;
+    /* Local-function inlining: one escape scan over the whole form before
+     * any function is compiled; the results are copied out because a
+     * nested FLET compiled during phase 1 reuses the scratch fields.  The
+     * marks are what an inlined body may see (everything bound later at a
+     * call site is hidden from it). */
+    int macro_mark = env->local_macro_count;
+    int smacro_mark = env->symbol_macro_count;
+    int block_mark = c->block_count;
+    int tagbody_mark = c->tagbody_count;
+    uint32_t escaped = ~(uint32_t)0;
+    uint8_t calls[CL_LOCAL_INLINE_MAX_NAMES];
+    int n_bindings = 0, bi = 0;
 
     /* GC SAFETY: phase 1's compile_expr calls compact — protect `form` and
      * derive `body` only after them. */
     CL_GC_PROTECT(form);
+
+    { CL_Obj b = bindings; while (CL_CONS_P(b)) { n_bindings++; b = cl_cdr(b); } }
+    memset(calls, 0, sizeof(calls));
+    if (local_inline_policy_ok(c) && n_bindings <= CL_LOCAL_INLINE_MAX_NAMES) {
+        local_inline_scan(c, form, n_bindings);   /* macroexpands: compacts */
+        escaped = c->funuse_escaped;
+        memcpy(calls, c->funuse_calls, sizeof(calls));
+    }
+    bindings = cl_car(cl_cdr(form));   /* re-derive after the scan */
 
     /* Phase 1: compile each function in outer scope, store in anonymous slots */
     {
@@ -2031,6 +2534,21 @@ CL_Obj compile_flet(CL_Compiler *c, CL_Obj form)
             CL_Obj fbody = cl_cdr(cl_cdr(binding));
             CL_Obj lambda_form;
             int slot;
+
+            if (local_inline_decide(binding, bi, escaped, calls)) {
+                /* No closure: an anonymous slot (never written or read —
+                 * it only makes the name a local function for every
+                 * shadowing check) and the inline entry.  FLET functions
+                 * cannot see their own group: fun_mark = saved_fun_count. */
+                slot = alloc_temp_slot(env);
+                local_inline_register(c, b, slot, saved_local_count,
+                                      saved_fun_count, macro_mark, smacro_mark,
+                                      block_mark, tagbody_mark);
+                bi++;
+                b = cl_cdr(b);
+                continue;
+            }
+            bi++;
 
             /* Build (lambda (params) (block name body...)) per CL spec:
              * flet functions have an implicit block named after the function.
@@ -2120,14 +2638,38 @@ CL_Obj compile_labels(CL_Compiler *c, CL_Obj form)
     int saved_local_count = env->local_count;
     int saved_fun_count = env->local_fun_count;
     int saved_tail = c->in_tail;
+    /* Local-function inlining — see compile_flet.  A LABELS member is
+     * inlined only when no member's body (its own included) references
+     * it, which the scan reports as an escape; the group stays visible to
+     * an inlined body (fun_mark / local_mark cover the group's entries). */
+    int macro_mark = env->local_macro_count;
+    int smacro_mark = env->symbol_macro_count;
+    int block_mark = c->block_count;
+    int tagbody_mark = c->tagbody_count;
+    uint32_t escaped = ~(uint32_t)0;
+    uint8_t calls[CL_LOCAL_INLINE_MAX_NAMES];
+    uint8_t is_inline[CL_MAX_LOCAL_FUNS];
+    int n_bindings = 0;
 
     /* GC SAFETY: phase 2's compile_expr calls compact — protect `form` and
      * derive `body` only after them. */
     CL_GC_PROTECT(form);
 
+    { CL_Obj b = bindings; while (CL_CONS_P(b)) { n_bindings++; b = cl_cdr(b); } }
+    memset(calls, 0, sizeof(calls));
+    memset(is_inline, 0, sizeof(is_inline));
+    if (local_inline_policy_ok(c) && n_bindings <= CL_LOCAL_INLINE_MAX_NAMES) {
+        local_inline_scan(c, form, n_bindings);   /* macroexpands: compacts */
+        escaped = c->funuse_escaped;
+        memcpy(calls, c->funuse_calls, sizeof(calls));
+    }
+    bindings = cl_car(cl_cdr(form));   /* re-derive after the scan */
+
     /* Phase 1: pre-allocate slots, initialize to NIL, box them, and register
      * all function names. Boxing is required so that closures compiled in
-     * phase 2 capture a reference to the box cell (not a copy of NIL). */
+     * phase 2 capture a reference to the box cell (not a copy of NIL).
+     * An inlined member gets its slot (anonymous, never touched) and its
+     * entry, but no initialization or box. */
     {
         CL_Obj b = bindings;
         int n = 0;
@@ -2139,6 +2681,15 @@ CL_Obj compile_labels(CL_Compiler *c, CL_Obj form)
             if (env->local_count > env->max_locals)
                 env->max_locals = env->local_count;
             env->locals[slot] = CL_NIL;  /* anonymous slot */
+
+            if (n < CL_MAX_LOCAL_FUNS &&
+                local_inline_decide(binding, n, escaped, calls)) {
+                is_inline[n] = 1;
+                cl_env_add_local_fun(env, fname, slot);
+                n++;
+                b = cl_cdr(b);
+                continue;
+            }
 
             /* Initialize slot to NIL */
             cl_emit(c, OP_CONST);
@@ -2165,6 +2716,7 @@ CL_Obj compile_labels(CL_Compiler *c, CL_Obj form)
             int i;
             for (i = 0; i < n; i++) {
                 int slot = saved_local_count + i;
+                if (i < CL_MAX_LOCAL_FUNS && is_inline[i]) continue;
                 cl_emit(c, OP_LOAD);
                 cl_emit(c, (uint8_t)slot);
                 cl_emit(c, OP_MAKE_CELL);
@@ -2174,18 +2726,48 @@ CL_Obj compile_labels(CL_Compiler *c, CL_Obj form)
                 env->boxed[slot] = 1;
             }
         }
+
+        /* The inline entries, now that the whole group is registered (an
+         * inlined body sees every member, so the fun mark is the count
+         * after registration). */
+        {
+            int i, fun_mark = env->local_fun_count;
+            int local_mark = env->local_count;
+            b = cl_car(cl_cdr(form));
+            CL_GC_PROTECT(b);
+            for (i = 0; i < n && CL_CONS_P(b); i++, b = cl_cdr(b)) {
+                int idx;
+                if (!(i < CL_MAX_LOCAL_FUNS && is_inline[i])) continue;
+                idx = cl_env_lookup_local_fun_index(env, cl_car(cl_car(b)));
+                if (idx < 0 || idx < saved_fun_count) continue;   /* not registered */
+                local_inline_fill(c, b, idx, CL_NIL, local_mark, fun_mark,
+                                  macro_mark, smacro_mark, block_mark,
+                                  tagbody_mark);
+            }
+            CL_GC_UNPROTECT(1);
+        }
     }
 
     /* Phase 2: compile each function and store in its pre-allocated (boxed) slot */
     {
-        CL_Obj b = bindings;
+        CL_Obj b = cl_car(cl_cdr(form));   /* re-derive: phase 1's inline entries consed */
         int slot = saved_local_count;  /* first allocated slot */
+        int i = 0;
         CL_GC_PROTECT(b);
         while (!CL_NULL_P(b)) {
             CL_Obj binding = cl_car(b);
             CL_Obj fname = cl_car(binding);
             CL_Obj fbody = cl_cdr(cl_cdr(binding));
             CL_Obj lambda_form;
+
+            if (i < CL_MAX_LOCAL_FUNS && is_inline[i]) {
+                /* Inlined: no closure to build. */
+                i++;
+                slot++;
+                b = cl_cdr(b);
+                continue;
+            }
+            i++;
 
             /* Build (lambda (params) (block name body...)) per CL spec:
              * labels functions have an implicit block named after the function.

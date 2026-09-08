@@ -691,9 +691,13 @@ call row of bench-prims — the VM's hot fields had moved onto different cache
 lines.  New per-thread tables go at the END of the struct.  This is the same
 sensitivity CLAUDE.md records for `vm.o` and LTO.
 
-### 4.2 Phase 2 — the call and unwind protocol ✅ DONE except item 5 (2026-09-08)
+### 4.2 Phase 2 — the call and unwind protocol ✅ DONE (2026-09-08)
 
-Items 1, 2, 3, 4, 6 and 7 landed; item 5 is open (below).  Behaviour is
+Items 1, 2, 3, 4, 6 and 7 landed in `e60e71db`; item 5, the handler-case
+JIT template and the debug-only gating of the `OP_CALL_GLOBAL`
+constant-pool check (`#ifdef DEBUG_VM`, like the other structural checks
+of item 1 — the review had kept it unconditional) in the follow-up
+commit.  Behaviour is
 pinned by `tests/test_tier4_phase2.sh` (141 checks, also run under `make
 test-gc-stress`) and the "Tier-4 phase 2" block of
 `tests/amiga/run-tests.lisp`.  Full numbers in docs/benchmarks.md
@@ -744,24 +748,53 @@ planning phase 3 against it.
    instead of calling a function (through interposed cleanups as pending
    kind 3), and the landing is a table of per-clause `OP_JMP`s.  A
    `:no-error` clause is rewritten first, exactly as CLHS 9.2.23 shows.
-   The m68k JIT walker bails on functions containing one (they run
-   interpreted) — the old expansion was JIT-able; a template is a
-   follow-up.
+   The m68k JIT walker has a template for both opcodes (follow-up
+   commit): the BLOCK_PUSH inline-setjmp shape, whose longjmp arm pushes
+   the condition and dispatches on the matched clause index to that
+   clause's table entry (`cl_jit_runtime_handler_case_*`); the
+   `walker-hc-*` checks of `tests/amiga/test-jit.lisp` pin that the
+   functions attach native code and land in the right clause.
 4. **unwind-protect value passing** ✅ — `OP_MV_SAVE` parks the protected
    form's values on a per-thread save stack (`CL_Thread.mv_save_buf`,
    fixnum-tagged count on top, GC-marked as a whole) and `OP_MV_RESTORE`
    pops them after the cleanup: no list, no `VALUES-LIST` call, no local
    slot.  Every NLX landing and error frame drops the records of
    abandoned cleanups.  The JIT has templates for both.
-5. **Non-escaping `flet`/`labels`** ⬜ **open** — not in this commit.  The
-   safe design is inline expansion at each call site: a local function
-   that is never `#'`-referenced, never recursive and has a simple lambda
-   list is compiled as `(block name (let* ((param g) ...) body))` at the
-   call, with the call-site bindings introduced since the definition
-   hidden from the body's name lookups (the same sentinel trick the &key
-   default prologue uses) so free variables resolve in the definition
-   environment.  The escape and recursion scans can reuse `nlx_scan`'s
-   macro-aware walker.
+5. **Non-escaping `flet`/`labels`** ✅ (2026-09-08, follow-up commit) —
+   inline expansion at each call site.  A local function that is never
+   `#'`-referenced, never declared `notinline`, never called from inside
+   a closure (a `lambda`, a sibling's or nested local function's body, a
+   `handler-bind` handler, a `restart-case` clause — the body is only
+   inlined into the defining function's own code) and, for `labels`,
+   never referenced from any member's body (recursion, direct or mutual)
+   keeps no closure at all: the call compiles to `args; STORE params;
+   (locally . body)` — wrapped in `(block name ...)` only when the body
+   returns from it — with every name the call site bound since the
+   definition (variables, local functions, macrolet, symbol-macrolet,
+   blocks, go tags) hidden from the body through skip bands in the
+   lookup tables (`CL_CompEnv.hide_*`, `CL_Compiler.hide_block/tagbody_*`),
+   so free names resolve in the definition environment (CLHS 3.1.1).
+   The escape analysis is one macro-aware `nlx_scan` walk per form
+   (`NLX_FUNUSE` mode; it also sees through symbol-macros).  Shape
+   limits: required parameters only (≤ 8), no special parameter or
+   `(special ...)` declaration, and a body over 48 conses is inlined only
+   when called once.  `(optimize (space > speed))` or `(debug 3)` keeps
+   the closures (and the local's backtrace frame — an inlined call has
+   none, the error line still points into the body);
+   `CLAMIGA_NO_LOCAL_INLINE=1` does so process-wide.  A macro that
+   expands differently between the analysis and the compile is reported
+   as a clear compile error, never compiled as a call through the empty
+   slot.  What it saves per `flet` entry: the closure allocation; per
+   call: the frame push, arity check and `OP_RET` (bench-prims
+   `flet-call` 73 → 49 ns absolute, i.e. the body alone; every other row
+   within ±2 ns or inside its run-to-run spread — docs/benchmarks.md
+   2026-09-08 item 5).  Not covered: a
+   `labels` helper called from a recursive sibling (that call is from
+   inside the sibling's closure — a cross-compiler expansion, which would
+   need the hiding bands to span the env chain and the outer block/tag
+   tables; the closure path stays).  Tests: `tests/test_local_inline.sh`
+   (72 checks, DISASSEMBLE-pinned, also under gc-stress), the "item 5"
+   block of `tests/amiga/run-tests.lisp`.
 6. **Keyword constructors** ✅ — every `defstruct` keyword constructor
    carries a compiler macro (`%struct-keyword-ctor-expand`) that turns a
    literal-keyword call into a positional `%make-struct`, binding the
@@ -788,16 +821,19 @@ b 2)))` — left the call's already-pushed arguments on the operand stack
 the NLX path).  `nlx_scan` now routes such exits through the NLX frame,
 whose landing restores the stack pointer.
 
-**What the sento cell is bound by**: not the actor thread's VM work
-alone.  The per-message VM cost shrank (the 10% CPU-time drop) but the
-rate did not; a steady-state per-thread `sample` shows no lock contention
-and several threads saturated in `cl_vm_run` (the bench builds a fresh
-actor system per iteration, so the busy set shifts).  Whether the
-producers, allocation plus stop-the-world collections across 20+ threads,
-or the consumer sets the rate was not resolved in this phase.  Resolve
-that per thread before using this cell as the phase-3 gate; a
-`:load-threads 1` variant isolates the consumer.  Phase 3's
-superinstructions will show on bench-prims regardless.
+**What the sento cell is bound by** (resolved in the follow-up commit,
+`trunk/sento-bench-loadthreads.lisp`, numbers in docs/benchmarks.md
+2026-09-08 item 5): the consumer.  Over a producer-count sweep the rate is
+highest with ONE producer (287k msg/s average, 271k median), drops to
+~190k with 2–4 and recovers to 267k with 8, with the collector at 1–1.4%
+of wall time throughout.  At one producer the actor thread spends ~3.5 µs
+per message — the ~1,450 bytecodes of the message path at ~2.4 ns each —
+so the path is VM-bound and phase 3's superinstructions will move it.
+The 2–4 producer dip is the message-box hand-off (producers alternately
+overfilling past `:wait-if-queue-larger-than` and draining it, so the
+consumer sleeps and wakes per burst), which is why the 4-producer cell
+used as this phase's gate stayed flat while CPU time per run fell 10%.
+**Gate phase 3 on `:load-threads 1`** (median of record: 271k).
 
 ### 4.3 Phase 3 — superinstructions (~10–15%)
 

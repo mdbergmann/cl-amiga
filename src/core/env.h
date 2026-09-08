@@ -26,6 +26,25 @@ typedef struct {
 typedef struct {
     CL_Obj name;   /* function name (symbol) */
     int slot;      /* local slot index where closure is stored */
+    /* Inline expansion (compiler_special.c, "Local-function inlining"): a
+     * FLET/LABELS function the compiler proved non-escaping keeps no
+     * closure — every call compiles to its body in place.  inline_body is
+     * (BLOCK name (LOCALLY . body)) and inline_params the required
+     * parameter list; both CL_NIL for an ordinary binding, whose slot then
+     * holds the closure.  The *_mark fields record how much of the
+     * defining env / compiler existed when the function was defined, so a
+     * call site can hide everything bound since (see the hide_* bands
+     * below) and the body's free names resolve in the definition
+     * environment.  The block/tagbody marks index the DEFINING compiler's
+     * tables: a call is inlined only from that same compiler. */
+    CL_Obj inline_body;
+    CL_Obj inline_params;
+    int def_local_mark;
+    int def_fun_mark;
+    int def_macro_mark;
+    int def_smacro_mark;
+    int def_block_mark;
+    int def_tagbody_mark;
 } CL_LocalFun;
 
 typedef struct {
@@ -65,7 +84,23 @@ typedef struct CL_CompEnv {
      * directly via symbol-macrolet in this env and shadow any existing local
      * with the same name. */
     int inherited_symbol_macro_count;
+    /* Name-hiding bands for local-function inlining.  While an inlined
+     * body is being compiled, the entries with index in [lo, hi) of
+     * locals / local_funs / local_macros / symbol_macros are invisible to
+     * every lookup: they were bound between the function's definition and
+     * the call site, and the body must resolve its free names in the
+     * definition environment (CLHS 3.1.1).  Empty (lo == hi) otherwise;
+     * nested inlining saves and restores them.  The compiler keeps the
+     * matching bands for its BLOCK / TAGBODY tables. */
+    int hide_local_lo, hide_local_hi;
+    int hide_fun_lo, hide_fun_hi;
+    int hide_macro_lo, hide_macro_hi;
+    int hide_smacro_lo, hide_smacro_hi;
 } CL_CompEnv;
+
+/* 1 when local slot I is visible to name lookups (outside the hiding band). */
+#define CL_ENV_LOCAL_VISIBLE(env, i) \
+    ((i) < (env)->hide_local_lo || (i) >= (env)->hide_local_hi)
 
 /* Clear boxed flags for slots [from, env->local_count) so reused slots
  * aren't incorrectly treated as heap-boxed cells.  Must be called before
@@ -97,9 +132,18 @@ int cl_env_lookup_upvalue(CL_CompEnv *env, CL_Obj symbol,
  * Returns upvalue index (>=0) or -1 if not found in any parent scope. */
 int cl_env_resolve_upvalue(CL_CompEnv *env, CL_Obj symbol);
 
-/* Local function bindings (flet/labels) */
+/* Local function bindings (flet/labels).  add returns the entry index (or
+ * -1 when full); lookup returns the closure SLOT of the innermost visible
+ * binding, lookup_index the ENTRY index (so the caller can read the
+ * inline fields) — both -1 when NAME is not bound. */
 int cl_env_add_local_fun(CL_CompEnv *env, CL_Obj name, int slot);
 int cl_env_lookup_local_fun(CL_CompEnv *env, CL_Obj name);
+int cl_env_lookup_local_fun_index(CL_CompEnv *env, CL_Obj name);
+/* 1 when NAME resolves, in ENV's parent chain, to a local function that
+ * was compiled inline (no closure exists to capture) — a reference from
+ * inside a nested lambda that the inlining analysis should have ruled
+ * out; the compiler reports it instead of capturing an empty slot. */
+int cl_env_parent_fun_is_inline(CL_CompEnv *env, CL_Obj name);
 
 /* Resolve a local function as an upvalue (across lambda boundaries) */
 int cl_env_resolve_fun_upvalue(CL_CompEnv *env, CL_Obj name);

@@ -1056,6 +1056,37 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
             is_target[landing_ip] = 1;
             break;
         }
+        case OP_HANDLER_CASE_PUSH: {
+            /* 1 + u16 types_idx + i32 offset = 7 bytes.  The landing
+             * (catch_ip + offset, catch_ip = ip+7) is a table of one
+             * 5-byte OP_JMP per clause; the longjmp arm the emitter
+             * builds branches to entry k for clause k, so every entry is
+             * a branch target.  The clause count is the length of the
+             * TYPE list constant.  A clauseless form (n == 0) is left to
+             * the interpreter: nothing can ever land in it. */
+            int32_t offset;
+            uint32_t landing_ip, k, n;
+            uint16_t types_idx;
+            int ok;
+            CL_Obj types;
+            step = 7;
+            if (ip + 7 > bc->code_len) return 0;
+            types_idx = ((uint16_t)bc->code[ip + 1] << 8) | bc->code[ip + 2];
+            if (types_idx >= bc->n_constants || bc->constants == NULL) return 0;
+            offset = read_i32_be(bc->code + ip + 3);
+            landing_ip = compute_landing_ip(offset, ip + 7, bc->code_len, &ok);
+            if (!ok) return 0;
+            types = bc->constants[types_idx];
+            n = 0;
+            while (CL_CONS_P(types)) { n++; types = cl_cdr(types); }
+            if (n == 0 || n > 127 || landing_ip + 5 * n > bc->code_len) return 0;
+            for (k = 0; k < n; k++)
+                is_target[landing_ip + 5 * k] = 1;
+            break;
+        }
+        case OP_HANDLER_CASE_POP:
+            step = 1;
+            break;
         case OP_AMIGA_CALL:
             /* 1 + u16 sym_idx + i16 offset + i32 regspec + u8 n_args
              * = 10 bytes.  Straight-line opcode, no branch targets. */
@@ -2450,6 +2481,117 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             m68k_emit_move_l_imm32_predec(cb, (uint32_t)count, REG_A7);
             m68k_emit_jsr_abs_l(cb, helper);
             m68k_emit_addq_l_an(cb, 4, REG_A7);
+            break;
+        }
+
+        case OP_HANDLER_CASE_PUSH: {
+            /* u16 types_idx, i32 offset.  Same inline-setjmp shape as
+             * OP_BLOCK_PUSH (see that comment for the sequence and the
+             * rationale), with a different landing arm: the VM resumes a
+             * matched clause at landing + 5 * k — the k-th OP_JMP of the
+             * per-clause table compile_handler_case emits — so after the
+             * post_longjmp helper has pushed the condition, the arm reads
+             * the clause index and dispatches:
+             *
+             *   JSR post_longjmp        -- D0 = condition
+             *   MOVE.L D0,-(A7)         -- the clause's sole value
+             *   JSR clause              -- D0 = k
+             *   MOVEQ #0,D1; CMP.L D1,D0; BEQ.W entry_0
+             *   ...                     -- one pair per clause but the last
+             *   BRA.W entry_{n-1}
+             *   normal_path:
+             *   JSR commit              -- frame + clause bindings
+             *
+             * The prescan marked every table entry as a branch target, so
+             * both arms meet the walker at depth 0 with the condition at
+             * (a7).  Every entry sits after the form (compile_handler_case
+             * emits push, form, pop, jmp, table), so all of them are
+             * forward patches. */
+            uint16_t types_idx;
+            CL_Obj types;
+            int32_t bc_offset;
+            uint32_t landing_bc_ip, n, k;
+            int32_t beq_pc, normal_path_off;
+            uint32_t alloc_helper        = (uint32_t)(uintptr_t)&cl_jit_runtime_handler_case_alloc;
+            uint32_t commit_helper       = (uint32_t)(uintptr_t)&cl_jit_runtime_handler_case_commit;
+            uint32_t post_longjmp_helper = (uint32_t)(uintptr_t)&cl_jit_runtime_handler_case_post_longjmp;
+            uint32_t clause_helper       = (uint32_t)(uintptr_t)&cl_jit_runtime_handler_case_clause;
+
+            if (ip + 6 > bc->code_len) goto fail;
+            types_idx = ((uint16_t)bc->code[ip] << 8) | bc->code[ip + 1];
+            ip += 2;
+            bc_offset = read_i32_be(bc->code + ip);
+            ip += 4;
+            if (types_idx >= bc->n_constants || bc->constants == NULL) goto fail;
+            types = bc->constants[types_idx];
+            n = 0;
+            { CL_Obj t = types; while (CL_CONS_P(t)) { n++; t = cl_cdr(t); } }
+            if (n == 0 || n > 127) goto fail;
+            {
+                int ok;
+                landing_bc_ip = compute_landing_ip(bc_offset, ip,
+                                                   bc->code_len, &ok);
+                if (!ok) goto fail;
+            }
+            if (landing_bc_ip + 5 * n > bc->code_len) goto fail;
+
+            cache_flush(cb, &cache_head, &cache_depth);
+
+            /* alloc(types) → D0 = &nlx->buf.  The helper may cl_error on
+             * NLX / handler stack overflow — the flush above keeps every
+             * cached operand reachable through the conservative scan. */
+            emit_obj_imm_predec(cb, relocs, types);
+            m68k_emit_jsr_abs_l(cb, alloc_helper);
+            m68k_emit_addq_l_an(cb, 4, REG_A7);
+
+            /* setjmp(D0): push D0, JSR setjmp, drop arg; Z on the zero
+             * (normal) return. */
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+            m68k_emit_jsr_abs_l(cb, cl_jit_setjmp_addr);
+            m68k_emit_addq_l_an(cb, 4, REG_A7);
+            m68k_emit_tst_l_dn(cb, REG_D0);
+            beq_pc = (int32_t)cb_len(cb) + 2;
+            m68k_emit_beq_w(cb, 0);   /* → normal_path, patched below */
+
+            /* Longjmp arm: condition onto the operand stack, then the
+             * clause dispatch. */
+            m68k_emit_jsr_abs_l(cb, post_longjmp_helper);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+            m68k_emit_jsr_abs_l(cb, clause_helper);
+            for (k = 0; k + 1 < n; k++) {
+                int32_t bcc_pc;
+                m68k_emit_moveq(cb, (int8_t)k, REG_D1);
+                m68k_emit_cmp_l_dn_dm(cb, REG_D1, REG_D0);
+                bcc_pc = (int32_t)cb_len(cb) + 2;
+                if (!patches_push(&patches, &n_patches, &cap_patches,
+                                  (uint32_t)bcc_pc, landing_bc_ip + 5 * k))
+                    goto fail;
+                m68k_emit_beq_w(cb, 0);
+            }
+            {
+                int32_t bra_pc = (int32_t)cb_len(cb) + 2;
+                if (!patches_push(&patches, &n_patches, &cap_patches,
+                                  (uint32_t)bra_pc, landing_bc_ip + 5 * (n - 1)))
+                    goto fail;
+                m68k_emit_bra_w(cb, 0);
+            }
+
+            /* normal_path: patch the BEQ to land here, then commit. */
+            normal_path_off = (int32_t)cb_len(cb);
+            m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)beq_pc,
+                              (int16_t)(normal_path_off - beq_pc));
+            m68k_emit_jsr_abs_l(cb, commit_helper);
+            /* Cache depth stays 0; the protected form executes from here. */
+            break;
+        }
+
+        case OP_HANDLER_CASE_POP: {
+            /* Mirror of OP_BLOCK_POP: the helper searches backward for
+             * the frame, drops its clause bindings and the frame.  The
+             * operand stack is untouched (the form's value stays), it is
+             * non-allocating, and D5/D6/D7 survive the JSR — no flush. */
+            uint32_t pop_helper = (uint32_t)(uintptr_t)&cl_jit_runtime_handler_case_pop;
+            m68k_emit_jsr_abs_l(cb, pop_helper);
             break;
         }
 

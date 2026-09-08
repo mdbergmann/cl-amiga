@@ -783,6 +783,18 @@ int main(int argc, char *argv[])
             cl_optimize_force_speed = fs[0] - '0';
         }
     }
+    /* CLAMIGA_NO_LOCAL_INLINE=1 keeps every FLET/LABELS function a real
+     * closure (no call-site inlining) — for A/B measurements and for
+     * isolating a suspected inlining bug. */
+    {
+        char nlbuf[8];
+        const char *nl = platform_getenv("CLAMIGA_NO_LOCAL_INLINE", nlbuf,
+                                         (int)sizeof(nlbuf));
+        if (nl && nl[0] == '1' && nl[1] == '\0') {
+            extern int cl_local_inline_enabled;
+            cl_local_inline_enabled = 0;
+        }
+    }
     cl_jit_init();
     if (no_jit) cl_jit_set_active(0);
     cl_vm_init(stack_entries, frame_count);

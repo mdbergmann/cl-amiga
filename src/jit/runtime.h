@@ -309,6 +309,20 @@ void   cl_jit_runtime_uwprot_pop(void);
 void   cl_jit_runtime_uwprot_post_longjmp(void);
 void   cl_jit_runtime_uwprot_rethrow(void);
 
+/* OP_HANDLER_CASE_PUSH / OP_HANDLER_CASE_POP.  Same JSR-setjmp-inline
+ * shape as BLOCK_PUSH; the frame is CL_NLX_HANDLER_CASE, its tag the
+ * clause TYPE list, and commit also pushes one clause binding per type
+ * (fixnum clause index, nlx_index = the frame) so cl_signal_condition's
+ * cl_handler_case_transfer lands in our buf.  post_longjmp returns the
+ * condition; clause() the matched clause index the walker's landing arm
+ * dispatches on (clause k resumes at the k-th OP_JMP of the bytecode
+ * landing table).  See runtime.c for the full protocol. */
+void    *cl_jit_runtime_handler_case_alloc(CL_Obj types);
+void     cl_jit_runtime_handler_case_commit(void);
+void     cl_jit_runtime_handler_case_pop(void);
+CL_Obj   cl_jit_runtime_handler_case_post_longjmp(void);
+uint32_t cl_jit_runtime_handler_case_clause(void);
+
 /* OP_MV_TO_LIST helper: build a list from cl_mv_values, returning it.
  * Matches the VM's quirk where cl_mv_count==0 with non-NIL primary is
  * treated as a single-value list. */

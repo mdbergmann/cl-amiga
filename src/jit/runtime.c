@@ -1494,6 +1494,116 @@ void cl_jit_runtime_handler_pop(uint32_t count)
     cl_handler_active_mask &= ~CL_HANDLER_BAND_MASK(cl_handler_top, old_top);
 }
 
+/* --- OP_HANDLER_CASE_PUSH / OP_HANDLER_CASE_POP --------------------------
+ *
+ * Same JIT-inline-setjmp protocol as BLOCK_PUSH (alloc → JSR setjmp →
+ * commit on the zero arm).  The frame is a CL_NLX_HANDLER_CASE whose tag
+ * is the clause TYPE list (a constant of the bytecode); commit pushes the
+ * frame AND one handler binding per clause whose "handler" is the clause
+ * index as a fixnum, pointing back at the frame — exactly what the VM's
+ * OP_HANDLER_CASE_PUSH does.  When a clause matches, cl_signal_condition
+ * → cl_handler_case_transfer stores the condition as the frame's result,
+ * sets hc_clause and lands in our buf through cl_nlx_jump (landing ==
+ * NULL, so the frame's own setjmp is the target; interposing cleanups run
+ * first as pending kind 3, re-initiated by uwprot_rethrow).  The walker's
+ * longjmp arm pushes the condition and branches to the matched clause's
+ * OP_JMP in the bytecode landing table (clause k at landing + 5 * k).
+ *
+ *   handler_case_alloc(types)   — reserve the frame, check both stacks.
+ *   handler_case_commit()       — cl_nlx_top++, push the clause bindings.
+ *   handler_case_pop()          — normal exit: drop bindings and frame.
+ *   handler_case_post_longjmp() — restore the marks, return the condition.
+ *   handler_case_clause()       — the matched clause index (after the above).
+ */
+
+static int handler_case_clause_count(CL_Obj types)
+{
+    int n = 0;
+    while (CL_CONS_P(types)) { n++; types = cl_cdr(types); }
+    return n;
+}
+
+void *cl_jit_runtime_handler_case_alloc(CL_Obj types)
+{
+    CL_NLXFrame *nlx;
+    /* Both capacity checks BEFORE the frame is committed, so an overflow
+     * error leaves nothing half-pushed (mirrors the VM opcode). */
+    if (cl_handler_top + handler_case_clause_count(types) > CL_MAX_HANDLER_BINDINGS)
+        cl_error(CL_ERR_OVERFLOW, "Handler stack overflow");
+    nlx = nlx_alloc_common(CL_NLX_HANDLER_CASE, types);
+    nlx->hc_clause  = 0;
+    /* The VM's landing restores these two as well; nlx_alloc_common leaves
+     * them alone for the other JIT frames, so capture them here. */
+    nlx->error_mark = cl_error_frame_top;
+    return &nlx->buf;
+}
+
+void cl_jit_runtime_handler_case_commit(void)
+{
+    int ni = cl_nlx_top;
+    CL_Obj types = cl_nlx_stack[ni].tag;
+    int n = handler_case_clause_count(types);
+    int k;
+    cl_nlx_top++;
+    /* Clause 0 is pushed LAST so it is the innermost binding:
+     * cl_signal_condition walks the stack top-down and CLHS 9.1.4 wants
+     * the textually first matching clause (vm.c OP_HANDLER_CASE_PUSH). */
+    for (k = n - 1; k >= 0; k--) {
+        CL_Obj t = types;
+        int j;
+        for (j = 0; j < k; j++) t = cl_cdr(t);
+        cl_handler_stack[cl_handler_top].type_name    = cl_car(t);
+        cl_handler_stack[cl_handler_top].handler      = CL_MAKE_FIXNUM(k);
+        cl_handler_stack[cl_handler_top].nlx_index    = ni;
+        cl_handler_stack[cl_handler_top].handler_mark = cl_handler_top;
+        cl_handler_active_mask |= ((uint64_t)1 << cl_handler_top);
+        cl_handler_top++;
+    }
+}
+
+void cl_jit_runtime_handler_case_pop(void)
+{
+    /* Normal exit: search backward for the frame (a tail call inside the
+     * form may have leaked an intervening NLX frame — same tolerance as
+     * nlx_pop_type), drop its clause bindings, then the frame.  The MV
+     * state is the form's and is left alone. */
+    int hi;
+    for (hi = cl_nlx_top - 1; hi >= 0; hi--) {
+        if (cl_nlx_stack[hi].type == CL_NLX_HANDLER_CASE) {
+            int old_top = cl_handler_top;
+            cl_handler_top = cl_nlx_stack[hi].handler_mark;
+            if (cl_handler_top < old_top)
+                cl_handler_active_mask &=
+                    ~CL_HANDLER_BAND_MASK(cl_handler_top, old_top);
+            cl_nlx_top = hi;
+            return;
+        }
+    }
+    if (cl_nlx_top > 0) cl_nlx_top--;
+}
+
+CL_Obj cl_jit_runtime_handler_case_post_longjmp(void)
+{
+    /* cl_nlx_top is this frame's index (set by cl_handler_case_transfer
+     * or uwprot_rethrow's kind-3 arm).  The clause bindings are gone once
+     * nlx_restore_core has restored handler_top to the frame's mark. */
+    CL_NLXFrame *nlx = &cl_nlx_stack[cl_nlx_top];
+    CL_Obj cond;
+    nlx_restore_core(nlx, CL_CAPTURE_SP());
+    cl_error_frame_top   = nlx->error_mark;
+    cl_saved_pending_top = nlx->saved_pending_mark;
+    cond = nlx->result;
+    cl_pending_throw = 0;
+    cl_mv_count = 1;
+    cl_mv_values[0] = cond;
+    return cond;
+}
+
+uint32_t cl_jit_runtime_handler_case_clause(void)
+{
+    return (uint32_t)cl_nlx_stack[cl_nlx_top].hc_clause;
+}
+
 void cl_jit_runtime_restart_push(CL_Obj name_sym, CL_Obj handler, CL_Obj report,
                                  CL_Obj interactive, CL_Obj test, CL_Obj tag)
 {

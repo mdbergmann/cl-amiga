@@ -1988,6 +1988,102 @@
     (defun jit-after-free-probe () 42)
     (jit-after-free-probe)))
 
+; ---- Walker: OP_HANDLER_CASE_PUSH / OP_HANDLER_CASE_POP ----
+;
+; HANDLER-CASE is the special form CLAMIGA::%HANDLER-CASE (Tier-4 phase
+; 2): one NLX frame plus one clause binding per clause, and a landing
+; table of per-clause OP_JMPs.  The walker emits the same inline JSR
+; setjmp shape as OP_BLOCK_PUSH; the longjmp arm pushes the condition and
+; dispatches on the matched clause index (cl_jit_runtime_handler_case_
+; clause) to that clause's table entry.  Every function below must attach
+; native code (%jit-dump-bytes non-NIL: the walker no longer bails on the
+; opcode) so the asserted behaviour is the native path's.
+(defun walker-hc-normal (x)
+  (handler-case (* x 2)
+    (error (c) (declare (ignore c)) :err)))
+(check "walker-hc-normal-compiled" t (not (null (clamiga::%jit-dump-bytes #'walker-hc-normal))))
+(check "walker-hc-normal-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-hc-normal 21)
+    (> (clamiga::%jit-invoke-count) before)))
+(check "walker-hc-normal-result" 42 (walker-hc-normal 21))
+
+(defun walker-hc-error (x)
+  (handler-case (error "hc boom ~A" x)
+    (error (c) (list :caught (search "hc boom" (princ-to-string c))))))
+(check "walker-hc-error-compiled" t (not (null (clamiga::%jit-dump-bytes #'walker-hc-error))))
+(check "walker-hc-error-result" '(:caught 0) (walker-hc-error 1))
+
+; Three clauses: the dispatch must reach the second and third table
+; entries, not only the first.
+(define-condition walker-hc-c1 (error) ())
+(define-condition walker-hc-c2 (error) ())
+(defun walker-hc-dispatch (which)
+  (handler-case (cond ((eql which 1) (error 'walker-hc-c1))
+                      ((eql which 2) (error 'walker-hc-c2))
+                      ((eql which 3) (error "plain"))
+                      (t :none))
+    (walker-hc-c1 () :first)
+    (walker-hc-c2 (c) (declare (ignore c)) :second)
+    (error () :third)))
+(check "walker-hc-dispatch-compiled" t (not (null (clamiga::%jit-dump-bytes #'walker-hc-dispatch))))
+(check "walker-hc-dispatch" '(:first :second :third :none)
+  (list (walker-hc-dispatch 1) (walker-hc-dispatch 2)
+        (walker-hc-dispatch 3) (walker-hc-dispatch 4)))
+
+; The error is raised in a JIT'd callee and lands in the JIT'd caller's
+; clause: cl_handler_case_transfer → cl_nlx_jump into our setjmp buf.
+(defun walker-hc-callee (x) (if (> x 0) (error "neg wanted") (- x)))
+(defun walker-hc-caller (x)
+  (handler-case (walker-hc-callee x)
+    (error (c) (declare (ignore c)) :from-callee)))
+(check "walker-hc-caller-compiled" t (not (null (clamiga::%jit-dump-bytes #'walker-hc-caller))))
+(check "walker-hc-across-frames" '(5 :from-callee)
+  (list (walker-hc-caller -5) (walker-hc-caller 5)))
+
+; An interposed unwind-protect in the same JIT'd function: the cleanup
+; runs first (the transfer is parked as pending kind 3 and re-initiated by
+; uwprot_rethrow), then the clause sees the count.
+(defvar *walker-hc-cleanups* 0)
+(defun walker-hc-uwp ()
+  (setq *walker-hc-cleanups* 0)
+  (handler-case
+      (unwind-protect (error "through cleanup")
+        (incf *walker-hc-cleanups*))
+    (error () (list :caught *walker-hc-cleanups*))))
+(check "walker-hc-uwp-compiled" t (not (null (clamiga::%jit-dump-bytes #'walker-hc-uwp))))
+(check "walker-hc-uwp-cleanup-first" '(:caught 1) (walker-hc-uwp))
+
+; Nested: the inner clause does not match and the outer does, then the
+; inner matches and the outer frame is popped normally afterwards.
+(defun walker-hc-nested (which)
+  (handler-case
+      (handler-case (if (eql which :inner) (error 'walker-hc-c1) (error 'walker-hc-c2))
+        (walker-hc-c1 () :inner-caught))
+    (walker-hc-c2 () :outer-caught)))
+(check "walker-hc-nested-compiled" t (not (null (clamiga::%jit-dump-bytes #'walker-hc-nested))))
+(check "walker-hc-nested" '(:inner-caught :outer-caught)
+  (list (walker-hc-nested :inner) (walker-hc-nested :outer)))
+
+; Multiple values on the normal path, and a :no-error clause.
+(defun walker-hc-mv () (handler-case (values 1 2 3) (error () :err)))
+(check "walker-hc-mv" '(1 2 3) (multiple-value-list (walker-hc-mv)))
+(defun walker-hc-noerr (x)
+  (handler-case (* x 3)
+    (error () :err)
+    (:no-error (v) (list :ok v))))
+(check "walker-hc-no-error" '(:ok 9) (walker-hc-noerr 3))
+
+; Both exits pop the frame and the clause bindings: 300 rounds of each
+; path would overflow a leaked NLX or handler stack.
+(defun walker-hc-loop (n)
+  (let ((hits 0))
+    (dotimes (i n hits)
+      (handler-case (if (oddp i) (error "odd") i)
+        (error () (incf hits))))))
+(check "walker-hc-loop-compiled" t (not (null (clamiga::%jit-dump-bytes #'walker-hc-loop))))
+(check "walker-hc-loop-no-leak" 150 (walker-hc-loop 300))
+
 ; Restore the suite-wide baseline established by run-tests.lisp's
 ; "declaim optimize" test — sections after this load expect speed 3.
 (declaim (optimize (speed 3)))

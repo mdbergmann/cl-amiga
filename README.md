@@ -849,10 +849,23 @@ rest are parsed and accepted as conforming no-ops.
     `cl:compilation-speed`) but ignored, and any non-standard quality — e.g.
     `security` — is silently accepted and ignored.
 - **`inline` / `notinline`** — `notinline` is *honored*: it suppresses
-  compiler-macro expansion, constant folding, and the builtin-to-opcode
-  inlining for the named functions, forcing real out-of-line calls.
-  `inline` sets a flag on the function symbol (visible via `describe`) but
-  does not yet force inlining of user functions.
+  compiler-macro expansion, constant folding, the builtin-to-opcode
+  inlining, and the local-function inlining below for the named functions,
+  forcing real out-of-line calls.  `inline` sets a flag on the function
+  symbol (visible via `describe`) but does not yet force inlining of
+  global user functions.
+- **Local functions are inlined automatically.** A `flet`/`labels`
+  function that never escapes — it is not `#'`-referenced, not called
+  from inside a `lambda` or another local function, not recursive — is
+  compiled into each of its call sites instead of a closure, with its free
+  variables still resolving where the function was defined. Such a call
+  costs what its body costs (no frame, no closure allocation when the
+  `flet` is entered). Functions with `&optional`/`&rest`/`&key`, special
+  parameters, or a large body called from several places keep a closure,
+  as does everything under `(optimize (space 2))`, `(debug 3)`, or a
+  `notinline` declaration; an inlined call has no frame of its own in a
+  backtrace. `CLAMIGA_NO_LOCAL_INLINE=1` turns it off process-wide.
+  See `tests/test_local_inline.sh` for what is and is not inlined.
 - **`type`, `ftype`, `ignore`, `ignorable`, `dynamic-extent`** — accepted but
   currently no-ops (no type propagation, unused-variable warnings, or
   stack-allocation).

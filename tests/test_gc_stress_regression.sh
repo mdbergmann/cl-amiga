@@ -5016,14 +5016,16 @@ check_absent   "no corruption diagnostics from the lambda name hand-off" \
 # it has to be re-derived from the GC-protected binding cursor.  A stale offset
 # there is a garbage symbol in bc->name: a wrong name in every backtrace, or a
 # crash printing one.  The method half goes through DEFMETHOD's NAMED-LAMBDA
-# expansion, which is compiled and named on the same path.
+# expansion, which is compiled and named on the same path.  The #' references
+# keep the locals closures: a non-escaping local function is compiled inline
+# and has no bc->name to check (tests/test_local_inline.sh).
 cat > "$WORK/localname.lisp" <<'EOF'
 (defun ln-flet ()
   (flet ((ln-flet-local () (ext:backtrace)))
-    (let ((r (ln-flet-local))) r)))
+    (let ((r (funcall #'ln-flet-local))) r)))
 (defun ln-labels ()
   (labels ((ln-labels-local () (let ((r (funcall (lambda () (ext:backtrace))))) r)))
-    (let ((r (ln-labels-local))) r)))
+    (let ((r (funcall #'ln-labels-local))) r)))
 (defgeneric ln-gf (x))
 (defmethod ln-gf ((x integer)) (ext:backtrace))
 (format t "LN:~a/~a/~a/~a~%"

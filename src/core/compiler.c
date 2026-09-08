@@ -311,6 +311,26 @@ CL_OptimizeSettings cl_optimize_global   = {1, 1, 1, 1};
  * on (3) and fully off (0) and compare results. */
 int cl_optimize_force_speed = -1;
 
+/* Local-function inlining switch — see compiler_internal.h; main.c clears
+ * it for CLAMIGA_NO_LOCAL_INLINE=1. */
+int cl_local_inline_enabled = 1;
+
+/* A reference to an inlined FLET/LABELS function that the escape analysis
+ * did not foresee (compile_flet's scan ran over a macro that expanded
+ * differently, or a symbol-macro it could not see through).  There is no
+ * closure to load, so say exactly what happened and how to get one. */
+static void inline_local_misuse(CL_Compiler *c, CL_Obj name, const char *how)
+{
+    CL_UNUSED(c);
+    cl_error(CL_ERR_GENERAL,
+             "Compiler: local function %s was compiled inline (it keeps no "
+             "closure), but %s reached the compiler after the analysis had "
+             "ruled that out — usually a macro that expands differently on "
+             "each expansion.  Add (declare (notinline %s)) to the FLET/LABELS "
+             "body to keep a real closure.",
+             cl_symbol_name(name), how, cl_symbol_name(name));
+}
+
 /* Seed a freshly pushed compiler's effective optimize settings: inherit
  * from the immediately enclosing compiler in the active chain, or from the
  * proclaimed baseline when COMP is the root of a fresh top-level compile
@@ -4290,14 +4310,20 @@ static void compile_function(CL_Compiler *c, CL_Obj form)
     if (CL_CONS_P(name) && cl_car(name) == SYM_LAMBDA) {
         compile_lambda(c, name);
     } else if (CL_SYMBOL_P(name)) {
-        int fun_slot = cl_env_lookup_local_fun(c->env, name);
-        if (fun_slot >= 0) {
+        int fun_idx = cl_env_lookup_local_fun_index(c->env, name);
+        if (fun_idx >= 0 && !CL_NULL_P(c->env->local_funs[fun_idx].inline_body))
+            inline_local_misuse(c, name, "a #' (FUNCTION) reference");
+        if (fun_idx >= 0) {
+            int fun_slot = c->env->local_funs[fun_idx].slot;
             cl_emit(c, OP_LOAD);
             cl_emit(c, (uint8_t)fun_slot);
             if (c->env->boxed[fun_slot])
                 cl_emit(c, OP_CELL_REF);
         } else if (c->env) {
-            int uv_idx = cl_env_resolve_fun_upvalue(c->env, name);
+            int uv_idx;
+            if (cl_env_parent_fun_is_inline(c->env, name))
+                inline_local_misuse(c, name, "a #' (FUNCTION) reference from inside a nested closure");
+            uv_idx = cl_env_resolve_fun_upvalue(c->env, name);
             if (uv_idx >= 0) {
                 cl_emit(c, OP_UPVAL);
                 cl_emit(c, (uint8_t)uv_idx);
@@ -4779,14 +4805,26 @@ static void compile_call(CL_Compiler *c, CL_Obj form)
      * symbol's binding is read at call time, so redefinition still takes
      * effect).  global_sym_idx >= 0 records that shape for the emit below. */
     if (CL_SYMBOL_P(func)) {
-        int fun_slot = cl_env_lookup_local_fun(c->env, func);
-        if (fun_slot >= 0) {
+        int fun_idx = cl_env_lookup_local_fun_index(c->env, func);
+        if (fun_idx >= 0 && !CL_NULL_P(c->env->local_funs[fun_idx].inline_body)) {
+            /* A non-escaping local function keeps no closure: the call IS
+             * its body, compiled in place (compiler_special.c).  It leaves
+             * in_tail and mv_state as the body's compile set them. */
+            compile_local_inline_call(c, fun_idx, args, saved_tail);
+            CL_GC_UNPROTECT(1);  /* args */
+            return;
+        }
+        if (fun_idx >= 0) {
+            int fun_slot = c->env->local_funs[fun_idx].slot;
             cl_emit(c, OP_LOAD);
             cl_emit(c, (uint8_t)fun_slot);
             if (c->env->boxed[fun_slot])
                 cl_emit(c, OP_CELL_REF);
         } else if (c->env) {
-            int uv_idx = cl_env_resolve_fun_upvalue(c->env, func);
+            int uv_idx;
+            if (cl_env_parent_fun_is_inline(c->env, func))
+                inline_local_misuse(c, func, "a call from inside a nested closure");
+            uv_idx = cl_env_resolve_fun_upvalue(c->env, func);
             if (uv_idx >= 0) {
                 cl_emit(c, OP_UPVAL);
                 cl_emit(c, (uint8_t)uv_idx);
@@ -6216,8 +6254,11 @@ void cl_compiler_gc_mark_thread(CL_Thread *t)
             while (env) {
                 for (i = 0; i < env->local_count; i++)
                     gc_mark_obj(env->locals[i]);
-                for (i = 0; i < env->local_fun_count; i++)
+                for (i = 0; i < env->local_fun_count; i++) {
                     gc_mark_obj(env->local_funs[i].name);
+                    gc_mark_obj(env->local_funs[i].inline_body);
+                    gc_mark_obj(env->local_funs[i].inline_params);
+                }
                 for (i = 0; i < env->local_macro_count; i++) {
                     gc_mark_obj(env->local_macros[i].name);
                     gc_mark_obj(env->local_macros[i].expander);
@@ -6314,8 +6355,11 @@ void cl_compiler_gc_update_thread(CL_Thread *t, void (*update)(CL_Obj *))
             CL_CompEnv *env = c->env;
             for (i = 0; i < env->local_count; i++)
                 update(&env->locals[i]);
-            for (i = 0; i < env->local_fun_count; i++)
+            for (i = 0; i < env->local_fun_count; i++) {
                 update(&env->local_funs[i].name);
+                update(&env->local_funs[i].inline_body);
+                update(&env->local_funs[i].inline_params);
+            }
             for (i = 0; i < env->local_macro_count; i++) {
                 update(&env->local_macros[i].name);
                 update(&env->local_macros[i].expander);

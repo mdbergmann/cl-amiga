@@ -7,6 +7,89 @@ command, and results, so later runs can be compared like-for-like.
 Related: [specs/performance.md](../specs/performance.md) is the optimization
 *plan*; this file is the *measured results* log.
 
+## 2026-09-08 — Tier 4 phase 2, item 5: non-escaping local functions inlined
+
+**Context**: the follow-up to the phase-2 commit closes its open items
+([specs/performance.md](../specs/performance.md) 4.2): a `flet`/`labels`
+function the compiler proves non-escaping is compiled into each call site
+instead of a closure; the m68k JIT gets a template for the handler-case
+opcodes; the `OP_CALL_GLOBAL` constant-pool check moves under `DEBUG_VM`.
+Three binaries measured in the SAME session on a quiet machine: the
+phase-2 tree (`563983cc`, a `git worktree`), that tree plus every change
+except the `vm.c` gating ("novm"), and the full tree.
+
+**Environment**: Apple M3 Ultra, macOS 26.6.2, `--heap 64M`; every run
+compiled `trunk/bench-prims.lisp` from source (the FASL cache entry was
+deleted before each run), minimum of 5 interleaved runs per binary,
+absolute ns (baseline 25.0 ns in all three).  Rows that moved by 3 ns or
+more:
+
+| row | phase 2 | novm | item 5 | delta |
+| --- | ---: | ---: | ---: | ---: |
+| flet-call | 73 | 49 | 49 | **−24** |
+| gf-around+primary | 476 | 464 | 462 | −14 (spread ±15) |
+| gf-call-next-method | 484 | 472 | 466 | −18 (spread ±15) |
+| make-instance-2init | 2,716 | 2,779 | 2,704 | −12 (spread ±60) |
+
+Every other row is within ±2 ns; the call rows (`call-1arg` 40, `call-3arg`
+48, `funcall-closure` 40) are identical across the three binaries, i.e. the
+`DEBUG_VM` gating of the constant-pool check is not measurable on the host
+(the 68020 saves three compares per interpreted global call).  `flet-call`
+— `(flet ((h (x) (if x i x))) (h i))` — is now the body alone: no closure
+allocation on entry, no frame, no `OP_RET`.  The three heavy CLOS rows
+moved less than their run-to-run spread and nothing on those paths is a
+`flet` (`defmethod` expands to a `named-lambda`; `call-next-method` is a
+global function), so they are not attributed to this change.
+
+**A measurement trap worth recording**: a first pass of this table showed
+every row +5–6 ns except the empty loop.  It was contention — a unit-test
+binary was being rebuilt and run on the same machine during runs 2–5 —
+and it looked exactly like a layout regression.  A source-compiled and a
+FASL-loaded run of the same file also time the same (checked as part of
+the rerun), so "FASL-loaded code is slower" is not a thing either.
+
+**What the sento pinned/tell cell is bound by** (the question the phase-2
+entry below left open).  `trunk/sento-bench-loadthreads.lisp` runs the
+cell over a producer-count sweep, everything else as in the matrix
+(`:num-shared-workers 8`, `:duration 5`, `:num-iterations 6`, warm cache,
+`--heap 192M`, this binary, quiet machine):
+
+| producers (`:load-threads`) | AVG msg/s | MEDIAN | MIN | MAX | GC share |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 286,970 | 271,495 | 263,098 | 366,989 | 1.0% |
+| 2 | 191,665 | 190,193 | 180,042 | 201,220 | 1.4% |
+| 4 | 188,315 | 186,248 | 179,958 | 195,913 | 1.4% |
+| 8 | 266,679 | 257,826 | 253,606 | 290,000 | 1.2% |
+
+The rate does not grow with the producers — one producer already reaches
+the highest rate, so the producer side is not the limit; the collector
+is not either (1–1.4% of wall time, stop-the-world 0–52 ms per 31 s).
+The consumer is: at one producer the actor thread handles a message every
+~3.5 µs, which is what the phase-1 profile's ~1,450 bytecodes per message
+cost at ~2.4 ns each — the message path is VM-bound, so phase 3's
+superinstructions will move this number.  The dip at 2–4 producers (−35%)
+is a queue hand-off effect, not VM work: with `:wait-if-queue-larger-than
+10000` several producers alternately overfill and drain the one message
+box, so the consumer sleeps and wakes on the condition variable per
+burst; with one producer the queue stays populated, with eight it is
+always full, and in both cases the consumer never sleeps.  This is
+why the 4-producer configuration used as the phase-2 gate stayed flat
+while the CPU time per run fell 10%: that cell measures the hand-off
+pattern, not the consumer.  **Use `:load-threads 1` (or 8) as the phase-3
+acceptance cell**; the 1-producer median (271k) is the consumer's number.
+
+**Gates**: `make test` (incl. `tests/test_local_inline.sh`, 72 checks),
+`make test-gc-stress`, `make test-memleak`, `make -f Makefile.cross
+test-amiga` (see the follow-up commit message for the counts).
+
+**Reproduce**: `git worktree add --detach /tmp/base 563983cc && (cd
+/tmp/base && make host)`; then per run `find ~/.cache/common-lisp -name
+bench-prims.fasl -delete` before `clamiga --no-userinit --heap 64M
+--non-interactive --load trunk/bench-prims.lisp`, alternating binaries,
+and take the minimum per row.
+
+---
+
 ## 2026-09-08 — Tier 4 phase 2 landed: call and unwind protocol
 
 **Context**: results for [specs/performance.md](../specs/performance.md) 4.2

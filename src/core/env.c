@@ -15,6 +15,10 @@ CL_CompEnv *cl_env_create(CL_CompEnv *parent)
     memset(env->boxed, 0, sizeof(env->boxed));
     env->upvalue_count = 0;
     env->local_fun_count = 0;
+    env->hide_local_lo = env->hide_local_hi = 0;
+    env->hide_fun_lo = env->hide_fun_hi = 0;
+    env->hide_macro_lo = env->hide_macro_hi = 0;
+    env->hide_smacro_lo = env->hide_smacro_hi = 0;
 
     /* Inherit macrolet and symbol-macrolet bindings from parent scope.
      * Per CL spec, these are lexically scoped and visible in nested lambdas. */
@@ -50,7 +54,8 @@ CL_CompEnv *cl_env_create(CL_CompEnv *parent)
                 int threshold = (i < parent->inherited_symbol_macro_count)
                     ? 0 : parent->symbol_macros[i].local_count_at_create;
                 for (j = parent->local_count - 1; j >= threshold; j--) {
-                    if (parent->locals[j] == sm_name) {
+                    if (CL_ENV_LOCAL_VISIBLE(parent, j) &&
+                        parent->locals[j] == sm_name) {
                         is_locally_shadowed = 1;
                         break;
                     }
@@ -89,6 +94,12 @@ int cl_env_lookup(CL_CompEnv *env, CL_Obj symbol)
 {
     int i;
     for (i = env->local_count - 1; i >= 0; i--) {
+        if (i < env->hide_local_hi && i >= env->hide_local_lo) {
+            /* Hidden band (an inlined local function's body is being
+             * compiled — see env.h): skip straight below it. */
+            i = env->hide_local_lo;
+            continue;
+        }
         if (env->locals[i] == symbol) return i;
     }
     return -1;
@@ -167,19 +178,47 @@ int cl_env_resolve_upvalue(CL_CompEnv *env, CL_Obj symbol)
 
 int cl_env_add_local_fun(CL_CompEnv *env, CL_Obj name, int slot)
 {
+    CL_LocalFun *lf;
     if (env->local_fun_count >= CL_MAX_LOCAL_FUNS) return -1;
-    env->local_funs[env->local_fun_count].name = name;
-    env->local_funs[env->local_fun_count].slot = slot;
+    lf = &env->local_funs[env->local_fun_count];
+    lf->name = name;
+    lf->slot = slot;
+    lf->inline_body = CL_NIL;
+    lf->inline_params = CL_NIL;
+    lf->def_local_mark = lf->def_fun_mark = 0;
+    lf->def_macro_mark = lf->def_smacro_mark = 0;
+    lf->def_block_mark = lf->def_tagbody_mark = 0;
     return env->local_fun_count++;
+}
+
+int cl_env_lookup_local_fun_index(CL_CompEnv *env, CL_Obj name)
+{
+    int i;
+    for (i = env->local_fun_count - 1; i >= 0; i--) {
+        if (i < env->hide_fun_hi && i >= env->hide_fun_lo) {
+            i = env->hide_fun_lo;   /* hidden band — see env.h */
+            continue;
+        }
+        if (env->local_funs[i].name == name) return i;
+    }
+    return -1;
 }
 
 int cl_env_lookup_local_fun(CL_CompEnv *env, CL_Obj name)
 {
-    int i;
-    for (i = env->local_fun_count - 1; i >= 0; i--) {
-        if (env->local_funs[i].name == name) return env->local_funs[i].slot;
+    int i = cl_env_lookup_local_fun_index(env, name);
+    return i >= 0 ? env->local_funs[i].slot : -1;
+}
+
+int cl_env_parent_fun_is_inline(CL_CompEnv *env, CL_Obj name)
+{
+    CL_CompEnv *e = env ? env->parent : NULL;
+    while (e) {
+        int i = cl_env_lookup_local_fun_index(e, name);
+        if (i >= 0) return !CL_NULL_P(e->local_funs[i].inline_body);
+        e = e->parent;
     }
-    return -1;
+    return 0;
 }
 
 int cl_env_add_local_macro(CL_CompEnv *env, CL_Obj name, CL_Obj expander)
@@ -194,6 +233,10 @@ CL_Obj cl_env_lookup_local_macro(CL_CompEnv *env, CL_Obj name)
 {
     int i;
     for (i = env->local_macro_count - 1; i >= 0; i--) {
+        if (i < env->hide_macro_hi && i >= env->hide_macro_lo) {
+            i = env->hide_macro_lo;   /* hidden band — see env.h */
+            continue;
+        }
         if (env->local_macros[i].name == name)
             return env->local_macros[i].expander;
     }
@@ -219,6 +262,10 @@ int cl_env_lookup_symbol_macro_p(CL_CompEnv *env, CL_Obj name, CL_Obj *out)
 {
     int i;
     for (i = env->symbol_macro_count - 1; i >= 0; i--) {
+        if (i < env->hide_smacro_hi && i >= env->hide_smacro_lo) {
+            i = env->hide_smacro_lo;   /* hidden band — see env.h */
+            continue;
+        }
         if (env->symbol_macros[i].name != name) continue;
         /* Locally-added symbol-macro (added via symbol-macrolet in this env).
          * Per CLHS, a lexical variable binding (LET, LET-star, a lambda list,
@@ -239,7 +286,8 @@ int cl_env_lookup_symbol_macro_p(CL_CompEnv *env, CL_Obj name, CL_Obj *out)
         {
             int j;
             for (j = 0; j < env->local_count; j++) {
-                if (env->locals[j] == name) return 0;
+                if (CL_ENV_LOCAL_VISIBLE(env, j) && env->locals[j] == name)
+                    return 0;
             }
         }
         if (out) *out = env->symbol_macros[i].expansion;
@@ -277,6 +325,10 @@ CL_Obj cl_build_lex_env(CL_CompEnv *env)
         CL_Obj name = env->local_macros[i].name;
         CL_Obj expander = env->local_macros[i].expander;
         CL_Obj inner, pair;
+        if (i < env->hide_macro_hi && i >= env->hide_macro_lo) {
+            i = env->hide_macro_lo;   /* hidden band — see env.h */
+            continue;
+        }
         CL_GC_PROTECT(name);
         CL_GC_PROTECT(expander);
         inner = cl_cons(name, expander);
@@ -299,12 +351,20 @@ CL_Obj cl_build_lex_env(CL_CompEnv *env)
         CL_Obj name = env->symbol_macros[i].name;
         CL_Obj expansion = env->symbol_macros[i].expansion;
 
+        if (i < env->hide_smacro_hi && i >= env->hide_smacro_lo) {
+            i = env->hide_smacro_lo;   /* hidden band — see env.h */
+            continue;
+        }
+
         /* Inherited entries are shadowed by a local of the same name. */
         if (i < env->inherited_symbol_macro_count) {
             int j;
             int shadowed = 0;
             for (j = 0; j < env->local_count; j++) {
-                if (env->locals[j] == name) { shadowed = 1; break; }
+                if (CL_ENV_LOCAL_VISIBLE(env, j) && env->locals[j] == name) {
+                    shadowed = 1;
+                    break;
+                }
             }
             if (shadowed) continue;
         }
