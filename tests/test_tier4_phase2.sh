@@ -36,11 +36,14 @@
 #      literal-keyword call into a positional %MAKE-STRUCT: argument
 #      evaluation order, duplicate / unknown / :allow-other-keys keys,
 #      non-constant init-forms, :include, FUNCALL / APPLY, dynamic keys.
-#   7. CALL-NEXT-METHOD / NEXT-METHOD-P run on a per-EMF method vector and
+#   7. CALL-NEXT-METHOD / NEXT-METHOD-P run on a per-EMF method list and
 #      ONE special (*CNM*): :around / :before / :after ordering, explicit
 #      arguments, "No next method", nested generic calls, auxiliary methods
 #      seeing no next method, multiple values, long-form method
 #      combinations, threads, redefinition.
+#   8. A debugger abort to top level (:q) drops the value records of the
+#      UNWIND-PROTECT cleanups it abandons (needs expect(1); skipped
+#      otherwise).
 
 CLAMIGA="${1:-build/host/clamiga}"
 
@@ -612,6 +615,63 @@ check_contains "method redefinition rebuilds the chain"        "R7o (:AO (:AT :R
 check_contains "print-object call-next-method"                 "R7p \"#<\"\|R7p \"#S\"" "$out"
 check_contains "last primary calling next is an error"         "R7q \"No next method\"" "$out"
 check_contains "t7 completes"                                  "T7-DONE" "$out"
+
+# ---------------------------------------------------------------------------
+# 8. The save stack after a debugger abort (:q / "Return to top level")
+#    jump_to_top_level resets every other per-thread stack top; it must
+#    drop the UNWIND-PROTECT value records of the cleanups it abandons
+#    too, or the save stack only grows across aborts (found by the review
+#    of the phase-2 commit).  The interactive debugger needs a real tty,
+#    so this leg runs under expect(1) and is skipped where it isn't
+#    installed (Linux CI images, MSYS2) — same as test_debugger_eof.sh.
+# ---------------------------------------------------------------------------
+EXPECT=$(command -v expect 2>/dev/null || true)
+if [ -z "$EXPECT" ]; then
+    echo "  SKIP  save stack dropped across debugger :q (expect(1) not on PATH)"
+else
+cat > "$WORK/t8.exp" <<'EOF'
+set timeout 60
+spawn [lindex $argv 0] --no-userinit --no-color
+expect {
+    "COMMON-LISP-USER>" {}
+    timeout { puts "T8FAIL: no REPL prompt"; exit 1 }
+}
+# 50 nested cleanups, each with a 20-value record parked while it runs
+# (50 x 21 words of the 2048-word stack); the innermost one lands in the
+# debugger.
+send "(defun p2-park (n err) (unwind-protect (values 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20) (if (> n 0) (p2-park (1- n) err) (when err (error \"park\")))))\r"
+expect {
+    "COMMON-LISP-USER>" {}
+    timeout { puts "T8FAIL: defun did not return"; exit 1 }
+}
+send "(p2-park 49 t)\r"
+expect {
+    "Debug>" {}
+    timeout { puts "T8FAIL: no Debug> prompt"; exit 1 }
+}
+send ":q\r"
+expect {
+    "COMMON-LISP-USER>" {}
+    timeout { puts "T8FAIL: no prompt after :q"; exit 1 }
+}
+# A second nest of the same size overflows the stack if the first one's
+# records were never dropped.  The marker is assembled at run time so the
+# echoed input line cannot match it.
+send "(format t \"~%~A ~S~%\" (concatenate 'string \"R8\" \"a\") (handler-case (progn (p2-park 49 nil) :ok) (error (e) (if (search \"value-save stack overflow\" (princ-to-string e)) :leaked (princ-to-string e)))))\r"
+expect {
+    "R8a :OK" { puts "T8PASS" }
+    "R8a :LEAKED" { puts "T8FAIL: save stack leaked across :q"; exit 1 }
+    "R8a " { puts "T8FAIL: unexpected error after :q"; exit 1 }
+    eof { puts "T8FAIL: REPL died"; exit 1 }
+    timeout { puts "T8FAIL: no result after :q"; exit 1 }
+}
+send "\x04"
+expect { eof {} timeout {} }
+exit 0
+EOF
+out=$("$EXPECT" -f "$WORK/t8.exp" "$CLAMIGA" 2>&1)
+check_contains "save stack dropped across debugger :q"         "T8PASS" "$out"
+fi
 
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

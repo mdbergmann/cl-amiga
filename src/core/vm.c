@@ -2784,10 +2784,14 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             VM_POLL_BREAK();
             VM_REQUIRE_CONSTANTS_IDX("OP_CALL_GLOBAL", sym_idx);
             sym = constants[sym_idx];
-            /* Validate sym is a valid symbol before dereferencing — same
-             * check OP_FLOAD performs on the identical constant-pool
-             * resolution, kept unconditionally (not DEBUG_VM-gated) because
-             * it has caught real GC corruption on that path. */
+            /* The constant-pool validation OP_FLOAD performs, kept
+             * unconditional here as well (review decision, 2026-09-08):
+             * the compiler only ever stores the call head's symbol in this
+             * slot, so a non-symbol means heap corruption, and without the
+             * check `s->function` below dereferences a wild pointer — on
+             * AmigaOS with no memory protection to catch it.  Measured
+             * within noise on the host (bench-prims min-of-5 either way);
+             * the three compares per global call on a 68020 are the price. */
             if (!CL_HEAP_P(sym) || sym >= cl_heap.arena_size ||
                 CL_HDR_TYPE(CL_OBJ_TO_PTR(sym)) != TYPE_SYMBOL) {
                 fprintf(stderr, "[VM] CALL_GLOBAL: constant[%d] = 0x%08x is NOT a symbol "

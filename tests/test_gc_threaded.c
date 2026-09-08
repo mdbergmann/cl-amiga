@@ -1253,6 +1253,39 @@ TEST(concurrent_gc_vs_map_error_unwind)
 }
 
 /* ================================================================
+ * Regression: the UNWIND-PROTECT value save stack (Tier-4 phase 2,
+ * OP_MV_SAVE) is a per-thread root table that gc_mark_thread_roots and
+ * gc_update_thread_roots walk up to mv_save_top, so
+ * cl_thread_reset_lisp_state — the heap re-init and image-restore reset
+ * of every registered thread — must clear mv_save_top like the other
+ * root tops.  A record left in flight (a cleanup was running when the
+ * heap went away) would otherwise be walked as stale offsets into the
+ * freed arena.  Caught by the commit's review; this pins the invariant.
+ * ================================================================ */
+
+TEST(mv_save_top_reset_on_heap_reinit)
+{
+    CL_Thread *t = cl_current_thread;
+
+    /* Park one record by hand: two values, then the fixnum-tagged count. */
+    t->mv_save_buf[0] = CL_MAKE_FIXNUM(1);
+    t->mv_save_buf[1] = CL_MAKE_FIXNUM(2);
+    t->mv_save_buf[2] = CL_MAKE_FIXNUM(2);
+    t->mv_save_top = 3;
+    cl_thread_reset_lisp_state(t);
+    ASSERT_EQ_INT(t->mv_save_top, 0);
+
+    /* The re-init path resets every registered thread through it. */
+    t->mv_save_top = 3;
+    cl_mem_shutdown();
+    cl_mem_init(512 * 1024);
+    ASSERT_EQ_INT(cl_current_thread->mv_save_top, 0);
+
+    cl_mem_shutdown();
+    cl_mem_init(4 * 1024 * 1024);
+}
+
+/* ================================================================
  * Regression: shared C-global Lisp tables must be reset by cl_mem_init.
  *
  * gc_mark marks a set of shared globals DIRECTLY (package registry,
@@ -1730,6 +1763,7 @@ int main(void)
     /* Regression: unconditionally-marked shared Lisp globals (package
      * registry, compiler tables, ...) must be reset on heap re-init */
     RUN(shared_tables_reset_on_heap_reinit);
+    RUN(mv_save_top_reset_on_heap_reinit);
 
     /* Regression: cl_lock_alloc_obj's `name` must survive the moving
      * cl_gc_reclaim_young()/cl_gc() retries on lock-table exhaustion */

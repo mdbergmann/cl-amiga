@@ -251,6 +251,10 @@ static void jump_to_top_level(void)
     cl_gc_reset_roots();
     cl_vm.sp = 0;
     cl_vm.fp = 0;
+    /* The UNWIND-PROTECT value records of the cleanups this abandons
+     * (OP_MV_SAVE) would otherwise stay parked for the rest of the
+     * session — the save stack only ever grew across :q. */
+    CT->mv_save_top = 0;
 
     if (cl_error_frame_top > 0) {
         int code = cl_error_code;

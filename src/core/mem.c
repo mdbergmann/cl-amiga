@@ -903,16 +903,8 @@ void cl_mem_init(uint32_t heap_size)
      * a pre-re-init cl_error pointing into the fresh arena. */
     {
         CL_Thread *rt;
-        for (rt = cl_thread_list; rt; rt = rt->next) {
+        for (rt = cl_thread_list; rt; rt = rt->next)
             cl_thread_reset_lisp_state(rt);
-            /* cl_thread_reset_lisp_state (thread.c) predates the Tier-4
-             * phase-2 mv_save stack and does not clear mv_save_top yet —
-             * reset it here too, otherwise a nonzero mv_save_top left by an
-             * in-flight OP_MV_SAVE record is a stale offset into the just-
-             * freed arena that gc_mark_thread_roots/gc_update_thread_roots
-             * will walk once the fresh heap's bump front grows past it. */
-            rt->mv_save_top = 0;
-        }
     }
     /* Drop any grown mark stack from a previous heap: the growth cap is
      * derived from the (possibly different) new arena size, and unit tests

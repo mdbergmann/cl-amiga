@@ -1170,6 +1170,7 @@ void cl_thread_reset_lisp_state(CL_Thread *t)
     t->pending_value = CL_NIL;
     t->pending_mv_count = 0;
     t->saved_pending_top = 0;
+    t->mv_save_top = 0;   /* UNWIND-PROTECT value records (mv_save_buf) */
     t->pending_lambda_name = CL_NIL;
     t->name = CL_NIL;
     t->result = CL_NIL;
