@@ -65,13 +65,14 @@ static uint32_t hash_string_ci(const char *str, uint32_t len)
     return hash;
 }
 
-#ifdef CL_WIDE_STRINGS
-/* Content hash for a wide (or any) Lisp string, per code point.  Must agree
- * with cl_hash_string/hash_string_ci for ASCII content: keys_equal compares a
- * wide "abc" and a narrow "abc" as EQUAL, so both must land in the same
+/* Content hash for any Lisp string representation, per code point: wide
+ * strings, and adjustable / fill-pointer character vectors (CL_STRING_VECTOR_P,
+ * hashed over the active length).  Must agree with cl_hash_string /
+ * hash_string_ci for ASCII content: keys_equal compares a wide "abc", a
+ * fill-pointer "abc" and a narrow "abc" as EQUAL, so all must land in the same
  * bucket.  XORing the low byte of each code point achieves that (collisions
  * between distinct wide chars are fine — only equal-must-hash-equal matters). */
-static uint32_t hash_wide_string(CL_Obj s, int ci)
+static uint32_t hash_string_content(CL_Obj s, int ci)
 {
     uint32_t hash = 0;
     uint32_t i, len = cl_string_length(s);
@@ -82,7 +83,6 @@ static uint32_t hash_wide_string(CL_Obj s, int ci)
     }
     return hash;
 }
-#endif
 
 /* Content hash for a bit-vector over its active length, used under EQUAL —
  * keys_equal compares bit-vectors elementwise under EQUAL (CLHS), so the hash
@@ -228,8 +228,17 @@ static uint32_t hash_obj(CL_Obj obj, uint32_t test)
             /* keys_equal content-compares wide strings under EQUAL/EQUALP —
              * an identity hash made equal keys un-findable after the first
              * rehash/collision (AH5). */
-            return hash_wide_string(obj, test == CL_HT_TEST_EQUALP);
+            return hash_string_content(obj, test == CL_HT_TEST_EQUALP);
 #endif
+        if (CL_STRING_VECTOR_P(obj))
+            /* Adjustable / fill-pointer character vector: a STRING per CLHS,
+             * and keys_equal content-compares it against base/wide strings
+             * under EQUAL/EQUALP (a JSON parser's VECTOR-PUSH-EXTEND key
+             * buffer looked up with a literal), so it must hash like one —
+             * and like base strings it hashes as a string under EQUALP too,
+             * not via the type-blind vector path below, which would fold in
+             * length and first element only and never match a literal key. */
+            return hash_string_content(obj, test == CL_HT_TEST_EQUALP);
         if ((type == TYPE_VECTOR || type == TYPE_BIT_VECTOR ||
              type == TYPE_BYTE_VECTOR) && test == CL_HT_TEST_EQUALP) {
             /* EQUALP descends general/bit/byte vectors alike (keys_equal) —
@@ -330,7 +339,12 @@ static int keys_equal(CL_Obj a, CL_Obj b, uint32_t test)
         return ((CL_DoubleFloat *)CL_OBJ_TO_PTR(a))->value ==
                ((CL_DoubleFloat *)CL_OBJ_TO_PTR(b))->value;
 
-    if (CL_ANY_STRING_P(a) && CL_ANY_STRING_P(b)) {
+    /* Strings in every representation — base, wide, and adjustable /
+     * fill-pointer character vectors — compare elementwise (CLHS EQUAL on
+     * strings; EQUALP case-insensitively).  cl_string_length/char_at handle
+     * all three, and hash_obj hashes all three by content. */
+    if ((CL_ANY_STRING_P(a) || CL_STRING_VECTOR_P(a)) &&
+        (CL_ANY_STRING_P(b) || CL_STRING_VECTOR_P(b))) {
         uint32_t la = cl_string_length(a), lb = cl_string_length(b);
         uint32_t i;
         if (la != lb) return 0;

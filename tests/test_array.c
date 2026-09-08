@@ -884,6 +884,32 @@ TEST(equal_string_vs_char_vector)
         "                     :initial-contents '(#\\a #\\b #\\d)))"), "NIL");
 }
 
+TEST(fill_pointer_string_as_equal_hash_key)
+{
+    /* Regression: a fill-pointer character vector is a STRING, and EQUAL
+       says T against a literal of the same content (above) -- so SXHASH must
+       agree (CLHS: EQUAL implies equal SXHASH) and an EQUAL / EQUALP hash
+       table must find the key from either side.  It hashed by identity
+       (EQUAL) or via the type-blind vector path (EQUALP), so a key built with
+       VECTOR-PUSH-EXTEND (a JSON parser's object key) was never found by a
+       literal lookup. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((k (make-array 2 :element-type 'character"
+        "                       :adjustable t :fill-pointer 0)))"
+        "  (vector-push-extend #\\a k)"
+        "  (vector-push-extend #\\b k)"
+        "  (list (= (sxhash k) (sxhash \"ab\"))"
+        "        (let ((h (make-hash-table :test 'equal)))"
+        "          (setf (gethash k h) 1)"
+        "          (gethash \"ab\" h))"
+        "        (let ((h (make-hash-table :test 'equal)))"
+        "          (setf (gethash \"ab\" h) 2)"
+        "          (gethash k h))"
+        "        (let ((h (make-hash-table :test 'equalp)))"
+        "          (setf (gethash k h) 3)"
+        "          (gethash \"AB\" h))))"), "(T 1 2 3)");
+}
+
 /* ============================================================ */
 /* adjust-array                                                 */
 /* ============================================================ */
@@ -1532,6 +1558,7 @@ int main(void)
     RUN(vector_push_extend_nonadjustable_character);
     RUN(vector_push_extend_nonadjustable_character_equal);
     RUN(equal_string_vs_char_vector);
+    RUN(fill_pointer_string_as_equal_hash_key);
 
     /* Adjust */
     RUN(adjust_array_grow);

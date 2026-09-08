@@ -611,21 +611,27 @@ static CL_Obj bi_close(CL_Obj *args, int n)
 /* (make-string-input-stream string &optional start end) */
 static CL_Obj bi_make_string_input_stream(CL_Obj *args, int n)
 {
-    CL_String *str;
-    uint32_t start = 0, end;
+    uint32_t start = 0, end, slen;
 
-    if (!CL_ANY_STRING_P(args[0]))
+    /* CLHS: STRING is any string, which includes an adjustable /
+     * fill-pointer character vector (CL_STRING_VECTOR_P) -- the buffer
+     * shape a parser builds with VECTOR-PUSH-EXTEND and then hands to
+     * READ-FROM-STRING (yason's parse-number does exactly that).  The
+     * stream reads through cl_string_char_at, which already handles that
+     * representation; only this entry check and the length lookup were
+     * base/wide-string only.  The active length honors the fill pointer. */
+    if (!CL_ANY_STRING_P(args[0]) && !CL_STRING_VECTOR_P(args[0]))
         cl_error(CL_ERR_TYPE, "MAKE-STRING-INPUT-STREAM: argument is not a string");
-    str = (CL_String *)CL_OBJ_TO_PTR(args[0]);
-    end = str->length;
+    slen = cl_string_length(args[0]);
+    end = slen;
 
     if (n >= 2 && CL_FIXNUM_P(args[1]))
         start = (uint32_t)CL_FIXNUM_VAL(args[1]);
     if (n >= 3 && !CL_NULL_P(args[2]) && CL_FIXNUM_P(args[2]))
         end = (uint32_t)CL_FIXNUM_VAL(args[2]);
 
-    if (start > str->length) start = str->length;
-    if (end > str->length) end = str->length;
+    if (start > slen) start = slen;
+    if (end > slen) end = slen;
 
     {
         CL_Obj s = cl_make_string_input_stream(args[0], start, end);

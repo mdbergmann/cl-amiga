@@ -4283,6 +4283,31 @@ TEST(eval_with_input_from_string_index_start_end)
     ASSERT_STR_EQ(buf, "12");
 }
 
+/* Regression: MAKE-STRING-INPUT-STREAM (and with it READ-FROM-STRING and
+ * WITH-INPUT-FROM-STRING) must accept every string, including an adjustable
+ * fill-pointer character vector -- CLHS "string" covers it and STRINGP says T.
+ * The entry check only knew base/wide strings, so a buffer built with
+ * VECTOR-PUSH-EXTEND and handed to READ-FROM-STRING (yason's parse-number)
+ * failed with "argument is not a string".  The stream's extent is the fill
+ * pointer, not the vector's capacity. */
+TEST(eval_string_input_stream_accepts_fill_pointer_string)
+{
+    char buf[64];
+    CL_Obj r;
+    r = cl_eval_string(
+        "(let ((b (make-array 8 :element-type 'character"
+        "                       :adjustable t :fill-pointer 0)))"
+        "  (vector-push-extend #\\4 b)"
+        "  (vector-push-extend #\\2 b)"
+        "  (list (stringp b)"
+        "        (read-from-string b)"
+        "        (with-input-from-string (s b) (read-char s))"
+        "        (let ((s (make-string-input-stream b)))"
+        "          (read-char s) (read-char s) (read-char s nil :eof))))");
+    cl_prin1_to_string(r, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(T 42 #\\4 :EOF)");
+}
+
 /* Regression: FILE-POSITION on a string input stream must discount a
  * pushed-back character (PEEK-CHAR / UNREAD-CHAR).  PEEK-CHAR reads ahead and
  * stashes the char, advancing st->position; the logical read position is one
@@ -4929,6 +4954,7 @@ int main(void)
 
     RUN(eval_get_dispatch_macro_character_conformance);
     RUN(eval_with_input_from_string_index_start_end);
+    RUN(eval_string_input_stream_accepts_fill_pointer_string);
     RUN(eval_file_position_accounts_for_peek);
     RUN(eval_file_position_start_end_designators);
     RUN(eval_file_position_start_honors_stream_start_offset);
