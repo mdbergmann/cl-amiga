@@ -11194,6 +11194,41 @@ y" 1))
     (dotimes (i 5000) (setq acc (list i (cons i i) (list i i i))))
     (length acc)))
 
+; A class metaobject REPLACED by a different object under an unchanged name
+; (a metaclass change) must not stay served from a warm GF cache.  Because
+; %GF-IC-EMF validates its entry by class NAME rather than by looking the
+; name up in *CLASS-TABLE* on every dispatch, it now relies on class
+; registration clearing every GF's cache — %FINALIZE-AND-REGISTER-CLASS does
+; that, and this pins it.
+;
+; No method is (re)installed on T4-RC-TAG after the swap: %INSTALL-METHOD-IN-GF
+; clears its own GF's cache on every ADD-METHOD, which would mask a broken
+; %INVALIDATE-ALL-GF-CACHES behind that unrelated clear.  Instead a FALLBACK
+; method on T is installed before the swap; the OLD class's method can never
+; apply to an instance of the genuinely-new class object, so a correctly
+; invalidated cache must fall through to slow dispatch and land on FALLBACK,
+; while a stale slot-8 entry (matched by name only) would still invoke the
+; old FIRST method directly.
+(defclass t4-mc-a (standard-class) ())
+(defclass t4-mc-b (standard-class) ())
+(defmethod validate-superclass ((c t4-mc-a) (s standard-class)) t)
+(defmethod validate-superclass ((c t4-mc-b) (s standard-class)) t)
+(defclass t4-rc () ((v :initarg :v :accessor t4-rc-v)) (:metaclass t4-mc-a))
+(defgeneric t4-rc-tag (x))
+(defmethod t4-rc-tag ((x t4-rc)) 'first)
+(defmethod t4-rc-tag ((x t)) 'fallback)
+(defvar *t4-rc* (make-instance 't4-rc :v 1))
+(check "dispatch before the class is replaced" 'first
+  (progn (dotimes (i 20) (t4-rc-tag *t4-rc*)) (t4-rc-tag *t4-rc*)))
+(defvar *t4-rc-old* (find-class 't4-rc))
+(defclass t4-rc () ((v :initarg :v :accessor t4-rc-v)) (:metaclass t4-mc-b))
+(check "class replacement allocates a new class object" nil
+  (eq *t4-rc-old* (find-class 't4-rc)))
+(defvar *t4-rc2* (make-instance 't4-rc :v 2))
+(check "a warm cache does not serve the superseded class" 'fallback
+  (t4-rc-tag *t4-rc2*))
+(check "accessors follow the new class" 2 (t4-rc-v *t4-rc2*))
+
 ; --- Exit hooks (EXT:*EXIT-HOOKS*) ---
 ; The list API here, plus one real hook registered at the bottom: it can only
 ; run from main.c's shutdown funnel, so its marker in the results log is the

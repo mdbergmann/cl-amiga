@@ -21,6 +21,11 @@
 #      classes, subclasses and method redefinition.
 #   6. OP_CONS / OP_LIST / &rest build their lists from GC-rooted stack
 #      slots — the results must be well formed at every arity.
+#   7. Because (5) validates by name, a class metaobject REPLACED by a
+#      different object under the same name must still not be served from a
+#      warm GF cache.  It is not, because class registration clears every
+#      GF's cache — an invariant this optimization now depends on, so it
+#      gets a test of its own.
 
 CLAMIGA="${1:-build/host/clamiga}"
 
@@ -318,6 +323,58 @@ check_contains "&key after required"     'L7:(1 2 3)'          "$out"
 check_contains "long &rest through APPLY" "L8:$RESTN"          "$out"
 check_contains "consing under collection pressure" 'L9:3'      "$out"
 check_contains "list case ran to completion"       'LISTS-DONE' "$out"
+
+# --- Case 7: a class REPLACED under an unchanged name ---------------------
+# %GF-IC-EMF validates its cached entry by class NAME rather than by
+# looking the name up in *CLASS-TABLE* on every dispatch, so it now RELIES
+# on an invariant it did not rely on before: whenever a class metaobject is
+# replaced by a different object under the same name, every GF's slot-8
+# cache must already have been cleared.  It is — %FINALIZE-AND-REGISTER-CLASS
+# (lib/clos.lisp) is the shared tail of both the standard and the
+# metaclass-driven creation paths and ends in %INVALIDATE-ALL-GF-CACHES —
+# but nothing else pins that, and the failure mode if it ever changes is a
+# GF silently dispatching to the superseded class's methods forever.  A
+# metaclass change is the sharpest form: it allocates a genuinely new class
+# object whose name slot still reads the same symbol.
+#
+# No method is (re)installed on RC-TAG after the swap: %INSTALL-METHOD-IN-GF
+# clears its own GF's cache on every ADD-METHOD, which would mask a broken
+# %INVALIDATE-ALL-GF-CACHES behind that unrelated clear.  Instead a FALLBACK
+# method on T is installed before the swap; the OLD class's method can never
+# apply to an instance of the genuinely-new class object, so a correctly
+# invalidated cache must fall through to slow dispatch and land on FALLBACK,
+# while a stale slot-8 entry (matched by name only) would still invoke the
+# old FIRST method directly.
+cat > "$WORK/reclass.lisp" <<EOF
+(defclass mc-a (standard-class) ())
+(defclass mc-b (standard-class) ())
+(defmethod validate-superclass ((c mc-a) (s standard-class)) t)
+(defmethod validate-superclass ((c mc-b) (s standard-class)) t)
+(defclass rc () ((v :initarg :v :accessor rc-v)) (:metaclass mc-a))
+(defgeneric rc-tag (x))
+(defmethod rc-tag ((x rc)) 'first)
+(defmethod rc-tag ((x t)) 'fallback)
+(defvar *rc* (make-instance 'rc :v 1))
+;; warm the inline cache against the FIRST class object
+(dotimes (i $GFN) (rc-tag *rc*))
+(format t "R1:~s~%" (rc-tag *rc*))
+(format t "R2:~s~%" (eq (find-class 'rc) (find-class 'rc)))
+(defvar *rc-old-class* (find-class 'rc))
+;; replace the class under the SAME name, via a metaclass change
+(defclass rc () ((v :initarg :v :accessor rc-v)) (:metaclass mc-b))
+(format t "R3:~s~%" (eq *rc-old-class* (find-class 'rc)))
+(defvar *rc2* (make-instance 'rc :v 2))
+(format t "R4:~s~%" (rc-tag *rc2*))
+(format t "R5:~s~%" (rc-v *rc2*))
+(format t "RECLASS-DONE~%")
+EOF
+out=$(run "$WORK/reclass.lisp")
+check_contains "dispatch before the class is replaced" 'R1:FIRST' "$out"
+check_contains "find-class is stable"                  'R2:T'     "$out"
+check_contains "class replacement allocates a new class object" 'R3:NIL' "$out"
+check_contains "a warm cache does not serve the superseded class" 'R4:FALLBACK' "$out"
+check_contains "accessors follow the new class"        'R5:2'     "$out"
+check_contains "class-replacement case ran to completion" 'RECLASS-DONE' "$out"
 
 echo ""
 echo "$passed passed, $failed failed, $total total"
