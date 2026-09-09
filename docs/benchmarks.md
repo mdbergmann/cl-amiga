@@ -7,6 +7,124 @@ command, and results, so later runs can be compared like-for-like.
 Related: [specs/performance.md](../specs/performance.md) is the optimization
 *plan*; this file is the *measured results* log.
 
+## 2026-09-09 — General workloads: clamiga vs ECL vs SBCL
+
+**Context**: the first comparison that is not sento-shaped.
+`trunk/bench-general.lisp` times 31 WORKLOADS — the Gabriel shapes (tak,
+fib, deriv, n-queens), sorting and list processing, hash tables, strings and
+string streams, the reader, the printer, FORMAT, fixnum / float / bignum
+arithmetic, arrays, CLOS, structs, conditions, LOOP, allocation churn — and
+runs unchanged on clamiga, ECL and SBCL.  Every row returns an integer that
+depends on all of its work, printed as `val=`; the three implementations
+must agree on it (they do, except for the bignum rows — see finding 5).
+Master at `8d8e89b3` (0.9 + Tier 4 phases 1–3), `make host`.  ECL 26.5.5
+(Homebrew, native `compile-file` output) and SBCL 2.6.8 (Homebrew, `--load`
+compiles natively).  All three at `(optimize (speed 1) (safety 1) (debug
+1))`, the setting third-party code is compiled with by default.
+
+**Environment**: Apple M3 Ultra, macOS 26.6.2, `--heap 64M`; clamiga compiled
+the file from source into a scratch FASL cache each run
+(`CLAMIGA_FASL_CACHE_DIR`).  Each row is the minimum of 5 in-process
+repetitions, and each implementation ran twice in separate processes, one
+after the other on a quiet machine (the table takes the lower of the two;
+clamiga's runs agree within 2% on every row).  A `CLAMIGA_FORCE_SPEED=3` run
+matched speed 1 on every row.
+
+| row | clamiga | ECL | SBCL | ECL/clamiga | SBCL/clamiga |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| tak | 122.0 | 33.0 | 16.3 | 3.70× | 7.48× |
+| fib | 87.0 | 44.2 | 15.3 | 1.97× | 5.69× |
+| nqueens | 71.0 | 20.8 | 14.1 | 3.41× | 5.04× |
+| deriv | 115.0 | 34.3 | 8.6 | 3.35× | 13.37× |
+| list-sort | 108.0 | 123.2 | 68.2 | 0.88× | 1.58× |
+| list-ops | 80.0 | 44.2 | 9.2 | 1.81× | 8.70× |
+| hof | 71.0 | 35.3 | 8.2 | 2.01× | 8.66× |
+| assoc | 213.0 | 7.8 | 12.4 | 27.31× | 17.18× |
+| getf | 11.0 | 7.6 | 5.9 | 1.45× | 1.86× |
+| vector-sort | 1054.0 | 6.4 | 3.0 | 164.69× | 351.33× |
+| insertion-sort | 99.0 | 29.5 | 11.9 | 3.36× | 8.32× |
+| matmul | 62.0 | 34.7 | 12.4 | 1.79× | 5.00× |
+| mandel | 49.0 | 69.1 | 8.8 | 0.71× | 5.57× |
+| float-vector | 59.0 | 49.7 | 0.7 | 1.19× | 84.29× |
+| bignum-fact | 53.0 | 20.4 | 9.0 | 2.60× | 5.89× |
+| bignum-arith | 33.0 † | 6.4 | 14.3 | (5.16×) | (2.31×) |
+| hash-fixnum | 45.0 | 36.2 | 12.0 | 1.24× | 3.75× |
+| hash-string | 77.0 | 9.0 | 2.9 | 8.56× | 26.55× |
+| string-ops | 64.0 | 86.2 | 10.3 | 0.74× | 6.21× |
+| string-stream | 65.0 | 89.9 | 16.9 | 0.72× | 3.85× |
+| char-loop | 103.0 | 3.9 | 2.0 | 26.41× | 51.50× |
+| format | 52.0 | 685.5 | 46.4 | 0.08× | 1.12× |
+| reader | 84.0 | 53.7 | 32.5 | 1.56× | 2.58× |
+| printer | 58.0 | 100.9 | 76.9 | 0.57× | 0.75× |
+| clos-dispatch | 73.0 | 33.0 | 6.1 | 2.21× | 11.97× |
+| make-instance | 84.0 | 61.7 | 0.4 | 1.36× | 210.00× |
+| struct-bst | 59.0 | 34.1 | 8.5 | 1.73× | 6.94× |
+| fixnum-loop | 170.0 | 85.0 | 12.9 | 2.00× | 13.18× |
+| loop-collect | 84.0 | 26.9 | 10.9 | 3.12× | 7.71× |
+| conditions | 61.0 | 339.7 | 10.2 | 0.18× | 5.98× |
+| alloc-churn | 79.0 | 54.2 | 12.4 | 1.46× | 6.37× |
+| **total** | **3445** | **2266** | **480** | **1.52×** | **7.18×** |
+| **geomean** |  |  |  | **2.10×** | **8.16×** |
+
+Milliseconds; a ratio above 1 means clamiga is slower.  † clamiga's
+bignum-arith cell is not comparable (finding 5).
+
+**Headline**: ECL is 1.52× faster in total and 2.10× by geometric mean, but
+the mean is carried by three pathological rows.  Without vector-sort, assoc
+and char-loop the geometric mean is 1.50× and the totals are at parity
+(clamiga 2,075 ms vs ECL 2,248 ms), because ECL's FORMAT and condition
+signalling are so slow.  The plain interpretive tax of the VM against native
+code is 2–3.7× (fixnum-loop 2.0, fib 2.0, tak 3.7, nqueens 3.4, deriv 3.4,
+insertion-sort 3.4, loop-collect 3.1).  clamiga beats ECL on seven rows:
+format 13×, conditions 5.6×, printer 1.7×, mandel 1.4×, string-stream 1.4×,
+string-ops 1.35×, list-sort 1.14×.  SBCL is 7–8× ahead overall; its
+make-instance (210×) and float-vector (84×) rows are its constructor
+optimisation and unboxed double-float arrays.
+
+**Findings** (ranked by what a fix would buy):
+
+1. **vector-sort 165×** — `bi_sort` (`builtins_sequence2.c`) sorts lists
+   with a merge sort but vectors with `vector_insertion_sort`, O(n²) with a
+   predicate call per comparison: 20,000 elements take 1,054 ms as a vector
+   and 108 ms as a list.  `stable-sort` shares the path.  A merge sort for
+   vectors (or sort-through-a-list) is the fix.
+2. **assoc 27× while getf is 1.45×** — `lib/boot.lisp` overrides the C
+   `ASSOC` with a Lisp function (keyword parsing, then `funcall #'eql` per
+   pair) to add `:test-not`/`:key`; every ASSOC in user code pays ~34 ns per
+   list element.  Same shape for RASSOC, SUBLIS, SUBST, NSUBST.  Delegating
+   to the C builtin when no keyword is supplied (or a compiler macro) would
+   recover the 27×.
+3. **char-loop 26×** — `char` and `char=` are builtin calls, not opcodes;
+   the loop body is six calls per character.
+4. **hash-string 8.6×** — EQUAL hash tables with string keys, 10,000 keys,
+   50,000 operations.
+5. **bignum division is WRONG above 4,095 bits** — `bignum.c:238` divides
+   through fixed 16-bit-limb scratch buffers (`u_buf[256], v_buf[128]`,
+   commented "should be enough for practical use"); a dividend of 4,096 bits
+   (128 32-bit words, `(expt 2 4095)` and up) or a divisor above 2,048 bits
+   silently yields quotient 0 and remainder = dividend, and `gcd` inherits
+   it.  `logand`/`logior`/`logxor` (`bignum.c:1864`) truncate at 2,048 bits
+   the same way.  `(mod (factorial 600) 1000003)` is 0 instead of 471663;
+   400! is still right.  Multiplication is unaffected (`integer-length` of
+   1000! is the correct 8,530), so bignum-fact's timing is the intended
+   workload and only its `val` is wrong; bignum-arith's `floor` bails out
+   early, so that clamiga cell is not a measurement.
+6. **bignum-fact 2.6×**, hash-fixnum 1.24×, alloc-churn 1.46×, matmul 1.8×,
+   struct-bst 1.7×, clos-dispatch 2.2×: the runtime's C paths sit close to
+   ECL; the rows dominated by bytecode do not.
+
+**Reproduce**:
+
+```
+./build/host/clamiga --no-userinit --heap 64M --non-interactive --load trunk/bench-general.lisp
+CLAMIGA_FORCE_SPEED=3 ./build/host/clamiga --no-userinit --heap 64M --non-interactive --load trunk/bench-general.lisp
+ecl --norc --eval '(progn (load (compile-file "trunk/bench-general.lisp" :output-file "/tmp/bench-general.fas")) (quit))'
+sbcl --non-interactive --no-userinit --no-sysinit --load trunk/bench-general.lisp
+# Amiga: (defparameter cl-user::*bg-scale* 1/20) before loading
+```
+
+---
+
 ## 2026-09-09 — Tier 4 phase 3 landed: superinstructions, the peephole at every speed
 
 **Context**: results for [specs/performance.md](../specs/performance.md) 4.3.

@@ -1917,7 +1917,7 @@ Compute-bound code sees the largest wins; call-heavy code is bounded by the same
 
 The Amiga test suite passes on the JIT config; per-opcode JIT coverage (counter-bump, value-correctness, and unwind-recovery assertions) lives in `tests/amiga/test-jit.lisp`.
 
-Point-in-time benchmark results (sento actor throughput on host, Amiga JIT call loop) are logged with environment and reproduction commands in [docs/benchmarks.md](docs/benchmarks.md). Two general-purpose suites live in `trunk/`: `trunk/bench.lisp` compares JIT vs. bytecode across common Lisp constructs, and `trunk/bench-opt.lisp` tracks the optimization targets from [specs/performance.md](specs/performance.md) with deterministic, result-verified micro-benchmarks (`./build/host/clamiga --heap 64M --load trunk/bench-opt.lisp`).
+Point-in-time benchmark results (sento actor throughput on host, Amiga JIT call loop) are logged with environment and reproduction commands in [docs/benchmarks.md](docs/benchmarks.md). Two general-purpose suites live in `trunk/`: `trunk/bench.lisp` compares JIT vs. bytecode across common Lisp constructs, and `trunk/bench-opt.lisp` tracks the optimization targets from [specs/performance.md](specs/performance.md) with deterministic, result-verified micro-benchmarks (`./build/host/clamiga --heap 64M --load trunk/bench-opt.lisp`). Two more are portable and run unchanged on clamiga, ECL and SBCL, so every row carries a native-compiler reference point: `trunk/bench-general.lisp` (general workloads: sorting, hashing, strings, reader/printer, CLOS, bignums, ...) and `trunk/bench-prims.lisp` (per-primitive costs); the usage lines are in each file's header and the measured tables in [docs/benchmarks.md](docs/benchmarks.md).
 
 ## Known Limitations and Future Work
 
