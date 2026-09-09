@@ -1,5 +1,6 @@
 /*
- * Bytecode peephole post-pass (spec 1.8) — gated on (optimize (speed >= 2)).
+ * Bytecode peephole post-pass (spec 1.8, superinstructions spec 4.3) —
+ * runs at (optimize (speed >= 1)), i.e. everywhere but (speed 0).
  *
  * Runs over a function's finished bytecode after the single emit pass, as a
  * decode -> rewrite -> re-encode pipeline:
@@ -9,10 +10,17 @@
  *      branch target as a basic-block boundary.
  *   2. REWRITE patterns on the instruction list (never across a boundary):
  *        - jump-to-jump threading      JMP/JNIL/JTRUE -> JMP t   ==> direct t
+ *        - jump-to-return              JMP -> RET                ==> RET
+ *        - return site                 STORE n; POP; JMP -> LOAD n; RET ==> RET
  *        - dead code                   unreachable after JMP/RET/... removed
  *        - store-then-reload           STORE n; POP; LOAD n      ==> STORE n
+ *        - dead store before return    STORE n; [MV_RESET;] RET  ==> [MV_RESET;] RET
  *        - pure-push + pop elision     CONST/NIL/T/LOAD/DUP/UPVAL; POP ==> -
  *        - not-branch fusion           NOT; JNIL t               ==> JTRUE t
+ *      then, once the above reach a fixpoint, FUSE adjacent pairs into the
+ *      superinstructions of opcodes.h (one dispatch instead of two, same
+ *      semantics — see peep_fuse for the table).  Fusion runs last so the
+ *      deleting rewrites see the compiler's own opcodes only.
  *   3. RE-ENCODE, recomputing all relative offsets from scratch and
  *      remapping the pc-keyed source line table.
  *
@@ -37,7 +45,9 @@
  *     the mv write by substituting OP_MV_RESET (same 1-byte length).
  *   - NLX landing pads (CATCH/UWPROT/BLOCK_PUSH/TAGBODY_PUSH offsets) are
  *     treated exactly like jump targets; their offsets are re-encoded, but
- *     they are never threaded.
+ *     they are never threaded.  A HANDLER_CASE_PUSH landing is a TABLE of
+ *     one 5-byte JMP per clause that C indexes by clause number, so every
+ *     entry is pinned: a permanent target that keeps its shape.
  *   - Backward-jump GC safepoints survive: offsets are recomputed from final
  *     positions, so a real loop's back edge stays a backward jump.
  *
@@ -75,17 +85,58 @@ const CL_OpcodeInfo *cl_opcode_info(uint8_t op)
     return info->name ? info : NULL;
 }
 
+int cl_opnd_len(uint8_t kind)
+{
+    switch ((CL_OperandKind)kind) {
+    case CL_OPND_NONE:      return 0;
+    case CL_OPND_U8:        return 1;
+    case CL_OPND_U16:       return 2;
+    case CL_OPND_JREL:      return 4;
+    case CL_OPND_U16_JREL:  return 6;
+    case CL_OPND_U16_U16:   return 4;
+    case CL_OPND_U16_U8:    return 3;
+    case CL_OPND_AMIGA:     return 9;
+    case CL_OPND_U8_U8:     return 2;
+    case CL_OPND_U8_U16_U8: return 4;
+    case CL_OPND_U8_JREL:   return 5;
+    case CL_OPND_U8_U16:    return 3;
+    case CL_OPND_U16_U16_U8: return 5;
+    case CL_OPND_CLOSURE:   return -1;
+    }
+    return -1;
+}
+
+int cl_opnd_jrel_pos(uint8_t kind)
+{
+    switch ((CL_OperandKind)kind) {
+    case CL_OPND_JREL:     return 1;
+    case CL_OPND_U16_JREL: return 3;
+    case CL_OPND_U8_JREL:  return 2;
+    default:               return 0;
+    }
+}
+
 /* --- Instruction list --- */
 
 #define PEEP_DELETED 0x01   /* instruction removed; jumps into it retarget forward */
 #define PEEP_TARGET  0x02   /* branch/NLX-landing target: basic-block boundary */
+#define PEEP_FUSED   0x04   /* deleted because a preceding head absorbed it */
+#define PEEP_PINNED  0x08   /* an entry of a HANDLER-CASE landing table: always
+                               a target (C enters it at landing + 5*k), and it
+                               must stay a 5-byte OP_JMP */
 
 typedef struct {
     uint32_t old_pos;     /* byte offset of the opcode in the input buffer */
     uint32_t new_pos;     /* byte offset in the output buffer (re-encode) */
     const uint8_t *raw;   /* points at the opcode byte in the input buffer */
-    uint16_t raw_len;     /* total instruction length in bytes */
-    int32_t jump_target;  /* instruction index for JREL/U16_JREL, else -1 */
+    uint16_t raw_len;     /* total instruction length in bytes (a fused
+                             instruction: 1 + all members' operand bytes) */
+    int32_t jump_target;  /* instruction index for a jump/landing operand, else -1 */
+    int32_t fused_with;   /* index of the next member folded into this one
+                             (its operand bytes follow ours), else -1 */
+    uint16_t own_len;     /* this instruction's operand byte count as
+                             decoded (fusion changes raw_len, not this; the
+                             JMP -> RET rewrite zeroes both) */
     uint8_t op;           /* current opcode (patterns may rewrite it) */
     uint8_t flags;        /* PEEP_* */
 } PeepInsn;
@@ -98,7 +149,8 @@ typedef struct {
 } PeepCode;
 
 /* Instruction byte length for re-encoding.  Everything keeps its decoded
- * length except opcode substitutions, which are all 1-byte <-> 1-byte. */
+ * length except opcode substitutions (1-byte <-> 1-byte) and fusions,
+ * which set raw_len to the fused length when they fire. */
 static uint32_t peep_insn_len(const PeepInsn *in)
 {
     return in->raw_len;
@@ -152,16 +204,7 @@ static int peep_decode(PeepCode *pc, const uint8_t *code, uint32_t len)
 
         if (!info) return 0;  /* unknown opcode — bail */
 
-        switch ((CL_OperandKind)info->operands) {
-        case CL_OPND_NONE:     opnd_len = 0; break;
-        case CL_OPND_U8:       opnd_len = 1; break;
-        case CL_OPND_U16:      opnd_len = 2; break;
-        case CL_OPND_JREL:     opnd_len = 4; break;
-        case CL_OPND_U16_JREL: opnd_len = 6; break;
-        case CL_OPND_U16_U16:  opnd_len = 4; break;
-        case CL_OPND_U16_U8:   opnd_len = 3; break;
-        case CL_OPND_AMIGA:    opnd_len = 9; break;
-        case CL_OPND_CLOSURE: {
+        if (info->operands == CL_OPND_CLOSURE) {
             /* u16 template const index + 2 bytes per template upvalue.
              * Needs the constant pool; anything unexpected -> bail. */
             uint16_t idx;
@@ -174,9 +217,10 @@ static int peep_decode(PeepCode *pc, const uint8_t *code, uint32_t len)
             if (!CL_BYTECODE_P(tmpl)) return 0;
             tmpl_bc = (const CL_Bytecode *)CL_OBJ_TO_PTR(tmpl);
             opnd_len = 2 + 2u * tmpl_bc->n_upvalues;
-            break;
-        }
-        default: return 0;
+        } else {
+            int fixed = cl_opnd_len(info->operands);
+            if (fixed < 0) return 0;
+            opnd_len = (uint32_t)fixed;
         }
 
         if (ip + 1 + opnd_len > len) return 0;  /* truncated — bail */
@@ -186,6 +230,8 @@ static int peep_decode(PeepCode *pc, const uint8_t *code, uint32_t len)
         in->raw = code + ip;
         in->raw_len = (uint16_t)(1 + opnd_len);
         in->jump_target = -1;
+        in->fused_with = -1;
+        in->own_len = (uint16_t)opnd_len;
         in->op = code[ip];
         in->flags = 0;
         ip += 1 + opnd_len;
@@ -200,16 +246,13 @@ static int peep_decode(PeepCode *pc, const uint8_t *code, uint32_t len)
         for (i = 0; i < pc->count; i++) {
             PeepInsn *in = &pc->insns[i];
             const CL_OpcodeInfo *info = cl_opcode_info(in->op);
+            int jpos = cl_opnd_jrel_pos(info->operands);
             int32_t off;
             uint32_t tpos;
             int32_t tidx;
 
-            if (info->operands == CL_OPND_JREL)
-                off = peep_read_i32(in->raw + 1);
-            else if (info->operands == CL_OPND_U16_JREL)
-                off = peep_read_i32(in->raw + 3);
-            else
-                continue;
+            if (!jpos) continue;
+            off = peep_read_i32(in->raw + jpos);
 
             /* Offsets are relative to the first byte after the instruction. */
             tpos = in->old_pos + in->raw_len + (uint32_t)off;
@@ -225,15 +268,51 @@ static int peep_decode(PeepCode *pc, const uint8_t *code, uint32_t len)
             in->jump_target = tidx;
         }
     }
+
+    /* HANDLER-CASE landing tables.  OP_HANDLER_CASE_PUSH's landing is the
+     * first of N consecutive 5-byte OP_JMPs (N = length of the clause type
+     * list in its u16 constant); cl_handler_case_transfer enters entry k at
+     * landing + 5*k, so from the bytecode's own control flow every entry but
+     * the first looks unreachable.  Pin them: each is a permanent target
+     * (never dead, never absorbed into a pattern) and keeps its shape (the
+     * JMP -> RET rewrite skips it; threading keeps it a JMP).  Anything
+     * unexpected — no constant pool, a non-list, a table entry that is not
+     * a JMP — bails the pass. */
+    {
+        int32_t i;
+        for (i = 0; i < pc->count; i++) {
+            PeepInsn *in = &pc->insns[i];
+            CL_Obj types;
+            int32_t n = 0, k;
+            uint16_t idx;
+            if (in->op != OP_HANDLER_CASE_PUSH) continue;
+            if (!pc->constants) return 0;
+            idx = peep_read_u16(in->raw + 1);
+            if (idx >= pc->n_constants) return 0;
+            types = pc->constants[idx];
+            while (CL_CONS_P(types)) { n++; types = cl_cdr(types); }
+            if (!CL_NULL_P(types)) return 0;
+            if (in->jump_target < 0 || in->jump_target + n > pc->count) return 0;
+            for (k = 0; k < n; k++) {
+                PeepInsn *e = &pc->insns[in->jump_target + k];
+                if (e->op != OP_JMP || e->raw_len != 5) return 0;
+                e->flags |= PEEP_PINNED;
+            }
+        }
+    }
     return 1;
 }
 
-/* Recompute PEEP_TARGET flags from all live jumps/NLX landings. */
+/* Recompute PEEP_TARGET flags from all live jumps/NLX landings; a pinned
+ * landing-table entry is a target regardless. */
 static void peep_mark_targets(PeepCode *pc)
 {
     int32_t i;
-    for (i = 0; i < pc->count; i++)
+    for (i = 0; i < pc->count; i++) {
         pc->insns[i].flags &= (uint8_t)~PEEP_TARGET;
+        if (pc->insns[i].flags & PEEP_PINNED)
+            pc->insns[i].flags |= PEEP_TARGET;
+    }
     for (i = 0; i < pc->count; i++) {
         PeepInsn *in = &pc->insns[i];
         if (in->flags & PEEP_DELETED) continue;
@@ -308,7 +387,16 @@ static int32_t peep_next_live_unjoined(const PeepCode *pc, int32_t i,
 
 /* Jump-to-jump threading: a JMP/JNIL/JTRUE whose target is an OP_JMP jumps
  * directly to that JMP's target.  NLX landing offsets are never threaded.
- * Chain chase is capped to stay clear of jump cycles. */
+ * Chain chase is capped to stay clear of jump cycles.  A target that was
+ * deleted stands for the next live instruction (that is where the encoder
+ * retargets it), so the chase looks through deletions.
+ *
+ * JMP -> RET becomes RET: the return is one byte and unconditional, so
+ * duplicating it at the jump site saves the dispatch and the MV state
+ * flows into it unchanged (JMP writes nothing).  Every function's block
+ * result lands this way — `STORE slot; JMP end` with `end: STORE slot;
+ * RET` — and once the landing's dead STORE goes (peep_dead_store_ret) the
+ * JMP's live target IS the RET. */
 static int peep_thread_jumps(PeepCode *pc)
 {
     int changed = 0;
@@ -322,13 +410,113 @@ static int peep_thread_jumps(PeepCode *pc)
         if (in->jump_target < 0) continue;
         for (hops = 0; hops < 16; hops++) {
             int32_t t = in->jump_target;
-            PeepInsn *ti = &pc->insns[t];
-            if (ti->flags & PEEP_DELETED) break;
+            PeepInsn *ti;
+            while (t < pc->count && (pc->insns[t].flags & PEEP_DELETED)) t++;
+            if (t >= pc->count) break;
+            ti = &pc->insns[t];
+            if (in->op == OP_JMP && ti->op == OP_RET &&
+                !(in->flags & PEEP_PINNED)) {
+                in->op = OP_RET;
+                in->jump_target = -1;
+                in->raw_len = 1;
+                in->own_len = 0;
+                changed++;
+                break;
+            }
             if (ti->op != OP_JMP || ti->jump_target < 0) break;
             if (ti->jump_target == in->jump_target) break;  /* self-loop */
             in->jump_target = ti->jump_target;
             changed++;
         }
+    }
+    return changed;
+}
+
+/* STORE n; [POP;] JMP L   with  L: LOAD n; RET            ==>  RET
+ * STORE n; [POP;] JMP L   with  L: LOAD n; MV_RESET; RET  ==>  MV_RESET; RET
+ * The site of a local RETURN-FROM / RETURN: the compiler stores the value
+ * into the block's result slot, pops it and jumps to the landing, which
+ * reloads the slot and returns.  OP_STORE peeks, so with the STORE and the
+ * POP gone the value is on top at the site — return it from there (the JMP
+ * becomes the RET; with an MV_RESET landing the STORE becomes that reset).
+ * Once no site jumps to the landing's LOAD any more, the fall-through path
+ * `value; STORE n; POP; LOAD n; RET` collapses through the store-reload and
+ * dead-store rules on the following rounds.  Neither the POP nor the JMP
+ * may be a target: another path reaching them would have to guarantee the
+ * value on top as well.  The STORE may be one (that path was about to
+ * store the value it has on top). */
+static int peep_return_site(PeepCode *pc)
+{
+    int changed = 0;
+    int32_t i;
+    for (i = 0; i < pc->count; i++) {
+        PeepInsn *s = &pc->insns[i];
+        PeepInsn *j, *l, *p = NULL;
+        int32_t ji, t, ri;
+        int joined, reset = 0;
+        if (s->flags & PEEP_DELETED) continue;
+        if (s->op != OP_STORE) continue;
+        ji = peep_next_live_unjoined(pc, i, &joined);
+        if (ji >= pc->count || joined) continue;
+        j = &pc->insns[ji];
+        if (j->op == OP_POP) {
+            p = j;
+            ji = peep_next_live_unjoined(pc, ji, &joined);
+            if (ji >= pc->count || joined) continue;
+            j = &pc->insns[ji];
+        }
+        if (j->op != OP_JMP || j->jump_target < 0) continue;
+        t = j->jump_target;
+        while (t < pc->count && (pc->insns[t].flags & PEEP_DELETED)) t++;
+        if (t >= pc->count) continue;
+        l = &pc->insns[t];
+        if (l->op != OP_LOAD || l->raw[1] != s->raw[1]) continue;
+        ri = peep_next_live(pc, t);
+        if (ri < pc->count && pc->insns[ri].op == OP_MV_RESET) {
+            reset = 1;
+            ri = peep_next_live(pc, ri);
+        }
+        if (ri >= pc->count || pc->insns[ri].op != OP_RET) continue;
+        if (reset) {
+            s->op = OP_MV_RESET;
+            s->raw_len = 1;
+            s->own_len = 0;
+        } else {
+            s->flags |= PEEP_DELETED;
+        }
+        if (p) p->flags |= PEEP_DELETED;
+        j->op = OP_RET;
+        j->jump_target = -1;
+        j->raw_len = 1;
+        j->own_len = 0;
+        changed++;
+    }
+    return changed;
+}
+
+/* STORE n; RET  ==>  RET      (also STORE n; MV_RESET; RET)
+ * OP_STORE peeks, so the value RET returns is unchanged; the local it
+ * wrote dies with the frame, and MV_RESET reads no local.  The compiler
+ * emits this at the end of every function: a DEFUN body is a BLOCK whose
+ * result slot the tail form is stored into, for the RETURN-FROM landing's
+ * sake, whether or not a RETURN-FROM exists.  No join check is needed: a
+ * jump landing on the RET (or the MV_RESET) skipped the store on that
+ * path, and a jump landing on the STORE retargets past it. */
+static int peep_dead_store_ret(PeepCode *pc)
+{
+    int changed = 0;
+    int32_t i;
+    for (i = 0; i < pc->count; i++) {
+        PeepInsn *s = &pc->insns[i];
+        int32_t ni;
+        if (s->flags & PEEP_DELETED) continue;
+        if (s->op != OP_STORE) continue;
+        ni = peep_next_live(pc, i);
+        if (ni < pc->count && pc->insns[ni].op == OP_MV_RESET)
+            ni = peep_next_live(pc, ni);
+        if (ni >= pc->count || pc->insns[ni].op != OP_RET) continue;
+        s->flags |= PEEP_DELETED;
+        changed++;
     }
     return changed;
 }
@@ -456,6 +644,137 @@ static int peep_not_branch(PeepCode *pc)
     return changed;
 }
 
+/* --- Superinstruction fusion (spec 4.3) ---
+ *
+ * One greedy left-to-right pass over the final instruction stream.  Each
+ * rule folds an adjacent pair (head, next) into one opcode whose vm.c
+ * handler is exactly the pair — same stack effect, same MV effect, same
+ * errors — so no dataflow reasoning is needed here.  The only guard is the
+ * basic-block one: a jump landing on the second member would execute only
+ * the tail, so a pair whose second member is a branch target is never
+ * fused (peep_next_live_unjoined).  The head keeps its place in the list
+ * (its old_pos, its line entry and any branch landing on it are unaffected);
+ * the absorbed member is marked deleted + PEEP_FUSED and chained through
+ * fused_with, so the encoder emits its operand bytes after the head's and
+ * the line remap attributes it to the head.  A branch operand moves from
+ * the member to the head (jump_target); the encoder rewrites it at the
+ * fused shape's offset.
+ *
+ * The scan resumes after the absorbed member, so a fused instruction is
+ * never itself a head (LOAD a; LOAD b; LOAD c -> LOAD_LOAD a b; LOAD c).
+ *
+ * Triples (tried first at a head that starts one):
+ *   LOAD a; STORE b; POP       -> LOAD_STORE_POP a b
+ *   GLOAD sym; EQ; JNIL t      -> GLOAD_EQ_JNIL sym t
+ * Pairs:
+ *   STORE n; POP               -> STORE_POP n
+ *   LOAD a; LOAD b             -> LOAD_LOAD a b
+ *   LOAD s; CONST k            -> LOAD_CONST s k
+ *   LOAD s; CALL_GLOBAL sym n  -> LOAD_CALL_GLOBAL s sym n
+ *   LOAD s; STRUCT_REF i       -> LOAD_STRUCT_REF s i
+ *   LOAD s; MV_RESET           -> LOAD_MV_RESET s
+ *   LOAD s; RET                -> LOAD_RET s
+ *   LOAD s; JNIL t             -> LOAD_JNIL s t
+ *   POP; LOAD s                -> POP_LOAD s
+ *   EQ; JNIL t                 -> EQ_JNIL t
+ *   GLOAD sym; JNIL t          -> GLOAD_JNIL sym t
+ *   GLOAD sym; CALL_GLOBAL f n -> GLOAD_CALL_GLOBAL sym f n
+ *
+ * The table is the opcode-pair profile of the sento message path
+ * (docs/benchmarks.md 2026-09-09): the first nine pairs were 31% of all
+ * dispatches, the five added after re-profiling the fused stream another
+ * 10% of what remained.  CLAMIGA_NO_FUSE=1 (main.c) leaves the pairs
+ * alone — A/B runs, bisects. */
+
+int cl_peephole_fuse_enabled = 1;
+
+static uint8_t peep_fused_opcode3(uint8_t a, uint8_t b, uint8_t c)
+{
+    if (a == OP_LOAD && b == OP_STORE && c == OP_POP) return OP_LOAD_STORE_POP;
+    if (a == OP_GLOAD && b == OP_EQ && c == OP_JNIL) return OP_GLOAD_EQ_JNIL;
+    return 0;
+}
+
+static uint8_t peep_fused_opcode(uint8_t a, uint8_t b)
+{
+    switch (a) {
+    case OP_STORE:
+        return b == OP_POP ? OP_STORE_POP : 0;
+    case OP_LOAD:
+        switch (b) {
+        case OP_LOAD:        return OP_LOAD_LOAD;
+        case OP_CONST:       return OP_LOAD_CONST;
+        case OP_CALL_GLOBAL: return OP_LOAD_CALL_GLOBAL;
+        case OP_STRUCT_REF:  return OP_LOAD_STRUCT_REF;
+        case OP_MV_RESET:    return OP_LOAD_MV_RESET;
+        case OP_RET:         return OP_LOAD_RET;
+        case OP_JNIL:        return OP_LOAD_JNIL;
+        default:             return 0;
+        }
+    case OP_POP:
+        return b == OP_LOAD ? OP_POP_LOAD : 0;
+    case OP_EQ:
+        return b == OP_JNIL ? OP_EQ_JNIL : 0;
+    case OP_GLOAD:
+        switch (b) {
+        case OP_JNIL:        return OP_GLOAD_JNIL;
+        case OP_CALL_GLOBAL: return OP_GLOAD_CALL_GLOBAL;
+        default:             return 0;
+        }
+    default:
+        return 0;
+    }
+}
+
+/* Fold member M (index MI) into head A: A's operands grow by M's, a
+ * branch operand moves to A, M is deleted and chained after PREV. */
+static void peep_absorb(PeepInsn *a, PeepInsn *prev, PeepInsn *m, int32_t mi)
+{
+    a->raw_len = (uint16_t)(a->raw_len + m->own_len);
+    if (m->jump_target >= 0) a->jump_target = m->jump_target;
+    prev->fused_with = mi;
+    m->flags |= PEEP_DELETED | PEEP_FUSED;
+    m->jump_target = -1;
+}
+
+static int peep_fuse(PeepCode *pc)
+{
+    int changed = 0;
+    int32_t i;
+    if (!cl_peephole_fuse_enabled) return 0;
+    for (i = 0; i < pc->count; i++) {
+        PeepInsn *a = &pc->insns[i];
+        PeepInsn *b, *c;
+        int32_t bi, ci;
+        int joined;
+        uint8_t fused;
+        if (a->flags & PEEP_DELETED) continue;
+        bi = peep_next_live_unjoined(pc, i, &joined);
+        if (bi >= pc->count || joined) continue;
+        b = &pc->insns[bi];
+        ci = peep_next_live_unjoined(pc, bi, &joined);
+        if (ci < pc->count && !joined) {
+            c = &pc->insns[ci];
+            fused = peep_fused_opcode3(a->op, b->op, c->op);
+            if (fused) {
+                a->op = fused;
+                peep_absorb(a, a, b, bi);
+                peep_absorb(a, b, c, ci);
+                changed++;
+                i = ci;
+                continue;
+            }
+        }
+        fused = peep_fused_opcode(a->op, b->op);
+        if (!fused) continue;
+        a->op = fused;
+        peep_absorb(a, a, b, bi);
+        changed++;
+        i = bi;   /* resume after the absorbed member */
+    }
+    return changed;
+}
+
 /* --- Re-encode --- */
 
 /* Assign new positions, emit into OUT (size >= input length), rewrite the
@@ -477,37 +796,48 @@ static uint32_t peep_encode(PeepCode *pc, uint8_t *out,
     /* Pass 2: emit bytes; jump offsets recomputed from new positions.  A
      * jump whose target instruction was deleted retargets to the next live
      * instruction (deleting a jump target is only ever done for pattern
-     * pairs that are semantically no-ops on every path through them). */
+     * pairs that are semantically no-ops on every path through them).  A
+     * fused instruction's operand bytes are its members' operand bytes in
+     * order (the fused_with chain); its jump offset, if any, is then
+     * rewritten at the fused shape's position. */
     for (i = 0; i < pc->count; i++) {
         PeepInsn *in = &pc->insns[i];
         const CL_OpcodeInfo *info;
         uint8_t *dst;
+        uint32_t w;
+        int32_t m;
         if (in->flags & PEEP_DELETED) continue;
         info = cl_opcode_info(in->op);
         dst = out + in->new_pos;
         dst[0] = in->op;
-        if (in->raw_len > 1)
-            memcpy(dst + 1, in->raw + 1, (size_t)(in->raw_len - 1));
+        w = 1;
+        for (m = i; m >= 0; m = pc->insns[m].fused_with) {
+            const PeepInsn *mem = &pc->insns[m];
+            if (mem->own_len)
+                memcpy(dst + w, mem->raw + 1, (size_t)mem->own_len);
+            w += mem->own_len;
+        }
         if (in->jump_target >= 0) {
             int32_t t = in->jump_target;
             uint32_t tpos;
             int32_t off;
+            int jpos = cl_opnd_jrel_pos(info->operands);
             while (t < pc->count && (pc->insns[t].flags & PEEP_DELETED)) t++;
             /* The function's final RET/HALT is never deleted while a live
              * jump references past it (it is reachable via that jump), so a
              * live target always exists. */
             tpos = pc->insns[t].new_pos;
             off = (int32_t)tpos - (int32_t)(in->new_pos + in->raw_len);
-            if (info->operands == CL_OPND_JREL)
-                peep_write_i32(dst + 1, off);
-            else /* CL_OPND_U16_JREL */
-                peep_write_i32(dst + 3, off);
+            peep_write_i32(dst + jpos, off);
         }
     }
 
     /* Remap the source line table: each entry's pc moves to the new position
      * of the first live instruction at old_pos >= pc; entries that collapse
-     * onto the same new pc keep only the first. */
+     * onto the same new pc keep only the first.  An entry on an absorbed
+     * fusion member maps BACK to its head (the instruction that now runs
+     * it), not forward — forward would hand the member's line to whatever
+     * instruction follows the pair, displacing that one's own entry. */
     if (lines && n_lines && *n_lines > 0) {
         int out_n = 0;
         int li;
@@ -524,6 +854,10 @@ static uint32_t peep_encode(PeepCode *pc, uint8_t *out,
                     else hi = mid;
                 }
                 idx = lo;
+            }
+            if (idx < pc->count && (pc->insns[idx].flags & PEEP_FUSED)) {
+                while (idx > 0 && (pc->insns[idx].flags & PEEP_DELETED))
+                    idx--;
             }
             while (idx < pc->count && (pc->insns[idx].flags & PEEP_DELETED))
                 idx++;
@@ -576,13 +910,20 @@ int cl_peephole_run(uint8_t *code, int *code_len,
         peep_mark_targets(&pc);
         changed += peep_thread_jumps(&pc);
         peep_mark_targets(&pc);  /* threading moves target marks */
+        changed += peep_return_site(&pc);
         changed += peep_dead_code(&pc);
         changed += peep_store_reload(&pc);
+        changed += peep_dead_store_ret(&pc);
         changed += peep_pure_pop(&pc);
         changed += peep_not_branch(&pc);
         total += changed;
         if (!changed) break;
     }
+
+    /* Superinstructions, once, over the settled stream (marks may be stale
+     * if the loop hit its round cap with changes still pending). */
+    peep_mark_targets(&pc);
+    total += peep_fuse(&pc);
 
     if (!total) {
         platform_free(pc.insns);
@@ -631,7 +972,9 @@ int cl_peephole_run(uint8_t *code, int *code_len,
 
 void cl_peephole_optimize(struct CL_Compiler_s *c)
 {
-    if (c->peep_speed_max < 2) return;
+    /* (speed 0) keeps the bytecode exactly as emitted (CLAMIGA_FORCE_SPEED=0
+     * is how the differential harness gets the reference output). */
+    if (c->peep_speed_max < 1) return;
     cl_peephole_run(c->code, &c->code_pos, c->constants, c->const_count,
                     c->line_entries, &c->line_entry_count);
 }

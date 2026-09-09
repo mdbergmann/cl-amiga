@@ -199,26 +199,25 @@
 ; OP_T, OP_CONST, OP_LOAD, OP_STORE, OP_POP, OP_RET).
 ;
 ; (defun walker-nil-1arg (x) nil) bytecode:
-;   NIL ; STORE 1 ; POP ; LOAD 1 ; RET   (7 bytes)
+;   NIL ; RET   (2 bytes — the compiler emits NIL ; STORE 1 ; POP ;
+;   LOAD 1 ; RET, and the peephole pass (spec 4.3) folds the block-result
+;   store-reload and the dead store before the RET away)
 ; arity=1, n_locals=2 → 1 extra local → LINK A6,#-4.
-; Slot 1 is the block-return local at -4(a6).
+; Slot 1 is the (now unused) block-return local at -4(a6).
 ;
 ; With the 3-slot rotating stack cache, the cache_head index advances
 ; D7 → D5 → D6 → D7 on each push.  This function starts with head=7;
-; the first push (OP_NIL) lands in D{next(7)} = D5.  Subsequent pop
+; the first push (OP_NIL) lands in D{next(7)} = D5.  The RET pops it
 ; back through D5 to D0 (no register shifts — the rotation reclaims
 ; D5 implicitly).  The prologue saves D5/D6/D7 to A6-relative slots;
 ; the epilogue restores via A6-relative loads.
 ;
-; Expected native (38 bytes):
+; Expected native (30 bytes):
 ;   78 86 255 252   ; link a6,#-4
 ;   47 7            ; move.l d7,-(a7)         — save D7
 ;   47 6            ; move.l d6,-(a7)         — save D6
 ;   47 5            ; move.l d5,-(a7)         — save D5
 ;   122 0           ; moveq #0,d5             — OP_NIL → D5 (new TOS)
-;   45 69 255 252   ; move.l d5,-4(a6)        — OP_STORE 1 (peek)
-;                   ; (OP_POP: no bytes — cache head/depth rotate back)
-;   42 46 255 252   ; move.l -4(a6),d5        — OP_LOAD 1 → D5 (TOS again)
 ;   32 5            ; move.l d5,d0           \
 ;   46 46 255 248   ; move.l -8(a6),d7        — restore D7
 ;   44 46 255 244   ; move.l -12(a6),d6       — restore D6
@@ -227,8 +226,7 @@
 ;   78 117          ; rts                    /
 (defun walker-nil-1arg (x) nil)
 (check "walker-nil-1arg-bytes"
-  '(78 86 255 252  47 7  47 6  47 5  122 0  45 69 255 252
-    42 46 255 252  32 5
+  '(78 86 255 252  47 7  47 6  47 5  122 0  32 5
     46 46 255 248  44 46 255 244  42 46 255 240
     78 94  78 117)
   (clamiga::%jit-dump-bytes #'walker-nil-1arg))
@@ -246,8 +244,7 @@
 ; `move.l #imm32`.  Otherwise the shape mirrors walker-nil-1arg.
 (defun walker-fix-1arg (x) 42)
 (check "walker-fix-1arg-bytes"
-  '(78 86 255 252  47 7  47 6  47 5  122 85  45 69 255 252
-    42 46 255 252  32 5
+  '(78 86 255 252  47 7  47 6  47 5  122 85  32 5
     46 46 255 248  44 46 255 244  42 46 255 240
     78 94  78 117)
   (clamiga::%jit-dump-bytes #'walker-fix-1arg))
@@ -257,20 +254,20 @@
 ; pointer that doesn't fit in MOVEQ's 8-bit signed range) via the
 ; 6-byte `move.l #imm32,d7` instead of MOVEQ's 2 bytes.  CL_T's
 ; address varies across boots so the embedded immediate isn't stable
-; — verify total size (4 bytes longer than walker-nil-1arg's 38) and
+; — verify total size (4 bytes longer than walker-nil-1arg's 30) and
 ; behavior.
 (defun walker-t-1arg (x) t)
-(check "walker-t-1arg-size" 42
+(check "walker-t-1arg-size" 34
   (length (clamiga::%jit-dump-bytes #'walker-t-1arg)))
 (check "walker-t-1arg-returns-t" t (walker-t-1arg nil))
 
 ; Real local-slot use: LET binds an extra slot above the block-return.
 ; (defun walker-let-id (x) (let ((y x)) y))
 ;   arity=1, n_locals=3 (x=slot 0, block-return=slot 1, y=slot 2)
-;   bytecode: LOAD 0 ; STORE 2 ; POP ; LOAD 2 ; STORE 1 ; POP ; LOAD 1 ; RET
-; Exercises the parameter-slot path (slot 0 at 8(a6)) AND extra-local
-; path (slots 1 & 2 below a6) within the same function.  Byte-exact
-; would be brittle; behavior is what matters.
+;   bytecode as emitted: LOAD 0 ; STORE 2 ; POP ; LOAD 2 ; STORE 1 ; POP ;
+;   LOAD 1 ; MV_RESET ; RET — the peephole pass (spec 4.3) folds both
+;   store-reloads and the dead stores away, leaving LOAD_MV_RESET 0 ; RET,
+;   which the pass-through matcher handles.  Behavior is what matters.
 (defun walker-let-id (x) (let ((y x)) y))
 (check "walker-let-id-fixnum" 7        (walker-let-id 7))
 (check "walker-let-id-symbol" 'banana  (walker-let-id 'banana))

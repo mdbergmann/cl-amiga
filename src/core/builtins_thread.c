@@ -266,6 +266,10 @@ static void *thread_entry(void *arg)
             frame->vm_sp = t->vm.sp;
             frame->vm_fp = t->vm.fp;
             frame->result = CL_NIL;
+            /* Marked by every GC (see bi_warn's frame push): a C frame has
+             * no bytecode, and whatever the slot held before must not be
+             * mistaken for one. */
+            frame->bytecode = CL_NIL;
             frame->dyn_mark = t->dyn_top;
             frame->handler_mark = t->handler_top;
             /* Snapshot the disabled-handler band like the vm.c/jit NLX setup

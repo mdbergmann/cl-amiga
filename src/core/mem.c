@@ -3150,9 +3150,15 @@ static void gc_mark_thread_roots(CL_Thread *t)
      * Values that live across an ALLOCATING unwind-protect cleanup are
      * parked in pending_mv_values / saved_pending_stack, marked below. */
     for (i = 0; i < t->nlx_top; i++) {
-        GC_DBG_SRC("nlx_stack", i);
+        /* Every frame below nlx_top must have all three initialized — a
+         * C-pushed frame too (cl_nlx_frame_init_c): the slot's previous
+         * occupant leaves stale offsets behind, and marking one corrupts
+         * the arena walk.  The per-field source names the culprit. */
+        GC_DBG_SRC("nlx_stack.tag", i);
         gc_mark_obj(t->nlx_stack[i].tag);
+        GC_DBG_SRC("nlx_stack.result", i);
         gc_mark_obj(t->nlx_stack[i].result);
+        GC_DBG_SRC("nlx_stack.bytecode", i);
         gc_mark_obj(t->nlx_stack[i].bytecode);
     }
 

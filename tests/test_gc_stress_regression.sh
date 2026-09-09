@@ -5540,6 +5540,29 @@ else
     echo "  FAIL  binding table FASL: compile_fasl failed"
 fi
 
+# --- A C-pushed NLX frame (WARN's muffle-warning catch, a thread's abort
+# frame) left its `bytecode` field as the slot's previous occupant had it.
+# The collector marks tag/result/bytecode of every frame below nlx_top, so
+# once that occupant — the VM frame of a since-collected top-level form —
+# was gone, the mark landed on a stale offset ([GC-BADMARK]
+# nlx_stack.bytecode).  Shape: a top-level CATCH puts a VM frame with the
+# form's own bytecode at NLX index 1 (index 0 is the HANDLER-CASE); the
+# form dies; WARN under a HANDLER-CASE then reuses index 1 and allocates
+# (the tag cons, the restart) before it is ever unwound.
+cat > "$WORK/nlxc.lisp" <<'EOF'
+(handler-case (catch 'gcs-x (throw 'gcs-x 1)) (error () nil))
+(dotimes (i 4) (make-array 500))
+(format t "NLXC-WARN:~S~%" (handler-case (warn "w") (warning () :w)))
+(format t "NLXC-THREAD:~S~%"
+        (mp:join-thread (mp:make-thread (lambda () (list (make-array 200) (handler-case (warn "t") (warning () :tw)))))))
+(format t "NLXC-DONE~%")
+EOF
+out=$(run_stress "$WORK/nlxc.lisp")
+check_contains "WARN's C-pushed NLX frame carries no stale bytecode" "NLXC-WARN::W" "$out"
+check_contains "a worker thread's abort frame carries no stale bytecode" "NLXC-THREAD:(#(" "$out"
+check_contains "C-pushed NLX frames: run completes" "NLXC-DONE" "$out"
+check_absent   "C-pushed NLX frames: no bad mark" "BADMARK\|FATAL" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

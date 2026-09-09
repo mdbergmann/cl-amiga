@@ -136,6 +136,78 @@
   (if (< n 2) n (+ (c-fib (- n 1)) (c-fib (- n 2)))))
 (report "fib" (c-fib 15))
 
+;; --- spec 4.3: superinstructions and the two rewrites that came with them ---
+
+;; STORE_POP / LOAD_LOAD / LOAD_CALL_GLOBAL: several bindings, then calls
+;; taking them in every order
+(defun c-bindings (x y)
+  (let ((a (car x)) (b (cdr x)) (c (car y)))
+    (list (list a b c) (list c b a) (list b) (list a c))))
+(report "bindings" (c-bindings '(1 . 2) '(3)))
+
+;; LOAD_STRUCT_REF: a local's slot; the type error survives fusion
+(defstruct c-pt x y)
+(defun c-slot (p) (list (c-pt-x p) (c-pt-y p)))
+(report "slot" (c-slot (make-c-pt :x 1 :y 2)))
+(report "slot-err" (handler-case (c-slot 5) (type-error () :signaled)))
+
+;; LOAD_MV_RESET / LOAD_RET: a returned local is exactly one value
+(defun c-ret-local (x) (let ((v (floor x 2))) v))
+(report "ret-local" (multiple-value-list (c-ret-local 9)))
+(defun c-ret-param (x) x)
+(report "ret-param" (multiple-value-list (c-ret-param (values 1 2))))
+
+;; EQ_JNIL / LOAD_JNIL / GLOAD_JNIL: the three test shapes
+(defvar *c-flag* nil)
+(defun c-tests (a b)
+  (list (if (eq a b) :eq :ne)
+        (if a :a :not-a)
+        (if *c-flag* :flag :no-flag)
+        (let ((*c-flag* t)) (if *c-flag* :bound :unbound))
+        (when (eq a 'k) :k)))
+(report "tests" (list (c-tests 'k 'k) (c-tests nil 'k) (c-tests 1 2)))
+(defvar *c-unbound*)
+(defun c-unbound-test () (if *c-unbound* 1 2))
+(report "unbound-test" (handler-case (c-unbound-test) (unbound-variable () :unbound)))
+
+;; the function-end shape: RETURN-FROM landings, a block result, a
+;; builtin tail call that falls through to the RET
+(defun c-early (x)
+  (when (car x) (return-from c-early :early))
+  (if (cdr x) (return-from c-early (list :cdr (cdr x))))
+  (setq x (cons :end x)))
+(report "early" (list (c-early '(t)) (c-early '(nil . 5)) (c-early '(nil))))
+(defun c-tail-builtin (x) (car x))
+(report "tail-builtin" (c-tail-builtin '(7)))
+(defun c-setq-value (x) (setq x (+ x 1)))
+(report "setq-value" (c-setq-value 41))
+
+;; round two: a local-to-local SETQ, a local then a constant, an EQ
+;; against a special, a special as the last argument, a discarded value
+;; then a local
+(defun c-r2 (a b)
+  (let ((c a) (d 0))
+    (setq d c)
+    (list (if (eq b *c-flag*) (list c :k) (list c :n))
+          (cadr (list d *c-flag*)) (progn (list 1) d))))
+(report "r2" (list (c-r2 1 nil) (c-r2 2 :x) (let ((*c-flag* :x)) (c-r2 2 :x))))
+(defun c-r2u (a) (if (eq a *c-unbound*) 1 2))
+(report "r2-unbound" (handler-case (c-r2u 1) (unbound-variable () :unbound)))
+
+;; a HANDLER-CASE with several clauses: the landing table is one JMP per
+;; clause, entered by index from C — every entry must survive the pass
+(defun c-hc3 (k)
+  (handler-case (case k (0 (warn "w")) (1 (error "e")) (t (signal 'condition)))
+    (warning () :warning)
+    (error () :error)
+    (condition () :condition)))
+(report "hc3" (list (c-hc3 0) (c-hc3 1) (c-hc3 2)))
+(defun c-hc-last (x)
+  (handler-case (if x (warn "w") (error "e"))
+    (warning () :w)
+    (error () :e)))
+(report "hc-last" (list (c-hc-last t) (c-hc-last nil)))
+
 ;; final checksum over everything reported, so a silent mid-corpus
 ;; divergence still flips the last line
 (format t "CHECKSUM = ~S~%" (sxhash (format nil "~S" *r*)))

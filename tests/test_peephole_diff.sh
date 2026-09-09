@@ -2,8 +2,9 @@
 # Differential test for the bytecode peephole post-pass (spec 1.8).
 #
 # Runs tests/peephole-corpus.lisp with CLAMIGA_FORCE_SPEED=0 (pass disabled
-# everywhere), =2 and =3 (pass forced on for every compile in the process)
-# and requires byte-identical output.  A mis-relocated jump, broken NLX
+# everywhere), =1 (the default: rewrites + superinstruction fusion), =2 and
+# =3 (forced on for every compile in the process) and requires byte-identical
+# output.  A mis-relocated jump, broken NLX
 # landing pad, or over-eager deletion shows up as a diff (or a crash).
 #
 # CLAMIGA_FORCE_SPEED pins the effective (optimize (speed N)) for the whole
@@ -64,15 +65,24 @@ check() {
 }
 
 run_at_speed 0 "$WORK/s0.out"; rc0=$?
+run_at_speed 1 "$WORK/s1.out"; rc1=$?
 run_at_speed 2 "$WORK/s2.out"; rc2=$?
 run_at_speed 3 "$WORK/s3.out"; rc3=$?
 
 check "corpus_completes_speed0" "$rc0"
+check "corpus_completes_speed1" "$rc1"
 check "corpus_completes_speed2" "$rc2"
 check "corpus_completes_speed3" "$rc3"
 
 grep -q "CORPUS-DONE" "$WORK/s0.out"; check "corpus_done_speed0" "$?"
 grep -q "CORPUS-DONE" "$WORK/s3.out"; check "corpus_done_speed3" "$?"
+
+if diff "$WORK/s0.out" "$WORK/s1.out" >/dev/null 2>&1; then
+    check "speed0_vs_speed1_identical" 0
+else
+    check "speed0_vs_speed1_identical" 1
+    diff "$WORK/s0.out" "$WORK/s1.out" | head -20
+fi
 
 if diff "$WORK/s0.out" "$WORK/s2.out" >/dev/null 2>&1; then
     check "speed0_vs_speed2_identical" 0

@@ -1628,6 +1628,13 @@ static CL_Obj bi_warn(CL_Obj *args, int n)
         frame->vm_sp = cl_vm.sp;
         frame->vm_fp = cl_vm.fp;
         frame->result = CL_NIL;
+        /* The collector marks tag, result AND bytecode of every frame below
+         * nlx_top; a C-pushed frame has no bytecode, and the slot's previous
+         * occupant (a VM frame of some since-collected top-level form) left
+         * a stale offset here.  Marking it corrupted the arena walk
+         * ([GC-BADMARK] nlx_stack.bytecode under CLAMIGA_GC_STRESS, found by
+         * tests/test_tier4_phase3.sh's HANDLER-CASE + WARN case). */
+        frame->bytecode = CL_NIL;
         frame->dyn_mark = cl_dyn_top;
         frame->handler_mark = cl_handler_top;
         frame->restart_mark = cl_restart_top;

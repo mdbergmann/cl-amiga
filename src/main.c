@@ -795,6 +795,17 @@ int main(int argc, char *argv[])
             cl_local_inline_enabled = 0;
         }
     }
+    /* CLAMIGA_NO_FUSE=1 leaves the compiler's opcode pairs unfused (no
+     * superinstructions) — the same A/B and bisect purpose. */
+    {
+        char nfbuf[8];
+        const char *nf = platform_getenv("CLAMIGA_NO_FUSE", nfbuf,
+                                         (int)sizeof(nfbuf));
+        if (nf && nf[0] == '1' && nf[1] == '\0') {
+            extern int cl_peephole_fuse_enabled;
+            cl_peephole_fuse_enabled = 0;
+        }
+    }
     cl_jit_init();
     if (no_jit) cl_jit_set_active(0);
     cl_vm_init(stack_entries, frame_count);

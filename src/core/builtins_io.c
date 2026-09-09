@@ -2552,6 +2552,7 @@ static int disasm_u16_is_const(uint8_t op)
     case OP_CLOSURE: case OP_HANDLER_PUSH: case OP_RESTART_PUSH:
     case OP_ASSERT_TYPE: case OP_BLOCK_PUSH: case OP_BLOCK_RETURN:
     case OP_TAGBODY_PUSH: case OP_TAGBODY_GO: case OP_DEFVAR:
+    case OP_GLOAD_JNIL: case OP_GLOAD_EQ_JNIL:
         return 1;
     default:
         return 0;
@@ -2717,6 +2718,84 @@ static void disasm_bytecode(CL_Obj bcobj)
             snprintf(line, sizeof(line), "  %04lu: %-12s %-4u %u ; %s\n",
                     (unsigned long)start_ip, info->name,
                     (unsigned int)a, (unsigned int)b, annot);
+            cl_write_cstring_to_stdout(line);
+            break;
+        }
+
+        case CL_OPND_U8_U8: {
+            /* LOAD_LOAD a b / LOAD_STRUCT_REF slot idx */
+            uint8_t a = code[ip], b = code[ip + 1];
+            ip += 2;
+            snprintf(line, sizeof(line), "  %04lu: %-12s %u %u\n",
+                    (unsigned long)start_ip, info->name,
+                    (unsigned int)a, (unsigned int)b);
+            cl_write_cstring_to_stdout(line);
+            break;
+        }
+
+        case CL_OPND_U8_U16_U8: {
+            /* LOAD_CALL_GLOBAL: slot, symbol const index, nargs */
+            uint8_t s = code[ip];
+            uint16_t a = (uint16_t)((code[ip + 1] << 8) | code[ip + 2]);
+            uint8_t b = code[ip + 3];
+            ip += 4;
+            annot[0] = '\0';
+            if (a < n_constants)
+                cl_prin1_to_string(constants[a], annot, sizeof(annot));
+            snprintf(line, sizeof(line), "  %04lu: %-12s %u %-4u %u ; %s\n",
+                    (unsigned long)start_ip, info->name, (unsigned int)s,
+                    (unsigned int)a, (unsigned int)b, annot);
+            cl_write_cstring_to_stdout(line);
+            break;
+        }
+
+        case CL_OPND_U8_U16: {
+            /* LOAD_CONST: slot, then the constant */
+            uint8_t s = code[ip];
+            uint16_t a = (uint16_t)((code[ip + 1] << 8) | code[ip + 2]);
+            ip += 3;
+            annot[0] = '\0';
+            if (a < n_constants)
+                cl_prin1_to_string(constants[a], annot, sizeof(annot));
+            snprintf(line, sizeof(line), "  %04lu: %-12s %u %-4u ; %s\n",
+                    (unsigned long)start_ip, info->name, (unsigned int)s,
+                    (unsigned int)a, annot);
+            cl_write_cstring_to_stdout(line);
+            break;
+        }
+
+        case CL_OPND_U16_U16_U8: {
+            /* GLOAD_CALL_GLOBAL: the special, the callee, nargs */
+            uint16_t a = (uint16_t)((code[ip] << 8) | code[ip + 1]);
+            uint16_t b = (uint16_t)((code[ip + 2] << 8) | code[ip + 3]);
+            uint8_t n = code[ip + 4];
+            char annot2[128];
+            ip += 5;
+            annot[0] = '\0';
+            annot2[0] = '\0';
+            if (a < n_constants)
+                cl_prin1_to_string(constants[a], annot, sizeof(annot));
+            if (b < n_constants)
+                cl_prin1_to_string(constants[b], annot2, sizeof(annot2));
+            snprintf(line, sizeof(line), "  %04lu: %-12s %-4u %-4u %u ; %s %s\n",
+                    (unsigned long)start_ip, info->name,
+                    (unsigned int)a, (unsigned int)b, (unsigned int)n,
+                    annot, annot2);
+            cl_write_cstring_to_stdout(line);
+            break;
+        }
+
+        case CL_OPND_U8_JREL: {
+            /* LOAD_JNIL: slot, then the i32 branch offset */
+            uint8_t s = code[ip++];
+            int32_t val = (int32_t)(((uint32_t)code[ip] << 24) |
+                                    ((uint32_t)code[ip + 1] << 16) |
+                                    ((uint32_t)code[ip + 2] << 8) |
+                                    (uint32_t)code[ip + 3]);
+            ip += 4;
+            snprintf(line, sizeof(line), "  %04lu: %-12s %u %+d    ; -> %04lu\n",
+                    (unsigned long)start_ip, info->name, (unsigned int)s,
+                    (int)val, (unsigned long)((int32_t)ip + val));
             cl_write_cstring_to_stdout(line);
             break;
         }

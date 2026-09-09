@@ -172,6 +172,8 @@ static void jit_reloc_record(JitRelocs *r, uint32_t off)
  */
 static int matches_trivial_leaf(const CL_Bytecode *bc, CL_Obj *value_out)
 {
+    /* The block-result epilogue as the compiler emits it; the peephole
+     * pass (spec 4.3) reduces it to the bare RET at any speed above 0. */
     static const uint8_t epilogue[6] = {
         OP_STORE, 0x00,
         OP_POP,
@@ -186,8 +188,8 @@ static int matches_trivial_leaf(const CL_Bytecode *bc, CL_Obj *value_out)
     if (bc->flags != 0) return 0;      /* no &key, no allow-other-keys */
     if (bc->n_keys != 0) return 0;
     if (bc->n_upvalues != 0) return 0;
-    if (bc->n_locals != 1) return 0;
-    if (bc->code_len < 7) return 0;
+    if (bc->n_locals > 1) return 0;
+    if (bc->code_len < 2) return 0;
 
     op = bc->code[0];
     if (op == OP_NIL || op == OP_T) {
@@ -197,8 +199,12 @@ static int matches_trivial_leaf(const CL_Bytecode *bc, CL_Obj *value_out)
     } else {
         return 0;
     }
-    if (bc->code_len != prefix_len + 6) return 0;
-    if (memcmp(bc->code + prefix_len, epilogue, 6) != 0) return 0;
+    if (bc->code_len == prefix_len + 1) {
+        if (bc->code[prefix_len] != OP_RET) return 0;
+    } else {
+        if (bc->code_len != prefix_len + 6) return 0;
+        if (memcmp(bc->code + prefix_len, epilogue, 6) != 0) return 0;
+    }
 
     if (op == OP_NIL) {
         *value_out = CL_NIL;
@@ -256,6 +262,18 @@ static int matches_passthrough(const CL_Bytecode *bc, uint8_t *slot_out)
     if (bc->n_upvalues != 0) return 0;
     arity = (uint8_t)bc->arity;
     if (bc->n_locals != (uint16_t)(arity + 1)) return 0;
+
+    /* The peephole pass (spec 4.3) leaves `LOAD_MV_RESET j; RET` of this
+     * body; the 9-byte shape below is the compiler's own emission, seen
+     * at (speed 0). */
+    if (bc->code_len == 3) {
+        if (bc->code[0] != OP_LOAD_MV_RESET) return 0;
+        slot = bc->code[1];
+        if (slot >= arity) return 0;
+        if (bc->code[2] != OP_RET) return 0;
+        *slot_out = slot;
+        return 1;
+    }
     if (bc->code_len != 9) return 0;
 
     if (bc->code[0] != OP_LOAD)  return 0;
@@ -973,6 +991,35 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
             step = 3; break;
         case OP_CALL_GLOBAL: case OP_TAILCALL_GLOBAL:
             step = 4; break;   /* u16 sym_idx + u8 nargs */
+        /* Superinstructions (opcodes.h): the members' operands in order. */
+        case OP_STORE_POP: case OP_LOAD_MV_RESET: case OP_LOAD_RET:
+        case OP_POP_LOAD:
+            step = 2; break;
+        case OP_LOAD_LOAD: case OP_LOAD_STRUCT_REF: case OP_LOAD_STORE_POP:
+            step = 3; break;
+        case OP_LOAD_CONST:
+            step = 4; break;   /* u8 slot + u16 const_idx */
+        case OP_LOAD_CALL_GLOBAL:
+            step = 5; break;   /* u8 slot + u16 sym_idx + u8 nargs */
+        case OP_GLOAD_CALL_GLOBAL:
+            step = 6; break;   /* u16 sym_idx + u16 sym_idx + u8 nargs */
+        case OP_EQ_JNIL: case OP_LOAD_JNIL: case OP_GLOAD_JNIL:
+        case OP_GLOAD_EQ_JNIL: {
+            /* The i32 follows the opcode (EQ_JNIL), a u8 (LOAD_JNIL) or a
+             * u16 (GLOAD_JNIL, GLOAD_EQ_JNIL); it is relative to the
+             * instruction's end. */
+            uint32_t pre = (op == OP_EQ_JNIL) ? 0 : (op == OP_LOAD_JNIL) ? 1 : 2;
+            int32_t offset;
+            uint32_t target;
+            int ok;
+            step = 1 + pre + 4;
+            if (ip + step > bc->code_len) return 0;
+            offset = read_i32_be(bc->code + ip + 1 + pre);
+            target = compute_landing_ip(offset, ip + step, bc->code_len, &ok);
+            if (!ok) return 0;
+            is_target[target] = 1;
+            break;
+        }
         case OP_JMP: case OP_JNIL: case OP_JTRUE: {
             int32_t offset;
             uint32_t target;
@@ -1139,6 +1186,81 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
     return 1;
 }
 
+/* Emit a Bcc.W to bytecode offset TARGET_BC_OFF.  CC selects the branch:
+ * BCC_ALWAYS (BRA), BCC_EQ (BEQ: the Z flag the caller just set means
+ * "NIL"), BCC_NE.  INSN_START is the branching instruction's own bytecode
+ * offset: a target at or before it is a backward branch whose native
+ * offset bc_to_native already holds; anything later is a forward branch
+ * recorded for patching once the walk is done.  Returns 0 when the
+ * displacement does not fit in 16 bits or the backward target was never
+ * emitted (a jump into the middle of an instruction). */
+#define BCC_ALWAYS 0
+#define BCC_EQ     1
+#define BCC_NE     2
+static int emit_bcc_to_bc(CodeBuf *cb, int cc, uint32_t target_bc_off,
+                          uint32_t insn_start, const int32_t *bc_to_native,
+                          BranchPatch **patches, uint32_t *n_patches,
+                          uint32_t *cap_patches)
+{
+    uint32_t patch_off = cb_len(cb) + 2;   /* disp field of Bcc.W */
+    int16_t disp = 0;
+    if (target_bc_off <= insn_start) {
+        int32_t target_native = bc_to_native[target_bc_off];
+        int32_t disp32;
+        if (target_native < 0) return 0;
+        disp32 = target_native - (int32_t)patch_off;
+        if (disp32 < -32768 || disp32 > 32767) return 0;
+        disp = (int16_t)disp32;
+    } else {
+        if (!patches_push(patches, n_patches, cap_patches,
+                          patch_off, target_bc_off)) return 0;
+    }
+    switch (cc) {
+    case BCC_ALWAYS: m68k_emit_bra_w(cb, disp); break;
+    case BCC_EQ:     m68k_emit_beq_w(cb, disp); break;
+    default:         m68k_emit_bne_w(cb, disp); break;
+    }
+    return 1;
+}
+
+/* OP_CALL_GLOBAL's template — u16 sym_idx, u8 nargs at *IP — the fused
+ * `FLOAD sym; CALL n`.  Same shape as OP_CALL's template with one more
+ * helper argument (the symbol, baked as a relocated immediate) and no
+ * function slot on the operand stack: only the N args are dropped
+ * afterwards.  C-ABI order on the m68k stack is (operand_top, nargs, sym),
+ * so sym is pushed first.  Shared by OP_CALL_GLOBAL and the two fused
+ * heads (OP_LOAD_CALL_GLOBAL, OP_GLOAD_CALL_GLOBAL) that push one more
+ * argument first.  Returns 0 on a malformed operand. */
+static int emit_call_global(const CL_Bytecode *bc, uint32_t *ip, CodeBuf *cb,
+                            JitRelocs *relocs, int *cache_head, int *cache_depth)
+{
+    uint16_t sym_idx;
+    uint8_t nargs;
+    CL_Obj sym;
+    uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_call_global;
+    int16_t drop_bytes;
+    if (*ip + 2 >= bc->code_len) return 0;
+    sym_idx = ((uint16_t)bc->code[*ip] << 8) | bc->code[*ip + 1];
+    *ip += 2;
+    nargs = bc->code[(*ip)++];
+    if (sym_idx >= bc->n_constants || bc->constants == NULL) return 0;
+    sym = bc->constants[sym_idx];
+    if (!CL_SYMBOL_P(sym)) return 0;
+    drop_bytes = (int16_t)(4 * (int32_t)nargs);
+
+    cache_flush(cb, cache_head, cache_depth);
+    m68k_emit_move_l_an_to_am(cb, REG_A7, REG_A0);
+    emit_obj_imm_predec(cb, relocs, sym);
+    m68k_emit_move_l_imm32_predec(cb, (uint32_t)nargs, REG_A7);
+    m68k_emit_move_l_an_predec_am(cb, REG_A0, REG_A7);
+    m68k_emit_jsr_abs_l(cb, helper);
+    m68k_emit_lea_disp_an_to_am(cb, 12, REG_A7, REG_A7);
+    if (drop_bytes)
+        m68k_emit_lea_disp_an_to_am(cb, drop_bytes, REG_A7, REG_A7);
+    cache_push_dn(cb, cache_head, cache_depth, REG_D0);
+    return 1;
+}
+
 static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
 {
     uint16_t arity;
@@ -1146,6 +1268,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
     uint32_t n_extra;
     uint32_t ip;
     uint32_t i;
+    int saw_ret = 0;
     int16_t frame_size;
     int16_t saved_d7_disp, saved_d6_disp, saved_d5_disp;
     int32_t *bc_to_native = NULL;
@@ -2150,39 +2273,46 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             break;
         }
 
-        case OP_CALL_GLOBAL: {
-            /* u16 sym_idx, u8 nargs — the fused `FLOAD sym; CALL n`.
-             * Same shape as OP_CALL's template with one more helper
-             * argument (the symbol, baked as a relocated immediate) and
-             * no function slot on the operand stack: only the N args
-             * are dropped afterwards.  C-ABI order on the m68k stack is
-             * (operand_top, nargs, sym), so sym is pushed first. */
-            uint16_t sym_idx;
-            uint8_t nargs;
-            CL_Obj sym;
-            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_call_global;
-            int16_t drop_bytes;
-            if (ip + 2 >= bc->code_len) goto fail;
-            sym_idx = ((uint16_t)bc->code[ip] << 8) | bc->code[ip + 1];
-            ip += 2;
-            nargs = bc->code[ip++];
-            if (sym_idx >= bc->n_constants || bc->constants == NULL) goto fail;
-            sym = bc->constants[sym_idx];
-            if (!CL_SYMBOL_P(sym)) goto fail;
-            drop_bytes = (int16_t)(4 * (int32_t)nargs);
-
-            cache_flush(cb, &cache_head, &cache_depth);
-            m68k_emit_move_l_an_to_am(cb, REG_A7, REG_A0);
-            emit_obj_imm_predec(cb, relocs, sym);
-            m68k_emit_move_l_imm32_predec(cb, (uint32_t)nargs, REG_A7);
-            m68k_emit_move_l_an_predec_am(cb, REG_A0, REG_A7);
-            m68k_emit_jsr_abs_l(cb, helper);
-            m68k_emit_lea_disp_an_to_am(cb, 12, REG_A7, REG_A7);
-            if (drop_bytes)
-                m68k_emit_lea_disp_an_to_am(cb, drop_bytes, REG_A7, REG_A7);
-            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
+        case OP_LOAD_CALL_GLOBAL: {
+            /* u8 slot, then OP_CALL_GLOBAL's operands: push the local,
+             * then the call. */
+            uint8_t slot;
+            if (ip >= bc->code_len) goto fail;
+            slot = bc->code[ip++];
+            if (slot >= n_locals) goto fail;
+            cache_push_disp_an(cb, &cache_head, &cache_depth,
+                               slot_disp(slot, slot_anchor, is_kw), REG_A6);
+            if (!emit_call_global(bc, &ip, cb, relocs, &cache_head, &cache_depth))
+                goto fail;
             break;
         }
+
+        case OP_GLOAD_CALL_GLOBAL: {
+            /* u16 sym_idx (the special), then OP_CALL_GLOBAL's operands:
+             * the OP_GLOAD helper (value in D0) pushed, then the call. */
+            uint16_t idx;
+            CL_Obj sym;
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_gload;
+            if (ip + 1 >= bc->code_len) goto fail;
+            idx = ((uint16_t)bc->code[ip] << 8) | bc->code[ip + 1];
+            ip += 2;
+            if (idx >= bc->n_constants || bc->constants == NULL) goto fail;
+            sym = bc->constants[idx];
+            if (!CL_SYMBOL_P(sym)) goto fail;
+            cache_flush(cb, &cache_head, &cache_depth);
+            emit_obj_imm_predec(cb, relocs, sym);
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_addq_l_an(cb, 4, REG_A7);
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
+            if (!emit_call_global(bc, &ip, cb, relocs, &cache_head, &cache_depth))
+                goto fail;
+            break;
+        }
+
+        case OP_CALL_GLOBAL:
+            if (!emit_call_global(bc, &ip, cb, relocs, &cache_head, &cache_depth))
+                goto fail;
+            break;
 
         case OP_TAILCALL_GLOBAL: {
             /* u16 sym_idx, u8 nargs — `FLOAD sym; TAILCALL n` fused.  Same
@@ -2799,6 +2929,17 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             break;
         }
 
+        case OP_LOAD_STRUCT_REF: {
+            /* u8 slot, then OP_STRUCT_REF's u8 index: push the local and
+             * fall through. */
+            uint8_t slot;
+            if (ip >= bc->code_len) goto fail;
+            slot = bc->code[ip++];
+            if (slot >= n_locals) goto fail;
+            cache_push_disp_an(cb, &cache_head, &cache_depth,
+                               slot_disp(slot, slot_anchor, is_kw), REG_A6);
+        }
+        /* FALLTHROUGH */
         case OP_STRUCT_REF: {
             uint8_t idx;
             uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_struct_ref;
@@ -3128,7 +3269,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
              * on whether the popped value was CL_NIL (0). */
             int32_t offset;
             uint32_t target_bc_off;
-            uint32_t patch_off;
+            uint32_t insn_start = ip - 1;
             int ok;
             if (ip + 4 > bc->code_len) goto fail;
             offset = read_i32_be(bc->code + ip);
@@ -3153,37 +3294,242 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
                  * pop's initial move and the branch. */
                 m68k_emit_tst_l_dn(cb, REG_D0);
             }
-
-            patch_off = cb_len(cb) + 2;  /* disp field of Bcc.W */
-
-            if (target_bc_off <= ip - 5) {
-                int32_t target_native = bc_to_native[target_bc_off];
-                int32_t disp32;
-                if (target_native < 0) goto fail;
-                disp32 = target_native - (int32_t)patch_off;
-                if (disp32 < -32768 || disp32 > 32767) goto fail;
-                switch (op) {
-                case OP_JMP:   m68k_emit_bra_w(cb, (int16_t)disp32); break;
-                case OP_JNIL:  m68k_emit_beq_w(cb, (int16_t)disp32); break;
-                case OP_JTRUE: m68k_emit_bne_w(cb, (int16_t)disp32); break;
-                }
-            } else {
-                if (!patches_push(&patches, &n_patches, &cap_patches,
-                                  patch_off, target_bc_off)) goto fail;
-                switch (op) {
-                case OP_JMP:   m68k_emit_bra_w(cb, 0); break;
-                case OP_JNIL:  m68k_emit_beq_w(cb, 0); break;
-                case OP_JTRUE: m68k_emit_bne_w(cb, 0); break;
-                }
-            }
+            if (!emit_bcc_to_bc(cb, op == OP_JMP ? BCC_ALWAYS :
+                                    op == OP_JNIL ? BCC_EQ : BCC_NE,
+                                target_bc_off, insn_start, bc_to_native,
+                                &patches, &n_patches, &cap_patches))
+                goto fail;
             break;
         }
+
+        /* ---- Superinstructions (opcodes.h, specs/performance.md 4.3) ----
+         * Each is the pair the peephole pass fused; the template is the
+         * two members' templates back to back, minus the push/pop the
+         * cache would have absorbed anyway.  The four with a heavier tail
+         * (CALL_GLOBAL, STRUCT_REF, MV_RESET, RET) push the local and FALL
+         * THROUGH into the tail's case, whose operands follow in the
+         * stream — so the tail's template exists once. */
+
+        case OP_STORE_POP: {
+            uint8_t slot;
+            int16_t disp;
+            if (ip >= bc->code_len) goto fail;
+            slot = bc->code[ip++];
+            if (slot >= n_locals) goto fail;
+            disp = slot_disp(slot, slot_anchor, is_kw);
+            if (cache_depth >= 1) {
+                m68k_emit_move_l_dn_to_disp_am(cb, (M68kReg)cache_head,
+                                               disp, REG_A6);
+            } else {
+                m68k_emit_move_l_an_to_disp_am(cb, REG_A7, disp, REG_A6);
+            }
+            cache_drop(cb, &cache_head, &cache_depth);
+            break;
+        }
+
+        case OP_LOAD_LOAD: {
+            uint8_t a, b;
+            if (ip + 1 >= bc->code_len) goto fail;
+            a = bc->code[ip];
+            b = bc->code[ip + 1];
+            ip += 2;
+            if (a >= n_locals || b >= n_locals) goto fail;
+            cache_push_disp_an(cb, &cache_head, &cache_depth,
+                               slot_disp(a, slot_anchor, is_kw), REG_A6);
+            cache_push_disp_an(cb, &cache_head, &cache_depth,
+                               slot_disp(b, slot_anchor, is_kw), REG_A6);
+            break;
+        }
+
+        case OP_EQ_JNIL: {
+            /* OP_EQ pushes T when the two are the same object and JNIL
+             * jumps on NIL: pop both, compare, branch when NOT equal. */
+            int32_t offset;
+            uint32_t target_bc_off;
+            uint32_t insn_start = ip - 1;
+            int ok;
+            if (ip + 4 > bc->code_len) goto fail;
+            offset = read_i32_be(bc->code + ip);
+            ip += 4;
+            target_bc_off = compute_landing_ip(offset, ip, bc->code_len, &ok);
+            if (!ok) goto fail;
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);   /* b */
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);   /* a */
+            cache_flush(cb, &cache_head, &cache_depth);
+            m68k_emit_cmp_l_dn_dm(cb, REG_D1, REG_D0);
+            if (!emit_bcc_to_bc(cb, BCC_NE, target_bc_off, insn_start,
+                                bc_to_native, &patches, &n_patches,
+                                &cap_patches))
+                goto fail;
+            break;
+        }
+
+        case OP_GLOAD_JNIL: {
+            /* The OP_GLOAD helper call (value in D0, nothing pushed), then
+             * the JNIL test on D0. */
+            uint16_t idx;
+            CL_Obj sym;
+            int32_t offset;
+            uint32_t target_bc_off;
+            uint32_t insn_start = ip - 1;
+            int ok;
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_gload;
+            if (ip + 6 > bc->code_len) goto fail;
+            idx = ((uint16_t)bc->code[ip] << 8) | bc->code[ip + 1];
+            ip += 2;
+            offset = read_i32_be(bc->code + ip);
+            ip += 4;
+            target_bc_off = compute_landing_ip(offset, ip, bc->code_len, &ok);
+            if (!ok) goto fail;
+            if (idx >= bc->n_constants || bc->constants == NULL) goto fail;
+            sym = bc->constants[idx];
+            if (!CL_SYMBOL_P(sym)) goto fail;
+            cache_flush(cb, &cache_head, &cache_depth);
+            emit_obj_imm_predec(cb, relocs, sym);
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_addq_l_an(cb, 4, REG_A7);
+            m68k_emit_tst_l_dn(cb, REG_D0);
+            if (!emit_bcc_to_bc(cb, BCC_EQ, target_bc_off, insn_start,
+                                bc_to_native, &patches, &n_patches,
+                                &cap_patches))
+                goto fail;
+            break;
+        }
+
+        case OP_GLOAD_EQ_JNIL: {
+            /* The OP_GLOAD helper (value in D0), the other operand popped
+             * into D1 — after the flush, so nothing clobbers D0 — then
+             * compare and branch when NOT the same object. */
+            uint16_t idx;
+            CL_Obj sym;
+            int32_t offset;
+            uint32_t target_bc_off;
+            uint32_t insn_start = ip - 1;
+            int ok;
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_gload;
+            if (ip + 6 > bc->code_len) goto fail;
+            idx = ((uint16_t)bc->code[ip] << 8) | bc->code[ip + 1];
+            ip += 2;
+            offset = read_i32_be(bc->code + ip);
+            ip += 4;
+            target_bc_off = compute_landing_ip(offset, ip, bc->code_len, &ok);
+            if (!ok) goto fail;
+            if (idx >= bc->n_constants || bc->constants == NULL) goto fail;
+            sym = bc->constants[idx];
+            if (!CL_SYMBOL_P(sym)) goto fail;
+            cache_flush(cb, &cache_head, &cache_depth);
+            emit_obj_imm_predec(cb, relocs, sym);
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_addq_l_an(cb, 4, REG_A7);
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);   /* a, from (a7)+ */
+            m68k_emit_cmp_l_dn_dm(cb, REG_D1, REG_D0);
+            if (!emit_bcc_to_bc(cb, BCC_NE, target_bc_off, insn_start,
+                                bc_to_native, &patches, &n_patches,
+                                &cap_patches))
+                goto fail;
+            break;
+        }
+
+        case OP_LOAD_CONST: {
+            uint8_t slot;
+            uint16_t idx;
+            if (ip + 2 >= bc->code_len) goto fail;
+            slot = bc->code[ip++];
+            idx = ((uint16_t)bc->code[ip] << 8) | bc->code[ip + 1];
+            ip += 2;
+            if (slot >= n_locals) goto fail;
+            if (idx >= bc->n_constants || bc->constants == NULL) goto fail;
+            cache_push_disp_an(cb, &cache_head, &cache_depth,
+                               slot_disp(slot, slot_anchor, is_kw), REG_A6);
+            cache_push_obj(cb, &cache_head, &cache_depth, relocs,
+                           bc->constants[idx]);
+            break;
+        }
+
+        case OP_LOAD_STORE_POP: {
+            /* locals[b] = locals[a], through D0; the cache is untouched. */
+            uint8_t a, b;
+            if (ip + 1 >= bc->code_len) goto fail;
+            a = bc->code[ip];
+            b = bc->code[ip + 1];
+            ip += 2;
+            if (a >= n_locals || b >= n_locals) goto fail;
+            m68k_emit_move_l_disp_an_to_dn(cb, slot_disp(a, slot_anchor, is_kw),
+                                           REG_A6, REG_D0);
+            m68k_emit_move_l_dn_to_disp_am(cb, REG_D0,
+                                           slot_disp(b, slot_anchor, is_kw),
+                                           REG_A6);
+            break;
+        }
+
+        case OP_POP_LOAD: {
+            uint8_t slot;
+            if (ip >= bc->code_len) goto fail;
+            slot = bc->code[ip++];
+            if (slot >= n_locals) goto fail;
+            cache_drop(cb, &cache_head, &cache_depth);
+            cache_push_disp_an(cb, &cache_head, &cache_depth,
+                               slot_disp(slot, slot_anchor, is_kw), REG_A6);
+            break;
+        }
+
+        case OP_LOAD_JNIL: {
+            /* The local straight into D0 (MOVE.L to a data register sets
+             * Z), after the flush so nothing clobbers the flags. */
+            uint8_t slot;
+            int16_t disp;
+            int32_t offset;
+            uint32_t target_bc_off;
+            uint32_t insn_start = ip - 1;
+            int ok;
+            if (ip + 5 > bc->code_len) goto fail;
+            slot = bc->code[ip++];
+            offset = read_i32_be(bc->code + ip);
+            ip += 4;
+            target_bc_off = compute_landing_ip(offset, ip, bc->code_len, &ok);
+            if (!ok) goto fail;
+            if (slot >= n_locals) goto fail;
+            disp = slot_disp(slot, slot_anchor, is_kw);
+            cache_flush(cb, &cache_head, &cache_depth);
+            m68k_emit_move_l_disp_an_to_dn(cb, disp, REG_A6, REG_D0);
+            if (!emit_bcc_to_bc(cb, BCC_EQ, target_bc_off, insn_start,
+                                bc_to_native, &patches, &n_patches,
+                                &cap_patches))
+                goto fail;
+            break;
+        }
+
+        case OP_LOAD_MV_RESET: {
+            uint8_t slot;
+            if (ip >= bc->code_len) goto fail;
+            slot = bc->code[ip++];
+            if (slot >= n_locals) goto fail;
+            cache_push_disp_an(cb, &cache_head, &cache_depth,
+                               slot_disp(slot, slot_anchor, is_kw), REG_A6);
+            m68k_emit_jsr_abs_l(cb, (uint32_t)(uintptr_t)&cl_jit_runtime_mv_reset);
+            break;
+        }
+
+        case OP_LOAD_RET: {
+            uint8_t slot;
+            if (ip >= bc->code_len) goto fail;
+            slot = bc->code[ip++];
+            if (slot >= n_locals) goto fail;
+            cache_push_disp_an(cb, &cache_head, &cache_depth,
+                               slot_disp(slot, slot_anchor, is_kw), REG_A6);
+        }
+        /* FALLTHROUGH into OP_RET */
 
         case OP_RET:
             /* Pop result into D0 (cache-aware), restore the callee-
              * saved cache regs from their A6-relative slots (the
              * positions are independent of where SP currently is),
-             * then UNLK / RTS. */
+             * then UNLK / RTS.  The walk goes on: since the peephole's
+             * return rewrites (spec 4.3) a function returns wherever a
+             * RETURN-FROM or a block arm ends, so more code — reachable
+             * only as a branch target, where the cache is empty by the
+             * depth-0 invariant — may follow.  The forward patches are
+             * resolved after the walk. */
             bc_to_native[ip] = (int32_t)cb_len(cb);  /* fall-through target */
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
             m68k_emit_move_l_disp_an_to_dn(cb, saved_d7_disp, REG_A6, REG_D7);
@@ -3191,27 +3537,31 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             m68k_emit_move_l_disp_an_to_dn(cb, saved_d5_disp, REG_A6, REG_D5);
             m68k_emit_unlk_an(cb, REG_A6);
             m68k_emit_rts(cb);
-
-            for (i = 0; i < n_patches; i++) {
-                BranchPatch *p = &patches[i];
-                int32_t target_native;
-                int32_t disp32;
-                if (p->target_bc_off > bc->code_len) goto fail;
-                target_native = bc_to_native[p->target_bc_off];
-                if (target_native < 0) goto fail;
-                disp32 = target_native - (int32_t)p->patch_off;
-                if (disp32 < -32768 || disp32 > 32767) goto fail;
-                m68k_patch_disp16(cb_data(cb), cb_len(cb),
-                                  p->patch_off, (int16_t)disp32);
-            }
-            result = 1;
-            goto cleanup;
+            cache_depth = 0;
+            saw_ret = 1;
+            break;
 
         default:
             goto fail;
         }
     }
-    /* Falling off the end without OP_RET = malformed bytecode. */
+    /* Falling off the end without any OP_RET = malformed bytecode. */
+    if (!saw_ret) goto fail;
+
+    for (i = 0; i < n_patches; i++) {
+        BranchPatch *p = &patches[i];
+        int32_t target_native;
+        int32_t disp32;
+        if (p->target_bc_off > bc->code_len) goto fail;
+        target_native = bc_to_native[p->target_bc_off];
+        if (target_native < 0) goto fail;
+        disp32 = target_native - (int32_t)p->patch_off;
+        if (disp32 < -32768 || disp32 > 32767) goto fail;
+        m68k_patch_disp16(cb_data(cb), cb_len(cb),
+                          p->patch_off, (int16_t)disp32);
+    }
+    result = 1;
+    goto cleanup;
 
 fail:
     result = 0;

@@ -7,6 +7,141 @@ command, and results, so later runs can be compared like-for-like.
 Related: [specs/performance.md](../specs/performance.md) is the optimization
 *plan*; this file is the *measured results* log.
 
+## 2026-09-09 — Tier 4 phase 3 landed: superinstructions, the peephole at every speed
+
+**Context**: results for [specs/performance.md](../specs/performance.md) 4.3.
+The peephole pass runs at every speed above 0 now (it was `speed >= 2`),
+fuses fourteen adjacent opcode pairs and triples into one dispatch each,
+and gained three rewrites on the way (the dead result-slot store before a
+RET, a JMP whose target is a RET, a RETURN-FROM site returning in place).
+Three binaries measured in the SAME session on a quiet machine: the item-5
+tree (`17a20059`, a `git worktree`), the phase-3 tree with
+`CLAMIGA_NO_FUSE=1` (the pass at speed 1 with its rewrites, no fusion —
+"nofuse"), and the phase-3 tree.
+
+**Environment**: Apple M3 Ultra, macOS 26.6.2, `--heap 64M` for the
+microbench, `--heap 192M` for sento; every bench-prims run compiled the
+file from source (the FASL cache entry was deleted before each run),
+minimum of 5 interleaved runs per binary.
+
+**Which opcode pairs to fuse** came from an adjacent-pair profile
+(`PROFILE_OPCODES` builds count pairs now; `(clamiga::%op-counts-dump)`
+prints the top 48), taken on the sento pinned/tell path at one producer,
+4 s, before any fusion: 856.8M dispatches, 1,245 per message.  The top
+fusable pairs — STORE→POP 10.8%, POP→LOAD 8.4%, LOAD→LOAD 5.2%,
+LOAD→CALL_GLOBAL 4.8%, LOAD→RET 2.8%, LOAD→STRUCT_REF 2.7%,
+LOAD→MV_RESET 2.6%, EQ→JNIL 1.9%, GLOAD→JNIL 1.6% — became the first nine
+opcodes; `CONST; EQ; JNIL` from the plan does not occur on this path
+(`GLOAD; EQ; JNIL`, the slot-protocol marker test, does).  A second
+profile of the fused stream (1,044 per message) chose the five of round
+two: LOAD→CONST 2.3%, GLOAD→CALL_GLOBAL 2.4%, GLOAD→EQ→JNIL 2.1%,
+LOAD→STORE→POP 2.0%, POP→LOAD 1.8%.  After round two: 854.4M dispatches for 877k messages, **974 per message** (−22%).  The top remaining pairs are dynamic successors (JNIL→NIL, GLOAD_EQ_JNIL→LOAD_MV_RESET, a builtin call's result stored) or headed by a peeked STORE (STORE→GLOAD_EQ_JNIL 2.3%, STORE→CONST 1.7%) — the next round, if one is ever worth it, starts there.
+
+**Per-primitive** (`trunk/bench-prims.lisp`, ABSOLUTE ns = net + the
+empty-loop baseline).  The baseline itself moved: `(dotimes (i n) (setq
+acc i))` is 25.0 → 22.0 (nofuse) → 16.0 ns per iteration, because its
+body `LOAD i; STORE acc; POP` is one `LOAD_STORE_POP` now (the separate
+7-run probe agrees: 25.8 → 17.3 ns), so about 9 ns of every row's delta
+is loop overhead and the rest is the row's own.
+
+| row | item 5 | nofuse | phase 3 | delta |
+| --- | ---: | ---: | ---: | ---: |
+| fixnum-add | 28 | 25 | 24 | −4 |
+| call-1arg | 41 | 35 | 27 | −14 |
+| call-3arg | 48 | 43 | 33 | −15 |
+| call-&key-2of3 | 67 | 60 | 49 | −18 |
+| call-&rest-2 | 67 | 60 | 51 | −16 |
+| call-mvbind | 65 | 59 | 47 | −18 |
+| flet-call | 50 | 43 | 42 | −8 |
+| funcall-closure | 40 | 38 | 33 | −7 |
+| closure-cell-incf | 59 | 53 | 45 | −14 |
+| apply-3list | 59 | 53 | 45 | −14 |
+| gf-1arg-1method | 76 | 64 | 57 | −19 |
+| gf-2arg-2methods | 86 | 73 | 65 | −21 |
+| gf-around+primary | 478 | 391 | 379 | **−99** |
+| gf-call-next-method | 486 | 389 | 381 | **−105** |
+| accessor-read | 31 | 28 | 23 | −8 |
+| accessor-write | 35 | 33 | 28 | −7 |
+| slot-value-read | 62 | 56 | 39 | −23 |
+| slot-value-write | 61 | 59 | 48 | −13 |
+| with-slots-incf | 136 | 127 | 94 | **−42** |
+| struct-read | 27 | 24 | 22 | −5 |
+| struct-write | 28 | 26 | 26 | −2 |
+| struct-push-pop | 61 | 61 | 56 | −5 |
+| make-instance-2init | 2,752 | 2,200 | 2,180 | **−572** |
+| make-struct-2init | 52 | 51 | 37 | −15 |
+| cons | 32 | 28 | 24 | −8 |
+| list-4 | 65 | 60 | 55 | −10 |
+| closure-alloc | 41 | 38 | 28 | −13 |
+| special-read | 27 | 23 | 20 | −7 |
+| special-bind | 37 | 34 | 28 | −9 |
+| handler-case | 54 | 46 | 37 | −17 |
+| handler-bind | 51 | 41 | 32 | −19 |
+| unwind-protect | 80 | 68 | 61 | −19 |
+| catch-throw | 55 | 49 | 43 | −12 |
+| typep-class | 51 | 48 | 39 | −12 |
+| case-keyword | 66 | 57 | 44 | −22 |
+| gethash-eq | 39 | 36 | 29 | −10 |
+| svref | 47 | 44 | 37 | −10 |
+| lock-acquire-release | 85 | 80 | 70 | −15 |
+| lock+condvar-notify | 99 | 92 | 81 | −18 |
+
+No row regressed.  The "nofuse" column separates the two halves: the
+rewrites alone (and the old peephole finally running on default-speed
+code) take the CLOS rows most — `gf-around+primary` 478 → 391 and
+`make-instance-2init` 2,752 → 2,200 are all rewrites, the dispatch and
+CLOS code being full of RETURN-FROM sites and block results that used to
+cost a store, a jump and a reload each — while the fusion takes the
+loop-shaped rows: `slot-value-read` 56 → 39, `with-slots-incf` 127 → 94,
+`case-keyword` 57 → 44, `closure-alloc` 38 → 28.
+
+**Acceptance cells** — sento pinned/tell.  The single-producer cell
+(`trunk/sento-bench-loadthreads.lisp`, `SENTO_LOAD_THREADS="1"`,
+`:num-shared-workers 8`, `:duration 5`, `:num-iterations 6`), the
+consumer's own number per the item-5 entry, two runs per binary,
+alternating:
+
+| | AVG msg/s | MEDIAN | MIN | MAX | GC share |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| item 5, run 1 | 278,237 | 259,190 | 255,166 | 363,462 | 0.9% |
+| item 5, run 2 | 285,595 | 269,744 | 264,015 | 368,289 | 0.9% |
+| phase 3, run 1 | 368,352 | 355,421 | 333,897 | 444,975 | 0.8% |
+| phase 3, run 2 | 370,798 | 358,162 | 329,632 | 455,591 | 0.8% |
+| | **+30%** | **+33%** | +28% | +23% | |
+
+Against the item-5 entry's median of record (271k): 357k, +32%.  The
+4-producer cell of the phase-1/phase-2 entries (`trunk/profile-sento-bench.lisp`:
+`:load-threads 4`, `:duration 15`, `:num-iterations 8`), the tier's gate
+since 4.0 (175k there), one run per binary:
+
+| | AVG msg/s | MEDIAN | MIN | MAX |
+| --- | ---: | ---: | ---: | ---: |
+| item 5 | 219,969 | 198,458 | 187,940 | 259,727 |
+| phase 3 | 234,646 | 211,342 | 202,075 | 310,292 |
+| | **+6.7%** | +6.5% | +7.5% | +19% |
+
+That cell measures the message-box hand-off between several producers
+and one consumer (see the item-5 entry), so it moves far less than the
+consumer-bound cell above; it is reported for continuity with the earlier
+phases, not as the phase-3 gate.
+
+**Gates**: `make test` (incl. `tests/test_tier4_phase3.sh`, 78 checks,
+and the 47 cases of `tests/test_peephole.c`), `make test-gc-stress` (which
+found the latent C-frame NLX bug — see the commit — and now carries its
+regression case), `make test-memleak`, `make -f Makefile.cross test-amiga` (fresh boot 4615/4616 — the one miss is the known FS-UAE-only `audio-short-sample-completes` — and restored image 4616/4616; a `--no-jit` run of the suite through the boot-override hook passes everything but the 74 checks that expect native code, so the fused VM is right on m68k independently of the walker).
+
+**Reproduce**: `git worktree add --detach /tmp/base 17a20059 && (cd
+/tmp/base && make host)`; per run `find ~/.cache/common-lisp -name
+bench-prims.fasl -delete` then `clamiga --no-userinit --heap 64M
+--non-interactive --load trunk/bench-prims.lisp`, alternating the three
+binaries (`CLAMIGA_NO_FUSE=1` for the middle column), minimum per row;
+the sento cells as named above; the pair profile with `make host
+BUILDDIR=build/host-opprof DEBUG_FLAGS=-DPROFILE_OPCODES`, a warm-up
+iteration, `(clamiga::%op-counts-reset)`, one 4 s iteration at one
+producer, `(clamiga::%op-counts-dump)`.
+
+---
+
 ## 2026-09-08 — Tier 4 phase 2, item 5: non-escaping local functions inlined
 
 **Context**: the follow-up to the phase-2 commit closes its open items

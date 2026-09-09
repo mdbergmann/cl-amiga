@@ -11499,6 +11499,99 @@ y" 1))
            (rec (n acc) (if (zerop n) acc (rec (1- n) (+ acc n)))))
     (+ (leaf 4) (rec 3 0))))
 
+; --- Tier-4 phase 3: superinstructions (specs/performance.md 4.3) ---
+; The peephole pass runs at every speed above 0 now and fuses fourteen
+; adjacent opcode pairs and triples (STORE_POP, LOAD_LOAD, LOAD_CALL_GLOBAL,
+; LOAD_STRUCT_REF, LOAD_MV_RESET, LOAD_RET, EQ_JNIL, GLOAD_JNIL, LOAD_JNIL,
+; LOAD_CONST, GLOAD_CALL_GLOBAL, GLOAD_EQ_JNIL, LOAD_STORE_POP, POP_LOAD); a
+; function returns wherever a RETURN-FROM or a block arm ends instead of
+; jumping to one RET, and a dead store before a RET is gone.  Host coverage with the
+; shapes pinned through DISASSEMBLE: tests/test_tier4_phase3.sh.  Here: the
+; semantics on the m68k build, and — where the JIT is active — proof that
+; the walker compiles every fused shape and a function with several RETs
+; (an invoke count that does not move means it bailed to the interpreter).
+(defstruct t4p3-pt x y)
+(defvar *t4p3-flag* nil)
+(defvar *t4p3-unbound*)
+(defun t4p3-bind (x y)
+  (let ((a (car x)) (b (cdr x)) (c (car y)))
+    (list (list a b c) (list c b a) (list b) (list a c))))
+(check "fused bindings and calls in every order" '((1 2 3) (3 2 1) (2) (1 3))
+  (t4p3-bind '(1 . 2) '(3)))
+(defun t4p3-slot (p) (list (t4p3-pt-x p) (t4p3-pt-y p)))
+(check "LOAD_STRUCT_REF through a local" '(1 2) (t4p3-slot (make-t4p3-pt :x 1 :y 2)))
+(check "LOAD_STRUCT_REF on a non-struct is the type error" 5
+  (handler-case (t4p3-slot 5) (type-error (e) (type-error-datum e))))
+(defun t4p3-ret-local (x) (let ((v (floor x 2))) v))
+(check "a returned LET local is one value" '(4) (multiple-value-list (t4p3-ret-local 9)))
+(defun t4p3-ret-param (x) x)
+(check "a returned parameter is one value" '(1) (multiple-value-list (t4p3-ret-param (values 1 2))))
+(defun t4p3-tests (a b)
+  (list (if (eq a b) :eq :ne) (if a :a :not-a) (if *t4p3-flag* :flag :no-flag)
+        (when (eq a 'k) :k) (and a b) (or a b)))
+(check "EQ_JNIL / LOAD_JNIL / GLOAD_JNIL"
+       '((:eq :a :no-flag :k k k) (:ne :not-a :no-flag nil nil k) (:ne :a :no-flag nil 2 1))
+  (list (t4p3-tests 'k 'k) (t4p3-tests nil 'k) (t4p3-tests 1 2)))
+(check "GLOAD_JNIL sees a LET binding" '(:no-flag :flag :no-flag)
+  (list (third (t4p3-tests 1 1)) (let ((*t4p3-flag* t)) (third (t4p3-tests 1 1)))
+        (third (t4p3-tests 1 1))))
+(defun t4p3-unbound-test () (if *t4p3-unbound* 1 2))
+(check "GLOAD_JNIL on an unbound special signals" :unbound
+  (handler-case (t4p3-unbound-test) (unbound-variable () :unbound)))
+(defun t4p3-callee (a) (list :v1 a))
+(defun t4p3-caller (a) (car (list (t4p3-callee a) a)))
+(check "LOAD_CALL_GLOBAL sees the definition" '(:v1 1) (t4p3-caller 1))
+(defun t4p3-callee (a) (list :v2 a))
+(check "LOAD_CALL_GLOBAL sees the redefinition" '(:v2 2) (t4p3-caller 2))
+(check "LOAD_CALL_GLOBAL of an undefined function is catchable" :uf
+  (handler-case (funcall (lambda (q) (t4p3-no-such-function q)) 1)
+    (undefined-function () :uf)))
+(defun t4p3-early (x)
+  (when (car x) (return-from t4p3-early :early))
+  (if (cdr x) (return-from t4p3-early (list :cdr (cdr x))))
+  (setq x (cons :end x)))
+(check "several returns in one function" '(:early (:cdr 5) (:end nil))
+  (list (t4p3-early '(t)) (t4p3-early '(nil . 5)) (t4p3-early '(nil))))
+(defun t4p3-block-nil (l) (dolist (x l) (when (eq x :stop) (return :stopped))))
+(check "RETURN from a DOLIST" '(:stopped nil) (list (t4p3-block-nil '(1 :stop 2)) (t4p3-block-nil '(1 2))))
+(defun t4p3-hc3 (k)
+  (handler-case (case k (0 (warn "w")) (1 (error "e")) (t (signal 'condition)))
+    (warning () :warning)
+    (error () :error)
+    (condition () :condition)))
+(check "three-clause HANDLER-CASE keeps its landing table" '(:warning :error :condition)
+  (list (t4p3-hc3 0) (t4p3-hc3 1) (t4p3-hc3 2)))
+(defun t4p3-hc-last (x)
+  (handler-case (if x (warn "w") (error "e")) (warning () :w) (error () :e)))
+(check "two-clause HANDLER-CASE at the end of a function" '(:w :e)
+  (list (t4p3-hc-last t) (t4p3-hc-last nil)))
+(defun t4p3-r2 (a b)
+  (let ((c a) (d 0))
+    (setq d c)
+    (list (if (eq b *t4p3-flag*) (list c :k) (list c :n))
+          (cadr (list d *t4p3-flag*)) (progn (list 1) d))))
+(check "LOAD_STORE_POP / LOAD_CONST / GLOAD_EQ_JNIL / GLOAD_CALL_GLOBAL / POP_LOAD"
+       '(((1 :k) nil 1) ((2 :n) nil 2) ((2 :k) :x 2))
+  (list (t4p3-r2 1 nil) (t4p3-r2 2 :x) (let ((*t4p3-flag* :x)) (t4p3-r2 2 :x))))
+(defun t4p3-r2u (a) (if (eq a *t4p3-unbound*) 1 2))
+(check "GLOAD_EQ_JNIL on an unbound special signals" :unbound
+  (handler-case (t4p3-r2u 1) (unbound-variable () :unbound)))
+;; JIT coverage: each of these carries the shapes named; where the JIT is
+;; active the walker must have produced native code for it (%jit-dump-bytes
+;; is NIL for a function the walker bailed on — vacuous under --no-jit and
+;; on the host).  The functions above ran already, so the semantics of the
+;; native code are covered by their checks.
+(defun t4p3-jit-native-p (f)
+  (if (clamiga::%jit-active-p) (not (null (clamiga::%jit-dump-bytes f))) t))
+(check "JIT: STORE_POP / LOAD_LOAD / LOAD_CALL_GLOBAL" t (t4p3-jit-native-p #'t4p3-bind))
+(check "JIT: LOAD_STRUCT_REF" t (t4p3-jit-native-p #'t4p3-slot))
+(check "JIT: LOAD_MV_RESET / LOAD_RET" t (and (t4p3-jit-native-p #'t4p3-ret-param)
+                                              (t4p3-jit-native-p #'t4p3-ret-local)))
+(check "JIT: EQ_JNIL / LOAD_JNIL / GLOAD_JNIL" t (t4p3-jit-native-p #'t4p3-tests))
+(check "JIT: several RETs in one function" t (t4p3-jit-native-p #'t4p3-early))
+(check "JIT: HANDLER-CASE clause bodies after a RET" t (t4p3-jit-native-p #'t4p3-hc-last))
+(check "JIT: the round-two opcodes" t (t4p3-jit-native-p #'t4p3-r2))
+
 ; --- Exit hooks (EXT:*EXIT-HOOKS*) ---
 ; The list API here, plus one real hook registered at the bottom: it can only
 ; run from main.c's shutdown funnel, so its marker in the results log is the

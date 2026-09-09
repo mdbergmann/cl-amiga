@@ -232,7 +232,7 @@ gains at `(safety 0)`.
 
 ---
 
-### 1.8 Bytecode Peephole Post-Pass (gated behind `speed >= 2`) ✅ DONE (2026-07-10)
+### 1.8 Bytecode Peephole Post-Pass (gated behind `speed >= 2`; since 4.3: `speed >= 1`) ✅ DONE (2026-07-10)
 
 The higher-ceiling, higher-risk companion to 1.3. Build this **only after 1.3 ships and profiling
 shows the emit-time wins are insufficient** — and build it as a proper decode → rewrite → re-encode
@@ -299,7 +299,8 @@ differential fuzz harness in the spirit of gc-stress — compile representative 
 and `speed 3` and assert identical results — before it can be trusted on by default.
 
 **Files**: new `src/core/peephole.c` (decode/rewrite/re-encode), called from the bytecode
-finalization path in `src/core/compiler.c` when `cl_optimize_settings.speed >= 2`.
+finalization path in `src/core/compiler.c` when `cl_optimize_settings.speed >= 2` — lowered
+to `>= 1` by 4.3, which also added the superinstruction fusion step and three rewrites.
 
 ---
 
@@ -835,17 +836,109 @@ consumer sleeps and wakes per burst), which is why the 4-producer cell
 used as this phase's gate stayed flat while CPU time per run fell 10%.
 **Gate phase 3 on `:load-threads 1`** (median of record: 271k).
 
-### 4.3 Phase 3 — superinstructions (~10–15%)
+### 4.3 Phase 3 — superinstructions ✅ DONE (2026-09-09)
 
-What actually crosses 2×.  The peephole pass (1.8) already decodes and
-re-encodes bytecode, so fused opcodes can be emitted there without touching the
-compiler.  Candidates from the opcode counts, in order: `STORE n; POP` →
-`STORE_POP n` (21% of all dispatches today), `LOAD a; LOAD b`, `GLOAD; JNIL`,
-`CONST; EQ; JNIL`, `LOAD; STRUCT_REF`.  Requires a `CL_FASL_VERSION` bump, new
-X-macro rows in `opcodes.h` (disassembler and peephole decoder follow for
-free), and either walker templates for the new opcodes in the m68k JIT or a
-walker bail-out on them (bail keeps correctness; templates keep the JIT's
-coverage).
+The peephole pass (1.8) already decodes and re-encodes bytecode, so fused
+opcodes are emitted there without touching the compiler.  Two decisions
+shaped the phase:
+
+- **The pass runs at every speed above 0 now** (`cl_peephole_optimize`
+  gated on `peep_speed_max >= 1`, was `>= 2`).  Third-party code — sento
+  included — compiles at the default `(speed 1)`, so a `speed >= 2` gate
+  would have left the acceptance workload untouched.  `(speed 0)` and
+  `CLAMIGA_FORCE_SPEED=0` keep the bytecode as emitted, which is what the
+  differential harness diffs against (now at 0 vs 1, 2 and 3);
+  `CLAMIGA_NO_FUSE=1` keeps the rewrites but not the fusion.
+- **The table came from a pair profile, not from the single-opcode counts
+  of 4.0.**  `PROFILE_OPCODES` builds now count adjacent pairs
+  (`cl_op_pair_counts`, dumped by `%op-counts-dump`); the sento message
+  path at one producer gave STORE→POP 10.8%, POP→LOAD 8.4%, LOAD→LOAD
+  5.2%, LOAD→CALL_GLOBAL 4.8%, LOAD→STRUCT_REF 2.7%, LOAD→RET 2.8%,
+  LOAD→MV_RESET 2.6%, EQ→JNIL 1.9%, GLOAD→JNIL 1.6% — and `CONST; EQ; JNIL`
+  from the plan barely registers (`GLOAD; EQ; JNIL`, the slot-protocol
+  marker test, is what is there).  A second profile of the fused stream
+  chose the five round-two shapes.
+
+**Shipped** (`peephole.c` `peep_fuse`, `opcodes.h` 0xB2–0xBF, `vm.c`,
+`jit.c`, `builtins_io.c`; `CL_FASL_VERSION` 33):
+
+| fused opcode | members | operands |
+| --- | --- | --- |
+| `STORE_POP n` | STORE n; POP | u8 |
+| `LOAD_LOAD a b` | LOAD a; LOAD b | u8 u8 |
+| `LOAD_CONST s k` | LOAD s; CONST k | u8 u16 |
+| `LOAD_CALL_GLOBAL s f n` | LOAD s; CALL_GLOBAL f n | u8 u16 u8 |
+| `GLOAD_CALL_GLOBAL v f n` | GLOAD v; CALL_GLOBAL f n | u16 u16 u8 |
+| `LOAD_STRUCT_REF s i` | LOAD s; STRUCT_REF i | u8 u8 |
+| `LOAD_STORE_POP a b` | LOAD a; STORE b; POP | u8 u8 |
+| `POP_LOAD s` | POP; LOAD s | u8 |
+| `LOAD_MV_RESET s` | LOAD s; MV_RESET | u8 |
+| `LOAD_RET s` | LOAD s; RET | u8 |
+| `LOAD_JNIL s t` | LOAD s; JNIL t | u8 i32 |
+| `EQ_JNIL t` | EQ; JNIL t | i32 |
+| `GLOAD_JNIL v t` | GLOAD v; JNIL t | u16 i32 |
+| `GLOAD_EQ_JNIL v t` | GLOAD v; EQ; JNIL t | u16 i32 |
+
+A fused opcode's operands are its members' operands concatenated, so the
+pass builds it by chaining the members (`fused_with`) and the encoder
+copies their bytes in order; `cl_opnd_len` / `cl_opnd_jrel_pos` are the two
+shape facts every decoder (peephole, disassembler, JIT prescan, the
+exhaustiveness test) reads.  Fusion is one greedy left-to-right pass after
+the deleting rewrites reach their fixpoint, triples before pairs, never
+across a branch target (a jump landing on the second member would run
+only the tail), and a fused head is never re-fused.  Each `vm.c` handler
+is exactly the pair; the ones with a heavy tail (`CALL_GLOBAL`,
+`STRUCT_REF`, `RET`) push the local and fall into the tail's handler, so
+the tail exists once.  The m68k walker has a template for every one (the
+heavy-tail ones reuse the tail's template the same way) and the prescan
+knows their shapes, so JIT coverage is unchanged.  The line map attributes
+an absorbed member to its head, and the error paths of the fused opcodes
+(and of `STRUCT_REF`/`STRUCT_SET`/`GLOAD`/`CALL_GLOBAL` themselves) now
+sync the frame's ip first, so a backtrace names the form's line rather
+than the previous call's.
+
+**Three rewrites came out of looking at the fused listings**, each a
+generic win independent of fusion:
+
+- *Dead store before RET*: every function ended in `STORE slot; RET` —
+  the DEFUN block's result slot, stored whether or not a RETURN-FROM
+  exists — one dispatch per call, gone (`peep_dead_store_ret`, also
+  through a `MV_RESET`).
+- *Jump to return*: a `JMP` whose live target is `RET` becomes the `RET`
+  (`peep_thread_jumps`), so a block arm returns where it ends.
+- *Return site*: a local RETURN-FROM compiled to `STORE slot; POP; JMP L`
+  with `L: LOAD slot; [MV_RESET;] RET`; the site now returns in place
+  (`peep_return_site`), and once no site targets `L`, the fall-through
+  `STORE; POP; LOAD; RET` collapses through the two rules above.
+
+Because a function now returns wherever an arm ends, the m68k walker no
+longer stops at the first `OP_RET` (it used to resolve its forward patches
+there); it walks on, emits an epilogue per `RET`, and resolves the patches
+at the end.  Its two shape matchers learned the fused forms
+(`CONST k; RET` for a trivial leaf, `LOAD_MV_RESET j; RET` for a
+pass-through).
+
+**The one regression the speed-1 gate flushed out**: `HANDLER_CASE_PUSH`'s
+landing is a table of one 5-byte `JMP` per clause that `cl_handler_case_transfer`
+indexes at `landing + 5*k`; only the first entry is a target from the
+bytecode's own control flow, so the dead-code rewrite deleted the rest
+(and the clauses behind them — the second clause of any two-clause
+`handler-case` silently became the first).  The decoder now pins every
+table entry (`PEEP_PINNED`: always a target, never shrunk), the
+differential corpus carries multi-clause handler-cases, and
+`tests/test_peephole.c` has the byte-level case.
+
+**Tests**: `tests/test_peephole.c` (47 cases: every fusion, the three
+rewrites, the pinned table, the line map, the speed policy),
+`tests/test_tier4_phase3.sh` (78 checks: shapes through DISASSEMBLE at
+speed 1 / speed 0 / `CLAMIGA_NO_FUSE`, semantics and error paths of every
+fused opcode, dynamic bindings, backtrace lines, multi-clause
+`handler-case`, `compile-file` round trip, allocation loops; also under
+`make test-gc-stress`), the "Tier-4 phase 3" block of
+`tests/amiga/run-tests.lisp` (semantics plus JIT-coverage proofs through
+`%jit-invoke-count`), and `tests/peephole-corpus.lisp` at four speeds.
+
+**Measured**: docs/benchmarks.md 2026-09-09 (phase 3).
 
 ### Expected result and validation
 
@@ -881,8 +974,8 @@ Recommended sequence balancing impact vs. risk:
 | 9 | 3.1 (slot access), 3.2 (keyword pre-comp) | ✅ 3.1 DONE (2026-07-05: registry hash index + fused slot-access builtins + C GF inline-cache probe); 3.2 pending |
 | — | 2.4 (set ops in C) | Deprioritized — measured near-zero real-world use (2026-07-05) |
 | 10 | 4.1 (runtime taxes: call_builtin, SLOT-VALUE resolution cache, GF IC without intern/lock, typep by identity, symbol_value(thr), rooted cons) | ✅ DONE (2026-09-08) — +37.6% on sento pinned/tell |
-| 11 | 4.2 (call + NLX protocol: OP_CALL/OP_RET slimming, CALL_GLOBAL, setjmp-free NLX frames, handler-case/unwind-protect codegen, direct flet, keyword constructors, CNM chains) | Planned |
-| 12 | 4.3 (superinstructions via the peephole pass; FASL bump; JIT walker) | Planned |
+| 11 | 4.2 (call + NLX protocol: OP_CALL/OP_RET slimming, CALL_GLOBAL, setjmp-free NLX frames, handler-case/unwind-protect codegen, inlined local functions, keyword constructors, CNM chains) | ✅ DONE (2026-09-08) |
+| 12 | 4.3 (superinstructions via the peephole pass at every speed above 0; the return-shape rewrites; FASL v33; JIT walker templates) | ✅ DONE (2026-09-09) |
 
 Lesson from phase 6: **profile a real workload before picking the next item** — the
 biggest win so far (1.9) was not in the plan, and a planned item (2.4) measured

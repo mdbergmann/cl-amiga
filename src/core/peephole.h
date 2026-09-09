@@ -2,9 +2,11 @@
 #define CL_PEEPHOLE_H
 
 /*
- * Bytecode peephole post-pass (spec 1.8), gated on (optimize (speed >= 2)).
- * See peephole.c for the full design notes.  Fail-safe: on anything it does
- * not fully understand it leaves the bytecode untouched.
+ * Bytecode peephole post-pass (spec 1.8) and superinstruction fusion
+ * (spec 4.3), run at (optimize (speed >= 1)) — only (speed 0) keeps the
+ * bytecode as emitted.  See peephole.c for the full design notes.
+ * Fail-safe: on anything it does not fully understand it leaves the
+ * bytecode untouched.
  */
 
 #include <stdint.h>
@@ -18,10 +20,15 @@
 struct CL_Compiler_s;
 
 /* Optimize C's emitted bytecode in place if its effective (declare
- * (optimize (speed ...))) high-water mark is >= 2.  Called from the two
+ * (optimize (speed ...))) high-water mark is >= 1.  Called from the two
  * bytecode finalization sites (compile_lambda, cl_compile_env) after the
  * final OP_RET/OP_HALT is emitted and all jumps are patched. */
 void cl_peephole_optimize(struct CL_Compiler_s *c);
+
+/* Process-wide switch for the superinstruction fusion step alone
+ * (CLAMIGA_NO_FUSE=1 clears it in main.c): the deleting rewrites still run,
+ * the compiler's own opcodes are left unfused.  For A/B runs and bisects. */
+extern int cl_peephole_fuse_enabled;
 
 /* Raw engine (exposed for unit tests): rewrite CODE[0..*CODE_LEN) in place,
  * shrink-only.  CONSTANTS/N_CONSTANTS are needed to decode OP_CLOSURE's

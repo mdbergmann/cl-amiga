@@ -837,14 +837,21 @@ rest are parsed and accepted as conforming no-ops.
     and the `destructuring-bind` guards — too-few/too-many arity and the
     unknown-keyword check of a `&key` section — are not emitted; at
     `safety ≥ 1` they are.
-  - At **`speed ≥ 2`** a bytecode **peephole post-pass** runs over each
-    compiled function: it removes store-then-reload round trips and discarded
-    pure values, fuses `(not ...)` tests into inverted branches, threads
-    jump-to-jump chains, and deletes unreachable code — typically 8–12%
-    faster on load/store-heavy loops, and the m68k JIT compiles the optimized
-    stream for free. The rewrite is semantics-preserving: type errors from
-    discarded values (e.g. `(car 5)`), multiple-values state, and non-local
-    exits all behave exactly as at `speed 0`.
+  - At **`speed ≥ 1`** (the default) a bytecode **peephole post-pass** runs
+    over each compiled function: it removes store-then-reload round trips,
+    discarded pure values, the dead store of a function's result slot and
+    the jump to a shared return, fuses `(not ...)` tests into inverted
+    branches, threads jump-to-jump chains, deletes unreachable code, and
+    then fuses the most frequent adjacent opcode pairs into
+    **superinstructions** (a local followed by a global call, a struct
+    slot read of a local, a local or special variable used as an `if`
+    test, an `eq` test that branches, and so on — fourteen shapes, chosen
+    from an opcode-pair profile of a message-passing workload). The m68k
+    JIT compiles the optimized stream for free. The rewrite is
+    semantics-preserving: type errors from discarded values (e.g.
+    `(car 5)`), multiple-values state, and non-local exits all behave
+    exactly as at `speed 0`, which is the only level that keeps the
+    bytecode as emitted.
   - `compilation-speed` is interned (so libraries can name
     `cl:compilation-speed`) but ignored, and any non-standard quality — e.g.
     `security` — is silently accepted and ignored.
@@ -879,36 +886,40 @@ dead-branch, scoping, and check-elision behavior; the implementation lives in
 ### The peephole post-pass in practice
 
 **How it works**: when a function finishes compiling with an effective
-`speed ≥ 2`, its bytecode is decoded into an instruction list, rewritten
-(store-reload elimination, discarded-pure-value removal, `(not ...)` branch
-fusion, jump threading, dead code), and re-encoded with all jump and
-non-local-exit offsets recomputed. The pass is fail-safe: anything it does
-not fully understand makes it leave the bytecode untouched, so it can never
-miscompile — only miss an optimization.
+`speed ≥ 1`, its bytecode is decoded into an instruction list, rewritten
+(store-reload elimination, discarded-pure-value removal, dead result-slot
+stores, returns in place of jumps to a return, `(not ...)` branch fusion,
+jump threading, dead code), fused into superinstructions, and re-encoded
+with all jump and non-local-exit offsets recomputed. The pass is
+fail-safe: anything it does not fully understand makes it leave the
+bytecode untouched, so it can never miscompile — only miss an
+optimization. `disassemble` shows the result; a fused opcode is named
+after its members (`LOAD_CALL_GLOBAL`, `GLOAD_JNIL`, `STORE_POP`, ...).
 
 **When it applies**: at **compile time only** — inside `defun`, `compile`,
 `compile-file`, and source `load` — whenever the function's effective
-`speed` is ≥ 2, whether that comes from a `declaim`/`proclaim` baseline, a
-body `(declare (optimize (speed ...)))`, or the `CLAMIGA_FORCE_SPEED`
-environment variable (which pins the effective `speed` for the whole
-process, overriding declarations — handy for A/B testing any workload).
+`speed` is ≥ 1, i.e. always unless a `declaim`/`proclaim` baseline or the
+`CLAMIGA_FORCE_SPEED=0` environment variable (which pins the effective
+`speed` for the whole process, overriding declarations — handy for A/B
+testing any workload) sets it to 0. `CLAMIGA_NO_FUSE=1` keeps the
+rewrites but leaves the opcode pairs unfused, for the same A/B purpose.
 
 **FASL caches**: the optimization is baked into the compiled bytecode, so a
-`.fasl` compiled at `speed 3` stays optimized for everyone who loads it,
-regardless of their current settings. The flip side: **loading a cached FASL
-never re-runs the compiler**, so code compiled at `speed 1` stays
-unoptimized until it is actually recompiled — raising `speed` (or setting
-`CLAMIGA_FORCE_SPEED=3`) afterwards has no effect on a warm cache. To push
-an already-compiled library through the pass, clear its FASL cache first
-(for ASDF/Quicklisp systems on the host: `~/.cache/common-lisp/cl-amiga-*`)
-and reload.
+`.fasl` stays optimized for everyone who loads it, regardless of their
+current settings. The flip side: **loading a cached FASL never re-runs the
+compiler**, so code compiled at `speed 0` stays as emitted until it is
+actually recompiled — changing `speed` (or `CLAMIGA_FORCE_SPEED`)
+afterwards has no effect on a warm cache. To push an already-compiled
+library through the pass, clear its FASL cache first (for ASDF/Quicklisp
+systems on the host: `~/.cache/common-lisp/cl-amiga-*`) and reload.
 
-`tests/test_peephole.c` demonstrates every rewrite pattern and guard, and
-`tests/peephole-corpus.lisp` + `tests/test_peephole_diff.sh` run the same
-code with the pass forced off and on (`CLAMIGA_FORCE_SPEED=0` vs `3`) and
-require identical output. The design rationale and rewrite-soundness
-arguments live in the `src/core/peephole.c` header comment and
-`specs/performance.md` §1.8.
+`tests/test_peephole.c` demonstrates every rewrite and fusion pattern and
+guard, `tests/test_tier4_phase3.sh` pins the fused shapes through
+`disassemble`, and `tests/peephole-corpus.lisp` + `tests/test_peephole_diff.sh`
+run the same code with the pass forced off and on (`CLAMIGA_FORCE_SPEED=0`
+vs `1`, `2`, `3`) and require identical output. The design rationale and
+rewrite-soundness arguments live in the `src/core/peephole.c` header
+comment and `specs/performance.md` §1.8 and §4.3.
 
 ### Disassembly
 
@@ -926,15 +937,11 @@ CL-USER> (disassemble 'add1)
 Disassembly of ADD1:
   1 required, 0 optional, 0 key
   2 locals, 0 upvalues
-  12 bytes, 1 constants
+  6 bytes, 1 constants
 
-  0000: LOAD         0
-  0002: CONST        0    ; 1
-  0005: ADD
-  0006: STORE        1
-  0008: POP
-  0009: LOAD         1
-  0011: RET
+  0000: LOAD_CONST   0 0    ; 1
+  0004: ADD
+  0005: RET
 
 Constants:
   0: 1

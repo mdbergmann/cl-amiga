@@ -43,6 +43,18 @@
  *                     n_upvalues
  *   CL_OPND_AMIGA     u16 + i16 + i32 + u8 (9 bytes; the i32 is a regspec
  *                     immediate, NOT a jump offset)
+ *   CL_OPND_U8_U8     two u8 (the fused LOAD a; LOAD b and LOAD s; STRUCT_REF i)
+ *   CL_OPND_U8_U16_U8 u8 slot + u16 const index + u8 nargs (LOAD_CALL_GLOBAL)
+ *   CL_OPND_U8_JREL   u8 slot + i32 jump offset relative to the first byte
+ *                     after both operands (LOAD_JNIL)
+ *   CL_OPND_U8_U16    u8 slot + u16 const index (LOAD_CONST)
+ *   CL_OPND_U16_U16_U8 two u16 const indexes + u8 nargs (GLOAD_CALL_GLOBAL:
+ *                     the special's symbol, the callee's symbol, the count)
+ *
+ * The operand bytes of a fused opcode (specs/performance.md 4.3) are the
+ * operand bytes of its members, in order — that is what lets the peephole
+ * pass (peephole.c, peep_fuse) build them by concatenation.  cl_opnd_len()
+ * and cl_opnd_jrel_pos() are the two shape facts every decoder needs.
  *
  * Dataflow flags (ground truth: the vm.c dispatch case):
  *   CL_OPF_MVW    unconditionally writes cl_mv_count on its normal
@@ -69,7 +81,12 @@ typedef enum {
     CL_OPND_U16_U16,
     CL_OPND_CLOSURE,
     CL_OPND_AMIGA,
-    CL_OPND_U16_U8
+    CL_OPND_U16_U8,
+    CL_OPND_U8_U8,
+    CL_OPND_U8_U16_U8,
+    CL_OPND_U8_JREL,
+    CL_OPND_U8_U16,
+    CL_OPND_U16_U16_U8
 } CL_OperandKind;
 
 #define CL_OPF_MVW    0x01
@@ -188,6 +205,25 @@ typedef enum {
      * normal exit and leaves the MV state alone. */ \
     X(OP_HANDLER_CASE_PUSH, 0xB0, "HANDLER_CASE_PUSH", CL_OPND_U16_JREL, 0)   /* NLX frame + N clause bindings */ \
     X(OP_HANDLER_CASE_POP,  0xB1, "HANDLER_CASE_POP",  CL_OPND_NONE, 0)       /* Pop the frame and its bindings (normal exit) */ \
+    /* Superinstructions (specs/performance.md 4.3).  Never emitted by the
+     * compiler: the peephole pass fuses each from the adjacent pair (or
+     * triple) named in its comment, so every one is exactly that sequence
+     * in one dispatch — same stack effect, same MV effect, same errors.
+     * The operand bytes are the members' operand bytes concatenated. */ \
+    X(OP_STORE_POP,        0xB2, "STORE_POP",        CL_OPND_U8, 0)                   /* STORE n; POP */ \
+    X(OP_LOAD_LOAD,        0xB3, "LOAD_LOAD",        CL_OPND_U8_U8, 0)                /* LOAD a; LOAD b (pushes TWO — not PURE) */ \
+    X(OP_LOAD_CALL_GLOBAL, 0xB4, "LOAD_CALL_GLOBAL", CL_OPND_U8_U16_U8, CL_OPF_MVW|CL_OPF_MVR) /* LOAD s; CALL_GLOBAL sym n */ \
+    X(OP_LOAD_STRUCT_REF,  0xB5, "LOAD_STRUCT_REF",  CL_OPND_U8_U8, CL_OPF_MVW)       /* LOAD s; STRUCT_REF i */ \
+    X(OP_LOAD_MV_RESET,    0xB6, "LOAD_MV_RESET",    CL_OPND_U8, CL_OPF_MVW)          /* LOAD s; MV_RESET */ \
+    X(OP_LOAD_RET,         0xB7, "LOAD_RET",         CL_OPND_U8, CL_OPF_MVR|CL_OPF_UNCOND) /* LOAD s; RET */ \
+    X(OP_EQ_JNIL,          0xB8, "EQ_JNIL",          CL_OPND_JREL, CL_OPF_MVW)        /* EQ; JNIL t (pop 2, jump if not eq) */ \
+    X(OP_GLOAD_JNIL,       0xB9, "GLOAD_JNIL",       CL_OPND_U16_JREL, CL_OPF_MVW)    /* GLOAD sym; JNIL t (nothing pushed) */ \
+    X(OP_LOAD_JNIL,        0xBA, "LOAD_JNIL",        CL_OPND_U8_JREL, 0)              /* LOAD s; JNIL t (nothing pushed) */ \
+    X(OP_LOAD_CONST,       0xBB, "LOAD_CONST",       CL_OPND_U8_U16, CL_OPF_MVW)      /* LOAD s; CONST k (pushes TWO — not PURE) */ \
+    X(OP_GLOAD_CALL_GLOBAL,0xBC, "GLOAD_CALL_GLOBAL",CL_OPND_U16_U16_U8, CL_OPF_MVW|CL_OPF_MVR) /* GLOAD sym; CALL_GLOBAL f n */ \
+    X(OP_GLOAD_EQ_JNIL,    0xBD, "GLOAD_EQ_JNIL",    CL_OPND_U16_JREL, CL_OPF_MVW)    /* GLOAD sym; EQ; JNIL t (pop 1, jump if not eq) */ \
+    X(OP_LOAD_STORE_POP,   0xBE, "LOAD_STORE_POP",   CL_OPND_U8_U8, 0)                /* LOAD a; STORE b; POP (locals[b] = locals[a]) */ \
+    X(OP_POP_LOAD,         0xBF, "POP_LOAD",         CL_OPND_U8, 0)                   /* POP; LOAD s (replaces the top) */ \
     X(OP_HALT,         0xFF, "HALT",         CL_OPND_NONE, CL_OPF_UNCOND)    /* Stop VM */
 
 /*
@@ -231,5 +267,14 @@ typedef struct {
 } CL_OpcodeInfo;
 
 const CL_OpcodeInfo *cl_opcode_info(uint8_t op);
+
+/* Operand byte count of a fixed-length operand shape; -1 for
+ * CL_OPND_CLOSURE (variable: needs the template's n_upvalues). */
+int cl_opnd_len(uint8_t kind);
+
+/* Byte offset, counted from the opcode byte, of the i32 jump/landing offset
+ * an operand shape carries; 0 when the shape has none.  The offset is
+ * relative to the first byte after the whole instruction. */
+int cl_opnd_jrel_pos(uint8_t kind);
 
 #endif /* CL_OPCODES_H */

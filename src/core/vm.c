@@ -146,87 +146,18 @@ static void dbg_check_watch_impl(const char *where) {
  * and Lisp profiling scripts stay portable. */
 #ifdef PROFILE_OPCODES
 static uint32_t cl_op_counts_arr[256];
+/* Adjacent-pair counts, [previous op][this op], for choosing
+ * superinstructions (specs/performance.md 4.3).  The previous op is
+ * tracked per cl_vm_run activation, so a pair that straddles a call into
+ * a bytecode callee (CALL -> the callee's first op) is counted too; those
+ * are not fusable and are easy to spot in the dump.  Counters are
+ * process-wide and racy on purpose — this is a profile, not a test. */
+static uint32_t cl_op_pair_counts[256][256];
 
 static const char *cl_opcode_name(uint8_t op)
 {
-    switch (op) {
-    case OP_CONST: return "CONST";
-    case OP_LOAD: return "LOAD";
-    case OP_STORE: return "STORE";
-    case OP_GLOAD: return "GLOAD";
-    case OP_GSTORE: return "GSTORE";
-    case OP_UPVAL: return "UPVAL";
-    case OP_POP: return "POP";
-    case OP_DUP: return "DUP";
-    case OP_CONS: return "CONS";
-    case OP_CAR: return "CAR";
-    case OP_CDR: return "CDR";
-    case OP_ADD: return "ADD";
-    case OP_SUB: return "SUB";
-    case OP_MUL: return "MUL";
-    case OP_DIV: return "DIV";
-    case OP_EQ: return "EQ";
-    case OP_LT: return "LT";
-    case OP_GT: return "GT";
-    case OP_LE: return "LE";
-    case OP_GE: return "GE";
-    case OP_NUMEQ: return "NUMEQ";
-    case OP_NOT: return "NOT";
-    case OP_JMP: return "JMP";
-    case OP_JNIL: return "JNIL";
-    case OP_JTRUE: return "JTRUE";
-    case OP_CALL: return "CALL";
-    case OP_TAILCALL: return "TAILCALL";
-    case OP_RET: return "RET";
-    case OP_CLOSURE: return "CLOSURE";
-    case OP_APPLY: return "APPLY";
-    case OP_LIST: return "LIST";
-    case OP_NIL: return "NIL";
-    case OP_T: return "T";
-    case OP_FLOAD: return "FLOAD";
-    case OP_DEFMACRO: return "DEFMACRO";
-    case OP_ARGC: return "ARGC";
-    case OP_CATCH: return "CATCH";
-    case OP_UNCATCH: return "UNCATCH";
-    case OP_UWPROT: return "UWPROT";
-    case OP_UWPOP: return "UWPOP";
-    case OP_UWRETHROW: return "UWRETHROW";
-    case OP_MV_LOAD: return "MV_LOAD";
-    case OP_MV_TO_LIST: return "MV_TO_LIST";
-    case OP_NTH_VALUE: return "NTH_VALUE";
-    case OP_DYNBIND: return "DYNBIND";
-    case OP_DYNUNBIND: return "DYNUNBIND";
-    case OP_RPLACA: return "RPLACA";
-    case OP_RPLACD: return "RPLACD";
-    case OP_ASET: return "ASET";
-    case OP_DEFTYPE: return "DEFTYPE";
-    case OP_HANDLER_PUSH: return "HANDLER_PUSH";
-    case OP_HANDLER_POP: return "HANDLER_POP";
-    case OP_RESTART_PUSH: return "RESTART_PUSH";
-    case OP_RESTART_POP: return "RESTART_POP";
-    case OP_ASSERT_TYPE: return "ASSERT_TYPE";
-    case OP_BLOCK_PUSH: return "BLOCK_PUSH";
-    case OP_BLOCK_POP: return "BLOCK_POP";
-    case OP_BLOCK_RETURN: return "BLOCK_RETURN";
-    case OP_FSTORE: return "FSTORE";
-    case OP_MAKE_CELL: return "MAKE_CELL";
-    case OP_CELL_REF: return "CELL_REF";
-    case OP_CELL_SET_LOCAL: return "CELL_SET_LOCAL";
-    case OP_CELL_SET_UPVAL: return "CELL_SET_UPVAL";
-    case OP_TAGBODY_PUSH: return "TAGBODY_PUSH";
-    case OP_TAGBODY_POP: return "TAGBODY_POP";
-    case OP_TAGBODY_GO: return "TAGBODY_GO";
-    case OP_PROGV_BIND: return "PROGV_BIND";
-    case OP_PROGV_UNBIND: return "PROGV_UNBIND";
-    case OP_DEFSETF: return "DEFSETF";
-    case OP_DEFVAR: return "DEFVAR";
-    case OP_MV_RESET: return "MV_RESET";
-    case OP_AMIGA_CALL: return "AMIGA_CALL";
-    case OP_STRUCT_REF: return "STRUCT_REF";
-    case OP_STRUCT_SET: return "STRUCT_SET";
-    case OP_HALT: return "HALT";
-    default: return "?";
-    }
+    const CL_OpcodeInfo *info = cl_opcode_info(op);
+    return info ? info->name : "?";
 }
 #endif /* PROFILE_OPCODES */
 
@@ -235,6 +166,7 @@ void cl_op_counts_reset(void)
 #ifdef PROFILE_OPCODES
     uint32_t i;
     for (i = 0; i < 256; i++) cl_op_counts_arr[i] = 0;
+    memset(cl_op_pair_counts, 0, sizeof(cl_op_pair_counts));
 #endif
 }
 
@@ -265,6 +197,22 @@ void cl_op_counts_dump(FILE *out)
                 idx[i], cl_opcode_name(idx[i]),
                 (unsigned long)c,
                 total ? (100.0 * (double)c / (double)total) : 0.0);
+    }
+    /* Top adjacent pairs: repeatedly pick the largest remaining cell. */
+    fprintf(out, "=== top opcode pairs (prev -> this) ===\n");
+    for (i = 0; i < 48; i++) {
+        uint32_t best = 0, bp = 0, bo = 0, p, o;
+        for (p = 0; p < 256; p++)
+            for (o = 0; o < 256; o++)
+                if (cl_op_pair_counts[p][o] > best) {
+                    best = cl_op_pair_counts[p][o]; bp = p; bo = o;
+                }
+        if (best == 0) break;
+        fprintf(out, "  %-13s -> %-13s %12lu %7.2f%%\n",
+                cl_opcode_name((uint8_t)bp), cl_opcode_name((uint8_t)bo),
+                (unsigned long)best,
+                total ? (100.0 * (double)best / (double)total) : 0.0);
+        cl_op_pair_counts[bp][bo] = 0;
     }
     fflush(out);
 #else
@@ -1883,6 +1831,9 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
     CL_Obj *constants = frame->constants;
     uint32_t ip = frame->ip;
     uint8_t op;
+#ifdef PROFILE_OPCODES
+    uint8_t prof_prev_op = 0;   /* 0 is not an opcode: "activation entry" */
+#endif
 
     /* ---- Computed goto dispatch (GCC/Clang) ----
      * Eliminates the switch overhead: each opcode handler jumps directly
@@ -1972,6 +1923,20 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
         [OP_AMIGA_CALL]   = &&vm_op_OP_AMIGA_CALL,
         [OP_STRUCT_REF]   = &&vm_op_OP_STRUCT_REF,
         [OP_STRUCT_SET]   = &&vm_op_OP_STRUCT_SET,
+        [OP_STORE_POP]        = &&vm_op_OP_STORE_POP,
+        [OP_LOAD_LOAD]        = &&vm_op_OP_LOAD_LOAD,
+        [OP_LOAD_CALL_GLOBAL] = &&vm_op_OP_LOAD_CALL_GLOBAL,
+        [OP_LOAD_STRUCT_REF]  = &&vm_op_OP_LOAD_STRUCT_REF,
+        [OP_LOAD_MV_RESET]    = &&vm_op_OP_LOAD_MV_RESET,
+        [OP_LOAD_RET]         = &&vm_op_OP_LOAD_RET,
+        [OP_EQ_JNIL]          = &&vm_op_OP_EQ_JNIL,
+        [OP_GLOAD_JNIL]       = &&vm_op_OP_GLOAD_JNIL,
+        [OP_LOAD_JNIL]        = &&vm_op_OP_LOAD_JNIL,
+        [OP_LOAD_CONST]       = &&vm_op_OP_LOAD_CONST,
+        [OP_GLOAD_CALL_GLOBAL] = &&vm_op_OP_GLOAD_CALL_GLOBAL,
+        [OP_GLOAD_EQ_JNIL]    = &&vm_op_OP_GLOAD_EQ_JNIL,
+        [OP_LOAD_STORE_POP]   = &&vm_op_OP_LOAD_STORE_POP,
+        [OP_POP_LOAD]         = &&vm_op_OP_POP_LOAD,
         [OP_HALT]         = &&vm_op_OP_HALT,
     };
 
@@ -1988,7 +1953,11 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
     }
 
 #ifdef PROFILE_OPCODES
-#define CL_OPCOUNT_TICK(op) (cl_op_counts_arr[(uint8_t)(op)]++)
+#define CL_OPCOUNT_TICK(op) do { \
+        cl_op_counts_arr[(uint8_t)(op)]++; \
+        cl_op_pair_counts[prof_prev_op][(uint8_t)(op)]++; \
+        prof_prev_op = (uint8_t)(op); \
+    } while (0)
 #else
 #define CL_OPCOUNT_TICK(op) ((void)0)
 #endif
@@ -2349,6 +2318,137 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             VM_BREAK;
         }
 
+        /* ---- Superinstructions (specs/performance.md 4.3) ----
+         * Each is the adjacent pair the peephole pass fused (opcodes.h): the
+         * pair's semantics in one dispatch, with the intermediate push/pop
+         * gone.  The MV effect is the pair's: a member that wrote
+         * cl_mv_count still does, one that did not still does not.  The
+         * three fused with a heavier tail (CALL_GLOBAL, STRUCT_REF, RET)
+         * sit directly before that tail's handler and FALL THROUGH into it
+         * after the LOAD, so the tail exists once. */
+
+        VM_CASE(OP_STORE_POP): {          /* STORE n; POP */
+            uint8_t slot = code[ip++];
+            cl_vm.stack[frame->bp + slot] = cl_vm.stack[--cl_vm.sp];
+            DBG_CHECK_WATCH("OP_STORE_POP");
+            VM_BREAK;
+        }
+
+        VM_CASE(OP_LOAD_LOAD): {          /* LOAD a; LOAD b */
+            uint8_t a = code[ip], b = code[ip + 1];
+            ip += 2;
+            cl_vm_push(cl_vm.stack[frame->bp + a]);
+            cl_vm_push(cl_vm.stack[frame->bp + b]);
+            VM_BREAK;
+        }
+
+        VM_CASE(OP_LOAD_CONST): {         /* LOAD s; CONST k */
+            uint8_t slot = code[ip++];
+            uint16_t idx = read_u16(code, &ip);
+            VM_REQUIRE_CONSTANTS("OP_LOAD_CONST");
+            cl_vm_push(cl_vm.stack[frame->bp + slot]);
+            cl_vm_push(constants[idx]);
+            cl_mv_count = 1;              /* OP_CONST's write */
+            VM_BREAK;
+        }
+
+        VM_CASE(OP_LOAD_STORE_POP): {     /* LOAD a; STORE b; POP */
+            uint8_t a = code[ip], b = code[ip + 1];
+            ip += 2;
+            cl_vm.stack[frame->bp + b] = cl_vm.stack[frame->bp + a];
+            DBG_CHECK_WATCH("OP_LOAD_STORE_POP");
+            VM_BREAK;
+        }
+
+        VM_CASE(OP_POP_LOAD): {           /* POP; LOAD s */
+            uint8_t slot = code[ip++];
+            cl_vm.stack[cl_vm.sp - 1] = cl_vm.stack[frame->bp + slot];
+            VM_BREAK;
+        }
+
+        VM_CASE(OP_LOAD_MV_RESET): {      /* LOAD s; MV_RESET */
+            uint8_t slot = code[ip++];
+            cl_vm_push(cl_vm.stack[frame->bp + slot]);
+            cl_mv_count = 1;
+            VM_BREAK;
+        }
+
+        VM_CASE(OP_LOAD_JNIL): {          /* LOAD s; JNIL t — nothing pushed */
+            uint8_t slot = code[ip++];
+            int32_t offset = read_i32(code, &ip);
+            if (CL_NULL_P(cl_vm.stack[frame->bp + slot])) ip += offset;
+            VM_BREAK;
+        }
+
+        VM_CASE(OP_EQ_JNIL): {            /* EQ; JNIL t — pop both, no push */
+            int32_t offset = read_i32(code, &ip);
+            CL_Obj b = cl_vm_pop(), a = cl_vm_pop();
+            cl_mv_count = 1;              /* OP_EQ's write */
+            if (a != b) ip += offset;
+            VM_BREAK;
+        }
+
+        /* The symbol-value read OP_GLOAD and OP_GLOAD_JNIL share.  Inline
+         * fast path: no dynamic binding active on this thread means the value
+         * IS the symbol's global cell — no TLS lookup (thr is the loop's
+         * cached thread) and no TLV probe.  GLOAD is 5% of all dispatches in
+         * the sento profile. */
+#define VM_GLOBAL_VALUE(sym) \
+        ((thr->tlv_entry_count == 0 && !CL_NULL_P(sym)) \
+             ? ((CL_Symbol *)CL_OBJ_TO_PTR(sym))->value \
+             : cl_symbol_value_on(thr, (sym)))
+
+        VM_CASE(OP_GLOAD_JNIL): {         /* GLOAD sym; JNIL t — nothing pushed */
+            uint16_t idx = read_u16(code, &ip);
+            int32_t offset = read_i32(code, &ip);
+            CL_Obj sym, val;
+            VM_REQUIRE_CONSTANTS("OP_GLOAD_JNIL");
+            sym = constants[idx];
+            val = VM_GLOBAL_VALUE(sym);
+            if (val == CL_UNBOUND) {
+                frame->ip = ip;
+                cl_error(CL_ERR_UNBOUND, "Unbound variable: %s",
+                         cl_symbol_name(sym));
+            }
+            cl_mv_count = 1;              /* OP_GLOAD's write */
+            if (CL_NULL_P(val)) ip += offset;
+            VM_BREAK;
+        }
+
+        VM_CASE(OP_GLOAD_EQ_JNIL): {      /* GLOAD sym; EQ; JNIL t — pop 1, no push */
+            uint16_t idx = read_u16(code, &ip);
+            int32_t offset = read_i32(code, &ip);
+            CL_Obj sym, val, a;
+            VM_REQUIRE_CONSTANTS("OP_GLOAD_EQ_JNIL");
+            sym = constants[idx];
+            val = VM_GLOBAL_VALUE(sym);
+            if (val == CL_UNBOUND) {
+                frame->ip = ip;
+                cl_error(CL_ERR_UNBOUND, "Unbound variable: %s",
+                         cl_symbol_name(sym));
+            }
+            a = cl_vm_pop();
+            cl_mv_count = 1;              /* OP_EQ's write */
+            if (a != val) ip += offset;
+            VM_BREAK;
+        }
+
+        VM_CASE(OP_GLOAD_CALL_GLOBAL): {  /* GLOAD sym; CALL_GLOBAL f n */
+            uint16_t idx = read_u16(code, &ip);
+            CL_Obj sym, val;
+            VM_REQUIRE_CONSTANTS("OP_GLOAD_CALL_GLOBAL");
+            sym = constants[idx];
+            val = VM_GLOBAL_VALUE(sym);
+            if (val == CL_UNBOUND) {
+                frame->ip = ip;
+                cl_error(CL_ERR_UNBOUND, "Unbound variable: %s",
+                         cl_symbol_name(sym));
+            }
+            cl_vm_push(val);              /* the callee establishes the MV state */
+            op = OP_CALL_GLOBAL;          /* the shared body reads is_tail off op */
+            goto vm_call_global_body;     /* its u16 + u8 are next */
+        }
+
         VM_CASE(OP_GLOAD): {
             uint16_t idx = read_u16(code, &ip);
             CL_Obj sym;
@@ -2360,16 +2460,12 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 cl_error(CL_ERR_GENERAL, "OP_GLOAD with NULL constants ptr");
             }
             sym = constants[idx];
-            /* Inline fast path: no dynamic binding active on this thread
-             * means the value IS the symbol's global cell — no TLS lookup
-             * (thr is the loop's cached thread) and no TLV probe.  GLOAD is
-             * 5% of all dispatches in the sento profile. */
-            CL_Obj val = (thr->tlv_entry_count == 0 && !CL_NULL_P(sym))
-                         ? ((CL_Symbol *)CL_OBJ_TO_PTR(sym))->value
-                         : cl_symbol_value_on(thr, sym);
-            if (val == CL_UNBOUND)
+            CL_Obj val = VM_GLOBAL_VALUE(sym);
+            if (val == CL_UNBOUND) {
+                frame->ip = ip;   /* the backtrace names this line */
                 cl_error(CL_ERR_UNBOUND, "Unbound variable: %s",
                          cl_symbol_name(sym));
+            }
             cl_vm_push(val);
             cl_mv_count = 1;
             VM_BREAK;
@@ -2765,6 +2861,14 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             }
             goto do_call;
 
+        VM_CASE(OP_LOAD_CALL_GLOBAL): {   /* LOAD s; CALL_GLOBAL sym n */
+            uint8_t slot = code[ip++];
+            cl_vm_push(cl_vm.stack[frame->bp + slot]);
+            op = OP_CALL_GLOBAL;          /* the shared body reads is_tail off op */
+            /* FALLTHROUGH into OP_CALL_GLOBAL: its u16 + u8 are next
+             * (OP_GLOAD_CALL_GLOBAL arrives here by goto) */
+        }
+        vm_call_global_body:
         VM_CASE(OP_CALL_GLOBAL):
         VM_CASE(OP_TAILCALL_GLOBAL): {
             /* FLOAD sym; CALL n fused: the symbol's function binding is
@@ -2809,9 +2913,11 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             func_obj = s->function;
             if (func_obj == CL_UNBOUND) {
                 func_obj = cl_symbol_value_on(thr, sym);
-                if (func_obj == CL_UNBOUND)
+                if (func_obj == CL_UNBOUND) {
+                    frame->ip = ip;   /* the backtrace names this line */
                     cl_error(CL_ERR_UNDEFINED, "Undefined function: %s",
                              cl_symbol_name(sym));
+                }
             }
             arg_base = &cl_vm.stack[cl_vm.sp - nargs];
         }
@@ -3485,6 +3591,11 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             VM_BREAK;
         }
 
+        VM_CASE(OP_LOAD_RET): {           /* LOAD s; RET */
+            uint8_t slot = code[ip++];
+            cl_vm_push(cl_vm.stack[frame->bp + slot]);
+            /* FALLTHROUGH into OP_RET, which pops it as the result */
+        }
         VM_CASE(OP_RET): {
             CL_Obj result;
             result = (cl_vm.sp > (int)(frame->bp + frame->n_locals))
@@ -3570,7 +3681,8 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     next_op == OP_ASSERT_TYPE || next_op == OP_BLOCK_PUSH ||
                     next_op == OP_TAGBODY_PUSH || next_op == OP_BLOCK_RETURN ||
                     next_op == OP_TAGBODY_GO || next_op == OP_HANDLER_PUSH ||
-                    next_op == OP_RESTART_PUSH) {
+                    next_op == OP_RESTART_PUSH || next_op == OP_LOAD_CALL_GLOBAL ||
+                    next_op == OP_GLOAD_JNIL) {
                     CL_Bytecode *fbc = NULL;
                     if (CL_CLOSURE_P(frame->bytecode)) {
                         CL_Closure *cc = (CL_Closure *)CL_OBJ_TO_PTR(frame->bytecode);
@@ -4890,17 +5002,28 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             cl_mv_count = 1;
             VM_BREAK;
 
+        VM_CASE(OP_LOAD_STRUCT_REF): {    /* LOAD s; STRUCT_REF i */
+            uint8_t slot = code[ip++];
+            cl_vm_push(cl_vm.stack[frame->bp + slot]);
+            /* FALLTHROUGH into OP_STRUCT_REF: its u8 index is next */
+        }
         VM_CASE(OP_STRUCT_REF): {
             uint8_t idx = code[ip++];
             CL_Obj obj = cl_vm_pop();
             CL_Struct *st;
-            if (!CL_STRUCT_P(obj))
+            /* Error paths sync the frame's ip first, so the backtrace names
+             * this form's line, not the previous call's. */
+            if (!CL_STRUCT_P(obj)) {
+                frame->ip = ip;
                 cl_signal_type_error(obj, "STRUCTURE", "%STRUCT-REF");
+            }
             st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
-            if ((uint32_t)idx >= st->n_slots)
+            if ((uint32_t)idx >= st->n_slots) {
+                frame->ip = ip;
                 cl_error(CL_ERR_ARGS,
                          "%%STRUCT-REF: index %u out of range (n_slots=%u)",
                          (unsigned)idx, (unsigned)st->n_slots);
+            }
             cl_vm_push(st->slots[idx]);
             cl_mv_count = 1;
             VM_BREAK;
@@ -4911,13 +5034,17 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             CL_Obj val = cl_vm_pop();
             CL_Obj obj = cl_vm_pop();
             CL_Struct *st;
-            if (!CL_STRUCT_P(obj))
+            if (!CL_STRUCT_P(obj)) {
+                frame->ip = ip;
                 cl_signal_type_error(obj, "STRUCTURE", "%STRUCT-SET");
+            }
             st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
-            if ((uint32_t)idx >= st->n_slots)
+            if ((uint32_t)idx >= st->n_slots) {
+                frame->ip = ip;
                 cl_error(CL_ERR_ARGS,
                          "%%STRUCT-SET: index %u out of range (n_slots=%u)",
                          (unsigned)idx, (unsigned)st->n_slots);
+            }
             /* Publication barrier: this store may make a freshly-built
              * object graph reachable to peer threads that read the slot
              * WITHOUT a lock (CLOS dispatch metadata — gf-methods,
