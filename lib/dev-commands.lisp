@@ -25,6 +25,8 @@
    "+RC-OK+" "+RC-WARN+" "+RC-ERROR+" "+RC-FATAL+"
    ;; Session state
    "*COMMAND-PACKAGE*" "*MAX-RESULT-LENGTH*" "*LAST-RESULT*"
+   ;; Introspection commands' knobs
+   "*MAX-COMPLETIONS*" "*PRETTY-MARGIN*"
    ;; Introspection / extension
    "*COMMANDS*" "DEFINE-COMMAND"))
 
@@ -356,6 +358,448 @@ paths that contain spaces (LOAD \"Ram Disk:foo.lisp\")."
                                      (string-right-trim '(#\Newline) values-text)
                                      (string #\Newline) text)
                         text)))))))
+
+;;; ================================================================
+;;; Introspection
+;;;
+;;; The editor's phase-2 commands: what a symbol takes (ARGLIST), what a
+;;; prefix could be (COMPLETE), what a symbol is (DESCRIBE, APROPOS), where
+;;; it lives (SOURCE-LOCATION) and what a form means (MACROEXPAND).  All
+;;; of them resolve names against *COMMAND-PACKAGE* -- the package the
+;;; editor selected with IN-PACKAGE -- and never intern: a name that does
+;;; not exist is rc 10 with a reason, not a fresh symbol.
+;;; ================================================================
+
+(defun %first-token (string)
+  "Split STRING into (values FIRST REST): the first whitespace-delimited
+token, case preserved, and the trimmed remainder."
+  (let* ((s (string-trim '(#\Space #\Tab #\Newline #\Return) string))
+         (end (or (position-if (lambda (c) (member c '(#\Space #\Tab))) s)
+                  (length s))))
+    (values (subseq s 0 end)
+            (string-trim '(#\Space #\Tab #\Newline #\Return) (subseq s end)))))
+
+(defun %split-symbol-name (string)
+  "Split STRING as the reader would: (values PACKAGE-NAME NAME INTERNAL-P).
+PACKAGE-NAME is NIL for an unqualified name, \"KEYWORD\" for :NAME;
+INTERNAL-P is true for the PKG::NAME spelling."
+  (let ((colon (position #\: string)))
+    (cond ((null colon) (values nil string nil))
+          ((zerop colon) (values "KEYWORD" (string-left-trim ":" string) t))
+          (t (let ((two (and (< (1+ colon) (length string))
+                             (char= (char string (1+ colon)) #\:))))
+               (values (subseq string 0 colon)
+                       (subseq string (+ colon (if two 2 1)))
+                       two))))))
+
+(defun %symbol-name-case (name)
+  "NAME as the reader would spell it: upcased, unless written |between bars|."
+  (if (and (>= (length name) 2)
+           (char= (char name 0) #\|)
+           (char= (char name (1- (length name))) #\|))
+      (subseq name 1 (1- (length name)))
+      (string-upcase name)))
+
+(defun %find-symbol-string (string)
+  "The existing symbol STRING names, without interning: (values SYMBOL
+STATUS) with STATUS as FIND-SYMBOL reports it, or (values NIL NIL REASON)."
+  (multiple-value-bind (pkg-name name) (%split-symbol-name (%unquote string))
+    (let ((pkg (if pkg-name
+                   (find-package (%symbol-name-case pkg-name))
+                   *command-package*)))
+      (cond ((null pkg)
+             (values nil nil (format nil "no such package: ~a" pkg-name)))
+            ((zerop (length name))
+             (values nil nil "a symbol name is required"))
+            (t
+             (multiple-value-bind (sym status)
+                 (find-symbol (%symbol-name-case name) pkg)
+               (if status
+                   (values sym status)
+                   (values nil nil (format nil "no such symbol: ~a" string)))))))))
+
+(defmacro %with-symbol ((var arg) &body body)
+  "Bind VAR to the symbol ARG names and run BODY, or reply rc 10."
+  (let ((status (gensym)) (reason (gensym)))
+    `(if (zerop (length ,arg))
+         (values +rc-fatal+ "ERROR: a symbol name is required")
+         (multiple-value-bind (,var ,status ,reason) (%find-symbol-string ,arg)
+           (if ,status
+               (progn ,@body)
+               (values +rc-error+ (format nil "ERROR: ~a" ,reason)))))))
+
+(defmacro %with-reply-printing (&body body)
+  "Printer settings for a reply the editor shows as code: symbols relative
+to the command package and in lower case, one line unless the command
+breaks lines itself."
+  `(let ((*package* *command-package*)
+         (*print-case* :downcase)
+         (*print-pretty* nil)
+         (*print-readably* nil)
+         (*print-circle* nil)
+         (*print-length* nil)
+         (*print-level* nil))
+     ,@body))
+
+(defun %symbol-string (sym)
+  (%with-reply-printing (prin1-to-string sym)))
+
+;;; --- ARGLIST ------------------------------------------------------
+
+(defparameter *special-operator-arglists*
+  '((block name &body body) (catch tag &body body)
+    (eval-when situations &body body) (flet bindings &body body)
+    (function name) (go tag) (if test then &optional else)
+    (labels bindings &body body) (let bindings &body body)
+    (let* bindings &body body) (load-time-value form &optional read-only-p)
+    (locally &body body) (macrolet bindings &body body)
+    (multiple-value-call function &rest forms)
+    (multiple-value-prog1 first-form &body forms) (progn &body forms)
+    (progv symbols values &body body) (quote object)
+    (return-from name &optional value) (setq &rest pairs)
+    (symbol-macrolet bindings &body body) (tagbody &rest statements)
+    (the type form) (throw tag result)
+    (unwind-protect protected &body cleanup))
+  "Syntax of the standard special operators, which have no function object
+to ask -- so the editor's status line has something to show for IF and LET
+too.")
+
+(defun %operator-arglist (sym)
+  "(values LAMBDA-LIST KIND) for the operator SYM names: KIND is :MACRO,
+:GENERIC-FUNCTION, :FUNCTION or :SPECIAL-OPERATOR, and NIL when SYM names
+nothing.  LAMBDA-LIST is :NOT-AVAILABLE when nothing was recorded."
+  (cond ((special-operator-p sym)
+         ;; The table's parameter names are symbols of this package; the
+         ;; editor wants them bare, as an uninterned symbol prints.
+         (let ((entry (assoc sym *special-operator-arglists*)))
+           (values (if entry
+                       (mapcar (lambda (x)
+                                 (if (member x lambda-list-keywords)
+                                     x
+                                     (make-symbol (symbol-name x))))
+                               (cdr entry))
+                       :not-available)
+                   :special-operator)))
+        ((macro-function sym)
+         (values (ext:function-arglist (macro-function sym)) :macro))
+        ((fboundp sym)
+         (let ((fn (symbol-function sym)))
+           (if (typep fn 'generic-function)
+               (values (mop:generic-function-lambda-list fn) :generic-function)
+               (values (ext:function-arglist fn) :function))))
+        (t (values :not-available nil))))
+
+(defun %arglist-string (lambda-list)
+  ;; The C builtins' placeholders are uninterned (#:ARG0); an editor's
+  ;; status line does not want the #: in front of each.
+  (%with-reply-printing
+    (let ((*print-gensym* nil))
+      (if (null lambda-list) "()" (prin1-to-string lambda-list)))))
+
+(define-command "ARGLIST" (arg)
+  (%with-symbol (sym arg)
+    (multiple-value-bind (lambda-list kind) (%operator-arglist sym)
+      (cond ((null kind)
+             (values +rc-error+
+                     (format nil "ERROR: ~a names no function, macro or special operator"
+                             (%symbol-string sym))))
+            ((eq lambda-list :not-available)
+             (values +rc-error+
+                     (format nil "ERROR: no lambda list recorded for ~a"
+                             (%symbol-string sym))))
+            (t (values +rc-ok+ (%arglist-string lambda-list)))))))
+
+;;; --- COMPLETE -----------------------------------------------------
+
+(defvar *max-completions* 200
+  "Cap on COMPLETE's reply, in candidates.  Past it the editor is better
+served by the common prefix than by the list.")
+
+(defun %prefix-p (prefix name)
+  (and (<= (length prefix) (length name))
+       (string= prefix name :end2 (length prefix))))
+
+(defun %completions (prefix package-name)
+  "(values CANDIDATES NIL) or (values NIL REASON).  CANDIDATES are the
+symbol names starting with PREFIX -- spelled PKG:NAME / PKG::NAME / :NAME
+as PREFIX was -- exported ones first, each group sorted, capped at
+*MAX-COMPLETIONS*.  PACKAGE-NAME, when given, is where to look; otherwise
+the package part of PREFIX, else *COMMAND-PACKAGE*."
+  (multiple-value-bind (pkg-prefix name internal-p) (%split-symbol-name prefix)
+    (let* ((pkg-designator (or package-name pkg-prefix))
+           (pkg (if pkg-designator
+                    (find-package (%symbol-name-case pkg-designator))
+                    *command-package*))
+           (uname (%symbol-name-case name))
+           ;; Only the exported symbols answer to the PKG: spelling.
+           (externals-only (and pkg-prefix
+                                (not internal-p)
+                                (not (string= pkg-prefix ""))
+                                (not (string-equal pkg-prefix "KEYWORD"))))
+           (spelling (cond ((null pkg-prefix) "")
+                           ((string-equal pkg-prefix "KEYWORD")
+                            (if (position #\: prefix :end 1) ":" "keyword:"))
+                           (t (format nil "~a~a" (string-downcase pkg-prefix)
+                                      (if internal-p "::" ":")))))
+           (external '())
+           (internal '()))
+      (if (null pkg)
+          (values nil (format nil "no such package: ~a" pkg-designator))
+          (progn
+            (do-symbols (s pkg)
+              (when (%prefix-p uname (symbol-name s))
+                (multiple-value-bind (found status) (find-symbol (symbol-name s) pkg)
+                  (declare (ignore found))
+                  (if (eq status :internal)
+                      (unless externals-only (pushnew s internal))
+                      (pushnew s external)))))
+            (let ((names
+                    (%with-reply-printing
+                      (let ((*print-gensym* nil))
+                        (mapcar (lambda (s)
+                                  ;; An uninterned copy prints the bare name
+                                  ;; with the reader's escapes, no package.
+                                  (concatenate 'string spelling
+                                               (prin1-to-string (make-symbol (symbol-name s)))))
+                                (append (sort external #'string< :key #'symbol-name)
+                                        (sort internal #'string< :key #'symbol-name)))))))
+              (values (if (> (length names) *max-completions*)
+                          (subseq names 0 *max-completions*)
+                          names)
+                      nil)))))))
+
+(define-command "COMPLETE" (arg)
+  (multiple-value-bind (prefix package-name) (%first-token arg)
+    (if (zerop (length prefix))
+        (values +rc-fatal+ "ERROR: COMPLETE requires a prefix")
+        (multiple-value-bind (names reason)
+            (%completions (%unquote prefix)
+                          (and (plusp (length package-name)) (%unquote package-name)))
+          (if reason
+              (values +rc-error+ (format nil "ERROR: ~a" reason))
+              (values +rc-ok+ (format nil "~{~a~^~%~}" names)))))))
+
+;;; --- DESCRIBE / APROPOS ---------------------------------------------
+
+(define-command "DESCRIBE" (arg)
+  (%with-symbol (sym arg)
+    (handler-case
+        (values +rc-ok+
+                (string-right-trim
+                 '(#\Newline)
+                 (with-output-to-string (out)
+                   (let ((*package* *command-package*))
+                     (describe sym out)))))
+      (error (e)
+        (values +rc-error+ (format nil "ERROR: ~a" (%condition-text e)))))))
+
+(defun %symbol-kinds (sym)
+  "What SYM names, as APROPOS tags it: a list of strings."
+  (let ((kinds '()))
+    (when (boundp sym) (push "variable" kinds))
+    (cond ((special-operator-p sym) (push "special-operator" kinds))
+          ((macro-function sym) (push "macro" kinds))
+          ((fboundp sym) (push "function" kinds)))
+    (when (and (fboundp 'find-class) (find-class sym nil))
+      (push "class" kinds))
+    (nreverse kinds)))
+
+(defun %apropos-lines (string package)
+  "One line per matching symbol, NAME then its kind tags: everything
+accessible in PACKAGE (APROPOS-LIST), which defaults to the command
+package -- the user's own definitions and what their package uses, not
+the internals of every package in the image."
+  (%with-reply-printing
+    (with-output-to-string (out)
+      (dolist (s (apropos-list string (or package *command-package*)))
+        (format out "~s~{ ~a~}~%" s (%symbol-kinds s))))))
+
+(define-command "APROPOS" (arg)
+  (multiple-value-bind (string package-name) (%first-token arg)
+    (if (zerop (length string))
+        (values +rc-fatal+ "ERROR: APROPOS requires a string")
+        (let ((pkg (and (plusp (length package-name))
+                        (find-package (%symbol-name-case (%unquote package-name))))))
+          (if (and (plusp (length package-name)) (null pkg))
+              (values +rc-error+ (format nil "ERROR: no such package: ~a" package-name))
+              (values +rc-ok+
+                      (string-right-trim '(#\Newline)
+                                         (%apropos-lines (%unquote string) pkg))))))))
+
+;;; --- SOURCE-LOCATION ------------------------------------------------
+
+(defun %symbol-source-location (sym)
+  "(FILE LINE) for the code SYM names, or NIL.  A macro's expander, a
+function's body; a generic function has no body of its own, so the first
+method with a recorded location stands in."
+  (let ((fn (cond ((macro-function sym))
+                  ((fboundp sym) (symbol-function sym)))))
+    (flet ((location (f)
+             ;; (FILE LINE); LINE is 1-based, so 0 is "not recorded" -- a
+             ;; method body compiled at load time from a FASL has the file
+             ;; but no line, and a file alone is not somewhere to jump to.
+             (let ((loc (and f (ext:function-source-location f))))
+               (and (consp loc) (integerp (second loc)) (plusp (second loc)) loc))))
+      (cond ((null fn) nil)
+            ((typep fn 'generic-function)
+             (dolist (m (mop:generic-function-methods fn) nil)
+               (let ((loc (location (mop:method-function m))))
+                 (when loc (return loc)))))
+            (t (location fn))))))
+
+(define-command "SOURCE-LOCATION" (arg)
+  (%with-symbol (sym arg)
+    (let ((loc (%symbol-source-location sym)))
+      (if loc
+          (values +rc-ok+ (format nil "~a:~d" (first loc) (second loc)))
+          (values +rc-error+
+                  (format nil "ERROR: no source location recorded for ~a"
+                          (%symbol-string sym)))))))
+
+;;; --- MACROEXPAND ----------------------------------------------------
+;;;
+;;; The expansion goes into an editor window, so it is laid out the way a
+;;; Lisp programmer would write it -- the standard pretty printer fills to
+;;; the margin, which is unreadable for code.  Three rules, each tried in
+;;; order: a form that fits on the rest of the line stays flat; a known
+;;; body operator keeps its distinguished arguments on its own line and
+;;; indents the body by two; anything else aligns its arguments under the
+;;; first one.
+
+(defvar *pretty-margin* 72
+  "Column MACROEXPAND breaks lines at.")
+
+(defparameter *body-operators*
+  '((let . 1) (let* . 1) (flet . 1) (labels . 1) (macrolet . 1)
+    (symbol-macrolet . 1) (lambda . 1) (when . 1) (unless . 1)
+    (defun . 2) (defmacro . 2) (defmethod . 2) (defgeneric . 2)
+    (dolist . 1) (dotimes . 1) (do . 2) (do* . 2) (block . 1)
+    (return-from . 1) (multiple-value-bind . 2) (destructuring-bind . 2)
+    (if . 1) (case . 1) (ecase . 1) (typecase . 1) (etypecase . 1)
+    (handler-case . 1) (handler-bind . 1) (restart-case . 1) (catch . 1)
+    (unwind-protect . 1) (prog1 . 1) (progn . 0) (cond . 0) (tagbody . 0)
+    (locally . 0) (eval-when . 1) (progv . 2) (the . 1)
+    (with-open-file . 1) (with-output-to-string . 1)
+    (with-input-from-string . 1) (with-slots . 2) (with-accessors . 2)
+    (defclass . 2) (defstruct . 1) (deftype . 2) (defvar . 1)
+    (defparameter . 1) (defconstant . 1) (define-compiler-macro . 2)
+    (define-condition . 2) (loop . :fill))
+  "Operator -> how many leading arguments stay on the operator's line
+before the body indents by two; :FILL packs the arguments as they come.")
+
+(defun %proper-list-p (x)
+  (and (consp x) (ignore-errors (list-length x)) t))
+
+(defun %pp-newline (out col)
+  (terpri out)
+  (dotimes (i col) (write-char #\Space out)))
+
+(defun %pp-fits-p (form col)
+  (<= (+ col (length (prin1-to-string form))) *pretty-margin*))
+
+(defun %pp (form out col)
+  "Print FORM to OUT, whose cursor is at column COL."
+  (cond ((or (atom form) (not (%proper-list-p form)) (%pp-fits-p form col))
+         (prin1 form out))
+        ((and (eq (car form) 'quote) (= (length form) 2))
+         (write-char #\' out)
+         (%pp (second form) out (1+ col)))
+        ((and (eq (car form) 'function) (= (length form) 2))
+         (write-string "#'" out)
+         (%pp (second form) out (+ col 2)))
+        (t
+         (let* ((head (car form))
+                (style (and (symbolp head) (cdr (assoc head *body-operators*))))
+                (head-string (and (symbolp head) (prin1-to-string head))))
+           (write-char #\( out)
+           (cond
+             ((integerp style)
+              ;; Distinguished arguments on the head's line while they fit
+              ;; flat; a bulky one gets its own line, aligned; the body
+              ;; indents by two.
+              (write-string head-string out)
+              (let ((c (+ col 1 (length head-string)))
+                    (args (cdr form))
+                    (n style))
+                (loop while (and args (plusp n))
+                      do (let ((a (pop args)))
+                           (decf n)
+                           (cond ((%pp-fits-p a (1+ c))
+                                  (write-char #\Space out)
+                                  (prin1 a out)
+                                  (incf c (1+ (length (prin1-to-string a)))))
+                                 (t
+                                  (%pp-newline out (+ col 4))
+                                  (%pp a out (+ col 4))
+                                  (setq c *pretty-margin*)))))
+                (dolist (f args)
+                  (%pp-newline out (+ col 2))
+                  (%pp f out (+ col 2)))))
+             ((eq style :fill)
+              ;; LOOP: as many clauses per line as fit, aligned after the
+              ;; operator.
+              (write-string head-string out)
+              (let* ((start (+ col 1 (length head-string) 1))
+                     (c start)
+                     (first t))
+                (dolist (a (cdr form))
+                  (let ((flat (prin1-to-string a)))
+                    (cond ((and (not first) (> (+ c (length flat)) *pretty-margin*))
+                           (%pp-newline out start)
+                           (setq c start))
+                          ((not first)
+                           (write-char #\Space out)
+                           (incf c))
+                          (t (write-char #\Space out)))
+                    (setq first nil)
+                    (cond ((%pp-fits-p a c)
+                           (write-string flat out)
+                           (incf c (length flat)))
+                          (t
+                           (%pp a out c)
+                           (setq c *pretty-margin*)))))))
+             (head-string
+              ;; Arguments under the first one; a long operator name would
+              ;; push them past the middle, so indent by two instead.
+              (write-string head-string out)
+              (let ((c (+ col 1 (length head-string) 1)))
+                (if (> c (floor *pretty-margin* 2))
+                    (dolist (f (cdr form))
+                      (%pp-newline out (+ col 2))
+                      (%pp f out (+ col 2)))
+                    (let ((first t))
+                      (dolist (f (cdr form))
+                        (if first (write-char #\Space out) (%pp-newline out c))
+                        (setq first nil)
+                        (%pp f out c))))))
+             (t
+              ;; ((lambda ...) ...) and data: one element per line.
+              (let ((first t))
+                (dolist (f form)
+                  (unless first (%pp-newline out (1+ col)))
+                  (setq first nil)
+                  (%pp f out (1+ col))))))
+           (write-char #\) out)))))
+
+(defun %pretty-string (form)
+  (%with-reply-printing
+    (with-output-to-string (out) (%pp form out 0))))
+
+(defun %macroexpand-command (verb arg expander)
+  (if (zerop (length arg))
+      (values +rc-fatal+ (format nil "ERROR: ~a requires a form" verb))
+      (handler-case
+          (let ((form (let ((*package* *command-package*))
+                        (read-from-string arg))))
+            (values +rc-ok+ (%pretty-string (funcall expander form))))
+        (error (e)
+          (values +rc-error+ (format nil "ERROR: ~a" (%condition-text e)))))))
+
+(define-command "MACROEXPAND" (arg)
+  (%macroexpand-command "MACROEXPAND" arg #'macroexpand))
+
+(define-command "MACROEXPAND-1" (arg)
+  (%macroexpand-command "MACROEXPAND-1" arg #'macroexpand-1))
 
 ;;; ================================================================
 ;;; Dispatch

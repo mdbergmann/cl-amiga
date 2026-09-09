@@ -24,6 +24,20 @@
 (proclaim '(special / // /// *break-on-signals*))
 (setq / nil // nil /// nil *break-on-signals* nil)
 
+;; Documentation storage -- ahead of everything else in this file on
+;; purpose.  The compiler turns every docstring in a DEFUN / DEFMACRO /
+;; DEFVAR / DEFPARAMETER / DEFCONSTANT / DEFTYPE into a load-time
+;; (%SET-DOCUMENTATION 'name 'doc-type "...") call (compiler_extra.c,
+;; emit_doc_call), so the writer has to exist before the first documented
+;; definition below runs, whether boot is loaded from source or from the
+;; FASL.  DOCUMENTATION itself, and the DEFSETF, are further down with the
+;; other CL functions; CLOS later turns both into generic functions.
+;; EXT:*CAPTURE-DOCUMENTATION* NIL at compile time drops the strings.
+(defvar *documentation-table* (make-hash-table :test 'equal))
+
+(defun %set-documentation (obj doc-type string)
+  (setf (gethash (cons obj doc-type) *documentation-table*) string))
+
 ;; Composite CAR/CDR accessors (all 28 from CL spec)
 (defun cadr (x) (car (cdr x)))
 (defun caar (x) (car (car x)))
@@ -1048,14 +1062,10 @@ Spec is var | (var ...) | ((keyword var) ...)."
       (unless (%set-member (if key (funcall key x) x) list2 actual-test key nil)
         (return-from subsetp nil)))))
 
-;; documentation — CL standard documentation function
-(defvar *documentation-table* (make-hash-table :test 'equal))
-
+;; documentation — CL standard documentation function.  The table and
+;; %SET-DOCUMENTATION are at the top of this file (see there).
 (defun documentation (obj doc-type)
   (gethash (cons obj doc-type) *documentation-table*))
-
-(defun %set-documentation (obj doc-type string)
-  (setf (gethash (cons obj doc-type) *documentation-table*) string))
 
 (defsetf documentation %set-documentation)
 
@@ -1210,18 +1220,23 @@ Spec is var | (var ...) | ((keyword var) ...)."
            (nreverse acc)))
         (report nil)
         (default-initargs nil)
+        (documentation nil)
         (clos-available (fboundp '%add-method-to-gf)))
     ;; Parse options
     (dolist (opt options)
       (case (car opt)
         (:report (setq report (cadr opt)))
-        (:default-initargs (setq default-initargs (cdr opt)))))
+        (:default-initargs (setq default-initargs (cdr opt)))
+        (:documentation (setq documentation (cadr opt)))))
     `(progn
        ;; Register the FULL parent list so condition type membership
        ;; (TYPEP / SUBTYPEP / handler-case) sees every superclass, including
        ;; ones where ERROR is not the first parent (e.g. usocket's
        ;; (define-condition socket-error (socket-condition error))).
        (%register-condition-type ',name ',parents-list ',slot-pairs)
+       ;; (:documentation "...") -> the TYPE doc-type, as for DEFCLASS.
+       ,@(when (stringp documentation)
+           `((%set-documentation ',name 'type ,documentation)))
        (when (fboundp '%register-condition-class)
          (%register-condition-class ',name ',parents-list))
        ,@(mapcan (lambda (slot-spec)
@@ -1430,14 +1445,25 @@ Spec is var | (var ...) | ((keyword var) ...)."
                   pkg))))
          pkg))))
 
-;; do-symbols — iterate over all symbols in a package
+;; do-symbols — iterate over the symbols ACCESSIBLE in a package (CLHS
+;; 11.1.1.2.1): the ones present in it plus the exported symbols of every
+;; package it uses.  %PACKAGE-SYMBOLS alone is the present set; the
+;; inherited ones are what completion and APROPOS in a user package are
+;; mostly about (MAPCAR from CL-USER).  A symbol reachable both ways may
+;; be seen twice, which the standard allows.
+(defun %accessible-symbols (pkg)
+  (let ((inherited nil))
+    (dolist (used (package-use-list pkg))
+      (setq inherited (append (%package-external-symbols used) inherited)))
+    (append (%package-symbols pkg) inherited)))
+
 (defmacro do-symbols (spec &body body)
   (let ((var (car spec))
         (package (cadr spec))
         (result (caddr spec))
         (pkg (gensym)) (syms (gensym)) (s (gensym)))
     `(let* ((,pkg ,(if package `(find-package ,package) '*package*))
-            (,syms (%package-symbols ,pkg)))
+            (,syms (%accessible-symbols ,pkg)))
        (dolist (,s ,syms ,result)
          (let ((,var ,s))
            ,@body)))))
@@ -1490,6 +1516,39 @@ Spec is var | (var ...) | ((keyword var) ...)."
           (go ,sym-loop)
           ,done))
        (let ((,var nil)) ,result))))
+
+;; apropos / apropos-list (CLHS 25.1.3).  A case-insensitive substring
+;; match on the symbol name over the symbols accessible in PACKAGE, or over
+;; every package when none is given.  APROPOS-LIST returns a fresh list,
+;; sorted by name and free of duplicates, so an editor can show it as it
+;; is; APROPOS prints one symbol per line with what the symbol names, and
+;; returns no values.  See tests/test_documentation.c.
+(defun %apropos-package (designator)
+  (or (find-package designator)
+      (error "APROPOS: no such package: ~a" designator)))
+
+(defun apropos-list (string &optional package)
+  (let ((string (string string))
+        (result nil))
+    (if package
+        (do-symbols (s (%apropos-package package))
+          (when (search string (symbol-name s) :test #'char-equal)
+            (push s result)))
+        (do-all-symbols (s)
+          (when (search string (symbol-name s) :test #'char-equal)
+            (push s result))))
+    (sort (remove-duplicates result :test #'eq) #'string< :key #'symbol-name)))
+
+(defun apropos (string &optional package)
+  (dolist (s (apropos-list string package))
+    (fresh-line)
+    (prin1 s)
+    (cond ((special-operator-p s) (write-string "  [special operator]"))
+          ((macro-function s) (write-string "  [macro]"))
+          ((fboundp s) (write-string "  [function]")))
+    (when (boundp s) (write-string "  [bound]")))
+  (fresh-line)
+  (values))
 
 ;; defstruct — define a named structure type
 ;; Supports options: :conc-name, :constructor, :predicate, :copier, :include
@@ -1606,7 +1665,8 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
          (copier-opt nil) (copier-set nil)
          (include-name nil) (include-slots nil)
          (type-opt nil)
-         (print-function-opt nil) (print-object-opt nil))
+         (print-function-opt nil) (print-object-opt nil)
+         (struct-doc nil))
     ;; Process options
     (dolist (opt options)
       (cond
@@ -1653,9 +1713,10 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
         (dolist (spec parent-specs)
           (push spec include-slots))
         (setq include-slots (reverse include-slots))))
-    ;; Skip docstring if first element is a string
+    ;; A leading string is the docstring (CLHS DEFSTRUCT), recorded under
+    ;; the STRUCTURE doc-type by the first form of the expansion.
     (when (and slot-specs (stringp (car slot-specs)))
-      (pop slot-specs))
+      (setq struct-doc (pop slot-specs)))
     ;; Build full slot list: inherited + own
     (let* ((own-parsed (mapcar #'%defstruct-parse-slot slot-specs))
            (all-slots (append include-slots own-parsed))
@@ -1683,7 +1744,9 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
                         ((not copier-set) (intern (concatenate 'string "COPY-" name-str)))
                         ((null copier-opt) nil)
                         (t copier-opt)))
-           (forms nil))
+           ;; Pushed onto and reversed below, so the doc form comes first.
+           (forms (when struct-doc
+                    (list `(%set-documentation ',name 'structure ,struct-doc)))))
       ;; A typed-sequence struct: (:type vector), (:type (vector ELT [SIZE]))
       ;; — e.g. ironclad's (:type (vector (unsigned-byte 32))) — or (:type
       ;; list) — e.g. rfc2388's (defstruct (header (:type list) ...)).  The
@@ -2196,7 +2259,7 @@ car and cdr, OR both are atoms and the test is satisfied."
 
 (defun ldiff (list object)
   "Return a copy of LIST up to but not including the tail OBJECT.
-If OBJECT is not EQL to any tail of LIST, a copy of LIST is returned —
+If OBJECT is not EQL to any tail of LIST, a copy of LIST is returned --
 including any dotted-list terminator (so the result is also dotted)."
   (unless (listp list)
     (error 'type-error :datum list :expected-type 'list))
@@ -2478,17 +2541,17 @@ letting the three be freely mixed into one accumulation (CLHS 6.1.3),
 e.g. `(loop ... if x nconc l else collect e)`:
 
 * Anonymous accumulator (TAIL-VAR is NIL): build REVERSED (newest element
-  first) and NREVERSE once at loop end — the cheapest way on a 68020, and
+  first) and NREVERSE once at loop end -- the cheapest way on a 68020, and
   unobservable because nothing can see the variable before the loop
   returns.  COLLECT pushes one element; NCONC reverse-splices
-  destructively (NRECONC — the argument may be destroyed, like NCONC);
-  APPEND reverse-copies (REVAPPEND — no destruction, like APPEND).  The
+  destructively (NRECONC -- the argument may be destroyed, like NCONC);
+  APPEND reverse-copies (REVAPPEND -- no destruction, like APPEND).  The
   clause parser emits the matching NREVERSE in the result form.
 
 * INTO variable (TAIL-VAR is the hidden tail-pointer gensym): the
   variable is user-visible in the loop body and in FINALLY (CLHS 6.1.3:
   it is \"like a variable established by WITH\"), so it must hold the
-  accumulation IN ORDER at every step — GitHub #19 was `(loop ... nconc
+  accumulation IN ORDER at every step -- GitHub #19 was `(loop ... nconc
   (list :k e) into acc do (setf (getf acc :k) ...))` seeing a reversed
   plist.  Each clause splices at the tail: COLLECT a fresh cons, NCONC
   the list itself (and re-LASTs it), APPEND a COPY-LIST of it.  No
@@ -2589,8 +2652,8 @@ e.g. `(loop ... if x nconc l else collect e)`:
          forms))
 
 (defun %loop-parallelize-setqs (forms)
-  "Turn a list of (SETQ var expr) forms — the per-iteration steppers of a
-group of AND-connected FOR clauses — into a single form that steps them in
+  "Turn a list of (SETQ var expr) forms -- the per-iteration steppers of a
+group of AND-connected FOR clauses -- into a single form that steps them in
 PARALLEL (CLHS 6.1.2.1.4): every step expression is evaluated against the
 pre-step values (captured in temporaries) before any variable is assigned.
 Returns a one-element list holding that LET form."
@@ -2603,7 +2666,7 @@ Returns a one-element list holding that LET form."
   "Build the preamble stepper for a group of FOR var = init THEN step clauses.
 SPECS is a list of (var init-expr step-expr).  On the first iteration (FLAG
 true) the variables are initialised in order; on subsequent iterations they
-are stepped in PARALLEL — every step expression is read against the previous
+are stepped in PARALLEL -- every step expression is read against the previous
 values before any variable is assigned (CLHS 6.1.2.1.4).  A single-clause
 group reduces to the ordinary sequential init-then-step."
   (let* ((inits (mapcar (lambda (s) (list 'setq (car s) (cadr s))) specs))
@@ -3623,7 +3686,7 @@ macros or (THE type ...) wrapping one of these."
 
 (defun mp::%atomic-fixnum-sum (old delta operator)
   "OLD + DELTA for ATOMIC-INCF / ATOMIC-DECF: both must be fixnums, and so
-must the result — an atomic counter never silently becomes a bignum."
+must the result -- an atomic counter never silently becomes a bignum."
   (unless (typep old 'fixnum)
     (error 'type-error :datum old :expected-type 'fixnum))
   (unless (typep delta 'fixnum)

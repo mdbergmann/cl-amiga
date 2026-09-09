@@ -149,6 +149,11 @@ CL_Obj cl_ffi_i64_to_obj(int64_t v);
 /* Number of arguments a stub takes (its fixed arity). */
 int cl_ffi_stub_arity(CL_Obj stub);
 
+/* EXT:FUNCTION-ARGLIST / EXT:FUNCTION-SOURCE-LOCATION on a function object
+ * (builtins.c); DESCRIBE prints both.  :NOT-AVAILABLE when unknown. */
+CL_Obj cl_function_arglist(CL_Obj fn);
+CL_Obj cl_function_source_location(CL_Obj fn);
+
 /* COMMON-LISP package handle (defined in package.c); declared here so the
  * shared defun() helper below can register into it without pulling in
  * package.h. */

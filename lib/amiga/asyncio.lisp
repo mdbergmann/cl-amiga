@@ -180,10 +180,10 @@ Lisp code runs."
 
 (defun %wait-packet (af)
   "Wait for the pending packet and return its dp_Res1 (bytes moved, 0 at
-EOF, negative on error — dp_Res2 has the DOS code).  With no packet
+EOF, negative on error -- dp_Res2 has the DOS code).  With no packet
 pending, return the previous packet's result, like the C original: an
 error sticks to the file.  The PA_SIGNAL/PA_IGNORE dance around WaitPort
-is the SIGB_SINGLE trick — the port only signals while we really wait."
+is the SIGB_SINGLE trick -- the port only signals while we really wait."
   (let ((mem (async-file-mem af)))
     (cond ((async-file-pending-p af)
            (ffi:poke-u8 mem exec:+pa-signal+ +mp-flags+)
@@ -367,7 +367,7 @@ closing on the way out however BODY exits."
 (defun read-async (af dest &optional num-bytes)
   "Read up to NUM-BYTES bytes from AF into DEST (a foreign pointer, an
 integer address, or a vector of (UNSIGNED-BYTE 8), which also defaults
-NUM-BYTES to its length).  Returns the number of bytes read — less than
+NUM-BYTES to its length).  Returns the number of bytes read -- less than
 NUM-BYTES only at end of file, 0 at EOF proper.  While the caller works
 on these bytes, the next buffer load is already on its way."
   (%check-open af "READ-ASYNC")

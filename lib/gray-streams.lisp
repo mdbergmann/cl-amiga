@@ -273,7 +273,7 @@
 (defgeneric stream-read-sequence (stream sequence start end &key &allow-other-keys)
   (:documentation
    "Fill SEQUENCE from START to END with elements read from STREAM.
-Return the index of the first element not modified — END on a full read, or
+Return the index of the first element not modified -- END on a full read, or
 the position where end-of-file was reached."))
 
 (defmethod stream-read-sequence ((stream fundamental-input-stream)

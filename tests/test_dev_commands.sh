@@ -223,6 +223,206 @@ EOF
 out=$(run_script "$TMPD/truncate.lisp")
 check "over-long reply is truncated"   'truncated at 200 characters' "$out"
 
+# ===========================================================================
+# Introspection: ARGLIST / COMPLETE / DESCRIBE / APROPOS / SOURCE-LOCATION /
+# MACROEXPAND -- the editor's phase-2 commands.  Every case that names a
+# symbol resolves it against the command package without interning, so an
+# unknown name is rc 10 with a reason.
+# ===========================================================================
+
+# A file of definitions, loaded from its FASL: SOURCE-LOCATION and the
+# docstrings must survive COMPILE-FILE + LOAD in a fresh session, which is
+# the load-time-call design of specs/documentation-introspection.md.
+cat > "$TMPD/intro.lisp" <<'EOF'
+(in-package :cl-user)
+
+(defun intro-fn (a b &key (c 3))
+  "Intro doc."
+  (list a b c))
+(defmacro intro-mac (x &body body)
+  "Intro macro doc."
+  `(let ((y ,x)) ,@body))
+(defgeneric intro-gf (a) (:documentation "Intro gf doc."))
+(defmethod intro-gf ((a string)) a)
+(defvar *intro-var* 1 "Intro var doc.")
+(defun intro-other () 2)
+EOF
+cat > "$TMPD/intro-compile.lisp" <<EOF
+(compile-file "$TMPD/intro.lisp" :output-file "$TMPD/intro.fasl")
+EOF
+run_script "$TMPD/intro-compile.lisp" >/dev/null 2>&1
+
+# Runs COMMAND after loading the FASL (a fresh image each time).
+run_intro() {
+    cat <<EOF | "$CLAMIGA" --no-userinit --batch 2>&1
+(require "dev-commands")
+(load "$TMPD/intro.fasl")
+(multiple-value-bind (rc text) (ext.dev:handle-command "$1")
+  (format t "~&<<RC=~d>>~%~a~%<<END>>~%" rc text))
+EOF
+}
+
+# --- ARGLIST ---------------------------------------------------------------
+
+out=$(run_intro 'ARGLIST intro-fn')
+check "ARGLIST returns rc 0"                 '<<RC=0>>' "$out"
+check "ARGLIST is the lambda list as written, lower case" '^(a b &key (c 3))$' "$out"
+
+out=$(run_intro 'ARGLIST intro-mac')
+check "ARGLIST of a macro is its written lambda list" '^(x &body body)$' "$out"
+
+out=$(run_intro 'ARGLIST intro-gf')
+check "ARGLIST of a generic function"        '^(a)$' "$out"
+
+out=$(run_intro 'ARGLIST cl:mapcar')
+check "ARGLIST of a builtin has bare placeholders" '^(arg0 arg1 &rest arg2)$' "$out"
+
+out=$(run_intro 'ARGLIST if')
+check "ARGLIST of a special operator comes from the table" '^(test then &optional else)$' "$out"
+
+out=$(run_intro 'ARGLIST no-such-symbol-here')
+check "ARGLIST of an unknown name is rc 10"  '<<RC=10>>' "$out"
+check "ARGLIST names the missing symbol"     'no such symbol: no-such-symbol-here' "$out"
+
+out=$(run_intro 'ARGLIST nopkg:foo')
+check "ARGLIST with an unknown package is rc 10" 'no such package: nopkg' "$out"
+
+out=$(run_intro 'ARGLIST *intro-var*')
+check "ARGLIST of a variable is rc 10"       '<<RC=10>>' "$out"
+
+out=$(run_intro 'ARGLIST')
+check "ARGLIST without a name is fatal"      '<<RC=20>>' "$out"
+
+# --- COMPLETE --------------------------------------------------------------
+
+out=$(run_intro 'COMPLETE intro-')
+check "COMPLETE lists every candidate"       '^intro-fn$' "$out"
+check "COMPLETE lists the macro too"         '^intro-mac$' "$out"
+check "COMPLETE candidates are sorted"       'intro-fn.*intro-gf.*intro-mac.*intro-other' "$(echo "$out" | tr '\n' ' ')"
+
+out=$(run_intro 'COMPLETE multiple-value-b')
+check "COMPLETE sees symbols inherited from CL" '^multiple-value-bind$' "$out"
+
+out=$(run_intro 'COMPLETE cl:mapc')
+check "COMPLETE keeps the package prefix as typed" '^cl:mapcar$' "$out"
+
+out=$(run_intro 'COMPLETE :for')
+check "COMPLETE handles keywords"            '^:format-control$' "$out"
+
+out=$(run_intro 'COMPLETE handle ext.dev')
+check "COMPLETE takes an explicit package"   '^handle-command$' "$out"
+
+out=$(run_intro 'COMPLETE zzz-nothing')
+check "COMPLETE with no candidate is rc 0"   '<<RC=0>>' "$out"
+
+out=$(run_intro 'COMPLETE x nopkg')
+check "COMPLETE with an unknown package is rc 10" 'no such package: nopkg' "$out"
+
+# Exported symbols come first: MAPCAR (external in CL) before a same-prefix
+# internal of the command package.
+cat > "$TMPD/complete-order.lisp" <<EOF
+(require "dev-commands")
+(load "$TMPD/intro.fasl")
+(defun mapcar-intro-internal () 1)
+(multiple-value-bind (rc text) (ext.dev:handle-command "COMPLETE mapcar")
+  (format t "~&<<RC=~d>>~%~a~%<<END>>~%" rc (substitute #\\Space #\\Newline text)))
+(let ((ext.dev:*max-completions* 2))
+  (multiple-value-bind (rc text) (ext.dev:handle-command "COMPLETE m")
+    (format t "~&<<CAP rc=~d lines=~d>>~%" rc (1+ (count #\\Newline text)))))
+EOF
+out=$(run_script "$TMPD/complete-order.lisp")
+check "COMPLETE puts exported candidates first" 'mapcar mapcar-intro-internal' "$out"
+check "COMPLETE caps the candidate list"     '<<CAP rc=0 lines=2>>' "$out"
+
+# --- DESCRIBE --------------------------------------------------------------
+
+out=$(run_intro 'DESCRIBE intro-fn')
+check "DESCRIBE returns rc 0"                '<<RC=0>>' "$out"
+check "DESCRIBE shows the lambda list"       'Lambda-list: (A B &KEY (C 3))' "$out"
+check "DESCRIBE shows the docstring loaded from the FASL" 'Documentation: Intro doc.' "$out"
+check "DESCRIBE shows the source location"   'Source: .*intro.lisp:3' "$out"
+
+out=$(run_intro 'DESCRIBE intro-mac')
+check "DESCRIBE of a macro names it a macro" 'Macro: ' "$out"
+check "DESCRIBE of a macro shows its docstring" 'Documentation: Intro macro doc.' "$out"
+
+out=$(run_intro 'DESCRIBE *intro-var*')
+check "DESCRIBE shows a variable docstring"  'Variable documentation: Intro var doc.' "$out"
+
+out=$(run_intro 'DESCRIBE no-such-symbol-here')
+check "DESCRIBE of an unknown name is rc 10" '<<RC=10>>' "$out"
+
+# --- APROPOS ---------------------------------------------------------------
+
+out=$(run_intro 'APROPOS intro-')
+check "APROPOS finds the user's own definitions" '^intro-fn function$' "$out"
+check "APROPOS tags a macro"                 '^intro-mac macro$' "$out"
+check "APROPOS tags a variable"              '^\*intro-var\* variable$' "$out"
+
+out=$(run_intro 'APROPOS make-hash cl')
+check "APROPOS takes a package"              '^make-hash-table function$' "$out"
+
+out=$(run_intro 'APROPOS x nopkg')
+check "APROPOS with an unknown package is rc 10" 'no such package: nopkg' "$out"
+
+out=$(run_intro 'APROPOS')
+check "APROPOS without a string is fatal"    '<<RC=20>>' "$out"
+
+# --- SOURCE-LOCATION -------------------------------------------------------
+
+out=$(run_intro 'SOURCE-LOCATION intro-fn')
+check "SOURCE-LOCATION returns rc 0"         '<<RC=0>>' "$out"
+check "SOURCE-LOCATION is file:line of the DEFUN" 'intro.lisp:3$' "$out"
+
+out=$(run_intro 'SOURCE-LOCATION intro-mac')
+check "SOURCE-LOCATION of a macro"           'intro.lisp:6$' "$out"
+
+# A generic function has no body of its own: the first method with a
+# recorded location stands in.  From the source, since a method body
+# loaded from a FASL is compiled at load time and carries no line -- and
+# then the honest answer is rc 10, not "file:0".
+cat > "$TMPD/gf-loc.lisp" <<EOF
+(require "dev-commands")
+(load "$TMPD/intro.lisp")
+(multiple-value-bind (rc text) (ext.dev:handle-command "SOURCE-LOCATION intro-gf")
+  (format t "~&<<SRC rc=~d>>~%~a~%<<END>>~%" rc text))
+EOF
+out=$(run_script "$TMPD/gf-loc.lisp")
+check "SOURCE-LOCATION of a generic function is its first method" 'intro.lisp:10$' "$out"
+out=$(run_intro 'SOURCE-LOCATION intro-gf')
+check "SOURCE-LOCATION without a line is rc 10, not file:0" '<<RC=10>>' "$out"
+
+out=$(run_intro 'SOURCE-LOCATION cl:mapcar')
+check "SOURCE-LOCATION of a builtin is rc 10" '<<RC=10>>' "$out"
+check "SOURCE-LOCATION explains"             'no source location recorded for mapcar' "$out"
+
+# --- MACROEXPAND -----------------------------------------------------------
+
+out=$(run_intro 'MACROEXPAND-1 (intro-mac (+ 1 2) (print y))')
+check "MACROEXPAND-1 returns rc 0"           '<<RC=0>>' "$out"
+check "MACROEXPAND-1 expands once, lower case" '^(let ((y (+ 1 2))) (print y))$' "$out"
+
+# A long expansion is laid out like code: body forms indented by two under
+# WITH-OPEN-FILE's LET, not filled to the margin.
+cat > "$TMPD/mx.lisp" <<'EOF'
+(require "dev-commands")
+(multiple-value-bind (rc text)
+    (ext.dev:handle-command "MACROEXPAND (with-open-file (s \"foo\" :direction :output :if-exists :supersede) (format s \"hello ~a\" 1) (format s \"world\"))")
+  (format t "~&<<RC=~d>>~%~a~%<<END>>~%" rc text))
+EOF
+out=$(run_script "$TMPD/mx.lisp")
+check "MACROEXPAND lays the expansion out"   '^(let ((s (open "foo" :direction :output :if-exists :supersede)))$' "$out"
+check "MACROEXPAND indents the body by two"  '^  (unwind-protect' "$out"
+
+out=$(run_intro 'MACROEXPAND (intro-fn 1 2)')
+check "MACROEXPAND of a non-macro form returns it" '^(intro-fn 1 2)$' "$out"
+
+out=$(run_intro 'MACROEXPAND (')
+check "MACROEXPAND of an unreadable form is rc 10" '<<RC=10>>' "$out"
+
+out=$(run_intro 'MACROEXPAND')
+check "MACROEXPAND without a form is fatal"  '<<RC=20>>' "$out"
+
 echo ""
 echo "test_dev_commands: $passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

@@ -62,14 +62,14 @@
 (defconstant +max-volume+ 64)
 
 (defconstant +max-precedence+ 127
-  "ADALLOC_MAXPREC — the highest allocation precedence; a channel held
+  "ADALLOC_MAXPREC -- the highest allocation precedence; a channel held
 at it cannot be stolen (nothing can steal a channel of equal or greater
 precedence).  On m68k PLAY-SAMPLE writes the channel's Paula period and
 volume registers by hand (this AmigaOS ignores ADIOF_PERVOL), and the
 audio.device autodoc is explicit that a caller storing directly to the
 hardware registers must lock the channel or hold it at max precedence so
 it cannot be stolen out from under the poke.  OPEN-AUDIO takes the latter
-road — a field on the allocation, no extra (and, on this device,
+road -- a field on the allocation, no extra (and, on this device,
 hang-prone) synchronous command.")
 
 ;;; Paula's per-channel length register counts 16-bit words, so one

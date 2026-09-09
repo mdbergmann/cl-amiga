@@ -10,11 +10,14 @@
 #                binary release points it at its staging directory)
 #   -b CLAMIGA   host binary (default build/host/clamiga)
 #   -D, --no-docstrings
-#                bind AMIGA.FFI:*DEFCFUN-DOCSTRINGS* to NIL for the run, so
-#                the DEFCFUN bindings in the FASLs carry no docstrings (the C
-#                prototypes stay in the .lisp sources).  ~16 KB of heap per
-#                raw OS module on the target; `make fasl-amiga` and the binary
-#                release pass it, a host-only build may leave them in.
+#                bind AMIGA.FFI:*DEFCFUN-DOCSTRINGS* and
+#                EXT:*CAPTURE-DOCUMENTATION* to NIL for the run, so the
+#                DEFCFUN bindings in the FASLs carry no docstrings (the C
+#                prototypes stay in the .lisp sources) and neither do the
+#                DEFUN / DEFMACRO / DEFVAR / DEFCLASS ... forms.  ~16 KB of
+#                heap per raw OS module on the target; `make fasl-amiga` and
+#                the binary release pass it, a host-only build may leave
+#                them in.
 #   FILE...      sources relative to the repo root (default: every .lisp
 #                under lib/amiga/, the ReAction/raw-bindings tree)
 #
@@ -82,10 +85,13 @@ if [ "$DOCSTRINGS" = 0 ]; then
     # (source or an existing FASL, whichever REQUIRE picks) and then
     # setting the variable is enough — DEFVAR keeps the NIL when the
     # file's own form runs again during its compile.
+    # EXT:*CAPTURE-DOCUMENTATION* is read by the compiler for every
+    # documented definition, so the compiling process must have it NIL.
     cat >> "$DRIVER" <<'EOF'
 (require "amiga/ffi")
 (setf amiga.ffi:*defcfun-docstrings* nil)
-(format t "~&LIBFASL: DEFCFUN docstrings disabled for this run~%")
+(setf ext:*capture-documentation* nil)
+(format t "~&LIBFASL: DEFCFUN and definition docstrings disabled for this run~%")
 EOF
 fi
 n=0

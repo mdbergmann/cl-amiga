@@ -80,6 +80,59 @@
         (check "arexx load ran the forms after the errors" t
                (and (boundp '*arexx-test-end*) t))
 
+        ; Introspection -- the editor's phase-2 commands, over the port.
+        ; The definitions come from a file so SOURCE-LOCATION has a line to
+        ; report and the docstring went through the compiler's load-time
+        ; record.
+        (with-open-file (s "T:clamiga-arexx-intro.lisp"
+                           :direction :output :if-exists :supersede)
+          (format s "(defun arexx-intro-fn (a &optional (b 2))~%")
+          (format s "  \"Intro doc.\"~%")
+          (format s "  (list a b))~%")
+          (format s "(defmacro arexx-intro-mac (x &body body) `(progn ,x ,@body))~%"))
+        (multiple-value-bind (rc text)
+            (amiga.arexx:send port "LOAD T:clamiga-arexx-intro.lisp")
+          (check "arexx intro file loads" 0 rc)
+          (check "arexx intro file loads clean" t
+                 (and (search "0 error(s)" text) t)))
+        (multiple-value-bind (rc text) (amiga.arexx:send port "ARGLIST arexx-intro-fn")
+          (check "arexx ARGLIST rc" 0 rc)
+          (check "arexx ARGLIST is the written lambda list" "(a &optional (b 2))" text))
+        (multiple-value-bind (rc text) (amiga.arexx:send port "ARGLIST arexx-intro-mac")
+          (check "arexx ARGLIST of a macro rc" 0 rc)
+          (check "arexx ARGLIST of a macro" "(x &body body)" text))
+        (multiple-value-bind (rc text) (amiga.arexx:send port "ARGLIST no-such-fn-here")
+          (declare (ignore text))
+          (check "arexx ARGLIST of an unknown name is rc 10" 10 rc))
+        (multiple-value-bind (rc text) (amiga.arexx:send port "COMPLETE arexx-intro-")
+          (check "arexx COMPLETE rc" 0 rc)
+          (check "arexx COMPLETE lists both, sorted" t
+                 (and (search "arexx-intro-fn" text)
+                      (search "arexx-intro-mac" text)
+                      (< (search "arexx-intro-fn" text) (search "arexx-intro-mac" text))
+                      t)))
+        (multiple-value-bind (rc text) (amiga.arexx:send port "DESCRIBE arexx-intro-fn")
+          (check "arexx DESCRIBE rc" 0 rc)
+          (check "arexx DESCRIBE shows the lambda list" t
+                 (and (search "Lambda-list: (A &OPTIONAL (B 2))" text) t))
+          (check "arexx DESCRIBE shows the docstring" t
+                 (and (search "Documentation: Intro doc." text) t)))
+        (multiple-value-bind (rc text) (amiga.arexx:send port "APROPOS arexx-intro")
+          (check "arexx APROPOS rc" 0 rc)
+          (check "arexx APROPOS tags the kinds" t
+                 (and (search "arexx-intro-fn function" text)
+                      (search "arexx-intro-mac macro" text)
+                      t)))
+        (multiple-value-bind (rc text) (amiga.arexx:send port "SOURCE-LOCATION arexx-intro-fn")
+          (check "arexx SOURCE-LOCATION rc" 0 rc)
+          (check "arexx SOURCE-LOCATION is file:line" t
+                 (and (search "clamiga-arexx-intro.lisp:1" text) t)))
+        (multiple-value-bind (rc text)
+            (amiga.arexx:send port "MACROEXPAND-1 (arexx-intro-mac 1 2 3)")
+          (check "arexx MACROEXPAND-1 rc" 0 rc)
+          (check "arexx MACROEXPAND-1 expansion" "(progn 1 2 3)" text))
+        (delete-file "T:clamiga-arexx-intro.lisp")
+
         ; The port keeps serving after all of that.
         (multiple-value-bind (rc text) (amiga.arexx:send port "PING")
           (check "arexx still alive after failures" 0 rc)

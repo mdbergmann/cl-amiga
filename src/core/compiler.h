@@ -58,6 +58,10 @@ void cl_compiler_indexes_gc_invalidate(void);
 
 void cl_compiler_init(void);
 
+/* True unless EXT:*CAPTURE-DOCUMENTATION* is NIL: whether the defining
+ * forms record their docstrings (compiler_extra.c emit_doc_call). */
+int cl_capture_documentation_p(void);
+
 /* Release the pooled CL_Compiler blocks (~366 KB each, 8 pre-warmed) and the
  * compiler's own locks.  Call at process exit only, once no compile can be in
  * flight — during a run the pool must keep its blocks (see compiler.c). */

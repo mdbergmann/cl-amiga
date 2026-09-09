@@ -104,8 +104,8 @@ directory truenames with a trailing slash)."
                 (char= (char name (1- (length name))) #\/))))))
 
 (defun %parse-verify-location (location)
-  "Split cl+ssl's :VERIFY-LOCATION designator — :DEFAULT, a file, a
-directory, or a list of files/directories — into (values ca-file ca-path).
+  "Split cl+ssl's :VERIFY-LOCATION designator -- :DEFAULT, a file, a
+directory, or a list of files/directories -- into (values ca-file ca-path).
 :DEFAULT means the TLS provider's default trust store (NIL/NIL)."
   (let ((ca-file nil)
         (ca-path nil))

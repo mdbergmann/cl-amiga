@@ -140,7 +140,7 @@
   "Find the class named NAME.  Signal an error if not found and
 ERRORP is true.  Common libraries (serapeum, closer-mop callers) pass
 an already-reified class metaobject in place of a class name and
-expect it to round-trip — when NAME is itself a class, return it
+expect it to round-trip -- when NAME is itself a class, return it
 directly instead of attempting a symbol lookup."
   (declare (ignore environment))
   (when (and (structurep name)
@@ -173,7 +173,7 @@ directly instead of attempting a symbol lookup."
 ;;; treated as user metaclasses (they are created during bootstrap, never
 ;;; via %ENSURE-CLASS).
 (defun %metaclass-p (class)
-  "True if CLASS is a metaclass — i.e. a proper subclass of STANDARD-CLASS."
+  "True if CLASS is a metaclass -- i.e. a proper subclass of STANDARD-CLASS."
   (let ((std (find-class 'standard-class nil)))
     (and std
          (not (eq class std))
@@ -646,7 +646,7 @@ directly instead of attempting a symbol lookup."
   "Serializes the get-or-create in INTERN-EQL-SPECIALIZER.  The sync
    table makes each gethash/put individually safe, but without this lock
    two threads interning the SAME value could both miss and create two
-   non-EQ specializers — breaking the EQ identity the MOP guarantees
+   non-EQ specializers -- breaking the EQ identity the MOP guarantees
    (and with it method replacement, which compares specializers).")
 
 (defun eql-specializer-p (object)
@@ -1127,7 +1127,7 @@ Specialize via defmethod to provide lazy initialization."
 (defun %build-slot-index-table (effective-slots)
   "Build a hash table mapping slot-name -> effective-slot-definition.
    Callers reach the actual storage via SLOT-DEFINITION-LOCATION on the
-   returned slot-def — an integer struct index for :INSTANCE allocation,
+   returned slot-def -- an integer struct index for :INSTANCE allocation,
    or a cons cell (NAME . VALUE) for :CLASS allocation."
   (let ((table (make-hash-table :test 'eq)))
     (dolist (slot effective-slots)
@@ -1175,7 +1175,7 @@ Specialize via defmethod to provide lazy initialization."
    FINALIZE-INHERITANCE recomputes the CPL, effective slots, slot index
    table and default initargs, and drop the cached CLASS-PROTOTYPE, which
    was allocated with the old slot layout.  Direct-subclasses and
-   direct-methods are deliberately kept — the metaobject stays the same
+   direct-methods are deliberately kept -- the metaobject stays the same
    object, so every method specialized on it and every subclass linked to
    it remains valid."
   (%struct-set class 8 nil)                   ; 8: prototype
@@ -1231,7 +1231,7 @@ Specialize via defmethod to provide lazy initialization."
   "True when OLD-CLASS (from FIND-CLASS, may be NIL) is a class metaobject
    whose struct type is exactly TYPE-NAME, so a redefinition can update it
    in place.  CLHS DEFCLASS / 4.3.6: redefining a class modifies the
-   EXISTING class object — FIND-CLASS keeps returning the same object, and
+   EXISTING class object -- FIND-CLASS keeps returning the same object, and
    methods specialized on it (or on its superclasses) keep dispatching on
    instances of classes defined after the redefinition.  A metaobject of a
    different struct type (a metaclass change, a BUILT-IN-CLASS or a
@@ -1361,7 +1361,7 @@ Specialize via defmethod to provide lazy initialization."
 (defun %find-inherited-class-slot-cell (class slot-name)
   "Walk CLASS's direct-superclasses' effective slots looking for a
    class-allocated slot with SLOT-NAME. Return its location cons cell
-   so the subclass can share the same storage — per AMOP §5.5,
+   so the subclass can share the same storage -- per AMOP section 5.5,
    subclasses inherit :class storage unless they redefine the slot."
   (dolist (super (class-direct-superclasses class) nil)
     (when (class-finalized-p super)
@@ -1376,7 +1376,7 @@ Specialize via defmethod to provide lazy initialization."
 (defun %assign-slot-locations (class effective-slots)
   "Fill in SLOT-DEFINITION-LOCATION for each effective slot. Instance
    slots get the next integer struct index. Class-allocated slots get
-   a cons (NAME . VALUE) — inherited from a superclass when the class
+   a cons (NAME . VALUE) -- inherited from a superclass when the class
    does not provide its own direct definition for the same name.
 
    A metaclass (subclass of STANDARD-CLASS) reserves indices 0-11 for the
@@ -1575,7 +1575,7 @@ Specialize via defmethod to provide lazy initialization."
 
 (defun allocate-instance (class)
   "Allocate a fresh instance of CLASS with all instance slots unbound.
-   Class-allocated slots don't take struct storage — they live in the
+   Class-allocated slots don't take struct storage -- they live in the
    cons cell attached to their effective-slot-definition."
   (let ((name (class-name class))
         (n 0))
@@ -1817,7 +1817,7 @@ for the plain-table corruption hazard).")
   "Broadcast UPDATE-DEPENDENT to each dependent of METAOBJECT with
 INITARGS describing the change.  Short-circuits when there are no
 dependents and (defensively) when the UPDATE-DEPENDENT GF is not yet
-bound — both conditions hold during bootstrap before the protocol GFs
+bound -- both conditions hold during bootstrap before the protocol GFs
 are defined."
   (let ((deps (gethash metaobject *metaobject-dependents*)))
     (when (and deps (fboundp 'update-dependent))
@@ -1957,16 +1957,16 @@ When called with no arguments, passes the original method arguments."
    dispatch-cache entry, or a standard-combination method set that lacked a
    primary until recomputed from the live method list.  A non-zero value
    means the dispatch cache / applicable-method computation disagreed with
-   the authoritative method list at least once — a GC relocation artifact, a
+   the authoritative method list at least once -- a GC relocation artifact, a
    concurrent cache write / method-list read from another thread, or a missed
-   invalidation — and was corrected.  Exposed for field diagnosis; normally
+   invalidation -- and was corrected.  Exposed for field diagnosis; normally
    zero.")
 
 (defvar *clos-diagnose-no-primary* nil
   "When true, a genuine \"no applicable primary method\" miss (after the
    self-heal recompute also fails to find one) dumps a diagnostic to
    *ERROR-OUTPUT* via %REPORT-DISPATCH-NO-PRIMARY: arg classes, their
-   precedence lists, and the GF's full method roster.  Default NIL — this is
+   precedence lists, and the GF's full method roster.  Default NIL -- this is
    an ordinary, common user error (only :before/:after/:around methods
    defined) as well as the symptom of the rare dispatch-metadata corruption
    the heal targets, so the dump is opt-in field-diagnosis output, not
@@ -1974,9 +1974,9 @@ When called with no arguments, passes the original method arguments."
 
 (defvar *clos-diagnose-no-applicable* nil
   "When true, a fresh dispatch miss that computes an EMPTY applicable-method
-   set for a GF that HAS methods — the first-call analogue of the stale
+   set for a GF that HAS methods -- the first-call analogue of the stale
    negative-cache entry %DISPATCH-NEGATIVE-HIT heals, but reached before any
-   negative entry exists to heal — dumps a diagnostic to *ERROR-OUTPUT* (arg
+   negative entry exists to heal -- dumps a diagnostic to *ERROR-OUTPUT* (arg
    classes + their precedence lists + the GF's method roster) after the
    self-heal retries also come up empty.  Default NIL: a fresh empty set is
    usually a genuine user error (a GF called with argument types it has no
@@ -2059,7 +2059,7 @@ When called with no arguments, passes the original method arguments."
 (defun %dispatch-dump-metadata (gf args applicable recomputed)
   "Dump the argument classes, their class-precedence-lists, and the GF's full
    method roster (qualifiers + specializers) to *ERROR-OUTPUT*.  Shared by the
-   no-primary and no-applicable field diagnostics — a truncated CPL points at
+   no-primary and no-applicable field diagnostics -- a truncated CPL points at
    class-metadata corruption, a short/wrong method list at method-list
    corruption, so the same dump distinguishes the two failure modes for either
    symptom.  APPLICABLE/RECOMPUTED may be NIL when the caller has no such set
@@ -2096,7 +2096,7 @@ When called with no arguments, passes the original method arguments."
   "Emit a diagnostic when standard combination finds applicable methods but
    NO primary among them.  In conformant code this is a genuine user error
    (only :before/:after/:around defined); but it also surfaces the same
-   intermittent dispatch-metadata corruption as the negative-cache path —
+   intermittent dispatch-metadata corruption as the negative-cache path --
    a GC relocation of a class's precedence list or the GF method list, or a
    concurrent mutation from another thread (log4cl's watcher / sento workers
    run while the main thread dispatches), which drops the primary from the
@@ -2104,7 +2104,7 @@ When called with no arguments, passes the original method arguments."
    apart on the next occurrence: the arg classes + their precedence lists
    (to spot a truncated CPL), and the GF's full defined-method roster with
    qualifiers/specializers (to spot a short/corrupt method list).  A no-op
-   unless *CLOS-DIAGNOSE-NO-PRIMARY* is true — see its docstring."
+   unless *CLOS-DIAGNOSE-NO-PRIMARY* is true -- see its docstring."
   (when *clos-diagnose-no-primary*
     (format *error-output*
             "~&; [dispatch] No applicable PRIMARY method for ~S~%"
@@ -2115,22 +2115,22 @@ When called with no arguments, passes the original method arguments."
   "How many times a dispatch self-heal recomputes the applicable-method set,
    yielding between tries, before giving up.  A transient dispatch-metadata
    inconsistency (a GC relocation window, or a concurrent metadata mutation
-   from a peer thread — log4cl's watcher / sento workers on the single-core
+   from a peer thread -- log4cl's watcher / sento workers on the single-core
    AmigaOS target) needs at least one yield for the mutator / GC to make
    progress, after which the recompute observes the corrected set; the extra
    tries add margin.  Only ever reached on a dispatch MISS for a GF that
-   plainly has the needed method — never on the hot path — so the cost is
+   plainly has the needed method -- never on the hot path -- so the cost is
    confined to the rare heal.")
 
 (defun %recompute-methods-until (gf args predicate)
   "Recompute (%COMPUTE-APPLICABLE-METHODS GF ARGS) up to *DISPATCH-HEAL-RETRIES*
    times, YIELDING between tries, and return the first recomputed set that
-   satisfies PREDICATE — or NIL if none does.  The yield is what makes the
+   satisfies PREDICATE -- or NIL if none does.  The yield is what makes the
    retry meaningful: the recompute is a pure function of the live dispatch
    metadata, so a plain re-run with no yield just observes the same
    (transiently corrupt) state every time.  Giving a concurrent mutator / GC a
    scheduling slot lets the window close, after which the recompute sees the
-   real set.  Shared by both self-heals — empty applicable set (PREDICATE =
+   real set.  Shared by both self-heals -- empty applicable set (PREDICATE =
    non-empty) and missing primary (PREDICATE = has-primary)."
   (when (and args (typep gf 'standard-generic-function))
     (dotimes (i *dispatch-heal-retries*)
@@ -2143,7 +2143,7 @@ When called with no arguments, passes the original method arguments."
 (defun %gf-roster-has-primary-p (gf)
   "True if GF's method roster contains at least one primary (unqualified)
    method.  Distinguishes a genuine \"only :around/:before/:after defined\"
-   user error (no retry — it can never yield an applicable primary) from a
+   user error (no retry -- it can never yield an applicable primary) from a
    suspicious applicable set that lacks a primary the GF plainly defines
    (retry-and-heal)."
   (and (typep gf 'standard-generic-function)
@@ -2157,13 +2157,13 @@ When called with no arguments, passes the original method arguments."
    resolver) before letting %BUILD-EFFECTIVE-METHOD signal \"No applicable
    primary method\".  A recomputed set that DOES contain a primary means the
    set handed in was stale/corrupt (same class of transient dispatch-metadata
-   corruption as the negative-cache bug — a GC relocation of an argument
+   corruption as the negative-cache bug -- a GC relocation of an argument
    class's precedence list, or a concurrent metadata read while a peer thread
    mutates it, dropping the applicable primary while the ((t)(t)) :around
    survives); retry-with-yield and heal.  Gated on the GF's roster actually
    containing a primary: a GF with only :around/:before/:after can never heal,
    so it errors immediately with no wasted retries.  Otherwise the miss is
-   genuine (or the corruption is persistent) — dump a diagnostic and fall
+   genuine (or the corruption is persistent) -- dump a diagnostic and fall
    through to the normal error.  Preserves the fast path bit-for-bit when a
    primary is present in the handed-in set."
   (if (%methods-have-primary-p methods)
@@ -2205,10 +2205,10 @@ When called with no arguments, passes the original method arguments."
   "A *fresh* (uncached) dispatch miss on GF for ARGS computed an EMPTY
    applicable-method set.  This is the first-call analogue of the stale
    negative-cache entry %DISPATCH-NEGATIVE-HIT heals: the same transient
-   dispatch-metadata corruption — a GC relocation of a class precedence list
+   dispatch-metadata corruption -- a GC relocation of a class precedence list
    or the GF method list, or a concurrent metadata mutation from a peer thread
    (log4cl's watcher / sento workers dispatch while the main thread loads a
-   system) — can make one %COMPUTE-APPLICABLE-METHODS pass observe an empty set
+   system) -- can make one %COMPUTE-APPLICABLE-METHODS pass observe an empty set
    even though a method plainly applies.  On the *first* miss no negative entry
    exists yet, so nothing had a chance to self-heal, and the plain path would
    cache a (now stale) negative AND immediately signal NO-APPLICABLE-METHOD.
@@ -2216,7 +2216,7 @@ When called with no arguments, passes the original method arguments."
    Defend that first miss the same way: if GF actually has methods, recompute
    with yields between tries (%RECOMPUTE-METHODS-UNTIL) so any in-flight window
    can close.  Return an EMF to dispatch through if a retry finds methods (and
-   bump *GF-CACHE-HEALS*), or NIL for a genuine miss — the caller then caches
+   bump *GF-CACHE-HEALS*), or NIL for a genuine miss -- the caller then caches
    the negative + signals NO-APPLICABLE-METHOD exactly as before.  A GF with
    zero methods, or a real type mismatch, recomputes empty every time and
    returns NIL, so this never turns a genuine miss into a spurious call."
@@ -2354,7 +2354,7 @@ in T and the last :around's CALL-NEXT-METHOD reaches it without a binding."
    contention.  A synchronized table serializes those slow-path cache updates
    internally (see CL_HT_FLAG_SYNC in builtins_hashtable.c).
 
-   This guards only the slow (cache-miss) path — the monomorphic inline-cache
+   This guards only the slow (cache-miss) path -- the monomorphic inline-cache
    fast path in the discriminating function never touches this table, so the
    hot dispatch path pays nothing.  TEST is 'EQ or 'EQL."
   (clamiga::%make-sync-hash-table test))
@@ -2364,14 +2364,14 @@ in T and the last :around's CALL-NEXT-METHOD reaches it without a binding."
    \"no method applies\" for this class tuple.  The dispatch cache is only a
    memo of a pure function (the applicable-method set for a tuple of argument
    classes), so a cached negative that contradicts the live method list is by
-   definition stale — it can arise from a GC relocation touching the EQ-keyed
+   definition stale -- it can arise from a GC relocation touching the EQ-keyed
    cache, a concurrent cache write from another thread (sento spins up worker
    threads that dispatch GFs while the main thread loads systems), or a missed
    invalidation.  Rather than trust the memo, recompute from the authoritative
    method list: if methods now apply, heal the cache entry and dispatch;
    otherwise the miss is genuine and we signal NO-APPLICABLE-METHOD.  This
-   never turns a correct miss into a spurious call — a genuine no-method
-   recomputes empty and still signals — it only rescues a stale/corrupt
+   never turns a correct miss into a spurious call -- a genuine no-method
+   recomputes empty and still signals -- it only rescues a stale/corrupt
    negative that would otherwise wrongly report \"No applicable method\" for a
    method that plainly exists."
   (let ((methods (%compute-applicable-methods gf args)))
@@ -2655,7 +2655,7 @@ in T and the last :around's CALL-NEXT-METHOD reaches it without a binding."
 
 
 (defun %build-discriminating-function (gf lambda-list)
-  "Return the discriminating function for GF — an arity-specialized
+  "Return the discriminating function for GF -- an arity-specialized
    closure when the GF takes 1, 2, or 3 required arguments and no
    non-required parameters, otherwise the variadic fallback."
   (let ((nreq (%gf-lambda-list-required-count lambda-list)))
@@ -2723,7 +2723,7 @@ in T and the last :around's CALL-NEXT-METHOD reaches it without a binding."
   "Method object -> slot name, for DEFCLASS-generated reader methods.
    Mutated (gethash/setf/remhash) from %INSTALL-METHOD-IN-GF /
    %UNINSTALL-METHOD-FROM-GF / %NOTE-READER-METHOD, which run whenever
-   DEFMETHOD/ADD-METHOD/REMOVE-METHOD fire on ANY thread — the same
+   DEFMETHOD/ADD-METHOD/REMOVE-METHOD fire on ANY thread -- the same
    multi-thread hazard %MAKE-DISPATCH-CACHE guards against above, so this
    table needs the same CL_HT_FLAG_SYNC treatment rather than a plain
    (lock-free) table.")
@@ -2752,8 +2752,8 @@ in T and the last :around's CALL-NEXT-METHOD reaches it without a binding."
          slot)))
 
 (defun %reader-ic-entries (ic)
-  "IC when it is reader-shaped — a list of (TYPE-NAME . SLOT-INDEX)
-   entries — else NIL.  The EMF caches sharing slot 8 put a class object
+  "IC when it is reader-shaped -- a list of (TYPE-NAME . SLOT-INDEX)
+   entries -- else NIL.  The EMF caches sharing slot 8 put a class object
    (never a cons) in their car, so one CONSP look disambiguates."
   (if (and (consp ic) (consp (car ic))) ic nil))
 
@@ -2875,7 +2875,7 @@ in T and the last :around's CALL-NEXT-METHOD reaches it without a binding."
   "Writer IC miss.  Take the ordinary slow path (which performs the
    store through the full protocol), then push (TYPE-NAME . (- -1 IDX))
    for OBJ's class onto the writer IC.  Snapshot/re-validate/fresh-spine
-   discipline is %GF-READER-1-MISS's — see its docstring.
+   discipline is %GF-READER-1-MISS's -- see its docstring.
    %READER-IC-ENTRIES' shape check covers writer entries too (both are
    lists of conses; only the cdr's sign differs)."
   (let ((old (%reader-ic-entries (gf-inline-cache gf))))
@@ -3055,6 +3055,7 @@ already-existing GF the installed combination is preserved."
   (let ((method-defs nil)
         (combo-name 'standard)
         (combo-options nil)
+        (documentation nil)
         (gf-class 'standard-generic-function))
     (dolist (opt options)
       (cond
@@ -3062,6 +3063,9 @@ already-existing GF the installed combination is preserved."
         ;; subclass to instantiate (e.g. snooze's resource-generic-function).
         ((and (consp opt) (eq (car opt) :generic-function-class))
          (setq gf-class (cadr opt)))
+        ;; (:documentation "...") -> the FUNCTION doc-type on the name.
+        ((and (consp opt) (eq (car opt) :documentation))
+         (setq documentation (cadr opt)))
         ;; Inline method definition
         ((and (consp opt) (eq (car opt) :method))
          ;; (:method [qualifiers...] specialized-lambda-list &body body)
@@ -3089,9 +3093,12 @@ already-existing GF the installed combination is preserved."
                :lambda-list ',lambda-list
                :method-combination-name ',combo-name
                :method-combination-options ',combo-options
-               :generic-function-class ',gf-class)))
-      (if method-defs
-          `(progn ,egf-form ,@method-defs)
+               :generic-function-class ',gf-class))
+          (doc-forms
+            (when (stringp documentation)
+              `((%set-documentation ',name 'function ,documentation)))))
+      (if (or method-defs doc-forms)
+          `(progn ,egf-form ,@doc-forms ,@method-defs)
           egf-form))))
 
 ;;; --- defmethod helpers ---
@@ -3137,7 +3144,7 @@ already-existing GF the installed combination is preserved."
 
 (defun extract-specializer-names (specialized-lambda-list)
   "AMOP: given a specialized lambda list, return the list of specializer
-   names — class-name symbols or (EQL value) forms, padded with T for
+   names -- class-name symbols or (EQL value) forms, padded with T for
    unspecialized required parameters.  Non-required parameters are
    skipped."
   (let ((names nil))
@@ -3152,7 +3159,7 @@ already-existing GF the installed combination is preserved."
 
 (defun extract-lambda-list (specialized-lambda-list)
   "AMOP: given a specialized lambda list, return the corresponding plain
-   lambda list — specialized required parameters are replaced by their
+   lambda list -- specialized required parameters are replaced by their
    variable names; non-required parameters are preserved verbatim."
   (let ((unspec nil)
         (in-required t))
@@ -3244,7 +3251,7 @@ already-existing GF the installed combination is preserved."
   "Serializes the read-modify-write of GF-METHODS across concurrent
    %INSTALL-METHOD-IN-GF / %UNINSTALL-METHOD-FROM-GF calls (possibly on
    different GFs).  The single %SET-GF-METHODS store is atomic at the
-   reader's granularity — a dispatcher never sees a torn list — but two
+   reader's granularity -- a dispatcher never sees a torn list -- but two
    writers that both read the old list before either stores race to a
    lost update: whichever store lands second silently discards the
    other's method/removal.  A coarse global lock (rather than a lock
@@ -3345,7 +3352,7 @@ already-existing GF the installed combination is preserved."
 
 (defun %add-method-to-gf (gf-name qualifiers specializer-names fn lambda-list
                           &optional simple-primary-p)
-  "Bridge used by DEFMETHOD expansion — construct the method struct and
+  "Bridge used by DEFMETHOD expansion -- construct the method struct and
    install it via the primitive install helper (bypasses the ADD-METHOD
    GF dispatch that is itself built on this path during bootstrap).
    SIMPLE-PRIMARY-P is set by the DEFMETHOD macro when the method body
@@ -3439,7 +3446,7 @@ already-existing GF the installed combination is preserved."
    register the class.  On reinitialization (REINIT-P, class
    redefinition) the metaobject is the SAME struct as before, so its
    direct-subclasses and direct-methods survive and get re-finalized /
-   keep dispatching; and — as in AMOP's class reinitialization protocol —
+   keep dispatching; and -- as in AMOP's class reinitialization protocol --
    :DIRECT-SUPERCLASSES, :DIRECT-SLOTS and :DIRECT-DEFAULT-INITARGS that
    are NOT supplied keep their current values instead of resetting."
   (let ((not-supplied (list nil)))
@@ -3671,7 +3678,7 @@ already-existing GF the installed combination is preserved."
 (defgeneric finalize-inheritance (class))
 (defmethod finalize-inheritance ((class t))
   "Compute CPL, effective slots, and default initargs via the MOP GFs.
-   Idempotent: already-finalized classes return immediately (AMOP §3.4.2)."
+   Idempotent: already-finalized classes return immediately (AMOP section 3.4.2)."
   (if (class-finalized-p class)
       class
       (progn
@@ -3688,7 +3695,7 @@ already-existing GF the installed combination is preserved."
 (defmethod class-prototype ((class t))
   "Return a (lazily allocated) prototype instance of CLASS. For classes
    that cannot be instantiated (built-ins without a slot-index-table),
-   return NIL rather than signal — callers treat it as advisory."
+   return NIL rather than signal -- callers treat it as advisory."
   (or (%struct-ref class 8)
       (when (class-slot-index-table class)
         (let ((proto (allocate-instance class)))
@@ -3738,7 +3745,8 @@ already-existing GF the installed combination is preserved."
   (let ((accessor-defs nil)
         (slot-def-forms nil)
         (default-initarg-forms nil)
-        (metaclass-name nil))
+        (metaclass-name nil)
+        (documentation nil))
     ;; Parse class options
     (dolist (opt class-options)
       (when (consp opt)
@@ -3752,7 +3760,10 @@ already-existing GF the installed combination is preserved."
                         (push `(list ',key (lambda () ,val)) default-initarg-forms)))))
           ((eq (car opt) :metaclass)
            ;; (:metaclass NAME)
-           (setq metaclass-name (cadr opt))))))
+           (setq metaclass-name (cadr opt)))
+          ((eq (car opt) :documentation)
+           ;; (:documentation "...") -> the TYPE doc-type on the class name.
+           (setq documentation (cadr opt))))))
     ;; Parse each slot specifier
     (dolist (spec slot-specifiers)
       (let* ((parsed (%parse-slot-spec spec))
@@ -3802,6 +3813,8 @@ already-existing GF the installed combination is preserved."
          :direct-slots (list ,@slot-def-forms)
          :direct-default-initargs (list ,@(nreverse default-initarg-forms))
          ,@(when metaclass-name `(:metaclass ',metaclass-name)))
+       ,@(when (stringp documentation)
+           `((%set-documentation ',name 'type ,documentation)))
        ,@accessor-defs
        (find-class ',name))))
 
@@ -3968,7 +3981,7 @@ to GF invoke FN in place of the standard dispatch.  Returns GF."
 
 (defun standard-instance-access (instance location)
   "AMOP: unchecked slot access by integer location.  No bound check,
-no GF dispatch — useful inside SLOT-VALUE-USING-CLASS methods that want
+no GF dispatch -- useful inside SLOT-VALUE-USING-CLASS methods that want
 to sidestep the protocol they are implementing."
   (%struct-ref instance location))
 
@@ -4022,7 +4035,7 @@ method change regardless of which path installed it."
 
 (defgeneric remove-method (generic-function method))
 (defmethod remove-method ((gf standard-generic-function) (method standard-method))
-  "AMOP: uninstall METHOD from GF.  Returns GF.  Uses EQ identity — a
+  "AMOP: uninstall METHOD from GF.  Returns GF.  Uses EQ identity -- a
 method that is not installed is silently ignored, matching AMOP.  The
 UPDATE-DEPENDENT broadcast is fired by %UNINSTALL-METHOD-FROM-GF."
   (%uninstall-method-from-gf gf method)
@@ -4033,7 +4046,7 @@ UPDATE-DEPENDENT broadcast is fired by %UNINSTALL-METHOD-FROM-GF."
                         &optional (errorp t))
   "AMOP: locate the method on GF with the given QUALIFIERS list and
 SPECIALIZERS list.  SPECIALIZERS may contain class objects, class
-names, or (EQL value) / EQL-SPECIALIZER metaobjects — names are
+names, or (EQL value) / EQL-SPECIALIZER metaobjects -- names are
 resolved to metaobjects via %RESOLVE-SPECIALIZERS before comparison."
   (let* ((resolved (mapcar (lambda (s)
                              (cond
@@ -4057,7 +4070,7 @@ resolved to metaobjects via %RESOLVE-SPECIALIZERS before comparison."
 (defmethod make-method-lambda ((gf standard-generic-function) (method standard-method)
                                 lambda-expression environment)
   "AMOP: rewrite a method LAMBDA-EXPRESSION before it is compiled.
-Default method returns LAMBDA-EXPRESSION and NIL — DEFMETHOD builds
+Default method returns LAMBDA-EXPRESSION and NIL -- DEFMETHOD builds
 the lambda directly and does not consult this GF unless a user method
 overrides it.  Returns two values: the possibly-transformed lambda
 expression and a list of extra initargs for MAKE-METHOD-LAMBDA callers."
@@ -4065,7 +4078,7 @@ expression and a list of extra initargs for MAKE-METHOD-LAMBDA callers."
   (values lambda-expression nil))
 
 (defun %gf-or-name (gf-or-name)
-  "Resolve a GF designator to a standard-generic-function metaobject —
+  "Resolve a GF designator to a standard-generic-function metaobject --
 accepts a GF struct or a function-name (symbol or (SETF name))."
   (cond
     ((and (structurep gf-or-name)
@@ -4080,7 +4093,7 @@ accepts a GF struct or a function-name (symbol or (SETF name))."
                            (method-class (find-class 'standard-method)))
   "closer-mop: construct a method from LAMBDA-EXPRESSION and install it
 on GF-OR-NAME.  LAMBDA-EXPRESSION is either a lambda form or a
-specialized lambda method form — if :lambda-list and :specializers are
+specialized lambda method form -- if :lambda-list and :specializers are
 not supplied, they are parsed from LAMBDA-EXPRESSION's first argument
 list.  METHOD-CLASS is accepted for API completeness but is not used
 since user-defined method classes are out of scope."
@@ -4181,9 +4194,10 @@ non-default options so every GF has its own metaobject to inspect."
                                          documentation)
   "Register a short-form method combination named NAME.  OPERATOR is the
 combining operator symbol (defaults to NAME).  IDENTITY-WITH-ONE-ARGUMENT
-controls the single-primary-method optimisation.  DOCUMENTATION is
-accepted for API completeness but not stored."
-  (declare (ignore documentation))
+controls the single-primary-method optimisation.  DOCUMENTATION, when a
+string, is stored under the METHOD-COMBINATION doc-type."
+  (when (stringp documentation)
+    (%set-documentation name 'method-combination documentation))
   (setf (gethash (%method-combination-key name) *method-combinations*)
         (%make-struct 'standard-method-combination
           name nil :short operator identity-with-one-argument nil))
@@ -4226,7 +4240,7 @@ groups bound by DEFINE-METHOD-COMBINATION."
 (defmethod find-method-combination (gf name options)
   "AMOP: return the method-combination metaobject named NAME, attached
 with OPTIONS.  Default method consults the global combination registry
-and ignores GF, so it accepts NIL as well as a generic-function object —
+and ignores GF, so it accepts NIL as well as a generic-function object --
 the closer-mop calling convention."
   (declare (ignore gf))
   (%resolve-method-combination name options))
@@ -4349,7 +4363,7 @@ The :MOST-SPECIFIC-LAST option (supplied via DEFGENERIC's
    is FN.  Used by CALL-METHOD to wrap a (MAKE-METHOD FORM) designator into
    a real method object.  simple-primary-p is NIL so that a chain ending in
    the anonymous method always runs it with a *CNM* binding whose next
-   index is past the end — CALL-NEXT-METHOD then signals \"No next method\"
+   index is past the end -- CALL-NEXT-METHOD then signals \"No next method\"
    instead of recursing forever when FORM calls call-next-method and the
    anonymous method is the last in the chain."
   (%make-struct 'standard-method
@@ -4430,9 +4444,9 @@ PATTERN elements are compared with EQL; a lone * in PATTERN means
 (defun %filter-methods-by-spec (methods spec-tail)
   "Select methods that satisfy the group specifier SPEC-TAIL (the part
 after the group-variable name in a long-form group-spec).  Supported:
-  ()                 — unqualified methods
-  (qualifier...)     — exact qualifier list, optionally ending in *
-  (symbol)           — SYMBOL names a predicate of the qualifier list
+  ()                 -- unqualified methods
+  (qualifier...)     -- exact qualifier list, optionally ending in *
+  (symbol)           -- SYMBOL names a predicate of the qualifier list
 The :ORDER option reorders the matched methods: METHODS arrive
 most-specific-first, and :MOST-SPECIFIC-LAST reverses them."
   (let* ((pattern (car spec-tail))
@@ -4458,13 +4472,13 @@ most-specific-first, and :MOST-SPECIFIC-LAST reverses them."
 (defmacro define-method-combination (name &rest args)
   "Register a user method combination.  Two forms:
 
-Short form — all ARGS are :KEYWORD value pairs (or empty):
+Short form -- all ARGS are :KEYWORD value pairs (or empty):
   (define-method-combination NAME
     [:documentation STRING]
     [:identity-with-one-argument BOOL]
     [:operator SYMBOL])
 
-Long form — first ARG is a lambda-list, second is a group-spec list:
+Long form -- first ARG is a lambda-list, second is a group-spec list:
   (define-method-combination NAME LAMBDA-LIST ({GROUP-SPEC}*)
     [(:arguments . ARG-LIST)] [(:generic-function VAR)]
     [(:documentation STRING)]
@@ -4495,7 +4509,8 @@ to dispatch the methods it pulls out of those groups."
      (let* ((lambda-list (car args))
             (group-specs (cadr args))
             (body (cddr args))
-            (gf-var nil))
+            (gf-var nil)
+            (documentation nil))
        (declare (ignore lambda-list))
        ;; Strip leading option forms: (:documentation ...), (:arguments ...),
        ;; (:generic-function VAR).
@@ -4505,18 +4520,22 @@ to dispatch the methods it pulls out of those groups."
                             (eq (caar body) :generic-function)))
              do (let ((opt (pop body)))
                   (case (car opt)
-                    (:generic-function (setq gf-var (cadr opt))))))
+                    (:generic-function (setq gf-var (cadr opt)))
+                    (:documentation (setq documentation (cadr opt))))))
        (let ((gf-sym (or gf-var (gensym "GF")))
              (methods-sym (gensym "METHODS")))
-         `(%define-long-method-combination
-             ',name
-             (lambda (,gf-sym ,methods-sym)
-               (declare (ignorable ,gf-sym))
-               (let ,(mapcar (lambda (gs)
-                               `(,(car gs)
-                                 (%filter-methods-by-spec ,methods-sym ',(cdr gs))))
-                             group-specs)
-                 ,@body))))))))
+         `(progn
+            ,@(when (stringp documentation)
+                `((%set-documentation ',name 'method-combination ,documentation)))
+            (%define-long-method-combination
+              ',name
+              (lambda (,gf-sym ,methods-sym)
+                (declare (ignorable ,gf-sym))
+                (let ,(mapcar (lambda (gs)
+                                `(,(car gs)
+                                  (%filter-methods-by-spec ,methods-sym ',(cdr gs))))
+                              group-specs)
+                  ,@body)))))))))
 
 ;;; --- Dependent-maintenance protocol GFs (AMOP §5.4) ---
 ;;; *METAOBJECT-DEPENDENTS* and %NOTIFY-DEPENDENTS are defined near the
@@ -4527,7 +4546,7 @@ to dispatch the methods it pulls out of those groups."
 
 (defgeneric add-dependent (metaobject dependent))
 (defmethod add-dependent ((metaobject t) dependent)
-  "AMOP §5.4: register DEPENDENT so it receives UPDATE-DEPENDENT
+  "AMOP section 5.4: register DEPENDENT so it receives UPDATE-DEPENDENT
 notifications when METAOBJECT is modified by ENSURE-CLASS, ADD-METHOD,
 REMOVE-METHOD, or ENSURE-GENERIC-FUNCTION.  Re-adding a dependent
 already present (EQ compare) is a no-op.  Returns NIL."
@@ -4539,7 +4558,7 @@ already present (EQ compare) is a no-op.  Returns NIL."
 
 (defgeneric remove-dependent (metaobject dependent))
 (defmethod remove-dependent ((metaobject t) dependent)
-  "AMOP §5.4: unregister DEPENDENT from METAOBJECT.  Silently ignores
+  "AMOP section 5.4: unregister DEPENDENT from METAOBJECT.  Silently ignores
 dependents that were not previously registered.  Returns NIL."
   (let ((deps (gethash metaobject *metaobject-dependents*)))
     (setf (gethash metaobject *metaobject-dependents*)
@@ -4548,7 +4567,7 @@ dependents that were not previously registered.  Returns NIL."
 
 (defgeneric map-dependents (metaobject function))
 (defmethod map-dependents ((metaobject t) function)
-  "AMOP §5.4: apply FUNCTION to each dependent of METAOBJECT in
+  "AMOP section 5.4: apply FUNCTION to each dependent of METAOBJECT in
 implementation-defined order.  Returns NIL.  FUNCTION is called with
 one argument (the dependent)."
   (dolist (dep (gethash metaobject *metaobject-dependents*))
@@ -4557,8 +4576,8 @@ one argument (the dependent)."
 
 (defgeneric update-dependent (metaobject dependent &rest initargs))
 (defmethod update-dependent ((metaobject t) (dependent t) &rest initargs)
-  "AMOP §5.4: notify DEPENDENT that METAOBJECT changed.  INITARGS
-describes the change — the broadcaster passes ('ADD-METHOD METHOD),
+  "AMOP section 5.4: notify DEPENDENT that METAOBJECT changed.  INITARGS
+describes the change -- the broadcaster passes ('ADD-METHOD METHOD),
 ('REMOVE-METHOD METHOD), or ('REINITIALIZE-INSTANCE ...keys...).  The
 default method is a no-op; users specialise on their own dependent
 class to react."
@@ -4644,7 +4663,7 @@ BUILT-IN-CLASS, or FUNCALLABLE-STANDARD-CLASS).  closer-mop:CLASSP."
 
 (defun generic-function-method-class (gf)
   "AMOP: the class of methods added to GF by DEFMETHOD.  We do not
-track a per-GF method class — every method is a STANDARD-METHOD."
+track a per-GF method class -- every method is a STANDARD-METHOD."
   (declare (ignore gf))
   (find-class 'standard-method))
 
@@ -4661,7 +4680,7 @@ GF's lambda-list."
 
 (defun generic-function-declarations (gf)
   "AMOP: the list of OPTIMIZE / declare-identifier declarations for GF.
-We do not track declarations — return NIL."
+We do not track declarations -- return NIL."
   (declare (ignore gf))
   nil)
 
@@ -4737,7 +4756,7 @@ CALL-METHOD; callers typically pass the result to a compiler."
 (defgeneric ensure-generic-function-using-class (gf name &rest args))
 (defmethod ensure-generic-function-using-class (gf name &rest args)
   "AMOP: delegate to ENSURE-GENERIC-FUNCTION.  GF is the existing
-metaobject (or NIL) — it is reused or reinitialized by the underlying
+metaobject (or NIL) -- it is reused or reinitialized by the underlying
 implementation."
   (declare (ignore gf))
   (apply #'ensure-generic-function name args))
@@ -4751,21 +4770,21 @@ implementation."
 (defgeneric specializer-direct-methods (specializer))
 (defmethod specializer-direct-methods (specializer)
   "AMOP: methods that directly specialize on SPECIALIZER.  We don't
-track a back-link — return NIL."
+track a back-link -- return NIL."
   (declare (ignore specializer))
   nil)
 
 (defgeneric specializer-direct-generic-functions (specializer))
 (defmethod specializer-direct-generic-functions (specializer)
   "AMOP: generic functions that have a method directly specializing on
-SPECIALIZER.  We don't track a back-link — return NIL."
+SPECIALIZER.  We don't track a back-link -- return NIL."
   (declare (ignore specializer))
   nil)
 
 (defgeneric add-direct-method (specializer method))
 (defmethod add-direct-method (specializer method)
   "AMOP: record METHOD as a direct method of SPECIALIZER.  We do not
-maintain the back-link — this is a no-op."
+maintain the back-link -- this is a no-op."
   (declare (ignore specializer method))
   nil)
 
@@ -4778,7 +4797,7 @@ maintain the back-link — this is a no-op."
 (defgeneric add-direct-subclass (class subclass))
 (defmethod add-direct-subclass (class subclass)
   "AMOP: register SUBCLASS as a direct subclass of CLASS.  We already
-maintain this list in class slot 6 — add SUBCLASS unless it is already
+maintain this list in class slot 6 -- add SUBCLASS unless it is already
 present."
   (let ((subs (class-direct-subclasses class)))
     (unless (member subclass subs :test #'eq)
@@ -4795,14 +4814,14 @@ present."
 (defgeneric accessor-method-slot-definition (method))
 (defmethod accessor-method-slot-definition (method)
   "AMOP: the direct slot definition that generated METHOD.  We do not
-back-link slot accessors to their slot-definition source — return NIL."
+back-link slot accessors to their slot-definition source -- return NIL."
   (declare (ignore method))
   nil)
 
 (defgeneric reader-method-class (class direct-slot &rest initargs))
 (defmethod reader-method-class (class direct-slot &rest initargs)
   "AMOP: class of reader methods generated for DIRECT-SLOT on CLASS.
-We generate STANDARD-METHOD instances for accessors — this is the
+We generate STANDARD-METHOD instances for accessors -- this is the
 protocol hook a user metaclass would override to substitute a subclass."
   (declare (ignore class direct-slot initargs))
   (find-class 'standard-reader-method))
@@ -4886,7 +4905,7 @@ protocol hook a user metaclass would override to substitute a subclass."
    OBJECT by allocating an instance of its type and restoring SLOT-NAMES
    (default: all slots).  Unbound slots are left unbound.  The init form
    references OBJECT itself, so the FASL writer shares it with the
-   creation result — the resulting object is EQ to the one the creation
+   creation result -- the resulting object is EQ to the one the creation
    form produced (the required circular self-reference)."
   (declare (ignore environment))
   (let ((names (or slot-names (%object-load-form-slot-names object)))
@@ -4902,7 +4921,7 @@ protocol hook a user metaclass would override to substitute a subclass."
 (defun clamiga::%make-load-form-active-p ()
   "T iff MAKE-LOAD-FORM has at least one user method.  The FASL writer's
    pre-pass calls this once per COMPILE-FILE run and skips the constant
-   graph walk entirely when it returns NIL — so every file that does not
+   graph walk entirely when it returns NIL -- so every file that does not
    define a MAKE-LOAD-FORM method pays zero pre-pass cost and keeps the
    exact prior serialization behavior."
   (and (fboundp 'make-load-form)

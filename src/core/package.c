@@ -1061,8 +1061,9 @@ void cl_package_export_defined_cl_symbols(void)
  * any %-helper divergence — run it after touching boot.lisp / clos.lisp. */
 static const char *const clos_internal_names[] = {
     "+STANDARD-CLASS-SLOT-LAYOUT+",
+    "%ACCESSIBLE-SYMBOLS",
     "%ACCESSOR-READER-BODY", "%ACCESSOR-WRITER-BODY",
-    "%ADD-METHOD-TO-GF", "%ASSIGN-SLOT-LOCATIONS",
+    "%ADD-METHOD-TO-GF", "%APROPOS-PACKAGE", "%ASSIGN-SLOT-LOCATIONS",
     "%BOA-PATCH-DEFAULTS", "%BODY-SIMPLE-PRIMARY-P",
     "%CNM-CHAIN", "%CNM-INVOKE",
     "%BUILD-DISCRIMINATING-FUNCTION",

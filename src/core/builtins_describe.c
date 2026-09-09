@@ -15,6 +15,7 @@
 #include "string_utils.h"
 #include "vm.h"
 #include "float.h"
+#include "compiler.h"
 #include "../platform/platform.h"
 #include <string.h>
 #include <stdio.h>
@@ -45,6 +46,90 @@ static void write_obj(CL_Obj stream, CL_Obj obj)
     write_str(stream, buf);
 }
 
+
+/* Apply the Lisp function named NAME in PACKAGE to ARGS, or return CL_NIL
+ * when it is not fbound -- DESCRIBE also runs during boot, before
+ * DOCUMENTATION (boot.lisp) and GENERIC-FUNCTION-LAMBDA-LIST (clos.lisp)
+ * exist.  A generic function is unwrapped to its discriminating function,
+ * which is what cl_vm_apply can run.  The caller protects ARGS. */
+static CL_Obj call_lisp(const char *name, CL_Obj package, CL_Obj *args, int n)
+{
+    CL_Obj sym = cl_find_symbol(name, (uint32_t)strlen(name), package);
+    CL_Obj fn;
+    if (CL_NULL_P(sym) || !CL_SYMBOL_P(sym)) return CL_NIL;
+    fn = ((CL_Symbol *)CL_OBJ_TO_PTR(sym))->function;
+    if (fn == CL_UNBOUND || CL_NULL_P(fn)) return CL_NIL;
+    fn = cl_unwrap_funcallable(fn);
+    return cl_vm_apply(fn, args, n);
+}
+
+/* "  LABEL: <doc>" when (DOCUMENTATION NAME 'DOC-TYPE) is a string. */
+static void describe_documentation(CL_Obj stream, CL_Obj name,
+                                   const char *doc_type, const char *label)
+{
+    CL_Obj args[2];
+    CL_Obj doc;
+    args[0] = name;
+    args[1] = cl_intern_in(doc_type, (uint32_t)strlen(doc_type), cl_package_cl);
+    CL_GC_PROTECT(stream);
+    CL_GC_PROTECT(args[0]);
+    CL_GC_PROTECT(args[1]);
+    doc = call_lisp("DOCUMENTATION", cl_package_cl, args, 2);
+    if (CL_ANY_STRING_P(doc)) {
+        CL_GC_PROTECT(doc);
+        write_str(stream, label);
+        cl_princ_to_stream(doc, stream);
+        write_nl(stream);
+        CL_GC_UNPROTECT(1);
+    }
+    CL_GC_UNPROTECT(3);
+}
+
+/* "  Lambda-list: (...)" for a function object -- the list as written for
+ * compiled code (EXT:FUNCTION-ARGLIST), the GF's own for a generic
+ * function -- and "  Source: file:line" when the compiler recorded one. */
+static void describe_lambda_list(CL_Obj stream, CL_Obj fn)
+{
+    CL_Obj ll, loc;
+    CL_GC_PROTECT(stream);
+    CL_GC_PROTECT(fn);
+    if (cl_funcallable_instance_p(fn)) {
+        CL_Obj args[1];
+        args[0] = fn;
+        CL_GC_PROTECT(args[0]);
+        ll = call_lisp("GENERIC-FUNCTION-LAMBDA-LIST", cl_package_mop, args, 1);
+        CL_GC_UNPROTECT(1);
+    } else {
+        ll = cl_function_arglist(fn);
+    }
+    /* :NOT-AVAILABLE is a symbol; a real lambda list is NIL or a cons. */
+    if (CL_NULL_P(ll) || CL_CONS_P(ll)) {
+        CL_GC_PROTECT(ll);
+        write_str(stream, "  Lambda-list: ");
+        if (CL_NULL_P(ll))
+            write_str(stream, "()");
+        else
+            cl_prin1_to_stream(ll, stream);
+        write_nl(stream);
+        CL_GC_UNPROTECT(1);
+    }
+    loc = cl_function_source_location(fn);
+    if (CL_CONS_P(loc)) {
+        CL_GC_PROTECT(loc);
+        write_str(stream, "  Source: ");
+        cl_princ_to_stream(cl_car(loc), stream);
+        /* Lines are 1-based; 0 means the file is known but not the line
+         * (a body compiled at load time from a FASL). */
+        if (CL_CONS_P(cl_cdr(loc)) && CL_FIXNUM_P(cl_car(cl_cdr(loc))) &&
+            CL_FIXNUM_VAL(cl_car(cl_cdr(loc))) > 0) {
+            write_str(stream, ":");
+            cl_princ_to_stream(cl_car(cl_cdr(loc)), stream);
+        }
+        write_nl(stream);
+        CL_GC_UNPROTECT(1);
+    }
+    CL_GC_UNPROTECT(2);
+}
 
 static CL_Obj resolve_stream(CL_Obj *args, int n)
 {
@@ -179,7 +264,26 @@ static void describe_symbol(CL_Obj obj, CL_Obj stream)
         write_str(stream, "  Function: ");
         write_obj(stream, fn);
         write_nl(stream);
+        describe_lambda_list(stream, fn);
     }
+
+    /* A macro's expander lives in the macro table, not the function cell. */
+    {
+        CL_Obj macro = cl_get_macro(obj);
+        if (!CL_NULL_P(macro)) {
+            CL_GC_PROTECT(macro);
+            write_str(stream, "  Macro: ");
+            write_obj(stream, macro);
+            write_nl(stream);
+            describe_lambda_list(stream, macro);
+            CL_GC_UNPROTECT(1);
+        }
+    }
+
+    describe_documentation(stream, obj, "FUNCTION", "  Documentation: ");
+    describe_documentation(stream, obj, "VARIABLE", "  Variable documentation: ");
+    describe_documentation(stream, obj, "TYPE", "  Type documentation: ");
+    describe_documentation(stream, obj, "STRUCTURE", "  Structure documentation: ");
 
     if (!CL_NULL_P(plist)) {
         write_str(stream, "  Plist: ");
@@ -362,6 +466,7 @@ static void describe_closure(CL_Obj obj, CL_Obj stream)
     uint16_t arity = 0;
     uint16_t n_upvalues = 0;
     int have_bc = 0;
+    int have_ll = 0;
     char buf[64];
 
     if (CL_BYTECODE_P(cl->bytecode)) {
@@ -369,11 +474,13 @@ static void describe_closure(CL_Obj obj, CL_Obj stream)
         bc_name = bc->name;
         arity = bc->arity;
         n_upvalues = bc->n_upvalues;
+        have_ll = !CL_NULL_P(bc->source_lambda_list);
         have_bc = 1;
     }
 
     CL_GC_PROTECT(stream);
     CL_GC_PROTECT(bc_name);
+    CL_GC_PROTECT(obj);
 
     write_obj(stream, obj);
     write_line(stream, " is a COMPILED-FUNCTION");
@@ -384,16 +491,24 @@ static void describe_closure(CL_Obj obj, CL_Obj stream)
             write_obj(stream, bc_name);
             write_nl(stream);
         }
-        snprintf(buf, sizeof(buf), "  Arity: %d", (int)(arity & 0x7FFF));
-        write_line(stream, buf);
-        if (arity & 0x8000)
-            write_line(stream, "  Has &rest parameter");
+        /* The lambda list as written, when the compiler captured it (and
+         * the source file:line); the bare arity otherwise. */
+        if (have_ll) {
+            describe_lambda_list(stream, obj);
+        } else {
+            snprintf(buf, sizeof(buf), "  Arity: %d", (int)(arity & 0x7FFF));
+            write_line(stream, buf);
+            if (arity & 0x8000)
+                write_line(stream, "  Has &rest parameter");
+        }
         if (n_upvalues > 0) {
             snprintf(buf, sizeof(buf), "  Upvalues: %u", (unsigned)n_upvalues);
             write_line(stream, buf);
         }
+        if (CL_SYMBOL_P(bc_name))
+            describe_documentation(stream, bc_name, "FUNCTION", "  Documentation: ");
     }
-    CL_GC_UNPROTECT(2);
+    CL_GC_UNPROTECT(3);
 }
 
 static void describe_vector(CL_Obj obj, CL_Obj stream)

@@ -78,7 +78,7 @@
     (if (zerop addr) nil (ffi:make-foreign-pointer addr))))
 
 (defun %poke-fptr (ptr val offset)
-  "Store VAL — a foreign pointer, an integer address or NIL — at PTR+OFFSET."
+  "Store VAL -- a foreign pointer, an integer address or NIL -- at PTR+OFFSET."
   (ffi:poke-u32 ptr
                 (cond ((null val) 0)
                       ((ffi:foreign-pointer-p val)

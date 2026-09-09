@@ -229,7 +229,7 @@ LIBRARY-BASE.  REG-SPEC is a plist of (:register param-name ...) pairs.
 legacy spelling of :RESULT :VOID.  DOC becomes the function's docstring
 (unless *DEFCFUN-DOCSTRINGS* is NIL).
 
-NAME's function cell receives an FFI stub — a compact binding
+NAME's function cell receives an FFI stub -- a compact binding
 descriptor the runtime calls directly.  Direct call sites `(move-to rp
 x y)` compile to a bare OP_AMIGA_CALL in the caller; #'NAME, FUNCALL,
 APPLY, TRACE and DESCRIBE all work on the stub as on any function."

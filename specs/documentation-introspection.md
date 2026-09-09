@@ -8,8 +8,44 @@ retrievable via `DOCUMENTATION`, discoverable via `APROPOS`, and surfaced by
 `DESCRIBE` — on host and Amiga, and through editor tooling (Sly/icl doc
 commands, which call `DOCUMENTATION` and `DESCRIBE` under the hood).
 
-Today the *API* is conformant but the pipeline that should feed it is
-disconnected: the compiler parses docstrings and throws them away.
+## Status (2026-09-09)
+
+All five phases below are implemented; the audit that follows is kept as
+the record of where things stood.
+
+- Capture is a load-time `(CLAMIGA::%SET-DOCUMENTATION 'name 'doc-type
+  "...")` call emitted by the compiler for `defun` / `defmacro` /
+  `defvar` / `defparameter` / `defconstant` / `deftype`
+  (`compiler_extra.c`, `emit_doc_call`) and by the Lisp macros for
+  `defstruct` (`structure`), `define-condition` and `defclass` (`type`),
+  `defgeneric` (`function`) and `define-method-combination`
+  (`method-combination`).  `*documentation-table*` and
+  `%SET-DOCUMENTATION` moved to the top of `boot.lisp` so a source boot can
+  run the calls too.
+- `EXT:*CAPTURE-DOCUMENTATION*` (default `T`, read at compile time) is the
+  switch; `scripts/compile-lib-fasls.sh --no-docstrings` binds it `NIL`.
+  With it on, `boot.fasl` grew by 16 KB and `clos.fasl` by 50 KB.
+- Docstrings now reach the FASL as string literals, so the lib's
+  docstrings were made ASCII (the em dashes and section signs) for the
+  `CLAMIGA_FASL_PORTABLE=1` writer.
+- `defmacro` hands the wrapper `(macro-function 'x)` returns the lambda
+  list as written, so `EXT:FUNCTION-ARGLIST` (and DESCRIBE, and the editor)
+  see `(a &body b)` rather than `(#:form #:env)`.
+- `apropos` / `apropos-list` are Lisp in `boot.lisp`; `do-symbols` now
+  iterates the *accessible* symbols (CLHS 11.1.1.2.1), which they and
+  completion need.
+- `describe` of a symbol prints `Lambda-list:`, `Macro:`, `Source:
+  file:line` and the `Documentation:` / `Variable documentation:` / `Type
+  documentation:` / `Structure documentation:` lines; of a compiled
+  function, the captured lambda list instead of the bare arity.
+- Tests: `tests/test_documentation.c`, the FASL leg in
+  `tests/test_dev_commands.sh`, a gc-stress case, and the Amiga suite.
+  The editor-facing commands (`ARGLIST`, `COMPLETE`, `DESCRIBE`,
+  `APROPOS`, `SOURCE-LOCATION`, `MACROEXPAND`) are in
+  `lib/dev-commands.lisp`.
+
+Before this, the *API* was conformant but the pipeline that should feed it
+was disconnected: the compiler parsed docstrings and threw them away.
 
 ## Current State (audit 2026-07-13)
 

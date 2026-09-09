@@ -5587,6 +5587,75 @@ check_contains "bignum bit ops / ASH past 2,048 bits under stress"  "BIG-BITS:(T
 check_contains "bignum GCD past 4,096 bits under stress"            "BIG-GCD:T" "$out"
 check_contains "bignum large operands: run completes"               "BIG-DONE" "$out"
 
+# --- Case: docstring capture and the macro lambda-list hand-off -------------
+# The compiler builds a (%SET-DOCUMENTATION 'name 'doc-type "...") call per
+# documented definition (compiler_extra.c emit_doc_call: five conses and two
+# interns, each a compaction point) and patches the macro wrapper's template
+# with the written lambda list after compiling it.  Both the compile and the
+# FASL load run under stress; a stale docstring or name would show up as a
+# missing/garbled record or a wrong lambda list.
+cat > "$WORK/doc.lisp" <<'EOF'
+(defun gcs-doc-fn (a b &key (c 3))
+  "A function docstring long enough to be its own heap object."
+  (list a b c))
+(defmacro gcs-doc-mac (x (y z) &body body)
+  "A macro docstring."
+  `(list ,x ,y ,z ,@body))
+(defvar *gcs-doc-var* 1 "A variable docstring.")
+(deftype gcs-doc-type () "A type docstring." 'integer)
+(defstruct gcs-doc-struct "A structure docstring." s)
+EOF
+cat > "$WORK/doc-direct.lisp" <<EOF
+(load "$WORK/doc.lisp")
+(format t "DOC-FN:~a~%" (documentation 'gcs-doc-fn 'function))
+(format t "DOC-MAC:~a~%" (documentation 'gcs-doc-mac 'function))
+(format t "DOC-VAR:~a~%" (documentation '*gcs-doc-var* 'variable))
+(format t "DOC-TYPE:~a~%" (documentation 'gcs-doc-type 'type))
+(format t "DOC-STRUCT:~a~%" (documentation 'gcs-doc-struct 'structure))
+(format t "DOC-LL:~s~%" (ext:function-arglist (macro-function 'gcs-doc-mac)))
+(format t "DOC-CALL:~s~%" (gcs-doc-mac 1 (2 3) 4))
+EOF
+out=$(run_stress "$WORK/doc-direct.lisp")
+check_contains "docstring of a defun recorded under stress"   "DOC-FN:A function docstring long enough to be its own heap object." "$out"
+check_contains "docstring of a defmacro recorded under stress" "DOC-MAC:A macro docstring." "$out"
+check_contains "docstring of a defvar recorded under stress"   "DOC-VAR:A variable docstring." "$out"
+check_contains "docstring of a deftype recorded under stress"  "DOC-TYPE:A type docstring." "$out"
+check_contains "docstring of a defstruct recorded under stress" "DOC-STRUCT:A structure docstring." "$out"
+check_contains "macro wrapper carries the written lambda list under stress" "DOC-LL:(X (Y Z) &BODY BODY)" "$out"
+check_contains "macro still destructures after the hand-off"  "DOC-CALL:(1 2 3 4)" "$out"
+
+if compile_fasl "$WORK/doc.lisp" "$WORK/doc.fasl"; then
+    cat > "$WORK/doc-load.lisp" <<EOF
+(load "$WORK/doc.fasl")
+(format t "FDOC-FN:~a~%" (documentation 'gcs-doc-fn 'function))
+(format t "FDOC-MAC:~a~%" (documentation 'gcs-doc-mac 'function))
+(format t "FDOC-LL:~s~%" (ext:function-arglist (macro-function 'gcs-doc-mac)))
+EOF
+    out=$(run_stress "$WORK/doc-load.lisp")
+    check_contains "FASL-loaded docstring survives stress"      "FDOC-FN:A function docstring long enough to be its own heap object." "$out"
+    check_contains "FASL-loaded macro docstring survives stress" "FDOC-MAC:A macro docstring." "$out"
+    check_contains "FASL-loaded macro lambda list survives stress" "FDOC-LL:(X (Y Z) &BODY BODY)" "$out"
+else
+    echo "  SKIP  docstring FASL compile failed"
+fi
+
+# --- Case: DESCRIBE of a generic function under stress ----------------------
+# Bug: describe_lambda_list (builtins_describe.c) built a local args[1] array
+# holding the funcallable instance and passed it to call_lisp, which applies
+# GENERIC-FUNCTION-LAMBDA-LIST -- an allocating call.  The array slot was not
+# itself GC-protected (only the separate `fn` local was), so a compaction
+# triggered by that call could leave args[0] pointing at stale/relocated
+# memory, corrupting the GF argument.
+cat > "$WORK/gfdesc.lisp" <<'EOF'
+(defgeneric gcs-desc-gf (a b) (:documentation "GF described under stress."))
+(defmethod gcs-desc-gf ((a integer) (b integer)) (+ a b))
+(format t "GFDESC:~a~%"
+        (with-output-to-string (s) (describe 'gcs-desc-gf s)))
+EOF
+out=$(run_stress "$WORK/gfdesc.lisp")
+check_contains "describe of a generic function's lambda list survives stress" "Lambda-list: (A B)" "$out"
+check_contains "describe of a generic function's documentation survives stress" "GF described under stress." "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

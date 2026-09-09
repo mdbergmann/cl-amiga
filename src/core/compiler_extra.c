@@ -1636,6 +1636,11 @@ void compile_defsetf(CL_Compiler *c, CL_Obj form)
 
 /* --- Deftype --- */
 
+/* Docstring capture, defined with the DEFVAR family below. */
+static CL_Obj body_docstring(CL_Obj body);
+static void emit_doc_call(CL_Compiler *c, CL_Obj name,
+                          const char *doc_type, int doc_type_len, CL_Obj doc);
+
 void compile_deftype(CL_Compiler *c, CL_Obj form)
 {
     /* (deftype name lambda-list body...)
@@ -1643,6 +1648,7 @@ void compile_deftype(CL_Compiler *c, CL_Obj form)
     CL_Obj name = cl_car(cl_cdr(form));
     CL_Obj lambda_list = cl_car(cl_cdr(cl_cdr(form)));
     CL_Obj body = cl_cdr(cl_cdr(cl_cdr(form)));
+    CL_Obj doc = body_docstring(body);
     CL_Obj lambda_form;
     int idx;
 
@@ -1658,21 +1664,23 @@ void compile_deftype(CL_Compiler *c, CL_Obj form)
      * registers a NON-canonical name in type_table and cl_get_type_expander's
      * `cl_car(pair) == name` identity check never matches the interned symbol —
      * subtypep/upgraded-array-element-type then silently fail for the deftype.
-     * Protect BEFORE the first allocation, not after. */
+     * Protect BEFORE the first allocation, not after.  `doc` likewise. */
     CL_GC_PROTECT(name);
+    CL_GC_PROTECT(doc);
 
     lambda_form = cl_cons(SYM_LAMBDA, cl_cons(lambda_list, body));
     CL_GC_PROTECT(lambda_form);
 
     compile_expr(c, lambda_form);
 
-    CL_GC_UNPROTECT(1);            /* lambda_form — name stays protected */
+    CL_GC_UNPROTECT(1);            /* lambda_form — name, doc stay protected */
 
     /* OP_DEFTYPE pops the closure, registers type, pushes name */
     idx = cl_add_constant(c, name);
     cl_emit(c, OP_DEFTYPE);
     cl_emit_u16(c, (uint16_t)idx);
-    CL_GC_UNPROTECT(1);            /* name */
+    emit_doc_call(c, name, "TYPE", 4, doc);
+    CL_GC_UNPROTECT(2);            /* doc, name */
 }
 
 /* --- Defvar / Defparameter --- */
@@ -1710,11 +1718,93 @@ static void emit_mark_call(CL_Compiler *c, const char *builtin, int builtin_len,
     CL_GC_UNPROTECT(2);            /* quoted, mark_form */
 }
 
+/* --- Documentation strings --- */
+
+/* The docstring of a DEFUN / DEFMACRO / DEFTYPE body, or CL_NIL.
+ *
+ * CLHS 3.4.11: a string among the leading declarations is documentation
+ * only when at least one form follows it -- `(defun f () "x")` RETURNS
+ * "x".  Mirrors the skip in process_body_declarations, which is where the
+ * string used to disappear (specs/documentation-introspection.md). */
+static CL_Obj body_docstring(CL_Obj body)
+{
+    CL_Obj forms = body;
+    while (CL_CONS_P(forms)) {
+        CL_Obj form = cl_car(forms);
+        if (CL_ANY_STRING_P(form))
+            return CL_NULL_P(cl_cdr(forms)) ? CL_NIL : form;
+        if (!(CL_CONS_P(form) && cl_car(form) == SYM_DECLARE))
+            return CL_NIL;
+        forms = cl_cdr(forms);
+    }
+    return CL_NIL;
+}
+
+/* Emit (CLAMIGA::%SET-DOCUMENTATION 'NAME 'DOC-TYPE DOC) and discard its
+ * value; a no-op when DOC is not a string or EXT:*CAPTURE-DOCUMENTATION*
+ * is NIL.
+ *
+ * A load-time call, for the same reason emit_mark_call is one: recording
+ * the string while compiling would be lost the moment the definition is
+ * loaded from a FASL, and a lean image wants to be able to drop the
+ * strings altogether (the switch).  DOC_TYPE is the name of a CL symbol --
+ * FUNCTION, VARIABLE, TYPE.  %SET-DOCUMENTATION is the boot.lisp writer
+ * behind (SETF DOCUMENTATION); it is defined before the first docstring
+ * in boot.lisp so a source boot can run these calls too.
+ *
+ * GC SAFETY: every intermediate is protected across the next allocation;
+ * NAME must already be protected by the caller. */
+static void emit_doc_call(CL_Compiler *c, CL_Obj name,
+                          const char *doc_type, int doc_type_len, CL_Obj doc)
+{
+    CL_Obj tmp, q_name, q_type, args, form, sym;
+
+    if (!CL_ANY_STRING_P(doc) || !cl_capture_documentation_p())
+        return;
+
+    CL_GC_PROTECT(doc);                             /* 1 */
+    tmp = cl_cons(name, CL_NIL);
+    CL_GC_PROTECT(tmp);
+    q_name = cl_cons(SYM_QUOTE, tmp);
+    CL_GC_UNPROTECT(1);                             /* tmp */
+    CL_GC_PROTECT(q_name);                          /* 2 */
+    sym = cl_intern_in(doc_type, (uint32_t)doc_type_len, cl_package_cl);
+    CL_GC_PROTECT(sym);
+    tmp = cl_cons(sym, CL_NIL);
+    CL_GC_UNPROTECT(1);                             /* sym */
+    CL_GC_PROTECT(tmp);
+    q_type = cl_cons(SYM_QUOTE, tmp);
+    CL_GC_UNPROTECT(1);                             /* tmp */
+    CL_GC_PROTECT(q_type);                          /* 3 */
+    args = cl_cons(doc, CL_NIL);
+    CL_GC_PROTECT(args);                            /* 4 */
+    args = cl_cons(q_type, args);
+    args = cl_cons(q_name, args);
+    sym = cl_intern_in("%SET-DOCUMENTATION", 18, cl_package_clamiga);
+    CL_GC_PROTECT(sym);
+    form = cl_cons(sym, args);
+    CL_GC_UNPROTECT(1);                             /* sym */
+    CL_GC_PROTECT(form);                            /* 5 */
+    compile_expr(c, form);
+    cl_emit(c, OP_POP);
+    CL_GC_UNPROTECT(5);            /* form, args, q_type, q_name, doc */
+}
+
+/* The third argument of (DEFVAR / DEFPARAMETER / DEFCONSTANT name init doc),
+ * or CL_NIL.  REST is the tail after the name. */
+static CL_Obj defvar_docstring(CL_Obj rest)
+{
+    if (CL_CONS_P(rest) && CL_CONS_P(cl_cdr(rest)))
+        return cl_car(cl_cdr(rest));
+    return CL_NIL;
+}
+
 void compile_defvar(CL_Compiler *c, CL_Obj form)
 {
     /* (defvar name) or (defvar name init-form) */
     CL_Obj name = cl_car(cl_cdr(form));
     CL_Obj rest = cl_cdr(cl_cdr(form));
+    CL_Obj doc = defvar_docstring(rest);
     CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(name);
 
     sym->flags |= CL_SYM_SPECIAL;
@@ -1723,8 +1813,10 @@ void compile_defvar(CL_Compiler *c, CL_Obj form)
      * relocate the `name` symbol.  cl_compile_env does not re-protect the form,
      * so a bare `name` would go stale and cl_add_constant/cl_emit_const would
      * bake a stale offset into OP_DEFVAR / the return value — marking the WRONG
-     * symbol special at FASL load.  Same class as compile_deftype. */
+     * symbol special at FASL load.  Same class as compile_deftype.  `doc` is
+     * read from `rest` for the same reason, before the init form compiles. */
     CL_GC_PROTECT(name);
+    CL_GC_PROTECT(doc);
     if (!CL_NULL_P(rest)) {
         int idx;
         compile_expr(c, cl_car(rest));
@@ -1744,7 +1836,8 @@ void compile_defvar(CL_Compiler *c, CL_Obj form)
         emit_mark_call(c, "%MARK-SPECIAL", 13, name);
     }
     cl_emit_const(c, name);
-    CL_GC_UNPROTECT(1);
+    emit_doc_call(c, name, "VARIABLE", 8, doc);
+    CL_GC_UNPROTECT(2);  /* doc, name */
 }
 
 void compile_defparameter(CL_Compiler *c, CL_Obj form)
@@ -1752,6 +1845,7 @@ void compile_defparameter(CL_Compiler *c, CL_Obj form)
     /* (defparameter name init-form) — always sets value, marks special */
     CL_Obj name = cl_car(cl_cdr(form));
     CL_Obj rest = cl_cdr(cl_cdr(form));
+    CL_Obj doc = defvar_docstring(rest);
     CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(name);
     int idx;
 
@@ -1760,6 +1854,7 @@ void compile_defparameter(CL_Compiler *c, CL_Obj form)
     /* GC SAFETY: see compile_defvar — protect `name` across compile_expr's
      * compaction so OP_GSTORE/OP_DEFVAR get the live symbol, not a stale one. */
     CL_GC_PROTECT(name);
+    CL_GC_PROTECT(doc);
     if (!CL_NULL_P(rest)) {
         compile_expr(c, cl_car(rest));
         idx = cl_add_constant(c, name);
@@ -1774,7 +1869,8 @@ void compile_defparameter(CL_Compiler *c, CL_Obj form)
         cl_emit_u16(c, (uint16_t)idx);
     }
     cl_emit_const(c, name);
-    CL_GC_UNPROTECT(1);
+    emit_doc_call(c, name, "VARIABLE", 8, doc);
+    CL_GC_UNPROTECT(2);  /* doc, name */
 }
 
 void compile_defconstant(CL_Compiler *c, CL_Obj form)
@@ -1782,6 +1878,7 @@ void compile_defconstant(CL_Compiler *c, CL_Obj form)
     /* (defconstant name value) — always sets value, marks constant */
     CL_Obj name = cl_car(cl_cdr(form));
     CL_Obj rest = cl_cdr(cl_cdr(form));
+    CL_Obj doc = defvar_docstring(rest);
     CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(name);
     int idx;
 
@@ -1797,6 +1894,7 @@ void compile_defconstant(CL_Compiler *c, CL_Obj form)
 
     /* GC SAFETY: see compile_defvar — protect `name` across compile_expr. */
     CL_GC_PROTECT(name);
+    CL_GC_PROTECT(doc);
     if (!CL_NULL_P(rest)) {
         compile_expr(c, cl_car(rest));
         idx = cl_add_constant(c, name);
@@ -1809,7 +1907,8 @@ void compile_defconstant(CL_Compiler *c, CL_Obj form)
      * flag set above does not survive into the loading session). */
     emit_mark_call(c, "%MARK-CONSTANT", 14, name);
     cl_emit_const(c, name);
-    CL_GC_UNPROTECT(1);
+    emit_doc_call(c, name, "VARIABLE", 8, doc);
+    CL_GC_UNPROTECT(2);  /* doc, name */
 }
 
 /* --- named-lambda --- */
@@ -1908,7 +2007,14 @@ void compile_defun(CL_Compiler *c, CL_Obj form)
     CL_Obj store_sym = name;       /* symbol for OP_FSTORE */
     int is_setf_fn = 0;
     int ltv_base, ltv_i;
+    /* Read before the first allocation and protected underneath everything
+     * else: `form` is a by-value copy the compactor does not forward, so
+     * neither it nor `body` can be re-read once compile_expr has run. */
+    CL_Obj doc_name = name;
+    CL_Obj doc = body_docstring(body);
 
+    CL_GC_PROTECT(doc_name);
+    CL_GC_PROTECT(doc);
     CL_GC_PROTECT(name);    /* protect name across all allocating calls below */
     /* lambda_list and body are sub-structures of `form`; they are read here
      * but consed into lambda_form/block_body only AFTER the cl_cons calls
@@ -1991,6 +2097,11 @@ void compile_defun(CL_Compiler *c, CL_Obj form)
     /* Return the name (replace closure on stack) */
     cl_emit(c, OP_POP);
     cl_emit_const(c, is_setf_fn ? name : real_name);
+
+    /* Docstring, keyed on the name as written -- (SETF FOO) included, so
+     * (DOCUMENTATION '(SETF FOO) 'FUNCTION) finds it. */
+    emit_doc_call(c, doc_name, "FUNCTION", 8, doc);
+    CL_GC_UNPROTECT(2);  /* doc, doc_name */
 }
 
 /* Generate a unique uninterned symbol for defmacro destructuring */
@@ -2066,7 +2177,18 @@ void compile_defmacro(CL_Compiler *c, CL_Obj form)
     CL_Obj body = cl_cdr(cl_cdr(cl_cdr(form)));
     int idx;
     CL_Obj lambda_form;
+    /* Kept underneath the working set (see the UNPROTECT counts below):
+     * the docstring and name for the load-time DOCUMENTATION record, and
+     * the lambda list as the user wrote it, for EXT:FUNCTION-ARGLIST --
+     * assigned once &environment has been stripped, before the rewrites
+     * that turn it into the expander's internal parameter list. */
+    CL_Obj doc = body_docstring(body);
+    CL_Obj doc_name = name;
+    CL_Obj display_ll = CL_NIL;
 
+    CL_GC_PROTECT(doc);
+    CL_GC_PROTECT(doc_name);
+    CL_GC_PROTECT(display_ll);
     CL_GC_PROTECT(name);
     CL_GC_PROTECT(lambda_list);
     CL_GC_PROTECT(body);
@@ -2114,6 +2236,7 @@ void compile_defmacro(CL_Compiler *c, CL_Obj form)
             cur = cl_cdr(cur);
         }
     }
+    display_ll = lambda_list;
 
     /* Handle &whole: strip it from the lambda list and use its variable
      * as the first parameter (receives the whole form from expander).
@@ -2304,6 +2427,25 @@ void compile_defmacro(CL_Compiler *c, CL_Obj form)
 
         compile_expr(c, wrap_form);
 
+        /* The wrapper is what (MACRO-FUNCTION 'name) returns, so it is the
+         * object EXT:FUNCTION-ARGLIST (and DESCRIBE, and an editor's
+         * arglist display) asks about -- and its own lambda list is the
+         * meaningless (#:form #:env).  Its template is the constant
+         * compile_lambda added last to `c`; hand it the lambda list as
+         * written instead.  Identity-checked rather than assumed: the
+         * template's captured list must start with our form gensym.
+         * bc is heap-resident; there is no source-level write barrier
+         * (specs/generational-gc.md, dirty-page tracking). */
+        if (c->const_count > 0) {
+            CL_Obj tmpl = c->constants[c->const_count - 1];
+            if (CL_BYTECODE_P(tmpl)) {
+                CL_Bytecode *bc = (CL_Bytecode *)CL_OBJ_TO_PTR(tmpl);
+                if (CL_CONS_P(bc->source_lambda_list) &&
+                    cl_car(bc->source_lambda_list) == form_gs)
+                    bc->source_lambda_list = display_ll;
+            }
+        }
+
         CL_GC_UNPROTECT(9); /* wrap_form, let_bindings, let_binding,
                                outer_lambda, outer_ll, inner_call,
                                env_gs, form_gs, inner_gs */
@@ -2315,6 +2457,10 @@ void compile_defmacro(CL_Compiler *c, CL_Obj form)
     idx = cl_add_constant(c, name);
     cl_emit(c, OP_DEFMACRO);
     cl_emit_u16(c, (uint16_t)idx);
+
+    /* CLHS: a macro's docstring lives under the FUNCTION doc-type. */
+    emit_doc_call(c, doc_name, "FUNCTION", 8, doc);
+    CL_GC_UNPROTECT(3); /* display_ll, doc_name, doc */
 }
 
 /* --- Declaration processing --- */

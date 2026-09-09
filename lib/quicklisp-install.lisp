@@ -37,7 +37,7 @@ environment (HTTP_PROXY / http_proxy). Quicklisp opens a DIRECT TCP socket and
 ignores the proxy env vars on its own, so in a network-isolated sandbox (e.g. the
 ai-pipeline egress proxy, the only route out) the install would otherwise hang on
 a routeless connection. No-op when unset, so the normal Amiga path is unchanged.
-Must run AFTER quicklisp.lisp is loaded — that's what defines the QL-HTTP package."
+Must run AFTER quicklisp.lisp is loaded -- that's what defines the QL-HTTP package."
   (let ((proxy (or (ext:getenv "HTTP_PROXY") (ext:getenv "http_proxy")))
         (proxy-var (find-symbol "*PROXY-URL*" "QL-HTTP")))
     (when (and proxy proxy-var (plusp (length proxy)))

@@ -1702,11 +1702,9 @@ static CL_Obj build_arglist(int n_required, int n_optional, int has_rest,
     return result;
 }
 
-static CL_Obj bi_function_arglist(CL_Obj *args, int n)
+CL_Obj cl_function_arglist(CL_Obj fn)
 {
-    CL_Obj fn = args[0];
     CL_Bytecode *bc = NULL;
-    (void)n;
 
     if (CL_HEAP_P(fn)) {
         void *p = CL_OBJ_TO_PTR(fn);
@@ -1747,6 +1745,12 @@ static CL_Obj bi_function_arglist(CL_Obj *args, int n)
     return cl_intern_in("NOT-AVAILABLE", 13, cl_package_keyword);
 }
 
+static CL_Obj bi_function_arglist(CL_Obj *args, int n)
+{
+    (void)n;
+    return cl_function_arglist(args[0]);
+}
+
 /* --- Function source location (EXT:FUNCTION-SOURCE-LOCATION) --------------
  *
  * Returns the source location of FN as the list (FILE LINE), where FILE is a
@@ -1758,14 +1762,12 @@ static CL_Obj bi_function_arglist(CL_Obj *args, int n)
  *
  * Returns :NOT-AVAILABLE when FN is not a code object, or has no recorded
  * file (e.g. functions defined at the REPL, where source_file is NULL). */
-static CL_Obj bi_function_source_location(CL_Obj *args, int n)
+CL_Obj cl_function_source_location(CL_Obj fn)
 {
-    CL_Obj fn = args[0];
     CL_Bytecode *bc = NULL;
     const char *file;
     int line;
     CL_Obj file_str, result;
-    (void)n;
 
     if (CL_HEAP_P(fn)) {
         void *p = CL_OBJ_TO_PTR(fn);
@@ -1797,6 +1799,12 @@ static CL_Obj bi_function_source_location(CL_Obj *args, int n)
     result = cl_cons(file_str, result);
     CL_GC_UNPROTECT(2);
     return result;
+}
+
+static CL_Obj bi_function_source_location(CL_Obj *args, int n)
+{
+    (void)n;
+    return cl_function_source_location(args[0]);
 }
 
 /* --- Backtrace introspection (EXT:BACKTRACE / EXT:FRAME-LOCALS) -----------
@@ -2195,9 +2203,8 @@ void cl_builtins_init(void)
     cl_builtins_bindtab_init();
 
     /* CL functions not yet implemented — register stubs so FBOUNDP /
-     * SYMBOL-FUNCTION return non-NIL; any call signals an error. */
-    defstub("APROPOS");
-    defstub("APROPOS-LIST");
+     * SYMBOL-FUNCTION return non-NIL; any call signals an error.
+     * APROPOS / APROPOS-LIST are real, in lib/boot.lisp. */
     /* MAKE-BROADCAST-STREAM / MAKE-CONCATENATED-STREAM / MAKE-ECHO-STREAM
      * and their component accessors are real builtins in builtins_stream.c
      * (CLHS 21.2). */

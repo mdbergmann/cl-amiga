@@ -6453,11 +6453,37 @@ static void register_inlined_macro_stubs(void)
     CL_GC_UNPROTECT(2);
 }
 
+/* EXT:*CAPTURE-DOCUMENTATION* -- when NIL, DEFUN / DEFMACRO / DEFVAR /
+ * DEFPARAMETER / DEFCONSTANT / DEFTYPE compile without their docstrings
+ * (the compiler-side switch of specs/documentation-introspection.md).
+ * Read at compile time, so binding it around COMPILE-FILE is what makes
+ * a lean FASL; scripts/compile-lib-fasls.sh --no-docstrings does that
+ * for the release.  Default T. */
+static CL_Obj SYM_CAPTURE_DOCUMENTATION = CL_NIL;
+
+int cl_capture_documentation_p(void)
+{
+    if (CL_NULL_P(SYM_CAPTURE_DOCUMENTATION)) return 1;
+    return !CL_NULL_P(cl_symbol_value(SYM_CAPTURE_DOCUMENTATION));
+}
+
+static void capture_documentation_init(void)
+{
+    CL_Obj sym = cl_intern_in("*CAPTURE-DOCUMENTATION*", 23, cl_package_ext);
+    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    s->flags |= CL_SYM_SPECIAL;
+    s->value = SYM_T;
+    SYM_CAPTURE_DOCUMENTATION = sym;
+    cl_gc_register_root(&SYM_CAPTURE_DOCUMENTATION);
+    cl_export_symbol(sym, cl_package_ext);
+}
+
 void cl_compiler_init(void)
 {
     macro_table = CL_NIL;
     setf_table = CL_NIL;
     type_table = CL_NIL;
+    capture_documentation_init();
     cl_alist_index_reset(&type_index);
     cl_alist_index_reset(&setf_index);
     cl_alist_index_reset(&cmacro_index);

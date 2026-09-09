@@ -9244,6 +9244,85 @@ y" 1))
 
 (check "jit shadow frames toggle off" nil (clamiga::%jit-set-frames nil))
 
+; --- docstrings are recorded by the defining forms ---
+; The compiler emits a load-time %SET-DOCUMENTATION call per documented
+; DEFUN / DEFMACRO / DEFVAR / DEFTYPE (compiler_extra.c); DEFSTRUCT,
+; DEFCLASS, DEFGENERIC and DEFINE-CONDITION record theirs from Lisp.  A
+; string that is the whole body is a value, not a docstring (CLHS 3.4.11).
+(defun amiga-doc-fn (x &optional (y 2))
+  "Amiga doc fn."
+  (list x y))
+(defun amiga-doc-only () "just a value")
+(defmacro amiga-doc-mac (a &body b) "Amiga doc mac." `(progn ,a ,@b))
+(defvar *amiga-doc-var* 1 "Amiga doc var.")
+(deftype amiga-doc-type () "Amiga doc type." 'integer)
+(defstruct amiga-doc-struct "Amiga doc struct." s)
+(defclass amiga-doc-class () ((s :initarg :s)) (:documentation "Amiga doc class."))
+(defgeneric amiga-doc-gf (a) (:documentation "Amiga doc gf."))
+(define-condition amiga-doc-cond (error) () (:documentation "Amiga doc cond."))
+(check "documentation of a defun" "Amiga doc fn." (documentation 'amiga-doc-fn 'function))
+(check "a string-only body is the value, not the doc" '(nil "just a value")
+  (list (documentation 'amiga-doc-only 'function) (amiga-doc-only)))
+(check "documentation of a defmacro" "Amiga doc mac." (documentation 'amiga-doc-mac 'function))
+(check "documentation of a defvar" "Amiga doc var." (documentation '*amiga-doc-var* 'variable))
+(check "documentation of a deftype" "Amiga doc type." (documentation 'amiga-doc-type 'type))
+(check "documentation of a defstruct" "Amiga doc struct." (documentation 'amiga-doc-struct 'structure))
+(check "documentation of a defclass" "Amiga doc class." (documentation 'amiga-doc-class 'type))
+(check "documentation of a defgeneric" "Amiga doc gf." (documentation 'amiga-doc-gf 'function))
+(check "documentation of a define-condition" "Amiga doc cond." (documentation 'amiga-doc-cond 'type))
+; The macro-function wrapper answers with the lambda list as written.
+(check "macro-function carries the written lambda list" '(a &body b)
+  (ext:function-arglist (macro-function 'amiga-doc-mac)))
+; Bundled FASLs carry the library's own docstrings (COMPLEMENT is a
+; documented DEFUN in boot.lisp).
+(check "a boot.lisp docstring survived the FASL" t
+  (and (stringp (documentation 'complement 'function)) t))
+; The switch: nothing recorded while it is NIL.
+(let ((ext:*capture-documentation* nil))
+  (eval '(defun amiga-doc-dropped (x) "Dropped." x)))
+(check "documentation capture can be switched off" nil
+  (documentation 'amiga-doc-dropped 'function))
+
+; --- APROPOS / APROPOS-LIST are real ---
+(check "apropos-list finds by substring, case-insensitively" t
+  (and (member 'mapcar (apropos-list "mapc" "CL")) t))
+(check "apropos-list sees inherited symbols" t
+  (and (member 'mapcar (apropos-list "MAPCAR" "CL-USER")) t))
+(check "apropos-list is sorted and duplicate-free" t
+  (let ((l (apropos-list "mapc" "CL")))
+    (and (equal l (sort (copy-list l) #'string< :key #'symbol-name))
+         (= (length l) (length (remove-duplicates l))))))
+(check "apropos prints the kind" t
+  (and (search "[function]"
+               (with-output-to-string (*standard-output*) (apropos "make-hash-table" "CL")))
+       t))
+
+; --- DESCRIBE shows the lambda list, documentation and source ---
+(defparameter *amiga-describe-fn*
+  (with-output-to-string (s) (describe 'amiga-doc-fn s)))
+(check "describe shows the lambda list" t
+  (and (search "Lambda-list: (X &OPTIONAL (Y 2))" *amiga-describe-fn*) t))
+(check "describe shows the documentation" t
+  (and (search "Documentation: Amiga doc fn." *amiga-describe-fn*) t))
+; A file loaded from the command line (--load, through the faslcache)
+; records "<stream>" as its file on the target, so the file name is not
+; asserted; the line is what matters and it must be this file's.
+(defparameter *amiga-describe-source*
+  (let ((start (search "Source: " *amiga-describe-fn*)))
+    (and start (subseq *amiga-describe-fn* start
+                       (position #\Newline *amiga-describe-fn* :start start)))))
+(format t "DESCRIBE-SOURCE: ~a~%" *amiga-describe-source*)
+(check "describe shows the source" t (and *amiga-describe-source* t))
+(check "describe source carries the line" t
+  (let* ((colon (and *amiga-describe-source*
+                     (position #\: *amiga-describe-source* :from-end t)))
+         (line (and colon (parse-integer *amiga-describe-source*
+                                         :start (1+ colon) :junk-allowed t))))
+    (and line (> line 9000) t)))
+(check "describe of a macro" t
+  (let ((out (with-output-to-string (s) (describe 'amiga-doc-mac s))))
+    (and (search "Macro: " out) (search "Lambda-list: (A &BODY B)" out) t)))
+
 ; --- documentation is a generic function ---
 ; Storage via (setf documentation) + retrieval; adding a specialized
 ; method for a user-defined doc-type must NOT break the (t t) fallback.

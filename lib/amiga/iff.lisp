@@ -227,7 +227,7 @@ the way out however BODY exits."
 ;;; ================================================================
 
 (defun parse-step (file &optional (mode :rawstep))
-  "One ParseIFF step on FILE.  MODE is :RAWSTEP (the default — every
+  "One ParseIFF step on FILE.  MODE is :RAWSTEP (the default -- every
 context boundary is reported, what SIFT needs), :STEP (like :RAWSTEP
 but with iffparse's automatic prop/stop handling) or :SCAN (run to the
 next declared stop chunk).  Returns :CHUNK on entering a context (or
@@ -247,7 +247,7 @@ ERROR-STRING text."
                     (iff-file-name file) err (error-string err))))))
 
 (defun current-chunk (file)
-  "The current context node of FILE, as (VALUES ID TYPE SIZE SCAN) —
+  "The current context node of FILE, as (VALUES ID TYPE SIZE SCAN) --
 cn_ID, cn_Type, cn_Size and cn_Scan, integers (ID-STRING makes them
 readable).  NIL when there is no current chunk."
   (%check-open file "CURRENT-CHUNK")
@@ -260,7 +260,7 @@ readable).  NIL when there is no current chunk."
 
 (defun iff-depth (file)
   "FILE's current chunk nesting depth (iff_Depth): 1 at the top-level
-FORM (the default outer context counts), 2 inside it, and so on — the
+FORM (the default outer context counts), 2 inside it, and so on -- the
 C sift's indentation count."
   (%check-open file "IFF-DEPTH")
   (ip:iff-handle-depth (iff-file-handle file)))
@@ -268,7 +268,7 @@ C sift's indentation count."
 (defun read-chunk-bytes (file vector &optional num-bytes)
   "Read up to NUM-BYTES bytes (default: VECTOR's length) of the current
 chunk's data into VECTOR, a vector of (UNSIGNED-BYTE 8).  Returns the
-number of bytes read — iffparse clips at the chunk boundary, so 0 means
+number of bytes read -- iffparse clips at the chunk boundary, so 0 means
 the chunk is exhausted."
   (%check-open file "READ-CHUNK-BYTES")
   (let ((count (or num-bytes (length vector))))
@@ -317,8 +317,8 @@ Returns T."
   t)
 
 (defun write-chunk-bytes (file data &optional num-bytes)
-  "Write NUM-BYTES bytes (default: all) of DATA — a vector of
-(UNSIGNED-BYTE 8) or a string of 8-bit characters — into the current
+  "Write NUM-BYTES bytes (default: all) of DATA -- a vector of
+(UNSIGNED-BYTE 8) or a string of 8-bit characters -- into the current
 chunk (WriteChunkBytes).  Returns the number of bytes written."
   (%check-open file "WRITE-CHUNK-BYTES")
   (let ((count (or num-bytes (length data))))
@@ -342,7 +342,7 @@ chunk (WriteChunkBytes).  Returns the number of bytes written."
 
 (defun map-chunks (function source &key (clipboard-unit 0))
   "Parse SOURCE (a file name or :CLIPBOARD) with IFFPARSE_RAWSTEP and
-call FUNCTION with (ID TYPE SIZE DEPTH) for every chunk entered — the
+call FUNCTION with (ID TYPE SIZE DEPTH) for every chunk entered -- the
 loop at the heart of sift.c.  Returns the number of chunks.  A parse
 error signals, carrying the ERROR-STRING text."
   (with-iff (file source :direction :read :clipboard-unit clipboard-unit)
@@ -358,7 +358,7 @@ error signals, carrying the ERROR-STRING text."
 
 (defun sift (source &key (stream *standard-output*) (clipboard-unit 0))
   "Print an IFFCheck-like listing of SOURCE (a file name, or :CLIPBOARD
-for the C sift's -c) to STREAM — the NDK sift program:
+for the C sift's -c) to STREAM -- the NDK sift program:
 
     . FORM 64 ILBM
     . . BMHD 20 ILBM

@@ -411,7 +411,7 @@ Pre-built `lib/boot.fasl` and `lib/clos.fasl` ship with the binary; on the lower
 
 `make fasl-amiga` does the same for everything under `lib/amiga/` (the curated modules, `AMIGA.REACTION` and the generated raw OS bindings), writing `lib/amiga/**/*.fasl` next to the sources: an Amiga run of the tree — the FS-UAE suite, or a real machine with the repo on it — then loads e.g. `lib/amiga/raw/intuition.fasl` instead of compiling ~4k forms on a 68020 at the first `(require "amiga/raw/intuition")`. This is optional for development (the Amiga's faslcache does the same lazily on first use), the files are gitignored, and `REQUIRE` ignores a FASL that is older than its source or was written by another FASL format version. The binary release ships these FASLs (see below). The host-compiled FASLs are portable because the FASL format is arch/endian-neutral and the `lib/amiga` sources have no reader conditionals — all platform variance is decided at load time. See `tests/test_lib_fasl_portable.sh`.
 
-Note: string literals in the `lib/` modules that ship as FASLs must stay ASCII-only — the m68k Amiga build is compiled without `CL_WIDE_STRINGS` to save RAM and cannot read FASLs that contain `FASL_TAG_WIDE_STRING`. The host and MorphOS builds have `CL_WIDE_STRINGS` (full Unicode, `CHAR-CODE-LIMIT` 1114112 — required by e.g. flexi-streams/drakma); their writers auto-downgrade all-ASCII wide strings to byte strings, so the shared `lib/` FASLs stay readable everywhere. `make fasl`, `make fasl-amiga` and the release script compile with `CLAMIGA_FASL_PORTABLE=1`, which makes the writer refuse such a literal on the host — the diagnostic names the file, source line and code point (`U+2014` for the usual em dash) — instead of the Amiga failing the whole module with a `BAD_TAG` deserialize error at load time. Comments and docstrings are unaffected (neither reaches the FASL).
+Note: string literals in the `lib/` modules that ship as FASLs must stay ASCII-only — the m68k Amiga build is compiled without `CL_WIDE_STRINGS` to save RAM and cannot read FASLs that contain `FASL_TAG_WIDE_STRING`. The host and MorphOS builds have `CL_WIDE_STRINGS` (full Unicode, `CHAR-CODE-LIMIT` 1114112 — required by e.g. flexi-streams/drakma); their writers auto-downgrade all-ASCII wide strings to byte strings, so the shared `lib/` FASLs stay readable everywhere. `make fasl`, `make fasl-amiga` and the release script compile with `CLAMIGA_FASL_PORTABLE=1`, which makes the writer refuse such a literal on the host — the diagnostic names the file, source line and code point (`U+2014` for the usual em dash) — instead of the Amiga failing the whole module with a `BAD_TAG` deserialize error at load time. Comments are unaffected; docstrings are string literals like any other (they are recorded for `documentation`, see below), so the rule applies to them too.
 
 ### Exit hooks
 
@@ -649,10 +649,16 @@ Work:src/foo.lisp:40: ERROR: Too many arguments to DRAW: expected 2, got 3
 | `LOAD <file>` | Load a file, answer with its diagnostics |
 | `COMPILE-FILE <file>` | Compile a file to a FASL, answer with its diagnostics |
 | `EVAL <form>` | Evaluate one or more forms, answer with the printed values |
-| `IN-PACKAGE <pkg>` | Set the package used by `EVAL` and `LOAD` |
+| `IN-PACKAGE <pkg>` | Set the package used by `EVAL`, `LOAD` and the commands below |
 | `LASTRESULT` | Re-fetch the previous reply (see below) |
+| `ARGLIST <symbol>` | The lambda list, on one line, in lower case: a function's as written, a macro's, a generic function's, a builtin's with `arg0 arg1 ...` placeholders, a special operator's from a table |
+| `COMPLETE <prefix> [<pkg>]` | One candidate per line, exported symbols first, each group sorted, at most `ext.dev:*max-completions*` (200); `cl:map`, `pkg::name` and `:key` prefixes are honoured and kept |
+| `DESCRIBE <symbol>` | `describe` output (lambda list, docstring, source file:line included) |
+| `APROPOS <string> [<pkg>]` | One matching symbol per line with its kinds: `function`, `macro`, `special-operator`, `variable`, `class`; the symbols accessible in `<pkg>`, or in the command package |
+| `SOURCE-LOCATION <symbol>` | `<file>:<line>` of the definition; rc 10 when none was recorded |
+| `MACROEXPAND <form>`, `MACROEXPAND-1 <form>` | The expansion, laid out as code (body forms indented, arguments aligned) rather than filled to the margin |
 
-A command string starting with `(` is evaluated directly, so `ADDRESS CLAMIGA '(room)'` works too.
+A command string starting with `(` is evaluated directly, so `ADDRESS CLAMIGA '(room)'` works too. The introspection commands resolve names in the command package without interning: an unknown symbol or package is rc 10 with the reason.
 
 **Return codes** follow the ARexx severity ladder: `0` success, `5` warnings, `10` errors, `20` unusable command. Two consequences worth knowing, both forced by the ARexx protocol rather than chosen:
 
@@ -728,6 +734,18 @@ diffs the real package exports against a committed snapshot; run
   the same contract the `Debug>` prompt keeps: it leaves the inspector and
   returns to the caller, with the session still running.
   See `tests/test_inspect.c` and `tests/test_inspect_eof.sh`.
+- **Documentation and introspection** — docstrings are kept: `(documentation
+  'foo 'function)` answers for `defun`/`defmacro`/`defgeneric`, `'variable`
+  for `defvar`/`defparameter`/`defconstant`, `'type` for `deftype`/`defclass`/
+  `define-condition`, `'structure` for `defstruct`, and they survive
+  `compile-file` (the record is a load-time call in the FASL).
+  `(describe 'foo)` shows the lambda list as written, the documentation and
+  the source `file:line`; `(apropos "map" "CL")` / `apropos-list` search by
+  substring.  Binding `ext:*capture-documentation*` to `nil` around a compile
+  drops the strings for a lean image (`scripts/compile-lib-fasls.sh
+  --no-docstrings` does that for the release's Amiga modules); the bundled
+  `boot.fasl`/`clos.fasl` keep theirs, about 66 KB of heap.
+  See `tests/test_documentation.c`.
 - **Platform abstraction** — all OS calls go through `platform.h` (POSIX and AmigaOS implementations)
 - **FFI** — generic foreign pointer type + peek/poke (all platforms); 68k assembly trampoline for AmigaOS register-based library calls
 - **Threading** (MP package) — kernel threads, per-thread dynamic bindings (TLV), locks, named condition variables, thread interruption/destruction, type predicates; stop-the-world GC with safepoints; POSIX pthreads (with `__thread`-backed TLS) and AmigaOS processes/SignalSemaphores.
@@ -1921,7 +1939,7 @@ Point-in-time benchmark results (sento actor throughput on host, Amiga JIT call 
 
 ## Known Limitations and Future Work
 
-- **Alpha status / ANSI CL gaps** — the major subsystems work (CLOS, conditions, packages, the full numeric tower, arrays, pathnames, streams, `loop`, `format`) and real CL libraries load, but corners of the spec remain unimplemented. Concretely, these standard operators are `fboundp` but signal a "not yet implemented" error when called: `apropos` / `apropos-list`, `y-or-n-p` / `yes-or-no-p`, `pprint-tab` / `pprint-tabular`, `print-not-readable-object`, `invalid-method-error` / `method-combination-error`, and logical pathnames (`logical-pathname`, `load-logical-pathname-translations`; `(typep x 'logical-pathname)` is always `nil`). `defstruct` supports `(:type list)` / `(:type vector)` but ignores `:named` and `:initial-offset`. The metaobject protocol is a working AMOP subset rather than the complete MOP — see [docs/mop.md](docs/mop.md) for what is covered.
+- **Alpha status / ANSI CL gaps** — the major subsystems work (CLOS, conditions, packages, the full numeric tower, arrays, pathnames, streams, `loop`, `format`) and real CL libraries load, but corners of the spec remain unimplemented. Concretely, these standard operators are `fboundp` but signal a "not yet implemented" error when called: `y-or-n-p` / `yes-or-no-p`, `pprint-tab` / `pprint-tabular`, `print-not-readable-object`, `invalid-method-error` / `method-combination-error`, and logical pathnames (`logical-pathname`, `load-logical-pathname-translations`; `(typep x 'logical-pathname)` is always `nil`). `defstruct` supports `(:type list)` / `(:type vector)` but ignores `:named` and `:initial-offset`. The metaobject protocol is a working AMOP subset rather than the complete MOP — see [docs/mop.md](docs/mop.md) for what is covered.
 - **Amiga OS coverage** — every OS library is callable 1:1 through the generated raw bindings under `lib/amiga/raw/` (`asl`, `layers`, `commodities`, `datatypes`, `locale`, … — see [Raw OS bindings](#raw-os-bindings-generated)), but the idiomatic Lisp layer on top of them covers only Intuition, Graphics, GadTools, ReAction, MUI, ARexx, audio.device, AHI (opt-in), IFF and async DOS I/O (see [Available Amiga Modules](#available-amiga-modules)). Everything else — ASL requesters, Layers, Commodities, Datatypes, Locale, … — is raw-binding-only for now: fully usable, but with C-shaped structures and tag lists rather than a Lisp-shaped API.
 - **Callbacks on AmigaOS/MorphOS** — `ffi:make-callback` builds real entry points on the target too (a 68k stub; on MorphOS a 68k stub into a PPC gate), with the AmigaOS register conventions through its `regs` argument, so `struct Hook`s and BOOPSI dispatchers re-enter Lisp (`amiga.ffi:make-hook` / `make-dispatcher`, `amiga.boopsi:pool-hook`, `amiga.mui:create-custom-class`). Two limits: `:float` / `:double` arguments and 64-bit or floating-point results are refused on the target (the stub returns d0 only), and a callback invoked from a task that is not a Lisp thread — intuition calling a `gadgetclass` method from input.device — returns 0 with a warning instead of running Lisp, so custom *gadget* classes stay out of reach (custom MUI classes are fine: MUI dispatches from the application's own task).
 - **Composite streams** — `make-two-way-stream`, `make-broadcast-stream`, `make-concatenated-stream`, and `make-echo-stream` are implemented with their component accessors (see the composite-stream tests in `tests/test_stream.c` / `tests/amiga/run-tests.lisp` for usage). Broadcast, concatenated, and echo streams accept native stream components only — a Gray stream component is rejected with a type error (a two-way stream may wrap Gray streams)
