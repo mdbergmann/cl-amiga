@@ -47,7 +47,7 @@ matched speed 1 on every row.
 | mandel | 49.0 | 69.1 | 8.8 | 0.71× | 5.57× |
 | float-vector | 59.0 | 49.7 | 0.7 | 1.19× | 84.29× |
 | bignum-fact | 53.0 | 20.4 | 9.0 | 2.60× | 5.89× |
-| bignum-arith | 33.0 † | 6.4 | 14.3 | (5.16×) | (2.31×) |
+| bignum-arith | 181.0 † | 6.4 | 14.3 | 28.28× | 12.66× |
 | hash-fixnum | 45.0 | 36.2 | 12.0 | 1.24× | 3.75× |
 | hash-string | 77.0 | 9.0 | 2.9 | 8.56× | 26.55× |
 | string-ops | 64.0 | 86.2 | 10.3 | 0.74× | 6.21× |
@@ -63,16 +63,17 @@ matched speed 1 on every row.
 | loop-collect | 84.0 | 26.9 | 10.9 | 3.12× | 7.71× |
 | conditions | 61.0 | 339.7 | 10.2 | 0.18× | 5.98× |
 | alloc-churn | 79.0 | 54.2 | 12.4 | 1.46× | 6.37× |
-| **total** | **3445** | **2266** | **480** | **1.52×** | **7.18×** |
-| **geomean** |  |  |  | **2.10×** | **8.16×** |
+| **total** | **3593** | **2266** | **480** | **1.59×** | **7.49×** |
+| **geomean** |  |  |  | **2.22×** | **8.62×** |
 
 Milliseconds; a ratio above 1 means clamiga is slower.  † clamiga's
-bignum-arith cell is not comparable (finding 5).
+bignum-arith cell is the re-measurement on the fixed binary (finding 5);
+the first run's 33 ms was the bug's early bail-out.
 
-**Headline**: ECL is 1.52× faster in total and 2.10× by geometric mean, but
+**Headline**: ECL is 1.59× faster in total and 2.22× by geometric mean, but
 the mean is carried by three pathological rows.  Without vector-sort, assoc
-and char-loop the geometric mean is 1.50× and the totals are at parity
-(clamiga 2,075 ms vs ECL 2,248 ms), because ECL's FORMAT and condition
+and char-loop the geometric mean is 1.59× and the totals are at parity
+(clamiga 2,223 ms vs ECL 2,248 ms), because ECL's FORMAT and condition
 signalling are so slow.  The plain interpretive tax of the VM against native
 code is 2–3.7× (fixnum-loop 2.0, fib 2.0, tak 3.7, nqueens 3.4, deriv 3.4,
 insertion-sort 3.4, loop-collect 3.1).  clamiga beats ECL on seven rows:
@@ -108,7 +109,15 @@ optimisation and unboxed double-float arrays.
    400! is still right.  Multiplication is unaffected (`integer-length` of
    1000! is the correct 8,530), so bignum-fact's timing is the intended
    workload and only its `val` is wrong; bignum-arith's `floor` bails out
-   early, so that clamiga cell is not a measurement.
+   early, so that clamiga cell is not a measurement.  **Fixed the same
+   day** (heap scratch above the stack buffers, streaming LOGCOUNT /
+   LOGBITP; `tests/test_bignum.c` large-operand tests).  The two rows
+   re-measured on the fixed binary, `val` now agreeing with ECL and SBCL:
+   bignum-fact 54 ms (unchanged), bignum-arith 181 ms — 28× behind ECL,
+   whose integers are GMP's, because clamiga's Knuth division runs on
+   16-bit limbs (the multiplication already packs to 32-bit limbs on the
+   host).  A 32-bit-limb division is the follow-up if bignum-heavy code
+   ever matters.
 6. **bignum-fact 2.6×**, hash-fixnum 1.24×, alloc-churn 1.46×, matmul 1.8×,
    struct-bst 1.7×, clos-dispatch 2.2×: the runtime's C paths sit close to
    ECL; the rows dominated by bytecode do not.

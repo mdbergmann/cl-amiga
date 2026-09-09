@@ -41,6 +41,53 @@
 (check "div many" 2 (/ 100 10 5))
 (check "mod" 1 (mod 10 3))
 (check "mod even" 0 (mod 10 2))
+
+;; Bignum operands past the old fixed scratch buffers (fixed 2026-09):
+;; division of a dividend >= 4,096 bits, or by a divisor > 2,048 bits,
+;; returned quotient 0; LOGAND/LOGIOR/LOGXOR truncated at 2,048 bits;
+;; LOGCOUNT and LOGBITP capped negatives there; ASH right of a 4,096+-bit
+;; result overran a stack buffer.  Expected values cross-checked with Python.
+(check "bignum mod 2^4064 (254 limbs)" 385732 (mod (expt 2 4064) 1000003))
+(check "bignum mod 2^4095 (256 limbs)" 458305 (mod (expt 2 4095) 1000003))
+(check "bignum mod 2^8000" 123176 (mod (expt 2 8000) 1000003))
+(check "bignum floor 2^8000 length" 7981 (integer-length (floor (expt 2 8000) 1000003)))
+(check "bignum 600! mod prime" 471663
+       (let ((r 1)) (dotimes (i 600) (setq r (* r (1+ i)))) (mod r 1000003)))
+(check "bignum truncate by 2100-bit divisor" (list t 12345)
+       (multiple-value-bind (q r) (truncate (+ (expt 2 5000) 12345) (expt 2 2100))
+         (list (= q (expt 2 2900)) r)))
+(check "bignum mod by 3000-bit divisor" 555042
+       (mod (mod (expt 2 8000) (+ (expt 2 3000) 1)) 1000003))
+(check "bignum mod negative 4100-bit dividend" 334285 (mod (- (expt 2 4100)) 1000003))
+(check "bignum rem negative 4100-bit dividend" -665718 (rem (- (expt 2 4100)) 1000003))
+(check "bignum gcd 5000-bit" t (= (gcd (expt 2 5000) (* 3 (expt 2 4500))) (expt 2 4500)))
+(check "bignum isqrt 5000-bit" 2501 (integer-length (isqrt (expt 2 5000))))
+(check "bignum ratio reduces past 4096 bits" 1024 (/ (expt 2 5000) (expt 2 4990)))
+(check "bignum logand 5000-bit" 0 (logand (expt 2 5000) (1- (expt 2 5000))))
+(check "bignum logior 5000-bit" t (= (logior (expt 2 5000) 1) (1+ (expt 2 5000))))
+(check "bignum logxor 5000-bit" t
+       (= (logxor (expt 2 5000) (expt 2 4000)) (+ (expt 2 5000) (expt 2 4000))))
+(check "bignum logand negative 5000-bit" t
+       (= (logand (- (expt 2 5000)) (1- (expt 2 6000))) (- (expt 2 6000) (expt 2 5000))))
+(check "bignum logior negative result past 4096 bits" t
+       (= (logior (- (expt 2 5000)) (- (expt 2 4999))) (- (expt 2 4999))))
+(check "bignum logxor negative 5000-bit" t
+       (= (logxor (- (expt 2 5000)) 1) (1+ (- (expt 2 5000)))))
+(check "bignum logcount positive 5000-bit" 5000 (logcount (1- (expt 2 5000))))
+(check "bignum logcount negative 5000-bit" 5000 (logcount (- (expt 2 5000))))
+(check "bignum logcount negative mixed" 4999 (logcount (- (expt 2 3000) (expt 2 5000))))
+(check "bignum logbitp negative 5000-bit" (list nil t t)
+       (list (logbitp 4999 (- (expt 2 5000))) (logbitp 5000 (- (expt 2 5000)))
+             (logbitp 9000 (- (expt 2 5000)))))
+(check "bignum logbitp negative mixed" (list nil t nil t)
+       (let ((n (- (expt 2 3000) (expt 2 5000))))
+         (list (logbitp 2999 n) (logbitp 3000 n) (logbitp 4999 n) (logbitp 5000 n))))
+(check "bignum ash right 5000-bit" t (= (ash (expt 2 5000) -7) (expt 2 4993)))
+(check "bignum ash right 5000-bit mixed" t
+       (= (ash (+ (expt 2 5000) (expt 2 4200) 1) -1) (+ (expt 2 4999) (expt 2 4199))))
+(check "bignum ash right negative 5000-bit" t (= (ash (- (expt 2 5000)) -7) (- (expt 2 4993))))
+(check "bignum ash right negative floors" t
+       (= (ash (- (1+ (expt 2 5000))) -1) (- (1+ (expt 2 4999)))))
 (check "1+" 42 (1+ 41))
 (check "1-" 42 (1- 43))
 

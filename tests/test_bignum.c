@@ -775,6 +775,113 @@ TEST(cdb_hash_intermediate_steps)
  * main
  * ================================================================ */
 
+/* ================================================================
+ * Large operands: past the old fixed scratch buffers (fixed 2026-09).
+ *
+ * Until then bignum_divmod silently returned quotient 0 for a dividend of
+ * 4,096+ bits (256 16-bit limbs) or a divisor above 2,048 bits, the bit
+ * operations truncated their operands at 2,048 bits and a negative result
+ * at 4,096, LOGCOUNT / LOGBITP capped negatives at 2,048 bits, and ASH
+ * right of a 4,096+-bit result overran a 256-limb stack buffer (SIGTRAP).
+ * GCD, ISQRT and ratio normalisation inherited the bad division.  Every
+ * expected value below was cross-checked with Python.
+ * ================================================================ */
+
+TEST(divmod_dividend_4096_bits)
+{
+    /* 2^4064 (254 limbs) always worked; 2^4095 (256 limbs) returned 0 */
+    ASSERT_STR_EQ(eval_print("(mod (expt 2 4064) 1000003)"), "385732");
+    ASSERT_STR_EQ(eval_print("(mod (expt 2 4095) 1000003)"), "458305");
+    ASSERT_STR_EQ(eval_print("(mod (expt 2 4096) 1000003)"), "916610");
+    ASSERT_STR_EQ(eval_print("(mod (expt 2 8000) 1000003)"), "123176");
+    ASSERT_STR_EQ(eval_print("(integer-length (floor (expt 2 8000) 1000003))"),
+                  "7981");
+}
+
+TEST(divmod_factorial_mod_prime)
+{
+    /* the bench-general rows that exposed the bug: 400! was right,
+       600! and 1000! came back 0 */
+    ASSERT_STR_EQ(eval_print("(let ((r 1)) (dotimes (i 400) (setq r (* r (1+ i))))"
+                             " (mod r 1000003))"), "595125");
+    ASSERT_STR_EQ(eval_print("(let ((r 1)) (dotimes (i 600) (setq r (* r (1+ i))))"
+                             " (mod r 1000003))"), "471663");
+    ASSERT_STR_EQ(eval_print("(let ((r 1)) (dotimes (i 1000) (setq r (* r (1+ i))))"
+                             " (mod r 1000003))"), "864722");
+}
+
+TEST(divmod_divisor_over_2048_bits)
+{
+    ASSERT_STR_EQ(eval_print("(= (truncate (expt 2 5000) (expt 2 2100)) (expt 2 2900))"),
+                  "T");
+    ASSERT_STR_EQ(eval_print("(multiple-value-bind (q r)"
+                             " (truncate (+ (expt 2 5000) 12345) (expt 2 2100))"
+                             " (list (= q (expt 2 2900)) r))"), "(T 12345)");
+    ASSERT_STR_EQ(eval_print("(mod (mod (expt 2 8000) (+ (expt 2 3000) 1)) 1000003)"),
+                  "555042");
+    ASSERT_STR_EQ(eval_print("(integer-length (mod (expt 2 8000) (+ (expt 2 3000) 1)))"),
+                  "2001");
+}
+
+TEST(divmod_negative_dividend_large)
+{
+    ASSERT_STR_EQ(eval_print("(integer-length (floor (- (expt 2 4100)) 1000003))"),
+                  "4081");
+    ASSERT_STR_EQ(eval_print("(mod (- (expt 2 4100)) 1000003)"), "334285");
+    ASSERT_STR_EQ(eval_print("(rem (- (expt 2 4100)) 1000003)"), "-665718");
+}
+
+TEST(division_consumers_large)
+{
+    /* GCD, ISQRT and ratio reduction all divide */
+    ASSERT_STR_EQ(eval_print("(= (gcd (expt 2 5000) (* 3 (expt 2 4500))) (expt 2 4500))"),
+                  "T");
+    ASSERT_STR_EQ(eval_print("(integer-length (isqrt (expt 2 5000)))"), "2501");
+    ASSERT_STR_EQ(eval_print("(/ (expt 2 5000) (expt 2 4990))"), "1024");
+    ASSERT_STR_EQ(eval_print("(= (float (/ (expt 2 5000) (expt 2 4990)) 1d0) 1024d0)"),
+                  "T");
+}
+
+TEST(bitops_over_2048_bits)
+{
+    ASSERT_STR_EQ(eval_print("(logand (expt 2 5000) (1- (expt 2 5000)))"), "0");
+    ASSERT_STR_EQ(eval_print("(= (logior (expt 2 5000) 1) (1+ (expt 2 5000)))"), "T");
+    ASSERT_STR_EQ(eval_print("(= (logxor (expt 2 5000) (expt 2 4000))"
+                             " (+ (expt 2 5000) (expt 2 4000)))"), "T");
+    ASSERT_STR_EQ(eval_print("(= (logand (- (expt 2 5000)) (1- (expt 2 6000)))"
+                             " (- (expt 2 6000) (expt 2 5000)))"), "T");
+    /* a negative RESULT past 4,096 bits: from_twos_complement's own buffer */
+    ASSERT_STR_EQ(eval_print("(= (logior (- (expt 2 5000)) (- (expt 2 4999)))"
+                             " (- (expt 2 4999)))"), "T");
+    ASSERT_STR_EQ(eval_print("(= (logxor (- (expt 2 5000)) 1) (1+ (- (expt 2 5000))))"),
+                  "T");
+}
+
+TEST(logcount_logbitp_negative_over_2048_bits)
+{
+    ASSERT_STR_EQ(eval_print("(logcount (1- (expt 2 5000)))"), "5000");
+    ASSERT_STR_EQ(eval_print("(logcount (- (expt 2 5000)))"), "5000");
+    ASSERT_STR_EQ(eval_print("(logcount (- (expt 2 3000) (expt 2 5000)))"), "4999");
+    ASSERT_STR_EQ(eval_print("(list (logbitp 4999 (- (expt 2 5000)))"
+                             " (logbitp 5000 (- (expt 2 5000)))"
+                             " (logbitp 9000 (- (expt 2 5000))))"), "(NIL T T)");
+    ASSERT_STR_EQ(eval_print("(let ((n (- (expt 2 3000) (expt 2 5000))))"
+                             " (list (logbitp 2999 n) (logbitp 3000 n)"
+                             " (logbitp 4999 n) (logbitp 5000 n)))"), "(NIL T NIL T)");
+}
+
+TEST(ash_right_over_4096_bits)
+{
+    /* overran the 256-limb stack buffer: the process died with SIGTRAP */
+    ASSERT_STR_EQ(eval_print("(= (ash (expt 2 5000) -7) (expt 2 4993))"), "T");
+    ASSERT_STR_EQ(eval_print("(= (ash (+ (expt 2 5000) (expt 2 4200) 1) -1)"
+                             " (+ (expt 2 4999) (expt 2 4199)))"), "T");
+    ASSERT_STR_EQ(eval_print("(= (ash (- (expt 2 5000)) -7) (- (expt 2 4993)))"), "T");
+    /* arithmetic shift floors toward -infinity */
+    ASSERT_STR_EQ(eval_print("(= (ash (- (1+ (expt 2 5000))) -1) (- (1+ (expt 2 4999))))"),
+                  "T");
+}
+
 int main(void)
 {
     test_init();
@@ -918,6 +1025,16 @@ int main(void)
     RUN(ash_bignum_left);
     RUN(cdb_hash_fiveam);
     RUN(cdb_hash_intermediate_steps);
+
+    /* Large operands past the old fixed scratch buffers (2026-09) */
+    RUN(divmod_dividend_4096_bits);
+    RUN(divmod_factorial_mod_prime);
+    RUN(divmod_divisor_over_2048_bits);
+    RUN(divmod_negative_dividend_large);
+    RUN(division_consumers_large);
+    RUN(bitops_over_2048_bits);
+    RUN(logcount_logbitp_negative_over_2048_bits);
+    RUN(ash_right_over_4096_bits);
 
     /* C-level API */
     RUN(c_bignum_from_int32);

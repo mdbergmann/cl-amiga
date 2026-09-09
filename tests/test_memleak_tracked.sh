@@ -89,6 +89,24 @@ cat > "$WORK/churn.lisp" <<'LISPEOF'
 LISPEOF
 run_case "no_leak_after_compile_churn" "$WORK/churn.lisp"
 
+# --- bignum scratch buffers above the stack sizes (2026-09) ----------------
+# Division of a 4,096+-bit dividend or by a >2,048-bit divisor, the bit
+# operations past 2,048 bits, a negative bit-op result past 4,096 bits and
+# ASH right of a 4,096+-bit result each platform_alloc a scratch block that
+# must be handed back on the same call.
+cat > "$WORK/bignum.lisp" <<LISPEOF
+(mod (expt 2 8000) 1000003)
+(mod (expt 2 8000) (+ (expt 2 3000) 1))
+(gcd (expt 2 5000) (* 3 (expt 2 4500)))
+(logand (expt 2 5000) (1- (expt 2 5000)))
+(logior (- (expt 2 5000)) (- (expt 2 4999)))
+(logxor (expt 2 5000) (expt 2 4000))
+(ash (expt 2 5000) -7)
+(ash (- (expt 2 5000)) -7)
+(quit)
+LISPEOF
+run_case "no_leak_after_bignum_scratch" "$WORK/bignum.lisp"
+
 # --- CLOS, streams, locks, threads, string output, a dropped stream --------
 cat > "$WORK/heavy.lisp" <<LISPEOF
 (defclass pt () ((x :initarg :x :accessor px) (y :initarg :y :accessor py)))

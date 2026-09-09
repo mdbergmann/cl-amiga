@@ -233,17 +233,21 @@ static uint32_t bignum_divmod(const uint16_t *a, uint32_t a_len,
 
         while (bh < 0x8000) { bh <<= 1; shift++; }
 
-        /* Allocate normalized copies on stack (limited size for safety) */
+        /* Normalized copies: stack buffers for the common sizes, the heap
+         * above them.  (Until 2026-09 anything past 256 / 128 limbs — a
+         * dividend of 4,096 bits or a divisor above 2,048 — silently
+         * returned quotient 0; tests/test_bignum.c divmod_*_bits.) */
         {
-            uint16_t u_buf[256], v_buf[128]; /* Should be enough for practical use */
-            if (a_len + 1 > 256 || b_len > 128) {
-                /* Fallback: very large division — should not happen in practice */
-                memset(quot, 0, (m + 1) * sizeof(uint16_t));
-                memset(rem, 0, b_len * sizeof(uint16_t));
-                return 1;
-            }
-            u = u_buf;
-            v = v_buf;
+            uint16_t u_buf[256], v_buf[128];
+            uint16_t *u_heap = NULL, *v_heap = NULL;
+            if (a_len + 1 > 256)
+                u = u_heap = (uint16_t *)platform_alloc((a_len + 1) * sizeof(uint16_t));
+            else
+                u = u_buf;
+            if (b_len > 128)
+                v = v_heap = (uint16_t *)platform_alloc(b_len * sizeof(uint16_t));
+            else
+                v = v_buf;
 
             /* Shift b left by 'shift' bits */
             {
@@ -337,6 +341,9 @@ static uint32_t bignum_divmod(const uint16_t *a, uint32_t a_len,
             } else {
                 memcpy(rem, u, n * sizeof(uint16_t));
             }
+
+            if (u_heap) platform_free(u_heap);
+            if (v_heap) platform_free(v_heap);
         }
 
         q_len = m + 1;
@@ -1736,7 +1743,8 @@ CL_Obj cl_arith_ash(CL_Obj n, CL_Obj count)
         uint32_t word_shift = (uint32_t)(-shift) / 16;
         uint32_t bit_shift = (uint32_t)(-shift) % 16;
         uint32_t r_len, i;
-        uint16_t result[256];
+        uint16_t result_stack[256];
+        uint16_t *result;
 
         nl = to_limbs(n, &n_len, &n_sign, tn);
 
@@ -1746,6 +1754,11 @@ CL_Obj cl_arith_ash(CL_Obj n, CL_Obj count)
         }
 
         r_len = n_len - word_shift;
+        /* Heap above 256 limbs: a 4,096+-bit result overran this stack
+         * buffer until 2026-09 (tests/test_bignum.c ash_right_over_4096_bits). */
+        result = r_len > 256
+            ? (uint16_t *)platform_alloc(r_len * sizeof(uint16_t))
+            : result_stack;
         memset(result, 0, r_len * sizeof(uint16_t));
 
         if (bit_shift == 0) {
@@ -1779,6 +1792,7 @@ CL_Obj cl_arith_ash(CL_Obj n, CL_Obj count)
                 }
             }
             res = bignum_from_limbs(result, r_len, n_sign);
+            if (result != result_stack) platform_free(result);
             if (n_sign && any_set) {
                 res = cl_arith_sub(res, CL_MAKE_FIXNUM(1));
             }
@@ -1827,10 +1841,10 @@ static CL_Obj from_twos_complement(const uint16_t *buf, uint32_t len)
 {
     /* If high bit of top limb is set, it's negative */
     int negative = (buf[len - 1] & 0x8000) != 0;
-    uint16_t tmp[256];
+    uint16_t tmp_stack[256];
+    uint16_t *tmp;
     uint32_t i;
-
-    if (len > 256) len = 256;
+    CL_Obj res;
 
     if (!negative) {
         /* Strip leading zeros */
@@ -1838,7 +1852,10 @@ static CL_Obj from_twos_complement(const uint16_t *buf, uint32_t len)
         return bignum_from_limbs(buf, len, 0);
     }
 
-    /* Negative: invert and add 1 */
+    /* Negative: invert and add 1.  Heap above 256 limbs — until 2026-09
+     * the result was silently cut at 4,096 bits here. */
+    tmp = len > 256 ? (uint16_t *)platform_alloc(len * sizeof(uint16_t))
+                    : tmp_stack;
     {
         uint32_t carry = 1;
         for (i = 0; i < len; i++) {
@@ -1847,8 +1864,10 @@ static CL_Obj from_twos_complement(const uint16_t *buf, uint32_t len)
             carry = val >> 16;
         }
         while (len > 1 && tmp[len - 1] == 0) len--;
-        return bignum_from_limbs(tmp, len, 1);
+        res = bignum_from_limbs(tmp, len, 1);
     }
+    if (tmp != tmp_stack) platform_free(tmp);
+    return res;
 }
 
 /* Bitwise ops for the cold (>fixnum) case.  The three CL bitwise operators
@@ -1861,18 +1880,36 @@ typedef enum { BITOP_AND, BITOP_IOR, BITOP_XOR } BignumBitop;
 
 static CL_Obj bignum_bitop(CL_Obj a, CL_Obj b, BignumBitop op, const char *name)
 {
-    uint16_t ba[128], bb[128];
+    uint16_t a_stack[128], b_stack[128], r_stack[128];
+    uint16_t *ba = a_stack, *bb = b_stack, *result = r_stack, *heap = NULL;
     int a_neg, b_neg;
-    uint32_t a_len, b_len, max_len, i;
-    uint16_t result[128];
+    uint32_t a_len, b_len, max_len, need, i;
+    CL_Obj res;
 
     check_integer(a, name);
     check_integer(b, name);
 
-    a_len = to_twos_complement(a, ba, 128, &a_neg);
-    b_len = to_twos_complement(b, bb, 128, &b_neg);
+    /* Room for the longer operand plus one sign-extension limb: stack
+     * buffers for the common sizes, one heap block above 128 limbs (until
+     * 2026-09 operands past 2,048 bits were silently truncated here;
+     * tests/test_bignum.c bitops_over_2048_bits). */
+    {
+        uint16_t t[2];
+        uint32_t la, lb, s;
+        to_limbs(a, &la, &s, t);
+        to_limbs(b, &lb, &s, t);
+        need = (la > lb ? la : lb) + 1;
+    }
+    if (need > 128) {
+        heap = (uint16_t *)platform_alloc(3 * need * sizeof(uint16_t));
+        ba = heap;
+        bb = heap + need;
+        result = heap + 2 * need;
+    }
+
+    a_len = to_twos_complement(a, ba, need, &a_neg);
+    b_len = to_twos_complement(b, bb, need, &b_neg);
     max_len = a_len > b_len ? a_len : b_len;
-    if (max_len > 128) max_len = 128;
 
     /* Sign-extend the shorter operand, then combine limb by limb. */
     {
@@ -1889,7 +1926,9 @@ static CL_Obj bignum_bitop(CL_Obj a, CL_Obj b, BignumBitop op, const char *name)
         }
     }
 
-    return from_twos_complement(result, max_len);
+    res = from_twos_complement(result, max_len);
+    if (heap) platform_free(heap);
+    return res;
 }
 
 CL_Obj cl_arith_logand(CL_Obj a, CL_Obj b)
@@ -1957,23 +1996,16 @@ int cl_arith_logcount(CL_Obj n)
             for (i = 0; i < bn->length; i++)
                 c += popcount16(bn->limbs[i]);
         } else {
-            /* Negative: count 0-bits = popcount of two's complement negation - but easier:
-               logcount(-n) = logcount(n-1) for negative n (CL spec).
-               We compute two's complement and count 1-bits of the inverted form.
-               Actually, for negative n, logcount(n) = logcount(lognot(n)) = logcount(-n-1).
-               -n-1 has magnitude |n|-1. */
-            uint16_t tmp[128];
-            uint32_t len = bn->length;
+            /* Negative: CLHS LOGCOUNT counts the 0-bits of a negative
+             * integer, i.e. the 1-bits of lognot(n) = |n| - 1.  Stream the
+             * subtraction limb by limb — no scratch buffer and no size cap
+             * (until 2026-09 a tmp[128] silently capped this at 2,048 bits). */
             uint32_t borrow = 1;
-            if (len > 128) len = 128;
-            /* Compute magnitude - 1 */
-            for (i = 0; i < len; i++) {
+            for (i = 0; i < bn->length; i++) {
                 uint32_t val = (uint32_t)bn->limbs[i] - borrow;
-                tmp[i] = (uint16_t)(val & 0xFFFF);
+                c += popcount16((uint16_t)(val & 0xFFFF));
                 borrow = (val >> 16) & 1; /* borrow if underflow */
             }
-            for (i = 0; i < len; i++)
-                c += popcount16(tmp[i]);
         }
         return c;
     }
@@ -1999,31 +2031,23 @@ int cl_arith_logbitp(int index, CL_Obj integer)
             if (limb_idx >= bn->length) return 0;
             return (bn->limbs[limb_idx] >> bit_idx) & 1;
         } else {
-            /* Negative: two's complement. Need to negate magnitude.
-               In two's complement, bits of -n = ~(n-1) when n > 0.
-               So bit i of -|m| = NOT(bit i of (|m|-1)).
-               But we need to handle borrow propagation. */
-            uint16_t tmp[128];
-            uint32_t len = bn->length;
+            /* Negative: two's complement, bit i of -|m| = NOT(bit i of
+             * (|m| - 1)).  Stream the subtraction up to the wanted limb,
+             * keeping only the current one — no scratch buffer and no size
+             * cap (until 2026-09 a tmp[128] reported every bit above 2,048
+             * of a negative as set). */
             uint32_t borrow = 1;
             uint32_t i;
-            uint16_t val;
-            if (len > 128) len = 128;
-            /* Compute |m| - 1 in magnitude, only up to limb_idx+1 */
-            {
-                uint32_t compute_len = limb_idx + 1;
-                if (compute_len > len) compute_len = len;
-                for (i = 0; i < compute_len; i++) {
-                    uint32_t v = (uint32_t)bn->limbs[i] - borrow;
-                    tmp[i] = (uint16_t)(v & 0xFFFF);
-                    borrow = (v >> 16) & 1;
-                }
-            }
-            if (limb_idx >= len) {
+            uint16_t val = 0;
+            if (limb_idx >= bn->length) {
                 /* Beyond magnitude: two's complement sign extension = all 1s */
                 return 1;
             }
-            val = tmp[limb_idx];
+            for (i = 0; i <= limb_idx; i++) {
+                uint32_t v = (uint32_t)bn->limbs[i] - borrow;
+                val = (uint16_t)(v & 0xFFFF);
+                borrow = (v >> 16) & 1;
+            }
             /* Two's complement: invert */
             return ((~val) >> bit_idx) & 1;
         }

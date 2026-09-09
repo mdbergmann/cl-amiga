@@ -5563,6 +5563,30 @@ check_contains "a worker thread's abort frame carries no stale bytecode" "NLXC-T
 check_contains "C-pushed NLX frames: run completes" "NLXC-DONE" "$out"
 check_absent   "C-pushed NLX frames: no bad mark" "BADMARK\|FATAL" "$out"
 
+# --- Case: bignum scratch buffers on the heap under stress ------------------
+# The 2026-09 fix moved the >256-limb division / bit-op / ASH scratch off the
+# C stack onto platform_alloc memory.  The limb pointers into the operands
+# (to_limbs) are consumed before bignum_from_limbs allocates — this pins that
+# order under a compaction on every allocation.  That the off-heap buffers
+# are handed back is tests/test_memleak_tracked.sh no_leak_after_bignum_scratch.
+cat > "$WORK/bignum.lisp" <<'EOF'
+(format t "BIG-MOD:~D~%" (mod (expt 2 8000) 1000003))
+(format t "BIG-DIV:~D~%" (mod (mod (expt 2 8000) (+ (expt 2 3000) 1)) 1000003))
+(format t "BIG-BITS:~S~%" (list (= (logior (expt 2 5000) 1) (1+ (expt 2 5000)))
+                                (= (logior (- (expt 2 5000)) (- (expt 2 4999))) (- (expt 2 4999)))
+                                (= (ash (expt 2 5000) -7) (expt 2 4993))
+                                (logcount (- (expt 2 5000)))
+                                (logbitp 4999 (- (expt 2 5000)))))
+(format t "BIG-GCD:~S~%" (= (gcd (expt 2 5000) (* 3 (expt 2 4500))) (expt 2 4500)))
+(format t "BIG-DONE~%")
+EOF
+out=$(run_stress "$WORK/bignum.lisp")
+check_contains "bignum division past 4,096 bits under stress"      "BIG-MOD:123176" "$out"
+check_contains "bignum division by a 3,000-bit divisor under stress" "BIG-DIV:555042" "$out"
+check_contains "bignum bit ops / ASH past 2,048 bits under stress"  "BIG-BITS:(T T T 5000 NIL)" "$out"
+check_contains "bignum GCD past 4,096 bits under stress"            "BIG-GCD:T" "$out"
+check_contains "bignum large operands: run completes"               "BIG-DONE" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]
