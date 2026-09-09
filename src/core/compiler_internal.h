@@ -254,12 +254,16 @@ typedef struct CL_Compiler_s {
      * (one nlx_scan walk per FLET/LABELS form): the candidate names are
      * env->local_funs[funuse_lo .. funuse_lo + funuse_n), bit i of
      * funuse_escaped is set when candidate i must keep a closure, and
-     * funuse_calls[i] counts its direct call sites (saturating).  Lives
-     * here rather than in statics because compiles run concurrently on
-     * several threads and nest through macro expansion. */
+     * funuse_calls[i] counts its direct call sites (saturating).
+     * funuse_cur is the candidate whose body the walk is inside (-1 for
+     * the form's own body): a LOAD-TIME-VALUE found there vetoes that
+     * candidate, since inlining would compile — and so evaluate — the
+     * form once per call site.  Lives here rather than in statics because
+     * compiles run concurrently on several threads and nest through
+     * macro expansion. */
     int hide_block_lo, hide_block_hi;
     int hide_tagbody_lo, hide_tagbody_hi;
-    int funuse_lo, funuse_n;
+    int funuse_lo, funuse_n, funuse_cur;
     uint32_t funuse_escaped;
     uint8_t funuse_calls[32];
 } CL_Compiler;

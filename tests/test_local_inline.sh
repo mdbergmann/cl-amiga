@@ -241,14 +241,40 @@ cat > "$WORK/t3.lisp" <<'EOF'
 (defun li-opt (a) (flet ((f (x &optional (y 1)) (* x y))) (f a)))
 (defun li-rest (a) (flet ((f (&rest r) r)) (f a)))
 (defun li-setf-name (a) (flet (((setf li-acc) (v o) (list v o))) (setf (li-acc a) 1)))
+;; A LOAD-TIME-VALUE in the body keeps the closure: an inlined body is
+;; compiled — and the form evaluated — once per call site, and the value
+;; must be one object per function (serapeum's STATIC-LET is built on
+;; that).  The scan finds it through a macro and inside a nested lambda.
+(defun li-ltv (a) (flet ((f (x) (cons x (load-time-value (list :ltv))))) (list (cdr (f a)) (cdr (f 1)))))
+(defmacro li-ltv-mac () '(load-time-value (list :ltv)))
+(defun li-ltv-hidden (a) (flet ((f (x) (cons x (li-ltv-mac)))) (list (cdr (f a)) (cdr (f 1)))))
+(defun li-ltv-nested (a)
+  (flet ((f (x) (funcall (lambda () (cons x (load-time-value (list :ltv)))))))
+    (list (cdr (f a)) (cdr (f 1)))))
 (dolist (fn '(li-inl li-fref li-noti li-noti2 li-lam li-hb li-lab li-lab2 li-spdecl
-              li-big2 li-big1 li-space li-debug li-opt li-rest li-setf-name))
+              li-big2 li-big1 li-space li-debug li-opt li-rest li-setf-name
+              li-ltv li-ltv-hidden li-ltv-nested))
   (format t "~%=== DIS ~A ===~%" fn)
   (disassemble fn))
 (format t "~%R3 ~S~%" (list (li-inl 3) (li-fref 3) (li-noti 3) (li-noti2 3) (li-lam '(1 2))
                             (li-hb 3) (li-lab 3) (li-lab2 3) (li-spdecl 3)
                             (length (li-big2 1)) (length (li-big1 1))
                             (li-space 3) (li-debug 3) (li-opt 3) (li-rest 3)))
+(format t "R3ltv ~S~%" (flet ((same (r) (eq (first r) (second r))))
+                         (list (same (li-ltv 5)) (same (li-ltv-hidden 5)) (same (li-ltv-nested 5)))))
+;; serapeum's STATIC-LOAD-TIME-VALUE identity probe, and STATIC-LET's
+;; initialize-once pattern: the init form runs on the first call only.
+(format t "R3ltv2 ~S~%" (funcall (compile nil '(lambda ()
+                                                (flet ((fn () (load-time-value (random most-positive-fixnum))))
+                                                  (eql (fn) (fn)))))))
+(defun li-ltv-once ()
+  (let ((x 0))
+    (flet ((foo () (let ((cell (load-time-value (list nil))))
+                     (unless (car cell) (incf x) (setf (car cell) t))
+                     42)))
+      (foo) (foo) (foo)
+      x)))
+(format t "R3ltv3 ~S~%" (li-ltv-once))
 (format t "T3-DONE~%")
 EOF
 out=$(run "$WORK/t3.lisp")
@@ -281,6 +307,12 @@ check_contains "&optional keeps a closure"                       "CLOSURE" "$(di
 check_contains "&rest keeps a closure"                           "CLOSURE" "$(dis LI-REST)"
 check_contains "(setf name) keeps a closure"                     "CLOSURE" "$(dis LI-SETF-NAME)"
 check_contains "every shape still computes the right value"      "R3 (8 6 6 6 (2 4) 3 12 8 6 2 12 6 6 3 (3))" "$out"
+check_contains "load-time-value in the body keeps a closure"     "CLOSURE" "$(dis LI-LTV)"
+check_contains "load-time-value behind a macro keeps a closure"  "CLOSURE" "$(dis LI-LTV-HIDDEN)"
+check_contains "load-time-value in a nested lambda keeps a closure" "CLOSURE" "$(dis LI-LTV-NESTED)"
+check_contains "load-time-value is one object across call sites" "R3ltv (T T T)" "$out"
+check_contains "load-time-value identity across calls (serapeum probe)" "R3ltv2 T" "$out"
+check_contains "static-let pattern: init form runs once"         "R3ltv3 1" "$out"
 check_contains "t3 completes"                                    "T3-DONE" "$out"
 
 cat > "$WORK/t3b.lisp" <<'EOF'
@@ -347,11 +379,15 @@ check_contains "t4 completes"                                    "T4-DONE" "$out
 cat > "$WORK/t5src.lisp" <<'EOF'
 (defun li-cf (a) (flet ((twice (x) (* x 2))) (+ (twice a) (twice (1+ a)))))
 (defun li-cf-hide (a) (let ((x a)) (flet ((f () x)) (let ((x (* a 100))) (list x (f))))))
+;; COMPILE-FILE mints one memo cell per compiled LOAD-TIME-VALUE: an inlined
+;; body would get one per call site.  The veto keeps the closure here too.
+(defun li-cf-ltv (a) (flet ((f (x) (cons x (load-time-value (list :cf-ltv))))) (eq (cdr (f a)) (cdr (f 1)))))
 EOF
 cat > "$WORK/t5.lisp" <<EOF
 (let ((fasl (compile-file "$WORK/t5src.lisp")))
   (load fasl))
 (format t "R5a ~S~%" (list (li-cf 3) (li-cf-hide 2)))
+(format t "R5ltv ~S~%" (li-cf-ltv 3))
 (disassemble 'li-cf)
 (defgeneric li-gf (x))
 (defmethod li-gf ((x integer)) (flet ((f (y) (+ x y))) (list (f 1) (f 2))))
@@ -363,6 +399,7 @@ cat > "$WORK/t5.lisp" <<EOF
 EOF
 out=$(run "$WORK/t5.lisp")
 check_contains "compile-file round trip"                         "R5a (14 (200 2))" "$out"
+check_contains "compile-file: load-time-value one object per function" "R5ltv T" "$out"
 check_absent   "compile-file output has no closure for the helper" "CLOSURE" "$out"
 check_contains "flet inside a method body"                       "R5b (11 12)" "$out"
 check_contains "bench-prims flet-call shape"                     "R5c 7" "$out"

@@ -886,10 +886,11 @@ rest are parsed and accepted as conforming no-ops.
   variables still resolving where the function was defined. Such a call
   costs what its body costs (no frame, no closure allocation when the
   `flet` is entered). Functions with `&optional`/`&rest`/`&key`, special
-  parameters, or a large body called from several places keep a closure,
-  as does everything under `(optimize (space 2))`, `(debug 3)`, or a
-  `notinline` declaration; an inlined call has no frame of its own in a
-  backtrace. `CLAMIGA_NO_LOCAL_INLINE=1` turns it off process-wide.
+  parameters, a `load-time-value` in the body (its value stays one object
+  per function, not one per call site), or a large body called from
+  several places keep a closure, as does everything under
+  `(optimize (space 2))`, `(debug 3)`, or a `notinline` declaration; an
+  inlined call has no frame of its own in a backtrace. `CLAMIGA_NO_LOCAL_INLINE=1` turns it off process-wide.
   See `tests/test_local_inline.sh` for what is and is not inlined.
 - **`type`, `ftype`, `ignore`, `ignorable`, `dynamic-extent`** — accepted but
   currently no-ops (no type propagation, unused-variable warnings, or

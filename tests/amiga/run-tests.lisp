@@ -1240,6 +1240,31 @@ y" 1))
 (defun ltv-fn () (load-time-value (cons 'a 'b)))
 (check "ltv in function" '(a . b) (ltv-fn))
 (check "ltv same object" t (eq (ltv-fn) (ltv-fn)))
+; A LOAD-TIME-VALUE inside a local function: the compiler inlines a
+; non-escaping FLET at every call site, and each inlined copy would evaluate
+; its own copy of the form.  The escape scan vetoes inlining for such a body
+; (also through a macro), so the value is one object per function — what
+; serapeum's STATIC-LET / STATIC-LOAD-TIME-VALUE rely on.
+(defun ltv-flet-fn ()
+  (flet ((f (x) (cons x (load-time-value (list 'ltv)))))
+    (eq (cdr (f 1)) (cdr (f 2)))))
+(check "ltv in a twice-called flet is one object" t (ltv-flet-fn))
+(defmacro ltv-flet-mac () '(load-time-value (list 'ltv)))
+(defun ltv-flet-mac-fn ()
+  (flet ((f (x) (cons x (ltv-flet-mac))))
+    (eq (cdr (f 1)) (cdr (f 2)))))
+(check "ltv behind a macro in a twice-called flet" t (ltv-flet-mac-fn))
+(check "ltv identity across calls of a local function" t
+  (funcall (compile nil '(lambda ()
+                          (flet ((fn () (load-time-value (random most-positive-fixnum))))
+                            (eql (fn) (fn)))))))
+(check "ltv init form in a flet runs once (static-let pattern)" 1
+  (let ((x 0))
+    (flet ((foo () (let ((cell (load-time-value (list nil))))
+                     (unless (car cell) (incf x) (setf (car cell) t))
+                     42)))
+      (foo) (foo) (foo)
+      x)))
 
 ; --- get-properties ---
 (check "get-properties found" '(:b 2 (:b 2 :c 3)) (multiple-value-list (get-properties '(:a 1 :b 2 :c 3) '(:b :c))))

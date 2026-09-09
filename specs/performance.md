@@ -778,7 +778,10 @@ planning phase 3 against it.
    The escape analysis is one macro-aware `nlx_scan` walk per form
    (`NLX_FUNUSE` mode; it also sees through symbol-macros).  Shape
    limits: required parameters only (≤ 8), no special parameter or
-   `(special ...)` declaration, and a body over 48 conses is inlined only
+   `(special ...)` declaration, no `load-time-value` anywhere in the body
+   (the walk finds it through macros; an inlined body is compiled — and
+   the form evaluated — once per call site, which broke serapeum's
+   `static-let`, 2026-09-09), and a body over 48 conses is inlined only
    when called once.  `(optimize (space > speed))` or `(debug 3)` keeps
    the closures (and the local's backtrace frame — an inlined call has
    none, the error line still points into the body);

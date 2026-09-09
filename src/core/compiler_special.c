@@ -879,6 +879,19 @@ static int nlx_scan(CL_Obj form, int mode, CL_Obj tag, int anon)
             }
             return 0;
         }
+        /* (load-time-value form) inside a candidate's body: the function
+         * must be compiled exactly once.  An inlined body is compiled at
+         * every call site, and compile_load_time_value evaluates the form
+         * (REPL/LOAD) or mints a memo cell (COMPILE-FILE) per compilation —
+         * two call sites would see two different objects, which is exactly
+         * what serapeum's STATIC-LET / STATIC-LOAD-TIME-VALUE build on not
+         * happening.  The form itself runs in the null lexical environment,
+         * so it cannot reference the candidates: nothing below to scan. */
+        if (head == SYM_LOAD_TIME_VALUE) {
+            CL_Compiler *c = cl_active_compiler;
+            if (c->funuse_cur >= 0) funuse_escape(c->funuse_cur);
+            return 0;
+        }
         /* (NAME args...) — from inside a closure the call needs the closure
          * (the body is inlined only from the defining function's own code);
          * at the definition level it is a direct call site.  Either way the
@@ -2153,10 +2166,12 @@ void compile_unwind_protect(CL_Compiler *c, CL_Obj form)
  * any reference from a group member's body (recursion, direct or mutual).
  * Also excluded: names that are not plain symbols, lambda lists with any
  * &-keyword, more than CL_LOCAL_INLINE_MAX_PARAMS parameters, a special
- * parameter, a (special ...) declaration in the body, and — to bound code
- * growth — a body over CL_LOCAL_INLINE_MAX_SIZE conses called from more
- * than one site.  (optimize (space > speed)) or (debug 3) turns it off for
- * the form; CLAMIGA_NO_LOCAL_INLINE=1 for the process.
+ * parameter, a (special ...) declaration in the body, a LOAD-TIME-VALUE
+ * anywhere in the body (the same walk finds it, through macros — its
+ * value must be one object per function, not one per call site), and —
+ * to bound code growth — a body over CL_LOCAL_INLINE_MAX_SIZE conses
+ * called from more than one site.  (optimize (space > speed)) or (debug 3)
+ * turns it off for the form; CLAMIGA_NO_LOCAL_INLINE=1 for the process.
  *
  * The analysis is what makes the closure-free binding safe; two guards in
  * compiler.c (inline_local_misuse) report the case it cannot foresee — a
@@ -2234,6 +2249,7 @@ static void local_inline_scan(CL_Compiler *c, CL_Obj form, int n)
 
     c->funuse_lo = lo;
     c->funuse_n = 0;
+    c->funuse_cur = -1;
     c->funuse_escaped = 0;
     memset(c->funuse_calls, 0, sizeof(c->funuse_calls));
 
@@ -2251,17 +2267,21 @@ static void local_inline_scan(CL_Compiler *c, CL_Obj form, int n)
     c->funuse_n = n;
 
     /* GC SAFETY: the walk macroexpands (allocates / compacts); every cursor
-     * re-read after a scan call is rooted.  form itself is the caller's. */
+     * re-read after a scan call is rooted.  form itself is the caller's.
+     * funuse_cur names the body being walked so a LOAD-TIME-VALUE inside it
+     * (at any depth — a nested closure's copy is compiled per site too)
+     * vetoes that candidate; the form's own body is nobody's. */
     scan_nlx_arg_depth = 0;
     b = cl_car(cl_cdr(form));
     CL_GC_PROTECT(b);
-    while (CL_CONS_P(b)) {
+    for (i = 0; CL_CONS_P(b); i++, b = cl_cdr(b)) {
         CL_Obj def = cl_car(b);
+        c->funuse_cur = i < n ? i : -1;
         if (CL_CONS_P(def) && CL_CONS_P(cl_cdr(def)))
             nlx_scan_body(cl_cdr(cl_cdr(def)), NLX_FUNUSE, CL_NIL, 1);
-        b = cl_cdr(b);
     }
     CL_GC_UNPROTECT(1);
+    c->funuse_cur = -1;
     nlx_scan_body(cl_cdr(cl_cdr(form)), NLX_FUNUSE, CL_NIL, 0);
 
     c->funuse_n = 0;
