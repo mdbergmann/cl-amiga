@@ -14,7 +14,15 @@
 ;; ATOMICS_DIR=<dir>: pushed onto asdf:*central-registry* before the
 ;; quickload so an older `atomics` checkout wins over the local-projects
 ;; fork — needed to run a binary predating mp:compare-and-swap (< 0.7)
-;; for an A/B.  The driver prints which atomics.asd / sento.asd loaded.
+;; for an A/B.  The same hook serves a different sento checkout.  The
+;; driver prints which atomics.asd / sento.asd loaded.
+;;
+;; SENTO_QUEUE_CAP=<n>: passed as :wait-if-queue-larger-than to every cell
+;; (the bench's default is 10000).  The SHARED/ask cell needs 2000 on 0.10
+;; and later: each in-flight asynchronous ask holds three MP locks (the
+;; waiting actor's box, its queue, the future), and the faster sender side
+;; otherwise keeps more of them in flight than the 16384-slot lock table
+;; holds — see docs/sento-bench-results-0.10.md.
 ;;
 ;; Runs ~5 minutes: ~31 s per cell (shared/tell ~50 s, queue drain) plus
 ;; the cold load.  Throughput of record is trivial-benchmark's AVERAGE
@@ -41,6 +49,12 @@
 (format t "--- atomics loaded from: ~A ---~%" (asdf:system-source-file "atomics"))
 (format t "--- sento loaded from: ~A ---~%" (asdf:system-source-file "sento"))
 
+(defparameter *queue-cap*
+  (let ((s (env "SENTO_QUEUE_CAP")))
+    (and s (plusp (length s)) (parse-integer s))))
+(when *queue-cap*
+  (format t "--- SENTO_QUEUE_CAP=~D (:wait-if-queue-larger-than) ---~%" *queue-cap*))
+
 (defun gengc-stats ()
   ;; (enabled-p minor-count minor-seconds promoted-bytes old-top dirty-pages);
   ;; classic-collector builds (no %GENGC-STATS) report zero minors.
@@ -62,7 +76,9 @@
                :load-threads 8
                :duration 5
                :num-iterations 6
-               args)
+               (append args
+                       (and *queue-cap*
+                            (list :wait-if-queue-larger-than *queue-cap*))))
       (error (e)
         (setf ok nil)
         (format t "~%--- CELL ~A ERROR: ~A ---~%" name e)))
