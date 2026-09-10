@@ -187,6 +187,123 @@ TEST(condvar_wait_timeout)
 }
 
 /* ================================================================
+ * Per-thread parking (token semantics — specs/mp-locks-heap-words.md)
+ * ================================================================ */
+
+TEST(park_init_destroy)
+{
+    void *p = NULL;
+    ASSERT_EQ_INT(platform_park_init(&p), 0);
+    ASSERT(p != NULL);
+    platform_park_destroy(p);
+}
+
+/* An unpark that arrives BEFORE the park is not lost: the next park
+ * returns at once and consumes the token. */
+TEST(park_unpark_before_park_is_consumed)
+{
+    void *p = NULL;
+    uint32_t t0, t1;
+    platform_park_init(&p);
+    platform_unpark(p);
+    t0 = platform_time_ms();
+    ASSERT_EQ_INT(platform_park(p, 1000), 0);   /* token, not timeout */
+    t1 = platform_time_ms();
+    ASSERT(t1 - t0 < 500);
+    /* The token was consumed: the next timed park must time out. */
+    ASSERT_EQ_INT(platform_park(p, 30), 1);
+    platform_park_destroy(p);
+}
+
+/* Two unparks are one token. */
+TEST(park_two_unparks_one_token)
+{
+    void *p = NULL;
+    platform_park_init(&p);
+    platform_unpark(p);
+    platform_unpark(p);
+    ASSERT_EQ_INT(platform_park(p, 1000), 0);
+    ASSERT_EQ_INT(platform_park(p, 30), 1);
+    platform_park_destroy(p);
+}
+
+/* A timed park with no token times out (and reports it). */
+TEST(park_timed_times_out)
+{
+    void *p = NULL;
+    uint32_t t0, t1;
+    platform_park_init(&p);
+    t0 = platform_time_ms();
+    ASSERT_EQ_INT(platform_park(p, 60), 1);
+    t1 = platform_time_ms();
+    ASSERT(t1 - t0 >= 40);   /* slack for coarse clocks */
+    platform_park_destroy(p);
+}
+
+/* An untimed park blocks until another thread unparks it. */
+static void *park_unparker(void *arg)
+{
+    void *p = arg;
+    platform_sleep_ms(50);
+    platform_unpark(p);
+    return NULL;
+}
+
+TEST(park_untimed_woken_by_peer)
+{
+    void *p = NULL, *th = NULL;
+    uint32_t t0, t1;
+    platform_park_init(&p);
+    platform_thread_create(&th, park_unparker, p, 0);
+    t0 = platform_time_ms();
+    ASSERT_EQ_INT(platform_park(p, 0), 0);
+    t1 = platform_time_ms();
+    ASSERT(t1 - t0 >= 20);      /* it really waited for the peer */
+    platform_thread_join(th, NULL);
+    platform_park_destroy(p);
+}
+
+/* Handoff ping-pong: N rounds through two park handles, each side
+ * parking untimed and unparking the other — no lost wakeup hangs it. */
+typedef struct {
+    void *mine;
+    void *other;
+    volatile int *turn;
+    int me;
+    int rounds;
+} PingArg;
+
+static void *park_pinger(void *arg)
+{
+    PingArg *pa = (PingArg *)arg;
+    int i;
+    for (i = 0; i < pa->rounds; i++) {
+        while (*pa->turn != pa->me)
+            platform_park(pa->mine, 0);
+        *pa->turn = 1 - pa->me;
+        platform_unpark(pa->other);
+    }
+    return NULL;
+}
+
+TEST(park_ping_pong_no_lost_wakeup)
+{
+    void *pa = NULL, *pb = NULL, *th = NULL;
+    volatile int turn = 0;
+    PingArg a, b;
+    platform_park_init(&pa);
+    platform_park_init(&pb);
+    a.mine = pa; a.other = pb; a.turn = &turn; a.me = 0; a.rounds = 2000;
+    b.mine = pb; b.other = pa; b.turn = &turn; b.me = 1; b.rounds = 2000;
+    platform_thread_create(&th, park_pinger, &b, 0);
+    park_pinger(&a);
+    platform_thread_join(th, NULL);
+    ASSERT_EQ_INT((int)turn, 0);
+    platform_park_destroy(pa);
+    platform_park_destroy(pb);
+}
+
+/* ================================================================
  * Thread create/join tests
  * ================================================================ */
 
@@ -418,6 +535,14 @@ int main(void)
     RUN(condvar_signal_wait);
     RUN(condvar_broadcast);
     RUN(condvar_wait_timeout);
+
+    /* Parking */
+    RUN(park_init_destroy);
+    RUN(park_unpark_before_park_is_consumed);
+    RUN(park_two_unparks_one_token);
+    RUN(park_timed_times_out);
+    RUN(park_untimed_woken_by_peer);
+    RUN(park_ping_pong_no_lost_wakeup);
 
     /* Thread */
     RUN(thread_create_join);

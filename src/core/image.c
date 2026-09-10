@@ -1290,19 +1290,20 @@ int cl_image_restore_staged(void)
             }
 
             case TYPE_LOCK: {
+                /* A lock is plain heap data; only its dynamic state needs
+                 * resetting.  The saving process's owner serial and depth
+                 * mean nothing here (a saved image cannot meaningfully
+                 * contain a held lock), so every restored lock is free. */
                 CL_Lock *lk = (CL_Lock *)ptr;
-                if (cl_lock_table_install_at(lk->lock_id,
-                        (lk->flags & CL_LOCK_FLAG_RECURSIVE) != 0) != 0)
-                    image_fatal("could not recreate lock id %u (restored "
-                                "MP:LOCK)", (unsigned)lk->lock_id, 0);
+                lk->state = 0;
+                lk->depth = 0;
                 break;
             }
 
             case TYPE_CONDVAR: {
+                /* Same: no thread of this process is registered on it. */
                 CL_CondVar *cv = (CL_CondVar *)ptr;
-                if (cl_condvar_table_install_at(cv->condvar_id) != 0)
-                    image_fatal("could not recreate condition variable id "
-                                "%u", (unsigned)cv->condvar_id, 0);
+                cv->waiters = 0;
                 break;
             }
 

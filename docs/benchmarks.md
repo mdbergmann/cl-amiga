@@ -7,6 +7,40 @@ command, and results, so later runs can be compared like-for-like.
 Related: [specs/performance.md](../specs/performance.md) is the optimization
 *plan*; this file is the *measured results* log.
 
+## 2026-09-10 — MP locks as heap words: shared/ask runs at the default cap, shared/tell +321%
+
+**Context**: [specs/mp-locks-heap-words.md](../specs/mp-locks-heap-words.md)
+landed — a lock is a state word in the heap object, blocking parks each
+thread on its own handle, no OS mutex and no lock table.  Same-session
+A/B against a detached worktree of `f4cbcb41` (the entry below), sento
+3.4.5, cold caches, speed 3, the driver's default queue cap (10000).
+The base binary's leg loads the bordeaux-threads fork's committed
+version via `ATOMICS_DIR` (its `ACQUIRE-LOCK` takes two arguments).
+
+| Cell | table locks (`f4cbcb41`) | heap-word locks | Δ |
+| --- | ---: | ---: | ---: |
+| pinned/tell | 243,587 | 299,260 | +22.9% |
+| pinned/ask-s | 108,365 | 121,118 | +11.8% |
+| pinned/ask | 55,995 | 55,311 | −1.2% (re-measured: +1..5%, noise) |
+| shared/tell | 41,791 | 176,126 | +321% |
+| shared/ask-s | 68,005 | 58,086 | −14.6% (re-measured twice: −4%, −6%) |
+| shared/ask (default cap) | aborts: `lock table full` | 45,424 | runs |
+
+shared/tell is the thundering herd gone (eight workers on one queue
+lock were broadcast awake on every release; now one waiter wakes per
+release).  shared/ask-s pays for the process-wide `cl_thread_list_lock`
+that every condition wait and notify now takes; the spec's
+"Implementation notes" record the per-object waiter chain that would
+remove it.  `trunk/bench-prims.lisp` (min of 5): `lock-acquire-release`
+55 → 52 ns, `lock+condvar-notify` 67 → 62 ns, every other row within a
+nanosecond; `mt.call-x8` / `mt.dynbind-x8` unchanged at 35 / 36 ms.
+
+Reproduce: `CLAMIGA_FASL_CACHE_DIR=<fresh dir> CLAMIGA_FORCE_SPEED=3
+./build/host/clamiga --no-userinit --heap 192M --non-interactive --load
+trunk/sento-bench-matrix.lisp`, one leg per binary, sequentially.
+
+---
+
 ## 2026-09-10 — sento matrix for 0.10: +17% to +99% per cell over the 0.8 binary
 
 **Context**: the full reply-mode / dispatcher matrix of the sento series,

@@ -81,8 +81,71 @@ cat > "$tmp" <<'EOF'
   (setf r (mp:join-thread th))
   (format t "I5-INTERRUPT-CONDWAIT=~a,~a~%" (if hit "HIT" "MISS") r))
 
-;; I8: dropping the last reference to a HELD lock must not destroy the
-;; OS mutex under the holder (leaks it with a warning instead).
+;; I5d: destroy a thread parked in a TIMED condition-wait (long timeout)
+;; and one parked in a TIMED acquire-lock — delivery must not wait for
+;; the timeout (heap-word locks: the publisher unparks the target directly).
+(let* ((lk (mp:make-lock))
+       (cv (mp:make-condition-variable))
+       (t0 (get-internal-real-time))
+       (th (mp:make-thread
+            (lambda ()
+              (mp:acquire-lock lk)
+              (loop (mp:condition-wait cv lk 30))))))
+  (sleep 0.4)
+  (mp:destroy-thread th)
+  (handler-case (mp:join-thread th) (error () nil))
+  (format t "I5-DESTROY-TIMED-CONDWAIT=~a~%"
+          (if (< (/ (- (get-internal-real-time) t0) internal-time-units-per-second) 5)
+              "FAST" "SLOW")))
+(let ((lk (mp:make-lock)) (t0 (get-internal-real-time)))
+  (mp:acquire-lock lk)
+  (let ((th (mp:make-thread (lambda () (mp:acquire-lock lk t 30) :got))))
+    (sleep 0.4)
+    (mp:destroy-thread th)
+    (handler-case (mp:join-thread th) (error () nil))
+    (mp:release-lock lk))
+  (format t "I5-DESTROY-TIMED-LOCKWAIT=~a~%"
+          (if (< (/ (- (get-internal-real-time) t0) internal-time-units-per-second) 5)
+              "FAST" "SLOW")))
+
+;; I5e: INTERRUPT (not destroy) a thread parked in a blocking acquire-lock:
+;; the function runs while it waits, and the thread still gets the lock
+;; once it is released.
+(let* ((lk (mp:make-lock))
+       (hit nil)
+       (th nil))
+  (mp:acquire-lock lk)
+  (setf th (mp:make-thread (lambda () (mp:acquire-lock lk) (mp:release-lock lk) :finished)))
+  (sleep 0.4)
+  (mp:interrupt-thread th (lambda () (setf hit t)))
+  (dotimes (i 40) (unless hit (sleep 0.05)))
+  (mp:release-lock lk)
+  (format t "I5-INTERRUPT-LOCKWAIT=~a,~a~%" (if hit "HIT" "MISS") (mp:join-thread th)))
+
+;; I5f: a thread destroyed while parked on a lock must not strand the
+;; OTHER waiters on that lock (the abandoned wait hands the lock on).
+(let* ((lk (mp:make-lock))
+       (got 0)
+       (gate (mp:make-lock))
+       (victim nil)
+       (others nil))
+  (mp:acquire-lock lk)
+  (setf victim (mp:make-thread (lambda () (mp:acquire-lock lk) (mp:release-lock lk))))
+  (sleep 0.2)
+  (dotimes (i 3)
+    (push (mp:make-thread (lambda () (mp:acquire-lock lk)
+                            (mp:with-lock-held (gate) (incf got))
+                            (mp:release-lock lk)))
+          others))
+  (sleep 0.3)
+  (mp:destroy-thread victim)
+  (handler-case (mp:join-thread victim) (error () nil))
+  (mp:release-lock lk)
+  (dolist (th others) (mp:join-thread th))
+  (format t "I5-DESTROY-DOES-NOT-STRAND=~a~%" got))
+
+;; I8: dropping the last reference to a HELD lock is plain garbage
+;; collection now (no OS mutex to leak) — must not crash.
 (let ((l (mp:make-lock)))
   (mp:acquire-lock l))
 (dotimes (i 3) (gc))
@@ -111,6 +174,10 @@ while [ $i -le $runs ]; do
     printf '%s' "$out" | grep -q "I5-DESTROY-CONDWAIT-OK" || fail "destroy of condwait-parked thread hung"
     printf '%s' "$out" | grep -q "I5-DESTROY-LOCKWAIT-OK" || fail "destroy of lock-parked thread hung"
     printf '%s' "$out" | grep -q "I5-INTERRUPT-CONDWAIT=HIT,FINISHED" || fail "interrupt of parked thread not delivered"
+    printf '%s' "$out" | grep -q "I5-DESTROY-TIMED-CONDWAIT=FAST" || fail "destroy of timed-condwait-parked thread waited for the timeout"
+    printf '%s' "$out" | grep -q "I5-DESTROY-TIMED-LOCKWAIT=FAST" || fail "destroy of timed-lock-parked thread waited for the timeout"
+    printf '%s' "$out" | grep -q "I5-INTERRUPT-LOCKWAIT=HIT,FINISHED" || fail "interrupt of lock-parked thread not delivered or lock lost"
+    printf '%s' "$out" | grep -q "I5-DESTROY-DOES-NOT-STRAND=3" || fail "destroying a parked waiter stranded the other waiters"
     printf '%s' "$out" | grep -q "I8-HELD-FINALIZE-OK" || fail "held-lock finalize crashed"
     printf '%s' "$out" | grep -q "T5-EXIT-WITH-WORKERS" || fail "no exit marker"
     i=$((i + 1))

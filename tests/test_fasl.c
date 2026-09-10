@@ -1435,8 +1435,7 @@ TEST(deserialize_bad_tag)
  * captured at compile time, like log4cl's appender %LOCK initform) used
  * to deserialize as NIL because TYPE_LOCK had no FASL serialization.
  * Verify that round-tripping a lock now produces a fresh, usable lock
- * with the same name and recursive-flag — and a freshly allocated
- * platform mutex (different lock_id). */
+ * with the same name and recursive-flag — a distinct, free lock object. */
 TEST(serialize_lock_nonrecursive)
 {
     uint8_t buf[256];
@@ -1463,7 +1462,9 @@ TEST(serialize_lock_nonrecursive)
     lk_in  = (CL_Lock *)CL_OBJ_TO_PTR(lk_obj);
     lk_out = (CL_Lock *)CL_OBJ_TO_PTR(result);
     ASSERT_EQ_INT(lk_out->flags & CL_LOCK_FLAG_RECURSIVE, 0);
-    ASSERT(lk_in->lock_id != lk_out->lock_id);  /* fresh platform mutex */
+    ASSERT(lk_in != lk_out);                   /* a fresh lock object */
+    ASSERT_EQ_INT((int)lk_out->state, 0);      /* free, depth 0 */
+    ASSERT_EQ_INT((int)lk_out->depth, 0);
     ASSERT(CL_STRING_P(lk_out->name));
     out_name = (CL_String *)CL_OBJ_TO_PTR(lk_out->name);
     ASSERT_STR_EQ(out_name->data, "test-lock");

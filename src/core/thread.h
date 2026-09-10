@@ -424,8 +424,9 @@ typedef struct CL_Thread_s {
      * blocked acquiring a held lock) or a stalled stop-the-world GC.  Single-writer
      * (the owning thread) so the racy cross-thread read is fine for diagnostics. */
     volatile int wait_kind;     /* 0=running,1=condwait,2=condwait/timeout,3=lock-acquire,4=GC-STW-wait */
-    volatile int wait_cv_id;    /* condvar id when wait_kind is condwait */
-    volatile int wait_lock_id;  /* lock id when condwait/lock-acquire; straggler tid for GC-STW-wait */
+    volatile int wait_straggler_tid;  /* GC-STW-wait: the thread holding up the world */
+    /* The lock or condvar the thread is parked on lives in wait_obj /
+     * wait_lock at the END of the struct (GC roots, see there). */
 
     /* ---- COMPILE-FILE per-thread state ---- */
     /* Set to 1 while COMPILE-FILE is active (thread-local so concurrent
@@ -517,6 +518,31 @@ typedef struct CL_Thread_s {
      * mv_save_top (a scalar, so it lives with the other scalars above the
      * tables).  At the end for the same layout reason as slot_ic. */
     CL_Obj  mv_save_buf[CL_MV_SAVE_SIZE];
+
+    /* ---- MP lock / condition-variable parking (specs/mp-locks-heap-words.md) ----
+     * park:     this thread's platform park handle (token semantics), created
+     *           by the thread itself at start-up and destroyed by it at exit —
+     *           on AmigaOS it is a signal bit of the owning task.  Read by
+     *           peers only under cl_thread_list_lock (release scan, notify,
+     *           interrupt delivery); NULL means "cannot park" (degrade to a
+     *           sleep poll).
+     * wait_obj: the lock (wait_kind 3) or condvar (wait_kind 1/2) this thread
+     *           is registered as waiting on, NIL otherwise.  Written under
+     *           cl_thread_list_lock; a releaser / notifier scans the thread
+     *           list for it.  GC ROOT: marked and forwarded with the thread
+     *           metadata, so a parked thread keeps its lock alive and the
+     *           record holds the forwarded object after a compaction.
+     * wait_lock: the lock a condition-wait will re-acquire (diagnostics; GC
+     *           root for the same reason).
+     * serial:   process-unique thread number (never reused, unlike the table
+     *           slot `id`), the owner identity baked into CL_Lock.state.  A
+     *           lock left held by an exited thread therefore can never be
+     *           mistaken for one owned by a later thread that got its slot.
+     * Cold fields, so at the end (the layout note above). */
+    void    *park;
+    CL_Obj   wait_obj;
+    CL_Obj   wait_lock;
+    uint32_t serial;
 } CL_Thread;
 
 /* Current thread pointer — TLS-backed.
@@ -615,66 +641,15 @@ extern CL_Thread *cl_thread_table[CL_MAX_THREADS];
  * under cl_thread_list_lock (or during STW GC, when no peer can run). */
 extern uint32_t cl_thread_table_gen[CL_MAX_THREADS];
 
-/* Lock side table: maps lock_id -> void* (platform mutex).
- * Sized for sento workloads: each actor allocates ~3 locks (queue, mbox state,
- * eventstream registry), plus one withreply-lock per ASK in flight.  Tests
- * like ASK--SHARED--TIMEOUT--MANY create 2000 actors × ASK simultaneously,
- * needing >6000 simultaneously-live locks.  16384 fits in 128KB on 64-bit
- * (64KB on 32-bit Amiga) and absorbs that working set with headroom.  GC
- * still reclaims dead slots; this is the upper bound when the entire working
- * set is reachable.
- *
- * On AmigaOS (8MB target) the high-concurrency sento workloads aren't
- * realistic — shrink to 256 to free ~63KB of BSS per table.  Programs
- * that exceed it get a clean error rather than silent corruption. */
-#ifdef PLATFORM_AMIGA
-#define CL_MAX_LOCKS    256
-#define CL_MAX_CONDVARS 256
-#else
-#define CL_MAX_LOCKS    16384
-#define CL_MAX_CONDVARS 16384
-#endif
-extern void *cl_lock_table[CL_MAX_LOCKS];
+/* MP locks and condition variables are plain heap objects (CL_Lock /
+ * CL_CondVar in types.h) with no OS primitive and no side table behind
+ * them; blocking goes through each thread's own park handle.  The only
+ * process-wide state is the thread serial counter below. */
 
-/* Owner tracking for cl_lock_table entries: cl_lock_held[id] is set by the
- * acquiring thread AFTER platform_mutex_lock succeeds and cleared by the
- * releasing thread BEFORE platform_mutex_unlock (owner-only mutation while
- * holding the mutex).  gc_finalize_dead(TYPE_LOCK) reads it during STW
- * (race-free) and LEAKS the OS mutex instead of destroying a held one
- * (pthread_mutex_destroy of a locked mutex is UB).
- *
- * cl_lock_depth[id] counts nested acquires by the current owner (recursive
- * locks via MP:MAKE-RECURSIVE-LOCK can be acquired N>1 times by the same
- * thread and are still genuinely OS-locked after only one release).
- * bi_acquire_lock increments it on every successful acquire; bi_release_lock
- * decrements it and only clears cl_lock_held once it reaches 0, so a
- * recursive lock stays correctly "held" for gc_finalize_dead until it is
- * released as many times as it was acquired.  gc_finalize_dead resets both
- * to 0 when it frees a table slot (held or not) so a reused lock_id starts
- * clean. */
-extern CL_Thread *cl_lock_held[CL_MAX_LOCKS];
-extern uint32_t cl_lock_depth[CL_MAX_LOCKS];
-
-/* Condvar side table: maps condvar_id -> void* (platform condvar).
- * Sized to mirror CL_MAX_LOCKS so condvar-paired lock workloads scale. */
-extern void *cl_condvar_table[CL_MAX_CONDVARS];
-
-/* Global parking lot for contended blocking MP:ACQUIRE-LOCK (all locks
- * share it).  A blocking acquire that exhausts its trylock/yield spin
- * phase registers in cl_lock_park_waiters (under cl_lock_park_mutex) and
- * parks on cl_lock_park_cv with a timed backstop; bi_release_lock
- * broadcasts the cv whenever waiters are registered, so a lock handoff
- * wakes the waiter immediately instead of on a sleep-poll grid (the
- * 10ms-sleep escalation this replaces collapsed sento message throughput
- * ~6x).  wake_interrupted_waiter broadcasts it too, so interrupt/destroy
- * reaches lock-parked threads promptly (I5); the timed backstop bounds
- * delivery even on a lost wake.  Sharing one cv means a broadcast wakes
- * parked waiters of unrelated locks — they retrylock, fail, and re-park;
- * with realistic thread counts that herd is tiny, and it frees us from
- * per-lock condvar lifecycle management (16K table slots, finalizers). */
-extern void *cl_lock_park_mutex;
-extern void *cl_lock_park_cv;
-extern volatile uint32_t cl_lock_park_waiters;
+/* Next process-unique thread serial (1 = the main thread).  Assigned once
+ * per CL_Thread and never reused; the value that identifies a lock's owner
+ * in CL_Lock.state. */
+uint32_t cl_thread_next_serial(void);
 
 /* Reset every Lisp-heap reference gc_mark_thread_roots walks (stale after
  * a heap re-initialization — see cl_mem_init).  Keep in sync with
@@ -711,25 +686,10 @@ void cl_thread_backtrace_release(CL_Thread *t);
 int cl_thread_table_alloc(CL_Thread *t);
 void cl_thread_table_free(int id);
 
-/* Allocate a side table slot for a lock, returns id or -1 */
-int cl_lock_table_alloc(void *handle);
-void cl_lock_table_free(int id);
-
-/* Allocate a fresh CL_Lock heap object backed by a freshly-initialized
- * platform mutex.  recursive != 0 selects a recursive mutex.  Errors out
- * via cl_error() on failure; err_prefix tags the message for the caller
- * (e.g. "MP:MAKE-LOCK", "FASL"). */
+/* Allocate a fresh, free CL_Lock heap object.  recursive != 0 makes it
+ * re-entrant for its owner.  Errors out via cl_error() on failure;
+ * err_prefix tags the message for the caller (e.g. "MP:MAKE-LOCK", "FASL"). */
 CL_Obj cl_lock_alloc_obj(int recursive, CL_Obj name, const char *err_prefix);
-
-/* Allocate a side table slot for a condvar, returns id or -1 */
-int cl_condvar_table_alloc(void *handle);
-void cl_condvar_table_free(int id);
-
-/* Image restore (image.c): recreate a lock/condvar's OS primitive at the
- * FIXED table id recorded in a restored heap object.  Returns 0 on
- * success, -1 on bad id / occupied slot / init failure. */
-int cl_lock_table_install_at(uint32_t id, int recursive);
-int cl_condvar_table_install_at(uint32_t id);
 
 /* ---- Thread registry ---- */
 extern CL_Thread  *cl_thread_list;      /* linked list of all threads */

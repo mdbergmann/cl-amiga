@@ -232,6 +232,88 @@ void platform_condvar_broadcast(void *handle)
 }
 
 /* ================================================================
+ * Per-thread parking (see platform_thread.h)
+ * ================================================================ */
+
+typedef struct {
+    pthread_mutex_t mutex;
+    pthread_cond_t  cond;
+    int             permit;   /* 1 = a token is waiting to be consumed */
+} PosixPark;
+
+int platform_park_init(void **handle)
+{
+    PosixPark *p = (PosixPark *)malloc(sizeof(PosixPark));
+    if (!p) return -1;
+    if (pthread_mutex_init(&p->mutex, NULL) != 0) {
+        free(p);
+        return -1;
+    }
+    if (pthread_cond_init(&p->cond, NULL) != 0) {
+        pthread_mutex_destroy(&p->mutex);
+        free(p);
+        return -1;
+    }
+    p->permit = 0;
+    *handle = p;
+    return 0;
+}
+
+void platform_park_destroy(void *handle)
+{
+    PosixPark *p = (PosixPark *)handle;
+    if (!p) return;
+    pthread_cond_destroy(&p->cond);
+    pthread_mutex_destroy(&p->mutex);
+    free(p);
+}
+
+int platform_park(void *handle, uint32_t timeout_ms)
+{
+    PosixPark *p = (PosixPark *)handle;
+    int timed_out = 0;
+
+    pthread_mutex_lock(&p->mutex);
+    if (timeout_ms == 0) {
+        while (!p->permit)
+            pthread_cond_wait(&p->cond, &p->mutex);
+    } else {
+        struct timespec ts;
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+        ts.tv_sec = tv.tv_sec + (long)(timeout_ms / 1000);
+        ts.tv_nsec = tv.tv_usec * 1000L + (long)(timeout_ms % 1000) * 1000000L;
+        if (ts.tv_nsec >= 1000000000L) {
+            ts.tv_sec++;
+            ts.tv_nsec -= 1000000000L;
+        }
+        while (!p->permit) {
+            if (pthread_cond_timedwait(&p->cond, &p->mutex, &ts) == ETIMEDOUT) {
+                /* A token deposited between the timeout and this re-check
+                 * still counts: the permit test below decides. */
+                timed_out = !p->permit;
+                break;
+            }
+        }
+    }
+    if (p->permit) {
+        p->permit = 0;   /* consume the token */
+        timed_out = 0;
+    }
+    pthread_mutex_unlock(&p->mutex);
+    return timed_out;
+}
+
+void platform_unpark(void *handle)
+{
+    PosixPark *p = (PosixPark *)handle;
+    pthread_mutex_lock(&p->mutex);
+    p->permit = 1;
+    pthread_cond_signal(&p->cond);
+    pthread_mutex_unlock(&p->mutex);
+}
+
+/* ================================================================
  * Atomics (GCC __sync builtins — available on all target GCC versions)
  * ================================================================ */
 

@@ -18,7 +18,10 @@ configuration: **shared/ask fills clamiga's 16384-slot lock table on the
 0.10 binary**, because the faster sender side keeps more asynchronous asks
 in flight and each one holds three locks. At a lower queue cap the cell
 runs at 28.7k msg/s, +54% over the 0.8 binary at the same cap. See
-"shared/ask and the lock table" below.
+"shared/ask and the lock table" below.  **Resolved the same day**: with locks as
+heap words (specs/mp-locks-heap-words.md; the "MP locks as heap words"
+entry in [benchmarks.md](benchmarks.md)) shared/ask runs at the default
+cap at 45.4k msg/s and there is no lock table to fill.
 
 Companion documents: [sento-bench-results-0.2.md](sento-bench-results-0.2.md)
 records the 0.2 baseline and describes the benchmark itself (N sender

@@ -737,11 +737,9 @@ TEST(current_thread_identity_in_worker)
     ASSERT_STR_EQ(r, "T");
 }
 
-/* The lock-table is bounded (CL_MAX_LOCKS = 1024) but slots are reclaimed
- * by GC when their wrapping CL_Lock heap object dies.  Heap pressure alone
- * does not reliably trigger GC for tiny lock objects, so MAKE-LOCK does a
- * GC + retry when the table is full.  Sento's `ask-s` allocates one lock
- * per call; without this, 800 concurrent ask-s calls exhausted the table. */
+/* Locks are plain heap words: there is no side table and no cap, so
+ * making thousands of them (sento's `ask-s` allocates one per call) is
+ * just allocation.  Kept as the smoke test for that path. */
 TEST(lock_table_slot_reclaimed_by_gc)
 {
     const char *r = eval_print(
@@ -749,7 +747,7 @@ TEST(lock_table_slot_reclaimed_by_gc)
     ASSERT_STR_EQ(r, ":OK");
 }
 
-/* Same for condition-variables (CL_MAX_CONDVARS = 1024). */
+/* Same for condition-variables. */
 TEST(condvar_table_slot_reclaimed_by_gc)
 {
     const char *r = eval_print(

@@ -222,6 +222,7 @@ test_batch test_repl_values test_repl_paste test_boot_log test_mx_error_context 
                 test_io_diag test_ql_socket_timeouts test_stream_outbuf_leak \
                 test_shutdown_leak \
                 test_tls_loopback test_compiler_chain_unwind test_mt_lock_contention_throughput \
+                test_mp_heap_locks \
                 test_mt_print_stress test_load_keywords test_load_rebind \
                 test_dev_commands test_userinit test_compile_file_package \
                 test_compile_file_stderr test_fasl_cache_dir test_make_load_form \
@@ -351,6 +352,8 @@ test-mt-thread-exit-race: host
 		DEBUG_FLAGS="-DDEBUG_THREAD_RACE_HOOKS"
 	@echo "--- test_mt_thread_exit_gc (deterministic race) ---"
 	@$(TEST_TMPDIR_ENV) sh $(TEST_SRCDIR)/test_mt_thread_exit_gc.sh $(HOST_BIN) $(RACE_BUILDDIR)/clamiga$(EXE)
+	@echo "--- test_mt_lock_barge_race (deterministic race) ---"
+	@$(TEST_TMPDIR_ENV) sh $(TEST_SRCDIR)/test_mt_lock_barge_race.sh $(HOST_BIN) $(RACE_BUILDDIR)/clamiga$(EXE)
 
 # `make test-plus` adds the host-cold-test (sento cold-load smoke test) on top
 # of the fast tier.
