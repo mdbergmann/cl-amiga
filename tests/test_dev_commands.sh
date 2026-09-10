@@ -423,6 +423,155 @@ check "MACROEXPAND of an unreadable form is rc 10" '<<RC=10>>' "$out"
 out=$(run_intro 'MACROEXPAND')
 check "MACROEXPAND without a form is fatal"  '<<RC=20>>' "$out"
 
+# --- REPL (lib/dev-repl.lisp) ----------------------------------------------
+#
+# The REPL runs on its own thread and talks back to the editor's port through
+# EXT.DEV:*REPL-SEND*.  Here a Lisp function stands in for the editor: it
+# records what the REPL thread sends (OUTPUT, READLINE, RESULT) and answers a
+# READLINE with REPL-INPUT, as the editor would.  One image for the whole
+# conversation, since the thread's state is the point.
+
+cat > "$TMPD/repl.lisp" <<'EOF'
+(require "dev-commands")
+(defvar *sent* '())
+(defvar *sent-lock* (mp:make-lock))
+(defvar *editor*
+  (lambda (port command)
+    (mp:with-lock-held (*sent-lock*) (push (cons port command) *sent*))
+    (when (string= command "READLINE")
+      (ext.dev:handle-command "REPL-INPUT typed line"))
+    (values 0 "")))
+(setf ext.dev:*repl-send* *editor*)
+(defun result-p (command)
+  (and (>= (length command) 6) (string= "RESULT" command :end2 6)))
+(defun wait-result ()
+  (loop repeat 500
+        do (when (mp:with-lock-held (*sent-lock*) (find-if #'result-p *sent* :key #'cdr))
+             (return t))
+           (sleep 0.02)))
+(defun show (label)
+  (format t "~&<<~a>>~%" label)
+  (dolist (s (reverse *sent*))
+    (format t "SENT ~a|~a~%" (car s) (cdr s)))
+  (format t "<<END ~a>>~%" label)
+  (setf *sent* '()))
+(defun cmd (label c)
+  (multiple-value-bind (rc text) (ext.dev:handle-command c)
+    (format t "~&<<~a RC=~d>>~%~a~%<<END>>~%" label rc text)))
+(defun thread-alive ()
+  (and ext.dev::*repl-thread* (mp:thread-alive-p ext.dev::*repl-thread*) t))
+
+(cmd "eval-unattached" "REPL-EVAL (+ 1 2)")
+(cmd "attach-noport" "REPL-ATTACH")
+(cmd "attach" "REPL-ATTACH EDITOR")
+(cmd "eval" "REPL-EVAL (progn (princ \"hello\") (terpri) (princ \"there\") (+ 2 3))")
+(wait-result) (show "eval")
+(cmd "history" "REPL-EVAL (* * 10)")
+(wait-result) (show "history")
+;; The REPL thread's history variables (*, **, ... see %REPL-EVAL) must be
+;; bound locally to that thread, not the global slot the physical console's
+;; REPL (src/core/repl.c's cl_repl_update_history) also writes through.
+;; This script's own top-level forms run under cl_repl_batch, which never
+;; touches these symbols, so the global * stays NIL unless %REPL-LOOP fails
+;; to shadow it -- in which case the REPL-EVAL above would have set it to 50.
+(format t "<<MAIN-STAR=~a>>~%" *)
+(cmd "two-values" "REPL-EVAL (values 1 2)")
+(wait-result) (show "two values")
+(cmd "no-values" "REPL-EVAL (values)")
+(wait-result) (show "no values")
+(cmd "in-package" "REPL-EVAL (in-package :ext.dev)")
+(wait-result) (show "in-package")
+(format t "<<COMMAND-PACKAGE=~a>>~%" (package-name ext.dev:*command-package*))
+(cmd "editor-in-package" "IN-PACKAGE CL-USER")
+(cmd "error" "REPL-EVAL (progn (princ \"before\") (error \"boom\"))")
+(wait-result) (show "error")
+(cmd "warning" "REPL-EVAL (warn \"careful\")")
+(wait-result) (show "warning")
+(cmd "readline" "REPL-EVAL (read-line)")
+(wait-result) (show "readline")
+(cmd "stray" "REPL-INPUT stray")
+(cmd "chunks" "REPL-EVAL (princ (make-string 2500 :initial-element #\\x))")
+(wait-result)
+(format t "<<CHUNKS=~d>>~%"
+        (count-if (lambda (s) (string= "OUTPUT" (cdr s) :end2 6)) *sent*))
+(format t "<<TOTAL=~d>>~%"
+        (reduce #'+ (mapcar (lambda (s) (if (string= "OUTPUT" (cdr s) :end2 6)
+                                            (- (length (cdr s)) 7)
+                                            0))
+                            *sent*)))
+(setf *sent* '())
+(cmd "interrupt-idle" "REPL-INTERRUPT")
+(cmd "eval-loop" "REPL-EVAL (loop)")
+(sleep 0.3)
+(cmd "eval-busy" "REPL-EVAL (+ 1 1)")
+(cmd "interrupt" "REPL-INTERRUPT")
+(wait-result) (show "interrupt")
+(cmd "eval-after" "REPL-EVAL (+ 1 2)")
+(wait-result) (show "after interrupt")
+(cmd "reattach" "REPL-ATTACH EDITOR2")
+(cmd "eval-reattached" "REPL-EVAL (+ 20 22)")
+(wait-result) (show "reattached")
+(cmd "detach" "REPL-DETACH")
+(cmd "eval-detached" "REPL-EVAL (+ 1 2)")
+(format t "<<THREAD-ALIVE-AFTER-DETACH=~a>>~%" (thread-alive))
+;; The editor goes away: the transport fails, the REPL stops itself.
+(cmd "attach2" "REPL-ATTACH EDITOR")
+(setf ext.dev:*repl-send* (lambda (port command) (error "port ~a is gone (~a)" port command)))
+(cmd "eval-gone" "REPL-EVAL (+ 1 1)")
+(loop repeat 250 while (thread-alive) do (sleep 0.02))
+(format t "<<THREAD-ALIVE-AFTER-FAILURE=~a>>~%" (thread-alive))
+(setf ext.dev:*repl-send* *editor*)
+(cmd "attach3" "REPL-ATTACH EDITOR")
+(cmd "eval-recovered" "REPL-EVAL (+ 1 1)")
+(wait-result) (show "recovered")
+(cmd "detach2" "REPL-DETACH")
+EOF
+# Not $out: check() assigns the global `out` itself, so a block extracted
+# from it would be read from the previous check's argument.
+repl_out=$(run_script "$TMPD/repl.lisp")
+block() { echo "$repl_out" | sed -n "/<<$1>>/,/<<END $1>>/p"; }
+
+check "REPL-EVAL before the REPL is loaded is unknown" '<<eval-unattached RC=20>>' "$repl_out"
+check "REPL-ATTACH needs a port"                '<<attach-noport RC=20>>' "$repl_out"
+check "REPL-ATTACH returns rc 0"                '<<attach RC=0>>'  "$repl_out"
+check "REPL-ATTACH answers the package"         '^CL-USER$'        "$repl_out"
+check "REPL-EVAL replies at once"               '<<eval RC=0>>'    "$repl_out"
+check "output is streamed line by line"         'SENT EDITOR|OUTPUT hello$' "$(block eval)"
+check "the last line is flushed before RESULT"  'SENT EDITOR|OUTPUT there$' "$(block eval)"
+check "RESULT carries rc and package"           '^SENT EDITOR|RESULT 0 CL-USER$' "$(block eval)"
+check "RESULT carries the value"                '^5$'              "$(block eval)"
+check "output precedes RESULT" 'OUTPUT there' "$(block eval | sed -n '1,/RESULT/p')"
+check "the history variables are kept"          '^50$'             "$(block history)"
+check "the REPL thread's history is private, not the console's global *" '<<MAIN-STAR=NIL>>' "$repl_out"
+check "several values, one per line"            '^1$'              "$(block 'two values')"
+check "no values says so"                       '; No values'      "$(block 'no values')"
+check "IN-PACKAGE at the REPL changes the prompt" 'RESULT 0 EXT.DEV' "$(block in-package)"
+check "IN-PACKAGE at the REPL reaches the commands" '<<COMMAND-PACKAGE=EXT.DEV>>' "$repl_out"
+check "output before an error still arrives"    'OUTPUT before'    "$(block error)"
+check "an error is rc 10 in RESULT"             'RESULT 10 CL-USER' "$(block error)"
+check "the editor's IN-PACKAGE reaches the REPL" 'RESULT 10 CL-USER' "$(block error)"
+check "RESULT carries the error text"           'ERROR: boom'      "$(block error)"
+check "a warning is printed as output"          'OUTPUT WARNING: careful' "$(block warning)"
+check "a warning does not fail the form"        'RESULT 0 CL-USER' "$(block warning)"
+check "READ-LINE asks the editor"               '^SENT EDITOR|READLINE$' "$(block readline)"
+check "REPL-INPUT is the line read"             '"typed line"'     "$(block readline)"
+check "REPL-INPUT with no READLINE outstanding is rc 10" '<<stray RC=10>>' "$repl_out"
+check "a big write goes out in chunks"          '<<CHUNKS=3>>'     "$repl_out"
+check "the chunks add up to the text"           '<<TOTAL=2500>>'   "$repl_out"
+check "REPL-INTERRUPT when idle is rc 0"        'the REPL is idle' "$repl_out"
+check "REPL-EVAL while a form runs is rc 10"    '<<eval-busy RC=10>>' "$repl_out"
+check "REPL-INTERRUPT is rc 0"                  '<<interrupt RC=0>>' "$repl_out"
+check "the interrupted form is rc 10"           'RESULT 10 CL-USER' "$(block interrupt)"
+check "the interrupted form says so"            'ERROR: Interrupted' "$(block interrupt)"
+check "the REPL works after an interrupt"       '^3$'              "$(block 'after interrupt')"
+check "REPL-ATTACH again moves to the new port" 'SENT EDITOR2|RESULT 0 CL-USER' "$(block reattached)"
+check "REPL-DETACH is rc 0"                     '<<detach RC=0>>'  "$repl_out"
+check "REPL-EVAL after detach is rc 10"         '<<eval-detached RC=10>>' "$repl_out"
+check "REPL-DETACH stops the thread"            '<<THREAD-ALIVE-AFTER-DETACH=NIL>>' "$repl_out"
+check "a transport failure stops the REPL"      '<<THREAD-ALIVE-AFTER-FAILURE=NIL>>' "$repl_out"
+check "REPL-ATTACH works again after that"      '<<attach3 RC=0>>' "$repl_out"
+check "and so does the REPL"                    '^2$'              "$(block recovered)"
+
 echo ""
 echo "test_dev_commands: $passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

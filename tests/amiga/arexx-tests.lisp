@@ -133,6 +133,91 @@
           (check "arexx MACROEXPAND-1 expansion" "(progn 1 2 3)" text))
         (delete-file "T:clamiga-arexx-intro.lisp")
 
+        ; The REPL (lib/dev-repl.lisp): a thread of its own that talks back
+        ; to the editor's port.  There is one ARexx port per process, so the
+        ; editor's port here is our own: the REPL thread's OUTPUT / READLINE
+        ; / RESULT commands travel over ARexx as EVALs that record them, and
+        ; READLINE is answered with a REPL-INPUT round trip -- the real
+        ; protocol in both directions, with the editor played by this file.
+        (defvar cl-user::*arexx-repl-sent* '())
+        (setf ext.dev:*repl-send*
+              (lambda (to command)
+                (amiga.arexx:send
+                 to (format nil "EVAL (push ~s cl-user::*arexx-repl-sent*)" command))
+                (when (string= command "READLINE")
+                  (amiga.arexx:send to "REPL-INPUT typed on the amiga"))
+                (values 0 "")))
+        (flet ((wait-result ()
+                 (loop repeat 500
+                       until (find-if (lambda (s)
+                                        (and (>= (length s) 6)
+                                             (string= "RESULT" s :end2 6)))
+                                      cl-user::*arexx-repl-sent*)
+                       do (sleep 0.02))
+                 (prog1 (reverse cl-user::*arexx-repl-sent*)
+                   (setf cl-user::*arexx-repl-sent* '())))
+               (index-of (prefix sent)
+                 (position-if (lambda (s) (and (>= (length s) (length prefix))
+                                               (string= prefix s :end2 (length prefix))))
+                              sent)))
+          (multiple-value-bind (rc text) (amiga.arexx:send port "REPL-ATTACH CLAMIGATEST")
+            (check "arexx REPL-ATTACH rc" 0 rc)
+            (check "arexx REPL-ATTACH answers the package" "CL-USER" text))
+          (multiple-value-bind (rc text)
+              (amiga.arexx:send
+               port "REPL-EVAL (progn (princ \"repl says hi\") (terpri) (read-line))")
+            (check "arexx REPL-EVAL replies at once" 0 rc)
+            (check "arexx REPL-EVAL reply carries no values" "" text))
+          (let ((sent (wait-result)))
+            (check "arexx REPL streams the output" t
+                   (and (index-of "OUTPUT repl says hi" sent) t))
+            (check "arexx REPL asks the editor for a line" t
+                   (and (index-of "READLINE" sent) t))
+            (check "arexx REPL RESULT comes last" t
+                   (and (index-of "RESULT 0 CL-USER" sent)
+                        (= (index-of "RESULT 0 CL-USER" sent) (1- (length sent)))))
+            (check "arexx REPL RESULT carries the line read" t
+                   (and (search "\"typed on the amiga\"" (car (last sent))) t))
+            (check "arexx REPL output precedes the read" t
+                   (and (index-of "OUTPUT repl says hi" sent)
+                        (index-of "READLINE" sent)
+                        (< (index-of "OUTPUT repl says hi" sent)
+                           (index-of "READLINE" sent)))))
+          ; A running form keeps the port free, and can be aborted.
+          (multiple-value-bind (rc text) (amiga.arexx:send port "REPL-EVAL (loop)")
+            (declare (ignore text))
+            (check "arexx REPL-EVAL of an endless loop replies" 0 rc))
+          (sleep 0.2)
+          (multiple-value-bind (rc text) (amiga.arexx:send port "PING")
+            (check "arexx port answers while the REPL runs" 0 rc)
+            (check "arexx port answers PONG while the REPL runs" "PONG" text))
+          (multiple-value-bind (rc text) (amiga.arexx:send port "REPL-EVAL (+ 1 1)")
+            (declare (ignore text))
+            (check "arexx REPL-EVAL while busy is rc 10" 10 rc))
+          (multiple-value-bind (rc text) (amiga.arexx:send port "REPL-INTERRUPT")
+            (declare (ignore text))
+            (check "arexx REPL-INTERRUPT rc" 0 rc))
+          (let ((sent (wait-result)))
+            (check "arexx REPL-INTERRUPT aborts the form" t
+                   (and (index-of "RESULT 10 CL-USER" sent)
+                        (search "Interrupted" (car (last sent)))
+                        t)))
+          (multiple-value-bind (rc text) (amiga.arexx:send port "REPL-EVAL (+ 40 2)")
+            (declare (ignore text))
+            (check "arexx REPL-EVAL after the interrupt rc" 0 rc))
+          (let ((sent (wait-result)))
+            (check "arexx REPL works after the interrupt" t
+                   (and (index-of "RESULT 0 CL-USER" sent)
+                        (search "42" (car (last sent)))
+                        t)))
+          (multiple-value-bind (rc text) (amiga.arexx:send port "REPL-DETACH")
+            (declare (ignore text))
+            (check "arexx REPL-DETACH rc" 0 rc))
+          (multiple-value-bind (rc text) (amiga.arexx:send port "REPL-EVAL (+ 1 1)")
+            (declare (ignore text))
+            (check "arexx REPL-EVAL after detach is rc 10" 10 rc)))
+        (setf ext.dev:*repl-send* #'amiga.arexx:send)
+
         ; The port keeps serving after all of that.
         (multiple-value-bind (rc text) (amiga.arexx:send port "PING")
           (check "arexx still alive after failures" 0 rc)

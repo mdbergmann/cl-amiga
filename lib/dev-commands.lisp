@@ -27,6 +27,8 @@
    "*COMMAND-PACKAGE*" "*MAX-RESULT-LENGTH*" "*LAST-RESULT*"
    ;; Introspection commands' knobs
    "*MAX-COMPLETIONS*" "*PRETTY-MARGIN*"
+   ;; The REPL's way back to the editor (lib/dev-repl.lisp)
+   "*REPL-SEND*"
    ;; Introspection / extension
    "*COMMANDS*" "DEFINE-COMMAND"))
 
@@ -800,6 +802,29 @@ before the body indents by two; :FILL packs the arguments as they come.")
 
 (define-command "MACROEXPAND-1" (arg)
   (%macroexpand-command "MACROEXPAND-1" arg #'macroexpand-1))
+
+;;; ================================================================
+;;; REPL
+;;;
+;;; The REPL runs on a thread of its own and talks back to the editor's
+;;; port; that lives in lib/dev-repl.lisp, which needs gray-streams and
+;;; so CLOS.  It is loaded the first time an editor asks for it, so a
+;;; session that only loads files never pays for it.
+;;; ================================================================
+
+(defvar *repl-send* nil
+  "Function of (PORT COMMAND) that delivers COMMAND to the editor's ARexx
+port PORT, returning (values RC TEXT).  AMIGA.AREXX installs its SEND;
+the host tests install a Lisp function that stands in for the editor.")
+
+(define-command "REPL-ATTACH" (arg)
+  ;; Loading dev-repl replaces this entry with the real command.
+  (let ((problem (handler-case (progn (require "dev-repl") nil)
+                   (error (e) (%condition-text e)))))
+    (if problem
+        (values +rc-fatal+
+                (format nil "ERROR: cannot load the REPL support: ~a" problem))
+        (funcall (cdr (assoc "REPL-ATTACH" *commands* :test #'string=)) arg))))
 
 ;;; ================================================================
 ;;; Dispatch

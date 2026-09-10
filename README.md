@@ -657,8 +657,15 @@ Work:src/foo.lisp:40: ERROR: Too many arguments to DRAW: expected 2, got 3
 | `APROPOS <string> [<pkg>]` | One matching symbol per line with its kinds: `function`, `macro`, `special-operator`, `variable`, `class`; the symbols accessible in `<pkg>`, or in the command package |
 | `SOURCE-LOCATION <symbol>` | `<file>:<line>` of the definition; rc 10 when none was recorded |
 | `MACROEXPAND <form>`, `MACROEXPAND-1 <form>` | The expansion, laid out as code (body forms indented, arguments aligned) rather than filled to the margin |
+| `REPL-ATTACH <port>` | Start the REPL thread, which talks back to the editor's ARexx port `<port>` (see below); answers with the current package |
+| `REPL-EVAL <forms>` | Hand the forms to the REPL thread; answers at once (rc 10 while a form is still running), the values arrive with `RESULT` |
+| `REPL-INPUT <line>` | Answer an outstanding `READLINE` |
+| `REPL-INTERRUPT` | Abort the running form |
+| `REPL-DETACH` | Stop the REPL thread |
 
 A command string starting with `(` is evaluated directly, so `ADDRESS CLAMIGA '(room)'` works too. The introspection commands resolve names in the command package without interning: an unknown symbol or package is rc 10 with the reason.
+
+**The REPL** is for an editor with a listener window. `EVAL` answers with everything a form printed, after the fact; a REPL wants the output as it happens, wants a `READ-LINE` to ask the editor, and must not tie up the port while a form runs. So `REPL-ATTACH` starts a second thread and the conversation becomes two-way: the port answers the editor's commands at once, and the REPL thread sends commands to the editor's port — `OUTPUT <text>` for each line (or 1 KB) of output, `READLINE` when the form reads standard input (the editor answers with `REPL-INPUT`), and `RESULT <rc> <package>` followed by the printed values, one per line, or the error text, when the form is done. The listener's `*`, `+` and friends are kept, `IN-PACKAGE` at either end is seen by the other, and arglist and completion keep working while a form runs. The REPL support (`lib/dev-repl.lisp`) is loaded on first use; `ext.dev:*repl-send*` is the function that delivers to the editor, which the host tests replace with a Lisp function playing the editor.
 
 **Return codes** follow the ARexx severity ladder: `0` success, `5` warnings, `10` errors, `20` unusable command. Two consequences worth knowing, both forced by the ARexx protocol rather than chosen:
 

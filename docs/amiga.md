@@ -736,8 +736,9 @@ REPL is busy.
 | `*handler-thread*` | variable | The `MP` thread serving the port |
 
 The commands themselves (`PING`, `VERSION`, `LOAD`, `COMPILE-FILE`, `EVAL`,
-`IN-PACKAGE`, `LASTRESULT`), the return-code ladder, and the `RESULT`/`FAILAT`
-protocol notes are documented in the
+`IN-PACKAGE`, `LASTRESULT`, the introspection commands and the `REPL-*`
+commands behind an editor's listener window), the return-code ladder, and the
+`RESULT`/`FAILAT` protocol notes are documented in the
 [ARexx port](../README.md#arexx-port-amigaos--morphos) section of the main
 README. They are implemented by the portable `EXT.DEV` package
 (`lib/dev-commands.lisp`), which loads and runs on the host as well —

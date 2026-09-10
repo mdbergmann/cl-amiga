@@ -162,4 +162,8 @@ ARexx port from Lisp, and it is what the test suite uses to exercise our
 own port end to end without needing RexxMast."
   (amiga:arexx-send port command result-size))
 
+;; The editor's REPL (lib/dev-repl.lisp) sends its OUTPUT / READLINE /
+;; RESULT traffic to the editor's own port with this.
+(setf ext.dev:*repl-send* #'send)
+
 (provide "amiga/arexx")
