@@ -406,7 +406,7 @@ void cl_gc_stop_the_world(void)
                 /* Record which thread is holding up the world so a watchdog
                  * dump can name the straggler that never reached a safepoint
                  * (e.g. a thread blocked in a syscall outside a safe region). */
-                if (self) self->wait_lock_id = (int)t->id;
+                if (self) self->wait_straggler_tid = (int)t->id;
                 break;
             }
         }
@@ -432,7 +432,7 @@ void cl_gc_stop_the_world(void)
             fprintf(stderr, "GC-STW diag: world NOT stopped after %u ms — "
                     "straggler tid=%d (running, neither at a safepoint nor in "
                     "a safe region); all-thread dump follows\n",
-                    (unsigned)waited_ms, self ? self->wait_lock_id : -1);
+                    (unsigned)waited_ms, self ? self->wait_straggler_tid : -1);
             cl_dump_thread_waits();
         }
     }
@@ -589,6 +589,12 @@ static void dbg_race_selftest_and_exit(void)
 __attribute__((constructor))
 static void dbg_race_selftest_ctor(void)
 {
+    /* CLAMIGA_RACE_SELFTEST=0 skips the self-test so the same binary can
+     * run a Lisp program under the other race hooks it carries
+     * (CLAMIGA_RACE_LOCK_MARK_DELAY_MS, tests/test_mt_lock_barge_race.sh). */
+    const char *skip = getenv("CLAMIGA_RACE_SELFTEST");
+    if (skip && skip[0] == '0' && skip[1] == '\0')
+        return;
     dbg_race_selftest_and_exit();  /* never returns */
 }
 #endif /* DEBUG_THREAD_RACE_HOOKS */
@@ -897,15 +903,16 @@ int cl_symbol_boundp(CL_Obj sym)
 
 CL_Thread *cl_thread_table[CL_MAX_THREADS];
 uint32_t cl_thread_table_gen[CL_MAX_THREADS];
-void *cl_lock_table[CL_MAX_LOCKS];
-void *cl_condvar_table[CL_MAX_CONDVARS];
-CL_Thread *cl_lock_held[CL_MAX_LOCKS];   /* see thread.h */
-uint32_t cl_lock_depth[CL_MAX_LOCKS];    /* see thread.h */
 
-/* Global lock-acquire parking lot — see thread.h. */
-void *cl_lock_park_mutex = NULL;
-void *cl_lock_park_cv = NULL;
-volatile uint32_t cl_lock_park_waiters = 0;
+/* Process-unique thread serials (see CL_Thread.serial).  Main is 1; the
+ * counter only ever grows, so a serial baked into a lock's state word
+ * can never come to mean a different thread. */
+static volatile uint32_t cl_thread_serial_counter = 1;
+
+uint32_t cl_thread_next_serial(void)
+{
+    return platform_atomic_inc(&cl_thread_serial_counter);
+}
 
 int cl_thread_table_alloc(CL_Thread *t)
 {
@@ -932,98 +939,6 @@ void cl_thread_table_free(int id)
     if (id >= 0 && id < CL_MAX_THREADS)
         cl_thread_table[id] = NULL;
     platform_mutex_unlock(cl_thread_list_lock);
-}
-
-int cl_lock_table_alloc(void *handle)
-{
-    int i, result = -1;
-    platform_mutex_lock(cl_thread_list_lock);
-    for (i = 0; i < CL_MAX_LOCKS; i++) {
-        if (!cl_lock_table[i]) {
-            cl_lock_table[i] = handle;
-            result = i;
-            break;
-        }
-    }
-    platform_mutex_unlock(cl_thread_list_lock);
-    return result;
-}
-
-void cl_lock_table_free(int id)
-{
-    platform_mutex_lock(cl_thread_list_lock);
-    if (id >= 0 && id < CL_MAX_LOCKS)
-        cl_lock_table[id] = NULL;
-    platform_mutex_unlock(cl_thread_list_lock);
-}
-
-int cl_condvar_table_alloc(void *handle)
-{
-    int i, result = -1;
-    platform_mutex_lock(cl_thread_list_lock);
-    for (i = 0; i < CL_MAX_CONDVARS; i++) {
-        if (!cl_condvar_table[i]) {
-            cl_condvar_table[i] = handle;
-            result = i;
-            break;
-        }
-    }
-    platform_mutex_unlock(cl_thread_list_lock);
-    return result;
-}
-
-void cl_condvar_table_free(int id)
-{
-    platform_mutex_lock(cl_thread_list_lock);
-    if (id >= 0 && id < CL_MAX_CONDVARS)
-        cl_condvar_table[id] = NULL;
-    platform_mutex_unlock(cl_thread_list_lock);
-}
-
-/* Install a fresh platform mutex/condvar at a FIXED table id — the image
- * restore (image.c) recreates each restored CL_Lock/CL_CondVar's OS
- * primitive at the id recorded in the object, preserving identity within
- * the image (same doctrine as FASL_TAG_LOCK: fresh at load, identity
- * preserved).  Single-threaded use only (restore runs before any Lisp);
- * still locked for uniformity.  Returns 0 on success, -1 on a bad id,
- * an occupied slot, or primitive-init failure. */
-int cl_lock_table_install_at(uint32_t id, int recursive)
-{
-    void *m = NULL;
-    int rc = -1;
-    if (id >= CL_MAX_LOCKS) return -1;
-    platform_mutex_lock(cl_thread_list_lock);
-    if (!cl_lock_table[id]) {
-        if (recursive)
-            platform_mutex_init_recursive(&m);
-        else
-            platform_mutex_init(&m);
-        if (m) {
-            cl_lock_table[id] = m;
-            cl_lock_held[id] = NULL;
-            cl_lock_depth[id] = 0;
-            rc = 0;
-        }
-    }
-    platform_mutex_unlock(cl_thread_list_lock);
-    return rc;
-}
-
-int cl_condvar_table_install_at(uint32_t id)
-{
-    void *cv = NULL;
-    int rc = -1;
-    if (id >= CL_MAX_CONDVARS) return -1;
-    platform_mutex_lock(cl_thread_list_lock);
-    if (!cl_condvar_table[id]) {
-        platform_condvar_init(&cv);
-        if (cv) {
-            cl_condvar_table[id] = cv;
-            rc = 0;
-        }
-    }
-    platform_mutex_unlock(cl_thread_list_lock);
-    return rc;
 }
 
 CL_Thread *cl_thread_alloc_worker(void)
@@ -1097,6 +1012,10 @@ CL_Thread *cl_thread_alloc_worker_sized(uint32_t vm_stack_size,
     /* Default: single-value mode */
     t->mv_count = 1;
     t->status = 0; /* created */
+    t->serial = cl_thread_next_serial();
+    /* park stays NULL until the worker's own OS thread creates it
+     * (thread_entry) — on AmigaOS the handle is a signal bit of the task
+     * that parks, so the parent cannot allocate it. */
 
     return t;
 }
@@ -1194,6 +1113,10 @@ void cl_thread_reset_lisp_state(CL_Thread *t)
     }
     t->tlv_entry_count = 0;
     t->vm_extra_count = 0;   /* cl_vm_gc_mark_extra_thread walks this too */
+    t->wait_kind = 0;        /* MP wait registration (wait_obj/wait_lock are
+                              * GC roots — see gc_mark_thread_roots) */
+    t->wait_obj = CL_NIL;
+    t->wait_lock = CL_NIL;
 }
 
 int cl_thread_current_is_registered(void)
@@ -1281,10 +1204,14 @@ void cl_thread_init(void)
     platform_mutex_init(&gc_mutex);
     platform_condvar_init(&gc_condvar);
 
-    /* Initialize the lock-acquire parking lot (see thread.h) */
-    platform_mutex_init(&cl_lock_park_mutex);
-    platform_condvar_init(&cl_lock_park_cv);
-    cl_lock_park_waiters = 0;
+    /* The main thread's MP park handle and serial (workers get theirs in
+     * thread_entry / cl_thread_alloc_worker_sized).  A failed init leaves
+     * park NULL: the lock and condvar slow paths then sleep-poll. */
+    cl_thread_serial_counter = 1;
+    cl_main_thread.serial = 1;
+    cl_main_thread.park = NULL;
+    if (platform_park_init(&cl_main_thread.park) != 0)
+        cl_main_thread.park = NULL;
 
     /* Allocate NLX stack */
     cl_main_thread.nlx_stack = (CL_NLXFrame *)platform_alloc(
@@ -1308,8 +1235,6 @@ void cl_thread_init(void)
 
     /* Initialize side tables */
     memset(cl_thread_table, 0, sizeof(cl_thread_table));
-    memset(cl_lock_table, 0, sizeof(cl_lock_table));
-    memset(cl_condvar_table, 0, sizeof(cl_condvar_table));
 
     /* Register main thread in both registry and side table */
     cl_thread_register(&cl_main_thread);
@@ -1345,6 +1270,20 @@ void cl_thread_shutdown(void)
 
     /* Unregister main thread */
     cl_thread_unregister(&cl_main_thread);
+
+    /* Main's MP park handle: unregistered above, so no release scan or
+     * notify can find it, and interrupt delivery only unparks a thread
+     * with a live wait registration (main has none here).  Clear the
+     * pointer under the list lock so a peer that read it under the lock
+     * cannot see a torn state, then free it — on AmigaOS the signal bit
+     * must be freed by the main task itself, which this is. */
+    if (cl_main_thread.park) {
+        void *p = cl_main_thread.park;
+        if (cl_thread_list_lock) platform_mutex_lock(cl_thread_list_lock);
+        cl_main_thread.park = NULL;
+        if (cl_thread_list_lock) platform_mutex_unlock(cl_thread_list_lock);
+        platform_park_destroy(p);
+    }
 
     if (cl_main_thread.saved_pending_stack) {
         platform_free(cl_main_thread.saved_pending_stack);
@@ -1392,48 +1331,13 @@ void cl_thread_shutdown(void)
         gc_mutex = NULL;
     }
 
-    /* Destroy the lock-acquire parking lot */
-    if (cl_lock_park_cv) {
-        platform_condvar_destroy(cl_lock_park_cv);
-        cl_lock_park_cv = NULL;
-    }
-    if (cl_lock_park_mutex) {
-        platform_mutex_destroy(cl_lock_park_mutex);
-        cl_lock_park_mutex = NULL;
-    }
-
     /* Destroy thread registry lock */
     if (cl_thread_list_lock) {
         platform_mutex_destroy(cl_thread_list_lock);
         cl_thread_list_lock = NULL;
     }
 
-    /* Locks and condition variables created from Lisp (MP:MAKE-LOCK,
-     * MP:MAKE-CONDITION-VARIABLE).  The GC destroys one only when its wrapper
-     * object is proved dead; anything still reachable at exit — a lock held in
-     * a global, the usual case — was never destroyed at all.  Each is an OS
-     * primitive (a SignalSemaphore on AmigaOS), so on a machine with no
-     * per-process reclaim they accumulate across runs.
-     *
-     * A lock recorded as HELD is skipped, exactly as gc_finalize_dead does:
-     * destroying a held mutex is undefined behavior.  No worker is left to
-     * release it (cl_thread_count == 0 here), so leaking that one is the
-     * correct trade. */
-    {
-        uint32_t i;
-        for (i = 0; i < CL_MAX_LOCKS; i++) {
-            void *h = cl_lock_table[i];
-            if (!h) continue;
-            cl_lock_table[i] = NULL;
-            if (cl_lock_held[i]) { cl_lock_held[i] = NULL; cl_lock_depth[i] = 0; continue; }
-            cl_lock_depth[i] = 0;
-            platform_mutex_destroy(h);
-        }
-        for (i = 0; i < CL_MAX_CONDVARS; i++) {
-            void *h = cl_condvar_table[i];
-            if (!h) continue;
-            cl_condvar_table[i] = NULL;
-            platform_condvar_destroy(h);
-        }
-    }
+    /* MP locks and condition variables own no OS primitive (they are plain
+     * heap words, specs/mp-locks-heap-words.md), so there is nothing of
+     * theirs to hand back here. */
 }

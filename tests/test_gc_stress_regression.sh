@@ -4536,7 +4536,7 @@ out=$(CLAMIGA_GC_STRESS=1 CLAMIGA_LOCK_DIAG=50 "$TIMEOUT" 90 "$CLAMIGA" \
 check_contains "contended acquire completes under stress with diag enabled" \
   "LOCKDIAG-STRESS-OK" "$out"
 check_contains "diag names relocated lock and holder after compactions" \
-  'for lock [0-9]* "stress-lock" held by tid=[0-9]* "stress-holder"' "$out"
+  'for lock "stress-lock" held by tid=[0-9]* "stress-holder"' "$out"
 check_absent   "no corruption in lock_wait_report heap re-derive" \
   "corrupted\|not of type\|Guru\|SIGSEGV\|badmark\|Unbound" "$out"
 
@@ -5655,6 +5655,55 @@ EOF
 out=$(run_stress "$WORK/gfdesc.lisp")
 check_contains "describe of a generic function's lambda list survives stress" "Lambda-list: (A B)" "$out"
 check_contains "describe of a generic function's documentation survives stress" "GF described under stress." "$out"
+
+# --- Case: compaction while threads are PARKED on a lock and a condvar ------
+# MP locks and condition variables are heap words (specs/mp-locks-heap-words.md):
+# a parked thread's wait registration (CL_Thread.wait_obj / wait_lock) is a
+# GC root that must be forwarded by every compaction, and the releaser /
+# notifier compares its (forwarded) object against that record.  Here the
+# main thread forces a compaction per allocation while workers are parked on
+# both kinds of object; each wake must reach the right waiter, the woken
+# thread must find the forwarded lock (acquire + release it), and the
+# condvar's waiter count must be back to zero afterwards.
+cat > "$WORK/parked.lisp" <<'EOF'
+(let* ((lk (mp:make-lock "parked-lock"))
+       (cv (mp:make-condition-variable "parked-cv"))
+       (go nil)
+       (woken 0)
+       (gate (mp:make-lock))
+       (cv-waiters (loop repeat 3 collect
+                     (mp:make-thread
+                      (lambda ()
+                        (mp:acquire-lock lk)
+                        (loop until go do (mp:condition-wait cv lk))
+                        (mp:release-lock lk)
+                        (mp:with-lock-held (gate) (incf woken))))))
+       (lk-waiters nil))
+  (sleep 0.3)                                   ; cv waiters parked, lk free
+  (mp:acquire-lock lk)
+  (setf lk-waiters (loop repeat 3 collect
+                     (mp:make-thread
+                      (lambda ()
+                        (mp:acquire-lock lk)
+                        (mp:release-lock lk)
+                        (mp:with-lock-held (gate) (incf woken))))))
+  (sleep 0.3)                                   ; lock waiters parked
+  ;; Every allocation here is a compaction under CLAMIGA_GC_STRESS=1,
+  ;; moving both objects while six threads are parked on them.
+  (dotimes (i 300) (make-list 10))
+  (setf go t)
+  (mp:condition-broadcast cv)
+  (dotimes (i 300) (make-list 10))
+  (mp:release-lock lk)
+  (dolist (th (append cv-waiters lk-waiters)) (mp:join-thread th))
+  (format t "PARKED-STRESS woken=~a waiters=~a held=~a~%"
+          woken (mp::%condvar-waiters cv) (mp::%lock-held-p lk)))
+EOF
+out=$(CLAMIGA_GC_STRESS=1 "$TIMEOUT" 120 "$CLAMIGA" \
+      --no-userinit --heap 48M --non-interactive \
+      --load "$WORK/parked.lisp" </dev/null 2>&1)
+check_contains "threads parked on a lock and a condvar survive compactions" \
+  "PARKED-STRESS woken=6 waiters=0 held=NIL" "$out"
 
 echo ""
 echo "$passed passed, $failed failed, $total total"

@@ -1667,32 +1667,24 @@ TEST(tlab_leftover_holes_reclaimed_after_threads_exit)
 #endif /* CL_TLAB */
 
 /* ================================================================
- * Regression: cl_lock_alloc_obj must GC-protect `name` across the
- * cl_gc_reclaim_young()/cl_gc() table-exhaustion retries, not just
- * around the final cl_alloc() (see builtins_thread.c).  Under the
- * generational collector both retries are MOVING collections, so an
- * unprotected `name` local would end up stale (pre-move offset) once
- * stored into the returned lock's `name` slot.
+ * Regression: cl_lock_alloc_obj must GC-protect `name` across its
+ * allocation (see builtins_thread.c).  Under the generational collector
+ * the allocation is a MOVING collection point, so an unprotected `name`
+ * local would end up stale (pre-move offset) once stored into the
+ * returned lock's `name` slot.  Locks are plain heap words now (no side
+ * table, no cap): make many of them so the allocation itself has to
+ * collect, then check that a named lock's name survived intact.
  * ================================================================ */
 
-TEST(lock_alloc_obj_protects_name_across_table_exhaustion_gc)
+TEST(lock_alloc_obj_protects_name_across_gc)
 {
     CL_Obj held = CL_NIL, name, lock;
     CL_Lock *lk;
     CL_String *s;
-    int i, free_slots = 0;
-
-    /* Saturate every currently-empty lock-table slot with a real, rooted
-     * CL_Lock so that dropping the root turns the ENTIRE table into
-     * reclaimable garbage in one shot.  This makes the first
-     * cl_lock_table_alloc() attempt inside the upcoming cl_lock_alloc_obj
-     * call fail deterministically, forcing it through the
-     * cl_gc_reclaim_young()/cl_gc() retries. */
-    for (i = 0; i < CL_MAX_LOCKS; i++)
-        if (!cl_lock_table[i]) free_slots++;
+    int i;
 
     CL_GC_PROTECT(held);
-    for (i = 0; i < free_slots; i++) {
+    for (i = 0; i < 20000; i++) {
         CL_Obj filler = cl_lock_alloc_obj(0, CL_NIL, "TEST");
         held = cl_cons(filler, held);
     }
@@ -1700,10 +1692,13 @@ TEST(lock_alloc_obj_protects_name_across_table_exhaustion_gc)
     CL_GC_UNPROTECT(1);
 
     name = cl_make_string("named-lock-regression", 22);
+    cl_gc();
     lock = cl_lock_alloc_obj(0, name, "TEST");
 
     ASSERT(CL_LOCK_P(lock));
     lk = (CL_Lock *)CL_OBJ_TO_PTR(lock);
+    ASSERT_EQ_INT((int)lk->state, 0);
+    ASSERT_EQ_INT((int)lk->depth, 0);
     ASSERT(CL_STRING_P(lk->name));
     s = (CL_String *)CL_OBJ_TO_PTR(lk->name);
     ASSERT_EQ_INT((int)s->length, 22);
@@ -1767,7 +1762,7 @@ int main(void)
 
     /* Regression: cl_lock_alloc_obj's `name` must survive the moving
      * cl_gc_reclaim_young()/cl_gc() retries on lock-table exhaustion */
-    RUN(lock_alloc_obj_protects_name_across_table_exhaustion_gc);
+    RUN(lock_alloc_obj_protects_name_across_gc);
 
 #ifdef CL_TLAB
     /* TLAB: per-thread allocation buffers (refills, GC reset, compaction,

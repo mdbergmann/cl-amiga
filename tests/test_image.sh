@@ -193,6 +193,44 @@ out=$("$TIMEOUT" 60 "$CLAMIGA" --no-userinit --image repl.img \
 ec=$?
 check "repl_image_restores" 0 "$ec" "$out" "RVAR=5"
 
+# --- Locks and condition variables restore free (heap words) -------------
+# The image is written while a recursive lock is HELD at depth 2 by the
+# saving thread, after a condvar has been waited on and notified; the
+# restored objects must be free with zero waiters and usable
+# (specs/mp-locks-heap-words.md: restore zeroes state/depth/waiters — a
+# saved image cannot meaningfully contain a held lock, and SAVE-IMAGE
+# refuses while worker threads run, so no waiter can be registered).
+
+cat > lockimg.lisp <<'EOF'
+(defvar *im-lk* (mp:make-recursive-lock "img-lock"))
+(defvar *im-cv* (mp:make-condition-variable "img-cv"))
+(defvar *im-go* nil)
+(let ((th (mp:make-thread (lambda ()
+                            (let ((l (mp:make-lock)))
+                              (mp:acquire-lock l)
+                              (loop until *im-go* do (mp:condition-wait *im-cv* l))
+                              (mp:release-lock l))))))
+  (sleep 0.2)
+  (setf *im-go* t)
+  (mp:condition-broadcast *im-cv*)
+  (mp:join-thread th))
+(mp:acquire-lock *im-lk*)
+(mp:acquire-lock *im-lk*)
+(format t "PRE-SAVE waiters=~a held=~a~%" (mp::%condvar-waiters *im-cv*) (mp::%lock-held-p *im-lk*))
+(ext:save-image "locks.img")
+(mp:release-lock *im-lk*)
+(mp:release-lock *im-lk*)
+EOF
+out=$("$TIMEOUT" 60 "$CLAMIGA" $CLI --heap 8M --non-interactive \
+    --load lockimg.lisp </dev/null 2>&1)
+ec=$?
+check "save_with_held_lock" 0 "$ec" "$out" "PRE-SAVE waiters=0 held=T" "Image saved"
+
+out=$("$TIMEOUT" 60 "$CLAMIGA" --no-userinit --image locks.img --non-interactive \
+    --eval '(format t "POST-RESTORE waiters=~a held=~a ok=~a~%" (mp::%condvar-waiters *im-cv*) (mp::%lock-held-p *im-lk*) (progn (mp:acquire-lock *im-lk*) (mp:acquire-lock *im-lk*) (mp:condition-notify *im-cv*) (mp:release-lock *im-lk*) (mp:release-lock *im-lk*) (mp:join-thread (mp:make-thread (lambda () (mp:acquire-lock *im-lk* nil))))))' </dev/null 2>&1)
+ec=$?
+check "restored_lock_and_condvar_are_free" 0 "$ec" "$out" "POST-RESTORE waiters=0 held=NIL ok=T"
+
 # --- Corrupt image: explicit --image refuses cleanly ---------------------
 
 # Flip a fingerprint byte (offset 12 is inside the 32-byte fingerprint).

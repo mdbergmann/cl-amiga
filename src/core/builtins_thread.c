@@ -140,6 +140,13 @@ static void *thread_entry(void *arg)
     /* 1. Set up TLS for this OS thread */
     platform_tls_set(t);
 
+    /* 1b. This thread's MP park handle (specs/mp-locks-heap-words.md).
+     *     Created by the thread itself: on AmigaOS it is a signal bit of
+     *     the task that will Wait() on it.  A failure leaves it NULL and
+     *     the lock/condvar slow paths sleep-poll instead of parking. */
+    if (platform_park_init(&t->park) != 0)
+        t->park = NULL;
+
     /* 1a. Come online for stop-the-world GC.  Until now the child was a
      *     newborn: registered in cl_thread_list (so GC marks/forwards its
      *     roots — notably t->result below) but invisible to the STW wait loop.
@@ -413,6 +420,21 @@ static void *thread_entry(void *arg)
      *   list walk.
      */
     cl_thread_unregister(t);
+
+    /* 7a. Free the park handle.  Off the list, no release scan or notify
+     *     can reach it, and interrupt delivery unparks only a thread with a
+     *     live wait registration (we have none).  Cleared under the list
+     *     lock so a peer that reads `park` under it never sees a freed
+     *     handle; freed by this task itself (AmigaOS: FreeSignal must be
+     *     called by the owning task).  The lock may already be torn down
+     *     during process exit (see cl_thread_unregister). */
+    if (t->park) {
+        void *p = t->park;
+        if (cl_thread_list_lock) platform_mutex_lock(cl_thread_list_lock);
+        t->park = NULL;
+        if (cl_thread_list_lock) platform_mutex_unlock(cl_thread_list_lock);
+        platform_park_destroy(p);
+    }
 
     /* 8. Publish terminal status LAST.  After this write, observers
      *    (mp:thread-alive-p, the reaper, gc_finalize_dead) may free `t` at
@@ -894,6 +916,8 @@ static void dump_print_name(CL_Obj name)
     }
 }
 
+static void dump_print_wait_obj_name(CL_Obj o);   /* lock section below */
+
 /* Human-readable form of CL_Thread.wait_kind (see thread.h).  Shared by
  * MP:DUMP-THREAD-WAITS and the slow-lock-wait diagnostic. */
 static const char *wait_kind_name(int wk)
@@ -940,12 +964,19 @@ void cl_dump_thread_waits(void)
         fprintf(stderr, "  tid=%-3u status=%-8s name=\"", t->id, st);
         dump_print_name(t->name);
         fprintf(stderr, "\" %s", wk);
-        if (t->wait_kind == 1 || t->wait_kind == 2)
-            fprintf(stderr, " cv=%d lock=%d", t->wait_cv_id, t->wait_lock_id);
-        else if (t->wait_kind == 3)
-            fprintf(stderr, " lock=%d", t->wait_lock_id);
-        else if (t->wait_kind == 4)
-            fprintf(stderr, " waiting-for-tid=%d", t->wait_lock_id);
+        if (t->wait_kind == 1 || t->wait_kind == 2) {
+            fprintf(stderr, " cv=\"");
+            dump_print_wait_obj_name(t->wait_obj);
+            fprintf(stderr, "\" lock=\"");
+            dump_print_wait_obj_name(t->wait_lock);
+            fputc('"', stderr);
+        } else if (t->wait_kind == 3) {
+            fprintf(stderr, " lock=\"");
+            dump_print_wait_obj_name(t->wait_obj);
+            fputc('"', stderr);
+        } else if (t->wait_kind == 4) {
+            fprintf(stderr, " waiting-for-tid=%d", t->wait_straggler_tid);
+        }
         /* GC coordination flags — a thread with gc_req=1 but stopped=0 and
          * safe=0 is the straggler holding up a stop-the-world GC. */
         fprintf(stderr, " [gc_req=%d stopped=%d safe=%d]",
@@ -990,70 +1021,89 @@ static CL_Obj bi_thread_yield(CL_Obj *args, int n)
 
 /* ================================================================
  * Lock builtins
+ *
+ * A lock is a heap word (CL_Lock in types.h): `state` is 0 when free, or
+ * the owner's thread serial shifted up one bit, with bit 0
+ * (CL_LOCK_CONTENDED) set once some thread has had to park on it.  The
+ * runtime allocates no OS mutex per lock.  Blocking goes through each
+ * thread's own park handle (platform_park, token semantics): a waiter
+ * marks the lock CONTENDED, registers itself (wait_kind / wait_obj, under
+ * cl_thread_list_lock), re-checks the lock, and parks; a releaser that
+ * sees CONTENDED stores 0 and scans the thread list for ONE thread
+ * registered on this lock and unparks it.  The uncontended paths are a
+ * single CAS each and never take a lock or scan anything.  The shape is
+ * Drepper's "mutex 2" ("Futexes Are Tricky") with a registration list in
+ * place of the futex — see specs/mp-locks-heap-words.md for the
+ * invariants, and the "Lost wakeups" risk there for why every abandon
+ * path (timeout, interrupt) hands the lock on before leaving.
+ *
+ * GC discipline: a CL_Lock* / CL_CondVar* is re-derived from its GC-rooted
+ * args[] slot after anything that can run a compaction — a park (safe
+ * region), cl_thread_handle_interrupt (runs Lisp), any allocation.  The
+ * objects move; the rooted slot is forwarded.  The registration fields
+ * (wait_obj / wait_lock) are thread roots for the same reason.
  * ================================================================ */
 
+#ifdef DEBUG_THREAD_RACE_HOOKS
+/* Deterministic race window for tests/test_mt_lock_barge_race.sh: the
+ * number of milliseconds a contended acquirer sleeps between registering
+ * itself as a waiter and marking the current holder's word CONTENDED
+ * (CLAMIGA_RACE_LOCK_MARK_DELAY_MS; 0 / unset = no delay). */
+static int dbg_race_lock_mark_delay_ms(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        char envbuf[16];
+        const char *s = platform_getenv("CLAMIGA_RACE_LOCK_MARK_DELAY_MS",
+                                        envbuf, (int)sizeof(envbuf));
+        cached = (s && *s) ? atoi(s) : 0;
+        if (cached < 0) cached = 0;
+    }
+    return cached;
+}
+#endif
+
+/* The owner identity stored in CL_Lock.state for thread T. */
+#define LOCK_OWNER_WORD(t)  ((uint32_t)(t)->serial << 1)
+#define LOCK_OWNER_OF(s)    ((s) & ~(uint32_t)CL_LOCK_CONTENDED)
+
+/* Host: a short yield-spin before parking, for the typical MP critical
+ * section that is held for less time than a park/unpark round trip.
+ * The spin READS the state word and only attempts a CAS when it reads
+ * free, so spinners do not bounce the lock's cache line.  AmigaOS /
+ * MorphOS: none — a Forbid()/Permit() yield only reschedules when a task
+ * switch is already pending, so spinning cannot hand the single CPU to
+ * the holder; park at once. */
+#ifdef PLATFORM_AMIGA
+#define CL_LOCK_SPIN_YIELDS 0
+#else
+#define CL_LOCK_SPIN_YIELDS 256
+#endif
+
 /* (mp:make-lock &optional name) -> lock */
-/* Allocate a fresh CL_Lock with a freshly-initialized platform mutex.
- * recursive != 0 selects PTHREAD_MUTEX_RECURSIVE on POSIX; on AmigaOS
- * SignalSemaphore is recursive in either case.  Used by MP:MAKE-LOCK,
- * MP:MAKE-RECURSIVE-LOCK, and the FASL reader (so a lock embedded in a
- * struct/closure constant comes back as a usable, fresh-at-load-time
- * lock instead of NIL).  Errors out via cl_error() — the err_prefix
- * parameter customizes the message so callers see e.g. "MP:MAKE-LOCK: ..."
- * vs. "FASL: ...". */
+/* Allocate a fresh, free CL_Lock.  recursive != 0 makes it re-entrant
+ * for its owner.  Used by MP:MAKE-LOCK, MP:MAKE-RECURSIVE-LOCK, and the
+ * FASL reader (so a lock embedded in a struct/closure constant comes back
+ * as a usable, fresh-at-load-time lock instead of NIL).  Errors out via
+ * cl_error() — err_prefix customizes the message so callers see e.g.
+ * "MP:MAKE-LOCK: ..." vs. "FASL: ...". */
 CL_Obj cl_lock_alloc_obj(int recursive, CL_Obj name, const char *err_prefix)
 {
-    void *mutex_handle = NULL;
-    int lock_id;
     CL_Lock *lk;
-    int rc = recursive
-        ? platform_mutex_init_recursive(&mutex_handle)
-        : platform_mutex_init(&mutex_handle);
 
-    if (rc != 0)
-        cl_error(CL_ERR_GENERAL, "%s: failed to create mutex", err_prefix);
-
-    /* `name` is a plain CL_Obj C local (the caller's copy), not itself a GC
-     * root: both cl_gc_reclaim_young() and cl_gc() below are moving
-     * collections under the generational collector, so it must stay
-     * GC-protected across this entire span, not just around the final
-     * cl_alloc(). */
+    /* `name` is a plain CL_Obj C local (the caller's copy): the allocation
+     * below is a moving collection point under the generational collector. */
     CL_GC_PROTECT(name);
-    lock_id = cl_lock_table_alloc(mutex_handle);
-    if (lock_id < 0) {
-        /* Lock table is bounded but slots are reclaimed when the wrapping
-         * CL_Lock heap object becomes unreachable.  Dead locks are mostly
-         * RECENT (per-message futures etc.), so try a minor cycle first;
-         * escalate to a full collection only if that freed nothing.  This
-         * matters: workloads that cons a lock per message hit this path
-         * every ~table-size messages, and a full collection here was the
-         * dominant GC cost of the sento ask benchmark. */
-        cl_gc_reclaim_young();
-        lock_id = cl_lock_table_alloc(mutex_handle);
-    }
-    if (lock_id < 0) {
-        cl_gc();
-        lock_id = cl_lock_table_alloc(mutex_handle);
-    }
-    if (lock_id < 0) {
-        CL_GC_UNPROTECT(1);
-        platform_mutex_destroy(mutex_handle);
-        cl_error(CL_ERR_GENERAL, "%s: lock table full (max %d)",
-                 err_prefix, CL_MAX_LOCKS);
-    }
-
     lk = (CL_Lock *)cl_alloc(TYPE_LOCK, sizeof(CL_Lock));
     CL_GC_UNPROTECT(1);
-    if (!lk) {
-        cl_lock_table_free(lock_id);
-        platform_mutex_destroy(mutex_handle);
+    if (!lk)
         cl_error(CL_ERR_STORAGE, "%s: cannot allocate lock object",
                  err_prefix);
-    }
 
-    lk->lock_id = (uint32_t)lock_id;
-    lk->name = name;
+    lk->state = 0;
+    lk->depth = 0;
     lk->flags = recursive ? CL_LOCK_FLAG_RECURSIVE : 0;
+    lk->name = name;
     return CL_PTR_TO_OBJ(lk);
 }
 
@@ -1065,21 +1115,139 @@ static CL_Obj bi_make_lock(CL_Obj *args, int n)
 
 /* (mp:make-recursive-lock &optional name) -> lock
  * A recursive lock can be acquired multiple times by the same thread; it must
- * be released the same number of times before another thread can acquire it.
- * On AmigaOS this is identical to make-lock (SignalSemaphore is naturally
- * recursive); on POSIX it uses PTHREAD_MUTEX_RECURSIVE. */
+ * be released the same number of times before another thread can acquire it. */
 static CL_Obj bi_make_recursive_lock(CL_Obj *args, int n)
 {
     CL_Obj name = (n > 0) ? args[0] : CL_NIL;
     return cl_lock_alloc_obj(1, name, "MP:MAKE-RECURSIVE-LOCK");
 }
 
+/* Seconds (a non-negative real, or NIL for "none") -> milliseconds.
+ * Returns 1 when a timeout is in effect and stores it in *ms_out.
+ * Clamped to INT32_MAX ms (~24.85 days): ms_until() below folds the
+ * deadline through a signed 32-bit subtraction, so a deadline further out
+ * than that wraps and reads as already expired on the very first check
+ * instead of blocking for the requested (long but finite) duration. */
+static int parse_timeout_ms(CL_Obj arg, const char *who, uint32_t *ms_out)
+{
+    double secs;
+    if (CL_NULL_P(arg))
+        return 0;
+    secs = cl_to_double(arg);
+    if (secs < 0.0)
+        cl_error(CL_ERR_TYPE, "%s: timeout must be a non-negative real "
+                 "number of seconds", who);
+    if (secs * 1000.0 > (double)0x7FFFFFFFu)
+        *ms_out = 0x7FFFFFFFu;
+    else
+        *ms_out = (uint32_t)(secs * 1000.0);
+    return 1;
+}
+
+/* Milliseconds still to wait before `deadline_ms` (monotonic), 0 when it
+ * has passed.  Signed compare so the ms clock may wrap. */
+static uint32_t ms_until(uint32_t deadline_ms)
+{
+    int32_t d = (int32_t)(deadline_ms - platform_time_ms());
+    return d > 0 ? (uint32_t)d : 0;
+}
+
+/* Clear this thread's wait registration (under cl_thread_list_lock so a
+ * concurrent release scan / notify sees either the whole record or none). */
+static void wait_deregister(CL_Thread *self)
+{
+    platform_mutex_lock(cl_thread_list_lock);
+    self->wait_kind = 0;
+    self->wait_obj = CL_NIL;
+    self->wait_lock = CL_NIL;
+    platform_mutex_unlock(cl_thread_list_lock);
+}
+
+/* Park this thread for up to `ms` milliseconds (0 = until unparked)
+ * inside a GC safe region.  A thread without a park handle (init failed
+ * at start-up) degrades to a short sleep; its callers re-check their
+ * condition in a loop, so the only cost is latency. */
+static void wait_park(CL_Thread *self, uint32_t ms)
+{
+    if (self->park) {
+        cl_gc_enter_safe_region();
+        platform_park(self->park, ms);
+        cl_gc_leave_safe_region();
+    } else {
+        platform_sleep_ms((ms == 0 || ms > 10) ? 10 : ms);
+    }
+}
+
+/* Wake one thread registered as a lock-acquire waiter on `lock_obj`
+ * (other than `except`).  Called with the lock's state already 0 by a
+ * contended release, and by a waiter that abandons a contended wait. */
+static void lock_wake_one(CL_Obj lock_obj, CL_Thread *except)
+{
+    CL_Thread *t;
+    platform_mutex_lock(cl_thread_list_lock);
+    for (t = cl_thread_list; t; t = t->next) {
+        if (t != except && t->wait_kind == 3 && t->wait_obj == lock_obj) {
+            if (t->park) platform_unpark(t->park);
+            break;
+        }
+    }
+    platform_mutex_unlock(cl_thread_list_lock);
+}
+
+/* Release the lock in `lock_obj` that the caller owns at depth 0.  The
+ * "mutex 2" release: an uncontended lock is freed by one CAS; a contended
+ * one is stored free and ONE parked waiter is unparked.  The store is
+ * fenced before the scan so it is ordered against a waiter's
+ * register-then-re-check sequence (both under cl_thread_list_lock on the
+ * waiter's side): either the waiter's registration is visible to the scan,
+ * or the store of 0 is visible to its re-check. */
+static void lock_release_core(CL_Obj lock_obj)
+{
+    CL_Lock *lk = (CL_Lock *)CL_OBJ_TO_PTR(lock_obj);
+    uint32_t s = lk->state;
+    if (!(s & CL_LOCK_CONTENDED) && platform_atomic_cas(&lk->state, s, 0))
+        return;
+    /* Contended: a plain store frees the lock, so it needs the RELEASE
+     * fence the CAS above has built in.  Without it, on a weakly ordered
+     * host (ARM64) the store of 0 can become visible before the critical
+     * section's own stores, and the next acquirer — whose CAS is an
+     * acquire — reads stale data: the barging soak in
+     * tests/test_mp_heap_locks.sh caught exactly one lost `incf` in
+     * 320,000 protected increments this way.  The fence after the store
+     * orders it against the waiter scan (see above). */
+    platform_memory_barrier();
+    lk->state = 0;
+    platform_memory_barrier();
+    lock_wake_one(lock_obj, NULL);
+}
+
+/* A waiter that leaves a contended acquire WITHOUT the lock (timeout, or an
+ * interrupt about to unwind it) must not strand the other waiters: the
+ * release that woke it consumed the CONTENDED bit, so a lock that is free
+ * now needs another waiter woken, and a lock that a barging thread took
+ * without the bit needs it set again so that thread's release scans. */
+static void lock_abandon_wait(CL_Obj lock_obj, CL_Thread *self)
+{
+    for (;;) {
+        CL_Lock *lk = (CL_Lock *)CL_OBJ_TO_PTR(lock_obj);
+        uint32_t s = lk->state;
+        if (s == 0) {
+            lock_wake_one(lock_obj, self);
+            return;
+        }
+        if (s & CL_LOCK_CONTENDED)
+            return;
+        if (platform_atomic_cas(&lk->state, s, s | CL_LOCK_CONTENDED))
+            return;
+    }
+}
+
 /* ---- Slow-lock-wait diagnostic (CLAMIGA_LOCK_DIAG) ----
  *
  * When the CLAMIGA_LOCK_DIAG environment variable is set, a blocking
  * MP:ACQUIRE-LOCK that has waited at least the threshold reports the
- * contended lock (id + name), the waiting thread, and the current HOLDER
- * — including what the holder itself is blocked on — to stderr, repeats
+ * contended lock (name), the waiting thread, and the current HOLDER —
+ * including what the holder itself is blocked on — to stderr, repeats
  * while still parked, and reports once more when the lock is finally
  * acquired (with the total wait).  The env value is the threshold in
  * milliseconds; "1" or a non-numeric value selects the 1000ms default.
@@ -1089,7 +1257,8 @@ static CL_Obj bi_make_recursive_lock(CL_Obj *args, int n)
  * clamiga's own output: the report fires from inside the stalled wait and
  * names the culprit.  Runtime diagnostic, not DEBUG-flag instrumentation:
  * always compiled, zero cost when the env var is unset (one cached-static
- * read per contended park iteration, a path that is already slow). */
+ * read per contended park, a path that is already slow — parks are
+ * untimed unless the variable is set). */
 
 #define CL_LOCK_DIAG_REPEAT_MS 5000  /* re-report cadence while still parked */
 
@@ -1113,319 +1282,362 @@ static int32_t lock_diag_threshold_ms(void)
     return cached;
 }
 
+/* The name of the lock / condvar a thread's wait record points at. */
+static void dump_print_wait_obj_name(CL_Obj o)
+{
+    if (CL_LOCK_P(o))
+        dump_print_name(((CL_Lock *)CL_OBJ_TO_PTR(o))->name);
+    else if (CL_CONDVAR_P(o))
+        dump_print_name(((CL_CondVar *)CL_OBJ_TO_PTR(o))->name);
+    else
+        fprintf(stderr, "(none)");
+}
+
 /* Print one slow-wait observation for the lock in `lock_obj`.
  *
  * MUST be called OUTSIDE the GC safe region: it reads heap objects (the
  * lock's and threads' name strings), which a peer's compacting GC could be
  * relocating while the caller is parked.  The caller passes the lock as the
- * re-read GC-rooted args[0] value — any CL_Lock* captured before the park
+ * re-read GC-rooted args[] value — any CL_Lock* captured before the park
  * is potentially stale after a compaction.
  *
  * `acquired` != 0 prints the final "acquired after N ms" form instead of
  * the still-waiting form. */
-static void lock_wait_report(CL_Obj lock_obj, uint32_t lock_id,
-                             uint32_t waited_ms, int acquired)
+static void lock_wait_report(CL_Obj lock_obj, uint32_t waited_ms, int acquired)
 {
     CL_Thread *self = cl_get_current_thread();
     CL_Lock *lk = (CL_Lock *)CL_OBJ_TO_PTR(lock_obj);
+    uint32_t owner_serial;
 
     fprintf(stderr, "MP:ACQUIRE-LOCK diag: tid=%u \"", self->id);
     dump_print_name(self->name);
     if (acquired) {
-        fprintf(stderr, "\" acquired lock %u \"", lock_id);
+        fprintf(stderr, "\" acquired lock \"");
         dump_print_name(lk->name);
         fprintf(stderr, "\" after %u ms\n", waited_ms);
         fflush(stderr);
         return;
     }
-    fprintf(stderr, "\" waiting %u ms for lock %u \"", waited_ms, lock_id);
+    fprintf(stderr, "\" waiting %u ms for lock \"", waited_ms);
     dump_print_name(lk->name);
     fputc('"', stderr);
 
-    /* Identify the holder.  cl_lock_held is owner-maintained, so the read
-     * is racy by design (diagnostic).  Dereference the pointer only after
-     * re-finding it in the thread table under the list lock, so the zombie
-     * reaper / a completing JOIN cannot free the holder mid-print.  The
-     * list lock is only ever held for short bounded sections (the STW
-     * request/scan loops release it before parking on gc_condvar), so
-     * blocking on it here cannot deadlock. */
-    if (cl_thread_list_lock) platform_mutex_lock(cl_thread_list_lock);
-    {
-        CL_Thread *holder = cl_lock_held[lock_id];
-        int live = 0;
+    /* Identify the holder by the serial in the state word.  The read is
+     * racy by design (diagnostic); the holder is looked up in the thread
+     * list under cl_thread_list_lock so the zombie reaper / a completing
+     * JOIN cannot free it mid-print.  The list lock is only ever held for
+     * short bounded sections (the STW request/scan loops release it before
+     * parking on gc_condvar), so blocking on it here cannot deadlock. */
+    owner_serial = LOCK_OWNER_OF(lk->state) >> 1;
+    platform_mutex_lock(cl_thread_list_lock);
+    if (owner_serial == 0) {
+        fprintf(stderr, " with no holder (released this instant?)");
+    } else {
+        CL_Thread *holder;
+        for (holder = cl_thread_list; holder; holder = holder->next)
+            if (holder->serial == owner_serial) break;
         if (holder) {
-            int i;
-            for (i = 0; i < CL_MAX_THREADS; i++) {
-                if (cl_thread_table[i] == holder) { live = 1; break; }
-            }
-        }
-        if (holder && live) {
             fprintf(stderr, " held by tid=%u \"", holder->id);
             dump_print_name(holder->name);
             fprintf(stderr, "\" depth=%u holder-state=%s",
-                    cl_lock_depth[lock_id], wait_kind_name(holder->wait_kind));
-            if (holder->wait_kind == 1 || holder->wait_kind == 2)
-                fprintf(stderr, " cv=%d lock=%d",
-                        holder->wait_cv_id, holder->wait_lock_id);
-            else if (holder->wait_kind == 3)
-                fprintf(stderr, " lock=%d", holder->wait_lock_id);
+                    lk->depth, wait_kind_name(holder->wait_kind));
+            if (holder->wait_kind == 1 || holder->wait_kind == 2) {
+                fprintf(stderr, " cv=\"");
+                dump_print_wait_obj_name(holder->wait_obj);
+                fprintf(stderr, "\" lock=\"");
+                dump_print_wait_obj_name(holder->wait_lock);
+                fputc('"', stderr);
+            } else if (holder->wait_kind == 3) {
+                fprintf(stderr, " lock=\"");
+                dump_print_wait_obj_name(holder->wait_obj);
+                fputc('"', stderr);
+            }
             if (holder->in_safe_region)
                 fprintf(stderr, " [in-safe-region: blocking syscall]");
-        } else if (holder) {
+        } else {
             fprintf(stderr, " held by an already-exited thread"
                             " (lock leaked by its holder?)");
-        } else {
-            fprintf(stderr, " with no tracked holder"
-                            " (released this instant?)");
         }
     }
-    if (cl_thread_list_lock) platform_mutex_unlock(cl_thread_list_lock);
+    platform_mutex_unlock(cl_thread_list_lock);
     fputc('\n', stderr);
     fflush(stderr);
 }
 
-/* (mp:acquire-lock lock &optional wait) -> bool */
+/* Blocking acquire of the lock in the GC-rooted slot *lock_slot, for a
+ * caller whose fast-path CAS already failed.  Returns 1 once the lock is
+ * held (state = this thread's serial, CONTENDED kept set — the "mutex 2"
+ * rule that makes the next release scan for the waiters we could not see),
+ * 0 when `timed` and `ms` elapsed first.  The caller sets depth.
+ *
+ * deliver_interrupts: consume a pending MP:INTERRUPT-THREAD / DESTROY-THREAD
+ * while waiting (may longjmp out).  0 defers it to the caller — the
+ * condition-wait re-acquire, which must run the interrupt with the lock
+ * held so a destroy unwinds through the caller's UNWIND-PROTECT. */
+static int lock_acquire_slow(CL_Obj *lock_slot, CL_Thread *self,
+                             int timed, uint32_t ms, int deliver_interrupts)
+{
+    uint32_t me = LOCK_OWNER_WORD(self);
+    int32_t  diag_ms = lock_diag_threshold_ms();
+    uint32_t start = 0, deadline = 0, next_report = 0;
+    int reported = 0;
+    int spins = 0;
+
+    if (timed || diag_ms >= 0) {
+        start = platform_time_ms();
+        deadline = start + ms;
+        next_report = start + (uint32_t)(diag_ms >= 0 ? diag_ms : 0);
+    }
+
+    for (;;) {
+        CL_Lock *lk = (CL_Lock *)CL_OBJ_TO_PTR(*lock_slot);
+        uint32_t s = lk->state;
+        uint32_t wait_ms = 0;
+
+        if (s == 0) {
+            /* Free.  Past the spin phase we take it CONTENDED (see above);
+             * in the spin phase we are not a registered waiter and take
+             * it plain, like the fast path. */
+            uint32_t want = (spins < CL_LOCK_SPIN_YIELDS)
+                            ? me : (me | CL_LOCK_CONTENDED);
+            if (platform_atomic_cas(&lk->state, 0, want))
+                break;
+            continue;
+        }
+
+        if (spins < CL_LOCK_SPIN_YIELDS) {
+            spins++;
+            if (deliver_interrupts && self->interrupt_pending)
+                cl_thread_handle_interrupt(self);   /* may longjmp */
+            platform_thread_yield();
+            /* A spinner is not parked in a safe region, so it must reach
+             * a safepoint itself or a peer's stop-the-world waits out the
+             * whole spin phase; the loop top re-derives the (possibly
+             * moved) lock. */
+            if (self->gc_requested)
+                cl_gc_safepoint();
+            continue;
+        }
+
+        /* Register FIRST, then make sure the CURRENT holder's word carries
+         * CONTENDED, and only then park.  Both orders matter:
+         *
+         *  - registering before the mark means the holder whose word we
+         *    mark cannot release without scanning, and its scan (after
+         *    its store of 0) runs after our registration, so it finds us;
+         *  - marking AFTER registering means the bit is on the word of
+         *    whoever holds the lock NOW.  Marking it before (as the first
+         *    version did, then merely re-checking "state == 0" after
+         *    registering) lost a wakeup in three steps: the marked holder
+         *    released and scanned before we were listed, a spinning
+         *    newcomer took the free lock with a plain word, our re-check
+         *    saw "held" and parked — and the newcomer's release, seeing no
+         *    bit, never scanned.  This is the futex_wait(&val, 2) re-check
+         *    of Drepper's mutex 2, done by hand.
+         *
+         * If the lock is free by the time we look, we do not park at all. */
+        platform_mutex_lock(cl_thread_list_lock);
+        self->wait_obj = *lock_slot;
+        self->wait_lock = CL_NIL;
+        self->wait_kind = 3;
+        platform_mutex_unlock(cl_thread_list_lock);
+        platform_memory_barrier();
+#ifdef DEBUG_THREAD_RACE_HOOKS
+        /* Widen the registered-but-not-yet-marked window on demand so
+         * tests/test_mt_lock_barge_race.sh can force a release plus a
+         * barging re-acquire to land inside it (CLAMIGA_RACE_LOCK_MARK_DELAY_MS). */
+        if (dbg_race_lock_mark_delay_ms() > 0)
+            platform_sleep_ms((uint32_t)dbg_race_lock_mark_delay_ms());
+#endif
+        for (;;) {
+            lk = (CL_Lock *)CL_OBJ_TO_PTR(*lock_slot);
+            s = lk->state;
+            if (s == 0)
+                break;
+            if ((s & CL_LOCK_CONTENDED) ||
+                platform_atomic_cas(&lk->state, s, s | CL_LOCK_CONTENDED))
+                break;
+        }
+        if (s == 0) {
+            wait_deregister(self);
+            continue;
+        }
+        /* An interrupt published before our registration was not
+         * delivered by an unpark (the publisher only unparks a registered
+         * waiter); consume it here rather than park past it. */
+        if (deliver_interrupts && self->interrupt_pending) {
+            wait_deregister(self);
+            lock_abandon_wait(*lock_slot, self);
+            cl_thread_handle_interrupt(self);   /* may longjmp */
+            continue;
+        }
+
+        if (timed) {
+            wait_ms = ms_until(deadline);
+            if (wait_ms == 0) {
+                wait_deregister(self);
+                lock_abandon_wait(*lock_slot, self);
+                return 0;
+            }
+        }
+        if (diag_ms >= 0) {
+            uint32_t d = ms_until(next_report);
+            if (d == 0) d = 1;
+            if (wait_ms == 0 || d < wait_ms) wait_ms = d;
+        }
+
+        wait_park(self, wait_ms);
+        wait_deregister(self);
+
+        if (diag_ms >= 0 && ms_until(next_report) == 0) {
+            /* Report OUTSIDE the safe region (we are): the heap is stable
+             * and *lock_slot holds the forwarded lock. */
+            lock_wait_report(*lock_slot, platform_time_ms() - start, 0);
+            next_report = platform_time_ms() + CL_LOCK_DIAG_REPEAT_MS;
+            reported = 1;
+        }
+        if (deliver_interrupts && self->interrupt_pending) {
+            lock_abandon_wait(*lock_slot, self);
+            cl_thread_handle_interrupt(self);   /* may longjmp */
+        }
+        /* Loop: re-read the state and try again (a barging newcomer may
+         * have taken the lock in between — we re-park, as bordeaux-threads
+         * promises nothing about fairness). */
+    }
+
+    if (reported) {
+        uint32_t total = platform_time_ms() - start;
+        lock_wait_report(*lock_slot, total, 1);
+    }
+    return 1;
+}
+
+/* (mp:acquire-lock lock &optional (wait-p t) timeout) -> bool
+ * With wait-p NIL the lock is tried once.  timeout (seconds, a non-negative
+ * real) bounds a blocking acquire; NIL waits forever, 0 tries once.
+ * Returns T when the lock is held on return, NIL otherwise. */
 static CL_Obj bi_acquire_lock(CL_Obj *args, int n)
 {
     CL_Lock *lk;
-    void *mutex;
-    int wait_p = 1;  /* default: blocking */
+    CL_Thread *self;
+    uint32_t me, s;
+    int wait_p = 1;
+    int timed = 0;
+    uint32_t ms = 0;
 
     if (!CL_LOCK_P(args[0]))
         cl_error(CL_ERR_TYPE, "MP:ACQUIRE-LOCK: argument must be a lock");
-
     if (n > 1 && CL_NULL_P(args[1]))
         wait_p = 0;
+    if (n > 2)
+        timed = parse_timeout_ms(args[2], "MP:ACQUIRE-LOCK", &ms);
 
+    self = cl_get_current_thread();
+    me = LOCK_OWNER_WORD(self);
     lk = (CL_Lock *)CL_OBJ_TO_PTR(args[0]);
-    if (lk->lock_id >= CL_MAX_LOCKS)
-        cl_error(CL_ERR_GENERAL, "MP:ACQUIRE-LOCK: invalid lock id");
 
-    mutex = cl_lock_table[lk->lock_id];
-    if (!mutex)
-        cl_error(CL_ERR_GENERAL, "MP:ACQUIRE-LOCK: lock has been destroyed");
-
-    if (wait_p) {
-        /* Blocking acquire — bracket with safe region so a concurrent
-         * stop-the-world GC does not deadlock waiting on this thread. */
-        CL_Thread *self = CL_MT() ? cl_get_current_thread() : NULL;
-        uint32_t lock_id = lk->lock_id;
-        if (self) {
-            self->wait_kind = 3;
-            self->wait_lock_id = (int)lock_id;
-            self->wait_cv_id = -1;
-        }
-        if (!self) {
-            platform_mutex_lock(mutex);
-        } else {
-            /* Interruptible acquire: a plain platform_mutex_lock never
-             * runs another safepoint, so MP:DESTROY-THREAD /
-             * MP:INTERRUPT-THREAD aimed at a thread parked here was
-             * deferred until the lock came free — forever, if it never
-             * did.  Trylock with a yield-spin phase first (typical MP
-             * critical sections are short, so contended handoffs stay
-             * fast), then PARK on the shared cl_lock_park_cv:
-             * bi_release_lock broadcasts it whenever waiters are
-             * registered, so a handoff wakes us immediately (the 10ms
-             * sleep-poll this replaces collapsed sento message throughput
-             * ~6x — threads slept out their quantum long after the lock
-             * came free).  The timed backstop bounds interrupt delivery
-             * and self-heals any lost-wake edge; wake_interrupted_waiter
-             * additionally broadcasts the parking cv on interrupt/destroy
-             * so delivery is prompt, not backstop-bound.  The interrupt
-             * handler runs OUTSIDE the safe region (it touches the heap
-             * and may longjmp on a destroy). */
-            int spins = 0;
-            int32_t diag_ms = lock_diag_threshold_ms();
-            uint32_t wait_start = 0, next_report = 0;
-            int waited = 0;
-            cl_gc_enter_safe_region();
-            while (platform_mutex_trylock(mutex) != 0) {
-                if (diag_ms >= 0) {
-                    uint32_t now = platform_time_ms();
-                    if (!waited) {
-                        waited = 1;
-                        wait_start = now;
-                        next_report = now + (uint32_t)diag_ms;
-                    } else if ((int32_t)(now - next_report) >= 0) {
-                        /* Report OUTSIDE the safe region: a peer's
-                         * compacting GC may be relocating the heap while
-                         * we are parked, and the report reads heap
-                         * objects.  args[0] is GC-rooted (VM stack), so
-                         * re-reading it inside the report yields the
-                         * forwarded lock object. */
-                        cl_gc_leave_safe_region();
-                        lock_wait_report(args[0], lock_id,
-                                         now - wait_start, 0);
-                        cl_gc_enter_safe_region();
-                        next_report = now + CL_LOCK_DIAG_REPEAT_MS;
-                    }
-                }
-                if (self->interrupt_pending) {
-                    cl_gc_leave_safe_region();
-                    self->wait_kind = 0;
-                    cl_thread_handle_interrupt(self);  /* longjmps on destroy */
-                    self->wait_kind = 3;
-                    self->wait_lock_id = (int)lock_id;
-                    cl_gc_enter_safe_region();
-                }
-                if (spins < 256) {
-                    spins++;
-                    platform_thread_yield();
-                } else {
-                    /* Register, then re-try under the parking mutex: a
-                     * release between the failed trylock above and the
-                     * registration below reads waiters BEFORE we bump it
-                     * and won't broadcast — the re-try closes that gap
-                     * (the lock it released is free now).  A release that
-                     * reads waiters AFTER the bump serializes on the
-                     * parking mutex, so its broadcast can't slip into the
-                     * gap between our re-try and the wait. */
-                    platform_mutex_lock(cl_lock_park_mutex);
-                    cl_lock_park_waiters++;
-                    if (platform_mutex_trylock(mutex) == 0) {
-                        cl_lock_park_waiters--;
-                        platform_mutex_unlock(cl_lock_park_mutex);
-                        break;
-                    }
-                    platform_condvar_wait_timeout(cl_lock_park_cv,
-                                                  cl_lock_park_mutex, 100);
-                    cl_lock_park_waiters--;
-                    platform_mutex_unlock(cl_lock_park_mutex);
-                }
-            }
-            cl_gc_leave_safe_region();
-            if (waited) {
-                /* `waited` is only set when the diagnostic is enabled.
-                 * Report the total wait once the acquire finally succeeds,
-                 * so a stall's duration is measured, not eyeballed.  We
-                 * are outside the safe region here — heap reads are safe. */
-                uint32_t total = platform_time_ms() - wait_start;
-                if (total >= (uint32_t)diag_ms)
-                    lock_wait_report(args[0], lock_id, total, 1);
-            }
-        }
-        if (self) self->wait_kind = 0;
-        /* Owner tracking — see thread.h.  Set single-threaded too: the
-         * finalize-while-held hazard (gc_finalize_dead TYPE_LOCK) does
-         * not need a second thread to bite.  Depth counts nested
-         * acquires so a recursive lock stays "held" until it has been
-         * released as many times as it was acquired. */
-        cl_lock_held[lock_id] = cl_get_current_thread();
-        cl_lock_depth[lock_id]++;
-        return CL_T;
-    } else {
-        if (platform_mutex_trylock(mutex) != 0)
-            return CL_NIL;
-        cl_lock_held[lk->lock_id] = cl_get_current_thread();
-        cl_lock_depth[lk->lock_id]++;
+    /* Fast path: free -> ours, one CAS. */
+    if (platform_atomic_cas(&lk->state, 0, me)) {
+        lk->depth = 1;
         return CL_T;
     }
+    s = lk->state;
+    if (LOCK_OWNER_OF(s) == me) {
+        if (lk->flags & CL_LOCK_FLAG_RECURSIVE) {
+            lk->depth++;
+            return CL_T;
+        }
+        cl_error(CL_ERR_GENERAL,
+                 "MP:ACQUIRE-LOCK: the calling thread already holds this "
+                 "lock (a plain lock is not re-entrant; use "
+                 "MP:MAKE-RECURSIVE-LOCK for nested acquires)");
+    }
+    if (!wait_p)
+        return CL_NIL;
+    if (timed && ms == 0)
+        return CL_NIL;    /* one attempt was made above */
+
+    if (!lock_acquire_slow(&args[0], self, timed, ms, 1))
+        return CL_NIL;
+    lk = (CL_Lock *)CL_OBJ_TO_PTR(args[0]);   /* re-derive: we parked */
+    lk->depth = 1;
+    return CL_T;
 }
 
 /* (mp:release-lock lock) -> nil */
 static CL_Obj bi_release_lock(CL_Obj *args, int n)
 {
     CL_Lock *lk;
-    void *mutex;
+    CL_Thread *self;
     CL_UNUSED(n);
 
     if (!CL_LOCK_P(args[0]))
         cl_error(CL_ERR_TYPE, "MP:RELEASE-LOCK: argument must be a lock");
 
+    self = cl_get_current_thread();
     lk = (CL_Lock *)CL_OBJ_TO_PTR(args[0]);
-    if (lk->lock_id >= CL_MAX_LOCKS)
-        cl_error(CL_ERR_GENERAL, "MP:RELEASE-LOCK: invalid lock id");
-
-    mutex = cl_lock_table[lk->lock_id];
-    if (!mutex)
-        cl_error(CL_ERR_GENERAL, "MP:RELEASE-LOCK: lock has been destroyed");
-
-    /* Clear owner tracking BEFORE the unlock (owner-only mutation while
-     * still holding — see thread.h).  Only clear the owner once the nested
-     * depth reaches 0, so a recursively-held lock stays tracked as held
-     * until it has been released as many times as it was acquired. */
-    if (cl_lock_depth[lk->lock_id] > 0) cl_lock_depth[lk->lock_id]--;
-    if (cl_lock_depth[lk->lock_id] == 0)
-        cl_lock_held[lk->lock_id] = NULL;
-    platform_mutex_unlock(mutex);
-    /* Wake parked contended acquirers (see bi_acquire_lock).  The racy
-     * waiters read keeps the uncontended path at zero extra cost; a
-     * parker's registration is ordered before its final trylock (both
-     * under the parking mutex), so if its trylock saw the mutex still
-     * locked, the unlock above — and hence this read — happens after the
-     * bump and sees it.  Taking the parking mutex before broadcasting
-     * closes the register-vs-park window: a registrant that hasn't parked
-     * yet still holds the parking mutex, so the broadcast waits for it. */
-    platform_memory_barrier();
-    if (cl_lock_park_waiters > 0) {
-        platform_mutex_lock(cl_lock_park_mutex);
-        platform_condvar_broadcast(cl_lock_park_cv);
-        platform_mutex_unlock(cl_lock_park_mutex);
+    if (LOCK_OWNER_OF(lk->state) != LOCK_OWNER_WORD(self)) {
+        if (lk->state == 0)
+            cl_error(CL_ERR_GENERAL,
+                     "MP:RELEASE-LOCK: the lock is not held");
+        cl_error(CL_ERR_GENERAL,
+                 "MP:RELEASE-LOCK: the lock is held by another thread "
+                 "(only the owner may release it)");
     }
+    if (lk->depth > 1) {
+        lk->depth--;
+        return CL_NIL;
+    }
+    lk->depth = 0;
+    lock_release_core(args[0]);
     return CL_NIL;
 }
 
 /* ================================================================
  * Condition variable builtins
+ *
+ * A condition variable is a heap word too (CL_CondVar): a `waiters`
+ * count and a name.  A waiter registers (wait_kind 1/2, wait_obj = cv,
+ * wait_lock = lock) and parks on its own handle; notify scans the thread
+ * list for one (or every) thread registered on this cv, clears its
+ * wait_kind and unparks it.  "Notified" versus "timed out" is decided by
+ * the wait_kind field under cl_thread_list_lock — the same lock the
+ * notifier writes it under — so a notify landing at the timeout instant
+ * counts as a notify, never both or neither.
  * ================================================================ */
 
 /* (mp:make-condition-variable &optional name) -> cv */
 static CL_Obj bi_make_condition_variable(CL_Obj *args, int n)
 {
     CL_Obj name = (n > 0) ? args[0] : CL_NIL;
-    void *cv_handle = NULL;
-    int cv_id;
     CL_CondVar *cv;
 
-    if (platform_condvar_init(&cv_handle) != 0)
-        cl_error(CL_ERR_GENERAL,
-                 "MP:MAKE-CONDITION-VARIABLE: failed to create condvar");
-
-    /* `name` is a plain CL_Obj C local, not itself a GC root: both
-     * cl_gc_reclaim_young() and cl_gc() below are moving collections under
-     * the generational collector, so it must stay GC-protected across this
-     * entire span, not just around the final cl_alloc(). */
     CL_GC_PROTECT(name);
-    cv_id = cl_condvar_table_alloc(cv_handle);
-    if (cv_id < 0) {
-        /* See bi_make_lock for rationale on the minor-first GC retry. */
-        cl_gc_reclaim_young();
-        cv_id = cl_condvar_table_alloc(cv_handle);
-    }
-    if (cv_id < 0) {
-        cl_gc();
-        cv_id = cl_condvar_table_alloc(cv_handle);
-    }
-    if (cv_id < 0) {
-        CL_GC_UNPROTECT(1);
-        platform_condvar_destroy(cv_handle);
-        cl_error(CL_ERR_GENERAL,
-                 "MP:MAKE-CONDITION-VARIABLE: condvar table full (max %d)",
-                 CL_MAX_CONDVARS);
-    }
-
     cv = (CL_CondVar *)cl_alloc(TYPE_CONDVAR, sizeof(CL_CondVar));
     CL_GC_UNPROTECT(1);
-    if (!cv) {
-        cl_condvar_table_free(cv_id);
-        platform_condvar_destroy(cv_handle);
+    if (!cv)
         cl_error(CL_ERR_STORAGE,
                  "MP:MAKE-CONDITION-VARIABLE: cannot allocate condvar object");
-    }
 
-    cv->condvar_id = (uint32_t)cv_id;
+    cv->waiters = 0;
     cv->name = name;
     return CL_PTR_TO_OBJ(cv);
 }
 
 /* (mp:condition-wait cv lock &optional timeout) -> bool
- * timeout is in seconds (real number).  Returns T if signaled, NIL if timed out. */
+ * timeout is in seconds (real number).  Returns T when notified (or
+ * woken spuriously by an interrupt), NIL when the timeout elapsed.
+ * The lock must be held by the caller; it is released for the duration
+ * of the wait and re-acquired at the same recursion depth before return. */
 static CL_Obj bi_condition_wait(CL_Obj *args, int n)
 {
     CL_CondVar *cv;
     CL_Lock *lk;
-    void *cv_handle, *mutex;
+    CL_Thread *self;
+    uint32_t me, saved_depth;
+    int timed = 0;
+    uint32_t ms = 0, deadline = 0;
+    CL_Obj result = CL_T;
 
     if (!CL_CONDVAR_P(args[0]))
         cl_error(CL_ERR_TYPE,
@@ -1433,24 +1645,16 @@ static CL_Obj bi_condition_wait(CL_Obj *args, int n)
     if (!CL_LOCK_P(args[1]))
         cl_error(CL_ERR_TYPE,
                  "MP:CONDITION-WAIT: second argument must be a lock");
+    if (n > 2)
+        timed = parse_timeout_ms(args[2], "MP:CONDITION-WAIT", &ms);
 
-    cv = (CL_CondVar *)CL_OBJ_TO_PTR(args[0]);
+    self = cl_get_current_thread();
+    me = LOCK_OWNER_WORD(self);
     lk = (CL_Lock *)CL_OBJ_TO_PTR(args[1]);
-
-    /* Bounds-check the ids before indexing (like acquire/release-lock):
-     * a stale or FASL-reconstructed wrapper with an out-of-range id was
-     * an OOB read instead of a clean error. */
-    if (cv->condvar_id >= CL_MAX_CONDVARS)
-        cl_error(CL_ERR_GENERAL, "MP:CONDITION-WAIT: invalid condvar id");
-    if (lk->lock_id >= CL_MAX_LOCKS)
-        cl_error(CL_ERR_GENERAL, "MP:CONDITION-WAIT: invalid lock id");
-
-    cv_handle = cl_condvar_table[cv->condvar_id];
-    mutex = cl_lock_table[lk->lock_id];
-
-    if (!cv_handle || !mutex)
+    if (LOCK_OWNER_OF(lk->state) != me)
         cl_error(CL_ERR_GENERAL,
-                 "MP:CONDITION-WAIT: condvar or lock has been destroyed");
+                 "MP:CONDITION-WAIT: the calling thread does not hold the "
+                 "lock (acquire it before waiting)");
 
     /* If we're about to park while holding an internal rwlock reader
      * (compiler tables), every thread that needs the matching writer lock
@@ -1464,157 +1668,153 @@ static CL_Obj bi_condition_wait(CL_Obj *args, int n)
      * dead code implying protection that doesn't exist.  Re-add it once a
      * cl_tables_rdlock_at()-style counted wrapper exists for the package
      * rwlock (and cl_tables_dump_rdlock_holders walks it too). */
-    if (CL_MT() && cl_get_current_thread()->rdlock_tables_held > 0) {
+    if (CL_MT() && self->rdlock_tables_held > 0) {
         cl_tables_dump_rdlock_holders(
             "[BUG] mp:condition-wait while holding an internal rwlock "
             "reader (tables):");
         cl_capture_backtrace();
-        fprintf(stderr, "%s", cl_get_current_thread()->backtrace_buf);
+        fprintf(stderr, "%s", self->backtrace_buf);
         fflush(stderr);
         abort();
     }
 
-    if (n > 2 && !CL_NULL_P(args[2])) {
-        /* Timed wait: convert seconds to milliseconds */
-        double secs = cl_to_double(args[2]);
-        uint32_t ms;
-        int timed_out;
-        CL_Thread *self = CL_MT() ? cl_get_current_thread() : NULL;
-        uint32_t lock_id = lk->lock_id;
-        if (secs <= 0.0)
-            ms = 0;
-        else if (secs > 4294967.0)
-            ms = 0xFFFFFFFFu;
-        else
-            ms = (uint32_t)(secs * 1000.0);
-        if (self) {
-            self->wait_kind = 2;
-            self->wait_cv_id = (int)cv->condvar_id;
-            self->wait_lock_id = (int)lock_id;
-            /* Pre-park interrupt check, ordered AFTER publishing the wait
-             * registration above.  Consumed HERE, not deferred to "the
-             * next safepoint" — see the untimed path below for the
-             * Amiga-JIT rationale. */
-            platform_memory_barrier();
-            if (self->interrupt_pending) {
-                self->wait_kind = 0;
-                cl_thread_handle_interrupt(self);  /* longjmps on destroy */
-                return CL_T;   /* interrupt ran — spurious wakeup */
-            }
+    saved_depth = lk->depth;
+    if (timed)
+        deadline = platform_time_ms() + ms;
+
+    /* Register on the cv (under the list lock, the notifier's lock too). */
+    cv = (CL_CondVar *)CL_OBJ_TO_PTR(args[0]);
+    platform_mutex_lock(cl_thread_list_lock);
+    self->wait_obj = args[0];
+    self->wait_lock = args[1];
+    self->wait_kind = timed ? 2 : 1;
+    platform_atomic_inc(&cv->waiters);
+    platform_mutex_unlock(cl_thread_list_lock);
+
+    /* Pre-park interrupt check.  The publisher sets interrupt_pending
+     * under cl_thread_list_lock and unparks a REGISTERED waiter, so an
+     * interrupt published before our registration reaches us only here.
+     * Consume it HERE, not at "the next safepoint": on the Amiga JIT path a
+     * caller loop like (loop (mp:condition-wait cv lk)) contains NO
+     * safepoints (JIT'd code polls nothing; builtin calls go through
+     * cl_vm_apply without a safepoint), so returning T alone spun the loop
+     * forever and a destroy was never delivered — the FS-UAE hang that
+     * caught this.  A destroy longjmps out with the lock still held, so the
+     * caller's UNWIND-PROTECT releases it. */
+    platform_memory_barrier();
+    if (self->interrupt_pending) {
+        platform_mutex_lock(cl_thread_list_lock);
+        if (self->wait_kind != 0) {   /* not already picked by a notifier */
+            self->wait_kind = 0;
+            cv = (CL_CondVar *)CL_OBJ_TO_PTR(args[0]);
+            platform_atomic_dec(&cv->waiters);
         }
-        cl_gc_enter_safe_region();
-        timed_out = platform_condvar_wait_timeout(cv_handle, mutex, ms);
-        cl_gc_leave_safe_region();
-        if (self) self->wait_kind = 0;
-        /* The wait re-acquired the user mutex; whoever held it in between
-         * cleared/claimed the owner entry — re-claim it (see thread.h).
-         * The underlying condvar wait always re-locks at depth 1,
-         * regardless of any recursion depth held before the wait. */
-        cl_lock_held[lock_id] = cl_get_current_thread();
-        cl_lock_depth[lock_id] = 1;
-        /* Post-wake delivery (see the untimed path). */
-        if (self && self->interrupt_pending)
-            cl_thread_handle_interrupt(self);
-        return timed_out ? CL_NIL : CL_T;
+        self->wait_obj = CL_NIL;
+        self->wait_lock = CL_NIL;
+        platform_mutex_unlock(cl_thread_list_lock);
+        cl_thread_handle_interrupt(self);  /* longjmps on destroy */
+        return CL_T;   /* interrupt ran — spurious wakeup */
     }
 
-    {
-        CL_Thread *self = CL_MT() ? cl_get_current_thread() : NULL;
-        uint32_t lock_id = lk->lock_id;
-        if (self) {
-            self->wait_kind = 1;
-            self->wait_cv_id = (int)cv->condvar_id;
-            self->wait_lock_id = (int)lock_id;
-            /* Pre-park interrupt check (I5).  Ordering matters: the wait
-             * registration above is published BEFORE this read, and the
-             * interrupt publisher stores interrupt_pending BEFORE reading
-             * the registration.  So either we see the flag here and skip
-             * the park (spurious wakeup — the interrupt runs at the next
-             * safepoint), or the publisher sees our registration and
-             * wakes us via lock-then-broadcast on this cv.  Without this
-             * pair, an interrupt/destroy aimed at a parked thread was
-             * deferred until someone else happened to notify the cv —
-             * forever, for a wait that is never notified. */
-            platform_memory_barrier();
-            if (self->interrupt_pending) {
-                /* Consume the interrupt HERE, not at "the next safepoint":
-                 * on the Amiga JIT path a caller loop like
-                 * (loop (mp:condition-wait cv lk)) contains NO safepoints
-                 * (JIT'd code polls nothing; builtin calls go through
-                 * cl_vm_apply without a safepoint), so returning T just
-                 * spun the loop through this check forever and the
-                 * destroy was never delivered — the FS-UAE hang that
-                 * caught this.  A destroy longjmps out while the caller
-                 * holds the wait mutex — identical to a loop-safepoint
-                 * delivery, which also runs with the mutex re-acquired. */
-                self->wait_kind = 0;
-                cl_thread_handle_interrupt(self);  /* longjmps on destroy */
-                return CL_T;   /* interrupt ran — spurious wakeup */
-            }
+    /* Release the lock fully (any recursion depth) and park. */
+    lk = (CL_Lock *)CL_OBJ_TO_PTR(args[1]);
+    lk->depth = 0;
+    lock_release_core(args[1]);
+
+    for (;;) {
+        uint32_t wait_ms = 0;
+        int done = 0;
+        if (timed) {
+            wait_ms = ms_until(deadline);
+            if (wait_ms > 0)
+                wait_park(self, wait_ms);
+        } else {
+            wait_park(self, 0);
         }
-        cl_gc_enter_safe_region();
-        platform_condvar_wait(cv_handle, mutex);
-        cl_gc_leave_safe_region();
-        if (self) self->wait_kind = 0;
-        /* Re-claim owner tracking after the internal re-acquire.  The
-         * underlying condvar wait always re-locks at depth 1, regardless
-         * of any recursion depth held before the wait. */
-        cl_lock_held[lock_id] = cl_get_current_thread();
-        cl_lock_depth[lock_id] = 1;
-        /* Post-wake delivery (same JIT-no-safepoint rationale as above):
-         * the publisher's wakeup must lead to consumption HERE — the
-         * caller's predicate loop may never reach a safepoint. */
-        if (self && self->interrupt_pending)
-            cl_thread_handle_interrupt(self);
+        /* Resolve the wake under the notifier's lock. */
+        platform_mutex_lock(cl_thread_list_lock);
+        if (self->wait_kind == 0) {
+            /* A notifier picked us: it cleared wait_kind, decremented the
+             * waiter count and deposited our token. */
+            result = CL_T;
+            done = 1;
+        } else if (self->interrupt_pending ||
+                   (timed && ms_until(deadline) == 0)) {
+            self->wait_kind = 0;
+            cv = (CL_CondVar *)CL_OBJ_TO_PTR(args[0]);
+            platform_atomic_dec(&cv->waiters);
+            result = self->interrupt_pending ? CL_T : CL_NIL;
+            done = 1;
+        }
+        if (done) {
+            self->wait_obj = CL_NIL;
+            self->wait_lock = CL_NIL;
+        }
+        platform_mutex_unlock(cl_thread_list_lock);
+        if (done) break;
+        /* Spurious return (a stale token from an earlier wake): still
+         * registered, deadline not reached — park again. */
     }
-    return CL_T;
+
+    /* Re-acquire the lock at the saved depth.  Interrupts are NOT consumed
+     * inside this acquire: a destroy must unwind with the lock held (the
+     * caller's UNWIND-PROTECT releases it), exactly as a safepoint delivery
+     * would run with the lock re-acquired. */
+    lk = (CL_Lock *)CL_OBJ_TO_PTR(args[1]);
+    if (!platform_atomic_cas(&lk->state, 0, me))
+        lock_acquire_slow(&args[1], self, 0, 0, 0);
+    lk = (CL_Lock *)CL_OBJ_TO_PTR(args[1]);
+    lk->depth = saved_depth;
+
+    /* Post-wake delivery (same JIT-no-safepoint rationale as above): the
+     * publisher's wakeup must lead to consumption HERE — the caller's
+     * predicate loop may never reach a safepoint. */
+    if (self->interrupt_pending)
+        cl_thread_handle_interrupt(self);
+    return result;
+}
+
+/* Wake one (all == 0) or every thread registered on the condvar in
+ * `cv_obj`.  The `waiters` fast path keeps a notify with nobody waiting
+ * free of the list lock — most of sento's notifies on the reply path. */
+static void condvar_wake(CL_Obj cv_obj, int all)
+{
+    CL_CondVar *cv = (CL_CondVar *)CL_OBJ_TO_PTR(cv_obj);
+    CL_Thread *t;
+
+    if (cv->waiters == 0)
+        return;
+    platform_mutex_lock(cl_thread_list_lock);
+    for (t = cl_thread_list; t; t = t->next) {
+        if ((t->wait_kind == 1 || t->wait_kind == 2) && t->wait_obj == cv_obj) {
+            t->wait_kind = 0;
+            platform_atomic_dec(&cv->waiters);
+            if (t->park) platform_unpark(t->park);
+            if (!all) break;
+        }
+    }
+    platform_mutex_unlock(cl_thread_list_lock);
 }
 
 /* (mp:condition-notify cv) -> nil */
 static CL_Obj bi_condition_notify(CL_Obj *args, int n)
 {
-    CL_CondVar *cv;
-    void *cv_handle;
     CL_UNUSED(n);
-
     if (!CL_CONDVAR_P(args[0]))
         cl_error(CL_ERR_TYPE,
                  "MP:CONDITION-NOTIFY: argument must be a condition-variable");
-
-    cv = (CL_CondVar *)CL_OBJ_TO_PTR(args[0]);
-    if (cv->condvar_id >= CL_MAX_CONDVARS)
-        cl_error(CL_ERR_GENERAL, "MP:CONDITION-NOTIFY: invalid condvar id");
-    cv_handle = cl_condvar_table[cv->condvar_id];
-
-    if (!cv_handle)
-        cl_error(CL_ERR_GENERAL,
-                 "MP:CONDITION-NOTIFY: condvar has been destroyed");
-
-    platform_condvar_signal(cv_handle);
+    condvar_wake(args[0], 0);
     return CL_NIL;
 }
 
 /* (mp:condition-broadcast cv) -> nil */
 static CL_Obj bi_condition_broadcast(CL_Obj *args, int n)
 {
-    CL_CondVar *cv;
-    void *cv_handle;
     CL_UNUSED(n);
-
     if (!CL_CONDVAR_P(args[0]))
         cl_error(CL_ERR_TYPE,
                  "MP:CONDITION-BROADCAST: argument must be a condition-variable");
-
-    cv = (CL_CondVar *)CL_OBJ_TO_PTR(args[0]);
-    if (cv->condvar_id >= CL_MAX_CONDVARS)
-        cl_error(CL_ERR_GENERAL, "MP:CONDITION-BROADCAST: invalid condvar id");
-    cv_handle = cl_condvar_table[cv->condvar_id];
-
-    if (!cv_handle)
-        cl_error(CL_ERR_GENERAL,
-                 "MP:CONDITION-BROADCAST: condvar has been destroyed");
-
-    platform_condvar_broadcast(cv_handle);
+    condvar_wake(args[0], 1);
     return CL_NIL;
 }
 
@@ -1622,71 +1822,21 @@ static CL_Obj bi_condition_broadcast(CL_Obj *args, int n)
  * Thread interruption
  * ================================================================ */
 
-/* Wake a target parked in MP:CONDITION-WAIT after publishing an
- * interrupt/destroy to it (I5).  The wait state (kind + cv/lock ids) was
- * captured under cl_thread_list_lock right after the interrupt_pending
- * store; this runs AFTER releasing it (blocking on a user mutex while
- * holding the registry lock would stall every thread operation).
- *
- * Guarantee: lock-then-broadcast on the target's wait mutex.  During the
- * target's pre-park window it HOLDS that mutex, so our acquire succeeds
- * only once the target has atomically parked (condvar wait releases it)
- * — the broadcast then reliably reaches it.  If the target instead saw
- * interrupt_pending in its own pre-park check (bi_condition_wait), it
- * never parks and no wakeup is needed.  The trylock is bounded: if some
- * THIRD thread holds the mutex long-term the target cannot be pre-park
- * (it would hold the mutex itself), so an unlocked broadcast suffices.
- *
- * The captured ids are inherently racy (the target publishes wait state
- * without the registry lock) and the table slots can be freed/reused
- * after capture — a mis-aimed broadcast is a spurious wakeup, which
- * condition-wait users must tolerate anyway. */
-static void wake_interrupted_waiter(int wait_kind, int cv_id, int lock_id)
+/* Wake a target parked in MP:CONDITION-WAIT or a blocking MP:ACQUIRE-LOCK
+ * after publishing an interrupt/destroy to it.  Called with
+ * cl_thread_list_lock HELD, right after the interrupt_pending store: the
+ * target registers its wait under the same lock and checks the flag
+ * AFTER registering, so either we see its registration here and unpark
+ * it (a token that its park consumes even if it has not parked yet), or
+ * it sees the flag in its own pre-park check and never parks.  No timed
+ * backstop is needed.  The target consumes the interrupt inside the
+ * waiting builtin itself (for a condition-wait: after re-acquiring its
+ * lock). */
+static void wake_interrupted_waiter(CL_Thread *target)
 {
-    void *cv_handle, *mutex;
-    if (wait_kind == 3) {
-        /* Lock-acquire park (bi_acquire_lock): waiters share the global
-         * parking cv.  Broadcast under the parking mutex so a target
-         * mid-registration (holds the mutex until its condvar wait
-         * releases it) can't miss the wake; its next loop round consumes
-         * the interrupt.  The 100ms timed backstop covers the pre-spin
-         * window where the target isn't parked yet. */
-        platform_mutex_lock(cl_lock_park_mutex);
-        platform_condvar_broadcast(cl_lock_park_cv);
-        platform_mutex_unlock(cl_lock_park_mutex);
-        return;
-    }
-    if (wait_kind != 1 && wait_kind != 2)
-        return;   /* not cv-parked */
-    if (cv_id < 0 || cv_id >= CL_MAX_CONDVARS)
-        return;
-    cv_handle = cl_condvar_table[cv_id];
-    if (!cv_handle)
-        return;
-    mutex = (lock_id >= 0 && lock_id < CL_MAX_LOCKS)
-                ? cl_lock_table[lock_id] : NULL;
-    if (mutex) {
-        int tries, got = 0;
-        /* The window where the target is genuinely about to park (holds
-         * its own mutex, about to call condvar_wait) is only a few
-         * instructions wide — a long bound here does not improve the odds
-         * of catching it.  It does, however, impose worst-case latency on
-         * the caller (MP:INTERRUPT-THREAD/MP:DESTROY-THREAD) whenever the
-         * target is merely busy holding the mutex for unrelated reasons
-         * and never parks.  Keep the bound short (20 x 10ms = 200ms): per
-         * the file header comment above, an unlocked broadcast is safe
-         * and sufficient once some other thread holds the mutex long-term. */
-        cl_gc_enter_safe_region();
-        for (tries = 0; tries < 20; tries++) {
-            if (platform_mutex_trylock(mutex) == 0) { got = 1; break; }
-            platform_sleep_ms(10);
-        }
-        cl_gc_leave_safe_region();
-        platform_condvar_broadcast(cv_handle);
-        if (got) platform_mutex_unlock(mutex);
-    } else {
-        platform_condvar_broadcast(cv_handle);
-    }
+    if ((target->wait_kind == 1 || target->wait_kind == 2 ||
+         target->wait_kind == 3) && target->park)
+        platform_unpark(target->park);
 }
 
 /* (mp:interrupt-thread thread function) -> t */
@@ -1742,29 +1892,13 @@ static CL_Obj bi_interrupt_thread(CL_Obj *args, int n)
      * flag order still needs an explicit barrier — on ARM64 the two
      * stores can otherwise become visible flag-first and the target
      * consumes pending with a stale (NIL) func, silently dropping the
-     * interrupt.
-     *
-     * Parked targets (mp:condition-wait, blocking mp:acquire-lock) are
-     * woken via wake_interrupted_waiter below (I5): cv-parked threads get
-     * their wait cv broadcast, lock-parked threads get the shared parking
-     * cv broadcast, and both consume the interrupt inside the waiting
-     * builtin itself. */
+     * interrupt. */
     target->interrupt_func = func;
     platform_memory_barrier();
     target->interrupt_pending = 1;
-    /* Capture the target's wait registration for the parked-thread wakeup
-     * (I5).  The barrier orders the pending store before these loads —
-     * paired with the target's publish-registration-then-check-pending
-     * sequence in bi_condition_wait, at least one side always observes
-     * the other. */
     platform_memory_barrier();
-    {
-        int t_kind = target->wait_kind;
-        int t_cv   = target->wait_cv_id;
-        int t_lk   = target->wait_lock_id;
-        platform_mutex_unlock(cl_thread_list_lock);
-        wake_interrupted_waiter(t_kind, t_cv, t_lk);
-    }
+    wake_interrupted_waiter(target);
+    platform_mutex_unlock(cl_thread_list_lock);
 
     return CL_T;
 }
@@ -1811,15 +1945,9 @@ static CL_Obj bi_destroy_thread(CL_Obj *args, int n)
     target->destroy_requested = 1;
     platform_memory_barrier();
     target->interrupt_pending = 1;
-    /* Parked-thread wakeup — same protocol as MP:INTERRUPT-THREAD. */
     platform_memory_barrier();
-    {
-        int t_kind = target->wait_kind;
-        int t_cv   = target->wait_cv_id;
-        int t_lk   = target->wait_lock_id;
-        platform_mutex_unlock(cl_thread_list_lock);
-        wake_interrupted_waiter(t_kind, t_cv, t_lk);
-    }
+    wake_interrupted_waiter(target);
+    platform_mutex_unlock(cl_thread_list_lock);
 
     return CL_T;
 }
@@ -1853,6 +1981,31 @@ static CL_Obj bi_lock_name(CL_Obj *args, int n)
 
     lk = (CL_Lock *)CL_OBJ_TO_PTR(args[0]);
     return lk->name;
+}
+
+/* (mp::%condvar-waiters cv) -> fixnum
+ * The number of threads currently registered as waiting on CV.  A test /
+ * triage hook: after every waiter has returned (notified, timed out or
+ * interrupted) it must read 0 — a non-zero count with nobody waiting is a
+ * bookkeeping bug in the wait/notify protocol. */
+static CL_Obj bi_condvar_waiters(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    if (!CL_CONDVAR_P(args[0]))
+        cl_error(CL_ERR_TYPE,
+                 "MP::%%CONDVAR-WAITERS: argument must be a condition-variable");
+    return CL_MAKE_FIXNUM((int32_t)((CL_CondVar *)CL_OBJ_TO_PTR(args[0]))->waiters);
+}
+
+/* (mp::%lock-held-p lock) -> bool
+ * Whether LOCK is currently held by any thread (racy by nature; a test /
+ * triage hook — the ownership check itself lives in RELEASE-LOCK). */
+static CL_Obj bi_lock_held_p(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    if (!CL_LOCK_P(args[0]))
+        cl_error(CL_ERR_TYPE, "MP::%%LOCK-HELD-P: argument must be a lock");
+    return ((CL_Lock *)CL_OBJ_TO_PTR(args[0]))->state != 0 ? CL_T : CL_NIL;
 }
 
 /* (mp:threadp obj) -> bool */
@@ -2077,7 +2230,7 @@ void cl_builtins_thread_init(void)
 
     mp_defun("MAKE-LOCK",               bi_make_lock,               0, 1);
     mp_defun("%MAKE-RECURSIVE-LOCK",    bi_make_recursive_lock,     0, 1);
-    mp_defun("ACQUIRE-LOCK",            bi_acquire_lock,            1, 2);
+    mp_defun("ACQUIRE-LOCK",            bi_acquire_lock,            1, 3);
     mp_defun("RELEASE-LOCK",            bi_release_lock,            1, 1);
 
     mp_defun("MAKE-CONDITION-VARIABLE",  bi_make_condition_variable, 0, 1);
@@ -2096,6 +2249,8 @@ void cl_builtins_thread_init(void)
     mp_defun("CONDITION-VARIABLE-P",     bi_condition_variable_p,    1, 1);
 
     /* Compare-and-swap cell primitives (MP:COMPARE-AND-SWAP expands to these) */
+    mp_defun_internal("%CONDVAR-WAITERS",  bi_condvar_waiters,  1, 1);
+    mp_defun_internal("%LOCK-HELD-P",      bi_lock_held_p,      1, 1);
     mp_defun_internal("%CAS-CAR",          bi_cas_car,          3, 3);
     mp_defun_internal("%CAS-CDR",          bi_cas_cdr,          3, 3);
     mp_defun_internal("%CAS-SVREF",        bi_cas_svref,        4, 4);

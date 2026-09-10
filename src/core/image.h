@@ -27,7 +27,10 @@
 #include "types.h"
 
 #define CL_IMAGE_MAGIC   0x434C494Du   /* "CLIM" */
-#define CL_IMAGE_VERSION 3             /* bump on ANY format change.
+#define CL_IMAGE_VERSION 4             /* bump on ANY format change.
+                                        * v4: CL_Lock / CL_CondVar became
+                                        * heap words (state/depth/waiters
+                                        * instead of side-table ids).
                                         * v3: CL_Package gained the
                                         * `bindings` slot (demand-interned
                                         * binding tables, bindtab.c).

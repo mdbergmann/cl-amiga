@@ -126,6 +126,35 @@ cat > "$WORK/heavy.lisp" <<LISPEOF
 LISPEOF
 run_case "no_leak_after_clos_streams_threads" "$WORK/heavy.lisp"
 
+# --- MP locks / condition variables are heap words: no off-heap primitive --
+# 200,000 of each, some left held or with a registered-then-woken waiter,
+# plus thread create/exit cycles (each worker allocates and frees its own
+# park handle) must leave nothing outstanding.
+cat > "$WORK/locks.lisp" <<'LISPEOF'
+(let ((v (make-array 400000)))
+  (dotimes (i 200000)
+    (setf (aref v i) (mp:make-lock)
+          (aref v (+ i 200000)) (mp:make-condition-variable)))
+  (mp:acquire-lock (aref v 0))            ; left held: still just garbage
+  (setf v nil))
+(let* ((lk (mp:make-lock)) (cv (mp:make-condition-variable)) (go nil)
+       (th (mp:make-thread (lambda ()
+                             (mp:acquire-lock lk)
+                             (loop until go do (mp:condition-wait cv lk))
+                             (mp:release-lock lk)))))
+  (sleep 0.1)
+  (mp:with-lock-held (lk) (setf go t) (mp:condition-notify cv))
+  (mp:join-thread th))
+(dotimes (i 50)
+  (mp:join-thread (mp:make-thread (lambda ()
+                                    (let ((l (mp:make-lock)))
+                                      (mp:with-lock-held (l)
+                                        (mp:condition-wait (mp:make-condition-variable) l 0.001)))))))
+(gc)
+(quit)
+LISPEOF
+run_case "no_leak_after_lock_condvar_churn" "$WORK/locks.lisp"
+
 # --- compile-file + FASL load: the reader's own allocations ----------------
 cat > "$WORK/src.lisp" <<'LISPEOF'
 (defun fl-a (x) (+ x 1))

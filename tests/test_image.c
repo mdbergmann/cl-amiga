@@ -429,9 +429,9 @@ TEST(condvar_and_dead_thread_restore)
     ASSERT_EQ_INT(cl_image_stage(IMG_PATH, 0), 0);
     ASSERT_EQ_INT(cl_image_restore_staged(), 0);
 
-    /* TYPE_CONDVAR: cl_condvar_table_install_at re-created a live handle,
-     * so the restored condvar is usable, not just type-tagged — a
-     * destroyed/never-installed handle would make CONDITION-NOTIFY signal. */
+    /* TYPE_CONDVAR: a condvar is a heap word (specs/mp-locks-heap-words.md);
+     * restore zeroes its waiter count, so the restored condvar is usable,
+     * not just type-tagged — CONDITION-NOTIFY on it must not signal. */
     ASSERT(truthy("(mp:condition-variable-p *ti-cv*)"));
     cl_eval_string("(mp:condition-notify *ti-cv*)");
 

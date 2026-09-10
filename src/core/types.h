@@ -842,26 +842,39 @@ typedef struct {
 
 #define CL_THREAD_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_THREAD)
 
-/* --- Lock (mutex wrapper) --- */
+/* --- Lock (MP:LOCK) ---
+ *
+ * A lock is data: the object holds its own state word and the runtime
+ * never allocates an OS mutex for it (specs/mp-locks-heap-words.md).
+ * `state` is 0 when free; otherwise the owner's thread serial shifted up
+ * one bit, with bit 0 (CL_LOCK_CONTENDED) set once some thread has had to
+ * park on it — the "futex mutex 2" encoding, so an uncontended release is
+ * one CAS and never scans for waiters.  Blocking goes through the
+ * per-thread park handle (platform_park), never through this object's
+ * address, so a compaction may move a lock while threads are parked on it. */
 
 #define CL_LOCK_FLAG_RECURSIVE 0x01u
+#define CL_LOCK_CONTENDED      0x01u   /* bit 0 of `state` */
 
 typedef struct {
     CL_Header hdr;
-    uint32_t lock_id;     /* Side table index -> void* (platform mutex) */
-    CL_Obj name;          /* CL string or NIL */
-    uint32_t flags;       /* CL_LOCK_FLAG_* — recorded so FASL can recreate
-                           * the right kind of mutex at load time */
+    volatile uint32_t state;   /* 0 = free; else owner_serial << 1 | CONTENDED */
+    uint32_t depth;            /* nested acquires by the owner; 1 when held once */
+    uint32_t flags;            /* CL_LOCK_FLAG_* — recorded so FASL recreates
+                                * the same kind of lock at load time */
+    CL_Obj name;               /* CL string or NIL */
 } CL_Lock;
 
 #define CL_LOCK_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_LOCK)
 
-/* --- Condition variable wrapper --- */
+/* --- Condition variable (MP:CONDITION-VARIABLE) ---
+ * `waiters` counts registered waiters so a notify with nobody waiting
+ * returns without taking the thread-list lock. */
 
 typedef struct {
     CL_Header hdr;
-    uint32_t condvar_id;  /* Side table index -> void* (platform condvar) */
-    CL_Obj name;          /* CL string or NIL */
+    volatile uint32_t waiters;
+    CL_Obj name;               /* CL string or NIL */
 } CL_CondVar;
 
 #define CL_CONDVAR_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_CONDVAR)

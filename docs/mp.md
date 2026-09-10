@@ -45,8 +45,8 @@ with safepoints across all live threads.
 |-----------|------|-------------|
 | `(make-lock &optional name)` | function | Create a mutex |
 | `(make-recursive-lock &optional name)` | function | Create a recursive (re-entrant) lock |
-| `(acquire-lock lock &optional wait-p)` | function | Acquire a lock; with `wait-p` `nil`, try without blocking |
-| `(release-lock lock)` | function | Release a held lock |
+| `(acquire-lock lock &optional (wait-p t) timeout)` | function | Acquire a lock; with `wait-p` `nil`, try once without blocking; `timeout` (seconds) bounds a blocking acquire — `nil` on timeout |
+| `(release-lock lock)` | function | Release a held lock (an error unless the caller holds it) |
 | `(with-lock-held (lock) &body body)` | macro | Acquire/release around a body |
 | `(with-recursive-lock-held (lock) &body body)` | macro | As above for a recursive lock |
 | `(lockp object)` | function | Type predicate for locks |
@@ -70,9 +70,18 @@ with safepoints across all live threads.
 | `(read-memory-barrier)` | function | Acquire/read fence |
 | `(write-memory-barrier)` | function | Release/write fence |
 
+Locks and condition variables are plain heap objects with no OS primitive
+behind them, so there is no limit on how many can be live at once and a
+dropped lock is ordinary garbage.  A plain lock is not re-entrant: acquiring
+one the calling thread already holds signals an error (use
+`make-recursive-lock`).  Releasing a lock the caller does not hold signals
+an error and leaves the lock as it was.  A recursive lock held at depth
+*n* across `condition-wait` is re-acquired at depth *n*.  Timeouts on
+AmigaOS resolve in 20–50 ms steps.
+
 > `%make-recursive-lock` is the internal primitive behind `make-recursive-lock`.
-> Not yet covered: semaphores, `with-timeout`, and `:timeout` on
-> `acquire-lock` — see [Known Limitations](../README.md#known-limitations-and-future-work).
+> Not yet covered: semaphores and `with-timeout` — see
+> [Known Limitations](../README.md#known-limitations-and-future-work).
 
 ## Atomic operations
 

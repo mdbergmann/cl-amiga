@@ -45,6 +45,30 @@ int  platform_condvar_wait_timeout(void *handle, void *mutex, uint32_t ms);
 void platform_condvar_signal(void *handle);
 void platform_condvar_broadcast(void *handle);
 
+/* ---- Per-thread parking (token semantics) ----
+ *
+ * The blocking primitive behind the Lisp-visible MP locks and condition
+ * variables (specs/mp-locks-heap-words.md).  A handle belongs to ONE
+ * thread — the one that parks on it — and behaves like a binary
+ * semaphore: `unpark` deposits a token, `park` blocks until a token is
+ * present and consumes it.  An unpark that arrives BEFORE the matching
+ * park is therefore never lost (the next park returns at once), which is
+ * what lets a waiter register itself, re-check its condition and then
+ * park without a timed backstop.  Two unparks are one token.
+ *
+ * park returns 0 when a token was consumed, 1 when timeout_ms elapsed
+ * without one; timeout_ms == 0 waits forever.  Any thread may unpark;
+ * only the owner parks, and only the owner may init/destroy its handle
+ * (on AmigaOS the handle is a signal bit of the owning task).
+ *
+ * POSIX / Windows: a mutex, a condvar and a permit flag.  AmigaOS /
+ * MorphOS: one AllocSignal() bit per thread; Wait() is the park,
+ * Signal() the unpark, and a delivered signal stays set until consumed. */
+int  platform_park_init(void **handle);
+void platform_park_destroy(void *handle);
+int  platform_park(void *handle, uint32_t timeout_ms);
+void platform_unpark(void *handle);
+
 /* ---- Atomics ---- */
 uint32_t platform_atomic_inc(volatile uint32_t *ptr);
 uint32_t platform_atomic_dec(volatile uint32_t *ptr);

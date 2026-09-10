@@ -11,9 +11,11 @@
 # throughput ~6x and its mixed ask/tell counter test failed its 3s
 # assert-cond window deterministically.
 #
-# The fix parks contended acquirers on the shared cl_lock_park_cv, which
-# bi_release_lock broadcasts whenever waiters are registered — a handoff
-# wakes the waiter immediately.
+# The fix parked contended acquirers on a shared condvar that release-lock
+# broadcast; since specs/mp-locks-heap-words.md each contended acquirer
+# parks on its own per-thread handle and a release unparks exactly one
+# registered waiter — a handoff still wakes the waiter immediately, which
+# is what the probe below keeps pinned.
 #
 # Probe: hold the lock while a waiter escalates past its spin phase
 # (60ms), then release and measure release->acquired latency.  Sleep-poll

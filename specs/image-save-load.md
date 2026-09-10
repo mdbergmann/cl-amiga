@@ -320,8 +320,8 @@ One linear pass `ptr = arena+CL_ALIGN … arena+bump`, dispatching on
 | STREAM (file/socket) | cannot exist (save precondition).  Defensive: clear OPEN, set EOF, handle_id = 0 |
 | STREAM (synonym/two-way/broadcast/concatenated) | keep — children are arena references |
 | STREAM (cbuf) | clear OPEN + EOF (load-time C-buffer streams never live past their load) |
-| LOCK | recreate a fresh platform mutex honoring `flags` (recursive bit), install at the recorded `lock_id` — same doctrine as FASL_TAG_LOCK ("fresh at load, identity within the image preserved").  The lock/held/depth tables are cleared first and rebuilt solely from the walk |
-| CONDVAR | same: fresh platform condvar at recorded `condvar_id` |
+| LOCK | plain heap data since specs/mp-locks-heap-words.md (no OS primitive, no table): zero `state` and `depth` — every restored lock is free; `flags` and `name` are kept |
+| CONDVAR | same: zero `waiters` (no thread of the restoring process is registered on it) |
 | THREAD | if it is the saved main-thread wrapper (matched via THREAD0): re-bind to the live main thread.  Any other wrapper: force `table_gen` mismatch so JOIN/INTERRUPT report "thread no longer exists" — exactly the existing stale-wrapper semantics |
 | FOREIGN_POINTER | invalidate: address = 0, size = 0, flags = 0.  FFI deref/call paths already reject a null address; audit and tighten messages ("foreign pointer from a restored image — recreate it via *RESTORE-HOOKS*") |
 

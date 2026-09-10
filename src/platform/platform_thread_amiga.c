@@ -512,6 +512,86 @@ void platform_condvar_broadcast(void *handle)
 }
 
 /* ================================================================
+ * Per-thread parking (see platform_thread.h)
+ *
+ * One signal bit of the OWNING task, allocated once at thread start and
+ * freed at thread exit.  Exec signals are tokens already: Signal() sets
+ * the bit, Wait() blocks until it is set and clears it, and a Signal()
+ * that lands before the Wait() stays set until consumed.  This replaces
+ * the per-wait AllocSignal(-1) of the old condvar code, whose exhaustion
+ * (a task has ~16 free user bits) produced the degraded spurious-wakeup
+ * paths above.
+ *
+ * A TIMED park has no Wait()-with-timeout in Exec without timer.device;
+ * it polls SetSignal() between Delay() steps (20 ms ticks, 50 ms cap),
+ * exactly as the condvar timed wait did.  Only condition-wait / acquire-
+ * lock with a :timeout take that path; untimed parks — every lock
+ * handoff and every untimed condition-wait — block in Wait() and wake on
+ * the Signal() itself.
+ * ================================================================ */
+
+typedef struct {
+    struct Task *task;   /* the owner: the only task that parks */
+    BYTE         sig;    /* its signal bit */
+} AmigaPark;
+
+int platform_park_init(void **handle)
+{
+    AmigaPark *p;
+    BYTE sig = AllocSignal(-1);
+    if (sig < 0) return -1;
+    p = (AmigaPark *)AllocVec(sizeof(AmigaPark), MEMF_CLEAR);
+    if (!p) {
+        FreeSignal(sig);
+        return -1;
+    }
+    p->task = FindTask(NULL);
+    p->sig = sig;
+    *handle = p;
+    return 0;
+}
+
+void platform_park_destroy(void *handle)
+{
+    AmigaPark *p = (AmigaPark *)handle;
+    if (!p) return;
+    /* A token left behind by a late unpark must not leak into whatever
+     * this bit is reused for. */
+    SetSignal(0, 1UL << p->sig);
+    FreeSignal(p->sig);
+    FreeVec(p);
+}
+
+int platform_park(void *handle, uint32_t timeout_ms)
+{
+    AmigaPark *p = (AmigaPark *)handle;
+    ULONG mask = 1UL << p->sig;
+
+    if (timeout_ms == 0) {
+        Wait(mask);        /* consumes the bit */
+        return 0;
+    }
+    {
+        uint32_t elapsed = 0;
+        uint32_t step = timeout_ms < 50 ? timeout_ms : 50;
+        for (;;) {
+            if (SetSignal(0, mask) & mask)   /* test-and-clear = consume */
+                return 0;
+            if (elapsed >= timeout_ms)
+                return 1;
+            Delay(step / 20 + 1);   /* 1/50 s ticks, rounded up */
+            elapsed += step;
+        }
+    }
+}
+
+void platform_unpark(void *handle)
+{
+    AmigaPark *p = (AmigaPark *)handle;
+    Signal(p->task, 1UL << p->sig);
+}
+
+/* ================================================================
  * Atomics (Forbid/Permit — safe on 68020, very short critical sections)
  * ================================================================ */
 

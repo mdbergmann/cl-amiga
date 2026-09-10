@@ -7,6 +7,67 @@ command, and results, so later runs can be compared like-for-like.
 Related: [specs/performance.md](../specs/performance.md) is the optimization
 *plan*; this file is the *measured results* log.
 
+## 2026-09-10 — MP locks as heap words: shared/ask runs at the default cap, shared/tell +321%
+
+**Context**: [specs/mp-locks-heap-words.md](../specs/mp-locks-heap-words.md)
+landed — a lock is a state word in the heap object, blocking parks each
+thread on its own handle, no OS mutex and no lock table.  Same-session
+A/B against a detached worktree of `f4cbcb41` (the entry below), sento
+3.4.5, cold caches, speed 3, the driver's default queue cap (10000).
+The base binary's leg loads the bordeaux-threads fork's committed
+version via `ATOMICS_DIR` (its `ACQUIRE-LOCK` takes two arguments).
+
+| Cell | table locks (`f4cbcb41`) | heap-word locks | Δ |
+| --- | ---: | ---: | ---: |
+| pinned/tell | 243,587 | 299,260 | +22.9% |
+| pinned/ask-s | 108,365 | 121,118 | +11.8% |
+| pinned/ask | 55,995 | 55,311 | −1.2% (re-measured: +1..5%, noise) |
+| shared/tell | 41,791 | 176,126 | +321% |
+| shared/ask-s | 68,005 | 58,086 | −14.6% (re-measured twice: −4%, −6%) |
+| shared/ask (default cap) | aborts: `lock table full` | 45,424 | runs |
+
+shared/tell is the thundering herd gone (eight workers on one queue
+lock were broadcast awake on every release; now one waiter wakes per
+release).  shared/ask-s pays for the process-wide `cl_thread_list_lock`
+that every condition wait and notify now takes; the spec's
+"Implementation notes" record the per-object waiter chain that would
+remove it.  `trunk/bench-prims.lisp` (min of 5): `lock-acquire-release`
+55 → 52 ns, `lock+condvar-notify` 67 → 62 ns, every other row within a
+nanosecond; `mt.call-x8` / `mt.dynbind-x8` unchanged at 35 / 36 ms.
+
+Reproduce: `CLAMIGA_FASL_CACHE_DIR=<fresh dir> CLAMIGA_FORCE_SPEED=3
+./build/host/clamiga --no-userinit --heap 192M --non-interactive --load
+trunk/sento-bench-matrix.lisp`, one leg per binary, sequentially.
+
+---
+
+## 2026-09-10 — sento matrix for 0.10: +17% to +99% per cell over the 0.8 binary
+
+**Context**: the full reply-mode / dispatcher matrix of the sento series,
+re-run on master ahead of the 0.10 bump with the 0.8 protocol (cold cache,
+speed 3) and a same-session A/B against binaries built from the 0.9 and
+0.8 bump commits. Full entry: [sento-bench-results-0.10.md](sento-bench-results-0.10.md).
+
+| Cell | 0.10 | 0.8 (same session) | Δ |
+| --- | ---: | ---: | ---: |
+| pinned/tell | 274,098 | 170,779 | +60.5% |
+| pinned/ask-s | 108,575 | 92,692 | +17.1% |
+| pinned/ask | 33,419 | 23,841 | +40.2% |
+| shared/tell | 39,056 | 27,808 | +40.4% |
+| shared/ask-s | 72,277 | 36,314 | +99.0% |
+| shared/ask (queue cap 2000) | 28,678 | 18,617 | +54.0% |
+
+0.9 and 0.8 read the same; the whole delta is Tier 4 (the three entries
+below). **Finding**: shared/ask at the bench's default queue cap (10000)
+aborts on 0.10 with `MP:MAKE-LOCK: lock table full (max 16384)` — each
+in-flight async ask holds three locks (waiting actor's box, its queue,
+the future), and the faster sender side now keeps more than ~5,400 of
+them in flight. The fixed table (`CL_MAX_LOCKS`) is the limit, not the
+slot scan (≈3 µs per `MAKE-LOCK` at 15k live locks); a growable table or
+a larger host cap with a free list is the follow-up.
+
+---
+
 ## 2026-09-09 — General workloads: clamiga vs ECL vs SBCL
 
 **Context**: the first comparison that is not sento-shaped.

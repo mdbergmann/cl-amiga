@@ -574,7 +574,6 @@ static uint32_t gen_fin_count = 0, gen_fin_cap = 0;
 static int gen_type_finalizable(uint8_t type)
 {
     return type == TYPE_BYTECODE || type == TYPE_STREAM ||
-           type == TYPE_LOCK || type == TYPE_CONDVAR ||
            type == TYPE_FOREIGN_POINTER || type == TYPE_THREAD;
 }
 
@@ -3270,6 +3269,13 @@ static void gc_mark_thread_roots(CL_Thread *t)
     gc_mark_obj(t->result);
     gc_mark_obj(t->interrupt_func);
     gc_mark_obj(t->thread_obj);
+    /* MP wait registration: the lock / condvar this thread is parked on
+     * (and the lock a condition-wait re-acquires).  A parked thread keeps
+     * its object alive, and the UPDATE counterpart forwards the record so
+     * the releaser's / notifier's identity compare sees the moved object. */
+    GC_DBG_SRC("mp-wait", 0);
+    gc_mark_obj(t->wait_obj);
+    gc_mark_obj(t->wait_lock);
 
     /* Current lexical env installed for a macro expander — keeps the
      * &environment alist alive while the expander runs. */
@@ -3509,7 +3515,7 @@ static void gc_mark(void)
 
 /* Release external resources owned by a dead heap object.
  * Called from gc_sweep with the world stopped, so the per-table mutex used
- * by cl_lock_table_alloc / cl_condvar_table_alloc is not needed: no other
+ * by the stream / thread side tables is not needed: no other
  * thread can mutate the tables here. */
 /* R-srcloc: the reader's cons→source-line table is keyed by arena OFFSETS.
  * Two staleness modes corrupt its diagnostics: (a) a key whose cons died —
@@ -3683,58 +3689,14 @@ static void gc_finalize_dead(uint8_t *ptr)
         }
         break;
     }
-    case TYPE_LOCK: {
-        /* If a program drops every reference to a lock wrapper while some
-         * thread still HOLDS the platform mutex (acquired earlier, wrapper
-         * discarded), destroying the mutex is undefined behavior on
-         * pthreads.  cl_lock_held[]/cl_lock_depth[] track the holder and its
-         * nested-acquire count (set/incremented by acquire, decremented by
-         * release, cleared once depth reaches 0; read here during STW =
-         * race-free): a held mutex is deliberately LEAKED — the table slot
-         * and holder/depth entries are cleared so the id can be reused, but
-         * the OS mutex survives for the (now unreachable) holder.  Blocked
-         * WAITERS are safe regardless (their args root the wrapper).
-         * Closes tier-3 I8. */
-        CL_Lock *lk = (CL_Lock *)ptr;
-        if (lk->lock_id < CL_MAX_LOCKS) {
-            void *h = cl_lock_table[lk->lock_id];
-            if (h) {
-                cl_lock_table[lk->lock_id] = NULL;
-                if (cl_lock_held[lk->lock_id]) {
-                    static int lock_leak_warned = 0;
-                    cl_lock_held[lk->lock_id] = NULL;
-                    cl_lock_depth[lk->lock_id] = 0;
-                    if (!lock_leak_warned) {
-                        lock_leak_warned = 1;
-                        fprintf(stderr, "[MP] warning: a lock was garbage-"
-                                "collected while still held - leaking its OS "
-                                "mutex (destroying a held mutex is undefined "
-                                "behavior). Common cause: MP:DESTROY-THREAD "
-                                "of a thread inside a critical section "
-                                "(WITH-LOCK-HELD / MP:CONDITION-WAIT) - the "
-                                "lock can never be released, so the leak is "
-                                "deliberate and benign; further leaks are "
-                                "silent\n");
-                    }
-                } else {
-                    cl_lock_depth[lk->lock_id] = 0;
-                    platform_mutex_destroy(h);
-                }
-            }
-        }
+    /* TYPE_LOCK / TYPE_CONDVAR: plain heap words, nothing external to
+     * release — a dead lock is ordinary garbage whether or not some thread
+     * still "holds" it (specs/mp-locks-heap-words.md).  A thread parked on
+     * a lock or condvar keeps it alive through its wait_obj root, so a
+     * waiter can never find its object gone. */
+    case TYPE_LOCK:
+    case TYPE_CONDVAR:
         break;
-    }
-    case TYPE_CONDVAR: {
-        CL_CondVar *cv = (CL_CondVar *)ptr;
-        if (cv->condvar_id < CL_MAX_CONDVARS) {
-            void *h = cl_condvar_table[cv->condvar_id];
-            if (h) {
-                cl_condvar_table[cv->condvar_id] = NULL;
-                platform_condvar_destroy(h);
-            }
-        }
-        break;
-    }
     case TYPE_FOREIGN_POINTER: {
         /* Reclaim the side-table slot for transient (unowned) foreign
          * pointers — dlsym results, values returned from foreign calls, and
@@ -4126,6 +4088,9 @@ static void gc_update_thread_roots(CL_Thread *t)
     gc_update_slot(&t->current_package);  /* per-thread *PACKAGE* mirror —
                                            * see gc_mark counterpart */
     gc_update_slot(&t->thread_obj);
+    gc_update_slot(&t->wait_obj);         /* MP wait registration — see
+                                           * gc_mark counterpart */
+    gc_update_slot(&t->wait_lock);
 
     /* Reader state — must mirror gc_mark_thread_roots.  These were marked
      * but not updated, leaving stale CL_Obj values pointing to old arena

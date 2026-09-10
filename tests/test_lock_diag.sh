@@ -1,7 +1,7 @@
 #!/bin/sh
 # Slow-lock-wait diagnostic (CLAMIGA_LOCK_DIAG): a blocking MP:ACQUIRE-LOCK
 # that waits past the threshold must report — to stderr, from inside the
-# stalled wait — the contended lock (id + name), the waiting thread, the
+# stalled wait — the contended lock (name), the waiting thread, the
 # current holder (name + wait state), and finally the total wait once the
 # lock is acquired.  Built for triaging intermittent multi-minute stalls
 # (a loader parked on a lock another thread holds) from clamiga's own
@@ -59,10 +59,10 @@ status=$?
 [ $status -eq 0 ] || fail "exit $status: hang or crash"
 printf '%s' "$out" | grep -q "LOCK-DIAG-DONE" || fail "program did not complete"
 printf '%s' "$out" | \
-    grep -q 'waiting [0-9]* ms for lock [0-9]* "device-registry" held by tid=[0-9]* "device-init"' \
+    grep -q 'waiting [0-9]* ms for lock "device-registry" held by tid=[0-9]* "device-init"' \
     || fail "no still-waiting report naming lock and holder"
 printf '%s' "$out" | \
-    grep -q 'acquired lock [0-9]* "device-registry" after [0-9]* ms' \
+    grep -q 'acquired lock "device-registry" after [0-9]* ms' \
     || fail "no acquired-after report"
 
 # 2. Default (env unset): the identical contended run must be silent.

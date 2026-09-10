@@ -9027,12 +9027,107 @@ y" 1))
       (dolist (th workers) (mp:join-thread th)))
     (car counter)))
 
-; I8 (batch 6b): dropping the last reference to a HELD lock leaks the OS
-; mutex instead of destroying it under the holder — must not crash/Guru.
+; I8 (batch 6b): dropping the last reference to a HELD lock — plain
+; garbage now that locks are heap words (no OS mutex) — must not crash/Guru.
 (check "t4b6 held lock finalize leaks not destroys" :ok
   (progn (let ((l (mp:make-lock))) (mp:acquire-lock l))
          (gc) (gc)
          :ok))
+
+; --- MP locks and condition variables as heap words -----------------------
+; (specs/mp-locks-heap-words.md).  The Amiga mirror of
+; tests/test_mp_heap_locks.sh: no table cap (the old Amiga cap was 256),
+; misuse signals instead of hanging, recursion depth survives a wait, the
+; acquire-lock timeout, a timed wait racing a notifier leaves no waiter
+; registered, and thread create/exit cycles hand their park signal bit
+; back (a task has ~16 free bits — a leak would break parking after a
+; few dozen threads).
+(check "mp-heap 2000 live locks and condvars, no table cap" 4000
+  (let ((v (make-array 4000)) (n 0))
+    (dotimes (i 2000)
+      (setf (aref v i) (mp:make-lock)
+            (aref v (+ i 2000)) (mp:make-condition-variable)))
+    (dotimes (i 2000)
+      (mp:acquire-lock (aref v i)) (mp:release-lock (aref v i)) (incf n)
+      (mp:condition-notify (aref v (+ i 2000))) (incf n))
+    (setf v nil) (gc)
+    n))
+(check "mp-heap release by a non-owner signals, lock stays held" '(:err nil t)
+  (let ((lk (mp:make-lock)))
+    (mp:acquire-lock lk)
+    (let ((r1 (mp:join-thread (mp:make-thread
+                               (lambda () (handler-case (progn (mp:release-lock lk) :released)
+                                            (error () :err))))))
+          (r2 (mp:join-thread (mp:make-thread (lambda () (mp:acquire-lock lk nil))))))
+      (mp:release-lock lk)
+      (list r1 r2 (mp:join-thread (mp:make-thread (lambda () (mp:acquire-lock lk nil))))))))
+(check "mp-heap release of a free lock signals" :err
+  (handler-case (mp:release-lock (mp:make-lock)) (error () :err)))
+(check "mp-heap re-acquire of a plain lock by its owner signals" '(:err t)
+  (let ((lk (mp:make-lock)))
+    (mp:acquire-lock lk)
+    (list (handler-case (mp:acquire-lock lk) (error () :err))
+          (progn (mp:release-lock lk) (mp:acquire-lock lk nil)))))
+(check "mp-heap condition-wait without the lock signals" :err
+  (handler-case (mp:condition-wait (mp:make-condition-variable) (mp:make-lock))
+    (error () :err)))
+(check "mp-heap recursive depth 2 survives a condition-wait" '(nil t)
+  (let* ((lk (mp:make-recursive-lock))
+         (cv (mp:make-condition-variable))
+         (go nil) (after-one nil) (after-two nil)
+         (th (mp:make-thread
+              (lambda ()
+                (mp:acquire-lock lk)
+                (mp:acquire-lock lk)
+                (loop until go do (mp:condition-wait cv lk))
+                (mp:release-lock lk)
+                (sleep 0.3)
+                (mp:release-lock lk)))))
+    (sleep 0.3)
+    (mp:with-lock-held (lk) (setf go t) (mp:condition-notify cv))
+    (sleep 0.1)
+    (setf after-one (mp:acquire-lock lk nil))
+    (mp:join-thread th)
+    (setf after-two (mp:acquire-lock lk nil))
+    (when after-two (mp:release-lock lk))
+    (list after-one after-two)))
+(check "mp-heap acquire-lock timeout: 0 tries once, NIL on timeout, T when released" '(nil nil t)
+  (let ((lk (mp:make-lock)))
+    (mp:acquire-lock lk)
+    (let ((r0 (mp:join-thread (mp:make-thread (lambda () (mp:acquire-lock lk t 0)))))
+          (r1 (mp:join-thread (mp:make-thread (lambda () (mp:acquire-lock lk t 0.2)))))
+          (th (mp:make-thread (lambda () (prog1 (mp:acquire-lock lk t 5) (mp:release-lock lk))))))
+      (sleep 0.2)
+      (mp:release-lock lk)
+      (list r0 r1 (mp:join-thread th)))))
+(check "mp-heap timed wait racing notify leaves no waiter registered" '(t t)
+  (let* ((lk (mp:make-lock)) (cv (mp:make-condition-variable))
+         (rounds 60) (ts 0) (nils 0) (bad 0) (stop nil)
+         (notifier (mp:make-thread
+                    (lambda ()
+                      (loop until stop do (mp:with-lock-held (lk) (mp:condition-notify cv)))))))
+    (dotimes (i rounds)
+      (mp:acquire-lock lk)
+      (if (mp:condition-wait cv lk 0.01) (incf ts) (incf nils))
+      (mp:release-lock lk)
+      (unless (zerop (mp::%condvar-waiters cv)) (incf bad)))
+    (setf stop t)
+    (mp:join-thread notifier)
+    (list (= (+ ts nils) rounds) (zerop bad))))
+(check "mp-heap park signal bit handed back across 60 thread create/exit cycles" nil
+  (progn
+    (dotimes (i 60)
+      (mp:join-thread
+       (mp:make-thread (lambda ()
+                         (let ((l (mp:make-lock)))
+                           (mp:with-lock-held (l)
+                             (mp:condition-wait (mp:make-condition-variable) l 0.01)))))))
+    ;; a fresh worker must still be able to park (timed wait times out)
+    (mp:join-thread
+     (mp:make-thread (lambda ()
+                       (let ((l (mp:make-lock)))
+                         (mp:with-lock-held (l)
+                           (mp:condition-wait (mp:make-condition-variable) l 0.05))))))))
 
 ; ST5 (batch 6a): closing a synonym stream whose symbol holds a NON-stream
 ; must not scribble stream fields into the object.
