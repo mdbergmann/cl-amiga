@@ -7,17 +7,55 @@ command, and results, so later runs can be compared like-for-like.
 Related: [specs/performance.md](../specs/performance.md) is the optimization
 *plan*; this file is the *measured results* log.
 
+## 2026-09-10 — sento matrix for 0.10, refreshed after the heap-word locks: +50% to +360% per cell over 0.8
+
+**Context**: the full matrix of the entry two below, re-run on `04a2a410`
+(master with the heap-word locks, PR #37) with the same protocol —
+cold cache, speed 3, the bench's default queue cap — and a same-session
+A/B against the 0.10 tree before the lock change (`6989f7aa`), the 0.9
+bump and the 0.8 bump. Full entry, now the 0.10 figures of record:
+[sento-bench-results-0.10.md](sento-bench-results-0.10.md).
+
+| Cell | 0.10 (`04a2a410`) | pre-lock 0.10 (`6989f7aa`) | 0.8 | vs pre-lock | vs 0.8 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| pinned/tell | 302,005 | 270,318 | 165,239 | +11.7% | +82.8% |
+| pinned/ask-s | 132,478 | 110,296 | 88,050 | +20.1% | +50.5% |
+| pinned/ask | 35,421 | 36,419 | 22,460 | −2.7% | +57.7% |
+| shared/tell | 122,427 | 41,636 | 26,629 | +194% | +360% |
+| shared/ask-s | 63,594 | 75,171 | 36,496 | −15.4% | +74.2% |
+| shared/ask (default cap) | 29,747 | aborts: `lock table full` (28,558 at cap 2000) | 17,569 | (+4.2%) | +69.3% |
+
+Every cell runs at the standard configuration; the lock-table abort the
+entry two below found is gone with the table. **Finding**: the table had
+been forcing collections. A slot was reclaimed only by the collector, so
+at 90–130k lock allocations per second (a lock and a condition variable
+per synchronous ask, three locks per asynchronous one) `MAKE-LOCK` hit a
+full table every 0.1–0.2 s and ran a minor collection each time — 215
+collections and 1.22 s of stop-the-world in the pre-lock pinned/ask-s
+cell against 24 and 0.007 s now; the "collector's share went up in STW
+time" observation of the first 0.10 matrix was this, not Tier 4. The
+shared/tell drain overhead is gone too (47–52 s wall for six 5-second
+iterations on every older binary, 31.5 s now). shared/ask-s is −15% in
+the matrix leg for the `cl_thread_list_lock` reason the entry below gives.
+
+Reproduce: as below; the driver's `ATOMICS_DIR` now takes `:`-separated
+directories, so a base binary's leg can pin both a sento checkout and the
+bordeaux-threads fork at `92113d6`.
+
+---
+
 ## 2026-09-10 — MP locks as heap words: shared/ask runs at the default cap, shared/tell +321%
 
 **Context**: [specs/mp-locks-heap-words.md](../specs/mp-locks-heap-words.md)
 landed — a lock is a state word in the heap object, blocking parks each
 thread on its own handle, no OS mutex and no lock table.  Same-session
-A/B against a detached worktree of `f4cbcb41` (the entry below), sento
-3.4.5, cold caches, speed 3, the driver's default queue cap (10000).
+A/B against a detached worktree of the pre-lock tree (`6989f7aa` plus the
+bench commit of the entry below; both sit inside the `04a2a410` squash),
+sento 3.4.5, cold caches, speed 3, the driver's default queue cap (10000).
 The base binary's leg loads the bordeaux-threads fork's committed
 version via `ATOMICS_DIR` (its `ACQUIRE-LOCK` takes two arguments).
 
-| Cell | table locks (`f4cbcb41`) | heap-word locks | Δ |
+| Cell | table locks (pre-lock tree) | heap-word locks | Δ |
 | --- | ---: | ---: | ---: |
 | pinned/tell | 243,587 | 299,260 | +22.9% |
 | pinned/ask-s | 108,365 | 121,118 | +11.8% |
@@ -46,7 +84,9 @@ trunk/sento-bench-matrix.lisp`, one leg per binary, sequentially.
 **Context**: the full reply-mode / dispatcher matrix of the sento series,
 re-run on master ahead of the 0.10 bump with the 0.8 protocol (cold cache,
 speed 3) and a same-session A/B against binaries built from the 0.9 and
-0.8 bump commits. Full entry: [sento-bench-results-0.10.md](sento-bench-results-0.10.md).
+0.8 bump commits. Full entry: [sento-bench-results-0.10.md](sento-bench-results-0.10.md)
+— **superseded the same evening** by the refreshed matrix two entries
+above (the lock change landed; the doc now carries both columns).
 
 | Cell | 0.10 | 0.8 (same session) | Δ |
 | --- | ---: | ---: | ---: |

@@ -11,18 +11,21 @@
 ;;   CLAMIGA_FORCE_SPEED=3 ./build/host/clamiga --no-userinit --heap 192M \
 ;;       --non-interactive --load trunk/sento-bench-matrix.lisp
 ;;
-;; ATOMICS_DIR=<dir>: pushed onto asdf:*central-registry* before the
-;; quickload so an older `atomics` checkout wins over the local-projects
-;; fork — needed to run a binary predating mp:compare-and-swap (< 0.7)
-;; for an A/B.  The same hook serves a different sento checkout.  The
-;; driver prints which atomics.asd / sento.asd loaded.
+;; ATOMICS_DIR=<dir>[:<dir>...]: each directory is pushed onto
+;; asdf:*central-registry* before the quickload so an older `atomics`
+;; checkout wins over the local-projects fork — needed to run a binary
+;; predating mp:compare-and-swap (< 0.7) for an A/B.  The same hook serves
+;; a pinned sento checkout, or the bordeaux-threads fork at the commit a
+;; base binary needs (its ACQUIRE-LOCK predates the timeout argument).
+;; The driver prints which atomics.asd / bordeaux-threads.asd / sento.asd
+;; loaded.
 ;;
 ;; SENTO_QUEUE_CAP=<n>: passed as :wait-if-queue-larger-than to every cell
-;; (the bench's default is 10000).  The SHARED/ask cell needs 2000 on 0.10
-;; and later: each in-flight asynchronous ask holds three MP locks (the
-;; waiting actor's box, its queue, the future), and the faster sender side
-;; otherwise keeps more of them in flight than the 16384-slot lock table
-;; holds — see docs/sento-bench-results-0.10.md.
+;; (the bench's default is 10000).  Binaries before the heap-word locks
+;; (04a2a410) need 2000 for the SHARED/ask cell: each in-flight
+;; asynchronous ask held three slots of the 16384-entry lock table, and
+;; the 0.10 sender side kept more of them in flight than that — see
+;; docs/sento-bench-results-0.10.md.
 ;;
 ;; Runs ~5 minutes: ~31 s per cell (shared/tell ~50 s, queue drain) plus
 ;; the cold load.  Throughput of record is trivial-benchmark's AVERAGE
@@ -35,18 +38,24 @@
   (let ((sym (find-symbol "GETENV" :ext)))
     (and sym (fboundp sym) (funcall sym name))))
 
-(let ((dir (env "ATOMICS_DIR")))
-  (when (and dir (plusp (length dir)))
-    (push (pathname (if (char= (char dir (1- (length dir))) #\/) dir
-                        (concatenate 'string dir "/")))
-          asdf:*central-registry*)
-    (format t "--- ATOMICS_DIR=~A pushed onto asdf:*central-registry* ---~%" dir)))
+(let ((dirs (env "ATOMICS_DIR")))
+  (when (and dirs (plusp (length dirs)))
+    (loop :for start := 0 :then (1+ end)
+          :for end := (position #\: dirs :start start)
+          :for dir := (subseq dirs start end)
+          :do (when (plusp (length dir))
+                (push (pathname (if (char= (char dir (1- (length dir))) #\/) dir
+                                    (concatenate 'string dir "/")))
+                      asdf:*central-registry*)
+                (format t "--- ATOMICS_DIR: ~A pushed onto asdf:*central-registry* ---~%" dir))
+          :while end)))
 
 (load "trunk/load-sento-bench.lisp")
 
 (format t "~%--- lisp-implementation-version: ~A ---~%" (lisp-implementation-version))
 (format t "--- CLAMIGA_FORCE_SPEED=~A ---~%" (env "CLAMIGA_FORCE_SPEED"))
 (format t "--- atomics loaded from: ~A ---~%" (asdf:system-source-file "atomics"))
+(format t "--- bordeaux-threads loaded from: ~A ---~%" (asdf:system-source-file "bordeaux-threads"))
 (format t "--- sento loaded from: ~A ---~%" (asdf:system-source-file "sento"))
 
 (defparameter *queue-cap*
