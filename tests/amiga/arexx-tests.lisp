@@ -244,7 +244,9 @@
             (declare (ignore text))
             (check "arexx REPL-ATTACH DEBUG rc" 0 rc))
           (multiple-value-bind (rc text)
-              (amiga.arexx:send port "REPL-EVAL (flet ((arexx-dbg (n) (error \"dbg ~a\" n))) (arexx-dbg 7))")
+              ;; A DEFUN, not an FLET: a local function is inlined and has no
+              ;; frame of its own, so FRAME 0 would be the form's.
+              (amiga.arexx:send port "REPL-EVAL (progn (defun cl-user::arexx-dbg (n) (error \"dbg ~a\" n)) (cl-user::arexx-dbg 7))")
             (declare (ignore text))
             (check "arexx REPL-EVAL of an error with DEBUG replies" 0 rc))
           (loop repeat 500
