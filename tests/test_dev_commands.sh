@@ -572,6 +572,189 @@ check "a transport failure stops the REPL"      '<<THREAD-ALIVE-AFTER-FAILURE=NI
 check "REPL-ATTACH works again after that"      '<<attach3 RC=0>>' "$repl_out"
 check "and so does the REPL"                    '^2$'              "$(block recovered)"
 
+# --- The debugger and the inspector (phase 4 of the editor) -----------------
+#
+# With REPL-ATTACH <port> DEBUG an unhandled error parks the REPL thread on
+# the erring stack and announces DEBUGGER <level> to the editor; the editor
+# then asks BACKTRACE / FRAME / FRAME-EVAL and picks a RESTART (or ABORT,
+# CONTINUE) -- see the header of lib/dev-repl.lisp.  INSPECT / PART / POP
+# are synchronous on the handler thread and do not need the REPL, except
+# that `INSPECT *' sees the REPL thread's last value.
+
+cat > "$TMPD/debug.lisp" <<'EOF'
+(require "dev-commands")
+(defvar *sent* '())
+(defvar *sent-lock* (mp:make-lock))
+(defvar *editor*
+  (lambda (port command)
+    (mp:with-lock-held (*sent-lock*) (push (cons port command) *sent*))
+    (when (string= command "READLINE")
+      (ext.dev:handle-command "REPL-INPUT typed line"))
+    (values 0 "")))
+(setf ext.dev:*repl-send* *editor*)
+(defun sent-p (pred)
+  (mp:with-lock-held (*sent-lock*) (find-if pred *sent* :key #'cdr)))
+(defun prefix-p (prefix s)
+  (and (>= (length s) (length prefix)) (string= prefix s :end2 (length prefix))))
+(defun wait-for (pred)
+  (loop repeat 500 do (when (sent-p pred) (return t)) (sleep 0.02)))
+(defun wait-result () (wait-for (lambda (c) (prefix-p "RESULT" c))))
+(defun wait-debugger (level)
+  (wait-for (lambda (c) (prefix-p (format nil "DEBUGGER ~d" level) c))))
+(defun wait-output (needle)
+  (wait-for (lambda (c) (and (prefix-p "OUTPUT" c) (search needle c)))))
+(defun show (label)
+  (format t "~&<<~a>>~%" label)
+  (dolist (s (reverse *sent*)) (format t "SENT ~a|~a~%" (car s) (cdr s)))
+  (format t "<<END ~a>>~%" label)
+  (setf *sent* '()))
+(defun cmd (label c)
+  (multiple-value-bind (rc text) (ext.dev:handle-command c)
+    (format t "~&<<~a RC=~d>>~%~a~%<<END>>~%" label rc text)))
+(defun thread-alive ()
+  (and ext.dev::*repl-thread* (mp:thread-alive-p ext.dev::*repl-thread*) t))
+(defun dbg-fn (a b) (let ((c (* a b))) (error "bad ~a" c)))
+
+(cmd "backtrace-idle" "BACKTRACE")
+(cmd "attach-bad-option" "REPL-ATTACH EDITOR VERBOSE")
+(cmd "attach-debug" "REPL-ATTACH EDITOR DEBUG")
+(cmd "debug-error" "REPL-EVAL (progn (princ \"pre\") (dbg-fn 3 4))")
+(wait-debugger 1) (show "debugger")
+(cmd "eval-in-debugger" "REPL-EVAL (+ 1 1)")
+(cmd "restarts" "RESTARTS")
+(format t "<<REPL-DEBUG=~a>>~%" ext.dev::*repl-debug*)
+(cmd "backtrace" "BACKTRACE")
+(cmd "frame0" "FRAME 0")
+(cmd "frame-none" "FRAME 99")
+(cmd "frame-eval" "FRAME-EVAL 0 (list arg0 arg1 local3)")
+(wait-output "(3 4 12)") (show "frame-eval")
+(cmd "frame-eval-error" "FRAME-EVAL 0 (error \"nested\")")
+(wait-debugger 2) (show "nested")
+(cmd "backtrace2" "BACKTRACE")
+(cmd "abort-nested" "ABORT")
+(wait-output "Aborted") (sleep 0.1) (show "abort-nested")
+(cmd "restart-bad" "RESTART 99")
+(cmd "continue-none" "CONTINUE")
+(cmd "restart-abort" "RESTART 0")
+(wait-result) (show "restart-abort")
+(cmd "debug-cerror" "REPL-EVAL (progn (cerror \"Go on\" \"stop\") :went-on)")
+(wait-debugger 1) (show "cerror")
+(cmd "continue" "CONTINUE")
+(wait-result) (show "continue")
+(cmd "debug-use-value" "REPL-EVAL (restart-case (error \"x\") (use-value (v) :interactive (lambda () (list (read-line))) v))")
+(wait-debugger 1) (show "use-value-entered")
+(cmd "restart-use-value" "RESTART 0")
+(wait-result) (show "use-value")
+(cmd "debug-error2" "REPL-EVAL (error \"y\")")
+(wait-debugger 1) (setf *sent* '())
+(cmd "interrupt-debugger" "REPL-INTERRUPT")
+(wait-result) (show "interrupt-debugger")
+(cmd "eval-list" "REPL-EVAL (list :a :b)")
+(wait-result) (setf *sent* '())
+(cmd "inspect-star" "INSPECT *")
+(cmd "inspect-cons" "INSPECT (list 1 (list 2 3))")
+(cmd "part-1" "PART 1")
+(cmd "pop" "POP")
+(cmd "pop-root" "POP")
+(cmd "part-bad" "PART 7")
+(cmd "inspect-error" "INSPECT (error \"no\")")
+(cmd "inspect-none" "INSPECT")
+(setf ext.dev:*max-inspect-parts* 3)
+(cmd "inspect-limit" "INSPECT (make-array 10 :initial-element 0)")
+;; An error raised by the runtime (an unbound variable: cl_error from C,
+;; not CL:ERROR) inside a frame eval, a Lisp error nested inside THAT, then
+;; ABORT twice: each ABORT must land one level down, and a CONTINUE
+;; afterwards must still work.  The host does this right; the m68k build
+;; did not (2026-09-11, clamacs's phase-4 leg), so this pins what the JIT
+;; fix has to reach.
+(cmd "unbound-in-frame" "REPL-EVAL (dbg-fn 3 4)")
+(wait-debugger 1) (setf *sent* '())
+(cmd "fe-unbound" "FRAME-EVAL 0 (list nosuchvar)")
+(wait-debugger 2) (show "unbound-level2")
+(cmd "fe-nested" "FRAME-EVAL 0 (dbg-fn 1 2)")
+(wait-debugger 3) (setf *sent* '())
+(cmd "abort-3" "ABORT")
+(wait-for (lambda (c) (prefix-p "OUTPUT ; Aborted" c))) (sleep 0.1)
+(cmd "restarts-after-3" "RESTARTS")
+(setf *sent* '())
+(cmd "abort-2" "ABORT")
+(wait-for (lambda (c) (prefix-p "OUTPUT ; Aborted" c))) (sleep 0.1)
+(cmd "restarts-after-2" "RESTARTS")
+(cmd "abort-1" "ABORT")
+(wait-result) (setf *sent* '())
+(cmd "cerror-after" "REPL-EVAL (progn (cerror \"Go on\" \"stop\") :still-continues)")
+(wait-debugger 1) (setf *sent* '())
+(cmd "continue-after" "CONTINUE")
+(wait-result) (show "continue-after")
+(cmd "debug-error3" "REPL-EVAL (error \"z\")")
+(wait-debugger 1) (setf *sent* '())
+(cmd "detach-in-debugger" "REPL-DETACH")
+(format t "<<THREAD-ALIVE-AFTER-DETACH=~a>>~%" (thread-alive))
+;; Without DEBUG an error ends the form as it did before.
+(cmd "attach-plain" "REPL-ATTACH EDITOR")
+(cmd "plain-error" "REPL-EVAL (error \"plain\")")
+(wait-result) (show "plain")
+(cmd "detach2" "REPL-DETACH")
+EOF
+debug_out=$(run_script "$TMPD/debug.lisp")
+dblock() { echo "$debug_out" | sed -n "/<<$1>>/,/<<END $1>>/p"; }
+# A command reply: `<<label RC=n>>' up to its `<<END>>'.
+dreply() { echo "$debug_out" | sed -n "/<<$1 RC=/,/<<END>>/p"; }
+
+check "BACKTRACE before the REPL is loaded is unknown" '<<backtrace-idle RC=20>>' "$debug_out"
+check "REPL-ATTACH rejects an unknown option"    '<<attach-bad-option RC=20>>' "$debug_out"
+check "REPL-ATTACH takes DEBUG"                  '<<attach-debug RC=0>>' "$debug_out"
+check "output before the error still arrives"    'OUTPUT pre'       "$(dblock debugger)"
+check "an error announces DEBUGGER 1"            'DEBUGGER 1 CL-USER' "$(dblock debugger)"
+check "the condition follows on the next line"   'SIMPLE-ERROR: bad 12' "$(dblock debugger)"
+check "the REPL's own ABORT restart is offered"  '0: ABORT Return to the REPL' "$(dblock debugger)"
+check "REPL-EVAL in the debugger is rc 10"       '<<eval-in-debugger RC=10>>' "$debug_out"
+check "and says so"                              'in the debugger'  "$debug_out"
+check "RESTARTS names the level and the condition" '^level 1: SIMPLE-ERROR: bad 12$' "$(dreply restarts)"
+check "RESTARTS lists the restarts as DEBUGGER did" '^0: ABORT Return to the REPL$' "$(dreply restarts)"
+check "a DEBUG attach is remembered" '<<REPL-DEBUG=T>>' "$debug_out"
+check "BACKTRACE lists the erring function first" '^0: dbg-fn' "$(dreply backtrace)"
+check "BACKTRACE leaves the REPL's own frames out" '^1: <anonymous>$' "$(dreply backtrace)"
+check "FRAME 0 names the arguments"              '^ARG0 = 3$'       "$(dreply frame0)"
+check "FRAME 0 shows the LET variable"           '^LOCAL3 = 12$'    "$(dreply frame0)"
+check "FRAME of a frame that is not there says so" '; no such frame' "$(dreply frame-none)"
+check "FRAME-EVAL replies at once"               '<<frame-eval RC=0>>' "$debug_out"
+check "FRAME-EVAL binds the locals by name"      'OUTPUT (3 4 12)'  "$(dblock frame-eval)"
+check "an error in FRAME-EVAL is DEBUGGER 2"     'DEBUGGER 2 CL-USER' "$(dblock nested)"
+check "level 2 offers a return to level 1"       '0: ABORT Return to debugger level 1' "$(dblock nested)"
+check "the nested backtrace still shows level 1's frames" '^1: dbg-fn' "$(dreply backtrace2)"
+check "ABORT at level 2 re-announces level 1"    'DEBUGGER 1 CL-USER' "$(dblock abort-nested)"
+check "and prints that it aborted"               'OUTPUT ; Aborted' "$(dblock abort-nested)"
+check "RESTART out of range is rc 10"            '<<restart-bad RC=10>>' "$debug_out"
+check "CONTINUE without a CONTINUE restart is rc 10" 'no CONTINUE restart' "$debug_out"
+check "RESTART 0 leaves the debugger"            'DEBUGGER 0 CL-USER' "$(dblock restart-abort)"
+check "and the form ends with RESULT"            'RESULT 0 CL-USER'  "$(dblock restart-abort)"
+check "aborted, as the values say"               '; Aborted'        "$(dblock restart-abort)"
+check "CERROR offers CONTINUE first"             '0: CONTINUE Go on' "$(dblock cerror)"
+check "CONTINUE goes on with the form"           ':WENT-ON'         "$(dblock continue)"
+check "a restart without a report shows its name alone" '0: USE-VALUE $' "$(dblock use-value-entered)"
+check "an interactive restart reads through READLINE" 'READLINE'    "$(dblock use-value)"
+check "and its value is the form's"              '"typed line"'     "$(dblock use-value)"
+check "REPL-INTERRUPT in the debugger ends the form" 'ERROR: Interrupted' "$(dblock interrupt-debugger)"
+check "INSPECT * sees the REPL's last value"     '^(:A :B)$'        "$(dreply inspect-star)"
+check "INSPECT starts with a header"             '^CONS 1 2$'       "$(dreply inspect-cons)"
+check "INSPECT numbers the parts"                '^1: Cdr = ((2 3))$' "$(dreply inspect-cons)"
+check "PART descends and the depth grows"        '^CONS 2 2$'       "$(dreply part-1)"
+check "PART shows the part's own parts"          '^0: Car = (2 3)$' "$(dreply part-1)"
+check "POP comes back"                           '^CONS 1 2$'       "$(dreply pop)"
+check "POP at the root is rc 10"                 '<<pop-root RC=10>>' "$debug_out"
+check "PART out of range is rc 10"               'no part 7 (the object has 2)' "$debug_out"
+check "INSPECT of a failing form is rc 10"       '<<inspect-error RC=10>>' "$debug_out"
+check "INSPECT without a form is rc 20"          '<<inspect-none RC=20>>' "$debug_out"
+check "the part list is capped, the header says the count" '^SIMPLE-VECTOR 1 10$' "$(dreply inspect-limit)"
+check "and lists only that many"                 '^2: \[2\] = 0$'   "$(dreply inspect-limit)"
+check "a runtime error in a frame eval is a nested level" 'UNBOUND-VARIABLE: Unbound variable: NOSUCHVAR' "$(dblock unbound-level2)"
+check "ABORT from level 3 lands at level 2"       '^level 2: UNBOUND-VARIABLE' "$(dreply restarts-after-3)"
+check "ABORT from level 2 lands at level 1"       '^level 1: SIMPLE-ERROR: bad 12' "$(dreply restarts-after-2)"
+check "CONTINUE still works after that"           ':STILL-CONTINUES' "$(dblock continue-after)"
+check "REPL-DETACH while parked stops the thread" '<<THREAD-ALIVE-AFTER-DETACH=NIL>>' "$debug_out"
+check "without DEBUG an error is RESULT 10 as before" 'ERROR: plain' "$(dblock plain)"
+
 echo ""
 echo "test_dev_commands: $passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

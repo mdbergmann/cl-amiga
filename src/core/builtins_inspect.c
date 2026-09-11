@@ -568,9 +568,64 @@ static CL_Obj bi_inspect(CL_Obj *args, int n)
     return CL_NIL;
 }
 
+/* --- Builtin: (ext:inspect-parts object &optional limit) --- */
+
+/* The navigable components of OBJECT as a list of (LABEL . VALUE) conses,
+ * LABEL a fresh string, in the order the interactive inspector numbers
+ * them -- so the index of a cons in the list is the index the inspector
+ * would take.  The second value is the total component count; with LIMIT
+ * (a positive fixnum) at most that many are listed, so a 10000-element
+ * vector does not cost 10000 conses to look at.
+ *
+ * This is the non-interactive face of the inspector, for a front end that
+ * shows the parts itself (the clamacs inspector window over the ARexx
+ * port, lib/dev-commands.lisp INSPECT/PART/POP): the C loop above reads
+ * stdin, which no port command can. */
+static CL_Obj bi_inspect_parts(CL_Obj *args, int n)
+{
+    CL_Obj obj = args[0];
+    CL_Obj result = CL_NIL, pair = CL_NIL, label_str = CL_NIL, comp = CL_NIL;
+    int count, shown, i;
+    int limit = 0;
+
+    if (n > 1 && CL_FIXNUM_P(args[1]) && CL_FIXNUM_VAL(args[1]) > 0)
+        limit = CL_FIXNUM_VAL(args[1]);
+
+    count = cl_inspect_component_count(obj);
+    shown = (limit > 0 && count > limit) ? limit : count;
+
+    /* cl_inspect_get_component allocates for a struct (the slot-name
+     * list), cl_make_string and cl_cons always: everything held across the
+     * loop is rooted, and OBJ is re-read from its rooted slot by
+     * cl_inspect_get_component itself.  The label points at static
+     * storage the next call overwrites, so it is copied before that. */
+    CL_GC_PROTECT(obj);
+    CL_GC_PROTECT(result);
+    CL_GC_PROTECT(pair);
+    CL_GC_PROTECT(label_str);
+    CL_GC_PROTECT(comp);
+    for (i = shown - 1; i >= 0; i--) {
+        const char *label;
+        comp      = cl_inspect_get_component(obj, i, &label);
+        label_str = cl_make_string(label, (uint32_t)strlen(label));
+        pair      = cl_cons(label_str, comp);
+        result    = cl_cons(pair, result);
+    }
+    CL_GC_UNPROTECT(5);
+
+    cl_mv_count     = 2;
+    cl_mv_values[0] = result;
+    cl_mv_values[1] = CL_MAKE_FIXNUM(count);
+    return result;
+}
+
 /* --- Registration --- */
 
 void cl_builtins_inspect_init(void)
 {
     defun("INSPECT", bi_inspect, 1, 1);
+
+    cl_register_builtin("INSPECT-PARTS", bi_inspect_parts, 1, 2, cl_package_ext);
+    cl_export_symbol(cl_intern_in("INSPECT-PARTS", 13, cl_package_ext),
+                     cl_package_ext);
 }

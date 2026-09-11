@@ -882,6 +882,16 @@ static CL_NLXFrame *nlx_alloc_common(int type, CL_Obj tag)
     nlx->printer_mark        = cl_printer_state_save();
     nlx->saved_jit_depth     = CT->jit_depth;
     nlx->saved_pending_mark  = cl_saved_pending_top;
+    /* The C-level error-frame (CL_CATCH) depth, as the VM records it for
+     * every NLX frame (vm.c NLX_PUSH_COMMON).  It used to be captured for
+     * HANDLER-CASE frames only, so a THROW into a JIT'd CATCH -- every
+     * restart invoked into natively compiled code, e.g. a RESTART-CASE's
+     * ABORT chosen from a handler that ran on top of a native frame --
+     * left cl_error_frame_top at the depth of C frames the longjmp had
+     * abandoned; the next cl_error then longjmp'd into that dead stack
+     * (seen as a handler "declining" and the outer form ending, clamacs's
+     * debugger, 2026-09-11; tests/amiga/dev-repl-tests.lisp). */
+    nlx->error_mark          = cl_error_frame_top;
     nlx->mv_save_mark        = CT->mv_save_top;
     nlx->mv_count            = 1;
     nlx->landing             = NULL;   /* JIT frame: setjmps inline into buf */
@@ -928,6 +938,13 @@ static void nlx_restore_core(CL_NLXFrame *nlx, void *landing_anchor)
     cl_handler_top          = nlx->handler_mark;
     cl_handler_active_mask  = nlx->handler_active_mask;
     cl_restart_top          = nlx->restart_mark;
+    /* Error frames pushed by C code deeper than this frame are gone with
+     * the C stack the longjmp unwound: drop them, as the VM's landing does
+     * (vm.c), or a later cl_error longjmps into dead stack.  The pending
+     * mark likewise (both were HANDLER-CASE-only before; see
+     * nlx_alloc_common). */
+    cl_error_frame_top      = nlx->error_mark;
+    cl_saved_pending_top    = nlx->saved_pending_mark;
     gc_root_count           = nlx->gc_root_mark;
     cl_jit_restore_depth(nlx->saved_jit_depth);
     cl_compiler_unwind_to(nlx->compiler_mark, landing_anchor);
@@ -1110,6 +1127,59 @@ void *cl_jit_runtime_uwprot_alloc(void)
     nlx->code           = cur ? cur->code      : NULL;
     nlx->constants      = cur ? cur->constants : NULL;
     nlx->bytecode       = cur ? cur->bytecode  : CL_NIL;
+
+    /* Park the pending-throw state and clear it, exactly as the VM's
+     * OP_UWPROT arming does (vm.c), so an UNWIND-PROTECT nested inside a
+     * cleanup body cannot clobber the transfer that is unwinding through
+     * the enclosing one.  This was missing: the JIT parked nothing, its
+     * normal-exit pop cleared cl_pending_throw outright, and a THROW (a
+     * restart invoked from a handler) into a JIT'd CATCH was lost the
+     * moment an interposed cleanup ran a WITH-LOCK-HELD -- the transfer
+     * simply stopped, and the condition being handled escaped instead
+     * (clamacs's debugger, 2026-09-11; tests/amiga/dev-repl-tests.lisp
+     * "cleanup with-lock-held").  Mirrors the VM including the GC-safety
+     * rule there: with no throw in flight the tag/value globals are stale
+     * offsets, so NILs are parked, not copies. */
+    if (cl_saved_pending_top >= cl_saved_pending_max)
+        cl_error(CL_ERR_OVERFLOW, "saved-pending stack overflow");
+    {
+        CL_SavedPending *sp = &cl_saved_pending_stack[cl_saved_pending_top++];
+        int pt = cl_pending_throw;
+        sp->pending_throw = pt;
+        if (pt) {
+            int mi;
+            sp->pending_tag      = cl_pending_tag;
+            sp->pending_value    = cl_pending_value;
+            sp->pending_mv_count = cl_pending_mv_count;
+            for (mi = 0; mi < cl_pending_mv_count && mi < CL_MAX_MV; mi++)
+                sp->pending_mv_values[mi] = cl_pending_mv_values[mi];
+            sp->pending_error_code = cl_pending_error_code;
+            if (pt == 2) {
+                strncpy(sp->pending_error_msg, cl_pending_error_msg,
+                        sizeof(sp->pending_error_msg) - 1);
+                sp->pending_error_msg[sizeof(sp->pending_error_msg) - 1] = '\0';
+            } else {
+                sp->pending_error_msg[0] = '\0';
+            }
+            cl_pending_throw      = 0;
+            cl_pending_tag        = CL_NIL;
+            cl_pending_value      = CL_NIL;
+            cl_pending_mv_count   = 0;
+            cl_pending_error_code = 0;
+            cl_pending_error_msg[0] = '\0';
+        } else {
+            sp->pending_tag      = CL_NIL;
+            sp->pending_value    = CL_NIL;
+            sp->pending_mv_count = 0;
+            sp->pending_error_code = 0;
+            sp->pending_error_msg[0] = '\0';
+        }
+        sp->entered_via_longjmp = 0;   /* the landing sets it */
+    }
+    /* The record is part of this frame's dynamic extent: a transfer to
+     * this frame must find it, not drop it (nlx_alloc_common took the mark
+     * before the push). */
+    nlx->saved_pending_mark = cl_saved_pending_top;
     return &nlx->buf;
 }
 
@@ -1120,10 +1190,12 @@ void cl_jit_runtime_uwprot_commit(void)
 
 void cl_jit_runtime_uwprot_pop(void)
 {
-    /* Normal-exit pop, then clear any pending-throw record so a
-     * subsequent non-throwing exit past this UWPROT doesn't rethrow. */
+    /* Normal-exit pop of the NLX frame only.  cl_pending_throw is NOT
+     * cleared here: the arming parked and cleared it, and uwprot_rethrow
+     * restores it after the cleanup -- clearing it here is what lost an
+     * enclosing transfer whenever a nested UNWIND-PROTECT in a cleanup
+     * body exited normally (mirrors the VM's OP_UWPOP). */
     nlx_pop_type(CL_NLX_UWPROT);
-    cl_pending_throw = 0;
 }
 
 void cl_jit_runtime_uwprot_post_longjmp(void)
@@ -1133,6 +1205,27 @@ void cl_jit_runtime_uwprot_post_longjmp(void)
      * Read the frame's saved marks and restore. */
     CL_NLXFrame *nlx = &cl_nlx_stack[cl_nlx_top];
     nlx_restore_core(nlx, CL_CAPTURE_SP());
+    /* Pass-through, not a target: the transfer stays in flight, so
+     * cl_pending_throw stays set.  Record it in the slot the arming parked
+     * (nlx_restore_core put cl_saved_pending_top back to just past it),
+     * so uwprot_rethrow can re-initiate it after the cleanup even when the
+     * cleanup body's own NLX activity cleared the globals (mirrors the VM's
+     * UWPROT landing). */
+    if (cl_saved_pending_top > 0) {
+        CL_SavedPending *sp = &cl_saved_pending_stack[cl_saved_pending_top - 1];
+        int mi;
+        sp->pending_throw    = cl_pending_throw;
+        sp->pending_tag      = cl_pending_tag;
+        sp->pending_value    = cl_pending_value;
+        sp->pending_mv_count = cl_pending_mv_count;
+        for (mi = 0; mi < cl_pending_mv_count && mi < CL_MAX_MV; mi++)
+            sp->pending_mv_values[mi] = cl_pending_mv_values[mi];
+        sp->pending_error_code = cl_pending_error_code;
+        strncpy(sp->pending_error_msg, cl_pending_error_msg,
+                sizeof(sp->pending_error_msg) - 1);
+        sp->pending_error_msg[sizeof(sp->pending_error_msg) - 1] = '\0';
+        sp->entered_via_longjmp = 1;
+    }
     /* Intentionally don't touch cl_mv_count / cl_mv_values: the throw
      * site may have arranged its own MV state that the cleanup forms must
      * observe.  The protected form's values were never produced on this
@@ -1192,7 +1285,46 @@ CL_Obj cl_jit_runtime_mv_restore(void)
 
 void cl_jit_runtime_uwprot_rethrow(void)
 {
-    int p = cl_pending_throw;
+    int p;
+    /* Pop the record the arming parked and decide whether to re-initiate,
+     * with the VM's OP_UWRETHROW rules: a transfer started inside the
+     * cleanup body itself always goes on; otherwise the parked one is put
+     * back into the globals, and goes on only if this frame's landing had
+     * fired for it -- a frame entered normally leaves it parked for the
+     * enclosing cleanup to find. */
+    {
+        int rethrow_active = (cl_pending_throw != 0);
+        int should_rethrow;
+        CL_SavedPending saved;
+        if (cl_saved_pending_top > 0) {
+            saved = cl_saved_pending_stack[--cl_saved_pending_top];
+        } else {
+            saved.pending_throw = 0;
+            saved.pending_tag = CL_NIL;
+            saved.pending_value = CL_NIL;
+            saved.pending_mv_count = 0;
+            saved.pending_error_code = 0;
+            saved.pending_error_msg[0] = '\0';
+            saved.entered_via_longjmp = 0;
+        }
+        if (cl_pending_throw == 0) {
+            int mi;
+            cl_pending_throw      = saved.pending_throw;
+            cl_pending_tag        = saved.pending_tag;
+            cl_pending_value      = saved.pending_value;
+            cl_pending_mv_count   = saved.pending_mv_count;
+            for (mi = 0; mi < saved.pending_mv_count && mi < CL_MAX_MV; mi++)
+                cl_pending_mv_values[mi] = saved.pending_mv_values[mi];
+            cl_pending_error_code = saved.pending_error_code;
+            strncpy(cl_pending_error_msg, saved.pending_error_msg,
+                    sizeof(cl_pending_error_msg) - 1);
+            cl_pending_error_msg[sizeof(cl_pending_error_msg) - 1] = '\0';
+        }
+        should_rethrow = rethrow_active ||
+                         (saved.entered_via_longjmp && cl_pending_throw != 0);
+        if (!should_rethrow) return;
+    }
+    p = cl_pending_throw;
     if (p == 0) return;
 
     if (p == 1) {
@@ -1532,9 +1664,8 @@ void *cl_jit_runtime_handler_case_alloc(CL_Obj types)
         cl_error(CL_ERR_OVERFLOW, "Handler stack overflow");
     nlx = nlx_alloc_common(CL_NLX_HANDLER_CASE, types);
     nlx->hc_clause  = 0;
-    /* The VM's landing restores these two as well; nlx_alloc_common leaves
-     * them alone for the other JIT frames, so capture them here. */
-    nlx->error_mark = cl_error_frame_top;
+    /* error_mark and saved_pending_mark come from nlx_alloc_common now, for
+     * every JIT frame kind. */
     return &nlx->buf;
 }
 
@@ -1589,9 +1720,7 @@ CL_Obj cl_jit_runtime_handler_case_post_longjmp(void)
      * nlx_restore_core has restored handler_top to the frame's mark. */
     CL_NLXFrame *nlx = &cl_nlx_stack[cl_nlx_top];
     CL_Obj cond;
-    nlx_restore_core(nlx, CL_CAPTURE_SP());
-    cl_error_frame_top   = nlx->error_mark;
-    cl_saved_pending_top = nlx->saved_pending_mark;
+    nlx_restore_core(nlx, CL_CAPTURE_SP());   /* error_mark, pending mark included */
     cond = nlx->result;
     cl_pending_throw = 0;
     cl_mv_count = 1;

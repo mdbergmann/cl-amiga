@@ -11287,6 +11287,15 @@ y" 1))
     (setq *fail-count* (+ *fail-count* 1))
     (format t "FAIL: ARexx port tests could not run: ~A~%" e)))
 
+; --- The editor's debugger protocol (lib/dev-repl.lisp), in-process ---
+; Nested debugger levels and restarts with natively compiled and bytecode
+; signallers; see the file's header for why this runs on the target.
+#+amigaos
+(handler-case (load "tests/amiga/dev-repl-tests.lisp")
+  (error (e)
+    (setq *fail-count* (+ *fail-count* 1))
+    (format t "FAIL: dev-repl tests could not run: ~A~%" e)))
+
 ; --- TLS over AmiSSL (AmigaOS / MorphOS) ---
 ; Loopback client/server through the reactor-owned TLS provider.  The file
 ; itself skips (with a note, not a failure) when no provider is installed —
