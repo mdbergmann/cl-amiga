@@ -235,8 +235,68 @@
             (check "arexx REPL-DETACH rc" 0 rc))
           (multiple-value-bind (rc text) (amiga.arexx:send port "REPL-EVAL (+ 1 1)")
             (declare (ignore text))
-            (check "arexx REPL-EVAL after detach is rc 10" 10 rc)))
+            (check "arexx REPL-EVAL after detach is rc 10" 10 rc))
+          ; The debugger (REPL-ATTACH ... DEBUG): an error parks the REPL
+          ; thread and announces DEBUGGER 1 over the port; BACKTRACE and
+          ; FRAME are answered while it is parked, RESTART 0 (the REPL's
+          ; own ABORT) lets it go, and RESULT follows.
+          (multiple-value-bind (rc text) (amiga.arexx:send port "REPL-ATTACH CLAMIGATEST DEBUG")
+            (declare (ignore text))
+            (check "arexx REPL-ATTACH DEBUG rc" 0 rc))
+          (multiple-value-bind (rc text)
+              (amiga.arexx:send port "REPL-EVAL (flet ((arexx-dbg (n) (error \"dbg ~a\" n))) (arexx-dbg 7))")
+            (declare (ignore text))
+            (check "arexx REPL-EVAL of an error with DEBUG replies" 0 rc))
+          (loop repeat 500
+                until (index-of "DEBUGGER 1" cl-user::*arexx-repl-sent*)
+                do (sleep 0.02))
+          (let ((announce (find-if (lambda (s) (and (>= (length s) 10) (string= "DEBUGGER 1" s :end2 10)))
+                                   cl-user::*arexx-repl-sent*)))
+            (check "arexx an error announces DEBUGGER 1" t (and announce t))
+            (check "arexx DEBUGGER carries the condition" t
+                   (and announce (search "SIMPLE-ERROR: dbg 7" announce) t))
+            (check "arexx DEBUGGER lists the ABORT restart" t
+                   (and announce (search "ABORT Return to the REPL" announce) t)))
+          (multiple-value-bind (rc text) (amiga.arexx:send port "BACKTRACE")
+            (check "arexx BACKTRACE rc" 0 rc)
+            (check "arexx BACKTRACE starts at the erring frame" t
+                   (and (search "0: " text) t)))
+          (multiple-value-bind (rc text) (amiga.arexx:send port "FRAME 0")
+            (check "arexx FRAME 0 rc" 0 rc)
+            (check "arexx FRAME 0 shows the argument" t
+                   (and (search "ARG0 = 7" text) t)))
+          (multiple-value-bind (rc text) (amiga.arexx:send port "REPL-EVAL (+ 1 1)")
+            (declare (ignore text))
+            (check "arexx REPL-EVAL in the debugger is rc 10" 10 rc))
+          (multiple-value-bind (rc text) (amiga.arexx:send port "RESTART 0")
+            (declare (ignore text))
+            (check "arexx RESTART 0 rc" 0 rc))
+          (let ((sent (wait-result)))
+            (check "arexx leaving the debugger announces DEBUGGER 0" t
+                   (and (index-of "DEBUGGER 0" sent) t))
+            (check "arexx the aborted form ends with RESULT" t
+                   (and (index-of "RESULT 0 CL-USER" sent)
+                        (search "Aborted" (car (last sent)))
+                        t)))
+          (multiple-value-bind (rc text) (amiga.arexx:send port "REPL-DETACH")
+            (declare (ignore text))
+            (check "arexx REPL-DETACH after the debugger rc" 0 rc)))
         (setf ext.dev:*repl-send* #'amiga.arexx:send)
+
+        ; The inspector: synchronous on the port's thread.
+        (multiple-value-bind (rc text) (amiga.arexx:send port "INSPECT (list 1 (list 2 3))")
+          (check "arexx INSPECT rc" 0 rc)
+          (check "arexx INSPECT header" t (and (search "CONS 1 2" text) t))
+          (check "arexx INSPECT parts" t (and (search "1: Cdr = ((2 3))" text) t)))
+        (multiple-value-bind (rc text) (amiga.arexx:send port "PART 1")
+          (check "arexx PART rc" 0 rc)
+          (check "arexx PART descends" t (and (search "CONS 2 2" text) t)))
+        (multiple-value-bind (rc text) (amiga.arexx:send port "POP")
+          (check "arexx POP rc" 0 rc)
+          (check "arexx POP comes back" t (and (search "CONS 1 2" text) t)))
+        (multiple-value-bind (rc text) (amiga.arexx:send port "POP")
+          (declare (ignore text))
+          (check "arexx POP at the root is rc 10" 10 rc))
 
         ; The port keeps serving after all of that.
         (multiple-value-bind (rc text) (amiga.arexx:send port "PING")

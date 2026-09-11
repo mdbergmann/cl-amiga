@@ -211,6 +211,54 @@ TEST(inspect_string_chars)
     ASSERT_EQ('B', CL_CHAR_VAL(c1));
 }
 
+/* --- EXT:INSPECT-PARTS: the parts as a list, for a front end --- */
+
+TEST(inspect_parts_lists_labelled_components)
+{
+    /* A cons: two parts, labelled as the interactive inspector labels
+     * them, in its order, and the count as the second value. */
+    ASSERT(strcmp(eval_str("(ext:inspect-parts (cons 1 2))"),
+                  "((\"Car\" . 1) (\"Cdr\" . 2))") == 0);
+    ASSERT(strcmp(eval_str("(nth-value 1 (ext:inspect-parts (cons 1 2)))"), "2") == 0);
+
+    /* A vector: one part per element, labelled by index. */
+    ASSERT(strcmp(eval_str("(ext:inspect-parts (vector 'a 'b))"),
+                  "((\"[0]\" . A) (\"[1]\" . B))") == 0);
+
+    /* The labels are fresh strings, not the builtin's static buffer: two
+     * indexed parts keep two different labels. */
+    ASSERT(strcmp(eval_str("(car (first (ext:inspect-parts (vector 1 2 3))))"),
+                  "\"[0]\"") == 0);
+    ASSERT(strcmp(eval_str("(car (third (ext:inspect-parts (vector 1 2 3))))"),
+                  "\"[2]\"") == 0);
+}
+
+TEST(inspect_parts_honours_the_limit)
+{
+    /* Ten elements, two asked for: two listed, the count says ten. */
+    ASSERT(strcmp(eval_str("(length (ext:inspect-parts (make-array 10 :initial-element 0) 2))"),
+                  "2") == 0);
+    ASSERT(strcmp(eval_str("(nth-value 1 (ext:inspect-parts (make-array 10 :initial-element 0) 2))"),
+                  "10") == 0);
+    /* A limit of zero (or none) means everything. */
+    ASSERT(strcmp(eval_str("(length (ext:inspect-parts (make-array 10 :initial-element 0) 0))"),
+                  "10") == 0);
+}
+
+TEST(inspect_parts_of_a_leaf_is_empty)
+{
+    ASSERT(strcmp(eval_str("(ext:inspect-parts 42)"), "NIL") == 0);
+    ASSERT(strcmp(eval_str("(nth-value 1 (ext:inspect-parts 42))"), "0") == 0);
+    ASSERT(strcmp(eval_str("(ext:inspect-parts nil)"), "NIL") == 0);
+}
+
+TEST(inspect_parts_struct_slots_are_named)
+{
+    eval("(defstruct ipt-point x y)");
+    ASSERT(strcmp(eval_str("(ext:inspect-parts (make-ipt-point :x 3 :y 4))"),
+                  "((\"X\" . 3) (\"Y\" . 4))") == 0);
+}
+
 TEST(inspect_ratio_parts)
 {
     CL_Obj r = eval("2/3");
@@ -378,6 +426,12 @@ int main(void)
     RUN(inspect_out_of_range);
     RUN(inspect_is_bound);
     RUN(inspect_show_obj_to_standard_output);
+
+    /* EXT:INSPECT-PARTS, the non-interactive face */
+    RUN(inspect_parts_lists_labelled_components);
+    RUN(inspect_parts_honours_the_limit);
+    RUN(inspect_parts_of_a_leaf_is_empty);
+    RUN(inspect_parts_struct_slots_are_named);
 
     /* Interactive-loop tests (redirect stdin — keep last) */
     RUN(inspect_eof_returns_and_leaves_stdin_readable);

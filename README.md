@@ -657,15 +657,24 @@ Work:src/foo.lisp:40: ERROR: Too many arguments to DRAW: expected 2, got 3
 | `APROPOS <string> [<pkg>]` | One matching symbol per line with its kinds: `function`, `macro`, `special-operator`, `variable`, `class`; the symbols accessible in `<pkg>`, or in the command package |
 | `SOURCE-LOCATION <symbol>` | `<file>:<line>` of the definition; rc 10 when none was recorded |
 | `MACROEXPAND <form>`, `MACROEXPAND-1 <form>` | The expansion, laid out as code (body forms indented, arguments aligned) rather than filled to the margin |
-| `REPL-ATTACH <port>` | Start the REPL thread, which talks back to the editor's ARexx port `<port>` (see below); answers with the current package |
+| `REPL-ATTACH <port> [DEBUG]` | Start the REPL thread, which talks back to the editor's ARexx port `<port>` (see below); answers with the current package. With `DEBUG`, an unhandled error opens the debugger protocol instead of ending the form |
 | `REPL-EVAL <forms>` | Hand the forms to the REPL thread; answers at once (rc 10 while a form is still running), the values arrive with `RESULT` |
 | `REPL-INPUT <line>` | Answer an outstanding `READLINE` |
-| `REPL-INTERRUPT` | Abort the running form |
+| `REPL-INTERRUPT` | Abort the running form (also from inside the debugger) |
 | `REPL-DETACH` | Stop the REPL thread |
+| `BACKTRACE` | In the debugger: the frames of the current level, `<n>: <name>  <file>:<line>` |
+| `RESTARTS` | In the debugger: `level <n>: <condition>`, then the current level's restarts as `DEBUGGER` listed them |
+| `FRAME <n>` | In the debugger: the locals of frame `<n>`, `<name> = <value>` per line |
+| `FRAME-EVAL <n> <forms>` | In the debugger: evaluate with frame `<n>`'s locals bound under their names (`ARG0`, `LOCAL3`, ...); answers at once, the values arrive as `OUTPUT`, an error opens a nested level |
+| `RESTART <n>`, `ABORT`, `CONTINUE` | In the debugger: invoke restart `<n>` of the current level (interactively -- one that asks reads through `READLINE`), or the innermost `ABORT` / `CONTINUE` restart |
+| `INSPECT <form>` | Evaluate the form and inspect its value: a header `<TYPE> <depth> <part-count>`, the object, then `<n>: <label> = <value>` per part (at most `ext.dev:*max-inspect-parts*`, 200). `*`, `**` and `***` are the REPL thread's |
+| `PART <n>`, `POP` | Descend into part `<n>` of the object being inspected, or come back up; each answers like `INSPECT` |
 
 A command string starting with `(` is evaluated directly, so `ADDRESS CLAMIGA '(room)'` works too. The introspection commands resolve names in the command package without interning: an unknown symbol or package is rc 10 with the reason.
 
 **The REPL** is for an editor with a listener window. `EVAL` answers with everything a form printed, after the fact; a REPL wants the output as it happens, wants a `READ-LINE` to ask the editor, and must not tie up the port while a form runs. So `REPL-ATTACH` starts a second thread and the conversation becomes two-way: the port answers the editor's commands at once, and the REPL thread sends commands to the editor's port — `OUTPUT <text>` for each line (or 1 KB) of output, `READLINE` when the form reads standard input (the editor answers with `REPL-INPUT`), and `RESULT <rc> <package>` followed by the printed values, one per line, or the error text, when the form is done. The listener's `*`, `+` and friends are kept, `IN-PACKAGE` at either end is seen by the other, and arglist and completion keep working while a form runs. The REPL support (`lib/dev-repl.lisp`) is loaded on first use; `ext.dev:*repl-send*` is the function that delivers to the editor, which the host tests replace with a Lisp function playing the editor.
+
+**The debugger** is the same shape once more. With `REPL-ATTACH <port> DEBUG`, an unhandled error does not end the form: the REPL thread stays on the erring stack, sends `DEBUGGER <level> <package>` followed by the condition and one restart per line (`<n>: <NAME> <report>`), and takes its next steps from the port -- `BACKTRACE`, `FRAME`, `FRAME-EVAL`, `RESTART`, `ABORT`, `CONTINUE` above. Every REPL form has an `ABORT` restart ("Return to the REPL"), an error inside a `FRAME-EVAL` is a nested level whose `ABORT` returns to the level below, and leaving a level re-announces the one underneath (`DEBUGGER 0` once none is left) before `RESULT` ends the form. `INSPECT`, `PART` and `POP` are the non-interactive face of the inspector (`ext:inspect-parts` lists an object's parts as `(label . value)` pairs) and answer at once on the port's thread.
 
 **Return codes** follow the ARexx severity ladder: `0` success, `5` warnings, `10` errors, `20` unusable command. Two consequences worth knowing, both forced by the ARexx protocol rather than chosen:
 

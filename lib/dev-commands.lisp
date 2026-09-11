@@ -26,7 +26,7 @@
    ;; Session state
    "*COMMAND-PACKAGE*" "*MAX-RESULT-LENGTH*" "*LAST-RESULT*"
    ;; Introspection commands' knobs
-   "*MAX-COMPLETIONS*" "*PRETTY-MARGIN*"
+   "*MAX-COMPLETIONS*" "*PRETTY-MARGIN*" "*MAX-INSPECT-PARTS*"
    ;; The REPL's way back to the editor (lib/dev-repl.lisp)
    "*REPL-SEND*"
    ;; Introspection / extension
@@ -802,6 +802,132 @@ before the body indents by two; :FILL packs the arguments as they come.")
 
 (define-command "MACROEXPAND-1" (arg)
   (%macroexpand-command "MACROEXPAND-1" arg #'macroexpand-1))
+
+;;; ================================================================
+;;; Rows for a front end's lists
+;;;
+;;; The inspector's parts, a frame's locals and a restart's report are
+;;; shown one per row by the editor, so each value is printed bounded
+;;; and on one line: a 10000-element list is a row, not a screen.
+;;; ================================================================
+
+(defun %one-line (text limit)
+  "TEXT with its newlines blanked, cut to LIMIT characters with a marker."
+  (let ((flat (substitute #\Space #\Newline (substitute #\Space #\Return text))))
+    (if (> (length flat) limit)
+        (concatenate 'string (subseq flat 0 limit) " ...")
+        flat)))
+
+(defun %print-bounded (object)
+  "OBJECT as one row: PRIN1 with bounded length and depth, on one line,
+and never a signal -- a PRINT-OBJECT method that errors gives a marker."
+  (let ((*print-length* 10)
+        (*print-level* 3)
+        (*print-pretty* nil)
+        (*print-readably* nil)
+        (*print-circle* nil)
+        (*package* *command-package*))
+    (%one-line (handler-case (prin1-to-string object)
+                 (error () (format nil "#<unprintable ~a>" (type-of object))))
+               200)))
+
+(defun %parse-index (string)
+  "STRING as a non-negative integer, or NIL."
+  (let ((n (ignore-errors (parse-integer string :junk-allowed t))))
+    (and n (>= n 0) n)))
+
+(defun %split-index (string)
+  "(values INDEX REST) for `<n> <rest>': the leading number and what
+follows it, trimmed; INDEX is NIL when there is none."
+  (let* ((s (string-trim '(#\Space #\Tab) string))
+         (end (or (position-if-not #'digit-char-p s) (length s))))
+    (if (zerop end)
+        (values nil s)
+        (values (parse-integer s :end end)
+                (string-trim '(#\Space #\Tab) (subseq s end))))))
+
+;;; ================================================================
+;;; The inspector
+;;;
+;;; A non-interactive face over the C inspector's part enumeration
+;;; (EXT:INSPECT-PARTS): the editor shows the numbered parts itself,
+;;; descends into one with PART and comes back with POP.  The navigation
+;;; stack is per connection, like *COMMAND-PACKAGE*, and a fresh INSPECT
+;;; starts it over.  The object comes from a form evaluated here, on the
+;;; port's handler thread; the REPL thread's *, ** and *** are bound
+;;; around that evaluation, so `INSPECT *' looks at the last REPL value.
+;;; ================================================================
+
+(defvar *max-inspect-parts* 200
+  "How many parts an INSPECT, PART or POP reply lists.  The header line
+carries the total, so a front end can say how many more there are.")
+
+(defvar *inspect-stack* '()
+  "The objects being inspected, innermost first.")
+
+(defvar *repl-stars* nil
+  "The REPL thread's (* ** ***) after its last form, so INSPECT on the
+handler thread can see them; lib/dev-repl.lisp keeps it current.")
+
+(defun %inspect-reply ()
+  "The reply for the top of *INSPECT-STACK*: a header `<TYPE> <depth>
+<count>', the object on one line, then `<n>: <label> = <value>' per part."
+  (let ((object (first *inspect-stack*)))
+    (multiple-value-bind (parts count)
+        (ext:inspect-parts object *max-inspect-parts*)
+      (values +rc-ok+
+              (with-output-to-string (s)
+                (format s "~a ~d ~d~%"
+                        (%one-line (let ((*package* *command-package*))
+                                     (prin1-to-string (type-of object)))
+                                   60)
+                        (length *inspect-stack*) count)
+                (write-line (%print-bounded object) s)
+                (let ((i 0))
+                  (dolist (part parts)
+                    (format s "~d: ~a = ~a~%" i (car part) (%print-bounded (cdr part)))
+                    (incf i))))))))
+
+(define-command "INSPECT" (arg)
+  (if (zerop (length arg))
+      (values +rc-fatal+ "ERROR: INSPECT requires a form")
+      (let ((problem nil) (object nil))
+        (handler-case
+            (let ((*package* *command-package*))
+              (setf object
+                    (progv (if *repl-stars* '(* ** ***) '()) *repl-stars*
+                      (eval (read-from-string arg)))))
+          (error (e) (setf problem (%condition-text e))))
+        (if problem
+            (values +rc-error+ (format nil "ERROR: ~a" problem))
+            (progn (setf *inspect-stack* (list object))
+                   (%inspect-reply))))))
+
+(define-command "PART" (arg)
+  (let ((n (%parse-index arg)))
+    (cond ((null *inspect-stack*)
+           (values +rc-error+ "ERROR: nothing is being inspected (INSPECT <form> first)"))
+          ((null n)
+           (values +rc-fatal+ "ERROR: PART requires a part number"))
+          (t
+           ;; Only the parts up to N are listed: a big vector costs N
+           ;; conses to descend into, not its length.
+           (multiple-value-bind (parts count)
+               (ext:inspect-parts (first *inspect-stack*) (1+ n))
+             (if (< n count)
+                 (progn (push (cdr (nth n parts)) *inspect-stack*)
+                        (%inspect-reply))
+                 (values +rc-error+
+                         (format nil "ERROR: no part ~d (the object has ~d)" n count))))))))
+
+(define-command "POP" (arg)
+  (declare (ignore arg))
+  (cond ((null *inspect-stack*)
+         (values +rc-error+ "ERROR: nothing is being inspected (INSPECT <form> first)"))
+        ((null (rest *inspect-stack*))
+         (values +rc-error+ "ERROR: already at the object INSPECT started from"))
+        (t (pop *inspect-stack*)
+           (%inspect-reply))))
 
 ;;; ================================================================
 ;;; REPL
