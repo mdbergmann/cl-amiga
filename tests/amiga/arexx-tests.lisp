@@ -27,6 +27,10 @@
         (check "arexx start returns the port name" "CLAMIGATEST" port)
         (check "arexx port-name" "CLAMIGATEST" (amiga.arexx:port-name))
         (check "arexx running-p" t (amiga.arexx:running-p))
+        ; START registers STOP as an exit hook, so a process that ends with
+        ; the port up takes it down instead of leaving a zombie task on it.
+        (check "arexx start registers stop as an exit hook" t
+               (and (member 'amiga.arexx:stop ext:*exit-hooks*) t))
 
         ; PING: the minimal round trip -- message out, reply in, rc 0 with a
         ; RESULT argstring (rc 0 is the only case ARexx transmits one).
@@ -163,6 +167,22 @@
           (multiple-value-bind (rc text) (amiga.arexx:send port "REPL-ATTACH CLAMIGATEST")
             (check "arexx REPL-ATTACH rc" 0 rc)
             (check "arexx REPL-ATTACH answers the package" "CL-USER" text))
+          ; REPL-ATTACH loads lib/dev-repl.lisp on first use, which registers
+          ; %repl-stop as an exit hook so the REPL thread cannot outlive the
+          ; process (see dev-repl.lisp:326-330).  Newest-hook-first means
+          ; %repl-stop, registered here, must run ahead of amiga.arexx:stop,
+          ; registered by AMIGA.AREXX:START above -- else the port's exit
+          ; hook could tear down the port while the REPL thread is still on
+          ; it.
+          (check "arexx REPL-ATTACH registers %repl-stop as an exit hook" t
+                 (and (member 'ext.dev::%repl-stop ext:*exit-hooks*) t))
+          (check "arexx %repl-stop runs ahead of amiga.arexx:stop (newest-first)" t
+                 (let ((hooks ext:*exit-hooks*))
+                   (and (member 'ext.dev::%repl-stop hooks)
+                        (member 'amiga.arexx:stop hooks)
+                        (< (position 'ext.dev::%repl-stop hooks)
+                           (position 'amiga.arexx:stop hooks))
+                        t)))
           (multiple-value-bind (rc text)
               (amiga.arexx:send
                port "REPL-EVAL (progn (princ \"repl says hi\") (terpri) (read-line))")

@@ -323,6 +323,12 @@ checks on the REPL thread itself."
       (progn (setf *repl-thread* nil *repl-port* nil)
              t)))
 
+;; The REPL thread must not outlive the process either (see the exit hook
+;; in AMIGA.AREXX:START for what a leftover thread costs).  This file loads
+;; after the port is up, so hooks running newest-first stop the REPL thread
+;; before the port that fed it.
+(ext:add-exit-hook '%repl-stop)
+
 (defun %repl-start (port)
   (mp:with-lock-held (*repl-lock*)
     (setf *repl-port* port

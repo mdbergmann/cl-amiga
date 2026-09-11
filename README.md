@@ -618,7 +618,7 @@ Start it from inside clamiga (put these two lines in `S:.clamigarc` to have ever
 (amiga.arexx:start)          ; => "CLAMIGA"
 ```
 
-The port is served by its own thread, so it answers even while the REPL is busy. A second clamiga claims `CLAMIGA.1`, `CLAMIGA.2`, and so on; `(amiga.arexx:port-name)` reports the name, `(amiga.arexx:stop)` shuts it down.
+The port is served by its own thread, so it answers even while the REPL is busy. A second clamiga claims `CLAMIGA.1`, `CLAMIGA.2`, and so on; `(amiga.arexx:port-name)` reports the name, `(amiga.arexx:stop)` shuts it down. `start` also registers `stop` as an exit hook, so a `(quit)` or the end of a `--non-interactive` run takes the port down with the process instead of leaving a dead task on it.
 
 From an editor macro:
 

@@ -107,6 +107,13 @@ the same LOAD does not produce at the REPL."
     (error "AMIGA.AREXX: port ~a is already running" *port-name*))
   (setf *port-name* nil
         *start-error* nil)
+  ;; Take the port down when the process exits.  Without this a
+  ;; --non-interactive run (or a (quit)) that ends with the handler thread
+  ;; alive leaves an AmigaOS task behind that still owns the public port
+  ;; but whose VM has been torn down: the next message to it crashes the
+  ;; task, and the sender waits forever for a reply.  Exit hooks run before
+  ;; any teardown, and the registration is idempotent.
+  (ext:add-exit-hook 'stop)
   (setf *handler-thread*
         (mp:make-thread (lambda () (%handler-loop name))
                         :name "arexx-port"
