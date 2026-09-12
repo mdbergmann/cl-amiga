@@ -27,8 +27,9 @@ mosdebug.log
 # FS-UAE per-file metadata written into the shared mount
 *.uaem
 
-# MorphOS-built binary dropped in for scripts/make-binary-release.sh
+# MorphOS-built binaries dropped in for scripts/make-binary-release.sh
 /clamiga-mos
+/clamacs-mos
 /clamiga-mos.img
 
 # `make fasl-amiga` precompiles lib/amiga/** next to the sources (host-built,

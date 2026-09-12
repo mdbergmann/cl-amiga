@@ -13,6 +13,10 @@
 #     bin/*/clamiga.img     bare-boot heap image (boot + CLOS) beside EACH
 #                           binary: startup restores it in one read instead
 #                           of loading lib/boot.fasl + clos.fasl (see below)
+#     bin/aos3/clamacs      Clamacs, the MUI editor/IDE (clamacs/ submodule),
+#     bin/mos/clamacs       cross-compiled here / built natively on MorphOS.
+#                           Soft-float and CPU-neutral, so ONE m68k binary
+#                           serves both AmigaOS builds (it sits in bin/aos3).
 #     lib/                  runtime library — FASLs where portable, sources
 #                           where compilation must happen on the target
 #     docs/                 package API reference (signatures + descriptions)
@@ -94,9 +98,15 @@
 #                  saved on MorphOS by THAT binary from the same source
 #                  tree: `make -f Makefile.mos image` writes
 #                  build/morphos/clamiga.img (and verifies it).
+#   CLAMACS_MOS_BIN=path
+#                  The MorphOS clamacs binary (default: ./clamacs-mos), built
+#                  natively in the clamacs/ submodule with its Makefile.mos.
 #
 # The aos3 images need the FS-UAE setup of `make -f Makefile.cross
-# test-amiga` (pkill fs-uae first if an emulator is lingering).
+# test-amiga` (pkill fs-uae first if an emulator is lingering).  The editor
+# needs the clamacs/ submodule checked out with its vendor/texteditor (MUI
+# headers): `git submodule update --init clamacs && git -C clamacs submodule
+# update --init vendor/texteditor`.  It is built with this repo's toolchain.
 
 set -euo pipefail
 
@@ -113,6 +123,7 @@ else TIMEOUT=""; fi
 
 MOS_BIN=${MOS_BIN:-$ROOT/clamiga-mos}
 MOS_IMG=${MOS_IMG:-$ROOT/clamiga-mos.img}
+CLAMACS_MOS_BIN=${CLAMACS_MOS_BIN:-$ROOT/clamacs-mos}
 FSUAE_BIN=verify/realamiga/FS-UAE.app/Contents/MacOS/fs-uae
 
 # --- version from the single source of truth ------------------------------
@@ -141,6 +152,18 @@ if [ ! -f "$MOS_IMG" ]; then
     echo "       writes build/morphos/clamiga.img) and copy it here, or point MOS_IMG=... at it." >&2
     exit 1
 fi
+if [ ! -f "$CLAMACS_MOS_BIN" ]; then
+    echo "ERROR: MorphOS clamacs binary not found: $CLAMACS_MOS_BIN" >&2
+    echo "       Build it natively on MorphOS (make -f Makefile.mos in clamacs/) and" >&2
+    echo "       copy it here, or point CLAMACS_MOS_BIN=... at it." >&2
+    exit 1
+fi
+if [ ! -f clamacs/Makefile.cross ] || [ ! -d clamacs/vendor/texteditor/include ]; then
+    echo "ERROR: the clamacs/ submodule (or its vendor/texteditor) is not checked out." >&2
+    echo "       Run: git submodule update --init clamacs" >&2
+    echo "            git -C clamacs submodule update --init vendor/texteditor" >&2
+    exit 1
+fi
 if [ ! -x "$FSUAE_BIN" ]; then
     echo "ERROR: FS-UAE not found at $FSUAE_BIN — the aos3 heap images are saved" >&2
     echo "       in the emulator (same setup as make -f Makefile.cross test-amiga)." >&2
@@ -157,12 +180,18 @@ make -f Makefile.cross amiga
 echo "--- Cross-compiling AmigaOS 3 binary (hard-float, FPU=1) ---"
 make -f Makefile.cross amiga FPU=1
 
+echo "--- Cross-compiling Clamacs (clamacs/ submodule) ---"
+make -C clamacs -f Makefile.cross amiga \
+    TOOLCHAIN="$ROOT/tools/m68k-amigaos-gcc/prefix"
+
 HOST_BIN="$ROOT/build/host/clamiga"
 AOS3_BIN="$ROOT/build/cross/clamiga"
 AOS3FPU_BIN="$ROOT/build/cross-fpu/clamiga"
+CLAMACS_BIN="$ROOT/clamacs/build/cross/clamacs"
 [ -x "$HOST_BIN" ] || { echo "ERROR: $HOST_BIN missing" >&2; exit 1; }
 [ -f "$AOS3_BIN" ] || { echo "ERROR: $AOS3_BIN missing" >&2; exit 1; }
 [ -f "$AOS3FPU_BIN" ] || { echo "ERROR: $AOS3FPU_BIN missing" >&2; exit 1; }
+[ -f "$CLAMACS_BIN" ] || { echo "ERROR: $CLAMACS_BIN missing" >&2; exit 1; }
 
 # --- stage ----------------------------------------------------------------
 echo "--- Staging $STAGE ---"
@@ -173,8 +202,11 @@ mkdir -p "$STAGE/bin/aos3" "$STAGE/bin/aos3-fpu" "$STAGE/bin/mos" \
 cp "$AOS3_BIN"    "$STAGE/bin/aos3/clamiga"
 cp "$AOS3FPU_BIN" "$STAGE/bin/aos3-fpu/clamiga"
 cp "$MOS_BIN"     "$STAGE/bin/mos/clamiga"
+cp "$CLAMACS_BIN"     "$STAGE/bin/aos3/clamacs"
+cp "$CLAMACS_MOS_BIN" "$STAGE/bin/mos/clamacs"
 chmod +x "$STAGE/bin/aos3/clamiga" "$STAGE/bin/aos3-fpu/clamiga" \
-         "$STAGE/bin/mos/clamiga"
+         "$STAGE/bin/mos/clamiga" "$STAGE/bin/aos3/clamacs" \
+         "$STAGE/bin/mos/clamacs"
 
 # lib: FASL-portable modules, compiled by the just-built host binary so
 # CL_FASL_VERSION matches the packaged binaries exactly.  The script compiles
@@ -240,6 +272,8 @@ Common Lisp for AmigaOS 3+ and MorphOS.
   bin/aos3-fpu/clamiga  AmigaOS 3.x, hard-float build — REQUIRES an FPU
   bin/mos/clamiga       MorphOS (PowerPC, native)
   bin/*/clamiga.img     heap image of the bare boot, one per binary (see Startup)
+  bin/aos3/clamacs      Clamacs, the editor/IDE — AmigaOS 3.x, any 68020+
+  bin/mos/clamacs       Clamacs for MorphOS (see Clamacs below)
   lib/                  runtime library (precompiled FASLs + Lisp sources)
   docs/                 package API reference (call signatures included)
   examples/             example programs (Lisp source)
@@ -317,6 +351,31 @@ Examples
 --------
   bin/aos3/clamiga --load examples/amiga/gfx/bouncing-lines.lisp
   bin/aos3/clamiga --load examples/amiga/reaction/listbrowser.lisp   (ReAction GUIs, see examples/amiga/README.md)
+
+Clamacs (editor / IDE)
+----------------------
+Clamacs is an Emacs-flavoured Lisp editor and IDE for AmigaOS 3 and
+MorphOS: a native MUI application that talks to a running clamiga over
+its ARexx port — load, compile and evaluate from the buffer, arglists
+and completion, jump to definition, a REPL window (C-c C-z), a debugger
+window with restarts and backtrace, and an inspector (C-c I).
+
+It needs MUI 3.8 or newer (muimaster.library 19+) and TextEditor.mcc
+15.29 or newer in MUI:Libs/mui/ (MorphOS ships it; on AmigaOS 3 install
+both from Aminet).  The editor checks for them at startup.
+
+Open clamiga's ARexx port and start the editor:
+
+  ; in S:.clamigarc (or at the REPL)
+  (require "amiga/arexx")
+  (amiga.arexx:start)
+
+  ; then, in another shell
+  bin/aos3/clamacs            (bin/mos/clamacs on MorphOS)
+
+The one m68k clamacs binary runs on every 68020+ machine and works with
+either AmigaOS clamiga binary.  Source and documentation:
+https://github.com/mdbergmann/clamacs
 
 Project: https://github.com/mdbergmann/cl-amiga
 EOF
@@ -396,6 +455,13 @@ if [ "$SMOKE" = 1 ]; then
     grep -q "; Loading .*rel/.*lib/amiga/reaction\.fasl" "$OUT/smoke.log" &&
     grep -q "^MEMF-CHIP 2" "$OUT/smoke.log" || {
         echo "ERROR: lib/amiga did not load from the release FASLs — see $OUT/smoke.log" >&2
+        exit 1; }
+    # The editor cannot run on the host; check that what is staged is a real
+    # AmigaOS hunk executable (0x000003F3 = HUNK_HEADER) of a plausible size.
+    magic=$(od -An -tx1 -N4 "$STAGE/bin/aos3/clamacs" | tr -d ' \n')
+    size=$(wc -c < "$STAGE/bin/aos3/clamacs" | tr -d ' ')
+    [ "$magic" = "000003f3" ] && [ "$size" -gt 20000 ] || {
+        echo "ERROR: bin/aos3/clamacs is not an AmigaOS executable (magic $magic, $size bytes)" >&2
         exit 1; }
     echo "smoke test passed"
 fi

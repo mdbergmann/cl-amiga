@@ -1,3 +1,6 @@
 [submodule "tools/m68k-amigaos-gcc"]
 	path = tools/m68k-amigaos-gcc
 	url = https://github.com/AmigaPorts/m68k-amigaos-gcc.git
+[submodule "clamacs"]
+	path = clamacs
+	url = https://github.com/mdbergmann/clamacs.git

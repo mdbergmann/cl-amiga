@@ -607,6 +607,24 @@ Register clamiga in `~/.iclrc`:
 
 Then run `icl --lisp clamiga`. ICL spawns clamiga, loads SLYNK via ASDF, and connects; evaluation, completion, `,doc`, the inspector, and the browser UI all run against the clamiga image. If something goes wrong at startup, `icl --verbose --lisp clamiga --eval '(+ 1 2)'` shows the spawn command and wire traffic.
 
+## Clamacs (native editor / IDE)
+
+[Clamacs](https://github.com/mdbergmann/clamacs) is an Emacs-flavoured Common Lisp editor and IDE for AmigaOS 3 and MorphOS: a native MUI application (a subclass of `TextEditor.mcc` with Emacs key handling, minibuffer, kill ring, Lisp indentation and sexp navigation) that drives a running clamiga over the [ARexx port](#arexx-port-amigaos--morphos) below — load, compile and evaluate from the buffer with clickable diagnostics, arglists, completion, jump to definition, describe and apropos, a REPL window (`C-c C-z`) fed by a REPL thread in clamiga, a debugger window (restarts, backtrace, locals, eval in a frame) and an inspector (`C-c I`). It is the on-Amiga counterpart to the SLY setup above: two processes, so a GC pause or a crash in one never freezes the other.
+
+Clamacs lives in this repository as the `clamacs/` submodule and ships in the [binary release](#binary-release-amigaos--morphos) next to the `clamiga` binaries (`bin/aos3/clamacs`, `bin/mos/clamacs`). It needs MUI 3.8+ and `TextEditor.mcc` 15.29+ installed (MorphOS ships it). Open the port and start the editor:
+
+```lisp
+;; S:.clamigarc
+(require "amiga/arexx")
+(amiga.arexx:start)
+```
+
+```
+bin/aos3/clamacs
+```
+
+The editor's own suites, build and design notes are in the submodule (`clamacs/README.md`, `clamacs/CLAUDE.md`); the Lisp-side commands it speaks are `EXT.DEV` (`lib/dev-commands.lisp`, `tests/test_dev_commands.sh`). To build it from a checkout: `git submodule update --init clamacs && git -C clamacs submodule update --init vendor/texteditor`, then `make -C clamacs -f Makefile.cross amiga` (it uses this repo's cross toolchain).
+
 ## ARexx port (AmigaOS / MorphOS)
 
 Native Amiga editors talk to a running clamiga over an ARexx port: trigger a load from CygnusEd or GoldED, get the compile diagnostics back, evaluate a form in the live image. This is the on-Amiga counterpart to the SLY setup above — no Emacs, no TCP, no host machine involved.
@@ -1252,8 +1270,11 @@ MOS_BIN=./clamiga-mos scripts/make-binary-release.sh
 
 It cross-compiles both AmigaOS 3 binaries — soft-float (`bin/aos3/`, runs
 on any 68020+) and hard-float (`bin/aos3-fpu/`, requires an FPU) — takes a
-natively built MorphOS binary (`MOS_BIN`, default `./clamiga-mos`), and
-assembles `clamiga-<version>/` with `bin/aos3/`, `bin/aos3-fpu/`, `bin/mos/`, `lib/` (precompiled
+natively built MorphOS binary (`MOS_BIN`, default `./clamiga-mos`), builds
+[Clamacs](#clamacs-native-editor--ide) from the `clamacs/` submodule (its
+MorphOS binary comes in as `CLAMACS_MOS_BIN`, default `./clamacs-mos`), and
+assembles `clamiga-<version>/` with `bin/aos3/`, `bin/aos3-fpu/`, `bin/mos/` (the `clamacs`
+binary next to `clamiga` in `bin/aos3/` and `bin/mos/`), `lib/` (precompiled
 FASLs where portable — the core library and all of `lib/amiga/` including
 the raw OS bindings, with the `lib/amiga` sources alongside for reference —
 and Lisp sources where compilation must happen on the target, i.e. asdf and
@@ -2034,6 +2055,7 @@ examples/
     gfx/            Graphics demos (bouncing-lines, doublebuffer, sprite)
     reaction/       ReAction GUI examples ported from the NDK 3.2 (buttons, checkbox, chooser, ...)
     mui/            MUI GUI examples (hello)
+clamacs/          Clamacs, the native MUI editor/IDE (git submodule, shipped in the binary release)
 tests/
   test_*.c        Host test suites (C)
   amiga/          Amiga test suite (Lisp)
