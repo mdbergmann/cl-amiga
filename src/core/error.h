@@ -253,6 +253,14 @@ void cl_fatal_diag(const char *fmt, ...);
  * debugger can dispatch PRINT-OBJECT for a meaningful report. */
 CL_NORETURN void cl_error_from_condition(CL_Obj condition);
 
+/* The report text of a condition: its :format-control applied to the
+ * :format-arguments, else its report string, else the standard report of
+ * its type made from the standard slots (TYPE-ERROR "The value ~S is not
+ * of type ~S" from :datum/:expected-type, the CELL-ERROR family from
+ * :name, ...), else CL_NIL.  Allocates; COND must be GC-rooted by the
+ * caller.  builtins_condition.c. */
+CL_Obj cl_condition_report(CL_Obj cond);
+
 /* Abort the current thread quietly: signal the condition so handler-case /
  * unwind-protect run, but skip the interactive debugger entirely.  Used for
  * controlled internal aborts such as destroy-thread's "Thread destroyed". */

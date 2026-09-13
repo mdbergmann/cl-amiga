@@ -459,14 +459,139 @@ static int slot_present_p(CL_Obj slots, CL_Obj key)
     return 0;
 }
 
+/* FORMAT a C control string with up to three condition-slot arguments into
+ * a fresh Lisp string.  Same rooting idiom as format_condition_report:
+ * everything is copied into args_buf and rooted BEFORE the first
+ * allocation, since the string stream and the formatter both compact. */
+static CL_Obj format_default_report(const char *ctl, const CL_Obj *argv, int argc)
+{
+    CL_Obj args_buf[5];  /* [dest, ctl, up to 3 args] */
+    CL_Obj sstream, result;
+    int i;
+
+    args_buf[0] = CL_NIL;
+    args_buf[1] = CL_NIL;
+    for (i = 0; i < argc; i++)
+        args_buf[2 + i] = argv[i];
+    for (i = 0; i < 2 + argc; i++)
+        cl_gc_push_root(&args_buf[i]);
+
+    args_buf[1] = cl_make_string(ctl, (uint32_t)strlen(ctl));
+    sstream = cl_make_string_output_stream();
+    CL_GC_PROTECT(sstream);
+    args_buf[0] = sstream;
+    cl_format_to_stream(sstream, args_buf, 2 + argc);
+    result = cl_finish_string_output_stream(sstream);
+    CL_GC_UNPROTECT(1 + 2 + argc);
+    return result;
+}
+
+/* The report of a standard condition made WITHOUT a :format-control —
+ * (make-condition 'type-error :datum 5 :expected-type 'list),
+ * (error 'type-error ...), CHECK-TYPE, THE, ECASE/ETYPECASE fallthrough —
+ * derived from the type's standard slots (CLHS 9.2: TYPE-ERROR has
+ * :datum/:expected-type, CELL-ERROR :name, ...).  Without this the
+ * condition printed as "#<CONDITION TYPE-ERROR>" under ~A and the
+ * unhandled-error line said just "TYPE-ERROR", the datum and expected
+ * type invisible although both were right there in the slots.
+ *
+ * The condition is not pinned by any table here: COND must be rooted by
+ * the caller (the helper allocates), and the slot values are read out of
+ * the alist BEFORE the first allocation.  Returns CL_NIL for a type with
+ * no standard report, leaving the "#<CONDITION ...>" default to the
+ * printer. */
+static CL_Obj cl_condition_default_report(CL_Obj cond)
+{
+    /* Per standard type: the supertype to test, the control string, and up
+     * to three slot keys whose values become the format arguments (a NULL
+     * key slot means "the condition's type name" — the arithmetic-error
+     * family names its concrete type).  The order matters: a subtype must
+     * precede its supertype (UNBOUND-VARIABLE before CELL-ERROR). */
+    struct default_report {
+        CL_Obj *type;
+        const char *ctl;
+        CL_Obj *keys[3];
+        int argc;
+    };
+    /* Interned first: the lookup can create the keyword (allocating), so
+     * the condition pointer is derived only afterwards. */
+    CL_Obj kw_object = cl_intern_keyword("OBJECT", 6);
+    CL_Obj type;
+    CL_Obj result = CL_NIL;
+    struct default_report table[] = {
+        { &SYM_TYPE_ERROR, "The value ~S is not of type ~S",
+          { &KW_DATUM, &KW_EXPECTED_TYPE, NULL }, 2 },
+        { &SYM_UNBOUND_VARIABLE_COND, "The variable ~S is unbound",
+          { &KW_NAME, NULL, NULL }, 1 },
+        { &SYM_UNDEFINED_FUNCTION_COND, "The function ~S is undefined",
+          { &KW_NAME, NULL, NULL }, 1 },
+        { &SYM_UNBOUND_SLOT, "The slot ~S is unbound in ~S",
+          { &KW_NAME, &KW_INSTANCE, NULL }, 2 },
+        { &SYM_CELL_ERROR, "Cell error on ~S",
+          { &KW_NAME, NULL, NULL }, 1 },
+        { &SYM_FILE_ERROR, "File error on ~S",
+          { &KW_PATHNAME, NULL, NULL }, 1 },
+        { &SYM_PACKAGE_ERROR, "Package error on ~S",
+          { &KW_PACKAGE, NULL, NULL }, 1 },
+        { &SYM_STREAM_ERROR, "Stream error on ~S",
+          { &KW_STREAM, NULL, NULL }, 1 },
+        { &SYM_ARITHMETIC_ERROR, "~A signalled by ~S with operands ~S",
+          { NULL, &KW_OPERATION, &KW_OPERANDS }, 3 },
+        { &SYM_PRINT_NOT_READABLE, "~S cannot be printed readably",
+          { &kw_object, NULL, NULL }, 1 },
+    };
+    CL_Condition *c = (CL_Condition *)CL_OBJ_TO_PTR(cond);
+    CL_Obj argv[3];
+    unsigned ti;
+
+    type = c->type_name;
+
+    if (CL_NULL_P(type) || !CL_SYMBOL_P(type))
+        return CL_NIL;
+
+    /* COND, TYPE and KW_OBJECT are all live across cl_condition_type_matches,
+     * which can macroexpand a deftype alias (cl_vm_apply, allocating) on any
+     * table entry — matched or not.  Without rooting, a compaction there
+     * would leave COND/TYPE as stale offsets for the next iteration, and
+     * KW_OBJECT (referenced via table[9].keys[0]) stale for the final one.
+     * C is re-derived from the now-always-valid COND after every match. */
+    CL_GC_PROTECT(cond);
+    CL_GC_PROTECT(type);
+    CL_GC_PROTECT(kw_object);
+
+    for (ti = 0; ti < sizeof(table) / sizeof(table[0]); ti++) {
+        const struct default_report *d = &table[ti];
+        int i;
+        if (!cl_condition_type_matches(type, *d->type))
+            continue;
+        c = (CL_Condition *)CL_OBJ_TO_PTR(cond);
+        for (i = 0; i < d->argc; i++)
+            argv[i] = d->keys[i] ? slot_lookup(c->slots, *d->keys[i])
+                                 : c->type_name;
+        result = format_default_report(d->ctl, argv, d->argc);
+        break;
+    }
+
+    CL_GC_UNPROTECT(3);
+    return result;
+}
+
 /* Format a condition's report string, applying :format-arguments if present.
- * Returns a CL string object, or CL_NIL if no format-control. */
+ * Returns a CL string object, or CL_NIL if no format-control and no
+ * report_string — unless the type has a standard report (see
+ * cl_condition_default_report), which is then returned instead.
+ *
+ * The condition object must be GC-rooted by the caller; C is re-derived
+ * from it after the (allocating) default-report path. */
 static CL_Obj format_condition_report(CL_Condition *c)
 {
     CL_Obj fmt_ctrl = slot_lookup(c->slots, KW_FORMAT_CONTROL);
     CL_Obj fmt_args;
-    if (CL_NULL_P(fmt_ctrl) || !CL_ANY_STRING_P(fmt_ctrl))
-        return c->report_string;  /* fallback to raw report_string */
+    if (CL_NULL_P(fmt_ctrl) || !CL_ANY_STRING_P(fmt_ctrl)) {
+        if (!CL_NULL_P(c->report_string))
+            return c->report_string;  /* fallback to raw report_string */
+        return cl_condition_default_report(CL_PTR_TO_OBJ(c));
+    }
 
     fmt_args = slot_lookup(c->slots, KW_FORMAT_ARGUMENTS);
     if (CL_NULL_P(fmt_args))
@@ -503,6 +628,17 @@ static CL_Obj format_condition_report(CL_Condition *c)
         CL_GC_UNPROTECT(1 + 2 + list_len);
         return result;
     }
+}
+
+/* The report text of COND for ~A / the unhandled-error line: the
+ * :format-control applied to its :format-arguments, else the raw
+ * report_string, else the type's standard slot-derived report, else
+ * CL_NIL.  Allocates; COND must be rooted by the caller.  (A
+ * make-condition'd SIMPLE-ERROR used to print its control string with the
+ * ~a directives unfilled, since only ERROR formatted it.) */
+CL_Obj cl_condition_report(CL_Obj cond)
+{
+    return format_condition_report((CL_Condition *)CL_OBJ_TO_PTR(cond));
 }
 
 /* Check if a symbol is a known condition type in the hierarchy.

@@ -10360,6 +10360,57 @@ TEST(eval_let_star_shadow_no_closure)
     ASSERT_STR_EQ(eval_print("(let* ((x 1) (x (+ x 100))) x)"), "101");
 }
 
+/* CLHS LET: a binding is VAR or (VAR [INIT-FORM]).  (x 1 2) compiled
+ * silently as (x 1) — the compiler read the car and cadr and dropped the
+ * rest without a word.  Now a compile-time error, for LET and LET*, that
+ * names the binding; the well-formed shapes are unaffected. */
+TEST(eval_let_malformed_binding_rejected)
+{
+    ASSERT_STR_EQ(eval_print("(let ((x 1 2)) x)"), "ERROR:1");
+    ASSERT_STR_EQ(eval_print("(let* ((x 1 2)) x)"), "ERROR:1");
+    ASSERT_STR_EQ(eval_print("(let ((x 1) (y 2 3)) y)"), "ERROR:1");
+    /* the message names the binding and the form */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (eval '(let ((x 1 2)) x))"
+        "  (error (e) (let ((m (format nil \"~a\" e)))"
+        "    (list (and (search \"LET:\" m) t) (and (search \"(X 1 2)\" m) t)))))"),
+        "(T T)");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (eval '(let* ((x 1 2)) x))"
+        "  (error (e) (and (search \"LET*:\" (format nil \"~a\" e)) t)))"),
+        "T");
+    /* dotted binding, non-symbol variable, dotted binding list */
+    ASSERT_STR_EQ(eval_print("(let ((x . 1)) x)"), "ERROR:1");
+    ASSERT_STR_EQ(eval_print("(let ((1 2)) 3)"), "ERROR:1");
+    ASSERT_STR_EQ(eval_print("(let (\"s\") 3)"), "ERROR:1");
+    ASSERT_STR_EQ(eval_print("(let ((x 1) . y) x)"), "ERROR:1");
+    /* the well-formed shapes still compile */
+    ASSERT_STR_EQ(eval_print("(let (x (y) (z 3)) (list x y z))"), "(NIL NIL 3)");
+    ASSERT_STR_EQ(eval_print("(let* (x (y) (z 3)) (list x y z))"), "(NIL NIL 3)");
+    ASSERT_STR_EQ(eval_print("(let () 4)"), "4");
+}
+
+TEST(eval_let_too_many_bindings_rejected)
+{
+    /* CL_MAX_BINDINGS (64) is a compiler limit; bindings past it were
+     * silently dropped by the parallel LET's n < CL_MAX_BINDINGS guard,
+     * and LET* indexed its boxing table past the end.  Both now error. */
+    char form[4096];
+    int i, len = 0;
+    len += snprintf(form + len, sizeof(form) - (size_t)len, "(let (");
+    for (i = 0; i < 65; i++)
+        len += snprintf(form + len, sizeof(form) - (size_t)len, "(v%d %d) ", i, i);
+    snprintf(form + len, sizeof(form) - (size_t)len, ") v64)");
+    ASSERT_STR_EQ(eval_print(form), "ERROR:1");
+    /* exactly 64 is fine */
+    len = 0;
+    len += snprintf(form + len, sizeof(form) - (size_t)len, "(let* (");
+    for (i = 0; i < 64; i++)
+        len += snprintf(form + len, sizeof(form) - (size_t)len, "(v%d %d) ", i, i);
+    snprintf(form + len, sizeof(form) - (size_t)len, ") v63)");
+    ASSERT_STR_EQ(eval_print(form), "63");
+}
+
 TEST(eval_let_bind_name_shadows_macro)
 {
     /* Regression: the compiler's scan_body_for_boxing must not treat the
@@ -12421,6 +12472,8 @@ int main(void)
     RUN(eval_let_star_shadow_closure_mutation);
     RUN(eval_let_star_shadow_initform_ref);
     RUN(eval_let_star_shadow_no_closure);
+    RUN(eval_let_malformed_binding_rejected);
+    RUN(eval_let_too_many_bindings_rejected);
     RUN(eval_let_bind_name_shadows_macro);
     RUN(eval_mvbind_var_shadows_macro);
     RUN(eval_do_implicit_tagbody);

@@ -1573,9 +1573,23 @@ static void print_obj(CL_Obj obj)
                         break;
                 }
             }
-            if (!CL_NULL_P(cond->report_string)) {
-                out_any_str_lisp(cond->report_string);
-                break;
+            /* The report: :format-control applied to its arguments (a
+             * make-condition'd simple condition printed "bad ~a" raw
+             * before), else the report string, else the standard report a
+             * type makes from its slots ((make-condition 'type-error
+             * :datum 5 :expected-type 'list) reads "The value 5 is not of
+             * type LIST", not "#<CONDITION TYPE-ERROR>").  The helper
+             * allocates — obj is rooted across it and cond re-derived. */
+            {
+                CL_Obj rpt;
+                CL_GC_PROTECT(obj);
+                rpt = cl_condition_report(obj);
+                CL_GC_UNPROTECT(1);
+                cond = (CL_Condition *)CL_OBJ_TO_PTR(obj);
+                if (!CL_NULL_P(rpt) && CL_ANY_STRING_P(rpt)) {
+                    out_any_str_lisp(rpt);
+                    break;
+                }
             }
         }
         /* GC SAFETY (MT): each write below can block and let a peer

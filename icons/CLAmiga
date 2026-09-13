@@ -1,0 +1,11 @@
+; CLAmiga -- double-click launcher (run by C:IconX, see CLAmiga.info).
+; Opens the console window named in the icon's WINDOW tool type and starts
+; the soft-float AmigaOS 3 build, or the MorphOS build on MorphOS.  The
+; current directory is this drawer, where lib/ sits, and the binary finds
+; its clamiga.img and lib/ from there.  Stack: 128K, as README-BINARY says.
+Stack 131072
+If EXISTS SYS:MorphOS
+  bin/mos/clamiga
+Else
+  bin/aos3/clamiga
+EndIf

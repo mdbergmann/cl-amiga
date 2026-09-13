@@ -233,7 +233,7 @@ test_batch test_repl_values test_repl_paste test_boot_log test_mx_error_context 
                 test_amiga_bindgen \
                 test_amiga_boopsi test_amiga_reaction test_amiga_mui test_amiga_curated_vs_raw \
                 test_amiga_asyncio test_amiga_ahi test_amiga_iff test_amiga_gfx_examples \
-                test_lib_fasl_portable
+                test_lib_fasl_portable test_fasl_source_name
 
 # The ones that take no clamiga binary: two drive make itself, one the
 # Aminet upload script (dry runs only, no network).

@@ -1622,7 +1622,8 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
     prev_file = cl_current_source_file;
     prev_file_id = cl_current_file_id;
     prev_line = cl_reader_get_line();
-    cl_current_source_file = cl_intern_source_file(in_path);
+    cl_current_source_file = cl_intern_source_file(
+        cl_fasl_portable_source_name(in_path));
     cl_current_file_id++;
     cl_reader_reset_line();
 

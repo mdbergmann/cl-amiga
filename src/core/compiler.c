@@ -2703,6 +2703,51 @@ static CL_Obj compile_let(CL_Compiler *c, CL_Obj form, int sequential)
     CL_GC_PROTECT(bindings);
     CL_GC_PROTECT(body);
 
+    /* CLHS 3.1.2.1 / LET: each binding is VAR or (VAR [INIT-FORM]).  The
+     * binding loops below read only the car and cadr, so (x 1 2) used to
+     * compile silently as (x 1) — the stray element vanishing without a
+     * word — as did a non-symbol variable, a dotted binding list, and any
+     * binding past CL_MAX_BINDINGS (dropped by the parallel branch's
+     * n < CL_MAX_BINDINGS guard).  Reject all of them here, naming the
+     * offending binding. */
+    {
+        const char *who = sequential ? "LET*" : "LET";
+        CL_Obj b = bindings;
+        int n_bind = 0;
+        while (CL_CONS_P(b)) {
+            CL_Obj binding = cl_car(b);
+            CL_Obj var = binding;
+            int bad = 0;
+            if (CL_CONS_P(binding)) {
+                CL_Obj rest = cl_cdr(binding);
+                var = cl_car(binding);
+                /* NIL, or exactly one init-form: (VAR) / (VAR INIT) */
+                if (!CL_NULL_P(rest) &&
+                    !(CL_CONS_P(rest) && CL_NULL_P(cl_cdr(rest))))
+                    bad = 1;
+            }
+            if (!bad && (!CL_SYMBOL_P(var) || CL_NULL_P(var)))
+                bad = 1;
+            if (bad) {
+                char bbuf[128];
+                cl_prin1_to_string(binding, bbuf, (int)sizeof(bbuf));
+                cl_error(CL_ERR_GENERAL,
+                         "%s: malformed binding %s -- expected VAR or "
+                         "(VAR [INIT-FORM])", who, bbuf);
+            }
+            if (++n_bind > CL_MAX_BINDINGS)
+                cl_error(CL_ERR_GENERAL, "%s: too many bindings (max %d)",
+                         who, CL_MAX_BINDINGS);
+            b = cl_cdr(b);
+        }
+        if (!CL_NULL_P(b)) {
+            char bbuf[128];
+            cl_prin1_to_string(bindings, bbuf, (int)sizeof(bbuf));
+            cl_error(CL_ERR_GENERAL,
+                     "%s: bindings must be a proper list, got %s", who, bbuf);
+        }
+    }
+
     /* Pre-scan body for (declare (special ...)) to find locally-special vars */
     CL_Obj local_specials = scan_local_specials(body);
     CL_GC_PROTECT(local_specials); /* protect across scan_body_for_boxing / compile_expr */

@@ -1282,10 +1282,13 @@ binary next to `clamiga` in `bin/aos3/` and `bin/mos/`), `lib/` (precompiled
 FASLs where portable — the core library and all of `lib/amiga/` including
 the raw OS bindings, with the `lib/amiga` sources alongside for reference —
 and Lisp sources where compilation must happen on the target, i.e. asdf and
-quicklisp), the package API reference under `docs/`, and `examples/` — then
-smoke-tests the deployed layout and produces `.zip` and `.lha` archives.
-The binaries find `lib/` relative to themselves, so the extracted tree
-runs from any directory without assigns or environment variables.
+quicklisp), the package API reference under `docs/`, `examples/`, and three
+Workbench icons in the package root (`CLAmiga`, `CLAmiga-FPU`, `Clamacs`:
+IconX launchers from `icons/`, drawn by `scripts/make-icons.py`, that start
+the matching binary from `bin/` on a double-click, `bin/mos/` on MorphOS)
+— then smoke-tests the deployed layout and produces `.zip` and `.lha`
+archives. The binaries find `lib/` relative to themselves, so the extracted
+tree runs from any directory without assigns or environment variables.
 
 The release is published on Aminet as
 [dev/lang/clamiga.lha](https://aminet.net/package/dev/lang/clamiga).

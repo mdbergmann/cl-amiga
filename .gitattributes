@@ -7,3 +7,5 @@
 # test comparing such a literal against a file clamiga wrote ("\n" only)
 # fails on Windows alone (tests/test_amiga_bindgen.lisp was the first).
 * text=auto eol=lf
+# Workbench icons (icons/*.info, scripts/make-icons.py) are binaries.
+*.info binary

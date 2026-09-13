@@ -5705,6 +5705,32 @@ out=$(CLAMIGA_GC_STRESS=1 "$TIMEOUT" 120 "$CLAMIGA" \
 check_contains "threads parked on a lock and a condvar survive compactions" \
   "PARKED-STRESS woken=6 waiters=0 held=NIL" "$out"
 
+# --- Case: slot-derived condition report under compaction -------------------
+# cl_condition_default_report (builtins_condition.c) reads :datum /
+# :expected-type out of the condition's slot alist and FORMATs them into a
+# fresh string: the subtype walk, the control-string allocation, the string
+# stream and the formatter each compact.  The printer (~A), the ERROR path
+# and cl_error_from_condition all root the condition across it; a stale
+# pointer here shows as a garbled or missing datum.
+cat > "$WORK/condreport.lisp" <<'EOF'
+(let ((bad 0))
+  (dotimes (i 20)
+    (let ((c (make-condition 'type-error :datum (list i i) :expected-type 'string)))
+      (unless (string= (princ-to-string c)
+                       (format nil "The value (~a ~a) is not of type STRING" i i))
+        (incf bad)
+        (format t "CONDREPORT-MISMATCH ~a: ~a~%" i (princ-to-string c)))))
+  (format t "CONDREPORT-PRINC mismatches=~a~%" bad))
+(format t "CONDREPORT-HANDLER ~a~%"
+        (handler-case (error 'type-error :datum "abc" :expected-type 'integer)
+          (type-error (e) (format nil "~a" e))))
+(error 'type-error :datum 'sym :expected-type 'list)
+EOF
+out=$(run_stress "$WORK/condreport.lisp")
+check_contains "type-error slot report survives compaction (princ)" "CONDREPORT-PRINC mismatches=0" "$out"
+check_contains "type-error slot report survives compaction (handler)" 'CONDREPORT-HANDLER The value "abc" is not of type INTEGER' "$out"
+check_contains "unhandled type-error line carries the slot report" "ERROR: TYPE-ERROR: The value SYM is not of type LIST" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

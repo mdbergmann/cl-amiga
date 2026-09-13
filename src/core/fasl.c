@@ -1029,6 +1029,40 @@ void cl_fasl_set_portable_mode(int on)
     fasl_portable_mode = on ? 1 : 0;
 }
 
+/* The source name a portable FASL records for PATH (the resolved, absolute
+ * compile-file input).  CL_Bytecode.source_file is serialized into every
+ * function's FASL unit and is what a backtrace, the debugger and
+ * EXT.DEV's SOURCE-LOCATION print — so a release compiled on the build
+ * host used to show "/Users/<builder>/.../cl-amiga/lib/amiga/ahi.lisp" in
+ * every Amiga backtrace through a shipped module: a path that exists on no
+ * user's machine.  In portable mode the name is made relative to the
+ * compiling process's current directory when the source lies under it
+ * ("lib/amiga/ahi.lisp": the release script, `make fasl` and
+ * compile-lib-fasls.sh all run from the tree root, and that is also where
+ * the file sits in the deployed layout).  A source outside the cwd, and
+ * every non-portable compile, keeps the absolute path (the Sly/SLYNK M-.
+ * backend needs it on the host).  Returns PATH itself or a suffix of it. */
+const char *cl_fasl_portable_source_name(const char *path)
+{
+    char cwd[512];
+    int n;
+
+    if (!cl_fasl_portable_mode() || !path)
+        return path;
+    n = platform_getcwd(cwd, (int)sizeof(cwd));
+    if (n <= 0 || n >= (int)sizeof(cwd) - 1)
+        return path;
+    /* A device-rooted cwd ("Work:") already ends in its separator; else
+     * the match must stop at a directory boundary, not mid-component. */
+    if (cwd[n - 1] != '/' && cwd[n - 1] != ':') {
+        cwd[n++] = '/';
+        cwd[n] = '\0';
+    }
+    if (strncmp(path, cwd, (size_t)n) == 0 && path[n] != '\0')
+        return path + n;
+    return path;
+}
+
 const char *cl_fasl_nonportable_detail(const CL_FaslWriter *w)
 {
     return w->nonportable_detail;

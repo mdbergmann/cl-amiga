@@ -378,10 +378,18 @@ TEST(lisp_printer_aesthetic_uses_report)
     ASSERT_STR_EQ(eval_print(
         "(format nil \"~s\" (make-condition 'simple-error :format-control \"Foo Error\"))"),
         "\"#<CONDITION SIMPLE-ERROR: \\\"Foo Error\\\">\"");
-    /* No report_string ⇒ ~A still gives the wrapper (nothing else to say). */
+    /* No report_string, but a standard type ⇒ ~A reports from the slots
+     * (the wrapper is only for a type with nothing to say, see
+     * lisp_cell_error_family_default_report). */
     ASSERT_STR_EQ(eval_print(
         "(format nil \"~a\" (make-condition 'type-error :datum 42))"),
-        "\"#<CONDITION TYPE-ERROR>\"");
+        "\"The value 42 is not of type NIL\"");
+    /* A make-condition'd simple condition fills its ~a directives under
+     * ~A (only ERROR used to format them). */
+    ASSERT_STR_EQ(eval_print(
+        "(format nil \"~a\" (make-condition 'simple-error"
+        " :format-control \"Foo ~a\" :format-arguments '(7)))"),
+        "\"Foo 7\"");
 }
 
 #ifdef CL_WIDE_STRINGS
@@ -1358,6 +1366,87 @@ TEST(lisp_check_type_fail)
         "\"hello\"");
 }
 
+/* A standard condition made without :format-control reports from its
+ * slots (CLHS 9.1.3: ~A on a condition prints its report).  Used to print
+ * as "#<CONDITION TYPE-ERROR>" — the datum and expected type were in the
+ * slots but never shown. */
+TEST(lisp_type_error_default_report_princ)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(princ-to-string (make-condition 'type-error"
+        " :datum 5 :expected-type 'list))"),
+        "\"The value 5 is not of type LIST\"");
+}
+
+TEST(lisp_type_error_default_report_error_handler)
+{
+    /* (error 'type-error ...) — the handler sees the same report */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (error 'type-error :datum \"x\" :expected-type 'integer)"
+        "  (error (e) (format nil \"~a\" e)))"),
+        "\"The value \\\"x\\\" is not of type INTEGER\"");
+    /* CHECK-TYPE and THE go through the same path */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (let ((x 5)) (check-type x string))"
+        "  (type-error (e) (format nil \"~a\" e)))"),
+        "\"The value 5 is not of type STRING\"");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (the list 7)"
+        "  (type-error (e) (format nil \"~a\" e)))"),
+        "\"The value 7 is not of type LIST\"");
+}
+
+TEST(lisp_type_error_default_report_subtype)
+{
+    /* A user subtype of TYPE-ERROR without its own :report inherits it;
+     * one WITH a :report keeps its own. */
+    ASSERT_STR_EQ(eval_print(
+        "(progn (define-condition my-te (type-error) ())"
+        " (princ-to-string (make-condition 'my-te :datum 1 :expected-type 'symbol)))"),
+        "\"The value 1 is not of type SYMBOL\"");
+    ASSERT_STR_EQ(eval_print(
+        "(progn (define-condition my-te2 (type-error) ()"
+        "  (:report (lambda (c s) (format s \"custom ~a\" (type-error-datum c)))))"
+        " (princ-to-string (make-condition 'my-te2 :datum 1 :expected-type 'symbol)))"),
+        "\"custom 1\"");
+}
+
+TEST(lisp_type_error_default_report_prin1_unchanged)
+{
+    /* ~S / PRIN1 keeps the unreadable #<...> form (print-escape T) */
+    ASSERT_STR_EQ(eval_print(
+        "(prin1-to-string (make-condition 'type-error"
+        " :datum 5 :expected-type 'list))"),
+        "\"#<CONDITION TYPE-ERROR>\"");
+    /* A :format-control still wins over the slot-derived report */
+    ASSERT_STR_EQ(eval_print(
+        "(princ-to-string (make-condition 'simple-type-error"
+        " :datum 5 :expected-type 'list"
+        " :format-control \"bad ~a\" :format-arguments '(5)))"),
+        "\"bad 5\"");
+}
+
+TEST(lisp_cell_error_family_default_report)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(princ-to-string (make-condition 'unbound-variable :name 'foo))"),
+        "\"The variable FOO is unbound\"");
+    ASSERT_STR_EQ(eval_print(
+        "(princ-to-string (make-condition 'undefined-function :name 'bar))"),
+        "\"The function BAR is undefined\"");
+    ASSERT_STR_EQ(eval_print(
+        "(princ-to-string (make-condition 'division-by-zero"
+        " :operation '/ :operands '(1 0)))"),
+        "\"DIVISION-BY-ZERO signalled by / with operands (1 0)\"");
+    ASSERT_STR_EQ(eval_print(
+        "(princ-to-string (make-condition 'file-error :pathname \"x.txt\"))"),
+        "\"File error on \\\"x.txt\\\"\"");
+    /* A type with no standard slots keeps the #<...> default under ~A */
+    ASSERT_STR_EQ(eval_print(
+        "(princ-to-string (make-condition 'control-error))"),
+        "\"#<CONDITION CONTROL-ERROR>\"");
+}
+
 TEST(lisp_assert_pass)
 {
     /* assert passes when test is true */
@@ -2060,6 +2149,11 @@ int main(void)
     RUN(lisp_define_condition_multi_slots);
     RUN(lisp_check_type_pass);
     RUN(lisp_check_type_fail);
+    RUN(lisp_type_error_default_report_princ);
+    RUN(lisp_type_error_default_report_error_handler);
+    RUN(lisp_type_error_default_report_subtype);
+    RUN(lisp_type_error_default_report_prin1_unchanged);
+    RUN(lisp_cell_error_family_default_report);
     RUN(lisp_assert_pass);
     RUN(lisp_assert_fail);
 

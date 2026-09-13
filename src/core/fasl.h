@@ -128,6 +128,10 @@
  * strings that survive into the FASL count. */
 int  cl_fasl_portable_mode(void);
 void cl_fasl_set_portable_mode(int on);          /* explicit override (tests) */
+/* Source name recorded for a compile-file input in portable mode: relative
+ * to the cwd when the file lies under it, so a shipped FASL's backtraces
+ * name "lib/amiga/ahi.lisp" and not the build host's absolute path. */
+const char *cl_fasl_portable_source_name(const char *path);
 /* cl_fasl_nonportable_detail() is declared below, after CL_FaslWriter. */
 
 /* Max uninterned symbols tracked per FASL file (for gensym dedup) */

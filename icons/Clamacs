@@ -1,0 +1,11 @@
+; Clamacs -- double-click launcher (run by C:IconX, see Clamacs.info).
+; Starts the editor/IDE; it opens its own MUI windows, so the icon's
+; WINDOW tool type is NIL:.  The editor talks to a running clamiga over
+; ARexx and can start one itself (PROGDIR:clamiga, i.e. the binary next
+; to it).  Needs MUI 3.8+ and TextEditor.mcc 15.29+ (see README-BINARY).
+Stack 131072
+If EXISTS SYS:MorphOS
+  Run >NIL: bin/mos/clamacs
+Else
+  Run >NIL: bin/aos3/clamacs
+EndIf

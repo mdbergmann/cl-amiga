@@ -474,10 +474,15 @@ void cl_error_from_condition(CL_Obj condition)
         }
     }
 
-    c = (CL_Condition *)CL_OBJ_TO_PTR(condition);
+    /* No PRINT-OBJECT text: the condition's own report — formatted
+     * :format-control, report string, or the standard slot-derived report
+     * of its type (a bare (error 'type-error :datum 5 :expected-type 'list)
+     * used to print just "ERROR: TYPE-ERROR").  Allocates; condition is
+     * rooted above. */
     if (CL_NULL_P(report)) {
-        report = c->report_string;
+        report = cl_condition_report(condition);
     }
+    c = (CL_Condition *)CL_OBJ_TO_PTR(condition);
 
     if (!CL_NULL_P(report) && CL_ANY_STRING_P(report)) {
         /* Bounded UTF-8 conversion — the report is wide for any

@@ -1467,6 +1467,17 @@ y" 1))
 (check "declaim live after caught compile error" "ok"
   (handler-case (eval '(the fixnum "ok")) (type-error () :declaim-dead)))
 (declaim (optimize (safety 1)))
+;; CLHS LET: a binding is VAR or (VAR [INIT-FORM]).  (x 1 2) used to compile
+;; silently as (x 1); it is a compile-time error naming the binding now.
+(check "let malformed binding rejected" '(t t)
+  (handler-case (eval '(let ((x 1 2)) x))
+    (error (e) (let ((m (format nil "~a" e)))
+                 (list (and (search "LET:" m) t) (and (search "(X 1 2)" m) t))))))
+(check "let* malformed binding rejected" t
+  (handler-case (eval '(let* ((x 1 2)) x))
+    (error (e) (and (search "LET*:" (format nil "~a" e)) t))))
+(check "let well-formed shapes" '(nil nil 3)
+  (eval '(let (x (y) (z 3)) (list x y z))))
 ;; Live direction: a throwing macroexpander crosses the in-progress compile —
 ;; its abandoned compilers are freed at the CATCH landing, but a landing
 ;; inside the expander's own VM run must NOT free the enclosing live compiler.
@@ -3110,6 +3121,20 @@ y" 1))
 ; --- check-type ---
 (check "check-type pass" :ok (let ((x 42)) (check-type x integer) :ok))
 (check "check-type fail" "hello" (handler-case (let ((x "hello")) (check-type x integer)) (type-error (c) (type-error-datum c))))
+;; A TYPE-ERROR made without :format-control reports from its slots under ~A
+;; (CLHS 9.1.3); it printed as "#<CONDITION TYPE-ERROR>" before.  ~S keeps
+;; the unreadable form, a :format-control still wins, CELL-ERROR family too.
+(check "type-error default report princ" "The value 5 is not of type LIST"
+  (princ-to-string (make-condition 'type-error :datum 5 :expected-type 'list)))
+(check "type-error default report via error" "The value 5 is not of type STRING"
+  (handler-case (let ((x 5)) (check-type x string)) (type-error (e) (format nil "~a" e))))
+(check "type-error default report prin1 unchanged" "#<CONDITION TYPE-ERROR>"
+  (prin1-to-string (make-condition 'type-error :datum 5 :expected-type 'list)))
+(check "type-error format-control wins" "bad 5"
+  (princ-to-string (make-condition 'simple-type-error :datum 5 :expected-type 'list
+                                   :format-control "bad ~a" :format-arguments '(5))))
+(check "unbound-variable default report" "The variable FOO is unbound"
+  (princ-to-string (make-condition 'unbound-variable :name 'foo)))
 
 ; --- assert ---
 (check "assert pass" :ok (progn (assert (= 1 1)) :ok))
