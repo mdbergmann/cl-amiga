@@ -611,6 +611,10 @@ Then run `icl --lisp clamiga`. ICL spawns clamiga, loads SLYNK via ASDF, and con
 
 [Clamacs](https://github.com/mdbergmann/clamacs) is an Emacs-flavoured Common Lisp editor and IDE for AmigaOS 3 and MorphOS: a native MUI application (a subclass of `TextEditor.mcc` with Emacs key handling, minibuffer, kill ring, Lisp indentation and sexp navigation) that drives a running clamiga over the [ARexx port](#arexx-port-amigaos--morphos) below — load, compile and evaluate from the buffer with clickable diagnostics, arglists, completion, jump to definition, describe and apropos, a REPL window (`C-c C-z`) fed by a REPL thread in clamiga, a debugger window (restarts, backtrace, locals, eval in a frame) and an inspector (`C-c I`). It is the on-Amiga counterpart to the SLY setup above: two processes, so a GC pause or a crash in one never freezes the other.
 
+![Clamacs on a Vampire V4: the editor, the REPL window and the debugger window](https://raw.githubusercontent.com/mdbergmann/clamacs/master/docs/screenshots/debugger.png)
+
+More screenshots (the inspector, the diagnostics window) are in the submodule's [README](https://github.com/mdbergmann/clamacs#screenshots).
+
 Clamacs lives in this repository as the `clamacs/` submodule and ships in the [binary release](#binary-release-amigaos--morphos) next to the `clamiga` binaries (`bin/aos3/clamacs`, `bin/mos/clamacs`). It needs MUI 3.8+ and `TextEditor.mcc` 15.29+ installed (MorphOS ships it). Open the port and start the editor:
 
 ```lisp

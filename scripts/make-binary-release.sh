@@ -24,11 +24,14 @@
 #     README.md LICENSE README-BINARY.txt
 #
 # lib/ packaging policy (correctness, not preference):
-#   FASL   boot clos ffi gray-streams
+#   FASL   boot clos ffi gray-streams dev-commands dev-repl
 #          — self-contained, no reader conditionals / compile-time feature
 #          detection, so a host-compiled FASL is portable (FASLs are
 #          arch/endian-neutral; boot.fasl + clos.fasl have shipped this way
-#          all along).
+#          all along).  dev-commands + dev-repl are the EXT.DEV command
+#          layer behind the ARexx development port: amiga/arexx REQUIREs
+#          them, so without them Clamacs cannot connect to a released
+#          clamiga at all.
 #   FASL + SOURCE
 #          amiga/**       — the curated modules, AMIGA.REACTION and the
 #                           generated raw OS bindings (lib/amiga/raw/**): no
@@ -89,7 +92,14 @@
 # from any current directory without assigns or environment variables.
 #
 # Usage:
-#   scripts/make-binary-release.sh [--no-smoke]
+#   scripts/make-binary-release.sh [--no-smoke] [--snapshot]
+#
+#   --snapshot     AmigaOS-only development snapshot of the working tree:
+#                  no bin/mos/ (no MorphOS inputs needed), staged and
+#                  archived as clamiga-<version>-snapshot-<git short sha>
+#                  so it never masquerades as, or overwrites, a release.
+#                  Everything else (FASLs, heap images, smoke test) is the
+#                  release procedure.
 #
 #   MOS_BIN=path   MorphOS binary to package (default: ./clamiga-mos).
 #                  There is no MorphOS cross toolchain here — build it
@@ -114,7 +124,14 @@ cd "$(dirname "$0")/.."
 ROOT=$(pwd)
 
 SMOKE=1
-[ "${1:-}" = "--no-smoke" ] && SMOKE=0
+SNAPSHOT=0
+for arg in "$@"; do
+    case "$arg" in
+        --no-smoke) SMOKE=0 ;;
+        --snapshot) SNAPSHOT=1 ;;
+        *) echo "usage: $0 [--no-smoke] [--snapshot]" >&2; exit 2 ;;
+    esac
+done
 
 # macOS ships no `timeout`; prefer coreutils' if present, else run unguarded.
 if command -v timeout > /dev/null 2>&1; then TIMEOUT="timeout 300"
@@ -134,25 +151,35 @@ VERSION="$VMAJOR.$VMINOR.$VPATCH"
     echo "ERROR: could not parse version from src/core/types.h" >&2; exit 1; }
 
 REL="clamiga-$VERSION"
+SNAPSHOT_ID=""
+if [ "$SNAPSHOT" = 1 ]; then
+    SNAPSHOT_ID="$(git rev-parse --short HEAD)"
+    git diff --quiet HEAD 2>/dev/null || SNAPSHOT_ID="$SNAPSHOT_ID-dirty"
+    REL="$REL-snapshot-$SNAPSHOT_ID"
+fi
 OUT="$ROOT/build/release"
 STAGE="$OUT/$REL"
 
-echo "=== CL-Amiga binary release $VERSION ==="
+if [ "$SNAPSHOT" = 1 ]; then
+    echo "=== CL-Amiga AmigaOS snapshot $VERSION ($SNAPSHOT_ID) ==="
+else
+    echo "=== CL-Amiga binary release $VERSION ==="
+fi
 
 # --- inputs ---------------------------------------------------------------
-if [ ! -f "$MOS_BIN" ]; then
+if [ "$SNAPSHOT" = 1 ]; then
+    : # no MorphOS inputs in an AmigaOS-only snapshot
+elif [ ! -f "$MOS_BIN" ]; then
     echo "ERROR: MorphOS binary not found: $MOS_BIN" >&2
     echo "       Build it natively on MorphOS (make -f Makefile.mos) and copy it" >&2
     echo "       here, or point MOS_BIN=... at it." >&2
     exit 1
-fi
-if [ ! -f "$MOS_IMG" ]; then
+elif [ ! -f "$MOS_IMG" ]; then
     echo "ERROR: MorphOS heap image not found: $MOS_IMG" >&2
     echo "       Save it on MorphOS with the binary in MOS_BIN (make -f Makefile.mos image" >&2
     echo "       writes build/morphos/clamiga.img) and copy it here, or point MOS_IMG=... at it." >&2
     exit 1
-fi
-if [ ! -f "$CLAMACS_MOS_BIN" ]; then
+elif [ ! -f "$CLAMACS_MOS_BIN" ]; then
     echo "ERROR: MorphOS clamacs binary not found: $CLAMACS_MOS_BIN" >&2
     echo "       Build it natively on MorphOS (make -f Makefile.mos in clamacs/) and" >&2
     echo "       copy it here, or point CLAMACS_MOS_BIN=... at it." >&2
@@ -196,23 +223,25 @@ CLAMACS_BIN="$ROOT/clamacs/build/cross/clamacs"
 # --- stage ----------------------------------------------------------------
 echo "--- Staging $STAGE ---"
 rm -rf "$STAGE"
-mkdir -p "$STAGE/bin/aos3" "$STAGE/bin/aos3-fpu" "$STAGE/bin/mos" \
-         "$STAGE/lib/amiga" "$STAGE/docs"
+mkdir -p "$STAGE/bin/aos3" "$STAGE/bin/aos3-fpu" "$STAGE/lib/amiga" "$STAGE/docs"
 
 cp "$AOS3_BIN"    "$STAGE/bin/aos3/clamiga"
 cp "$AOS3FPU_BIN" "$STAGE/bin/aos3-fpu/clamiga"
-cp "$MOS_BIN"     "$STAGE/bin/mos/clamiga"
-cp "$CLAMACS_BIN"     "$STAGE/bin/aos3/clamacs"
-cp "$CLAMACS_MOS_BIN" "$STAGE/bin/mos/clamacs"
+cp "$CLAMACS_BIN" "$STAGE/bin/aos3/clamacs"
 chmod +x "$STAGE/bin/aos3/clamiga" "$STAGE/bin/aos3-fpu/clamiga" \
-         "$STAGE/bin/mos/clamiga" "$STAGE/bin/aos3/clamacs" \
-         "$STAGE/bin/mos/clamacs"
+         "$STAGE/bin/aos3/clamacs"
+if [ "$SNAPSHOT" = 0 ]; then
+    mkdir -p "$STAGE/bin/mos"
+    cp "$MOS_BIN"         "$STAGE/bin/mos/clamiga"
+    cp "$CLAMACS_MOS_BIN" "$STAGE/bin/mos/clamacs"
+    chmod +x "$STAGE/bin/mos/clamiga" "$STAGE/bin/mos/clamacs"
+fi
 
 # lib: FASL-portable modules, compiled by the just-built host binary so
 # CL_FASL_VERSION matches the packaged binaries exactly.  The script compiles
 # with CLAMIGA_FASL_PORTABLE=1 and refuses a module whose compile printed an
 # error or produced no FASL (see its header).
-FASL_LIBS="boot clos ffi gray-streams"
+FASL_LIBS="boot clos ffi gray-streams dev-commands dev-repl"
 echo "--- compile-file $FASL_LIBS -> $REL/lib/*.fasl ---"
 sh scripts/compile-lib-fasls.sh -o "$STAGE" -b "$HOST_BIN" \
     $(for m in $FASL_LIBS; do printf 'lib/%s.lisp ' "$m"; done) \
@@ -250,7 +279,7 @@ for t in aos3 aos3-fpu; do
         echo "ERROR: the bin/$t image run reported another version than $VERSION — see build/amiga/image.log" >&2
         exit 1; }
 done
-cp "$MOS_IMG" "$STAGE/bin/mos/clamiga.img"
+[ "$SNAPSHOT" = 1 ] || cp "$MOS_IMG" "$STAGE/bin/mos/clamiga.img"
 
 # docs: package API reference only (no benchmarks/screenshots)
 cp docs/README.md docs/amiga.md docs/clamiga.md docs/ext.md docs/ffi.md \
@@ -267,6 +296,15 @@ CL-Amiga $VERSION — binary release
 ==================================
 
 Common Lisp for AmigaOS 3+ and MorphOS.
+EOF
+[ "$SNAPSHOT" = 0 ] || cat >> "$STAGE/README-BINARY.txt" <<EOF
+
+*** DEVELOPMENT SNAPSHOT — not a release ***
+Built from commit $SNAPSHOT_ID on $(date +%Y-%m-%d), AmigaOS binaries only:
+there is no bin/mos/ in this package, and the MorphOS lines below do not
+apply.  Everything else is the release layout.
+EOF
+cat >> "$STAGE/README-BINARY.txt" <<EOF
 
   bin/aos3/clamiga      AmigaOS 3.x, 68020 or better — runs on any CPU
   bin/aos3-fpu/clamiga  AmigaOS 3.x, hard-float build — REQUIRES an FPU
@@ -420,6 +458,10 @@ if [ "$SMOKE" = 1 ]; then
         "$SMOKEDIR/rel/bin/aos3/clamiga" --non-interactive --heap 48M \
         --eval '(format t "IMAGE-RESTORED ~a~%" ext:*image-restored-p*)' \
         --eval '(require "gray-streams")' \
+        --eval '(require "dev-commands")' \
+        --eval '(format t "DEV-COMMANDS ~a~%" (find-package "EXT.DEV"))' \
+        --eval '(require "dev-repl")' \
+        --eval '(format t "DEV-REPL ~a~%" (find-symbol "*REPL-THREAD-STACK-SIZE*" "EXT.DEV"))' \
         --eval '(require "asdf")' \
         --eval '(format t "SHIM-AT ~a~%" (asdf:system-source-directory (asdf:find-system "cl+ssl")))' \
         --eval '(require "amiga/raw/exec")' \
@@ -455,6 +497,18 @@ if [ "$SMOKE" = 1 ]; then
     grep -q "; Loading .*rel/.*lib/amiga/reaction\.fasl" "$OUT/smoke.log" &&
     grep -q "^MEMF-CHIP 2" "$OUT/smoke.log" || {
         echo "ERROR: lib/amiga did not load from the release FASLs — see $OUT/smoke.log" >&2
+        exit 1; }
+    # The ARexx development port's command layer (what amiga/arexx REQUIREs
+    # and Clamacs talks to) must ship and come up from its FASL.
+    grep -q "; Loading .*rel/.*lib/dev-commands\.fasl" "$OUT/smoke.log" &&
+    grep -q "^DEV-COMMANDS #<PACKAGE EXT.DEV>" "$OUT/smoke.log" || {
+        echo "ERROR: dev-commands did not load from the release FASL — see $OUT/smoke.log" >&2
+        exit 1; }
+    # dev-repl is the other half of the EXT.DEV layer (the editor's REPL
+    # thread, loaded on demand by REPL-ATTACH) — it must ship and load too.
+    grep -q "; Loading .*rel/.*lib/dev-repl\.fasl" "$OUT/smoke.log" &&
+    grep -q "^DEV-REPL \*REPL-THREAD-STACK-SIZE\*" "$OUT/smoke.log" || {
+        echo "ERROR: dev-repl did not load from the release FASL — see $OUT/smoke.log" >&2
         exit 1; }
     # The editor cannot run on the host; check that what is staged is a real
     # AmigaOS hunk executable (0x000003F3 = HUNK_HEADER) of a plausible size.

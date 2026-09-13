@@ -93,7 +93,7 @@ fi
 # ---------------------------------------------------------------- Part 2
 echo "=== test_lib_fasl_portable: every shipped lib module compiles portably ==="
 # Mirrors scripts/make-binary-release.sh: FASL_LIBS + lib/amiga/**.
-SHIPPED="lib/boot.lisp lib/clos.lisp lib/ffi.lisp lib/gray-streams.lisp $(find lib/amiga -name '*.lisp' | LC_ALL=C sort | tr '\n' ' ')"
+SHIPPED="lib/boot.lisp lib/clos.lisp lib/ffi.lisp lib/gray-streams.lisp lib/dev-commands.lisp lib/dev-repl.lisp $(find lib/amiga -name '*.lisp' | LC_ALL=C sort | tr '\n' ' ')"
 n_src=$(echo $SHIPPED | wc -w | tr -d ' ')
 out=$(sh scripts/compile-lib-fasls.sh -o "$TMPD" -b "$CLAMIGA" $SHIPPED 2>&1)
 rc=$?
