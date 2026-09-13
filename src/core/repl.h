@@ -23,6 +23,12 @@ void cl_load_file(const char *path);
 void cl_repl_init(void);
 void cl_repl_init_no_userinit(int no_userinit);
 
+/* User init file candidates on AmigaOS/MorphOS, first found wins
+ * (S:.clamigarc, then the pre-0.9.1 S:clamiga.lisp).  The host reads
+ * ~/.clamigarc.  Exported so tests/test_userinit_paths.c can pin the
+ * documented name; the list is compiled on every platform. */
+extern const char *const cl_userinit_paths_amiga[];
+
 /* Restored-boot init (--image): the heap already holds everything the
  * saving session had loaded, so boot.lisp/CLOS loading and the symbol
  * export passes are skipped entirely.  Runs the user init file (unless

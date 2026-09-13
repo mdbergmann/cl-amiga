@@ -173,11 +173,21 @@ void cl_load_file(const char *path)
     }
 }
 
+/* The user init file on AmigaOS/MorphOS, first found wins: S:.clamigarc
+ * is the documented name (the README, the release notes and Clamacs all
+ * say so, and it mirrors ~/.clamigarc on the host); S:clamiga.lisp is
+ * what the runtime read before 0.9.1 and stays as a fallback so an
+ * existing file keeps working.  tests/test_userinit_paths.c pins the
+ * contract. */
+const char *const cl_userinit_paths_amiga[] = {
+    "S:.clamigarc", "S:clamiga.lisp", NULL
+};
+
 /* Try to load user init file */
 static void load_user_init(void)
 {
 #ifdef PLATFORM_AMIGA
-    static const char *paths[] = { "S:clamiga.lisp", NULL };
+    const char *const *paths = cl_userinit_paths_amiga;
 #else
     static char user_init_path[512];
     static const char *paths[2];

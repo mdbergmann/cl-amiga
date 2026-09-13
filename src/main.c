@@ -385,7 +385,7 @@ static void print_usage(void)
         "  --eval <expr>    Evaluate expression before REPL (multiple allowed)\n"
         "  --script <file>  Load file and exit (no REPL)\n"
         "  --non-interactive Process options and exit (no REPL)\n"
-        "  --no-userinit    Skip user init file (~/.clamigarc)\n"
+        "  --no-userinit    Skip user init file (~/.clamigarc; Amiga: S:.clamigarc)\n"
         "  --image <file>   Restore a heap image saved with EXT:SAVE-IMAGE\n"
         "  --no-image       Skip auto-discovery of clamiga.img\n"
         "  --color          Force color output\n"
