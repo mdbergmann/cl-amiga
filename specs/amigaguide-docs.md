@@ -506,7 +506,13 @@ Verification:
   real pages converted **by the m68k binary itself** in 97 s;
   `docs/cl-amiga.guide`, `ext.guide` and `clamacs.guide` open in
   MultiView, screenshots under `build/amiga/shots/`.
-- Vampire (AmigaOS 3.2) and MorphOS: not yet -- both boxes were off on
-  2026-09-14.  Open `docs/cl-amiga.guide` from a binary release there
-  and follow a Contents link and a cross-file link (the index's `Doc`
-  links) when they are next up.
+- Vampire V4 (AmigaOS 3.2.3, Kickstart 47.13, MultiView 47, 1280x720
+  RTG), 2026-09-14: the ten guides pushed to `Work:Download/guide-test/`;
+  `Version ext.guide` prints `ext.guide 0.9.0`; `cl-amiga.guide` opens
+  with 63 nodes; the Contents link and the in-text "Known Limitations"
+  link jump (node 60/63), the Contents button returns, and the Package
+  Reference node's `docs/ext.md` link opens `ext.guide` (cross-file,
+  1/11).  Screenshots under `build/amiga/shots-guide/vampire/`.
+- MorphOS: not yet -- the box was off on 2026-09-14.  Open
+  `docs/cl-amiga.guide` from a binary release there and follow a
+  Contents link and a cross-file link when it is next up.
