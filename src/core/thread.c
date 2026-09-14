@@ -415,7 +415,7 @@ void cl_gc_stop_the_world(void)
         if (all_stopped) {
             if (waited_ms > 0)
                 fprintf(stderr, "GC-STW diag: world stopped after %u ms of "
-                        "timed-out waits — a timeout RESCAN unstuck it, which "
+                        "timed-out waits - a timeout RESCAN unstuck it, which "
                         "points at a lost gc_condvar wakeup, or at a straggler "
                         "that stopped without a broadcast reaching us\n",
                         (unsigned)waited_ms);
@@ -429,7 +429,7 @@ void cl_gc_stop_the_world(void)
         } else if (platform_condvar_wait_timeout(gc_condvar, gc_mutex,
                                                  (uint32_t)diag_ms) != 0) {
             waited_ms += (uint32_t)diag_ms;
-            fprintf(stderr, "GC-STW diag: world NOT stopped after %u ms — "
+            fprintf(stderr, "GC-STW diag: world NOT stopped after %u ms - "
                     "straggler tid=%d (running, neither at a safepoint nor in "
                     "a safe region); all-thread dump follows\n",
                     (unsigned)waited_ms, self ? self->wait_straggler_tid : -1);
@@ -1315,7 +1315,7 @@ void cl_thread_shutdown(void)
         if (!warned) {
             warned = 1;
             fprintf(stderr, "[MP] shutdown with %u worker thread(s) still "
-                    "running — leaking GC/thread primitives (safe; process "
+                    "running - leaking GC/thread primitives (safe; process "
                     "is exiting)\n", (unsigned)cl_thread_count);
         }
         return;

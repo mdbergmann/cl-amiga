@@ -152,7 +152,7 @@ static void handle_bt_command(const char *arg, int *frames)
              * could not show more — reject it rather than silently ignore. */
             if (endp == arg || *endp != '\0' || n < 0 || n > cl_vm.frame_size) {
                 cl_write_cstring_to_debug_io(
-                    "Usage: :bt [<n>|all] — show at most <n> frames "
+                    "Usage: :bt [<n>|all] - show at most <n> frames "
                     "(0 or \"all\" for every frame)\n");
                 return;
             }
@@ -194,12 +194,14 @@ static int display_restarts(void)
 static void display_help(void)
 {
     cl_write_cstring_to_debug_io("Debugger commands:\n");
-    cl_write_cstring_to_debug_io("  <number>  — invoke restart by number\n");
+    /* ASCII only: this reaches an ISO-8859-1 Amiga console, where a UTF-8
+     * dash shows as garbage (tests/test_ascii_messages.sh). */
+    cl_write_cstring_to_debug_io("  <number>  - invoke restart by number\n");
     cl_write_cstring_to_debug_io(
-        "  :bt [n]   — show backtrace (n frames, or \"all\")\n");
-    cl_write_cstring_to_debug_io("  :q        — return to top level\n");
-    cl_write_cstring_to_debug_io("  :help     — show this help\n");
-    cl_write_cstring_to_debug_io("  <expr>    — evaluate a Lisp expression\n");
+        "  :bt [n]   - show backtrace (n frames, or \"all\")\n");
+    cl_write_cstring_to_debug_io("  :q        - return to top level\n");
+    cl_write_cstring_to_debug_io("  :help     - show this help\n");
+    cl_write_cstring_to_debug_io("  <expr>    - evaluate a Lisp expression\n");
 }
 
 /* Invoke restart at index (0 = topmost restart, counting down) */
@@ -265,7 +267,7 @@ static void jump_to_top_level(void)
     }
 
     /* No error frame — fatal (should not happen in interactive REPL) */
-    cl_write_cstring_to_debug_io("No error frame — cannot return to top level\n");
+    cl_write_cstring_to_debug_io("No error frame - cannot return to top level\n");
 }
 
 /* Core debugger loop */
@@ -304,7 +306,7 @@ void cl_invoke_debugger(CL_Obj condition)
         cl_color_set(CL_COLOR_RED);
         cl_write_cstring_to_debug_io(
             "\nDebugger recursion limit reached "
-            "(error while handling an error) — returning to top level.\n");
+            "(error while handling an error) - returning to top level.\n");
         cl_color_reset();
         jump_to_top_level(); /* longjmp — does not return */
         return;              /* unreachable */

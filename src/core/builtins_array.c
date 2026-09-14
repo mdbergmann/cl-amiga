@@ -1959,7 +1959,7 @@ CL_Obj bi_vector_push_extend(CL_Obj *args, int n)
             return CL_MAKE_FIXNUM((int32_t)fp);
         }
         cl_error(CL_ERR_GENERAL,
-                 "VECTOR-PUSH-EXTEND: cannot extend a packed %s vector — "
+                 "VECTOR-PUSH-EXTEND: cannot extend a packed %s vector - "
                  "pre-allocate enough capacity with MAKE-ARRAY",
                  cl_bytevec_type_name(bv->is_signed, bv->elt_shift));
     }
@@ -2037,7 +2037,7 @@ CL_Obj bi_vector_push_extend(CL_Obj *args, int n)
      * on vectors), so fail loudly if the invariant ever breaks. */
     if (vec->rank > 1)
         cl_error(CL_ERR_GENERAL,
-                 "VECTOR-PUSH-EXTEND: internal error — cannot displace a "
+                 "VECTOR-PUSH-EXTEND: internal error - cannot displace a "
                  "rank-%u array in place", (unsigned)vec->rank);
     vec->data[0] = new_arr;
     vec->data[1] = CL_MAKE_FIXNUM(0);  /* displacement offset = 0 */
@@ -2247,7 +2247,7 @@ CL_Obj bi_adjust_array(CL_Obj *args, int n)
          * backstop keeps the GC contract loud if that guard ever moves). */
         if (old_vec->rank > 1)
             cl_error(CL_ERR_GENERAL,
-                     "ADJUST-ARRAY: internal error — cannot displace a "
+                     "ADJUST-ARRAY: internal error - cannot displace a "
                      "rank-%u array in place", (unsigned)old_vec->rank);
         old_vec->data[0] = new_arr;
         old_vec->data[1] = CL_MAKE_FIXNUM(0);  /* displacement offset = 0 */

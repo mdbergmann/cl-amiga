@@ -248,8 +248,10 @@ test_batch test_repl_values test_repl_paste test_boot_log test_mx_error_context 
                 test_lib_fasl_portable test_fasl_source_name test_md2guide
 
 # The ones that take no clamiga binary: two drive make itself, one the
-# Aminet upload script (dry runs only, no network).
-SHELL_TESTS_NOARG = test_cross_wide_knob test_test_extra test_aminet_upload
+# Aminet upload script (dry runs only, no network), one greps the sources
+# (user-visible strings must be ASCII: the Amiga console is not UTF-8).
+SHELL_TESTS_NOARG = test_cross_wide_knob test_test_extra test_aminet_upload \
+                    test_ascii_messages
 
 test-fast: $(TEST_BINS) host
 	@echo "=== Running tests (fast tier: skips sento/host-cold-test) ==="

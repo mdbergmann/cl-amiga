@@ -677,7 +677,7 @@ CL_Obj cl_amiga_call_via_base_sym(CL_Obj base_sym, int16_t offset,
                  cl_symbol_name(base_sym));
     if (CL_NULL_P(base_val))
         cl_error(CL_ERR_GENERAL,
-                 "OP_AMIGA_CALL: library base %s is NIL — the library "
+                 "OP_AMIGA_CALL: library base %s is NIL - the library "
                  "is not open (bindings only open it on AmigaOS/MorphOS)",
                  cl_symbol_name(base_sym));
     if (!CL_FOREIGN_POINTER_P(base_val))

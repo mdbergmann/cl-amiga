@@ -266,7 +266,7 @@ void cl_gc_register_root(CL_Obj *root_ptr)
          * corruption (the slot goes stale on the next compaction and is
          * never marked).  Fail loudly at boot instead. */
         platform_write_string(
-            "FATAL: cl_gc_register_root: CL_MAX_GLOBAL_ROOTS exceeded — "
+            "FATAL: cl_gc_register_root: CL_MAX_GLOBAL_ROOTS exceeded - "
             "raise the limit in mem.h\n");
         platform_flush_output();
         exit(1);
@@ -827,7 +827,7 @@ void cl_mem_init(uint32_t heap_size)
                     cl_heap.arena = NULL;
                     platform_write_string(
                         "clamiga: generational GC unavailable "
-                        "(mmap/write-watch setup failed) — classic GC\n");
+                        "(mmap/write-watch setup failed) - classic GC\n");
                 }
             }
         }
@@ -2209,7 +2209,7 @@ void cl_gc_push_root(CL_Obj *root)
     if (gc_root_count < CL_GC_ROOT_STACK_SIZE) {
         gc_root_stack[gc_root_count++] = root;
     } else {
-        cl_fatal_diag("FATAL: GC root stack overflow (%d/%d) — increase CL_GC_ROOT_STACK_SIZE\n",
+        cl_fatal_diag("FATAL: GC root stack overflow (%d/%d) - increase CL_GC_ROOT_STACK_SIZE\n",
                       gc_root_count, CL_GC_ROOT_STACK_SIZE);
         cl_capture_backtrace();
         cl_fatal_diag("%s", cl_backtrace_buf);
@@ -2233,7 +2233,7 @@ void cl_gc_push_root_dbg(CL_Obj *root, const char *file, int line)
         CT->gc_root_lines[gc_root_count] = line;
         gc_root_stack[gc_root_count++] = root;
     } else {
-        fprintf(stderr, "FATAL: GC root stack overflow (%d/%d) at %s:%d — increase CL_GC_ROOT_STACK_SIZE\n",
+        fprintf(stderr, "FATAL: GC root stack overflow (%d/%d) at %s:%d - increase CL_GC_ROOT_STACK_SIZE\n",
                 gc_root_count, CL_GC_ROOT_STACK_SIZE, file, line);
         /* Dump run-length-compressed pusher sites: a root LEAK (push without
          * pop, usually across a longjmp) shows up as one site repeated
@@ -2442,7 +2442,7 @@ static void gc_mark_push(CL_Obj obj)
                         (unsigned)CL_HDR_TYPE(gc_dbg_mark_parent),
                         (unsigned)CL_HDR_SIZE(gc_dbg_mark_parent));
             } else {
-                fprintf(stderr, "  parent: (root set — no parent object)\n");
+                fprintf(stderr, "  parent: (root set - no parent object)\n");
             }
             cl_capture_backtrace();
             fprintf(stderr, "%s", cl_backtrace_buf);
@@ -2462,7 +2462,7 @@ static void gc_mark_push(CL_Obj obj)
             overflow_warned = 1;
             platform_write_string("GC: mark stack cannot grow "
                                   "(OOM or cap); falling back to heap "
-                                  "re-scan — expect slow GC cycles\n");
+                                  "re-scan - expect slow GC cycles\n");
         }
         gc_mark_overflow = 1;
         return;
@@ -2715,7 +2715,7 @@ void gc_mark_obj(CL_Obj obj)
         CL_HDR_TYPE(ptr) > GC_DBG_MAX_TYPE) {
         fprintf(stderr,
                 "[GC-BADMARK] gc_mark_obj(0x%08x): implausible object start "
-                "(type=%u size=%u bump=0x%08x) — interior or stale offset\n"
+                "(type=%u size=%u bump=0x%08x) - interior or stale offset\n"
                 "  source: %s[%d]%s\n",
                 (unsigned)obj, (unsigned)CL_HDR_TYPE(ptr),
                 (unsigned)CL_HDR_SIZE(ptr), (unsigned)cl_heap.bump,
@@ -2825,7 +2825,7 @@ static void jit_pin_record(uint32_t offset)
             if (!pin_oom_warned) {
                 pin_oom_warned = 1;
                 platform_write_string(
-                    "GC: JIT pin-table allocation failed — compaction "
+                    "GC: JIT pin-table allocation failed - compaction "
                     "suppressed for this cycle (mark+sweep only)\n");
             }
             return;
@@ -2958,7 +2958,7 @@ static void gc_scan_jit_native_stack(CL_Thread *t)
         if (!oom_warned) {
             oom_warned = 1;
             platform_write_string(
-                "GC: JIT native-stack scan buffer allocation failed — "
+                "GC: JIT native-stack scan buffer allocation failed - "
                 "falling back to chunked scanning (slower, still safe)\n");
         }
         candidates = emergency_buf;
@@ -3108,7 +3108,7 @@ int cl_gc_audit_roots(void)
     for (t = cl_thread_list; t; t = t->next) {
         for (i = 0; i < t->gc_root_count; i++) {
             if (root_slot_independently_forwarded(t->gc_roots[i])) {
-                fprintf(stderr, "GC root audit: note — thread root #%d "
+                fprintf(stderr, "GC root audit: note - thread root #%d "
                         "aliases an independently-forwarded thread region "
                         "(redundant CL_GC_PROTECT; skipped by the root "
                         "dedup pass)\n", i);
@@ -4655,7 +4655,7 @@ static void gc_verify_ht_chains(CL_Hashtable *ht, const char *when)
                 fprintf(stderr,
                         "[GC-HT-BUG] %s: hashtable @0x%08x (test=%u count=%u "
                         "buckets=%u flags=0x%x) chain walk exceeded count at "
-                        "bucket %u — cycle/corruption\n"
+                        "bucket %u - cycle/corruption\n"
                         "  chain=0x%08x entry->car(pair)=0x%08x "
                         "entry->cdr=0x%08x\n",
                         when,
@@ -4951,7 +4951,7 @@ void cl_gc_compact(void)
         if (gen_enabled) {
             gen_enabled = 0;
             platform_write_string("clamiga: generational GC disabled "
-                                  "(compaction fallback) — classic GC\n");
+                                  "(compaction fallback) - classic GC\n");
         }
 #endif
         cl_heap.gc_count++;
@@ -4978,7 +4978,7 @@ void cl_gc_compact(void)
         if (gen_enabled) {
             gen_enabled = 0;
             platform_write_string("clamiga: generational GC disabled "
-                                  "(forwarding-table OOM) — classic GC\n");
+                                  "(forwarding-table OOM) - classic GC\n");
         }
 #endif
         cl_heap.gc_count++;
@@ -5266,7 +5266,7 @@ int cl_gc_minor(uint32_t seen_gc_count)
          * does, roots are already forwarded and there is no rollback —
          * fail loudly instead of corrupting silently. */
         platform_write_string("FATAL: gengc dirty-page walk desynced "
-                              "mid-update — heap invariant broken\n");
+                              "mid-update - heap invariant broken\n");
         platform_flush_output();
         exit(1);
     }
@@ -5352,7 +5352,7 @@ static void gc_dump_roots_dbg(void)
     for (t = cl_thread_list; t; t = t->next) {
         int i;
         snprintf(buf, sizeof(buf),
-                 "GC-ROOTS: thread %u — %d protected roots:\n",
+                 "GC-ROOTS: thread %u - %d protected roots:\n",
                  (unsigned)t->id, t->gc_root_count);
         platform_write_string(buf);
 

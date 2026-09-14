@@ -880,7 +880,7 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                                           UINT32_MAX, bytecode, NULL) == 0) {
                         n_units++;
                     } else {
-                        cl_write_cstring_to_stdout("; Warning: FASL serialization failed — skipping cache for this file\n");
+                        cl_write_cstring_to_stdout("; Warning: FASL serialization failed - skipping cache for this file\n");
                         do_cache = 0;
                     }
                 }
@@ -1818,7 +1818,7 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
                 char msg[1024];
                 snprintf(msg, sizeof(msg),
                          "; Warning: FASL unit failed in %s "
-                         "(unit %d/%d, name=%s, src-line=%u, reason=%s, error=%d) — skipping FASL cache for this file\n",
+                         "(unit %d/%d, name=%s, src-line=%u, reason=%s, error=%d) - skipping FASL cache for this file\n",
                          in_path, bci + 1, bc_collect_count,
                          bname ? bname->data : "<anon>",
                          (unsigned)bcobj->source_line,
@@ -4390,7 +4390,7 @@ static void check_octet_vector(CL_Obj obj, const char *who, uint32_t *len_out,
         CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(obj);
         if (bv->elt_shift)
             cl_error(CL_ERR_TYPE,
-                     "%s: buffer must be an octet vector — a packed "
+                     "%s: buffer must be an octet vector - a packed "
                      "(UNSIGNED-BYTE 16)/(SIGNED-BYTE 16) vector holds "
                      "2-byte elements, not octets", who);
         *bv_out = bv;

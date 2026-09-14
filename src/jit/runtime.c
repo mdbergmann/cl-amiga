@@ -955,12 +955,28 @@ static void nlx_restore_core(CL_NLXFrame *nlx, void *landing_anchor)
 /* BLOCK/CATCH longjmp arrival: core restore + full multiple-value set +
  * return the stashed result.  (TAGBODY and UWPROT diverge on the MV
  * handling and are written out longhand.)  LANDING_ANCHOR is forwarded
- * to nlx_restore_core unchanged — see its comment. */
+ * to nlx_restore_core unchanged — see its comment.
+ *
+ * This landing IS the target of a non-local transfer, so that transfer is
+ * complete: drop any pending NLX state, as the VM's CATCH/BLOCK landing
+ * does.  The pending state can be a FOREIGN one — an error unwind
+ * (cl_pending_throw == 2) that landed in an UNWIND-PROTECT cleanup, where
+ * the cleanup then threw out to this catch.  CLHS 5.2 says the original
+ * transfer is abandoned when a cleanup initiates its own; leaving the flag
+ * set let the next enclosing uwprot_rethrow resurrect that abandoned
+ * error.  Seen 2026-09-14 as the ARexx port's EVAL of an undefined
+ * function: the command layer's %CALL-GUARDED (a CATCH whose cleanup
+ * THROWs) caught the unwind, and the WITH-OUTPUT-TO-STRING epilogue
+ * around it re-raised the error into the outer guard (rc 20) -- and in
+ * the port's own cleanup chain, killed the handler thread before it
+ * could reply (tests/amiga/dev-repl-tests.lisp "guarded escape",
+ * tests/amiga/arexx-tests.lisp "eval of an undefined function"). */
 static CL_Obj nlx_restore_common(void *landing_anchor)
 {
     CL_NLXFrame *nlx = &cl_nlx_stack[cl_nlx_top];
     int mi;
     nlx_restore_core(nlx, landing_anchor);
+    cl_pending_throw = 0;
     cl_mv_count = nlx->mv_count;
     for (mi = 0; mi < cl_mv_count && mi < CL_MAX_MV; mi++)
         cl_mv_values[mi] = nlx->mv_values[mi];
@@ -1566,7 +1582,7 @@ CL_Obj cl_jit_runtime_amiga_call(CL_Obj base_sym, int32_t offset,
                  cl_symbol_name(base_sym));
     if (CL_NULL_P(base_val))
         cl_error(CL_ERR_GENERAL,
-                 "OP_AMIGA_CALL: library base %s is NIL — the library "
+                 "OP_AMIGA_CALL: library base %s is NIL - the library "
                  "is not open (bindings only open it on AmigaOS/MorphOS)",
                  cl_symbol_name(base_sym));
     if (!CL_FOREIGN_POINTER_P(base_val))
@@ -1803,6 +1819,9 @@ CL_Obj cl_jit_runtime_tagbody_post_longjmp(void)
     CL_Obj tag_index;
 
     nlx_restore_core(nlx, CL_CAPTURE_SP());
+    /* Target of a completed transfer: nothing stays pending (the VM's
+     * TAGBODY landing does the same; see nlx_restore_common). */
+    cl_pending_throw = 0;
     cl_mv_count = 1;
 
     tag_index = nlx->result;

@@ -59,6 +59,29 @@
           (check "arexx eval rc" 0 rc)
           (check "arexx eval result" t (and (search "42" text) t)))
 
+        ; A form that errors -- an undefined function, the typo case -- must
+        ; come back as a diagnostic (rc 10, text via LASTRESULT) and leave
+        ; the handler thread on the port: the editor's C-c C-c of
+        ; (formt t "hello") must not take clamiga's console debugger or the
+        ; port down with it.  Runtime-raised, so the JIT's unwind through
+        ; the command layer's guard is what this exercises on the m68k.
+        (multiple-value-bind (rc text)
+            (amiga.arexx:send port "EVAL (cl-user::arexx-no-such-function 1 2)")
+          (check "arexx eval of an undefined function rc" 10 rc)
+          (check "arexx eval error drops RESULT" "" text))
+        (multiple-value-bind (rc text) (amiga.arexx:send port "LASTRESULT")
+          (check "arexx eval error lastresult rc" 0 rc)
+          (check "arexx eval error names the function" t
+                 (and (search "AREXX-NO-SUCH-FUNCTION" text) t))
+          (check "arexx eval error counts one error" t
+                 (and (search "1 error(s)" text) t)))
+        (multiple-value-bind (rc text) (amiga.arexx:send port "PING")
+          (check "arexx port serves after an eval error" 0 rc)
+          (check "arexx port answers after an eval error" "PONG" text))
+        (multiple-value-bind (rc text) (amiga.arexx:send port "EVAL (* 6 7)")
+          (check "arexx eval works after an eval error" 0 rc)
+          (check "arexx eval value after an eval error" t (and (search "42" text) t)))
+
         ; An unknown verb is fatal (rc 20) and, per the protocol, carries no
         ; RESULT -- the text is only reachable through LASTRESULT.
         (multiple-value-bind (rc text) (amiga.arexx:send port "NOSUCHVERB")

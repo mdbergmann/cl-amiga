@@ -124,7 +124,7 @@ void cl_setjmp_overrun_check(void)
     if (overrun > CL_JMPBUF_GUARD_RESERVED_BYTES) {
         snprintf(msg, sizeof(msg),
                  "FATAL: setjmp() overruns jmp_buf by %d bytes but only %d are "
-                 "reserved — raise CL_JMPBUF_GUARD_BYTES in types.h\n",
+                 "reserved - raise CL_JMPBUF_GUARD_BYTES in types.h\n",
                  overrun, (int)CL_JMPBUF_GUARD_RESERVED_BYTES);
         cl_write_cstring_to_stdout(msg);
         /* cl_thread_init() (called just before this check runs — see main.c)
@@ -300,9 +300,15 @@ CL_NORETURN static void cl_error_unwind(int code)
                         : 0;
         for (i = cl_nlx_top - 1; i >= nlx_floor; i--) {
             if (cl_nlx_stack[i].type == CL_NLX_UWPROT) {
-                CL_Frame *tf = &cl_vm.frames[cl_nlx_stack[i].vm_fp - 1];
-                if (tf->code != cl_nlx_stack[i].code)
-                    continue;
+                /* A JIT-owned frame pushed with no VM frame below it
+                 * (vm_fp 0: a thread whose whole call chain is native)
+                 * has nothing to have gone stale -- frames[-1] is not a
+                 * frame.  Same rule as the JIT's jit_nlx_frame_is_stale. */
+                if (cl_nlx_stack[i].vm_fp > 0) {
+                    CL_Frame *tf = &cl_vm.frames[cl_nlx_stack[i].vm_fp - 1];
+                    if (tf->code != cl_nlx_stack[i].code)
+                        continue;
+                }
                 cl_pending_throw = 2;
                 cl_pending_error_code = code;
                 strncpy(cl_pending_error_msg, cl_error_msg,

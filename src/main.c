@@ -1072,7 +1072,7 @@ shutdown:
      * whole branch exists to avoid (see the leaked-primitives comment in
      * cl_thread_shutdown). */
     if (cl_thread_count > 0) {
-        SHUTDOWN_TRACE("workers still running — fast _exit, arena left to OS");
+        SHUTDOWN_TRACE("workers still running - fast _exit, arena left to OS");
         mem_diag_report("worker-thread fast exit (arena deliberately not freed)");
         fflush(NULL);
         _exit(cl_exit_code);
@@ -1125,7 +1125,7 @@ shutdown:
      * without running the hanging teardown. */
     SHUTDOWN_TRACE("calling fflush(NULL)");
     fflush(NULL);
-    SHUTDOWN_TRACE("fflush done — calling _exit");
+    SHUTDOWN_TRACE("fflush done - calling _exit");
     _exit(cl_exit_code);
     SHUTDOWN_TRACE("_exit returned (should never happen)");
 #elif defined(PLATFORM_MORPHOS)
@@ -1142,7 +1142,7 @@ shutdown:
      * tc_UserData during its post-main teardown.  Leaving our pointer there is
      * what froze the machine after "returning from main". */
     cl_thread_restore_main_tls();
-    SHUTDOWN_TRACE("fflush done, TLS restored — returning from main");
+    SHUTDOWN_TRACE("fflush done, TLS restored - returning from main");
 #endif
 #undef SHUTDOWN_TRACE
 

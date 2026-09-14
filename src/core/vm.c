@@ -1319,7 +1319,18 @@ CL_Obj cl_vm_frame_locals(int index)
  * This happens when a tail call or return reuses a frame after an NLX frame was established. */
 static int nlx_frame_is_stale(CL_NLXFrame *nlx)
 {
-    CL_Frame *target = &cl_vm.frames[nlx->vm_fp - 1];
+    CL_Frame *target;
+#ifdef JIT_M68K
+    /* A JIT-owned frame pushed with no VM frame below it (vm_fp 0) has no
+     * target frame to have been reused: frames[-1] is not a frame.  Same
+     * rule as the JIT's own jit_nlx_frame_is_stale.  Only a JIT build can
+     * push such a frame (a VM-pushed one always sits in an activation), so
+     * the host VM stays byte-for-byte what it was -- cl_vm_run is layout-
+     * sensitive (see the Makefile note on vm.o). */
+    if (nlx->vm_fp <= 0)
+        return 0;
+#endif
+    target = &cl_vm.frames[nlx->vm_fp - 1];
     return target->code != nlx->code;
 }
 
@@ -3519,7 +3530,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                         if (!CL_BYTECODE_P(bc_obj)) {
                             fprintf(stderr,
                                 "[VM] BUG: bytecode 0x%08x type=%u (expected BYTECODE=%u) "
-                                "— GC swept/reused? fn=%s code=%p\n",
+                                "- GC swept/reused? fn=%s code=%p\n",
                                 (unsigned)bc_obj,
                                 (unsigned)CL_HDR_TYPE(CL_OBJ_TO_PTR(bc_obj)),
                                 (unsigned)TYPE_BYTECODE,
@@ -3529,7 +3540,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                             cl_capture_backtrace();
                             fprintf(stderr, "%s", cl_backtrace_buf);
                             cl_error(CL_ERR_GENERAL,
-                                     "Bytecode object type changed — likely GC'd and reused");
+                                     "Bytecode object type changed - likely GC'd and reused");
                         }
                     }
 

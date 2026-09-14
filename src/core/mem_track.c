@@ -242,7 +242,7 @@ void cl_mem_track_report(void)
     platform_write_string(line);
     if (mt_overflows) {
         snprintf(line, sizeof(line),
-                 "[mem]   WARNING: %lu allocation(s) untracked — table full "
+                 "[mem]   WARNING: %lu allocation(s) untracked - table full "
                  "(raise MT_CAP); figures below are incomplete\n",
                  mt_overflows);
         platform_write_string(line);

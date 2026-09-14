@@ -1491,7 +1491,7 @@ static CL_Obj bi_jit_disassemble(CL_Obj *args, int n)
     if (bc == NULL) return CL_NIL;
     if (bc->native_code == NULL || bc->native_len == 0) {
         cl_write_cstring_to_stdout(
-            "  (no native code — function runs through the bytecode interpreter)\n");
+            "  (no native code - function runs through the bytecode interpreter)\n");
         return CL_NIL;
     }
     cl_jit_disassemble(bc->native_code, bc->native_len);

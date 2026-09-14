@@ -325,7 +325,7 @@ static void inline_local_misuse(CL_Compiler *c, CL_Obj name, const char *how)
     cl_error(CL_ERR_GENERAL,
              "Compiler: local function %s was compiled inline (it keeps no "
              "closure), but %s reached the compiler after the analysis had "
-             "ruled that out — usually a macro that expands differently on "
+             "ruled that out - usually a macro that expands differently on "
              "each expansion.  Add (declare (notinline %s)) to the FLET/LABELS "
              "body to keep a real closure.",
              cl_symbol_name(name), how, cl_symbol_name(name));
@@ -5206,7 +5206,7 @@ static int compile_expr_step(CL_Compiler *c, CL_Obj *expr_p)
                     int _fp0 = cl_vm.fp, _sp0 = cl_vm.sp;
                     expanded = cl_vm_apply(local_expander, call_args, 2);
                     if (cl_vm.fp != _fp0 || cl_vm.sp != _sp0) {
-                        fprintf(stderr, "[MXLEAK-LOCAL] local macrolet vm_apply leaked fp:%d→%d sp:%d→%d\n",
+                        fprintf(stderr, "[MXLEAK-LOCAL] local macrolet vm_apply leaked fp:%d->%d sp:%d->%d\n",
                                 _fp0, cl_vm.fp, _sp0, cl_vm.sp);
                         fflush(stderr);
                     }
@@ -5281,7 +5281,7 @@ static int compile_expr_step(CL_Compiler *c, CL_Obj *expr_p)
             CL_GC_UNPROTECT(1);
             if (cl_vm.fp != _fp0 || cl_vm.sp != _sp0) {
                 const char *_mname = CL_SYMBOL_P(head) ? cl_symbol_name(head) : "?";
-                fprintf(stderr, "[MXLEAK-GLOBAL] macroexpand_1(%s) leaked fp:%d→%d sp:%d→%d\n",
+                fprintf(stderr, "[MXLEAK-GLOBAL] macroexpand_1(%s) leaked fp:%d->%d sp:%d->%d\n",
                         _mname, _fp0, cl_vm.fp, _sp0, cl_vm.sp);
                 fflush(stderr);
             }

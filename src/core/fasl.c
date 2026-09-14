@@ -1873,7 +1873,7 @@ void cl_fasl_hist_dump(const char *label, uint32_t bytes_written)
         total_bytes += g_fasl_hist_bytes[i];
         total_count += g_fasl_hist_count[i];
     }
-    fprintf(stderr, "[FASL hist] %s — bytes_written=%u total_attributed=%llu objs=%u\n",
+    fprintf(stderr, "[FASL hist] %s - bytes_written=%u total_attributed=%llu objs=%u\n",
             label, bytes_written,
             (unsigned long long)total_bytes, total_count);
     for (i = 0; i < FASL_HIST_COUNT; i++) {

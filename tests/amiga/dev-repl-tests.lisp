@@ -77,6 +77,67 @@
        (clamiga::%jit-dump-bytes #'drt-bytecode-fn))
 
 ;;; ----------------------------------------------------------------
+;;; The command layer's guard shape (dev-commands' %CALL-GUARDED: a CATCH
+;;; whose UNWIND-PROTECT cleanup THROWs), nested twice with an
+;;; UNWIND-PROTECT between.  A C-level error unwind -- no handler takes
+;;; the condition -- lands in the inner guard's cleanup, whose THROW
+;;; abandons that unwind (CLHS 5.2); the middle UNWIND-PROTECT's epilogue
+;;; must then find nothing to re-initiate, and the outer guard sees a
+;;; normal return.  The JIT's CATCH landing left the abandoned error
+;;; pending (2026-09-14): the middle epilogue re-raised it, the outer
+;;; guard answered "aborted by an unhandled condition" (the port's EVAL
+;;; of an undefined function came back rc 20 instead of a diagnostic),
+;;; and in the port's own cleanup chain the resurrected error killed the
+;;; handler thread before it replied.  On a thread of its own, as the
+;;; port's handler is, so an escape ends that thread and not this file.
+;;; ----------------------------------------------------------------
+
+(defvar *drt-guard-result* :not-run)
+
+(defmacro drt-define-guards (guard outer)
+  `(progn
+     (defun ,guard (thunk)
+       (let ((escaped t) (result nil))
+         (catch 'drt-escape
+           (unwind-protect
+                (progn (setf result (funcall thunk))
+                       (setf escaped nil))
+             (when escaped (throw 'drt-escape nil))))
+         (values result escaped)))
+     (defun ,outer (thunk)
+       (multiple-value-list
+        (,guard (lambda ()
+                  (unwind-protect
+                       (multiple-value-list (,guard thunk))
+                    (push :middle-cleanup *drt-trace*))))))))
+
+(drt-define-guards drt-guard-native drt-outer-guard-native)
+(clamiga::%jit-set-active nil)
+(drt-define-guards drt-guard-bytecode drt-outer-guard-bytecode)
+(clamiga::%jit-set-active t)
+
+(defun drt-guard-case (label outer thunk)
+  (setf *drt-guard-result* :not-run
+        *drt-trace* '())
+  (let ((th (mp:make-thread (lambda () (setf *drt-guard-result* (funcall outer thunk)))
+                            :name "drt-guard")))
+    (ignore-errors (mp:join-thread th)))
+  ;; The inner guard caught it, (NIL T); the middle cleanup ran once; the
+  ;; outer guard saw a normal return: ((NIL T) NIL).
+  (check (format nil "guarded escape, ~a: result" label) '((nil t) nil) *drt-guard-result*)
+  (check (format nil "guarded escape, ~a: middle cleanup ran once" label)
+         '(:middle-cleanup) *drt-trace*))
+
+(dolist (guards (list (list "native guards" #'drt-outer-guard-native)
+                      (list "bytecode guards" #'drt-outer-guard-bytecode)))
+  (dolist (signaller (list (list "native signaller" (lambda () (drt-native-fn 1 2)))
+                           (list "bytecode signaller" (lambda () (drt-bytecode-fn 1 2)))
+                           (list "undefined function"
+                                 (lambda () (funcall (intern "DRT-NO-SUCH-FUNCTION") 1)))))
+    (drt-guard-case (format nil "~a, ~a" (first guards) (first signaller))
+                    (second guards) (second signaller))))
+
+;;; ----------------------------------------------------------------
 ;;; The minimal shape, without dev-repl: a handler on top of the erring
 ;;; frame runs a nested job with its own RESTART-CASE and handler; the
 ;;; nested handler invokes the nested ABORT; the outer handler then

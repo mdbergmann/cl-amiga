@@ -2611,7 +2611,7 @@ static void sock_call_impl(SockReq *req, int use_safe_region)
             ULONG got = Wait(rpsig | SIGBREAKF_CTRL_C);
             if (got & SIGBREAKF_CTRL_C) {
                 fprintf(stderr, "[SOCK] Ctrl-C while blocked awaiting reactor "
-                        "reply: op=%s slot=%d — reactor stuck or reply lost\n",
+                        "reply: op=%s slot=%d - reactor stuck or reply lost\n",
                         sock_op_name(req->op), (int)req->slot);
                 fflush(stderr);
             }

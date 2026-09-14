@@ -1974,7 +1974,7 @@ void compile_handler_case(CL_Compiler *c, CL_Obj form)
         if (!CL_CONS_P(cl) || !CL_CONS_P(cl_cdr(cl)) ||
             !(CL_NULL_P(cl_car(cl_cdr(cl))) || CL_CONS_P(cl_car(cl_cdr(cl)))))
             cl_error(CL_ERR_GENERAL,
-                     "HANDLER-CASE: malformed clause %d — expected "
+                     "HANDLER-CASE: malformed clause %d - expected "
                      "(typespec ([var]) form*)", k);
     }
 

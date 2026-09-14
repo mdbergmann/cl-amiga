@@ -345,7 +345,7 @@ static uint32_t ffi_byte_span(CL_Obj source, CL_Obj start_arg, CL_Obj end_arg,
         *sbv = (CL_ByteVector *)CL_OBJ_TO_PTR(source);
         if ((*sbv)->elt_shift)
             cl_error(CL_ERR_TYPE,
-                     "%s: source must hold octets — a packed "
+                     "%s: source must hold octets - a packed "
                      "(UNSIGNED-BYTE 16)/(SIGNED-BYTE 16) vector holds "
                      "2-byte elements; use an (UNSIGNED-BYTE 8) vector", who);
         len = cl_bytevec_active_length(*sbv);
