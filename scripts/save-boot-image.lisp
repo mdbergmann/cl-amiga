@@ -13,7 +13,8 @@
 ;;; file" -- that spelling is for a POSIX host only.)
 ;;;
 ;;; `make -f Makefile.cross image-amiga` runs it unattended in FS-UAE,
-;;; `make -f Makefile.mos image` natively on MorphOS, and
+;;; `make -f Makefile.mos image` natively on MorphOS, `make image` on the
+;;; host (into build/host/image/, for `make install`), and
 ;;; scripts/make-binary-release.sh runs it against the staged release layout
 ;;; (so the image is dumped from the very FASLs that ship).
 ;;; scripts/verify-boot-image.lisp checks the result.

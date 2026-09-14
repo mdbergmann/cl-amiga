@@ -143,7 +143,7 @@ LIB_TEST_OBJS = $(patsubst $(SRCDIR)/%.c,$(TESTOBJDIR)/%.o,$(LIB_SRCS))
 DESTDIR ?=
 PREFIX ?= /usr/local
 
-.PHONY: host test test-fast test-plus test-extra linux-test clean verify-amiga install-hooks docs-check docs-update test-gc-stress test-memleak test-mt-thread-exit-race fasl fasl-amiga clean-fasl-amiga install uninstall
+.PHONY: host test test-fast test-plus test-extra linux-test clean verify-amiga install-hooks docs-check docs-update test-gc-stress test-memleak test-mt-thread-exit-race fasl fasl-amiga clean-fasl-amiga image install install-layout uninstall
 
 host: $(HOST_BIN)
 
@@ -229,7 +229,8 @@ test_batch test_repl_values test_repl_paste test_boot_log test_mx_error_context 
                 test_struct_slot_access test_defconstant_fasl test_peephole_diff \
                 test_tier4_phase1 test_tier4_phase2 test_tier4_phase3 test_local_inline \
                 test_defvar_special_fasl test_stack_depth test_argv_utf8 \
-                test_utf8_filenames test_image test_boot_image_scripts test_finish_output_flush \
+                test_utf8_filenames test_image test_boot_image_scripts test_install_layout \
+                test_finish_output_flush \
                 test_amiga_bindgen \
                 test_amiga_boopsi test_amiga_reaction test_amiga_mui test_amiga_curated_vs_raw \
                 test_amiga_asyncio test_amiga_ahi test_amiga_iff test_amiga_gfx_examples \
@@ -575,11 +576,50 @@ install-hooks:
 	@echo "=> auto-review hook activated (core.hooksPath=githooks)"
 	@echo "   bypass one commit with 'git commit --no-verify'; disable with CLAUDE_AUTO_REVIEW=0"
 
-install: host fasl
-	cp -pR lib/ $(DESTDIR)$(PREFIX)/lib/clamiga
-	mkdir -p $(DESTDIR)$(PREFIX)/bin
-	install -m755 $(BUILDDIR)/clamiga $(DESTDIR)$(PREFIX)/bin
+# Bare-boot heap image for `make install` (specs/image-save-load.md, README
+# "Heap images"): the host counterpart of Makefile.cross `image-amiga` and
+# Makefile.mos `image`.  Images are per-build, so the freshly built binary
+# writes its own from lib/boot.fasl + clos.fasl, then restarts from it to
+# prove the result (scripts/save-boot-image.lisp / verify-boot-image.lisp).
+#
+# It lands in $(IMAGE_DIR), deliberately OFF the startup discovery path
+# (cwd, beside the binary, <prefix>/lib/clamiga/): an image beside
+# build/host/clamiga would be restored by every test run from then on, and
+# since the fingerprint keys on version/format rather than the binary's
+# bytes, a leftover would outlive a rebuild that changed lib/boot.lisp and
+# the gates would run the stale boot.  The verify step names it with --image
+# for the same reason.  CLAMIGA_HOME is cleared so the dump comes from THIS
+# tree's lib/, the one `install` copies, not from an installed one.
+IMAGE_DIR = $(BUILDDIR)/image
 
+image: $(HOST_BIN)
+	@mkdir -p $(IMAGE_DIR)
+	rm -f $(IMAGE_DIR)/clamiga.img
+	cd $(IMAGE_DIR) && CLAMIGA_HOME= ../clamiga$(EXE) --no-userinit --no-image --non-interactive --boot-log --load $(CURDIR)/scripts/save-boot-image.lisp
+	CLAMIGA_HOME= $(HOST_BIN) --no-userinit --non-interactive --boot-log --image $(IMAGE_DIR)/clamiga.img --load scripts/verify-boot-image.lisp
+
+# Binary + lib/ + heap image under a prefix, SBCL-style: <prefix>/bin/clamiga,
+# <prefix>/lib/clamiga/ (the runtime library) and, in there, the clamiga.img
+# startup restores boot + CLOS from — the third executable-relative place
+# discovery looks (src/main.c discover_image), so an installed clamiga starts
+# the way the binary release does.  The image is regenerated first so it is
+# always the just-built binary's own, dumped from the FASLs being installed;
+# the two recipe-level sub-makes sequence fasl -> image -> copy under -j.
+install: host fasl
+	@$(MAKE) --no-print-directory image
+	@$(MAKE) --no-print-directory install-layout
+
+# The copying alone, once binary, FASLs and image are built — split out so
+# tests/test_install_layout.sh can lay the tree out into a DESTDIR without
+# recompiling lib/.  Only <prefix>/lib is created up front: `cp -R lib/ X`
+# must find X absent to create it as a copy of lib/ on both BSD and GNU cp.
+install-layout:
+	mkdir -p $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(PREFIX)/lib
+	cp -pR lib/ $(DESTDIR)$(PREFIX)/lib/clamiga
+	install -m755 $(BUILDDIR)/clamiga $(DESTDIR)$(PREFIX)/bin
+	install -m644 $(IMAGE_DIR)/clamiga.img $(DESTDIR)$(PREFIX)/lib/clamiga/clamiga.img
+
+# lib/clamiga/ goes as a whole, image included.
 uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/bin/clamiga
 	rm -rf $(DESTDIR)$(PREFIX)/lib/clamiga

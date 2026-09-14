@@ -84,20 +84,24 @@ make test          # Fast test tier (C unit + shell tests)
 make test-plus     # Fast tier + host-cold-test (sento cold-load smoke test)
 make test-extra    # Heavyweight trunk integration scripts
 make test-memleak  # Off-heap allocation tracer: assert nothing leaks at exit
+make image         # Save + verify a bare-boot clamiga.img (build/host/image/) for `make install`
 make clean         # Remove build artifacts
 ```
 
-`make install` (and `make uninstall`) lays the binary and its `lib/` out under
-an install prefix, the same way SBCL does — `<prefix>/bin/clamiga` plus
-`<prefix>/lib/clamiga/`. The prefix is `/usr/local` unless you say otherwise:
+`make install` (and `make uninstall`) lays the binary, its `lib/` and a
+bare-boot heap image out under an install prefix, the same way SBCL does —
+`<prefix>/bin/clamiga` plus `<prefix>/lib/clamiga/` (with `clamiga.img` inside,
+so the installed clamiga starts from an image like the binary release; see
+"Heap images"). The prefix is `/usr/local` unless you say otherwise:
 
 ```
 make install PREFIX=/opt/clamiga
 ```
 
-An installed clamiga finds its library there on its own, from any working
-directory and with no environment setup (`tests/test_lib_search_cwd.sh` covers
-the full resolution order).
+An installed clamiga finds its library and its image there on its own, from
+any working directory and with no environment setup (`tests/test_lib_search_cwd.sh`
+covers the full resolution order, `tests/test_install_layout.sh` the installed
+layout end to end).
 
 ### Host (Windows)
 
@@ -465,11 +469,13 @@ bare-boot `clamiga.img` beside it (`bin/aos3/clamiga.img` and so on), so
 startup restores boot and CLOS in one read instead of loading `lib/boot.fasl`
 and `lib/clos.fasl`; `--no-image` boots from the FASLs, and `--boot-log`
 prints the phase timings either way.  Images are per-build, so each is
-written by its own binary: `make -f Makefile.cross image-amiga` saves and
-verifies one for a cross build unattended in FS-UAE, `make -f Makefile.mos
-image` natively on MorphOS, and `scripts/make-binary-release.sh` does it for
-the staged release (see `scripts/save-boot-image.lisp` /
-`verify-boot-image.lisp`, exercised by `tests/test_boot_image_scripts.sh`).
+written by its own binary: `make image` saves and verifies one for the host
+build (`make install` puts it in `<prefix>/lib/clamiga/`), `make -f
+Makefile.cross image-amiga` for a cross build unattended in FS-UAE, `make -f
+Makefile.mos image` natively on MorphOS, and `scripts/make-binary-release.sh`
+does it for the staged release (see `scripts/save-boot-image.lisp` /
+`verify-boot-image.lisp`, exercised by `tests/test_boot_image_scripts.sh` and
+`tests/test_install_layout.sh`).
 
 For a shipped application image, `:shake-bindings t` additionally drops the
 demand-interned binding tables of the raw OS modules (~150 KB for the four
