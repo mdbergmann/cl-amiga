@@ -143,7 +143,7 @@ LIB_TEST_OBJS = $(patsubst $(SRCDIR)/%.c,$(TESTOBJDIR)/%.o,$(LIB_SRCS))
 DESTDIR ?=
 PREFIX ?= /usr/local
 
-.PHONY: host test test-fast test-plus test-extra linux-test clean verify-amiga install-hooks docs-check docs-update test-gc-stress test-memleak test-mt-thread-exit-race fasl fasl-amiga clean-fasl-amiga image install install-layout uninstall
+.PHONY: host test test-fast test-plus test-extra linux-test clean verify-amiga install-hooks docs-check docs-update guide test-gc-stress test-memleak test-mt-thread-exit-race fasl fasl-amiga clean-fasl-amiga image install install-layout uninstall
 
 host: $(HOST_BIN)
 
@@ -158,6 +158,17 @@ docs-check: host
 docs-update: host
 	@sh tools/docs/package-symbols.sh generate $(HOST_BIN) > docs/package-symbols.txt
 	@echo "docs-update: regenerated docs/package-symbols.txt"
+
+# The documentation as AmigaGuide: README.md and docs/*.md (and the clamacs
+# README when the submodule is present) converted to build/guide/*.guide by
+# tools/docs/md2guide.lisp, run by the host binary -- see
+# tools/docs/md2guide.sh and specs/amigaguide-docs.md.  The binary release
+# runs the same conversion into its docs/; the generated files are not
+# committed.  tests/test_md2guide.sh (in `make test`) converts the same
+# sources, so Markdown the converter cannot render fails the fast tier.
+GUIDE_DIR = build/guide
+guide: host
+	@sh tools/docs/md2guide.sh $(HOST_BIN) $(GUIDE_DIR)
 
 $(HOST_BIN): $(HOST_OBJS)
 	@mkdir -p $(dir $@)
@@ -234,7 +245,7 @@ test_batch test_repl_values test_repl_paste test_boot_log test_mx_error_context 
                 test_amiga_bindgen \
                 test_amiga_boopsi test_amiga_reaction test_amiga_mui test_amiga_curated_vs_raw \
                 test_amiga_asyncio test_amiga_ahi test_amiga_iff test_amiga_gfx_examples \
-                test_lib_fasl_portable test_fasl_source_name
+                test_lib_fasl_portable test_fasl_source_name test_md2guide
 
 # The ones that take no clamiga binary: two drive make itself, one the
 # Aminet upload script (dry runs only, no network).
@@ -318,6 +329,8 @@ test-gc-stress:
 	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_image.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
 	@echo "--- test_shutdown_leak (CLAMIGA_GC_STRESS=1, forced compaction) ---"
 	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_shutdown_leak.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
+	@echo "--- test_md2guide (CLAMIGA_GC_STRESS=1, forced compaction: string/cons-heavy Lisp) ---"
+	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_md2guide.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
 
 # `make test-memleak` builds a DEBUG_MEM_TRACK binary — every platform_alloc
 # tagged with its call site — and asserts that a run ends with ZERO off-heap

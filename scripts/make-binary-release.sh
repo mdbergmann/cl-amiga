@@ -20,6 +20,11 @@
 #     lib/                  runtime library — FASLs where portable, sources
 #                           where compilation must happen on the target
 #     docs/                 package API reference (signatures + descriptions)
+#                           as Markdown AND as AmigaGuide (*.guide, generated
+#                           here by tools/docs/md2guide.sh from README.md,
+#                           docs/*.md and clamacs/README.md -- readable on
+#                           the Amiga with MultiView; cl-amiga.guide is the
+#                           README, clamacs.guide the editor's)
 #     examples/             example programs, as Lisp source
 #     README.md LICENSE README-BINARY.txt
 #
@@ -281,10 +286,17 @@ for t in aos3 aos3-fpu; do
 done
 [ "$SNAPSHOT" = 1 ] || cp "$MOS_IMG" "$STAGE/bin/mos/clamiga.img"
 
-# docs: package API reference only (no benchmarks/screenshots)
+# docs: package API reference only (no benchmarks/screenshots), plus the
+# editor's README, and every page as an AmigaGuide next to its Markdown
+# (specs/amigaguide-docs.md): the converter runs in the host binary and
+# fails the release on Markdown it cannot render or on a dangling link.
 cp docs/README.md docs/amiga.md docs/clamiga.md docs/ext.md docs/ffi.md \
    docs/gray.md docs/mop.md docs/mp.md docs/package-symbols.txt \
    docs/clamiga-documented-symbols.txt "$STAGE/docs/"
+cp clamacs/README.md "$STAGE/docs/clamacs.md"
+echo "--- AmigaGuide docs -> $REL/docs/*.guide ---"
+sh tools/docs/md2guide.sh "$HOST_BIN" "$STAGE/docs" \
+    || { echo "ERROR: AmigaGuide docs not produced" >&2; exit 1; }
 
 # examples, as-is
 cp -R examples "$STAGE/examples"
@@ -322,7 +334,8 @@ cat >> "$STAGE/README-BINARY.txt" <<EOF
   bin/aos3/clamacs      Clamacs, the editor/IDE — AmigaOS 3.x, any 68020+
   bin/mos/clamacs       Clamacs for MorphOS (see Clamacs below)
   lib/                  runtime library (precompiled FASLs + Lisp sources)
-  docs/                 package API reference (call signatures included)
+  docs/                 the documentation, as Markdown and as AmigaGuide
+                        (*.guide -- open with MultiView, see Documentation)
   examples/             example programs (Lisp source)
   CLAmiga, CLAmiga-FPU, Clamacs
                         Workbench icons: double-click to start the
@@ -403,10 +416,17 @@ and are cached under S:cl-amiga/faslcache/, so later loads are fast.
 
 Documentation
 -------------
-docs/README.md is the index of the package reference: EXT (sockets, GC,
-introspection), MP (threads), FFI, GRAY (Gray streams), MOP, CLAMIGA,
-and the AMIGA.* GUI bindings — every function documented with its call
-signature.
+Every page ships twice: as Markdown (*.md) and as AmigaGuide (*.guide),
+readable on the Amiga itself -- open docs/cl-amiga.guide with MultiView
+(or any AmigaGuide viewer; "MultiView docs/cl-amiga.guide" from a shell)
+and follow the links.
+
+  docs/cl-amiga.guide   this README.md: features, usage, GUI, limitations
+  docs/README.guide     the index of the package reference: EXT (sockets,
+                        GC, introspection), MP (threads), FFI, GRAY (Gray
+                        streams), MOP, CLAMIGA, and the AMIGA.* GUI bindings
+                        -- every function documented with its call signature
+  docs/clamacs.guide    the Clamacs editor/IDE (see Clamacs below)
 
 Examples
 --------
@@ -435,8 +455,8 @@ Open clamiga's ARexx port and start the editor:
   bin/aos3/clamacs            (bin/mos/clamacs on MorphOS)
 
 The one m68k clamacs binary runs on every 68020+ machine and works with
-either AmigaOS clamiga binary.  Source and documentation:
-https://github.com/mdbergmann/clamacs
+either AmigaOS clamiga binary.  Documentation: docs/clamacs.guide (and
+docs/clamacs.md); source: https://github.com/mdbergmann/clamacs
 
 Project: https://github.com/mdbergmann/cl-amiga
 EOF
@@ -533,6 +553,13 @@ if [ "$SMOKE" = 1 ]; then
     grep -q "^DEV-REPL \*REPL-THREAD-STACK-SIZE\*" "$OUT/smoke.log" || {
         echo "ERROR: dev-repl did not load from the release FASL — see $OUT/smoke.log" >&2
         exit 1; }
+    # The AmigaGuide docs: one per shipped page, each a real guide file
+    # (@DATABASE first) -- the converter's own checks ran during staging.
+    for g in cl-amiga README ext mp ffi gray mop clamiga amiga clamacs; do
+        [ "$(head -c 10 "$STAGE/docs/$g.guide" 2>/dev/null)" = "@DATABASE " ] || {
+            echo "ERROR: docs/$g.guide missing or not an AmigaGuide file" >&2
+            exit 1; }
+    done
     # The editor cannot run on the host; check that what is staged is a real
     # AmigaOS hunk executable (0x000003F3 = HUNK_HEADER) of a plausible size.
     magic=$(od -An -tx1 -N4 "$STAGE/bin/aos3/clamacs" | tr -d ' \n')

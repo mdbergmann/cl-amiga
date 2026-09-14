@@ -1,0 +1,4 @@
+# Fence
+
+```
+never closed

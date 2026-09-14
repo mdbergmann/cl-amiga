@@ -41,3 +41,7 @@ make docs-update    # regenerate package-symbols.txt after editing the prose
 When a package's exports change: update the affected `*.md` prose (and, for a new
 user-facing CLAMIGA symbol, `clamiga-documented-symbols.txt`), then run
 `make docs-update`. The machinery lives in `tools/docs/`.
+
+The `.guide` files of the binary release are generated from these pages by
+`make guide` (`tools/docs/md2guide.lisp`); `make test` fails on Markdown the
+converter does not handle, and on a link to a heading that does not exist.

@@ -11342,6 +11342,15 @@ y" 1))
     (setq *fail-count* (+ *fail-count* 1))
     (format t "FAIL: shim registry tests could not run: ~A~%" e)))
 
+; --- AmigaGuide documentation converter (tools/docs/md2guide.lisp) ---
+; The golden fixture set converted on the target and compared byte for
+; byte with the committed .guide files (host leg: tests/test_md2guide.sh).
+; Nested LOAD: the converter's package cannot exist when THIS file is read.
+(handler-case (load "tests/amiga/md2guide-tests.lisp")
+  (error (e)
+    (setq *fail-count* (+ *fail-count* 1))
+    (format t "FAIL: md2guide tests could not run: ~A~%" e)))
+
 ; --- Heap images (EXT:SAVE-IMAGE API surface) ---
 ; The actual save->restore cycle needs two processes and is driven by
 ; call-on-ustartup (tests/amiga/image-save.lisp + image-verify.lisp);

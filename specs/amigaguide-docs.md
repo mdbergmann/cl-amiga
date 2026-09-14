@@ -1,6 +1,7 @@
 # AmigaGuide documentation: Markdown to `.guide` converter
 
-Status: PROPOSED
+Status: IMPLEMENTED (2026-09-14; the record of what was built and verified
+is at the end, under "Implementation record")
 Date: 2026-09-07
 
 ## Goal
@@ -445,3 +446,67 @@ test 200 lines, wiring under 50 lines.
   `make test`.
 - Generated guides are not committed; they are built by `make guide`
   and by the release script.
+
+## Implementation record (2026-09-14)
+
+Built as specified, with these outcomes and deviations:
+
+- **Rendering probe** (`build/amiga/probe.guide`, MultiView on the OS 3.9
+  Workbench of the FS-UAE `test-amiga` setup, `amigaguide.datatype` 44):
+  the bold+underlined title, the hanging-indent lists, the definition
+  entries, the four-column quote and the two-space code block all render
+  as laid out; `\@` and `\\` in body text show as `@` and `\`; a link
+  button's quoted label is taken **literally** (a `\\` in it shows both
+  backslashes), so labels are written unescaped with `"` replaced by `'`;
+  Latin-1 characters render; a code line past the window's width runs
+  off the right edge without wrapping.  `@{fg fill}` colours inline code
+  on this datatype but is a V40 attribute -- inline code stays plain.
+- **Character mapping**: mapped characters travel through parsing as
+  placeholder characters in the unused C1 range (`#x80` + index into
+  `*char-map*`) and are spelled out only on output.  Slugs and column
+  widths therefore see the original text: GitHub's anchor for
+  `Fixture — the mapping` is `fixture--the-mapping`, and mapping the em
+  dash to `--` first would have produced `fixture----the-mapping`.
+- **Input decoding** is the converter's own: files are read as Latin-1
+  bytes and UTF-8 is decoded in Lisp, so the output is byte-identical on
+  the byte-string m68k build (`char-code-limit` 256) and on wide builds.
+- **Clamacs**: the editor's `README.md` (from the `clamacs/` submodule)
+  is a tenth input, `docs/clamacs.guide`, and ships next to
+  `docs/clamacs.md`.  `tools/docs/md2guide.sh` skips it with a note when
+  the submodule is not checked out (CI checks out without submodules).
+- **Extra strictness** beyond the list above: an unmatched backtick, a
+  table row whose cell count differs from the header's, an unterminated
+  fence, a lazy (unindented) continuation line in a list, a code fence
+  or a second nesting level inside a list, a block inside a block quote,
+  and a file that does not start with a level-1 heading are errors.  A
+  link whose text equals its target (`[examples/](examples/)`) is emitted
+  once, not as `examples/ (examples/)`.
+- **Titles** longer than 76 columns wrap like body text (the `AMIGA.*`
+  page's is 185 columns).
+- **Badges** (an image inside a link, the README's CI status) are dropped
+  entirely; a lone italic "CI" at the top of the manual meant nothing.
+  Plain images keep their alt text as an italic line.
+- **Found in the docs**: three signature rows in `docs/amiga.md` were
+  glued to the paragraph above them (GitHub rendered them as text); the
+  Clamacs README spelled the `C-x `` ` `` key as a backslash-escaped
+  backtick inside a code span.  Both fixed.
+
+Verification:
+
+- `tests/test_md2guide.sh` in `make test`: golden fixture set
+  (`tests/md2guide/fixture.md` + `other.md`, for the cross-file links),
+  twelve error fixtures under `tests/md2guide/errors/`, the real docs
+  through `md2guide.sh`, and the structural checks (plus: the `@$VER:`
+  line carries the version from `src/core/types.h`, no unindented body
+  line wider than 76 visible columns, the index links every reference
+  page).  Also run under `CLAMIGA_GC_STRESS=1` in `make test-gc-stress`.
+- `tests/amiga/md2guide-tests.lisp` in the Amiga suite: the fixture set
+  converted on the target is byte-identical to the golden files.
+- Acceptance in FS-UAE (OS 3.9 Workbench, 68040 JIT config): the ten
+  real pages converted **by the m68k binary itself** in 97 s;
+  `docs/cl-amiga.guide`, `ext.guide` and `clamacs.guide` open in
+  MultiView, screenshots under `build/amiga/shots/`.
+- Vampire (AmigaOS 3.2) and MorphOS: not yet -- both boxes were off on
+  2026-09-14.  Open `docs/cl-amiga.guide` from a binary release there
+  and follow a Contents link and a cross-file link (the index's `Doc`
+  links) when they are next up.

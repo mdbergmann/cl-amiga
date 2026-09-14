@@ -738,6 +738,20 @@ diffs the real package exports against a committed snapshot; run
 `make docs-update` after changing a package's exports. See
 [docs/README.md](docs/README.md#keeping-the-lists-in-sync).
 
+### AmigaGuide
+
+The binary release ships every page of the reference, this README
+(`docs/cl-amiga.guide`) and the Clamacs README (`docs/clamacs.guide`) as
+AmigaGuide files next to the Markdown, readable on the Amiga itself with
+MultiView; every heading is a node and every link between the pages works.
+`make guide` builds them into `build/guide/` with
+`tools/docs/md2guide.lisp`, a small converter written in Lisp and run by
+clamiga (on the host or on the Amiga). It supports the Markdown these pages
+use and rejects anything else with a `file:line:` diagnostic, so `make test`
+fails on a construct it cannot render or on a dangling link.
+`tests/md2guide/fixture.md` and its `fixture.guide` are the executable
+example of the mapping.
+
 ## Architecture
 
 - **Single-pass compiler** from S-expressions to bytecode, executed by a stack-based VM
