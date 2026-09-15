@@ -538,9 +538,12 @@ Verification:
   link jump (node 60/63), the Contents button returns, and the Package
   Reference node's `docs/ext.md` link opens `ext.guide` (cross-file,
   1/11).  Screenshots under `build/amiga/shots-guide/vampire/`.
-- MorphOS: not yet -- the box was off on 2026-09-14.  Open
-  `cl-amiga.guide` from a binary release there and follow a Contents
-  link and a cross-file link when it is next up.
+- MorphOS (3.20, MultiView 3.17), 2026-09-15, from the unpacked 0.10.0
+  release under `Work:Download/`: `README-FIRST.guide` opens (11 nodes),
+  the Contents link to Documentation jumps, and its `docs/README.guide`
+  link opens the package reference -- the cross-drawer link works there
+  too.  `SYS:Utilities/Multiview` exists on MorphOS (case-insensitive
+  file system), so the guide icons' default tool resolves.
 
 ## Layout change (2026-09-15): root guides, README-FIRST, icons
 
