@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
 """Generate the Workbench icons of the binary release (icons/*.info).
 
-Each icon is a classic (OS 1.3/2.x-style) DiskObject project icon whose
-default tool is C:IconX, so a double-click on Workbench or Ambient runs the
-launcher script of the same name next to it -- `icons/CLAmiga` starts
-bin/aos3/clamiga in a console window, `icons/CLAmiga-FPU` the hard-float
-build, `icons/Clamacs` the editor.  The script, not the icon, picks bin/mos
-on MorphOS, so one icon serves both systems.
+Each icon is a classic (OS 1.3/2.x-style) DiskObject project icon.  Three
+have C:IconX as their default tool, so a double-click on Workbench or
+Ambient runs the launcher script of the same name next to it --
+`icons/CLAmiga` starts bin/aos3/clamiga in a console window,
+`icons/CLAmiga-FPU` the hard-float build, `icons/Clamacs` the editor.  The
+script, not the icon, picks bin/mos on MorphOS, so one icon serves both
+systems.  The fourth, `icons/Guide.info`, is the icon of every AmigaGuide
+file the release ships (copied next to each *.guide as <name>.guide.info
+by scripts/make-binary-release.sh): its default tool is
+SYS:Utilities/MultiView, so a double-click opens the guide.
 
 Why classic icons: every Workbench from 1.3 on renders a 2-bitplane
 DiskObject with the standard 4-colour palette (0 grey, 1 black, 2 white,
 3 blue), no icon.library, NewIcons or OS3.5 colour-icon support needed --
 and the file is ~500 bytes.  The image is the same 48x24 lambda card for
-all three; a badge tells the FPU build and the editor apart.
+all of them; a badge tells the FPU build, the editor and the guides apart.
 
     python3 scripts/make-icons.py [OUTDIR]        # default: icons/
 
@@ -58,10 +62,12 @@ LAMBDA = [
 # 3x5 pixel capitals for the badge text.
 FONT = {
     "A": ["###", "#.#", "###", "#.#", "#.#"],
+    "C": ["###", "#..", "#..", "#..", "###"],
     "D": ["##.", "#.#", "#.#", "#.#", "##."],
     "E": ["###", "#..", "##.", "#..", "###"],
     "F": ["###", "#..", "##.", "#..", "#.."],
     "I": ["###", ".#.", ".#.", ".#.", "###"],
+    "O": ["###", "#.#", "#.#", "#.#", "###"],
     "P": ["##.", "#.#", "##.", "#..", "#.."],
     "U": ["#.#", "#.#", "#.#", "#.#", "###"],
 }
@@ -130,6 +136,13 @@ def art(kind):
             px[7][x] = BLACK
             px[10][x] = BLACK
         badge(px, "IDE")
+    elif kind == "guide":
+        # a small lambda and the "lines of text" of a document page
+        blit(px, LAMBDA, 4, 4, BLACK)
+        for y in (6, 9, 12, 15):
+            for x in range(21, 43 if y < 15 else 28):
+                px[y][x] = BLACK
+        badge(px, "DOC")
     else:
         raise ValueError(kind)
     return px
@@ -202,11 +215,19 @@ def diskobject(px, default_tool, tooltypes, stack):
     return body
 
 
+def iconx(window):
+    """An IconX launcher: the console window of the run, a 128K stack."""
+    return "C:IconX", ["WINDOW=" + window], 131072
+
+
 ICONS = {
-    # name: (art kind, console window of the IconX run)
-    "CLAmiga":     ("clamiga",     "CON:0/20/640/236/CLAmiga/CLOSE"),
-    "CLAmiga-FPU": ("clamiga-fpu", "CON:0/20/640/236/CLAmiga-FPU/CLOSE"),
-    "Clamacs":     ("clamacs",     "NIL:"),
+    # name: (art kind, default tool, tool types, stack)
+    "CLAmiga":     ("clamiga",) + iconx("CON:0/20/640/236/CLAmiga/CLOSE"),
+    "CLAmiga-FPU": ("clamiga-fpu",) + iconx("CON:0/20/640/236/CLAmiga-FPU/CLOSE"),
+    "Clamacs":     ("clamacs",) + iconx("NIL:"),
+    # the AmigaGuide files: MultiView, as installed by AmigaOS 3.x and
+    # MorphOS; a project icon's stack is what Workbench starts the tool with
+    "Guide":       ("guide", "SYS:Utilities/MultiView", [], 16384),
 }
 
 
@@ -214,8 +235,8 @@ def main():
     outdir = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "..", "icons")
     os.makedirs(outdir, exist_ok=True)
-    for name, (kind, window) in ICONS.items():
-        data = diskobject(art(kind), "C:IconX", ["WINDOW=" + window], 131072)
+    for name, (kind, tool, tooltypes, stack) in ICONS.items():
+        data = diskobject(art(kind), tool, tooltypes, stack)
         path = os.path.join(outdir, name + ".info")
         with open(path, "wb") as f:
             f.write(data)

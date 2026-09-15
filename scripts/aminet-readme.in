@@ -46,10 +46,12 @@ Getting started
      bin/aos3/clamiga --heap 16M     ; more heap for bigger programs
      bin/aos3/clamiga --load examples/amiga/reaction/listbrowser.lisp
    examples/ holds ready-to-run programs (ReAction and MUI GUIs,
-   graphics, audio, IFF, ARexx), docs/README.md is the package reference
-   (EXT, MP, FFI, GRAY, MOP and the AMIGA.* bindings), and
-   README-BINARY.txt has the details on the binaries, the heap image and
-   the libraries.
+   graphics, audio, IFF, ARexx).  The documentation is AmigaGuide with
+   icons: README-FIRST.guide (the binaries, the heap image, the
+   libraries, and how Clamacs connects to clamiga's ARexx port),
+   cl-amiga.guide (the manual), clamacs.guide (the editor), and
+   docs/README.guide, the package reference (EXT, MP, FFI, GRAY, MOP and
+   the AMIGA.* bindings).
 
 Changes in @VERSION@
 --------------------

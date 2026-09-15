@@ -5,7 +5,7 @@
 /*
  * Regression test for the AmigaOS user init file name.
  *
- * Bug: every document — README.md, the binary release's README-BINARY.txt,
+ * Bug: every document — README.md, the binary release's README-FIRST.md,
  * the Clamacs editor — told the user to put (require "amiga/arexx")
  * (amiga.arexx:start) into S:.clamigarc, mirroring ~/.clamigarc on the host,
  * while repl.c's load_user_init() only ever read S:clamiga.lisp.  The file

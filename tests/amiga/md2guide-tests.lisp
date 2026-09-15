@@ -3,13 +3,14 @@
 ;
 ; Loaded from run-tests.lisp (nested LOAD: the converter defines its own
 ; package, which cannot exist when this file is read).  Converts the
-; golden fixture set (tests/md2guide/fixture.md + other.md) into T: and
-; compares the result byte for byte with the committed fixture.guide /
-; other.guide -- the same comparison tests/test_md2guide.sh makes on the
-; host.  It proves the converter is portable Lisp: UTF-8 is decoded by the
-; converter itself from a Latin-1 stream, so the output is identical on
-; the byte-string m68k build and on wide-string builds.  The fixture, not
-; the shipped docs, to keep suite time flat.
+; golden fixture set (tests/md2guide/fixture.md + other.md + sub/child.md)
+; into T: -- the converter creates T:sub/ itself -- and compares the
+; result byte for byte with the committed fixture.guide / other.guide /
+; sub/child.guide -- the same comparison tests/test_md2guide.sh makes on
+; the host.  It proves the converter is portable Lisp: UTF-8 is decoded by
+; the converter itself from a Latin-1 stream, so the output is identical
+; on the byte-string m68k build and on wide-string builds.  The fixture,
+; not the shipped docs, to keep suite time flat.
 
 (load "tools/docs/md2guide.lisp")
 
@@ -28,9 +29,10 @@
       nil))
 
 (check "md2guide converts the fixture set to T:"
-       2
+       3
        (md2guide:convert-set '(("tests/md2guide/fixture.md" . "fixture.guide")
-                               ("tests/md2guide/other.md" . "other.guide"))
+                               ("tests/md2guide/other.md" . "other.guide")
+                               ("tests/md2guide/sub/child.md" . "sub/child.guide"))
                              "T:" :version "0.0.0" :date "01.01.2000"))
 
 (let ((expected (md2guide-test-file-bytes "tests/md2guide/fixture.guide"))
@@ -45,6 +47,20 @@
   (check "md2guide other.guide byte-identical to the golden file"
          nil
          (md2guide-test-first-difference expected actual)))
+
+; The guide one directory down: written into a directory the converter
+; created, its links up spelled as AmigaDOS parent paths (/fixture.guide).
+(check "md2guide created T:sub/ for the nested guide"
+       t
+       (and (probe-file "T:sub/child.guide") t))
+(let ((expected (md2guide-test-file-bytes "tests/md2guide/sub/child.guide"))
+      (actual (md2guide-test-file-bytes "T:sub/child.guide")))
+  (check "md2guide sub/child.guide byte-identical to the golden file"
+         nil
+         (md2guide-test-first-difference expected actual))
+  (check "md2guide nested guide links up with an AmigaDOS parent path"
+         t
+         (and (search "LINK \"/fixture.guide/tables\"" actual) t)))
 
 ; An unsupported construct is a located error, and nothing is written.
 (check "md2guide error fixture signals file:line diagnostic"
@@ -74,3 +90,4 @@
 
 (delete-file "T:fixture.guide")
 (delete-file "T:other.guide")
+(delete-file "T:sub/child.guide")

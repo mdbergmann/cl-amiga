@@ -159,11 +159,13 @@ docs-update: host
 	@sh tools/docs/package-symbols.sh generate $(HOST_BIN) > docs/package-symbols.txt
 	@echo "docs-update: regenerated docs/package-symbols.txt"
 
-# The documentation as AmigaGuide: README.md and docs/*.md (and the clamacs
-# README when the submodule is present) converted to build/guide/*.guide by
-# tools/docs/md2guide.lisp, run by the host binary -- see
+# The documentation as AmigaGuide: README-FIRST.md, README.md and docs/*.md
+# (and the clamacs README when the submodule is present) converted by
+# tools/docs/md2guide.lisp, run by the host binary, into build/guide/ laid
+# out as the binary release root is (README-FIRST.guide, cl-amiga.guide,
+# clamacs.guide at the top, the reference under docs/) -- see
 # tools/docs/md2guide.sh and specs/amigaguide-docs.md.  The binary release
-# runs the same conversion into its docs/; the generated files are not
+# runs the same conversion into its staged root; the generated files are not
 # committed.  tests/test_md2guide.sh (in `make test`) converts the same
 # sources, so Markdown the converter cannot render fails the fast tier.
 GUIDE_DIR = build/guide

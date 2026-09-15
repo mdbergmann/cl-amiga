@@ -740,11 +740,15 @@ diffs the real package exports against a committed snapshot; run
 
 ### AmigaGuide
 
-The binary release ships every page of the reference, this README
-(`docs/cl-amiga.guide`) and the Clamacs README (`docs/clamacs.guide`) as
-AmigaGuide files next to the Markdown, readable on the Amiga itself with
-MultiView; every heading is a node and every link between the pages works.
-`make guide` builds them into `build/guide/` with
+The binary release ships its documentation as AmigaGuide files, readable
+on the Amiga itself with MultiView, each with a Workbench icon: in the
+package root `README-FIRST.guide` (the getting-started page,
+[README-FIRST.md](README-FIRST.md): what is where, the binaries, the heap
+image, and how Clamacs connects to clamiga's ARexx port), this README as
+`cl-amiga.guide` and the Clamacs README as `clamacs.guide`; the package
+reference under `docs/` next to its Markdown. Every heading is a node and
+every link between the pages works, across the drawers.
+`make guide` builds the same layout into `build/guide/` with
 `tools/docs/md2guide.lisp`, a small converter written in Lisp and run by
 clamiga (on the host or on the Amiga). It supports the Markdown these pages
 use and rejects anything else with a `file:line:` diagnostic, so `make test`
@@ -1302,12 +1306,15 @@ binary next to `clamiga` in `bin/aos3/` and `bin/mos/`), `lib/` (precompiled
 FASLs where portable — the core library and all of `lib/amiga/` including
 the raw OS bindings, with the `lib/amiga` sources alongside for reference —
 and Lisp sources where compilation must happen on the target, i.e. asdf and
-quicklisp), the package API reference under `docs/`, `examples/`, and three
-Workbench icons in the package root (`CLAmiga`, `CLAmiga-FPU`, `Clamacs`:
-IconX launchers from `icons/`, drawn by `scripts/make-icons.py`, that start
-the matching binary from `bin/` on a double-click, `bin/mos/` on MorphOS)
-— then smoke-tests the deployed layout and produces `.zip` and `.lha`
-archives. The binaries find `lib/` relative to themselves, so the extracted
+quicklisp), the package API reference under `docs/`, `examples/`, the
+[AmigaGuide documentation](#amigaguide) (`README-FIRST.guide`,
+`cl-amiga.guide` and `clamacs.guide` in the package root, the reference
+guides under `docs/`, every guide with an icon that opens it in MultiView),
+and three Workbench icons in the package root (`CLAmiga`, `CLAmiga-FPU`,
+`Clamacs`: IconX launchers from `icons/`, drawn by `scripts/make-icons.py`
+like the guide icon, that start the matching binary from `bin/` on a
+double-click, `bin/mos/` on MorphOS) — then smoke-tests the deployed
+layout and produces `.zip` and `.lha` archives. The binaries find `lib/` relative to themselves, so the extracted
 tree runs from any directory without assigns or environment variables.
 
 The release is published on Aminet as

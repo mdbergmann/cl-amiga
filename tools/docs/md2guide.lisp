@@ -19,8 +19,11 @@
 ;;;;
 ;;;; Entry points:
 ;;;;   (md2guide:convert-set inputs output-dir &key version date)
-;;;;       INPUTS is a list of (source-path . guide-name); every guide is
-;;;;       written into OUTPUT-DIR, links are resolved across the set.
+;;;;       INPUTS is a list of (source-path . guide-path); every guide is
+;;;;       written under OUTPUT-DIR at its guide-path (which may carry a
+;;;;       directory: "docs/ext.guide"; the directories are created), and
+;;;;       links are resolved across the set as paths relative to the
+;;;;       linking guide's directory.
 ;;;;   (md2guide:convert source guide-path &key version date)
 ;;;;       one file (a set of one).
 ;;;;   (md2guide:cli inputs output-dir version date)
@@ -567,7 +570,7 @@ hyphen and underscore, spaces to hyphens."
 (defstruct doc
   source        ; path as given
   norm          ; normalized path, for link resolution
-  guide         ; output file name
+  guide         ; output path relative to the output directory ("docs/ext.guide")
   title         ; document title (plain text)
   title-slug    ; slug of the level-1 heading (an alias of "main")
   main-blocks   ; blocks before the first section
@@ -637,6 +640,24 @@ hyphen and underscore, spaces to hyphens."
   (let ((p (position #\/ s :from-end t)))
     (if p (subseq s 0 (1+ p)) "")))
 
+(defun path-file-name (s)
+  (subseq s (length (path-directory s))))
+
+(defun relative-guide-path (from to)
+  "The AmigaDOS path of guide file TO relative to the directory of guide
+file FROM (both relative to the output directory): a sibling is its bare
+name, a file below is `dir/name', and every step up is one leading `/'
+\(the AmigaDOS parent; `..' means nothing there).  The link is resolved by
+amigaguide.library against the directory of the document it is in."
+  (let ((from-dirs (butlast (split-path from)))
+        (to-parts (split-path to)))
+    (loop while (and from-dirs (rest to-parts)
+                     (string= (first from-dirs) (first to-parts)))
+          do (pop from-dirs) (pop to-parts))
+    (concatenate 'string
+                 (make-string (length from-dirs) :initial-element #\/)
+                 (format nil "~{~A~^/~}" to-parts))))
+
 (defun join-path (dir name)
   (cond ((zerop (length dir)) name)
         ((member (char dir (1- (length dir))) '(#\/ #\:)) (concatenate 'string dir name))
@@ -678,7 +699,10 @@ anchor in a converted file is recorded as an error."
                             *link-errors*))
                     (values :node (if (eq doc *doc*)
                                       node
-                                      (concatenate 'string (doc-guide doc) "/" node))))))))))
+                                      (concatenate 'string
+                                                   (relative-guide-path (doc-guide *doc*)
+                                                                        (doc-guide doc))
+                                                   "/" node))))))))))
 
 ;;; ------------------------------------------------------------ emitter
 
@@ -888,8 +912,8 @@ with FIRST-PREFIX, the others with REST-PREFIX."
 (defun emit-doc (doc version date)
   (let ((*doc* doc)
         (nodes (doc-nodes doc)))
-    (emit (format nil "@DATABASE ~A" (doc-guide doc)))
-    (emit (format nil "@$VER: ~A ~A (~A)" (doc-guide doc) version date))
+    (emit (format nil "@DATABASE ~A" (path-file-name (doc-guide doc))))
+    (emit (format nil "@$VER: ~A ~A (~A)" (path-file-name (doc-guide doc)) version date))
     (emit (format nil "@AUTHOR ~A" *author*))
     (emit (format nil "@(C) ~A" *copyright*))
     (emit (format nil "@WIDTH ~D" (+ *width* 2)))
@@ -949,6 +973,7 @@ file converts."
       (error 'md2guide-error
              :message (format nil "~{~A~^~%~}" (reverse *link-errors*))))
     (dolist (o (nreverse outputs))
+      (ensure-directories-exist (car o))
       (with-open-file (out (car o) :direction :output :if-exists :supersede
                                    :if-does-not-exist :create :external-format :latin-1)
         (write-string (cdr o) out)))

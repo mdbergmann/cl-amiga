@@ -38,11 +38,14 @@ real-target test of the reader, string and stream code.
 
 ### Inputs
 
-The nine Markdown files the binary release ships:
+The Markdown files the binary release ships (the layout of 2026-09-15;
+originally every guide went to `docs/`, see the implementation record):
 
 | Source | Output | Role |
 |--------|--------|------|
-| `README.md` | `docs/cl-amiga.guide` | The user manual (features, usage, GUI, limitations) |
+| `README-FIRST.md` | `README-FIRST.guide` | Getting started: what is where, the binaries, the heap image, Clamacs and the ARexx port |
+| `README.md` | `cl-amiga.guide` | The user manual (features, usage, GUI, limitations) |
+| `clamacs/README.md` | `clamacs.guide` | The Clamacs editor/IDE (when the submodule is checked out) |
 | `docs/README.md` | `docs/README.guide` | Package reference index |
 | `docs/ext.md` | `docs/ext.guide` | `EXT` reference |
 | `docs/mp.md` | `docs/mp.guide` | `MP` reference |
@@ -52,11 +55,18 @@ The nine Markdown files the binary release ships:
 | `docs/clamiga.md` | `docs/clamiga.guide` | `CLAMIGA` reference |
 | `docs/amiga.md` | `docs/amiga.guide` | `AMIGA.*` reference |
 
-All guides live in one directory (`docs/`), so cross-file links are
-plain `file.guide/node` paths with no directory component.  The
-top-level README is named `cl-amiga.guide` rather than `README.guide`
-(taken by the index) or `clamiga.guide` (taken by the `CLAMIGA` package
-page; AmigaDOS file names are case-insensitive).
+The output paths are the release layout: the three guides a user opens
+first sit in the package root next to the Workbench icons, the reference
+under `docs/` next to its Markdown.  Every guide gets a Workbench icon
+(`icons/Guide.info`, default tool `SYS:Utilities/MultiView`, copied as
+`<name>.guide.info` by the release script), so the documentation is
+visible and readable from Workbench.  The top-level README is named
+`cl-amiga.guide` rather than `README.guide` (taken by the index) or
+`clamiga.guide` (taken by the `CLAMIGA` package page; AmigaDOS file names
+are case-insensitive).  `README-FIRST.md` lives in the repository root so
+that its links resolve identically in the checkout and in the release
+(same relative position); it replaces the `README-BINARY.txt` the release
+script used to generate.
 
 Not converted: `docs/benchmarks.md`, `docs/sento-bench-results-*.md`,
 `specs/*.md`, `docs/*.txt`, `examples/**/README.md`.  Links into them
@@ -223,18 +233,28 @@ MultiView.
 | Markdown target | Output |
 |-----------------|--------|
 | `#anchor` | `@{"text" LINK "anchor"}` |
-| `page.md#anchor`, `page.md` | `@{"text" LINK "page.guide/anchor"}`, `.../main` |
-| `../README.md#anchor` (from `docs/`) | `@{"text" LINK "cl-amiga.guide/anchor"}` |
-| `docs/page.md#anchor` (from `README.md`) | `@{"text" LINK "page.guide/anchor"}` |
+| `page.md#anchor`, `page.md` (a sibling) | `@{"text" LINK "page.guide/anchor"}`, `.../main` |
+| `docs/page.md#anchor` (from the root) | `@{"text" LINK "docs/page.guide/anchor"}` |
+| `../README.md#anchor` (from `docs/`) | `@{"text" LINK "/cl-amiga.guide/anchor"}` |
 | a file that is not converted (`benchmarks.md`, `../specs/x.md`, `tests/...`) | `text (path)` as plain text |
 | `http://`, `https://` | `text (url)` as plain text |
 
-The directory part of a target is dropped and the basename mapped
-through the Inputs table.  The converter converts the whole set in one
-run, so it resolves every anchor against the parsed heading set of the
-target file; **a dangling link is an error**, same-file or cross-file.
-Link text inside table cells and list items is supported.  MultiView
-cannot open URLs on stock 3.1, so URLs stay text.
+A target is resolved against the source layout (the linking file's
+directory plus the target path, normalized) and looked up in the input
+set; the link is then emitted as the **path of the target guide relative
+to the linking guide's directory** in the output layout, in AmigaDOS
+spelling: a sibling is its bare name, a guide below is `dir/name`, and
+each step up is one leading `/` (`..` means nothing to AmigaDOS).
+amigaguide.library resolves the file part of a link against the
+directory of the document the link is in, so this is what makes the
+root/`docs/` layout work in both directions (verified on a Vampire V4,
+AmigaOS 3.2.3, MultiView 47: `sub/child.guide/below` from the root and
+`/fixture.guide/tables` from the subdirectory both open the right node).
+The converter converts the whole set in one run, so it resolves every
+anchor against the parsed heading set of the target file; **a dangling
+link is an error**, same-file or cross-file.  Link text inside table
+cells and list items is supported.  MultiView cannot open URLs on stock
+3.1, so URLs stay text.
 
 ### Images
 
@@ -318,15 +338,17 @@ heading and therefore an error.
 - `tools/docs/md2guide.sh <clamiga-binary> <output-dir>`: wraps the
   above for the fixed input set, invoked like `package-symbols.sh`
   (`CLAMIGA_NO_USERINIT=1 ... --non-interactive --load ... --eval ...`).
+  `<output-dir>` is laid out as the release root (the root guides at the
+  top, the reference under `docs/`; the converter creates the directory).
 - `make guide` (Makefile, next to `docs-check`/`docs-update`): builds
-  `build/guide/*.guide` with the host binary.  Generated files are not
-  committed.
-- `scripts/make-binary-release.sh`: after copying `docs/*.md` into the
-  stage, runs the converter into `$STAGE/docs/` so every guide sits next
-  to its Markdown; the smoke test checks the nine files exist and start
-  with `@DATABASE`.  `README-BINARY.txt` gets one line under
-  Documentation: the same reference is in `docs/*.guide`, open
-  `docs/cl-amiga.guide` with MultiView.
+  that layout under `build/guide/` with the host binary.  Generated files
+  are not committed.
+- `scripts/make-binary-release.sh`: after copying `README-FIRST.md`,
+  `README.md` and `docs/*.md` into the stage, runs the converter into the
+  stage root, then copies `icons/Guide.info` next to every `.guide` as its
+  `.info`; the smoke test checks that each guide exists at its release
+  path, starts with `@DATABASE`, has its icon, and that the root guides
+  link down into `docs/` and the `AMIGA.*` reference links back up.
 - Windows/MSYS2 host: the script is POSIX sh and the converter runs in
   clamiga, so it works there unchanged; paths handed to clamiga go
   through `tests/shpath.sh`'s `native_path` where the shell test
@@ -435,8 +457,11 @@ test 200 lines, wiring under 50 lines.
 
 ## Decisions taken (override if wanted)
 
-- One `.guide` per `.md`, same basename, all under `docs/`; the manual
-  is `cl-amiga.guide`.
+- One `.guide` per `.md`, same basename; the manual is `cl-amiga.guide`.
+  Since 2026-09-15 the three guides a user opens first
+  (`README-FIRST.guide`, `cl-amiga.guide`, `clamacs.guide`) sit in the
+  package root next to the Workbench icons, the reference under `docs/`,
+  and every guide has an icon (originally all under `docs/`, no icons).
 - Level-2 and level-3 headings are nodes; node names are the GitHub
   anchor slugs.
 - Fixed 76-column layout, no `@SMARTWRAP`.
@@ -514,5 +539,55 @@ Verification:
   Reference node's `docs/ext.md` link opens `ext.guide` (cross-file,
   1/11).  Screenshots under `build/amiga/shots-guide/vampire/`.
 - MorphOS: not yet -- the box was off on 2026-09-14.  Open
-  `docs/cl-amiga.guide` from a binary release there and follow a
-  Contents link and a cross-file link when it is next up.
+  `cl-amiga.guide` from a binary release there and follow a Contents
+  link and a cross-file link when it is next up.
+
+## Layout change (2026-09-15): root guides, README-FIRST, icons
+
+Asked for after the 0.10 packaging: the guides a user opens first belong
+in the package root next to the Workbench icons, there should be a
+getting-started guide, and every guide should have an icon.
+
+- **Output paths carry directories.**  The input set maps
+  `README-FIRST.md`, `README.md` and `clamacs/README.md` to
+  `README-FIRST.guide`, `cl-amiga.guide` and `clamacs.guide` in the output
+  root and the reference to `docs/*.guide`; `convert-set` creates the
+  directories (`ensure-directories-exist`), and `@DATABASE`/`@$VER:` carry
+  the bare file name.  `make guide`, the test and the release script all
+  produce the same layout, the release script straight into its staged
+  root.
+- **Cross-file links are directory-relative** (see Links above): the
+  path of the target guide relative to the linking guide's directory,
+  with AmigaDOS's leading-slash parent.  Verified in both directions on
+  the Vampire (MultiView 47, `amigaguide.datatype` of AmigaOS 3.2.3)
+  before the layout was changed: the fixture set's `sub/child.guide`
+  opened from `Work:Download/guide-layout/`, its "the fixture" link
+  (`/fixture.guide/tables`) opened the fixture's Tables node, the
+  fixture's "Child" link (`sub/child.guide/below`) opened the child's
+  Below node.  The golden fixture set grew a third file,
+  `tests/md2guide/sub/child.md`, that links up; `fixture.md` links down
+  to it; the Amiga suite converts it into a `T:sub/` the converter
+  creates.
+- **`README-FIRST.md`** is a committed Markdown file in the repository
+  root (the same relative position as in the release, so its links
+  resolve in both), converted like the others and gated by `make test`
+  like the others.  It carries what `README-BINARY.txt` used to say --
+  the layout, the binaries, the stack and heap, the heap image, the
+  libraries -- plus the two lines every Clamacs user needs in
+  `S:.clamigarc` and why (the editor launches `PROGDIR:clamiga` when no
+  port is found, and only the rc file opens the port).  The release
+  script no longer writes `README-BINARY.txt`; a `--snapshot` build gets
+  a `SNAPSHOT.txt` with the snapshot note instead.
+- **Icons**: `scripts/make-icons.py` draws a fourth icon, `icons/Guide.info`
+  (the lambda card with the lines of a page and a `DOC` badge), a project
+  icon whose default tool is `SYS:Utilities/MultiView`, 16K stack, no tool
+  types.  The release script copies it next to every `.guide` (root and
+  `docs/`) as `<name>.guide.info`.  Workbench starts the default tool
+  with the project's drawer as its current directory, which is also how
+  MultiView opened the guides in the Vampire check above.
+- `tests/test_md2guide.sh` converts the real docs into the release layout
+  and resolves every `LINK` target relative to the linking guide's
+  directory the way the library does; it also asserts the cross-layout
+  links (README-FIRST to manual/index/editor, manual into `docs/`,
+  `AMIGA.*` reference up to the manual) and that `@DATABASE` carries the
+  bare name.

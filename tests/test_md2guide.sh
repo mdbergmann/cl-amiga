@@ -3,23 +3,31 @@
 # (specs/amigaguide-docs.md).
 #
 # Covered:
-#   golden fixture: tests/md2guide/fixture.md + other.md convert to files
-#     byte-identical to the committed fixture.guide / other.guide (every
-#     supported construct, every link form, every mapped character, Latin-1
-#     pass-through, a cross-file link in both directions)
+#   golden fixture: tests/md2guide/fixture.md + other.md + sub/child.md
+#     convert to files byte-identical to the committed fixture.guide /
+#     other.guide / sub/child.guide (every supported construct, every link
+#     form, every mapped character, Latin-1 pass-through, cross-file links
+#     in both directions and across a directory level: down as
+#     `sub/child.guide/node`, up as `/fixture.guide/node` -- the AmigaDOS
+#     parent -- with the output directory created by the converter)
 #   error fixtures: each file under tests/md2guide/errors/ fails with a
 #     `file:line:` diagnostic naming the construct, exit status 1, and no
 #     output file is written
-#   the real docs: tools/docs/md2guide.sh converts README.md and docs/*.md
-#     (plus clamacs/README.md when the submodule is present) with zero
-#     diagnostics -- the drift gate: a construct the converter does not
-#     handle, or a dangling link, in the shipped documentation fails here
+#   the real docs: tools/docs/md2guide.sh converts README-FIRST.md,
+#     README.md and docs/*.md (plus clamacs/README.md when the submodule is
+#     present) with zero diagnostics into the release layout -- the root
+#     guides at the top, the reference under docs/ -- the drift gate: a
+#     construct the converter does not handle, or a dangling link, in the
+#     shipped documentation fails here
 #   structural checks over that output, independent of the converter:
-#     @DATABASE first, @NODE/@ENDNODE balance, every LINK target names an
-#     @NODE of the right file, no byte above 0x7F other than the Latin-1
-#     pass-through set, no unescaped @ outside a command, no unindented
-#     body line wider than 76 visible columns, the @$VER: line carries the
-#     version from src/core/types.h
+#     @DATABASE first (with the bare file name), @NODE/@ENDNODE balance,
+#     every LINK target names an @NODE of the right file resolved relative
+#     to the linking guide's directory, no byte above 0x7F other than the
+#     Latin-1 pass-through set, no unescaped @ outside a command, no
+#     unindented body line wider than 76 visible columns, the @$VER: line
+#     carries the version from src/core/types.h, and the pages link across
+#     the layout: README-FIRST to the manual/editor/index, the manual into
+#     docs/, the AMIGA.* reference back up to the manual
 #
 # Run: sh tests/test_md2guide.sh build/host/clamiga
 
@@ -47,10 +55,11 @@ run_convert() {
 
 # --- golden fixture -------------------------------------------------------
 mkdir -p "$WORK/fx"
-out=$(run_convert '("tests/md2guide/fixture.md" . "fixture.guide") ("tests/md2guide/other.md" . "other.guide")' "$WORK_NATIVE/fx")
+# sub/ is not created here: the converter creates the output directories
+out=$(run_convert '("tests/md2guide/fixture.md" . "fixture.guide") ("tests/md2guide/other.md" . "other.guide") ("tests/md2guide/sub/child.md" . "sub/child.guide")' "$WORK_NATIVE/fx")
 rc=$?
 if [ "$rc" -eq 0 ]; then ok "fixture_converts"; else fail "fixture_converts" "$out"; fi
-for g in fixture other; do
+for g in fixture other sub/child; do
     if [ -f "$WORK/fx/$g.guide" ] && cmp -s "$WORK/fx/$g.guide" "tests/md2guide/$g.guide"; then
         ok "golden_$g"
     else
@@ -99,15 +108,18 @@ if [ "${CLAMIGA_GC_STRESS:-0}" = 1 ]; then
     echo "$passed passed, $failed failed, $total total"
     if [ "$failed" -gt 0 ]; then echo "FAIL"; exit 1; else echo "PASS"; exit 0; fi
 fi
-out=$(sh tools/docs/md2guide.sh "$CLAMIGA" "$WORK/docs" 2>&1)
+out=$(sh tools/docs/md2guide.sh "$CLAMIGA" "$WORK/rel" 2>&1)
 rc=$?
 if [ "$rc" -eq 0 ]; then ok "real_docs_convert"; else fail "real_docs_convert" "$out"; fi
-for g in cl-amiga README ext mp ffi gray mop clamiga amiga; do
-    [ -s "$WORK/docs/$g.guide" ] || fail "real_docs_present_$g" "missing $WORK/docs/$g.guide"
+# the release layout: the root guides at the top, the reference under docs/
+for g in README-FIRST cl-amiga docs/README docs/ext docs/mp docs/ffi docs/gray docs/mop docs/clamiga docs/amiga; do
+    [ -s "$WORK/rel/$g.guide" ] || fail "real_docs_present_$g" "missing $WORK/rel/$g.guide"
 done
 if [ -f clamacs/README.md ]; then
-    [ -s "$WORK/docs/clamacs.guide" ] && ok "real_docs_clamacs" || fail "real_docs_clamacs" "no clamacs.guide although clamacs/README.md exists"
+    [ -s "$WORK/rel/clamacs.guide" ] && ok "real_docs_clamacs" || fail "real_docs_clamacs" "no clamacs.guide although clamacs/README.md exists"
 fi
+stray=$(cd "$WORK/rel" && find . -name '*.guide' | grep -v '^\./\(docs/\)\{0,1\}[^/]*\.guide$')
+[ -z "$stray" ] && ok "real_docs_layout" || fail "real_docs_layout" "guides outside the root and docs/: $stray"
 total=$((total + 1)); passed=$((passed + 1)); echo "  ok  real_docs_present"
 
 # --- structural checks (LC_ALL=C: the files carry Latin-1 bytes) -----------
@@ -115,21 +127,29 @@ ver_field() { sed -n "s/^#define CL_VERSION_$1 \([0-9][0-9]*\)$/\1/p" src/core/t
 VERSION="$(ver_field MAJOR).$(ver_field MINOR).$(ver_field PATCH)"
 VDATE=$(sed -n 's/^#define CL_VERSION_DATE "\([^"]*\)"$/\1/p' src/core/types.h)
 export LC_ALL=C
-cd "$WORK/docs" || exit 1
+cd "$WORK/rel" || exit 1
 bad=""
-for f in *.guide; do
+for f in *.guide docs/*.guide; do
+    base=${f##*/}
     [ "$(head -c 10 "$f")" = "@DATABASE " ] || bad="$bad $f:no-@DATABASE"
-    [ "$(sed -n 2p "$f")" = "@\$VER: $f $VERSION ($VDATE)" ] || bad="$bad $f:bad-\$VER"
+    [ "$(sed -n 1p "$f")" = "@DATABASE $base" ] || bad="$bad $f:@DATABASE-not-bare-name"
+    [ "$(sed -n 2p "$f")" = "@\$VER: $base $VERSION ($VDATE)" ] || bad="$bad $f:bad-\$VER"
     [ "$(grep -c '^@NODE ' "$f")" -eq "$(grep -c '^@ENDNODE$' "$f")" ] || bad="$bad $f:node-balance"
-    # every LINK "node" / LINK "file.guide/node" names an @NODE of that file
+    # every LINK "node" / LINK "path/file.guide/node" names an @NODE of that
+    # file, the path taken relative to this guide's directory the way
+    # amigaguide.library takes it: "docs/x.guide" is below, "/x.guide" is in
+    # the parent (each leading slash one step up)
     grep -o 'LINK "[^"]*"' "$f" | sed 's/LINK "//; s/"$//' | sort -u | while read -r t; do
         case "$t" in
-            */*) g=${t%%/*}; n=${t#*/} ;;
-            *)   g=$f; n=$t ;;
+            */*) g=${t%/*}; n=${t##*/} ;;
+            *)   g=$base; n=$t ;;
         esac
-        grep -q "^@NODE $n " "$g" 2>/dev/null || echo "$f: dangling LINK $t"
-    done > "$WORK/links.$f"
-    [ -s "$WORK/links.$f" ] && bad="$bad $f:$(head -1 "$WORK/links.$f")"
+        d=$(dirname "$f")
+        while [ "${g#/}" != "$g" ]; do g=${g#/}; d=$(dirname "$d"); done
+        [ "$d" = "." ] && p=$g || p="$d/$g"
+        grep -q "^@NODE $n " "$p" 2>/dev/null || echo "$f: dangling LINK $t"
+    done > "$WORK/links.$base"
+    [ -s "$WORK/links.$base" ] && bad="$bad $f:$(head -1 "$WORK/links.$base")"
     # an @ that is neither escaped nor a command
     if grep -v '^@\(DATABASE\|\$VER\|AUTHOR\|(C)\|WIDTH\|REM\|NODE\|ENDNODE\)' "$f" \
         | sed 's/\\\\//g; s/\\@//g; s/@{[^}]*}//g' | grep -q '@'; then
@@ -147,14 +167,27 @@ for f in *.guide; do
 done
 cd "$ROOT" || exit 1
 if [ -z "$bad" ]; then ok "structure"; else fail "structure" "$bad"; fi
-# the index page links to every reference page
+# the index page links to every reference page (siblings: bare names)
 bad=""
 for g in ext mp ffi gray mop clamiga amiga; do
-    grep -q "LINK \"$g.guide/main\"" "$WORK/docs/README.guide" || bad="$bad README.guide:no-link-to-$g"
+    grep -q "LINK \"$g.guide/main\"" "$WORK/rel/docs/README.guide" || bad="$bad README.guide:no-link-to-$g"
 done
 [ -z "$bad" ] && ok "index_links_every_page" || fail "index_links_every_page" "$bad"
-# the manual links into the reference
-grep -q 'LINK "ext.guide/' "$WORK/docs/cl-amiga.guide" && ok "manual_links_reference" || fail "manual_links_reference"
+# the manual (root) links down into the reference (docs/)
+grep -q 'LINK "docs/ext.guide/' "$WORK/rel/cl-amiga.guide" && ok "manual_links_reference" || fail "manual_links_reference"
+# the AMIGA.* reference (docs/) links up to the manual (root): AmigaDOS parent
+grep -q 'LINK "/cl-amiga.guide/' "$WORK/rel/docs/amiga.guide" && ok "reference_links_manual" || fail "reference_links_manual"
+# the getting-started page links to the manual, the index and (when the
+# submodule is present) the editor's guide, all by their release paths
+bad=""
+grep -q 'LINK "cl-amiga.guide/main"' "$WORK/rel/README-FIRST.guide" || bad="$bad no-link-to-manual"
+grep -q 'LINK "docs/README.guide/main"' "$WORK/rel/README-FIRST.guide" || bad="$bad no-link-to-index"
+grep -q 'LINK "docs/ext.guide/heap-images"' "$WORK/rel/README-FIRST.guide" || bad="$bad no-link-to-ext-heap-images"
+grep -q 'LINK "cl-amiga.guide/arexx-port-amigaos--morphos"' "$WORK/rel/README-FIRST.guide" || bad="$bad no-link-to-arexx-section"
+if [ -f clamacs/README.md ]; then
+    grep -q 'LINK "clamacs.guide/main"' "$WORK/rel/README-FIRST.guide" || bad="$bad no-link-to-clamacs"
+fi
+[ -z "$bad" ] && ok "readme_first_links" || fail "readme_first_links" "$bad"
 
 echo ""
 echo "$passed passed, $failed failed, $total total"

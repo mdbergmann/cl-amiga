@@ -4,17 +4,20 @@
 # Usage:
 #   md2guide.sh <clamiga-binary> <output-dir>
 #
-# Converts the documentation the binary release ships (README.md and the
-# package reference under docs/) into one .guide per .md in <output-dir>,
-# with tools/docs/md2guide.lisp run by the given clamiga.  When the clamacs/
-# submodule is checked out, its README becomes clamacs.guide as well.  The
-# version and date stamped into every @$VER: line come from src/core/types.h,
-# the single source of truth for the version.
+# Converts the documentation the binary release ships into one .guide per
+# .md under <output-dir>, laid out as the release root is: README-FIRST.guide,
+# cl-amiga.guide (README.md) and clamacs.guide (the editor's README, when the
+# clamacs/ submodule is checked out) at the top, next to the Workbench icons,
+# and the package reference under docs/.  tools/docs/md2guide.lisp does the
+# work, run by the given clamiga; the version and date stamped into every
+# @$VER: line come from src/core/types.h, the single source of truth for the
+# version.
 #
 # Called by `make guide` (into build/guide/), by scripts/make-binary-release.sh
-# (into the staged docs/), and by tests/test_md2guide.sh.  Exit status 1 with a
-# `file:line: message` diagnostic when a source uses Markdown the converter
-# does not handle, or contains a dangling link -- see specs/amigaguide-docs.md.
+# (into the staged release root), and by tests/test_md2guide.sh.  Exit status
+# 1 with a `file:line: message` diagnostic when a source uses Markdown the
+# converter does not handle, or contains a dangling link -- see
+# specs/amigaguide-docs.md.
 
 set -e
 
@@ -45,15 +48,16 @@ mkdir -p "$OUT"
 . "$ROOT/tests/shpath.sh"
 OUT_NATIVE=$(native_path "$(CDPATH= cd "$OUT" && pwd)")
 
-INPUTS='("README.md" . "cl-amiga.guide")
-        ("docs/README.md" . "README.guide")
-        ("docs/ext.md" . "ext.guide")
-        ("docs/mp.md" . "mp.guide")
-        ("docs/ffi.md" . "ffi.guide")
-        ("docs/gray.md" . "gray.guide")
-        ("docs/mop.md" . "mop.guide")
-        ("docs/clamiga.md" . "clamiga.guide")
-        ("docs/amiga.md" . "amiga.guide")'
+INPUTS='("README-FIRST.md" . "README-FIRST.guide")
+        ("README.md" . "cl-amiga.guide")
+        ("docs/README.md" . "docs/README.guide")
+        ("docs/ext.md" . "docs/ext.guide")
+        ("docs/mp.md" . "docs/mp.guide")
+        ("docs/ffi.md" . "docs/ffi.guide")
+        ("docs/gray.md" . "docs/gray.guide")
+        ("docs/mop.md" . "docs/mop.guide")
+        ("docs/clamiga.md" . "docs/clamiga.guide")
+        ("docs/amiga.md" . "docs/amiga.guide")'
 if [ -f "$ROOT/clamacs/README.md" ]; then
     INPUTS="$INPUTS
         (\"clamacs/README.md\" . \"clamacs.guide\")"

@@ -56,7 +56,7 @@ expect_fail() {  # expect_fail DESC PATTERN -- args...: script must exit non-zer
 # every good run passes --notes.
 V=9.9.9
 mkdir -p "$TMPD/clamiga-$V/bin/aos3"
-echo "fixture" > "$TMPD/clamiga-$V/README-BINARY.txt"
+echo "fixture" > "$TMPD/clamiga-$V/README-FIRST.md"
 echo "binary"  > "$TMPD/clamiga-$V/bin/aos3/clamiga"
 HAVE_LHA=0
 if command -v lha > /dev/null 2>&1; then

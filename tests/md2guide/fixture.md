@@ -19,6 +19,8 @@ Everything before the first level-2 heading is the body of the `main` node.
 
 1. An ordered item.
 2. Another, with a link to a [section of the other file](other.md#second-section).
+3. A link into a file one directory below, [Child](sub/child.md#below),
+   which links back up.
 
 ## Inline markup
 

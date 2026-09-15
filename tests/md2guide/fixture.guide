@@ -26,6 +26,7 @@ Everything before the first level-2 heading is the body of the main node.
 
 1. An ordered item.
 2. Another, with a link to a @{"section of the other file" LINK "other.guide/second-section"}.
+3. A link into a file one directory below, @{"Child" LINK "sub/child.guide/below"}, which links back up.
 
 @{b}Contents@{ub}
 
