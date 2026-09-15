@@ -7,10 +7,20 @@ Ambient runs the launcher script of the same name next to it --
 `icons/CLAmiga` starts bin/aos3/clamiga in a console window,
 `icons/CLAmiga-FPU` the hard-float build, `icons/Clamacs` the editor.  The
 script, not the icon, picks bin/mos on MorphOS, so one icon serves both
-systems.  The fourth, `icons/Guide.info`, is the icon of every AmigaGuide
-file the release ships (copied next to each *.guide as <name>.guide.info
-by scripts/make-binary-release.sh): its default tool is
-SYS:Utilities/MultiView, so a double-click opens the guide.
+systems.  The guide icons have SYS:Utilities/MultiView as their default
+tool, so a double-click opens the guide: `icons/Guide.info` is copied next
+to every reference guide under docs/ by scripts/make-binary-release.sh,
+and `README-FIRST.guide.info`, `cl-amiga.guide.info`,
+`clamacs.guide.info` are the same image with a fixed position for the
+three guides in the package root.
+
+The package root is laid out in two rows -- the three launchers, then the
+three guides -- by fixed icon positions (do_CurrentX/Y) instead of
+Workbench's own placement, and `icons/Drawer.info` is the icon OF the
+package drawer (shipped beside it in the archive as clamiga-<version>.info):
+a drawer icon carries the drawer window's size and position and the "show
+icons, view by icon" setting, which is what makes the two rows fit and
+show up as laid out.
 
 Why classic icons: every Workbench from 1.3 on renders a 2-bitplane
 DiskObject with the standard 4-colour palette (0 grey, 1 black, 2 white,
@@ -175,7 +185,11 @@ def cstring(s):
     return struct.pack(">I", len(b)) + b
 
 
-def diskobject(px, default_tool, tooltypes, stack):
+NO_ICON_POSITION = 0x80000000   # Workbench places the icon itself
+WBDRAWER = 2                    # (1 is WBDISK; type 2 is what SYS:Prefs.info carries)
+
+
+def gadget_header():
     gadget = struct.pack(
         ">IhhhhHHHIIIIIHI",
         0,                      # NextGadget
@@ -192,22 +206,33 @@ def diskobject(px, default_tool, tooltypes, stack):
         1,                      # UserData: 1 = OS 2.x icon revision
     )
     assert len(gadget) == 44
-    NO_ICON_POSITION = 0x80000000   # Workbench places the icon itself
-    head = struct.pack(">HH", 0xE310, 1) + gadget + struct.pack(
+    return struct.pack(">HH", 0xE310, 1) + gadget
+
+
+def image_header():
+    image = struct.pack(">hhhhhIBBI", 0, 0, W, H, 2, 1, 0x03, 0x00, 0)
+    assert len(image) == 20
+    return image
+
+
+def diskobject(px, default_tool, tooltypes, stack, pos=None):
+    """A project icon.  POS = (x, y) pins it in its drawer window (pixels
+    from the window's inner top-left, the image's top-left corner; the
+    label is centred under the image); None lets Workbench place it."""
+    x, y = pos if pos else (NO_ICON_POSITION, NO_ICON_POSITION)
+    head = gadget_header() + struct.pack(
         ">BBIIIIIIi",
         WBPROJECT, 0,           # do_Type, pad
         1,                      # do_DefaultTool (follows)
         1 if tooltypes else 0,  # do_ToolTypes (follows)
-        NO_ICON_POSITION,       # do_CurrentX
-        NO_ICON_POSITION,       # do_CurrentY
+        x,                      # do_CurrentX
+        y,                      # do_CurrentY
         0,                      # do_DrawerData
         0,                      # do_ToolWindow
         stack,                  # do_StackSize
     )
     assert len(head) == 78
-    image = struct.pack(">hhhhhIBBI", 0, 0, W, H, 2, 1, 0x03, 0x00, 0)
-    assert len(image) == 20
-    body = head + image + planes(px) + cstring(default_tool)
+    body = head + image_header() + planes(px) + cstring(default_tool)
     if tooltypes:
         body += struct.pack(">I", (len(tooltypes) + 1) * 4)
         for t in tooltypes:
@@ -215,32 +240,102 @@ def diskobject(px, default_tool, tooltypes, stack):
     return body
 
 
+def drawerobject(px, left, top, width, height):
+    """A drawer icon: the DiskObject is followed by the image, then by its
+    DrawerData -- one contiguous 62-byte struct DrawerData (workbench.h;
+    lib/amiga/raw/wb.lisp's DRAWER-DATA): the NewWindow Workbench opens the
+    drawer with (outer size and position on the Workbench screen), the
+    view's scroll offsets, and the OS 2.x dd_Flags/dd_ViewModes (1 = show
+    only files with icons, 1 = view by icon, so the fixed icon positions
+    apply whatever the user's Workbench default is)."""
+    head = gadget_header() + struct.pack(
+        ">BBIIIIIIi",
+        WBDRAWER, 0,            # do_Type, pad
+        0,                      # do_DefaultTool
+        0,                      # do_ToolTypes
+        NO_ICON_POSITION,       # do_CurrentX
+        NO_ICON_POSITION,       # do_CurrentY
+        1,                      # do_DrawerData (follows)
+        0,                      # do_ToolWindow
+        0,                      # do_StackSize
+    )
+    assert len(head) == 78
+    WBENCHSCREEN = 1
+    newwindow = struct.pack(
+        ">hhhhBBIIIIIIIhhHHH",
+        left, top, width, height,
+        0xFF, 0xFF,             # DetailPen, BlockPen: the screen's
+        0, 0x0200107F,          # IDCMPFlags; Flags as Workbench 3.x writes
+                                # them (size/drag/depth/close gadgets, ...)
+        0, 0, 0, 0, 0,          # FirstGadget, CheckMark, Title, Screen, BitMap
+        98, 68,                 # MinWidth, MinHeight (as SYS:Prefs.info)
+        0xFFFF, 0xFFFF,         # MaxWidth, MaxHeight
+        WBENCHSCREEN,           # Type
+    )
+    assert len(newwindow) == 48
+    drawerdata = newwindow + struct.pack(
+        ">iiIH",
+        0, 0,                   # dd_CurrentX/Y
+        1,                      # dd_Flags: show only files with icons
+        1,                      # dd_ViewModes: view by icon
+    )
+    assert len(drawerdata) == 62
+    return head + image_header() + planes(px) + drawerdata
+
+
 def iconx(window):
     """An IconX launcher: the console window of the run, a 128K stack."""
     return "C:IconX", ["WINDOW=" + window], 131072
 
 
+MULTIVIEW = ("SYS:Utilities/MultiView", [], 16384)   # tool as installed by
+# AmigaOS 3.x and MorphOS; a project icon's stack is what Workbench starts
+# the tool with
+
+# The package root, two rows: the three launchers, then the three guides.
+# Columns 170 px apart so the longest label ("README-FIRST.guide", 144 px
+# in Topaz 8, centred under its 48 px image) clears its neighbours, and the
+# first column far enough in that that label is not clipped at the left
+# edge; rows 52 px apart (24 px image + label + gap).  Pixels from the
+# drawer window's inner top-left.
+COL = (64, 234, 404)
+ROW = (8, 60)
+
 ICONS = {
-    # name: (art kind, default tool, tool types, stack)
-    "CLAmiga":     ("clamiga",) + iconx("CON:0/20/640/236/CLAmiga/CLOSE"),
-    "CLAmiga-FPU": ("clamiga-fpu",) + iconx("CON:0/20/640/236/CLAmiga-FPU/CLOSE"),
-    "Clamacs":     ("clamacs",) + iconx("NIL:"),
-    # the AmigaGuide files: MultiView, as installed by AmigaOS 3.x and
-    # MorphOS; a project icon's stack is what Workbench starts the tool with
-    "Guide":       ("guide", "SYS:Utilities/MultiView", [], 16384),
+    # name: (art kind, default tool, tool types, stack, position or None)
+    "CLAmiga":     ("clamiga",) + iconx("CON:0/20/640/236/CLAmiga/CLOSE") + ((COL[0], ROW[0]),),
+    "CLAmiga-FPU": ("clamiga-fpu",) + iconx("CON:0/20/640/236/CLAmiga-FPU/CLOSE") + ((COL[1], ROW[0]),),
+    "Clamacs":     ("clamacs",) + iconx("NIL:") + ((COL[2], ROW[0]),),
+    "README-FIRST.guide": ("guide",) + MULTIVIEW + ((COL[0], ROW[1]),),
+    "cl-amiga.guide":     ("guide",) + MULTIVIEW + ((COL[1], ROW[1]),),
+    "clamacs.guide":      ("guide",) + MULTIVIEW + ((COL[2], ROW[1]),),
+    # the reference guides under docs/: Workbench places them
+    "Guide":       ("guide",) + MULTIVIEW + (None,),
 }
+
+# The package drawer's own icon (clamiga-<version>.info beside the drawer):
+# a window on the Workbench screen big enough for the two rows above --
+# 580 x 160 outer, so ~550 x 130 inside the borders, title bar and
+# scrollers on a stock 3.x screen font (checked on a Vampire, OS 3.2.3).
+DRAWER = ("clamiga", 40, 30, 580, 160)
 
 
 def main():
     outdir = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "..", "icons")
     os.makedirs(outdir, exist_ok=True)
-    for name, (kind, tool, tooltypes, stack) in ICONS.items():
-        data = diskobject(art(kind), tool, tooltypes, stack)
+    for name, (kind, tool, tooltypes, stack, pos) in ICONS.items():
+        data = diskobject(art(kind), tool, tooltypes, stack, pos)
         path = os.path.join(outdir, name + ".info")
         with open(path, "wb") as f:
             f.write(data)
         print("%s: %d bytes" % (path, len(data)))
+    kind, left, top, width, height = DRAWER
+    data = drawerobject(art(kind), left, top, width, height)
+    path = os.path.join(outdir, "Drawer.info")
+    with open(path, "wb") as f:
+        f.write(data)
+    print("%s: %d bytes (drawer)" % (path, len(data)))
 
 
 if __name__ == "__main__":

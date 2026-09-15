@@ -591,3 +591,19 @@ getting-started guide, and every guide should have an icon.
   links (README-FIRST to manual/index/editor, manual into `docs/`,
   `AMIGA.*` reference up to the manual) and that `@DATABASE` carries the
   bare name.
+- **Root layout and drawer icon** (same day, second request): the six
+  root icons carry fixed positions (`do_CurrentX/Y`; launchers in one
+  row, the three guides beneath, columns 170 px apart starting at 64 so
+  the 144 px "README-FIRST.guide" label is not clipped), and the archives
+  carry `clamiga-<version>.info` beside the drawer: a `WBDRAWER` icon
+  (`icons/Drawer.info`) whose DrawerData opens the window at 580x160 and
+  whose DrawerData2 says "show only files with icons, view by icon".
+  Two things learned on the Vampire: `WBDRAWER` is type **2** (1 is
+  `WBDISK`; with type 1 Workbench silently used its default drawer icon
+  and window), and Workbench keeps a drawer's DiskObject cached while
+  the parent window is open, so a replaced `.info` is only seen after
+  the parent window is closed and reopened -- a never-opened drawer is
+  the reliable test.  icon.library itself (checked with
+  `amiga/raw/icon`'s GetDiskObject from clamiga on the box) read every
+  variant fine.  Verified: the drawer opens at 580x160 with the two rows
+  and the icon-less `README.md`/`LICENSE` hidden.

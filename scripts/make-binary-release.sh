@@ -28,11 +28,15 @@
 #     cl-amiga.guide        manual (README.md) and the editor's README
 #     clamacs.guide         (docs/clamacs.md), as AmigaGuide in the package
 #                           root next to the Workbench icons
-#     *.guide.info          every guide has an icon (icons/Guide.info:
-#                           default tool MultiView), root and docs/
+#     *.guide.info          every guide has an icon (default tool MultiView),
+#                           root and docs/
 #     CLAmiga CLAmiga-FPU Clamacs (+ .info)
 #                           Workbench launcher icons and their IconX scripts
 #     README-FIRST.md README.md LICENSE
+#   clamiga-<version>.info  beside the drawer in the archive: the drawer's own
+#                           icon, whose window shows the root in two rows
+#                           (launchers, guides -- the root icons carry fixed
+#                           positions) and only files with icons
 #
 # lib/ packaging policy (correctness, not preference):
 #   FASL   boot clos ffi gray-streams dev-commands dev-repl
@@ -322,9 +326,18 @@ sh tools/docs/md2guide.sh "$HOST_BIN" "$STAGE" \
 for n in CLAmiga CLAmiga-FPU Clamacs; do
     cp "icons/$n" "icons/$n.info" "$STAGE/"
 done
-find "$STAGE" -name '*.guide' | while read -r g; do
+# The root is laid out in two rows (launchers, then guides) by positions in
+# these icons; the reference guides under docs/ get the unpositioned copy.
+for n in README-FIRST cl-amiga clamacs; do
+    cp "icons/$n.guide.info" "$STAGE/$n.guide.info"
+done
+for g in "$STAGE"/docs/*.guide; do
     cp icons/Guide.info "$g.info"
 done
+# The icon OF the package drawer, shipped beside it in the archive as
+# clamiga-<version>.info: it carries the drawer window's size (big enough
+# for the two rows) and "show only files with icons, view by icon".
+cp icons/Drawer.info "$OUT/$REL.info"
 
 [ "$SNAPSHOT" = 0 ] || cat > "$STAGE/SNAPSHOT.txt" <<EOF
 *** DEVELOPMENT SNAPSHOT of CL-Amiga $VERSION -- not a release ***
@@ -438,6 +451,12 @@ if [ "$SMOKE" = 1 ]; then
             echo "ERROR: $g.guide has no icon ($g.guide.info)" >&2
             exit 1; }
     done
+    # The drawer icon beside the package: a WBDRAWER DiskObject (magic
+    # E310, type 2 at offset 48) with its DrawerData.
+    [ "$(od -An -tx1 -N2 "$OUT/$REL.info" | tr -d ' \n')" = "e310" ] &&
+    [ "$(od -An -tx1 -j48 -N1 "$OUT/$REL.info" | tr -d ' \n')" = "02" ] || {
+        echo "ERROR: $REL.info is not a drawer icon" >&2
+        exit 1; }
     # The root guides link into docs/ and the reference links back up: the
     # paths must be relative to each guide's own drawer (AmigaDOS: a leading
     # slash is the parent).
@@ -459,9 +478,11 @@ fi
 # --- archives -------------------------------------------------------------
 echo "--- Archiving ---"
 rm -f "$OUT/$REL-bin.zip" "$OUT/$REL-bin.lha"
-( cd "$OUT" && zip -rq "$REL-bin.zip" "$REL" )
+# the drawer icon travels beside the drawer, so the unpacked clamiga-<version>
+# shows up on Workbench with its window laid out
+( cd "$OUT" && zip -rq "$REL-bin.zip" "$REL" "$REL.info" )
 if command -v lha > /dev/null 2>&1; then
-    ( cd "$OUT" && lha aq "$REL-bin.lha" "$REL" ) \
+    ( cd "$OUT" && lha aq "$REL-bin.lha" "$REL" "$REL.info" ) \
         || echo "warning: lha archiving failed — the .zip is still valid"
 else
     echo "note: lha not found — only the .zip was created"

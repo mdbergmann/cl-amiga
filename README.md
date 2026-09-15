@@ -1312,9 +1312,13 @@ quicklisp), the package API reference under `docs/`, `examples/`, the
 guides under `docs/`, every guide with an icon that opens it in MultiView),
 and three Workbench icons in the package root (`CLAmiga`, `CLAmiga-FPU`,
 `Clamacs`: IconX launchers from `icons/`, drawn by `scripts/make-icons.py`
-like the guide icon, that start the matching binary from `bin/` on a
-double-click, `bin/mos/` on MorphOS) — then smoke-tests the deployed
-layout and produces `.zip` and `.lha` archives. The binaries find `lib/` relative to themselves, so the extracted
+like the guide icons, that start the matching binary from `bin/` on a
+double-click, `bin/mos/` on MorphOS). The root icons carry fixed positions
+(the launchers in one row, the three guides beneath them) and the
+archives carry the package drawer's own icon (`clamiga-<version>.info`
+beside the drawer), whose window is sized for those two rows and shows
+only files with icons — then it smoke-tests the deployed layout and
+produces `.zip` and `.lha` archives. The binaries find `lib/` relative to themselves, so the extracted
 tree runs from any directory without assigns or environment variables.
 
 The release is published on Aminet as
