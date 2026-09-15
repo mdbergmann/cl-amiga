@@ -251,9 +251,10 @@ test_batch test_repl_values test_repl_paste test_boot_log test_mx_error_context 
 
 # The ones that take no clamiga binary: two drive make itself, one the
 # Aminet upload script (dry runs only, no network), one greps the sources
-# (user-visible strings must be ASCII: the Amiga console is not UTF-8).
+# (user-visible strings must be ASCII: the Amiga console is not UTF-8),
+# one pins the byte layout of the release's Workbench icons (icons/).
 SHELL_TESTS_NOARG = test_cross_wide_knob test_test_extra test_aminet_upload \
-                    test_ascii_messages
+                    test_ascii_messages test_icons
 
 test-fast: $(TEST_BINS) host
 	@echo "=== Running tests (fast tier: skips sento/host-cold-test) ==="

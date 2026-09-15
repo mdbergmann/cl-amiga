@@ -241,13 +241,30 @@ def diskobject(px, default_tool, tooltypes, stack, pos=None):
 
 
 def drawerobject(px, left, top, width, height):
-    """A drawer icon: the DiskObject is followed by the image, then by its
-    DrawerData -- one contiguous 62-byte struct DrawerData (workbench.h;
-    lib/amiga/raw/wb.lisp's DRAWER-DATA): the NewWindow Workbench opens the
-    drawer with (outer size and position on the Workbench screen), the
-    view's scroll offsets, and the OS 2.x dd_Flags/dd_ViewModes (1 = show
-    only files with icons, 1 = view by icon, so the fixed icon positions
-    apply whatever the user's Workbench default is)."""
+    """A drawer icon.  ON DISK the 62-byte struct DrawerData of workbench.h
+    is NOT contiguous -- icon.library has written it in two pieces since
+    OS 2.0, and reads it back the same way:
+
+        DiskObject (78)  DrawerData FIRST 56 BYTES  Image (20 + planes)
+        [default tool] [tool types] [tool window]  DrawerData2 (6)
+
+    The first 56 bytes are the struct NewWindow Workbench opens the drawer
+    with (outer size and position on the Workbench screen) plus the view's
+    scroll offsets dd_CurrentX/Y; the last 6 -- dd_Flags, dd_ViewModes, the
+    OS 2.x additions -- come at the very end of the file and are read only
+    when do_Gadget.UserData carries the OS 2.x revision (1).  This is the
+    layout of every drawer icon AmigaOS itself writes: SYS:Prefs.info on an
+    AmigaOS 3.2.3 Vampire and Devs.info/Utilities.info of the OS 3.9
+    Workbench in verify/realamiga/aos3 all have the NewWindow at offset 78
+    and the Image header at 134, with the six bytes last (dumped and
+    compared 2026-09-15); a file with the 62 bytes in one block after the
+    image is rejected by icon.library and Workbench silently shows its
+    default drawer instead.  tests/test_icons.sh pins this layout.  Do not
+    "fix" it to match the in-memory struct.
+
+    dd_Flags 1 = show only files with icons, dd_ViewModes 1 = view by icon,
+    so the fixed icon positions apply whatever the user's Workbench default
+    is."""
     head = gadget_header() + struct.pack(
         ">BBIIIIIIi",
         WBDRAWER, 0,            # do_Type, pad
@@ -273,14 +290,10 @@ def drawerobject(px, left, top, width, height):
         WBENCHSCREEN,           # Type
     )
     assert len(newwindow) == 48
-    drawerdata = newwindow + struct.pack(
-        ">iiIH",
-        0, 0,                   # dd_CurrentX/Y
-        1,                      # dd_Flags: show only files with icons
-        1,                      # dd_ViewModes: view by icon
-    )
-    assert len(drawerdata) == 62
-    return head + image_header() + planes(px) + drawerdata
+    drawerdata = newwindow + struct.pack(">ii", 0, 0)    # + dd_CurrentX/Y
+    assert len(drawerdata) == 56
+    drawerdata2 = struct.pack(">IH", 1, 1)                # dd_Flags, dd_ViewModes
+    return head + drawerdata + image_header() + planes(px) + drawerdata2
 
 
 def iconx(window):

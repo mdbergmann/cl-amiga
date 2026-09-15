@@ -607,3 +607,15 @@ getting-started guide, and every guide should have an icon.
   `amiga/raw/icon`'s GetDiskObject from clamiga on the box) read every
   variant fine.  Verified: the drawer opens at 580x160 with the two rows
   and the icon-less `README.md`/`LICENSE` hidden.
+- **On disk, `struct DrawerData` is split** -- its first 56 bytes
+  (NewWindow + dd_CurrentX/Y) right after the 78-byte DiskObject, the
+  Image next, and dd_Flags/dd_ViewModes as the last six bytes of the
+  file.  That is what every drawer icon AmigaOS writes looks like
+  (SYS:Prefs.info on the Vampire, the OS 3.9 Devs.info/Utilities.info
+  in `verify/realamiga/aos3`, all dumped), and it is what icon.library
+  reads.  The review gate once "corrected" the generator to write the
+  62-byte in-memory struct in one block after the image, which
+  icon.library rejects (Workbench silently shows its default drawer);
+  `tests/test_icons.sh` (in `make test`) now pins the byte layout of
+  every shipped icon and checks the generator reproduces the committed
+  files.
