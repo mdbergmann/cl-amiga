@@ -1115,8 +1115,9 @@ static CL_Obj bi_type_of(CL_Obj *args, int n)
         CL_GC_PROTECT(tail);
         et_tail = cl_cons(CL_MAKE_FIXNUM(nbits), CL_NIL);
         CL_GC_PROTECT(et_tail);
-        et = cl_cons(is_signed ? cl_intern("SIGNED-BYTE", 11)
-                               : cl_intern("UNSIGNED-BYTE", 13), et_tail);
+        et = is_signed ? cl_intern("SIGNED-BYTE", 11)
+                       : cl_intern("UNSIGNED-BYTE", 13);
+        et = cl_cons(et, et_tail);
         CL_GC_UNPROTECT(1); /* et_tail */
         mid = cl_cons(et, tail);
         CL_GC_UNPROTECT(1); /* tail */

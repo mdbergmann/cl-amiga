@@ -110,201 +110,110 @@ static CL_Obj merge_default_initargs(CL_Obj type_sym, CL_Obj slots,
  * any slot the caller left unsupplied (defined after the hierarchy walker). */
 static CL_Obj apply_condition_slot_initforms(CL_Obj type_sym, CL_Obj slots);
 
-/* Build the hierarchy alist during init */
+/* Push one (type parent1 parent2 ...) entry.  The entry is built by the
+ * caller before this runs, so the global is read only after that
+ * allocation (see cl_list2 in mem.h). */
+static void hierarchy_add(CL_Obj entry)
+{
+    condition_hierarchy = cl_cons(entry, condition_hierarchy);
+}
+
+/* Build the hierarchy alist during init, bottom-up so it is a proper alist */
 static void build_hierarchy(void)
 {
-    /* Helper: push (type parent1 parent2 ...) onto hierarchy */
-    /* Build bottom-up so hierarchy is a proper alist */
-
     /* print-not-readable -> error */
-    condition_hierarchy = cl_cons(
-        cl_cons(SYM_PRINT_NOT_READABLE,
-                cl_cons(SYM_ERROR_COND, CL_NIL)),
-        condition_hierarchy);
+    hierarchy_add(cl_list2(SYM_PRINT_NOT_READABLE, SYM_ERROR_COND));
 
     /* reader-error -> parse-error, stream-error */
-    condition_hierarchy = cl_cons(
-        cl_cons(SYM_READER_ERROR,
-                cl_cons(SYM_PARSE_ERROR,
-                        cl_cons(SYM_STREAM_ERROR, CL_NIL))),
-        condition_hierarchy);
+    hierarchy_add(cl_list3(SYM_READER_ERROR, SYM_PARSE_ERROR, SYM_STREAM_ERROR));
 
     /* parse-error -> error */
-    condition_hierarchy = cl_cons(
-        cl_cons(SYM_PARSE_ERROR,
-                cl_cons(SYM_ERROR_COND, CL_NIL)),
-        condition_hierarchy);
+    hierarchy_add(cl_list2(SYM_PARSE_ERROR, SYM_ERROR_COND));
 
     /* package-error -> error */
-    condition_hierarchy = cl_cons(
-        cl_cons(SYM_PACKAGE_ERROR,
-                cl_cons(SYM_ERROR_COND, CL_NIL)),
-        condition_hierarchy);
+    hierarchy_add(cl_list2(SYM_PACKAGE_ERROR, SYM_ERROR_COND));
 
     /* file-error -> error */
-    condition_hierarchy = cl_cons(
-        cl_cons(SYM_FILE_ERROR,
-                cl_cons(SYM_ERROR_COND, CL_NIL)),
-        condition_hierarchy);
+    hierarchy_add(cl_list2(SYM_FILE_ERROR, SYM_ERROR_COND));
 
     /* end-of-file -> stream-error */
-    condition_hierarchy = cl_cons(
-        cl_cons(SYM_END_OF_FILE,
-                cl_cons(SYM_STREAM_ERROR, CL_NIL)),
-        condition_hierarchy);
+    hierarchy_add(cl_list2(SYM_END_OF_FILE, SYM_STREAM_ERROR));
 
     /* socket-timeout (EXT) -> stream-error: a socket read/write deadline
      * elapsed.  A subtype of STREAM-ERROR so generic stream handlers catch it. */
-    condition_hierarchy = cl_cons(
-        cl_cons(SYM_SOCKET_TIMEOUT,
-                cl_cons(SYM_STREAM_ERROR, CL_NIL)),
-        condition_hierarchy);
+    hierarchy_add(cl_list2(SYM_SOCKET_TIMEOUT, SYM_STREAM_ERROR));
 
     /* stream-error -> error */
-    condition_hierarchy = cl_cons(
-        cl_cons(SYM_STREAM_ERROR,
-                cl_cons(SYM_ERROR_COND, CL_NIL)),
-        condition_hierarchy);
+    hierarchy_add(cl_list2(SYM_STREAM_ERROR, SYM_ERROR_COND));
 
     /* unbound-slot -> cell-error */
-    condition_hierarchy = cl_cons(
-        cl_cons(SYM_UNBOUND_SLOT,
-                cl_cons(SYM_CELL_ERROR, CL_NIL)),
-        condition_hierarchy);
+    hierarchy_add(cl_list2(SYM_UNBOUND_SLOT, SYM_CELL_ERROR));
 
     /* cell-error -> error */
-    condition_hierarchy = cl_cons(
-        cl_cons(SYM_CELL_ERROR,
-                cl_cons(SYM_ERROR_COND, CL_NIL)),
-        condition_hierarchy);
+    hierarchy_add(cl_list2(SYM_CELL_ERROR, SYM_ERROR_COND));
 
     /* storage-condition -> serious-condition */
-    condition_hierarchy = cl_cons(
-        cl_cons(SYM_STORAGE_CONDITION,
-                cl_cons(SYM_SERIOUS_CONDITION, CL_NIL)),
-        condition_hierarchy);
+    hierarchy_add(cl_list2(SYM_STORAGE_CONDITION, SYM_SERIOUS_CONDITION));
 
     /* division-by-zero -> arithmetic-error */
-    condition_hierarchy = cl_cons(
-        cl_cons(SYM_DIVISION_BY_ZERO,
-                cl_cons(SYM_ARITHMETIC_ERROR, CL_NIL)),
-        condition_hierarchy);
+    hierarchy_add(cl_list2(SYM_DIVISION_BY_ZERO, SYM_ARITHMETIC_ERROR));
 
     /* floating-point-overflow -> arithmetic-error */
-    condition_hierarchy = cl_cons(
-        cl_cons(SYM_FLOATING_POINT_OVERFLOW,
-                cl_cons(SYM_ARITHMETIC_ERROR, CL_NIL)),
-        condition_hierarchy);
+    hierarchy_add(cl_list2(SYM_FLOATING_POINT_OVERFLOW, SYM_ARITHMETIC_ERROR));
 
     /* floating-point-underflow -> arithmetic-error */
-    condition_hierarchy = cl_cons(
-        cl_cons(SYM_FLOATING_POINT_UNDERFLOW,
-                cl_cons(SYM_ARITHMETIC_ERROR, CL_NIL)),
-        condition_hierarchy);
+    hierarchy_add(cl_list2(SYM_FLOATING_POINT_UNDERFLOW, SYM_ARITHMETIC_ERROR));
 
     /* floating-point-inexact -> arithmetic-error */
-    condition_hierarchy = cl_cons(
-        cl_cons(SYM_FLOATING_POINT_INEXACT,
-                cl_cons(SYM_ARITHMETIC_ERROR, CL_NIL)),
-        condition_hierarchy);
+    hierarchy_add(cl_list2(SYM_FLOATING_POINT_INEXACT, SYM_ARITHMETIC_ERROR));
 
     /* floating-point-invalid-operation -> arithmetic-error */
-    condition_hierarchy = cl_cons(
-        cl_cons(SYM_FLOATING_POINT_INVALID,
-                cl_cons(SYM_ARITHMETIC_ERROR, CL_NIL)),
-        condition_hierarchy);
+    hierarchy_add(cl_list2(SYM_FLOATING_POINT_INVALID, SYM_ARITHMETIC_ERROR));
 
     /* arithmetic-error -> error */
-    condition_hierarchy = cl_cons(
-        cl_cons(SYM_ARITHMETIC_ERROR,
-                cl_cons(SYM_ERROR_COND, CL_NIL)),
-        condition_hierarchy);
+    hierarchy_add(cl_list2(SYM_ARITHMETIC_ERROR, SYM_ERROR_COND));
 
     /* control-error -> error */
-    condition_hierarchy = cl_cons(
-        cl_cons(SYM_CONTROL_ERROR,
-                cl_cons(SYM_ERROR_COND, CL_NIL)),
-        condition_hierarchy);
+    hierarchy_add(cl_list2(SYM_CONTROL_ERROR, SYM_ERROR_COND));
 
     /* program-error -> error */
-    condition_hierarchy = cl_cons(
-        cl_cons(SYM_PROGRAM_ERROR,
-                cl_cons(SYM_ERROR_COND, CL_NIL)),
-        condition_hierarchy);
+    hierarchy_add(cl_list2(SYM_PROGRAM_ERROR, SYM_ERROR_COND));
 
     /* undefined-function -> error */
-    condition_hierarchy = cl_cons(
-        cl_cons(SYM_UNDEFINED_FUNCTION_COND,
-                cl_cons(SYM_ERROR_COND, CL_NIL)),
-        condition_hierarchy);
+    hierarchy_add(cl_list2(SYM_UNDEFINED_FUNCTION_COND, SYM_ERROR_COND));
 
     /* unbound-variable -> error */
-    condition_hierarchy = cl_cons(
-        cl_cons(SYM_UNBOUND_VARIABLE_COND,
-                cl_cons(SYM_ERROR_COND, CL_NIL)),
-        condition_hierarchy);
+    hierarchy_add(cl_list2(SYM_UNBOUND_VARIABLE_COND, SYM_ERROR_COND));
 
     /* type-error -> error */
-    condition_hierarchy = cl_cons(
-        cl_cons(SYM_TYPE_ERROR,
-                cl_cons(SYM_ERROR_COND, CL_NIL)),
-        condition_hierarchy);
+    hierarchy_add(cl_list2(SYM_TYPE_ERROR, SYM_ERROR_COND));
 
     /* simple-type-error -> type-error, simple-condition */
-    condition_hierarchy = cl_cons(
-        cl_cons(SYM_SIMPLE_TYPE_ERROR,
-                cl_cons(SYM_TYPE_ERROR,
-                        cl_cons(SYM_SIMPLE_CONDITION, CL_NIL))),
-        condition_hierarchy);
+    hierarchy_add(cl_list3(SYM_SIMPLE_TYPE_ERROR, SYM_TYPE_ERROR, SYM_SIMPLE_CONDITION));
 
     /* simple-error -> error, simple-condition */
-    condition_hierarchy = cl_cons(
-        cl_cons(SYM_SIMPLE_ERROR,
-                cl_cons(SYM_ERROR_COND,
-                        cl_cons(SYM_SIMPLE_CONDITION, CL_NIL))),
-        condition_hierarchy);
+    hierarchy_add(cl_list3(SYM_SIMPLE_ERROR, SYM_ERROR_COND, SYM_SIMPLE_CONDITION));
 
     /* style-warning -> warning */
-    condition_hierarchy = cl_cons(
-        cl_cons(SYM_STYLE_WARNING,
-                cl_cons(SYM_WARNING, CL_NIL)),
-        condition_hierarchy);
+    hierarchy_add(cl_list2(SYM_STYLE_WARNING, SYM_WARNING));
 
     /* simple-warning -> warning, simple-condition */
-    condition_hierarchy = cl_cons(
-        cl_cons(SYM_SIMPLE_WARNING,
-                cl_cons(SYM_WARNING,
-                        cl_cons(SYM_SIMPLE_CONDITION, CL_NIL))),
-        condition_hierarchy);
+    hierarchy_add(cl_list3(SYM_SIMPLE_WARNING, SYM_WARNING, SYM_SIMPLE_CONDITION));
 
     /* error -> serious-condition */
-    condition_hierarchy = cl_cons(
-        cl_cons(SYM_ERROR_COND,
-                cl_cons(SYM_SERIOUS_CONDITION, CL_NIL)),
-        condition_hierarchy);
+    hierarchy_add(cl_list2(SYM_ERROR_COND, SYM_SERIOUS_CONDITION));
 
     /* serious-condition -> condition */
-    condition_hierarchy = cl_cons(
-        cl_cons(SYM_SERIOUS_CONDITION,
-                cl_cons(SYM_CONDITION, CL_NIL)),
-        condition_hierarchy);
+    hierarchy_add(cl_list2(SYM_SERIOUS_CONDITION, SYM_CONDITION));
 
     /* simple-condition -> condition */
-    condition_hierarchy = cl_cons(
-        cl_cons(SYM_SIMPLE_CONDITION,
-                cl_cons(SYM_CONDITION, CL_NIL)),
-        condition_hierarchy);
+    hierarchy_add(cl_list2(SYM_SIMPLE_CONDITION, SYM_CONDITION));
 
     /* warning -> condition */
-    condition_hierarchy = cl_cons(
-        cl_cons(SYM_WARNING,
-                cl_cons(SYM_CONDITION, CL_NIL)),
-        condition_hierarchy);
+    hierarchy_add(cl_list2(SYM_WARNING, SYM_CONDITION));
 
     /* condition -> (no parent) */
-    condition_hierarchy = cl_cons(
-        cl_cons(SYM_CONDITION, CL_NIL),
-        condition_hierarchy);
+    hierarchy_add(cl_cons(SYM_CONDITION, CL_NIL));
 }
 
 /* Look up parent list for a type in the hierarchy alist.

@@ -3689,7 +3689,7 @@ void compile_restart_case(CL_Compiler *c, CL_Obj form)
         CL_GC_PROTECT(test);
 
         /* Build (lambda (params...) body...) and compile it */
-        lambda_form = cl_cons(SYM_LAMBDA, cl_cons(params, clause_body));
+        lambda_form = cl_list_star3(SYM_LAMBDA, params, clause_body);
         compile_expr(c, lambda_form);  /* pushes closure (handler) on stack */
 
         /* Push the restart's :report / :interactive / :test operands, then
@@ -3831,15 +3831,15 @@ void cl_macrolet_install_expanders(CL_CompEnv *env, CL_Obj bindings)
                     }
                     lambda_list = new_ll;
                     if (CL_SYMBOL_P(env_var)) {
-                        CL_Obj capture_sym =
-                            cl_intern_in("%MACROEXPAND-ENV", 16,
-                                         cl_package_clamiga);
-                        CL_Obj capture_call = cl_cons(capture_sym, CL_NIL);
-                        CL_Obj bind = cl_cons(env_var,
-                                              cl_cons(capture_call, CL_NIL));
-                        CL_Obj binds = cl_cons(bind, CL_NIL);
-                        CL_Obj let_f = cl_cons(SYM_LET, cl_cons(binds, mbody));
-                        mbody = cl_cons(let_f, CL_NIL);
+                        /* (let ((env-var (%macroexpand-env))) . mbody), one
+                         * allocation per statement (mem.h, cl_list2) */
+                        CL_Obj f = cl_intern_in("%MACROEXPAND-ENV", 16,
+                                                cl_package_clamiga);
+                        f = cl_cons(f, CL_NIL);
+                        f = cl_list2(env_var, f);
+                        f = cl_cons(f, CL_NIL);
+                        f = cl_list_star3(SYM_LET, f, mbody);
+                        mbody = cl_cons(f, CL_NIL);
                     }
                     CL_GC_UNPROTECT(4); /* cur2, new_tail, new_ll, env_var */
                 }
@@ -3869,6 +3869,7 @@ void cl_macrolet_install_expanders(CL_CompEnv *env, CL_Obj bindings)
 
                 CL_GC_PROTECT(new_ll);
                 CL_GC_PROTECT(new_ll_tail);
+                CL_GC_PROTECT(cur);     /* walks on across the conses below */
 
                 while (!CL_NULL_P(cur)) {
                     CL_Obj param = cl_car(cur);
@@ -3889,8 +3890,11 @@ void cl_macrolet_install_expanders(CL_CompEnv *env, CL_Obj bindings)
                         CL_Obj gs = defmacro_gensym();
                         CL_Obj db_form;
                         CL_GC_PROTECT(gs);
-                        db_form = cl_cons(SYM_DESTRUCTURING_BIND,
-                                   cl_cons(param, cl_cons(gs, mbody)));
+                        /* (destructuring-bind param gs . mbody); param is
+                         * re-read, the gensym may have moved it */
+                        db_form = cl_cons(gs, mbody);
+                        db_form = cl_list_star3(SYM_DESTRUCTURING_BIND,
+                                                cl_car(cur), db_form);
                         mbody = cl_cons(db_form, CL_NIL);
                         cell = cl_cons(gs, CL_NIL);
                         if (CL_NULL_P(new_ll)) { new_ll = cell; }
@@ -3905,10 +3909,13 @@ void cl_macrolet_install_expanders(CL_CompEnv *env, CL_Obj bindings)
                             CL_Obj gs = defmacro_gensym();
                             CL_Obj db_form;
                             CL_GC_PROTECT(gs);
-                            db_form = cl_cons(SYM_DESTRUCTURING_BIND,
-                                       cl_cons(next_param, cl_cons(gs, mbody)));
+                            /* next_param re-read: the gensym may move it */
+                            db_form = cl_cons(gs, mbody);
+                            db_form = cl_list_star3(SYM_DESTRUCTURING_BIND,
+                                                    cl_car(cl_cdr(cur)),
+                                                    db_form);
                             mbody = cl_cons(db_form, CL_NIL);
-                            cell = cl_cons(param, CL_NIL);
+                            cell = cl_cons(cl_car(cur), CL_NIL); /* &body/&rest */
                             if (CL_NULL_P(new_ll)) { new_ll = cell; }
                             else { ((CL_Cons *)CL_OBJ_TO_PTR(new_ll_tail))->cdr = cell; }
                             new_ll_tail = cell;
@@ -3933,11 +3940,11 @@ void cl_macrolet_install_expanders(CL_CompEnv *env, CL_Obj bindings)
                 }
 
                 lambda_list = new_ll;
-                CL_GC_UNPROTECT(2); /* new_ll, new_ll_tail */
+                CL_GC_UNPROTECT(3); /* cur, new_ll, new_ll_tail */
             }
 
             /* Build (lambda (params) body...) */
-            lambda_form = cl_cons(SYM_LAMBDA, cl_cons(lambda_list, mbody));
+            lambda_form = cl_list_star3(SYM_LAMBDA, lambda_list, mbody);
             CL_GC_PROTECT(lambda_form);
 
             /* Wrap in 2-arg (form environment) trampoline — matches

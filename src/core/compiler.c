@@ -3643,7 +3643,7 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             CL_GC_PROTECT(p);
             while (CL_CONS_P(p)) {
                 char buf[16];
-                CL_Obj tmp, name_str;
+                CL_Obj tmp, name_str, form;
                 int len;
                 len = snprintf(buf, sizeof(buf), "%%MV%d", n);
                 name_str = cl_make_string(buf, (uint32_t)len);
@@ -3653,10 +3653,9 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                 CL_GC_PROTECT(tmp);
                 tmps = cl_cons(tmp, tmps);
                 /* Build (setf place-i tmp-i) */
-                setfs = cl_cons(
-                    cl_cons(cl_intern_in("SETF", 4, cl_package_cl),
-                            cl_cons(cl_car(p), cl_cons(tmp, CL_NIL))),
-                    setfs);
+                form = cl_intern_in("SETF", 4, cl_package_cl);
+                form = cl_list3(form, cl_car(p), tmp);
+                setfs = cl_cons(form, setfs);
                 CL_GC_UNPROTECT(1);
                 n++;
                 p = cl_cdr(p);
@@ -3744,27 +3743,24 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             CL_Obj test_form = cl_car(cl_cdr(place));
             CL_Obj then_place = cl_car(cl_cdr(cl_cdr(place)));
             CL_Obj else_place = cl_car(cl_cdr(cl_cdr(cl_cdr(place))));
-            CL_Obj setf_then, setf_else, new_if;
+            CL_Obj setf_then = CL_NIL, setf_else = CL_NIL, new_if;
 
             CL_GC_PROTECT(test_form);
             CL_GC_PROTECT(then_place);
             CL_GC_PROTECT(else_place);
             CL_GC_PROTECT(val_form);
+            CL_GC_PROTECT(setf_then);
+            CL_GC_PROTECT(setf_else);
 
-            setf_then = cl_cons(SYM_SETF,
-                          cl_cons(then_place,
-                            cl_cons(val_form, CL_NIL)));
-            setf_else = CL_NULL_P(else_place) ? CL_NIL
-                        : cl_cons(SYM_SETF,
-                            cl_cons(else_place,
-                              cl_cons(val_form, CL_NIL)));
-            new_if = cl_cons(SYM_IF,
-                       cl_cons(test_form,
-                         cl_cons(setf_then,
-                           CL_NULL_P(else_place) ? CL_NIL
-                           : cl_cons(setf_else, CL_NIL))));
+            setf_then = cl_list3(SYM_SETF, then_place, val_form);
+            if (CL_NULL_P(else_place)) {
+                new_if = cl_list3(SYM_IF, test_form, setf_then);
+            } else {
+                setf_else = cl_list3(SYM_SETF, else_place, val_form);
+                new_if = cl_list4(SYM_IF, test_form, setf_then, setf_else);
+            }
 
-            CL_GC_UNPROTECT(4);
+            CL_GC_UNPROTECT(6);
             compile_expr(c, new_if);
             c->in_tail = saved_tail;
             return;
@@ -3778,6 +3774,8 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             CL_Obj body = cl_cdr(cl_cdr(place));
             CL_Obj inner_place, new_body, setf_form, new_let;
             CL_Obj rev = CL_NIL;
+            /* `head` is not forwarded: decide now, re-read the symbol later */
+            int is_star = (head == SYM_LETSTAR);
 
             CL_GC_PROTECT(bindings);
             CL_GC_PROTECT(body);
@@ -3792,9 +3790,7 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             inner_place = CL_CONS_P(body) ? cl_car(body) : CL_NIL;
 
             /* Build (setf inner-place val) */
-            setf_form = cl_cons(SYM_SETF,
-                          cl_cons(inner_place,
-                            cl_cons(val_form, CL_NIL)));
+            setf_form = cl_list3(SYM_SETF, inner_place, val_form);
 
             /* Build new body: preceding-forms... (setf place val) */
             new_body = cl_cons(setf_form, CL_NIL);
@@ -3805,7 +3801,8 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             }
 
             /* Build (let/let* bindings new-body...) */
-            new_let = cl_cons(head, cl_cons(bindings, new_body));
+            new_let = cl_list_star3(is_star ? SYM_LETSTAR : SYM_LET,
+                                    bindings, new_body);
 
             CL_GC_UNPROTECT(5);
             compile_expr(c, new_let);
@@ -3823,9 +3820,7 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             CL_GC_PROTECT(inner_place);
             CL_GC_PROTECT(val_form);
             /* Build (the type val_form) */
-            typed_val = cl_cons(SYM_THE,
-                          cl_cons(type_spec,
-                            cl_cons(val_form, CL_NIL)));
+            typed_val = cl_list3(SYM_THE, type_spec, val_form);
             CL_GC_UNPROTECT(3);
             compile_setf_place(c, inner_place, typed_val);
             c->in_tail = saved_tail;
@@ -3851,9 +3846,7 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             CL_Obj arg = cl_car(cl_cdr(place));
             CL_Obj nth_place;
             CL_GC_PROTECT(arg);
-            nth_place = cl_cons(SETF_SYM_NTH,
-                          cl_cons(CL_MAKE_FIXNUM(nth_idx),
-                            cl_cons(arg, CL_NIL)));
+            nth_place = cl_list3(SETF_SYM_NTH, CL_MAKE_FIXNUM(nth_idx), arg);
             CL_GC_UNPROTECT(1);  /* arg */
             CL_GC_UNPROTECT(2);  /* place, val_form */
             compile_setf_place(c, nth_place, val_form);
@@ -3875,11 +3868,12 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                 ibuf[ki + 1] = hname->data[ki + 2];
             ibuf[ilen - 1] = 'R';
             ibuf[ilen] = '\0';
-            isym = cl_intern_in(ibuf, ilen, cl_package_cl);
+            /* Rooted before the intern, which may already move them. */
             CL_GC_PROTECT(outer_sym);
             CL_GC_PROTECT(arg);
-            iplace = cl_cons(isym, cl_cons(arg, CL_NIL));
-            nplace = cl_cons(outer_sym, cl_cons(iplace, CL_NIL));
+            isym = cl_intern_in(ibuf, ilen, cl_package_cl);
+            iplace = cl_list2(isym, arg);
+            nplace = cl_list2(outer_sym, iplace);
             CL_GC_UNPROTECT(2);  /* outer_sym, arg */
             CL_GC_UNPROTECT(2);  /* place, val_form */
             compile_setf_place(c, nplace, val_form);

@@ -426,8 +426,11 @@ static CL_Obj bi_rem(CL_Obj *args, int n)
         return CL_MAKE_FIXNUM(va % vb);
     }
     {
+        /* One allocating call per statement: args[0] is read only after the
+         * product exists (mem.h, cl_list2). */
         CL_Obj q = cl_arith_truncate(args[0], args[1]);
-        return cl_arith_sub(args[0], cl_arith_mul(q, args[1]));
+        CL_Obj prod = cl_arith_mul(q, args[1]);
+        return cl_arith_sub(args[0], prod);
     }
 }
 

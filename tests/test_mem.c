@@ -258,6 +258,122 @@ TEST(gc_root_audit_stops_the_world_when_multithreaded)
     cl_thread_count = 1;
 }
 
+/* --- Short-list helpers (cl_list2/3/4, cl_list_star3) --- */
+
+TEST(list_helpers_build_the_lists)
+{
+    CL_Obj l, tail;
+    l = cl_list2(CL_MAKE_FIXNUM(1), CL_MAKE_FIXNUM(2));
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(cl_car(l)), 1);
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(cl_car(cl_cdr(l))), 2);
+    ASSERT(CL_NULL_P(cl_cdr(cl_cdr(l))));
+
+    l = cl_list3(CL_MAKE_FIXNUM(1), CL_NIL, CL_MAKE_FIXNUM(3));
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(cl_car(l)), 1);
+    ASSERT(CL_NULL_P(cl_car(cl_cdr(l))));        /* NIL is an element */
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(cl_car(cl_cdr(cl_cdr(l)))), 3);
+    ASSERT(CL_NULL_P(cl_cdr(cl_cdr(cl_cdr(l)))));
+
+    l = cl_list4(CL_MAKE_FIXNUM(1), CL_MAKE_FIXNUM(2), CL_MAKE_FIXNUM(3),
+                 CL_MAKE_FIXNUM(4));
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(cl_car(cl_cdr(cl_cdr(cl_cdr(l))))), 4);
+    ASSERT(CL_NULL_P(cl_cdr(cl_cdr(cl_cdr(cl_cdr(l))))));
+
+    /* (1 2 . tail): the tail is shared, not copied; a dotted tail stays */
+    tail = cl_list2(CL_MAKE_FIXNUM(3), CL_MAKE_FIXNUM(4));
+    CL_GC_PROTECT(tail);
+    l = cl_list_star3(CL_MAKE_FIXNUM(1), CL_MAKE_FIXNUM(2), tail);
+    ASSERT(cl_cdr(cl_cdr(l)) == tail);
+    l = cl_list_star3(CL_MAKE_FIXNUM(1), CL_MAKE_FIXNUM(2), CL_MAKE_FIXNUM(3));
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(cl_cdr(cl_cdr(l))), 3);
+    CL_GC_UNPROTECT(1);
+}
+
+/* Garbage, then the elements, then fill the bump region until fewer than
+ * `room` conses fit: the helper's own conses have to collect, and a
+ * collection there moves the elements down over the garbage.  Returns the
+ * elements through the (already protected) pointers.  Generational
+ * collector only: the classic one serves the next conses from the free list
+ * its sweep rebuilt, so the bump pointer (and this fill) stops moving. */
+static void helper_elements_then_fill(CL_Obj *a, CL_Obj *b, CL_Obj *c,
+                                      CL_Obj *d, CL_Obj *tail, int room)
+{
+    uint32_t before, cons_size;
+    int i;
+    for (i = 0; i < 1000; i++)
+        (void)cl_cons(CL_MAKE_FIXNUM(i), CL_NIL);
+    *a = cl_make_string("a", 1);
+    *b = cl_make_string("b", 1);
+    *c = cl_make_string("c", 1);
+    *d = cl_make_string("d", 1);
+    *tail = cl_list2(*c, *d);           /* for cl_list_star3 */
+    before = cl_heap.bump;
+    (void)cl_cons(CL_NIL, CL_NIL);
+    cons_size = cl_heap.bump - before;
+    if (cons_size == 0)
+        return;                         /* not a bump allocation: see above */
+    while (cl_heap.arena_size - cl_heap.bump >= (uint32_t)room * cons_size)
+        (void)cl_cons(CL_MAKE_FIXNUM(0), CL_NIL);
+}
+
+static int string_is(CL_Obj s, char ch)
+{
+    return CL_STRING_P(s) && ((CL_String *)CL_OBJ_TO_PTR(s))->length == 1 &&
+           ((CL_String *)CL_OBJ_TO_PTR(s))->data[0] == ch;
+}
+
+/* The helpers exist because nested cl_cons calls read their other arguments
+ * before the inner cons collects (C's argument evaluation order).  Each
+ * helper must hand back the elements where the collection moved them. */
+TEST(list_helpers_survive_a_collection_inside)
+{
+    CL_Obj a = CL_NIL, b = CL_NIL, c = CL_NIL, d = CL_NIL, l = CL_NIL;
+    CL_Obj tail = CL_NIL;
+    CL_Obj a0;
+    uint32_t gc0;
+    int kind;
+    if (!cl_gengc_enabled()) {
+        printf("  skip  list_helpers_survive_a_collection_inside "
+               "(classic collector)\n");
+        return;
+    }
+    CL_GC_PROTECT(a);
+    CL_GC_PROTECT(b);
+    CL_GC_PROTECT(c);
+    CL_GC_PROTECT(d);
+    CL_GC_PROTECT(l);
+    CL_GC_PROTECT(tail);
+    for (kind = 0; kind < 4; kind++) {
+        helper_elements_then_fill(&a, &b, &c, &d, &tail, 2);
+        a0 = a;
+        gc0 = cl_heap.gc_count;
+        switch (kind) {
+        case 0: l = cl_list2(a, b); break;
+        case 1: l = cl_list3(a, b, c); break;
+        case 2: l = cl_list4(a, b, c, d); break;
+        default: l = cl_list_star3(a, b, tail); break;
+        }
+        ASSERT(cl_heap.gc_count != gc0);         /* collected inside */
+        if (cl_gengc_enabled())
+            ASSERT(a != a0);                     /* ... and moved them */
+        ASSERT(cl_car(l) == a && string_is(cl_car(l), 'a'));
+        ASSERT(cl_car(cl_cdr(l)) == b && string_is(b, 'b'));
+        if (kind == 1 || kind == 2) {
+            ASSERT(cl_car(cl_cdr(cl_cdr(l))) == c);
+            ASSERT(string_is(c, 'c'));
+        }
+        if (kind == 2) {
+            ASSERT(cl_car(cl_cdr(cl_cdr(cl_cdr(l)))) == d);
+            ASSERT(string_is(d, 'd'));
+            ASSERT(CL_NULL_P(cl_cdr(cl_cdr(cl_cdr(cl_cdr(l))))));
+        }
+        if (kind == 0) ASSERT(CL_NULL_P(cl_cdr(cl_cdr(l))));
+        if (kind == 1) ASSERT(CL_NULL_P(cl_cdr(cl_cdr(cl_cdr(l)))));
+        if (kind == 3) ASSERT(cl_cdr(cl_cdr(l)) == tail);
+    }
+    CL_GC_UNPROTECT(6);
+}
+
 TEST(heap_stats)
 {
     /* Verify arena is initialized and stats don't crash */
@@ -284,6 +400,8 @@ int main(void)
     RUN(gc_root_audit_detects_same_thread_duplicate);
     RUN(gc_root_audit_detects_cross_thread_duplicate);
     RUN(gc_root_audit_stops_the_world_when_multithreaded);
+    RUN(list_helpers_build_the_lists);
+    RUN(list_helpers_survive_a_collection_inside);
     RUN(heap_stats);
 
     teardown();

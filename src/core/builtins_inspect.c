@@ -623,9 +623,12 @@ static CL_Obj bi_inspect_parts(CL_Obj *args, int n)
 
 void cl_builtins_inspect_init(void)
 {
+    CL_Obj sym;
+
     defun("INSPECT", bi_inspect, 1, 1);
 
     cl_register_builtin("INSPECT-PARTS", bi_inspect_parts, 1, 2, cl_package_ext);
-    cl_export_symbol(cl_intern_in("INSPECT-PARTS", 13, cl_package_ext),
-                     cl_package_ext);
+    /* The package is read after the intern has allocated (mem.h, cl_list2). */
+    sym = cl_intern_in("INSPECT-PARTS", 13, cl_package_ext);
+    cl_export_symbol(sym, cl_package_ext);
 }

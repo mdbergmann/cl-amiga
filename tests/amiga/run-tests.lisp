@@ -11903,6 +11903,64 @@ y" 1))
 (ext:add-exit-hook
   (lambda () (format t "~%EXIT-HOOK-RAN: shutdown hook fired at exit~%")))
 
+; --- Forms the runtime builds in C ---
+; These used to be nested cl_cons calls, which may read their other
+; arguments before the inner cons runs; a collection in between left stale
+; offsets (a DEFUN compiled as a function call, its parameters as globals).
+; The rewritten sites, as tests/test_runtime_forms.sh covers them on the
+; host (there also under forced compaction).
+(defun rtf-defun-loop (n)
+  (let ((ok t))
+    (dotimes (i n ok)
+      (eval (read-from-string "(defun rtf-f (k v ht) (list ht v k))"))
+      (unless (equal (funcall 'rtf-f 1 2 3) '(3 2 1)) (setq ok nil)))))
+(check "runtime forms: DEFUN keeps its lambda list" t (rtf-defun-loop 200))
+(check "runtime forms: reader quote, function, backquote"
+  '((quote a) (function car) (0 1 2 3))
+  (list (read-from-string "'a") (read-from-string "#'car")
+        (eval (read-from-string "(let ((x 1) (y (list 2 3))) `(0 ,x ,@y))"))))
+(check "runtime forms: DEFMACRO body is a BLOCK" '(3 3)
+  (progn (eval (read-from-string
+                "(defmacro rtf-m (x) (return-from rtf-m (list 'list x x)))"))
+         (eval '(rtf-m 3))))
+(check "runtime forms: DEFTYPE expander" '(t nil)
+  (progn (eval (read-from-string "(deftype rtf-digit () '(integer 0 9))"))
+         (list (typep 5 'rtf-digit) (typep 10 'rtf-digit))))
+(check "runtime forms: MACROLET destructuring after &body" '(1 2 3)
+  (eval '(macrolet ((m (a &body (x y)) `(list ,a ,x ,y))) (m 1 2 3))))
+(check "runtime forms: MACROLET &environment" 42
+  (eval '(macrolet ((inner () 42)
+                    (outer (&environment env) (macroexpand '(inner) env)))
+          (outer))))
+(check "runtime forms: SETF of IF" '((9) (8))
+  (let ((a (list 1)) (b (list 2)))
+    (setf (if (car a) (car a) (car b)) 9)
+    (setf (if nil (car a) (car b)) 8)
+    (list a b)))
+(check "runtime forms: SETF of LET" '(7 2)
+  (let ((c (list 1 2))) (setf (let ((x c)) (car x)) 7) c))
+(check "runtime forms: SETF of THE and THIRD" '(4 2 30)
+  (let ((c (list 1 2 3)))
+    (setf (the fixnum (car c)) 4)
+    (setf (third c) 30)
+    c))
+(check "runtime forms: SETF of CAADR" '(1 (20 3))
+  (let ((l (list 1 (list 2 3)))) (setf (caadr l) 20) l))
+(check "runtime forms: SETF of VALUES" '(3 1)
+  (let (a b) (setf (values a b) (floor 7 2)) (list a b)))
+(check "runtime forms: RESTART-CASE clause" 3
+  (restart-case (invoke-restart 'rtf-r 1 2) (rtf-r (x y) (+ x y))))
+(check "runtime forms: REM and MOD of bignums" '(1 -1 6)
+  (list (rem (expt 10 30) 7) (rem (- (expt 10 30)) 7)
+        (mod (- (expt 10 30)) 7)))
+(check "runtime forms: ratio reduction" (list (- (expt 2 30)) (expt 3 40))
+  (let ((r (/ (- (expt 2 70)) (expt 6 40))))
+    (list (numerator r) (denominator r))))
+(check "runtime forms: *FEATURES* word size and byte order" '(t t)
+  (list (and (or (member :64-bit *features*) (member :32-bit *features*)) t)
+        (and (or (member :little-endian *features*)
+                 (member :big-endian *features*)) t)))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

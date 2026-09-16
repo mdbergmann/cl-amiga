@@ -792,8 +792,9 @@ void compile_case(CL_Compiler *c, CL_Obj form, int error_if_no_match)
             }
             cl2 = cl_cdr(cl2);
         }
-        ecase_expected = cl_cons(cl_intern_in("MEMBER", 6, cl_package_cl),
-                                 keylist);
+        /* keylist is read after the intern (mem.h, cl_list2) */
+        ecase_expected = cl_intern_in("MEMBER", 6, cl_package_cl);
+        ecase_expected = cl_cons(ecase_expected, keylist);
         CL_GC_UNPROTECT(2); /* cl2, keylist */
         CL_GC_PROTECT(ecase_expected);
     }
@@ -1497,45 +1498,43 @@ void compile_load_time_value(CL_Compiler *c, CL_Obj form)
                  (PROGN (RPLACD G (FUNCALL (QUOTE thunk)))
                         (RPLACA G T) (CDR G)))) */
 
+        /* Each operator is interned in the statement before the list that
+         * uses it, never inside that call's argument list (mem.h, cl_list2):
+         * `tmp` holds it for no longer than that. */
+
         /* (CAR G) */
-        tmp = cl_cons(gensym, CL_NIL);
-        car_g = cl_cons(cl_intern_in("CAR", 3, cl_package_cl), tmp);
+        tmp = cl_intern_in("CAR", 3, cl_package_cl);
+        car_g = cl_list2(tmp, gensym);
         CL_GC_PROTECT(car_g);              /*  8 */
 
         /* (CDR G) — then-branch */
-        tmp = cl_cons(gensym, CL_NIL);
-        cdr_g1 = cl_cons(cl_intern_in("CDR", 3, cl_package_cl), tmp);
+        tmp = cl_intern_in("CDR", 3, cl_package_cl);
+        cdr_g1 = cl_list2(tmp, gensym);
         CL_GC_PROTECT(cdr_g1);             /*  9 */
 
         /* (CDR G) — fallback tail */
-        tmp = cl_cons(gensym, CL_NIL);
-        cdr_g2 = cl_cons(cl_intern_in("CDR", 3, cl_package_cl), tmp);
+        tmp = cl_intern_in("CDR", 3, cl_package_cl);
+        cdr_g2 = cl_list2(tmp, gensym);
         CL_GC_PROTECT(cdr_g2);             /* 10 */
 
         /* (RPLACD G (FUNCALL (QUOTE thunk))) */
-        tmp = cl_cons(funcall_thunk, CL_NIL);
-        tmp = cl_cons(gensym, tmp);
-        rplacd_call = cl_cons(cl_intern_in("RPLACD", 6, cl_package_cl), tmp);
+        tmp = cl_intern_in("RPLACD", 6, cl_package_cl);
+        rplacd_call = cl_list3(tmp, gensym, funcall_thunk);
         CL_GC_PROTECT(rplacd_call);        /* 11 */
 
         /* (RPLACA G T) */
-        tmp = cl_cons(SYM_T, CL_NIL);
-        tmp = cl_cons(gensym, tmp);
-        rplaca_call = cl_cons(cl_intern_in("RPLACA", 6, cl_package_cl), tmp);
+        tmp = cl_intern_in("RPLACA", 6, cl_package_cl);
+        rplaca_call = cl_list3(tmp, gensym, SYM_T);
         CL_GC_PROTECT(rplaca_call);        /* 12 */
 
         /* (PROGN (RPLACD G ...) (RPLACA G T) (CDR G)) */
-        tmp = cl_cons(cdr_g2, CL_NIL);
-        tmp = cl_cons(rplaca_call, tmp);
-        tmp = cl_cons(rplacd_call, tmp);
-        progn_form = cl_cons(cl_intern_in("PROGN", 5, cl_package_cl), tmp);
+        tmp = cl_intern_in("PROGN", 5, cl_package_cl);
+        progn_form = cl_list4(tmp, rplacd_call, rplaca_call, cdr_g2);
         CL_GC_PROTECT(progn_form);         /* 13 */
 
         /* (IF (CAR G) (CDR G) (PROGN ...)) */
-        tmp = cl_cons(progn_form, CL_NIL);
-        tmp = cl_cons(cdr_g1, tmp);
-        tmp = cl_cons(car_g, tmp);
-        if_form = cl_cons(cl_intern_in("IF", 2, cl_package_cl), tmp);
+        tmp = cl_intern_in("IF", 2, cl_package_cl);
+        if_form = cl_list4(tmp, car_g, cdr_g1, progn_form);
         CL_GC_PROTECT(if_form);            /* 14 */
 
         /* LET binding: (G (QUOTE <cell>)) */
@@ -1548,9 +1547,8 @@ void compile_load_time_value(CL_Compiler *c, CL_Obj form)
         CL_GC_PROTECT(let_bindings);       /* 16 */
 
         /* (LET ((G (QUOTE <cell>))) (IF ...)) */
-        tmp = cl_cons(if_form, CL_NIL);
-        tmp = cl_cons(let_bindings, tmp);
-        let_form = cl_cons(cl_intern_in("LET", 3, cl_package_cl), tmp);
+        tmp = cl_intern_in("LET", 3, cl_package_cl);
+        let_form = cl_list3(tmp, let_bindings, if_form);
         CL_GC_PROTECT(let_form);           /* 17 */
 
         compile_expr(c, let_form);
@@ -1674,7 +1672,7 @@ void compile_deftype(CL_Compiler *c, CL_Obj form)
     CL_GC_PROTECT(name);
     CL_GC_PROTECT(doc);
 
-    lambda_form = cl_cons(SYM_LAMBDA, cl_cons(lambda_list, body));
+    lambda_form = cl_list_star3(SYM_LAMBDA, lambda_list, body);
     CL_GC_PROTECT(lambda_form);
 
     compile_expr(c, lambda_form);
@@ -1979,22 +1977,20 @@ static void compile_defun_emit_ltv_init(CL_Compiler *c, CL_Obj cell, CL_Obj thun
     funcall_thunk = cl_cons(SYM_FUNCALL, tmp);
     CL_GC_PROTECT(funcall_thunk);          /*  5 */
 
-    /* (RPLACD (QUOTE cell) (FUNCALL (QUOTE thunk))) */
-    tmp = cl_cons(funcall_thunk, CL_NIL);
-    tmp = cl_cons(quoted_cell, tmp);
-    rplacd_init = cl_cons(cl_intern_in("RPLACD", 6, cl_package_cl), tmp);
+    /* (RPLACD (QUOTE cell) (FUNCALL (QUOTE thunk))) -- the operator is
+     * interned before, not inside, the list call (mem.h, cl_list2) */
+    tmp = cl_intern_in("RPLACD", 6, cl_package_cl);
+    rplacd_init = cl_list3(tmp, quoted_cell, funcall_thunk);
     CL_GC_PROTECT(rplacd_init);            /*  6 */
 
     /* (RPLACA (QUOTE cell) T) */
-    tmp = cl_cons(SYM_T, CL_NIL);
-    tmp = cl_cons(quoted_cell, tmp);
-    rplaca_init = cl_cons(cl_intern_in("RPLACA", 6, cl_package_cl), tmp);
+    tmp = cl_intern_in("RPLACA", 6, cl_package_cl);
+    rplaca_init = cl_list3(tmp, quoted_cell, SYM_T);
     CL_GC_PROTECT(rplaca_init);            /*  7 */
 
     /* (PROGN (RPLACD ...) (RPLACA ...)) */
-    tmp = cl_cons(rplaca_init, CL_NIL);
-    tmp = cl_cons(rplacd_init, tmp);
-    init_form = cl_cons(cl_intern_in("PROGN", 5, cl_package_cl), tmp);
+    tmp = cl_intern_in("PROGN", 5, cl_package_cl);
+    init_form = cl_list3(tmp, rplacd_init, rplaca_init);
     CL_GC_PROTECT(init_form);              /*  8 */
 
     compile_expr(c, init_form);
@@ -2065,13 +2061,15 @@ void compile_defun(CL_Compiler *c, CL_Obj form)
     CL_GC_PROTECT(store_sym);
 
     /* CL spec: defun wraps body in (block name ...) */
-    block_body = cl_cons(SYM_BLOCK, cl_cons(real_name, body));
+    block_body = cl_list_star3(SYM_BLOCK, real_name, body);
     CL_GC_PROTECT(block_body);
 
-    /* Build (lambda (params) (block name body...)) */
-    lambda_form = cl_cons(SYM_LAMBDA,
-                          cl_cons(lambda_list,
-                                  cl_cons(block_body, CL_NIL)));
+    /* Build (lambda (params) (block name body...)).  Not as nested cl_cons
+     * calls: SYM_LAMBDA and lambda_list would be read before the inner
+     * conses allocate, and a collection there left this form with a stale
+     * LAMBDA -- the whole DEFUN then compiled as a function call, its
+     * parameters as global variables (mem.h, cl_list2). */
+    lambda_form = cl_list3(SYM_LAMBDA, lambda_list, block_body);
     CL_GC_PROTECT(lambda_form);
 
     ltv_base = cl_ltv_init_count;
@@ -2377,11 +2375,9 @@ void compile_defmacro(CL_Compiler *c, CL_Obj form)
        Without this, (return-from <macro-name> ...) inside the body
        errors with "no block named <macro-name>". */
     {
-        CL_Obj block_body = cl_cons(SYM_BLOCK, cl_cons(name, body));
+        CL_Obj block_body = cl_list_star3(SYM_BLOCK, name, body);
         CL_GC_PROTECT(block_body);
-        lambda_form = cl_cons(SYM_LAMBDA,
-                              cl_cons(lambda_list,
-                                      cl_cons(block_body, CL_NIL)));
+        lambda_form = cl_list3(SYM_LAMBDA, lambda_list, block_body);
         CL_GC_UNPROTECT(1);
     }
     CL_GC_PROTECT(lambda_form);

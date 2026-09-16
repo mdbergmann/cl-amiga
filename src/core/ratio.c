@@ -59,7 +59,8 @@ CL_Obj cl_make_ratio_normalized(CL_Obj num, CL_Obj den)
     /* Reduce by GCD */
     CL_GC_PROTECT(num);
     CL_GC_PROTECT(den);
-    g = cl_arith_gcd(cl_arith_abs(num), den);
+    g = cl_arith_abs(num);          /* before the gcd reads den (mem.h) */
+    g = cl_arith_gcd(g, den);
     CL_GC_UNPROTECT(2);
 
     CL_GC_PROTECT(num);

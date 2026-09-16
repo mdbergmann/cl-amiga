@@ -1178,11 +1178,11 @@ static CL_Obj read_expr(void)
      * sentinel leaks into user structure. */
     case '\'': /* quote */
         do { obj = read_expr(); } while (obj == CL_READER_SKIP && !eof_seen);
-        return cl_cons(SYM_QUOTE, cl_cons(obj, CL_NIL));
+        return cl_list2(SYM_QUOTE, obj);
 
     case '`': /* quasiquote */
         do { obj = read_expr(); } while (obj == CL_READER_SKIP && !eof_seen);
-        return cl_cons(SYM_QUASIQUOTE, cl_cons(obj, CL_NIL));
+        return cl_list2(SYM_QUASIQUOTE, obj);
 
     case ',': /* unquote / unquote-splicing */
         ch = read_char();
@@ -1193,11 +1193,11 @@ static CL_Obj read_expr(void)
          * read time).  Treat them the same here. */
         if (ch == '@' || ch == '.') {
             do { obj = read_expr(); } while (obj == CL_READER_SKIP && !eof_seen);
-            return cl_cons(SYM_UNQUOTE_SPLICING, cl_cons(obj, CL_NIL));
+            return cl_list2(SYM_UNQUOTE_SPLICING, obj);
         }
         unread_char(ch);
         do { obj = read_expr(); } while (obj == CL_READER_SKIP && !eof_seen);
-        return cl_cons(SYM_UNQUOTE, cl_cons(obj, CL_NIL));
+        return cl_list2(SYM_UNQUOTE, obj);
 
     case '#': {
         int sub_ch = read_char();
@@ -1244,7 +1244,7 @@ static CL_Obj read_expr(void)
         if (ch == '\'') {
             /* #'foo => (FUNCTION foo) — skip past #+/#- voids (R6) */
             do { obj = read_expr(); } while (obj == CL_READER_SKIP && !eof_seen);
-            return cl_cons(SYM_FUNCTION, cl_cons(obj, CL_NIL));
+            return cl_list2(SYM_FUNCTION, obj);
         }
         if (ch == '\\') {
             /* #\x => character literal */

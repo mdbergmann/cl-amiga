@@ -153,6 +153,17 @@ CL_Obj cl_cons(CL_Obj car, CL_Obj cdr);
  * local): the operands are passed by address and read after the
  * allocation, so no root-stack push is needed for them.  See mem.c. */
 CL_Obj cl_cons_rooted(const CL_Obj *car_ref, const CL_Obj *cdr_ref);
+/* Short lists, (a b), (a b c), (a b c d), and (a b . tail).  Like cl_cons
+ * they root their arguments themselves, so a caller passes plain values --
+ * but only values: never nest an allocating call inside the argument list
+ * of a call that takes a CL_Obj.  C leaves the order in which arguments are
+ * evaluated unspecified, so the other arguments may already have been read
+ * when the nested call collects and moves them, and the outer call then
+ * stores stale offsets.  tests/test_gc_arg_order.sh checks src/ for it. */
+CL_Obj cl_list2(CL_Obj a, CL_Obj b);
+CL_Obj cl_list3(CL_Obj a, CL_Obj b, CL_Obj c);
+CL_Obj cl_list4(CL_Obj a, CL_Obj b, CL_Obj c, CL_Obj d);
+CL_Obj cl_list_star3(CL_Obj a, CL_Obj b, CL_Obj tail);
 CL_Obj cl_make_string(const char *str, uint32_t len);
 #ifdef CL_WIDE_STRINGS
 CL_Obj cl_make_wide_string(const uint32_t *chars, uint32_t len);

@@ -1829,6 +1829,50 @@ CL_Obj cl_cons(CL_Obj car, CL_Obj cdr)
     return CL_PTR_TO_OBJ(c);
 }
 
+/* Each list is built back to front, one cl_cons per statement, so every
+ * element is read after the previous allocation has finished (and may have
+ * moved it); the elements not yet consed stay rooted until then. */
+CL_Obj cl_list_star3(CL_Obj a, CL_Obj b, CL_Obj tail)
+{
+    CL_Obj r;
+    CL_GC_PROTECT(a);
+    r = cl_cons(b, tail);
+    r = cl_cons(a, r);
+    CL_GC_UNPROTECT(1);
+    return r;
+}
+
+CL_Obj cl_list2(CL_Obj a, CL_Obj b)
+{
+    return cl_list_star3(a, b, CL_NIL);
+}
+
+CL_Obj cl_list3(CL_Obj a, CL_Obj b, CL_Obj c)
+{
+    CL_Obj r;
+    CL_GC_PROTECT(a);
+    CL_GC_PROTECT(b);
+    r = cl_cons(c, CL_NIL);
+    r = cl_cons(b, r);
+    r = cl_cons(a, r);
+    CL_GC_UNPROTECT(2);
+    return r;
+}
+
+CL_Obj cl_list4(CL_Obj a, CL_Obj b, CL_Obj c, CL_Obj d)
+{
+    CL_Obj r;
+    CL_GC_PROTECT(a);
+    CL_GC_PROTECT(b);
+    CL_GC_PROTECT(c);
+    r = cl_cons(d, CL_NIL);
+    r = cl_cons(c, r);
+    r = cl_cons(b, r);
+    r = cl_cons(a, r);
+    CL_GC_UNPROTECT(3);
+    return r;
+}
+
 /* Cons whose CAR and CDR are ALREADY GC-rooted by the caller — passed by
  * ADDRESS, not by value.
  *

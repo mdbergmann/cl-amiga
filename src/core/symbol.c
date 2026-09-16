@@ -837,8 +837,11 @@ void cl_symbol_init(void)
     KW_M68K        = cl_intern_keyword("M68K", 4);
     {
         CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_FEATURES);
-        CL_Obj features = CL_NIL;
+        CL_Obj features = CL_NIL, kw;
         s->flags |= CL_SYM_SPECIAL;
+        /* Each keyword is interned in its own statement, before the cons
+         * reads `features` (mem.h, cl_list2). */
+        CL_GC_PROTECT(features);
 #ifdef PLATFORM_AMIGA
 #ifdef PLATFORM_MORPHOS
         /* MorphOS is the AmigaOS API on PPC: keep :AMIGAOS (the OS-API
@@ -846,8 +849,10 @@ void cl_symbol_init(void)
          * feature gates m68k-only machinery (the template JIT, the
          * register-based library-call FFI dispatcher) that this build
          * does not have.  :MORPHOS lets code target this port. */
-        features = cl_cons(cl_intern_keyword("PPC", 3), features);
-        features = cl_cons(cl_intern_keyword("MORPHOS", 7), features);
+        kw = cl_intern_keyword("PPC", 3);
+        features = cl_cons(kw, features);
+        kw = cl_intern_keyword("MORPHOS", 7);
+        features = cl_cons(kw, features);
 #else
         features = cl_cons(KW_M68K, features);
 #endif
@@ -859,15 +864,19 @@ void cl_symbol_init(void)
          * pick the correct platform naming convention (.dylib vs .so)
          * and probe the right install locations. */
 #if defined(__APPLE__)
-        features = cl_cons(cl_intern_keyword("DARWIN", 6), features);
+        kw = cl_intern_keyword("DARWIN", 6);
+        features = cl_cons(kw, features);
 #elif defined(__linux__)
-        features = cl_cons(cl_intern_keyword("LINUX", 5), features);
+        kw = cl_intern_keyword("LINUX", 5);
+        features = cl_cons(kw, features);
 #endif
         /* Host CPU architecture — cl+ssl keys homebrew detection on :ARM64 */
 #if defined(__aarch64__) || defined(__arm64__)
-        features = cl_cons(cl_intern_keyword("ARM64", 5), features);
+        kw = cl_intern_keyword("ARM64", 5);
+        features = cl_cons(kw, features);
 #elif defined(__x86_64__) || defined(_M_X64)
-        features = cl_cons(cl_intern_keyword("X86-64", 6), features);
+        kw = cl_intern_keyword("X86-64", 6);
+        features = cl_cons(kw, features);
 #endif
 #endif
         /* Word size and endianness of the RUNNING binary.  Portability
@@ -877,16 +886,18 @@ void cl_symbol_init(void)
          * here from the compiler makes feature-conditional code work even
          * with an unpatched trivial-features. */
         if (sizeof(void *) == 8)
-            features = cl_cons(cl_intern_keyword("64-BIT", 6), features);
+            kw = cl_intern_keyword("64-BIT", 6);
         else
-            features = cl_cons(cl_intern_keyword("32-BIT", 6), features);
+            kw = cl_intern_keyword("32-BIT", 6);
+        features = cl_cons(kw, features);
         {
             union { uint32_t u; uint8_t b[4]; } ec;
             ec.u = 1;
             if (ec.b[0] == 1)
-                features = cl_cons(cl_intern_keyword("LITTLE-ENDIAN", 13), features);
+                kw = cl_intern_keyword("LITTLE-ENDIAN", 13);
             else
-                features = cl_cons(cl_intern_keyword("BIG-ENDIAN", 10), features);
+                kw = cl_intern_keyword("BIG-ENDIAN", 10);
+            features = cl_cons(kw, features);
         }
         features = cl_cons(KW_COMMON_LISP, features);
         features = cl_cons(KW_CL_AMIGA, features);
@@ -905,6 +916,7 @@ void cl_symbol_init(void)
          * before the loop stale. */
         s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_FEATURES);
         s->value = features;
+        CL_GC_UNPROTECT(1);
     }
     /* Reader dereferences this handle on every #+ / #- — forward it across
      * compaction (see SYM_STAR_READTABLE note below). */

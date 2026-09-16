@@ -1679,19 +1679,22 @@ static CL_Obj build_arglist(int n_required, int n_optional, int has_rest,
     if (n_keys > 0) {
         for (i = n_keys - 1; i >= 0; i--)
             result = cl_cons(key_syms[i], result);
-        result = cl_cons(cl_intern_in("&KEY", 4, cl_package_cl), result);
+        tmp = cl_intern_in("&KEY", 4, cl_package_cl);
+        result = cl_cons(tmp, result);
     }
     if (has_rest) {
         tmp = arg_placeholder(n_required + n_optional);
         result = cl_cons(tmp, result);
-        result = cl_cons(cl_intern_in("&REST", 5, cl_package_cl), result);
+        tmp = cl_intern_in("&REST", 5, cl_package_cl);
+        result = cl_cons(tmp, result);
     }
     if (n_optional > 0) {
         for (i = n_optional - 1; i >= 0; i--) {
             tmp = arg_placeholder(n_required + i);
             result = cl_cons(tmp, result);
         }
-        result = cl_cons(cl_intern_in("&OPTIONAL", 9, cl_package_cl), result);
+        tmp = cl_intern_in("&OPTIONAL", 9, cl_package_cl);
+        result = cl_cons(tmp, result);
     }
     for (i = n_required - 1; i >= 0; i--) {
         tmp = arg_placeholder(i);
@@ -2060,6 +2063,14 @@ static void cl_intern_standard_cl_symbols(void)
     }
 }
 
+/* Intern NAME in EXT and export it.  Two statements on purpose: the package
+ * must be read after the intern has allocated (see cl_list2 in mem.h). */
+static void export_ext_symbol(const char *name, uint32_t len)
+{
+    CL_Obj sym = cl_intern_in(name, len, cl_package_ext);
+    cl_export_symbol(sym, cl_package_ext);
+}
+
 void cl_builtins_init(void)
 {
     /* List ops */
@@ -2137,20 +2148,16 @@ void cl_builtins_init(void)
 
     /* Function arglist introspection (Sly/SLYNK) — exported from EXT */
     cl_register_builtin("FUNCTION-ARGLIST", bi_function_arglist, 1, 1, cl_package_ext);
-    cl_export_symbol(cl_intern_in("FUNCTION-ARGLIST", 16, cl_package_ext),
-                     cl_package_ext);
+    export_ext_symbol("FUNCTION-ARGLIST", 16);
     cl_register_builtin("FUNCTION-SOURCE-LOCATION", bi_function_source_location,
                         1, 1, cl_package_ext);
-    cl_export_symbol(cl_intern_in("FUNCTION-SOURCE-LOCATION", 24, cl_package_ext),
-                     cl_package_ext);
+    export_ext_symbol("FUNCTION-SOURCE-LOCATION", 24);
 
     /* Backtrace introspection (Sly/SLYNK SLDB) — exported from EXT */
     cl_register_builtin("BACKTRACE", bi_backtrace, 0, 1, cl_package_ext);
-    cl_export_symbol(cl_intern_in("BACKTRACE", 9, cl_package_ext),
-                     cl_package_ext);
+    export_ext_symbol("BACKTRACE", 9);
     cl_register_builtin("FRAME-LOCALS", bi_frame_locals, 1, 1, cl_package_ext);
-    cl_export_symbol(cl_intern_in("FRAME-LOCALS", 12, cl_package_ext),
-                     cl_package_ext);
+    export_ext_symbol("FRAME-LOCALS", 12);
 
     /* Opcode profiler (no-op unless built with -DPROFILE_OPCODES) */
     cl_register_builtin("%OP-COUNTS-RESET", bi_op_counts_reset, 0, 0, cl_package_clamiga);
@@ -2241,12 +2248,10 @@ void cl_builtins_init(void)
     }
     cl_export_symbol(SYM_EXIT_HOOKS, cl_package_ext);
     cl_register_builtin("ADD-EXIT-HOOK", bi_add_exit_hook, 1, 1, cl_package_ext);
-    cl_export_symbol(cl_intern_in("ADD-EXIT-HOOK", 13, cl_package_ext),
-                     cl_package_ext);
+    export_ext_symbol("ADD-EXIT-HOOK", 13);
     cl_register_builtin("REMOVE-EXIT-HOOK", bi_remove_exit_hook, 1, 1,
                         cl_package_ext);
-    cl_export_symbol(cl_intern_in("REMOVE-EXIT-HOOK", 16, cl_package_ext),
-                     cl_package_ext);
+    export_ext_symbol("REMOVE-EXIT-HOOK", 16);
 
     /* Heap images: EXT:SAVE-IMAGE, EXT:*SAVE-HOOKS* / *RESTORE-HOOKS* /
      * *IMAGE-RESTORED-P* (image.c) */

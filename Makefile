@@ -241,7 +241,7 @@ test_batch test_repl_values test_repl_paste test_boot_log test_mx_error_context 
                 test_compile_file_stderr test_fasl_cache_dir test_make_load_form \
                 test_struct_slot_access test_defconstant_fasl test_peephole_diff \
                 test_tier4_phase1 test_tier4_phase2 test_tier4_phase3 test_local_inline \
-                test_scan_opcodes \
+                test_scan_opcodes test_runtime_forms \
                 test_defvar_special_fasl test_stack_depth test_argv_utf8 \
                 test_utf8_filenames test_image test_boot_image_scripts test_install_layout \
                 test_finish_output_flush \
@@ -253,9 +253,10 @@ test_batch test_repl_values test_repl_paste test_boot_log test_mx_error_context 
 # The ones that take no clamiga binary: two drive make itself, one the
 # Aminet upload script (dry runs only, no network), one greps the sources
 # (user-visible strings must be ASCII: the Amiga console is not UTF-8),
-# one pins the byte layout of the release's Workbench icons (icons/).
+# one pins the byte layout of the release's Workbench icons (icons/), one
+# keeps allocating calls out of argument lists next to heap values.
 SHELL_TESTS_NOARG = test_cross_wide_knob test_test_extra test_aminet_upload \
-                    test_ascii_messages test_icons
+                    test_ascii_messages test_icons test_gc_arg_order
 
 test-fast: $(TEST_BINS) host
 	@echo "=== Running tests (fast tier: skips sento/host-cold-test) ==="
@@ -331,6 +332,8 @@ test-gc-stress:
 	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_tier4_phase3.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
 	@echo "--- test_scan_opcodes (CLAMIGA_GC_STRESS=1, forced compaction) ---"
 	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_scan_opcodes.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
+	@echo "--- test_runtime_forms (CLAMIGA_GC_STRESS=1, forced compaction) ---"
+	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_runtime_forms.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
 	@echo "--- test_tls_loopback (CLAMIGA_GC_STRESS=1, forced compaction) ---"
 	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_tls_loopback.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
 	@echo "--- test_image (CLAMIGA_GC_STRESS=1, forced compaction) ---"

@@ -3051,18 +3051,23 @@ static CL_Obj bi_ext_gc_time_stats(CL_Obj *args, int n)
 {
     uint64_t stw, mark, sweep, compact, stw_max;
     uint32_t stops, skips;
-    CL_Obj result = CL_NIL;
+    CL_Obj result = CL_NIL, f;
     CL_UNUSED(args); CL_UNUSED(n);
     cl_gc_time_stats(&stw, &mark, &sweep, &compact);
     cl_gc_stw_stats(&stops, &stw_max, &skips);
     CL_GC_PROTECT(result);
     result = cl_cons(CL_MAKE_FIXNUM((int32_t)(skips & CL_FIXNUM_MAX)), result);
-    result = cl_cons(cl_make_double_float((double)stw_max / 1e6), result);
+    f = cl_make_double_float((double)stw_max / 1e6);
+    result = cl_cons(f, result);
     result = cl_cons(CL_MAKE_FIXNUM((int32_t)(stops & CL_FIXNUM_MAX)), result);
-    result = cl_cons(cl_make_double_float((double)compact / 1e6), result);
-    result = cl_cons(cl_make_double_float((double)sweep / 1e6), result);
-    result = cl_cons(cl_make_double_float((double)mark / 1e6), result);
-    result = cl_cons(cl_make_double_float((double)stw / 1e6), result);
+    f = cl_make_double_float((double)compact / 1e6);
+    result = cl_cons(f, result);
+    f = cl_make_double_float((double)sweep / 1e6);
+    result = cl_cons(f, result);
+    f = cl_make_double_float((double)mark / 1e6);
+    result = cl_cons(f, result);
+    f = cl_make_double_float((double)stw / 1e6);
+    result = cl_cons(f, result);
     result = cl_cons(CL_MAKE_FIXNUM((int32_t)(cl_heap.compact_count & CL_FIXNUM_MAX)), result);
     result = cl_cons(CL_MAKE_FIXNUM((int32_t)(cl_heap.gc_count & CL_FIXNUM_MAX)), result);
     CL_GC_UNPROTECT(1);
@@ -3080,14 +3085,15 @@ static CL_Obj bi_ext_gengc_stats(CL_Obj *args, int n)
 {
     uint32_t minors, old_top, dirty_last;
     uint64_t minor_us, promoted;
-    CL_Obj result = CL_NIL;
+    CL_Obj result = CL_NIL, f;
     CL_UNUSED(args); CL_UNUSED(n);
     cl_gengc_stats(&minors, &minor_us, &promoted, &old_top, &dirty_last);
     CL_GC_PROTECT(result);
     result = cl_cons(CL_MAKE_FIXNUM((int32_t)(dirty_last & CL_FIXNUM_MAX)), result);
     result = cl_cons(CL_MAKE_FIXNUM((int32_t)(old_top & CL_FIXNUM_MAX)), result);
     result = cl_cons(CL_MAKE_FIXNUM((int32_t)(promoted & CL_FIXNUM_MAX)), result);
-    result = cl_cons(cl_make_double_float((double)minor_us / 1e6), result);
+    f = cl_make_double_float((double)minor_us / 1e6);
+    result = cl_cons(f, result);
     result = cl_cons(CL_MAKE_FIXNUM((int32_t)(minors & CL_FIXNUM_MAX)), result);
     result = cl_cons(cl_gengc_enabled() ? CL_T : CL_NIL, result);
     CL_GC_UNPROTECT(1);
@@ -3757,7 +3763,7 @@ static CL_Obj bi_provide(CL_Obj *args, int n)
     uint32_t len;
     const char *name;
     char charbuf[8];
-    CL_Obj name_str;
+    CL_Obj name_str, modules;
 
     CL_UNUSED(n);
     name = module_name_cstr(args[0], &len, charbuf);
@@ -3768,7 +3774,9 @@ static CL_Obj bi_provide(CL_Obj *args, int n)
     /* Push string onto *modules* */
     name_str = cl_make_string(name, len);
     CL_GC_PROTECT(name_str);
-    cl_set_symbol_value(SYM_STAR_MODULES, cl_cons(name_str, cl_symbol_value(SYM_STAR_MODULES)));
+    /* Cons first, then read the symbol for the store (mem.h, cl_list2). */
+    modules = cl_cons(name_str, cl_symbol_value(SYM_STAR_MODULES));
+    cl_set_symbol_value(SYM_STAR_MODULES, modules);
     CL_GC_UNPROTECT(1);
     return SYM_T;
 }
@@ -4825,7 +4833,7 @@ static CL_Obj bi_tls_peer_certificate(CL_Obj *args, int n)
     };
     CL_Stream *st = check_tls_stream(args[0], "EXT:TLS-PEER-CERTIFICATE");
     PlatformSocket sh = (PlatformSocket)st->handle_id;
-    CL_Obj result = CL_NIL;
+    CL_Obj result = CL_NIL, item;
     char buf[512];
     int i;
     CL_UNUSED(n);
@@ -4837,9 +4845,10 @@ static CL_Obj bi_tls_peer_certificate(CL_Obj *args, int n)
     for (i = 0; i < 4; i++) {
         if (platform_tls_peer_cert_field(sh, fields[i].field,
                                          buf, sizeof(buf)) == 0) {
-            result = cl_cons(cl_make_string(buf, (uint32_t)strlen(buf)), result);
-            result = cl_cons(cl_intern_keyword(fields[i].kw, fields[i].kwlen),
-                             result);
+            item = cl_make_string(buf, (uint32_t)strlen(buf));
+            result = cl_cons(item, result);
+            item = cl_intern_keyword(fields[i].kw, fields[i].kwlen);
+            result = cl_cons(item, result);
         }
     }
     CL_GC_UNPROTECT(1);
