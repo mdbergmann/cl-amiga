@@ -8,6 +8,8 @@
  * Handles special forms, lexical scope, upvalue capture, tail calls.
  */
 
+/* Hard limits for one compiled function.  The compiler's buffers start small
+ * and grow up to these (compiler.c), so they cost nothing until used. */
 #define CL_MAX_CODE_SIZE   262144
 #define CL_MAX_CONSTANTS   8192
 
@@ -62,9 +64,22 @@ void cl_compiler_init(void);
  * forms record their docstrings (compiler_extra.c emit_doc_call). */
 int cl_capture_documentation_p(void);
 
-/* Release the pooled CL_Compiler blocks (~366 KB each, 8 pre-warmed) and the
- * compiler's own locks.  Call at process exit only, once no compile can be in
- * flight — during a run the pool must keep its blocks (see compiler.c). */
+/* (ext:%compiler-pool-stats).  Blocks in use by a running compile are not
+ * counted. */
+typedef struct {
+    uint32_t parked;          /* compiler blocks parked in the pool */
+    uint32_t block_bytes;     /* size of one block */
+    uint32_t buffer_bytes;    /* bytecode + constants buffers they hold */
+    uint32_t largest_parked;  /* largest single buffer a parked block holds */
+    uint32_t code_max;        /* largest bytecode buffer ever grown (bytes) */
+    uint32_t const_max;       /* largest constants table ever grown (entries) */
+} CL_CompilerPoolStats;
+void cl_compiler_pool_stats(CL_CompilerPoolStats *st);
+
+/* Release the pooled CL_Compiler blocks (8 pre-warmed) with their bytecode
+ * and constants buffers, and the compiler's own locks.  Call at process exit
+ * only, once no compile can be in flight — during a run the pool must keep
+ * its blocks (see compiler.c). */
 void cl_compiler_shutdown(void);
 
 /* Release the interned source-file pool.  Must run AFTER cl_mem_shutdown:

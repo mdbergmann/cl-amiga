@@ -11881,6 +11881,76 @@ y" 1))
 (check "JIT: HANDLER-CASE clause bodies after a RET" t (t4p3-jit-native-p #'t4p3-hc-last))
 (check "JIT: the round-two opcodes" t (t4p3-jit-native-p #'t4p3-r2))
 
+; --- Compiler buffers grow on demand (the compiler pool's footprint) ---
+; The compiler's bytecode and constants buffers used to be fixed arrays at the
+; limits, 375 KB per pooled block on m68k and eight blocks pre-warmed: 3 MB of
+; Fast RAM per process.  They now grow from a kilobyte, and a pooled block
+; keeps at most 16 KB.  CB-DAG references its leaf 2^K times while consing K
+; lists, so large functions are cheap to build.  See
+; tests/test_compiler_buffers.sh for the full host suite.
+(defun cb-dag (leaf k)
+  (if (= k 0) leaf (let ((s (cb-dag leaf (1- k)))) (list 'progn s s))))
+(defun cb-big-fn (k)
+  (list 'lambda '(x)
+        (list 'let '((acc x)) (cb-dag '(setq acc (+ acc 1)) k) 'acc)))
+(defun cb-pool-bounded-p ()
+  (let ((s (ext:%compiler-pool-stats)))
+    (and (<= (fourth s) 16384)
+         (<= (third s) (* (first s) (+ 16384 (* 1024 4)))))))
+(let ((s (ext:%compiler-pool-stats)))
+  (format t "NOTE: compiler pool ~D block(s) x ~D bytes + ~D buffer bytes~%"
+          (first s) (second s) (third s))
+  ;; >= rather than an exact 8: this is 11,000+ lines into one continuous
+  ;; MT-heavy test process, and cl_compiler_pool_release only trims
+  ;; oversized buffers -- it never removes a block from the free list -- so
+  ;; nothing shrinks the parked count back down once some earlier test needs
+  ;; more than the 8 pre-warmed blocks concurrently.
+  (check "compiler pool: at least eight blocks parked" t (>= (first s) 8))
+  (check "compiler pool: a block is a fraction of 375 KB" t
+    (< 0 (second s) 160000)))
+(check "compiler buffers: past the initial bytecode buffer" 69
+  (funcall (compile nil (cb-big-fn 6)) 5))
+(check "compiler buffers: 32 KB of bytecode" 2053
+  (funcall (compile nil (cb-big-fn 11)) 5))
+(check "compiler buffers: a nested lambda grows its own buffer" 6146
+  (funcall (compile nil
+             (list 'lambda '(x)
+                   (list 'let '((acc x))
+                         (cb-dag '(setq acc (+ acc 1)) 11)
+                         (list 'funcall
+                               (list 'lambda '()
+                                     (list 'let '((acc (* acc 2)))
+                                           (cb-dag '(setq acc (+ acc 1)) 11)
+                                           'acc))))))
+           1))
+(check "compiler buffers: oversized buffers are not kept" t (cb-pool-bounded-p))
+(check "compiler buffers: past 262144 bytes a clean error" t
+  (handler-case (progn (compile nil (cb-big-fn 15)) nil)
+    (error (e) (not (null (search "Bytecode too large"
+                                  (princ-to-string e)))))))
+(check "compiler buffers: every block back after the overflow" '(t t 3)
+  (list (>= (first (ext:%compiler-pool-stats)) 8) (cb-pool-bounded-p)
+        (funcall (compile nil '(lambda (a b) (+ a b))) 1 2)))
+(let* ((objs (loop for i below 1100 collect (code-char (+ 256 i))))
+       (form (list 'lambda '()
+                   (cons 'append
+                         (loop for rest on objs by (lambda (l) (nthcdr 200 l))
+                               collect (cons 'list
+                                             (subseq rest 0 (min 200 (length rest)))))))))
+  (check "compiler buffers: 1100 constants" t
+    (equal objs (funcall (compile nil form)))))
+(let* ((objs (loop for i below 300 collect (format nil "cb~D" i)))
+       (f (compile nil (list 'lambda '()
+                             (cons 'append
+                                   (list (cons 'list (subseq objs 0 150))
+                                         (cons 'list (subseq objs 150))))))))
+  (dotimes (i 200) (make-string 10))
+  (ext:gc)
+  (check "compiler buffers: string constants survive growth and a GC" t
+    (let ((v (funcall f)))
+      (and (= (length v) 300) (every #'eq objs v)))))
+(check "compiler buffers: constants tables are not kept" t (cb-pool-bounded-p))
+
 ; --- Exit hooks (EXT:*EXIT-HOOKS*) ---
 ; The list API here, plus one real hook registered at the bottom: it can only
 ; run from main.c's shutdown funnel, so its marker in the results log is the

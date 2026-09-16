@@ -3036,6 +3036,31 @@ static CL_Obj bi_ext_bytecode_offheap_stats(CL_Obj *args, int n)
                    cl_cons(CL_MAKE_FIXNUM((int32_t)count), CL_NIL));
 }
 
+/* (ext:%compiler-pool-stats) — the compiler's working memory, also outside
+ * the arena, as a 6-element list: (parked-blocks block-bytes buffer-bytes
+ * largest-parked-buffer largest-code-bytes largest-constants).  The pool
+ * keeps its blocks for the whole run (compiler.c says why), so parked-blocks
+ * x block-bytes + buffer-bytes is what compiling costs a process between
+ * compiles; largest-parked-buffer stays at or under the pool's keep size
+ * (16 KB) however large a function was compiled; the last two say how large
+ * the biggest compile so far had to grow its buffers. */
+static CL_Obj bi_ext_compiler_pool_stats(CL_Obj *args, int n)
+{
+    CL_CompilerPoolStats st;
+    CL_Obj result = CL_NIL;
+    CL_UNUSED(args); CL_UNUSED(n);
+    cl_compiler_pool_stats(&st);
+    CL_GC_PROTECT(result);
+    result = cl_cons(CL_MAKE_FIXNUM((int32_t)st.const_max), result);
+    result = cl_cons(CL_MAKE_FIXNUM((int32_t)st.code_max), result);
+    result = cl_cons(CL_MAKE_FIXNUM((int32_t)st.largest_parked), result);
+    result = cl_cons(CL_MAKE_FIXNUM((int32_t)st.buffer_bytes), result);
+    result = cl_cons(CL_MAKE_FIXNUM((int32_t)st.block_bytes), result);
+    result = cl_cons(CL_MAKE_FIXNUM((int32_t)st.parked), result);
+    CL_GC_UNPROTECT(1);
+    return result;
+}
+
 /* (ext:%gc-time-stats) — cumulative GC phase timers as a 9-element list:
  * (gc-count compact-count stw-seconds mark-seconds sweep-seconds
  *  compact-seconds stw-stops stw-max-seconds epoch-skips).  Counts are
@@ -4966,6 +4991,7 @@ void cl_builtins_io_init(void)
     extfun("GC-COMPACT", bi_ext_gc_compact, 0, 0);
     extfun("%GC-MARK-STATS", bi_ext_gc_mark_stats, 0, 0);
     extfun("%BYTECODE-OFFHEAP-STATS", bi_ext_bytecode_offheap_stats, 0, 0);
+    extfun("%COMPILER-POOL-STATS", bi_ext_compiler_pool_stats, 0, 0);
     extfun("%GC-TIME-STATS", bi_ext_gc_time_stats, 0, 0);
 #ifdef CL_GENGC
     extfun("%GENGC-STATS", bi_ext_gengc_stats, 0, 0);

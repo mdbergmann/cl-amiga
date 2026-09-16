@@ -89,6 +89,35 @@ cat > "$WORK/churn.lisp" <<'LISPEOF'
 LISPEOF
 run_case "no_leak_after_compile_churn" "$WORK/churn.lisp"
 
+# --- compiler buffers: grown, kept, dropped, and lost to an overflow -------
+# The pool keeps small bytecode / constants buffers across compiles, frees the
+# oversized ones on release and all of them at shutdown; a compile that
+# overflows the limit leaves its grown buffer to the unwind path.
+cat > "$WORK/compbuf.lisp" <<'LISPEOF'
+(defun dag (leaf k)
+  (if (= k 0) leaf (let ((s (dag leaf (1- k)))) (list 'progn s s))))
+(defun big-fn (k)
+  `(lambda (x) (let ((acc x)) ,(dag '(setq acc (+ acc 1)) k) acc)))
+(dolist (k '(6 9 11 13)) (funcall (compile nil (big-fn k)) 0))
+(handler-case (compile nil (big-fn 15)) (error () nil))
+(let ((objs (loop for i below 1500 collect (format nil "c~D" i))))
+  (funcall (compile nil `(lambda () (list ,@(subseq objs 0 200)))))
+  (compile nil `(lambda ()
+                  (let ((v (make-array 1500)))
+                    ,@(loop for o in objs for i from 0
+                            collect `(setf (svref v ,i) ,o))
+                    v))))
+(handler-case
+    (compile nil `(lambda ()
+                    (let ((v (make-array 8300)))
+                      ,@(loop for i below 8300
+                              collect `(setf (svref v ,i) ,(code-char (+ 256 i))))
+                      v)))
+  (error () nil))
+(quit)
+LISPEOF
+run_case "no_leak_after_compiler_buffer_growth" "$WORK/compbuf.lisp"
+
 # --- bignum scratch buffers above the stack sizes (2026-09) ----------------
 # Division of a 4,096+-bit dividend or by a >2,048-bit divisor, the bit
 # operations past 2,048 bits, a negative bit-op result past 4,096 bits and

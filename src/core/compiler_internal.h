@@ -189,8 +189,15 @@ typedef struct CL_Compiler_s {
      * relies on the stack-grows-down ABI assumption documented at
      * CL_CAPTURE_SP (thread.h). */
     void *anchor;
-    uint8_t code[CL_MAX_CODE_SIZE];
-    CL_Obj constants[CL_MAX_CONSTANTS];
+    /* Bytecode and constants being built.  Both are platform_alloc'd and
+     * grown on demand up to CL_MAX_CODE_SIZE / CL_MAX_CONSTANTS by cl_emit
+     * and cl_add_constant, the only two places that append; everything else
+     * indexes below code_pos / const_count.  A pooled block keeps them
+     * across compiles (see cl_compiler_pool_acquire). */
+    uint8_t *code;
+    CL_Obj *constants;
+    int code_cap;
+    int const_cap;
     int code_pos;
     int const_count;
     CL_CompEnv *env;

@@ -22,6 +22,12 @@ void *cl_tables_rwlock = NULL;
  * can use them. */
 static CL_Compiler *cl_compiler_pool_acquire(void);
 static void cl_compiler_pool_release(CL_Compiler *c);
+/* The CL_Compiler pool's mutex (lazily initialized by
+ * cl_compiler_pool_init, near the pool below). Declared this early so
+ * compiler_grow_code/compiler_grow_constants can guard the shared
+ * high-water-mark globals with it — those run on whichever thread is
+ * compiling, with no other synchronization of their own. */
+static void *cl_compiler_pool_lock;
 
 /* Per-thread-tracked rwlock helpers (see compiler.h).
  * cl_tables_rdlock is a macro at every call site that tags the call
@@ -409,13 +415,83 @@ const char *cl_intern_source_file(const char *path)
 
 /* --- Code emission --- */
 
+/* The bytecode and constants buffers start at these sizes and double up to
+ * CL_MAX_CODE_SIZE / CL_MAX_CONSTANTS.  With fixed arrays at the caps a
+ * CL_Compiler was 366 KB and the pool pre-warmed eight of them: 3 MB off-heap
+ * before the first form, on machines with 8 MB.  Most functions need well
+ * under a kilobyte of either. */
+#define CL_COMPILER_CODE_INIT   1024
+#define CL_COMPILER_CONST_INIT  64
+/* A pooled compiler keeps buffers up to these sizes between compiles; larger
+ * ones are freed on release (cl_compiler_pool_release). */
+#define CL_COMPILER_CODE_KEEP   16384
+#define CL_COMPILER_CONST_KEEP  1024
+
+/* Largest buffers any compile grew to, for the CLAMIGA_MEM_DIAG report at
+ * shutdown.  Written only when a buffer grows. */
+static int compiler_code_cap_max = 0;
+static int compiler_const_cap_max = 0;
+
+static void compiler_grow_code(CL_Compiler *c)
+{
+    uint32_t cap;
+    uint8_t *buf, *old;
+
+    if (c->code_cap >= CL_MAX_CODE_SIZE)
+        cl_error(CL_ERR_OVERFLOW,
+                 "Bytecode too large: one compiled function may hold at most "
+                 "%d bytes of bytecode -- split the form into smaller "
+                 "functions", CL_MAX_CODE_SIZE);
+    cap = c->code_cap > 0 ? (uint32_t)c->code_cap * 2 : CL_COMPILER_CODE_INIT;
+    if (cap > CL_MAX_CODE_SIZE) cap = CL_MAX_CODE_SIZE;
+    buf = (uint8_t *)platform_alloc(cap);
+    if (!buf)
+        cl_error(CL_ERR_STORAGE,
+                 "Compiler out of memory: cannot grow the bytecode buffer "
+                 "to %lu bytes", (unsigned long)cap);
+    if (c->code_pos > 0)
+        memcpy(buf, c->code, (size_t)c->code_pos);
+    old = c->code;
+    c->code = buf;
+    c->code_cap = (int)cap;
+    if (old) platform_free(old);
+    if (cl_compiler_pool_lock) platform_mutex_lock(cl_compiler_pool_lock);
+    if (c->code_cap > compiler_code_cap_max)
+        compiler_code_cap_max = c->code_cap;
+    if (cl_compiler_pool_lock) platform_mutex_unlock(cl_compiler_pool_lock);
+}
+
+/* No GC can run in here (platform_alloc is not the arena), so the constants
+ * the GC walks through c->constants are never seen half-copied. */
+static void compiler_grow_constants(CL_Compiler *c)
+{
+    uint32_t cap;
+    CL_Obj *buf, *old;
+
+    cap = c->const_cap > 0 ? (uint32_t)c->const_cap * 2 : CL_COMPILER_CONST_INIT;
+    if (cap > CL_MAX_CONSTANTS) cap = CL_MAX_CONSTANTS;
+    buf = (CL_Obj *)platform_alloc(cap * sizeof(CL_Obj));
+    if (!buf)
+        cl_error(CL_ERR_STORAGE,
+                 "Compiler out of memory: cannot grow the constants table "
+                 "to %lu entries", (unsigned long)cap);
+    if (c->const_count > 0)
+        memcpy(buf, c->constants, (size_t)c->const_count * sizeof(CL_Obj));
+    old = c->constants;
+    c->constants = buf;
+    c->const_cap = (int)cap;
+    if (old) platform_free(old);
+    if (cl_compiler_pool_lock) platform_mutex_lock(cl_compiler_pool_lock);
+    if (c->const_cap > compiler_const_cap_max)
+        compiler_const_cap_max = c->const_cap;
+    if (cl_compiler_pool_lock) platform_mutex_unlock(cl_compiler_pool_lock);
+}
+
 void cl_emit(CL_Compiler *c, uint8_t byte)
 {
-    if (c->code_pos < CL_MAX_CODE_SIZE) {
-        c->code[c->code_pos++] = byte;
-    } else {
-        cl_error(CL_ERR_OVERFLOW, "Bytecode too large");
-    }
+    if (c->code_pos >= c->code_cap)
+        compiler_grow_code(c);          /* signals past CL_MAX_CODE_SIZE */
+    c->code[c->code_pos++] = byte;
 }
 
 void cl_emit_u16(CL_Compiler *c, uint16_t val)
@@ -445,9 +521,14 @@ int cl_add_constant(CL_Compiler *c, CL_Obj obj)
         if (c->constants[i] == obj) return i;
     }
     if (c->const_count >= CL_MAX_CONSTANTS) {
-        cl_error(CL_ERR_OVERFLOW, "Too many constants");
+        cl_error(CL_ERR_OVERFLOW,
+                 "Too many constants: one compiled function may reference at "
+                 "most %d distinct constants -- split the form into smaller "
+                 "functions", CL_MAX_CONSTANTS);
         return 0;
     }
+    if (c->const_count >= c->const_cap)
+        compiler_grow_constants(c);
     c->constants[c->const_count] = obj;
     return c->const_count++;
 }
@@ -1231,15 +1312,14 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
 
 
     /* Heap-allocate inner compiler (too large for AmigaOS stack).
-     * Routed through cl_compiler_pool_acquire so the ~366 KB block is
-     * recycled across calls and never returned to AmigaOS — see the
-     * pool comment in cl_compile. */
+     * Routed through cl_compiler_pool_acquire so the block and its buffers
+     * are recycled across calls and never returned to AmigaOS — see the
+     * pool comment above cl_compiler_pool_head.  Comes back zeroed. */
     inner = cl_compiler_pool_acquire();
     if (!inner) {
         platform_write_string("[compile_lambda] pool_acquire FAILED\n");
         return;
     }
-    memset(inner, 0, sizeof(*inner));
     inner->mv_state = CL_MV_ONE;  /* nothing emitted yet */
 
     /* Claim the name the caller handed over (compile_defun / compile_named_lambda
@@ -5910,19 +5990,24 @@ void cl_register_setf_function(CL_Obj accessor, CL_Obj setf_fn_sym)
 
 /* --- Public API --- */
 
-/* CL_Compiler is ~366 KB (375,212 bytes on m68k — code[262144] and
- * constants[8192] dominate; see compiler_internal.h) — far too large for the
- * AmigaOS stack and too costly to alloc/free per call.  AllocVec/FreeVec of
- * blocks that size fragments the AmigaOS system pool: after roughly 44 cycles
- * loading lib/clos.lisp the next AllocVec returns NULL even though plenty of
- * free RAM exists.
+/* A CL_Compiler is too large for the AmigaOS stack (its fixed tables --
+ * blocks, tagbodies, lambda-list scratch -- are ~80 KB) and too costly to
+ * alloc/free per call.  AllocVec/FreeVec churn of big blocks fragments the
+ * AmigaOS system pool: when the struct still held its bytecode and constants
+ * as fixed arrays (366 KB), the next AllocVec returned NULL after roughly 44
+ * cycles loading lib/clos.lisp even though plenty of free RAM existed.
  * To avoid that we keep a process-wide free-list — popped on entry, pushed
  * on exit — so a successfully allocated CL_Compiler is never returned to
- * AmigaOS.  Nested compiles (parent chain) are handled correctly: each
- * call still gets a distinct struct.  The chain is short (<= depth of
- * compile-time macro expansion) so memory growth is bounded. */
+ * AmigaOS, and neither are the bytecode and constants buffers it grew, up to
+ * CL_COMPILER_CODE_KEEP / CL_COMPILER_CONST_KEEP (bigger ones are rare and
+ * go back, so one huge form does not pin them for the rest of the run).
+ * Nested compiles (parent chain) are handled correctly: each call still gets
+ * a distinct struct.  The chain is short (<= depth of compile-time macro
+ * expansion) so memory growth is bounded. */
 static CL_Compiler *cl_compiler_pool_head = NULL;
-static void *cl_compiler_pool_lock = NULL;
+/* cl_compiler_pool_lock itself is forward-declared near the top of this
+ * file (compiler_grow_code/compiler_grow_constants need it before this
+ * point) and lazily initialized below, in cl_compiler_pool_init. */
 /* Blocks currently parked on the free list.  Kept so cl_compiler_pool_init
  * can top the pool up to CL_COMPILER_POOL_PREWARM instead of blindly adding
  * another 8 blocks: cl_compiler_init runs again on every heap re-init (unit
@@ -5944,6 +6029,20 @@ static CL_Compiler *cl_compiler_pool_acquire(void)
     if (cl_compiler_pool_lock) platform_mutex_unlock(cl_compiler_pool_lock);
     if (!c) {
         c = (CL_Compiler *)platform_alloc(sizeof(CL_Compiler));
+        if (!c) return NULL;
+    }
+    /* Hand the block out zeroed, but keep the buffers a previous compile
+     * grew: reusing them is what the pool is for.  Their contents are dead
+     * (code_pos / const_count restart at 0). */
+    {
+        uint8_t *code = c->code;
+        CL_Obj *constants = c->constants;
+        int code_cap = c->code_cap, const_cap = c->const_cap;
+        memset(c, 0, sizeof(*c));
+        c->code = code;
+        c->code_cap = code_cap;
+        c->constants = constants;
+        c->const_cap = const_cap;
     }
     return c;
 }
@@ -5951,8 +6050,19 @@ static CL_Compiler *cl_compiler_pool_acquire(void)
 static void cl_compiler_pool_release(CL_Compiler *c)
 {
     if (!c) return;
-    /* Drop owned external buffers — only the big struct itself is pooled. */
+    /* The tail stack is dropped; the bytecode and constants buffers stay
+     * with the block unless one compile grew them past the keep size. */
     if (c->tail_stack) { platform_free(c->tail_stack); c->tail_stack = NULL; }
+    if (c->code_cap > CL_COMPILER_CODE_KEEP) {
+        platform_free(c->code);
+        c->code = NULL;
+        c->code_cap = 0;
+    }
+    if (c->const_cap > CL_COMPILER_CONST_KEEP) {
+        platform_free(c->constants);
+        c->constants = NULL;
+        c->const_cap = 0;
+    }
     if (cl_compiler_pool_lock) platform_mutex_lock(cl_compiler_pool_lock);
     c->parent = cl_compiler_pool_head; /* reuse parent slot as free-list link */
     cl_compiler_pool_head = c;
@@ -5970,9 +6080,8 @@ void cl_compiler_pool_init(void)
      * up front to cover the worst-case nested-compile chain depth we have
      * seen (1 outer cl_compile + several compile_lambda for inner lambdas
      * in CLOS-heavy methods).  8 is comfortably above the high-water mark
-     * observed.  It is not cheap: 8 x ~366 KB is ~2.9 MB reserved for the
-     * whole run, which is affordable on the 64 MB machines this targets but
-     * is the single largest thing clamiga holds outside the arena.
+     * observed.  The buffers are not pre-warmed: they start at a kilobyte
+     * and the first compiles size them.
      *
      * Top up to the target rather than adding a fixed 8: this runs again on
      * every cl_compiler_init, i.e. once per heap re-init. */
@@ -5988,16 +6097,37 @@ void cl_compiler_pool_init(void)
     if (cl_compiler_pool_lock) platform_mutex_unlock(cl_compiler_pool_lock);
 }
 
+void cl_compiler_pool_stats(CL_CompilerPoolStats *st)
+{
+    CL_Compiler *c;
+
+    memset(st, 0, sizeof(*st));
+    if (cl_compiler_pool_lock) platform_mutex_lock(cl_compiler_pool_lock);
+    for (c = cl_compiler_pool_head; c; c = (CL_Compiler *)c->parent) {
+        uint32_t code = (uint32_t)c->code_cap;
+        uint32_t consts = (uint32_t)c->const_cap * (uint32_t)sizeof(CL_Obj);
+        st->parked++;
+        st->buffer_bytes += code + consts;
+        if (code > st->largest_parked) st->largest_parked = code;
+        if (consts > st->largest_parked) st->largest_parked = consts;
+    }
+    if (cl_compiler_pool_lock) platform_mutex_unlock(cl_compiler_pool_lock);
+    st->block_bytes = (uint32_t)sizeof(CL_Compiler);
+    st->code_max = (uint32_t)compiler_code_cap_max;
+    st->const_max = (uint32_t)compiler_const_cap_max;
+}
+
 /* Release the compiler pool at process exit.
  *
  * During a run the pool deliberately never returns a CL_Compiler to the OS
  * (see the comment above cl_compiler_pool_head): re-AllocVec-ing blocks this
  * size fragments the AmigaOS system pool until the allocation fails outright.
- * That reasoning stops at process exit, where the blocks are pure loss — on
- * AmigaOS memory not handed back before the process ends is gone from the
- * system pool until reboot, so eight ~366 KB blocks (~2.9 MB) went missing on
- * every clamiga launch.  This was the bulk of a measured 3.74 MB of Fast RAM
- * lost per run on a Vampire (see tests/test_shutdown_leak.sh).
+ * That reasoning stops at process exit, where the blocks and their buffers
+ * are pure loss — on AmigaOS memory not handed back before the process ends
+ * is gone from the system pool until reboot, so the pool (then eight 366 KB
+ * blocks, ~2.9 MB) went missing on every clamiga launch.  This was the bulk of
+ * a measured 3.74 MB of Fast RAM lost per run on a Vampire (see
+ * tests/test_shutdown_leak.sh).
  *
  * Safe here because no compile can be in flight: main() calls this after the
  * exit hooks and the VM are done, so every block that was ever handed out has
@@ -6014,20 +6144,32 @@ void cl_compiler_shutdown(void)
 
     {
         int n = 0;
+        unsigned long buffers = 0;
         while (c) {
             CL_Compiler *next = (CL_Compiler *)c->parent;  /* free-list link */
             if (c->tail_stack) platform_free(c->tail_stack);
+            if (c->code) {
+                buffers += (unsigned long)c->code_cap;
+                platform_free(c->code);
+            }
+            if (c->constants) {
+                buffers += (unsigned long)c->const_cap * sizeof(CL_Obj);
+                platform_free(c->constants);
+            }
             platform_free(c);
             c = next;
             n++;
         }
         if (cl_mem_diag) {
-            char buf[160];
+            char buf[256];
             snprintf(buf, sizeof(buf),
-                     "[mem] compiler pool: %d block(s) x %lu bytes = %lu "
-                     "bytes released\n",
-                     n, (unsigned long)sizeof(CL_Compiler),
-                     (unsigned long)n * (unsigned long)sizeof(CL_Compiler));
+                     "[mem] compiler pool: %d block(s) x %lu bytes + %lu "
+                     "buffer bytes = %lu bytes released (largest buffers "
+                     "grown: %d bytes of bytecode, %d constants)\n",
+                     n, (unsigned long)sizeof(CL_Compiler), buffers,
+                     (unsigned long)n * (unsigned long)sizeof(CL_Compiler)
+                         + buffers,
+                     compiler_code_cap_max, compiler_const_cap_max);
             platform_write_string(buf);
         }
     }
@@ -6113,7 +6255,6 @@ static CL_Obj cl_compile_env(CL_Obj expr, CL_Obj lex_env)
         platform_write_string("[compile] platform_alloc(CL_Compiler) FAILED\n");
         return CL_NIL;
     }
-    memset(comp, 0, sizeof(*comp));
     env = cl_env_create(NULL);
     comp->env = env;
     comp->in_tail = 0;

@@ -1121,9 +1121,10 @@ contract, and `specs/generational-gc.md` for the design.
 Not everything CL-Amiga allocates lives in the GC arena, so not everything
 shows up in `ROOM`.  Each compiled function owns a bytecode body, a constants
 pool, `&key` arrays, a line map and (on m68k) its JIT code; the compiler keeps
-a pool of large working buffers; the struct, condition and type registries
-keep hash indexes.  All of that is ordinary system memory, and CL-Amiga
-returns it — during a run when the collector proves a function dead, and at
+eight working blocks of about 80 KB for the whole run, whose bytecode and
+constants buffers grow only as far as the functions being compiled need; the
+struct, condition and type registries keep hash indexes.  All of that is
+ordinary system memory, and CL-Amiga returns it — during a run when the collector proves a function dead, and at
 exit for everything still live.
 
 This matters more on AmigaOS than anywhere else: **AmigaOS does not reclaim a
@@ -1141,6 +1142,12 @@ Two diagnostics report on it:
   compiled-code memory has been returned to the system since startup.  It must
   grow after a GC that follows redefining functions, `compile`, or reloading a
   file.
+- `(ext:%compiler-pool-stats)` returns `(parked-blocks block-bytes
+  buffer-bytes largest-parked-buffer largest-code-bytes largest-constants)` —
+  what the compiler holds between compiles, and how far the largest compile so
+  far had to grow its buffers.  A single function is limited to 262144 bytes
+  of bytecode and 8192 distinct constants; past that the compiler signals an
+  error.  See `tests/test_compiler_buffers.sh`.
 
 `make test-memleak` builds with `-DDEBUG_MEM_TRACK`, which tags every off-heap
 allocation with the source line that made it and asserts a run ends with zero

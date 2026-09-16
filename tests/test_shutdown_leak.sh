@@ -3,10 +3,10 @@
 #
 # clamiga keeps a lot of memory outside the GC arena: every compiled function
 # owns a bytecode body, a constants pool, &key arrays, a line map and (on
-# m68k) JIT code; the compiler pool holds eight ~366 KB blocks; the struct,
-# condition and setf/deftype indexes are hash tables; the stream layer has
-# segmented directories.  None of it is visible to ROOM, and none of it used
-# to be released.
+# m68k) JIT code; the compiler pool holds eight blocks and their buffers;
+# the struct, condition and setf/deftype indexes are hash tables; the stream
+# layer has segmented directories.  None of it is visible to ROOM, and none of
+# it used to be released.
 #
 # On a host that was invisible — the kernel reclaims the address space.  On
 # AmigaOS nothing reclaims it, so each run permanently cost the machine
@@ -114,10 +114,20 @@ case "$out" in
   *) chk "shutdown_releases_compiler_pool" no; echo "$out" | tail -6 ;;
 esac
 
-# The pool pre-warms 8 blocks and each is ~366 KB, so this must be megabytes.
-pool=$(echo "$out" | sed -n 's/.*= \([0-9][0-9]*\) bytes released.*/\1/p' | tail -1)
-if [ -n "$pool" ] && [ "$pool" -gt 1000000 ]; then chk "compiler_pool_release_is_whole_pool" yes
-else chk "compiler_pool_release_is_whole_pool" no; echo "  (got '$pool')"; fi
+# The pool pre-warms 8 blocks and releases every one of them, with the
+# buffers they grew.  A block used to hold its bytecode and constants as
+# fixed arrays (366 KB each, 3 MB for the pool); what is left is ~80 KB, so
+# the whole release must now be well under a megabyte but cover all eight.
+line=$(echo "$out" | grep '\[mem\] compiler pool:' | tail -1)
+nblk=$(echo "$line" | sed -n 's/.*pool: \([0-9][0-9]*\) block(s) x .*/\1/p')
+bsize=$(echo "$line" | sed -n 's/.* block(s) x \([0-9][0-9]*\) bytes .*/\1/p')
+pool=$(echo "$line" | sed -n 's/.*= \([0-9][0-9]*\) bytes released.*/\1/p')
+if [ "$nblk" = "8" ] && [ -n "$bsize" ] && [ -n "$pool" ] \
+   && [ "$pool" -ge $((nblk * bsize)) ]; then chk "compiler_pool_release_is_whole_pool" yes
+else chk "compiler_pool_release_is_whole_pool" no; echo "  (got '$line')"; fi
+if [ -n "$bsize" ] && [ "$bsize" -lt 160000 ] && [ -n "$pool" ] && [ "$pool" -lt 1000000 ]; then
+    chk "compiler_pool_blocks_are_small" yes
+else chk "compiler_pool_blocks_are_small" no; echo "  (got '$line')"; fi
 
 live=$(echo "$out" | sed -n 's/.*during the run, \([0-9][0-9]*\) released at shutdown.*/\1/p' | tail -1)
 if [ -n "$live" ] && [ "$live" -gt 50000 ]; then chk "shutdown_releases_live_bytecode_payload" yes

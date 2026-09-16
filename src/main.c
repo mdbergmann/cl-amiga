@@ -1082,7 +1082,8 @@ shutdown:
      * finally safe to take away state that a live thread could still have
      * been using.  Each of these releases memory that lives OUTSIDE the GC
      * arena and that nothing else ever hands back — the compiler pool (eight
-     * ~366 KB blocks) with its hash indexes and interned source paths, the
+     * blocks and their bytecode buffers) with its hash indexes and interned
+     * source paths, the
      * struct/CLOS slot index and the condition-hierarchy index, the stream
      * module's segmented directories and its OS mutexes, and on AmigaOS the
      * still-open DOS files, their I/O buffers and the public ARexx port.
