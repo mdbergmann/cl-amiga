@@ -996,11 +996,13 @@ spike's RET from about 50 to about 34 ms.  On the host `char-loop` went
 from 104 to 66 ms and the new `string-scan` row from 26 to 16 ms (ECL
 3.7, SBCL 0.6); no `bench-opt` row got slower.
 
-**Tests**: `tests/test_scan_opcodes.sh` (134 checks: every shape through
-DISASSEMBLE at speed 1 / speed 0 / `CLAMIGA_NO_FUSE`, every string and
-vector representation through `AREF`, the builtin error texts, `CMP_BR`
-on every number kind and both polarities, `PUSH`/`POP` value and order
-on every kind of place, `INCF`/`DECF` on every kind of place, `SVREF` on a string, the
+**Tests**: `tests/test_scan_opcodes.sh` (135 checks in its summary
+line — 134 `check_contains`/`check_absent` calls plus the inline count of
+`JTRUE`s in a `CASE`: every shape through DISASSEMBLE at speed 1 /
+speed 0 / `CLAMIGA_NO_FUSE`, every string and vector representation
+through `AREF`, the builtin error texts including `SVREF` on a string,
+`CMP_BR` on every number kind and both polarities, `PUSH`/`POP` value and
+order on every kind of place, `INCF`/`DECF` on every kind of place, the
 `compile-file` round trip, allocation loops; also under
 `make test-gc-stress`), `tests/test_peephole.c` (the `CMP_BR` fusion for
 every comparison and polarity, the blocked and backward cases, the
