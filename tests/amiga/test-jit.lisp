@@ -1985,6 +1985,26 @@
     (defun jit-after-free-probe () 42)
     (jit-after-free-probe)))
 
+; --- Block-start index (mem.c gc_hdr_page[]): the conservative native-
+; stack scan validates each spilled word against it instead of walking
+; the whole arena per collection.  The JIT'd loops above compacted and
+; swept with live native frames (pins, gaps, splits, bump resets); the
+; index must still agree with the arena's header chain everywhere.  A
+; violation here is the bug class that would surface as a phantom mark
+; or a missed pin under the JIT — on the host the C unit test
+; tests/test_gc_hdr_index.c covers the same invariant without native
+; frames.  (-1 would mean no index at all: never on the Amiga, whose
+; collector is always the classic one.)
+(check "gc block-start index clean after JIT GC stress" 0
+  (progn
+    (let ((filler (make-array 30000 :initial-element 1)))
+      (jit-reloc-sum 200)
+      (ext:gc-compact)
+      (jit-reloc-sum 200)
+      (ext:gc)
+      (aref filler 0))
+    (ext:%gc-audit-hdr-index)))
+
 ; ---- Walker: OP_HANDLER_CASE_PUSH / OP_HANDLER_CASE_POP ----
 ;
 ; HANDLER-CASE is the special form CLAMIGA::%HANDLER-CASE (Tier-4 phase

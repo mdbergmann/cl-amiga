@@ -1094,6 +1094,11 @@ generational machinery needs an MMU and is compiled out there.
 - `CLAMIGA_GENGC=0` (environment) selects the classic collector on the host
   (useful for A/B measurements; behavior is identical, only pause costs
   differ).
+- `CLAMIGA_HDR_INDEX=0` (environment) drops the block-start index the classic
+  collector keeps for the m68k JIT's native-stack scan; collections taken
+  inside JIT'd code then pay a full arena walk in the mark phase (an A/B
+  switch, behavior is identical).  `(ext:%gc-audit-hdr-index)` checks the
+  index against the heap (0 = clean).
 - `(ext:gc)` forces a full collection, `(ext:%gc-minor)` a minor cycle.
 - `(ext:%gc-time-stats)` and `(ext:%gengc-stats)` expose collector telemetry
   (per-phase times, minor counts, promoted bytes, dirty-page counts).

@@ -177,6 +177,170 @@ static void gc_dump_roots_dbg(void);
 static int gc_verify_errors;  /* defined/reset inside gc_verify_marked */
 #endif
 
+/* --- Block-start index (classic collector) -------------------------------
+ *
+ * gc_hdr_page[p] is the arena offset of a block header (object, free block
+ * or TLAB hole) at or below the first byte of arena page p, from which the
+ * linear "walk by header size" is valid.  It lets the conservative JIT
+ * native-stack scan (gc_scan_jit_native_stack) decide "is this word the
+ * start of a block?" by walking at most one page of headers instead of the
+ * whole arena bump-front, which is what made every collection taken inside
+ * JIT'd code pay an extra sweep-sized pass in the mark phase (the marker's
+ * JIT cost measured by the Clamacs spike: mark 80 ms vs 40 ms without the
+ * JIT on a 68040-class machine, first collection 361 vs 129 ms).
+ *
+ * Invariant (every page p with p*GC_HDR_PAGE < cl_heap.bump): the entry is
+ * a real header offset <= p*GC_HDR_PAGE, or GC_HDR_NONE, in which case the
+ * nearest lower page's entry (ultimately CL_ALIGN) serves.  A header, once
+ * written, stays a header at that offset until the next sweep or slide,
+ * because between collections blocks are only ever SPLIT from the front
+ * (alloc_from_free_list, tlab_cut) — the front header survives at its
+ * offset and the remainder gets a fresh one.  So the index is rebuilt by
+ * the two passes that rewrite headers (gc_sweep coalesces, gc_slide moves)
+ * and extended by the paths that create a header on virgin bytes
+ * (alloc_from_bump, and the split remainder for good measure).  The image
+ * loader's classic walk re-notes the adopted payload.
+ *
+ * Classic collector only: gen mode (host) has no free list, moves young
+ * objects in minor collections and never runs the JIT; there the index is
+ * absent (NULL) and the scan keeps its full-walk validation.  An allocation
+ * failure at init leaves it absent as well — same fallback. */
+#define GC_HDR_PAGE_SHIFT 12
+#define GC_HDR_PAGE       (1u << GC_HDR_PAGE_SHIFT)
+#define GC_HDR_NONE       0xFFFFFFFFu
+static uint32_t *gc_hdr_page   = NULL;
+static uint32_t  gc_hdr_npages = 0;
+#if defined(DEBUG_GC) || defined(DEBUG_GC_STRESS)
+static void gc_jit_scan_verify_index(const uint32_t *candidates, int n_cand);
+#endif
+/* Next page boundary at or above cl_heap.bump: a bump allocation that ends
+ * beyond it covers a page's first byte and must be noted.  0xFFFFFFFF
+ * (never crossed) while the index is absent, so alloc_from_bump pays one
+ * compare either way. */
+static uint32_t  gc_hdr_bump_watch = 0xFFFFFFFFu;
+
+/* Does a block [off, off+size) cover the first byte of some page? */
+#define GC_HDR_CROSSES(off, size) \
+    ((((off) + GC_HDR_PAGE - 1) & ~(uint32_t)(GC_HDR_PAGE - 1)) < (off) + (size))
+
+/* Record `off` as the block covering the first byte of every page whose
+ * first byte lies in [off, off+size).  Assignment, not min/max: the caller
+ * knows the block is the one covering those bytes right now. */
+static void gc_hdr_note(uint32_t off, uint32_t size)
+{
+    uint32_t first = (off + GC_HDR_PAGE - 1) >> GC_HDR_PAGE_SHIFT;
+    uint32_t last  = (off + size - 1) >> GC_HDR_PAGE_SHIFT;
+    if (!gc_hdr_page) return;
+    if (last >= gc_hdr_npages) last = gc_hdr_npages - 1;
+    while (first <= last)
+        gc_hdr_page[first++] = off;
+}
+
+static void gc_hdr_bump_reset(void)
+{
+    if (gc_hdr_page)
+        gc_hdr_bump_watch = (cl_heap.bump + GC_HDR_PAGE - 1)
+                            & ~(uint32_t)(GC_HDR_PAGE - 1);
+    else
+        gc_hdr_bump_watch = 0xFFFFFFFFu;
+}
+
+/* Slow path of alloc_from_bump: the block [old, old+size) just placed at
+ * the bump front crossed gc_hdr_bump_watch. */
+static void gc_hdr_note_bump(uint32_t old, uint32_t size)
+{
+    gc_hdr_note(old, size);
+    gc_hdr_bump_reset();
+}
+
+static void gc_hdr_index_clear(void)
+{
+    uint32_t i;
+    for (i = 0; i < gc_hdr_npages; i++)
+        gc_hdr_page[i] = GC_HDR_NONE;
+}
+
+static void gc_hdr_index_release(void)
+{
+    if (gc_hdr_page) {
+        platform_free(gc_hdr_page);
+        gc_hdr_page = NULL;
+    }
+    gc_hdr_npages = 0;
+    gc_hdr_bump_watch = 0xFFFFFFFFu;
+}
+
+/* Size the index for the current arena (called from cl_mem_init after the
+ * arena exists and the collector mode is known). */
+static void gc_hdr_index_init(void)
+{
+    char ebuf[8];
+    const char *e;
+    gc_hdr_index_release();
+    /* CLAMIGA_HDR_INDEX=0 leaves the index absent (the scan falls back to
+     * the full arena walk) — an A/B switch for measuring the marker's JIT
+     * cost, in the spirit of CLAMIGA_GENGC=0. */
+    e = platform_getenv("CLAMIGA_HDR_INDEX", ebuf, (int)sizeof(ebuf));
+    if (e && e[0] == '0' && e[1] == '\0')
+        return;
+    gc_hdr_npages = (cl_heap.arena_size + GC_HDR_PAGE - 1) >> GC_HDR_PAGE_SHIFT;
+    if (gc_hdr_npages == 0) gc_hdr_npages = 1;
+    gc_hdr_page = (uint32_t *)platform_alloc(gc_hdr_npages * sizeof(uint32_t));
+    if (!gc_hdr_page) {
+        gc_hdr_npages = 0;
+        gc_hdr_bump_watch = 0xFFFFFFFFu;
+        return;
+    }
+    gc_hdr_index_clear();
+    gc_hdr_bump_reset();
+}
+
+/* A header offset from which walking forward reaches every block of page
+ * `page` (the page's own entry, else the nearest lower page's, else the
+ * first block of the arena). */
+static uint32_t gc_hdr_walk_start(uint32_t page)
+{
+    while (page > 0 && gc_hdr_page[page] == GC_HDR_NONE)
+        page--;
+    if (page == 0 || gc_hdr_page[page] == GC_HDR_NONE)
+        return CL_ALIGN;
+    return gc_hdr_page[page];
+}
+
+/* Walk cursor for gc_hdr_is_block_start: [blk, nxt) is the block found by
+ * the previous call.  Ascending queries within one block or the next few
+ * continue from it instead of re-entering through the index. */
+typedef struct {
+    uint32_t blk;
+    uint32_t nxt;
+} GC_HdrCursor;
+
+/* Is `offset` the start of a block below the bump front?  Needs the index
+ * (caller checks gc_hdr_page).  Bounded: at most one page of headers plus
+ * whatever a stale (split-behind) entry adds, never the whole arena. */
+static int gc_hdr_is_block_start(uint32_t offset, GC_HdrCursor *cur)
+{
+    uint32_t b, size;
+    if (offset < CL_ALIGN || offset >= cl_heap.bump) return 0;
+    if (cur->blk <= offset && offset < cur->nxt)
+        return offset == cur->blk;
+    b = gc_hdr_walk_start(offset >> GC_HDR_PAGE_SHIFT);
+    if (cur->nxt != 0 && cur->nxt <= offset && cur->nxt > b)
+        b = cur->nxt;                       /* continue the ascending walk */
+    for (;;) {
+        size = CL_HDR_SIZE(cl_heap.arena + b);
+        if (size == 0) {                    /* malformed header: not a block */
+            cur->blk = cur->nxt = 0;
+            return 0;
+        }
+        if (b + size > offset) break;
+        b += size;
+    }
+    cur->blk = b;
+    cur->nxt = b + size;
+    return b == offset;
+}
+
 /* Compaction forwarding table — maps (old_offset - gc_fwd_base)/CL_ALIGN
  * -> new_offset.  Allocated via platform_alloc during compaction, freed
  * afterwards.  gc_fwd_base is 0 for a full compaction (table spans the
@@ -861,6 +1025,15 @@ void cl_mem_init(uint32_t heap_size)
     gc_last_compact_cycle = 0xFFFFFFFF;
     gc_sweeps_since_compact = 0;
 
+    /* Block-start index for the JIT native-stack scan — classic collector
+     * only (see the definition above).  Re-derived for every new arena. */
+#ifdef CL_GENGC
+    if (gen_enabled)
+        gc_hdr_index_release();
+    else
+#endif
+        gc_hdr_index_init();
+
 #ifdef CL_TLAB
     /* TLAB chunk size for this heap.  CLAMIGA_TLAB_CHUNK=<bytes> overrides
      * (0 disables); otherwise CL_TLAB_CHUNK, scaled down so per-thread
@@ -994,6 +1167,11 @@ void cl_mem_adopt_image_begin(uint32_t bump)
     gc_reset_transient_state();
     gc_last_compact_cycle = 0xFFFFFFFF;
     gc_sweeps_since_compact = 0;
+    /* Block-start index: the payload replaces whatever the arena held;
+     * cl_mem_adopt_image_finish's classic walk re-notes it. */
+    if (gc_hdr_page)
+        gc_hdr_index_clear();
+    gc_hdr_bump_reset();
 }
 
 void cl_mem_adopt_image_finish(void)
@@ -1029,11 +1207,14 @@ void cl_mem_adopt_image_finish(void)
     /* Classic collector: the saving process may have run generational
      * (sticky marks SET on every old object) — normalize to the all-clear
      * state gc_mark assumes at cycle start.  Also covers a classic-mode
-     * save, where the pre-dump compaction already left marks clear. */
+     * save, where the pre-dump compaction already left marks clear.
+     * The same walk rebuilds the block-start index for the payload. */
     while (ptr < end) {
         uint32_t size = CL_HDR_SIZE(ptr);
         if (size == 0) break;
         CL_HDR_CLR_MARK(ptr);
+        if (GC_HDR_CROSSES((uint32_t)(ptr - cl_heap.arena), size))
+            gc_hdr_note((uint32_t)(ptr - cl_heap.arena), size);
         ptr += size;
     }
 }
@@ -1189,6 +1370,7 @@ void cl_mem_shutdown(void)
         cl_heap.arena = NULL;
     }
     gc_mark_stack_release();
+    gc_hdr_index_release();
     if (jit_scan_cand_buf) {
         platform_free(jit_scan_cand_buf);
         jit_scan_cand_buf = NULL;
@@ -1232,8 +1414,13 @@ int cl_bump_fits(uint32_t bump, uint32_t size, uint32_t arena_size)
 static void *alloc_from_bump(uint32_t size)
 {
     if (cl_bump_fits(cl_heap.bump, size, cl_heap.arena_size)) {
-        void *ptr = cl_heap.arena + cl_heap.bump;
-        cl_heap.bump += size;
+        uint32_t old = cl_heap.bump;
+        void *ptr = cl_heap.arena + old;
+        cl_heap.bump = old + size;
+        /* Block-start index: one compare per bump allocation; the slow
+         * path runs once per 4 KB of bump-allocated data. */
+        if (cl_heap.bump > gc_hdr_bump_watch)
+            gc_hdr_note_bump(old, size);
         return ptr;
     }
     return NULL;
@@ -1262,6 +1449,14 @@ static void *alloc_from_free_list(uint32_t *sizep, uint32_t max_steps)
                 new_free->size = remainder;
                 new_free->next_offset = block->next_offset;
                 *prev_off = new_off;
+                /* Block-start index: the front piece keeps the block's
+                 * header, so the index stays valid without this; noting
+                 * both pieces keeps the scan's walk short after a large
+                 * free block has been carved into many objects. */
+                if (GC_HDR_CROSSES(cur_off, size))
+                    gc_hdr_note(cur_off, size);
+                if (GC_HDR_CROSSES(new_off, remainder))
+                    gc_hdr_note(new_off, remainder);
             } else {
                 /* Use entire block — report actual size so header matches */
                 size = block->size;
@@ -2989,19 +3184,25 @@ static void gc_scan_jit_native_stack(CL_Thread *t)
         if (!jit_scan_free_valid)
             jit_scan_collect_free_snapshot();
 
-        /* Phase 2: walk the arena bump-front; for each real header
-         * offset that appears in `candidates`, mark it.  Walking from
-         * CL_ALIGN (offset 0 is reserved for NIL) by header size,
-         * matching gc_sweep's iteration. */
-        p   = cl_heap.arena + CL_ALIGN;
-        end = cl_heap.arena + cl_heap.bump;
-        while (p < end) {
-            uint32_t size = CL_HDR_SIZE(p);
-            uint32_t offset;
-            if (size == 0) break;       /* defensive: malformed header */
-            offset = (uint32_t)(p - cl_heap.arena);
-            if (cand_bsearch(candidates, n_cand, offset) &&
-                !gc_offset_is_free_block(offset)) {
+        /* Phase 2: validate each candidate as a block start, then mark
+         * and pin the real objects among them.
+         *
+         * With the block-start index (classic collector) each candidate
+         * costs at most a page of header walking — ascending, with the
+         * cursor carried between candidates.  Without it (gen mode, or
+         * the index could not be allocated) fall back to the original
+         * full walk of the arena bump-front from CL_ALIGN (offset 0 is
+         * reserved for NIL) by header size, matching gc_sweep's
+         * iteration, binary-searching the candidates at every header. */
+        if (gc_hdr_page) {
+            GC_HdrCursor cur;
+            int i;
+            cur.blk = cur.nxt = 0;
+            for (i = 0; i < n_cand; i++) {
+                uint32_t offset = candidates[i];
+                if (i > 0 && offset == candidates[i - 1]) continue;
+                if (!gc_hdr_is_block_start(offset, &cur)) continue;
+                if (gc_offset_is_free_block(offset)) continue;
                 gc_mark_obj((CL_Obj)offset);
                 /* Pin it: the compactor must not move an object reachable
                  * only through a conservative (offset-valued) C-stack
@@ -3010,10 +3211,148 @@ static void gc_scan_jit_native_stack(CL_Thread *t)
                  * the aggregate (chunks/threads can interleave). */
                 jit_pin_record(offset);
             }
-            p += size;
+#if defined(DEBUG_GC) || defined(DEBUG_GC_STRESS)
+            /* Cross-check the index against the ground truth: the full
+             * walk must accept exactly the same candidates.  A mismatch
+             * is an index-invariant bug (a header written on virgin bytes
+             * without a note, or a note missed by a pass that rewrites
+             * headers) — the kind that would otherwise surface as a
+             * phantom mark or a missed pin. */
+            gc_jit_scan_verify_index(candidates, n_cand);
+#endif
+        } else {
+            p   = cl_heap.arena + CL_ALIGN;
+            end = cl_heap.arena + cl_heap.bump;
+            while (p < end) {
+                uint32_t size = CL_HDR_SIZE(p);
+                uint32_t offset;
+                if (size == 0) break;       /* defensive: malformed header */
+                offset = (uint32_t)(p - cl_heap.arena);
+                if (cand_bsearch(candidates, n_cand, offset) &&
+                    !gc_offset_is_free_block(offset)) {
+                    gc_mark_obj((CL_Obj)offset);
+                    jit_pin_record(offset);
+                }
+                p += size;
+            }
         }
     }
 }
+
+/* Audit the block-start index against the arena: for every page whose
+ * first byte lies below the bump front, the entry (or the nearest lower
+ * entry it defers to) must be a header on the linear chain from CL_ALIGN
+ * at or below the page's first byte.  Returns the number of pages that
+ * violate this, -1 when the index is absent (gen mode / init failure).
+ * Diagnostic entry point (ext:%gc-audit-hdr-index and the unit tests);
+ * the caller must hold the world stopped or be single-threaded. */
+int cl_gc_audit_hdr_index(void)
+{
+    uint32_t off = CL_ALIGN;
+    uint32_t page = 1;      /* page 0's first byte is NIL's reserved slot:
+                             * its walk start is CL_ALIGN by definition */
+    int violations = 0;
+
+    if (!gc_hdr_page) return -1;
+
+    /* One ascending walk over the real chain; `off` is the block covering
+     * the page's first byte when we reach that page. */
+    while (page < gc_hdr_npages && (page << GC_HDR_PAGE_SHIFT) < cl_heap.bump) {
+        uint32_t page_start = page << GC_HDR_PAGE_SHIFT;
+        uint32_t entry;
+        for (;;) {
+            uint32_t size = CL_HDR_SIZE(cl_heap.arena + off);
+            if (size == 0) return violations + 1;   /* chain broken: bail */
+            if (off + size > page_start) break;
+            off += size;
+        }
+        /* `off` now covers page_start (off <= page_start < off+size).
+         * The entry must be some header <= page_start: either `off`
+         * itself or an earlier chain header (a split-behind entry).
+         * Verify by walking from the entry to `off`. */
+        entry = gc_hdr_walk_start(page);
+        if (entry > page_start) {
+            violations++;
+        } else {
+            uint32_t w = entry;
+            while (w < off) {
+                uint32_t size = CL_HDR_SIZE(cl_heap.arena + w);
+                if (size == 0) { w = 0xFFFFFFFFu; break; }
+                w += size;
+            }
+            if (w != off) violations++;
+        }
+        page++;
+    }
+    return violations;
+}
+
+#if defined(DEBUG_GC) || defined(DEBUG_GC_STRESS)
+/* Self-check of the block-start index at the end of a collection.  Under
+ * DEBUG_GC every time; under DEBUG_GC_STRESS (a compaction per
+ * allocation) every 64th, so the stress suite keeps its pace while the
+ * invariant is still checked thousands of times per run.  Fatal on a
+ * violation: the scan would turn it into a phantom mark or a missed pin
+ * on the Amiga, far from here. */
+static void gc_hdr_index_selfcheck(void)
+{
+    int v;
+    if (!gc_hdr_page) return;
+#ifndef DEBUG_GC
+    if (cl_heap.gc_count % 64 != 0) return;
+#endif
+    v = cl_gc_audit_hdr_index();
+    if (v != 0) {
+        char buf[96];
+        snprintf(buf, sizeof(buf),
+                 "FATAL: GC block-start index: %d page(s) violate the "
+                 "invariant after GC #%lu\n", v, (unsigned long)cl_heap.gc_count);
+        platform_write_string(buf);
+        platform_flush_output();
+        abort();
+    }
+}
+
+/* Recompute the scan's accept set the original way (full arena walk) and
+ * compare it with the index-based answers. */
+static void gc_jit_scan_verify_index(const uint32_t *candidates, int n_cand)
+{
+    GC_HdrCursor cur;
+    int i;
+    int bad = 0;
+    cur.blk = cur.nxt = 0;
+    for (i = 0; i < n_cand; i++) {
+        uint32_t offset = candidates[i];
+        int by_index, by_walk = 0;
+        uint8_t *p = cl_heap.arena + CL_ALIGN;
+        uint8_t *end = cl_heap.arena + cl_heap.bump;
+        if (i > 0 && offset == candidates[i - 1]) continue;
+        by_index = gc_hdr_is_block_start(offset, &cur);
+        while (p < end) {
+            uint32_t size = CL_HDR_SIZE(p);
+            uint32_t o = (uint32_t)(p - cl_heap.arena);
+            if (size == 0) break;
+            if (o == offset) { by_walk = 1; break; }
+            if (o > offset) break;
+            p += size;
+        }
+        if (by_index != by_walk) {
+            char buf[128];
+            snprintf(buf, sizeof(buf),
+                     "GC: block-start index disagrees with the arena walk at "
+                     "offset 0x%08x (index %d, walk %d)\n",
+                     (unsigned)offset, by_index, by_walk);
+            platform_write_string(buf);
+            bad++;
+        }
+    }
+    if (bad) {
+        platform_write_string("FATAL: GC block-start index corrupt\n");
+        platform_flush_output();
+        abort();
+    }
+}
+#endif
 
 /* Mark all per-thread roots for a single thread.
  * Called during STW GC — no locking needed, thread is stopped.
@@ -3819,8 +4158,14 @@ static void gc_sweep(void)
 #endif
             size = total;  /* advance past entire coalesced region */
         }
+        /* Block-start index: coalescing just erased the headers inside a
+         * free block, so every page this block covers is re-pointed at
+         * it (live objects re-note themselves, a no-op in effect). */
+        if (GC_HDR_CROSSES((uint32_t)(ptr - cl_heap.arena), size))
+            gc_hdr_note((uint32_t)(ptr - cl_heap.arena), size);
         ptr += size;
     }
+    gc_hdr_bump_reset();
 }
 
 /* ================================================================
@@ -4511,6 +4856,8 @@ static void gc_make_free_gap(uint32_t offset, uint32_t total)
              * next_offset link, and writing one would smash the following
              * object.  The space is reclaimed by the next compaction. */
             ((CL_Header *)(cl_heap.arena + offset))->header = chunk;
+            if (GC_HDR_CROSSES(offset, chunk))
+                gc_hdr_note(offset, chunk);
             return;
         }
         {
@@ -4524,6 +4871,8 @@ static void gc_make_free_gap(uint32_t offset, uint32_t total)
                        chunk - sizeof(CL_FreeBlock));
 #endif
         }
+        if (GC_HDR_CROSSES(offset, chunk))
+            gc_hdr_note(offset, chunk);
         offset += chunk;
         total  -= chunk;
     }
@@ -4582,6 +4931,10 @@ static void gc_slide(void)
 
             if (new_offset != old_offset)
                 memmove(cl_heap.arena + new_offset, ptr, size);
+            /* Block-start index: placed in ascending order, so the last
+             * assignment per page is the covering block. */
+            if (GC_HDR_CROSSES(new_offset, size))
+                gc_hdr_note(new_offset, size);
             fill = new_offset + size;
             live_total += size;
         } else {
@@ -4592,6 +4945,7 @@ static void gc_slide(void)
     }
 
     cl_heap.bump = fill;
+    gc_hdr_bump_reset();
     /* total_allocated counts live data; gap free-blocks below bump are on
      * the free list and excluded (matches gc_sweep's accounting). */
     cl_heap.total_allocated = live_total;
@@ -5034,6 +5388,9 @@ void cl_gc_compact(void)
 
     cl_heap.gc_count++;
     cl_heap.compact_count++;
+#if defined(DEBUG_GC) || defined(DEBUG_GC_STRESS)
+    gc_hdr_index_selfcheck();
+#endif
 
     /* The bump pointer was just reset to the end of the surviving objects, so
      * the sweep-forever escape counter starts fresh — see gc_sweeps_since_compact. */
@@ -5802,6 +6159,9 @@ static void cl_gc_stopped(uint64_t t0)
     gc_verify_after_sweep();
 #endif
     cl_heap.gc_count++;
+#if defined(DEBUG_GC) || defined(DEBUG_GC_STRESS)
+    gc_hdr_index_selfcheck();
+#endif
     if (gc_diag_on())
         gc_diag_report("sweep", platform_time_us() - diag_t_begin);
 #ifdef DEBUG_GC

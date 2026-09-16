@@ -3129,6 +3129,18 @@ static CL_Obj bi_ext_gc_audit_roots(CL_Obj *args, int n)
     return CL_MAKE_FIXNUM(cl_gc_audit_roots());
 }
 
+/* (ext:%gc-audit-hdr-index) — check the block-start index the JIT
+ * native-stack scan validates candidates against (0 = clean, -1 = no
+ * index: generational mode or CLAMIGA_HDR_INDEX=0).  The Amiga suite
+ * runs it after the JIT GC-stress tests; a violation means a header was
+ * written without the index being told, which the scan would turn into
+ * a phantom mark or a missed pin. */
+static CL_Obj bi_ext_gc_audit_hdr_index(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    return CL_MAKE_FIXNUM(cl_gc_audit_hdr_index());
+}
+
 static CL_Obj bi_time_report(CL_Obj *args, int n)
 {
     uint32_t start_time, end_time, elapsed;
@@ -4952,6 +4964,7 @@ void cl_builtins_io_init(void)
 #endif
     extfun("%STREAM-OUTBUF-STATS", bi_ext_stream_outbuf_stats, 0, 0);
     extfun("%GC-AUDIT-ROOTS", bi_ext_gc_audit_roots, 0, 0);
+    extfun("%GC-AUDIT-HDR-INDEX", bi_ext_gc_audit_hdr_index, 0, 0);
     extfun("GETENV", bi_getenv, 1, 1);
     extfun("UNPACK-BYTERUN1", bi_unpack_byterun1, 5, 6);
     extfun("COPY-ROWS", bi_copy_rows, 8, 8);

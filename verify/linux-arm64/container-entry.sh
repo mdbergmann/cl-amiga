@@ -15,6 +15,11 @@ mkdir -p /tmp/cl-amiga
     --exclude=./.git \
     --exclude=./verify/realamiga \
     . ) | tar xf - -C /tmp/cl-amiga
+# tools/ holds the m68k toolchain and vendored SDK dumps (hundreds of
+# thousands of files, none needed here), but tools/docs is the AmigaGuide
+# converter that make test's md2guide gate runs -- copy just that back.
+mkdir -p /tmp/cl-amiga/tools
+cp -R /cl-amiga/tools/docs /tmp/cl-amiga/tools/docs
 
 cd /tmp/cl-amiga
 if [ $# -eq 0 ]; then

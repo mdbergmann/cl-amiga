@@ -419,11 +419,44 @@ validation** in `mem.c::gc_scan_jit_native_stack`.
    offsets (values that pass `CL_HEAP_P` and `< arena_size`) into
    a 256-entry stack-local buffer.  Overflow drops the excess and
    warns once — a correctness gap, not a corruption hazard.
-2. *Validate-and-mark.* `qsort` the candidates; walk the arena
-   bump-front by header size, and for each real header offset `X`
-   binary-search the candidate buffer.  Only matches reach
-   `gc_mark_obj`.  Phantom marks at non-object-start bytes are
-   impossible.
+2. *Validate-and-mark.* `qsort` the candidates and decide for each
+   whether it is the start of a block.  Only real starts that are not
+   free-list blocks reach `gc_mark_obj`.  Phantom marks at
+   non-object-start bytes are impossible.
+
+   *How a start is recognised (2026-09-16, the marker's JIT cost).*
+   The first landing walked the whole arena bump-front by header size
+   at every collection, binary-searching the candidates at each
+   header.  That is a sweep-sized pass added to the *mark* phase of
+   every collection taken inside JIT'd code — i.e. every collection
+   once the JIT is on, since allocation-triggered and explicit GCs
+   alike run under a live `cl_jit_invoke` frame.  The Clamacs spike
+   measured it: mark 80 ms with the JIT vs 40 ms without on a
+   68040-class machine, first collection 361 vs 129 ms (the first sweep
+   sees every object the boot image and the load left behind).  The
+   classic collector now keeps a **block-start index**
+   (`gc_hdr_page[]`, one `uint32_t` per 4 KB arena page = 8 KB for an
+   8 MB heap): the offset of a header at or below the page's first
+   byte from which the header chain is valid.  A candidate is
+   validated by walking at most one page of headers from its page's
+   entry (the ascending candidates carry a cursor, so a run of
+   candidates in one block costs one walk).  The invariant — every
+   page below the bump front maps to a real header — holds because
+   between collections blocks are only ever *split from the front*
+   (the front header survives), so only the passes that rewrite
+   headers rebuild it (`gc_sweep` coalescing, `gc_slide` moving, the
+   image adopter's walk) and only the paths that write a header on
+   virgin bytes extend it (`alloc_from_bump`, one compare per
+   allocation; the free-list split notes both pieces to keep walks
+   short).  Gen mode (host) has no index — no free list, minors move
+   young objects, and the JIT never runs there — and falls back to the
+   full walk, as does `CLAMIGA_HDR_INDEX=0` (the A/B switch).
+   `ext:%gc-audit-hdr-index` / `cl_gc_audit_hdr_index()` check the
+   invariant against the arena (0 = clean); `tests/test_gc_hdr_index.c`
+   exercises it through sweeps, splits, pinned compactions and heap
+   re-init, the Amiga JIT suite after its GC-stress loops, and debug
+   builds cross-check every scan against the full walk and self-audit
+   after collections.
 
 With phantom marks ruled out, the *mark* phase is safe: a candidate
 is either a real heap offset (marked → object retained) or a

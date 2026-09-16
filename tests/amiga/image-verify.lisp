@@ -17,6 +17,8 @@
        (format t "FAIL: image ~a - signaled: ~a~%" ,name c))))
 
 (img-check "restored-p" t ext:*image-restored-p*)
+(img-check "gc block-start index over the adopted payload" 0
+           (progn (ext:gc) (ext:%gc-audit-hdr-index)))
 (img-check "function" 144 (img-fib 12))
 (img-check "macro" 42 (img-twice 21))
 (img-check "clos dispatch" "Rex speaks" (img-speak *img-pet*))

@@ -251,6 +251,13 @@ void cl_mem_adopt_image_finish(void);
  * the number of violations (0 = clean). */
 int cl_gc_audit_roots(void);
 
+/* Audit the block-start index behind the conservative JIT native-stack
+ * scan: every arena page below the bump front must map to a real header
+ * at or below its first byte.  Returns the number of violating pages
+ * (0 = clean), -1 when the index is absent (generational mode, or
+ * CLAMIGA_HDR_INDEX=0).  See tests/test_gc_hdr_index.c. */
+int cl_gc_audit_hdr_index(void);
+
 
 /* Retire a thread's TLAB (flush cons accounting, drop the chunk).  The
  * uncut remainder is already formatted as a walkable hole; the next sweep
