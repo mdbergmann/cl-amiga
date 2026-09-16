@@ -18,6 +18,7 @@ verify/realamiga/*
 !verify/realamiga/run-fs-uae.sh
 !verify/realamiga/run-examples.sh
 !verify/realamiga/make-image.sh
+!verify/realamiga/run-on-vampire.py
 !verify/realamiga/examples.lisp
 !verify/realamiga/screen-grab.lisp
 

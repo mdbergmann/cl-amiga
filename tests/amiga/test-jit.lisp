@@ -2101,6 +2101,134 @@
 (check "walker-hc-loop-compiled" t (not (null (clamiga::%jit-dump-bytes #'walker-hc-loop))))
 (check "walker-hc-loop-no-leak" 150 (walker-hc-loop 300))
 
+;; --- The direct call path (jit_dispatch, src/jit/runtime.c).  A JIT'd
+;; caller reaches C builtins, FFI stubs and native callees straight from its
+;; operand stack; only interpreted callees, generic functions, arity
+;; mismatches and traced functions still take the cl_vm_apply trampoline
+;; (with its stub interpreter frame).  Each check pins one arm; the numbers
+;; behind the change are in trunk/bench-jit-call.lisp.
+
+;; A native callee: the caller's own entry plus one cl_jit_invoke per call.
+(defun jdc-leaf (a b) (+ a b))
+(defun jdc-caller (n) (let ((s 0)) (dotimes (i n) (setq s (jdc-leaf s 1))) s))
+(check "jit-direct-native-callee-compiled" '(t t)
+  (list (not (null (clamiga::%jit-dump-bytes #'jdc-leaf)))
+        (not (null (clamiga::%jit-dump-bytes #'jdc-caller)))))
+(check "jit-direct-native-callee-invokes" 11
+  (let ((before (clamiga::%jit-invoke-count)))
+    (jdc-caller 10)
+    (- (clamiga::%jit-invoke-count) before)))
+(check "jit-direct-native-callee-value" 1000 (jdc-caller 1000))
+
+;; A native callee's multiple values survive the direct entry, as do a
+;; builtin's (the MV buffer is the per-thread one either way).
+(defun jdc-mv-leaf (a) (values a (+ a 1)))
+(defun jdc-mv-caller () (multiple-value-list (jdc-mv-leaf 1)))
+(check "jit-direct-native-callee-mv" '(1 2) (jdc-mv-caller))
+(defun jdc-builtin-mv () (multiple-value-list (floor 7 2)))
+(check "jit-direct-builtin-mv" '(3 1) (jdc-builtin-mv))
+
+;; A &key native callee is entered directly too (the kw ABI reads its
+;; arguments from the VM stack, where the direct path copies them).
+(defun jdc-key (a &key (b 10)) (+ a b))
+(defun jdc-key-caller () (list (jdc-key 1) (jdc-key 1 :b 2)))
+(check "jit-direct-key-callee-compiled" t
+  (not (null (clamiga::%jit-dump-bytes #'jdc-key))))
+(check "jit-direct-key-callee" '(11 3) (jdc-key-caller))
+
+;; OP_CALL with a function value (FUNCALL) takes the same path.
+(defun jdc-funcall (f a b) (funcall f a b))
+(check "jit-direct-funcall-native" 7 (jdc-funcall #'jdc-leaf 3 4))
+(check "jit-direct-funcall-builtin" '(3 . 4) (jdc-funcall #'cons 3 4))
+
+;; Arity mismatches keep the VM's diagnostics: a builtin's from
+;; validate_builtin, a native callee's from OP_CALL (the direct path only
+;; takes a call the callee's lambda list accepts).
+(defun jdc-call0 (f) (funcall f))
+(check "jit-direct-builtin-arity-error" t
+  (handler-case (progn (jdc-call0 #'car) nil)
+    (error (e) (not (null (search "too few arguments" (format nil "~A" e)))))))
+(defun jdc-call1 (f a) (funcall f a))
+(check "jit-direct-native-arity-error" t
+  (handler-case (progn (jdc-call1 #'jdc-leaf 1) nil)
+    (error (e) (not (null (search "Too few arguments to JDC-LEAF" (format nil "~A" e)))))))
+
+;; An FFI stub (DEFCFUN) from a JIT'd caller: IoErr() through dos.library.
+(defvar *jdc-dos* (amiga:open-library "dos.library" 36))
+(amiga.ffi:defcfun jdc-ioerr *jdc-dos* -132 ())
+(defun jdc-ffi-caller () (integerp (jdc-ioerr)))
+(check "jit-direct-ffi-stub" t (jdc-ffi-caller))
+(amiga:close-library *jdc-dos*)
+
+;; A traced callee still traces from a JIT'd caller (tracing routes every
+;; call through the trampoline).
+(defun jdc-traced-leaf (x) (* x x))
+(defun jdc-traced-caller (x) (jdc-traced-leaf x))
+(trace jdc-traced-leaf)
+(let* ((s (make-string-output-stream))
+       (captured (progn (let ((*trace-output* s)) (jdc-traced-caller 5))
+                        (get-output-stream-string s))))
+  (check "jit-direct-traced-callee" t
+    (not (null (search "JDC-TRACED-LEAF" captured)))))
+(untrace jdc-traced-leaf)
+(check "jit-direct-untraced-callee" 25 (jdc-traced-caller 5))
+
+;; Native frames nest on the C stack, so runaway recursion through the
+;; direct path must reach the C-stack guard and signal, not crash.
+(defun jdc-deep (n) (if (= n 0) 0 (+ 1 (jdc-deep (- n 1)))))
+(check "jit-direct-deep-recursion-guarded" :caught
+  (handler-case (progn (jdc-deep 400000) :finished)
+    (error () :caught)))
+(check "jit-direct-recursion-after-guard" 100 (jdc-deep 100))
+
+;; Allocating builtins called directly, with collections in between: the
+;; arguments live on the rooted VM stack for the call and the caller's
+;; operand stack is scanned conservatively.
+(defun jdc-alloc (n) (let ((acc nil)) (dotimes (i n) (setq acc (list i (car acc)))) acc))
+(check "jit-direct-builtin-across-gc" '(t (299999 299998))
+  (let ((g0 (clamiga::%get-gc-count)))
+    (let ((r (jdc-alloc 300000)))
+      (list (> (clamiga::%get-gc-count) g0) r))))
+
+;; Regression: jit_dispatch's native-callee fast path (the TYPE_BYTECODE /
+;; TYPE_CLOSURE arm above, src/jit/runtime.c) used to resolve the callee's
+;; raw CL_Bytecode* before polling thr->gc_requested / calling
+;; cl_gc_safepoint(), then dereference that same stale pointer afterwards.
+;; A peer thread's concurrent EXT:GC-COMPACT runs exactly inside that poll
+;; (that's what gc_requested/cl_gc_safepoint coordinate) and can relocate
+;; the CL_Bytecode/CL_Closure the pointer was resolved from, since it's a
+;; raw pointer and not a CL_Obj compaction fixes up.  Several workers
+;; hammer a JIT-compiled native leaf through the direct path while another
+;; thread compacts concurrently -- a stale pointer shows up as a wrong
+;; result or a guru, not a hang, so this only needs to run enough rounds
+;; to land calls inside the compaction window.
+(defun jdc-mt-leaf (a b) (+ a b))
+(defun jdc-mt-caller (n)
+  (let ((s 0))
+    (dotimes (i n) (setq s (jdc-mt-leaf s 1)))
+    s))
+(check "jit-direct-native-callee-across-concurrent-gc" t
+  (progn
+    (unless (clamiga::%jit-dump-bytes #'jdc-mt-leaf)
+      (error "jdc-mt-leaf did not JIT-compile"))
+    (let ((workers nil))
+      (dotimes (w 4)
+        (push (mp:make-thread
+                (lambda ()
+                  (let ((good t))
+                    (dotimes (i 50)
+                      (unless (= (jdc-mt-caller 200) 200)
+                        (setq good nil)))
+                    good))
+                :name "jdc-mt-worker")
+              workers))
+      (let ((compactor (mp:make-thread
+                          (lambda () (dotimes (i 200) (ext:gc-compact)))
+                          :name "jdc-mt-compactor")))
+        (let ((results (mapcar #'mp:join-thread workers)))
+          (mp:join-thread compactor)
+          (every #'identity results))))))
+
 ; Restore the suite-wide baseline established by run-tests.lisp's
 ; "declaim optimize" test — sections after this load expect speed 3.
 (declaim (optimize (speed 3)))

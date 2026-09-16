@@ -11532,6 +11532,42 @@ TEST(eval_map_family_over_16_seqs_errors)
         "(apply #'mapcar #'+ (make-list 16 :initial-element '(1)))"), "(16)");
 }
 
+TEST(vm_call_builtin_on_stack_args)
+{
+    /* cl_vm_call_builtin is the m68k JIT's direct entry to a C builtin
+     * (jit_dispatch, src/jit/runtime.c): the arguments already sit on the
+     * VM stack.  Same result and MV state as OP_CALL, same arity
+     * diagnostic; the caller restores sp. */
+    CL_Thread *thr = cl_get_current_thread();
+    CL_Obj plus = ((CL_Symbol *)CL_OBJ_TO_PTR(cl_intern("+", 1)))->function;
+    CL_Obj car  = ((CL_Symbol *)CL_OBJ_TO_PTR(cl_intern("CAR", 3)))->function;
+    int base = cl_vm.sp;
+    CL_Obj r;
+    int err;
+    ASSERT(CL_FUNCTION_P(plus) && CL_FUNCTION_P(car));
+    cl_vm.stack[base] = CL_MAKE_FIXNUM(1);
+    cl_vm.stack[base + 1] = CL_MAKE_FIXNUM(2);
+    cl_vm.sp = base + 2;
+    r = cl_vm_call_builtin(thr, (CL_Function *)CL_OBJ_TO_PTR(plus),
+                           &cl_vm.stack[base], 2);
+    cl_vm.sp = base;
+    ASSERT_EQ(3, CL_FIXNUM_VAL(r));
+    ASSERT_EQ(1, cl_mv_count);
+    ASSERT(cl_mv_values[0] == r);
+    /* Arity is validated before the C function runs. */
+    CL_CATCH(err);
+    if (err == CL_ERR_NONE) {
+        cl_vm_call_builtin(thr, (CL_Function *)CL_OBJ_TO_PTR(car),
+                           &cl_vm.stack[base], 0);
+        CL_UNCATCH();
+        ASSERT(0 && "CAR with no arguments must signal");
+    } else {
+        CL_UNCATCH();
+        ASSERT_EQ(CL_ERR_ARGS, err);
+    }
+    cl_vm.sp = base;
+}
+
 int main(void)
 {
     test_init();
@@ -12580,6 +12616,7 @@ int main(void)
     RUN(eval_map_family_over_16_seqs_errors);
 
     RUN(eval_apply_builtin_over_64_args);
+    RUN(vm_call_builtin_on_stack_args);
     RUN(eval_remove_string_over_1023_chars);
     RUN(eval_concatenate_string_over_4096_chars);
 #ifdef CL_WIDE_STRINGS

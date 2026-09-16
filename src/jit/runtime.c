@@ -30,6 +30,9 @@
 #include "core/compiler.h"   /* cl_compiler_mark / cl_compiler_unwind_to,
                               * cl_amiga_ffi_call_dispatch */
 #include "core/string_utils.h" /* cl_string_length, cl_string_set_char_at */
+#include "core/builtins.h"   /* cl_ffi_stub_call (jit_dispatch) */
+#include "jit/jit.h"         /* cl_jit_invoke (jit_dispatch) */
+#include "../platform/platform.h"  /* CL_NOINLINE */
 #include <setjmp.h>
 #include <string.h>          /* memcpy for mv_values preservation */
 
@@ -345,41 +348,158 @@ CL_Obj cl_jit_runtime_progv_unbind(CL_Obj mark_obj, CL_Obj result)
  * Conservative m68k-stack scanning at safepoints is the spec'd
  * fix, tracked under §"Open design choices" in
  * specs/native-backend.md. */
-CL_Obj cl_jit_runtime_call(CL_Obj *operand_top, uint32_t nargs)
+/* --- The call path ----------------------------------------------------
+ *
+ * Every call a JIT'd function makes lands in one of the two helpers
+ * below with the arguments on the m68k operand stack (operand_top[0] =
+ * last argument ... [nargs-1] = first; OP_CALL's function value is at
+ * [nargs]).  They used to hand the callee to cl_vm_apply unconditionally,
+ * so every native call site paid the generic trampoline: two
+ * funcallable-instance probes, a C-stack probe (FindTask + bounds), the
+ * arguments copied into a C array and then onto the VM stack, and for a
+ * Lisp callee a stub OP_CALL frame plus a nested cl_vm_run activation
+ * (its own C-stack probe, thread lookup and dispatch) before
+ * cl_jit_invoke was reached.  trunk/bench-jit-call.lisp on FS-UAE 68040:
+ * a JIT'd caller paid 13.4 us per call to a native leaf against the
+ * interpreter's 11.8, and 15.2 vs 13.7 to a bytecode leaf -- the JIT lost
+ * on exactly the call-heavy generic code an editor is made of
+ * (clamacs/specs/clamacs-lisp.md, phase 0).
+ *
+ * jit_dispatch now handles the callee kinds that need no interpreter
+ * frame the way cl_vm_run's OP_CALL does:
+ *   - a C builtin or an FFI stub: the arguments are copied once, onto the
+ *     GC-rooted VM stack (builtins assume rooted arguments), then the C
+ *     function is called.  No C-stack probe, as in the VM: a builtin does
+ *     not grow the C stack by itself, and the ones that call back into
+ *     Lisp go through cl_vm_apply, which is guarded;
+ *   - a bytecode/closure callee that carries native code and whose arity
+ *     the argument count satisfies (the VM's own rule): a safepoint poll,
+ *     one C-stack probe (native frames nest on the m68k stack, so runaway
+ *     recursion must still reach the guard) and cl_jit_invoke;
+ *   - any other bytecode/closure callee (interpreted, or an arity
+ *     mismatch): the stub OP_CALL frame, but entered directly
+ *     (cl_vm_call_bytecode) from the operand stack.
+ * Everything else -- a generic function (the reader/writer inline caches
+ * live in cl_vm_apply), a traced function, a corrupted object -- takes
+ * cl_vm_apply as before, so every diagnostic is unchanged.  Both helpers allocate (the callee may),
+ * so the walker cache_flushes before the JSR. */
+
+/* The trampoline arm, its own function so that the CL_Obj[256] copy is not
+ * part of every native call's C-stack footprint: jit_dispatch's frame sits
+ * under the callee for the whole call, and native recursion nests one such
+ * frame per level (a 1 KB array there let a 100-deep recursion exhaust the
+ * 128 KB suite stack).  Never inlined, for the same reason. */
+static CL_Obj jit_dispatch_apply(CL_Obj func, CL_Obj *operand_top,
+                                 uint32_t nargs) CL_NOINLINE;
+static CL_Obj jit_dispatch_apply(CL_Obj func, CL_Obj *operand_top,
+                                 uint32_t nargs)
 {
     CL_Obj args[256];
-    CL_Obj func;
     uint32_t i;
-
-    if (nargs > 255) nargs = 255;   /* defensive — OP_CALL is u8 */
-
-    /* operand_top[0] = argN-1, [1] = argN-2, ..., [N-1] = arg0,
-     * [N] = func.  Walk down to reverse into args[]. */
-    for (i = 0; i < nargs; i++) {
+    for (i = 0; i < nargs; i++)
         args[i] = operand_top[nargs - 1 - i];
-    }
-    func = operand_top[nargs];
-
     return cl_vm_apply(func, args, (int)nargs);
+}
+
+/* Raw CL_Bytecode* a callee (bytecode or closure) carries, or NULL.  Called
+ * twice by the TYPE_BYTECODE/TYPE_CLOSURE arm below: once to decide whether
+ * the native fast path applies, and again right before cl_jit_invoke, after
+ * a safepoint may have run a compacting GC that relocated the object --
+ * see the re-derivation comment at the second call site. */
+static CL_Bytecode *jit_dispatch_bytecode_of(CL_Obj func, uint32_t ftype)
+{
+    if (ftype == TYPE_CLOSURE) {
+        CL_Obj bco = ((CL_Closure *)CL_OBJ_TO_PTR(func))->bytecode;
+        if (CL_HEAP_P(bco) && bco < cl_heap.arena_size && CL_BYTECODE_P(bco))
+            return (CL_Bytecode *)CL_OBJ_TO_PTR(bco);
+        return NULL;
+    }
+    return (CL_Bytecode *)CL_OBJ_TO_PTR(func);
+}
+
+static CL_Obj jit_dispatch(CL_Obj func, CL_Obj *operand_top, uint32_t nargs)
+{
+    CL_Thread *thr = cl_get_current_thread();
+    uint32_t i;
+    uint32_t ftype = 0xFFu;
+
+    if (CL_HEAP_P(func) && func < cl_heap.arena_size)
+        ftype = CL_HDR_TYPE(CL_OBJ_TO_PTR(func));
+
+    if (thr->trace_count == 0 &&
+        thr->vm.sp + (int)nargs < (int)thr->vm.stack_size - 16) {
+        if (ftype == TYPE_FUNCTION || ftype == TYPE_FFI_STUB) {
+            int base = thr->vm.sp;
+            CL_Obj result;
+            for (i = 0; i < nargs; i++)
+                thr->vm.stack[base + (int)i] = operand_top[nargs - 1 - i];
+            thr->vm.sp = base + (int)nargs;
+            if (ftype == TYPE_FUNCTION) {
+                result = cl_vm_call_builtin(thr, (CL_Function *)CL_OBJ_TO_PTR(func),
+                                            &thr->vm.stack[base], (int)nargs);
+            } else {
+                result = cl_ffi_stub_call(func, &thr->vm.stack[base], (int)nargs);
+                thr->mv_count = 1;
+                thr->mv_values[0] = result;
+            }
+            thr->vm.sp = base;
+            return result;
+        }
+        if (ftype == TYPE_BYTECODE || ftype == TYPE_CLOSURE) {
+            CL_Bytecode *bc = jit_dispatch_bytecode_of(func, ftype);
+            if (bc != NULL && bc->native_code != NULL) {
+                uint32_t arity = bc->arity & 0x7FFF;
+                int fits = (bc->arity & 0x8000) == 0 && bc->n_optional == 0 &&
+                           ((bc->flags & 1) ? nargs >= arity : nargs == arity);
+                if (fits) {
+                    int base;
+                    CL_Obj result;
+                    if (thr->gc_requested) cl_gc_safepoint();
+                    if (thr->interrupt_pending) cl_thread_handle_interrupt(thr);
+                    /* The safepoint above can run a peer thread's stop-the-
+                     * world (compacting) collection, which relocates the
+                     * CL_Bytecode/CL_Closure bc was resolved from -- bc is
+                     * a raw pointer, not a CL_Obj, so compaction does not
+                     * fix it up in place.  Re-resolve it from func before
+                     * dereferencing it again. */
+                    bc = jit_dispatch_bytecode_of(func, ftype);
+                    cl_check_c_stack("a native call");
+                    base = thr->vm.sp;
+                    for (i = 0; i < nargs; i++)
+                        thr->vm.stack[base + (int)i] = operand_top[nargs - 1 - i];
+                    thr->vm.sp = base + (int)nargs;
+                    result = cl_jit_invoke(func, bc, (int)nargs);
+                    thr->vm.sp = base;
+                    return result;
+                }
+            }
+            /* An interpreted callee (or one whose lambda list the call does
+             * not fit: the arity diagnostic is OP_CALL's): the stub-frame
+             * path, entered with the operand-stack layout as it is. */
+            if (bc != NULL)
+                return cl_vm_call_bytecode(thr, func, operand_top, (int)nargs, 1);
+        }
+    }
+
+    return jit_dispatch_apply(func, operand_top, nargs);
+}
+
+/* Backing for OP_CALL: the function value sits under the arguments. */
+CL_Obj cl_jit_runtime_call(CL_Obj *operand_top, uint32_t nargs)
+{
+    if (nargs > 255) nargs = 255;   /* defensive -- OP_CALL is u8 */
+    return jit_dispatch(operand_top[nargs], operand_top, nargs);
 }
 
 /* Backing for OP_CALL_GLOBAL / the fallback arm of OP_TAILCALL_GLOBAL: the
  * fused `FLOAD sym; CALL n`.  The arguments sit on the operand stack exactly
- * as for cl_jit_runtime_call, but there is no function slot under them — the
- * callee is resolved from SYM here (same rules as cl_jit_runtime_fload) and
- * handed to cl_vm_apply. */
+ * as for cl_jit_runtime_call, but there is no function slot under them -- the
+ * callee is resolved from SYM here (same rules as cl_jit_runtime_fload). */
 CL_Obj cl_jit_runtime_call_global(CL_Obj *operand_top, uint32_t nargs,
                                   CL_Obj sym)
 {
-    CL_Obj args[256];
-    CL_Obj func;
-    uint32_t i;
-
-    if (nargs > 255) nargs = 255;   /* defensive — the operand is a u8 */
-    func = cl_jit_runtime_fload(sym);
-    for (i = 0; i < nargs; i++)
-        args[i] = operand_top[nargs - 1 - i];
-    return cl_vm_apply(func, args, (int)nargs);
+    if (nargs > 255) nargs = 255;   /* defensive -- the operand is a u8 */
+    return jit_dispatch(cl_jit_runtime_fload(sym), operand_top, nargs);
 }
 
 /* Backing for OP_APPLY.  Flatten `arglist` into a stack-local buffer, resolve

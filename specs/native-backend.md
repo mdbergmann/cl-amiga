@@ -1360,9 +1360,11 @@ disclaimer from the GC interaction story.
 `EXT:BACKTRACE` and `EXT:FRAME-LOCALS` (the Sly/SLDB backend) walk
 `cl_vm.frames`. JIT'd functions run native code via `cl_jit_invoke` and
 **do not push a `CL_Frame`** — so by default they are invisible to the
-backtrace, and the `cl_vm_apply` trampolines that drive JIT→JIT calls show
-up as anonymous frames. On the interpreter (host, `--no-jit`) ordinary
-calls push real frames, so backtraces are complete there.
+backtrace, and the `cl_vm_apply` trampolines that drove JIT→JIT calls at
+the time showed up as anonymous frames (a JIT'd caller now enters a native
+callee directly, see the 2026-09-16 status; only an interpreted callee still
+gets a stub frame). On the interpreter (host, `--no-jit`) ordinary calls
+push real frames, so backtraces are complete there.
 
 ### Opt-in shadow frame
 
@@ -1416,3 +1418,119 @@ frame cannot leak.
   window. It is now cleared per top-level form in the load/REPL loop — still
   valid within the form that errors (the debugger runs before the next form),
   but no longer leaks across forms.
+
+## Status (2026-09-16, direct call dispatch from JIT'd code)
+
+**The finding.**  The phase-0 spike of the Clamacs-in-Lisp port
+(`clamacs/specs/clamacs-lisp.md`) measured the JIT making call-heavy
+generic code *slower* than the interpreter on a real 68040-class machine:
+1.04 ms per keystroke with the JIT against 0.71 ms without.  A new A/B
+suite, `trunk/bench-jit-call.lisp`, isolates the call shapes such code is
+made of (each row re-defines the loop driver under both JIT states, the
+callees pinned to one state, so only the caller's dispatch path differs).
+The per-iteration costs before the change, in microseconds:
+
+| Row (200k iterations)          | Vampire V4 bc | Vampire V4 JIT | FS-UAE 040 bc | FS-UAE 040 JIT |
+|--------------------------------|--------------:|---------------:|--------------:|---------------:|
+| loop only                      |  7.3 |  0.4 |  7.7 |  0.5 |
+| builtin 2-arg (LOGTEST)        | 12.2 | 12.0 | 12.8 |  6.9 |
+| builtin GETHASH                | 27.5 | 29.1 | 21.7 | 19.1 |
+| call native leaf               | 11.8 | 18.8 | 11.8 | 13.4 |
+| call bytecode leaf             | 12.5 | 19.5 | 13.7 | 15.2 |
+| call &optional leaf            | 16.1 | 25.1 | 17.5 | 19.4 |
+| FUNCALL native leaf            | 12.9 | 18.5 | 12.1 | 13.1 |
+| decode-key mix (native helper) | 69.2 | 89.4 | 59.7 | 59.4 |
+
+Subtract the loop row and a JIT'd caller paid ~18 us to call a native leaf
+on the Vampire where the interpreter paid ~4.5: four times the cost, on
+the one operation generic code does most.  Every call from native code went
+through `cl_jit_runtime_call[_global]` → `cl_vm_apply`: two
+funcallable-instance probes, a C-stack probe (`FindTask` + bounds), the
+arguments copied into a C array and again onto the VM stack, and for a Lisp
+callee a stub `OP_CALL` frame plus a nested `cl_vm_run` activation (its own
+C-stack probe, thread lookup and dispatch setup) before `cl_jit_invoke` was
+reached — so a JIT→JIT call ran through *three* C frames and the interpreter
+on the way, and a JIT→builtin call paid the whole generic trampoline for a
+C function pointer.
+
+**The change** (`jit_dispatch`, `src/jit/runtime.c`).  The two call helpers
+now classify the callee themselves, the way `cl_vm_run`'s `OP_CALL` does,
+and dispatch the kinds that need no interpreter frame directly from the
+operand stack:
+
+- a C builtin or an FFI stub: the arguments are copied once, onto the
+  GC-rooted VM stack (builtins assume rooted arguments), then
+  `cl_vm_call_builtin` (the exported `call_builtin`: arity check, per-thread
+  crash diagnostics, MV bookkeeping) or `cl_ffi_stub_call`.  No C-stack
+  probe, as in the VM — a builtin does not grow the C stack by itself, and
+  the ones that call back into Lisp go through the guarded `cl_vm_apply`;
+- a bytecode/closure callee with native code whose lambda list the call
+  fits (the VM's rule: exact arity, or at least the required count for a
+  `&key` function): a safepoint poll, ONE C-stack probe (native frames nest
+  on the m68k stack, so runaway recursion must still reach the guard) and
+  `cl_jit_invoke`;
+- any other bytecode/closure callee (interpreted, or an arity mismatch —
+  the diagnostic stays `OP_CALL`'s): `cl_vm_call_bytecode`, the stub-frame
+  tail split out of `cl_vm_apply`, entered with the operand-stack layout as
+  it is (a `reversed` flag) instead of after a copy and the probes.
+
+Generic functions (the reader/writer inline caches live in `cl_vm_apply`),
+traced functions (`thr->trace_count > 0` routes every call through the
+trampoline, so `TRACE` output is unchanged) and anything that is not a
+function keep taking `cl_vm_apply`, so every diagnostic is as before.
+
+**After**, same rows, same machines (the FS-UAE column is an emulator
+whose own JIT flatters straight-line code; the Vampire column is the
+real-hardware one):
+
+| Row (200k iterations)          | Vampire V4 bc | Vampire V4 JIT | FS-UAE 040 bc | FS-UAE 040 JIT |
+|--------------------------------|--------------:|---------------:|--------------:|---------------:|
+| builtin 2-arg (LOGTEST)        | 12.1 |  6.0 | 13.4 |  3.7 |
+| builtin GETHASH                | 23.2 | 14.3 | 22.5 | 12.6 |
+| call native leaf               | 11.8 |  7.0 | 12.4 |  5.1 |
+| call bytecode leaf             | 12.4 | 12.7 | 14.2 | 12.1 |
+| call &optional leaf            | 16.2 | 18.2 | 18.5 | 17.8 |
+| FUNCALL native leaf            | 12.9 |  6.8 | 13.1 |  4.9 |
+| decode-key mix (native helper) | 67.2 | 50.0 | 59.3 | 34.2 |
+| decode-key mix (bytecode helper) | 65.5 | 53.1 | 59.0 | 36.8 |
+
+A JIT'd call to a native leaf costs 60% of the interpreter's now (it cost
+1.6x before); the decode-key mix, the spike's per-key shape, went from 30%
+slower than bytecode to 25% faster on the Vampire.  The spike itself,
+re-run on the Vampire in one session, JIT on vs `--no-jit`: per key 658 vs
+689 us median (it was 1043 vs 706), RET 50 vs 88 ms, GC pauses equal.
+One structural point: `jit_dispatch`'s frame sits under the callee for the
+whole call and native recursion nests one per level, so the trampoline
+arm's `CL_Obj[256]` copy lives in a separate never-inlined function
+(`jit_dispatch_apply`) -- with the array in the dispatcher a 100-deep
+native recursion exhausted the suite's 128 KB stack.  That split moved the
+native-leaf row from 4.9 to 7.0 us on the Vampire (three runs each; the
+FS-UAE row stayed at 4.9-5.1 and the decode-key mix at ~50 us): the two
+object files differ only in where the array lives, so the 1 KB shift of
+every stack address below the dispatcher is a cache-layout effect of that
+machine, not dispatch work -- noted, not chased.  The one row still
+behind on real hardware is a call into an *interpreted* callee (15.8 vs
+12.5 us): the stub frame and the `cl_vm_run` re-entry are the interpreter's
+own entry cost and cannot be trimmed from the JIT side; the lever there is
+the walker taking `&optional`/`&rest` prologues so fewer callees stay
+interpreted (open below).  The Amiga suite (`tests/amiga/test-jit.lisp`,
+"jit-direct-*") pins each arm: invoke count per direct native call,
+multiple values through both entries, `&key` callees, FUNCALL, both arity
+diagnostics, an FFI stub, a traced callee, runaway native recursion reaching
+the C-stack guard, and allocating builtins across collections.
+
+**Policy decision.**  The spec left "either the per-call round trip gets
+cheaper or only declared code is compiled" open.  With the round trip
+fixed the JIT wins on generic code, so the default stays *compile
+everything*; a declared-only policy would have traded the wins above for
+the load-time cost, which is a separate lever (`specs/lazy-jit.md`).
+
+**Open levers, after this:**
+
+- `&optional` / `&rest` prologue shapes for the walker (the interpreted-callee
+  row above).
+- Direct JSR to a native callee from the call site (no helper at all) when
+  the resolved function carries native code — the remaining ~4.5 us per
+  native call on the Vampire is the helper, `cl_jit_invoke`'s bookkeeping
+  and the C-stack probe.
+- Lazy compilation / a hot-function gate for load time (`specs/lazy-jit.md`).

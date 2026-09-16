@@ -660,67 +660,76 @@ CL_Obj cl_vm_apply(CL_Obj func, CL_Obj *args, int nargs)
         return result;
     }
 
-    /* Bytecode / closure callees go through a stub OP_CALL whose nargs operand
-     * is a single byte; that path cannot represent more than 255 actual args.
-     * (The inline OP_APPLY in cl_vm_run handles up to CALL-ARGUMENTS-LIMIT for
-     * &rest callees; this trampoline is the fallback used by MAPCAR/REDUCE/JIT.)
-     * Error clearly rather than silently truncating the call. */
+    /* Bytecode / closure (and anything else that is not a builtin or an FFI
+     * stub -- the error for a non-function lands in OP_CALL): the stub-frame
+     * path. */
+    return cl_vm_call_bytecode(cl_get_current_thread(), func, args, nargs, 0);
+}
+
+/* The stub-frame call: push a minimal frame whose code is OP_CALL n; OP_HALT,
+ * then func and the arguments, and run the dispatch loop until the HALT.
+ * The stub code lives in the frame itself (heap-allocated with the frame
+ * array), so it survives a longjmp past this C frame.  ARGS holds the
+ * arguments in call order, or -- REVERSED non-zero -- args[i] is argument
+ * nargs-1-i, which is how the m68k JIT's operand stack lays them out
+ * (jit_dispatch, src/jit/runtime.c, enters here for an interpreted callee
+ * without copying them first).  The one-byte OP_CALL operand caps this path
+ * at 255 arguments; cl_vm_apply_list runs the inline OP_APPLY for more.
+ * The C-stack guard is cl_vm_run's own, on entry, before any bytecode runs. */
+CL_Obj cl_vm_call_bytecode(CL_Thread *thr, CL_Obj func, const CL_Obj *args,
+                           int nargs, int reversed)
+{
+    CL_Frame *frame;
+    int base_fp, base_nlx, saved_sp, i;
+    CL_Obj result;
+
     if (nargs > 255)
         cl_error(CL_ERR_ARGS,
                  "APPLY: too many arguments (got %d; this call path is "
                  "limited to 255)", nargs);
+    if (thr->vm.fp >= (int)thr->vm.frame_size)
+        cl_error(CL_ERR_OVERFLOW, "VM frame stack overflow");
+    if (thr->vm.sp + nargs + 1 >= (int)thr->vm.stack_size)
+        cl_error(CL_ERR_OVERFLOW, "VM stack overflow");
 
-    /* Bytecode / closure: push func+args on VM stack, set up a tiny
-     * stub frame with OP_CALL+OP_HALT, and run the dispatch loop.
-     * The stub code lives in frame->stub_code (heap-allocated with the
-     * frame array) so it survives longjmp past this C frame. */
-    {
-        CL_Frame *frame;
-        int base_fp, base_nlx, saved_sp;
-        CL_Obj result;
+    base_fp = thr->vm.fp;
+    saved_sp = thr->vm.sp;
+    base_nlx = thr->nlx_top;
 
-        /* (the C-stack guard ran above, ahead of every callee kind) */
+    /* The stub frame goes in BEFORE func+args: bp = sp before them,
+     * n_locals = 0.  After OP_CALL consumes func+args and pushes the
+     * result, sp = bp+1 so OP_HALT sees the result. */
+    frame = &thr->vm.frames[thr->vm.fp++];
+    frame->stub_code[0] = OP_CALL;
+    frame->stub_code[1] = (uint8_t)nargs;
+    frame->stub_code[2] = OP_HALT;
+    frame->bytecode = CL_NIL;
+    frame->code = frame->stub_code;
+    frame->constants = NULL;
+    frame->ip = 0;
+    frame->bp = thr->vm.sp;
+    frame->n_locals = 0;
+    frame->nargs = 0;
+    frame->nlx_level = thr->nlx_top;
+    frame->fslot = 0;
 
-        /* Push a minimal stub frame BEFORE pushing func+args.
-         * bp = current sp, n_locals = 0.  After OP_CALL consumes
-         * func+args and pushes the result, sp = bp+1 so OP_HALT
-         * sees the result. */
-        base_fp = cl_vm.fp;
-        saved_sp = cl_vm.sp;
-        base_nlx = cl_nlx_top;
-        if (cl_vm.fp >= cl_vm.frame_size)
-            cl_error(CL_ERR_OVERFLOW, "VM frame stack overflow");
-
-        frame = &cl_vm.frames[cl_vm.fp++];
-        /* Build stub code in the frame itself (not on C stack) */
-        frame->stub_code[0] = OP_CALL;
-        frame->stub_code[1] = (uint8_t)nargs;
-        frame->stub_code[2] = OP_HALT;
-        frame->bytecode = CL_NIL;
-        frame->code = frame->stub_code;
-        frame->constants = NULL;
-        frame->ip = 0;
-        frame->bp = cl_vm.sp;  /* bp before func+args */
-        frame->n_locals = 0;
-        frame->nargs = 0;
-        frame->nlx_level = cl_nlx_top;
-        frame->fslot = 0;
-
-        /* Push function and arguments onto VM stack */
-        cl_vm_push(func);
+    thr->vm.stack[thr->vm.sp++] = func;
+    if (reversed) {
         for (i = 0; i < nargs; i++)
-            cl_vm_push(args[i]);
-
-        result = cl_vm_run(base_fp, base_nlx);
-
-        /* Restore fp/sp: OP_HALT doesn't decrement fp, so the stub
-         * frame would leak.  Without this restore, each cl_vm_apply
-         * call leaves fp one higher than it should be, causing OP_RET
-         * in the caller's cl_vm_run to restore the wrong frame. */
-        cl_vm.fp = base_fp;
-        cl_vm.sp = saved_sp;
-        return result;
+            thr->vm.stack[thr->vm.sp++] = args[nargs - 1 - i];
+    } else {
+        for (i = 0; i < nargs; i++)
+            thr->vm.stack[thr->vm.sp++] = args[i];
     }
+
+    result = cl_vm_run(base_fp, base_nlx);
+
+    /* OP_HALT does not pop the stub frame; without this restore each call
+     * would leave fp one higher and the caller's OP_RET would restore the
+     * wrong frame. */
+    thr->vm.fp = base_fp;
+    thr->vm.sp = saved_sp;
+    return result;
 }
 
 /* (apply FUNC ARGLIST) from C, for any argument count up to
@@ -1490,6 +1499,15 @@ static CL_Obj call_builtin(CL_Thread *thr, CL_Function *func,
     result = func->func(args, nargs);
     thr->mv_values[0] = result;
     return result;
+}
+
+/* The JIT's entry to call_builtin (see vm.h).  Its own function so the
+ * static one stays out of cl_vm_run's frame; the frame here is as small as
+ * call_builtin's own. */
+CL_Obj cl_vm_call_builtin(CL_Thread *thr, CL_Function *func,
+                          CL_Obj *args, int nargs)
+{
+    return call_builtin(thr, func, args, nargs);
 }
 
 #if defined(CL_ASAN_BUILD) || defined(__SANITIZE_ADDRESS__) || \

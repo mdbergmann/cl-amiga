@@ -46,14 +46,16 @@
  *   - cl_jit_runtime_call — backing for OP_CALL.  Takes (operand_top,
  *     nargs): the caller has placed [func, arg0..argN-1] on the m68k
  *     operand stack with argN-1 at the lowest address; operand_top
- *     points at argN-1.  The helper reverse-copies the args into a
- *     stack-local CL_Obj[256] (matches OP_CALL's u8 nargs limit) and
- *     dispatches via cl_vm_apply, so closures, builtins, and
- *     JIT-compiled callees all route through the existing call path.
- *     cl_vm_apply also answers promoted reader-GF calls from the CLOS
- *     inline cache before unwrapping the GF (the JIT-side equivalent
- *     of the interpreter's OP_CALL reader probe), so JIT'd accessor
- *     calls never enter the VM on a cache hit.
+ *     points at argN-1.  A builtin, an FFI stub or a native callee is
+ *     dispatched directly from the operand stack (jit_dispatch: the
+ *     arguments copied once onto the rooted VM stack, then the C
+ *     function or cl_jit_invoke); every other callee is reverse-copied
+ *     into a stack-local CL_Obj[256] (OP_CALL's u8 nargs limit) and
+ *     handed to cl_vm_apply, the existing call path for interpreted
+ *     callees and generic functions.  cl_vm_apply answers promoted
+ *     reader-GF calls from the CLOS inline cache before unwrapping the
+ *     GF (the JIT-side equivalent of the interpreter's OP_CALL reader
+ *     probe), so JIT'd accessor calls never enter the VM on a hit.
  *     Returns the callee's primary value in D0; the m68k operand
  *     stack is unchanged across the helper, the caller pops func+args
  *     and pushes the result with a single LEA.
@@ -141,6 +143,10 @@ CL_Obj cl_jit_runtime_progv_bind(CL_Obj symbols_list, CL_Obj values_list);
 CL_Obj cl_jit_runtime_progv_unbind(CL_Obj mark_obj, CL_Obj result);
 
 CL_Obj cl_jit_runtime_fload(CL_Obj sym);
+/* OP_CALL backing.  Builtins, FFI stubs and native callees are dispatched
+ * directly (arguments copied onto the rooted VM stack, then the C function
+ * or cl_jit_invoke); anything else goes through cl_vm_apply.  See
+ * jit_dispatch in runtime.c. */
 CL_Obj cl_jit_runtime_call (CL_Obj *operand_top, uint32_t nargs);
 /* OP_CALL_GLOBAL: like cl_jit_runtime_call, but the callee is resolved from
  * SYM (no function slot under the arguments). */

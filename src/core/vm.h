@@ -305,6 +305,18 @@ CL_Obj cl_vm_apply(CL_Obj func, CL_Obj *args, int nargs);
 /* (apply FUNC ARGLIST) for any count up to CALL-ARGUMENTS-LIMIT — runs the
  * inline OP_APPLY; cl_vm_apply's one-byte OP_CALL stub stops at 255. */
 CL_Obj cl_vm_apply_list(CL_Obj func, CL_Obj arglist);
+struct CL_Thread_s;
+/* Call a C builtin whose arguments already sit on the VM stack (rooted),
+ * exactly as cl_vm_run's OP_CALL does it: arity check, per-thread crash
+ * diagnostics, MV bookkeeping, no frame.  The m68k JIT's direct call path
+ * (jit/runtime.c) uses it; every other caller goes through cl_vm_apply. */
+CL_Obj cl_vm_call_builtin(struct CL_Thread_s *thr, CL_Function *func,
+                          CL_Obj *args, int nargs);
+/* Call a bytecode/closure callee through a stub OP_CALL frame (the tail of
+ * cl_vm_apply).  ARGS in call order, or with REVERSED set args[i] = argument
+ * nargs-1-i (the JIT's operand-stack layout).  At most 255 arguments. */
+CL_Obj cl_vm_call_bytecode(struct CL_Thread_s *thr, CL_Obj func,
+                           const CL_Obj *args, int nargs, int reversed);
 
 /* Suffix for a THROW / RETURN-FROM / GO miss when the target exists but is
  * hidden below cl_nlx_floor (inside a foreign callback); "" otherwise.

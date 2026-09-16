@@ -7,6 +7,68 @@ command, and results, so later runs can be compared like-for-like.
 Related: [specs/performance.md](../specs/performance.md) is the optimization
 *plan*; this file is the *measured results* log.
 
+## 2026-09-16 — JIT call dispatch: a JIT'd call to a native leaf 18.8 → 7.0 us on real hardware
+
+**Context**: the Clamacs-in-Lisp spike (`clamacs/specs/clamacs-lisp.md`,
+phase 0) found the m68k JIT making call-heavy generic code slower than the
+interpreter (per keystroke 1.04 vs 0.71 ms on a Vampire V4).  Every call
+from native code went through the generic `cl_vm_apply` trampoline and, for
+a Lisp callee, a stub interpreter frame; `jit_dispatch` (`src/jit/runtime.c`)
+now enters builtins, FFI stubs and native callees directly, and interpreted
+callees through the stub frame without the copies and probes.  Design and
+the full tables: `specs/native-backend.md`, "Status (2026-09-16)".
+
+**Environment**: Vampire V4 (real 68040-class FPGA, Kickstart 47.115) and
+FS-UAE A4000/68040 (`verify/realamiga/verify.fs-uae`), `--heap 8M`,
+`stack 128000`, the cross-built `build/cross/clamiga` before (`c920aecd`)
+and with the change.  Per-iteration cost in microseconds, 200,000
+iterations per row, bytecode vs JIT columns from the same run.
+
+| Row                            | Vampire bc | Vampire JIT before → after | FS-UAE bc | FS-UAE JIT before → after |
+|--------------------------------|-----------:|---------------------------:|----------:|--------------------------:|
+| loop only                      |  7.3 |  0.4 →  0.4 |  7.7 |  0.5 →  0.5 |
+| builtin 2-arg (LOGTEST)        | 12.2 | 12.0 →  6.0 | 12.8 |  6.9 →  3.7 |
+| builtin 1-arg (HASH-TABLE-P)   | 11.9 |  5.9 →  2.9 | 12.8 |  5.5 →  3.2 |
+| builtin GETHASH                | 27.5 | 29.1 → 14.3 | 21.7 | 19.1 → 12.6 |
+| call native leaf               | 11.8 | 18.8 →  7.0 | 11.8 | 13.4 →  5.1 |
+| call bytecode leaf             | 12.5 | 19.5 → 12.7 | 13.7 | 15.2 → 12.1 |
+| call &optional leaf            | 16.1 | 25.1 → 18.2 | 17.5 | 19.4 → 17.8 |
+| FUNCALL native leaf            | 12.9 | 18.5 →  6.8 | 12.1 | 13.1 →  4.9 |
+| local BLOCK/RETURN-FROM        | 13.0 |  6.3 →  3.3 | 13.7 |  5.8 →  3.5 |
+| fixnum CASE (8 keys)           | 26.9 | 12.1 →  6.3 | 28.1 |  9.1 →  6.3 |
+| FFI PEEK-U16                   | 10.9 |  7.1 →  3.2 | 11.8 |  6.7 →  3.6 |
+| decode-key mix (native helper) | 69.2 | 89.4 → 50.0 | 59.7 | 59.4 → 34.2 |
+| decode-key mix (bytecode helper) | 63.2 | 90.7 → 53.1 | 57.1 | 60.8 → 36.8 |
+
+(The bytecode column moves 0-10% between runs; the "after" columns are
+the committed binary's, each the last of several agreeing runs.  An
+intermediate build that kept the trampoline's 1 KB argument copy in the
+dispatcher's frame read 4.9 us on the native-leaf row on the Vampire;
+moving it out -- needed for recursion depth -- costs that row 2 us there
+and nothing on FS-UAE or on the decode-key mix, a stack-layout cache
+effect of the machine.)
+
+The spike that raised the item (`clamacs/spike/run-vamp.py`, the per-key
+Emacs layer over TextEditor.mcc), re-run on the Vampire with the change,
+JIT on vs `--no-jit` in one session: per key 658 vs 689 us median (p90
+1094 vs 1105), RET 50 vs 88 ms, explicit full GC 131 / 55 vs 133 / 50 ms.
+Before the change the same spike read 1043 vs 706 us per key.  The
+suite's own call loop (`trunk/bench-jit-loop.lisp`, two million calls
+from a JIT'd caller into two native leaves, run after every
+`test-amiga`) reads 214,133 calls/s on the FS-UAE 68040 config against
+69,930 on 2026-08-09.
+
+**Reproduce**:
+
+```
+make -f Makefile.cross amiga
+# real hardware through amiagent (pushes the cross binary beside the release):
+verify/realamiga/run-on-vampire.py trunk/bench-jit-call.lisp
+# FS-UAE: a boot-override that runs the file, see verify/realamiga/call-on-ustartup
+```
+
+---
+
 ## 2026-09-10 — sento matrix for 0.10, refreshed after the heap-word locks: +50% to +360% per cell over 0.8
 
 **Context**: the full matrix of the entry two below, re-run on `04a2a410`
