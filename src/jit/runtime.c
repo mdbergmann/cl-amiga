@@ -32,7 +32,7 @@
 #include "core/string_utils.h" /* cl_string_length, cl_string_set_char_at */
 #include "core/builtins.h"   /* cl_ffi_stub_call (jit_dispatch) */
 #include "jit/jit.h"         /* cl_jit_invoke (jit_dispatch) */
-#include "../platform/platform.h"  /* CL_NOINLINE */
+#include "platform/platform.h" /* CL_NOINLINE */
 #include <setjmp.h>
 #include <string.h>          /* memcpy for mv_values preservation */
 

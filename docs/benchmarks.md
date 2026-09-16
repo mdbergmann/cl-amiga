@@ -46,7 +46,11 @@ intermediate build that kept the trampoline's 1 KB argument copy in the
 dispatcher's frame read 4.9 us on the native-leaf row on the Vampire;
 moving it out -- needed for recursion depth -- costs that row 2 us there
 and nothing on FS-UAE or on the decode-key mix, a stack-layout cache
-effect of the machine.)
+effect of the machine.  The build actually committed, which re-derives
+the callee's bytecode pointer after the safepoint, reads 7.7 / 3.6 /
+43.2 us on the native-leaf / LOGTEST / decode-key rows: on the Vampire a
+row moves by 2-3 us between layouts of the same code, so compare builds
+on the mix rows and on the spike, not on one leaf row.)
 
 The spike that raised the item (`clamacs/spike/run-vamp.py`, the per-key
 Emacs layer over TextEditor.mcc), re-run on the Vampire with the change,
