@@ -1000,7 +1000,7 @@ from 104 to 66 ms and the new `string-scan` row from 26 to 16 ms (ECL
 DISASSEMBLE at speed 1 / speed 0 / `CLAMIGA_NO_FUSE`, every string and
 vector representation through `AREF`, the builtin error texts, `CMP_BR`
 on every number kind and both polarities, `PUSH`/`POP` value and order
-on every kind of place, `INCF`/`DECF` on every kind of place, the
+on every kind of place, `INCF`/`DECF` on every kind of place, `SVREF` on a string, the
 `compile-file` round trip, allocation loops; also under
 `make test-gc-stress`), `tests/test_peephole.c` (the `CMP_BR` fusion for
 every comparison and polarity, the blocked and backward cases, the
