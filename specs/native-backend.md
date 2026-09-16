@@ -1419,6 +1419,45 @@ frame cannot leak.
   valid within the form that errors (the debugger runs before the next form),
   but no longer leaks across forms.
 
+## Status (2026-09-16, evening: the string-scan opcodes)
+
+Five opcodes came with `specs/performance.md` 4.4 (the Clamacs-in-Lisp
+spike's "character scanning costs 25-65 us per character" finding), and
+the walker has a template for each, so JIT coverage is unchanged:
+
+- **`OP_AREF k`**: a three-argument helper call (`cl_jit_runtime_aref` →
+  `cl_vector_ref1`, the builtin's own type gate and error text for the
+  accessor kind), the same shape as `OP_STRUCT_REF`: pop the index and the
+  array, flush (the helper signals), push the kind immediate and the two
+  operands, JSR, drop 12, push D0.  The VM inlines the simple-string /
+  simple-vector case; the walker does not yet — the arena base and the
+  header type byte would be its first inline heap reads — so a JIT'd
+  `(schar s i)` costs a C call.  The lever if a scan ever needs it.
+- **`OP_CHAREQ`**: inline, `emit_chareq_compute`: `CMPI.B #CL_TAG_CHAR`
+  on both operands' low byte (a new encoder, `m68k_emit_cmpi_b_imm_dn`),
+  `CMP.L`, `T`/`NIL` into D0; the slow path is the spill / JSR / reload
+  shim of `emit_compare_compute`, its helper signals `CHAR='s type error.
+- **`OP_CMP_BR k t`**: the comparison and the branch in one, both
+  polarities: pop b/a, flush (a branch boundary), the fixnum `BTST` pair
+  (or the character `CMPI.B` pair) to the slow path, `CMP.L d1,d0`, then
+  one `Bcc` straight to the bytecode target on the *effective* m68k
+  condition (`cmp_br_condition`: the comparison's code, or its inverse
+  for the JNIL shape) — `emit_bcc_to_bc` now takes the raw m68k condition
+  code, so `BCC_LT`/`BCC_GE`/`BCC_GT`/`BCC_LE` join `BCC_EQ`/`BCC_NE`.
+  The slow path calls `cl_jit_runtime_cmp_kind(a, b, kind)` and branches
+  on its `T`/`NIL` with `TST.L` + `BNE`/`BEQ`.  Both branch sites go
+  through the patch list, so a forward target is resolved like any other.
+- **`OP_PUSH_LOCAL s` / `OP_POP_LOCAL s`**: helper calls that take the
+  slot's *address* in the LINK frame (`LEA disp(a6),a0`): the push helper
+  conses and stores (the slot is a word of the JIT'd frame, inside the
+  conservative scan window, so the list is a root across the allocation;
+  `cl_cons` roots the item), the pop helper returns the car and stores
+  the cdr (`CAR`'s type error on a non-list).  Both flush first.
+
+The prescan knows the shapes (`OP_CMP_BR` joins the `u8 + i32` branch
+family of `OP_LOAD_JNIL`).  Measured: `docs/benchmarks.md` 2026-09-16
+(string-scan); tests: the `jss-` block of `tests/amiga/test-jit.lisp`.
+
 ## Status (2026-09-16, direct call dispatch from JIT'd code)
 
 **The finding.**  The phase-0 spike of the Clamacs-in-Lisp port

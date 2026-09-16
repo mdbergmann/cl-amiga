@@ -146,6 +146,11 @@ void m68k_emit_and_l_dn_to_dm(CodeBuf *cb, M68kReg dn, M68kReg dm);
  * after the AND. */
 void m68k_emit_btst_imm_dn(CodeBuf *cb, uint8_t imm, M68kReg dn);
 
+/* CMPI.B #imm,Dn — compare the low byte of Dn with an 8-bit immediate;
+ * sets Z when equal.  4 bytes.  The walker uses it for the character
+ * tag test (CL_TAG_CHAR lives in the low byte of a CL_Obj). */
+void m68k_emit_cmpi_b_imm_dn(CodeBuf *cb, uint8_t imm, M68kReg dn);
+
 /* ADD.L Dn,Dm — Dm = Dm + Dn.  Sets N/Z/V/C flags.  2 bytes.  The V
  * flag captures signed overflow — the JIT uses BVS to detect fixnum
  * range overflow. */

@@ -224,6 +224,19 @@ typedef enum {
     X(OP_GLOAD_EQ_JNIL,    0xBD, "GLOAD_EQ_JNIL",    CL_OPND_U16_JREL, CL_OPF_MVW)    /* GLOAD sym; EQ; JNIL t (pop 1, jump if not eq) */ \
     X(OP_LOAD_STORE_POP,   0xBE, "LOAD_STORE_POP",   CL_OPND_U8_U8, 0)                /* LOAD a; STORE b; POP (locals[b] = locals[a]) */ \
     X(OP_POP_LOAD,         0xBF, "POP_LOAD",         CL_OPND_U8, 0)                   /* POP; LOAD s (replaces the top) */ \
+    /* String-scan fast path (specs/performance.md 4.4).  The compiler
+     * emits AREF for a two-argument AREF/SVREF/CHAR/SCHAR call (the u8
+     * says which, so the type gate and the error text stay the builtin's)
+     * and CHAREQ for a two-argument CHAR=; PUSH_LOCAL / POP_LOCAL for
+     * PUSH / POP on an unboxed lexical variable.  CMP_BR is fused by the
+     * peephole from `LT/GT/LE/GE/NUMEQ/CHAREQ; JNIL/JTRUE` — u8 kind
+     * (CL_CMP_BR_*: bits 0-2 the comparison, bit 3 set = branch when the
+     * comparison holds, i.e. the JTRUE shape) and the i32 offset. */ \
+    X(OP_AREF,             0xC0, "AREF",             CL_OPND_U8, CL_OPF_MVW)          /* Pop idx, pop vec; push vec[idx] (u8 = accessor kind) */ \
+    X(OP_CHAREQ,           0xC1, "CHAREQ",           CL_OPND_NONE, CL_OPF_MVW)        /* Pop 2 characters; push T/NIL (signals on a non-character) */ \
+    X(OP_CMP_BR,           0xC2, "CMP_BR",           CL_OPND_U8_JREL, CL_OPF_MVW)     /* LT..CHAREQ; JNIL/JTRUE t (pop 2, nothing pushed) */ \
+    X(OP_PUSH_LOCAL,       0xC3, "PUSH_LOCAL",       CL_OPND_U8, CL_OPF_MVW)          /* Pop item; locals[s] = (cons item locals[s]); push it */ \
+    X(OP_POP_LOCAL,        0xC4, "POP_LOCAL",        CL_OPND_U8, CL_OPF_MVW)          /* Push (car locals[s]); locals[s] = (cdr locals[s]) */ \
     X(OP_HALT,         0xFF, "HALT",         CL_OPND_NONE, CL_OPF_UNCOND)    /* Stop VM */
 
 /*
@@ -250,6 +263,22 @@ typedef enum {
  * Emitted for (clamiga::%struct-ref obj <fixnum>) etc. with a constant
  * index; the full builtins remain for dynamic indices.
  */
+
+/* OP_AREF accessor kinds (the u8 operand). */
+#define CL_AREF_KIND_AREF   0
+#define CL_AREF_KIND_SVREF  1
+#define CL_AREF_KIND_CHAR   2
+#define CL_AREF_KIND_SCHAR  3
+
+/* OP_CMP_BR kind byte: comparison in bits 0-2, polarity in bit 3. */
+#define CL_CMP_BR_LT      0
+#define CL_CMP_BR_GT      1
+#define CL_CMP_BR_LE      2
+#define CL_CMP_BR_GE      3
+#define CL_CMP_BR_NUMEQ   4
+#define CL_CMP_BR_CHAREQ  5
+#define CL_CMP_BR_CMP_MASK 0x07
+#define CL_CMP_BR_IF_TRUE  0x08   /* jump when the comparison holds (from JTRUE); clear = from JNIL */
 
 enum CL_Opcode {
 #define CL_OPCODE_ENUM_ENTRY(name, value, str, opnd, flags) name = value,

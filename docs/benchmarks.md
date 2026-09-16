@@ -7,6 +7,79 @@ command, and results, so later runs can be compared like-for-like.
 Related: [specs/performance.md](../specs/performance.md) is the optimization
 *plan*; this file is the *measured results* log.
 
+## 2026-09-16 — string-scan fast path: a character scan 3-7× faster on real hardware
+
+**Context**: item 3 of the Clamacs-in-Lisp runtime cycle
+(`clamacs/specs/clamacs-lisp.md`).  The spike measured 18-33 us per
+character for an editor's indent scan on a Vampire V4; `(schar s i)` and
+`(char= c #\x)` were builtin calls and a `CASE` key test two dispatches on
+the miss path.  Five opcodes (`AREF`, `CHAREQ`, `CMP_BR`, `PUSH_LOCAL`,
+`POP_LOCAL`), a `CASE` branch shape and leaner `PUSH`/`INCF`/`DECF`
+expansions; design in `specs/performance.md` 4.4, JIT templates in
+`specs/native-backend.md` "Status (2026-09-16, evening)".  The declared
+scan's ordinary character went from 41 dispatches plus a builtin call to
+26 dispatches.
+
+**Environment**: Vampire V4 (Kickstart 47.115), `--heap 8M`, `stack
+128000`, JIT on.  Before = `07cab514`, after = this change, both
+cross-built and run from identically laid-out trees (the repo's `lib/`,
+lib/amiga compiled into the FASL cache, warm).  Host: the Mac, `make host`
+of both commits, same session, alternating runs, minimum taken.
+
+**Scan only** (`trunk/bench-scan.lisp` through
+`verify/realamiga/run-on-vampire.py`; three scans over a 1,007-char Lisp
+text, 50 repetitions; the Amiga clock ticks in 20 ms, so a cell
+resolves to about 0.4 us).  Microseconds per character:
+
+| scan | before | after |
+|------|-------:|------:|
+| naive (`CHAR`, `COND` of `CHAR=`, no declarations) | 18.3 | 2.4-2.8 |
+| declared state machine (`SCHAR`, `CASE`, fixnum declarations) | 7.6 | 2.0-2.4 |
+| bench-general `scan-parens` | 8.3 | 2.0-2.4 |
+
+In two of the four "after" runs one of the three functions ran 2.5-3×
+slower than in the other runs, for the whole run, with the same binary and
+the same code; which function was hit moved when an unrelated allocation
+changed (the Lisp file's name).  That is a native-code placement effect on
+this machine (the item-2 entry saw a 2 us version of it), not dispatch
+work; compare builds over several runs.
+
+**The spike** (`clamacs/spike/run-vamp.py`, two runs per binary):
+
+| | before | after |
+|---|---:|---:|
+| per key, median | 651 / 634 us | 661 / 622 us |
+| RET, median | 48.5 / 51.2 ms | 35.9 / 32.0 ms |
+| RET: naive indent scan + indentation | 20.9 / 22.1 ms | 10.2 / 8.2 ms |
+| RET: declared scan + indentation | 11.6 / 12.0 ms | 9.7 / 8.5 ms |
+| full GC, first / later (warm run) | 354 / 68 ms | 357-377 / 65 ms |
+
+The scan itself is now about 1.5 ms of a 657-char buffer; the remaining
+~7 ms of each "indent" cell is the indentation decision after it (a
+`POSITION-IF` with a closure, `SUBSEQ`, `MEMBER :test STRING-EQUAL` over
+28 names) — editor code on generic sequence functions, the next thing to
+look at on the Lisp side.  Per key and GC are unchanged.  (A first A/B ran
+the old binary from the 0.10.0 release drawer and showed a 139 ms first
+GC against 325-427 ms for the new one; from identical trees both take
+~355 ms.  The first-collection cost depends on how the library was laid
+out and loaded, not on the binary.)
+
+**Host** (`trunk/bench-general.lisp`, min of 2; the new `string-scan` row
+is `scan-parens` over 400 generated defuns, 5 passes):
+
+| row | before | after | ECL | SBCL |
+|-----|-------:|------:|----:|-----:|
+| char-loop | 104 | 66 | 4.2 | 2.0 |
+| string-scan | 26 | 16 | 3.7 | 0.6 |
+| insertion-sort | 104 | 76 | | |
+| float-vector | 61 | 50 | | |
+| struct-bst | 60 | 55 | | |
+| total (32 rows) | 3,683 | 3,596 | | |
+
+`trunk/bench-opt.lisp` (min of 3): `vm.fixnum-loop` 50 → 43 ms,
+`safety*.svref-loop` 29 → 26, `alloc.cons-churn` 26 → 21; no row slower
+by more than 1 ms, `vm.*` and `mt.*` included.
+
 ## 2026-09-16 — JIT call dispatch: a JIT'd call to a native leaf 18.8 → 7.0 us on real hardware
 
 **Context**: the Clamacs-in-Lisp spike (`clamacs/specs/clamacs-lisp.md`,

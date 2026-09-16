@@ -826,18 +826,27 @@ void compile_case(CL_Compiler *c, CL_Obj form, int error_if_no_match)
             }
         } else {
             int body_chain = CL_JUMP_CHAIN_END;
-            int next_clause_pos;
+            int next_clause_pos = -1;
 
-            /* Emit EQ tests for each key */
+            /* Emit EQ tests for each key.  Every key but the last jumps to
+             * the body when it matches; the LAST key falls into the body
+             * and jumps to the next clause when it does not — `EQ; JNIL
+             * next` instead of `EQ; JTRUE body; JMP next`, one dispatch
+             * fewer on the miss path (the peephole fuses it to EQ_JNIL) and
+             * the shape every single-key clause takes. */
             if (CL_CONS_P(keys)) {
                 /* Multiple keys: ((k1 k2 k3) body...) */
                 CL_Obj k = keys;
                 while (!CL_NULL_P(k)) {
+                    int last = CL_NULL_P(cl_cdr(k));
                     cl_emit(c, OP_LOAD);
                     cl_emit(c, (uint8_t)temp_slot);
                     cl_emit_const(c, cl_car(k));
                     cl_emit(c, OP_EQ);
-                    body_chain = cl_emit_jump_chain(c, OP_JTRUE, body_chain);
+                    if (last)
+                        next_clause_pos = cl_emit_jump(c, OP_JNIL);
+                    else
+                        body_chain = cl_emit_jump_chain(c, OP_JTRUE, body_chain);
                     k = cl_cdr(k);
                 }
             } else {
@@ -846,11 +855,8 @@ void compile_case(CL_Compiler *c, CL_Obj form, int error_if_no_match)
                 cl_emit(c, (uint8_t)temp_slot);
                 cl_emit_const(c, keys);
                 cl_emit(c, OP_EQ);
-                body_chain = cl_emit_jump_chain(c, OP_JTRUE, body_chain);
+                next_clause_pos = cl_emit_jump(c, OP_JNIL);
             }
-
-            /* No key matched — jump to next clause */
-            next_clause_pos = cl_emit_jump(c, OP_JMP);
 
             /* body: patch all key-match jumps here */
             cl_patch_jump_chain(c, body_chain);
@@ -870,7 +876,7 @@ void compile_case(CL_Compiler *c, CL_Obj form, int error_if_no_match)
             }
 
             /* next_clause: */
-            cl_patch_jump(c, next_clause_pos);
+            if (next_clause_pos >= 0) cl_patch_jump(c, next_clause_pos);
         }
 
         CL_GC_UNPROTECT(2); /* body, keys */

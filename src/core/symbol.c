@@ -42,6 +42,8 @@ CL_Obj SYM_ECASE = CL_NIL;
 CL_Obj SYM_TYPECASE = CL_NIL;
 CL_Obj SYM_ETYPECASE = CL_NIL;
 CL_Obj SYM_OTHERWISE = CL_NIL;
+CL_Obj SYM_PUSH = CL_NIL;
+CL_Obj SYM_POP = CL_NIL;
 CL_Obj SYM_FLET = CL_NIL;
 CL_Obj SYM_LABELS = CL_NIL;
 CL_Obj SYM_AMP_KEY = CL_NIL;
@@ -471,6 +473,8 @@ void cl_symbol_init(void)
     SYM_TYPECASE      = cl_intern_in("TYPECASE", 8, cl_package_cl);
     SYM_ETYPECASE     = cl_intern_in("ETYPECASE", 9, cl_package_cl);
     SYM_OTHERWISE     = cl_intern_in("OTHERWISE", 9, cl_package_cl);
+    SYM_PUSH          = cl_intern_in("PUSH", 4, cl_package_cl);
+    SYM_POP           = cl_intern_in("POP", 3, cl_package_cl);
     SYM_FLET          = cl_intern_in("FLET", 4, cl_package_cl);
     SYM_LABELS        = cl_intern_in("LABELS", 6, cl_package_cl);
     SYM_AMP_KEY       = cl_intern_in("&KEY", 4, cl_package_cl);
@@ -1043,6 +1047,8 @@ void cl_symbol_init(void)
     cl_gc_register_root(&SYM_TYPECASE);
     cl_gc_register_root(&SYM_ETYPECASE);
     cl_gc_register_root(&SYM_OTHERWISE);
+    cl_gc_register_root(&SYM_PUSH);
+    cl_gc_register_root(&SYM_POP);
     cl_gc_register_root(&SYM_FLET);
     cl_gc_register_root(&SYM_LABELS);
     cl_gc_register_root(&SYM_AMP_KEY);

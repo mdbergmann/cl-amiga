@@ -974,6 +974,10 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
         case OP_APPLY:
         case OP_PROGV_BIND: case OP_PROGV_UNBIND:
             step = 1; break;
+        case OP_CHAREQ:
+            step = 1; break;
+        case OP_AREF: case OP_PUSH_LOCAL: case OP_POP_LOCAL:
+            step = 2; break;
         case OP_LOAD: case OP_STORE: case OP_CALL: case OP_TAILCALL:
         case OP_STRUCT_REF: case OP_STRUCT_SET: case OP_DYNUNBIND:
         case OP_CELL_SET_LOCAL:
@@ -1004,11 +1008,12 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
         case OP_GLOAD_CALL_GLOBAL:
             step = 6; break;   /* u16 sym_idx + u16 sym_idx + u8 nargs */
         case OP_EQ_JNIL: case OP_LOAD_JNIL: case OP_GLOAD_JNIL:
-        case OP_GLOAD_EQ_JNIL: {
-            /* The i32 follows the opcode (EQ_JNIL), a u8 (LOAD_JNIL) or a
-             * u16 (GLOAD_JNIL, GLOAD_EQ_JNIL); it is relative to the
-             * instruction's end. */
-            uint32_t pre = (op == OP_EQ_JNIL) ? 0 : (op == OP_LOAD_JNIL) ? 1 : 2;
+        case OP_GLOAD_EQ_JNIL: case OP_CMP_BR: {
+            /* The i32 follows the opcode (EQ_JNIL), a u8 (LOAD_JNIL,
+             * CMP_BR) or a u16 (GLOAD_JNIL, GLOAD_EQ_JNIL); it is relative
+             * to the instruction's end. */
+            uint32_t pre = (op == OP_EQ_JNIL) ? 0
+                         : (op == OP_LOAD_JNIL || op == OP_CMP_BR) ? 1 : 2;
             int32_t offset;
             uint32_t target;
             int ok;
@@ -1194,9 +1199,15 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
  * recorded for patching once the walk is done.  Returns 0 when the
  * displacement does not fit in 16 bits or the backward target was never
  * emitted (a jump into the middle of an instruction). */
+/* `cc` is the m68k condition code itself (asm_m68k.h: 0=BRA, 6=BNE,
+ * 7=BEQ, 12=BGE, 13=BLT, 14=BGT, 15=BLE). */
 #define BCC_ALWAYS 0
-#define BCC_EQ     1
-#define BCC_NE     2
+#define BCC_NE     6
+#define BCC_EQ     7
+#define BCC_GE     12
+#define BCC_LT     13
+#define BCC_GT     14
+#define BCC_LE     15
 static int emit_bcc_to_bc(CodeBuf *cb, int cc, uint32_t target_bc_off,
                           uint32_t insn_start, const int32_t *bc_to_native,
                           BranchPatch **patches, uint32_t *n_patches,
@@ -1215,12 +1226,76 @@ static int emit_bcc_to_bc(CodeBuf *cb, int cc, uint32_t target_bc_off,
         if (!patches_push(patches, n_patches, cap_patches,
                           patch_off, target_bc_off)) return 0;
     }
-    switch (cc) {
-    case BCC_ALWAYS: m68k_emit_bra_w(cb, disp); break;
-    case BCC_EQ:     m68k_emit_beq_w(cb, disp); break;
-    default:         m68k_emit_bne_w(cb, disp); break;
-    }
+    m68k_emit_bcc_w(cb, (uint8_t)cc, disp);
     return 1;
+}
+
+/* The m68k condition that branches when comparison `cmp` (CL_CMP_BR_*)
+ * holds after `cmp.l d1,d0` (flags = a - b), or when it does not. */
+static int cmp_br_condition(int cmp, int when_true)
+{
+    switch (cmp) {
+    case CL_CMP_BR_LT: return when_true ? BCC_LT : BCC_GE;
+    case CL_CMP_BR_GT: return when_true ? BCC_GT : BCC_LE;
+    case CL_CMP_BR_LE: return when_true ? BCC_LE : BCC_GT;
+    case CL_CMP_BR_GE: return when_true ? BCC_GE : BCC_LT;
+    default:           return when_true ? BCC_EQ : BCC_NE;   /* NUMEQ, CHAREQ */
+    }
+}
+
+/* OP_CHAREQ's compute template.  Operands in D0=a, D1=b; leaves CL_T or
+ * CL_NIL in D0.  Same boundary-free contract as emit_compare_compute,
+ * with the character tag test (CMPI.B against CL_TAG_CHAR on the low
+ * byte) in place of the fixnum BTST; two equal characters are the same
+ * tagged word, so CMP.L decides.  The slow-path helper signals CHAR='s
+ * type error (it never returns for a non-character), so the shim keeps
+ * the spill/reload only for the conservative scan of a signalled
+ * condition's allocation. */
+static void emit_chareq_compute(CodeBuf *cb, int cache_head, int cache_depth,
+                                JitRelocs *relocs)
+{
+    uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_chareq;
+    int32_t bne_a_pc, bne_b_pc, beq_pc, bra1_pc, bra2_pc;
+    int32_t slow_off, done_off, load_t_off;
+
+    m68k_emit_cmpi_b_imm_dn(cb, CL_TAG_CHAR, REG_D0);
+    bne_a_pc = (int32_t)cb_len(cb) + 2;
+    m68k_emit_bne_w(cb, 0);
+    m68k_emit_cmpi_b_imm_dn(cb, CL_TAG_CHAR, REG_D1);
+    bne_b_pc = (int32_t)cb_len(cb) + 2;
+    m68k_emit_bne_w(cb, 0);
+
+    m68k_emit_cmp_l_dn_dm(cb, REG_D1, REG_D0);
+    beq_pc = (int32_t)cb_len(cb) + 2;
+    m68k_emit_beq_w(cb, 0);
+    m68k_emit_moveq(cb, 0, REG_D0);                  /* CL_NIL */
+    bra1_pc = (int32_t)cb_len(cb) + 2;
+    m68k_emit_bra_w(cb, 0);
+
+    load_t_off = (int32_t)cb_len(cb);
+    emit_obj_imm_d0(cb, relocs, CL_T);
+    bra2_pc = (int32_t)cb_len(cb) + 2;
+    m68k_emit_bra_w(cb, 0);
+
+    slow_off = (int32_t)cb_len(cb);
+    emit_cache_spill(cb, cache_head, cache_depth);
+    m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
+    m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+    m68k_emit_jsr_abs_l(cb, helper);
+    m68k_emit_addq_l_an(cb, 8, REG_A7);
+    emit_cache_reload(cb, cache_head, cache_depth);
+    done_off = (int32_t)cb_len(cb);
+
+    m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)bne_a_pc,
+                      (int16_t)(slow_off - bne_a_pc));
+    m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)bne_b_pc,
+                      (int16_t)(slow_off - bne_b_pc));
+    m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)beq_pc,
+                      (int16_t)(load_t_off - beq_pc));
+    m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)bra1_pc,
+                      (int16_t)(done_off - bra1_pc));
+    m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)bra2_pc,
+                      (int16_t)(done_off - bra2_pc));
 }
 
 /* OP_CALL_GLOBAL's template — u16 sym_idx, u8 nargs at *IP — the fused
@@ -3309,6 +3384,155 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
          * (CALL_GLOBAL, STRUCT_REF, MV_RESET, RET) push the local and FALL
          * THROUGH into the tail's case, whose operands follow in the
          * stream — so the tail's template exists once. */
+
+        /* ---- String-scan fast path (opcodes.h 0xC0-0xC4, spec 4.4) ---- */
+
+        case OP_AREF: {
+            /* u8 kind.  Three-arg helper (vec, idx, kind) = cl_vector_ref1,
+             * the builtin's own path; it signals type / bounds errors, so
+             * the cache is flushed first (same contract as STRUCT_REF). */
+            uint8_t kind;
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_aref;
+            if (ip >= bc->code_len) goto fail;
+            kind = bc->code[ip++];
+            if (kind > CL_AREF_KIND_SCHAR) goto fail;
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);   /* idx */
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);   /* vec */
+            cache_flush(cb, &cache_head, &cache_depth);
+            m68k_emit_move_l_imm32_predec(cb, (uint32_t)kind, REG_A7);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_lea_disp_an_to_am(cb, 12, REG_A7, REG_A7);
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
+            break;
+        }
+
+        case OP_CHAREQ:
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
+            emit_chareq_compute(cb, cache_head, cache_depth, relocs);
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
+            break;
+
+        case OP_CMP_BR: {
+            /* u8 kind, i32 offset: the comparison and the branch in one.
+             * Pop b/a, flush (a branch boundary: the target expects
+             * depth 0, and the slow helper may signal), then the inline
+             * fixnum (or character) test branches straight to the target
+             * on the effective condition; the slow path calls the kind
+             * helper and branches on its T/NIL. */
+            uint8_t kind;
+            int cmp, when_true;
+            int32_t offset;
+            uint32_t target_bc_off;
+            uint32_t insn_start = ip - 1;
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_cmp_kind;
+            int32_t tag_a_pc, tag_b_pc, bra_pc, slow_off, done_off;
+            int ok;
+            if (ip + 5 > bc->code_len) goto fail;
+            kind = bc->code[ip++];
+            offset = read_i32_be(bc->code + ip);
+            ip += 4;
+            target_bc_off = compute_landing_ip(offset, ip, bc->code_len, &ok);
+            if (!ok) goto fail;
+            cmp = kind & CL_CMP_BR_CMP_MASK;
+            when_true = (kind & CL_CMP_BR_IF_TRUE) != 0;
+            if (cmp > CL_CMP_BR_CHAREQ || (kind & ~(CL_CMP_BR_CMP_MASK | CL_CMP_BR_IF_TRUE)))
+                goto fail;
+
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);   /* b */
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);   /* a */
+            cache_flush(cb, &cache_head, &cache_depth);
+
+            if (cmp == CL_CMP_BR_CHAREQ) {
+                m68k_emit_cmpi_b_imm_dn(cb, CL_TAG_CHAR, REG_D0);
+                tag_a_pc = (int32_t)cb_len(cb) + 2;
+                m68k_emit_bne_w(cb, 0);
+                m68k_emit_cmpi_b_imm_dn(cb, CL_TAG_CHAR, REG_D1);
+                tag_b_pc = (int32_t)cb_len(cb) + 2;
+                m68k_emit_bne_w(cb, 0);
+            } else {
+                m68k_emit_btst_imm_dn(cb, 0, REG_D0);
+                tag_a_pc = (int32_t)cb_len(cb) + 2;
+                m68k_emit_beq_w(cb, 0);
+                m68k_emit_btst_imm_dn(cb, 0, REG_D1);
+                tag_b_pc = (int32_t)cb_len(cb) + 2;
+                m68k_emit_beq_w(cb, 0);
+            }
+            m68k_emit_cmp_l_dn_dm(cb, REG_D1, REG_D0);             /* flags = a - b */
+            if (!emit_bcc_to_bc(cb, cmp_br_condition(cmp, when_true),
+                                target_bc_off, insn_start, bc_to_native,
+                                &patches, &n_patches, &cap_patches))
+                goto fail;
+            bra_pc = (int32_t)cb_len(cb) + 2;
+            m68k_emit_bra_w(cb, 0);
+
+            /* Slow path: helper(a, b, cmp) -> T/NIL in D0. */
+            slow_off = (int32_t)cb_len(cb);
+            m68k_emit_move_l_imm32_predec(cb, (uint32_t)cmp, REG_A7);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_lea_disp_an_to_am(cb, 12, REG_A7, REG_A7);
+            m68k_emit_tst_l_dn(cb, REG_D0);
+            if (!emit_bcc_to_bc(cb, when_true ? BCC_NE : BCC_EQ,
+                                target_bc_off, insn_start, bc_to_native,
+                                &patches, &n_patches, &cap_patches))
+                goto fail;
+            done_off = (int32_t)cb_len(cb);
+
+            m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)tag_a_pc,
+                              (int16_t)(slow_off - tag_a_pc));
+            m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)tag_b_pc,
+                              (int16_t)(slow_off - tag_b_pc));
+            m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)bra_pc,
+                              (int16_t)(done_off - bra_pc));
+            break;
+        }
+
+        case OP_PUSH_LOCAL: {
+            /* u8 slot.  Pop the item, hand the helper its value and the
+             * slot's ADDRESS in the LINK frame; it conses, stores and
+             * returns the new list.  cl_cons allocates: flush first so the
+             * cached operands are on the m68k stack for the scan. */
+            uint8_t slot;
+            int16_t disp;
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_push_local;
+            if (ip >= bc->code_len) goto fail;
+            slot = bc->code[ip++];
+            if (slot >= n_locals) goto fail;
+            disp = slot_disp(slot, slot_anchor, is_kw);
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);   /* item */
+            cache_flush(cb, &cache_head, &cache_depth);
+            m68k_emit_lea_disp_an_to_am(cb, disp, REG_A6, REG_A0);
+            m68k_emit_move_l_an_predec_am(cb, REG_A0, REG_A7);         /* &slot */
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);         /* item */
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_addq_l_an(cb, 8, REG_A7);
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
+            break;
+        }
+
+        case OP_POP_LOCAL: {
+            /* u8 slot.  Helper takes the slot's address, returns the car
+             * and stores the cdr.  Non-allocating, but CAR's type error
+             * allocates a condition: flush. */
+            uint8_t slot;
+            int16_t disp;
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_pop_local;
+            if (ip >= bc->code_len) goto fail;
+            slot = bc->code[ip++];
+            if (slot >= n_locals) goto fail;
+            disp = slot_disp(slot, slot_anchor, is_kw);
+            cache_flush(cb, &cache_head, &cache_depth);
+            m68k_emit_lea_disp_an_to_am(cb, disp, REG_A6, REG_A0);
+            m68k_emit_move_l_an_predec_am(cb, REG_A0, REG_A7);
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_addq_l_an(cb, 4, REG_A7);
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
+            break;
+        }
 
         case OP_STORE_POP: {
             uint8_t slot;

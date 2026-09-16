@@ -943,6 +943,73 @@ fused opcode, dynamic bindings, backtrace lines, multi-clause
 
 **Measured**: docs/benchmarks.md 2026-09-09 (phase 3).
 
+### 4.4 The string-scan fast path ✅ DONE (2026-09-16)
+
+**The finding** (the Clamacs-in-Lisp spike, `clamacs/specs/clamacs-lisp.md`
+"What the spike found", item 1): scanning text character by character —
+what an editor does on every RET, TAB, paren match and colouring pass —
+cost 18-33 us per character on a real 68040-class machine (the declared
+and the naive scan after 4.3 and the JIT call fix), i.e. well over a
+thousand instructions for `SCHAR` + `CASE` + a list push.  The bytecode
+showed why: `(schar s i)` and `(char= c #\x)` were global calls to
+builtins (a full call dispatch each), a `CASE` key test compiled to `EQ;
+JTRUE body; JMP next` (two dispatches on the miss path), a loop test to
+`LT; JNIL`, `(push i stack)` to a LET temporary plus `CONS` plus `STORE`,
+and `(incf i)` to six opcodes through two LET temporaries.
+
+**Shipped** (`opcodes.h` 0xC0-0xC4, `compiler.c`, `compiler_extra.c`,
+`peephole.c`, `vm.c`, `jit.c`, `runtime.c`, `builtins_array.c`,
+`lib/boot.lisp`; `CL_FASL_VERSION` 34):
+
+| opcode | operands | emitted by | what it is |
+| --- | --- | --- | --- |
+| `AREF k` | u8 kind | compiler: a two-argument `AREF` / `SVREF` / `CHAR` / `SCHAR` | pop index, pop array, push the element.  The VM inlines a fixnum index into a simple base string (every kind) or a simple general vector (`AREF`/`SVREF`); everything else — wide strings, fill-pointer / displaced / bit / byte vectors and every error — is `cl_vector_ref1`, which keeps each accessor's own type gate and error text.  The JIT calls that helper. |
+| `CHAREQ` | — | compiler: a two-argument `CHAR=` | pop two characters, push `T`/`NIL`; the builtin's type error otherwise.  Inline in the JIT (tag test + `CMP.L`). |
+| `CMP_BR k t` | u8 kind, i32 | peephole: `LT/GT/LE/GE/NUMEQ/CHAREQ; JNIL/JTRUE t` | the comparison and the branch in one: fixnum (or character) fast path, the member's full type gate and cross-type compare otherwise (`cl_vm_compare_kind`).  The kind byte is *synthesized* by the fusion (comparison in bits 0-2, bit 3 = the JTRUE shape) — the first fused opcode whose operands are not just its members' bytes.  The JIT branches straight to the target on the m68k condition. |
+| `PUSH_LOCAL s` | u8 slot | compiler: `(push item var)` on an unboxed lexical variable | pop the item, `locals[s] = (cons item locals[s])`, push it.  The item on the VM stack and the list in its slot are the cons's roots. |
+| `POP_LOCAL s` | u8 slot | compiler: `(pop var)` on an unboxed lexical variable | push the car, store the cdr; `CAR`'s type error on a non-list. |
+
+`PUSH`/`POP` are intercepted the way `CASE`/`COND` are — ahead of macro
+expansion, only for the shape `(push item sym)` / `(pop sym)` where `sym`
+is a local of the current function that is neither boxed (captured and
+mutated), nor special, nor a symbol macro; every other place, and every
+`macroexpand`, sees the genuine macro in `lib/boot.lisp`.  Three shapes
+changed with it: `CASE` emits `EQ; JNIL next` for a clause's last key
+(one dispatch fewer on the miss path, and it fuses to `EQ_JNIL`); the
+`PUSH` macro's variable case is `(setq var (cons item var))` with no
+temporary (the item is evaluated first either way); `INCF`/`DECF` on a
+variable with a literal delta is `(setq var (+ var delta))` — three
+opcodes instead of six.  A new peephole rewrite deletes a `JMP` to the
+instruction after it (the exit jump of a `CASE`/`COND` last arm, a `LOOP`
+prologue).
+
+**The declared scan, per ordinary character** (state 0, no key
+matches): 41 dispatches plus a builtin call before; 26 dispatches and no
+call after.  Eight of the 26 are the `CASE` chain over four character
+keys (`LOAD_CONST; EQ_JNIL` per key) — a jump table on small integer and
+character keys is the next lever if one is needed.
+
+**Measured** (docs/benchmarks.md 2026-09-16, string-scan): on a Vampire
+V4 the scan alone went from 18.3 to 2.4-2.8 us per character (naive) and
+from 7.6 to 2.0-2.4 (declared, `trunk/bench-scan.lisp`); the Clamacs
+spike's RET from about 50 to about 34 ms.  On the host `char-loop` went
+from 104 to 66 ms and the new `string-scan` row from 26 to 16 ms (ECL
+3.7, SBCL 0.6); no `bench-opt` row got slower.
+
+**Tests**: `tests/test_scan_opcodes.sh` (134 checks: every shape through
+DISASSEMBLE at speed 1 / speed 0 / `CLAMIGA_NO_FUSE`, every string and
+vector representation through `AREF`, the builtin error texts, `CMP_BR`
+on every number kind and both polarities, `PUSH`/`POP` value and order
+on every kind of place, `INCF`/`DECF` on every kind of place, the
+`compile-file` round trip, allocation loops; also under
+`make test-gc-stress`), `tests/test_peephole.c` (the `CMP_BR` fusion for
+every comparison and polarity, the blocked and backward cases, the
+jump-to-next rule), `tests/peephole-corpus.lisp` (the scan and each
+opcode at four speeds), `tests/test_gc_stress_regression.sh` (the scan
+over base and wide strings under forced compaction), and the `jss-`
+block of `tests/amiga/test-jit.lisp` (every template's fast, slow and
+error path on real m68k, with the native-code proof).
+
 ### Expected result and validation
 
 - Phases 1+2 ≈ 1.6–1.7× on sento pinned/tell; all three ≈ 2×.  ECL parity

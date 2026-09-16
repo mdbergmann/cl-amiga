@@ -3191,6 +3191,58 @@ static CL_Obj emit_tail_postlude(CL_Compiler *c, CL_TailFrame *tf)
 
 static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form);
 
+/* (push item var) / (pop var) with VAR an unboxed lexical variable of the
+ * current function — not a symbol macro, not captured-and-mutated (boxed),
+ * not special, not an upvalue — compiles to OP_PUSH_LOCAL / OP_POP_LOCAL
+ * (specs/performance.md 4.4): the item, then one opcode that conses onto
+ * (or takes the car off) the slot in place.  Same evaluation order and the
+ * same value as the macro's expansion (`(setq var (cons item var))` reads
+ * the variable after the item; POP returns the car).  Returns 0 when the
+ * form is not that shape — the caller then macroexpands it as before, so a
+ * malformed form gets the macro's own diagnostic. */
+static int try_compile_push_pop(CL_Compiler *c, CL_Obj form)
+{
+    CL_Obj head = cl_car(form);
+    CL_Obj rest = cl_cdr(form);
+    CL_Obj var, item = CL_NIL, expansion;
+    int slot;
+    int saved_tail = c->in_tail;
+
+    if (!c->env) return 0;
+    if (head == SYM_PUSH) {
+        if (!CL_CONS_P(rest) || !CL_CONS_P(cl_cdr(rest)) ||
+            !CL_NULL_P(cl_cdr(cl_cdr(rest))))
+            return 0;
+        item = cl_car(rest);
+        var = cl_car(cl_cdr(rest));
+    } else {
+        if (!CL_CONS_P(rest) || !CL_NULL_P(cl_cdr(rest)))
+            return 0;
+        var = cl_car(rest);
+    }
+    if (!CL_SYMBOL_P(var) || CL_NULL_P(var)) return 0;
+    if (cl_env_lookup_symbol_macro_p(c->env, var, &expansion)) return 0;
+    slot = cl_env_lookup(c->env, var);
+    if (slot < 0 || c->env->boxed[slot]) return 0;
+
+    if (head == SYM_PUSH) {
+        /* compile_expr can compact: re-derive the variable from the
+         * protected form afterwards (its slot cannot change, but the
+         * symbol offset can). */
+        CL_GC_PROTECT(form);
+        c->in_tail = 0;
+        compile_expr(c, item);
+        c->in_tail = saved_tail;
+        CL_GC_UNPROTECT(1);
+        cl_emit(c, OP_PUSH_LOCAL);
+    } else {
+        cl_emit(c, OP_POP_LOCAL);
+    }
+    cl_emit(c, (uint8_t)slot);
+    c->mv_state = CL_MV_ONE;
+    return 1;
+}
+
 static void compile_setq(CL_Compiler *c, CL_Obj form)
 {
     CL_Obj rest = cl_cdr(form);
@@ -4467,6 +4519,35 @@ static uint8_t inline_builtin_opcode(CL_Obj func, int nargs)
         if (nargs == 1 && memcmp(name->data, "NULL", 4) == 0) return OP_NOT;
         if (nargs == 2 && memcmp(name->data, "CONS", 4) == 0) return OP_CONS;
         break;
+    case 5:
+        /* Two-argument CHAR= only: the n-ary form stays a call. */
+        if (nargs == 2 && memcmp(name->data, "CHAR=", 5) == 0) return OP_CHAREQ;
+        break;
+    }
+    return 0;
+}
+
+/* The one-index array readers OP_AREF inlines (specs/performance.md 4.4):
+ * returns 1 + CL_AREF_KIND_* for a two-argument CL:AREF / SVREF / CHAR /
+ * SCHAR call, 0 otherwise.  The kind byte keeps each accessor's own type
+ * gate and error text (cl_vector_ref1). */
+static int inline_aref_kind(CL_Obj func, int nargs)
+{
+    CL_Symbol *s;
+    CL_String *name;
+    if (nargs != 2 || !CL_SYMBOL_P(func)) return 0;
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(func);
+    if (s->package != cl_package_cl) return 0;
+    name = (CL_String *)CL_OBJ_TO_PTR(s->name);
+    switch (name->length) {
+    case 4:
+        if (memcmp(name->data, "AREF", 4) == 0) return 1 + CL_AREF_KIND_AREF;
+        if (memcmp(name->data, "CHAR", 4) == 0) return 1 + CL_AREF_KIND_CHAR;
+        break;
+    case 5:
+        if (memcmp(name->data, "SVREF", 5) == 0) return 1 + CL_AREF_KIND_SVREF;
+        if (memcmp(name->data, "SCHAR", 5) == 0) return 1 + CL_AREF_KIND_SCHAR;
+        break;
     }
     return 0;
 }
@@ -4824,7 +4905,8 @@ static void compile_call(CL_Compiler *c, CL_Obj form)
     {
         int candidate_nargs = proper_list_length(args);
         uint8_t opcode = inline_builtin_opcode(func, candidate_nargs);
-        if (opcode != 0) {
+        int aref_kind = opcode ? 0 : inline_aref_kind(func, candidate_nargs);
+        if (opcode != 0 || aref_kind != 0) {
             CL_Obj rest = args;
             /* Protect the cursor: compile_expr can compact, relocating the
              * arg list cells; without &rest registered, rest = cl_cdr(rest)
@@ -4835,7 +4917,12 @@ static void compile_call(CL_Compiler *c, CL_Obj form)
                 compile_expr(c, cl_car(rest));
                 rest = cl_cdr(rest);
             }
-            cl_emit(c, opcode);
+            if (aref_kind != 0) {
+                cl_emit(c, OP_AREF);
+                cl_emit(c, (uint8_t)(aref_kind - 1));
+            } else {
+                cl_emit(c, opcode);
+            }
             CL_GC_UNPROTECT(2);  /* rest, args */
             c->in_tail = saved_tail;
             c->mv_state = CL_MV_ONE;   /* inlined builtin opcodes: one value */
@@ -5258,6 +5345,11 @@ static int compile_expr_step(CL_Compiler *c, CL_Obj *expr_p)
          * MACROEXPAND/code-walker conformance, but must compile via its native
          * special-form path — so dispatch it here, ahead of the macro check. */
         if (head == SYM_DESTRUCTURING_BIND) { compile_destructuring_bind(c, expr); return 0; }
+        /* PUSH / POP on an unboxed lexical variable compile to one opcode
+         * (specs/performance.md 4.4); every other place goes through the
+         * macro in lib/boot.lisp. */
+        if ((head == SYM_PUSH || head == SYM_POP) && try_compile_push_pop(c, expr))
+            return 0;
 
         if (CL_SYMBOL_P(head) && cl_macro_p(head)) {
             int _fp0 = cl_vm.fp, _sp0 = cl_vm.sp;

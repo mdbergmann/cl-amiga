@@ -208,6 +208,54 @@
     (error () :e)))
 (report "hc-last" (list (c-hc-last t) (c-hc-last nil)))
 
+;; string-scan fast path (spec 4.4): AREF / CHAREQ from the compiler,
+;; CMP_BR fused from every comparison under both branch polarities,
+;; PUSH_LOCAL / POP_LOCAL, the CASE key shape, INCF/DECF on locals
+(defun c-scan (text)
+  (let ((stack nil) (state 0) (i 0) (opens 0) (n (length text)))
+    (loop while (< i n)
+          do (let ((c (schar text i)))
+               (case state
+                 (0 (case c
+                      (#\( (push i stack) (incf opens))
+                      (#\) (pop stack))
+                      (#\" (setq state 1))
+                      (#\; (setq state 2))))
+                 (1 (case c (#\\ (setq state 3)) (#\" (setq state 0))))
+                 (2 (when (char= c #\Newline) (setq state 0)))
+                 (t (setq state 1))))
+             (incf i))
+    (list opens state stack)))
+(report "scan" (c-scan "(a (b \"x)\" ; )(
+ (c \"\\\"\" d"))
+(defun c-cmp (a b)
+  (list (if (< a b) 1 0) (if (> a b) 1 0) (if (<= a b) 1 0) (if (>= a b) 1 0)
+        (if (= a b) 1 0) (unless (< a b) 1) (unless (>= a b) 1) (unless (= a b) 1)
+        (if (not (> a b)) 1 0)))
+(report "cmp" (list (c-cmp 1 2) (c-cmp 2 1) (c-cmp 3 3) (c-cmp 1.5 1) (c-cmp (expt 2 40) 1)
+                    (c-cmp 1/2 1/2) (handler-case (c-cmp 'a 1) (type-error () :type-error))))
+(defun c-chareq (a b) (list (char= a b) (if (char= a b) :y :n) (unless (char= a b) :n)))
+(report "chareq" (list (c-chareq #\a #\a) (c-chareq #\a #\b)
+                       (handler-case (c-chareq #\a 1) (type-error () :type-error))))
+(defun c-aref (v s i) (list (aref v i) (svref v i) (char s i) (schar s i) (aref s i)))
+(report "aref" (list (c-aref (vector 1 2 3) "xyz" 1)
+                     (handler-case (c-aref (vector 1) "x" 3) (error () :error))
+                     (handler-case (c-aref '(1) "x" 0) (error () :error))))
+(defun c-pushpop (n)
+  (let ((s nil) (out nil))
+    (dotimes (i n) (push (* i i) s) (when (oddp i) (push (pop s) out)))
+    (list s out (pop s) (pop s) s)))
+(report "pushpop" (list (c-pushpop 5) (c-pushpop 0) (handler-case (let ((x 5)) (pop x)) (type-error () :type-error))))
+(defun c-incf (x) (list (incf x) (incf x 10) (decf x) (decf x 2.5) x))
+(report "incf" (list (c-incf 1) (c-incf most-positive-fixnum)))
+(defun c-case (x) (case x (1 :one) ((2 3) :two-three) (#\a :a) (:k) (t :other)))
+(report "case" (mapcar #'c-case '(1 2 3 #\a :k 9)))
+(defun c-case-in-loop (l)
+  (let ((r nil))
+    (dolist (x l) (case x ((a b) (push :ab r)) (c (push :c r)) (t (push x r))))
+    r))
+(report "case-loop" (c-case-in-loop '(a c b d)))
+
 ;; final checksum over everything reported, so a silent mid-corpus
 ;; divergence still flips the last line
 (format t "CHECKSUM = ~S~%" (sxhash (format nil "~S" *r*)))

@@ -7,6 +7,7 @@
 #include "thread.h"
 #include "compiler.h"  /* cl_get_type_expander */
 #include "vm.h"        /* cl_vm_apply */
+#include "opcodes.h"   /* CL_AREF_KIND_* */
 #include "../platform/platform.h"
 #include <string.h>
 
@@ -1148,6 +1149,81 @@ static CL_Obj bi_svref(CL_Obj *args, int n)
     if (idx < 0 || (uint32_t)idx >= vec->length)
         cl_error(CL_ERR_ARGS, "SVREF: index %d out of range", (int)idx);
     return cl_vector_data(vec)[idx];
+}
+
+/* --- OP_AREF's slow path (builtins.h) --- */
+
+CL_Obj cl_vector_ref1(CL_Obj vec, CL_Obj idx, int kind)
+{
+    static const char *const who[4] = { "AREF", "SVREF", "CHAR", "SCHAR" };
+    const char *w = who[kind & 3];
+    int32_t i;
+    CL_Vector *v;
+
+    switch (kind) {
+    case CL_AREF_KIND_CHAR:
+        /* CHAR accepts every string, including a fill-pointer / adjustable
+         * character vector (bi_char_accessor). */
+        if (!CL_ANY_STRING_P(vec) && !CL_STRING_VECTOR_P(vec))
+            cl_error(CL_ERR_TYPE, "CHAR: not a string");
+        break;
+    case CL_AREF_KIND_SCHAR:
+        if (!CL_ANY_STRING_P(vec))
+            cl_error(CL_ERR_TYPE, "SCHAR: not a simple-string");
+        break;
+    case CL_AREF_KIND_SVREF:
+        if (!CL_VECTOR_P(vec))
+            cl_error(CL_ERR_TYPE, "SVREF: not a simple vector");
+        v = (CL_Vector *)CL_OBJ_TO_PTR(vec);
+        if (v->rank > 1 || v->flags != 0)
+            cl_error(CL_ERR_TYPE, "SVREF: not a simple vector");
+        break;
+    default:
+        break;
+    }
+    if (!CL_FIXNUM_P(idx)) {
+        if (kind == CL_AREF_KIND_CHAR || kind == CL_AREF_KIND_SCHAR)
+            cl_error(CL_ERR_TYPE, "%s: index must be an integer", w);
+        cl_error(CL_ERR_TYPE, "%s: index must be a fixnum", w);
+    }
+    i = CL_FIXNUM_VAL(idx);
+
+    if (kind == CL_AREF_KIND_CHAR || kind == CL_AREF_KIND_SCHAR) {
+        if (i < 0 || (uint32_t)i >= cl_string_length(vec))
+            cl_error(CL_ERR_ARGS, "%s: index %d out of range", w, (int)i);
+        return CL_MAKE_CHAR(cl_string_char_at(vec, (uint32_t)i));
+    }
+    if (kind == CL_AREF_KIND_AREF) {
+        if (CL_BIT_VECTOR_P(vec)) {
+            CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(vec);
+            if (i < 0 || (uint32_t)i >= bv->length)
+                cl_error(CL_ERR_ARGS, "AREF: index %d out of range", (int)i);
+            return CL_MAKE_FIXNUM(cl_bv_get_bit(bv, (uint32_t)i));
+        }
+        if (CL_ANY_STRING_P(vec)) {
+            if (i < 0 || (uint32_t)i >= cl_string_length(vec))
+                cl_error(CL_ERR_ARGS, "AREF: index %d out of range", (int)i);
+            return CL_MAKE_CHAR(cl_string_char_at(vec, (uint32_t)i));
+        }
+        if (CL_BYTE_VECTOR_P(vec)) {
+            CL_ByteVector *bv = (CL_ByteVector *)CL_OBJ_TO_PTR(vec);
+            if (i < 0 || (uint32_t)i >= bv->length)
+                cl_error(CL_ERR_ARGS, "AREF: index %d out of range", (int)i);
+            return CL_MAKE_FIXNUM(cl_bytevec_get(bv, (uint32_t)i));
+        }
+        if (!CL_VECTOR_P(vec))
+            cl_error(CL_ERR_TYPE, "AREF: not an array");
+        v = (CL_Vector *)CL_OBJ_TO_PTR(vec);
+        if (v->rank > 1)
+            cl_error(CL_ERR_ARGS, "AREF: expected %d indices, got 1", (int)v->rank);
+    } else {
+        v = (CL_Vector *)CL_OBJ_TO_PTR(vec);   /* SVREF: gated above */
+    }
+    /* AREF accesses the underlying array, ignoring any fill pointer
+     * (CLHS 'aref'): bound on the total length, not the active length. */
+    if (i < 0 || (uint32_t)i >= v->length)
+        cl_error(CL_ERR_ARGS, "%s: index %d out of range", w, (int)i);
+    return cl_vector_data(v)[i];
 }
 
 /* ======================================================= */

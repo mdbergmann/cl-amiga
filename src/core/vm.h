@@ -355,6 +355,13 @@ CL_Obj cl_gf_writer_ic_probe(CL_Obj gfobj, CL_Obj val, CL_Obj obj);
 void cl_vm_push(CL_Obj val);
 CL_Obj cl_vm_pop(void);
 
+/* The comparison OP_CMP_BR fuses (CL_CMP_BR_* in opcodes.h), for the
+ * operands the inline fixnum / character fast path does not cover: the
+ * full REAL / NUMBER / CHARACTER type gate of the member opcode, the
+ * cross-type numeric compare, the member's error text.  Returns 1 when
+ * the comparison holds.  Shared with the JIT's slow path (runtime.c). */
+int cl_vm_compare_kind(CL_Obj a, CL_Obj b, int cmp);
+
 /* C stack overflow detection */
 void cl_check_c_stack(const char *context);
 /* cl_check_c_stack + GC-root-stack headroom; for per-nesting-level

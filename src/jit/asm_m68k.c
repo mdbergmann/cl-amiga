@@ -234,6 +234,15 @@ void m68k_emit_btst_imm_dn(CodeBuf *cb, uint8_t imm, M68kReg dn)
     cb_emit_u16(cb, (uint16_t)(imm & 0x1F));
 }
 
+/* CMPI.B #imm,Dn: 0000 1100 00 000 dn first word (0x0C00 | dn, size
+ * 00 = byte, EA mode 000 = data register direct), then a 16-bit word
+ * carrying the immediate in its low byte.  4 bytes. */
+void m68k_emit_cmpi_b_imm_dn(CodeBuf *cb, uint8_t imm, M68kReg dn)
+{
+    cb_emit_u16(cb, (uint16_t)(0x0C00 | (dn & 7)));
+    cb_emit_u16(cb, (uint16_t)imm);
+}
+
 /* ADD.L Dn,Dm: <ea> ADD Dn → Dn form, EA = source data register.
  * Bits: 1101 dm 010 000 dn = 0xD080 | (dm<<9) | dn.  2 bytes. */
 void m68k_emit_add_l_dn_to_dm(CodeBuf *cb, M68kReg dn, M68kReg dm)

@@ -11,6 +11,7 @@
  *   2. REWRITE patterns on the instruction list (never across a boundary):
  *        - jump-to-jump threading      JMP/JNIL/JTRUE -> JMP t   ==> direct t
  *        - jump-to-return              JMP -> RET                ==> RET
+ *        - jump-to-next                JMP L; L:                 ==> -
  *        - return site                 STORE n; POP; JMP -> LOAD n; RET ==> RET
  *        - dead code                   unreachable after JMP/RET/... removed
  *        - store-then-reload           STORE n; POP; LOAD n      ==> STORE n
@@ -139,6 +140,10 @@ typedef struct {
                              JMP -> RET rewrite zeroes both) */
     uint8_t op;           /* current opcode (patterns may rewrite it) */
     uint8_t flags;        /* PEEP_* */
+    uint8_t synth_len;    /* 1 when a fusion synthesized an operand byte
+                             (CMP_BR's kind) that precedes the members'
+                             operand bytes; raw_len counts it */
+    uint8_t synth;        /* that byte */
 } PeepInsn;
 
 typedef struct {
@@ -234,6 +239,8 @@ static int peep_decode(PeepCode *pc, const uint8_t *code, uint32_t len)
         in->own_len = (uint16_t)opnd_len;
         in->op = code[ip];
         in->flags = 0;
+        in->synth_len = 0;
+        in->synth = 0;
         ip += 1 + opnd_len;
         n++;
     }
@@ -428,6 +435,33 @@ static int peep_thread_jumps(PeepCode *pc)
             in->jump_target = ti->jump_target;
             changed++;
         }
+    }
+    return changed;
+}
+
+/* JMP L  with  L the next live instruction  ==>  (deleted)
+ * A jump to the instruction that follows it does nothing: the compiler
+ * emits one at the end of a CASE/COND arm that happens to be the last
+ * (the exit chain lands right after it) and at a LOOP prologue.  Never a
+ * backward jump, so no safepoint is lost; a pinned table entry keeps its
+ * shape. */
+static int peep_jump_to_next(PeepCode *pc)
+{
+    int changed = 0;
+    int32_t i;
+    for (i = 0; i < pc->count; i++) {
+        PeepInsn *in = &pc->insns[i];
+        int32_t t, n;
+        if (in->flags & PEEP_DELETED) continue;
+        if (in->op != OP_JMP || in->jump_target < 0) continue;
+        if (in->flags & PEEP_PINNED) continue;
+        t = in->jump_target;
+        while (t < pc->count && (pc->insns[t].flags & PEEP_DELETED)) t++;
+        n = peep_next_live(pc, i);
+        if (t != n || n >= pc->count) continue;
+        in->flags |= PEEP_DELETED;
+        in->jump_target = -1;
+        changed++;
     }
     return changed;
 }
@@ -679,6 +713,10 @@ static int peep_not_branch(PeepCode *pc)
  *   EQ; JNIL t                 -> EQ_JNIL t
  *   GLOAD sym; JNIL t          -> GLOAD_JNIL sym t
  *   GLOAD sym; CALL_GLOBAL f n -> GLOAD_CALL_GLOBAL sym f n
+ *   LT|GT|LE|GE|NUMEQ|CHAREQ; JNIL t | JTRUE t
+ *                              -> CMP_BR kind t   (spec 4.4; the kind byte
+ *                                 is synthesized: the comparison in bits
+ *                                 0-2, bit 3 set for the JTRUE shape)
  *
  * The table is the opcode-pair profile of the sento message path
  * (docs/benchmarks.md 2026-09-09): the first nine pairs were 31% of all
@@ -693,6 +731,25 @@ static uint8_t peep_fused_opcode3(uint8_t a, uint8_t b, uint8_t c)
     if (a == OP_LOAD && b == OP_STORE && c == OP_POP) return OP_LOAD_STORE_POP;
     if (a == OP_GLOAD && b == OP_EQ && c == OP_JNIL) return OP_GLOAD_EQ_JNIL;
     return 0;
+}
+
+/* CMP_BR's synthesized kind byte for the pair (a, b), or -1 when the pair
+ * is not a comparison followed by a conditional branch. */
+static int peep_cmp_br_kind(uint8_t a, uint8_t b)
+{
+    int cmp;
+    switch (a) {
+    case OP_LT:     cmp = CL_CMP_BR_LT; break;
+    case OP_GT:     cmp = CL_CMP_BR_GT; break;
+    case OP_LE:     cmp = CL_CMP_BR_LE; break;
+    case OP_GE:     cmp = CL_CMP_BR_GE; break;
+    case OP_NUMEQ:  cmp = CL_CMP_BR_NUMEQ; break;
+    case OP_CHAREQ: cmp = CL_CMP_BR_CHAREQ; break;
+    default:        return -1;
+    }
+    if (b == OP_JNIL)  return cmp;
+    if (b == OP_JTRUE) return cmp | CL_CMP_BR_IF_TRUE;
+    return -1;
 }
 
 static uint8_t peep_fused_opcode(uint8_t a, uint8_t b)
@@ -766,7 +823,18 @@ static int peep_fuse(PeepCode *pc)
             }
         }
         fused = peep_fused_opcode(a->op, b->op);
-        if (!fused) continue;
+        if (!fused) {
+            int kind = peep_cmp_br_kind(a->op, b->op);
+            if (kind < 0) continue;
+            a->op = OP_CMP_BR;
+            a->synth_len = 1;
+            a->synth = (uint8_t)kind;
+            a->raw_len = (uint16_t)(a->raw_len + 1);
+            peep_absorb(a, a, b, bi);
+            changed++;
+            i = bi;
+            continue;
+        }
         a->op = fused;
         peep_absorb(a, a, b, bi);
         changed++;
@@ -811,6 +879,7 @@ static uint32_t peep_encode(PeepCode *pc, uint8_t *out,
         dst = out + in->new_pos;
         dst[0] = in->op;
         w = 1;
+        if (in->synth_len) dst[w++] = in->synth;
         for (m = i; m >= 0; m = pc->insns[m].fused_with) {
             const PeepInsn *mem = &pc->insns[m];
             if (mem->own_len)
@@ -909,6 +978,7 @@ int cl_peephole_run(uint8_t *code, int *code_len,
         int changed = 0;
         peep_mark_targets(&pc);
         changed += peep_thread_jumps(&pc);
+        changed += peep_jump_to_next(&pc);
         peep_mark_targets(&pc);  /* threading moves target marks */
         changed += peep_return_site(&pc);
         changed += peep_dead_code(&pc);

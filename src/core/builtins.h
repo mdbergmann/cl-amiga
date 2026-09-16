@@ -267,4 +267,12 @@ void cl_inspect_show_obj(CL_Obj obj);
  * SK_* flags naming the keywords this function accepts. */
 void cl_check_seq_keywords(CL_Obj *args, int n, int kw_start, unsigned allowed);
 
+/* One-index array read shared by OP_AREF (vm.c) and the JIT's helper: the
+ * exact semantics of the two-argument AREF / SVREF / CHAR / SCHAR builtin
+ * named by `kind` (CL_AREF_KIND_* in opcodes.h) — same type gates, same
+ * bounds, same error text.  Non-allocating on the success path; signals
+ * on any mismatch.  The callers inline the simple-string / simple-vector
+ * fast path and land here for everything else. */
+CL_Obj cl_vector_ref1(CL_Obj vec, CL_Obj idx, int kind);
+
 #endif /* CL_BUILTINS_H */

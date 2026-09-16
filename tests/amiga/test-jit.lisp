@@ -2229,6 +2229,100 @@
           (mp:join-thread compactor)
           (every #'identity results))))))
 
+; --- String-scan fast path (opcodes.h 0xC0-0xC4, specs/performance.md 4.4).
+; Five opcodes, each with a walker template: AREF (helper call with the
+; accessor kind), CHAREQ (inline character-tag test + CMP.L, helper for
+; the type error), CMP_BR (inline fixnum / character compare branching
+; straight to the target, helper slow path), PUSH_LOCAL / POP_LOCAL
+; (helpers that take the slot's address in the LINK frame).  Every
+; function below must compile natively — %JIT-DUMP-BYTES is non-NIL and
+; the invoke counter moves — and agree with the bytecode semantics on
+; the fast path, the slow path and the error path.  Declared speed 1
+; here still runs the peephole, which is what fuses CMP_BR.
+(defun jss-schar (s i) (schar s i))
+(defun jss-char (s i) (char s i))
+(defun jss-aref (v i) (aref v i))
+(defun jss-svref (v i) (svref v i))
+(defun jss-chareq (a b) (char= a b))
+(defun jss-chareq-br (a b) (list (if (char= a b) :y :n) (unless (char= a b) :n)))
+(defun jss-cmp (a b)
+  (list (if (< a b) 1 0) (if (> a b) 1 0) (if (<= a b) 1 0) (if (>= a b) 1 0)
+        (if (= a b) 1 0) (unless (< a b) 1) (unless (>= a b) 1) (if (not (= a b)) 1 0)))
+(defun jss-push (x) (let ((s nil)) (push x s) (push 2 s) s))
+(defun jss-pop (l) (list (pop l) (pop l) l))
+(defun jss-scan (text)
+  (let ((stack nil) (state 0) (i 0) (opens 0) (n (length text)))
+    (loop while (< i n)
+          do (let ((c (schar text i)))
+               (case state
+                 (0 (case c
+                      (#\( (push i stack) (incf opens))
+                      (#\) (pop stack))
+                      (#\" (setq state 1))
+                      (#\; (setq state 2))))
+                 (1 (case c (#\\ (setq state 3)) (#\" (setq state 0))))
+                 (2 (when (char= c #\Newline) (setq state 0)))
+                 (t (setq state 1))))
+             (incf i))
+    (list opens state stack)))
+(defun jss-native-p (f) (not (null (clamiga::%jit-dump-bytes f))))
+(check "jss-all-native" t
+  (every #'jss-native-p (list #'jss-schar #'jss-char #'jss-aref #'jss-svref
+                              #'jss-chareq #'jss-chareq-br #'jss-cmp
+                              #'jss-push #'jss-pop #'jss-scan)))
+(check "jss-scan-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (jss-scan "()")
+    (> (clamiga::%jit-invoke-count) before)))
+(check "jss-schar" #\b (jss-schar "abc" 1))
+(check "jss-char" #\c (jss-char "abc" 2))
+(check "jss-char-fill-pointer" #\b
+  (jss-char (make-array 4 :element-type 'character :fill-pointer 3 :initial-contents "abcd") 1))
+(check "jss-aref-vector" 20 (jss-aref (vector 10 20 30) 1))
+(check "jss-aref-string" #\a (jss-aref "abc" 0))
+(check "jss-aref-bit" 1 (jss-aref #*0110 1))
+(check "jss-svref" 30 (jss-svref (vector 10 20 30) 2))
+(check "jss-schar-oob" :error (handler-case (jss-schar "abc" 3) (error () :error)))
+(check "jss-schar-not-string" :error (handler-case (jss-schar 42 0) (error () :error)))
+(check "jss-svref-not-simple" :error
+  (handler-case (jss-svref (make-array 3 :fill-pointer 2) 0) (error () :error)))
+(check "jss-svref-string" :error
+  (handler-case (jss-svref "abc" 0) (error () :error)))
+(check "jss-aref-list" :error (handler-case (jss-aref '(1 2) 0) (error () :error)))
+(check "jss-chareq" '(t nil) (list (jss-chareq #\x #\x) (jss-chareq #\x #\y)))
+(check "jss-chareq-type-error" :type-error
+  (handler-case (jss-chareq #\x 1) (type-error () :type-error)))
+(check "jss-chareq-br" '((:y nil) (:n :n)) (list (jss-chareq-br #\a #\a) (jss-chareq-br #\a #\b)))
+(check "jss-chareq-br-type-error" :type-error
+  (handler-case (jss-chareq-br 1 #\a) (type-error () :type-error)))
+(check "jss-cmp-fixnum-lt" '(1 0 1 0 0 nil 1 1) (jss-cmp 1 2))
+(check "jss-cmp-fixnum-gt" '(0 1 0 1 0 1 nil 1) (jss-cmp 2 1))
+(check "jss-cmp-fixnum-eq" '(0 0 1 1 1 1 nil 0) (jss-cmp 3 3))
+(check "jss-cmp-negative" '(1 0 1 0 0 nil 1 1) (jss-cmp -5 -1))
+(check "jss-cmp-bignum" '(0 1 0 1 0 1 nil 1) (jss-cmp (expt 2 40) 1))
+(check "jss-cmp-float" '(1 0 1 0 0 nil 1 1) (jss-cmp 1.5 2))
+(check "jss-cmp-ratio" '(0 0 1 1 1 1 nil 0) (jss-cmp 1/2 0.5))
+(check "jss-cmp-type-error" :type-error
+  (handler-case (jss-cmp 'a 1) (type-error () :type-error)))
+(check "jss-push" '(2 1) (jss-push 1))
+(check "jss-pop" '(1 2 (3)) (jss-pop '(1 2 3)))
+(check "jss-pop-nil" '(nil nil nil) (jss-pop nil))
+(check "jss-pop-non-list" :type-error
+  (handler-case (jss-pop 5) (type-error () :type-error)))
+(check "jss-scan" '(4 0 (10 7 0)) (jss-scan "(a (b) (c (d"))
+(check "jss-scan-strings-comments" '(1 2 (0))
+  (jss-scan "(a \"x)\" ; )("))
+; PUSH_LOCAL conses from native code with the list in a LINK-frame slot:
+; a compaction in the middle must keep the partial list.
+(defun jss-push-gc (n)
+  (let ((s nil))
+    (dotimes (i n)
+      (push (make-string 8 :initial-element #\z) s)
+      (when (= i 20) (ext:gc-compact)))
+    (list (length s) (length (first s)))))
+(check "jss-push-gc-native" t (jss-native-p #'jss-push-gc))
+(check "jss-push-gc" '(50 8) (jss-push-gc 50))
+
 ; Restore the suite-wide baseline established by run-tests.lisp's
 ; "declaim optimize" test — sections after this load expect speed 3.
 (declaim (optimize (speed 3)))

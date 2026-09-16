@@ -25,6 +25,7 @@
 #include "core/printer.h"    /* cl_prin1_to_string (OP_ASSERT_TYPE diagnostic) */
 #include "core/package.h"    /* cl_sync_current_package_from_dynamic */
 #include "core/thread.h"     /* cl_symbol_value / cl_set_symbol_value */
+#include "core/opcodes.h"    /* CL_CMP_BR_*, CL_AREF_KIND_* */
 #include "core/vm.h"         /* cl_dynbind_restore_to, CL_MAX_DYN_BINDINGS, CL_NLXFrame */
 #include "core/mem.h"        /* cl_heap.arena_size */
 #include "core/compiler.h"   /* cl_compiler_mark / cl_compiler_unwind_to,
@@ -785,6 +786,42 @@ CL_Obj cl_jit_runtime_cell_ref(CL_Obj cell_obj)
 {
     CL_Cell *cell = (CL_Cell *)CL_OBJ_TO_PTR(cell_obj);
     return cell->value;
+}
+
+/* --- String-scan fast path helpers (runtime.h) --- */
+
+CL_Obj cl_jit_runtime_aref(CL_Obj vec_obj, CL_Obj idx_obj, uint32_t kind)
+{
+    return cl_vector_ref1(vec_obj, idx_obj, (int)kind);
+}
+
+CL_Obj cl_jit_runtime_chareq(CL_Obj a, CL_Obj b)
+{
+    if (!CL_CHAR_P(a) || !CL_CHAR_P(b))
+        cl_error(CL_ERR_TYPE, "CHAR=: not a character");
+    return a == b ? CL_T : CL_NIL;
+}
+
+CL_Obj cl_jit_runtime_cmp_kind(CL_Obj a, CL_Obj b, uint32_t cmp)
+{
+    return cl_vm_compare_kind(a, b, (int)cmp) ? CL_T : CL_NIL;
+}
+
+CL_Obj cl_jit_runtime_push_local(CL_Obj item, CL_Obj *slot)
+{
+    /* cl_cons roots both by-value arguments; the slot itself is a word of
+     * the JIT'd frame, inside the conservatively scanned window. */
+    CL_Obj cell = cl_cons(item, *slot);
+    *slot = cell;
+    return cell;
+}
+
+CL_Obj cl_jit_runtime_pop_local(CL_Obj *slot)
+{
+    CL_Obj list = *slot;
+    CL_Obj car = cl_car(list);     /* signals on a non-list, like the macro's CAR */
+    *slot = cl_cdr(list);
+    return car;
 }
 
 CL_Obj cl_jit_runtime_cell_set(CL_Obj cell_obj, CL_Obj val)

@@ -940,7 +940,8 @@ rest are parsed and accepted as conforming no-ops.
     **superinstructions** (a local followed by a global call, a struct
     slot read of a local, a local or special variable used as an `if`
     test, an `eq` test that branches, and so on — fourteen shapes, chosen
-    from an opcode-pair profile of a message-passing workload). The m68k
+    from an opcode-pair profile of a message-passing workload — plus a
+    numeric or `char=` comparison that branches). The m68k
     JIT compiles the optimized stream for free. The rewrite is
     semantics-preserving: type errors from discarded values (e.g.
     `(car 5)`), multiple-values state, and non-local exits all behave
@@ -955,6 +956,15 @@ rest are parsed and accepted as conforming no-ops.
   forcing real out-of-line calls.  `inline` sets a flag on the function
   symbol (visible via `describe`) but does not yet force inlining of
   global user functions.
+- **Character and vector access is inlined.** A two-argument `aref`,
+  `svref`, `char` or `schar`, and a two-argument `char=`, compile to one
+  opcode each instead of a call (same type checks and error messages as
+  the functions); a comparison under `if`/`when`/`unless`/`dotimes`
+  branches directly; `push`/`pop` on a local variable and `incf`/`decf`
+  of a local by a constant are one or three opcodes. A character scan such
+  as an editor's paren matcher runs 3 to 7 times faster on a 68040-class
+  machine for it. See `tests/test_scan_opcodes.sh` for what is inlined and
+  what stays a call.
 - **Local functions are inlined automatically.** A `flet`/`labels`
   function that never escapes — it is not `#'`-referenced, not called
   from inside a `lambda` or another local function, not recursive — is

@@ -71,6 +71,8 @@ extern CL_Obj SYM_ECASE;
 extern CL_Obj SYM_TYPECASE;
 extern CL_Obj SYM_ETYPECASE;
 extern CL_Obj SYM_OTHERWISE;
+extern CL_Obj SYM_PUSH;
+extern CL_Obj SYM_POP;
 extern CL_Obj SYM_FLET;
 extern CL_Obj SYM_LABELS;
 extern CL_Obj SYM_AMP_KEY;

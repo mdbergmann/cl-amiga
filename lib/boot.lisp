@@ -214,8 +214,13 @@
 (defmacro push (item place)
   (cond
     ((symbolp place)
-     (let ((g (gensym "ITEM")))
-       `(let ((,g ,item)) (setq ,place (cons ,g ,place)))))
+     ;; A variable has no subforms, and (cons item place) reads it after
+     ;; the item — the order CLHS 5.1.1.1 / PUSH prescribe — so no
+     ;; temporary is needed.  (The compiler turns this shape on an
+     ;; unboxed lexical variable into one OP_PUSH_LOCAL before it ever
+     ;; reaches the macro; specials, globals and closed-over variables
+     ;; take this expansion.)
+     `(setq ,place (cons ,item ,place)))
     ((and (consp place) (%place-direct-mutator-p (car place)))
      (let* ((op (car place))
             (subs (cdr place))
@@ -252,25 +257,34 @@
 ;; CLtS 5.1.3 demands DELTA be evaluated before PLACE is read, so that
 ;; e.g. (incf x (setf x 1)) returns 2 and leaves x = 2 (not 1) — the
 ;; setf-of-x is the delta, then the modified x is what we add to.
+;; INCF/DECF: a variable place (no setf temporaries, the access form is
+;; the variable itself — so not a symbol macro) with a literal number for
+;; DELTA has nothing to sequence, and `(setq var (+ var delta))` is the
+;; whole thing: three opcodes instead of the two LET temporaries.  Every
+;; other place keeps the general get-setf-expansion shape.
 (defmacro incf (place &optional (delta 1) &environment env)
   (multiple-value-bind (temps vals stores set-form access-form)
       (get-setf-expansion place env)
-    (let ((d (gensym "DELTA")) (store (car stores)))
-      `(let* (,@(mapcar #'list temps vals)
-              (,d ,delta)
-              (,store (+ ,access-form ,d)))
-         ,set-form
-         ,store))))
+    (if (and (symbolp place) (null temps) (eq access-form place) (numberp delta))
+        `(setq ,place (+ ,place ,delta))
+        (let ((d (gensym "DELTA")) (store (car stores)))
+          `(let* (,@(mapcar #'list temps vals)
+                  (,d ,delta)
+                  (,store (+ ,access-form ,d)))
+             ,set-form
+             ,store)))))
 
 (defmacro decf (place &optional (delta 1) &environment env)
   (multiple-value-bind (temps vals stores set-form access-form)
       (get-setf-expansion place env)
-    (let ((d (gensym "DELTA")) (store (car stores)))
-      `(let* (,@(mapcar #'list temps vals)
-              (,d ,delta)
-              (,store (- ,access-form ,d)))
-         ,set-form
-         ,store))))
+    (if (and (symbolp place) (null temps) (eq access-form place) (numberp delta))
+        `(setq ,place (- ,place ,delta))
+        (let ((d (gensym "DELTA")) (store (car stores)))
+          `(let* (,@(mapcar #'list temps vals)
+                  (,d ,delta)
+                  (,store (- ,access-form ,d)))
+             ,set-form
+             ,store)))))
 
 (defmacro remf (place indicator)
   ;; CLHS 5.1.2: remf modifies the place.  %remf returns the new list as

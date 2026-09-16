@@ -333,6 +333,42 @@ void cl_vm_push(CL_Obj val)
 #endif
 }
 
+/* OP_CMP_BR's slow path (vm.h).  Mirrors OP_LT..OP_NUMEQ's non-fixnum arm
+ * and OP_CHAREQ's gate exactly, error text included. */
+int cl_vm_compare_kind(CL_Obj a, CL_Obj b, int cmp)
+{
+    static const char *const names[6] = { "<", ">", "<=", ">=", "=", "CHAR=" };
+    const char *opname = names[cmp < 6 ? cmp : 0];
+    if (cmp == CL_CMP_BR_CHAREQ) {
+        if (!CL_CHAR_P(a) || !CL_CHAR_P(b))
+            cl_error(CL_ERR_TYPE, "CHAR=: not a character");
+        return a == b;
+    }
+    if (cmp == CL_CMP_BR_NUMEQ) {
+        if (CL_FIXNUM_P(a) && CL_FIXNUM_P(b)) return a == b;
+        if (!CL_NUMBER_P(a)) cl_signal_type_error(a, "NUMBER", opname);
+        if (!CL_NUMBER_P(b)) cl_signal_type_error(b, "NUMBER", opname);
+        return cl_numeric_equal(a, b);
+    }
+    {
+        int c;
+        if (CL_FIXNUM_P(a) && CL_FIXNUM_P(b)) {
+            int32_t av = CL_FIXNUM_VAL(a), bv = CL_FIXNUM_VAL(b);
+            c = av < bv ? -1 : av > bv ? 1 : 0;
+        } else {
+            if (!CL_REALP(a)) cl_signal_type_error(a, "REAL", opname);
+            if (!CL_REALP(b)) cl_signal_type_error(b, "REAL", opname);
+            c = cl_arith_compare(a, b);
+        }
+        switch (cmp) {
+        case CL_CMP_BR_LT: return c <  0;
+        case CL_CMP_BR_GT: return c >  0;
+        case CL_CMP_BR_LE: return c <= 0;
+        default:           return c >= 0;
+        }
+    }
+}
+
 CL_Obj cl_vm_pop(void)
 {
     if (cl_vm.sp <= 0)
@@ -1966,6 +2002,11 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
         [OP_GLOAD_EQ_JNIL]    = &&vm_op_OP_GLOAD_EQ_JNIL,
         [OP_LOAD_STORE_POP]   = &&vm_op_OP_LOAD_STORE_POP,
         [OP_POP_LOAD]         = &&vm_op_OP_POP_LOAD,
+        [OP_AREF]             = &&vm_op_OP_AREF,
+        [OP_CHAREQ]           = &&vm_op_OP_CHAREQ,
+        [OP_CMP_BR]           = &&vm_op_OP_CMP_BR,
+        [OP_PUSH_LOCAL]       = &&vm_op_OP_PUSH_LOCAL,
+        [OP_POP_LOCAL]        = &&vm_op_OP_POP_LOCAL,
         [OP_HALT]         = &&vm_op_OP_HALT,
     };
 
@@ -2386,6 +2427,117 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             ip += 2;
             cl_vm.stack[frame->bp + b] = cl_vm.stack[frame->bp + a];
             DBG_CHECK_WATCH("OP_LOAD_STORE_POP");
+            VM_BREAK;
+        }
+
+        /* --- String-scan fast path (specs/performance.md 4.4) --- */
+
+        VM_CASE(OP_AREF): {               /* pop idx, pop vec; push vec[idx] */
+            uint8_t kind = code[ip++];
+            CL_Obj idx_obj = cl_vm_pop();
+            CL_Obj vec = cl_vm_pop();
+            /* Inline: a fixnum index into a simple base string (every
+             * accessor kind) or a simple general vector (AREF/SVREF).  The
+             * unsigned compare folds the negative-index check into the
+             * bound.  Everything else — wide strings, fill-pointer /
+             * displaced / bit / byte vectors, the type and range errors —
+             * is the builtin's own path in cl_vector_ref1. */
+            if (CL_FIXNUM_P(idx_obj)) {
+                uint32_t i = (uint32_t)CL_FIXNUM_VAL(idx_obj);
+                if (kind != CL_AREF_KIND_SVREF && CL_STRING_P(vec)) {
+                    CL_String *str = (CL_String *)CL_OBJ_TO_PTR(vec);
+                    if (i < str->length) {
+                        cl_vm_push(CL_MAKE_CHAR((unsigned char)str->data[i]));
+                        cl_mv_count = 1;
+                        VM_BREAK;
+                    }
+                } else if (kind < CL_AREF_KIND_CHAR && CL_VECTOR_P(vec)) {
+                    CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(vec);
+                    if (i < v->length && v->rank <= 1 &&
+                        (kind == CL_AREF_KIND_AREF
+                             ? !(v->flags & CL_VEC_FLAG_DISPLACED)
+                             : v->flags == 0)) {
+                        cl_vm_push(v->data[i]);
+                        cl_mv_count = 1;
+                        VM_BREAK;
+                    }
+                }
+            }
+            frame->ip = ip;               /* error attribution */
+            cl_vm_push(cl_vector_ref1(vec, idx_obj, kind));
+            cl_mv_count = 1;
+            VM_BREAK;
+        }
+
+        VM_CASE(OP_CHAREQ): {             /* (char= a b) */
+            CL_Obj b = cl_vm_pop(), a = cl_vm_pop();
+            if (!CL_CHAR_P(a) || !CL_CHAR_P(b)) {
+                frame->ip = ip;
+                cl_error(CL_ERR_TYPE, "CHAR=: not a character");
+            }
+            /* Same code <=> same tagged word (CL_MAKE_CHAR). */
+            cl_vm_push(a == b ? SYM_T : CL_NIL);
+            cl_mv_count = 1;
+            VM_BREAK;
+        }
+
+        VM_CASE(OP_CMP_BR): {             /* LT..CHAREQ; JNIL/JTRUE t */
+            uint8_t kind = code[ip++];
+            int32_t offset = read_i32(code, &ip);
+            CL_Obj b = cl_vm_pop(), a = cl_vm_pop();
+            int cmp = kind & CL_CMP_BR_CMP_MASK;
+            int holds;
+            cl_mv_count = 1;              /* the comparison's write */
+            if (cmp < CL_CMP_BR_CHAREQ && CL_FIXNUM_P(a) && CL_FIXNUM_P(b)) {
+                int32_t av = CL_FIXNUM_VAL(a), bv = CL_FIXNUM_VAL(b);
+                switch (cmp) {
+                case CL_CMP_BR_LT: holds = av <  bv; break;
+                case CL_CMP_BR_GT: holds = av >  bv; break;
+                case CL_CMP_BR_LE: holds = av <= bv; break;
+                case CL_CMP_BR_GE: holds = av >= bv; break;
+                default:           holds = av == bv; break;
+                }
+            } else if (cmp == CL_CMP_BR_CHAREQ && CL_CHAR_P(a) && CL_CHAR_P(b)) {
+                holds = (a == b);
+            } else {
+                frame->ip = ip;           /* error attribution */
+                holds = cl_vm_compare_kind(a, b, cmp);
+            }
+            if ((kind & CL_CMP_BR_IF_TRUE) ? holds : !holds) ip += offset;
+            VM_BREAK;
+        }
+
+        VM_CASE(OP_PUSH_LOCAL): {         /* (push item local) */
+            uint8_t slot = code[ip++];
+            int base = frame->bp + slot;
+            /* Both cons cells' sources are on the VM stack (the item at
+             * TOS, the list in its slot): rooted, forwarded in place. */
+            CL_Obj cell = cl_cons_rooted(&cl_vm.stack[cl_vm.sp - 1],
+                                         &cl_vm.stack[base]);
+            cl_vm.sp--;
+            cl_vm.stack[base] = cell;
+            cl_vm_push(cell);
+            cl_mv_count = 1;
+            VM_BREAK;
+        }
+
+        VM_CASE(OP_POP_LOCAL): {          /* (pop local) */
+            uint8_t slot = code[ip++];
+            CL_Obj *lp = &cl_vm.stack[frame->bp + slot];
+            CL_Obj list = *lp;
+            if (CL_CONS_P(list)) {
+                CL_Cons *cell = (CL_Cons *)CL_OBJ_TO_PTR(list);
+                *lp = cell->cdr;
+                cl_vm_push(cell->car);
+            } else {
+                /* NIL pops NIL; anything else is CAR's type error. */
+                CL_Obj car;
+                frame->ip = ip;
+                car = cl_car(list);
+                *lp = cl_cdr(list);
+                cl_vm_push(car);
+            }
+            cl_mv_count = 1;
             VM_BREAK;
         }
 

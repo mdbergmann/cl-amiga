@@ -216,6 +216,23 @@ void cl_jit_runtime_assert_type(CL_Obj val, CL_Obj type_spec);
  * out via cl_error on type / bounds violations. */
 CL_Obj cl_jit_runtime_aset(CL_Obj vec_obj, CL_Obj idx_obj, CL_Obj val);
 
+/* String-scan fast path (opcodes.h 0xC0-0xC4, specs/performance.md 4.4).
+ *   aref       — OP_AREF: cl_vector_ref1 with the accessor kind.
+ *   chareq     — OP_CHAREQ's slow path (one operand not a character:
+ *                CHAR='s type error).
+ *   cmp_kind   — OP_CMP_BR's slow path: cl_vm_compare_kind as T/NIL.
+ *   push_local — OP_PUSH_LOCAL: *slot = (cons item *slot), returns it.
+ *                `slot` points into the JIT'd frame on the m68k stack,
+ *                which the conservative scan reaches, so the list stays
+ *                live across the allocation.
+ *   pop_local  — OP_POP_LOCAL: returns (car *slot), *slot = (cdr *slot);
+ *                CAR's type error on a non-list. */
+CL_Obj cl_jit_runtime_aref(CL_Obj vec_obj, CL_Obj idx_obj, uint32_t kind);
+CL_Obj cl_jit_runtime_chareq(CL_Obj a, CL_Obj b);
+CL_Obj cl_jit_runtime_cmp_kind(CL_Obj a, CL_Obj b, uint32_t cmp);
+CL_Obj cl_jit_runtime_push_local(CL_Obj item, CL_Obj *slot);
+CL_Obj cl_jit_runtime_pop_local(CL_Obj *slot);
+
 /* OP_MAKE_CELL / OP_CELL_REF / OP_CELL_SET_LOCAL backings.  Mirror the
  * VM cases exactly: make_cell allocates a fresh CL_Cell wrapping `val`,
  * cell_ref dereferences cell->value, cell_set writes cell->value and

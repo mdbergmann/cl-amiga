@@ -5731,6 +5731,33 @@ check_contains "type-error slot report survives compaction (princ)" "CONDREPORT-
 check_contains "type-error slot report survives compaction (handler)" 'CONDREPORT-HANDLER The value "abc" is not of type INTEGER' "$out"
 check_contains "unhandled type-error line carries the slot report" "ERROR: TYPE-ERROR: The value SYM is not of type LIST" "$out"
 
+# --- Case: string-scan opcodes under forced compaction ---------------------
+# OP_PUSH_LOCAL conses inside the opcode (the item on the VM stack and the
+# list in its slot are the cons's roots), OP_AREF reads wide and base
+# strings, OP_CMP_BR / OP_CHAREQ compare, OP_POP_LOCAL takes the car —
+# every one runs with a compaction before each allocation.
+cat > "$WORK/scanops.lisp" <<'EOF'
+(defun so-scan (s)
+  (let ((stack nil) (n (length s)) (i 0) (count 0))
+    (loop while (< i n)
+          do (let ((c (char s i)))
+               (when (char= c #\() (push (list i (make-string 2 :initial-element c)) stack) (incf count))
+               (when (char= c #\)) (pop stack)))
+             (incf i))
+    (list count (length stack) (car (first stack)) (cadr (first stack)))))
+(let ((base (make-string 40 :initial-element #\x))
+      (wide (make-string 40 :initial-element (code-char 955))))
+  (dotimes (k 40) (when (zerop (mod k 4)) (setf (char base k) #\() (setf (char wide k) #\()))
+  (setf (char base 39) #\)) (setf (char wide 39) #\))
+  (format t "SCANOPS-BASE ~S~%" (so-scan base))
+  (format t "SCANOPS-WIDE ~S~%" (so-scan wide)))
+(format t "SCANOPS-DONE~%")
+EOF
+out=$(run_stress "$WORK/scanops.lisp")
+check_contains "PUSH_LOCAL/POP_LOCAL/AREF/CMP_BR under forced compaction (base string)" 'SCANOPS-BASE (10 9 32 "((")' "$out"
+check_contains "the same over a wide string" 'SCANOPS-WIDE (10 9 32 "((")' "$out"
+check_contains "scan-opcodes case finished" "SCANOPS-DONE" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

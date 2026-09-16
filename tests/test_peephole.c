@@ -137,7 +137,7 @@ TEST(opcode_info_exhaustive_and_rejects_gaps)
     ASSERT(cl_opcode_info(0x07) == NULL);
     ASSERT(cl_opcode_info(0x1F) == NULL);
     ASSERT(cl_opcode_info(0x51) == NULL);
-    ASSERT(cl_opcode_info(0xC0) == NULL);
+    ASSERT(cl_opcode_info(0xC5) == NULL);
     ASSERT(cl_opcode_info(0xFE) == NULL);
     /* ...and the two shape helpers agree with the decoder's contract. */
     ASSERT_EQ_INT(cl_opnd_len(CL_OPND_CLOSURE), -1);
@@ -168,6 +168,7 @@ TEST(decoder_knows_every_opcode)
     for (i = 0; i < sizeof(ops) / sizeof(ops[0]); i++) {
         uint8_t code[24];
         int len = 0, ret;
+        uint8_t expect_first;
         uint32_t opnd_len;
         if (ops[i].opnd == CL_OPND_CLOSURE) continue;
         ASSERT(cl_opnd_len(ops[i].opnd) >= 0);
@@ -181,12 +182,16 @@ TEST(decoder_knows_every_opcode)
         code[len++] = OP_NIL;
         code[len++] = OP_RET;
         ret = run_peep(code, &len);
-        if (ret != 1 || code[0] != ops[i].op) {
+        /* An OP_JMP with a zero offset jumps to the next instruction: the
+         * jump-to-next rewrite deletes it, and the LOAD;POP behind it goes
+         * with the pure-pop rule, so the stream starts at the NIL. */
+        expect_first = (ops[i].op == OP_JMP) ? OP_NIL : ops[i].op;
+        if (ret != 1 || code[0] != expect_first) {
             printf("  opcode 0x%02X: ret=%d first-byte=0x%02X\n",
                    ops[i].op, ret, code[0]);
         }
         ASSERT_EQ_INT(ret, 1);           /* decoded + optimized the pair */
-        ASSERT_EQ_INT(code[0], ops[i].op); /* opcode itself preserved */
+        ASSERT_EQ_INT(code[0], expect_first); /* opcode itself preserved */
     }
 }
 
@@ -343,13 +348,14 @@ TEST(jump_threading_and_dead_jump_removal)
 
 TEST(dead_code_after_jmp_removed)
 {
+    /* The JMP over the dead pair then targets the instruction after it
+     * and is deleted in turn (jump-to-next). */
     uint8_t code[] = {
         OP_JMP, 0, 0, 0, 3,    /* over LOAD;POP -> NIL */
         OP_LOAD, 0, OP_POP,    /* unreachable */
         OP_NIL, OP_RET
     };
     uint8_t want[] = {
-        OP_JMP, 0, 0, 0, 0,
         OP_NIL, OP_RET
     };
     int len = (int)sizeof(code);
@@ -533,6 +539,107 @@ TEST(jump_landing_inside_pattern_blocks_it)
 
 /* --- Layer 1b: superinstruction fusion (spec 4.3) and the two rewrites
  * that came with it (dead store before RET, JMP -> RET) --- */
+
+TEST(jump_to_next_deleted_conditional_kept)
+{
+    /* JMP to the following instruction is a no-op and goes; a JNIL to the
+     * following instruction still pops and stays (fused with its LOAD). */
+    uint8_t code[] = {
+        OP_JMP, 0, 0, 0, 0,
+        OP_LOAD, 0,
+        OP_JNIL, 0, 0, 0, 0,
+        OP_NIL, OP_RET
+    };
+    uint8_t want[] = {
+        OP_LOAD_JNIL, 0, 0, 0, 0, 0,
+        OP_NIL, OP_RET
+    };
+    int len = (int)sizeof(code);
+    ASSERT_EQ_INT(run_peep(code, &len), 1);
+    ASSERT_EQ_INT(len, (int)sizeof(want));
+    ASSERT(memcmp(code, want, sizeof(want)) == 0);
+}
+
+TEST(fuse_cmp_br_every_comparison_both_polarities)
+{
+    /* LT..CHAREQ; JNIL/JTRUE t -> CMP_BR kind t with the synthesized kind
+     * byte (comparison in bits 0-2, bit 3 = the JTRUE shape) and the jump
+     * offset re-encoded after it (CL_OPND_U8_JREL). */
+    static const struct { uint8_t cmp_op; uint8_t kind; } cmps[] = {
+        { OP_LT, CL_CMP_BR_LT }, { OP_GT, CL_CMP_BR_GT },
+        { OP_LE, CL_CMP_BR_LE }, { OP_GE, CL_CMP_BR_GE },
+        { OP_NUMEQ, CL_CMP_BR_NUMEQ }, { OP_CHAREQ, CL_CMP_BR_CHAREQ }
+    };
+    size_t i;
+    int pol;
+    for (i = 0; i < sizeof(cmps) / sizeof(cmps[0]); i++) {
+        for (pol = 0; pol < 2; pol++) {
+            uint8_t code[] = {
+                OP_LOAD, 0, OP_LOAD, 1,
+                0 /* cmp */, 0 /* branch */, 0, 0, 0, 2,   /* -> over T;RET */
+                OP_T, OP_RET,
+                OP_NIL, OP_RET
+            };
+            uint8_t want[] = {
+                OP_LOAD_LOAD, 0, 1,
+                OP_CMP_BR, 0 /* kind */, 0, 0, 0, 2,
+                OP_T, OP_RET,
+                OP_NIL, OP_RET
+            };
+            int len = (int)sizeof(code);
+            code[4] = cmps[i].cmp_op;
+            code[5] = pol ? OP_JTRUE : OP_JNIL;
+            want[4] = (uint8_t)(cmps[i].kind | (pol ? CL_CMP_BR_IF_TRUE : 0));
+            ASSERT_EQ_INT(run_peep(code, &len), 1);
+            ASSERT_EQ_INT(len, (int)sizeof(want));
+            if (memcmp(code, want, sizeof(want)) != 0)
+                printf("  cmp 0x%02X pol %d: got %02X %02X %02X %02X %02X %02X %02X %02X %02X\n",
+                       cmps[i].cmp_op, pol, code[0], code[1], code[2], code[3],
+                       code[4], code[5], code[6], code[7], code[8]);
+            ASSERT(memcmp(code, want, sizeof(want)) == 0);
+        }
+    }
+}
+
+TEST(cmp_br_not_fused_when_branch_is_a_target_and_backward_offset)
+{
+    /* A jump landing on the JNIL blocks the fusion; a backward CMP_BR
+     * offset is relocated like any other branch. */
+    uint8_t code[] = {
+        OP_LOAD, 2,                  /* 0 */
+        OP_JTRUE, 0, 0, 0, 5,        /* 2: -> the JNIL at 12 */
+        OP_LOAD, 0, OP_LOAD, 1,      /* 7: fuses (the pass's one change) */
+        OP_LT,                       /* 11 */
+        OP_JNIL, 0, 0, 0, 1,         /* 12: -> NIL at 18 (over POP) */
+        OP_POP,                      /* 17 */
+        OP_NIL, OP_RET               /* 18 */
+    };
+    int len = (int)sizeof(code);
+    ASSERT_EQ_INT(run_peep(code, &len), 1);
+    ASSERT_EQ_INT(code[0], OP_LOAD);
+    ASSERT_EQ_INT(code[7], OP_LOAD_LOAD);
+    ASSERT_EQ_INT(code[10], OP_LT);      /* LT kept apart */
+    ASSERT_EQ_INT(code[11], OP_JNIL);
+    {
+        uint8_t code2[] = {
+            OP_NIL,                      /* 0: loop head */
+            OP_LOAD, 0, OP_LOAD, 1,      /* 1 */
+            OP_GE, OP_JTRUE, 0xFF, 0xFF, 0xFF, 0xF5,  /* 5: -11 -> 0 */
+            OP_NIL, OP_RET
+        };
+        uint8_t want2[] = {
+            OP_NIL,
+            OP_LOAD_LOAD, 0, 1,
+            OP_CMP_BR, (uint8_t)(CL_CMP_BR_GE | CL_CMP_BR_IF_TRUE),
+            0xFF, 0xFF, 0xFF, 0xF6,      /* -10 -> 0 */
+            OP_NIL, OP_RET
+        };
+        int len2 = (int)sizeof(code2);
+        ASSERT_EQ_INT(run_peep(code2, &len2), 1);
+        ASSERT_EQ_INT(len2, (int)sizeof(want2));
+        ASSERT(memcmp(code2, want2, sizeof(want2)) == 0);
+    }
+}
 
 TEST(fuse_store_pop)
 {
@@ -851,9 +958,8 @@ TEST(return_site_returns_in_place)
             OP_NIL, OP_RET,           /* dead: nothing reaches it */
             OP_LOAD, 2, OP_RET
         };
-        uint8_t want4[] = {
+        uint8_t want4[] = {         /* the JMP to the next live insn is gone */
             OP_STORE_POP, 1,
-            OP_JMP, 0, 0, 0, 0,
             OP_LOAD_RET, 2
         };
         int len4 = (int)sizeof(code4);
@@ -1178,6 +1284,9 @@ int main(void)
     RUN(jump_landing_inside_pattern_blocks_it);
     RUN(handler_case_landing_table_pinned);
 
+    RUN(jump_to_next_deleted_conditional_kept);
+    RUN(fuse_cmp_br_every_comparison_both_polarities);
+    RUN(cmp_br_not_fused_when_branch_is_a_target_and_backward_offset);
     RUN(fuse_store_pop);
     RUN(fuse_load_load_and_load_call_global_greedy);
     RUN(fuse_load_struct_ref_load_mv_reset_load_ret);

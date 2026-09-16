@@ -385,6 +385,42 @@
           (incf c))))
     c))
 
+;;; string-scan: the editor's paren/string/comment state machine over a
+;;; Lisp-like text — SCHAR per character, CASE on the character, PUSH/POP
+;;; of a paren stack, a fixnum index loop.  What every RET/TAB/paren-match
+;;; in an editor does (specs/performance.md 4.4).
+(defvar *lisp-text*
+  (with-output-to-string (o)
+    (dotimes (k (scaled 400))
+      (format o "(defun fn~D (a b)~%  \"doc ; not a comment\"~%  ;; a comment (with parens~%  (let ((x (+ a b)) (y \"str\\\"ing\"))~%    (when (> x ~D)~%      (list x y (car (list 1 2 3))))))~%~%"
+              k k))))
+
+(defun scan-parens (text end)
+  (declare (type simple-string text) (type fixnum end))
+  (let ((stack '()) (state 0) (i 0) (opens 0))
+    (declare (type fixnum state i opens))
+    (loop while (< i end)
+          do (let ((c (schar text i)))
+               (case state
+                 (0 (case c
+                      (#\( (push i stack) (incf opens))
+                      (#\) (pop stack))
+                      (#\" (setq state 1))
+                      (#\; (setq state 2))))
+                 (1 (case c
+                      (#\\ (setq state 3))
+                      (#\" (setq state 0))))
+                 (2 (when (char= c #\Newline) (setq state 0)))
+                 (t (setq state 1))))
+             (incf i))
+    (+ opens (length stack))))
+
+(defun run-string-scan ()
+  (let ((text (coerce *lisp-text* 'simple-string)) (acc 0))
+    (dotimes (r 5)
+      (incf acc (scan-parens text (length text))))
+    acc))
+
 ;;; --- format, reader, printer ----------------------------------------
 
 (defun run-format ()
@@ -558,6 +594,7 @@
 (defbench "string-ops" run-string-ops)
 (defbench "string-stream" run-string-stream)
 (defbench "char-loop" run-char-loop)
+(defbench "string-scan" run-string-scan)
 (defbench "format" run-format)
 (defbench "reader" run-reader)
 (defbench "printer" run-printer)
