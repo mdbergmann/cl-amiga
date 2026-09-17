@@ -429,8 +429,12 @@ static CL_Obj read_labeled_object(int n)
     }
 
     /* Unique placeholder so any #n# inside the object can refer back to us.
-     * CL_READER_SKIP as car distinguishes it from a real (nil . nil) value. */
-    placeholder = cl_cons(CL_READER_SKIP, CL_NIL);
+     * CL_UNBOUND as car distinguishes it from a real (nil . nil) value — no
+     * datum the reader builds has it.  It has to be a marker the collector
+     * knows: the placeholder is a rooted heap cons while the labelled object
+     * is read (which allocates), and CL_READER_SKIP here made a GC in that
+     * window mark "offset 6" as an object. */
+    placeholder = cl_cons(CL_UNBOUND, CL_NIL);
     CL_GC_PROTECT(placeholder);
     cell = cl_cons(CL_MAKE_FIXNUM(n), placeholder);
     CL_GC_PROTECT(cell);
@@ -462,13 +466,13 @@ static CL_Obj read_label_reference(int n)
     }
     /* A reference to a not-yet-completed label (placeholder still in place)
      * means a circular forward reference — flag it so #n= patches afterward.
-     * Detect the placeholder by its CL_READER_SKIP car (not content-equality
+     * Detect the placeholder by its CL_UNBOUND car (not content-equality
      * against NIL/NIL, which would false-positive on a real (nil . nil) value). */
     {
         CL_Obj val = cl_cdr(cell);
         if (CL_CONS_P(val)) {
             CL_Cons *vc = (CL_Cons *)CL_OBJ_TO_PTR(val);
-            if (vc->car == CL_READER_SKIP)
+            if (vc->car == CL_UNBOUND)
                 rd_label_backrefs++;
         }
         return val;

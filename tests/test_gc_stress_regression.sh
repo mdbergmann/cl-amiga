@@ -5854,6 +5854,51 @@ check_contains "deps: changed DEFSTRUCT recompiles the untouched file" 'Recompil
 check_contains "deps: slots hit after the layout change" 'GCDEPS (D1 D2) "n" :T1 4' "$out"
 check_contains "deps case finished" "GCDEPS-DONE" "$out"
 
+# --- Case: a GC while a #n= labelled object is being read --------------------
+# #n= roots a placeholder cons for the label while it reads the object, so a
+# #n# inside can refer back to it.  The placeholder's marker car used to be the
+# reader's private #+/#- SKIP sentinel (0x06) — low bits "not a fixnum, not a
+# character", which is all gc_mark_obj filters, so a collection in that window
+# marked arena offset 6 as an object ([GC-BADMARK] here; in a release build a
+# bogus header at the arena start gets marked and "forwarded").  The marker is
+# CL_UNBOUND now.  Shared, nested and circular labels, by READ-FROM-STRING, by
+# LOAD and by COMPILE-FILE; #. forces a collection inside the window as well.
+mkdir -p "$WORK/rdlabel"
+cat > "$WORK/rdlabel/lit.lisp" <<'EOF'
+(defvar *rl-file* '(#1=(f1 f2 f3) #1# #2=(g #1#) #2# #3=(h . #3#)))
+EOF
+cat > "$WORK/rdlabel/run.lisp" <<EOF
+(defun rl-shape (l)
+  (list (eq (first l) (second l))
+        (eq (third l) (fourth l))
+        (eq (second (third l)) (first l))
+        (let ((c (fifth l))) (and (eq (car c) 'h) (eq (cdr c) c)))
+        (first l)))
+(format t "RL-STRING ~S~%"
+        (rl-shape (read-from-string "(#1=(f1 f2 f3) #1# #2=(g #1#) #2# #3=(h . #3#))")))
+(format t "RL-DOT ~S~%"
+        (let ((l (read-from-string "(#1=(a #.(progn (ext:gc) 'b) c) #1# #2=(x #.(progn (ext:gc) 'y) . #2#))")))
+          (list (first l) (eq (first l) (second l))
+                (let ((c (third l))) (list (first c) (second c) (eq (cddr c) c))))))
+(format t "RL-VEC ~S~%"
+        (let ((v (read-from-string "#(#1=(v1 v2) #1# #2=\"str\" #2#)")))
+          (list (eq (aref v 0) (aref v 1)) (eq (aref v 2) (aref v 3)) (aref v 0) (aref v 2))))
+(load "$WORK/rdlabel/lit.lisp")
+(format t "RL-LOAD ~S~%" (rl-shape *rl-file*))
+(makunbound '*rl-file*)
+(compile-file "$WORK/rdlabel/lit.lisp" :output-file "$WORK/rdlabel/lit.fasl")
+(load "$WORK/rdlabel/lit.fasl")
+(format t "RL-FASL ~S~%" (rl-shape *rl-file*))
+(format t "RL-DONE~%")
+EOF
+out=$(CLAMIGA_FASL_CACHE_DIR="$WORK/rdlabel/cache" run_stress "$WORK/rdlabel/run.lisp")
+check_contains "read-label: shared, nested and circular labels by READ-FROM-STRING" "RL-STRING (T T T T (F1 F2 F3))" "$out"
+check_contains "read-label: a collection forced inside the labelled object" "RL-DOT ((A B C) T (X Y T))" "$out"
+check_contains "read-label: labels inside a vector" 'RL-VEC (T T (V1 V2) "str")' "$out"
+check_contains "read-label: labels in a LOADed source file" "RL-LOAD (T T T T (F1 F2 F3))" "$out"
+check_contains "read-label: labels through COMPILE-FILE and the FASL" "RL-FASL (T T T T (F1 F2 F3))" "$out"
+check_contains "read-label case finished" "RL-DONE" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

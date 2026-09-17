@@ -4280,6 +4280,19 @@ y" 1))
       (error (c)
         (if (search "SDEP-ED" (princ-to-string c)) :stale (princ-to-string c))))))
 
+; A GC while a #n= labelled object is being read: the label's rooted
+; placeholder cons used to carry the reader's #+/#- SKIP sentinel (0x06) in
+; its car, which the collector took for a heap offset.  #. forces the
+; collection inside the window.  Stress twin: the "read-label" case of
+; tests/test_gc_stress_regression.sh.
+(check "reader label: GC inside a #n= object" '((a b c) t (x y t))
+  (let ((l (read-from-string
+            "(#1=(a #.(progn (ext:gc) 'b) c) #1# #2=(x #.(progn (ext:gc) 'y) . #2#))")))
+    (list (first l) (eq (first l) (second l))
+          (let ((c (third l))) (list (first c) (second c) (eq (cddr c) c))))))
+(check "reader label: heap still sound after it" 1000
+  (progn (ext:gc) (length (make-list 1000))))
+
 ; --- TCP sockets (server side: socket-listen / socket-accept / socket-local-port) ---
 ; FS-UAE provides a TCP stack (bsdsocket.library on Amiga), so these run for
 ; real.  Single-threaded loopback pattern, same as the host tests: a loopback
