@@ -62,12 +62,12 @@ run() {
 check_contains() {
     desc="$1"; pattern="$2"; actual="$3"
     total=$((total + 1))
-    if echo "$actual" | grep -q -- "$pattern"; then
+    if printf '%s\n' "$actual" | grep -q -- "$pattern"; then
         echo "  ok  $desc"
         passed=$((passed + 1))
     else
         echo "  FAIL  $desc (expected /$pattern/)"
-        echo "$actual" | tail -6 | sed 's/^/      /'
+        printf '%s\n' "$actual" | tail -6 | sed 's/^/      /'
         failed=$((failed + 1))
     fi
 }
@@ -75,9 +75,9 @@ check_contains() {
 check_absent() {
     desc="$1"; pattern="$2"; actual="$3"
     total=$((total + 1))
-    if echo "$actual" | grep -q -- "$pattern"; then
+    if printf '%s\n' "$actual" | grep -q -- "$pattern"; then
         echo "  FAIL  $desc (saw /$pattern/)"
-        echo "$actual" | grep -- "$pattern" | head -3 | sed 's/^/      /'
+        printf '%s\n' "$actual" | grep -- "$pattern" | head -3 | sed 's/^/      /'
         failed=$((failed + 1))
     else
         echo "  ok  $desc"
@@ -122,7 +122,7 @@ cat > "$WORK/shapes.lisp" <<'EOF'
 EOF
 out=$(run "$WORK/shapes.lisp")
 check_contains "shapes ran" "SHAPES-DONE" "$out"
-sect() { echo "$out" | awk -v f="=== $1" '$0==f{p=1;next} /^=== /{p=0} p'; }
+sect() { printf '%s\n' "$out" | awk -v f="=== $1" '$0==f{p=1;next} /^=== /{p=0} p'; }
 check_contains "SCHAR -> AREF 3"          "AREF         3" "$(sect SH-SCHAR)"
 check_contains "CHAR -> AREF 2"           "AREF         2" "$(sect SH-CHAR)"
 check_contains "AREF -> AREF 0"           "AREF         0" "$(sect SH-AREF)"
