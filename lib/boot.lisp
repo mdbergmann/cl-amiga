@@ -3188,7 +3188,12 @@ group reduces to the ordinary sequential init-then-step."
                    for-and-next
                    (let* ((raw-var (car rest))
                           (destructuring (consp raw-var))
-                          (var (if destructuring (gensym "DVAR") raw-var))
+                          ;; CLHS 6.1.1.7: NIL as the variable ignores the
+                          ;; value -- (loop for nil in list ...).  It still
+                          ;; steps, so it gets a variable LET can bind.
+                          (var (if destructuring
+                                   (gensym "DVAR")
+                                   (if (null raw-var) (gensym "IGNORE") raw-var)))
                           ;; CLHS 6.1.2.1: an optional type-spec may follow
                           ;; the variable, e.g. (loop for i fixnum from 0 ...).
                           (after-var (%loop-skip-type-spec (cdr rest)))

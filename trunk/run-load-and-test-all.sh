@@ -263,12 +263,18 @@ if [ "$COLD" -eq 0 ]; then
   BINID_FILE="$PERSCRIPT_CACHE/.clamiga-binid"
   # cksum is POSIX and present on macOS + Linux; output is "<crc> <size> <name>"
   # — keep crc+size, drop the path so a moved tree doesn't force a wipe.
-  cur_binid=$(cksum "$CLAMIGA" 2>/dev/null | awk '{print $1, $2}')
+  # The boot and CLOS FASLs count as part of the binary: they hold the macros
+  # (LOOP, DEFCLASS, ...) every cached expansion came from, and a fix there
+  # leaves the executable untouched.
+  # (CLAMIGA_BOOT_FASLS overrides the list; tests/test_test_extra.sh uses it.)
+  BOOT_FASLS=${CLAMIGA_BOOT_FASLS:-lib/boot.fasl lib/clos.fasl}
+  # shellcheck disable=SC2086
+  cur_binid=$(cat "$CLAMIGA" $BOOT_FASLS 2>/dev/null | cksum | awk '{print $1, $2}')
   prev_binid=""
   [ -f "$BINID_FILE" ] && prev_binid=$(cat "$BINID_FILE" 2>/dev/null)
   if [ -n "$cur_binid" ] && [ "$cur_binid" != "$prev_binid" ]; then
     if [ -d "$PERSCRIPT_CACHE" ]; then
-      echo ">>> clamiga binary changed since last run — wiping stale FASL cache" >&2
+      echo ">>> clamiga binary or boot FASLs changed since last run — wiping stale FASL cache" >&2
       rm -rf "$PERSCRIPT_CACHE"
     fi
     mkdir -p "$PERSCRIPT_CACHE"

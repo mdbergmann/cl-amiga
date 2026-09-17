@@ -5724,9 +5724,21 @@ cat > "$WORK/condreport.lisp" <<'EOF'
 (format t "CONDREPORT-HANDLER ~a~%"
         (handler-case (error 'type-error :datum "abc" :expected-type 'integer)
           (type-error (e) (format nil "~a" e))))
+(format t "CONDREPORT-CIRCULAR ~a~%"
+        (let ((c (list 1 2 3)))
+          (setf (cdddr c) c)
+          (handler-case (error 'type-error :datum c :expected-type 'list)
+            (type-error (e) (format nil "~a" e)))))
+(format t "CONDREPORT-CIRCULAR-FMT ~a~%"
+        (let ((c (list 1 2 3)))
+          (setf (cdddr c) c)
+          (handler-case (error "~a" c)
+            (error (e) (format nil "~a" e)))))
 (error 'type-error :datum 'sym :expected-type 'list)
 EOF
 out=$(run_stress "$WORK/condreport.lisp")
+check_contains "circular datum: slot report is finite (*print-circle* bound)" 'CONDREPORT-CIRCULAR The value #0=(1 2 3 . #0#) is not of type LIST' "$out"
+check_contains "circular :format-arguments datum: format-control report is finite" 'CONDREPORT-CIRCULAR-FMT #0=(1 2 3 . #0#)' "$out"
 check_contains "type-error slot report survives compaction (princ)" "CONDREPORT-PRINC mismatches=0" "$out"
 check_contains "type-error slot report survives compaction (handler)" 'CONDREPORT-HANDLER The value "abc" is not of type INTEGER' "$out"
 check_contains "unhandled type-error line carries the slot report" "ERROR: TYPE-ERROR: The value SYM is not of type LIST" "$out"

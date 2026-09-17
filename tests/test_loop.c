@@ -301,6 +301,22 @@ TEST(into_after_loop_finish_and_empty)
                   "NIL");
 }
 
+/* CLHS 6.1.1.7: NIL as a loop variable ignores the value.  LOOP bound it
+ * as (LET* ((NIL NIL)) ...), which LET rightly rejects -- serapeum's
+ * LET-OVER-LAMBDA (loop for nil in preds collect (gensym)) did not compile. */
+TEST(nil_variable_ignores_the_value)
+{
+    ASSERT_STR_EQ(eval_print("(loop for nil in '(1 2 3) collect 7)"), "(7 7 7)");
+    ASSERT_STR_EQ(eval_print(
+        "(loop for nil on '(1 2) for i from 0 collect i)"), "(0 1)");
+    ASSERT_STR_EQ(eval_print("(loop for nil across #(1 2) count t)"), "2");
+    ASSERT_STR_EQ(eval_print(
+        "(loop for nil in '(a b) and i from 0 collect i)"), "(0 1)");
+    /* NIL inside a destructuring pattern was already fine */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for (nil . x) in '((1 . 2) (3 . 4)) collect x)"), "(2 4)");
+}
+
 TEST(anonymous_accumulator_unchanged)
 {
     /* The default accumulator keeps its reverse-and-NREVERSE strategy and
@@ -338,6 +354,7 @@ int main(void)
     RUN(into_mixed_kinds_same_var);
     RUN(into_shared_by_toplevel_and_conditional_clause);
     RUN(into_after_loop_finish_and_empty);
+    RUN(nil_variable_ignores_the_value);
     RUN(anonymous_accumulator_unchanged);
 
     teardown();

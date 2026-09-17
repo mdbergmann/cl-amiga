@@ -377,6 +377,7 @@ static CL_Obj format_default_report(const char *ctl, const CL_Obj *argv, int arg
     CL_Obj args_buf[5];  /* [dest, ctl, up to 3 args] */
     CL_Obj sstream, result;
     int i;
+    int dyn_mark = cl_dyn_top;
 
     args_buf[0] = CL_NIL;
     args_buf[1] = CL_NIL;
@@ -389,7 +390,13 @@ static CL_Obj format_default_report(const char *ctl, const CL_Obj *argv, int arg
     sstream = cl_make_string_output_stream();
     CL_GC_PROTECT(sstream);
     args_buf[0] = sstream;
+    /* The arguments are slot values -- any object the program put there.
+     * ERROR formats this report before it signals, so a circular datum
+     * ((error 'type-error :datum (circular-list 1 2 3) ...), alexandria's
+     * LASTCAR) would print forever and never reach the handler. */
+    cl_dynbind_c(SYM_PRINT_CIRCLE, SYM_T);
     cl_format_to_stream(sstream, args_buf, 2 + argc);
+    cl_dynbind_restore_to(dyn_mark);
     result = cl_finish_string_output_stream(sstream);
     CL_GC_UNPROTECT(1 + 2 + argc);
     return result;
@@ -513,6 +520,7 @@ static CL_Obj format_condition_report(CL_Condition *c)
         CL_Obj tmp;
         CL_Obj args_buf[32];  /* [dest, fmt, up to 30 format args] */
         int i;
+        int dyn_mark = cl_dyn_top;
 
         /* Collect the control string and arguments into args_buf BEFORE
          * any allocation, then GC-root every slot: both
@@ -532,7 +540,12 @@ static CL_Obj format_condition_report(CL_Condition *c)
         sstream = cl_make_string_output_stream();
         CL_GC_PROTECT(sstream);
         args_buf[0] = sstream;  /* destination (unused by cl_format_to_stream) */
+        /* The arguments are whatever the caller passed to ERROR/WARN --
+         * same "would print forever" risk as format_default_report's
+         * slot-derived args (e.g. (error "~a" (circular-list 1 2 3))). */
+        cl_dynbind_c(SYM_PRINT_CIRCLE, SYM_T);
         cl_format_to_stream(sstream, args_buf, 2 + list_len);
+        cl_dynbind_restore_to(dyn_mark);
         result = cl_finish_string_output_stream(sstream);
         CL_GC_UNPROTECT(1 + 2 + list_len);
         return result;

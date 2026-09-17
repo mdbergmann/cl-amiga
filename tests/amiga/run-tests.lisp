@@ -3128,6 +3128,22 @@ y" 1))
   (princ-to-string (make-condition 'type-error :datum 5 :expected-type 'list)))
 (check "type-error default report via error" "The value 5 is not of type STRING"
   (handler-case (let ((x 5)) (check-type x string)) (type-error (e) (format nil "~a" e))))
+;; ERROR formats this report before signaling: a circular datum must not
+;; print forever (alexandria's LASTCAR.ERROR.2).
+(check "type-error default report, circular datum"
+  '("The value #0=(1 2 3 . #0#) is not of type LIST" nil)
+  (let ((c (list 1 2 3)))
+    (setf (cdddr c) c)
+    (handler-case (error 'type-error :datum c :expected-type 'list)
+      (type-error (e) (list (princ-to-string e) *print-circle*)))))
+;; Same hang, reached via :format-control/:format-arguments (error "~a" x)
+;; instead of the slot-derived default report -- the more common call form.
+(check "simple-error report, circular format argument"
+  '("#0=(1 2 3 . #0#)" nil)
+  (let ((c (list 1 2 3)))
+    (setf (cdddr c) c)
+    (handler-case (error "~a" c)
+      (error (e) (list (princ-to-string e) *print-circle*)))))
 (check "type-error default report prin1 unchanged" "#<CONDITION TYPE-ERROR>"
   (prin1-to-string (make-condition 'type-error :datum 5 :expected-type 'list)))
 (check "type-error format-control wins" "bad 5"
@@ -5618,6 +5634,11 @@ y" 1))
 (check "loop destr in" '(3 7 11) (loop for (a b) in '((1 2) (3 4) (5 6)) collect (+ a b)))
 (check "loop destr dotted" '((x 1) (y 2) (z 3)) (loop for (a . b) in '((x . 1) (y . 2) (z . 3)) collect (list a b)))
 (check "loop destr nested" '(6 15) (loop for (a (b c)) in '((1 (2 3)) (4 (5 6))) collect (+ a b c)))
+;; CLHS 6.1.1.7: NIL as the variable ignores the value
+(check "loop for nil in" '(7 7 7) (loop for nil in '(1 2 3) collect 7))
+(check "loop for nil on / across" '((0 1) 2)
+  (list (loop for nil on '(1 2) for i from 0 collect i)
+        (loop for nil across #(1 2) count t)))
 (check "loop destr on" '((1 (2 3)) (2 (3)) (3 nil)) (loop for (a . b) on '(1 2 3) collect (list a b)))
 ; CLHS 6.1.2.1.3: FOR/ON tests the end of the list "as if by using atom" (NOT
 ; endp), so ON over a non-list atom or the dotted tail of an improper list

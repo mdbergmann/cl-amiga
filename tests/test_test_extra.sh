@@ -160,12 +160,14 @@ trap 'rm -rf "$fixture_fail" "$fixture_pass" "$guard_cache" "$guard_log" "$guard
 
 printf '#!/bin/sh\nexit 0\n' > "$guard_bin"
 chmod +x "$guard_bin"
+echo "boot v1" > "$guard_bindir/boot.fasl"
 
 run_guard() {
   ( cd "$REPO_ROOT" && \
     CLAMIGA="$guard_bin" \
     LOGDIR="$guard_log" \
     CLAMIGA_FASL_CACHE_PARENT="$guard_cache" \
+    CLAMIGA_BOOT_FASLS="$guard_bindir/boot.fasl" \
     sh "$RUNNER" >/dev/null 2>&1 )
 }
 
@@ -201,6 +203,18 @@ chmod +x "$guard_bin"
 seed_marker
 run_guard
 check "guard_wipes_cache_when_binary_changes" "gone" "$(marker_state)"
+
+# Fourth run, same binary but a rebuilt boot FASL: the macros every cached
+# expansion came from changed (a LOOP fix in lib/boot.lisp left the executable
+# untouched, and serapeum kept loading FASLs of files that had failed to
+# compile) -> wipe.
+echo "boot v2" > "$guard_bindir/boot.fasl"
+seed_marker
+run_guard
+check "guard_wipes_cache_when_boot_fasl_changes" "gone" "$(marker_state)"
+seed_marker
+run_guard
+check "guard_keeps_cache_when_boot_fasl_unchanged" "present" "$(marker_state)"
 
 # ---- Summary ----
 

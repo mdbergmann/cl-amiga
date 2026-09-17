@@ -1378,6 +1378,38 @@ TEST(lisp_type_error_default_report_princ)
         "\"The value 5 is not of type LIST\"");
 }
 
+/* A circular datum: ERROR formats the slot report BEFORE it signals, so
+ * without *PRINT-CIRCLE* bound there the print never ended and the handler
+ * was never reached (alexandria's LASTCAR.ERROR.2 hung make test-extra).
+ * The caller's *PRINT-CIRCLE* is untouched afterwards. */
+TEST(lisp_type_error_default_report_circular_datum)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((c (list 1 2 3))) (setf (cdddr c) c)"
+        "  (handler-case (error 'type-error :datum c :expected-type 'list)"
+        "    (type-error (e) (list (princ-to-string e) *print-circle*))))"),
+        "(\"The value #0=(1 2 3 . #0#) is not of type LIST\" NIL)");
+    /* circular through the CAR */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((c (list 1))) (setf (car c) c)"
+        "  (handler-case (error 'type-error :datum c :expected-type 'list)"
+        "    (type-error (e) (princ-to-string e))))"),
+        "\"The value #0=(#0#) is not of type LIST\"");
+}
+
+/* Same hang, reached via the :format-control/:format-arguments path
+ * (format_condition_report) instead of the slot-derived default report:
+ * (error "~a" x) is the more common call form, and a circular format
+ * argument used to print forever there too. */
+TEST(lisp_simple_error_report_circular_format_arg)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((c (list 1 2 3))) (setf (cdddr c) c)"
+        "  (handler-case (error \"~a\" c)"
+        "    (error (e) (list (princ-to-string e) *print-circle*))))"),
+        "(\"#0=(1 2 3 . #0#)\" NIL)");
+}
+
 TEST(lisp_type_error_default_report_error_handler)
 {
     /* (error 'type-error ...) — the handler sees the same report */
@@ -2150,6 +2182,8 @@ int main(void)
     RUN(lisp_check_type_pass);
     RUN(lisp_check_type_fail);
     RUN(lisp_type_error_default_report_princ);
+    RUN(lisp_type_error_default_report_circular_datum);
+    RUN(lisp_simple_error_report_circular_format_arg);
     RUN(lisp_type_error_default_report_error_handler);
     RUN(lisp_type_error_default_report_subtype);
     RUN(lisp_type_error_default_report_prin1_unchanged);
