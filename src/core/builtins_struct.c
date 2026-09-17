@@ -15,6 +15,8 @@
 #include "error.h"
 #include "compiler.h"
 #include "vm.h"
+#include "string_utils.h"
+#include "float.h"
 #include "../platform/platform.h"
 #include "../platform/platform_thread.h"
 #include <string.h>
@@ -534,6 +536,192 @@ static CL_Obj bi_register_struct_type(CL_Obj *args, int n)
 
     CL_GC_UNPROTECT(3);
     return name;
+}
+
+/* --- Layout dependencies of compiled code ---
+ *
+ * DEFSTRUCT's compiler macros bake a structure's layout into the CALLER:
+ * an accessor call compiles to OP_STRUCT_REF/SET with a constant slot
+ * index, a keyword constructor call to a positional %MAKE-STRUCT with the
+ * slot defaults spliced in, and an (:INCLUDE parent) copies the parent's
+ * slot specs.  A FASL of such code is only valid against the layout it was
+ * compiled with, and the file that holds the DEFSTRUCT is usually another
+ * one — so a FASL kept across an edit of that DEFSTRUCT (LOAD's implicit
+ * cache is keyed by the dependent file's OWN mtime) reads and writes the
+ * wrong slots without any error.
+ *
+ * Each of those expansions therefore reports the structure's name here.
+ * While a file is being compiled for a FASL, *STRUCT-LAYOUT-DEPS* is bound
+ * to the list of names collected so far (LOAD and COMPILE-FILE bind it to
+ * NIL per file, so nested loads keep their own lists); its global value T
+ * means "nobody is recording".  The FASL writer stores a layout hash per
+ * name (cl_struct_layout_hash) and the loader compares it against the live
+ * registry BEFORE running any unit — see the DEPS trailer in fasl.c.  The
+ * struct-access opcodes stay unchecked: the cost is paid once per file
+ * load, not once per slot access. */
+CL_Obj cl_struct_deps_sym = CL_NIL;
+
+void cl_struct_note_layout_use(CL_Obj name)
+{
+    CL_Obj deps, p;
+
+    if (!CL_SYMBOL_P(name) || CL_NULL_P(name)) return;
+    deps = cl_symbol_value(cl_struct_deps_sym);
+    if (!CL_NULL_P(deps) && !CL_CONS_P(deps)) return;   /* T: not recording */
+    for (p = deps; CL_CONS_P(p); p = cl_cdr(p))
+        if (cl_car(p) == name) return;
+    /* NAME is an argument of the calling builtin (rooted); DEPS is reachable
+     * from the binding — but read it again after the allocation, which may
+     * have moved it. */
+    CL_GC_PROTECT(name);
+    p = cl_cons(name, CL_NIL);
+    CL_GC_UNPROTECT(1);
+    ((CL_Cons *)CL_OBJ_TO_PTR(p))->cdr = cl_symbol_value(cl_struct_deps_sym);
+    cl_set_symbol_value(cl_struct_deps_sym, p);
+}
+
+#define LAYOUT_HASH_MAX_DEPTH 64
+
+static uint32_t layout_hash_byte(uint32_t h, uint32_t b)
+{
+    return (h ^ (b & 0xFFu)) * 16777619u;   /* FNV-1a */
+}
+
+static uint32_t layout_hash_u32(uint32_t h, uint32_t v)
+{
+    h = layout_hash_byte(h, v >> 24);
+    h = layout_hash_byte(h, v >> 16);
+    h = layout_hash_byte(h, v >> 8);
+    return layout_hash_byte(h, v);
+}
+
+static uint32_t layout_hash_chars(uint32_t h, CL_Obj str)
+{
+    uint32_t i, len = cl_string_length(str);
+    for (i = 0; i < len; i++)
+        h = layout_hash_u32(h, (uint32_t)cl_string_char_at(str, i));
+    return h;
+}
+
+/* Hash a slot-spec tree by CONTENT, never by heap offset: the value has to
+ * come out the same in the process that compiled a file and in the one
+ * that loads it — another run, a host-built FASL on the Amiga, a narrow or
+ * a wide-string build.  Symbols count by name and, unless keyword, home
+ * package name (an uninterned one only as "a gensym": its name carries a
+ * counter), strings by code point, fixnums and characters by value,
+ * bignums/floats/ratios/complexes by their numeric content (recursively for
+ * ratio/complex, since their components are themselves numbers), anything
+ * else by its heap type alone.  Never allocates and never signals.
+ *
+ * Float bit patterns are extracted with memcpy rather than a union or
+ * pointer cast: a FLOAT's in-memory byte order already follows the host's
+ * own multi-byte convention (big-endian m68k vs little-endian host), so the
+ * memcpy'd bits, read back as an integer on that same host, always equal
+ * the canonical IEEE-754 bit pattern — and layout_hash_u32 hashes it
+ * byte-by-byte via shifts, so the resulting hash itself doesn't depend on
+ * host endianness either. */
+static uint32_t layout_hash_obj(uint32_t h, CL_Obj obj, int depth)
+{
+    for (;;) {
+        if (CL_NULL_P(obj)) return layout_hash_byte(h, 3);
+        if (CL_FIXNUM_P(obj))
+            return layout_hash_u32(layout_hash_byte(h, 1),
+                                   (uint32_t)CL_FIXNUM_VAL(obj));
+        if (CL_CHAR_P(obj))
+            return layout_hash_u32(layout_hash_byte(h, 2),
+                                   (uint32_t)CL_CHAR_VAL(obj));
+        if (CL_SYMBOL_P(obj)) {
+            CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(obj);
+            if (CL_NULL_P(s->package)) return layout_hash_byte(h, 5);
+            if (s->package == cl_package_keyword)
+                return layout_hash_chars(layout_hash_byte(h, 10), s->name);
+            h = layout_hash_chars(layout_hash_byte(h, 4),
+                    ((CL_Package *)CL_OBJ_TO_PTR(s->package))->name);
+            return layout_hash_chars(h, s->name);
+        }
+        if (CL_ANY_STRING_P(obj))
+            return layout_hash_chars(layout_hash_byte(h, 6), obj);
+        if (CL_SINGLE_FLOAT_P(obj)) {
+            CL_SingleFloat *sf = (CL_SingleFloat *)CL_OBJ_TO_PTR(obj);
+            uint32_t bits;
+            memcpy(&bits, &sf->value, sizeof(bits));
+            return layout_hash_u32(layout_hash_byte(h, 12), bits);
+        }
+        if (CL_DOUBLE_FLOAT_P(obj)) {
+            CL_DoubleFloat *df = (CL_DoubleFloat *)CL_OBJ_TO_PTR(obj);
+            uint64_t bits;
+            memcpy(&bits, &df->value, sizeof(bits));
+            h = layout_hash_byte(h, 13);
+            h = layout_hash_u32(h, (uint32_t)(bits >> 32));
+            return layout_hash_u32(h, (uint32_t)bits);
+        }
+        if (CL_BIGNUM_P(obj)) {
+            CL_Bignum *bn = (CL_Bignum *)CL_OBJ_TO_PTR(obj);
+            uint32_t i;
+            h = layout_hash_u32(layout_hash_byte(h, 14), bn->sign);
+            h = layout_hash_u32(h, bn->length);
+            for (i = 0; i < bn->length; i++)
+                h = layout_hash_u32(h, (uint32_t)bn->limbs[i]);
+            return h;
+        }
+        if (CL_RATIO_P(obj)) {
+            CL_Ratio *r = (CL_Ratio *)CL_OBJ_TO_PTR(obj);
+            if (depth >= LAYOUT_HASH_MAX_DEPTH) return layout_hash_byte(h, 11);
+            h = layout_hash_obj(layout_hash_byte(h, 15), r->numerator, depth + 1);
+            return layout_hash_obj(h, r->denominator, depth + 1);
+        }
+        if (CL_COMPLEX_P(obj)) {
+            CL_Complex *c = (CL_Complex *)CL_OBJ_TO_PTR(obj);
+            if (depth >= LAYOUT_HASH_MAX_DEPTH) return layout_hash_byte(h, 11);
+            h = layout_hash_obj(layout_hash_byte(h, 16), c->realpart, depth + 1);
+            return layout_hash_obj(h, c->imagpart, depth + 1);
+        }
+        if (!CL_CONS_P(obj)) {
+            h = layout_hash_byte(h, 9);
+            return CL_HEAP_P(obj)
+                ? layout_hash_byte(h, (uint32_t)CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)))
+                : h;
+        }
+        if (depth >= LAYOUT_HASH_MAX_DEPTH) return layout_hash_byte(h, 11);
+        h = layout_hash_byte(h, 7);
+        h = layout_hash_obj(h, ((CL_Cons *)CL_OBJ_TO_PTR(obj))->car, depth + 1);
+        obj = ((CL_Cons *)CL_OBJ_TO_PTR(obj))->cdr;
+        depth++;
+    }
+}
+
+/* Layout hash of a registered structure type: slot count, parent and the
+ * full slot specs (names in order, defaults, options), inherited slots
+ * included — everything DEFSTRUCT's compiler macros copy into a caller.
+ * Returns 0 when TYPE_NAME is not registered (then *hash_out is untouched). */
+int cl_struct_layout_hash(CL_Obj type_name, uint32_t *hash_out)
+{
+    CL_Obj entry = find_struct_entry(type_name);
+    if (!CL_CONS_P(entry)) return 0;
+    /* entry = (name n-slots parent specs); the name is the lookup key */
+    *hash_out = layout_hash_obj(2166136261u, cl_cdr(entry), 0);
+    return 1;
+}
+
+/* (%note-struct-use name) — see "Layout dependencies" above. */
+static CL_Obj bi_note_struct_use(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    cl_struct_note_layout_use(args[0]);
+    return CL_NIL;
+}
+
+/* (%struct-acc-form name idx obj)     => (clamiga::%struct-ref obj idx)
+ * (%struct-acc-form name idx obj val) => (clamiga::%struct-set obj idx val)
+ * The body of every DEFSTRUCT accessor's compiler macro: builds the inline
+ * access form AND records that the code being compiled depends on NAME's
+ * layout, in one call, so the accessor macros stay as small as they were. */
+static CL_Obj bi_struct_acc_form(CL_Obj *args, int n)
+{
+    cl_struct_note_layout_use(args[0]);
+    if (n == 4)
+        return cl_list4(cl_struct_set_sym, args[2], args[1], args[3]);
+    return cl_list3(cl_struct_ref_sym, args[2], args[1]);
 }
 
 /* (%make-struct name slot-val...) */
@@ -1452,6 +1640,8 @@ void cl_builtins_struct_init(void)
                         1, 1, cl_package_clamiga);
     cl_register_builtin("%SET-CLOS-CLASS-TABLE", bi_set_clos_class_table, 1, 1, cl_package_clamiga);
     cl_register_builtin("%STRUCT-CHANGE-CLASS", bi_struct_change_class, 3, 3, cl_package_clamiga);
+    cl_register_builtin("%NOTE-STRUCT-USE", bi_note_struct_use, 1, 1, cl_package_clamiga);
+    cl_register_builtin("%STRUCT-ACC-FORM", bi_struct_acc_form, 3, 4, cl_package_clamiga);
 
     /* Cache the symbols compile_call matches against to emit dedicated
      * struct-access bytecodes.  The %STRUCT-REF / %STRUCT-SET builtins
@@ -1465,4 +1655,14 @@ void cl_builtins_struct_init(void)
     cl_gc_register_root(&cl_struct_ref_sym);
     cl_gc_register_root(&cl_struct_set_sym);
     cl_gc_register_root(&cl_slot_unbound_marker);
+
+    /* *STRUCT-LAYOUT-DEPS*: global value T = not recording (see "Layout
+     * dependencies of compiled code" above). */
+    cl_struct_deps_sym = cl_intern_in("*STRUCT-LAYOUT-DEPS*", 20, cl_package_clamiga);
+    {
+        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(cl_struct_deps_sym);
+        s->flags |= CL_SYM_SPECIAL;
+        s->value = SYM_T;
+    }
+    cl_gc_register_root(&cl_struct_deps_sym);
 }

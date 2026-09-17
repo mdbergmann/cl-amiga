@@ -126,6 +126,16 @@ extern CL_Obj cl_struct_ref_sym;
 extern CL_Obj cl_handler_case_sym;
 extern CL_Obj cl_struct_set_sym;
 
+/* Structure-layout dependencies of the file being compiled
+ * (builtins_struct.c, "Layout dependencies of compiled code").
+ * CLAMIGA::*STRUCT-LAYOUT-DEPS* is bound to NIL per file by LOAD and
+ * COMPILE-FILE and collects the names DEFSTRUCT's compiler macros report;
+ * cl_struct_layout_hash is what the FASL's DEPS trailer stores per name
+ * (returns 0 when the type is not registered). */
+extern CL_Obj cl_struct_deps_sym;
+void cl_struct_note_layout_use(CL_Obj name);
+int  cl_struct_layout_hash(CL_Obj type_name, uint32_t *hash_out);
+
 /* FFI::%DEFINE-CSTRUCT-ACCESSORS — FFI:DEFCSTRUCT's bulk accessor
  * installer (builtins_ffi.c).  compile_call matches the symbol and, when
  * the argument is a quoted entry list, registers the ACCESSOR ->

@@ -1653,6 +1653,10 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
                           (setq bindings (cons (list tmp vf) bindings))
                           (setq values-by-key
                                 (cons (cons (car pair) tmp) values-by-key))))))
+                ;; The positional call bakes in the slot order and the
+                ;; defaults: the code being compiled now depends on this
+                ;; layout (the FASL's DEPS trailer records it).
+                (clamiga::%note-struct-use struct-name)
                 (let ((positional
                         (mapcar (lambda (key spec)
                                   (let ((hit (assoc key values-by-key)))
@@ -1723,6 +1727,9 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
          (setq print-object-opt (cadr opt)))))
     ;; Compute inherited slots from :include (with defaults)
     (when include-name
+      ;; The parent's slot specs are copied into this expansion, so the
+      ;; file being compiled depends on the parent's layout.
+      (clamiga::%note-struct-use include-name)
       (let ((parent-specs (%struct-slot-specs include-name)))
         (dolist (spec parent-specs)
           (push spec include-slots))
@@ -1889,17 +1896,19 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
           ;; the call into (clamiga::%struct-ref obj <idx>) — which the
           ;; compiler then lowers to OP_STRUCT_REF, skipping the wrapper
           ;; frame entirely on direct calls.  Same for the setter.
+          ;; %STRUCT-ACC-FORM builds that form and records that the code
+          ;; being compiled depends on this structure's layout.
           (let ((idx 0))
             (dolist (sname slot-names)
               (let* ((acc-name (intern (concatenate 'string prefix (symbol-name sname))))
                      (setter-name (intern (concatenate 'string "%SET-" (symbol-name acc-name)))))
                 (push `(defun ,acc-name (obj) (clamiga::%struct-ref obj ,idx)) forms)
                 (push `(define-compiler-macro ,acc-name (obj)
-                         (list 'clamiga::%struct-ref obj ,idx))
+                         (clamiga::%struct-acc-form ',name ,idx obj))
                       forms)
                 (push `(defun ,setter-name (obj val) (clamiga::%struct-set obj ,idx val)) forms)
                 (push `(define-compiler-macro ,setter-name (obj val)
-                         (list 'clamiga::%struct-set obj ,idx val))
+                         (clamiga::%struct-acc-form ',name ,idx obj val))
                       forms)
                 (push `(defsetf ,acc-name ,setter-name) forms))
               (setq idx (+ idx 1))))

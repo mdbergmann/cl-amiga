@@ -4231,6 +4231,55 @@ y" 1))
       (load path)     ; must load from the cache — no further compile
       *recache-count*)))
 
+; A FASL is only valid against the structure layouts it was compiled with
+; (the DEPS trailer, FASL v35).  DEFSTRUCT's compiler macros inline a slot
+; INDEX into the caller, and LOAD's cache is keyed by the caller's own
+; datestamp — so a slot added in front of a structure defined in ANOTHER
+; file used to make the untouched, cached caller read the wrong slot
+; (clamacs, 2026-09-17).  The cached caller must be recompiled instead, and
+; a FASL loaded by name must refuse to run.  Compiles are counted like above.
+; Host twin with the full matrix: tests/test_fasl_struct_deps.sh.
+(defvar *sdep-count* 0)
+(defmacro sdep-bump ()
+  (setq *sdep-count* (+ *sdep-count* 1))
+  nil)
+(flet ((write-file (path &rest lines)
+         (when (probe-file path) (delete-file path))
+         (with-open-file (s path :direction :output :if-does-not-exist :create)
+           (dolist (l lines) (write-line l s)))))
+  (write-file "T:sdep-a.lisp"
+              "(defstruct cl-user::sdep-ed cl-user::documents cl-user::name)")
+  (write-file "T:sdep-b.lisp"
+              "(cl-user::sdep-bump)"
+              "(defun cl-user::sdep-docs (e) (cl-user::sdep-ed-documents e))"
+              "(defun cl-user::sdep-set (e v) (setf (cl-user::sdep-ed-documents e) v))")
+  (setq *sdep-count* 0)
+  (load "T:sdep-a.lisp")
+  (load "T:sdep-b.lisp")                 ; compile #1, cached with its trailer
+  (compile-file "T:sdep-b.lisp" :output-file "T:sdep-b-out.fasl") ; compile #2
+  (check "struct deps: cold load reads the slot" '(d1)
+    (funcall 'sdep-docs (funcall 'make-sdep-ed :documents '(d1))))
+  (load "T:sdep-b.lisp")
+  (check "struct deps: unchanged layout loads from the cache" 2 *sdep-count*)
+  (sleep 2)
+  (write-file "T:sdep-a.lisp"
+              "(defstruct cl-user::sdep-ed cl-user::frontend cl-user::documents cl-user::name)")
+  (load "T:sdep-a.lisp")                 ; new layout: DOCUMENTS is slot 1 now
+  (load "T:sdep-b.lisp")                 ; own datestamp unchanged — trailer mismatch
+  (check "struct deps: changed DEFSTRUCT recompiles the untouched file" 3 *sdep-count*)
+  (check "struct deps: read hits the right slot" '(d1)
+    (funcall 'sdep-docs (funcall 'make-sdep-ed :frontend :fe :documents '(d1))))
+  (check "struct deps: SETF hits the right slot" '(:fe (d2))
+    (let ((e (funcall 'make-sdep-ed :frontend :fe :documents '(d1))))
+      (funcall 'sdep-set e '(d2))
+      (list (funcall 'sdep-ed-frontend e) (funcall 'sdep-ed-documents e))))
+  (load "T:sdep-b.lisp")
+  (check "struct deps: the recompiled file is cached again" 3 *sdep-count*)
+  (check "struct deps: a stale FASL loaded by name refuses to run" :stale
+    (handler-case (progn (load "T:sdep-b-out.fasl") :loaded)
+      (error (c)
+        (if (search "SDEP-ED" (princ-to-string c)) :stale (princ-to-string c))))))
+
 ; --- TCP sockets (server side: socket-listen / socket-accept / socket-local-port) ---
 ; FS-UAE provides a TCP stack (bsdsocket.library on Amiga), so these run for
 ; real.  Single-threaded loopback pattern, same as the host tests: a loopback

@@ -5814,6 +5814,46 @@ check_contains "NLX scan: user macro in a LOOP body compiles and runs" "SCANMACR
 check_contains "the macro's assertions all held" "SCANMACROLET-FAILURES NIL" "$out"
 check_contains "scan-macrolet case finished" "SCANMACROLET-DONE" "$out"
 
+# --- Case: structure-layout dependencies (the FASL's DEPS trailer) ----------
+# DEFSTRUCT's compiler macros report the structure they inline to
+# *STRUCT-LAYOUT-DEPS* (builtins_struct.c: a cons per new name, in the middle
+# of a macroexpansion), LOAD/COMPILE-FILE write the list as a trailer and the
+# loader hashes the live slot specs to compare.  Compile under stress with a
+# private cache, load the cached FASLs under stress, then change the
+# DEFSTRUCT: the untouched dependent file must be recompiled, not misread.
+# See tests/test_fasl_struct_deps.sh for the full behaviour.
+mkdir -p "$WORK/deps"
+printf '(defstruct gd-ed documents (name "n"))\n' > "$WORK/deps/a.lisp"
+cat > "$WORK/deps/b.lisp" <<'EOF'
+(defstruct (gd-child (:include gd-ed)) tag)
+(defun gd-docs (e) (gd-ed-documents e))
+(defun gd-set (e v) (setf (gd-ed-documents e) v))
+(defun gd-mk () (make-gd-child :documents '(d1) :tag :t1))
+EOF
+cat > "$WORK/deps/run.lisp" <<EOF
+(load "$WORK/deps/a.lisp")
+(load "$WORK/deps/b.lisp")
+(let ((e (gd-mk)))
+  (gd-set e (append (gd-docs e) '(d2)))
+  (format t "GCDEPS ~S ~S ~S ~S~%" (gd-docs e) (gd-ed-name e) (gd-child-tag e)
+          (clamiga::%struct-slot-count 'gd-child)))
+(format t "GCDEPS-DONE~%")
+EOF
+deps_stress() {
+    CLAMIGA_FASL_CACHE_DIR="$WORK/deps/cache" run_stress "$WORK/deps/run.lisp"
+}
+out=$(deps_stress)
+check_contains "deps: compiled under stress, correct" 'GCDEPS (D1 D2) "n" :T1 3' "$out"
+out=$(deps_stress)
+check_contains "deps: cached FASLs pass the layout check under stress" 'Loading .*cache.*b\.fasl' "$out"
+check_contains "deps: cached load correct" 'GCDEPS (D1 D2) "n" :T1 3' "$out"
+sleep 1
+printf '(defstruct gd-ed frontend documents (name "n"))\n' > "$WORK/deps/a.lisp"
+out=$(deps_stress)
+check_contains "deps: changed DEFSTRUCT recompiles the untouched file" 'Recompiling .*b\.lisp: structure COMMON-LISP-USER::GD-ED changed' "$out"
+check_contains "deps: slots hit after the layout change" 'GCDEPS (D1 D2) "n" :T1 4' "$out"
+check_contains "deps case finished" "GCDEPS-DONE" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

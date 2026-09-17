@@ -388,6 +388,8 @@ static void print_usage(void)
         "  --no-userinit    Skip user init file (~/.clamigarc; Amiga: S:.clamigarc)\n"
         "  --image <file>   Restore a heap image saved with EXT:SAVE-IMAGE\n"
         "  --no-image       Skip auto-discovery of clamiga.img\n"
+        "  --no-fasl-cache  LOAD always compiles from source (no implicit FASL cache;\n"
+        "                   also CLAMIGA_FASL_CACHE=0)\n"
         "  --color          Force color output\n"
         "  --no-color       Disable color output\n"
         "  --no-jit         Disable the m68k JIT (functions stay bytecode-only)\n"
@@ -619,6 +621,8 @@ int main(int argc, char *argv[])
             image_file = argv[++i];
         } else if (strcmp(argv[i], "--no-image") == 0) {
             no_image = 1;
+        } else if (strcmp(argv[i], "--no-fasl-cache") == 0) {
+            cl_load_fasl_cache_off = 1;
         } else if (strcmp(argv[i], "--help") == 0) {
             print_usage();
             exit(0);

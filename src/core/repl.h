@@ -43,6 +43,9 @@ void cl_repl_init_from_image(int no_userinit, uint32_t image_ms);
  * progress lines.  main.c clears it only when --boot-log is given, so
  * normal output and piped tests that match output exactly stay clean. */
 extern int cl_quiet_boot;
+/* --no-fasl-cache: LOAD neither reads nor writes its implicit FASL cache
+ * (builtins_io.c, load_fasl_cache_enabled). */
+extern int cl_load_fasl_cache_off;
 
 /* Minimal init: C builtins only, no boot.lisp/CLOS loading.
  * For unit tests that need cl_compile/cl_eval_string but not macros. */

@@ -335,6 +335,51 @@ static int cf_emit_fasl_unit(CL_FaslWriter *fw,
     return 0;
 }
 
+/* Append the DEPS trailer (fasl.c) for the structure names DEPS to the
+ * file-level writer, growing the buffer like cf_emit_fasl_unit does.
+ * Returns 0 on success (including "nothing to write"), -1 when the buffer
+ * could not grow — the caller must then drop the FASL: without its trailer
+ * it would load unchecked. */
+static int cf_emit_fasl_deps(CL_FaslWriter *fw,
+                             uint8_t **fasl_buf_p, uint32_t *fasl_cap_p,
+                             CL_Obj deps)
+{
+    uint32_t need = cl_fasl_deps_size(deps);
+
+    if (need == 0) return 0;
+    if (fw->pos + need > *fasl_cap_p) {
+        uint32_t new_cap = fw->pos + need;
+        uint8_t *new_buf = (uint8_t *)platform_alloc(new_cap);
+        if (!new_buf) return -1;
+        memcpy(new_buf, *fasl_buf_p, fw->pos);
+        platform_free(*fasl_buf_p);
+        *fasl_buf_p = new_buf;
+        *fasl_cap_p = new_cap;
+        fw->data = new_buf;
+        fw->capacity = new_cap;
+    }
+    cl_fasl_write_deps(fw, deps);
+    return fw->error == FASL_OK ? 0 : -1;
+}
+
+/* LOAD's implicit FASL cache can be switched off: --no-fasl-cache, or
+ * CLAMIGA_FASL_CACHE=0 in the environment.  Every LOAD of a source file
+ * then compiles it, and nothing is read from or written to the cache.  The
+ * DEPS trailer catches a changed DEFSTRUCT; a changed macro or inline
+ * function in another file it cannot see, and this is the answer to that.
+ * COMPILE-FILE's default output path is not affected. */
+int cl_load_fasl_cache_off = 0;
+
+static int load_fasl_cache_enabled(void)
+{
+    char envbuf[16];
+    const char *v;
+
+    if (cl_load_fasl_cache_off) return 0;
+    v = platform_getenv("CLAMIGA_FASL_CACHE", envbuf, sizeof(envbuf));
+    return !(v && v[0] == '0' && v[1] == '\0');
+}
+
 /* --- Load --- */
 
 /* Resolve a LOAD / COMPILE-FILE input designator (string or pathname) to a
@@ -571,7 +616,7 @@ static CL_Obj bi_load(CL_Obj *args, int n)
         int skip_cache =
             (plen2 >= 4 && strcmp(path_buf + plen2 - 4, ".asd") == 0) ||
             (plen2 >= 5 && strcmp(path_buf + plen2 - 5, ".fasl") == 0);
-        if (!skip_cache &&
+        if (!skip_cache && load_fasl_cache_enabled() &&
             make_fasl_cache_path(path_buf, cache_path, sizeof(cache_path)) &&
             platform_file_exists(cache_path))
         {
@@ -592,9 +637,30 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                                          ((uint32_t)(uint8_t)buf[3]);
                         uint32_t fver  = ((uint32_t)(uint8_t)buf[4] << 8) |
                                          ((uint32_t)(uint8_t)buf[5]);
+                        char stale_dep[160];
                         if (magic == CL_FASL_MAGIC && fver != CL_FASL_VERSION) {
                             /* Stale FASL — drop the cache entry and fall
                                through to compile from source. */
+                            platform_free(buf);
+                            buf = NULL;
+                            platform_file_delete(cache_path);
+                        } else if (magic == CL_FASL_MAGIC &&
+                                   !cl_fasl_check_deps((const uint8_t *)buf,
+                                                       (uint32_t)size, stale_dep,
+                                                       sizeof(stale_dep))) {
+                            /* Compiled against another layout of a structure
+                               (its DEFSTRUCT, in some other file, changed):
+                               the inlined slot indices are wrong.  Same
+                               treatment — recompile from source. */
+                            int do_verbose = verbose_explicit ? verbose
+                                : !CL_NULL_P(cl_symbol_value(SYM_STAR_LOAD_VERBOSE));
+                            if (do_verbose) {
+                                cl_write_cstring_to_stdout("; Recompiling ");
+                                cl_write_cstring_to_stdout(path_buf);
+                                cl_write_cstring_to_stdout(": structure ");
+                                cl_write_cstring_to_stdout(stale_dep);
+                                cl_write_cstring_to_stdout(" changed since it was cached\n");
+                            }
                             platform_free(buf);
                             buf = NULL;
                             platform_file_delete(cache_path);
@@ -649,7 +715,7 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                                 int saved_gc_roots_fasl = gc_root_count;
                                 CL_CATCH(fasl_err);
                                 if (fasl_err == CL_ERR_NONE) {
-                                    cl_fasl_load((const uint8_t *)buf, (uint32_t)size);
+                                    cl_fasl_load_prechecked((const uint8_t *)buf, (uint32_t)size);
                                     platform_free(buf);
                                     CL_UNCATCH();
 
@@ -794,7 +860,8 @@ static CL_Obj bi_load(CL_Obj *args, int n)
         CL_FaslWriter *fw = NULL;
         int do_cache = 0;
 
-        if (make_fasl_cache_path(path_buf, auto_cache_path, sizeof(auto_cache_path))) {
+        if (load_fasl_cache_enabled() &&
+            make_fasl_cache_path(path_buf, auto_cache_path, sizeof(auto_cache_path))) {
             /* Skip auto-caching for .asd files — they are ASDF system definitions
              * and would collide with .lisp files of the same name in the cache
              * (e.g. mt19937.asd and mt19937.lisp both map to mt19937.fasl) */
@@ -825,6 +892,12 @@ static CL_Obj bi_load(CL_Obj *args, int n)
             }
             } /* !is_asd */
         }
+
+    /* Collect the structure layouts this file's code gets compiled against
+     * (builtins_struct.c); T = don't record, so a file that is not being
+     * cached does not leak its names into an enclosing LOAD's list.  Popped
+     * with the other binds by cl_dynbind_restore_to(dyn_mark). */
+    cl_dynbind_c(cl_struct_deps_sym, do_cache ? CL_NIL : SYM_T);
 
     /* Save and set source file context.  The path is interned into the
      * source-file pool so any bytecode compiled here can hold a stable
@@ -928,6 +1001,10 @@ static CL_Obj bi_load(CL_Obj *args, int n)
     platform_free(buf);
 
     /* Write FASL cache file if we collected units */
+    if (do_cache && n_units > 0 &&
+        cf_emit_fasl_deps(fw, &fasl_buf, &fasl_capacity,
+                          cl_symbol_value(cl_struct_deps_sym)) != 0)
+        do_cache = 0;   /* no room for the trailer: an unchecked FASL is worse than none */
     if (do_cache && n_units > 0) {
         char dir[1024];
         /* Patch n_units in header */
@@ -1614,6 +1691,11 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
         CL_GC_UNPROTECT(2);  /* cft_path, cfp_path */
     }
 
+    /* Collect the structure layouts this file's code gets compiled against
+     * (builtins_struct.c); they become the FASL's DEPS trailer.  Popped
+     * with the binds above by cl_dynbind_restore_to(dyn_mark). */
+    cl_dynbind_c(cl_struct_deps_sym, CL_NIL);
+
     /* Save source file context.  in_path is a stack-local buffer; intern
      * it into the process-lifetime source-file pool so that bytecodes
      * compiled below can keep referencing the path string after this
@@ -1841,6 +1923,13 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
             in_path, n_units);
     fflush(stderr);
 #endif
+
+    /* The DEPS trailer goes after the last unit.  Without room for it the
+     * FASL would load unchecked, so it counts as incomplete. */
+    if (n_units > 0 && !fasl_incomplete &&
+        cf_emit_fasl_deps(w, &fasl_buf, &fasl_capacity,
+                          cl_symbol_value(cl_struct_deps_sym)) != 0)
+        fasl_incomplete = 1;
 
     /* Write FASL file to disk (skip if any units failed to serialize). */
     if (n_units > 0 && !fasl_incomplete) {

@@ -7,6 +7,7 @@
 #include "vm.h"
 #include "compiler.h"
 #include "thread.h"
+#include "string_utils.h"
 #include "../platform/platform.h"
 #include "../jit/jit.h"
 #include <string.h>
@@ -3129,6 +3130,168 @@ CL_Obj cl_fasl_deserialize_bytecode(CL_FaslReader *r)
 }
 
 /* ================================================================
+ * DEPS trailer — structure layouts the compiled code depends on
+ * ================================================================
+ *
+ * Wire format, after the last unit, present when the header carries
+ * CL_FASL_FLAG_DEPS:
+ *
+ *   magic:  4 bytes  "DEPS"
+ *   count:  2 bytes
+ *   per entry:
+ *     u16 pkg_len,  bytes   home package name of the structure's name
+ *     u16 name_len, bytes   symbol name
+ *     u32 hash              cl_struct_layout_hash at compile time
+ *
+ * Names travel as plain bytes, not as FASL_TAG_SYMBOL: the check runs
+ * before any unit, when the package may not exist yet (the file's own
+ * DEFPACKAGE is one of its units), and it must never intern or signal.
+ * See builtins_struct.c, "Layout dependencies of compiled code". */
+
+#define FASL_DEPS_MAGIC 0x44455053u  /* "DEPS" */
+
+/* 1 when NAME can be written as bytes: the structure is registered (so it
+ * has a hash), its name is interned, and both names are 8-bit strings that
+ * fit a u16 length. */
+static int fasl_dep_writable(CL_Obj name, uint32_t *hash_out,
+                             CL_Obj *pkg_name_out, CL_Obj *sym_name_out)
+{
+    CL_Symbol *s;
+    CL_Obj strs[2];
+    int k;
+
+    if (!CL_SYMBOL_P(name) || CL_NULL_P(name)) return 0;
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(name);
+    if (CL_NULL_P(s->package)) return 0;
+    strs[0] = ((CL_Package *)CL_OBJ_TO_PTR(s->package))->name;
+    strs[1] = s->name;
+    for (k = 0; k < 2; k++) {
+        uint32_t i, len;
+        if (!CL_ANY_STRING_P(strs[k])) return 0;
+        len = cl_string_length(strs[k]);
+        if (len == 0 || len > 0xFFFFu) return 0;
+        for (i = 0; i < len; i++)
+            if (cl_string_char_at(strs[k], i) > 0xFF) return 0;
+    }
+    if (!cl_struct_layout_hash(name, hash_out)) return 0;
+    *pkg_name_out = strs[0];
+    *sym_name_out = strs[1];
+    return 1;
+}
+
+/* One pass over DEPS: sizes the trailer (W == NULL) or writes its entries.
+ * Returns the trailer's byte size, 0 when no entry is writable. */
+static uint32_t fasl_deps_walk(CL_FaslWriter *w, CL_Obj deps,
+                               uint32_t *count_out)
+{
+    uint32_t bytes = 6, count = 0;
+    CL_Obj p;
+
+    for (p = deps; CL_CONS_P(p); p = cl_cdr(p)) {
+        uint32_t hash, i, len;
+        CL_Obj strs[2];
+        int k;
+        if (count == 0xFFFFu) break;
+        if (!fasl_dep_writable(cl_car(p), &hash, &strs[0], &strs[1])) continue;
+        count++;
+        for (k = 0; k < 2; k++) {
+            len = cl_string_length(strs[k]);
+            bytes += 2 + len;
+            if (w) {
+                cl_fasl_write_u16(w, (uint16_t)len);
+                for (i = 0; i < len; i++)
+                    cl_fasl_write_u8(w, (uint8_t)cl_string_char_at(strs[k], i));
+            }
+        }
+        bytes += 4;
+        if (w) cl_fasl_write_u32(w, hash);
+    }
+    if (count_out) *count_out = count;
+    return count ? bytes : 0;
+}
+
+uint32_t cl_fasl_deps_size(CL_Obj deps)
+{
+    return fasl_deps_walk(NULL, deps, NULL);
+}
+
+void cl_fasl_write_deps(CL_FaslWriter *w, CL_Obj deps)
+{
+    uint32_t count = 0;
+
+    if (fasl_deps_walk(NULL, deps, &count) == 0) return;
+    cl_fasl_write_u32(w, FASL_DEPS_MAGIC);
+    cl_fasl_write_u16(w, (uint16_t)count);
+    fasl_deps_walk(w, deps, NULL);
+    /* The header was written first; flag the trailer now that it exists.
+     * flags is the big-endian u16 at bytes 6-7. */
+    if (w->error == FASL_OK && w->pos >= 12)
+        w->data[7] |= CL_FASL_FLAG_DEPS;
+}
+
+/* Compare a FASL's DEPS trailer against the live structure registry.
+ * Returns 1 when the file may be loaded: no trailer, or every dependency
+ * that is registered NOW still has the layout the file was compiled with.
+ * A structure (or its package) that does not exist yet is not a mismatch —
+ * a file that defines the structure it uses is the normal case.  Returns 0
+ * on the first mismatch and names the structure in DETAIL.  A malformed
+ * trailer counts as "no trailer": the unit loader reports real damage.
+ * Works on the raw buffer; never interns, signals or touches the reader
+ * registry. */
+int cl_fasl_check_deps(const uint8_t *data, uint32_t size,
+                       char *detail, uint32_t detail_size)
+{
+    CL_FaslReader r;
+    uint32_t n_units, i, count;
+    uint16_t flags;
+
+    if (detail && detail_size) detail[0] = '\0';
+    if (size < 12) return 1;
+    flags = (uint16_t)(((uint16_t)data[6] << 8) | data[7]);
+    if (!(flags & CL_FASL_FLAG_DEPS)) return 1;
+
+    /* Only pos/size/error are used: the big dedup tables stay untouched. */
+    r.data = data; r.size = size; r.pos = 8; r.error = FASL_OK;
+    n_units = cl_fasl_read_u32(&r);
+    for (i = 0; i < n_units; i++) {
+        uint32_t len = cl_fasl_read_u32(&r);
+        if (r.error || len > r.size - r.pos) return 1;
+        r.pos += len;
+    }
+    if (cl_fasl_read_u32(&r) != FASL_DEPS_MAGIC || r.error) return 1;
+    count = cl_fasl_read_u16(&r);
+
+    for (i = 0; i < count; i++) {
+        const uint8_t *pkg_name, *sym_name;
+        uint32_t pkg_len, sym_len, want, have;
+        CL_Obj pkg, sym;
+
+        pkg_len = cl_fasl_read_u16(&r);
+        if (r.error || pkg_len > r.size - r.pos) return 1;
+        pkg_name = r.data + r.pos; r.pos += pkg_len;
+        sym_len = cl_fasl_read_u16(&r);
+        if (r.error || sym_len > r.size - r.pos) return 1;
+        sym_name = r.data + r.pos; r.pos += sym_len;
+        want = cl_fasl_read_u32(&r);
+        if (r.error) return 1;
+
+        pkg = cl_find_package((const char *)pkg_name, pkg_len);
+        if (CL_NULL_P(pkg)) continue;
+        sym = cl_package_find_symbol((const char *)sym_name, sym_len, pkg);
+        if (CL_NULL_P(sym) || !CL_SYMBOL_P(sym)) continue;
+        if (!cl_struct_layout_hash(sym, &have)) continue;
+        if (have != want) {
+            if (detail && detail_size)
+                snprintf(detail, detail_size, "%.*s::%.*s",
+                         (int)(pkg_len > 60 ? 60 : pkg_len), (const char *)pkg_name,
+                         (int)(sym_len > 80 ? 80 : sym_len), (const char *)sym_name);
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* ================================================================
  * High-level FASL load
  * ================================================================ */
 
@@ -3147,7 +3310,19 @@ static const char *fasl_err_name(int err)
     }
 }
 
+static CL_Obj fasl_load(const uint8_t *data, uint32_t size, int check_deps);
+
 CL_Obj cl_fasl_load(const uint8_t *data, uint32_t size)
+{
+    return fasl_load(data, size, 1);
+}
+
+CL_Obj cl_fasl_load_prechecked(const uint8_t *data, uint32_t size)
+{
+    return fasl_load(data, size, 0);
+}
+
+static CL_Obj fasl_load(const uint8_t *data, uint32_t size, int check_deps)
 {
     CL_FaslReader r;
     uint32_t n_units, i;
@@ -3179,6 +3354,28 @@ CL_Obj cl_fasl_load(const uint8_t *data, uint32_t size)
             break;
         }
         return CL_NIL;  /* not reached */
+    }
+
+    /* Before any unit runs: the code must still match the structure
+     * layouts it was compiled against.  LOAD's cache path checks this
+     * itself first and recompiles quietly; reaching it here means a FASL
+     * somebody asked for by name. */
+    if (check_deps) {
+        char dep[160];
+        if (!cl_fasl_check_deps(data, size, dep, sizeof(dep))) {
+            if (r.shared_objs) { platform_free(r.shared_objs); r.shared_objs = NULL; r.shared_count = 0; }
+            /* Unregister BEFORE signalling: a Lisp HANDLER-CASE takes this
+             * error by a non-local exit that passes no C error frame, so
+             * nothing else would drop the registry's pointer to R — a
+             * dead stack frame the next GC then marks as a reader. */
+            cl_fasl_reader_unregister(&r);
+            cl_error(CL_ERR_GENERAL,
+                     "FASL is stale: it was compiled against a different layout "
+                     "of structure %s (its DEFSTRUCT changed since).  Inlined "
+                     "slot accesses would hit the wrong slots - recompile the "
+                     "file that uses it", dep);
+            return CL_NIL;
+        }
     }
 
     for (i = 0; i < n_units; i++) {
