@@ -30,6 +30,7 @@
 #include "core/mem.h"        /* cl_heap.arena_size */
 #include "core/compiler.h"   /* cl_compiler_mark / cl_compiler_unwind_to,
                               * cl_amiga_ffi_call_dispatch */
+#include "core/fasl.h"       /* cl_fasl_{reader,writer}_unwind_to */
 #include "core/string_utils.h" /* cl_string_length, cl_string_set_char_at */
 #include "core/builtins.h"   /* cl_ffi_stub_call (jit_dispatch) */
 #include "jit/jit.h"         /* cl_jit_invoke (jit_dispatch) */
@@ -1105,6 +1106,8 @@ static void nlx_restore_core(CL_NLXFrame *nlx, void *landing_anchor)
     gc_root_count           = nlx->gc_root_mark;
     cl_jit_restore_depth(nlx->saved_jit_depth);
     cl_compiler_unwind_to(nlx->compiler_mark, landing_anchor);
+    cl_fasl_reader_unwind_to(landing_anchor);
+    cl_fasl_writer_unwind_to(landing_anchor);
     cl_printer_state_restore(nlx->printer_mark);
     CT->mv_save_top = nlx->mv_save_mark;
 }

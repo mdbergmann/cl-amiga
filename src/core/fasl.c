@@ -1996,33 +1996,63 @@ void cl_fasl_reader_init(CL_FaslReader *r, const uint8_t *data, uint32_t size)
  * Both are a small fixed array of active CL_Fasl{Reader,Writer} pointers plus
  * a parallel owner-thread id per slot, guarded by one mutex.  The register /
  * unregister / save_count / restore_count logic is byte-identical between the
- * two, so it lives once here (fasl_reg_*) and the eight public entry points
- * below are thin wrappers.  items[] is void* so both element types share this
- * code without type-punning; the GC mark/update walkers cast back to the
- * concrete type. */
-typedef struct {
+ * two, so it lives once here (fasl_reg_*) and the public entry points below
+ * are thin wrappers.  items[] is void* so both element types share this code
+ * without type-punning; the GC mark/update walkers cast back to the concrete
+ * type.
+ *
+ * anchor[] and free_abandoned_item exist for the writer registry only, and
+ * are NULL for the reader registry:
+ *   - A reader is a C stack local of fasl_load, so the reader's own address
+ *     IS a usable depth anchor (see cl_fasl_reader_unwind_to) and there is
+ *     nothing to free beyond aux[] (its shared_objs table) — the reader
+ *     itself sits in dead stack after an abandoning longjmp and must not be
+ *     touched.
+ *   - A writer is platform_alloc'd (bi_load heap-allocates it to keep its own
+ *     stack frame small), so items[] is a heap pointer unrelated to C-stack
+ *     depth: anchor[] carries a separate CL_CAPTURE_SP() taken at the
+ *     registering frame instead.  And because the writer struct survives the
+ *     longjmp (it's heap, not stack), free_abandoned_item can safely
+ *     dereference it to hand back everything the abandoned registration
+ *     still owns. */
+typedef struct FaslRegistry FaslRegistry;
+struct FaslRegistry {
     void    **items;   /* active CL_FaslReader* / CL_FaslWriter* pointers */
     uint32_t *owners;  /* CT->id that registered each slot */
+    void    **aux;     /* off-heap table to free on abandonment: readers'
+                        * shared_objs (fasl_reader_note_shared) or writers'
+                        * per-unit scratch buffer (cl_fasl_writer_note_scratch) */
+    void    **anchor;  /* writers only (NULL for readers): stack_anchor passed
+                        * to cl_fasl_writer_register, see above */
+    void    (*free_abandoned_item)(void *item);  /* writers only (NULL for
+                        * readers): frees the item itself on abandonment */
     int       count;
     int       cap;
-} FaslRegistry;
+};
+
+static void fasl_writer_free_abandoned_item(void *item);
 
 static void    *fasl_reader_slots[FASL_MAX_ACTIVE_READERS];
 static uint32_t  fasl_reader_owners[FASL_MAX_ACTIVE_READERS];
+static void    *fasl_reader_aux[FASL_MAX_ACTIVE_READERS];
 static void    *fasl_writer_slots[FASL_MAX_ACTIVE_WRITERS];
 static uint32_t  fasl_writer_owners[FASL_MAX_ACTIVE_WRITERS];
+static void    *fasl_writer_aux[FASL_MAX_ACTIVE_WRITERS];
+static void    *fasl_writer_anchor[FASL_MAX_ACTIVE_WRITERS];
 
 static FaslRegistry fasl_reader_reg =
-    { fasl_reader_slots, fasl_reader_owners, 0, FASL_MAX_ACTIVE_READERS };
+    { fasl_reader_slots, fasl_reader_owners, fasl_reader_aux, NULL, NULL,
+      0, FASL_MAX_ACTIVE_READERS };
 static FaslRegistry fasl_writer_reg =
-    { fasl_writer_slots, fasl_writer_owners, 0, FASL_MAX_ACTIVE_WRITERS };
+    { fasl_writer_slots, fasl_writer_owners, fasl_writer_aux, fasl_writer_anchor,
+      fasl_writer_free_abandoned_item, 0, FASL_MAX_ACTIVE_WRITERS };
 
 /* Protects both registries in multi-threaded mode.  Initialized lazily on the
  * first register call, which always runs on the main thread during single-
  * threaded boot before any secondary thread is created. */
 static void *fasl_registry_mutex = NULL;
 
-static void fasl_reg_add(FaslRegistry *reg, void *item, const char *what)
+static void fasl_reg_add(FaslRegistry *reg, void *item, void *anchor, const char *what)
 {
     int ok;
     /* Capture CL_MT() once so the unlock decision matches the lock decision:
@@ -2038,6 +2068,8 @@ static void fasl_reg_add(FaslRegistry *reg, void *item, const char *what)
     if (ok) {
         reg->items[reg->count] = item;
         reg->owners[reg->count] = CT->id;
+        if (reg->aux) reg->aux[reg->count] = NULL;
+        if (reg->anchor) reg->anchor[reg->count] = anchor;
         reg->count++;
     }
     if (mt) platform_mutex_unlock(fasl_registry_mutex);
@@ -2045,6 +2077,31 @@ static void fasl_reg_add(FaslRegistry *reg, void *item, const char *what)
     if (!ok)
         cl_error(CL_ERR_GENERAL, "FASL: active-%s table full (max %d)",
                  what, reg->cap);
+}
+
+/* Drop slot I (caller holds the mutex in MT mode).  ABANDONED = the owning C
+ * frame was unwound by a longjmp and will never run its own cleanup: the
+ * slot's off-heap table is freed here, from the registry's copy of the
+ * pointer.  For the reader registry (free_abandoned_item is NULL) the reader
+ * itself sits in dead stack and must not be read past aux[]; the writer
+ * registry's free_abandoned_item may dereference items[i] freely (it is
+ * heap-allocated, not a stack local — see the FaslRegistry comment above). */
+static void fasl_reg_drop_at(FaslRegistry *reg, int i, int abandoned)
+{
+    int j;
+    if (abandoned) {
+        if (reg->aux && reg->aux[i])
+            platform_free(reg->aux[i]);
+        if (reg->free_abandoned_item)
+            reg->free_abandoned_item(reg->items[i]);
+    }
+    for (j = i; j < reg->count - 1; j++) {
+        reg->items[j] = reg->items[j + 1];
+        reg->owners[j] = reg->owners[j + 1];
+        if (reg->aux) reg->aux[j] = reg->aux[j + 1];
+        if (reg->anchor) reg->anchor[j] = reg->anchor[j + 1];
+    }
+    reg->count--;
 }
 
 static void fasl_reg_remove(FaslRegistry *reg, void *item)
@@ -2061,12 +2118,7 @@ static void fasl_reg_remove(FaslRegistry *reg, void *item)
     /* Defensive out-of-order removal. */
     for (i = reg->count - 1; i >= 0; i--) {
         if (reg->items[i] == item) {
-            int j;
-            for (j = i; j < reg->count - 1; j++) {
-                reg->items[j] = reg->items[j + 1];
-                reg->owners[j] = reg->owners[j + 1];
-            }
-            reg->count--;
+            fasl_reg_drop_at(reg, i, 0);
             break;
         }
     }
@@ -2103,8 +2155,8 @@ static void fasl_reg_restore_count(FaslRegistry *reg, int n)
     int i;
     if (n < 0) return;
     if (!CL_MT()) {
-        if (n <= reg->count)
-            reg->count = n;
+        while (reg->count > n)
+            fasl_reg_drop_at(reg, reg->count - 1, 1);
         return;
     }
     if (!fasl_registry_mutex) return;
@@ -2120,12 +2172,7 @@ static void fasl_reg_restore_count(FaslRegistry *reg, int n)
          * already visited in earlier iterations. */
         for (i = reg->count - 1; i >= 0 && thread_count > n; i--) {
             if (reg->owners[i] == tid) {
-                int j;
-                for (j = i; j < reg->count - 1; j++) {
-                    reg->items[j] = reg->items[j + 1];
-                    reg->owners[j] = reg->owners[j + 1];
-                }
-                reg->count--;
+                fasl_reg_drop_at(reg, i, 1);
                 thread_count--;
             }
         }
@@ -2140,10 +2187,76 @@ static void fasl_reg_restore_count(FaslRegistry *reg, int n)
  * the objects are stitched into the reachable graph (see the rooting rationale
  * above cl_fasl_gc_mark_readers).  Loads nest (a CLASS_REF may load another
  * FASL), hence the stack of active readers. */
-void cl_fasl_reader_register(CL_FaslReader *r)   { fasl_reg_add(&fasl_reader_reg, r, "reader"); }
+void cl_fasl_reader_register(CL_FaslReader *r)   { fasl_reg_add(&fasl_reader_reg, r, NULL, "reader"); }
 void cl_fasl_reader_unregister(CL_FaslReader *r) { fasl_reg_remove(&fasl_reader_reg, r); }
 int  cl_fasl_reader_save_count(void)             { return fasl_reg_save_count(&fasl_reader_reg); }
 void cl_fasl_reader_restore_count(int n)         { fasl_reg_restore_count(&fasl_reader_reg, n); }
+
+/* The reader just allocated its shared_objs table: keep a copy of the pointer
+ * in its registry slot, so an unwind that abandons the reader can still hand
+ * the table back (AmigaOS has no exit reclaim).  An unregistered reader (the
+ * unit tests) has no slot and keeps freeing the table itself. */
+static void fasl_reader_note_shared(CL_FaslReader *r)
+{
+    int i;
+    int mt = CL_MT();
+    if (mt && !fasl_registry_mutex) return;
+    if (mt) platform_mutex_lock(fasl_registry_mutex);
+    for (i = fasl_reader_reg.count - 1; i >= 0; i--) {
+        if (fasl_reader_reg.items[i] == (void *)r) {
+            fasl_reader_reg.aux[i] = (void *)r->shared_objs;
+            break;
+        }
+    }
+    if (mt) platform_mutex_unlock(fasl_registry_mutex);
+}
+
+/* NLX-landing unwind of an active-{reader,writer} registry — the counterpart
+ * of cl_compiler_unwind_to, called next to it (twice, once per registry) at
+ * every landing.  A Lisp HANDLER-CASE / RETURN-FROM / THROW out of a FASL
+ * load passes no C error frame, so fasl_reg_restore_count never runs for it
+ * and the registry keeps pointing at the abandoned reader/writer: the next GC
+ * marks a dead stack frame as a reader (SEGV in gc_mark_children, or worse,
+ * "forwards" whatever lives there by then), or keeps touching a writer whose
+ * owning bi_load frame is long gone and will never free it.
+ *
+ * The depth test compares LANDING_ANCHOR against each entry's ANCHOR — for
+ * the reader registry that is items[i] itself (a reader is always a C stack
+ * local of fasl_load); for the writer registry (anchor non-NULL) it is the
+ * separate CL_CAPTURE_SP() stashed at cl_fasl_writer_register time, since
+ * items[i] there is a platform_alloc'd pointer unrelated to C-stack depth.
+ * Either way: an anchor strictly deeper than LANDING_ANCHOR belongs to a
+ * frame the longjmp discarded; one at or shallower is owned by a live
+ * fasl_load whose unit re-entered the VM, and stays.  Only the calling
+ * thread's entries are looked at — another thread's stack is not comparable.
+ * The count test up front keeps the landing cheap when no load is in flight
+ * (every BLOCK/CATCH/TAGBODY transfer comes through here); it is unlocked,
+ * which is fine: an entry of THIS thread keeps the count non-zero whatever
+ * the others do. */
+static void fasl_reg_unwind_to(FaslRegistry *reg, void *landing_anchor)
+{
+    int i, mt;
+    uint32_t tid;
+    if (reg->count == 0) return;
+    mt = CL_MT();
+    if (mt && !fasl_registry_mutex) return;
+    tid = CT->id;
+    if (mt) platform_mutex_lock(fasl_registry_mutex);
+    for (i = reg->count - 1; i >= 0; i--) {
+        void *entry_anchor;
+        if (mt && reg->owners[i] != tid) continue;
+        entry_anchor = reg->anchor ? reg->anchor[i] : reg->items[i];
+        if ((uintptr_t)entry_anchor >= (uintptr_t)landing_anchor)
+            break;  /* live owner; everything older is shallower still */
+        fasl_reg_drop_at(reg, i, 1);
+    }
+    if (mt) platform_mutex_unlock(fasl_registry_mutex);
+}
+
+void cl_fasl_reader_unwind_to(void *landing_anchor)
+{
+    fasl_reg_unwind_to(&fasl_reader_reg, landing_anchor);
+}
 
 /* --- Public writer registry entry points ---
  * bi_load's auto-cache serializes one FASL unit per top-level form, interleaved
@@ -2153,10 +2266,56 @@ void cl_fasl_reader_restore_count(int n)         { fasl_reg_restore_count(&fasl_
  * gensym's old offset could collide with a different live gensym's new offset,
  * making the EQ dedup emit a GENSYM_REF to the wrong id — a silently wrong
  * cached FASL. */
-void cl_fasl_writer_register(CL_FaslWriter *w)   { fasl_reg_add(&fasl_writer_reg, w, "writer"); }
+void cl_fasl_writer_register(CL_FaslWriter *w, void *stack_anchor)
+{
+    fasl_reg_add(&fasl_writer_reg, w, stack_anchor, "writer");
+}
 void cl_fasl_writer_unregister(CL_FaslWriter *w) { fasl_reg_remove(&fasl_writer_reg, w); }
 int  cl_fasl_writer_save_count(void)             { return fasl_reg_save_count(&fasl_writer_reg); }
 void cl_fasl_writer_restore_count(int n)         { fasl_reg_restore_count(&fasl_writer_reg, n); }
+
+/* The caller (re)allocated its per-unit scratch buffer (bi_load's unit_buf):
+ * keep a copy of the pointer in the writer's registry slot, so an unwind that
+ * abandons the writer can still hand the buffer back (AmigaOS has no exit
+ * reclaim) — mirrors fasl_reader_note_shared.  An unregistered writer (e.g.
+ * bi_compile_file's, or the unit tests') has no slot and keeps freeing its
+ * own scratch buffer, so this is a silent no-op for it. */
+void cl_fasl_writer_note_scratch(CL_FaslWriter *w, void *unit_buf)
+{
+    int i;
+    int mt = CL_MT();
+    if (mt && !fasl_registry_mutex) return;
+    if (mt) platform_mutex_lock(fasl_registry_mutex);
+    for (i = fasl_writer_reg.count - 1; i >= 0; i--) {
+        if (fasl_writer_reg.items[i] == (void *)w) {
+            fasl_writer_reg.aux[i] = unit_buf;
+            break;
+        }
+    }
+    if (mt) platform_mutex_unlock(fasl_registry_mutex);
+}
+
+/* fasl_reg_drop_at's free_abandoned_item for the writer registry.  Unlike a
+ * reader, W is platform_alloc'd — it survives the longjmp that abandoned its
+ * registration, so it is safe to dereference here and hand back everything
+ * bi_load would have on its own cleanup path: the shared/gensym dedup tables
+ * (cl_fasl_writer_release), the growing output buffer (w->data, kept in sync
+ * with bi_load's fasl_buf by cf_emit_fasl_unit/cf_emit_fasl_deps on every
+ * grow), and the writer struct itself.  aux[i] (unit_buf) is already freed by
+ * fasl_reg_drop_at before this runs. */
+static void fasl_writer_free_abandoned_item(void *item)
+{
+    CL_FaslWriter *w = (CL_FaslWriter *)item;
+    if (!w) return;
+    cl_fasl_writer_release(w);
+    if (w->data) platform_free(w->data);
+    platform_free(w);
+}
+
+void cl_fasl_writer_unwind_to(void *landing_anchor)
+{
+    fasl_reg_unwind_to(&fasl_writer_reg, landing_anchor);
+}
 
 void cl_fasl_gc_mark_writers(void)
 {
@@ -2423,8 +2582,10 @@ CL_Obj cl_fasl_deserialize_obj(CL_FaslReader *r)
         /* Lazily allocate shared table */
         if (!r->shared_objs) {
             r->shared_objs = (CL_Obj *)platform_alloc(FASL_MAX_SHARED * sizeof(CL_Obj));
-            if (r->shared_objs)
+            if (r->shared_objs) {
                 memset(r->shared_objs, 0, FASL_MAX_SHARED * sizeof(CL_Obj));
+                fasl_reader_note_shared(r);
+            }
         }
         /* Stash the id so allocate-then-fill body deserializers (struct,
          * closure, bytecode) can register their freshly-allocated shell
@@ -3322,6 +3483,16 @@ CL_Obj cl_fasl_load_prechecked(const uint8_t *data, uint32_t size)
     return fasl_load(data, size, 0);
 }
 
+/* fasl_load is about to signal an error of its own: nothing below returns
+ * here, so release the reader first.  (An error raised from INSIDE a unit
+ * cannot do this; the error-frame restore and the NLX-landing unwind drop
+ * that reader — and free its table — from the registry instead.) */
+static void fasl_load_abandon(CL_FaslReader *r)
+{
+    cl_fasl_reader_unregister(r);
+    if (r->shared_objs) { platform_free(r->shared_objs); r->shared_objs = NULL; r->shared_count = 0; }
+}
+
 static CL_Obj fasl_load(const uint8_t *data, uint32_t size, int check_deps)
 {
     CL_FaslReader r;
@@ -3336,12 +3507,7 @@ static CL_Obj fasl_load(const uint8_t *data, uint32_t size, int check_deps)
     n_units = cl_fasl_read_header(&r);
     if (r.error) {
         int hdr_err = r.error;
-        /* cl_error longjmps: the reader REGISTRY is restored by the error
-         * unwind (CL_ErrorFrame fasl-reader top), but the lazily-malloc'd
-         * shared_objs table would leak — free it before signaling (up to
-         * 256 KB per failed load; the old unregister/return after cl_error
-         * was dead code). */
-        if (r.shared_objs) { platform_free(r.shared_objs); r.shared_objs = NULL; r.shared_count = 0; }
+        fasl_load_abandon(&r);
         switch (hdr_err) {
         case FASL_ERR_BAD_MAGIC:
             cl_error(CL_ERR_GENERAL, "FASL: invalid magic number");
@@ -3363,12 +3529,7 @@ static CL_Obj fasl_load(const uint8_t *data, uint32_t size, int check_deps)
     if (check_deps) {
         char dep[160];
         if (!cl_fasl_check_deps(data, size, dep, sizeof(dep))) {
-            if (r.shared_objs) { platform_free(r.shared_objs); r.shared_objs = NULL; r.shared_count = 0; }
-            /* Unregister BEFORE signalling: a Lisp HANDLER-CASE takes this
-             * error by a non-local exit that passes no C error frame, so
-             * nothing else would drop the registry's pointer to R — a
-             * dead stack frame the next GC then marks as a reader. */
-            cl_fasl_reader_unregister(&r);
+            fasl_load_abandon(&r);
             cl_error(CL_ERR_GENERAL,
                      "FASL is stale: it was compiled against a different layout "
                      "of structure %s (its DEFSTRUCT changed since).  Inlined "
@@ -3384,7 +3545,7 @@ static CL_Obj fasl_load(const uint8_t *data, uint32_t size, int check_deps)
         cl_fasl_read_u32(&r); /* skip unit length */
 
         if (r.error) {
-            if (r.shared_objs) { platform_free(r.shared_objs); r.shared_objs = NULL; r.shared_count = 0; }
+            fasl_load_abandon(&r);
             cl_error(CL_ERR_GENERAL,
                      "FASL: truncated unit header at unit %u/%u (pos %u, size %u)",
                      (unsigned)i, (unsigned)n_units,
@@ -3395,7 +3556,7 @@ static CL_Obj fasl_load(const uint8_t *data, uint32_t size, int check_deps)
         bc_obj = cl_fasl_deserialize_bytecode(&r);
         if (r.error) {
             int des_err = r.error;
-            if (r.shared_objs) { platform_free(r.shared_objs); r.shared_objs = NULL; r.shared_count = 0; }
+            fasl_load_abandon(&r);
             cl_error(CL_ERR_GENERAL,
                      "FASL: deserialize failed: unit %u/%u %s at pos %u (unit_start %u, size %u)",
                      (unsigned)i, (unsigned)n_units,

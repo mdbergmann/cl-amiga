@@ -211,6 +211,57 @@ cat > "$WORK/quitload.lisp" <<LISPEOF
 LISPEOF
 run_case "no_leak_when_quit_inside_load" "$WORK/quitload.lisp"
 
+# --- a FASL load abandoned by a non-local exit ------------------------------
+# The unit signals while the reader holds its off-heap shared-object table
+# (the literal below is one object referenced twice).  HANDLER-CASE, RETURN-FROM
+# and THROW leave through the VM's NLX landing, the last load through LOAD's own
+# per-form error frame — either way fasl_load never reaches its cleanup, so the
+# registry has to hand the table back.
+cat > "$WORK/boom.lisp" <<'LISPEOF'
+(defvar *boom-shared* '(#1=(1 2 3) #1# #2="shared" #2#))
+(error "boom from inside a FASL unit")
+LISPEOF
+cat > "$WORK/boomload.lisp" <<LISPEOF
+(load "$WORK/boom.fasl")
+LISPEOF
+cat > "$WORK/abandon.lisp" <<LISPEOF
+(compile-file "$WORK/boom.lisp" :output-file "$WORK/boom.fasl")
+(handler-case (load "$WORK/boom.fasl") (error () :caught))
+(block out
+  (handler-bind ((error (lambda (e) (declare (ignore e)) (return-from out nil))))
+    (load "$WORK/boom.fasl")))
+(catch 'tag
+  (handler-bind ((error (lambda (e) (declare (ignore e)) (throw 'tag nil))))
+    (load "$WORK/boom.fasl")))
+(load "$WORK/boomload.lisp")
+(gc)
+(quit)
+LISPEOF
+run_case "no_leak_after_abandoned_fasl_load" "$WORK/abandon.lisp"
+
+# --- a source LOAD's auto-cache writer abandoned by a non-local exit -------
+# bi_load's auto-cache heap-allocates a CL_FaslWriter (fw) plus a fasl_buf
+# and unit_buf, and registers fw as a GC root for the whole source load — the
+# writer counterpart of the reader case above.  HANDLER-CASE, RETURN-FROM and
+# THROW leave through the NLX landing before bi_load's own end-of-function
+# cleanup runs, so all three had to be handed back from the registry instead.
+cat > "$WORK/wboom.lisp" <<'LISPEOF'
+(defvar *wboom-shared* '(#1=(1 2 3) #1# #2="shared" #2#))
+(error "wboom from inside a source LOAD unit")
+LISPEOF
+cat > "$WORK/wabandon.lisp" <<LISPEOF
+(handler-case (load "$WORK/wboom.lisp") (error () :caught))
+(block out
+  (handler-bind ((error (lambda (e) (declare (ignore e)) (return-from out nil))))
+    (load "$WORK/wboom.lisp")))
+(catch 'tag
+  (handler-bind ((error (lambda (e) (declare (ignore e)) (throw 'tag nil))))
+    (load "$WORK/wboom.lisp")))
+(gc)
+(quit)
+LISPEOF
+run_case "no_leak_after_abandoned_source_load_writer" "$WORK/wabandon.lisp"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ] || exit 1

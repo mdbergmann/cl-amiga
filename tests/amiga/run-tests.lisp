@@ -4293,6 +4293,98 @@ y" 1))
 (check "reader label: heap still sound after it" 1000
   (progn (ext:gc) (length (make-list 1000))))
 
+; A non-local exit out of a FASL load takes the loader's reader with it.
+; fasl_load registers its stack-local reader as a GC root; HANDLER-CASE,
+; RETURN-FROM and THROW leave through the NLX landing (the VM's, or the JIT
+; runtime's), which passes no C error frame — the registry used to keep
+; pointing into dead stack until the next GC crashed on it, and the reader's
+; 256 KB off-heap table was gone until reboot.  The nested load is the
+; opposite risk: a landing INSIDE a live load must leave that load's reader
+; rooted.  Host twin: tests/test_fasl_reader_unwind.sh.
+; The suite itself is being LOADed, so the counts are compared against BASE.
+(flet ((write-file (path &rest lines)
+         (when (probe-file path) (delete-file path))
+         (with-open-file (s path :direction :output :if-does-not-exist :create)
+           (dolist (l lines) (write-line l s))))
+       (delta (base)
+         (mapcar #'- (ext:%fasl-registry-stats) base)))
+ (let ((base (ext:%fasl-registry-stats)))
+  (write-file "T:fnlx-boom.lisp"
+              "(defvar cl-user::*fnlx-shared* '(#1=(1 2 3) #1# #2=(a b) #2#))"
+              "(error \"fnlx boom\")"
+              "(defvar cl-user::*fnlx-never* t)")
+  (write-file "T:fnlx-outer.lisp"
+              "(defvar cl-user::*fnlx-o1* '(#1=(o1 o2) #1#))"
+              "(defvar cl-user::*fnlx-caught* (handler-case (load \"T:fnlx-boom.fasl\") (error () :inner-caught)))"
+              "(defvar cl-user::*fnlx-mid* (ext:%fasl-registry-stats))"
+              "(defvar cl-user::*fnlx-o2* '(#1=(tail) #1# #2=(x y) #2#))")
+  (compile-file "T:fnlx-boom.lisp" :output-file "T:fnlx-boom.fasl")
+  (compile-file "T:fnlx-outer.lisp" :output-file "T:fnlx-outer.fasl")
+  (check "fasl nlx: HANDLER-CASE out of a load drops the reader" '("fnlx boom" (0 0))
+    (list (handler-case (load "T:fnlx-boom.fasl") (error (c) (princ-to-string c)))
+          (delta base)))
+  (check "fasl nlx: RETURN-FROM out of a load drops the reader" '(:returned (0 0))
+    (list (block out
+            (handler-bind ((error (lambda (c) (declare (ignore c)) (return-from out :returned))))
+              (load "T:fnlx-boom.fasl")))
+          (delta base)))
+  (check "fasl nlx: THROW out of a load drops the reader" '(:thrown (0 0))
+    (list (catch 'fnlx-tag
+            (handler-bind ((error (lambda (c) (declare (ignore c)) (throw 'fnlx-tag :thrown))))
+              (load "T:fnlx-boom.fasl")))
+          (delta base)))
+  (check "fasl nlx: GC after the abandoned loads" :alive
+    (progn (ext:gc) (length (make-list 100)) :alive))
+  (check "fasl nlx: units before the error ran, the ones after did not" '(4 nil)
+    (list (length (symbol-value 'cl-user::*fnlx-shared*)) (boundp 'cl-user::*fnlx-never*)))
+  (load "T:fnlx-outer.fasl")
+  (check "fasl nlx: a landing inside a live load keeps that load's reader" '(:inner-caught (1 0))
+    (list (symbol-value 'cl-user::*fnlx-caught*)
+          (mapcar #'- (symbol-value 'cl-user::*fnlx-mid*) base)))
+  (check "fasl nlx: the live load's later units still share their literals" '(t t t)
+    (let ((o1 (symbol-value 'cl-user::*fnlx-o1*))
+          (o2 (symbol-value 'cl-user::*fnlx-o2*)))
+      (list (eq (first o1) (second o1)) (eq (first o2) (second o2)) (eq (third o2) (fourth o2)))))
+  (check "fasl nlx: nothing left registered" '(0 0) (delta base))))
+
+; The writer counterpart: bi_load's own auto-cache heap-allocates a
+; CL_FaslWriter (fw) and registers it as a GC root for a SOURCE load, not the
+; reader case above (which loads a compiled FASL).  fw is platform_alloc'd
+; rather than a C stack local, so an abandoning longjmp does not dangle-
+; pointer-crash it the way the reader's did — but nothing else freed it or
+; its fasl_buf/unit_buf without cl_fasl_writer_unwind_to at the landing, so
+; it stayed a registered GC root (and both buffers stayed allocated) forever.
+; Host twin: tests/test_fasl_reader_unwind.sh section 5.
+(flet ((write-file (path &rest lines)
+         (when (probe-file path) (delete-file path))
+         (with-open-file (s path :direction :output :if-does-not-exist :create)
+           (dolist (l lines) (write-line l s))))
+       (delta (base)
+         (mapcar #'- (ext:%fasl-registry-stats) base)))
+ (let ((base (ext:%fasl-registry-stats)))
+  (write-file "T:wnlx-boom.lisp"
+              "(defvar cl-user::*wnlx-shared* '(#1=(1 2 3) #1# #2=(a b) #2#))"
+              "(error \"wnlx boom\")"
+              "(defvar cl-user::*wnlx-never* t)")
+  (check "fasl nlx: HANDLER-CASE out of a source load drops the writer" '("wnlx boom" (0 0))
+    (list (handler-case (load "T:wnlx-boom.lisp") (error (c) (princ-to-string c)))
+          (delta base)))
+  (check "fasl nlx: RETURN-FROM out of a source load drops the writer" '(:returned (0 0))
+    (list (block out
+            (handler-bind ((error (lambda (c) (declare (ignore c)) (return-from out :returned))))
+              (load "T:wnlx-boom.lisp")))
+          (delta base)))
+  (check "fasl nlx: THROW out of a source load drops the writer" '(:thrown (0 0))
+    (list (catch 'wnlx-tag
+            (handler-bind ((error (lambda (c) (declare (ignore c)) (throw 'wnlx-tag :thrown))))
+              (load "T:wnlx-boom.lisp")))
+          (delta base)))
+  (check "fasl nlx: GC after the abandoned writer loads" :alive
+    (progn (ext:gc) (length (make-list 100)) :alive))
+  (check "fasl nlx: units before the error ran, the ones after did not (writer)" '(4 nil)
+    (list (length (symbol-value 'cl-user::*wnlx-shared*)) (boundp 'cl-user::*wnlx-never*)))
+  (check "fasl nlx: nothing left registered after the writer cases" '(0 0) (delta base))))
+
 ; --- TCP sockets (server side: socket-listen / socket-accept / socket-local-port) ---
 ; FS-UAE provides a TCP stack (bsdsocket.library on Amiga), so these run for
 ; real.  Single-threaded loopback pattern, same as the host tests: a loopback

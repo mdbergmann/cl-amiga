@@ -8,6 +8,7 @@
 #include "float.h"
 #include "error.h"
 #include "compiler.h"
+#include "fasl.h"       /* cl_fasl_{reader,writer}_unwind_to at the NLX landing */
 #include "builtins.h"   /* cl_ffi_stub_call, cl_amiga_call_via_base_sym */
 #include "printer.h"
 #include "string_utils.h"
@@ -2244,6 +2245,8 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             gc_root_count = nlx->gc_root_mark;
             cl_jit_restore_depth(nlx->saved_jit_depth);
             cl_compiler_unwind_to(nlx->compiler_mark, CL_CAPTURE_SP());
+            cl_fasl_reader_unwind_to(CL_CAPTURE_SP());
+            cl_fasl_writer_unwind_to(CL_CAPTURE_SP());
             cl_printer_state_restore(nlx->printer_mark);
             cl_saved_pending_top = nlx->saved_pending_mark;
             /* Drop the UNWIND-PROTECT value records of the cleanups this

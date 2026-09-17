@@ -274,15 +274,39 @@ void cl_fasl_gc_update_mlf(void (*update_fn)(CL_Obj *));
  * past cl_fasl_reader_unregister; the error frame restores the count). */
 int  cl_fasl_reader_save_count(void);
 void cl_fasl_reader_restore_count(int n);
+/* NLX-landing counterpart: a Lisp-level non-local exit passes no error frame.
+ * Drops (and frees the off-heap table of) every reader of the calling thread
+ * that lives deeper in the C stack than LANDING_ANCHOR = CL_CAPTURE_SP() at
+ * the landing, i.e. in a frame the longjmp discarded.  Call it wherever
+ * cl_compiler_unwind_to is called. */
+void cl_fasl_reader_unwind_to(void *landing_anchor);
 
 /* Active-WRITER registry: GC-roots a persistent writer's gensym dedup table
- * across bi_load's interleaved compile/eval/serialize (see fasl.c). */
-void cl_fasl_writer_register(CL_FaslWriter *w);
+ * across bi_load's interleaved compile/eval/serialize (see fasl.c).
+ * Unlike a reader, a registered writer is platform_alloc'd (not a C stack
+ * local) — STACK_ANCHOR is CL_CAPTURE_SP() taken at the registering frame
+ * (bi_load), kept alongside the writer purely so cl_fasl_writer_unwind_to
+ * can tell an abandoned registration from a live one; it is never
+ * dereferenced. */
+void cl_fasl_writer_register(CL_FaslWriter *w, void *stack_anchor);
 void cl_fasl_writer_unregister(CL_FaslWriter *w);
 int  cl_fasl_writer_save_count(void);
 void cl_fasl_writer_restore_count(int n);
 void cl_fasl_gc_mark_writers(void);
 void cl_fasl_gc_update_writers(void (*update_fn)(CL_Obj *));
+/* The registered writer's per-unit scratch buffer (bi_load's `unit_buf`) is
+ * not reachable from the CL_FaslWriter itself, so the registry keeps its own
+ * copy to free on abandonment — call this whenever the caller (re)allocates
+ * it, including right after cl_fasl_writer_register. A writer with no slot
+ * (unregistered, e.g. bi_compile_file's writer) is a silent no-op. */
+void cl_fasl_writer_note_scratch(CL_FaslWriter *w, void *unit_buf);
+/* NLX-landing counterpart of cl_fasl_reader_unwind_to (see above), for the
+ * writer registry: drops every writer of the calling thread registered with
+ * a stack_anchor deeper than LANDING_ANCHOR, freeing its scratch buffer,
+ * shared/gensym dedup tables, output buffer (w->data) and the writer struct
+ * itself — all off-heap and otherwise gone until reboot on AmigaOS. Call it
+ * next to cl_fasl_reader_unwind_to. */
+void cl_fasl_writer_unwind_to(void *landing_anchor);
 
 #ifdef DEBUG_FASL
 /* --- Per-unit serialization histogram (debug builds only) ---

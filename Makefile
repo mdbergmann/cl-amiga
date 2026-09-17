@@ -235,7 +235,7 @@ test_batch test_repl_values test_repl_paste test_boot_log test_mx_error_context 
                 test_io_diag test_ql_socket_timeouts test_stream_outbuf_leak \
                 test_shutdown_leak \
                 test_tls_loopback test_compiler_chain_unwind test_reader_label_gc \
-                test_mt_lock_contention_throughput \
+                test_fasl_reader_unwind test_mt_lock_contention_throughput \
                 test_mp_heap_locks \
                 test_mt_print_stress test_load_keywords test_load_rebind \
                 test_dev_commands test_userinit test_compile_file_package \

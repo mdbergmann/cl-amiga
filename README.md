@@ -1152,6 +1152,11 @@ Two diagnostics report on it:
   far had to grow its buffers.  A single function is limited to 262144 bytes
   of bytecode and 8192 distinct constants; past that the compiler signals an
   error.  See `tests/test_compiler_buffers.sh`.
+- `(ext:%fasl-registry-stats)` returns `(readers writers)` — the FASL loads
+  and cache writes in flight on the calling thread.  Outside of `load` /
+  `compile-file` both are 0; both are back to 0 as well after a FASL load
+  (or a source `load`'s auto-cache write) was left by `handler-case`,
+  `return-from` or `throw`.  See `tests/test_fasl_reader_unwind.sh`.
 
 `make test-memleak` builds with `-DDEBUG_MEM_TRACK`, which tags every off-heap
 allocation with the source line that made it and asserts a run ends with zero

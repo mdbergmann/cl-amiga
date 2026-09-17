@@ -5899,6 +5899,97 @@ check_contains "read-label: labels in a LOADed source file" "RL-LOAD (T T T T (F
 check_contains "read-label: labels through COMPILE-FILE and the FASL" "RL-FASL (T T T T (F1 F2 F3))" "$out"
 check_contains "read-label case finished" "RL-DONE" "$out"
 
+# --- Case: a FASL load abandoned by a non-local exit -------------------------
+# fasl_load's stack-local reader is a registered GC root.  A HANDLER-CASE /
+# RETURN-FROM / THROW out of a unit leaves through the NLX landing, which has
+# to drop it (cl_fasl_reader_unwind_to): with compaction on every allocation
+# the very next cons would otherwise "forward" slots of a dead stack frame.
+# The nested half is the opposite risk — outer.fasl catches inner's error
+# inside one of its own units, so outer's reader must STAY rooted: its later
+# units still resolve shared objects through it while everything moves.
+# See tests/test_fasl_reader_unwind.sh for the full behaviour.
+mkdir -p "$WORK/nlxfasl"
+cat > "$WORK/nlxfasl/boom.lisp" <<'EOF'
+(defvar *gn-shared* '(#1=(1 2 3) #1# #2=(a b) #2#))
+(error "gn boom")
+EOF
+cat > "$WORK/nlxfasl/outer.lisp" <<EOF
+(defvar *gn-o1* '(#1=(o1 o2) #1#))
+(defvar *gn-caught* (handler-case (load "$WORK/nlxfasl/boom.fasl") (error () :inner-caught)))
+(defvar *gn-churn* (loop repeat 50 collect (make-list 5)))
+(defvar *gn-o2* '(#1=(tail) #1# #2=(x y) #2#))
+EOF
+cat > "$WORK/nlxfasl/run.lisp" <<EOF
+(compile-file "$WORK/nlxfasl/boom.lisp" :output-file "$WORK/nlxfasl/boom.fasl")
+(compile-file "$WORK/nlxfasl/outer.lisp" :output-file "$WORK/nlxfasl/outer.fasl")
+(defun gn-churn () (length (loop repeat 200 collect (make-string 9))))
+(format t "GN-HC ~S ~S~%"
+        (handler-case (load "$WORK/nlxfasl/boom.fasl") (error () :caught)) (gn-churn))
+(format t "GN-RF ~S ~S~%"
+        (block out
+          (handler-bind ((error (lambda (e) (declare (ignore e)) (return-from out :returned))))
+            (load "$WORK/nlxfasl/boom.fasl")))
+        (gn-churn))
+(format t "GN-TH ~S ~S~%"
+        (catch 'tag
+          (handler-bind ((error (lambda (e) (declare (ignore e)) (throw 'tag :thrown))))
+            (load "$WORK/nlxfasl/boom.fasl")))
+        (gn-churn))
+(load "$WORK/nlxfasl/outer.fasl")
+(format t "GN-OUTER ~S ~S ~S ~S ~S~%" *gn-caught*
+        (eq (first *gn-o1*) (second *gn-o1*))
+        (eq (first *gn-o2*) (second *gn-o2*))
+        (eq (third *gn-o2*) (fourth *gn-o2*))
+        (equal *gn-o2* '((tail) (tail) (x y) (x y))))
+(gc)
+(format t "GN-DONE~%")
+EOF
+out=$(run_stress "$WORK/nlxfasl/run.lisp")
+check_contains "nlx-fasl: HANDLER-CASE out of a load, then allocate" "GN-HC :CAUGHT 200" "$out"
+check_contains "nlx-fasl: RETURN-FROM out of a load, then allocate" "GN-RF :RETURNED 200" "$out"
+check_contains "nlx-fasl: THROW out of a load, then allocate" "GN-TH :THROWN 200" "$out"
+check_contains "nlx-fasl: live outer reader survives the inner landing" "GN-OUTER :INNER-CAUGHT T T T T" "$out"
+check_contains "nlx-fasl case finished" "GN-DONE" "$out"
+
+# --- Case: a source LOAD's auto-cache writer abandoned by a non-local exit --
+# bi_load's own auto-cache heap-allocates a CL_FaslWriter (fw) plus a
+# fasl_buf/unit_buf and registers fw as a GC root for the whole source load —
+# the writer counterpart of the "FASL load abandoned by a non-local exit"
+# case above.  fw is platform_alloc'd (not a C stack local), so an abandoning
+# longjmp does not dangle-pointer-crash it the way the reader's stack local
+# would — but without cl_fasl_writer_unwind_to at the landing nothing else
+# freed it (or its two buffers) either, and it stayed a registered GC root
+# forever: every collection after that would walk a writer whose owning
+# bi_load frame is long gone.  Each exit is followed by a churn allocation,
+# same as the reader case, to prove the heap is still sound afterward.
+mkdir -p "$WORK/nlxwriter"
+cat > "$WORK/nlxwriter/wboom.lisp" <<'EOF'
+(defvar *wgn-shared* '(#1=(1 2 3) #1# #2=(a b) #2#))
+(error "wgn boom")
+EOF
+cat > "$WORK/nlxwriter/run.lisp" <<EOF
+(defun wgn-churn () (length (loop repeat 200 collect (make-string 9))))
+(format t "WGN-HC ~S ~S~%"
+        (handler-case (load "$WORK/nlxwriter/wboom.lisp") (error () :caught)) (wgn-churn))
+(format t "WGN-RF ~S ~S~%"
+        (block out
+          (handler-bind ((error (lambda (e) (declare (ignore e)) (return-from out :returned))))
+            (load "$WORK/nlxwriter/wboom.lisp")))
+        (wgn-churn))
+(format t "WGN-TH ~S ~S~%"
+        (catch 'tag
+          (handler-bind ((error (lambda (e) (declare (ignore e)) (throw 'tag :thrown))))
+            (load "$WORK/nlxwriter/wboom.lisp")))
+        (wgn-churn))
+(gc)
+(format t "WGN-DONE~%")
+EOF
+out=$(CLAMIGA_FASL_CACHE_DIR="$WORK/nlxwriter/cache" run_stress "$WORK/nlxwriter/run.lisp")
+check_contains "nlx-writer: HANDLER-CASE out of a source load, then allocate" "WGN-HC :CAUGHT 200" "$out"
+check_contains "nlx-writer: RETURN-FROM out of a source load, then allocate" "WGN-RF :RETURNED 200" "$out"
+check_contains "nlx-writer: THROW out of a source load, then allocate" "WGN-TH :THROWN 200" "$out"
+check_contains "nlx-writer case finished" "WGN-DONE" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

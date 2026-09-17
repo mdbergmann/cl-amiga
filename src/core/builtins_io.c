@@ -275,6 +275,10 @@ static int cf_emit_fasl_unit(CL_FaslWriter *fw,
         if (new_cap > unit_cap_max) new_cap = unit_cap_max;
         platform_free(*unit_buf_p);
         *unit_buf_p = NULL;
+        /* Keep the registry's abandonment copy of unit_buf (if fw is
+         * registered) from ever pointing at freed memory — see the writer
+         * registry note in fasl.h/fasl.c. */
+        cl_fasl_writer_note_scratch(fw, NULL);
         new_buf = (uint8_t *)platform_alloc(new_cap);
         if (!new_buf) {
             cl_fasl_writer_release(&uw);
@@ -283,6 +287,7 @@ static int cf_emit_fasl_unit(CL_FaslWriter *fw,
         }
         *unit_buf_p = new_buf;
         *unit_cap_p = new_cap;
+        cl_fasl_writer_note_scratch(fw, *unit_buf_p);
         cl_fasl_writer_release(&uw);
         cl_fasl_writer_init(&uw, *unit_buf_p, *unit_cap_p);
         memcpy(uw.gensym_objs, fw->gensym_objs, fw->gensym_count * sizeof(CL_Obj));
@@ -880,8 +885,18 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                  * serialized interleaved with compiling/evaluating later
                  * forms, which compact — unrooted entries went stale and
                  * could EQ-collide with a different gensym's new offset
-                 * (silently wrong GENSYM_REF in the cached FASL). */
-                cl_fasl_writer_register(fw);
+                 * (silently wrong GENSYM_REF in the cached FASL).
+                 *
+                 * fw (and its scratch/output buffers) is heap-allocated, so
+                 * an abandoning NLX past this whole function does not
+                 * dangle-pointer-crash the way a stack-local reader would —
+                 * but nothing else frees fw/fasl_buf/unit_buf for that path,
+                 * so the registry still has to be told: register with a
+                 * stack anchor (this frame) so cl_fasl_writer_unwind_to can
+                 * recognize an abandoned registration, and note unit_buf so
+                 * it can hand that buffer back too. */
+                cl_fasl_writer_register(fw, CL_CAPTURE_SP());
+                cl_fasl_writer_note_scratch(fw, unit_buf);
             } else {
                 if (fasl_buf) platform_free(fasl_buf);
                 if (unit_buf) platform_free(unit_buf);
@@ -3111,6 +3126,19 @@ static CL_Obj bi_ext_gc_mark_stats(CL_Obj *args, int n)
                                    CL_NIL)));
 }
 
+/* (ext:%fasl-registry-stats) — the calling thread's active FASL readers and
+ * writers as a 2-element list: (readers writers).  Both are GC roots that
+ * point at C-side state (a reader is a stack local of fasl_load), so both
+ * must be 0 whenever no LOAD / COMPILE-FILE is in flight on this thread.  A
+ * nonzero reader count at top level means a non-local exit out of a load left
+ * the registry pointing into dead stack — the next GC would crash on it. */
+static CL_Obj bi_ext_fasl_registry_stats(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    return cl_list2(CL_MAKE_FIXNUM((int32_t)cl_fasl_reader_save_count()),
+                    CL_MAKE_FIXNUM((int32_t)cl_fasl_writer_save_count()));
+}
+
 /* (ext:%bytecode-offheap-stats) — off-heap bytecode payload returned to the
  * allocator since heap init, as a 2-element list: (bytes objects).
  *
@@ -5087,6 +5115,7 @@ void cl_builtins_io_init(void)
     extfun("GC-COMPACT", bi_ext_gc_compact, 0, 0);
     extfun("%GC-MARK-STATS", bi_ext_gc_mark_stats, 0, 0);
     extfun("%BYTECODE-OFFHEAP-STATS", bi_ext_bytecode_offheap_stats, 0, 0);
+    extfun("%FASL-REGISTRY-STATS", bi_ext_fasl_registry_stats, 0, 0);
     extfun("%COMPILER-POOL-STATS", bi_ext_compiler_pool_stats, 0, 0);
     extfun("%GC-TIME-STATS", bi_ext_gc_time_stats, 0, 0);
 #ifdef CL_GENGC

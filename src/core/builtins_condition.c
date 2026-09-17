@@ -13,6 +13,7 @@
 #include "error.h"
 #include "vm.h"
 #include "compiler.h"
+#include "fasl.h"
 #include "reader.h"
 #include "printer.h"
 #include "color.h"
@@ -1754,6 +1755,8 @@ static CL_Obj bi_warn(CL_Obj *args, int n)
             cl_error_frame_top = f->error_mark;
             gc_root_count = f->gc_root_mark;
             cl_compiler_unwind_to(f->compiler_mark, CL_CAPTURE_SP());
+            cl_fasl_reader_unwind_to(CL_CAPTURE_SP());
+            cl_fasl_writer_unwind_to(CL_CAPTURE_SP());
             cl_printer_state_restore(f->printer_mark);
             cl_saved_pending_top = f->saved_pending_mark;
             CT->mv_save_top = f->mv_save_mark;
