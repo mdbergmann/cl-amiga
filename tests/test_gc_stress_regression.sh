@@ -5899,6 +5899,65 @@ check_contains "read-label: labels in a LOADed source file" "RL-LOAD (T T T T (F
 check_contains "read-label: labels through COMPILE-FILE and the FASL" "RL-FASL (T T T T (F1 F2 F3))" "$out"
 check_contains "read-label case finished" "RL-DONE" "$out"
 
+# --- Case: string / vector literals keep their identity through a FASL -------
+# Strings, vectors, arrays, bit vectors and pathnames are in the FASL
+# shared-object set since v36; the reader registers a vector shell in its
+# shared table BEFORE reading the elements, so every element read (which
+# compacts here) has to forward that entry.  Also the source reader's circular
+# back-patch through a vector.  See tests/test_fasl_literal_identity.sh.
+mkdir -p "$WORK/litident"
+cat > "$WORK/litident/lit.lisp" <<'EOF'
+(defvar *gl-lit* '(#1="s" #1# #2=#(1 #1# (a)) #2# #3=#P"foo/gl.lisp" #3#))
+(defvar *gl-circ* '#1=#(a (b #1#) "t"))
+EOF
+cat > "$WORK/litident/run.lisp" <<EOF
+(defun gl-shape ()
+  (list (eq (first *gl-lit*) (second *gl-lit*))
+        (eq (third *gl-lit*) (fourth *gl-lit*))
+        (eq (aref (third *gl-lit*) 1) (first *gl-lit*))
+        (eq (fifth *gl-lit*) (sixth *gl-lit*))
+        (eq *gl-circ* (second (aref *gl-circ* 1)))
+        (first *gl-lit*) (aref *gl-circ* 2)))
+(load "$WORK/litident/lit.lisp")
+(format t "GL-SRC ~S~%" (gl-shape))
+(makunbound '*gl-lit*) (makunbound '*gl-circ*)
+(load "$WORK/litident/lit.lisp")
+(format t "GL-CACHE ~S~%" (gl-shape))
+(makunbound '*gl-lit*) (makunbound '*gl-circ*)
+(compile-file "$WORK/litident/lit.lisp" :output-file "$WORK/litident/lit.fasl")
+(load "$WORK/litident/lit.fasl")
+(format t "GL-FASL ~S~%" (gl-shape))
+(format t "GL-DONE~%")
+EOF
+out=$(CLAMIGA_FASL_CACHE_DIR="$WORK/litident/cache" run_stress "$WORK/litident/run.lisp")
+check_contains "literal identity: from source" 'GL-SRC (T T T T T "s" "t")' "$out"
+check_contains "literal identity: from LOAD's cached FASL" 'GL-CACHE (T T T T T "s" "t")' "$out"
+check_contains "literal identity: through COMPILE-FILE" 'GL-FASL (T T T T T "s" "t")' "$out"
+check_contains "literal identity case finished" "GL-DONE" "$out"
+
+# --- Case: LOADs nested past the static table sizes --------------------------
+# The C-buffer stream table and the FASL writer registry grow while a dozen
+# LOADs are in flight, each with a registered cache writer that every
+# compaction walks (tests/test_fasl_reader_unwind.sh section 6).
+mkdir -p "$WORK/deepload"
+i=1
+while [ $i -le 11 ]; do
+    printf '(setq *gd-depth* %s)\n(load "%s/deepload/n%s.lisp")\n(push %s *gd-back*)\n' \
+        "$i" "$WORK" "$((i + 1))" "$i" > "$WORK/deepload/n$i.lisp"
+    i=$((i + 1))
+done
+printf '(setq *gd-depth* (list :bottom (ext:%%fasl-registry-stats)))\n' > "$WORK/deepload/n12.lisp"
+cat > "$WORK/deepload/run.lisp" <<EOF
+(defvar *gd-depth* 0)
+(defvar *gd-back* nil)
+(load "$WORK/deepload/n1.lisp")
+(format t "GD-DEEP ~S ~S~%" *gd-depth* *gd-back*)
+(format t "GD-AFTER ~S~%" (ext:%fasl-registry-stats))
+EOF
+out=$(CLAMIGA_FASL_CACHE_DIR="$WORK/deepload/cache" run_stress "$WORK/deepload/run.lisp")
+check_contains "deep load: twelve nested LOADs, twelve live cache writers" 'GD-DEEP (:BOTTOM (0 12)) (1 2 3 4 5 6 7 8 9 10 11)' "$out"
+check_contains "deep load: registries empty afterwards" 'GD-AFTER (0 0)' "$out"
+
 # --- Case: a FASL load abandoned by a non-local exit -------------------------
 # fasl_load's stack-local reader is a registered GC root.  A HANDLER-CASE /
 # RETURN-FROM / THROW out of a unit leaves through the NLX landing, which has

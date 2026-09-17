@@ -4407,6 +4407,54 @@ y" 1))
   (check "cbuf: LOAD still loads" :compiled
     (progn (load "T:cbuf-src.fasl") (funcall 'cbuf-fn))))
 
+; LOADs nest past the static table sizes (C-buffer streams 7, FASL writers 8):
+; both tables grow.  12 levels stay well inside the C stack and the 32 error
+; frames.  tests/test_fasl_reader_unwind.sh section 6.
+(progn
+  (defvar cl-user::*nest-depth* 0)
+  (loop for i from 1 to 11
+        do (with-open-file (s (format nil "T:nest~D.lisp" i)
+                              :direction :output :if-exists :supersede)
+             (format s "(setq cl-user::*nest-depth* ~D)~%(load \"T:nest~D.lisp\")~%"
+                     i (1+ i))))
+  (with-open-file (s "T:nest12.lisp" :direction :output :if-exists :supersede)
+    (write-line "(setq cl-user::*nest-depth* :bottom)" s))
+  (check "nest: twelve nested LOADs reach the bottom" :bottom
+    (progn (load "T:nest1.lisp") cl-user::*nest-depth*)))
+
+; A literal that occurs twice is one object after COMPILE-FILE + LOAD (FASL
+; v36: strings, vectors, bit vectors, pathnames), and a vector can contain
+; itself, from source too.  tests/test_fasl_literal_identity.sh.
+(progn
+  (with-open-file (s "T:litident.lisp" :direction :output :if-exists :supersede)
+    (write-line "(defvar cl-user::*li-lit* '(#1=\"s\" #1# #2=#(1 #1# (a)) #2# #3=#*101 #3# #4=#P\"T:li.lisp\" #4#))" s)
+    (write-line "(defvar cl-user::*li-circ* '#1=#(a (b #1#) \"t\"))" s))
+  (when (probe-file "T:litident.fasl") (delete-file "T:litident.fasl"))
+  (compile-file "T:litident.lisp" :output-file "T:litident.fasl")
+  (load "T:litident.fasl")
+  (check "litident: shared literals keep their identity through a FASL"
+      '(t t t t t t "s" "t")
+    (let ((l cl-user::*li-lit*) (c cl-user::*li-circ*))
+      (list (eq (first l) (second l))
+            (eq (third l) (fourth l))
+            (eq (aref (third l) 1) (first l))
+            (eq (fifth l) (sixth l))
+            (eq (seventh l) (eighth l))
+            (eq c (second (aref c 1)))
+            (first l) (aref c 2))))
+  (check "litident: a vector that contains itself, read from source" t
+    (let ((v (read-from-string "#1=#(a (b #1#))")))
+      (eq v (second (aref v 1))))))
+
+; An abandoned LOAD does not leave its file name behind as the source-file
+; context.  Separate top-level forms on purpose: the DEFUN must be compiled
+; after the LOAD was abandoned.  tests/test_fasl_reader_unwind.sh section 7.
+(handler-case (load "T:cbuf-boom.lisp") (error () nil))
+(defun cl-user::ctx-after-abandoned-load () 1)
+(check "ctx: function after an abandoned LOAD does not name that file" nil
+  (let ((loc (ext:function-source-location #'cl-user::ctx-after-abandoned-load)))
+    (and (consp loc) (search "cbuf-boom" (first loc)) t)))
+
 ; --- TCP sockets (server side: socket-listen / socket-accept / socket-local-port) ---
 ; FS-UAE provides a TCP stack (bsdsocket.library on Amiga), so these run for
 ; real.  Single-threaded loopback pattern, same as the host tests: a loopback

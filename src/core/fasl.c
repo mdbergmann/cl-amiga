@@ -1149,13 +1149,27 @@ static int fasl_ser_step(CL_FaslWriter *w, FaslSerStack *s)
          * literal or a shared tail — emits an OBJ_REF and stops the spine
          * instead of walking the cycle forever.
          *
-         * Reader's OBJ_DEF/REF handler is type-agnostic — no reader-side
-         * change needed. */
+         *
+         * Strings, vectors/arrays, bit and byte vectors and pathnames are
+         * included for identity alone (v36): '(#1="s" #1#) has to come back
+         * with both elements EQ, as it is in the source and as it was for
+         * lists all along (CLHS 3.2.4.4 — the loader may coalesce similar
+         * literals, it may not split one).  Costs 3 B per literal.
+         *
+         * The reader's OBJ_DEF/REF handler is type-agnostic, but a type with
+         * children must take the pending id before it reads them (see
+         * FASL_TAG_OBJ_DEF). */
         {
             uint8_t htype = CL_HDR_TYPE(CL_OBJ_TO_PTR(obj));
             if (htype == TYPE_CLOSURE || htype == TYPE_BYTECODE ||
                 htype == TYPE_STRUCT  || htype == TYPE_SYMBOL  ||
-                htype == TYPE_LOCK    || htype == TYPE_CONS) {
+                htype == TYPE_LOCK    || htype == TYPE_CONS    ||
+                htype == TYPE_STRING  ||
+#ifdef CL_WIDE_STRINGS
+                htype == TYPE_WIDE_STRING ||
+#endif
+                htype == TYPE_VECTOR  || htype == TYPE_BIT_VECTOR  ||
+                htype == TYPE_BYTE_VECTOR || htype == TYPE_PATHNAME) {
                 uint16_t id;
                 int rc = fasl_shared_get_or_insert(w, obj, &id);
                 if (rc == 1) {
@@ -2676,20 +2690,32 @@ CL_Obj cl_fasl_deserialize_obj(CL_FaslReader *r)
          * reference belongs.  Symptom: runtime "%STRUCT-REF: not a
          * structure" when the corrupted slot is later accessed.
          *
-         * If the body deserializer doesn't consume the pending id
-         * (because its type doesn't form cycles via shared_objs —
-         * string, vector, cons, symbol, package, etc.), the fallback
-         * branch below registers here. */
+         * If the body deserializer doesn't consume the pending id (string,
+         * symbol, bit vector, lock), the fallback below registers here.  A
+         * type whose children can be shells themselves (pathname: its
+         * directory list) takes the id before reading them even though it
+         * cannot be part of a cycle: a child shell written without an
+         * OBJ_DEF of its own (writer table full) would claim it. */
+        /* Ids restart with every unit of the file while the table lives as
+         * long as the reader: clear the previous unit's entry, so "still
+         * NIL" below means "this body registered nothing". */
+        if (r->shared_objs && id < FASL_MAX_SHARED)
+            r->shared_objs[id] = CL_NIL;
         cl_fasl_set_pending_obj_def(r, id);
         result = cl_fasl_deserialize_obj(r);
-        if (r->pending_obj_def_id != CL_FASL_NO_PENDING) {
-            /* Body didn't consume — register now (atomic types). */
-            if (r->shared_objs && id < FASL_MAX_SHARED) {
-                r->shared_objs[id] = result;
-                if (id >= r->shared_count) r->shared_count = id + 1;
-            }
-            r->pending_obj_def_id = CL_FASL_NO_PENDING;
+        /* Body didn't register a shell at this id — register the result now.
+         * Asking the table rather than "is the id still pending": a child's
+         * own OBJ_DEF (a lock's name string, since v36) sets and clears the
+         * pending id on its way through, and the lock then came back
+         * unregistered — its OBJ_REFs resolved to NIL.  An unregistered
+         * entry is NIL (the table is zeroed); no OBJ_DEF'd object is. */
+        if (r->shared_objs && id < FASL_MAX_SHARED &&
+            CL_NULL_P(r->shared_objs[id])) {
+            r->shared_objs[id] = result;
+            if (id >= r->shared_count) r->shared_count = id + 1;
         }
+        if (r->pending_obj_def_id == id)
+            r->pending_obj_def_id = CL_FASL_NO_PENDING;
         return result;
     }
 
@@ -2923,6 +2949,7 @@ CL_Obj cl_fasl_deserialize_obj(CL_FaslReader *r)
         /* Each element is at least a 1-byte tag in the remaining input. */
         if (!fasl_check_count(r, len, 1, CL_MAX_VECTOR_ELTS)) return CL_NIL;
         result = cl_make_vector(len);
+        cl_fasl_consume_pending_obj_def(r, result);   /* #1=#(... #1# ...) */
         CL_GC_PROTECT(result);
         v = (CL_Vector *)CL_OBJ_TO_PTR(result);
         for (i = 0; i < len; i++) {
@@ -2964,6 +2991,7 @@ CL_Obj cl_fasl_deserialize_obj(CL_FaslReader *r)
         }
         result = cl_make_array(len, rank, dims, CL_VEC_FLAG_MULTIDIM,
                                CL_NO_FILL_POINTER);
+        cl_fasl_consume_pending_obj_def(r, result);
         CL_GC_PROTECT(result);
         for (i = 0; i < len; i++) {
             CL_Obj elt = cl_fasl_deserialize_obj(r);
@@ -3026,6 +3054,10 @@ CL_Obj cl_fasl_deserialize_obj(CL_FaslReader *r)
         CL_Obj components[6];
         int i;
         CL_Obj result;
+        /* No shell to register ahead of the components; take the id so they
+         * cannot clobber or claim it (see FASL_TAG_OBJ_DEF). */
+        uint32_t def_id = r->pending_obj_def_id;
+        r->pending_obj_def_id = CL_FASL_NO_PENDING;
         for (i = 0; i < 6; i++) {
             components[i] = cl_fasl_deserialize_obj(r);
             CL_GC_PROTECT(components[i]);
@@ -3034,6 +3066,8 @@ CL_Obj cl_fasl_deserialize_obj(CL_FaslReader *r)
                                   components[2], components[3],
                                   components[4], components[5]);
         CL_GC_UNPROTECT(6);
+        r->pending_obj_def_id = def_id;
+        cl_fasl_consume_pending_obj_def(r, result);
         return result;
     }
 

@@ -589,7 +589,8 @@ TEST(serialize_wide_string_ascii_downgrades)
 
     /* First byte after the (optional) shared-object framing must be the
      * STRING tag — this is what makes the FASL portable. */
-    ASSERT_EQ_INT(buf[0], FASL_TAG_STRING);
+    ASSERT_EQ_INT(buf[0], FASL_TAG_OBJ_DEF);   /* u16 id follows (v36) */
+    ASSERT_EQ_INT(buf[3], FASL_TAG_STRING);
 
     /* And a byte-only reader (the Amiga case) must be able to round-trip. */
     cl_fasl_reader_init(&r, buf, w.pos);
@@ -609,7 +610,8 @@ TEST(serialize_wide_string_nonascii_stays_wide)
     cl_fasl_serialize_obj(&w, ws);
 
     /* Non-ASCII codepoint forces WIDE_STRING. */
-    ASSERT_EQ_INT(buf[0], FASL_TAG_WIDE_STRING);
+    ASSERT_EQ_INT(buf[0], FASL_TAG_OBJ_DEF);   /* u16 id follows (v36) */
+    ASSERT_EQ_INT(buf[3], FASL_TAG_WIDE_STRING);
 }
 
 /* CLAMIGA_FASL_PORTABLE=1 (cl_fasl_set_portable_mode): a string that would
@@ -641,7 +643,8 @@ TEST(serialize_wide_string_nonascii_portable_refused)
     cl_fasl_writer_init(&w, buf, sizeof(buf));
     cl_fasl_serialize_obj(&w, ws);
     ASSERT_EQ_INT(w.error, FASL_OK);
-    ASSERT_EQ_INT(buf[0], FASL_TAG_STRING);
+    ASSERT_EQ_INT(buf[0], FASL_TAG_OBJ_DEF);   /* u16 id follows (v36) */
+    ASSERT_EQ_INT(buf[3], FASL_TAG_STRING);
 
     /* Mode off: the non-ASCII string is written as WIDE_STRING as before. */
     cl_fasl_set_portable_mode(0);
@@ -649,7 +652,8 @@ TEST(serialize_wide_string_nonascii_portable_refused)
     cl_fasl_writer_init(&w, buf, sizeof(buf));
     cl_fasl_serialize_obj(&w, ws);
     ASSERT_EQ_INT(w.error, FASL_OK);
-    ASSERT_EQ_INT(buf[0], FASL_TAG_WIDE_STRING);
+    ASSERT_EQ_INT(buf[0], FASL_TAG_OBJ_DEF);   /* u16 id follows (v36) */
+    ASSERT_EQ_INT(buf[3], FASL_TAG_WIDE_STRING);
 }
 #endif
 
@@ -1498,6 +1502,100 @@ TEST(serialize_lock_recursive_preserves_flag)
     ASSERT(lk_out->flags & CL_LOCK_FLAG_RECURSIVE);
 
     CL_GC_UNPROTECT(2);
+}
+
+/* A string or vector literal that occurs twice is one object after the
+ * round trip (v36), also when it sits inside a shared vector whose other
+ * elements carry OBJ_DEFs of their own — the vector has to be registered
+ * before its elements are read. */
+TEST(serialize_string_and_vector_sharing_preserved)
+{
+    uint8_t buf[512];
+    CL_FaslWriter w;
+    CL_FaslReader r;
+    CL_Obj str, vec, list, result, v1;
+
+    str = cl_make_string("shared", 6);
+    CL_GC_PROTECT(str);
+    vec = cl_make_vector(3);
+    CL_GC_PROTECT(vec);
+    ((CL_Vector *)CL_OBJ_TO_PTR(vec))->data[0] = str;
+    ((CL_Vector *)CL_OBJ_TO_PTR(vec))->data[1] = str;
+    ((CL_Vector *)CL_OBJ_TO_PTR(vec))->data[2] = vec;      /* itself */
+    /* (vec vec str) */
+    list = cl_cons(str, CL_NIL);
+    CL_GC_PROTECT(list);
+    list = cl_cons(vec, list);
+    list = cl_cons(vec, list);
+
+    cl_fasl_writer_init(&w, buf, sizeof(buf));
+    cl_fasl_serialize_obj(&w, list);
+    ASSERT_EQ_INT(w.error, FASL_OK);
+
+    cl_fasl_reader_init(&r, buf, w.pos);
+    result = cl_fasl_deserialize_obj(&r);
+    ASSERT_EQ_INT(r.error, FASL_OK);
+
+    v1 = cl_car(result);
+    ASSERT(CL_VECTOR_P(v1));
+    ASSERT(v1 == cl_car(cl_cdr(result)));
+    ASSERT(CL_STRING_P(((CL_Vector *)CL_OBJ_TO_PTR(v1))->data[0]));
+    ASSERT(((CL_Vector *)CL_OBJ_TO_PTR(v1))->data[0] ==
+           ((CL_Vector *)CL_OBJ_TO_PTR(v1))->data[1]);
+    ASSERT(((CL_Vector *)CL_OBJ_TO_PTR(v1))->data[2] == v1);
+    ASSERT(((CL_Vector *)CL_OBJ_TO_PTR(v1))->data[0] ==
+           cl_car(cl_cdr(cl_cdr(result))));
+
+    cl_fasl_writer_release(&w);
+    if (r.shared_objs) platform_free(r.shared_objs);
+    CL_GC_UNPROTECT(3);
+}
+
+/* Shared-object ids restart with every unit while one reader (and its table)
+ * reads the whole file: an id defined again must resolve to the NEW unit's
+ * object, not to what the previous unit left in the slot. */
+TEST(serialize_shared_ids_restart_per_unit)
+{
+    uint8_t buf[512];
+    CL_FaslWriter w;
+    CL_FaslReader r;
+    CL_Obj s1, s2, l1, l2, r1, r2;
+    uint32_t unit1_len;
+
+    s1 = cl_make_string("one", 3);
+    CL_GC_PROTECT(s1);
+    s2 = cl_make_string("two", 3);
+    CL_GC_PROTECT(s2);
+    l1 = cl_cons(s1, CL_NIL);
+    CL_GC_PROTECT(l1);
+    l1 = cl_cons(s1, l1);
+    l2 = cl_cons(s2, CL_NIL);
+    CL_GC_PROTECT(l2);
+    l2 = cl_cons(s2, l2);
+
+    cl_fasl_writer_init(&w, buf, sizeof(buf));
+    cl_fasl_serialize_obj(&w, l1);
+    ASSERT_EQ_INT(w.error, FASL_OK);
+    unit1_len = w.pos;
+    cl_fasl_writer_release(&w);
+    cl_fasl_writer_init(&w, buf + unit1_len, sizeof(buf) - unit1_len);
+    cl_fasl_serialize_obj(&w, l2);                 /* ids from 0 again */
+    ASSERT_EQ_INT(w.error, FASL_OK);
+
+    cl_fasl_reader_init(&r, buf, unit1_len + w.pos);
+    r1 = cl_fasl_deserialize_obj(&r);
+    CL_GC_PROTECT(r1);
+    r2 = cl_fasl_deserialize_obj(&r);
+    ASSERT_EQ_INT(r.error, FASL_OK);
+    ASSERT(cl_car(r1) == cl_car(cl_cdr(r1)));
+    ASSERT(cl_car(r2) == cl_car(cl_cdr(r2)));
+    ASSERT(cl_car(r1) != cl_car(r2));
+    ASSERT(CL_STRING_P(cl_car(r2)));
+    ASSERT_EQ_INT(((CL_String *)CL_OBJ_TO_PTR(cl_car(r2)))->data[1], 'w');
+
+    cl_fasl_writer_release(&w);
+    if (r.shared_objs) platform_free(r.shared_objs);
+    CL_GC_UNPROTECT(5);
 }
 
 /* When the same lock is referenced twice within a unit, dedup via
@@ -2728,6 +2826,8 @@ int main(void)
     RUN(deserialize_bad_tag);
     RUN(serialize_lock_nonrecursive);
     RUN(serialize_lock_recursive_preserves_flag);
+    RUN(serialize_string_and_vector_sharing_preserved);
+    RUN(serialize_shared_ids_restart_per_unit);
     RUN(serialize_lock_sharing_preserved);
     RUN(serialize_cons_head_sharing_preserved);
     RUN(serialize_many_shared_cons_cells);

@@ -384,11 +384,22 @@ static CL_Obj reader_label_cell(int n)
     return CL_NIL;
 }
 
-/* Replace every reference to `from` reachable through CONS slots of `root`
- * with `to`.  Non-allocating (so no GC can move objects mid-walk); a bounded
- * visited set makes it terminate on the cyclic structure it is fixing up.
- * Used only for genuinely circular #n= definitions — the common shared-label
- * case (e.g. jzon's #1=#:|| ... #1#) never reaches here. */
+/* Replace every reference to `from` reachable through the CONS slots and
+ * general-vector elements of `root` with `to` (#1=(a . #1#), #1=#(a #1#),
+ * #1=#2A((#1#))).  Non-allocating (so no GC can move objects mid-walk); a
+ * bounded visited set makes it terminate on the cyclic structure it is fixing
+ * up.  Used only for genuinely circular #n= definitions — the common
+ * shared-label case (e.g. jzon's #1=#:|| ... #1#) never reaches here. */
+static int reader_patch_container_p(CL_Obj obj)
+{
+    if (CL_CONS_P(obj)) return 1;
+    if (CL_VECTOR_P(obj)) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
+        return !(v->flags & (CL_VEC_FLAG_STRING | CL_VEC_FLAG_DISPLACED));
+    }
+    return 0;
+}
+
 static void reader_patch_labels(CL_Obj root, CL_Obj from, CL_Obj to)
 {
     enum { MAXN = 256 };
@@ -396,22 +407,32 @@ static void reader_patch_labels(CL_Obj root, CL_Obj from, CL_Obj to)
     CL_Obj visited[MAXN];
     int sp = 0, nv = 0, i;
 
-    if (!CL_CONS_P(root)) return;
+    if (!reader_patch_container_p(root)) return;
     stack[sp++] = root;
     while (sp > 0) {
         CL_Obj node = stack[--sp];
-        CL_Cons *c;
         int seen = 0;
         for (i = 0; i < nv; i++)
             if (visited[i] == node) { seen = 1; break; }
         if (seen) continue;
         if (nv >= MAXN) return;        /* structure too large — degrade safely */
         visited[nv++] = node;
-        c = (CL_Cons *)CL_OBJ_TO_PTR(node);
-        if (c->car == from) c->car = to;
-        else if (CL_CONS_P(c->car) && sp < MAXN) stack[sp++] = c->car;
-        if (c->cdr == from) c->cdr = to;
-        else if (CL_CONS_P(c->cdr) && sp < MAXN) stack[sp++] = c->cdr;
+        if (CL_CONS_P(node)) {
+            CL_Cons *c = (CL_Cons *)CL_OBJ_TO_PTR(node);
+            if (c->car == from) c->car = to;
+            else if (reader_patch_container_p(c->car) && sp < MAXN) stack[sp++] = c->car;
+            if (c->cdr == from) c->cdr = to;
+            else if (reader_patch_container_p(c->cdr) && sp < MAXN) stack[sp++] = c->cdr;
+        } else {
+            CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(node);
+            CL_Obj *data = cl_vector_data(v);
+            uint32_t k;
+            for (k = 0; k < v->length; k++) {
+                if (data[k] == from) data[k] = to;
+                else if (reader_patch_container_p(data[k]) && sp < MAXN)
+                    stack[sp++] = data[k];
+            }
+        }
     }
 }
 

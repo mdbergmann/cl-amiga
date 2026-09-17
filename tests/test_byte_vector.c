@@ -1246,16 +1246,18 @@ TEST(w16_fasl_roundtrip_big_endian_wire)
     ASSERT_EQ_INT(FASL_OK, w.error);
     cl_fasl_writer_release(&w);
 
-    /* Wire layout: tag, u32 length (BE), u8 is_signed, u8 elt_shift,
-     * then per-element u16 big-endian. */
-    ASSERT_EQ_INT(FASL_TAG_BYTE_VECTOR, (int)buf[0]);
-    ASSERT_EQ_INT(3, (int)buf[4]);       /* length LSB of big-endian u32 */
-    ASSERT_EQ_INT(0, (int)buf[5]);       /* is_signed */
-    ASSERT_EQ_INT(1, (int)buf[6]);       /* elt_shift */
-    ASSERT_EQ_INT(0x12, (int)buf[7]);    /* element 0 high byte first */
-    ASSERT_EQ_INT(0x34, (int)buf[8]);
-    ASSERT_EQ_INT(0x00, (int)buf[9]);
-    ASSERT_EQ_INT(0x01, (int)buf[10]);
+    /* Wire layout: OBJ_DEF + u16 id (shared-object framing, v36), then tag,
+     * u32 length (BE), u8 is_signed, u8 elt_shift, then per-element u16
+     * big-endian. */
+    ASSERT_EQ_INT(FASL_TAG_OBJ_DEF, (int)buf[0]);
+    ASSERT_EQ_INT(FASL_TAG_BYTE_VECTOR, (int)buf[3]);
+    ASSERT_EQ_INT(3, (int)buf[7]);       /* length LSB of big-endian u32 */
+    ASSERT_EQ_INT(0, (int)buf[8]);       /* is_signed */
+    ASSERT_EQ_INT(1, (int)buf[9]);       /* elt_shift */
+    ASSERT_EQ_INT(0x12, (int)buf[10]);   /* element 0 high byte first */
+    ASSERT_EQ_INT(0x34, (int)buf[11]);
+    ASSERT_EQ_INT(0x00, (int)buf[12]);
+    ASSERT_EQ_INT(0x01, (int)buf[13]);
 
     cl_fasl_reader_init(&r, buf, w.pos);
     back = cl_fasl_deserialize_obj(&r);

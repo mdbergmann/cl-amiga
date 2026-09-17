@@ -239,7 +239,7 @@ test_batch test_repl_values test_repl_paste test_boot_log test_mx_error_context 
                 test_mp_heap_locks \
                 test_mt_print_stress test_load_keywords test_load_rebind \
                 test_dev_commands test_userinit test_compile_file_package \
-                test_compile_file_stderr test_fasl_cache_dir test_fasl_struct_deps test_make_load_form \
+                test_compile_file_stderr test_fasl_cache_dir test_fasl_struct_deps test_fasl_literal_identity test_make_load_form \
                 test_struct_slot_access test_defconstant_fasl test_peephole_diff \
                 test_tier4_phase1 test_tier4_phase2 test_tier4_phase3 test_local_inline \
                 test_scan_opcodes test_runtime_forms test_compiler_buffers \
