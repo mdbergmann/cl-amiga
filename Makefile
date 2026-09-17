@@ -148,7 +148,7 @@ PREFIX ?= /usr/local
 host: $(HOST_BIN)
 
 # Keep the docs/*.md package symbol lists in sync with the real exports.
-# docs-check (CI/pre-commit) fails if any documented extension package's export
+# docs-check (also run by `make test`: tests/test_docs_symbols.sh) fails if any documented extension package's export
 # set drifts from docs/package-symbols.txt, or if docs/clamiga.md references a
 # CLAMIGA symbol that is no longer exported.  docs-update regenerates the
 # snapshot after you have updated the prose.  See tools/docs/package-symbols.sh.
@@ -249,7 +249,7 @@ test_batch test_repl_values test_repl_paste test_boot_log test_mx_error_context 
                 test_amiga_bindgen \
                 test_amiga_boopsi test_amiga_reaction test_amiga_mui test_amiga_curated_vs_raw \
                 test_amiga_asyncio test_amiga_ahi test_amiga_iff test_amiga_gfx_examples \
-                test_lib_fasl_portable test_fasl_source_name test_md2guide
+                test_lib_fasl_portable test_fasl_source_name test_md2guide test_docs_symbols
 
 # The ones that take no clamiga binary: two drive make itself, one the
 # Aminet upload script (dry runs only, no network), one greps the sources

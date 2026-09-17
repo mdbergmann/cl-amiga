@@ -460,7 +460,7 @@ usage end-to-end.
 | `(playing-p audio)` | function | True while the last `play-sample` is still sounding |
 | `(period-for-rate rate)` | function | Paula period for a sample `rate` in Hz (PAL clock) |
 
-- **Constants:** `+max-volume+` (64), `+max-sample-bytes+` (131072).
+- **Constants:** `+max-volume+` (64), `+max-sample-bytes+` (131072), `+max-precedence+` (127 — the highest allocation precedence; a channel held at it cannot be stolen, and on m68k `open-audio` always allocates at it).
 
 ---
 

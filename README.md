@@ -688,7 +688,7 @@ Work:src/foo.lisp:40: ERROR: Too many arguments to DRAW: expected 2, got 3
 | `DESCRIBE <symbol>` | `describe` output (lambda list, docstring, source file:line included) |
 | `APROPOS <string> [<pkg>]` | One matching symbol per line with its kinds: `function`, `macro`, `special-operator`, `variable`, `class`; the symbols accessible in `<pkg>`, or in the command package |
 | `SOURCE-LOCATION <symbol>` | `<file>:<line>` of the definition; rc 10 when none was recorded |
-| `MACROEXPAND <form>`, `MACROEXPAND-1 <form>` | The expansion, laid out as code (body forms indented, arguments aligned) rather than filled to the margin |
+| `MACROEXPAND <form>`, `MACROEXPAND-1 <form>` | The expansion, laid out as code (body forms indented, arguments aligned) rather than filled to the margin; lines break at column `ext.dev:*pretty-margin*` (72) |
 | `REPL-ATTACH <port> [DEBUG]` | Start the REPL thread, which talks back to the editor's ARexx port `<port>` (see below); answers with the current package. With `DEBUG`, an unhandled error opens the debugger protocol instead of ending the form |
 | `REPL-EVAL <forms>` | Hand the forms to the REPL thread; answers at once (rc 10 while a form is still running), the values arrive with `RESULT` |
 | `REPL-INPUT <line>` | Answer an outstanding `READLINE` |

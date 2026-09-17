@@ -658,10 +658,21 @@ expect {
 # records were never dropped.  The marker is assembled at run time so the
 # echoed input line cannot match it.
 send "(format t \"~%~A ~S~%\" (concatenate 'string \"R8\" \"a\") (handler-case (progn (p2-park 49 nil) :ok) (error (e) (if (search \"value-save stack overflow\" (princ-to-string e)) :leaked (princ-to-string e)))))\r"
+# Match the WHOLE result line, then look at it: expect tries its patterns on
+# whatever has arrived so far, so a bare "R8a " catch-all fired whenever the
+# pty delivered the line in two pieces ("R8a " first, ":OK" later) — a rare
+# false "unexpected error after :q".
 expect {
-    "R8a :OK" { puts "T8PASS" }
-    "R8a :LEAKED" { puts "T8FAIL: save stack leaked across :q"; exit 1 }
-    "R8a " { puts "T8FAIL: unexpected error after :q"; exit 1 }
+    -re {R8a ([^\r\n]*)[\r\n]} {
+        set r8 $expect_out(1,string)
+        if {$r8 eq ":OK"} {
+            puts "T8PASS"
+        } elseif {$r8 eq ":LEAKED"} {
+            puts "T8FAIL: save stack leaked across :q"; exit 1
+        } else {
+            puts "T8FAIL: unexpected error after :q: $r8"; exit 1
+        }
+    }
     eof { puts "T8FAIL: REPL died"; exit 1 }
     timeout { puts "T8FAIL: no result after :q"; exit 1 }
 }
