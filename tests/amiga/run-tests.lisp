@@ -4385,6 +4385,28 @@ y" 1))
     (list (length (symbol-value 'cl-user::*wnlx-shared*)) (boundp 'cl-user::*wnlx-never*)))
   (check "fasl nlx: nothing left registered after the writer cases" '(0 0) (delta base))))
 
+; Abandoned source LOADs give their C-buffer source stream back: the table
+; has seven slots, and the seventh caught LOAD error used to leave every later
+; LOAD / COMPILE-FILE reading from NIL — nothing loaded, no FASL written, no
+; error (which is how the rest of this suite found it).  Host twin:
+; tests/test_fasl_reader_unwind.sh section 6.
+(progn
+  (when (probe-file "T:cbuf-boom.lisp") (delete-file "T:cbuf-boom.lisp"))
+  (with-open-file (s "T:cbuf-boom.lisp" :direction :output :if-does-not-exist :create)
+    (write-line "(error \"cbuf boom\")" s))
+  (with-open-file (s "T:cbuf-src.lisp" :direction :output :if-exists :supersede)
+    (write-line "(defun cl-user::cbuf-fn () :compiled)" s))
+  (when (probe-file "T:cbuf-src.fasl") (delete-file "T:cbuf-src.fasl"))
+  (check "cbuf: twelve caught LOAD errors all signal" 12
+    (loop repeat 12
+          count (equal "cbuf boom" (handler-case (load "T:cbuf-boom.lisp")
+                                     (error (c) (princ-to-string c))))))
+  (check "cbuf: COMPILE-FILE still writes its file" t
+    (progn (compile-file "T:cbuf-src.lisp" :output-file "T:cbuf-src.fasl")
+           (not (null (probe-file "T:cbuf-src.fasl")))))
+  (check "cbuf: LOAD still loads" :compiled
+    (progn (load "T:cbuf-src.fasl") (funcall 'cbuf-fn))))
+
 ; --- TCP sockets (server side: socket-listen / socket-accept / socket-local-port) ---
 ; FS-UAE provides a TCP stack (bsdsocket.library on Amiga), so these run for
 ; real.  Single-threaded loopback pattern, same as the host tests: a loopback

@@ -5951,6 +5951,32 @@ check_contains "nlx-fasl: THROW out of a load, then allocate" "GN-TH :THROWN 200
 check_contains "nlx-fasl: live outer reader survives the inner landing" "GN-OUTER :INNER-CAUGHT T T T T" "$out"
 check_contains "nlx-fasl case finished" "GN-DONE" "$out"
 
+# --- Case: source streams of abandoned LOADs come back at sweep time ---------
+# A LOAD left by a non-local exit never closes its C-buffer source stream; the
+# dead stream's slot and file buffer are released by the sweep
+# (cl_stream_cbuf_gc_release).  Under stress that finalizer runs on every
+# allocation, next to the live streams of the enclosing LOADs — it must only
+# ever take the dead ones.
+mkdir -p "$WORK/cbuf"
+printf '(defvar *gcb-ran* 0)\n(incf *gcb-ran*)\n(error "gcb boom")\n' > "$WORK/cbuf/boom.lisp"
+printf '(defun gcb-fn () :compiled)\n' > "$WORK/cbuf/src.lisp"
+cat > "$WORK/cbuf/inner.lisp" <<EOF
+(defvar *gcb-inner* (loop repeat 12 count (handler-case (load "$WORK/cbuf/boom.lisp") (error () t))))
+(defvar *gcb-tail* (list :still :reading :the :outer :file))
+EOF
+cat > "$WORK/cbuf/run.lisp" <<EOF
+(load "$WORK/cbuf/inner.lisp")
+(format t "GCB ~S ~S ~S~%" *gcb-inner* *gcb-ran* *gcb-tail*)
+(compile-file "$WORK/cbuf/src.lisp" :output-file "$WORK/cbuf/src.fasl")
+(load "$WORK/cbuf/src.fasl")
+(format t "GCB-FN ~S~%" (gcb-fn))
+(format t "GCB-DONE~%")
+EOF
+out=$(CLAMIGA_FASL_CACHE_DIR="$WORK/cbuf/cache" run_stress "$WORK/cbuf/run.lisp")
+check_contains "cbuf: twelve abandoned LOADs inside a live LOAD" "GCB 12 12 (:STILL :READING :THE :OUTER :FILE)" "$out"
+check_contains "cbuf: COMPILE-FILE and LOAD work afterwards" "GCB-FN :COMPILED" "$out"
+check_contains "cbuf case finished" "GCB-DONE" "$out"
+
 # --- Case: a source LOAD's auto-cache writer abandoned by a non-local exit --
 # bi_load's own auto-cache heap-allocates a CL_FaslWriter (fw) plus a
 # fasl_buf/unit_buf and registers fw as a GC root for the whole source load —

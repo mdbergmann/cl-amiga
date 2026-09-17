@@ -926,6 +926,14 @@ static CL_Obj bi_load(CL_Obj *args, int n)
 
     /* Use C-buffer stream — file content stays outside GC arena */
     stream = cl_make_cbuf_input_stream(buf, (uint32_t)size);
+    if (CL_NULL_P(stream)) {
+        /* Reading from NIL would hit EOF at once and "load" nothing, quietly.
+         * The cache writer registered above goes with the error unwind. */
+        platform_free(buf);
+        cl_error(CL_ERR_GENERAL,
+                 "LOAD: cannot open a source stream for %s - LOADs are nested "
+                 "too deeply (C-buffer stream table full)", path_buf);
+    }
     CL_GC_PROTECT(stream);
 
     for (;;) {
@@ -1757,6 +1765,18 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
 
     /* Create source stream */
     stream = cl_make_cbuf_input_stream(src_buf, (uint32_t)src_size);
+    if (CL_NULL_P(stream)) {
+        /* Reading from NIL would compile nothing and write no file, quietly. */
+        CL_GC_UNPROTECT(1); /* bc_vec */
+        platform_free(fasl_buf);
+        platform_free(unit_buf);
+        platform_free(w);
+        platform_free(src_buf);
+        cl_error(CL_ERR_GENERAL,
+                 "COMPILE-FILE: cannot open a source stream - LOADs are nested "
+                 "too deeply (C-buffer stream table full)");
+        return CL_NIL;
+    }
     CL_GC_PROTECT(stream);
 
     /* Flag COMPILE-FILE active so load-time-value defers evaluation to load time */

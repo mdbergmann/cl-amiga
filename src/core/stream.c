@@ -1733,33 +1733,74 @@ CL_Obj cl_make_string_input_stream(CL_Obj string, uint32_t start, uint32_t end)
     return s;
 }
 
-CL_Obj cl_make_cbuf_input_stream(const char *data, uint32_t len)
+/* Sweep-time release of a C-buffer stream that died without CLOSE.
+ *
+ * LOAD, COMPILE-FILE and the script runner read their file through one, keep
+ * it GC-protected for as long as they run, and close it (then free the file
+ * buffer) on their way out.  A non-local exit out of the file — HANDLER-CASE
+ * around a LOAD whose form signals — skips that: the stream becomes garbage
+ * with its table slot still taken and the file buffer owned by nobody.  Seven
+ * of those and every later LOAD / COMPILE-FILE found no slot (and used to
+ * read nothing, silently).  The OPEN flag gates it exactly as for the OS
+ * handles next door in gc_finalize: a closed stream cleared it together with
+ * the slot, and clearing it here makes a re-finalize a no-op.  The slot cannot
+ * have been recycled — it stays taken until this runs.  Called under STW. */
+void cl_stream_cbuf_gc_release(CL_Stream *st)
 {
-    CL_Obj s = cl_make_stream(CL_STREAM_INPUT, CL_STREAM_CBUF);
-    CL_Stream *st;
-    int i;
+    uint32_t idx = st->handle_id;
+    if (st->stream_type != CL_STREAM_CBUF || !(st->flags & CL_STREAM_FLAG_OPEN))
+        return;
+    st->flags &= ~CL_STREAM_FLAG_OPEN;
+    if (idx == 0 || idx >= CL_CBUF_TABLE_SIZE || !cbuf_table[idx].data)
+        return;
+    platform_free((void *)cbuf_table[idx].data);
+    cbuf_table[idx].data = NULL;
+    cbuf_table[idx].len = 0;
+}
+
+static int cbuf_take_slot(const char *data, uint32_t len)
+{
+    int i, found = 0;
     /* Capture CL_MT() once — see cl_stream_alloc_outbuf for why re-evaluating
      * it at the unlock sites can leak cl_stream_table_mutex locked. */
-    int mt;
-    if (CL_NULL_P(s)) return CL_NIL;
-    mt = CL_MT();
-
-    /* Find a free slot in the cbuf table */
+    int mt = CL_MT();
     if (mt) platform_mutex_lock(cl_stream_table_mutex);
     for (i = 1; i < CL_CBUF_TABLE_SIZE; i++) {
         if (cbuf_table[i].data == NULL) {
             cbuf_table[i].data = data;
             cbuf_table[i].len = len;
-            if (mt) platform_mutex_unlock(cl_stream_table_mutex);
-            st = (CL_Stream *)CL_OBJ_TO_PTR(s);
-            st->handle_id = (uint32_t)i;
-            st->position = 0;
-            st->out_buf_len = len;  /* End limit */
-            return s;
+            found = i;
+            break;
         }
     }
     if (mt) platform_mutex_unlock(cl_stream_table_mutex);
-    return CL_NIL;  /* No free slots */
+    return found;
+}
+
+CL_Obj cl_make_cbuf_input_stream(const char *data, uint32_t len)
+{
+    CL_Obj s;
+    CL_Stream *st;
+    int slot = cbuf_take_slot(data, len);
+
+    if (!slot) {
+        /* Full: slots held by abandoned streams come back with a collection
+         * (cl_stream_cbuf_gc_release).  Nothing of ours is on the heap yet. */
+        cl_gc();
+        slot = cbuf_take_slot(data, len);
+        if (!slot) return CL_NIL;  /* genuinely nested that deep */
+    }
+    s = cl_make_stream(CL_STREAM_INPUT, CL_STREAM_CBUF);
+    if (CL_NULL_P(s)) {
+        cbuf_table[slot].data = NULL;
+        cbuf_table[slot].len = 0;
+        return CL_NIL;
+    }
+    st = (CL_Stream *)CL_OBJ_TO_PTR(s);
+    st->handle_id = (uint32_t)slot;
+    st->position = 0;
+    st->out_buf_len = len;  /* End limit */
+    return s;
 }
 
 CL_Obj cl_make_string_output_stream(void)

@@ -4070,6 +4070,9 @@ static void gc_finalize_dead(uint8_t *ptr)
             else
                 platform_socket_close_gc((PlatformSocket)st->handle_id);
         }
+        /* A C-buffer stream its owner was unwound past (LOAD left by a
+         * non-local exit): slot and file buffer come back here. */
+        cl_stream_cbuf_gc_release(st);
         break;
     }
     /* TYPE_LOCK / TYPE_CONDVAR: plain heap words, nothing external to

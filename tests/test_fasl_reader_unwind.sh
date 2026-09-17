@@ -227,6 +227,49 @@ check "writer_throw_probe_clean"                 "$(has '^AFTER-WRITER-TH CLEAN'
 check "gc_after_abandoned_writer_loads_survives" "$(has '^WRITER-DONE')"
 check "no_writer_left_registered"                "$(hasnt 'still active')"
 
+# --- 6. abandoned source LOADs give their source stream back ------------------
+# LOAD and COMPILE-FILE read the file through a C-buffer stream, one of seven
+# table slots, closed on their way out.  A non-local exit skips that, and the
+# seventh caught LOAD error used to leave every later LOAD / COMPILE-FILE
+# reading from NIL: nothing loaded, no file written, no error.  A dead stream
+# now hands slot and file buffer back at the next collection, which a full
+# table forces; nesting that really is too deep signals.
+d="$TMP/cbuf"; mkdir -p "$d"
+printf '(defvar *cb-ran* 0)\n(incf *cb-ran*)\n(error "cb boom")\n' > "$d/cboom.lisp"
+printf '(defun cb-fn () :compiled)\n' > "$d/cbsrc.lisp"
+i=1
+while [ $i -le 9 ]; do
+    printf '(setq *cb-depth* %s)\n(load "nest%s.lisp")\n' "$i" "$((i + 1))" > "$d/nest$i.lisp"
+    i=$((i + 1))
+done
+printf '(setq *cb-depth* :bottom)\n' > "$d/nest10.lisp"
+cat > "$d/run.lisp" <<'EOF'
+(defvar *cb-depth* 0)
+(format t "CAUGHT ~S~%"
+        (loop repeat 20
+              count (equal "cb boom" (handler-case (load "cboom.lisp")
+                                       (error (c) (princ-to-string c))))))
+(format t "RAN ~S~%" *cb-ran*)
+(format t "CF ~S~%" (progn (compile-file "cbsrc.lisp" :output-file "cbsrc.fasl")
+                           (not (null (probe-file "cbsrc.fasl")))))
+(format t "LOADED ~S~%" (progn (load "cbsrc.fasl") (cb-fn)))
+(format t "DEEP ~S~%"
+        (handler-case (progn (load "nest1.lisp") :no-error)
+          (error (c) (if (search "nested too deeply" (princ-to-string c))
+                         :clear-error (princ-to-string c)))))
+(format t "DEPTH ~S~%" *cb-depth*)
+(format t "AFTER-DEEP ~S~%" (handler-case (load "cboom.lisp") (error () :signals-again)))
+EOF
+run "$d"
+check "every_caught_load_error_still_signals" "$(has '^CAUGHT 20')"
+check "every_abandoned_load_ran_its_forms"    "$(has '^RAN 20')"
+check "compile_file_writes_after_them"        "$(has '^CF T')"
+check "load_works_after_them"                 "$(has '^LOADED :COMPILED')"
+check "too_deep_nesting_is_a_clear_error"     "$(has '^DEEP :CLEAR-ERROR')"
+# seven slots, one of them run.lisp's own
+check "nesting_got_as_deep_as_the_table"      "$(has '^DEPTH 6')"
+check "load_recovers_after_the_nesting_error" "$(has '^AFTER-DEEP :SIGNALS-AGAIN')"
+
 echo ""
 echo "test_fasl_reader_unwind: $passed passed, $failed failed"
 [ "$failed" -eq 0 ]

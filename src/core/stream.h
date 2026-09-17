@@ -142,8 +142,13 @@ CL_Obj cl_make_string_input_stream(CL_Obj string, uint32_t start, uint32_t end);
 
 /* Create input stream reading from a C buffer (data stays outside GC arena).
  * The caller must keep `data` alive until the stream is done.
- * The data pointer is stored in the outbuf side table. */
+ * The data pointer is stored in the outbuf side table.
+ * Returns NIL when all slots are taken by live streams (nesting too deep);
+ * the caller still owns `data` then. */
 CL_Obj cl_make_cbuf_input_stream(const char *data, uint32_t len);
+/* GC sweep hook: a C-buffer stream that died without CLOSE gives its slot
+ * back and frees its buffer (the owner was unwound past its cleanup). */
+void cl_stream_cbuf_gc_release(CL_Stream *st);
 
 /* Create string output stream with growable buffer. */
 CL_Obj cl_make_string_output_stream(void);
