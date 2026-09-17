@@ -3512,6 +3512,18 @@ y" 1))
 (check "defstruct accessor y" 20 (dst-point-y (make-dst-point :x 10 :y 20)))
 (check "defstruct predicate t" t (dst-point-p (make-dst-point)))
 (check "defstruct predicate nil" nil (dst-point-p 42))
+; DEFSTRUCT's hidden slot setter is CLAMIGA::%STRUCT-SET-<pkg>::<acc>, not
+; %SET-<acc> in the user's package, where it took over a user function of that
+; name (and its compiler macro rewrote direct calls into a slot write on the
+; first argument).  tests/test_struct_slot_access.sh section 6.
+(defstruct dst-vw container title)
+(defun %set-dst-vw-title (p title) (setf (dst-point-y p) (length title)) :user)
+(check "defstruct setter does not take over a user %SET-<acc> function" '(:user 3 "T")
+  (let ((p (make-dst-point)) (v (make-dst-vw)))
+    (setf (dst-vw-title v) "T")
+    (list (%set-dst-vw-title p "abc") (dst-point-y p) (dst-vw-title v))))
+(check "defstruct setter symbol is not in the user package" nil
+  (find-symbol "%SET-DST-POINT-X"))
 (check "defstruct setf" 99 (let ((p (make-dst-point :x 1))) (setf (dst-point-x p) 99) (dst-point-x p)))
 (check "defstruct copier" 1 (let ((a (make-dst-point :x 1))) (let ((b (copy-dst-point a))) (setf (dst-point-x b) 99) (dst-point-x a))))
 (check "defstruct typep" t (typep (make-dst-point) 'dst-point))

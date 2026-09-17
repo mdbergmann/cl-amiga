@@ -1669,6 +1669,20 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
                       (list 'let* (nreverse bindings) call)
                       call))))))))
 
+;; The hidden function behind (SETF (acc obj) val) for a structure accessor:
+;; CLAMIGA::%STRUCT-SET-<home package>::<accessor>, the scheme (SETF name)
+;; functions use.  It was %SET-<accessor> interned in the current package,
+;; i.e. in the USER's namespace: (defstruct view title) silently took over a
+;; user function named %SET-VIEW-TITLE - DEFUN order decided whose body won,
+;; and the setter's compiler macro rewrote every direct call to the user's
+;; function into a raw slot write on its first argument.
+(defun clamiga::%struct-setter-name (acc-name)
+  (let ((pkg (symbol-package acc-name)))
+    (intern (concatenate 'string "%STRUCT-SET-"
+                         (if pkg (package-name pkg) "")
+                         "::" (symbol-name acc-name))
+            "CLAMIGA")))
+
 (defmacro defstruct (name-and-options &rest slot-specs)
   (let* ((name (if (consp name-and-options) (car name-and-options) name-and-options))
          (options (if (consp name-and-options) (cdr name-and-options) nil))
@@ -1818,7 +1832,7 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
             (let ((idx 0))
               (dolist (sname slot-names)
                 (let* ((acc-name (intern (concatenate 'string prefix (symbol-name sname))))
-                       (setter-name (intern (concatenate 'string "%SET-" (symbol-name acc-name))))
+                       (setter-name (clamiga::%struct-setter-name acc-name))
                        (getter-form (if (eq seq-kind 'vector)
                                         `(svref obj ,idx)
                                         `(nth ,idx obj)))
@@ -1901,7 +1915,7 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
           (let ((idx 0))
             (dolist (sname slot-names)
               (let* ((acc-name (intern (concatenate 'string prefix (symbol-name sname))))
-                     (setter-name (intern (concatenate 'string "%SET-" (symbol-name acc-name)))))
+                     (setter-name (clamiga::%struct-setter-name acc-name)))
                 (push `(defun ,acc-name (obj) (clamiga::%struct-ref obj ,idx)) forms)
                 (push `(define-compiler-macro ,acc-name (obj)
                          (clamiga::%struct-acc-form ',name ,idx obj))

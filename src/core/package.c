@@ -1196,6 +1196,7 @@ static const char *const clos_internal_names[] = {
     "%SLOT-VALUE-SLOW",
     "%STRUCT-CHANGE-CLASS",
     "%STRUCT-REF", "%STRUCT-SET",
+    "%STRUCT-SETTER-NAME",
     "%STRUCT-SLOT-NAMES", "%STRUCT-SLOT-SPECS",
     "%STRUCT-TYPE-NAME",
     "%SUBCLASSP", "%SUBST-IT",

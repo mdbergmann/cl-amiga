@@ -132,6 +132,42 @@ check_contains "slot-value before compaction"       "PRE:41"  "$out"
 check_contains "slot-value after compaction"        "POST:41" "$out"
 check_contains "slot index rebuilt after compaction" "IDX:0"   "$out"
 
+# --- 6. DEFSTRUCT's hidden slot setter stays out of the user's namespace ----
+# The function behind (SETF (acc obj) val) was %SET-<accessor> interned in the
+# current package: (defstruct ssa-vw title) took over a user function named
+# %SET-SSA-VW-TITLE, and the setter's compiler macro turned every direct call
+# to the user's function into a slot write on its first argument (chipi-ui's
+# %SET-VIEW-TITLE wrote the title into its nav-context's DEPTH slot).  It is
+# CLAMIGA::%STRUCT-SET-<package>::<accessor> now.  Both definition orders, a
+# typed (:type list) structure, and an accessor from another package.
+out=$(run_quiet '
+(defstruct ssa-nc body (depth 0))
+(defstruct ssa-vw container page title)
+(defun %set-ssa-vw-title (ctx title) (setf (ssa-nc-depth ctx) (length title)) :user)
+(defun %set-ssa-late-x (a b) (list :user a b))
+(defstruct ssa-late x)
+(defstruct (ssa-lst (:type list)) p q)
+(defun %set-ssa-lst-q (a b) (list :user-list a b))
+(let ((c (make-ssa-nc)) (v (make-ssa-vw)) (l (make-ssa-late)) (s (make-ssa-lst)))
+  (format t "DIRECT:~s/~s~%" (%set-ssa-vw-title c "abc") (ssa-nc-depth c))
+  (setf (ssa-vw-title v) "T")
+  (format t "SETF:~s/~s~%" (ssa-vw-title v) (ssa-nc-depth c))
+  (setf (ssa-late-x l) 7)
+  (format t "LATE:~s/~s~%" (%set-ssa-late-x 1 2) (ssa-late-x l))
+  (setf (ssa-lst-q s) 9)
+  (format t "LIST:~s/~s~%" (%set-ssa-lst-q 1 2) s)
+  (incf (ssa-nc-depth c) 10)
+  (format t "INCF:~s~%" (ssa-nc-depth c))
+  (format t "NOSYM:~s~%" (find-symbol "%SET-SSA-NC-DEPTH"))
+  (format t "HOME:~s~%" (symbol-package (clamiga::%struct-setter-name (quote ssa-nc-depth)))))')
+check_contains "user %SET-<acc> function is called, not the slot setter" 'DIRECT::USER/3' "$out"
+check_contains "SETF of the accessor still writes the slot"              'SETF:"T"/3'     "$out"
+check_contains "DEFSTRUCT after the user function leaves it alone"       'LATE:(:USER 1 2)/7' "$out"
+check_contains "typed (:type list) structure likewise"                   'LIST:(:USER-LIST 1 2)/(NIL 9)' "$out"
+check_contains "INCF through the accessor"                               'INCF:13'        "$out"
+check_contains "no %SET-<acc> symbol in the user package"                'NOSYM:NIL'      "$out"
+check_contains "the setter lives in CLAMIGA"                             'HOME:#<PACKAGE "CLAMIGA">\|HOME:#<PACKAGE CLAMIGA>' "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 if [ "$failed" -gt 0 ]; then
