@@ -104,6 +104,26 @@ void cl_load_file(const char *path)
 
         /* Use C-buffer stream — file content stays outside GC arena */
         stream = cl_make_cbuf_input_stream(buf, (uint32_t)size);
+        if (CL_NULL_P(stream)) {
+            /* Not reachable today — --load files run one after the other at
+             * top level, so a slot is always free — but reading from NIL
+             * would "load" nothing, quietly (see bi_load).  Restore the load
+             * context mutated above before erroring — mirrors the
+             * CL_ERR_EXIT branch below — so a future caller re-entering
+             * cl_load_file mid-load doesn't see stale *LOAD-PATHNAME*,
+             * *LOAD-TRUENAME*, or source-file/line state after the longjmp. */
+            platform_free(buf);
+            cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, saved_load_pathname);
+            cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, saved_load_truename);
+            CL_GC_UNPROTECT(5); /* saved_lt, saved_lp, lt_obj, lp_obj, saved_package */
+            cl_current_source_file = prev_file;
+            cl_current_file_id = prev_file_id;
+            cl_reader_set_line(prev_line);
+            cl_error(CL_ERR_GENERAL,
+                     "LOAD: cannot open a source stream for %s - LOADs are "
+                     "nested too deeply (C-buffer stream table full)", path);
+            return;
+        }
         CL_GC_PROTECT(stream);
 
         for (;;) {
