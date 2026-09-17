@@ -2214,7 +2214,14 @@ static CL_Obj bi_call_macro_expander(CL_Obj *args, int n)
     CL_GC_PROTECT(form);
     CL_GC_PROTECT(env);
 
+    /* GC SAFETY: saved_env is written back into the thread's
+     * current_lex_env slot AFTER the expander ran -- which allocates and can
+     * compact.  The slot is a GC root (marked and forwarded), the C local is
+     * not: for a nested expansion under a non-NIL lexical environment (a
+     * global macro inside a MACROLET body) the restore put a stale offset
+     * into a root, for the next collection to mark and forward. */
     saved_env = cl_current_lex_env;
+    CL_GC_PROTECT(saved_env);
     cl_current_lex_env = env;
     if (CL_NULL_P(rest)) {
         result = cl_vm_apply(inner, arg_array, nargs);
@@ -2231,7 +2238,7 @@ static CL_Obj bi_call_macro_expander(CL_Obj *args, int n)
     }
     cl_current_lex_env = saved_env;
 
-    CL_GC_UNPROTECT(3);
+    CL_GC_UNPROTECT(4);
     return result;
 }
 

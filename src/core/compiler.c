@@ -2621,7 +2621,19 @@ top:
         int saved_handler = cl_handler_top;
         int saved_restart = cl_restart_top;
         int saved_debugger = cl_debugger_enabled;
-        int saved_gc_roots = gc_root_count;
+        int saved_gc_roots;
+        /* GC SAFETY: FORM is read again after cl_build_lex_env below, which
+         * conses whenever the compiler env carries local macros -- i.e. for
+         * every global macro call inside a MACROLET body, and LOOP expands
+         * into one.  Unprotected, the expander was handed a stale form
+         * ("CAR: argument is not of type LIST (got FUNCTION)" out of the
+         * speculative expansion, which then aborted the whole compile when
+         * a HANDLER-CASE was watching), and the identity test and the
+         * general walk below read it after the expansion as well.
+         * Registered BEFORE the root count is saved, so the error path's
+         * restore keeps it. */
+        CL_GC_PROTECT(form);
+        saved_gc_roots = gc_root_count;
         cl_debugger_enabled = 0;  /* Suppress debugger during expansion */
 #ifdef DEBUG_SCANNER
         fprintf(stderr, "[scanner] expanding macro: %s\n", cl_symbol_name(head));
@@ -2643,7 +2655,7 @@ top:
                 CL_GC_PROTECT(expanded);
                 scan_body_for_boxing(expanded, vars, n_vars,
                                      mutated, captured, closure_depth);
-                CL_GC_UNPROTECT(1);
+                CL_GC_UNPROTECT(2); /* expanded, form */
                 scan_macro_depth--;
                 return;
             }
@@ -2664,6 +2676,7 @@ top:
             gc_root_count = saved_gc_roots;
         }
         }
+        CL_GC_UNPROTECT(1); /* form */
         scan_macro_depth--;
     }
 

@@ -5770,6 +5770,50 @@ check_contains "PUSH_LOCAL/POP_LOCAL/AREF/CMP_BR under forced compaction (base s
 check_contains "the same over a wide string" 'SCANOPS-WIDE (10 9 32 "((")' "$out"
 check_contains "scan-opcodes case finished" "SCANOPS-DONE" "$out"
 
+# --- Case: the pre-scans' speculative macroexpansion under a MACROLET -------
+# scan_body_for_boxing (compiler.c) and scan_nlx_macroexpand_1
+# (compiler_special.c) expand a global macro call to look inside it, and
+# build the macro's &environment first with cl_build_lex_env -- which conses
+# exactly when the compiler env carries local macros, i.e. inside a MACROLET
+# body.  Both held FORM unprotected across that cons and handed the expander
+# a stale form: "CAR: argument is not of type LIST (got FUNCTION)".  The
+# scanners swallow an expansion error, but the condition is SIGNALLED first,
+# so under a HANDLER-CASE the whole compile was abandoned.  LOOP expands into
+# a MACROLET (LOOP-FINISH) around a TAGBODY, so any user macro in a LOOP body
+# hit the NLX scan; a LET in a MACROLET body hits the boxing scan.  Found by
+# clamacs' test suite (a deftest with an assertion macro inside LOOP, loaded
+# inside the runner's HANDLER-CASE), 2026-09-17.
+cat > "$WORK/scanmacrolet.lisp" <<'EOF'
+(defvar *sm-failures* '())
+(defmacro sm-chk (actual expected)
+  (let ((a (gensym "A")) (e (gensym "E")))
+    `(let ((,a ,actual) (,e ,expected))
+       (unless (equal ,a ,e)
+         (push (list ',actual ,a ,e) *sm-failures*)))))
+(format t "SCANMACROLET-BOXING ~A~%"
+        (handler-case
+            (eval '(macrolet ((lf () nil)) (sm-chk (+ 1 2) 3) :compiled))
+          (error (c) (format nil "ERR ~A" c))))
+(format t "SCANMACROLET-NLX ~A~%"
+        (handler-case
+            (progn
+              (eval '(defun sm-loop ()
+                       (let ((sum 0))
+                         (loop for i from 3 to 5
+                               do (sm-chk i i) (sm-chk (* i 2) (+ i i))
+                                  (incf sum i))
+                         sum)))
+              (sm-loop))
+          (error (c) (format nil "ERR ~A" c))))
+(format t "SCANMACROLET-FAILURES ~S~%" *sm-failures*)
+(format t "SCANMACROLET-DONE~%")
+EOF
+out=$(run_stress "$WORK/scanmacrolet.lisp")
+check_contains "boxing scan: global macro under MACROLET expands a live form" "SCANMACROLET-BOXING COMPILED" "$out"
+check_contains "NLX scan: user macro in a LOOP body compiles and runs" "SCANMACROLET-NLX 12" "$out"
+check_contains "the macro's assertions all held" "SCANMACROLET-FAILURES NIL" "$out"
+check_contains "scan-macrolet case finished" "SCANMACROLET-DONE" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

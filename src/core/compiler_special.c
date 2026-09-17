@@ -682,6 +682,13 @@ static CL_Obj scan_nlx_macroexpand_1(CL_Obj form)
     saved_handler = cl_handler_top;
     saved_restart = cl_restart_top;
     saved_debugger = cl_debugger_enabled;
+    /* GC SAFETY: FORM is handed to the expander AFTER cl_build_lex_env, which
+     * conses whenever the compiler env carries local macros (any macro call
+     * inside a MACROLET body -- LOOP expands into one), and the error path
+     * returns it.  Same hazard, same fix as in scan_body_for_boxing;
+     * registered before the root count is saved so the error path's restore
+     * keeps it. */
+    CL_GC_PROTECT(form);
     saved_gc_roots = gc_root_count;
     cl_debugger_enabled = 0;  /* Suppress debugger during expansion */
     expanded = form;
@@ -710,6 +717,7 @@ static CL_Obj scan_nlx_macroexpand_1(CL_Obj form)
     cl_handler_top = saved_handler;
     cl_restart_top = saved_restart;
     scan_nlx_macro_depth--;
+    CL_GC_UNPROTECT(1); /* form */
     return expanded;
 }
 
