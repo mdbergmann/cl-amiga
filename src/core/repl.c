@@ -70,6 +70,8 @@ void cl_load_file(const char *path)
 
     {
         const char *prev_file = cl_current_source_file;
+        const char *own_file;
+        uint16_t own_file_id;
         uint16_t prev_file_id = cl_current_file_id;
         int prev_line = cl_reader_get_line();
         /* Per CL spec, LOAD binds *package* so in-package in loaded file
@@ -101,6 +103,8 @@ void cl_load_file(const char *path)
         cl_current_source_file = cl_intern_source_file(path);
         cl_current_file_id++;
         cl_reader_reset_line();
+        own_file = cl_current_source_file;
+        own_file_id = cl_current_file_id;
 
         /* Use C-buffer stream — file content stays outside GC arena */
         stream = cl_make_cbuf_input_stream(buf, (uint32_t)size);
@@ -120,8 +124,8 @@ void cl_load_file(const char *path)
             cl_current_file_id = prev_file_id;
             cl_reader_set_line(prev_line);
             cl_error(CL_ERR_GENERAL,
-                     "LOAD: cannot open a source stream for %s - LOADs are "
-                     "nested too deeply (C-buffer stream table full)", path);
+                     "LOAD: cannot open a source stream for %s - out of "
+                     "memory, or over 250 source files being read at once", path);
             return;
         }
         CL_GC_PROTECT(stream);
@@ -141,6 +145,10 @@ void cl_load_file(const char *path)
              * form) while preventing cross-form leakage. */
             cl_debug_base_fp = 0;
 
+            /* see bi_load's file loop: an abandoned nested LOAD leaves its
+             * file behind */
+            cl_current_source_file = own_file;
+            cl_current_file_id = own_file_id;
             expr = cl_read_from_stream(stream);
             if (cl_reader_eof()) break;
 
@@ -242,11 +250,15 @@ static void load_user_init(void)
             if (buf) {
                 CL_Obj cl_str, stream;
                 const char *prev_file = cl_current_source_file;
+                const char *own_file;
+                uint16_t own_file_id;
                 uint16_t prev_file_id = cl_current_file_id;
                 int prev_line = cl_reader_get_line();
                 cl_current_source_file = cl_intern_source_file(paths[i]);
                 cl_current_file_id++;
                 cl_reader_reset_line();
+                own_file = cl_current_source_file;
+                own_file_id = cl_current_file_id;
 
                 cl_str = cl_make_string(buf, (int)size);
                 CL_GC_PROTECT(cl_str);
@@ -260,6 +272,8 @@ static void load_user_init(void)
                     int err;
                     int saved_gc_roots = gc_root_count;
 
+                    cl_current_source_file = own_file;  /* as above */
+                    cl_current_file_id = own_file_id;
                     expr = cl_read_from_stream(stream);
                     if (cl_reader_eof()) break;
 
@@ -715,6 +729,11 @@ void cl_repl(void)
                 stream.len = accum_len;
                 stream.line = 1;
 
+                /* Top level has no source file; a LOAD that an earlier input
+                 * left by a non-local exit never restored that (see bi_load's
+                 * file loop). */
+                cl_current_source_file = NULL;
+                cl_current_file_id = 0;
                 expr = cl_read_from_string(&stream);
                 if (!CL_NULL_P(expr) && !cl_reader_eof()) {
                     /* Set - to current form */
@@ -844,6 +863,8 @@ void cl_repl_batch(void)
                 if (err == CL_ERR_NONE) {
                     CL_Obj expr, bytecode, result;
 
+                    cl_current_source_file = NULL;  /* as in cl_repl */
+                    cl_current_file_id = 0;
                     expr = cl_read_from_string(&stream);
                     if (CL_NULL_P(expr) || cl_reader_eof()) {
                         CL_UNCATCH();

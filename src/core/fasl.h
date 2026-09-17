@@ -307,6 +307,8 @@ void cl_fasl_writer_note_scratch(CL_FaslWriter *w, void *unit_buf);
  * itself — all off-heap and otherwise gone until reboot on AmigaOS. Call it
  * next to cl_fasl_reader_unwind_to. */
 void cl_fasl_writer_unwind_to(void *landing_anchor);
+/* Process exit: free registry arrays that grew past their static size. */
+void cl_fasl_release_registries(void);
 
 #ifdef DEBUG_FASL
 /* --- Per-unit serialization histogram (debug builds only) ---

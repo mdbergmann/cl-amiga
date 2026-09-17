@@ -1988,7 +1988,8 @@ void cl_fasl_reader_init(CL_FaslReader *r, const uint8_t *data, uint32_t size)
  * "Undefined function: PACKAGE" when loading a FASL under heap pressure.
  *
  * Loads can nest (a CLASS_REF runs FIND-CLASS, which may load another
- * FASL), so we keep a small stack of active readers. */
+ * FASL), so we keep a stack of active readers; it starts at these static
+ * sizes and grows when LOADs nest deeper (fasl_reg_grow). */
 #define FASL_MAX_ACTIVE_READERS 16
 #define FASL_MAX_ACTIVE_WRITERS 8
 
@@ -2028,6 +2029,8 @@ struct FaslRegistry {
                         * readers): frees the item itself on abandonment */
     int       count;
     int       cap;
+    int       grown;   /* arrays are platform_alloc'd (fasl_reg_grow), not the
+                        * static initial ones */
 };
 
 static void fasl_writer_free_abandoned_item(void *item);
@@ -2042,15 +2045,61 @@ static void    *fasl_writer_anchor[FASL_MAX_ACTIVE_WRITERS];
 
 static FaslRegistry fasl_reader_reg =
     { fasl_reader_slots, fasl_reader_owners, fasl_reader_aux, NULL, NULL,
-      0, FASL_MAX_ACTIVE_READERS };
+      0, FASL_MAX_ACTIVE_READERS, 0 };
 static FaslRegistry fasl_writer_reg =
     { fasl_writer_slots, fasl_writer_owners, fasl_writer_aux, fasl_writer_anchor,
-      fasl_writer_free_abandoned_item, 0, FASL_MAX_ACTIVE_WRITERS };
+      fasl_writer_free_abandoned_item, 0, FASL_MAX_ACTIVE_WRITERS, 0 };
 
 /* Protects both registries in multi-threaded mode.  Initialized lazily on the
  * first register call, which always runs on the main thread during single-
  * threaded boot before any secondary thread is created. */
 static void *fasl_registry_mutex = NULL;
+
+/* Double the registry's arrays (caller holds the mutex in MT mode).  The
+ * registry is as deep as LOADs nest, summed over all threads, so a fixed cap
+ * is a nesting limit.  The GC walkers read items[]/count unlocked under
+ * stop-the-world, which on AmigaOS suspends this task wherever it happens to
+ * be: every new array is a full copy before its pointer is published, the
+ * old ones are freed only after all four are, and cap goes last — a walker
+ * sees a consistent prefix whichever mix of old and new it catches.  The
+ * initial arrays are static and never freed. */
+static int fasl_reg_grow(FaslRegistry *reg)
+{
+    int ncap = reg->cap * 2;
+    int n = reg->count;
+    void    **items  = (void **)platform_alloc((uint32_t)(ncap * sizeof(void *)));
+    uint32_t *owners = (uint32_t *)platform_alloc((uint32_t)(ncap * sizeof(uint32_t)));
+    void    **aux    = (void **)platform_alloc((uint32_t)(ncap * sizeof(void *)));
+    void    **anchor = reg->anchor
+        ? (void **)platform_alloc((uint32_t)(ncap * sizeof(void *))) : NULL;
+    void *old_items = reg->items, *old_owners = reg->owners;
+    void *old_aux = reg->aux, *old_anchor = reg->anchor;
+
+    if (!items || !owners || !aux || (reg->anchor && !anchor)) {
+        if (items) platform_free(items);
+        if (owners) platform_free(owners);
+        if (aux) platform_free(aux);
+        if (anchor) platform_free(anchor);
+        return 0;
+    }
+    memcpy(items, reg->items, n * sizeof(void *));
+    memcpy(owners, reg->owners, n * sizeof(uint32_t));
+    memcpy(aux, reg->aux, n * sizeof(void *));
+    if (anchor) memcpy(anchor, reg->anchor, n * sizeof(void *));
+    reg->items = items;
+    reg->owners = owners;
+    reg->aux = aux;
+    if (anchor) reg->anchor = anchor;
+    if (reg->grown) {
+        platform_free(old_items);
+        platform_free(old_owners);
+        platform_free(old_aux);
+        if (old_anchor) platform_free(old_anchor);
+    }
+    reg->grown = 1;
+    reg->cap = ncap;
+    return 1;
+}
 
 static void fasl_reg_add(FaslRegistry *reg, void *item, void *anchor, const char *what)
 {
@@ -2064,18 +2113,19 @@ static void fasl_reg_add(FaslRegistry *reg, void *item, void *anchor, const char
     mt = CL_MT();
 
     if (mt) platform_mutex_lock(fasl_registry_mutex);
-    ok = reg->count < reg->cap;
+    ok = reg->count < reg->cap || fasl_reg_grow(reg);
     if (ok) {
         reg->items[reg->count] = item;
         reg->owners[reg->count] = CT->id;
-        if (reg->aux) reg->aux[reg->count] = NULL;
+        reg->aux[reg->count] = NULL;
         if (reg->anchor) reg->anchor[reg->count] = anchor;
         reg->count++;
     }
     if (mt) platform_mutex_unlock(fasl_registry_mutex);
 
     if (!ok)
-        cl_error(CL_ERR_GENERAL, "FASL: active-%s table full (max %d)",
+        cl_error(CL_ERR_GENERAL,
+                 "FASL: out of memory growing the active-%s table (%d in use)",
                  what, reg->cap);
 }
 
@@ -2315,6 +2365,34 @@ static void fasl_writer_free_abandoned_item(void *item)
 void cl_fasl_writer_unwind_to(void *landing_anchor)
 {
     fasl_reg_unwind_to(&fasl_writer_reg, landing_anchor);
+}
+
+/* Process exit: hand back registry arrays that grew past the static ones
+ * (LOADs nested deeper than the initial caps).  AmigaOS has no exit reclaim. */
+static void fasl_reg_release(FaslRegistry *reg, void **items, uint32_t *owners,
+                             void **aux, void **anchor, int cap)
+{
+    if (!reg->grown) return;
+    platform_free(reg->items);
+    platform_free(reg->owners);
+    platform_free(reg->aux);
+    if (reg->anchor) platform_free(reg->anchor);
+    /* Back to the static arrays, so a re-init starts from a working registry. */
+    reg->items = items;
+    reg->owners = owners;
+    reg->aux = aux;
+    reg->anchor = anchor;
+    reg->count = 0;
+    reg->cap = cap;
+    reg->grown = 0;
+}
+
+void cl_fasl_release_registries(void)
+{
+    fasl_reg_release(&fasl_reader_reg, fasl_reader_slots, fasl_reader_owners,
+                     fasl_reader_aux, NULL, FASL_MAX_ACTIVE_READERS);
+    fasl_reg_release(&fasl_writer_reg, fasl_writer_slots, fasl_writer_owners,
+                     fasl_writer_aux, fasl_writer_anchor, FASL_MAX_ACTIVE_WRITERS);
 }
 
 void cl_fasl_gc_mark_writers(void)

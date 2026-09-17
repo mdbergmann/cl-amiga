@@ -111,7 +111,7 @@ static void outbuf_stats(uint32_t *used_out, uint32_t *capacity_out)
     if (capacity_out) *capacity_out = nb * CL_OUTBUF_BLOCK_SIZE - 1;
 }
 
-/* Mutex protecting outbuf_table and cbuf_table slot allocation/deallocation */
+/* Mutex protecting outbuf and cbuf slot allocation/deallocation */
 static void *cl_stream_table_mutex = NULL;
 
 /* I/O serialisation locks.
@@ -196,12 +196,39 @@ static SockLockPair *sock_lock_pair(uint32_t h)
 
 /* --- C-buffer input stream side table --- */
 
-#define CL_CBUF_TABLE_SIZE 8
-
-static struct {
+/* One slot per LOAD / COMPILE-FILE / script file being read, so the table is
+ * as deep as LOADs nest.  Same segmented directory as the outbuf table above:
+ * block 0 is static (seven slots cover every ordinary run), further blocks
+ * are platform_alloc'd on demand and never freed or moved before process
+ * exit, so the read paths index a slot without the table mutex.  What bounds
+ * LOAD nesting is the per-thread error-frame stack (CL_MAX_ERROR_FRAMES) or
+ * the C stack, not this table; the directory's ceiling is for all threads
+ * together. */
+typedef struct {
     const char *data;
     uint32_t len;
-} cbuf_table[CL_CBUF_TABLE_SIZE];
+} CL_CBufSlot;
+
+#define CL_CBUF_BLOCK_SHIFT 3
+#define CL_CBUF_BLOCK_SIZE  (1 << CL_CBUF_BLOCK_SHIFT)
+#define CL_CBUF_BLOCK_MASK  (CL_CBUF_BLOCK_SIZE - 1)
+#define CL_CBUF_MAX_BLOCKS  32                      /* up to 255 handles */
+
+static CL_CBufSlot cbuf_block0[CL_CBUF_BLOCK_SIZE];
+static CL_CBufSlot * volatile cbuf_dir[CL_CBUF_MAX_BLOCKS] = { cbuf_block0 };
+/* Grows only under cl_stream_table_mutex; the block is published (zeroed)
+ * before the count, as for outbuf_nblocks. */
+static volatile uint32_t cbuf_nblocks = 1;
+
+/* Resolve a handle to its slot, or NULL for handle 0 / out of range. */
+static CL_CBufSlot *cbuf_at(uint32_t handle)
+{
+    uint32_t blk = handle >> CL_CBUF_BLOCK_SHIFT;
+    CL_CBufSlot *b;
+    if (handle == 0 || blk >= cbuf_nblocks) return NULL;
+    b = cbuf_dir[blk];
+    return b ? &b[handle & CL_CBUF_BLOCK_MASK] : NULL;
+}
 
 void cl_stream_init(void)
 {
@@ -344,6 +371,15 @@ void cl_stream_release_tables(void)
         platform_free(b);
     }
     outbuf_nblocks = 1;
+
+    /* C-buffer stream blocks past the static one (deeply nested LOADs). */
+    for (blk = 1; blk < cbuf_nblocks; blk++) {
+        CL_CBufSlot *cb = cbuf_dir[blk];
+        if (!cb) continue;
+        cbuf_dir[blk] = NULL;
+        platform_free(cb);
+    }
+    cbuf_nblocks = 1;
 
     /* Per-socket lock blocks: never freed during the run by design (a looked-up
      * lock must stay valid for the life of the process, unlocked readers and
@@ -814,12 +850,12 @@ static int stream_read_raw_byte(CL_Stream *st)
     case CL_STREAM_FILE:
         return platform_file_getchar((PlatformFile)st->handle_id);
     case CL_STREAM_CBUF: {
-        uint32_t idx = st->handle_id;
-        if (idx == 0 || idx >= CL_CBUF_TABLE_SIZE || !cbuf_table[idx].data)
+        CL_CBufSlot *cb = cbuf_at(st->handle_id);
+        if (!cb || !cb->data)
             return -1;
         if (st->position >= st->out_buf_len)
             return -1;
-        return (unsigned char)cbuf_table[idx].data[st->position++];
+        return (unsigned char)cb->data[st->position++];
     }
     case CL_STREAM_SOCKET:
         return platform_socket_read((PlatformSocket)st->handle_id);
@@ -1173,12 +1209,11 @@ int32_t cl_stream_read_bytes(CL_Obj stream, char *buf, uint32_t len)
     }
 
     if (st->stream_type == CL_STREAM_CBUF) {
-        uint32_t idx = st->handle_id;
-        if (idx != 0 && idx < CL_CBUF_TABLE_SIZE && cbuf_table[idx].data &&
-            st->position < st->out_buf_len) {
+        CL_CBufSlot *cb = cbuf_at(st->handle_id);
+        if (cb && cb->data && st->position < st->out_buf_len) {
             uint32_t avail = st->out_buf_len - st->position;
             if (avail > len - got) avail = len - got;
-            memcpy(buf + got, cbuf_table[idx].data + st->position, avail);
+            memcpy(buf + got, cb->data + st->position, avail);
             st->position += avail;
             got += avail;
         }
@@ -1691,12 +1726,14 @@ void cl_stream_close(CL_Obj stream)
                 st->out_buf_handle = 0;
             }
             break;
-        case CL_STREAM_CBUF:
-            if (handle > 0 && handle < CL_CBUF_TABLE_SIZE) {
-                cbuf_table[handle].data = NULL;
-                cbuf_table[handle].len = 0;
+        case CL_STREAM_CBUF: {
+            CL_CBufSlot *cb = cbuf_at(handle);
+            if (cb) {
+                cb->data = NULL;
+                cb->len = 0;
             }
             break;
+        }
         case CL_STREAM_SOCKET:
             if (handle != 0) {
                 platform_socket_flush((PlatformSocket)handle);
@@ -1747,31 +1784,53 @@ CL_Obj cl_make_string_input_stream(CL_Obj string, uint32_t start, uint32_t end)
  * have been recycled — it stays taken until this runs.  Called under STW. */
 void cl_stream_cbuf_gc_release(CL_Stream *st)
 {
-    uint32_t idx = st->handle_id;
+    CL_CBufSlot *cb;
     if (st->stream_type != CL_STREAM_CBUF || !(st->flags & CL_STREAM_FLAG_OPEN))
         return;
     st->flags &= ~CL_STREAM_FLAG_OPEN;
-    if (idx == 0 || idx >= CL_CBUF_TABLE_SIZE || !cbuf_table[idx].data)
+    cb = cbuf_at(st->handle_id);
+    if (!cb || !cb->data)
         return;
-    platform_free((void *)cbuf_table[idx].data);
-    cbuf_table[idx].data = NULL;
-    cbuf_table[idx].len = 0;
+    platform_free((void *)cb->data);
+    cb->data = NULL;
+    cb->len = 0;
 }
 
-static int cbuf_take_slot(const char *data, uint32_t len)
+/* Take a free slot; with `grow`, add a block when every slot is taken.
+ * Returns the handle, or 0 when full (and not growing, at the directory's
+ * ceiling, or out of memory). */
+static uint32_t cbuf_take_slot(const char *data, uint32_t len, int grow)
 {
-    int i, found = 0;
+    uint32_t blk, i, found = 0;
     /* Capture CL_MT() once — see cl_stream_alloc_outbuf for why re-evaluating
      * it at the unlock sites can leak cl_stream_table_mutex locked. */
     int mt = CL_MT();
     if (mt) platform_mutex_lock(cl_stream_table_mutex);
-    for (i = 1; i < CL_CBUF_TABLE_SIZE; i++) {
-        if (cbuf_table[i].data == NULL) {
-            cbuf_table[i].data = data;
-            cbuf_table[i].len = len;
-            found = i;
-            break;
+    for (blk = 0; blk < cbuf_nblocks && !found; blk++) {
+        CL_CBufSlot *b = cbuf_dir[blk];
+        if (!b) continue;
+        for (i = (blk == 0) ? 1 : 0; i < CL_CBUF_BLOCK_SIZE; i++) {
+            if (b[i].data == NULL) {
+                found = (blk << CL_CBUF_BLOCK_SHIFT) | i;
+                break;
+            }
         }
+    }
+    if (!found && grow && cbuf_nblocks < CL_CBUF_MAX_BLOCKS) {
+        uint32_t nb = cbuf_nblocks;
+        CL_CBufSlot *b = (CL_CBufSlot *)platform_alloc(
+            (uint32_t)(CL_CBUF_BLOCK_SIZE * sizeof(CL_CBufSlot)));
+        if (b) {
+            memset(b, 0, CL_CBUF_BLOCK_SIZE * sizeof(CL_CBufSlot));
+            cbuf_dir[nb] = b;             /* publish only after full init */
+            cbuf_nblocks = nb + 1;
+            found = nb << CL_CBUF_BLOCK_SHIFT;
+        }
+    }
+    if (found) {
+        CL_CBufSlot *cb = cbuf_at(found);
+        cb->data = data;
+        cb->len = len;
     }
     if (mt) platform_mutex_unlock(cl_stream_table_mutex);
     return found;
@@ -1781,23 +1840,25 @@ CL_Obj cl_make_cbuf_input_stream(const char *data, uint32_t len)
 {
     CL_Obj s;
     CL_Stream *st;
-    int slot = cbuf_take_slot(data, len);
+    uint32_t slot = cbuf_take_slot(data, len, 0);
 
     if (!slot) {
-        /* Full: slots held by abandoned streams come back with a collection
-         * (cl_stream_cbuf_gc_release).  Nothing of ours is on the heap yet. */
+        /* Full: slots (and file buffers) held by abandoned streams come back
+         * with a collection (cl_stream_cbuf_gc_release), so try that before
+         * growing.  Nothing of ours is on the heap yet. */
         cl_gc();
-        slot = cbuf_take_slot(data, len);
-        if (!slot) return CL_NIL;  /* genuinely nested that deep */
+        slot = cbuf_take_slot(data, len, 1);
+        if (!slot) return CL_NIL;  /* directory ceiling or out of memory */
     }
     s = cl_make_stream(CL_STREAM_INPUT, CL_STREAM_CBUF);
     if (CL_NULL_P(s)) {
-        cbuf_table[slot].data = NULL;
-        cbuf_table[slot].len = 0;
+        CL_CBufSlot *cb = cbuf_at(slot);
+        cb->data = NULL;
+        cb->len = 0;
         return CL_NIL;
     }
     st = (CL_Stream *)CL_OBJ_TO_PTR(s);
-    st->handle_id = (uint32_t)slot;
+    st->handle_id = slot;
     st->position = 0;
     st->out_buf_len = len;  /* End limit */
     return s;

@@ -471,6 +471,7 @@ typedef struct CL_Thread_s {
     char   callback_error_msg[512];
     char   pending_error_msg[512];
     CL_ErrorFrame error_frames[CL_MAX_ERROR_FRAMES];
+    int           error_frame_overflowing; /* see cl_error_frame_push */
     char          error_msg[512];
     CL_Obj *gc_roots[CL_GC_ROOT_STACK_SIZE];
 #ifdef DEBUG_GC

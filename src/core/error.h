@@ -48,8 +48,20 @@
 #define CL_ERR_EOF       12  /* maps to the END-OF-FILE condition (CLHS) */
 #define CL_ERR_TIMEOUT   13  /* maps to EXT:SOCKET-TIMEOUT (subtype of STREAM-ERROR) */
 
-/* Error handler frame stack */
-#define CL_MAX_ERROR_FRAMES 16
+/* Error handler frame stack (per thread).  Every nested LOAD / COMPILE-FILE /
+ * EVAL holds one frame for as long as it runs, so this is a nesting limit.
+ * On AmigaOS the C stack gives out first (a LOAD level costs ~5K of it); the
+ * host has the stack to go deeper.  A frame is ~210 bytes on m68k.
+ *
+ * The last CL_ERROR_FRAME_RESERVE frames are headroom: a push that would
+ * enter them signals "nested too deeply" instead (cl_error_frame_push), and
+ * the handling of that very error may use them. */
+#ifdef PLATFORM_AMIGA
+#define CL_MAX_ERROR_FRAMES 32
+#else
+#define CL_MAX_ERROR_FRAMES 64
+#endif
+#define CL_ERROR_FRAME_RESERVE 4
 
 typedef struct {
     jmp_buf buf;
@@ -150,7 +162,10 @@ typedef struct {
     CL_PrinterState saved_printer;
 } CL_ErrorFrame;
 
-/* Push an error frame.  Returns the frame index, or -1 on overflow.
+/* Push an error frame.  Returns the frame index.  Running into the reserve
+ * signals a CL_ERR_OVERFLOW error from here — to the enclosing frame, like
+ * any error raised just before the CL_CATCH; -1 only when the reserve itself
+ * is used up while that error is being handled.
  * Must be called BEFORE setjmp so that all side-effects are sequenced
  * before the setjmp point (C99 7.13.1.1 restricts contexts for setjmp). */
 int cl_error_frame_push(void);

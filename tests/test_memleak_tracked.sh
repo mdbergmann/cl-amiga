@@ -262,6 +262,28 @@ cat > "$WORK/wabandon.lisp" <<LISPEOF
 LISPEOF
 run_case "no_leak_after_abandoned_source_load_writer" "$WORK/wabandon.lisp"
 
+# --- LOADs nested past the static table sizes ---------------------------------
+# The C-buffer stream table and the FASL reader/writer registries start static
+# and grow with platform_alloc when LOADs nest deeper (8 / 16 / 8 entries);
+# the grown blocks are handed back at exit.  The bottom file signals, so the
+# whole chain is abandoned once and completed once.
+i=1
+while [ $i -le 24 ]; do
+    printf '(load "%s/deep%s.lisp")\n' "$WORK" "$((i + 1))" > "$WORK/deep$i.lisp"
+    i=$((i + 1))
+done
+printf '(when *deep-boom* (error "deep boom"))\n' > "$WORK/deep25.lisp"
+cat > "$WORK/deep.lisp" <<LISPEOF
+(defvar *deep-boom* t)
+(handler-case (load "$WORK/deep1.lisp") (error () :caught))
+(setq *deep-boom* nil)
+(load "$WORK/deep1.lisp")
+(compile-file "$WORK/deep25.lisp" :output-file "$WORK/deep25.fasl")
+(gc)
+(quit)
+LISPEOF
+run_case "no_leak_after_deeply_nested_loads" "$WORK/deep.lisp"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ] || exit 1

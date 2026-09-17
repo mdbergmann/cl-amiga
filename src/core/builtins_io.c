@@ -451,6 +451,8 @@ static CL_Obj bi_load(CL_Obj *args, int n)
     unsigned long size;
     CL_Obj stream, expr, bytecode;
     const char *prev_file;
+    const char *own_file;
+    uint16_t own_file_id;
     uint16_t prev_file_id;
     int prev_line;
 
@@ -530,11 +532,16 @@ static CL_Obj bi_load(CL_Obj *args, int n)
         cl_current_source_file = cl_intern_source_file("<stream>");
         cl_current_file_id++;
         cl_reader_reset_line();
+        own_file = cl_current_source_file;
+        own_file_id = cl_current_file_id;
 
         for (;;) {
             int err;
             int saved_fp, saved_sp, saved_nlx;
 
+            /* see the file-load loop below */
+            cl_current_source_file = own_file;
+            cl_current_file_id = own_file_id;
             expr = cl_read_from_stream(stream);
             if (cl_reader_eof()) break;
 
@@ -923,6 +930,8 @@ static CL_Obj bi_load(CL_Obj *args, int n)
     cl_current_source_file = cl_intern_source_file(path_buf);
     cl_current_file_id++;
     cl_reader_reset_line();
+    own_file = cl_current_source_file;
+    own_file_id = cl_current_file_id;
 
     /* Use C-buffer stream — file content stays outside GC arena */
     stream = cl_make_cbuf_input_stream(buf, (uint32_t)size);
@@ -931,8 +940,8 @@ static CL_Obj bi_load(CL_Obj *args, int n)
          * The cache writer registered above goes with the error unwind. */
         platform_free(buf);
         cl_error(CL_ERR_GENERAL,
-                 "LOAD: cannot open a source stream for %s - LOADs are nested "
-                 "too deeply (C-buffer stream table full)", path_buf);
+                 "LOAD: cannot open a source stream for %s - out of memory, "
+                 "or over 250 source files being read at once", path_buf);
     }
     CL_GC_PROTECT(stream);
 
@@ -940,6 +949,13 @@ static CL_Obj bi_load(CL_Obj *args, int n)
         int err;
         int saved_fp, saved_sp, saved_nlx;
 
+        /* A nested LOAD that the previous form left by a non-local exit
+         * (HANDLER-CASE around it) never ran its own restore below, so the
+         * context still names that file: every function compiled from here
+         * on would carry it into its backtraces.  Line numbers live in the
+         * stream and need no such care. */
+        cl_current_source_file = own_file;
+        cl_current_file_id = own_file_id;
         expr = cl_read_from_stream(stream);
         if (cl_reader_eof()) break;
 
@@ -1595,6 +1611,8 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
     unsigned long src_size;
     CL_Obj stream, expr;
     const char *prev_file;
+    const char *own_file;
+    uint16_t own_file_id;
     uint16_t prev_file_id;
     int prev_line;
     CL_Obj output_pathname;
@@ -1731,6 +1749,8 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
         cl_fasl_portable_source_name(in_path));
     cl_current_file_id++;
     cl_reader_reset_line();
+    own_file = cl_current_source_file;
+    own_file_id = cl_current_file_id;
 
     /* Allocate FASL and unit buffers + FASL writers (heap-allocated to
      * keep bi_compile_file's stack frame small — CL_FaslWriter is ~4KB
@@ -1773,8 +1793,8 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
         platform_free(w);
         platform_free(src_buf);
         cl_error(CL_ERR_GENERAL,
-                 "COMPILE-FILE: cannot open a source stream - LOADs are nested "
-                 "too deeply (C-buffer stream table full)");
+                 "COMPILE-FILE: cannot open a source stream - out of memory, "
+                 "or over 250 source files being read at once");
         return CL_NIL;
     }
     CL_GC_PROTECT(stream);
@@ -1807,6 +1827,10 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
 
         CL_CATCH(err);
         if (err == CL_ERR_NONE) {
+            /* see bi_load's file loop: an abandoned nested LOAD (from an
+             * EVAL-WHEN or a macro expander) leaves its file behind */
+            cl_current_source_file = own_file;
+            cl_current_file_id = own_file_id;
             expr = cl_read_from_stream(stream);
             if (cl_reader_eof()) {
                 CL_UNCATCH();

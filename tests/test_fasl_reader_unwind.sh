@@ -233,16 +233,20 @@ check "no_writer_left_registered"                "$(hasnt 'still active')"
 # seventh caught LOAD error used to leave every later LOAD / COMPILE-FILE
 # reading from NIL: nothing loaded, no file written, no error.  A dead stream
 # now hands slot and file buffer back at the next collection, which a full
-# table forces; nesting that really is too deep signals.
+# table forces; LOADs that really nest deeper than the static block make the
+# table grow (30 deep here: three blocks past the first; the FASL writer
+# registry grows with it).  What does bound the nesting is the per-thread C
+# error-frame stack, one frame per LOAD level: running out of it is a clear
+# error from the level that hit it, and everything works afterwards.
 d="$TMP/cbuf"; mkdir -p "$d"
 printf '(defvar *cb-ran* 0)\n(incf *cb-ran*)\n(error "cb boom")\n' > "$d/cboom.lisp"
 printf '(defun cb-fn () :compiled)\n' > "$d/cbsrc.lisp"
 i=1
-while [ $i -le 9 ]; do
+while [ $i -le 99 ]; do
     printf '(setq *cb-depth* %s)\n(load "nest%s.lisp")\n' "$i" "$((i + 1))" > "$d/nest$i.lisp"
     i=$((i + 1))
 done
-printf '(setq *cb-depth* :bottom)\n' > "$d/nest10.lisp"
+printf '(setq *cb-depth* :bottom)\n' > "$d/nest100.lisp"
 cat > "$d/run.lisp" <<'EOF'
 (defvar *cb-depth* 0)
 (format t "CAUGHT ~S~%"
@@ -254,10 +258,15 @@ cat > "$d/run.lisp" <<'EOF'
                            (not (null (probe-file "cbsrc.fasl")))))
 (format t "LOADED ~S~%" (progn (load "cbsrc.fasl") (cb-fn)))
 (format t "DEEP ~S~%"
+        (handler-case (progn (load "nest71.lisp") :no-error)
+          (error (c) (princ-to-string c))))
+(format t "DEPTH ~S~%" *cb-depth*)
+(format t "TOO-DEEP ~S~%"
         (handler-case (progn (load "nest1.lisp") :no-error)
           (error (c) (if (search "nested too deeply" (princ-to-string c))
                          :clear-error (princ-to-string c)))))
-(format t "DEPTH ~S~%" *cb-depth*)
+(format t "TOO-DEEP-GOT-PAST-THE-OLD-LIMIT ~S~%" (> *cb-depth* 20))
+(format t "REGISTRY ~S~%" (ext:%fasl-registry-stats))
 (format t "AFTER-DEEP ~S~%" (handler-case (load "cboom.lisp") (error () :signals-again)))
 EOF
 run "$d"
@@ -265,10 +274,42 @@ check "every_caught_load_error_still_signals" "$(has '^CAUGHT 20')"
 check "every_abandoned_load_ran_its_forms"    "$(has '^RAN 20')"
 check "compile_file_writes_after_them"        "$(has '^CF T')"
 check "load_works_after_them"                 "$(has '^LOADED :COMPILED')"
-check "too_deep_nesting_is_a_clear_error"     "$(has '^DEEP :CLEAR-ERROR')"
-# seven slots, one of them run.lisp's own
-check "nesting_got_as_deep_as_the_table"      "$(has '^DEPTH 6')"
-check "load_recovers_after_the_nesting_error" "$(has '^AFTER-DEEP :SIGNALS-AGAIN')"
+check "loads_nest_past_the_static_block"      "$(has '^DEEP :NO-ERROR')"
+check "deep_nesting_reached_the_bottom"       "$(has '^DEPTH :BOTTOM')"
+check "running_out_of_error_frames_is_clear"  "$(has '^TOO-DEEP :CLEAR-ERROR')"
+check "that_limit_is_well_past_the_old_one"   "$(has '^TOO-DEEP-GOT-PAST-THE-OLD-LIMIT T')"
+check "abandoned_deep_loads_left_no_writer"   "$(has '^REGISTRY (0 0)')"
+check "load_still_signals_after_deep_nesting" "$(has '^AFTER-DEEP :SIGNALS-AGAIN')"
+
+# --- 7. an abandoned LOAD does not leave its file name behind -----------------
+# LOAD restores the source-file context (what a compiled function records for
+# backtraces and M-.) on its way out, which a non-local exit skips.  Each
+# loader now re-asserts its own file before every top-level form: LOAD,
+# COMPILE-FILE (the abandoned LOAD sits in an EVAL-WHEN) and the REPL.
+d="$TMP/ctx"; mkdir -p "$d"
+printf '\n\n(error "ctx boom")\n' > "$d/ctxboom.lisp"
+cat > "$d/ctxcf.lisp" <<'EOF'
+(eval-when (:compile-toplevel)
+  (handler-case (load "ctxboom.lisp") (error () nil)))
+(defun ctx-cf-fn () 1)
+EOF
+cat > "$d/run.lisp" <<'EOF'
+(handler-case (load "ctxboom.lisp") (error () nil))
+(defun ctx-load-fn () 1)
+(format t "LOAD-CTX ~S~%" (ext:function-source-location #'ctx-load-fn))
+(compile-file "ctxcf.lisp" :output-file "ctxcf.fasl")
+(load "ctxcf.fasl")
+(format t "CF-CTX ~S~%" (ext:function-source-location #'ctx-cf-fn))
+EOF
+run "$d"
+check "function_after_abandoned_load_names_its_own_file" "$(has '^LOAD-CTX ("run.lisp" 2)')"
+check "compile_file_after_abandoned_load_likewise"       "$(has '^CF-CTX (".*ctxcf.lisp" 3)')"
+out=$(cd "$d" && printf '%s\n' \
+        '(handler-case (load "ctxboom.lisp") (error () nil))' \
+        '(defun ctx-repl-fn () 1)' \
+        '(format t "REPL-CTX ~S~%" (ext:function-source-location (function ctx-repl-fn)))' \
+      | "$CLAMIGA" --no-userinit --no-fasl-cache 2>&1)
+check "repl_function_after_abandoned_load_has_no_file"   "$(has 'REPL-CTX :NOT-AVAILABLE')"
 
 echo ""
 echo "test_fasl_reader_unwind: $passed passed, $failed failed"

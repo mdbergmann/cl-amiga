@@ -36,7 +36,21 @@ void cl_jit_restore_depth(int new_depth)
 
 int cl_error_frame_push(void)
 {
-    if (cl_error_frame_top >= CL_MAX_ERROR_FRAMES) return -1;
+    if (cl_error_frame_top < CL_MAX_ERROR_FRAMES - CL_ERROR_FRAME_RESERVE) {
+        CT->error_frame_overflowing = 0;
+    } else if (!CT->error_frame_overflowing) {
+        /* Callers used to get -1 here, which no CL_CATCH site tells apart
+         * from a caught error: each went on to CL_UNCATCH a frame it never
+         * pushed (popping its caller's) and reported an empty message. */
+        CT->error_frame_overflowing = 1;
+        cl_error(CL_ERR_OVERFLOW,
+                 "LOAD, COMPILE-FILE or EVAL nested too deeply: %d C error "
+                 "frames in use on this thread (limit %d)",
+                 cl_error_frame_top,
+                 CL_MAX_ERROR_FRAMES - CL_ERROR_FRAME_RESERVE);
+    } else if (cl_error_frame_top >= CL_MAX_ERROR_FRAMES) {
+        return -1;
+    }
     cl_error_frames[cl_error_frame_top].active = 1;
     /* Snapshot gc_root_count so cl_error_unwind can drop any CL_GC_PROTECT
      * entries pushed by C stack frames we will unwind out of.  Must be

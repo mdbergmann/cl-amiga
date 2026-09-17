@@ -2,6 +2,7 @@
 #include "core/types.h"
 #include "core/mem.h"
 #include "core/error.h"
+#include "core/fasl.h"
 #include "core/package.h"
 #include "core/symbol.h"
 #include "core/reader.h"
@@ -1104,6 +1105,8 @@ shutdown:
     SHUTDOWN_TRACE("builtins done");
     cl_stream_release_tables();
     SHUTDOWN_TRACE("stream tables done");
+    cl_fasl_release_registries();
+    SHUTDOWN_TRACE("fasl registries done");
     platform_release_resources();
     SHUTDOWN_TRACE("platform resources done");
 
