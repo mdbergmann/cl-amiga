@@ -223,7 +223,7 @@ on *every* launch on a Vampire until the 0.8 shutdown paths were fixed.)
 - **64K** (AmigaOS default) — sufficient for the core runtime and most of the test suite, but NOT for the GUI load path: `(require "amiga/gadtools")` or the Lambda's Tale UI nests `bi_load` frames (~5K each) on top of deep reader recursion. Fails cleanly with the guard error.
 - **128K** — verified sufficient for a full from-source compile of the GUI/game path (test runner baseline) and for Quicklisp/FSet/fiveam (deep CLOS dispatch chains).
 
-The `stack` CLI command sets the stack before launching clamiga.
+Since 2026-09-18 the m68k binary gives itself that 128K when it was started with less (`platform_run_main` swaps to a stack of its own, and `platform_process_exit` hands it back — every exit goes through that function, never a bare `_exit`): a Shell at the 64K default and a Workbench icon's 8000 bytes both work.  The `stack` CLI command still matters above 128K (the Quicklisp scripts on real hardware use `stack 800000`).  A Workbench start (argc 0) is turned into a command line by `platform_startup_args` from the icons' `ARGS`/`WINDOW` tool types; `tests/amiga/wb-check.lisp` + `verify/realamiga/wbrun.c` are the unattended leg.
 
 ## Integration Test Scripts
 

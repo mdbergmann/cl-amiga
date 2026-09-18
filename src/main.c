@@ -15,6 +15,7 @@
 #include "core/repl.h"
 #include "core/color.h"
 #include "core/image.h"
+#include "core/cmdline.h"
 #include "jit/jit.h"
 #include <string.h>
 #include <stdio.h>
@@ -396,8 +397,17 @@ static void print_usage(void)
         "  --no-jit         Disable the m68k JIT (functions stay bytecode-only)\n"
         "  --boot-log       Print boot phase timings (\"; [boot] ...\")\n"
         "  --help           Show this help message\n"
+        "  --               End of options: what follows is the program's own\n"
+        "                   (EXT:*COMMAND-LINE-ARGS*), never loaded\n"
         "\n"
+        "A bare argument before -- is loaded like --load.\n"
         "Sizes accept K, M, G suffixes (e.g. 8M, 512K, 1G).\n"
+#ifdef PLATFORM_AMIGA
+        "\n"
+        "Started from Workbench, the options come from the ARGS tool type of the\n"
+        "tool's icon and then of each project's icon; every project is one\n"
+        "argument after --.  WINDOW=<console spec> names the console.\n"
+#endif
     );
 }
 
@@ -551,7 +561,7 @@ static CL_Obj eval_string_in_cl_user(const char *str)
     return result;
 }
 
-int main(int argc, char *argv[])
+static int clamiga_main(int argc, char *argv[])
 {
     int batch = 0;
     int non_interactive = 0;
@@ -570,11 +580,18 @@ int main(int argc, char *argv[])
     uint32_t heap_size = 0;
     uint32_t stack_entries = 0;
     int frame_count = 0;
+    int workbench_started = 0;
+    char **program_args = NULL;   /* what follows `--` */
+    int program_argc = 0;
 
 #ifdef PLATFORM_WIN32
     /* Before anything reads argv: it arrives ANSI-mangled otherwise. */
     win32_utf8_argv(&argc, &argv);
 #endif
+    /* A Workbench start (AmigaOS: argc == 0) has no command line; the
+     * platform layer builds one from the icons' tool types and the project
+     * icons.  A no-op that returns 0 everywhere else. */
+    workbench_started = platform_startup_args(&argc, &argv);
 
 #if defined(PLATFORM_POSIX) || defined(PLATFORM_WIN32)
     /* Enable Unicode character classification.  Try a UTF-8 locale explicitly
@@ -617,7 +634,7 @@ int main(int argc, char *argv[])
             if (i + 1 >= argc) {
                 fprintf(stderr, "Error: --image requires a file argument\n");
                 print_usage();
-                exit(1);
+                platform_process_exit(1);
             }
             image_file = argv[++i];
         } else if (strcmp(argv[i], "--no-image") == 0) {
@@ -626,12 +643,12 @@ int main(int argc, char *argv[])
             cl_load_fasl_cache_off = 1;
         } else if (strcmp(argv[i], "--help") == 0) {
             print_usage();
-            exit(0);
+            platform_process_exit(0);
         } else if (strcmp(argv[i], "--load") == 0) {
             if (i + 1 >= argc) {
                 fprintf(stderr, "Error: --load requires a file argument\n");
                 print_usage();
-                exit(1);
+                platform_process_exit(1);
             }
             if (action_count < MAX_ACTIONS) {
                 actions[action_count].is_eval = 0;
@@ -642,7 +659,7 @@ int main(int argc, char *argv[])
             if (i + 1 >= argc) {
                 fprintf(stderr, "Error: --eval requires an expression argument\n");
                 print_usage();
-                exit(1);
+                platform_process_exit(1);
             }
             if (action_count < MAX_ACTIONS) {
                 actions[action_count].is_eval = 1;
@@ -653,7 +670,7 @@ int main(int argc, char *argv[])
             if (i + 1 >= argc) {
                 fprintf(stderr, "Error: --script requires a file argument\n");
                 print_usage();
-                exit(1);
+                platform_process_exit(1);
             }
             script = 1;
             script_file = argv[++i];
@@ -661,26 +678,26 @@ int main(int argc, char *argv[])
             if (i + 1 >= argc) {
                 fprintf(stderr, "Error: --heap requires a size argument\n");
                 print_usage();
-                exit(1);
+                platform_process_exit(1);
             }
             heap_size = parse_size(argv[++i]);
             if (heap_size == 0) {
                 fprintf(stderr, "Error: invalid heap size '%s'\n", argv[i]);
                 print_usage();
-                exit(1);
+                platform_process_exit(1);
             }
         } else if (strcmp(argv[i], "--vm-stack") == 0) {
             if (i + 1 >= argc) {
                 fprintf(stderr, "Error: --vm-stack requires a size argument\n");
                 print_usage();
-                exit(1);
+                platform_process_exit(1);
             }
             {
                 uint32_t stack_bytes = parse_size(argv[++i]);
                 if (stack_bytes == 0) {
                     fprintf(stderr, "Error: invalid stack size '%s'\n", argv[i]);
                     print_usage();
-                    exit(1);
+                    platform_process_exit(1);
                 }
                 stack_entries = stack_bytes / 4; /* each entry is uint32_t */
             }
@@ -688,21 +705,27 @@ int main(int argc, char *argv[])
             if (i + 1 >= argc) {
                 fprintf(stderr, "Error: --frames requires a number\n");
                 print_usage();
-                exit(1);
+                platform_process_exit(1);
             }
             {
                 uint32_t n = parse_size(argv[++i]);
                 if (n == 0) {
                     fprintf(stderr, "Error: invalid frame count '%s'\n", argv[i]);
                     print_usage();
-                    exit(1);
+                    platform_process_exit(1);
                 }
                 frame_count = (int)n;
             }
+        } else if (strcmp(argv[i], "--") == 0) {
+            /* End of options: the rest belongs to the program
+             * (EXT:*COMMAND-LINE-ARGS*) and is never loaded. */
+            program_args = argv + i + 1;
+            program_argc = argc - i - 1;
+            break;
         } else if (strncmp(argv[i], "--", 2) == 0) {
             fprintf(stderr, "Error: unknown option '%s'\n", argv[i]);
             print_usage();
-            exit(1);
+            platform_process_exit(1);
         } else {
             /* Bare file argument: treat as --load */
             if (action_count < MAX_ACTIONS) {
@@ -745,7 +768,7 @@ int main(int argc, char *argv[])
     image_t0 = platform_time_ms();
     if (image_file) {
         if (cl_image_stage(image_file, 0) != 0)
-            exit(1);
+            platform_process_exit(1);
     } else if (!no_image) {
         discover_image();
     }
@@ -823,19 +846,26 @@ int main(int argc, char *argv[])
      * where an image's boot_roots count must match (image.c). */
     cl_image_note_boot_roots();
 
+    /* EXT:*COMMAND-LINE-ARGS* / *WORKBENCH-STARTED-P*: published after
+     * the C init (they cons) and after a restore (the image carries the
+     * saving process's values), before the user init file and the restore
+     * hooks, which are where a program reads them. */
     if (cl_image_staged_p()) {
         image_t0 = platform_time_ms();
         if (cl_image_restore_staged() == 0) {
             image_ms += platform_time_ms() - image_t0;
+            cl_cmdline_publish(program_argc, program_args, workbench_started);
             cl_repl_init_from_image(no_userinit, image_ms);
         } else {
             /* Pre-arena verification failed (reason already printed). */
             cl_image_discard_staged();
             if (image_file)
-                exit(1);   /* explicit --image: never boot something else */
+                platform_process_exit(1);   /* explicit --image: never boot something else */
+            cl_cmdline_publish(program_argc, program_args, workbench_started);
             cl_repl_init_no_userinit(no_userinit);
         }
     } else {
+        cl_cmdline_publish(program_argc, program_args, workbench_started);
         cl_repl_init_no_userinit(no_userinit);
     }
 
@@ -1079,8 +1109,7 @@ shutdown:
     if (cl_thread_count > 0) {
         SHUTDOWN_TRACE("workers still running - fast _exit, arena left to OS");
         mem_diag_report("worker-thread fast exit (arena deliberately not freed)");
-        fflush(NULL);
-        _exit(cl_exit_code);
+        platform_process_exit(cl_exit_code);
     }
 
     /* Past the worker check: this process is single-threaded again, so it is
@@ -1131,11 +1160,9 @@ shutdown:
      * and the OS reclaims the rest on process exit, flush any pending C stdio
      * and terminate via _exit(), which hands the return code back to DOS
      * without running the hanging teardown. */
-    SHUTDOWN_TRACE("calling fflush(NULL)");
-    fflush(NULL);
-    SHUTDOWN_TRACE("fflush done - calling _exit");
-    _exit(cl_exit_code);
-    SHUTDOWN_TRACE("_exit returned (should never happen)");
+    SHUTDOWN_TRACE("calling platform_process_exit");
+    platform_process_exit(cl_exit_code);
+    SHUTDOWN_TRACE("platform_process_exit returned (should never happen)");
 #elif defined(PLATFORM_MORPHOS)
     /* MorphOS PPC: the _exit() workaround above was masking the setjmp jmp_buf
      * overrun that corrupted every NLX/error frame throughout the run (fixed
@@ -1155,4 +1182,12 @@ shutdown:
 #undef SHUTDOWN_TRACE
 
     return cl_exit_code;
+}
+
+int main(int argc, char *argv[])
+{
+    /* The runtime's main runs on a C stack of at least
+     * PLATFORM_MAIN_STACK_MIN: on m68k AmigaOS the platform layer swaps to
+     * one of its own when the Shell's `stack` or the icon gave less. */
+    return platform_run_main(clamiga_main, argc, argv);
 }

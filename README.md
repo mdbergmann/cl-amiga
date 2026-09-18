@@ -160,6 +160,45 @@ toggles, and safety guarantees.
 (shows progress during the multi-second boot) and for spotting startup-time
 regressions; see `tests/test_boot_log.sh` for the exact behavior.
 
+### Program arguments
+
+A bare argument is loaded like `--load`; everything after `--` belongs to
+the program instead:
+
+```
+clamiga --load app.lisp -- input.txt "two words"
+```
+
+`ext:*command-line-args*` is then `("input.txt" "two words")` — verbatim,
+never loaded, whatever it looks like — and it is already set when
+`~/.clamigarc` and `ext:*restore-hooks*` run, so an application image
+started as `clamiga --image app.img -- file` finds its files there.
+`tests/test_command_line_args.sh` shows the whole contract.
+
+### Starting from Workbench (AmigaOS)
+
+clamiga can be started from an icon: its own tool icon, or a project icon
+(a `.lisp` file, say) whose default tool is clamiga — double-clicked, or
+shift-selected together with the tool.  There is no command line then;
+two tool types stand in for it, read from the tool's icon and then from
+each project's (a project's options come later and win where one wins):
+
+- `ARGS=...` — the options, exactly as on a command line, e.g.
+  `ARGS=--heap 8M --load Work:app.lisp`; a double-quoted stretch is one
+  argument.
+- `WINDOW=...` — the console, e.g. `WINDOW=CON:0/20/640/200/My Lisp/CLOSE`,
+  or `NIL:` for none.  Without it clamiga gets an `AUTO` window that only
+  appears once something is printed and stays until it is closed.
+
+Every project is one argument after `--`, as a full path, so an
+application takes them from `ext:*command-line-args*` — they are never
+loaded on its behalf.  `ext:*workbench-started-p*` is `T`, the current
+directory is the tool's drawer, and the run gets its 128 KB stack by
+itself (see [Heap and stack sizing](#heap-and-stack-sizing)).
+`tests/amiga/wb-check.lisp` is the runnable example: the Amiga suite starts
+clamiga through `verify/realamiga/wbrun.c`, which sends the same
+`WBStartup` message Workbench does.
+
 ### REPL results
 
 The REPL prints **every** value a form returns, one per line, starting on a
@@ -225,16 +264,20 @@ The default heap is **4 MB**. On the Amiga, plain clamiga — without Quicklisp 
 | FSet (functional collections)             | `--heap 24M`     | `stack 128000`    |
 | Fiveam (load + self-tests)                | `--heap 24M`     | `stack 128000`    |
 
-On AmigaOS, the default 64K stack is sufficient for basic use. For Quicklisp/ASDF workloads with deep CLOS dispatch chains, or when source-compiling GUI code (deeply nested macro towers), increase the stack:
+On AmigaOS 3 the run always has at least **128 KB** of stack: when the
+Shell's `stack` setting (64K by default) or a Workbench icon gives less,
+clamiga switches to a 128 KB stack of its own for the duration.  So `stack`
+matters only when a workload needs more than that — the Quicklisp-based
+test scripts on real hardware, say:
 
 ```
-stack 128000
+stack 800000
 clamiga --heap 24M
 ```
 
-If the stack is too small for a deeply nested form, clamiga signals a clean
-`C stack nearly exhausted` error telling you to raise it — it never corrupts
-the session.
+(MorphOS sizes its native stack itself, 1 MB.)  If the stack is too small
+for a deeply nested form, clamiga signals a clean `C stack nearly exhausted`
+error telling you to raise it — it never corrupts the session.
 
 ### Quicklisp
 

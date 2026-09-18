@@ -2260,6 +2260,12 @@ void cl_builtins_init(void)
         cl_image_builtins_init();
     }
 
+    /* EXT:*COMMAND-LINE-ARGS* / *WORKBENCH-STARTED-P* (cmdline.c) */
+    {
+        extern void cl_cmdline_builtins_init(void);
+        cl_cmdline_builtins_init();
+    }
+
     /* Register cached symbols for GC compaction forwarding */
     cl_gc_register_root(&trace_list);
 }

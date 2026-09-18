@@ -3052,6 +3052,219 @@ void platform_shutdown(void)
     }
 }
 
+/* =============================================================
+ * Program arguments, Workbench start, the main stack, process exit
+ * ============================================================= */
+
+#include <workbench/startup.h>
+#include <workbench/workbench.h>
+#include <proto/icon.h>
+#include "../core/cmdline.h"
+
+/* <unistd.h> cannot be included this late (the bsdsocket headers above
+ * define a getdtablesize macro that breaks it); _exit is all we need. */
+extern void _exit(int status);
+
+struct Library *IconBase = NULL;
+
+#ifndef PLATFORM_MORPHOS
+/* libnix's Workbench start: with no console of its own, a tool started
+ * from an icon gets this window as Input()/Output() (opened before main;
+ * AUTO = it appears only when something is written or read, so a GUI
+ * program never shows it, and WAIT keeps it up until the user closes it
+ * once it did appear).  libnix would close it from its exit list, which
+ * the 68k exit path (_exit, see main.c) never runs — platform_process_exit
+ * closes it instead. */
+char *__stdiowin = "CON:0/20/640/200/CL-Amiga/AUTO/CLOSE/WAIT";
+#endif
+
+static int    wb_started = 0;          /* main() was handed a WBStartup */
+static BPTR   wb_stdio_console = 0;    /* libnix's __stdiowin handle */
+static BPTR   wb_window_console = 0;   /* the WINDOW tool type's, if any */
+static char   wb_argbuf[2048];         /* the synthetic command line ... */
+static char  *wb_argv[64];             /* ... and its argv (64 slots) */
+static char   wb_pathbuf[512];
+
+/* The main stack swap (platform_run_main / platform_process_exit). */
+static struct StackSwapStruct main_stack_swap;
+static void *main_stack_mem = NULL;
+
+/* Read the ARGS and WINDOW tool types of the icon NAME in the directory
+ * LOCK into the builder / *WINDOW.  Missing icon or library: nothing. */
+static void wb_read_icon(BPTR lock, const char *name, CL_ArgvBuilder *b,
+                         const char **window)
+{
+    BPTR old;
+    struct DiskObject *dobj;
+    if (!IconBase || !name)
+        return;
+    old = CurrentDir(lock);
+    dobj = GetDiskObject((CONST_STRPTR)name);
+    if (dobj) {
+        if (dobj->do_ToolTypes) {
+            const char *v;
+            v = (const char *)FindToolType((CONST_STRPTR *)dobj->do_ToolTypes,
+                                           (CONST_STRPTR)"ARGS");
+            if (v)
+                cl_argv_builder_split(b, v);
+            v = (const char *)FindToolType((CONST_STRPTR *)dobj->do_ToolTypes,
+                                           (CONST_STRPTR)"WINDOW");
+            if (v && *v) {
+                /* keep a copy: the DiskObject goes away below */
+                static char winbuf[256];
+                strncpy(winbuf, v, sizeof(winbuf) - 1);
+                winbuf[sizeof(winbuf) - 1] = '\0';
+                *window = winbuf;
+            }
+        }
+        FreeDiskObject(dobj);
+    }
+    CurrentDir(old);
+}
+
+int platform_startup_args(int *argc, char ***argv)
+{
+    struct WBStartup *wbs;
+    CL_ArgvBuilder b;
+    const char *window = NULL;
+    LONG i;
+
+    if (*argc != 0)
+        return 0;                       /* a Shell start: argv is the command line */
+    wbs = (struct WBStartup *)*argv;
+    wb_started = 1;
+    wb_stdio_console = Input();         /* libnix's __stdiowin (0 without one) */
+
+    cl_argv_builder_init(&b, wb_argbuf, (int)sizeof(wb_argbuf),
+                         wb_argv, (int)(sizeof(wb_argv) / sizeof(wb_argv[0])));
+    cl_argv_builder_add(&b, (wbs && wbs->sm_NumArgs > 0 && wbs->sm_ArgList[0].wa_Name)
+                            ? (const char *)wbs->sm_ArgList[0].wa_Name : "clamiga");
+
+    IconBase = OpenLibrary((CONST_STRPTR)"icon.library", 36);
+    if (wbs && wbs->sm_ArgList) {
+        /* The tool's icon first, then every project's: a project's ARGS
+         * come later on the line, so its options win where one wins. */
+        for (i = 0; i < wbs->sm_NumArgs; i++)
+            wb_read_icon(wbs->sm_ArgList[i].wa_Lock,
+                         (const char *)wbs->sm_ArgList[i].wa_Name, &b, &window);
+        /* Every project (a file icon double-clicked with clamiga as its
+         * default tool, or shift-selected with the tool's icon) is one
+         * argument after --, as a full path: the program decides what to
+         * do with it — it is never loaded on the program's behalf. */
+        if (wbs->sm_NumArgs > 1)
+            cl_argv_builder_add(&b, "--");
+        for (i = 1; i < wbs->sm_NumArgs; i++) {
+            struct WBArg *a = &wbs->sm_ArgList[i];
+            if (!a->wa_Name || !a->wa_Name[0])
+                continue;               /* a drawer, not a file */
+            wb_pathbuf[0] = '\0';
+            if (a->wa_Lock &&
+                NameFromLock(a->wa_Lock, (STRPTR)wb_pathbuf, (LONG)sizeof(wb_pathbuf)) &&
+                AddPart((STRPTR)wb_pathbuf, (CONST_STRPTR)a->wa_Name, (ULONG)sizeof(wb_pathbuf)))
+                cl_argv_builder_add(&b, wb_pathbuf);
+            else
+                cl_argv_builder_add(&b, (const char *)a->wa_Name);
+        }
+    }
+    if (IconBase) {
+        CloseLibrary(IconBase);
+        IconBase = NULL;
+    }
+
+    /* WINDOW=<console spec>: the console this run reads and writes (the
+     * IconX convention; NIL: for none).  Replaces libnix's default window
+     * for Input()/Output(); C stdio keeps the default one, which stays
+     * unopened unless something is printed through it. */
+    if (window) {
+        wb_window_console = Open((CONST_STRPTR)window, MODE_OLDFILE);
+        if (wb_window_console) {
+            SelectInput(wb_window_console);
+            SelectOutput(wb_window_console);
+        } else {
+            platform_write_string("clamiga: cannot open the WINDOW tool type's console: ");
+            platform_write_string(window);
+            platform_write_string("\n");
+        }
+    }
+    if (b.overflow)
+        platform_write_string("clamiga: too many or too long arguments in the "
+                              "icons' ARGS tool types and projects; some were dropped\n");
+
+    *argc = b.argc;
+    *argv = b.argv;
+    return 1;
+}
+
+/* Close what a Workbench start opened: the WINDOW console, then libnix's
+ * stdio window (both are Input()/Output() candidates; C stdio has been
+ * flushed for the last time by then), and the DupLock'd current directory
+ * libnix's startup set (clamiga never changes the cwd, so CurrentDir(0)
+ * hands that lock back). */
+static void wb_teardown(void)
+{
+    if (!wb_started)
+        return;
+    SelectInput(0);
+    SelectOutput(0);
+    if (wb_window_console) {
+        Close(wb_window_console);
+        wb_window_console = 0;
+    }
+    if (wb_stdio_console) {
+        Close(wb_stdio_console);
+        wb_stdio_console = 0;
+    }
+    {
+        BPTR dir = CurrentDir(0);
+        if (dir)
+            UnLock(dir);
+    }
+    wb_started = 0;
+}
+
+int platform_run_main(int (*fn)(int, char **), int argc, char **argv)
+{
+#ifdef PLATFORM_MORPHOS
+    /* Native code runs on the PPC stack, sized by the __stack global the
+     * MorphOS startup honours (main.c). */
+    return fn(argc, argv);
+#else
+    struct Task *t = FindTask(NULL);
+    ULONG have = (ULONG)((char *)t->tc_SPUpper - (char *)t->tc_SPLower);
+    int rc;
+    if (have >= PLATFORM_MAIN_STACK_MIN)
+        return fn(argc, argv);
+    main_stack_mem = AllocVec(PLATFORM_MAIN_STACK_MIN, MEMF_ANY);
+    if (!main_stack_mem)
+        return fn(argc, argv);          /* out of memory: run with what there is */
+    main_stack_swap.stk_Lower = main_stack_mem;
+    main_stack_swap.stk_Upper = (ULONG)main_stack_mem + PLATFORM_MAIN_STACK_MIN;
+    main_stack_swap.stk_Pointer = (APTR)main_stack_swap.stk_Upper;
+    StackSwap(&main_stack_swap);
+    rc = fn(argc, argv);
+    StackSwap(&main_stack_swap);        /* back: the struct now holds ours */
+    FreeVec(main_stack_mem);
+    main_stack_mem = NULL;
+    return rc;
+#endif
+}
+
+void platform_process_exit(int code)
+{
+    fflush(NULL);
+    wb_teardown();
+#ifndef PLATFORM_MORPHOS
+    if (main_stack_mem) {
+        /* Back on the stack we were given; the frames above the swap point
+         * are abandoned, which is what _exit does anyway. */
+        StackSwap(&main_stack_swap);
+        FreeVec(main_stack_mem);
+        main_stack_mem = NULL;
+    }
+#endif
+    _exit(code);
+}
+
 void platform_release_resources(void)
 {
     /* Remove our public ARexx port from exec's list.  This is a correctness

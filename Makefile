@@ -115,6 +115,7 @@ CORE_SRC     = $(SRCDIR)/core/types.c \
                $(SRCDIR)/core/repl.c \
                $(SRCDIR)/core/fasl.c \
                $(SRCDIR)/core/image.c \
+               $(SRCDIR)/core/cmdline.c \
                $(SRCDIR)/core/color.c \
                $(SRCDIR)/core/thread.c \
                $(SRCDIR)/core/string_utils.c
@@ -244,6 +245,7 @@ test_batch test_repl_values test_repl_paste test_boot_log test_mx_error_context 
                 test_tier4_phase1 test_tier4_phase2 test_tier4_phase3 test_local_inline \
                 test_scan_opcodes test_runtime_forms test_compiler_buffers \
                 test_defvar_special_fasl test_stack_depth test_argv_utf8 \
+                test_command_line_args \
                 test_utf8_filenames test_image test_boot_image_scripts test_install_layout \
                 test_finish_output_flush \
                 test_amiga_bindgen \
@@ -341,6 +343,8 @@ test-gc-stress:
 	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_tls_loopback.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
 	@echo "--- test_image (CLAMIGA_GC_STRESS=1, forced compaction) ---"
 	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_image.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
+	@echo "--- test_command_line_args (CLAMIGA_GC_STRESS=1, forced compaction: the argument list is consed at boot) ---"
+	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_command_line_args.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
 	@echo "--- test_shutdown_leak (CLAMIGA_GC_STRESS=1, forced compaction) ---"
 	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_shutdown_leak.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
 	@echo "--- test_md2guide (CLAMIGA_GC_STRESS=1, forced compaction: string/cons-heavy Lisp) ---"

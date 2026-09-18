@@ -11630,6 +11630,15 @@ y" 1))
 (check "*image-restored-p* is bound" t
   (if (member ext:*image-restored-p* '(nil t)) t nil))
 
+; --- Program arguments (cmdline.c) ---
+; call-on-ustartup starts every suite run with `-- suite-arg "two words"`:
+; what follows -- is EXT:*COMMAND-LINE-ARGS*, verbatim, never loaded; the
+; restored-boot run sees the same list (published after the restore, not
+; carried from the saver).  A Shell start is never a Workbench start.
+(check "*command-line-args* is what followed --"
+  '("suite-arg" "two words") ext:*command-line-args*)
+(check "*workbench-started-p* is NIL from the Shell" nil ext:*workbench-started-p*)
+
 ; --- Tier-4 phase 1: runtime-tax removals (specs/performance.md 4.1) ---
 ; The target side of tests/test_tier4_phase1.sh.  Every case here pins a
 ; behaviour a Phase-1 speed change had to preserve, and each is worth more

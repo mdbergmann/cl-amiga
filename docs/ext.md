@@ -92,6 +92,23 @@ End-to-end examples: `tests/tls-loopback.lisp`
 | `(system-command command)` | function | Run a host/AmigaOS shell command |
 | `(defglobal name value &optional doc)` | macro | Define a global (non-dynamic) variable |
 
+## Program arguments
+
+What follows `--` on the command line is the program's, never loaded
+(README "Program arguments"); a Workbench start on AmigaOS turns the
+icons' `ARGS`/`WINDOW` tool types into the options and every project icon
+into one argument (README "Starting from Workbench").  Both variables are
+set before `~/.clamigarc` and `*restore-hooks*` run, and a restored image
+reports the restoring process's arguments.
+
+| Signature | Kind | Description |
+|-----------|------|-------------|
+| `*command-line-args*` | variable | The arguments after `--`, as a list of strings, verbatim (`NIL` without); on a Workbench start the full path of every project icon |
+| `*workbench-started-p*` | variable | `T` when this process was started from a Workbench icon (AmigaOS), `NIL` from a Shell or on a host |
+
+Runnable examples: `tests/test_command_line_args.sh` (host) and
+`tests/amiga/wb-check.lisp` (Amiga, the Workbench start).
+
 ## Exit hooks
 
 `ext:*exit-hooks*` is a list of function designators clamiga funcalls with no

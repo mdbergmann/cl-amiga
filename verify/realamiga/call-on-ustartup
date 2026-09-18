@@ -36,7 +36,10 @@ avail >>build/amiga/test-results.log
 stack 128000
 echo "=== run start ===" >>build/amiga/test-results.log
 date >>build/amiga/test-results.log
-build/amiga/clamiga --no-userinit --heap 8M --non-interactive --load tests/amiga/run-tests.lisp >>build/amiga/test-results.log
+; `-- suite-arg "two words"`: the suite checks EXT:*COMMAND-LINE-ARGS*
+; (never loaded, whatever follows --); the restored-boot run below gets
+; the same and must see them too (published after the restore).
+build/amiga/clamiga --no-userinit --heap 8M --non-interactive --load tests/amiga/run-tests.lisp -- suite-arg "two words" >>build/amiga/test-results.log
 ; Heap images (specs/image-save-load.md): save state in one process,
 ; restore it in a second, verify (IMAGE-VERIFY-PASSED marker).  Images go
 ; to the host-mounted build/amiga/ dir, not RAM:, so they cost no Amiga
@@ -55,9 +58,36 @@ cd CLAmiga:
 ; watchdog's stall detector keeps seeing progress.
 echo "=== restored-boot suite ===" >>build/amiga/test-results.log
 build/amiga/clamiga --no-userinit --no-image --heap 8M --non-interactive --load tests/amiga/image-boot-save.lisp >>build/amiga/test-results.log
-build/amiga/clamiga --no-userinit --image build/amiga/boot.img --heap 8M --non-interactive --load tests/amiga/run-tests.lisp >>build/amiga/test-results.log
+build/amiga/clamiga --no-userinit --image build/amiga/boot.img --heap 8M --non-interactive --load tests/amiga/run-tests.lisp -- suite-arg "two words" >>build/amiga/test-results.log
 delete >NIL: CLAmiga:build/amiga/clamiga-test.img
 delete >NIL: CLAmiga:build/amiga/boot.img
+; The main stack: with `stack 8000` (twice a stock Shell's default) the
+; runtime must swap to its own 128K (platform_run_main) -- verify-amiga
+; requires SMALL-STACK-PASSED.  Last but one, so a crash here costs no
+; other leg its result.
+echo "=== small-stack start ===" >>build/amiga/test-results.log
+stack 8000
+build/amiga/clamiga --no-userinit --no-image --heap 8M --non-interactive --load tests/amiga/small-stack-check.lisp >>build/amiga/test-results.log
+stack 128000
+; Workbench start: wbrun (verify/realamiga/wbrun.c) starts clamiga exactly
+; as a double-click on a project icon does -- a WBStartup message, no
+; console, an 8000-byte stack -- with the options in the icons' ARGS tool
+; types and the project as the argument after --.  The icons are written
+; here (wbrun MKICON), never checked in; wb-check.lisp writes the verdict
+; to wb-start.log (no console to print to) -- WORKBENCH-START-PASSED.
+echo "=== workbench start ===" >>build/amiga/test-results.log
+delete >NIL: build/amiga/wb-start.log
+delete >NIL: build/amiga/wb-project.lisp build/amiga/wb-project.lisp.info build/amiga/clamiga.info
+copy >NIL: tests/amiga/wb-project.lisp build/amiga/wb-project.lisp
+build/amiga/wbrun MKICON TOOL build/amiga/clamiga "ARGS=--no-userinit --no-image --heap 8M --non-interactive" "WINDOW=CON:0/0/640/100/wb-check/AUTO/CLOSE"
+build/amiga/wbrun MKICON PROJECT build/amiga/wb-project.lisp "ARGS=--load CLAmiga:tests/amiga/wb-check.lisp"
+build/amiga/wbrun RUN STACK=8000 build/amiga/clamiga build/amiga/wb-project.lisp
+IF EXISTS build/amiga/wb-start.log
+  type build/amiga/wb-start.log >>build/amiga/test-results.log
+ELSE
+  echo "WORKBENCH-START-FAILED: no wb-start.log (clamiga never ran the check)" >>build/amiga/test-results.log
+ENDIF
+delete >NIL: build/amiga/wb-project.lisp build/amiga/wb-project.lisp.info build/amiga/clamiga.info
 echo "=== run end ===" >>build/amiga/test-results.log
 date >>build/amiga/test-results.log
 ; Quit FS-UAE so `make test-amiga` returns without manual intervention.

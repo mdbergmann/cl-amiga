@@ -151,6 +151,7 @@ CORE_SRC     = $(SRCDIR)/core/types.c \
                $(SRCDIR)/core/repl.c \
                $(SRCDIR)/core/fasl.c \
                $(SRCDIR)/core/image.c \
+               $(SRCDIR)/core/cmdline.c \
                $(SRCDIR)/core/color.c \
                $(SRCDIR)/core/thread.c \
                $(SRCDIR)/core/string_utils.c
@@ -167,7 +168,13 @@ ALL_OBJS = $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(ALL_SRCS)) \
 
 .PHONY: amiga test-amiga test-amiga-lowend examples-amiga image-amiga clean check-toolchain
 
-amiga: check-toolchain $(BUILDDIR)/clamiga
+amiga: check-toolchain $(BUILDDIR)/clamiga $(BUILDDIR)/wbrun
+
+# wbrun: starts a program the way Workbench does (verify/realamiga/wbrun.c);
+# the suite's Workbench-start leg runs clamiga through it.
+$(BUILDDIR)/wbrun: verify/realamiga/wbrun.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $<
 
 check-toolchain:
 	@if [ ! -x "$(CC)" ]; then \
@@ -224,9 +231,10 @@ $(BUILDDIR)/%.o: $(SRCDIR)/%.s
 # rule, also because of FPU= variant switching: an up-to-date $(BUILDDIR)/clamiga
 # skips the link rule, and FS-UAE would silently test whichever variant was
 # deployed last.
-test-amiga: $(BUILDDIR)/clamiga
+test-amiga: $(BUILDDIR)/clamiga $(BUILDDIR)/wbrun
 	@mkdir -p build/amiga
 	cp $(BUILDDIR)/clamiga build/amiga/clamiga
+	cp $(BUILDDIR)/wbrun build/amiga/wbrun
 	@rm -f build/amiga/clamiga-test.img build/amiga/boot.img
 	@echo "=== Launching FS-UAE (high-end JIT config) — auto-quits when tests finish ==="
 	verify/realamiga/run-fs-uae.sh verify/realamiga/verify.fs-uae
@@ -249,13 +257,14 @@ examples-amiga: $(BUILDDIR)/clamiga
 image-amiga: $(BUILDDIR)/clamiga
 	verify/realamiga/make-image.sh $(BUILDDIR)
 
-test-amiga-lowend: $(BUILDDIR)/clamiga
+test-amiga-lowend: $(BUILDDIR)/clamiga $(BUILDDIR)/wbrun
 	@if [ "$(FPU)" = "1" ]; then \
 		echo "ERROR: test-amiga-lowend runs an FPU-less 68020 config — the FPU=1 binary cannot run there."; \
 		exit 1; \
 	fi
 	@mkdir -p build/amiga
 	cp $(BUILDDIR)/clamiga build/amiga/clamiga
+	cp $(BUILDDIR)/wbrun build/amiga/wbrun
 	@rm -f build/amiga/clamiga-test.img build/amiga/boot.img
 	@echo "=== Launching FS-UAE (lower-end 68020 baseline) — auto-quits when tests finish ==="
 	verify/realamiga/run-fs-uae.sh verify/realamiga/verify-lowend.fs-uae
@@ -292,6 +301,18 @@ verify-amiga:
 	fi
 	@if ! grep -q "IMAGE-RESTORE-HOOK-RAN" build/amiga/test-results.log; then \
 		echo "=== Amiga verification FAILED (EXT:*RESTORE-HOOKS* did not run) ==="; \
+		exit 1; \
+	fi
+	@# Main-stack leg (tests/amiga/small-stack-check.lisp): started with
+	@# `stack 8000`, the runtime swaps to its own 128K stack (platform_run_main).
+	@if ! grep -q "SMALL-STACK-PASSED" build/amiga/test-results.log; then \
+		echo "=== Amiga verification FAILED (small-stack start: the main stack swap) ==="; \
+		exit 1; \
+	fi
+	@# Workbench-start leg (tests/amiga/wb-check.lisp via wbrun): tool types
+	@# as options, the project as EXT:*COMMAND-LINE-ARGS*, the WINDOW console.
+	@if ! grep -q "WORKBENCH-START-PASSED" build/amiga/test-results.log; then \
+		echo "=== Amiga verification FAILED (Workbench start) ==="; \
 		exit 1; \
 	fi
 	@# The driver (call-on-ustartup) writes "=== run end ===" only after

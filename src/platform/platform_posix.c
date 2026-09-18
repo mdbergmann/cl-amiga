@@ -928,6 +928,25 @@ int platform_getcwd(char *buf, int bufsize)
     return 0;
 }
 
+int platform_startup_args(int *argc, char ***argv)
+{
+    /* A POSIX process always has its command line. */
+    (void)argc; (void)argv;
+    return 0;
+}
+
+int platform_run_main(int (*fn)(int, char **), int argc, char **argv)
+{
+    /* The main thread's stack is 8 MB or more here. */
+    return fn(argc, argv);
+}
+
+void platform_process_exit(int code)
+{
+    fflush(NULL);
+    _exit(code);
+}
+
 int platform_system(const char *command)
 {
     int status;

@@ -124,6 +124,7 @@ CORE_SRC     = $(SRCDIR)/core/types.c \
                $(SRCDIR)/core/repl.c \
                $(SRCDIR)/core/fasl.c \
                $(SRCDIR)/core/image.c \
+               $(SRCDIR)/core/cmdline.c \
                $(SRCDIR)/core/color.c \
                $(SRCDIR)/core/thread.c \
                $(SRCDIR)/core/string_utils.c

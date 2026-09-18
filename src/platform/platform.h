@@ -380,6 +380,36 @@ int platform_system(const char *command);
 /* Current working directory (returns length, 0 on error) */
 int platform_getcwd(char *buf, int bufsize);
 
+/* The program's arguments when the OS gave it none on a command line.
+ * AmigaOS: a Workbench start hands main() argc == 0 and the WBStartup
+ * message as argv; this rewrites both — argv[0], the ARGS tool type of the
+ * tool's icon and then of every project icon (split as a command line),
+ * `--`, one full path per project — opens the console a WINDOW tool type
+ * names, and returns 1.  Returns 0, leaving argc/argv alone, on a CLI
+ * start and on every other platform. */
+int platform_startup_args(int *argc, char ***argv);
+
+/* The C stack the runtime needs on the main thread: the reader and the
+ * compiler recurse per nesting level, and a 64K stack fails the GUI load
+ * path (cleanly, at the recursion guard) — README "Amiga Stack". */
+#define PLATFORM_MAIN_STACK_MIN (128u * 1024u)
+
+/* Run the program's real main on a C stack of at least
+ * PLATFORM_MAIN_STACK_MIN bytes.  m68k AmigaOS: a Shell gives a process
+ * whatever `stack` says (4K by default) and Workbench the icon's, so this
+ * swaps to a stack of its own when the one it was given is smaller (exec
+ * StackSwap) and gives it back when FN returns or platform_process_exit
+ * runs.  Everywhere else the stack is ample and this just calls FN. */
+int platform_run_main(int (*fn)(int, char **), int argc, char **argv);
+
+/* End the process NOW, without the C runtime's post-main teardown (the
+ * 68k exit path and the workers-still-alive path need that).  Flushes C
+ * stdio first; the Amiga implementation also closes the consoles a
+ * Workbench start opened, unlocks its current directory and hands the
+ * swapped stack back — libnix does that from its exit list, which _exit
+ * skips.  Never returns. */
+void platform_process_exit(int code);
+
 /* Lifecycle */
 void  platform_init(void);
 void  platform_shutdown(void);

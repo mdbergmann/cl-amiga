@@ -1046,6 +1046,30 @@ int platform_getcwd(char *buf, int bufsize)
     return 0;
 }
 
+int platform_startup_args(int *argc, char ***argv)
+{
+    /* A Windows process always has its command line. */
+    (void)argc; (void)argv;
+    return 0;
+}
+
+int platform_run_main(int (*fn)(int, char **), int argc, char **argv)
+{
+    /* The main thread's stack is 1 MB or more here. */
+    return fn(argc, argv);
+}
+
+/* Defined below; _exit() skips the atexit handler that would normally
+ * restore it, so platform_process_exit runs it explicitly. */
+static void console_restore_at_exit(void);
+
+void platform_process_exit(int code)
+{
+    fflush(NULL);
+    console_restore_at_exit();
+    _exit(code);
+}
+
 int platform_system(const char *command)
 {
     int status;
