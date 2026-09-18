@@ -887,8 +887,10 @@ static void image_fatal(const char *fmt, unsigned a, unsigned b)
     fflush(NULL);
 #if defined(PLATFORM_AMIGA) && !defined(PLATFORM_MORPHOS)
     /* m68k AmigaOS: exit()'s post-main stdio teardown hangs the Shell —
-     * same reason main.c ends with _exit() there. */
-    _exit(1);
+     * same reason main.c ends there through platform_process_exit, which
+     * also hands back the swapped main stack and a Workbench start's
+     * console and directory lock (a bare _exit would leak all three). */
+    platform_process_exit(1);
 #else
     /* MorphOS (and host): route through cl_fatal_exit() so
      * cl_thread_restore_main_tls() runs first — cl_thread_init() has
