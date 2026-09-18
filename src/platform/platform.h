@@ -587,6 +587,30 @@ uint32_t platform_amiga_call(uint32_t lib_base, int16_t offset,
 uint32_t platform_amiga_alloc_chip(uint32_t size);
 void     platform_amiga_free_chip(uint32_t addr, uint32_t size);
 
+/* DoMethod(APP, PUSH_METHOD, OBJECT, 2, METHOD, VALUE) -- MUI's
+ * MUIM_Application_PushMethod, the one call MUI allows from a task that is
+ * not the application's own: the method is queued and run by the
+ * application's input loop.  Called from C that runs on such a task (the
+ * native string-key hook, invoked by Intuition from input.device), so it
+ * must not touch Lisp.  On AmigaOS the app's class dispatcher is invoked
+ * through utility.library's CallHookPkt; on POSIX / Windows the call is
+ * recorded for the tests (platform_amiga_last_pushed_method). */
+void     platform_amiga_push_method(uint32_t app, uint32_t push_method,
+                                    uint32_t object, uint32_t method,
+                                    uint32_t value);
+
+/* Called on the Lisp task before a hook that will push is handed out:
+ * opens what the push needs (utility.library on AmigaOS).  Returns 1 when
+ * pushes can be made, 0 when not (the hook is then refused).  Always 1 on
+ * the host builds. */
+int      platform_amiga_push_method_prepare(void);
+
+/* Host builds only: the arguments of the most recent
+ * platform_amiga_push_method into OUT[0..4] (app, push_method, object,
+ * method, value).  Returns 0 when nothing was pushed since the last call
+ * (the record is cleared on read), else 1.  On AmigaOS always 0. */
+int      platform_amiga_last_pushed_method(uint32_t out[5]);
+
 /* =============================================================
  * Amiga-specific: ARexx host port  (platform_amiga_rexx.c)
  * =============================================================

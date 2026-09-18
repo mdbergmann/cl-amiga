@@ -2394,3 +2394,33 @@ void platform_amiga_free_chip(uint32_t addr, uint32_t size)
 {
     platform_ffi_free(addr, size);
 }
+
+/* No MUI on POSIX: the push is recorded for tests/test_amiga_mui.lisp. */
+static uint32_t amiga_last_push[5];
+static int      amiga_last_push_valid = 0;
+
+void platform_amiga_push_method(uint32_t app, uint32_t push_method,
+                                uint32_t object, uint32_t method,
+                                uint32_t value)
+{
+    amiga_last_push[0] = app;
+    amiga_last_push[1] = push_method;
+    amiga_last_push[2] = object;
+    amiga_last_push[3] = method;
+    amiga_last_push[4] = value;
+    amiga_last_push_valid = 1;
+}
+
+int platform_amiga_last_pushed_method(uint32_t out[5])
+{
+    int i;
+    if (!amiga_last_push_valid) return 0;
+    for (i = 0; i < 5; i++) out[i] = amiga_last_push[i];
+    amiga_last_push_valid = 0;
+    return 1;
+}
+
+int platform_amiga_push_method_prepare(void)
+{
+    return 1;
+}

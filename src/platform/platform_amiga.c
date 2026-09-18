@@ -3628,6 +3628,55 @@ void platform_amiga_close_library(uint32_t lib_base)
     CloseLibrary((struct Library *)lib_base);
 }
 
+/* MUIM_Application_PushMethod from a foreign task (platform.h).  The
+ * application's class dispatcher is the Hook at the start of its IClass
+ * (what amiga.lib's DoMethodA does), invoked through utility.library so
+ * that a PPC MUI on MorphOS and a 68k one on AmigaOS are called the same
+ * way.  utility.library is opened on the first push and stays open: a
+ * library base is a reference count, not memory, and this can run on
+ * input.device's task, where a CloseLibrary would be one call too many. */
+#include <intuition/classusr.h>
+#include <proto/utility.h>
+struct Library *UtilityBase = NULL;
+
+void platform_amiga_push_method(uint32_t app, uint32_t push_method,
+                                uint32_t object, uint32_t method,
+                                uint32_t value)
+{
+    ULONG msg[5];
+    struct IClass *cl;
+
+    if (app == 0) return;
+    if (UtilityBase == NULL) {
+        /* Opened by the Lisp task at hook creation (see
+         * platform_amiga_push_method_prepare); a NULL here means that did
+         * not happen, and the push is dropped rather than an OpenLibrary
+         * attempted from a task that may not own a stack for it. */
+        return;
+    }
+    cl = OCLASS((Object *)app);
+    if (cl == NULL) return;
+    msg[0] = (ULONG)push_method;
+    msg[1] = (ULONG)object;
+    msg[2] = 2;
+    msg[3] = (ULONG)method;
+    msg[4] = (ULONG)value;
+    CallHookPkt((struct Hook *)cl, (Object *)app, msg);
+}
+
+int platform_amiga_push_method_prepare(void)
+{
+    if (UtilityBase == NULL)
+        UtilityBase = OpenLibrary((CONST_STRPTR)"utility.library", 36);
+    return UtilityBase != NULL;
+}
+
+int platform_amiga_last_pushed_method(uint32_t out[5])
+{
+    (void)out;
+    return 0;
+}
+
 /* platform_amiga_call() is implemented in ffi_dispatch_m68k.s
  * (68k assembly trampoline for register-based library calls).
  *

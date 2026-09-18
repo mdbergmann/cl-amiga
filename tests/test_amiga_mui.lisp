@@ -56,14 +56,16 @@
                        "AREA-RIGHT" "AREA-SCREEN" "AREA-TOP" "AREA-WIDTH" "AREA-WINDOW"
                        "AVAILABLE-P" "CLASS-ID" "CREATE-CUSTOM-CLASS" "CUSTOM-CLASS-CLASS"
                        "DISPOSE-OBJECT" "DO-APPLICATION-EVENTS" "DO-METHOD" "DO-SUPER-METHOD"
-                       "DRAW-FLAGS" "GET-ATTR" "GET-ATTR-POINTER" "GET-ATTR-STRING" "INST-DATA"
+                       "DRAW-FLAGS" "FREE-STRING-KEY-HOOK" "GET-ATTR" "GET-ATTR-POINTER"
+                       "GET-ATTR-STRING" "INST-DATA"
                        "LAYOUT-CHILD" "LAYOUT-CHILDREN" "LAYOUT-MSG-HEIGHT"
                        "LAYOUT-MSG-MIN-MAX" "LAYOUT-MSG-TYPE" "LAYOUT-MSG-WIDTH"
-                       "MAKE-ID" "MAKE-OBJECT" "METHOD-ID" "MIN-MAX-INFO"
+                       "MAKE-ID" "MAKE-OBJECT" "MAKE-STRING-KEY-HOOK" "METHOD-ID" "MIN-MAX-INFO"
                        "NEW-OBJECT" "NOTIFY" "OBJECT-CLASS" "POOL-ALLOC" "POOL-FINALIZER"
                        "POOL-HOOK" "POOL-STRING"
                        "POOL-STRING-ARRAY" "REJECT-IDCMP" "REQUEST" "REQUEST-IDCMP"
                        "RETURN-ID" "SET-ATTRS" "SET-MIN-MAX"
+                       "STRING-KEY-HOOK-ENTRY" "STRING-KEY-HOOK-STATS"
                        "WINDOW-EDGE-DELTA" "WINDOW-SIZE-MINMAX" "WINDOW-SIZE-SCREEN"
                        "WINDOW-SIZE-VISIBLE" "WITH-FOREIGN-POOL" "WITH-TAGS")
   (let ((names '()))
@@ -444,6 +446,184 @@
                           "REQUEST-IDCMP" "muimaster.library")
         (message-mentions (lambda () (amiga.mui:reject-idcmp nil 0))
                           "REJECT-IDCMP" "muimaster.library")))
+
+;;; --- the string-key hook: the C matcher, driven by hand ----------------
+;;;
+;;; The hook is C (src/core/builtins_amiga.c) so that Intuition can call
+;;; it on input.device's task; on the host its entry is a C function of
+;;; (hook, sgwork, message) that CALL-FOREIGN reaches.  The structs are
+;;; built by hand at the offsets of intuition/sghooks.h and
+;;; devices/inputevent.h, and the push -- MUIM_Application_PushMethod on
+;;; the Amiga -- is recorded by the host platform (%LAST-PUSHED-METHOD).
+
+(defconstant +t-sgw-size+ 44)
+(defconstant +t-ie-size+ 22)
+(defconstant +t-sgh-key+ 1)
+(defconstant +t-sgh-click+ 2)
+
+(defun call-string-key-hook (hook sgw msg)
+  (ffi:call-foreign (amiga.mui:string-key-hook-entry hook) :uint32
+                    '(:pointer :pointer :pointer) (list hook sgw msg)))
+
+(defmacro with-sgwork ((sgw ie msg &key (code 0) (qualifier 0) (command +t-sgh-key+)
+                                       (actions #x23) (editop 8))
+                       &body body)
+  "A struct SGWork with its InputEvent (a key press CODE with QUALIFIER)
+and an SGH_* message, as Intuition hands them to an edit hook; ACTIONS
+starts as SGA_USE|SGA_END|SGA_NEXTACTIVE, EDITOP as EO_INSERTCHAR.  The
+IEvent pointer at 20 is 8 bytes on the host and covers Code at 24 (the
+layout is Intuition's, 32-bit), so Code's value here is whatever the
+pointer's upper half is: the checks compare it against the pre-call
+state, and a taken key must leave it 0."
+  `(let ((,sgw (ffi:alloc-foreign +t-sgw-size+))
+         (,ie (ffi:alloc-foreign +t-ie-size+))
+         (,msg (ffi:alloc-foreign 4)))
+     (unwind-protect
+          (progn
+            (ffi:poke-u8 ,ie 1 4)                                 ; IECLASS_RAWKEY
+            (ffi:poke-u16 ,ie ,code 6)
+            (ffi:poke-u16 ,ie ,qualifier 8)
+            (ffi:poke-pointer ,sgw ,ie 20)                        ; IEvent
+            (ffi:poke-u32 ,sgw ,actions 30)
+            (ffi:poke-u16 ,sgw ,editop 42)
+            (ffi:poke-u32 ,msg ,command 0)
+            ,@body)
+       (ffi:free-foreign ,msg) (ffi:free-foreign ,ie) (ffi:free-foreign ,sgw))))
+
+(defun sgwork-state (sgw ie)
+  "What the hook may have rewritten: ie_Code, ie_Qualifier, Code, Actions, EditOp."
+  (list (ffi:peek-u16 ie 6) (ffi:peek-u16 ie 8)
+        (ffi:peek-u16 sgw 24) (ffi:peek-u32 sgw 30) (ffi:peek-u16 sgw 42)))
+
+;; TAB (#x42) with no qualifier, C-g (#x24 + CONTROL) and Alt-x (#x32 + LALT)
+;; are taken; the mask #x19 = LSHIFT|CONTROL|LALT after the right-hand fold
+(defparameter *t-entries* '((#x42 #x19 #x00 1001)     ; TAB
+                            (#x24 #x19 #x08 1002)     ; C-g
+                            (#x32 #x19 #x10 1003)))   ; M-x
+
+(check "string-key-hook-makes-and-frees" '(t 0 0 3 nil)
+  (let ((hook (amiga.mui:make-string-key-hook 4096 8192 #x8100 *t-entries*)))
+    (multiple-value-bind (calls matches count) (amiga.mui:string-key-hook-stats hook)
+      (prog1 (list (ffi:foreign-pointer-p hook) calls matches count
+                   (amiga.mui:free-string-key-hook hook))))))
+
+(check "string-key-hook-takes-a-listed-key-and-pushes-it"
+    '(#xFFFFFFFF (#xFF 0 0 #x00 1) (4096 #x80429EF8 8192 #x8100 1001) (1 1 3))
+  (let ((hook (amiga.mui:make-string-key-hook 4096 8192 #x8100 *t-entries*)))
+    (amiga::%last-pushed-method)                                ; clear
+    (unwind-protect
+         (with-sgwork (sgw ie msg :code #x42 :qualifier 0)
+           (let ((rc (call-string-key-hook hook sgw msg)))
+             (list rc (sgwork-state sgw ie) (amiga::%last-pushed-method)
+                   (multiple-value-list (amiga.mui:string-key-hook-stats hook)))))
+      (amiga.mui:free-string-key-hook hook))))
+
+(check "string-key-hook-leaves-an-unlisted-key-to-the-gadget"
+    '(#xFFFFFFFF t nil (1 0 3))
+  (let ((hook (amiga.mui:make-string-key-hook 4096 8192 #x8100 *t-entries*)))
+    (unwind-protect
+         (with-sgwork (sgw ie msg :code #x20 :qualifier 0)        ; `a'
+           (let* ((before (sgwork-state sgw ie))
+                  (rc (call-string-key-hook hook sgw msg)))
+             (list rc (equal before (sgwork-state sgw ie)) (amiga::%last-pushed-method)
+                   (multiple-value-list (amiga.mui:string-key-hook-stats hook)))))
+      (amiga.mui:free-string-key-hook hook))))
+
+;; the qualifiers matter: TAB with Control is not the TAB entry, C-g needs
+;; Control, Alt-x with either Alt; a Command key (outside the mask) is ignored
+;; by the mask but a Shift inside it is not
+(check "string-key-hook-matches-qualifiers-through-the-mask"
+    '(nil 1002 1003 1003 1002 nil)
+  (let ((hook (amiga.mui:make-string-key-hook 4096 8192 #x8100 *t-entries*)))
+    (flet ((pushed (code qualifier)
+             (amiga::%last-pushed-method)
+             (with-sgwork (sgw ie msg :code code :qualifier qualifier)
+               (call-string-key-hook hook sgw msg)
+               (fifth (amiga::%last-pushed-method)))))
+      (unwind-protect
+           (list (pushed #x42 #x08)          ; C-TAB: not listed
+                 (pushed #x24 #x08)          ; C-g
+                 (pushed #x32 #x10)          ; LALT-x
+                 (pushed #x32 #x20)          ; RALT-x: folded into LALT
+                 (pushed #x24 #x48)          ; C-g with the left Amiga key: outside the mask
+                 (pushed #x24 #x09))         ; C-S-g: Shift is inside the mask
+        (amiga.mui:free-string-key-hook hook)))))
+
+(check "string-key-hook-ignores-releases-and-other-commands"
+    '((#xFFFFFFFF nil) (0 nil) (0 nil))
+  (let ((hook (amiga.mui:make-string-key-hook 4096 8192 #x8100 *t-entries*)))
+    (unwind-protect
+         (list (with-sgwork (sgw ie msg :code #xC2 :qualifier 0)          ; TAB released
+                 (list (call-string-key-hook hook sgw msg) (amiga::%last-pushed-method)))
+               (with-sgwork (sgw ie msg :code #x42 :command +t-sgh-click+)  ; a click
+                 (list (call-string-key-hook hook sgw msg) (amiga::%last-pushed-method)))
+               (with-sgwork (sgw ie msg :code #x42)                       ; no SGWork at all
+                 (list (ffi:call-foreign (amiga.mui:string-key-hook-entry hook) :uint32
+                                         '(:pointer :pointer :pointer)
+                                         (list hook (ffi:make-foreign-pointer 0) msg))
+                       (amiga::%last-pushed-method))))
+      (amiga.mui:free-string-key-hook hook))))
+
+(check "string-key-hook-with-no-ievent-answers-done-and-pushes-nothing"
+    '(#xFFFFFFFF nil)
+  (let ((hook (amiga.mui:make-string-key-hook 4096 8192 #x8100 *t-entries*)))
+    (unwind-protect
+         (with-sgwork (sgw ie msg :code #x42)
+           (ffi:poke-pointer sgw (ffi:make-foreign-pointer 0) 20)
+           (list (call-string-key-hook hook sgw msg) (amiga::%last-pushed-method)))
+      (amiga.mui:free-string-key-hook hook))))
+
+(check "string-key-hook-value-and-objects-may-be-pointers-and-bignums"
+    '(t t #x8100 #xFFFFFFF0)
+  (let ((hook (amiga.mui:make-string-key-hook (ffi:make-foreign-pointer #x80424C33)
+                                              (ffi:make-foreign-pointer 12) #x8100
+                                              '((#x42 #x19 0 #xFFFFFFF0)))))
+    (unwind-protect
+         (with-sgwork (sgw ie msg :code #x42)
+           (call-string-key-hook hook sgw msg)
+           (let ((p (amiga::%last-pushed-method)))
+             (list (integerp (first p)) (integerp (third p)) (fourth p) (fifth p))))
+      (amiga.mui:free-string-key-hook hook))))
+
+(check "string-key-hook-rejects-bad-entries" '(t t t t t)
+  (list (message-mentions (lambda () (amiga.mui:make-string-key-hook 1 2 3 '((1 2 3))))
+                          "MAKE-STRING-KEY-HOOK" "code qual-mask qual-value value")
+        (message-mentions (lambda () (amiga.mui:make-string-key-hook 1 2 3 '((#xC2 0 0 1))))
+                          "release")
+        (message-mentions (lambda () (amiga.mui:make-string-key-hook 1 2 3 '((#x42 70000 0 1))))
+                          "65535")
+        (message-mentions (lambda () (amiga.mui:make-string-key-hook 1 2 3 '((#x42 0 0 "x"))))
+                          "unsigned 32-bit")
+        (message-mentions (lambda () (amiga.mui:free-string-key-hook (ffi:make-foreign-pointer 12)))
+                          "not a live string-key hook")))
+
+(check "string-key-hook-nil-free-is-ignored" nil
+  (amiga.mui:free-string-key-hook nil))
+
+;;; STRING-KEY-HOOK-STATS conses its (calls matches count) list and
+;;; %LAST-PUSHED-METHOD conses its 5-element result (both call cl_cons /
+;;; cl_amiga_box_result in src/core/builtins_amiga.c) while the hook
+;;; object and the pushed values are live.  EXT:GC forces a compacting
+;;; collection (CL_GENGC on the host, see CLAUDE.md "GC Safety") around
+;;; every step, so a missing CL_GC_PROTECT in either builtin would show
+;;; up here as a stale or corrupted result instead of passing quietly.
+(check "string-key-hook-stats-and-last-pushed-survive-forced-gc" t
+  (let ((hook (amiga.mui:make-string-key-hook 4096 8192 #x8100 *t-entries*)))
+    (ext:gc)
+    (unwind-protect
+         (dotimes (i 20 t)
+           (with-sgwork (sgw ie msg :code #x42 :qualifier 0)
+             (ext:gc)
+             (call-string-key-hook hook sgw msg)
+             (ext:gc))
+           (multiple-value-bind (calls matches count)
+               (progn (ext:gc) (amiga.mui:string-key-hook-stats hook))
+             (ext:gc)
+             (let ((pushed (amiga::%last-pushed-method)))
+               (unless (and (= calls (1+ i)) (= matches (1+ i)) (= count 3)
+                            (equal pushed '(4096 #x80429EF8 8192 #x8100 1001)))
+                 (return nil)))))
+      (amiga.mui:free-string-key-hook hook))))
 
 ;;; --- the examples load on the host and bow out ------------------------
 

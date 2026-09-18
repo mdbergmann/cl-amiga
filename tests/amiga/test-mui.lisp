@@ -714,5 +714,72 @@ STRING-CELL for the notification test.  Returns the application."
                   (null failed)))))                      ; no deferred hook error
       '(t t t t t)))
 
+;; The string-key hook: a String's MUIA_String_EditHook that is C from
+;; end to end, since MUI 3.8 runs it on input.device's task where Lisp
+;; cannot run.  Called here as Intuition would (CallHookPkt with a
+;; hand-built SGWork), it must rewrite the event into a no-op for the
+;; gadget and queue the entry's value to the object through
+;; MUIM_Application_PushMethod -- which the application's input loop
+;; then delivers to the custom class's Lisp dispatcher.  The m68k stub
+;; entry, the CallHookPkt register convention and the real push are what
+;; this checks beyond the host's tests/test_amiga_mui.lisp.
+(check "mui-string-key-hook-pushes-through-the-application" '(t #xFFFFFFFF (#xFF 0 0 1) (1 1) 4242 (1 0))
+  (if *mui-p*
+      (let ((got '()) (rc nil) (rewritten nil) (stats nil) (after nil) (missed nil))
+        (amiga.mui:with-foreign-pool ()
+          (let* ((method #x81000042)
+                 (mcc (amiga.mui:create-custom-class
+                       :area
+                       (lambda (class object message)
+                         (if (= (amiga.mui:method-id message) method)
+                             (progn (push (ffi:peek-u32 message 4) got) 1)
+                             (amiga.mui:do-super-method class object message)))))
+                 (obj (amiga.mui:new-object (amiga.mui:custom-class-class mcc)))
+                 (app (amiga.mui:new-object :application
+                                            (%m "+MUIA-APPLICATION-BASE+") "CLAMIGAMUIKEYHOOK"))
+                 (hook (amiga.mui:make-string-key-hook app obj method
+                                                       '((#x42 #x19 #x00 4242))))  ; TAB
+                 (sgw (ffi:alloc-foreign 44))
+                 (ie (ffi:alloc-foreign 22))
+                 (msg (ffi:alloc-foreign 4)))
+            (unwind-protect
+                 (progn
+                   (ffi:poke-u8 ie 1 4)                       ; IECLASS_RAWKEY
+                   (ffi:poke-u16 ie #x42 6)                   ; TAB pressed
+                   (ffi:poke-u16 ie 0 8)
+                   (ffi:poke-pointer sgw ie 20)               ; IEvent
+                   (ffi:poke-u16 sgw 9 24)                    ; Code: the TAB character
+                   (ffi:poke-u32 sgw #x23 30)                 ; SGA_USE|SGA_END|SGA_NEXTACTIVE
+                   (ffi:poke-u16 sgw 8 42)                    ; EO_INSERTCHAR
+                   (ffi:poke-u32 msg 1 0)                     ; SGH_KEY
+                   (setf rc (amiga.raw.utility:call-hook-pkt hook sgw msg))
+                   (setf rewritten (list (ffi:peek-u16 ie 6) (ffi:peek-u16 sgw 24)
+                                         (ffi:peek-u32 sgw 30) (ffi:peek-u16 sgw 42)))
+                   (setf stats (multiple-value-bind (c m) (amiga.mui:string-key-hook-stats hook)
+                                 (list c m)))
+                   ;; the queued method runs from the input loop
+                   (amiga.mui:application-input app)
+                   (setf after (car got))
+                   ;; an unlisted key is left alone and pushes nothing
+                   (ffi:poke-u16 ie #x20 6)                   ; `a'
+                   (let ((n (length got)))
+                     (amiga.raw.utility:call-hook-pkt hook sgw msg)
+                     (amiga.mui:application-input app)
+                     (setf missed (list (- (length got) n)
+                                        (multiple-value-bind (c m) (amiga.mui:string-key-hook-stats hook)
+                                          (- m 1))))))
+              (ffi:free-foreign msg) (ffi:free-foreign ie) (ffi:free-foreign sgw)
+              (amiga.mui:dispose-object obj)
+              (amiga.mui:dispose-object app)
+              (amiga.mui:free-string-key-hook hook))))
+        (list t rc rewritten stats after (list (- 1 (first missed)) (second missed))))
+      '(t #xFFFFFFFF (#xFF 0 0 1) (1 1) 4242 (1 0))))
+
+;; the module's copy of MUIM_Application_PushMethod, which the hook uses
+(check "mui-push-method-constant-matches-generated" t
+  (if *mui-p*
+      (= amiga.mui::+muim-application-push-method+ (%m "+MUIM-APPLICATION-PUSH-METHOD+"))
+      t))
+
 (format t "; mui: done~%")
 (finish-output)

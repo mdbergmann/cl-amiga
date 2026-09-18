@@ -1608,6 +1608,18 @@ static CL_Obj kw_callback_debug = CL_NIL;
 static volatile uint32_t ffi_foreign_task_calls = 0;
 static uint32_t ffi_foreign_task_reported = 0;
 
+/* (ext:%ffi-foreign-task-calls) — how many callback invocations arrived
+ * from a task that is not a Lisp thread and were answered with 0 without
+ * running Lisp.  The warning above goes to *DEBUG-IO*, which a detached
+ * process on AmigaOS (`Run >log`) never shows; this counter is readable
+ * from Lisp, e.g. over an ARexx port, so "the OS never calls my hook" and
+ * "the OS calls my hook from input.device's task" can be told apart. */
+static CL_Obj bi_ext_ffi_foreign_task_calls(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    return CL_MAKE_FIXNUM((int32_t)ffi_foreign_task_calls);
+}
+
 int cl_callback_debugger_allowed(void)
 {
     if (CT->callback_depth == 0) return 1;
@@ -1935,6 +1947,8 @@ void cl_builtins_ffi_init(void)
         s->value = cl_intern_keyword("DEFER", 5);
     }
     cl_export_symbol(SYM_CALLBACK_ERROR_POLICY, cl_package_ext);
+    cl_register_builtin_exported("%FFI-FOREIGN-TASK-CALLS", bi_ext_ffi_foreign_task_calls,
+                                 0, 0, cl_package_ext);
 
     /* Register all keyword cache slots as GC roots BEFORE any cl_intern_keyword
      * call allocates — a compaction triggered mid-sequence would leave already-

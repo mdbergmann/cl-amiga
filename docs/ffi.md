@@ -90,6 +90,7 @@ all rejected with a diagnostic rather than silently corrupting memory.
 | `(make-callback ret-type arg-types lisp-fn &optional regs)` | function | Create a C-callable callback from a Lisp function — a libffi closure on the host, a 68k stub (into a PPC gate on MorphOS) on the target, where it works too.  `regs`, a list parallel to `arg-types` of `:d0`–`:d7` / `:a0`–`:a6` / `NIL`, names the 68k register each argument arrives in for the AmigaOS register conventions (`'(:a0 :a2 :a1)` = a `struct Hook` entry's hook / object / message; the host ignores it).  On the target the result is a 32-bit integer or pointer in d0 and `:float` / `:double` arguments are refused |
 | `(free-callback callback)` | function | Release a callback |
 | `ext:*callback-error-policy*` | variable | What an unhandled error inside a callback does: `:defer` (default) — the callback returns 0 / NULL and the condition is re-signaled once the foreign call that invoked it returns, where a `handler-case` around `call-foreign` (or the library call) catches it; `:debug` — enter the debugger inside the callback (host only in practice) |
+| `(ext:%ffi-foreign-task-calls)` | function | How many callback invocations so far came from a thread or task that is not a Lisp thread and were answered with 0 without running Lisp (see below) — readable where the warning is not visible, e.g. over an ARexx port from a detached process |
 
 A callback is a *boundary*: the Lisp function runs on the foreign caller's
 stack, between its C frames, and no non-local exit may cross them.  A

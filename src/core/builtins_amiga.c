@@ -16,6 +16,7 @@
 #include "string_utils.h"
 #include "printer.h"
 #include "thread.h"
+#include <stddef.h>   /* offsetof (the string-key hook) */
 #include "../platform/platform.h"
 #include <string.h>
 #include <stdio.h>
@@ -789,6 +790,331 @@ static CL_Obj bi_amiga_defcfun(CL_Obj *args, int nargs)
 }
 
 /* ================================================================
+ * The native string-key hook (AMIGA.MUI:MAKE-STRING-KEY-HOOK)
+ *
+ * MUI 3.8's String gadget is an Intuition string gadget while it is
+ * active, and Intuition runs a string gadget's edit hook -- what
+ * MUIA_String_EditHook installs -- on input.device's task.  A Lisp hook
+ * there is answered with 0 without running (ffi_callback_handler, the
+ * foreign-task rule of specs/mui-bindings.md §10.3.2), so the key it was
+ * meant to take goes to the gadget: TAB cycles the focus, C-g types
+ * nothing.  This hook is C from end to end and needs no Lisp: it matches
+ * the key's raw code and qualifiers against a table the Lisp side filled
+ * at creation, and for a match it (1) makes the key a no-op for the
+ * gadget -- the InputEvent becomes a release of no key, the SGWork's Code
+ * is cleared, the default editing actions are undone and EditOp is
+ * EO_NOOP -- and (2) queues the entry's value to the object with
+ * MUIM_Application_PushMethod, so the Lisp method runs on the
+ * application's own task once the gadget is done with the event.  The
+ * answer for an SGH_KEY is always ~0 ("understood", sghooks.h); anything
+ * else gets 0.
+ *
+ * The struct layouts (intuition/sghooks.h SGWork, devices/inputevent.h
+ * InputEvent) are read at fixed offsets so that the matcher compiles and
+ * runs on the host, where tests/test_amiga_mui.lisp calls the hook's
+ * entry with hand-built structs.
+ * ================================================================ */
+
+#define SKH_SGH_KEY            1
+#define SKH_SGW_IEVENT         20   /* struct InputEvent *IEvent */
+#define SKH_SGW_CODE           24   /* UWORD Code */
+#define SKH_SGW_ACTIONS        30   /* ULONG Actions */
+#define SKH_SGW_EDITOP         42   /* UWORD EditOp */
+#define SKH_IE_CODE            6    /* UWORD ie_Code */
+#define SKH_IE_QUALIFIER       8    /* UWORD ie_Qualifier */
+#define SKH_IECODE_UP_PREFIX   0x80
+#define SKH_EO_NOOP            1
+#define SKH_SGA_CLEAR          (0x01 | 0x02 | 0x04 | 0x08 | 0x20 | 0x40)
+        /* SGA_USE | SGA_END | SGA_BEEP | SGA_REUSE | SGA_NEXTACTIVE | SGA_PREVACTIVE */
+#define SKH_QUAL_LSHIFT        0x0001
+#define SKH_QUAL_RSHIFT        0x0002
+#define SKH_QUAL_LALT          0x0010
+#define SKH_QUAL_RALT          0x0020
+#define SKH_KEY_DONE           0xFFFFFFFFu
+
+typedef struct {
+    uint16_t code;        /* ie_Code of a key press (bit 7 clear) */
+    uint16_t qual_mask;   /* the qualifier bits that matter ... */
+    uint16_t qual_value;  /* ... and what they must be */
+    uint16_t pad;
+    uint32_t value;       /* pushed as the method's one argument */
+} SKHEntry;
+
+typedef struct StringKeyHook_ {
+    uint32_t  app, object, push_method, method;
+    uint32_t  count;
+    SKHEntry *entries;
+    void     *closure;    /* platform_ffi_make_closure handle */
+    void     *code;       /* its entry, the hook's h_Entry */
+    uint8_t   hook[20];   /* struct Hook: MinNode 8, h_Entry, h_SubEntry, h_Data */
+    /* The foreign-pointer handle of HOOK -- owned by the one Lisp object
+     * %MAKE-STRING-KEY-HOOK returned (its finalizer releases the side-table
+     * slot on the host: one handle per object, mem.c), so the free path
+     * nulls that object instead of releasing the slot itself. */
+    uint32_t  hook_handle;
+    /* diagnostics, readable with STRING-KEY-HOOK-STATS */
+    volatile uint32_t calls, matches;
+    struct StringKeyHook_ *next;   /* the live list (skh_live) */
+} StringKeyHook;
+
+static uint16_t skh_rd16(const uint8_t *p) { uint16_t v; memcpy(&v, p, 2); return v; }
+static uint32_t skh_rd32(const uint8_t *p) { uint32_t v; memcpy(&v, p, 4); return v; }
+static void skh_wr16(uint8_t *p, uint16_t v) { memcpy(p, &v, 2); }
+static void skh_wr32(uint8_t *p, uint32_t v) { memcpy(p, &v, 4); }
+
+/* The hook's entry: (hook, sgw, msg) in a0/a2/a1.  Runs on whatever task
+ * Intuition uses -- no Lisp, no allocation, no error. */
+static void skh_handler(void *ud, const CLFFIValue *a, CLFFIValue *ret)
+{
+    StringKeyHook *h = (StringKeyHook *)ud;
+    uint8_t *sgw = (uint8_t *)a[1].p;
+    uint8_t *msg = (uint8_t *)a[2].p;
+    uint8_t *ie;
+    uint16_t code, qual, q;
+    uint32_t i;
+
+    ret->u32 = 0;
+    h->calls++;
+    if (sgw == NULL || msg == NULL) return;
+    if (skh_rd32(msg) != SKH_SGH_KEY) return;
+    ret->u32 = SKH_KEY_DONE;
+    /* IEvent is a native pointer: 4 bytes on the Amiga, 8 in a hand-built
+     * SGWork on the host (FFI:POKE-POINTER writes sizeof(void *)). */
+    {
+        void *p;
+        memcpy(&p, sgw + SKH_SGW_IEVENT, sizeof p);
+        ie = (uint8_t *)p;
+    }
+    if (ie == NULL) return;
+    code = skh_rd16(ie + SKH_IE_CODE);
+    if (code & SKH_IECODE_UP_PREFIX) return;         /* a release is never ours */
+    qual = skh_rd16(ie + SKH_IE_QUALIFIER);
+    /* Either Shift is Shift, either Alt is Alt (what the keymap and an
+     * Emacs layer both say): fold the right-hand ones into the left. */
+    q = qual;
+    if (q & SKH_QUAL_RSHIFT) q = (uint16_t)((q & ~SKH_QUAL_RSHIFT) | SKH_QUAL_LSHIFT);
+    if (q & SKH_QUAL_RALT)   q = (uint16_t)((q & ~SKH_QUAL_RALT) | SKH_QUAL_LALT);
+    for (i = 0; i < h->count; i++) {
+        const SKHEntry *e = &h->entries[i];
+        if (e->code == code && (q & e->qual_mask) == e->qual_value) {
+            h->matches++;
+            /* A release of no key, no qualifier, no character: a no-op for
+             * the class's own edit hook, which MUI 3.8 runs after this one
+             * on the same SGWork. */
+            skh_wr16(ie + SKH_IE_CODE, (uint16_t)(SKH_IECODE_UP_PREFIX | 0x7F));
+            skh_wr16(ie + SKH_IE_QUALIFIER, 0);
+            skh_wr16(sgw + SKH_SGW_CODE, 0);
+            /* And undo the default editing when it ran before us. */
+            skh_wr32(sgw + SKH_SGW_ACTIONS,
+                     skh_rd32(sgw + SKH_SGW_ACTIONS) & ~(uint32_t)SKH_SGA_CLEAR);
+            skh_wr16(sgw + SKH_SGW_EDITOP, SKH_EO_NOOP);
+            platform_amiga_push_method(h->app, h->push_method, h->object,
+                                       h->method, e->value);
+            return;
+        }
+    }
+}
+
+static uint32_t skh_u32_arg(const char *who, const char *what, CL_Obj v)
+{
+    /* an integer (a MUIM_ constant is above the fixnum range: a bignum),
+     * a foreign pointer, NIL/T -- the register-argument coercion */
+    if (!CL_INTEGER_P(v) && !CL_FOREIGN_POINTER_P(v) && !CL_NULL_P(v) && v != CL_T)
+        cl_error(CL_ERR_TYPE, "%s: %s must be an unsigned 32-bit integer or a foreign pointer", who, what);
+    return cl_amiga_ffi_arg_to_u32(v, 0, 0);
+}
+
+/* The live hooks, so that a pointer handed to the builtins is looked up
+ * rather than dereferenced: a stray one is refused, never read.  Made and
+ * freed on Lisp threads only; the OS's calls into the hook never touch
+ * the list. */
+static StringKeyHook *skh_live = NULL;
+static void          *skh_live_lock = NULL;
+
+static StringKeyHook *skh_of(const char *who, CL_Obj v)
+{
+    CL_ForeignPtr *fp;
+    StringKeyHook *h;
+    void *p;
+    if (!CL_FOREIGN_POINTER_P(v))
+        cl_error(CL_ERR_TYPE, "%s: not a string-key hook (a foreign pointer from %%MAKE-STRING-KEY-HOOK)", who);
+    fp = (CL_ForeignPtr *)CL_OBJ_TO_PTR(v);
+    p = platform_ffi_resolve(fp->address);
+    if (p != NULL) {
+        if (skh_live_lock) platform_mutex_lock(skh_live_lock);
+        for (h = skh_live; h != NULL; h = h->next)
+            if ((void *)h->hook == p) break;
+        if (skh_live_lock) platform_mutex_unlock(skh_live_lock);
+        if (h != NULL) return h;
+    }
+    cl_error(CL_ERR_ARGS, "%s: the pointer is not a live string-key hook", who);
+    return NULL;
+}
+
+static void skh_link(StringKeyHook *h, int add)
+{
+    StringKeyHook **pp;
+    if (skh_live_lock) platform_mutex_lock(skh_live_lock);
+    if (add) {
+        h->next = skh_live;
+        skh_live = h;
+    } else {
+        for (pp = &skh_live; *pp != NULL; pp = &(*pp)->next)
+            if (*pp == h) { *pp = h->next; break; }
+    }
+    if (skh_live_lock) platform_mutex_unlock(skh_live_lock);
+}
+
+/* (amiga:%make-string-key-hook app object push-method method entries)
+ *   → hook (a foreign pointer to the struct Hook)
+ * ENTRIES: a list of (code qual-mask qual-value value), integers. */
+static CL_Obj bi_amiga_make_string_key_hook(CL_Obj *args, int nargs)
+{
+    static const char *who = "AMIGA:%MAKE-STRING-KEY-HOOK";
+    StringKeyHook *h;
+    CL_Obj list, entry;
+    uint32_t n = 0, i;
+    CLFFIType types[3] = { CL_FFI_POINTER, CL_FFI_POINTER, CL_FFI_POINTER };
+    int8_t regs[3] = { 8, 10, 9 };   /* a0, a2, a1 */
+    (void)nargs;
+
+    for (list = args[4]; !CL_NULL_P(list); list = cl_cdr(list)) {
+        if (!CL_CONS_P(list))
+            cl_error(CL_ERR_TYPE, "%s: ENTRIES must be a proper list", who);
+        n++;
+    }
+    if (!platform_amiga_push_method_prepare())
+        cl_error(CL_ERR_GENERAL, "%s: cannot open utility.library v36, which the push needs", who);
+
+    h = (StringKeyHook *)platform_alloc(sizeof(StringKeyHook));
+    if (h == NULL) cl_error(CL_ERR_GENERAL, "%s: out of memory", who);
+    memset(h, 0, sizeof(*h));
+    h->app         = skh_u32_arg(who, "APP", args[0]);
+    h->object      = skh_u32_arg(who, "OBJECT", args[1]);
+    h->push_method = skh_u32_arg(who, "PUSH-METHOD", args[2]);
+    h->method      = skh_u32_arg(who, "METHOD", args[3]);
+    if (n > 0) {
+        h->entries = (SKHEntry *)platform_alloc(n * sizeof(SKHEntry));
+        if (h->entries == NULL) { platform_free(h); cl_error(CL_ERR_GENERAL, "%s: out of memory", who); }
+    }
+    for (list = args[4], i = 0; i < n; list = cl_cdr(list), i++) {
+        CL_Obj f[4];
+        int k;
+        entry = cl_car(list);
+        for (k = 0; k < 4; k++) {
+            if (!CL_CONS_P(entry)) {
+                platform_free(h->entries); platform_free(h);
+                cl_error(CL_ERR_TYPE, "%s: entry %u is not a list of four integers (code qual-mask qual-value value)", who, (unsigned)i);
+            }
+            f[k] = cl_car(entry);
+            entry = cl_cdr(entry);
+        }
+        for (k = 0; k < 3; k++) {
+            if (!CL_FIXNUM_P(f[k]) || CL_FIXNUM_VAL(f[k]) < 0 || CL_FIXNUM_VAL(f[k]) > 0xFFFF) {
+                platform_free(h->entries); platform_free(h);
+                cl_error(CL_ERR_ARGS, "%s: entry %u: code, qual-mask and qual-value must be integers 0..65535", who, (unsigned)i);
+            }
+        }
+        if (CL_FIXNUM_VAL(f[0]) & SKH_IECODE_UP_PREFIX) {
+            platform_free(h->entries); platform_free(h);
+            cl_error(CL_ERR_ARGS, "%s: entry %u: code #x%X is a key release (bit 7 set); the hook matches presses", who, (unsigned)i, (unsigned)CL_FIXNUM_VAL(f[0]));
+        }
+        h->entries[i].code       = (uint16_t)CL_FIXNUM_VAL(f[0]);
+        h->entries[i].qual_mask  = (uint16_t)CL_FIXNUM_VAL(f[1]);
+        h->entries[i].qual_value = (uint16_t)CL_FIXNUM_VAL(f[2]);
+        h->entries[i].value      = skh_u32_arg(who, "an entry's value", f[3]);
+    }
+    h->count = n;
+
+    h->code = platform_ffi_make_closure(CL_FFI_U32, 3, types, regs, skh_handler, h, &h->closure);
+    if (h->code == NULL) {
+        platform_free(h->entries); platform_free(h);
+        cl_error(CL_ERR_GENERAL, "%s: cannot build the hook entry (callbacks unsupported or out of memory)", who);
+    }
+    /* struct Hook: h_Entry at 8, h_SubEntry 12, h_Data 16.  The h_Entry
+     * longword is what the OS jumps to; on the host (64-bit code
+     * addresses) it is the low half and only STRING-KEY-HOOK-ENTRY is
+     * exact -- as for AMIGA.FFI:MAKE-HOOK. */
+    skh_wr32(h->hook + 8, (uint32_t)(uintptr_t)h->code);
+    skh_wr32(h->hook + 12, 0);
+    skh_wr32(h->hook + 16, (uint32_t)(uintptr_t)h);
+    h->hook_handle = platform_ffi_register(h->hook);
+    if (h->hook_handle == 0) {
+        platform_ffi_free_closure(h->closure);
+        platform_free(h->entries); platform_free(h);
+        cl_error(CL_ERR_GENERAL, "%s: foreign pointer table full", who);
+    }
+    skh_link(h, 1);
+    return cl_make_foreign_pointer(h->hook_handle, 20, 0);
+}
+
+/* (amiga:%free-string-key-hook hook) → NIL.  Only once no object holds
+ * the hook any more: the entry stub is freed with it.  HOOK becomes a
+ * null pointer, so a second free is refused instead of reading freed
+ * memory, and its finalizer has nothing left to release. */
+static CL_Obj bi_amiga_free_string_key_hook(CL_Obj *args, int nargs)
+{
+    StringKeyHook *h;
+    CL_ForeignPtr *fp;
+    (void)nargs;
+    if (CL_NULL_P(args[0])) return CL_NIL;
+    h = skh_of("AMIGA:%FREE-STRING-KEY-HOOK", args[0]);
+    fp = (CL_ForeignPtr *)CL_OBJ_TO_PTR(args[0]);
+    skh_link(h, 0);
+    platform_ffi_release(h->hook_handle);
+    fp->address = 0;
+    fp->size = 0;
+    h->hook_handle = 0;
+    platform_ffi_free_closure(h->closure);
+    if (h->entries) platform_free(h->entries);
+    platform_free(h);
+    return CL_NIL;
+}
+
+/* (amiga:%string-key-hook-entry hook) → the entry as a foreign pointer:
+ * what the OS calls, exact on the host too (a C function of (hook, sgw,
+ * msg) there), for tests that call it themselves.  A fresh handle each
+ * time: the pointer object owns it (see StringKeyHook.hook_handle). */
+static CL_Obj bi_amiga_string_key_hook_entry(CL_Obj *args, int nargs)
+{
+    StringKeyHook *h;
+    (void)nargs;
+    h = skh_of("AMIGA:%STRING-KEY-HOOK-ENTRY", args[0]);
+    return cl_make_foreign_pointer(platform_ffi_register(h->code), 0, 0);
+}
+
+/* (amiga:%string-key-hook-stats hook) → (calls matches count): how often
+ * the OS called the hook, how many keys it took, how many entries it
+ * holds.  Diagnostics: "MUI never calls the hook" and "the hook never
+ * matches" are different bugs. */
+static CL_Obj bi_amiga_string_key_hook_stats(CL_Obj *args, int nargs)
+{
+    StringKeyHook *h;
+    (void)nargs;
+    h = skh_of("AMIGA:%STRING-KEY-HOOK-STATS", args[0]);
+    return cl_cons(CL_MAKE_FIXNUM((int32_t)h->calls),
+                   cl_cons(CL_MAKE_FIXNUM((int32_t)h->matches),
+                           cl_cons(CL_MAKE_FIXNUM((int32_t)h->count), CL_NIL)));
+}
+
+/* (amiga:%last-pushed-method) → (app push-method object method value) or
+ * NIL: the host's record of the last push (platform.h), for the tests.
+ * NIL on AmigaOS, where the push really happens. */
+static CL_Obj bi_amiga_last_pushed_method(CL_Obj *args, int nargs)
+{
+    uint32_t out[5];
+    CL_Obj result = CL_NIL;
+    int i;
+    (void)args; (void)nargs;
+    if (!platform_amiga_last_pushed_method(out)) return CL_NIL;
+    CL_GC_PROTECT(result);
+    for (i = 4; i >= 0; i--)
+        result = cl_cons(cl_amiga_box_result(out[i], CL_AMIGA_RES_UNSIGNED), result);
+    CL_GC_UNPROTECT(1);
+    return result;
+}
+
+/* ================================================================
  * Init
  * ================================================================ */
 
@@ -831,6 +1157,17 @@ void cl_builtins_amiga_init(void)
     /* Register builtins in AMIGA package — the real implementations on
      * AmigaOS/MorphOS, the AMIGA_HOST_STUB errors elsewhere (same names
      * and arities, so the package surface is identical on every build). */
+    /* The native string-key hook (AMIGA.MUI:MAKE-STRING-KEY-HOOK): real on
+     * every build -- the matcher is C, the push is recorded on the host.
+     * Internal (unexported, like %DEFCFUN): AMIGA.MUI is the documented
+     * surface. */
+    if (skh_live_lock == NULL) platform_mutex_init(&skh_live_lock);
+    cl_register_builtin("%MAKE-STRING-KEY-HOOK",  bi_amiga_make_string_key_hook,  5, 5, cl_package_amiga);
+    cl_register_builtin("%FREE-STRING-KEY-HOOK",  bi_amiga_free_string_key_hook,  1, 1, cl_package_amiga);
+    cl_register_builtin("%STRING-KEY-HOOK-ENTRY", bi_amiga_string_key_hook_entry, 1, 1, cl_package_amiga);
+    cl_register_builtin("%STRING-KEY-HOOK-STATS", bi_amiga_string_key_hook_stats, 1, 1, cl_package_amiga);
+    cl_register_builtin("%LAST-PUSHED-METHOD",    bi_amiga_last_pushed_method,    0, 0, cl_package_amiga);
+
     amiga_defun("OPEN-LIBRARY",      bi_amiga_open_library,       1,  2);
     amiga_defun("CLOSE-LIBRARY",     bi_amiga_close_library,      1,  1);
     amiga_defun("CALL-LIBRARY",      bi_amiga_call_library,       3,  4);

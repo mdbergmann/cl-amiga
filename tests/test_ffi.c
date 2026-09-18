@@ -11,6 +11,10 @@
 #include "core/builtins.h"
 #include "core/repl.h"
 #include "platform/platform.h"
+#ifndef PLATFORM_AMIGA
+#include <pthread.h>
+#include <stdlib.h>
+#endif
 
 static void setup(void)
 {
@@ -653,6 +657,52 @@ TEST(lisp_ffi_callback_on_worker_thread_under_list_churn)
         "0");
 }
 
+/* A callback hit from a thread the runtime never registered (a raw
+ * pthread here; input.device's task on AmigaOS, which is where Intuition
+ * runs a string gadget's edit hook) must not run Lisp: it answers 0, and
+ * the hit is counted where Lisp can read it. */
+static void *foreign_task_caller(void *cb)
+{
+    int32_t (*fn)(void *, void *) = (int32_t (*)(void *, void *))cb;
+    static intptr_t result;
+    result = fn(NULL, NULL);
+    return &result;
+}
+
+TEST(lisp_ffi_callback_from_foreign_task_counted_not_run)
+{
+    CL_Obj cb;
+    void *addr;
+    void *ret;
+    pthread_t th;
+    int before_n = atoi(eval_print("(ext:%ffi-foreign-task-calls)"));
+    cl_eval_string("(defvar cl-user::*foreign-task-ran* nil)");
+    cb = cl_eval_string("(defparameter cl-user::*foreign-task-cb* "
+                        "  (ffi:make-callback :int32 '(:pointer :pointer) "
+                        "    (lambda (a b) (declare (ignore a b)) "
+                        "      (setq cl-user::*foreign-task-ran* t) 42)))");
+    cb = cl_eval_string("cl-user::*foreign-task-cb*");
+    /* the host keeps a real pointer behind the 32-bit address field */
+    addr = platform_ffi_resolve(((CL_ForeignPtr *)CL_OBJ_TO_PTR(cb))->address);
+    ASSERT(addr != NULL);
+    ASSERT(pthread_create(&th, NULL, foreign_task_caller, addr) == 0);
+    ASSERT(pthread_join(th, &ret) == 0);
+    ASSERT(*(intptr_t *)ret == 0);                       /* answered 0 */
+    ASSERT_STR_EQ(eval_print("cl-user::*foreign-task-ran*"), "NIL");  /* never ran */
+    {
+        char expect[32];
+        snprintf(expect, sizeof(expect), "%d", before_n + 1);
+        ASSERT_STR_EQ(eval_print("(ext:%ffi-foreign-task-calls)"), expect);
+    }
+    /* the same callback on the Lisp thread still runs */
+    ASSERT_STR_EQ(eval_print("(ffi:call-foreign cl-user::*foreign-task-cb* :int32 "
+                             "  '(:pointer :pointer) (list (ffi:make-foreign-pointer 0) "
+                             "                             (ffi:make-foreign-pointer 0)))"),
+                  "42");
+    ASSERT_STR_EQ(eval_print("cl-user::*foreign-task-ran*"), "T");
+    eval_print("(ffi:free-callback cl-user::*foreign-task-cb*)");
+}
+
 TEST(lisp_ffi_callback_policy_variable)
 {
     ASSERT_STR_EQ(eval_print("ext:*callback-error-policy*"), ":DEFER");
@@ -777,6 +827,7 @@ int main(void)
     RUN(lisp_ffi_callback_error_is_deferred_to_caller);
     RUN(lisp_ffi_callback_error_not_seen_by_outer_handlers_inside);
     RUN(lisp_ffi_callback_nlx_across_boundary_refused);
+    RUN(lisp_ffi_callback_from_foreign_task_counted_not_run);
     RUN(lisp_ffi_callback_inner_handlers_and_nesting_work);
     RUN(lisp_ffi_callback_on_worker_thread_under_list_churn);
     RUN(lisp_ffi_callback_policy_variable);

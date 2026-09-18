@@ -125,7 +125,11 @@
    "AREA-MIN-WIDTH" "AREA-MIN-HEIGHT"
    ;; Custom layout hooks: the struct MUI_LayoutMsg and MUI_Layout
    "LAYOUT-MSG-TYPE" "LAYOUT-MSG-MIN-MAX" "LAYOUT-MSG-WIDTH" "LAYOUT-MSG-HEIGHT"
-   "LAYOUT-CHILDREN" "LAYOUT-CHILD"))
+   "LAYOUT-CHILDREN" "LAYOUT-CHILD"
+   ;; A String's MUIA_String_EditHook that takes keys without running Lisp
+   ;; on Intuition's task (MUI 3.8 edits an active String there)
+   "MAKE-STRING-KEY-HOOK" "FREE-STRING-KEY-HOOK" "STRING-KEY-HOOK-ENTRY"
+   "STRING-KEY-HOOK-STATS"))
 
 (in-package "AMIGA.MUI")
 
@@ -146,6 +150,7 @@
 (defconstant +muim-notify+                     #x8042C9CB) ; MUIM_Notify
 (defconstant +muim-application-new-input+      #x80423BA6) ; MUIM_Application_NewInput
 (defconstant +muim-application-return-id+      #x804276EF) ; MUIM_Application_ReturnID
+(defconstant +muim-application-push-method+    #x80429EF8) ; MUIM_Application_PushMethod
 (defconstant +muiv-application-return-id-quit+ -1)         ; MUIV_Application_ReturnID_Quit
 
 (defconstant +muiv-every-time+        #x49893131)         ; MUIV_EveryTime
@@ -1015,5 +1020,65 @@ REQUEST-IDCMP asked for, in MUIM_Cleanup.  Returns NIL."
   (%muimaster "REJECT-IDCMP")
   (%reject-idcmp object flags)
   nil)
+
+;;; ================================================================
+;;; The string-key hook: keys taken from an active String
+;;; ================================================================
+;;;
+;;; An active MUI 3.8 String is an Intuition string gadget, and Intuition
+;;; runs its edit hook -- the Hook that MUIA_String_EditHook installs --
+;;; on input.device's task, not the application's.  A Lisp hook there
+;;; is answered with 0 without running (specs/mui-bindings.md §10.3.2:
+;;; no VM, an unknown stack), so the key it meant to take goes to the
+;;; gadget: TAB moves the focus on, C-g types nothing.  (MUI 4 never
+;;; calls the hook at all and hands the keys to MUIM_HandleEvent.)
+;;;
+;;; MAKE-STRING-KEY-HOOK builds a hook that is C from end to end: it
+;;; matches the key's raw code and qualifiers against ENTRIES, and for
+;;; a match it makes the key a no-op for the gadget and queues the
+;;; entry's VALUE to OBJECT as METHOD's one argument through
+;;; MUIM_Application_PushMethod -- so a Lisp method (a custom class's
+;;; dispatcher) runs on the application's task, after the gadget is done
+;;; with the event.  Which keys to take is decided in Lisp when the hook
+;;; is made, from the keymap (MapRawKey over the raw codes: which code
+;;; and qualifiers give `g' with Control, say); the hook itself never
+;;; decodes.
+
+(defun make-string-key-hook (app object method entries)
+  "A struct Hook for a String's MUIA_String_EditHook that takes the key
+presses in ENTRIES away from the gadget and pushes them to OBJECT.
+ENTRIES is a list of (CODE QUAL-MASK QUAL-VALUE VALUE): a press whose
+raw code (ie_Code, bit 7 clear) is CODE and whose qualifiers, masked
+with QUAL-MASK, equal QUAL-VALUE is taken -- the right Shift and Alt
+count as the left ones before the mask is applied -- and VALUE (an
+unsigned 32-bit integer, e.g. the key's own encoding) is queued as
+\(DoMethod APP MUIM_Application_PushMethod OBJECT 2 METHOD VALUE), which
+the application's input loop turns into (DoMethod OBJECT METHOD VALUE).
+Every other key stays the gadget's.  Returns the hook as a foreign
+pointer, the value of MUIA_String_EditHook; it must outlive the String
+and is released with FREE-STRING-KEY-HOOK.  STRING-KEY-HOOK-STATS says
+how often it was called and how often it matched."
+  (unless (and (listp entries) (every (lambda (e) (and (listp e) (= (length e) 4))) entries))
+    (error "AMIGA.MUI:MAKE-STRING-KEY-HOOK: ENTRIES must be a list of (code qual-mask qual-value value) lists, got ~S"
+           entries))
+  (amiga::%make-string-key-hook app object +muim-application-push-method+ method entries))
+
+(defun free-string-key-hook (hook)
+  "Release a MAKE-STRING-KEY-HOOK hook -- only after every String that
+holds it is disposed, since its entry code goes with it.  NIL is ignored."
+  (amiga::%free-string-key-hook hook)
+  nil)
+
+(defun string-key-hook-entry (hook)
+  "The hook's h_Entry as a foreign pointer -- what the OS calls, exact on
+the host too, where it is a C function of (hook, sgwork, message) that
+tests call themselves."
+  (amiga::%string-key-hook-entry hook))
+
+(defun string-key-hook-stats (hook)
+  "Three values: how often the OS called HOOK, how many key presses it
+took, and how many entries it holds.  `never called' and `never matched'
+are different bugs."
+  (values-list (amiga::%string-key-hook-stats hook)))
 
 (provide "amiga/mui")

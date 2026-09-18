@@ -1063,7 +1063,24 @@ Everything above, in one pass, with these deviations:
   compares the TLS slot against `cl_thread_list` by identity, no
   dereference, no lock; a miss returns 0 and bumps a counter that the
   next `cl_ffi_deferred_error_check` on a Lisp thread reports once as a
-  warning — nothing is printed from the foreign task itself.
+  warning — nothing is printed from the foreign task itself.  The
+  counter is readable as `(ext:%ffi-foreign-task-calls)` (2026-09-18),
+  because the warning goes to `*debug-io*`, which a `Run >log` process
+  on AmigaOS never shows: that is how the Vampire proved that MUI 3.8
+  calls a `String`'s `MUIA_String_EditHook` — an Intuition string edit
+  hook — on input.device's task, once per key into the active gadget
+  (the Lisp editor's hook was "never called" for a week).  The case is
+  real, not theoretical, and has its own answer:
+  `amiga.mui:make-string-key-hook` (`builtins_amiga.c`, platform-
+  neutral C behind a `platform_ffi_make_closure` stub), a hook that
+  matches raw code + qualifiers against a table Lisp fills from the
+  keymap, rewrites the `SGWork` into a no-op for the gadget and queues
+  the entry's value to an object via `MUIM_Application_PushMethod`
+  (`platform_amiga_push_method`: the app's dispatcher through
+  `CallHookPkt`, utility.library opened on the Lisp task beforehand) —
+  the one MUI call allowed from a foreign task.  Host tests drive the
+  entry with hand-built structs (`tests/test_amiga_mui.lisp`); the
+  FS-UAE suite pushes through a real application (`test-mui.lisp`).
 - **GC**: `callback_error` and `last_condition` are marked and forwarded
   with the other per-thread roots; `test_gc_stress_regression.sh`'s FFI
   case now errors inside a comparator under forced compaction and reads

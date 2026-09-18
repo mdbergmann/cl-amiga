@@ -641,6 +641,10 @@ when the call into MUI that dispatched it returns (`new-object`,
 | `(layout-msg-width message)`, `(layout-msg-height message)` | function | `lm_Layout.Width` / `.Height`: the rectangle MUI gives the group for a `MUILM_LAYOUT`.  `setf`-able — a virtual group writes back what it really needs |
 | `(layout-children message)` | function | The group's children as a list of objects — the `NextObject()` walk of `lm_Children` |
 | `(layout-child child left top width height &optional flags)` | function | `MUI_Layout`: place one child inside the group's rectangle, in coordinates relative to it.  `T` when MUI accepted it |
+| `(make-string-key-hook app object method entries)` | function | A `struct Hook` for a `String`'s `MUIA_String_EditHook` that takes key presses away from the gadget without running Lisp — MUI 3.8 edits an active `String` on input.device's task, where a Lisp hook is answered 0.  `entries` is a list of `(code qual-mask qual-value value)`: a press whose raw code is `code` and whose qualifiers, masked with `qual-mask`, equal `qual-value` (the right Shift and Alt count as the left ones) becomes a no-op for the gadget and `value` is queued to `object` as `method`'s one argument through `MUIM_Application_PushMethod`, so a custom class's Lisp dispatcher gets `(DoMethod object method value)` on the application's task.  Every other key stays the gadget's.  The hook must outlive the `String` |
+| `(free-string-key-hook hook)` | function | Release it, once no `String` holds it (`NIL` is ignored) |
+| `(string-key-hook-entry hook)` | function | Its `h_Entry` as a foreign pointer — exact on the host too, where it is a C function of `(hook sgwork message)` that tests call |
+| `(string-key-hook-stats hook)` | function | Three values: calls, keys taken, entries.  "Never called" and "never matched" are different bugs |
 
 ---
 

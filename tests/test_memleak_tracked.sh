@@ -284,6 +284,24 @@ cat > "$WORK/deep.lisp" <<LISPEOF
 LISPEOF
 run_case "no_leak_after_deeply_nested_loads" "$WORK/deep.lisp"
 
+# --- the native string-key hook (AMIGA.MUI:MAKE-STRING-KEY-HOOK) ------------
+# builtins_amiga.c parks the hook's state, its entry table and a platform
+# closure off-heap; FREE-STRING-KEY-HOOK must hand all of it back, also
+# when the hook was made with no entries and when its entry was asked for
+# (a registration per pointer object, released by the finalizer).
+cat > "$WORK/skh.lisp" <<'LISPEOF'
+(require "amiga/mui")
+(dotimes (i 3)
+  (let ((h (amiga.mui:make-string-key-hook 1 2 3 '((#x42 #x19 0 9) (#x24 #x19 8 10)))))
+    (amiga.mui:string-key-hook-entry h)
+    (amiga.mui:string-key-hook-stats h)
+    (amiga.mui:free-string-key-hook h)))
+(amiga.mui:free-string-key-hook (amiga.mui:make-string-key-hook 1 2 3 '()))
+(gc)
+(quit)
+LISPEOF
+run_case "no_leak_after_string_key_hooks" "$WORK/skh.lisp"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ] || exit 1
