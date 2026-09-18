@@ -1341,7 +1341,10 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
     if (strcmp(tname, "STRING") == 0 || strcmp(tname, "SIMPLE-STRING") == 0 ||
         strcmp(tname, "BASE-STRING") == 0 || strcmp(tname, "SIMPLE-BASE-STRING") == 0) {
         if (CL_ANY_STRING_P(obj)) return obj;
-        if (CL_NULL_P(obj)) return cl_make_string("NIL", 3);
+        /* NIL is the empty sequence here, not the symbol: CLHS COERCE
+         * requires a SEQUENCE for a string result type, so (coerce nil
+         * 'string) is "" (SBCL, CCL, ECL agree) -- unlike (string nil). */
+        if (CL_NULL_P(obj)) return cl_make_string("", 0);
         if (CL_SYMBOL_P(obj)) {
             const char *sname = cl_symbol_name(obj);
             return cl_make_string(sname, (uint32_t)strlen(sname));

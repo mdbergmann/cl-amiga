@@ -68,6 +68,12 @@ through `AMIGA.AREXX` below, which builds the handler thread on top of them.
 | `(arexx-request-stop)` | function | Wake the waiting thread so it can shut down; safe from any thread |
 | `(arexx-send port command &optional result-size)` | function | Send `command` to a public ARexx port and wait for the reply; returns `(values rc result-string)` |
 
+Waiting for exec signals:
+
+| Signature | Kind | Description |
+|-----------|------|-------------|
+| `(wait-signals mask)` | function | exec `Wait(mask)`, returning the signals received. Unlike the raw `amiga.raw.exec:wait`, the sleep is a GC safe region: a stop-the-world collection started by another Lisp thread does not wait for this task's next signal. The MUI and ReAction event loops wait with it; use it yourself wherever a task parks on a signal a worker thread raises |
+
 ---
 
 ## `AMIGA.FFI` — Tag lists & `defcfun`

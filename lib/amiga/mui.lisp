@@ -586,7 +586,11 @@ will close the window."
                  (,deadline
                   (amiga.raw.dos:delay 5))
                  (t
-                  (let ((,got (amiga.raw.exec:wait
+                  ;; AMIGA:WAIT-SIGNALS, not the raw Wait: a task asleep in
+                  ;; a plain library call is invisible to a stop-the-world
+                  ;; GC another thread starts (a worker thread beside a GUI
+                  ;; loop), which would then wait for this loop's next event.
+                  (let ((,got (amiga:wait-signals
                                (logior ,sigs ,extra amiga.raw.dos:+sigbreakf-ctrl-c+))))
                     (when (logtest ,got amiga.raw.dos:+sigbreakf-ctrl-c+)
                       (return))))))))))

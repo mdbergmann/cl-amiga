@@ -262,6 +262,21 @@ TEST(make_array_base_char_wide_content_widens)
         "5000");
 }
 
+/* CLHS COERCE: for a string result type the object must be a SEQUENCE, and
+ * NIL is the empty one -- so (coerce nil 'string) is "", the same as
+ * (coerce '() 'vector) is #().  It used to answer "NIL", reading NIL as the
+ * symbol the way STRING does; the Lisp Clamacs's (coerce (nreverse chars)
+ * 'string) then spelled an empty quoted word "NIL". */
+TEST(coerce_nil_to_string_is_empty)
+{
+    ASSERT_STR_EQ(eval_print("(coerce nil 'string)"), "\"\"");
+    ASSERT_STR_EQ(eval_print("(coerce '() 'simple-string)"), "\"\"");
+    ASSERT_STR_EQ(eval_print("(length (coerce (nreverse (list)) 'string))"), "0");
+    /* STRING itself keeps its designator semantics. */
+    ASSERT_STR_EQ(eval_print("(string nil)"), "\"NIL\"");
+    ASSERT_STR_EQ(eval_print("(coerce 'nil-ish 'string)"), "\"NIL-ISH\"");
+}
+
 /* class-of a MAKE-ARRAY string is STRING, so STRING-specialized CLOS
  * methods (and any %class-of consumer) see it correctly. */
 TEST(make_array_string_class_of_is_string)
@@ -1501,6 +1516,7 @@ int main(void)
     RUN(make_array_initial_contents);
     RUN(make_array_fill_pointer);
     RUN(make_array_fill_pointer_t_string);
+    RUN(coerce_nil_to_string_is_empty);
     RUN(char_accessor_on_string_vector);
     RUN(schar_requires_simple_string);
     RUN(replace_into_string_type_checks);

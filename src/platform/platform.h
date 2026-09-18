@@ -654,6 +654,15 @@ int  platform_arexx_send(const char *portname, const char *cmd,
                          int32_t *rc_out, char *result, int result_size,
                          int32_t *rc2_out);
 
+/* exec Wait(MASK) bracketed in a GC safe region; returns the signals
+ * received.  A Lisp thread parked in a raw Wait() (AMIGA.RAW.EXEC:WAIT is a
+ * plain library call) is invisible to a stop-the-world collection started
+ * by another thread: the initiator waits for a safepoint the sleeper cannot
+ * reach until some signal wakes it, so a GUI event loop with a worker
+ * thread beside it would stall every collection.  This is the Wait an
+ * event loop must use (AMIGA:WAIT-SIGNALS, the MUI and ReAction loops). */
+uint32_t platform_wait_signals(uint32_t mask);
+
 /* Flush I/D caches for a freshly written code buffer.
  * Required on AmigaOS 68040/060 after emitting JIT code — calls
  * CacheClearU() so the CPU doesn't execute stale instruction-cache

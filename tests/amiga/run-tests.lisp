@@ -2530,6 +2530,9 @@ y" 1))
 (check "coerce list->vector" t (equalp (coerce '(1 2 3) 'vector) (vector 1 2 3)))
 (check "coerce vector->list" '(1 2 3) (coerce (vector 1 2 3) 'list))
 (check "coerce nil->list" nil (coerce nil 'list))
+; NIL is the empty SEQUENCE to COERCE (CLHS), not the symbol STRING sees.
+(check "coerce nil->string is empty" "" (coerce nil 'string))
+(check "coerce nil->simple-string is empty" 0 (length (coerce '() 'simple-string)))
 (check "coerce nil->vector" t (equalp (coerce nil 'vector) (vector)))
 ; A BIT element type in (vector/array bit ...) must yield a bit-vector
 (check "coerce list->(vector bit N)" t (bit-vector-p (coerce '(1 0 1) '(vector bit 3))))
@@ -11568,6 +11571,16 @@ y" 1))
   (error (e)
     (setq *fail-count* (+ *fail-count* 1))
     (format t "FAIL: ARexx port tests could not run: ~A~%" e)))
+
+; --- AMIGA:WAIT-SIGNALS: exec Wait() as a GC safe region ---
+; Same nested-LOAD shape (the file names AMIGA.RAW.EXEC symbols).  A worker
+; thread runs a full collection while the main task is parked in the wait;
+; the raw Wait would have hung the collection until the next signal.
+#+amigaos
+(handler-case (load "tests/amiga/wait-signals-tests.lisp")
+  (error (e)
+    (setq *fail-count* (+ *fail-count* 1))
+    (format t "FAIL: wait-signals tests could not run: ~A~%" e)))
 
 ; --- The editor's debugger protocol (lib/dev-repl.lisp), in-process ---
 ; Nested debugger levels and restarts with natively compiled and bytecode

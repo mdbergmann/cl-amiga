@@ -1676,7 +1676,11 @@ strings; `make-object` is `MUI_MakeObject`'s builtin collection
 (`MUI_RequestA`), `pool-string-array` for `MUIA_Cycle_Entries`, `make-id`
 and the `MUIV_Window_*` size macros complete it.  Setting
 `amiga.mui:*event-loop-timeout*` makes `do-application-events` return
-after that many seconds — how the examples run unattended.  `available-p`
+after that many seconds — how the examples run unattended.  The loop
+waits with `amiga:wait-signals`, exec `Wait()` as a GC safe region, so a
+worker thread (`mp:make-thread`) beside a GUI can allocate and collect
+while the loop sleeps; a program that parks its own task on a signal
+another thread raises should wait the same way (`docs/amiga.md`).  `available-p`
 tells whether `muimaster.library` opens; the module itself loads
 everywhere (the raw module, by contrast, needs the library at `require`
 time).  The toolkit-neutral half is `AMIGA.BOOPSI`, re-exported (same

@@ -227,7 +227,9 @@ gadget."
                      (return))
                    (amiga.raw.dos:delay 5))
                   (t
-                   (let ((,sigs (amiga.raw.exec:wait
+                   ;; AMIGA:WAIT-SIGNALS: GC-cooperative, so a worker
+                   ;; thread's collection does not wait for the next event.
+                   (let ((,sigs (amiga:wait-signals
                                  (logior (window-signal-mask ,win) ,extra
                                          amiga.raw.dos:+sigbreakf-ctrl-c+))))
                      (when (logtest ,sigs amiga.raw.dos:+sigbreakf-ctrl-c+)

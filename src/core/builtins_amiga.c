@@ -589,6 +589,21 @@ static CL_Obj bi_amiga_arexx_send(CL_Obj *args, int nargs)
     return cl_mv_values[0];
 }
 
+/* (amiga:wait-signals mask) → the signals received
+ * exec Wait() inside a GC safe region -- the Wait an event loop uses when
+ * another Lisp thread may collect meanwhile (platform_wait_signals). */
+static CL_Obj bi_amiga_wait_signals(CL_Obj *args, int nargs)
+{
+    uint32_t mask;
+    CL_UNUSED(nargs);
+    if (!CL_FIXNUM_P(args[0]) && !CL_BIGNUM_P(args[0]))
+        cl_error(CL_ERR_TYPE, "AMIGA:WAIT-SIGNALS: the signal mask must be an integer");
+    mask = cl_amiga_ffi_arg_to_u32(args[0], 1, 0);
+    if (mask == 0)
+        cl_error(CL_ERR_ARGS, "AMIGA:WAIT-SIGNALS: an empty signal mask would wait forever");
+    return cl_amiga_box_result(platform_wait_signals(mask), CL_AMIGA_RES_UNSIGNED);
+}
+
 #else /* !PLATFORM_AMIGA — host stubs.
  *
  * The AMIGA package and every builtin name exist on the host too, so that
@@ -648,6 +663,7 @@ AMIGA_HOST_STUB(bi_amiga_arexx_request_stop, "AREXX-REQUEST-STOP")
 AMIGA_HOST_STUB(bi_amiga_arexx_wait,         "AREXX-WAIT")
 AMIGA_HOST_STUB(bi_amiga_arexx_reply,        "AREXX-REPLY")
 AMIGA_HOST_STUB(bi_amiga_arexx_send,         "AREXX-SEND")
+AMIGA_HOST_STUB(bi_amiga_wait_signals,       "WAIT-SIGNALS")
 
 static void amiga_defun(const char *name, CL_CFunc func, int min, int max)
 {
@@ -831,6 +847,11 @@ void cl_builtins_amiga_init(void)
     amiga_defun("AREXX-WAIT",         bi_amiga_arexx_wait,         0,  0);
     amiga_defun("AREXX-REPLY",        bi_amiga_arexx_reply,        1,  2);
     amiga_defun("AREXX-SEND",         bi_amiga_arexx_send,         2,  3);
+
+    /* exec Wait() as a GC-cooperative blocking call: the wait of every
+     * event loop (lib/amiga/mui.lisp, reaction.lisp) and of a program that
+     * parks its main task on a signal a worker thread raises. */
+    amiga_defun("WAIT-SIGNALS",       bi_amiga_wait_signals,       1,  1);
 
     /* DEFCFUN's stub constructor (internal, not exported: AMIGA.FFI spells
      * it amiga::%make-libcall-stub; user code shouldn't write it). */

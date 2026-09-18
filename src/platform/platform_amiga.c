@@ -61,6 +61,17 @@ void platform_flush_output(void)
     }
 }
 
+uint32_t platform_wait_signals(uint32_t mask)
+{
+    ULONG got;
+    /* Same bracket as platform_read_line and the ARexx port's Wait: a task
+     * asleep in Wait() counts as stopped for a peer's stop-the-world GC. */
+    cl_gc_enter_safe_region();
+    got = Wait((ULONG)mask);
+    cl_gc_leave_safe_region();
+    return (uint32_t)got;
+}
+
 int platform_read_line(char *buf, int bufsize)
 {
     BPTR in = Input();
@@ -3069,18 +3080,22 @@ struct Library *IconBase = NULL;
 
 #ifndef PLATFORM_MORPHOS
 /* libnix's Workbench start: with no console of its own, a tool started
- * from an icon gets this window as Input()/Output() (opened before main;
- * AUTO = it appears only when something is written or read, so a GUI
- * program never shows it, and WAIT keeps it up until the user closes it
- * once it did appear).  libnix would close it from its exit list, which
- * the 68k exit path (_exit, see main.c) never runs — platform_process_exit
- * closes it instead. */
+ * from an icon gets this window as Input()/Output() (opened before main by
+ * libnix's __nocommandline; AUTO = it appears only when something is
+ * written or read, so a GUI program never shows it, and WAIT keeps it up
+ * until the user closes it once it did appear).  libnix closes it again
+ * from its exit list (__exitcommandline), which DOES run on the 68k exit
+ * path: in libnix's ncrt0.S `_exit' and `exit' are one entry, so the
+ * runtime must not close this handle itself -- a second Close() of a
+ * freed FileHandle is a "Program failed" requester at exit (seen 2026-09-18
+ * in the suite's Workbench leg).  The same goes for the current-directory
+ * lock that start set: libnix's exit unlocks it. */
 char *__stdiowin = "CON:0/20/640/200/CL-Amiga/AUTO/CLOSE/WAIT";
 #endif
 
 static int    wb_started = 0;          /* main() was handed a WBStartup */
-static BPTR   wb_stdio_console = 0;    /* libnix's __stdiowin handle */
-static BPTR   wb_window_console = 0;   /* the WINDOW tool type's, if any */
+static BPTR   wb_stdio_console = 0;    /* libnix's __stdiowin handle (libnix closes it) */
+static BPTR   wb_window_console = 0;   /* the WINDOW tool type's, if any (ours) */
 static char   wb_argbuf[2048];         /* the synthetic command line ... */
 static char  *wb_argv[64];             /* ... and its argv (64 slots) */
 static char   wb_pathbuf[512];
@@ -3195,30 +3210,23 @@ int platform_startup_args(int *argc, char ***argv)
     return 1;
 }
 
-/* Close what a Workbench start opened: the WINDOW console, then libnix's
- * stdio window (both are Input()/Output() candidates; C stdio has been
- * flushed for the last time by then), and the DupLock'd current directory
- * libnix's startup set (clamiga never changes the cwd, so CurrentDir(0)
- * hands that lock back). */
+/* Close what THIS runtime opened for a Workbench start: the WINDOW tool
+ * type's console, after putting libnix's stdio window back as Input()/
+ * Output() (C stdio has been flushed for the last time by then).  libnix's
+ * own window and the DupLock'd current directory its startup set are
+ * libnix's to close and unlock, from the exit list that _exit runs (see
+ * __stdiowin above); closing them here too crashed the process at exit. */
 static void wb_teardown(void)
 {
     if (!wb_started)
         return;
-    SelectInput(0);
-    SelectOutput(0);
+    SelectInput(wb_stdio_console);
+    SelectOutput(wb_stdio_console);
     if (wb_window_console) {
         Close(wb_window_console);
         wb_window_console = 0;
     }
-    if (wb_stdio_console) {
-        Close(wb_stdio_console);
-        wb_stdio_console = 0;
-    }
-    {
-        BPTR dir = CurrentDir(0);
-        if (dir)
-            UnLock(dir);
-    }
+    wb_stdio_console = 0;
     wb_started = 0;
 }
 
@@ -3255,13 +3263,19 @@ void platform_process_exit(int code)
     wb_teardown();
 #ifndef PLATFORM_MORPHOS
     if (main_stack_mem) {
-        /* Back on the stack we were given; the frames above the swap point
-         * are abandoned, which is what _exit does anyway. */
+        /* Back on the stack we were given, so the task's stack bounds are
+         * the original ones again when libnix's exit resets SP to what it
+         * saved at _start (a frame on that stack); the frames above the
+         * swap point are abandoned. */
         StackSwap(&main_stack_swap);
         FreeVec(main_stack_mem);
         main_stack_mem = NULL;
     }
 #endif
+    /* On 68k libnix this is the same entry as exit(): the exit list runs
+     * (libnix's Workbench window and lock, stdio, the libraries it opened)
+     * and the WBStartup message is replied; only the C-level atexit work
+     * of the runtime is skipped, which is the point. */
     _exit(code);
 }
 
