@@ -22,6 +22,7 @@ verify/realamiga/*
 !verify/realamiga/regtest.c
 !verify/realamiga/stackprobe.c
 !verify/realamiga/fpuregtest.c
+!verify/realamiga/storeprobe.c
 !verify/realamiga/run-on-vampire.py
 !verify/realamiga/examples.lisp
 !verify/realamiga/screen-grab.lisp
