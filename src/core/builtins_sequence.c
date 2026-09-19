@@ -112,13 +112,46 @@ static unsigned seq_keyword_flag(CL_Obj kw)
     return 0;
 }
 
+/* The builtin whose arguments are being checked: call_builtin records it
+ * per thread before entering the C function (thread.h last_builtin).  A
+ * name that would have to be read from a corrupt object is answered as
+ * "?" -- these messages are read on a corrupted heap. */
+static const char *seq_builtin_name(void)
+{
+    CL_Obj f = CT->last_builtin;
+    if (CL_HEAP_P(f) && f <= cl_heap.arena_size - sizeof(CL_Function) &&
+        CL_HDR_TYPE(CL_OBJ_TO_PTR(f)) == TYPE_FUNCTION) {
+        CL_Obj name = ((CL_Function *)CL_OBJ_TO_PTR(f))->name;
+        if (CL_SYMBOL_P(name)) return cl_symbol_name(name);
+    }
+    return "?";
+}
+
+/* A keyword-argument error names the builtin, the offending value and its
+ * position, and lists every argument: a non-symbol in a key position is
+ * how a shifted or corrupted argument list first shows itself, and which
+ * value sits where tells a missing leading argument (everything shifted
+ * left by one) from a single bad value. */
+static void seq_keyword_error(CL_Obj *args, int n, int i, const char *what)
+{
+    char val[96], all[256];
+    cl_error(CL_ERR_ARGS, "%s: %s: %s (argument %d of %d; the arguments: %s)",
+             seq_builtin_name(), what, cl_obj_brief(args[i], val, sizeof(val)),
+             i + 1, n, cl_args_brief(args, n, all, sizeof(all)));
+}
+
 void cl_check_seq_keywords(CL_Obj *args, int n, int kw_start, unsigned allowed)
 {
     int i, aok = 0;
 
     /* An odd number of cells in the keyword portion is a program-error. */
-    if (((n - kw_start) & 1) != 0)
-        cl_error(CL_ERR_ARGS, "odd number of keyword arguments");
+    if (((n - kw_start) & 1) != 0) {
+        char all[256];
+        cl_error(CL_ERR_ARGS, "%s: odd number of keyword arguments "
+                 "(%d after the %d positional; the arguments: %s)",
+                 seq_builtin_name(), n - kw_start, kw_start,
+                 cl_args_brief(args, n, all, sizeof(all)));
+    }
 
     /* Leftmost :allow-other-keys wins. */
     for (i = kw_start; i + 1 < n; i += 2) {
@@ -130,10 +163,19 @@ void cl_check_seq_keywords(CL_Obj *args, int n, int kw_start, unsigned allowed)
         CL_Obj kw = args[i];
         if (kw == SEQ_KW_AOK) continue;
         if (!CL_SYMBOL_P(kw))
-            cl_error(CL_ERR_ARGS, "keyword-argument key is not a symbol");
+            seq_keyword_error(args, n, i, "keyword-argument key is not a symbol");
         if (!(seq_keyword_flag(kw) & allowed))
-            cl_error(CL_ERR_ARGS, "unrecognized keyword argument");
+            seq_keyword_error(args, n, i, "unrecognized keyword argument");
     }
+}
+
+/* "not a function" for a :test / :key / mapped function designator: what
+ * the value is, which builtin got it. */
+static void seq_not_a_function(CL_Obj fn, const char *role)
+{
+    char val[96];
+    cl_error(CL_ERR_TYPE, "%s: not a function%s: %s", seq_builtin_name(), role,
+             cl_obj_brief(fn, val, sizeof(val)));
 }
 
 /* Call a 2-arg test function */
@@ -155,7 +197,7 @@ static CL_Obj call_test(CL_Obj test_fn, CL_Obj a, CL_Obj b)
         /* cl_vm_apply GC-roots targs across the call (a :test/:key may compact
          * while reading its args). */
         return cl_vm_apply(test_fn, targs, 2);
-    cl_error(CL_ERR_TYPE, "not a function (test)");
+    seq_not_a_function(test_fn, " (:test)");
     return CL_NIL;
 }
 
@@ -181,7 +223,7 @@ static CL_Obj call_1(CL_Obj fn, CL_Obj arg)
     if (CL_FUNCTION_OBJ_P(fn))
         /* cl_vm_apply GC-roots pargs across the call. */
         return cl_vm_apply(fn, pargs, 1);
-    cl_error(CL_ERR_TYPE, "not a function");
+    seq_not_a_function(fn, "");
     return CL_NIL;
 }
 
@@ -197,7 +239,7 @@ static CL_Obj call_0(CL_Obj fn)
         fn = cl_unwrap_funcallable(fn);
     if (CL_FUNCTION_OBJ_P(fn))
         return cl_vm_apply(fn, NULL, 0);
-    cl_error(CL_ERR_TYPE, "not a function");
+    seq_not_a_function(fn, "");
     return CL_NIL;
 }
 

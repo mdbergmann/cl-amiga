@@ -231,7 +231,11 @@ CL_Obj cl_coerce_funcdesig(CL_Obj obj, const char *context)
         }
         cl_error(CL_ERR_UNDEFINED, "Undefined function: %s", cl_symbol_name(obj));
     }
-    cl_error(CL_ERR_TYPE, "%s: not a function", context);
+    {
+        char val[96];
+        cl_error(CL_ERR_TYPE, "%s: not a function: %s", context,
+                 cl_obj_brief(obj, val, sizeof(val)));
+    }
     return CL_NIL;
 }
 

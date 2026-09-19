@@ -28,6 +28,7 @@ static CL_Obj SYM_LIST = CL_NIL;
 
 static CL_Obj call_func(CL_Obj func, CL_Obj *call_args, int nargs)
 {
+    CL_Obj designator = func;
     /* Resolve symbol function designator */
     if (CL_SYMBOL_P(func)) {
         CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(func);
@@ -37,7 +38,28 @@ static CL_Obj call_func(CL_Obj func, CL_Obj *call_args, int nargs)
         /* cl_vm_apply GC-roots call_args across the call (the function may
          * compact while reading its own args). */
         return cl_vm_apply(func, call_args, nargs);
-    cl_error(CL_ERR_TYPE, "not a function");
+    {
+        /* Which builtin (call_builtin records it per thread), what it was
+         * handed, and -- when a symbol was handed over -- what its function
+         * cell held: the two tell a bad argument from a clobbered cell. */
+        char val[96], des[96], nm[96];
+        CL_Obj b = CT->last_builtin;
+        const char *bname = "?";
+        if (CL_HEAP_P(b) && b <= cl_heap.arena_size - sizeof(CL_Function) &&
+            CL_HDR_TYPE(CL_OBJ_TO_PTR(b)) == TYPE_FUNCTION &&
+            CL_SYMBOL_P(((CL_Function *)CL_OBJ_TO_PTR(b))->name))
+            bname = cl_symbol_name(((CL_Function *)CL_OBJ_TO_PTR(b))->name);
+        if (designator != func)
+            cl_error(CL_ERR_TYPE, "%s: not a function: %s (the function cell of %s), "
+                     "called with (%s)", bname,
+                     cl_obj_brief(func, val, sizeof(val)),
+                     cl_obj_brief(designator, des, sizeof(des)),
+                     cl_args_brief(call_args, nargs, nm, sizeof(nm)));
+        else
+            cl_error(CL_ERR_TYPE, "%s: not a function: %s, called with (%s)", bname,
+                     cl_obj_brief(func, val, sizeof(val)),
+                     cl_args_brief(call_args, nargs, nm, sizeof(nm)));
+    }
     return CL_NIL;
 }
 

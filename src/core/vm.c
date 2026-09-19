@@ -946,6 +946,82 @@ static CL_Bytecode *get_frame_bytecode(CL_Frame *f)
     return NULL;
 }
 
+/* "NAME (file:line)" of the function a frame is executing, at ip, for the
+ * error messages the VM raises at a call site (arity, not a function):
+ * the CALLEE is in the message already; this names the CALLER, so a
+ * message read from a log on the Amiga -- where there is no debugger to
+ * ask for a backtrace -- points at the calling form.  "?" for a stub or
+ * a frame whose bytecode is not readable. */
+static const char *frame_site_brief(CL_Frame *f, uint32_t ip, char *buf, int n)
+{
+    CL_Bytecode *bc = f ? get_frame_bytecode(f) : NULL;
+    if (!bc) { snprintf(buf, n, "?"); return buf; }
+    snprintf(buf, n, "%s (%s:%d)",
+             (!CL_NULL_P(bc->name) && CL_SYMBOL_P(bc->name))
+                 ? cl_symbol_name(bc->name) : "<lambda>",
+             bc->source_file ? bc->source_file : "?",
+             lookup_source_line(bc, ip));
+    return buf;
+}
+
+/* The two call-site errors of the VM, formatted OUTSIDE cl_vm_run: their
+ * buffers would otherwise sit in the hot function's frame, and the giant
+ * cl_vm_run is sensitive to anything added to it (CLAUDE.md).  Both
+ * messages carry the caller and the arguments as received: an arity
+ * error or a non-function callee is the first symptom of a stack that is
+ * off by one (the leading argument gone, the callee itself among the
+ * arguments), and only the values tell that apart from a wrong call.
+ * The callee is described by cl_obj_brief, so a corrupt word prints as
+ * what it is; the "heap object type N" spelling stays for the tests that
+ * grep it. */
+static CL_NOINLINE void vm_arity_error(CL_Bytecode *callee_bc, CL_Frame *frame,
+                                       uint32_t ip, CL_Obj *args, int nargs,
+                                       int expected)
+{
+    char site[160], argv[256];
+    CL_Obj fname = callee_bc->name;
+    int few = nargs < expected;
+    int n_opt = callee_bc->n_optional;
+    int loose = n_opt || (callee_bc->arity & 0x8000) || (callee_bc->flags & 1);
+    cl_error(CL_ERR_ARGS,
+             "Too %s arguments to %s (%s:%u): expected %s%d, got %d, "
+             "called from %s with (%s)",
+             few ? "few" : "many",
+             (!CL_NULL_P(fname) && CL_SYMBOL_P(fname)) ? cl_symbol_name(fname) : "<lambda>",
+             callee_bc->source_file ? callee_bc->source_file : "?",
+             (unsigned)callee_bc->source_line,
+             few ? (loose ? "at least " : "") : (n_opt ? "at most " : ""),
+             expected, nargs,
+             frame_site_brief(frame, ip, site, sizeof(site)),
+             cl_args_brief(args, nargs, argv, sizeof(argv)));
+}
+
+static CL_NOINLINE void vm_not_a_function_error(CL_Obj func_obj, CL_Frame *frame,
+                                                uint32_t ip, CL_Obj *args, int nargs)
+{
+    char val[96], site[160], argv[256];
+    const char *what;
+    if (CL_NULL_P(func_obj)) {
+        what = "NIL";
+    } else if (CL_SYMBOL_P(func_obj)) {
+        snprintf(val, sizeof(val), "symbol %s", cl_symbol_name(func_obj));
+        what = val;
+    } else if (CL_HEAP_P(func_obj) && func_obj < cl_heap.arena_size) {
+        char one[64];
+        snprintf(val, sizeof(val), "heap object type %u %s",
+                 (unsigned)CL_HDR_TYPE(CL_OBJ_TO_PTR(func_obj)),
+                 cl_obj_brief(func_obj, one, sizeof(one)));
+        what = val;
+    } else {
+        /* a fixnum / character prints as itself; a non-object word as
+         * "#<raw ...>" / "#<out of arena ...>" */
+        what = cl_obj_brief(func_obj, val, sizeof(val));
+    }
+    cl_error(CL_ERR_TYPE, "Not a function: %s, called from %s with (%s)", what,
+             frame_site_brief(frame, ip, site, sizeof(site)),
+             cl_args_brief(args, nargs, argv, sizeof(argv)));
+}
+
 /* A cl_vm_apply stub frame carries no user function — its code points at
  * the frame's own embedded stub_code (the OP_CALL/OP_HALT trampoline set up
  * in cl_vm_apply).  JIT'd calls route through cl_vm_apply, so these stubs
@@ -1533,7 +1609,33 @@ static CL_Obj call_builtin(CL_Thread *thr, CL_Function *func,
             thr->pre_call_mv_values[mi] = thr->mv_values[mi];
     }
     thr->mv_count = 1;
+#if defined(DEBUG_GC) || defined(DEBUG_GC_STRESS) || defined(DEBUG_GC_ROOTS)
+    /* A builtin must hand back the protect stack as it found it: an entry
+     * it leaves behind is the ADDRESS of one of its dead C locals, and the
+     * next compaction forwards an arena offset into whatever frame reuses
+     * that slot -- a corrupted C local far from the culprit, layout-
+     * dependent, invisible to the heap itself (the Amiga-only finding of
+     * 2026-09-18: a "not a function" CONS in a local never assigned).
+     * Checked here, at the one return, so the leaking builtin is named. */
+    {
+        int roots_before = gc_root_count;
+        result = func->func(args, nargs);
+        if (gc_root_count != roots_before) {
+            const char *nm = CL_SYMBOL_P(func->name) ? cl_symbol_name(func->name) : "?";
+            fprintf(stderr, "[GC-ROOTS] builtin %s returned with %d protect entr%s "
+                    "left on the stack (had %d, has %d)\n", nm,
+                    gc_root_count - roots_before,
+                    gc_root_count - roots_before == 1 ? "y" : "ies",
+                    roots_before, gc_root_count);
+            cl_error(CL_ERR_GENERAL, "builtin %s returned with %d protect entries "
+                     "left on the GC root stack (had %d, has %d)", nm,
+                     gc_root_count - roots_before, roots_before,
+                     gc_root_count);
+        }
+    }
+#else
     result = func->func(args, nargs);
+#endif
     thr->mv_values[0] = result;
     return result;
 }
@@ -3278,30 +3380,10 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 max_args = (has_rest || has_key)
                            ? 255 : callee_arity + n_opt;
 
-                if (nargs < min_args) {
-                    CL_Obj fname = callee_bc->name;
-                    const char *fn = (!CL_NULL_P(fname) && CL_SYMBOL_P(fname))
-                                     ? cl_symbol_name(fname) : "<lambda>";
-                    const char *src = callee_bc->source_file
-                                      ? callee_bc->source_file : "?";
-                    unsigned src_line = callee_bc->source_line;
-                    cl_error(CL_ERR_ARGS,
-                             "Too few arguments to %s (%s:%u): expected %s%d, got %d",
-                             fn, src, src_line,
-                             (n_opt || has_rest || has_key) ? "at least " : "",
-                             min_args, nargs);
-                }
-                if (nargs > max_args) {
-                    CL_Obj fname = callee_bc->name;
-                    const char *fn = (!CL_NULL_P(fname) && CL_SYMBOL_P(fname))
-                                     ? cl_symbol_name(fname) : "<lambda>";
-                    const char *src = callee_bc->source_file
-                                      ? callee_bc->source_file : "?";
-                    unsigned src_line = callee_bc->source_line;
-                    cl_error(CL_ERR_ARGS,
-                             "Too many arguments to %s (%s:%u): expected %s%d, got %d",
-                             fn, src, src_line, n_opt ? "at most " : "",
-                             max_args, nargs);
+                if (nargs < min_args || nargs > max_args) {
+                    frame->ip = ip;   /* the backtrace names this line */
+                    vm_arity_error(callee_bc, frame, ip, arg_base, nargs,
+                                   nargs < min_args ? min_args : max_args);
                 }
 
                 /* Native fast path (m68k JIT, opt-in via cl_jit_compile).
@@ -3754,23 +3836,8 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
 #endif /* DEBUG_VM */
                 }
             } else {
-                /* Print what we got for debugging */
-                char buf[128];
-                if (CL_NULL_P(func_obj)) {
-                    cl_error(CL_ERR_TYPE, "Not a function: NIL");
-                } else if (CL_SYMBOL_P(func_obj)) {
-                    snprintf(buf, sizeof(buf), "Not a function: symbol %s",
-                             cl_symbol_name(func_obj));
-                    cl_error(CL_ERR_TYPE, buf);
-                } else if (CL_HEAP_P(func_obj)) {
-                    snprintf(buf, sizeof(buf), "Not a function: heap object type %u",
-                             (unsigned)CL_HDR_TYPE(CL_OBJ_TO_PTR(func_obj)));
-                    cl_error(CL_ERR_TYPE, buf);
-                } else {
-                    snprintf(buf, sizeof(buf), "Not a function: raw value 0x%08X",
-                             (unsigned)func_obj);
-                    cl_error(CL_ERR_TYPE, buf);
-                }
+                frame->ip = ip;   /* the backtrace names this line */
+                vm_not_a_function_error(func_obj, frame, ip, arg_base, nargs);
             }
             VM_BREAK;
         }

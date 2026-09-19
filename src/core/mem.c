@@ -6339,3 +6339,293 @@ void cl_mem_stats(void)
     platform_write_string(buf);
 #endif
 }
+
+/* ======================================================================
+ * Heap verification on demand -- (ext:%heap-verify)
+ *
+ * A diagnostic for the field, where a corrupted heap first shows itself
+ * as an unrelated error ("not a function", a keyword that is no symbol)
+ * long after the corruption happened, and where stderr is not seen
+ * (AmigaOS, a script's `>log').  It collects (so that every remaining
+ * non-free block is a live object whose every reference must be
+ * sound), then walks the arena and checks each object's header and
+ * each of its child references against a bitmap of real object starts,
+ * plus every registered static root and every thread's protect stack.
+ * A reference that lands past the bump front, unaligned, inside another
+ * object, in a free block, or on a header with an impossible type is
+ * reported with its holder.  Answers the fault count; the report text
+ * (bounded) is left in a static buffer for cl_gc_verify_heap_report,
+ * which the builtin turns into a Lisp string AFTER the walk (the walk
+ * itself allocates nothing).
+ * ====================================================================== */
+
+#define HV_REPORT_CAP 3072
+/* Kept back from the ordinary lines: the "...\n" cut mark (4 bytes) and the
+ * closing summary (87 characters at most, plus the NUL). */
+#define HV_TAIL_ROOM  96
+static char hv_report[HV_REPORT_CAP];
+static int  hv_report_len;
+static int  hv_cut;                 /* the ordinary lines ran out of room */
+static int  hv_faults;
+static uint8_t *hv_starts;          /* bit per CL_ALIGN unit: an object starts here */
+static uint8_t *hv_free;            /* bit per CL_ALIGN unit: a free block starts here */
+
+/* Append one formatted line if all of it fits below cap; answers whether
+ * it did (a line that does not fit is left out whole). */
+static int hv_append(int cap, const char *fmt, va_list ap)
+{
+    int room = cap - hv_report_len;
+    int n = vsnprintf(hv_report + hv_report_len, room, fmt, ap);
+    if (n < 0 || n >= room) {
+        hv_report[hv_report_len] = '\0';
+        return 0;
+    }
+    hv_report_len += n;
+    return 1;
+}
+
+/* An ordinary line.  They stop HV_TAIL_ROOM short of the buffer's end, with
+ * a single "..." to say lines were left out. */
+static void hv_say(const char *fmt, ...)
+{
+    va_list ap;
+    int ok;
+    if (hv_cut) return;
+    va_start(ap, fmt);
+    ok = hv_append(HV_REPORT_CAP - HV_TAIL_ROOM, fmt, ap);
+    va_end(ap);
+    if (!ok) {
+        strcpy(hv_report + hv_report_len, "...\n");
+        hv_report_len += 4;
+        hv_cut = 1;
+    }
+}
+
+/* The closing line: it is written however full the faults left the buffer,
+ * because a heavily corrupted heap is exactly where its count is wanted. */
+static void hv_summary(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    hv_append(HV_REPORT_CAP, fmt, ap);
+    va_end(ap);
+}
+
+#define HV_BIT_SET(map, off)  ((map)[((off) / CL_ALIGN) >> 3] |= (uint8_t)(1u << (((off) / CL_ALIGN) & 7u)))
+#define HV_BIT_GET(map, off)  (((map)[((off) / CL_ALIGN) >> 3] >> (((off) / CL_ALIGN) & 7u)) & 1u)
+
+/* What is wrong with a reference, or NULL when nothing is. */
+static const char *hv_ref_fault(CL_Obj ref)
+{
+    if (CL_NULL_P(ref) || CL_FIXNUM_P(ref) || CL_CHAR_P(ref)) return NULL;
+    if (ref == CL_UNBOUND) return "the UNBOUND sentinel";
+    if (!CL_HEAP_P(ref)) return "not a tagged object";
+    /* limit - size, not ref + size: size_t is 32 bits on the Amiga, and a
+     * raw word near 0xFFFFFFFF would wrap the sum past the check */
+    if (ref > cl_heap.bump - sizeof(CL_Header)) return "past the bump front";
+    if ((ref & (CL_ALIGN - 1)) != 0) return "unaligned";
+    if (HV_BIT_GET(hv_free, ref)) return "a free block";
+    if (!HV_BIT_GET(hv_starts, ref)) return "inside an object (no header there)";
+    if (CL_HDR_TYPE(CL_OBJ_TO_PTR(ref)) > CL_TYPE_MAX) return "an impossible type tag";
+    return NULL;
+}
+
+static void hv_check_ref(const char *holder, CL_Obj holder_obj, int idx, CL_Obj ref)
+{
+    const char *fault = hv_ref_fault(ref);
+    char a[80], b[80];
+    if (!fault) return;
+    hv_faults++;
+    if (holder_obj != CL_NIL)
+        hv_say("%s %s slot %d -> 0x%08lx is %s (%s)\n", holder,
+               cl_obj_brief(holder_obj, a, sizeof(a)), idx,
+               (unsigned long)ref, fault, cl_obj_brief(ref, b, sizeof(b)));
+    else
+        hv_say("%s slot %d -> 0x%08lx is %s (%s)\n", holder, idx,
+               (unsigned long)ref, fault, cl_obj_brief(ref, b, sizeof(b)));
+}
+
+int cl_gc_verify_heap(void)
+{
+    uint32_t off, units, bytes, walk_end, n_objs = 0, n_free = 0;
+    int i;
+    CL_Thread *t;
+
+    hv_report_len = 0;
+    hv_report[0] = '\0';
+    hv_cut = 0;
+    hv_faults = 0;
+
+    /* Everything that is not free is live after this. */
+    cl_gc();
+
+    units = cl_heap.bump / CL_ALIGN + 1;
+    bytes = (units + 7) / 8;
+    hv_starts = (uint8_t *)platform_alloc(bytes);
+    hv_free   = (uint8_t *)platform_alloc(bytes);
+    if (!hv_starts || !hv_free) {
+        if (hv_starts) platform_free(hv_starts);
+        if (hv_free) platform_free(hv_free);
+        hv_starts = hv_free = NULL;
+        hv_say("heap-verify: no memory for the %lu-byte start bitmaps\n",
+               (unsigned long)bytes);
+        return -1;
+    }
+    memset(hv_starts, 0, bytes);
+    memset(hv_free, 0, bytes);
+
+    /* Pass 1: every block start; header sanity.  A header that breaks the
+     * walk ends it there: walk_end is where the later walks stop too, since
+     * past it there is no telling where a block starts. */
+    walk_end = cl_heap.bump;
+    for (off = CL_ALIGN; off < cl_heap.bump; ) {
+        uint8_t *hp = cl_heap.arena + off;
+        uint32_t size = CL_HDR_SIZE(hp);
+        uint8_t type = CL_HDR_TYPE(hp);
+        if (size == 0 || (size & (CL_ALIGN - 1)) != 0 || off + size > cl_heap.bump) {
+            hv_faults++;
+            hv_say("block @0x%08lx: header size %lu (type %u) breaks the arena walk "
+                   "(bump 0x%08lx); walk stopped\n", (unsigned long)off,
+                   (unsigned long)size, (unsigned)type, (unsigned long)cl_heap.bump);
+            walk_end = off;
+            break;
+        }
+        if (type > CL_TYPE_MAX) {
+            hv_faults++;
+            hv_say("block @0x%08lx: impossible type tag %u (size %lu)\n",
+                   (unsigned long)off, (unsigned)type, (unsigned long)size);
+        }
+#ifdef CL_GENGC
+        if (!gen_enabled && CL_HDR_MARKED(hp)) {   /* old space keeps its mark under GENGC */
+#else
+        if (CL_HDR_MARKED(hp)) {
+#endif
+            hv_faults++;
+            hv_say("block @0x%08lx: mark bit still set after the collection (type %u)\n",
+                   (unsigned long)off, (unsigned)type);
+        }
+        HV_BIT_SET(hv_starts, off);
+        n_objs++;
+        off += size;
+    }
+    /* The free list: those blocks hold no references. */
+    for (off = cl_heap.free_list; off != 0; ) {
+        CL_FreeBlock *fb;
+        if (off >= cl_heap.bump || (off & (CL_ALIGN - 1)) != 0 || !HV_BIT_GET(hv_starts, off)) {
+            hv_faults++;
+            hv_say("free list: link 0x%08lx is not a block start; list walk stopped\n",
+                   (unsigned long)off);
+            break;
+        }
+        HV_BIT_SET(hv_free, off);
+        n_free++;
+        fb = (CL_FreeBlock *)(cl_heap.arena + off);
+        off = fb->next_offset;
+        if (n_free > n_objs) {
+            hv_faults++;
+            hv_say("free list: cycles\n");
+            break;
+        }
+    }
+    /* A bare size-only header (too small for a free-list link) holds no
+     * object either: nothing live is smaller than a cons. */
+    for (off = CL_ALIGN; off < walk_end; ) {
+        uint8_t *hp = cl_heap.arena + off;
+        uint32_t size = CL_HDR_SIZE(hp);
+        if (size == 0 || off + size > walk_end) break;
+        if (size < sizeof(CL_Cons) && !HV_BIT_GET(hv_free, off)) {
+            HV_BIT_SET(hv_free, off);
+            n_free++;
+        }
+        off += size;
+    }
+
+    /* Pass 2: every live object's children. */
+    for (off = CL_ALIGN; off < walk_end; ) {
+        uint8_t *hp = cl_heap.arena + off;
+        uint32_t size = CL_HDR_SIZE(hp);
+        uint8_t type = CL_HDR_TYPE(hp);
+        CL_Obj self = (CL_Obj)off;
+        int slot = 0;
+        if (size == 0 || off + size > walk_end) break;
+        if (HV_BIT_GET(hv_free, off) || type > CL_TYPE_MAX) { off += size; continue; }
+        if (type == TYPE_BYTECODE) {
+            CL_Bytecode *bc = (CL_Bytecode *)hp;
+            if (!bc->code || bc->code_len == 0) {
+                hv_faults++;
+                hv_say("bytecode @0x%08lx: code %p len %lu\n", (unsigned long)off,
+                       (void *)bc->code, (unsigned long)bc->code_len);
+            }
+            if (!bc->constants && bc->n_constants > 0) {
+                hv_faults++;
+                hv_say("bytecode @0x%08lx: %u constants but no pool\n",
+                       (unsigned long)off, (unsigned)bc->n_constants);
+                off += size; continue;
+            }
+        }
+#define GC_VISIT(s) hv_check_ref(cl_type_name(self), self, slot++, (s))
+#define GC_BYTECODE_TAIL(bc) ((void)(bc))
+#define GC_STREAM_TAIL(st) ((void)(st))
+        GC_WALK_OBJ_CHILDREN(hp, type);
+#undef GC_VISIT
+#undef GC_BYTECODE_TAIL
+#undef GC_STREAM_TAIL
+        off += size;
+    }
+
+    /* The roots outside the arena: registered statics, thread protect stacks. */
+    for (i = 0; i < n_global_roots; i++) {
+        const char *fault = hv_ref_fault(*global_roots[i]);
+        if (fault) {
+            char b[80];
+            const char *site = "?";
+            int line = 0;
+#ifdef DEBUG_GC
+            site = global_root_files[i] ? global_root_files[i] : "?";
+            line = global_root_lines[i];
+#endif
+            hv_faults++;
+            hv_say("static root #%d (%s:%d) -> 0x%08lx is %s (%s)\n", i, site, line,
+                   (unsigned long)*global_roots[i], fault,
+                   cl_obj_brief(*global_roots[i], b, sizeof(b)));
+        }
+    }
+#undef gc_root_count
+    for (t = cl_thread_list; t; t = t->next) {
+        int j;
+        for (j = 0; j < t->gc_root_count; j++) {
+            const char *fault = hv_ref_fault(*t->gc_roots[j]);
+            if (fault) {
+                char b[80];
+                hv_faults++;
+                hv_say("thread %p protect #%d -> 0x%08lx is %s (%s)\n", (void *)t, j,
+                       (unsigned long)*t->gc_roots[j], fault,
+                       cl_obj_brief(*t->gc_roots[j], b, sizeof(b)));
+            }
+        }
+        for (j = 0; j < t->vm.sp; j++) {
+            const char *fault = hv_ref_fault(t->vm.stack[j]);
+            if (fault) {
+                char b[80];
+                hv_faults++;
+                hv_say("thread %p VM stack[%d] -> 0x%08lx is %s (%s)\n", (void *)t, j,
+                       (unsigned long)t->vm.stack[j], fault,
+                       cl_obj_brief(t->vm.stack[j], b, sizeof(b)));
+            }
+        }
+    }
+
+#define gc_root_count (CT->gc_root_count)
+    hv_summary("heap-verify: %lu blocks (%lu free), bump 0x%08lx, %d fault(s)\n",
+               (unsigned long)n_objs, (unsigned long)n_free,
+               (unsigned long)cl_heap.bump, hv_faults);
+    platform_free(hv_starts);
+    platform_free(hv_free);
+    hv_starts = hv_free = NULL;
+    return hv_faults;
+}
+
+const char *cl_gc_verify_heap_report(void)
+{
+    return hv_report;
+}

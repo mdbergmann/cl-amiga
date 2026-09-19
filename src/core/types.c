@@ -1,11 +1,12 @@
 #include "types.h"
 #include "mem.h"
 #include "error.h"
+#include "package.h"
 #include "../platform/platform.h"
+#include <stdio.h>
 
 #ifdef DEBUG_GC
 #include "vm.h"
-#include <stdio.h>
 #endif
 
 CL_Obj CL_T = CL_NIL;  /* Set properly during init by symbol/package setup */
@@ -139,4 +140,99 @@ const char *cl_type_name(CL_Obj obj)
         }
     }
     return "UNKNOWN";
+}
+
+/*
+ * A short description of ANY 32-bit value for a diagnostic: the printed
+ * form of a symbol, fixnum, character or short string, the type and raw
+ * value of every other object, and an explicit marker for a word that is
+ * not an object at all (an offset past the arena, the UNBOUND sentinel, a
+ * raw word).  Allocates nothing and dereferences no offset it has not
+ * bounds-checked against the arena, so it can be pointed at the very
+ * garbage a corruption diagnostic is trying to describe -- the printer
+ * cannot (it recurses into whatever it finds).  Answers buf.
+ */
+const char *cl_obj_brief(CL_Obj obj, char *buf, int bufsize)
+{
+    if (bufsize < 8) { if (bufsize > 0) buf[0] = '\0'; return buf; }
+    if (CL_NULL_P(obj)) { strcpy(buf, "NIL"); return buf; }
+    if (obj == CL_UNBOUND) { strcpy(buf, "#<unbound>"); return buf; }
+    if (CL_FIXNUM_P(obj)) {
+        snprintf(buf, bufsize, "%ld", (long)CL_FIXNUM_VAL(obj));
+        return buf;
+    }
+    if (CL_CHAR_P(obj)) {
+        int c = CL_CHAR_VAL(obj);
+        if (c > 32 && c < 127) snprintf(buf, bufsize, "#\\%c", c);
+        else                   snprintf(buf, bufsize, "#\\(code %d)", c);
+        return buf;
+    }
+    if (!CL_HEAP_P(obj)) {
+        snprintf(buf, bufsize, "#<raw 0x%08lx>", (unsigned long)obj);
+        return buf;
+    }
+    /* limit - size, not obj + size: size_t is 32 bits on the Amiga, and a
+     * raw word near 0xFFFFFFFF would wrap the sum past the check */
+    if (obj > cl_heap.arena_size - sizeof(CL_Header)) {
+        snprintf(buf, bufsize, "#<out of arena 0x%08lx>", (unsigned long)obj);
+        return buf;
+    }
+    switch (CL_HDR_TYPE(CL_OBJ_TO_PTR(obj))) {
+    case TYPE_SYMBOL: {
+        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(obj);
+        CL_Obj name = s->name;
+        if (CL_HEAP_P(name) && name <= cl_heap.arena_size - sizeof(CL_String) &&
+            CL_HDR_TYPE(CL_OBJ_TO_PTR(name)) == TYPE_STRING) {
+            CL_String *str = (CL_String *)CL_OBJ_TO_PTR(name);
+            int len = str->length > 64 ? 64 : (int)str->length;
+            snprintf(buf, bufsize, "%s%.*s",
+                     s->package == cl_package_keyword ? ":" : "", len, str->data);
+        } else {
+            snprintf(buf, bufsize, "#<SYMBOL 0x%08lx, name 0x%08lx>",
+                     (unsigned long)obj, (unsigned long)name);
+        }
+        return buf;
+    }
+    case TYPE_STRING: {
+        CL_String *str = (CL_String *)CL_OBJ_TO_PTR(obj);
+        int len = str->length > 32 ? 32 : (int)str->length;
+        snprintf(buf, bufsize, "\"%.*s%s\"", len, str->data,
+                 str->length > 32 ? "..." : "");
+        return buf;
+    }
+    default:
+        break;
+    }
+    if (strcmp(cl_type_name(obj), "UNKNOWN") == 0)
+        snprintf(buf, bufsize, "#<type %u 0x%08lx>",
+                 (unsigned)CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)), (unsigned long)obj);
+    else
+        snprintf(buf, bufsize, "#<%s 0x%08lx>", cl_type_name(obj), (unsigned long)obj);
+    return buf;
+}
+
+/* The arguments of a call, each through cl_obj_brief, space-separated and
+ * cut off with "..." once the buffer is nearly full.  For the messages of
+ * an arity / keyword / callee check: seeing the whole argument list is what
+ * tells a shifted stack (an argument missing at the front, the callee
+ * itself among the arguments) from a single bad value. */
+const char *cl_args_brief(CL_Obj *args, int nargs, char *buf, int bufsize)
+{
+    int i, pos = 0;
+    if (bufsize < 8) { if (bufsize > 0) buf[0] = '\0'; return buf; }
+    buf[0] = '\0';
+    for (i = 0; i < nargs; i++) {
+        char one[96];
+        int n;
+        cl_obj_brief(args[i], one, sizeof(one));
+        n = snprintf(buf + pos, bufsize - pos, "%s%s", i ? " " : "", one);
+        if (n < 0 || pos + n >= bufsize - 4) {
+            /* out of room: end with "..." */
+            if (pos > bufsize - 5) pos = bufsize - 5;
+            strcpy(buf + pos, " ...");
+            break;
+        }
+        pos += n;
+    }
+    return buf;
 }

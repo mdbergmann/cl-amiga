@@ -3248,9 +3248,11 @@ int platform_run_main(int (*fn)(int, char **), int argc, char **argv)
     main_stack_swap.stk_Lower = main_stack_mem;
     main_stack_swap.stk_Upper = (ULONG)main_stack_mem + PLATFORM_MAIN_STACK_MIN;
     main_stack_swap.stk_Pointer = (APTR)main_stack_swap.stk_Upper;
-    StackSwap(&main_stack_swap);
-    rc = fn(argc, argv);
-    StackSwap(&main_stack_swap);        /* back: the struct now holds ours */
+    /* The swap itself is assembly (stack_swap_m68k.s): to gcc, StackSwap
+     * is an ordinary call, and C code around it may keep sp-relative
+     * temporaries or defer a callee's argument pop past the swap back --
+     * this function did, unwinding the wrong stack before its rts. */
+    rc = platform_stack_call(&main_stack_swap, fn, argc, argv);
     FreeVec(main_stack_mem);
     main_stack_mem = NULL;
     return rc;
@@ -3266,10 +3268,12 @@ void platform_process_exit(int code)
         /* Back on the stack we were given, so the task's stack bounds are
          * the original ones again when libnix's exit resets SP to what it
          * saved at _start (a frame on that stack); the frames above the
-         * swap point are abandoned. */
-        StackSwap(&main_stack_swap);
-        FreeVec(main_stack_mem);
+         * swap point are abandoned.  Swap, FreeVec and _exit are one
+         * assembly routine: nothing of ours runs on either stack in
+         * between. */
+        void *mem = main_stack_mem;
         main_stack_mem = NULL;
+        platform_stack_exit(&main_stack_swap, mem, code);
     }
 #endif
     /* On 68k libnix this is the same entry as exit(): the exit list runs

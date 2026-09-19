@@ -269,6 +269,14 @@ int cl_gc_audit_roots(void);
  * CLAMIGA_HDR_INDEX=0).  See tests/test_gc_hdr_index.c. */
 int cl_gc_audit_hdr_index(void);
 
+/* Collect, then check every object header, every child reference of
+ * every live object, every registered static root and every thread's
+ * protect stack / VM stack against the real object starts.  Returns the
+ * fault count (0 = clean, -1 = could not run); the bounded report is
+ * read with cl_gc_verify_heap_report.  (ext:%heap-verify) in Lisp. */
+int cl_gc_verify_heap(void);
+const char *cl_gc_verify_heap_report(void);
+
 
 /* Retire a thread's TLAB (flush cons accounting, drop the chunk).  The
  * uncut remainder is already formatted as a walkable hole; the next sweep

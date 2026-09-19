@@ -366,6 +366,16 @@ const char *platform_executable_prefix(char *buf, int bufsize);
  * turned into a clean Lisp error before it silently corrupts memory. */
 long platform_stack_headroom(void);
 
+#if defined(PLATFORM_AMIGA) && !defined(PLATFORM_MORPHOS)
+/* The m68k main-stack swap, in assembly (stack_swap_m68k.s): run FN on
+ * the stack SS describes and come back, or leave the process from it.
+ * See platform_run_main / platform_process_exit for why not C. */
+struct StackSwapStruct;
+int  platform_stack_call(struct StackSwapStruct *ss, int (*fn)(int, char **),
+                         int argc, char **argv);
+void platform_stack_exit(struct StackSwapStruct *ss, void *mem, int code);
+#endif
+
 /* Directory LEVELS above the executable's directory, as a prefix ready for
  * direct concatenation with a relative path (trailing separator included).
  * On AmigaOS this resolves through dos.library ParentDir — the "PROGDIR:"

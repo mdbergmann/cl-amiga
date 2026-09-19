@@ -231,7 +231,7 @@ test_batch test_repl_values test_repl_paste test_boot_log test_mx_error_context 
                 test_mt_gc_compact_hang test_mt_stream_mutex_leak test_mt_dispatch_addmethod_race \
                 test_mt_dispatch_cache_race test_mt_thread_exit_gc test_mt_thread_identity \
                 test_mt_intern_stw test_mt_stream_close_race test_mt_interrupt_parked \
-                test_lock_diag test_break_diag test_debugger_backtrace test_backtrace_lines \
+                test_lock_diag test_break_diag test_call_diag test_heap_verify test_debugger_backtrace test_backtrace_lines \
                 test_debugger_eof test_inspect_eof \
                 test_io_diag test_ql_socket_timeouts test_stream_outbuf_leak \
                 test_shutdown_leak \
@@ -349,6 +349,10 @@ test-gc-stress:
 	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_shutdown_leak.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
 	@echo "--- test_md2guide (CLAMIGA_GC_STRESS=1, forced compaction: string/cons-heavy Lisp) ---"
 	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_md2guide.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
+	@echo "--- test_heap_verify (CLAMIGA_GC_STRESS=1, forced compaction: the verifier collects and allocates its report; light churn) ---"
+	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_heap_verify.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
+	@echo "--- test_call_diag (CLAMIGA_GC_STRESS=1, forced compaction: the diagnostics' error messages) ---"
+	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_call_diag.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
 
 # `make test-memleak` builds a DEBUG_MEM_TRACK binary — every platform_alloc
 # tagged with its call site — and asserts that a run ends with ZERO off-heap

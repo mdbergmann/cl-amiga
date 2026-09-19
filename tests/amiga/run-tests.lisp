@@ -12310,6 +12310,53 @@ y" 1))
         (and (or (member :little-endian *features*)
                  (member :big-endian *features*)) t)))
 
+; --- Call-site diagnostics (tests/test_call_diag.sh is the host leg) ---
+; An arity error, a non-function callee and a sequence builtin's keyword
+; check say WHAT they got: the caller, the arguments as received, the
+; offending value and its position.  On the Amiga a log line is all there
+; is, and these three errors are the first symptom of a shifted or
+; corrupted argument list (the Clamacs FASL finding of 2026-09-18).
+(defun cdiag-two (a b) (list a b))
+(defun cdiag-caller (x) (cdiag-two x))
+(defun cdiag-msg (thunk)
+  (handler-case (progn (funcall thunk) "no error")
+    (error (e) (format nil "~A" e))))
+; Under the m68k JIT the caller is native code whose frame carries no
+; bytecode ip, so the site reads "?" there (an open item of the JIT's
+; backtraces); the callee and the arguments are named either way.
+(check "call-diag: arity names callee, caller and the arguments" '(t t t)
+  (let ((m (cdiag-msg (lambda () (cdiag-caller 42)))))
+    (list (and (search "Too few arguments to CDIAG-TWO" m) t)
+          (and (search (if (clamiga::%jit-active-p) "called from " "called from CDIAG-CALLER") m) t)
+          (and (search "with (42)" m) t))))
+(check "call-diag: too many lists the arguments" t
+  (and (search "got 3, called from" (cdiag-msg (lambda () (cdiag-two 1 2 3)))) t))
+(check "call-diag: keyword check names builtin, value, position, arguments" t
+  (and (search "MISMATCH: keyword-argument key is not a symbol: 7 (argument 3 of 4; the arguments: \"abc\" \"abd\" 7 3)"
+               (cdiag-msg (lambda () (mismatch "abc" "abd" 7 3)))) t))
+(check "call-diag: unknown keyword is named" t
+  (and (search "unrecognized keyword argument: :BOGUS (argument 3 of 4"
+               (cdiag-msg (lambda () (mismatch "abc" "abd" :bogus 3)))) t))
+(check "call-diag: :test that is no function shows the value" t
+  (and (search "not a function: 42" (cdiag-msg (lambda () (find 1 '(1 2) :test 42)))) t))
+(check "call-diag: funcall of a fixnum names value, caller and arguments" '(t t)
+  (let ((m (cdiag-msg (lambda () (funcall 42 :a "s")))))
+    (list (and (search "Not a function: 42, called from" m) t)
+          (and (search "with (:A \"s\")" m) t))))
+(check "call-diag: funcall of a cons keeps the type wording and adds the object" t
+  (and (search "Not a function: heap object type 0 #<CONS 0x"
+               (cdiag-msg (lambda () (funcall '(1 . 2) :k)))) t))
+
+; --- (ext:%heap-verify): the heap of this whole suite so far is sound ---
+; Collects, then checks every live object's references, the static roots
+; and the thread stacks.  0 here, after everything above allocated,
+; compacted and errored, is the field probe's own regression test
+; (tests/test_heap_verify.sh is the host leg).
+(check "heap-verify: the suite's heap is clean" '(0 t)
+  (multiple-value-bind (n r) (ext:%heap-verify)
+    (unless (eql n 0) (format t "~&~A" r))
+    (list n (and (search "fault(s)" r) t))))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

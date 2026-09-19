@@ -970,6 +970,13 @@ CL_Obj cl_cons(CL_Obj car, CL_Obj cdr);
 /* Type name for printing/errors */
 const char *cl_type_name(CL_Obj obj);
 
+/* A short, allocation-free, crash-proof description of any 32-bit value
+ * for a diagnostic (a symbol's name, a fixnum, a short string, else the
+ * type + raw value; a marker for a non-object).  Answers buf. */
+const char *cl_obj_brief(CL_Obj obj, char *buf, int bufsize);
+/* nargs values through cl_obj_brief, space-separated, "..." when cut. */
+const char *cl_args_brief(CL_Obj *args, int nargs, char *buf, int bufsize);
+
 /* Check if obj is of type type_spec (same as CL typep) */
 int cl_typep(CL_Obj obj, CL_Obj type_spec);
 

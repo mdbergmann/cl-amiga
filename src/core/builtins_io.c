@@ -3340,6 +3340,25 @@ static CL_Obj bi_ext_gc_audit_hdr_index(CL_Obj *args, int n)
     return CL_MAKE_FIXNUM(cl_gc_audit_hdr_index());
 }
 
+/* (ext:%heap-verify) => faults, report-string.  Collects, then checks
+ * every live object's header and references, the registered static
+ * roots and the thread stacks (mem.c cl_gc_verify_heap).  For the field:
+ * call it after each LOAD of a suspect file, or before the form that
+ * fails, to find where a corruption entered -- on the Amiga the report
+ * goes into the script's log, where stderr never does. */
+static CL_Obj bi_ext_heap_verify(CL_Obj *args, int n)
+{
+    int faults;
+    const char *rep;
+    CL_UNUSED(args); CL_UNUSED(n);
+    faults = cl_gc_verify_heap();
+    rep = cl_gc_verify_heap_report();
+    cl_mv_values[0] = CL_MAKE_FIXNUM(faults);
+    cl_mv_values[1] = cl_make_string(rep, (uint32_t)strlen(rep));
+    cl_mv_count = 2;
+    return cl_mv_values[0];
+}
+
 static CL_Obj bi_time_report(CL_Obj *args, int n)
 {
     uint32_t start_time, end_time, elapsed;
@@ -5169,6 +5188,7 @@ void cl_builtins_io_init(void)
     extfun("%STREAM-OUTBUF-STATS", bi_ext_stream_outbuf_stats, 0, 0);
     extfun("%GC-AUDIT-ROOTS", bi_ext_gc_audit_roots, 0, 0);
     extfun("%GC-AUDIT-HDR-INDEX", bi_ext_gc_audit_hdr_index, 0, 0);
+    extfun("%HEAP-VERIFY", bi_ext_heap_verify, 0, 0);
     extfun("GETENV", bi_getenv, 1, 1);
     extfun("UNPACK-BYTERUN1", bi_unpack_byterun1, 5, 6);
     extfun("COPY-ROWS", bi_copy_rows, 8, 8);
