@@ -3,7 +3,7 @@
 (build/cross/probes/*, see PROBES.md) to a real Amiga through amiagent and
 run them, printing each verdict line.
 
-With no arguments runs the standard set: storeprobe v1 (three launches,
+With no arguments runs the standard set: storeprobe v1 (five launches,
 since v1..v20 pass or fail per launch -- PROBES.md) v5 v8 v9 v14 v20,
 fpuregtest fpu/sin, regtest, stackprobe.  Otherwise each argument is one
 run, e.g. "storeprobe 5 noswap v9".  storeprobe v21 FREEZES a Vampire and
@@ -30,7 +30,7 @@ DIR = os.environ.get("AMIGA_DIR", "T:")
 if DIR and not DIR.endswith((":", "/")):
     DIR += "/"  # a drawer ("Work:Download") needs the separator; a volume or assign ("T:") has it
 
-DEFAULT = ["storeprobe 3 noswap v1", "storeprobe 3 noswap v1", "storeprobe 3 noswap v1",
+DEFAULT = ["storeprobe 3 noswap v1"] * 5 + [
            "storeprobe 3 noswap v5", "storeprobe 3 noswap v8",
            "storeprobe 3 noswap v9", "storeprobe 3 noswap v14", "storeprobe 3 noswap v20",
            "fpuregtest 5 noswap fpu", "fpuregtest 5 noswap sin",

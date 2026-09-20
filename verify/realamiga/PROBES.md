@@ -85,6 +85,64 @@ What to run elsewhere, and why:
   (`ApolloControl CORE`), `ApolloControl CPU`, the verdict lines, the
   address dependence and the v21 freeze above, and this file's source.
 
+## Procedure for a machine not in the table below
+
+Ten minutes, nothing to install on the Amiga beyond the four binaries.
+Never run `v21`, and do not run clamiga itself for this -- the probes are
+enough and cannot take the machine down.
+
+1. `make -f Makefile.cross probes` on the host (needs the m68k toolchain
+   under `tools/m68k-amigaos-gcc/prefix`, as `make -f Makefile.cross amiga`
+   does).
+2. Get the binaries onto the box: `run-probes.py` with `AMIGA_HOST` /
+   `AMIGA_TOKEN` when an amiagent runs there (`AMIGA_DIR` for a drawer other
+   than `T:`), otherwise copy `build/cross/probes/*` by hand, `Protect +e`
+   them, and run the lines below from a Shell.
+3. Record what the machine is, from a Shell: `Version` (Kickstart, exec),
+   `CPU` (the 3.x command: CPU type, caches), and on a Vampire
+   `ApolloControl CORE`, `ApolloControl BFN`, `ApolloControl CPU`.  On a
+   MorphOS or emulated machine say so: the probes then measure the 68k
+   emulation, a control for "healthy", not a core.
+4. Run, and keep every verdict line:
+
+       storeprobe 3 noswap v1      (FIVE times -- separate launches, since the
+                                    verdict is per launch on a defective core)
+       storeprobe 3 noswap v5
+       storeprobe 3 noswap v9
+       storeprobe 3 noswap v20
+       storeprobe 3 noswap v14
+       storeprobe 3 noswap v8
+       storeprobe 3 swap v1
+       fpuregtest 5 noswap fpu
+       fpuregtest 5 noswap sin
+       regtest 5 noswap
+       stackprobe 5 noswap fpu
+
+   `run-probes.py` with no arguments runs this set except the `swap` line.
+   Run that one separately: `run-probes.py "storeprobe 3 swap v1"` --
+   arguments replace the default set, they do not extend it.
+   A healthy machine prints `0 lost store(s) -- all stores landed` on
+   every storeprobe line, `registers intact` from fpuregtest and regtest
+   and `0 foreign write(s) -- live stack intact` from stackprobe; exit
+   code 0 throughout.  Any `STORES LOST` on any launch means
+   the defect is present; five clean `v1` launches in a row mean it is
+   absent with high confidence (on core 10760 the per-launch odds are
+   about even).
+5. Add a row to the table below and commit it.  For a Vampire with a
+   different core than 10760, also note whether v1 EVER lost a store: that
+   single bit is the question for the Apollo team ("does a newer core fix
+   it?").
+
+## Results so far
+
+| machine                                   | CPU / core                      | v1 (5 launches)      | v5 / v9 / v20 / v14 / v8         | fpu / reg / stack | date       |
+|-------------------------------------------|---------------------------------|----------------------|----------------------------------|-------------------|------------|
+| Apollo V4 Standalone, KS 47.13, WB 3.2.3  | AC68080 core 10760, 92 MHz      | LOST on ~half        | LOST / LOST 74% / ok / ok / flips | clean             | 2026-09-19 |
+| FS-UAE (verify.fs-uae, 68040 JIT)         | emulated 68040                  | clean                | clean                            | clean             | 2026-09-19 |
+
+("flips" = passed in one build and lost 68% in the next: the source-address
+dependence above, before it was understood.)
+
 ## fpuregtest, regtest, stackprobe -- the ones that exonerated the rest
 
     fpuregtest [SECONDS] [swap|noswap] [fpu] [sin] [cr]
