@@ -6083,6 +6083,34 @@ check_contains "nlx-writer: RETURN-FROM out of a source load, then allocate" "WG
 check_contains "nlx-writer: THROW out of a source load, then allocate" "WGN-TH :THROWN 200" "$out"
 check_contains "nlx-writer case finished" "WGN-DONE" "$out"
 
+# --- Case: an inlined FLET/LABELS function's bindings cursor ---------------
+# local_inline_fill (compiler_special.c) takes the bindings cursor B by
+# value: the caller protects ITS copy, and the RETURN-FROM scan the fill
+# runs first macroexpands -- under stress, compacts -- before the fill
+# re-reads the body and the parameter list through B.  A FLET whose
+# function is inlined (never escapes) as the value form of DEFVAR /
+# DEFPARAMETER / DEFCONSTANT hit it: "CDR: argument is not of type LIST
+# (got SYMBOL)" at load, form by form or from a file alike (the clamacs
+# menu table, 2026-09-20).  The same shapes inside a DEFUN, a PROGN or a
+# SETQ happened to survive by allocation luck, so all of them are here.
+mkdir -p "$WORK/flet-inline"
+cat > "$WORK/flet-inline/run.lisp" <<'EOF'
+(defparameter *fli-1* (flet ((f () 1)) (f)))
+(defvar *fli-2* (flet ((f (a b) (list a b))) (list (f 1 2) (f 3 4))))
+(defconstant +fli-3+ (labels ((f (a) (* a 2))) (f 21)))
+(defparameter *fli-4* (flet ((title (name) (list :title name))
+                             (item (command label) (list :item command label)))
+                        (list (title "Project") (item 'find-file "Open...") (item 'save-buffer "Save"))))
+(defun fli-fn () (flet ((f (a) (return-from f (1+ a)))) (f 9)))
+(setq *fli-5* (flet ((f (x) (if (> x 0) (return-from f :pos) :neg))) (list (f 1) (f -1))))
+(format t "FLI ~S ~S ~S ~S ~S ~S~%" *fli-1* *fli-2* +fli-3+ (length *fli-4*) (fli-fn) *fli-5*)
+(format t "FLI-DONE~%")
+EOF
+out=$(CLAMIGA_FASL_CACHE_DIR="$WORK/flet-inline/cache" run_stress "$WORK/flet-inline/run.lisp")
+check_contains "flet-inline: inlined local functions as DEFVAR/DEFPARAMETER/DEFCONSTANT values" \
+    "FLI 1 ((1 2) (3 4)) 42 3 10 (:POS :NEG)" "$out"
+check_contains "flet-inline case finished" "FLI-DONE" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

@@ -2365,6 +2365,16 @@ static void local_inline_fill(CL_Compiler *c, CL_Obj b, int idx,
                               int block_mark, int tagbody_mark)
 {
     CL_CompEnv *env = c->env;
+    /* GC SAFETY: the caller's cursor is protected in the CALLER's frame;
+     * this parameter is a copy of its value, which the compactor does not
+     * forward.  The RETURN-FROM scan below macroexpands (allocates, and
+     * under gc-stress compacts at every allocation), so the re-reads
+     * through B after it -- the LOCALLY cons, the block name, the
+     * parameter list -- would walk a stale offset: `(defparameter *x*
+     * (flet ((f () 1)) (f)))' loaded under stress failed with "CDR:
+     * argument is not of type LIST (got SYMBOL)" here (the clamacs menu
+     * table, 2026-09-20).  Protect the copy. */
+    CL_GC_PROTECT(b);
     if (CL_NULL_P(inline_body)) {
         /* The implicit BLOCK only when the body can RETURN-FROM it (a
          * macro-aware scan, like compile_block's): a local-exit block
@@ -2384,6 +2394,7 @@ static void local_inline_fill(CL_Compiler *c, CL_Obj b, int idx,
     }
     env->local_funs[idx].inline_body     = inline_body;
     env->local_funs[idx].inline_params   = cl_car(cl_cdr(cl_car(b)));
+    CL_GC_UNPROTECT(1);                                   /* b */
     env->local_funs[idx].def_local_mark  = local_mark;
     env->local_funs[idx].def_fun_mark    = fun_mark;
     env->local_funs[idx].def_macro_mark  = macro_mark;

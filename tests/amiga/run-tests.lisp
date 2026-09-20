@@ -641,6 +641,26 @@ y" 1))
 (check "flet closure" 15 (let ((x 10)) (flet ((f (y) (+ x y))) (f 5))))
 (check "labels fact" 120 (labels ((fact (n) (if (<= n 1) 1 (* n (fact (- n 1)))))) (fact 5)))
 (check "labels mutual" t (labels ((even2 (n) (if (= n 0) t (odd2 (- n 1)))) (odd2 (n) (if (= n 0) nil (even2 (- n 1))))) (even2 4)))
+; Regression (2026-09-20, the clamacs menu table): an inlined FLET/LABELS
+; function as the value form of DEFVAR / DEFPARAMETER / DEFCONSTANT --
+; local_inline_fill re-read the bindings through an unprotected copy of the
+; cursor after its RETURN-FROM scan (a compaction there gave "CDR: argument
+; is not of type LIST"); tests/test_gc_stress_regression.sh has the stress leg.
+(defparameter *fli-param* (flet ((f () 1)) (f)))
+(defvar *fli-var* (flet ((f (a b) (list a b))) (list (f 1 2) (f 3 4))))
+(defconstant +fli-const+ (labels ((f (a) (* a 2))) (f 21)))
+(defparameter *fli-table*
+  (flet ((title (name) (list :title name))
+         (item (command label) (list :item command label)))
+    (list (title "Project") (item 'find-file "Open...") (item 'save-buffer "Save"))))
+(check "defparameter of an inlined flet" 1 *fli-param*)
+(check "defvar of an inlined flet" '((1 2) (3 4)) *fli-var*)
+(check "defconstant of an inlined labels" 42 +fli-const+)
+(check "defparameter of a flet-built table" '(:item save-buffer "Save") (third *fli-table*))
+(check "defparameter of a flet with return-from" '(:pos :neg)
+       (progn (defparameter *fli-rf* (flet ((f (x) (if (> x 0) (return-from f :pos) :neg)))
+                                       (list (f 1) (f -1))))
+              *fli-rf*))
 ; Regression (chipz inflate.lisp): #'(setf name) must resolve to the setter
 ; symbol, not FLOAD the raw (SETF NAME) cons (which corrupted the const pool).
 (defun (setf sl-acc) (v x) (setf (car x) v) v)
