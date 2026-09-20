@@ -168,7 +168,7 @@ ALL_SRCS = $(MAIN_SRC) $(PLATFORM_SRC) $(CORE_SRC) $(JIT_SRC)
 ALL_OBJS = $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(ALL_SRCS)) \
            $(patsubst $(SRCDIR)/%.s,$(BUILDDIR)/%.o,$(PLATFORM_ASM))
 
-.PHONY: amiga test-amiga test-amiga-lowend examples-amiga image-amiga clean check-toolchain probes
+.PHONY: amiga test-amiga test-amiga-lowend examples-amiga image-amiga editor-image-amiga clean check-toolchain probes
 
 amiga: check-toolchain $(BUILDDIR)/clamiga $(BUILDDIR)/wbrun
 
@@ -269,6 +269,15 @@ examples-amiga: $(BUILDDIR)/clamiga
 # the shipped FASLs.
 image-amiga: $(BUILDDIR)/clamiga
 	verify/realamiga/make-image.sh $(BUILDDIR)
+
+# The Clamacs editor's heap image beside the binary (BUILDDIR/clamacs.img),
+# saved + verified in FS-UAE from the submodule's sources: the editor's
+# files are staged under build/editor-lib/lib/clamacs/ the way the release
+# ships them (verify/realamiga/make-editor-image.sh wants a lib/clamacs/).
+editor-image-amiga: $(BUILDDIR)/clamiga
+	rm -rf build/editor-lib && mkdir -p build/editor-lib/lib/clamacs
+	cp clamacs/lisp/*.lisp clamacs/scripts/save-editor-image.lisp clamacs/scripts/verify-editor-image.lisp build/editor-lib/lib/clamacs/
+	verify/realamiga/make-editor-image.sh $(BUILDDIR) build/editor-lib
 
 test-amiga-lowend: $(BUILDDIR)/clamiga $(BUILDDIR)/wbrun
 	@if [ "$(FPU)" = "1" ]; then \

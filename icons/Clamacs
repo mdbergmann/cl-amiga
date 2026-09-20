@@ -1,11 +1,14 @@
 ; Clamacs -- double-click launcher (run by C:IconX, see Clamacs.info).
-; Starts the editor/IDE; it opens its own MUI windows, so the icon's
-; WINDOW tool type is NIL:.  The editor talks to a running clamiga over
-; ARexx and can start one itself (PROGDIR:clamiga, i.e. the binary next
-; to it).  Needs MUI 3.8+ and TextEditor.mcc 15.29+ (see README-FIRST).
+; Starts the editor/IDE: the clamiga next to its clamacs.img, restored
+; from that image (the editor, already loaded) and told to run it.  It
+; opens its own MUI windows, so the icon's WINDOW tool type is NIL:.  The
+; editor talks to a running clamiga over ARexx and can start one itself
+; (PROGDIR:clamiga, i.e. the same binary).  Needs MUI 3.8+ and
+; TextEditor.mcc 15.29+ (see README-FIRST).  Files to edit go after `--'
+; when started from a shell; S:.clamacsrc is loaded first.
 Stack 131072
 If EXISTS SYS:MorphOS
-  Run >NIL: bin/mos/clamacs
+  Run >NIL: bin/mos/clamiga --image bin/mos/clamacs.img --heap 8M --non-interactive --eval "(clamacs::run)"
 Else
-  Run >NIL: bin/aos3/clamacs
+  Run >NIL: bin/aos3/clamiga --image bin/aos3/clamacs.img --heap 8M --non-interactive --eval "(clamacs::run)"
 EndIf

@@ -29,19 +29,25 @@ never gates on this repo — and work that leads back into the runtime
 the game) is a commit *here*, with every gate above applying to it in
 full.  Keep the two changes, and their gates, apart.
 
-**Clamacs, the native MUI editor/IDE, is the `clamacs/` submodule**
-(https://github.com/mdbergmann/clamacs, since 2026-09-12): it is
-released *with* clamiga — `scripts/make-binary-release.sh` cross-builds
-it and ships `bin/aos3/clamacs` and `bin/mos/clamacs` next to the
-runtime binaries — but it keeps its own suites and its own `CLAUDE.md`.
+**Clamacs, the MUI editor/IDE, is the `clamacs/` submodule**
+(https://github.com/mdbergmann/clamacs, since 2026-09-12).  It is written
+in Common Lisp (`clamacs/lisp/`, `clamacs/specs/clamacs-lisp.md`; the C
+editor under `clamacs/src/` is its frozen predecessor) and runs as a
+clamiga instance of its own.  It is released *with* clamiga —
+`scripts/make-binary-release.sh` compiles it into `lib/clamacs/` (FASLs
+beside the sources) and saves a `clamacs.img` heap image next to each
+`clamiga` binary in FS-UAE (`verify/realamiga/make-editor-image.sh`;
+`make -f Makefile.cross editor-image-amiga` does it for a cross build,
+`make -f Makefile.mos editor-image` natively on MorphOS), which the
+`Clamacs` launcher starts with `clamiga --image clamacs.img --eval
+"(clamacs::run)"` — but it keeps its own suites and its own `CLAUDE.md`.
 The same rule applies: editor work is a commit in the submodule (pin
 bumped here afterwards, `git add clamacs`), and anything it needs from
 the runtime (an `EXT.DEV` command in `lib/dev-commands.lisp`, a compiler
 or JIT fix) is a commit here under every gate above.  `make test` never
-runs the editor's suites; `git submodule update --init clamacs` (plus
-`vendor/texteditor` inside it, for the MUI headers) is all the release
-build needs, since the editor's `Makefile.cross` falls back to this
-repo's toolchain install.
+runs the editor's suites; `git submodule update --init clamacs` is all
+the release build needs (no toolchain: the host binary compiles the
+editor's FASLs).
 
 `make host` builds a **native Windows .exe** from an MSYS2 mingw shell
 (CLANGARM64/UCRT64/MINGW64) — `make host CC_HOST=clang`, `make test

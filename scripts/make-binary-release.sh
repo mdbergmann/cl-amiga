@@ -13,10 +13,15 @@
 #     bin/*/clamiga.img     bare-boot heap image (boot + CLOS) beside EACH
 #                           binary: startup restores it in one read instead
 #                           of loading lib/boot.fasl + clos.fasl (see below)
-#     bin/aos3/clamacs      Clamacs, the MUI editor/IDE (clamacs/ submodule),
-#     bin/mos/clamacs       cross-compiled here / built natively on MorphOS.
-#                           Soft-float and CPU-neutral, so ONE m68k binary
-#                           serves both AmigaOS builds (it sits in bin/aos3).
+#     bin/*/clamacs.img     Clamacs, the editor/IDE (clamacs/ submodule,
+#                           written in Lisp), as a heap image beside EACH
+#                           binary: the Clamacs launcher starts
+#                           `clamiga --image clamacs.img --eval "(clamacs::run)"`.
+#                           Saved by the staged m68k binaries in FS-UAE like
+#                           clamiga.img, natively on MorphOS (CLAMACS_MOS_IMG).
+#     lib/clamacs/          the editor's sources plus FASLs, and its two image
+#                           scripts: what `--no-image` (or a refused image)
+#                           starts the editor from
 #     lib/                  runtime library — FASLs where portable, sources
 #                           where compilation must happen on the target
 #     docs/                 package API reference (signatures + descriptions)
@@ -123,15 +128,17 @@
 #                  saved on MorphOS by THAT binary from the same source
 #                  tree: `make -f Makefile.mos image` writes
 #                  build/morphos/clamiga.img (and verifies it).
-#   CLAMACS_MOS_BIN=path
-#                  The MorphOS clamacs binary (default: ./clamacs-mos), built
-#                  natively in the clamacs/ submodule with its Makefile.mos.
+#   CLAMACS_MOS_IMG=path
+#                  The MorphOS Clamacs heap image (default: ./clamacs-mos.img),
+#                  saved on MorphOS by the MOS_BIN binary from the same source
+#                  tree: `make -f Makefile.mos editor-image` writes
+#                  build/morphos/clamacs.img (and verifies it).
 #
 # The aos3 images need the FS-UAE setup of `make -f Makefile.cross
-# test-amiga` (pkill fs-uae first if an emulator is lingering).  The editor
-# needs the clamacs/ submodule checked out with its vendor/texteditor (MUI
-# headers): `git submodule update --init clamacs && git -C clamacs submodule
-# update --init vendor/texteditor`.  It is built with this repo's toolchain.
+# test-amiga` (pkill fs-uae first if an emulator is lingering; the editor
+# image also needs the MUI + TextEditor.mcc on that Workbench).  The editor
+# needs the clamacs/ submodule checked out: `git submodule update --init
+# clamacs`.  No toolchain: it is Lisp, compiled by the host binary.
 
 set -euo pipefail
 
@@ -155,7 +162,7 @@ else TIMEOUT=""; fi
 
 MOS_BIN=${MOS_BIN:-$ROOT/clamiga-mos}
 MOS_IMG=${MOS_IMG:-$ROOT/clamiga-mos.img}
-CLAMACS_MOS_BIN=${CLAMACS_MOS_BIN:-$ROOT/clamacs-mos}
+CLAMACS_MOS_IMG=${CLAMACS_MOS_IMG:-$ROOT/clamacs-mos.img}
 FSUAE_BIN=verify/realamiga/FS-UAE.app/Contents/MacOS/fs-uae
 
 # --- version from the single source of truth ------------------------------
@@ -194,16 +201,15 @@ elif [ ! -f "$MOS_IMG" ]; then
     echo "       Save it on MorphOS with the binary in MOS_BIN (make -f Makefile.mos image" >&2
     echo "       writes build/morphos/clamiga.img) and copy it here, or point MOS_IMG=... at it." >&2
     exit 1
-elif [ ! -f "$CLAMACS_MOS_BIN" ]; then
-    echo "ERROR: MorphOS clamacs binary not found: $CLAMACS_MOS_BIN" >&2
-    echo "       Build it natively on MorphOS (make -f Makefile.mos in clamacs/) and" >&2
-    echo "       copy it here, or point CLAMACS_MOS_BIN=... at it." >&2
+elif [ ! -f "$CLAMACS_MOS_IMG" ]; then
+    echo "ERROR: MorphOS Clamacs heap image not found: $CLAMACS_MOS_IMG" >&2
+    echo "       Save it on MorphOS with the binary in MOS_BIN (make -f Makefile.mos editor-image" >&2
+    echo "       writes build/morphos/clamacs.img) and copy it here, or point CLAMACS_MOS_IMG=... at it." >&2
     exit 1
 fi
-if [ ! -f clamacs/Makefile.cross ] || [ ! -d clamacs/vendor/texteditor/include ]; then
-    echo "ERROR: the clamacs/ submodule (or its vendor/texteditor) is not checked out." >&2
+if [ ! -f clamacs/lisp/load.lisp ] || [ ! -f clamacs/scripts/save-editor-image.lisp ]; then
+    echo "ERROR: the clamacs/ submodule is not checked out." >&2
     echo "       Run: git submodule update --init clamacs" >&2
-    echo "            git -C clamacs submodule update --init vendor/texteditor" >&2
     exit 1
 fi
 if [ ! -x "$FSUAE_BIN" ]; then
@@ -222,18 +228,12 @@ make -f Makefile.cross amiga
 echo "--- Cross-compiling AmigaOS 3 binary (hard-float, FPU=1) ---"
 make -f Makefile.cross amiga FPU=1
 
-echo "--- Cross-compiling Clamacs (clamacs/ submodule) ---"
-make -C clamacs -f Makefile.cross amiga \
-    TOOLCHAIN="$ROOT/tools/m68k-amigaos-gcc/prefix"
-
 HOST_BIN="$ROOT/build/host/clamiga"
 AOS3_BIN="$ROOT/build/cross/clamiga"
 AOS3FPU_BIN="$ROOT/build/cross-fpu/clamiga"
-CLAMACS_BIN="$ROOT/clamacs/build/cross/clamacs"
 [ -x "$HOST_BIN" ] || { echo "ERROR: $HOST_BIN missing" >&2; exit 1; }
 [ -f "$AOS3_BIN" ] || { echo "ERROR: $AOS3_BIN missing" >&2; exit 1; }
 [ -f "$AOS3FPU_BIN" ] || { echo "ERROR: $AOS3FPU_BIN missing" >&2; exit 1; }
-[ -f "$CLAMACS_BIN" ] || { echo "ERROR: $CLAMACS_BIN missing" >&2; exit 1; }
 
 # --- stage ----------------------------------------------------------------
 echo "--- Staging $STAGE ---"
@@ -242,14 +242,11 @@ mkdir -p "$STAGE/bin/aos3" "$STAGE/bin/aos3-fpu" "$STAGE/lib/amiga" "$STAGE/docs
 
 cp "$AOS3_BIN"    "$STAGE/bin/aos3/clamiga"
 cp "$AOS3FPU_BIN" "$STAGE/bin/aos3-fpu/clamiga"
-cp "$CLAMACS_BIN" "$STAGE/bin/aos3/clamacs"
-chmod +x "$STAGE/bin/aos3/clamiga" "$STAGE/bin/aos3-fpu/clamiga" \
-         "$STAGE/bin/aos3/clamacs"
+chmod +x "$STAGE/bin/aos3/clamiga" "$STAGE/bin/aos3-fpu/clamiga"
 if [ "$SNAPSHOT" = 0 ]; then
     mkdir -p "$STAGE/bin/mos"
-    cp "$MOS_BIN"         "$STAGE/bin/mos/clamiga"
-    cp "$CLAMACS_MOS_BIN" "$STAGE/bin/mos/clamacs"
-    chmod +x "$STAGE/bin/mos/clamiga" "$STAGE/bin/mos/clamacs"
+    cp "$MOS_BIN" "$STAGE/bin/mos/clamiga"
+    chmod +x "$STAGE/bin/mos/clamiga"
 fi
 
 # lib: FASL-portable modules, compiled by the just-built host binary so
@@ -281,6 +278,42 @@ echo "--- compile-file lib/amiga/** -> $REL/lib/amiga/**/*.fasl ---"
 sh scripts/compile-lib-fasls.sh -o "$STAGE" -b "$HOST_BIN" --no-docstrings \
     || { echo "ERROR: lib/amiga FASLs not produced" >&2; exit 1; }
 
+# lib/clamacs: the Clamacs editor (clamacs/lisp/, specs/clamacs-lisp.md
+# over there) as sources plus the FASLs compiled from them in load order by
+# the host binary, portable like lib/amiga's (CLAMIGA_FASL_PORTABLE=1:
+# a string literal the Amiga could not load fails here).  Its load.lisp
+# takes a FASL beside a source, so a `--no-image` start (or a refused
+# image) loads the editor without compiling it on the target.  The two
+# image scripts ship with them; the docstrings stay -- they are what
+# `M-x` help shows.
+echo "--- lib/clamacs: sources + compile-file -> $REL/lib/clamacs/*.fasl ---"
+mkdir -p "$STAGE/lib/clamacs"
+cp clamacs/lisp/*.lisp clamacs/scripts/save-editor-image.lisp \
+   clamacs/scripts/verify-editor-image.lisp "$STAGE/lib/clamacs/"
+CLAMACS_LOG="$OUT/lib-clamacs.log"
+( CLAMIGA_NO_USERINIT=1 CLAMIGA_FASL_PORTABLE=1 $TIMEOUT "$HOST_BIN" --no-userinit \
+    --non-interactive --heap 32M \
+    --eval '(defvar cl-user::*clamacs-frontend-files* (list "frontend-mui" "transport-arexx"))' \
+    --eval '(defvar cl-user::*clamacs-compile-fasls* t)' \
+    --load "$STAGE/lib/clamacs/load.lisp" \
+    --eval '(format t "CLAMACS-FASLS ~a~%" (find-package "CLAMACS"))' \
+    --eval '(quit)' </dev/null ) > "$CLAMACS_LOG" 2>&1 || true
+grep -q "^CLAMACS-FASLS #<PACKAGE CLAMACS>" "$CLAMACS_LOG" &&
+! grep -Eq '^ERROR:|^; Warning: FASL unit failed|^WARNING:' "$CLAMACS_LOG" || {
+    echo "ERROR: lib/clamacs FASLs not produced — see $CLAMACS_LOG" >&2
+    grep -E '^ERROR:|^; Warning: FASL unit failed|^WARNING:' "$CLAMACS_LOG" | head -5 >&2
+    exit 1; }
+# Every module load.lisp compiles must have left a FASL.  load.lisp itself
+# and clamacs.lisp (the run-from-source entry point) are not modules: they
+# ship as sources only and never get one.
+for f in clamacs/lisp/*.lisp; do
+    name=$(basename "${f%.lisp}")
+    case "$name" in load|clamacs) continue ;; esac
+    [ -s "$STAGE/lib/clamacs/$name.fasl" ] || {
+        echo "ERROR: lib/clamacs/$name.fasl was not written — see $CLAMACS_LOG" >&2
+        exit 1; }
+done
+
 # heap images: one per binary, beside it (policy above).  The m68k pair is
 # saved by the staged binaries from the staged layout in FS-UAE, and each is
 # restarted from the release root — where no image sits, so discovery has to
@@ -295,6 +328,19 @@ for t in aos3 aos3-fpu; do
         exit 1; }
 done
 [ "$SNAPSHOT" = 1 ] || cp "$MOS_IMG" "$STAGE/bin/mos/clamiga.img"
+
+# The editor's image beside each binary, the same way: the staged binary
+# loads the staged lib/clamacs/ in FS-UAE and dumps its heap, then starts
+# the editor from that image (a window, the menu strip, a clean exit).
+for t in aos3 aos3-fpu; do
+    echo "--- Saving + verifying $REL/bin/$t/clamacs.img in FS-UAE ---"
+    verify/realamiga/make-editor-image.sh "$REL_DIR/bin/$t" "$REL_DIR" \
+        || { echo "ERROR: Clamacs heap image for bin/$t not produced" >&2; exit 1; }
+    grep -q "^IMAGE-VERSION $VERSION" build/amiga/editor-image.log || {
+        echo "ERROR: the bin/$t Clamacs image run reported another version than $VERSION — see build/amiga/editor-image.log" >&2
+        exit 1; }
+done
+[ "$SNAPSHOT" = 1 ] || cp "$CLAMACS_MOS_IMG" "$STAGE/bin/mos/clamacs.img"
 
 # docs: package API reference only (no benchmarks/screenshots), plus the
 # editor's README as docs/clamacs.md.
@@ -465,12 +511,42 @@ if [ "$SMOKE" = 1 ]; then
     grep -q 'LINK "/cl-amiga.guide/' "$STAGE/docs/amiga.guide" || {
         echo "ERROR: the guides do not link across the root/docs layout" >&2
         exit 1; }
-    # The editor cannot run on the host; check that what is staged is a real
-    # AmigaOS hunk executable (0x000003F3 = HUNK_HEADER) of a plausible size.
-    magic=$(od -An -tx1 -N4 "$STAGE/bin/aos3/clamacs" | tr -d ' \n')
-    size=$(wc -c < "$STAGE/bin/aos3/clamacs" | tr -d ' ')
-    [ "$magic" = "000003f3" ] && [ "$size" -gt 20000 ] || {
-        echo "ERROR: bin/aos3/clamacs is not an AmigaOS executable (magic $magic, $size bytes)" >&2
+    # The editor: its m68k images are beside the binaries (verified in
+    # FS-UAE above), and lib/clamacs/ must come up from the shipped FASLs
+    # on the host binary -- the fallback of a `--no-image` start.  The
+    # GUI itself cannot run here, so the load stops at the pure modules
+    # (the frontend files are Amiga-only in load.lisp).
+    for t in aos3 aos3-fpu; do
+        [ -s "$STAGE/bin/$t/clamacs.img" ] || {
+            echo "ERROR: bin/$t/clamacs.img is missing or empty" >&2; exit 1; }
+    done
+    ( cd "$SMOKEDIR" && CLAMIGA_NO_USERINIT=1 CLAMIGA_HOME= $TIMEOUT \
+        "$SMOKEDIR/rel/bin/aos3/clamiga" --non-interactive --no-image --heap 16M \
+        --load "$SMOKEDIR/rel/lib/clamacs/load.lisp" \
+        --eval '(format t "CLAMACS-LIB ~a ~a~%" (find-package "CLAMACS") (fboundp (find-symbol "MENU-STATE" "CLAMACS")))' \
+        --eval '(quit)' ) > "$OUT/smoke-clamacs.log" 2>&1
+    grep -q "^CLAMACS-LIB #<PACKAGE CLAMACS> T" "$OUT/smoke-clamacs.log" &&
+    grep -q "; Loading .*rel/lib/clamacs/menu\.fasl" "$OUT/smoke-clamacs.log" || {
+        echo "ERROR: lib/clamacs did not load from the release FASLs — see $OUT/smoke-clamacs.log" >&2
+        exit 1; }
+    # And the editor's image scripts round-trip on the host too: a host
+    # clamacs.img saved beside the host binary, restored, holding the
+    # editor (START itself needs MUI and is what FS-UAE verified).
+    rm -f "$SMOKEDIR/rel/bin/aos3/clamacs.img"
+    ( cd "$SMOKEDIR/rel/bin/aos3" && CLAMIGA_NO_USERINIT=1 CLAMIGA_HOME= $TIMEOUT \
+        ./clamiga --no-userinit --no-image --non-interactive --heap 16M \
+        --load ../../lib/clamacs/load.lisp \
+        --load ../../lib/clamacs/save-editor-image.lisp ) >> "$OUT/smoke-clamacs.log" 2>&1 \
+      && [ -s "$SMOKEDIR/rel/bin/aos3/clamacs.img" ] || {
+        echo "ERROR: host Clamacs image save in the release layout failed — see $OUT/smoke-clamacs.log" >&2
+        exit 1; }
+    ( cd "$SMOKEDIR/rel" && CLAMIGA_NO_USERINIT=1 CLAMIGA_HOME= $TIMEOUT \
+        bin/aos3/clamiga --no-userinit --non-interactive --heap 16M \
+        --image bin/aos3/clamacs.img \
+        --eval '(format t "CLAMACS-IMAGE ~a ~a~%" ext:*image-restored-p* (fboundp (find-symbol "MENU-STATE" "CLAMACS")))' \
+        --eval '(quit)' ) >> "$OUT/smoke-clamacs.log" 2>&1
+    grep -q "^CLAMACS-IMAGE T T" "$OUT/smoke-clamacs.log" || {
+        echo "ERROR: the host Clamacs image did not restore the editor — see $OUT/smoke-clamacs.log" >&2
         exit 1; }
     echo "smoke test passed"
 fi

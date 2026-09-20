@@ -18,8 +18,8 @@ icon or read on.  (This page is `README-FIRST.guide` on the Amiga and
 | `bin/aos3-fpu/clamiga` | AmigaOS 3.x, hard-float build -- REQUIRES an FPU |
 | `bin/mos/clamiga` | MorphOS (PowerPC, native) |
 | `bin/*/clamiga.img` | the heap image of the bare boot, one per binary (see Startup) |
-| `bin/aos3/clamacs`, `bin/mos/clamacs` | Clamacs for AmigaOS 3.x (one binary for every 68020+) and for MorphOS |
-| `lib/` | the runtime library: precompiled FASLs plus the Lisp sources |
+| `bin/*/clamacs.img` | Clamacs, the editor/IDE, as a heap image beside each binary: the `Clamacs` icon starts `clamiga --image clamacs.img` |
+| `lib/` | the runtime library: precompiled FASLs plus the Lisp sources; `lib/clamacs/` is the editor's |
 | `docs/` | the package reference, as AmigaGuide and Markdown; `docs/README.guide` is its index |
 | `examples/` | example programs, as Lisp source |
 | `README.md`, `LICENSE` | the manual as Markdown, and the Apache-2.0 license |
@@ -90,8 +90,9 @@ your own settings; `--no-userinit` skips it).
 
 ## Clamacs and the ARexx port
 
-Clamacs is an Emacs-flavoured Lisp editor and IDE: a native MUI
-application that talks to a running clamiga over clamiga's ARexx port --
+Clamacs is an Emacs-flavoured Lisp editor and IDE: a MUI application,
+written in Lisp and running as a clamiga of its own, that talks to a
+running clamiga over clamiga's ARexx port --
 load, compile and evaluate from the buffer, arglists and completion, jump
 to definition, a REPL window (`C-c C-z`), a debugger window with restarts
 and backtrace, and an inspector (`C-c I`).  It needs MUI 3.8 or newer
@@ -116,12 +117,17 @@ same two forms at the REPL.  Then either:
   the port and connects, or
 - start Clamacs alone: the first command that needs clamiga asks "No
   clamiga ARexx port was found.  Start clamiga in its own console
-  window?"; Start launches the `clamiga` next to the editor
-  (`bin/aos3/clamacs` starts `bin/aos3/clamiga`, `bin/mos/clamacs` starts
-  `bin/mos/clamiga`) with a 128K stack and waits for the port to appear.
+  window?"; Start launches the `clamiga` the editor itself runs on
+  (`bin/aos3/clamiga` or `bin/mos/clamiga`, the one beside its
+  `clamacs.img`) with a 128K stack and waits for the port to appear.
   That only happens when `S:.clamigarc` opens it -- without the two lines
   the editor reports "Cannot start clamiga" after twenty seconds,
   although a clamiga is running in the new console.
+
+From a shell, files to edit go after `--`:
+`bin/aos3/clamiga --image bin/aos3/clamacs.img --non-interactive --eval "(clamacs::run)" -- Work:my.lisp`
+(that is what the `Clamacs` icon runs, without files).  `S:.clamacsrc`, if
+you have one, is loaded before the first window opens.
 
 The editor's keys, windows and menus are in [clamacs.guide](clamacs/README.md);
 the port's commands (`LOAD`, `EVAL`, `COMPLETE`, ...) are in the manual's

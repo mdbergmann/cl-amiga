@@ -668,7 +668,7 @@ Then run `icl --lisp clamiga`. ICL spawns clamiga, loads SLYNK via ASDF, and con
 
 More screenshots (the inspector, the diagnostics window) are in the submodule's [README](https://github.com/mdbergmann/clamacs#screenshots).
 
-Clamacs lives in this repository as the `clamacs/` submodule and ships in the [binary release](#binary-release-amigaos--morphos) next to the `clamiga` binaries (`bin/aos3/clamacs`, `bin/mos/clamacs`). It needs MUI 3.8+ and `TextEditor.mcc` 15.29+ installed (MorphOS ships it). Open the port and start the editor:
+Clamacs is written in Common Lisp and runs as a clamiga instance of its own. It lives in this repository as the `clamacs/` submodule and ships in the [binary release](#binary-release-amigaos--morphos) as a heap image next to each `clamiga` binary (`bin/aos3/clamacs.img`, `bin/mos/clamacs.img`, saved like `clamiga.img`) plus its sources and FASLs under `lib/clamacs/`. It needs MUI 3.8+ and `TextEditor.mcc` 15.29+ installed (MorphOS ships it). Open the port and start the editor:
 
 ```lisp
 ;; S:.clamigarc
@@ -677,10 +677,12 @@ Clamacs lives in this repository as the `clamacs/` submodule and ships in the [b
 ```
 
 ```
-bin/aos3/clamacs
+bin/aos3/clamiga --image bin/aos3/clamacs.img --non-interactive --eval "(clamacs::run)" -- file.lisp
 ```
 
-The editor's own suites, build and design notes are in the submodule (`clamacs/README.md`, `clamacs/CLAUDE.md`); the Lisp-side commands it speaks are `EXT.DEV` (`lib/dev-commands.lisp`, `tests/test_dev_commands.sh`). To build it from a checkout: `git submodule update --init clamacs && git -C clamacs submodule update --init vendor/texteditor`, then `make -C clamacs -f Makefile.cross amiga` (it uses this repo's cross toolchain).
+(the `Clamacs` Workbench icon runs that line; from a checkout, `clamiga --heap 8M --non-interactive --load clamacs/lisp/clamacs.lisp -- file.lisp` loads it from source). `S:.clamacsrc` is loaded before the first window opens and can define commands and bind keys (see `clamacs.guide`).
+
+The editor's own suites and design notes are in the submodule (`clamacs/README.md`, `clamacs/CLAUDE.md`, `clamacs/specs/clamacs-lisp.md`); the Lisp-side commands it speaks are `EXT.DEV` (`lib/dev-commands.lisp`, `tests/test_dev_commands.sh`). `make -f Makefile.cross editor-image-amiga` saves and verifies a `clamacs.img` beside a cross build in FS-UAE, `make -f Makefile.mos editor-image` does the same natively on MorphOS.
 
 ## ARexx port (AmigaOS / MorphOS)
 
@@ -1402,13 +1404,14 @@ MOS_BIN=./clamiga-mos scripts/make-binary-release.sh
 
 It cross-compiles both AmigaOS 3 binaries — soft-float (`bin/aos3/`, runs
 on any 68020+) and hard-float (`bin/aos3-fpu/`, requires an FPU) — takes a
-natively built MorphOS binary (`MOS_BIN`, default `./clamiga-mos`), builds
-[Clamacs](#clamacs-native-editor--ide) from the `clamacs/` submodule (its
-MorphOS binary comes in as `CLAMACS_MOS_BIN`, default `./clamacs-mos`), and
-assembles `clamiga-<version>/` with `bin/aos3/`, `bin/aos3-fpu/`, `bin/mos/` (the `clamacs`
-binary next to `clamiga` in `bin/aos3/` and `bin/mos/`), `lib/` (precompiled
-FASLs where portable — the core library and all of `lib/amiga/` including
-the raw OS bindings, with the `lib/amiga` sources alongside for reference —
+natively built MorphOS binary (`MOS_BIN`, default `./clamiga-mos`), compiles
+[Clamacs](#clamacs-native-editor--ide) from the `clamacs/` submodule into
+`lib/clamacs/` and saves its heap image beside each binary (the MorphOS
+one comes in as `CLAMACS_MOS_IMG`, default `./clamacs-mos.img`), and
+assembles `clamiga-<version>/` with `bin/aos3/`, `bin/aos3-fpu/`, `bin/mos/` (a
+`clamacs.img` next to each `clamiga` and its `clamiga.img`), `lib/` (precompiled
+FASLs where portable — the core library, all of `lib/amiga/` including
+the raw OS bindings, and the editor, with the sources alongside for reference —
 and Lisp sources where compilation must happen on the target, i.e. asdf and
 quicklisp), the package API reference under `docs/`, `examples/`, the
 [AmigaGuide documentation](#amigaguide) (`README-FIRST.guide`,

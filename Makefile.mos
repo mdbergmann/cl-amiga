@@ -146,7 +146,7 @@ ALL_OBJS = $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(ALL_SRCS))
 # (CL_JMPBUF_GUARD sizing) is enforced at every clamiga boot by
 # cl_setjmp_overrun_check().
 
-.PHONY: morphos image clean
+.PHONY: morphos image editor-image clean
 
 morphos: $(BUILDDIR)/clamiga
 
@@ -168,6 +168,19 @@ image: $(BUILDDIR)/clamiga
 	cd $(BUILDDIR) && ./clamiga --no-userinit --no-image --non-interactive --boot-log --load save-boot-image.lisp
 	rm -f $(BUILDDIR)/save-boot-image.lisp
 	$(BUILDDIR)/clamiga --no-userinit --non-interactive --boot-log --load scripts/verify-boot-image.lisp
+
+# The Clamacs editor's heap image beside the binary (build/morphos/clamacs.img),
+# the MorphOS counterpart of Makefile.cross's editor-image-amiga: the editor
+# (clamacs/lisp/, a submodule checkout) is loaded from source and dumped,
+# then the image is started from the repo root and must open a window and
+# quit (clamacs/scripts/verify-editor-image.lisp; needs MUI, i.e. a
+# session on the box's screen).  The release script packages the result as
+# CLAMACS_MOS_IMG=... .  `//` is AmigaDOS for the grandparent directory,
+# which the -noixemul clamiga understands where `../..` fails.
+editor-image: $(BUILDDIR)/clamiga
+	rm -f $(BUILDDIR)/clamacs.img
+	cd $(BUILDDIR) && ./clamiga --no-userinit --no-image --heap 8M --non-interactive --boot-log --load //clamacs/lisp/load.lisp --load //clamacs/scripts/save-editor-image.lisp
+	$(BUILDDIR)/clamiga --no-userinit --heap 8M --non-interactive --boot-log --image $(BUILDDIR)/clamacs.img --load clamacs/scripts/verify-editor-image.lisp
 
 $(BUILDDIR)/clamiga: $(ALL_OBJS)
 	@mkdir -p $(dir $@)
