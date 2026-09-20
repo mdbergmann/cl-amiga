@@ -5076,6 +5076,12 @@ cat > "$WORK/devcmd.lisp" <<EOF
   (format t "DEVCMD-EVAL:~a:~a~%" rc (if (search "42" text) "42" "NO42")))
 (multiple-value-bind (rc text) (ext.dev:handle-command "PING")
   (format t "DEVCMD-ALIVE:~a:~a~%" rc text))
+;; A raw verb (the editor's OUTPUT) receives its chunk verbatim -- the
+;; blanks and the newline survive the substrings taken under compaction.
+(defvar *gcs-raw* nil)
+(ext.dev:define-raw-command "GCS-RAW" (arg) (setf *gcs-raw* arg) (values 0 ""))
+(ext.dev:handle-command (format nil "GCS-RAW   indented~%"))
+(format t "DEVCMD-RAW:~a~%" (if (string= *gcs-raw* (format nil "  indented~%")) "VERBATIM" "TRIMMED"))
 EOF
 out=$(run_stress "$WORK/devcmd.lisp")
 check_contains "dev-command LOAD reports both diagnostics under compaction storm" \
@@ -5088,6 +5094,8 @@ check_contains "dev-command EVAL replies under compaction storm" \
   "DEVCMD-EVAL:0:42" "$out"
 check_contains "dev-command handler still answers after the storm" \
   "DEVCMD-ALIVE:0:PONG" "$out"
+check_contains "a raw dev-command keeps its chunk verbatim under compaction storm" \
+  "DEVCMD-RAW:VERBATIM" "$out"
 check_absent   "no corruption diagnostics from the dev-command layer" \
   "corrupted\|type 0\|BADMARK\|badmark\|SIGSEGV\|Unbound" "$out"
 

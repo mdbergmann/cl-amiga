@@ -202,6 +202,26 @@
 ;;; The real thing: dev-repl's debugger, driven as the editor drives it.
 ;;; ----------------------------------------------------------------
 
+;;; A raw verb (what the Lisp Clamacs registers OUTPUT as) gets its argument
+;;; verbatim: the leading blanks and the trailing newline survive, where an
+;;; ordinary verb's argument is trimmed at both ends.
+(defvar *drt-raw* '())
+(ext.dev:define-raw-command "DRT-RAW" (arg)
+  (push arg *drt-raw*)
+  (values ext.dev:+rc-ok+ ""))
+(ext.dev:define-command "DRT-TRIMMED" (arg)
+  (push arg *drt-raw*)
+  (values ext.dev:+rc-ok+ ""))
+(drt-cmd (format nil "DRT-RAW   indented~%"))
+(drt-cmd "DRT-RAW")
+(drt-cmd (format nil "DRT-TRIMMED   both ends  ~%"))
+(check "dev-repl: a raw verb keeps blanks and the newline"
+       (format nil "  indented~%") (third *drt-raw*))
+(check "dev-repl: a raw verb alone is the empty chunk" "" (second *drt-raw*))
+(check "dev-repl: an ordinary verb is trimmed" "both ends" (first *drt-raw*))
+(check "dev-repl: DRT-RAWS is not DRT-RAW"
+       ext.dev:+rc-fatal+ (nth-value 0 (drt-cmd "DRT-RAWS x")))
+
 (multiple-value-bind (rc text) (drt-cmd "REPL-ATTACH DRT DEBUG")
   (check "dev-repl: REPL-ATTACH DEBUG" 0 rc)
   (check "dev-repl: REPL-ATTACH answers the package" "CL-USER" text))
