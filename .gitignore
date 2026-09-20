@@ -23,6 +23,7 @@ verify/realamiga/*
 !verify/realamiga/stackprobe.c
 !verify/realamiga/fpuregtest.c
 !verify/realamiga/storeprobe.c
+!verify/realamiga/apollo-repro.c
 !verify/realamiga/PROBES.md
 !verify/realamiga/run-probes.py
 !verify/realamiga/run-on-vampire.py

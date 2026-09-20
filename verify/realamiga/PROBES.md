@@ -85,6 +85,24 @@ What to run elsewhere, and why:
   (`ApolloControl CORE`), `ApolloControl CPU`, the verdict lines, the
   address dependence and the v21 freeze above, and this file's source.
 
+## apollo-repro.c -- the one-file reproduction for the Apollo team
+
+    m68k-amigaos-gcc -noixemul -mcpu=68020 -O1 -o apollo-repro verify/realamiga/apollo-repro.c
+    apollo-repro            # sixteen source distances, 20000 replays each, a table; exit 20 if any lost
+    apollo-repro 64         # one distance, 100000 replays
+
+Ninety lines, no dependencies beyond libnix: `move.l <abs>,(a0)+ ; clr.l
+(a0)+ ; clr.l (a0)` from a static source 4..64 bytes below a static
+target, one distance at a time, and the third word read back.  On core
+10760 (data loaded at 0x1F67514) the source 64 bytes below the target
+loses 19999 of 20000 replays on every launch and the other fifteen lose
+none; on a 68040, 68060 or UAE no row loses.  Which row loses depends on
+the load address as well (the same layout inside clamiga, whose data
+lands elsewhere on each launch, flagged only one launch in four), so the
+table, not a single row, is the signature.  Switching the source only
+every 20000 replays is the regime the placement probe survived; do not
+shorten the blocks (see v21).
+
 ## Procedure for a machine not in the table below
 
 Ten minutes, nothing to install on the Amiga beyond the four binaries.
