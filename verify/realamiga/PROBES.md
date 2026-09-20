@@ -139,6 +139,8 @@ enough and cannot take the machine down.
 |-------------------------------------------|---------------------------------|----------------------|----------------------------------|-------------------|------------|
 | Apollo V4 Standalone, KS 47.13, WB 3.2.3  | AC68080 core 10760, 92 MHz      | LOST on ~half        | LOST / LOST 74% / ok / ok / flips | clean             | 2026-09-19 |
 | FS-UAE (verify.fs-uae, 68040 JIT)         | emulated 68040                  | clean                | clean                            | clean             | 2026-09-19 |
+| Amiga 4000, KS 47.102, WB 47.5            | 68060 Rev1 + 68882, CopyBack    | clean                | clean                            | clean             | 2026-09-20 |
+| Amiga 1200 (Warp), KS 47.115, WB 47.5     | 68040 + 68882, CopyBack         | clean                | clean                            | clean             | 2026-09-20 |
 
 ("flips" = passed in one build and lost 68% in the next: the source-address
 dependence above, before it was understood.)
