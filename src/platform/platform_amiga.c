@@ -3657,8 +3657,11 @@ void platform_amiga_close_library(uint32_t lib_base)
  * that a PPC MUI on MorphOS and a 68k one on AmigaOS are called the same
  * way.  utility.library is opened on the first push and stays open: a
  * library base is a reference count, not memory, and this can run on
- * input.device's task, where a CloseLibrary would be one call too many. */
-#include <intuition/classusr.h>
+ * input.device's task, where a CloseLibrary would be one call too many.
+ * OCLASS is intuition/classes.h's (classusr.h only has the Object type):
+ * the m68k NDK reaches it through another include, the MorphOS SDK does
+ * not, and the PPC link failed on the implicit declaration. */
+#include <intuition/classes.h>
 #include <proto/utility.h>
 struct Library *UtilityBase = NULL;
 
