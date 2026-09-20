@@ -221,6 +221,15 @@ extern CL_Obj SYM_TERMINAL_IO;       /* *TERMINAL-IO* */
 
 /* Feature system */
 extern CL_Obj SYM_STAR_FEATURES;     /* *FEATURES* */
+/* Lost stores counted by the startup CPU self-test (main.c,
+ * platform_cpu_store_selftest); nonzero puts :CPU-LOST-STORES on
+ * *FEATURES* so scripts and test suites can see a defective CPU. */
+extern uint32_t cl_cpu_lost_stores;
+/* Put :CPU-LOST-STORES on *FEATURES* or take it off, to match
+ * cl_cpu_lost_stores.  Run at boot (cl_symbol_init) and again after a heap
+ * image restore (main.c): the image carries the SAVING process's list, and
+ * this flag describes the CPU of the process now running. */
+void cl_features_sync_cpu_lost_stores(void);
 
 /* Readtable */
 extern CL_Obj SYM_STAR_READTABLE;    /* *READTABLE* */

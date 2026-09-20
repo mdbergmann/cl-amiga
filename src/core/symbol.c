@@ -190,6 +190,7 @@ CL_Obj SYM_DEBUG_IO = CL_NIL;
 CL_Obj SYM_QUERY_IO = CL_NIL;
 CL_Obj SYM_TERMINAL_IO = CL_NIL;
 CL_Obj SYM_STAR_FEATURES = CL_NIL;
+uint32_t cl_cpu_lost_stores = 0;
 CL_Obj SYM_STAR_READTABLE = CL_NIL;
 
 /* Printer control variable symbols */
@@ -422,6 +423,54 @@ const char *cl_symbol_name(CL_Obj sym)
     s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     name = (CL_String *)CL_OBJ_TO_PTR(s->name);
     return name->data;
+}
+
+/* Make *FEATURES* say what THIS process's CPU self-test found (main.c):
+ * :CPU-LOST-STORES on it when cl_cpu_lost_stores is nonzero, off it
+ * otherwise.  cl_symbol_init calls it at boot; main.c calls it again after a
+ * heap-image restore, because the restore replaces *FEATURES* with the
+ * SAVING process's list -- an image saved on an affected Vampire would
+ * otherwise tell a sound machine its CPU loses stores, and the shipped
+ * clamiga.img (saved in FS-UAE) would hide the flag from an affected one. */
+void cl_features_sync_cpu_lost_stores(void)
+{
+    CL_Obj kw, cur, prev = CL_NIL;
+    CL_Symbol *s;
+
+    /* Sound CPU: only look the keyword up -- a boot that never had it must
+     * not grow the KEYWORD package, and an image that had it finds it. */
+    if (cl_cpu_lost_stores)
+        kw = cl_intern_keyword("CPU-LOST-STORES", 15);
+    else
+        kw = cl_find_symbol("CPU-LOST-STORES", 15, cl_package_keyword);
+    if (CL_NULL_P(kw))
+        return;                 /* never interned: on no list */
+
+    /* No allocation in this walk, so the raw pointers stay valid.  Removal
+     * splices in place; a duplicate entry goes too. */
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_FEATURES);
+    for (cur = s->value; CL_CONS_P(cur); ) {
+        CL_Cons *c = (CL_Cons *)CL_OBJ_TO_PTR(cur);
+        if (c->car == kw) {
+            if (cl_cpu_lost_stores)
+                return;         /* already on the list */
+            if (CL_NULL_P(prev))
+                s->value = c->cdr;
+            else
+                ((CL_Cons *)CL_OBJ_TO_PTR(prev))->cdr = c->cdr;
+        } else {
+            prev = cur;
+        }
+        cur = c->cdr;
+    }
+
+    if (cl_cpu_lost_stores) {
+        /* cl_cons roots both operands; re-derive s after the allocation. */
+        CL_Obj features = s->value;
+        features = cl_cons(kw, features);
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_FEATURES);
+        s->value = features;
+    }
 }
 
 void cl_symbol_init(void)
@@ -921,6 +970,11 @@ void cl_symbol_init(void)
     /* Reader dereferences this handle on every #+ / #- — forward it across
      * compaction (see SYM_STAR_READTABLE note below). */
     cl_gc_register_root(&SYM_STAR_FEATURES);
+    /* The CPU of this machine loses memory stores (the startup self-test,
+     * main.c): let #+cpu-lost-stores and test suites know.  After the root
+     * registration, since it allocates; main.c repeats it after an image
+     * restore. */
+    cl_features_sync_cpu_lost_stores();
 
     /* LAMBDA-LIST-KEYWORDS — CL constant */
     {

@@ -1001,6 +1001,25 @@ long platform_stack_headroom(void)
 #endif
 }
 
+#ifndef PLATFORM_MORPHOS
+/* The replay loop is assembly (cpu_store_probe_m68k.s): the chain must
+ * reach the CPU exactly as gcc's prologue emits it, with nothing the
+ * compiler might store nearby -- the defect eats stores, and a lost loop
+ * counter never ends.  One absolute source only: a sweep over several
+ * froze the Vampire (the file says why in full). */
+extern uint32_t platform_cpu_store_probe_m68k(uint32_t replays);
+#endif
+
+uint32_t platform_cpu_store_selftest(uint32_t rounds)
+{
+#ifdef PLATFORM_MORPHOS
+    (void)rounds;
+    return 0;                           /* PPC: no such defect known */
+#else
+    return platform_cpu_store_probe_m68k(rounds);
+#endif
+}
+
 int platform_executable_ancestor_prefix(int levels, char *buf, int bufsize)
 {
     BPTR lock = Lock((STRPTR)"PROGDIR:", ACCESS_READ);

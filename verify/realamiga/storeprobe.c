@@ -45,8 +45,25 @@ static ULONG cur_a0;
 static char report[1024];
 static int report_len;
 
-#define MAX_VARIANT 20
+#define MAX_VARIANT 21
 static int variant = 1;
+
+/* Variant 21 -- FREEZES A VAMPIRE (core 10760, twice on 2026-09-19, the
+ * display "out of range", reboot needed): the v5 chain with SIXTEEN
+ * absolute sources at consecutive longword addresses, the next every 16
+ * rounds.  The finding behind it: whether the store is lost depends on
+ * the ADDRESS OF THE ABSOLUTE SOURCE (mod 64) -- 8 of the 16 longword
+ * offsets lose every time, the other 8 never; the code address and the
+ * destination make no difference.  A program's data hunk lands somewhere
+ * else on every launch, so a single source (v1..v20) passes or fails per
+ * LAUNCH, and this sweep would fail on every launch -- but switching the
+ * source between replays makes the mis-executed store land outside the
+ * buffer, in hardware.  Kept as the record for the Apollo team; run it
+ * only on a machine you can reboot.  clamiga's startup self-test is the
+ * single-source chain for that reason. */
+static ULONG eqs[16];
+static ULONG eqs_lost[16];
+static int cur_k;
 
 /* One replay into DST (5 longs), each variant ONE inline-asm block so the
  * chain reaches the CPU back to back.  E = the absolute-address source
@@ -68,7 +85,9 @@ static int variant = 1;
  *  17  move.l E,-(a0) ... predecrement chain: move.l E,-(a0) ; clr.l -(a0) ; clr.l -(a0)  (a0 = dst+5, writes d[4],d[3],d[2])
  *  18  move.l E,(a0)+ ; clr.l (a0)+ ; clr.l (a0)  with a1 as the pointer instead of a0
  *  19  move.l E,(a0)+ ; clr.w (a0)+ ; clr.w (a0)+ ; clr.l (a0)   (word clears)
- *  20  move.l E,4(a0) ; clr.l 8(a0) ; clr.l 12(a0)  (displacement, E first at +4) */
+ *  20  move.l E,4(a0) ; clr.l 8(a0) ; clr.l 12(a0)  (displacement, E first at +4)
+ *  21  the v5 chain with 16 absolute sources at consecutive addresses, swept
+ *      one per 16 rounds -- covers every source alignment mod 64, see eqs[] */
 static int replay(ULONG *dst)
 {
     volatile ULONG *d = dst;
@@ -90,8 +109,19 @@ static int replay(ULONG *dst)
     case 14: dst[2] = dst[3] = 0xDEAD0000u | variant; break;
     case 17: dst[2] = dst[3] = dst[4] = 0xDEAD0000u | variant; exp[4] = eqlfn; exp[3] = 0; exp[2] = 0; break;
     case 20: dst[1] = dst[2] = dst[3] = 0xDEAD0000u | variant; exp[1] = eqlfn; exp[2] = 0; exp[3] = 0; exp[4] = src[1]; dst[4] = src[1]; break;
+    case 21: dst[2] = dst[3] = dst[4] = 0xDEAD0000u | variant; exp[2] = eqs[cur_k]; break;
     }
 #define A(...) __asm__ volatile (__VA_ARGS__)
+#define S(K) A("movea.l %0,%%a0\n move.l %1,(%%a0)+\n clr.l (%%a0)+\n clr.l (%%a0)\n" : : "r"(dst+2), "m"(eqs[K]) : "a0","memory")
+    if (variant == 21) {
+        switch (cur_k) {
+        case 0: S(0); break;   case 1: S(1); break;   case 2: S(2); break;   case 3: S(3); break;
+        case 4: S(4); break;   case 5: S(5); break;   case 6: S(6); break;   case 7: S(7); break;
+        case 8: S(8); break;   case 9: S(9); break;   case 10: S(10); break; case 11: S(11); break;
+        case 12: S(12); break; case 13: S(13); break; case 14: S(14); break; default: S(15); break;
+        }
+    }
+#undef S
     switch (variant) {
     case 1: A("movea.l %0,%%a0\n movea.l %1,%%a4\n move.l (%%a4),(%%a0)+\n move.l 4(%%a4),(%%a0)+\n move.l %2,(%%a0)+\n clr.l (%%a0)+\n clr.l (%%a0)\n" : : "r"(dst), "r"(src), "m"(eqlfn) : "a0","a4","memory"); break;
     case 2: A("movea.l %0,%%a0\n movea.l %1,%%a4\n move.l (%%a4),(%%a0)+\n move.l 4(%%a4),(%%a0)+\n move.l %2,(%%a0)+\n clr.l (%%a0)+\n nop\n clr.l (%%a0)\n" : : "r"(dst), "r"(src), "m"(eqlfn) : "a0","a4","memory"); break;
@@ -140,10 +170,11 @@ static void run(ULONG rounds, ULONG *heap)
         int off = (int)(r & 15);           /* 0..15 longs => every mod-16 case */
         ULONG *ds = stackbuf + 8 + off;
         ULONG *dh = heap + 8 + off;
+        cur_k = (int)((r >> 4) & 15);      /* v21: the source, every 16 rounds the next */
         fill(stackbuf, 64);
-        if (replay(ds)) note_lost("stack", off, ds);
+        if (replay(ds)) { note_lost("stack", off, ds); eqs_lost[cur_k]++; }
         fill(heap, 64);
-        if (replay(dh)) note_lost("heap", off, dh);
+        if (replay(dh)) { note_lost("heap", off, dh); eqs_lost[cur_k]++; }
         if ((r & 0x1fff) == 0) Delay(1);   /* a task switch for sure */
         rounds_done = r;
     }
@@ -182,7 +213,11 @@ int main(int argc, char **argv)
     }
     printf("storeprobe: %d s, %s, variant %d  cpu flags 0x%04x\n", secs, swap ? "swap" : "noswap",
            variant, (unsigned)SysBase->AttnFlags);
+    if (variant == 21)
+        printf("storeprobe: WARNING -- variant 21 froze a Vampire V4 (core 10760) within seconds;\n"
+               "            be ready to reboot (verify/realamiga/PROBES.md)\n");
     fflush(stdout);
+    for (i = 0; i < 16; i++) eqs[i] = 0x0E410000u + (ULONG)i;
     rounds = (ULONG)secs * 300000UL;
     heapbuf = AllocVec(64 * sizeof(ULONG) + 16, MEMF_ANY);
     if (!heapbuf) { printf("no memory\n"); return 10; }
@@ -203,6 +238,13 @@ int main(int argc, char **argv)
     }
     FreeVec(heapbuf);
     printf("%s", report);
+    if (variant == 21) {
+        int k;
+        printf("  source address mod 64 -> lost (of %lu replays each):\n", (unsigned long)(rounds_done + 1) / 8);
+        for (k = 0; k < 16; k++)
+            printf("  %2lu:%-7lu%s", (unsigned long)((ULONG)&eqs[k] & 63), (unsigned long)eqs_lost[k],
+                   (k & 3) == 3 ? "\n" : "");
+    }
     printf("storeprobe: %lu rounds, %lu lost store(s) -- %s\n", (unsigned long)rounds_done + 1,
            (unsigned long)lost, lost ? "STORES LOST" : "all stores landed");
     return lost ? 20 : 0;

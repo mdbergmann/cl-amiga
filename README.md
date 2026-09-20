@@ -1206,6 +1206,36 @@ allocation with the source line that made it and asserts a run ends with zero
 bytes outstanding — naming the file and line if not.  See
 `tests/test_memleak_tracked.sh` and `tests/test_shutdown_leak.sh`.
 
+### CPU store self-test
+
+Some FPGA CPU cores lose memory stores: the Apollo 68080 of the Vampire V4
+(core 10760) drops the last of a short run of stores after a memory-to-memory
+move from an absolute address — a sequence gcc emits for ordinary function
+prologues — so a C local can read back as whatever its stack slot held
+before, and any program fails at random ("not a function", "too few
+arguments", wrong values), differently on every launch.  Nothing in software
+avoids it: the data cache, superscalar mode and compiler flags make no
+difference.
+
+So the m68k build checks at startup.  It replays that store sequence a few
+thousand times (milliseconds) and, if a store is lost, prints a warning
+naming the defect and puts `:cpu-lost-stores` on `*features*` so scripts
+and test suites can see it.  A sound CPU prints nothing.  Whether the core
+loses the store depends on where the program's data landed in memory, which
+changes from launch to launch, so on an affected machine the warning shows
+on some launches and not on others — a quiet launch is not a clean bill of
+health.
+`(ext:%cpu-store-selftest &optional rounds)` repeats the test and returns
+the number of lost stores; `CLAMIGA_CPU_CHECK=0` in the environment skips
+the startup check, and `CLAMIGA_CPU_CHECK=<n>` (a positive number) makes any
+CPU report `n` lost stores — a marked, simulated warning, for trying
+`#+cpu-lost-stores` code on a sound machine.  A session started from a heap
+image gets the verdict of the machine it runs on, not of the one that saved
+the image.  The standalone probes that pinned the defect down, and
+what to report to the Apollo team, are in `verify/realamiga/PROBES.md`.
+See `tests/test_cpu_selftest.sh` and the `cpu-store-selftest` block in
+`tests/amiga/run-tests.lisp`.
+
 ### Exact float printing and reading
 
 Float literals and printed floats convert between decimal text and IEEE

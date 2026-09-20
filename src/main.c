@@ -550,6 +550,73 @@ static void mem_diag_report(const char *where)
     platform_flush_output();
 }
 
+/* The CPU store self-test (platform_cpu_store_selftest): a few thousand
+ * replays of the five-store prologue chain the Apollo 68080 drops, run
+ * before the heap exists.  A sound CPU costs a few milliseconds and
+ * nothing is printed; a CPU that loses stores gets a warning on every
+ * launch -- there is no software fix (the data cache, superscalar mode
+ * and the compiler flags make no difference), so the one thing clamiga
+ * can do is name the defect instead of failing at random later, and put
+ * :CPU-LOST-STORES on *FEATURES* for scripts.  CLAMIGA_CPU_CHECK=0 skips
+ * the test (and the feature); CLAMIGA_CPU_CHECK=<n>, n > 0, makes a sound
+ * CPU report n lost stores (clamped to the round count) so the warning, the
+ * feature and its image-restore handling can be exercised anywhere
+ * (tests/test_cpu_selftest.sh). */
+#define CPU_STORE_CHECK_ROUNDS 4096u
+
+/* The n of CLAMIGA_CPU_CHECK=<n>: all decimal digits, at least 1; else 0. */
+static uint32_t cpu_check_simulated(const char *v)
+{
+    uint32_t n = 0;
+    if (!v || !v[0])
+        return 0;
+    for (; *v; v++) {
+        if (*v < '0' || *v > '9')
+            return 0;
+        if (n < CPU_STORE_CHECK_ROUNDS)     /* no wrap on a long digit string */
+            n = n * 10u + (uint32_t)(*v - '0');
+    }
+    return n > CPU_STORE_CHECK_ROUNDS ? CPU_STORE_CHECK_ROUNDS : n;
+}
+
+static void cpu_store_check(void)
+{
+    char envbuf[8];
+    char buf[640];
+    const char *v = platform_getenv("CLAMIGA_CPU_CHECK", envbuf, (int)sizeof(envbuf));
+    uint32_t lost;
+    int simulated = 0;
+    if (v && v[0] == '0' && v[1] == '\0')
+        return;
+    lost = platform_cpu_store_selftest(CPU_STORE_CHECK_ROUNDS);
+    if (!lost) {
+        lost = cpu_check_simulated(v);
+        simulated = lost != 0;
+    }
+    if (!lost)
+        return;
+    cl_cpu_lost_stores = lost;
+    if (simulated)
+        platform_write_string(
+            "*** clamiga: CLAMIGA_CPU_CHECK is set: the CPU test found nothing,\n"
+            "*** the warning below is SIMULATED.\n");
+    snprintf(buf, sizeof(buf),
+             "*** clamiga: THIS CPU LOSES MEMORY STORES: %lu of %lu replays of a\n"
+             "*** five-store sequence left a word unwritten.  Known on the Apollo 68080\n"
+             "*** (Vampire V4, core 10760); no software setting avoids it.  Any program\n"
+             "*** can fail at random (\"not a function\", \"too few arguments\", wrong\n"
+             "*** values), and a launch this test does not flag is not safe either.\n"
+             "*** :CPU-LOST-STORES is on *FEATURES*; (ext:%%cpu-store-selftest) repeats\n"
+             "*** the test.  See verify/realamiga/PROBES.md in the clamiga sources and\n"
+             "*** report your core (ApolloControl CORE) to the Apollo team.\n"
+             "*** CLAMIGA_CPU_CHECK=0 skips this test.\n",
+             (unsigned long)lost, (unsigned long)CPU_STORE_CHECK_ROUNDS);
+    /* platform_write_string: on AmigaOS this must land in the console or
+     * the script's `>file` log, where stderr never does. */
+    platform_write_string(buf);
+    platform_flush_output();
+}
+
 /* Evaluate --eval in CL-USER context (not whatever *package* was left by --load) */
 static CL_Obj eval_string_in_cl_user(const char *str)
 {
@@ -750,6 +817,9 @@ static int clamiga_main(int argc, char *argv[])
      * measure launch-to-here directly (boot/load profiling). */
     cl_internal_time_init();
 
+    /* Before anything else runs on this CPU: does it keep what is stored? */
+    cpu_store_check();
+
     /* Baseline for the CLAMIGA_MEM_DIAG leak report printed at shutdown.
      * Sampled here, before a single byte of runtime state exists, so the
      * closing sample measures everything this process failed to hand back.
@@ -854,6 +924,9 @@ static int clamiga_main(int argc, char *argv[])
         image_t0 = platform_time_ms();
         if (cl_image_restore_staged() == 0) {
             image_ms += platform_time_ms() - image_t0;
+            /* *FEATURES* came back from the saver too, with ITS verdict on
+             * the CPU: re-derive :CPU-LOST-STORES from this process's test. */
+            cl_features_sync_cpu_lost_stores();
             cl_cmdline_publish(program_argc, program_args, workbench_started);
             cl_repl_init_from_image(no_userinit, image_ms);
         } else {

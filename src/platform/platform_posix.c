@@ -901,6 +901,12 @@ const char *platform_executable_prefix(char *buf, int bufsize)
     return buf;
 }
 
+uint32_t platform_cpu_store_selftest(uint32_t rounds)
+{
+    (void)rounds;
+    return 0;                           /* the m68k build has the test */
+}
+
 long platform_stack_headroom(void)
 {
     /* No portable exact answer on POSIX; the generic 3MB usage budget in

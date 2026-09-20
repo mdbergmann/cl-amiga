@@ -962,6 +962,12 @@ unsigned long platform_mem_available(void)
     return 0;
 }
 
+uint32_t platform_cpu_store_selftest(uint32_t rounds)
+{
+    (void)rounds;
+    return 0;                           /* the m68k build has the test */
+}
+
 /* Nothing to take back: the kernel closes every descriptor and reclaims the
  * whole address space when the process ends.  See platform.h. */
 void platform_release_resources(void)

@@ -366,6 +366,27 @@ const char *platform_executable_prefix(char *buf, int bufsize);
  * turned into a clean Lisp error before it silently corrupts memory. */
 long platform_stack_headroom(void);
 
+/* CPU store self-test: replay ROUNDS times, into a static buffer (NOT the
+ * stack: cpu_store_probe_m68k.s says why) at every alignment mod 16, the
+ * five-store sequence gcc emits for a function prologue that initialises
+ * locals through a post-incremented pointer (`move.l (a4),(a0)+ ; move.l
+ * 4(a4),(a0)+ ; move.l <abs>,(a0)+ ; clr.l (a0)+ ; clr.l (a0)`), and count
+ * the replays after which the five words do not read back as written.  A
+ * sound CPU answers 0.  The Apollo 68080
+ * (Vampire V4, core 10760, 2026-09-19) drops or delays the last store of
+ * that chain whenever the absolute source's address mod 64 is one of a
+ * fixed set of alignments (verify/realamiga/storeprobe.c, PROBES.md); the
+ * data hunk lands somewhere else on every launch, so on that core the
+ * test flags about every second launch (a sweep over several source
+ * addresses would flag every launch but froze the machine -- see
+ * cpu_store_probe_m68k.s).  In clamiga that was a C local reading back
+ * as whatever dead data its slot held, i.e. random "not a function" /
+ * "too few arguments" errors.  Only the m68k build has the test; every
+ * other platform answers 0.  main.c runs it once at startup (a few
+ * thousand replays, milliseconds) and warns; (ext:%cpu-store-selftest)
+ * repeats it. */
+uint32_t platform_cpu_store_selftest(uint32_t rounds);
+
 #if defined(PLATFORM_AMIGA) && !defined(PLATFORM_MORPHOS)
 /* The m68k main-stack swap, in assembly (stack_swap_m68k.s): run FN on
  * the stack SS describes and come back, or leave the process from it.

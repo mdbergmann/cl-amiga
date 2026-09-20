@@ -12357,6 +12357,28 @@ y" 1))
     (unless (eql n 0) (format t "~&~A" r))
     (list n (and (search "fault(s)" r) t))))
 
+; --- (ext:%cpu-store-selftest): does this CPU keep what is stored? ---
+; The m68k build replays the five-store prologue chain the Apollo 68080
+; (Vampire V4, core 10760) drops.  A sound CPU (FS-UAE, a Motorola 68k)
+; answers 0 and :CPU-LOST-STORES is absent; a defective one answers > 0
+; AND has the feature -- the two must agree, whichever machine runs this,
+; also when the session booted from a heap image (the restore re-derives
+; the feature from THIS process's startup test, not the image's saver).
+; (tests/test_cpu_selftest.sh is the host leg, where the answer is 0 and
+; CLAMIGA_CPU_CHECK=<n> stands in for a defective CPU.)
+(check "cpu-store-selftest: an integer >= 0 at the default and at 20000 rounds" '(t t)
+  (let ((a (ext:%cpu-store-selftest)) (b (ext:%cpu-store-selftest 20000)))
+    (list (and (integerp a) (>= a 0)) (and (integerp b) (>= b 0)))))
+(check "cpu-store-selftest: lost stores and :CPU-LOST-STORES agree" t
+  (let ((lost (ext:%cpu-store-selftest 20000))
+        (flagged (and (member :cpu-lost-stores *features*) t)))
+    (when (> lost 0)
+      (format t "~&  this CPU lost ~A of 20000 stores (see verify/realamiga/PROBES.md)~%" lost))
+    (eq (> lost 0) flagged)))
+(check "cpu-store-selftest: ROUNDS must be a positive fixnum" t
+  (handler-case (progn (ext:%cpu-store-selftest 0) nil)
+    (type-error () t)))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

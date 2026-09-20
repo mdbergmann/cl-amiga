@@ -3359,6 +3359,26 @@ static CL_Obj bi_ext_heap_verify(CL_Obj *args, int n)
     return cl_mv_values[0];
 }
 
+/* (ext:%cpu-store-selftest &optional (rounds 4096)) => lost-stores.
+ * Repeats the startup CPU store self-test (platform_cpu_store_selftest,
+ * main.c cpu_store_check) for ROUNDS replays and answers how many left a
+ * word unwritten: 0 on a sound CPU and on every non-m68k build.  Lets a
+ * script measure a suspect machine, or confirm that :CPU-LOST-STORES on
+ * *FEATURES* was earned. */
+static CL_Obj bi_ext_cpu_store_selftest(CL_Obj *args, int n)
+{
+    uint32_t rounds = 4096;
+    if (n > 0) {
+        if (!CL_FIXNUM_P(args[0]) || CL_FIXNUM_VAL(args[0]) < 1) {
+            char ob[64];
+            cl_error(CL_ERR_TYPE, "%%CPU-STORE-SELFTEST: ROUNDS must be a positive fixnum, got %s",
+                     cl_obj_brief(args[0], ob, (int)sizeof(ob)));
+        }
+        rounds = (uint32_t)CL_FIXNUM_VAL(args[0]);
+    }
+    return CL_MAKE_FIXNUM(platform_cpu_store_selftest(rounds) & CL_FIXNUM_MAX);
+}
+
 static CL_Obj bi_time_report(CL_Obj *args, int n)
 {
     uint32_t start_time, end_time, elapsed;
@@ -5189,6 +5209,7 @@ void cl_builtins_io_init(void)
     extfun("%GC-AUDIT-ROOTS", bi_ext_gc_audit_roots, 0, 0);
     extfun("%GC-AUDIT-HDR-INDEX", bi_ext_gc_audit_hdr_index, 0, 0);
     extfun("%HEAP-VERIFY", bi_ext_heap_verify, 0, 0);
+    extfun("%CPU-STORE-SELFTEST", bi_ext_cpu_store_selftest, 0, 1);
     extfun("GETENV", bi_getenv, 1, 1);
     extfun("UNPACK-BYTERUN1", bi_unpack_byterun1, 5, 6);
     extfun("COPY-ROWS", bi_copy_rows, 8, 8);
