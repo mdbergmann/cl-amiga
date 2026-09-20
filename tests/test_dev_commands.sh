@@ -211,6 +211,50 @@ check "IN-PACKAGE switches the command package" 'DEV-CMD-TEST' "$out"
 out=$(run_cmd 'IN-PACKAGE NO-SUCH-PACKAGE-HERE')
 check "IN-PACKAGE rejects unknown packages" 'no such package' "$out"
 
+# --- DEFINE-RAW-COMMAND -----------------------------------------------------
+#
+# An editor's port receives the REPL thread's `OUTPUT <chunk>' through this
+# layer too, and a chunk is text, not syntax: the indentation of an
+# indented line and the newline a chunk ends with must survive, where every
+# other command is trimmed at both ends.  Exactly what the C editor's
+# replmsg.c did outside ReadArgs (clamacs tests/test_replmsg.c).
+
+cat > "$TMPD/raw.lisp" <<'EOF'
+(require "dev-commands")
+(defvar *chunks* '())
+(ext.dev:define-raw-command "OUTPUT" (arg)
+  (push arg *chunks*)
+  (values ext.dev:+rc-ok+ ""))
+(ext.dev:define-command "TRIMMED" (arg)
+  (push arg *chunks*)
+  (values ext.dev:+rc-ok+ ""))
+(dolist (c (list (format nil "OUTPUT hello~%")
+                 (format nil "OUTPUT   indented~%")
+                 "OUTPUT say \"hi"
+                 (format nil "OUTPUT a~%b~%c~%")
+                 "OUTPUT "
+                 "OUTPUT"
+                 "output lower"
+                 "OUTPUTS x"
+                 (format nil "TRIMMED   both ends   ~%")))
+  (ext.dev:handle-command c))
+;; A newline inside a grep pattern is an alternation, not a newline, so show
+;; every newline as ~ and assert on single-line patterns.
+(format t "~&<<CHUNKS=~s>>~%"
+        (mapcar (lambda (c) (substitute #\~ #\Newline c)) (reverse *chunks*)))
+(multiple-value-bind (rc text) (ext.dev:handle-command "OUTPUTS x")
+  (format t "~&<<RC=~d>>~%~a~%<<END>>~%" rc text))
+EOF
+out=$(run_script "$TMPD/raw.lisp")
+check "a raw command keeps the chunk's newline"      '"hello~"' "$out"
+check "a raw command keeps leading blanks"           '"  indented~"' "$out"
+check "a raw command takes quotes as text"           '"say \\"hi"' "$out"
+check "a raw command keeps several lines"            '"a~b~c~"' "$out"
+check "OUTPUT with a blank is the empty chunk"       '"" ""' "$out"
+check "raw verbs are case-insensitive"               '"lower"' "$out"
+check "an ordinary command is still trimmed"         '"both ends"' "$out"
+check "OUTPUTS is not OUTPUT"                        'unknown command: OUTPUTS' "$out"
+
 # --- result cap ------------------------------------------------------------
 # An unbounded compiler log cannot be shipped as an ARexx argstring.
 cat > "$TMPD/truncate.lisp" <<'EOF'

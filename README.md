@@ -760,7 +760,7 @@ Replies are capped at `ext.dev:*max-result-length*` (8 KB) and truncated on a li
 
 Runnable macros are in [`examples/amiga/arexx/`](examples/amiga/arexx/): `clamiga.rexx` (a shell client — `rx clamiga.rexx LOAD Work:src/foo.lisp`) and `load-current-file.ced` (save-and-load bound to a CygnusEd key). `AMIGA.AREXX:SEND` drives *other* applications' ARexx ports from Lisp with the same protocol.
 
-The command layer is portable Lisp (`lib/dev-commands.lisp`, package `EXT.DEV`) and runs on the host too, so `(ext.dev:handle-command "LOAD foo.lisp")` is testable without an Amiga; see `tests/test_dev_commands.sh` for the executable specification and `tests/amiga/arexx-tests.lisp` for the end-to-end port test.
+The command layer is portable Lisp (`lib/dev-commands.lisp`, package `EXT.DEV`) and runs on the host too, so `(ext.dev:handle-command "LOAD foo.lisp")` is testable without an Amiga; see `tests/test_dev_commands.sh` for the executable specification and `tests/amiga/arexx-tests.lisp` for the end-to-end port test. Your own verbs go in with `ext.dev:define-command`; a verb whose argument is text rather than syntax (an editor taking the REPL thread's `OUTPUT <chunk>`) uses `ext.dev:define-raw-command` and receives it verbatim, blanks and newlines included.
 
 ## Package Reference
 

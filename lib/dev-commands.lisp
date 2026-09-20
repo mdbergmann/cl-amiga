@@ -30,7 +30,7 @@
    ;; The REPL's way back to the editor (lib/dev-repl.lisp)
    "*REPL-SEND*"
    ;; Introspection / extension
-   "*COMMANDS*" "DEFINE-COMMAND"))
+   "*COMMANDS*" "DEFINE-COMMAND" "DEFINE-RAW-COMMAND" "*RAW-COMMANDS*"))
 
 (in-package "EXT.DEV")
 
@@ -249,6 +249,31 @@ and returns (values RC TEXT).")
          (setf (cdr entry) (lambda (,arg) ,@body))
          (push (cons ,verb (lambda (,arg) ,@body)) *commands*))
      ,verb))
+
+(defvar *raw-commands* '()
+  "The verbs whose argument is handed over VERBATIM: everything after the
+verb and its one separating blank, leading blanks, trailing newlines and
+all.  HANDLE-COMMAND trims every other command at both ends, which is
+right for `LOAD foo.lisp' and wrong for a chunk of program output.")
+
+(defmacro define-raw-command (verb (arg) &body body)
+  "DEFINE-COMMAND for a verb whose argument is text, not syntax: an
+editor's `OUTPUT <chunk>' from the REPL thread (lib/dev-repl.lisp), where
+an indented line must keep its indentation and a chunk that ends in a
+newline must keep it.  `OUTPUT' alone is the empty chunk."
+  `(progn
+     (pushnew ,verb *raw-commands* :test #'string=)
+     (define-command ,verb (,arg) ,@body)))
+
+(defun %raw-verb (command)
+  "The verb at the very start of COMMAND, upcased, and the index after it
+-- the character there is the separator, when there is one.  Raw verbs
+are matched where the REPL thread puts them: at position 0, as a whole
+word (OUTPUTS is not OUTPUT)."
+  (let ((end (or (position-if (lambda (c) (member c '(#\Space #\Tab #\Newline #\Return)))
+                              command)
+                 (length command))))
+    (values (string-upcase (subseq command 0 end)) end)))
 
 (defun %split-verb (string)
   "Split STRING into (values VERB REST).  VERB is upcased; REST keeps its
@@ -975,8 +1000,22 @@ both `EVAL (room)' and `(room)' work from a macro."
              1
              (%call-guarded
               (lambda ()
-                (let ((trimmed (string-trim '(#\Space #\Tab #\Newline #\Return) command)))
+                (let ((trimmed (string-trim '(#\Space #\Tab #\Newline #\Return) command))
+                      (raw (and *raw-commands*
+                                (multiple-value-bind (verb end) (%raw-verb command)
+                                  (and (member verb *raw-commands* :test #'string=)
+                                       (cons verb end))))))
                   (cond
+                    (raw
+                     ;; The argument as it came: after the verb and ONE
+                     ;; blank, when there is one.
+                     (let* ((end (cdr raw))
+                            (rest (if (and (< end (length command))
+                                           (char= (char command end) #\Space))
+                                      (subseq command (1+ end))
+                                      (subseq command end))))
+                       (multiple-value-setq (rc text)
+                         (funcall (cdr (assoc (car raw) *commands* :test #'string=)) rest))))
                     ((zerop (length trimmed))
                      (setf rc +rc-ok+ text ""))
                     ((char= (char trimmed 0) #\()
