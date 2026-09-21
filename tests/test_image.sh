@@ -21,6 +21,10 @@
 #   ~/.clamigarc runs after a restore with EXT:*IMAGE-RESTORED-P* = T
 #   :shake-bindings — the delivery mode: binding tables shed before the dump,
 #     touched names intact, untouched ones gone with a reader error saying why
+#   AMIGA.FFI:DEFINE-LIBRARY-VARIABLE — library bases re-derived before
+#     ~/.clamigarc, in definition order, once each; a failing one reported;
+#     a zeroed (plain DEFVAR) base makes a library call signal "NULL
+#     pointer" on the VM and the stub path instead of jumping to -LVO
 #
 # Run: sh tests/test_image.sh build/host/clamiga
 
@@ -409,6 +413,77 @@ out=$("$TIMEOUT" 60 "$CLAMIGA" $CLI --heap 8M --non-interactive \
 ec=$?
 check "unknown_keyword_lists_quit_and_shake_bindings" 0 "$ec" "$out" \
     "KWERR=.*:QUIT and :SHAKE-BINDINGS"
+
+# --- AMIGA.FFI:DEFINE-LIBRARY-VARIABLE: OS state re-derived on restore ----
+# A restore zeroes every foreign pointer of the image (it belonged to the
+# saving process), so an Amiga module's library base would come back as
+# address 0 and the first library call would jump to -LVO.  A variable
+# declared with DEFINE-LIBRARY-VARIABLE has its init form run again in the
+# restoring process, in definition order, BEFORE ~/.clamigarc; a plain
+# foreign-pointer base now makes the call signal instead.
+
+cat > libvar-state.lisp <<'EOF'
+(require "amiga/ffi")
+(defvar *lv-evals* 0)
+;; A base, as OPEN-LIBRARY returns one: its form runs at load, and exactly
+;; once more in the restoring process (counted there only).
+(amiga.ffi:define-library-variable *lv-base*
+  (progn (when ext:*image-restored-p* (incf *lv-evals*))
+         (ffi:make-foreign-pointer #x1000)))
+;; Derived from the base: must be re-derived after it.
+(amiga.ffi:define-library-variable *lv-version*
+  (and *lv-base* (+ 1 (ffi:foreign-pointer-address *lv-base*))))
+;; Fails in the restoring process: reported, left NIL, the rest go on.
+(amiga.ffi:define-library-variable *lv-broken*
+  (if ext:*image-restored-p* (error "no such library here") :loaded))
+(amiga.ffi:define-library-variable *lv-after*
+  (if ext:*image-restored-p* :rederived :loaded)
+  "The last library variable.")
+;; The contrast: a plain DEFVAR'd base, zeroed by the restore.
+(defvar *lv-plain* (ffi:make-foreign-pointer #x2000))
+(amiga.ffi:defcfun lv-call *lv-plain* -30 (:d0 x))
+(defun lv-direct () (lv-call 1))
+(format t "LV-LOADED=~a~%" (list *lv-evals* *lv-version* *lv-broken* *lv-after*))
+EOF
+
+cat > libvar-verify.lisp <<'EOF'
+(defun lv-null-p (thunk)
+  (handler-case (progn (funcall thunk) :called)
+    (error (e) (if (search "NULL pointer" (format nil "~a" e)) :null e))))
+(format t "LV=~a~%" (list *lv-evals* (ffi:foreign-pointer-address *lv-base*)
+                          *lv-version* *lv-broken* *lv-after*
+                          (length amiga.ffi::*library-variables*)))
+(format t "LV-DOC=~a~%" (documentation '*lv-after* 'variable))
+(format t "LV-PLAIN=~a~%" (list (ffi:foreign-pointer-address *lv-plain*)
+                                (lv-null-p #'lv-direct)
+                                (lv-null-p (lambda () (funcall #'lv-call 1)))))
+EOF
+
+mkdir -p lv-home
+cat > lv-home/.clamigarc <<'EOF'
+(format t "RC-LV=~a~%" (list (ffi:foreign-pointer-address *lv-base*) *lv-version*))
+EOF
+
+# Loaded twice: DEFVAR keeps the value and the registry keeps one entry per
+# variable, so the restore runs each form exactly once.
+out=$("$TIMEOUT" 60 "$CLAMIGA" $CLI --heap 8M --non-interactive \
+    --load libvar-state.lisp --load libvar-state.lisp \
+    --eval '(ext:save-image "libvar.img")' </dev/null 2>&1)
+ec=$?
+check "library_variables_save" 0 "$ec" "$out" \
+    "LV-LOADED=(0 4097 LOADED LOADED)" "Image saved"
+
+out=$(HOME="$WORK/lv-home" CLAMIGA_NO_USERINIT= "$TIMEOUT" 60 "$CLAMIGA" \
+    --image libvar.img --non-interactive --load libvar-verify.lisp </dev/null 2>&1)
+ec=$?
+check "library_variables_rederived_before_clamigarc" 0 "$ec" "$out" \
+    "RC-LV=(4096 4097)"
+check "library_variables_rederived_in_order_once_each" 0 "$ec" "$out" \
+    "LV=(1 4096 4097 NIL REDERIVED 4)" "LV-DOC=The last library variable."
+check "library_variable_that_fails_is_reported" 0 "$ec" "$out" \
+    "\*LV-BROKEN\* could not be re-derived after the image restore -- no such library here"
+check "null_library_base_signals_on_both_call_paths" 0 "$ec" "$out" \
+    "LV-PLAIN=(0 NULL NULL)"
 
 # --- Report --------------------------------------------------------------
 

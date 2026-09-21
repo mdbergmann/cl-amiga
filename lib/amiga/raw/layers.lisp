@@ -22,10 +22,12 @@
 
 ;;; Library base  opened at load time on AmigaOS/MorphOS; NIL on other
 ;;; hosts (the module still loads there for testing and compilation).
-(defvar *layers-base*
+;;; Base and version are re-derived after a heap-image restore, before
+;;; ~/.clamigarc runs (AMIGA.FFI:DEFINE-LIBRARY-VARIABLE).
+(amiga.ffi:define-library-variable *layers-base*
   (when (member :amigaos *features*)
     (amiga.ffi:open-library-or-die "layers.library" 0)))
-(defvar *layers-version*
+(amiga.ffi:define-library-variable *layers-version*
   (and *layers-base* (amiga.ffi:library-version *layers-base*)))
 (defun %version>= (n)
   (and *layers-version* (>= *layers-version* n)))

@@ -21,10 +21,12 @@
 
 ;;; Library base  opened at load time on AmigaOS/MorphOS; NIL on other
 ;;; hosts (the module still loads there for testing and compilation).
-(defvar *drawlist-base*
+;;; Base and version are re-derived after a heap-image restore, before
+;;; ~/.clamigarc runs (AMIGA.FFI:DEFINE-LIBRARY-VARIABLE).
+(amiga.ffi:define-library-variable *drawlist-base*
   (when (member :amigaos *features*)
     (amiga.ffi:open-library-or-die "images/drawlist.image" 0)))
-(defvar *drawlist-version*
+(amiga.ffi:define-library-variable *drawlist-version*
   (and *drawlist-base* (amiga.ffi:library-version *drawlist-base*)))
 (defun %version>= (n)
   (and *drawlist-version* (>= *drawlist-version* n)))

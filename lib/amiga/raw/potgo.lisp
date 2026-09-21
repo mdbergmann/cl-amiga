@@ -21,10 +21,13 @@
 
 ;;; Library base  opened at load time on AmigaOS/MorphOS; NIL on other
 ;;; hosts (the module still loads there for testing and compilation).
+;;; Base and version are re-derived after a heap-image restore, before
+;;; ~/.clamigarc runs (AMIGA.FFI:DEFINE-LIBRARY-VARIABLE).
 ;;; potgo.resource is a device/resource: there is no OpenLibrary.  Set the base
-;;; yourself (IORequest io_Device after OpenDevice, or OpenResource).
-(defvar *potgo-base* nil)
-(defvar *potgo-version*
+;;; yourself (IORequest io_Device after OpenDevice, or OpenResource);
+;;; a restore sets it back to NIL.
+(amiga.ffi:define-library-variable *potgo-base* nil)
+(amiga.ffi:define-library-variable *potgo-version*
   (and *potgo-base* (amiga.ffi:library-version *potgo-base*)))
 (defun %version>= (n)
   (and *potgo-version* (>= *potgo-version* n)))

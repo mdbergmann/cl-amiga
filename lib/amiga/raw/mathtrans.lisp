@@ -20,10 +20,12 @@
 
 ;;; Library base  opened at load time on AmigaOS/MorphOS; NIL on other
 ;;; hosts (the module still loads there for testing and compilation).
-(defvar *mathtrans-base*
+;;; Base and version are re-derived after a heap-image restore, before
+;;; ~/.clamigarc runs (AMIGA.FFI:DEFINE-LIBRARY-VARIABLE).
+(amiga.ffi:define-library-variable *mathtrans-base*
   (when (member :amigaos *features*)
     (amiga.ffi:open-library-or-die "mathtrans.library" 0)))
-(defvar *mathtrans-version*
+(amiga.ffi:define-library-variable *mathtrans-version*
   (and *mathtrans-base* (amiga.ffi:library-version *mathtrans-base*)))
 (defun %version>= (n)
   (and *mathtrans-version* (>= *mathtrans-version* n)))

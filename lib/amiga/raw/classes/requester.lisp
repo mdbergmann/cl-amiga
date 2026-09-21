@@ -22,10 +22,12 @@
 
 ;;; Library base  opened at load time on AmigaOS/MorphOS; NIL on other
 ;;; hosts (the module still loads there for testing and compilation).
-(defvar *requester-base*
+;;; Base and version are re-derived after a heap-image restore, before
+;;; ~/.clamigarc runs (AMIGA.FFI:DEFINE-LIBRARY-VARIABLE).
+(amiga.ffi:define-library-variable *requester-base*
   (when (member :amigaos *features*)
     (amiga.ffi:open-library-or-die "requester.class" 0)))
-(defvar *requester-version*
+(amiga.ffi:define-library-variable *requester-version*
   (and *requester-base* (amiga.ffi:library-version *requester-base*)))
 (defun %version>= (n)
   (and *requester-version* (>= *requester-version* n)))

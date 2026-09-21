@@ -509,7 +509,10 @@ saving; `ext:*save-hooks*` / `ext:*restore-hooks*` exist to tear down and
 rebuild such OS state around the snapshot, and `ext:*image-restored-p*` lets
 `~/.clamigarc` skip loads the image already contains.  Process state is
 re-derived on restore, not carried over: `*default-pathname-defaults*` names
-the restoring process's directory and `*random-state*` is freshly seeded.
+the restoring process's directory, `*random-state*` is freshly seeded, and
+the libraries the `AMIGA.*` modules opened are opened again before
+`~/.clamigarc` runs (`amiga.ffi:define-library-variable` does it for a
+module of your own).
 
 The binary release starts this way itself: each shipped binary has a
 bare-boot `clamiga.img` beside it (`bin/aos3/clamiga.img` and so on), so

@@ -22,10 +22,12 @@
 
 ;;; Library base  opened at load time on AmigaOS/MorphOS; NIL on other
 ;;; hosts (the module still loads there for testing and compilation).
-(defvar *keymap-base*
+;;; Base and version are re-derived after a heap-image restore, before
+;;; ~/.clamigarc runs (AMIGA.FFI:DEFINE-LIBRARY-VARIABLE).
+(amiga.ffi:define-library-variable *keymap-base*
   (when (member :amigaos *features*)
     (amiga.ffi:open-library-or-die "keymap.library" 0)))
-(defvar *keymap-version*
+(amiga.ffi:define-library-variable *keymap-version*
   (and *keymap-base* (amiga.ffi:library-version *keymap-base*)))
 (defun %version>= (n)
   (and *keymap-version* (>= *keymap-version* n)))

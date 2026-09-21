@@ -21,10 +21,12 @@
 
 ;;; Library base  opened at load time on AmigaOS/MorphOS; NIL on other
 ;;; hosts (the module still loads there for testing and compilation).
-(defvar *colorwheel-base*
+;;; Base and version are re-derived after a heap-image restore, before
+;;; ~/.clamigarc runs (AMIGA.FFI:DEFINE-LIBRARY-VARIABLE).
+(amiga.ffi:define-library-variable *colorwheel-base*
   (when (member :amigaos *features*)
     (amiga.ffi:open-library-or-die "gadgets/colorwheel.gadget" 0)))
-(defvar *colorwheel-version*
+(amiga.ffi:define-library-variable *colorwheel-version*
   (and *colorwheel-base* (amiga.ffi:library-version *colorwheel-base*)))
 (defun %version>= (n)
   (and *colorwheel-version* (>= *colorwheel-version* n)))

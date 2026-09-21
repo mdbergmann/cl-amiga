@@ -73,6 +73,39 @@
 (img-check "random-state reseeded" t
            (/= (random 1000000) *img-rnd-next*))
 
+; Library bases are re-derived before ~/.clamigarc runs
+; (AMIGA.FFI:DEFINE-LIBRARY-VARIABLE); every library call path works from
+; the restored process, and a base that is still a zeroed foreign pointer
+; signals instead of jumping to -LVO.
+(defun img-avail-fresh () (amiga.raw.exec:avail-mem 0))
+(defun img-null-p (thunk)
+  (let ((amiga.raw.exec:*exec-base* (ffi:make-foreign-pointer 0))
+        (amiga.exec:*exec-base* (ffi:make-foreign-pointer 0)))
+    (handler-case (progn (funcall thunk) :called)
+      (error (c)
+        (if (search "NULL pointer" (format nil "~a" c)) :null (format nil "~a" c))))))
+(img-check "raw library base re-derived (ExecBase)" t
+           (= (ffi:foreign-pointer-address amiga.raw.exec:*exec-base*)
+              (ffi:peek-u32 (ffi:make-foreign-pointer 4))))
+(img-check "curated library base re-derived (ExecBase)" t
+           (= (ffi:foreign-pointer-address amiga.exec:*exec-base*)
+              (ffi:peek-u32 (ffi:make-foreign-pointer 4))))
+(img-check "library version re-derived from the new base" t
+           (and (plusp amiga.raw.exec:*exec-version*)
+                (eql amiga.raw.exec:*exec-version*
+                     (amiga.ffi:library-version amiga.raw.exec:*exec-base*))))
+(img-check "stub call from image code" t (plusp (img-avail-raw)))
+(img-check "stub call compiled after the restore" t (plusp (img-avail-fresh)))
+(img-check "call-library after the restore" t (plusp (amiga.exec:avail-mem)))
+(img-check "NULL base signals: direct call" :null (img-null-p #'img-avail-fresh))
+(img-check "NULL base signals: stub through funcall" :null
+           (img-null-p (lambda () (funcall #'amiga.raw.exec:avail-mem 0))))
+(img-check "NULL base signals: call-library" :null
+           (img-null-p #'amiga.exec:avail-mem))
+(img-check "NULL base signals: call-library-fast" :null
+           (img-null-p (lambda ()
+                         (amiga:call-library-fast amiga.exec:*exec-base* -216 0))))
+
 ; The restored heap must survive GC + compaction (offsets, JIT relink,
 ; blob-attached bytecode all get exercised by the collector).
 (img-check "gc after restore" 55

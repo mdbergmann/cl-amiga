@@ -229,6 +229,21 @@ static CL_Obj bi_amiga_close_library(CL_Obj *args, int nargs)
     return CL_T;
 }
 
+/* Signal a clear error when the library base FP holds is 0: a call through
+ * base 0 is a jump to address -LVO, which crashes the machine instead of
+ * signalling.  Shared by CALL-LIBRARY and CALL-LIBRARY-FAST (WHO names the
+ * caller in the message); the base-symbol paths make the same check in
+ * cl_amiga_library_base_address. */
+static void library_base_check(CL_ForeignPtr *fp, const char *who)
+{
+    if (fp->address == 0)
+        cl_error(CL_ERR_GENERAL,
+                 "%s: the library base is a NULL pointer - "
+                 "the library is not open in this process (a heap image "
+                 "zeroes every foreign pointer on restore: keep bases in "
+                 "AMIGA.FFI:DEFINE-LIBRARY-VARIABLE variables)", who);
+}
+
 /* (amiga:call-library base offset reg-spec &optional result-kind) → object
  *
  * reg-spec is a plist: (:D0 val :A0 ptr :D1 42 ...)
@@ -252,6 +267,7 @@ static CL_Obj bi_amiga_call_library(CL_Obj *args, int nargs)
     if (!CL_FOREIGN_POINTER_P(args[0]))
         cl_error(CL_ERR_TYPE, "AMIGA:CALL-LIBRARY: base must be a foreign pointer");
     fp = (CL_ForeignPtr *)CL_OBJ_TO_PTR(args[0]);
+    library_base_check(fp, "AMIGA:CALL-LIBRARY");
 
     if (!CL_FIXNUM_P(args[1]))
         cl_error(CL_ERR_TYPE, "AMIGA:CALL-LIBRARY: offset must be a fixnum");
@@ -325,6 +341,7 @@ static CL_Obj bi_amiga_call_library_fast(CL_Obj *args, int nargs)
         cl_error(CL_ERR_TYPE,
                  "AMIGA:CALL-LIBRARY-FAST: base must be a foreign pointer");
     fp = (CL_ForeignPtr *)CL_OBJ_TO_PTR(args[0]);
+    library_base_check(fp, "AMIGA:CALL-LIBRARY-FAST");
 
     if (!CL_FIXNUM_P(args[1]))
         cl_error(CL_ERR_TYPE,
@@ -680,9 +697,14 @@ static void amiga_defun(const char *name, CL_CFunc func, int min, int max)
  * cl_amiga_ffi_call_dispatch differs per platform.
  * ================================================================ */
 
-CL_Obj cl_amiga_call_via_base_sym(CL_Obj base_sym, int16_t offset,
-                                  uint32_t regspec, int n_args,
-                                  CL_Obj *args)
+/* The library base a call through BASE_SYM goes to, or a clear error.  The
+ * one check both library-call paths make (this file's for the VM and the
+ * stubs, jit/runtime.c's for native code): a call through base 0 is a
+ * jump to address -LVO, which crashes the machine instead of signalling.
+ * A NULL base is what a heap-image restore leaves in a variable that was
+ * not declared with AMIGA.FFI:DEFINE-LIBRARY-VARIABLE (every foreign
+ * pointer of the image is zeroed: it belonged to the saving process). */
+uint32_t cl_amiga_library_base_address(CL_Obj base_sym)
 {
     CL_Obj base_val;
     CL_ForeignPtr *bfp;
@@ -702,8 +724,23 @@ CL_Obj cl_amiga_call_via_base_sym(CL_Obj base_sym, int16_t offset,
                  "OP_AMIGA_CALL: %s is not a foreign pointer",
                  cl_symbol_name(base_sym));
     bfp = (CL_ForeignPtr *)CL_OBJ_TO_PTR(base_val);
-    return cl_amiga_ffi_call_dispatch(bfp->address, offset, regspec,
-                                      n_args, args);
+    if (bfp->address == 0)
+        cl_error(CL_ERR_GENERAL,
+                 "OP_AMIGA_CALL: library base %s is a NULL pointer - the "
+                 "library is not open in this process (a heap image "
+                 "zeroes every foreign pointer on restore: declare the "
+                 "base with AMIGA.FFI:DEFINE-LIBRARY-VARIABLE, or reopen "
+                 "it in EXT:*RESTORE-HOOKS*)",
+                 cl_symbol_name(base_sym));
+    return bfp->address;
+}
+
+CL_Obj cl_amiga_call_via_base_sym(CL_Obj base_sym, int16_t offset,
+                                  uint32_t regspec, int n_args,
+                                  CL_Obj *args)
+{
+    uint32_t base = cl_amiga_library_base_address(base_sym);
+    return cl_amiga_ffi_call_dispatch(base, offset, regspec, n_args, args);
 }
 
 /* (amiga:%make-libcall-stub name base-sym lvo reg-nibbles result-kind nparams)

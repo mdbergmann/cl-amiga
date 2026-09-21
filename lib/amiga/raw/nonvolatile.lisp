@@ -21,10 +21,12 @@
 
 ;;; Library base  opened at load time on AmigaOS/MorphOS; NIL on other
 ;;; hosts (the module still loads there for testing and compilation).
-(defvar *nonvolatile-base*
+;;; Base and version are re-derived after a heap-image restore, before
+;;; ~/.clamigarc runs (AMIGA.FFI:DEFINE-LIBRARY-VARIABLE).
+(amiga.ffi:define-library-variable *nonvolatile-base*
   (when (member :amigaos *features*)
     (amiga.ffi:open-library-or-die "nonvolatile.library" 0)))
-(defvar *nonvolatile-version*
+(amiga.ffi:define-library-variable *nonvolatile-version*
   (and *nonvolatile-base* (amiga.ffi:library-version *nonvolatile-base*)))
 (defun %version>= (n)
   (and *nonvolatile-version* (>= *nonvolatile-version* n)))

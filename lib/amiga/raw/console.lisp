@@ -22,10 +22,13 @@
 
 ;;; Library base  opened at load time on AmigaOS/MorphOS; NIL on other
 ;;; hosts (the module still loads there for testing and compilation).
+;;; Base and version are re-derived after a heap-image restore, before
+;;; ~/.clamigarc runs (AMIGA.FFI:DEFINE-LIBRARY-VARIABLE).
 ;;; console.device is a device/resource: there is no OpenLibrary.  Set the base
-;;; yourself (IORequest io_Device after OpenDevice, or OpenResource).
-(defvar *console-base* nil)
-(defvar *console-version*
+;;; yourself (IORequest io_Device after OpenDevice, or OpenResource);
+;;; a restore sets it back to NIL.
+(amiga.ffi:define-library-variable *console-base* nil)
+(amiga.ffi:define-library-variable *console-version*
   (and *console-base* (amiga.ffi:library-version *console-base*)))
 (defun %version>= (n)
   (and *console-version* (>= *console-version* n)))

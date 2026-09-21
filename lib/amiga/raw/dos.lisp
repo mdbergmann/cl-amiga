@@ -37,10 +37,12 @@
 
 ;;; Library base  opened at load time on AmigaOS/MorphOS; NIL on other
 ;;; hosts (the module still loads there for testing and compilation).
-(defvar *dos-base*
+;;; Base and version are re-derived after a heap-image restore, before
+;;; ~/.clamigarc runs (AMIGA.FFI:DEFINE-LIBRARY-VARIABLE).
+(amiga.ffi:define-library-variable *dos-base*
   (when (member :amigaos *features*)
     (amiga.ffi:open-library-or-die "dos.library" 0)))
-(defvar *dos-version*
+(amiga.ffi:define-library-variable *dos-version*
   (and *dos-base* (amiga.ffi:library-version *dos-base*)))
 (defun %version>= (n)
   (and *dos-version* (>= *dos-version* n)))

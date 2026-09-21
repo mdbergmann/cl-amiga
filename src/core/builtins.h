@@ -109,13 +109,18 @@ uint32_t cl_amiga_ffi_arg_to_u32(CL_Obj val, int arg_index, int reg_idx);
  * and call LVO OFFSET of that library with the register args in ARGS
  * (ARGS[0] = first register arg) per REGSPEC.  Shared by the VM's
  * OP_AMIGA_CALL and the CL_STUB_LIBCALL path of cl_ffi_stub_call so the
- * three error cases (unbound base, NIL base = library not open, non
- * foreign-pointer base) read identically everywhere.  ARGS must be
- * GC-rooted (VM stack slots).  Host builds signal the "only available
- * on AmigaOS/MorphOS" error after the base checks. */
+ * four error cases (unbound base, NIL base = library not open, non
+ * foreign-pointer base, NULL base = a pointer a heap-image restore
+ * zeroed) read identically everywhere.  ARGS must be GC-rooted (VM stack
+ * slots).  Host builds signal the "only available on AmigaOS/MorphOS"
+ * error after the base checks. */
 CL_Obj cl_amiga_call_via_base_sym(CL_Obj base_sym, int16_t offset,
                                   uint32_t regspec, int n_args,
                                   CL_Obj *args);
+
+/* Those four checks alone: the base address of BASE_SYM's library, never
+ * 0 (the JIT's library call, jit/runtime.c, uses it too). */
+uint32_t cl_amiga_library_base_address(CL_Obj base_sym);
 
 /* Foreign-callback boundary (builtins_ffi.c; thread.h "Foreign-callback
  * boundary").  cl_ffi_deferred_error_check re-signals, on the Lisp side,

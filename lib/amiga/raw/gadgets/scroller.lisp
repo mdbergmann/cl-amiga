@@ -21,10 +21,12 @@
 
 ;;; Library base  opened at load time on AmigaOS/MorphOS; NIL on other
 ;;; hosts (the module still loads there for testing and compilation).
-(defvar *scroller-base*
+;;; Base and version are re-derived after a heap-image restore, before
+;;; ~/.clamigarc runs (AMIGA.FFI:DEFINE-LIBRARY-VARIABLE).
+(amiga.ffi:define-library-variable *scroller-base*
   (when (member :amigaos *features*)
     (amiga.ffi:open-library-or-die "gadgets/scroller.gadget" 0)))
-(defvar *scroller-version*
+(amiga.ffi:define-library-variable *scroller-version*
   (and *scroller-base* (amiga.ffi:library-version *scroller-base*)))
 (defun %version>= (n)
   (and *scroller-version* (>= *scroller-version* n)))

@@ -21,10 +21,13 @@
 
 ;;; Library base  opened at load time on AmigaOS/MorphOS; NIL on other
 ;;; hosts (the module still loads there for testing and compilation).
+;;; Base and version are re-derived after a heap-image restore, before
+;;; ~/.clamigarc runs (AMIGA.FFI:DEFINE-LIBRARY-VARIABLE).
 ;;; timer.device is a device/resource: there is no OpenLibrary.  Set the base
-;;; yourself (IORequest io_Device after OpenDevice, or OpenResource).
-(defvar *timer-base* nil)
-(defvar *timer-version*
+;;; yourself (IORequest io_Device after OpenDevice, or OpenResource);
+;;; a restore sets it back to NIL.
+(amiga.ffi:define-library-variable *timer-base* nil)
+(amiga.ffi:define-library-variable *timer-version*
   (and *timer-base* (amiga.ffi:library-version *timer-base*)))
 (defun %version>= (n)
   (and *timer-version* (>= *timer-version* n)))

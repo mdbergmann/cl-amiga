@@ -180,6 +180,9 @@ Rules and limits:
   foreign pointers are invalidated.  `ext:*save-hooks*` (run before the
   dump) and `ext:*restore-hooks*` (run after a restore, most recent
   first) are the supported way to tear such state down and rebuild it.
+  The Amiga library bases of the `AMIGA.*` modules need neither: they are
+  reopened before `~/.clamigarc` runs (`amiga.ffi:define-library-variable`,
+  [amiga.md](amiga.md)).
 - `ext:*image-restored-p*` is `T` in a restored session — it is already
   set when `~/.clamigarc` runs, so an rc file can skip loads the image
   already contains.

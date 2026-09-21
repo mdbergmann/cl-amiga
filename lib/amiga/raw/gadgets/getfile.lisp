@@ -22,10 +22,12 @@
 
 ;;; Library base  opened at load time on AmigaOS/MorphOS; NIL on other
 ;;; hosts (the module still loads there for testing and compilation).
-(defvar *getfile-base*
+;;; Base and version are re-derived after a heap-image restore, before
+;;; ~/.clamigarc runs (AMIGA.FFI:DEFINE-LIBRARY-VARIABLE).
+(amiga.ffi:define-library-variable *getfile-base*
   (when (member :amigaos *features*)
     (amiga.ffi:open-library-or-die "gadgets/getfile.gadget" 0)))
-(defvar *getfile-version*
+(amiga.ffi:define-library-variable *getfile-version*
   (and *getfile-base* (amiga.ffi:library-version *getfile-base*)))
 (defun %version>= (n)
   (and *getfile-version* (>= *getfile-version* n)))

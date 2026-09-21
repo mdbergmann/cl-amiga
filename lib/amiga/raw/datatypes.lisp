@@ -28,10 +28,12 @@
 
 ;;; Library base  opened at load time on AmigaOS/MorphOS; NIL on other
 ;;; hosts (the module still loads there for testing and compilation).
-(defvar *datatypes-base*
+;;; Base and version are re-derived after a heap-image restore, before
+;;; ~/.clamigarc runs (AMIGA.FFI:DEFINE-LIBRARY-VARIABLE).
+(amiga.ffi:define-library-variable *datatypes-base*
   (when (member :amigaos *features*)
     (amiga.ffi:open-library-or-die "datatypes.library" 0)))
-(defvar *datatypes-version*
+(amiga.ffi:define-library-variable *datatypes-version*
   (and *datatypes-base* (amiga.ffi:library-version *datatypes-base*)))
 (defun %version>= (n)
   (and *datatypes-version* (>= *datatypes-version* n)))

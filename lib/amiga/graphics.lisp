@@ -51,7 +51,7 @@
 ;;; FASLs) -- same convention as the generated amiga/raw modules.
 ;;; ================================================================
 
-(defvar *gfx-base*
+(define-library-variable *gfx-base*
   (when (member :amigaos *features*)
     (amiga:open-library "graphics.library" 39)))
 (when (and (member :amigaos *features*) (null *gfx-base*))

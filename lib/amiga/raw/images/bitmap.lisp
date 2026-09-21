@@ -21,10 +21,12 @@
 
 ;;; Library base  opened at load time on AmigaOS/MorphOS; NIL on other
 ;;; hosts (the module still loads there for testing and compilation).
-(defvar *bitmap-base*
+;;; Base and version are re-derived after a heap-image restore, before
+;;; ~/.clamigarc runs (AMIGA.FFI:DEFINE-LIBRARY-VARIABLE).
+(amiga.ffi:define-library-variable *bitmap-base*
   (when (member :amigaos *features*)
     (amiga.ffi:open-library-or-die "images/bitmap.image" 0)))
-(defvar *bitmap-version*
+(amiga.ffi:define-library-variable *bitmap-version*
   (and *bitmap-base* (amiga.ffi:library-version *bitmap-base*)))
 (defun %version>= (n)
   (and *bitmap-version* (>= *bitmap-version* n)))

@@ -2526,15 +2526,18 @@ MODULE-NAME the require name (\"amiga/raw/intuition\")."
         (unless header-only
           (format out "~%;;; Library base — opened at load time on AmigaOS/MorphOS; NIL on other~%")
           (format out ";;; hosts (the module still loads there for testing and compilation).~%")
+          (format out ";;; Base and version are re-derived after a heap-image restore, before~%")
+          (format out ";;; ~~/.clamigarc runs (AMIGA.FFI:DEFINE-LIBRARY-VARIABLE).~%")
           (cond
             ((lib-auto-open-p libname)
-             (format out "(defvar ~A~%  (when (member :amigaos *features*)~%    (amiga.ffi:open-library-or-die ~S 0)))~%"
+             (format out "(amiga.ffi:define-library-variable ~A~%  (when (member :amigaos *features*)~%    (amiga.ffi:open-library-or-die ~S 0)))~%"
                      base-var (lib-open-name libname)))
             (t
              (format out ";;; ~A is a device/resource: there is no OpenLibrary.  Set the base~%" libname)
-             (format out ";;; yourself (IORequest io_Device after OpenDevice, or OpenResource).~%")
-             (format out "(defvar ~A nil)~%" base-var)))
-          (format out "(defvar ~A~%  (and ~A (amiga.ffi:library-version ~A)))~%" version-var base-var base-var)
+             (format out ";;; yourself (IORequest io_Device after OpenDevice, or OpenResource);~%")
+             (format out ";;; a restore sets it back to NIL.~%")
+             (format out "(amiga.ffi:define-library-variable ~A nil)~%" base-var)))
+          (format out "(amiga.ffi:define-library-variable ~A~%  (and ~A (amiga.ffi:library-version ~A)))~%" version-var base-var base-var)
           (format out "(defun %version>= (n)~%  (and ~A (>= ~A n)))~%" version-var version-var))
         ;; The binding table: every constant, struct accessor and library
         ;; function of the module in one form, materialised on first use.

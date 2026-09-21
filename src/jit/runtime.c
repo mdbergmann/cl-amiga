@@ -1731,25 +1731,11 @@ CL_Obj cl_jit_runtime_amiga_call(CL_Obj base_sym, int32_t offset,
                                  CL_Obj *operand_top)
 {
     CL_Obj args_buf[8];
-    CL_Obj base_val;
-    CL_ForeignPtr *bfp;
+    uint32_t base;
     uint32_t i;
 
-    base_val = cl_symbol_value(base_sym);
-    if (base_val == CL_UNBOUND)
-        cl_error(CL_ERR_UNBOUND,
-                 "OP_AMIGA_CALL: unbound library base %s",
-                 cl_symbol_name(base_sym));
-    if (CL_NULL_P(base_val))
-        cl_error(CL_ERR_GENERAL,
-                 "OP_AMIGA_CALL: library base %s is NIL - the library "
-                 "is not open (bindings only open it on AmigaOS/MorphOS)",
-                 cl_symbol_name(base_sym));
-    if (!CL_FOREIGN_POINTER_P(base_val))
-        cl_error(CL_ERR_TYPE,
-                 "OP_AMIGA_CALL: %s is not a foreign pointer",
-                 cl_symbol_name(base_sym));
-    bfp = (CL_ForeignPtr *)CL_OBJ_TO_PTR(base_val);
+    /* The VM path's checks (builtins_amiga.c), a NULL base included. */
+    base = cl_amiga_library_base_address(base_sym);
 
     /* dispatch caps at 7; the buffer is sized to 8 anyway. */
     if (n_args > 7)
@@ -1760,7 +1746,7 @@ CL_Obj cl_jit_runtime_amiga_call(CL_Obj base_sym, int32_t offset,
     for (i = 0; i < n_args; i++)
         args_buf[i] = operand_top[n_args - 1 - i];
 
-    return cl_amiga_ffi_call_dispatch(bfp->address, (int16_t)offset,
+    return cl_amiga_ffi_call_dispatch(base, (int16_t)offset,
                                       regspec, (int)n_args, args_buf);
 }
 

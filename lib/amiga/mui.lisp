@@ -183,11 +183,13 @@
 ;;; muimaster.library — opened on first use
 ;;; ================================================================
 
-(defvar *muimaster-base* nil
+(define-library-variable *muimaster-base* nil
   "The muimaster.library base once the first MUI call opened it (MUI 3.8
 = version 19, MorphOS = 20); NIL before that, and forever on the host or
 an Amiga without MUI.  Never closed: the objects a program creates need
-the library for as long as the process lives, as in a C MUI program.")
+the library for as long as the process lives, as in a C MUI program.
+NIL again after a heap-image restore, so the first MUI call of the
+restored process opens it for that process.")
 
 (defun %open-muimaster ()
   "The library base, opening muimaster.library (version MUIMASTER_VMIN)

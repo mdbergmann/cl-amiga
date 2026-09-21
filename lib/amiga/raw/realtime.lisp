@@ -21,10 +21,12 @@
 
 ;;; Library base  opened at load time on AmigaOS/MorphOS; NIL on other
 ;;; hosts (the module still loads there for testing and compilation).
-(defvar *realtime-base*
+;;; Base and version are re-derived after a heap-image restore, before
+;;; ~/.clamigarc runs (AMIGA.FFI:DEFINE-LIBRARY-VARIABLE).
+(amiga.ffi:define-library-variable *realtime-base*
   (when (member :amigaos *features*)
     (amiga.ffi:open-library-or-die "realtime.library" 0)))
-(defvar *realtime-version*
+(amiga.ffi:define-library-variable *realtime-version*
   (and *realtime-base* (amiga.ffi:library-version *realtime-base*)))
 (defun %version>= (n)
   (and *realtime-version* (>= *realtime-version* n)))

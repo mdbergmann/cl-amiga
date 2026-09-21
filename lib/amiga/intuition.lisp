@@ -67,7 +67,7 @@
 ;;; FASLs) -- same convention as the generated amiga/raw modules.
 ;;; ================================================================
 
-(defvar *intuition-base*
+(define-library-variable *intuition-base*
   (when (member :amigaos *features*)
     (amiga:open-library "intuition.library" 39)))
 (when (and (member :amigaos *features*) (null *intuition-base*))
@@ -96,7 +96,7 @@
 (defconstant +lvo-dos-delay+           -198)  ; dos.library Delay(ticks), d1 = ticks
 
 ;;; Exec LVOs for message handling
-(defvar *exec-base* (ffi:make-foreign-pointer 4))  ; ExecBase at absolute addr 4
+(define-library-variable *exec-base* (ffi:make-foreign-pointer 4))  ; ExecBase at absolute addr 4
 (defconstant +lvo-wait-port+    -384)
 (defconstant +lvo-get-msg+      -372)
 (defconstant +lvo-reply-msg+    -378)

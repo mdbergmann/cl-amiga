@@ -21,10 +21,12 @@
 
 ;;; Library base  opened at load time on AmigaOS/MorphOS; NIL on other
 ;;; hosts (the module still loads there for testing and compilation).
-(defvar *penmap-base*
+;;; Base and version are re-derived after a heap-image restore, before
+;;; ~/.clamigarc runs (AMIGA.FFI:DEFINE-LIBRARY-VARIABLE).
+(amiga.ffi:define-library-variable *penmap-base*
   (when (member :amigaos *features*)
     (amiga.ffi:open-library-or-die "images/penmap.image" 0)))
-(defvar *penmap-version*
+(amiga.ffi:define-library-variable *penmap-version*
   (and *penmap-base* (amiga.ffi:library-version *penmap-base*)))
 (defun %version>= (n)
   (and *penmap-version* (>= *penmap-version* n)))

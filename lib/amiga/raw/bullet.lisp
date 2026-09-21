@@ -23,10 +23,12 @@
 
 ;;; Library base  opened at load time on AmigaOS/MorphOS; NIL on other
 ;;; hosts (the module still loads there for testing and compilation).
-(defvar *bullet-base*
+;;; Base and version are re-derived after a heap-image restore, before
+;;; ~/.clamigarc runs (AMIGA.FFI:DEFINE-LIBRARY-VARIABLE).
+(amiga.ffi:define-library-variable *bullet-base*
   (when (member :amigaos *features*)
     (amiga.ffi:open-library-or-die "bullet.library" 0)))
-(defvar *bullet-version*
+(amiga.ffi:define-library-variable *bullet-version*
   (and *bullet-base* (amiga.ffi:library-version *bullet-base*)))
 (defun %version>= (n)
   (and *bullet-version* (>= *bullet-version* n)))

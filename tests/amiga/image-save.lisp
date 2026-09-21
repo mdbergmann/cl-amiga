@@ -55,5 +55,19 @@
 (defvar *img-saved-dpd* (namestring *default-pathname-defaults*))
 (defvar *img-rnd-next* (random 1000000 (make-random-state nil)))
 
+; Library bases (AMIGA.FFI:DEFINE-LIBRARY-VARIABLE).  The restore zeroes
+; every foreign pointer of the image, so a base a module opened at load time
+; came back as address 0 and the first library call jumped to -LVO -- the
+; Clamacs heap image died that way in TextEditor.mcc's version probe.  Both
+; kinds of module: the curated amiga/exec (AMIGA:CALL-LIBRARY through its
+; *EXEC-BASE*) and a generated one (a DEFCFUN stub through
+; AMIGA.RAW.EXEC:*EXEC-BASE*), whose AVAIL-MEM this function touches so the
+; shed keeps it.  IMG-AVAIL-RAW is image code: after the restore it runs as
+; bytecode, IMAGE-VERIFY's twin is compiled (and JIT'd) there.
+(require "amiga/exec")
+(require "amiga/raw/exec")
+(defun img-avail-raw () (amiga.raw.exec:avail-mem 0))
+(format t "IMAGE-LIBCALL-BEFORE-SAVE ~a~%" (plusp (img-avail-raw)))
+
 (format t "IMAGE-STATE-BUILT fib10=~a dpd=~a~%" (img-fib 10) *img-saved-dpd*)
 (ext:save-image "build/amiga/clamiga-test.img" :quit t :shake-bindings t)

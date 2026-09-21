@@ -22,10 +22,12 @@
 
 ;;; Library base  opened at load time on AmigaOS/MorphOS; NIL on other
 ;;; hosts (the module still loads there for testing and compilation).
-(defvar *getscreenmode-base*
+;;; Base and version are re-derived after a heap-image restore, before
+;;; ~/.clamigarc runs (AMIGA.FFI:DEFINE-LIBRARY-VARIABLE).
+(amiga.ffi:define-library-variable *getscreenmode-base*
   (when (member :amigaos *features*)
     (amiga.ffi:open-library-or-die "gadgets/getscreenmode.gadget" 0)))
-(defvar *getscreenmode-version*
+(amiga.ffi:define-library-variable *getscreenmode-version*
   (and *getscreenmode-base* (amiga.ffi:library-version *getscreenmode-base*)))
 (defun %version>= (n)
   (and *getscreenmode-version* (>= *getscreenmode-version* n)))

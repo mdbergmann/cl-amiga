@@ -32,10 +32,12 @@
 
 ;;; Library base  opened at load time on AmigaOS/MorphOS; NIL on other
 ;;; hosts (the module still loads there for testing and compilation).
-(defvar *intuition-base*
+;;; Base and version are re-derived after a heap-image restore, before
+;;; ~/.clamigarc runs (AMIGA.FFI:DEFINE-LIBRARY-VARIABLE).
+(amiga.ffi:define-library-variable *intuition-base*
   (when (member :amigaos *features*)
     (amiga.ffi:open-library-or-die "intuition.library" 0)))
-(defvar *intuition-version*
+(amiga.ffi:define-library-variable *intuition-version*
   (and *intuition-base* (amiga.ffi:library-version *intuition-base*)))
 (defun %version>= (n)
   (and *intuition-version* (>= *intuition-version* n)))

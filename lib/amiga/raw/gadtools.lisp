@@ -21,10 +21,12 @@
 
 ;;; Library base  opened at load time on AmigaOS/MorphOS; NIL on other
 ;;; hosts (the module still loads there for testing and compilation).
-(defvar *gadtools-base*
+;;; Base and version are re-derived after a heap-image restore, before
+;;; ~/.clamigarc runs (AMIGA.FFI:DEFINE-LIBRARY-VARIABLE).
+(amiga.ffi:define-library-variable *gadtools-base*
   (when (member :amigaos *features*)
     (amiga.ffi:open-library-or-die "gadtools.library" 0)))
-(defvar *gadtools-version*
+(amiga.ffi:define-library-variable *gadtools-version*
   (and *gadtools-base* (amiga.ffi:library-version *gadtools-base*)))
 (defun %version>= (n)
   (and *gadtools-version* (>= *gadtools-version* n)))

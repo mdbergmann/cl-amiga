@@ -227,6 +227,11 @@ static int image_restored = 0;
  * part of the boot-root restore set and survive into images). */
 static CL_Obj SYM_SAVE_HOOKS = CL_NIL;        /* EXT:*SAVE-HOOKS* */
 static CL_Obj SYM_RESTORE_HOOKS = CL_NIL;     /* EXT:*RESTORE-HOOKS* */
+/* EXT::*SYSTEM-RESTORE-HOOKS* (internal): the runtime's own library modules
+ * re-derive the OS state they captured at load time -- the Amiga library
+ * bases of AMIGA.FFI:DEFINE-LIBRARY-VARIABLE -- before ~/.clamigarc runs,
+ * so no user code ever sees the zeroed foreign pointers of the image. */
+static CL_Obj SYM_SYSTEM_RESTORE_HOOKS = CL_NIL;
 static CL_Obj SYM_IMAGE_RESTORED_P = CL_NIL;  /* EXT:*IMAGE-RESTORED-P* */
 static CL_Obj KW_QUIT_IMG = CL_NIL;
 static CL_Obj KW_SHAKE_BINDINGS = CL_NIL;
@@ -384,6 +389,11 @@ static void image_run_hook_list(CL_Obj sym, const char *what)
 void cl_image_run_restore_hooks(void)
 {
     image_run_hook_list(SYM_RESTORE_HOOKS, "restore hook");
+}
+
+void cl_image_run_system_restore_hooks(void)
+{
+    image_run_hook_list(SYM_SYSTEM_RESTORE_HOOKS, "system restore hook");
 }
 
 /* ================================================================
@@ -1467,9 +1477,9 @@ static CL_Obj bi_save_image(CL_Obj *args, int nargs)
     return cl_make_string(path, (uint32_t)strlen(path));
 }
 
-/* Intern an EXT special variable with initial value NIL, export it, and
- * root the C handle. */
-static CL_Obj image_defvar_ext(const char *name, CL_Obj *slot)
+/* Intern an EXT special variable with initial value NIL, export it unless
+ * it is one of the runtime's internals, and root the C handle. */
+static CL_Obj image_defvar_ext(const char *name, CL_Obj *slot, int exported)
 {
     CL_Obj sym = cl_intern_in(name, (uint32_t)strlen(name), cl_package_ext);
     CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
@@ -1477,15 +1487,17 @@ static CL_Obj image_defvar_ext(const char *name, CL_Obj *slot)
     s->value = CL_NIL;
     *slot = sym;
     cl_gc_register_root(slot);
-    cl_export_symbol(sym, cl_package_ext);
+    if (exported)
+        cl_export_symbol(sym, cl_package_ext);
     return sym;
 }
 
 void cl_image_builtins_init(void)
 {
-    image_defvar_ext("*SAVE-HOOKS*", &SYM_SAVE_HOOKS);
-    image_defvar_ext("*RESTORE-HOOKS*", &SYM_RESTORE_HOOKS);
-    image_defvar_ext("*IMAGE-RESTORED-P*", &SYM_IMAGE_RESTORED_P);
+    image_defvar_ext("*SAVE-HOOKS*", &SYM_SAVE_HOOKS, 1);
+    image_defvar_ext("*RESTORE-HOOKS*", &SYM_RESTORE_HOOKS, 1);
+    image_defvar_ext("*SYSTEM-RESTORE-HOOKS*", &SYM_SYSTEM_RESTORE_HOOKS, 0);
+    image_defvar_ext("*IMAGE-RESTORED-P*", &SYM_IMAGE_RESTORED_P, 1);
 
     KW_QUIT_IMG = cl_intern_keyword("QUIT", 4);
     cl_gc_register_root(&KW_QUIT_IMG);

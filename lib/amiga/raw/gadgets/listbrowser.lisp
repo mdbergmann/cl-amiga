@@ -22,10 +22,12 @@
 
 ;;; Library base  opened at load time on AmigaOS/MorphOS; NIL on other
 ;;; hosts (the module still loads there for testing and compilation).
-(defvar *listbrowser-base*
+;;; Base and version are re-derived after a heap-image restore, before
+;;; ~/.clamigarc runs (AMIGA.FFI:DEFINE-LIBRARY-VARIABLE).
+(amiga.ffi:define-library-variable *listbrowser-base*
   (when (member :amigaos *features*)
     (amiga.ffi:open-library-or-die "gadgets/listbrowser.gadget" 0)))
-(defvar *listbrowser-version*
+(amiga.ffi:define-library-variable *listbrowser-version*
   (and *listbrowser-base* (amiga.ffi:library-version *listbrowser-base*)))
 (defun %version>= (n)
   (and *listbrowser-version* (>= *listbrowser-version* n)))

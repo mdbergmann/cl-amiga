@@ -1267,9 +1267,9 @@ void cl_repl_init(void)
 /* Restored-boot init (--image; see repl.h).  Everything cl_repl_init
  * builds — boot.lisp, CLOS, the export passes, the history symbols — is
  * already present in the restored heap; only the per-process pieces run:
- * the user init file and the restore hooks.  EXT:*IMAGE-RESTORED-P* was
- * set to T by cl_image_restore_staged BEFORE this, so ~/.clamigarc can
- * skip redundant loads. */
+ * the system restore hooks, the user init file and the restore hooks.
+ * EXT:*IMAGE-RESTORED-P* was set to T by cl_image_restore_staged BEFORE
+ * this, so ~/.clamigarc can skip redundant loads. */
 void cl_repl_init_from_image(int no_userinit, uint32_t image_ms)
 {
     /* Start the clock image_ms in the past: the stage (read + verify) and
@@ -1279,8 +1279,13 @@ void cl_repl_init_from_image(int no_userinit, uint32_t image_ms)
     uint32_t t_start = platform_time_ms() - image_ms;
     uint32_t t_prev  = t_start;
     extern void cl_image_run_restore_hooks(void);
+    extern void cl_image_run_system_restore_hooks(void);
 
     BOOT_TIME("image restored (read + relink)");
+
+    /* The library bases the image's Amiga modules hold are zeroed foreign
+     * pointers now; they are reopened before any user code runs. */
+    cl_image_run_system_restore_hooks();
 
     if (!no_userinit) {
         load_user_init();

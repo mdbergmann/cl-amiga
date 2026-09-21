@@ -41,7 +41,7 @@
 ;;; there -- same convention as the generated amiga/raw modules.
 ;;; ================================================================
 
-(defvar *exec-base*
+(define-library-variable *exec-base*
   (when (member :amigaos *features*)
     (ffi:make-foreign-pointer (ffi:peek-u32 (ffi:make-foreign-pointer 4)))))
 

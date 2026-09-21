@@ -24,10 +24,12 @@
 
 ;;; Library base  opened at load time on AmigaOS/MorphOS; NIL on other
 ;;; hosts (the module still loads there for testing and compilation).
-(defvar *diskfont-base*
+;;; Base and version are re-derived after a heap-image restore, before
+;;; ~/.clamigarc runs (AMIGA.FFI:DEFINE-LIBRARY-VARIABLE).
+(amiga.ffi:define-library-variable *diskfont-base*
   (when (member :amigaos *features*)
     (amiga.ffi:open-library-or-die "diskfont.library" 0)))
-(defvar *diskfont-version*
+(amiga.ffi:define-library-variable *diskfont-version*
   (and *diskfont-base* (amiga.ffi:library-version *diskfont-base*)))
 (defun %version>= (n)
   (and *diskfont-version* (>= *diskfont-version* n)))

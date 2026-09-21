@@ -21,10 +21,12 @@
 
 ;;; Library base  opened at load time on AmigaOS/MorphOS; NIL on other
 ;;; hosts (the module still loads there for testing and compilation).
-(defvar *texteditor-base*
+;;; Base and version are re-derived after a heap-image restore, before
+;;; ~/.clamigarc runs (AMIGA.FFI:DEFINE-LIBRARY-VARIABLE).
+(amiga.ffi:define-library-variable *texteditor-base*
   (when (member :amigaos *features*)
     (amiga.ffi:open-library-or-die "gadgets/texteditor.gadget" 0)))
-(defvar *texteditor-version*
+(amiga.ffi:define-library-variable *texteditor-version*
   (and *texteditor-base* (amiga.ffi:library-version *texteditor-base*)))
 (defun %version>= (n)
   (and *texteditor-version* (>= *texteditor-version* n)))

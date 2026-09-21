@@ -130,4 +130,11 @@ void cl_image_builtins_init(void);
  * path in repl.c after the user init file ran. */
 void cl_image_run_restore_hooks(void);
 
+/* Run EXT::*SYSTEM-RESTORE-HOOKS* (internal; same calling rules): the
+ * runtime's library modules re-derive the OS state they captured at load
+ * time -- AMIGA.FFI:DEFINE-LIBRARY-VARIABLE's library bases, whose foreign
+ * pointers the restore zeroed.  Called from the restored-boot path in
+ * repl.c BEFORE the user init file, so ~/.clamigarc can call the OS. */
+void cl_image_run_system_restore_hooks(void);
+
 #endif /* CL_IMAGE_H */

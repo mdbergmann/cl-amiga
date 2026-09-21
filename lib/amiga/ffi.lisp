@@ -12,7 +12,7 @@
   (:use "CL" "FFI")
   (:export "WITH-LIBRARY" "WITH-TAG-LIST" "MAKE-TAG-LIST" "DEFCFUN"
            "*DEFCFUN-DOCSTRINGS*" "DEFINE-BINDING-TABLE"
-           "LIBRARY-VERSION" "OPEN-LIBRARY-OR-DIE"
+           "LIBRARY-VERSION" "OPEN-LIBRARY-OR-DIE" "DEFINE-LIBRARY-VARIABLE"
            ;; Lisp functions the OS calls back: struct Hook entries and
            ;; BOOPSI class dispatchers
            "MAKE-HOOK" "FREE-HOOK" "HOOK-ENTRY" "HOOK-DATA"
@@ -51,6 +51,63 @@ base -- the OS revision that the running system actually provides.
 Bindings generated from the OS 3.2 NDK guard functions newer than V39
 with this at load time."
   (ffi:peek-u16 base 20))
+
+;;; ================================================================
+;;; define-library-variable — OS state a module captures at load time
+;;; ================================================================
+;;;
+;;; A library base cannot travel in a heap image: the restore zeroes every
+;;; foreign pointer (the address belonged to the saving process), and even
+;;; where the address would still be right the restoring process never
+;;; opened the library, so a disk-based one (asl, muimaster) could be
+;;; expunged while in use.  A module therefore declares its base -- and
+;;; whatever it derives from it, the library's version -- with
+;;; DEFINE-LIBRARY-VARIABLE: a DEFVAR whose init form runs again after a
+;;; restore, before ~/.clamigarc (the runtime's EXT::*SYSTEM-RESTORE-HOOKS*),
+;;; exactly as a fresh load runs it.
+
+(defvar *library-variables* '()
+  "(SYMBOL . INIT-FUNCTION) for every DEFINE-LIBRARY-VARIABLE, in the
+order the variables were defined: re-derived in that order after a
+restore, so a version defined after its base sees the new base.")
+
+(defun %note-library-variable (name init)
+  "Register NAME's INIT function; a reload replaces its entry in place."
+  (let ((entry (assoc name *library-variables*)))
+    (if entry
+        (setf (cdr entry) init)
+        (setf *library-variables*
+              (append *library-variables* (list (cons name init))))))
+  name)
+
+(defmacro define-library-variable (name init-form &optional (doc nil docp))
+  "DEFVAR NAME with INIT-FORM, a value the running system decides -- a
+library base (OPEN-LIBRARY-OR-DIE, AMIGA:OPEN-LIBRARY), the version of
+one, NIL for a device or resource base the program sets itself -- and
+evaluate INIT-FORM again after a heap-image restore, before ~/.clamigarc
+runs: the image's copy belongs to the saving process (a restore zeroes
+every foreign pointer).  Variables are re-derived in the order they were
+defined.  An INIT-FORM that signals then leaves NAME NIL and says so on
+*ERROR-OUTPUT*; a library call through the NIL base reports that the
+library is not open."
+  `(progn
+     (defvar ,name ,init-form ,@(when docp (list doc)))
+     (%note-library-variable ',name (lambda () ,init-form))))
+
+(defun %rederive-library-variables ()
+  "EXT::*SYSTEM-RESTORE-HOOKS* entry: run every library variable's init
+form again, in this process."
+  (dolist (entry *library-variables*)
+    (setf (symbol-value (car entry))
+          (handler-case (funcall (cdr entry))
+            (error (e)
+              (format *error-output*
+                      "~&; AMIGA.FFI: ~S could not be re-derived after the image restore -- ~A~%;   it is NIL now: calls through it say the library is not open~%"
+                      (car entry) e)
+              nil)))))
+
+(unless (member '%rederive-library-variables ext::*system-restore-hooks*)
+  (push '%rederive-library-variables ext::*system-restore-hooks*))
 
 ;;; ================================================================
 ;;; Tag list support

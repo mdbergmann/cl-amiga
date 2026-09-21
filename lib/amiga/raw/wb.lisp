@@ -22,10 +22,12 @@
 
 ;;; Library base  opened at load time on AmigaOS/MorphOS; NIL on other
 ;;; hosts (the module still loads there for testing and compilation).
-(defvar *wb-base*
+;;; Base and version are re-derived after a heap-image restore, before
+;;; ~/.clamigarc runs (AMIGA.FFI:DEFINE-LIBRARY-VARIABLE).
+(amiga.ffi:define-library-variable *wb-base*
   (when (member :amigaos *features*)
     (amiga.ffi:open-library-or-die "workbench.library" 0)))
-(defvar *wb-version*
+(amiga.ffi:define-library-variable *wb-version*
   (and *wb-base* (amiga.ffi:library-version *wb-base*)))
 (defun %version>= (n)
   (and *wb-version* (>= *wb-version* n)))

@@ -21,10 +21,13 @@
 
 ;;; Library base  opened at load time on AmigaOS/MorphOS; NIL on other
 ;;; hosts (the module still loads there for testing and compilation).
+;;; Base and version are re-derived after a heap-image restore, before
+;;; ~/.clamigarc runs (AMIGA.FFI:DEFINE-LIBRARY-VARIABLE).
 ;;; NIL is a device/resource: there is no OpenLibrary.  Set the base
-;;; yourself (IORequest io_Device after OpenDevice, or OpenResource).
-(defvar *cia-base* nil)
-(defvar *cia-version*
+;;; yourself (IORequest io_Device after OpenDevice, or OpenResource);
+;;; a restore sets it back to NIL.
+(amiga.ffi:define-library-variable *cia-base* nil)
+(amiga.ffi:define-library-variable *cia-version*
   (and *cia-base* (amiga.ffi:library-version *cia-base*)))
 (defun %version>= (n)
   (and *cia-version* (>= *cia-version* n)))

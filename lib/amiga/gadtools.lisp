@@ -71,7 +71,7 @@
 ;;; convention as the generated amiga/raw modules.
 ;;; ================================================================
 
-(defvar *gadtools-base*
+(define-library-variable *gadtools-base*
   (when (member :amigaos *features*)
     (amiga:open-library "gadtools.library" 39)))
 (when (and (member :amigaos *features*) (null *gadtools-base*))

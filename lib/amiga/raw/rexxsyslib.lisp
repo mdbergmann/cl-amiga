@@ -24,10 +24,12 @@
 
 ;;; Library base  opened at load time on AmigaOS/MorphOS; NIL on other
 ;;; hosts (the module still loads there for testing and compilation).
-(defvar *rexxsyslib-base*
+;;; Base and version are re-derived after a heap-image restore, before
+;;; ~/.clamigarc runs (AMIGA.FFI:DEFINE-LIBRARY-VARIABLE).
+(amiga.ffi:define-library-variable *rexxsyslib-base*
   (when (member :amigaos *features*)
     (amiga.ffi:open-library-or-die "rexxsyslib.library" 0)))
-(defvar *rexxsyslib-version*
+(amiga.ffi:define-library-variable *rexxsyslib-version*
   (and *rexxsyslib-base* (amiga.ffi:library-version *rexxsyslib-base*)))
 (defun %version>= (n)
   (and *rexxsyslib-version* (>= *rexxsyslib-version* n)))

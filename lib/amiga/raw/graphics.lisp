@@ -42,10 +42,12 @@
 
 ;;; Library base  opened at load time on AmigaOS/MorphOS; NIL on other
 ;;; hosts (the module still loads there for testing and compilation).
-(defvar *graphics-base*
+;;; Base and version are re-derived after a heap-image restore, before
+;;; ~/.clamigarc runs (AMIGA.FFI:DEFINE-LIBRARY-VARIABLE).
+(amiga.ffi:define-library-variable *graphics-base*
   (when (member :amigaos *features*)
     (amiga.ffi:open-library-or-die "graphics.library" 0)))
-(defvar *graphics-version*
+(amiga.ffi:define-library-variable *graphics-version*
   (and *graphics-base* (amiga.ffi:library-version *graphics-base*)))
 (defun %version>= (n)
   (and *graphics-version* (>= *graphics-version* n)))
