@@ -2381,6 +2381,18 @@
 (defun hot-driver (n) (let ((s 0)) (dotimes (i n) (setq s (+ s (hot-leaf i)))) s))
 (check "hot: native callers count their interpreted callees" '(570 t t)
   (list (hot-driver 20) (hot-native-p #'hot-driver) (hot-native-p #'hot-leaf)))
+; ... once per call: jit_dispatch hands the callee to the stub frame, whose
+; OP_CALL counts it.  jit_dispatch used to count it as well, which made it
+; hot after half the threshold.
+(defun hot-leaf-once (x) (* x 5))
+(defun hot-driver-native (n)
+  (declare (optimize (speed 3)))
+  (let ((s 0)) (dotimes (i n) (setq s (+ s (hot-leaf-once i)))) s))
+(check "hot: a native caller's callee compiles on the threshold-th call" '(t nil t)
+  (list (hot-native-p #'hot-driver-native)
+        (progn (hot-driver-native (1- (clamiga::%jit-hot-threshold)))
+               (hot-native-p #'hot-leaf-once))
+        (progn (hot-driver-native 1) (hot-native-p #'hot-leaf-once))))
 (check "hot: threshold 1 compiles on the first call" '(5 t)
   (let ((prev (clamiga::%jit-set-hot-threshold 1)))
     (defun hot-once (x) (+ x 4))
@@ -2424,33 +2436,35 @@
 (check "hot: %jit-disassemble leaves a JIT-off definition alone" nil
   (progn (clamiga::%jit-disassemble #'hot-cold) (hot-native-p #'hot-cold)))
 
-; Regression: cl_jit_note_call's "keep counting" store read bc->jit_hot's
-; count once, then later wrote back (SPEED-bit | that count) with a plain
-; assign -- unlike the settle arm below it, which only ORs in
-; CL_BC_JIT_SETTLED.  If another thread settled bc in between (using a
-; fresher read), the stale assign clobbered the settle back down to a
-; small count, making a function the JIT had already declined eligible to
-; re-enter jit_compile_impl over and over instead of staying settled once
-; declined (jit.c).  hot-race-declined always declines: its &optional arg
-; bails every matcher/walker the same way jit-stub-test-fn's &optional
-; does at the top of this file.  %JIT-HOT-COMPILE-COUNT only advances
-; when jit_compile_impl actually runs, so hammering this one shared
-; bytecode from several threads must not move it more than once.
+; Several threads calling one function while it turns hot.  A counting
+; store that went stale could overwrite another thread's settle with a
+; small count (cl_jit_note_call re-checks before it writes), and a
+; declined function would then be tried again every 8 calls.  That race
+; is too narrow to force from here, so this is a smoke test of concurrent
+; settling.  hot-race-declined always declines: its &optional arg bails
+; every matcher/walker, as jit-stub-test-fn's does at the top of this
+; file.  %JIT-HOT-COMPILE-COUNT counts every function the hot path tries,
+; so the target must be the only one counted in the window: the worker is
+; (speed 3), settled at definition, and the thread's entry call into it
+; (cl_vm_apply's stub OP_CALL, which counts like any interpreted call)
+; therefore counts nothing -- a loop LAMBDA there would compile on its
+; first call.  Two threads that reach the threshold together may both try
+; (jit.c), hence at most 2.
 (defun hot-race-declined (x &optional y) (or x y))
-(check "hot: concurrent calls settle a declined function exactly once"
-       '(nil t)
+(defun hot-race-worker ()
+  (declare (optimize (speed 3)))
+  (dotimes (i 400) (hot-race-declined i nil)))
+(check "hot: concurrent calls settle a declined function" '(nil t)
   (let ((prev (clamiga::%jit-set-hot-threshold 8)))
     (unwind-protect
         (let ((before (clamiga::%jit-hot-compile-count))
               (workers nil))
           (dotimes (w 6)
-            (push (mp:make-thread
-                    (lambda () (dotimes (i 400) (hot-race-declined i nil)))
-                    :name "hot-race-worker")
+            (push (mp:make-thread #'hot-race-worker :name "hot-race-worker")
                   workers))
           (mapc #'mp:join-thread workers)
           (list (hot-native-p #'hot-race-declined)
-                (<= (- (clamiga::%jit-hot-compile-count) before) 1)))
+                (<= 1 (- (clamiga::%jit-hot-compile-count) before) 2)))
       (clamiga::%jit-set-hot-threshold prev))))
 
 ; Restore the suite-wide baseline established by run-tests.lisp's

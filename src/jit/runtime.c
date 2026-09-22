@@ -449,11 +449,10 @@ static CL_Obj jit_dispatch(CL_Obj func, CL_Obj *operand_top, uint32_t nargs)
         }
         if (ftype == TYPE_BYTECODE || ftype == TYPE_CLOSURE) {
             CL_Bytecode *bc = jit_dispatch_bytecode_of(func, ftype);
-            /* Hot compilation, as in the VM's OP_CALL: a native caller
-             * counts its interpreted callees too, or a function reached
-             * only from compiled code would never turn hot. */
-            if (bc != NULL && bc->native_code == NULL && CL_BC_JIT_COUNTING_P(bc))
-                cl_jit_note_call(bc);
+            /* No hot-call count here: an interpreted callee goes on to the
+             * stub frame below, whose OP_CALL counts it (jit.h).  Counting
+             * here too made a native caller's callee hot after half the
+             * threshold. */
             if (bc != NULL && bc->native_code != NULL) {
                 uint32_t arity = bc->arity & 0x7FFF;
                 int fits = (bc->arity & 0x8000) == 0 && bc->n_optional == 0 &&

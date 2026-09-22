@@ -62,17 +62,20 @@ it in bit 7 of the serialized flags byte, the reader strips it back out —
 the in-memory `flags` keep bits 0-1, which the JIT's eligibility checks
 compare against 0.  Part of `CL_FASL_VERSION` 38.
 
-**Call paths.**  Two places can run native code for a callee: the VM's
-`OP_CALL` (`vm.c`, also what `cl_vm_apply`'s stub frame goes through) and
-`jit_dispatch` (`runtime.c`, every call from native code).  Both do
+**Call paths.**  Every interpreted call is counted in one place, the VM's
+`OP_CALL` (`vm.c`):
 
 ```c
 if (!bc->native_code && CL_BC_JIT_COUNTING_P(bc))
     cl_jit_note_call(bc);
 ```
 
-right before their native check, so the call that turns a function hot
-already runs native.  The `vm.c` hunks are inside `#ifdef JIT_M68K`: the
+right before its native check, so the call that turns a function hot
+already runs native.  That covers callers outside the VM too:
+`cl_vm_apply`'s stub frame is an `OP_CALL`, and `jit_dispatch`
+(`runtime.c`, every call from native code) hands an interpreted callee to
+that stub frame.  `jit_dispatch` must not count as well — it did at first,
+and a native caller's callee turned hot after half the threshold.  The `vm.c` hunks are inside `#ifdef JIT_M68K`: the
 host VM is byte-for-byte what it was.  A settled function pays one byte
 compare per call.
 
@@ -128,8 +131,8 @@ as they turn hot; a restored speed-3 function compiles on its first call.
   and changed `image.c`'s layout hash).
 - No `JIT_COMPILING` state or CAS publish: deterministic codegen plus
   "never free on the hot path" makes the race harmless.
-- `jit_dispatch` counts as well: a function reached only from native code
-  would otherwise never turn hot.
+- A function reached only from native code turns hot like any other: its
+  calls reach `OP_CALL` through `jit_dispatch`'s stub frame.
 - The loop rule, the speed-3 hint and eager mode are new.
 - The eager call sites were not removed but routed through
   `cl_jit_note_definition`, which is also where eager mode lives.
