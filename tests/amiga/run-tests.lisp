@@ -10002,6 +10002,19 @@ y" 1))
   (let ((p (ffi:foreign-string "hello")))
     (prog1 (ffi:foreign-to-string p)
       (ffi:free-foreign p))))
+;; No hidden cap: an old 4096-byte default cut Clamacs's TextEditor exports
+;; (and the files it saved) at 4 KB.  MAX-LEN still bounds the read.
+(check "ffi-foreign-to-string-past-4k" '(t 10000 t "ab" :rejected)
+  (let ((s (make-string 10000)))
+    (dotimes (i 10000) (setf (char s i) (code-char (+ 97 (mod i 26)))))
+    (let ((p (ffi:foreign-string s)))
+      (prog1 (list (string= s (ffi:foreign-to-string p))
+                   (length (ffi:foreign-to-string p nil))
+                   (string= (subseq s 0 4096) (ffi:foreign-to-string p 4096))
+                   (ffi:foreign-to-string p 2)
+                   (handler-case (ffi:foreign-to-string p -1)
+                     (type-error () :rejected)))
+        (ffi:free-foreign p)))))
 (check "ffi-pointer-plus" 120
   (ffi:foreign-pointer-address (ffi:pointer+ (ffi:make-foreign-pointer 100) 20)))
 (check "ffi-with-foreign-alloc" 42

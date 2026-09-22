@@ -556,7 +556,10 @@ static CL_Obj bi_ffi_foreign_string(CL_Obj *args, int nargs)
 }
 
 /* (ffi:foreign-to-string fp &optional max-len) → string
- * Reads a null-terminated string from foreign memory. */
+ * Reads a null-terminated string from foreign memory: up to the NUL, or at
+ * most MAX-LEN bytes when that is given.  No hidden cap without it -- a
+ * 4096-byte default once cut every TextEditor export in Clamacs to 4 KB,
+ * silently, saved files included. */
 static CL_Obj bi_ffi_foreign_to_string(CL_Obj *args, int nargs)
 {
     uint32_t handle;
@@ -569,8 +572,16 @@ static CL_Obj bi_ffi_foreign_to_string(CL_Obj *args, int nargs)
     if (!base)
         cl_error(CL_ERR_GENERAL, "FFI:FOREIGN-TO-STRING: invalid foreign pointer");
     cstr = (const char *)base;
-    maxlen = (nargs > 1 && !CL_NULL_P(args[1]))
-             ? (uint32_t)CL_FIXNUM_VAL(args[1]) : 4096;
+    maxlen = 0xFFFFFFFFUL;
+    if (nargs > 1 && !CL_NULL_P(args[1])) {
+        if (!CL_FIXNUM_P(args[1]) || CL_FIXNUM_VAL(args[1]) < 0) {
+            char val[64];
+            cl_error(CL_ERR_TYPE, "FFI:FOREIGN-TO-STRING: max-len must be a "
+                     "non-negative integer or NIL (read to the NUL), got %s",
+                     cl_obj_brief(args[1], val, sizeof(val)));
+        }
+        maxlen = (uint32_t)CL_FIXNUM_VAL(args[1]);
+    }
     for (len = 0; len < maxlen && cstr[len] != '\0'; len++)
         ;
     return cl_make_string(cstr, len);

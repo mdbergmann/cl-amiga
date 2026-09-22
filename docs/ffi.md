@@ -77,7 +77,7 @@ all rejected with a diagnostic rather than silently corrupting memory.
 | Signature | Kind | Description |
 |-----------|------|-------------|
 | `(foreign-string string)` | function | Copy a Lisp string into a freshly allocated C string |
-| `(foreign-to-string pointer &optional max-len)` | function | Read a NUL-terminated C string into a Lisp string, up to `max-len` bytes |
+| `(foreign-to-string pointer &optional max-len)` | function | Read a NUL-terminated C string into a Lisp string: up to its NUL, or at most `max-len` bytes when given |
 
 ## Calls, callbacks, libraries (host)
 

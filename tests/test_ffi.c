@@ -381,6 +381,37 @@ TEST(lisp_ffi_foreign_string_empty)
         "\"\"");
 }
 
+/* No hidden cap: without MAX-LEN the string is read to its NUL.  An old
+ * 4096-byte default cut every Clamacs TextEditor export (and so every
+ * file it saved) at 4 KB, silently.  MAX-LEN still bounds the read. */
+TEST(lisp_ffi_foreign_string_long)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (make-string 10000)))"
+        "  (dotimes (i 10000) (setf (char s i) (code-char (+ 97 (mod i 26)))))"
+        "  (let ((p (ffi:foreign-string s)))"
+        "    (prog1 (list (string= s (ffi:foreign-to-string p))"
+        "                 (length (ffi:foreign-to-string p nil))"
+        "                 (string= (subseq s 0 4096) (ffi:foreign-to-string p 4096))"
+        "                 (length (ffi:foreign-to-string p 20000))"
+        "                 (ffi:foreign-to-string p 0))"
+        "      (ffi:free-foreign p))))"),
+        "(T 10000 T 10000 \"\")");
+}
+
+TEST(lisp_ffi_foreign_string_bad_max_len)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((p (ffi:foreign-string \"abc\")))"
+        "  (prog1 (list (handler-case (ffi:foreign-to-string p -1)"
+        "                 (type-error () :rejected))"
+        "               (handler-case (ffi:foreign-to-string p \"4\")"
+        "                 (type-error () :rejected))"
+        "               (ffi:foreign-to-string p 2))"
+        "    (ffi:free-foreign p)))"),
+        "(:REJECTED :REJECTED \"ab\")");
+}
+
 TEST(lisp_ffi_pointer_plus)
 {
     /* pointer+ should create a new pointer with offset address */
@@ -802,6 +833,8 @@ int main(void)
     RUN(lisp_ffi_poke_bytes_respects_fill_pointer);
     RUN(lisp_ffi_foreign_string);
     RUN(lisp_ffi_foreign_string_empty);
+    RUN(lisp_ffi_foreign_string_long);
+    RUN(lisp_ffi_foreign_string_bad_max_len);
     RUN(lisp_ffi_pointer_plus);
     RUN(lisp_ffi_printer);
 
