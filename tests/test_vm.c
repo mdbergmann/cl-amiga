@@ -2728,6 +2728,47 @@ TEST(eval_defvar_no_overwrite)
     ASSERT_EQ_INT(eval_int("*y*"), 42);
 }
 
+TEST(eval_defvar_init_form_only_when_unbound)
+{
+    /* CLHS DEFVAR: the initial-value form "is evaluated only if name is
+     * not already bound" -- not merely left unstored.  The form's side
+     * effect used to run on every re-evaluation. */
+    eval_print("(defvar *dvc* 0)");
+    ASSERT_STR_EQ(eval_print("(defvar *dvx* (setq *dvc* (+ *dvc* 1)))"),
+                  "*DVX*");
+    ASSERT_STR_EQ(eval_print("(defvar *dvx* (setq *dvc* (+ *dvc* 1)))"),
+                  "*DVX*");
+    ASSERT_EQ_INT(eval_int("*dvc*"), 1);
+    ASSERT_EQ_INT(eval_int("*dvx*"), 1);
+    /* A form that would signal is not evaluated at all once bound. */
+    ASSERT_STR_EQ(eval_print("(defvar *dvx* (error \"evaluated\"))"),
+                  "*DVX*");
+    ASSERT_EQ_INT(eval_int("*dvx*"), 1);
+    /* Unbound again -> evaluated again. */
+    eval_print("(makunbound '*dvx*)");
+    eval_print("(defvar *dvx* (setq *dvc* (+ *dvc* 10)))");
+    ASSERT_EQ_INT(eval_int("*dvc*"), 11);
+    ASSERT_EQ_INT(eval_int("*dvx*"), 11);
+}
+
+TEST(eval_def_forms_store_in_tail_position)
+{
+    /* A DEFVAR / DEFPARAMETER / DEFCONSTANT that is the last form of a
+     * function body used to compile its value form as a tail call: the
+     * store after it was dead code, the function returned the value
+     * instead of the name, and the variable stayed unbound. */
+    eval_print("(defun dvt-val () 42)");
+    eval_print("(defun dvt-var () (defvar *dvt-v* (dvt-val)))");
+    eval_print("(defun dvt-par () (defparameter *dvt-p* (dvt-val)))");
+    eval_print("(defun dvt-con () (defconstant +dvt-c+ (dvt-val)))");
+    ASSERT_STR_EQ(eval_print("(dvt-var)"), "*DVT-V*");
+    ASSERT_STR_EQ(eval_print("(dvt-par)"), "*DVT-P*");
+    ASSERT_STR_EQ(eval_print("(dvt-con)"), "+DVT-C+");
+    ASSERT_EQ_INT(eval_int("*dvt-v*"), 42);
+    ASSERT_EQ_INT(eval_int("*dvt-p*"), 42);
+    ASSERT_EQ_INT(eval_int("+dvt-c+"), 42);
+}
+
 TEST(eval_defparameter_overwrite)
 {
     /* defparameter always overwrites */
@@ -11784,6 +11825,8 @@ int main(void)
     RUN(eval_mv_propagation);
     RUN(eval_defvar_basic);
     RUN(eval_defvar_no_overwrite);
+    RUN(eval_defvar_init_form_only_when_unbound);
+    RUN(eval_def_forms_store_in_tail_position);
     RUN(eval_defparameter_overwrite);
     RUN(eval_defconstant_basic);
     RUN(eval_defconstant_setq_error);

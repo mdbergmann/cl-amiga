@@ -2,7 +2,8 @@
 ;;
 ;; Bootstrap of the ANSI Common Lisp test suite (Paul Dietz / ansi-test).
 ;; Loads the rt framework + aux + universe + the CONS, SYMBOLS, NUMBERS and
-;; SEQUENCES chapters, then runs them all in a single rt:do-tests pass.
+;; SEQUENCES chapters and the DEFVAR / DEFPARAMETER tests, then runs them all
+;; in a single rt:do-tests pass.
 ;;
 ;; Usage (host):
 ;;   ./build/host/clamiga --heap 96M --load trunk/load-and-test-ansi.lisp
@@ -18,7 +19,7 @@
 (defparameter *aux-dir* (truename "third_party/ansi-test/auxiliary/"))
 (setq *default-pathname-defaults* *ansi-test-dir*)
 
-(format t "~%=== ANSI test bootstrap (rt + aux + universe + cons + symbols + numbers + sequences) ===~%")
+(format t "~%=== ANSI test bootstrap (rt + aux + universe + cons + symbols + numbers + sequences + defvar/defparameter) ===~%")
 (format t "ansi-test dir: ~A~%" *ansi-test-dir*)
 
 ;; --- Bootstrap (still in CL-USER) ---
@@ -99,6 +100,19 @@
 (common-lisp:format common-lisp:t "~%--- Loading sequences chapter ---~%")
 (common-lisp:load
  (common-lisp:merge-pathnames "sequences/load.lsp"
+                              (common-lisp:symbol-value
+                               'common-lisp-user::*ansi-test-dir*)))
+
+;; --- DEFVAR / DEFPARAMETER (two files of the data-and-control-flow chapter,
+;; not the whole chapter).  defvar.5 is the CLHS rule that DEFVAR evaluates
+;; its initial-value form only when the variable is unbound. ---
+(common-lisp:format common-lisp:t "~%--- Loading DEFVAR / DEFPARAMETER tests ---~%")
+(common-lisp:load
+ (common-lisp:merge-pathnames "data-and-control-flow/defvar.lsp"
+                              (common-lisp:symbol-value
+                               'common-lisp-user::*ansi-test-dir*)))
+(common-lisp:load
+ (common-lisp:merge-pathnames "data-and-control-flow/defparameter.lsp"
                               (common-lisp:symbol-value
                                'common-lisp-user::*ansi-test-dir*)))
 

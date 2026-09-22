@@ -4845,7 +4845,7 @@ protocol hook a user metaclass would override to substitute a subclass."
 (fmakunbound 'documentation)
 (defgeneric documentation (x doc-type))
 (defmethod documentation (x doc-type)
-  (gethash (cons x doc-type) *documentation-table*))
+  (values (gethash (cons x doc-type) *documentation-table*)))   ; one value (CLHS)
 
 (defgeneric (setf documentation) (new-value x doc-type))
 (defmethod (setf documentation) (new-value x doc-type)

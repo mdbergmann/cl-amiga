@@ -1689,7 +1689,8 @@ void compile_deftype(CL_Compiler *c, CL_Obj form)
 
 /* --- Defvar / Defparameter --- */
 
-/* Emit a runtime call (BUILTIN 'NAME) and discard its result.
+/* Emit a runtime call (BUILTIN 'NAME), leaving its value on the stack;
+ * emit_mark_call discards it.
  *
  * Used by defconstant / defvar to mark a symbol constant / special at LOAD
  * time.  The compile-time side effect (setting the symbol flag while
@@ -1701,8 +1702,8 @@ void compile_deftype(CL_Compiler *c, CL_Obj form)
  * calls; every intermediate is protected across the next allocation so a
  * compacting GC (deterministically under gc-stress) cannot leave a stale
  * C-local offset.  NAME must already be GC-protected by the caller. */
-static void emit_mark_call(CL_Compiler *c, const char *builtin, int builtin_len,
-                           CL_Obj name)
+static void emit_quoted_call(CL_Compiler *c, const char *builtin,
+                             int builtin_len, CL_Obj name)
 {
     CL_Obj inner, quoted, b_sym, b_arg, mark_form;
     inner = cl_cons(name, CL_NIL);
@@ -1718,8 +1719,14 @@ static void emit_mark_call(CL_Compiler *c, const char *builtin, int builtin_len,
     CL_GC_UNPROTECT(2);            /* b_sym, b_arg (reachable from mark_form) */
     CL_GC_PROTECT(mark_form);
     compile_expr(c, mark_form);
-    cl_emit(c, OP_POP);
     CL_GC_UNPROTECT(2);            /* quoted, mark_form */
+}
+
+static void emit_mark_call(CL_Compiler *c, const char *builtin, int builtin_len,
+                           CL_Obj name)
+{
+    emit_quoted_call(c, builtin, builtin_len, name);
+    cl_emit(c, OP_POP);
 }
 
 /* --- Documentation strings --- */
@@ -1810,6 +1817,7 @@ void compile_defvar(CL_Compiler *c, CL_Obj form)
     CL_Obj rest = cl_cdr(cl_cdr(form));
     CL_Obj doc = defvar_docstring(rest);
     CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(name);
+    int saved_tail = c->in_tail;
 
     sym->flags |= CL_SYM_SPECIAL;
 
@@ -1818,14 +1826,40 @@ void compile_defvar(CL_Compiler *c, CL_Obj form)
      * so a bare `name` would go stale and cl_add_constant/cl_emit_const would
      * bake a stale offset into OP_DEFVAR / the return value — marking the WRONG
      * symbol special at FASL load.  Same class as compile_deftype.  `doc` is
-     * read from `rest` for the same reason, before the init form compiles. */
+     * read from `rest` for the same reason, before the init form compiles;
+     * `rest` itself is protected because the init form is read from it only
+     * after the BOUNDP test below has compiled (and allocated). */
     CL_GC_PROTECT(name);
     CL_GC_PROTECT(doc);
+    CL_GC_PROTECT(rest);
+    /* Nothing below is in tail position -- the form returns NAME.  An init
+     * form compiled with in_tail set became a tail call, which made the
+     * OP_DEFVAR after it dead code: (defun f () (defvar *x* (g))) never
+     * bound *X*. */
+    c->in_tail = 0;
     if (!CL_NULL_P(rest)) {
-        int idx;
+        int idx, bound_pos, store_pos;
+        /* CLHS DEFVAR: the initial-value form "is evaluated only if name is
+         * not already bound".  OP_DEFVAR alone checked boundness only when
+         * STORING, so the form's side effects ran on every reload.
+         *
+         *     (%GLOBALLY-BOUND-P 'name)  JTRUE bound
+         *     <init-form>                JMP  store
+         *   bound:  NIL
+         *   store:  OP_DEFVAR name
+         *
+         * The bound branch still runs OP_DEFVAR: it proclaims the variable
+         * special (a symbol bound by a plain SETQ must become special) and,
+         * asking the same global-value question as the test, never stores
+         * the placeholder NIL. */
+        emit_quoted_call(c, "%GLOBALLY-BOUND-P", 17, name);
+        bound_pos = cl_emit_jump(c, OP_JTRUE);
         compile_expr(c, cl_car(rest));
+        store_pos = cl_emit_jump(c, OP_JMP);
+        cl_patch_jump(c, bound_pos);
+        cl_emit(c, OP_NIL);
+        cl_patch_jump(c, store_pos);
         idx = cl_add_constant(c, name);
-        /* OP_DEFVAR: mark special, store only if unbound (runtime check) */
         cl_emit(c, OP_DEFVAR);
         cl_emit_u16(c, (uint16_t)idx);
     } else {
@@ -1841,7 +1875,8 @@ void compile_defvar(CL_Compiler *c, CL_Obj form)
     }
     cl_emit_const(c, name);
     emit_doc_call(c, name, "VARIABLE", 8, doc);
-    CL_GC_UNPROTECT(2);  /* doc, name */
+    c->in_tail = saved_tail;
+    CL_GC_UNPROTECT(3);  /* rest, doc, name */
 }
 
 void compile_defparameter(CL_Compiler *c, CL_Obj form)
@@ -1852,6 +1887,7 @@ void compile_defparameter(CL_Compiler *c, CL_Obj form)
     CL_Obj doc = defvar_docstring(rest);
     CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(name);
     int idx;
+    int saved_tail = c->in_tail;
 
     sym->flags |= CL_SYM_SPECIAL;
 
@@ -1859,6 +1895,7 @@ void compile_defparameter(CL_Compiler *c, CL_Obj form)
      * compaction so OP_GSTORE/OP_DEFVAR get the live symbol, not a stale one. */
     CL_GC_PROTECT(name);
     CL_GC_PROTECT(doc);
+    c->in_tail = 0;            /* see compile_defvar: the store must not be dead */
     if (!CL_NULL_P(rest)) {
         compile_expr(c, cl_car(rest));
         idx = cl_add_constant(c, name);
@@ -1874,6 +1911,7 @@ void compile_defparameter(CL_Compiler *c, CL_Obj form)
     }
     cl_emit_const(c, name);
     emit_doc_call(c, name, "VARIABLE", 8, doc);
+    c->in_tail = saved_tail;
     CL_GC_UNPROTECT(2);  /* doc, name */
 }
 
@@ -1885,6 +1923,7 @@ void compile_defconstant(CL_Compiler *c, CL_Obj form)
     CL_Obj doc = defvar_docstring(rest);
     CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(name);
     int idx;
+    int saved_tail = c->in_tail;
 
     /* If already constant with a different value, error */
     if ((sym->flags & CL_SYM_CONSTANT) && sym->value != CL_UNBOUND) {
@@ -1899,6 +1938,7 @@ void compile_defconstant(CL_Compiler *c, CL_Obj form)
     /* GC SAFETY: see compile_defvar — protect `name` across compile_expr. */
     CL_GC_PROTECT(name);
     CL_GC_PROTECT(doc);
+    c->in_tail = 0;            /* see compile_defvar: the store must not be dead */
     if (!CL_NULL_P(rest)) {
         compile_expr(c, cl_car(rest));
         idx = cl_add_constant(c, name);
@@ -1912,6 +1952,7 @@ void compile_defconstant(CL_Compiler *c, CL_Obj form)
     emit_mark_call(c, "%MARK-CONSTANT", 14, name);
     cl_emit_const(c, name);
     emit_doc_call(c, name, "VARIABLE", 8, doc);
+    c->in_tail = saved_tail;
     CL_GC_UNPROTECT(2);  /* doc, name */
 }
 

@@ -83,6 +83,19 @@ TEST(defun_docstring_recorded)
     ASSERT_STR_EQ(eval_print("(doc-fn 1)"), "2");
 }
 
+/* CLHS DOCUMENTATION returns one value, the string or NIL.  Both the
+ * boot.lisp function and the CLOS method returned GETHASH's found-p as a
+ * second value; the ANSI suite's DEFVAR.2 / DEFPARAMETER.2 compare every
+ * value. */
+TEST(documentation_returns_one_value)
+{
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (documentation 'doc-no-such 'function))"),
+                  "(NIL)");
+    eval_print("(defvar *doc-one* 1 \"One.\")");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (documentation '*doc-one* 'variable))"),
+                  "(\"One.\")");
+}
+
 TEST(defun_docstring_after_declare)
 {
     /* CLHS 3.4.11: the docstring may sit among the declarations. */
@@ -317,6 +330,7 @@ int main(void)
     setup();
 
     RUN(defun_docstring_recorded);
+    RUN(documentation_returns_one_value);
     RUN(defun_docstring_after_declare);
     RUN(string_only_body_is_a_value_not_a_doc);
     RUN(setf_function_docstring);

@@ -1036,6 +1036,29 @@ y" 1))
 (check "defvar basic" 10 *dv1*)
 (defvar *dv1* 99)
 (check "defvar no overwrite" 10 *dv1*)
+;; CLHS DEFVAR: the initial-value form is evaluated only when the variable
+;; is unbound -- not evaluated and then left unstored.
+(defvar *dv-once-count* 0)
+(defvar *dv-once* (incf *dv-once-count*))
+(defvar *dv-once* (incf *dv-once-count*))
+(check "defvar init form evaluated once" '(1 1) (list *dv-once-count* *dv-once*))
+(check "defvar init form of a bound variable not evaluated" 1
+       (progn (defvar *dv-once* (error "evaluated")) *dv-once*))
+;; A DEF* form as the last form of a function body: its value form compiled
+;; as a tail call, and the store after it was dead code.
+(defun dv-tail-val () 42)
+(defun dv-tail-var () (defvar *dv-tail-v* (dv-tail-val)))
+(defun dv-tail-par () (defparameter *dv-tail-p* (dv-tail-val)))
+(defun dv-tail-con () (defconstant +dv-tail-c+ (dv-tail-val)))
+(check "defvar in tail position stores" '(*dv-tail-v* 42)
+       (list (dv-tail-var) (symbol-value '*dv-tail-v*)))
+(check "defparameter in tail position stores" '(*dv-tail-p* 42)
+       (list (dv-tail-par) (symbol-value '*dv-tail-p*)))
+(check "defconstant in tail position stores" '(+dv-tail-c+ 42)
+       (list (dv-tail-con) (symbol-value '+dv-tail-c+)))
+;; CLHS DOCUMENTATION returns one value (ANSI DEFVAR.2 / DEFPARAMETER.2).
+(check "documentation returns one value" '(nil)
+       (multiple-value-list (documentation '*dv-once* 'variable)))
 ;; INTERN of a fresh keyword returned a stale offset when the export at its
 ;; end collected and moved the new symbol (host regression test:
 ;; tests/test_gengc.c).  Intern under garbage churn and compare against

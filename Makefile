@@ -244,7 +244,7 @@ test_batch test_repl_values test_repl_paste test_boot_log test_mx_error_context 
                 test_struct_slot_access test_defconstant_fasl test_peephole_diff \
                 test_tier4_phase1 test_tier4_phase2 test_tier4_phase3 test_local_inline \
                 test_scan_opcodes test_runtime_forms test_compiler_buffers \
-                test_defvar_special_fasl test_stack_depth test_argv_utf8 \
+                test_defvar_special_fasl test_defvar_init_once_fasl test_stack_depth test_argv_utf8 \
                 test_command_line_args \
                 test_utf8_filenames test_image test_boot_image_scripts test_install_layout \
                 test_finish_output_flush \
@@ -353,6 +353,8 @@ test-gc-stress:
 	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_heap_verify.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
 	@echo "--- test_call_diag (CLAMIGA_GC_STRESS=1, forced compaction: the diagnostics' error messages) ---"
 	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_call_diag.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
+	@echo "--- test_defvar_init_once_fasl (CLAMIGA_GC_STRESS=1, forced compaction: DEFVAR's BOUNDP-guarded codegen) ---"
+	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_defvar_init_once_fasl.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
 
 # `make test-memleak` builds a DEBUG_MEM_TRACK binary — every platform_alloc
 # tagged with its call site — and asserts that a run ends with ZERO off-heap

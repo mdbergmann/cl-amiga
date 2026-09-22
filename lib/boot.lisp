@@ -1079,7 +1079,8 @@ Spec is var | (var ...) | ((keyword var) ...)."
 ;; documentation — CL standard documentation function.  The table and
 ;; %SET-DOCUMENTATION are at the top of this file (see there).
 (defun documentation (obj doc-type)
-  (gethash (cons obj doc-type) *documentation-table*))
+  ;; One value (CLHS): the string or NIL -- not GETHASH's found-p too.
+  (values (gethash (cons obj doc-type) *documentation-table*)))
 
 (defsetf documentation %set-documentation)
 

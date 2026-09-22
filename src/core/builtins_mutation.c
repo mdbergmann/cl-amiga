@@ -192,6 +192,21 @@ static CL_Obj bi_mark_special(CL_Obj *args, int n)
     return args[0];
 }
 
+/* %GLOBALLY-BOUND-P: T when the symbol's GLOBAL value cell is bound,
+   ignoring any dynamic binding on this thread.  DEFVAR emits a call to it
+   to skip its initial-value form (CLHS: "evaluated only if name is not
+   already bound"); it must ask the question OP_DEFVAR's store asks, or a
+   DEFVAR inside a LET of the same variable would evaluate the form and
+   then not store it -- or skip it and leave the global unbound. */
+static CL_Obj bi_globally_boundp(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    if (!CL_SYMBOL_P(args[0]))
+        cl_signal_type_error(args[0], "SYMBOL", "%GLOBALLY-BOUND-P");
+    return ((CL_Symbol *)CL_OBJ_TO_PTR(args[0]))->value != CL_UNBOUND
+           ? SYM_T : CL_NIL;
+}
+
 extern CL_Obj setf_fn_table;
 
 /* Helper: if name is (setf sym), look up the setf-fn symbol in setf_fn_table.
@@ -374,6 +389,7 @@ void cl_builtins_mutation_init(void)
     cl_register_builtin("%SYMBOL-CONSTANT-P", bi_symbol_constant_p, 1, 1, cl_package_clamiga);
     cl_register_builtin("%MARK-CONSTANT", bi_mark_constant, 1, 1, cl_package_clamiga);
     cl_register_builtin("%MARK-SPECIAL", bi_mark_special, 1, 1, cl_package_clamiga);
+    cl_register_builtin("%GLOBALLY-BOUND-P", bi_globally_boundp, 1, 1, cl_package_clamiga);
     defun("FBOUNDP", bi_fboundp, 1, 1);
     defun("FMAKUNBOUND", bi_fmakunbound, 1, 1);
     defun("MAKUNBOUND", bi_makunbound, 1, 1);
