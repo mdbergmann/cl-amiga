@@ -1036,6 +1036,19 @@ y" 1))
 (check "defvar basic" 10 *dv1*)
 (defvar *dv1* 99)
 (check "defvar no overwrite" 10 *dv1*)
+;; INTERN of a fresh keyword returned a stale offset when the export at its
+;; end collected and moved the new symbol (host regression test:
+;; tests/test_gengc.c).  Intern under garbage churn and compare against
+;; FIND-SYMBOL.
+(check "fresh keywords survive a collection inside their export" 0
+       (let ((bad 0))
+         (dotimes (i 300 bad)
+           (make-string 200)
+           (let* ((name (format nil "AMIGA-FRESH-KW-~D" i))
+                  (kw (intern name :keyword)))
+             (unless (and (eq kw (find-symbol name :keyword))
+                          (eq kw (symbol-value kw)))
+               (incf bad))))))
 (defparameter *dp1* 10)
 (check "defparameter basic" 10 *dp1*)
 (defparameter *dp1* 20)

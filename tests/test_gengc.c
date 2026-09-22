@@ -269,6 +269,62 @@ TEST(pretouch_is_safe_on_protected_old_range)
     CL_GC_UNPROTECT(1);
 }
 
+/* Regression (2026-09-22): interning a FRESH keyword returned the symbol's
+ * pre-move offset whenever the export at the end of cl_intern_in
+ * collected -- cl_export_symbol roots its own copy of the symbol, not the
+ * caller's local.  A minor slides the fresh symbol down over the dead
+ * nursery data below it; the reader then consed the stale offset into the
+ * form it was reading, and the next minor ran off the arena end sliding
+ * the "survivor" it pointed at.  (gc-stress never saw it: compacting
+ * before every allocation leaves nothing dead below the newest object,
+ * so it never moves.)
+ *
+ * Deterministic setup: fill the nursery with garbage until exactly what
+ * cl_intern_in allocates before the export (name string, symbol, bucket
+ * cell) still fits -- the export's first cons then has to collect. */
+TEST(fresh_keyword_survives_gc_inside_its_export)
+{
+    static const char name[] = "GENGC-EXPORT-PROBE";
+    const uint32_t len = (uint32_t)(sizeof(name) - 1);
+    uint32_t before, need, gap, gc0, n;
+    CL_Obj kw, found, garbage;
+
+    ASSERT_EQ_INT(cl_gc_minor(cl_heap.gc_count), 1);
+    ASSERT(CL_NULL_P(cl_find_symbol(name, len, cl_package_keyword)));
+
+    /* What the slow path allocates before its export, measured on
+     * garbage of the same shape. */
+    before = cl_heap.bump;
+    garbage = cl_make_string(name, len);
+    garbage = cl_make_symbol(garbage);
+    garbage = cl_cons(garbage, CL_NIL);
+    need = cl_heap.bump - before;
+    (void)garbage;
+
+    /* Dead filler (it becomes the space the symbol slides down over),
+     * the last piece sized so that exactly `need` bytes remain. */
+    gap = cl_heap.arena_size - cl_heap.bump;
+    while (gap - need > 65536u + 64u) {
+        (void)cl_make_vector(8192);
+        gap = cl_heap.arena_size - cl_heap.bump;
+    }
+    n = (gap - need - (uint32_t)sizeof(CL_Vector)) / (uint32_t)sizeof(CL_Obj);
+    (void)cl_make_vector(n);
+    ASSERT_EQ((unsigned long)(cl_heap.arena_size - cl_heap.bump),
+              (unsigned long)need);
+
+    gc0 = cl_heap.gc_count;
+    kw = cl_intern_in(name, len, cl_package_keyword);
+    ASSERT(cl_heap.gc_count != gc0);            /* the export collected */
+
+    found = cl_find_symbol(name, len, cl_package_keyword);
+    ASSERT(CL_SYMBOL_P(found));
+    ASSERT_EQ((unsigned long)kw, (unsigned long)found);
+    ASSERT_STR_EQ(cl_symbol_name(kw), "GENGC-EXPORT-PROBE");
+    ASSERT_EQ((unsigned long)((CL_Symbol *)CL_OBJ_TO_PTR(kw))->value,
+              (unsigned long)kw);               /* self-evaluating */
+}
+
 #else /* !CL_GENGC */
 
 TEST(gengc_not_compiled_in)
@@ -291,6 +347,9 @@ int main(void)
     RUN(major_resets_watermark_to_live_top);
     RUN(minor_stats_accumulate);
     RUN(gc_count_advances_on_minor_and_epoch_dedup_applies);
+    /* Needs the packages setup() made: the two tests after it re-create
+     * the heap without re-running cl_package_init. */
+    RUN(fresh_keyword_survives_gc_inside_its_export);
     RUN(env_kill_switch_pins_classic_collector);
     RUN(repeated_reinit_tears_gen_state_down);
     RUN(pretouch_is_safe_on_protected_old_range);

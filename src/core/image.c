@@ -1489,7 +1489,7 @@ static CL_Obj image_defvar_ext(const char *name, CL_Obj *slot, int exported)
     cl_gc_register_root(slot);
     if (exported)
         cl_export_symbol(sym, cl_package_ext);
-    return sym;
+    return *slot;   /* the export can collect: *slot is the rooted copy */
 }
 
 void cl_image_builtins_init(void)

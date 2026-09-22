@@ -96,7 +96,7 @@ static CL_Obj defvar_ext(const char *name, CL_Obj *slot)
     *slot = sym;
     cl_gc_register_root(slot);
     cl_export_symbol(sym, cl_package_ext);
-    return sym;
+    return *slot;   /* the export can collect: *slot is the rooted copy */
 }
 
 void cl_cmdline_builtins_init(void)

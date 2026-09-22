@@ -362,7 +362,16 @@ CL_Obj cl_intern_in(const char *name, uint32_t len, CL_Obj package)
         s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
         s->value = sym;
         s->flags |= CL_SYM_CONSTANT;
+        /* GC SAFETY: cl_export_symbol conses its import/export cells and
+         * can collect.  It roots its OWN copy of the argument, not this
+         * local, so an unprotected `sym` came back as the pre-move offset
+         * of the symbol it just interned -- the reader then consed that
+         * stale offset into the form it was building (a generational
+         * minor slides the fresh symbol down; the host crashed in the
+         * next minor's survivor slide, 2026-09-22). */
+        CL_GC_PROTECT(sym);
         cl_export_symbol(sym, cl_package_keyword);
+        CL_GC_UNPROTECT(1);
     }
     return sym;
 }
