@@ -20,6 +20,13 @@
 (img-check "gc block-start index over the adopted payload" 0
            (progn (ext:gc) (ext:%gc-audit-hdr-index)))
 (img-check "function" 144 (img-fib 12))
+; Native code does not survive an image; a restored function is compiled
+; again once it turns hot (IMG-FIB 12 is 465 calls).  Before 0.12 nothing in
+; an image was ever compiled again.
+(img-check "restored function compiled once hot" t
+           (if (clamiga::%jit-active-p)
+               (and (clamiga::%jit-dump-bytes #'img-fib) t)
+               t))
 (img-check "macro" 42 (img-twice 21))
 (img-check "clos dispatch" "Rex speaks" (img-speak *img-pet*))
 (img-check "new instance" "Fido speaks"

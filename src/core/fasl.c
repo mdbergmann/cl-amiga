@@ -1725,7 +1725,10 @@ static int fasl_ser_step(CL_FaslWriter *w, FaslSerStack *s)
             cl_fasl_write_u16(w, bc->n_locals);
             cl_fasl_write_u16(w, bc->n_upvalues);
             cl_fasl_write_u8(w, bc->n_optional);
-            cl_fasl_write_u8(w, bc->flags);
+            /* Bit 7 of the wire byte is the (speed 3) JIT hint -- the
+             * in-memory flags use bits 0-1 only (fasl.h v38). */
+            cl_fasl_write_u8(w, (uint8_t)((bc->flags & 0x7F) |
+                                          ((bc->jit_hot & CL_BC_JIT_SPEED) ? 0x80 : 0)));
             cl_fasl_write_u8(w, bc->n_keys);
             s->frames[idx].phase = PHASE_BC_KEY_SYMS;
             s->frames[idx].index = 0;
@@ -3298,7 +3301,11 @@ CL_Obj cl_fasl_deserialize_bytecode(CL_FaslReader *r)
     bc->n_locals = cl_fasl_read_u16(r);
     bc->n_upvalues = cl_fasl_read_u16(r);
     bc->n_optional = cl_fasl_read_u8(r);
-    bc->flags = cl_fasl_read_u8(r);
+    {
+        uint8_t wire = cl_fasl_read_u8(r);
+        bc->flags = (uint8_t)(wire & 0x7F);
+        bc->jit_hot = (wire & 0x80) ? CL_BC_JIT_SPEED : 0;
+    }
     bc->n_keys = cl_fasl_read_u8(r);
 
     /* Key params */
@@ -3392,11 +3399,11 @@ CL_Obj cl_fasl_deserialize_bytecode(CL_FaslReader *r)
     }
 
     /* Give the JIT a chance at FASL-loaded code too — the source-load
-     * compile path (compiler.c) already hooks cl_jit_compile, but
-     * functions read from a FASL bypass that and would otherwise
-     * always run as bytecode. */
+     * compile path (compiler.c) already hooks the JIT, but functions read
+     * from a FASL bypass that and would otherwise always run as bytecode.
+     * Eager or (speed 3) compiles here, anything else once it turns hot. */
     bc = (CL_Bytecode *)CL_OBJ_TO_PTR(bc_obj);
-    cl_jit_compile(bc);
+    cl_jit_note_definition(bc);
 
     CL_GC_UNPROTECT(1);
     return bc_obj;

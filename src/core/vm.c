@@ -3399,6 +3399,14 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                  * checks above have already enforced nargs == arity for
                  * these shapes (matchers reject optional/&key/&rest),
                  * so cl_jit_invoke can dispatch on nargs unconditionally. */
+#ifdef JIT_M68K
+                /* Hot compilation (jit.h): count the interpreted call; the
+                 * one that reaches the threshold compiles, and takes the
+                 * native path right below.  Heap-free, so callee_bc stays
+                 * valid.  Settled functions pay one byte compare. */
+                if (!callee_bc->native_code && CL_BC_JIT_COUNTING_P(callee_bc))
+                    cl_jit_note_call(callee_bc);
+#endif
                 if (callee_bc->native_code &&
                     !is_tail && !is_func_traced(func_obj)) {
                     /* Pass the function-object CL_Obj (closure or raw
@@ -3413,6 +3421,23 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     cl_vm_push(nresult);
                     VM_BREAK;
                 }
+#ifdef JIT_M68K
+                /* A TAIL call into native code: call it, then return its
+                 * values from this frame (OP_RET's body, vm_native_tail_ret)
+                 * instead of reusing the frame, which native code cannot
+                 * enter.  Since functions compile once hot, the caller of
+                 * a hot loop is often interpreted -- an entry function that
+                 * runs once and ends in (main-loop) -- and the old skip ran
+                 * the compiled loop as bytecode forever.  The frame stays
+                 * for the length of the native call: one level, since the
+                 * callee's own tail calls happen in native code. */
+                if (is_tail && callee_bc->native_code && !is_func_traced(func_obj)) {
+                    CL_Obj nresult = cl_jit_invoke(func_obj, callee_bc, nargs);
+                    cl_vm.sp -= (nargs + fslot);
+                    cl_vm_push(nresult);
+                    goto vm_native_tail_ret;
+                }
+#endif
 
                 /* GC-protect func_obj across the &rest consing below: on
                  * the tail path its stack slot is overwritten by the
@@ -3849,6 +3874,9 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
         }
         VM_CASE(OP_RET): {
             CL_Obj result;
+#ifdef JIT_M68K
+        vm_native_tail_ret:   /* OP_CALL: a tail call into native code returns here */
+#endif
             result = (cl_vm.sp > (int)(frame->bp + frame->n_locals))
                             ? cl_vm_pop() : CL_NIL;
 

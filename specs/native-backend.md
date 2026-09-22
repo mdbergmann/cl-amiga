@@ -1572,4 +1572,6 @@ the load-time cost, which is a separate lever (`specs/lazy-jit.md`).
   the resolved function carries native code — the remaining ~4.5 us per
   native call on the Vampire is the helper, `cl_jit_invoke`'s bookkeeping
   and the C-stack probe.
-- Lazy compilation / a hot-function gate for load time (`specs/lazy-jit.md`).
+- ~~Lazy compilation / a hot-function gate for load time~~ -- done 2026-09-22:
+  functions compile once hot, loops on their first call, `(speed 3)` at
+  definition (`specs/lazy-jit.md`).

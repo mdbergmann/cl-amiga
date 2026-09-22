@@ -39,4 +39,12 @@ int cl_peephole_run(uint8_t *code, int *code_len,
                     const CL_Obj *constants, int n_constants,
                     CL_LineEntry *lines, int *n_lines);
 
+/* 1 when CODE[0..LEN) contains a jump (or NLX landing offset) that points
+ * backwards -- a loop.  The JIT's hot compilation compiles such a function
+ * on its first call instead of waiting for the call count (jit.h).
+ * Decodes like the pass itself; bytecode it does not understand answers 0.
+ * CONSTANTS/N_CONSTANTS as for cl_peephole_run. */
+int cl_bytecode_has_backward_jump(const uint8_t *code, uint32_t len,
+                                  const CL_Obj *constants, int n_constants);
+
 #endif /* CL_PEEPHOLE_H */

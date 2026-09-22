@@ -365,6 +365,13 @@ typedef struct {
     uint8_t n_optional; /* Number of &optional params */
     uint8_t flags;      /* bit 0: has_key, bit 1: allow_other_keys */
     uint8_t n_keys;     /* Number of &key params */
+    /* Lazy-JIT state, CL_BC_JIT_* below (m68k JIT: jit.c cl_jit_note_call).
+     * Occupies what was padding -- sizeof(CL_Bytecode) is unchanged on
+     * every target, which image.c's layout hash depends on.  Only the
+     * CL_BC_JIT_SPEED hint is FASL-serialized (bit 7 of the flags byte on
+     * the wire); the call count starts over after a load or an image
+     * restore. */
+    uint8_t jit_hot;
     CL_Obj *key_syms;   /* Keyword symbols array (platform_alloc'd) */
     uint8_t *key_slots; /* Slot indices for each key param (platform_alloc'd) */
     uint8_t *key_suppliedp_slots; /* Slot indices for supplied-p vars (or 0xFF=none) */
@@ -399,6 +406,18 @@ typedef struct {
 } CL_Bytecode;
 
 #define CL_BYTECODE_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_BYTECODE)
+
+/* CL_Bytecode.jit_hot.  Bits 0-6 count the calls that ran interpreted;
+ * the JIT compiles the function when the count reaches the hot threshold
+ * (or on its first call when it contains a loop).  CL_BC_JIT_SETTLED
+ * there means "stop counting": compiled, rejected by the JIT, or defined
+ * while the JIT was off.  Bit 7 records (optimize (speed 3)) at compile
+ * time, which compiles the function at definition instead. */
+#define CL_BC_JIT_COUNT_MASK  0x7Fu
+#define CL_BC_JIT_SETTLED     0x7Fu
+#define CL_BC_JIT_SPEED       0x80u
+#define CL_BC_JIT_COUNTING_P(bc) \
+    ((((bc)->jit_hot) & CL_BC_JIT_COUNT_MASK) != CL_BC_JIT_SETTLED)
 
 /* --- Closure (bytecode + captured upvalues) --- */
 

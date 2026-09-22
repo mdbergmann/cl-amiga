@@ -390,6 +390,59 @@ TEST(backward_jump_relocated_across_deletion)
     ASSERT(memcmp(code, want, sizeof(want)) == 0);
 }
 
+/* cl_bytecode_has_backward_jump: the m68k JIT compiles a function that
+ * loops on its first call instead of waiting for the hot threshold. */
+static const CL_Bytecode *peep_fn_bytecode(CL_Obj fn)
+{
+    if (CL_CLOSURE_P(fn))
+        fn = ((CL_Closure *)CL_OBJ_TO_PTR(fn))->bytecode;
+    return CL_BYTECODE_P(fn) ? (const CL_Bytecode *)CL_OBJ_TO_PTR(fn) : NULL;
+}
+
+TEST(backward_jump_detection)
+{
+    uint8_t loop[] = {
+        OP_NIL,
+        OP_JNIL, 0xFF, 0xFF, 0xFF, 0xFA,   /* -6 -> NIL */
+        OP_RET
+    };
+    uint8_t forward[] = {
+        OP_NIL,
+        OP_JNIL, 0x00, 0x00, 0x00, 0x01,   /* +1 -> RET, skipping NIL */
+        OP_NIL,
+        OP_RET
+    };
+    /* A fused member carrying the offset after another operand. */
+    uint8_t fused_loop[] = {
+        OP_LOAD_JNIL, 0, 0xFF, 0xFF, 0xFF, 0xFA,   /* -6 -> itself */
+        OP_RET
+    };
+    uint8_t unknown[] = { 0x00, OP_NIL, OP_JNIL, 0xFF, 0xFF, 0xFF, 0xFA, OP_RET };
+    uint8_t truncated[] = { OP_NIL, OP_JNIL, 0xFF, 0xFF };
+    const CL_Bytecode *bc;
+
+    ASSERT_EQ_INT(cl_bytecode_has_backward_jump(loop, sizeof(loop), NULL, 0), 1);
+    ASSERT_EQ_INT(cl_bytecode_has_backward_jump(forward, sizeof(forward), NULL, 0), 0);
+    ASSERT_EQ_INT(cl_bytecode_has_backward_jump(fused_loop, sizeof(fused_loop), NULL, 0), 1);
+    /* What it cannot decode answers "no loop" (the count still applies). */
+    ASSERT_EQ_INT(cl_bytecode_has_backward_jump(unknown, sizeof(unknown), NULL, 0), 0);
+    ASSERT_EQ_INT(cl_bytecode_has_backward_jump(truncated, sizeof(truncated), NULL, 0), 0);
+    ASSERT_EQ_INT(cl_bytecode_has_backward_jump(NULL, 0, NULL, 0), 0);
+
+    /* Compiled code: DOTIMES loops, a straight-line body with an IF does not;
+     * an inner LAMBDA (OP_CLOSURE's variable-length operand) is stepped over. */
+    bc = peep_fn_bytecode(cl_eval_string(
+        "(lambda (n) (let ((s 0)) (dotimes (i n) (setq s (+ s i))) s))"));
+    ASSERT(bc != NULL);
+    ASSERT_EQ_INT(cl_bytecode_has_backward_jump(bc->code, bc->code_len,
+                                                bc->constants, bc->n_constants), 1);
+    bc = peep_fn_bytecode(cl_eval_string(
+        "(lambda (x y) (let ((f (lambda () (+ x y)))) (if (> x 0) (funcall f) (- y))))"));
+    ASSERT(bc != NULL);
+    ASSERT_EQ_INT(cl_bytecode_has_backward_jump(bc->code, bc->code_len,
+                                                bc->constants, bc->n_constants), 0);
+}
+
 TEST(catch_landing_pad_relocated)
 {
     /* OP_CATCH's i32 is an NLX landing pad — must be re-encoded like a jump
@@ -1274,6 +1327,7 @@ int main(void)
     RUN(jump_threading_and_dead_jump_removal);
     RUN(dead_code_after_jmp_removed);
     RUN(backward_jump_relocated_across_deletion);
+    RUN(backward_jump_detection);
     RUN(catch_landing_pad_relocated);
     RUN(line_map_remapped_and_deduped);
     RUN(bails_on_unknown_opcode);

@@ -7,6 +7,57 @@ command, and results, so later runs can be compared like-for-like.
 Related: [specs/performance.md](../specs/performance.md) is the optimization
 *plan*; this file is the *measured results* log.
 
+## 2026-09-22 — JIT compiles when hot: boot 720 → 520 ms, native code for boot + editor 857 KB → 35 KB
+
+**Context**: the m68k JIT compiled every function at definition, which
+cost load time and memory for code that mostly runs once, and a heap
+image (native code is dropped on restore) was never compiled again.  Now
+a function compiles on its 8th interpreted call, on its first when it
+loops, and at definition under `(optimize (speed 3))`; `--jit-eager` is
+the old policy.  Design: `specs/lazy-jit.md`.
+
+**Environment**: FS-UAE A4000/68040 (`verify/realamiga/verify.fs-uae`),
+`--heap 8M`, `stack 128000`, `--no-userinit`, FASL caches warm (the
+editor's files compiled by a warm-up run first).  One cross-built binary
+with the change, the policy picked on the command line; "0.11" is the
+snapshot binary of `86f7b0e4` from its release tree, same session.
+Milliseconds unless noted, two runs each (they agreed within 40 ms).
+
+| | hot (default) | `--jit-eager` | `--no-jit` | 0.11 |
+|---|--:|--:|--:|--:|
+| boot, `--boot-log` "ready" | 520 / 540 | 720 / 720 | 580 / 560 | 700 |
+| native code after boot | 10.8 KB (42 fns) | 245 KB | 0 | |
+| loading the editor (`clamacs/lisp/load.lisp`) | 1380 / 1380 | 1900 / 1880 | 1460 / 1460 | |
+| native code after boot + editor | 35 KB (114 fns) | 857 KB | 0 | |
+| 20,000 generic-function calls | 620 / 600 | 600 / 620 | 840 / 880 | |
+| 1,000 MAKE-INSTANCE | 680 / 660 | 660 / 660 | 740 / 780 | |
+| 20,000 GF calls, restored from an image | 620 / 600 | | 860 / 880 | (as `--no-jit`) |
+| 1,000 MAKE-INSTANCE, restored from an image | 740 / 680 | | 780 / 800 | (as `--no-jit`) |
+| `trunk/bench-jit-loop.lisp`, calls/s | 192,308 / 191,571 / 194,553 | 194,175 / 193,798 / 193,798 | | 193,798 / 194,553 / 193,050 |
+
+The hot policy boots faster than `--no-jit`: the few functions that turn
+hot during CLOS's load (42) pay for their compile.  A restored image now
+runs native code again (0.11's images ran as bytecode for good, the
+`--no-jit` column); the native code a workload compiles is proportional to
+what it runs — 21.8 KB for the CLOS rows after a restore.
+
+`trunk/bench-jit-call.lisp` (`*bjc-n*` 50000, per iteration, bytecode →
+JIT column): unchanged against `--jit-eager` and 0.11 — native leaf
+13.6 → 5.6 us, fixnum CASE 23.6 → 6.0, decode-key mix 59.2 → 35.2.  The
+first measurement run of the change had read *no* JIT gain in this file:
+its thunk runs twice, so it stays interpreted, and the VM's native fast
+path skipped tail calls — the thunk's tail call into the compiled driver
+ran the driver as bytecode.  Tail calls from bytecode into native code
+now call and return (`specs/lazy-jit.md`, "Tail calls from bytecode").
+
+**Reproduce**: a boot-override script (see `verify/realamiga/make-image.sh`
+for the pattern) running, per policy, `clamiga --no-userinit --no-image
+--heap 8M --non-interactive --boot-log [--jit-eager|--no-jit]` with a
+file that prints `(clamiga::%jit-native-bytes)`,
+`(clamiga::%jit-hot-compile-count)` and the timings.
+
+---
+
 ## 2026-09-16 — string-scan fast path: a character scan 3-7× faster on real hardware
 
 **Context**: item 3 of the Clamacs-in-Lisp runtime cycle

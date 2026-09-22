@@ -144,6 +144,51 @@ TEST(save_restore_second_life)
     full_teardown();
 }
 
+/* ---------- JIT state across an image ---------- */
+
+static CL_Bytecode *fn_bytecode(const char *fn_expr)
+{
+    CL_Obj fn = cl_eval_string(fn_expr);
+    if (CL_CLOSURE_P(fn))
+        fn = ((CL_Closure *)CL_OBJ_TO_PTR(fn))->bytecode;
+    return CL_BYTECODE_P(fn) ? (CL_Bytecode *)CL_OBJ_TO_PTR(fn) : NULL;
+}
+
+TEST(restore_restarts_jit_call_count_keeps_speed_hint)
+{
+    /* Native code never survives an image, so neither may the JIT's call
+     * count: the saving session had settled most functions (compiled or
+     * rejected them), and a settled count restored as-is would keep the
+     * function from ever being compiled again -- every m68k image ran as
+     * bytecode before 0.12.  The (speed 3) hint stays. */
+    CL_Bytecode *bc;
+
+    full_init(CL_DEFAULT_HEAP_SIZE);
+    cl_eval_string("(defun ti-hot (x) (+ x 1))");
+    cl_eval_string("(defun ti-fast (x) (declare (optimize (speed 3))) (* x 2))");
+    bc = fn_bytecode("#'ti-hot");
+    ASSERT(bc != NULL);
+    bc->jit_hot = CL_BC_JIT_SETTLED;
+    bc = fn_bytecode("#'ti-fast");
+    ASSERT(bc != NULL);
+    ASSERT(bc->jit_hot & CL_BC_JIT_SPEED);
+    bc->jit_hot = CL_BC_JIT_SPEED | CL_BC_JIT_SETTLED;
+    ASSERT(save_now(IMG_PATH));
+    full_teardown();
+
+    full_init(CL_DEFAULT_HEAP_SIZE);
+    ASSERT_EQ_INT(cl_image_stage(IMG_PATH, 0), 0);
+    ASSERT_EQ_INT(cl_image_restore_staged(), 0);
+    bc = fn_bytecode("#'ti-hot");
+    ASSERT(bc != NULL);
+    ASSERT_EQ_INT(bc->jit_hot, 0);
+    bc = fn_bytecode("#'ti-fast");
+    ASSERT(bc != NULL);
+    ASSERT_EQ_INT(bc->jit_hot, CL_BC_JIT_SPEED);
+    ASSERT_EQ_INT(eval_int("(+ (ti-hot 1) (ti-fast 2))"), 6);
+    full_teardown();
+}
+
 TEST(restore_into_larger_heap)
 {
     full_init(CL_DEFAULT_HEAP_SIZE);
@@ -459,6 +504,7 @@ int main(void)
 {
     test_init();
     RUN(save_restore_second_life);
+    RUN(restore_restarts_jit_call_count_keeps_speed_hint);
     RUN(restore_into_larger_heap);
     RUN(restore_too_small_heap_refused_pre_arena);
     RUN(save_deferred_until_at_rest);

@@ -1926,6 +1926,63 @@ TEST(serialize_bytecode_with_keys)
     ASSERT_EQ_INT(bc2->key_suppliedp_slots[1], 0xFF);
 }
 
+/* The (optimize (speed 3)) JIT hint travels in bit 7 of the serialized flags
+ * byte (fasl.h v38); the in-memory flags keep bits 0-1, which the JIT's
+ * eligibility checks compare against 0.  The host writes the FASLs the m68k
+ * binaries load, so the hint has to survive a host round trip -- and the
+ * call count must not travel at all. */
+TEST(serialize_bytecode_speed3_jit_hint)
+{
+    uint8_t buf[1024];
+    CL_FaslWriter w;
+    CL_FaslReader r;
+    CL_Obj bc_obj, result;
+    CL_Bytecode *bc, *bc2;
+    uint8_t flags;
+    int hinted;
+
+    bc_obj = make_bytecode_with_keys();
+    CL_GC_PROTECT(bc_obj);
+    for (hinted = 0; hinted <= 1; hinted++) {
+        bc = (CL_Bytecode *)CL_OBJ_TO_PTR(bc_obj);
+        flags = bc->flags;
+        bc->jit_hot = (uint8_t)((hinted ? CL_BC_JIT_SPEED : 0) | 5);
+
+        cl_fasl_writer_init(&w, buf, sizeof(buf));
+        cl_fasl_serialize_bytecode(&w, bc_obj);
+        cl_fasl_reader_init(&r, buf, w.pos);
+        result = cl_fasl_deserialize_bytecode(&r);
+        ASSERT_EQ_INT(r.error, FASL_OK);
+
+        bc2 = (CL_Bytecode *)CL_OBJ_TO_PTR(result);
+        ASSERT_EQ_INT(bc2->flags, flags);
+        ASSERT_EQ_INT(bc2->flags & 0x80, 0);
+        ASSERT_EQ_INT(bc2->jit_hot, hinted ? CL_BC_JIT_SPEED : 0);
+    }
+    CL_GC_UNPROTECT(1);
+}
+
+/* The compiler records the hint for (speed 3) anywhere in the lambda -- a
+ * local DECLARE included -- on every target, JIT or not. */
+TEST(compiler_records_speed3_jit_hint)
+{
+    CL_Obj fn;
+    CL_Bytecode *bc;
+
+    fn = eval_obj("(lambda (x) (declare (optimize (speed 3))) (+ x 1))");
+    ASSERT(CL_CLOSURE_P(fn) || CL_BYTECODE_P(fn));
+    bc = CL_CLOSURE_P(fn)
+        ? (CL_Bytecode *)CL_OBJ_TO_PTR(((CL_Closure *)CL_OBJ_TO_PTR(fn))->bytecode)
+        : (CL_Bytecode *)CL_OBJ_TO_PTR(fn);
+    ASSERT(bc->jit_hot & CL_BC_JIT_SPEED);
+
+    fn = eval_obj("(lambda (x) (+ x 1))");
+    bc = CL_CLOSURE_P(fn)
+        ? (CL_Bytecode *)CL_OBJ_TO_PTR(((CL_Closure *)CL_OBJ_TO_PTR(fn))->bytecode)
+        : (CL_Bytecode *)CL_OBJ_TO_PTR(fn);
+    ASSERT_EQ_INT(bc->jit_hot & CL_BC_JIT_SPEED, 0);
+}
+
 TEST(serialize_bytecode_with_symbol_name)
 {
     uint8_t buf[1024];
@@ -2839,6 +2896,8 @@ int main(void)
     RUN(serialize_bytecode_with_source_info);
     RUN(serialize_bytecode_no_source_file);
     RUN(serialize_bytecode_with_keys);
+    RUN(serialize_bytecode_speed3_jit_hint);
+    RUN(compiler_records_speed3_jit_hint);
     RUN(serialize_bytecode_with_symbol_name);
 
     /* Full FASL file round-trips */

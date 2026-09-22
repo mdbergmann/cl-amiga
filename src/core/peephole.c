@@ -197,6 +197,43 @@ static void peep_write_i32(uint8_t *p, int32_t v)
 
 /* Decode CODE[0..LEN) into PC->insns.  Returns 1 on success, 0 to bail out
  * (unknown opcode, truncated operands, undecodable OP_CLOSURE). */
+int cl_bytecode_has_backward_jump(const uint8_t *code, uint32_t len,
+                                  const CL_Obj *constants, int n_constants)
+{
+    uint32_t ip = 0;
+
+    if (code == NULL) return 0;
+    while (ip < len) {
+        const CL_OpcodeInfo *info = cl_opcode_info(code[ip]);
+        uint32_t opnd_len;
+        int jpos;
+
+        if (!info) return 0;
+        if (info->operands == CL_OPND_CLOSURE) {
+            /* u16 template const index + 2 bytes per template upvalue. */
+            uint16_t idx;
+            CL_Obj tmpl;
+            if (ip + 3 > len) return 0;
+            idx = peep_read_u16(code + ip + 1);
+            if (idx >= n_constants || !constants) return 0;
+            tmpl = constants[idx];
+            if (!CL_BYTECODE_P(tmpl)) return 0;
+            opnd_len = 2 + 2u * ((const CL_Bytecode *)CL_OBJ_TO_PTR(tmpl))->n_upvalues;
+        } else {
+            int fixed = cl_opnd_len(info->operands);
+            if (fixed < 0) return 0;
+            opnd_len = (uint32_t)fixed;
+        }
+        if (ip + 1 + opnd_len > len) return 0;
+        jpos = cl_opnd_jrel_pos(info->operands);
+        /* The offset counts from the next instruction: negative = back. */
+        if (jpos && peep_read_i32(code + ip + jpos) < 0)
+            return 1;
+        ip += 1 + opnd_len;
+    }
+    return 0;
+}
+
 static int peep_decode(PeepCode *pc, const uint8_t *code, uint32_t len)
 {
     uint32_t ip = 0;

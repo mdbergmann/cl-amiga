@@ -24,6 +24,11 @@
 ; run at speed 3 with the JIT active.  The suite's speed-3 baseline is
 ; restored at the end of this file.
 (declaim (optimize (speed 1)))
+; Everything below inspects a function's native code right after its DEFUN,
+; so it runs in eager mode (every function compiles at definition, the way
+; the JIT worked before 0.12).  The default -- compile once hot -- is
+; restored, and covered, in the "Hot compilation" section at the end.
+(defparameter *jit-suite-hot-threshold* (clamiga::%jit-set-hot-threshold 0))
 
 ; --- Byte-pipeline smoke: %JIT-COMPILE-STUB writes NOP+RTS into a
 ; function's native_code slot, %JIT-DUMP-BYTES reads it back. ---
@@ -2322,6 +2327,131 @@
     (list (length s) (length (first s)))))
 (check "jss-push-gc-native" t (jss-native-p #'jss-push-gc))
 (check "jss-push-gc" '(50 8) (jss-push-gc 50))
+
+; --- Hot compilation (the default since 0.12, jit.h) ---
+; Outside eager mode a function is compiled when it turns hot: on its
+; %JIT-HOT-THRESHOLD-th interpreted call, on its first call when it loops,
+; and at definition when compiled under (optimize (speed 3)).  A function
+; defined with the JIT off stays bytecode.  All of this is what lets a heap
+; image, whose native code is dropped on restore, run native code again.
+(clamiga::%jit-set-hot-threshold *jit-suite-hot-threshold*)
+(defun hot-native-p (f) (and (clamiga::%jit-dump-bytes f) t))
+(check "hot: default threshold" 8 (clamiga::%jit-hot-threshold))
+; %JIT-SET-HOT-THRESHOLD documents its domain as (INTEGER 0 126) -- the
+; count lives in 7 bits of bc->jit_hot (CL_BC_JIT_COUNT_MASK) and 127 is
+; reserved as the CL_BC_JIT_SETTLED sentinel.  A negative value signals;
+; a value past 126 used to be silently clamped by cl_jit_set_hot_threshold
+; instead of also signaling, contradicting that documented type.
+(check "hot: set-hot-threshold rejects a negative value" :type-error
+  (handler-case (progn (clamiga::%jit-set-hot-threshold -1) :no-error)
+    (type-error () :type-error)))
+(check "hot: set-hot-threshold rejects past the 7-bit max" :type-error
+  (handler-case (progn (clamiga::%jit-set-hot-threshold 127) :no-error)
+    (type-error () :type-error)))
+(check "hot: set-hot-threshold accepts the max" 126
+  (let ((prev (clamiga::%jit-set-hot-threshold 126)))
+    (prog1 (clamiga::%jit-hot-threshold)
+      (clamiga::%jit-set-hot-threshold prev))))
+(check "hot: threshold unchanged after a rejected out-of-range call" 8
+  (clamiga::%jit-hot-threshold))
+(defun hot-inc (x) (+ x 1))
+(check "hot: not compiled at definition" nil (hot-native-p #'hot-inc))
+(check "hot: interpreted below the threshold" nil
+  (progn (dotimes (i 7) (hot-inc i)) (hot-native-p #'hot-inc)))
+(check "hot: compiled on the threshold-th call" '(1 t t)
+  (let ((before (clamiga::%jit-hot-compile-count)))
+    (list (hot-inc 0) (hot-native-p #'hot-inc)
+          (> (clamiga::%jit-hot-compile-count) before))))
+(check "hot: native after it turned hot" '(42 t)
+  (let ((before (clamiga::%jit-invoke-count)))
+    (list (hot-inc 41) (> (clamiga::%jit-invoke-count) before))))
+(defun hot-loop (n) (let ((s 0)) (dotimes (i n) (setq s (+ s i))) s))
+(check "hot: a loop is not compiled at definition" nil (hot-native-p #'hot-loop))
+(check "hot: a loop compiles on its first call" '(45 t)
+  (list (hot-loop 10) (hot-native-p #'hot-loop)))
+(defun hot-speed (x) (declare (optimize (speed 3))) (* x 2))
+(check "hot: (speed 3) compiles at definition" t (hot-native-p #'hot-speed))
+(clamiga::%jit-set-active nil)
+(defun hot-cold (x) (+ x 3))
+(clamiga::%jit-set-active t)
+(check "hot: defined with the JIT off stays bytecode" '(23 nil)
+  (let ((r 0)) (dotimes (i 21) (setq r (hot-cold i))) (list r (hot-native-p #'hot-cold))))
+; A callee reached only from native code is counted by the native call path.
+(defun hot-leaf (x) (* x 3))
+(defun hot-driver (n) (let ((s 0)) (dotimes (i n) (setq s (+ s (hot-leaf i)))) s))
+(check "hot: native callers count their interpreted callees" '(570 t t)
+  (list (hot-driver 20) (hot-native-p #'hot-driver) (hot-native-p #'hot-leaf)))
+(check "hot: threshold 1 compiles on the first call" '(5 t)
+  (let ((prev (clamiga::%jit-set-hot-threshold 1)))
+    (defun hot-once (x) (+ x 4))
+    (prog1 (list (hot-once 1) (hot-native-p #'hot-once))
+      (clamiga::%jit-set-hot-threshold prev))))
+; A TAIL call from interpreted code into native code runs native (call, then
+; return from the caller's frame).  The native fast path used to skip tail
+; calls, which kept a hot loop that a run-once entry function tail-calls
+; interpreted forever.
+(defun hot-tail-target (n) (let ((s 0)) (dotimes (i n) (setq s (+ s 1))) s))
+(defun hot-tail-mv (x) (values x (+ x 1) (+ x 2)))
+(clamiga::%jit-set-active nil)
+(defun hot-tail-caller (n) (hot-tail-target n))          ; bytecode, tail call
+(defun hot-tail-mv-caller (x) (hot-tail-mv x))
+(clamiga::%jit-set-active t)
+(check "hot: an interpreted tail call enters native code" '(t 100 t)
+  (progn
+    (hot-tail-target 1)                                  ; a loop: compiles now
+    (let ((before (clamiga::%jit-invoke-count)))
+      (list (hot-native-p #'hot-tail-target)
+            (hot-tail-caller 100)
+            (> (clamiga::%jit-invoke-count) before)))))
+(check "hot: multiple values through a native tail call" '(t (5 6 7))
+  (progn
+    (dotimes (i 8) (hot-tail-mv i))
+    (list (hot-native-p #'hot-tail-mv)
+          (multiple-value-list (hot-tail-mv-caller 5)))))
+; Self tail recursion that turns native part-way: the interpreted frame
+; stays for one native call, the rest recurses in native code.
+(defun hot-count-down (n) (if (= n 0) :done (hot-count-down (- n 1))))
+(check "hot: deep self tail recursion that turns native" :done
+  (hot-count-down 200000))
+
+; JITEXPAND / %JIT-DISASSEMBLE show a fresh definition: they compile a
+; function that has not turned hot yet -- but not one defined with the JIT
+; off (HOT-COLD above).
+(defun hot-shown (x) (- x 1))
+(check "hot: %jit-disassemble compiles a fresh definition" '(nil t)
+  (list (hot-native-p #'hot-shown)
+        (progn (clamiga::%jit-disassemble #'hot-shown) (hot-native-p #'hot-shown))))
+(check "hot: %jit-disassemble leaves a JIT-off definition alone" nil
+  (progn (clamiga::%jit-disassemble #'hot-cold) (hot-native-p #'hot-cold)))
+
+; Regression: cl_jit_note_call's "keep counting" store read bc->jit_hot's
+; count once, then later wrote back (SPEED-bit | that count) with a plain
+; assign -- unlike the settle arm below it, which only ORs in
+; CL_BC_JIT_SETTLED.  If another thread settled bc in between (using a
+; fresher read), the stale assign clobbered the settle back down to a
+; small count, making a function the JIT had already declined eligible to
+; re-enter jit_compile_impl over and over instead of staying settled once
+; declined (jit.c).  hot-race-declined always declines: its &optional arg
+; bails every matcher/walker the same way jit-stub-test-fn's &optional
+; does at the top of this file.  %JIT-HOT-COMPILE-COUNT only advances
+; when jit_compile_impl actually runs, so hammering this one shared
+; bytecode from several threads must not move it more than once.
+(defun hot-race-declined (x &optional y) (or x y))
+(check "hot: concurrent calls settle a declined function exactly once"
+       '(nil t)
+  (let ((prev (clamiga::%jit-set-hot-threshold 8)))
+    (unwind-protect
+        (let ((before (clamiga::%jit-hot-compile-count))
+              (workers nil))
+          (dotimes (w 6)
+            (push (mp:make-thread
+                    (lambda () (dotimes (i 400) (hot-race-declined i nil)))
+                    :name "hot-race-worker")
+                  workers))
+          (mapc #'mp:join-thread workers)
+          (list (hot-native-p #'hot-race-declined)
+                (<= (- (clamiga::%jit-hot-compile-count) before) 1)))
+      (clamiga::%jit-set-hot-threshold prev))))
 
 ; Restore the suite-wide baseline established by run-tests.lisp's
 ; "declaim optimize" test — sections after this load expect speed 3.

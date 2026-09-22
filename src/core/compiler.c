@@ -1744,7 +1744,11 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
     bc->native_len  = 0;
     bc->native_relocs = NULL;
     bc->native_reloc_count = 0;
-    cl_jit_compile(bc);  /* no-op on host / when JIT_M68K undefined */
+    /* (optimize (speed 3)) anywhere in the lambda compiles it at definition
+     * (jit.h).  Recorded on every target: the hint travels in the FASL, and
+     * the host compiles the FASLs the m68k binaries load. */
+    bc->jit_hot = (inner->peep_speed_max >= 3) ? CL_BC_JIT_SPEED : 0;
+    cl_jit_note_definition(bc);  /* no-op on host / when JIT_M68K undefined */
 
     const_idx = cl_add_constant(c, CL_PTR_TO_OBJ(bc));
     cl_emit(c, OP_CLOSURE);
@@ -6367,7 +6371,10 @@ static CL_Obj cl_compile_env(CL_Obj expr, CL_Obj lex_env)
     bc->native_len  = 0;
     bc->native_relocs = NULL;
     bc->native_reloc_count = 0;
-    cl_jit_compile(bc);  /* no-op on host / when JIT_M68K undefined */
+    /* A top-level form runs once, through cl_vm_eval (never OP_CALL's
+     * native path): it is compiled only in eager mode, as before. */
+    bc->jit_hot = 0;
+    cl_jit_note_definition(bc);  /* no-op on host / when JIT_M68K undefined */
 
     /* Unregister compiler from GC root chain */
     cl_active_compiler = comp->parent;

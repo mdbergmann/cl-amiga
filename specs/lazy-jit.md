@@ -1,199 +1,135 @@
-# Lazy JIT (compile-on-hot)
+# Lazy JIT (compile when hot)
 
-Status: **proposed** (2026-06-04). Not yet implemented.
+Status: **implemented** (2026-09-22, for 0.12).  Proposed 2026-06-04; the
+design below is what shipped, with the differences from the proposal noted
+at the end.
 
 ## Problem
 
-Boot is ~5× slower with the JIT enabled than without it:
+The m68k JIT compiled every `CL_Bytecode` the moment it was created: at
+FASL load (`fasl.c`), in `compile_lambda`, and even for top-level forms
+(`cl_compile`), whose native code nothing ever ran — `cl_vm_eval`
+interprets, and native code is entered only through `OP_CALL`.  Measured
+in FS-UAE's 68040 config (2026-09-21, snapshot binary, JIT vs `--no-jit`):
 
-- `--no-jit`: ~0.8 s boot
-- default (JIT on): ~3.8 s boot
+|                              | JIT       | no JIT  |
+|------------------------------|-----------|---------|
+| boot (boot library + CLOS)   | 700 ms    | 520 ms  |
+| loading the editor           | 2140 ms   | 1540 ms |
+| native code, boot only       | ~450 KB   | 0       |
+| native code, boot + editor   | ~1.2 MB   | 0       |
 
-The JIT is **eager / ahead-of-time, not lazy**. There is no hot-loop
-threshold — `cl_jit_compile()` runs on *every* `CL_Bytecode` the moment
-it is created:
+The benefit is uneven (`docs/benchmarks.md`): a tight loop ~18× faster,
+fixnum CASE ~4×, a plain call ~1.7×, the editor's per-key path ~5%.  Most
+of what load time compiles is cold.
 
-- `src/core/fasl.c:1925` — every bytecode deserialized from a FASL
-- `src/core/compiler.c:922` and `src/core/compiler.c:4094` — every
-  function compiled from source
+And heap images: `image.c` drops native code on restore (the buffers are
+off-heap), and since the JIT ran only at creation, **nothing in an image
+was ever compiled again** — every shipped `clamiga.img` ran boot + CLOS as
+bytecode.
 
-At boot we load `lib/boot.fasl` then `(require "clos")`. That is ~186
-defuns/macros in `boot.lisp` + ~295 in `clos.lisp`, and once nested
-lambdas, closures, every `defmethod` and macro body are counted it is
-well over a thousand bytecode objects — each fully compiled to m68k
-native code *before the REPL is reached*. With `--no-jit`,
-`cl_jit_compile()` short-circuits at `jit.c:2877` (`if (!jit_active)
-return;`), so all of that work is skipped. The extra ~3 s is whole-
-program native compilation done up front.
+## Policy
 
-### Cost amplifiers (per compiled function)
+- A function is compiled on its `threshold`-th interpreted call
+  (default 8, `CL_JIT_HOT_DEFAULT`).
+- A function containing a backward jump (a loop) is compiled on its first
+  call: it pays for the compile inside that call.
+- A function compiled under `(optimize (speed 3))` — anywhere in the
+  lambda, a local `DECLARE` included — is compiled at definition.
+- A function defined while the JIT is off (`--no-jit`,
+  `(clamiga::%jit-set-active nil)`) stays bytecode for good, which keeps
+  the A/B-benchmark idiom working.
+- Threshold 0 is eager mode, the old behaviour: `--jit-eager`, or
+  `(clamiga::%jit-set-hot-threshold 0)` (returns the previous value).
+  The m68k tests that inspect native code right after a `DEFUN` bind it
+  (`tests/amiga/test-jit.lisp`); the rest of `run-tests.lisp` runs at
+  speed 3 and is eager through the hint.
+- `%JIT-DISASSEMBLE` (and so `JITEXPAND`) compiles a function that is
+  still counting, so a fresh definition can be inspected.
 
-These make each eager compile expensive on real hardware, and are paid
-hundreds–thousands of times during boot:
+## Mechanism
 
-1. **Full cache flush per function** — `jit.c:2922` →
-   `platform_amiga.c:1424` calls `CacheClearU()`, which flushes the
-   *entire* I and D cache. Worse than its own cost: it dumps the data
-   cache too, so the surrounding boot work (FASL parsing, GC, the next
-   compile) then runs cold. Cheap on a bare 68020 (no write-back I-cache),
-   genuinely expensive on 68030/040/060 — so the magnitude of the
-   slowdown is CPU-dependent.
-2. **Allocator churn** — `codebuf.c` starts the code buffer at 8 bytes
-   (`cb_init(&cb, 8)` at `jit.c:2881`) and doubles, each step an
-   `AllocVec` + `memcpy` + `FreeVec`. `walker_compile` additionally
-   `platform_alloc`s two scratch arrays (`bc_to_native`, `is_target`,
-   `jit.c:962-967`) and a `BranchPatch` list per function. On AmigaOS
-   each `AllocVec`/`FreeVec` is a `Forbid/Permit`-bracketed memory-list
-   operation.
+**State: one byte, in padding.**  `CL_Bytecode.jit_hot` sits after
+`n_keys`, where both the host and the m68k layout had a pad byte
+(`sizeof(CL_Bytecode)` is unchanged: 0x80 host, 0x4a m68k — `image.c`
+hashes it).  Bits 0-6 count interpreted calls; the value 0x7F
+(`CL_BC_JIT_SETTLED`) means stop counting — compiled, rejected, or
+defined with the JIT off.  Bit 7 (`CL_BC_JIT_SPEED`) is the speed-3 hint.
 
-## Goal
+**Hint on the wire.**  The compiler sets the hint on every target (the
+host compiles the FASLs the m68k binaries load); the FASL writer carries
+it in bit 7 of the serialized flags byte, the reader strips it back out —
+the in-memory `flags` keep bits 0-1, which the JIT's eligibility checks
+compare against 0.  Part of `CL_FASL_VERSION` 38.
 
-Compile a function only once it has proven hot, so boot compiles almost
-nothing (most boot/CLOS functions are called only a handful of times
-during load), while genuinely hot user code still reaches native speed
-after a short warm-up. Target: boot back near the 0.8 s figure with the
-JIT still enabled.
-
-## Why the core change is small
-
-The dispatch already keys off a single field — `vm.c:1948`,
-`if (callee_bc->native_code && !is_tail && !is_func_traced(func_obj))`.
-Native code is a sidecar pointer on `CL_Bytecode`; it is **never freed on
-sweep** (bytecode objects are effectively permanent, and the GC
-mark/update paths at `mem.c:848` / `mem.c:1734` do not touch
-`native_code`), and `cl_jit_compile` only uses `platform_alloc` (system
-memory, not the arena) so it **never triggers GC or moves `bc`**. That
-makes calling it lazily from inside the VM loop safe with respect to GC —
-the property that makes this tractable.
-
-## Design
-
-### Data-structure additions (`src/core/types.h`, `CL_Bytecode`)
-
-Add two runtime-only fields. **Not FASL-serialized, so no
-`CL_FASL_VERSION` bump.** Struct stays 32-bit clean.
-
-- `uint16_t call_count;` — invocations observed while still interpreted.
-- `uint8_t  jit_state;`  — one of:
-  - `JIT_UNTRIED` (0) — not yet attempted; keep counting.
-  - `JIT_COMPILING` (1) — a thread is compiling it now (race guard).
-  - `JIT_COMPILED` (2) — `native_code != NULL`, fast path live.
-  - `JIT_REJECTED` (3) — walker bailed; never retry.
-
-Initialize `call_count = 0`, `jit_state = JIT_UNTRIED` in the bytecode
-allocator alongside the existing `native_code = NULL`.
-
-`JIT_REJECTED` is **mandatory**: today a walker bail and "not yet tried"
-are both `native_code == NULL` and indistinguishable. Without a distinct
-rejected state, a non-compilable function would be re-attempted (and
-re-`CacheClearU`'d) on *every* call forever — a worse regression than the
-boot cost.
-
-### Remove the eager call sites
-
-Drop (or gate behind a debug/eager build flag) the three eager
-`cl_jit_compile()` calls: `fasl.c:1925`, `compiler.c:922`,
-`compiler.c:4094`. After this nothing compiles at load.
-
-### VM dispatch (`src/core/vm.c`, around 1948)
-
-When `native_code == NULL` and `jit_state == JIT_UNTRIED`, increment
-`call_count`; on crossing the threshold attempt one compile:
+**Call paths.**  Two places can run native code for a callee: the VM's
+`OP_CALL` (`vm.c`, also what `cl_vm_apply`'s stub frame goes through) and
+`jit_dispatch` (`runtime.c`, every call from native code).  Both do
 
 ```c
-if (callee_bc->native_code) {
-    /* existing native fast path (vm.c:1948) */
-} else if (callee_bc->jit_state == JIT_UNTRIED &&
-           ++callee_bc->call_count >= CL_JIT_HOT_THRESHOLD) {
-    cl_jit_try_compile(callee_bc);   /* sets state COMPILED or REJECTED */
-}
+if (!bc->native_code && CL_BC_JIT_COUNTING_P(bc))
+    cl_jit_note_call(bc);
 ```
 
-The increment+compare is in the hottest interpreter path, so it must stay
-minimal and only run while `JIT_UNTRIED`. Counting happens at the
-non-tail dispatch site only; tail calls already never take the native
-path (`!is_tail` gate), so tail-only functions stay interpreted with no
-regression.
+right before their native check, so the call that turns a function hot
+already runs native.  The `vm.c` hunks are inside `#ifdef JIT_M68K`: the
+host VM is byte-for-byte what it was.  A settled function pays one byte
+compare per call.
 
-Threshold: small, **4–16** (start at 8, tune). Lower = closer to eager;
-higher = longer warm-up but cheaper boot.
+**Tail calls from bytecode.**  The VM's native fast path used to skip
+tail calls (native code cannot reuse an interpreted frame).  Under eager
+compilation that rarely mattered — the caller was native too.  Now the
+caller of a hot loop is often interpreted (an entry function that runs
+once and ends in `(main-loop)`, a benchmark's thunk), and the skip kept
+the compiled loop running as bytecode for good: the first measurement
+run showed `bench-jit-call.lisp` with no JIT gain at all in the default
+mode.  A tail call into native code now calls it and returns its values
+from the caller's frame (a jump into `OP_RET`'s body); the frame stays
+for one native call, since the callee's own tail calls happen in native
+code (self-recursive ones as a branch).
 
-### Thread safety (the real wrinkle)
+**Loop detection** is `cl_bytecode_has_backward_jump` (`peephole.c`, next
+to the decoder it mirrors; host-tested in `tests/test_peephole.c`), run
+once per function, on its first counted call — never for the majority of
+functions, which are never called.
 
-The VM is multi-threaded (MP package, per-thread VM, stop-the-world GC),
-and `CL_Bytecode` is shared across threads. Eager-at-load sidesteps races
-entirely — compilation happens once before any worker runs. Lazy
-compile-on-hot means two threads can race to compile the same bytecode.
+**GC.**  The JIT allocates only off-heap (`platform_alloc`), so
+`cl_jit_note_call` cannot move the caller's raw `CL_Bytecode *`.
 
-`cl_jit_try_compile` must:
+**Threads.**  Two threads can reach the threshold of one function
+together.  The hot path (`jit_compile_impl(bc, 0)`) never frees native
+code: it compiles into its own buffer and installs it only if the
+bytecode still has none, otherwise throws its own away.  The codegen is
+deterministic, so the rare pair that both install (one preempted between
+the check and the stores) writes identical code and reloc tables — the
+loser's buffer leaks, nothing is freed under a running caller.  No CAS,
+no "compiling" state.
 
-1. CAS `jit_state` `JIT_UNTRIED → JIT_COMPILING` (`__sync_*`, already used
-   on Amiga per the threading model). Only the winner compiles; losers
-   skip and keep interpreting until `native_code` is published.
-2. Compile into a local buffer, then **publish `native_code` last** (it is
-   the field the reader gates on at `vm.c:1948`); set `native_len` before
-   the pointer, with a write barrier, so a half-written state is never
-   observed.
-3. Set `jit_state` to `JIT_COMPILED` (on success) or `JIT_REJECTED` (walker
-   bailed → free the buffer, leave `native_code == NULL`).
+**Images.**  Restore resets the count and keeps the hint
+(`bc->jit_hot &= CL_BC_JIT_SPEED`), so restored functions compile again
+as they turn hot; a restored speed-3 function compiles on its first call.
 
-`cl_jit_active_threads` (`jit.c:3261`) guards native *execution* vs.
-stop-the-world GC and is unrelated to this compilation race.
+## Tests
 
-## What this does not change
+- `tests/test_peephole.c` `backward_jump_detection` — the decoder.
+- `tests/test_fasl.c` `serialize_bytecode_speed3_jit_hint`,
+  `compiler_records_speed3_jit_hint` — the hint, compiler to wire and back.
+- `tests/test_image.c` `restore_restarts_jit_call_count_keeps_speed_hint`.
+- `tests/amiga/test-jit.lisp`, "Hot compilation" — threshold, loop rule,
+  speed 3, JIT-off definitions, native callers counting their callees,
+  threshold 1, `%JIT-DISASSEMBLE`.
+- `tests/amiga/image-verify.lisp` — a function restored from an image is
+  native once hot.
 
-- **No `CL_FASL_VERSION` bump** — new fields are runtime-only.
-- **No GC interaction** — `cl_jit_compile` allocates only system memory;
-  `bc` cannot move during compile.
-- **No new free path** — `native_code` was never swept before and still
-  is not; lifecycle is unchanged.
-- The `CacheClearU()` per function (`jit.c:2922`) is still emitted, just
-  called far fewer times. See "Related cheap fix" below.
+## Differences from the 2026-06 proposal
 
-## Behavioural change to be aware of
-
-Warm-up: the first `CL_JIT_HOT_THRESHOLD` calls of every function
-interpret. Correct for boot (functions called a few times never compile).
-For a tight benchmark, peak speed now arrives after warm-up rather than
-from the first call.
-
-## Host testability
-
-On host, `cl_jit_compile` is an inline no-op (`jit.h:82`) — `native_code`
-never gets set. The counter would climb forever unless `JIT_REJECTED`
-fires after the one attempt, which it does. This makes the
-threshold/reject state machine **unit-testable on host** without m68k:
-drive a function past the threshold, assert `jit_state == JIT_REJECTED`
-and that no further compile attempts occur.
-
-## Touch list
-
-- `src/core/types.h` — two fields on `CL_Bytecode`.
-- bytecode allocator — initialize the two fields.
-- `src/core/vm.c` — lazy counter + try-compile at dispatch (~15 lines).
-- `src/core/compiler.c` (×2), `src/core/fasl.c` — remove eager calls.
-- `src/jit/jit.c` — `cl_jit_try_compile` wrapper with the CAS publish
-  protocol.
-- `tests/test_*.c` — host test for the state machine (threshold →
-  attempt → `REJECTED`, no re-attempt).
-- `tests/amiga/run-tests.lisp` — a hot function ends up native after
-  enough calls (introspection hook exists: `builtins.c:870` / `965`).
-- `specs/native-backend.md` — cross-reference; CLAUDE.md boot-time note.
-
-## Effort estimate
-
-- **Single-threaded-correct version:** ~half a day. Straightforward,
-  testable on host.
-- **Thread-safe version (required to ship, given the MP package):** ~1 day
-  including contention testing. Risk is concentrated almost entirely in
-  the CAS publish protocol, not in volume of code.
-
-## Related cheap fix (independent, do regardless)
-
-Batch the cache flush: drop the per-function `CacheClearU()` and flush
-once after the boot FASL load completes, or switch to per-range
-`CacheClearE` (V37+) on just the emitted buffer (`platform_amiga.c:1417`).
-~20 minutes; may recover a large fraction of the boot cost on 040/060 on
-its own. **Measure first** to apportion the 3 s between compilation volume
-and the per-function full-cache flush before committing to the larger
-lazy-JIT change.
+- One byte in existing padding instead of a `uint16_t` counter plus a
+  state byte (the struct would have grown by 4 bytes per function on m68k
+  and changed `image.c`'s layout hash).
+- No `JIT_COMPILING` state or CAS publish: deterministic codegen plus
+  "never free on the hot path" makes the race harmless.
+- `jit_dispatch` counts as well: a function reached only from native code
+  would otherwise never turn hot.
+- The loop rule, the speed-3 hint and eager mode are new.
+- The eager call sites were not removed but routed through
+  `cl_jit_note_definition`, which is also where eager mode lives.

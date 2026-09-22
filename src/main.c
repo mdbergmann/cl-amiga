@@ -395,6 +395,8 @@ static void print_usage(void)
         "  --color          Force color output\n"
         "  --no-color       Disable color output\n"
         "  --no-jit         Disable the m68k JIT (functions stay bytecode-only)\n"
+        "  --jit-eager      JIT every function at definition instead of once it\n"
+        "                   turns hot (the pre-0.12 behaviour)\n"
         "  --boot-log       Print boot phase timings (\"; [boot] ...\")\n"
         "  --help           Show this help message\n"
         "  --               End of options: what follows is the program's own\n"
@@ -636,6 +638,7 @@ static int clamiga_main(int argc, char *argv[])
     int no_userinit = 0;
     int script = 0;
     int no_jit = 0;
+    int jit_eager = 0;
     int boot_log = 0;
     int no_image = 0;
     uint32_t image_ms = 0, image_t0;   /* --boot-log: stage + restore cost */
@@ -693,6 +696,8 @@ static int clamiga_main(int argc, char *argv[])
             non_interactive = 1;
         } else if (strcmp(argv[i], "--no-jit") == 0) {
             no_jit = 1;
+        } else if (strcmp(argv[i], "--jit-eager") == 0) {
+            jit_eager = 1;
         } else if (strcmp(argv[i], "--boot-log") == 0) {
             boot_log = 1;
         } else if (strcmp(argv[i], "--no-userinit") == 0) {
@@ -905,7 +910,8 @@ static int clamiga_main(int argc, char *argv[])
         }
     }
     cl_jit_init();
-    if (no_jit) cl_jit_set_active(0);
+    if (no_jit) cl_jit_disable_for_session();
+    if (jit_eager) cl_jit_set_hot_threshold(0);
     cl_vm_init(stack_entries, frame_count);
     cl_stream_init();
     cl_builtins_init();

@@ -1246,11 +1246,16 @@ int cl_image_restore_staged(void)
                     bc->source_file = NULL;
                 }
 
-                /* The JIT recompiles lazily, exactly as after a FASL load. */
+                /* Native code does not survive the image: the JIT compiles
+                 * the function again once it turns hot (jit.h), as after a
+                 * FASL load.  The saved call count -- mostly "settled",
+                 * because the saving session compiled or rejected the
+                 * function -- starts over; the (speed 3) hint stays. */
                 bc->native_code = NULL;
                 bc->native_len = 0;
                 bc->native_relocs = NULL;
                 bc->native_reloc_count = 0;
+                bc->jit_hot &= CL_BC_JIT_SPEED;
 
                 if (br.error)
                     image_fatal("blob section truncated at bytecode "

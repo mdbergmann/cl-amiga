@@ -1432,8 +1432,10 @@ static CL_Obj bi_jit_invoke_count(CL_Obj *args, int n)
     return CL_MAKE_FIXNUM((int32_t)cl_jit_invoke_count_get());
 }
 
-/* (%JIT-SET-ACTIVE BOOL) — toggle whether new CL_Bytecodes will be
- * JIT-compiled at creation time.  Returns the new state as T/NIL.  Use
+/* (%JIT-SET-ACTIVE BOOL) — toggle whether functions defined from now on may
+ * be JIT-compiled (at definition in eager mode, else once they turn hot);
+ * one defined while it is off stays bytecode.  Returns the new state as
+ * T/NIL.  Use
  * around `defun` to bind a function in either mode for A/B benchmarks:
  *
  *   (clamiga::%jit-set-active nil) (defun slow-foo ...)
@@ -1449,6 +1451,49 @@ static CL_Obj bi_jit_set_active(CL_Obj *args, int n)
     active = !CL_NULL_P(args[0]);
     cl_jit_set_active(active);
     return active ? CL_T : CL_NIL;
+}
+
+/* (%JIT-SET-HOT-THRESHOLD N) — compile a function on its Nth interpreted
+ * call (0..126; a function with a loop, or compiled under (speed 3), does
+ * not wait).  0 is eager mode: every function compiles at definition, the
+ * way the JIT worked before 0.12 -- what `--jit-eager` sets, and what the
+ * m68k tests that inspect a function's native code right after its DEFUN
+ * bind around themselves.  Returns the previous threshold; always 0 on a
+ * build without the JIT. */
+static CL_Obj bi_jit_set_hot_threshold(CL_Obj *args, int n)
+{
+    int prev = cl_jit_hot_threshold();
+    CL_UNUSED(n);
+    if (!CL_FIXNUM_P(args[0]) || CL_FIXNUM_VAL(args[0]) < 0 ||
+        CL_FIXNUM_VAL(args[0]) > CL_JIT_HOT_MAX)
+        cl_signal_type_error(args[0], "(INTEGER 0 126)", "%JIT-SET-HOT-THRESHOLD");
+    cl_jit_set_hot_threshold((int)CL_FIXNUM_VAL(args[0]));
+    return CL_MAKE_FIXNUM(prev);
+}
+
+/* (%JIT-HOT-THRESHOLD) — the current threshold (0 = eager). */
+static CL_Obj bi_jit_hot_threshold(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    return CL_MAKE_FIXNUM(cl_jit_hot_threshold());
+}
+
+/* (%JIT-HOT-COMPILE-COUNT) — functions the hot path has handed to the JIT
+ * since boot (compiled or found ineligible).  Lets a test prove that a
+ * function compiled because it turned hot, not at its definition. */
+static CL_Obj bi_jit_hot_compile_count(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    return CL_MAKE_FIXNUM((int32_t)cl_jit_hot_compile_count());
+}
+
+/* (%JIT-NATIVE-BYTES) — bytes of native code the JIT has installed since
+ * boot, cumulative (a dead function's code is not subtracted): what a load
+ * or a workload compiled, for A/B runs of the hot threshold. */
+static CL_Obj bi_jit_native_bytes(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    return CL_MAKE_FIXNUM((int32_t)cl_jit_native_bytes());
 }
 
 /* (%JIT-ACTIVE-P) — T when the m68k JIT is compiled in and enabled (so new
@@ -1484,15 +1529,17 @@ static CL_Obj bi_jit_frames_p(CL_Obj *args, int n)
 
 /* (%JIT-DISASSEMBLE fn) — prints one line of m68k assembly per
  * instruction in fn's native_code, to *standard-output*.  Returns NIL.
- * Prints a friendly placeholder when the function has no native code
- * (either because the JIT didn't compile it or because we're on host
- * where JIT_M68K is undefined). */
+ * A function that has not turned hot yet is compiled first, so JITEXPAND
+ * shows a fresh definition.  Prints a friendly placeholder when the
+ * function has no native code (the JIT declined it, it was defined with
+ * the JIT off, or we're on host where JIT_M68K is undefined). */
 static CL_Obj bi_jit_disassemble(CL_Obj *args, int n)
 {
     CL_Bytecode *bc;
     CL_UNUSED(n);
     bc = jit_bytecode_of(args[0], "%JIT-DISASSEMBLE");
     if (bc == NULL) return CL_NIL;
+    cl_jit_compile_if_counting(bc);   /* heap-free: bc stays valid */
     if (bc->native_code == NULL || bc->native_len == 0) {
         cl_write_cstring_to_stdout(
             "  (no native code - function runs through the bytecode interpreter)\n");
@@ -2176,6 +2223,10 @@ void cl_builtins_init(void)
     cl_register_builtin("%JIT-DISASSEMBLE",   bi_jit_disassemble,   1, 1, cl_package_clamiga);
     cl_register_builtin("%JIT-SET-ACTIVE",    bi_jit_set_active,    1, 1, cl_package_clamiga);
     cl_register_builtin("%JIT-ACTIVE-P",      bi_jit_active_p,      0, 0, cl_package_clamiga);
+    cl_register_builtin("%JIT-SET-HOT-THRESHOLD", bi_jit_set_hot_threshold, 1, 1, cl_package_clamiga);
+    cl_register_builtin("%JIT-HOT-THRESHOLD", bi_jit_hot_threshold, 0, 0, cl_package_clamiga);
+    cl_register_builtin("%JIT-HOT-COMPILE-COUNT", bi_jit_hot_compile_count, 0, 0, cl_package_clamiga);
+    cl_register_builtin("%JIT-NATIVE-BYTES", bi_jit_native_bytes, 0, 0, cl_package_clamiga);
     cl_register_builtin("%JIT-SET-FRAMES",    bi_jit_set_frames,    1, 1, cl_package_clamiga);
     cl_register_builtin("%JIT-FRAMES-P",      bi_jit_frames_p,      0, 0, cl_package_clamiga);
 

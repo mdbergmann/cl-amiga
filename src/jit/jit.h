@@ -16,6 +16,13 @@
 
 #include "core/types.h"
 
+/* Hot-call threshold bounds (jit.h; specs/lazy-jit.md).  Kept outside the
+ * JIT_M68K guard below: %JIT-SET-HOT-THRESHOLD validates against
+ * CL_JIT_HOT_MAX on every build, including host, where cl_jit_set_hot_threshold
+ * is the no-op stub. */
+#define CL_JIT_HOT_DEFAULT  8
+#define CL_JIT_HOT_MAX      126    /* the count lives in 7 bits */
+
 #ifdef JIT_M68K
 
 /* One-time init at boot, after cl_compiler_init. */
@@ -26,6 +33,33 @@ void   cl_jit_init(void);
  * disabled — callers must always be ready to fall back to the bytecode
  * interpreter. */
 void   cl_jit_compile(CL_Bytecode *bc);
+
+/* When to compile (specs/lazy-jit.md).  A new
+ * function is compiled at definition only in eager mode (hot threshold 0)
+ * or when it was compiled under (optimize (speed 3)); otherwise the
+ * interpreter counts its calls (bc->jit_hot) and compiles it on the
+ * threshold-th one -- on the first when it contains a backward branch,
+ * i.e. a loop.  Code that runs once is never compiled, which is what
+ * makes a heap image (whose native code is dropped on restore) fast
+ * again: its functions compile as they turn hot.
+ *
+ * cl_jit_note_definition replaces cl_jit_compile at the three places a
+ * CL_Bytecode is born (compile_lambda, cl_compile, the FASL reader).
+ * cl_jit_note_call is the call paths' slow arm, taken only while
+ * CL_BC_JIT_COUNTING_P and native_code is NULL; it never allocates on the
+ * heap (the JIT does not), so a caller's raw CL_Bytecode * stays valid. */
+void   cl_jit_note_definition(CL_Bytecode *bc);
+void   cl_jit_note_call(CL_Bytecode *bc);
+/* Compile now a function that is still counting (%JIT-DISASSEMBLE, so that
+ * JITEXPAND shows a fresh definition's code).  A settled one is left as it
+ * is: the JIT already declined it, or it was defined with the JIT off. */
+void   cl_jit_compile_if_counting(CL_Bytecode *bc);
+void   cl_jit_set_hot_threshold(int calls);   /* 0 = eager; clamped */
+int    cl_jit_hot_threshold(void);
+/* Functions the hot path compiled / found ineligible since boot. */
+uint32_t cl_jit_hot_compile_count(void);
+/* Bytes of native code installed since boot (cumulative). */
+uint32_t cl_jit_native_bytes(void);
 
 /* Enter native code with the same calling convention the bytecode VM
  * uses (args already pushed on cl_vm.stack).  `func_obj` is the
@@ -46,6 +80,9 @@ int    cl_jit_enabled(void);
  * to get a bytecode-only version.  Used by `--no-jit` and the
  * `%JIT-SET-ACTIVE` builtin to A/B benchmark JIT vs. bytecode. */
 void   cl_jit_set_active(int active);
+/* --no-jit: off for the whole session (a later %JIT-SET-ACTIVE T lifts it).
+ * Unlike a %JIT-SET-ACTIVE NIL window, calls settle their callees then. */
+void   cl_jit_disable_for_session(void);
 
 /* Toggle the per-call shadow CL_Frame that makes JIT'd functions visible to
  * EXT:BACKTRACE / EXT:FRAME-LOCALS and the error-time backtrace.  Off by
@@ -80,9 +117,17 @@ void cl_jit_disassemble(const uint8_t *code, uint32_t len);
 
 static inline void   cl_jit_init(void)                       { }
 static inline void   cl_jit_compile(CL_Bytecode *bc)         { (void)bc; }
+static inline void   cl_jit_note_definition(CL_Bytecode *bc) { (void)bc; }
+static inline void   cl_jit_note_call(CL_Bytecode *bc)       { (void)bc; }
+static inline void   cl_jit_compile_if_counting(CL_Bytecode *bc) { (void)bc; }
+static inline void   cl_jit_set_hot_threshold(int calls)      { (void)calls; }
+static inline int    cl_jit_hot_threshold(void)              { return 0; }
+static inline uint32_t cl_jit_hot_compile_count(void)        { return 0; }
+static inline uint32_t cl_jit_native_bytes(void)             { return 0; }
 static inline CL_Obj cl_jit_invoke(CL_Obj f, CL_Bytecode *bc, int n) { (void)f; (void)bc; (void)n; return CL_NIL; }
 static inline int    cl_jit_enabled(void)                    { return 0; }
 static inline void   cl_jit_set_active(int a)                 { (void)a; }
+static inline void   cl_jit_disable_for_session(void)        { }
 static inline void   cl_jit_set_shadow_frames(int on)        { (void)on; }
 static inline int    cl_jit_shadow_frames_enabled(void)      { return 0; }
 static inline int    cl_jit_emit_stub(CL_Bytecode *bc)       { (void)bc; return 0; }
