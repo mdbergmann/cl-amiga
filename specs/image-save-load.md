@@ -107,8 +107,9 @@ Sections, in order:
   3. THREAD0    main-thread persistent state: current_package, the TLV
                 table entries (sym,value pairs), the main thread's
                 Lisp wrapper object (CL_Obj)
-  4. BLOBS      per-bytecode side buffers (see below)
-  5. ARENA      bump bytes, raw
+  4. SOURCES    every distinct source-file name once (see below)
+  5. BLOBS      per-bytecode side buffers (see below)
+  6. ARENA      bump bytes, raw
 ```
 
 ### Build fingerprint
@@ -181,14 +182,26 @@ writer emits:
   n_constants          2 + n CL_Obj values      (arena offsets, valid as-is)
   n_keys               1 + key_syms CL_Obj[] + key_slots u8[] + suppliedp u8[]
   line_map_count       2 + CL_LineEntry[]
-  source_file_len      2 + path bytes           (0 = none)
+  source_file          2   1-based index into SOURCES (0 = none)
 ```
 
 `native_code`/`native_relocs` are **not** dumped: the restore walk NULLs
 those fields and the lazy JIT recompiles exactly as it does after a FASL
 load.  `constants` values and `source_lambda_list` are ordinary heap
-references — nothing to do.  On restore, `source_file` goes through
-`cl_intern_source_file` for a stable process-lifetime pointer.
+references — nothing to do.
+
+`source_file` points into the interned source-file pool
+(`cl_intern_source_file`), so every function of a file shares one string.
+The image keeps that sharing (since v5): the SOURCES section before the
+blobs is `n_sources` (4) followed by `len` (2) + path bytes per distinct
+name, collected by pointer in the same arena walk that counts the
+bytecodes, and a blob names its file by index.  Before v5 each blob
+carried its own copy of the path — in the editor's image 2,019 copies of
+46 paths, 130 KB of the file.  Restore interns each name once and hands
+the pointers out by index; the pre-arena scan rejects an index past the
+table (and a table larger than a u16 index reaches) as a corrupt image.
+A path the table cannot take (65,535 names, out of memory) leaves that
+function without a source file, and SAVE-IMAGE says how many.
 
 A second, small blob class: **string-output-stream buffers**.  A live
 output string stream's `out_buf_handle` indexes the growable C outbuf side
@@ -282,9 +295,10 @@ cl_image_restore(file)             # instead of cl_repl_init's boot load
     5. restore THREAD0: main thread's current_package, TLV entries,
        re-point the main-thread Lisp wrapper (fix its thread_id/table_gen
        to the current main slot)
-    6. re-attach BLOBS: for each entry, find the CL_Bytecode at bc_offset
-       (verify CL_HDR_TYPE == TYPE_BYTECODE — corrupt image → clean
-       error), platform_alloc + copy each buffer, intern source_file,
+    6. re-attach BLOBS: intern the SOURCES names once; for each entry,
+       find the CL_Bytecode at bc_offset (verify CL_HDR_TYPE ==
+       TYPE_BYTECODE — corrupt image → clean error), platform_alloc +
+       copy each buffer, point source_file at its interned name,
        NULL the native_code fields; recreate outbuf slots
     7. relink walk (next section)
     8. clear cl_srcloc_table

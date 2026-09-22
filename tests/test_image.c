@@ -12,7 +12,8 @@
  * clean refusal BEFORE the heap is touched), the at-rest gating of the
  * deferred dump, save preconditions (open file stream, active FASL
  * reader), the builtin relink registry including the stale-builtin stub,
- * and outbuf/readtable/TLV round-trips.
+ * outbuf/readtable/TLV round-trips, and the SOURCES section (each source
+ * file's name stored once; a bad index refused pre-arena).
  *
  * The end-to-end two-process legs (CLI flags, discovery, :quit,
  * .clamigarc interplay) are tests/test_image.sh.
@@ -414,6 +415,151 @@ TEST(stage_rejects_garbage_truncation_version_fingerprint)
     full_teardown();
 }
 
+/* ---------- the SOURCES section (image v5) ---------- */
+
+/* Occurrences of S in BUF[0..SIZE). */
+static int count_bytes(const char *buf, unsigned long size, const char *s)
+{
+    unsigned long n = strlen(s), i;
+    int count = 0;
+    for (i = 0; i + n <= size; i++)
+        if (memcmp(buf + i, s, n) == 0) count++;
+    return count;
+}
+
+/* Offset of the SOURCES section (its u32 count) in the image file BUF:
+ * past the header, ROOTS, READTABLES and THREAD0. */
+static unsigned long sources_offset(const char *buf)
+{
+    uint32_t n_roots, rt_bytes, n_tlv;
+    unsigned long pos = CL_IMAGE_HEADER_BYTES;
+    memcpy(&n_roots, buf + 48, 4);
+    pos += (unsigned long)n_roots * 4;
+    memcpy(&rt_bytes, buf + pos + 4, 4);
+    pos += 8 + rt_bytes;
+    memcpy(&n_tlv, buf + pos + 8, 4);
+    pos += 12 + (unsigned long)n_tlv * 8;
+    return pos;
+}
+
+/* Offset of the source index of the first blob that has one (0 if none),
+ * walking the BLOBS section of the image file BUF. */
+static unsigned long first_source_index_offset(const char *buf,
+                                               unsigned long size)
+{
+    unsigned long pos = sources_offset(buf);
+    uint32_t n_sources, n_blobs, i;
+    memcpy(&n_sources, buf + pos, 4);
+    pos += 4;
+    for (i = 0; i < n_sources; i++) {
+        uint16_t len;
+        memcpy(&len, buf + pos, 2);
+        pos += 2 + (unsigned long)len;
+    }
+    memcpy(&n_blobs, buf + 52, 4);
+    for (i = 0; i < n_blobs && pos < size; i++) {
+        uint32_t code_len;
+        uint16_t n_const, lm_count, idx;
+        uint8_t n_keys;
+        pos += 4;                                       /* bc_offset */
+        memcpy(&code_len, buf + pos, 4);
+        pos += 4 + (unsigned long)code_len;
+        memcpy(&n_const, buf + pos, 2);
+        pos += 2 + (unsigned long)n_const * 4;
+        n_keys = (uint8_t)buf[pos];
+        pos += 1 + (unsigned long)n_keys * 6;
+        memcpy(&lm_count, buf + pos, 2);
+        pos += 2 + (unsigned long)lm_count * sizeof(CL_LineEntry);
+        memcpy(&idx, buf + pos, 2);
+        if (idx) return pos;
+        pos += 2;
+    }
+    return 0;
+}
+
+static const char *fn_source_file(const char *fn_expr)
+{
+    CL_Bytecode *bc = fn_bytecode(fn_expr);
+    return bc ? bc->source_file : NULL;
+}
+
+TEST(source_files_stored_once_and_shared_after_restore)
+{
+    char *buf;
+    unsigned long size, pos;
+    uint32_t n_sources;
+    uint16_t bad_idx;
+    const char *one_a, *one_b, *two;
+
+    /* Life 1: two "files" (the compiler records cl_current_source_file),
+     * one with a nested lambda, and a function from no file at all. */
+    full_init(CL_DEFAULT_HEAP_SIZE);
+    cl_current_source_file = cl_intern_source_file("ti/src-one.lisp");
+    cl_eval_string("(defun ti-src-1 (x) (+ x 1))");
+    cl_eval_string("(defun ti-src-2 (x) (lambda (y) (+ x y)))");
+    cl_current_source_file = cl_intern_source_file("ti/src-two.lisp");
+    cl_eval_string("(defun ti-src-3 (x) (* x 3))");
+    cl_current_source_file = NULL;
+    cl_eval_string("(defun ti-src-none (x) x)");
+    ASSERT(save_now(IMG_PATH));
+    full_teardown();
+
+    /* Each name is in the file once, however many functions share it. */
+    size = slurp(IMG_PATH, &buf);
+    ASSERT(size > 100);
+    if (size <= 100) return;
+    ASSERT_EQ_INT(count_bytes(buf, size, "ti/src-one.lisp"), 1);
+    ASSERT_EQ_INT(count_bytes(buf, size, "ti/src-two.lisp"), 1);
+
+    /* Life 2: every function gets its file back, and the functions of one
+     * file share one interned name again. */
+    full_init(CL_DEFAULT_HEAP_SIZE);
+    ASSERT_EQ_INT(cl_image_stage(IMG_PATH, 0), 0);
+    ASSERT_EQ_INT(cl_image_restore_staged(), 0);
+    one_a = fn_source_file("#'ti-src-1");
+    one_b = fn_source_file("(ti-src-2 1)");
+    two = fn_source_file("#'ti-src-3");
+    ASSERT(one_a != NULL && one_b != NULL && two != NULL);
+    if (one_a && two) {
+        ASSERT_STR_EQ(one_a, "ti/src-one.lisp");
+        ASSERT_STR_EQ(two, "ti/src-two.lisp");
+    }
+    ASSERT(one_a == one_b);
+    ASSERT(fn_source_file("#'ti-src-none") == NULL);
+    ASSERT(truthy("(equal (car (ext:function-source-location #'ti-src-3)) "
+                  "\"ti/src-two.lisp\")"));
+    full_teardown();
+
+    /* A blob naming a source past the table, and a table larger than a
+     * u16 index reaches: both refused before the heap is touched -- the
+     * good image still restores in the same (virgin) life afterwards. */
+    pos = first_source_index_offset(buf, size);
+    ASSERT(pos != 0);
+    full_init(CL_DEFAULT_HEAP_SIZE);
+    if (pos) {
+        memcpy(&n_sources, buf + sources_offset(buf), 4);
+        bad_idx = (uint16_t)(n_sources + 1);
+        memcpy(buf + pos, &bad_idx, 2);
+        write_file("build/host/ti-bad.img", buf, (uint32_t)size);
+        ASSERT_EQ_INT(cl_image_stage("build/host/ti-bad.img", 1), 0);
+        ASSERT(cl_image_restore_staged() != 0);
+        cl_image_discard_staged();
+
+        n_sources = 0x10000u;
+        memcpy(buf + sources_offset(buf), &n_sources, 4);
+        write_file("build/host/ti-bad.img", buf, (uint32_t)size);
+        ASSERT_EQ_INT(cl_image_stage("build/host/ti-bad.img", 1), 0);
+        ASSERT(cl_image_restore_staged() != 0);
+        cl_image_discard_staged();
+        platform_file_delete("build/host/ti-bad.img");
+    }
+    platform_free(buf);
+    ASSERT_EQ_INT(cl_image_stage(IMG_PATH, 0), 0);
+    ASSERT_EQ_INT(cl_image_restore_staged(), 0);
+    ASSERT_EQ_INT(eval_int("(ti-src-3 14)"), 42);
+    full_teardown();
+}
+
 /* ---------- readtable + TLV + save hooks ---------- */
 
 TEST(readtable_and_hooks_round_trip)
@@ -513,6 +659,7 @@ int main(void)
     RUN(builtin_registry_resolves_and_misses);
     RUN(stale_builtin_stub_signals);
     RUN(stage_rejects_garbage_truncation_version_fingerprint);
+    RUN(source_files_stored_once_and_shared_after_restore);
     RUN(readtable_and_hooks_round_trip);
     RUN(condvar_and_dead_thread_restore);
     platform_file_delete(IMG_PATH);

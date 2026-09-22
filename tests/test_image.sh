@@ -21,6 +21,7 @@
 #   ~/.clamigarc runs after a restore with EXT:*IMAGE-RESTORED-P* = T
 #   :shake-bindings — the delivery mode: binding tables shed before the dump,
 #     touched names intact, untouched ones gone with a reader error saying why
+#   source files: each name stored once, every function's file restored
 #   AMIGA.FFI:DEFINE-LIBRARY-VARIABLE — library bases re-derived before
 #     ~/.clamigarc, in definition order, once each; a failing one reported;
 #     a zeroed (plain DEFVAR) base makes a library call signal "NULL
@@ -413,6 +414,53 @@ out=$("$TIMEOUT" 60 "$CLAMIGA" $CLI --heap 8M --non-interactive \
 ec=$?
 check "unknown_keyword_lists_quit_and_shake_bindings" 0 "$ec" "$out" \
     "KWERR=.*:QUIT and :SHAKE-BINDINGS"
+
+# --- Source files: each name once in the image, every function's back ----
+# A function keeps the file it was compiled from (EXT:FUNCTION-SOURCE-LOCATION,
+# M-., backtraces).  The image holds each file's name once and a function
+# names it by index; it used to carry a copy per function -- 2,019 copies of
+# 46 paths in the editor's image.
+
+cat > im-src-alpha.lisp <<'EOF'
+(defun im-src-a1 (x) (+ x 1))
+(defun im-src-a2 (x) (lambda (y) (+ x y)))
+(defmacro im-src-am (x) `(list ,x))
+EOF
+cat > im-src-beta.lisp <<'EOF'
+(defun im-src-b1 (x) (- x 1))
+EOF
+
+out=$("$TIMEOUT" 60 "$CLAMIGA" $CLI --heap 8M --non-interactive \
+    --load im-src-alpha.lisp --load im-src-beta.lisp \
+    --eval '(defun im-src-repl (x) x)' \
+    --eval '(ext:save-image "src.img" :quit t)' </dev/null 2>&1)
+ec=$?
+check "source_files_save" 0 "$ec" "$out" "Image saved"
+
+desc="source_file_names_stored_once"
+n_alpha=$(LC_ALL=C grep -a -o 'im-src-alpha\.lisp' src.img | wc -l | tr -d ' ')
+n_beta=$(LC_ALL=C grep -a -o 'im-src-beta\.lisp' src.img | wc -l | tr -d ' ')
+if [ "$n_alpha" = 1 ] && [ "$n_beta" = 1 ]; then
+    ok
+else
+    fail "$desc" "im-src-alpha.lisp $n_alpha times, im-src-beta.lisp $n_beta times" ""
+fi
+
+# The file of each function (the nested lambda's too) and, for one of them,
+# the whole location -- only the file is the image's business.
+out=$("$TIMEOUT" 60 "$CLAMIGA" --no-userinit --image src.img --non-interactive \
+    --eval '(format t "SRC=~s~%" (mapcar (lambda (f)
+                                          (let ((loc (ext:function-source-location f)))
+                                            (if (consp loc) (car loc) loc)))
+                                        (list (function im-src-a1) (im-src-a2 1)
+                                              (macro-function (quote im-src-am))
+                                              (function im-src-b1) (function im-src-repl))))' \
+    --eval '(format t "LOC=~s~%" (ext:function-source-location (function im-src-b1)))' \
+    </dev/null 2>&1)
+ec=$?
+check "source_files_restored_per_function" 0 "$ec" "$out" \
+    'SRC=("im-src-alpha.lisp" "im-src-alpha.lisp" "im-src-alpha.lisp" "im-src-beta.lisp" :NOT-AVAILABLE)' \
+    'LOC=("im-src-beta.lisp" 1)'
 
 # --- AMIGA.FFI:DEFINE-LIBRARY-VARIABLE: OS state re-derived on restore ----
 # A restore zeroes every foreign pointer of the image (it belonged to the

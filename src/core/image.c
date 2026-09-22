@@ -416,30 +416,87 @@ static void iw_u8(ImgWriter *w, uint8_t v)  { iw_bytes(w, &v, 1); }
 static void iw_u16(ImgWriter *w, uint16_t v) { iw_bytes(w, &v, 2); }
 static void iw_u32(ImgWriter *w, uint32_t v) { iw_bytes(w, &v, 4); }
 
-/* Count TYPE_BYTECODE objects in the (compacted, hole-free) arena. */
-static uint32_t image_count_bytecodes(void)
+/* The SOURCES section: every distinct source-file name once, which a blob
+ * then names by a 1-based u16 index (0 = no file).  A file's functions all
+ * point at ONE interned string (cl_intern_source_file), so the table is
+ * keyed by pointer; a blob used to carry its own copy of the path instead
+ * -- 2,019 copies of 46 paths, 130 KB, in the editor's image.  The arena
+ * walk meets a file's bytecodes mostly back to back, so the last hit is
+ * tried before the scan. */
+#define IMG_MAX_SOURCES 0xFFFFu
+
+typedef struct {
+    const char **paths;
+    uint32_t count;
+    uint32_t cap;
+    uint32_t last;          /* index of the last hit */
+} ImgSources;
+
+/* PATH's 1-based index, entered first when ADD.  0 for no path, and for
+ * one the table cannot take (full, out of memory, longer than a u16 length
+ * says): that function then comes back without a source file. */
+static uint16_t img_source_index(ImgSources *t, const char *path, int add)
+{
+    uint32_t i;
+
+    if (!path) return 0;
+    if (t->last < t->count && t->paths[t->last] == path)
+        return (uint16_t)(t->last + 1);
+    for (i = 0; i < t->count; i++) {
+        if (t->paths[i] == path) {
+            t->last = i;
+            return (uint16_t)(i + 1);
+        }
+    }
+    if (!add || t->count >= IMG_MAX_SOURCES || strlen(path) > 0xFFFFu)
+        return 0;
+    if (t->count == t->cap) {
+        uint32_t ncap = t->cap ? t->cap * 2 : 64;
+        const char **np =
+            (const char **)platform_alloc(ncap * (uint32_t)sizeof(*np));
+        if (!np) return 0;
+        if (t->count)
+            memcpy(np, t->paths, t->count * (uint32_t)sizeof(*np));
+        if (t->paths) platform_free((void *)t->paths);
+        t->paths = np;
+        t->cap = ncap;
+    }
+    t->paths[t->count] = path;
+    t->last = t->count;
+    return (uint16_t)(++t->count);
+}
+
+/* Count TYPE_BYTECODE objects in the (compacted, hole-free) arena and enter
+ * their source files into SRCS.  Returns the count; *LOST is how many of
+ * them have a source file the table could not take. */
+static uint32_t image_collect_bytecodes(ImgSources *srcs, uint32_t *lost)
 {
     uint8_t *ptr = cl_heap.arena + CL_ALIGN;
     uint8_t *end = cl_heap.arena + cl_heap.bump;
     uint32_t n = 0;
+    *lost = 0;
     while (ptr < end) {
         uint32_t size = CL_HDR_SIZE(ptr);
         if (size == 0) break;
-        if (CL_HDR_TYPE(ptr) == TYPE_BYTECODE) n++;
+        if (CL_HDR_TYPE(ptr) == TYPE_BYTECODE) {
+            const CL_Bytecode *bc = (const CL_Bytecode *)ptr;
+            n++;
+            if (bc->source_file &&
+                img_source_index(srcs, bc->source_file, 1) == 0)
+                (*lost)++;
+        }
         ptr += size;
     }
     return n;
 }
 
 static void image_write_bytecode_blob(ImgWriter *w, uint32_t off,
-                                      const CL_Bytecode *bc)
+                                      const CL_Bytecode *bc, uint16_t sf_idx)
 {
     uint32_t code_len = bc->code ? bc->code_len : 0;
     uint16_t n_const = bc->constants ? bc->n_constants : 0;
     uint8_t n_keys = (bc->key_syms && bc->key_slots) ? bc->n_keys : 0;
     uint16_t lm_count = bc->line_map ? bc->line_map_count : 0;
-    uint16_t sf_len = bc->source_file
-                      ? (uint16_t)strlen(bc->source_file) : 0;
 
     iw_u32(w, off);
     iw_u32(w, code_len);
@@ -460,8 +517,7 @@ static void image_write_bytecode_blob(ImgWriter *w, uint32_t off,
     }
     iw_u16(w, lm_count);
     iw_bytes(w, bc->line_map, (uint32_t)lm_count * (uint32_t)sizeof(CL_LineEntry));
-    iw_u16(w, sf_len);
-    iw_bytes(w, bc->source_file, sf_len);
+    iw_u16(w, sf_idx);
 }
 
 static int image_write_file(const char *path)
@@ -469,7 +525,8 @@ static int image_write_file(const char *path)
     char tmp_path[1100];
     ImgWriter w;
     uint8_t fprint[CL_IMAGE_FPRINT_LEN];
-    uint32_t n_blobs, n_roots, n_outbufs, h;
+    uint32_t n_blobs, n_roots, n_outbufs, h, lost;
+    ImgSources srcs;
     int i;
     CL_Thread *mt = cl_main_thread_ptr;
 
@@ -479,7 +536,6 @@ static int image_write_file(const char *path)
     }
     snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
 
-    n_blobs = image_count_bytecodes();
     n_roots = (uint32_t)image_boot_roots + N_IMAGE_NAMED_ROOTS;
     n_outbufs = 0;
     for (h = cl_stream_outbuf_next_used(0); h != 0;
@@ -494,6 +550,17 @@ static int image_write_file(const char *path)
                  "; SAVE-IMAGE: cannot create \"%.180s\"\n", tmp_path);
         platform_write_string(buf);
         return -1;
+    }
+
+    memset(&srcs, 0, sizeof(srcs));
+    n_blobs = image_collect_bytecodes(&srcs, &lost);
+    if (lost) {
+        char buf[200];
+        snprintf(buf, sizeof(buf),
+                 "; SAVE-IMAGE: note: %u function(s) lose their source file "
+                 "name - it did not fit the image's source-file table\n",
+                 (unsigned)lost);
+        platform_write_string(buf);
     }
 
     /* --- Header --- */
@@ -546,19 +613,31 @@ static int image_write_file(const char *path)
         }
     }
 
-    /* --- Section 4: BLOBS (bytecode side buffers, then outbufs) --- */
+    /* --- Section 4: SOURCES (each source-file name once) --- */
+    iw_u32(&w, srcs.count);
+    for (h = 0; h < srcs.count; h++) {
+        uint16_t len = (uint16_t)strlen(srcs.paths[h]);
+        iw_u16(&w, len);
+        iw_bytes(&w, srcs.paths[h], len);
+    }
+
+    /* --- Section 5: BLOBS (bytecode side buffers, then outbufs) --- */
     {
         uint8_t *ptr = cl_heap.arena + CL_ALIGN;
         uint8_t *end = cl_heap.arena + cl_heap.bump;
         while (ptr < end) {
             uint32_t size = CL_HDR_SIZE(ptr);
             if (size == 0) break;
-            if (CL_HDR_TYPE(ptr) == TYPE_BYTECODE)
+            if (CL_HDR_TYPE(ptr) == TYPE_BYTECODE) {
+                const CL_Bytecode *bc = (const CL_Bytecode *)ptr;
                 image_write_bytecode_blob(&w,
-                    (uint32_t)(ptr - cl_heap.arena), (CL_Bytecode *)ptr);
+                    (uint32_t)(ptr - cl_heap.arena), bc,
+                    img_source_index(&srcs, bc->source_file, 0));
+            }
             ptr += size;
         }
     }
+    if (srcs.paths) platform_free((void *)srcs.paths);
     iw_u32(&w, n_outbufs);
     for (h = cl_stream_outbuf_next_used(0); h != 0;
          h = cl_stream_outbuf_next_used(h)) {
@@ -568,7 +647,7 @@ static int image_write_file(const char *path)
         iw_bytes(&w, cl_stream_outbuf_data(h), len);
     }
 
-    /* --- Section 5: ARENA --- */
+    /* --- Section 6: ARENA --- */
     iw_bytes(&w, cl_heap.arena, cl_heap.bump);
 
     if (platform_file_flush(w.fh) < 0) w.error = 1;
@@ -955,7 +1034,8 @@ int cl_image_restore_staged(void)
     CL_Obj th_package, th_wrapper;
     uint32_t th_ntlv;
     const uint8_t *tlv_sec;
-    uint32_t blob_sec_pos, outbuf_sec_pos;
+    uint32_t src_sec_pos, n_sources, blob_sec_pos, outbuf_sec_pos;
+    const char **src_tab = NULL;
     uint32_t i;
     CL_Thread *mt = cl_main_thread_ptr;
     int stale_count = 0;
@@ -1016,11 +1096,19 @@ int cl_image_restore_staged(void)
     }
     tlv_sec = ir_ptr(&r, th_ntlv * 8u);
 
-    /* Section 4: BLOBS — structural scan (bounds only; attach comes after
-     * the arena is in place). */
+    /* Section 4: SOURCES — bounds only; interned once the heap is ours. */
+    n_sources = ir_u32(&r);
+    src_sec_pos = r.pos;
+    if (n_sources > IMG_MAX_SOURCES)
+        r.error = 1;
+    for (i = 0; i < n_sources && !r.error; i++)
+        (void)ir_ptr(&r, ir_u16(&r));
+
+    /* Section 5: BLOBS — structural scan (bounds and source indices; attach
+     * comes after the arena is in place). */
     blob_sec_pos = r.pos;
     for (i = 0; i < h->n_blobs && !r.error; i++) {
-        uint32_t code_len, sf_len;
+        uint32_t code_len;
         uint16_t n_const, lm_count;
         uint8_t n_keys;
         (void)ir_u32(&r);               /* bc_offset */
@@ -1032,8 +1120,8 @@ int cl_image_restore_staged(void)
         (void)ir_ptr(&r, (uint32_t)n_keys * 6u);
         lm_count = ir_u16(&r);
         (void)ir_ptr(&r, (uint32_t)lm_count * (uint32_t)sizeof(CL_LineEntry));
-        sf_len = ir_u16(&r);
-        (void)ir_ptr(&r, sf_len);
+        if (ir_u16(&r) > n_sources)
+            r.error = 1;                /* source index past the table */
     }
     outbuf_sec_pos = r.pos;
     {
@@ -1046,7 +1134,7 @@ int cl_image_restore_staged(void)
         }
     }
 
-    /* Section 5: ARENA — must be exactly the trailing h->bump bytes. */
+    /* Section 6: ARENA — must be exactly the trailing h->bump bytes. */
     arena_sec = ir_ptr(&r, h->bump);
     if (r.error || !roots_sec || !arena_sec || r.pos != r.size) {
         platform_write_string(
@@ -1113,6 +1201,33 @@ int cl_image_restore_staged(void)
         }
     }
 
+    /* Source files: each name interned once, before the walk hands the
+     * pointers out by index. */
+    if (n_sources) {
+        ImgReader sr;
+        sr.data = r.data;
+        sr.size = r.size;
+        sr.pos = src_sec_pos;
+        sr.error = 0;
+        src_tab = (const char **)platform_alloc(
+            n_sources * (uint32_t)sizeof(*src_tab));
+        if (!src_tab)
+            image_fatal("out of memory attaching %u source-file names",
+                        (unsigned)n_sources, 0);
+        for (i = 0; i < n_sources; i++) {
+            uint16_t len = ir_u16(&sr);
+            const uint8_t *p = ir_ptr(&sr, len);
+            char *name = (char *)platform_alloc((uint32_t)len + 1);
+            if (!name)
+                image_fatal("out of memory attaching source-file name %u "
+                            "(%u bytes)", (unsigned)i, (unsigned)len);
+            memcpy(name, p, len);
+            name[len] = '\0';
+            src_tab[i] = cl_intern_source_file(name);
+            platform_free(name);
+        }
+    }
+
     /* ---- The relink walk: one linear pass, same shape as sweep.  Also
      * the integrity check — any malformed header aborts cleanly. ---- */
     {
@@ -1151,8 +1266,8 @@ int cl_image_restore_staged(void)
 
             case TYPE_BYTECODE: {
                 CL_Bytecode *bc = (CL_Bytecode *)ptr;
-                uint32_t b_off, code_len, sf_len;
-                uint16_t n_const, lm_count;
+                uint32_t b_off, code_len;
+                uint16_t n_const, lm_count, sf_idx;
                 uint8_t n_keys;
                 const uint8_t *p;
 
@@ -1236,15 +1351,8 @@ int cl_image_restore_staged(void)
                 }
                 bc->line_map_count = lm_count;
 
-                sf_len = ir_u16(&br);
-                p = ir_ptr(&br, sf_len);
-                if (sf_len && sf_len < sizeof(namebuf)) {
-                    memcpy(namebuf, p, sf_len);
-                    namebuf[sf_len] = '\0';
-                    bc->source_file = cl_intern_source_file(namebuf);
-                } else {
-                    bc->source_file = NULL;
-                }
+                sf_idx = ir_u16(&br);   /* <= n_sources: checked by the scan */
+                bc->source_file = sf_idx ? src_tab[sf_idx - 1] : NULL;
 
                 /* Native code does not survive the image: the JIT compiles
                  * the function again once it turns hot (jit.h), as after a
@@ -1368,6 +1476,7 @@ int cl_image_restore_staged(void)
                         "bytecodes in heap", (unsigned)h->n_blobs,
                         (unsigned)blob_idx);
     }
+    if (src_tab) platform_free((void *)src_tab);
 
     if (stale_count > 0) {
         char buf[400];

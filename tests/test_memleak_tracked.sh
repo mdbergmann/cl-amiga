@@ -42,12 +42,14 @@ case "$probe" in
     exit 1 ;;
 esac
 
-# run_case NAME FILE — run FILE and require a zero-byte leak report.
+# run_case NAME FILE [ARG...] — run FILE (after the command-line ARGs) and
+# require a zero-byte leak report.
 run_case() {
     name=$1
     file=$2
+    shift 2
     total=$((total + 1))
-    out=$(CLAMIGA_MEM_DIAG=1 "$CLAMIGA" --no-userinit --load "$file" </dev/null 2>&1)
+    out=$(CLAMIGA_MEM_DIAG=1 "$CLAMIGA" --no-userinit "$@" --load "$file" </dev/null 2>&1)
     report=$(echo "$out" | sed -n 's/^\[mem\] leak report: \([0-9][0-9]*\) block(s), \([0-9][0-9]*\) bytes.*/\1 \2/p' | tail -1)
     blocks=$(echo "$report" | cut -d' ' -f1)
     bytes=$(echo "$report" | cut -d' ' -f2)
@@ -60,6 +62,12 @@ run_case() {
     case "$out" in
       *"table full"*)
         echo "  FAIL  $name (tracker table overflowed — raise MT_CAP in mem_track.c)"
+        failed=$((failed + 1))
+        return ;;
+      *"SCENARIO-FAILED"*)
+        # the scenario did not do what it exists to measure
+        echo "  FAIL  $name"
+        echo "$out" | grep 'SCENARIO-FAILED'
         failed=$((failed + 1))
         return ;;
     esac
@@ -301,6 +309,26 @@ cat > "$WORK/skh.lisp" <<'LISPEOF'
 (quit)
 LISPEOF
 run_case "no_leak_after_string_key_hooks" "$WORK/skh.lisp"
+
+# --- heap image save + restore ----------------------------------------------
+# The save builds an off-heap source-file table; the restore attaches every
+# function's bytecode side buffers and interns each source-file name once
+# through a scratch table.  Both processes must hand it all back.
+cat > "$WORK/imgfns.lisp" <<'LISPEOF'
+(defun leak-img-a (x) (lambda (y) (+ x y)))
+(defun leak-img-b (x) (* x 2))
+LISPEOF
+cat > "$WORK/imgsave.lisp" <<LISPEOF
+(load "$WORK/imgfns.lisp")
+(ext:save-image "$WORK/leak.img" :quit t)
+LISPEOF
+run_case "no_leak_after_image_save" "$WORK/imgsave.lisp" --no-image
+cat > "$WORK/imgrestore.lisp" <<'LISPEOF'
+(unless (and ext:*image-restored-p* (= (funcall (leak-img-a 40) (leak-img-b 1)) 42))
+  (format t "SCENARIO-FAILED: the image did not restore the session~%"))
+(quit)
+LISPEOF
+run_case "no_leak_after_image_restore" "$WORK/imgrestore.lisp" --image "$WORK/leak.img"
 
 echo ""
 echo "$passed passed, $failed failed, $total total"

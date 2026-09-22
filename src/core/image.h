@@ -16,7 +16,7 @@
  * is needed either.  The only per-process fixups are C pointers: builtin
  * CL_CFunc pointers (relinked by name through the builtin registry),
  * CL_Bytecode side buffers (re-attached from the blob section), interned
- * source-file paths, OS handles (locks/condvars recreated; file/socket
+ * source-file paths (one table entry per file), OS handles (locks/condvars recreated; file/socket
  * streams cannot exist at save), and foreign pointers (invalidated).
  *
  * Images are strictly per-build: a fingerprint over the version, the FASL
@@ -27,7 +27,11 @@
 #include "types.h"
 
 #define CL_IMAGE_MAGIC   0x434C494Du   /* "CLIM" */
-#define CL_IMAGE_VERSION 4             /* bump on ANY format change.
+#define CL_IMAGE_VERSION 5             /* bump on ANY format change.
+                                        * v5: SOURCES section -- each
+                                        * source-file name stored once, a
+                                        * blob names it by a u16 index
+                                        * instead of carrying a copy.
                                         * v4: CL_Lock / CL_CondVar became
                                         * heap words (state/depth/waiters
                                         * instead of side-table ids).
