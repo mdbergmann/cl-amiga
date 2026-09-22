@@ -285,17 +285,21 @@ sh scripts/compile-lib-fasls.sh -o "$STAGE" -b "$HOST_BIN" --no-docstrings \
 # takes a FASL beside a source, so a `--no-image` start (or a refused
 # image) loads the editor without compiling it on the target.  The two
 # image scripts ship with them; the docstrings stay -- they are what
-# `M-x` help shows.
+# `M-x` help shows.  It runs from the staging root: a portable FASL records
+# its source relative to the cwd, so every function says lib/clamacs/x.lisp,
+# where the file sits in the release, and not build/release/<rel>/lib/...,
+# which exists on no Amiga (lib/amiga's FASLs get lib/amiga/... the same
+# way, compiled from the tree root).
 echo "--- lib/clamacs: sources + compile-file -> $REL/lib/clamacs/*.fasl ---"
 mkdir -p "$STAGE/lib/clamacs"
 cp clamacs/lisp/*.lisp clamacs/scripts/save-editor-image.lisp \
    clamacs/scripts/verify-editor-image.lisp "$STAGE/lib/clamacs/"
 CLAMACS_LOG="$OUT/lib-clamacs.log"
-( CLAMIGA_NO_USERINIT=1 CLAMIGA_FASL_PORTABLE=1 $TIMEOUT "$HOST_BIN" --no-userinit \
-    --non-interactive --heap 32M \
+( cd "$STAGE" && CLAMIGA_NO_USERINIT=1 CLAMIGA_FASL_PORTABLE=1 $TIMEOUT "$HOST_BIN" --no-userinit \
+    --no-image --non-interactive --heap 32M \
     --eval '(defvar cl-user::*clamacs-frontend-files* (list "frontend-mui" "transport-arexx"))' \
     --eval '(defvar cl-user::*clamacs-compile-fasls* t)' \
-    --load "$STAGE/lib/clamacs/load.lisp" \
+    --load lib/clamacs/load.lisp \
     --eval '(format t "CLAMACS-FASLS ~a~%" (find-package "CLAMACS"))' \
     --eval '(quit)' </dev/null ) > "$CLAMACS_LOG" 2>&1 || true
 grep -q "^CLAMACS-FASLS #<PACKAGE CLAMACS>" "$CLAMACS_LOG" &&
@@ -313,6 +317,14 @@ for f in clamacs/lisp/*.lisp; do
         echo "ERROR: lib/clamacs/$name.fasl was not written — see $CLAMACS_LOG" >&2
         exit 1; }
 done
+# No shipped FASL may name a source by where this machine built it: that
+# path is what a backtrace, M-. and EXT:FUNCTION-SOURCE-LOCATION print on
+# the Amiga, and every image saved from the FASLs carries it too.
+leaked=$(grep -rlaF -e "$ROOT/" -e "$REL/" --include='*.fasl' "$STAGE/lib" || true)
+[ -z "$leaked" ] || {
+    echo "ERROR: these FASLs record build-machine source paths (compiled from the wrong cwd?):" >&2
+    echo "$leaked" | sed 's/^/    /' >&2
+    exit 1; }
 
 # heap images: one per binary, beside it (policy above).  The m68k pair is
 # saved by the staged binaries from the staged layout in FS-UAE, and each is
