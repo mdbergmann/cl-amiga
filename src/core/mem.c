@@ -3906,7 +3906,9 @@ static void gc_mark(void)
  * WRONG file/line; (b) after compaction, a surviving cons moved and its
  * (correct) entry becomes unreachable while its old offset may false-match.
  * Fix: clear dead keys right after marking (mark bits still set), and
- * forward surviving keys while the forwarding table is alive. */
+ * forward surviving keys while the forwarding table is alive — then move
+ * each entry to the slot its NEW key hashes to, since lookup only ever
+ * probes that one slot. */
 static void gc_srcloc_invalidate_dead(void)
 {
     uint32_t i;
@@ -3927,6 +3929,39 @@ static void gc_srcloc_forward(void)
         CL_Obj k = cl_srcloc_table[i].cons_obj;
         if (CL_NULL_P(k) || CL_FIXNUM_P(k) || CL_CHAR_P(k)) continue;
         cl_srcloc_table[i].cons_obj = gc_forward(k);
+    }
+    /* Re-home in place, no scratch table (16 KB matters on the Amiga).
+     * Carry a misplaced entry to its home slot: an empty home takes it; a
+     * home holding a misplaced entry swaps, and that entry is carried on;
+     * a home holding its own entry is a collision, and the table is lossy
+     * like srcloc_record's overwrite: the higher offset keeps the slot.
+     * A slide keeps allocation order and a minor promotes above the old
+     * space, so that is the more recently read form, the one the compiler
+     * may still look up; the loser is typically a long-compiled form kept
+     * alive by a quoted constant or a lambda list.  Each step settles or
+     * drops one misplaced entry, so the pass is linear, and slots below i
+     * only ever hold settled entries. */
+    for (i = 0; i < CL_SRCLOC_SIZE; i++) {
+        CL_SrcLoc carry;
+        uint32_t home;
+        if (CL_NULL_P(cl_srcloc_table[i].cons_obj)) continue;
+        home = CL_SRCLOC_INDEX(cl_srcloc_table[i].cons_obj);
+        if (home == i) continue;
+        carry = cl_srcloc_table[i];
+        cl_srcloc_table[i].cons_obj = CL_NIL;
+        for (;;) {
+            CL_SrcLoc *slot = &cl_srcloc_table[home];
+            CL_SrcLoc next;
+            if (CL_NULL_P(slot->cons_obj)) { *slot = carry; break; }
+            if (CL_SRCLOC_INDEX(slot->cons_obj) == home) {
+                if (carry.cons_obj > slot->cons_obj) *slot = carry;
+                break;
+            }
+            next = *slot;
+            *slot = carry;
+            carry = next;
+            home = CL_SRCLOC_INDEX(carry.cons_obj);
+        }
     }
 }
 

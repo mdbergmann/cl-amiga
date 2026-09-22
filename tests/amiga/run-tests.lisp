@@ -9573,6 +9573,19 @@ y" 1))
   :not-available (ext:function-source-location #'car))
 (check "function-source-location non-function not-available"
   :not-available (ext:function-source-location 42))
+; The reader's cons -> line table must follow a cons the collector moves:
+; SL-COMPACT-NOW compacts while it expands, so the second lambda has moved
+; by the time it is compiled.  It keeps its own line, two below the first
+; one's (it used to report the macro call's line, one below).
+(defmacro sl-compact-now (form) (ext:gc-compact) form)
+(defparameter *sl-moved*
+  (list (lambda () 0)
+        (sl-compact-now
+         (lambda (y)
+           y))))
+(check "function-source-location line survives a compaction mid-compile"
+  2 (- (second (ext:function-source-location (second *sl-moved*)))
+       (second (ext:function-source-location (first *sl-moved*)))))
 
 ; --- EXT:BACKTRACE / EXT:FRAME-LOCALS (Sly SLDB backend) ---
 ; Each call is non-tail (wrapped in a LET initform) so the VM's tail-call

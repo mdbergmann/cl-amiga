@@ -38,8 +38,11 @@ int cl_reader_eof(void);
 /* Source location tracking */
 
 /* Source location table: maps cons cell offsets to line numbers.
- * Fixed-size hash table — entries overwrite on collision. */
+ * Fixed-size hash table — entries overwrite on collision.  An entry lives
+ * in the slot its KEY hashes to, so a collector that moves a cons must
+ * re-home the entry, not just rewrite its key (gc_srcloc_forward). */
 #define CL_SRCLOC_SIZE 2048
+#define CL_SRCLOC_INDEX(obj) (((uint32_t)(obj) >> 2) % CL_SRCLOC_SIZE)
 
 typedef struct {
     CL_Obj cons_obj;   /* Arena offset of cons cell (key) */

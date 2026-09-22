@@ -6111,6 +6111,43 @@ check_contains "flet-inline: inlined local functions as DEFVAR/DEFPARAMETER/DEFC
     "FLI 1 ((1 2) (3 4)) 42 3 10 (:POS :NEG)" "$out"
 check_contains "flet-inline case finished" "FLI-DONE" "$out"
 
+# --- Case: the reader's cons -> line table across compaction --------------
+# The table is direct-mapped by the cons's offset.  A compaction rewrote a
+# moved cons's key but left the entry in the old offset's slot, where no
+# lookup probes, so a form moved between READ and the compiler lost its
+# lines: a nested lambda reported line 0 or its enclosing form's line.
+# Stress alone does not move a form that was just read: compacting before
+# every allocation leaves no garbage below it.  SRL-DROP-BALLAST lets go of
+# a list allocated before the form was read and then allocates, so the
+# stress compaction slides the rest of the form down mid-compile.
+mkdir -p "$WORK/srcloc"
+cat > "$WORK/srcloc/src.lisp" <<'EOF'
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defvar *srl-ballast* (list (make-list 2000) (make-list 2000))))
+(defmacro srl-drop-ballast (form) (pop *srl-ballast*) (list 'progn form))
+(defun srl-outer ()
+  (list
+   (srl-drop-ballast
+    (lambda (y)
+      y))))
+(defparameter *srl-lambda*
+  (srl-drop-ballast
+   (lambda (z)
+     z)))
+EOF
+cat > "$WORK/srcloc/run.lisp" <<EOF
+(load "$WORK/srcloc/src.lisp")
+(format t "SRL ~S ~S ~S~%"
+        (second (ext:function-source-location #'srl-outer))
+        (second (ext:function-source-location (car (srl-outer))))
+        (second (ext:function-source-location *srl-lambda*)))
+(format t "SRL-DONE~%")
+EOF
+out=$(CLAMIGA_FASL_CACHE_DIR="$WORK/srcloc/cache" run_stress "$WORK/srcloc/run.lisp")
+check_contains "srcloc: a defun, its nested lambda and a DEFPARAMETER lambda keep their lines" \
+    "SRL 4 7 11" "$out"
+check_contains "srcloc case finished" "SRL-DONE" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

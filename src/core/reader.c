@@ -117,7 +117,7 @@ static int current_line(void)
 
 static void srcloc_record(CL_Obj cons_obj, int line)
 {
-    uint32_t idx = (cons_obj >> 2) % CL_SRCLOC_SIZE;
+    uint32_t idx = CL_SRCLOC_INDEX(cons_obj);
     /* Ordered writes: this diagnostics-only table is written without a lock
      * (concurrent reader threads), so invalidate the key FIRST — a
      * concurrent cl_srcloc_lookup then never pairs the new key with the old
@@ -1044,7 +1044,7 @@ CL_Obj cl_read_standard_string_from_stream(CL_Obj stream)
 
 int cl_srcloc_lookup(CL_Obj cons_obj)
 {
-    uint32_t idx = (cons_obj >> 2) % CL_SRCLOC_SIZE;
+    uint32_t idx = CL_SRCLOC_INDEX(cons_obj);
     if (cl_srcloc_table[idx].cons_obj == cons_obj)
         return (int)cl_srcloc_table[idx].line;
     return 0;
