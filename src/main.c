@@ -1145,6 +1145,19 @@ shutdown:
      * the only place user code gets to observe process exit. */
     cl_run_exit_hooks();
     SHUTDOWN_TRACE("exit hooks done");
+#ifdef PLATFORM_AMIGA
+    /* Nothing ends a worker task on AmigaOS: one still running when main
+     * returns executes this program's unloaded code and crashes.  Ask the
+     * workers to unwind now, while streams and the heap they may touch on
+     * the way out are all still alive. */
+    if (cl_thread_count > 1) {
+        uint32_t left = cl_thread_stop_workers(2000);
+        if (left)
+            fprintf(stderr, "[MP] exit: %u worker thread(s) did not stop "
+                    "within 2 s\n", (unsigned)left);
+    }
+    SHUTDOWN_TRACE("workers stopped");
+#endif
     cl_stream_shutdown();
     SHUTDOWN_TRACE("stream done");
     cl_vm_shutdown();
@@ -1188,6 +1201,15 @@ shutdown:
     if (cl_thread_count > 0) {
         SHUTDOWN_TRACE("workers still running - fast _exit, arena left to OS");
         mem_diag_report("worker-thread fast exit (arena deliberately not freed)");
+        /* AmigaOS: the ones that ignored cl_thread_stop_workers above would
+         * run on into the unloaded seglist — take their tasks out instead.
+         * (A no-op elsewhere: the process exit ends them.) */
+        {
+            uint32_t removed = platform_thread_remove_stragglers();
+            if (removed)
+                fprintf(stderr, "[MP] exit: removed %u worker task(s) that "
+                        "would have outlived the program\n", (unsigned)removed);
+        }
         platform_process_exit(cl_exit_code);
     }
 

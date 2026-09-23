@@ -1952,6 +1952,50 @@ static CL_Obj bi_destroy_thread(CL_Obj *args, int n)
     return CL_T;
 }
 
+uint32_t cl_thread_stop_workers(uint32_t timeout_ms)
+{
+    CL_Thread *self = (CL_Thread *)platform_tls_get();
+    uint32_t i, asked = 0, elapsed = 0;
+
+    if (!cl_thread_list_lock) return 0;
+
+    /* Same publication discipline as MP:DESTROY-THREAD, for every worker. */
+    platform_mutex_lock(cl_thread_list_lock);
+    for (i = 0; i < CL_MAX_THREADS; i++) {
+        CL_Thread *t = cl_thread_table[i];
+        if (!t || t == self || t->status >= 2) continue;
+        t->destroy_requested = 1;
+        platform_memory_barrier();
+        t->interrupt_pending = 1;
+        platform_memory_barrier();
+        wake_interrupted_waiter(t);
+        asked++;
+    }
+    platform_mutex_unlock(cl_thread_list_lock);
+    if (!asked) return 0;
+
+    /* The unwinding workers may need a GC; we must not hold them off. */
+    cl_gc_enter_safe_region();
+    while (cl_thread_count > 1 && elapsed < timeout_ms) {
+        platform_sleep_ms(20);
+        elapsed += 20;
+    }
+    cl_gc_leave_safe_region();
+    return cl_thread_count > 1 ? cl_thread_count - 1 : 0;
+}
+
+/* (mp::%stop-workers timeout-ms) -> number of workers still registered
+ * Test hook for the AmigaOS process-exit path (cl_thread_stop_workers). */
+static CL_Obj bi_stop_workers(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    if (!CL_FIXNUM_P(args[0]) || CL_FIXNUM_VAL(args[0]) < 0)
+        cl_error(CL_ERR_TYPE, "MP::%%STOP-WORKERS: TIMEOUT-MS must be a "
+                 "non-negative fixnum");
+    return CL_MAKE_FIXNUM((int32_t)cl_thread_stop_workers(
+                              (uint32_t)CL_FIXNUM_VAL(args[0])));
+}
+
 /* ================================================================
  * Accessors and predicates
  * ================================================================ */
@@ -2297,6 +2341,7 @@ void cl_builtins_thread_init(void)
     mp_defun_internal("%OS-THREAD-COUNT",  bi_os_thread_count,  0, 0);
     mp_defun_internal("%DRAIN-OS-THREADS", bi_drain_os_threads, 2, 2);
     mp_defun_internal("%SET-THREAD-EXIT-DELAY", bi_set_thread_exit_delay, 1, 1);
+    mp_defun_internal("%STOP-WORKERS",     bi_stop_workers,     1, 1);
     mp_defun_internal("%CAS-CAR",          bi_cas_car,          3, 3);
     mp_defun_internal("%CAS-CDR",          bi_cas_cdr,          3, 3);
     mp_defun_internal("%CAS-SVREF",        bi_cas_svref,        4, 4);

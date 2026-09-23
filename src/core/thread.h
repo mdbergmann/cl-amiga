@@ -574,6 +574,15 @@ int cl_thread_current_is_registered(void);
 /* Initialize/shutdown thread system */
 void cl_thread_init(void);
 void cl_thread_shutdown(void);
+
+/* Ask every other registered thread to unwind and exit (the DESTROY-THREAD
+ * path: UNWIND-PROTECT cleanups run) and wait up to TIMEOUT_MS for them to
+ * leave the registry.  Returns how many are still registered.  Process exit
+ * on AmigaOS calls it before tearing anything down: nothing ends a worker
+ * task there, and one still running when main returns executes unloaded
+ * code.  A worker that never reaches a safepoint (stuck in foreign code)
+ * is not stopped by this. */
+uint32_t cl_thread_stop_workers(uint32_t timeout_ms);
 /* Restore the main task's TLS slot (tc_UserData) to its pre-init value.
  * Call once just before the process exits — see cl_thread_init. */
 void cl_thread_restore_main_tls(void);

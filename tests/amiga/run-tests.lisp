@@ -9524,6 +9524,29 @@ y" 1))
     (mp:join-thread (mp:make-thread (lambda () nil)))
     (<= (mp::%os-thread-count) base)))
 
+; Process exit stops workers that are still RUNNING.  Nothing ends a worker
+; task on AmigaOS, so one left running when main returned executed the
+; unloaded program; main now asks every worker to unwind first
+; (cl_thread_stop_workers, the DESTROY-THREAD path).  Their UNWIND-PROTECT
+; cleanups must run and the registry must empty.
+; See tests/test_mt_stop_workers.sh.
+(check "mp stop-workers unwinds a busy, a waiting and a sleeping worker" '(0 ("COND" "SLEEP" "SPIN") 0)
+  (let* ((done nil) (started 0) (l (mp:make-lock "sw")) (cv (mp:make-condition-variable))
+         (mk (lambda (tag body)
+               (mp:make-thread
+                (lambda ()
+                  (unwind-protect (progn (mp:with-lock-held (l) (incf started)) (funcall body))
+                    (mp:with-lock-held (l) (push (string tag) done)))))))
+         (ths (list (funcall mk :spin (lambda () (loop)))
+                    (funcall mk :cond (lambda () (mp:with-lock-held (l)
+                                                   (loop (mp:condition-wait cv l)))))
+                    (funcall mk :sleep (lambda () (sleep 60))))))
+    (loop until (= started 3) do (sleep 0.02))
+    (sleep 0.2)
+    (list (mp::%stop-workers 10000)
+          (sort (copy-list done) #'string<)
+          (count-if #'mp:thread-alive-p ths))))
+
 ; ST5 (batch 6a): closing a synonym stream whose symbol holds a NON-stream
 ; must not scribble stream fields into the object.
 (defvar *t4b6-not-a-stream* (copy-seq "keep me intact"))

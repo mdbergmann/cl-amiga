@@ -42,6 +42,13 @@ uint32_t platform_thread_drain(const volatile uint32_t *keep, uint32_t timeout_m
  * before it counts itself gone — widens the exit window above so tests can
  * hit it deterministically.  Returns the previous value. */
 uint32_t platform_thread_set_exit_delay(uint32_t ms);
+/* Last resort at process exit, after workers were asked to stop and did not:
+ * on AmigaOS remove every worker task still live (RemTask under Forbid) so
+ * none of them runs on into this program's unloaded code — their memory is
+ * reclaimed with the task, any DOS or exec resource they held is lost.
+ * Elsewhere the process exit ends every thread and this does nothing.
+ * Returns how many tasks were removed. */
+uint32_t platform_thread_remove_stragglers(void);
 
 /* ---- Mutex ---- */
 int  platform_mutex_init(void **handle);

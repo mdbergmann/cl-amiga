@@ -6191,6 +6191,33 @@ check_contains "exit drain: the drained worker's result survives compaction" 'XD
 check_contains "exit drain: QUIT with a worker in its tail completes" "XD-DONE" "$out"
 check_absent   "exit drain: no straggler warning, no bad mark" "did not finish\|BADMARK\|FATAL" "$out"
 
+# --- Case: stopping running workers (the AmigaOS exit path) -----------------
+# cl_thread_stop_workers waits in a GC safe region while every worker unwinds
+# through DESTROY-THREAD; their cleanups allocate, compacting on each
+# allocation here, and what they leave behind must survive it.
+cat > "$WORK/stopworkers.lisp" <<'EOF'
+(defvar *sw-out* nil)
+(defvar *sw-lock* (mp:make-lock "sw"))
+(defvar *sw-go* 0)
+(dotimes (i 3)
+  (let ((i i))
+    (mp:make-thread
+     (lambda ()
+       (unwind-protect
+            (progn (mp:with-lock-held (*sw-lock*) (incf *sw-go*))
+                   (loop (make-list 5)))
+         (mp:with-lock-held (*sw-lock*)
+           (push (list i (make-array 20 :initial-element i)) *sw-out*)))))))
+(loop until (= *sw-go* 3) do (sleep 0.01))
+(format t "SW-LEFT:~S~%" (mp::%stop-workers 20000))
+(format t "SW-OUT:~S~%" (sort (mapcar (lambda (e) (list (first e) (aref (second e) 19))) *sw-out*)
+                              #'< :key #'first))
+EOF
+out=$(run_stress "$WORK/stopworkers.lisp")
+check_contains "stop workers: every worker left the registry" "SW-LEFT:0" "$out"
+check_contains "stop workers: cleanup results survive compaction" "SW-OUT:((0 0) (1 1) (2 2))" "$out"
+check_absent   "stop workers: no bad mark" "BADMARK\|FATAL" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

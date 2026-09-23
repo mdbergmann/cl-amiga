@@ -95,6 +95,11 @@ uint32_t platform_thread_drain(const volatile uint32_t *keep, uint32_t timeout_m
     }
 }
 
+uint32_t platform_thread_remove_stragglers(void)
+{
+    return 0;   /* _exit ends every thread of the process */
+}
+
 uint32_t platform_thread_set_exit_delay(uint32_t ms)
 {
     uint32_t old = posix_exit_delay_ms;

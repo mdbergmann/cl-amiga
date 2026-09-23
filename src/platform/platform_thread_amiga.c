@@ -54,7 +54,7 @@
  * cannot observe finished=1 (and free `at`) until the child Permit()s.
  * Detach hands `at` to whichever side finishes last. */
 
-typedef struct {
+typedef struct AmigaThread {
     volatile int            finished;
     volatile int            detached;
     void                   *result;
@@ -63,6 +63,7 @@ typedef struct {
     struct Task            *joiner;    /* registered by platform_thread_join */
     BYTE                    join_sig;  /* signal bit in JOINER's task */
     struct Process         *proc;
+    struct AmigaThread *live_next;  /* amiga_live_list link, Forbid()-guarded */
 } AmigaThread;
 
 /* Workers still executing clamiga code (see platform_thread.h).  Counted up
@@ -78,6 +79,17 @@ typedef struct {
  * on MorphOS at the end of every few Clamacs drive runs. */
 static volatile uint32_t amiga_live_threads = 0;
 static volatile uint32_t amiga_exit_delay_ms = 0;
+/* The same workers as a list, for platform_thread_remove_stragglers.  Linked
+ * in and out only under Forbid(), exactly where amiga_live_threads moves. */
+static AmigaThread *amiga_live_list = NULL;
+
+static void live_list_unlink(AmigaThread *at)   /* caller holds Forbid() */
+{
+    AmigaThread **pp;
+    for (pp = &amiga_live_list; *pp; pp = &(*pp)->live_next) {
+        if (*pp == at) { *pp = at->live_next; return; }
+    }
+}
 
 /* Entry point for new process — runs user function, signals joiner */
 static void amiga_thread_entry(void)
@@ -103,7 +115,10 @@ static void amiga_thread_entry(void)
      * spinning a zombie process forever. */
     while (!(at = (AmigaThread *)me->tc_UserData)) {
         if (++spins > 3000) {
+            AmigaThread *e;
             Forbid();              /* exit forbidden, see amiga_live_threads */
+            for (e = amiga_live_list; e; e = e->live_next)
+                if (e->proc == (struct Process *)me) { live_list_unlink(e); break; }
             amiga_live_threads--;
             return;
         }
@@ -121,6 +136,7 @@ static void amiga_thread_entry(void)
      * the moment it can run and observe finished — cannot race the rest.
      * FreeVec and Signal do not break a Forbid(). */
     Forbid();
+    live_list_unlink(at);
     at->finished = 1;
     joiner_local = at->joiner;
     sig_local    = at->join_sig;
@@ -186,6 +202,8 @@ int platform_thread_create(void **handle, void *(*func)(void *), void *arg,
         /* Counted before the child exists, so every exit path of
          * amiga_thread_entry decrements a count that was already added. */
         amiga_live_threads++;
+        at->live_next = amiga_live_list;
+        amiga_live_list = at;
 
         proc = CreateNewProcTags(
             NP_Entry,     CL_PROC_ENTRY(amiga_thread_entry_gate, amiga_thread_entry),
@@ -200,6 +218,7 @@ int platform_thread_create(void **handle, void *(*func)(void *), void *arg,
     }
 
     if (!proc) {
+        live_list_unlink(at);
         amiga_live_threads--;
         Permit();
         FreeVec(at);
@@ -231,6 +250,29 @@ uint32_t platform_thread_drain(const volatile uint32_t *keep, uint32_t timeout_m
         Delay(1);                /* 1/50 s: lets a lower-priority worker run */
         elapsed += 20;
     }
+}
+
+/* Tasks on the list have not reached their exit tail's Forbid() (they are
+ * unlinked inside it), so none is running clamiga code we could cut short
+ * mid-way under our own Forbid(): each sits in Wait() or in the ready
+ * queue.  RemTask frees its tc_MemEntry (stack, Process); `at` is left
+ * alone — the process is exiting and a joiner may still hold it. */
+uint32_t platform_thread_remove_stragglers(void)
+{
+    AmigaThread *at;
+    uint32_t n = 0;
+
+    Forbid();
+    for (at = amiga_live_list; at; at = at->live_next) {
+        if (at->proc) {
+            RemTask((struct Task *)at->proc);
+            n++;
+        }
+    }
+    amiga_live_list = NULL;
+    amiga_live_threads -= n;
+    Permit();
+    return n;
 }
 
 uint32_t platform_thread_set_exit_delay(uint32_t ms)
