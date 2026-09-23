@@ -303,6 +303,11 @@ parked there) come back through: the form ends with `; Aborted'."
     (gray:stream-clear-input in)
     (%repl-flush out)
     (setf *command-package* *package*)
+    ;; Idle BEFORE the editor hears RESULT: RESULT puts the prompt back, and
+    ;; an editor that sends the next form at once -- a macro, or one that
+    ;; delivers in-process from inside this very send -- must not be told
+    ;; the REPL is busy.  A REPL-EVAL arriving now waits in *REPL-JOB*.
+    (%repl-finish-job)
     (%repl-send (format nil "RESULT ~d ~a~%~a" rc (%prompt-package-name *package*)
                         (%truncate (or result "; No values"))))))
 

@@ -274,6 +274,26 @@
 ;; run shows as such rather than as a flake.
 (drt-nested-abort-scenario "bytecode signaller again" "drt-bytecode-fn")
 
+;;; RESULT means idle.  An editor that sends the next form from inside the
+;;; send that delivered RESULT -- Clamacs talking to its own image does,
+;;; and a fast macro can -- must have it taken, not refused as busy.
+(defvar *drt-chained* nil)
+(let ((plain ext.dev:*repl-send*))
+  (setf ext.dev:*repl-send*
+        (lambda (port command)
+          (funcall plain port command)
+          (when (and (drt-prefix-p "RESULT" command) (null *drt-chained*))
+            (setf *drt-chained*
+                  (multiple-value-list (drt-cmd "REPL-EVAL (+ 40 2)"))))
+          (values 0 "")))
+  (drt-clear)
+  (drt-cmd "REPL-EVAL (+ 1 1)")
+  (drt-wait (lambda (c) (and (drt-prefix-p "RESULT" c) (search "42" c))))
+  (setf ext.dev:*repl-send* plain))
+(check "dev-repl: a REPL-EVAL sent on RESULT is taken" 0 (first *drt-chained*))
+(check "dev-repl: and its form runs" t
+       (drt-sent-p (lambda (c) (and (drt-prefix-p "RESULT 0" c) (search "42" c) t))))
+
 (multiple-value-bind (rc text) (drt-cmd "REPL-DETACH")
   (declare (ignore text))
   (check "dev-repl: REPL-DETACH" 0 rc))

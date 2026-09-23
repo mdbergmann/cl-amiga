@@ -568,6 +568,23 @@ cat > "$TMPD/repl.lisp" <<'EOF'
 (cmd "attach3" "REPL-ATTACH EDITOR")
 (cmd "eval-recovered" "REPL-EVAL (+ 1 1)")
 (wait-result) (show "recovered")
+;; An editor that sends the next form the moment RESULT arrives -- inside
+;; the send, as a macro or an in-process editor does -- must find the REPL
+;; idle: RESULT is the REPL's promise that it is.
+(defvar *chained* nil)
+(setf ext.dev:*repl-send*
+      (lambda (port command)
+        (funcall *editor* port command)
+        (when (and (result-p command) (null *chained*))
+          (setf *chained* (multiple-value-list (ext.dev:handle-command "REPL-EVAL (+ 40 2)"))))
+        (values 0 "")))
+(cmd "eval-chain" "REPL-EVAL (+ 1 1)")
+(loop repeat 500
+      until (>= (mp:with-lock-held (*sent-lock*) (count-if #'result-p *sent* :key #'cdr)) 2)
+      do (sleep 0.02))
+(format t "<<CHAINED=~a ~a>>~%" (first *chained*) (second *chained*))
+(show "chain")
+(setf ext.dev:*repl-send* *editor*)
 (cmd "detach2" "REPL-DETACH")
 EOF
 # Not $out: check() assigns the global `out` itself, so a block extracted
@@ -615,6 +632,8 @@ check "REPL-DETACH stops the thread"            '<<THREAD-ALIVE-AFTER-DETACH=NIL
 check "a transport failure stops the REPL"      '<<THREAD-ALIVE-AFTER-FAILURE=NIL>>' "$repl_out"
 check "REPL-ATTACH works again after that"      '<<attach3 RC=0>>' "$repl_out"
 check "and so does the REPL"                    '^2$'              "$(block recovered)"
+check "RESULT means idle: the next REPL-EVAL sent on it is taken" '<<CHAINED=0 >>' "$repl_out"
+check "and that form runs"                      '^42$'             "$(block chain)"
 
 # --- The debugger and the inspector (phase 4 of the editor) -----------------
 #
