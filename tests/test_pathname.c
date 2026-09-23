@@ -1,6 +1,7 @@
 #include "test.h"
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 #include "core/types.h"
 #include "core/mem.h"
 #include "core/error.h"
@@ -13,6 +14,8 @@
 #include "core/builtins.h"
 #include "core/repl.h"
 #include "platform/platform.h"
+
+CL_Obj bi_merge_pathnames(CL_Obj *args, int n);
 
 static void setup(void)
 {
@@ -420,6 +423,111 @@ TEST(pathname_amiga_namestring)
     ASSERT_STR_EQ(eval_print("(namestring #P\"DH0:Work/test.lisp\")"), "\"DH0:Work/test.lisp\"");
 }
 
+/* --- AmigaDOS slash rules (parsed with the Amiga syntax on every host) ---
+ *
+ * AmigaDOS reads a LEADING slash as the parent of the current directory
+ * and each empty component ("a//b") as one more level up; only a device
+ * makes a path absolute.  The POSIX reading ((:ABSOLUTE ...)) made
+ * (load "//x/f.lisp") open the right file but resolve the files IT loads
+ * against the volume root.  Result: "<directory> <namestring>", where the
+ * namestring is rebuilt with the Amiga syntax (it must round-trip). */
+static const char *amiga_parse(const char *str)
+{
+    static char buf[512];
+    int err;
+
+    CL_CATCH(err);
+    if (err == CL_ERR_NONE) {
+        CL_Obj pn = cl_parse_namestring_syntax(str, (uint32_t)strlen(str), 1);
+        uint32_t used;
+        cl_prin1_to_string(((CL_Pathname *)CL_OBJ_TO_PTR(pn))->directory,
+                           buf, sizeof(buf));
+        used = (uint32_t)strlen(buf);
+        buf[used++] = ' ';
+        cl_pathname_to_namestring_syntax((CL_Pathname *)CL_OBJ_TO_PTR(pn),
+                                         buf + used, sizeof(buf) - used, 1);
+        CL_UNCATCH();
+        return buf;
+    }
+    CL_UNCATCH();
+    snprintf(buf, sizeof(buf), "ERROR:%d", err);
+    cl_vm.sp = 0;
+    cl_vm.fp = 0;
+    return buf;
+}
+
+TEST(pathname_amiga_leading_slash_is_parent)
+{
+    ASSERT_STR_EQ(amiga_parse("/foo/x.lisp"), "(:RELATIVE :UP \"foo\") /foo/x.lisp");
+    ASSERT_STR_EQ(amiga_parse("//clamacs/lisp/load.lisp"),
+                  "(:RELATIVE :UP :UP \"clamacs\" \"lisp\") //clamacs/lisp/load.lisp");
+    ASSERT_STR_EQ(amiga_parse("/"), "(:RELATIVE :UP) /");
+    ASSERT_STR_EQ(amiga_parse("//"), "(:RELATIVE :UP :UP) //");
+    ASSERT_STR_EQ(amiga_parse("/x"), "(:RELATIVE :UP) /x");
+}
+
+TEST(pathname_amiga_empty_component_is_parent)
+{
+    ASSERT_STR_EQ(amiga_parse("a//b/f.lisp"), "(:RELATIVE \"a\" :UP \"b\") a//b/f.lisp");
+    ASSERT_STR_EQ(amiga_parse("a//"), "(:RELATIVE \"a\" :UP) a//");
+    ASSERT_STR_EQ(amiga_parse("Work:a///b"), "(:ABSOLUTE \"a\" :UP :UP) Work:a///b");
+    ASSERT_STR_EQ(amiga_parse("Work:/x"), "(:ABSOLUTE :UP) Work:/x");
+}
+
+TEST(pathname_amiga_plain_paths_unchanged)
+{
+    ASSERT_STR_EQ(amiga_parse("Work:dev/test.lisp"), "(:ABSOLUTE \"dev\") Work:dev/test.lisp");
+    ASSERT_STR_EQ(amiga_parse("PROGDIR:"), "(:ABSOLUTE) PROGDIR:");
+    ASSERT_STR_EQ(amiga_parse("a/b/"), "(:RELATIVE \"a\" \"b\") a/b/");
+    ASSERT_STR_EQ(amiga_parse("f.lisp"), "NIL f.lisp");
+}
+
+/* The case that broke: a file named by "//dir/load.lisp" merges its
+ * siblings under the current directory, not the volume root. */
+TEST(pathname_amiga_parent_merges_under_cwd)
+{
+    static char buf[512];
+    int err;
+    CL_Obj args[2];
+
+    strcpy(buf, "ERROR");
+    CL_CATCH(err);
+    if (err == CL_ERR_NONE) {
+        args[0] = cl_parse_namestring_syntax("//lisp/pkg.lisp", 15, 1);
+        CL_GC_PROTECT(args[0]);
+        args[1] = cl_parse_namestring_syntax("Work:build/morphos/", 19, 1);
+        CL_GC_PROTECT(args[1]);
+        args[0] = bi_merge_pathnames(args, 2);
+        cl_pathname_to_namestring_syntax((CL_Pathname *)CL_OBJ_TO_PTR(args[0]),
+                                         buf, sizeof(buf), 1);
+        CL_GC_UNPROTECT(2);
+    }
+    CL_UNCATCH();
+    ASSERT_STR_EQ(buf, "Work:build/morphos///lisp/pkg.lisp");
+}
+
+/* POSIX spells :UP / :BACK as "..", so they are no longer dropped. */
+TEST(namestring_up_component_posix)
+{
+    char posix[256], amiga[256];
+    int err;
+
+    strcpy(posix, "ERROR");
+    strcpy(amiga, "ERROR");
+    CL_CATCH(err);
+    if (err == CL_ERR_NONE) {
+        CL_Obj pn = cl_eval_string(
+            "(make-pathname :directory '(:relative :up \"x\" :back) :name \"f\")");
+        cl_pathname_to_namestring_syntax((CL_Pathname *)CL_OBJ_TO_PTR(pn),
+                                         posix, sizeof(posix), 0);
+        cl_pathname_to_namestring_syntax((CL_Pathname *)CL_OBJ_TO_PTR(pn),
+                                         amiga, sizeof(amiga), 1);
+    }
+    CL_UNCATCH();
+    ASSERT_STR_EQ(posix, "../x/../f");
+    ASSERT_STR_EQ(amiga, "/x//f");
+}
+
 /* --- coerce --- */
 
 TEST(coerce_string_to_pathname)
@@ -797,6 +905,11 @@ int main(void)
     RUN(pathname_amiga_name);
     RUN(pathname_amiga_type);
     RUN(pathname_amiga_namestring);
+    RUN(pathname_amiga_leading_slash_is_parent);
+    RUN(pathname_amiga_empty_component_is_parent);
+    RUN(pathname_amiga_plain_paths_unchanged);
+    RUN(pathname_amiga_parent_merges_under_cwd);
+    RUN(namestring_up_component_posix);
     RUN(coerce_string_to_pathname);
     RUN(default_pathname_defaults);
     RUN(default_pathname_defaults_is_absolute);

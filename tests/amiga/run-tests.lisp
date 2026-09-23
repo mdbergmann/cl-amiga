@@ -5210,7 +5210,12 @@ y" 1))
 
 ; merge-pathnames fills in missing directory (returns pathname)
 (check "merge-pathnames" "/some/dir/file.txt" (namestring (merge-pathnames "file.txt" "/some/dir/")))
+#-amigaos
 (check "merge-pathnames-has-dir" "/other/file.txt" (namestring (merge-pathnames "/other/file.txt" "/some/dir/")))
+; AmigaDOS: a leading "/" is the PARENT directory (relative), so it merges
+; under the defaults as one :UP -- "/some/dir//other/" is some/other.
+#+amigaos
+(check "merge-pathnames-has-dir" "/some/dir//other/file.txt" (namestring (merge-pathnames "/other/file.txt" "/some/dir/")))
 
 ; enough-namestring
 (check "enough-namestring" "/foo/bar/baz.txt" (enough-namestring "/foo/bar/baz.txt" "/foo/"))
@@ -5234,7 +5239,31 @@ y" 1))
 (check "pathname-type-p" "lisp" (pathname-type #P"/foo/bar.lisp"))
 
 ; pathname-directory from #P
+#-amigaos
 (check "pathname-dir-p" (list :absolute "foo") (pathname-directory #P"/foo/bar.lisp"))
+#+amigaos
+(check "pathname-dir-p" (list :relative :up "foo") (pathname-directory #P"/foo/bar.lisp"))
+
+; AmigaDOS slash rules: a leading "/" and every empty component ("a//b") go
+; up one directory; only a device makes a path absolute.  Reading "//x" as
+; Unix-absolute made (load "//x/load.lisp") open the right file and then
+; resolve everything it loaded against the volume root.
+#+amigaos
+(progn
+  (check "amiga-slash-grandparent" (list :relative :up :up "clamacs" "lisp")
+         (pathname-directory "//clamacs/lisp/load.lisp"))
+  (check "amiga-slash-empty-component" (list :relative "a" :up "b")
+         (pathname-directory "a//b/f.lisp"))
+  (check "amiga-slash-device-parent" (list :absolute "a" :up)
+         (pathname-directory "Work:a//f"))
+  (check "amiga-slash-roundtrip" "//clamacs/lisp/load.lisp"
+         (namestring "//clamacs/lisp/load.lisp"))
+  (check "amiga-slash-up-namestring" "//x/f"
+         (namestring (make-pathname :directory '(:relative :up :up "x") :name "f")))
+  (check "amiga-slash-merge-under-defaults" "Work:build/morphos///lisp/pkg.lisp"
+         (namestring (merge-pathnames "pkg.lisp"
+                                      (merge-pathnames "//lisp/load.lisp"
+                                                       "Work:build/morphos/")))))
 
 ; pathname-device from Amiga path
 (check "pathname-device-amiga" "DH0" (pathname-device #P"DH0:Work/test.lisp"))

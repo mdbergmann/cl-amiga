@@ -58,14 +58,46 @@ static int device_is_drive_letter(CL_Obj device)
 }
 #endif
 
+/* AmigaDOS reads '/' differently from POSIX: a LEADING slash is the parent
+ * of the current directory, not the root ("//x" = the grandparent's x), and
+ * every EMPTY component between two slashes goes up one more level
+ * ("a//b" = a's parent's b).  Only a device ("Work:") makes a path absolute.
+ * Both syntaxes are compiled in so the host suite can test the Amiga one
+ * (tests/test_pathname.c); the platform picks its own by default. */
+#ifdef PLATFORM_AMIGA
+#define CL_AMIGA_PATH_SYNTAX 1
+#else
+#define CL_AMIGA_PATH_SYNTAX 0
+#endif
+
+/* :UP / :BACK keywords, interned once by cl_builtins_pathname_init and
+ * GC-rooted there — avoids a cl_find_symbol package lookup on every
+ * directory component of every namestring built/parsed. */
+static CL_Obj kw_up = CL_NIL;
+static CL_Obj kw_back = CL_NIL;
+
+/* Is this directory component :UP or :BACK?  Must not allocate — the
+ * namestring builder runs on raw CL_Pathname pointers. */
+static int dir_up_component_p(CL_Obj comp)
+{
+    if (!CL_SYMBOL_P(comp)) return 0;
+    return comp == kw_up || comp == kw_back;
+}
+
 /*
  * Parse a namestring into pathname components.
  * Returns a pathname object.
  *
- * Amiga:  "VOLUME:dir1/dir2/name.type"
+ * Amiga:  "VOLUME:dir1/dir2/name.type", "/up/name", "a//b/name"
+ *         (each leading or empty component is :UP)
  * POSIX:  "/dir1/dir2/name.type" or "dir1/dir2/name.type"
  */
 CL_Obj cl_parse_namestring(const char *str, uint32_t len)
+{
+    return cl_parse_namestring_syntax(str, len, CL_AMIGA_PATH_SYNTAX);
+}
+
+CL_Obj cl_parse_namestring_syntax(const char *str, uint32_t len, int amiga)
 {
     CL_Obj host = CL_NIL;
     CL_Obj device = CL_NIL;
@@ -164,8 +196,9 @@ CL_Obj cl_parse_namestring(const char *str, uint32_t len)
         CL_GC_PROTECT(dir_list);
         CL_GC_PROTECT(dir_tail);
 
-        /* Determine absolute vs relative */
-        if (dp < end && CL_PATH_SEP_P(*dp)) {
+        /* Determine absolute vs relative.  On AmigaDOS a leading slash is
+         * NOT the root: it stays in place for the loop below to read as :UP. */
+        if (!amiga && dp < end && CL_PATH_SEP_P(*dp)) {
             dir_kind = KW_ABSOLUTE;
             dp++;
         } else if (!CL_NULL_P(device)) {
@@ -205,6 +238,13 @@ CL_Obj cl_parse_namestring(const char *str, uint32_t len)
                     ((CL_Cons *)CL_OBJ_TO_PTR(dir_tail))->cdr = cell;
                     dir_tail = cell;
                 }
+            } else if (amiga && dp < end && CL_PATH_SEP_P(*dp)) {
+                /* Empty component = one level up (leading "/" or "a//b").
+                 * dir_list/dir_tail are protected across the cons. */
+                CL_Obj cell = kw_up;
+                cell = cl_cons(cell, CL_NIL);
+                ((CL_Cons *)CL_OBJ_TO_PTR(dir_tail))->cdr = cell;
+                dir_tail = cell;
             }
             if (dp < end && CL_PATH_SEP_P(*dp)) dp++;
         }
@@ -274,6 +314,13 @@ CL_Obj cl_parse_namestring(const char *str, uint32_t len)
  */
 uint32_t cl_pathname_to_namestring(CL_Pathname *pn, char *buf, uint32_t bufsz)
 {
+    return cl_pathname_to_namestring_syntax(pn, buf, bufsz,
+                                            CL_AMIGA_PATH_SYNTAX);
+}
+
+uint32_t cl_pathname_to_namestring_syntax(CL_Pathname *pn, char *buf,
+                                          uint32_t bufsz, int amiga)
+{
     uint32_t pos = 0;
 
 #define EMIT_CHAR(c) do { if (pos < bufsz - 1) buf[pos] = (c); pos++; } while(0)
@@ -319,6 +366,9 @@ uint32_t cl_pathname_to_namestring(CL_Pathname *pn, char *buf, uint32_t bufsz)
             CL_Obj comp = cl_car(rest);
             if (comp == KW_WILD) {
                 EMIT_CHAR('*');
+            } else if (dir_up_component_p(comp)) {
+                /* AmigaDOS: an empty component is the parent ("a//b"). */
+                if (!amiga) { EMIT_CHAR('.'); EMIT_CHAR('.'); }
             } else if (CL_STRING_P(comp)) {
                 CL_String *cs = (CL_String *)CL_OBJ_TO_PTR(comp);
                 EMIT_STR(cs->data, cs->length);
@@ -946,8 +996,41 @@ static CL_Obj bi_translate_pathname(CL_Obj *args, int n)
  * Registration
  * ================================================================ */
 
+/* (ext::%amiga-namestring-roundtrip string) => (directory namestring)
+ * Parses STRING with the AmigaDOS slash rules on any platform and rebuilds
+ * its namestring with them — lets the host suites (the gc-stress one
+ * included) exercise the Amiga-only :UP parsing path. */
+static CL_Obj bi_amiga_namestring_roundtrip(CL_Obj *args, int n)
+{
+    char buf[1024];
+    uint32_t len;
+    CL_Obj pn_obj, ns, result;
+    CL_String *s;
+    CL_UNUSED(n);
+
+    if (!CL_STRING_P(args[0]))
+        cl_error(CL_ERR_TYPE, "%%AMIGA-NAMESTRING-ROUNDTRIP: expected a simple string");
+    s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+    pn_obj = cl_parse_namestring_syntax(s->data, s->length, 1);
+    CL_GC_PROTECT(pn_obj);
+    len = cl_pathname_to_namestring_syntax((CL_Pathname *)CL_OBJ_TO_PTR(pn_obj),
+                                           buf, sizeof(buf), 1);
+    ns = cl_make_string(buf, len);
+    result = cl_cons(ns, CL_NIL);
+    result = cl_cons(((CL_Pathname *)CL_OBJ_TO_PTR(pn_obj))->directory, result);
+    CL_GC_UNPROTECT(1);
+    return result;
+}
+
 void cl_builtins_pathname_init(void)
 {
+    kw_up = cl_intern_keyword("UP", 2);
+    kw_back = cl_intern_keyword("BACK", 4);
+    cl_gc_register_root(&kw_up);
+    cl_gc_register_root(&kw_back);
+
+    cl_register_builtin("%AMIGA-NAMESTRING-ROUNDTRIP",
+                        bi_amiga_namestring_roundtrip, 1, 1, cl_package_ext);
     cl_gc_register_root(&SYM_STAR_DEFAULT_PATHNAME_DEFAULTS);
     defun("PATHNAMEP", bi_pathnamep, 1, 1);
     defun("PATHNAME", bi_pathname, 1, 1);

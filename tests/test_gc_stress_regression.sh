@@ -102,6 +102,20 @@ EOF
 out=$(run_stress "$WORK/pn.lisp")
 check_contains "parse-namestring keeps directory + name + type" 'PN:"/tmp/sub/file.lisp"' "$out"
 
+# --- Case 2b: AmigaDOS slash rules (:UP components) under stress -----------
+# The Amiga parser interns :UP and conses it into the directory list mid-scan
+# (leading "/" and empty "a//b" components); every cell must survive the
+# compactions between them.
+cat > "$WORK/pn-amiga.lisp" <<'EOF'
+(format t "PNA:~s~%" (ext::%amiga-namestring-roundtrip "Work:a//b///c/f.lisp"))
+(format t "PNB:~s~%" (ext::%amiga-namestring-roundtrip "//clamacs/lisp/load.lisp"))
+EOF
+out=$(run_stress "$WORK/pn-amiga.lisp")
+check_contains "Amiga parse keeps :UP runs between names" \
+    'PNA:((:ABSOLUTE "a" :UP "b" :UP :UP "c") "Work:a//b///c/f.lisp")' "$out"
+check_contains "Amiga parse reads leading slashes as :UP" \
+    'PNB:((:RELATIVE :UP :UP "clamacs" "lisp") "//clamacs/lisp/load.lisp")' "$out"
+
 # --- Case 3: defun loaded from FASL — OP_CLOSURE bytecode template --------
 # Bug: OP_CLOSURE cached the bytecode-template CL_Obj across cl_alloc; a
 # compaction relocated the template, so the closure's bytecode field went

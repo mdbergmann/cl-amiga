@@ -176,10 +176,9 @@ image: $(BUILDDIR)/clamiga
 # quit (clamacs/scripts/verify-editor-image.lisp; needs MUI, i.e. a
 # session on the box's screen).  The release script packages the result as
 # CLAMACS_MOS_IMG=... .  The save runs from beside the binary, so the editor
-# is named by an ABSOLUTE AmigaDOS path: `../..` means nothing to the
-# -noixemul clamiga, and a `//clamacs/...` argument opens the file but
-# LOAD's pathname parse reads the leading `/` as Unix-absolute, so
-# load.lisp then looks for its siblings at the volume root.  The GG shell
+# is named by an ABSOLUTE AmigaDOS path (`../..` means nothing to the
+# -noixemul clamiga; `//clamacs/...` works too, but an absolute path keeps
+# the FASL source names independent of where the save ran).  The GG shell
 # spells the checkout /Work/DevelAdd/...; AMIGA_CURDIR is Work:DevelAdd/...
 # (the same absolute paths verify/realamiga/make-editor-image.sh passes).
 AMIGA_CURDIR := $(shell echo "$(CURDIR)" | sed 's|^/\([^/]*\)/*|\1:|')

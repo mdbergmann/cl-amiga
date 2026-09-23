@@ -280,4 +280,13 @@ void cl_check_seq_keywords(CL_Obj *args, int n, int kw_start, unsigned allowed);
  * fast path and land here for everything else. */
 CL_Obj cl_vector_ref1(CL_Obj vec, CL_Obj idx, int kind);
 
+/* Namestring parse/build (builtins_pathname.c).  The _syntax variants take
+ * AMIGA = 1 for AmigaDOS slash rules (leading or empty component = :UP)
+ * regardless of the platform; the plain ones use the platform's own. */
+CL_Obj cl_parse_namestring(const char *str, uint32_t len);
+CL_Obj cl_parse_namestring_syntax(const char *str, uint32_t len, int amiga);
+uint32_t cl_pathname_to_namestring(CL_Pathname *pn, char *buf, uint32_t bufsz);
+uint32_t cl_pathname_to_namestring_syntax(CL_Pathname *pn, char *buf,
+                                          uint32_t bufsz, int amiga);
+
 #endif /* CL_BUILTINS_H */
