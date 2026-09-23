@@ -77,36 +77,51 @@ static struct Task     *rexx_owner = NULL;     /* task that owns the port */
 static BYTE             rexx_wake_sig = -1;    /* wake bit for close() */
 static volatile int     rexx_stop = 0;
 
-/* Open rexxsyslib on demand.  Only argstring/message construction needs it;
- * the port itself is plain exec. */
-static int rexx_need_lib(void)
+/* rexxsyslib is shared by every thread of the process: the open port holds
+ * it for its lifetime, and each send() (from any thread) and each reply
+ * holds it for the span of its calls.  RexxSysBase is one global that every
+ * CreateArgstring/DeleteRexxMsg macro re-reads at the call, so the library
+ * may be closed only when NOBODY is between an acquire and its release.
+ * The old scheme opened it once and closed it from whichever side finished
+ * first -- the port owner's close(), or another thread's send() -- while a
+ * send() was still parked waiting for its reply.  That sender then called
+ * DeleteArgstring through a NULL/expunged base and jumped into garbage: the
+ * "68k exception at 0x4e" in CL-Thread at the end of the Clamacs drive,
+ * where the editor closes its port while its REPL thread waits on a send.
+ * Every count change is Forbid()ed: several threads acquire and release. */
+static uint32_t rexx_lib_users = 0;
+
+/* Take a reference on rexxsyslib, opening it on first use.  Returns 0 when
+ * the library is not available (nothing was taken). */
+static int rexx_acquire_lib(void)
 {
     int have;
-    /* RexxSysBase is touched from both the handler thread (open/close) and
-     * whatever thread calls send() -- Forbid() makes the check-then-open
-     * atomic so two callers can never race into opening (and one clobbering
-     * the other's base) or into reading it while close() is tearing it
-     * down. */
     Forbid();
     if (!RexxSysBase)
         RexxSysBase = (RexxSysBase_t *)OpenLibrary((STRPTR)RXSNAME, 0);
     have = RexxSysBase != NULL;
+    if (have)
+        rexx_lib_users++;
     Permit();
     return have;
 }
 
-/* Release rexxsyslib once nothing needs it.  platform_arexx_send() may open
- * the library on a process that has no port of its own (driving another
- * application), and an AmigaOS library left open cannot be expunged -- so a
- * send that opened it puts it back when it is done. */
-static void rexx_release_lib_if_idle(void)
+/* Drop a reference; the last one closes the library.  A process that only
+ * drives other applications (no port of its own) must not keep it open --
+ * an AmigaOS library left open cannot be expunged. */
+static void rexx_release_lib(void)
 {
     Forbid();
-    if (!rexx_port && RexxSysBase) {
+    if (rexx_lib_users > 0 && --rexx_lib_users == 0 && RexxSysBase) {
         CloseLibrary((struct Library *)RexxSysBase);
         RexxSysBase = NULL;
     }
     Permit();
+}
+
+uint32_t platform_arexx_lib_users(void)
+{
+    return rexx_lib_users;
 }
 
 const char *platform_arexx_strerror(int code)
@@ -131,8 +146,6 @@ int platform_arexx_open(const char *basename, char *name_out, int name_size)
 
     if (rexx_port)
         return PLATFORM_AREXX_ALREADY;
-    if (!rexx_need_lib())
-        return PLATFORM_AREXX_NOLIB;
 
     /* ARexx upcases the host name in `ADDRESS <name>` before FindPort, so a
      * lowercase port name is simply unreachable from a macro.  Upcase here
@@ -145,14 +158,21 @@ int platform_arexx_open(const char *basename, char *name_out, int name_size)
     if (i == 0)
         return PLATFORM_AREXX_NONAME;
 
+    /* The port's own reference, released by platform_arexx_close(). */
+    if (!rexx_acquire_lib())
+        return PLATFORM_AREXX_NOLIB;
+
     rexx_port = CreateMsgPort();
-    if (!rexx_port)
+    if (!rexx_port) {
+        rexx_release_lib();
         return PLATFORM_AREXX_NOMEM;
+    }
 
     rexx_wake_sig = AllocSignal(-1L);
     if (rexx_wake_sig < 0) {
         DeleteMsgPort(rexx_port);
         rexx_port = NULL;
+        rexx_release_lib();
         return PLATFORM_AREXX_NOMEM;
     }
 
@@ -173,6 +193,7 @@ int platform_arexx_open(const char *basename, char *name_out, int name_size)
         rexx_wake_sig = -1;
         DeleteMsgPort(rexx_port);
         rexx_port = NULL;
+        rexx_release_lib();
         return PLATFORM_AREXX_NONAME;
     }
     rexx_port->mp_Node.ln_Name = rexx_port_name;
@@ -274,10 +295,11 @@ void platform_arexx_reply(int32_t rc, const char *result, uint32_t result_len)
     rm->rm_Result2 = 0;
     /* See the protocol note at the top: a result string is only legal with
      * rm_Result1 == 0, and only when the caller asked for one. */
-    if (rc == 0 && result && (rm->rm_Action & RXFF_RESULT) && rexx_need_lib()) {
+    if (rc == 0 && result && (rm->rm_Action & RXFF_RESULT) && rexx_acquire_lib()) {
         UBYTE *as = CreateArgstring((STRPTR)result, (ULONG)result_len);
         if (as)
             rm->rm_Result2 = (LONG)as;
+        rexx_release_lib();
     }
     ReplyMsg((struct Message *)rm);
 }
@@ -287,19 +309,8 @@ void platform_arexx_close(void)
     struct MsgPort *port = rexx_port;
     struct RexxMsg *rm;
 
-    if (!port) {
-        /* No port, but an open() that failed after rexx_need_lib() would
-         * still be holding rexxsyslib -- release it rather than leak it for
-         * the life of the process.  Forbid()ed for the same reason as
-         * rexx_need_lib(): RexxSysBase can be read concurrently by send(). */
-        Forbid();
-        if (RexxSysBase) {
-            CloseLibrary((struct Library *)RexxSysBase);
-            RexxSysBase = NULL;
-        }
-        Permit();
-        return;
-    }
+    if (!port)
+        return;   /* never opened, or open() failed (it released its ref) */
 
     if (rexx_pending)
         platform_arexx_reply(PLATFORM_AREXX_RC_FATAL, NULL, 0);
@@ -329,14 +340,9 @@ void platform_arexx_close(void)
     rexx_port_name[0] = '\0';
     rexx_stop = 0;
 
-    /* Same race as above: a concurrent send() may still be between
-     * rexx_need_lib() and its CreateArgstring/CreateRexxMsg calls. */
-    Forbid();
-    if (RexxSysBase) {
-        CloseLibrary((struct Library *)RexxSysBase);
-        RexxSysBase = NULL;
-    }
-    Permit();
+    /* The port's reference.  A send() still waiting on its reply holds its
+     * own, so the library stays open under it. */
+    rexx_release_lib();
 }
 
 /* --- Sending (test harness / scripting from Lisp) ---------------------
@@ -359,19 +365,22 @@ int platform_arexx_send(const char *portname, const char *cmd,
     if (rc2_out) *rc2_out = 0;
     if (result && result_size > 0) result[0] = '\0';
 
-    if (!rexx_need_lib())
+    /* This send's own reference, held until its last DeleteRexxMsg --
+     * across the wait for the reply, which is when another thread (the
+     * port owner closing, another send finishing) used to close it. */
+    if (!rexx_acquire_lib())
         return PLATFORM_AREXX_NOLIB;
 
     reply_port = CreateMsgPort();
     if (!reply_port) {
-        rexx_release_lib_if_idle();
+        rexx_release_lib();
         return PLATFORM_AREXX_NOMEM;
     }
 
     rm = CreateRexxMsg(reply_port, NULL, (STRPTR)portname);
     if (!rm) {
         DeleteMsgPort(reply_port);
-        rexx_release_lib_if_idle();
+        rexx_release_lib();
         return PLATFORM_AREXX_NOMEM;
     }
 
@@ -379,7 +388,7 @@ int platform_arexx_send(const char *portname, const char *cmd,
     if (!arg) {
         DeleteRexxMsg(rm);
         DeleteMsgPort(reply_port);
-        rexx_release_lib_if_idle();
+        rexx_release_lib();
         return PLATFORM_AREXX_NOMEM;
     }
     ARG0(rm) = (STRPTR)arg;
@@ -398,7 +407,7 @@ int platform_arexx_send(const char *portname, const char *cmd,
         ARG0(rm) = NULL;
         DeleteRexxMsg(rm);
         DeleteMsgPort(reply_port);
-        rexx_release_lib_if_idle();
+        rexx_release_lib();
         return PLATFORM_AREXX_NOPORT;
     }
 
@@ -433,7 +442,7 @@ int platform_arexx_send(const char *portname, const char *cmd,
     ARG0(rm) = NULL;
     DeleteRexxMsg(rm);
     DeleteMsgPort(reply_port);
-    rexx_release_lib_if_idle();
+    rexx_release_lib();
     return PLATFORM_AREXX_OK;
 }
 

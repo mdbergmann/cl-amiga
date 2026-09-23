@@ -607,6 +607,16 @@ static CL_Obj bi_amiga_arexx_send(CL_Obj *args, int nargs)
     return cl_mv_values[0];
 }
 
+/* (amiga::%arexx-lib-users) → fixnum
+ * References held on rexxsyslib: the open port plus every send/reply in
+ * progress.  A test hook -- it must be 0 once no port is open and no send is
+ * running, and the library must stay open under a send still in flight. */
+static CL_Obj bi_amiga_arexx_lib_users(CL_Obj *args, int nargs)
+{
+    CL_UNUSED(args); CL_UNUSED(nargs);
+    return CL_MAKE_FIXNUM((int32_t)platform_arexx_lib_users());
+}
+
 /* (amiga:wait-signals mask) → the signals received
  * exec Wait() inside a GC safe region -- the Wait an event loop uses when
  * another Lisp thread may collect meanwhile (platform_wait_signals). */
@@ -681,6 +691,7 @@ AMIGA_HOST_STUB(bi_amiga_arexx_request_stop, "AREXX-REQUEST-STOP")
 AMIGA_HOST_STUB(bi_amiga_arexx_wait,         "AREXX-WAIT")
 AMIGA_HOST_STUB(bi_amiga_arexx_reply,        "AREXX-REPLY")
 AMIGA_HOST_STUB(bi_amiga_arexx_send,         "AREXX-SEND")
+AMIGA_HOST_STUB(bi_amiga_arexx_lib_users,    "%AREXX-LIB-USERS")
 AMIGA_HOST_STUB(bi_amiga_wait_signals,       "WAIT-SIGNALS")
 
 static void amiga_defun(const char *name, CL_CFunc func, int min, int max)
@@ -1221,6 +1232,7 @@ void cl_builtins_amiga_init(void)
     amiga_defun("AREXX-WAIT",         bi_amiga_arexx_wait,         0,  0);
     amiga_defun("AREXX-REPLY",        bi_amiga_arexx_reply,        1,  2);
     amiga_defun("AREXX-SEND",         bi_amiga_arexx_send,         2,  3);
+    cl_register_builtin("%AREXX-LIB-USERS", bi_amiga_arexx_lib_users, 0, 0, cl_package_amiga);
 
     /* exec Wait() as a GC-cooperative blocking call: the wait of every
      * event loop (lib/amiga/mui.lisp, reaction.lisp) and of a program that

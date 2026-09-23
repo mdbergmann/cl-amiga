@@ -339,3 +339,46 @@
   (error (e)
     (setq *fail-count* (+ *fail-count* 1))
     (format t "FAIL: ARexx port tests signaled: ~A~%" e)))
+
+; The port closing while other threads' sends are still waiting for their
+; replies.  rexxsyslib is shared by the whole process, and the old code
+; closed it from whichever side finished first: here the handler closes the
+; port (answering B's queued message with rc 20) while B is still parked in
+; its send, and B then freed its message through a NULL library base -- the
+; "68k exception at 0x4e" in CL-Thread at the end of the Clamacs drive,
+; where the editor closes its port under its own REPL thread's send.  Every
+; send and the open port hold a reference now; the library closes with the
+; last one.
+(handler-case
+    (let* ((port (amiga.arexx:start :name "CLAMIGATEST2"))
+           (slow-rc :none) (slow-text nil) (queued-rc :none)
+           (a nil) (b nil))
+      (check "arexx rexxsyslib held once by the open port" 1 (amiga::%arexx-lib-users))
+      ; A keeps the handler busy for a second ...
+      (setf a (mp:make-thread
+               (lambda ()
+                 (multiple-value-setq (slow-rc slow-text)
+                   (amiga.arexx:send port "EVAL (progn (sleep 1) 7)")))))
+      (sleep 0.3)
+      ; ... so B's message is still queued when STOP closes the port.
+      (setf b (mp:make-thread
+               (lambda () (setf queued-rc (amiga.arexx:send port "PING")))))
+      (sleep 0.3)
+      (check "arexx rexxsyslib held by the port and each send in flight" 3
+             (amiga::%arexx-lib-users))
+      (amiga.arexx:stop)
+      (mp:join-thread a)
+      (mp:join-thread b)
+      (check "arexx the slow command still got its answer" '(0 t)
+             (list slow-rc (and (search "7" slow-text) t)))
+      (check "arexx a send queued at close is answered rc 20, and survives" 20 queued-rc)
+      (check "arexx rexxsyslib closed once the last send is done" 0
+             (amiga::%arexx-lib-users))
+      ; A send from a process with no port of its own opens and closes it.
+      (check "arexx send to a missing port leaves rexxsyslib closed" '(t 0)
+             (list (handler-case (progn (amiga.arexx:send "CLAMIGA-NO-SUCH-PORT" "PING") nil)
+                     (error () t))
+                   (amiga::%arexx-lib-users))))
+  (error (e)
+    (setq *fail-count* (+ *fail-count* 1))
+    (format t "FAIL: ARexx close-under-send tests signaled: ~A~%" e)))

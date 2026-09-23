@@ -709,6 +709,10 @@ int  platform_arexx_send(const char *portname, const char *cmd,
                          int32_t *rc_out, char *result, int result_size,
                          int32_t *rc2_out);
 
+/* References currently held on rexxsyslib (the open port + every send or
+ * reply in progress, from any thread); 0 means it is closed.  Test hook. */
+uint32_t platform_arexx_lib_users(void);
+
 /* exec Wait(MASK) bracketed in a GC safe region; returns the signals
  * received.  A Lisp thread parked in a raw Wait() (AMIGA.RAW.EXEC:WAIT is a
  * plain library call) is invisible to a stop-the-world collection started
